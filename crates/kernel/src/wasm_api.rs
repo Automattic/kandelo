@@ -969,3 +969,193 @@ pub extern "C" fn kernel_exit(status: i32) {
     let mut host = WasmHostIO;
     syscalls::sys_exit(proc, &mut host, status);
 }
+
+// ---------------------------------------------------------------------------
+// Socket and poll exports
+// ---------------------------------------------------------------------------
+
+/// Create a socket. Returns fd or negative errno.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_socket(domain: u32, sock_type: u32, protocol: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    let mut host = WasmHostIO;
+    match syscalls::sys_socket(proc, &mut host, domain, sock_type, protocol) {
+        Ok(fd) => fd,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Create a connected pair of sockets. Returns 0 on success, negative errno on error.
+/// Writes the two fds to sv_ptr[0] and sv_ptr[1].
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_socketpair(domain: u32, sock_type: u32, protocol: u32, sv_ptr: *mut i32) -> i32 {
+    let proc = unsafe { get_process() };
+    let mut host = WasmHostIO;
+    match syscalls::sys_socketpair(proc, &mut host, domain, sock_type, protocol) {
+        Ok((fd0, fd1)) => {
+            unsafe {
+                *sv_ptr = fd0;
+                *sv_ptr.add(1) = fd1;
+            }
+            0
+        }
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Bind a socket to an address. Returns 0 on success, negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_bind(fd: i32, addr_ptr: *const u8, addr_len: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    let addr = unsafe { slice::from_raw_parts(addr_ptr, addr_len as usize) };
+    match syscalls::sys_bind(proc, fd, addr) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Listen for connections. Returns 0 on success, negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_listen(fd: i32, backlog: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    match syscalls::sys_listen(proc, fd, backlog) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Accept a connection. Returns new fd or negative errno.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_accept(fd: i32) -> i32 {
+    let proc = unsafe { get_process() };
+    let mut host = WasmHostIO;
+    match syscalls::sys_accept(proc, &mut host, fd) {
+        Ok(new_fd) => new_fd,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Connect to an address. Returns 0 on success, negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_connect(fd: i32, addr_ptr: *const u8, addr_len: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    let mut host = WasmHostIO;
+    let addr = unsafe { slice::from_raw_parts(addr_ptr, addr_len as usize) };
+    match syscalls::sys_connect(proc, &mut host, fd, addr) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Send data on a socket. Returns bytes sent or negative errno.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_send(fd: i32, buf_ptr: *const u8, buf_len: u32, flags: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    let mut host = WasmHostIO;
+    let buf = unsafe { slice::from_raw_parts(buf_ptr, buf_len as usize) };
+    match syscalls::sys_send(proc, &mut host, fd, buf, flags) {
+        Ok(n) => n as i32,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Receive data from a socket. Returns bytes received or negative errno.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_recv(fd: i32, buf_ptr: *mut u8, buf_len: u32, flags: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    let mut host = WasmHostIO;
+    let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
+    match syscalls::sys_recv(proc, &mut host, fd, buf, flags) {
+        Ok(n) => n as i32,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Shut down a socket. Returns 0 on success, negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_shutdown(fd: i32, how: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    match syscalls::sys_shutdown(proc, fd, how) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Get socket option. Returns 0 on success, negative errno on error.
+/// Writes the option value to optval_ptr.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_getsockopt(fd: i32, level: u32, optname: u32, optval_ptr: *mut u32) -> i32 {
+    let proc = unsafe { get_process() };
+    match syscalls::sys_getsockopt(proc, fd, level, optname) {
+        Ok(val) => {
+            unsafe { *optval_ptr = val; }
+            0
+        }
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Set socket option. Returns 0 on success, negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_setsockopt(fd: i32, level: u32, optname: u32, optval: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    match syscalls::sys_setsockopt(proc, fd, level, optname, optval) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Poll file descriptors. Returns number of ready fds, or negative errno.
+/// fds_ptr points to an array of WasmPollFd structs (8 bytes each: i32 fd, i16 events, i16 revents).
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_poll(fds_ptr: *mut u8, nfds: u32, timeout: i32) -> i32 {
+    let proc = unsafe { get_process() };
+    let fds = unsafe {
+        slice::from_raw_parts_mut(fds_ptr as *mut wasm_posix_shared::WasmPollFd, nfds as usize)
+    };
+    match syscalls::sys_poll(proc, fds, timeout) {
+        Ok(n) => n,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Send data to a specific address. Returns bytes sent or negative errno.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_sendto(
+    fd: i32,
+    buf_ptr: *const u8,
+    buf_len: u32,
+    flags: u32,
+    addr_ptr: *const u8,
+    addr_len: u32,
+) -> i32 {
+    let proc = unsafe { get_process() };
+    let mut host = WasmHostIO;
+    let buf = unsafe { slice::from_raw_parts(buf_ptr, buf_len as usize) };
+    let addr = unsafe { slice::from_raw_parts(addr_ptr, addr_len as usize) };
+    match syscalls::sys_sendto(proc, &mut host, fd, buf, flags, addr) {
+        Ok(n) => n as i32,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Receive data with sender address. Returns bytes received or negative errno.
+/// Writes sender address to addr_ptr and address length to addr_len_ptr.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_recvfrom(
+    fd: i32,
+    buf_ptr: *mut u8,
+    buf_len: u32,
+    flags: u32,
+    addr_ptr: *mut u8,
+    addr_len: u32,
+) -> i32 {
+    let proc = unsafe { get_process() };
+    let mut host = WasmHostIO;
+    let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
+    let addr_buf = unsafe { slice::from_raw_parts_mut(addr_ptr, addr_len as usize) };
+    match syscalls::sys_recvfrom(proc, &mut host, fd, buf, flags, addr_buf) {
+        Ok((n, _addr_len)) => n as i32,
+        Err(e) => -(e as i32),
+    }
+}
