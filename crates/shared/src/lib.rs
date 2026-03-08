@@ -14,6 +14,23 @@ pub enum Syscall {
     Dup2 = 8,
     Pipe = 9,
     Fcntl = 10,
+    Stat = 11,
+    Lstat = 12,
+    Mkdir = 13,
+    Rmdir = 14,
+    Unlink = 15,
+    Rename = 16,
+    Link = 17,
+    Symlink = 18,
+    Readlink = 19,
+    Chmod = 20,
+    Chown = 21,
+    Access = 22,
+    Getcwd = 23,
+    Chdir = 24,
+    Opendir = 25,
+    Readdir = 26,
+    Closedir = 27,
 }
 
 impl Syscall {
@@ -30,6 +47,23 @@ impl Syscall {
             8 => Some(Syscall::Dup2),
             9 => Some(Syscall::Pipe),
             10 => Some(Syscall::Fcntl),
+            11 => Some(Syscall::Stat),
+            12 => Some(Syscall::Lstat),
+            13 => Some(Syscall::Mkdir),
+            14 => Some(Syscall::Rmdir),
+            15 => Some(Syscall::Unlink),
+            16 => Some(Syscall::Rename),
+            17 => Some(Syscall::Link),
+            18 => Some(Syscall::Symlink),
+            19 => Some(Syscall::Readlink),
+            20 => Some(Syscall::Chmod),
+            21 => Some(Syscall::Chown),
+            22 => Some(Syscall::Access),
+            23 => Some(Syscall::Getcwd),
+            24 => Some(Syscall::Chdir),
+            25 => Some(Syscall::Opendir),
+            26 => Some(Syscall::Readdir),
+            27 => Some(Syscall::Closedir),
             _ => None,
         }
     }
@@ -73,6 +107,7 @@ pub enum Errno {
     EACCES = 13,
     EFAULT = 14,
     EEXIST = 17,
+    EXDEV = 18,
     ENOTDIR = 20,
     EISDIR = 21,
     EINVAL = 22,
@@ -81,6 +116,7 @@ pub enum Errno {
     ENOSPC = 28,
     ESPIPE = 29,
     EROFS = 30,
+    EMLINK = 31,
     EPIPE = 32,
     ERANGE = 34,
     ENAMETOOLONG = 36,
@@ -107,6 +143,7 @@ impl Errno {
             13 => Some(Errno::EACCES),
             14 => Some(Errno::EFAULT),
             17 => Some(Errno::EEXIST),
+            18 => Some(Errno::EXDEV),
             20 => Some(Errno::ENOTDIR),
             21 => Some(Errno::EISDIR),
             22 => Some(Errno::EINVAL),
@@ -115,6 +152,7 @@ impl Errno {
             28 => Some(Errno::ENOSPC),
             29 => Some(Errno::ESPIPE),
             30 => Some(Errno::EROFS),
+            31 => Some(Errno::EMLINK),
             32 => Some(Errno::EPIPE),
             34 => Some(Errno::ERANGE),
             36 => Some(Errno::ENAMETOOLONG),
@@ -164,6 +202,26 @@ pub mod seek {
     pub const SEEK_SET: u32 = 0;
     pub const SEEK_CUR: u32 = 1;
     pub const SEEK_END: u32 = 2;
+}
+
+/// Access mode constants for access()/faccessat().
+pub mod access {
+    pub const F_OK: u32 = 0;
+    pub const R_OK: u32 = 4;
+    pub const W_OK: u32 = 2;
+    pub const X_OK: u32 = 1;
+}
+
+/// Directory entry type constants (DT_*).
+pub mod dirent {
+    pub const DT_UNKNOWN: u32 = 0;
+    pub const DT_FIFO: u32 = 1;
+    pub const DT_CHR: u32 = 2;
+    pub const DT_DIR: u32 = 4;
+    pub const DT_BLK: u32 = 6;
+    pub const DT_REG: u32 = 8;
+    pub const DT_LNK: u32 = 10;
+    pub const DT_SOCK: u32 = 12;
 }
 
 /// File mode and type constants (S_*).
@@ -238,4 +296,16 @@ pub struct WasmStat {
     pub st_ctime_sec: u64,
     pub st_ctime_nsec: u32,
     pub _pad: u32,
+}
+
+/// Directory entry structure for the Wasm POSIX interface.
+///
+/// Uses `repr(C)` for a stable, predictable memory layout that can be
+/// shared across the Wasm shared-memory boundary.
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct WasmDirent {
+    pub d_ino: u64,
+    pub d_type: u32,
+    pub d_namlen: u32,
 }
