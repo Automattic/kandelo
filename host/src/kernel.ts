@@ -966,4 +966,154 @@ export class WasmPosixKernel {
       return -1;
     }
   }
+
+  // ---- Public API: Socket & Poll operations ----
+
+  /**
+   * Create a socket. Returns the fd or throws on error.
+   */
+  socket(domain: number, type: number, protocol: number): number {
+    const fn = this.instance!.exports.kernel_socket as (
+      domain: number,
+      type: number,
+      protocol: number,
+    ) => number;
+    const result = fn(domain, type, protocol);
+    if (result < 0) throw new Error(`socket failed: errno ${-result}`);
+    return result;
+  }
+
+  /**
+   * Create a connected pair of Unix domain stream sockets.
+   * Returns [fd0, fd1].
+   */
+  socketpair(domain: number, type: number, protocol: number): [number, number] {
+    const fn = this.instance!.exports.kernel_socketpair as (
+      domain: number,
+      type: number,
+      protocol: number,
+      svPtr: number,
+    ) => number;
+    // Use a scratch area in Wasm memory for the two i32 results.
+    // We use offset 0 of the data buffer (safe for temp use since no
+    // concurrent host operations touch it).
+    const dv = this.getMemoryDataView();
+    const scratchPtr = 4; // offset 4 to avoid address 0
+    const result = fn(domain, type, protocol, scratchPtr);
+    if (result < 0) throw new Error(`socketpair failed: errno ${-result}`);
+    const fd0 = dv.getInt32(scratchPtr, true);
+    const fd1 = dv.getInt32(scratchPtr + 4, true);
+    return [fd0, fd1];
+  }
+
+  /**
+   * Shut down part of a full-duplex socket connection.
+   */
+  shutdown(fd: number, how: number): void {
+    const fn = this.instance!.exports.kernel_shutdown as (
+      fd: number,
+      how: number,
+    ) => number;
+    const result = fn(fd, how);
+    if (result < 0) throw new Error(`shutdown failed: errno ${-result}`);
+  }
+
+  /**
+   * Send data on a connected socket. Returns bytes sent.
+   */
+  send(fd: number, data: Uint8Array, flags: number = 0): number {
+    const fn = this.instance!.exports.kernel_send as (
+      fd: number,
+      bufPtr: number,
+      bufLen: number,
+      flags: number,
+    ) => number;
+    // Write data into Wasm memory at a temp location
+    const mem = this.getMemoryBuffer();
+    const tmpPtr = 16; // scratch area
+    mem.set(data, tmpPtr);
+    const result = fn(fd, tmpPtr, data.length, flags);
+    if (result < 0) throw new Error(`send failed: errno ${-result}`);
+    return result;
+  }
+
+  /**
+   * Receive data from a connected socket. Returns the received data.
+   */
+  recv(fd: number, maxLen: number, flags: number = 0): Uint8Array {
+    const fn = this.instance!.exports.kernel_recv as (
+      fd: number,
+      bufPtr: number,
+      bufLen: number,
+      flags: number,
+    ) => number;
+    const tmpPtr = 16; // scratch area
+    const result = fn(fd, tmpPtr, maxLen, flags);
+    if (result < 0) throw new Error(`recv failed: errno ${-result}`);
+    const mem = this.getMemoryBuffer();
+    return mem.slice(tmpPtr, tmpPtr + result);
+  }
+
+  /**
+   * Poll file descriptors for I/O readiness.
+   * Returns array of {fd, events, revents} with revents filled in.
+   */
+  poll(
+    fds: Array<{ fd: number; events: number }>,
+    timeout: number,
+  ): Array<{ fd: number; events: number; revents: number }> {
+    const fn = this.instance!.exports.kernel_poll as (
+      fdsPtr: number,
+      nfds: number,
+      timeout: number,
+    ) => number;
+    const nfds = fds.length;
+    const tmpPtr = 16; // scratch area
+    const dv = this.getMemoryDataView();
+    // Write pollfd structs (8 bytes each: i32 fd, i16 events, i16 revents)
+    for (let i = 0; i < nfds; i++) {
+      const off = tmpPtr + i * 8;
+      dv.setInt32(off, fds[i].fd, true);
+      dv.setInt16(off + 4, fds[i].events, true);
+      dv.setInt16(off + 6, 0, true);
+    }
+    const result = fn(tmpPtr, nfds, timeout);
+    if (result < 0) throw new Error(`poll failed: errno ${-result}`);
+    return fds.map((f, i) => ({
+      fd: f.fd,
+      events: f.events,
+      revents: dv.getInt16(tmpPtr + i * 8 + 6, true),
+    }));
+  }
+
+  /**
+   * Get a socket option value.
+   */
+  getsockopt(fd: number, level: number, optname: number): number {
+    const fn = this.instance!.exports.kernel_getsockopt as (
+      fd: number,
+      level: number,
+      optname: number,
+      optvalPtr: number,
+    ) => number;
+    const dv = this.getMemoryDataView();
+    const scratchPtr = 4;
+    const result = fn(fd, level, optname, scratchPtr);
+    if (result < 0) throw new Error(`getsockopt failed: errno ${-result}`);
+    return dv.getUint32(scratchPtr, true);
+  }
+
+  /**
+   * Set a socket option value.
+   */
+  setsockopt(fd: number, level: number, optname: number, value: number): void {
+    const fn = this.instance!.exports.kernel_setsockopt as (
+      fd: number,
+      level: number,
+      optname: number,
+      optval: number,
+    ) => number;
+    const result = fn(fd, level, optname, value);
+    if (result < 0) throw new Error(`setsockopt failed: errno ${-result}`);
+  }
 }
