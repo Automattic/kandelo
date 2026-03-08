@@ -61,13 +61,13 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 
 | Function | Status | Notes |
 |----------|--------|-------|
-| `kill()` | Planned | Inter-process signaling via kernel. |
-| `signal()` | Planned | Legacy signal handler registration. |
-| `sigaction()` | Planned | Modern signal handler registration. |
-| `sigprocmask()` | Planned | Signal mask manipulation. |
-| `sigsuspend()` | Planned | Requires blocking + signal delivery. |
-| `raise()` | Planned | Signal self. |
-| `alarm()` | Planned | Timer-based SIGALRM. |
+| `kill()` | Partial | Marks signal as pending. sig=0 validity check. Single-process only (no cross-process delivery yet). |
+| `signal()` | Planned | Legacy API. Use sigaction() instead. |
+| `sigaction()` | Partial | Sets handler disposition (SIG_DFL, SIG_IGN, or function pointer). SIGKILL/SIGSTOP immutable. Actual handler invocation deferred (requires Asyncify or syscall-entry checking). |
+| `sigprocmask()` | Full | Block/unblock/setmask operations on 64-bit signal mask. SIGKILL and SIGSTOP cannot be blocked per POSIX. |
+| `sigsuspend()` | Planned | Requires blocking + signal delivery mechanism. |
+| `raise()` | Full | Equivalent to kill(getpid(), sig). |
+| `alarm()` | Planned | Timer-based SIGALRM. Requires host timer integration. |
 
 ## Memory Management
 
@@ -174,8 +174,8 @@ These features require SharedArrayBuffer (and cross-origin isolation headers in 
 2. **Phase 2 (Complete):** Directory operations — stat, lstat, mkdir, rmdir, unlink, link, symlink, readlink, rename, chmod, chown, access, opendir, readdir, closedir, chdir, getcwd
 3. **Phase 3a (Complete):** Process identity & lifecycle — getpid, getppid, getuid/geteuid, getgid/getegid, exit/_exit
 3b. **Phase 3b (Deferred):** Multi-process — fork, exec, waitpid (requires multi-worker architecture)
-4. **Phase 4 (Next):** Signals — kill, sigaction, sigprocmask
-5. **Phase 5:** fcntl locking — F_GETLK, F_SETLK, F_SETLKW
+4. **Phase 4 (Complete):** Signals — kill, raise, sigaction, sigprocmask. Signal delivery mechanism deferred (needs Asyncify).
+5. **Phase 5 (Next):** fcntl locking — F_GETLK, F_SETLK, F_SETLKW
 6. **Phase 6:** Sockets — socket, bind, listen, accept, connect
 7. **Phase 7:** Time, TTY, environment
 8. **Phase 8:** Memory management — mmap (anonymous), brk
