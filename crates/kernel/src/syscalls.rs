@@ -16,6 +16,7 @@ use crate::pipe::{PipeBuffer, DEFAULT_PIPE_CAPACITY};
 use crate::process::{HostIO, Process};
 use crate::signal::SignalHandler;
 use wasm_posix_shared::signal::{SIG_DFL, SIG_IGN, SIG_BLOCK, SIG_UNBLOCK, SIG_SETMASK, SIGKILL, SIGSTOP, NSIG};
+use wasm_posix_shared::mmap::{MAP_ANONYMOUS, MAP_FAILED};
 
 /// Creation flags that are stripped from status_flags after open.
 const CREATION_FLAGS: u32 = O_CREAT | O_EXCL | O_TRUNC | O_CLOEXEC | O_DIRECTORY;
@@ -891,6 +892,53 @@ pub fn sys_unsetenv(proc: &mut Process, name: &[u8]) -> Result<(), Errno> {
     Ok(())
 }
 
+/// mmap -- currently only supports anonymous mappings.
+pub fn sys_mmap(
+    proc: &mut Process,
+    _addr: u32,  // hint address (ignored for now)
+    len: u32,
+    prot: u32,
+    flags: u32,
+    _fd: i32,     // ignored for anonymous
+    _offset: i64, // ignored for anonymous
+) -> Result<u32, Errno> {
+    // Only anonymous mappings supported
+    if flags & MAP_ANONYMOUS == 0 {
+        return Err(Errno::ENOSYS);
+    }
+
+    let addr = proc.memory.mmap_anonymous(len, prot, flags);
+    if addr == MAP_FAILED {
+        return Err(Errno::ENOMEM);
+    }
+    Ok(addr)
+}
+
+/// munmap -- unmap a previously mapped region.
+pub fn sys_munmap(proc: &mut Process, addr: u32, len: u32) -> Result<(), Errno> {
+    if proc.memory.munmap(addr, len) {
+        Ok(())
+    } else {
+        Err(Errno::EINVAL)
+    }
+}
+
+/// brk -- set/get the program break.
+/// If addr is 0, returns the current break.
+/// Otherwise, sets the break to addr and returns the new break.
+pub fn sys_brk(proc: &mut Process, addr: u32) -> u32 {
+    if addr == 0 {
+        proc.memory.get_brk()
+    } else {
+        proc.memory.set_brk(addr)
+    }
+}
+
+/// mprotect -- not applicable to Wasm linear memory.
+pub fn sys_mprotect(_proc: &Process, _addr: u32, _len: u32, _prot: u32) -> Result<(), Errno> {
+    Err(Errno::ENOSYS)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1744,5 +1792,47 @@ mod tests {
     fn test_setenv_rejects_name_with_equals() {
         let mut proc = Process::new(1);
         assert_eq!(sys_setenv(&mut proc, b"A=B", b"value", true), Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn test_mmap_anonymous() {
+        let mut proc = Process::new(1);
+        let addr = sys_mmap(&mut proc, 0, 4096, 3, 0x22, -1, 0).unwrap(); // PROT_READ|WRITE, MAP_PRIVATE|ANON
+        assert_ne!(addr, 0xFFFFFFFF);
+    }
+
+    #[test]
+    fn test_mmap_file_backed_unsupported() {
+        let mut proc = Process::new(1);
+        let result = sys_mmap(&mut proc, 0, 4096, 3, 0x02, 3, 0); // MAP_PRIVATE without MAP_ANONYMOUS
+        assert_eq!(result, Err(Errno::ENOSYS));
+    }
+
+    #[test]
+    fn test_munmap() {
+        let mut proc = Process::new(1);
+        let addr = sys_mmap(&mut proc, 0, 4096, 3, 0x22, -1, 0).unwrap();
+        sys_munmap(&mut proc, addr, 0x10000).unwrap();
+    }
+
+    #[test]
+    fn test_brk_query() {
+        let mut proc = Process::new(1);
+        let brk = sys_brk(&mut proc, 0);
+        assert!(brk > 0);
+    }
+
+    #[test]
+    fn test_brk_set() {
+        let mut proc = Process::new(1);
+        let initial = sys_brk(&mut proc, 0);
+        let new_brk = sys_brk(&mut proc, initial + 4096);
+        assert_eq!(new_brk, initial + 4096);
+    }
+
+    #[test]
+    fn test_mprotect_returns_enosys() {
+        let proc = Process::new(1);
+        assert_eq!(sys_mprotect(&proc, 0, 4096, 3), Err(Errno::ENOSYS));
     }
 }
