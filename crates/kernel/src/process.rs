@@ -37,6 +37,8 @@ pub trait HostIO {
     fn host_opendir(&mut self, path: &[u8]) -> Result<i64, Errno>;
     fn host_readdir(&mut self, handle: i64, name_buf: &mut [u8]) -> Result<Option<(u64, u32, usize)>, Errno>;
     fn host_closedir(&mut self, handle: i64) -> Result<(), Errno>;
+    fn host_clock_gettime(&mut self, clock_id: u32) -> Result<(i64, i64), Errno>;
+    fn host_nanosleep(&mut self, seconds: i64, nanoseconds: i64) -> Result<(), Errno>;
 }
 
 /// Process lifecycle state.
@@ -63,6 +65,7 @@ pub struct Process {
     pub cwd: Vec<u8>,
     pub dir_streams: Vec<Option<DirStream>>,
     pub signals: SignalState,
+    pub environ: Vec<Vec<u8>>,
 }
 
 impl Process {
@@ -99,6 +102,7 @@ impl Process {
             cwd: alloc::vec![b'/'],
             dir_streams: Vec::new(),
             signals: SignalState::new(),
+            environ: Vec::new(),
         }
     }
 }
