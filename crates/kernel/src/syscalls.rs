@@ -1271,10 +1271,10 @@ pub fn sys_send(
 /// Receive data from a connected socket.
 pub fn sys_recv(
     proc: &mut Process,
-    host: &mut dyn HostIO,
+    _host: &mut dyn HostIO,
     fd: i32,
     buf: &mut [u8],
-    _flags: u32,
+    flags: u32,
 ) -> Result<usize, Errno> {
     use crate::socket::SocketState;
 
@@ -1288,7 +1288,18 @@ pub fn sys_recv(
     if sock.state != SocketState::Connected {
         return Err(Errno::ENOTCONN);
     }
-    sys_read(proc, host, fd, buf)
+    if sock.shut_rd {
+        return Ok(0);
+    }
+    let recv_buf_idx = sock.recv_buf_idx.ok_or(Errno::ENOTCONN)?;
+    let peek = flags & 2 != 0; // MSG_PEEK
+    let pipe = proc
+        .pipes
+        .get_mut(recv_buf_idx)
+        .and_then(|p| p.as_mut())
+        .ok_or(Errno::EBADF)?;
+    let n = if peek { pipe.peek(buf) } else { pipe.read(buf) };
+    Ok(n)
 }
 
 /// Get socket option value.
@@ -2726,6 +2737,32 @@ mod tests {
         let n = sys_recv(&mut proc, &mut host, fd1, &mut buf, 0).unwrap();
         assert_eq!(n, 4);
         assert_eq!(&buf, b"test");
+    }
+
+    #[test]
+    fn test_recv_msg_peek() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+        let (fd0, fd1) = sys_socketpair(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+
+        // Write data via fd0
+        sys_send(&mut proc, &mut host, fd0, b"peek test", 0).unwrap();
+
+        // Peek via fd1 — data should be returned but not consumed
+        let mut buf = [0u8; 32];
+        let n = sys_recv(&mut proc, &mut host, fd1, &mut buf, 2).unwrap(); // MSG_PEEK=2
+        assert_eq!(n, 9);
+        assert_eq!(&buf[..9], b"peek test");
+
+        // Regular read — data should still be there
+        let n2 = sys_recv(&mut proc, &mut host, fd1, &mut buf, 0).unwrap();
+        assert_eq!(n2, 9);
+        assert_eq!(&buf[..9], b"peek test");
+
+        // Now data is consumed
+        let n3 = sys_recv(&mut proc, &mut host, fd1, &mut buf, 0).unwrap();
+        assert_eq!(n3, 0);
     }
 
     #[test]

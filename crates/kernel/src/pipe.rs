@@ -72,6 +72,24 @@ impl PipeBuffer {
         n
     }
 
+    /// Read data from the ring buffer without consuming it, returning the
+    /// number of bytes read.
+    ///
+    /// This is equivalent to `read()` but the head pointer and length are
+    /// not modified, so the same data can be read again.
+    ///
+    /// Returns 0 if the buffer is empty.
+    pub fn peek(&self, buf: &mut [u8]) -> usize {
+        let cap = self.capacity();
+        let n = buf.len().min(self.len);
+        let mut src = self.head;
+        for i in 0..n {
+            buf[i] = self.buf[src];
+            src = (src + 1) % cap;
+        }
+        n
+    }
+
     /// Read data from the ring buffer into `buf`, returning the number of
     /// bytes read.
     ///
@@ -204,6 +222,21 @@ mod tests {
 
         pipe.close_read_end();
         assert!(!pipe.is_read_end_open());
+    }
+
+    #[test]
+    fn test_pipe_peek() {
+        let mut pipe = PipeBuffer::new(DEFAULT_PIPE_CAPACITY);
+        pipe.write(b"hello");
+        let mut buf = [0u8; 5];
+        // Peek should read without consuming
+        let n = pipe.peek(&mut buf);
+        assert_eq!(n, 5);
+        assert_eq!(&buf[..5], b"hello");
+        // Data should still be available for regular read
+        let n2 = pipe.read(&mut buf);
+        assert_eq!(n2, 5);
+        assert_eq!(&buf[..5], b"hello");
     }
 
     #[test]
