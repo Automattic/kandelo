@@ -19,7 +19,7 @@ use wasm_posix_shared::signal::{SIG_DFL, SIG_IGN, SIG_BLOCK, SIG_UNBLOCK, SIG_SE
 use wasm_posix_shared::mmap::{MAP_ANONYMOUS, MAP_FAILED};
 
 /// Creation flags that are stripped from status_flags after open.
-const CREATION_FLAGS: u32 = O_CREAT | O_EXCL | O_TRUNC | O_CLOEXEC | O_DIRECTORY;
+const CREATION_FLAGS: u32 = O_CREAT | O_EXCL | O_TRUNC | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW;
 
 /// Open a file, returning the new file descriptor number.
 pub fn sys_open(
@@ -129,6 +129,7 @@ pub fn sys_read(
 
     let host_handle = ofd.host_handle;
     let file_type = ofd.file_type;
+    let status_flags = ofd.status_flags;
 
     match file_type {
         FileType::Pipe => {
@@ -138,7 +139,13 @@ pub fn sys_read(
                 .get_mut(pipe_idx)
                 .and_then(|p| p.as_mut())
                 .ok_or(Errno::EBADF)?;
-            Ok(pipe.read(buf))
+            let n = pipe.read(buf);
+            if n == 0 && pipe.is_write_end_open() {
+                if status_flags & O_NONBLOCK != 0 {
+                    return Err(Errno::EAGAIN);
+                }
+            }
+            Ok(n)
         }
         FileType::Socket => {
             let sock_idx = (-(host_handle + 1)) as usize;
@@ -153,8 +160,10 @@ pub fn sys_read(
                 .and_then(|p| p.as_mut())
                 .ok_or(Errno::EBADF)?;
             let n = pipe.read(buf);
-            if n == 0 && !pipe.is_write_end_open() {
-                return Ok(0);
+            if n == 0 && pipe.is_write_end_open() {
+                if status_flags & O_NONBLOCK != 0 {
+                    return Err(Errno::EAGAIN);
+                }
             }
             Ok(n)
         }
@@ -3170,5 +3179,20 @@ mod tests {
         // Get owner
         let result = sys_fcntl(&mut proc, 0, 9, 0); // F_GETOWN
         assert_eq!(result, Ok(42));
+    }
+
+    #[test]
+    fn test_open_nofollow_passed_through() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::flags::O_NOFOLLOW;
+        // Open with O_NOFOLLOW should work for regular files
+        let result = sys_open(&mut proc, &mut host, b"/tmp/test", O_RDONLY | O_NOFOLLOW, 0);
+        assert!(result.is_ok());
+        // Verify O_NOFOLLOW is NOT stored in status flags
+        let fd = result.unwrap();
+        let entry = proc.fd_table.get(fd).unwrap();
+        let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
+        assert_eq!(ofd.status_flags & O_NOFOLLOW, 0); // Not in status flags
     }
 }
