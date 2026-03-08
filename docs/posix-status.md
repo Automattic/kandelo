@@ -222,3 +222,8 @@ These features require SharedArrayBuffer (and cross-origin isolation headers in 
 10. **Phase 10 (Complete):** Extended POSIX — umask, uname, sysconf, dup3, pipe2, ftruncate, fsync, writev, readv, getrlimit, setrlimit
 11. **Phase 11 (Complete):** Final gaps — truncate, fdatasync, fchmod, fchown, getpgrp, setpgid, getsid, setsid, fstatat, unlinkat, mkdirat, renameat
 12. **Phase 12 (Complete):** Remaining tractable — faccessat, fchmodat, fchownat, linkat, symlinkat, readlinkat, select, setuid/setgid/seteuid/setegid, getrusage
+13a. **Phase 13a (In Progress):** Multi-Worker Infrastructure
+- ProcessManager with process table and worker lifecycle
+- WorkerAdapter abstraction (Node.js worker_threads + mock)
+- Worker entry point: kernel initialization in worker thread
+- Message protocol for host ↔ worker communication
