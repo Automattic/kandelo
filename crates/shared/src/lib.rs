@@ -43,6 +43,12 @@ pub enum Syscall {
     Sigprocmask = 37,
     Raise = 38,
     Alarm = 39,
+    ClockGettime = 40,
+    Nanosleep = 41,
+    Isatty = 42,
+    GetEnv = 43,
+    SetEnv = 44,
+    UnsetEnv = 45,
 }
 
 impl Syscall {
@@ -88,6 +94,12 @@ impl Syscall {
             37 => Some(Syscall::Sigprocmask),
             38 => Some(Syscall::Raise),
             39 => Some(Syscall::Alarm),
+            40 => Some(Syscall::ClockGettime),
+            41 => Some(Syscall::Nanosleep),
+            42 => Some(Syscall::Isatty),
+            43 => Some(Syscall::GetEnv),
+            44 => Some(Syscall::SetEnv),
+            45 => Some(Syscall::UnsetEnv),
             _ => None,
         }
     }
@@ -138,6 +150,7 @@ pub enum Errno {
     EINVAL = 22,
     ENFILE = 23,
     EMFILE = 24,
+    ENOTTY = 25,
     ENOSPC = 28,
     ESPIPE = 29,
     EROFS = 30,
@@ -175,6 +188,7 @@ impl Errno {
             22 => Some(Errno::EINVAL),
             23 => Some(Errno::ENFILE),
             24 => Some(Errno::EMFILE),
+            25 => Some(Errno::ENOTTY),
             28 => Some(Errno::ENOSPC),
             29 => Some(Errno::ESPIPE),
             30 => Some(Errno::EROFS),
@@ -402,4 +416,21 @@ pub mod signal {
     pub const SA_DEFAULT_CORE: u32 = 2;   // Core dump (treated as terminate in Wasm)
     pub const SA_DEFAULT_STOP: u32 = 3;   // Stop (not supported in Wasm)
     pub const SA_DEFAULT_CONT: u32 = 4;   // Continue (not supported in Wasm)
+}
+
+/// Clock ID constants for clock_gettime/clock_settime.
+pub mod clock {
+    pub const CLOCK_REALTIME: u32 = 0;
+    pub const CLOCK_MONOTONIC: u32 = 1;
+}
+
+/// Timespec structure for the Wasm POSIX interface.
+///
+/// Uses `repr(C)` for a stable, predictable memory layout that can be
+/// shared across the Wasm shared-memory boundary.
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct WasmTimespec {
+    pub tv_sec: i64,
+    pub tv_nsec: i64,
 }
