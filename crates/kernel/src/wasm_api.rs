@@ -46,6 +46,8 @@ unsafe extern "C" {
     fn host_nanosleep(sec: i64, nsec: i64) -> i32;
     fn host_ftruncate(handle: i64, length: i64) -> i32;
     fn host_fsync(handle: i64) -> i32;
+    fn host_fchmod(handle: i64, mode: u32) -> i32;
+    fn host_fchown(handle: i64, uid: u32, gid: u32) -> i32;
 }
 
 // ---------------------------------------------------------------------------
@@ -301,6 +303,16 @@ impl HostIO for WasmHostIO {
 
     fn host_fsync(&mut self, handle: i64) -> Result<(), Errno> {
         let result = unsafe { host_fsync(handle) };
+        i32_to_result(result)
+    }
+
+    fn host_fchmod(&mut self, handle: i64, mode: u32) -> Result<(), Errno> {
+        let result = unsafe { host_fchmod(handle, mode) };
+        i32_to_result(result)
+    }
+
+    fn host_fchown(&mut self, handle: i64, uid: u32, gid: u32) -> Result<(), Errno> {
+        let result = unsafe { host_fchown(handle, uid, gid) };
         i32_to_result(result)
     }
 }
@@ -1374,6 +1386,53 @@ pub extern "C" fn kernel_fsync(fd: i32) -> i32 {
     let proc = unsafe { get_process() };
     let mut host = WasmHostIO;
     match syscalls::sys_fsync(proc, &mut host, fd) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Truncate a file to a specified length (path-based). Returns 0 on success, or negative errno on error.
+/// The 64-bit length is passed as two 32-bit halves for Wasm compatibility.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_truncate(path_ptr: *const u8, path_len: u32, length_lo: u32, length_hi: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    let mut host = WasmHostIO;
+    let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
+    let length = ((length_hi as i64) << 32) | (length_lo as u64 as i64);
+    match syscalls::sys_truncate(proc, &mut host, path, length) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Synchronize file data to storage (alias for fsync). Returns 0 on success, or negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_fdatasync(fd: i32) -> i32 {
+    let proc = unsafe { get_process() };
+    let mut host = WasmHostIO;
+    match syscalls::sys_fdatasync(proc, &mut host, fd) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Change file mode via file descriptor. Returns 0 on success, or negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_fchmod(fd: i32, mode: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    let mut host = WasmHostIO;
+    match syscalls::sys_fchmod(proc, &mut host, fd, mode) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Change file owner and group via file descriptor. Returns 0 on success, or negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_fchown(fd: i32, uid: u32, gid: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    let mut host = WasmHostIO;
+    match syscalls::sys_fchown(proc, &mut host, fd, uid, gid) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     }

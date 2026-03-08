@@ -88,6 +88,14 @@ pub enum Syscall {
     Readv = 82,
     Getrlimit = 83,
     Setrlimit = 84,
+    Truncate = 85,
+    Fdatasync = 86,
+    Fchmod = 87,
+    Fchown = 88,
+    Getpgrp = 89,
+    Setpgid = 90,
+    Getsid = 91,
+    Setsid = 92,
 }
 
 impl Syscall {
@@ -178,6 +186,14 @@ impl Syscall {
             82 => Some(Syscall::Readv),
             83 => Some(Syscall::Getrlimit),
             84 => Some(Syscall::Setrlimit),
+            85 => Some(Syscall::Truncate),
+            86 => Some(Syscall::Fdatasync),
+            87 => Some(Syscall::Fchmod),
+            88 => Some(Syscall::Fchown),
+            89 => Some(Syscall::Getpgrp),
+            90 => Some(Syscall::Setpgid),
+            91 => Some(Syscall::Getsid),
+            92 => Some(Syscall::Setsid),
             _ => None,
         }
     }

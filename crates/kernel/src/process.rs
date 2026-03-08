@@ -44,6 +44,8 @@ pub trait HostIO {
     fn host_nanosleep(&mut self, seconds: i64, nanoseconds: i64) -> Result<(), Errno>;
     fn host_ftruncate(&mut self, handle: i64, length: i64) -> Result<(), Errno>;
     fn host_fsync(&mut self, handle: i64) -> Result<(), Errno>;
+    fn host_fchmod(&mut self, handle: i64, mode: u32) -> Result<(), Errno>;
+    fn host_fchown(&mut self, handle: i64, uid: u32, gid: u32) -> Result<(), Errno>;
 }
 
 /// Process lifecycle state.
@@ -61,6 +63,8 @@ pub struct Process {
     pub gid: u32,
     pub euid: u32,
     pub egid: u32,
+    pub pgid: u32,
+    pub sid: u32,
     pub state: ProcessState,
     pub exit_status: i32,
     pub fd_table: FdTable,
@@ -107,6 +111,8 @@ impl Process {
             gid: 1000,
             euid: 1000,
             egid: 1000,
+            pgid: pid,
+            sid: pid,
             state: ProcessState::Running,
             exit_status: 0,
             fd_table,

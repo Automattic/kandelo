@@ -1857,6 +1857,67 @@ pub fn sys_fsync(
     host.host_fsync(ofd.host_handle)
 }
 
+/// truncate -- truncate a file to a specified length (path-based).
+/// Opens the file for writing, truncates it, then closes it.
+pub fn sys_truncate(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    path: &[u8],
+    length: i64,
+) -> Result<(), Errno> {
+    let fd = sys_open(proc, host, path, O_WRONLY, 0)?;
+    let result = sys_ftruncate(proc, host, fd, length);
+    let _ = sys_close(proc, host, fd);
+    result
+}
+
+/// fdatasync -- synchronize file data to storage.
+/// In our Wasm environment this is an alias for fsync.
+pub fn sys_fdatasync(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    fd: i32,
+) -> Result<(), Errno> {
+    sys_fsync(proc, host, fd)
+}
+
+/// fchmod -- change file mode via file descriptor.
+pub fn sys_fchmod(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    fd: i32,
+    mode: u32,
+) -> Result<(), Errno> {
+    let entry = proc.fd_table.get(fd)?;
+    let ofd_idx = entry.ofd_ref.0;
+    let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+
+    if ofd.file_type != FileType::Regular && ofd.file_type != FileType::Directory {
+        return Err(Errno::EINVAL);
+    }
+
+    host.host_fchmod(ofd.host_handle, mode)
+}
+
+/// fchown -- change file owner and group via file descriptor.
+pub fn sys_fchown(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    fd: i32,
+    uid: u32,
+    gid: u32,
+) -> Result<(), Errno> {
+    let entry = proc.fd_table.get(fd)?;
+    let ofd_idx = entry.ofd_ref.0;
+    let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+
+    if ofd.file_type != FileType::Regular && ofd.file_type != FileType::Directory {
+        return Err(Errno::EINVAL);
+    }
+
+    host.host_fchown(ofd.host_handle, uid, gid)
+}
+
 /// writev -- write data from multiple buffers (scatter-gather I/O).
 /// Iterates over the provided buffer slices, writing each in order.
 /// Stops on a short write or error, returning the total bytes written.
@@ -2072,6 +2133,14 @@ mod tests {
         }
 
         fn host_fsync(&mut self, _handle: i64) -> Result<(), Errno> {
+            Ok(())
+        }
+
+        fn host_fchmod(&mut self, _handle: i64, _mode: u32) -> Result<(), Errno> {
+            Ok(())
+        }
+
+        fn host_fchown(&mut self, _handle: i64, _uid: u32, _gid: u32) -> Result<(), Errno> {
             Ok(())
         }
     }
@@ -3817,5 +3886,57 @@ mod tests {
         let proc = Process::new(1);
         let result = sys_getrlimit(&proc, 99);
         assert_eq!(result, Err(Errno::EINVAL));
+    }
+
+    // ---- truncate tests ----
+
+    #[test]
+    fn test_truncate_path() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let result = sys_truncate(&mut proc, &mut host, b"/tmp/test", 100);
+        assert!(result.is_ok());
+    }
+
+    // ---- fdatasync tests ----
+
+    #[test]
+    fn test_fdatasync() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/tmp/test", O_WRONLY | O_CREAT, 0o644).unwrap();
+        let result = sys_fdatasync(&mut proc, &mut host, fd);
+        assert!(result.is_ok());
+    }
+
+    // ---- fchmod tests ----
+
+    #[test]
+    fn test_fchmod() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/tmp/test", O_WRONLY | O_CREAT, 0o644).unwrap();
+        let result = sys_fchmod(&mut proc, &mut host, fd, 0o755);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_fchmod_pipe_einval() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (r, _w) = sys_pipe(&mut proc).unwrap();
+        let result = sys_fchmod(&mut proc, &mut host, r, 0o755);
+        assert_eq!(result, Err(Errno::EINVAL));
+    }
+
+    // ---- fchown tests ----
+
+    #[test]
+    fn test_fchown() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/tmp/test", O_WRONLY | O_CREAT, 0o644).unwrap();
+        let result = sys_fchown(&mut proc, &mut host, fd, 1000, 1000);
+        assert!(result.is_ok());
     }
 }
