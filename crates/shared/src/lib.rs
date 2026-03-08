@@ -96,6 +96,10 @@ pub enum Syscall {
     Setpgid = 90,
     Getsid = 91,
     Setsid = 92,
+    Fstatat = 93,
+    Unlinkat = 94,
+    Mkdirat = 95,
+    Renameat = 96,
 }
 
 impl Syscall {
@@ -194,6 +198,10 @@ impl Syscall {
             90 => Some(Syscall::Setpgid),
             91 => Some(Syscall::Getsid),
             92 => Some(Syscall::Setsid),
+            93 => Some(Syscall::Fstatat),
+            94 => Some(Syscall::Unlinkat),
+            95 => Some(Syscall::Mkdirat),
+            96 => Some(Syscall::Renameat),
             _ => None,
         }
     }
@@ -348,6 +356,8 @@ pub mod flags {
     pub const O_NOFOLLOW: u32 = 0o400000;
     pub const O_CLOEXEC: u32 = 0o2000000;
     pub const AT_FDCWD: i32 = -100;
+    pub const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
+    pub const AT_REMOVEDIR: u32 = 0x200;
 }
 
 /// File descriptor flags (FD_*).

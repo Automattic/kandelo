@@ -1341,6 +1341,70 @@ pub extern "C" fn kernel_openat(dirfd: i32, path_ptr: *const u8, path_len: u32, 
     }
 }
 
+/// fstatat() - stat relative to directory fd.
+/// Returns 0 on success, negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_fstatat(dirfd: i32, path_ptr: *const u8, path_len: u32, stat_ptr: *mut u8, flags: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    let mut host = WasmHostIO;
+    let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
+    match syscalls::sys_fstatat(proc, &mut host, dirfd, path, flags) {
+        Ok(stat) => {
+            let stat_bytes = unsafe {
+                slice::from_raw_parts(
+                    &stat as *const WasmStat as *const u8,
+                    core::mem::size_of::<WasmStat>(),
+                )
+            };
+            unsafe {
+                core::ptr::copy_nonoverlapping(stat_bytes.as_ptr(), stat_ptr, stat_bytes.len());
+            }
+            0
+        }
+        Err(e) => -(e as i32),
+    }
+}
+
+/// unlinkat() - unlink relative to directory fd.
+/// Returns 0 on success, negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_unlinkat(dirfd: i32, path_ptr: *const u8, path_len: u32, flags: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    let mut host = WasmHostIO;
+    let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
+    match syscalls::sys_unlinkat(proc, &mut host, dirfd, path, flags) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// mkdirat() - mkdir relative to directory fd.
+/// Returns 0 on success, negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_mkdirat(dirfd: i32, path_ptr: *const u8, path_len: u32, mode: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    let mut host = WasmHostIO;
+    let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
+    match syscalls::sys_mkdirat(proc, &mut host, dirfd, path, mode) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// renameat() - rename relative to directory fds.
+/// Returns 0 on success, negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_renameat(olddirfd: i32, old_ptr: *const u8, old_len: u32, newdirfd: i32, new_ptr: *const u8, new_len: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    let mut host = WasmHostIO;
+    let oldpath = unsafe { slice::from_raw_parts(old_ptr, old_len as usize) };
+    let newpath = unsafe { slice::from_raw_parts(new_ptr, new_len as usize) };
+    match syscalls::sys_renameat(proc, &mut host, olddirfd, oldpath, newdirfd, newpath) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Terminal / ioctl exports
 // ---------------------------------------------------------------------------

@@ -1717,6 +1717,98 @@ pub fn sys_openat(
     Err(Errno::ENOSYS)
 }
 
+/// fstatat -- stat relative to directory fd.
+///
+/// If path is absolute or dirfd is AT_FDCWD, delegates to sys_stat (or
+/// sys_lstat when AT_SYMLINK_NOFOLLOW is set). Relative paths with a real
+/// dirfd are not yet supported and return ENOSYS.
+pub fn sys_fstatat(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    dirfd: i32,
+    path: &[u8],
+    flags: u32,
+) -> Result<WasmStat, Errno> {
+    use wasm_posix_shared::flags::{AT_FDCWD, AT_SYMLINK_NOFOLLOW};
+
+    if (!path.is_empty() && path[0] == b'/') || dirfd == AT_FDCWD {
+        if flags & AT_SYMLINK_NOFOLLOW != 0 {
+            return sys_lstat(proc, host, path);
+        }
+        return sys_stat(proc, host, path);
+    }
+
+    Err(Errno::ENOSYS)
+}
+
+/// unlinkat -- unlink relative to directory fd.
+///
+/// If flags contains AT_REMOVEDIR, acts like rmdir. Otherwise acts like
+/// unlink. Only AT_FDCWD and absolute paths are currently supported.
+pub fn sys_unlinkat(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    dirfd: i32,
+    path: &[u8],
+    flags: u32,
+) -> Result<(), Errno> {
+    use wasm_posix_shared::flags::{AT_FDCWD, AT_REMOVEDIR};
+
+    if (!path.is_empty() && path[0] == b'/') || dirfd == AT_FDCWD {
+        if flags & AT_REMOVEDIR != 0 {
+            return sys_rmdir(proc, host, path);
+        }
+        return sys_unlink(proc, host, path);
+    }
+
+    Err(Errno::ENOSYS)
+}
+
+/// mkdirat -- mkdir relative to directory fd.
+///
+/// Only AT_FDCWD and absolute paths are currently supported.
+pub fn sys_mkdirat(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    dirfd: i32,
+    path: &[u8],
+    mode: u32,
+) -> Result<(), Errno> {
+    use wasm_posix_shared::flags::AT_FDCWD;
+
+    if (!path.is_empty() && path[0] == b'/') || dirfd == AT_FDCWD {
+        return sys_mkdir(proc, host, path, mode);
+    }
+
+    Err(Errno::ENOSYS)
+}
+
+/// renameat -- rename relative to directory fds.
+///
+/// Both old and new paths must be absolute or use AT_FDCWD. If either
+/// path is relative with a real dirfd, returns ENOSYS.
+pub fn sys_renameat(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    olddirfd: i32,
+    oldpath: &[u8],
+    newdirfd: i32,
+    newpath: &[u8],
+) -> Result<(), Errno> {
+    use wasm_posix_shared::flags::AT_FDCWD;
+
+    let old_resolved =
+        (!oldpath.is_empty() && oldpath[0] == b'/') || olddirfd == AT_FDCWD;
+    let new_resolved =
+        (!newpath.is_empty() && newpath[0] == b'/') || newdirfd == AT_FDCWD;
+
+    if old_resolved && new_resolved {
+        return sys_rename(proc, host, oldpath, newpath);
+    }
+
+    Err(Errno::ENOSYS)
+}
+
 /// tcgetattr -- get terminal attributes.
 /// Writes c_iflag, c_oflag, c_cflag, c_lflag (4 x u32 = 16 bytes) then c_cc (32 bytes) = 48 bytes total.
 pub fn sys_tcgetattr(proc: &mut Process, fd: i32, buf: &mut [u8]) -> Result<(), Errno> {
@@ -3429,6 +3521,108 @@ mod tests {
         // fd 0 is stdin (CharDevice, not Directory)
         let result = sys_openat(&mut proc, &mut host, 0, b"relative", O_RDONLY, 0);
         assert_eq!(result, Err(Errno::ENOTDIR));
+    }
+
+    #[test]
+    fn test_fstatat_at_fdcwd() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let result = sys_fstatat(&mut proc, &mut host, AT_FDCWD, b"/tmp/test", 0);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_fstatat_absolute_path() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        // Absolute path ignores dirfd
+        let result = sys_fstatat(&mut proc, &mut host, 5, b"/tmp/test", 0);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_fstatat_symlink_nofollow() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let result = sys_fstatat(&mut proc, &mut host, AT_FDCWD, b"/tmp/link", AT_SYMLINK_NOFOLLOW);
+        assert!(result.is_ok());
+        let stat = result.unwrap();
+        // MockHostIO lstat returns S_IFLNK
+        assert_eq!(stat.st_mode & S_IFLNK, S_IFLNK);
+    }
+
+    #[test]
+    fn test_fstatat_relative_enosys() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let result = sys_fstatat(&mut proc, &mut host, 5, b"relative", 0);
+        assert!(matches!(result, Err(Errno::ENOSYS)));
+    }
+
+    #[test]
+    fn test_unlinkat_at_fdcwd() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let result = sys_unlinkat(&mut proc, &mut host, AT_FDCWD, b"/tmp/test", 0);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_unlinkat_removedir() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let result = sys_unlinkat(&mut proc, &mut host, AT_FDCWD, b"/tmp/dir", AT_REMOVEDIR);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_unlinkat_relative_enosys() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let result = sys_unlinkat(&mut proc, &mut host, 5, b"relative", 0);
+        assert_eq!(result, Err(Errno::ENOSYS));
+    }
+
+    #[test]
+    fn test_mkdirat_at_fdcwd() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let result = sys_mkdirat(&mut proc, &mut host, AT_FDCWD, b"/tmp/newdir", 0o755);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_mkdirat_relative_enosys() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let result = sys_mkdirat(&mut proc, &mut host, 5, b"relative", 0o755);
+        assert_eq!(result, Err(Errno::ENOSYS));
+    }
+
+    #[test]
+    fn test_renameat_at_fdcwd() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let result = sys_renameat(&mut proc, &mut host, AT_FDCWD, b"/tmp/old", AT_FDCWD, b"/tmp/new");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_renameat_absolute_paths() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        // Both paths absolute, dirfds are ignored
+        let result = sys_renameat(&mut proc, &mut host, 5, b"/tmp/old", 6, b"/tmp/new");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_renameat_relative_enosys() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        // Old path relative with non-AT_FDCWD dirfd
+        let result = sys_renameat(&mut proc, &mut host, 5, b"relative", AT_FDCWD, b"/tmp/new");
+        assert_eq!(result, Err(Errno::ENOSYS));
     }
 
     #[test]
