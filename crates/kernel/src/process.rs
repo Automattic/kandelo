@@ -6,6 +6,7 @@ use wasm_posix_shared::{Errno, WasmStat};
 use crate::fd::FdTable;
 use crate::ofd::OfdTable;
 use crate::pipe::PipeBuffer;
+use crate::signal::SignalState;
 
 /// A handle to an open directory stream for readdir iteration.
 pub struct DirStream {
@@ -59,6 +60,7 @@ pub struct Process {
     pub pipes: Vec<Option<PipeBuffer>>,
     pub cwd: Vec<u8>,
     pub dir_streams: Vec<Option<DirStream>>,
+    pub signals: SignalState,
 }
 
 impl Process {
@@ -93,6 +95,7 @@ impl Process {
             pipes: Vec::new(),
             cwd: alloc::vec![b'/'],
             dir_streams: Vec::new(),
+            signals: SignalState::new(),
         }
     }
 }
