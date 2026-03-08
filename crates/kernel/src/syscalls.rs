@@ -1561,6 +1561,85 @@ pub fn sys_openat(
     Err(Errno::ENOSYS)
 }
 
+/// tcgetattr -- get terminal attributes.
+/// Writes c_iflag, c_oflag, c_cflag, c_lflag (4 x u32 = 16 bytes) then c_cc (32 bytes) = 48 bytes total.
+pub fn sys_tcgetattr(proc: &mut Process, fd: i32, buf: &mut [u8]) -> Result<(), Errno> {
+    let entry = proc.fd_table.get(fd)?;
+    let ofd_idx = entry.ofd_ref.0;
+    let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+    if ofd.file_type != FileType::CharDevice {
+        return Err(Errno::ENOTTY);
+    }
+    if buf.len() < 48 {
+        return Err(Errno::EINVAL);
+    }
+    let ts = &proc.terminal;
+    buf[0..4].copy_from_slice(&ts.c_iflag.to_le_bytes());
+    buf[4..8].copy_from_slice(&ts.c_oflag.to_le_bytes());
+    buf[8..12].copy_from_slice(&ts.c_cflag.to_le_bytes());
+    buf[12..16].copy_from_slice(&ts.c_lflag.to_le_bytes());
+    buf[16..48].copy_from_slice(&ts.c_cc);
+    Ok(())
+}
+
+/// tcsetattr -- set terminal attributes.
+/// Reads c_iflag, c_oflag, c_cflag, c_lflag (4 x u32 = 16 bytes) then c_cc (32 bytes) = 48 bytes.
+/// action: 0=TCSANOW, 1=TCSADRAIN, 2=TCSAFLUSH (all treated same in single-process).
+pub fn sys_tcsetattr(proc: &mut Process, fd: i32, _action: u32, buf: &[u8]) -> Result<(), Errno> {
+    let entry = proc.fd_table.get(fd)?;
+    let ofd_idx = entry.ofd_ref.0;
+    let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+    if ofd.file_type != FileType::CharDevice {
+        return Err(Errno::ENOTTY);
+    }
+    if buf.len() < 48 {
+        return Err(Errno::EINVAL);
+    }
+    let ts = &mut proc.terminal;
+    ts.c_iflag = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
+    ts.c_oflag = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
+    ts.c_cflag = u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]);
+    ts.c_lflag = u32::from_le_bytes([buf[12], buf[13], buf[14], buf[15]]);
+    ts.c_cc.copy_from_slice(&buf[16..48]);
+    Ok(())
+}
+
+/// ioctl -- device control.
+/// Only terminal ioctls supported: TIOCGWINSZ (0x5413), TIOCSWINSZ (0x5414).
+pub fn sys_ioctl(proc: &mut Process, fd: i32, request: u32, buf: &mut [u8]) -> Result<(), Errno> {
+    let entry = proc.fd_table.get(fd)?;
+    let ofd_idx = entry.ofd_ref.0;
+    let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+    if ofd.file_type != FileType::CharDevice {
+        return Err(Errno::ENOTTY);
+    }
+    match request {
+        0x5413 => { // TIOCGWINSZ
+            if buf.len() < 8 {
+                return Err(Errno::EINVAL);
+            }
+            let ws = &proc.terminal.winsize;
+            buf[0..2].copy_from_slice(&ws.ws_row.to_le_bytes());
+            buf[2..4].copy_from_slice(&ws.ws_col.to_le_bytes());
+            buf[4..6].copy_from_slice(&ws.ws_xpixel.to_le_bytes());
+            buf[6..8].copy_from_slice(&ws.ws_ypixel.to_le_bytes());
+            Ok(())
+        }
+        0x5414 => { // TIOCSWINSZ
+            if buf.len() < 8 {
+                return Err(Errno::EINVAL);
+            }
+            let ws = &mut proc.terminal.winsize;
+            ws.ws_row = u16::from_le_bytes([buf[0], buf[1]]);
+            ws.ws_col = u16::from_le_bytes([buf[2], buf[3]]);
+            ws.ws_xpixel = u16::from_le_bytes([buf[4], buf[5]]);
+            ws.ws_ypixel = u16::from_le_bytes([buf[6], buf[7]]);
+            Ok(())
+        }
+        _ => Err(Errno::ENOTTY),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2892,5 +2971,82 @@ mod tests {
         // fd 0 is stdin (CharDevice, not Directory)
         let result = sys_openat(&mut proc, &mut host, 0, b"relative", O_RDONLY, 0);
         assert_eq!(result, Err(Errno::ENOTDIR));
+    }
+
+    #[test]
+    fn test_tcgetattr_returns_terminal_state() {
+        let mut proc = Process::new(1);
+        let mut buf = [0u8; 60];
+        let result = sys_tcgetattr(&mut proc, 0, &mut buf);
+        assert!(result.is_ok());
+        // Verify c_lflag has ECHO set (in the 4th u32, bytes 12-15)
+        let c_lflag = u32::from_le_bytes([buf[12], buf[13], buf[14], buf[15]]);
+        assert!(c_lflag & 0o0010 != 0); // ECHO
+    }
+
+    #[test]
+    fn test_tcgetattr_enotty_for_regular_file() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/tmp/test", O_RDONLY, 0).unwrap();
+        let mut buf = [0u8; 60];
+        let result = sys_tcgetattr(&mut proc, fd, &mut buf);
+        assert_eq!(result, Err(Errno::ENOTTY));
+    }
+
+    #[test]
+    fn test_tcsetattr_modifies_terminal_state() {
+        let mut proc = Process::new(1);
+        let mut buf = [0u8; 60];
+        sys_tcgetattr(&mut proc, 0, &mut buf).unwrap();
+        // Clear ECHO in c_lflag (4th u32, bytes 12-15)
+        let c_lflag = u32::from_le_bytes([buf[12], buf[13], buf[14], buf[15]]);
+        let new_lflag = c_lflag & !0o0010; // Clear ECHO
+        buf[12..16].copy_from_slice(&new_lflag.to_le_bytes());
+        // Set attrs with TCSANOW=0
+        let result = sys_tcsetattr(&mut proc, 0, 0, &buf);
+        assert!(result.is_ok());
+        // Read back
+        let mut buf2 = [0u8; 60];
+        sys_tcgetattr(&mut proc, 0, &mut buf2).unwrap();
+        let c_lflag2 = u32::from_le_bytes([buf2[12], buf2[13], buf2[14], buf2[15]]);
+        assert_eq!(c_lflag2 & 0o0010, 0); // ECHO cleared
+    }
+
+    #[test]
+    fn test_ioctl_tiocgwinsz() {
+        let mut proc = Process::new(1);
+        let mut buf = [0u8; 8];
+        let result = sys_ioctl(&mut proc, 0, 0x5413, &mut buf); // TIOCGWINSZ
+        assert!(result.is_ok());
+        let ws_row = u16::from_le_bytes([buf[0], buf[1]]);
+        let ws_col = u16::from_le_bytes([buf[2], buf[3]]);
+        assert_eq!(ws_row, 24);
+        assert_eq!(ws_col, 80);
+    }
+
+    #[test]
+    fn test_ioctl_tiocswinsz() {
+        let mut proc = Process::new(1);
+        let mut buf = [0u8; 8];
+        buf[0..2].copy_from_slice(&120u16.to_le_bytes()); // rows
+        buf[2..4].copy_from_slice(&200u16.to_le_bytes()); // cols
+        let result = sys_ioctl(&mut proc, 0, 0x5414, &mut buf); // TIOCSWINSZ
+        assert!(result.is_ok());
+        // Read back
+        let mut buf2 = [0u8; 8];
+        sys_ioctl(&mut proc, 0, 0x5413, &mut buf2).unwrap(); // TIOCGWINSZ
+        let ws_row = u16::from_le_bytes([buf2[0], buf2[1]]);
+        let ws_col = u16::from_le_bytes([buf2[2], buf2[3]]);
+        assert_eq!(ws_row, 120);
+        assert_eq!(ws_col, 200);
+    }
+
+    #[test]
+    fn test_ioctl_unsupported_returns_enotty() {
+        let mut proc = Process::new(1);
+        let mut buf = [0u8; 8];
+        let result = sys_ioctl(&mut proc, 0, 0x9999, &mut buf);
+        assert_eq!(result, Err(Errno::ENOTTY));
     }
 }
