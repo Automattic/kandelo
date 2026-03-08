@@ -53,6 +53,20 @@ pub enum Syscall {
     Munmap = 47,
     Brk = 48,
     Mprotect = 49,
+    Socket = 50,
+    Bind = 51,
+    Listen = 52,
+    Accept = 53,
+    Connect = 54,
+    Send = 55,
+    Recv = 56,
+    Shutdown = 57,
+    Getsockopt = 58,
+    Setsockopt = 59,
+    Poll = 60,
+    Socketpair = 61,
+    Sendto = 62,
+    Recvfrom = 63,
 }
 
 impl Syscall {
@@ -108,6 +122,20 @@ impl Syscall {
             47 => Some(Syscall::Munmap),
             48 => Some(Syscall::Brk),
             49 => Some(Syscall::Mprotect),
+            50 => Some(Syscall::Socket),
+            51 => Some(Syscall::Bind),
+            52 => Some(Syscall::Listen),
+            53 => Some(Syscall::Accept),
+            54 => Some(Syscall::Connect),
+            55 => Some(Syscall::Send),
+            56 => Some(Syscall::Recv),
+            57 => Some(Syscall::Shutdown),
+            58 => Some(Syscall::Getsockopt),
+            59 => Some(Syscall::Setsockopt),
+            60 => Some(Syscall::Poll),
+            61 => Some(Syscall::Socketpair),
+            62 => Some(Syscall::Sendto),
+            63 => Some(Syscall::Recvfrom),
             _ => None,
         }
     }
@@ -170,8 +198,24 @@ pub enum Errno {
     ENOTEMPTY = 39,
     ELOOP = 40,
     EOVERFLOW = 75,
+    ENOTSOCK = 88,
+    EDESTADDRREQ = 89,
+    EMSGSIZE = 90,
+    EPROTOTYPE = 91,
+    ENOPROTOOPT = 92,
+    EPROTONOSUPPORT = 93,
+    EOPNOTSUPP = 95,
+    EAFNOSUPPORT = 97,
+    EADDRINUSE = 98,
+    EADDRNOTAVAIL = 99,
+    ENETUNREACH = 101,
+    ECONNABORTED = 103,
     ECONNRESET = 104,
+    EISCONN = 106,
     ENOTCONN = 107,
+    ESHUTDOWN = 108,
+    EALREADY = 114,
+    EINPROGRESS = 115,
 }
 
 impl Errno {
@@ -208,8 +252,24 @@ impl Errno {
             39 => Some(Errno::ENOTEMPTY),
             40 => Some(Errno::ELOOP),
             75 => Some(Errno::EOVERFLOW),
+            88 => Some(Errno::ENOTSOCK),
+            89 => Some(Errno::EDESTADDRREQ),
+            90 => Some(Errno::EMSGSIZE),
+            91 => Some(Errno::EPROTOTYPE),
+            92 => Some(Errno::ENOPROTOOPT),
+            93 => Some(Errno::EPROTONOSUPPORT),
+            95 => Some(Errno::EOPNOTSUPP),
+            97 => Some(Errno::EAFNOSUPPORT),
+            98 => Some(Errno::EADDRINUSE),
+            99 => Some(Errno::EADDRNOTAVAIL),
+            101 => Some(Errno::ENETUNREACH),
+            103 => Some(Errno::ECONNABORTED),
             104 => Some(Errno::ECONNRESET),
+            106 => Some(Errno::EISCONN),
             107 => Some(Errno::ENOTCONN),
+            108 => Some(Errno::ESHUTDOWN),
+            114 => Some(Errno::EALREADY),
+            115 => Some(Errno::EINPROGRESS),
             _ => None,
         }
     }
@@ -272,6 +332,42 @@ pub mod mmap {
 
     // Return value for failure
     pub const MAP_FAILED: u32 = 0xFFFFFFFF;
+}
+
+/// Socket constants.
+pub mod socket {
+    pub const AF_UNIX: u32 = 1;
+    pub const AF_INET: u32 = 2;
+    pub const AF_INET6: u32 = 10;
+    pub const SOCK_STREAM: u32 = 1;
+    pub const SOCK_DGRAM: u32 = 2;
+    pub const SOCK_NONBLOCK: u32 = 0o4000;
+    pub const SOCK_CLOEXEC: u32 = 0o2000000;
+    pub const SOL_SOCKET: u32 = 1;
+    pub const SO_REUSEADDR: u32 = 2;
+    pub const SO_ERROR: u32 = 4;
+    pub const SO_KEEPALIVE: u32 = 9;
+    pub const SO_RCVBUF: u32 = 8;
+    pub const SO_SNDBUF: u32 = 7;
+    pub const SO_TYPE: u32 = 3;
+    pub const SO_DOMAIN: u32 = 39;
+    pub const SO_ACCEPTCONN: u32 = 30;
+    pub const SHUT_RD: u32 = 0;
+    pub const SHUT_WR: u32 = 1;
+    pub const SHUT_RDWR: u32 = 2;
+    pub const MSG_PEEK: u32 = 2;
+    pub const MSG_DONTWAIT: u32 = 64;
+    pub const MSG_NOSIGNAL: u32 = 0x4000;
+}
+
+/// Poll constants.
+pub mod poll {
+    pub const POLLIN: i16 = 0x0001;
+    pub const POLLPRI: i16 = 0x0002;
+    pub const POLLOUT: i16 = 0x0004;
+    pub const POLLERR: i16 = 0x0008;
+    pub const POLLHUP: i16 = 0x0010;
+    pub const POLLNVAL: i16 = 0x0020;
 }
 
 /// Seek whence constants.
@@ -460,4 +556,16 @@ pub mod clock {
 pub struct WasmTimespec {
     pub tv_sec: i64,
     pub tv_nsec: i64,
+}
+
+/// Poll file descriptor structure for the Wasm POSIX interface.
+///
+/// Uses `repr(C)` for a stable, predictable memory layout that can be
+/// shared across the Wasm shared-memory boundary.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct WasmPollFd {
+    pub fd: i32,
+    pub events: i16,
+    pub revents: i16,
 }
