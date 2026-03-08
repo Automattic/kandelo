@@ -82,18 +82,19 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 
 | Function | Status | Notes |
 |----------|--------|-------|
-| `opendir()` | Planned | Host-delegated. |
-| `readdir()` | Planned | Host-delegated. |
-| `closedir()` | Planned | |
-| `mkdir()` | Planned | Host-delegated. |
-| `rmdir()` | Planned | Host-delegated. |
-| `chdir()` / `getcwd()` | Planned | Per-process virtual cwd in kernel. |
-| `link()` / `unlink()` | Planned | Host-delegated. |
-| `rename()` | Planned | Host-delegated. |
-| `stat()` / `lstat()` | Planned | Host-delegated. |
-| `chmod()` / `chown()` | Planned | Host-delegated where supported. |
-| `access()` | Planned | Host-delegated. |
+| `opendir()` | Partial | Host-delegated via DirStream table. Entry-at-a-time iteration. |
+| `readdir()` | Partial | Returns WasmDirent (d_ino, d_type, d_namlen) + name buffer. |
+| `closedir()` | Full | Frees DirStream slot, delegates to host. |
+| `mkdir()` | Partial | Host-delegated. Relative paths resolved via kernel cwd. |
+| `rmdir()` | Partial | Host-delegated. Relative paths resolved via kernel cwd. |
+| `chdir()` / `getcwd()` | Partial | Kernel-maintained cwd. chdir validates via host_stat that target is S_IFDIR. getcwd returns ERANGE if buffer too small. |
+| `link()` / `unlink()` | Partial | Host-delegated. Relative paths resolved via kernel cwd. |
+| `rename()` | Partial | Host-delegated. Both paths resolved via kernel cwd. |
+| `stat()` / `lstat()` | Partial | Host-delegated. stat follows symlinks, lstat does not. |
+| `chmod()` / `chown()` | Partial | Host-delegated. May be no-op in browser environments. |
+| `access()` | Partial | Host-delegated. Checks real filesystem permissions. |
 | `realpath()` | Planned | Can be userspace with readlink + getcwd. |
+| `symlink()` / `readlink()` | Partial | Host-delegated. Symlink target stored as-is, linkpath resolved. |
 
 ## Socket Operations
 
@@ -169,9 +170,9 @@ These features require SharedArrayBuffer (and cross-origin isolation headers in 
 
 ## Implementation Priority
 
-1. **Phase 1 (Current):** File descriptors & basic I/O — open, close, read, write, lseek, dup, dup2, pipe, fstat, fcntl (flags)
-2. **Phase 2:** Directory operations — opendir, readdir, mkdir, stat, chmod, getcwd/chdir
-3. **Phase 3:** Process management — fork, exec, waitpid, exit, getpid
+1. **Phase 1 (Complete):** File descriptors & basic I/O — open, close, read, write, lseek, dup, dup2, pipe, fstat, fcntl (flags)
+2. **Phase 2 (Complete):** Directory operations — stat, lstat, mkdir, rmdir, unlink, link, symlink, readlink, rename, chmod, chown, access, opendir, readdir, closedir, chdir, getcwd
+3. **Phase 3 (Next):** Process management — fork, exec, waitpid, exit, getpid
 4. **Phase 4:** Signals — kill, sigaction, sigprocmask
 5. **Phase 5:** fcntl locking — F_GETLK, F_SETLK, F_SETLKW
 6. **Phase 6:** Sockets — socket, bind, listen, accept, connect
