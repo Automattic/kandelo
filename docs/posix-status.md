@@ -119,7 +119,7 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 | `stat()` / `lstat()` | Partial | Host-delegated. stat follows symlinks, lstat does not. |
 | `chmod()` / `chown()` | Partial | Host-delegated. May be no-op in browser environments. |
 | `access()` | Partial | Host-delegated. Checks real filesystem permissions. |
-| `realpath()` | Planned | Can be userspace with readlink + getcwd. |
+| `realpath()` | Partial | Resolves path against cwd, normalizes `.`/`..`, verifies existence via stat. Intermediate symlink resolution not yet performed (future enhancement). |
 | `symlink()` / `readlink()` | Partial | Host-delegated. Symlink target stored as-is, linkpath resolved. |
 
 ## Socket Operations

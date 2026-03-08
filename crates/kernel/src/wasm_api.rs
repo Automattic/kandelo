@@ -1834,3 +1834,25 @@ pub extern "C" fn kernel_getrusage(who: i32, buf_ptr: *mut u8, buf_len: u32) -> 
         Err(e) => -(e as i32),
     }
 }
+
+// ---------------------------------------------------------------------------
+// realpath
+// ---------------------------------------------------------------------------
+
+/// realpath — resolve canonical path. Returns bytes written, or negative errno.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_realpath(
+    path_ptr: *const u8,
+    path_len: u32,
+    buf_ptr: *mut u8,
+    buf_len: u32,
+) -> i32 {
+    let proc = unsafe { get_process() };
+    let mut host = WasmHostIO;
+    let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
+    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
+    match syscalls::sys_realpath(proc, &mut host, path, buf) {
+        Ok(n) => n as i32,
+        Err(e) => -(e as i32),
+    }
+}

@@ -2371,6 +2371,39 @@ pub fn sys_getrusage(_proc: &mut Process, who: i32, buf: &mut [u8]) -> Result<()
     Ok(())
 }
 
+/// realpath -- resolve a pathname to a canonical absolute form.
+///
+/// Resolves the path against cwd, normalizes `.` and `..` components,
+/// and verifies the path exists via host stat. Intermediate symlink
+/// resolution is not performed (would require walking each component
+/// with lstat/readlink; noted as future enhancement).
+pub fn sys_realpath(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    path: &[u8],
+    buf: &mut [u8],
+) -> Result<usize, Errno> {
+    use crate::path::{resolve_path, normalize_path};
+
+    if path.is_empty() {
+        return Err(Errno::ENOENT);
+    }
+
+    // Make absolute
+    let absolute = resolve_path(path, &proc.cwd);
+    // Normalize . and ..
+    let normalized = normalize_path(&absolute);
+    // Verify path exists
+    host.host_stat(&normalized)?;
+
+    let len = normalized.len();
+    if buf.len() < len {
+        return Err(Errno::ERANGE);
+    }
+    buf[..len].copy_from_slice(&normalized);
+    Ok(len)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4744,5 +4777,64 @@ mod tests {
         let mut buf = [0u8; 10];
         let result = sys_getrusage(&mut proc, 0, &mut buf);
         assert_eq!(result, Err(Errno::EINVAL));
+    }
+
+    // ---- realpath ----
+
+    #[test]
+    fn test_realpath_absolute() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let mut buf = [0u8; 256];
+        let len = sys_realpath(&mut proc, &mut host, b"/tmp/test", &mut buf).unwrap();
+        assert_eq!(&buf[..len], b"/tmp/test");
+    }
+
+    #[test]
+    fn test_realpath_relative() {
+        let mut proc = Process::new(1);
+        proc.cwd = b"/home/user".to_vec();
+        let mut host = MockHostIO::new();
+        let mut buf = [0u8; 256];
+        let len = sys_realpath(&mut proc, &mut host, b"file.txt", &mut buf).unwrap();
+        assert_eq!(&buf[..len], b"/home/user/file.txt");
+    }
+
+    #[test]
+    fn test_realpath_dotdot() {
+        let mut proc = Process::new(1);
+        proc.cwd = b"/home/user".to_vec();
+        let mut host = MockHostIO::new();
+        let mut buf = [0u8; 256];
+        let len = sys_realpath(&mut proc, &mut host, b"../file.txt", &mut buf).unwrap();
+        assert_eq!(&buf[..len], b"/home/file.txt");
+    }
+
+    #[test]
+    fn test_realpath_dot() {
+        let mut proc = Process::new(1);
+        proc.cwd = b"/home/user".to_vec();
+        let mut host = MockHostIO::new();
+        let mut buf = [0u8; 256];
+        let len = sys_realpath(&mut proc, &mut host, b"./file.txt", &mut buf).unwrap();
+        assert_eq!(&buf[..len], b"/home/user/file.txt");
+    }
+
+    #[test]
+    fn test_realpath_empty_path() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let mut buf = [0u8; 256];
+        let result = sys_realpath(&mut proc, &mut host, b"", &mut buf);
+        assert_eq!(result, Err(Errno::ENOENT));
+    }
+
+    #[test]
+    fn test_realpath_buffer_too_small() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let mut buf = [0u8; 3]; // Too small for "/tmp/test"
+        let result = sys_realpath(&mut proc, &mut host, b"/tmp/test", &mut buf);
+        assert_eq!(result, Err(Errno::ERANGE));
     }
 }

@@ -112,6 +112,7 @@ pub enum Syscall {
     Seteuid = 106,
     Setegid = 107,
     Getrusage = 108,
+    Realpath = 109,
 }
 
 impl Syscall {
@@ -226,6 +227,7 @@ impl Syscall {
             106 => Some(Syscall::Seteuid),
             107 => Some(Syscall::Setegid),
             108 => Some(Syscall::Getrusage),
+            109 => Some(Syscall::Realpath),
             _ => None,
         }
     }
