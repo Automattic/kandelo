@@ -924,6 +924,44 @@ pub extern "C" fn kernel_unsetenv(name_ptr: *const u8, name_len: u32) -> i32 {
     }
 }
 
+/// mmap. Returns address or MAP_FAILED (0xFFFFFFFF).
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_mmap(addr: u32, len: u32, prot: u32, flags: u32, fd: i32, offset_lo: u32, offset_hi: i32) -> u32 {
+    let proc = unsafe { get_process() };
+    let offset = ((offset_hi as i64) << 32) | (offset_lo as u64 as i64);
+    match syscalls::sys_mmap(proc, addr, len, prot, flags, fd, offset) {
+        Ok(a) => a,
+        Err(_) => wasm_posix_shared::mmap::MAP_FAILED,
+    }
+}
+
+/// munmap. Returns 0 on success, or negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_munmap(addr: u32, len: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    match syscalls::sys_munmap(proc, addr, len) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// brk. Returns the current or new program break.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_brk(addr: u32) -> u32 {
+    let proc = unsafe { get_process() };
+    syscalls::sys_brk(proc, addr)
+}
+
+/// mprotect. Returns 0 on success, or negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_mprotect(addr: u32, len: u32, prot: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    match syscalls::sys_mprotect(proc, addr, len, prot) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
 /// Exit the process. Closes all fds and dir streams, sets state to Exited.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_exit(status: i32) {
