@@ -84,6 +84,22 @@ pub fn sys_close(
                     }
                 }
             }
+            FileType::Socket => {
+                let sock_idx = (-(host_handle + 1)) as usize;
+                if let Some(sock) = proc.sockets.get(sock_idx) {
+                    if let Some(send_idx) = sock.send_buf_idx {
+                        if let Some(Some(pipe)) = proc.pipes.get_mut(send_idx) {
+                            pipe.close_write_end();
+                        }
+                    }
+                    if let Some(recv_idx) = sock.recv_buf_idx {
+                        if let Some(Some(pipe)) = proc.pipes.get_mut(recv_idx) {
+                            pipe.close_read_end();
+                        }
+                    }
+                }
+                proc.sockets.free(sock_idx);
+            }
             _ => {
                 host.host_close(host_handle)?;
             }
@@ -969,6 +985,119 @@ pub fn sys_brk(proc: &mut Process, addr: u32) -> u32 {
 /// mprotect -- not applicable to Wasm linear memory.
 pub fn sys_mprotect(_proc: &Process, _addr: u32, _len: u32, _prot: u32) -> Result<(), Errno> {
     Err(Errno::ENOSYS)
+}
+
+/// Create a socket, returning the new fd.
+pub fn sys_socket(
+    proc: &mut Process,
+    _host: &mut dyn HostIO,
+    domain: u32,
+    sock_type: u32,
+    protocol: u32,
+) -> Result<i32, Errno> {
+    use crate::socket::{SocketDomain, SocketInfo, SocketType};
+    use wasm_posix_shared::socket::*;
+
+    let dom = match domain {
+        AF_UNIX => SocketDomain::Unix,
+        AF_INET => SocketDomain::Inet,
+        AF_INET6 => SocketDomain::Inet6,
+        _ => return Err(Errno::EAFNOSUPPORT),
+    };
+
+    let base_type = sock_type & !(SOCK_NONBLOCK | SOCK_CLOEXEC);
+    let stype = match base_type {
+        SOCK_STREAM => SocketType::Stream,
+        SOCK_DGRAM => SocketType::Dgram,
+        _ => return Err(Errno::EPROTOTYPE),
+    };
+
+    let sock = SocketInfo::new(dom, stype, protocol);
+    let sock_idx = proc.sockets.alloc(sock);
+
+    let mut status_flags = O_RDWR;
+    if sock_type & SOCK_NONBLOCK != 0 {
+        status_flags |= O_NONBLOCK;
+    }
+    let host_handle = -((sock_idx as i64) + 1);
+    let ofd_idx = proc.ofd_table.create(FileType::Socket, status_flags, host_handle);
+
+    let fd_flags = if sock_type & SOCK_CLOEXEC != 0 {
+        FD_CLOEXEC
+    } else {
+        0
+    };
+    let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
+
+    Ok(fd)
+}
+
+/// Create a connected pair of Unix domain stream sockets.
+pub fn sys_socketpair(
+    proc: &mut Process,
+    _host: &mut dyn HostIO,
+    domain: u32,
+    sock_type: u32,
+    _protocol: u32,
+) -> Result<(i32, i32), Errno> {
+    use crate::socket::{SocketDomain, SocketInfo, SocketState, SocketType};
+    use wasm_posix_shared::socket::*;
+
+    if domain != AF_UNIX {
+        return Err(Errno::EAFNOSUPPORT);
+    }
+
+    let base_type = sock_type & !(SOCK_NONBLOCK | SOCK_CLOEXEC);
+    let stype = match base_type {
+        SOCK_STREAM => SocketType::Stream,
+        _ => return Err(Errno::EPROTOTYPE),
+    };
+
+    // Allocate two ring buffers: buf_ab (A→B) and buf_ba (B→A)
+    let buf_ab_idx = proc.pipes.len();
+    proc.pipes.push(Some(PipeBuffer::new(DEFAULT_PIPE_CAPACITY)));
+    let buf_ba_idx = proc.pipes.len();
+    proc.pipes.push(Some(PipeBuffer::new(DEFAULT_PIPE_CAPACITY)));
+
+    // Socket A: sends to buf_ab, receives from buf_ba
+    let mut sock_a = SocketInfo::new(SocketDomain::Unix, stype, 0);
+    sock_a.state = SocketState::Connected;
+    sock_a.send_buf_idx = Some(buf_ab_idx);
+    sock_a.recv_buf_idx = Some(buf_ba_idx);
+
+    // Socket B: sends to buf_ba, receives from buf_ab
+    let mut sock_b = SocketInfo::new(SocketDomain::Unix, stype, 0);
+    sock_b.state = SocketState::Connected;
+    sock_b.send_buf_idx = Some(buf_ba_idx);
+    sock_b.recv_buf_idx = Some(buf_ab_idx);
+
+    let sock_a_idx = proc.sockets.alloc(sock_a);
+    let sock_b_idx = proc.sockets.alloc(sock_b);
+
+    // Set peer indices
+    proc.sockets.get_mut(sock_a_idx).unwrap().peer_idx = Some(sock_b_idx);
+    proc.sockets.get_mut(sock_b_idx).unwrap().peer_idx = Some(sock_a_idx);
+
+    // Create OFDs
+    let mut status_flags = O_RDWR;
+    if sock_type & SOCK_NONBLOCK != 0 {
+        status_flags |= O_NONBLOCK;
+    }
+
+    let handle_a = -((sock_a_idx as i64) + 1);
+    let handle_b = -((sock_b_idx as i64) + 1);
+    let ofd_a = proc.ofd_table.create(FileType::Socket, status_flags, handle_a);
+    let ofd_b = proc.ofd_table.create(FileType::Socket, status_flags, handle_b);
+
+    let fd_flags = if sock_type & SOCK_CLOEXEC != 0 {
+        FD_CLOEXEC
+    } else {
+        0
+    };
+    let fd0 = proc.fd_table.alloc(OpenFileDescRef(ofd_a), fd_flags)?;
+    let fd1 = proc.fd_table.alloc(OpenFileDescRef(ofd_b), fd_flags)?;
+
+    Ok((fd0, fd1))
 }
 
 #[cfg(test)]
@@ -1866,5 +1995,89 @@ mod tests {
     fn test_mprotect_returns_enosys() {
         let proc = Process::new(1);
         assert_eq!(sys_mprotect(&proc, 0, 4096, 3), Err(Errno::ENOSYS));
+    }
+
+    #[test]
+    fn test_socket_creation() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+        let fd = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+        assert!(fd >= 3);
+        let entry = proc.fd_table.get(fd).unwrap();
+        let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
+        assert_eq!(ofd.file_type, FileType::Socket);
+    }
+
+    #[test]
+    fn test_socket_unsupported_domain() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let result = sys_socket(&mut proc, &mut host, 999, 1, 0);
+        assert_eq!(result, Err(Errno::EAFNOSUPPORT));
+    }
+
+    #[test]
+    fn test_socket_unsupported_type() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::AF_UNIX;
+        let result = sys_socket(&mut proc, &mut host, AF_UNIX, 999, 0);
+        assert_eq!(result, Err(Errno::EPROTOTYPE));
+    }
+
+    #[test]
+    fn test_socketpair_unix_stream() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+        let (fd0, fd1) = sys_socketpair(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+        assert!(fd0 >= 3);
+        assert!(fd1 >= 3);
+        assert_ne!(fd0, fd1);
+
+        // Write through fd0, read from fd1
+        let n = sys_write(&mut proc, &mut host, fd0, b"hello").unwrap();
+        assert_eq!(n, 5);
+        let mut buf = [0u8; 5];
+        let n = sys_read(&mut proc, &mut host, fd1, &mut buf).unwrap();
+        assert_eq!(n, 5);
+        assert_eq!(&buf, b"hello");
+
+        // Write through fd1, read from fd0 (bidirectional)
+        let n = sys_write(&mut proc, &mut host, fd1, b"world").unwrap();
+        assert_eq!(n, 5);
+        let mut buf = [0u8; 5];
+        let n = sys_read(&mut proc, &mut host, fd0, &mut buf).unwrap();
+        assert_eq!(n, 5);
+        assert_eq!(&buf, b"world");
+    }
+
+    #[test]
+    fn test_socketpair_close_one_end() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+        let (fd0, fd1) = sys_socketpair(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+
+        sys_close(&mut proc, &mut host, fd1).unwrap();
+
+        // Write to fd0 should return EPIPE (peer closed)
+        let result = sys_write(&mut proc, &mut host, fd0, b"test");
+        assert_eq!(result, Err(Errno::EPIPE));
+
+        // Read from fd0 should return 0 (EOF)
+        let mut buf = [0u8; 4];
+        let n = sys_read(&mut proc, &mut host, fd0, &mut buf).unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn test_socketpair_not_unix() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+        let result = sys_socketpair(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0);
+        assert_eq!(result, Err(Errno::EAFNOSUPPORT));
     }
 }
