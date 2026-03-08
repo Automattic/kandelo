@@ -38,6 +38,11 @@ pub enum Syscall {
     Getgid = 32,
     Getegid = 33,
     Exit = 34,
+    Kill = 35,
+    Sigaction = 36,
+    Sigprocmask = 37,
+    Raise = 38,
+    Alarm = 39,
 }
 
 impl Syscall {
@@ -78,6 +83,11 @@ impl Syscall {
             32 => Some(Syscall::Getgid),
             33 => Some(Syscall::Getegid),
             34 => Some(Syscall::Exit),
+            35 => Some(Syscall::Kill),
+            36 => Some(Syscall::Sigaction),
+            37 => Some(Syscall::Sigprocmask),
+            38 => Some(Syscall::Raise),
+            39 => Some(Syscall::Alarm),
             _ => None,
         }
     }
@@ -324,4 +334,47 @@ pub struct WasmDirent {
     pub d_ino: u64,
     pub d_type: u32,
     pub d_namlen: u32,
+}
+
+/// POSIX signal constants.
+pub mod signal {
+    // Standard POSIX signals
+    pub const SIGHUP: u32 = 1;
+    pub const SIGINT: u32 = 2;
+    pub const SIGQUIT: u32 = 3;
+    pub const SIGILL: u32 = 4;
+    pub const SIGTRAP: u32 = 5;
+    pub const SIGABRT: u32 = 6;
+    pub const SIGBUS: u32 = 7;
+    pub const SIGFPE: u32 = 8;
+    pub const SIGKILL: u32 = 9;
+    pub const SIGUSR1: u32 = 10;
+    pub const SIGUSR2: u32 = 12;
+    pub const SIGPIPE: u32 = 13;
+    pub const SIGALRM: u32 = 14;
+    pub const SIGTERM: u32 = 15;
+    pub const SIGCHLD: u32 = 17;
+    pub const SIGCONT: u32 = 18;
+    pub const SIGSTOP: u32 = 19;
+    pub const SIGTSTP: u32 = 20;
+    pub const SIGWINCH: u32 = 28;
+
+    // Maximum signal number
+    pub const NSIG: u32 = 64;
+
+    // Signal handler special values
+    pub const SIG_DFL: u32 = 0;
+    pub const SIG_IGN: u32 = 1;
+
+    // sigprocmask how values
+    pub const SIG_BLOCK: u32 = 0;
+    pub const SIG_UNBLOCK: u32 = 1;
+    pub const SIG_SETMASK: u32 = 2;
+
+    // Default actions
+    pub const SA_DEFAULT_TERM: u32 = 0;   // Terminate
+    pub const SA_DEFAULT_IGN: u32 = 1;    // Ignore
+    pub const SA_DEFAULT_CORE: u32 = 2;   // Core dump (treated as terminate in Wasm)
+    pub const SA_DEFAULT_STOP: u32 = 3;   // Stop (not supported in Wasm)
+    pub const SA_DEFAULT_CONT: u32 = 4;   // Continue (not supported in Wasm)
 }
