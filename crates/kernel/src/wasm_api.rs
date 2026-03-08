@@ -455,6 +455,18 @@ pub extern "C" fn kernel_fcntl(fd: i32, cmd: u32, arg: u32) -> i32 {
     }
 }
 
+/// fcntl lock operations. The flock struct is read from/written to the pointer.
+/// Returns 0 on success, or negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_fcntl_lock(fd: i32, cmd: u32, flock_ptr: *mut u8) -> i32 {
+    let proc = unsafe { get_process() };
+    let flock = unsafe { &mut *(flock_ptr as *mut wasm_posix_shared::WasmFlock) };
+    match syscalls::sys_fcntl_lock(proc, fd, cmd, flock) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
 /// Stat a file by path. Writes a `WasmStat` struct to the pointer.
 /// Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
