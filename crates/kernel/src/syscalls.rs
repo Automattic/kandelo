@@ -405,10 +405,75 @@ pub fn sys_fcntl(
     }
 }
 
+use crate::path::resolve_path;
+
+pub fn sys_stat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<WasmStat, Errno> {
+    let resolved = resolve_path(path, &proc.cwd);
+    host.host_stat(&resolved)
+}
+
+pub fn sys_lstat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<WasmStat, Errno> {
+    let resolved = resolve_path(path, &proc.cwd);
+    host.host_lstat(&resolved)
+}
+
+pub fn sys_mkdir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8], mode: u32) -> Result<(), Errno> {
+    let resolved = resolve_path(path, &proc.cwd);
+    host.host_mkdir(&resolved, mode)
+}
+
+pub fn sys_rmdir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
+    let resolved = resolve_path(path, &proc.cwd);
+    host.host_rmdir(&resolved)
+}
+
+pub fn sys_unlink(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
+    let resolved = resolve_path(path, &proc.cwd);
+    host.host_unlink(&resolved)
+}
+
+pub fn sys_rename(proc: &mut Process, host: &mut dyn HostIO, oldpath: &[u8], newpath: &[u8]) -> Result<(), Errno> {
+    let old = resolve_path(oldpath, &proc.cwd);
+    let new = resolve_path(newpath, &proc.cwd);
+    host.host_rename(&old, &new)
+}
+
+pub fn sys_link(proc: &mut Process, host: &mut dyn HostIO, oldpath: &[u8], newpath: &[u8]) -> Result<(), Errno> {
+    let old = resolve_path(oldpath, &proc.cwd);
+    let new = resolve_path(newpath, &proc.cwd);
+    host.host_link(&old, &new)
+}
+
+pub fn sys_symlink(proc: &mut Process, host: &mut dyn HostIO, target: &[u8], linkpath: &[u8]) -> Result<(), Errno> {
+    // Note: symlink target is stored as-is (not resolved), but linkpath is resolved
+    let link = resolve_path(linkpath, &proc.cwd);
+    host.host_symlink(target, &link)
+}
+
+pub fn sys_readlink(proc: &mut Process, host: &mut dyn HostIO, path: &[u8], buf: &mut [u8]) -> Result<usize, Errno> {
+    let resolved = resolve_path(path, &proc.cwd);
+    host.host_readlink(&resolved, buf)
+}
+
+pub fn sys_chmod(proc: &mut Process, host: &mut dyn HostIO, path: &[u8], mode: u32) -> Result<(), Errno> {
+    let resolved = resolve_path(path, &proc.cwd);
+    host.host_chmod(&resolved, mode)
+}
+
+pub fn sys_chown(proc: &mut Process, host: &mut dyn HostIO, path: &[u8], uid: u32, gid: u32) -> Result<(), Errno> {
+    let resolved = resolve_path(path, &proc.cwd);
+    host.host_chown(&resolved, uid, gid)
+}
+
+pub fn sys_access(proc: &mut Process, host: &mut dyn HostIO, path: &[u8], amode: u32) -> Result<(), Errno> {
+    let resolved = resolve_path(path, &proc.cwd);
+    host.host_access(&resolved, amode)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wasm_posix_shared::mode::S_IFREG;
+    use wasm_posix_shared::mode::{S_IFREG, S_IFLNK};
 
     /// Mock host I/O for testing.
     struct MockHostIO {
@@ -470,6 +535,53 @@ mod tests {
                 _pad: 0,
             })
         }
+
+        fn host_stat(&mut self, _path: &[u8]) -> Result<WasmStat, Errno> {
+            Ok(WasmStat {
+                st_dev: 0, st_ino: 1, st_mode: S_IFREG | 0o644, st_nlink: 1,
+                st_uid: 0, st_gid: 0, st_size: 1024,
+                st_atime_sec: 0, st_atime_nsec: 0,
+                st_mtime_sec: 0, st_mtime_nsec: 0,
+                st_ctime_sec: 0, st_ctime_nsec: 0, _pad: 0,
+            })
+        }
+
+        fn host_lstat(&mut self, _path: &[u8]) -> Result<WasmStat, Errno> {
+            // Return S_IFLNK to distinguish from stat
+            Ok(WasmStat {
+                st_dev: 0, st_ino: 2, st_mode: S_IFLNK | 0o777, st_nlink: 1,
+                st_uid: 0, st_gid: 0, st_size: 7,
+                st_atime_sec: 0, st_atime_nsec: 0,
+                st_mtime_sec: 0, st_mtime_nsec: 0,
+                st_ctime_sec: 0, st_ctime_nsec: 0, _pad: 0,
+            })
+        }
+
+        fn host_mkdir(&mut self, _path: &[u8], _mode: u32) -> Result<(), Errno> { Ok(()) }
+        fn host_rmdir(&mut self, _path: &[u8]) -> Result<(), Errno> { Ok(()) }
+        fn host_unlink(&mut self, _path: &[u8]) -> Result<(), Errno> { Ok(()) }
+        fn host_rename(&mut self, _oldpath: &[u8], _newpath: &[u8]) -> Result<(), Errno> { Ok(()) }
+        fn host_link(&mut self, _oldpath: &[u8], _newpath: &[u8]) -> Result<(), Errno> { Ok(()) }
+        fn host_symlink(&mut self, _target: &[u8], _linkpath: &[u8]) -> Result<(), Errno> { Ok(()) }
+
+        fn host_readlink(&mut self, _path: &[u8], buf: &mut [u8]) -> Result<usize, Errno> {
+            let target = b"/target";
+            let n = buf.len().min(target.len());
+            buf[..n].copy_from_slice(&target[..n]);
+            Ok(n)
+        }
+
+        fn host_chmod(&mut self, _path: &[u8], _mode: u32) -> Result<(), Errno> { Ok(()) }
+        fn host_chown(&mut self, _path: &[u8], _uid: u32, _gid: u32) -> Result<(), Errno> { Ok(()) }
+        fn host_access(&mut self, _path: &[u8], _amode: u32) -> Result<(), Errno> { Ok(()) }
+
+        fn host_opendir(&mut self, _path: &[u8]) -> Result<i64, Errno> { Ok(200) }
+
+        fn host_readdir(&mut self, _handle: i64, _name_buf: &mut [u8]) -> Result<Option<(u64, u32, usize)>, Errno> {
+            Ok(None) // empty directory
+        }
+
+        fn host_closedir(&mut self, _handle: i64) -> Result<(), Errno> { Ok(()) }
     }
 
     #[test]
@@ -679,5 +791,77 @@ mod tests {
         let n = sys_read(&mut proc, &mut host, read_fd, &mut buf).unwrap();
         assert_eq!(n, 5);
         assert_eq!(&buf[..5], b"hello");
+    }
+
+    #[test]
+    fn test_stat_returns_file_info() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let stat = sys_stat(&mut proc, &mut host, b"/tmp/file").unwrap();
+        assert_eq!(stat.st_mode & S_IFREG, S_IFREG);
+        assert_eq!(stat.st_size, 1024);
+    }
+
+    #[test]
+    fn test_lstat_returns_symlink_info() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let stat = sys_lstat(&mut proc, &mut host, b"/tmp/link").unwrap();
+        assert_eq!(stat.st_mode & S_IFLNK, S_IFLNK);
+    }
+
+    #[test]
+    fn test_stat_resolves_relative_path() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        proc.cwd = b"/home/user".to_vec();
+        // Should not fail - relative paths get cwd prepended
+        let stat = sys_stat(&mut proc, &mut host, b"file.txt").unwrap();
+        assert_eq!(stat.st_mode & S_IFREG, S_IFREG);
+    }
+
+    #[test]
+    fn test_mkdir_delegates_to_host() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        sys_mkdir(&mut proc, &mut host, b"/tmp/newdir", 0o755).unwrap();
+    }
+
+    #[test]
+    fn test_unlink_delegates_to_host() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        sys_unlink(&mut proc, &mut host, b"/tmp/file").unwrap();
+    }
+
+    #[test]
+    fn test_readlink_returns_target() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let mut buf = [0u8; 256];
+        let n = sys_readlink(&mut proc, &mut host, b"/tmp/link", &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"/target");
+    }
+
+    #[test]
+    fn test_rename_delegates_to_host() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        sys_rename(&mut proc, &mut host, b"/tmp/old", b"/tmp/new").unwrap();
+    }
+
+    #[test]
+    fn test_access_delegates_to_host() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        sys_access(&mut proc, &mut host, b"/tmp/file", 0).unwrap(); // F_OK
+    }
+
+    #[test]
+    fn test_symlink_target_not_resolved() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        // symlink target is stored as-is, only linkpath is resolved
+        sys_symlink(&mut proc, &mut host, b"../relative-target", b"/tmp/link").unwrap();
     }
 }
