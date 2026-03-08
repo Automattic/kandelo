@@ -393,10 +393,37 @@ pub extern "C" fn kernel_write(fd: i32, buf_ptr: *const u8, buf_len: u32) -> i32
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_lseek(fd: i32, offset_lo: u32, offset_hi: i32, whence: u32) -> i64 {
     let proc = unsafe { get_process() };
+    let mut host = WasmHostIO;
     let offset = ((offset_hi as i64) << 32) | (offset_lo as u64 as i64);
-    match syscalls::sys_lseek(proc, fd, offset, whence) {
+    match syscalls::sys_lseek(proc, &mut host, fd, offset, whence) {
         Ok(pos) => pos,
         Err(e) => -(e as i64),
+    }
+}
+
+/// pread - read at offset without modifying position. Returns bytes read or negative errno.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_pread(fd: i32, buf_ptr: *mut u8, buf_len: u32, offset_lo: u32, offset_hi: i32) -> i32 {
+    let proc = unsafe { get_process() };
+    let mut host = WasmHostIO;
+    let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
+    let offset = ((offset_hi as i64) << 32) | (offset_lo as u64 as i64);
+    match syscalls::sys_pread(proc, &mut host, fd, buf, offset) {
+        Ok(n) => n as i32,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// pwrite - write at offset without modifying position. Returns bytes written or negative errno.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_pwrite(fd: i32, buf_ptr: *const u8, buf_len: u32, offset_lo: u32, offset_hi: i32) -> i32 {
+    let proc = unsafe { get_process() };
+    let mut host = WasmHostIO;
+    let buf = unsafe { slice::from_raw_parts(buf_ptr, buf_len as usize) };
+    let offset = ((offset_hi as i64) << 32) | (offset_lo as u64 as i64);
+    match syscalls::sys_pwrite(proc, &mut host, fd, buf, offset) {
+        Ok(n) => n as i32,
+        Err(e) => -(e as i32),
     }
 }
 

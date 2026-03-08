@@ -232,6 +232,7 @@ pub fn sys_write(
 /// Seek to a position in a file, returning the new offset.
 pub fn sys_lseek(
     proc: &mut Process,
+    host: &mut dyn HostIO,
     fd: i32,
     offset: i64,
     whence: u32,
@@ -249,7 +250,7 @@ pub fn sys_lseek(
     let new_offset = match whence {
         SEEK_SET => offset,
         SEEK_CUR => ofd.offset + offset,
-        SEEK_END => return Err(Errno::ENOSYS),
+        SEEK_END => host.host_seek(ofd.host_handle, offset, whence)?,
         _ => return Err(Errno::EINVAL),
     };
 
@@ -259,6 +260,71 @@ pub fn sys_lseek(
 
     ofd.offset = new_offset;
     Ok(new_offset)
+}
+
+/// Read from a file descriptor at a given offset without modifying the file position.
+pub fn sys_pread(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    fd: i32,
+    buf: &mut [u8],
+    offset: i64,
+) -> Result<usize, Errno> {
+    let entry = proc.fd_table.get(fd)?;
+    let ofd_idx = entry.ofd_ref.0;
+    let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+
+    let access_mode = ofd.status_flags & O_ACCMODE;
+    if access_mode == O_WRONLY {
+        return Err(Errno::EBADF);
+    }
+
+    // pread is only valid for seekable fds (not pipes or sockets)
+    if ofd.file_type == FileType::Pipe || ofd.file_type == FileType::Socket {
+        return Err(Errno::ESPIPE);
+    }
+
+    let host_handle = ofd.host_handle;
+    let saved_offset = ofd.offset;
+
+    // Seek to the requested offset, read, then restore.
+    // Single-threaded, so save/seek/read/restore is safe.
+    host.host_seek(host_handle, offset, SEEK_SET)?;
+    let n = host.host_read(host_handle, buf)?;
+    host.host_seek(host_handle, saved_offset, SEEK_SET)?;
+
+    Ok(n)
+}
+
+/// Write to a file descriptor at a given offset without modifying the file position.
+pub fn sys_pwrite(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    fd: i32,
+    buf: &[u8],
+    offset: i64,
+) -> Result<usize, Errno> {
+    let entry = proc.fd_table.get(fd)?;
+    let ofd_idx = entry.ofd_ref.0;
+    let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+
+    let access_mode = ofd.status_flags & O_ACCMODE;
+    if access_mode == O_RDONLY {
+        return Err(Errno::EBADF);
+    }
+
+    if ofd.file_type == FileType::Pipe || ofd.file_type == FileType::Socket {
+        return Err(Errno::ESPIPE);
+    }
+
+    let host_handle = ofd.host_handle;
+    let saved_offset = ofd.offset;
+
+    host.host_seek(host_handle, offset, SEEK_SET)?;
+    let n = host.host_write(host_handle, buf)?;
+    host.host_seek(host_handle, saved_offset, SEEK_SET)?;
+
+    Ok(n)
 }
 
 /// Duplicate a file descriptor, returning the new fd number.
@@ -1693,20 +1759,21 @@ mod tests {
         let fd = sys_open(&mut proc, &mut host, b"/tmp/test", O_RDWR, 0o644).unwrap();
 
         // SEEK_SET to 100
-        let pos = sys_lseek(&mut proc, fd, 100, SEEK_SET).unwrap();
+        let pos = sys_lseek(&mut proc, &mut host, fd, 100, SEEK_SET).unwrap();
         assert_eq!(pos, 100);
 
         // SEEK_CUR -10 -> 90
-        let pos = sys_lseek(&mut proc, fd, -10, SEEK_CUR).unwrap();
+        let pos = sys_lseek(&mut proc, &mut host, fd, -10, SEEK_CUR).unwrap();
         assert_eq!(pos, 90);
     }
 
     #[test]
     fn test_lseek_pipe_fails() {
         let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
         let (read_fd, _write_fd) = sys_pipe(&mut proc).unwrap();
 
-        let result = sys_lseek(&mut proc, read_fd, 0, SEEK_SET);
+        let result = sys_lseek(&mut proc, &mut host, read_fd, 0, SEEK_SET);
         assert_eq!(result, Err(Errno::ESPIPE));
     }
 
@@ -2658,5 +2725,45 @@ mod tests {
         assert_eq!(n, 1); // Only stdout ready
         assert_ne!(pollfds[0].revents & POLLOUT, 0);
         assert_eq!(pollfds[1].revents, 0);
+    }
+
+    #[test]
+    fn test_lseek_seek_end_on_pipe() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (read_fd, _write_fd) = sys_pipe(&mut proc).unwrap();
+        // SEEK_END on pipe should return ESPIPE
+        let result = sys_lseek(&mut proc, &mut host, read_fd, 0, SEEK_END);
+        assert_eq!(result, Err(Errno::ESPIPE));
+    }
+
+    #[test]
+    fn test_pread_espipe_on_pipe() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (read_fd, _write_fd) = sys_pipe(&mut proc).unwrap();
+        let mut buf = [0u8; 4];
+        let result = sys_pread(&mut proc, &mut host, read_fd, &mut buf, 0);
+        assert_eq!(result, Err(Errno::ESPIPE));
+    }
+
+    #[test]
+    fn test_pwrite_espipe_on_pipe() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (_read_fd, write_fd) = sys_pipe(&mut proc).unwrap();
+        let result = sys_pwrite(&mut proc, &mut host, write_fd, b"test", 0);
+        assert_eq!(result, Err(Errno::ESPIPE));
+    }
+
+    #[test]
+    fn test_pread_espipe_on_socket() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+        let fd = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+        let mut buf = [0u8; 4];
+        let result = sys_pread(&mut proc, &mut host, fd, &mut buf, 0);
+        assert_eq!(result, Err(Errno::ESPIPE));
     }
 }

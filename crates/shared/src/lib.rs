@@ -67,6 +67,8 @@ pub enum Syscall {
     Socketpair = 61,
     Sendto = 62,
     Recvfrom = 63,
+    Pread = 64,
+    Pwrite = 65,
 }
 
 impl Syscall {
@@ -136,6 +138,8 @@ impl Syscall {
             61 => Some(Syscall::Socketpair),
             62 => Some(Syscall::Sendto),
             63 => Some(Syscall::Recvfrom),
+            64 => Some(Syscall::Pread),
+            65 => Some(Syscall::Pwrite),
             _ => None,
         }
     }
