@@ -16,7 +16,7 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 | Function | Status | Notes |
 |----------|--------|-------|
 | `open()` | Partial | Host-delegated. O_CREAT, O_EXCL, O_TRUNC, O_APPEND, O_NONBLOCK, O_CLOEXEC, O_DIRECTORY flags handled. O_NOFOLLOW not yet supported. |
-| `openat()` | Planned | Same as open() with AT_FDCWD and relative fd support. |
+| `openat()` | Partial | AT_FDCWD delegates to open(). Absolute paths handled. Relative paths with non-AT_FDCWD dirfd return ENOSYS (requires directory path resolution). |
 | `close()` | Partial | Ref-counted OFD cleanup. Host handle closed when last ref dropped. EINTR not yet handled. |
 | `read()` | Partial | Host-delegated for files. Pipe reads from kernel ring buffer. Short reads permitted. O_NONBLOCK not yet enforced. |
 | `pread()` | Partial | Host-delegated via seek-read-restore. Not atomic (single-threaded safe only). Rejects pipes/sockets with ESPIPE. |
@@ -116,11 +116,11 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 
 | Function | Status | Notes |
 |----------|--------|-------|
-| `time()` | Planned | Wrapper around clock_gettime(CLOCK_REALTIME). |
-| `gettimeofday()` | Planned | Wrapper around clock_gettime(CLOCK_REALTIME). |
+| `time()` | Full | Wrapper around clock_gettime(CLOCK_REALTIME). Returns seconds since epoch. |
+| `gettimeofday()` | Full | Wrapper around clock_gettime(CLOCK_REALTIME). Returns (sec, usec) pair. |
 | `clock_gettime()` | Full | Host-delegated. CLOCK_REALTIME and CLOCK_MONOTONIC supported. Node.js uses Date.now() and process.hrtime.bigint(). |
 | `nanosleep()` | Partial | Host-delegated. Node.js uses Atomics.wait with timeout. Browser may need Asyncify fallback. Validates tv_sec >= 0 and tv_nsec < 1e9. |
-| `usleep()` | Planned | Wrapper around nanosleep. |
+| `usleep()` | Full | Converts microseconds to sec+nsec, delegates to host_nanosleep. |
 
 ## Terminal / TTY
 
