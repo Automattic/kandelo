@@ -33,6 +33,14 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 | `fstat()` | Partial | Host-delegated for regular files. Pipe returns S_IFIFO | 0o600. Full struct stat populated. |
 | `ftruncate()` | Partial | Host-delegated for regular files with write access. Validates length >= 0. Rejects non-regular fds. |
 | `fsync()` | Partial | Host-delegated for regular files. Rejects non-regular fds (pipes, sockets). |
+| `fdatasync()` | Partial | Alias for fsync(). No metadata distinction in Wasm environment. |
+| `truncate()` | Partial | Path-based. Opens file O_WRONLY, calls ftruncate, closes. |
+| `fchmod()` | Partial | Host-delegated for regular files and directories. Rejects pipes/sockets. |
+| `fchown()` | Partial | Host-delegated for regular files and directories. Rejects pipes/sockets. |
+| `fstatat()` | Partial | AT_FDCWD delegates to stat/lstat. AT_SYMLINK_NOFOLLOW supported. Relative paths with real dirfd return ENOSYS. |
+| `unlinkat()` | Partial | AT_FDCWD delegates to unlink/rmdir. AT_REMOVEDIR flag supported. |
+| `mkdirat()` | Partial | AT_FDCWD delegates to mkdir. umask applied. |
+| `renameat()` | Partial | Both dirfds must be AT_FDCWD or paths absolute. |
 
 ## fcntl()
 
@@ -62,6 +70,10 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 | `getppid()` | Full | Returns ppid (0 for init process). |
 | `getuid()` / `geteuid()` | Full | Simulated; defaults to uid=1000. Configurable at init. |
 | `getgid()` / `getegid()` | Full | Simulated; defaults to gid=1000. Configurable at init. |
+| `getpgrp()` | Full | Returns process group ID (simulated, defaults to pid). |
+| `setpgid()` | Full | Sets process group ID. pid=0 means self. pgid=0 means use target pid. |
+| `getsid()` | Full | Returns session ID (simulated, defaults to pid). pid=0 means self. |
+| `setsid()` | Full | Creates new session. Sets sid=pid, pgid=pid. Returns new session ID. |
 
 ## Signals
 
@@ -198,3 +210,4 @@ These features require SharedArrayBuffer (and cross-origin isolation headers in 
 8. **Phase 8 (Complete):** Memory management — mmap (anonymous), munmap, brk, mprotect (stub)
 9. **Phase 9 (Complete):** Polish & gaps — tcgetattr/tcsetattr, ioctl (TIOCGWINSZ/TIOCSWINSZ), signal(), fcntl F_GETOWN/F_SETOWN, MSG_PEEK, O_NONBLOCK pipe enforcement, O_NOFOLLOW, time/gettimeofday/usleep/openat wrappers
 10. **Phase 10 (Complete):** Extended POSIX — umask, uname, sysconf, dup3, pipe2, ftruncate, fsync, writev, readv, getrlimit, setrlimit
+11. **Phase 11 (Complete):** Final gaps — truncate, fdatasync, fchmod, fchown, getpgrp, setpgid, getsid, setsid, fstatat, unlinkat, mkdirat, renameat

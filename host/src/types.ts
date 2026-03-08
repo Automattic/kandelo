@@ -59,6 +59,8 @@ export interface PlatformIO {
   // File operations
   ftruncate(handle: number, length: number): Promise<void>;
   fsync(handle: number): Promise<void>;
+  fchmod(handle: number, mode: number): Promise<void>;
+  fchown(handle: number, uid: number, gid: number): Promise<void>;
 
   // Time
   clockGettime(clockId: number): Promise<{ sec: number; nsec: number }>;

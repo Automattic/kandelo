@@ -192,6 +192,12 @@ export class WasmPosixKernel {
         host_nanosleep: (sec: bigint, nsec: bigint): number => {
           return this.hostNanosleep(sec, nsec);
         },
+        host_fchmod: (handle: bigint, mode: number): number => {
+          return this.hostFchmod(handle, mode);
+        },
+        host_fchown: (handle: bigint, uid: number, gid: number): number => {
+          return this.hostFchown(handle, uid, gid);
+        },
       },
     };
 
@@ -967,6 +973,50 @@ export class WasmPosixKernel {
     }
   }
 
+  // ---- Phase 11: fchmod/fchown host imports ----
+
+  /**
+   * host_fchmod(handle: i64, mode: u32) -> i32
+   */
+  private hostFchmod(handle: bigint, mode: number): number {
+    const h = Number(handle);
+    try {
+      let result = 0;
+      this.io
+        .fchmod(h, mode)
+        .then(() => {
+          result = 0;
+        })
+        .catch(() => {
+          result = -1;
+        });
+      return result;
+    } catch {
+      return -1;
+    }
+  }
+
+  /**
+   * host_fchown(handle: i64, uid: u32, gid: u32) -> i32
+   */
+  private hostFchown(handle: bigint, uid: number, gid: number): number {
+    const h = Number(handle);
+    try {
+      let result = 0;
+      this.io
+        .fchown(h, uid, gid)
+        .then(() => {
+          result = 0;
+        })
+        .catch(() => {
+          result = -1;
+        });
+      return result;
+    } catch {
+      return -1;
+    }
+  }
+
   // ---- Public API: Socket & Poll operations ----
 
   /**
@@ -1278,5 +1328,88 @@ export class WasmPosixKernel {
     const fn = this.instance!.exports.kernel_fsync as (fd: number) => number;
     const result = fn(fd);
     if (result < 0) throw new Error(`fsync failed: errno ${-result}`);
+  }
+
+  // ---- Public API: Phase 11 Final Gaps ----
+
+  /**
+   * Truncate a file by path to specified length.
+   */
+  truncate(pathPtr: number, pathLen: number, length: number): void {
+    const fn = this.instance!.exports.kernel_truncate as (
+      pathPtr: number, pathLen: number, lengthLo: number, lengthHi: number
+    ) => number;
+    const lo = length & 0xFFFFFFFF;
+    const hi = Math.floor(length / 0x100000000);
+    const result = fn(pathPtr, pathLen, lo, hi);
+    if (result < 0) throw new Error(`truncate failed: errno ${-result}`);
+  }
+
+  /**
+   * Synchronize file data to storage (alias for fsync in Wasm).
+   */
+  fdatasync(fd: number): void {
+    const fn = this.instance!.exports.kernel_fdatasync as (fd: number) => number;
+    const result = fn(fd);
+    if (result < 0) throw new Error(`fdatasync failed: errno ${-result}`);
+  }
+
+  /**
+   * Change file mode via fd.
+   */
+  fchmod(fd: number, mode: number): void {
+    const fn = this.instance!.exports.kernel_fchmod as (fd: number, mode: number) => number;
+    const result = fn(fd, mode);
+    if (result < 0) throw new Error(`fchmod failed: errno ${-result}`);
+  }
+
+  /**
+   * Change file owner/group via fd.
+   */
+  fchown(fd: number, uid: number, gid: number): void {
+    const fn = this.instance!.exports.kernel_fchown as (
+      fd: number, uid: number, gid: number
+    ) => number;
+    const result = fn(fd, uid, gid);
+    if (result < 0) throw new Error(`fchown failed: errno ${-result}`);
+  }
+
+  /**
+   * Get process group ID.
+   */
+  getpgrp(): number {
+    const fn = this.instance!.exports.kernel_getpgrp as () => number;
+    return fn();
+  }
+
+  /**
+   * Set process group ID.
+   */
+  setpgid(pid: number, pgid: number): void {
+    const fn = this.instance!.exports.kernel_setpgid as (
+      pid: number, pgid: number
+    ) => number;
+    const result = fn(pid, pgid);
+    if (result < 0) throw new Error(`setpgid failed: errno ${-result}`);
+  }
+
+  /**
+   * Get session ID.
+   */
+  getsid(pid: number): number {
+    const fn = this.instance!.exports.kernel_getsid as (pid: number) => number;
+    const result = fn(pid);
+    if (result < 0) throw new Error(`getsid failed: errno ${-result}`);
+    return result;
+  }
+
+  /**
+   * Create new session.
+   */
+  setsid(): number {
+    const fn = this.instance!.exports.kernel_setsid as () => number;
+    const result = fn();
+    if (result < 0) throw new Error(`setsid failed: errno ${-result}`);
+    return result;
   }
 }
