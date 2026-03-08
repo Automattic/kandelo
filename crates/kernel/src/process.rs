@@ -72,6 +72,7 @@ pub struct Process {
     pub memory: MemoryManager,
     pub terminal: TerminalState,
     pub environ: Vec<Vec<u8>>,
+    pub umask: u32,
 }
 
 impl Process {
@@ -112,6 +113,7 @@ impl Process {
             memory: MemoryManager::new(),
             terminal: TerminalState::new(),
             environ: Vec::new(),
+            umask: 0o022,
         }
     }
 }

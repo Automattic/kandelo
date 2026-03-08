@@ -29,7 +29,12 @@ pub fn sys_open(
     oflags: u32,
     mode: u32,
 ) -> Result<i32, Errno> {
-    let host_handle = host.host_open(path, oflags, mode)?;
+    let effective_mode = if oflags & O_CREAT != 0 {
+        mode & !proc.umask
+    } else {
+        mode
+    };
+    let host_handle = host.host_open(path, oflags, effective_mode)?;
 
     let file_type = if oflags & O_DIRECTORY != 0 {
         FileType::Directory
@@ -669,7 +674,8 @@ pub fn sys_lstat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resu
 
 pub fn sys_mkdir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8], mode: u32) -> Result<(), Errno> {
     let resolved = resolve_path(path, &proc.cwd);
-    host.host_mkdir(&resolved, mode)
+    let effective_mode = mode & !proc.umask;
+    host.host_mkdir(&resolved, effective_mode)
 }
 
 pub fn sys_rmdir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
@@ -1701,6 +1707,13 @@ pub fn sys_ioctl(proc: &mut Process, fd: i32, request: u32, buf: &mut [u8]) -> R
         }
         _ => Err(Errno::ENOTTY),
     }
+}
+
+/// umask — set file creation mask, return previous mask
+pub fn sys_umask(proc: &mut Process, mask: u32) -> u32 {
+    let old = proc.umask;
+    proc.umask = mask & 0o777;
+    old
 }
 
 #[cfg(test)]
@@ -3260,5 +3273,30 @@ mod tests {
         // Next write should get EAGAIN
         let result = sys_write(&mut proc, &mut host, write_fd, b"x");
         assert_eq!(result, Err(Errno::EAGAIN));
+    }
+
+    // ---- umask tests ----
+
+    #[test]
+    fn test_umask_default() {
+        let proc = Process::new(1);
+        assert_eq!(proc.umask, 0o022);
+    }
+
+    #[test]
+    fn test_umask_set_and_get_old() {
+        let mut proc = Process::new(1);
+        let old = sys_umask(&mut proc, 0o077);
+        assert_eq!(old, 0o022); // previous default
+        let old2 = sys_umask(&mut proc, 0o000);
+        assert_eq!(old2, 0o077);
+    }
+
+    #[test]
+    fn test_umask_masks_high_bits() {
+        let mut proc = Process::new(1);
+        let old = sys_umask(&mut proc, 0o7777); // only 0o777 stored
+        assert_eq!(old, 0o022);
+        assert_eq!(proc.umask, 0o777);
     }
 }

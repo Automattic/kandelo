@@ -1287,3 +1287,10 @@ pub extern "C" fn kernel_ioctl(fd: i32, request: u32, buf_ptr: *mut u8, buf_len:
         Err(e) => -(e as i32),
     }
 }
+
+/// Set file creation mask. Returns the previous mask value.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_umask(mask: u32) -> u32 {
+    let proc = unsafe { get_process() };
+    syscalls::sys_umask(proc, mask)
+}
