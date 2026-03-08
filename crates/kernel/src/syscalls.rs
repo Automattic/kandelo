@@ -470,10 +470,35 @@ pub fn sys_access(proc: &mut Process, host: &mut dyn HostIO, path: &[u8], amode:
     host.host_access(&resolved, amode)
 }
 
+/// Change the current working directory.
+/// Validates that the path exists and is a directory via host_stat.
+pub fn sys_chdir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
+    let resolved = crate::path::resolve_path(path, &proc.cwd);
+    // Validate the path exists and is a directory
+    let stat = host.host_stat(&resolved)?;
+    let file_type = stat.st_mode & wasm_posix_shared::mode::S_IFMT;
+    if file_type != wasm_posix_shared::mode::S_IFDIR {
+        return Err(Errno::ENOTDIR);
+    }
+    proc.cwd = resolved;
+    Ok(())
+}
+
+/// Get the current working directory.
+/// Writes the cwd path to `buf` and returns the number of bytes written.
+/// Returns ERANGE if the buffer is too small.
+pub fn sys_getcwd(proc: &Process, buf: &mut [u8]) -> Result<usize, Errno> {
+    if buf.len() < proc.cwd.len() {
+        return Err(Errno::ERANGE);
+    }
+    buf[..proc.cwd.len()].copy_from_slice(&proc.cwd);
+    Ok(proc.cwd.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wasm_posix_shared::mode::{S_IFREG, S_IFLNK};
+    use wasm_posix_shared::mode::{S_IFDIR, S_IFREG, S_IFLNK};
 
     /// Mock host I/O for testing.
     struct MockHostIO {
@@ -536,9 +561,17 @@ mod tests {
             })
         }
 
-        fn host_stat(&mut self, _path: &[u8]) -> Result<WasmStat, Errno> {
+        fn host_stat(&mut self, path: &[u8]) -> Result<WasmStat, Errno> {
+            // Return S_IFDIR for paths that look like directories
+            let is_dir = path.ends_with(b"dir") || path.ends_with(b"tmp")
+                || path.ends_with(b"/") || path == b"/";
+            let mode = if is_dir {
+                S_IFDIR | 0o755
+            } else {
+                S_IFREG | 0o644
+            };
             Ok(WasmStat {
-                st_dev: 0, st_ino: 1, st_mode: S_IFREG | 0o644, st_nlink: 1,
+                st_dev: 0, st_ino: 1, st_mode: mode, st_nlink: 1,
                 st_uid: 0, st_gid: 0, st_size: 1024,
                 st_atime_sec: 0, st_atime_nsec: 0,
                 st_mtime_sec: 0, st_mtime_nsec: 0,
@@ -863,5 +896,55 @@ mod tests {
         let mut host = MockHostIO::new();
         // symlink target is stored as-is, only linkpath is resolved
         sys_symlink(&mut proc, &mut host, b"../relative-target", b"/tmp/link").unwrap();
+    }
+
+    #[test]
+    fn test_getcwd_returns_initial_cwd() {
+        let proc = Process::new(1);
+        let mut buf = [0u8; 256];
+        let n = sys_getcwd(&proc, &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"/");
+    }
+
+    #[test]
+    fn test_chdir_changes_cwd() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        sys_chdir(&mut proc, &mut host, b"/tmp").unwrap();
+        let mut buf = [0u8; 256];
+        let n = sys_getcwd(&proc, &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"/tmp");
+    }
+
+    #[test]
+    fn test_chdir_relative_path() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        // First chdir to /tmp (ends with "tmp", so MockHostIO returns S_IFDIR)
+        sys_chdir(&mut proc, &mut host, b"/tmp").unwrap();
+        // Then chdir to "subdir" relative (resolves to /tmp/subdir, ends with "dir")
+        sys_chdir(&mut proc, &mut host, b"subdir").unwrap();
+        let mut buf = [0u8; 256];
+        let n = sys_getcwd(&proc, &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"/tmp/subdir");
+    }
+
+    #[test]
+    fn test_chdir_rejects_non_directory() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        // Path "file.txt" doesn't end with dir/tmp, so MockHostIO returns S_IFREG
+        let result = sys_chdir(&mut proc, &mut host, b"/file.txt");
+        assert_eq!(result, Err(Errno::ENOTDIR));
+    }
+
+    #[test]
+    fn test_getcwd_erange_when_buffer_too_small() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        sys_chdir(&mut proc, &mut host, b"/tmp").unwrap();
+        let mut buf = [0u8; 2]; // too small for "/tmp"
+        let result = sys_getcwd(&proc, &mut buf);
+        assert_eq!(result, Err(Errno::ERANGE));
     }
 }
