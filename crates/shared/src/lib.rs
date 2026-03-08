@@ -84,6 +84,10 @@ pub enum Syscall {
     Pipe2 = 78,
     Ftruncate = 79,
     Fsync = 80,
+    Writev = 81,
+    Readv = 82,
+    Getrlimit = 83,
+    Setrlimit = 84,
 }
 
 impl Syscall {
@@ -170,6 +174,10 @@ impl Syscall {
             78 => Some(Syscall::Pipe2),
             79 => Some(Syscall::Ftruncate),
             80 => Some(Syscall::Fsync),
+            81 => Some(Syscall::Writev),
+            82 => Some(Syscall::Readv),
+            83 => Some(Syscall::Getrlimit),
+            84 => Some(Syscall::Setrlimit),
             _ => None,
         }
     }
@@ -577,6 +585,20 @@ pub mod signal {
     pub const SA_DEFAULT_CORE: u32 = 2;   // Core dump (treated as terminate in Wasm)
     pub const SA_DEFAULT_STOP: u32 = 3;   // Stop (not supported in Wasm)
     pub const SA_DEFAULT_CONT: u32 = 4;   // Continue (not supported in Wasm)
+}
+
+/// Resource limit constants for getrlimit/setrlimit.
+pub mod rlimit {
+    pub const RLIMIT_CPU: u32 = 0;
+    pub const RLIMIT_FSIZE: u32 = 1;
+    pub const RLIMIT_DATA: u32 = 2;
+    pub const RLIMIT_STACK: u32 = 3;
+    pub const RLIMIT_CORE: u32 = 4;
+    pub const RLIMIT_NOFILE: u32 = 7;
+    pub const RLIMIT_AS: u32 = 9;
+    pub const RLIMIT_NPROC: u32 = 6;
+    pub const RLIM_NLIMITS: usize = 16;
+    pub const RLIM_INFINITY: u64 = u64::MAX;
 }
 
 /// Clock ID constants for clock_gettime/clock_settime.

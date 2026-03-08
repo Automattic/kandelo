@@ -1378,3 +1378,91 @@ pub extern "C" fn kernel_fsync(fd: i32) -> i32 {
         Err(e) => -(e as i32),
     }
 }
+
+/// Write data from multiple buffers (scatter-gather I/O).
+/// iov_ptr points to an array of iovec structs, each 8 bytes: (iov_base: u32, iov_len: u32).
+/// Returns total bytes written (>= 0) or negative errno.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_writev(fd: i32, iov_ptr: *const u8, iovcnt: i32) -> i32 {
+    let proc = unsafe { get_process() };
+    let mut host = WasmHostIO;
+
+    if iovcnt <= 0 || iovcnt > 1024 {
+        return -(Errno::EINVAL as i32);
+    }
+
+    let mut total: usize = 0;
+    for i in 0..iovcnt as usize {
+        let iov = unsafe { iov_ptr.add(i * 8) };
+        let base = unsafe {
+            u32::from_le_bytes([*iov, *iov.add(1), *iov.add(2), *iov.add(3)])
+        };
+        let len = unsafe {
+            u32::from_le_bytes([*iov.add(4), *iov.add(5), *iov.add(6), *iov.add(7)])
+        };
+
+        if len == 0 {
+            continue;
+        }
+        let buf = unsafe { slice::from_raw_parts(base as *const u8, len as usize) };
+        match syscalls::sys_write(proc, &mut host, fd, buf) {
+            Ok(n) => {
+                total += n;
+                if n < len as usize {
+                    break;
+                }
+            }
+            Err(e) => {
+                if total > 0 {
+                    return total as i32;
+                }
+                return -(e as i32);
+            }
+        }
+    }
+    total as i32
+}
+
+/// Read data into multiple buffers (scatter-gather I/O).
+/// iov_ptr points to an array of iovec structs, each 8 bytes: (iov_base: u32, iov_len: u32).
+/// Returns total bytes read (>= 0) or negative errno.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_readv(fd: i32, iov_ptr: *mut u8, iovcnt: i32) -> i32 {
+    let proc = unsafe { get_process() };
+    let mut host = WasmHostIO;
+
+    if iovcnt <= 0 || iovcnt > 1024 {
+        return -(Errno::EINVAL as i32);
+    }
+
+    let mut total: usize = 0;
+    for i in 0..iovcnt as usize {
+        let iov = unsafe { iov_ptr.add(i * 8) };
+        let base = unsafe {
+            u32::from_le_bytes([*iov, *iov.add(1), *iov.add(2), *iov.add(3)])
+        };
+        let len = unsafe {
+            u32::from_le_bytes([*iov.add(4), *iov.add(5), *iov.add(6), *iov.add(7)])
+        };
+
+        if len == 0 {
+            continue;
+        }
+        let buf = unsafe { slice::from_raw_parts_mut(base as *mut u8, len as usize) };
+        match syscalls::sys_read(proc, &mut host, fd, buf) {
+            Ok(n) => {
+                total += n;
+                if n < len as usize || n == 0 {
+                    break;
+                }
+            }
+            Err(e) => {
+                if total > 0 {
+                    return total as i32;
+                }
+                return -(e as i32);
+            }
+        }
+    }
+    total as i32
+}

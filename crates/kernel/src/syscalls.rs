@@ -1857,6 +1857,77 @@ pub fn sys_fsync(
     host.host_fsync(ofd.host_handle)
 }
 
+/// writev -- write data from multiple buffers (scatter-gather I/O).
+/// Iterates over the provided buffer slices, writing each in order.
+/// Stops on a short write or error, returning the total bytes written.
+pub fn sys_writev(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    fd: i32,
+    buffers: &[&[u8]],
+) -> Result<usize, Errno> {
+    let mut total = 0usize;
+    for buf in buffers {
+        if buf.is_empty() {
+            continue;
+        }
+        let n = sys_write(proc, host, fd, buf)?;
+        total += n;
+        if n < buf.len() {
+            break; // Short write, stop
+        }
+    }
+    Ok(total)
+}
+
+/// readv -- read data into multiple buffers (scatter-gather I/O).
+/// Iterates over the provided buffer slices, reading into each in order.
+/// Stops on a short read, EOF, or error, returning the total bytes read.
+pub fn sys_readv(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    fd: i32,
+    buffers: &mut [&mut [u8]],
+) -> Result<usize, Errno> {
+    let mut total = 0usize;
+    for buf in buffers.iter_mut() {
+        if buf.is_empty() {
+            continue;
+        }
+        let n = sys_read(proc, host, fd, *buf)?;
+        total += n;
+        if n < buf.len() || n == 0 {
+            break; // Short read or EOF, stop
+        }
+    }
+    Ok(total)
+}
+
+/// getrlimit — get resource limits
+/// Returns (soft_limit, hard_limit) for the given resource.
+pub fn sys_getrlimit(proc: &Process, resource: u32) -> Result<(u64, u64), Errno> {
+    if resource as usize >= 16 {
+        return Err(Errno::EINVAL);
+    }
+    let limits = proc.rlimits[resource as usize];
+    Ok((limits[0], limits[1]))
+}
+
+/// setrlimit — set resource limits (advisory, not enforced)
+pub fn sys_setrlimit(proc: &mut Process, resource: u32, soft: u64, hard: u64) -> Result<(), Errno> {
+    if resource as usize >= 16 {
+        return Err(Errno::EINVAL);
+    }
+    // Soft limit cannot exceed hard limit
+    if soft > hard {
+        return Err(Errno::EINVAL);
+    }
+    // Non-root: cannot raise hard limit above current
+    // (In our simulated environment, we allow it since uid check is simulated)
+    proc.rlimits[resource as usize] = [soft, hard];
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3632,5 +3703,119 @@ mod tests {
         let w_ofd = proc.ofd_table.get(w_entry.ofd_ref.0).unwrap();
         assert_ne!(r_ofd.status_flags & O_NONBLOCK, 0);
         assert_ne!(w_ofd.status_flags & O_NONBLOCK, 0);
+    }
+
+    #[test]
+    fn test_writev_multiple_buffers() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (r, w) = sys_pipe(&mut proc).unwrap();
+        let bufs: &[&[u8]] = &[b"hello", b" ", b"world"];
+        let n = sys_writev(&mut proc, &mut host, w, bufs).unwrap();
+        assert_eq!(n, 11);
+        // Read back
+        let mut rbuf = [0u8; 32];
+        let n2 = sys_read(&mut proc, &mut host, r, &mut rbuf).unwrap();
+        assert_eq!(n2, 11);
+        assert_eq!(&rbuf[..11], b"hello world");
+    }
+
+    #[test]
+    fn test_readv_multiple_buffers() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (r, w) = sys_pipe(&mut proc).unwrap();
+        // Write data to pipe
+        sys_write(&mut proc, &mut host, w, b"helloworld").unwrap();
+        // Read into multiple buffers
+        let mut buf1 = [0u8; 5];
+        let mut buf2 = [0u8; 5];
+        let mut buffers: [&mut [u8]; 2] = [&mut buf1, &mut buf2];
+        let n = sys_readv(&mut proc, &mut host, r, &mut buffers).unwrap();
+        assert_eq!(n, 10);
+        assert_eq!(&buf1, b"hello");
+        assert_eq!(&buf2, b"world");
+    }
+
+    #[test]
+    fn test_writev_empty_buffer() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (_r, w) = sys_pipe(&mut proc).unwrap();
+        let bufs: &[&[u8]] = &[b"", b"data", b""];
+        let n = sys_writev(&mut proc, &mut host, w, bufs).unwrap();
+        assert_eq!(n, 4);
+    }
+
+    #[test]
+    fn test_writev_bad_fd() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let bufs: &[&[u8]] = &[b"hello"];
+        let result = sys_writev(&mut proc, &mut host, 99, bufs);
+        assert_eq!(result, Err(Errno::EBADF));
+    }
+
+    #[test]
+    fn test_readv_bad_fd() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let mut buf1 = [0u8; 5];
+        let mut buffers: [&mut [u8]; 1] = [&mut buf1];
+        let result = sys_readv(&mut proc, &mut host, 99, &mut buffers);
+        assert_eq!(result, Err(Errno::EBADF));
+    }
+
+    #[test]
+    fn test_readv_empty_buffers() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (r, w) = sys_pipe(&mut proc).unwrap();
+        sys_write(&mut proc, &mut host, w, b"data").unwrap();
+        let mut buf1 = [0u8; 0];
+        let mut buf2 = [0u8; 4];
+        let mut buffers: [&mut [u8]; 2] = [&mut buf1, &mut buf2];
+        let n = sys_readv(&mut proc, &mut host, r, &mut buffers).unwrap();
+        assert_eq!(n, 4);
+        assert_eq!(&buf2, b"data");
+    }
+
+    #[test]
+    fn test_getrlimit_nofile_default() {
+        let proc = Process::new(1);
+        let (soft, hard) = sys_getrlimit(&proc, 7).unwrap(); // RLIMIT_NOFILE
+        assert_eq!(soft, 1024);
+        assert_eq!(hard, 4096);
+    }
+
+    #[test]
+    fn test_getrlimit_stack_default() {
+        let proc = Process::new(1);
+        let (soft, hard) = sys_getrlimit(&proc, 3).unwrap(); // RLIMIT_STACK
+        assert_eq!(soft, 8 * 1024 * 1024);
+        assert_eq!(hard, u64::MAX);
+    }
+
+    #[test]
+    fn test_setrlimit_and_getrlimit() {
+        let mut proc = Process::new(1);
+        sys_setrlimit(&mut proc, 7, 512, 2048).unwrap(); // RLIMIT_NOFILE
+        let (soft, hard) = sys_getrlimit(&proc, 7).unwrap();
+        assert_eq!(soft, 512);
+        assert_eq!(hard, 2048);
+    }
+
+    #[test]
+    fn test_setrlimit_soft_exceeds_hard() {
+        let mut proc = Process::new(1);
+        let result = sys_setrlimit(&mut proc, 7, 5000, 1000);
+        assert_eq!(result, Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn test_getrlimit_invalid_resource() {
+        let proc = Process::new(1);
+        let result = sys_getrlimit(&proc, 99);
+        assert_eq!(result, Err(Errno::EINVAL));
     }
 }

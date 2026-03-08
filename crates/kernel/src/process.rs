@@ -75,6 +75,7 @@ pub struct Process {
     pub terminal: TerminalState,
     pub environ: Vec<Vec<u8>>,
     pub umask: u32,
+    pub rlimits: [[u64; 2]; 16], // [soft, hard] pairs for each resource
 }
 
 impl Process {
@@ -94,6 +95,10 @@ impl Process {
 
         let mut fd_table = FdTable::new();
         fd_table.preopen_stdio(); // fds 0,1,2 → OFD refs 0,1,2
+
+        let mut rlimits = [[u64::MAX; 2]; 16]; // Default: infinity for all
+        rlimits[7] = [1024, 4096];             // RLIMIT_NOFILE: soft=1024, hard=4096
+        rlimits[3] = [8 * 1024 * 1024, u64::MAX]; // RLIMIT_STACK: soft=8MB, hard=infinity
 
         Process {
             pid,
@@ -116,6 +121,7 @@ impl Process {
             terminal: TerminalState::new(),
             environ: Vec::new(),
             umask: 0o022,
+            rlimits,
         }
     }
 }
