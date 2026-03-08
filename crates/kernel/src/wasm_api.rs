@@ -1656,3 +1656,181 @@ pub extern "C" fn kernel_setrlimit(resource: u32, rlim_ptr: *const u8) -> i32 {
         Err(e) => -(e as i32),
     }
 }
+
+// ---------------------------------------------------------------------------
+// Phase 12: Remaining *at() variants
+// ---------------------------------------------------------------------------
+
+/// faccessat — check file accessibility relative to directory fd.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_faccessat(dirfd: i32, path_ptr: *const u8, path_len: u32, amode: u32, flags: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    let mut host = WasmHostIO;
+    let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
+    match syscalls::sys_faccessat(proc, &mut host, dirfd, path, amode, flags) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// fchmodat — change file mode relative to directory fd.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_fchmodat(dirfd: i32, path_ptr: *const u8, path_len: u32, mode: u32, flags: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    let mut host = WasmHostIO;
+    let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
+    match syscalls::sys_fchmodat(proc, &mut host, dirfd, path, mode, flags) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// fchownat — change file owner/group relative to directory fd.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_fchownat(dirfd: i32, path_ptr: *const u8, path_len: u32, uid: u32, gid: u32, flags: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    let mut host = WasmHostIO;
+    let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
+    match syscalls::sys_fchownat(proc, &mut host, dirfd, path, uid, gid, flags) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// linkat — create hard link relative to directory fds.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_linkat(olddirfd: i32, old_ptr: *const u8, old_len: u32, newdirfd: i32, new_ptr: *const u8, new_len: u32, flags: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    let mut host = WasmHostIO;
+    let oldpath = unsafe { slice::from_raw_parts(old_ptr, old_len as usize) };
+    let newpath = unsafe { slice::from_raw_parts(new_ptr, new_len as usize) };
+    match syscalls::sys_linkat(proc, &mut host, olddirfd, oldpath, newdirfd, newpath, flags) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// symlinkat — create symbolic link relative to directory fd.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_symlinkat(target_ptr: *const u8, target_len: u32, newdirfd: i32, link_ptr: *const u8, link_len: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    let mut host = WasmHostIO;
+    let target = unsafe { slice::from_raw_parts(target_ptr, target_len as usize) };
+    let linkpath = unsafe { slice::from_raw_parts(link_ptr, link_len as usize) };
+    match syscalls::sys_symlinkat(proc, &mut host, target, newdirfd, linkpath) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// readlinkat — read symbolic link relative to directory fd.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_readlinkat(dirfd: i32, path_ptr: *const u8, path_len: u32, buf_ptr: *mut u8, buf_len: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    let mut host = WasmHostIO;
+    let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
+    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
+    match syscalls::sys_readlinkat(proc, &mut host, dirfd, path, buf) {
+        Ok(n) => n as i32,
+        Err(e) => -(e as i32),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 12: select()
+// ---------------------------------------------------------------------------
+
+/// select — synchronous I/O multiplexing.
+///
+/// Each fd_set is 128 bytes (1024 bits). Null pointer means that set is not used.
+/// Returns number of ready fds, or negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_select(
+    nfds: i32,
+    readfds_ptr: *mut u8,
+    writefds_ptr: *mut u8,
+    exceptfds_ptr: *mut u8,
+    timeout_ms: i32,
+) -> i32 {
+    let proc = unsafe { get_process() };
+
+    let readfds = if readfds_ptr.is_null() {
+        None
+    } else {
+        Some(unsafe { core::slice::from_raw_parts_mut(readfds_ptr, 128) })
+    };
+    let writefds = if writefds_ptr.is_null() {
+        None
+    } else {
+        Some(unsafe { core::slice::from_raw_parts_mut(writefds_ptr, 128) })
+    };
+    let exceptfds = if exceptfds_ptr.is_null() {
+        None
+    } else {
+        Some(unsafe { core::slice::from_raw_parts_mut(exceptfds_ptr, 128) })
+    };
+
+    match syscalls::sys_select(proc, nfds, readfds, writefds, exceptfds, timeout_ms) {
+        Ok(n) => n,
+        Err(e) => -(e as i32),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 12: setuid/setgid/seteuid/setegid
+// ---------------------------------------------------------------------------
+
+/// setuid — set real and effective user ID.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_setuid(uid: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    match syscalls::sys_setuid(proc, uid) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// setgid — set real and effective group ID.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_setgid(gid: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    match syscalls::sys_setgid(proc, gid) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// seteuid — set effective user ID.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_seteuid(euid: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    match syscalls::sys_seteuid(proc, euid) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// setegid — set effective group ID.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_setegid(egid: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    match syscalls::sys_setegid(proc, egid) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 12: getrusage
+// ---------------------------------------------------------------------------
+
+/// getrusage — get resource usage. Writes 144-byte rusage struct.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_getrusage(who: i32, buf_ptr: *mut u8, buf_len: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
+    match syscalls::sys_getrusage(proc, who, buf) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}

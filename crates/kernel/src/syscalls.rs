@@ -2115,6 +2115,262 @@ pub fn sys_setrlimit(proc: &mut Process, resource: u32, soft: u64, hard: u64) ->
     Ok(())
 }
 
+/// faccessat -- check file accessibility relative to directory fd.
+///
+/// Only AT_FDCWD and absolute paths are currently supported.
+pub fn sys_faccessat(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    dirfd: i32,
+    path: &[u8],
+    amode: u32,
+    _flags: u32,
+) -> Result<(), Errno> {
+    use wasm_posix_shared::flags::AT_FDCWD;
+
+    if (!path.is_empty() && path[0] == b'/') || dirfd == AT_FDCWD {
+        return sys_access(proc, host, path, amode);
+    }
+
+    Err(Errno::ENOSYS)
+}
+
+/// fchmodat -- change file mode relative to directory fd.
+///
+/// Only AT_FDCWD and absolute paths are currently supported.
+/// AT_SYMLINK_NOFOLLOW is accepted but not distinguishable from
+/// regular chmod in our host delegation model.
+pub fn sys_fchmodat(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    dirfd: i32,
+    path: &[u8],
+    mode: u32,
+    _flags: u32,
+) -> Result<(), Errno> {
+    use wasm_posix_shared::flags::AT_FDCWD;
+
+    if (!path.is_empty() && path[0] == b'/') || dirfd == AT_FDCWD {
+        return sys_chmod(proc, host, path, mode);
+    }
+
+    Err(Errno::ENOSYS)
+}
+
+/// fchownat -- change file owner/group relative to directory fd.
+///
+/// Only AT_FDCWD and absolute paths are currently supported.
+pub fn sys_fchownat(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    dirfd: i32,
+    path: &[u8],
+    uid: u32,
+    gid: u32,
+    _flags: u32,
+) -> Result<(), Errno> {
+    use wasm_posix_shared::flags::AT_FDCWD;
+
+    if (!path.is_empty() && path[0] == b'/') || dirfd == AT_FDCWD {
+        return sys_chown(proc, host, path, uid, gid);
+    }
+
+    Err(Errno::ENOSYS)
+}
+
+/// linkat -- create hard link relative to directory fds.
+///
+/// Both old and new paths must be absolute or use AT_FDCWD.
+pub fn sys_linkat(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    olddirfd: i32,
+    oldpath: &[u8],
+    newdirfd: i32,
+    newpath: &[u8],
+    _flags: u32,
+) -> Result<(), Errno> {
+    use wasm_posix_shared::flags::AT_FDCWD;
+
+    let old_resolved =
+        (!oldpath.is_empty() && oldpath[0] == b'/') || olddirfd == AT_FDCWD;
+    let new_resolved =
+        (!newpath.is_empty() && newpath[0] == b'/') || newdirfd == AT_FDCWD;
+
+    if old_resolved && new_resolved {
+        return sys_link(proc, host, oldpath, newpath);
+    }
+
+    Err(Errno::ENOSYS)
+}
+
+/// symlinkat -- create symbolic link relative to directory fd.
+///
+/// The target path is stored as-is (not resolved). Only newdirfd
+/// applies, and only AT_FDCWD and absolute paths are supported.
+pub fn sys_symlinkat(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    target: &[u8],
+    newdirfd: i32,
+    linkpath: &[u8],
+) -> Result<(), Errno> {
+    use wasm_posix_shared::flags::AT_FDCWD;
+
+    if (!linkpath.is_empty() && linkpath[0] == b'/') || newdirfd == AT_FDCWD {
+        return sys_symlink(proc, host, target, linkpath);
+    }
+
+    Err(Errno::ENOSYS)
+}
+
+/// readlinkat -- read symbolic link relative to directory fd.
+///
+/// Only AT_FDCWD and absolute paths are currently supported.
+pub fn sys_readlinkat(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    dirfd: i32,
+    path: &[u8],
+    buf: &mut [u8],
+) -> Result<usize, Errno> {
+    use wasm_posix_shared::flags::AT_FDCWD;
+
+    if (!path.is_empty() && path[0] == b'/') || dirfd == AT_FDCWD {
+        return sys_readlink(proc, host, path, buf);
+    }
+
+    Err(Errno::ENOSYS)
+}
+
+/// select -- synchronous I/O multiplexing.
+///
+/// Wraps poll() by converting fd_set bitmasks into pollfd entries.
+/// Each fd_set is FD_SETSIZE/8 = 128 bytes. Null sets are allowed.
+pub fn sys_select(
+    proc: &mut Process,
+    nfds: i32,
+    mut readfds: Option<&mut [u8]>,
+    mut writefds: Option<&mut [u8]>,
+    mut exceptfds: Option<&mut [u8]>,
+    _timeout_ms: i32,
+) -> Result<i32, Errno> {
+    use wasm_posix_shared::poll::{POLLIN, POLLOUT, POLLPRI, POLLERR, POLLHUP};
+
+    if nfds < 0 || nfds > 1024 {
+        return Err(Errno::EINVAL);
+    }
+
+    let nfds = nfds as usize;
+
+    // Build pollfd array from fd_sets
+    let mut pollfds: alloc::vec::Vec<WasmPollFd> = alloc::vec::Vec::new();
+    // Track which fds are in which sets
+    let mut fd_info: alloc::vec::Vec<(usize, bool, bool, bool)> = alloc::vec::Vec::new();
+
+    for fd in 0..nfds {
+        let byte = fd / 8;
+        let bit = fd % 8;
+
+        let in_read = readfds.as_ref().map_or(false, |s| (s[byte] >> bit) & 1 != 0);
+        let in_write = writefds.as_ref().map_or(false, |s| (s[byte] >> bit) & 1 != 0);
+        let in_except = exceptfds.as_ref().map_or(false, |s| (s[byte] >> bit) & 1 != 0);
+
+        if in_read || in_write || in_except {
+            let mut events: i16 = 0;
+            if in_read { events |= POLLIN; }
+            if in_write { events |= POLLOUT; }
+            if in_except { events |= POLLPRI; }
+
+            pollfds.push(WasmPollFd {
+                fd: fd as i32,
+                events,
+                revents: 0,
+            });
+            fd_info.push((fd, in_read, in_write, in_except));
+        }
+    }
+
+    // Run poll
+    sys_poll(proc, &mut pollfds, 0)?;
+
+    // Clear the output fd_sets
+    if let Some(ref mut s) = readfds { s[..nfds.div_ceil(8)].fill(0); }
+    if let Some(ref mut s) = writefds { s[..nfds.div_ceil(8)].fill(0); }
+    if let Some(ref mut s) = exceptfds { s[..nfds.div_ceil(8)].fill(0); }
+
+    // Convert poll results back to fd_sets
+    let mut ready = 0i32;
+    for (i, pollfd) in pollfds.iter().enumerate() {
+        let (fd, in_read, in_write, in_except) = fd_info[i];
+        let byte = fd / 8;
+        let bit = fd % 8;
+        let mut counted = false;
+
+        if in_read && (pollfd.revents & (POLLIN | POLLHUP | POLLERR)) != 0 {
+            if let Some(ref mut s) = readfds { s[byte] |= 1 << bit; }
+            counted = true;
+        }
+        if in_write && (pollfd.revents & (POLLOUT | POLLERR)) != 0 {
+            if let Some(ref mut s) = writefds { s[byte] |= 1 << bit; }
+            counted = true;
+        }
+        if in_except && (pollfd.revents & POLLPRI) != 0 {
+            if let Some(ref mut s) = exceptfds { s[byte] |= 1 << bit; }
+            counted = true;
+        }
+        if counted { ready += 1; }
+    }
+
+    Ok(ready)
+}
+
+/// setuid -- set real and effective user ID (simulated).
+pub fn sys_setuid(proc: &mut Process, uid: u32) -> Result<(), Errno> {
+    proc.uid = uid;
+    proc.euid = uid;
+    Ok(())
+}
+
+/// setgid -- set real and effective group ID (simulated).
+pub fn sys_setgid(proc: &mut Process, gid: u32) -> Result<(), Errno> {
+    proc.gid = gid;
+    proc.egid = gid;
+    Ok(())
+}
+
+/// seteuid -- set effective user ID (simulated).
+pub fn sys_seteuid(proc: &mut Process, euid: u32) -> Result<(), Errno> {
+    proc.euid = euid;
+    Ok(())
+}
+
+/// setegid -- set effective group ID (simulated).
+pub fn sys_setegid(proc: &mut Process, egid: u32) -> Result<(), Errno> {
+    proc.egid = egid;
+    Ok(())
+}
+
+/// getrusage -- get resource usage (simulated).
+///
+/// Returns mostly zeroed rusage struct. In our single-process Wasm
+/// environment, we don't track actual resource usage. The struct is
+/// 144 bytes: 2 x timeval (16 bytes each) + 14 x i64.
+pub fn sys_getrusage(_proc: &mut Process, who: i32, buf: &mut [u8]) -> Result<(), Errno> {
+    use wasm_posix_shared::rusage::{RUSAGE_SELF, RUSAGE_CHILDREN};
+
+    if who != RUSAGE_SELF && who != RUSAGE_CHILDREN {
+        return Err(Errno::EINVAL);
+    }
+    if buf.len() < 144 {
+        return Err(Errno::EINVAL);
+    }
+    // Zero the entire struct — all fields are 0
+    // In a more complete implementation, ru_utime could track elapsed time
+    buf[..144].fill(0);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4221,5 +4477,272 @@ mod tests {
         assert_eq!(result, Ok(1)); // Returns pid
         assert_eq!(proc.sid, 1);
         assert_eq!(proc.pgid, 1);
+    }
+
+    // ---- Phase 12: Remaining *at() variants ----
+
+    #[test]
+    fn test_faccessat_at_fdcwd() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        // Should delegate to sys_access
+        let result = sys_faccessat(&mut proc, &mut host, -100, b"/tmp/test", 0, 0);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_faccessat_real_dirfd_enosys() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let result = sys_faccessat(&mut proc, &mut host, 5, b"relative", 0, 0);
+        assert_eq!(result, Err(Errno::ENOSYS));
+    }
+
+    #[test]
+    fn test_faccessat_absolute_path() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let result = sys_faccessat(&mut proc, &mut host, 5, b"/absolute", 0, 0);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_fchmodat_at_fdcwd() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let result = sys_fchmodat(&mut proc, &mut host, -100, b"/tmp/test", 0o644, 0);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_fchmodat_real_dirfd_enosys() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let result = sys_fchmodat(&mut proc, &mut host, 5, b"relative", 0o644, 0);
+        assert_eq!(result, Err(Errno::ENOSYS));
+    }
+
+    #[test]
+    fn test_fchownat_at_fdcwd() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let result = sys_fchownat(&mut proc, &mut host, -100, b"/tmp/test", 1000, 1000, 0);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_fchownat_real_dirfd_enosys() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let result = sys_fchownat(&mut proc, &mut host, 5, b"relative", 1000, 1000, 0);
+        assert_eq!(result, Err(Errno::ENOSYS));
+    }
+
+    #[test]
+    fn test_linkat_both_fdcwd() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let result = sys_linkat(&mut proc, &mut host, -100, b"/old", -100, b"/new", 0);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_linkat_real_dirfd_enosys() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let result = sys_linkat(&mut proc, &mut host, 5, b"old", -100, b"/new", 0);
+        assert_eq!(result, Err(Errno::ENOSYS));
+    }
+
+    #[test]
+    fn test_symlinkat_at_fdcwd() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let result = sys_symlinkat(&mut proc, &mut host, b"target", -100, b"/link");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_symlinkat_real_dirfd_enosys() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let result = sys_symlinkat(&mut proc, &mut host, b"target", 5, b"link");
+        assert_eq!(result, Err(Errno::ENOSYS));
+    }
+
+    #[test]
+    fn test_readlinkat_at_fdcwd() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let mut buf = [0u8; 256];
+        let result = sys_readlinkat(&mut proc, &mut host, -100, b"/some/link", &mut buf);
+        // MockHostIO host_readlink returns placeholder data
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_readlinkat_real_dirfd_enosys() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let mut buf = [0u8; 256];
+        let result = sys_readlinkat(&mut proc, &mut host, 5, b"relative/link", &mut buf);
+        assert_eq!(result, Err(Errno::ENOSYS));
+    }
+
+    // ---- Phase 12: select() ----
+
+    #[test]
+    fn test_select_regular_file_readable() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        // Open a regular file
+        let fd = sys_open(&mut proc, &mut host, b"/tmp/test", 0, 0o644).unwrap();
+        assert_eq!(fd, 3);
+
+        // Set fd 3 in readfds
+        let mut readfds = [0u8; 128];
+        readfds[0] = 0b1000; // bit 3
+        let result = sys_select(&mut proc, 4, Some(&mut readfds), None, None, 0);
+        assert_eq!(result, Ok(1));
+        assert_eq!(readfds[0] & 0b1000, 0b1000); // fd 3 still set
+    }
+
+    #[test]
+    fn test_select_empty_sets() {
+        let mut proc = Process::new(1);
+        let result = sys_select(&mut proc, 0, None, None, None, 0);
+        assert_eq!(result, Ok(0));
+    }
+
+    #[test]
+    fn test_select_invalid_nfds() {
+        let mut proc = Process::new(1);
+        let result = sys_select(&mut proc, -1, None, None, None, 0);
+        assert_eq!(result, Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn test_select_pipe_readable() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        let (rfd, wfd) = sys_pipe(&mut proc).unwrap();
+        // Write data to pipe
+        sys_write(&mut proc, &mut host, wfd, b"hello").unwrap();
+
+        let mut readfds = [0u8; 128];
+        let byte = rfd as usize / 8;
+        let bit = rfd as usize % 8;
+        readfds[byte] = 1 << bit;
+
+        let result = sys_select(&mut proc, rfd + 1, Some(&mut readfds), None, None, 0);
+        assert_eq!(result, Ok(1));
+        assert_ne!(readfds[byte] & (1 << bit), 0);
+    }
+
+    #[test]
+    fn test_select_pipe_writable() {
+        let mut proc = Process::new(1);
+
+        let (_rfd, wfd) = sys_pipe(&mut proc).unwrap();
+
+        let mut writefds = [0u8; 128];
+        let byte = wfd as usize / 8;
+        let bit = wfd as usize % 8;
+        writefds[byte] = 1 << bit;
+
+        let result = sys_select(&mut proc, wfd + 1, None, Some(&mut writefds), None, 0);
+        assert_eq!(result, Ok(1));
+        assert_ne!(writefds[byte] & (1 << bit), 0);
+    }
+
+    #[test]
+    fn test_select_multiple_fds() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        let fd1 = sys_open(&mut proc, &mut host, b"/file1", 0, 0o644).unwrap();
+        let fd2 = sys_open(&mut proc, &mut host, b"/file2", 0, 0o644).unwrap();
+
+        let mut readfds = [0u8; 128];
+        readfds[fd1 as usize / 8] |= 1 << (fd1 as usize % 8);
+        readfds[fd2 as usize / 8] |= 1 << (fd2 as usize % 8);
+
+        let max_fd = core::cmp::max(fd1, fd2) + 1;
+        let result = sys_select(&mut proc, max_fd, Some(&mut readfds), None, None, 0);
+        assert_eq!(result, Ok(2));
+    }
+
+    // ---- Phase 12: setuid/setgid/seteuid/setegid ----
+
+    #[test]
+    fn test_setuid() {
+        let mut proc = Process::new(1);
+        assert_eq!(proc.uid, 1000);
+        sys_setuid(&mut proc, 0).unwrap();
+        assert_eq!(proc.uid, 0);
+        assert_eq!(proc.euid, 0);
+    }
+
+    #[test]
+    fn test_setgid() {
+        let mut proc = Process::new(1);
+        assert_eq!(proc.gid, 1000);
+        sys_setgid(&mut proc, 0).unwrap();
+        assert_eq!(proc.gid, 0);
+        assert_eq!(proc.egid, 0);
+    }
+
+    #[test]
+    fn test_seteuid() {
+        let mut proc = Process::new(1);
+        sys_seteuid(&mut proc, 500).unwrap();
+        assert_eq!(proc.uid, 1000); // Real uid unchanged
+        assert_eq!(proc.euid, 500);
+    }
+
+    #[test]
+    fn test_setegid() {
+        let mut proc = Process::new(1);
+        sys_setegid(&mut proc, 500).unwrap();
+        assert_eq!(proc.gid, 1000); // Real gid unchanged
+        assert_eq!(proc.egid, 500);
+    }
+
+    // ---- Phase 12: getrusage ----
+
+    #[test]
+    fn test_getrusage_self() {
+        let mut proc = Process::new(1);
+        let mut buf = [0xFFu8; 144];
+        let result = sys_getrusage(&mut proc, 0, &mut buf);
+        assert!(result.is_ok());
+        // All fields should be zeroed
+        assert!(buf.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn test_getrusage_children() {
+        let mut proc = Process::new(1);
+        let mut buf = [0xFFu8; 144];
+        let result = sys_getrusage(&mut proc, -1, &mut buf);
+        assert!(result.is_ok());
+        assert!(buf.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn test_getrusage_invalid_who() {
+        let mut proc = Process::new(1);
+        let mut buf = [0u8; 144];
+        let result = sys_getrusage(&mut proc, 5, &mut buf);
+        assert_eq!(result, Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn test_getrusage_buffer_too_small() {
+        let mut proc = Process::new(1);
+        let mut buf = [0u8; 10];
+        let result = sys_getrusage(&mut proc, 0, &mut buf);
+        assert_eq!(result, Err(Errno::EINVAL));
     }
 }

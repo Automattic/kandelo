@@ -100,6 +100,18 @@ pub enum Syscall {
     Unlinkat = 94,
     Mkdirat = 95,
     Renameat = 96,
+    Faccessat = 97,
+    Fchmodat = 98,
+    Fchownat = 99,
+    Linkat = 100,
+    Symlinkat = 101,
+    Readlinkat = 102,
+    Select = 103,
+    Setuid = 104,
+    Setgid = 105,
+    Seteuid = 106,
+    Setegid = 107,
+    Getrusage = 108,
 }
 
 impl Syscall {
@@ -202,6 +214,18 @@ impl Syscall {
             94 => Some(Syscall::Unlinkat),
             95 => Some(Syscall::Mkdirat),
             96 => Some(Syscall::Renameat),
+            97 => Some(Syscall::Faccessat),
+            98 => Some(Syscall::Fchmodat),
+            99 => Some(Syscall::Fchownat),
+            100 => Some(Syscall::Linkat),
+            101 => Some(Syscall::Symlinkat),
+            102 => Some(Syscall::Readlinkat),
+            103 => Some(Syscall::Select),
+            104 => Some(Syscall::Setuid),
+            105 => Some(Syscall::Setgid),
+            106 => Some(Syscall::Seteuid),
+            107 => Some(Syscall::Setegid),
+            108 => Some(Syscall::Getrusage),
             _ => None,
         }
     }
@@ -625,6 +649,19 @@ pub mod rlimit {
     pub const RLIMIT_NPROC: u32 = 6;
     pub const RLIM_NLIMITS: usize = 16;
     pub const RLIM_INFINITY: u64 = u64::MAX;
+}
+
+/// getrusage who constants.
+pub mod rusage {
+    pub const RUSAGE_SELF: i32 = 0;
+    pub const RUSAGE_CHILDREN: i32 = -1;
+}
+
+/// select() constants.
+pub mod select {
+    pub const FD_SETSIZE: usize = 1024;
+    /// Size of fd_set in bytes (FD_SETSIZE / 8).
+    pub const FD_SET_BYTES: usize = FD_SETSIZE / 8;
 }
 
 /// Clock ID constants for clock_gettime/clock_settime.
