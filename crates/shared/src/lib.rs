@@ -31,6 +31,13 @@ pub enum Syscall {
     Opendir = 25,
     Readdir = 26,
     Closedir = 27,
+    Getpid = 28,
+    Getppid = 29,
+    Getuid = 30,
+    Geteuid = 31,
+    Getgid = 32,
+    Getegid = 33,
+    Exit = 34,
 }
 
 impl Syscall {
@@ -64,6 +71,13 @@ impl Syscall {
             25 => Some(Syscall::Opendir),
             26 => Some(Syscall::Readdir),
             27 => Some(Syscall::Closedir),
+            28 => Some(Syscall::Getpid),
+            29 => Some(Syscall::Getppid),
+            30 => Some(Syscall::Getuid),
+            31 => Some(Syscall::Geteuid),
+            32 => Some(Syscall::Getgid),
+            33 => Some(Syscall::Getegid),
+            34 => Some(Syscall::Exit),
             _ => None,
         }
     }
@@ -98,6 +112,7 @@ impl ChannelStatus {
 pub enum Errno {
     EPERM = 1,
     ENOENT = 2,
+    ESRCH = 3,
     EINTR = 4,
     EIO = 5,
     ENXIO = 6,
@@ -134,6 +149,7 @@ impl Errno {
         match val {
             1 => Some(Errno::EPERM),
             2 => Some(Errno::ENOENT),
+            3 => Some(Errno::ESRCH),
             4 => Some(Errno::EINTR),
             5 => Some(Errno::EIO),
             6 => Some(Errno::ENXIO),
