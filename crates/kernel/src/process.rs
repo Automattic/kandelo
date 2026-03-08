@@ -7,6 +7,11 @@ use crate::fd::FdTable;
 use crate::ofd::OfdTable;
 use crate::pipe::PipeBuffer;
 
+/// A handle to an open directory stream for readdir iteration.
+pub struct DirStream {
+    pub host_handle: i64,
+}
+
 /// Trait for host I/O operations that the kernel delegates to the runtime.
 pub trait HostIO {
     fn host_open(&mut self, path: &[u8], flags: u32, mode: u32) -> Result<i64, Errno>;
@@ -15,14 +20,31 @@ pub trait HostIO {
     fn host_write(&mut self, handle: i64, buf: &[u8]) -> Result<usize, Errno>;
     fn host_seek(&mut self, handle: i64, offset: i64, whence: u32) -> Result<i64, Errno>;
     fn host_fstat(&mut self, handle: i64) -> Result<WasmStat, Errno>;
+    fn host_stat(&mut self, path: &[u8]) -> Result<WasmStat, Errno>;
+    fn host_lstat(&mut self, path: &[u8]) -> Result<WasmStat, Errno>;
+    fn host_mkdir(&mut self, path: &[u8], mode: u32) -> Result<(), Errno>;
+    fn host_rmdir(&mut self, path: &[u8]) -> Result<(), Errno>;
+    fn host_unlink(&mut self, path: &[u8]) -> Result<(), Errno>;
+    fn host_rename(&mut self, oldpath: &[u8], newpath: &[u8]) -> Result<(), Errno>;
+    fn host_link(&mut self, oldpath: &[u8], newpath: &[u8]) -> Result<(), Errno>;
+    fn host_symlink(&mut self, target: &[u8], linkpath: &[u8]) -> Result<(), Errno>;
+    fn host_readlink(&mut self, path: &[u8], buf: &mut [u8]) -> Result<usize, Errno>;
+    fn host_chmod(&mut self, path: &[u8], mode: u32) -> Result<(), Errno>;
+    fn host_chown(&mut self, path: &[u8], uid: u32, gid: u32) -> Result<(), Errno>;
+    fn host_access(&mut self, path: &[u8], amode: u32) -> Result<(), Errno>;
+    fn host_opendir(&mut self, path: &[u8]) -> Result<i64, Errno>;
+    fn host_readdir(&mut self, handle: i64, name_buf: &mut [u8]) -> Result<Option<(u64, u32, usize)>, Errno>;
+    fn host_closedir(&mut self, handle: i64) -> Result<(), Errno>;
 }
 
-/// Per-process kernel state: file descriptor table, OFD table, and pipes.
+/// Per-process kernel state: file descriptor table, OFD table, pipes, cwd, and directory streams.
 pub struct Process {
     pub pid: u32,
     pub fd_table: FdTable,
     pub ofd_table: OfdTable,
     pub pipes: Vec<Option<PipeBuffer>>,
+    pub cwd: Vec<u8>,
+    pub dir_streams: Vec<Option<DirStream>>,
 }
 
 impl Process {
@@ -48,6 +70,8 @@ impl Process {
             fd_table,
             ofd_table,
             pipes: Vec::new(),
+            cwd: alloc::vec![b'/'],
+            dir_streams: Vec::new(),
         }
     }
 }
