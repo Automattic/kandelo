@@ -10,7 +10,7 @@ extern crate alloc;
 
 use core::slice;
 
-use wasm_posix_shared::{Errno, WasmDirent, WasmStat};
+use wasm_posix_shared::{Errno, WasmDirent, WasmStat, WasmTimespec};
 
 use crate::process::{HostIO, Process};
 use crate::syscalls;
@@ -42,6 +42,8 @@ unsafe extern "C" {
     fn host_opendir(path_ptr: *const u8, path_len: u32) -> i64;
     fn host_readdir(dir_handle: i64, dirent_ptr: *mut u8, name_ptr: *mut u8, name_len: u32) -> i32;
     fn host_closedir(dir_handle: i64) -> i32;
+    fn host_clock_gettime(clock_id: u32, sec_ptr: *mut i64, nsec_ptr: *mut i64) -> i32;
+    fn host_nanosleep(sec: i64, nsec: i64) -> i32;
 }
 
 // ---------------------------------------------------------------------------
@@ -272,6 +274,21 @@ impl HostIO for WasmHostIO {
 
     fn host_closedir(&mut self, handle: i64) -> Result<(), Errno> {
         let result = unsafe { host_closedir(handle) };
+        i32_to_result(result)
+    }
+
+    fn host_clock_gettime(&mut self, clock_id: u32) -> Result<(i64, i64), Errno> {
+        let mut sec: i64 = 0;
+        let mut nsec: i64 = 0;
+        let result = unsafe {
+            host_clock_gettime(clock_id, &mut sec as *mut i64, &mut nsec as *mut i64)
+        };
+        i32_to_result(result)?;
+        Ok((sec, nsec))
+    }
+
+    fn host_nanosleep(&mut self, seconds: i64, nanoseconds: i64) -> Result<(), Errno> {
+        let result = unsafe { host_nanosleep(seconds, nanoseconds) };
         i32_to_result(result)
     }
 }
@@ -806,6 +823,104 @@ pub extern "C" fn kernel_sigprocmask(how: u32, set_lo: u32, set_hi: u32) -> i64 
     match syscalls::sys_sigprocmask(proc, how, set) {
         Ok(old) => old as i64,
         Err(e) => -(e as i64),
+    }
+}
+
+/// Get the current time from a clock source.
+/// Writes a WasmTimespec struct to ts_ptr.
+/// Returns 0 on success, or negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_clock_gettime(clock_id: u32, ts_ptr: *mut u8) -> i32 {
+    let proc = unsafe { get_process() };
+    let mut host = WasmHostIO;
+    match syscalls::sys_clock_gettime(proc, &mut host, clock_id) {
+        Ok(ts) => {
+            let ts_bytes = unsafe {
+                slice::from_raw_parts(
+                    &ts as *const WasmTimespec as *const u8,
+                    core::mem::size_of::<WasmTimespec>(),
+                )
+            };
+            unsafe {
+                core::ptr::copy_nonoverlapping(ts_bytes.as_ptr(), ts_ptr, ts_bytes.len());
+            }
+            0
+        }
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Sleep for a specified duration.
+/// Reads a WasmTimespec struct from req_ptr.
+/// Returns 0 on success, or negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_nanosleep(req_ptr: *const u8) -> i32 {
+    let proc = unsafe { get_process() };
+    let mut host = WasmHostIO;
+    let req = unsafe { &*(req_ptr as *const WasmTimespec) };
+    match syscalls::sys_nanosleep(proc, &mut host, req) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Check if a file descriptor refers to a terminal.
+/// Returns 1 if terminal, or negative errno on error (ENOTTY if not a terminal).
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_isatty(fd: i32) -> i32 {
+    let proc = unsafe { get_process() };
+    match syscalls::sys_isatty(proc, fd) {
+        Ok(v) => v,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Get an environment variable by name.
+/// Returns the length of the value on success, or negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_getenv(
+    name_ptr: *const u8,
+    name_len: u32,
+    buf_ptr: *mut u8,
+    buf_len: u32,
+) -> i32 {
+    let proc = unsafe { get_process() };
+    let name = unsafe { slice::from_raw_parts(name_ptr, name_len as usize) };
+    let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
+    match syscalls::sys_getenv(proc, name, buf) {
+        Ok(n) => n as i32,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Set an environment variable.
+/// Returns 0 on success, or negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_setenv(
+    name_ptr: *const u8,
+    name_len: u32,
+    val_ptr: *const u8,
+    val_len: u32,
+    overwrite: u32,
+) -> i32 {
+    let proc = unsafe { get_process() };
+    let name = unsafe { slice::from_raw_parts(name_ptr, name_len as usize) };
+    let value = unsafe { slice::from_raw_parts(val_ptr, val_len as usize) };
+    match syscalls::sys_setenv(proc, name, value, overwrite != 0) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Remove an environment variable.
+/// Returns 0 on success, or negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_unsetenv(name_ptr: *const u8, name_len: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    let name = unsafe { slice::from_raw_parts(name_ptr, name_len as usize) };
+    match syscalls::sys_unsetenv(proc, name) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
     }
 }
 
