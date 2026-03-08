@@ -37,9 +37,23 @@ pub trait HostIO {
     fn host_closedir(&mut self, handle: i64) -> Result<(), Errno>;
 }
 
+/// Process lifecycle state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessState {
+    Running,
+    Exited,
+}
+
 /// Per-process kernel state: file descriptor table, OFD table, pipes, cwd, and directory streams.
 pub struct Process {
     pub pid: u32,
+    pub ppid: u32,
+    pub uid: u32,
+    pub gid: u32,
+    pub euid: u32,
+    pub egid: u32,
+    pub state: ProcessState,
+    pub exit_status: i32,
     pub fd_table: FdTable,
     pub ofd_table: OfdTable,
     pub pipes: Vec<Option<PipeBuffer>>,
@@ -67,6 +81,13 @@ impl Process {
 
         Process {
             pid,
+            ppid: 0,
+            uid: 1000,
+            gid: 1000,
+            euid: 1000,
+            egid: 1000,
+            state: ProcessState::Running,
+            exit_status: 0,
             fd_table,
             ofd_table,
             pipes: Vec::new(),
