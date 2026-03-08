@@ -1466,3 +1466,33 @@ pub extern "C" fn kernel_readv(fd: i32, iov_ptr: *mut u8, iovcnt: i32) -> i32 {
     }
     total as i32
 }
+
+/// Get resource limits. Writes soft and hard limits as two u64 LE values (16 bytes) to rlim_ptr.
+/// Returns 0 on success, or negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_getrlimit(resource: u32, rlim_ptr: *mut u8) -> i32 {
+    let proc = unsafe { get_process() };
+    match syscalls::sys_getrlimit(proc, resource) {
+        Ok((soft, hard)) => {
+            let buf = unsafe { core::slice::from_raw_parts_mut(rlim_ptr, 16) };
+            buf[0..8].copy_from_slice(&soft.to_le_bytes());
+            buf[8..16].copy_from_slice(&hard.to_le_bytes());
+            0
+        }
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Set resource limits. Reads soft and hard limits as two u64 LE values (16 bytes) from rlim_ptr.
+/// Returns 0 on success, or negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_setrlimit(resource: u32, rlim_ptr: *const u8) -> i32 {
+    let proc = unsafe { get_process() };
+    let buf = unsafe { core::slice::from_raw_parts(rlim_ptr, 16) };
+    let soft = u64::from_le_bytes([buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]]);
+    let hard = u64::from_le_bytes([buf[8], buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15]]);
+    match syscalls::sys_setrlimit(proc, resource, soft, hard) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
