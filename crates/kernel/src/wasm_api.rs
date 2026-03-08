@@ -1240,3 +1240,40 @@ pub extern "C" fn kernel_openat(dirfd: i32, path_ptr: *const u8, path_len: u32, 
         Err(e) => -(e as i32),
     }
 }
+
+// ---------------------------------------------------------------------------
+// Terminal / ioctl exports
+// ---------------------------------------------------------------------------
+
+/// Get terminal attributes. Returns 0 on success, or negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_tcgetattr(fd: i32, buf_ptr: *mut u8, buf_len: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
+    match syscalls::sys_tcgetattr(proc, fd, buf) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Set terminal attributes. Returns 0 on success, or negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_tcsetattr(fd: i32, action: u32, buf_ptr: *const u8, buf_len: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    let buf = unsafe { core::slice::from_raw_parts(buf_ptr, buf_len as usize) };
+    match syscalls::sys_tcsetattr(proc, fd, action, buf) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Perform an ioctl operation. Returns 0 on success, or negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_ioctl(fd: i32, request: u32, buf_ptr: *mut u8, buf_len: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
+    match syscalls::sys_ioctl(proc, fd, request, buf) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
