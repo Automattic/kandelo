@@ -10,7 +10,7 @@ extern crate alloc;
 
 use core::slice;
 
-use wasm_posix_shared::{Errno, WasmStat};
+use wasm_posix_shared::{Errno, WasmDirent, WasmStat};
 
 use crate::process::{HostIO, Process};
 use crate::syscalls;
@@ -27,6 +27,21 @@ unsafe extern "C" {
     fn host_write(handle: i64, buf_ptr: *const u8, buf_len: u32) -> i32;
     fn host_seek(handle: i64, offset_lo: u32, offset_hi: i32, whence: u32) -> i64;
     fn host_fstat(handle: i64, stat_ptr: *mut u8) -> i32;
+    fn host_stat(path_ptr: *const u8, path_len: u32, stat_ptr: *mut u8) -> i32;
+    fn host_lstat(path_ptr: *const u8, path_len: u32, stat_ptr: *mut u8) -> i32;
+    fn host_mkdir(path_ptr: *const u8, path_len: u32, mode: u32) -> i32;
+    fn host_rmdir(path_ptr: *const u8, path_len: u32) -> i32;
+    fn host_unlink(path_ptr: *const u8, path_len: u32) -> i32;
+    fn host_rename(old_ptr: *const u8, old_len: u32, new_ptr: *const u8, new_len: u32) -> i32;
+    fn host_link(old_ptr: *const u8, old_len: u32, new_ptr: *const u8, new_len: u32) -> i32;
+    fn host_symlink(target_ptr: *const u8, target_len: u32, link_ptr: *const u8, link_len: u32) -> i32;
+    fn host_readlink(path_ptr: *const u8, path_len: u32, buf_ptr: *mut u8, buf_len: u32) -> i32;
+    fn host_chmod(path_ptr: *const u8, path_len: u32, mode: u32) -> i32;
+    fn host_chown(path_ptr: *const u8, path_len: u32, uid: u32, gid: u32) -> i32;
+    fn host_access(path_ptr: *const u8, path_len: u32, amode: u32) -> i32;
+    fn host_opendir(path_ptr: *const u8, path_len: u32) -> i64;
+    fn host_readdir(dir_handle: i64, dirent_ptr: *mut u8, name_ptr: *mut u8, name_len: u32) -> i32;
+    fn host_closedir(dir_handle: i64) -> i32;
 }
 
 // ---------------------------------------------------------------------------
@@ -125,6 +140,139 @@ impl HostIO for WasmHostIO {
         let result = unsafe { host_fstat(handle, stat_ptr) };
         i32_to_result(result)?;
         Ok(stat)
+    }
+
+    fn host_stat(&mut self, path: &[u8]) -> Result<WasmStat, Errno> {
+        let mut stat = WasmStat {
+            st_dev: 0, st_ino: 0, st_mode: 0, st_nlink: 0, st_uid: 0, st_gid: 0,
+            st_size: 0, st_atime_sec: 0, st_atime_nsec: 0, st_mtime_sec: 0,
+            st_mtime_nsec: 0, st_ctime_sec: 0, st_ctime_nsec: 0, _pad: 0,
+        };
+        let stat_ptr = &mut stat as *mut WasmStat as *mut u8;
+        let result = unsafe { host_stat(path.as_ptr(), path.len() as u32, stat_ptr) };
+        i32_to_result(result)?;
+        Ok(stat)
+    }
+
+    fn host_lstat(&mut self, path: &[u8]) -> Result<WasmStat, Errno> {
+        let mut stat = WasmStat {
+            st_dev: 0, st_ino: 0, st_mode: 0, st_nlink: 0, st_uid: 0, st_gid: 0,
+            st_size: 0, st_atime_sec: 0, st_atime_nsec: 0, st_mtime_sec: 0,
+            st_mtime_nsec: 0, st_ctime_sec: 0, st_ctime_nsec: 0, _pad: 0,
+        };
+        let stat_ptr = &mut stat as *mut WasmStat as *mut u8;
+        let result = unsafe { host_lstat(path.as_ptr(), path.len() as u32, stat_ptr) };
+        i32_to_result(result)?;
+        Ok(stat)
+    }
+
+    fn host_mkdir(&mut self, path: &[u8], mode: u32) -> Result<(), Errno> {
+        let result = unsafe { host_mkdir(path.as_ptr(), path.len() as u32, mode) };
+        i32_to_result(result)
+    }
+
+    fn host_rmdir(&mut self, path: &[u8]) -> Result<(), Errno> {
+        let result = unsafe { host_rmdir(path.as_ptr(), path.len() as u32) };
+        i32_to_result(result)
+    }
+
+    fn host_unlink(&mut self, path: &[u8]) -> Result<(), Errno> {
+        let result = unsafe { host_unlink(path.as_ptr(), path.len() as u32) };
+        i32_to_result(result)
+    }
+
+    fn host_rename(&mut self, oldpath: &[u8], newpath: &[u8]) -> Result<(), Errno> {
+        let result = unsafe {
+            host_rename(
+                oldpath.as_ptr(), oldpath.len() as u32,
+                newpath.as_ptr(), newpath.len() as u32,
+            )
+        };
+        i32_to_result(result)
+    }
+
+    fn host_link(&mut self, oldpath: &[u8], newpath: &[u8]) -> Result<(), Errno> {
+        let result = unsafe {
+            host_link(
+                oldpath.as_ptr(), oldpath.len() as u32,
+                newpath.as_ptr(), newpath.len() as u32,
+            )
+        };
+        i32_to_result(result)
+    }
+
+    fn host_symlink(&mut self, target: &[u8], linkpath: &[u8]) -> Result<(), Errno> {
+        let result = unsafe {
+            host_symlink(
+                target.as_ptr(), target.len() as u32,
+                linkpath.as_ptr(), linkpath.len() as u32,
+            )
+        };
+        i32_to_result(result)
+    }
+
+    fn host_readlink(&mut self, path: &[u8], buf: &mut [u8]) -> Result<usize, Errno> {
+        let result = unsafe {
+            host_readlink(path.as_ptr(), path.len() as u32, buf.as_mut_ptr(), buf.len() as u32)
+        };
+        if result < 0 {
+            match Errno::from_u32((-result) as u32) {
+                Some(e) => Err(e),
+                None => Err(Errno::EIO),
+            }
+        } else {
+            Ok(result as usize)
+        }
+    }
+
+    fn host_chmod(&mut self, path: &[u8], mode: u32) -> Result<(), Errno> {
+        let result = unsafe { host_chmod(path.as_ptr(), path.len() as u32, mode) };
+        i32_to_result(result)
+    }
+
+    fn host_chown(&mut self, path: &[u8], uid: u32, gid: u32) -> Result<(), Errno> {
+        let result = unsafe { host_chown(path.as_ptr(), path.len() as u32, uid, gid) };
+        i32_to_result(result)
+    }
+
+    fn host_access(&mut self, path: &[u8], amode: u32) -> Result<(), Errno> {
+        let result = unsafe { host_access(path.as_ptr(), path.len() as u32, amode) };
+        i32_to_result(result)
+    }
+
+    fn host_opendir(&mut self, path: &[u8]) -> Result<i64, Errno> {
+        let result = unsafe { host_opendir(path.as_ptr(), path.len() as u32) };
+        if result < 0 {
+            match Errno::from_u32((-result) as u32) {
+                Some(e) => Err(e),
+                None => Err(Errno::EIO),
+            }
+        } else {
+            Ok(result)
+        }
+    }
+
+    fn host_readdir(&mut self, handle: i64, name_buf: &mut [u8]) -> Result<Option<(u64, u32, usize)>, Errno> {
+        let mut dirent = WasmDirent { d_ino: 0, d_type: 0, d_namlen: 0 };
+        let dirent_ptr = &mut dirent as *mut WasmDirent as *mut u8;
+        let result = unsafe {
+            host_readdir(handle, dirent_ptr, name_buf.as_mut_ptr(), name_buf.len() as u32)
+        };
+        if result < 0 {
+            match Errno::from_u32((-result) as u32) {
+                Some(e) => Err(e),
+                None => Err(Errno::EIO),
+            }
+        } else if result == 0 {
+            Ok(None)
+        } else {
+            Ok(Some((dirent.d_ino, dirent.d_type, dirent.d_namlen as usize)))
+        }
+    }
+
+    fn host_closedir(&mut self, handle: i64) -> Result<(), Errno> {
+        let result = unsafe { host_closedir(handle) };
+        i32_to_result(result)
     }
 }
 
@@ -303,6 +451,264 @@ pub extern "C" fn kernel_fcntl(fd: i32, cmd: u32, arg: u32) -> i32 {
     let proc = unsafe { get_process() };
     match syscalls::sys_fcntl(proc, fd, cmd, arg) {
         Ok(val) => val,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Stat a file by path. Writes a `WasmStat` struct to the pointer.
+/// Returns 0 on success, or negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_stat(path_ptr: *const u8, path_len: u32, stat_ptr: *mut u8) -> i32 {
+    let proc = unsafe { get_process() };
+    let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
+    let mut host = WasmHostIO;
+    match syscalls::sys_stat(proc, &mut host, path) {
+        Ok(stat) => {
+            let stat_bytes = unsafe {
+                slice::from_raw_parts(
+                    &stat as *const WasmStat as *const u8,
+                    core::mem::size_of::<WasmStat>(),
+                )
+            };
+            unsafe {
+                core::ptr::copy_nonoverlapping(stat_bytes.as_ptr(), stat_ptr, stat_bytes.len());
+            }
+            0
+        }
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Lstat a file by path (does not follow symlinks). Writes a `WasmStat` struct.
+/// Returns 0 on success, or negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_lstat(path_ptr: *const u8, path_len: u32, stat_ptr: *mut u8) -> i32 {
+    let proc = unsafe { get_process() };
+    let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
+    let mut host = WasmHostIO;
+    match syscalls::sys_lstat(proc, &mut host, path) {
+        Ok(stat) => {
+            let stat_bytes = unsafe {
+                slice::from_raw_parts(
+                    &stat as *const WasmStat as *const u8,
+                    core::mem::size_of::<WasmStat>(),
+                )
+            };
+            unsafe {
+                core::ptr::copy_nonoverlapping(stat_bytes.as_ptr(), stat_ptr, stat_bytes.len());
+            }
+            0
+        }
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Create a directory. Returns 0 on success, or negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_mkdir(path_ptr: *const u8, path_len: u32, mode: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
+    let mut host = WasmHostIO;
+    match syscalls::sys_mkdir(proc, &mut host, path, mode) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Remove a directory. Returns 0 on success, or negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rmdir(path_ptr: *const u8, path_len: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
+    let mut host = WasmHostIO;
+    match syscalls::sys_rmdir(proc, &mut host, path) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Unlink (delete) a file. Returns 0 on success, or negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_unlink(path_ptr: *const u8, path_len: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
+    let mut host = WasmHostIO;
+    match syscalls::sys_unlink(proc, &mut host, path) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Rename a file. Returns 0 on success, or negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rename(
+    old_ptr: *const u8,
+    old_len: u32,
+    new_ptr: *const u8,
+    new_len: u32,
+) -> i32 {
+    let proc = unsafe { get_process() };
+    let oldpath = unsafe { slice::from_raw_parts(old_ptr, old_len as usize) };
+    let newpath = unsafe { slice::from_raw_parts(new_ptr, new_len as usize) };
+    let mut host = WasmHostIO;
+    match syscalls::sys_rename(proc, &mut host, oldpath, newpath) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Create a hard link. Returns 0 on success, or negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_link(
+    old_ptr: *const u8,
+    old_len: u32,
+    new_ptr: *const u8,
+    new_len: u32,
+) -> i32 {
+    let proc = unsafe { get_process() };
+    let oldpath = unsafe { slice::from_raw_parts(old_ptr, old_len as usize) };
+    let newpath = unsafe { slice::from_raw_parts(new_ptr, new_len as usize) };
+    let mut host = WasmHostIO;
+    match syscalls::sys_link(proc, &mut host, oldpath, newpath) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Create a symbolic link. Returns 0 on success, or negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_symlink(
+    target_ptr: *const u8,
+    target_len: u32,
+    link_ptr: *const u8,
+    link_len: u32,
+) -> i32 {
+    let proc = unsafe { get_process() };
+    let target = unsafe { slice::from_raw_parts(target_ptr, target_len as usize) };
+    let linkpath = unsafe { slice::from_raw_parts(link_ptr, link_len as usize) };
+    let mut host = WasmHostIO;
+    match syscalls::sys_symlink(proc, &mut host, target, linkpath) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Read a symbolic link. Returns bytes read (>= 0) or negative errno.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_readlink(
+    path_ptr: *const u8,
+    path_len: u32,
+    buf_ptr: *mut u8,
+    buf_len: u32,
+) -> i32 {
+    let proc = unsafe { get_process() };
+    let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
+    let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
+    let mut host = WasmHostIO;
+    match syscalls::sys_readlink(proc, &mut host, path, buf) {
+        Ok(n) => n as i32,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Change file permissions. Returns 0 on success, or negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_chmod(path_ptr: *const u8, path_len: u32, mode: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
+    let mut host = WasmHostIO;
+    match syscalls::sys_chmod(proc, &mut host, path, mode) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Change file ownership. Returns 0 on success, or negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_chown(path_ptr: *const u8, path_len: u32, uid: u32, gid: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
+    let mut host = WasmHostIO;
+    match syscalls::sys_chown(proc, &mut host, path, uid, gid) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Check file accessibility. Returns 0 on success, or negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_access(path_ptr: *const u8, path_len: u32, amode: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
+    let mut host = WasmHostIO;
+    match syscalls::sys_access(proc, &mut host, path, amode) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Change working directory. Returns 0 on success, or negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_chdir(path_ptr: *const u8, path_len: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
+    let mut host = WasmHostIO;
+    match syscalls::sys_chdir(proc, &mut host, path) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Get current working directory. Returns length written (>= 0) or negative errno.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_getcwd(buf_ptr: *mut u8, buf_len: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
+    match syscalls::sys_getcwd(proc, buf) {
+        Ok(n) => n as i32,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Open a directory for reading. Returns dir handle (>= 0) or negative errno.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_opendir(path_ptr: *const u8, path_len: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
+    let mut host = WasmHostIO;
+    match syscalls::sys_opendir(proc, &mut host, path) {
+        Ok(dh) => dh,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Read next directory entry. Returns 1 if entry read, 0 if end, or negative errno.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_readdir(
+    dir_handle: i32,
+    dirent_ptr: *mut u8,
+    name_ptr: *mut u8,
+    name_len: u32,
+) -> i32 {
+    let proc = unsafe { get_process() };
+    let dirent_buf = unsafe {
+        slice::from_raw_parts_mut(dirent_ptr, core::mem::size_of::<WasmDirent>())
+    };
+    let name_buf = unsafe { slice::from_raw_parts_mut(name_ptr, name_len as usize) };
+    let mut host = WasmHostIO;
+    match syscalls::sys_readdir(proc, &mut host, dir_handle, dirent_buf, name_buf) {
+        Ok(n) => n,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Close a directory stream. Returns 0 on success, or negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_closedir(dir_handle: i32) -> i32 {
+    let proc = unsafe { get_process() };
+    let mut host = WasmHostIO;
+    match syscalls::sys_closedir(proc, &mut host, dir_handle) {
+        Ok(()) => 0,
         Err(e) => -(e as i32),
     }
 }
