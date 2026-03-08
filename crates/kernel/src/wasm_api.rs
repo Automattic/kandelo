@@ -755,6 +755,48 @@ pub extern "C" fn kernel_getegid() -> u32 {
     syscalls::sys_getegid(proc)
 }
 
+/// Send a signal to a process. Returns 0 on success, or negative errno.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_kill(pid: i32, sig: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    match syscalls::sys_kill(proc, pid, sig) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Send a signal to the current process. Returns 0 on success, or negative errno.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_raise(sig: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    match syscalls::sys_raise(proc, sig) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Set signal handler. Returns old handler value (>= 0) or negative errno.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_sigaction(sig: u32, handler: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    match syscalls::sys_sigaction(proc, sig, handler) {
+        Ok(old) => old as i32,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Manipulate the signal mask. The 64-bit set is passed as two 32-bit halves.
+/// Returns old mask as i64 (>= 0) or negative errno.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_sigprocmask(how: u32, set_lo: u32, set_hi: u32) -> i64 {
+    let proc = unsafe { get_process() };
+    let set = ((set_hi as u64) << 32) | (set_lo as u64);
+    match syscalls::sys_sigprocmask(proc, how, set) {
+        Ok(old) => old as i64,
+        Err(e) => -(e as i64),
+    }
+}
+
 /// Exit the process. Closes all fds and dir streams, sets state to Exited.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_exit(status: i32) {
