@@ -4,11 +4,13 @@ use wasm_posix_shared::Errno;
 use wasm_posix_shared::flags::*;
 use wasm_posix_shared::fd_flags::FD_CLOEXEC;
 use wasm_posix_shared::fcntl_cmd::*;
+use wasm_posix_shared::lock_type::*;
 use wasm_posix_shared::seek::*;
 use wasm_posix_shared::mode::S_IFIFO;
-use wasm_posix_shared::WasmStat;
+use wasm_posix_shared::{WasmFlock, WasmStat};
 
 use crate::fd::OpenFileDescRef;
+use crate::lock::FileLock;
 use crate::ofd::FileType;
 use crate::pipe::{PipeBuffer, DEFAULT_PIPE_CAPACITY};
 use crate::process::{HostIO, Process};
@@ -402,6 +404,104 @@ pub fn sys_fcntl(
             let ofd_idx = entry.ofd_ref.0;
             proc.ofd_table.set_status_flags(ofd_idx, arg);
             Ok(0)
+        }
+        F_GETLK | F_SETLK | F_SETLKW => {
+            // Lock operations need the flock struct - use sys_fcntl_lock instead
+            Err(Errno::EINVAL)
+        }
+        _ => Err(Errno::EINVAL),
+    }
+}
+
+/// fcntl lock operations (F_GETLK, F_SETLK, F_SETLKW).
+pub fn sys_fcntl_lock(
+    proc: &mut Process,
+    fd: i32,
+    cmd: u32,
+    flock: &mut WasmFlock,
+) -> Result<(), Errno> {
+    let entry = proc.fd_table.get(fd)?;
+    let ofd_idx = entry.ofd_ref.0;
+    let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+    let host_handle = ofd.host_handle;
+
+    // Resolve start offset based on whence
+    let start = match flock.l_whence {
+        0 => flock.l_start,           // SEEK_SET
+        1 => ofd.offset + flock.l_start, // SEEK_CUR
+        2 => return Err(Errno::ENOSYS), // SEEK_END needs file size
+        _ => return Err(Errno::EINVAL),
+    };
+
+    match cmd {
+        F_GETLK => {
+            // Check if the requested lock would conflict
+            match proc
+                .lock_table
+                .get_blocking_lock(host_handle, flock.l_type, start, flock.l_len, proc.pid)
+            {
+                Some(blocking) => {
+                    // Return info about the blocking lock
+                    flock.l_type = blocking.lock_type;
+                    flock.l_start = blocking.start;
+                    flock.l_len = blocking.len;
+                    flock.l_pid = blocking.pid;
+                    flock.l_whence = 0; // SEEK_SET (absolute)
+                }
+                None => {
+                    // No conflict - set l_type to F_UNLCK
+                    flock.l_type = F_UNLCK;
+                }
+            }
+            Ok(())
+        }
+        F_SETLK | F_SETLKW => {
+            // Check for access mode compatibility
+            let access_mode = ofd.status_flags & O_ACCMODE;
+            if flock.l_type == F_RDLCK && access_mode == O_WRONLY {
+                return Err(Errno::EBADF);
+            }
+            if flock.l_type == F_WRLCK && access_mode == O_RDONLY {
+                return Err(Errno::EBADF);
+            }
+
+            if flock.l_type == F_UNLCK {
+                // Unlock
+                let lock = FileLock {
+                    pid: proc.pid,
+                    lock_type: F_UNLCK,
+                    start,
+                    len: flock.l_len,
+                };
+                proc.lock_table.set_lock(host_handle, lock);
+                return Ok(());
+            }
+
+            // Check for conflicts
+            if proc
+                .lock_table
+                .get_blocking_lock(host_handle, flock.l_type, start, flock.l_len, proc.pid)
+                .is_some()
+            {
+                if cmd == F_SETLK {
+                    // Non-blocking: return error
+                    return Err(Errno::EAGAIN);
+                }
+                // F_SETLKW would block -- but in single-process this can't happen
+                // (same-pid locks never conflict). If we get here with multi-process,
+                // we'd need to block. For now, return ENOSYS.
+                return Err(Errno::ENOSYS);
+            }
+
+            // Set the lock
+            let lock = FileLock {
+                pid: proc.pid,
+                lock_type: flock.l_type,
+                start,
+                len: flock.l_len,
+            };
+            proc.lock_table.set_lock(host_handle, lock);
+            Ok(())
         }
         _ => Err(Errno::EINVAL),
     }
@@ -1352,5 +1452,81 @@ mod tests {
         let mut proc = Process::new(42);
         sys_raise(&mut proc, 15).unwrap(); // SIGTERM
         assert!(proc.signals.is_pending(15));
+    }
+
+    #[test]
+    fn test_fcntl_setlk_and_getlk() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/tmp/test", O_RDWR | O_CREAT, 0o644).unwrap();
+
+        // Set a write lock on bytes 0-99
+        let mut flock = WasmFlock {
+            l_type: F_WRLCK,
+            l_whence: 0,
+            l_start: 0,
+            l_len: 100,
+            l_pid: 0,
+            _pad: 0,
+        };
+        sys_fcntl_lock(&mut proc, fd, F_SETLK, &mut flock).unwrap();
+
+        // F_GETLK should report no conflict (same pid)
+        let mut query = WasmFlock {
+            l_type: F_WRLCK,
+            l_whence: 0,
+            l_start: 0,
+            l_len: 100,
+            l_pid: 0,
+            _pad: 0,
+        };
+        sys_fcntl_lock(&mut proc, fd, F_GETLK, &mut query).unwrap();
+        assert_eq!(query.l_type, F_UNLCK); // No conflict with self
+    }
+
+    #[test]
+    fn test_fcntl_unlock() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/tmp/test", O_RDWR | O_CREAT, 0o644).unwrap();
+
+        // Set then unlock
+        let mut flock = WasmFlock {
+            l_type: F_WRLCK,
+            l_whence: 0,
+            l_start: 0,
+            l_len: 100,
+            l_pid: 0,
+            _pad: 0,
+        };
+        sys_fcntl_lock(&mut proc, fd, F_SETLK, &mut flock).unwrap();
+
+        let mut unlock = WasmFlock {
+            l_type: F_UNLCK,
+            l_whence: 0,
+            l_start: 0,
+            l_len: 100,
+            l_pid: 0,
+            _pad: 0,
+        };
+        sys_fcntl_lock(&mut proc, fd, F_SETLK, &mut unlock).unwrap();
+    }
+
+    #[test]
+    fn test_fcntl_rdlck_requires_read_access() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/tmp/test", O_WRONLY | O_CREAT, 0o644).unwrap();
+
+        let mut flock = WasmFlock {
+            l_type: F_RDLCK,
+            l_whence: 0,
+            l_start: 0,
+            l_len: 100,
+            l_pid: 0,
+            _pad: 0,
+        };
+        let result = sys_fcntl_lock(&mut proc, fd, F_SETLK, &mut flock);
+        assert_eq!(result, Err(Errno::EBADF));
     }
 }
