@@ -115,17 +115,17 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 
 | Function | Status | Notes |
 |----------|--------|-------|
-| `time()` | Planned | Host-delegated. |
-| `gettimeofday()` | Planned | Host-delegated. |
-| `clock_gettime()` | Planned | Host-delegated. |
-| `nanosleep()` | Planned | Atomics.wait with timeout, or setTimeout fallback. |
-| `usleep()` | Planned | |
+| `time()` | Planned | Wrapper around clock_gettime(CLOCK_REALTIME). |
+| `gettimeofday()` | Planned | Wrapper around clock_gettime(CLOCK_REALTIME). |
+| `clock_gettime()` | Full | Host-delegated. CLOCK_REALTIME and CLOCK_MONOTONIC supported. Node.js uses Date.now() and process.hrtime.bigint(). |
+| `nanosleep()` | Partial | Host-delegated. Node.js uses Atomics.wait with timeout. Browser may need Asyncify fallback. Validates tv_sec >= 0 and tv_nsec < 1e9. |
+| `usleep()` | Planned | Wrapper around nanosleep. |
 
 ## Terminal / TTY
 
 | Function | Status | Notes |
 |----------|--------|-------|
-| `isatty()` | Planned | Check if fd references a char device. |
+| `isatty()` | Full | Returns 1 for CharDevice fds (stdin/stdout/stderr), ENOTTY for others. |
 | `tcgetattr()` / `tcsetattr()` | Planned | Virtual terminal state in kernel. |
 | `ioctl()` (TIOC*) | Planned | Terminal ioctls only. |
 
@@ -133,9 +133,9 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 
 | Function | Status | Notes |
 |----------|--------|-------|
-| `getenv()` | Planned | Userspace with kernel-provided initial environment. |
-| `setenv()` / `unsetenv()` | Planned | Userspace. |
-| `environ` | Planned | |
+| `getenv()` | Full | Kernel-managed environment block. Returns value or ENOENT. ERANGE if buffer too small. |
+| `setenv()` / `unsetenv()` | Full | Kernel-managed. setenv supports overwrite flag. Rejects empty name or name containing '='. |
+| `environ` | Partial | Stored as Vec of KEY=VALUE entries in Process. No C-style char** environ pointer yet. |
 
 ---
 
@@ -176,6 +176,6 @@ These features require SharedArrayBuffer (and cross-origin isolation headers in 
 3b. **Phase 3b (Deferred):** Multi-process — fork, exec, waitpid (requires multi-worker architecture)
 4. **Phase 4 (Complete):** Signals — kill, raise, sigaction, sigprocmask. Signal delivery mechanism deferred (needs Asyncify).
 5. **Phase 5 (Complete):** fcntl locking — F_GETLK, F_SETLK, F_SETLKW with byte-range granularity
-6. **Phase 6:** Sockets — socket, bind, listen, accept, connect
-7. **Phase 7:** Time, TTY, environment
+6. **Phase 6 (Next):** Sockets — socket, bind, listen, accept, connect
+7. **Phase 7 (Complete):** Time, TTY, environment — clock_gettime, nanosleep, isatty, getenv/setenv/unsetenv
 8. **Phase 8:** Memory management — mmap (anonymous), brk
