@@ -92,6 +92,7 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 | `sigaction()` | Partial | Sets handler disposition (SIG_DFL, SIG_IGN, or function pointer). SIGKILL/SIGSTOP immutable. **Gap:** No sa_flags support (SA_RESTART, SA_SIGINFO, SA_NOCLDWAIT, SA_NOCLDSTOP all missing). Actual handler invocation deferred (requires Asyncify or syscall-entry checking). |
 | `sigprocmask()` | Full | Block/unblock/setmask operations on 64-bit signal mask. SIGKILL and SIGSTOP cannot be blocked per POSIX. |
 | `sigsuspend()` | Full | Atomically replaces signal mask and blocks until deliverable signal arrives. Uses SharedArrayBuffer + Atomics.wait/notify for cross-thread wake. Always returns EINTR. |
+| `pause()` | Full | Suspends until a signal is delivered. Delegates to sigsuspend with current mask. Always returns EINTR. |
 | `raise()` | Full | Equivalent to kill(getpid(), sig). |
 | `alarm()` | Full | Sets SIGALRM timer via host setTimeout. Returns previous remaining seconds. alarm(0) cancels. Not inherited by fork, canceled by exec. |
 
@@ -173,7 +174,7 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 | `sysconf()` | Partial | Returns _SC_PAGE_SIZE=65536 (Wasm page), _SC_OPEN_MAX=1024, _SC_NPROCESSORS_ONLN=1, _SC_CLK_TCK=100. Unknown names return EINVAL. |
 | `umask()` | Full | Set file creation mask, returns previous mask. Default 0o022. Applied in open() and mkdir(). Masked to 0o777. |
 | `getrlimit()` | Full | Returns (soft, hard) resource limits. Defaults: NOFILE=(1024,4096), STACK=(8MB,infinity), others infinity. |
-| `setrlimit()` | Partial | Sets resource limits. Validates soft <= hard. RLIMIT_NOFILE enforced via FdTable max_fds sync. RLIMIT_FSIZE enforced in write() (EFBIG + SIGXFSZ). |
+| `setrlimit()` | Partial | Sets resource limits. Validates soft <= hard. RLIMIT_NOFILE enforced via FdTable max_fds sync. RLIMIT_FSIZE enforced in write()/ftruncate() (EFBIG + SIGXFSZ). |
 | `getrusage()` | Partial | Returns zeroed rusage struct (144 bytes). RUSAGE_SELF and RUSAGE_CHILDREN supported. No actual resource tracking in Wasm. |
 
 ---
@@ -205,14 +206,14 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 
 | Gap | Subsystem | Description |
 |-----|-----------|-------------|
-| **RLIMIT_FSIZE partial enforcement** | rlimits | write() checks FSIZE limit (EFBIG + SIGXFSZ). ftruncate() does not check. |
+| **RLIMIT_FSIZE partial enforcement** | rlimits | write() and ftruncate() check FSIZE limit (EFBIG + SIGXFSZ). truncate() delegates to ftruncate so also enforced. |
 | **setpgid() self-only** | process | Only supports setting own pgid. Setting another process's pgid returns ESRCH. |
 | **realpath() no symlink resolution** | filesystem | Normalizes `.`/`..` and verifies existence but does not resolve intermediate symlinks. |
 | **No getpeername/getsockname** | socket | Socket address query functions not implemented. |
 | **No pathconf/fpathconf** | sysinfo | System configuration queries for pathnames not implemented. |
 | **recv() flags mostly ignored** | socket | MSG_WAITALL, MSG_DONTWAIT not supported. MSG_PEEK works. |
 | **Socket options silently no-op** | socket | SO_REUSEADDR, SO_KEEPALIVE accepted but have no effect. |
-| **No POLLERR reporting** | I/O multiplex | poll() reports POLLHUP for closed pipe but not POLLERR for error conditions. |
+| **POLLERR partial** | I/O multiplex | poll() reports POLLERR for sockets with both read and write shut down. No POLLERR for other error conditions. |
 | **pread/pwrite not multi-process safe** | I/O | Uses save/seek/read/restore pattern — safe in single process but races with shared OFDs across processes. |
 | **brk not inherited on fork** | memory | Child process gets fresh MemoryManager instead of inheriting parent's program break. |
 | **VMIN/VTIME not interpreted** | terminal | Values stored in c_cc array but read() does not alter behavior based on them. |
@@ -220,7 +221,6 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 | **No job control** | terminal | tcgetpgrp()/tcsetpgrp() not implemented. No foreground/background process group distinction. SIGTTIN/SIGTTOU not generated. |
 | **readdir() "." and ".." entries** | directory | Presence of `.` and `..` entries depends entirely on host implementation. |
 | **No ENFILE** | fd | Only per-process EMFILE limit exists. No system-wide fd limit tracking. |
-| **No pause()** | signals | Not implemented, but sigsuspend() covers the same use case. |
 
 ### Wasm-Inherent — Gaps that cannot be fully resolved in Wasm
 

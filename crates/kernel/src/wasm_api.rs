@@ -2033,3 +2033,15 @@ pub extern "C" fn kernel_sigsuspend(mask_lo: u32, mask_hi: u32) -> i32 {
         Err(e) => -(e as i32),
     }
 }
+
+/// pause -- suspend until a signal is delivered.
+/// Always returns negative EINTR.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_pause() -> i32 {
+    let proc = unsafe { get_process() };
+    let mut host = WasmHostIO;
+    match syscalls::sys_pause(proc, &mut host) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}

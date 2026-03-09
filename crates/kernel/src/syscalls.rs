@@ -1092,6 +1092,15 @@ pub fn sys_sigsuspend(proc: &mut Process, host: &mut dyn HostIO, mask: u64) -> R
     Err(Errno::EINTR)
 }
 
+/// pause -- suspend until a signal is delivered.
+///
+/// Equivalent to sigsuspend with the current signal mask (blocks until any
+/// unblocked signal arrives). Always returns EINTR.
+pub fn sys_pause(proc: &mut Process, host: &mut dyn HostIO) -> Result<(), Errno> {
+    let current_mask = proc.signals.blocked;
+    sys_sigsuspend(proc, host, current_mask)
+}
+
 /// Set signal handler. Returns the previous handler disposition as a u32.
 /// handler_val: 0=SIG_DFL, 1=SIG_IGN, anything else=function pointer (future use)
 pub fn sys_sigaction(proc: &mut Process, sig: u32, handler_val: u32) -> Result<u32, Errno> {
@@ -1807,6 +1816,10 @@ fn poll_check(proc: &mut Process, fds: &mut [WasmPollFd]) -> i32 {
             FileType::Socket => {
                 let sock_idx = (-(ofd.host_handle + 1)) as usize;
                 if let Some(sock) = proc.sockets.get(sock_idx) {
+                    // POLLERR: report error if socket has pending error or shut down for writing
+                    if sock.shut_wr && sock.shut_rd {
+                        revents |= POLLERR;
+                    }
                     // Check recv buffer for readability
                     if let Some(recv_idx) = sock.recv_buf_idx {
                         if let Some(Some(pipe)) = proc.pipes.get(recv_idx) {
@@ -2153,6 +2166,13 @@ pub fn sys_ftruncate(
     let access = ofd.status_flags & O_ACCMODE;
     if access == O_RDONLY {
         return Err(Errno::EINVAL);
+    }
+
+    // RLIMIT_FSIZE: check if truncate target exceeds file size limit
+    let fsize_limit = proc.rlimits[1][0]; // RLIMIT_FSIZE soft limit
+    if fsize_limit != u64::MAX && (length as u64) > fsize_limit {
+        proc.signals.raise(wasm_posix_shared::signal::SIGXFSZ);
+        return Err(Errno::EFBIG);
     }
 
     host.host_ftruncate(ofd.host_handle, length)
@@ -4787,6 +4807,41 @@ mod tests {
 
         // SIGXFSZ should have been raised
         assert_ne!(proc.signals.deliverable(), 0);
+    }
+
+    #[test]
+    fn test_ftruncate_rlimit_fsize() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/tmp/ftrunc_test", O_WRONLY | O_CREAT, 0o644).unwrap();
+
+        // Set RLIMIT_FSIZE to 100 bytes
+        sys_setrlimit(&mut proc, 1, 100, 100).unwrap();
+
+        // Truncate to 50 should succeed
+        assert!(sys_ftruncate(&mut proc, &mut host, fd, 50).is_ok());
+
+        // Truncate to 200 should fail with EFBIG
+        let result = sys_ftruncate(&mut proc, &mut host, fd, 200);
+        assert_eq!(result, Err(Errno::EFBIG));
+    }
+
+    #[test]
+    fn test_poll_socket_pollerr() {
+        use wasm_posix_shared::socket::*;
+        use wasm_posix_shared::poll::*;
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (fd0, _fd1) = sys_socketpair(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+
+        // Shutdown both directions to trigger POLLERR
+        sys_shutdown(&mut proc, fd0, SHUT_RDWR).unwrap();
+
+        let mut fds = [WasmPollFd { fd: fd0, events: POLLIN | POLLOUT, revents: 0 }];
+        let result = sys_poll(&mut proc, &mut host, &mut fds, 0).unwrap();
+        assert!(result > 0);
+        assert_ne!(fds[0].revents & POLLERR, 0);
     }
 
     #[test]
