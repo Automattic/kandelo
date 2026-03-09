@@ -14,6 +14,7 @@
  */
 
 import type { KernelConfig, PlatformIO, StatResult } from "./types";
+import { SharedPipeBuffer } from "./shared-pipe-buffer";
 
 /** Size of the WasmStat struct in bytes (repr(C) layout). */
 const WASM_STAT_SIZE = 88;
@@ -26,10 +27,19 @@ export class WasmPosixKernel {
   private io: PlatformIO;
   private instance: WebAssembly.Instance | null = null;
   private memory: WebAssembly.Memory | null = null;
+  private sharedPipes = new Map<number, SharedPipeBuffer>();
 
   constructor(config: KernelConfig, io: PlatformIO) {
     this.config = config;
     this.io = io;
+  }
+
+  registerSharedPipe(handle: number, sab: SharedArrayBuffer): void {
+    this.sharedPipes.set(handle, SharedPipeBuffer.fromSharedBuffer(sab));
+  }
+
+  unregisterSharedPipe(handle: number): void {
+    this.sharedPipes.delete(handle);
   }
 
   /**
@@ -294,6 +304,13 @@ export class WasmPosixKernel {
   private hostClose(handle: bigint): number {
     const h = Number(handle);
 
+    // Check shared pipe registry
+    const pipe = this.sharedPipes.get(h);
+    if (pipe) {
+      this.sharedPipes.delete(h);
+      return 0;
+    }
+
     try {
       let result = -1;
       this.io
@@ -318,6 +335,18 @@ export class WasmPosixKernel {
    */
   private hostRead(handle: bigint, bufPtr: number, bufLen: number): number {
     const h = Number(handle);
+
+    // Check shared pipe registry
+    const pipe = this.sharedPipes.get(h);
+    if (pipe) {
+      const mem = this.getMemoryBuffer();
+      const dst = new Uint8Array(bufLen);
+      const n = pipe.read(dst);
+      if (n > 0) {
+        mem.set(dst.subarray(0, n), bufPtr);
+      }
+      return n;
+    }
 
     // stdin — not yet supported
     if (h === 0) {
@@ -354,6 +383,12 @@ export class WasmPosixKernel {
     const h = Number(handle);
     const mem = this.getMemoryBuffer();
     const data = mem.slice(bufPtr, bufPtr + bufLen);
+
+    // Check shared pipe registry
+    const pipe = this.sharedPipes.get(h);
+    if (pipe) {
+      return pipe.write(data);
+    }
 
     // stdout / stderr — write to console
     if (h === 1) {

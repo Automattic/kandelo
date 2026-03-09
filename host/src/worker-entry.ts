@@ -6,6 +6,8 @@ import type {
   WorkerInitMessage,
   WorkerToHostMessage,
   HostToWorkerMessage,
+  RegisterPipeMessage,
+  ConvertPipeMessage,
 } from "./worker-protocol";
 
 interface MessagePort {
@@ -84,6 +86,25 @@ export async function workerMain(
             { type: "fork_state", pid: initData.pid, data: forkData.buffer } satisfies WorkerToHostMessage,
             [forkData.buffer],
           );
+          break;
+        }
+        case "register_pipe": {
+          const msg = m as RegisterPipeMessage;
+          kernel.registerSharedPipe(msg.handle, msg.buffer);
+          break;
+        }
+        case "convert_pipe": {
+          const msg = m as ConvertPipeMessage;
+          const convertFn = instance.exports.kernel_convert_pipe_to_host as
+            (ofdIdx: number, newHandle: bigint) => number;
+          const result = convertFn(msg.ofdIndex, BigInt(msg.newHandle));
+          if (result < 0) {
+            port.postMessage({
+              type: "error",
+              pid: initData.pid,
+              message: `kernel_convert_pipe_to_host failed: ${result}`,
+            } satisfies WorkerToHostMessage);
+          }
           break;
         }
       }

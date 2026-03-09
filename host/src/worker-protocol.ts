@@ -5,10 +5,24 @@ import type { KernelConfig } from "./types";
 export type HostToWorkerMessage =
   | WorkerInitMessage
   | WorkerTerminateMessage
-  | GetForkStateMessage;
+  | GetForkStateMessage
+  | RegisterPipeMessage
+  | ConvertPipeMessage;
 
 export interface GetForkStateMessage {
   type: "get_fork_state";
+}
+
+export interface RegisterPipeMessage {
+  type: "register_pipe";
+  handle: number;
+  buffer: SharedArrayBuffer;
+}
+
+export interface ConvertPipeMessage {
+  type: "convert_pipe";
+  ofdIndex: number;
+  newHandle: number;
 }
 
 export interface WorkerInitMessage {
