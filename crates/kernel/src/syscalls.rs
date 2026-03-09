@@ -271,6 +271,13 @@ pub fn sys_write(
             Ok(n)
         }
         _ => {
+            // O_APPEND: seek to end before writing (POSIX atomicity for single-process)
+            if status_flags & O_APPEND != 0 {
+                let end = host.host_seek(host_handle, 0, 2)?; // SEEK_END
+                if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
+                    ofd.offset = end;
+                }
+            }
             let n = host.host_write(host_handle, buf)?;
             if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
                 ofd.offset += n as i64;
