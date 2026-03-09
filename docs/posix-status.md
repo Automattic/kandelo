@@ -212,7 +212,6 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 | **RLIMIT_FSIZE partial enforcement** | rlimits | write() and ftruncate() check FSIZE limit (EFBIG + SIGXFSZ). truncate() delegates to ftruncate so also enforced. |
 | **setpgid() self-only** | process | Only supports setting own pgid. Setting another process's pgid returns ESRCH. |
 | **realpath() no symlink resolution** | filesystem | Normalizes `.`/`..` and verifies existence but does not resolve intermediate symlinks. |
-| **recv() MSG_WAITALL not supported** | socket | MSG_DONTWAIT and MSG_PEEK supported. MSG_WAITALL not implemented. |
 | **Socket options silently no-op** | socket | SO_REUSEADDR, SO_KEEPALIVE accepted but have no effect. |
 | **POLLERR partial** | I/O multiplex | poll() reports POLLERR for sockets with both read and write shut down. No POLLERR for other error conditions. |
 | **pread/pwrite not multi-process safe** | I/O | Uses save/seek/read/restore pattern — safe in single process but races with shared OFDs across processes. |

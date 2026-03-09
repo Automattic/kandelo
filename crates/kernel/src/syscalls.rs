@@ -1622,6 +1622,7 @@ pub fn sys_recv(
 ) -> Result<usize, Errno> {
     use crate::socket::SocketState;
     use wasm_posix_shared::socket::{MSG_DONTWAIT, MSG_PEEK};
+    const MSG_WAITALL: u32 = 0x100;
 
     let entry = proc.fd_table.get(fd)?;
     let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
@@ -1640,6 +1641,8 @@ pub fn sys_recv(
     let recv_buf_idx = sock.recv_buf_idx.ok_or(Errno::ENOTCONN)?;
     let peek = flags & MSG_PEEK != 0;
     let nonblock = (status_flags & O_NONBLOCK != 0) || (flags & MSG_DONTWAIT != 0);
+    let waitall = flags & MSG_WAITALL != 0 && !peek;
+    let mut total = 0usize;
 
     loop {
         let pipe = proc
@@ -1647,12 +1650,13 @@ pub fn sys_recv(
             .get_mut(recv_buf_idx)
             .and_then(|p| p.as_mut())
             .ok_or(Errno::EBADF)?;
-        let n = if peek { pipe.peek(buf) } else { pipe.read(buf) };
-        if n > 0 {
-            return Ok(n);
+        let n = if peek { pipe.peek(&mut buf[total..]) } else { pipe.read(&mut buf[total..]) };
+        total += n;
+        if total >= buf.len() || (total > 0 && !waitall) {
+            return Ok(total);
         }
-        if !pipe.is_write_end_open() {
-            return Ok(0); // peer closed
+        if n == 0 && !pipe.is_write_end_open() {
+            return Ok(total); // peer closed — return what we have
         }
         if nonblock {
             return Err(Errno::EAGAIN);
@@ -3997,6 +4001,42 @@ mod tests {
         // Now data is consumed — use MSG_DONTWAIT to avoid blocking
         let result = sys_recv(&mut proc, &mut host, fd1, &mut buf, MSG_DONTWAIT);
         assert_eq!(result, Err(Errno::EAGAIN));
+    }
+
+    #[test]
+    fn test_recv_msg_waitall() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+        let (fd0, fd1) = sys_socketpair(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+
+        // Write 10 bytes in two chunks
+        sys_send(&mut proc, &mut host, fd0, b"hello", 0).unwrap();
+        sys_send(&mut proc, &mut host, fd0, b"world", 0).unwrap();
+
+        // Recv with MSG_WAITALL should get all 10 bytes at once
+        let mut buf = [0u8; 10];
+        let n = sys_recv(&mut proc, &mut host, fd1, &mut buf, 0x100).unwrap(); // MSG_WAITALL=0x100
+        assert_eq!(n, 10);
+        assert_eq!(&buf, b"helloworld");
+    }
+
+    #[test]
+    fn test_recv_msg_waitall_peer_closed() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+        let (fd0, fd1) = sys_socketpair(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+
+        // Write only 5 bytes, then close
+        sys_send(&mut proc, &mut host, fd0, b"short", 0).unwrap();
+        sys_close(&mut proc, &mut host, fd0).unwrap();
+
+        // MSG_WAITALL should return short read when peer closes
+        let mut buf = [0u8; 20];
+        let n = sys_recv(&mut proc, &mut host, fd1, &mut buf, 0x100).unwrap();
+        assert_eq!(n, 5);
+        assert_eq!(&buf[..5], b"short");
     }
 
     #[test]
