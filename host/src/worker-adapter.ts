@@ -62,11 +62,13 @@ export class MockWorkerHandle implements WorkerHandle {
 export class MockWorkerAdapter implements WorkerAdapter {
   lastWorker: MockWorkerHandle | null = null;
   lastWorkerData: unknown = null;
+  allWorkers: MockWorkerHandle[] = [];
 
   createWorker(workerData: unknown): WorkerHandle {
     const handle = new MockWorkerHandle();
     this.lastWorker = handle;
     this.lastWorkerData = workerData;
+    this.allWorkers.push(handle);
     return handle;
   }
 }

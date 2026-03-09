@@ -125,3 +125,66 @@ describe("ProcessManager", () => {
     expect(pm.getProcess(1)!.ppid).toBe(5);
   });
 });
+
+describe("ProcessManager.fork()", () => {
+  it("should fork a running process and create a child", async () => {
+    const { pm, adapter } = createTestPM();
+
+    // Spawn parent
+    const spawnPromise = pm.spawn();
+    adapter.lastWorker!.simulateMessage({ type: "ready", pid: 1 });
+    await spawnPromise;
+    const parentWorker = adapter.lastWorker!;
+
+    // Fork parent
+    const forkPromise = pm.fork(1);
+
+    // Parent should receive get_fork_state request
+    expect(parentWorker.sentMessages).toContainEqual({ type: "get_fork_state" });
+
+    // Simulate parent responding with fork state
+    parentWorker.simulateMessage({
+      type: "fork_state",
+      pid: 1,
+      data: new ArrayBuffer(64),
+    });
+
+    // Allow microtask queue to flush so fork() continues after await
+    await Promise.resolve();
+
+    // Child worker should have been created with forkState
+    const childWorker = adapter.lastWorker!;
+    expect(childWorker).not.toBe(parentWorker);
+    expect(adapter.lastWorkerData).toMatchObject({
+      type: "init",
+      pid: 2,
+      ppid: 1,
+      forkState: expect.any(ArrayBuffer),
+    });
+
+    // Simulate child ready
+    childWorker.simulateMessage({ type: "ready", pid: 2 });
+    const childPid = await forkPromise;
+
+    expect(childPid).toBe(2);
+    expect(pm.getProcess(2)!.ppid).toBe(1);
+    expect(pm.getProcess(2)!.state).toBe("running");
+  });
+
+  it("should reject fork of non-existent process", async () => {
+    const { pm } = createTestPM();
+    await expect(pm.fork(99)).rejects.toThrow();
+  });
+
+  it("should reject fork of non-running process", async () => {
+    const { pm, adapter } = createTestPM();
+    const p = pm.spawn();
+    adapter.lastWorker!.simulateMessage({ type: "ready", pid: 1 });
+    await p;
+
+    // Simulate exit
+    adapter.lastWorker!.simulateMessage({ type: "exit", pid: 1, status: 0 });
+
+    await expect(pm.fork(1)).rejects.toThrow();
+  });
+});
