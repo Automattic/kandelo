@@ -359,6 +359,30 @@ pub extern "C" fn kernel_init(pid: u32) {
     }
 }
 
+/// Serialize current process state for fork. Returns bytes written, or negative errno.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_get_fork_state(buf_ptr: *mut u8, buf_len: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
+    match crate::fork::serialize_fork_state(proc, buf) {
+        Ok(written) => written as i32,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Initialize kernel from serialized fork state (child side).
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_init_from_fork(buf_ptr: *const u8, buf_len: u32, child_pid: u32) -> i32 {
+    let buf = unsafe { core::slice::from_raw_parts(buf_ptr, buf_len as usize) };
+    match crate::fork::deserialize_fork_state(buf, child_pid) {
+        Ok(proc) => {
+            unsafe { *PROCESS.0.get() = Some(proc); }
+            0
+        }
+        Err(e) => -(e as i32),
+    }
+}
+
 /// Open a file. Returns fd (>= 0) on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_open(
