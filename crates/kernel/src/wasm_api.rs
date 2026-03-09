@@ -2045,3 +2045,51 @@ pub extern "C" fn kernel_pause() -> i32 {
         Err(e) => -(e as i32),
     }
 }
+
+/// pathconf -- get configurable pathname variable for a path.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_pathconf(path_ptr: u32, path_len: u32, name: i32) -> i64 {
+    let path = unsafe {
+        core::slice::from_raw_parts(path_ptr as *const u8, path_len as usize)
+    };
+    match syscalls::sys_pathconf(path, name) {
+        Ok(v) => v,
+        Err(e) => -(e as i64),
+    }
+}
+
+/// fpathconf -- get configurable pathname variable for an open fd.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_fpathconf(fd: i32, name: i32) -> i64 {
+    let proc = unsafe { get_process() };
+    match syscalls::sys_fpathconf(proc, fd, name) {
+        Ok(v) => v,
+        Err(e) => -(e as i64),
+    }
+}
+
+/// getsockname -- get local socket address.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_getsockname(fd: i32, buf_ptr: u32, buf_len: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    let buf = unsafe {
+        core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len as usize)
+    };
+    match syscalls::sys_getsockname(proc, fd, buf) {
+        Ok(n) => n as i32,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// getpeername -- get remote socket address.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_getpeername(fd: i32, buf_ptr: u32, buf_len: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    let buf = unsafe {
+        core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len as usize)
+    };
+    match syscalls::sys_getpeername(proc, fd, buf) {
+        Ok(n) => n as i32,
+        Err(e) => -(e as i32),
+    }
+}

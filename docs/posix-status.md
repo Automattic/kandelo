@@ -18,9 +18,9 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 | `open()` | Partial | Host-delegated. O_CREAT, O_EXCL, O_TRUNC, O_APPEND, O_NONBLOCK, O_CLOEXEC, O_DIRECTORY, O_NOFOLLOW flags handled. umask applied to mode on O_CREAT. |
 | `openat()` | Partial | AT_FDCWD delegates to open(). Absolute paths handled. Relative paths with non-AT_FDCWD dirfd return ENOSYS (requires directory path resolution). |
 | `close()` | Partial | Ref-counted OFD cleanup. Host handle closed when last ref dropped. Releases all fcntl advisory locks on the file (POSIX-compliant). EINTR not yet handled. |
-| `read()` | Partial | Host-delegated for files. Pipe/socket reads from kernel ring buffer. Short reads permitted. O_NONBLOCK returns EAGAIN when no data available. |
+| `read()` | Partial | Host-delegated for files. Pipe/socket reads from kernel ring buffer with blocking when empty (EINTR on signal). Short reads permitted. O_NONBLOCK returns EAGAIN. |
 | `pread()` | Partial | Host-delegated via seek-read-restore. Not atomic (single-threaded safe only). Rejects pipes/sockets with ESPIPE. |
-| `write()` | Partial | Host-delegated for files. Pipe writes to kernel ring buffer. EPIPE + SIGPIPE on closed read end (POSIX-compliant). O_APPEND seek-to-end not yet atomic. |
+| `write()` | Partial | Host-delegated for files. Pipe writes to kernel ring buffer with blocking when full (EINTR on signal). EPIPE + SIGPIPE on closed read end (POSIX-compliant). O_APPEND seeks to end before write. RLIMIT_FSIZE enforced (EFBIG + SIGXFSZ). |
 | `pwrite()` | Partial | Host-delegated via seek-write-restore. Not atomic (single-threaded safe only). Rejects pipes/sockets with ESPIPE. |
 | `lseek()` | Full | SEEK_SET, SEEK_CUR, SEEK_END all implemented. SEEK_END delegates to host for file size calculation. |
 | `dup()` | Full | Lowest available fd. FD_CLOEXEC cleared. Shares OFD with original. |
@@ -138,7 +138,7 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 | `setsockopt()` / `getsockopt()` | Partial | SOL_SOCKET level: SO_TYPE, SO_DOMAIN, SO_ERROR, SO_ACCEPTCONN, SO_RCVBUF, SO_SNDBUF readable. SO_REUSEADDR, SO_KEEPALIVE accepted (no-op). |
 | `shutdown()` | Full | SHUT_RD, SHUT_WR, SHUT_RDWR. Properly closes buffer endpoints. |
 | `select()` | Partial | Wrapper around poll(). Converts fd_set bitmasks to pollfd array. Timeout supported via polling loop. |
-| `poll()` | Partial | Checks readiness for regular files, pipes, and sockets. Timeout supported via polling loop with 1ms sleep intervals. Returns EINTR on pending signals. |
+| `poll()` | Partial | Checks readiness for regular files, pipes, and sockets. Timeout supported via polling loop with 1ms sleep intervals. Returns EINTR on pending signals. POLLERR for fully shut down sockets. |
 
 ## Time
 
@@ -176,6 +176,10 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 | `getrlimit()` | Full | Returns (soft, hard) resource limits. Defaults: NOFILE=(1024,4096), STACK=(8MB,infinity), others infinity. |
 | `setrlimit()` | Partial | Sets resource limits. Validates soft <= hard. RLIMIT_NOFILE enforced via FdTable max_fds sync. RLIMIT_FSIZE enforced in write()/ftruncate() (EFBIG + SIGXFSZ). |
 | `getrusage()` | Partial | Returns zeroed rusage struct (144 bytes). RUSAGE_SELF and RUSAGE_CHILDREN supported. No actual resource tracking in Wasm. |
+| `pathconf()` | Full | Returns POSIX compile-time constants: _PC_NAME_MAX=255, _PC_PATH_MAX=4096, _PC_PIPE_BUF=4096, _PC_LINK_MAX=14, etc. |
+| `fpathconf()` | Full | Same as pathconf() but validates fd exists first. Returns EBADF for invalid fd. |
+| `getsockname()` | Partial | Returns AF_UNIX (family=1) for kernel-internal sockets. No real address information. |
+| `getpeername()` | Partial | Returns AF_UNIX for connected kernel-internal sockets. Returns ENOTCONN for unconnected. |
 
 ---
 
@@ -200,7 +204,6 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 | **No signal queuing** | signals | Pending signals stored as 64-bit bitmask — one bit per signal. Multiple instances of the same signal are coalesced. POSIX real-time signals require queuing. |
 | **`*at()` functions with real dirfd** | filesystem | openat, fstatat, faccessat, fchmodat, fchownat, linkat, symlinkat, readlinkat all return ENOSYS when given a real dirfd (non-AT_FDCWD) with a relative path. Only AT_FDCWD works. |
 | **No seekdir/telldir/rewinddir** | directory | Directory iteration position control not implemented. DirStream only stores host_handle. |
-| **Blocking pipe read/write** | pipe | Pipe reads/writes are always non-blocking (O_NONBLOCK enforced). Blocking semantics not implemented. |
 
 ### Medium — Spec deviations with limited practical impact
 
@@ -209,8 +212,6 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 | **RLIMIT_FSIZE partial enforcement** | rlimits | write() and ftruncate() check FSIZE limit (EFBIG + SIGXFSZ). truncate() delegates to ftruncate so also enforced. |
 | **setpgid() self-only** | process | Only supports setting own pgid. Setting another process's pgid returns ESRCH. |
 | **realpath() no symlink resolution** | filesystem | Normalizes `.`/`..` and verifies existence but does not resolve intermediate symlinks. |
-| **No getpeername/getsockname** | socket | Socket address query functions not implemented. |
-| **No pathconf/fpathconf** | sysinfo | System configuration queries for pathnames not implemented. |
 | **recv() flags mostly ignored** | socket | MSG_WAITALL, MSG_DONTWAIT not supported. MSG_PEEK works. |
 | **Socket options silently no-op** | socket | SO_REUSEADDR, SO_KEEPALIVE accepted but have no effect. |
 | **POLLERR partial** | I/O multiplex | poll() reports POLLERR for sockets with both read and write shut down. No POLLERR for other error conditions. |

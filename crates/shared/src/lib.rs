@@ -115,6 +115,10 @@ pub enum Syscall {
     Realpath = 109,
     Sigsuspend = 110,
     Pause = 111,
+    Pathconf = 112,
+    Fpathconf = 113,
+    Getsockname = 114,
+    Getpeername = 115,
 }
 
 impl Syscall {
@@ -232,6 +236,10 @@ impl Syscall {
             109 => Some(Syscall::Realpath),
             110 => Some(Syscall::Sigsuspend),
             111 => Some(Syscall::Pause),
+            112 => Some(Syscall::Pathconf),
+            113 => Some(Syscall::Fpathconf),
+            114 => Some(Syscall::Getsockname),
+            115 => Some(Syscall::Getpeername),
             _ => None,
         }
     }

@@ -1494,6 +1494,48 @@ pub fn sys_socketpair(
     Ok((fd0, fd1))
 }
 
+/// getsockname -- get local socket address.
+///
+/// For kernel-internal AF_UNIX sockets, writes AF_UNIX (family=1) with
+/// empty path. Returns the number of bytes written (2 bytes minimum for
+/// sa_family). Real network sockets are not supported.
+pub fn sys_getsockname(proc: &Process, fd: i32, buf: &mut [u8]) -> Result<usize, Errno> {
+    let entry = proc.fd_table.get(fd)?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    if ofd.file_type != FileType::Socket {
+        return Err(Errno::ENOTSOCK);
+    }
+    // AF_UNIX = 1, little-endian u16
+    if buf.len() >= 2 {
+        buf[0] = 1; // AF_UNIX low byte
+        buf[1] = 0; // AF_UNIX high byte
+    }
+    Ok(2)
+}
+
+/// getpeername -- get remote socket address.
+///
+/// For kernel-internal AF_UNIX socketpairs, returns AF_UNIX family.
+/// Real network sockets are not supported.
+pub fn sys_getpeername(proc: &Process, fd: i32, buf: &mut [u8]) -> Result<usize, Errno> {
+    let entry = proc.fd_table.get(fd)?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    if ofd.file_type != FileType::Socket {
+        return Err(Errno::ENOTSOCK);
+    }
+    let sock_idx = (-(ofd.host_handle + 1)) as usize;
+    let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+    // Must be connected (have a peer)
+    if sock.send_buf_idx.is_none() {
+        return Err(Errno::ENOTCONN);
+    }
+    if buf.len() >= 2 {
+        buf[0] = 1; // AF_UNIX low byte
+        buf[1] = 0; // AF_UNIX high byte
+    }
+    Ok(2)
+}
+
 /// Shut down part of a full-duplex socket connection.
 pub fn sys_shutdown(proc: &mut Process, fd: i32, how: u32) -> Result<(), Errno> {
     use wasm_posix_shared::socket::*;
@@ -2175,6 +2217,35 @@ pub fn sys_sysconf(name: i32) -> Result<i64, Errno> {
         8 => Ok(1),      // _SC_NPROCESSORS_CONF
         11 => Ok(65536), // _SC_PAGESIZE (Wasm page = 64KB)
         30 => Ok(65536), // _SC_PAGE_SIZE (alias)
+        _ => Err(Errno::EINVAL),
+    }
+}
+
+/// pathconf -- get configurable pathname variable values.
+///
+/// Returns POSIX-required compile-time constants for the given name.
+/// The path is not validated (we return the same values regardless).
+pub fn sys_pathconf(_path: &[u8], name: i32) -> Result<i64, Errno> {
+    pathconf_value(name)
+}
+
+/// fpathconf -- get configurable pathname variable values for an open fd.
+pub fn sys_fpathconf(proc: &Process, fd: i32, name: i32) -> Result<i64, Errno> {
+    let _ = proc.fd_table.get(fd)?;
+    pathconf_value(name)
+}
+
+fn pathconf_value(name: i32) -> Result<i64, Errno> {
+    match name {
+        1 => Ok(14),         // _PC_LINK_MAX
+        2 => Ok(13),         // _PC_MAX_CANON
+        3 => Ok(255),        // _PC_MAX_INPUT
+        4 => Ok(255),        // _PC_NAME_MAX
+        5 => Ok(4096),       // _PC_PATH_MAX
+        6 => Ok(4096),       // _PC_PIPE_BUF
+        7 => Ok(1),          // _PC_CHOWN_RESTRICTED
+        8 => Ok(1),          // _PC_NO_TRUNC
+        9 => Ok(0),          // _PC_VDISABLE
         _ => Err(Errno::EINVAL),
     }
 }
@@ -4588,6 +4659,71 @@ mod tests {
     #[test]
     fn test_sysconf_invalid() {
         assert_eq!(sys_sysconf(9999), Err(Errno::EINVAL));
+    }
+
+    // ---- pathconf/fpathconf tests ----
+
+    #[test]
+    fn test_pathconf_name_max() {
+        assert_eq!(sys_pathconf(b"/tmp/foo", 4), Ok(255)); // _PC_NAME_MAX
+    }
+
+    #[test]
+    fn test_pathconf_pipe_buf() {
+        assert_eq!(sys_pathconf(b"/tmp/foo", 6), Ok(4096)); // _PC_PIPE_BUF
+    }
+
+    #[test]
+    fn test_pathconf_invalid_name() {
+        assert_eq!(sys_pathconf(b"/tmp/foo", 999), Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn test_fpathconf_valid_fd() {
+        let proc = Process::new(1);
+        // fd 0 is pre-opened (stdin)
+        assert_eq!(sys_fpathconf(&proc, 0, 5), Ok(4096)); // _PC_PATH_MAX
+    }
+
+    #[test]
+    fn test_fpathconf_invalid_fd() {
+        let proc = Process::new(1);
+        assert_eq!(sys_fpathconf(&proc, 99, 5), Err(Errno::EBADF));
+    }
+
+    // ---- getsockname/getpeername tests ----
+
+    #[test]
+    fn test_getsockname_socket() {
+        use wasm_posix_shared::socket::*;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (fd0, _fd1) = sys_socketpair(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+        let mut buf = [0u8; 16];
+        let n = sys_getsockname(&proc, fd0, &mut buf).unwrap();
+        assert_eq!(n, 2);
+        assert_eq!(buf[0], 1); // AF_UNIX
+        assert_eq!(buf[1], 0);
+    }
+
+    #[test]
+    fn test_getsockname_non_socket() {
+        let proc = Process::new(1);
+        let mut buf = [0u8; 16];
+        // fd 0 is stdin, not a socket
+        assert_eq!(sys_getsockname(&proc, 0, &mut buf), Err(Errno::ENOTSOCK));
+    }
+
+    #[test]
+    fn test_getpeername_connected() {
+        use wasm_posix_shared::socket::*;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (fd0, _fd1) = sys_socketpair(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+        let mut buf = [0u8; 16];
+        let n = sys_getpeername(&proc, fd0, &mut buf).unwrap();
+        assert_eq!(n, 2);
+        assert_eq!(buf[0], 1); // AF_UNIX
     }
 
     // ---- ftruncate tests ----
