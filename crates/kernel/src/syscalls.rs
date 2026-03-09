@@ -73,6 +73,12 @@ pub fn sys_close(
         (ofd.host_handle, ofd.file_type, ofd.status_flags)
     };
 
+    // POSIX: closing any fd for a file releases all advisory locks on that file
+    // held by this process, regardless of which fd acquired the lock.
+    if host_handle >= 0 && file_type != FileType::Pipe && file_type != FileType::Socket {
+        proc.lock_table.remove_for_handle(host_handle, proc.pid);
+    }
+
     let freed = proc.ofd_table.dec_ref(idx);
 
     if freed {
@@ -1155,6 +1161,9 @@ pub fn sys_exit(proc: &mut Process, host: &mut dyn HostIO, status: i32) {
             let _ = host.host_closedir(stream.host_handle);
         }
     }
+
+    // POSIX: all advisory locks held by the process are released on exit.
+    proc.lock_table.remove_all_for_pid(proc.pid);
 
     proc.state = ProcessState::Exited;
     proc.exit_status = status;
@@ -3384,6 +3393,53 @@ mod tests {
         };
         let result = sys_fcntl_lock(&mut proc, fd, F_SETLK, &mut flock);
         assert_eq!(result, Err(Errno::EBADF));
+    }
+
+    #[test]
+    fn test_close_releases_fcntl_locks() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/tmp/lockfile", O_RDWR | O_CREAT, 0o644).unwrap();
+
+        // Acquire a write lock
+        let mut flock = WasmFlock {
+            l_type: F_WRLCK, l_whence: 0, l_start: 0, l_len: 100, l_pid: 0, _pad: 0,
+        };
+        sys_fcntl_lock(&mut proc, fd, F_SETLK, &mut flock).unwrap();
+
+        // Verify lock is held (get_blocking_lock from a different pid would find it)
+        let ofd = proc.ofd_table.get(proc.fd_table.get(fd).unwrap().ofd_ref.0).unwrap();
+        let hh = ofd.host_handle;
+        assert!(proc.lock_table.get_blocking_lock(hh, F_WRLCK as u32, 0, 100, 999).is_some());
+
+        // Close the fd — should release all locks on this file
+        sys_close(&mut proc, &mut host, fd).unwrap();
+
+        // Lock should now be gone
+        assert!(proc.lock_table.get_blocking_lock(hh, F_WRLCK as u32, 0, 100, 999).is_none());
+    }
+
+    #[test]
+    fn test_exit_releases_fcntl_locks() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/tmp/lockfile", O_RDWR | O_CREAT, 0o644).unwrap();
+
+        // Acquire a write lock
+        let mut flock = WasmFlock {
+            l_type: F_WRLCK, l_whence: 0, l_start: 0, l_len: 100, l_pid: 0, _pad: 0,
+        };
+        sys_fcntl_lock(&mut proc, fd, F_SETLK, &mut flock).unwrap();
+
+        let ofd = proc.ofd_table.get(proc.fd_table.get(fd).unwrap().ofd_ref.0).unwrap();
+        let hh = ofd.host_handle;
+        assert!(proc.lock_table.get_blocking_lock(hh, F_WRLCK as u32, 0, 100, 999).is_some());
+
+        // Exit the process — should release all locks
+        sys_exit(&mut proc, &mut host, 0);
+
+        // Lock should now be gone
+        assert!(proc.lock_table.get_blocking_lock(hh, F_WRLCK as u32, 0, 100, 999).is_none());
     }
 
     #[test]
