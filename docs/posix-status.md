@@ -17,16 +17,16 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 |----------|--------|-------|
 | `open()` | Partial | Host-delegated. O_CREAT, O_EXCL, O_TRUNC, O_APPEND, O_NONBLOCK, O_CLOEXEC, O_DIRECTORY, O_NOFOLLOW flags handled. umask applied to mode on O_CREAT. |
 | `openat()` | Partial | AT_FDCWD delegates to open(). Absolute paths handled. Relative paths with non-AT_FDCWD dirfd return ENOSYS (requires directory path resolution). |
-| `close()` | Partial | Ref-counted OFD cleanup. Host handle closed when last ref dropped. EINTR not yet handled. |
+| `close()` | Partial | Ref-counted OFD cleanup. Host handle closed when last ref dropped. **Gap:** Does not release fcntl advisory locks on the file (POSIX requires all locks released when any fd for that file is closed). EINTR not yet handled. |
 | `read()` | Partial | Host-delegated for files. Pipe/socket reads from kernel ring buffer. Short reads permitted. O_NONBLOCK returns EAGAIN when no data available. |
 | `pread()` | Partial | Host-delegated via seek-read-restore. Not atomic (single-threaded safe only). Rejects pipes/sockets with ESPIPE. |
-| `write()` | Partial | Host-delegated for files. Pipe writes to kernel ring buffer. EPIPE on closed read end. O_APPEND seek-to-end not yet atomic. |
+| `write()` | Partial | Host-delegated for files. Pipe writes to kernel ring buffer. EPIPE on closed read end but SIGPIPE not raised (POSIX requires both). O_APPEND seek-to-end not yet atomic. |
 | `pwrite()` | Partial | Host-delegated via seek-write-restore. Not atomic (single-threaded safe only). Rejects pipes/sockets with ESPIPE. |
 | `lseek()` | Full | SEEK_SET, SEEK_CUR, SEEK_END all implemented. SEEK_END delegates to host for file size calculation. |
 | `dup()` | Full | Lowest available fd. FD_CLOEXEC cleared. Shares OFD with original. |
 | `dup2()` | Full | Atomic close-and-dup. Same-fd no-op. FD_CLOEXEC cleared. |
 | `dup3()` | Full | Like dup2 but returns EINVAL if oldfd==newfd. Supports O_CLOEXEC flag. |
-| `pipe()` | Partial | Kernel-space ring buffer (64KB). PIPE_BUF=4096. O_NONBLOCK enforced (EAGAIN). Cross-process pipes via SharedArrayBuffer after fork. Blocking read/write not yet implemented. |
+| `pipe()` | Partial | Kernel-space ring buffer (64KB). PIPE_BUF=4096 but atomicity not enforced for writes ≤ PIPE_BUF (POSIX requires no interleaving). O_NONBLOCK enforced (EAGAIN). Cross-process pipes via SharedArrayBuffer after fork. Blocking read/write not yet implemented. |
 | `pipe2()` | Full | Like pipe with O_NONBLOCK and O_CLOEXEC flag support. |
 | `readv()` | Full | Scatter read. Iterates over iovec array calling sys_read for each buffer. Stops on short read or EOF. |
 | `writev()` | Full | Gather write. Iterates over iovec array calling sys_write for each buffer. Stops on short write. |
@@ -58,9 +58,9 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 | `F_SETFD` | Full | Sets FD_CLOEXEC flag. Per-fd, not per-OFD. |
 | `F_GETFL` | Full | Returns status flags + access mode. Use O_ACCMODE mask. |
 | `F_SETFL` | Full | Only O_APPEND, O_NONBLOCK modifiable. Access mode bits preserved. |
-| `F_GETLK` | Full | Advisory record locking. Returns blocking lock info or F_UNLCK if no conflict. |
-| `F_SETLK` | Full | Non-blocking lock acquisition. Returns EAGAIN on conflict. Read/write access mode validated. |
-| `F_SETLKW` | Partial | Blocking lock acquisition. In single-process mode, behaves like F_SETLK (no contention possible). Multi-process blocking deferred to Phase 3b. |
+| `F_GETLK` | Partial | Advisory record locking. Returns blocking lock info or F_UNLCK if no conflict. **Gap:** Locks not released when fd is closed (POSIX requires all locks on a file released when any fd referring to that file is closed). Locks not cleaned up on process exit. |
+| `F_SETLK` | Partial | Non-blocking lock acquisition. Returns EAGAIN on conflict. Read/write access mode validated. **Gap:** Same lock lifecycle issues as F_GETLK — no release on close() or exit(). |
+| `F_SETLKW` | Partial | Blocking lock acquisition. In single-process mode, behaves like F_SETLK (no contention possible). Multi-process blocking not yet implemented. No deadlock detection. |
 | `F_GETOWN` | Full | Returns async I/O owner PID from OFD. Default 0. |
 | `F_SETOWN` | Full | Sets async I/O owner PID on OFD. SIGIO delivery deferred to signal delivery phase. |
 
@@ -71,7 +71,7 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 | `fork()` | Partial | Host-side ProcessManager.fork() serializes kernel state from parent worker, deserializes in child worker. Binary format covers process scalars, FD/OFD tables, signals, environment, CWD, rlimits, terminal. No Wasm-internal fork syscall yet (host-initiated only). |
 | `exec()` | Partial | Replaces process image with new Wasm binary in same worker. Preserves PID, open fds (closes CLOEXEC), environment, CWD, signal mask. Resets caught handlers to default (SIG_IGN preserved). Host-initiated via ProcessManager.exec() and kernel-initiated via host_exec import. |
 | `waitpid()` | Partial | Host-side ProcessManager.waitpid() with WNOHANG support. Reaps zombie processes. No Wasm-internal waitpid syscall yet (host-initiated only). |
-| `exit()` / `_exit()` | Partial | Closes all fds and dir streams, sets ProcessState::Exited. No parent notification yet (needs waitpid). |
+| `exit()` / `_exit()` | Partial | Closes all fds and dir streams, sets ProcessState::Exited. **Gap:** No SIGCHLD sent to parent. fcntl locks not explicitly released (and close() doesn't release them either — see fcntl gaps). |
 | `getpid()` | Full | Returns pid from Process struct. |
 | `getppid()` | Full | Returns ppid (0 for init process). |
 | `getuid()` / `geteuid()` | Full | Simulated; defaults to uid=1000. Configurable at init. |
@@ -79,17 +79,17 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 | `setuid()` / `seteuid()` | Full | Simulated. setuid sets both uid and euid. seteuid sets only euid. No privilege checks. |
 | `setgid()` / `setegid()` | Full | Simulated. setgid sets both gid and egid. setegid sets only egid. No privilege checks. |
 | `getpgrp()` | Full | Returns process group ID (simulated, defaults to pid). |
-| `setpgid()` | Full | Sets process group ID. pid=0 means self. pgid=0 means use target pid. |
+| `setpgid()` | Partial | Sets process group ID. pid=0 means self. pgid=0 means use target pid. **Gap:** Only supports setting own pgid; setting other processes' pgid returns ESRCH. |
 | `getsid()` | Full | Returns session ID (simulated, defaults to pid). pid=0 means self. |
-| `setsid()` | Full | Creates new session. Sets sid=pid, pgid=pid. Returns new session ID. |
+| `setsid()` | Partial | Creates new session. Sets sid=pid, pgid=pid. Returns new session ID. **Gap:** Does not validate that caller is not already a session leader (POSIX requires EPERM). |
 
 ## Signals
 
 | Function | Status | Notes |
 |----------|--------|-------|
-| `kill()` | Partial | Marks signal as pending. sig=0 validity check. Cross-process delivery via host_kill import and ProcessManager.deliverSignal(). |
+| `kill()` | Partial | Marks signal as pending. sig=0 validity check. Cross-process delivery via host_kill import and ProcessManager.deliverSignal(). **Gap:** Signals are marked pending but caught handlers never invoked (see signal delivery gap). |
 | `signal()` | Full | Legacy API. Returns previous handler. Wraps sigaction() semantics. SIGKILL/SIGSTOP immutable. |
-| `sigaction()` | Partial | Sets handler disposition (SIG_DFL, SIG_IGN, or function pointer). SIGKILL/SIGSTOP immutable. Actual handler invocation deferred (requires Asyncify or syscall-entry checking). |
+| `sigaction()` | Partial | Sets handler disposition (SIG_DFL, SIG_IGN, or function pointer). SIGKILL/SIGSTOP immutable. **Gap:** No sa_flags support (SA_RESTART, SA_SIGINFO, SA_NOCLDWAIT, SA_NOCLDSTOP all missing). Actual handler invocation deferred (requires Asyncify or syscall-entry checking). |
 | `sigprocmask()` | Full | Block/unblock/setmask operations on 64-bit signal mask. SIGKILL and SIGSTOP cannot be blocked per POSIX. |
 | `sigsuspend()` | Full | Atomically replaces signal mask and blocks until deliverable signal arrives. Uses SharedArrayBuffer + Atomics.wait/notify for cross-thread wake. Always returns EINTR. |
 | `raise()` | Full | Equivalent to kill(getpid(), sig). |
@@ -101,7 +101,7 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 |----------|--------|-------|
 | `mmap()` | Partial | Anonymous mappings only (MAP_ANONYMOUS). Page-aligned (64KB Wasm pages). File-backed mappings not yet supported. MAP_FIXED not yet supported. |
 | `munmap()` | Full | Removes tracked region. Page-aligned address required. |
-| `brk()` / `sbrk()` | Partial | Kernel-managed program break. Initial break at 0x01000000. Only increases supported; shrinking not yet implemented. |
+| `brk()` / `sbrk()` | Partial | Kernel-managed program break. Initial break at 0x01000000. Only increases supported; shrinking not yet implemented. **Gap:** Program break not inherited on fork (child starts fresh). |
 | `mprotect()` | Stub | Returns ENOSYS. Wasm linear memory has no page-level protection. |
 
 ## Directory Operations
@@ -132,12 +132,12 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 | `listen()` | Stub | Returns ENOSYS. Requires host network stack. |
 | `accept()` | Stub | Returns ENOSYS. Requires host network stack. |
 | `connect()` | Stub | Returns ENOSYS. Requires host network stack. |
-| `send()` / `recv()` | Partial | Works for connected Unix domain sockets (via socketpair). MSG_PEEK supported for non-consuming reads. |
+| `send()` / `recv()` | Partial | Works for connected Unix domain sockets (via socketpair). MSG_PEEK supported. **Gap:** MSG_WAITALL, MSG_DONTWAIT not supported. |
 | `sendto()` / `recvfrom()` | Stub | Returns ENOSYS. Requires host network stack for UDP. |
 | `setsockopt()` / `getsockopt()` | Partial | SOL_SOCKET level: SO_TYPE, SO_DOMAIN, SO_ERROR, SO_ACCEPTCONN, SO_RCVBUF, SO_SNDBUF readable. SO_REUSEADDR, SO_KEEPALIVE accepted (no-op). |
 | `shutdown()` | Full | SHUT_RD, SHUT_WR, SHUT_RDWR. Properly closes buffer endpoints. |
-| `select()` | Partial | Wrapper around poll(). Converts fd_set bitmasks to pollfd array. Timeout ignored (non-blocking only). |
-| `poll()` | Partial | Checks readiness for regular files, pipes, and sockets. Timeout ignored (non-blocking only). |
+| `select()` | Partial | Wrapper around poll(). Converts fd_set bitmasks to pollfd array. **Gap:** Timeout ignored — always non-blocking. |
+| `poll()` | Partial | Checks readiness for regular files, pipes, and sockets. **Gap:** Timeout ignored — always non-blocking. No POLLERR reporting. |
 
 ## Time
 
@@ -154,7 +154,7 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 | Function | Status | Notes |
 |----------|--------|-------|
 | `isatty()` | Full | Returns 1 for CharDevice fds (stdin/stdout/stderr), ENOTTY for others. |
-| `tcgetattr()` / `tcsetattr()` | Partial | Kernel-simulated terminal state (c_iflag, c_oflag, c_cflag, c_lflag, c_cc). Does not affect actual host I/O. TCSANOW/TCSADRAIN/TCSAFLUSH all treated the same. |
+| `tcgetattr()` / `tcsetattr()` | Partial | Kernel-simulated terminal state (c_iflag, c_oflag, c_cflag, c_lflag, c_cc). Does not affect actual host I/O. TCSANOW/TCSADRAIN/TCSAFLUSH all treated the same. **Gap:** VMIN/VTIME values stored but not interpreted by read(). ICANON flag tracked but no line buffering applied. |
 | `ioctl()` (TIOC*) | Partial | TIOCGWINSZ and TIOCSWINSZ supported. Default 24x80. Other ioctls return ENOTTY. |
 
 ## Environment
@@ -173,8 +173,72 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 | `sysconf()` | Partial | Returns _SC_PAGE_SIZE=65536 (Wasm page), _SC_OPEN_MAX=1024, _SC_NPROCESSORS_ONLN=1, _SC_CLK_TCK=100. Unknown names return EINVAL. |
 | `umask()` | Full | Set file creation mask, returns previous mask. Default 0o022. Applied in open() and mkdir(). Masked to 0o777. |
 | `getrlimit()` | Full | Returns (soft, hard) resource limits. Defaults: NOFILE=(1024,4096), STACK=(8MB,infinity), others infinity. |
-| `setrlimit()` | Full | Sets resource limits (advisory, not enforced). Validates soft <= hard. |
+| `setrlimit()` | Partial | Sets resource limits (advisory, not enforced). Validates soft <= hard. **Gap:** RLIMIT_NOFILE not enforced by open()/dup(). RLIMIT_FSIZE not enforced by write()/ftruncate(). |
 | `getrusage()` | Partial | Returns zeroed rusage struct (144 bytes). RUSAGE_SELF and RUSAGE_CHILDREN supported. No actual resource tracking in Wasm. |
+
+---
+
+## Known POSIX Gaps
+
+Systematic audit of all subsystems against POSIX specifications. Gaps are categorized by severity and actionability.
+
+### Critical — Violates POSIX semantics, causes incorrect behavior
+
+| Gap | Subsystem | Description |
+|-----|-----------|-------------|
+| **Locks not released on close()** | fcntl | POSIX requires that when any fd referring to a file is closed, all advisory locks held by the process on that file are released. `sys_close()` does not call `lock_table.remove_for_handle()`. |
+| **Locks not released on exit()** | fcntl | POSIX requires all advisory locks released when process exits. `sys_exit()` doesn't call `lock_table.remove_all_for_pid()`, and since close() also doesn't release them, locks are orphaned. |
+| **SIGPIPE not raised** | pipe/write | Writing to a pipe/socket with closed read end returns EPIPE but does not raise SIGPIPE. POSIX requires both. Many C programs rely on SIGPIPE default action (terminate) for broken pipe detection. |
+| **Signal handlers never invoked** | signals | Signals can be marked pending and masks managed, but caught signal handlers (function pointers) are never actually called. Requires Asyncify or syscall-entry signal checking. |
+
+### High — Missing features that affect common programs
+
+| Gap | Subsystem | Description |
+|-----|-----------|-------------|
+| **poll()/select() timeout ignored** | I/O multiplex | Timeout parameter is accepted but ignored — always non-blocking. Breaks event-loop programs that rely on blocking poll(). |
+| **No EINTR from any syscall** | all | No syscall ever returns EINTR. POSIX requires interruptible syscalls (read, write, close, poll, etc.) to return EINTR when a signal is delivered. Tied to signal handler invocation gap. |
+| **RLIMIT_NOFILE not enforced** | rlimits | open()/dup() do not check the NOFILE soft limit before allocating fds. Programs relying on fd limits for resource control will not be bounded. |
+| **No SIGCHLD on child exit** | process | Parent process does not receive SIGCHLD when child exits. Breaks wait()/waitpid() notification patterns. |
+| **PIPE_BUF atomicity not enforced** | pipe | Writes ≤ PIPE_BUF (4096) are not guaranteed atomic. POSIX requires no interleaving of concurrent writes ≤ PIPE_BUF. Ring buffer has no boundary tracking. |
+| **O_APPEND not atomic** | write | Writes with O_APPEND do not atomically seek-to-end then write. In multi-process scenarios, concurrent O_APPEND writes could interleave. |
+| **sigaction() missing sa_flags** | signals | No support for SA_RESTART (auto-restart interrupted syscalls), SA_SIGINFO (detailed signal info), SA_NOCLDWAIT, SA_NOCLDSTOP. Only handler disposition is tracked. |
+| **No signal queuing** | signals | Pending signals stored as 64-bit bitmask — one bit per signal. Multiple instances of the same signal are coalesced. POSIX real-time signals require queuing. |
+| **`*at()` functions with real dirfd** | filesystem | openat, fstatat, faccessat, fchmodat, fchownat, linkat, symlinkat, readlinkat all return ENOSYS when given a real dirfd (non-AT_FDCWD) with a relative path. Only AT_FDCWD works. |
+| **No seekdir/telldir/rewinddir** | directory | Directory iteration position control not implemented. DirStream only stores host_handle. |
+| **Blocking pipe read/write** | pipe | Pipe reads/writes are always non-blocking (O_NONBLOCK enforced). Blocking semantics not implemented. |
+
+### Medium — Spec deviations with limited practical impact
+
+| Gap | Subsystem | Description |
+|-----|-----------|-------------|
+| **RLIMIT_FSIZE not enforced** | rlimits | write()/ftruncate() do not check FSIZE limit. |
+| **setpgid() self-only** | process | Only supports setting own pgid. Setting another process's pgid returns ESRCH. |
+| **setsid() no validation** | process | Does not check if caller is already a session leader (POSIX requires EPERM). |
+| **realpath() no symlink resolution** | filesystem | Normalizes `.`/`..` and verifies existence but does not resolve intermediate symlinks. |
+| **No getpeername/getsockname** | socket | Socket address query functions not implemented. |
+| **No pathconf/fpathconf** | sysinfo | System configuration queries for pathnames not implemented. |
+| **recv() flags mostly ignored** | socket | MSG_WAITALL, MSG_DONTWAIT not supported. MSG_PEEK works. |
+| **Socket options silently no-op** | socket | SO_REUSEADDR, SO_KEEPALIVE accepted but have no effect. |
+| **No POLLERR reporting** | I/O multiplex | poll() reports POLLHUP for closed pipe but not POLLERR for error conditions. |
+| **pread/pwrite not multi-process safe** | I/O | Uses save/seek/read/restore pattern — safe in single process but races with shared OFDs across processes. |
+| **brk not inherited on fork** | memory | Child process gets fresh MemoryManager instead of inheriting parent's program break. |
+| **VMIN/VTIME not interpreted** | terminal | Values stored in c_cc array but read() does not alter behavior based on them. |
+| **ICANON no line buffering** | terminal | Flag tracked in c_lflag but no canonical-mode line editing or buffering applied. Host I/O unaffected. |
+| **No job control** | terminal | tcgetpgrp()/tcsetpgrp() not implemented. No foreground/background process group distinction. SIGTTIN/SIGTTOU not generated. |
+| **readdir() "." and ".." entries** | directory | Presence of `.` and `..` entries depends entirely on host implementation. |
+| **No ENFILE** | fd | Only per-process EMFILE limit exists. No system-wide fd limit tracking. |
+| **No pause()** | signals | Not implemented, but sigsuspend() covers the same use case. |
+
+### Wasm-Inherent — Gaps that cannot be fully resolved in Wasm
+
+| Gap | Subsystem | Reason |
+|-----|-----------|--------|
+| **mprotect() returns ENOSYS** | memory | Wasm linear memory has no page-level protection. |
+| **No file-backed mmap** | memory | Would require host cooperation and shared memory semantics. MAP_FIXED also unsupported. |
+| **TCP/UDP sockets** | socket | bind/listen/accept/connect return ENOSYS. Requires host network stack integration. |
+| **Setuid/setgid enforcement** | process | Single-user Wasm environment; privilege checks simulated only. |
+| **Permission checks** | filesystem | Delegated to host. Kernel does not independently verify file permissions. |
+| **getrusage() zeroed** | sysinfo | No actual resource tracking available in Wasm. Returns zero-filled struct. |
 
 ---
 
