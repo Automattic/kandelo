@@ -27,6 +27,11 @@ export interface SpawnOptions {
   cwd?: string;
 }
 
+export interface WaitResult {
+  pid: number;
+  status: number;
+}
+
 export class ProcessManager {
   private processes = new Map<number, ProcessInfo>();
   private nextPid = 1;
@@ -245,6 +250,43 @@ export class ProcessManager {
       });
 
       parentInfo.worker.postMessage({ type: "get_fork_state" });
+    });
+  }
+
+  async waitpid(targetPid: number, options: number = 0): Promise<WaitResult> {
+    const WNOHANG = 1;
+
+    const info = this.processes.get(targetPid);
+    if (!info) {
+      throw new Error(`No such process: ${targetPid}`);
+    }
+
+    // Already exited? Reap immediately.
+    if (info.state === "zombie") {
+      const status = info.exitStatus ?? 0;
+      this.processes.delete(targetPid);
+      return { pid: targetPid, status };
+    }
+
+    // WNOHANG: return immediately if not exited
+    if (options & WNOHANG) {
+      return { pid: 0, status: 0 };
+    }
+
+    // Wait for exit
+    return new Promise<WaitResult>((resolve) => {
+      info.worker.on("message", (msg: unknown) => {
+        const m = msg as WorkerToHostMessage;
+        if (m.type === "exit" && m.pid === targetPid) {
+          this.processes.delete(targetPid);
+          resolve({ pid: targetPid, status: m.status });
+        }
+      });
+
+      info.worker.on("exit", (code: number) => {
+        this.processes.delete(targetPid);
+        resolve({ pid: targetPid, status: code });
+      });
     });
   }
 

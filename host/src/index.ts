@@ -5,7 +5,7 @@ export { ProcessManager } from "./process-manager";
 export { NodeWorkerAdapter, MockWorkerAdapter } from "./worker-adapter";
 export type { KernelConfig, PlatformIO, StatResult } from "./types";
 export type { WorkerAdapter, WorkerHandle } from "./worker-adapter";
-export type { ProcessInfo, ProcessManagerConfig, SpawnOptions } from "./process-manager";
+export type { ProcessInfo, ProcessManagerConfig, SpawnOptions, WaitResult } from "./process-manager";
 export type {
   HostToWorkerMessage,
   WorkerToHostMessage,

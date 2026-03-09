@@ -188,3 +188,63 @@ describe("ProcessManager.fork()", () => {
     await expect(pm.fork(1)).rejects.toThrow();
   });
 });
+
+describe("ProcessManager.waitpid()", () => {
+  it("should return immediately for already-exited child", async () => {
+    const { pm, adapter } = createTestPM();
+
+    const p = pm.spawn();
+    adapter.lastWorker!.simulateMessage({ type: "ready", pid: 1 });
+    await p;
+
+    // Child exits
+    adapter.lastWorker!.simulateMessage({ type: "exit", pid: 1, status: 42 });
+
+    const result = await pm.waitpid(1);
+    expect(result).toEqual({ pid: 1, status: 42 });
+    // Process should be reaped
+    expect(pm.getProcess(1)).toBeUndefined();
+  });
+
+  it("should wait for child to exit", async () => {
+    const { pm, adapter } = createTestPM();
+
+    const p = pm.spawn();
+    const worker = adapter.lastWorker!;
+    worker.simulateMessage({ type: "ready", pid: 1 });
+    await p;
+
+    const waitPromise = pm.waitpid(1);
+
+    // Not yet resolved
+    let resolved = false;
+    waitPromise.then(() => { resolved = true; });
+    await Promise.resolve(); // flush microtasks
+    expect(resolved).toBe(false);
+
+    // Child exits
+    worker.simulateMessage({ type: "exit", pid: 1, status: 7 });
+
+    const result = await waitPromise;
+    expect(result).toEqual({ pid: 1, status: 7 });
+    expect(pm.getProcess(1)).toBeUndefined();
+  });
+
+  it("should return pid 0 with WNOHANG if child still running", async () => {
+    const { pm, adapter } = createTestPM();
+
+    const p = pm.spawn();
+    adapter.lastWorker!.simulateMessage({ type: "ready", pid: 1 });
+    await p;
+
+    const result = await pm.waitpid(1, 1); // WNOHANG = 1
+    expect(result).toEqual({ pid: 0, status: 0 });
+    // Process should NOT be reaped
+    expect(pm.getProcess(1)).toBeDefined();
+  });
+
+  it("should throw for non-existent process", async () => {
+    const { pm } = createTestPM();
+    await expect(pm.waitpid(99)).rejects.toThrow();
+  });
+});
