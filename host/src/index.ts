@@ -16,4 +16,5 @@ export type {
   WorkerErrorMessage,
   RegisterPipeMessage,
   ConvertPipeMessage,
+  DeliverSignalMessage,
 } from "./worker-protocol";

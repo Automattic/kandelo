@@ -410,6 +410,48 @@ describe("ProcessManager pipe conversion on fork", () => {
   });
 });
 
+describe("ProcessManager.deliverSignal()", () => {
+  it("should deliver signal to target worker", async () => {
+    const { pm, adapter } = createTestPM();
+
+    const p1 = pm.spawn();
+    const worker1 = adapter.lastWorker!;
+    worker1.simulateMessage({ type: "ready", pid: 1 });
+    await p1;
+
+    const p2 = pm.spawn();
+    const worker2 = adapter.lastWorker!;
+    worker2.simulateMessage({ type: "ready", pid: 2 });
+    await p2;
+
+    pm.deliverSignal(2, 15); // SIGTERM
+
+    const signalMsgs = worker2.sentMessages.filter(
+      (m: any) => m.type === "deliver_signal"
+    );
+    expect(signalMsgs).toHaveLength(1);
+    expect(signalMsgs[0]).toEqual({ type: "deliver_signal", signal: 15 });
+  });
+
+  it("should throw for non-existent process signal delivery", () => {
+    const { pm } = createTestPM();
+    expect(() => pm.deliverSignal(999, 15)).toThrow();
+  });
+
+  it("should throw for zombie process signal delivery", async () => {
+    const { pm, adapter } = createTestPM();
+
+    const p = pm.spawn();
+    adapter.lastWorker!.simulateMessage({ type: "ready", pid: 1 });
+    await p;
+
+    // Transition to zombie
+    adapter.lastWorker!.simulateMessage({ type: "exit", pid: 1, status: 0 });
+
+    expect(() => pm.deliverSignal(1, 15)).toThrow();
+  });
+});
+
 describe("ProcessManager.waitpid()", () => {
   it("should return immediately for already-exited child", async () => {
     const { pm, adapter } = createTestPM();

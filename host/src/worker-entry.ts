@@ -8,6 +8,7 @@ import type {
   HostToWorkerMessage,
   RegisterPipeMessage,
   ConvertPipeMessage,
+  DeliverSignalMessage,
 } from "./worker-protocol";
 
 interface MessagePort {
@@ -105,6 +106,12 @@ export async function workerMain(
               message: `kernel_convert_pipe_to_host failed: ${result}`,
             } satisfies WorkerToHostMessage);
           }
+          break;
+        }
+        case "deliver_signal": {
+          const deliverFn = instance.exports.kernel_deliver_signal as
+            (sig: number) => number;
+          deliverFn(m.signal);
           break;
         }
       }

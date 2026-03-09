@@ -7,7 +7,8 @@ export type HostToWorkerMessage =
   | WorkerTerminateMessage
   | GetForkStateMessage
   | RegisterPipeMessage
-  | ConvertPipeMessage;
+  | ConvertPipeMessage
+  | DeliverSignalMessage;
 
 export interface GetForkStateMessage {
   type: "get_fork_state";
@@ -24,6 +25,11 @@ export interface ConvertPipeMessage {
   type: "convert_pipe";
   ofdIndex: number;
   newHandle: number;
+}
+
+export interface DeliverSignalMessage {
+  type: "deliver_signal";
+  signal: number;
 }
 
 export interface WorkerInitMessage {

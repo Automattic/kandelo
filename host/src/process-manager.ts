@@ -385,6 +385,14 @@ export class ProcessManager {
     });
   }
 
+  deliverSignal(targetPid: number, signal: number): void {
+    const info = this.processes.get(targetPid);
+    if (!info || info.state === "zombie") {
+      throw new Error(`No such process: ${targetPid}`);
+    }
+    info.worker.postMessage({ type: "deliver_signal", signal });
+  }
+
   async terminate(pid: number): Promise<void> {
     const info = this.processes.get(pid);
     if (!info) return;
