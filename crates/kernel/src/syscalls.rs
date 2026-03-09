@@ -237,6 +237,7 @@ pub fn sys_write(
                     .and_then(|p| p.as_mut())
                     .ok_or(Errno::EBADF)?;
                 if !pipe.is_read_end_open() {
+                    proc.signals.raise(wasm_posix_shared::signal::SIGPIPE);
                     return Err(Errno::EPIPE);
                 }
                 let n = pipe.write(buf);
@@ -250,6 +251,7 @@ pub fn sys_write(
             let sock_idx = (-(host_handle + 1)) as usize;
             let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
             if sock.shut_wr {
+                proc.signals.raise(wasm_posix_shared::signal::SIGPIPE);
                 return Err(Errno::EPIPE);
             }
             let send_buf_idx = sock.send_buf_idx.ok_or(Errno::ENOTCONN)?;
@@ -259,6 +261,7 @@ pub fn sys_write(
                 .and_then(|p| p.as_mut())
                 .ok_or(Errno::EBADF)?;
             if !pipe.is_read_end_open() {
+                proc.signals.raise(wasm_posix_shared::signal::SIGPIPE);
                 return Err(Errno::EPIPE);
             }
             let n = pipe.write(buf);
@@ -3667,6 +3670,35 @@ mod tests {
         let mut buf = [0u8; 4];
         let n = sys_read(&mut proc, &mut host, fd0, &mut buf).unwrap();
         assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn test_write_broken_pipe_raises_sigpipe() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (read_fd, write_fd) = sys_pipe(&mut proc).unwrap();
+
+        // Close read end
+        sys_close(&mut proc, &mut host, read_fd).unwrap();
+
+        // Write should fail with EPIPE and raise SIGPIPE
+        let result = sys_write(&mut proc, &mut host, write_fd, b"data");
+        assert_eq!(result, Err(Errno::EPIPE));
+        assert!(proc.signals.is_pending(wasm_posix_shared::signal::SIGPIPE));
+    }
+
+    #[test]
+    fn test_write_shutdown_socket_raises_sigpipe() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+        let (fd0, _fd1) = sys_socketpair(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+
+        sys_shutdown(&mut proc, fd0, SHUT_WR).unwrap();
+
+        let result = sys_write(&mut proc, &mut host, fd0, b"test");
+        assert_eq!(result, Err(Errno::EPIPE));
+        assert!(proc.signals.is_pending(wasm_posix_shared::signal::SIGPIPE));
     }
 
     #[test]
