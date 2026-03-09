@@ -110,6 +110,10 @@ export class ProcessManager {
               }
               info.state = "zombie";
               info.exitStatus = m.status;
+              // POSIX: deliver SIGCHLD to parent when child exits
+              if (info.ppid > 0) {
+                try { this.deliverSignal(info.ppid, 17); } catch { /* parent may have exited */ }
+              }
             }
             break;
           case "error":
@@ -298,6 +302,10 @@ export class ProcessManager {
               }
               childInfo.state = "zombie";
               childInfo.exitStatus = m.status;
+              // POSIX: deliver SIGCHLD to parent when child exits
+              if (childInfo.ppid > 0) {
+                try { this.deliverSignal(childInfo.ppid, 17); } catch { /* parent may have exited */ }
+              }
             }
             break;
           case "error":
