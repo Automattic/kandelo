@@ -87,7 +87,7 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 
 | Function | Status | Notes |
 |----------|--------|-------|
-| `kill()` | Partial | Marks signal as pending. sig=0 validity check. Single-process only (no cross-process delivery yet). |
+| `kill()` | Partial | Marks signal as pending. sig=0 validity check. Cross-process delivery via host_kill import and ProcessManager.deliverSignal(). |
 | `signal()` | Full | Legacy API. Returns previous handler. Wraps sigaction() semantics. SIGKILL/SIGSTOP immutable. |
 | `sigaction()` | Partial | Sets handler disposition (SIG_DFL, SIG_IGN, or function pointer). SIGKILL/SIGSTOP immutable. Actual handler invocation deferred (requires Asyncify or syscall-entry checking). |
 | `sigprocmask()` | Full | Block/unblock/setmask operations on 64-bit signal mask. SIGKILL and SIGSTOP cannot be blocked per POSIX. |
@@ -237,3 +237,8 @@ These features require SharedArrayBuffer (and cross-origin isolation headers in 
 - Host-delegated pipe support in kernel (host_handle >= 0 routes to host_read/host_write)
 - kernel_convert_pipe_to_host Wasm export
 - Pipe detection and conversion on fork via ProcessManager
+13d. **Phase 13d (Complete):** Cross-Process Signals
+- kernel_deliver_signal Wasm export for host-initiated signal injection
+- host_kill Wasm import with cross-process routing in sys_kill
+- DeliverSignalMessage protocol and ProcessManager.deliverSignal()
+- KillRequestMessage: worker → host → target worker signal routing
