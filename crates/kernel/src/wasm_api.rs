@@ -50,6 +50,7 @@ unsafe extern "C" {
     fn host_fchmod(handle: i64, mode: u32) -> i32;
     fn host_fchown(handle: i64, uid: u32, gid: u32) -> i32;
     fn host_kill(pid: i32, sig: u32) -> i32;
+    fn host_exec(path_ptr: *const u8, path_len: u32) -> i32;
 }
 
 // ---------------------------------------------------------------------------
@@ -320,6 +321,18 @@ impl HostIO for WasmHostIO {
 
     fn host_kill(&mut self, pid: i32, sig: u32) -> Result<(), Errno> {
         let ret = unsafe { host_kill(pid, sig) };
+        if ret < 0 {
+            match Errno::from_u32((-ret) as u32) {
+                Some(e) => Err(e),
+                None => Err(Errno::EIO),
+            }
+        } else {
+            Ok(())
+        }
+    }
+
+    fn host_exec(&mut self, path: &[u8]) -> Result<(), Errno> {
+        let ret = unsafe { host_exec(path.as_ptr(), path.len() as u32) };
         if ret < 0 {
             match Errno::from_u32((-ret) as u32) {
                 Some(e) => Err(e),
@@ -1949,6 +1962,22 @@ pub extern "C" fn kernel_realpath(
     let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
     match syscalls::sys_realpath(proc, &mut host, path, buf) {
         Ok(n) => n as i32,
+        Err(e) => -(e as i32),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// execve
+// ---------------------------------------------------------------------------
+
+/// Execute a new program. Returns 0 on success, or negative errno.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_execve(path_ptr: *const u8, path_len: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
+    let mut host = WasmHostIO;
+    match syscalls::sys_execve(proc, &mut host, path) {
+        Ok(()) => 0,
         Err(e) => -(e as i32),
     }
 }

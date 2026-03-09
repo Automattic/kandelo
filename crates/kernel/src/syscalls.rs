@@ -987,6 +987,16 @@ pub fn sys_raise(proc: &mut Process, host: &mut dyn HostIO, sig: u32) -> Result<
     sys_kill(proc, host, proc.pid as i32, sig)
 }
 
+/// Execute a new program. Delegates to host for binary loading.
+/// On success, the kernel process will be replaced (POSIX: exec doesn't return on success).
+/// On failure, returns the error.
+pub fn sys_execve(_proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
+    if path.is_empty() {
+        return Err(Errno::ENOENT);
+    }
+    host.host_exec(path)
+}
+
 /// Set signal handler. Returns the previous handler disposition as a u32.
 /// handler_val: 0=SIG_DFL, 1=SIG_IGN, anything else=function pointer (future use)
 pub fn sys_sigaction(proc: &mut Process, sig: u32, handler_val: u32) -> Result<u32, Errno> {
@@ -2601,6 +2611,10 @@ mod tests {
         }
 
         fn host_kill(&mut self, _pid: i32, _sig: u32) -> Result<(), Errno> {
+            Ok(())
+        }
+
+        fn host_exec(&mut self, _path: &[u8]) -> Result<(), Errno> {
             Ok(())
         }
     }
@@ -4929,5 +4943,21 @@ mod tests {
         let mut buf = [0u8; 3]; // Too small for "/tmp/test"
         let result = sys_realpath(&mut proc, &mut host, b"/tmp/test", &mut buf);
         assert_eq!(result, Err(Errno::ERANGE));
+    }
+
+    #[test]
+    fn test_execve_empty_path_returns_enoent() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let result = sys_execve(&mut proc, &mut host, b"");
+        assert_eq!(result, Err(Errno::ENOENT));
+    }
+
+    #[test]
+    fn test_execve_delegates_to_host() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let result = sys_execve(&mut proc, &mut host, b"/bin/ls");
+        assert!(result.is_ok());
     }
 }

@@ -223,6 +223,9 @@ export class WasmPosixKernel {
         host_kill: (pid: number, sig: number): number => {
           return this.hostKill(pid, sig);
         },
+        host_exec: (_pathPtr: number, _pathLen: number): number => {
+          return -2; // -ENOENT stub
+        },
       },
     };
 
