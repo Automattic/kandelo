@@ -184,11 +184,16 @@ export async function workerMain(
                 return;
               }
 
-              // 4. Replace references
+              // 4. Transfer shared pipe registrations from old kernel
+              for (const [handle, entry] of kernel.getSharedPipes()) {
+                newKernel.registerSharedPipe(handle, entry.pipe.getBuffer(), entry.end);
+              }
+
+              // 5. Replace references
               kernel = newKernel;
               instance = newInstance;
 
-              // 5. Notify host
+              // 6. Notify host
               port.postMessage({
                 type: "exec_complete",
                 pid: initData.pid,

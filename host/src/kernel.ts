@@ -49,6 +49,11 @@ export class WasmPosixKernel {
     this.sharedPipes.delete(handle);
   }
 
+  /** Returns all registered shared pipes (for transferring during exec). */
+  getSharedPipes(): Map<number, { pipe: SharedPipeBuffer; end: "read" | "write" }> {
+    return this.sharedPipes;
+  }
+
   /**
    * Load and instantiate the kernel Wasm module.
    *
