@@ -68,9 +68,9 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 
 | Function | Status | Notes |
 |----------|--------|-------|
-| `fork()` | Planned | Requires Wasm linear memory snapshot + multi-worker coordination. Deferred to Phase 3b. |
-| `exec()` | Planned | Load new Wasm module into existing process context. Deferred to Phase 3b. |
-| `waitpid()` | Planned | Requires cross-worker IPC. Deferred to Phase 3b. |
+| `fork()` | Partial | Host-side ProcessManager.fork() serializes kernel state from parent worker, deserializes in child worker. Binary format covers process scalars, FD/OFD tables, signals, environment, CWD, rlimits, terminal. No Wasm-internal fork syscall yet (host-initiated only). |
+| `exec()` | Planned | Load new Wasm module into existing process context. Deferred to Phase 13e. |
+| `waitpid()` | Partial | Host-side ProcessManager.waitpid() with WNOHANG support. Reaps zombie processes. No Wasm-internal waitpid syscall yet (host-initiated only). |
 | `exit()` / `_exit()` | Partial | Closes all fds and dir streams, sets ProcessState::Exited. No parent notification yet (needs waitpid). |
 | `getpid()` | Full | Returns pid from Process struct. |
 | `getppid()` | Full | Returns ppid (0 for init process). |
@@ -222,8 +222,13 @@ These features require SharedArrayBuffer (and cross-origin isolation headers in 
 10. **Phase 10 (Complete):** Extended POSIX — umask, uname, sysconf, dup3, pipe2, ftruncate, fsync, writev, readv, getrlimit, setrlimit
 11. **Phase 11 (Complete):** Final gaps — truncate, fdatasync, fchmod, fchown, getpgrp, setpgid, getsid, setsid, fstatat, unlinkat, mkdirat, renameat
 12. **Phase 12 (Complete):** Remaining tractable — faccessat, fchmodat, fchownat, linkat, symlinkat, readlinkat, select, setuid/setgid/seteuid/setegid, getrusage
-13a. **Phase 13a (In Progress):** Multi-Worker Infrastructure
+13a. **Phase 13a (Complete):** Multi-Worker Infrastructure
 - ProcessManager with process table and worker lifecycle
 - WorkerAdapter abstraction (Node.js worker_threads + mock)
 - Worker entry point: kernel initialization in worker thread
 - Message protocol for host ↔ worker communication
+13b. **Phase 13b (Complete):** Fork & Waitpid
+- Binary fork state serialization/deserialization (Rust)
+- kernel_get_fork_state / kernel_init_from_fork Wasm exports
+- ProcessManager.fork() with state transfer to child worker
+- ProcessManager.waitpid() with WNOHANG support
