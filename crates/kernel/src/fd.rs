@@ -132,6 +132,11 @@ impl FdTable {
         self.max_fds
     }
 
+    /// Update the max_fds limit (e.g. when RLIMIT_NOFILE changes).
+    pub fn set_max_fds(&mut self, max: usize) {
+        self.max_fds = max;
+    }
+
     /// Place an entry at a specific fd (dup2 semantics).
     ///
     /// If the slot was occupied, returns `Some(old_ofd_ref)`.

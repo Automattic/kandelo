@@ -2242,6 +2242,13 @@ pub fn sys_setrlimit(proc: &mut Process, resource: u32, soft: u64, hard: u64) ->
     // Non-root: cannot raise hard limit above current
     // (In our simulated environment, we allow it since uid check is simulated)
     proc.rlimits[resource as usize] = [soft, hard];
+
+    // RLIMIT_NOFILE (resource 7): sync fd table max_fds with new soft limit.
+    if resource == 7 {
+        let max = if soft == u64::MAX { 1024 * 1024 } else { soft as usize };
+        proc.fd_table.set_max_fds(max);
+    }
+
     Ok(())
 }
 
@@ -4671,6 +4678,25 @@ mod tests {
         let mut proc = Process::new(1);
         let result = sys_setrlimit(&mut proc, 7, 5000, 1000);
         assert_eq!(result, Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn test_setrlimit_nofile_enforced() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        // Lower RLIMIT_NOFILE soft limit to 5
+        sys_setrlimit(&mut proc, 7, 5, 4096).unwrap();
+
+        // fds 0,1,2 are pre-opened (stdio). We can open 2 more (fd 3, 4).
+        let fd3 = sys_open(&mut proc, &mut host, b"/tmp/a", O_RDWR | O_CREAT, 0o644).unwrap();
+        assert_eq!(fd3, 3);
+        let fd4 = sys_open(&mut proc, &mut host, b"/tmp/b", O_RDWR | O_CREAT, 0o644).unwrap();
+        assert_eq!(fd4, 4);
+
+        // fd 5 should fail with EMFILE
+        let result = sys_open(&mut proc, &mut host, b"/tmp/c", O_RDWR | O_CREAT, 0o644);
+        assert_eq!(result, Err(Errno::EMFILE));
     }
 
     #[test]
