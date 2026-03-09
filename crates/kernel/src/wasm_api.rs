@@ -52,6 +52,7 @@ unsafe extern "C" {
     fn host_kill(pid: i32, sig: u32) -> i32;
     fn host_exec(path_ptr: *const u8, path_len: u32) -> i32;
     fn host_set_alarm(seconds: u32) -> i32;
+    fn host_sigsuspend_wait() -> i32;
 }
 
 // ---------------------------------------------------------------------------
@@ -347,6 +348,15 @@ impl HostIO for WasmHostIO {
     fn host_set_alarm(&mut self, seconds: u32) -> Result<(), Errno> {
         let result = unsafe { host_set_alarm(seconds) };
         i32_to_result(result)
+    }
+
+    fn host_sigsuspend_wait(&mut self) -> Result<u32, Errno> {
+        let result = unsafe { host_sigsuspend_wait() };
+        if result < 0 {
+            Err(Errno::from_u32((-result) as u32).unwrap_or(Errno::EINTR))
+        } else {
+            Ok(result as u32)
+        }
     }
 }
 
@@ -2000,6 +2010,24 @@ pub extern "C" fn kernel_alarm(seconds: u32) -> i32 {
     let mut host = WasmHostIO;
     match syscalls::sys_alarm(proc, &mut host, seconds) {
         Ok(remaining) => remaining as i32,
+        Err(e) => -(e as i32),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// sigsuspend
+// ---------------------------------------------------------------------------
+
+/// Temporarily replace the signal mask and suspend until a signal is delivered.
+/// The mask is passed as two u32 halves (lo, hi) to form a u64.
+/// Always returns negative EINTR on success (signal was delivered).
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_sigsuspend(mask_lo: u32, mask_hi: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    let mut host = WasmHostIO;
+    let mask = ((mask_hi as u64) << 32) | (mask_lo as u64);
+    match syscalls::sys_sigsuspend(proc, &mut host, mask) {
+        Ok(()) => 0,
         Err(e) => -(e as i32),
     }
 }

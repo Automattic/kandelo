@@ -1024,6 +1024,39 @@ pub fn sys_alarm(proc: &mut Process, host: &mut dyn HostIO, seconds: u32) -> Res
     Ok(remaining)
 }
 
+/// sigsuspend -- temporarily replace the signal mask and suspend until a signal is delivered.
+///
+/// Atomically replaces the process's signal mask with `mask` (SIGKILL and SIGSTOP cannot
+/// be blocked), then blocks until a deliverable signal arrives. The original mask is
+/// restored before returning. Always returns Err(EINTR).
+pub fn sys_sigsuspend(proc: &mut Process, host: &mut dyn HostIO, mask: u64) -> Result<(), Errno> {
+    use wasm_posix_shared::signal::{NSIG, SIGKILL, SIGSTOP};
+
+    let old_mask = proc.signals.blocked;
+    // Cannot block SIGKILL or SIGSTOP
+    proc.signals.blocked = mask & !((1u64 << SIGKILL) | (1u64 << SIGSTOP));
+
+    // Check if any signals are already deliverable with new mask
+    if proc.signals.deliverable() != 0 {
+        proc.signals.blocked = old_mask;
+        return Err(Errno::EINTR);
+    }
+
+    // Block until a deliverable signal arrives
+    loop {
+        let sig = host.host_sigsuspend_wait()?;
+        if sig > 0 && sig < NSIG {
+            proc.signals.raise(sig);
+        }
+        if proc.signals.deliverable() != 0 {
+            break;
+        }
+    }
+
+    proc.signals.blocked = old_mask;
+    Err(Errno::EINTR)
+}
+
 /// Set signal handler. Returns the previous handler disposition as a u32.
 /// handler_val: 0=SIG_DFL, 1=SIG_IGN, anything else=function pointer (future use)
 pub fn sys_sigaction(proc: &mut Process, sig: u32, handler_val: u32) -> Result<u32, Errno> {
@@ -2492,11 +2525,12 @@ mod tests {
     struct MockHostIO {
         next_handle: i64,
         dir_entry_returned: bool,
+        sigsuspend_signal: u32,
     }
 
     impl MockHostIO {
         fn new() -> Self {
-            MockHostIO { next_handle: 100, dir_entry_returned: false }
+            MockHostIO { next_handle: 100, dir_entry_returned: false, sigsuspend_signal: 0 }
         }
     }
 
@@ -2647,6 +2681,10 @@ mod tests {
 
         fn host_set_alarm(&mut self, _seconds: u32) -> Result<(), Errno> {
             Ok(())
+        }
+
+        fn host_sigsuspend_wait(&mut self) -> Result<u32, Errno> {
+            Ok(self.sigsuspend_signal)
         }
     }
 
@@ -5018,5 +5056,45 @@ mod tests {
         let remaining = sys_alarm(&mut proc, &mut host, 0).unwrap();
         assert!(remaining > 0);
         assert_eq!(proc.alarm_deadline_ns, 0);
+    }
+
+    #[test]
+    fn test_sigsuspend_returns_eintr_when_signal_already_pending() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        proc.signals.raise(2); // SIGINT
+        let result = sys_sigsuspend(&mut proc, &mut host, 0);
+        assert_eq!(result, Err(Errno::EINTR));
+    }
+
+    #[test]
+    fn test_sigsuspend_restores_old_mask() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        proc.signals.blocked = 0xFF;
+        proc.signals.raise(2); // SIGINT pending
+        let _ = sys_sigsuspend(&mut proc, &mut host, 0);
+        assert_eq!(proc.signals.blocked, 0xFF);
+    }
+
+    #[test]
+    fn test_sigsuspend_blocks_until_signal() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.sigsuspend_signal = 15; // SIGTERM
+        let result = sys_sigsuspend(&mut proc, &mut host, 0);
+        assert_eq!(result, Err(Errno::EINTR));
+        assert!(proc.signals.is_pending(15));
+    }
+
+    #[test]
+    fn test_sigsuspend_cannot_block_sigkill() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.sigsuspend_signal = 9; // SIGKILL
+        let mask = u64::MAX; // try to block everything
+        let result = sys_sigsuspend(&mut proc, &mut host, mask);
+        assert_eq!(result, Err(Errno::EINTR));
+        assert!(proc.signals.is_pending(9));
     }
 }

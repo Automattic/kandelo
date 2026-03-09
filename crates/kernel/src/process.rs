@@ -49,6 +49,8 @@ pub trait HostIO {
     fn host_kill(&mut self, pid: i32, sig: u32) -> Result<(), Errno>;
     fn host_exec(&mut self, path: &[u8]) -> Result<(), Errno>;
     fn host_set_alarm(&mut self, seconds: u32) -> Result<(), Errno>;
+    /// Block until a signal is delivered. Returns the signal number.
+    fn host_sigsuspend_wait(&mut self) -> Result<u32, Errno>;
 }
 
 /// Process lifecycle state.
