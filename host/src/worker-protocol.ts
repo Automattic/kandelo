@@ -4,7 +4,12 @@ import type { KernelConfig } from "./types";
 
 export type HostToWorkerMessage =
   | WorkerInitMessage
-  | WorkerTerminateMessage;
+  | WorkerTerminateMessage
+  | GetForkStateMessage;
+
+export interface GetForkStateMessage {
+  type: "get_fork_state";
+}
 
 export interface WorkerInitMessage {
   type: "init";
@@ -14,6 +19,7 @@ export interface WorkerInitMessage {
   kernelConfig: KernelConfig;
   env?: string[];
   cwd?: string;
+  forkState?: ArrayBuffer;
 }
 
 export interface WorkerTerminateMessage {
@@ -25,7 +31,8 @@ export interface WorkerTerminateMessage {
 export type WorkerToHostMessage =
   | WorkerReadyMessage
   | WorkerExitMessage
-  | WorkerErrorMessage;
+  | WorkerErrorMessage
+  | ForkStateMessage;
 
 export interface WorkerReadyMessage {
   type: "ready";
@@ -42,4 +49,10 @@ export interface WorkerErrorMessage {
   type: "error";
   pid: number;
   message: string;
+}
+
+export interface ForkStateMessage {
+  type: "fork_state";
+  pid: number;
+  data: ArrayBuffer;
 }
