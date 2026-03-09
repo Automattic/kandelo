@@ -4,6 +4,7 @@ import type {
   WorkerInitMessage,
   WorkerToHostMessage,
 } from "./worker-protocol";
+import { SharedPipeBuffer } from "./shared-pipe-buffer";
 
 export interface ProcessInfo {
   pid: number;
@@ -36,6 +37,8 @@ export class ProcessManager {
   private processes = new Map<number, ProcessInfo>();
   private nextPid = 1;
   private config: ProcessManagerConfig;
+  private nextPipeHandle = 1000; // Start at 1000 to avoid conflicts with file handles
+  private sharedPipes = new Map<number, SharedPipeBuffer>();
 
   constructor(config: ProcessManagerConfig) {
     this.config = config;
@@ -190,6 +193,37 @@ export class ProcessManager {
             if (childInfo.state === "starting") {
               clearTimeout(timeout);
               childInfo.state = "running";
+
+              // Detect pipe OFDs from fork state and convert to shared pipes
+              try {
+                const pipeOfds = this.parsePipeOfdsFromForkState(forkState);
+                for (const pipeOfd of pipeOfds) {
+                  const handle = this.nextPipeHandle++;
+                  const sharedPipe = SharedPipeBuffer.create();
+                  this.sharedPipes.set(handle, sharedPipe);
+
+                  const sab = sharedPipe.getBuffer();
+
+                  // Register shared pipe buffer with both workers
+                  parentInfo.worker.postMessage(
+                    { type: "register_pipe", handle, buffer: sab },
+                  );
+                  childInfo.worker.postMessage(
+                    { type: "register_pipe", handle, buffer: sab },
+                  );
+
+                  // Convert pipe OFDs in both kernels to use the new host handle
+                  parentInfo.worker.postMessage(
+                    { type: "convert_pipe", ofdIndex: pipeOfd.ofdIndex, newHandle: handle },
+                  );
+                  childInfo.worker.postMessage(
+                    { type: "convert_pipe", ofdIndex: pipeOfd.ofdIndex, newHandle: handle },
+                  );
+                }
+              } catch {
+                // If parsing fails, skip pipe conversion (no pipes to convert)
+              }
+
               resolve(childPid);
             }
             break;
@@ -229,6 +263,46 @@ export class ProcessManager {
         }
       });
     });
+  }
+
+  private parsePipeOfdsFromForkState(forkState: ArrayBuffer): { ofdIndex: number; isRead: boolean }[] {
+    const view = new DataView(forkState);
+    let offset = 12; // skip header (magic + version + total_size)
+    offset += 32;    // skip scalars (8 u32s)
+
+    // Skip signal state
+    offset += 8; // blocked u64
+    const handlerCount = view.getUint32(offset, true);
+    offset += 4;
+    offset += handlerCount * 8; // skip handlers
+
+    // Skip FD table
+    const _maxFds = view.getUint32(offset, true);
+    offset += 4;
+    const fdCount = view.getUint32(offset, true);
+    offset += 4;
+    offset += fdCount * 12; // skip fd entries (fd_num + ofd_index + fd_flags)
+
+    // Read OFD table
+    const ofdCount = view.getUint32(offset, true);
+    offset += 4;
+
+    const pipeOfds: { ofdIndex: number; statusFlags: number }[] = [];
+    for (let i = 0; i < ofdCount; i++) {
+      const index = view.getUint32(offset, true);
+      const fileType = view.getUint32(offset + 4, true);
+      const statusFlags = view.getUint32(offset + 8, true);
+      offset += 32; // total per OFD: index(4) + fileType(4) + statusFlags(4) + host_handle(8) + offset(8) + ref_count(4) = 32
+
+      if (fileType === 2) { // Pipe
+        pipeOfds.push({ ofdIndex: index, statusFlags });
+      }
+    }
+
+    return pipeOfds.map(p => ({
+      ofdIndex: p.ofdIndex,
+      isRead: (p.statusFlags & 3) === 0, // O_RDONLY = 0
+    }));
   }
 
   private requestForkState(parentInfo: ProcessInfo): Promise<ArrayBuffer> {

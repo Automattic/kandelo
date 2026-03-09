@@ -189,6 +189,214 @@ describe("ProcessManager.fork()", () => {
   });
 });
 
+function buildForkStateWithPipes(): ArrayBuffer {
+  // Build a minimal fork state buffer containing pipe OFDs
+  // Binary format (little-endian):
+  //   Header: magic(4) + version(4) + total_size(4) = 12 bytes
+  //   Scalars: 8 u32s = 32 bytes
+  //   Signal state: blocked(8) + handler_count(4) + 0 handlers = 12 bytes
+  //   FD table: max_fds(4) + fd_count(4) + 5 entries * 12 = 68 bytes
+  //   OFD table: ofd_count(4) + 5 entries * 32 = 164 bytes
+  //   Total needed for parsing: 12 + 32 + 12 + 68 + 164 = 288 bytes
+  //   Add padding for environment, cwd, rlimits, terminal
+
+  const totalSize = 12 + 32 + 12 + 68 + 164 + 4 + 5 + 256 + 56;
+  const buf = new ArrayBuffer(totalSize);
+  const view = new DataView(buf);
+  const bytes = new Uint8Array(buf);
+  let offset = 0;
+
+  // Header
+  view.setUint32(offset, 0x464F524B, true); offset += 4; // magic
+  view.setUint32(offset, 1, true); offset += 4; // version
+  view.setUint32(offset, totalSize, true); offset += 4; // total_size
+
+  // Scalars (ppid=1, uid=0, gid=0, euid=0, egid=0, pgid=1, sid=1, umask=0o022)
+  view.setUint32(offset, 1, true); offset += 4; // ppid
+  view.setUint32(offset, 0, true); offset += 4; // uid
+  view.setUint32(offset, 0, true); offset += 4; // gid
+  view.setUint32(offset, 0, true); offset += 4; // euid
+  view.setUint32(offset, 0, true); offset += 4; // egid
+  view.setUint32(offset, 1, true); offset += 4; // pgid
+  view.setUint32(offset, 1, true); offset += 4; // sid
+  view.setUint32(offset, 0o022, true); offset += 4; // umask
+
+  // Signal state: blocked=0, handler_count=0
+  view.setUint32(offset, 0, true); offset += 4; // blocked lo
+  view.setUint32(offset, 0, true); offset += 4; // blocked hi
+  view.setUint32(offset, 0, true); offset += 4; // handler_count
+
+  // FD table: max_fds=1024, fd_count=5
+  view.setUint32(offset, 1024, true); offset += 4; // max_fds
+  view.setUint32(offset, 5, true); offset += 4; // fd_count
+
+  // fd 0: stdin -> ofd 0
+  view.setUint32(offset, 0, true); offset += 4;
+  view.setUint32(offset, 0, true); offset += 4;
+  view.setUint32(offset, 0, true); offset += 4;
+  // fd 1: stdout -> ofd 1
+  view.setUint32(offset, 1, true); offset += 4;
+  view.setUint32(offset, 1, true); offset += 4;
+  view.setUint32(offset, 0, true); offset += 4;
+  // fd 2: stderr -> ofd 2
+  view.setUint32(offset, 2, true); offset += 4;
+  view.setUint32(offset, 2, true); offset += 4;
+  view.setUint32(offset, 0, true); offset += 4;
+  // fd 3: pipe read -> ofd 3
+  view.setUint32(offset, 3, true); offset += 4;
+  view.setUint32(offset, 3, true); offset += 4;
+  view.setUint32(offset, 0, true); offset += 4;
+  // fd 4: pipe write -> ofd 4
+  view.setUint32(offset, 4, true); offset += 4;
+  view.setUint32(offset, 4, true); offset += 4;
+  view.setUint32(offset, 0, true); offset += 4;
+
+  // OFD table: 5 entries
+  view.setUint32(offset, 5, true); offset += 4; // ofd_count
+
+  // OFD 0: stdin (Regular, O_RDONLY, handle=0)
+  view.setUint32(offset, 0, true); offset += 4; // index
+  view.setUint32(offset, 0, true); offset += 4; // file_type=Regular
+  view.setUint32(offset, 0, true); offset += 4; // status_flags=O_RDONLY
+  view.setBigInt64(offset, 0n, true); offset += 8; // host_handle
+  view.setBigInt64(offset, 0n, true); offset += 8; // file_offset
+  view.setUint32(offset, 1, true); offset += 4; // ref_count
+
+  // OFD 1: stdout (Regular, O_WRONLY, handle=1)
+  view.setUint32(offset, 1, true); offset += 4;
+  view.setUint32(offset, 0, true); offset += 4; // Regular
+  view.setUint32(offset, 1, true); offset += 4; // O_WRONLY
+  view.setBigInt64(offset, 1n, true); offset += 8;
+  view.setBigInt64(offset, 0n, true); offset += 8;
+  view.setUint32(offset, 1, true); offset += 4;
+
+  // OFD 2: stderr (Regular, O_WRONLY, handle=2)
+  view.setUint32(offset, 2, true); offset += 4;
+  view.setUint32(offset, 0, true); offset += 4; // Regular
+  view.setUint32(offset, 1, true); offset += 4; // O_WRONLY
+  view.setBigInt64(offset, 2n, true); offset += 8;
+  view.setBigInt64(offset, 0n, true); offset += 8;
+  view.setUint32(offset, 1, true); offset += 4;
+
+  // OFD 3: pipe read end (Pipe, O_RDONLY, handle=-1)
+  view.setUint32(offset, 3, true); offset += 4;
+  view.setUint32(offset, 2, true); offset += 4; // Pipe
+  view.setUint32(offset, 0, true); offset += 4; // O_RDONLY
+  view.setBigInt64(offset, -1n, true); offset += 8; // kernel-internal pipe
+  view.setBigInt64(offset, 0n, true); offset += 8;
+  view.setUint32(offset, 1, true); offset += 4;
+
+  // OFD 4: pipe write end (Pipe, O_WRONLY, handle=-1)
+  view.setUint32(offset, 4, true); offset += 4;
+  view.setUint32(offset, 2, true); offset += 4; // Pipe
+  view.setUint32(offset, 1, true); offset += 4; // O_WRONLY
+  view.setBigInt64(offset, -1n, true); offset += 8; // kernel-internal pipe
+  view.setBigInt64(offset, 0n, true); offset += 8;
+  view.setUint32(offset, 1, true); offset += 4;
+
+  // Environment: 0 entries
+  view.setUint32(offset, 0, true); offset += 4;
+
+  // CWD: "/"
+  view.setUint32(offset, 1, true); offset += 4;
+  bytes[offset] = 0x2F; offset += 1; // "/"
+
+  // Rlimits: 16 * [soft:u64, hard:u64] = 256 bytes (all zeros)
+  offset += 256;
+
+  // Terminal: c_iflag(4) + c_oflag(4) + c_cflag(4) + c_lflag(4) + c_cc(32) + winsize(8) = 56 bytes
+  offset += 56;
+
+  return buf;
+}
+
+describe("ProcessManager pipe conversion on fork", () => {
+  it("should detect pipe OFDs and send conversion messages on fork", async () => {
+    const { pm, adapter } = createTestPM();
+
+    // Spawn parent
+    const spawnPromise = pm.spawn();
+    adapter.lastWorker!.simulateMessage({ type: "ready", pid: 1 });
+    await spawnPromise;
+    const parentWorker = adapter.lastWorker!;
+
+    // Fork parent with pipe OFDs in fork state
+    const forkPromise = pm.fork(1);
+
+    // Parent responds with fork state containing pipes
+    const forkState = buildForkStateWithPipes();
+    parentWorker.simulateMessage({
+      type: "fork_state",
+      pid: 1,
+      data: forkState,
+    });
+
+    // Allow microtask queue to flush
+    await Promise.resolve();
+
+    // Child worker signals ready
+    const childWorker = adapter.lastWorker!;
+    childWorker.simulateMessage({ type: "ready", pid: 2 });
+    await forkPromise;
+
+    // Both workers should have received register_pipe messages (2 pipes = 2 register_pipe each)
+    const parentRegisterMsgs = parentWorker.sentMessages.filter(
+      (m: any) => m.type === "register_pipe"
+    );
+    const childRegisterMsgs = childWorker.sentMessages.filter(
+      (m: any) => m.type === "register_pipe"
+    );
+
+    expect(parentRegisterMsgs.length).toBe(2); // Two pipe OFDs
+    expect(childRegisterMsgs.length).toBe(2);
+
+    // Both workers should have received convert_pipe messages
+    const parentConvertMsgs = parentWorker.sentMessages.filter(
+      (m: any) => m.type === "convert_pipe"
+    );
+    const childConvertMsgs = childWorker.sentMessages.filter(
+      (m: any) => m.type === "convert_pipe"
+    );
+
+    expect(parentConvertMsgs.length).toBe(2);
+    expect(childConvertMsgs.length).toBe(2);
+
+    // Verify convert messages reference the correct OFD indices (3 and 4)
+    const parentOfdIndices = parentConvertMsgs.map((m: any) => m.ofdIndex).sort();
+    expect(parentOfdIndices).toEqual([3, 4]);
+  });
+
+  it("should not send pipe messages when fork state has no pipes", async () => {
+    const { pm, adapter } = createTestPM();
+
+    // Spawn parent
+    const spawnPromise = pm.spawn();
+    adapter.lastWorker!.simulateMessage({ type: "ready", pid: 1 });
+    await spawnPromise;
+    const parentWorker = adapter.lastWorker!;
+
+    // Fork with empty fork state (no pipes)
+    const forkPromise = pm.fork(1);
+    parentWorker.simulateMessage({
+      type: "fork_state",
+      pid: 1,
+      data: new ArrayBuffer(64), // Minimal/invalid fork state with no pipes
+    });
+
+    await Promise.resolve();
+
+    const childWorker = adapter.lastWorker!;
+    childWorker.simulateMessage({ type: "ready", pid: 2 });
+    await forkPromise;
+
+    // No register_pipe or convert_pipe messages
+    const parentPipeMsgs = parentWorker.sentMessages.filter(
+      (m: any) => m.type === "register_pipe" || m.type === "convert_pipe"
+    );
+    expect(parentPipeMsgs.length).toBe(0);
+  });
+});
+
 describe("ProcessManager.waitpid()", () => {
   it("should return immediately for already-exited child", async () => {
     const { pm, adapter } = createTestPM();
