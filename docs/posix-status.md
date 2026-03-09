@@ -16,7 +16,7 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 | Function | Status | Notes |
 |----------|--------|-------|
 | `open()` | Partial | Host-delegated. O_CREAT, O_EXCL, O_TRUNC, O_APPEND, O_NONBLOCK, O_CLOEXEC, O_DIRECTORY, O_NOFOLLOW flags handled. umask applied to mode on O_CREAT. |
-| `openat()` | Partial | AT_FDCWD delegates to open(). Absolute paths handled. Relative paths with non-AT_FDCWD dirfd return ENOSYS (requires directory path resolution). |
+| `openat()` | Full | AT_FDCWD delegates to open(). Absolute paths handled. Real dirfd supported via stored OFD paths. |
 | `close()` | Partial | Ref-counted OFD cleanup. Host handle closed when last ref dropped. Releases all fcntl advisory locks on the file (POSIX-compliant). EINTR not yet handled. |
 | `read()` | Partial | Host-delegated for files. Pipe/socket reads from kernel ring buffer with blocking when empty (EINTR on signal). Short reads permitted. O_NONBLOCK returns EAGAIN. |
 | `pread()` | Partial | Host-delegated via seek-read-restore. Not atomic (single-threaded safe only). Rejects pipes/sockets with ESPIPE. |
@@ -37,16 +37,16 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 | `truncate()` | Partial | Path-based. Opens file O_WRONLY, calls ftruncate, closes. |
 | `fchmod()` | Partial | Host-delegated for regular files and directories. Rejects pipes/sockets. |
 | `fchown()` | Partial | Host-delegated for regular files and directories. Rejects pipes/sockets. |
-| `fstatat()` | Partial | AT_FDCWD delegates to stat/lstat. AT_SYMLINK_NOFOLLOW supported. Relative paths with real dirfd return ENOSYS. |
-| `unlinkat()` | Partial | AT_FDCWD delegates to unlink/rmdir. AT_REMOVEDIR flag supported. |
-| `mkdirat()` | Partial | AT_FDCWD delegates to mkdir. umask applied. |
-| `renameat()` | Partial | Both dirfds must be AT_FDCWD or paths absolute. |
-| `faccessat()` | Partial | AT_FDCWD delegates to access(). Absolute paths handled. Relative paths with real dirfd return ENOSYS. |
-| `fchmodat()` | Partial | AT_FDCWD delegates to chmod(). AT_SYMLINK_NOFOLLOW accepted. Relative paths with real dirfd return ENOSYS. |
-| `fchownat()` | Partial | AT_FDCWD delegates to chown(). Relative paths with real dirfd return ENOSYS. |
-| `linkat()` | Partial | Both dirfds must be AT_FDCWD or paths absolute. |
-| `symlinkat()` | Partial | Target stored as-is. AT_FDCWD for linkpath dirfd only. Relative paths return ENOSYS. |
-| `readlinkat()` | Partial | AT_FDCWD delegates to readlink(). Relative paths with real dirfd return ENOSYS. |
+| `fstatat()` | Full | AT_FDCWD delegates to stat/lstat. AT_SYMLINK_NOFOLLOW supported. Real dirfd supported via stored OFD paths. |
+| `unlinkat()` | Full | AT_FDCWD delegates to unlink/rmdir. AT_REMOVEDIR flag supported. Real dirfd supported. |
+| `mkdirat()` | Full | AT_FDCWD delegates to mkdir. umask applied. Real dirfd supported. |
+| `renameat()` | Full | Both dirfds supported (AT_FDCWD, absolute, or real dirfd). |
+| `faccessat()` | Full | AT_FDCWD delegates to access(). Absolute paths and real dirfd supported. |
+| `fchmodat()` | Full | AT_FDCWD delegates to chmod(). AT_SYMLINK_NOFOLLOW accepted. Real dirfd supported. |
+| `fchownat()` | Full | AT_FDCWD delegates to chown(). Real dirfd supported. |
+| `linkat()` | Full | Both dirfds supported (AT_FDCWD, absolute, or real dirfd). |
+| `symlinkat()` | Full | Target stored as-is. Linkpath resolved via dirfd. Real dirfd supported. |
+| `readlinkat()` | Full | AT_FDCWD delegates to readlink(). Real dirfd supported. |
 
 ## fcntl()
 
@@ -87,9 +87,9 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 
 | Function | Status | Notes |
 |----------|--------|-------|
-| `kill()` | Partial | Marks signal as pending. sig=0 validity check. Cross-process delivery via host_kill import and ProcessManager.deliverSignal(). **Gap:** Signals are marked pending but caught handlers never invoked (see signal delivery gap). |
+| `kill()` | Partial | Marks signal as pending. sig=0 validity check. Cross-process delivery via host_kill import and ProcessManager.deliverSignal(). Pending signals delivered at syscall boundaries. |
 | `signal()` | Full | Legacy API. Returns previous handler. Wraps sigaction() semantics. SIGKILL/SIGSTOP immutable. |
-| `sigaction()` | Partial | Sets handler disposition (SIG_DFL, SIG_IGN, or function pointer). SIGKILL/SIGSTOP immutable. **Gap:** No sa_flags support (SA_RESTART, SA_SIGINFO, SA_NOCLDWAIT, SA_NOCLDSTOP all missing). Actual handler invocation deferred (requires Asyncify or syscall-entry checking). |
+| `sigaction()` | Partial | Sets handler disposition (SIG_DFL, SIG_IGN, or function pointer). SIGKILL/SIGSTOP immutable. Handlers invoked at syscall boundaries via host_call_signal_handler. **Gap:** No sa_flags support (SA_RESTART, SA_SIGINFO, SA_NOCLDWAIT, SA_NOCLDSTOP all missing). |
 | `sigprocmask()` | Full | Block/unblock/setmask operations on 64-bit signal mask. SIGKILL and SIGSTOP cannot be blocked per POSIX. |
 | `sigsuspend()` | Full | Atomically replaces signal mask and blocks until deliverable signal arrives. Uses SharedArrayBuffer + Atomics.wait/notify for cross-thread wake. Always returns EINTR. |
 | `pause()` | Full | Suspends until a signal is delivered. Delegates to sigsuspend with current mask. Always returns EINTR. |
@@ -102,16 +102,19 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 |----------|--------|-------|
 | `mmap()` | Partial | Anonymous mappings only (MAP_ANONYMOUS). Page-aligned (64KB Wasm pages). File-backed mappings not yet supported. MAP_FIXED not yet supported. |
 | `munmap()` | Full | Removes tracked region. Page-aligned address required. |
-| `brk()` / `sbrk()` | Partial | Kernel-managed program break. Initial break at 0x01000000. Only increases supported; shrinking not yet implemented. **Gap:** Program break not inherited on fork (child starts fresh). |
+| `brk()` / `sbrk()` | Partial | Kernel-managed program break. Initial break at 0x01000000. Only increases supported; shrinking not yet implemented. Program break inherited on fork/exec. |
 | `mprotect()` | Stub | Returns ENOSYS. Wasm linear memory has no page-level protection. |
 
 ## Directory Operations
 
 | Function | Status | Notes |
 |----------|--------|-------|
-| `opendir()` | Partial | Host-delegated via DirStream table. Entry-at-a-time iteration. |
-| `readdir()` | Partial | Returns WasmDirent (d_ino, d_type, d_namlen) + name buffer. |
+| `opendir()` | Partial | Host-delegated via DirStream table. Entry-at-a-time iteration. Stores resolved path for rewinddir. |
+| `readdir()` | Partial | Returns WasmDirent (d_ino, d_type, d_namlen) + name buffer. Tracks position for telldir/seekdir. |
 | `closedir()` | Full | Frees DirStream slot, delegates to host. |
+| `rewinddir()` | Full | Closes and reopens directory via stored path. Resets position to 0. |
+| `telldir()` | Full | Returns current position counter from DirStream. |
+| `seekdir()` | Full | Rewinds and skips entries to reach target position. |
 | `mkdir()` | Partial | Host-delegated. Relative paths resolved via kernel cwd. umask applied to mode. |
 | `rmdir()` | Partial | Host-delegated. Relative paths resolved via kernel cwd. |
 | `chdir()` / `getcwd()` | Partial | Kernel-maintained cwd. chdir validates via host_stat that target is S_IFDIR. getcwd returns ERANGE if buffer too small. |
@@ -189,9 +192,7 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 
 ### Critical — Violates POSIX semantics, causes incorrect behavior
 
-| Gap | Subsystem | Description |
-|-----|-----------|-------------|
-| **Signal handlers never invoked** | signals | Signals can be marked pending and masks managed, but caught signal handlers (function pointers) are never actually called. Requires Asyncify or syscall-entry signal checking. |
+(None currently — signal handler delivery resolved via syscall-boundary checking.)
 
 ### High — Missing features that affect common programs
 
@@ -202,8 +203,8 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 | **O_APPEND not atomic** | write | Writes with O_APPEND do not atomically seek-to-end then write. In multi-process scenarios, concurrent O_APPEND writes could interleave. |
 | **sigaction() missing sa_flags** | signals | No support for SA_RESTART (auto-restart interrupted syscalls), SA_SIGINFO (detailed signal info), SA_NOCLDWAIT, SA_NOCLDSTOP. Only handler disposition is tracked. |
 | **No signal queuing** | signals | Pending signals stored as 64-bit bitmask — one bit per signal. Multiple instances of the same signal are coalesced. POSIX real-time signals require queuing. |
-| **`*at()` functions with real dirfd** | filesystem | openat, fstatat, faccessat, fchmodat, fchownat, linkat, symlinkat, readlinkat all return ENOSYS when given a real dirfd (non-AT_FDCWD) with a relative path. Only AT_FDCWD works. |
-| **No seekdir/telldir/rewinddir** | directory | Directory iteration position control not implemented. DirStream only stores host_handle. |
+| ~~**`*at()` functions with real dirfd**~~ | filesystem | **Resolved.** All *at() syscalls now support real dirfd via stored OFD paths. |
+| ~~**No seekdir/telldir/rewinddir**~~ | directory | **Resolved.** DirStream now tracks path and position. rewinddir/telldir/seekdir implemented. |
 
 ### Medium — Spec deviations with limited practical impact
 
@@ -215,7 +216,7 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 | **Socket options silently no-op** | socket | SO_REUSEADDR, SO_KEEPALIVE accepted but have no effect. |
 | **POLLERR partial** | I/O multiplex | poll() reports POLLERR for sockets with both read and write shut down. No POLLERR for other error conditions. |
 | **pread/pwrite not multi-process safe** | I/O | Uses save/seek/read/restore pattern — safe in single process but races with shared OFDs across processes. |
-| **brk not inherited on fork** | memory | Child process gets fresh MemoryManager instead of inheriting parent's program break. |
+| ~~**brk not inherited on fork**~~ | memory | **Resolved.** Program break now serialized/deserialized in fork/exec state. |
 | **VMIN/VTIME not interpreted** | terminal | Values stored in c_cc array but read() does not alter behavior based on them. |
 | **ICANON no line buffering** | terminal | Flag tracked in c_lflag but no canonical-mode line editing or buffering applied. Host I/O unaffected. |
 | **No job control** | terminal | tcgetpgrp()/tcsetpgrp() not implemented. No foreground/background process group distinction. SIGTTIN/SIGTTOU not generated. |
