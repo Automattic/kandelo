@@ -2937,6 +2937,10 @@ mod tests {
             }
             Ok(self.sigsuspend_signal)
         }
+
+        fn host_call_signal_handler(&mut self, _handler_index: u32, _signum: u32) -> Result<(), Errno> {
+            Ok(())
+        }
     }
 
     #[test]

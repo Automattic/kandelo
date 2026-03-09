@@ -109,6 +109,18 @@ impl SignalState {
         self.pending & !self.blocked
     }
 
+    /// Dequeue the lowest-numbered deliverable signal.
+    /// Returns the signal number and clears it from pending.
+    pub fn dequeue(&mut self) -> Option<u32> {
+        let deliverable = self.pending & !self.blocked;
+        if deliverable == 0 {
+            return None;
+        }
+        let signum = deliverable.trailing_zeros();
+        self.pending &= !(1u64 << signum);
+        Some(signum)
+    }
+
     /// Reconstruct signal state from parts. Used by fork deserialization.
     /// Pending signals are cleared (per POSIX, child starts with no pending signals).
     pub fn from_parts(handlers: [SignalHandler; 64], blocked: u64) -> Self {
@@ -208,6 +220,49 @@ mod tests {
         let state = SignalState::from_parts_with_pending(handlers, 0x0000_0004, 0x0000_0008);
         assert_eq!(state.blocked, 0x0000_0004);
         assert_eq!(state.pending, 0x0000_0008);
+    }
+
+    #[test]
+    fn test_dequeue_returns_lowest_signal() {
+        let mut state = SignalState::new();
+        state.raise(SIGTERM); // 15
+        state.raise(SIGINT);  // 2
+        state.raise(SIGUSR1); // 10
+        // Should dequeue lowest first (SIGINT=2)
+        assert_eq!(state.dequeue(), Some(SIGINT));
+        assert_eq!(state.dequeue(), Some(SIGUSR1));
+        assert_eq!(state.dequeue(), Some(SIGTERM));
+        assert_eq!(state.dequeue(), None);
+    }
+
+    #[test]
+    fn test_dequeue_returns_none_when_empty() {
+        let mut state = SignalState::new();
+        assert_eq!(state.dequeue(), None);
+    }
+
+    #[test]
+    fn test_dequeue_clears_from_pending() {
+        let mut state = SignalState::new();
+        state.raise(SIGINT);
+        assert!(state.is_pending(SIGINT));
+        let sig = state.dequeue();
+        assert_eq!(sig, Some(SIGINT));
+        assert!(!state.is_pending(SIGINT));
+    }
+
+    #[test]
+    fn test_dequeue_skips_blocked_signals() {
+        let mut state = SignalState::new();
+        state.raise(SIGINT);  // 2 - blocked
+        state.raise(SIGTERM); // 15 - not blocked
+        state.blocked = 1u64 << SIGINT;
+        // Should skip SIGINT and return SIGTERM
+        assert_eq!(state.dequeue(), Some(SIGTERM));
+        // SIGINT is still pending
+        assert!(state.is_pending(SIGINT));
+        // No more deliverable
+        assert_eq!(state.dequeue(), None);
     }
 
     #[test]

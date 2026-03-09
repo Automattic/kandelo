@@ -51,6 +51,10 @@ pub trait HostIO {
     fn host_set_alarm(&mut self, seconds: u32) -> Result<(), Errno>;
     /// Block until a signal is delivered. Returns the signal number.
     fn host_sigsuspend_wait(&mut self) -> Result<u32, Errno>;
+    /// Ask the host to invoke a user-space signal handler.
+    /// `handler_index` is the Wasm function table index.
+    /// `signum` is the signal number being delivered.
+    fn host_call_signal_handler(&mut self, handler_index: u32, signum: u32) -> Result<(), Errno>;
 }
 
 /// Process lifecycle state.

@@ -244,6 +244,25 @@ export class WasmPosixKernel {
         host_sigsuspend_wait: (): number => {
           return this.hostSigsuspendWait();
         },
+        host_call_signal_handler: (handler_index: number, signum: number): number => {
+          if (!this.instance) {
+            return -22; // EINVAL
+          }
+          const table = this.instance.exports.__indirect_function_table as WebAssembly.Table;
+          if (!table) {
+            return -22; // EINVAL
+          }
+          const handler = table.get(handler_index);
+          if (handler) {
+            try {
+              (handler as Function)(signum);
+              return 0;
+            } catch (e) {
+              return -5; // EIO
+            }
+          }
+          return -22; // EINVAL
+        },
       },
     };
 
