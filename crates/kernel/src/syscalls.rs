@@ -961,14 +961,20 @@ pub fn sys_setsid(proc: &mut Process) -> Result<u32, Errno> {
 /// If pid matches current process, is 0 (process group), or is the negative of our pgid,
 /// raises locally. Otherwise delegates to host for cross-process delivery.
 pub fn sys_kill(proc: &mut Process, host: &mut dyn HostIO, pid: i32, sig: u32) -> Result<(), Errno> {
-    if sig == 0 {
-        // sig=0 is a validity check -- just return success
-        return Ok(());
-    }
-    if sig >= NSIG {
+    if sig >= NSIG && sig != 0 {
         return Err(Errno::EINVAL);
     }
-    if pid == proc.pid as i32 || pid == 0 || pid == -(proc.pgid as i32) {
+    let is_local = pid == proc.pid as i32 || pid == 0 || pid == -(proc.pgid as i32);
+    if sig == 0 {
+        // sig=0 is a validity/existence check. Local always succeeds.
+        // For remote pids, delegate to host so it can return ESRCH if needed.
+        if is_local {
+            return Ok(());
+        } else {
+            return host.host_kill(pid, sig);
+        }
+    }
+    if is_local {
         proc.signals.raise(sig);
         Ok(())
     } else {
@@ -3117,6 +3123,16 @@ mod tests {
         let result = sys_kill(&mut proc, &mut host, 0, 2);
         assert!(result.is_ok());
         assert!(proc.signals.is_pending(2));
+    }
+
+    #[test]
+    fn test_kill_sig_zero_remote_delegates_to_host() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        // sig=0 to remote pid should delegate to host for existence check
+        let result = sys_kill(&mut proc, &mut host, 2, 0);
+        assert!(result.is_ok()); // MockHostIO returns Ok(())
+        assert_eq!(proc.signals.pending, 0); // no signal raised locally
     }
 
     #[test]

@@ -404,6 +404,8 @@ export class ProcessManager {
     if (!info || info.state === "zombie") {
       throw new Error(`No such process: ${targetPid}`);
     }
+    // sig=0 is a POSIX existence check — no actual signal delivery
+    if (signal === 0) return;
     info.worker.postMessage({ type: "deliver_signal", signal });
   }
 
