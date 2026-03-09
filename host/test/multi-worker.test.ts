@@ -112,3 +112,35 @@ describe("Fork Integration", () => {
     await pm.terminate(parentPid);
   }, 15_000);
 });
+
+describe("Cross-Process Pipe Integration", () => {
+  it("should fork a process with pipe conversion support active", async () => {
+    const pm = new ProcessManager({
+      wasmBytes: loadWasmBytes(),
+      kernelConfig: {
+        maxWorkers: 4,
+        dataBufferSize: 65536,
+        useSharedMemory: false,
+      },
+      workerAdapter: new NodeWorkerAdapter(),
+    });
+
+    // Spawn parent
+    const parentPid = await pm.spawn();
+    expect(parentPid).toBe(1);
+
+    // Fork — the ProcessManager will attempt to parse pipe OFDs from the fork state.
+    // A freshly spawned process has no pipes, so no conversion should occur,
+    // but this verifies the parsing doesn't break the fork flow.
+    const childPid = await pm.fork(parentPid);
+    expect(childPid).toBe(2);
+
+    // Both processes should be running
+    expect(pm.getProcess(parentPid)!.state).toBe("running");
+    expect(pm.getProcess(childPid)!.state).toBe("running");
+
+    // Clean up
+    await pm.terminate(childPid);
+    await pm.terminate(parentPid);
+  }, 15_000);
+});
