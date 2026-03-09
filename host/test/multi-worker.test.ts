@@ -231,6 +231,55 @@ describe("Exec", () => {
   }, 15_000);
 });
 
+describe("Alarm", () => {
+  it("should allocate signalWakeSab for spawned processes", async () => {
+    const pm = new ProcessManager({
+      wasmBytes: loadWasmBytes(),
+      kernelConfig: {
+        maxWorkers: 4,
+        dataBufferSize: 65536,
+        useSharedMemory: false,
+      },
+      workerAdapter: new NodeWorkerAdapter(),
+    });
+
+    const pid = await pm.spawn();
+    const info = pm.getProcess(pid);
+    expect(info).toBeDefined();
+    expect(info!.signalWakeSab).toBeInstanceOf(SharedArrayBuffer);
+    expect(info!.signalWakeSab!.byteLength).toBe(8);
+
+    await pm.terminate(pid);
+  }, 15_000);
+
+  it("should allocate signalWakeSab for forked processes", async () => {
+    const pm = new ProcessManager({
+      wasmBytes: loadWasmBytes(),
+      kernelConfig: {
+        maxWorkers: 4,
+        dataBufferSize: 65536,
+        useSharedMemory: false,
+      },
+      workerAdapter: new NodeWorkerAdapter(),
+    });
+
+    const parentPid = await pm.spawn();
+    const childPid = await pm.fork(parentPid);
+
+    const childInfo = pm.getProcess(childPid);
+    expect(childInfo).toBeDefined();
+    expect(childInfo!.signalWakeSab).toBeInstanceOf(SharedArrayBuffer);
+    expect(childInfo!.signalWakeSab!.byteLength).toBe(8);
+
+    // Child and parent should have distinct SABs
+    const parentInfo = pm.getProcess(parentPid);
+    expect(parentInfo!.signalWakeSab).not.toBe(childInfo!.signalWakeSab);
+
+    await pm.terminate(childPid);
+    await pm.terminate(parentPid);
+  }, 15_000);
+});
+
 describe("Cross-Process Pipe Integration", () => {
   it("should fork a process with pipe conversion support active", async () => {
     const pm = new ProcessManager({
