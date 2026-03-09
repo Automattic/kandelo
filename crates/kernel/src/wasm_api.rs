@@ -952,6 +952,19 @@ pub extern "C" fn kernel_kill(pid: i32, sig: u32) -> i32 {
     }
 }
 
+/// Deliver a signal from an external source (host). Called by host when
+/// another process sends a signal to this one via kill().
+/// Returns 0 on success, -EINVAL for invalid signal.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_deliver_signal(sig: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    if sig == 0 || sig >= wasm_posix_shared::signal::NSIG {
+        return -(Errno::EINVAL as i32);
+    }
+    proc.signals.raise(sig);
+    0
+}
+
 /// Send a signal to the current process. Returns 0 on success, or negative errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_raise(sig: u32) -> i32 {

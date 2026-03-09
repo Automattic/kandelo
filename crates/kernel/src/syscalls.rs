@@ -3154,6 +3154,14 @@ mod tests {
     }
 
     #[test]
+    fn test_deliver_signal_marks_pending() {
+        let mut proc = Process::new(1);
+        // Simulate what kernel_deliver_signal does
+        proc.signals.raise(15); // SIGTERM
+        assert!(proc.signals.is_pending(15));
+    }
+
+    #[test]
     fn test_fcntl_setlk_and_getlk() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
