@@ -91,9 +91,9 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 | `signal()` | Full | Legacy API. Returns previous handler. Wraps sigaction() semantics. SIGKILL/SIGSTOP immutable. |
 | `sigaction()` | Partial | Sets handler disposition (SIG_DFL, SIG_IGN, or function pointer). SIGKILL/SIGSTOP immutable. Actual handler invocation deferred (requires Asyncify or syscall-entry checking). |
 | `sigprocmask()` | Full | Block/unblock/setmask operations on 64-bit signal mask. SIGKILL and SIGSTOP cannot be blocked per POSIX. |
-| `sigsuspend()` | Planned | Requires blocking + signal delivery mechanism. |
+| `sigsuspend()` | Full | Atomically replaces signal mask and blocks until deliverable signal arrives. Uses SharedArrayBuffer + Atomics.wait/notify for cross-thread wake. Always returns EINTR. |
 | `raise()` | Full | Equivalent to kill(getpid(), sig). |
-| `alarm()` | Planned | Timer-based SIGALRM. Requires host timer integration. |
+| `alarm()` | Full | Sets SIGALRM timer via host setTimeout. Returns previous remaining seconds. alarm(0) cancels. Not inherited by fork, canceled by exec. |
 
 ## Memory Management
 
