@@ -214,6 +214,11 @@ export class WasmPosixKernel {
         host_fchown: (handle: bigint, uid: number, gid: number): number => {
           return this.hostFchown(handle, uid, gid);
         },
+        host_kill: (_pid: number, _sig: number): number => {
+          // Stub: cross-process kill not yet implemented (Task 4).
+          // Return -ESRCH (3) to indicate no such process.
+          return -3;
+        },
       },
     };
 

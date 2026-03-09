@@ -46,6 +46,7 @@ pub trait HostIO {
     fn host_fsync(&mut self, handle: i64) -> Result<(), Errno>;
     fn host_fchmod(&mut self, handle: i64, mode: u32) -> Result<(), Errno>;
     fn host_fchown(&mut self, handle: i64, uid: u32, gid: u32) -> Result<(), Errno>;
+    fn host_kill(&mut self, pid: i32, sig: u32) -> Result<(), Errno>;
 }
 
 /// Process lifecycle state.

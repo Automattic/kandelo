@@ -49,6 +49,7 @@ unsafe extern "C" {
     fn host_fsync(handle: i64) -> i32;
     fn host_fchmod(handle: i64, mode: u32) -> i32;
     fn host_fchown(handle: i64, uid: u32, gid: u32) -> i32;
+    fn host_kill(pid: i32, sig: u32) -> i32;
 }
 
 // ---------------------------------------------------------------------------
@@ -315,6 +316,18 @@ impl HostIO for WasmHostIO {
     fn host_fchown(&mut self, handle: i64, uid: u32, gid: u32) -> Result<(), Errno> {
         let result = unsafe { host_fchown(handle, uid, gid) };
         i32_to_result(result)
+    }
+
+    fn host_kill(&mut self, pid: i32, sig: u32) -> Result<(), Errno> {
+        let ret = unsafe { host_kill(pid, sig) };
+        if ret < 0 {
+            match Errno::from_u32((-ret) as u32) {
+                Some(e) => Err(e),
+                None => Err(Errno::EIO),
+            }
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -946,7 +959,8 @@ pub extern "C" fn kernel_setsid() -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_kill(pid: i32, sig: u32) -> i32 {
     let proc = unsafe { get_process() };
-    match syscalls::sys_kill(proc, pid, sig) {
+    let mut host = WasmHostIO;
+    match syscalls::sys_kill(proc, &mut host, pid, sig) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     }
@@ -969,7 +983,8 @@ pub extern "C" fn kernel_deliver_signal(sig: u32) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_raise(sig: u32) -> i32 {
     let proc = unsafe { get_process() };
-    match syscalls::sys_raise(proc, sig) {
+    let mut host = WasmHostIO;
+    match syscalls::sys_raise(proc, &mut host, sig) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     }

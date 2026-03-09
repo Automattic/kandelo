@@ -957,9 +957,10 @@ pub fn sys_setsid(proc: &mut Process) -> Result<u32, Errno> {
     Ok(proc.sid)
 }
 
-/// Send a signal to the current process (since we only have one process).
-/// Returns Ok(()) on success, Err(EINVAL) for invalid signal.
-pub fn sys_kill(proc: &mut Process, _pid: i32, sig: u32) -> Result<(), Errno> {
+/// Send a signal to a process.
+/// If pid matches current process, is 0 (process group), or is the negative of our pgid,
+/// raises locally. Otherwise delegates to host for cross-process delivery.
+pub fn sys_kill(proc: &mut Process, host: &mut dyn HostIO, pid: i32, sig: u32) -> Result<(), Errno> {
     if sig == 0 {
         // sig=0 is a validity check -- just return success
         return Ok(());
@@ -967,13 +968,17 @@ pub fn sys_kill(proc: &mut Process, _pid: i32, sig: u32) -> Result<(), Errno> {
     if sig >= NSIG {
         return Err(Errno::EINVAL);
     }
-    proc.signals.raise(sig);
-    Ok(())
+    if pid == proc.pid as i32 || pid == 0 || pid == -(proc.pgid as i32) {
+        proc.signals.raise(sig);
+        Ok(())
+    } else {
+        host.host_kill(pid, sig)
+    }
 }
 
 /// Send a signal to the current process.
-pub fn sys_raise(proc: &mut Process, sig: u32) -> Result<(), Errno> {
-    sys_kill(proc, proc.pid as i32, sig)
+pub fn sys_raise(proc: &mut Process, host: &mut dyn HostIO, sig: u32) -> Result<(), Errno> {
+    sys_kill(proc, host, proc.pid as i32, sig)
 }
 
 /// Set signal handler. Returns the previous handler disposition as a u32.
@@ -2588,6 +2593,10 @@ mod tests {
         fn host_fchown(&mut self, _handle: i64, _uid: u32, _gid: u32) -> Result<(), Errno> {
             Ok(())
         }
+
+        fn host_kill(&mut self, _pid: i32, _sig: u32) -> Result<(), Errno> {
+            Ok(())
+        }
     }
 
     #[test]
@@ -3062,23 +3071,52 @@ mod tests {
     #[test]
     fn test_kill_marks_signal_pending() {
         let mut proc = Process::new(1);
-        let mut _host = MockHostIO::new();
-        sys_kill(&mut proc, 1, 2).unwrap(); // SIGINT=2
+        let mut host = MockHostIO::new();
+        sys_kill(&mut proc, &mut host, 1, 2).unwrap(); // SIGINT=2
         assert!(proc.signals.is_pending(2));
     }
 
     #[test]
     fn test_kill_sig_zero_is_noop() {
         let mut proc = Process::new(1);
-        sys_kill(&mut proc, 1, 0).unwrap();
+        let mut host = MockHostIO::new();
+        sys_kill(&mut proc, &mut host, 1, 0).unwrap();
         assert_eq!(proc.signals.pending, 0);
     }
 
     #[test]
     fn test_kill_invalid_signal() {
         let mut proc = Process::new(1);
-        let result = sys_kill(&mut proc, 1, 100);
+        let mut host = MockHostIO::new();
+        let result = sys_kill(&mut proc, &mut host, 1, 100);
         assert_eq!(result, Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn test_kill_remote_pid_calls_host_kill() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let result = sys_kill(&mut proc, &mut host, 2, 15);
+        assert!(result.is_ok());
+        assert!(!proc.signals.is_pending(15)); // NOT pending locally
+    }
+
+    #[test]
+    fn test_kill_self_raises_locally() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let result = sys_kill(&mut proc, &mut host, 1, 2);
+        assert!(result.is_ok());
+        assert!(proc.signals.is_pending(2));
+    }
+
+    #[test]
+    fn test_kill_pid_zero_raises_locally() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let result = sys_kill(&mut proc, &mut host, 0, 2);
+        assert!(result.is_ok());
+        assert!(proc.signals.is_pending(2));
     }
 
     #[test]
@@ -3149,7 +3187,8 @@ mod tests {
     #[test]
     fn test_raise_is_kill_to_self() {
         let mut proc = Process::new(42);
-        sys_raise(&mut proc, 15).unwrap(); // SIGTERM
+        let mut host = MockHostIO::new();
+        sys_raise(&mut proc, &mut host, 15).unwrap(); // SIGTERM
         assert!(proc.signals.is_pending(15));
     }
 
