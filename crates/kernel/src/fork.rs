@@ -221,7 +221,8 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
     w.write_u32(0)?; // placeholder for total_size
 
     // ── Scalars (32 bytes) ──
-    w.write_u32(proc.ppid)?;
+    // Write the parent's pid as the child's ppid (child's parent is this process)
+    w.write_u32(proc.pid)?;
     w.write_u32(proc.uid)?;
     w.write_u32(proc.gid)?;
     w.write_u32(proc.euid)?;
@@ -484,7 +485,7 @@ mod tests {
 
         let child = deserialize_fork_state(&buf[..written], 42).unwrap();
         assert_eq!(child.pid, 42);
-        assert_eq!(child.ppid, proc.ppid);
+        assert_eq!(child.ppid, proc.pid); // child's ppid is parent's pid
         assert_eq!(child.uid, proc.uid);
         assert_eq!(child.gid, proc.gid);
         assert_eq!(child.umask, proc.umask);

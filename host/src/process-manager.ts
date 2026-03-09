@@ -234,6 +234,7 @@ export class ProcessManager {
   private requestForkState(parentInfo: ProcessInfo): Promise<ArrayBuffer> {
     return new Promise<ArrayBuffer>((resolve, reject) => {
       const timeout = setTimeout(() => {
+        parentInfo.worker.off("message", handler);
         reject(
           new Error(
             `Fork state request timed out for process ${parentInfo.pid}`,
@@ -241,14 +242,16 @@ export class ProcessManager {
         );
       }, 10_000);
 
-      parentInfo.worker.on("message", (msg: unknown) => {
+      const handler = (msg: unknown) => {
         const m = msg as WorkerToHostMessage;
         if (m.type === "fork_state" && m.pid === parentInfo.pid) {
           clearTimeout(timeout);
+          parentInfo.worker.off("message", handler);
           resolve(m.data);
         }
-      });
+      };
 
+      parentInfo.worker.on("message", handler);
       parentInfo.worker.postMessage({ type: "get_fork_state" });
     });
   }

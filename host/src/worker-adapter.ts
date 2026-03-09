@@ -3,6 +3,7 @@ export interface WorkerHandle {
   on(event: "message", handler: (message: unknown) => void): void;
   on(event: "error", handler: (error: Error) => void): void;
   on(event: "exit", handler: (code: number) => void): void;
+  off(event: string, handler: (...args: unknown[]) => void): void;
   terminate(): Promise<number>;
 }
 
@@ -37,6 +38,27 @@ export class MockWorkerHandle implements WorkerHandle {
       case "exit":
         this.exitHandlers.push(handler as (code: number) => void);
         break;
+    }
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  off(event: string, handler: (...args: any[]) => void): void {
+    switch (event) {
+      case "message": {
+        const idx = this.messageHandlers.indexOf(handler as (msg: unknown) => void);
+        if (idx >= 0) this.messageHandlers.splice(idx, 1);
+        break;
+      }
+      case "error": {
+        const idx = this.errorHandlers.indexOf(handler as (err: Error) => void);
+        if (idx >= 0) this.errorHandlers.splice(idx, 1);
+        break;
+      }
+      case "exit": {
+        const idx = this.exitHandlers.indexOf(handler as (code: number) => void);
+        if (idx >= 0) this.exitHandlers.splice(idx, 1);
+        break;
+      }
     }
   }
 
@@ -133,6 +155,11 @@ class NodeWorkerHandle implements WorkerHandle {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   on(event: string, handler: (...args: any[]) => void): void {
     this.worker.on(event, handler);
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  off(event: string, handler: (...args: any[]) => void): void {
+    this.worker.off(event, handler);
   }
 
   async terminate(): Promise<number> {
