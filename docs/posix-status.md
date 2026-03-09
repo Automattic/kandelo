@@ -197,7 +197,7 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 
 | Gap | Subsystem | Description |
 |-----|-----------|-------------|
-| **No EINTR from any syscall** | all | No syscall ever returns EINTR (except poll/select). POSIX requires interruptible syscalls (read, write, close, etc.) to return EINTR when a signal is delivered. Tied to signal handler invocation gap. |
+| **EINTR partially implemented** | all | read, write, recv, poll, select return EINTR when a signal is pending during a blocking wait. close() and other non-blocking syscalls do not check. Tied to signal handler invocation gap. |
 | **PIPE_BUF atomicity not enforced** | pipe | Writes ≤ PIPE_BUF (4096) are not guaranteed atomic. POSIX requires no interleaving of concurrent writes ≤ PIPE_BUF. Ring buffer has no boundary tracking. |
 | **O_APPEND not atomic** | write | Writes with O_APPEND do not atomically seek-to-end then write. In multi-process scenarios, concurrent O_APPEND writes could interleave. |
 | **sigaction() missing sa_flags** | signals | No support for SA_RESTART (auto-restart interrupted syscalls), SA_SIGINFO (detailed signal info), SA_NOCLDWAIT, SA_NOCLDSTOP. Only handler disposition is tracked. |

@@ -1587,9 +1587,10 @@ pub fn sys_send(
     host: &mut dyn HostIO,
     fd: i32,
     buf: &[u8],
-    _flags: u32,
+    flags: u32,
 ) -> Result<usize, Errno> {
     use crate::socket::SocketState;
+    use wasm_posix_shared::socket::MSG_NOSIGNAL;
 
     let entry = proc.fd_table.get(fd)?;
     let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
@@ -1601,7 +1602,14 @@ pub fn sys_send(
     if sock.state != SocketState::Connected {
         return Err(Errno::ENOTCONN);
     }
-    sys_write(proc, host, fd, buf)
+    let nosignal = flags & MSG_NOSIGNAL != 0;
+    let sigpipe_was_pending = proc.signals.is_pending(wasm_posix_shared::signal::SIGPIPE);
+    let result = sys_write(proc, host, fd, buf);
+    // MSG_NOSIGNAL: suppress SIGPIPE raised by write
+    if nosignal && !sigpipe_was_pending {
+        proc.signals.clear(wasm_posix_shared::signal::SIGPIPE);
+    }
+    result
 }
 
 /// Receive data from a connected socket.
@@ -3989,6 +3997,22 @@ mod tests {
         // Now data is consumed — use MSG_DONTWAIT to avoid blocking
         let result = sys_recv(&mut proc, &mut host, fd1, &mut buf, MSG_DONTWAIT);
         assert_eq!(result, Err(Errno::EAGAIN));
+    }
+
+    #[test]
+    fn test_send_msg_nosignal() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+        let (fd0, fd1) = sys_socketpair(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+
+        // Close peer to trigger EPIPE on write
+        sys_close(&mut proc, &mut host, fd1).unwrap();
+
+        // Send with MSG_NOSIGNAL — should get EPIPE but NOT raise SIGPIPE
+        let result = sys_send(&mut proc, &mut host, fd0, b"test", MSG_NOSIGNAL);
+        assert_eq!(result, Err(Errno::EPIPE));
+        assert!(!proc.signals.is_pending(wasm_posix_shared::signal::SIGPIPE));
     }
 
     #[test]

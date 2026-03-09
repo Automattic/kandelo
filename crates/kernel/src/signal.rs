@@ -85,6 +85,13 @@ impl SignalState {
         true
     }
 
+    /// Clear a pending signal.
+    pub fn clear(&mut self, signum: u32) {
+        if signum > 0 && signum < 64 {
+            self.pending &= !(1u64 << signum);
+        }
+    }
+
     /// Check if a signal is pending.
     pub fn is_pending(&self, signum: u32) -> bool {
         if signum >= 64 { return false; }
