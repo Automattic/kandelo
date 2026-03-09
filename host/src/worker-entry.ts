@@ -90,7 +90,7 @@ export async function workerMain(
         }
         case "register_pipe": {
           const msg = m as RegisterPipeMessage;
-          kernel.registerSharedPipe(msg.handle, msg.buffer);
+          kernel.registerSharedPipe(msg.handle, msg.buffer, msg.end);
           break;
         }
         case "convert_pipe": {

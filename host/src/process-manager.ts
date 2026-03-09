@@ -194,31 +194,38 @@ export class ProcessManager {
               clearTimeout(timeout);
               childInfo.state = "running";
 
-              // Detect pipe OFDs from fork state and convert to shared pipes
+              // Detect pipe OFDs from fork state and convert to shared pipes.
+              // Pipe OFDs are grouped by their underlying pipe (same host_handle).
+              // One SharedPipeBuffer is created per pipe, shared by both endpoints.
+              // Each OFD gets its own handle so close can identify read vs write end.
               try {
-                const pipeOfds = this.parsePipeOfdsFromForkState(forkState);
-                for (const pipeOfd of pipeOfds) {
-                  const handle = this.nextPipeHandle++;
+                const pipeGroups = this.parsePipeGroupsFromForkState(forkState);
+                for (const group of pipeGroups) {
                   const sharedPipe = SharedPipeBuffer.create();
-                  this.sharedPipes.set(handle, sharedPipe);
-
                   const sab = sharedPipe.getBuffer();
 
-                  // Register shared pipe buffer with both workers
-                  parentInfo.worker.postMessage(
-                    { type: "register_pipe", handle, buffer: sab },
-                  );
-                  childInfo.worker.postMessage(
-                    { type: "register_pipe", handle, buffer: sab },
-                  );
+                  // Each OFD gets its own handle pointing to the same SharedPipeBuffer
+                  for (const ofd of group.ofds) {
+                    const handle = this.nextPipeHandle++;
+                    this.sharedPipes.set(handle, sharedPipe);
+                    const end = ofd.isRead ? "read" as const : "write" as const;
 
-                  // Convert pipe OFDs in both kernels to use the new host handle
-                  parentInfo.worker.postMessage(
-                    { type: "convert_pipe", ofdIndex: pipeOfd.ofdIndex, newHandle: handle },
-                  );
-                  childInfo.worker.postMessage(
-                    { type: "convert_pipe", ofdIndex: pipeOfd.ofdIndex, newHandle: handle },
-                  );
+                    // Register with both workers (same SAB, per-OFD handle + end type)
+                    parentInfo.worker.postMessage(
+                      { type: "register_pipe", handle, buffer: sab, end },
+                    );
+                    childInfo.worker.postMessage(
+                      { type: "register_pipe", handle, buffer: sab, end },
+                    );
+
+                    // Convert this OFD in both kernels
+                    parentInfo.worker.postMessage(
+                      { type: "convert_pipe", ofdIndex: ofd.ofdIndex, newHandle: handle },
+                    );
+                    childInfo.worker.postMessage(
+                      { type: "convert_pipe", ofdIndex: ofd.ofdIndex, newHandle: handle },
+                    );
+                  }
                 }
               } catch {
                 // If parsing fails, skip pipe conversion (no pipes to convert)
@@ -265,7 +272,13 @@ export class ProcessManager {
     });
   }
 
-  private parsePipeOfdsFromForkState(forkState: ArrayBuffer): { ofdIndex: number; isRead: boolean }[] {
+  /**
+   * Parse pipe OFDs from fork state binary, grouped by underlying pipe.
+   * Pipe OFDs sharing the same host_handle belong to the same pipe
+   * (read end and write end both have host_handle = -(pipe_idx + 1)).
+   * Returns one entry per unique pipe with per-OFD info (index + read/write end).
+   */
+  private parsePipeGroupsFromForkState(forkState: ArrayBuffer): { ofds: { ofdIndex: number; isRead: boolean }[] }[] {
     const view = new DataView(forkState);
     let offset = 12; // skip header (magic + version + total_size)
     offset += 32;    // skip scalars (8 u32s)
@@ -283,26 +296,31 @@ export class ProcessManager {
     offset += 4;
     offset += fdCount * 12; // skip fd entries (fd_num + ofd_index + fd_flags)
 
-    // Read OFD table
+    // Read OFD table — group pipe OFDs by host_handle
     const ofdCount = view.getUint32(offset, true);
     offset += 4;
 
-    const pipeOfds: { ofdIndex: number; statusFlags: number }[] = [];
+    const O_ACCMODE = 3;
+    const pipesByHandle = new Map<bigint, { ofdIndex: number; isRead: boolean }[]>();
     for (let i = 0; i < ofdCount; i++) {
       const index = view.getUint32(offset, true);
       const fileType = view.getUint32(offset + 4, true);
       const statusFlags = view.getUint32(offset + 8, true);
-      offset += 32; // total per OFD: index(4) + fileType(4) + statusFlags(4) + host_handle(8) + offset(8) + ref_count(4) = 32
+      const hostHandle = view.getBigInt64(offset + 12, true);
+      offset += 32; // index(4) + fileType(4) + statusFlags(4) + host_handle(8) + offset(8) + ref_count(4) = 32
 
       if (fileType === 2) { // Pipe
-        pipeOfds.push({ ofdIndex: index, statusFlags });
+        const ofd = { ofdIndex: index, isRead: (statusFlags & O_ACCMODE) === 0 };
+        const existing = pipesByHandle.get(hostHandle);
+        if (existing) {
+          existing.push(ofd);
+        } else {
+          pipesByHandle.set(hostHandle, [ofd]);
+        }
       }
     }
 
-    return pipeOfds.map(p => ({
-      ofdIndex: p.ofdIndex,
-      isRead: (p.statusFlags & 3) === 0, // O_RDONLY = 0
-    }));
+    return Array.from(pipesByHandle.values()).map(ofds => ({ ofds }));
   }
 
   private requestForkState(parentInfo: ProcessInfo): Promise<ArrayBuffer> {

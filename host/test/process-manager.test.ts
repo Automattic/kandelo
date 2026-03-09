@@ -339,7 +339,9 @@ describe("ProcessManager pipe conversion on fork", () => {
     childWorker.simulateMessage({ type: "ready", pid: 2 });
     await forkPromise;
 
-    // Both workers should have received register_pipe messages (2 pipes = 2 register_pipe each)
+    // Both pipe OFDs (indices 3, 4) share host_handle=-1, so they form
+    // one pipe group. Each OFD gets its own handle for close tracking.
+    // → 2 register_pipe per worker, 2 convert_pipe per worker
     const parentRegisterMsgs = parentWorker.sentMessages.filter(
       (m: any) => m.type === "register_pipe"
     );
@@ -347,10 +349,17 @@ describe("ProcessManager pipe conversion on fork", () => {
       (m: any) => m.type === "register_pipe"
     );
 
-    expect(parentRegisterMsgs.length).toBe(2); // Two pipe OFDs
+    expect(parentRegisterMsgs.length).toBe(2); // One per OFD (read + write)
     expect(childRegisterMsgs.length).toBe(2);
 
-    // Both workers should have received convert_pipe messages
+    // Both register_pipe messages should share the same SharedArrayBuffer
+    expect(parentRegisterMsgs[0].buffer).toBe(parentRegisterMsgs[1].buffer);
+
+    // One should be "read" and the other "write"
+    const ends = parentRegisterMsgs.map((m: any) => m.end).sort();
+    expect(ends).toEqual(["read", "write"]);
+
+    // Both OFD indices should be converted (different handles)
     const parentConvertMsgs = parentWorker.sentMessages.filter(
       (m: any) => m.type === "convert_pipe"
     );
@@ -360,6 +369,10 @@ describe("ProcessManager pipe conversion on fork", () => {
 
     expect(parentConvertMsgs.length).toBe(2);
     expect(childConvertMsgs.length).toBe(2);
+
+    // Each OFD gets a different handle
+    const parentHandles = parentConvertMsgs.map((m: any) => m.newHandle);
+    expect(parentHandles[0]).not.toBe(parentHandles[1]);
 
     // Verify convert messages reference the correct OFD indices (3 and 4)
     const parentOfdIndices = parentConvertMsgs.map((m: any) => m.ofdIndex).sort();

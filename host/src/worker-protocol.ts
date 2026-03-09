@@ -17,6 +17,7 @@ export interface RegisterPipeMessage {
   type: "register_pipe";
   handle: number;
   buffer: SharedArrayBuffer;
+  end: "read" | "write";
 }
 
 export interface ConvertPipeMessage {

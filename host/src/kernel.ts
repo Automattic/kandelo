@@ -27,15 +27,15 @@ export class WasmPosixKernel {
   private io: PlatformIO;
   private instance: WebAssembly.Instance | null = null;
   private memory: WebAssembly.Memory | null = null;
-  private sharedPipes = new Map<number, SharedPipeBuffer>();
+  private sharedPipes = new Map<number, { pipe: SharedPipeBuffer; end: "read" | "write" }>();
 
   constructor(config: KernelConfig, io: PlatformIO) {
     this.config = config;
     this.io = io;
   }
 
-  registerSharedPipe(handle: number, sab: SharedArrayBuffer): void {
-    this.sharedPipes.set(handle, SharedPipeBuffer.fromSharedBuffer(sab));
+  registerSharedPipe(handle: number, sab: SharedArrayBuffer, end: "read" | "write"): void {
+    this.sharedPipes.set(handle, { pipe: SharedPipeBuffer.fromSharedBuffer(sab), end });
   }
 
   unregisterSharedPipe(handle: number): void {
@@ -305,8 +305,13 @@ export class WasmPosixKernel {
     const h = Number(handle);
 
     // Check shared pipe registry
-    const pipe = this.sharedPipes.get(h);
-    if (pipe) {
+    const entry = this.sharedPipes.get(h);
+    if (entry) {
+      if (entry.end === "read") {
+        entry.pipe.closeRead();
+      } else {
+        entry.pipe.closeWrite();
+      }
       this.sharedPipes.delete(h);
       return 0;
     }
@@ -337,15 +342,11 @@ export class WasmPosixKernel {
     const h = Number(handle);
 
     // Check shared pipe registry
-    const pipe = this.sharedPipes.get(h);
-    if (pipe) {
+    const readEntry = this.sharedPipes.get(h);
+    if (readEntry) {
       const mem = this.getMemoryBuffer();
-      const dst = new Uint8Array(bufLen);
-      const n = pipe.read(dst);
-      if (n > 0) {
-        mem.set(dst.subarray(0, n), bufPtr);
-      }
-      return n;
+      const dst = new Uint8Array(mem.buffer, bufPtr, bufLen);
+      return readEntry.pipe.read(dst);
     }
 
     // stdin — not yet supported
@@ -385,9 +386,9 @@ export class WasmPosixKernel {
     const data = mem.slice(bufPtr, bufPtr + bufLen);
 
     // Check shared pipe registry
-    const pipe = this.sharedPipes.get(h);
-    if (pipe) {
-      return pipe.write(data);
+    const writeEntry = this.sharedPipes.get(h);
+    if (writeEntry) {
+      return writeEntry.pipe.write(data);
     }
 
     // stdout / stderr — write to console
