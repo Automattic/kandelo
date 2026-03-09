@@ -14,6 +14,7 @@ export interface ProcessInfo {
   worker: WorkerHandle;
   state: "starting" | "running" | "zombie";
   exitStatus?: number;
+  alarmTimer?: ReturnType<typeof setTimeout>;
 }
 
 export interface ProcessManagerConfig {
@@ -98,6 +99,10 @@ export class ProcessManager {
               cleanup();
               reject(new Error(`Worker exited with status ${m.status}`));
             } else {
+              if (info.alarmTimer) {
+                clearTimeout(info.alarmTimer);
+                info.alarmTimer = undefined;
+              }
               info.state = "zombie";
               info.exitStatus = m.status;
             }
@@ -119,10 +124,32 @@ export class ProcessManager {
           case "exec_request": {
             // Load binary — for now use same kernel binary.
             // In the future, resolve path to different binary.
+            if (info.alarmTimer) {
+              clearTimeout(info.alarmTimer);
+              info.alarmTimer = undefined;
+            }
             const wasmBytes = this.config.wasmBytes;
             info.worker.postMessage(
               { type: "exec_reply", wasmBytes: wasmBytes.slice(0) },
             );
+            break;
+          }
+          case "alarm_set": {
+            const alarmInfo = this.processes.get(m.pid);
+            if (alarmInfo && alarmInfo.state === "running") {
+              if (alarmInfo.alarmTimer) {
+                clearTimeout(alarmInfo.alarmTimer);
+                alarmInfo.alarmTimer = undefined;
+              }
+              if (m.seconds > 0) {
+                alarmInfo.alarmTimer = setTimeout(() => {
+                  alarmInfo.alarmTimer = undefined;
+                  try {
+                    this.deliverSignal(m.pid, 14); // SIGALRM
+                  } catch { /* process may have exited */ }
+                }, m.seconds * 1000);
+              }
+            }
             break;
           }
         }
@@ -256,6 +283,10 @@ export class ProcessManager {
               cleanup();
               reject(new Error(`Forked worker exited with status ${m.status}`));
             } else {
+              if (childInfo.alarmTimer) {
+                clearTimeout(childInfo.alarmTimer);
+                childInfo.alarmTimer = undefined;
+              }
               childInfo.state = "zombie";
               childInfo.exitStatus = m.status;
             }
@@ -277,10 +308,32 @@ export class ProcessManager {
           case "exec_request": {
             // Load binary — for now use same kernel binary.
             // In the future, resolve path to different binary.
+            if (childInfo.alarmTimer) {
+              clearTimeout(childInfo.alarmTimer);
+              childInfo.alarmTimer = undefined;
+            }
             const wasmBytes = this.config.wasmBytes;
             childInfo.worker.postMessage(
               { type: "exec_reply", wasmBytes: wasmBytes.slice(0) },
             );
+            break;
+          }
+          case "alarm_set": {
+            const alarmInfo = this.processes.get(m.pid);
+            if (alarmInfo && alarmInfo.state === "running") {
+              if (alarmInfo.alarmTimer) {
+                clearTimeout(alarmInfo.alarmTimer);
+                alarmInfo.alarmTimer = undefined;
+              }
+              if (m.seconds > 0) {
+                alarmInfo.alarmTimer = setTimeout(() => {
+                  alarmInfo.alarmTimer = undefined;
+                  try {
+                    this.deliverSignal(m.pid, 14); // SIGALRM
+                  } catch { /* process may have exited */ }
+                }, m.seconds * 1000);
+              }
+            }
             break;
           }
         }

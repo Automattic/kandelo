@@ -25,6 +25,7 @@ const WASM_DIRENT_SIZE = 16;
 export interface KernelCallbacks {
   onKill?: (pid: number, signal: number) => number;
   onExec?: (path: string) => number;
+  onAlarm?: (seconds: number) => number;
 }
 
 export class WasmPosixKernel {
@@ -231,6 +232,13 @@ export class WasmPosixKernel {
         },
         host_exec: (pathPtr: number, pathLen: number): number => {
           return this.hostExec(pathPtr, pathLen);
+        },
+        host_set_alarm: (seconds: number): number => {
+          return this.hostSetAlarm(seconds);
+        },
+        host_sigsuspend_wait: (): number => {
+          // Stub: sigsuspend host infrastructure added in a later task
+          return -1;
         },
       },
     };
@@ -1132,6 +1140,15 @@ export class WasmPosixKernel {
       return this.callbacks.onExec(path);
     }
     return -2; // -ENOENT
+  }
+
+  // ---- Phase 14: Alarm ----
+
+  private hostSetAlarm(seconds: number): number {
+    if (this.callbacks.onAlarm) {
+      return this.callbacks.onAlarm(seconds);
+    }
+    return 0;
   }
 
   // ---- Public API: Socket & Poll operations ----

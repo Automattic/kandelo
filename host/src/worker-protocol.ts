@@ -57,7 +57,8 @@ export type WorkerToHostMessage =
   | ForkStateMessage
   | KillRequestMessage
   | ExecRequestMessage
-  | ExecCompleteMessage;
+  | ExecCompleteMessage
+  | AlarmSetMessage;
 
 export interface WorkerReadyMessage {
   type: "ready";
@@ -98,6 +99,12 @@ export interface ExecRequestMessage {
 export interface ExecCompleteMessage {
   type: "exec_complete";
   pid: number;
+}
+
+export interface AlarmSetMessage {
+  type: "alarm_set";
+  pid: number;
+  seconds: number;
 }
 
 export interface ExecReplyMessage {

@@ -41,6 +41,14 @@ export async function workerMain(
         } satisfies WorkerToHostMessage);
         return 0;
       },
+      onAlarm: (seconds: number): number => {
+        port.postMessage({
+          type: "alarm_set",
+          pid: initData.pid,
+          seconds,
+        } satisfies WorkerToHostMessage);
+        return 0;
+      },
     };
 
     let kernel = new WasmPosixKernel(initData.kernelConfig, new NodePlatformIO(), callbacks);

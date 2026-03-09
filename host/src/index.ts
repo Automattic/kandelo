@@ -22,4 +22,5 @@ export type {
   ExecRequestMessage,
   ExecReplyMessage,
   ExecCompleteMessage,
+  AlarmSetMessage,
 } from "./worker-protocol";
