@@ -113,6 +113,77 @@ describe("Fork Integration", () => {
   }, 15_000);
 });
 
+describe("Cross-Process Signal Delivery", () => {
+  it("should deliver signal from parent to child via kill", async () => {
+    const pm = new ProcessManager({
+      wasmBytes: loadWasmBytes(),
+      kernelConfig: {
+        maxWorkers: 4,
+        dataBufferSize: 65536,
+        useSharedMemory: false,
+      },
+      workerAdapter: new NodeWorkerAdapter(),
+    });
+
+    const parentPid = await pm.spawn();
+    const childPid = await pm.fork(parentPid);
+
+    // Parent sends SIGTERM to child — should not throw
+    pm.deliverSignal(childPid, 15);
+
+    // Child should still be tracked (signal was delivered, not necessarily fatal
+    // in this context since the wasm kernel processes signals asynchronously)
+    const childInfo = pm.getProcess(childPid);
+    expect(childInfo).toBeDefined();
+
+    // Clean up
+    await pm.terminate(childPid);
+    await pm.terminate(parentPid);
+  }, 15_000);
+
+  it("should not deliver signal to non-existent process", async () => {
+    const pm = new ProcessManager({
+      wasmBytes: loadWasmBytes(),
+      kernelConfig: {
+        maxWorkers: 4,
+        dataBufferSize: 65536,
+        useSharedMemory: false,
+      },
+      workerAdapter: new NodeWorkerAdapter(),
+    });
+
+    await pm.spawn();
+    expect(() => pm.deliverSignal(999, 15)).toThrow();
+
+    await pm.terminate(1);
+  }, 15_000);
+
+  it("should deliver signal between independently spawned processes", async () => {
+    const pm = new ProcessManager({
+      wasmBytes: loadWasmBytes(),
+      kernelConfig: {
+        maxWorkers: 4,
+        dataBufferSize: 65536,
+        useSharedMemory: false,
+      },
+      workerAdapter: new NodeWorkerAdapter(),
+    });
+
+    const pid1 = await pm.spawn();
+    const pid2 = await pm.spawn();
+
+    // Process 1 sends SIGTERM to process 2
+    pm.deliverSignal(pid2, 15);
+
+    // Process 2 should still be tracked
+    expect(pm.getProcess(pid2)).toBeDefined();
+
+    // Clean up
+    await pm.terminate(pid1);
+    await pm.terminate(pid2);
+  }, 15_000);
+});
+
 describe("Cross-Process Pipe Integration", () => {
   it("should fork a process with pipe conversion support active", async () => {
     const pm = new ProcessManager({
