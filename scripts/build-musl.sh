@@ -31,9 +31,19 @@ done
 # ---------------------------------------------------------------
 # 1. Copy overlay files into musl source tree
 # ---------------------------------------------------------------
-echo "==> Copying arch overlay files..."
+echo "==> Copying overlay files..."
 rm -rf "$MUSL_DIR/arch/wasm32posix"
 cp -r "$OVERLAY_DIR/arch/wasm32posix" "$MUSL_DIR/arch/"
+
+# Copy source file overlays (e.g., Wasm-specific __libc_start_main.c)
+if [ -d "$OVERLAY_DIR/src" ]; then
+    cp -r "$OVERLAY_DIR/src/"* "$MUSL_DIR/src/"
+fi
+
+# Copy CRT overlay (e.g., Wasm-specific crt1.c with proper main signature)
+if [ -d "$OVERLAY_DIR/crt" ]; then
+    cp -r "$OVERLAY_DIR/crt/"* "$MUSL_DIR/crt/"
+fi
 
 # ---------------------------------------------------------------
 # 2. Write config.mak

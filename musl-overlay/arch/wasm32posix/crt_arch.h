@@ -25,14 +25,20 @@ void _start_c(long *);
 __attribute__((export_name("_start")))
 void _start(void)
 {
-    /* Build a minimal argc/argv block:
+    /* Build a minimal argc/argv/envp/auxv block:
      *   p[0] = argc = 0
      *   p[1] = argv[0] = NULL  (end of argv)
-     *   p[2] = NULL             (end of envp)
+     *   p[2] = envp[0] = NULL  (end of envp)
+     *   p[3] = auxv[0] = 0     (end of auxv — AT_NULL terminator)
+     *   p[4] = 0               (auxv value for AT_NULL)
      *
      * _start_c expects:  argc = p[0], argv = (void *)(p+1)
+     * __init_libc then computes:
+     *   envp = argv + argc + 1 = &p[2]
+     *   auxv = envp + 0 + 1    = &p[3]
+     * The auxv loop reads pairs until it finds AT_NULL (0).
      */
-    static long start_data[] = { 0, 0, 0 };
+    static long start_data[] = { 0, 0, 0, 0, 0 };
     _start_c(start_data);
 }
 #endif /* !SHARED */

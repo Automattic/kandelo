@@ -365,6 +365,15 @@ export class WasmPosixKernel {
       return 0;
     }
 
+    // Handles 0, 1, 2 are pre-opened stdio (stdin, stdout, stderr).
+    // These map to the host process's real fds and must NOT be closed
+    // by the guest — doing so would close the host's own stdio streams
+    // and can cause hangs (e.g., Node.js blocking on fs.closeSync(2)
+    // when called from within a Wasm host import callback with shared memory).
+    if (h >= 0 && h <= 2) {
+      return 0;
+    }
+
     try {
       let result = -1;
       this.io
