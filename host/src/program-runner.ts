@@ -88,17 +88,18 @@ export class ProgramRunner {
 
         // Call the program's _start entry point.
         const startFn = instance.exports._start as Function;
+        const getExitStatus = kernelExports.kernel_get_exit_status as Function | undefined;
         try {
             startFn();
             return 0;
         } catch (e: unknown) {
             // kernel_exit calls wasm unreachable to unwind the stack.
             // This manifests as a RuntimeError with "unreachable" in the message.
-            // We treat this as a normal program exit.
+            // We treat this as a normal program exit and read the stored exit code.
             if (e instanceof WebAssembly.RuntimeError) {
                 const msg = e.message || "";
                 if (msg.includes("unreachable")) {
-                    return 0;
+                    return getExitStatus ? getExitStatus() : 0;
                 }
             }
             throw e;

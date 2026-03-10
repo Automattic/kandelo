@@ -24,7 +24,10 @@ async function main() {
     }
 
     const kernelPath = resolve("host/wasm/wasm_posix_kernel.wasm");
-    const programPath = resolve(`examples/${name}.wasm`);
+    // Support both bare names (from examples/) and full paths
+    const programPath = name.endsWith(".wasm")
+        ? resolve(name)
+        : resolve(`examples/${name}.wasm`);
 
     const kernelBytes = readFileSync(kernelPath);
     const programBytes = readFileSync(programPath);
@@ -38,6 +41,7 @@ async function main() {
 
     if (exitCode !== 0) {
         console.error(`\nExited with code ${exitCode}`);
+        process.exit(exitCode);
     }
 }
 

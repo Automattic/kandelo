@@ -1475,6 +1475,13 @@ pub extern "C" fn kernel_exit(status: i32) {
     // No signal delivery after exit -- process is already terminated.
 }
 
+/// Get the exit status of the current process (set by kernel_exit).
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_get_exit_status() -> i32 {
+    let proc = unsafe { get_process() };
+    proc.exit_status
+}
+
 // ---------------------------------------------------------------------------
 // Socket and poll exports
 // ---------------------------------------------------------------------------

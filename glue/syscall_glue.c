@@ -141,6 +141,7 @@
 #define SYS_REWINDDIR     116
 #define SYS_TELLDIR       117
 #define SYS_SEEKDIR       118
+#define SYS__LLSEEK       385
 
 /* ENOSYS — returned for unknown syscall numbers */
 #define ENOSYS_NEG (-38)
@@ -235,14 +236,23 @@ static long __do_syscall(long n, long a1, long a2, long a3,
 
     /* lseek — (fd, offset_lo, offset_hi, whence)
      *
-     * musl's lseek.c uses: syscall(SYS_lseek, fd, offset, whence)
-     * The varargs function extracts args as long (32-bit), so the
-     * 64-bit offset naturally splits: a1=fd, a2=off_lo, a3=off_hi,
-     * a4=whence.  No internal musl code uses __syscall(SYS_lseek,...),
-     * so this 4-arg form is the only path. */
+     * Direct __syscall path: 4 args after splitting via __SYSCALL_LL_E. */
     case SYS_LSEEK:
         return (long)kernel_lseek((int32_t)a1, (uint32_t)a2,
                                   (int32_t)a3, (uint32_t)a4);
+
+    /* _llseek — (fd, offset_hi, offset_lo, result_ptr, whence)
+     *
+     * musl's lseek.c on 32-bit arches uses SYS__llseek which passes
+     * the 64-bit offset as two explicit 32-bit halves and writes the
+     * result to a pointer. */
+    case SYS__LLSEEK: {
+        int64_t r = kernel_lseek((int32_t)a1, (uint32_t)a3,
+                                  (int32_t)a2, (uint32_t)a5);
+        if (r < 0) return (long)r;
+        *(int64_t *)(uintptr_t)a4 = r;
+        return 0;
+    }
 
     /* pread — (fd, buf, count, off_lo, off_hi)
      * musl: syscall_cp(SYS_pread, fd, buf, size, __SYSCALL_LL_PRW(ofs))
