@@ -2,3 +2,9 @@
 node_modules/
 host/dist/
 .worktrees/
+/sysroot/
+/musl/config.mak
+/musl/obj/
+/musl/lib/
+/musl/arch/wasm32posix/
+*.wasm
