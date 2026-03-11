@@ -203,7 +203,7 @@
 #define __NR_syncfs         274
 #define __NR_fstatfs        275
 #define __NR_statfs         276
-#define __NR_flock          277
+#define __NR_flock          121
 #define __NR_msync          278
 #define __NR_mlock          279
 #define __NR_mlock2         280

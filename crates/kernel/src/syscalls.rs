@@ -5,6 +5,7 @@ use wasm_posix_shared::flags::*;
 use wasm_posix_shared::fd_flags::FD_CLOEXEC;
 use wasm_posix_shared::fcntl_cmd::*;
 use wasm_posix_shared::lock_type::*;
+use wasm_posix_shared::flock_op::*;
 use wasm_posix_shared::seek::*;
 use wasm_posix_shared::mode::S_IFIFO;
 use wasm_posix_shared::{WasmFlock, WasmPollFd, WasmStat, WasmTimespec};
@@ -801,6 +802,35 @@ pub fn sys_fcntl_lock(
         }
         _ => Err(Errno::EINVAL),
     }
+}
+
+/// BSD flock() — whole-file locking mapped to fcntl advisory locks.
+///
+/// Maps LOCK_SH/LOCK_EX/LOCK_UN to F_RDLCK/F_WRLCK/F_UNLCK on the entire file.
+/// LOCK_NB flag switches from F_SETLKW (blocking) to F_SETLK (non-blocking).
+pub fn sys_flock(proc: &mut Process, fd: i32, operation: u32) -> Result<(), Errno> {
+    let nonblock = operation & LOCK_NB != 0;
+    let op = operation & !LOCK_NB;
+
+    let lock_type = match op {
+        LOCK_SH => F_RDLCK,
+        LOCK_EX => F_WRLCK,
+        LOCK_UN => F_UNLCK,
+        _ => return Err(Errno::EINVAL),
+    };
+
+    let cmd = if lock_type == F_UNLCK || nonblock { F_SETLK } else { F_SETLKW };
+
+    let mut flock = WasmFlock {
+        l_type: lock_type,
+        l_whence: 0, // SEEK_SET
+        l_start: 0,
+        l_len: 0, // 0 means entire file
+        l_pid: proc.pid,
+        _pad: 0,
+    };
+
+    sys_fcntl_lock(proc, fd, cmd, &mut flock)
 }
 
 use wasm_posix_shared::WasmDirent;

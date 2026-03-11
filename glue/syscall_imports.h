@@ -536,4 +536,11 @@ int32_t kernel_setegid(uint32_t egid);
 KERNEL_IMPORT(kernel_getrandom)
 int32_t kernel_getrandom(uint8_t *buf_ptr, uint32_t buf_len, uint32_t flags);
 
+/* ------------------------------------------------------------------ */
+/* File locking                                                        */
+/* ------------------------------------------------------------------ */
+
+KERNEL_IMPORT(kernel_flock)
+int32_t kernel_flock(int32_t fd, uint32_t operation);
+
 #endif /* SYSCALL_IMPORTS_H */

@@ -143,6 +143,7 @@
 #define SYS_SEEKDIR       118
 #define SYS__LLSEEK       119
 #define SYS_GETRANDOM     120
+#define SYS_FLOCK         121
 
 /* ENOSYS — returned for unknown syscall numbers */
 #define ENOSYS_NEG (-38)
@@ -1002,6 +1003,10 @@ static long __do_syscall(long n, long a1, long a2, long a3,
     case SYS_GETRANDOM:
         return (long)kernel_getrandom((uint8_t *)(uintptr_t)a1,
                                       (uint32_t)a2, (uint32_t)a3);
+
+    /* flock — (fd, operation) */
+    case SYS_FLOCK:
+        return (long)kernel_flock((int32_t)a1, (uint32_t)a2);
 
     /* ============================================================== */
     /* Default: unknown syscall                                        */

@@ -433,6 +433,14 @@ pub mod lock_type {
     pub const F_UNLCK: u32 = 2;
 }
 
+/// BSD flock() operation constants.
+pub mod flock_op {
+    pub const LOCK_SH: u32 = 1;
+    pub const LOCK_EX: u32 = 2;
+    pub const LOCK_UN: u32 = 8;
+    pub const LOCK_NB: u32 = 4;
+}
+
 /// Memory mapping constants.
 pub mod mmap {
     // Protection flags (largely ignored in Wasm, but tracked for compatibility)

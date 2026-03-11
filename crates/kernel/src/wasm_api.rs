@@ -777,6 +777,20 @@ pub extern "C" fn kernel_fcntl_lock(fd: i32, cmd: u32, flock_ptr: *mut u8) -> i3
     result
 }
 
+/// BSD flock() — whole-file advisory locking.
+/// Returns 0 on success, or negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_flock(fd: i32, operation: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    let result = match syscalls::sys_flock(proc, fd, operation) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    };
+    let mut host = WasmHostIO;
+    deliver_pending_signals(proc, &mut host);
+    result
+}
+
 /// Stat a file by path. Writes a `WasmStat` struct to the pointer.
 /// Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
