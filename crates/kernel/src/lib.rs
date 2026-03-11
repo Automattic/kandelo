@@ -65,9 +65,13 @@ mod wasm {
                     cur = self.cursor.load(Ordering::Relaxed);
                 }
 
-                // Align the cursor
+                // Align the cursor (checked arithmetic to prevent wraparound
+                // on wasm32's 32-bit usize)
                 let aligned = (cur as usize + align - 1) & !(align - 1);
-                let new_cursor = aligned + size;
+                let new_cursor = match aligned.checked_add(size) {
+                    Some(nc) => nc,
+                    None => return core::ptr::null_mut(),
+                };
 
                 // Ensure Wasm memory covers the allocation
                 let current_bytes = core::arch::wasm32::memory_size(0) * 65536;
