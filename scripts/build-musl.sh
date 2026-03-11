@@ -112,6 +112,36 @@ echo "==> Building __main_void wrapper..."
     -o "$SYSROOT/lib/__main_void.o"
 "$AR" rcs "$SYSROOT/lib/libc.a" "$SYSROOT/lib/__main_void.o"
 
+# ---------------------------------------------------------------
+# 7. Build setjmp runtime (requires -fwasm-exceptions for __builtin_wasm_throw)
+# ---------------------------------------------------------------
+echo "==> Building setjmp runtime..."
+"$CC" --target=wasm32-unknown-unknown -O2 \
+    -fwasm-exceptions -matomics -mbulk-memory \
+    -I"$SYSROOT/include" \
+    -c "$OVERLAY_DIR/src/setjmp/wasm32/rt.c" \
+    -o "$SYSROOT/lib/wasm_setjmp_rt.o"
+"$AR" rcs "$SYSROOT/lib/libc.a" "$SYSROOT/lib/wasm_setjmp_rt.o"
+
+# ---------------------------------------------------------------
+# 8. Build sigsetjmp helpers and add to libc.a
+# ---------------------------------------------------------------
+echo "==> Building sigsetjmp helpers..."
+"$CC" --target=wasm32-unknown-unknown -O2 \
+    -matomics -mbulk-memory \
+    -I"$SYSROOT/include" \
+    -c "$OVERLAY_DIR/src/signal/wasm32posix/sigsetjmp.c" \
+    -o "$SYSROOT/lib/sigsetjmp_helpers.o"
+"$AR" rcs "$SYSROOT/lib/libc.a" "$SYSROOT/lib/sigsetjmp_helpers.o"
+
+# ---------------------------------------------------------------
+# 9. Install override headers
+# ---------------------------------------------------------------
+echo "==> Installing override headers..."
+if [ -d "$OVERLAY_DIR/include" ]; then
+    cp "$OVERLAY_DIR/include/"*.h "$SYSROOT/include/" 2>/dev/null || true
+fi
+
 echo ""
 echo "==> musl build complete!"
 echo "    Sysroot: $SYSROOT"

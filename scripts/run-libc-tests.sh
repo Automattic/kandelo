@@ -110,7 +110,9 @@ for test_name in "${TESTS[@]}"; do
         -nostdlib \
         -O2 \
         -matomics -mbulk-memory \
-        -fno-exceptions -fno-trapping-math \
+        -fno-trapping-math \
+        -mllvm -wasm-enable-sjlj \
+        -mllvm -wasm-use-legacy-eh=false \
         -D_GNU_SOURCE \
         -I"$LIBC_TEST/src/common" \
         "$src" \

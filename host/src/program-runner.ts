@@ -16,7 +16,11 @@
  *   4. Catch unreachable trap from kernel_exit as clean exit
  */
 
+import * as v8 from "node:v8";
 import { WasmPosixKernel } from "./kernel";
+
+// Enable exnref for setjmp/longjmp support (needed for Node.js < 25)
+v8.setFlagsFromString("--experimental-wasm-exnref");
 
 export class ProgramRunner {
     private kernel: WasmPosixKernel;
