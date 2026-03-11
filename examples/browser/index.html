@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>wasm-posix-kernel Browser Demo</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+    h1 { font-size: 1.4rem; margin-bottom: 1rem; }
+    .controls { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 1rem; }
+    select, button { font-size: 0.95rem; padding: 0.4rem 0.8rem; }
+    button { cursor: pointer; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    #output {
+      background: #1e1e1e; color: #d4d4d4; padding: 1rem;
+      border-radius: 4px; min-height: 200px; overflow: auto;
+      white-space: pre-wrap; word-break: break-all; font-size: 0.85rem;
+    }
+    .stderr { color: #f48771; }
+    .info { color: #6a9955; }
+  </style>
+</head>
+<body>
+  <h1>wasm-posix-kernel Browser Demo</h1>
+  <div class="controls">
+    <select id="program">
+      <option value="hello">hello</option>
+      <option value="malloc">malloc</option>
+      <option value="strings">strings</option>
+      <option value="math">math</option>
+      <option value="snprintf">snprintf</option>
+      <option value="environ">environ</option>
+      <option value="fprintf">fprintf</option>
+      <option value="files">files</option>
+      <option value="dirs">dirs</option>
+    </select>
+    <button id="run">Run</button>
+  </div>
+  <pre id="output"></pre>
+  <script type="module" src="./main.ts"></script>
+</body>
+</html>
