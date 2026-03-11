@@ -28,6 +28,8 @@ export interface KernelCallbacks {
   onAlarm?: (seconds: number) => number;
   onStdout?: (data: Uint8Array) => void;
   onStderr?: (data: Uint8Array) => void;
+  /** Read up to maxLen bytes from stdin. Return a Uint8Array with available data, or empty/null for EOF. */
+  onStdin?: (maxLen: number) => Uint8Array | null;
 }
 
 export class WasmPosixKernel {
@@ -380,9 +382,17 @@ export class WasmPosixKernel {
       return readEntry.pipe.read(dst);
     }
 
-    // stdin — not yet supported
+    // stdin
     if (h === 0) {
-      return 0;
+      if (this.callbacks.onStdin) {
+        const data = this.callbacks.onStdin(bufLen);
+        if (!data || data.length === 0) return 0; // EOF
+        const mem = this.getMemoryBuffer();
+        const n = Math.min(data.length, bufLen);
+        mem.set(data.subarray(0, n), bufPtr);
+        return n;
+      }
+      return 0; // EOF when no stdin callback
     }
 
     try {
