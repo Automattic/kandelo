@@ -90,6 +90,7 @@ pub struct Process {
     pub memory: MemoryManager,
     pub terminal: TerminalState,
     pub environ: Vec<Vec<u8>>,
+    pub argv: Vec<Vec<u8>>,
     pub umask: u32,
     pub rlimits: [[u64; 2]; 16], // [soft, hard] pairs for each resource
     pub alarm_deadline_ns: u64,
@@ -139,6 +140,7 @@ impl Process {
             memory: MemoryManager::new(),
             terminal: TerminalState::new(),
             environ: Vec::new(),
+            argv: Vec::new(),
             umask: 0o022,
             rlimits,
             alarm_deadline_ns: 0,

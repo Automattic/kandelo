@@ -69,6 +69,7 @@ async function run() {
 
     const runner = new ProgramRunner(kernel);
     const exitCode = await runner.run(programBytes, {
+      argv: [programName],
       env: [
         "HOME=/home",
         "TMPDIR=/tmp",

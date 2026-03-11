@@ -543,4 +543,17 @@ int32_t kernel_getrandom(uint8_t *buf_ptr, uint32_t buf_len, uint32_t flags);
 KERNEL_IMPORT(kernel_flock)
 int32_t kernel_flock(int32_t fd, uint32_t operation);
 
+/* ------------------------------------------------------------------ */
+/* Argv                                                                */
+/* ------------------------------------------------------------------ */
+
+KERNEL_IMPORT(kernel_push_argv)
+void kernel_push_argv(const uint8_t *ptr, uint32_t len);
+
+KERNEL_IMPORT(kernel_get_argc)
+uint32_t kernel_get_argc(void);
+
+KERNEL_IMPORT(kernel_argv_read)
+uint32_t kernel_argv_read(uint32_t index, uint8_t *buf_ptr, uint32_t buf_max);
+
 #endif /* SYSCALL_IMPORTS_H */

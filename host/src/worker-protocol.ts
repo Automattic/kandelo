@@ -40,6 +40,7 @@ export interface WorkerInitMessage {
   wasmBytes: ArrayBuffer;
   kernelConfig: KernelConfig;
   env?: string[];
+  argv?: string[];
   cwd?: string;
   forkState?: ArrayBuffer;
   signalWakeSab?: SharedArrayBuffer;

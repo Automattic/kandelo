@@ -21,18 +21,6 @@ When `host_call_signal_handler` fails (invalid function table index, handler thr
 
 ## Browser Host Gaps
 
-### argv/argc passing to wasm programs
-`kernel_init(pid)` only takes a PID. The `Process` struct has no argv field. C programs that read `argv`/`argc` get nothing. Fixing this requires:
-1. Adding argv storage to `Process` in `crates/kernel/src/process.rs`
-2. Adding a `kernel_init_argv` export or extending `kernel_init` signature
-3. Updating musl's `__libc_start_main` overlay to pass argv to `main()`
-4. Updating `ProgramRunner` and `workerMain` to pass args through
-
-**Files:** `crates/kernel/src/process.rs`, `crates/kernel/src/wasm_api.rs`, `musl-overlay/src/env/__libc_start_main.c`, `host/src/program-runner.ts`
-
-### putenv() function
-`setenv()` and `getenv()` work, but `putenv()` takes a single `KEY=VALUE` string. PHP uses `putenv()` extensively. Could be implemented as a thin wrapper splitting at `=` and calling `sys_setenv`. Alternatively, musl's libc `putenv()` may already call `setenv()` internally.
-
 ### OPFS filesystem backend
 Browser persistence across page loads requires an Origin Private File System (OPFS) backend implementing `FileSystemBackend`. WordPress needs this for wp-content, uploads, and database files. The `FileSystemBackend` interface is already well-defined — needs an async-to-sync bridge via SharedArrayBuffer + Atomics.
 

@@ -1429,6 +1429,39 @@ pub extern "C" fn kernel_unsetenv(name_ptr: *const u8, name_len: u32) -> i32 {
     result
 }
 
+// ---------------------------------------------------------------------------
+// Argv support — host pushes args, program reads them at startup
+// ---------------------------------------------------------------------------
+
+/// Push an argument string. Called by host before _start.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_push_argv(ptr: *const u8, len: u32) {
+    let proc = unsafe { get_process() };
+    let data = unsafe { slice::from_raw_parts(ptr, len as usize) };
+    proc.argv.push(data.to_vec());
+}
+
+/// Return the number of arguments.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_get_argc() -> u32 {
+    let proc = unsafe { get_process() };
+    proc.argv.len() as u32
+}
+
+/// Copy argument at `index` into `buf_ptr`. Returns bytes written.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_argv_read(index: u32, buf_ptr: *mut u8, buf_max: u32) -> u32 {
+    let proc = unsafe { get_process() };
+    if let Some(arg) = proc.argv.get(index as usize) {
+        let len = arg.len().min(buf_max as usize);
+        let dst = unsafe { slice::from_raw_parts_mut(buf_ptr, len) };
+        dst.copy_from_slice(&arg[..len]);
+        len as u32
+    } else {
+        0
+    }
+}
+
 /// getrandom — fill buffer with random bytes from the host.
 /// Returns number of bytes written, or negative errno on error.
 #[unsafe(no_mangle)]

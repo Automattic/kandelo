@@ -283,6 +283,13 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
         w.write_bytes(var)?;
     }
 
+    // ── Argv ──
+    w.write_u32(proc.argv.len() as u32)?;
+    for arg in &proc.argv {
+        w.write_u32(arg.len() as u32)?;
+        w.write_bytes(arg)?;
+    }
+
     // ── CWD ──
     w.write_u32(proc.cwd.len() as u32)?;
     w.write_bytes(&proc.cwd)?;
@@ -415,6 +422,15 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
         environ.push(data.to_vec());
     }
 
+    // ── Argv ──
+    let argv_count = r.read_u32()?;
+    let mut argv = Vec::with_capacity(argv_count as usize);
+    for _ in 0..argv_count {
+        let len = r.read_u32()? as usize;
+        let data = r.read_bytes(len)?;
+        argv.push(data.to_vec());
+    }
+
     // ── CWD ──
     let cwd_len = r.read_u32()? as usize;
     let cwd_data = r.read_bytes(cwd_len)?;
@@ -481,6 +497,7 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
         memory,
         terminal,
         environ,
+        argv,
         umask,
         rlimits,
         alarm_deadline_ns: 0,
@@ -577,6 +594,13 @@ pub fn serialize_exec_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
     for var in &proc.environ {
         w.write_u32(var.len() as u32)?;
         w.write_bytes(var)?;
+    }
+
+    // ── Argv ──
+    w.write_u32(proc.argv.len() as u32)?;
+    for arg in &proc.argv {
+        w.write_u32(arg.len() as u32)?;
+        w.write_bytes(arg)?;
     }
 
     // ── CWD ──
@@ -711,6 +735,15 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
         environ.push(data.to_vec());
     }
 
+    // ── Argv ──
+    let argv_count = r.read_u32()?;
+    let mut argv = Vec::with_capacity(argv_count as usize);
+    for _ in 0..argv_count {
+        let len = r.read_u32()? as usize;
+        let data = r.read_bytes(len)?;
+        argv.push(data.to_vec());
+    }
+
     // ── CWD ──
     let cwd_len = r.read_u32()? as usize;
     let cwd_data = r.read_bytes(cwd_len)?;
@@ -777,6 +810,7 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
         memory,
         terminal,
         environ,
+        argv,
         umask,
         rlimits,
         alarm_deadline_ns: 0,

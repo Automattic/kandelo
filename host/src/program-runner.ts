@@ -36,10 +36,10 @@ export class ProgramRunner {
      * Run a user program to completion.
      *
      * @param programBytes - The compiled Wasm bytes of the user program
-     * @param options - Optional settings (env: KEY=VALUE strings)
+     * @param options - Optional settings (env: KEY=VALUE strings, argv: argument strings)
      * @returns The exit code (0 for normal exit via kernel_exit trap)
      */
-    async run(programBytes: BufferSource, options?: { env?: string[] }): Promise<number> {
+    async run(programBytes: BufferSource, options?: { env?: string[]; argv?: string[] }): Promise<number> {
         const memory = this.kernel.getMemory();
         if (!memory) throw new Error("Kernel not initialized");
 
@@ -56,12 +56,19 @@ export class ProgramRunner {
         const kernelInit = kernelExports.kernel_init as Function;
         kernelInit(1);
 
+        // Allocate a scratch page for writing strings into wasm memory
+        const needsScratch = (options?.env && options.env.length > 0)
+            || (options?.argv && options.argv.length > 0);
+        let scratchPtr = 0;
+        if (needsScratch) {
+            const scratchPage = memory.grow(1);
+            scratchPtr = scratchPage * 65536;
+        }
+        const encoder = new TextEncoder();
+
         // Set environment variables if provided
         if (options?.env && options.env.length > 0) {
             const setenv = kernelExports.kernel_setenv as Function;
-            const scratchPage = memory.grow(1);
-            const scratchPtr = scratchPage * 65536;
-            const encoder = new TextEncoder();
             for (const entry of options.env) {
                 const eq = entry.indexOf("=");
                 if (eq < 0) continue;
@@ -72,6 +79,17 @@ export class ProgramRunner {
                 buf.set(nameBytes, scratchPtr);
                 buf.set(valBytes, valPtr);
                 setenv(scratchPtr, nameBytes.length, valPtr, valBytes.length, 1);
+            }
+        }
+
+        // Push argv if provided
+        if (options?.argv && options.argv.length > 0) {
+            const pushArgv = kernelExports.kernel_push_argv as Function;
+            for (const arg of options.argv) {
+                const bytes = encoder.encode(arg);
+                const buf = new Uint8Array(memory.buffer);
+                buf.set(bytes, scratchPtr);
+                pushArgv(scratchPtr, bytes.length);
             }
         }
 
