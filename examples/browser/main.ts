@@ -40,6 +40,10 @@ async function run() {
       new BrowserTimeProvider(),
     );
 
+    // Pre-create common directories that example programs expect
+    memfs.mkdir("/tmp", 0o777);
+    memfs.mkdir("/home", 0o755);
+
     // Create kernel with stdout/stderr callbacks
     const callbacks: KernelCallbacks = {
       onStdout: (data) => appendOutput(decoder.decode(data)),
