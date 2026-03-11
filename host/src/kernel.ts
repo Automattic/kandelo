@@ -267,6 +267,21 @@ export class WasmPosixKernel {
           }
           return -22; // EINVAL
         },
+        host_getrandom: (bufPtr: number, bufLen: number): number => {
+          try {
+            const mem = this.getMemoryBuffer();
+            const target = mem.subarray(bufPtr, bufPtr + bufLen);
+            if (typeof globalThis.crypto !== "undefined" && globalThis.crypto.getRandomValues) {
+              globalThis.crypto.getRandomValues(target);
+            } else {
+              // Fallback for environments without Web Crypto
+              for (let i = 0; i < bufLen; i++) target[i] = (Math.random() * 256) | 0;
+            }
+            return bufLen;
+          } catch {
+            return -5; // EIO
+          }
+        },
       },
     };
 

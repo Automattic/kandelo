@@ -54,6 +54,7 @@ unsafe extern "C" {
     fn host_set_alarm(seconds: u32) -> i32;
     fn host_sigsuspend_wait() -> i32;
     fn host_call_signal_handler(handler_index: u32, signum: u32) -> i32;
+    fn host_getrandom(buf_ptr: *mut u8, buf_len: u32) -> i32;
 }
 
 // ---------------------------------------------------------------------------
@@ -363,6 +364,18 @@ impl HostIO for WasmHostIO {
     fn host_call_signal_handler(&mut self, handler_index: u32, signum: u32) -> Result<(), Errno> {
         let result = unsafe { host_call_signal_handler(handler_index, signum) };
         i32_to_result(result)
+    }
+
+    fn host_getrandom(&mut self, buf: &mut [u8]) -> Result<usize, Errno> {
+        let result = unsafe { host_getrandom(buf.as_mut_ptr(), buf.len() as u32) };
+        if result < 0 {
+            match Errno::from_u32((-result) as u32) {
+                Some(e) => Err(e),
+                None => Err(Errno::EIO),
+            }
+        } else {
+            Ok(result as usize)
+        }
     }
 }
 
@@ -1398,6 +1411,21 @@ pub extern "C" fn kernel_unsetenv(name_ptr: *const u8, name_len: u32) -> i32 {
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
+    deliver_pending_signals(proc, &mut host);
+    result
+}
+
+/// getrandom — fill buffer with random bytes from the host.
+/// Returns number of bytes written, or negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_getrandom(buf_ptr: *mut u8, buf_len: u32, _flags: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
+    let mut host = WasmHostIO;
+    let result = match host.host_getrandom(buf) {
+        Ok(n) => n as i32,
+        Err(e) => -(e as i32),
+    };
     deliver_pending_signals(proc, &mut host);
     result
 }

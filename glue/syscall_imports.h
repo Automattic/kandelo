@@ -529,4 +529,11 @@ int32_t kernel_seteuid(uint32_t euid);
 KERNEL_IMPORT(kernel_setegid)
 int32_t kernel_setegid(uint32_t egid);
 
+/* ------------------------------------------------------------------ */
+/* Random                                                              */
+/* ------------------------------------------------------------------ */
+
+KERNEL_IMPORT(kernel_getrandom)
+int32_t kernel_getrandom(uint8_t *buf_ptr, uint32_t buf_len, uint32_t flags);
+
 #endif /* SYSCALL_IMPORTS_H */

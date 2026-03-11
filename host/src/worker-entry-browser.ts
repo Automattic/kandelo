@@ -5,6 +5,7 @@ import { VirtualPlatformIO } from "./vfs/vfs";
 import { MemoryFileSystem } from "./vfs/memory-fs";
 import { DeviceFileSystem } from "./vfs/device-fs";
 import { BrowserTimeProvider } from "./vfs/time";
+import type { MountConfig } from "./vfs/types";
 
 function createIO(initData: WorkerInitMessage): PlatformIO {
   if (!initData.mounts || initData.mounts.length === 0) {
@@ -16,7 +17,7 @@ function createIO(initData: WorkerInitMessage): PlatformIO {
       `Browser worker does not support mount types: ${unsupported.map(m => `${m.type} at ${m.mountPoint}`).join(", ")}`,
     );
   }
-  const backends = initData.mounts.map(m => ({
+  const backends: MountConfig[] = initData.mounts.map(m => ({
       mountPoint: m.mountPoint,
       backend: m.initialize
         ? MemoryFileSystem.create(m.sharedBuffer!)

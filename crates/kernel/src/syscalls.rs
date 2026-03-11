@@ -2981,6 +2981,14 @@ mod tests {
         fn host_call_signal_handler(&mut self, _handler_index: u32, _signum: u32) -> Result<(), Errno> {
             Ok(())
         }
+
+        fn host_getrandom(&mut self, buf: &mut [u8]) -> Result<usize, Errno> {
+            // Fill with deterministic pattern for testing
+            for (i, b) in buf.iter_mut().enumerate() {
+                *b = (i & 0xFF) as u8;
+            }
+            Ok(buf.len())
+        }
     }
 
     #[test]
@@ -5980,6 +5988,10 @@ mod tests {
         fn host_set_alarm(&mut self, _seconds: u32) -> Result<(), Errno> { Ok(()) }
         fn host_sigsuspend_wait(&mut self) -> Result<u32, Errno> { Err(Errno::EINTR) }
         fn host_call_signal_handler(&mut self, _handler_index: u32, _signum: u32) -> Result<(), Errno> { Ok(()) }
+        fn host_getrandom(&mut self, buf: &mut [u8]) -> Result<usize, Errno> {
+            for (i, b) in buf.iter_mut().enumerate() { *b = (i & 0xFF) as u8; }
+            Ok(buf.len())
+        }
     }
 
     /// Helper: open a directory and return its fd.
