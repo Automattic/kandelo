@@ -35,6 +35,7 @@ sw.onmessage = (e: MessageEvent) => {
   const port = {
     postMessage: (msg: unknown, transfer?: unknown[]) =>
       sw.postMessage(msg, transfer as Transferable[]),
+    // workerMain only registers one "message" handler, so replacing onmessage is safe.
     on: (event: string, handler: (...args: unknown[]) => void) => {
       if (event === "message") {
         sw.onmessage = (ev: MessageEvent) => handler(ev.data);
