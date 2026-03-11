@@ -49,11 +49,13 @@
         "types": "./dist/worker-entry-browser.d.ts",
         "default": "./dist/worker-entry-browser.js"
       }
-    }
+    },
+    "./wasm": "./wasm/wasm_posix_kernel.wasm"
   },
   "sideEffects": false,
   "files": [
-    "dist"
+    "dist",
+    "wasm"
   ],
   "scripts": {
     "build": "tsup",
