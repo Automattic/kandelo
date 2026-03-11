@@ -309,7 +309,7 @@
 #define __NR_faccessat2     382
 #define __NR_fchmodat2      383
 #define __NR_accept4        384
-#define __NR__llseek        385
+#define __NR__llseek        119
 #define __NR_execveat       386
 #define __NR_recvmsg        387
 #define __NR_sendmsg        388

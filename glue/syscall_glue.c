@@ -141,7 +141,7 @@
 #define SYS_REWINDDIR     116
 #define SYS_TELLDIR       117
 #define SYS_SEEKDIR       118
-#define SYS__LLSEEK       385
+#define SYS__LLSEEK       119
 
 /* ENOSYS — returned for unknown syscall numbers */
 #define ENOSYS_NEG (-38)
