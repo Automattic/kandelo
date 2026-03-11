@@ -622,7 +622,10 @@ pub fn sys_fstat(
             _pad: 0,
         })
     } else {
-        host.host_fstat(ofd.host_handle)
+        let mut st = host.host_fstat(ofd.host_handle)?;
+        st.st_uid = proc.euid;
+        st.st_gid = proc.egid;
+        Ok(st)
     }
 }
 
@@ -799,12 +802,18 @@ use crate::path::resolve_path;
 
 pub fn sys_stat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<WasmStat, Errno> {
     let resolved = resolve_path(path, &proc.cwd);
-    host.host_stat(&resolved)
+    let mut st = host.host_stat(&resolved)?;
+    st.st_uid = proc.euid;
+    st.st_gid = proc.egid;
+    Ok(st)
 }
 
 pub fn sys_lstat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<WasmStat, Errno> {
     let resolved = resolve_path(path, &proc.cwd);
-    host.host_lstat(&resolved)
+    let mut st = host.host_lstat(&resolved)?;
+    st.st_uid = proc.euid;
+    st.st_gid = proc.egid;
+    Ok(st)
 }
 
 pub fn sys_mkdir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8], mode: u32) -> Result<(), Errno> {
@@ -2121,11 +2130,14 @@ pub fn sys_fstatat(
     use wasm_posix_shared::flags::AT_SYMLINK_NOFOLLOW;
 
     let resolved = resolve_at_path(proc, dirfd, path)?;
-    if flags & AT_SYMLINK_NOFOLLOW != 0 {
-        host.host_lstat(&resolved)
+    let mut st = if flags & AT_SYMLINK_NOFOLLOW != 0 {
+        host.host_lstat(&resolved)?
     } else {
-        host.host_stat(&resolved)
-    }
+        host.host_stat(&resolved)?
+    };
+    st.st_uid = proc.euid;
+    st.st_gid = proc.egid;
+    Ok(st)
 }
 
 /// unlinkat -- unlink relative to directory fd.
