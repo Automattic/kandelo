@@ -6,6 +6,8 @@ export { NodePlatformIO } from "./platform/node";
 export { ProcessManager } from "./process-manager";
 export { SharedPipeBuffer } from "./shared-pipe-buffer";
 export { NodeWorkerAdapter, MockWorkerAdapter } from "./worker-adapter";
+export { workerMain } from "./worker-main";
+export type { CreateIOFn, MessagePort as WorkerMessagePort } from "./worker-main";
 export type { KernelConfig, PlatformIO, StatResult } from "./types";
 export type { WorkerAdapter, WorkerHandle } from "./worker-adapter";
 export type { ProcessInfo, ProcessManagerConfig, SpawnOptions, WaitResult } from "./process-manager";
