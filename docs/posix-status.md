@@ -306,3 +306,71 @@ These features require SharedArrayBuffer (and cross-origin isolation headers in 
 - host_exec Wasm import and sys_execve syscall
 - Worker re-initialization: new kernel instance with exec state in same worker
 - ProcessManager.exec() for host-initiated exec
+
+---
+
+## PHP-WASM / WordPress Playground Gap Analysis
+
+Target use case: hosting PHP-WASM (as used by WordPress Playground) on this kernel, replacing Emscripten's POSIX emulation layer. This section tracks what's needed and what's missing.
+
+### Phase A — Foundational (makes kernel viable as a PHP POSIX layer)
+
+| Gap | Subsystem | Description | Difficulty |
+|-----|-----------|-------------|------------|
+| **`flock()` syscall** | file locking | PHP sessions and SQLite both use whole-file locking via `flock()`. WordPress calls it heavily. Can map to `fcntl` F_SETLK/F_SETLKW internally. | Medium |
+| **`/dev/urandom` virtual device** | VFS | OpenSSL and `random_bytes()` need cryptographic randomness. Needs virtual device file support in VFS, delegating to `crypto.getRandomValues()`. | Easy |
+| **`getrandom()` syscall** | random | Alternative to `/dev/urandom` for PHP's random number generation. Host-delegated to `crypto.getRandomValues()`. | Easy |
+| **`putenv()` syscall** | environment | PHP uses `putenv("KEY=VALUE")` extensively. Different semantics from `setenv()` — takes a single `KEY=VALUE` string. | Easy |
+| **Virtual device files in VFS** | VFS | Support for `/dev/null`, `/dev/zero`, `/dev/urandom` as mountable virtual devices. PHP-WASM also uses `/request/stdout`, `/request/stderr`, `/request/headers`. | Medium |
+| **`initgroups()` stub** | process | ZendAccelerator needs it. Return success (no-op). | Easy |
+
+### Phase B — Networking (enables WordPress HTTP requests + MySQL)
+
+| Gap | Subsystem | Description | Difficulty |
+|-----|-----------|-------------|------------|
+| **`connect()` for AF_INET** | socket | PHP needs outbound TCP for HTTP requests and database connections. Host-delegated to fetch API bridge (HTTP) or WebSocket-to-TCP proxy (raw TCP). | Hard |
+| **`getaddrinfo()` / `gethostbyname()`** | DNS | Required for any network operation. Host-delegated (browser fetch or DNS-over-HTTPS). | Medium |
+| **`setsockopt()` expansion** | socket | `SO_KEEPALIVE`, `TCP_NODELAY` at minimum. WordPress Playground patches these for MySQL connectivity. | Easy |
+| **Async socket polling bridge** | socket | Bridge between blocking `poll()`/`select()` and async host I/O. Current `Atomics.wait()` approach works in workers. | Medium |
+
+### Phase C — Process management (enables wp-cli, Composer, PHPUnit)
+
+| Gap | Subsystem | Description | Difficulty |
+|-----|-----------|-------------|------------|
+| **Guest-initiated `fork()`/`exec()`** | process | Allow Wasm user-space code to trigger process spawning via syscall. Currently host-initiated only. | Hard |
+| **`proc_open()` compatible semantics** | process | Pipe creation + process spawn + wait. WordPress Playground replaces `proc_open` with custom JS shims. | Hard |
+| **Blocking pipe reads with timeout** | pipe | Current pipe blocking depends on SAB. Need proper timeout + EINTR semantics for `proc_open` pipes. | Medium |
+
+### Phase D — Browser persistence + PHP compilation
+
+| Gap | Subsystem | Description | Difficulty |
+|-----|-----------|-------------|------------|
+| **OPFS filesystem backend** | VFS | Origin Private File System for browser persistence across page loads. WordPress needs this for wp-content, uploads, database. | Medium |
+| **PHP compiled with clang → wasm32 + this musl sysroot** | toolchain | Replace Emscripten compilation with direct clang targeting. Requires new minimal PHP SAPI replacing Emscripten's `EM_JS`/`EM_ASYNC_JS` integration. | Very Hard |
+| **Emscripten SAPI replacement** | toolchain | PHP-WASM uses a ~2000-line custom C SAPI (`php_wasm.c`) tightly coupled to Emscripten. Would need a new SAPI using this kernel's syscall interface. | Very Hard |
+
+### Architectural Decision: Async/Blocking Bridge
+
+PHP is synchronous but the browser host is async. Two approaches:
+
+| Approach | Pros | Cons |
+|----------|------|------|
+| **SAB + `Atomics.wait()`** (current) | True blocking, no stack transform overhead, works reliably in Workers | Cannot block browser main thread; PHP must run in Web Worker |
+| **Asyncify / JSPI** (Emscripten approach) | Works on main thread | ~4.5s startup with auto-detect, 2x code size, fragile whitelist maintenance |
+
+The `Atomics.wait()` approach is architecturally superior but requires PHP to run in a Web Worker, which is different from current Playground architecture.
+
+### Already Covered for PHP-WASM
+
+These PHP needs are well-handled by the current kernel:
+- File I/O: open, close, read, write, lseek, fstat, stat, lstat, ftruncate, fsync
+- Directory ops: opendir, readdir, closedir, mkdir, rmdir, rename, unlink
+- FD manipulation: dup, dup2, dup3, pipe, pipe2, fcntl (with locking)
+- Process identity: getpid, getppid, getuid/geteuid, getgid/getegid, setsid
+- Signals: sigaction, sigprocmask, kill, signal, alarm
+- Time: clock_gettime, gettimeofday, nanosleep, usleep
+- Terminal: isatty, tcgetattr/tcsetattr, ioctl
+- Environment: getenv, setenv, unsetenv
+- Memory: anonymous mmap, munmap, brk
+- Multi-process: fork, exec, waitpid (host-side)
+- System info: uname, sysconf, umask, getrlimit/setrlimit
