@@ -23,13 +23,13 @@ export interface PlatformIO {
   read(
     handle: number,
     buffer: Uint8Array,
-    offset: number,
+    offset: number | null,
     length: number,
   ): number;
   write(
     handle: number,
     buffer: Uint8Array,
-    offset: number,
+    offset: number | null,
     length: number,
   ): number;
   seek(handle: number, offset: number, whence: number): number;

@@ -53,32 +53,46 @@ function translateOpenFlags(linuxFlags: number): number {
 export class NodePlatformIO implements PlatformIO {
   private dirHandles = new Map<number, fs.Dir>();
   private nextDirHandle = 1;
+  private fdPositions = new Map<number, number>();
 
   open(path: string, flags: number, mode: number): number {
-    return fs.openSync(path, translateOpenFlags(flags), mode);
+    const fd = fs.openSync(path, translateOpenFlags(flags), mode);
+    this.fdPositions.set(fd, 0);
+    return fd;
   }
 
   close(handle: number): number {
     fs.closeSync(handle);
+    this.fdPositions.delete(handle);
     return 0;
   }
 
   read(
     handle: number,
     buffer: Uint8Array,
-    offset: number,
+    offset: number | null,
     length: number,
   ): number {
-    return fs.readSync(handle, buffer, 0, length, offset);
+    const pos = offset ?? this.fdPositions.get(handle) ?? 0;
+    const bytesRead = fs.readSync(handle, buffer, 0, length, pos);
+    if (offset === null) {
+      this.fdPositions.set(handle, pos + bytesRead);
+    }
+    return bytesRead;
   }
 
   write(
     handle: number,
     buffer: Uint8Array,
-    offset: number,
+    offset: number | null,
     length: number,
   ): number {
-    return fs.writeSync(handle, buffer, 0, length, offset);
+    const pos = offset ?? this.fdPositions.get(handle) ?? 0;
+    const bytesWritten = fs.writeSync(handle, buffer, 0, length, pos);
+    if (offset === null) {
+      this.fdPositions.set(handle, pos + bytesWritten);
+    }
+    return bytesWritten;
   }
 
   seek(
@@ -87,19 +101,27 @@ export class NodePlatformIO implements PlatformIO {
     whence: number,
   ): number {
     // SEEK_SET=0, SEEK_CUR=1, SEEK_END=2
+    let newPos: number;
     switch (whence) {
       case 0: // SEEK_SET
-        return offset;
-      case 1: // SEEK_CUR — the kernel maintains the canonical position
-        return offset;
+        newPos = offset;
+        break;
+      case 1: { // SEEK_CUR
+        const cur = this.fdPositions.get(handle) ?? 0;
+        newPos = cur + offset;
+        break;
+      }
       case 2: {
         // SEEK_END — compute from file size
         const stat = fs.fstatSync(handle);
-        return stat.size + offset;
+        newPos = stat.size + offset;
+        break;
       }
       default:
         throw new Error(`Invalid whence value: ${whence}`);
     }
+    this.fdPositions.set(handle, newPos);
+    return newPos;
   }
 
   fstat(handle: number): StatResult {

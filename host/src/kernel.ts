@@ -386,7 +386,7 @@ export class WasmPosixKernel {
     try {
       const mem = this.getMemoryBuffer();
       const buf = mem.subarray(bufPtr, bufPtr + bufLen);
-      return this.io.read(h, buf, 0, bufLen);
+      return this.io.read(h, buf, null, bufLen);
     } catch {
       return -1;
     }
@@ -423,7 +423,7 @@ export class WasmPosixKernel {
     }
 
     try {
-      return this.io.write(h, data, 0, bufLen);
+      return this.io.write(h, data, null, bufLen);
     } catch {
       return -1;
     }
