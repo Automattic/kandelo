@@ -56,7 +56,7 @@ export class ProgramRunner {
         kernelInit(1);
 
         // Build import object bridging kernel exports to program imports.
-        const trace = !!process?.env?.TRACE_SYSCALLS;
+        const trace = typeof process !== "undefined" && !!process.env?.TRACE_SYSCALLS;
         const kernelImports: Record<string, WebAssembly.ExportValue> = {};
         for (const [name, exp] of Object.entries(kernelExports)) {
             if (name.startsWith("kernel_") && typeof exp === "function") {

@@ -51,6 +51,7 @@
       }
     }
   },
+  "sideEffects": false,
   "files": [
     "dist"
   ],

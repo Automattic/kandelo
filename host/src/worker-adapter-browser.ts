@@ -20,6 +20,7 @@ class BrowserWorkerHandle implements WorkerHandle {
   private worker: Worker;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private handlers = new Map<string, Set<(...args: any[]) => void>>();
+  private terminated = false;
 
   constructor(worker: Worker) {
     this.worker = worker;
@@ -28,6 +29,11 @@ class BrowserWorkerHandle implements WorkerHandle {
     };
     worker.onerror = (e: ErrorEvent) => {
       for (const h of this.handlers.get("error") ?? []) h(new Error(e.message));
+      // Worker errors are unrecoverable — synthesize an exit event
+      if (!this.terminated) {
+        this.terminated = true;
+        for (const h of this.handlers.get("exit") ?? []) h(1);
+      }
     };
   }
 
@@ -55,7 +61,10 @@ class BrowserWorkerHandle implements WorkerHandle {
 
   async terminate(): Promise<number> {
     this.worker.terminate();
-    for (const h of this.handlers.get("exit") ?? []) h(0);
+    if (!this.terminated) {
+      this.terminated = true;
+      for (const h of this.handlers.get("exit") ?? []) h(0);
+    }
     return 0;
   }
 }
