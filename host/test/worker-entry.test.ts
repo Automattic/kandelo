@@ -2,7 +2,8 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { workerMain } from "../src/worker-entry";
+import { workerMain } from "../src/worker-main";
+import { NodePlatformIO } from "../src/platform/node";
 import type { WorkerInitMessage } from "../src/worker-protocol";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -39,7 +40,7 @@ describe("workerMain", () => {
       },
     };
 
-    await workerMain(port as any, initData);
+    await workerMain(port as any, initData, () => new NodePlatformIO());
 
     expect(port.messages).toHaveLength(1);
     expect(port.messages[0]).toEqual({ type: "ready", pid: 1 });
@@ -59,7 +60,7 @@ describe("workerMain", () => {
       },
     };
 
-    await workerMain(port as any, initData);
+    await workerMain(port as any, initData, () => new NodePlatformIO());
 
     expect(port.messages).toHaveLength(1);
     expect((port.messages[0] as any).type).toBe("error");
