@@ -147,9 +147,9 @@
 #define ENOSYS_NEG (-38)
 
 /* fcntl lock commands — must match kernel's crates/shared/src/lib.rs */
-#define FCNTL_F_GETLK  5
-#define FCNTL_F_SETLK  6
-#define FCNTL_F_SETLKW 7
+#define FCNTL_F_GETLK  12
+#define FCNTL_F_SETLK  13
+#define FCNTL_F_SETLKW 14
 
 /* Buffer size hints for ioctl/termios where kernel needs a length */
 #define IOCTL_BUF_SIZE    256
@@ -296,7 +296,7 @@ static long __do_syscall(long n, long a1, long a2, long a3,
         return (long)kernel_pipe2((uint32_t)a2, (int32_t *)(uintptr_t)a1);
 
     /* fcntl — (fd, cmd, arg)
-     * Route lock commands (F_GETLK=5, F_SETLK=6, F_SETLKW=7) to
+     * Route lock commands (F_GETLK=12, F_SETLK=13, F_SETLKW=14) to
      * kernel_fcntl_lock where arg is a flock pointer. */
     case SYS_FCNTL: {
         uint32_t cmd = (uint32_t)a2;
