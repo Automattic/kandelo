@@ -15,6 +15,7 @@
 #include "syscall.h"
 #include "atomic.h"
 #include "libc.h"
+#include "pthread_impl.h"
 
 static void dummy(void) {}
 weak_alias(dummy, _init);
@@ -34,6 +35,15 @@ void __init_libc(char **envp, char *pn)
 
 	if (!pn) pn = "";
 	__progname = __progname_full = pn;
+
+	/* Initialize the thread pointer.  On real architectures this is
+	 * done by __init_tls -> __init_tp, but Wasm has no TLS segments.
+	 * We must at least set td->self and td->locale so that
+	 * CURRENT_UTF8 / CURRENT_LOCALE (which dereference td->locale)
+	 * don't crash with a null-pointer read. */
+	pthread_t td = __pthread_self();
+	td->self = td;
+	td->locale = &libc.global_locale;
 }
 
 static void libc_start_init(void)
