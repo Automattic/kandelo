@@ -8,7 +8,7 @@
 
 import * as fs from "node:fs";
 import type { PlatformIO, StatResult } from "../types";
-import { translateOpenFlags } from "../vfs/flags";
+import { translateOpenFlags } from "../vfs/host-fs";
 
 export class NodePlatformIO implements PlatformIO {
   private dirHandles = new Map<number, fs.Dir>();
