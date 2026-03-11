@@ -20,12 +20,9 @@ import { WasmPosixKernel } from "./kernel";
 
 // Enable exnref for Node.js < 25 (browsers already support it natively)
 if (typeof process !== "undefined" && process.versions?.node) {
-  try {
-    const v8 = await import("node:v8");
-    v8.setFlagsFromString("--experimental-wasm-exnref");
-  } catch {
-    // v8 module unavailable
-  }
+  import("node:v8")
+    .then(v8 => v8.setFlagsFromString("--experimental-wasm-exnref"))
+    .catch(() => {});
 }
 
 export class ProgramRunner {
