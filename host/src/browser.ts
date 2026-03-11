@@ -1,6 +1,7 @@
 // Browser-compatible exports (zero Node.js dependencies)
 export { WasmPosixKernel } from "./kernel";
 export type { KernelCallbacks } from "./kernel";
+export { ProgramRunner } from "./program-runner";
 export { SyscallChannel, ChannelStatus } from "./channel";
 export { SharedPipeBuffer } from "./shared-pipe-buffer";
 export { ProcessManager } from "./process-manager";

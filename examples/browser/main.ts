@@ -1,4 +1,5 @@
 import { WasmPosixKernel, type KernelCallbacks } from "../../host/src/kernel";
+import { ProgramRunner } from "../../host/src/program-runner";
 import { VirtualPlatformIO } from "../../host/src/vfs/vfs";
 import { MemoryFileSystem } from "../../host/src/vfs/memory-fs";
 import { BrowserTimeProvider } from "../../host/src/vfs/time";
@@ -60,47 +61,8 @@ async function run() {
 
     appendOutput(`Running ${programName}...\n\n`, "info");
 
-    // Inline ProgramRunner logic — bridge kernel exports as program imports
-    const kernelInstance = kernel.getInstance()!;
-    const kernelExports = kernelInstance.exports;
-    const memory = kernel.getMemory()!;
-
-    // Init PID 1
-    (kernelExports.kernel_init as Function)(1);
-
-    // Build import object: forward all kernel_* exports
-    const kernelImports: Record<string, WebAssembly.ExportValue> = {};
-    for (const [name, exp] of Object.entries(kernelExports)) {
-      if (name.startsWith("kernel_") && typeof exp === "function") {
-        kernelImports[name] = exp;
-      }
-    }
-
-    const instance = await WebAssembly.instantiate(
-      await WebAssembly.compile(programBytes),
-      { kernel: kernelImports, env: { memory } },
-    );
-
-    // Set heap base so malloc works
-    const heapBase = instance.exports.__heap_base;
-    if (heapBase instanceof WebAssembly.Global) {
-      (kernelExports.kernel_brk as Function)(heapBase.value);
-    }
-
-    // Run program
-    const startFn = instance.exports._start as Function;
-    const getExitStatus = kernelExports.kernel_get_exit_status as Function | undefined;
-    let exitCode: number;
-    try {
-      startFn();
-      exitCode = 0;
-    } catch (e: unknown) {
-      if (e instanceof WebAssembly.RuntimeError && e.message?.includes("unreachable")) {
-        exitCode = getExitStatus ? getExitStatus() : 0;
-      } else {
-        throw e;
-      }
-    }
+    const runner = new ProgramRunner(kernel);
+    const exitCode = await runner.run(programBytes);
 
     appendOutput(`\nExited with code ${exitCode}\n`, "info");
   } catch (e) {
