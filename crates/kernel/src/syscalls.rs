@@ -925,6 +925,17 @@ pub fn sys_chdir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resu
     Ok(())
 }
 
+/// Change directory by file descriptor.
+pub fn sys_fchdir(proc: &mut Process, fd: i32) -> Result<(), Errno> {
+    let entry = proc.fd_table.get(fd)?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    if ofd.file_type != FileType::Directory {
+        return Err(Errno::ENOTDIR);
+    }
+    proc.cwd = ofd.path.clone();
+    Ok(())
+}
+
 /// Get the current working directory.
 /// Writes the cwd path to `buf` and returns the number of bytes written.
 /// Returns ERANGE if the buffer is too small.

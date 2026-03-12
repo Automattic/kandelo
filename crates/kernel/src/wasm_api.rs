@@ -1027,6 +1027,19 @@ pub extern "C" fn kernel_chdir(path_ptr: *const u8, path_len: u32) -> i32 {
     result
 }
 
+/// Change directory by file descriptor. Returns 0 or negative errno.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_fchdir(fd: i32) -> i32 {
+    let proc = unsafe { get_process() };
+    let mut host = WasmHostIO;
+    let result = match syscalls::sys_fchdir(proc, fd) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    };
+    deliver_pending_signals(proc, &mut host);
+    result
+}
+
 /// Get current working directory. Returns length written (>= 0) or negative errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_getcwd(buf_ptr: *mut u8, buf_len: u32) -> i32 {

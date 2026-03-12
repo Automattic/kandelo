@@ -189,7 +189,7 @@
 #define __NR_set_robust_list 261
 #define __NR_get_robust_list 262
 /* utimensat moved to real implementation above */
-#define __NR_fchdir         264
+/* fchdir moved to real implementation above */
 #define __NR_chroot         265
 #define __NR_mount          266
 #define __NR_umount2        267
@@ -293,6 +293,7 @@
 #define __NR_clock_nanosleep 124
 #define __NR_utimensat      125
 #define __NR_mremap         126
+#define __NR_fchdir         127
 #define __NR_utimes         363
 #define __NR_futimesat      364
 #define __NR_clock_adjtime  365

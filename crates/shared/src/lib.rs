@@ -127,6 +127,7 @@ pub enum Syscall {
     ClockNanosleep = 124,
     Utimensat = 125,
     Mremap = 126,
+    Fchdir = 127,
 }
 
 impl Syscall {
@@ -256,6 +257,7 @@ impl Syscall {
             124 => Some(Syscall::ClockNanosleep),
             125 => Some(Syscall::Utimensat),
             126 => Some(Syscall::Mremap),
+            127 => Some(Syscall::Fchdir),
             _ => None,
         }
     }

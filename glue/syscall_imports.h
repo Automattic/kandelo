@@ -153,6 +153,9 @@ int32_t kernel_access(const uint8_t *path_ptr, uint32_t path_len,
 KERNEL_IMPORT(kernel_chdir)
 int32_t kernel_chdir(const uint8_t *path_ptr, uint32_t path_len);
 
+KERNEL_IMPORT(kernel_fchdir)
+int32_t kernel_fchdir(int32_t fd);
+
 KERNEL_IMPORT(kernel_getcwd)
 int32_t kernel_getcwd(uint8_t *buf_ptr, uint32_t buf_len);
 

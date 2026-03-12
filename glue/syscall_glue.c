@@ -149,6 +149,7 @@
 #define SYS_CLOCK_NANOSLEEP 124
 #define SYS_UTIMENSAT     125
 #define SYS_MREMAP        126
+#define SYS_FCHDIR        127
 
 /* ENOSYS — returned for unknown syscall numbers */
 #define ENOSYS_NEG (-38)
@@ -1043,6 +1044,10 @@ static long __do_syscall(long n, long a1, long a2, long a3,
     case SYS_MREMAP:
         return (long)kernel_mremap((uint32_t)a1, (uint32_t)a2,
                                    (uint32_t)a3, (uint32_t)a4);
+
+    /* fchdir — (fd) */
+    case SYS_FCHDIR:
+        return (long)kernel_fchdir((int32_t)a1);
 
     /* ============================================================== */
     /* Default: unknown syscall                                        */
