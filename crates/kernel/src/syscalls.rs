@@ -1536,6 +1536,16 @@ pub fn sys_utimensat(
     host.host_utimensat(&resolved, atime_sec, atime_nsec, mtime_sec, mtime_nsec)
 }
 
+/// Memory advice hint. No-op in Wasm — there's no virtual memory paging.
+pub fn sys_madvise(
+    _proc: &mut Process,
+    _addr: u32,
+    _len: u32,
+    _advice: u32,
+) -> Result<(), Errno> {
+    Ok(())
+}
+
 /// Remap a memory mapping. Not supported in Wasm — returns ENOSYS.
 pub fn sys_mremap(
     _proc: &mut Process,

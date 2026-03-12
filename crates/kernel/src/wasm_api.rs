@@ -1462,6 +1462,19 @@ pub extern "C" fn kernel_mremap(old_addr: u32, old_len: u32, new_len: u32, flags
     result
 }
 
+/// Memory advice hint. No-op, returns 0.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_madvise(addr: u32, len: u32, advice: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    let mut host = WasmHostIO;
+    let result = match syscalls::sys_madvise(proc, addr, len, advice) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    };
+    deliver_pending_signals(proc, &mut host);
+    result
+}
+
 /// Check if a file descriptor refers to a terminal.
 /// Returns 1 if terminal, or negative errno on error (ENOTTY if not a terminal).
 #[unsafe(no_mangle)]

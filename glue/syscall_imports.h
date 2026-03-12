@@ -565,6 +565,9 @@ int32_t kernel_utimensat(int32_t dirfd, const uint8_t *path_ptr,
                          uint32_t path_len, const uint8_t *times_ptr,
                          uint32_t flags);
 
+KERNEL_IMPORT(kernel_madvise)
+int32_t kernel_madvise(uint32_t addr, uint32_t len, uint32_t advice);
+
 /* ------------------------------------------------------------------ */
 /* Argv                                                                */
 /* ------------------------------------------------------------------ */

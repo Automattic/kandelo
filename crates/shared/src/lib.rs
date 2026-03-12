@@ -128,6 +128,7 @@ pub enum Syscall {
     Utimensat = 125,
     Mremap = 126,
     Fchdir = 127,
+    Madvise = 128,
 }
 
 impl Syscall {
@@ -258,6 +259,7 @@ impl Syscall {
             125 => Some(Syscall::Utimensat),
             126 => Some(Syscall::Mremap),
             127 => Some(Syscall::Fchdir),
+            128 => Some(Syscall::Madvise),
             _ => None,
         }
     }

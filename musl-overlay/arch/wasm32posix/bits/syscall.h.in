@@ -183,7 +183,7 @@
 #define __NR_getrandom      120
 #define __NR_memfd_create   256
 #define __NR_membarrier     257
-#define __NR_madvise        258
+#define __NR_madvise        128
 /* mremap moved to real implementation above */
 #define __NR_statx          260
 #define __NR_set_robust_list 261

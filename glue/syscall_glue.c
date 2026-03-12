@@ -150,6 +150,7 @@
 #define SYS_UTIMENSAT     125
 #define SYS_MREMAP        126
 #define SYS_FCHDIR        127
+#define SYS_MADVISE       128
 
 /* ENOSYS — returned for unknown syscall numbers */
 #define ENOSYS_NEG (-38)
@@ -1048,6 +1049,10 @@ static long __do_syscall(long n, long a1, long a2, long a3,
     /* fchdir — (fd) */
     case SYS_FCHDIR:
         return (long)kernel_fchdir((int32_t)a1);
+
+    /* madvise — (addr, length, advice) → no-op */
+    case SYS_MADVISE:
+        return (long)kernel_madvise((uint32_t)a1, (uint32_t)a2, (uint32_t)a3);
 
     /* ============================================================== */
     /* Default: unknown syscall                                        */
