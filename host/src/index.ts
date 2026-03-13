@@ -8,7 +8,9 @@ export { SharedPipeBuffer } from "./shared-pipe-buffer";
 export { NodeWorkerAdapter, MockWorkerAdapter } from "./worker-adapter";
 export { workerMain } from "./worker-main";
 export type { CreateIOFn, MessagePort as WorkerMessagePort } from "./worker-main";
-export type { KernelConfig, PlatformIO, StatResult } from "./types";
+export type { KernelConfig, PlatformIO, StatResult, NetworkIO } from "./types";
+export { TcpNetworkBackend, FetchNetworkBackend } from "./networking";
+export type { FetchBackendOptions } from "./networking";
 export type { WorkerAdapter, WorkerHandle } from "./worker-adapter";
 export type { ProcessInfo, ProcessManagerConfig, SpawnOptions, WaitResult } from "./process-manager";
 export type {
