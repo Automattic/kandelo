@@ -294,6 +294,7 @@
 #define __NR_utimensat      125
 #define __NR_mremap         126
 #define __NR_fchdir         127
+#define __NR_getaddrinfo    140
 #define __NR_utimes         363
 #define __NR_futimesat      364
 #define __NR_clock_adjtime  365

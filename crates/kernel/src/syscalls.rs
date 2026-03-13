@@ -3328,6 +3328,21 @@ mod tests {
         fn host_waitpid(&mut self, _pid: i32, _options: u32) -> Result<(i32, i32), Errno> {
             Err(Errno::ECHILD)
         }
+        fn host_net_connect(&mut self, _handle: i32, _addr: &[u8], _port: u16) -> Result<(), Errno> {
+            Err(Errno::ECONNREFUSED)
+        }
+        fn host_net_send(&mut self, _handle: i32, _data: &[u8], _flags: u32) -> Result<usize, Errno> {
+            Err(Errno::ENOTCONN)
+        }
+        fn host_net_recv(&mut self, _handle: i32, _len: u32, _flags: u32, _buf: &mut [u8]) -> Result<usize, Errno> {
+            Err(Errno::ENOTCONN)
+        }
+        fn host_net_close(&mut self, _handle: i32) -> Result<(), Errno> {
+            Ok(())
+        }
+        fn host_getaddrinfo(&mut self, _name: &[u8], _result: &mut [u8]) -> Result<usize, Errno> {
+            Err(Errno::ENOENT)
+        }
     }
 
     #[test]
@@ -6336,6 +6351,21 @@ mod tests {
         }
         fn host_waitpid(&mut self, _pid: i32, _options: u32) -> Result<(i32, i32), Errno> {
             Err(Errno::ECHILD)
+        }
+        fn host_net_connect(&mut self, _handle: i32, _addr: &[u8], _port: u16) -> Result<(), Errno> {
+            Err(Errno::ECONNREFUSED)
+        }
+        fn host_net_send(&mut self, _handle: i32, _data: &[u8], _flags: u32) -> Result<usize, Errno> {
+            Err(Errno::ENOTCONN)
+        }
+        fn host_net_recv(&mut self, _handle: i32, _len: u32, _flags: u32, _buf: &mut [u8]) -> Result<usize, Errno> {
+            Err(Errno::ENOTCONN)
+        }
+        fn host_net_close(&mut self, _handle: i32) -> Result<(), Errno> {
+            Ok(())
+        }
+        fn host_getaddrinfo(&mut self, _name: &[u8], _result: &mut [u8]) -> Result<usize, Errno> {
+            Err(Errno::ENOENT)
         }
     }
 

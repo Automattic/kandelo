@@ -57,6 +57,11 @@ unsafe extern "C" {
     fn host_getrandom(buf_ptr: *mut u8, buf_len: u32) -> i32;
     fn host_utimensat(path_ptr: *const u8, path_len: u32, atime_sec: i64, atime_nsec: i64, mtime_sec: i64, mtime_nsec: i64) -> i32;
     fn host_waitpid(pid: i32, options: u32, status_ptr: *mut i32) -> i32;
+    fn host_net_connect(handle: i32, addr_ptr: *const u8, addr_len: u32, port: u32) -> i32;
+    fn host_net_send(handle: i32, buf_ptr: *const u8, buf_len: u32, flags: u32) -> i32;
+    fn host_net_recv(handle: i32, buf_ptr: *mut u8, buf_len: u32, flags: u32) -> i32;
+    fn host_net_close(handle: i32) -> i32;
+    fn host_getaddrinfo(name_ptr: *const u8, name_len: u32, result_ptr: *mut u8, result_len: u32) -> i32;
 }
 
 // ---------------------------------------------------------------------------
@@ -394,6 +399,52 @@ impl HostIO for WasmHostIO {
             }
         } else {
             Ok((result, status))
+        }
+    }
+
+    fn host_net_connect(&mut self, handle: i32, addr: &[u8], port: u16) -> Result<(), Errno> {
+        let result = unsafe { host_net_connect(handle, addr.as_ptr(), addr.len() as u32, port as u32) };
+        i32_to_result(result)
+    }
+
+    fn host_net_send(&mut self, handle: i32, data: &[u8], flags: u32) -> Result<usize, Errno> {
+        let result = unsafe { host_net_send(handle, data.as_ptr(), data.len() as u32, flags) };
+        if result < 0 {
+            match Errno::from_u32((-result) as u32) {
+                Some(e) => Err(e),
+                None => Err(Errno::EIO),
+            }
+        } else {
+            Ok(result as usize)
+        }
+    }
+
+    fn host_net_recv(&mut self, handle: i32, _len: u32, flags: u32, buf: &mut [u8]) -> Result<usize, Errno> {
+        let result = unsafe { host_net_recv(handle, buf.as_mut_ptr(), buf.len() as u32, flags) };
+        if result < 0 {
+            match Errno::from_u32((-result) as u32) {
+                Some(e) => Err(e),
+                None => Err(Errno::EIO),
+            }
+        } else {
+            Ok(result as usize)
+        }
+    }
+
+    fn host_net_close(&mut self, handle: i32) -> Result<(), Errno> {
+        let result = unsafe { host_net_close(handle) };
+        i32_to_result(result)
+    }
+
+    fn host_getaddrinfo(&mut self, name: &[u8], result_buf: &mut [u8]) -> Result<usize, Errno> {
+        let result = unsafe { host_getaddrinfo(name.as_ptr(), name.len() as u32, result_buf.as_mut_ptr(), result_buf.len() as u32) };
+        if result < 0 {
+            match Errno::from_u32((-result) as u32) {
+                Some(e) => Err(e),
+                None => Err(Errno::EIO),
+            }
+        } else {
+            Ok(result as usize)
         }
     }
 }

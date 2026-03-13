@@ -140,6 +140,7 @@ pub enum Syscall {
     Sendmsg = 137,
     Recvmsg = 138,
     Wait4 = 139,
+    Getaddrinfo = 140,
 }
 
 impl Syscall {
@@ -282,6 +283,7 @@ impl Syscall {
             137 => Some(Syscall::Sendmsg),
             138 => Some(Syscall::Recvmsg),
             139 => Some(Syscall::Wait4),
+            140 => Some(Syscall::Getaddrinfo),
             _ => None,
         }
     }
@@ -363,6 +365,7 @@ pub enum Errno {
     EISCONN = 106,
     ENOTCONN = 107,
     ESHUTDOWN = 108,
+    ETIMEDOUT = 110,
     EALREADY = 114,
     EINPROGRESS = 115,
 }
@@ -420,6 +423,7 @@ impl Errno {
             111 => Some(Errno::ECONNREFUSED),
             107 => Some(Errno::ENOTCONN),
             108 => Some(Errno::ESHUTDOWN),
+            110 => Some(Errno::ETIMEDOUT),
             114 => Some(Errno::EALREADY),
             115 => Some(Errno::EINPROGRESS),
             _ => None,
