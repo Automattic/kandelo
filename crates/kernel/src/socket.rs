@@ -43,6 +43,8 @@ pub struct SocketInfo {
     pub shut_rd: bool,
     /// Whether the write half has been shut down.
     pub shut_wr: bool,
+    /// Host-side network handle for AF_INET sockets (assigned on connect).
+    pub host_net_handle: Option<i32>,
 }
 
 impl SocketInfo {
@@ -57,6 +59,7 @@ impl SocketInfo {
             send_buf_idx: None,
             shut_rd: false,
             shut_wr: false,
+            host_net_handle: None,
         }
     }
 }

@@ -105,6 +105,9 @@ pub fn sys_close(
             FileType::Socket => {
                 let sock_idx = (-(host_handle + 1)) as usize;
                 if let Some(sock) = proc.sockets.get(sock_idx) {
+                    if let Some(net_handle) = sock.host_net_handle {
+                        let _ = host.host_net_close(net_handle);
+                    }
                     if let Some(send_idx) = sock.send_buf_idx {
                         if let Some(Some(pipe)) = proc.pipes.get_mut(send_idx) {
                             pipe.close_write_end();
@@ -1798,26 +1801,10 @@ pub fn sys_socketpair(
 ///
 /// For kernel-internal AF_UNIX sockets, writes AF_UNIX (family=1) with
 /// empty path. Returns the number of bytes written (2 bytes minimum for
-/// sa_family). Real network sockets are not supported.
+/// sa_family). Returns AF_INET for inet sockets, AF_UNIX for unix sockets.
 pub fn sys_getsockname(proc: &Process, fd: i32, buf: &mut [u8]) -> Result<usize, Errno> {
-    let entry = proc.fd_table.get(fd)?;
-    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
-    if ofd.file_type != FileType::Socket {
-        return Err(Errno::ENOTSOCK);
-    }
-    // AF_UNIX = 1, little-endian u16
-    if buf.len() >= 2 {
-        buf[0] = 1; // AF_UNIX low byte
-        buf[1] = 0; // AF_UNIX high byte
-    }
-    Ok(2)
-}
+    use crate::socket::SocketDomain;
 
-/// getpeername -- get remote socket address.
-///
-/// For kernel-internal AF_UNIX socketpairs, returns AF_UNIX family.
-/// Real network sockets are not supported.
-pub fn sys_getpeername(proc: &Process, fd: i32, buf: &mut [u8]) -> Result<usize, Errno> {
     let entry = proc.fd_table.get(fd)?;
     let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
     if ofd.file_type != FileType::Socket {
@@ -1825,19 +1812,61 @@ pub fn sys_getpeername(proc: &Process, fd: i32, buf: &mut [u8]) -> Result<usize,
     }
     let sock_idx = (-(ofd.host_handle + 1)) as usize;
     let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
-    // Must be connected (have a peer)
-    if sock.send_buf_idx.is_none() {
-        return Err(Errno::ENOTCONN);
+    if buf.len() >= 2 {
+        let family: u16 = match sock.domain {
+            SocketDomain::Inet => 2,  // AF_INET
+            SocketDomain::Inet6 => 10, // AF_INET6
+            SocketDomain::Unix => 1,  // AF_UNIX
+        };
+        buf[0] = family as u8;       // low byte
+        buf[1] = (family >> 8) as u8; // high byte
+    }
+    Ok(2)
+}
+
+/// getpeername -- get remote socket address.
+///
+/// For AF_UNIX socketpairs, returns AF_UNIX family.
+/// For AF_INET/AF_INET6 sockets, returns the corresponding family.
+pub fn sys_getpeername(proc: &Process, fd: i32, buf: &mut [u8]) -> Result<usize, Errno> {
+    use crate::socket::{SocketDomain, SocketState};
+
+    let entry = proc.fd_table.get(fd)?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    if ofd.file_type != FileType::Socket {
+        return Err(Errno::ENOTSOCK);
+    }
+    let sock_idx = (-(ofd.host_handle + 1)) as usize;
+    let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+    // Must be connected
+    match sock.domain {
+        SocketDomain::Inet | SocketDomain::Inet6 => {
+            if sock.state != SocketState::Connected {
+                return Err(Errno::ENOTCONN);
+            }
+        }
+        SocketDomain::Unix => {
+            if sock.send_buf_idx.is_none() {
+                return Err(Errno::ENOTCONN);
+            }
+        }
     }
     if buf.len() >= 2 {
-        buf[0] = 1; // AF_UNIX low byte
-        buf[1] = 0; // AF_UNIX high byte
+        let family: u16 = match sock.domain {
+            SocketDomain::Inet => 2,  // AF_INET
+            SocketDomain::Inet6 => 10, // AF_INET6
+            SocketDomain::Unix => 1,  // AF_UNIX
+        };
+        buf[0] = family as u8;       // low byte
+        buf[1] = (family >> 8) as u8; // high byte
     }
     Ok(2)
 }
 
 /// Shut down part of a full-duplex socket connection.
-pub fn sys_shutdown(proc: &mut Process, fd: i32, how: u32) -> Result<(), Errno> {
+///
+/// For AF_INET/AF_INET6 sockets with SHUT_RDWR, also closes the host network handle.
+pub fn sys_shutdown(proc: &mut Process, host: &mut dyn HostIO, fd: i32, how: u32) -> Result<(), Errno> {
     use wasm_posix_shared::socket::*;
 
     let entry = proc.fd_table.get(fd)?;
@@ -1865,6 +1894,9 @@ pub fn sys_shutdown(proc: &mut Process, fd: i32, how: u32) -> Result<(), Errno> 
         SHUT_RDWR => {
             sock.shut_rd = true;
             sock.shut_wr = true;
+            if let Some(net_handle) = sock.host_net_handle {
+                let _ = host.host_net_close(net_handle);
+            }
             if let Some(send_idx) = sock.send_buf_idx {
                 if let Some(Some(pipe)) = proc.pipes.get_mut(send_idx) {
                     pipe.close_write_end();
@@ -1882,6 +1914,9 @@ pub fn sys_shutdown(proc: &mut Process, fd: i32, how: u32) -> Result<(), Errno> 
 }
 
 /// Send data on a connected socket.
+///
+/// For AF_INET/AF_INET6 sockets, delegates to the host via `host_net_send`.
+/// For AF_UNIX sockets, uses the existing pipe-backed path via sys_write.
 pub fn sys_send(
     proc: &mut Process,
     host: &mut dyn HostIO,
@@ -1889,7 +1924,7 @@ pub fn sys_send(
     buf: &[u8],
     flags: u32,
 ) -> Result<usize, Errno> {
-    use crate::socket::SocketState;
+    use crate::socket::{SocketDomain, SocketState};
     use wasm_posix_shared::socket::MSG_NOSIGNAL;
 
     let entry = proc.fd_table.get(fd)?;
@@ -1902,17 +1937,29 @@ pub fn sys_send(
     if sock.state != SocketState::Connected {
         return Err(Errno::ENOTCONN);
     }
-    let nosignal = flags & MSG_NOSIGNAL != 0;
-    let sigpipe_was_pending = proc.signals.is_pending(wasm_posix_shared::signal::SIGPIPE);
-    let result = sys_write(proc, host, fd, buf);
-    // MSG_NOSIGNAL: suppress SIGPIPE raised by write
-    if nosignal && !sigpipe_was_pending {
-        proc.signals.clear(wasm_posix_shared::signal::SIGPIPE);
+
+    match sock.domain {
+        SocketDomain::Inet | SocketDomain::Inet6 => {
+            let net_handle = sock.host_net_handle.ok_or(Errno::ENOTCONN)?;
+            host.host_net_send(net_handle, buf, flags)
+        }
+        SocketDomain::Unix => {
+            let nosignal = flags & MSG_NOSIGNAL != 0;
+            let sigpipe_was_pending = proc.signals.is_pending(wasm_posix_shared::signal::SIGPIPE);
+            let result = sys_write(proc, host, fd, buf);
+            // MSG_NOSIGNAL: suppress SIGPIPE raised by write
+            if nosignal && !sigpipe_was_pending {
+                proc.signals.clear(wasm_posix_shared::signal::SIGPIPE);
+            }
+            result
+        }
     }
-    result
 }
 
 /// Receive data from a connected socket.
+///
+/// For AF_INET/AF_INET6 sockets, delegates to the host via `host_net_recv`.
+/// For AF_UNIX sockets, uses the existing pipe-backed path.
 pub fn sys_recv(
     proc: &mut Process,
     host: &mut dyn HostIO,
@@ -1920,7 +1967,7 @@ pub fn sys_recv(
     buf: &mut [u8],
     flags: u32,
 ) -> Result<usize, Errno> {
-    use crate::socket::SocketState;
+    use crate::socket::{SocketDomain, SocketState};
     use wasm_posix_shared::socket::{MSG_DONTWAIT, MSG_PEEK};
     const MSG_WAITALL: u32 = 0x100;
 
@@ -1938,33 +1985,42 @@ pub fn sys_recv(
     if sock.shut_rd {
         return Ok(0);
     }
-    let recv_buf_idx = sock.recv_buf_idx.ok_or(Errno::ENOTCONN)?;
-    let peek = flags & MSG_PEEK != 0;
-    let nonblock = (status_flags & O_NONBLOCK != 0) || (flags & MSG_DONTWAIT != 0);
-    let waitall = flags & MSG_WAITALL != 0 && !peek;
-    let mut total = 0usize;
 
-    loop {
-        let pipe = proc
-            .pipes
-            .get_mut(recv_buf_idx)
-            .and_then(|p| p.as_mut())
-            .ok_or(Errno::EBADF)?;
-        let n = if peek { pipe.peek(&mut buf[total..]) } else { pipe.read(&mut buf[total..]) };
-        total += n;
-        if total >= buf.len() || (total > 0 && !waitall) {
-            return Ok(total);
+    match sock.domain {
+        SocketDomain::Inet | SocketDomain::Inet6 => {
+            let net_handle = sock.host_net_handle.ok_or(Errno::ENOTCONN)?;
+            host.host_net_recv(net_handle, buf.len() as u32, flags, buf)
         }
-        if n == 0 && !pipe.is_write_end_open() {
-            return Ok(total); // peer closed — return what we have
+        SocketDomain::Unix => {
+            let recv_buf_idx = sock.recv_buf_idx.ok_or(Errno::ENOTCONN)?;
+            let peek = flags & MSG_PEEK != 0;
+            let nonblock = (status_flags & O_NONBLOCK != 0) || (flags & MSG_DONTWAIT != 0);
+            let waitall = flags & MSG_WAITALL != 0 && !peek;
+            let mut total = 0usize;
+
+            loop {
+                let pipe = proc
+                    .pipes
+                    .get_mut(recv_buf_idx)
+                    .and_then(|p| p.as_mut())
+                    .ok_or(Errno::EBADF)?;
+                let n = if peek { pipe.peek(&mut buf[total..]) } else { pipe.read(&mut buf[total..]) };
+                total += n;
+                if total >= buf.len() || (total > 0 && !waitall) {
+                    return Ok(total);
+                }
+                if n == 0 && !pipe.is_write_end_open() {
+                    return Ok(total); // peer closed — return what we have
+                }
+                if nonblock {
+                    return Err(Errno::EAGAIN);
+                }
+                if proc.signals.deliverable() != 0 {
+                    return Err(Errno::EINTR);
+                }
+                let _ = host.host_nanosleep(0, 1_000_000);
+            }
         }
-        if nonblock {
-            return Err(Errno::EAGAIN);
-        }
-        if proc.signals.deliverable() != 0 {
-            return Err(Errno::EINTR);
-        }
-        let _ = host.host_nanosleep(0, 1_000_000);
     }
 }
 
@@ -2064,14 +2120,57 @@ pub fn sys_accept(proc: &mut Process, _host: &mut dyn HostIO, fd: i32) -> Result
     Err(Errno::ECONNABORTED)
 }
 
-/// Connect a socket to an address. No network available in Wasm.
-pub fn sys_connect(proc: &mut Process, _host: &mut dyn HostIO, fd: i32, _addr: &[u8]) -> Result<(), Errno> {
+/// Connect a socket to an address.
+///
+/// For AF_INET/AF_INET6 sockets, delegates to the host via `host_net_connect`.
+/// For AF_UNIX sockets, returns ECONNREFUSED (no Unix domain listener support).
+pub fn sys_connect(proc: &mut Process, host: &mut dyn HostIO, fd: i32, addr: &[u8]) -> Result<(), Errno> {
+    use crate::socket::{SocketDomain, SocketState};
+
     let entry = proc.fd_table.get(fd)?;
     let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
     if ofd.file_type != FileType::Socket {
         return Err(Errno::ENOTSOCK);
     }
-    Err(Errno::ECONNREFUSED)
+    let sock_idx = (-(ofd.host_handle + 1)) as usize;
+    let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+
+    match sock.domain {
+        SocketDomain::Inet | SocketDomain::Inet6 => {
+            if sock.state == SocketState::Connected {
+                return Err(Errno::EISCONN);
+            }
+            // Parse sockaddr_in: family(2) + port(2 big-endian) + addr(4)
+            if addr.len() < 8 {
+                return Err(Errno::EINVAL);
+            }
+            let port = u16::from_be_bytes([addr[2], addr[3]]);
+            let ip = &addr[4..8];
+            let net_handle = sock_idx as i32;
+            host.host_net_connect(net_handle, ip, port)?;
+            let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+            sock.state = SocketState::Connected;
+            sock.host_net_handle = Some(net_handle);
+            Ok(())
+        }
+        SocketDomain::Unix => Err(Errno::ECONNREFUSED),
+    }
+}
+
+/// Resolve a hostname to an IP address via the host.
+///
+/// `name` is the hostname bytes. `result_buf` receives the resolved address(es).
+/// Returns the number of bytes written to `result_buf`.
+pub fn sys_getaddrinfo(
+    _proc: &mut Process,
+    host: &mut dyn HostIO,
+    name: &[u8],
+    result_buf: &mut [u8],
+) -> Result<usize, Errno> {
+    if result_buf.len() < 4 {
+        return Err(Errno::EINVAL);
+    }
+    host.host_getaddrinfo(name, result_buf)
 }
 
 /// Send a message on a socket to a specific address. No datagram support.
@@ -4424,7 +4523,7 @@ mod tests {
         use wasm_posix_shared::socket::*;
         let (fd0, _fd1) = sys_socketpair(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
 
-        sys_shutdown(&mut proc, fd0, SHUT_WR).unwrap();
+        sys_shutdown(&mut proc, &mut host, fd0, SHUT_WR).unwrap();
 
         let result = sys_write(&mut proc, &mut host, fd0, b"test");
         assert_eq!(result, Err(Errno::EPIPE));
@@ -4446,7 +4545,7 @@ mod tests {
         let mut host = MockHostIO::new();
         use wasm_posix_shared::socket::*;
         let (fd0, _fd1) = sys_socketpair(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
-        sys_shutdown(&mut proc, fd0, SHUT_RD).unwrap();
+        sys_shutdown(&mut proc, &mut host, fd0, SHUT_RD).unwrap();
         let mut buf = [0u8; 4];
         let n = sys_read(&mut proc, &mut host, fd0, &mut buf).unwrap();
         assert_eq!(n, 0);
@@ -4458,7 +4557,7 @@ mod tests {
         let mut host = MockHostIO::new();
         use wasm_posix_shared::socket::*;
         let (fd0, _fd1) = sys_socketpair(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
-        sys_shutdown(&mut proc, fd0, SHUT_WR).unwrap();
+        sys_shutdown(&mut proc, &mut host, fd0, SHUT_WR).unwrap();
         let result = sys_write(&mut proc, &mut host, fd0, b"test");
         assert_eq!(result, Err(Errno::EPIPE));
     }
@@ -4598,8 +4697,9 @@ mod tests {
     #[test]
     fn test_shutdown_not_socket() {
         let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
         use wasm_posix_shared::socket::*;
-        let result = sys_shutdown(&mut proc, 0, SHUT_RDWR);
+        let result = sys_shutdown(&mut proc, &mut host, 0, SHUT_RDWR);
         assert_eq!(result, Err(Errno::ENOTSOCK));
     }
 
@@ -5628,7 +5728,7 @@ mod tests {
         let (fd0, _fd1) = sys_socketpair(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
 
         // Shutdown both directions to trigger POLLERR
-        sys_shutdown(&mut proc, fd0, SHUT_RDWR).unwrap();
+        sys_shutdown(&mut proc, &mut host, fd0, SHUT_RDWR).unwrap();
 
         let mut fds = [WasmPollFd { fd: fd0, events: POLLIN | POLLOUT, revents: 0 }];
         let result = sys_poll(&mut proc, &mut host, &mut fds, 0).unwrap();

@@ -2070,11 +2070,11 @@ pub extern "C" fn kernel_recv(fd: i32, buf_ptr: *mut u8, buf_len: u32, flags: u3
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_shutdown(fd: i32, how: u32) -> i32 {
     let proc = unsafe { get_process() };
-    let result = match syscalls::sys_shutdown(proc, fd, how) {
+    let mut host = WasmHostIO;
+    let result = match syscalls::sys_shutdown(proc, &mut host, fd, how) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    let mut host = WasmHostIO;
     deliver_pending_signals(proc, &mut host);
     result
 }
@@ -2964,4 +2964,17 @@ pub extern "C" fn kernel_getpeername(fd: i32, buf_ptr: u32, buf_len: u32) -> i32
     let mut host = WasmHostIO;
     deliver_pending_signals(proc, &mut host);
     result
+}
+
+/// Resolve a hostname to an IP address. Returns bytes written or negative errno.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_getaddrinfo(name_ptr: *const u8, name_len: u32, result_ptr: *mut u8) -> i32 {
+    let proc = unsafe { get_process() };
+    let mut host = WasmHostIO;
+    let name = unsafe { slice::from_raw_parts(name_ptr, name_len as usize) };
+    let result_buf = unsafe { slice::from_raw_parts_mut(result_ptr, 16) };
+    match syscalls::sys_getaddrinfo(proc, &mut host, name, result_buf) {
+        Ok(n) => n as i32,
+        Err(e) => -(e as i32),
+    }
 }
