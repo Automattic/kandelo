@@ -6644,4 +6644,57 @@ mod tests {
         let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
         assert_eq!(ofd.path, b"/base/dir/child/dir");
     }
+
+    #[test]
+    fn test_inet_socket_creation() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        assert!(fd >= 0);
+    }
+
+    #[test]
+    fn test_inet_connect_returns_econnrefused_with_mock() {
+        // MockHostIO returns ECONNREFUSED for host_net_connect
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        // sockaddr_in: AF_INET(2) + port(80) + IP(127.0.0.1)
+        let addr = [2, 0, 0, 80, 127, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0];
+        let err = sys_connect(&mut proc, &mut host, fd, &addr).unwrap_err();
+        assert_eq!(err, Errno::ECONNREFUSED);
+    }
+
+    #[test]
+    fn test_inet_send_on_unconnected_returns_enotconn() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        let err = sys_send(&mut proc, &mut host, fd, b"hello", 0).unwrap_err();
+        assert_eq!(err, Errno::ENOTCONN);
+    }
+
+    #[test]
+    fn test_unix_socket_connect_still_returns_econnrefused() {
+        // Regression: AF_UNIX connect should still fail
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+        let fd = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+        let addr = [1, 0]; // AF_UNIX family
+        let err = sys_connect(&mut proc, &mut host, fd, &addr).unwrap_err();
+        assert_eq!(err, Errno::ECONNREFUSED);
+    }
+
+    #[test]
+    fn test_getaddrinfo_returns_enoent_with_mock() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let mut result = [0u8; 16];
+        let err = sys_getaddrinfo(&mut proc, &mut host, b"example.com", &mut result).unwrap_err();
+        assert_eq!(err, Errno::ENOENT);
+    }
 }
