@@ -1,0 +1,18 @@
+Vendored TLS 1.2 Library
+========================
+
+This directory contains TLS 1.2 protocol implementation files vendored from
+the WordPress Playground project.
+
+Source: https://github.com/WordPress/wordpress-playground
+Path:   packages/php-wasm/web/src/lib/tls/
+License: GPL-2.0-or-later
+
+Copyright WordPress Foundation and contributors.
+
+Modifications from the original:
+- Replaced @php-wasm/util imports (concatUint8Arrays, concatArrayBuffers)
+  with local shims in shims.ts
+- Replaced @php-wasm/logger import with console.warn shim in shims.ts
+- Widened ArrayBuffer type signatures for TypeScript 5.7+ compatibility
+- Added vendor-compat.d.ts for SubtleCrypto type compatibility
