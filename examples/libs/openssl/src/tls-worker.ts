@@ -307,6 +307,13 @@ async function tryProcessHttpRequest(handle: number): Promise<void> {
         const writer = conn.tls.serverEnd.downstream.writable.getWriter();
         await writer.write(responseBytes);
         writer.releaseLock();
+
+        // Allow the TLS engine to encrypt and flush the response
+        await new Promise((r) => setTimeout(r, 50));
+
+        // Close the TLS connection (sends close_notify to client)
+        conn.closed = true;
+        conn.tls.close().catch(() => {});
     } catch (err) {
         // Send a 502 Bad Gateway response
         const errorBody = `Error fetching ${url}: ${err}`;
@@ -430,8 +437,10 @@ parentPort!.on("message", (msg: {
                 const len = param;
                 const sendData = new Uint8Array(data.slice(0, len));
                 const conn = connections.get(handle);
-                if (!conn) {
-                    signalError();
+                if (!conn || conn.closed) {
+                    // Connection already closed (e.g. SSL_shutdown after response).
+                    // Return success — the data is simply discarded.
+                    signalResult(len);
                     setImmediate(loop);
                     break;
                 }
@@ -448,8 +457,13 @@ parentPort!.on("message", (msg: {
 
                         signalResult(len);
                     } catch (err) {
-                        console.error("[tls-worker] send error:", err);
-                        signalError();
+                        // Ignore errors on closed connections (e.g. SSL_shutdown close_notify)
+                        if (conn.closed) {
+                            signalResult(len);
+                        } else {
+                            console.error("[tls-worker] send error:", err);
+                            signalError();
+                        }
                     }
                     setImmediate(loop);
                 })();
@@ -460,7 +474,8 @@ parentPort!.on("message", (msg: {
                 const maxLen = param;
                 const conn = connections.get(handle);
                 if (!conn) {
-                    signalError();
+                    // Connection already closed — return 0 (EOF)
+                    signalResult(0);
                     setImmediate(loop);
                     break;
                 }

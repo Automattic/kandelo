@@ -605,11 +605,10 @@ export class TLS_1_2_Connection {
 				this.serverUpstreamWriter.write(appData.body);
 			}
 		} catch (e) {
-			if (e instanceof TLSConnectionClosed) {
-				// Connection closed, no more application data to emit.
-				return;
-			}
-			throw e;
+			// Connection closed or TLS alert — stop polling.
+			// All errors are expected during connection teardown
+			// (e.g. DecodeError from SSL_shutdown's close_notify).
+			return;
 		}
 	}
 

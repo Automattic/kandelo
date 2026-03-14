@@ -7,10 +7,9 @@ import { execSync } from "node:child_process";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 function repoRoot(): string {
-    const gitCommon = execSync("git rev-parse --git-common-dir", {
+    return execSync("git rev-parse --show-toplevel", {
         cwd: __dirname, encoding: "utf-8",
     }).trim();
-    return join(gitCommon, "..");
 }
 
 describe("OpenSSL basic verification", () => {

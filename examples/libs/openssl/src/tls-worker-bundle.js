@@ -1193,10 +1193,7 @@ var TLS_1_2_Connection = class {
         this.serverUpstreamWriter.write(appData.body);
       }
     } catch (e) {
-      if (e instanceof TLSConnectionClosed) {
-        return;
-      }
-      throw e;
+      return;
     }
   }
   /**
@@ -2460,6 +2457,10 @@ async function tryProcessHttpRequest(handle) {
     const writer = conn.tls.serverEnd.downstream.writable.getWriter();
     await writer.write(responseBytes);
     writer.releaseLock();
+    await new Promise((r) => setTimeout(r, 50));
+    conn.closed = true;
+    conn.tls.close().catch(() => {
+    });
   } catch (err) {
     const errorBody = `Error fetching ${url}: ${err}`;
     const errorResponse = formatHttpResponse(
@@ -2560,8 +2561,8 @@ import_node_worker_threads.parentPort.on("message", (msg) => {
         const len = param;
         const sendData = new Uint8Array(data.slice(0, len));
         const conn = connections.get(handle);
-        if (!conn) {
-          signalError();
+        if (!conn || conn.closed) {
+          signalResult(len);
           setImmediate(loop);
           break;
         }
@@ -2573,8 +2574,12 @@ import_node_worker_threads.parentPort.on("message", (msg) => {
             await new Promise((r) => setTimeout(r, 5));
             signalResult(len);
           } catch (err) {
-            console.error("[tls-worker] send error:", err);
-            signalError();
+            if (conn.closed) {
+              signalResult(len);
+            } else {
+              console.error("[tls-worker] send error:", err);
+              signalError();
+            }
           }
           setImmediate(loop);
         })();
@@ -2584,7 +2589,7 @@ import_node_worker_threads.parentPort.on("message", (msg) => {
         const maxLen = param;
         const conn = connections.get(handle);
         if (!conn) {
-          signalError();
+          signalResult(0);
           setImmediate(loop);
           break;
         }

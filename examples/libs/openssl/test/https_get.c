@@ -27,6 +27,15 @@ int main(int argc, char **argv)
        Real integrations would populate /etc/ssl/certs/ in the VFS. */
     SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, NULL);
 
+    /* The TLS MITM proxy (from WordPress Playground) implements TLS 1.2 but
+       does not support the secure renegotiation extension (RFC 5746).
+       OpenSSL 3.x aborts by default; allow legacy connections here. */
+    SSL_CTX_set_options(ctx, SSL_OP_LEGACY_SERVER_CONNECT);
+
+    /* Restrict to TLS 1.2 since the MITM proxy only supports TLS 1.2. */
+    SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
+    SSL_CTX_set_max_proto_version(ctx, TLS1_2_VERSION);
+
     struct addrinfo hints = {0};
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;

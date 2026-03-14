@@ -198,7 +198,6 @@ pub fn sys_read(
             }
             match sock.domain {
                 SocketDomain::Inet | SocketDomain::Inet6 => {
-                    // AF_INET: delegate to host network backend (same as sys_recv)
                     let net_handle = sock.host_net_handle.ok_or(Errno::ENOTCONN)?;
                     host.host_net_recv(net_handle, buf.len() as u32, 0, buf)
                 }
@@ -304,7 +303,6 @@ pub fn sys_write(
             }
             match sock.domain {
                 SocketDomain::Inet | SocketDomain::Inet6 => {
-                    // AF_INET: delegate to host network backend (same as sys_send)
                     let net_handle = sock.host_net_handle.ok_or(Errno::ENOTCONN)?;
                     host.host_net_send(net_handle, buf, 0)
                 }
@@ -6716,5 +6714,69 @@ mod tests {
         let mut result = [0u8; 16];
         let err = sys_getaddrinfo(&mut proc, &mut host, b"example.com", &mut result).unwrap_err();
         assert_eq!(err, Errno::ENOENT);
+    }
+
+    #[test]
+    fn test_inet_write_after_connect_succeeds() {
+        // Create a mock that accepts connect and send
+        struct NetMock;
+        impl HostIO for NetMock {
+            fn host_open(&mut self, _p: &[u8], _f: u32, _m: u32) -> Result<i64, Errno> { Ok(100) }
+            fn host_close(&mut self, _h: i64) -> Result<(), Errno> { Ok(()) }
+            fn host_read(&mut self, _h: i64, _b: &mut [u8]) -> Result<usize, Errno> { Ok(0) }
+            fn host_write(&mut self, _h: i64, _b: &[u8]) -> Result<usize, Errno> { Ok(0) }
+            fn host_seek(&mut self, _h: i64, _o: i64, _w: u32) -> Result<i64, Errno> { Ok(0) }
+            fn host_fstat(&mut self, _h: i64) -> Result<WasmStat, Errno> { Ok(unsafe { core::mem::zeroed() }) }
+            fn host_stat(&mut self, _p: &[u8]) -> Result<WasmStat, Errno> { Ok(unsafe { core::mem::zeroed() }) }
+            fn host_lstat(&mut self, _p: &[u8]) -> Result<WasmStat, Errno> { Ok(unsafe { core::mem::zeroed() }) }
+            fn host_mkdir(&mut self, _p: &[u8], _m: u32) -> Result<(), Errno> { Ok(()) }
+            fn host_rmdir(&mut self, _p: &[u8]) -> Result<(), Errno> { Ok(()) }
+            fn host_unlink(&mut self, _p: &[u8]) -> Result<(), Errno> { Ok(()) }
+            fn host_rename(&mut self, _o: &[u8], _n: &[u8]) -> Result<(), Errno> { Ok(()) }
+            fn host_link(&mut self, _e: &[u8], _n: &[u8]) -> Result<(), Errno> { Ok(()) }
+            fn host_symlink(&mut self, _t: &[u8], _p: &[u8]) -> Result<(), Errno> { Ok(()) }
+            fn host_readlink(&mut self, _p: &[u8], _b: &mut [u8]) -> Result<usize, Errno> { Ok(0) }
+            fn host_chmod(&mut self, _p: &[u8], _m: u32) -> Result<(), Errno> { Ok(()) }
+            fn host_chown(&mut self, _p: &[u8], _u: u32, _g: u32) -> Result<(), Errno> { Ok(()) }
+            fn host_access(&mut self, _p: &[u8], _m: u32) -> Result<(), Errno> { Ok(()) }
+            fn host_opendir(&mut self, _p: &[u8]) -> Result<i64, Errno> { Ok(200) }
+            fn host_readdir(&mut self, _h: i64, _n: &mut [u8]) -> Result<Option<(u64, u32, usize)>, Errno> { Ok(None) }
+            fn host_closedir(&mut self, _h: i64) -> Result<(), Errno> { Ok(()) }
+            fn host_clock_gettime(&mut self, _c: u32) -> Result<(i64, i64), Errno> { Ok((0, 0)) }
+            fn host_nanosleep(&mut self, _s: i64, _n: i64) -> Result<(), Errno> { Ok(()) }
+            fn host_ftruncate(&mut self, _h: i64, _l: i64) -> Result<(), Errno> { Ok(()) }
+            fn host_fsync(&mut self, _h: i64) -> Result<(), Errno> { Ok(()) }
+            fn host_fchmod(&mut self, _h: i64, _m: u32) -> Result<(), Errno> { Ok(()) }
+            fn host_fchown(&mut self, _h: i64, _u: u32, _g: u32) -> Result<(), Errno> { Ok(()) }
+            fn host_kill(&mut self, _p: i32, _s: u32) -> Result<(), Errno> { Ok(()) }
+            fn host_exec(&mut self, _p: &[u8]) -> Result<(), Errno> { Ok(()) }
+            fn host_set_alarm(&mut self, _s: u32) -> Result<(), Errno> { Ok(()) }
+            fn host_sigsuspend_wait(&mut self) -> Result<u32, Errno> { Err(Errno::EINTR) }
+            fn host_call_signal_handler(&mut self, _h: u32, _s: u32) -> Result<(), Errno> { Ok(()) }
+            fn host_getrandom(&mut self, b: &mut [u8]) -> Result<usize, Errno> { for x in b.iter_mut() { *x = 0x42; } Ok(b.len()) }
+            fn host_utimensat(&mut self, _p: &[u8], _as: i64, _an: i64, _ms: i64, _mn: i64) -> Result<(), Errno> { Ok(()) }
+            fn host_waitpid(&mut self, _p: i32, _o: u32) -> Result<(i32, i32), Errno> { Err(Errno::ECHILD) }
+            fn host_net_connect(&mut self, _h: i32, _a: &[u8], _p: u16) -> Result<(), Errno> { Ok(()) }
+            fn host_net_send(&mut self, _h: i32, data: &[u8], _f: u32) -> Result<usize, Errno> { Ok(data.len()) }
+            fn host_net_recv(&mut self, _h: i32, _l: u32, _f: u32, _b: &mut [u8]) -> Result<usize, Errno> { Ok(0) }
+            fn host_net_close(&mut self, _h: i32) -> Result<(), Errno> { Ok(()) }
+            fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> { Err(Errno::ENOENT) }
+        }
+
+        let mut proc = Process::new(1);
+        let mut host = NetMock;
+        use wasm_posix_shared::socket::*;
+
+        // Create socket
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+
+        // Connect
+        let addr = [2, 0, 0, 80, 127, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0];
+        sys_connect(&mut proc, &mut host, fd, &addr).unwrap();
+
+        // Write should succeed (delegating to host_net_send)
+        let result = sys_write(&mut proc, &mut host, fd, b"hello world");
+        assert!(result.is_ok(), "sys_write on connected AF_INET socket should succeed, got: {:?}", result);
+        assert_eq!(result.unwrap(), 11);
     }
 }
