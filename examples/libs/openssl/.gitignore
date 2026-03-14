@@ -1,0 +1,4 @@
+node_modules/
+openssl-src/
+openssl-install/
+*.wasm

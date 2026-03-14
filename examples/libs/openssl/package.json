@@ -1,0 +1,13 @@
+{
+  "name": "wasm-posix-openssl-example",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build-openssl": "bash build-openssl.sh",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "vitest": "^3.2.0"
+  }
+}
