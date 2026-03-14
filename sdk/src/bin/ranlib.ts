@@ -1,6 +1,7 @@
 #!/usr/bin/env -S node --experimental-strip-types
 import { resolveToolchain } from '../lib/toolchain.ts';
 import { runPassthrough } from '../lib/exec.ts';
+import { isMain } from '../lib/is-main.ts';
 
 async function main(): Promise<void> {
   const toolchain = await resolveToolchain();
@@ -8,5 +9,4 @@ async function main(): Promise<void> {
   process.exit(exitCode);
 }
 
-const isMain = process.argv[1] && import.meta.url.endsWith(process.argv[1].replace(/\\/g, '/'));
-if (isMain) main();
+if (isMain(import.meta.url)) main();

@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { resolveToolchain, type Toolchain } from '../lib/toolchain.ts';
 import { COMPILE_FLAGS, LINK_FLAGS, filterArgs, parseArgs, needsLinking } from '../lib/flags.ts';
 import { runPassthrough } from '../lib/exec.ts';
+import { isMain } from '../lib/is-main.ts';
 
 export function buildClangArgs(userArgs: string[], toolchain: Toolchain): string[] {
   const { filtered, warnings } = filterArgs(userArgs);
@@ -45,5 +46,4 @@ async function main(): Promise<void> {
   process.exit(exitCode);
 }
 
-const isMain = process.argv[1] && import.meta.url.endsWith(process.argv[1].replace(/\\/g, '/'));
-if (isMain) main();
+if (isMain(import.meta.url)) main();
