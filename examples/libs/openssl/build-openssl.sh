@@ -38,7 +38,7 @@ perl Configure linux-generic32 \
     --prefix="$INSTALL_DIR"
 
 echo "==> Patching Makefile..."
-sed -i '' 's/^CROSS_COMPILE=.*/CROSS_COMPILE=/' Makefile
+sed -i.bak 's/^CROSS_COMPILE=.*/CROSS_COMPILE=/' Makefile && rm -f Makefile.bak
 
 echo "==> Building OpenSSL..."
 make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" build_generated libssl.a libcrypto.a

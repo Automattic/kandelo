@@ -60,7 +60,7 @@ A `NetworkIO` implementation for browser environments that handles both HTTP and
 6. After handshake: `send()` receives TLS Application Data records, decrypts to plaintext HTTP request, issues `fetch()` with `https://` URL (browser handles real TLS to the origin server).
 7. Wraps HTTP response in TLS Application Data records for `recv()`.
 
-**TLS implementation:** Adapted from WordPress Playground's purpose-built TLS 1.2 library (`packages/php-wasm/web/src/lib/tls/`). Apache 2.0 licensed, proven in production, minimal footprint.
+**TLS implementation:** Adapted from WordPress Playground's purpose-built TLS 1.2 library (`packages/php-wasm/web/src/lib/tls/`). GPL-2.0-or-later licensed, proven in production, minimal footprint.
 
 **MITM CA trust:** The example includes a CA certificate. Integrators populate `/etc/ssl/certs/` in the VFS so Wasm OpenSSL trusts it. The example documents both VFS pre-population and explicit `SSL_CTX_load_verify_locations()`.
 
@@ -76,7 +76,7 @@ Test program: `examples/libs/openssl/test/https_get.c`.
 
 ## Dependencies and Risks
 
-**WordPress Playground TLS 1.2 library** — Purpose-built for this use case, battle-tested, minimal. We vendor or reference the relevant files. Apache 2.0 licensed.
+**WordPress Playground TLS 1.2 library** — Purpose-built for this use case, battle-tested, minimal. We vendor or reference the relevant files. GPL-2.0-or-later licensed.
 
 **OpenSSL build fragility** — The `linux-generic32` + Makefile patching approach is a hack that works (proven by WordPress Playground) but may break across OpenSSL versions. Pinning to a specific version and documenting patches mitigates this.
 

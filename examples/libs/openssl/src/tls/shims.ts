@@ -3,7 +3,7 @@
  * vendored WordPress Playground TLS 1.2 library.
  *
  * Original source: https://github.com/WordPress/wordpress-playground
- * License: Apache-2.0
+ * License: GPL-2.0-or-later (see NOTICE file in this directory)
  */
 
 export function concatUint8Arrays(arrays: Uint8Array[]): Uint8Array {

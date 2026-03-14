@@ -6778,5 +6778,11 @@ mod tests {
         let result = sys_write(&mut proc, &mut host, fd, b"hello world");
         assert!(result.is_ok(), "sys_write on connected AF_INET socket should succeed, got: {:?}", result);
         assert_eq!(result.unwrap(), 11);
+
+        // Read should succeed (delegating to host_net_recv, returns 0 = EOF from mock)
+        let mut buf = [0u8; 64];
+        let result = sys_read(&mut proc, &mut host, fd, &mut buf);
+        assert!(result.is_ok(), "sys_read on connected AF_INET socket should succeed, got: {:?}", result);
+        assert_eq!(result.unwrap(), 0);
     }
 }
