@@ -1,0 +1,15 @@
+{
+  "name": "wasm-posix-libxml2-example",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build-libxml2": "bash build-libxml2.sh",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.0"
+  }
+}

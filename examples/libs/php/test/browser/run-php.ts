@@ -87,10 +87,20 @@ async function main() {
     const r3 = await runPhp(phpBytes, kernelBytes, memfs, devfs,
       ["php", "-r", '$db=new SQLite3(":memory:");$db->exec("CREATE TABLE t(v TEXT)");$db->exec("INSERT INTO t VALUES(\'sqlite-ok\')");echo $db->querySingle("SELECT v FROM t");']);
 
+    // Test 4: fileinfo
+    const r4 = await runPhp(phpBytes, kernelBytes, memfs, devfs,
+      ["php", "-r", '$f=new finfo(FILEINFO_MIME_TYPE);echo $f->buffer("GIF89a");']);
+
+    // Test 5: SimpleXML
+    const r5 = await runPhp(phpBytes, kernelBytes, memfs, devfs,
+      ["php", "-r", '$x=new SimpleXMLElement("<r><i>xml-ok</i></r>");echo $x->i;']);
+
     const results = {
       hello: r1.stdout.trim(),
       session: r2.stdout.trim(),
       sqlite: r3.stdout.trim(),
+      fileinfo: r4.stdout.trim(),
+      xml: r5.stdout.trim(),
     };
 
     stdoutEl.textContent = r1.stdout;

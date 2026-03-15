@@ -10,7 +10,7 @@
 
 import { test, expect } from "@playwright/test";
 
-test("PHP CLI runs Hello World, session, and SQLite in the browser", async ({ page }) => {
+test("PHP CLI runs Hello World, session, SQLite, fileinfo, and XML in the browser", async ({ page }) => {
   await page.goto("/");
 
   // Wait for the test harness to finish (up to 120s for multiple PHP runs)
@@ -37,4 +37,6 @@ test("PHP CLI runs Hello World, session, and SQLite in the browser", async ({ pa
   expect(results.hello).toContain("Hello World");
   expect(results.session).toContain("session-ok");
   expect(results.sqlite).toContain("sqlite-ok");
+  expect(results.fileinfo).toContain("image/gif");
+  expect(results.xml).toContain("xml-ok");
 });

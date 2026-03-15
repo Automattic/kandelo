@@ -13,6 +13,7 @@ fi
 
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 SYSROOT="$REPO_ROOT/sysroot"
+export WASM_POSIX_SYSROOT="$SYSROOT"
 SQLITE_DIR="$SCRIPT_DIR/../sqlite/sqlite-install"
 
 # Build SQLite if not already built
@@ -28,6 +29,55 @@ cp "$SQLITE_DIR/lib/libsqlite3.a" "$SYSROOT/lib/"
 mkdir -p "$SYSROOT/lib/pkgconfig"
 sed "s|^prefix=.*|prefix=$SYSROOT|" "$SQLITE_DIR/lib/pkgconfig/sqlite3.pc" \
     > "$SYSROOT/lib/pkgconfig/sqlite3.pc"
+
+# Build zlib if not already built
+ZLIB_DIR="$SCRIPT_DIR/../zlib/zlib-install"
+if [ ! -f "$ZLIB_DIR/lib/libz.a" ]; then
+    echo "==> Building zlib..."
+    bash "$SCRIPT_DIR/../zlib/build-zlib.sh"
+fi
+
+# Install zlib into sysroot
+echo "==> Installing zlib into sysroot..."
+cp "$ZLIB_DIR/include/zlib.h" "$ZLIB_DIR/include/zconf.h" "$SYSROOT/include/"
+cp "$ZLIB_DIR/lib/libz.a" "$SYSROOT/lib/"
+mkdir -p "$SYSROOT/lib/pkgconfig"
+sed "s|^prefix=.*|prefix=$SYSROOT|" "$ZLIB_DIR/lib/pkgconfig/zlib.pc" \
+    > "$SYSROOT/lib/pkgconfig/zlib.pc"
+
+# Build OpenSSL if not already built
+OPENSSL_DIR="$SCRIPT_DIR/../openssl/openssl-install"
+if [ ! -f "$OPENSSL_DIR/lib/libssl.a" ]; then
+    echo "==> Building OpenSSL..."
+    bash "$SCRIPT_DIR/../openssl/build-openssl.sh"
+fi
+
+# Install OpenSSL into sysroot
+echo "==> Installing OpenSSL into sysroot..."
+cp -r "$OPENSSL_DIR/include/openssl" "$SYSROOT/include/"
+cp "$OPENSSL_DIR/lib/libssl.a" "$OPENSSL_DIR/lib/libcrypto.a" "$SYSROOT/lib/"
+mkdir -p "$SYSROOT/lib/pkgconfig"
+for pc in openssl.pc libssl.pc libcrypto.pc; do
+    if [ -f "$OPENSSL_DIR/lib/pkgconfig/$pc" ]; then
+        sed "s|^prefix=.*|prefix=$SYSROOT|" "$OPENSSL_DIR/lib/pkgconfig/$pc" \
+            > "$SYSROOT/lib/pkgconfig/$pc"
+    fi
+done
+
+# Build libxml2 if not already built
+LIBXML2_DIR="$SCRIPT_DIR/../libxml2/libxml2-install"
+if [ ! -f "$LIBXML2_DIR/lib/libxml2.a" ]; then
+    echo "==> Building libxml2..."
+    bash "$SCRIPT_DIR/../libxml2/build-libxml2.sh"
+fi
+
+# Install libxml2 into sysroot
+echo "==> Installing libxml2 into sysroot..."
+cp -r "$LIBXML2_DIR/include/libxml" "$SYSROOT/include/"
+cp "$LIBXML2_DIR/lib/libxml2.a" "$SYSROOT/lib/"
+mkdir -p "$SYSROOT/lib/pkgconfig"
+sed "s|^prefix=.*|prefix=$SYSROOT|" "$LIBXML2_DIR/lib/pkgconfig/libxml-2.0.pc" \
+    > "$SYSROOT/lib/pkgconfig/libxml-2.0.pc"
 
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading PHP $PHP_VERSION..."
@@ -67,6 +117,16 @@ if [ ! -f Makefile ]; then
         --with-sqlite3 \
         --enable-pdo \
         --with-pdo-sqlite \
+        --enable-fileinfo \
+        --enable-exif \
+        --with-zlib \
+        --with-openssl \
+        --with-libxml \
+        --enable-xml \
+        --enable-dom \
+        --enable-simplexml \
+        --enable-xmlreader \
+        --enable-xmlwriter \
         --cache-file="$SCRIPT_DIR/config.cache" \
         --prefix="$INSTALL_DIR" \
         CFLAGS="-O2 -DZEND_USE_ASM_ARITHMETIC=0"
@@ -86,6 +146,7 @@ if [ ! -f Makefile ]; then
         -e 's/^#define HAVE_STD_SYSLOG 1/\/* #undef HAVE_STD_SYSLOG *\//' \
         -e 's/^#define HAVE_SETPROCTITLE 1/\/* #undef HAVE_SETPROCTITLE *\//' \
         -e 's/^#define HAVE_PRCTL 1/\/* #undef HAVE_PRCTL *\//' \
+        -e 's/^#define HAVE_RAND_EGD 1/\/* #undef HAVE_RAND_EGD *\//' \
         main/php_config.h && rm -f main/php_config.h.bak
 
     # Remove -MMD/-MF/-MT dependency tracking flags from Makefile.

@@ -82,3 +82,44 @@ describe("PHP session + SQLite on wasm-posix-kernel", () => {
         expect(exitCode).toBe(0);
     }, 60_000);
 });
+
+describe("PHP fileinfo + exif on wasm-posix-kernel", () => {
+    it("fileinfo works", async () => {
+        const { stdout, exitCode } = await runPhp(["php", "-r",
+            '$f = new finfo(FILEINFO_MIME_TYPE); echo $f->buffer("GIF89a");']);
+        expect(stdout).toContain("image/gif");
+        expect(exitCode).toBe(0);
+    }, 60_000);
+
+    it("exif extension loaded", async () => {
+        const { stdout, exitCode } = await runPhp(["php", "-r",
+            'echo extension_loaded("exif") ? "exif-ok" : "fail";']);
+        expect(stdout).toContain("exif-ok");
+        expect(exitCode).toBe(0);
+    }, 60_000);
+});
+
+describe("PHP zlib + openssl on wasm-posix-kernel", () => {
+    it("zlib works", async () => {
+        const { stdout, exitCode } = await runPhp(["php", "-r",
+            '$c = gzcompress("hello"); echo gzuncompress($c);']);
+        expect(stdout).toContain("hello");
+        expect(exitCode).toBe(0);
+    }, 60_000);
+
+    it("openssl extension loaded", async () => {
+        const { stdout, exitCode } = await runPhp(["php", "-r",
+            'echo extension_loaded("openssl") ? "openssl-ok" : "fail";']);
+        expect(stdout).toContain("openssl-ok");
+        expect(exitCode).toBe(0);
+    }, 60_000);
+});
+
+describe("PHP XML extensions on wasm-posix-kernel", () => {
+    it("SimpleXML works", async () => {
+        const { stdout, exitCode } = await runPhp(["php", "-r",
+            '$x = new SimpleXMLElement("<root><item>xml-ok</item></root>"); echo $x->item;']);
+        expect(stdout).toContain("xml-ok");
+        expect(exitCode).toBe(0);
+    }, 60_000);
+});

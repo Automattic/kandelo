@@ -1,0 +1,4 @@
+node_modules/
+libxml2-src/
+libxml2-install/
+*.wasm

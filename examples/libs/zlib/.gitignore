@@ -1,0 +1,4 @@
+node_modules/
+zlib-src/
+zlib-install/
+*.wasm
