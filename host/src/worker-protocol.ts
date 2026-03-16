@@ -44,6 +44,7 @@ export interface WorkerInitMessage {
   cwd?: string;
   forkState?: ArrayBuffer;
   signalWakeSab?: SharedArrayBuffer;
+  lockTableSab?: SharedArrayBuffer;
   mounts?: SerializedMountConfig[];
 }
 

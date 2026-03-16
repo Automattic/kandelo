@@ -15,6 +15,7 @@
 
 import type { KernelConfig, PlatformIO, StatResult } from "./types";
 import { SharedPipeBuffer } from "./shared-pipe-buffer";
+import { SharedLockTable } from "./shared-lock-table";
 
 /** Size of the WasmStat struct in bytes (repr(C) layout). */
 const WASM_STAT_SIZE = 88;
@@ -40,6 +41,7 @@ export class WasmPosixKernel {
   private memory: WebAssembly.Memory | null = null;
   private sharedPipes = new Map<number, { pipe: SharedPipeBuffer; end: "read" | "write" }>();
   private signalWakeSab: SharedArrayBuffer | null = null;
+  private sharedLockTable: SharedLockTable | null = null;
 
   constructor(config: KernelConfig, io: PlatformIO, callbacks?: KernelCallbacks) {
     this.config = config;
@@ -62,6 +64,10 @@ export class WasmPosixKernel {
 
   registerSignalWakeSab(sab: SharedArrayBuffer): void {
     this.signalWakeSab = sab;
+  }
+
+  registerSharedLockTable(sab: SharedArrayBuffer): void {
+    this.sharedLockTable = SharedLockTable.fromBuffer(sab);
   }
 
   /**
@@ -313,6 +319,15 @@ export class WasmPosixKernel {
         },
         host_getaddrinfo: (namePtr: number, nameLen: number, resultPtr: number, resultLen: number): number => {
           return this.hostGetaddrinfo(namePtr, nameLen, resultPtr, resultLen);
+        },
+        host_fcntl_lock: (
+          pathPtr: number, pathLen: number,
+          pid: number, cmd: number, lockType: number,
+          startLo: number, startHi: number,
+          lenLo: number, lenHi: number,
+          resultPtr: number,
+        ): number => {
+          return this.hostFcntlLock(pathPtr, pathLen, pid, cmd, lockType, startLo, startHi, lenLo, lenHi, resultPtr);
         },
       },
     };
@@ -1625,6 +1640,65 @@ export class WasmPosixKernel {
       return addr.length;
     } catch {
       return -2; // -ENOENT
+    }
+  }
+
+  // fcntl lock constants (must match crates/shared/src/lib.rs)
+  private static readonly F_GETLK = 12;
+  private static readonly F_SETLK = 13;
+  private static readonly F_SETLKW = 14;
+  private static readonly F_UNLCK = 2;
+
+  private hostFcntlLock(
+    pathPtr: number, pathLen: number,
+    pid: number, cmd: number, lockType: number,
+    startLo: number, startHi: number,
+    lenLo: number, lenHi: number,
+    resultPtr: number,
+  ): number {
+    if (!this.sharedLockTable) {
+      // No shared lock table — fall through (kernel handles locally)
+      return 0;
+    }
+    try {
+      const mem = this.getMemoryBuffer();
+      const path = new TextDecoder().decode(mem.slice(pathPtr, pathPtr + pathLen));
+      const pathHash = SharedLockTable.hashPath(path);
+      const start = (BigInt(startHi) << 32n) | BigInt(startLo >>> 0);
+      const len = (BigInt(lenHi) << 32n) | BigInt(lenLo >>> 0);
+
+      switch (cmd) {
+        case WasmPosixKernel.F_GETLK: {
+          const blocker = this.sharedLockTable.getBlockingLock(pathHash, lockType, start, len, pid);
+          const dv = this.getMemoryDataView();
+          if (blocker) {
+            dv.setUint32(resultPtr, blocker.lockType, true);
+            dv.setUint32(resultPtr + 4, blocker.pid, true);
+            const bStart = blocker.start;
+            dv.setUint32(resultPtr + 8, Number(bStart & 0xffffffffn), true);
+            dv.setUint32(resultPtr + 12, Number((bStart >> 32n) & 0xffffffffn), true);
+            const bLen = blocker.len;
+            dv.setUint32(resultPtr + 16, Number(bLen & 0xffffffffn), true);
+            dv.setUint32(resultPtr + 20, Number((bLen >> 32n) & 0xffffffffn), true);
+          } else {
+            // No conflict — write F_UNLCK
+            dv.setUint32(resultPtr, WasmPosixKernel.F_UNLCK, true);
+          }
+          return 0;
+        }
+        case WasmPosixKernel.F_SETLK: {
+          const ok = this.sharedLockTable.setLock(pathHash, pid, lockType, start, len);
+          return ok ? 0 : -11; // -EAGAIN
+        }
+        case WasmPosixKernel.F_SETLKW: {
+          this.sharedLockTable.setLockWait(pathHash, pid, lockType, start, len);
+          return 0;
+        }
+        default:
+          return -22; // -EINVAL
+      }
+    } catch {
+      return -5; // -EIO
     }
   }
 }

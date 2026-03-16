@@ -5,6 +5,8 @@ export { SyscallChannel, ChannelStatus } from "./channel";
 export { NodePlatformIO } from "./platform/node";
 export { ProcessManager } from "./process-manager";
 export { SharedPipeBuffer } from "./shared-pipe-buffer";
+export { SharedLockTable } from "./shared-lock-table";
+export type { LockInfo } from "./shared-lock-table";
 export { NodeWorkerAdapter, MockWorkerAdapter } from "./worker-adapter";
 export { workerMain } from "./worker-main";
 export type { CreateIOFn, MessagePort as WorkerMessagePort } from "./worker-main";

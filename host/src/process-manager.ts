@@ -5,6 +5,7 @@ import type {
   WorkerToHostMessage,
 } from "./worker-protocol";
 import { SharedPipeBuffer } from "./shared-pipe-buffer";
+import { SharedLockTable } from "./shared-lock-table";
 
 export interface ProcessInfo {
   pid: number;
@@ -41,9 +42,11 @@ export class ProcessManager {
   private config: ProcessManagerConfig;
   private nextPipeHandle = 1000; // Start at 1000 to avoid conflicts with file handles
   private sharedPipes = new Map<number, SharedPipeBuffer>();
+  private sharedLockTable: SharedLockTable;
 
   constructor(config: ProcessManagerConfig) {
     this.config = config;
+    this.sharedLockTable = SharedLockTable.create();
   }
 
   async spawn(options?: SpawnOptions): Promise<number> {
@@ -61,6 +64,7 @@ export class ProcessManager {
       env: options?.env,
       cwd: options?.cwd,
       signalWakeSab,
+      lockTableSab: this.sharedLockTable.getBuffer(),
     };
 
     const worker = this.config.workerAdapter.createWorker(initData);
@@ -79,6 +83,7 @@ export class ProcessManager {
 
     const cleanup = () => {
       this.processes.delete(pid);
+      this.sharedLockTable.removeLocksByPid(pid);
       worker.terminate().catch(() => {});
     };
 
@@ -108,6 +113,7 @@ export class ProcessManager {
                 clearTimeout(info.alarmTimer);
                 info.alarmTimer = undefined;
               }
+              this.sharedLockTable.removeLocksByPid(pid);
               info.state = "zombie";
               info.exitStatus = m.status;
               // POSIX: deliver SIGCHLD to parent when child exits
@@ -213,6 +219,7 @@ export class ProcessManager {
       kernelConfig: this.config.kernelConfig,
       forkState,
       signalWakeSab,
+      lockTableSab: this.sharedLockTable.getBuffer(),
     };
 
     const worker = this.config.workerAdapter.createWorker(initData);
@@ -229,6 +236,7 @@ export class ProcessManager {
 
     const cleanup = () => {
       this.processes.delete(childPid);
+      this.sharedLockTable.removeLocksByPid(childPid);
       worker.terminate().catch(() => {});
     };
 
@@ -300,6 +308,7 @@ export class ProcessManager {
                 clearTimeout(childInfo.alarmTimer);
                 childInfo.alarmTimer = undefined;
               }
+              this.sharedLockTable.removeLocksByPid(childPid);
               childInfo.state = "zombie";
               childInfo.exitStatus = m.status;
               // POSIX: deliver SIGCHLD to parent when child exits
@@ -541,6 +550,7 @@ export class ProcessManager {
   async terminate(pid: number): Promise<void> {
     const info = this.processes.get(pid);
     if (!info) return;
+    this.sharedLockTable.removeLocksByPid(pid);
     await info.worker.terminate();
     this.processes.delete(pid);
   }

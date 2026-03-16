@@ -62,6 +62,13 @@ unsafe extern "C" {
     fn host_net_recv(handle: i32, buf_ptr: *mut u8, buf_len: u32, flags: u32) -> i32;
     fn host_net_close(handle: i32) -> i32;
     fn host_getaddrinfo(name_ptr: *const u8, name_len: u32, result_ptr: *mut u8, result_len: u32) -> i32;
+    fn host_fcntl_lock(
+        path_ptr: *const u8, path_len: u32,
+        pid: u32, cmd: u32, lock_type: u32,
+        start_lo: u32, start_hi: u32,
+        len_lo: u32, len_hi: u32,
+        result_ptr: *mut u8,
+    ) -> i32;
 }
 
 // ---------------------------------------------------------------------------
@@ -446,6 +453,28 @@ impl HostIO for WasmHostIO {
         } else {
             Ok(result as usize)
         }
+    }
+
+    fn host_fcntl_lock(
+        &mut self,
+        path: &[u8], pid: u32, cmd: u32, lock_type: u32,
+        start: i64, len: i64,
+        result_buf: &mut [u8],
+    ) -> Result<(), Errno> {
+        let start_lo = start as u32;
+        let start_hi = (start >> 32) as u32;
+        let len_lo = len as u32;
+        let len_hi = (len >> 32) as u32;
+        let result = unsafe {
+            host_fcntl_lock(
+                path.as_ptr(), path.len() as u32,
+                pid, cmd, lock_type,
+                start_lo, start_hi,
+                len_lo, len_hi,
+                result_buf.as_mut_ptr(),
+            )
+        };
+        i32_to_result(result)
     }
 }
 
@@ -838,11 +867,11 @@ pub extern "C" fn kernel_fcntl(fd: i32, cmd: u32, arg: u32) -> i32 {
 pub extern "C" fn kernel_fcntl_lock(fd: i32, cmd: u32, flock_ptr: *mut u8) -> i32 {
     let proc = unsafe { get_process() };
     let flock = unsafe { &mut *(flock_ptr as *mut wasm_posix_shared::WasmFlock) };
-    let result = match syscalls::sys_fcntl_lock(proc, fd, cmd, flock) {
+    let mut host = WasmHostIO;
+    let result = match syscalls::sys_fcntl_lock(proc, fd, cmd, flock, &mut host) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    let mut host = WasmHostIO;
     deliver_pending_signals(proc, &mut host);
     result
 }
@@ -852,11 +881,11 @@ pub extern "C" fn kernel_fcntl_lock(fd: i32, cmd: u32, flock_ptr: *mut u8) -> i3
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_flock(fd: i32, operation: u32) -> i32 {
     let proc = unsafe { get_process() };
-    let result = match syscalls::sys_flock(proc, fd, operation) {
+    let mut host = WasmHostIO;
+    let result = match syscalls::sys_flock(proc, fd, operation, &mut host) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    let mut host = WasmHostIO;
     deliver_pending_signals(proc, &mut host);
     result
 }

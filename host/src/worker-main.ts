@@ -60,6 +60,10 @@ export async function workerMain(
       kernel.registerSignalWakeSab(initData.signalWakeSab);
     }
 
+    if (initData.lockTableSab) {
+      kernel.registerSharedLockTable(initData.lockTableSab);
+    }
+
     if (initData.forkState) {
       // Fork init: write fork state to Wasm memory and call kernel_init_from_fork
       const memory = kernel.getMemory()!;
@@ -244,6 +248,11 @@ export async function workerMain(
               // Transfer signal wake SAB to new kernel
               if (initData.signalWakeSab) {
                 newKernel.registerSignalWakeSab(initData.signalWakeSab);
+              }
+
+              // Transfer lock table SAB to new kernel
+              if (initData.lockTableSab) {
+                newKernel.registerSharedLockTable(initData.lockTableSab);
               }
 
               // 5. Replace references

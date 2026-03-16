@@ -65,6 +65,10 @@ pub trait HostIO {
     fn host_net_recv(&mut self, handle: i32, len: u32, flags: u32, buf: &mut [u8]) -> Result<usize, Errno>;
     fn host_net_close(&mut self, handle: i32) -> Result<(), Errno>;
     fn host_getaddrinfo(&mut self, name: &[u8], result: &mut [u8]) -> Result<usize, Errno>;
+    fn host_fcntl_lock(
+        &mut self, path: &[u8], pid: u32, cmd: u32, lock_type: u32,
+        start: i64, len: i64, result_buf: &mut [u8],
+    ) -> Result<(), Errno>;
 }
 
 /// Process lifecycle state.
