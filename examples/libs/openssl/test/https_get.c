@@ -35,6 +35,20 @@ int main(int argc, char **argv)
     /* Don't verify peer certificate (simplifies testing) */
     SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, NULL);
 
+    /*
+     * Force TLS 1.2 max — the MITM backend only supports TLS 1.2.
+     * TLS 1.2 also works fine for real TCP connections.
+     */
+    SSL_CTX_set_max_proto_version(ctx, TLS1_2_VERSION);
+
+    /*
+     * Allow legacy renegotiation — needed for compatibility with
+     * the WordPress Playground TLS 1.2 library's renegotiation_info
+     * handling when used as a MITM backend.
+     */
+    SSL_CTX_set_options(ctx, SSL_OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION
+                             | SSL_OP_LEGACY_SERVER_CONNECT);
+
     /* Resolve hostname */
     struct addrinfo hints = {0};
     hints.ai_family = AF_INET;
