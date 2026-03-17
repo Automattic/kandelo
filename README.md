@@ -94,6 +94,10 @@ cd host
 node --experimental-strip-types src/run.ts ../hello.wasm
 ```
 
+## Examples
+
+The [examples/](examples/) directory has C programs covering file I/O, directories, environment variables, memory allocation, networking, and file locking. A browser demo with Vite is in `examples/browser/`. Build scripts for PHP, SQLite, libxml2, OpenSSL, and zlib are in `examples/libs/`.
+
 ## Browser Usage
 
 Programs run in Web Workers using `SharedArrayBuffer` for blocking syscall support. Your server must set these headers:
