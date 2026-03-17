@@ -109,6 +109,12 @@ if [ ! -f Makefile ]; then
         --disable-cgi \
         --disable-phpdbg \
         --enable-cli \
+        --enable-mbstring \
+        --disable-mbregex \
+        --enable-ctype \
+        --enable-tokenizer \
+        --enable-filter \
+        --enable-phar \
         --without-valgrind \
         --without-pcre-jit \
         --disable-fiber-asm \

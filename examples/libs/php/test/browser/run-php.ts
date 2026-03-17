@@ -19,14 +19,26 @@ const exitCodeEl = document.getElementById("exit-code")!;
 const statusEl = document.getElementById("status")!;
 const resultsEl = document.getElementById("results")!;
 
+const O_WRONLY = 1;
+const O_CREAT = 0x40;
+
+interface TestResult {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+}
+
 async function runPhp(
   phpBytes: ArrayBuffer,
   kernelBytes: ArrayBuffer,
   memfs: MemoryFileSystem,
   devfs: DeviceFileSystem,
   argv: string[],
-): Promise<{ stdout: string; exitCode: number }> {
+): Promise<TestResult> {
   let stdout = "";
+  let stderr = "";
+  const decoder = new TextDecoder();
+
   const io = new VirtualPlatformIO(
     [
       { mountPoint: "/dev", backend: devfs },
@@ -35,10 +47,9 @@ async function runPhp(
     new BrowserTimeProvider(),
   );
 
-  const decoder = new TextDecoder();
   const callbacks: KernelCallbacks = {
     onStdout: (data) => { stdout += decoder.decode(data); },
-    onStderr: (data) => { stderrEl.textContent += decoder.decode(data); },
+    onStderr: (data) => { stderr += decoder.decode(data); },
   };
 
   const kernel = new WasmPosixKernel(
@@ -48,6 +59,7 @@ async function runPhp(
   );
 
   await kernel.init(kernelBytes);
+
   const runner = new ProgramRunner(kernel);
   const exitCode = await runner.run(phpBytes, {
     argv,
@@ -58,7 +70,7 @@ async function runPhp(
     ],
   });
 
-  return { stdout, exitCode };
+  return { stdout, stderr, exitCode };
 }
 
 async function main() {
@@ -75,36 +87,61 @@ async function main() {
     memfs.mkdir("/home", 0o755);
     memfs.mkdir("/dev", 0o755);
 
-    // Test 1: Hello World
+    // Write a PHP script to the virtual filesystem for file-based test
+    const scriptContent = new TextEncoder().encode('<?php echo "Browser File OK\\n"; ?>');
+    const fd = memfs.open("/home/script.php", O_WRONLY | O_CREAT, 0o644);
+    memfs.write(fd, scriptContent, null, scriptContent.length);
+    memfs.close(fd);
+
+    // Write an extensions test script (mbstring + ctype)
+    const extScript = new TextEncoder().encode(
+      '<?php echo json_encode(["mb" => mb_strlen("hello"), "ctype" => ctype_alpha("hello") ? "yes" : "no"]); ?>'
+    );
+    const fd2 = memfs.open("/home/ext_test.php", O_WRONLY | O_CREAT, 0o644);
+    memfs.write(fd2, extScript, null, extScript.length);
+    memfs.close(fd2);
+
+    // Test 1: Hello World (inline)
     const r1 = await runPhp(phpBytes, kernelBytes, memfs, devfs,
       ["php", "-r", 'echo "Hello World\n";']);
 
-    // Test 2: Session
+    // Test 2: File-based execution
     const r2 = await runPhp(phpBytes, kernelBytes, memfs, devfs,
+      ["php", "/home/script.php"]);
+
+    // Test 3: Extensions (mbstring + ctype)
+    const r3 = await runPhp(phpBytes, kernelBytes, memfs, devfs,
+      ["php", "/home/ext_test.php"]);
+
+    // Test 4: Session
+    const r4 = await runPhp(phpBytes, kernelBytes, memfs, devfs,
       ["php", "-r", 'session_start(); echo strlen(session_id()) > 0 ? "session-ok" : "fail";']);
 
-    // Test 3: SQLite3 in-memory
-    const r3 = await runPhp(phpBytes, kernelBytes, memfs, devfs,
+    // Test 5: SQLite3 in-memory
+    const r5 = await runPhp(phpBytes, kernelBytes, memfs, devfs,
       ["php", "-r", '$db=new SQLite3(":memory:");$db->exec("CREATE TABLE t(v TEXT)");$db->exec("INSERT INTO t VALUES(\'sqlite-ok\')");echo $db->querySingle("SELECT v FROM t");']);
 
-    // Test 4: fileinfo
-    const r4 = await runPhp(phpBytes, kernelBytes, memfs, devfs,
+    // Test 6: fileinfo
+    const r6 = await runPhp(phpBytes, kernelBytes, memfs, devfs,
       ["php", "-r", '$f=new finfo(FILEINFO_MIME_TYPE);echo $f->buffer("GIF89a");']);
 
-    // Test 5: SimpleXML
-    const r5 = await runPhp(phpBytes, kernelBytes, memfs, devfs,
+    // Test 7: SimpleXML
+    const r7 = await runPhp(phpBytes, kernelBytes, memfs, devfs,
       ["php", "-r", '$x=new SimpleXMLElement("<r><i>xml-ok</i></r>");echo $x->i;']);
 
     const results = {
       hello: r1.stdout.trim(),
-      session: r2.stdout.trim(),
-      sqlite: r3.stdout.trim(),
-      fileinfo: r4.stdout.trim(),
-      xml: r5.stdout.trim(),
+      file: r2.stdout.trim(),
+      extensions: r3.stdout.trim(),
+      session: r4.stdout.trim(),
+      sqlite: r5.stdout.trim(),
+      fileinfo: r6.stdout.trim(),
+      xml: r7.stdout.trim(),
     };
 
     stdoutEl.textContent = r1.stdout;
-    exitCodeEl.textContent = String(r1.exitCode);
+    stderrEl.textContent = [r1.stderr, r2.stderr, r3.stderr, r4.stderr, r5.stderr, r6.stderr, r7.stderr].filter(Boolean).join("\n---\n");
+    exitCodeEl.textContent = String(Math.max(r1.exitCode, r2.exitCode, r3.exitCode, r4.exitCode, r5.exitCode, r6.exitCode, r7.exitCode));
     resultsEl.textContent = JSON.stringify(results);
     statusEl.textContent = "done";
   } catch (e) {
