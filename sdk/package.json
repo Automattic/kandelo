@@ -1,6 +1,7 @@
 {
   "name": "wasm-posix-sdk",
   "version": "0.1.0",
+  "license": "MIT",
   "type": "module",
   "bin": {
     "wasm32posix-cc": "./src/bin/cc.ts",
