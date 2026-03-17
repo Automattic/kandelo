@@ -163,8 +163,17 @@
 #define SYS_RECVMSG       138
 #define SYS_WAIT4         139
 #define SYS_GETADDRINFO   140
-#define SYS_PRCTL         172
+#define SYS_PRCTL         223
+#define SYS_FUTEX         200
+#define SYS_GETTID        202
+#define SYS_SET_TID_ADDRESS 203
+#define SYS_EPOLL_CREATE1 239
+#define SYS_EPOLL_CTL     240
+#define SYS_EPOLL_PWAIT   241
 #define SYS_PRLIMIT64     250
+#define SYS_PPOLL         251
+#define SYS_PSELECT6      252
+#define SYS_SET_ROBUST_LIST 261
 
 /* ENOSYS — returned for unknown syscall numbers */
 #define ENOSYS_NEG (-38)
@@ -1212,6 +1221,118 @@ static long __do_syscall(long n, long a1, long a2, long a3,
         uint8_t *buf = (uint8_t *)(uintptr_t)a2;
         uint32_t buf_len = 16; /* thread name is always 16 bytes */
         return (long)kernel_prctl(option, (uint32_t)a3, buf, buf_len);
+    }
+
+    /* ============================================================== */
+    /* Runtime init stubs (single-threaded)                             */
+    /* ============================================================== */
+
+    case SYS_GETTID:
+        /* STUB: single-threaded — tid == pid */
+        return (long)kernel_gettid();
+
+    case SYS_SET_TID_ADDRESS:
+        /* STUB: single-threaded — ignore tidptr, return pid */
+        return (long)kernel_set_tid_address((uint32_t)(uintptr_t)a1);
+
+    case SYS_SET_ROBUST_LIST:
+        /* STUB: single-threaded — no-op */
+        return (long)kernel_set_robust_list((uint32_t)(uintptr_t)a1, (uint32_t)a2);
+
+    /* ============================================================== */
+    /* Futex stub (single-threaded)                                    */
+    /* ============================================================== */
+
+    case SYS_FUTEX:
+        /* STUB: single-threaded — see plan for threading upgrade notes */
+        return (long)kernel_futex(
+            (uint32_t)(uintptr_t)a1,  /* uaddr */
+            (uint32_t)a2,              /* op */
+            (uint32_t)a3,              /* val */
+            (uint32_t)(uintptr_t)a4,  /* timeout */
+            (uint32_t)(uintptr_t)a5,  /* uaddr2 */
+            (uint32_t)a6               /* val3 */
+        );
+
+    /* ============================================================== */
+    /* epoll stubs — return ENOSYS, programs fall back to poll()        */
+    /* ============================================================== */
+
+    case SYS_EPOLL_CREATE1:
+        /* STUB: returns ENOSYS — programs fall back to poll() */
+        return ENOSYS_NEG;
+
+    case SYS_EPOLL_CTL:
+        /* STUB: returns ENOSYS — programs fall back to poll() */
+        return ENOSYS_NEG;
+
+    case SYS_EPOLL_PWAIT:
+        /* STUB: returns ENOSYS — programs fall back to poll() */
+        return ENOSYS_NEG;
+
+    /* ============================================================== */
+    /* ppoll — poll with signal mask                                    */
+    /* ============================================================== */
+
+    case SYS_PPOLL: {
+        /* ppoll(fds, nfds, timeout_ts, sigmask, sigsetsize)
+         * Convert timespec to timeout_ms, extract sigmask, delegate to kernel.
+         */
+        uint8_t *fds_ptr = (uint8_t *)(uintptr_t)a1;
+        uint32_t nfds = (uint32_t)a2;
+        const int32_t *ts = (const int32_t *)(uintptr_t)a3;
+        int32_t timeout_ms;
+        if (!ts) {
+            timeout_ms = -1; /* infinite */
+        } else {
+            int32_t sec = ts[0];
+            int32_t nsec = ts[1];
+            timeout_ms = sec * 1000 + nsec / 1000000;
+            if (timeout_ms == 0 && (sec > 0 || nsec > 0))
+                timeout_ms = 1; /* round up to at least 1ms */
+        }
+        const uint32_t *sigmask = (const uint32_t *)(uintptr_t)a4;
+        uint32_t mask_lo = sigmask ? sigmask[0] : 0;
+        uint32_t mask_hi = sigmask ? sigmask[1] : 0;
+        return (long)kernel_ppoll(fds_ptr, nfds, timeout_ms, mask_lo, mask_hi);
+    }
+
+    /* ============================================================== */
+    /* pselect6 — select with signal mask                              */
+    /* ============================================================== */
+
+    case SYS_PSELECT6: {
+        /* pselect6(nfds, readfds, writefds, exceptfds, timeout_ts, sigmask_struct)
+         * sigmask_struct is {sigset_t *mask, size_t size}
+         * Convert timespec to timeout_ms, extract sigmask, delegate to kernel.
+         */
+        int32_t nfds = (int32_t)a1;
+        uint8_t *readfds_ptr = (uint8_t *)(uintptr_t)a2;
+        uint8_t *writefds_ptr = (uint8_t *)(uintptr_t)a3;
+        uint8_t *exceptfds_ptr = (uint8_t *)(uintptr_t)a4;
+        const int32_t *ts = (const int32_t *)(uintptr_t)a5;
+        int32_t timeout_ms;
+        if (!ts) {
+            timeout_ms = -1; /* infinite */
+        } else {
+            int32_t sec = ts[0];
+            int32_t nsec = ts[1];
+            timeout_ms = sec * 1000 + nsec / 1000000;
+            if (timeout_ms == 0 && (sec > 0 || nsec > 0))
+                timeout_ms = 1;
+        }
+        /* a6 is pointer to {sigset_t *mask, size_t size} */
+        const uint32_t *sigmask_struct = (const uint32_t *)(uintptr_t)a6;
+        uint32_t mask_lo = 0, mask_hi = 0;
+        if (sigmask_struct) {
+            const uint32_t *mask_ptr = (const uint32_t *)(uintptr_t)sigmask_struct[0];
+            if (mask_ptr) {
+                mask_lo = mask_ptr[0];
+                mask_hi = mask_ptr[1];
+            }
+        }
+        return (long)kernel_pselect6(nfds, readfds_ptr, writefds_ptr,
+                                     exceptfds_ptr, timeout_ms, mask_lo, mask_hi);
     }
 
     /* ============================================================== */

@@ -3085,3 +3085,108 @@ pub extern "C" fn kernel_getaddrinfo(name_ptr: *const u8, name_len: u32, result_
         Err(e) => -(e as i32),
     }
 }
+
+// ---------------------------------------------------------------------------
+// Runtime init stubs (single-threaded)
+// ---------------------------------------------------------------------------
+
+/// gettid — STUB: returns pid (tid == pid in single-threaded mode).
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_gettid() -> i32 {
+    let proc = unsafe { get_process() };
+    syscalls::sys_gettid(proc)
+}
+
+/// set_tid_address — STUB: ignores tidptr, returns pid.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_set_tid_address(_tidptr: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    syscalls::sys_set_tid_address(proc)
+}
+
+/// set_robust_list — STUB: no-op, returns 0.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_set_robust_list(_head: u32, _len: u32) -> i32 {
+    match syscalls::sys_set_robust_list() {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// futex — STUB: single-threaded, WAIT returns EAGAIN, WAKE returns 0.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_futex(_uaddr: u32, op: u32, _val: u32, _timeout: u32, _uaddr2: u32, _val3: u32) -> i32 {
+    match syscalls::sys_futex(op) {
+        Ok(n) => n,
+        Err(e) => -(e as i32),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ppoll / pselect6
+// ---------------------------------------------------------------------------
+
+/// ppoll — poll with atomic signal mask swap.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_ppoll(fds_ptr: *mut u8, nfds: u32, timeout_ms: i32, mask_lo: u32, mask_hi: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    let fds = unsafe {
+        slice::from_raw_parts_mut(fds_ptr as *mut wasm_posix_shared::WasmPollFd, nfds as usize)
+    };
+    let mask = if mask_lo == 0 && mask_hi == 0 {
+        None
+    } else {
+        Some(((mask_hi as u64) << 32) | (mask_lo as u64))
+    };
+    let mut host = WasmHostIO;
+    let result = match syscalls::sys_ppoll(proc, &mut host, fds, timeout_ms, mask) {
+        Ok(n) => n,
+        Err(e) => -(e as i32),
+    };
+    deliver_pending_signals(proc, &mut host);
+    result
+}
+
+/// pselect6 — select with atomic signal mask swap.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_pselect6(
+    nfds: i32,
+    readfds_ptr: *mut u8,
+    writefds_ptr: *mut u8,
+    exceptfds_ptr: *mut u8,
+    timeout_ms: i32,
+    mask_lo: u32,
+    mask_hi: u32,
+) -> i32 {
+    let proc = unsafe { get_process() };
+
+    let readfds = if readfds_ptr.is_null() {
+        None
+    } else {
+        Some(unsafe { core::slice::from_raw_parts_mut(readfds_ptr, 128) })
+    };
+    let writefds = if writefds_ptr.is_null() {
+        None
+    } else {
+        Some(unsafe { core::slice::from_raw_parts_mut(writefds_ptr, 128) })
+    };
+    let exceptfds = if exceptfds_ptr.is_null() {
+        None
+    } else {
+        Some(unsafe { core::slice::from_raw_parts_mut(exceptfds_ptr, 128) })
+    };
+
+    let mask = if mask_lo == 0 && mask_hi == 0 {
+        None
+    } else {
+        Some(((mask_hi as u64) << 32) | (mask_lo as u64))
+    };
+
+    let mut host = WasmHostIO;
+    let result = match syscalls::sys_pselect6(proc, &mut host, nfds, readfds, writefds, exceptfds, timeout_ms, mask) {
+        Ok(n) => n,
+        Err(e) => -(e as i32),
+    };
+    deliver_pending_signals(proc, &mut host);
+    result
+}

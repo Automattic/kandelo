@@ -2802,6 +2802,91 @@ pub fn sys_prctl(proc: &mut Process, option: u32, _arg2: u32, buf: &mut [u8]) ->
     }
 }
 
+// STUB: single-threaded — returns pid (tid == pid in single-threaded mode)
+pub fn sys_gettid(proc: &Process) -> i32 {
+    proc.pid as i32
+}
+
+// STUB: single-threaded — ignores tidptr, returns pid
+pub fn sys_set_tid_address(proc: &Process) -> i32 {
+    proc.pid as i32
+}
+
+// STUB: single-threaded — no-op (no robust futex list to track)
+pub fn sys_set_robust_list() -> Result<(), Errno> {
+    Ok(())
+}
+
+// STUB: single-threaded — see plan for threading upgrade notes
+// In single-threaded Wasm, contention is impossible:
+// - FUTEX_WAIT returns EAGAIN (value always "changed" since no other thread)
+// - FUTEX_WAKE returns 0 (no waiters to wake)
+pub fn sys_futex(op: u32) -> Result<i32, Errno> {
+    const FUTEX_WAIT: u32 = 0;
+    const FUTEX_WAKE: u32 = 1;
+    const FUTEX_PRIVATE_FLAG: u32 = 128;
+
+    let base_op = op & !FUTEX_PRIVATE_FLAG;
+    match base_op {
+        FUTEX_WAIT => Err(Errno::EAGAIN),
+        FUTEX_WAKE => Ok(0),
+        _ => Ok(0), // no-op for all other futex operations
+    }
+}
+
+/// ppoll — poll with atomic signal mask swap.
+/// Wraps sys_poll: save old mask → set new mask → poll → restore old mask.
+pub fn sys_ppoll(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    fds: &mut [WasmPollFd],
+    timeout_ms: i32,
+    mask: Option<u64>,
+) -> Result<i32, Errno> {
+    let old_mask = if let Some(new_mask) = mask {
+        let old = sys_sigprocmask(proc, SIG_SETMASK, new_mask)?;
+        Some(old)
+    } else {
+        None
+    };
+
+    let result = sys_poll(proc, host, fds, timeout_ms);
+
+    if let Some(old) = old_mask {
+        let _ = sys_sigprocmask(proc, SIG_SETMASK, old);
+    }
+
+    result
+}
+
+/// pselect6 — select with atomic signal mask swap.
+/// Wraps sys_select: save old mask → set new mask → select → restore old mask.
+pub fn sys_pselect6(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    nfds: i32,
+    readfds: Option<&mut [u8]>,
+    writefds: Option<&mut [u8]>,
+    exceptfds: Option<&mut [u8]>,
+    timeout_ms: i32,
+    mask: Option<u64>,
+) -> Result<i32, Errno> {
+    let old_mask = if let Some(new_mask) = mask {
+        let old = sys_sigprocmask(proc, SIG_SETMASK, new_mask)?;
+        Some(old)
+    } else {
+        None
+    };
+
+    let result = sys_select(proc, host, nfds, readfds, writefds, exceptfds, timeout_ms);
+
+    if let Some(old) = old_mask {
+        let _ = sys_sigprocmask(proc, SIG_SETMASK, old);
+    }
+
+    result
+}
+
 /// umask — set file creation mask, return previous mask
 pub fn sys_umask(proc: &mut Process, mask: u32) -> u32 {
     let old = proc.umask;

@@ -82,7 +82,11 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 | `setpgid()` | Partial | Sets process group ID. pid=0 means self. pgid=0 means use target pid. Only supports setting own pgid; other processes return ESRCH. |
 | `getsid()` | Full | Returns session ID (simulated, defaults to pid). pid=0 means self. |
 | `setsid()` | Full | Creates new session. Sets sid=pid, pgid=pid. Returns new session ID. Returns EPERM if already session leader (POSIX-compliant). |
-| `prctl()` | Partial | PR_SET_NAME and PR_GET_NAME store/retrieve thread name (16 bytes). All other operations return success (no-op). |
+| `prctl()` | Partial | PR_SET_NAME and PR_GET_NAME store/retrieve thread name (16 bytes). All other operations return success (no-op). Syscall number fixed to 223 (Batch 3). |
+| `gettid()` | Stub | Single-threaded: returns pid (tid == pid). Threading upgrade: return actual thread ID from thread table. |
+| `set_tid_address()` | Stub | Single-threaded: returns pid, ignores tidptr. Threading upgrade: store tidptr per-thread; kernel writes 0 + futex-wakes on thread exit. |
+| `set_robust_list()` | Stub | Single-threaded: no-op. Threading upgrade: track robust futex list per-thread; kernel walks list on thread exit. |
+| `futex()` | Stub | Single-threaded: FUTEX_WAIT returns EAGAIN (no contention possible), FUTEX_WAKE returns 0 (no waiters). PRIVATE variants handled. Threading upgrade: hash table mapping (process, uaddr) → wait queue. |
 
 ## Signals
 
@@ -103,7 +107,7 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 |----------|--------|-------|
 | `mmap()` | Partial | Anonymous mappings only (MAP_ANONYMOUS). Page-aligned (64KB Wasm pages). File-backed mappings not yet supported. MAP_FIXED not yet supported. |
 | `munmap()` | Full | Removes tracked region. Page-aligned address required. |
-| `brk()` / `sbrk()` | Partial | Kernel-managed program break. Initial break at 0x01000000. Only increases supported; shrinking not yet implemented. Program break inherited on fork/exec. |
+| `brk()` / `sbrk()` | Partial | Kernel-managed program break. Initial break at 0x01000000. Growing and shrinking supported. Program break inherited on fork/exec. |
 | `mprotect()` | Stub | Returns ENOSYS. Wasm linear memory has no page-level protection. |
 
 ## Directory Operations
@@ -143,6 +147,11 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 | `shutdown()` | Full | SHUT_RD, SHUT_WR, SHUT_RDWR. Properly closes buffer endpoints. |
 | `select()` | Partial | Wrapper around poll(). Converts fd_set bitmasks to pollfd array. Timeout supported via polling loop. |
 | `poll()` | Partial | Checks readiness for regular files, pipes, and sockets. Timeout supported via polling loop with 1ms sleep intervals. Returns EINTR on pending signals. POLLERR for fully shut down sockets. |
+| `ppoll()` | Full | Wraps poll() with atomic signal mask swap: save → set → poll → restore. Timespec converted to timeout_ms in glue layer. |
+| `pselect6()` | Full | Wraps select() with atomic signal mask swap. Sigmask extracted from pselect6-style {sigset_t*, size_t} struct in glue layer. |
+| `epoll_create1()` | Stub | Returns ENOSYS. Programs fall back to poll(). |
+| `epoll_ctl()` | Stub | Returns ENOSYS. Programs fall back to poll(). |
+| `epoll_pwait()` | Stub | Returns ENOSYS. Programs fall back to poll(). |
 
 ## Time
 
@@ -237,13 +246,19 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 
 ### Future Work — Planned for later batches
 
-**Medium-term (Batch 3+):**
+**Medium-term:**
 - PIPE_BUF atomicity enforcement (ring buffer boundary tracking for writes ≤ 4096)
 - Multi-process F_SETLKW blocking (currently returns immediately)
 - VMIN/VTIME terminal interpretation (read behavior based on c_cc values)
-- brk() shrinking (currently only grows)
 - Guest-initiated fork()/exec() syscalls (currently host-initiated only)
-- epoll stub (epoll_create, epoll_ctl, epoll_wait — returning ENOSYS initially)
+- Full epoll implementation (currently returns ENOSYS; programs fall back to poll)
+
+**Threading stubs (requires multi-threading support):**
+- `gettid()` — return actual thread ID from thread table (currently returns pid)
+- `set_tid_address()` — store tidptr per-thread; kernel writes 0 + futex-wakes on exit (currently no-op)
+- `set_robust_list()` — track robust futex list per-thread; walk on exit (currently no-op)
+- `futex()` — hash table mapping (process, uaddr) → wait queue with WAIT/WAKE semantics (currently WAIT→EAGAIN, WAKE→0)
+- `clone()` — create new thread sharing address space (not yet implemented)
 
 **Hard / Architectural:**
 - File-backed mmap() (requires host cooperation and shared memory semantics)

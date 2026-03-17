@@ -369,6 +369,23 @@ KERNEL_IMPORT(kernel_readv)
 int32_t kernel_readv(int32_t fd, uint8_t *iov_ptr, int32_t iovcnt);
 
 /* ------------------------------------------------------------------ */
+/* Thread/runtime init stubs (single-threaded)                         */
+/* ------------------------------------------------------------------ */
+
+KERNEL_IMPORT(kernel_gettid)
+int32_t kernel_gettid(void);
+
+KERNEL_IMPORT(kernel_set_tid_address)
+int32_t kernel_set_tid_address(uint32_t tidptr);
+
+KERNEL_IMPORT(kernel_set_robust_list)
+int32_t kernel_set_robust_list(uint32_t head, uint32_t len);
+
+KERNEL_IMPORT(kernel_futex)
+int32_t kernel_futex(uint32_t uaddr, uint32_t op, uint32_t val,
+                     uint32_t timeout, uint32_t uaddr2, uint32_t val3);
+
+/* ------------------------------------------------------------------ */
 /* Process control                                                     */
 /* ------------------------------------------------------------------ */
 
@@ -526,6 +543,15 @@ int32_t kernel_getpeername(int32_t fd, uint32_t buf_ptr, uint32_t buf_len);
 
 KERNEL_IMPORT(kernel_poll)
 int32_t kernel_poll(uint8_t *fds_ptr, uint32_t nfds, int32_t timeout);
+
+KERNEL_IMPORT(kernel_ppoll)
+int32_t kernel_ppoll(uint8_t *fds_ptr, uint32_t nfds, int32_t timeout_ms,
+                     uint32_t mask_lo, uint32_t mask_hi);
+
+KERNEL_IMPORT(kernel_pselect6)
+int32_t kernel_pselect6(int32_t nfds, uint8_t *readfds_ptr,
+                        uint8_t *writefds_ptr, uint8_t *exceptfds_ptr,
+                        int32_t timeout_ms, uint32_t mask_lo, uint32_t mask_hi);
 
 KERNEL_IMPORT(kernel_sendto)
 int32_t kernel_sendto(int32_t fd, const uint8_t *buf_ptr, uint32_t buf_len,
