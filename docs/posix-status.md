@@ -15,7 +15,7 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 
 | Function | Status | Notes |
 |----------|--------|-------|
-| `open()` | Partial | Host-delegated. O_CREAT, O_EXCL, O_TRUNC, O_APPEND, O_NONBLOCK, O_CLOEXEC, O_DIRECTORY, O_NOFOLLOW flags handled. umask applied to mode on O_CREAT. |
+| `open()` | Partial | Host-delegated. O_CREAT, O_EXCL, O_TRUNC, O_APPEND, O_NONBLOCK, O_CLOEXEC, O_DIRECTORY, O_NOFOLLOW flags handled. umask applied to mode on O_CREAT. Virtual device interception (`/dev/null`, `/dev/zero`, `/dev/urandom`, `/dev/full`, `/dev/fd/N`, `/dev/stdin`, `/dev/stdout`, `/dev/stderr`). |
 | `openat()` | Full | AT_FDCWD delegates to open(). Absolute paths handled. Real dirfd supported via stored OFD paths. |
 | `close()` | Partial | Ref-counted OFD cleanup. Host handle closed when last ref dropped. Releases all fcntl advisory locks on the file (POSIX-compliant). EINTR not yet handled. |
 | `read()` | Partial | Host-delegated for files. Pipe/socket reads from kernel ring buffer with blocking when empty (EINTR on signal). Short reads permitted. O_NONBLOCK returns EAGAIN. |
@@ -278,6 +278,24 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 | `tcgetattr()` / `tcsetattr()` | Partial | Kernel-simulated terminal state (c_iflag, c_oflag, c_cflag, c_lflag, c_cc). Does not affect actual host I/O. TCSANOW/TCSADRAIN/TCSAFLUSH all treated the same. **Gap:** VMIN/VTIME values stored but not interpreted by read(). ICANON flag tracked but no line buffering applied. |
 | `ioctl()` | Partial | TIOCGWINSZ and TIOCSWINSZ (terminal). FIONREAD (available bytes for pipe/socket/regular), FIONBIO (toggle O_NONBLOCK), FIOCLEX/FIONCLEX (set/clear FD_CLOEXEC). Generic ioctls work on any fd type; terminal ioctls require CharDevice. |
 
+## Virtual Device Files
+
+| Device | Status | Notes |
+|--------|--------|-------|
+| `/dev/null` | Full | Read returns EOF (0). Write discards data (returns count). Seek no-op. |
+| `/dev/zero` | Full | Read fills buffer with zeros. Write discards data (returns count). |
+| `/dev/urandom` / `/dev/random` | Full | Read delegates to `host_getrandom()` (crypto.getRandomValues on host). Write discards. |
+| `/dev/full` | Full | Read fills buffer with zeros. Write returns ENOSPC. |
+| `/dev/fd/N` | Full | Open-time dup of fd N. Validates target fd exists (EBADF if not). |
+| `/dev/stdin` | Full | Alias for `/dev/fd/0`. |
+| `/dev/stdout` | Full | Alias for `/dev/fd/1`. |
+| `/dev/stderr` | Full | Alias for `/dev/fd/2`. |
+| `/dev/tty` | Not yet | Controlling terminal — requires process-group shared state. |
+| `/dev/pts/*` | Not yet | Pseudo-terminal pairs — requires cross-process coordination. |
+| `/dev/shm/*` | Not yet | POSIX shared memory — requires cross-process SharedArrayBuffer. |
+
+All virtual devices return synthetic `stat()` with `S_IFCHR | 0666`, deterministic inode numbers, and `st_dev=5`. Path interception in kernel before host delegation — no host filesystem changes needed. `access()` returns OK for all virtual devices.
+
 ## Environment
 
 | Function | Status | Notes |
@@ -469,10 +487,10 @@ Target use case: hosting PHP-WASM (as used by WordPress Playground) on this kern
 | Gap | Subsystem | Description | Difficulty |
 |-----|-----------|-------------|------------|
 | **`flock()` syscall** | file locking | PHP sessions and SQLite both use whole-file locking via `flock()`. WordPress calls it heavily. Can map to `fcntl` F_SETLK/F_SETLKW internally. | Medium |
-| **`/dev/urandom` virtual device** | VFS | OpenSSL and `random_bytes()` need cryptographic randomness. Needs virtual device file support in VFS, delegating to `crypto.getRandomValues()`. | Easy |
-| **`getrandom()` syscall** | random | Alternative to `/dev/urandom` for PHP's random number generation. Host-delegated to `crypto.getRandomValues()`. | Easy |
+| ~~`/dev/urandom` virtual device~~ | VFS | **Done.** `/dev/urandom` and `/dev/random` intercept in kernel, delegate to `host_getrandom()` → `crypto.getRandomValues()`. | Easy |
+| ~~`getrandom()` syscall~~ | random | **Done.** Host-delegated to `crypto.getRandomValues()`. | Easy |
 | **`putenv()` syscall** | environment | PHP uses `putenv("KEY=VALUE")` extensively. Different semantics from `setenv()` — takes a single `KEY=VALUE` string. | Easy |
-| **Virtual device files in VFS** | VFS | Support for `/dev/null`, `/dev/zero`, `/dev/urandom` as mountable virtual devices. PHP-WASM also uses `/request/stdout`, `/request/stderr`, `/request/headers`. | Medium |
+| ~~Virtual device files in VFS~~ | VFS | **Done.** `/dev/null`, `/dev/zero`, `/dev/urandom`, `/dev/full`, `/dev/fd/N`, `/dev/stdin`, `/dev/stdout`, `/dev/stderr` all handled in-kernel. PHP-WASM also uses `/request/stdout`, `/request/stderr`, `/request/headers` (not yet supported). | Medium |
 | **`initgroups()` stub** | process | ZendAccelerator needs it. Return success (no-op). | Easy |
 
 ### Phase B — Networking (enables WordPress HTTP requests + MySQL)
