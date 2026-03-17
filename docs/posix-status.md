@@ -37,7 +37,16 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 | `truncate()` | Partial | Path-based. Opens file O_WRONLY, calls ftruncate, closes. |
 | `fchmod()` | Partial | Host-delegated for regular files and directories. Rejects pipes/sockets. |
 | `fchown()` | Partial | Host-delegated for regular files and directories. Rejects pipes/sockets. |
+| `preadv()` | Full | Scatter-gather read at offset. Iterates iovec entries calling pread for each. Stops on short read or EOF. |
+| `pwritev()` | Full | Scatter-gather write at offset. Iterates iovec entries calling pwrite for each. Stops on short write. |
+| `preadv2()` / `pwritev2()` | Partial | Delegates to preadv/pwritev. Extra flags parameter ignored. |
+| `sendfile()` | Full | Emulated with read+write loop (no zero-copy in Wasm). Supports offset parameter for positioned read from input fd. |
+| `fallocate()` | Stub | Returns 0 (no-op). File space managed by host. |
+| `copy_file_range()` | Stub | Returns ENOSYS. Programs fall back to read+write. |
+| `splice()` / `tee()` / `vmsplice()` | Stub | Returns ENOSYS. |
+| `readahead()` | Stub | Returns 0 (no-op advisory). |
 | `fstatat()` | Full | AT_FDCWD delegates to stat/lstat. AT_SYMLINK_NOFOLLOW supported. Real dirfd supported via stored OFD paths. |
+| `statx()` | Full | Delegates to fstatat, fills statx struct (256 bytes) from WasmStat. STATX_BASIC_STATS mask. |
 | `unlinkat()` | Full | AT_FDCWD delegates to unlink/rmdir. AT_REMOVEDIR flag supported. Real dirfd supported. |
 | `mkdirat()` | Full | AT_FDCWD delegates to mkdir. umask applied. Real dirfd supported. |
 | `renameat()` | Full | Both dirfds supported (AT_FDCWD, absolute, or real dirfd). |
@@ -87,6 +96,30 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 | `set_tid_address()` | Stub | Single-threaded: returns pid, ignores tidptr. Threading upgrade: store tidptr per-thread; kernel writes 0 + futex-wakes on thread exit. |
 | `set_robust_list()` | Stub | Single-threaded: no-op. Threading upgrade: track robust futex list per-thread; kernel walks list on thread exit. |
 | `futex()` | Stub | Single-threaded: FUTEX_WAIT returns EAGAIN (no contention possible), FUTEX_WAKE returns 0 (no waiters). PRIVATE variants handled. Threading upgrade: hash table mapping (process, uaddr) → wait queue. |
+| `execve()` | Full | Delegates to kernel_execve. Replaces process image. |
+| `execveat()` | Partial | Extracts path, delegates to kernel_execve. Ignores dirfd (path must be absolute or CWD-relative). |
+| `fork()` (syscall) | Stub | Returns ENOSYS from glue. Host-initiated only via ProcessManager. |
+| `vfork()` | Stub | Returns ENOSYS. |
+| `clone()` | Stub | Returns ENOSYS. Threading not yet supported. |
+| `personality()` | Stub | Returns 0 (PER_LINUX). |
+| `unshare()` / `setns()` | Stub | Returns EPERM. No namespace support. |
+| `ptrace()` | Stub | Returns ENOSYS. |
+| `process_vm_readv()` / `process_vm_writev()` | Stub | Returns ENOSYS. |
+| `membarrier()` | Stub | Returns 0 (no-op, single-threaded). |
+| `getcpu()` | Stub | Writes cpu=0, node=0. Single-CPU Wasm. |
+| `get_robust_list()` | Stub | Returns ENOSYS. |
+| `set_thread_area()` | Stub | Returns ENOSYS. |
+| `setfsuid()` / `setfsgid()` | Stub | Returns 0 (no-op). |
+| `acct()` | Stub | Returns ENOSYS. |
+| `reboot()` | Stub | Returns EPERM. |
+| `swapon()` / `swapoff()` | Stub | Returns EPERM. |
+| `syslog()` | Stub | Returns EPERM. |
+| `capget()` / `capset()` | Stub | Returns EPERM. No capabilities model. |
+| `vhangup()` | Stub | Returns EPERM. |
+| `sethostname()` / `setdomainname()` | Stub | Returns EPERM. |
+| `init_module()` / `delete_module()` | Stub | Returns EPERM. No kernel module support. |
+| `ioperm()` / `iopl()` | Stub | Returns EPERM. No I/O port access. |
+| `remap_file_pages()` | Stub | Returns ENOSYS. |
 
 ## Signals
 
@@ -100,6 +133,12 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 | `pause()` | Full | Suspends until a signal is delivered. Delegates to sigsuspend with current mask. Always returns EINTR. |
 | `raise()` | Full | Equivalent to kill(getpid(), sig). |
 | `alarm()` | Full | Sets SIGALRM timer via host setTimeout. Returns previous remaining seconds. alarm(0) cancels. Not inherited by fork, canceled by exec. |
+| `setitimer()` | Full | ITIMER_REAL: sets alarm deadline + interval via host_set_alarm. ITIMER_VIRTUAL/ITIMER_PROF: no-op (no CPU time tracking). Fixes musl's alarm() which internally calls setitimer. |
+| `getitimer()` | Full | ITIMER_REAL: returns stored interval + remaining time from deadline. ITIMER_VIRTUAL/ITIMER_PROF: returns zero. |
+| `sigtimedwait()` | Full | Checks pending signals in mask, dequeues lowest. Polls with 1ms sleep on timeout. Returns EAGAIN on timeout. |
+| `sigqueue()` / `rt_sigqueueinfo()` | Partial | Extracts signal number and delivers via raise(). siginfo_t data ignored (no signal queuing). |
+| `rt_sigreturn()` | Stub | Returns 0. Signal trampoline handled by host. |
+| `signalfd()` / `signalfd4()` | Stub | Returns ENOSYS. |
 
 ## Memory Management
 
@@ -109,6 +148,7 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 | `munmap()` | Full | Removes tracked region. Page-aligned address required. |
 | `brk()` / `sbrk()` | Partial | Kernel-managed program break. Initial break at 0x01000000. Growing and shrinking supported. Program break inherited on fork/exec. |
 | `mprotect()` | Stub | Returns ENOSYS. Wasm linear memory has no page-level protection. |
+| `memfd_create()` | Stub | Returns ENOSYS. |
 
 ## Directory Operations
 
@@ -130,6 +170,18 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 | `access()` | Partial | Host-delegated. Checks real filesystem permissions. |
 | `realpath()` | Partial | Resolves path against cwd, normalizes `.`/`..`, verifies existence via stat. Intermediate symlink resolution not yet performed (future enhancement). |
 | `symlink()` / `readlink()` | Partial | Host-delegated. Symlink target stored as-is, linkpath resolved. |
+| `sync()` / `syncfs()` | Stub | Returns 0 (no-op). Filesystem sync managed by host. |
+| `sync_file_range()` | Stub | Returns 0 (no-op). |
+| `chroot()` | Stub | Returns EPERM. No filesystem namespace isolation. |
+| `mount()` / `umount2()` | Stub | Returns EPERM. Future: VFS mount/unmount support. |
+| `pivot_root()` | Stub | Returns EPERM. |
+| `mknod()` / `mknodat()` | Stub | Returns EPERM. Device node creation not supported. |
+| `quotactl()` | Stub | Returns ENOSYS. |
+| `renameat2()` | Full | Delegates to renameat. Extra flags parameter ignored. |
+| `faccessat2()` | Full | Delegates to faccessat. Extra flags parameter ignored. |
+| `fchmodat2()` | Full | Delegates to fchmodat. Extra flags parameter ignored. |
+| `getdents()` (legacy) | Full | Delegates to getdents64. |
+| `name_to_handle_at()` / `open_by_handle_at()` | Stub | Returns ENOSYS. |
 
 ## Socket Operations
 
@@ -152,6 +204,8 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 | `epoll_create1()` | Stub | Returns ENOSYS. Programs fall back to poll(). |
 | `epoll_ctl()` | Stub | Returns ENOSYS. Programs fall back to poll(). |
 | `epoll_pwait()` | Stub | Returns ENOSYS. Programs fall back to poll(). |
+| `epoll_create()` / `epoll_wait()` | Stub | Legacy aliases. Returns ENOSYS. |
+| `sendmmsg()` / `recvmmsg()` | Stub | Returns ENOSYS. |
 
 ## Time
 
@@ -162,6 +216,59 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 | `clock_gettime()` | Full | Host-delegated. CLOCK_REALTIME and CLOCK_MONOTONIC supported. Node.js uses Date.now() and process.hrtime.bigint(). |
 | `nanosleep()` | Partial | Host-delegated. Node.js uses Atomics.wait with timeout. Browser may need Asyncify fallback. Validates tv_sec >= 0 and tv_nsec < 1e9. |
 | `usleep()` | Full | Converts microseconds to sec+nsec, delegates to host_nanosleep. |
+| `clock_settime()` | Stub | Returns EPERM. Cannot set system clock from Wasm. |
+| `settimeofday()` | Stub | Returns EPERM. Cannot set system clock from Wasm. |
+| `adjtimex()` / `clock_adjtime()` | Stub | Returns EPERM. Cannot adjust system clock from Wasm. |
+| `utimes()` | Full | Converts timeval to timespec, delegates to utimensat. |
+| `futimesat()` | Full | Like utimes but relative to dirfd. Delegates to utimensat. |
+
+## Scheduler
+
+| Function | Status | Notes |
+|----------|--------|-------|
+| `sched_getparam()` | Stub | Writes sched_priority=0. Single-threaded Wasm has no scheduling policy. |
+| `sched_setparam()` | Stub | Returns 0 (no-op). |
+| `sched_getscheduler()` | Stub | Returns 0 (SCHED_OTHER). |
+| `sched_setscheduler()` | Stub | Returns 0 (no-op). |
+| `sched_get_priority_max()` | Stub | Returns 0. |
+| `sched_get_priority_min()` | Stub | Returns 0. |
+| `sched_rr_get_interval()` | Stub | Writes 10ms timespec. |
+| `sched_setaffinity()` | Stub | Returns 0 (no-op). |
+| `sched_getaffinity()` | Stub | Sets bit 0 in cpuset (1 CPU). Returns cpuset size. |
+| `sched_yield()` | Stub | Returns 0 (no-op, single-threaded). |
+
+## Event/Notification
+
+| Function | Status | Notes |
+|----------|--------|-------|
+| `eventfd()` / `eventfd2()` | Stub | Returns ENOSYS. |
+| `timerfd_create()` | Stub | Returns ENOSYS. |
+| `timerfd_settime()` / `timerfd_gettime()` | Stub | Returns EINVAL. |
+| `inotify_init()` / `inotify_init1()` | Stub | Returns ENOSYS. |
+| `inotify_add_watch()` / `inotify_rm_watch()` | Stub | Returns EBADF. |
+| `fanotify_init()` / `fanotify_mark()` | Stub | Returns ENOSYS. |
+| `timer_create()` | Stub | Returns ENOSYS. POSIX per-process timers not implemented. |
+| `timer_settime()` / `timer_gettime()` | Stub | Returns ENOSYS. |
+| `timer_getoverrun()` / `timer_delete()` | Stub | Returns ENOSYS. |
+
+## IPC (System V & POSIX Message Queues)
+
+| Function | Status | Notes |
+|----------|--------|-------|
+| `msgget()` / `msgsnd()` / `msgrcv()` / `msgctl()` | Stub | Returns ENOSYS. SysV message queues not implemented. |
+| `semget()` / `semop()` / `semctl()` / `semtimedop()` | Stub | Returns ENOSYS. SysV semaphores not implemented. |
+| `shmget()` / `shmat()` / `shmdt()` / `shmctl()` | Stub | Returns ENOSYS. SysV shared memory not implemented. |
+| `mq_open()` / `mq_unlink()` | Stub | Returns ENOSYS. POSIX message queues not implemented. |
+| `mq_timedsend()` / `mq_timedreceive()` | Stub | Returns ENOSYS. |
+| `mq_notify()` / `mq_getsetattr()` | Stub | Returns ENOSYS. |
+
+## Extended Attributes
+
+| Function | Status | Notes |
+|----------|--------|-------|
+| `getxattr()` / `setxattr()` / `removexattr()` / `listxattr()` | Stub | Returns ENOSYS. Extended attributes not supported by host filesystem abstraction. |
+| `lgetxattr()` / `lsetxattr()` / `lremovexattr()` / `llistxattr()` | Stub | Returns ENOSYS. |
+| `fgetxattr()` / `fsetxattr()` / `fremovexattr()` / `flistxattr()` | Stub | Returns ENOSYS. |
 
 ## Terminal / TTY
 
@@ -202,7 +309,7 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 
 ### Critical — Violates POSIX semantics, causes incorrect behavior
 
-(None currently — signal handler delivery resolved via syscall-boundary checking.)
+(None currently — setitimer/getitimer resolved in Batch 5, signal handler delivery resolved via syscall-boundary checking.)
 
 ### High — Missing features that affect common programs
 
@@ -337,6 +444,19 @@ These features require SharedArrayBuffer (and cross-origin isolation headers in 
 - host_exec Wasm import and sys_execve syscall
 - Worker re-initialization: new kernel instance with exec state in same worker
 - ProcessManager.exec() for host-initiated exec
+14. **POSIX Compliance Batch 4 (Complete):** ~20 syscalls — tkill, sigpending, getpgid, setreuid/setregid, sysinfo, times, lchown, waitid, plus glue-only stubs
+15. **POSIX Compliance Batch 5 (Complete):** ~100+ syscalls
+- **Critical fix:** setitimer/getitimer (fixes musl's alarm() which internally calls setitimer)
+- **Kernel syscalls:** rt_sigtimedwait, preadv/pwritev, sendfile, statx
+- **Scheduler stubs:** sched_getparam/setparam/getscheduler/setscheduler/priorities/affinity (9 syscalls)
+- **File I/O extensions:** preadv2/pwritev2, fallocate, copy_file_range, splice/tee/vmsplice, readahead
+- **Filesystem stubs:** sync/syncfs, chroot, mount/umount2, mknod/mknodat, renameat2, faccessat2/fchmodat2
+- **Time stubs:** clock_settime, settimeofday, adjtimex, utimes/futimesat
+- **Process stubs:** fork/vfork/clone (ENOSYS), execve/execveat, personality, unshare/setns
+- **Event stubs:** eventfd2, signalfd4, timerfd_*, inotify_*, fanotify_*
+- **IPC stubs:** SysV msg/sem/shm (12), POSIX mq (6), ipc multiplexer
+- **Extended attributes:** 12 xattr syscalls (all ENOSYS)
+- **Remaining:** memfd_create, membarrier, getcpu, splice/tee, POSIX timers, capget/capset, and more
 
 ---
 

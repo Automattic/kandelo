@@ -502,6 +502,7 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
         umask,
         rlimits,
         alarm_deadline_ns: 0,
+        alarm_interval_ns: 0,
         thread_name: [0u8; 16],
     })
 }
@@ -817,6 +818,7 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
         umask,
         rlimits,
         alarm_deadline_ns: 0,
+        alarm_interval_ns: 0,
         thread_name: [0u8; 16],
     })
 }

@@ -481,6 +481,111 @@ pub fn sys_pwrite(
     Ok(n)
 }
 
+/// preadv -- scatter-gather read at offset.
+/// Reads into multiple buffers from a file descriptor at the given offset
+/// without modifying the file position.
+pub fn sys_preadv(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    fd: i32,
+    iovecs: &mut [&mut [u8]],
+    offset: i64,
+) -> Result<usize, Errno> {
+    let mut total = 0usize;
+    let mut cur_offset = offset;
+    for buf in iovecs.iter_mut() {
+        if buf.is_empty() {
+            continue;
+        }
+        let n = sys_pread(proc, host, fd, *buf, cur_offset)?;
+        total += n;
+        cur_offset += n as i64;
+        if n < buf.len() || n == 0 {
+            break; // Short read or EOF
+        }
+    }
+    Ok(total)
+}
+
+/// pwritev -- scatter-gather write at offset.
+/// Writes from multiple buffers to a file descriptor at the given offset
+/// without modifying the file position.
+pub fn sys_pwritev(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    fd: i32,
+    iovecs: &[&[u8]],
+    offset: i64,
+) -> Result<usize, Errno> {
+    let mut total = 0usize;
+    let mut cur_offset = offset;
+    for buf in iovecs {
+        if buf.is_empty() {
+            continue;
+        }
+        let n = sys_pwrite(proc, host, fd, buf, cur_offset)?;
+        total += n;
+        cur_offset += n as i64;
+        if n < buf.len() {
+            break; // Short write
+        }
+    }
+    Ok(total)
+}
+
+/// sendfile -- copy data between file descriptors.
+/// Emulated with read+write since we don't have zero-copy support.
+/// If offset_ptr is provided (non-negative), reads from that offset without
+/// changing the in_fd's position. Otherwise reads from current position.
+pub fn sys_sendfile(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    out_fd: i32,
+    in_fd: i32,
+    offset: i64,
+    count: usize,
+) -> Result<usize, Errno> {
+    let mut total = 0usize;
+    let mut buf = [0u8; 4096];
+    let mut cur_offset = offset;
+
+    while total < count {
+        let to_read = (count - total).min(buf.len());
+        let n = if offset >= 0 {
+            let n = sys_pread(proc, host, in_fd, &mut buf[..to_read], cur_offset)?;
+            cur_offset += n as i64;
+            n
+        } else {
+            sys_read(proc, host, in_fd, &mut buf[..to_read])?
+        };
+
+        if n == 0 {
+            break; // EOF
+        }
+
+        let written = sys_write(proc, host, out_fd, &buf[..n])?;
+        total += written;
+        if written < n {
+            break; // Short write
+        }
+    }
+    Ok(total)
+}
+
+/// statx -- extended file status.
+/// Delegates to fstatat and fills the statx structure from WasmStat.
+pub fn sys_statx(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    dirfd: i32,
+    path: &[u8],
+    flags: u32,
+    _mask: u32,
+) -> Result<WasmStat, Errno> {
+    // statx is essentially fstatat with extra fields we don't track
+    sys_fstatat(proc, host, dirfd, path, flags)
+}
+
 /// Duplicate a file descriptor, returning the new fd number.
 pub fn sys_dup(proc: &mut Process, fd: i32) -> Result<i32, Errno> {
     let entry = proc.fd_table.get(fd)?;
@@ -1359,6 +1464,156 @@ pub fn sys_alarm(proc: &mut Process, host: &mut dyn HostIO, seconds: u32) -> Res
     host.host_set_alarm(seconds)?;
 
     Ok(remaining)
+}
+
+/// setitimer -- set an interval timer.
+///
+/// ITIMER_REAL (0): delivers SIGALRM based on wall clock time, using the existing
+/// host_set_alarm mechanism. Stores interval for repeating timers.
+/// ITIMER_VIRTUAL (1) / ITIMER_PROF (2): no-op (no CPU time tracking in Wasm).
+///
+/// `new_value` is (interval_sec, interval_usec, value_sec, value_usec).
+/// Returns the old timer value as (interval_sec, interval_usec, value_sec, value_usec).
+pub fn sys_setitimer(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    which: u32,
+    new_interval_sec: i64,
+    new_interval_usec: i64,
+    new_value_sec: i64,
+    new_value_usec: i64,
+) -> Result<(i64, i64, i64, i64), Errno> {
+    // First, get old value (same as getitimer)
+    let old = sys_getitimer(proc, host, which)?;
+
+    match which {
+        0 => {
+            // ITIMER_REAL
+            let interval_ns = (new_interval_sec as u64) * 1_000_000_000
+                + (new_interval_usec as u64) * 1_000;
+            let value_ns = (new_value_sec as u64) * 1_000_000_000
+                + (new_value_usec as u64) * 1_000;
+
+            proc.alarm_interval_ns = interval_ns;
+
+            if value_ns > 0 {
+                let (sec, nsec) = host.host_clock_gettime(
+                    wasm_posix_shared::clock::CLOCK_MONOTONIC,
+                )?;
+                let now_ns = (sec as u64).wrapping_mul(1_000_000_000)
+                    .wrapping_add(nsec as u64);
+                proc.alarm_deadline_ns = now_ns + value_ns;
+
+                // Convert to whole seconds for host_set_alarm (round up)
+                let alarm_secs = ((value_ns + 999_999_999) / 1_000_000_000) as u32;
+                let alarm_secs = if alarm_secs == 0 { 1 } else { alarm_secs };
+                host.host_set_alarm(alarm_secs)?;
+            } else {
+                proc.alarm_deadline_ns = 0;
+                proc.alarm_interval_ns = 0;
+                host.host_set_alarm(0)?;
+            }
+
+            Ok(old)
+        }
+        1 | 2 => {
+            // ITIMER_VIRTUAL / ITIMER_PROF: no-op
+            Ok(old)
+        }
+        _ => Err(Errno::EINVAL),
+    }
+}
+
+/// getitimer -- get the current value of an interval timer.
+///
+/// Returns (interval_sec, interval_usec, value_sec, value_usec).
+pub fn sys_getitimer(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    which: u32,
+) -> Result<(i64, i64, i64, i64), Errno> {
+    match which {
+        0 => {
+            // ITIMER_REAL
+            let interval_sec = (proc.alarm_interval_ns / 1_000_000_000) as i64;
+            let interval_usec = ((proc.alarm_interval_ns % 1_000_000_000) / 1_000) as i64;
+
+            if proc.alarm_deadline_ns == 0 {
+                return Ok((interval_sec, interval_usec, 0, 0));
+            }
+
+            let (sec, nsec) = host.host_clock_gettime(
+                wasm_posix_shared::clock::CLOCK_MONOTONIC,
+            )?;
+            let now_ns = (sec as u64).wrapping_mul(1_000_000_000)
+                .wrapping_add(nsec as u64);
+
+            let remaining_ns = if proc.alarm_deadline_ns > now_ns {
+                proc.alarm_deadline_ns - now_ns
+            } else {
+                0
+            };
+
+            let value_sec = (remaining_ns / 1_000_000_000) as i64;
+            let value_usec = ((remaining_ns % 1_000_000_000) / 1_000) as i64;
+
+            Ok((interval_sec, interval_usec, value_sec, value_usec))
+        }
+        1 | 2 => {
+            // ITIMER_VIRTUAL / ITIMER_PROF: always zero
+            Ok((0, 0, 0, 0))
+        }
+        _ => Err(Errno::EINVAL),
+    }
+}
+
+/// rt_sigtimedwait -- wait for a signal from a specified set.
+///
+/// Checks if any signal in `mask` is already pending and dequeues it.
+/// If `timeout_ms` >= 0, waits up to that many milliseconds for a signal.
+/// If `timeout_ms` < 0, waits indefinitely.
+/// Returns the signal number on success, or EAGAIN on timeout.
+pub fn sys_sigtimedwait(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    mask: u64,
+    timeout_ms: i32,
+) -> Result<u32, Errno> {
+    use wasm_posix_shared::signal::NSIG;
+
+    // Check if any signal in mask is already pending
+    let pending_in_mask = proc.signals.pending & mask;
+    if pending_in_mask != 0 {
+        // Dequeue the lowest numbered signal
+        for sig in 1..NSIG {
+            if pending_in_mask & (1u64 << sig) != 0 {
+                proc.signals.pending &= !(1u64 << sig);
+                return Ok(sig);
+            }
+        }
+    }
+
+    if timeout_ms == 0 {
+        return Err(Errno::EAGAIN);
+    }
+
+    // Wait with 1ms sleep intervals, checking for signals
+    let iterations = if timeout_ms < 0 { i32::MAX } else { timeout_ms };
+    for _ in 0..iterations {
+        host.host_nanosleep(0, 1_000_000)?; // 1ms
+
+        let pending_in_mask = proc.signals.pending & mask;
+        if pending_in_mask != 0 {
+            for sig in 1..NSIG {
+                if pending_in_mask & (1u64 << sig) != 0 {
+                    proc.signals.pending &= !(1u64 << sig);
+                    return Ok(sig);
+                }
+            }
+        }
+    }
+
+    Err(Errno::EAGAIN)
 }
 
 /// sigsuspend -- temporarily replace the signal mask and suspend until a signal is delivered.
@@ -7176,5 +7431,174 @@ mod tests {
         let result = sys_read(&mut proc, &mut host, fd, &mut buf);
         assert!(result.is_ok(), "sys_read on connected AF_INET socket should succeed, got: {:?}", result);
         assert_eq!(result.unwrap(), 0);
+    }
+
+    // ===== setitimer / getitimer tests =====
+
+    #[test]
+    fn test_getitimer_initial_zero() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let result = sys_getitimer(&mut proc, &mut host, 0).unwrap();
+        assert_eq!(result, (0, 0, 0, 0));
+    }
+
+    #[test]
+    fn test_getitimer_virtual_always_zero() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let result = sys_getitimer(&mut proc, &mut host, 1).unwrap();
+        assert_eq!(result, (0, 0, 0, 0));
+    }
+
+    #[test]
+    fn test_getitimer_invalid_which() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let result = sys_getitimer(&mut proc, &mut host, 3);
+        assert_eq!(result, Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn test_setitimer_cancel() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        // Set an alarm first
+        proc.alarm_deadline_ns = 1_000_000_000;
+        proc.alarm_interval_ns = 500_000_000;
+        // Cancel it
+        let old = sys_setitimer(&mut proc, &mut host, 0, 0, 0, 0, 0).unwrap();
+        // Old should have had interval 0.5s
+        assert_eq!(old.0, 0); // interval_sec
+        assert_eq!(old.1, 500000); // interval_usec
+        // Now timer should be cleared
+        assert_eq!(proc.alarm_deadline_ns, 0);
+        assert_eq!(proc.alarm_interval_ns, 0);
+    }
+
+    #[test]
+    fn test_setitimer_sets_alarm() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        // MockHostIO returns time (1234567890, 123456789)
+        let now_ns = 1234567890u64 * 1_000_000_000 + 123456789u64;
+        // Set a 2.5 second timer with 1 second interval
+        let result = sys_setitimer(&mut proc, &mut host, 0, 1, 0, 2, 500000).unwrap();
+        // Old was zero
+        assert_eq!(result, (0, 0, 0, 0));
+        // Interval should be stored
+        assert_eq!(proc.alarm_interval_ns, 1_000_000_000);
+        // Deadline should be now_ns + 2.5s
+        assert_eq!(proc.alarm_deadline_ns, now_ns + 2_500_000_000);
+    }
+
+    #[test]
+    fn test_setitimer_virtual_noop() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let result = sys_setitimer(&mut proc, &mut host, 1, 1, 0, 1, 0).unwrap();
+        assert_eq!(result, (0, 0, 0, 0));
+        // ITIMER_VIRTUAL doesn't affect alarm_deadline_ns
+        assert_eq!(proc.alarm_deadline_ns, 0);
+    }
+
+    // ===== sigtimedwait tests =====
+
+    #[test]
+    fn test_sigtimedwait_pending_signal() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        // Raise SIGUSR1 (signal 10)
+        proc.signals.pending |= 1u64 << 10;
+        // Wait for SIGUSR1
+        let mask = 1u64 << 10;
+        let result = sys_sigtimedwait(&mut proc, &mut host, mask, 0).unwrap();
+        assert_eq!(result, 10);
+        // Signal should be dequeued
+        assert_eq!(proc.signals.pending & (1u64 << 10), 0);
+    }
+
+    #[test]
+    fn test_sigtimedwait_no_pending_timeout_zero() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let mask = 1u64 << 10;
+        let result = sys_sigtimedwait(&mut proc, &mut host, mask, 0);
+        assert_eq!(result, Err(Errno::EAGAIN));
+    }
+
+    #[test]
+    fn test_sigtimedwait_dequeues_lowest() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        // Raise both SIGUSR1 (10) and SIGUSR2 (12)
+        proc.signals.pending |= (1u64 << 10) | (1u64 << 12);
+        let mask = (1u64 << 10) | (1u64 << 12);
+        let result = sys_sigtimedwait(&mut proc, &mut host, mask, 0).unwrap();
+        assert_eq!(result, 10); // lowest first
+        // Only SIGUSR1 should be dequeued
+        assert_eq!(proc.signals.pending & (1u64 << 10), 0);
+        assert_ne!(proc.signals.pending & (1u64 << 12), 0);
+    }
+
+    // ===== preadv / pwritev tests =====
+
+    #[test]
+    fn test_preadv_basic() {
+        let mut proc = Process::new(1);
+        let mut host = TrackingHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/test/file", O_RDONLY, 0).unwrap();
+        let mut buf1 = [0u8; 4];
+        let mut buf2 = [0u8; 4];
+        let mut iovecs: [&mut [u8]; 2] = [&mut buf1, &mut buf2];
+        // TrackingHostIO reads return 0 (EOF), so total should be 0
+        let result = sys_preadv(&mut proc, &mut host, fd, &mut iovecs, 0);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_preadv_rejects_pipe() {
+        let mut proc = Process::new(1);
+        let mut host = TrackingHostIO::new();
+        let (read_fd, _write_fd) = sys_pipe(&mut proc).unwrap();
+        let mut buf = [0u8; 4];
+        let mut iovecs: [&mut [u8]; 1] = [&mut buf];
+        let result = sys_preadv(&mut proc, &mut host, read_fd, &mut iovecs, 0);
+        assert_eq!(result, Err(Errno::ESPIPE));
+    }
+
+    #[test]
+    fn test_pwritev_rejects_pipe() {
+        let mut proc = Process::new(1);
+        let mut host = TrackingHostIO::new();
+        let (_read_fd, write_fd) = sys_pipe(&mut proc).unwrap();
+        let iovecs: [&[u8]; 1] = [b"hello"];
+        let result = sys_pwritev(&mut proc, &mut host, write_fd, &iovecs, 0);
+        assert_eq!(result, Err(Errno::ESPIPE));
+    }
+
+    // ===== sendfile tests =====
+
+    #[test]
+    fn test_sendfile_copies_data() {
+        let mut proc = Process::new(1);
+        let mut host = TrackingHostIO::new();
+        let in_fd = sys_open(&mut proc, &mut host, b"/test/in", O_RDONLY, 0).unwrap();
+        let out_fd = sys_open(&mut proc, &mut host, b"/test/out", O_WRONLY, 0).unwrap();
+        // TrackingHostIO reads 5 bytes ("hello") per call, count=10 → copies 10 bytes
+        let result = sys_sendfile(&mut proc, &mut host, out_fd, in_fd, 0, 10);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 10);
+    }
+
+    // ===== statx tests =====
+
+    #[test]
+    fn test_statx_delegates_to_fstatat() {
+        let mut proc = Process::new(1);
+        let mut host = TrackingHostIO::new();
+        let result = sys_statx(&mut proc, &mut host, -100, b"/test/file", 0, 0);
+        assert!(result.is_ok());
+        assert_eq!(host.last_stat_path, b"/test/file");
     }
 }

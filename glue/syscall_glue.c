@@ -163,17 +163,151 @@
 #define SYS_RECVMSG       138
 #define SYS_WAIT4         139
 #define SYS_GETADDRINFO   140
-#define SYS_PRCTL         223
+/* Batch 4+ syscalls (200+ range) */
 #define SYS_FUTEX         200
+#define SYS_CLONE         201
 #define SYS_GETTID        202
 #define SYS_SET_TID_ADDRESS 203
+#define SYS_RT_SIGQUEUEINFO 205
+#define SYS_RT_SIGTIMEDWAIT 207
+#define SYS_RT_SIGRETURN  208
+#define SYS_EXECVE        211
+#define SYS_FORK          212
+#define SYS_VFORK         213
+#define SYS_PRCTL         223
+#define SYS_GETITIMER     224
+#define SYS_SETITIMER     225
+#define SYS_CLOCK_SETTIME 226
+#define SYS_SCHED_GETPARAM 230
+#define SYS_SCHED_SETPARAM 231
+#define SYS_SCHED_GETSCHEDULER 232
+#define SYS_SCHED_SETSCHEDULER 233
+#define SYS_SCHED_GET_PRIORITY_MAX 234
+#define SYS_SCHED_GET_PRIORITY_MIN 235
+#define SYS_SCHED_RR_GET_INTERVAL 236
+#define SYS_SCHED_SETAFFINITY 237
+#define SYS_SCHED_GETAFFINITY 238
 #define SYS_EPOLL_CREATE1 239
 #define SYS_EPOLL_CTL     240
 #define SYS_EPOLL_PWAIT   241
+#define SYS_EVENTFD2      242
+#define SYS_TIMERFD_CREATE 243
+#define SYS_TIMERFD_SETTIME 244
+#define SYS_TIMERFD_GETTIME 245
+#define SYS_SIGNALFD4     246
+#define SYS_INOTIFY_INIT1 247
+#define SYS_INOTIFY_ADD_WATCH 248
+#define SYS_INOTIFY_RM_WATCH 249
 #define SYS_PRLIMIT64     250
 #define SYS_PPOLL         251
 #define SYS_PSELECT6      252
+#define SYS_RECVMMSG      253
+#define SYS_SENDMMSG      254
+#define SYS_MEMFD_CREATE  256
+#define SYS_MEMBARRIER    257
+#define SYS_STATX         260
 #define SYS_SET_ROBUST_LIST 261
+#define SYS_GET_ROBUST_LIST 262
+#define SYS_CHROOT        265
+#define SYS_MOUNT         266
+#define SYS_UMOUNT2       267
+#define SYS_REBOOT        268
+#define SYS_MKNOD         271
+#define SYS_MKNODAT       272
+#define SYS_SYNC          273
+#define SYS_SYNCFS        274
+#define SYS_PERSONALITY   287
+#define SYS_UNSHARE       289
+#define SYS_COPY_FILE_RANGE 290
+#define SYS_SPLICE        291
+#define SYS_TEE           292
+#define SYS_READAHEAD     293
+#define SYS_SENDFILE      294
+#define SYS_PREADV        295
+#define SYS_PWRITEV       296
+#define SYS_PREADV2       297
+#define SYS_PWRITEV2      298
+#define SYS_ACCT          301
+#define SYS_CAPGET        302
+#define SYS_CAPSET        303
+#define SYS_SYSLOG        304
+#define SYS_PTRACE        305
+#define SYS_RENAMEAT2     306
+#define SYS_FALLOCATE     308
+#define SYS_NAME_TO_HANDLE_AT 309
+#define SYS_OPEN_BY_HANDLE_AT 310
+#define SYS_SETNS         311
+#define SYS_PROCESS_VM_READV 312
+#define SYS_PROCESS_VM_WRITEV 313
+#define SYS_PIVOT_ROOT    314
+#define SYS_SWAPON        315
+#define SYS_SWAPOFF       316
+#define SYS_DELETE_MODULE  317
+#define SYS_INIT_MODULE   318
+#define SYS_QUOTACTL      319
+#define SYS_SETHOSTNAME   320
+#define SYS_SETDOMAINNAME 321
+#define SYS_VHANGUP       322
+#define SYS_SYNC_FILE_RANGE 323
+#define SYS_REMAP_FILE_PAGES 324
+#define SYS_GETCPU        325
+#define SYS_TIMER_CREATE  326
+#define SYS_TIMER_SETTIME 327
+#define SYS_TIMER_GETTIME 328
+#define SYS_TIMER_GETOVERRUN 329
+#define SYS_TIMER_DELETE  330
+#define SYS_MQ_OPEN       331
+#define SYS_MQ_UNLINK     332
+#define SYS_MQ_TIMEDSEND  333
+#define SYS_MQ_TIMEDRECEIVE 334
+#define SYS_MQ_NOTIFY     335
+#define SYS_MQ_GETSETATTR 336
+#define SYS_MSGGET        337
+#define SYS_MSGRCV        338
+#define SYS_MSGSND        339
+#define SYS_MSGCTL        340
+#define SYS_SEMGET        341
+#define SYS_SEMOP         342
+#define SYS_SEMCTL        343
+#define SYS_SHMGET        344
+#define SYS_SHMAT         345
+#define SYS_SHMDT         346
+#define SYS_SHMCTL        347
+#define SYS_FANOTIFY_INIT 348
+#define SYS_FANOTIFY_MARK 349
+#define SYS_FGETXATTR     350
+#define SYS_FLISTXATTR    351
+#define SYS_FREMOVEXATTR  352
+#define SYS_FSETXATTR     353
+#define SYS_GETXATTR      354
+#define SYS_LISTXATTR     355
+#define SYS_LGETXATTR     356
+#define SYS_LLISTXATTR    357
+#define SYS_LREMOVEXATTR  358
+#define SYS_LSETXATTR     359
+#define SYS_REMOVEXATTR   360
+#define SYS_SETXATTR      361
+#define SYS_UTIMES        363
+#define SYS_FUTIMESAT     364
+#define SYS_CLOCK_ADJTIME 365
+#define SYS_ADJTIMEX      366
+#define SYS_SETTIMEOFDAY  367
+#define SYS_SEMTIMEDOP    368
+#define SYS_VMSPLICE      369
+#define SYS_SETFSUID      370
+#define SYS_SETFSGID      371
+#define SYS_IPC           373
+#define SYS_SET_THREAD_AREA 374
+#define SYS_IOPERM        375
+#define SYS_IOPL          376
+#define SYS_SIGNALFD      377
+#define SYS_EPOLL_CREATE  378
+#define SYS_EPOLL_WAIT    379
+#define SYS_EVENTFD       380
+#define SYS_INOTIFY_INIT  381
+#define SYS_FACCESSAT2    382
+#define SYS_FCHMODAT2     383
+#define SYS_EXECVEAT      386
 
 /* ENOSYS — returned for unknown syscall numbers */
 #define ENOSYS_NEG (-38)
@@ -1334,6 +1468,452 @@ static long __do_syscall(long n, long a1, long a2, long a3,
         return (long)kernel_pselect6(nfds, readfds_ptr, writefds_ptr,
                                      exceptfds_ptr, timeout_ms, mask_lo, mask_hi);
     }
+
+    /* ============================================================== */
+    /* setitimer / getitimer — interval timers (fixes musl alarm())   */
+    /* ============================================================== */
+
+    case SYS_SETITIMER:
+        return (long)kernel_setitimer((uint32_t)a1,
+                                      (const uint8_t *)(uintptr_t)a2,
+                                      (uint8_t *)(uintptr_t)a3);
+
+    case SYS_GETITIMER:
+        return (long)kernel_getitimer((uint32_t)a1,
+                                      (uint8_t *)(uintptr_t)a2);
+
+    /* ============================================================== */
+    /* rt_sigtimedwait — wait for signal from set                      */
+    /* ============================================================== */
+
+    case SYS_RT_SIGTIMEDWAIT: {
+        const uint32_t *set = (const uint32_t *)(uintptr_t)a1;
+        uint32_t mask_lo = set ? set[0] : 0;
+        uint32_t mask_hi = set ? set[1] : 0;
+        const int32_t *ts = (const int32_t *)(uintptr_t)a2;
+        int32_t timeout_ms;
+        if (!ts) {
+            timeout_ms = -1;
+        } else {
+            int32_t sec = ts[0];
+            int32_t nsec = ts[1];
+            timeout_ms = sec * 1000 + nsec / 1000000;
+            if (timeout_ms == 0 && (sec > 0 || nsec > 0))
+                timeout_ms = 1;
+        }
+        return (long)kernel_rt_sigtimedwait(mask_lo, mask_hi, timeout_ms);
+    }
+
+    /* rt_sigqueueinfo — send signal with data (simplified: just raise) */
+    case SYS_RT_SIGQUEUEINFO:
+        return (long)kernel_raise((uint32_t)a2);
+
+    /* rt_sigreturn — signal trampoline return (handled by host) */
+    case SYS_RT_SIGRETURN:
+        return 0;
+
+    /* ============================================================== */
+    /* Scatter-gather I/O with offset                                  */
+    /* ============================================================== */
+
+    /* preadv — (fd, iov, iovcnt, off_lo, off_hi) */
+    case SYS_PREADV:
+        return (long)kernel_preadv((int32_t)a1,
+                                   (uint8_t *)(uintptr_t)a2,
+                                   (int32_t)a3,
+                                   (uint32_t)a4, (int32_t)a5);
+
+    /* pwritev — (fd, iov, iovcnt, off_lo, off_hi) */
+    case SYS_PWRITEV:
+        return (long)kernel_pwritev((int32_t)a1,
+                                    (const uint8_t *)(uintptr_t)a2,
+                                    (int32_t)a3,
+                                    (uint32_t)a4, (int32_t)a5);
+
+    /* preadv2/pwritev2 — delegate to preadv/pwritev (ignore flags in a6) */
+    case SYS_PREADV2:
+        return (long)kernel_preadv((int32_t)a1,
+                                   (uint8_t *)(uintptr_t)a2,
+                                   (int32_t)a3,
+                                   (uint32_t)a4, (int32_t)a5);
+
+    case SYS_PWRITEV2:
+        return (long)kernel_pwritev((int32_t)a1,
+                                    (const uint8_t *)(uintptr_t)a2,
+                                    (int32_t)a3,
+                                    (uint32_t)a4, (int32_t)a5);
+
+    /* sendfile — (out_fd, in_fd, offset_ptr, count) */
+    case SYS_SENDFILE:
+        return (long)kernel_sendfile((int32_t)a1, (int32_t)a2,
+                                     (uint8_t *)(uintptr_t)a3,
+                                     (uint32_t)a4);
+
+    /* ============================================================== */
+    /* statx — extended stat                                           */
+    /* ============================================================== */
+
+    case SYS_STATX: {
+        const char *p = (const char *)(uintptr_t)a2;
+        return (long)kernel_statx((int32_t)a1, (const uint8_t *)p,
+                                   slen(p), (uint32_t)a3, (uint32_t)a4,
+                                   (uint8_t *)(uintptr_t)a5);
+    }
+
+    /* ============================================================== */
+    /* Scheduler stubs — single-threaded Wasm defaults                 */
+    /* ============================================================== */
+
+    case SYS_SCHED_GETPARAM: {
+        /* Write sched_priority=0 to param buf (4 bytes) */
+        uint32_t *param = (uint32_t *)(uintptr_t)a2;
+        if (param) *param = 0;
+        return 0;
+    }
+
+    case SYS_SCHED_SETPARAM:
+        return 0; /* no-op */
+
+    case SYS_SCHED_GETSCHEDULER:
+        return 0; /* SCHED_OTHER */
+
+    case SYS_SCHED_SETSCHEDULER:
+        return 0; /* no-op */
+
+    case SYS_SCHED_GET_PRIORITY_MAX:
+        return 0;
+
+    case SYS_SCHED_GET_PRIORITY_MIN:
+        return 0;
+
+    case SYS_SCHED_RR_GET_INTERVAL: {
+        /* Write 10ms timespec to buf: {0 sec, 10000000 nsec} */
+        int32_t *ts = (int32_t *)(uintptr_t)a2;
+        if (ts) {
+            ts[0] = 0;        /* tv_sec */
+            ts[1] = 10000000; /* tv_nsec = 10ms */
+        }
+        return 0;
+    }
+
+    case SYS_SCHED_SETAFFINITY:
+        return 0; /* no-op */
+
+    case SYS_SCHED_GETAFFINITY: {
+        /* Set bit 0 in cpuset (1 CPU), return sizeof(cpuset) */
+        uint32_t size = (uint32_t)a2;
+        uint8_t *mask = (uint8_t *)(uintptr_t)a3;
+        if (mask && size > 0) {
+            for (uint32_t i = 0; i < size; i++) mask[i] = 0;
+            mask[0] = 1; /* CPU 0 */
+        }
+        return (long)(size > 0 ? size : 8);
+    }
+
+    /* ============================================================== */
+    /* Filesystem stubs                                                */
+    /* ============================================================== */
+
+    case SYS_SYNC:
+    case SYS_SYNCFS:
+        return 0; /* no-op */
+
+    case SYS_CHROOT:
+    case SYS_MOUNT:
+    case SYS_UMOUNT2:
+    case SYS_PIVOT_ROOT:
+    case SYS_MKNOD:
+    case SYS_MKNODAT:
+        return -1; /* -EPERM */
+
+    case SYS_QUOTACTL:
+        return ENOSYS_NEG;
+
+    /* renameat2 — delegate to renameat (ignore flags in a5) */
+    case SYS_RENAMEAT2: {
+        const char *oldp = (const char *)(uintptr_t)a2;
+        const char *newp = (const char *)(uintptr_t)a4;
+        return (long)kernel_renameat((int32_t)a1,
+                                     (const uint8_t *)oldp, slen(oldp),
+                                     (int32_t)a3,
+                                     (const uint8_t *)newp, slen(newp));
+    }
+
+    /* faccessat2 — delegate to faccessat (ignore extra flags) */
+    case SYS_FACCESSAT2: {
+        const char *p = (const char *)(uintptr_t)a2;
+        return (long)kernel_faccessat((int32_t)a1, (const uint8_t *)p,
+                                      slen(p), (uint32_t)a3, (uint32_t)a4);
+    }
+
+    /* fchmodat2 — delegate to fchmodat (ignore extra flags) */
+    case SYS_FCHMODAT2: {
+        const char *p = (const char *)(uintptr_t)a2;
+        return (long)kernel_fchmodat((int32_t)a1, (const uint8_t *)p,
+                                     slen(p), (uint32_t)a3, (uint32_t)a4);
+    }
+
+    case SYS_FALLOCATE:
+        return 0; /* no-op */
+
+    case SYS_COPY_FILE_RANGE:
+        return ENOSYS_NEG; /* programs fall back to read+write */
+
+    /* getdents (legacy) — delegate to getdents64 */
+    case 141: /* SYS_GETDENTS legacy */
+        return (long)kernel_getdents64((int32_t)a1,
+                                       (uint8_t *)(uintptr_t)a2,
+                                       (uint32_t)a3);
+
+    /* ============================================================== */
+    /* Time stubs                                                      */
+    /* ============================================================== */
+
+    case SYS_CLOCK_SETTIME:
+    case SYS_SETTIMEOFDAY:
+    case SYS_ADJTIMEX:
+    case SYS_CLOCK_ADJTIME:
+        return -1; /* -EPERM */
+
+    /* utimes — convert timeval to timespec, delegate to utimensat */
+    case SYS_UTIMES: {
+        const char *p = (const char *)(uintptr_t)a1;
+        const int32_t *tv = (const int32_t *)(uintptr_t)a2;
+        if (!tv) {
+            /* NULL times = set to current time */
+            return (long)kernel_utimensat(-100, (const uint8_t *)p,
+                                          slen(p), (const uint8_t *)0, 0);
+        }
+        /* Convert 2x timeval {sec,usec} to timespec format for utimensat.
+         * musl timeval on wasm32: {long tv_sec, long tv_usec} = 8 bytes each */
+        uint8_t ts_buf[32]; /* 2x timespec: {i64 sec, i64 nsec} */
+        int64_t atime_sec = (int64_t)tv[0];
+        int64_t atime_nsec = (int64_t)tv[1] * 1000;
+        int64_t mtime_sec = (int64_t)tv[2];
+        int64_t mtime_nsec = (int64_t)tv[3] * 1000;
+        __builtin_memcpy(ts_buf + 0, &atime_sec, 8);
+        __builtin_memcpy(ts_buf + 8, &atime_nsec, 8);
+        __builtin_memcpy(ts_buf + 16, &mtime_sec, 8);
+        __builtin_memcpy(ts_buf + 24, &mtime_nsec, 8);
+        return (long)kernel_utimensat(-100, (const uint8_t *)p,
+                                      slen(p), ts_buf, 0);
+    }
+
+    /* futimesat — like utimes but relative to dirfd */
+    case SYS_FUTIMESAT: {
+        const char *p = (const char *)(uintptr_t)a2;
+        const int32_t *tv = (const int32_t *)(uintptr_t)a3;
+        if (!tv) {
+            return (long)kernel_utimensat((int32_t)a1, (const uint8_t *)p,
+                                          slen(p), (const uint8_t *)0, 0);
+        }
+        uint8_t ts_buf[32];
+        int64_t atime_sec = (int64_t)tv[0];
+        int64_t atime_nsec = (int64_t)tv[1] * 1000;
+        int64_t mtime_sec = (int64_t)tv[2];
+        int64_t mtime_nsec = (int64_t)tv[3] * 1000;
+        __builtin_memcpy(ts_buf + 0, &atime_sec, 8);
+        __builtin_memcpy(ts_buf + 8, &atime_nsec, 8);
+        __builtin_memcpy(ts_buf + 16, &mtime_sec, 8);
+        __builtin_memcpy(ts_buf + 24, &mtime_nsec, 8);
+        return (long)kernel_utimensat((int32_t)a1, (const uint8_t *)p,
+                                      slen(p), ts_buf, 0);
+    }
+
+    /* ============================================================== */
+    /* Process stubs                                                   */
+    /* ============================================================== */
+
+    case SYS_FORK:
+    case SYS_VFORK:
+    case SYS_CLONE:
+        return ENOSYS_NEG; /* host-initiated only */
+
+    /* execve — delegate to kernel */
+    case SYS_EXECVE: {
+        const char *p = (const char *)(uintptr_t)a1;
+        return (long)kernel_execve((const uint8_t *)p, slen(p));
+    }
+
+    /* execveat — extract path, delegate to kernel_execve */
+    case SYS_EXECVEAT: {
+        const char *p = (const char *)(uintptr_t)a2;
+        return (long)kernel_execve((const uint8_t *)p, slen(p));
+    }
+
+    /* ============================================================== */
+    /* Event/notification stubs                                        */
+    /* ============================================================== */
+
+    case SYS_EVENTFD2:
+    case SYS_EVENTFD:
+        return ENOSYS_NEG;
+
+    case SYS_SIGNALFD4:
+    case SYS_SIGNALFD:
+        return ENOSYS_NEG;
+
+    case SYS_TIMERFD_CREATE:
+        return ENOSYS_NEG;
+    case SYS_TIMERFD_SETTIME:
+    case SYS_TIMERFD_GETTIME:
+        return -22; /* -EINVAL */
+
+    case SYS_INOTIFY_INIT1:
+    case SYS_INOTIFY_INIT:
+        return ENOSYS_NEG;
+    case SYS_INOTIFY_ADD_WATCH:
+    case SYS_INOTIFY_RM_WATCH:
+        return -9; /* -EBADF */
+
+    /* Legacy epoll aliases */
+    case SYS_EPOLL_CREATE:
+    case SYS_EPOLL_WAIT:
+        return ENOSYS_NEG;
+
+    /* ============================================================== */
+    /* IPC stubs (SysV + POSIX MQ) — all return ENOSYS                */
+    /* ============================================================== */
+
+    case SYS_MSGGET:
+    case SYS_MSGSND:
+    case SYS_MSGRCV:
+    case SYS_MSGCTL:
+    case SYS_SEMGET:
+    case SYS_SEMOP:
+    case SYS_SEMCTL:
+    case SYS_SEMTIMEDOP:
+    case SYS_SHMGET:
+    case SYS_SHMAT:
+    case SYS_SHMDT:
+    case SYS_SHMCTL:
+    case SYS_MQ_OPEN:
+    case SYS_MQ_UNLINK:
+    case SYS_MQ_TIMEDSEND:
+    case SYS_MQ_TIMEDRECEIVE:
+    case SYS_MQ_NOTIFY:
+    case SYS_MQ_GETSETATTR:
+    case SYS_IPC:
+        return ENOSYS_NEG;
+
+    /* ============================================================== */
+    /* Extended attributes stubs — all return ENOSYS                   */
+    /* ============================================================== */
+
+    case SYS_FGETXATTR:
+    case SYS_FLISTXATTR:
+    case SYS_FREMOVEXATTR:
+    case SYS_FSETXATTR:
+    case SYS_GETXATTR:
+    case SYS_LISTXATTR:
+    case SYS_LGETXATTR:
+    case SYS_LLISTXATTR:
+    case SYS_LREMOVEXATTR:
+    case SYS_LSETXATTR:
+    case SYS_REMOVEXATTR:
+    case SYS_SETXATTR:
+        return ENOSYS_NEG;
+
+    /* ============================================================== */
+    /* POSIX timers — all return ENOSYS                                */
+    /* ============================================================== */
+
+    case SYS_TIMER_CREATE:
+    case SYS_TIMER_SETTIME:
+    case SYS_TIMER_GETTIME:
+    case SYS_TIMER_GETOVERRUN:
+    case SYS_TIMER_DELETE:
+        return ENOSYS_NEG;
+
+    /* ============================================================== */
+    /* fanotify — return ENOSYS                                        */
+    /* ============================================================== */
+
+    case SYS_FANOTIFY_INIT:
+    case SYS_FANOTIFY_MARK:
+        return ENOSYS_NEG;
+
+    /* ============================================================== */
+    /* Remaining stubs                                                 */
+    /* ============================================================== */
+
+    case SYS_MEMFD_CREATE:
+        return ENOSYS_NEG;
+
+    case SYS_MEMBARRIER:
+        return 0; /* no-op, single-threaded */
+
+    case SYS_GETCPU: {
+        uint32_t *cpu_ptr = (uint32_t *)(uintptr_t)a1;
+        uint32_t *node_ptr = (uint32_t *)(uintptr_t)a2;
+        if (cpu_ptr) *cpu_ptr = 0;
+        if (node_ptr) *node_ptr = 0;
+        return 0;
+    }
+
+    case SYS_GET_ROBUST_LIST:
+        return ENOSYS_NEG;
+
+    case SYS_SENDMMSG:
+    case SYS_RECVMMSG:
+        return ENOSYS_NEG;
+
+    case SYS_SPLICE:
+    case SYS_TEE:
+    case SYS_VMSPLICE:
+        return ENOSYS_NEG;
+
+    case SYS_READAHEAD:
+        return 0; /* no-op advisory */
+
+    case SYS_SYNC_FILE_RANGE:
+        return 0; /* no-op */
+
+    case SYS_REMAP_FILE_PAGES:
+        return ENOSYS_NEG;
+
+    case SYS_PERSONALITY:
+        return 0; /* PER_LINUX */
+
+    case SYS_UNSHARE:
+    case SYS_SETNS:
+        return -1; /* -EPERM */
+
+    case SYS_NAME_TO_HANDLE_AT:
+    case SYS_OPEN_BY_HANDLE_AT:
+        return ENOSYS_NEG;
+
+    case SYS_PROCESS_VM_READV:
+    case SYS_PROCESS_VM_WRITEV:
+        return ENOSYS_NEG;
+
+    case SYS_REBOOT:
+    case SYS_SWAPON:
+    case SYS_SWAPOFF:
+        return -1; /* -EPERM */
+
+    case SYS_ACCT:
+    case SYS_PTRACE:
+        return ENOSYS_NEG;
+
+    case SYS_SYSLOG:
+    case SYS_CAPGET:
+    case SYS_CAPSET:
+    case SYS_VHANGUP:
+    case SYS_SETHOSTNAME:
+    case SYS_SETDOMAINNAME:
+    case SYS_INIT_MODULE:
+    case SYS_DELETE_MODULE:
+    case SYS_IOPERM:
+    case SYS_IOPL:
+        return -1; /* -EPERM */
+
+    case SYS_SETFSUID:
+    case SYS_SETFSGID:
+        return 0; /* no-op, return current uid/gid */
+
+    case SYS_SET_THREAD_AREA:
+        return ENOSYS_NEG;
 
     /* ============================================================== */
     /* Default: unknown syscall                                        */

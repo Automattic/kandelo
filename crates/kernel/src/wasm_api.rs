@@ -2674,6 +2674,209 @@ pub extern "C" fn kernel_readv(fd: i32, iov_ptr: *mut u8, iovcnt: i32) -> i32 {
     result
 }
 
+/// preadv -- scatter-gather read at offset.
+/// iov_ptr points to iovec array (8 bytes each: base u32, len u32).
+/// offset is split into (lo, hi) u32 pair.
+/// Returns total bytes read or negative errno.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_preadv(fd: i32, iov_ptr: *mut u8, iovcnt: i32, offset_lo: u32, offset_hi: i32) -> i32 {
+    let proc = unsafe { get_process() };
+    let mut host = WasmHostIO;
+    let offset = ((offset_hi as i64) << 32) | (offset_lo as u64 as i64);
+
+    let result = 'done: {
+        if iovcnt <= 0 || iovcnt > 1024 {
+            break 'done -(Errno::EINVAL as i32);
+        }
+
+        let mut total: usize = 0;
+        let mut cur_offset = offset;
+        for i in 0..iovcnt as usize {
+            let iov = unsafe { iov_ptr.add(i * 8) };
+            let base = unsafe {
+                u32::from_le_bytes([*iov, *iov.add(1), *iov.add(2), *iov.add(3)])
+            };
+            let len = unsafe {
+                u32::from_le_bytes([*iov.add(4), *iov.add(5), *iov.add(6), *iov.add(7)])
+            };
+
+            if len == 0 {
+                continue;
+            }
+            let buf = unsafe { slice::from_raw_parts_mut(base as *mut u8, len as usize) };
+            match syscalls::sys_pread(proc, &mut host, fd, buf, cur_offset) {
+                Ok(n) => {
+                    total += n;
+                    cur_offset += n as i64;
+                    if n < len as usize || n == 0 {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    if total > 0 {
+                        break 'done total as i32;
+                    }
+                    break 'done -(e as i32);
+                }
+            }
+        }
+        total as i32
+    };
+    deliver_pending_signals(proc, &mut host);
+    result
+}
+
+/// pwritev -- scatter-gather write at offset.
+/// iov_ptr points to iovec array (8 bytes each: base u32, len u32).
+/// offset is split into (lo, hi) u32 pair.
+/// Returns total bytes written or negative errno.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_pwritev(fd: i32, iov_ptr: *const u8, iovcnt: i32, offset_lo: u32, offset_hi: i32) -> i32 {
+    let proc = unsafe { get_process() };
+    let mut host = WasmHostIO;
+    let offset = ((offset_hi as i64) << 32) | (offset_lo as u64 as i64);
+
+    let result = 'done: {
+        if iovcnt <= 0 || iovcnt > 1024 {
+            break 'done -(Errno::EINVAL as i32);
+        }
+
+        let mut total: usize = 0;
+        let mut cur_offset = offset;
+        for i in 0..iovcnt as usize {
+            let iov = unsafe { iov_ptr.add(i * 8) };
+            let base = unsafe {
+                u32::from_le_bytes([*iov, *iov.add(1), *iov.add(2), *iov.add(3)])
+            };
+            let len = unsafe {
+                u32::from_le_bytes([*iov.add(4), *iov.add(5), *iov.add(6), *iov.add(7)])
+            };
+
+            if len == 0 {
+                continue;
+            }
+            let buf = unsafe { slice::from_raw_parts(base as *const u8, len as usize) };
+            match syscalls::sys_pwrite(proc, &mut host, fd, buf, cur_offset) {
+                Ok(n) => {
+                    total += n;
+                    cur_offset += n as i64;
+                    if n < len as usize {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    if total > 0 {
+                        break 'done total as i32;
+                    }
+                    break 'done -(e as i32);
+                }
+            }
+        }
+        total as i32
+    };
+    deliver_pending_signals(proc, &mut host);
+    result
+}
+
+/// sendfile -- copy data between file descriptors.
+/// offset_ptr points to an i64 offset (or is null to use current position).
+/// Returns total bytes copied or negative errno.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_sendfile(out_fd: i32, in_fd: i32, offset_ptr: *mut u8, count: u32) -> i32 {
+    let proc = unsafe { get_process() };
+    let mut host = WasmHostIO;
+
+    let offset = if offset_ptr.is_null() {
+        -1i64
+    } else {
+        let bytes = unsafe { slice::from_raw_parts(offset_ptr, 8) };
+        i64::from_le_bytes(bytes.try_into().unwrap())
+    };
+
+    let result = match syscalls::sys_sendfile(proc, &mut host, out_fd, in_fd, offset, count as usize) {
+        Ok(n) => {
+            // Update offset_ptr if provided
+            if !offset_ptr.is_null() && offset >= 0 {
+                let new_offset = offset + n as i64;
+                let buf = unsafe { slice::from_raw_parts_mut(offset_ptr, 8) };
+                buf.copy_from_slice(&new_offset.to_le_bytes());
+            }
+            n as i32
+        }
+        Err(e) => -(e as i32),
+    };
+    deliver_pending_signals(proc, &mut host);
+    result
+}
+
+/// statx -- extended file stat.
+/// Delegates to fstatat and fills the statx buffer from WasmStat.
+/// statx struct layout: we write a simplified version compatible with musl expectations.
+/// Returns 0 on success, negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_statx(
+    dirfd: i32,
+    path_ptr: *const u8,
+    path_len: u32,
+    flags: u32,
+    mask: u32,
+    statx_ptr: *mut u8,
+) -> i32 {
+    let proc = unsafe { get_process() };
+    let mut host = WasmHostIO;
+    let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
+
+    let result = match syscalls::sys_statx(proc, &mut host, dirfd, path, flags, mask) {
+        Ok(st) => {
+            // Fill statx struct (256 bytes)
+            // We fill the key fields that musl expects
+            let buf = unsafe { slice::from_raw_parts_mut(statx_ptr, 256) };
+            // Zero out first
+            for b in buf.iter_mut() {
+                *b = 0;
+            }
+            // stx_mask (u32 @ 0): STATX_BASIC_STATS = 0x07ff
+            buf[0..4].copy_from_slice(&0x07ffu32.to_le_bytes());
+            // stx_blksize (u32 @ 4): default 4096
+            buf[4..8].copy_from_slice(&4096u32.to_le_bytes());
+            // stx_attributes (u64 @ 8): 0
+            // stx_nlink (u32 @ 16)
+            buf[16..20].copy_from_slice(&st.st_nlink.to_le_bytes());
+            // stx_uid (u32 @ 20)
+            buf[20..24].copy_from_slice(&st.st_uid.to_le_bytes());
+            // stx_gid (u32 @ 24)
+            buf[24..28].copy_from_slice(&st.st_gid.to_le_bytes());
+            // stx_mode (u16 @ 28)
+            buf[28..30].copy_from_slice(&(st.st_mode as u16).to_le_bytes());
+            // stx_ino (u64 @ 32)
+            buf[32..40].copy_from_slice(&st.st_ino.to_le_bytes());
+            // stx_size (u64 @ 40)
+            buf[40..48].copy_from_slice(&st.st_size.to_le_bytes());
+            // stx_blocks (u64 @ 48): size / 512
+            let blocks = (st.st_size + 511) / 512;
+            buf[48..56].copy_from_slice(&blocks.to_le_bytes());
+            // stx_attributes_mask (u64 @ 56): 0
+            // stx_atime (statx_timestamp @ 64): tv_sec(i64) + tv_nsec(u32) + pad(i32) = 16 bytes
+            buf[64..72].copy_from_slice(&st.st_atime_sec.to_le_bytes());
+            buf[72..76].copy_from_slice(&st.st_atime_nsec.to_le_bytes());
+            // stx_btime (@ 80): 0 (birth time not tracked)
+            // stx_ctime (@ 96)
+            buf[96..104].copy_from_slice(&st.st_ctime_sec.to_le_bytes());
+            buf[104..108].copy_from_slice(&st.st_ctime_nsec.to_le_bytes());
+            // stx_mtime (@ 112)
+            buf[112..120].copy_from_slice(&st.st_mtime_sec.to_le_bytes());
+            buf[120..124].copy_from_slice(&st.st_mtime_nsec.to_le_bytes());
+            // stx_rdev_major (u32 @ 128), stx_rdev_minor (u32 @ 132)
+            // stx_dev_major (u32 @ 136), stx_dev_minor (u32 @ 140)
+            buf[136..140].copy_from_slice(&(st.st_dev as u32).to_le_bytes());
+            0
+        }
+        Err(e) => -(e as i32),
+    };
+    deliver_pending_signals(proc, &mut host);
+    result
+}
+
 /// Get resource limits. Writes soft and hard limits as two u64 LE values (16 bytes) to rlim_ptr.
 /// Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
@@ -2979,6 +3182,77 @@ pub extern "C" fn kernel_alarm(seconds: u32) -> i32 {
 }
 
 // ---------------------------------------------------------------------------
+// setitimer / getitimer
+// ---------------------------------------------------------------------------
+
+/// setitimer -- set interval timer.
+/// new_ptr points to struct itimerval (32 bytes):
+///   { struct timeval it_interval (16 bytes), struct timeval it_value (16 bytes) }
+///   where struct timeval = { i64 tv_sec, i64 tv_usec } (wasm32 layout)
+/// old_ptr receives the previous itimerval (may be null).
+/// Returns 0 on success, negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_setitimer(which: u32, new_ptr: *const u8, old_ptr: *mut u8) -> i32 {
+    let proc = unsafe { get_process() };
+    let mut host = WasmHostIO;
+
+    // Parse new itimerval from memory
+    let (interval_sec, interval_usec, value_sec, value_usec) = if new_ptr.is_null() {
+        (0i64, 0i64, 0i64, 0i64)
+    } else {
+        let new_bytes = unsafe { slice::from_raw_parts(new_ptr, 32) };
+        let interval_sec = i64::from_le_bytes(new_bytes[0..8].try_into().unwrap());
+        let interval_usec = i64::from_le_bytes(new_bytes[8..16].try_into().unwrap());
+        let value_sec = i64::from_le_bytes(new_bytes[16..24].try_into().unwrap());
+        let value_usec = i64::from_le_bytes(new_bytes[24..32].try_into().unwrap());
+        (interval_sec, interval_usec, value_sec, value_usec)
+    };
+
+    let result = match syscalls::sys_setitimer(
+        proc, &mut host, which,
+        interval_sec, interval_usec, value_sec, value_usec,
+    ) {
+        Ok((old_isec, old_iusec, old_vsec, old_vusec)) => {
+            if !old_ptr.is_null() {
+                let old_bytes = unsafe { slice::from_raw_parts_mut(old_ptr, 32) };
+                old_bytes[0..8].copy_from_slice(&old_isec.to_le_bytes());
+                old_bytes[8..16].copy_from_slice(&old_iusec.to_le_bytes());
+                old_bytes[16..24].copy_from_slice(&old_vsec.to_le_bytes());
+                old_bytes[24..32].copy_from_slice(&old_vusec.to_le_bytes());
+            }
+            0
+        }
+        Err(e) => -(e as i32),
+    };
+    deliver_pending_signals(proc, &mut host);
+    result
+}
+
+/// getitimer -- get current value of interval timer.
+/// curr_ptr receives the current itimerval (32 bytes).
+/// Returns 0 on success, negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_getitimer(which: u32, curr_ptr: *mut u8) -> i32 {
+    let proc = unsafe { get_process() };
+    let mut host = WasmHostIO;
+    let result = match syscalls::sys_getitimer(proc, &mut host, which) {
+        Ok((isec, iusec, vsec, vusec)) => {
+            if !curr_ptr.is_null() {
+                let buf = unsafe { slice::from_raw_parts_mut(curr_ptr, 32) };
+                buf[0..8].copy_from_slice(&isec.to_le_bytes());
+                buf[8..16].copy_from_slice(&iusec.to_le_bytes());
+                buf[16..24].copy_from_slice(&vsec.to_le_bytes());
+                buf[24..32].copy_from_slice(&vusec.to_le_bytes());
+            }
+            0
+        }
+        Err(e) => -(e as i32),
+    };
+    deliver_pending_signals(proc, &mut host);
+    result
+}
+
+// ---------------------------------------------------------------------------
 // sigsuspend
 // ---------------------------------------------------------------------------
 
@@ -3006,6 +3280,22 @@ pub extern "C" fn kernel_pause() -> i32 {
     let mut host = WasmHostIO;
     let result = match syscalls::sys_pause(proc, &mut host) {
         Ok(()) => 0,
+        Err(e) => -(e as i32),
+    };
+    deliver_pending_signals(proc, &mut host);
+    result
+}
+
+/// rt_sigtimedwait -- wait for a signal from a specified set.
+/// mask is passed as (lo, hi) u32 halves. timeout_ms is in milliseconds (-1 for infinite).
+/// Returns signal number on success, negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rt_sigtimedwait(mask_lo: u32, mask_hi: u32, timeout_ms: i32) -> i32 {
+    let proc = unsafe { get_process() };
+    let mut host = WasmHostIO;
+    let mask = ((mask_hi as u64) << 32) | (mask_lo as u64);
+    let result = match syscalls::sys_sigtimedwait(proc, &mut host, mask, timeout_ms) {
+        Ok(sig) => sig as i32,
         Err(e) => -(e as i32),
     };
     deliver_pending_signals(proc, &mut host);

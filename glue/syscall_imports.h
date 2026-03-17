@@ -241,11 +241,22 @@ int64_t kernel_sigprocmask(uint32_t how, uint32_t set_lo, uint32_t set_hi);
 KERNEL_IMPORT(kernel_alarm)
 int32_t kernel_alarm(uint32_t seconds);
 
+KERNEL_IMPORT(kernel_setitimer)
+int32_t kernel_setitimer(uint32_t which, const uint8_t *new_ptr,
+                         uint8_t *old_ptr);
+
+KERNEL_IMPORT(kernel_getitimer)
+int32_t kernel_getitimer(uint32_t which, uint8_t *curr_ptr);
+
 KERNEL_IMPORT(kernel_sigsuspend)
 int32_t kernel_sigsuspend(uint32_t mask_lo, uint32_t mask_hi);
 
 KERNEL_IMPORT(kernel_pause)
 int32_t kernel_pause(void);
+
+KERNEL_IMPORT(kernel_rt_sigtimedwait)
+int32_t kernel_rt_sigtimedwait(uint32_t mask_lo, uint32_t mask_hi,
+                               int32_t timeout_ms);
 
 /* ------------------------------------------------------------------ */
 /* Time                                                                */
@@ -367,6 +378,23 @@ int32_t kernel_writev(int32_t fd, const uint8_t *iov_ptr, int32_t iovcnt);
 
 KERNEL_IMPORT(kernel_readv)
 int32_t kernel_readv(int32_t fd, uint8_t *iov_ptr, int32_t iovcnt);
+
+KERNEL_IMPORT(kernel_preadv)
+int32_t kernel_preadv(int32_t fd, uint8_t *iov_ptr, int32_t iovcnt,
+                      uint32_t offset_lo, int32_t offset_hi);
+
+KERNEL_IMPORT(kernel_pwritev)
+int32_t kernel_pwritev(int32_t fd, const uint8_t *iov_ptr, int32_t iovcnt,
+                       uint32_t offset_lo, int32_t offset_hi);
+
+KERNEL_IMPORT(kernel_sendfile)
+int32_t kernel_sendfile(int32_t out_fd, int32_t in_fd, uint8_t *offset_ptr,
+                        uint32_t count);
+
+KERNEL_IMPORT(kernel_statx)
+int32_t kernel_statx(int32_t dirfd, const uint8_t *path_ptr,
+                     uint32_t path_len, uint32_t flags, uint32_t mask,
+                     uint8_t *statx_ptr);
 
 /* ------------------------------------------------------------------ */
 /* Thread/runtime init stubs (single-threaded)                         */

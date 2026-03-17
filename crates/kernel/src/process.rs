@@ -105,6 +105,7 @@ pub struct Process {
     pub umask: u32,
     pub rlimits: [[u64; 2]; 16], // [soft, hard] pairs for each resource
     pub alarm_deadline_ns: u64,
+    pub alarm_interval_ns: u64,
     pub thread_name: [u8; 16],
 }
 
@@ -156,6 +157,7 @@ impl Process {
             umask: 0o022,
             rlimits,
             alarm_deadline_ns: 0,
+            alarm_interval_ns: 0,
             thread_name: [0u8; 16],
         }
     }
