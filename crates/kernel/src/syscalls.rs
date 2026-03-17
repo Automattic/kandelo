@@ -129,6 +129,28 @@ pub fn sys_open(
         mode
     };
     let resolved = crate::path::resolve_path(path, &proc.cwd);
+
+    // /dev/fd/N and /dev/stdin|stdout|stderr — dup an existing fd
+    if let Some(target_fd) = match_dev_fd(&resolved) {
+        let entry = proc.fd_table.get(target_fd)?;
+        let ofd_ref = entry.ofd_ref;
+        proc.ofd_table.inc_ref(ofd_ref.0);
+        let fd_flags = if oflags & O_CLOEXEC != 0 { FD_CLOEXEC } else { 0 };
+        let fd = proc.fd_table.alloc(ofd_ref, fd_flags)?;
+        return Ok(fd);
+    }
+
+    // Virtual device nodes — handle in-kernel, no host call
+    if let Some(dev) = match_virtual_device(&resolved) {
+        let status_flags = oflags & !CREATION_FLAGS;
+        let ofd_idx = proc.ofd_table.create(
+            FileType::CharDevice, status_flags, dev.host_handle(), resolved,
+        );
+        let fd_flags = if oflags & O_CLOEXEC != 0 { FD_CLOEXEC } else { 0 };
+        let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
+        return Ok(fd);
+    }
+
     let host_handle = host.host_open(&resolved, oflags, effective_mode)?;
 
     let file_type = if oflags & O_DIRECTORY != 0 {
@@ -2870,6 +2892,27 @@ pub fn sys_openat(
     mode: u32,
 ) -> Result<i32, Errno> {
     let resolved = resolve_at_path(proc, dirfd, path)?;
+
+    // /dev/fd/N and /dev/stdin|stdout|stderr — dup an existing fd
+    if let Some(target_fd) = match_dev_fd(&resolved) {
+        let entry = proc.fd_table.get(target_fd)?;
+        let ofd_ref = entry.ofd_ref;
+        proc.ofd_table.inc_ref(ofd_ref.0);
+        let fd_flags = if oflags & O_CLOEXEC != 0 { FD_CLOEXEC } else { 0 };
+        let fd = proc.fd_table.alloc(ofd_ref, fd_flags)?;
+        return Ok(fd);
+    }
+
+    // Virtual device nodes — handle in-kernel, no host call
+    if let Some(dev) = match_virtual_device(&resolved) {
+        let status_flags = oflags & !CREATION_FLAGS;
+        let ofd_idx = proc.ofd_table.create(
+            FileType::CharDevice, status_flags, dev.host_handle(), resolved,
+        );
+        let fd_flags = if oflags & O_CLOEXEC != 0 { FD_CLOEXEC } else { 0 };
+        let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
+        return Ok(fd);
+    }
 
     let effective_mode = if oflags & O_CREAT != 0 {
         mode & !proc.umask
@@ -7696,6 +7739,74 @@ mod tests {
     }
 
     // ---- virtual device tests ----
+
+    #[test]
+    fn test_open_dev_null() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/null", O_RDWR, 0).unwrap();
+        assert!(fd >= 3);
+        let ofd = proc.ofd_table.get(proc.fd_table.get(fd).unwrap().ofd_ref.0).unwrap();
+        assert_eq!(ofd.file_type, FileType::CharDevice);
+        assert_eq!(ofd.host_handle, -1);
+    }
+
+    #[test]
+    fn test_open_dev_zero() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/zero", O_RDONLY, 0).unwrap();
+        let ofd = proc.ofd_table.get(proc.fd_table.get(fd).unwrap().ofd_ref.0).unwrap();
+        assert_eq!(ofd.host_handle, -2);
+    }
+
+    #[test]
+    fn test_open_dev_urandom() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/urandom", O_RDONLY, 0).unwrap();
+        let ofd = proc.ofd_table.get(proc.fd_table.get(fd).unwrap().ofd_ref.0).unwrap();
+        assert_eq!(ofd.host_handle, -3);
+    }
+
+    #[test]
+    fn test_open_dev_full() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/full", O_RDWR, 0).unwrap();
+        let ofd = proc.ofd_table.get(proc.fd_table.get(fd).unwrap().ofd_ref.0).unwrap();
+        assert_eq!(ofd.host_handle, -4);
+    }
+
+    #[test]
+    fn test_open_dev_fd_dups_existing() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        // fd 1 = stdout, opening /dev/fd/1 should dup it
+        let fd = sys_open(&mut proc, &mut host, b"/dev/fd/1", O_WRONLY, 0).unwrap();
+        assert!(fd >= 3);
+        let ofd_ref_1 = proc.fd_table.get(1).unwrap().ofd_ref.0;
+        let ofd_ref_new = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        assert_eq!(ofd_ref_1, ofd_ref_new);
+    }
+
+    #[test]
+    fn test_open_dev_stdin_alias() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/stdin", O_RDONLY, 0).unwrap();
+        let ofd_ref_0 = proc.fd_table.get(0).unwrap().ofd_ref.0;
+        let ofd_ref_new = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        assert_eq!(ofd_ref_0, ofd_ref_new);
+    }
+
+    #[test]
+    fn test_open_dev_fd_nonexistent() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let result = sys_open(&mut proc, &mut host, b"/dev/fd/999", O_RDONLY, 0);
+        assert_eq!(result, Err(Errno::EBADF));
+    }
 
     #[test]
     fn test_match_virtual_device() {
