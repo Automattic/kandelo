@@ -249,7 +249,12 @@ pub fn sys_close(
                 if dir_host_handle >= 0 {
                     let _ = host.host_closedir(dir_host_handle);
                 }
-                host.host_close(host_handle)?;
+                // Virtual char devices have no host handle to close
+                if file_type == FileType::CharDevice && host_handle < 0 {
+                    // Nothing to clean up on host side
+                } else {
+                    host.host_close(host_handle)?;
+                }
             }
         }
     }
@@ -532,6 +537,11 @@ pub fn sys_lseek(
     // Pipes are not seekable.
     if ofd.file_type == FileType::Pipe || ofd.file_type == FileType::Socket {
         return Err(Errno::ESPIPE);
+    }
+
+    // Virtual char devices: seek is a no-op, always returns 0
+    if ofd.file_type == FileType::CharDevice && VirtualDevice::from_host_handle(ofd.host_handle).is_some() {
+        return Ok(0);
     }
 
     let new_offset = match whence {
@@ -915,6 +925,15 @@ pub fn sys_fstat(
             st_ctime_nsec: 0,
             _pad: 0,
         })
+    } else if ofd.file_type == FileType::CharDevice {
+        if let Some(dev) = VirtualDevice::from_host_handle(ofd.host_handle) {
+            return Ok(virtual_device_stat(dev, proc.euid, proc.egid));
+        }
+        // Real char device (stdin/stdout/stderr) — delegate to host
+        let mut st = host.host_fstat(ofd.host_handle)?;
+        st.st_uid = proc.euid;
+        st.st_gid = proc.egid;
+        Ok(st)
     } else {
         let mut st = host.host_fstat(ofd.host_handle)?;
         st.st_uid = proc.euid;
@@ -1147,6 +1166,18 @@ use crate::path::resolve_path;
 
 pub fn sys_stat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<WasmStat, Errno> {
     let resolved = resolve_path(path, &proc.cwd);
+    if let Some(dev) = match_virtual_device(&resolved) {
+        return Ok(virtual_device_stat(dev, proc.euid, proc.egid));
+    }
+    if match_dev_fd(&resolved).is_some() {
+        use wasm_posix_shared::mode::S_IFCHR;
+        return Ok(WasmStat {
+            st_dev: 5, st_ino: 0, st_mode: S_IFCHR | 0o666, st_nlink: 1,
+            st_uid: proc.euid, st_gid: proc.egid, st_size: 0,
+            st_atime_sec: 0, st_atime_nsec: 0, st_mtime_sec: 0, st_mtime_nsec: 0,
+            st_ctime_sec: 0, st_ctime_nsec: 0, _pad: 0,
+        });
+    }
     let mut st = host.host_stat(&resolved)?;
     st.st_uid = proc.euid;
     st.st_gid = proc.egid;
@@ -1155,6 +1186,18 @@ pub fn sys_stat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resul
 
 pub fn sys_lstat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<WasmStat, Errno> {
     let resolved = resolve_path(path, &proc.cwd);
+    if let Some(dev) = match_virtual_device(&resolved) {
+        return Ok(virtual_device_stat(dev, proc.euid, proc.egid));
+    }
+    if match_dev_fd(&resolved).is_some() {
+        use wasm_posix_shared::mode::S_IFCHR;
+        return Ok(WasmStat {
+            st_dev: 5, st_ino: 0, st_mode: S_IFCHR | 0o666, st_nlink: 1,
+            st_uid: proc.euid, st_gid: proc.egid, st_size: 0,
+            st_atime_sec: 0, st_atime_nsec: 0, st_mtime_sec: 0, st_mtime_nsec: 0,
+            st_ctime_sec: 0, st_ctime_nsec: 0, _pad: 0,
+        });
+    }
     let mut st = host.host_lstat(&resolved)?;
     st.st_uid = proc.euid;
     st.st_gid = proc.egid;
@@ -1212,6 +1255,9 @@ pub fn sys_chown(proc: &mut Process, host: &mut dyn HostIO, path: &[u8], uid: u3
 
 pub fn sys_access(proc: &mut Process, host: &mut dyn HostIO, path: &[u8], amode: u32) -> Result<(), Errno> {
     let resolved = resolve_path(path, &proc.cwd);
+    if match_virtual_device(&resolved).is_some() || match_dev_fd(&resolved).is_some() {
+        return Ok(());
+    }
     host.host_access(&resolved, amode)
 }
 
@@ -2979,6 +3025,18 @@ pub fn sys_fstatat(
     use wasm_posix_shared::flags::AT_SYMLINK_NOFOLLOW;
 
     let resolved = resolve_at_path(proc, dirfd, path)?;
+    if let Some(dev) = match_virtual_device(&resolved) {
+        return Ok(virtual_device_stat(dev, proc.euid, proc.egid));
+    }
+    if match_dev_fd(&resolved).is_some() {
+        use wasm_posix_shared::mode::S_IFCHR;
+        return Ok(WasmStat {
+            st_dev: 5, st_ino: 0, st_mode: S_IFCHR | 0o666, st_nlink: 1,
+            st_uid: proc.euid, st_gid: proc.egid, st_size: 0,
+            st_atime_sec: 0, st_atime_nsec: 0, st_mtime_sec: 0, st_mtime_nsec: 0,
+            st_ctime_sec: 0, st_ctime_nsec: 0, _pad: 0,
+        });
+    }
     let mut st = if flags & AT_SYMLINK_NOFOLLOW != 0 {
         host.host_lstat(&resolved)?
     } else {
@@ -3585,6 +3643,9 @@ pub fn sys_faccessat(
     _flags: u32,
 ) -> Result<(), Errno> {
     let resolved = resolve_at_path(proc, dirfd, path)?;
+    if match_virtual_device(&resolved).is_some() || match_dev_fd(&resolved).is_some() {
+        return Ok(());
+    }
     host.host_access(&resolved, amode)
 }
 
@@ -7764,6 +7825,60 @@ mod tests {
     }
 
     // ---- virtual device tests ----
+
+    #[test]
+    fn test_stat_dev_null() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let st = sys_stat(&mut proc, &mut host, b"/dev/null").unwrap();
+        assert_eq!(st.st_mode & 0xF000, wasm_posix_shared::mode::S_IFCHR);
+        assert_eq!(st.st_mode & 0o777, 0o666);
+        assert_eq!(st.st_ino, 1);
+        assert_eq!(st.st_dev, 5);
+    }
+
+    #[test]
+    fn test_fstat_dev_zero() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/zero", O_RDONLY, 0).unwrap();
+        let st = sys_fstat(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(st.st_mode & 0xF000, wasm_posix_shared::mode::S_IFCHR);
+        assert_eq!(st.st_ino, 2);
+    }
+
+    #[test]
+    fn test_lseek_dev_null() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/null", O_RDWR, 0).unwrap();
+        let pos = sys_lseek(&mut proc, &mut host, fd, 100, 0).unwrap();
+        assert_eq!(pos, 0);
+    }
+
+    #[test]
+    fn test_access_dev_urandom() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        sys_access(&mut proc, &mut host, b"/dev/urandom", 4).unwrap();
+    }
+
+    #[test]
+    fn test_close_dev_null() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/null", O_RDWR, 0).unwrap();
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        assert!(proc.fd_table.get(fd).is_err());
+    }
+
+    #[test]
+    fn test_stat_dev_fd_path() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let st = sys_stat(&mut proc, &mut host, b"/dev/fd/0").unwrap();
+        assert_eq!(st.st_mode & 0xF000, wasm_posix_shared::mode::S_IFCHR);
+    }
 
     #[test]
     fn test_read_dev_null_eof() {
