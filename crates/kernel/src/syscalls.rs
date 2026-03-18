@@ -328,6 +328,33 @@ pub fn sys_read(
             }
             match sock.domain {
                 SocketDomain::Inet | SocketDomain::Inet6 => {
+                    // Loopback path: use pipe buffers if available
+                    if let Some(recv_buf_idx) = sock.recv_buf_idx {
+                        loop {
+                            let pipe = proc
+                                .pipes
+                                .get_mut(recv_buf_idx)
+                                .and_then(|p| p.as_mut())
+                                .ok_or(Errno::EBADF)?;
+                            let n = pipe.read(buf);
+                            if n > 0 {
+                                return Ok(n);
+                            }
+                            if !pipe.is_write_end_open() {
+                                return Ok(0);
+                            }
+                            if status_flags & O_NONBLOCK != 0 {
+                                return Err(Errno::EAGAIN);
+                            }
+                            if proc.signals.deliverable() != 0 {
+                                if !proc.signals.should_restart() {
+                                    return Err(Errno::EINTR);
+                                }
+                            }
+                            let _ = host.host_nanosleep(0, 1_000_000);
+                        }
+                    }
+                    // External path: delegate to host
                     let net_handle = sock.host_net_handle.ok_or(Errno::ENOTCONN)?;
                     host.host_net_recv(net_handle, buf.len() as u32, 0, buf)
                 }
@@ -453,6 +480,34 @@ pub fn sys_write(
             }
             match sock.domain {
                 SocketDomain::Inet | SocketDomain::Inet6 => {
+                    // Loopback path: use pipe buffers if available
+                    if let Some(send_buf_idx) = sock.send_buf_idx {
+                        loop {
+                            let pipe = proc
+                                .pipes
+                                .get_mut(send_buf_idx)
+                                .and_then(|p| p.as_mut())
+                                .ok_or(Errno::EBADF)?;
+                            if !pipe.is_read_end_open() {
+                                proc.signals.raise(wasm_posix_shared::signal::SIGPIPE);
+                                return Err(Errno::EPIPE);
+                            }
+                            let n = pipe.write(buf);
+                            if n > 0 {
+                                return Ok(n);
+                            }
+                            if status_flags & O_NONBLOCK != 0 {
+                                return Err(Errno::EAGAIN);
+                            }
+                            if proc.signals.deliverable() != 0 {
+                                if !proc.signals.should_restart() {
+                                    return Err(Errno::EINTR);
+                                }
+                            }
+                            let _ = host.host_nanosleep(0, 1_000_000);
+                        }
+                    }
+                    // External path: delegate to host
                     let net_handle = sock.host_net_handle.ok_or(Errno::ENOTCONN)?;
                     host.host_net_send(net_handle, buf, 0)
                 }
@@ -2322,9 +2377,10 @@ pub fn sys_socketpair(
 
 /// getsockname -- get local socket address.
 ///
-/// For kernel-internal AF_UNIX sockets, writes AF_UNIX (family=1) with
-/// empty path. Returns the number of bytes written (2 bytes minimum for
-/// sa_family). Returns AF_INET for inet sockets, AF_UNIX for unix sockets.
+/// For AF_INET sockets, writes a full 16-byte sockaddr_in:
+///   family(2 LE) + port(2 BE) + addr(4) + zero(8)
+/// For AF_UNIX sockets, writes AF_UNIX (family=1) with empty path.
+/// Returns the number of bytes written.
 pub fn sys_getsockname(proc: &Process, fd: i32, buf: &mut [u8]) -> Result<usize, Errno> {
     use crate::socket::SocketDomain;
 
@@ -2335,16 +2391,39 @@ pub fn sys_getsockname(proc: &Process, fd: i32, buf: &mut [u8]) -> Result<usize,
     }
     let sock_idx = (-(ofd.host_handle + 1)) as usize;
     let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
-    if buf.len() >= 2 {
-        let family: u16 = match sock.domain {
-            SocketDomain::Inet => 2,  // AF_INET
-            SocketDomain::Inet6 => 10, // AF_INET6
-            SocketDomain::Unix => 1,  // AF_UNIX
-        };
-        buf[0] = family as u8;       // low byte
-        buf[1] = (family >> 8) as u8; // high byte
+
+    match sock.domain {
+        SocketDomain::Inet => {
+            // sockaddr_in is 16 bytes: family(2) + port(2) + addr(4) + zero(8)
+            let mut sa = [0u8; 16];
+            sa[0] = 2; // AF_INET low byte
+            sa[1] = 0; // AF_INET high byte
+            let port_be = sock.bind_port.to_be_bytes();
+            sa[2] = port_be[0];
+            sa[3] = port_be[1];
+            sa[4] = sock.bind_addr[0];
+            sa[5] = sock.bind_addr[1];
+            sa[6] = sock.bind_addr[2];
+            sa[7] = sock.bind_addr[3];
+            let n = buf.len().min(16);
+            buf[..n].copy_from_slice(&sa[..n]);
+            Ok(16)
+        }
+        SocketDomain::Inet6 => {
+            if buf.len() >= 2 {
+                buf[0] = 10; // AF_INET6
+                buf[1] = 0;
+            }
+            Ok(2)
+        }
+        SocketDomain::Unix => {
+            if buf.len() >= 2 {
+                buf[0] = 1; // AF_UNIX
+                buf[1] = 0;
+            }
+            Ok(2)
+        }
     }
-    Ok(2)
 }
 
 /// getpeername -- get remote socket address.
@@ -2634,42 +2713,127 @@ pub fn sys_setsockopt(
     }
 }
 
-/// Bind a socket to an address. No network binding available in Wasm.
-pub fn sys_bind(proc: &mut Process, fd: i32, _addr: &[u8]) -> Result<(), Errno> {
+/// Bind a socket to an address.
+///
+/// For AF_INET sockets, parses sockaddr_in and stores the IP + port.
+/// If port == 0, assigns an ephemeral port.
+pub fn sys_bind(proc: &mut Process, fd: i32, addr: &[u8]) -> Result<(), Errno> {
+    use crate::socket::{SocketDomain, SocketState};
+
     let entry = proc.fd_table.get(fd)?;
     let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
     if ofd.file_type != FileType::Socket {
         return Err(Errno::ENOTSOCK);
     }
-    Err(Errno::EADDRNOTAVAIL)
+    let sock_idx = (-(ofd.host_handle + 1)) as usize;
+    let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+
+    if sock.state != SocketState::Unbound {
+        return Err(Errno::EINVAL);
+    }
+
+    match sock.domain {
+        SocketDomain::Inet => {
+            // sockaddr_in: family(2) + port(2 BE) + addr(4) = 8 bytes min
+            if addr.len() < 8 {
+                return Err(Errno::EINVAL);
+            }
+            let port = u16::from_be_bytes([addr[2], addr[3]]);
+            let ip = [addr[4], addr[5], addr[6], addr[7]];
+
+            let assigned_port = if port == 0 {
+                let p = proc.next_ephemeral_port;
+                proc.next_ephemeral_port = proc.next_ephemeral_port.wrapping_add(1);
+                if proc.next_ephemeral_port == 0 {
+                    proc.next_ephemeral_port = 49152;
+                }
+                p
+            } else {
+                port
+            };
+
+            let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+            sock.bind_addr = ip;
+            sock.bind_port = assigned_port;
+            sock.state = SocketState::Bound;
+            Ok(())
+        }
+        _ => Err(Errno::EADDRNOTAVAIL),
+    }
 }
 
-/// Listen for connections on a socket. No-op (no real network).
+/// Listen for connections on a socket.
+///
+/// Sets the socket state to Listening so that connect() can find it.
 pub fn sys_listen(proc: &mut Process, fd: i32, _backlog: u32) -> Result<(), Errno> {
+    use crate::socket::{SocketState, SocketType};
+
     let entry = proc.fd_table.get(fd)?;
     let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
     if ofd.file_type != FileType::Socket {
         return Err(Errno::ENOTSOCK);
     }
+    let sock_idx = (-(ofd.host_handle + 1)) as usize;
+    let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+    if sock.sock_type != SocketType::Stream {
+        return Err(Errno::EOPNOTSUPP);
+    }
+    if sock.state != SocketState::Bound {
+        return Err(Errno::EINVAL);
+    }
+    sock.state = SocketState::Listening;
     Ok(())
 }
 
-/// Accept a connection on a listening socket. No connections possible.
+/// Accept a connection on a listening socket.
+///
+/// Pops a pending connection from the listener's backlog, creates an OFD + FD
+/// for the accepted socket, and returns the new fd.
 pub fn sys_accept(proc: &mut Process, _host: &mut dyn HostIO, fd: i32) -> Result<i32, Errno> {
+    use crate::socket::SocketState;
+
     let entry = proc.fd_table.get(fd)?;
     let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
     if ofd.file_type != FileType::Socket {
         return Err(Errno::ENOTSOCK);
     }
-    Err(Errno::ECONNABORTED)
+    let sock_idx = (-(ofd.host_handle + 1)) as usize;
+
+    let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+    if sock.state != SocketState::Listening {
+        return Err(Errno::EINVAL);
+    }
+
+    let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+    if sock.listen_backlog.is_empty() {
+        return Err(Errno::EAGAIN);
+    }
+    let accepted_sock_idx = sock.listen_backlog.remove(0);
+
+    // Create OFD for the accepted socket
+    let host_handle = -((accepted_sock_idx as i64) + 1);
+    let ofd_idx = proc.ofd_table.create(
+        FileType::Socket,
+        O_RDWR,
+        host_handle,
+        b"/dev/socket".to_vec(),
+    );
+
+    // Allocate fd
+    let new_fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), 0)?;
+    Ok(new_fd)
 }
 
 /// Connect a socket to an address.
 ///
-/// For AF_INET/AF_INET6 sockets, delegates to the host via `host_net_connect`.
-/// For AF_UNIX sockets, returns ECONNREFUSED (no Unix domain listener support).
+/// For AF_INET sockets connecting to 127.0.0.1, performs loopback connect:
+/// finds the listening socket on the target port, creates pipe pairs, and
+/// pushes a pending connection to the listener's backlog.
+/// For non-loopback AF_INET/AF_INET6, delegates to the host via `host_net_connect`.
+/// For AF_UNIX sockets, returns ECONNREFUSED.
 pub fn sys_connect(proc: &mut Process, host: &mut dyn HostIO, fd: i32, addr: &[u8]) -> Result<(), Errno> {
-    use crate::socket::{SocketDomain, SocketState};
+    use crate::socket::{SocketDomain, SocketInfo, SocketState, SocketType};
+    use crate::pipe::PipeBuffer;
 
     let entry = proc.fd_table.get(fd)?;
     let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
@@ -2689,13 +2853,65 @@ pub fn sys_connect(proc: &mut Process, host: &mut dyn HostIO, fd: i32, addr: &[u
                 return Err(Errno::EINVAL);
             }
             let port = u16::from_be_bytes([addr[2], addr[3]]);
-            let ip = &addr[4..8];
-            let net_handle = sock_idx as i32;
-            host.host_net_connect(net_handle, ip, port)?;
-            let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
-            sock.state = SocketState::Connected;
-            sock.host_net_handle = Some(net_handle);
-            Ok(())
+            let ip = [addr[4], addr[5], addr[6], addr[7]];
+
+            // Check for loopback address (127.0.0.1)
+            let is_loopback = ip == [127, 0, 0, 1];
+
+            if is_loopback && sock.domain == SocketDomain::Inet {
+                // Find listening socket on target port
+                let mut listener_idx = None;
+                let sock_count = proc.sockets.len();
+                for i in 0..sock_count {
+                    if let Some(s) = proc.sockets.get(i) {
+                        if s.state == SocketState::Listening
+                            && s.bind_port == port
+                            && s.sock_type == SocketType::Stream
+                        {
+                            listener_idx = Some(i);
+                            break;
+                        }
+                    }
+                }
+                let listener_idx = listener_idx.ok_or(Errno::ECONNREFUSED)?;
+
+                // Allocate two pipe buffers for bidirectional data:
+                //   pipe_a: client writes → server reads
+                //   pipe_b: server writes → client reads
+                let pipe_a_idx = proc.pipes.len();
+                proc.pipes.push(Some(PipeBuffer::new(65536)));
+                let pipe_b_idx = proc.pipes.len();
+                proc.pipes.push(Some(PipeBuffer::new(65536)));
+
+                // Create accepted socket (server side) with cross-connected pipes
+                let mut accepted_sock = SocketInfo::new(SocketDomain::Inet, SocketType::Stream, 0);
+                accepted_sock.state = SocketState::Connected;
+                accepted_sock.recv_buf_idx = Some(pipe_a_idx); // reads from pipe_a (client's writes)
+                accepted_sock.send_buf_idx = Some(pipe_b_idx); // writes to pipe_b (client's reads)
+                accepted_sock.bind_addr = proc.sockets.get(listener_idx).map(|s| s.bind_addr).unwrap_or([0; 4]);
+                accepted_sock.bind_port = proc.sockets.get(listener_idx).map(|s| s.bind_port).unwrap_or(0);
+                let accepted_idx = proc.sockets.alloc(accepted_sock);
+
+                // Push to listener's backlog
+                let listener = proc.sockets.get_mut(listener_idx).ok_or(Errno::EBADF)?;
+                listener.listen_backlog.push(accepted_idx);
+
+                // Connect client socket with cross-connected pipes
+                let client = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+                client.send_buf_idx = Some(pipe_a_idx); // writes to pipe_a (server's reads)
+                client.recv_buf_idx = Some(pipe_b_idx); // reads from pipe_b (server's writes)
+                client.state = SocketState::Connected;
+
+                Ok(())
+            } else {
+                // External connection: delegate to host
+                let net_handle = sock_idx as i32;
+                host.host_net_connect(net_handle, &ip, port)?;
+                let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+                sock.state = SocketState::Connected;
+                sock.host_net_handle = Some(net_handle);
+                Ok(())
+            }
         }
         SocketDomain::Unix => Err(Errno::ECONNREFUSED),
     }
@@ -2717,38 +2933,130 @@ pub fn sys_getaddrinfo(
     host.host_getaddrinfo(name, result_buf)
 }
 
-/// Send a message on a socket to a specific address. No datagram support.
+/// Send a message on a socket to a specific address.
+///
+/// For AF_INET DGRAM sockets with a loopback destination, finds the target
+/// bound DGRAM socket and pushes the datagram to its queue.
 pub fn sys_sendto(
     proc: &mut Process,
     _host: &mut dyn HostIO,
     fd: i32,
-    _buf: &[u8],
+    buf: &[u8],
     _flags: u32,
-    _addr: &[u8],
+    addr: &[u8],
 ) -> Result<usize, Errno> {
+    use crate::socket::{Datagram, SocketDomain, SocketState, SocketType};
+
     let entry = proc.fd_table.get(fd)?;
     let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
     if ofd.file_type != FileType::Socket {
         return Err(Errno::ENOTSOCK);
     }
-    Err(Errno::EDESTADDRREQ)
+    let sock_idx = (-(ofd.host_handle + 1)) as usize;
+    let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+
+    if sock.domain != SocketDomain::Inet || sock.sock_type != SocketType::Dgram {
+        return Err(Errno::EOPNOTSUPP);
+    }
+
+    // Parse destination sockaddr_in
+    if addr.len() < 8 {
+        return Err(Errno::EINVAL);
+    }
+    let dst_port = u16::from_be_bytes([addr[2], addr[3]]);
+    let dst_ip = [addr[4], addr[5], addr[6], addr[7]];
+
+    // Only support loopback
+    if dst_ip != [127, 0, 0, 1] {
+        return Err(Errno::ENETUNREACH);
+    }
+
+    // Get sender info
+    let src_addr = sock.bind_addr;
+    let src_port = sock.bind_port;
+
+    // Find target DGRAM socket bound to dst_port
+    let mut target_idx = None;
+    let sock_count = proc.sockets.len();
+    for i in 0..sock_count {
+        if let Some(s) = proc.sockets.get(i) {
+            if s.sock_type == SocketType::Dgram
+                && (s.state == SocketState::Bound || s.state == SocketState::Connected)
+                && s.bind_port == dst_port
+            {
+                target_idx = Some(i);
+                break;
+            }
+        }
+    }
+    let target_idx = target_idx.ok_or(Errno::ECONNREFUSED)?;
+
+    let datagram = Datagram {
+        data: buf.to_vec(),
+        src_addr,
+        src_port,
+    };
+
+    let target = proc.sockets.get_mut(target_idx).ok_or(Errno::EBADF)?;
+    target.dgram_queue.push(datagram);
+
+    Ok(buf.len())
 }
 
-/// Receive a message from a socket with sender address. No datagram support.
+/// Receive a message from a socket with sender address.
+///
+/// For AF_INET DGRAM sockets, dequeues a datagram and writes the sender address.
 pub fn sys_recvfrom(
     proc: &mut Process,
     _host: &mut dyn HostIO,
     fd: i32,
-    _buf: &mut [u8],
+    buf: &mut [u8],
     _flags: u32,
-    _addr_buf: &mut [u8],
+    addr_buf: &mut [u8],
 ) -> Result<(usize, usize), Errno> {
+    use crate::socket::{SocketDomain, SocketType};
+
     let entry = proc.fd_table.get(fd)?;
     let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
     if ofd.file_type != FileType::Socket {
         return Err(Errno::ENOTSOCK);
     }
-    Err(Errno::ENOTCONN)
+    let sock_idx = (-(ofd.host_handle + 1)) as usize;
+    let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+
+    if sock.domain != SocketDomain::Inet || sock.sock_type != SocketType::Dgram {
+        return Err(Errno::EOPNOTSUPP);
+    }
+
+    let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+    if sock.dgram_queue.is_empty() {
+        return Err(Errno::EAGAIN);
+    }
+    let datagram = sock.dgram_queue.remove(0);
+
+    // Copy data to buffer
+    let copy_len = buf.len().min(datagram.data.len());
+    buf[..copy_len].copy_from_slice(&datagram.data[..copy_len]);
+
+    // Write sender sockaddr_in to addr_buf
+    let mut addr_written = 0;
+    if !addr_buf.is_empty() {
+        let mut sa = [0u8; 16];
+        sa[0] = 2; // AF_INET
+        sa[1] = 0;
+        let port_be = datagram.src_port.to_be_bytes();
+        sa[2] = port_be[0];
+        sa[3] = port_be[1];
+        sa[4] = datagram.src_addr[0];
+        sa[5] = datagram.src_addr[1];
+        sa[6] = datagram.src_addr[2];
+        sa[7] = datagram.src_addr[3];
+        let n = addr_buf.len().min(16);
+        addr_buf[..n].copy_from_slice(&sa[..n]);
+        addr_written = 16;
+    }
+
+    Ok((copy_len, addr_written))
 }
 
 /// Poll file descriptors for I/O readiness.
@@ -2869,9 +3177,22 @@ fn poll_check(proc: &mut Process, fds: &mut [WasmPollFd]) -> i32 {
             FileType::Socket => {
                 let sock_idx = (-(ofd.host_handle + 1)) as usize;
                 if let Some(sock) = proc.sockets.get(sock_idx) {
+                    use crate::socket::SocketState;
                     // POLLERR: report error if socket has pending error or shut down for writing
                     if sock.shut_wr && sock.shut_rd {
                         revents |= POLLERR;
+                    }
+                    // Listening socket: POLLIN if backlog has pending connections
+                    if sock.state == SocketState::Listening && !sock.listen_backlog.is_empty() {
+                        if pollfd.events & POLLIN != 0 {
+                            revents |= POLLIN;
+                        }
+                    }
+                    // DGRAM socket: POLLIN if datagram queue is non-empty
+                    if !sock.dgram_queue.is_empty() {
+                        if pollfd.events & POLLIN != 0 {
+                            revents |= POLLIN;
+                        }
                     }
                     // Check recv buffer for readability
                     if let Some(recv_idx) = sock.recv_buf_idx {
@@ -5582,13 +5903,17 @@ mod tests {
     }
 
     #[test]
-    fn test_bind_eaddrnotavail_for_inet() {
+    fn test_bind_inet_succeeds() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         use wasm_posix_shared::socket::*;
         let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
-        let result = sys_bind(&mut proc, fd, &[0u8; 16]);
-        assert_eq!(result, Err(Errno::EADDRNOTAVAIL));
+        // sockaddr_in: family=AF_INET(2), port=8080 (BE), addr=0.0.0.0
+        let mut addr = [0u8; 16];
+        addr[0] = 2; // AF_INET
+        addr[2] = 0x1F; addr[3] = 0x90; // port 8080 big-endian
+        let result = sys_bind(&mut proc, fd, &addr);
+        assert_eq!(result, Ok(()));
     }
 
     #[test]
@@ -5599,23 +5924,31 @@ mod tests {
     }
 
     #[test]
-    fn test_listen_succeeds_noop() {
+    fn test_listen_after_bind_succeeds() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         use wasm_posix_shared::socket::*;
         let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        // Must bind before listen
+        let mut addr = [0u8; 16];
+        addr[0] = 2;
+        sys_bind(&mut proc, fd, &addr).unwrap();
         let result = sys_listen(&mut proc, fd, 5);
         assert_eq!(result, Ok(()));
     }
 
     #[test]
-    fn test_accept_econnaborted() {
+    fn test_accept_eagain_on_empty_backlog() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         use wasm_posix_shared::socket::*;
         let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        let mut addr = [0u8; 16];
+        addr[0] = 2;
+        sys_bind(&mut proc, fd, &addr).unwrap();
+        sys_listen(&mut proc, fd, 5).unwrap();
         let result = sys_accept(&mut proc, &mut host, fd);
-        assert_eq!(result, Err(Errno::ECONNABORTED));
+        assert_eq!(result, Err(Errno::EAGAIN));
     }
 
     #[test]
@@ -7728,8 +8061,8 @@ mod tests {
         // Create socket
         let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
 
-        // Connect
-        let addr = [2, 0, 0, 80, 127, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0];
+        // Connect to a non-loopback address to test host delegation
+        let addr = [2, 0, 0, 80, 93, 184, 216, 34, 0, 0, 0, 0, 0, 0, 0, 0];
         sys_connect(&mut proc, &mut host, fd, &addr).unwrap();
 
         // Write should succeed (delegating to host_net_send)
@@ -8141,5 +8474,129 @@ mod tests {
         }
         assert_eq!(VirtualDevice::from_host_handle(0), None);
         assert_eq!(VirtualDevice::from_host_handle(-5), None);
+    }
+
+    // ===== Loopback socket tests =====
+
+    #[test]
+    fn test_bind_inet_ephemeral_port() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        // Bind with port=0 → ephemeral
+        let addr = [2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        sys_bind(&mut proc, fd, &addr).unwrap();
+        // getsockname should show the assigned ephemeral port
+        let mut buf = [0u8; 16];
+        let n = sys_getsockname(&proc, fd, &mut buf).unwrap();
+        assert_eq!(n, 16);
+        assert_eq!(buf[0], 2); // AF_INET
+        let port = u16::from_be_bytes([buf[2], buf[3]]);
+        assert!(port >= 49152, "ephemeral port should be >= 49152, got {}", port);
+    }
+
+    #[test]
+    fn test_getsockname_inet_explicit_port() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        // Bind to port 8080
+        let mut addr = [0u8; 16];
+        addr[0] = 2;
+        addr[2] = 0x1F; addr[3] = 0x90; // 8080 big-endian
+        addr[4] = 127; addr[5] = 0; addr[6] = 0; addr[7] = 1;
+        sys_bind(&mut proc, fd, &addr).unwrap();
+        let mut buf = [0u8; 16];
+        sys_getsockname(&proc, fd, &mut buf).unwrap();
+        assert_eq!(buf[0], 2); // AF_INET
+        let port = u16::from_be_bytes([buf[2], buf[3]]);
+        assert_eq!(port, 8080);
+        assert_eq!(&buf[4..8], &[127, 0, 0, 1]);
+    }
+
+    #[test]
+    fn test_tcp_loopback() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+
+        // Server: socket → bind → listen
+        let server_fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        let mut addr = [0u8; 16];
+        addr[0] = 2; // AF_INET
+        addr[2] = 0x1F; addr[3] = 0x90; // port 8080
+        sys_bind(&mut proc, server_fd, &addr).unwrap();
+        sys_listen(&mut proc, server_fd, 5).unwrap();
+
+        // Client: socket → connect to 127.0.0.1:8080
+        let client_fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        let mut connect_addr = [0u8; 16];
+        connect_addr[0] = 2;
+        connect_addr[2] = 0x1F; connect_addr[3] = 0x90; // port 8080
+        connect_addr[4] = 127; connect_addr[5] = 0; connect_addr[6] = 0; connect_addr[7] = 1;
+        sys_connect(&mut proc, &mut host, client_fd, &connect_addr).unwrap();
+
+        // Server: accept
+        let accepted_fd = sys_accept(&mut proc, &mut host, server_fd).unwrap();
+
+        // Client writes, server reads
+        let written = sys_write(&mut proc, &mut host, client_fd, b"hello TCP").unwrap();
+        assert_eq!(written, 9);
+
+        let mut buf = [0u8; 64];
+        let n = sys_read(&mut proc, &mut host, accepted_fd, &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"hello TCP");
+
+        // Server writes, client reads
+        let written = sys_write(&mut proc, &mut host, accepted_fd, b"reply").unwrap();
+        assert_eq!(written, 5);
+
+        let mut buf2 = [0u8; 64];
+        let n2 = sys_read(&mut proc, &mut host, client_fd, &mut buf2).unwrap();
+        assert_eq!(&buf2[..n2], b"reply");
+    }
+
+    #[test]
+    fn test_udp_loopback() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+
+        // Create and bind a UDP socket (receiver)
+        let recv_fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        let mut addr = [0u8; 16];
+        addr[0] = 2;
+        // port=0 → ephemeral
+        sys_bind(&mut proc, recv_fd, &addr).unwrap();
+
+        // Get the assigned port
+        let mut gsa_buf = [0u8; 16];
+        sys_getsockname(&proc, recv_fd, &mut gsa_buf).unwrap();
+        let port = u16::from_be_bytes([gsa_buf[2], gsa_buf[3]]);
+
+        // Create and bind a sender UDP socket
+        let send_fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        let mut sender_addr = [0u8; 16];
+        sender_addr[0] = 2;
+        sys_bind(&mut proc, send_fd, &sender_addr).unwrap();
+
+        // Send to the receiver via loopback
+        let mut dest_addr = [0u8; 16];
+        dest_addr[0] = 2;
+        let port_be = port.to_be_bytes();
+        dest_addr[2] = port_be[0]; dest_addr[3] = port_be[1];
+        dest_addr[4] = 127; dest_addr[5] = 0; dest_addr[6] = 0; dest_addr[7] = 1;
+        let n = sys_sendto(&mut proc, &mut host, send_fd, b"hello UDP", 0, &dest_addr).unwrap();
+        assert_eq!(n, 9);
+
+        // Receive
+        let mut buf = [0u8; 64];
+        let mut from_addr = [0u8; 16];
+        let (data_len, addr_len) = sys_recvfrom(&mut proc, &mut host, recv_fd, &mut buf, 0, &mut from_addr).unwrap();
+        assert_eq!(&buf[..data_len], b"hello UDP");
+        assert_eq!(addr_len, 16);
+        assert_eq!(from_addr[0], 2); // AF_INET
     }
 }

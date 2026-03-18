@@ -126,6 +126,8 @@ pub struct Process {
     pub fork_exec_argv: Option<Vec<Vec<u8>>>,
     /// FD actions to apply before exec in fork child.
     pub fork_fd_actions: Vec<FdAction>,
+    /// Next ephemeral port to assign for bind(port=0).
+    pub next_ephemeral_port: u16,
 }
 
 impl Process {
@@ -182,6 +184,7 @@ impl Process {
             fork_exec_path: None,
             fork_exec_argv: None,
             fork_fd_actions: Vec::new(),
+            next_ephemeral_port: 49152,
         }
     }
 }

@@ -1,23 +1,22 @@
 # libc-test Failure Report
 
-Generated: 2026-03-18 17:13 UTC
+Generated: 2026-03-18 19:24 UTC
 
 | Status | Count |
 |--------|-------|
-| PASS | 280 |
-| FAIL | 25 |
+| PASS | 281 |
+| FAIL | 24 |
 | BUILD | 0 |
 | TIMEOUT | 19 |
 | **TOTAL** | **324** |
 
-## Runtime Failures (25)
+## Runtime Failures (24)
 
 | Test | Category |
 |------|----------|
 | `ipc_msg` |  functional |
 | `ipc_sem` |  functional |
 | `ipc_shm` |  functional |
-| `socket` |  functional |
 | `tls_init` |  functional |
 | `execle-env` |  regression |
 | `pthread_cond-smasher` |  regression |
@@ -64,7 +63,7 @@ Generated: 2026-03-18 17:13 UTC
 | `setenv-oom` |  regression |
 | `tls_get_new-dtv` |  regression |
 
-## Passing Tests (280)
+## Passing Tests (281)
 
 <details>
 <summary>Click to expand</summary>
@@ -95,6 +94,7 @@ Generated: 2026-03-18 17:13 UTC
 | `search_lsearch` |  functional |
 | `search_tsearch` |  functional |
 | `snprintf` |  functional |
+| `socket` |  functional |
 | `spawn` |  functional |
 | `sscanf_long` |  functional |
 | `sscanf` |  functional |
