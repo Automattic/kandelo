@@ -14,6 +14,14 @@ export class NodePlatformIO implements PlatformIO {
   private dirHandles = new Map<number, fs.Dir>();
   private nextDirHandle = 1;
   private fdPositions = new Map<number, number>();
+  // Offset from hrtime (monotonic) to epoch, computed once at startup.
+  private readonly _epochOffsetNs: bigint;
+
+  constructor() {
+    const hrt = process.hrtime.bigint();
+    const wallNs = BigInt(Date.now()) * 1_000_000n;
+    this._epochOffsetNs = wallNs - hrt;
+  }
 
   open(path: string, flags: number, mode: number): number {
     const fd = fs.openSync(path, translateOpenFlags(flags), mode);
@@ -230,18 +238,14 @@ export class NodePlatformIO implements PlatformIO {
   clockGettime(
     clockId: number,
   ): { sec: number; nsec: number } {
+    const ns = process.hrtime.bigint();
     if (clockId === 1) {
-      // CLOCK_MONOTONIC: use process.hrtime.bigint()
-      const ns = process.hrtime.bigint();
-      const sec = Number(ns / 1000000000n);
-      const nsec = Number(ns % 1000000000n);
-      return { sec, nsec };
+      // CLOCK_MONOTONIC
+      return { sec: Number(ns / 1000000000n), nsec: Number(ns % 1000000000n) };
     }
-    // CLOCK_REALTIME
-    const now = Date.now();
-    const sec = Math.floor(now / 1000);
-    const nsec = (now % 1000) * 1_000_000;
-    return { sec, nsec };
+    // CLOCK_REALTIME — use hrtime + epoch offset for nanosecond resolution
+    const realNs = ns + this._epochOffsetNs;
+    return { sec: Number(realNs / 1000000000n), nsec: Number(realNs % 1000000000n) };
   }
 
   nanosleep(sec: number, nsec: number): void {

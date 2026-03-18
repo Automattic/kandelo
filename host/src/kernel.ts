@@ -42,6 +42,15 @@ export class WasmPosixKernel {
   private sharedPipes = new Map<number, { pipe: SharedPipeBuffer; end: "read" | "write" }>();
   private signalWakeSab: SharedArrayBuffer | null = null;
   private sharedLockTable: SharedLockTable | null = null;
+  private programFuncTable: WebAssembly.Table | null = null;
+
+  /**
+   * Set the user program's indirect function table so signal handlers
+   * registered by the program can be called from the kernel.
+   */
+  setProgramFuncTable(table: WebAssembly.Table): void {
+    this.programFuncTable = table;
+  }
 
   constructor(config: KernelConfig, io: PlatformIO, callbacks?: KernelCallbacks) {
     this.config = config;
@@ -255,10 +264,10 @@ export class WasmPosixKernel {
           return this.hostSigsuspendWait();
         },
         host_call_signal_handler: (handler_index: number, signum: number): number => {
-          if (!this.instance) {
-            return -22; // EINVAL
-          }
-          const table = this.instance.exports.__indirect_function_table as WebAssembly.Table;
+          // Signal handlers are registered by the user program, so we must
+          // look up the function in the program's table, not the kernel's.
+          const table = this.programFuncTable
+            ?? (this.instance?.exports.__indirect_function_table as WebAssembly.Table | undefined);
           if (!table) {
             return -22; // EINVAL
           }

@@ -127,7 +127,7 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 |----------|--------|-------|
 | `kill()` | Partial | Marks signal as pending. sig=0 validity check. Cross-process delivery via host_kill import and ProcessManager.deliverSignal(). Pending signals delivered at syscall boundaries. |
 | `signal()` | Full | Legacy API. Returns previous handler. Wraps sigaction() semantics. SIGKILL/SIGSTOP immutable. |
-| `sigaction()` | Partial | Sets handler disposition (SIG_DFL, SIG_IGN, or function pointer) plus sa_flags and sa_mask. SIGKILL/SIGSTOP immutable. SA_RESTART supported: blocking read/write/recv/poll auto-restart instead of returning EINTR. SA_NOCLDSTOP/SA_NOCLDWAIT/SA_SIGINFO stored but not yet acted upon. |
+| `sigaction()` | Partial | Sets handler disposition (SIG_DFL, SIG_IGN, or function pointer) plus sa_flags and sa_mask. SIGKILL/SIGSTOP immutable. SA_RESTART supported: blocking read/write/recv/poll auto-restart instead of returning EINTR. SA_NOCLDSTOP/SA_NOCLDWAIT/SA_SIGINFO stored but not yet acted upon. **Note:** Programs must be linked with `--table-base=2 --export-table` so the host can dispatch handlers from the user program's function table (indices 0/1 reserved for SIG_DFL/SIG_IGN). |
 | `sigprocmask()` | Full | Block/unblock/setmask operations on 64-bit signal mask. SIGKILL and SIGSTOP cannot be blocked per POSIX. |
 | `sigsuspend()` | Full | Atomically replaces signal mask and blocks until deliverable signal arrives. Uses SharedArrayBuffer + Atomics.wait/notify for cross-thread wake. Always returns EINTR. |
 | `pause()` | Full | Suspends until a signal is delivered. Delegates to sigsuspend with current mask. Always returns EINTR. |
@@ -543,3 +543,36 @@ These PHP needs are well-handled by the current kernel:
 - Memory: anonymous mmap, munmap, brk
 - Multi-process: fork, exec, waitpid (host-side)
 - System info: uname, sysconf, umask, getrlimit/setrlimit
+
+---
+
+## Continuous Testing: musl libc-test Suite
+
+The full musl libc-test suite (functional + regression + math) is run via `scripts/run-libc-tests.sh`. Use `--report` to generate `docs/libc-test-failures.md`.
+
+### Summary (as of 2026-03-17)
+
+| Category | Pass | Fail | Timeout | Build | Total |
+|----------|------|------|---------|-------|-------|
+| Functional | 46 | 11 | 6 | 0 | 63 |
+| Regression | 43 | 12 | 8 | 0 | 63 |
+| Math | ~89 | ~110 | 0 | 0 | 199 |
+
+### Known Unfixable Failures
+
+These require features fundamentally unavailable in single-threaded Wasm:
+
+- **Wasm FP exceptions (110 math tests):** WebAssembly has no floating-point exception flags (`fenv.h`). All `fe*` math tests fail. `long double` variants pass because they use software fp128.
+- **No pthreads (17+ tests):** `pthread_create`, `pthread_cancel`, `pthread_mutex`, `sem_init`, etc.
+- **No fork/vfork (5+ tests):** `daemon-failure`, `fflush-exit`, `spawn`, `vfork`.
+- **No exec + /bin/sh (1 test):** `execle-env` requires a real shell.
+- **No SysV IPC (3 tests):** `ipc_msg`, `ipc_sem`, `ipc_shm` — ENOSYS by design.
+- **No dlopen/TLS (1+ tests):** `tls_get_new-dtv_dso`.
+- **No stack switching (1 test):** `sigaltstack` — signal handler runs but Wasm cannot switch stacks.
+
+### Linker Requirements for Signal Handlers
+
+Programs must be linked with two extra flags for signal handler dispatch to work:
+
+- `--table-base=2`: Reserves function table indices 0 (SIG_DFL) and 1 (SIG_IGN) so they don't collide with real C function pointers.
+- `--export-table`: Exports `__indirect_function_table` so the host can look up handler functions to call them.

@@ -219,6 +219,13 @@ export class ProgramRunner {
 
         const instance = await WebAssembly.instantiate(module, importObject);
 
+        // Give the kernel access to the program's function table so signal
+        // handlers (registered via sigaction in user code) can be dispatched.
+        const progTable = instance.exports.__indirect_function_table as WebAssembly.Table | undefined;
+        if (progTable) {
+            this.kernel.setProgramFuncTable(progTable);
+        }
+
         // Set the kernel's program break to the program's __heap_base.
         // Without this, the kernel uses a default break (16MB) which may
         // be beyond the allocated Wasm memory, causing OOB errors on malloc.

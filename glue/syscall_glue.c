@@ -168,9 +168,11 @@
 #define SYS_CLONE         201
 #define SYS_GETTID        202
 #define SYS_SET_TID_ADDRESS 203
+#define SYS_TKILL         204
 #define SYS_RT_SIGQUEUEINFO 205
 #define SYS_RT_SIGTIMEDWAIT 207
 #define SYS_RT_SIGRETURN  208
+#define SYS_SIGALTSTACK   209
 #define SYS_EXECVE        211
 #define SYS_FORK          212
 #define SYS_VFORK         213
@@ -719,6 +721,10 @@ static long __do_syscall(long n, long a1, long a2, long a3,
     case SYS_RAISE:
         return (long)kernel_raise((uint32_t)a1);
 
+    /* tkill — (tid, sig).  Single-threaded: ignore tid, delegate to raise. */
+    case SYS_TKILL:
+        return (long)kernel_raise((uint32_t)a2);
+
     /* alarm — (seconds) */
     case SYS_ALARM:
         return (long)kernel_alarm((uint32_t)a1);
@@ -726,6 +732,49 @@ static long __do_syscall(long n, long a1, long a2, long a3,
     /* signal — (signum, handler) */
     case SYS_SIGNAL:
         return (long)kernel_signal((uint32_t)a1, (uint32_t)a2);
+
+    /* sigaltstack — (ss, old_ss)
+     * Store/retrieve alternate signal stack info.
+     * Note: Wasm cannot truly use alternate stacks, but we track the state
+     * so sigaltstack queries work and programs don't get ENOSYS.
+     * struct stack_t { void *ss_sp; int ss_flags; size_t ss_size; } = 12 bytes. */
+    case SYS_SIGALTSTACK: {
+        static uint32_t alt_sp = 0;
+        static int32_t  alt_flags = 2; /* SS_DISABLE initially */
+        static uint32_t alt_size = 0;
+
+        const uint32_t *ss_new = (const uint32_t *)(uintptr_t)a1;
+        uint32_t *ss_old = (uint32_t *)(uintptr_t)a2;
+
+        /* Write old value first */
+        if (ss_old) {
+            ss_old[0] = alt_sp;
+            ss_old[1] = (uint32_t)alt_flags;
+            ss_old[2] = alt_size;
+        }
+
+        /* Set new value */
+        if (ss_new) {
+            int32_t flags = (int32_t)ss_new[1];
+            uint32_t size = ss_new[2];
+
+            /* Validate flags — only SS_DISABLE (2) and 0 are valid */
+            if (flags & ~(0x2 | 0x1)) /* ~(SS_DISABLE | SS_ONSTACK) */
+                return -22; /* -EINVAL */
+
+            if (!(flags & 0x2)) { /* not SS_DISABLE */
+                /* Check minimum size */
+                if (size < 2048) /* MINSIGSTKSZ */
+                    return -12; /* -ENOMEM */
+            }
+
+            alt_sp = ss_new[0];
+            alt_flags = flags;
+            alt_size = size;
+        }
+
+        return 0;
+    }
 
     /* rt_sigsuspend — (set_ptr, sigsetsize)
      * set_ptr points to unsigned long[2] signal mask */
@@ -1240,16 +1289,21 @@ static long __do_syscall(long n, long a1, long a2, long a3,
     /* Filesystem info                                                 */
     /* ============================================================== */
 
-    /* statfs — (path, buf) */
+    /* statfs / statfs64 — musl aliases SYS_statfs64 = SYS_statfs and calls
+       with 3 args: (path, sizeof buf, buf).  Handle both 2-arg and 3-arg. */
     case SYS_STATFS: {
         const char *p = (const char *)(uintptr_t)a1;
-        return (long)kernel_statfs((const uint8_t *)p, slen(p),
-                                   (uint8_t *)(uintptr_t)a2);
+        uint8_t *buf = a3 ? (uint8_t *)(uintptr_t)a3
+                          : (uint8_t *)(uintptr_t)a2;
+        return (long)kernel_statfs((const uint8_t *)p, slen(p), buf);
     }
 
-    /* fstatfs — (fd, buf) */
-    case SYS_FSTATFS:
-        return (long)kernel_fstatfs((int32_t)a1, (uint8_t *)(uintptr_t)a2);
+    /* fstatfs / fstatfs64 — same 3-arg pattern: (fd, sizeof buf, buf) */
+    case SYS_FSTATFS: {
+        uint8_t *buf = a3 ? (uint8_t *)(uintptr_t)a3
+                          : (uint8_t *)(uintptr_t)a2;
+        return (long)kernel_fstatfs((int32_t)a1, buf);
+    }
 
     /* ============================================================== */
     /* Identity (res* variants)                                        */

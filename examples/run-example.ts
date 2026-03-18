@@ -6,7 +6,7 @@
  *
  * Example:
  *   npx tsx examples/run-example.ts hello
- *   npx tsx examples/run-example.ts malloc
+ *   npx tsx examples/run-example.ts /path/to/test.wasm
  */
 
 import { readFileSync } from "fs";
@@ -19,7 +19,6 @@ async function main() {
     const name = process.argv[2];
     if (!name) {
         console.error("Usage: npx tsx examples/run-example.ts <name>");
-        console.error("  e.g. hello, fprintf, strings, math, malloc, files, dirs, snprintf, environ");
         process.exit(1);
     }
 
@@ -33,19 +32,30 @@ async function main() {
     const programBytes = readFileSync(programPath);
 
     const io = new NodePlatformIO();
-    const kernel = new WasmPosixKernel({}, io);
+
+    const kernel = new WasmPosixKernel(
+        { maxWorkers: 1, dataBufferSize: 65536, useSharedMemory: true },
+        io,
+        {
+            onStdout: (data) => process.stdout.write(data),
+            onStderr: (data) => process.stderr.write(data),
+        },
+    );
+
     await kernel.init(kernelBytes);
 
     const runner = new ProgramRunner(kernel);
-    const exitCode = await runner.run(programBytes);
+    const exitCode = await runner.run(programBytes, {
+        env: Object.entries(process.env)
+            .filter(([, v]) => v !== undefined)
+            .map(([k, v]) => `${k}=${v}`),
+        argv: [programPath, ...process.argv.slice(3)],
+    });
 
-    if (exitCode !== 0) {
-        console.error(`\nExited with code ${exitCode}`);
-        process.exit(exitCode);
-    }
+    process.exit(exitCode);
 }
 
-main().catch((err) => {
-    console.error("Fatal:", err);
+main().catch((e) => {
+    console.error(e);
     process.exit(1);
 });

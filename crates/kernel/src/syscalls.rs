@@ -4928,6 +4928,57 @@ mod tests {
     }
 
     #[test]
+    fn test_signal_delivery_after_unblock() {
+        // Reproduce the sigreturn test flow:
+        // 1. Register handler for SIGINT
+        // 2. Block SIGINT
+        // 3. Raise SIGINT (becomes pending but undeliverable)
+        // 4. Unblock SIGINT
+        // 5. Verify signal is dequeued and handler is found
+        let mut proc = Process::new(1);
+        const SIGINT: u32 = 2;
+
+        // Step 1: Set handler for SIGINT (handler_val=42, function pointer)
+        let result = sys_sigaction(&mut proc, SIGINT, 42, 0, 0);
+        assert!(result.is_ok(), "sigaction failed: {:?}", result);
+
+        // Verify handler is stored
+        let handler = proc.signals.get_handler(SIGINT);
+        assert!(matches!(handler, crate::signal::SignalHandler::Handler(42)),
+            "Expected Handler(42), got {:?}", handler);
+
+        // Step 2: Block all signals (SIG_BLOCK with mask=0x7FFFFFFF)
+        let result = sys_sigprocmask(&mut proc, 0, 0x7FFFFFFF);
+        assert!(result.is_ok());
+        assert!(proc.signals.blocked & (1u64 << SIGINT) != 0, "SIGINT should be blocked");
+
+        // Step 3: Raise SIGINT
+        let mut host = MockHostIO::new();
+        let result = sys_raise(&mut proc, &mut host, SIGINT);
+        assert!(result.is_ok());
+        assert!(proc.signals.is_pending(SIGINT), "SIGINT should be pending");
+
+        // Verify dequeue returns None while blocked
+        assert!(proc.signals.dequeue().is_none(), "Shouldn't dequeue blocked signal");
+        // Signal still pending since dequeue failed
+        assert!(proc.signals.is_pending(SIGINT), "SIGINT should still be pending");
+
+        // Step 4: Unblock all (SIG_SETMASK with mask=0)
+        let result = sys_sigprocmask(&mut proc, 2, 0);
+        assert!(result.is_ok());
+        assert!(proc.signals.blocked == 0, "No signals should be blocked");
+
+        // Step 5: Now dequeue should work
+        let sig = proc.signals.dequeue();
+        assert_eq!(sig, Some(SIGINT), "Should dequeue SIGINT");
+
+        // And handler should be Handler(42)
+        let handler = proc.signals.get_handler(SIGINT);
+        assert!(matches!(handler, crate::signal::SignalHandler::Handler(42)),
+            "Handler should still be Handler(42), got {:?}", handler);
+    }
+
+    #[test]
     fn test_fcntl_setlk_and_getlk() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();

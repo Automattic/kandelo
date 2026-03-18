@@ -75,6 +75,8 @@ LINK_FLAGS=(
     -Wl,--shared-memory
     -Wl,--max-memory=1073741824
     -Wl,--allow-undefined
+    -Wl,--table-base=2
+    -Wl,--export-table
 )
 
 # Timeout per test (seconds)
