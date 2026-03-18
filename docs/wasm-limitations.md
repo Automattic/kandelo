@@ -6,7 +6,8 @@ Failures that cannot be fixed without major architectural changes or Wasm spec e
 
 WebAssembly has no native `pthread_create` equivalent. Wasm threads require SharedArrayBuffer + Web Workers, orchestrated entirely by the host. The kernel returns ENOSYS for `clone`/`pthread_create` syscalls from guest code.
 
-**Affected tests:** `pthread_cancel`, `pthread_cancel-points`, `pthread_cond`, `pthread_tsd`, `sem`, `tls_align`, `tls_init`, `tls_local_exec`, `pthread_exit-cancel`, `pthread_rwlock-ebusy`, `raise-race`, `pthread_cond-smasher`
+**Affected tests (functional):** `pthread_cancel`, `pthread_cancel-points`, `pthread_cond`, `pthread_mutex`, `pthread_robust`, `pthread_tsd`, `sem_init`, `sem_open`, `tls_init`
+**Affected tests (regression):** `pthread_exit-cancel`, `pthread_rwlock-ebusy`, `raise-race`, `pthread_cond-smasher`, `pthread_create-oom`, `pthread_once-deadlock`, `pthread-robust-detach`, `tls_get_new-dtv`
 
 **Future path:** Host-managed Web Worker pool where the kernel requests thread creation from the host, which spawns a new Worker sharing the same memory. Requires significant host-side orchestration.
 
@@ -14,7 +15,8 @@ WebAssembly has no native `pthread_create` equivalent. Wasm threads require Shar
 
 `fork()` requires duplicating the entire Wasm linear memory and execution state (call stack, locals, globals). Wasm provides no mechanism to snapshot or clone execution state. Our multi-process support is host-initiated only (host spawns new workers with fresh instances).
 
-**Affected tests:** `daemon-failure`, `fflush-exit`, `pthread_exit-dtor`, `vfork`, `popen`, `wordexp`
+**Affected tests (functional):** `vfork`, `popen`, `spawn`
+**Affected tests (regression):** `daemon-failure`, `fflush-exit`, `pthread_exit-dtor`
 
 **Future path:** Copy-on-write memory via host-side memory mapping. Still can't clone the Wasm call stack — would need a "fork-at-main" approach where the child starts fresh with copied memory.
 
@@ -38,6 +40,26 @@ musl's pthread cancellation uses architecture-specific assembly (`__syscall_cp_a
 
 Tests that deliberately exhaust resources (malloc until OOM, create threads until failure) hang because Wasm's `memory.grow` doesn't properly signal failure in all musl code paths, and single-threaded execution means spinning loops never yield.
 
-**Affected tests:** `flockfile-list`, `malloc-brk-fail`, `malloc-oom`, `pthread_create-oom`, `pthread_once-deadlock`, `pthread-robust-detach`, `setenv-oom`, `tls_get_new-dtv`, `crypt`
+**Affected tests (regression):** `flockfile-list`, `malloc-brk-fail`, `malloc-oom`, `setenv-oom`
 
 **Future path:** Better `brk`/`mmap` failure handling; wasm memory growth limits; host-side timeout and interruption mechanism.
+
+## 6. Missing Infrastructure (not Wasm limitations)
+
+These failures are fixable but require specific features:
+
+| Test | Needs | Priority |
+|------|-------|----------|
+| `execle-env` | `/bin/sh` binary (e.g., dash or mrsh compiled to Wasm) | Medium |
+| `socket` | UDP bind/sendto/recvfrom + TCP listen/accept (loopback) | Medium |
+| `ipc_msg`, `ipc_sem`, `ipc_shm` | SysV IPC (msgget, semget, shmget) | Low |
+
+## Current Test Results (2026-03-17)
+
+| Suite | Pass | Fail | Timeout | Total |
+|-------|------|------|---------|-------|
+| Functional | 47 | 10 | 6 | 63 |
+| Regression | 43 | 11 | 8 | 62 |
+| **Total** | **90** | **21** | **14** | **125** |
+
+Pass rate: **72%** (90/125). All 35 non-passing tests are accounted for in this document.
