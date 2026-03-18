@@ -98,7 +98,11 @@ discover_functional() {
 
 discover_regression() {
     ls "$LIBC_TEST/src/regression/"*.c 2>/dev/null | while read -r f; do
-        basename "$f" .c
+        local name
+        name=$(basename "$f" .c)
+        # Skip _dso helper files (they're not standalone tests)
+        [[ "$name" == *_dso ]] && continue
+        echo "$name"
     done
 }
 

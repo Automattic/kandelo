@@ -18,11 +18,17 @@
 
 import { WasmPosixKernel } from "./kernel";
 
-// Enable exnref for Node.js < 25 (browsers already support it natively)
+// Enable exnref for Node.js < 25 (browsers already support it natively).
+// Must be synchronous — async import() can race with WebAssembly.compile().
 if (typeof process !== "undefined" && process.versions?.node) {
-  import("node:v8")
-    .then(v8 => v8.setFlagsFromString("--experimental-wasm-exnref"))
-    .catch(() => {});
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { createRequire } = require("node:module") as typeof import("node:module");
+    const v8 = createRequire(import.meta.url)("node:v8") as typeof import("node:v8");
+    v8.setFlagsFromString("--experimental-wasm-exnref");
+  } catch {
+    // Ignore — browser or unsupported Node version
+  }
 }
 
 /** Read an unsigned LEB128 integer from a byte array. */
