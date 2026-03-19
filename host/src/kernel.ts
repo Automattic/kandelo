@@ -29,6 +29,7 @@ export interface KernelCallbacks {
   onAlarm?: (seconds: number) => number;
   onFork?: (forkSab: SharedArrayBuffer) => void;
   onWaitpid?: (targetPid: number, options: number) => void;
+  onClone?: (fnPtr: number, arg: number, stackPtr: number, tlsPtr: number, ctidPtr: number) => number;
   onStdout?: (data: Uint8Array) => void;
   onStderr?: (data: Uint8Array) => void;
   /** Read up to maxLen bytes from stdin. Return a Uint8Array with available data, or empty/null for EOF. */
@@ -97,74 +98,57 @@ export class WasmPosixKernel {
    * @param wasmBytes - The compiled kernel Wasm binary
    */
   async init(wasmBytes: BufferSource): Promise<void> {
-    // The Wasm binary compiled with atomics requires shared memory.
-    // The initial/maximum page counts must match the Wasm import declaration
-    // (initial=17, max=16384 as emitted by the Rust toolchain).
     const memory = new WebAssembly.Memory({
       initial: 17,
       maximum: 16384,
       shared: true,
     });
     this.memory = memory;
+    const importObject = this.buildImportObject(memory);
+    const module = await WebAssembly.compile(wasmBytes as BufferSource);
+    this.instance = await WebAssembly.instantiate(module, importObject);
+  }
 
-    const importObject: WebAssembly.Imports = {
+  /**
+   * Like init(), but uses an existing shared WebAssembly.Memory instead of
+   * creating a new one. Used by thread workers that share the parent's memory.
+   */
+  async initWithMemory(wasmBytes: BufferSource, memory: WebAssembly.Memory): Promise<void> {
+    this.memory = memory;
+    const importObject = this.buildImportObject(memory);
+    const module = await WebAssembly.compile(wasmBytes as BufferSource);
+    this.instance = await WebAssembly.instantiate(module, importObject);
+  }
+
+  private buildImportObject(memory: WebAssembly.Memory): WebAssembly.Imports {
+    return {
       env: {
         memory,
-        host_open: (
-          pathPtr: number,
-          pathLen: number,
-          flags: number,
-          mode: number,
-        ): bigint => {
+        host_open: (pathPtr: number, pathLen: number, flags: number, mode: number): bigint => {
           return this.hostOpen(pathPtr, pathLen, flags, mode);
         },
         host_close: (handle: bigint): number => {
           return this.hostClose(handle);
         },
-        host_read: (
-          handle: bigint,
-          bufPtr: number,
-          bufLen: number,
-        ): number => {
+        host_read: (handle: bigint, bufPtr: number, bufLen: number): number => {
           return this.hostRead(handle, bufPtr, bufLen);
         },
-        host_write: (
-          handle: bigint,
-          bufPtr: number,
-          bufLen: number,
-        ): number => {
+        host_write: (handle: bigint, bufPtr: number, bufLen: number): number => {
           return this.hostWrite(handle, bufPtr, bufLen);
         },
-        host_seek: (
-          handle: bigint,
-          offsetLo: number,
-          offsetHi: number,
-          whence: number,
-        ): bigint => {
+        host_seek: (handle: bigint, offsetLo: number, offsetHi: number, whence: number): bigint => {
           return this.hostSeek(handle, offsetLo, offsetHi, whence);
         },
         host_fstat: (handle: bigint, statPtr: number): number => {
           return this.hostFstat(handle, statPtr);
         },
-        host_stat: (
-          pathPtr: number,
-          pathLen: number,
-          statPtr: number,
-        ): number => {
+        host_stat: (pathPtr: number, pathLen: number, statPtr: number): number => {
           return this.hostStat(pathPtr, pathLen, statPtr);
         },
-        host_lstat: (
-          pathPtr: number,
-          pathLen: number,
-          statPtr: number,
-        ): number => {
+        host_lstat: (pathPtr: number, pathLen: number, statPtr: number): number => {
           return this.hostLstat(pathPtr, pathLen, statPtr);
         },
-        host_mkdir: (
-          pathPtr: number,
-          pathLen: number,
-          mode: number,
-        ): number => {
+        host_mkdir: (pathPtr: number, pathLen: number, mode: number): number => {
           return this.hostMkdir(pathPtr, pathLen, mode);
         },
         host_rmdir: (pathPtr: number, pathLen: number): number => {
@@ -173,79 +157,37 @@ export class WasmPosixKernel {
         host_unlink: (pathPtr: number, pathLen: number): number => {
           return this.hostUnlink(pathPtr, pathLen);
         },
-        host_rename: (
-          oldPtr: number,
-          oldLen: number,
-          newPtr: number,
-          newLen: number,
-        ): number => {
+        host_rename: (oldPtr: number, oldLen: number, newPtr: number, newLen: number): number => {
           return this.hostRename(oldPtr, oldLen, newPtr, newLen);
         },
-        host_link: (
-          oldPtr: number,
-          oldLen: number,
-          newPtr: number,
-          newLen: number,
-        ): number => {
+        host_link: (oldPtr: number, oldLen: number, newPtr: number, newLen: number): number => {
           return this.hostLink(oldPtr, oldLen, newPtr, newLen);
         },
-        host_symlink: (
-          targetPtr: number,
-          targetLen: number,
-          linkPtr: number,
-          linkLen: number,
-        ): number => {
+        host_symlink: (targetPtr: number, targetLen: number, linkPtr: number, linkLen: number): number => {
           return this.hostSymlink(targetPtr, targetLen, linkPtr, linkLen);
         },
-        host_readlink: (
-          pathPtr: number,
-          pathLen: number,
-          bufPtr: number,
-          bufLen: number,
-        ): number => {
+        host_readlink: (pathPtr: number, pathLen: number, bufPtr: number, bufLen: number): number => {
           return this.hostReadlink(pathPtr, pathLen, bufPtr, bufLen);
         },
-        host_chmod: (
-          pathPtr: number,
-          pathLen: number,
-          mode: number,
-        ): number => {
+        host_chmod: (pathPtr: number, pathLen: number, mode: number): number => {
           return this.hostChmod(pathPtr, pathLen, mode);
         },
-        host_chown: (
-          pathPtr: number,
-          pathLen: number,
-          uid: number,
-          gid: number,
-        ): number => {
+        host_chown: (pathPtr: number, pathLen: number, uid: number, gid: number): number => {
           return this.hostChown(pathPtr, pathLen, uid, gid);
         },
-        host_access: (
-          pathPtr: number,
-          pathLen: number,
-          amode: number,
-        ): number => {
+        host_access: (pathPtr: number, pathLen: number, amode: number): number => {
           return this.hostAccess(pathPtr, pathLen, amode);
         },
         host_opendir: (pathPtr: number, pathLen: number): bigint => {
           return this.hostOpendir(pathPtr, pathLen);
         },
-        host_readdir: (
-          dirHandle: bigint,
-          direntPtr: number,
-          namePtr: number,
-          nameLen: number,
-        ): number => {
+        host_readdir: (dirHandle: bigint, direntPtr: number, namePtr: number, nameLen: number): number => {
           return this.hostReaddir(dirHandle, direntPtr, namePtr, nameLen);
         },
         host_closedir: (dirHandle: bigint): number => {
           return this.hostClosedir(dirHandle);
         },
-        host_clock_gettime: (
-          clockId: number,
-          secPtr: number,
-          nsecPtr: number,
-        ): number => {
+        host_clock_gettime: (clockId: number, secPtr: number, nsecPtr: number): number => {
           return this.hostClockGettime(clockId, secPtr, nsecPtr);
         },
         host_nanosleep: (sec: bigint, nsec: bigint): number => {
@@ -276,8 +218,6 @@ export class WasmPosixKernel {
           return this.hostSigsuspendWait();
         },
         host_call_signal_handler: (handler_index: number, signum: number): number => {
-          // Signal handlers are registered by the user program, so we must
-          // look up the function in the program's table, not the kernel's.
           const table = this.programFuncTable
             ?? (this.instance?.exports.__indirect_function_table as WebAssembly.Table | undefined);
           if (!table) {
@@ -301,7 +241,6 @@ export class WasmPosixKernel {
             if (typeof globalThis.crypto !== "undefined" && globalThis.crypto.getRandomValues) {
               globalThis.crypto.getRandomValues(target);
             } else {
-              // Fallback for environments without Web Crypto
               for (let i = 0; i < bufLen; i++) target[i] = (Math.random() * 256) | 0;
             }
             return bufLen;
@@ -310,20 +249,12 @@ export class WasmPosixKernel {
           }
         },
         host_utimensat: (
-          pathPtr: number,
-          pathLen: number,
-          atimeSec: bigint,
-          atimeNsec: bigint,
-          mtimeSec: bigint,
-          mtimeNsec: bigint,
+          pathPtr: number, pathLen: number,
+          atimeSec: bigint, atimeNsec: bigint, mtimeSec: bigint, mtimeNsec: bigint,
         ): number => {
           return this.hostUtimensat(pathPtr, pathLen, atimeSec, atimeNsec, mtimeSec, mtimeNsec);
         },
-        host_waitpid: (
-          pid: number,
-          options: number,
-          statusPtr: number,
-        ): number => {
+        host_waitpid: (pid: number, options: number, statusPtr: number): number => {
           return this.hostWaitpid(pid, options, statusPtr);
         },
         host_net_connect: (handle: number, addrPtr: number, addrLen: number, port: number): number => {
@@ -353,13 +284,17 @@ export class WasmPosixKernel {
         host_fork: (): number => {
           return this.hostFork();
         },
+        host_futex_wait: (addr: number, expected: number, timeoutLo: number, timeoutHi: number): number => {
+          return this.hostFutexWait(addr, expected, timeoutLo, timeoutHi);
+        },
+        host_futex_wake: (addr: number, count: number): number => {
+          return this.hostFutexWake(addr, count);
+        },
+        host_clone: (fnPtr: number, arg: number, stackPtr: number, tlsPtr: number, ctidPtr: number): number => {
+          return this.hostClone(fnPtr, arg, stackPtr, tlsPtr, ctidPtr);
+        },
       },
     };
-
-    const module = await WebAssembly.compile(
-      wasmBytes as BufferSource,
-    );
-    this.instance = await WebAssembly.instantiate(module, importObject);
   }
 
   /**
@@ -1785,5 +1720,45 @@ export class WasmPosixKernel {
 
     // Read result (child PID or negative errno)
     return Atomics.load(view, 1);
+  }
+
+  private hostFutexWait(addr: number, expected: number, timeoutLo: number, timeoutHi: number): number {
+    if (!this.memory) return -22; // -EINVAL
+
+    // addr is a byte offset into Wasm shared memory
+    const i32view = new Int32Array(this.memory.buffer);
+    const index = addr >>> 2;
+
+    // Reconstruct 64-bit timeout_ns from lo/hi
+    const timeoutNs = BigInt(timeoutHi >>> 0) * 0x100000000n + BigInt(timeoutLo >>> 0);
+    // Convert to signed
+    const signed = BigInt.asIntN(64, timeoutNs);
+
+    let timeoutMs: number | undefined;
+    if (signed >= 0n) {
+      // Convert ns → ms (rounding up to at least 1ms if nonzero)
+      timeoutMs = Number(signed / 1_000_000n);
+      if (timeoutMs === 0 && signed > 0n) timeoutMs = 1;
+    }
+    // signed < 0 → infinite wait (undefined timeout)
+
+    const result = Atomics.wait(i32view, index, expected, timeoutMs);
+    if (result === "timed-out") return -110; // -ETIMEDOUT
+    if (result === "not-equal") return -11;  // -EAGAIN
+    return 0; // "ok"
+  }
+
+  private hostFutexWake(addr: number, count: number): number {
+    if (!this.memory) return 0;
+    const i32view = new Int32Array(this.memory.buffer);
+    const index = addr >>> 2;
+    return Atomics.notify(i32view, index, count);
+  }
+
+  private hostClone(fnPtr: number, arg: number, stackPtr: number, tlsPtr: number, ctidPtr: number): number {
+    if (this.callbacks.onClone) {
+      return this.callbacks.onClone(fnPtr, arg, stackPtr, tlsPtr, ctidPtr);
+    }
+    return -38; // -ENOSYS — no clone handler registered
   }
 }

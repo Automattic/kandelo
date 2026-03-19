@@ -9,7 +9,8 @@ export type HostToWorkerMessage =
   | RegisterPipeMessage
   | ConvertPipeMessage
   | DeliverSignalMessage
-  | ExecReplyMessage;
+  | ExecReplyMessage
+  | ThreadInitMessage;
 
 export interface GetForkStateMessage {
   type: "get_fork_state";
@@ -73,7 +74,9 @@ export type WorkerToHostMessage =
   | ExecCompleteMessage
   | AlarmSetMessage
   | ForkRequestMessage
-  | WaitpidRequestMessage;
+  | WaitpidRequestMessage
+  | ThreadExitMessage
+  | CloneRequestMessage;
 
 export interface WorkerReadyMessage {
   type: "ready";
@@ -148,6 +151,45 @@ export interface ExecReplyMessage {
   type: "exec_reply";
   wasmBytes: ArrayBuffer;
   programBytes?: ArrayBuffer;
+}
+
+/** Host → Worker: initialize as a thread (not a process) */
+export interface ThreadInitMessage {
+  type: "thread_init";
+  tid: number;
+  wasmBytes: ArrayBuffer;
+  kernelConfig: KernelConfig;
+  programBytes?: ArrayBuffer;
+  fnPtr: number;
+  argPtr: number;
+  stackPtr: number;
+  tlsPtr: number;
+  ctidPtr: number;
+  signalWakeSab?: SharedArrayBuffer;
+  lockTableSab?: SharedArrayBuffer;
+  /** The parent's shared WebAssembly.Memory — threads share the same linear memory. */
+  memory: WebAssembly.Memory;
+}
+
+/** Worker → Host: thread finished */
+export interface ThreadExitMessage {
+  type: "thread_exit";
+  tid: number;
+  exitCode: number;
+}
+
+/** Worker → Host: clone request from kernel */
+export interface CloneRequestMessage {
+  type: "clone_request";
+  pid: number;
+  fnPtr: number;
+  argPtr: number;
+  stackPtr: number;
+  tlsPtr: number;
+  ctidPtr: number;
+  cloneSab: SharedArrayBuffer;
+  /** The parent's shared WebAssembly.Memory for the new thread. */
+  memory: WebAssembly.Memory;
 }
 
 export interface SerializedMountConfig {

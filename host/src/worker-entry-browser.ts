@@ -1,5 +1,5 @@
-import { workerMain } from "./worker-main";
-import type { WorkerInitMessage } from "./worker-protocol";
+import { workerMain, threadWorkerMain } from "./worker-main";
+import type { WorkerInitMessage, ThreadInitMessage } from "./worker-protocol";
 import type { PlatformIO } from "./types";
 import { VirtualPlatformIO } from "./vfs/vfs";
 import { MemoryFileSystem } from "./vfs/memory-fs";
@@ -35,16 +35,19 @@ const sw = globalThis as unknown as {
 };
 
 sw.onmessage = (e: MessageEvent) => {
-  const initData = e.data as WorkerInitMessage;
+  const data = e.data as { type: string };
   const port = {
     postMessage: (msg: unknown, transfer?: unknown[]) =>
       sw.postMessage(msg, transfer as Transferable[]),
-    // workerMain only registers one "message" handler, so replacing onmessage is safe.
     on: (event: string, handler: (...args: unknown[]) => void) => {
       if (event === "message") {
         sw.onmessage = (ev: MessageEvent) => handler(ev.data);
       }
     },
   };
-  workerMain(port, initData, createIO);
+  if (data.type === "thread_init") {
+    threadWorkerMain(port, e.data as ThreadInitMessage, createIO);
+  } else {
+    workerMain(port, e.data as WorkerInitMessage, createIO);
+  }
 };

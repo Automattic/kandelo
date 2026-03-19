@@ -72,6 +72,14 @@ pub trait HostIO {
     /// Request the host to fork the current process.
     /// Returns child PID (>= 0) on success, or negative errno on error.
     fn host_fork(&self) -> i32;
+    /// Futex wait: block if `*addr == expected`, with optional timeout in nanoseconds.
+    /// timeout_ns < 0 means infinite wait.
+    /// Returns 0 on wake, negative errno on error.
+    fn host_futex_wait(&mut self, addr: u32, expected: u32, timeout_ns: i64) -> Result<i32, Errno>;
+    /// Futex wake: wake up to `count` waiters on addr. Returns number woken.
+    fn host_futex_wake(&mut self, addr: u32, count: u32) -> Result<i32, Errno>;
+    /// Clone: spawn a new thread worker. Returns child TID on success.
+    fn host_clone(&mut self, fn_ptr: u32, arg: u32, stack_ptr: u32, tls_ptr: u32, ctid_ptr: u32) -> Result<i32, Errno>;
 }
 
 /// Process lifecycle state.

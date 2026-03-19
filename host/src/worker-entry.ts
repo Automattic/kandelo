@@ -1,6 +1,6 @@
 import { parentPort, workerData } from "node:worker_threads";
-import { workerMain } from "./worker-main";
-import type { WorkerInitMessage } from "./worker-protocol";
+import { workerMain, threadWorkerMain } from "./worker-main";
+import type { WorkerInitMessage, ThreadInitMessage } from "./worker-protocol";
 import type { PlatformIO } from "./types";
 import { NodePlatformIO } from "./platform/node";
 import { VirtualPlatformIO } from "./vfs/vfs";
@@ -24,5 +24,10 @@ function createIO(initData: WorkerInitMessage): PlatformIO {
 }
 
 if (parentPort) {
-  workerMain(parentPort, workerData as WorkerInitMessage, createIO);
+  const data = workerData as { type: string };
+  if (data.type === "thread_init") {
+    threadWorkerMain(parentPort, workerData as ThreadInitMessage, createIO);
+  } else {
+    workerMain(parentPort, workerData as WorkerInitMessage, createIO);
+  }
 }

@@ -3,6 +3,7 @@ import type { KernelCallbacks } from "./kernel";
 import type { PlatformIO } from "./types";
 import type {
   WorkerInitMessage,
+  ThreadInitMessage,
   WorkerToHostMessage,
   HostToWorkerMessage,
   RegisterPipeMessage,
@@ -152,6 +153,27 @@ export async function workerMain(
           pipeSabs: pipeSabs.map(p => ({ handle: p.handle, sab: p.sab, end: p.end })),
         } satisfies WorkerToHostMessage,
         [forkState]);
+      },
+      onClone: (fnPtr: number, arg: number, stackPtr: number, tlsPtr: number, ctidPtr: number): number => {
+        // Thread clone: post clone_request and block until host assigns a TID.
+        const cloneSab = new SharedArrayBuffer(8); // [flag, tid]
+        const view = new Int32Array(cloneSab);
+        Atomics.store(view, 0, 0);
+        Atomics.store(view, 1, 0);
+        port.postMessage({
+          type: "clone_request",
+          pid: initData.pid,
+          fnPtr,
+          argPtr: arg,
+          stackPtr,
+          tlsPtr,
+          ctidPtr,
+          cloneSab,
+          memory: kernel.getMemory()!,
+        } satisfies WorkerToHostMessage);
+        // Block until host signals back with TID
+        Atomics.wait(view, 0, 0);
+        return Atomics.load(view, 1); // TID or negative errno
       },
     };
 
@@ -621,4 +643,108 @@ function setupMessageListener(
       }
     }
   });
+}
+
+/**
+ * Thread worker entry point. Shares the parent's Memory but has its own
+ * Wasm instances (kernel + program). Sets the thread pointer, calls the
+ * thread function via the function table, then signals exit via ctid.
+ */
+export async function threadWorkerMain(
+  port: MessagePort,
+  initData: ThreadInitMessage,
+  createIO: CreateIOFn,
+): Promise<void> {
+  try {
+    const callbacks: KernelCallbacks = {};
+    const io = createIO({
+      type: "init",
+      pid: initData.tid,
+      ppid: 0,
+      wasmBytes: initData.wasmBytes,
+      kernelConfig: initData.kernelConfig,
+    });
+
+    // Use the parent's shared Memory — threads share the same linear memory.
+    const memory = initData.memory;
+    const kernel = new WasmPosixKernel(initData.kernelConfig, io, callbacks);
+    await kernel.initWithMemory(initData.wasmBytes, memory);
+
+    const instance = kernel.getInstance()!;
+
+    if (initData.signalWakeSab) {
+      kernel.registerSignalWakeSab(initData.signalWakeSab);
+    }
+    if (initData.lockTableSab) {
+      kernel.registerSharedLockTable(initData.lockTableSab);
+    }
+
+    // Do NOT call kernel_init — the kernel state is already in shared memory,
+    // initialized by the parent process. Thread workers share that state.
+
+    // Instantiate the user program module against the shared memory
+    if (initData.programBytes) {
+      const programModule = await WebAssembly.compile(initData.programBytes);
+
+      const programImports: WebAssembly.Imports = {
+        kernel: {},
+        env: { memory },
+      };
+      for (const [name, exp] of Object.entries(instance.exports)) {
+        if (typeof exp === "function") {
+          programImports.kernel[name] = exp;
+        }
+      }
+
+      const programInstance = await WebAssembly.instantiate(programModule, programImports);
+
+      // Set the thread pointer via __wasm_thread_init
+      const threadInit = programInstance.exports.__wasm_thread_init as
+        ((tp: number) => void) | undefined;
+      if (threadInit) {
+        threadInit(initData.tlsPtr);
+      }
+
+      // Get the function table to call the thread entry function
+      const funcTable = programInstance.exports.__indirect_function_table as
+        WebAssembly.Table | undefined;
+      if (!funcTable) {
+        throw new Error("Thread: no __indirect_function_table export");
+      }
+
+      // Call the thread entry function: fn(arg)
+      let exitCode = 0;
+      try {
+        const threadFn = funcTable.get(initData.fnPtr) as ((arg: number) => number) | null;
+        if (threadFn) {
+          exitCode = threadFn(initData.argPtr) || 0;
+        }
+      } catch (e) {
+        if (e instanceof Error && e.message.includes("unreachable")) {
+          exitCode = 0;
+        } else {
+          throw e;
+        }
+      }
+
+      // Thread exit: write 0 to *ctid_ptr and futex_wake it (for pthread_join)
+      if (initData.ctidPtr !== 0) {
+        const i32view = new Int32Array(memory.buffer);
+        Atomics.store(i32view, initData.ctidPtr >>> 2, 0);
+        Atomics.notify(i32view, initData.ctidPtr >>> 2, 1);
+      }
+
+      port.postMessage({
+        type: "thread_exit",
+        tid: initData.tid,
+        exitCode,
+      } satisfies WorkerToHostMessage);
+    }
+  } catch (err) {
+    port.postMessage({
+      type: "thread_exit",
+      tid: initData.tid,
+      exitCode: -1,
+    } satisfies WorkerToHostMessage);
+  }
 }

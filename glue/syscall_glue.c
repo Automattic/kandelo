@@ -1801,7 +1801,17 @@ static long __do_syscall(long n, long a1, long a2, long a3,
         return (long)kernel_fork();
 
     case SYS_CLONE:
-        return ENOSYS_NEG; /* not supported in Wasm */
+        /* Thread-style clone: a1=flags, a2=stack, a3=ptid, a4=tls, a5=ctid
+         * (Linux syscall arg order — NOT the same as __clone() wrapper order) */
+        return (long)kernel_clone(
+            0,                         /* fn — set by __clone override */
+            (uint32_t)(uintptr_t)a2,  /* stack */
+            (uint32_t)a1,              /* flags */
+            0,                         /* arg — set by __clone override */
+            (uint32_t)(uintptr_t)a3,  /* ptid */
+            (uint32_t)(uintptr_t)a4,  /* tls */
+            (uint32_t)(uintptr_t)a5   /* ctid */
+        );
 
     /* execve — delegate to kernel */
     case SYS_EXECVE: {

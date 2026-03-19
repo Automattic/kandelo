@@ -3626,21 +3626,108 @@ pub fn sys_set_robust_list() -> Result<(), Errno> {
     Ok(())
 }
 
-// STUB: single-threaded — see plan for threading upgrade notes
-// In single-threaded Wasm, contention is impossible:
-// - FUTEX_WAIT returns EAGAIN (value always "changed" since no other thread)
-// - FUTEX_WAKE returns 0 (no waiters to wake)
-pub fn sys_futex(op: u32) -> Result<i32, Errno> {
+/// futex — real implementation using host Atomics.wait/notify.
+pub fn sys_futex(
+    host: &mut dyn HostIO,
+    uaddr: u32,
+    op: u32,
+    val: u32,
+    timeout: u32,
+    uaddr2: u32,
+    val3: u32,
+) -> Result<i32, Errno> {
     const FUTEX_WAIT: u32 = 0;
     const FUTEX_WAKE: u32 = 1;
+    const FUTEX_FD: u32 = 2;
+    const FUTEX_REQUEUE: u32 = 3;
+    const FUTEX_CMP_REQUEUE: u32 = 4;
+    const FUTEX_WAKE_OP: u32 = 5;
+    const FUTEX_WAIT_BITSET: u32 = 9;
+    const FUTEX_WAKE_BITSET: u32 = 10;
     const FUTEX_PRIVATE_FLAG: u32 = 128;
+    const FUTEX_CLOCK_REALTIME: u32 = 256;
 
-    let base_op = op & !FUTEX_PRIVATE_FLAG;
+    let base_op = op & !(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME);
+
     match base_op {
-        FUTEX_WAIT => Err(Errno::EAGAIN),
-        FUTEX_WAKE => Ok(0),
-        _ => Ok(0), // no-op for all other futex operations
+        FUTEX_WAIT | FUTEX_WAIT_BITSET => {
+            // timeout is a pointer to struct timespec {sec: i32, nsec: i32} in Wasm memory
+            // For FUTEX_WAIT_BITSET, val3 is the bitmask (we ignore it, treat as full mask)
+            let timeout_ns: i64 = if timeout != 0 {
+                // Read timespec from Wasm memory
+                let mem = unsafe {
+                    core::slice::from_raw_parts(timeout as *const u8, 8)
+                };
+                let sec = i32::from_le_bytes([mem[0], mem[1], mem[2], mem[3]]) as i64;
+                let nsec = i32::from_le_bytes([mem[4], mem[5], mem[6], mem[7]]) as i64;
+                if base_op == FUTEX_WAIT {
+                    // Relative timeout
+                    sec * 1_000_000_000 + nsec
+                } else {
+                    // FUTEX_WAIT_BITSET uses absolute timeout by default
+                    // We pass it as-is and let the host handle it as relative
+                    sec * 1_000_000_000 + nsec
+                }
+            } else {
+                -1 // infinite wait
+            };
+            host.host_futex_wait(uaddr, val, timeout_ns)
+        }
+        FUTEX_WAKE | FUTEX_WAKE_BITSET => {
+            host.host_futex_wake(uaddr, val)
+        }
+        FUTEX_REQUEUE => {
+            // Wake val waiters on uaddr, requeue remaining to uaddr2
+            // Simplified: just wake val waiters (no requeue support)
+            host.host_futex_wake(uaddr, val)
+        }
+        FUTEX_CMP_REQUEUE => {
+            // Like REQUEUE but check *uaddr == val3 first
+            // Simplified: just wake val waiters
+            let _ = (uaddr2, val3);
+            host.host_futex_wake(uaddr, val)
+        }
+        FUTEX_WAKE_OP => {
+            // Wake val waiters on uaddr, then conditionally wake val3 on uaddr2
+            // Simplified: just wake val waiters on uaddr
+            let _ = (uaddr2, val3);
+            host.host_futex_wake(uaddr, val)
+        }
+        _ => Ok(0), // no-op for unrecognized ops
     }
+}
+
+/// clone — spawn a new thread via the host.
+pub fn sys_clone(
+    host: &mut dyn HostIO,
+    fn_ptr: u32,
+    stack_ptr: u32,
+    flags: u32,
+    arg: u32,
+    ptid_ptr: u32,
+    tls_ptr: u32,
+    ctid_ptr: u32,
+) -> Result<i32, Errno> {
+    const CLONE_VM: u32 = 0x00000100;
+    const CLONE_THREAD: u32 = 0x00010000;
+    const CLONE_PARENT_SETTID: u32 = 0x00100000;
+
+    // We only support thread-style clone (CLONE_VM | CLONE_THREAD)
+    if flags & CLONE_VM == 0 || flags & CLONE_THREAD == 0 {
+        return Err(Errno::ENOSYS);
+    }
+
+    let tid = host.host_clone(fn_ptr, arg, stack_ptr, tls_ptr, ctid_ptr)?;
+
+    // Write TID to parent's tid pointer if CLONE_PARENT_SETTID
+    if flags & CLONE_PARENT_SETTID != 0 && ptid_ptr != 0 {
+        unsafe {
+            let ptr = ptid_ptr as *mut i32;
+            *ptr = tid;
+        }
+    }
+
+    Ok(tid)
 }
 
 /// ppoll — poll with atomic signal mask swap.
@@ -4542,6 +4629,15 @@ mod tests {
         }
         fn host_fork(&self) -> i32 {
             -(Errno::ENOSYS as i32)
+        }
+        fn host_futex_wait(&mut self, _addr: u32, _expected: u32, _timeout_ns: i64) -> Result<i32, Errno> {
+            Err(Errno::EAGAIN)
+        }
+        fn host_futex_wake(&mut self, _addr: u32, _count: u32) -> Result<i32, Errno> {
+            Ok(0)
+        }
+        fn host_clone(&mut self, _fn_ptr: u32, _arg: u32, _stack_ptr: u32, _tls_ptr: u32, _ctid_ptr: u32) -> Result<i32, Errno> {
+            Err(Errno::ENOSYS)
         }
     }
 
@@ -7774,6 +7870,15 @@ mod tests {
         fn host_fork(&self) -> i32 {
             -(Errno::ENOSYS as i32)
         }
+        fn host_futex_wait(&mut self, _addr: u32, _expected: u32, _timeout_ns: i64) -> Result<i32, Errno> {
+            Err(Errno::EAGAIN)
+        }
+        fn host_futex_wake(&mut self, _addr: u32, _count: u32) -> Result<i32, Errno> {
+            Ok(0)
+        }
+        fn host_clone(&mut self, _fn_ptr: u32, _arg: u32, _stack_ptr: u32, _tls_ptr: u32, _ctid_ptr: u32) -> Result<i32, Errno> {
+            Err(Errno::ENOSYS)
+        }
     }
 
     /// Helper: open a directory and return its fd.
@@ -8052,6 +8157,9 @@ mod tests {
             fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> { Err(Errno::ENOENT) }
             fn host_fcntl_lock(&mut self, _p: &[u8], _pid: u32, _cmd: u32, _lt: u32, _s: i64, _l: i64, _r: &mut [u8]) -> Result<(), Errno> { Ok(()) }
             fn host_fork(&self) -> i32 { -(Errno::ENOSYS as i32) }
+            fn host_futex_wait(&mut self, _a: u32, _e: u32, _t: i64) -> Result<i32, Errno> { Err(Errno::EAGAIN) }
+            fn host_futex_wake(&mut self, _a: u32, _c: u32) -> Result<i32, Errno> { Ok(0) }
+            fn host_clone(&mut self, _f: u32, _a: u32, _s: u32, _t: u32, _c: u32) -> Result<i32, Errno> { Err(Errno::ENOSYS) }
         }
 
         let mut proc = Process::new(1);
