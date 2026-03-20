@@ -7,6 +7,7 @@ import type {
 } from "./worker-protocol";
 import { SharedPipeBuffer } from "./shared-pipe-buffer";
 import { SharedLockTable } from "./shared-lock-table";
+import type { CentralizedKernelWorker } from "./kernel-worker";
 
 export interface ProcessInfo {
   pid: number;
@@ -28,6 +29,13 @@ export interface ProcessManagerConfig {
   kernelConfig: KernelConfig;
   workerAdapter: WorkerAdapter;
   resolveProgram?: (path: string) => Promise<ArrayBuffer | null>;
+  /**
+   * Optional centralized kernel worker. When provided, processes use
+   * channel IPC to communicate with this single kernel instance instead
+   * of each worker instantiating its own kernel. Requires programs
+   * compiled with channel_syscall.c instead of syscall_glue.c.
+   */
+  centralizedKernel?: CentralizedKernelWorker;
 }
 
 export interface SpawnOptions {
