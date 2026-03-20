@@ -1,29 +1,25 @@
 # libc-test Failure Report
 
-Generated: 2026-03-18 19:24 UTC
+Generated: 2026-03-20 03:01 UTC
 
 | Status | Count |
 |--------|-------|
-| PASS | 281 |
-| FAIL | 24 |
+| PASS | 289 |
+| FAIL | 20 |
 | BUILD | 0 |
-| TIMEOUT | 19 |
+| TIMEOUT | 15 |
 | **TOTAL** | **324** |
 
-## Runtime Failures (24)
+## Runtime Failures (20)
 
 | Test | Category |
 |------|----------|
 | `ipc_msg` |  functional |
 | `ipc_sem` |  functional |
 | `ipc_shm` |  functional |
-| `tls_init` |  functional |
 | `execle-env` |  regression |
 | `pthread_cond-smasher` |  regression |
-| `pthread_exit-cancel` |  regression |
-| `pthread_rwlock-ebusy` |  regression |
-| `raise-race` |  regression |
-| `sigaltstack` |  regression |
+| `pthread-robust-detach` |  regression |
 | `acosh` |  math |
 | `asinh` |  math |
 | `erfc` |  math |
@@ -39,17 +35,13 @@ Generated: 2026-03-18 19:24 UTC
 | `y0f` |  math |
 | `ynf` |  math |
 
-## Timeouts (19)
+## Timeouts (15)
 
 | Test | Category |
 |------|----------|
 | `pthread_cancel-points` |  functional |
 | `pthread_cancel` |  functional |
-| `pthread_cond` |  functional |
-| `pthread_mutex` |  functional |
 | `pthread_robust` |  functional |
-| `pthread_tsd` |  functional |
-| `sem_init` |  functional |
 | `sem_open` |  functional |
 | `setjmp` |  functional |
 | `flockfile-list` |  regression |
@@ -58,12 +50,12 @@ Generated: 2026-03-18 19:24 UTC
 | `pthread_cancel-sem_wait` |  regression |
 | `pthread_cond_wait-cancel_ignored` |  regression |
 | `pthread_create-oom` |  regression |
-| `pthread_once-deadlock` |  regression |
-| `pthread-robust-detach` |  regression |
+| `raise-race` |  regression |
 | `setenv-oom` |  regression |
+| `sigaltstack` |  regression |
 | `tls_get_new-dtv` |  regression |
 
-## Passing Tests (281)
+## Passing Tests (289)
 
 <details>
 <summary>Click to expand</summary>
@@ -87,12 +79,16 @@ Generated: 2026-03-18 19:24 UTC
 | `mbc` |  functional |
 | `memstream` |  functional |
 | `popen` |  functional |
+| `pthread_cond` |  functional |
+| `pthread_mutex` |  functional |
+| `pthread_tsd` |  functional |
 | `qsort` |  functional |
 | `random` |  functional |
 | `search_hsearch` |  functional |
 | `search_insque` |  functional |
 | `search_lsearch` |  functional |
 | `search_tsearch` |  functional |
+| `sem_init` |  functional |
 | `snprintf` |  functional |
 | `socket` |  functional |
 | `spawn` |  functional |
@@ -115,6 +111,7 @@ Generated: 2026-03-18 19:24 UTC
 | `swprintf` |  functional |
 | `tgmath` |  functional |
 | `time` |  functional |
+| `tls_init` |  functional |
 | `udiv` |  functional |
 | `ungetc` |  functional |
 | `vfork` |  functional |
@@ -145,7 +142,10 @@ Generated: 2026-03-18 19:24 UTC
 | `printf-fmt-g-zeros` |  regression |
 | `printf-fmt-n` |  regression |
 | `pthread_condattr_setclock` |  regression |
+| `pthread_exit-cancel` |  regression |
 | `pthread_exit-dtor` |  regression |
+| `pthread_once-deadlock` |  regression |
+| `pthread_rwlock-ebusy` |  regression |
 | `putenv-doublefree` |  regression |
 | `regex-backref-0` |  regression |
 | `regex-bracket-icase` |  regression |

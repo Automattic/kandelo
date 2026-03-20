@@ -73,6 +73,7 @@ unsafe extern "C" {
     fn host_futex_wait(addr: u32, expected: u32, timeout_ns_lo: u32, timeout_ns_hi: u32) -> i32;
     fn host_futex_wake(addr: u32, count: u32) -> i32;
     fn host_clone(fn_ptr: u32, arg: u32, stack_ptr: u32, tls_ptr: u32, ctid_ptr: u32) -> i32;
+    fn host_is_thread_worker() -> i32;
 }
 
 // ---------------------------------------------------------------------------
@@ -2180,12 +2181,26 @@ pub extern "C" fn kernel_mprotect(addr: u32, len: u32, prot: u32) -> i32 {
 }
 
 /// Exit the process. Closes all fds and dir streams, sets state to Exited.
+/// For thread workers, just sets exit_status without destroying shared state.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_exit(status: i32) {
-    let (_gkl, proc) = unsafe { get_process() };
-    let mut host = WasmHostIO;
-    syscalls::sys_exit(proc, &mut host, status);
-    // No signal delivery after exit -- process is already terminated.
+pub extern "C" fn kernel_exit(status: i32) -> ! {
+    {
+        let (_gkl, proc) = unsafe { get_process() };
+        if unsafe { host_is_thread_worker() } != 0 {
+            // Thread exit: don't destroy shared process state (FDs, pipes, etc.).
+            // Just set exit status and return — the glue will trap via unreachable.
+            proc.exit_status = status;
+            // Drop GKL guard before trapping
+        } else {
+            let mut host = WasmHostIO;
+            syscalls::sys_exit(proc, &mut host, status);
+        }
+    } // _gkl dropped here — GKL released
+    // Halt execution — musl's _exit loops forever if we just return.
+    #[cfg(target_arch = "wasm32")]
+    unsafe { core::arch::wasm32::unreachable(); }
+    #[cfg(not(target_arch = "wasm32"))]
+    unreachable!("kernel_exit should not return");
 }
 
 /// Get the exit status of the current process (set by kernel_exit).

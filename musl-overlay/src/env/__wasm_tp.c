@@ -5,10 +5,10 @@
  * struct pthread. 64 unsigned longs = 256 bytes, more than enough
  * for struct pthread on wasm32 (~120 bytes).
  *
- * __wasm_thread_pointer is a mutable global that each Wasm Instance
- * gets its own copy of, making it naturally per-thread. The main
- * thread sets it to __wasm_tp_storage during __init_libc.
+ * __wasm_thread_pointer is _Thread_local so LLVM places it relative
+ * to __tls_base (a per-instance Wasm global), giving each thread its
+ * own copy even when sharing linear memory.
  */
 
 unsigned long __wasm_tp_storage[64];
-unsigned long __wasm_thread_pointer;
+_Thread_local unsigned long __wasm_thread_pointer;

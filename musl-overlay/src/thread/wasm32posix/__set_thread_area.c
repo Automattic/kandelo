@@ -6,7 +6,7 @@
  */
 #include "pthread_impl.h"
 
-extern unsigned long __wasm_thread_pointer;
+extern _Thread_local unsigned long __wasm_thread_pointer;
 
 int __set_thread_area(void *p)
 {

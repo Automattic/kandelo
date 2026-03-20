@@ -36,7 +36,12 @@ rm -rf "$MUSL_DIR/arch/wasm32posix"
 cp -r "$OVERLAY_DIR/arch/wasm32posix" "$MUSL_DIR/arch/"
 
 # Copy source file overlays (e.g., Wasm-specific __libc_start_main.c)
+# First, clean wasm32posix dirs in musl tree to remove stale overlay files
 if [ -d "$OVERLAY_DIR/src" ]; then
+    find "$OVERLAY_DIR/src" -type d -name wasm32posix | while read dir; do
+        rel="${dir#$OVERLAY_DIR/src/}"
+        rm -rf "$MUSL_DIR/src/$rel"
+    done
     cp -r "$OVERLAY_DIR/src/"* "$MUSL_DIR/src/"
 fi
 

@@ -8,7 +8,7 @@
  * Exported from the user program module so the host can call it.
  */
 
-extern unsigned long __wasm_thread_pointer;
+extern _Thread_local unsigned long __wasm_thread_pointer;
 
 /* Exported: host calls this to set TP before invoking the thread function */
 __attribute__((visibility("default")))

@@ -671,6 +671,9 @@ export class ProcessManager {
           // Thread done — nothing to clean up for now
         }
       });
+      threadWorker.on("error", () => {
+        // Thread worker error — logged by worker itself
+      });
 
       // Signal parent with the TID
       Atomics.store(view, 1, tid);

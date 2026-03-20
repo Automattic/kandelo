@@ -26,7 +26,7 @@ static void dummy1(void *p) {}
 weak_alias(dummy1, __init_ssp);
 
 extern unsigned long __wasm_tp_storage[64];
-extern unsigned long __wasm_thread_pointer;
+extern _Thread_local unsigned long __wasm_thread_pointer;
 int __init_tp(void *);
 
 void __init_libc(char **envp, char *pn)
@@ -36,6 +36,13 @@ void __init_libc(char **envp, char *pn)
 	/* On Wasm, there is no auxv, TLS, or secure-execution mode.
 	 * Set up minimal libc state only. */
 	libc.page_size = 65536; /* Wasm page size */
+
+	/* Set minimal TLS metrics so pthread_create's __copy_tls can
+	 * correctly lay out struct pthread for new threads. LLVM Wasm TLS
+	 * (_Thread_local) is handled separately by __wasm_init_tls; musl
+	 * only needs to know how much space to reserve for struct pthread. */
+	libc.tls_size = 2*sizeof(void *) + sizeof(struct pthread);
+	libc.tls_align = _Alignof(struct pthread) > 4 ? _Alignof(struct pthread) : 4;
 
 	if (!pn) pn = "";
 	__progname = __progname_full = pn;

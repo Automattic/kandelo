@@ -48,6 +48,7 @@ export class WasmPosixKernel {
   private programFuncTable: WebAssembly.Table | null = null;
   private forkSab: SharedArrayBuffer | null = null;
   private waitpidSab: SharedArrayBuffer | null = null;
+  isThreadWorker = false;
 
   /**
    * Set the user program's indirect function table so signal handlers
@@ -293,6 +294,9 @@ export class WasmPosixKernel {
         host_clone: (fnPtr: number, arg: number, stackPtr: number, tlsPtr: number, ctidPtr: number): number => {
           return this.hostClone(fnPtr, arg, stackPtr, tlsPtr, ctidPtr);
         },
+        host_is_thread_worker: (): number => {
+          return this.isThreadWorker ? 1 : 0;
+        },
       },
     };
   }
@@ -436,6 +440,7 @@ export class WasmPosixKernel {
     const h = Number(handle);
     const mem = this.getMemoryBuffer();
     const data = mem.slice(bufPtr, bufPtr + bufLen);
+
 
     // Check shared pipe registry
     const writeEntry = this.sharedPipes.get(h);

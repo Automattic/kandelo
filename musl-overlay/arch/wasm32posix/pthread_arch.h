@@ -1,9 +1,9 @@
 /*
- * Wasm per-thread thread pointer via a C global variable.
+ * Wasm per-thread thread pointer via _Thread_local.
  *
- * Each Wasm Instance has its own copy of global variables, making this
- * naturally per-thread when threads use separate Instances sharing
- * the same Memory.
+ * LLVM places _Thread_local variables relative to __tls_base, a
+ * per-instance Wasm global. Each thread (separate Wasm Instance
+ * sharing linear memory) gets its own copy automatically.
  *
  * The main thread sets __wasm_thread_pointer to point at __wasm_tp_storage.
  * Thread workers set it via __wasm_thread_init() before running.
@@ -12,7 +12,7 @@
  */
 
 extern unsigned long __wasm_tp_storage[64]; /* main thread backing storage */
-extern unsigned long __wasm_thread_pointer;
+extern _Thread_local unsigned long __wasm_thread_pointer;
 
 static inline uintptr_t __get_tp(void)
 {

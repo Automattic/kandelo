@@ -77,6 +77,12 @@ LINK_FLAGS=(
     -Wl,--allow-undefined
     -Wl,--table-base=2
     -Wl,--export-table
+    -Wl,--export=__wasm_init_tls
+    -Wl,--export=__tls_base
+    -Wl,--export=__tls_size
+    -Wl,--export=__tls_align
+    -Wl,--export=__stack_pointer
+    -Wl,--export=__wasm_thread_init
 )
 
 # Asyncify support: instrument wasm so fork() can save/restore call stack
