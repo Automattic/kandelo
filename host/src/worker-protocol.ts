@@ -49,6 +49,7 @@ export interface WorkerInitMessage {
   lockTableSab?: SharedArrayBuffer;
   forkSab?: SharedArrayBuffer;
   waitpidSab?: SharedArrayBuffer;
+  ipcSab?: SharedArrayBuffer;
   programBytes?: ArrayBuffer;
   mounts?: SerializedMountConfig[];
   /** Asyncify fork resume data — if present, child resumes from fork point. */
@@ -193,6 +194,7 @@ export interface ThreadInitMessage {
   ctidPtr: number;
   signalWakeSab?: SharedArrayBuffer;
   lockTableSab?: SharedArrayBuffer;
+  ipcSab?: SharedArrayBuffer;
   /** The parent's shared WebAssembly.Memory — threads share the same linear memory. */
   memory: WebAssembly.Memory;
 }

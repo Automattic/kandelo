@@ -193,6 +193,12 @@ export async function workerMain(
       kernel.registerSharedLockTable(initData.lockTableSab);
     }
 
+    if (initData.ipcSab) {
+      kernel.registerSharedIpcTable(initData.ipcSab);
+    }
+
+    kernel.pid = initData.pid;
+
     if (initData.forkSab) {
       kernel.registerForkSab(initData.forkSab);
     }
@@ -600,6 +606,12 @@ function setupMessageListener(
             if (initData.lockTableSab) {
               newKernel.registerSharedLockTable(initData.lockTableSab);
             }
+
+            if (initData.ipcSab) {
+              newKernel.registerSharedIpcTable(initData.ipcSab);
+            }
+
+            newKernel.pid = initData.pid;
 
             // Transfer fork SAB to new kernel
             if (initData.forkSab) {

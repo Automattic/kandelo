@@ -736,4 +736,44 @@ uint32_t kernel_get_argc(void);
 KERNEL_IMPORT(kernel_argv_read)
 uint32_t kernel_argv_read(uint32_t index, uint8_t *buf_ptr, uint32_t buf_max);
 
+/* ------------------------------------------------------------------ */
+/* SysV IPC                                                            */
+/* ------------------------------------------------------------------ */
+
+KERNEL_IMPORT(kernel_ipc_msgget)
+int32_t kernel_ipc_msgget(int32_t key, int32_t flags);
+
+KERNEL_IMPORT(kernel_ipc_msgsnd)
+int32_t kernel_ipc_msgsnd(int32_t qid, int32_t msg_ptr, int32_t msg_sz,
+                          int32_t flags);
+
+KERNEL_IMPORT(kernel_ipc_msgrcv)
+int32_t kernel_ipc_msgrcv(int32_t qid, int32_t msg_ptr, int32_t msg_sz,
+                          int32_t msgtyp, int32_t flags);
+
+KERNEL_IMPORT(kernel_ipc_msgctl)
+int32_t kernel_ipc_msgctl(int32_t qid, int32_t cmd, int32_t buf_ptr);
+
+KERNEL_IMPORT(kernel_ipc_semget)
+int32_t kernel_ipc_semget(int32_t key, int32_t nsems, int32_t flags);
+
+KERNEL_IMPORT(kernel_ipc_semop)
+int32_t kernel_ipc_semop(int32_t semid, int32_t sops_ptr, int32_t nsops);
+
+KERNEL_IMPORT(kernel_ipc_semctl)
+int32_t kernel_ipc_semctl(int32_t semid, int32_t semnum, int32_t cmd,
+                          int32_t arg);
+
+KERNEL_IMPORT(kernel_ipc_shmget)
+int32_t kernel_ipc_shmget(int32_t key, int32_t size, int32_t flags);
+
+KERNEL_IMPORT(kernel_ipc_shmat)
+int32_t kernel_ipc_shmat(int32_t shmid, int32_t shmaddr, int32_t flags);
+
+KERNEL_IMPORT(kernel_ipc_shmdt)
+int32_t kernel_ipc_shmdt(int32_t addr);
+
+KERNEL_IMPORT(kernel_ipc_shmctl)
+int32_t kernel_ipc_shmctl(int32_t shmid, int32_t cmd, int32_t buf_ptr);
+
 #endif /* SYSCALL_IMPORTS_H */

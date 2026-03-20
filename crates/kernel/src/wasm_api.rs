@@ -86,6 +86,18 @@ unsafe extern "C" {
     fn host_futex_wake(addr: u32, count: u32) -> i32;
     fn host_clone(fn_ptr: u32, arg: u32, stack_ptr: u32, tls_ptr: u32, ctid_ptr: u32) -> i32;
     fn host_is_thread_worker() -> i32;
+    // SysV IPC
+    fn host_ipc_msgget(key: i32, flags: i32) -> i32;
+    fn host_ipc_msgsnd(qid: i32, msg_ptr: i32, msg_sz: i32, flags: i32) -> i32;
+    fn host_ipc_msgrcv(qid: i32, msg_ptr: i32, msg_sz: i32, msgtyp: i32, flags: i32) -> i32;
+    fn host_ipc_msgctl(qid: i32, cmd: i32, buf_ptr: i32) -> i32;
+    fn host_ipc_semget(key: i32, nsems: i32, flags: i32) -> i32;
+    fn host_ipc_semop(semid: i32, sops_ptr: i32, nsops: i32) -> i32;
+    fn host_ipc_semctl(semid: i32, semnum: i32, cmd: i32, arg: i32) -> i32;
+    fn host_ipc_shmget(key: i32, size: i32, flags: i32) -> i32;
+    fn host_ipc_shmat(shmid: i32, shmaddr: i32, flags: i32) -> i32;
+    fn host_ipc_shmdt(addr: i32) -> i32;
+    fn host_ipc_shmctl(shmid: i32, cmd: i32, buf_ptr: i32) -> i32;
 }
 
 // ---------------------------------------------------------------------------
@@ -1269,15 +1281,87 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
             kernel_statx(a1, p, len, a3 as u32, a4 as u32, a5 as *mut u8)
         }
 
+        // SysV IPC
+        337 => kernel_ipc_msgget(a1, a2),          // SYS_MSGGET
+        338 => kernel_ipc_msgrcv(a1, a2, a3, a4, a5), // SYS_MSGRCV
+        339 => kernel_ipc_msgsnd(a1, a2, a3, a4),  // SYS_MSGSND
+        340 => kernel_ipc_msgctl(a1, a2, a3),       // SYS_MSGCTL
+        341 => kernel_ipc_semget(a1, a2, a3),       // SYS_SEMGET
+        342 => kernel_ipc_semop(a1, a2, a3),        // SYS_SEMOP
+        343 => kernel_ipc_semctl(a1, a2, a3, a4),   // SYS_SEMCTL
+        344 => kernel_ipc_shmget(a1, a2, a3),       // SYS_SHMGET
+        345 => kernel_ipc_shmat(a1, a2, a3),        // SYS_SHMAT
+        346 => kernel_ipc_shmdt(a1),                // SYS_SHMDT
+        347 => kernel_ipc_shmctl(a1, a2, a3),       // SYS_SHMCTL
+
         // Stubs that return 0 or -ENOSYS
         204 => kernel_raise(a2 as u32),            // SYS_TKILL
-        208 | 209 | 226 | 230..=238 | 239..=249 | 252..=254 | 256..=257 | 262 | 265..=268 | 271..=274 | 287 | 289..=293 | 297..=298 | 301..=305 | 306 | 308..=324 | 325..=336 | 337..=349 | 350..=369 | 370..=371 | 373..=383 | 386 => {
+        208 | 209 | 226 | 230..=238 | 239..=249 | 252..=254 | 256..=257 | 262 | 265..=268 | 271..=274 | 287 | 289..=293 | 297..=298 | 301..=305 | 306 | 308..=324 | 325..=336 | 348..=349 | 350..=369 | 370..=371 | 373..=383 | 386 => {
             // Many of these are stubs in the glue layer too; return ENOSYS
             -(Errno::ENOSYS as i32)
         }
 
         _ => -(Errno::ENOSYS as i32),
     }
+}
+
+// ---------------------------------------------------------------------------
+// SysV IPC kernel exports — thin wrappers to host imports
+// ---------------------------------------------------------------------------
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_ipc_msgget(key: i32, flags: i32) -> i32 {
+    unsafe { host_ipc_msgget(key, flags) }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_ipc_msgsnd(qid: i32, msg_ptr: i32, msg_sz: i32, flags: i32) -> i32 {
+    unsafe { host_ipc_msgsnd(qid, msg_ptr, msg_sz, flags) }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_ipc_msgrcv(qid: i32, msg_ptr: i32, msg_sz: i32, msgtyp: i32, flags: i32) -> i32 {
+    unsafe { host_ipc_msgrcv(qid, msg_ptr, msg_sz, msgtyp, flags) }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_ipc_msgctl(qid: i32, cmd: i32, buf_ptr: i32) -> i32 {
+    unsafe { host_ipc_msgctl(qid, cmd, buf_ptr) }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_ipc_semget(key: i32, nsems: i32, flags: i32) -> i32 {
+    unsafe { host_ipc_semget(key, nsems, flags) }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_ipc_semop(semid: i32, sops_ptr: i32, nsops: i32) -> i32 {
+    unsafe { host_ipc_semop(semid, sops_ptr, nsops) }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_ipc_semctl(semid: i32, semnum: i32, cmd: i32, arg: i32) -> i32 {
+    unsafe { host_ipc_semctl(semid, semnum, cmd, arg) }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_ipc_shmget(key: i32, size: i32, flags: i32) -> i32 {
+    unsafe { host_ipc_shmget(key, size, flags) }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_ipc_shmat(shmid: i32, shmaddr: i32, flags: i32) -> i32 {
+    unsafe { host_ipc_shmat(shmid, shmaddr, flags) }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_ipc_shmdt(addr: i32) -> i32 {
+    unsafe { host_ipc_shmdt(addr) }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_ipc_shmctl(shmid: i32, cmd: i32, buf_ptr: i32) -> i32 {
+    unsafe { host_ipc_shmctl(shmid, cmd, buf_ptr) }
 }
 
 /// Initialize the kernel with a new process.

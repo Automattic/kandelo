@@ -7,6 +7,7 @@ import type {
 } from "./worker-protocol";
 import { SharedPipeBuffer } from "./shared-pipe-buffer";
 import { SharedLockTable } from "./shared-lock-table";
+import { SharedIpcTable } from "./shared-ipc-table";
 import type { CentralizedKernelWorker } from "./kernel-worker";
 
 export interface ProcessInfo {
@@ -60,10 +61,12 @@ export class ProcessManager {
   private nextPipeHandle = 1000; // Start at 1000 to avoid conflicts with file handles
   private sharedPipes = new Map<number, SharedPipeBuffer>();
   private sharedLockTable: SharedLockTable;
+  private sharedIpcTable: SharedIpcTable;
 
   constructor(config: ProcessManagerConfig) {
     this.config = config;
     this.sharedLockTable = SharedLockTable.create();
+    this.sharedIpcTable = SharedIpcTable.create();
   }
 
   async spawn(options?: SpawnOptions): Promise<number> {
@@ -85,6 +88,7 @@ export class ProcessManager {
       cwd: options?.cwd,
       signalWakeSab,
       lockTableSab: this.sharedLockTable.getBuffer(),
+      ipcSab: this.sharedIpcTable.getBuffer(),
       forkSab,
       waitpidSab,
       programBytes: options?.programBytes,
@@ -275,6 +279,7 @@ export class ProcessManager {
       forkState,
       signalWakeSab,
       lockTableSab: this.sharedLockTable.getBuffer(),
+      ipcSab: this.sharedIpcTable.getBuffer(),
       forkSab: childForkSab,
       programBytes: parentInfo.programBytes,
     };
@@ -676,6 +681,7 @@ export class ProcessManager {
       tlsPtr,
       ctidPtr,
       lockTableSab: this.sharedLockTable.getBuffer(),
+      ipcSab: this.sharedIpcTable.getBuffer(),
       memory,
     };
 
@@ -733,6 +739,7 @@ export class ProcessManager {
       forkState: asyncifyData ? undefined : forkState,
       signalWakeSab,
       lockTableSab: this.sharedLockTable.getBuffer(),
+      ipcSab: this.sharedIpcTable.getBuffer(),
       forkSab: childForkSab,
       waitpidSab: childWaitpidSab,
       programBytes: parentInfo.programBytes,

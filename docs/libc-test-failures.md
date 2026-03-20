@@ -1,22 +1,19 @@
 # libc-test Failure Report
 
-Generated: 2026-03-20 03:01 UTC
+Generated: 2026-03-20 20:18 UTC
 
 | Status | Count |
 |--------|-------|
-| PASS | 289 |
-| FAIL | 20 |
+| PASS | 292 |
+| FAIL | 17 |
 | BUILD | 0 |
 | TIMEOUT | 15 |
 | **TOTAL** | **324** |
 
-## Runtime Failures (20)
+## Runtime Failures (17)
 
 | Test | Category |
 |------|----------|
-| `ipc_msg` |  functional |
-| `ipc_sem` |  functional |
-| `ipc_shm` |  functional |
 | `execle-env` |  regression |
 | `pthread_cond-smasher` |  regression |
 | `pthread-robust-detach` |  regression |
@@ -55,7 +52,7 @@ Generated: 2026-03-20 03:01 UTC
 | `sigaltstack` |  regression |
 | `tls_get_new-dtv` |  regression |
 
-## Passing Tests (289)
+## Passing Tests (292)
 
 <details>
 <summary>Click to expand</summary>
@@ -76,6 +73,9 @@ Generated: 2026-03-20 03:01 UTC
 | `fwscanf` |  functional |
 | `iconv_open` |  functional |
 | `inet_pton` |  functional |
+| `ipc_msg` |  functional |
+| `ipc_sem` |  functional |
+| `ipc_shm` |  functional |
 | `mbc` |  functional |
 | `memstream` |  functional |
 | `popen` |  functional |

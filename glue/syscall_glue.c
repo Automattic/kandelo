@@ -1856,29 +1856,78 @@ static long __do_syscall(long n, long a1, long a2, long a3,
         return ENOSYS_NEG;
 
     /* ============================================================== */
-    /* IPC stubs (SysV + POSIX MQ) — all return ENOSYS                */
+    /* SysV IPC — dispatch to kernel imports                           */
     /* ============================================================== */
 
     case SYS_MSGGET:
+        return kernel_ipc_msgget(a1, a2);
     case SYS_MSGSND:
+        return kernel_ipc_msgsnd(a1, (int32_t)a2, (int32_t)a3, a4);
     case SYS_MSGRCV:
+        return kernel_ipc_msgrcv(a1, (int32_t)a2, (int32_t)a3, a4, a5);
     case SYS_MSGCTL:
+        return kernel_ipc_msgctl(a1, a2, (int32_t)a3);
     case SYS_SEMGET:
+        return kernel_ipc_semget(a1, a2, a3);
     case SYS_SEMOP:
+        return kernel_ipc_semop(a1, (int32_t)a2, a3);
     case SYS_SEMCTL:
-    case SYS_SEMTIMEDOP:
+        return kernel_ipc_semctl(a1, a2, a3, (int32_t)a4);
     case SYS_SHMGET:
+        return kernel_ipc_shmget(a1, (int32_t)a2, a3);
     case SYS_SHMAT:
+        return kernel_ipc_shmat(a1, (int32_t)a2, a3);
     case SYS_SHMDT:
+        return kernel_ipc_shmdt((int32_t)a1);
     case SYS_SHMCTL:
+        return kernel_ipc_shmctl(a1, a2, (int32_t)a3);
+
+    /* POSIX MQ + IPC multiplexer — still ENOSYS */
+    case SYS_SEMTIMEDOP:
     case SYS_MQ_OPEN:
     case SYS_MQ_UNLINK:
     case SYS_MQ_TIMEDSEND:
     case SYS_MQ_TIMEDRECEIVE:
     case SYS_MQ_NOTIFY:
     case SYS_MQ_GETSETATTR:
-    case SYS_IPC:
-        return ENOSYS_NEG;
+    case SYS_IPC: {
+        /* SysV IPC multiplexer — a1 = IPCOP_*, a2-a6 = sub-op args */
+        long op = a1;
+        switch (op) {
+        case 13: /* IPCOP_msgget: (key, flag) */
+            return kernel_ipc_msgget(a2, a3);
+        case 11: /* IPCOP_msgsnd: (qid, len, flag, msgp) */
+            return kernel_ipc_msgsnd(a2, (int32_t)a5, (int32_t)a3, a4);
+        case 12: { /* IPCOP_msgrcv: (qid, len, flag, {msgp, type}) */
+            /* a5 points to {long msgp; long type} */
+            long *pair = (long *)a5;
+            return kernel_ipc_msgrcv(a2, (int32_t)pair[0], (int32_t)a3, pair[1], a4);
+        }
+        case 14: /* IPCOP_msgctl: (qid, cmd, 0, buf) */
+            return kernel_ipc_msgctl(a2, a3, (int32_t)a5);
+        case 2:  /* IPCOP_semget: (key, nsems, flag) */
+            return kernel_ipc_semget(a2, a3, a4);
+        case 1:  /* IPCOP_semop: (id, nsops, 0, buf) */
+            return kernel_ipc_semop(a2, (int32_t)a5, a3);
+        case 3:  /* IPCOP_semctl: (id, num, cmd, &arg) */
+            return kernel_ipc_semctl(a2, a3, a4, (int32_t)a5);
+        case 23: /* IPCOP_shmget: (key, size, flag) */
+            return kernel_ipc_shmget(a2, a3, a4);
+        case 21: { /* IPCOP_shmat: (id, flag, &raddr, addr) */
+            int32_t addr = kernel_ipc_shmat(a2, (int32_t)a5, a3);
+            if (addr < 0) return addr; /* error */
+            /* Write result address back through pointer (a4) */
+            *(long *)a4 = addr;
+            return 0;
+        }
+        case 22: /* IPCOP_shmdt: (0, 0, 0, addr) */
+            return kernel_ipc_shmdt((int32_t)a5);
+        case 24: /* IPCOP_shmctl: (id, cmd, 0, buf) */
+            return kernel_ipc_shmctl(a2, a3, (int32_t)a5);
+        default:
+            return ENOSYS_NEG;
+        }
+    }
 
     /* ============================================================== */
     /* Extended attributes stubs — all return ENOSYS                   */
