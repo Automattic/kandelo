@@ -25,6 +25,10 @@ extern weak hidden void (*const __init_array_start)(void), (*const __init_array_
 static void dummy1(void *p) {}
 weak_alias(dummy1, __init_ssp);
 
+extern unsigned long __wasm_tp_storage[64];
+extern _Thread_local unsigned long __wasm_thread_pointer;
+int __init_tp(void *);
+
 void __init_libc(char **envp, char *pn)
 {
 	__environ = envp;
@@ -33,17 +37,22 @@ void __init_libc(char **envp, char *pn)
 	 * Set up minimal libc state only. */
 	libc.page_size = 65536; /* Wasm page size */
 
+	/* Set minimal TLS metrics so pthread_create's __copy_tls can
+	 * correctly lay out struct pthread for new threads. LLVM Wasm TLS
+	 * (_Thread_local) is handled separately by __wasm_init_tls; musl
+	 * only needs to know how much space to reserve for struct pthread. */
+	libc.tls_size = 2*sizeof(void *) + sizeof(struct pthread);
+	libc.tls_align = _Alignof(struct pthread) > 4 ? _Alignof(struct pthread) : 4;
+
 	if (!pn) pn = "";
 	__progname = __progname_full = pn;
 
-	/* Initialize the thread pointer.  On real architectures this is
-	 * done by __init_tls -> __init_tp, but Wasm has no TLS segments.
-	 * We must at least set td->self and td->locale so that
-	 * CURRENT_UTF8 / CURRENT_LOCALE (which dereference td->locale)
-	 * don't crash with a null-pointer read. */
-	pthread_t td = __pthread_self();
-	td->self = td;
-	td->locale = &libc.global_locale;
+	/* Initialize the thread pointer for the main thread.
+	 * Set __wasm_thread_pointer to point at __wasm_tp_storage,
+	 * then call __init_tp which sets self, locale, tid,
+	 * libc.can_do_threads, etc. */
+	__wasm_thread_pointer = (unsigned long)__wasm_tp_storage;
+	__init_tp((void *)__wasm_tp_storage);
 }
 
 static void libc_start_init(void)

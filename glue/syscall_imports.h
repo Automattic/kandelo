@@ -397,7 +397,7 @@ int32_t kernel_statx(int32_t dirfd, const uint8_t *path_ptr,
                      uint8_t *statx_ptr);
 
 /* ------------------------------------------------------------------ */
-/* Thread/runtime init stubs (single-threaded)                         */
+/* Thread / runtime                                                    */
 /* ------------------------------------------------------------------ */
 
 KERNEL_IMPORT(kernel_gettid)
@@ -412,6 +412,11 @@ int32_t kernel_set_robust_list(uint32_t head, uint32_t len);
 KERNEL_IMPORT(kernel_futex)
 int32_t kernel_futex(uint32_t uaddr, uint32_t op, uint32_t val,
                      uint32_t timeout, uint32_t uaddr2, uint32_t val3);
+
+KERNEL_IMPORT(kernel_clone)
+int32_t kernel_clone(uint32_t fn_ptr, uint32_t stack_ptr, uint32_t flags,
+                     uint32_t arg, uint32_t ptid_ptr, uint32_t tls_ptr,
+                     uint32_t ctid_ptr);
 
 /* ------------------------------------------------------------------ */
 /* Process control                                                     */

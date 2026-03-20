@@ -44,6 +44,11 @@ int kernel_environ_get(unsigned index, unsigned char *buf, unsigned buf_max);
 __attribute__((export_name("_start")))
 void _start(void)
 {
+    /* Note: LLVM TLS for the main thread is initialized by the Wasm
+     * module's start function (__wasm_init_memory), which runs before
+     * _start. Do NOT call __wasm_init_tls here — the passive data
+     * segments have already been dropped by that point. */
+
     /*
      * _start_c expects a pointer p where:
      *   p[0] = argc

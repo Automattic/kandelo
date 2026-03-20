@@ -1190,10 +1190,17 @@ static long __do_syscall(long n, long a1, long a2, long a3,
         return (long)kernel_setsockopt((int32_t)a1, (uint32_t)a2,
                                        (uint32_t)a3, (uint32_t)a4);
 
-    /* getsockname — (fd, buf_ptr, buf_len) */
-    case SYS_GETSOCKNAME:
-        return (long)kernel_getsockname((int32_t)a1, (uint32_t)a2,
-                                        (uint32_t)a3);
+    /* getsockname — (fd, addr, addrlen_ptr) */
+    case SYS_GETSOCKNAME: {
+        uint32_t *addrlen_ptr = (uint32_t *)(uintptr_t)a3;
+        uint32_t buf_len = *addrlen_ptr;
+        int32_t ret = kernel_getsockname((int32_t)a1, (uint32_t)a2, buf_len);
+        if (ret >= 0) {
+            *addrlen_ptr = (uint32_t)ret;
+            return 0;
+        }
+        return (long)ret;
+    }
 
     /* getpeername — (fd, buf_ptr, buf_len) */
     case SYS_GETPEERNAME:
@@ -1217,13 +1224,24 @@ static long __do_syscall(long n, long a1, long a2, long a3,
                                    (const uint8_t *)(uintptr_t)a5,
                                    (uint32_t)a6);
 
-    /* recvfrom — (fd, buf, len, flags, addr, addrlen) */
-    case SYS_RECVFROM:
-        return (long)kernel_recvfrom((int32_t)a1,
-                                     (uint8_t *)(uintptr_t)a2,
-                                     (uint32_t)a3, (uint32_t)a4,
-                                     (uint8_t *)(uintptr_t)a5,
-                                     (uint32_t)a6);
+    /* recvfrom — (fd, buf, len, flags, addr, addrlen_ptr) */
+    case SYS_RECVFROM: {
+        uint32_t addr_buf_len = 0;
+        uint32_t *addrlen_ptr = (uint32_t *)(uintptr_t)a6;
+        if (addrlen_ptr) {
+            addr_buf_len = *addrlen_ptr;
+        }
+        int32_t ret = kernel_recvfrom((int32_t)a1,
+                                      (uint8_t *)(uintptr_t)a2,
+                                      (uint32_t)a3, (uint32_t)a4,
+                                      (uint8_t *)(uintptr_t)a5,
+                                      addr_buf_len);
+        if (ret >= 0 && addrlen_ptr && a5) {
+            /* kernel_recvfrom returns data bytes; addr is 16 bytes for sockaddr_in */
+            *addrlen_ptr = 16;
+        }
+        return (long)ret;
+    }
 
     /* select — (nfds, readfds, writefds, exceptfds, timeout_ms) */
     case SYS_SELECT:
@@ -1783,7 +1801,17 @@ static long __do_syscall(long n, long a1, long a2, long a3,
         return (long)kernel_fork();
 
     case SYS_CLONE:
-        return ENOSYS_NEG; /* not supported in Wasm */
+        /* Thread-style clone: a1=flags, a2=stack, a3=ptid, a4=tls, a5=ctid
+         * (Linux syscall arg order — NOT the same as __clone() wrapper order) */
+        return (long)kernel_clone(
+            0,                         /* fn — set by __clone override */
+            (uint32_t)(uintptr_t)a2,  /* stack */
+            (uint32_t)a1,              /* flags */
+            0,                         /* arg — set by __clone override */
+            (uint32_t)(uintptr_t)a3,  /* ptid */
+            (uint32_t)(uintptr_t)a4,  /* tls */
+            (uint32_t)(uintptr_t)a5   /* ctid */
+        );
 
     /* execve — delegate to kernel */
     case SYS_EXECVE: {

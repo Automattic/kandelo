@@ -27,6 +27,13 @@ pub enum SocketState {
     Closed,
 }
 
+/// A received UDP datagram.
+pub struct Datagram {
+    pub data: Vec<u8>,
+    pub src_addr: [u8; 4],
+    pub src_port: u16,
+}
+
 /// Per-socket kernel state.
 pub struct SocketInfo {
     pub domain: SocketDomain,
@@ -47,6 +54,14 @@ pub struct SocketInfo {
     pub host_net_handle: Option<i32>,
     /// Stored socket options as (level, optname, value) tuples.
     pub options: Vec<(u32, u32, u32)>,
+    /// Bound IPv4 address (for AF_INET sockets).
+    pub bind_addr: [u8; 4],
+    /// Bound port (for AF_INET sockets).
+    pub bind_port: u16,
+    /// Pending connection socket indices (for listening sockets).
+    pub listen_backlog: Vec<usize>,
+    /// Received UDP datagrams (for DGRAM sockets).
+    pub dgram_queue: Vec<Datagram>,
 }
 
 impl SocketInfo {
@@ -63,6 +78,10 @@ impl SocketInfo {
             shut_wr: false,
             host_net_handle: None,
             options: Vec::new(),
+            bind_addr: [0; 4],
+            bind_port: 0,
+            listen_backlog: Vec::new(),
+            dgram_queue: Vec::new(),
         }
     }
 
@@ -128,6 +147,11 @@ impl SocketTable {
     /// Get a mutable reference to socket info at `idx`.
     pub fn get_mut(&mut self, idx: usize) -> Option<&mut SocketInfo> {
         self.entries.get_mut(idx).and_then(|s| s.as_mut())
+    }
+
+    /// Return the number of slots (for iteration).
+    pub fn len(&self) -> usize {
+        self.entries.len()
     }
 }
 

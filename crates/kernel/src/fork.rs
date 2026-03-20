@@ -593,6 +593,7 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
         fork_exec_path,
         fork_exec_argv,
         fork_fd_actions,
+        next_ephemeral_port: 49152,
     })
 }
 
@@ -913,6 +914,7 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
         fork_exec_path: None,
         fork_exec_argv: None,
         fork_fd_actions: Vec::new(),
+        next_ephemeral_port: 49152,
     })
 }
 

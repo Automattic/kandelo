@@ -3,6 +3,8 @@ import type { KernelCallbacks } from "./kernel";
 import type { PlatformIO } from "./types";
 import type {
   WorkerInitMessage,
+  CentralizedWorkerInitMessage,
+  ThreadInitMessage,
   WorkerToHostMessage,
   HostToWorkerMessage,
   RegisterPipeMessage,
@@ -152,6 +154,29 @@ export async function workerMain(
           pipeSabs: pipeSabs.map(p => ({ handle: p.handle, sab: p.sab, end: p.end })),
         } satisfies WorkerToHostMessage,
         [forkState]);
+      },
+      onClone: (fnPtr: number, arg: number, stackPtr: number, tlsPtr: number, ctidPtr: number): number => {
+        // Thread clone: post clone_request and block until host assigns a TID.
+        const mem = kernel.getMemory()!;
+        const cloneSab = new SharedArrayBuffer(8); // [flag, tid]
+        const view = new Int32Array(cloneSab);
+        Atomics.store(view, 0, 0);
+        Atomics.store(view, 1, 0);
+        port.postMessage({
+          type: "clone_request",
+          pid: initData.pid,
+          fnPtr,
+          argPtr: arg,
+          stackPtr,
+          tlsPtr,
+          ctidPtr,
+          cloneSab,
+          memory: mem,
+        } satisfies WorkerToHostMessage);
+        // Block until host signals back with TID
+        Atomics.wait(view, 0, 0, 3000);
+        const tid = Atomics.load(view, 1);
+        return tid; // TID or negative errno
       },
     };
 
@@ -621,4 +646,450 @@ function setupMessageListener(
       }
     }
   });
+}
+
+/**
+ * Build minimal JavaScript kernel stubs for thread workers.
+ *
+ * Thread workers cannot instantiate the Wasm kernel module because its active
+ * data segments would overwrite the parent's kernel state in shared memory.
+ * Instead, we provide JavaScript functions that implement just the syscalls
+ * needed by musl's __pthread_exit path (futex, sigprocmask, exit, write).
+ * All other syscalls return -ENOSYS.
+ */
+function buildThreadKernelStubs(
+  memory: WebAssembly.Memory,
+  tid: number,
+  io: PlatformIO,
+): Record<string, (...args: number[]) => number | bigint | void> {
+  const ENOSYS = -38;
+
+  // Default stub — returns -ENOSYS for any unimplemented kernel function.
+  // The program module imports ~168 kernel functions; most are unused by threads.
+  const defaultStub = () => ENOSYS;
+
+  // i64-returning functions need to return BigInt
+  const defaultStub64 = () => BigInt(ENOSYS);
+
+  const stubs: Record<string, (...args: number[]) => number | bigint | void> = {
+    // ── Identity ──
+    kernel_getpid: () => 1,
+    kernel_getppid: () => 0,
+    kernel_gettid: () => tid,
+    kernel_getuid: () => 0,
+    kernel_geteuid: () => 0,
+    kernel_getgid: () => 0,
+    kernel_getegid: () => 0,
+    kernel_getpgrp: () => 1,
+
+    // ── Futex (critical for __tl_lock / __tl_unlock / pthread_join) ──
+    kernel_futex: (uaddr: number, op: number, val: number, timeout: number, _uaddr2: number, _val3: number): number => {
+      const i32 = new Int32Array(memory.buffer);
+      const index = uaddr >>> 2;
+      const FUTEX_PRIVATE = 128;
+      const opCode = op & ~FUTEX_PRIVATE;
+      const FUTEX_WAIT = 0;
+      const FUTEX_WAKE = 1;
+
+      if (opCode === FUTEX_WAIT) {
+        const actual = Atomics.load(i32, index);
+        if (actual !== val) return -11; // -EAGAIN (not-equal)
+        const result = Atomics.wait(i32, index, val);
+        if (result === "ok" || result === "not-equal") return 0;
+        return -110; // -ETIMEDOUT
+      } else if (opCode === FUTEX_WAKE) {
+        return Atomics.notify(i32, index, val);
+      }
+      return ENOSYS;
+    },
+
+    // ── Signals (no-op for threads) ──
+    // sigprocmask returns i64 in the Wasm ABI
+    kernel_sigprocmask: (_how: number, _set: number, _oldset: number) => 0n,
+    kernel_sigaction: (_sig: number, _act: number, _oact: number, _sigsetsize: number) => 0,
+    kernel_signal: (_sig: number, _handler: number) => 0,
+    kernel_sigsuspend: () => ENOSYS,
+    kernel_raise: () => 0,
+    kernel_kill: () => 0,
+    kernel_rt_sigtimedwait: () => ENOSYS,
+
+    // ── Exit ──
+    kernel_exit: (_status: number): void => {
+      // No-op — the unreachable instruction after __unmapself will trap,
+      // which the host catches to clean up the thread.
+    },
+
+    // ── Memory (minimal support) ──
+    kernel_mmap: (_addr: number, len: number, _prot: number, _flags: number, _fd: number, _offset: number): number => {
+      // Simple bump allocator using memory.grow
+      const pages = Math.ceil(len / 65536) || 1;
+      const page = memory.grow(pages);
+      if (page === -1) return -12; // -ENOMEM
+      return page * 65536;
+    },
+    kernel_munmap: () => 0,
+    kernel_mprotect: () => 0,
+    kernel_brk: (addr: number) => addr, // no-op, return requested addr
+    kernel_madvise: () => 0,
+    kernel_mremap: () => ENOSYS,
+
+    // ── Thread-related ──
+    kernel_set_tid_address: (_addr: number) => tid,
+    kernel_set_robust_list: () => 0,
+    kernel_clone: () => ENOSYS,
+    kernel_fork: () => ENOSYS,
+
+    // ── I/O (minimal — just write for debug output) ──
+    kernel_write: (fd: number, bufPtr: number, len: number): number => {
+      if (fd === 1 || fd === 2) {
+        const bytes = new Uint8Array(memory.buffer, bufPtr, len);
+        try {
+          // PlatformIO.write(handle, buffer, offset, length)
+          io.write(fd, bytes, null, len);
+        } catch { /* ignore */ }
+        return len;
+      }
+      return ENOSYS;
+    },
+    kernel_read: () => ENOSYS,
+    kernel_open: () => ENOSYS,
+    kernel_close: () => 0,
+
+    // ── Time ──
+    kernel_clock_gettime: (clockId: number, tp: number): number => {
+      const now = Date.now();
+      const sec = Math.floor(now / 1000);
+      const nsec = (now % 1000) * 1_000_000;
+      const view = new DataView(memory.buffer);
+      // timespec: { tv_sec: i32, tv_nsec: i32 } for wasm32
+      // Actually for wasm32, time_t is i64 but stored as two i32s? No, it's i32 for wasm32.
+      view.setInt32(tp, sec, true);
+      view.setInt32(tp + 4, nsec, true);
+      return 0;
+    },
+    kernel_gettimeofday: (tv: number) => {
+      const now = Date.now();
+      const sec = Math.floor(now / 1000);
+      const usec = (now % 1000) * 1000;
+      const view = new DataView(memory.buffer);
+      view.setInt32(tv, sec, true);
+      view.setInt32(tv + 4, usec, true);
+      return 0;
+    },
+    kernel_nanosleep: () => 0,
+    kernel_usleep: () => 0,
+
+    // ── Misc no-ops ──
+    kernel_sysconf: (_name: number) => -1n, // returns i64
+    kernel_umask: () => 0o22,
+    kernel_prctl: () => ENOSYS,
+    kernel_getrlimit: () => ENOSYS,
+    kernel_setrlimit: () => ENOSYS,
+    kernel_getrusage: () => ENOSYS,
+    kernel_isatty: () => 0,
+    kernel_getrandom: (buf: number, len: number): number => {
+      const bytes = new Uint8Array(memory.buffer, buf, len);
+      crypto.getRandomValues(bytes);
+      return len;
+    },
+
+    // ── i64-returning functions ──
+    kernel_lseek: defaultStub64 as () => bigint,
+    kernel_time: () => BigInt(Math.floor(Date.now() / 1000)),
+    kernel_telldir: defaultStub64 as () => bigint,
+    kernel_fpathconf: defaultStub64 as () => bigint,
+
+    // ── Void-returning functions ──
+    kernel_push_argv: (): void => {},
+    kernel_rewinddir: (): void => {},
+    kernel_seekdir: (): void => {},
+  };
+
+  // Functions that return i64 in the Wasm ABI (must return BigInt)
+  const i64Functions = new Set([
+    "kernel_lseek", "kernel_time", "kernel_telldir",
+    "kernel_fpathconf", "kernel_pathconf", "kernel_sysconf",
+    "kernel_sigprocmask",
+  ]);
+
+  // Return a Proxy that falls back to defaultStub for any missing function
+  return new Proxy(stubs, {
+    get(target, prop: string) {
+      if (prop in target) return target[prop];
+      if (i64Functions.has(prop)) {
+        return () => BigInt(ENOSYS);
+      }
+      return () => ENOSYS;
+    },
+  });
+}
+
+/**
+ * Thread worker entry point. Shares the parent's Memory but has its own
+ * program Wasm instance. Provides JavaScript kernel stubs instead of a Wasm
+ * kernel to avoid corrupting the parent's kernel state in shared memory.
+ */
+export async function threadWorkerMain(
+  port: MessagePort,
+  initData: ThreadInitMessage,
+  createIO: CreateIOFn,
+): Promise<void> {
+  try {
+    // Use the parent's shared Memory — threads share the same linear memory.
+    const memory = initData.memory;
+
+    // Thread workers do NOT instantiate the Wasm kernel module. The kernel
+    // stores its state (Process struct, FD table) in the shared linear memory,
+    // so instantiating a second kernel would overwrite the parent's state via
+    // active data segments. Instead, provide JavaScript kernel stubs that
+    // operate directly on the shared program memory.
+    const tid = initData.tid;
+    const io = createIO({
+      type: "init",
+      pid: tid,
+      ppid: 0,
+      wasmBytes: initData.wasmBytes,
+      kernelConfig: initData.kernelConfig,
+    });
+
+    // Instantiate the user program module against the shared memory
+    if (initData.programBytes) {
+      const programModule = await WebAssembly.compile(initData.programBytes);
+
+      // Build kernel stubs — minimal syscall implementations for threads.
+      const kernelStubs = buildThreadKernelStubs(memory, tid, io);
+      const programImports: WebAssembly.Imports = {
+        kernel: kernelStubs,
+        env: { memory },
+      };
+
+      const programInstance = await WebAssembly.instantiate(programModule, programImports);
+
+      // Initialize LLVM TLS block for this thread instance.
+      // _Thread_local variables are relative to __tls_base; __wasm_init_tls
+      // copies the TLS template into a fresh block so each thread has its own.
+      const initTls = programInstance.exports.__wasm_init_tls as
+        ((base: number) => void) | undefined;
+      const tlsSize = programInstance.exports.__tls_size as
+        WebAssembly.Global | undefined;
+
+      if (initTls && tlsSize) {
+        const size = (tlsSize.value as number) || 64;
+        const alignedSize = (size + 15) & ~15; // 16-byte align
+        const pages = Math.ceil(alignedSize / 65536) || 1;
+        const page = memory.grow(pages);
+        const tlsBlock = page * 65536;
+        initTls(tlsBlock);
+      }
+
+      // Set __stack_pointer to the thread's allocated stack so the thread
+      // doesn't corrupt the parent's stack in shared memory.
+      const stackPointer = programInstance.exports.__stack_pointer as
+        WebAssembly.Global | undefined;
+      if (stackPointer && initData.stackPtr) {
+        stackPointer.value = initData.stackPtr;
+      }
+
+      // Set the thread pointer via __wasm_thread_init
+      const threadInit = programInstance.exports.__wasm_thread_init as
+        ((tp: number) => void) | undefined;
+      if (threadInit) {
+        threadInit(initData.tlsPtr);
+      }
+
+      // Get the function table to call the thread entry function
+      const funcTable = programInstance.exports.__indirect_function_table as
+        WebAssembly.Table | undefined;
+      if (!funcTable) {
+        throw new Error("Thread: no __indirect_function_table export");
+      }
+
+      // Call the thread entry function: fn(arg)
+      let exitCode = 0;
+      try {
+        const threadFn = funcTable.get(initData.fnPtr) as ((arg: number) => number) | null;
+        if (threadFn) {
+          // CRITICAL: Copy the start_args struct from parent's stack (in shared
+          // memory) to a child-local region. The parent may have already returned
+          // from pthread_create by the time we get here, overwriting the args on
+          // its stack. Allocate a fresh page for the copy.
+          const argsPage = memory.grow(1);
+          const argsCopyBase = argsPage * 65536;
+          const ARGS_COPY_SIZE = 256; // generous — musl's start_args is ~48 bytes
+          const src = new Uint8Array(memory.buffer, initData.argPtr, ARGS_COPY_SIZE);
+          const dst = new Uint8Array(memory.buffer, argsCopyBase, ARGS_COPY_SIZE);
+          dst.set(src);
+
+          exitCode = threadFn(argsCopyBase) || 0;
+        }
+      } catch (e) {
+        if (e instanceof Error && e.message.includes("unreachable")) {
+          exitCode = 0;
+        } else {
+          throw e;
+        }
+      }
+
+      // Thread exit: signal ctid and tid for pthread_join.
+      // musl's __pthread_exit already wrote self->tid = 0 in shared memory
+      // before the thread trapped. We need to:
+      // 1. Write 0 to *ctid (CLONE_CHILD_CLEARTID — __thread_list_lock)
+      // 2. futex_wake on self->tid so pthread_join's __wait unblocks
+      const i32view = new Int32Array(memory.buffer);
+      if (initData.ctidPtr !== 0) {
+        Atomics.store(i32view, initData.ctidPtr >>> 2, 0);
+        Atomics.notify(i32view, initData.ctidPtr >>> 2, 1);
+      }
+      // tid is at offset 24 in struct pthread; tlsPtr IS the struct pointer
+      const PTHREAD_TID_OFFSET = 24;
+      const tidAddr = initData.tlsPtr + PTHREAD_TID_OFFSET;
+      const tidIndex = tidAddr >>> 2;
+      Atomics.store(i32view, tidIndex, 0);
+      Atomics.notify(i32view, tidIndex, Infinity);
+
+      port.postMessage({
+        type: "thread_exit",
+        tid: initData.tid,
+        exitCode,
+      } satisfies WorkerToHostMessage);
+    }
+  } catch (err) {
+    // Always signal ctid and tid so parent doesn't hang on pthread_join
+    if (initData.memory) {
+      try {
+        const i32view = new Int32Array(initData.memory.buffer);
+        if (initData.ctidPtr !== 0) {
+          Atomics.store(i32view, initData.ctidPtr >>> 2, 0);
+          Atomics.notify(i32view, initData.ctidPtr >>> 2, 1);
+        }
+        const PTHREAD_TID_OFFSET = 24;
+        const tidAddr = initData.tlsPtr + PTHREAD_TID_OFFSET;
+        Atomics.store(i32view, tidAddr >>> 2, 0);
+        Atomics.notify(i32view, tidAddr >>> 2, Infinity);
+      } catch { /* ignore — memory may be detached */ }
+    }
+    port.postMessage({
+      type: "thread_exit",
+      tid: initData.tid,
+      exitCode: -1,
+    } satisfies WorkerToHostMessage);
+  }
+}
+
+// =========================================================================
+// Centralized-mode Worker entry point
+// =========================================================================
+
+/**
+ * Entry point for process Workers in centralized kernel mode.
+ *
+ * Unlike workerMain(), this does NOT instantiate a WasmPosixKernel.
+ * The user program (compiled with channel_syscall.c) communicates with
+ * the centralized kernel via atomic channel IPC in shared Memory.
+ *
+ * The Worker's job is simply to:
+ * 1. Compile and instantiate the user Wasm module
+ * 2. Set up TLS (including __channel_base for the syscall channel)
+ * 3. Run _start
+ * 4. Report exit
+ */
+export async function centralizedWorkerMain(
+  port: MessagePort,
+  initData: CentralizedWorkerInitMessage,
+): Promise<void> {
+  try {
+    const { memory, programBytes, channelOffset, pid } = initData;
+
+    // Compile the user program module
+    const module = await WebAssembly.compile(programBytes);
+
+    // Build env imports. Channel-mode programs only import env.* (no kernel.*).
+    // The main import is the shared Memory.
+    const envImports: Record<string, WebAssembly.ExportValue> = { memory };
+
+    // Stub any unresolved env function imports
+    for (const imp of WebAssembly.Module.imports(module)) {
+      if (imp.module === "env" && imp.kind === "function") {
+        if (!envImports[imp.name]) {
+          envImports[imp.name] = (..._args: unknown[]) => {
+            throw new Error(`Unimplemented import: env.${imp.name}`);
+          };
+        }
+      }
+    }
+
+    const importObject: WebAssembly.Imports = { env: envImports };
+    const instance = await WebAssembly.instantiate(module, importObject);
+
+    // Initialize TLS for this thread
+    const initTls = instance.exports.__wasm_init_tls as
+      ((base: number) => void) | undefined;
+    const tlsSize = instance.exports.__tls_size as
+      WebAssembly.Global | undefined;
+
+    let tlsBlock = 0;
+    if (initTls && tlsSize) {
+      const size = (tlsSize.value as number) || 64;
+      const alignedSize = (size + 15) & ~15;
+      const pages = Math.ceil(alignedSize / 65536) || 1;
+      const page = memory.grow(pages);
+      tlsBlock = page * 65536;
+      initTls(tlsBlock);
+    }
+
+    // Set __channel_base in TLS so __do_syscall knows where the channel is.
+    // __channel_base is a _Thread_local uint32_t. Its offset within TLS is
+    // determined by the linker. We need to find the TLS offset of __channel_base
+    // and write the channel offset there.
+    //
+    // Strategy: the Wasm module should export __channel_base_tls_offset or
+    // we can compute it from the __tls_base global + known TLS layout.
+    // For now, look for a __set_channel_base export or use the TLS symbol.
+    const setChannelBase = instance.exports.__set_channel_base as
+      ((offset: number) => void) | undefined;
+
+    if (setChannelBase) {
+      setChannelBase(channelOffset);
+    } else if (tlsBlock > 0) {
+      // Fallback: __channel_base is typically the first TLS variable.
+      // The .tbss section containing __channel_base starts at offset 0 in TLS.
+      // Write the channel offset at tlsBlock + 0.
+      const view = new DataView(memory.buffer);
+      view.setUint32(tlsBlock, channelOffset, true);
+    }
+
+    // Signal ready
+    port.postMessage({
+      type: "ready",
+      pid,
+    } satisfies WorkerToHostMessage);
+
+    // Run the program
+    let exitCode = 0;
+    try {
+      const start = instance.exports._start as (() => void) | undefined;
+      if (start) {
+        start();
+      }
+    } catch (e) {
+      if (e instanceof Error && e.message.includes("unreachable")) {
+        // Normal exit via kernel_exit → unreachable trap
+        exitCode = 0;
+      } else {
+        throw e;
+      }
+    }
+
+    port.postMessage({
+      type: "exit",
+      pid,
+      status: exitCode,
+    } satisfies WorkerToHostMessage);
+  } catch (err) {
+    port.postMessage({
+      type: "error",
+      pid: initData.pid,
+      message: `Centralized worker failed: ${err instanceof Error ? err.message : String(err)}`,
+    } satisfies WorkerToHostMessage);
+  }
 }

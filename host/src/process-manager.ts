@@ -2,10 +2,12 @@ import type { WorkerAdapter, WorkerHandle } from "./worker-adapter";
 import type { KernelConfig } from "./types";
 import type {
   WorkerInitMessage,
+  ThreadInitMessage,
   WorkerToHostMessage,
 } from "./worker-protocol";
 import { SharedPipeBuffer } from "./shared-pipe-buffer";
 import { SharedLockTable } from "./shared-lock-table";
+import type { CentralizedKernelWorker } from "./kernel-worker";
 
 export interface ProcessInfo {
   pid: number;
@@ -27,6 +29,13 @@ export interface ProcessManagerConfig {
   kernelConfig: KernelConfig;
   workerAdapter: WorkerAdapter;
   resolveProgram?: (path: string) => Promise<ArrayBuffer | null>;
+  /**
+   * Optional centralized kernel worker. When provided, processes use
+   * channel IPC to communicate with this single kernel instance instead
+   * of each worker instantiating its own kernel. Requires programs
+   * compiled with channel_syscall.c instead of syscall_glue.c.
+   */
+  centralizedKernel?: CentralizedKernelWorker;
 }
 
 export interface SpawnOptions {
@@ -195,6 +204,14 @@ export class ProcessManager {
             this.handleWaitpidRequest(wm.targetPid, wm.options, wm.waitpidSab);
             break;
           }
+          case "clone_request": {
+            const cm = m as import("./worker-protocol").CloneRequestMessage;
+            this.handleCloneRequest(cm.pid, cm.fnPtr, cm.argPtr, cm.stackPtr, cm.tlsPtr, cm.ctidPtr, cm.cloneSab, cm.memory, info);
+            break;
+          }
+          case "thread_exit":
+            // Thread exited — no special cleanup needed for now
+            break;
         }
       });
 
@@ -615,6 +632,66 @@ export class ProcessManager {
       Atomics.store(view, 0, 1);
       Atomics.notify(view, 0);
     });
+  }
+
+  /**
+   * Handle clone_request: spawn a new thread worker that shares the
+   * parent's Memory but has its own Wasm instances. The thread worker
+   * sets the thread pointer, calls fn(arg) via the function table,
+   * then writes 0 to *ctid and wakes joiners.
+   */
+  private handleCloneRequest(
+    parentPid: number,
+    fnPtr: number,
+    argPtr: number,
+    stackPtr: number,
+    tlsPtr: number,
+    ctidPtr: number,
+    cloneSab: SharedArrayBuffer,
+    memory: WebAssembly.Memory,
+    parentInfo: ProcessInfo,
+  ): void {
+    const view = new Int32Array(cloneSab);
+    const tid = this.nextPid++;
+
+    const threadInitData: ThreadInitMessage = {
+      type: "thread_init",
+      tid,
+      wasmBytes: this.config.wasmBytes.slice(0),
+      kernelConfig: this.config.kernelConfig,
+      programBytes: parentInfo.programBytes?.slice(0),
+      fnPtr,
+      argPtr,
+      stackPtr,
+      tlsPtr,
+      ctidPtr,
+      lockTableSab: this.sharedLockTable.getBuffer(),
+      memory,
+    };
+
+    // Spawn thread worker
+    try {
+      const threadWorker = this.config.workerAdapter.createWorker(threadInitData);
+      // Listen for thread exit
+      threadWorker.on("message", (msg: unknown) => {
+        const m = msg as WorkerToHostMessage;
+        if (m.type === "thread_exit") {
+          // Thread done — nothing to clean up for now
+        }
+      });
+      threadWorker.on("error", () => {
+        // Thread worker error — logged by worker itself
+      });
+
+      // Signal parent with the TID
+      Atomics.store(view, 1, tid);
+      Atomics.store(view, 0, 1);
+      Atomics.notify(view, 0);
+    } catch {
+      Atomics.store(view, 1, -12); // -ENOMEM
+      Atomics.store(view, 0, 1);
+      Atomics.notify(view, 0);
+    }
   }
 
   /**

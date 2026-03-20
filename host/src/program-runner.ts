@@ -143,7 +143,8 @@ function handleExitTrap(
     if (e instanceof WebAssembly.RuntimeError) {
         const msg = e.message || "";
         if (msg.includes("unreachable")) {
-            return getExitStatus ? getExitStatus() : 0;
+            const status = getExitStatus ? getExitStatus() : 0;
+            return status;
         }
     }
     throw e;

@@ -4,12 +4,14 @@ import type { KernelConfig } from "./types";
 
 export type HostToWorkerMessage =
   | WorkerInitMessage
+  | CentralizedWorkerInitMessage
   | WorkerTerminateMessage
   | GetForkStateMessage
   | RegisterPipeMessage
   | ConvertPipeMessage
   | DeliverSignalMessage
-  | ExecReplyMessage;
+  | ExecReplyMessage
+  | ThreadInitMessage;
 
 export interface GetForkStateMessage {
   type: "get_fork_state";
@@ -57,6 +59,29 @@ export interface WorkerInitMessage {
   };
 }
 
+/**
+ * Init message for centralized-mode Workers.
+ * These Workers don't instantiate a kernel — they use channel IPC
+ * to communicate with the CentralizedKernelWorker.
+ */
+export interface CentralizedWorkerInitMessage {
+  type: "centralized_init";
+  pid: number;
+  ppid: number;
+  /** User program bytes (compiled with channel_syscall.c — no kernel imports) */
+  programBytes: ArrayBuffer;
+  /** Shared Memory for this process (also shared with CentralizedKernelWorker) */
+  memory: WebAssembly.Memory;
+  /** Channel offset within the shared Memory for this thread's syscall channel */
+  channelOffset: number;
+  /** Optional env vars to set up in the program */
+  env?: string[];
+  /** Optional argv */
+  argv?: string[];
+  /** Optional cwd */
+  cwd?: string;
+}
+
 export interface WorkerTerminateMessage {
   type: "terminate";
 }
@@ -73,7 +98,9 @@ export type WorkerToHostMessage =
   | ExecCompleteMessage
   | AlarmSetMessage
   | ForkRequestMessage
-  | WaitpidRequestMessage;
+  | WaitpidRequestMessage
+  | ThreadExitMessage
+  | CloneRequestMessage;
 
 export interface WorkerReadyMessage {
   type: "ready";
@@ -148,6 +175,45 @@ export interface ExecReplyMessage {
   type: "exec_reply";
   wasmBytes: ArrayBuffer;
   programBytes?: ArrayBuffer;
+}
+
+/** Host → Worker: initialize as a thread (not a process) */
+export interface ThreadInitMessage {
+  type: "thread_init";
+  tid: number;
+  wasmBytes: ArrayBuffer;
+  kernelConfig: KernelConfig;
+  programBytes?: ArrayBuffer;
+  fnPtr: number;
+  argPtr: number;
+  stackPtr: number;
+  tlsPtr: number;
+  ctidPtr: number;
+  signalWakeSab?: SharedArrayBuffer;
+  lockTableSab?: SharedArrayBuffer;
+  /** The parent's shared WebAssembly.Memory — threads share the same linear memory. */
+  memory: WebAssembly.Memory;
+}
+
+/** Worker → Host: thread finished */
+export interface ThreadExitMessage {
+  type: "thread_exit";
+  tid: number;
+  exitCode: number;
+}
+
+/** Worker → Host: clone request from kernel */
+export interface CloneRequestMessage {
+  type: "clone_request";
+  pid: number;
+  fnPtr: number;
+  argPtr: number;
+  stackPtr: number;
+  tlsPtr: number;
+  ctidPtr: number;
+  cloneSab: SharedArrayBuffer;
+  /** The parent's shared WebAssembly.Memory for the new thread. */
+  memory: WebAssembly.Memory;
 }
 
 export interface SerializedMountConfig {
