@@ -3,6 +3,7 @@ import type { KernelCallbacks } from "./kernel";
 import type { PlatformIO } from "./types";
 import type {
   WorkerInitMessage,
+  CentralizedWorkerInitMessage,
   ThreadInitMessage,
   WorkerToHostMessage,
   HostToWorkerMessage,
@@ -971,6 +972,124 @@ export async function threadWorkerMain(
       type: "thread_exit",
       tid: initData.tid,
       exitCode: -1,
+    } satisfies WorkerToHostMessage);
+  }
+}
+
+// =========================================================================
+// Centralized-mode Worker entry point
+// =========================================================================
+
+/**
+ * Entry point for process Workers in centralized kernel mode.
+ *
+ * Unlike workerMain(), this does NOT instantiate a WasmPosixKernel.
+ * The user program (compiled with channel_syscall.c) communicates with
+ * the centralized kernel via atomic channel IPC in shared Memory.
+ *
+ * The Worker's job is simply to:
+ * 1. Compile and instantiate the user Wasm module
+ * 2. Set up TLS (including __channel_base for the syscall channel)
+ * 3. Run _start
+ * 4. Report exit
+ */
+export async function centralizedWorkerMain(
+  port: MessagePort,
+  initData: CentralizedWorkerInitMessage,
+): Promise<void> {
+  try {
+    const { memory, programBytes, channelOffset, pid } = initData;
+
+    // Compile the user program module
+    const module = await WebAssembly.compile(programBytes);
+
+    // Build env imports. Channel-mode programs only import env.* (no kernel.*).
+    // The main import is the shared Memory.
+    const envImports: Record<string, WebAssembly.ExportValue> = { memory };
+
+    // Stub any unresolved env function imports
+    for (const imp of WebAssembly.Module.imports(module)) {
+      if (imp.module === "env" && imp.kind === "function") {
+        if (!envImports[imp.name]) {
+          envImports[imp.name] = (..._args: unknown[]) => {
+            throw new Error(`Unimplemented import: env.${imp.name}`);
+          };
+        }
+      }
+    }
+
+    const importObject: WebAssembly.Imports = { env: envImports };
+    const instance = await WebAssembly.instantiate(module, importObject);
+
+    // Initialize TLS for this thread
+    const initTls = instance.exports.__wasm_init_tls as
+      ((base: number) => void) | undefined;
+    const tlsSize = instance.exports.__tls_size as
+      WebAssembly.Global | undefined;
+
+    let tlsBlock = 0;
+    if (initTls && tlsSize) {
+      const size = (tlsSize.value as number) || 64;
+      const alignedSize = (size + 15) & ~15;
+      const pages = Math.ceil(alignedSize / 65536) || 1;
+      const page = memory.grow(pages);
+      tlsBlock = page * 65536;
+      initTls(tlsBlock);
+    }
+
+    // Set __channel_base in TLS so __do_syscall knows where the channel is.
+    // __channel_base is a _Thread_local uint32_t. Its offset within TLS is
+    // determined by the linker. We need to find the TLS offset of __channel_base
+    // and write the channel offset there.
+    //
+    // Strategy: the Wasm module should export __channel_base_tls_offset or
+    // we can compute it from the __tls_base global + known TLS layout.
+    // For now, look for a __set_channel_base export or use the TLS symbol.
+    const setChannelBase = instance.exports.__set_channel_base as
+      ((offset: number) => void) | undefined;
+
+    if (setChannelBase) {
+      setChannelBase(channelOffset);
+    } else if (tlsBlock > 0) {
+      // Fallback: __channel_base is typically the first TLS variable.
+      // The .tbss section containing __channel_base starts at offset 0 in TLS.
+      // Write the channel offset at tlsBlock + 0.
+      const view = new DataView(memory.buffer);
+      view.setUint32(tlsBlock, channelOffset, true);
+    }
+
+    // Signal ready
+    port.postMessage({
+      type: "ready",
+      pid,
+    } satisfies WorkerToHostMessage);
+
+    // Run the program
+    let exitCode = 0;
+    try {
+      const start = instance.exports._start as (() => void) | undefined;
+      if (start) {
+        start();
+      }
+    } catch (e) {
+      if (e instanceof Error && e.message.includes("unreachable")) {
+        // Normal exit via kernel_exit → unreachable trap
+        exitCode = 0;
+      } else {
+        throw e;
+      }
+    }
+
+    port.postMessage({
+      type: "exit",
+      pid,
+      status: exitCode,
+    } satisfies WorkerToHostMessage);
+  } catch (err) {
+    port.postMessage({
+      type: "error",
+      pid: initData.pid,
+      message: `Centralized worker failed: ${err instanceof Error ? err.message : String(err)}`,
     } satisfies WorkerToHostMessage);
   }
 }

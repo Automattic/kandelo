@@ -4,6 +4,7 @@ import type { KernelConfig } from "./types";
 
 export type HostToWorkerMessage =
   | WorkerInitMessage
+  | CentralizedWorkerInitMessage
   | WorkerTerminateMessage
   | GetForkStateMessage
   | RegisterPipeMessage
@@ -56,6 +57,29 @@ export interface WorkerInitMessage {
     asyncifyData: ArrayBuffer;
     asyncifyDataAddr: number;
   };
+}
+
+/**
+ * Init message for centralized-mode Workers.
+ * These Workers don't instantiate a kernel — they use channel IPC
+ * to communicate with the CentralizedKernelWorker.
+ */
+export interface CentralizedWorkerInitMessage {
+  type: "centralized_init";
+  pid: number;
+  ppid: number;
+  /** User program bytes (compiled with channel_syscall.c — no kernel imports) */
+  programBytes: ArrayBuffer;
+  /** Shared Memory for this process (also shared with CentralizedKernelWorker) */
+  memory: WebAssembly.Memory;
+  /** Channel offset within the shared Memory for this thread's syscall channel */
+  channelOffset: number;
+  /** Optional env vars to set up in the program */
+  env?: string[];
+  /** Optional argv */
+  argv?: string[];
+  /** Optional cwd */
+  cwd?: string;
 }
 
 export interface WorkerTerminateMessage {
