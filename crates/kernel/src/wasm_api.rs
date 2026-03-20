@@ -1125,7 +1125,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
         // Poll/select
         60 => kernel_poll(a1 as *mut u8, a2 as u32, a3), // SYS_POLL
         251 => kernel_ppoll(a1 as *mut u8, a2 as u32, a3, a4 as u32, a5 as u32), // SYS_PPOLL
-        103 => kernel_select(a1 as u32, a2 as *mut u8, a3 as *mut u8, a4 as *mut u8, a5 as i32), // SYS_SELECT
+        103 => kernel_select(a1, a2 as *mut u8, a3 as *mut u8, a4 as *mut u8, a5 as i32), // SYS_SELECT
 
         // Terminal
         70 => kernel_tcgetattr(a1, a2 as *mut u8, 256), // SYS_TCGETATTR
@@ -1237,7 +1237,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
         }
         212 => kernel_fork(),                      // SYS_FORK
         213 => kernel_fork(),                      // SYS_VFORK (treat as fork)
-        201 => kernel_clone(a1 as u32, a2 as u32, a3 as u32, a4 as u32, a5 as u32, 0), // SYS_CLONE
+        201 => kernel_clone(0, a2 as u32, a1 as u32, 0, a3 as u32, a4 as u32, a5 as u32), // SYS_CLONE
 
         // Futex
         200 => kernel_futex(a1 as u32, a2 as u32, a3 as u32, a4 as u32, a5 as u32, a6 as u32), // SYS_FUTEX
@@ -1251,8 +1251,12 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
         223 => kernel_prctl(a1 as u32, a2 as u32, a3 as *mut u8, a4 as u32), // SYS_PRCTL
 
         // pathconf
-        112 => kernel_pathconf(a1 as u32, a2 as u32, a3) as i32, // SYS_PATHCONF
-        113 => kernel_fpathconf(a1, a2),           // SYS_FPATHCONF
+        112 => { // SYS_PATHCONF
+            let p = a1 as *const u8;
+            let len = unsafe { cstr_len(p) };
+            kernel_pathconf(a1 as u32, len as u32, a2) as i32
+        }
+        113 => kernel_fpathconf(a1, a2) as i32,    // SYS_FPATHCONF
 
         // Timer
         225 => kernel_setitimer(a1 as u32, a2 as *const u8, a3 as *mut u8), // SYS_SETITIMER
@@ -1262,7 +1266,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
         260 => {
             let p = a2 as *const u8;
             let len = unsafe { cstr_len(p) };
-            kernel_statx(a1, p, len, a3 as u32, a4 as *mut u8)
+            kernel_statx(a1, p, len, a3 as u32, a4 as u32, a5 as *mut u8)
         }
 
         // Stubs that return 0 or -ENOSYS
