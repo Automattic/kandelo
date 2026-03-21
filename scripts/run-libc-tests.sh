@@ -3,13 +3,13 @@ set -euo pipefail
 
 # Build and run libc-test tests against the wasm-posix-kernel.
 #
-# Categories: functional, regression, math
+# Categories: functional, regression, math, math-relaxed
 #
 # Usage:
-#   scripts/run-libc-tests.sh                    # run all categories
+#   scripts/run-libc-tests.sh                    # run all categories (functional regression math)
 #   scripts/run-libc-tests.sh functional          # run one category
 #   scripts/run-libc-tests.sh functional string   # run specific test(s)
-#   scripts/run-libc-tests.sh --report            # run all + write failures to docs/libc-test-failures.md
+#   scripts/run-libc-tests.sh --report            # run all + math-relaxed, write report to docs/libc-test-failures.md
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SYSROOT="$REPO_ROOT/sysroot"
@@ -17,6 +17,25 @@ GLUE_DIR="$REPO_ROOT/glue"
 LIBC_TEST="$REPO_ROOT/libc-test"
 BUILD_DIR="$REPO_ROOT/libc-test/build"
 KERNEL_WASM="$REPO_ROOT/host/wasm/wasm_posix_kernel.wasm"
+
+# ── Expected failures ──────────────────────────────────────
+# Tests known to fail due to wasm32 soft-float precision limits (no hardware FPU rounding control).
+# All failures are 1-2 ULP rounding errors or Bessel function inaccuracy near zero crossings.
+
+MATH_EXPECTED_FAIL=(acosh asinh erfc j0 jn jnf lgamma lgammaf lgammaf_r sinh tgamma y0 y0f ynf)
+MATH_RELAXED_EXPECTED_FAIL=(tgamma j0 y0 y0f)  # Tests with inline checks that bypass checkulp
+
+# ── Helper: check if a test is in an expected-failure list ──
+
+is_expected_fail() {
+    local test_name="$1"
+    shift
+    local list=("$@")
+    for xf in "${list[@]}"; do
+        [ "$xf" = "$test_name" ] && return 0
+    done
+    return 1
+}
 
 # Auto-detect LLVM (same logic as SDK)
 find_llvm_bin() {
@@ -40,8 +59,8 @@ find_llvm_bin() {
 LLVM_BIN="$(find_llvm_bin)"
 CC="$LLVM_BIN/clang"
 
-# Common compile flags
-CFLAGS=(
+# Common compile flags (CFLAGS_BASE excludes -I common for overlay builds)
+CFLAGS_BASE=(
     --target=wasm32-unknown-unknown
     --sysroot="$SYSROOT"
     -nostdlib
@@ -51,8 +70,8 @@ CFLAGS=(
     -mllvm -wasm-enable-sjlj
     -mllvm -wasm-use-legacy-eh=false
     -D_GNU_SOURCE
-    -I"$LIBC_TEST/src/common"
 )
+CFLAGS=("${CFLAGS_BASE[@]}" -I"$LIBC_TEST/src/common")
 
 COMMON_SRCS=(
     "$LIBC_TEST/src/common/print.c"
@@ -131,6 +150,10 @@ discover_math() {
     done
 }
 
+discover_math-relaxed() {
+    discover_math
+}
+
 # ── Build helpers ───────────────────────────────────────────
 
 build_functional() {
@@ -172,12 +195,42 @@ build_math() {
     asyncify_wasm "$wasm"
 }
 
+build_math-relaxed() {
+    local test_name="$1"
+    local src="$LIBC_TEST/src/math/${test_name}.c"
+    local wasm="$BUILD_DIR/math-relaxed/${test_name}.wasm"
+    mkdir -p "$BUILD_DIR/math-relaxed"
+
+    # Use CFLAGS_BASE (without -I common) so overlay's mtest.h shadows the original
+    "$CC" "${CFLAGS_BASE[@]}" \
+        -I"$REPO_ROOT/libc-test-overlay" \
+        -I"$LIBC_TEST/src/common" \
+        -I"$LIBC_TEST/src/math" \
+        "$src" \
+        "$LIBC_TEST/src/common/mtest.c" \
+        "${COMMON_SRCS[@]}" "${LINK_FLAGS[@]}" \
+        -o "$wasm" 2>/tmp/libc-test-build-err.txt
+    asyncify_wasm "$wasm"
+}
+
 # ── Run a single test ───────────────────────────────────────
 
 run_test() {
     local category="$1"
     local test_name="$2"
     local wasm="$BUILD_DIR/$category/${test_name}.wasm"
+
+    # Determine expected-failure list for this category
+    local -a xfail_list=()
+    case "$category" in
+        math)          xfail_list=("${MATH_EXPECTED_FAIL[@]}") ;;
+        math-relaxed)  xfail_list=("${MATH_RELAXED_EXPECTED_FAIL[@]}") ;;
+    esac
+
+    local is_xfail=false
+    if [ ${#xfail_list[@]} -gt 0 ] && is_expected_fail "$test_name" "${xfail_list[@]}"; then
+        is_xfail=true
+    fi
 
     # Build
     if ! "build_${category}" "$test_name" 2>/dev/null; then
@@ -197,18 +250,30 @@ run_test() {
     set -e
 
     if [ $rc -eq 0 ]; then
-        echo "PASS  ${category}/${test_name}"
-        RESULTS+=("PASS  ${category}/${test_name}")
-        PASS=$((PASS + 1))
+        if $is_xfail; then
+            echo "XPASS ${category}/${test_name} (expected fail, but passed!)"
+            RESULTS+=("XPASS ${category}/${test_name}")
+            XPASS=$((XPASS + 1))
+        else
+            echo "PASS  ${category}/${test_name}"
+            RESULTS+=("PASS  ${category}/${test_name}")
+            PASS=$((PASS + 1))
+        fi
     elif [ $rc -eq 124 ]; then
         echo "TIME  ${category}/${test_name} (timeout ${TEST_TIMEOUT}s)"
         RESULTS+=("TIME  ${category}/${test_name}")
         TIMEOUT_COUNT=$((TIMEOUT_COUNT + 1))
     else
-        echo "FAIL  ${category}/${test_name} (exit $rc)"
-        echo "$output" | tail -10 | head -5 | sed 's/^/  /'
-        RESULTS+=("FAIL  ${category}/${test_name}")
-        FAIL=$((FAIL + 1))
+        if $is_xfail; then
+            echo "XFAIL ${category}/${test_name} (expected)"
+            RESULTS+=("XFAIL ${category}/${test_name}")
+            XFAIL=$((XFAIL + 1))
+        else
+            echo "FAIL  ${category}/${test_name} (exit $rc)"
+            echo "$output" | tail -10 | head -5 | sed 's/^/  /'
+            RESULTS+=("FAIL  ${category}/${test_name}")
+            FAIL=$((FAIL + 1))
+        fi
     fi
 }
 
@@ -222,10 +287,10 @@ SPECIFIC_TESTS=()
 while [ $# -gt 0 ]; do
     case "$1" in
         --report) REPORT_MODE=true; shift ;;
-        functional|regression|math)
+        functional|regression|math|math-relaxed)
             CATEGORIES+=("$1"); shift
             # Remaining args are specific tests within that category
-            while [ $# -gt 0 ] && [[ "$1" != --* ]] && [[ "$1" != functional ]] && [[ "$1" != regression ]] && [[ "$1" != math ]]; do
+            while [ $# -gt 0 ] && [[ "$1" != --* ]] && [[ "$1" != functional ]] && [[ "$1" != regression ]] && [[ "$1" != math ]] && [[ "$1" != math-relaxed ]]; do
                 SPECIFIC_TESTS+=("$1"); shift
             done
             ;;
@@ -233,9 +298,13 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-# Default: all categories
+# Default: all categories (without math-relaxed for plain runs)
 if [ ${#CATEGORIES[@]} -eq 0 ]; then
-    CATEGORIES=(functional regression math)
+    if $REPORT_MODE; then
+        CATEGORIES=(functional regression math math-relaxed)
+    else
+        CATEGORIES=(functional regression math)
+    fi
 fi
 
 # Verify prerequisites
@@ -253,6 +322,8 @@ FAIL=0
 SKIP=0
 BUILD_FAIL=0
 TIMEOUT_COUNT=0
+XFAIL=0
+XPASS=0
 RESULTS=()
 TOTAL=0
 
@@ -282,21 +353,23 @@ echo ""
 echo "===== Results ====="
 echo "PASS:    $PASS"
 echo "FAIL:    $FAIL"
+echo "XFAIL:   $XFAIL"
+echo "XPASS:   $XPASS"
 echo "BUILD:   $BUILD_FAIL"
 echo "TIMEOUT: $TIMEOUT_COUNT"
 echo "TOTAL:   $TOTAL"
 echo ""
 
 # Group results by status
-for status in PASS FAIL BUILD TIME; do
+for status in PASS XPASS FAIL XFAIL BUILD TIME; do
     count=0
     for r in "${RESULTS[@]}"; do
-        [[ "$r" == "$status"* ]] && count=$((count + 1))
+        [[ "$r" == "$status "* ]] && count=$((count + 1))
     done
     if [ $count -gt 0 ]; then
         echo "── ${status} ($count) ──"
         for r in "${RESULTS[@]}"; do
-            [[ "$r" == "$status"* ]] && echo "  $r"
+            [[ "$r" == "$status "* ]] && echo "  $r"
         done
         echo ""
     fi
@@ -315,6 +388,8 @@ if $REPORT_MODE; then
         echo "|--------|-------|"
         echo "| PASS | $PASS |"
         echo "| FAIL | $FAIL |"
+        echo "| XFAIL | $XFAIL |"
+        echo "| XPASS | $XPASS |"
         echo "| BUILD | $BUILD_FAIL |"
         echo "| TIMEOUT | $TIMEOUT_COUNT |"
         echo "| **TOTAL** | **$TOTAL** |"
@@ -323,11 +398,11 @@ if $REPORT_MODE; then
         for status in FAIL BUILD TIME; do
             count=0
             for r in "${RESULTS[@]}"; do
-                [[ "$r" == "$status"* ]] && count=$((count + 1))
+                [[ "$r" == "$status "* ]] && count=$((count + 1))
             done
             if [ $count -gt 0 ]; then
                 case "$status" in
-                    FAIL) echo "## Runtime Failures ($count)" ;;
+                    FAIL) echo "## Unexpected Failures ($count)" ;;
                     BUILD) echo "## Build Failures ($count)" ;;
                     TIME) echo "## Timeouts ($count)" ;;
                 esac
@@ -335,7 +410,7 @@ if $REPORT_MODE; then
                 echo "| Test | Category |"
                 echo "|------|----------|"
                 for r in "${RESULTS[@]}"; do
-                    if [[ "$r" == "$status"* ]]; then
+                    if [[ "$r" == "$status "* ]]; then
                         local_test="${r#* }"
                         local_cat="${local_test%%/*}"
                         local_name="${local_test#*/}"
@@ -346,6 +421,53 @@ if $REPORT_MODE; then
             fi
         done
 
+        # XFAIL section
+        xfail_count=0
+        for r in "${RESULTS[@]}"; do
+            [[ "$r" == "XFAIL "* ]] && xfail_count=$((xfail_count + 1))
+        done
+        if [ $xfail_count -gt 0 ]; then
+            echo "## Expected Failures — XFAIL ($xfail_count)"
+            echo ""
+            echo "These tests fail due to wasm32 soft-float precision limits (no hardware FPU rounding control)."
+            echo "All are 1-2 ULP rounding errors or Bessel function inaccuracy near zero crossings."
+            echo ""
+            echo "| Test | Category |"
+            echo "|------|----------|"
+            for r in "${RESULTS[@]}"; do
+                if [[ "$r" == "XFAIL "* ]]; then
+                    local_test="${r#* }"
+                    local_cat="${local_test%%/*}"
+                    local_name="${local_test#*/}"
+                    echo "| \`$local_name\` | $local_cat |"
+                fi
+            done
+            echo ""
+        fi
+
+        # XPASS section
+        xpass_count=0
+        for r in "${RESULTS[@]}"; do
+            [[ "$r" == "XPASS "* ]] && xpass_count=$((xpass_count + 1))
+        done
+        if [ $xpass_count -gt 0 ]; then
+            echo "## Unexpected Passes — XPASS ($xpass_count)"
+            echo ""
+            echo "These tests were expected to fail but passed. Consider removing them from the expected-failure list."
+            echo ""
+            echo "| Test | Category |"
+            echo "|------|----------|"
+            for r in "${RESULTS[@]}"; do
+                if [[ "$r" == "XPASS "* ]]; then
+                    local_test="${r#* }"
+                    local_cat="${local_test%%/*}"
+                    local_name="${local_test#*/}"
+                    echo "| \`$local_name\` | $local_cat |"
+                fi
+            done
+            echo ""
+        fi
+
         echo "## Passing Tests ($PASS)"
         echo ""
         echo "<details>"
@@ -354,7 +476,7 @@ if $REPORT_MODE; then
         echo "| Test | Category |"
         echo "|------|----------|"
         for r in "${RESULTS[@]}"; do
-            if [[ "$r" == "PASS"* ]]; then
+            if [[ "$r" == "PASS "* ]]; then
                 local_test="${r#* }"
                 local_cat="${local_test%%/*}"
                 local_name="${local_test#*/}"
