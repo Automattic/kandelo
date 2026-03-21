@@ -100,27 +100,64 @@ export class MockWorkerAdapter implements WorkerAdapter {
 import { Worker } from "node:worker_threads";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
+import { existsSync } from "node:fs";
 
 export class NodeWorkerAdapter implements WorkerAdapter {
   private entryUrl: URL;
+  private _compiledEntry: URL | false | undefined;
 
   constructor(entryUrl?: URL) {
     this.entryUrl =
       entryUrl ?? new URL("./worker-entry.ts", import.meta.url);
   }
 
+  /**
+   * Try to find a compiled .js version of the entry file.
+   * Checks: ../dist/<basename>.js (tsup output), then sibling .js.
+   */
+  private resolveCompiledEntry(): URL | null {
+    if (this._compiledEntry !== undefined) {
+      return this._compiledEntry || null;
+    }
+    if (this.entryUrl.protocol !== "file:") {
+      this._compiledEntry = false;
+      return null;
+    }
+    const href = this.entryUrl.href;
+
+    // Check tsup dist output: src/worker-entry.ts → dist/worker-entry.js
+    const distUrl = new URL(href.replace(/\/src\/([^/]+)\.ts$/, "/dist/$1.js"));
+    if (distUrl.href !== href && existsSync(distUrl)) {
+      this._compiledEntry = distUrl;
+      return distUrl;
+    }
+
+    // Check sibling .js file
+    const jsUrl = new URL(href.replace(/\.ts$/, ".js"));
+    if (jsUrl.href !== href && existsSync(jsUrl)) {
+      this._compiledEntry = jsUrl;
+      return jsUrl;
+    }
+
+    this._compiledEntry = false;
+    return null;
+  }
+
   createWorker(workerData: unknown): WorkerHandle {
-    // Resolve tsx/esm/api to an absolute file URL so the eval'd worker
-    // can import it without relying on bare-specifier resolution.
+    // Try the compiled JS entry first (much faster startup — avoids tsx
+    // bootstrap which takes >500ms with 10+ concurrent workers).
+    const compiledEntry = this.resolveCompiledEntry();
+    if (compiledEntry) {
+      const worker = new Worker(compiledEntry, { workerData });
+      return new NodeWorkerHandle(worker);
+    }
+
+    // Fallback: tsx eval bootstrap for running from TypeScript source.
     const require = createRequire(import.meta.url);
     const tsxApiPath = require.resolve("tsx/esm/api");
     const tsxApiUrl = pathToFileURL(tsxApiPath).href;
     const entryUrl = this.entryUrl.href;
 
-    // Workers cannot use `--import tsx` because Node.js customisation
-    // hooks registered via `module.register()` do not propagate to
-    // worker threads.  Instead we use an eval bootstrap that registers
-    // tsx inside the worker and then dynamically imports the real entry.
     const bootstrap = [
       `import { register } from '${tsxApiUrl}';`,
       `register();`,

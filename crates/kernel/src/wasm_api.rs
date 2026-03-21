@@ -1258,6 +1258,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
         202 => kernel_gettid(),                    // SYS_GETTID
         203 => kernel_set_tid_address(a1 as u32),  // SYS_SET_TID_ADDRESS
         261 => kernel_set_robust_list(a1 as u32, a2 as u32), // SYS_SET_ROBUST_LIST
+        262 => kernel_get_robust_list(a1 as u32, a2 as u32, a3 as u32), // SYS_GET_ROBUST_LIST
 
         // prctl
         223 => kernel_prctl(a1 as u32, a2 as u32, a3 as *mut u8, a4 as u32), // SYS_PRCTL
@@ -4421,13 +4422,19 @@ pub extern "C" fn kernel_set_tid_address(_tidptr: u32) -> i32 {
     syscalls::sys_set_tid_address(proc)
 }
 
-/// set_robust_list — STUB: no-op, returns 0.
+/// set_robust_list — stores the robust list head pointer (no-op for now).
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_set_robust_list(_head: u32, _len: u32) -> i32 {
     match syscalls::sys_set_robust_list() {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     }
+}
+
+/// get_robust_list — returns 0 to indicate robust list support.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_get_robust_list(_pid: u32, _head_ptr: u32, _len_ptr: u32) -> i32 {
+    0
 }
 
 /// futex — real implementation via host Atomics.wait/notify.

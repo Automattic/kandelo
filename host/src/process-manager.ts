@@ -695,8 +695,8 @@ export class ProcessManager {
           // Thread done — nothing to clean up for now
         }
       });
-      threadWorker.on("error", () => {
-        // Thread worker error — logged by worker itself
+      threadWorker.on("error", (err: Error) => {
+        console.error(`[PM] thread ${tid} error: ${err.message}`);
       });
 
       // Signal parent with the TID

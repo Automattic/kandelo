@@ -3670,23 +3670,21 @@ pub fn sys_futex(
             if crate::is_centralized_mode() {
                 return Err(Errno::EAGAIN);
             }
-            // timeout is a pointer to struct timespec {sec: i32, nsec: i32} in Wasm memory
+            // timeout is a pointer to struct timespec in Wasm memory.
+            // Layout (wasm32 time64): { tv_sec: i64, padding: 0, tv_nsec: i32, padding: 0 } = 16 bytes
             // For FUTEX_WAIT_BITSET, val3 is the bitmask (we ignore it, treat as full mask)
             let timeout_ns: i64 = if timeout != 0 {
-                // Read timespec from Wasm memory
+                // Read timespec from Wasm memory (16 bytes for time64 layout)
                 let mem = unsafe {
-                    core::slice::from_raw_parts(timeout as *const u8, 8)
+                    core::slice::from_raw_parts(timeout as *const u8, 16)
                 };
-                let sec = i32::from_le_bytes([mem[0], mem[1], mem[2], mem[3]]) as i64;
-                let nsec = i32::from_le_bytes([mem[4], mem[5], mem[6], mem[7]]) as i64;
-                if base_op == FUTEX_WAIT {
-                    // Relative timeout
-                    sec * 1_000_000_000 + nsec
-                } else {
-                    // FUTEX_WAIT_BITSET uses absolute timeout by default
-                    // We pass it as-is and let the host handle it as relative
-                    sec * 1_000_000_000 + nsec
-                }
+                let sec = i64::from_le_bytes([
+                    mem[0], mem[1], mem[2], mem[3],
+                    mem[4], mem[5], mem[6], mem[7],
+                ]);
+                // tv_nsec is a long (4 bytes on wasm32) at offset 8
+                let nsec = i32::from_le_bytes([mem[8], mem[9], mem[10], mem[11]]) as i64;
+                sec * 1_000_000_000 + nsec
             } else {
                 -1 // infinite wait
             };
@@ -3696,21 +3694,32 @@ pub fn sys_futex(
             host.host_futex_wake(uaddr, val)
         }
         FUTEX_REQUEUE => {
-            // Wake val waiters on uaddr, requeue remaining to uaddr2
-            // Simplified: just wake val waiters (no requeue support)
-            host.host_futex_wake(uaddr, val)
+            // Wake val waiters on uaddr, requeue up to val2 waiters to uaddr2.
+            // We can't truly requeue across futex addresses with Atomics, so
+            // wake val + val2 on uaddr instead — woken threads will re-check
+            // their conditions and re-wait on the correct address if needed.
+            let val2 = timeout; // timeout param repurposed as val2 for REQUEUE
+            host.host_futex_wake(uaddr, val + val2)
         }
         FUTEX_CMP_REQUEUE => {
             // Like REQUEUE but check *uaddr == val3 first
-            // Simplified: just wake val waiters
-            let _ = (uaddr2, val3);
-            host.host_futex_wake(uaddr, val)
+            let val2 = timeout;
+            let actual = unsafe { core::ptr::read_volatile(uaddr as *const u32) };
+            if actual != val3 {
+                return Err(Errno::EAGAIN);
+            }
+            host.host_futex_wake(uaddr, val + val2)
         }
         FUTEX_WAKE_OP => {
             // Wake val waiters on uaddr, then conditionally wake val3 on uaddr2
-            // Simplified: just wake val waiters on uaddr
-            let _ = (uaddr2, val3);
-            host.host_futex_wake(uaddr, val)
+            // Simplified: wake val on uaddr + val3 on uaddr2
+            let woken1 = host.host_futex_wake(uaddr, val)?;
+            let woken2 = if uaddr2 != 0 && val3 > 0 {
+                host.host_futex_wake(uaddr2, val3)?
+            } else {
+                0
+            };
+            Ok(woken1 + woken2)
         }
         _ => Ok(0), // no-op for unrecognized ops
     }

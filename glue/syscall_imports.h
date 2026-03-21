@@ -409,6 +409,9 @@ int32_t kernel_set_tid_address(uint32_t tidptr);
 KERNEL_IMPORT(kernel_set_robust_list)
 int32_t kernel_set_robust_list(uint32_t head, uint32_t len);
 
+KERNEL_IMPORT(kernel_get_robust_list)
+int32_t kernel_get_robust_list(uint32_t pid, uint32_t head_ptr, uint32_t len_ptr);
+
 KERNEL_IMPORT(kernel_futex)
 int32_t kernel_futex(uint32_t uaddr, uint32_t op, uint32_t val,
                      uint32_t timeout, uint32_t uaddr2, uint32_t val3);
