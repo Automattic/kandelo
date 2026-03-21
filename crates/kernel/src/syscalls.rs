@@ -4078,6 +4078,11 @@ pub fn sys_setrlimit(proc: &mut Process, resource: u32, soft: u64, hard: u64) ->
         proc.fd_table.set_max_fds(max);
     }
 
+    // RLIMIT_DATA (resource 2): enforce brk limit in memory manager.
+    if resource == 2 {
+        proc.memory.set_data_limit(soft);
+    }
+
     Ok(())
 }
 

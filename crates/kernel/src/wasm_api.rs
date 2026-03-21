@@ -2807,8 +2807,9 @@ pub extern "C" fn kernel_mmap(addr: u32, len: u32, prot: u32, flags: u32, fd: i3
         Err(_) => wasm_posix_shared::mmap::MAP_FAILED,
     };
 
-    // Ensure Wasm memory covers the mapped region.
-    if result != wasm_posix_shared::mmap::MAP_FAILED {
+    // Ensure Wasm memory covers the mapped region (skip PROT_NONE mappings
+    // which only reserve address space without needing physical backing).
+    if result != wasm_posix_shared::mmap::MAP_FAILED && prot != 0 {
         let end = result.saturating_add(len);
         ensure_memory_covers(end);
     }
