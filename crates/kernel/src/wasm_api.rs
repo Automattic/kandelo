@@ -65,7 +65,7 @@ unsafe extern "C" {
     fn host_exec(path_ptr: *const u8, path_len: u32) -> i32;
     fn host_set_alarm(seconds: u32) -> i32;
     fn host_sigsuspend_wait() -> i32;
-    fn host_call_signal_handler(handler_index: u32, signum: u32) -> i32;
+    fn host_call_signal_handler(handler_index: u32, signum: u32, sa_flags: u32) -> i32;
     fn host_getrandom(buf_ptr: *mut u8, buf_len: u32) -> i32;
     fn host_utimensat(path_ptr: *const u8, path_len: u32, atime_sec: i64, atime_nsec: i64, mtime_sec: i64, mtime_nsec: i64) -> i32;
     fn host_waitpid(pid: i32, options: u32, status_ptr: *mut i32) -> i32;
@@ -408,8 +408,8 @@ impl HostIO for WasmHostIO {
         }
     }
 
-    fn host_call_signal_handler(&mut self, handler_index: u32, signum: u32) -> Result<(), Errno> {
-        let result = unsafe { host_call_signal_handler(handler_index, signum) };
+    fn host_call_signal_handler(&mut self, handler_index: u32, signum: u32, sa_flags: u32) -> Result<(), Errno> {
+        let result = unsafe { host_call_signal_handler(handler_index, signum, sa_flags) };
         i32_to_result(result)
     }
 
@@ -713,9 +713,11 @@ fn deliver_pending_signals(proc: &mut Process, host: &mut WasmHostIO) {
         if proc.state == crate::process::ProcessState::Exited {
             break;
         }
-        match proc.signals.get_handler(signum) {
+        let action = proc.signals.get_action(signum);
+        match action.handler {
             SignalHandler::Handler(idx) => {
-                let _ = host.host_call_signal_handler(idx, signum);
+                // Pass sa_flags so host knows whether to use SA_SIGINFO calling convention
+                let _ = host.host_call_signal_handler(idx, signum, action.flags);
             }
             SignalHandler::Default => {
                 match default_action(signum) {

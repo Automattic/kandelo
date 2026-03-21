@@ -5203,9 +5203,8 @@ pub fn sys_getrusage(_proc: &mut Process, who: i32, buf: &mut [u8]) -> Result<()
 /// realpath -- resolve a pathname to a canonical absolute form.
 ///
 /// Resolves the path against cwd, normalizes `.` and `..` components,
-/// and verifies the path exists via host stat. Intermediate symlink
-/// resolution is not performed (would require walking each component
-/// with lstat/readlink; noted as future enhancement).
+/// and resolves symlinks by walking each path component with lstat/readlink.
+/// Returns ELOOP after 40 symlink resolutions.
 pub fn sys_realpath(
     proc: &mut Process,
     host: &mut dyn HostIO,
@@ -5218,18 +5217,111 @@ pub fn sys_realpath(
         return Err(Errno::ENOENT);
     }
 
-    // Make absolute
-    let absolute = resolve_path(path, &proc.cwd);
-    // Normalize . and ..
-    let normalized = normalize_path(&absolute);
-    // Verify path exists
-    host.host_stat(&normalized)?;
+    const MAX_SYMLINKS: u32 = 40;
+    let mut symlink_count: u32 = 0;
 
-    let len = normalized.len();
+    // Make absolute and normalize
+    let absolute = resolve_path(path, &proc.cwd);
+    let normalized = normalize_path(&absolute);
+
+    // Split into components and resolve each
+    let mut resolved = Vec::new();
+    resolved.push(b'/');
+
+    // Collect components (skip empty from split)
+    let components: Vec<&[u8]> = normalized[1..].split(|&b| b == b'/').filter(|c| !c.is_empty()).collect();
+
+    let mut i = 0;
+    let mut remaining_components: Vec<Vec<u8>> = components.iter().map(|c| c.to_vec()).collect();
+
+    while i < remaining_components.len() {
+        let component = remaining_components[i].clone();
+        i += 1;
+
+        // Build the candidate path: resolved + "/" + component
+        let mut candidate = resolved.clone();
+        if candidate.len() > 1 {
+            candidate.push(b'/');
+        }
+        candidate.extend_from_slice(&component);
+
+        // lstat to check if this component is a symlink
+        match host.host_lstat(&candidate) {
+            Ok(stat) => {
+                // S_IFLNK = 0o120000 = 0xA000
+                if (stat.st_mode & 0o170000) == 0o120000 {
+                    // It's a symlink — resolve it
+                    symlink_count += 1;
+                    if symlink_count > MAX_SYMLINKS {
+                        return Err(Errno::ELOOP);
+                    }
+
+                    let mut link_target = [0u8; 4096];
+                    let link_len = host.host_readlink(&candidate, &mut link_target)?;
+                    let target = &link_target[..link_len];
+
+                    if target.is_empty() {
+                        return Err(Errno::ENOENT);
+                    }
+
+                    // Collect remaining components after this one
+                    let rest: Vec<Vec<u8>> = remaining_components[i..].to_vec();
+
+                    if target[0] == b'/' {
+                        // Absolute symlink: restart from root
+                        resolved.clear();
+                        resolved.push(b'/');
+                        let target_norm = normalize_path(target);
+                        let mut new_components: Vec<Vec<u8>> = target_norm[1..]
+                            .split(|&b| b == b'/')
+                            .filter(|c| !c.is_empty())
+                            .map(|c| c.to_vec())
+                            .collect();
+                        new_components.extend(rest);
+                        remaining_components = new_components;
+                        i = 0;
+                    } else {
+                        // Relative symlink: resolve relative to current resolved dir
+                        let mut new_components: Vec<Vec<u8>> = target
+                            .split(|&b| b == b'/')
+                            .filter(|c| !c.is_empty())
+                            .map(|c| c.to_vec())
+                            .collect();
+                        new_components.extend(rest);
+                        remaining_components = new_components;
+                        i = 0;
+                    }
+                } else {
+                    // Not a symlink — add to resolved path
+                    if component == b".." {
+                        // Go up one level
+                        if let Some(pos) = resolved.iter().rposition(|&b| b == b'/') {
+                            if pos == 0 {
+                                resolved.truncate(1); // stay at root
+                            } else {
+                                resolved.truncate(pos);
+                            }
+                        }
+                    } else if component != b"." {
+                        if resolved.len() > 1 {
+                            resolved.push(b'/');
+                        }
+                        resolved.extend_from_slice(&component);
+                    }
+                }
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
+    // Final existence check
+    host.host_stat(&resolved)?;
+
+    let len = resolved.len();
     if buf.len() < len {
         return Err(Errno::ERANGE);
     }
-    buf[..len].copy_from_slice(&normalized);
+    buf[..len].copy_from_slice(&resolved);
     Ok(len)
 }
 
@@ -5422,11 +5514,21 @@ mod tests {
             })
         }
 
-        fn host_lstat(&mut self, _path: &[u8]) -> Result<WasmStat, Errno> {
-            // Return S_IFLNK to distinguish from stat
+        fn host_lstat(&mut self, path: &[u8]) -> Result<WasmStat, Errno> {
+            // Return S_IFLNK for paths containing "link" (for symlink tests),
+            // otherwise return regular file/directory mode.
+            let is_symlink = path.windows(4).any(|w| w == b"link");
+            let is_dir = path.ends_with(b"/") || path == b"/";
+            let mode = if is_symlink {
+                S_IFLNK | 0o777
+            } else if is_dir {
+                S_IFDIR | 0o755
+            } else {
+                S_IFREG | 0o644
+            };
             Ok(WasmStat {
-                st_dev: 0, st_ino: 2, st_mode: S_IFLNK | 0o777, st_nlink: 1,
-                st_uid: 0, st_gid: 0, st_size: 7,
+                st_dev: 0, st_ino: 2, st_mode: mode, st_nlink: 1,
+                st_uid: 0, st_gid: 0, st_size: 1024,
                 st_atime_sec: 0, st_atime_nsec: 0,
                 st_mtime_sec: 0, st_mtime_nsec: 0,
                 st_ctime_sec: 0, st_ctime_nsec: 0, _pad: 0,
@@ -5518,7 +5620,7 @@ mod tests {
             Ok(self.sigsuspend_signal)
         }
 
-        fn host_call_signal_handler(&mut self, _handler_index: u32, _signum: u32) -> Result<(), Errno> {
+        fn host_call_signal_handler(&mut self, _handler_index: u32, _signum: u32, _sa_flags: u32) -> Result<(), Errno> {
             Ok(())
         }
 
@@ -8717,9 +8819,13 @@ mod tests {
         }
         fn host_lstat(&mut self, path: &[u8]) -> Result<WasmStat, Errno> {
             self.last_lstat_path = path.to_vec();
+            // Return regular file/dir by default (not symlink) so realpath works
+            let is_dir = path.ends_with(b"dir") || path.ends_with(b"tmp")
+                || path.ends_with(b"/") || path == b"/";
+            let mode = if is_dir { S_IFDIR | 0o755 } else { S_IFREG | 0o644 };
             Ok(WasmStat {
-                st_dev: 0, st_ino: 2, st_mode: S_IFLNK | 0o777, st_nlink: 1,
-                st_uid: 0, st_gid: 0, st_size: 7,
+                st_dev: 0, st_ino: 2, st_mode: mode, st_nlink: 1,
+                st_uid: 0, st_gid: 0, st_size: 1024,
                 st_atime_sec: 0, st_atime_nsec: 0, st_mtime_sec: 0, st_mtime_nsec: 0,
                 st_ctime_sec: 0, st_ctime_nsec: 0, _pad: 0,
             })
@@ -8783,7 +8889,7 @@ mod tests {
         fn host_exec(&mut self, _path: &[u8]) -> Result<(), Errno> { Ok(()) }
         fn host_set_alarm(&mut self, _seconds: u32) -> Result<(), Errno> { Ok(()) }
         fn host_sigsuspend_wait(&mut self) -> Result<u32, Errno> { Err(Errno::EINTR) }
-        fn host_call_signal_handler(&mut self, _handler_index: u32, _signum: u32) -> Result<(), Errno> { Ok(()) }
+        fn host_call_signal_handler(&mut self, _handler_index: u32, _signum: u32, _sa_flags: u32) -> Result<(), Errno> { Ok(()) }
         fn host_getrandom(&mut self, buf: &mut [u8]) -> Result<usize, Errno> {
             for (i, b) in buf.iter_mut().enumerate() { *b = (i & 0xFF) as u8; }
             Ok(buf.len())
@@ -9091,7 +9197,7 @@ mod tests {
             fn host_exec(&mut self, _p: &[u8]) -> Result<(), Errno> { Ok(()) }
             fn host_set_alarm(&mut self, _s: u32) -> Result<(), Errno> { Ok(()) }
             fn host_sigsuspend_wait(&mut self) -> Result<u32, Errno> { Err(Errno::EINTR) }
-            fn host_call_signal_handler(&mut self, _h: u32, _s: u32) -> Result<(), Errno> { Ok(()) }
+            fn host_call_signal_handler(&mut self, _h: u32, _s: u32, _f: u32) -> Result<(), Errno> { Ok(()) }
             fn host_getrandom(&mut self, b: &mut [u8]) -> Result<usize, Errno> { for x in b.iter_mut() { *x = 0x42; } Ok(b.len()) }
             fn host_utimensat(&mut self, _p: &[u8], _as: i64, _an: i64, _ms: i64, _mn: i64) -> Result<(), Errno> { Ok(()) }
             fn host_waitpid(&mut self, _p: i32, _o: u32) -> Result<(i32, i32), Errno> { Err(Errno::ECHILD) }
@@ -10616,5 +10722,363 @@ mod tests {
         let fd = sys_open(&mut proc, &mut host, b"/tmp/test", O_RDWR | O_CREAT, 0o644).unwrap();
         let result = sys_ioctl(&mut proc, fd, 0x540F, &mut buf);
         assert_eq!(result, Err(Errno::ENOTTY));
+    }
+
+    // ── Phase 6 tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_realpath_resolves_symlink() {
+        // Custom mock where /tmp/mylink is a symlink to /tmp/realfile
+        struct SymlinkMock;
+        impl HostIO for SymlinkMock {
+            fn host_open(&mut self, _p: &[u8], _f: u32, _m: u32) -> Result<i64, Errno> { Ok(100) }
+            fn host_close(&mut self, _h: i64) -> Result<(), Errno> { Ok(()) }
+            fn host_read(&mut self, _h: i64, _b: &mut [u8]) -> Result<usize, Errno> { Ok(0) }
+            fn host_write(&mut self, _h: i64, _b: &[u8]) -> Result<usize, Errno> { Ok(0) }
+            fn host_seek(&mut self, _h: i64, _o: i64, _w: u32) -> Result<i64, Errno> { Ok(0) }
+            fn host_fstat(&mut self, _h: i64) -> Result<WasmStat, Errno> { Ok(unsafe { core::mem::zeroed() }) }
+            fn host_stat(&mut self, _p: &[u8]) -> Result<WasmStat, Errno> {
+                Ok(WasmStat {
+                    st_dev: 0, st_ino: 1, st_mode: S_IFREG | 0o644, st_nlink: 1,
+                    st_uid: 0, st_gid: 0, st_size: 100,
+                    st_atime_sec: 0, st_atime_nsec: 0, st_mtime_sec: 0, st_mtime_nsec: 0,
+                    st_ctime_sec: 0, st_ctime_nsec: 0, _pad: 0,
+                })
+            }
+            fn host_lstat(&mut self, path: &[u8]) -> Result<WasmStat, Errno> {
+                let mode = if path == b"/tmp/mylink" {
+                    S_IFLNK | 0o777
+                } else if path == b"/tmp" || path == b"/" {
+                    S_IFDIR | 0o755
+                } else {
+                    S_IFREG | 0o644
+                };
+                Ok(WasmStat {
+                    st_dev: 0, st_ino: 1, st_mode: mode, st_nlink: 1,
+                    st_uid: 0, st_gid: 0, st_size: 100,
+                    st_atime_sec: 0, st_atime_nsec: 0, st_mtime_sec: 0, st_mtime_nsec: 0,
+                    st_ctime_sec: 0, st_ctime_nsec: 0, _pad: 0,
+                })
+            }
+            fn host_mkdir(&mut self, _p: &[u8], _m: u32) -> Result<(), Errno> { Ok(()) }
+            fn host_rmdir(&mut self, _p: &[u8]) -> Result<(), Errno> { Ok(()) }
+            fn host_unlink(&mut self, _p: &[u8]) -> Result<(), Errno> { Ok(()) }
+            fn host_rename(&mut self, _o: &[u8], _n: &[u8]) -> Result<(), Errno> { Ok(()) }
+            fn host_link(&mut self, _e: &[u8], _n: &[u8]) -> Result<(), Errno> { Ok(()) }
+            fn host_symlink(&mut self, _t: &[u8], _p: &[u8]) -> Result<(), Errno> { Ok(()) }
+            fn host_readlink(&mut self, path: &[u8], buf: &mut [u8]) -> Result<usize, Errno> {
+                if path == b"/tmp/mylink" {
+                    let target = b"/tmp/realfile";
+                    buf[..target.len()].copy_from_slice(target);
+                    Ok(target.len())
+                } else {
+                    Err(Errno::EINVAL)
+                }
+            }
+            fn host_chmod(&mut self, _p: &[u8], _m: u32) -> Result<(), Errno> { Ok(()) }
+            fn host_chown(&mut self, _p: &[u8], _u: u32, _g: u32) -> Result<(), Errno> { Ok(()) }
+            fn host_access(&mut self, _p: &[u8], _m: u32) -> Result<(), Errno> { Ok(()) }
+            fn host_opendir(&mut self, _p: &[u8]) -> Result<i64, Errno> { Ok(200) }
+            fn host_readdir(&mut self, _h: i64, _n: &mut [u8]) -> Result<Option<(u64, u32, usize)>, Errno> { Ok(None) }
+            fn host_closedir(&mut self, _h: i64) -> Result<(), Errno> { Ok(()) }
+            fn host_clock_gettime(&mut self, _c: u32) -> Result<(i64, i64), Errno> { Ok((0, 0)) }
+            fn host_nanosleep(&mut self, _s: i64, _n: i64) -> Result<(), Errno> { Ok(()) }
+            fn host_ftruncate(&mut self, _h: i64, _l: i64) -> Result<(), Errno> { Ok(()) }
+            fn host_fsync(&mut self, _h: i64) -> Result<(), Errno> { Ok(()) }
+            fn host_fchmod(&mut self, _h: i64, _m: u32) -> Result<(), Errno> { Ok(()) }
+            fn host_fchown(&mut self, _h: i64, _u: u32, _g: u32) -> Result<(), Errno> { Ok(()) }
+            fn host_kill(&mut self, _p: i32, _s: u32) -> Result<(), Errno> { Ok(()) }
+            fn host_exec(&mut self, _p: &[u8]) -> Result<(), Errno> { Ok(()) }
+            fn host_set_alarm(&mut self, _s: u32) -> Result<(), Errno> { Ok(()) }
+            fn host_sigsuspend_wait(&mut self) -> Result<u32, Errno> { Err(Errno::EINTR) }
+            fn host_call_signal_handler(&mut self, _h: u32, _s: u32, _f: u32) -> Result<(), Errno> { Ok(()) }
+            fn host_getrandom(&mut self, b: &mut [u8]) -> Result<usize, Errno> { for x in b.iter_mut() { *x = 0x42; } Ok(b.len()) }
+            fn host_utimensat(&mut self, _p: &[u8], _as: i64, _an: i64, _ms: i64, _mn: i64) -> Result<(), Errno> { Ok(()) }
+            fn host_waitpid(&mut self, _p: i32, _o: u32) -> Result<(i32, i32), Errno> { Err(Errno::ECHILD) }
+            fn host_net_connect(&mut self, _h: i32, _a: &[u8], _p: u16) -> Result<(), Errno> { Ok(()) }
+            fn host_net_send(&mut self, _h: i32, data: &[u8], _f: u32) -> Result<usize, Errno> { Ok(data.len()) }
+            fn host_net_recv(&mut self, _h: i32, _l: u32, _f: u32, _b: &mut [u8]) -> Result<usize, Errno> { Ok(0) }
+            fn host_net_close(&mut self, _h: i32) -> Result<(), Errno> { Ok(()) }
+            fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> { Ok(0) }
+            fn host_fcntl_lock(&mut self, _p: &[u8], _pid: u32, _c: u32, _t: u32, _s: i64, _l: i64, _r: &mut [u8]) -> Result<(), Errno> { Ok(()) }
+            fn host_fork(&self) -> i32 { -1 }
+            fn host_futex_wait(&mut self, _a: u32, _e: u32, _t: i64) -> Result<i32, Errno> { Ok(0) }
+            fn host_futex_wake(&mut self, _a: u32, _c: u32) -> Result<i32, Errno> { Ok(0) }
+            fn host_clone(&mut self, _f: u32, _a: u32, _s: u32, _t: u32, _c: u32) -> Result<i32, Errno> { Err(Errno::ENOSYS) }
+        }
+
+        let mut proc = Process::new(1);
+        let mut host = SymlinkMock;
+        let mut buf = [0u8; 4096];
+
+        // /tmp/mylink is a symlink to /tmp/realfile
+        let len = sys_realpath(&mut proc, &mut host, b"/tmp/mylink", &mut buf).unwrap();
+        assert_eq!(&buf[..len], b"/tmp/realfile");
+    }
+
+    #[test]
+    fn test_realpath_eloop() {
+        // Mock where /tmp/loop1 -> /tmp/loop2 -> /tmp/loop1 (circular)
+        struct LoopMock;
+        impl HostIO for LoopMock {
+            fn host_open(&mut self, _p: &[u8], _f: u32, _m: u32) -> Result<i64, Errno> { Ok(100) }
+            fn host_close(&mut self, _h: i64) -> Result<(), Errno> { Ok(()) }
+            fn host_read(&mut self, _h: i64, _b: &mut [u8]) -> Result<usize, Errno> { Ok(0) }
+            fn host_write(&mut self, _h: i64, _b: &[u8]) -> Result<usize, Errno> { Ok(0) }
+            fn host_seek(&mut self, _h: i64, _o: i64, _w: u32) -> Result<i64, Errno> { Ok(0) }
+            fn host_fstat(&mut self, _h: i64) -> Result<WasmStat, Errno> { Ok(unsafe { core::mem::zeroed() }) }
+            fn host_stat(&mut self, _p: &[u8]) -> Result<WasmStat, Errno> { Ok(unsafe { core::mem::zeroed() }) }
+            fn host_lstat(&mut self, path: &[u8]) -> Result<WasmStat, Errno> {
+                let mode = if path == b"/tmp/loop1" || path == b"/tmp/loop2" {
+                    S_IFLNK | 0o777
+                } else if path == b"/tmp" || path == b"/" {
+                    S_IFDIR | 0o755
+                } else {
+                    S_IFREG | 0o644
+                };
+                Ok(WasmStat {
+                    st_dev: 0, st_ino: 1, st_mode: mode, st_nlink: 1,
+                    st_uid: 0, st_gid: 0, st_size: 100,
+                    st_atime_sec: 0, st_atime_nsec: 0, st_mtime_sec: 0, st_mtime_nsec: 0,
+                    st_ctime_sec: 0, st_ctime_nsec: 0, _pad: 0,
+                })
+            }
+            fn host_mkdir(&mut self, _p: &[u8], _m: u32) -> Result<(), Errno> { Ok(()) }
+            fn host_rmdir(&mut self, _p: &[u8]) -> Result<(), Errno> { Ok(()) }
+            fn host_unlink(&mut self, _p: &[u8]) -> Result<(), Errno> { Ok(()) }
+            fn host_rename(&mut self, _o: &[u8], _n: &[u8]) -> Result<(), Errno> { Ok(()) }
+            fn host_link(&mut self, _e: &[u8], _n: &[u8]) -> Result<(), Errno> { Ok(()) }
+            fn host_symlink(&mut self, _t: &[u8], _p: &[u8]) -> Result<(), Errno> { Ok(()) }
+            fn host_readlink(&mut self, path: &[u8], buf: &mut [u8]) -> Result<usize, Errno> {
+                let target = if path == b"/tmp/loop1" { b"/tmp/loop2" as &[u8] }
+                    else if path == b"/tmp/loop2" { b"/tmp/loop1" }
+                    else { return Err(Errno::EINVAL); };
+                buf[..target.len()].copy_from_slice(target);
+                Ok(target.len())
+            }
+            fn host_chmod(&mut self, _p: &[u8], _m: u32) -> Result<(), Errno> { Ok(()) }
+            fn host_chown(&mut self, _p: &[u8], _u: u32, _g: u32) -> Result<(), Errno> { Ok(()) }
+            fn host_access(&mut self, _p: &[u8], _m: u32) -> Result<(), Errno> { Ok(()) }
+            fn host_opendir(&mut self, _p: &[u8]) -> Result<i64, Errno> { Ok(200) }
+            fn host_readdir(&mut self, _h: i64, _n: &mut [u8]) -> Result<Option<(u64, u32, usize)>, Errno> { Ok(None) }
+            fn host_closedir(&mut self, _h: i64) -> Result<(), Errno> { Ok(()) }
+            fn host_clock_gettime(&mut self, _c: u32) -> Result<(i64, i64), Errno> { Ok((0, 0)) }
+            fn host_nanosleep(&mut self, _s: i64, _n: i64) -> Result<(), Errno> { Ok(()) }
+            fn host_ftruncate(&mut self, _h: i64, _l: i64) -> Result<(), Errno> { Ok(()) }
+            fn host_fsync(&mut self, _h: i64) -> Result<(), Errno> { Ok(()) }
+            fn host_fchmod(&mut self, _h: i64, _m: u32) -> Result<(), Errno> { Ok(()) }
+            fn host_fchown(&mut self, _h: i64, _u: u32, _g: u32) -> Result<(), Errno> { Ok(()) }
+            fn host_kill(&mut self, _p: i32, _s: u32) -> Result<(), Errno> { Ok(()) }
+            fn host_exec(&mut self, _p: &[u8]) -> Result<(), Errno> { Ok(()) }
+            fn host_set_alarm(&mut self, _s: u32) -> Result<(), Errno> { Ok(()) }
+            fn host_sigsuspend_wait(&mut self) -> Result<u32, Errno> { Err(Errno::EINTR) }
+            fn host_call_signal_handler(&mut self, _h: u32, _s: u32, _f: u32) -> Result<(), Errno> { Ok(()) }
+            fn host_getrandom(&mut self, b: &mut [u8]) -> Result<usize, Errno> { for x in b.iter_mut() { *x = 0x42; } Ok(b.len()) }
+            fn host_utimensat(&mut self, _p: &[u8], _as: i64, _an: i64, _ms: i64, _mn: i64) -> Result<(), Errno> { Ok(()) }
+            fn host_waitpid(&mut self, _p: i32, _o: u32) -> Result<(i32, i32), Errno> { Err(Errno::ECHILD) }
+            fn host_net_connect(&mut self, _h: i32, _a: &[u8], _p: u16) -> Result<(), Errno> { Ok(()) }
+            fn host_net_send(&mut self, _h: i32, data: &[u8], _f: u32) -> Result<usize, Errno> { Ok(data.len()) }
+            fn host_net_recv(&mut self, _h: i32, _l: u32, _f: u32, _b: &mut [u8]) -> Result<usize, Errno> { Ok(0) }
+            fn host_net_close(&mut self, _h: i32) -> Result<(), Errno> { Ok(()) }
+            fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> { Ok(0) }
+            fn host_fcntl_lock(&mut self, _p: &[u8], _pid: u32, _c: u32, _t: u32, _s: i64, _l: i64, _r: &mut [u8]) -> Result<(), Errno> { Ok(()) }
+            fn host_fork(&self) -> i32 { -1 }
+            fn host_futex_wait(&mut self, _a: u32, _e: u32, _t: i64) -> Result<i32, Errno> { Ok(0) }
+            fn host_futex_wake(&mut self, _a: u32, _c: u32) -> Result<i32, Errno> { Ok(0) }
+            fn host_clone(&mut self, _f: u32, _a: u32, _s: u32, _t: u32, _c: u32) -> Result<i32, Errno> { Err(Errno::ENOSYS) }
+        }
+
+        let mut proc = Process::new(1);
+        let mut host = LoopMock;
+        let mut buf = [0u8; 4096];
+
+        let result = sys_realpath(&mut proc, &mut host, b"/tmp/loop1", &mut buf);
+        assert_eq!(result, Err(Errno::ELOOP));
+    }
+
+    #[test]
+    fn test_realpath_relative_symlink() {
+        // Mock where /a/b/sym -> ../c/target (relative symlink)
+        struct RelSymlinkMock;
+        impl HostIO for RelSymlinkMock {
+            fn host_open(&mut self, _p: &[u8], _f: u32, _m: u32) -> Result<i64, Errno> { Ok(100) }
+            fn host_close(&mut self, _h: i64) -> Result<(), Errno> { Ok(()) }
+            fn host_read(&mut self, _h: i64, _b: &mut [u8]) -> Result<usize, Errno> { Ok(0) }
+            fn host_write(&mut self, _h: i64, _b: &[u8]) -> Result<usize, Errno> { Ok(0) }
+            fn host_seek(&mut self, _h: i64, _o: i64, _w: u32) -> Result<i64, Errno> { Ok(0) }
+            fn host_fstat(&mut self, _h: i64) -> Result<WasmStat, Errno> { Ok(unsafe { core::mem::zeroed() }) }
+            fn host_stat(&mut self, _p: &[u8]) -> Result<WasmStat, Errno> {
+                Ok(WasmStat {
+                    st_dev: 0, st_ino: 1, st_mode: S_IFREG | 0o644, st_nlink: 1,
+                    st_uid: 0, st_gid: 0, st_size: 100,
+                    st_atime_sec: 0, st_atime_nsec: 0, st_mtime_sec: 0, st_mtime_nsec: 0,
+                    st_ctime_sec: 0, st_ctime_nsec: 0, _pad: 0,
+                })
+            }
+            fn host_lstat(&mut self, path: &[u8]) -> Result<WasmStat, Errno> {
+                let mode = if path == b"/a/b/sym" {
+                    S_IFLNK | 0o777
+                } else if path == b"/" || path == b"/a" || path == b"/a/b"
+                       || path == b"/a/c" {
+                    S_IFDIR | 0o755
+                } else {
+                    S_IFREG | 0o644
+                };
+                Ok(WasmStat {
+                    st_dev: 0, st_ino: 1, st_mode: mode, st_nlink: 1,
+                    st_uid: 0, st_gid: 0, st_size: 100,
+                    st_atime_sec: 0, st_atime_nsec: 0, st_mtime_sec: 0, st_mtime_nsec: 0,
+                    st_ctime_sec: 0, st_ctime_nsec: 0, _pad: 0,
+                })
+            }
+            fn host_mkdir(&mut self, _p: &[u8], _m: u32) -> Result<(), Errno> { Ok(()) }
+            fn host_rmdir(&mut self, _p: &[u8]) -> Result<(), Errno> { Ok(()) }
+            fn host_unlink(&mut self, _p: &[u8]) -> Result<(), Errno> { Ok(()) }
+            fn host_rename(&mut self, _o: &[u8], _n: &[u8]) -> Result<(), Errno> { Ok(()) }
+            fn host_link(&mut self, _e: &[u8], _n: &[u8]) -> Result<(), Errno> { Ok(()) }
+            fn host_symlink(&mut self, _t: &[u8], _p: &[u8]) -> Result<(), Errno> { Ok(()) }
+            fn host_readlink(&mut self, path: &[u8], buf: &mut [u8]) -> Result<usize, Errno> {
+                if path == b"/a/b/sym" {
+                    let target = b"../c/target";
+                    buf[..target.len()].copy_from_slice(target);
+                    Ok(target.len())
+                } else {
+                    Err(Errno::EINVAL)
+                }
+            }
+            fn host_chmod(&mut self, _p: &[u8], _m: u32) -> Result<(), Errno> { Ok(()) }
+            fn host_chown(&mut self, _p: &[u8], _u: u32, _g: u32) -> Result<(), Errno> { Ok(()) }
+            fn host_access(&mut self, _p: &[u8], _m: u32) -> Result<(), Errno> { Ok(()) }
+            fn host_opendir(&mut self, _p: &[u8]) -> Result<i64, Errno> { Ok(200) }
+            fn host_readdir(&mut self, _h: i64, _n: &mut [u8]) -> Result<Option<(u64, u32, usize)>, Errno> { Ok(None) }
+            fn host_closedir(&mut self, _h: i64) -> Result<(), Errno> { Ok(()) }
+            fn host_clock_gettime(&mut self, _c: u32) -> Result<(i64, i64), Errno> { Ok((0, 0)) }
+            fn host_nanosleep(&mut self, _s: i64, _n: i64) -> Result<(), Errno> { Ok(()) }
+            fn host_ftruncate(&mut self, _h: i64, _l: i64) -> Result<(), Errno> { Ok(()) }
+            fn host_fsync(&mut self, _h: i64) -> Result<(), Errno> { Ok(()) }
+            fn host_fchmod(&mut self, _h: i64, _m: u32) -> Result<(), Errno> { Ok(()) }
+            fn host_fchown(&mut self, _h: i64, _u: u32, _g: u32) -> Result<(), Errno> { Ok(()) }
+            fn host_kill(&mut self, _p: i32, _s: u32) -> Result<(), Errno> { Ok(()) }
+            fn host_exec(&mut self, _p: &[u8]) -> Result<(), Errno> { Ok(()) }
+            fn host_set_alarm(&mut self, _s: u32) -> Result<(), Errno> { Ok(()) }
+            fn host_sigsuspend_wait(&mut self) -> Result<u32, Errno> { Err(Errno::EINTR) }
+            fn host_call_signal_handler(&mut self, _h: u32, _s: u32, _f: u32) -> Result<(), Errno> { Ok(()) }
+            fn host_getrandom(&mut self, b: &mut [u8]) -> Result<usize, Errno> { for x in b.iter_mut() { *x = 0x42; } Ok(b.len()) }
+            fn host_utimensat(&mut self, _p: &[u8], _as: i64, _an: i64, _ms: i64, _mn: i64) -> Result<(), Errno> { Ok(()) }
+            fn host_waitpid(&mut self, _p: i32, _o: u32) -> Result<(i32, i32), Errno> { Err(Errno::ECHILD) }
+            fn host_net_connect(&mut self, _h: i32, _a: &[u8], _p: u16) -> Result<(), Errno> { Ok(()) }
+            fn host_net_send(&mut self, _h: i32, data: &[u8], _f: u32) -> Result<usize, Errno> { Ok(data.len()) }
+            fn host_net_recv(&mut self, _h: i32, _l: u32, _f: u32, _b: &mut [u8]) -> Result<usize, Errno> { Ok(0) }
+            fn host_net_close(&mut self, _h: i32) -> Result<(), Errno> { Ok(()) }
+            fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> { Ok(0) }
+            fn host_fcntl_lock(&mut self, _p: &[u8], _pid: u32, _c: u32, _t: u32, _s: i64, _l: i64, _r: &mut [u8]) -> Result<(), Errno> { Ok(()) }
+            fn host_fork(&self) -> i32 { -1 }
+            fn host_futex_wait(&mut self, _a: u32, _e: u32, _t: i64) -> Result<i32, Errno> { Ok(0) }
+            fn host_futex_wake(&mut self, _a: u32, _c: u32) -> Result<i32, Errno> { Ok(0) }
+            fn host_clone(&mut self, _f: u32, _a: u32, _s: u32, _t: u32, _c: u32) -> Result<i32, Errno> { Err(Errno::ENOSYS) }
+        }
+
+        let mut proc = Process::new(1);
+        let mut host = RelSymlinkMock;
+        let mut buf = [0u8; 4096];
+
+        // /a/b/sym -> ../c/target resolves to /a/c/target
+        let len = sys_realpath(&mut proc, &mut host, b"/a/b/sym", &mut buf).unwrap();
+        assert_eq!(&buf[..len], b"/a/c/target");
+    }
+
+    #[test]
+    fn test_sa_siginfo_flag_stored() {
+        use wasm_posix_shared::signal::*;
+        let mut proc = Process::new(1);
+        // Set handler with SA_SIGINFO flag
+        let (_, old_flags, _) = sys_sigaction(&mut proc, SIGUSR1, 42, SA_SIGINFO, 0).unwrap();
+        assert_eq!(old_flags, 0); // was default
+
+        // Read back the action
+        let action = proc.signals.get_action(SIGUSR1);
+        assert_eq!(action.flags & SA_SIGINFO, SA_SIGINFO);
+    }
+
+    #[test]
+    fn test_rt_signal_queuing() {
+        let mut state = crate::signal::SignalState::new();
+        let rt_sig = 34u32; // SIGRTMIN + 2
+
+        // Raise the same RT signal 3 times
+        state.raise(rt_sig);
+        state.raise(rt_sig);
+        state.raise(rt_sig);
+
+        // Should dequeue 3 separate instances
+        assert_eq!(state.dequeue(), Some(rt_sig));
+        assert_eq!(state.dequeue(), Some(rt_sig));
+        assert_eq!(state.dequeue(), Some(rt_sig));
+        // Now exhausted
+        assert_eq!(state.dequeue(), None);
+    }
+
+    #[test]
+    fn test_standard_signal_coalesced() {
+        let mut state = crate::signal::SignalState::new();
+        use wasm_posix_shared::signal::SIGUSR1;
+
+        // Raise SIGUSR1 (standard, signal 10) 3 times
+        state.raise(SIGUSR1);
+        state.raise(SIGUSR1);
+        state.raise(SIGUSR1);
+
+        // Should only dequeue once (coalesced)
+        assert_eq!(state.dequeue(), Some(SIGUSR1));
+        assert_eq!(state.dequeue(), None);
+    }
+
+    #[test]
+    fn test_rt_signal_ordering() {
+        let mut state = crate::signal::SignalState::new();
+        let rt1 = 33u32;
+        let rt2 = 34u32;
+
+        // Raise rt2 first, then rt1
+        state.raise(rt2);
+        state.raise(rt1);
+
+        // Should dequeue in signal number order (lowest first from bitmask)
+        assert_eq!(state.dequeue(), Some(rt1));
+        assert_eq!(state.dequeue(), Some(rt2));
+        assert_eq!(state.dequeue(), None);
+    }
+
+    #[test]
+    fn test_rt_signal_clear_removes_all() {
+        let mut state = crate::signal::SignalState::new();
+        let rt_sig = 35u32;
+
+        state.raise(rt_sig);
+        state.raise(rt_sig);
+        state.raise(rt_sig);
+
+        // Clear should remove all queued instances
+        state.clear(rt_sig);
+        assert!(!state.is_pending(rt_sig));
+        assert_eq!(state.dequeue(), None);
+    }
+
+    #[test]
+    fn test_mixed_standard_and_rt_signals() {
+        use wasm_posix_shared::signal::SIGINT;
+        let mut state = crate::signal::SignalState::new();
+        let rt_sig = 40u32;
+
+        state.raise(rt_sig);
+        state.raise(rt_sig);
+        state.raise(SIGINT); // standard signal 2
+
+        // Standard signals have lower numbers, so SIGINT dequeues first
+        assert_eq!(state.dequeue(), Some(SIGINT));
+        // Then both RT signal instances
+        assert_eq!(state.dequeue(), Some(rt_sig));
+        assert_eq!(state.dequeue(), Some(rt_sig));
+        assert_eq!(state.dequeue(), None);
     }
 }

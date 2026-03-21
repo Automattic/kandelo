@@ -58,7 +58,10 @@ pub trait HostIO {
     /// Ask the host to invoke a user-space signal handler.
     /// `handler_index` is the Wasm function table index.
     /// `signum` is the signal number being delivered.
-    fn host_call_signal_handler(&mut self, handler_index: u32, signum: u32) -> Result<(), Errno>;
+    /// `sa_flags` is the sigaction flags (SA_SIGINFO, SA_RESTART, etc.)
+    /// When SA_SIGINFO is set, the host should call handler(signum, siginfo_ptr, 0)
+    /// instead of handler(signum).
+    fn host_call_signal_handler(&mut self, handler_index: u32, signum: u32, sa_flags: u32) -> Result<(), Errno>;
     fn host_getrandom(&mut self, buf: &mut [u8]) -> Result<usize, Errno>;
     fn host_utimensat(&mut self, path: &[u8], atime_sec: i64, atime_nsec: i64, mtime_sec: i64, mtime_nsec: i64) -> Result<(), Errno>;
     fn host_waitpid(&mut self, pid: i32, options: u32) -> Result<(i32, i32), Errno>;

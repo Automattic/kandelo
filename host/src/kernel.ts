@@ -228,7 +228,8 @@ export class WasmPosixKernel {
         host_sigsuspend_wait: (): number => {
           return this.hostSigsuspendWait();
         },
-        host_call_signal_handler: (handler_index: number, signum: number): number => {
+        host_call_signal_handler: (handler_index: number, signum: number, sa_flags: number): number => {
+          const SA_SIGINFO = 4;
           const table = this.programFuncTable
             ?? (this.instance?.exports.__indirect_function_table as WebAssembly.Table | undefined);
           if (!table) {
@@ -237,7 +238,13 @@ export class WasmPosixKernel {
           const handler = table.get(handler_index);
           if (handler) {
             try {
-              (handler as Function)(signum);
+              if (sa_flags & SA_SIGINFO) {
+                // SA_SIGINFO: call handler(signum, siginfo_ptr, ucontext_ptr)
+                // siginfo_ptr=0 and ucontext_ptr=0 for now (no siginfo written to memory yet)
+                (handler as Function)(signum, 0, 0);
+              } else {
+                (handler as Function)(signum);
+              }
               return 0;
             } catch (e) {
               return -5; // EIO
