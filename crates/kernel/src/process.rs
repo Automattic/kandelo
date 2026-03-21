@@ -17,6 +17,8 @@ pub struct DirStream {
     pub host_handle: i64,
     pub path: Vec<u8>,     // resolved directory path (for rewinddir)
     pub position: u64,     // entry counter (for telldir/seekdir)
+    /// Synthetic "." / ".." state: 0 = emit ".", 1 = emit "..", 2 = host entries
+    pub synth_dot_state: u8,
 }
 
 /// Trait for host I/O operations that the kernel delegates to the runtime.

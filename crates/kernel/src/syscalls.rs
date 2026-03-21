@@ -594,6 +594,7 @@ pub fn sys_write(
                 Ok(n)
             } else {
                 // Kernel-internal pipe
+                const PIPE_BUF: usize = 4096;
                 let pipe_idx = (-(host_handle + 1)) as usize;
                 loop {
                     let pipe = proc
@@ -605,12 +606,20 @@ pub fn sys_write(
                         proc.signals.raise(wasm_posix_shared::signal::SIGPIPE);
                         return Err(Errno::EPIPE);
                     }
-                    let n = pipe.write(buf);
-                    if n > 0 {
-                        return Ok(n);
-                    }
-                    if status_flags & O_NONBLOCK != 0 || crate::is_centralized_mode() {
-                        return Err(Errno::EAGAIN);
+                    // POSIX PIPE_BUF atomicity: writes ≤ PIPE_BUF must not be partial
+                    if buf.len() <= PIPE_BUF && pipe.free_space() < buf.len() {
+                        // Not enough space for atomic write
+                        if status_flags & O_NONBLOCK != 0 || crate::is_centralized_mode() {
+                            return Err(Errno::EAGAIN);
+                        }
+                    } else {
+                        let n = pipe.write(buf);
+                        if n > 0 {
+                            return Ok(n);
+                        }
+                        if status_flags & O_NONBLOCK != 0 || crate::is_centralized_mode() {
+                            return Err(Errno::EAGAIN);
+                        }
                     }
                     // Block: check for signals then sleep 1ms
                     if proc.signals.deliverable() != 0 {
@@ -1546,7 +1555,7 @@ pub fn sys_getcwd(proc: &Process, buf: &mut [u8]) -> Result<usize, Errno> {
 pub fn sys_opendir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<i32, Errno> {
     let resolved = crate::path::resolve_path(path, &proc.cwd);
     let host_handle = host.host_opendir(&resolved)?;
-    let stream = DirStream { host_handle, path: resolved, position: 0 };
+    let stream = DirStream { host_handle, path: resolved, position: 0, synth_dot_state: 0 };
 
     // Find a free slot or append
     for (i, slot) in proc.dir_streams.iter().enumerate() {
@@ -1577,9 +1586,51 @@ pub fn sys_readdir(
         .and_then(|s| s.as_ref())
         .ok_or(Errno::EBADF)?;
     let host_handle = stream.host_handle;
+    let synth_state = stream.synth_dot_state;
+
+    // Synthesize "." and ".." entries before host entries
+    if synth_state < 2 {
+        let (name, name_len) = if synth_state == 0 {
+            (b"." as &[u8], 1usize)
+        } else {
+            (b".." as &[u8], 2usize)
+        };
+        let dirent = WasmDirent {
+            d_ino: 1,
+            d_type: 4, // DT_DIR
+            d_namlen: name_len as u32,
+        };
+        let dirent_size = core::mem::size_of::<WasmDirent>();
+        if dirent_buf.len() >= dirent_size {
+            let dirent_bytes = unsafe {
+                core::slice::from_raw_parts(
+                    &dirent as *const WasmDirent as *const u8,
+                    dirent_size,
+                )
+            };
+            dirent_buf[..dirent_size].copy_from_slice(dirent_bytes);
+        }
+        if name_len <= name_buf.len() {
+            name_buf[..name_len].copy_from_slice(name);
+        }
+        if let Some(stream) = proc.dir_streams.get_mut(idx).and_then(|s| s.as_mut()) {
+            stream.synth_dot_state += 1;
+            stream.position += 1;
+        }
+        return Ok(1);
+    }
 
     match host.host_readdir(host_handle, name_buf)? {
         Some((d_ino, d_type, name_len)) => {
+            // Skip host "." and ".." entries (we already synthesized them)
+            if name_len == 1 && name_buf[0] == b'.' {
+                // Recurse to get the next entry
+                return sys_readdir(proc, host, dir_handle, dirent_buf, name_buf);
+            }
+            if name_len == 2 && name_buf[0] == b'.' && name_buf[1] == b'.' {
+                return sys_readdir(proc, host, dir_handle, dirent_buf, name_buf);
+            }
+
             // Write WasmDirent to dirent_buf if it fits
             let dirent = WasmDirent {
                 d_ino,
@@ -1629,6 +1680,7 @@ pub fn sys_rewinddir(proc: &mut Process, host: &mut dyn HostIO, dir_handle: i32)
     let stream = proc.dir_streams.get_mut(idx).and_then(|s| s.as_mut()).ok_or(Errno::EBADF)?;
     stream.host_handle = new_handle;
     stream.position = 0;
+    stream.synth_dot_state = 0;
     Ok(())
 }
 
@@ -1644,13 +1696,24 @@ pub fn sys_seekdir(proc: &mut Process, host: &mut dyn HostIO, dir_handle: i32, l
     // Rewind to beginning, then skip `loc` entries
     sys_rewinddir(proc, host, dir_handle)?;
     let idx = dir_handle as usize;
+
+    // Skip entries: first 2 positions are synthetic "." and ".."
+    let synth_to_skip = loc.min(2);
+    let host_to_skip = loc.saturating_sub(2);
+
+    // Advance synth state
+    if let Some(stream) = proc.dir_streams.get_mut(idx).and_then(|s| s.as_mut()) {
+        stream.synth_dot_state = synth_to_skip as u8;
+    }
+
+    // Skip host entries
     let mut name_buf = [0u8; 256];
-    for _ in 0..loc {
+    for _ in 0..host_to_skip {
         let stream = proc.dir_streams.get(idx).and_then(|s| s.as_ref()).ok_or(Errno::EBADF)?;
         let handle = stream.host_handle;
         match host.host_readdir(handle, &mut name_buf)? {
             Some(_) => {},
-            None => break, // past end of directory
+            None => break,
         }
     }
     if let Some(stream) = proc.dir_streams.get_mut(idx).and_then(|s| s.as_mut()) {
@@ -1711,43 +1774,65 @@ pub fn sys_getdents64(
     let mut name_buf = [0u8; 256];
     let mut entry_count = 0i64;
 
+    // Helper: write a single linux_dirent64 entry to buf at position pos.
+    // Returns the number of bytes written, or 0 if it doesn't fit.
+    fn write_dirent64(buf: &mut [u8], pos: usize, d_ino: u64, entry_count: i64, d_type: u8, name: &[u8]) -> usize {
+        let name_len = name.len();
+        let reclen_raw = 19 + name_len + 1;
+        let reclen = (reclen_raw + 7) & !7;
+        if pos + reclen > buf.len() {
+            return 0;
+        }
+        buf[pos..pos + 8].copy_from_slice(&d_ino.to_le_bytes());
+        buf[pos + 8..pos + 16].copy_from_slice(&entry_count.to_le_bytes());
+        buf[pos + 16..pos + 18].copy_from_slice(&(reclen as u16).to_le_bytes());
+        buf[pos + 18] = d_type;
+        buf[pos + 19..pos + 19 + name_len].copy_from_slice(name);
+        buf[pos + 19 + name_len] = 0;
+        for i in pos + 19 + name_len + 1..pos + reclen {
+            buf[i] = 0;
+        }
+        reclen
+    }
+
+    // Synthesize "." and ".." entries
+    let synth_state = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?.dir_synth_state;
+    if synth_state < 2 {
+        let synth_entries: &[&[u8]] = if synth_state == 0 { &[b".", b".."] } else { &[b".."] };
+        for name in synth_entries {
+            entry_count += 1;
+            let written = write_dirent64(buf, pos, 1, entry_count, 4 /* DT_DIR */, name);
+            if written == 0 {
+                if pos == 0 {
+                    return Err(Errno::EINVAL);
+                }
+                return Ok(pos);
+            }
+            pos += written;
+        }
+        if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
+            ofd.dir_synth_state = 2;
+        }
+    }
+
     loop {
         match host.host_readdir(dir_handle, &mut name_buf)? {
             Some((d_ino, d_type, name_len)) => {
-                // Calculate entry size: 19 bytes fixed + name + null + padding to 8-byte align
-                let reclen_raw = 19 + name_len + 1; // d_ino(8) + d_off(8) + d_reclen(2) + d_type(1) + name + null
-                let reclen = (reclen_raw + 7) & !7; // align to 8 bytes
-
-                if pos + reclen > buf.len() {
-                    if pos == 0 {
-                        return Err(Errno::EINVAL); // buffer too small for even one entry
-                    }
-                    // Can't fit more entries; stop and return what we have.
-                    // We need to "push back" this entry. Since host_readdir is stateful,
-                    // we can't un-read. We'll close and mark as needing re-iteration.
-                    // This is a simplification — real getdents uses a seekable dir position.
-                    break;
+                // Skip host "." and ".." entries (we already synthesized them)
+                if (name_len == 1 && name_buf[0] == b'.') ||
+                   (name_len == 2 && name_buf[0] == b'.' && name_buf[1] == b'.') {
+                    continue;
                 }
 
                 entry_count += 1;
-
-                // Write d_ino (u64 LE)
-                buf[pos..pos + 8].copy_from_slice(&d_ino.to_le_bytes());
-                // Write d_off (i64 LE) — use entry count as offset
-                buf[pos + 8..pos + 16].copy_from_slice(&entry_count.to_le_bytes());
-                // Write d_reclen (u16 LE)
-                buf[pos + 16..pos + 18].copy_from_slice(&(reclen as u16).to_le_bytes());
-                // Write d_type (u8)
-                buf[pos + 18] = d_type as u8;
-                // Write d_name (null-terminated)
-                buf[pos + 19..pos + 19 + name_len].copy_from_slice(&name_buf[..name_len]);
-                buf[pos + 19 + name_len] = 0; // null terminator
-                // Zero-fill padding
-                for i in pos + 19 + name_len + 1..pos + reclen {
-                    buf[i] = 0;
+                let written = write_dirent64(buf, pos, d_ino, entry_count, d_type as u8, &name_buf[..name_len]);
+                if written == 0 {
+                    if pos == 0 {
+                        return Err(Errno::EINVAL);
+                    }
+                    break;
                 }
-
-                pos += reclen;
+                pos += written;
             }
             None => {
                 // End of directory — mark as exhausted
@@ -3789,6 +3874,34 @@ pub fn sys_ioctl(proc: &mut Process, fd: i32, request: u32, buf: &mut [u8]) -> R
         return Ok(());
     }
 
+    // TIOCGPGRP / TIOCSPGRP — foreground process group
+    if request == 0x540F { // TIOCGPGRP
+        let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+        if ofd.file_type != FileType::CharDevice {
+            return Err(Errno::ENOTTY);
+        }
+        if buf.len() < 4 {
+            return Err(Errno::EINVAL);
+        }
+        buf[0..4].copy_from_slice(&proc.terminal.foreground_pgid.to_le_bytes());
+        return Ok(());
+    }
+    if request == 0x5410 { // TIOCSPGRP
+        let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+        if ofd.file_type != FileType::CharDevice {
+            return Err(Errno::ENOTTY);
+        }
+        if buf.len() < 4 {
+            return Err(Errno::EINVAL);
+        }
+        let pgid = i32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
+        if pgid <= 0 {
+            return Err(Errno::EINVAL);
+        }
+        proc.terminal.foreground_pgid = pgid;
+        return Ok(());
+    }
+
     // Terminal-specific ioctls: require CharDevice
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
     if ofd.file_type != FileType::CharDevice {
@@ -5827,12 +5940,21 @@ mod tests {
         let mut dirent_buf = [0u8; 16]; // WasmDirent is 16 bytes
         let mut name_buf = [0u8; 256];
 
-        // First call should return entry
+        // First two calls return synthesized "." and ".."
+        let result = sys_readdir(&mut proc, &mut host, dh, &mut dirent_buf, &mut name_buf).unwrap();
+        assert_eq!(result, 1);
+        assert_eq!(&name_buf[..1], b".");
+
+        let result = sys_readdir(&mut proc, &mut host, dh, &mut dirent_buf, &mut name_buf).unwrap();
+        assert_eq!(result, 1);
+        assert_eq!(&name_buf[..2], b"..");
+
+        // Third call should return host entry
         let result = sys_readdir(&mut proc, &mut host, dh, &mut dirent_buf, &mut name_buf).unwrap();
         assert_eq!(result, 1);
         assert_eq!(&name_buf[..8], b"test.txt");
 
-        // Second call should return end-of-directory
+        // Fourth call should return end-of-directory
         let result = sys_readdir(&mut proc, &mut host, dh, &mut dirent_buf, &mut name_buf).unwrap();
         assert_eq!(result, 0);
 
@@ -5872,12 +5994,16 @@ mod tests {
         let mut dirent_buf = [0u8; 16];
         let mut name_buf = [0u8; 256];
 
-        // Read first entry
+        // Skip synth entries
+        sys_readdir(&mut proc, &mut host, dh, &mut dirent_buf, &mut name_buf).unwrap(); // "."
+        sys_readdir(&mut proc, &mut host, dh, &mut dirent_buf, &mut name_buf).unwrap(); // ".."
+
+        // Read first host entry
         let r = sys_readdir(&mut proc, &mut host, dh, &mut dirent_buf, &mut name_buf).unwrap();
         assert_eq!(r, 1);
         assert_eq!(&name_buf[..8], b"test.txt");
 
-        // Read second entry
+        // Read second host entry
         let r = sys_readdir(&mut proc, &mut host, dh, &mut dirent_buf, &mut name_buf).unwrap();
         assert_eq!(r, 1);
         assert_eq!(&name_buf[..7], b"foo.txt");
@@ -5889,10 +6015,10 @@ mod tests {
         // Rewind
         sys_rewinddir(&mut proc, &mut host, dh).unwrap();
 
-        // Read again — should get first entry again
+        // After rewind, should get "." again
         let r = sys_readdir(&mut proc, &mut host, dh, &mut dirent_buf, &mut name_buf).unwrap();
         assert_eq!(r, 1);
-        assert_eq!(&name_buf[..8], b"test.txt");
+        assert_eq!(&name_buf[..1], b".");
 
         sys_closedir(&mut proc, &mut host, dh).unwrap();
     }
@@ -5932,20 +6058,22 @@ mod tests {
         let mut dirent_buf = [0u8; 16];
         let mut name_buf = [0u8; 256];
 
-        // Read first 3 entries
+        // Read first 5 entries (. .. test.txt foo.txt bar.txt)
         sys_readdir(&mut proc, &mut host, dh, &mut dirent_buf, &mut name_buf).unwrap();
         sys_readdir(&mut proc, &mut host, dh, &mut dirent_buf, &mut name_buf).unwrap();
         sys_readdir(&mut proc, &mut host, dh, &mut dirent_buf, &mut name_buf).unwrap();
-        assert_eq!(sys_telldir(&proc, dh).unwrap(), 3);
+        sys_readdir(&mut proc, &mut host, dh, &mut dirent_buf, &mut name_buf).unwrap();
+        sys_readdir(&mut proc, &mut host, dh, &mut dirent_buf, &mut name_buf).unwrap();
+        assert_eq!(sys_telldir(&proc, dh).unwrap(), 5);
 
-        // Seek to position 1
+        // Seek to position 1 (should be "..")
         sys_seekdir(&mut proc, &mut host, dh, 1).unwrap();
         assert_eq!(sys_telldir(&proc, dh).unwrap(), 1);
 
-        // Read should give entry at position 1 (foo.txt)
+        // Read should give entry at position 1 ("..")
         let r = sys_readdir(&mut proc, &mut host, dh, &mut dirent_buf, &mut name_buf).unwrap();
         assert_eq!(r, 1);
-        assert_eq!(&name_buf[..7], b"foo.txt");
+        assert_eq!(&name_buf[..2], b"..");
 
         sys_closedir(&mut proc, &mut host, dh).unwrap();
     }
@@ -10409,5 +10537,84 @@ mod tests {
         sys_close(&mut proc, &mut host, fd).unwrap();
         let result = sys_read(&mut proc, &mut host, fd, &mut [0u8; 128]);
         assert_eq!(result, Err(Errno::EBADF));
+    }
+
+    // ── Phase 5 tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_readdir_synthesizes_dot_entries() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.dir_entry_count = 0; // no host entries
+        let dh = sys_opendir(&mut proc, &mut host, b"/tmp").unwrap();
+
+        let mut dirent_buf = [0u8; 16];
+        let mut name_buf = [0u8; 256];
+
+        // Should get "." first
+        let r = sys_readdir(&mut proc, &mut host, dh, &mut dirent_buf, &mut name_buf).unwrap();
+        assert_eq!(r, 1);
+        assert_eq!(&name_buf[..1], b".");
+
+        // Then ".."
+        let r = sys_readdir(&mut proc, &mut host, dh, &mut dirent_buf, &mut name_buf).unwrap();
+        assert_eq!(r, 1);
+        assert_eq!(&name_buf[..2], b"..");
+
+        // Then end of directory (no host entries)
+        let r = sys_readdir(&mut proc, &mut host, dh, &mut dirent_buf, &mut name_buf).unwrap();
+        assert_eq!(r, 0);
+    }
+
+    #[test]
+    fn test_pipe_buf_atomicity() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (read_fd, write_fd) = sys_pipe(&mut proc).unwrap();
+
+        // Set write end to nonblocking
+        sys_fcntl(&mut proc, write_fd, 4, O_NONBLOCK).unwrap(); // F_SETFL
+
+        // Fill most of the pipe (capacity is 65536)
+        let big_buf = [0u8; 65530];
+        sys_write(&mut proc, &mut host, write_fd, &big_buf).unwrap();
+
+        // Now only 6 bytes free. A write of 100 bytes (≤ PIPE_BUF=4096)
+        // should fail with EAGAIN rather than doing a partial write.
+        let small_buf = [0u8; 100];
+        let result = sys_write(&mut proc, &mut host, write_fd, &small_buf);
+        assert_eq!(result, Err(Errno::EAGAIN));
+    }
+
+    #[test]
+    fn test_tiocgpgrp_tiocspgrp() {
+        let mut proc = Process::new(1);
+        let mut buf = [0u8; 4];
+
+        // TIOCGPGRP on stdin (fd 0, which is a CharDevice)
+        sys_ioctl(&mut proc, 0, 0x540F, &mut buf).unwrap();
+        let pgid = i32::from_le_bytes(buf);
+        assert_eq!(pgid, 1); // default foreground_pgid
+
+        // TIOCSPGRP — set to 42
+        buf.copy_from_slice(&42i32.to_le_bytes());
+        sys_ioctl(&mut proc, 0, 0x5410, &mut buf).unwrap();
+
+        // Read back
+        sys_ioctl(&mut proc, 0, 0x540F, &mut buf).unwrap();
+        let pgid = i32::from_le_bytes(buf);
+        assert_eq!(pgid, 42);
+    }
+
+    #[test]
+    fn test_tiocgpgrp_not_tty() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let mut buf = [0u8; 4];
+
+        // Open a regular file
+        let fd = sys_open(&mut proc, &mut host, b"/tmp/test", O_RDWR | O_CREAT, 0o644).unwrap();
+        let result = sys_ioctl(&mut proc, fd, 0x540F, &mut buf);
+        assert_eq!(result, Err(Errno::ENOTTY));
     }
 }

@@ -461,6 +461,7 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
             owner_pid: child_pid,
             path,
             dir_host_handle: -1,
+            dir_synth_state: 0,
         });
     }
     let ofd_table = OfdTable::from_raw(ofd_entries);
@@ -520,6 +521,7 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
             ws_xpixel,
             ws_ypixel,
         },
+        foreground_pgid: 1,
     };
 
     // ── Program break ──
@@ -830,6 +832,7 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
             owner_pid: pid,
             path,
             dir_host_handle: -1,
+            dir_synth_state: 0,
         });
     }
     let ofd_table = OfdTable::from_raw(ofd_entries);
@@ -889,6 +892,7 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
             ws_xpixel,
             ws_ypixel,
         },
+        foreground_pgid: 1,
     };
 
     // ── Program break ──

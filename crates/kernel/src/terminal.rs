@@ -70,6 +70,8 @@ pub struct TerminalState {
     pub c_lflag: u32,
     pub c_cc: [u8; NCCS],
     pub winsize: WinSize,
+    /// Foreground process group ID (for tcgetpgrp/tcsetpgrp via TIOCGPGRP/TIOCSPGRP).
+    pub foreground_pgid: i32,
 }
 
 impl TerminalState {
@@ -99,6 +101,7 @@ impl TerminalState {
                 ws_xpixel: 0,
                 ws_ypixel: 0,
             },
+            foreground_pgid: 1, // default to PID 1's group
         }
     }
 }
