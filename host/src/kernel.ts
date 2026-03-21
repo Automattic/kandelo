@@ -1792,7 +1792,9 @@ export class WasmPosixKernel {
     // signed < 0 → infinite wait (undefined timeout)
 
     const result = Atomics.wait(i32view, index, expected, timeoutMs);
-    if (result === "timed-out") return -110; // -ETIMEDOUT
+    if (result === "timed-out") {
+      return -110; // -ETIMEDOUT
+    }
     if (result === "not-equal") return -11;  // -EAGAIN
     return 0; // "ok"
   }

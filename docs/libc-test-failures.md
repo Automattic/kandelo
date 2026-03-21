@@ -1,22 +1,20 @@
 # libc-test Failure Report
 
-Generated: 2026-03-20 20:18 UTC
+Generated: 2026-03-20 22:49 UTC
 
 | Status | Count |
 |--------|-------|
-| PASS | 292 |
-| FAIL | 17 |
+| PASS | 295 |
+| FAIL | 15 |
 | BUILD | 0 |
-| TIMEOUT | 15 |
+| TIMEOUT | 14 |
 | **TOTAL** | **324** |
 
-## Runtime Failures (17)
+## Runtime Failures (15)
 
 | Test | Category |
 |------|----------|
 | `execle-env` |  regression |
-| `pthread_cond-smasher` |  regression |
-| `pthread-robust-detach` |  regression |
 | `acosh` |  math |
 | `asinh` |  math |
 | `erfc` |  math |
@@ -32,13 +30,12 @@ Generated: 2026-03-20 20:18 UTC
 | `y0f` |  math |
 | `ynf` |  math |
 
-## Timeouts (15)
+## Timeouts (14)
 
 | Test | Category |
 |------|----------|
 | `pthread_cancel-points` |  functional |
 | `pthread_cancel` |  functional |
-| `pthread_robust` |  functional |
 | `sem_open` |  functional |
 | `setjmp` |  functional |
 | `flockfile-list` |  regression |
@@ -52,7 +49,7 @@ Generated: 2026-03-20 20:18 UTC
 | `sigaltstack` |  regression |
 | `tls_get_new-dtv` |  regression |
 
-## Passing Tests (292)
+## Passing Tests (295)
 
 <details>
 <summary>Click to expand</summary>
@@ -81,6 +78,7 @@ Generated: 2026-03-20 20:18 UTC
 | `popen` |  functional |
 | `pthread_cond` |  functional |
 | `pthread_mutex` |  functional |
+| `pthread_robust` |  functional |
 | `pthread_tsd` |  functional |
 | `qsort` |  functional |
 | `random` |  functional |
@@ -141,11 +139,13 @@ Generated: 2026-03-20 20:18 UTC
 | `printf-fmt-g-round` |  regression |
 | `printf-fmt-g-zeros` |  regression |
 | `printf-fmt-n` |  regression |
+| `pthread_cond-smasher` |  regression |
 | `pthread_condattr_setclock` |  regression |
 | `pthread_exit-cancel` |  regression |
 | `pthread_exit-dtor` |  regression |
 | `pthread_once-deadlock` |  regression |
 | `pthread_rwlock-ebusy` |  regression |
+| `pthread-robust-detach` |  regression |
 | `putenv-doublefree` |  regression |
 | `regex-backref-0` |  regression |
 | `regex-bracket-icase` |  regression |

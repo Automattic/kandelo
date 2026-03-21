@@ -1442,8 +1442,10 @@ static long __do_syscall(long n, long a1, long a2, long a3,
         return (long)kernel_set_tid_address((uint32_t)(uintptr_t)a1);
 
     case SYS_SET_ROBUST_LIST:
-        /* STUB: single-threaded — no-op */
         return (long)kernel_set_robust_list((uint32_t)(uintptr_t)a1, (uint32_t)a2);
+
+    case SYS_GET_ROBUST_LIST:
+        return (long)kernel_get_robust_list((uint32_t)a1, (uint32_t)(uintptr_t)a2, (uint32_t)(uintptr_t)a3);
 
     /* ============================================================== */
     /* Futex stub (single-threaded)                                    */
@@ -1983,9 +1985,6 @@ static long __do_syscall(long n, long a1, long a2, long a3,
         if (node_ptr) *node_ptr = 0;
         return 0;
     }
-
-    case SYS_GET_ROBUST_LIST:
-        return ENOSYS_NEG;
 
     case SYS_SENDMMSG:
     case SYS_RECVMMSG:

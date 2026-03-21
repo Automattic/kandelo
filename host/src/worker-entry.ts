@@ -26,7 +26,9 @@ function createIO(initData: WorkerInitMessage): PlatformIO {
 if (parentPort) {
   const data = workerData as { type: string };
   if (data.type === "thread_init") {
-    threadWorkerMain(parentPort, workerData as ThreadInitMessage, createIO);
+    threadWorkerMain(parentPort, workerData as ThreadInitMessage, createIO).catch((e) => {
+      console.error(`[worker-entry] threadWorkerMain error: ${e}`);
+    });
   } else {
     workerMain(parentPort, workerData as WorkerInitMessage, createIO);
   }

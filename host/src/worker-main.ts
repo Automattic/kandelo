@@ -661,6 +661,79 @@ function setupMessageListener(
 }
 
 /**
+ * Walk a thread's robust futex list on exit and mark held mutexes as OWNER_DIED.
+ *
+ * struct robust_list_head (wasm32, long=4):
+ *   offset 0: list.next — pointer to first entry (or &list if empty)
+ *   offset 4: futex_offset — offset from list entry to futex word
+ *   offset 8: list_op_pending — in-progress lock operation
+ *
+ * For each entry, the futex word (mutex __lock) contains:
+ *   bits 0-29: owner TID
+ *   bit 30: FUTEX_OWNER_DIED (0x40000000)
+ *   bit 31: FUTEX_WAITERS (0x80000000)
+ */
+function walkRobustList(memory: WebAssembly.Memory, tid: number, headPtr: number): void {
+  if (headPtr === 0) return;
+  const FUTEX_OWNER_DIED = 0x40000000;
+  const TID_MASK = 0x3FFFFFFF;
+  const MAX_ENTRIES = 1024; // safety limit
+
+  try {
+    const dv = new DataView(memory.buffer);
+    const i32 = new Int32Array(memory.buffer);
+
+    // Read robust_list_head fields
+    const listNext = dv.getUint32(headPtr, true);
+    const futexOffset = dv.getInt32(headPtr + 4, true);
+    const pending = dv.getUint32(headPtr + 8, true);
+
+    // Handle pending entry first (entry that was being locked when thread died)
+    if (pending !== 0) {
+      handleRobustEntry(dv, i32, pending, futexOffset, tid, FUTEX_OWNER_DIED, TID_MASK);
+    }
+
+    // Walk the linked list. The list is circular — head.list.next points to
+    // the first entry, and the last entry points back to &head.list (= headPtr).
+    let entry = listNext;
+    for (let count = 0; count < MAX_ENTRIES && entry !== headPtr && entry !== 0; count++) {
+      if (entry !== pending) {
+        handleRobustEntry(dv, i32, entry, futexOffset, tid, FUTEX_OWNER_DIED, TID_MASK);
+      }
+      // Bit 0 of next pointer is the PI flag; mask it off
+      entry = dv.getUint32(entry, true) & ~1;
+    }
+  } catch {
+    // Memory access errors are non-fatal — thread is exiting anyway
+  }
+}
+
+function handleRobustEntry(
+  dv: DataView,
+  i32: Int32Array,
+  entryAddr: number,
+  futexOffset: number,
+  tid: number,
+  FUTEX_OWNER_DIED: number,
+  TID_MASK: number,
+): void {
+  const futexAddr = entryAddr + futexOffset;
+  const futexIndex = futexAddr >>> 2;
+  // CAS loop: set FUTEX_OWNER_DIED if we own it
+  let oldVal = Atomics.load(i32, futexIndex);
+  while ((oldVal & TID_MASK) === tid) {
+    const newVal = (oldVal & ~TID_MASK) | FUTEX_OWNER_DIED;
+    const actual = Atomics.compareExchange(i32, futexIndex, oldVal, newVal);
+    if (actual === oldVal) {
+      // Successfully marked; wake one waiter
+      Atomics.notify(i32, futexIndex, 1);
+      break;
+    }
+    oldVal = actual;
+  }
+}
+
+/**
  * Build minimal JavaScript kernel stubs for thread workers.
  *
  * Thread workers cannot instantiate the Wasm kernel module because its active
@@ -673,8 +746,11 @@ function buildThreadKernelStubs(
   memory: WebAssembly.Memory,
   tid: number,
   io: PlatformIO,
-): Record<string, (...args: number[]) => number | bigint | void> {
+): { imports: Record<string, (...args: number[]) => number | bigint | void>; getRobustListHead: () => number } {
   const ENOSYS = -38;
+
+  // Robust futex list head pointer — set by set_robust_list, walked on thread exit.
+  let robustListHead = 0;
 
   // Default stub — returns -ENOSYS for any unimplemented kernel function.
   // The program module imports ~168 kernel functions; most are unused by threads.
@@ -699,18 +775,43 @@ function buildThreadKernelStubs(
       const i32 = new Int32Array(memory.buffer);
       const index = uaddr >>> 2;
       const FUTEX_PRIVATE = 128;
-      const opCode = op & ~FUTEX_PRIVATE;
+      const FUTEX_CLOCK_REALTIME = 256;
+      const opCode = op & ~(FUTEX_PRIVATE | FUTEX_CLOCK_REALTIME);
       const FUTEX_WAIT = 0;
       const FUTEX_WAKE = 1;
+      const FUTEX_REQUEUE = 3;
+      const FUTEX_CMP_REQUEUE = 4;
+      const FUTEX_WAIT_BITSET = 9;
+      const FUTEX_WAKE_BITSET = 10;
 
-      if (opCode === FUTEX_WAIT) {
+      if (opCode === FUTEX_WAIT || opCode === FUTEX_WAIT_BITSET) {
         const actual = Atomics.load(i32, index);
         if (actual !== val) return -11; // -EAGAIN (not-equal)
-        const result = Atomics.wait(i32, index, val);
+
+        // Read timeout from shared memory if provided.
+        // struct timespec (wasm32 time64): { tv_sec: i64, tv_nsec: i32, pad: i32 } = 16 bytes
+        let timeoutMs: number | undefined;
+        if (timeout !== 0) {
+          const dv = new DataView(memory.buffer);
+          const sec = Number(dv.getBigInt64(timeout, true));
+          const nsec = dv.getInt32(timeout + 8, true);
+          const totalMs = sec * 1000 + Math.floor(nsec / 1_000_000);
+          timeoutMs = Math.max(0, totalMs);
+        }
+
+        const result = Atomics.wait(i32, index, val, timeoutMs);
         if (result === "ok" || result === "not-equal") return 0;
         return -110; // -ETIMEDOUT
-      } else if (opCode === FUTEX_WAKE) {
+      } else if (opCode === FUTEX_WAKE || opCode === FUTEX_WAKE_BITSET) {
         return Atomics.notify(i32, index, val);
+      } else if (opCode === FUTEX_REQUEUE) {
+        // Can't truly requeue; wake val + val2 on uaddr instead.
+        // timeout param is repurposed as val2 (max requeue count).
+        return Atomics.notify(i32, index, val + timeout);
+      } else if (opCode === FUTEX_CMP_REQUEUE) {
+        const actual = Atomics.load(i32, index);
+        if (actual !== _val3) return -11; // -EAGAIN
+        return Atomics.notify(i32, index, val + timeout);
       }
       return ENOSYS;
     },
@@ -747,7 +848,11 @@ function buildThreadKernelStubs(
 
     // ── Thread-related ──
     kernel_set_tid_address: (_addr: number) => tid,
-    kernel_set_robust_list: () => 0,
+    kernel_set_robust_list: (head: number, _len: number) => {
+      robustListHead = head;
+      return 0;
+    },
+    kernel_get_robust_list: () => 0,
     kernel_clone: () => ENOSYS,
     kernel_fork: () => ENOSYS,
 
@@ -756,12 +861,28 @@ function buildThreadKernelStubs(
       if (fd === 1 || fd === 2) {
         const bytes = new Uint8Array(memory.buffer, bufPtr, len);
         try {
-          // PlatformIO.write(handle, buffer, offset, length)
           io.write(fd, bytes, null, len);
         } catch { /* ignore */ }
         return len;
       }
       return ENOSYS;
+    },
+    kernel_writev: (fd: number, iovPtr: number, iovCnt: number): number => {
+      if (fd !== 1 && fd !== 2) return ENOSYS;
+      const dv = new DataView(memory.buffer);
+      let totalWritten = 0;
+      for (let i = 0; i < iovCnt; i++) {
+        const base = dv.getUint32(iovPtr + i * 8, true);
+        const len = dv.getUint32(iovPtr + i * 8 + 4, true);
+        if (len > 0) {
+          const bytes = new Uint8Array(memory.buffer, base, len);
+          try {
+            io.write(fd, bytes, null, len);
+          } catch { /* ignore */ }
+          totalWritten += len;
+        }
+      }
+      return totalWritten;
     },
     kernel_read: () => ENOSYS,
     kernel_open: () => ENOSYS,
@@ -773,10 +894,19 @@ function buildThreadKernelStubs(
       const sec = Math.floor(now / 1000);
       const nsec = (now % 1000) * 1_000_000;
       const view = new DataView(memory.buffer);
-      // timespec: { tv_sec: i32, tv_nsec: i32 } for wasm32
-      // Actually for wasm32, time_t is i64 but stored as two i32s? No, it's i32 for wasm32.
-      view.setInt32(tp, sec, true);
-      view.setInt32(tp + 4, nsec, true);
+      // struct timespec for wasm32 time64: { tv_sec: i64, tv_nsec: i64 } = 16 bytes
+      // (tv_nsec is actually i32 in C but kernel WasmTimespec uses i64; writing i64 is safe
+      // because the upper 32 bits are 0 and land in the padding field)
+      view.setBigInt64(tp, BigInt(sec), true);
+      view.setBigInt64(tp + 8, BigInt(nsec), true);
+      return 0;
+    },
+    kernel_clock_getres: (_clockId: number, tp: number): number => {
+      if (tp !== 0) {
+        const view = new DataView(memory.buffer);
+        view.setBigInt64(tp, 0n, true);
+        view.setBigInt64(tp + 8, 1000000n, true); // 1ms resolution
+      }
       return 0;
     },
     kernel_gettimeofday: (tv: number) => {
@@ -784,8 +914,9 @@ function buildThreadKernelStubs(
       const sec = Math.floor(now / 1000);
       const usec = (now % 1000) * 1000;
       const view = new DataView(memory.buffer);
-      view.setInt32(tv, sec, true);
-      view.setInt32(tv + 4, usec, true);
+      // struct timeval for wasm32: { tv_sec: i64, tv_usec: i64 } = 16 bytes
+      view.setBigInt64(tv, BigInt(sec), true);
+      view.setBigInt64(tv + 8, BigInt(usec), true);
       return 0;
     },
     kernel_nanosleep: () => 0,
@@ -825,7 +956,7 @@ function buildThreadKernelStubs(
   ]);
 
   // Return a Proxy that falls back to defaultStub for any missing function
-  return new Proxy(stubs, {
+  const imports = new Proxy(stubs, {
     get(target, prop: string) {
       if (prop in target) return target[prop];
       if (i64Functions.has(prop)) {
@@ -834,6 +965,7 @@ function buildThreadKernelStubs(
       return () => ENOSYS;
     },
   });
+  return { imports, getRobustListHead: () => robustListHead };
 }
 
 /**
@@ -846,6 +978,7 @@ export async function threadWorkerMain(
   initData: ThreadInitMessage,
   createIO: CreateIOFn,
 ): Promise<void> {
+  let getRobustListHead: (() => number) | undefined;
   try {
     // Use the parent's shared Memory — threads share the same linear memory.
     const memory = initData.memory;
@@ -869,7 +1002,9 @@ export async function threadWorkerMain(
       const programModule = initData.programModule ?? await WebAssembly.compile(initData.programBytes!);
 
       // Build kernel stubs — minimal syscall implementations for threads.
-      const kernelStubs = buildThreadKernelStubs(memory, tid, io);
+      const stubResult = buildThreadKernelStubs(memory, tid, io);
+      const kernelStubs = stubResult.imports;
+      getRobustListHead = stubResult.getRobustListHead;
       const programImports: WebAssembly.Imports = {
         kernel: kernelStubs,
         env: { memory },
@@ -942,6 +1077,10 @@ export async function threadWorkerMain(
         }
       }
 
+      // Walk the robust futex list — mark any held mutexes with FUTEX_OWNER_DIED
+      // so waiters get EOWNERDEAD instead of blocking forever.
+      if (getRobustListHead) walkRobustList(memory, tid, getRobustListHead());
+
       // Thread exit: signal ctid and tid for pthread_join.
       // musl's __pthread_exit already wrote self->tid = 0 in shared memory
       // before the thread trapped. We need to:
@@ -966,6 +1105,10 @@ export async function threadWorkerMain(
       } satisfies WorkerToHostMessage);
     }
   } catch (err) {
+    // Walk robust list even on crash — mark held mutexes as OWNER_DIED
+    if (initData.memory && getRobustListHead) {
+      try { walkRobustList(initData.memory, initData.tid, getRobustListHead()); } catch { /* */ }
+    }
     // Always signal ctid and tid so parent doesn't hang on pthread_join
     if (initData.memory) {
       try {
