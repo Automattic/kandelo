@@ -112,6 +112,26 @@ pub struct EventFdState {
     pub semaphore: bool,
 }
 
+/// An entry in an epoll interest list.
+#[derive(Debug, Clone)]
+pub struct EpollInterest {
+    pub fd: i32,
+    pub events: u32,
+    pub data: u64,
+}
+
+/// An epoll instance: a set of monitored file descriptors.
+#[derive(Debug, Clone)]
+pub struct EpollInstance {
+    pub interests: Vec<EpollInterest>,
+}
+
+impl EpollInstance {
+    pub fn new() -> Self {
+        EpollInstance { interests: Vec::new() }
+    }
+}
+
 /// File descriptor action to apply in a fork child before exec.
 #[derive(Debug, Clone)]
 pub enum FdAction {
@@ -165,6 +185,8 @@ pub struct Process {
     pub next_tid: u32,
     /// Eventfd instances owned by this process.
     pub eventfds: Vec<Option<EventFdState>>,
+    /// Epoll instances owned by this process.
+    pub epolls: Vec<Option<EpollInstance>>,
 }
 
 impl Process {
@@ -225,6 +247,7 @@ impl Process {
             threads: Vec::new(),
             next_tid: 0, // will be set to pid + 1 after pid is known
             eventfds: Vec::new(),
+            epolls: Vec::new(),
         }
     }
 

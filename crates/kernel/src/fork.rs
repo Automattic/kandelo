@@ -178,6 +178,7 @@ fn file_type_to_u32(ft: FileType) -> u32 {
         FileType::CharDevice => 3,
         FileType::Socket => 4,
         FileType::EventFd => 5,
+        FileType::Epoll => 6,
     }
 }
 
@@ -189,6 +190,7 @@ fn u32_to_file_type(v: u32) -> Result<FileType, Errno> {
         3 => Ok(FileType::CharDevice),
         4 => Ok(FileType::Socket),
         5 => Ok(FileType::EventFd),
+        6 => Ok(FileType::Epoll),
         _ => Err(Errno::EINVAL),
     }
 }
@@ -599,6 +601,7 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
         threads: Vec::new(),  // POSIX: child has single thread
         next_tid: 0,
         eventfds: Vec::new(),
+        epolls: Vec::new(),
     })
 }
 
@@ -923,6 +926,7 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
         threads: Vec::new(),  // exec resets to single thread
         next_tid: 0,
         eventfds: Vec::new(),
+        epolls: Vec::new(),
     })
 }
 

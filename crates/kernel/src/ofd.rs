@@ -14,6 +14,7 @@ pub enum FileType {
     CharDevice,
     Socket,
     EventFd,
+    Epoll,
 }
 
 #[derive(Clone)]

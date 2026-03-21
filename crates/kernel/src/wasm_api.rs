@@ -1295,13 +1295,20 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
         346 => kernel_ipc_shmdt(a1),                // SYS_SHMDT
         347 => kernel_ipc_shmctl(a1, a2, a3),       // SYS_SHMCTL
 
+        // epoll
+        239 => kernel_epoll_create1(a1 as u32),     // SYS_EPOLL_CREATE1: (flags)
+        378 => kernel_epoll_create1(0),              // SYS_EPOLL_CREATE: (size) — flags=0
+        240 => kernel_epoll_ctl(a1, a2, a3, a4 as *const u8), // SYS_EPOLL_CTL: (epfd, op, fd, event_ptr)
+        241 => kernel_epoll_pwait(a1, a2 as *mut u8, a3, a4, a5 as u32), // SYS_EPOLL_PWAIT: (epfd, events, maxevents, timeout, sigmask_ptr)
+        379 => kernel_epoll_pwait(a1, a2 as *mut u8, a3, a4, 0), // SYS_EPOLL_WAIT: (epfd, events, maxevents, timeout)
+
         // eventfd
         242 => kernel_eventfd2(a1 as u32, a2 as u32), // SYS_EVENTFD2: (initval, flags)
         380 => kernel_eventfd2(a1 as u32, 0),          // SYS_EVENTFD: (initval) — no flags
 
         // Stubs that return 0 or -ENOSYS
         204 => kernel_raise(a2 as u32),            // SYS_TKILL
-        208 | 209 | 226 | 230..=238 | 239..=241 | 243..=249 | 252..=254 | 256..=257 | 262 | 265..=268 | 271..=274 | 287 | 289..=293 | 297..=298 | 301..=305 | 306 | 308..=324 | 325..=336 | 348..=349 | 350..=369 | 370..=371 | 373..=379 | 381..=383 | 386 => {
+        208 | 209 | 226 | 230..=238 | 243..=249 | 252..=254 | 256..=257 | 262 | 265..=268 | 271..=274 | 287 | 289..=293 | 297..=298 | 301..=305 | 306 | 308..=324 | 325..=336 | 348..=349 | 350..=369 | 370..=371 | 373..=377 | 381..=383 | 386 => {
             // Many of these are stubs in the glue layer too; return ENOSYS
             -(Errno::ENOSYS as i32)
         }
@@ -1668,6 +1675,97 @@ pub extern "C" fn kernel_eventfd2(initval: u32, flags: u32) -> i32 {
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
+    deliver_pending_signals(proc, &mut host);
+    result
+}
+
+/// Create an epoll instance.
+/// Returns fd (>= 0) on success, or negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_epoll_create1(flags: u32) -> i32 {
+    let (_gkl, proc) = unsafe { get_process() };
+    let result = match syscalls::sys_epoll_create1(proc, flags) {
+        Ok(fd) => fd,
+        Err(e) => -(e as i32),
+    };
+    let mut host = WasmHostIO;
+    deliver_pending_signals(proc, &mut host);
+    result
+}
+
+/// Modify an epoll interest list.
+/// Returns 0 on success, or negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_epoll_ctl(epfd: i32, op: i32, fd: i32, event_ptr: *const u8) -> i32 {
+    let (_gkl, proc) = unsafe { get_process() };
+
+    // Read epoll_event struct from memory: { events: u32, data: u64 }
+    // On wasm32 without packing, u64 may be at offset 4 or 8 depending on alignment.
+    // musl's epoll_event on non-x86_64: events at offset 0 (4B), data at offset 4 (8B) = 12B total.
+    // But wasm32 aligns u64 to 8 bytes, so it's likely: events at 0, pad at 4, data at 8 = 16B.
+    // We'll try reading from offset 4 (packed) since musl doesn't use __packed__ on non-x86_64.
+    // Actually, for epoll_data_t which is a union, the alignment depends on the platform.
+    // On wasm32, the union has 4-byte alignment if the ABI is ILP32, making epoll_event 12 bytes.
+    let (events, data) = if !event_ptr.is_null() {
+        unsafe {
+            let events = core::ptr::read_unaligned(event_ptr as *const u32);
+            let data = core::ptr::read_unaligned(event_ptr.add(4) as *const u64);
+            (events, data)
+        }
+    } else {
+        (0u32, 0u64)
+    };
+
+    let result = match syscalls::sys_epoll_ctl(proc, epfd, op, fd, events, data) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    };
+    let mut host = WasmHostIO;
+    deliver_pending_signals(proc, &mut host);
+    result
+}
+
+/// Wait for events on an epoll instance.
+/// Returns number of ready events (>= 0), or negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_epoll_pwait(
+    epfd: i32,
+    events_ptr: *mut u8,
+    maxevents: i32,
+    timeout: i32,
+    sigmask_ptr: u32,
+) -> i32 {
+    let (_gkl, proc) = unsafe { get_process() };
+    let mut host = WasmHostIO;
+
+    // Read signal mask if provided
+    let sigmask = if sigmask_ptr != 0 {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let ptr = sigmask_ptr as *const u64;
+            Some(unsafe { *ptr })
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        { None }
+    } else {
+        None
+    };
+
+    let result = match syscalls::sys_epoll_pwait(proc, &mut host, epfd, maxevents, timeout, sigmask) {
+        Ok((count, events)) => {
+            // Write events to output buffer
+            // Each epoll_event: { events: u32, data: u64 } = 12 bytes (packed on wasm32)
+            for (i, (ev, data)) in events.iter().enumerate() {
+                let offset = i * 12;
+                unsafe {
+                    core::ptr::write_unaligned(events_ptr.add(offset) as *mut u32, *ev);
+                    core::ptr::write_unaligned(events_ptr.add(offset + 4) as *mut u64, *data);
+                }
+            }
+            count
+        }
+        Err(e) => -(e as i32),
+    };
     deliver_pending_signals(proc, &mut host);
     result
 }

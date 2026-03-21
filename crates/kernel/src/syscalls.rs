@@ -251,6 +251,13 @@ pub fn sys_close(
                     *slot = None;
                 }
             }
+            FileType::Epoll => {
+                // Free the epoll instance
+                let ep_idx = (-(host_handle + 1)) as usize;
+                if let Some(slot) = proc.epolls.get_mut(ep_idx) {
+                    *slot = None;
+                }
+            }
             _ => {
                 // Close any lazily-opened directory iteration handle
                 if dir_host_handle >= 0 {
@@ -676,8 +683,8 @@ pub fn sys_lseek(
 
     let ofd = proc.ofd_table.get_mut(ofd_idx).ok_or(Errno::EBADF)?;
 
-    // Pipes, sockets, and eventfds are not seekable.
-    if ofd.file_type == FileType::Pipe || ofd.file_type == FileType::Socket || ofd.file_type == FileType::EventFd {
+    // Pipes, sockets, eventfds, and epolls are not seekable.
+    if matches!(ofd.file_type, FileType::Pipe | FileType::Socket | FileType::EventFd | FileType::Epoll) {
         return Err(Errno::ESPIPE);
     }
 
@@ -725,8 +732,8 @@ pub fn sys_pread(
         return Err(Errno::EBADF);
     }
 
-    // pread is only valid for seekable fds (not pipes, sockets, or eventfds)
-    if ofd.file_type == FileType::Pipe || ofd.file_type == FileType::Socket || ofd.file_type == FileType::EventFd {
+    // pread is only valid for seekable fds
+    if matches!(ofd.file_type, FileType::Pipe | FileType::Socket | FileType::EventFd | FileType::Epoll) {
         return Err(Errno::ESPIPE);
     }
 
@@ -759,7 +766,7 @@ pub fn sys_pwrite(
         return Err(Errno::EBADF);
     }
 
-    if ofd.file_type == FileType::Pipe || ofd.file_type == FileType::Socket || ofd.file_type == FileType::EventFd {
+    if matches!(ofd.file_type, FileType::Pipe | FileType::Socket | FileType::EventFd | FileType::Epoll) {
         return Err(Errno::ESPIPE);
     }
 
@@ -1050,7 +1057,7 @@ pub fn sys_fstat(
 
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
 
-    if ofd.file_type == FileType::Pipe || ofd.file_type == FileType::EventFd {
+    if matches!(ofd.file_type, FileType::Pipe | FileType::EventFd | FileType::Epoll) {
         Ok(WasmStat {
             st_dev: 0,
             st_ino: 0,
@@ -3253,6 +3260,9 @@ fn poll_check(proc: &mut Process, fds: &mut [WasmPollFd]) -> i32 {
                     }
                 }
             }
+            FileType::Epoll => {
+                // Epoll fds are not typically polled; report not ready
+            }
             FileType::Regular | FileType::CharDevice | FileType::Directory => {
                 // Regular files and char devices are always ready
                 if pollfd.events & POLLIN != 0 {
@@ -4014,6 +4024,223 @@ pub fn sys_eventfd2(proc: &mut Process, initval: u32, flags: u32) -> Result<i32,
             Err(e)
         }
     }
+}
+
+/// epoll_create1 — create an epoll instance.
+///
+/// Returns a file descriptor for the new epoll instance.
+/// Flags: EPOLL_CLOEXEC (O_CLOEXEC).
+pub fn sys_epoll_create1(proc: &mut Process, flags: u32) -> Result<i32, Errno> {
+    use crate::ofd::FileType;
+    use crate::process::EpollInstance;
+    use wasm_posix_shared::fd_flags::FD_CLOEXEC;
+
+    let cloexec = flags & O_CLOEXEC != 0;
+
+    // Only EPOLL_CLOEXEC is valid
+    if flags & !O_CLOEXEC != 0 {
+        return Err(Errno::EINVAL);
+    }
+
+    let instance = EpollInstance::new();
+
+    // Allocate epoll slot
+    let ep_idx = {
+        let mut found = None;
+        for (i, slot) in proc.epolls.iter().enumerate() {
+            if slot.is_none() {
+                found = Some(i);
+                break;
+            }
+        }
+        match found {
+            Some(i) => {
+                proc.epolls[i] = Some(instance);
+                i
+            }
+            None => {
+                let i = proc.epolls.len();
+                proc.epolls.push(Some(instance));
+                i
+            }
+        }
+    };
+
+    let ep_handle = -((ep_idx as i64) + 1);
+    let ofd_idx = proc.ofd_table.create(
+        FileType::Epoll,
+        O_RDWR,
+        ep_handle,
+        b"/dev/epoll".to_vec(),
+    );
+
+    let fd_flags = if cloexec { FD_CLOEXEC } else { 0 };
+    match proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags) {
+        Ok(fd) => Ok(fd),
+        Err(e) => {
+            proc.ofd_table.dec_ref(ofd_idx);
+            proc.epolls[ep_idx] = None;
+            Err(e)
+        }
+    }
+}
+
+/// epoll_ctl — modify an epoll interest list.
+///
+/// op: EPOLL_CTL_ADD (1), EPOLL_CTL_DEL (2), EPOLL_CTL_MOD (3).
+pub fn sys_epoll_ctl(
+    proc: &mut Process,
+    epfd: i32,
+    op: i32,
+    fd: i32,
+    events: u32,
+    data: u64,
+) -> Result<(), Errno> {
+    const EPOLL_CTL_ADD: i32 = 1;
+    const EPOLL_CTL_DEL: i32 = 2;
+    const EPOLL_CTL_MOD: i32 = 3;
+
+    // Look up the epoll instance
+    let entry = proc.fd_table.get(epfd)?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    if ofd.file_type != FileType::Epoll {
+        return Err(Errno::EINVAL);
+    }
+    let ep_idx = (-(ofd.host_handle + 1)) as usize;
+
+    // Verify the target fd exists
+    let _ = proc.fd_table.get(fd)?;
+
+    let ep = proc.epolls.get_mut(ep_idx)
+        .and_then(|s| s.as_mut())
+        .ok_or(Errno::EBADF)?;
+
+    match op {
+        EPOLL_CTL_ADD => {
+            // Check if fd already exists in interest list
+            if ep.interests.iter().any(|e| e.fd == fd) {
+                return Err(Errno::EEXIST);
+            }
+            ep.interests.push(crate::process::EpollInterest { fd, events, data });
+            Ok(())
+        }
+        EPOLL_CTL_DEL => {
+            let pos = ep.interests.iter().position(|e| e.fd == fd)
+                .ok_or(Errno::ENOENT)?;
+            ep.interests.swap_remove(pos);
+            Ok(())
+        }
+        EPOLL_CTL_MOD => {
+            let interest = ep.interests.iter_mut().find(|e| e.fd == fd)
+                .ok_or(Errno::ENOENT)?;
+            interest.events = events;
+            interest.data = data;
+            Ok(())
+        }
+        _ => Err(Errno::EINVAL),
+    }
+}
+
+/// epoll_pwait — wait for events on an epoll instance.
+///
+/// Builds pollfds from the interest list, delegates to sys_poll,
+/// then maps the results back to epoll_event format.
+pub fn sys_epoll_pwait(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    epfd: i32,
+    maxevents: i32,
+    timeout_ms: i32,
+    sigmask: Option<u64>,
+) -> Result<(i32, Vec<(u32, u64)>), Errno> {
+    use wasm_posix_shared::poll::*;
+
+    if maxevents <= 0 {
+        return Err(Errno::EINVAL);
+    }
+
+    // Look up the epoll instance
+    let entry = proc.fd_table.get(epfd)?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    if ofd.file_type != FileType::Epoll {
+        return Err(Errno::EINVAL);
+    }
+    let ep_idx = (-(ofd.host_handle + 1)) as usize;
+
+    // Copy interest list (need to release borrow on proc)
+    let interests = {
+        let ep = proc.epolls.get(ep_idx)
+            .and_then(|s| s.as_ref())
+            .ok_or(Errno::EBADF)?;
+        ep.interests.clone()
+    };
+
+    if interests.is_empty() {
+        // No interests — just handle timeout/sigmask
+        if let Some(new_mask) = sigmask {
+            let old = sys_sigprocmask(proc, SIG_SETMASK, new_mask)?;
+            if timeout_ms != 0 {
+                // Brief sleep if timeout specified
+                if timeout_ms > 0 {
+                    let _ = host.host_nanosleep(0, (timeout_ms as i64) * 1_000_000);
+                }
+            }
+            let _ = sys_sigprocmask(proc, SIG_SETMASK, old);
+        }
+        return Ok((0, Vec::new()));
+    }
+
+    // Map EPOLL events to poll events
+    const EPOLLIN: u32 = 0x001;
+    const EPOLLOUT: u32 = 0x004;
+    const EPOLLERR: u32 = 0x008;
+    const EPOLLHUP: u32 = 0x010;
+    const EPOLLRDHUP: u32 = 0x2000;
+
+    // Build pollfds from interests
+    let mut pollfds: Vec<WasmPollFd> = interests.iter().map(|interest| {
+        let mut poll_events: i16 = 0;
+        if interest.events & EPOLLIN != 0 { poll_events |= POLLIN; }
+        if interest.events & EPOLLOUT != 0 { poll_events |= POLLOUT; }
+        WasmPollFd {
+            fd: interest.fd,
+            events: poll_events,
+            revents: 0,
+        }
+    }).collect();
+
+    // Apply signal mask if provided
+    let old_mask = if let Some(new_mask) = sigmask {
+        let old = sys_sigprocmask(proc, SIG_SETMASK, new_mask)?;
+        Some(old)
+    } else {
+        None
+    };
+
+    // Delegate to sys_poll
+    let ready = sys_poll(proc, host, &mut pollfds, timeout_ms);
+
+    // Restore signal mask
+    if let Some(old) = old_mask {
+        let _ = sys_sigprocmask(proc, SIG_SETMASK, old);
+    }
+
+    let ready_count = ready?;
+
+    // Map poll results back to epoll events
+    let mut events_out: Vec<(u32, u64)> = Vec::new();
+    for (i, pollfd) in pollfds.iter().enumerate() {
+        if pollfd.revents != 0 && events_out.len() < maxevents as usize {
+            let mut ep_events: u32 = 0;
+            if pollfd.revents & POLLIN != 0 { ep_events |= EPOLLIN; }
+            if pollfd.revents & POLLOUT != 0 { ep_events |= EPOLLOUT; }
+            if pollfd.revents & POLLERR != 0 { ep_events |= EPOLLERR; }
+            if pollfd.revents & POLLHUP != 0 { ep_events |= EPOLLHUP; }
+            events_out.push((ep_events, interests[i].data));
+        }
+    }
+
+    Ok((events_out.len() as i32, events_out))
 }
 
 /// umask — set file creation mask, return previous mask
@@ -9059,6 +9286,201 @@ mod tests {
     fn test_remove_nonexistent_thread() {
         let mut proc = Process::new(1);
         assert!(proc.remove_thread(999).is_none());
+    }
+
+    // ── epoll tests ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_epoll_create1_basic() {
+        let mut proc = Process::new(1);
+        let epfd = sys_epoll_create1(&mut proc, 0).unwrap();
+        assert!(epfd >= 3);
+
+        let entry = proc.fd_table.get(epfd).unwrap();
+        let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
+        assert_eq!(ofd.file_type, FileType::Epoll);
+    }
+
+    #[test]
+    fn test_epoll_create1_cloexec() {
+        let mut proc = Process::new(1);
+        let epfd = sys_epoll_create1(&mut proc, O_CLOEXEC).unwrap();
+        let entry = proc.fd_table.get(epfd).unwrap();
+        assert_eq!(entry.fd_flags, FD_CLOEXEC);
+    }
+
+    #[test]
+    fn test_epoll_create1_invalid_flags() {
+        let mut proc = Process::new(1);
+        let result = sys_epoll_create1(&mut proc, 0xDEAD);
+        assert_eq!(result, Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn test_epoll_ctl_add_del() {
+        let mut proc = Process::new(1);
+        let epfd = sys_epoll_create1(&mut proc, 0).unwrap();
+
+        // Add stdin (fd 0)
+        let epollin: u32 = 0x001;
+        sys_epoll_ctl(&mut proc, epfd, 1, 0, epollin, 42).unwrap();
+
+        // Verify interest was added
+        let entry = proc.fd_table.get(epfd).unwrap();
+        let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
+        let ep_idx = (-(ofd.host_handle + 1)) as usize;
+        let ep = proc.epolls[ep_idx].as_ref().unwrap();
+        assert_eq!(ep.interests.len(), 1);
+        assert_eq!(ep.interests[0].fd, 0);
+        assert_eq!(ep.interests[0].data, 42);
+
+        // Delete
+        sys_epoll_ctl(&mut proc, epfd, 2, 0, 0, 0).unwrap();
+        let ep = proc.epolls[ep_idx].as_ref().unwrap();
+        assert_eq!(ep.interests.len(), 0);
+    }
+
+    #[test]
+    fn test_epoll_ctl_add_duplicate_eexist() {
+        let mut proc = Process::new(1);
+        let epfd = sys_epoll_create1(&mut proc, 0).unwrap();
+
+        sys_epoll_ctl(&mut proc, epfd, 1, 0, 0x001, 0).unwrap();
+        let result = sys_epoll_ctl(&mut proc, epfd, 1, 0, 0x001, 0);
+        assert_eq!(result, Err(Errno::EEXIST));
+    }
+
+    #[test]
+    fn test_epoll_ctl_del_nonexistent_enoent() {
+        let mut proc = Process::new(1);
+        let epfd = sys_epoll_create1(&mut proc, 0).unwrap();
+
+        let result = sys_epoll_ctl(&mut proc, epfd, 2, 0, 0, 0);
+        assert_eq!(result, Err(Errno::ENOENT));
+    }
+
+    #[test]
+    fn test_epoll_ctl_mod() {
+        let mut proc = Process::new(1);
+        let epfd = sys_epoll_create1(&mut proc, 0).unwrap();
+
+        let epollin: u32 = 0x001;
+        let epollout: u32 = 0x004;
+        sys_epoll_ctl(&mut proc, epfd, 1, 0, epollin, 10).unwrap();
+        sys_epoll_ctl(&mut proc, epfd, 3, 0, epollout, 20).unwrap();
+
+        let entry = proc.fd_table.get(epfd).unwrap();
+        let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
+        let ep_idx = (-(ofd.host_handle + 1)) as usize;
+        let ep = proc.epolls[ep_idx].as_ref().unwrap();
+        assert_eq!(ep.interests[0].events, epollout);
+        assert_eq!(ep.interests[0].data, 20);
+    }
+
+    #[test]
+    fn test_epoll_ctl_invalid_op() {
+        let mut proc = Process::new(1);
+        let epfd = sys_epoll_create1(&mut proc, 0).unwrap();
+        let result = sys_epoll_ctl(&mut proc, epfd, 99, 0, 0, 0);
+        assert_eq!(result, Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn test_epoll_ctl_not_epoll_fd() {
+        let mut proc = Process::new(1);
+        // fd 0 is stdin, not an epoll fd
+        let result = sys_epoll_ctl(&mut proc, 0, 1, 1, 0x001, 0);
+        assert_eq!(result, Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn test_epoll_pwait_pipe_readable() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        // Create a pipe and write data to it
+        let (read_fd, write_fd) = sys_pipe(&mut proc).unwrap();
+        sys_write(&mut proc, &mut host, write_fd, b"hello").unwrap();
+
+        // Create epoll and add read end
+        let epfd = sys_epoll_create1(&mut proc, 0).unwrap();
+        let epollin: u32 = 0x001;
+        sys_epoll_ctl(&mut proc, epfd, 1, read_fd, epollin, 99).unwrap();
+
+        // Wait with timeout=0 (non-blocking)
+        let (count, events) = sys_epoll_pwait(&mut proc, &mut host, epfd, 10, 0, None).unwrap();
+        assert_eq!(count, 1);
+        assert_ne!(events[0].0 & epollin, 0);
+        assert_eq!(events[0].1, 99); // data preserved
+    }
+
+    #[test]
+    fn test_epoll_pwait_empty_interests() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        let epfd = sys_epoll_create1(&mut proc, 0).unwrap();
+        let (count, events) = sys_epoll_pwait(&mut proc, &mut host, epfd, 10, 0, None).unwrap();
+        assert_eq!(count, 0);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn test_epoll_pwait_invalid_maxevents() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        let epfd = sys_epoll_create1(&mut proc, 0).unwrap();
+        let result = sys_epoll_pwait(&mut proc, &mut host, epfd, 0, 0, None);
+        assert_eq!(result, Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn test_epoll_close_frees_state() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let epfd = sys_epoll_create1(&mut proc, 0).unwrap();
+
+        sys_close(&mut proc, &mut host, epfd).unwrap();
+        assert!(proc.epolls[0].is_none());
+    }
+
+    #[test]
+    fn test_epoll_lseek_fails() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let epfd = sys_epoll_create1(&mut proc, 0).unwrap();
+
+        let result = sys_lseek(&mut proc, &mut host, epfd, 0, SEEK_SET);
+        assert_eq!(result, Err(Errno::ESPIPE));
+    }
+
+    #[test]
+    fn test_epoll_with_eventfd() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        // Create an eventfd with initial value
+        let efd = sys_eventfd2(&mut proc, 5, O_NONBLOCK).unwrap();
+
+        // Create epoll and watch eventfd
+        let epfd = sys_epoll_create1(&mut proc, 0).unwrap();
+        let epollin: u32 = 0x001;
+        sys_epoll_ctl(&mut proc, epfd, 1, efd, epollin, 77).unwrap();
+
+        // Should be readable (counter > 0)
+        let (count, events) = sys_epoll_pwait(&mut proc, &mut host, epfd, 10, 0, None).unwrap();
+        assert_eq!(count, 1);
+        assert_ne!(events[0].0 & epollin, 0);
+        assert_eq!(events[0].1, 77);
+
+        // Read the eventfd to drain it
+        let mut buf = [0u8; 8];
+        sys_read(&mut proc, &mut host, efd, &mut buf).unwrap();
+
+        // Now should NOT be readable
+        let (count, _) = sys_epoll_pwait(&mut proc, &mut host, epfd, 10, 0, None).unwrap();
+        assert_eq!(count, 0);
     }
 
     // ── eventfd tests ─────────────────────────────────────────────────────

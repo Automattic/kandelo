@@ -1467,16 +1467,13 @@ static long __do_syscall(long n, long a1, long a2, long a3,
     /* ============================================================== */
 
     case SYS_EPOLL_CREATE1:
-        /* STUB: returns ENOSYS — programs fall back to poll() */
-        return ENOSYS_NEG;
+        return (long)kernel_epoll_create1((uint32_t)a1);
 
     case SYS_EPOLL_CTL:
-        /* STUB: returns ENOSYS — programs fall back to poll() */
-        return ENOSYS_NEG;
+        return (long)kernel_epoll_ctl((int32_t)a1, (int32_t)a2, (int32_t)a3, (uint8_t *)(uintptr_t)a4);
 
     case SYS_EPOLL_PWAIT:
-        /* STUB: returns ENOSYS — programs fall back to poll() */
-        return ENOSYS_NEG;
+        return (long)kernel_epoll_pwait((int32_t)a1, (uint8_t *)(uintptr_t)a2, (int32_t)a3, (int32_t)a4, (uint32_t)(uintptr_t)a5);
 
     /* ============================================================== */
     /* ppoll — poll with signal mask                                    */
@@ -1855,8 +1852,9 @@ static long __do_syscall(long n, long a1, long a2, long a3,
 
     /* Legacy epoll aliases */
     case SYS_EPOLL_CREATE:
+        return (long)kernel_epoll_create1(0);
     case SYS_EPOLL_WAIT:
-        return ENOSYS_NEG;
+        return (long)kernel_epoll_pwait((int32_t)a1, (uint8_t *)(uintptr_t)a2, (int32_t)a3, (int32_t)a4, 0);
 
     /* ============================================================== */
     /* SysV IPC — dispatch to kernel imports                           */
