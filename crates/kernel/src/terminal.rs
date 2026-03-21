@@ -1,5 +1,7 @@
 extern crate alloc;
 
+use alloc::vec::Vec;
+
 /// Terminal attribute flags (c_lflag)
 pub const ECHO: u32 = 0o0010;
 pub const ECHOE: u32 = 0o0020;
@@ -72,6 +74,10 @@ pub struct TerminalState {
     pub winsize: WinSize,
     /// Foreground process group ID (for tcgetpgrp/tcsetpgrp via TIOCGPGRP/TIOCSPGRP).
     pub foreground_pgid: i32,
+    /// Line buffer for ICANON mode line editing.
+    pub line_buffer: Vec<u8>,
+    /// Completed lines ready to be read (includes the terminating newline).
+    pub cooked_buffer: Vec<u8>,
 }
 
 impl TerminalState {
@@ -102,7 +108,109 @@ impl TerminalState {
                 ws_ypixel: 0,
             },
             foreground_pgid: 1, // default to PID 1's group
+            line_buffer: Vec::new(),
+            cooked_buffer: Vec::new(),
         }
+    }
+
+    /// Check if ICANON mode is enabled.
+    pub fn is_canonical(&self) -> bool {
+        self.c_lflag & ICANON != 0
+    }
+
+    /// Process a byte through the ICANON line discipline.
+    /// Returns echo bytes that should be written back to the terminal.
+    pub fn process_input_byte(&mut self, byte: u8) -> Vec<u8> {
+        let mut echo = Vec::new();
+        let do_echo = self.c_lflag & ECHO != 0;
+
+        // Input processing (c_iflag)
+        let byte = if self.c_iflag & ICRNL != 0 && byte == b'\r' {
+            b'\n'
+        } else if self.c_iflag & INLCR != 0 && byte == b'\n' {
+            b'\r'
+        } else if self.c_iflag & IGNCR != 0 && byte == b'\r' {
+            return echo; // discard CR
+        } else {
+            byte
+        };
+
+        // Check for VERASE (backspace/delete)
+        if byte == self.c_cc[VERASE] {
+            if !self.line_buffer.is_empty() {
+                self.line_buffer.pop();
+                if do_echo && self.c_lflag & ECHOE != 0 {
+                    // Echo backspace-space-backspace to erase character
+                    echo.extend_from_slice(b"\x08 \x08");
+                }
+            }
+            return echo;
+        }
+
+        // Check for VKILL (kill line, ^U)
+        if byte == self.c_cc[VKILL] {
+            if do_echo && self.c_lflag & ECHOK != 0 {
+                // Erase the whole line from display
+                for _ in 0..self.line_buffer.len() {
+                    echo.extend_from_slice(b"\x08 \x08");
+                }
+            }
+            self.line_buffer.clear();
+            return echo;
+        }
+
+        // Check for VEOF (^D)
+        if byte == self.c_cc[VEOF] {
+            // Flush current line buffer without adding the EOF character
+            self.cooked_buffer.extend_from_slice(&self.line_buffer);
+            self.line_buffer.clear();
+            return echo;
+        }
+
+        // Newline or VEOL: complete the line
+        if byte == b'\n' || byte == self.c_cc[VEOL] {
+            self.line_buffer.push(byte);
+            self.cooked_buffer.extend_from_slice(&self.line_buffer);
+            self.line_buffer.clear();
+            if do_echo || (self.c_lflag & ECHONL != 0 && byte == b'\n') {
+                echo.push(byte);
+            }
+            return echo;
+        }
+
+        // Regular character: add to line buffer
+        self.line_buffer.push(byte);
+        if do_echo {
+            echo.push(byte);
+        }
+        echo
+    }
+
+    /// Read from the cooked buffer (for ICANON mode).
+    /// Returns the number of bytes read.
+    pub fn read_cooked(&mut self, buf: &mut [u8]) -> usize {
+        let n = buf.len().min(self.cooked_buffer.len());
+        if n == 0 {
+            return 0;
+        }
+        buf[..n].copy_from_slice(&self.cooked_buffer[..n]);
+        self.cooked_buffer.drain(..n);
+        n
+    }
+
+    /// Check if cooked data is available for reading.
+    pub fn has_cooked_data(&self) -> bool {
+        !self.cooked_buffer.is_empty()
+    }
+
+    /// Get VMIN value (minimum bytes for raw read).
+    pub fn vmin(&self) -> u8 {
+        self.c_cc[VMIN]
+    }
+
+    /// Get VTIME value (timeout in tenths of a second for raw read).
+    pub fn vtime(&self) -> u8 {
+        self.c_cc[VTIME]
     }
 }
 
@@ -122,5 +230,205 @@ mod tests {
         assert_eq!(ts.c_cc[VEOF], 0x04);
         assert_eq!(ts.winsize.ws_row, 24);
         assert_eq!(ts.winsize.ws_col, 80);
+    }
+
+    #[test]
+    fn test_canonical_mode_default() {
+        let ts = TerminalState::new();
+        assert!(ts.is_canonical());
+    }
+
+    #[test]
+    fn test_line_buffer_newline() {
+        let mut ts = TerminalState::new();
+
+        // Type "hello\n"
+        for &b in b"hello" {
+            ts.process_input_byte(b);
+        }
+        assert!(!ts.has_cooked_data()); // not yet complete
+        ts.process_input_byte(b'\n');
+        assert!(ts.has_cooked_data()); // now complete
+
+        let mut buf = [0u8; 64];
+        let n = ts.read_cooked(&mut buf);
+        assert_eq!(&buf[..n], b"hello\n");
+    }
+
+    #[test]
+    fn test_line_buffer_cr_to_nl() {
+        let mut ts = TerminalState::new();
+        // ICRNL is set by default, so CR becomes NL
+        for &b in b"hi" {
+            ts.process_input_byte(b);
+        }
+        ts.process_input_byte(b'\r');
+        assert!(ts.has_cooked_data());
+
+        let mut buf = [0u8; 64];
+        let n = ts.read_cooked(&mut buf);
+        assert_eq!(&buf[..n], b"hi\n");
+    }
+
+    #[test]
+    fn test_verase_backspace() {
+        let mut ts = TerminalState::new();
+
+        for &b in b"abc" {
+            ts.process_input_byte(b);
+        }
+        // Delete 'c'
+        ts.process_input_byte(0x7F); // DEL = VERASE default
+        ts.process_input_byte(b'\n');
+
+        let mut buf = [0u8; 64];
+        let n = ts.read_cooked(&mut buf);
+        assert_eq!(&buf[..n], b"ab\n");
+    }
+
+    #[test]
+    fn test_vkill_clears_line() {
+        let mut ts = TerminalState::new();
+
+        for &b in b"hello" {
+            ts.process_input_byte(b);
+        }
+        // ^U kills the line
+        ts.process_input_byte(0x15);
+        assert_eq!(ts.line_buffer.len(), 0);
+
+        for &b in b"world" {
+            ts.process_input_byte(b);
+        }
+        ts.process_input_byte(b'\n');
+
+        let mut buf = [0u8; 64];
+        let n = ts.read_cooked(&mut buf);
+        assert_eq!(&buf[..n], b"world\n");
+    }
+
+    #[test]
+    fn test_veof_flushes_without_newline() {
+        let mut ts = TerminalState::new();
+
+        for &b in b"data" {
+            ts.process_input_byte(b);
+        }
+        // ^D flushes without adding newline
+        ts.process_input_byte(0x04);
+        assert!(ts.has_cooked_data());
+
+        let mut buf = [0u8; 64];
+        let n = ts.read_cooked(&mut buf);
+        assert_eq!(&buf[..n], b"data"); // no trailing newline
+    }
+
+    #[test]
+    fn test_veof_empty_line_returns_eof() {
+        let mut ts = TerminalState::new();
+
+        // ^D on empty line
+        ts.process_input_byte(0x04);
+        // Should flush empty buffer (returns 0 bytes = EOF to reader)
+        let mut buf = [0u8; 64];
+        let n = ts.read_cooked(&mut buf);
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn test_echo_output() {
+        let mut ts = TerminalState::new();
+
+        // Typing 'a' should echo 'a'
+        let echo = ts.process_input_byte(b'a');
+        assert_eq!(echo, vec![b'a']);
+
+        // Newline should echo newline
+        let echo = ts.process_input_byte(b'\n');
+        assert_eq!(echo, vec![b'\n']);
+    }
+
+    #[test]
+    fn test_echo_disabled() {
+        let mut ts = TerminalState::new();
+        ts.c_lflag &= !ECHO; // disable echo
+
+        let echo = ts.process_input_byte(b'a');
+        assert!(echo.is_empty());
+    }
+
+    #[test]
+    fn test_echonl_without_echo() {
+        let mut ts = TerminalState::new();
+        ts.c_lflag &= !ECHO;
+        ts.c_lflag |= ECHONL;
+
+        let echo = ts.process_input_byte(b'a');
+        assert!(echo.is_empty()); // no echo for regular chars
+
+        let echo = ts.process_input_byte(b'\n');
+        assert_eq!(echo, vec![b'\n']); // but newline is echoed
+    }
+
+    #[test]
+    fn test_backspace_echo_erases() {
+        let mut ts = TerminalState::new();
+
+        ts.process_input_byte(b'x');
+        let echo = ts.process_input_byte(0x7F); // DEL
+        // Should echo BS-SPACE-BS (erase character from display)
+        assert_eq!(echo, b"\x08 \x08");
+    }
+
+    #[test]
+    fn test_backspace_on_empty_line() {
+        let mut ts = TerminalState::new();
+
+        // Backspace on empty line should do nothing
+        let echo = ts.process_input_byte(0x7F);
+        assert!(echo.is_empty());
+    }
+
+    #[test]
+    fn test_multiple_lines() {
+        let mut ts = TerminalState::new();
+
+        // First line
+        for &b in b"line1\n" {
+            ts.process_input_byte(b);
+        }
+        // Second line
+        for &b in b"line2\n" {
+            ts.process_input_byte(b);
+        }
+
+        let mut buf = [0u8; 64];
+        // Read first line
+        let n = ts.read_cooked(&mut buf);
+        assert_eq!(&buf[..n], b"line1\nline2\n");
+    }
+
+    #[test]
+    fn test_vmin_vtime_defaults() {
+        let ts = TerminalState::new();
+        assert_eq!(ts.vmin(), 1);
+        assert_eq!(ts.vtime(), 0);
+    }
+
+    #[test]
+    fn test_igncr_discards_cr() {
+        let mut ts = TerminalState::new();
+        ts.c_iflag &= !ICRNL; // disable CR->NL
+        ts.c_iflag |= IGNCR;  // enable ignore CR
+
+        for &b in b"ab" {
+            ts.process_input_byte(b);
+        }
+        ts.process_input_byte(b'\r'); // should be discarded
+        ts.process_input_byte(b'\n');
+
+        let mut buf = [0u8; 64];
+        let n = ts.read_cooked(&mut buf);
+        assert_eq!(&buf[..n], b"ab\n");
     }
 }

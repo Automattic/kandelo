@@ -522,6 +522,8 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
             ws_ypixel,
         },
         foreground_pgid: 1,
+        line_buffer: Vec::new(),
+        cooked_buffer: Vec::new(),
     };
 
     // ── Program break ──
@@ -893,6 +895,8 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
             ws_ypixel,
         },
         foreground_pgid: 1,
+        line_buffer: Vec::new(),
+        cooked_buffer: Vec::new(),
     };
 
     // ── Program break ──

@@ -554,6 +554,45 @@ pub fn sys_read(
                     };
                     return Ok(n);
                 }
+
+                // Terminal (stdin) line discipline processing
+                if host_handle == 0 {
+                    if proc.terminal.is_canonical() {
+                        // ICANON mode: return from cooked buffer if available
+                        if proc.terminal.has_cooked_data() {
+                            let n = proc.terminal.read_cooked(buf);
+                            return Ok(n);
+                        }
+                        // Need more input — read from host and process through line discipline
+                        let mut raw = [0u8; 256];
+                        let raw_n = host.host_read(0, &mut raw)?;
+                        if raw_n == 0 {
+                            return Ok(0); // host EOF
+                        }
+                        for &byte in &raw[..raw_n] {
+                            let echo = proc.terminal.process_input_byte(byte);
+                            if !echo.is_empty() {
+                                // Echo back to terminal (stdout = host_handle 1)
+                                let _ = host.host_write(1, &echo);
+                            }
+                        }
+                        // Return cooked data if a complete line is now available
+                        let n = proc.terminal.read_cooked(buf);
+                        if n > 0 {
+                            return Ok(n);
+                        }
+                        // No complete line yet — in centralized mode return EAGAIN,
+                        // otherwise would loop (traditional blocking mode)
+                        if crate::is_centralized_mode() || status_flags & O_NONBLOCK != 0 {
+                            return Err(Errno::EAGAIN);
+                        }
+                        return Ok(0);
+                    }
+                    // Non-canonical mode: pass through raw bytes from host
+                    // VMIN/VTIME semantics are approximated
+                    let n = host.host_read(0, buf)?;
+                    return Ok(n);
+                }
             }
             let n = host.host_read(host_handle, buf)?;
             if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
@@ -10676,7 +10715,7 @@ mod tests {
     fn test_pipe_buf_atomicity() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
-        let (read_fd, write_fd) = sys_pipe(&mut proc).unwrap();
+        let (_read_fd, write_fd) = sys_pipe(&mut proc).unwrap();
 
         // Set write end to nonblocking
         sys_fcntl(&mut proc, write_fd, 4, O_NONBLOCK).unwrap(); // F_SETFL
