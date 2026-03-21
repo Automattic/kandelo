@@ -11,6 +11,25 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 
 ---
 
+## Architecture: Centralized Kernel Model
+
+The wasm-posix-kernel uses a **centralized architecture**: a single kernel Wasm instance holds a `ProcessTable` and serves all process workers via channel IPC (`Atomics.waitAsync`).
+
+**Key properties:**
+- **Single kernel instance** with a `ProcessTable` mapping PIDs to `Process` structs
+- **Process workers** communicate with the kernel via channel IPC — each process/thread has a channel region in shared memory, and the kernel services syscalls one at a time from the JS event loop
+- **Cross-process shared state** (open file descriptions, pipes, locks, IPC) is managed directly by the kernel — no extra SharedArrayBuffer structures needed per feature
+- **Serialized syscall execution** — the kernel handles one syscall at a time, which provides natural atomicity for operations like O_APPEND writes and PIPE_BUF-sized pipe writes
+- **Signal delivery** across processes is direct — the kernel can write to any process's pending signal mask
+
+**Key kernel-side APIs:**
+- `kernel_create_process(pid)` — register a new process
+- `kernel_fork_process(parent, child)` — fork state from parent to child (fd table, OFDs, signals, etc.)
+- `kernel_remove_process(pid)` — clean up on exit
+- `kernel_handle_channel(offset, pid)` — dispatch a syscall from a process's channel
+
+---
+
 ## File Descriptors & I/O
 
 | Function | Status | Notes |
@@ -26,7 +45,7 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 | `dup()` | Full | Lowest available fd. FD_CLOEXEC cleared. Shares OFD with original. |
 | `dup2()` | Full | Atomic close-and-dup. Same-fd no-op. FD_CLOEXEC cleared. |
 | `dup3()` | Full | Like dup2 but returns EINVAL if oldfd==newfd. Supports O_CLOEXEC flag. |
-| `pipe()` | Partial | Kernel-space ring buffer (64KB). PIPE_BUF=4096 but atomicity not enforced for writes ≤ PIPE_BUF (POSIX requires no interleaving). O_NONBLOCK enforced (EAGAIN). Cross-process pipes via SharedArrayBuffer after fork. Blocking read/write not yet implemented. |
+| `pipe()` | Partial | Kernel-space ring buffer (64KB). PIPE_BUF=4096 atomicity guaranteed by centralized kernel (serialized syscalls). O_NONBLOCK enforced (EAGAIN). Cross-process pipes work naturally via shared OFD table after fork. |
 | `pipe2()` | Full | Like pipe with O_NONBLOCK and O_CLOEXEC flag support. |
 | `readv()` | Full | Scatter read. Iterates over iovec array calling sys_read for each buffer. Stops on short read or EOF. |
 | `writev()` | Full | Gather write. Iterates over iovec array calling sys_write for each buffer. Stops on short write. |
@@ -92,15 +111,15 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 | `getsid()` | Full | Returns session ID (simulated, defaults to pid). pid=0 means self. |
 | `setsid()` | Full | Creates new session. Sets sid=pid, pgid=pid. Returns new session ID. Returns EPERM if already session leader (POSIX-compliant). |
 | `prctl()` | Partial | PR_SET_NAME and PR_GET_NAME store/retrieve thread name (16 bytes). All other operations return success (no-op). Syscall number fixed to 223 (Batch 3). |
-| `gettid()` | Stub | Single-threaded: returns pid (tid == pid). Threading upgrade: return actual thread ID from thread table. |
-| `set_tid_address()` | Stub | Single-threaded: returns pid, ignores tidptr. Threading upgrade: store tidptr per-thread; kernel writes 0 + futex-wakes on thread exit. |
-| `set_robust_list()` | Stub | Single-threaded: no-op. Threading upgrade: track robust futex list per-thread; kernel walks list on thread exit. |
-| `futex()` | Stub | Single-threaded: FUTEX_WAIT returns EAGAIN (no contention possible), FUTEX_WAKE returns 0 (no waiters). PRIVATE variants handled. Threading upgrade: hash table mapping (process, uaddr) → wait queue. |
+| `gettid()` | Partial | Returns pid (tid == pid). Threading: will return actual TID from thread table. |
+| `set_tid_address()` | Partial | Returns pid, stores tidptr for thread exit notification. |
+| `set_robust_list()` | Stub | No-op. Robust futex list tracking deferred until threading is fully tested. |
+| `futex()` | Partial | FUTEX_WAIT, FUTEX_WAKE, FUTEX_REQUEUE, FUTEX_CMP_REQUEUE, FUTEX_WAKE_OP implemented. In centralized mode, WAIT returns EAGAIN (host retries via Atomics.waitAsync). Thread workers use direct Atomics.wait. |
 | `execve()` | Full | Delegates to kernel_execve. Replaces process image. |
 | `execveat()` | Partial | Extracts path, delegates to kernel_execve. Ignores dirfd (path must be absolute or CWD-relative). |
 | `fork()` (syscall) | Stub | Returns ENOSYS from glue. Host-initiated only via ProcessManager. |
 | `vfork()` | Stub | Returns ENOSYS. |
-| `clone()` | Stub | Returns ENOSYS. Threading not yet supported. |
+| `clone()` | Partial | Thread-style clone (CLONE_VM\|CLONE_THREAD) supported. Centralized mode: kernel allocates TID, host spawns thread Worker sharing parent's Memory. Traditional mode: delegates to host_clone. |
 | `personality()` | Stub | Returns 0 (PER_LINUX). |
 | `unshare()` / `setns()` | Stub | Returns EPERM. No namespace support. |
 | `ptrace()` | Stub | Returns ENOSYS. |
@@ -334,8 +353,8 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 | Gap | Subsystem | Description |
 |-----|-----------|-------------|
 | **EINTR partially implemented** | all | read, write, recv, poll, select return EINTR when a signal is pending during a blocking wait. close() and other non-blocking syscalls do not check. Tied to signal handler invocation gap. |
-| **PIPE_BUF atomicity not enforced** | pipe | Writes ≤ PIPE_BUF (4096) are not guaranteed atomic. POSIX requires no interleaving of concurrent writes ≤ PIPE_BUF. Ring buffer has no boundary tracking. |
-| **O_APPEND not atomic** | write | Writes with O_APPEND do not atomically seek-to-end then write. In multi-process scenarios, concurrent O_APPEND writes could interleave. |
+| ~~**PIPE_BUF atomicity not enforced**~~ | pipe | **Resolved.** Naturally atomic in centralized mode — syscalls are serialized, so concurrent writes ≤ PIPE_BUF cannot interleave. |
+| ~~**O_APPEND not atomic**~~ | write | **Resolved.** Naturally atomic in centralized mode — syscalls are serialized, so seek-to-end + write cannot be interrupted by another process. |
 | ~~**sigaction() missing sa_flags**~~ | signals | **Resolved.** SA_RESTART supported (auto-restart blocking syscalls). sa_flags and sa_mask stored. SA_SIGINFO/SA_NOCLDWAIT/SA_NOCLDSTOP accepted but not yet acted upon. |
 | **No signal queuing** | signals | Pending signals stored as 64-bit bitmask — one bit per signal. Multiple instances of the same signal are coalesced. POSIX real-time signals require queuing. |
 | ~~**`*at()` functions with real dirfd**~~ | filesystem | **Resolved.** All *at() syscalls now support real dirfd via stored OFD paths. |
@@ -372,11 +391,9 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 ### Future Work — Planned for later batches
 
 **Medium-term:**
-- PIPE_BUF atomicity enforcement (ring buffer boundary tracking for writes ≤ 4096)
-- Multi-process F_SETLKW blocking (currently returns immediately)
 - VMIN/VTIME terminal interpretation (read behavior based on c_cc values)
-- Guest-initiated fork()/exec() syscalls (currently host-initiated only)
 - Full epoll implementation (currently returns ENOSYS; programs fall back to poll)
+- eventfd / timerfd / signalfd (currently stubs)
 
 **Threading stubs (requires multi-threading support):**
 - `gettid()` — return actual thread ID from thread table (currently returns pid)

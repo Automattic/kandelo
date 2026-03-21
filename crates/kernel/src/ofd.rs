@@ -13,6 +13,7 @@ pub enum FileType {
     Pipe,
     CharDevice,
     Socket,
+    EventFd,
 }
 
 #[derive(Clone)]

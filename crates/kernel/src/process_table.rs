@@ -98,6 +98,6 @@ impl ProcessTable {
 /// Global process table wrapper for static storage.
 pub struct GlobalProcessTable(pub UnsafeCell<ProcessTable>);
 
-/// SAFETY: Access is serialized — the centralized kernel is single-threaded
-/// (one syscall serviced at a time from the JS event loop).
+/// SAFETY: Access is serialized — the centralized kernel services one syscall
+/// at a time from the JS event loop (no concurrent Wasm execution).
 unsafe impl Sync for GlobalProcessTable {}

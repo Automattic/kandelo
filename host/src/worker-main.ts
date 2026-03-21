@@ -1175,22 +1175,76 @@ export async function centralizedWorkerMain(
     // Compile the user program module
     const module = await WebAssembly.compile(programBytes);
 
-    // Build env imports. Channel-mode programs only import env.* (no kernel.*).
-    // The main import is the shared Memory.
+    // Build imports. Channel-mode programs primarily use channel_syscall.c
+    // (no kernel.* imports). However, the musl overlay's __clone directly
+    // imports kernel.kernel_clone, so we need kernel.* stubs.
     const envImports: Record<string, WebAssembly.ExportValue> = { memory };
+    const kernelImports: Record<string, WebAssembly.ExportValue> = {};
 
-    // Stub any unresolved env function imports
+    // Stub any unresolved function imports
     for (const imp of WebAssembly.Module.imports(module)) {
-      if (imp.module === "env" && imp.kind === "function") {
+      if (imp.kind !== "function") continue;
+      if (imp.module === "env") {
         if (!envImports[imp.name]) {
           envImports[imp.name] = (..._args: unknown[]) => {
             throw new Error(`Unimplemented import: env.${imp.name}`);
+          };
+        }
+      } else if (imp.module === "kernel") {
+        // kernel.* imports: __clone calls kernel_clone which goes through
+        // the channel syscall dispatch (SYS_CLONE). We provide a stub that
+        // dispatches clone through the channel like any other syscall.
+        if (imp.name === "kernel_clone") {
+          kernelImports[imp.name] = (fnPtr: number, stackPtr: number, flags: number,
+            arg: number, ptidPtr: number, tlsPtr: number, ctidPtr: number): number => {
+            // Dispatch SYS_CLONE through channel_syscall (same as __syscall5)
+            // The __do_syscall function uses __channel_base TLS variable
+            // which is set up by centralizedWorkerMain.
+            // But we can't call __do_syscall from JS. Instead, we write
+            // directly to the channel and wait.
+            const SYS_CLONE_NR = 201;
+            const view = new DataView(memory.buffer);
+            const base = channelOffset;
+            // Write syscall args in Linux convention: flags, stack, ptid, tls, ctid
+            view.setInt32(base + 4, SYS_CLONE_NR, true);  // syscall nr
+            view.setInt32(base + 8, flags, true);           // a1 = flags
+            view.setInt32(base + 12, stackPtr, true);       // a2 = stack
+            view.setInt32(base + 16, ptidPtr, true);        // a3 = ptid
+            view.setInt32(base + 20, tlsPtr, true);         // a4 = tls
+            view.setInt32(base + 24, ctidPtr, true);        // a5 = ctid
+            view.setInt32(base + 28, 0, true);              // a6 = 0
+
+            // Set status to PENDING and notify
+            const i32 = new Int32Array(memory.buffer);
+            Atomics.store(i32, base / 4, 1); // CH_PENDING
+            Atomics.notify(i32, base / 4, 1);
+
+            // Wait for COMPLETE
+            while (Atomics.wait(i32, base / 4, 1) === "ok") {
+              // re-check
+            }
+
+            const result = view.getInt32(base + 32, true); // return value
+            const err = view.getUint32(base + 36, true);    // errno
+
+            // Reset to IDLE
+            Atomics.store(i32, base / 4, 0);
+
+            if (err) return -err;
+            return result;
+          };
+        } else {
+          kernelImports[imp.name] = (..._args: unknown[]) => {
+            throw new Error(`Unimplemented kernel import: kernel.${imp.name}`);
           };
         }
       }
     }
 
     const importObject: WebAssembly.Imports = { env: envImports };
+    if (Object.keys(kernelImports).length > 0) {
+      importObject.kernel = kernelImports;
+    }
     const instance = await WebAssembly.instantiate(module, importObject);
 
     // Initialize TLS for this thread

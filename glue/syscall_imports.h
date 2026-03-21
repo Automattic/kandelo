@@ -87,6 +87,9 @@ int32_t kernel_pipe(int32_t *fildes_ptr);
 KERNEL_IMPORT(kernel_pipe2)
 int32_t kernel_pipe2(uint32_t flags, int32_t *fd_ptr);
 
+KERNEL_IMPORT(kernel_eventfd2)
+int32_t kernel_eventfd2(uint32_t initval, uint32_t flags);
+
 KERNEL_IMPORT(kernel_fcntl)
 int32_t kernel_fcntl(int32_t fd, uint32_t cmd, uint32_t arg);
 

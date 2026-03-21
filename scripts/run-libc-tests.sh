@@ -26,19 +26,12 @@ MATH_EXPECTED_FAIL=(acosh asinh erfc j0 jn jnf lgamma lgammaf lgammaf_r sinh tga
 MATH_RELAXED_EXPECTED_FAIL=(tgamma j0 y0 y0f)  # Tests with inline checks that bypass checkulp
 
 # Tests blocked by fundamental Wasm limitations (no cancel-point asm, opaque stack,
-# no dlopen, no file-backed mmap, no thread-specific signals) or virtual address
-# space semantics differences (OOM: brk and mmap regions are separate in Wasm).
+# no file-backed mmap for sem_open).
 FUNCTIONAL_EXPECTED_FAIL=(
     pthread_cancel
     pthread_cancel-points
-    pthread_cond
-    pthread_mutex
-    pthread_robust
-    pthread_tsd
-    sem_init
     sem_open
     sigaltstack
-    tls_init
 )
 REGRESSION_EXPECTED_FAIL=(
     malloc-brk-fail

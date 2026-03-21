@@ -43,13 +43,13 @@ This means `fesetround()`, `fegetround()`, `feraiseexcept()`, etc. are functiona
 
 **Impact:** No test failures — math tests correctly skip non-RN rounding checks.
 
-## 6. Hangs on OOM / Resource Exhaustion (4 tests)
+## 6. OOM / Resource Exhaustion (2 tests)
 
-Tests that deliberately exhaust resources (malloc until OOM) hang because Wasm's `memory.grow` doesn't properly signal failure in all musl code paths, and single-threaded execution means spinning loops never yield.
+Tests that deliberately exhaust resources (malloc until OOM) can trigger issues because Wasm memory growth behaves differently from native. Memory limits are now enforced (RLIMIT_AS), and most OOM tests pass. Two remain:
 
-**Affected tests (regression):** `flockfile-list`, `malloc-brk-fail`, `malloc-oom`, `setenv-oom`
+**Affected tests (regression):** `malloc-brk-fail`, `malloc-oom`
 
-**Future path:** Better `brk`/`mmap` failure handling; wasm memory growth limits; host-side timeout and interruption mechanism.
+These tests expect specific brk/mmap failure semantics that differ in Wasm's linear memory model (brk and mmap regions are separate; `memory.grow` failure doesn't perfectly map to native OOM signaling).
 
 ## 7. setjmp Timeout (1 test)
 

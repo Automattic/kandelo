@@ -89,6 +89,29 @@ pub enum ProcessState {
     Exited,
 }
 
+/// Per-thread state within a process.
+#[derive(Debug, Clone)]
+pub struct ThreadInfo {
+    pub tid: u32,
+    pub ctid_ptr: u32,    // CLONE_CHILD_CLEARTID address (futex wake on exit)
+    pub stack_ptr: u32,
+    pub tls_ptr: u32,
+    pub tidptr: u32,       // set_tid_address pointer
+}
+
+impl ThreadInfo {
+    pub fn new(tid: u32, ctid_ptr: u32, stack_ptr: u32, tls_ptr: u32) -> Self {
+        ThreadInfo { tid, ctid_ptr, stack_ptr, tls_ptr, tidptr: 0 }
+    }
+}
+
+/// Per-eventfd state: a u64 counter with optional semaphore semantics.
+#[derive(Debug, Clone)]
+pub struct EventFdState {
+    pub counter: u64,
+    pub semaphore: bool,
+}
+
 /// File descriptor action to apply in a fork child before exec.
 #[derive(Debug, Clone)]
 pub enum FdAction {
@@ -136,6 +159,12 @@ pub struct Process {
     pub fork_fd_actions: Vec<FdAction>,
     /// Next ephemeral port to assign for bind(port=0).
     pub next_ephemeral_port: u16,
+    /// Threads created by this process (centralized mode).
+    pub threads: Vec<ThreadInfo>,
+    /// Next thread ID to allocate.
+    pub next_tid: u32,
+    /// Eventfd instances owned by this process.
+    pub eventfds: Vec<Option<EventFdState>>,
 }
 
 impl Process {
@@ -193,6 +222,44 @@ impl Process {
             fork_exec_argv: None,
             fork_fd_actions: Vec::new(),
             next_ephemeral_port: 49152,
+            threads: Vec::new(),
+            next_tid: 0, // will be set to pid + 1 after pid is known
+            eventfds: Vec::new(),
         }
+    }
+
+    /// Allocate a new thread ID for this process.
+    pub fn alloc_tid(&mut self) -> u32 {
+        // First thread TID starts at pid + 1
+        if self.next_tid == 0 {
+            self.next_tid = self.pid + 1;
+        }
+        let tid = self.next_tid;
+        self.next_tid += 1;
+        tid
+    }
+
+    /// Add a thread to this process.
+    pub fn add_thread(&mut self, info: ThreadInfo) {
+        self.threads.push(info);
+    }
+
+    /// Remove a thread by TID.
+    pub fn remove_thread(&mut self, tid: u32) -> Option<ThreadInfo> {
+        if let Some(idx) = self.threads.iter().position(|t| t.tid == tid) {
+            Some(self.threads.swap_remove(idx))
+        } else {
+            None
+        }
+    }
+
+    /// Find a thread by TID.
+    pub fn get_thread(&self, tid: u32) -> Option<&ThreadInfo> {
+        self.threads.iter().find(|t| t.tid == tid)
+    }
+
+    /// Find a thread by TID (mutable).
+    pub fn get_thread_mut(&mut self, tid: u32) -> Option<&mut ThreadInfo> {
+        self.threads.iter_mut().find(|t| t.tid == tid)
     }
 }

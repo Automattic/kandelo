@@ -244,6 +244,13 @@ pub fn sys_close(
                 }
                 proc.sockets.free(sock_idx);
             }
+            FileType::EventFd => {
+                // Free the eventfd state
+                let efd_idx = (-(host_handle + 1)) as usize;
+                if let Some(slot) = proc.eventfds.get_mut(efd_idx) {
+                    *slot = None;
+                }
+            }
             _ => {
                 // Close any lazily-opened directory iteration handle
                 if dir_host_handle >= 0 {
@@ -385,6 +392,48 @@ pub fn sys_read(
                     }
                 }
             }
+        }
+        FileType::EventFd => {
+            // eventfd read: must be exactly 8 bytes
+            if buf.len() < 8 {
+                return Err(Errno::EINVAL);
+            }
+            let efd_idx = (-(host_handle + 1)) as usize;
+            let efd = proc.eventfds.get_mut(efd_idx)
+                .and_then(|s| s.as_mut())
+                .ok_or(Errno::EBADF)?;
+            if efd.counter == 0 {
+                // Would block
+                if status_flags & O_NONBLOCK != 0 || crate::is_centralized_mode() {
+                    return Err(Errno::EAGAIN);
+                }
+                // Blocking mode: loop (non-centralized only)
+                loop {
+                    if proc.signals.deliverable() != 0 && !proc.signals.should_restart() {
+                        return Err(Errno::EINTR);
+                    }
+                    let _ = host.host_nanosleep(0, 1_000_000);
+                    let efd = proc.eventfds.get_mut(efd_idx)
+                        .and_then(|s| s.as_mut())
+                        .ok_or(Errno::EBADF)?;
+                    if efd.counter > 0 {
+                        break;
+                    }
+                }
+            }
+            let efd = proc.eventfds.get_mut(efd_idx)
+                .and_then(|s| s.as_mut())
+                .ok_or(Errno::EBADF)?;
+            let value = if efd.semaphore {
+                efd.counter -= 1;
+                1u64
+            } else {
+                let v = efd.counter;
+                efd.counter = 0;
+                v
+            };
+            buf[..8].copy_from_slice(&value.to_le_bytes());
+            Ok(8)
         }
         _ => {
             // Virtual character devices — handle in-kernel
@@ -540,6 +589,44 @@ pub fn sys_write(
                 }
             }
         }
+        FileType::EventFd => {
+            // eventfd write: must be exactly 8 bytes
+            if buf.len() < 8 {
+                return Err(Errno::EINVAL);
+            }
+            let value = u64::from_le_bytes(buf[..8].try_into().unwrap());
+            if value == u64::MAX {
+                return Err(Errno::EINVAL);
+            }
+            let efd_idx = (-(host_handle + 1)) as usize;
+            let efd = proc.eventfds.get_mut(efd_idx)
+                .and_then(|s| s.as_mut())
+                .ok_or(Errno::EBADF)?;
+            let max_val = u64::MAX - 1;
+            if efd.counter > max_val - value {
+                // Would overflow — block or EAGAIN
+                if status_flags & O_NONBLOCK != 0 || crate::is_centralized_mode() {
+                    return Err(Errno::EAGAIN);
+                }
+                loop {
+                    if proc.signals.deliverable() != 0 && !proc.signals.should_restart() {
+                        return Err(Errno::EINTR);
+                    }
+                    let _ = host.host_nanosleep(0, 1_000_000);
+                    let efd = proc.eventfds.get_mut(efd_idx)
+                        .and_then(|s| s.as_mut())
+                        .ok_or(Errno::EBADF)?;
+                    if efd.counter <= max_val - value {
+                        break;
+                    }
+                }
+            }
+            let efd = proc.eventfds.get_mut(efd_idx)
+                .and_then(|s| s.as_mut())
+                .ok_or(Errno::EBADF)?;
+            efd.counter += value;
+            Ok(8)
+        }
         _ => {
             // Virtual character devices — handle in-kernel
             if file_type == FileType::CharDevice {
@@ -550,7 +637,7 @@ pub fn sys_write(
                     };
                 }
             }
-            // O_APPEND: seek to end before writing (POSIX atomicity for single-process)
+            // O_APPEND: seek to end before writing (POSIX atomicity guaranteed by centralized kernel)
             if status_flags & O_APPEND != 0 {
                 let end = host.host_seek(host_handle, 0, 2)?; // SEEK_END
                 if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
@@ -589,8 +676,8 @@ pub fn sys_lseek(
 
     let ofd = proc.ofd_table.get_mut(ofd_idx).ok_or(Errno::EBADF)?;
 
-    // Pipes are not seekable.
-    if ofd.file_type == FileType::Pipe || ofd.file_type == FileType::Socket {
+    // Pipes, sockets, and eventfds are not seekable.
+    if ofd.file_type == FileType::Pipe || ofd.file_type == FileType::Socket || ofd.file_type == FileType::EventFd {
         return Err(Errno::ESPIPE);
     }
 
@@ -638,8 +725,8 @@ pub fn sys_pread(
         return Err(Errno::EBADF);
     }
 
-    // pread is only valid for seekable fds (not pipes or sockets)
-    if ofd.file_type == FileType::Pipe || ofd.file_type == FileType::Socket {
+    // pread is only valid for seekable fds (not pipes, sockets, or eventfds)
+    if ofd.file_type == FileType::Pipe || ofd.file_type == FileType::Socket || ofd.file_type == FileType::EventFd {
         return Err(Errno::ESPIPE);
     }
 
@@ -672,7 +759,7 @@ pub fn sys_pwrite(
         return Err(Errno::EBADF);
     }
 
-    if ofd.file_type == FileType::Pipe || ofd.file_type == FileType::Socket {
+    if ofd.file_type == FileType::Pipe || ofd.file_type == FileType::Socket || ofd.file_type == FileType::EventFd {
         return Err(Errno::ESPIPE);
     }
 
@@ -963,7 +1050,7 @@ pub fn sys_fstat(
 
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
 
-    if ofd.file_type == FileType::Pipe {
+    if ofd.file_type == FileType::Pipe || ofd.file_type == FileType::EventFd {
         Ok(WasmStat {
             st_dev: 0,
             st_ino: 0,
@@ -1612,7 +1699,7 @@ pub fn sys_getpgrp(proc: &Process) -> u32 {
 /// setpgid -- set process group ID.
 /// pid=0 means current process, pgid=0 means use pid as pgid.
 pub fn sys_setpgid(proc: &mut Process, pid: u32, pgid: u32) -> Result<(), Errno> {
-    // Only support setting own pgid (single-process)
+    // Only support setting own pgid (cross-process setpgid not yet implemented)
     if pid != 0 && pid != proc.pid {
         return Err(Errno::ESRCH);
     }
@@ -3155,6 +3242,17 @@ fn poll_check(proc: &mut Process, fds: &mut [WasmPollFd]) -> i32 {
         let mut revents: i16 = 0;
 
         match ofd.file_type {
+            FileType::EventFd => {
+                let efd_idx = (-(ofd.host_handle + 1)) as usize;
+                if let Some(Some(efd)) = proc.eventfds.get(efd_idx) {
+                    if pollfd.events & POLLIN != 0 && efd.counter > 0 {
+                        revents |= POLLIN;
+                    }
+                    if pollfd.events & POLLOUT != 0 && efd.counter < u64::MAX - 1 {
+                        revents |= POLLOUT;
+                    }
+                }
+            }
             FileType::Regular | FileType::CharDevice | FileType::Directory => {
                 // Regular files and char devices are always ready
                 if pollfd.events & POLLIN != 0 {
@@ -3467,7 +3565,7 @@ pub fn sys_tcgetattr(proc: &mut Process, fd: i32, buf: &mut [u8]) -> Result<(), 
 
 /// tcsetattr -- set terminal attributes.
 /// Reads c_iflag, c_oflag, c_cflag, c_lflag (4 x u32 = 16 bytes) then c_cc (32 bytes) = 48 bytes.
-/// action: 0=TCSANOW, 1=TCSADRAIN, 2=TCSAFLUSH (all treated same in single-process).
+/// action: 0=TCSANOW, 1=TCSADRAIN, 2=TCSAFLUSH (all treated same — no output queue to drain).
 pub fn sys_tcsetattr(proc: &mut Process, fd: i32, _action: u32, buf: &[u8]) -> Result<(), Errno> {
     let entry = proc.fd_table.get(fd)?;
     let ofd_idx = entry.ofd_ref.0;
@@ -3626,17 +3724,19 @@ pub fn sys_prctl(proc: &mut Process, option: u32, _arg2: u32, buf: &mut [u8]) ->
     }
 }
 
-// STUB: single-threaded — returns pid (tid == pid in single-threaded mode)
+// Returns thread ID. Without threading, tid == pid.
+// Threading upgrade: return actual TID from thread table.
 pub fn sys_gettid(proc: &Process) -> i32 {
     proc.pid as i32
 }
 
-// STUB: single-threaded — ignores tidptr, returns pid
+// Stores tidptr for thread exit notification. Without threading, returns pid.
+// Threading upgrade: store tidptr per-thread; kernel writes 0 + futex-wakes on exit.
 pub fn sys_set_tid_address(proc: &Process) -> i32 {
     proc.pid as i32
 }
 
-// STUB: single-threaded — no-op (no robust futex list to track)
+// No-op — robust futex list tracking deferred until threading is implemented.
 pub fn sys_set_robust_list() -> Result<(), Errno> {
     Ok(())
 }
@@ -3725,8 +3825,14 @@ pub fn sys_futex(
     }
 }
 
-/// clone — spawn a new thread via the host.
+/// clone — spawn a new thread.
+///
+/// In centralized mode: allocate a TID, store thread state, return TID.
+/// The host's handleClone will then spawn the actual thread Worker.
+///
+/// In traditional mode: delegate to host_clone.
 pub fn sys_clone(
+    proc: &mut Process,
     host: &mut dyn HostIO,
     fn_ptr: u32,
     stack_ptr: u32,
@@ -3736,24 +3842,46 @@ pub fn sys_clone(
     tls_ptr: u32,
     ctid_ptr: u32,
 ) -> Result<i32, Errno> {
+    use crate::process::ThreadInfo;
+
     const CLONE_VM: u32 = 0x00000100;
     const CLONE_THREAD: u32 = 0x00010000;
     const CLONE_PARENT_SETTID: u32 = 0x00100000;
+    const CLONE_CHILD_SETTID: u32 = 0x01000000;
+    const CLONE_CHILD_CLEARTID: u32 = 0x00200000;
+    const CLONE_SETTLS: u32 = 0x00080000;
 
     // We only support thread-style clone (CLONE_VM | CLONE_THREAD)
     if flags & CLONE_VM == 0 || flags & CLONE_THREAD == 0 {
         return Err(Errno::ENOSYS);
     }
 
-    let tid = host.host_clone(fn_ptr, arg, stack_ptr, tls_ptr, ctid_ptr)?;
+    let tid = if crate::is_centralized_mode() {
+        // Centralized mode: allocate TID and store thread info in process.
+        // The host will spawn the actual thread Worker after we return.
+        let tid = proc.alloc_tid();
+        let effective_tls = if flags & CLONE_SETTLS != 0 { tls_ptr } else { 0 };
+        let effective_ctid = if flags & CLONE_CHILD_CLEARTID != 0 { ctid_ptr } else { 0 };
+        let thread_info = ThreadInfo::new(tid, effective_ctid, stack_ptr, effective_tls);
+        proc.add_thread(thread_info);
+        tid as i32
+    } else {
+        // Traditional mode: delegate to host
+        host.host_clone(fn_ptr, arg, stack_ptr, tls_ptr, ctid_ptr)?
+    };
 
     // Write TID to parent's tid pointer if CLONE_PARENT_SETTID
     if flags & CLONE_PARENT_SETTID != 0 && ptid_ptr != 0 {
+        #[cfg(target_arch = "wasm32")]
         unsafe {
             let ptr = ptid_ptr as *mut i32;
             *ptr = tid;
         }
     }
+
+    // Write TID to child's tid pointer if CLONE_CHILD_SETTID
+    // (In centralized mode, the thread Worker will do this itself)
+    let _ = (flags, ctid_ptr); // suppress unused warnings
 
     Ok(tid)
 }
@@ -3809,6 +3937,83 @@ pub fn sys_pselect6(
     }
 
     result
+}
+
+/// eventfd2 — create an eventfd file descriptor.
+///
+/// Returns a file descriptor that can be used for event notification.
+/// The counter is initialized to `initval`.
+///
+/// Flags: EFD_CLOEXEC (0o2000000), EFD_NONBLOCK (0o4000), EFD_SEMAPHORE (1).
+pub fn sys_eventfd2(proc: &mut Process, initval: u32, flags: u32) -> Result<i32, Errno> {
+    use crate::ofd::FileType;
+    use crate::process::EventFdState;
+    use wasm_posix_shared::fd_flags::FD_CLOEXEC;
+
+    const EFD_SEMAPHORE: u32 = 1;
+
+    let semaphore = flags & EFD_SEMAPHORE != 0;
+    let cloexec = flags & O_CLOEXEC != 0;
+    let nonblock = flags & O_NONBLOCK != 0;
+
+    // Validate flags — only EFD_SEMAPHORE, EFD_CLOEXEC, EFD_NONBLOCK allowed
+    let valid_flags = EFD_SEMAPHORE | O_CLOEXEC | O_NONBLOCK;
+    if flags & !valid_flags != 0 {
+        return Err(Errno::EINVAL);
+    }
+
+    let state = EventFdState {
+        counter: initval as u64,
+        semaphore,
+    };
+
+    // Allocate eventfd slot (reuse freed slots)
+    let efd_idx = {
+        let mut found = None;
+        for (i, slot) in proc.eventfds.iter().enumerate() {
+            if slot.is_none() {
+                found = Some(i);
+                break;
+            }
+        }
+        match found {
+            Some(i) => {
+                proc.eventfds[i] = Some(state);
+                i
+            }
+            None => {
+                let i = proc.eventfds.len();
+                proc.eventfds.push(Some(state));
+                i
+            }
+        }
+    };
+
+    // Eventfd handle is negative: -(efd_idx + 1)
+    let efd_handle = -((efd_idx as i64) + 1);
+
+    // Status flags: O_RDWR (readable and writable), plus O_NONBLOCK if requested
+    let mut status_flags = O_RDWR;
+    if nonblock {
+        status_flags |= O_NONBLOCK;
+    }
+
+    let ofd_idx = proc.ofd_table.create(
+        FileType::EventFd,
+        status_flags,
+        efd_handle,
+        b"/dev/eventfd".to_vec(),
+    );
+
+    let fd_flags = if cloexec { FD_CLOEXEC } else { 0 };
+    match proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags) {
+        Ok(fd) => Ok(fd),
+        Err(e) => {
+            proc.ofd_table.dec_ref(ofd_idx);
+            proc.eventfds[efd_idx] = None;
+            Err(e)
+        }
+    }
 }
 
 /// umask — set file creation mask, return previous mask
@@ -4287,8 +4492,8 @@ pub fn sys_setegid(proc: &mut Process, egid: u32) -> Result<(), Errno> {
 
 /// getrusage -- get resource usage (simulated).
 ///
-/// Returns mostly zeroed rusage struct. In our single-process Wasm
-/// environment, we don't track actual resource usage. The struct is
+/// Returns mostly zeroed rusage struct. Wasm runtimes don't expose
+/// CPU/memory usage metrics, so we can't track actual resource usage. The struct is
 /// 144 bytes: 2 x timeval (16 bytes each) + 14 x i64.
 pub fn sys_getrusage(_proc: &mut Process, who: i32, buf: &mut [u8]) -> Result<(), Errno> {
     use wasm_posix_shared::rusage::{RUSAGE_SELF, RUSAGE_CHILDREN};
@@ -4440,6 +4645,7 @@ mod tests {
     use super::*;
     use crate::process::ProcessState;
     use wasm_posix_shared::mode::{S_IFDIR, S_IFREG, S_IFLNK};
+    use wasm_posix_shared::poll::{POLLIN, POLLOUT};
 
     /// Mock host I/O for testing.
     struct MockHostIO {
@@ -8739,5 +8945,342 @@ mod tests {
         assert_eq!(&buf[..data_len], b"hello UDP");
         assert_eq!(addr_len, 16);
         assert_eq!(from_addr[0], 2); // AF_INET
+    }
+
+    // ── Threading tests ──────────────────────────────────────────────
+
+    #[test]
+    fn test_process_thread_alloc_tid() {
+        let mut proc = Process::new(42);
+        let tid1 = proc.alloc_tid();
+        let tid2 = proc.alloc_tid();
+        assert_eq!(tid1, 43); // pid + 1
+        assert_eq!(tid2, 44);
+    }
+
+    #[test]
+    fn test_process_thread_add_remove() {
+        use crate::process::ThreadInfo;
+        let mut proc = Process::new(10);
+        let tid = proc.alloc_tid();
+        proc.add_thread(ThreadInfo::new(tid, 0x1000, 0x2000, 0x3000));
+        assert!(proc.get_thread(tid).is_some());
+        assert_eq!(proc.get_thread(tid).unwrap().stack_ptr, 0x2000);
+
+        let removed = proc.remove_thread(tid);
+        assert!(removed.is_some());
+        assert!(proc.get_thread(tid).is_none());
+    }
+
+    #[test]
+    fn test_clone_rejects_non_thread() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        // Without CLONE_VM | CLONE_THREAD, clone should return ENOSYS
+        let result = sys_clone(&mut proc, &mut host, 0, 0, 0, 0, 0, 0, 0);
+        assert_eq!(result, Err(Errno::ENOSYS));
+    }
+
+    #[test]
+    fn test_clone_rejects_clone_vm_only() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        const CLONE_VM: u32 = 0x00000100;
+        // CLONE_VM without CLONE_THREAD should fail
+        let result = sys_clone(&mut proc, &mut host, 0, 0x8000, CLONE_VM, 0, 0, 0, 0);
+        assert_eq!(result, Err(Errno::ENOSYS));
+    }
+
+    #[test]
+    fn test_clone_non_centralized_delegates_to_host() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        const CLONE_VM: u32 = 0x00000100;
+        const CLONE_THREAD: u32 = 0x00010000;
+        let flags = CLONE_VM | CLONE_THREAD;
+        // In non-centralized mode, host_clone returns -ENOSYS (mock)
+        let result = sys_clone(&mut proc, &mut host, 0, 0x8000, flags, 0, 0, 0, 0);
+        assert_eq!(result, Err(Errno::ENOSYS));
+    }
+
+    #[test]
+    fn test_process_multiple_threads() {
+        use crate::process::ThreadInfo;
+        let mut proc = Process::new(1);
+
+        // Allocate 3 threads
+        let t1 = proc.alloc_tid();
+        let t2 = proc.alloc_tid();
+        let t3 = proc.alloc_tid();
+
+        proc.add_thread(ThreadInfo::new(t1, 0x100, 0x1000, 0x2000));
+        proc.add_thread(ThreadInfo::new(t2, 0x200, 0x3000, 0x4000));
+        proc.add_thread(ThreadInfo::new(t3, 0x300, 0x5000, 0x6000));
+
+        assert_eq!(proc.threads.len(), 3);
+
+        // Remove middle thread
+        proc.remove_thread(t2);
+        assert_eq!(proc.threads.len(), 2);
+        assert!(proc.get_thread(t1).is_some());
+        assert!(proc.get_thread(t2).is_none());
+        assert!(proc.get_thread(t3).is_some());
+    }
+
+    #[test]
+    fn test_thread_info_fields() {
+        use crate::process::ThreadInfo;
+        let mut info = ThreadInfo::new(42, 0xABC, 0xDEF, 0x123);
+        assert_eq!(info.tid, 42);
+        assert_eq!(info.ctid_ptr, 0xABC);
+        assert_eq!(info.stack_ptr, 0xDEF);
+        assert_eq!(info.tls_ptr, 0x123);
+        assert_eq!(info.tidptr, 0); // default
+
+        info.tidptr = 0x456;
+        assert_eq!(info.tidptr, 0x456);
+    }
+
+    #[test]
+    fn test_process_get_thread_mut() {
+        use crate::process::ThreadInfo;
+        let mut proc = Process::new(5);
+        let tid = proc.alloc_tid();
+        proc.add_thread(ThreadInfo::new(tid, 0, 0, 0));
+
+        // Modify thread via mutable ref
+        if let Some(t) = proc.get_thread_mut(tid) {
+            t.tidptr = 0xBEEF;
+        }
+        assert_eq!(proc.get_thread(tid).unwrap().tidptr, 0xBEEF);
+    }
+
+    #[test]
+    fn test_remove_nonexistent_thread() {
+        let mut proc = Process::new(1);
+        assert!(proc.remove_thread(999).is_none());
+    }
+
+    // ── eventfd tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_eventfd2_basic() {
+        let mut proc = Process::new(1);
+        let fd = sys_eventfd2(&mut proc, 0, 0).unwrap();
+        assert!(fd >= 3); // 0,1,2 are stdio
+
+        // Verify OFD is EventFd type
+        let entry = proc.fd_table.get(fd).unwrap();
+        let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
+        assert_eq!(ofd.file_type, FileType::EventFd);
+        assert_eq!(ofd.status_flags & O_ACCMODE, O_RDWR);
+    }
+
+    #[test]
+    fn test_eventfd2_with_initial_value() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_eventfd2(&mut proc, 42, 0).unwrap();
+
+        // Read should return the initial value
+        let mut buf = [0u8; 8];
+        let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
+        assert_eq!(n, 8);
+        let val = u64::from_le_bytes(buf);
+        assert_eq!(val, 42);
+    }
+
+    #[test]
+    fn test_eventfd2_read_resets_counter() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_eventfd2(&mut proc, 10, O_NONBLOCK).unwrap();
+
+        // First read: returns 10, resets to 0
+        let mut buf = [0u8; 8];
+        sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
+        assert_eq!(u64::from_le_bytes(buf), 10);
+
+        // Second read: counter is 0, should EAGAIN
+        let result = sys_read(&mut proc, &mut host, fd, &mut buf);
+        assert_eq!(result, Err(Errno::EAGAIN));
+    }
+
+    #[test]
+    fn test_eventfd2_write_adds_to_counter() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_eventfd2(&mut proc, 5, 0).unwrap();
+
+        // Write 3 to the eventfd
+        let val: u64 = 3;
+        let n = sys_write(&mut proc, &mut host, fd, &val.to_le_bytes()).unwrap();
+        assert_eq!(n, 8);
+
+        // Read should return 5 + 3 = 8
+        let mut buf = [0u8; 8];
+        sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
+        assert_eq!(u64::from_le_bytes(buf), 8);
+    }
+
+    #[test]
+    fn test_eventfd2_semaphore_mode() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let efd_semaphore: u32 = 1;
+        let fd = sys_eventfd2(&mut proc, 3, efd_semaphore | O_NONBLOCK).unwrap();
+
+        // Read in semaphore mode: returns 1, decrements counter
+        let mut buf = [0u8; 8];
+        sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
+        assert_eq!(u64::from_le_bytes(buf), 1);
+
+        // Read again: returns 1, counter now 1
+        sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
+        assert_eq!(u64::from_le_bytes(buf), 1);
+
+        // Read again: returns 1, counter now 0
+        sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
+        assert_eq!(u64::from_le_bytes(buf), 1);
+
+        // Counter is now 0, should EAGAIN
+        let result = sys_read(&mut proc, &mut host, fd, &mut buf);
+        assert_eq!(result, Err(Errno::EAGAIN));
+    }
+
+    #[test]
+    fn test_eventfd2_cloexec() {
+        let mut proc = Process::new(1);
+        let fd = sys_eventfd2(&mut proc, 0, O_CLOEXEC).unwrap();
+        let entry = proc.fd_table.get(fd).unwrap();
+        assert_eq!(entry.fd_flags, FD_CLOEXEC);
+    }
+
+    #[test]
+    fn test_eventfd2_nonblock() {
+        let mut proc = Process::new(1);
+        let fd = sys_eventfd2(&mut proc, 0, O_NONBLOCK).unwrap();
+        let entry = proc.fd_table.get(fd).unwrap();
+        let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
+        assert_ne!(ofd.status_flags & O_NONBLOCK, 0);
+    }
+
+    #[test]
+    fn test_eventfd2_invalid_flags() {
+        let mut proc = Process::new(1);
+        let result = sys_eventfd2(&mut proc, 0, 0xDEAD);
+        assert_eq!(result, Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn test_eventfd2_read_too_small_buf() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_eventfd2(&mut proc, 1, 0).unwrap();
+
+        let mut buf = [0u8; 4]; // too small, need 8
+        let result = sys_read(&mut proc, &mut host, fd, &mut buf);
+        assert_eq!(result, Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn test_eventfd2_write_too_small_buf() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_eventfd2(&mut proc, 0, 0).unwrap();
+
+        let buf = [0u8; 4]; // too small, need 8
+        let result = sys_write(&mut proc, &mut host, fd, &buf);
+        assert_eq!(result, Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn test_eventfd2_write_u64_max_invalid() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_eventfd2(&mut proc, 0, 0).unwrap();
+
+        let val = u64::MAX;
+        let result = sys_write(&mut proc, &mut host, fd, &val.to_le_bytes());
+        assert_eq!(result, Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn test_eventfd2_poll_readable_when_nonzero() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_eventfd2(&mut proc, 5, 0).unwrap();
+
+        let mut fds = [WasmPollFd { fd, events: POLLIN | POLLOUT, revents: 0 }];
+        let n = sys_poll(&mut proc, &mut host, &mut fds, 0).unwrap();
+        assert_eq!(n, 1);
+        assert_ne!(fds[0].revents & POLLIN, 0);
+        assert_ne!(fds[0].revents & POLLOUT, 0);
+    }
+
+    #[test]
+    fn test_eventfd2_poll_not_readable_when_zero() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_eventfd2(&mut proc, 0, 0).unwrap();
+
+        let mut fds = [WasmPollFd { fd, events: POLLIN | POLLOUT, revents: 0 }];
+        let n = sys_poll(&mut proc, &mut host, &mut fds, 0).unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(fds[0].revents & POLLIN, 0);
+        assert_ne!(fds[0].revents & POLLOUT, 0);
+    }
+
+    #[test]
+    fn test_eventfd2_close_frees_state() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_eventfd2(&mut proc, 42, 0).unwrap();
+
+        // Close the eventfd
+        sys_close(&mut proc, &mut host, fd).unwrap();
+
+        // eventfd slot should be freed
+        assert!(proc.eventfds[0].is_none());
+    }
+
+    #[test]
+    fn test_eventfd2_lseek_fails() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_eventfd2(&mut proc, 0, 0).unwrap();
+
+        let result = sys_lseek(&mut proc, &mut host, fd, 0, SEEK_SET);
+        assert_eq!(result, Err(Errno::ESPIPE));
+    }
+
+    #[test]
+    fn test_eventfd2_fstat() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_eventfd2(&mut proc, 0, 0).unwrap();
+
+        let stat = sys_fstat(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(stat.st_mode & S_IFIFO, S_IFIFO);
+    }
+
+    #[test]
+    fn test_eventfd2_dup_shares_counter() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_eventfd2(&mut proc, 0, 0).unwrap();
+
+        // Dup the eventfd
+        let fd2 = sys_dup(&mut proc, fd).unwrap();
+        assert_ne!(fd, fd2);
+
+        // Write on fd
+        let val: u64 = 7;
+        sys_write(&mut proc, &mut host, fd, &val.to_le_bytes()).unwrap();
+
+        // Read on fd2 should see the value (they share the same OFD)
+        let mut buf = [0u8; 8];
+        sys_read(&mut proc, &mut host, fd2, &mut buf).unwrap();
+        assert_eq!(u64::from_le_bytes(buf), 7);
     }
 }

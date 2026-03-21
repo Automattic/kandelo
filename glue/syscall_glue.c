@@ -1832,8 +1832,9 @@ static long __do_syscall(long n, long a1, long a2, long a3,
     /* ============================================================== */
 
     case SYS_EVENTFD2:
+        return (long)kernel_eventfd2((uint32_t)a1, (uint32_t)a2);
     case SYS_EVENTFD:
-        return ENOSYS_NEG;
+        return (long)kernel_eventfd2((uint32_t)a1, 0);
 
     case SYS_SIGNALFD4:
     case SYS_SIGNALFD:

@@ -593,9 +593,9 @@ static PROCESS_TABLE: GlobalProcessTable = GlobalProcessTable(UnsafeCell::new(Pr
 /// all kernel access when multiple threads share the same Memory.
 ///
 /// DEPRECATED: In centralized mode (mode=1), GKL is bypassed because the
-/// centralized kernel is single-threaded (one syscall at a time from the
-/// JS event loop). GKL is only needed for mode=0 (traditional) where
-/// multiple threads in a process Worker share the kernel state.
+/// kernel services one syscall at a time from the JS event loop.
+/// GKL is only needed for mode=0 (traditional) where multiple threads
+/// in a process Worker share the kernel state.
 /// When mode=0 is fully removed, GKL and GklGuard can be deleted.
 static GKL: AtomicI32 = AtomicI32::new(0);
 
@@ -1295,9 +1295,13 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
         346 => kernel_ipc_shmdt(a1),                // SYS_SHMDT
         347 => kernel_ipc_shmctl(a1, a2, a3),       // SYS_SHMCTL
 
+        // eventfd
+        242 => kernel_eventfd2(a1 as u32, a2 as u32), // SYS_EVENTFD2: (initval, flags)
+        380 => kernel_eventfd2(a1 as u32, 0),          // SYS_EVENTFD: (initval) — no flags
+
         // Stubs that return 0 or -ENOSYS
         204 => kernel_raise(a2 as u32),            // SYS_TKILL
-        208 | 209 | 226 | 230..=238 | 239..=249 | 252..=254 | 256..=257 | 262 | 265..=268 | 271..=274 | 287 | 289..=293 | 297..=298 | 301..=305 | 306 | 308..=324 | 325..=336 | 348..=349 | 350..=369 | 370..=371 | 373..=383 | 386 => {
+        208 | 209 | 226 | 230..=238 | 239..=241 | 243..=249 | 252..=254 | 256..=257 | 262 | 265..=268 | 271..=274 | 287 | 289..=293 | 297..=298 | 301..=305 | 306 | 308..=324 | 325..=336 | 348..=349 | 350..=369 | 370..=371 | 373..=379 | 381..=383 | 386 => {
             // Many of these are stubs in the glue layer too; return ENOSYS
             -(Errno::ENOSYS as i32)
         }
@@ -1647,6 +1651,20 @@ pub extern "C" fn kernel_pipe2(flags: u32, fd_ptr: *mut i32) -> i32 {
             }
             0
         }
+        Err(e) => -(e as i32),
+    };
+    let mut host = WasmHostIO;
+    deliver_pending_signals(proc, &mut host);
+    result
+}
+
+/// Create an eventfd file descriptor.
+/// Returns fd (>= 0) on success, or negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_eventfd2(initval: u32, flags: u32) -> i32 {
+    let (_gkl, proc) = unsafe { get_process() };
+    let result = match syscalls::sys_eventfd2(proc, initval, flags) {
+        Ok(fd) => fd,
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
@@ -4061,9 +4079,9 @@ pub extern "C" fn kernel_clone(
     fn_ptr: u32, stack_ptr: u32, flags: u32, arg: u32,
     ptid_ptr: u32, tls_ptr: u32, ctid_ptr: u32,
 ) -> i32 {
-    let _gkl = GklGuard::acquire();
+    let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
-    match syscalls::sys_clone(&mut host, fn_ptr, stack_ptr, flags, arg, ptid_ptr, tls_ptr, ctid_ptr) {
+    match syscalls::sys_clone(proc, &mut host, fn_ptr, stack_ptr, flags, arg, ptid_ptr, tls_ptr, ctid_ptr) {
         Ok(tid) => tid,
         Err(e) => -(e as i32),
     }
@@ -4430,10 +4448,10 @@ pub extern "C" fn kernel_getaddrinfo(name_ptr: *const u8, name_len: u32, result_
 }
 
 // ---------------------------------------------------------------------------
-// Runtime init stubs (single-threaded)
+// Thread identity stubs (pre-threading)
 // ---------------------------------------------------------------------------
 
-/// gettid — STUB: returns pid (tid == pid in single-threaded mode).
+/// gettid — returns pid (tid == pid until threading is implemented).
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_gettid() -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
@@ -4459,6 +4477,20 @@ pub extern "C" fn kernel_set_robust_list(_head: u32, _len: u32) -> i32 {
 /// get_robust_list — returns 0 to indicate robust list support.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_get_robust_list(_pid: u32, _head_ptr: u32, _len_ptr: u32) -> i32 {
+    0
+}
+
+/// thread_exit — clean up thread state in the kernel.
+/// Called by the host when a thread Worker exits.
+/// Removes the thread from the process's thread table.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_thread_exit(pid: u32, tid: u32) -> i32 {
+    if crate::is_centralized_mode() {
+        let pt = unsafe { &mut *crate::PROCESS_TABLE.0.get() };
+        if let Some(proc) = pt.get_mut(pid) {
+            proc.remove_thread(tid);
+        }
+    }
     0
 }
 
