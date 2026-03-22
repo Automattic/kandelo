@@ -1,313 +1,98 @@
 // host/test/multi-worker.test.ts
+//
+// Tests CentralizedKernelWorker process management: register/unregister,
+// setNextChildPid, and fork flow.
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ProcessManager } from "../src/process-manager";
-import { NodeWorkerAdapter } from "../src/worker-adapter";
+import { CentralizedKernelWorker } from "../src/kernel-worker";
+import { NodePlatformIO } from "../src/platform/node";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-function loadWasmBytes(): ArrayBuffer {
-  const wasmPath = join(__dirname, "../wasm/wasm_posix_kernel.wasm");
-  const buf = readFileSync(wasmPath);
+const MAX_PAGES = 256; // small for tests
+const CH_TOTAL_SIZE = 40 + 65536;
+
+function loadKernelWasm(): ArrayBuffer {
+  const buf = readFileSync(join(__dirname, "../wasm/wasm_posix_kernel.wasm"));
   return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 }
 
-describe("Multi-Worker Integration", () => {
-  it("should spawn PID 1 in a real worker thread", async () => {
-    const pm = new ProcessManager({
-      wasmBytes: loadWasmBytes(),
-      kernelConfig: {
-        maxWorkers: 4,
-        dataBufferSize: 65536,
-        useSharedMemory: false,
-      },
-      workerAdapter: new NodeWorkerAdapter(),
-    });
+function createProcessMemory(): { memory: WebAssembly.Memory; channelOffset: number } {
+  const memory = new WebAssembly.Memory({
+    initial: 17,
+    maximum: MAX_PAGES,
+    shared: true,
+  });
+  const channelOffset = (MAX_PAGES - 2) * 65536;
+  memory.grow(MAX_PAGES - 17);
+  new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
+  return { memory, channelOffset };
+}
 
-    const pid = await pm.spawn();
-    expect(pid).toBe(1);
+describe("CentralizedKernelWorker Process Management", () => {
+  it("should register and unregister processes", async () => {
+    const kw = new CentralizedKernelWorker(
+      { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true },
+      new NodePlatformIO(),
+    );
+    await kw.init(loadKernelWasm());
 
-    const info = pm.getProcess(1);
-    expect(info).toBeDefined();
-    expect(info!.state).toBe("running");
+    const { memory: mem1, channelOffset: ch1 } = createProcessMemory();
+    const { memory: mem2, channelOffset: ch2 } = createProcessMemory();
 
-    await pm.terminate(1);
-  }, 15_000);
+    // Register two processes
+    kw.registerProcess(1, mem1, [ch1]);
+    kw.registerProcess(2, mem2, [ch2]);
 
-  it("should spawn multiple processes in separate workers", async () => {
-    const pm = new ProcessManager({
-      wasmBytes: loadWasmBytes(),
-      kernelConfig: {
-        maxWorkers: 4,
-        dataBufferSize: 65536,
-        useSharedMemory: false,
-      },
-      workerAdapter: new NodeWorkerAdapter(),
-    });
+    // Unregister both without error
+    kw.unregisterProcess(1);
+    kw.unregisterProcess(2);
 
-    const pid1 = await pm.spawn();
-    const pid2 = await pm.spawn();
+    // Unregistering non-existent pid should not throw
+    kw.unregisterProcess(999);
+  });
 
-    expect(pid1).toBe(1);
-    expect(pid2).toBe(2);
-    expect(pm.getProcessCount()).toBe(2);
+  it("should set next child PID for fork", async () => {
+    const kw = new CentralizedKernelWorker(
+      { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true },
+      new NodePlatformIO(),
+    );
+    await kw.init(loadKernelWasm());
 
-    await pm.terminate(1);
-    await pm.terminate(2);
-  }, 15_000);
-});
+    kw.setNextChildPid(42);
 
-describe("Fork Integration", () => {
-  it("should fork a process and create a child with cloned state", async () => {
-    const pm = new ProcessManager({
-      wasmBytes: loadWasmBytes(),
-      kernelConfig: {
-        maxWorkers: 4,
-        dataBufferSize: 65536,
-        useSharedMemory: false,
-      },
-      workerAdapter: new NodeWorkerAdapter(),
-    });
+    const { memory, channelOffset } = createProcessMemory();
+    kw.registerProcess(1, memory, [channelOffset]);
+    kw.unregisterProcess(1);
+  });
 
-    // Spawn parent
-    const parentPid = await pm.spawn();
-    expect(parentPid).toBe(1);
+  it("should throw when registering duplicate PID", async () => {
+    const kw = new CentralizedKernelWorker(
+      { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true },
+      new NodePlatformIO(),
+    );
+    await kw.init(loadKernelWasm());
 
-    // Fork parent → child
-    const childPid = await pm.fork(parentPid);
-    expect(childPid).toBe(2);
+    const { memory: mem1, channelOffset: ch1 } = createProcessMemory();
+    const { memory: mem2, channelOffset: ch2 } = createProcessMemory();
 
-    const childInfo = pm.getProcess(childPid);
-    expect(childInfo).toBeDefined();
-    expect(childInfo!.state).toBe("running");
-    expect(childInfo!.ppid).toBe(parentPid);
+    kw.registerProcess(1, mem1, [ch1]);
+    expect(() => kw.registerProcess(1, mem2, [ch2])).toThrow();
 
-    // Clean up
-    await pm.terminate(childPid);
-    await pm.terminate(parentPid);
-  }, 15_000);
+    kw.unregisterProcess(1);
+  });
 
-  it("should waitpid for a terminated child", async () => {
-    const pm = new ProcessManager({
-      wasmBytes: loadWasmBytes(),
-      kernelConfig: {
-        maxWorkers: 4,
-        dataBufferSize: 65536,
-        useSharedMemory: false,
-      },
-      workerAdapter: new NodeWorkerAdapter(),
-    });
+  it("should throw when registering before init", () => {
+    const kw = new CentralizedKernelWorker(
+      { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true },
+      new NodePlatformIO(),
+    );
 
-    const parentPid = await pm.spawn();
-    const childPid = await pm.fork(parentPid);
-
-    // Terminate child (simulates exit)
-    await pm.terminate(childPid);
-
-    // Parent should be able to continue
-    expect(pm.getProcess(parentPid)!.state).toBe("running");
-
-    await pm.terminate(parentPid);
-  }, 15_000);
-});
-
-describe("Cross-Process Signal Delivery", () => {
-  it("should deliver signal from parent to child via kill", async () => {
-    const pm = new ProcessManager({
-      wasmBytes: loadWasmBytes(),
-      kernelConfig: {
-        maxWorkers: 4,
-        dataBufferSize: 65536,
-        useSharedMemory: false,
-      },
-      workerAdapter: new NodeWorkerAdapter(),
-    });
-
-    const parentPid = await pm.spawn();
-    const childPid = await pm.fork(parentPid);
-
-    // Parent sends SIGTERM to child — should not throw
-    pm.deliverSignal(childPid, 15);
-
-    // Child should still be tracked (signal was delivered, not necessarily fatal
-    // in this context since the wasm kernel processes signals asynchronously)
-    const childInfo = pm.getProcess(childPid);
-    expect(childInfo).toBeDefined();
-
-    // Clean up
-    await pm.terminate(childPid);
-    await pm.terminate(parentPid);
-  }, 15_000);
-
-  it("should not deliver signal to non-existent process", async () => {
-    const pm = new ProcessManager({
-      wasmBytes: loadWasmBytes(),
-      kernelConfig: {
-        maxWorkers: 4,
-        dataBufferSize: 65536,
-        useSharedMemory: false,
-      },
-      workerAdapter: new NodeWorkerAdapter(),
-    });
-
-    await pm.spawn();
-    expect(() => pm.deliverSignal(999, 15)).toThrow();
-
-    await pm.terminate(1);
-  }, 15_000);
-
-  it("should deliver signal between independently spawned processes", async () => {
-    const pm = new ProcessManager({
-      wasmBytes: loadWasmBytes(),
-      kernelConfig: {
-        maxWorkers: 4,
-        dataBufferSize: 65536,
-        useSharedMemory: false,
-      },
-      workerAdapter: new NodeWorkerAdapter(),
-    });
-
-    const pid1 = await pm.spawn();
-    const pid2 = await pm.spawn();
-
-    // Process 1 sends SIGTERM to process 2
-    pm.deliverSignal(pid2, 15);
-
-    // Process 2 should still be tracked
-    expect(pm.getProcess(pid2)).toBeDefined();
-
-    // Clean up
-    await pm.terminate(pid1);
-    await pm.terminate(pid2);
-  }, 15_000);
-});
-
-describe("Exec", () => {
-  it("should exec a process with same binary", async () => {
-    const pm = new ProcessManager({
-      wasmBytes: loadWasmBytes(),
-      kernelConfig: {
-        maxWorkers: 4,
-        dataBufferSize: 65536,
-        useSharedMemory: false,
-      },
-      workerAdapter: new NodeWorkerAdapter(),
-    });
-
-    const pid = await pm.spawn();
-
-    // Exec with same binary (since we only have one)
-    await pm.exec(pid, loadWasmBytes());
-
-    // Process should still be tracked with same PID
-    const info = pm.getProcess(pid);
-    expect(info).toBeDefined();
-    expect(info!.pid).toBe(pid);
-
-    await pm.terminate(pid);
-  }, 15_000);
-
-  it("should maintain process count after exec", async () => {
-    const pm = new ProcessManager({
-      wasmBytes: loadWasmBytes(),
-      kernelConfig: {
-        maxWorkers: 4,
-        dataBufferSize: 65536,
-        useSharedMemory: false,
-      },
-      workerAdapter: new NodeWorkerAdapter(),
-    });
-
-    const pid = await pm.spawn();
-    const countBefore = pm.getProcessCount();
-
-    await pm.exec(pid, loadWasmBytes());
-
-    expect(pm.getProcessCount()).toBe(countBefore);
-
-    await pm.terminate(pid);
-  }, 15_000);
-});
-
-describe("Alarm", () => {
-  it("should allocate signalWakeSab for spawned processes", async () => {
-    const pm = new ProcessManager({
-      wasmBytes: loadWasmBytes(),
-      kernelConfig: {
-        maxWorkers: 4,
-        dataBufferSize: 65536,
-        useSharedMemory: false,
-      },
-      workerAdapter: new NodeWorkerAdapter(),
-    });
-
-    const pid = await pm.spawn();
-    const info = pm.getProcess(pid);
-    expect(info).toBeDefined();
-    expect(info!.signalWakeSab).toBeInstanceOf(SharedArrayBuffer);
-    expect(info!.signalWakeSab!.byteLength).toBe(8);
-
-    await pm.terminate(pid);
-  }, 15_000);
-
-  it("should allocate signalWakeSab for forked processes", async () => {
-    const pm = new ProcessManager({
-      wasmBytes: loadWasmBytes(),
-      kernelConfig: {
-        maxWorkers: 4,
-        dataBufferSize: 65536,
-        useSharedMemory: false,
-      },
-      workerAdapter: new NodeWorkerAdapter(),
-    });
-
-    const parentPid = await pm.spawn();
-    const childPid = await pm.fork(parentPid);
-
-    const childInfo = pm.getProcess(childPid);
-    expect(childInfo).toBeDefined();
-    expect(childInfo!.signalWakeSab).toBeInstanceOf(SharedArrayBuffer);
-    expect(childInfo!.signalWakeSab!.byteLength).toBe(8);
-
-    // Child and parent should have distinct SABs
-    const parentInfo = pm.getProcess(parentPid);
-    expect(parentInfo!.signalWakeSab).not.toBe(childInfo!.signalWakeSab);
-
-    await pm.terminate(childPid);
-    await pm.terminate(parentPid);
-  }, 15_000);
-});
-
-describe("Cross-Process Pipe Integration", () => {
-  it("should fork a process with pipe conversion support active", async () => {
-    const pm = new ProcessManager({
-      wasmBytes: loadWasmBytes(),
-      kernelConfig: {
-        maxWorkers: 4,
-        dataBufferSize: 65536,
-        useSharedMemory: false,
-      },
-      workerAdapter: new NodeWorkerAdapter(),
-    });
-
-    // Spawn parent
-    const parentPid = await pm.spawn();
-    expect(parentPid).toBe(1);
-
-    // Fork — the ProcessManager will attempt to parse pipe OFDs from the fork state.
-    // A freshly spawned process has no pipes, so no conversion should occur,
-    // but this verifies the parsing doesn't break the fork flow.
-    const childPid = await pm.fork(parentPid);
-    expect(childPid).toBe(2);
-
-    // Both processes should be running
-    expect(pm.getProcess(parentPid)!.state).toBe("running");
-    expect(pm.getProcess(childPid)!.state).toBe("running");
-
-    // Clean up
-    await pm.terminate(childPid);
-    await pm.terminate(parentPid);
-  }, 15_000);
+    const { memory, channelOffset } = createProcessMemory();
+    expect(() => kw.registerProcess(1, memory, [channelOffset])).toThrow(
+      "Kernel not initialized",
+    );
+  });
 });

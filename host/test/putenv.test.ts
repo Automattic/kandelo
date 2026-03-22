@@ -1,41 +1,16 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { WasmPosixKernel } from "../src/kernel";
-import { ProgramRunner } from "../src/program-runner";
-import { NodePlatformIO } from "../src/platform/node";
+import { runCentralizedProgram } from "./centralized-test-helper";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 describe("putenv / setenv / unsetenv", () => {
-  async function runPutenvTest(): Promise<{ exitCode: number; stdout: string }> {
-    const kernelWasm = readFileSync(join(__dirname, "../wasm/wasm_posix_kernel.wasm"));
-    const programWasm = readFileSync(join(__dirname, "../../examples/putenv_test.wasm"));
-
-    let stdout = "";
-    const io = new NodePlatformIO();
-
-    const kernel = new WasmPosixKernel(
-      { maxWorkers: 1, dataBufferSize: 65536, useSharedMemory: false },
-      io,
-      {
-        onStdout: (data: Uint8Array) => {
-          stdout += new TextDecoder().decode(data);
-        },
-      },
-    );
-    await kernel.init(kernelWasm);
-
-    const runner = new ProgramRunner(kernel);
-    const exitCode = await runner.run(programWasm, {
+  it("populates __environ from kernel at startup and syncs setenv/putenv/unsetenv", async () => {
+    const { exitCode, stdout } = await runCentralizedProgram({
+      programPath: join(__dirname, "../../examples/putenv_test.wasm"),
       env: ["HOME=/home/test", "PATH=/usr/bin"],
     });
-    return { exitCode, stdout };
-  }
-
-  it("populates __environ from kernel at startup and syncs setenv/putenv/unsetenv", async () => {
-    const { exitCode, stdout } = await runPutenvTest();
 
     // Startup env population from kernel
     expect(stdout).toContain("HOME=/home/test");
