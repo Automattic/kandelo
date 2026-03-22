@@ -32,6 +32,9 @@ examples/browser/dist/
 # libc-test build artifacts (source is a git submodule)
 libc-test/build/
 
+# Open POSIX Test Suite build artifacts
+open-posix-testsuite/build/
+
 # Debug/trace artifacts
 examples/fp128*.c
 examples/fp128*.wasm

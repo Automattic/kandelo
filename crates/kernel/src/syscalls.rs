@@ -1,5 +1,6 @@
 extern crate alloc;
 
+use alloc::vec::Vec;
 use wasm_posix_shared::Errno;
 use wasm_posix_shared::flags::*;
 use wasm_posix_shared::fd_flags::FD_CLOEXEC;

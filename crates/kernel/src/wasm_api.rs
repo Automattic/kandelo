@@ -4692,7 +4692,7 @@ pub extern "C" fn kernel_get_robust_list(_pid: u32, _head_ptr: u32, _len_ptr: u3
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_thread_exit(pid: u32, tid: u32) -> i32 {
     if crate::is_centralized_mode() {
-        let pt = unsafe { &mut *crate::PROCESS_TABLE.0.get() };
+        let pt = unsafe { &mut *PROCESS_TABLE.0.get() };
         if let Some(proc) = pt.get_mut(pid) {
             proc.remove_thread(tid);
         }
