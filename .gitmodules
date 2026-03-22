@@ -4,3 +4,6 @@
 [submodule "libc-test"]
 	path = libc-test
 	url = git@github.com:PocketCluster/libc-test.git
+[submodule "os-test"]
+	path = os-test
+	url = https://gitlab.com/sortix/os-test.git
