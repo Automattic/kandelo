@@ -46,7 +46,7 @@ CFLAGS=(
 )
 
 LINK_FLAGS=(
-    "$GLUE_DIR/syscall_glue.c"
+    "$GLUE_DIR/channel_syscall.c"
     "$GLUE_DIR/compiler_rt.c"
     "$SYSROOT/lib/crt1.o"
     "$SYSROOT/lib/libc.a"

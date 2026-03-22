@@ -47,6 +47,26 @@ const SYS_CLONE = 201;
 const SYS_EXIT = 34;
 const SYS_EXIT_GROUP = 35;
 
+/** Syscall numbers for memory management */
+const SYS_MMAP = 46;
+const SYS_BRK = 48;
+const SYS_MREMAP = 126;
+
+/** Syscall numbers for scatter/gather I/O */
+const SYS_WRITEV = 81;
+const SYS_READV = 82;
+const SYS_PREADV = 295;
+const SYS_PWRITEV = 296;
+
+/** fcntl commands that take a struct flock pointer */
+const SYS_FCNTL = 10;
+const F_GETLK = 5;
+const F_SETLK = 6;
+const F_SETLKW = 7;
+const F_GETLK64 = 12;
+const F_SETLK64 = 13;
+const F_SETLKW64 = 14;
+
 /** Retry interval for EAGAIN polling (ms) */
 const EAGAIN_RETRY_MS = 1;
 
@@ -101,6 +121,14 @@ const SYSCALL_ARGS: Record<number, ArgDesc[]> = {
   6:  [{ argIndex: 1, direction: "out", size: { type: "fixed", size: WASM_STAT_SIZE } }], // FSTAT: stat_buf
   64: [{ argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 } }], // PREAD: buf
   65: [{ argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 } }],  // PWRITE: buf
+
+  // _llseek
+  119: [{ argIndex: 3, direction: "out", size: { type: "fixed", size: 8 } }],  // _LLSEEK: result_ptr (off_t)
+
+  // wait4
+  139: [
+    { argIndex: 1, direction: "out", size: { type: "fixed", size: 4 } },      // WAIT4: wstatus (i32)
+  ],
 
   // FD operations
   9:  [{ argIndex: 0, direction: "out", size: { type: "fixed", size: 8 } }],   // PIPE: 2 x i32
@@ -157,6 +185,11 @@ const SYSCALL_ARGS: Record<number, ArgDesc[]> = {
     { argIndex: 1, direction: "in", size: { type: "fixed", size: 16 } },       // SIGACTION: act
     { argIndex: 2, direction: "out", size: { type: "fixed", size: 16 } },      //            oldact
   ],
+  37: [
+    { argIndex: 1, direction: "in", size: { type: "fixed", size: 8 } },       // SIGPROCMASK: set
+    { argIndex: 2, direction: "out", size: { type: "fixed", size: 8 } },      //              oldset
+  ],
+  110: [{ argIndex: 0, direction: "in", size: { type: "fixed", size: 8 } }],  // SIGSUSPEND: mask
 
   // Time
   40: [{ argIndex: 1, direction: "out", size: { type: "fixed", size: TIMESPEC_SIZE } }], // CLOCK_GETTIME
@@ -168,6 +201,21 @@ const SYSCALL_ARGS: Record<number, ArgDesc[]> = {
   125: [
     { argIndex: 1, direction: "in", size: { type: "cstring" } },
     { argIndex: 2, direction: "in", size: { type: "fixed", size: TIMESPEC_SIZE * 2 } },
+  ],
+
+  // Filesystem info
+  129: [
+    { argIndex: 0, direction: "in", size: { type: "cstring" } },              // STATFS: path
+    { argIndex: 1, direction: "out", size: { type: "fixed", size: 72 } },     //         statfs_buf
+  ],
+  130: [{ argIndex: 1, direction: "out", size: { type: "fixed", size: 72 } }], // FSTATFS: statfs_buf
+
+  // Resource limits
+  83: [{ argIndex: 1, direction: "out", size: { type: "fixed", size: 16 } }],  // GETRLIMIT: rlim (2 x u64)
+  84: [{ argIndex: 1, direction: "in", size: { type: "fixed", size: 16 } }],   // SETRLIMIT: rlim (2 x u64)
+  250: [
+    { argIndex: 2, direction: "in", size: { type: "fixed", size: 16 } },      // PRLIMIT64: new_rlim
+    { argIndex: 3, direction: "out", size: { type: "fixed", size: 16 } },     //            old_rlim
   ],
 
   // Environment
@@ -373,12 +421,13 @@ export class CentralizedKernelWorker {
     const setMode = this.kernelInstance.exports.kernel_set_mode as (mode: number) => void;
     setMode(1);
 
-    // Allocate scratch area in kernel memory.
-    // We use a fixed high address that won't conflict with the kernel's
-    // heap allocator (which grows from __heap_base upward).
-    // Use the last SCRATCH_SIZE bytes of the current memory.
-    const memBytes = this.kernelMemory.buffer.byteLength;
-    this.scratchOffset = memBytes - SCRATCH_SIZE;
+    // Allocate scratch area in kernel memory by growing it.
+    // We can't use the existing memory — kernel globals (KERNEL_MODE,
+    // PROCESS_TABLE, etc.) live in the upper region and would be
+    // overwritten. Growing the memory gives us fresh pages that don't
+    // overlap with anything.
+    const prevPages = this.kernelMemory.grow(2); // 2 pages = 128KB > SCRATCH_SIZE
+    this.scratchOffset = prevPages * 65536;
     // Ensure scratch area is zeroed
     new Uint8Array(this.kernelMemory.buffer, this.scratchOffset, SCRATCH_SIZE).fill(0);
 
@@ -393,14 +442,17 @@ export class CentralizedKernelWorker {
     pid: number,
     memory: WebAssembly.Memory,
     channelOffsets: number[],
+    options?: { skipKernelCreate?: boolean },
   ): void {
     if (!this.initialized) throw new Error("Kernel not initialized");
 
-    // Create process in kernel's process table
-    const createProcess = this.kernelInstance!.exports.kernel_create_process as (pid: number) => number;
-    const result = createProcess(pid);
-    if (result < 0) {
-      throw new Error(`Failed to create process ${pid}: errno ${-result}`);
+    // Create process in kernel's process table (skip if already created, e.g. by fork)
+    if (!options?.skipKernelCreate) {
+      const createProcess = this.kernelInstance!.exports.kernel_create_process as (pid: number) => number;
+      const result = createProcess(pid);
+      if (result < 0) {
+        throw new Error(`Failed to create process ${pid}: errno ${-result}`);
+      }
     }
 
     const channels: ChannelInfo[] = channelOffsets.map((offset) => ({
@@ -457,31 +509,23 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    // Wait for PENDING status asynchronously
-    const waitResult = Atomics.waitAsync(i32View, statusIndex, CH_IDLE);
+    // Wait for status to change from its current value.
+    // After a syscall completes, the process resets status COMPLETE→IDLE,
+    // then on its next syscall sets IDLE→PENDING. We need to handle all
+    // transitions, not just IDLE→PENDING.
+    const waitResult = Atomics.waitAsync(i32View, statusIndex, currentStatus);
 
     if (waitResult.async) {
       waitResult.value.then(() => {
         // Check if still registered
         if (!this.processes.has(channel.pid)) return;
-        // Status changed — check if PENDING
-        const status = Atomics.load(i32View, statusIndex);
-        if (status === CH_PENDING) {
-          this.handleSyscall(channel);
-        } else {
-          // Not pending, re-listen
-          this.listenOnChannel(channel);
-        }
+        // Status changed — re-enter to check new value
+        this.listenOnChannel(channel);
       });
     } else {
-      // Synchronous result — status already changed
-      const status = Atomics.load(i32View, statusIndex);
-      if (status === CH_PENDING) {
-        this.handleSyscall(channel);
-      } else {
-        // Re-listen on next tick to avoid stack overflow
-        queueMicrotask(() => this.listenOnChannel(channel));
-      }
+      // Synchronous result — status already changed from what we expected
+      // Re-check on next tick to avoid stack overflow from tight loops
+      queueMicrotask(() => this.listenOnChannel(channel));
     }
   }
 
@@ -529,6 +573,31 @@ export class CentralizedKernelWorker {
     if (syscallNr === SYS_EXIT || syscallNr === SYS_EXIT_GROUP) {
       this.handleExit(channel, syscallNr, origArgs);
       return;
+    }
+
+    // --- Scatter/gather I/O (writev/readv/pwritev/preadv) ---
+    // These have nested pointers (iov array → base buffers) that can't be
+    // handled by the simple ArgDesc system.
+    if (syscallNr === SYS_WRITEV || syscallNr === SYS_PWRITEV) {
+      this.handleWritev(channel, syscallNr, origArgs);
+      return;
+    }
+
+    if (syscallNr === SYS_READV || syscallNr === SYS_PREADV) {
+      this.handleReadv(channel, syscallNr, origArgs);
+      return;
+    }
+
+    // --- fcntl with struct flock pointer ---
+    // When cmd is a lock operation, arg3 is a pointer to struct flock (32 bytes).
+    // Handle as inout so the kernel can read/write the flock struct.
+    if (syscallNr === SYS_FCNTL) {
+      const cmd = origArgs[1];
+      if (cmd === F_GETLK || cmd === F_SETLK || cmd === F_SETLKW ||
+          cmd === F_GETLK64 || cmd === F_SETLK64 || cmd === F_SETLKW64) {
+        this.handleFcntlLock(channel, origArgs);
+        return;
+      }
     }
 
     // --- Normal syscall path ---
@@ -602,6 +671,14 @@ export class CentralizedKernelWorker {
     // Read return value and errno from kernel scratch
     const retVal = kernelView.getInt32(CH_RETURN, true);
     const errVal = kernelView.getUint32(CH_ERRNO, true);
+
+    // --- Process memory growth for brk/mmap/mremap ---
+    // In centralized mode, the kernel's ensure_memory_covers() grows the
+    // KERNEL's Wasm memory, not the process's. We must grow the process's
+    // WebAssembly.Memory here so the process can access the new addresses.
+    if (retVal > 0) {
+      this.ensureProcessMemoryCovers(channel.memory, syscallNr, retVal, origArgs);
+    }
 
     // --- Blocking syscall handling ---
 
@@ -849,6 +926,205 @@ export class CentralizedKernelWorker {
   }
 
   // -----------------------------------------------------------------------
+  // Scatter/gather I/O handling (writev/readv/pwritev/preadv)
+  //
+  // These syscalls use struct iovec arrays with nested pointers:
+  //   struct iovec { void *iov_base; size_t iov_len; }  (8 bytes on wasm32)
+  // Both the iov array AND each iov_base buffer must be in kernel memory.
+  // -----------------------------------------------------------------------
+
+  /**
+   * Handle writev/pwritev: copy iov array and all data buffers from
+   * process memory into kernel scratch, then call kernel_handle_channel.
+   */
+  /**
+   * Handle fcntl lock operations (F_GETLK, F_SETLK, F_SETLKW).
+   * Arg3 is a pointer to struct flock (32 bytes) which needs copy in/out.
+   */
+  private handleFcntlLock(channel: ChannelInfo, origArgs: number[]): void {
+    const FLOCK_SIZE = 32;
+    const flockPtr = origArgs[2];
+
+    const processMem = new Uint8Array(channel.memory.buffer);
+    const kernelMem = new Uint8Array(this.kernelMemory!.buffer);
+    const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
+    const dataStart = this.scratchOffset + CH_DATA;
+
+    // Copy flock struct from process → kernel scratch
+    if (flockPtr !== 0) {
+      kernelMem.set(processMem.subarray(flockPtr, flockPtr + FLOCK_SIZE), dataStart);
+    }
+
+    // Write syscall header to kernel scratch
+    kernelView.setUint32(CH_SYSCALL, SYS_FCNTL, true);
+    kernelView.setInt32(CH_ARGS + 0, origArgs[0], true); // fd
+    kernelView.setInt32(CH_ARGS + 4, origArgs[1], true); // cmd
+    kernelView.setInt32(CH_ARGS + 8, flockPtr !== 0 ? dataStart : 0, true); // flock_ptr in kernel memory
+    for (let i = 3; i < CH_ARGS_COUNT; i++) {
+      kernelView.setInt32(CH_ARGS + i * 4, origArgs[i], true);
+    }
+
+    const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
+      (offset: number, pid: number) => number;
+    handleChannel(this.scratchOffset, channel.pid);
+
+    const retVal = kernelView.getInt32(CH_RETURN, true);
+    const errVal = kernelView.getUint32(CH_ERRNO, true);
+
+    // Copy flock struct back from kernel → process (F_GETLK writes to it)
+    if (flockPtr !== 0 && retVal >= 0) {
+      const freshProcessMem = new Uint8Array(channel.memory.buffer);
+      freshProcessMem.set(kernelMem.subarray(dataStart, dataStart + FLOCK_SIZE), flockPtr);
+    }
+
+    this.completeChannel(channel, SYS_FCNTL, origArgs, undefined, retVal, errVal);
+  }
+
+  private handleWritev(channel: ChannelInfo, syscallNr: number, origArgs: number[]): void {
+    const fd = origArgs[0];
+    const iovPtr = origArgs[1];
+    const iovcnt = origArgs[2];
+
+    const processMem = new Uint8Array(channel.memory.buffer);
+    const processView = new DataView(channel.memory.buffer);
+    const kernelMem = new Uint8Array(this.kernelMemory!.buffer);
+    const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
+    const dataStart = this.scratchOffset + CH_DATA;
+
+    // Layout in scratch data area:
+    //   [0..iovcnt*8]     new iov array with kernel-space base pointers
+    //   [iovcnt*8..]      concatenated data buffers
+    const iovSize = iovcnt * 8;
+    let dataOff = iovSize;
+
+    for (let i = 0; i < iovcnt; i++) {
+      const base = processView.getUint32(iovPtr + i * 8, true);
+      const len = processView.getUint32(iovPtr + i * 8 + 4, true);
+
+      const kernelBase = dataStart + dataOff;
+
+      // Copy data buffer from process to kernel
+      if (len > 0 && dataOff + len <= CH_DATA_SIZE) {
+        kernelMem.set(processMem.subarray(base, base + len), kernelBase);
+      }
+
+      // Write adjusted iov entry
+      const iovAddr = dataStart + i * 8;
+      new DataView(kernelMem.buffer).setUint32(iovAddr, kernelBase, true);
+      new DataView(kernelMem.buffer).setUint32(iovAddr + 4, len, true);
+
+      dataOff += len;
+      dataOff = (dataOff + 3) & ~3; // align
+    }
+
+    // Write args to kernel scratch
+    kernelView.setUint32(CH_SYSCALL, syscallNr, true);
+    kernelView.setInt32(CH_ARGS, fd, true);
+    kernelView.setInt32(CH_ARGS + 4, dataStart, true); // adjusted iov ptr
+    kernelView.setInt32(CH_ARGS + 8, iovcnt, true);
+    if (syscallNr === SYS_PWRITEV) {
+      kernelView.setInt32(CH_ARGS + 12, origArgs[3], true); // off_lo
+      kernelView.setInt32(CH_ARGS + 16, origArgs[4], true); // off_hi
+    }
+
+    const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
+      (offset: number, pid: number) => number;
+    handleChannel(this.scratchOffset, channel.pid);
+
+    const retVal = kernelView.getInt32(CH_RETURN, true);
+    const errVal = kernelView.getUint32(CH_ERRNO, true);
+
+    if (retVal === -1 && errVal === EAGAIN) {
+      this.handleBlockingRetry(channel, syscallNr, origArgs);
+      return;
+    }
+
+    this.completeChannel(channel, syscallNr, origArgs, undefined, retVal, errVal);
+  }
+
+  /**
+   * Handle readv/preadv: set up iov array in kernel scratch, call
+   * kernel_handle_channel, then copy read data back to process memory.
+   */
+  private handleReadv(channel: ChannelInfo, syscallNr: number, origArgs: number[]): void {
+    const fd = origArgs[0];
+    const iovPtr = origArgs[1];
+    const iovcnt = origArgs[2];
+
+    const processMem = new Uint8Array(channel.memory.buffer);
+    const processView = new DataView(channel.memory.buffer);
+    const kernelMem = new Uint8Array(this.kernelMemory!.buffer);
+    const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
+    const dataStart = this.scratchOffset + CH_DATA;
+
+    // Read iov entries from process memory and build kernel-side copies
+    const iovSize = iovcnt * 8;
+    let dataOff = iovSize;
+
+    interface IovEntry { base: number; len: number; kernelBase: number }
+    const entries: IovEntry[] = [];
+
+    for (let i = 0; i < iovcnt; i++) {
+      const base = processView.getUint32(iovPtr + i * 8, true);
+      const len = processView.getUint32(iovPtr + i * 8 + 4, true);
+      const kernelBase = dataStart + dataOff;
+
+      entries.push({ base, len, kernelBase });
+
+      // Zero the kernel output buffer
+      if (len > 0 && dataOff + len <= CH_DATA_SIZE) {
+        kernelMem.fill(0, kernelBase, kernelBase + len);
+      }
+
+      // Write adjusted iov entry
+      const iovAddr = dataStart + i * 8;
+      new DataView(kernelMem.buffer).setUint32(iovAddr, kernelBase, true);
+      new DataView(kernelMem.buffer).setUint32(iovAddr + 4, len, true);
+
+      dataOff += len;
+      dataOff = (dataOff + 3) & ~3;
+    }
+
+    // Write args
+    kernelView.setUint32(CH_SYSCALL, syscallNr, true);
+    kernelView.setInt32(CH_ARGS, fd, true);
+    kernelView.setInt32(CH_ARGS + 4, dataStart, true);
+    kernelView.setInt32(CH_ARGS + 8, iovcnt, true);
+    if (syscallNr === SYS_PREADV) {
+      kernelView.setInt32(CH_ARGS + 12, origArgs[3], true);
+      kernelView.setInt32(CH_ARGS + 16, origArgs[4], true);
+    }
+
+    const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
+      (offset: number, pid: number) => number;
+    handleChannel(this.scratchOffset, channel.pid);
+
+    const retVal = kernelView.getInt32(CH_RETURN, true);
+    const errVal = kernelView.getUint32(CH_ERRNO, true);
+
+    if (retVal === -1 && errVal === EAGAIN) {
+      this.handleBlockingRetry(channel, syscallNr, origArgs);
+      return;
+    }
+
+    // Copy read data from kernel scratch back to process memory
+    if (retVal > 0) {
+      let remaining = retVal;
+      for (const entry of entries) {
+        if (remaining <= 0) break;
+        const copyLen = Math.min(entry.len, remaining);
+        processMem.set(
+          kernelMem.subarray(entry.kernelBase, entry.kernelBase + copyLen),
+          entry.base,
+        );
+        remaining -= copyLen;
+      }
+    }
+
+    this.completeChannel(channel, syscallNr, origArgs, undefined, retVal, errVal);
+  }
+
+  // -----------------------------------------------------------------------
   // Fork/exec/clone/exit handling
   // -----------------------------------------------------------------------
 
@@ -1013,23 +1289,16 @@ export class CentralizedKernelWorker {
   private handleExit(channel: ChannelInfo, syscallNr: number, origArgs: number[]): void {
     const exitStatus = origArgs[0];
 
-    // Route through kernel to update process state
-    const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
-    kernelView.setUint32(CH_SYSCALL, syscallNr, true);
-    for (let i = 0; i < CH_ARGS_COUNT; i++) {
-      kernelView.setInt32(CH_ARGS + i * 4, origArgs[i], true);
-    }
+    // Don't route through kernel_handle_channel — kernel_exit traps with
+    // `unreachable` and can't be caught cleanly. Instead, mark the process
+    // as exited via kernel_remove_process (called by unregisterProcess).
+    //
+    // IMPORTANT: Do NOT complete the channel. The worker is blocked on
+    // Atomics.wait in __do_syscall. If we complete the channel, musl's
+    // _exit() would loop calling SYS_exit repeatedly. By leaving the
+    // worker blocked, the host can terminate the worker thread cleanly.
 
-    const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
-      (offset: number, pid: number) => number;
-    handleChannel(this.scratchOffset, channel.pid);
-
-    // Complete the channel so the process unblocks (it will exit after)
-    const retVal = kernelView.getInt32(CH_RETURN, true);
-    const errVal = kernelView.getUint32(CH_ERRNO, true);
-    this.completeChannel(channel, syscallNr, origArgs, undefined, retVal, errVal);
-
-    // Notify callback
+    // Notify callback (which should terminate the worker)
     if (this.callbacks.onExit) {
       this.callbacks.onExit(channel.pid, exitStatus);
     }
@@ -1045,6 +1314,50 @@ export class CentralizedKernelWorker {
       ((pid: number, tid: number) => number) | undefined;
     if (threadExit) {
       threadExit(pid, tid);
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Process memory management
+  //
+  // In centralized mode, the kernel's ensure_memory_covers() grows the
+  // KERNEL's Wasm memory (memory index 0 in the kernel module). But the
+  // process runs in a different WebAssembly.Memory. After brk/mmap/mremap
+  // syscalls, we must grow the process's memory to cover the returned
+  // addresses — otherwise the process gets "memory access out of bounds".
+  // -----------------------------------------------------------------------
+
+  private ensureProcessMemoryCovers(
+    processMemory: WebAssembly.Memory,
+    syscallNr: number,
+    retVal: number,
+    origArgs: number[],
+  ): void {
+    let endAddr = 0;
+
+    if (syscallNr === SYS_BRK) {
+      // retVal is the new program break address
+      endAddr = retVal >>> 0;
+    } else if (syscallNr === SYS_MMAP) {
+      // retVal is the mapped address, origArgs[1] is the length
+      const MAP_FAILED = 0xffffffff;
+      if ((retVal >>> 0) !== MAP_FAILED) {
+        endAddr = (retVal >>> 0) + (origArgs[1] >>> 0);
+      }
+    } else if (syscallNr === SYS_MREMAP) {
+      // retVal is the new address, origArgs[2] is the new length
+      const MAP_FAILED = 0xffffffff;
+      if ((retVal >>> 0) !== MAP_FAILED) {
+        endAddr = (retVal >>> 0) + (origArgs[2] >>> 0);
+      }
+    }
+
+    if (endAddr > 0) {
+      const currentBytes = processMemory.buffer.byteLength;
+      if (endAddr > currentBytes) {
+        const neededPages = Math.ceil((endAddr - currentBytes) / 65536);
+        processMemory.grow(neededPages);
+      }
     }
   }
 

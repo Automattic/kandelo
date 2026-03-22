@@ -1,6 +1,6 @@
 # Fundamental WebAssembly Limitations
 
-Failures that cannot be fixed without major architectural changes or Wasm spec extensions.
+The wasm-posix-kernel aims to run existing systems software on WebAssembly with minimal changes (see [posix-status.md](posix-status.md) for project vision). The limitations below are inherent to the WebAssembly platform, not design choices — they represent the boundaries of what Wasm can express today.
 
 ## 1. No Guest-Initiated Thread Creation (18 tests)
 

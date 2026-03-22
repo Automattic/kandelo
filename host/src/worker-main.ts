@@ -1175,13 +1175,116 @@ export async function centralizedWorkerMain(
     // Compile the user program module
     const module = await WebAssembly.compile(programBytes);
 
-    // Build imports. Channel-mode programs primarily use channel_syscall.c
-    // (no kernel.* imports). However, the musl overlay's __clone directly
-    // imports kernel.kernel_clone, so we need kernel.* stubs.
+    // Build imports. Channel-mode programs use channel_syscall.c for syscalls,
+    // but the musl overlay CRT still imports kernel.* functions for argc/argv,
+    // environ, fork state, and clone.
     const envImports: Record<string, WebAssembly.ExportValue> = { memory };
-    const kernelImports: Record<string, WebAssembly.ExportValue> = {};
 
-    // Stub any unresolved function imports
+    // Prepare argv/environ data for kernel.* CRT imports
+    const argv = initData.argv || [];
+    const envVars = initData.env || [];
+    const encoder = new TextEncoder();
+
+    const kernelImports: Record<string, WebAssembly.ExportValue> = {
+      // CRT argv support
+      kernel_get_argc: (): number => argv.length,
+      kernel_argv_read: (index: number, bufPtr: number, bufMax: number): number => {
+        if (index >= argv.length) return 0;
+        const encoded = encoder.encode(argv[index]);
+        const len = Math.min(encoded.length, bufMax);
+        new Uint8Array(memory.buffer, bufPtr, len).set(encoded.subarray(0, len));
+        return len;
+      },
+
+      // CRT environ support
+      kernel_environ_count: (): number => envVars.length,
+      kernel_environ_get: (index: number, bufPtr: number, bufMax: number): number => {
+        if (index >= envVars.length) return -1;
+        const encoded = encoder.encode(envVars[index]);
+        const len = Math.min(encoded.length, bufMax);
+        new Uint8Array(memory.buffer, bufPtr, len).set(encoded.subarray(0, len));
+        return len;
+      },
+
+      // Fork/exec state — not a fork child in centralized mode
+      kernel_is_fork_child: (): number => 0,
+      kernel_apply_fork_fd_actions: (): number => 0,
+      kernel_get_fork_exec_path: (_buf: number, _max: number): number => 0,
+      kernel_get_fork_exec_argc: (): number => 0,
+      kernel_get_fork_exec_argv: (_index: number, _buf: number, _max: number): number => 0,
+      kernel_push_argv: (_ptr: number, _len: number): number => 0,
+      kernel_clear_fork_exec: (): number => 0,
+
+      // Exec dispatches through channel
+      kernel_execve: (_pathPtr: number): number => -38, // ENOSYS
+
+      // Exit dispatches through channel (SYS_EXIT)
+      kernel_exit: (status: number): void => {
+        const view = new DataView(memory.buffer);
+        const base = channelOffset;
+        view.setInt32(base + 4, 34, true); // SYS_EXIT = 34
+        view.setInt32(base + 8, status, true);
+        const i32 = new Int32Array(memory.buffer);
+        Atomics.store(i32, base / 4, 1); // CH_PENDING
+        Atomics.notify(i32, base / 4, 1);
+        // Wait for complete, then trap
+        while (Atomics.wait(i32, base / 4, 1) === "ok") { /* */ }
+        Atomics.store(i32, base / 4, 0);
+      },
+
+      // Clone dispatches through channel (SYS_CLONE)
+      kernel_clone: (fnPtr: number, stackPtr: number, flags: number,
+        arg: number, ptidPtr: number, tlsPtr: number, ctidPtr: number): number => {
+        const SYS_CLONE_NR = 201;
+        const view = new DataView(memory.buffer);
+        const base = channelOffset;
+        view.setInt32(base + 4, SYS_CLONE_NR, true);
+        view.setInt32(base + 8, flags, true);
+        view.setInt32(base + 12, stackPtr, true);
+        view.setInt32(base + 16, ptidPtr, true);
+        view.setInt32(base + 20, tlsPtr, true);
+        view.setInt32(base + 24, ctidPtr, true);
+        view.setInt32(base + 28, 0, true);
+        // Write fn_ptr and arg_ptr to CH_DATA area for handleClone
+        view.setUint32(base + 40, fnPtr, true);
+        view.setUint32(base + 44, arg, true);
+
+        const i32 = new Int32Array(memory.buffer);
+        Atomics.store(i32, base / 4, 1); // CH_PENDING
+        Atomics.notify(i32, base / 4, 1);
+        while (Atomics.wait(i32, base / 4, 1) === "ok") { /* */ }
+
+        const result = view.getInt32(base + 32, true);
+        const err = view.getUint32(base + 36, true);
+        Atomics.store(i32, base / 4, 0);
+
+        if (err) return -err;
+        return result;
+      },
+
+      // Fork dispatches through channel (SYS_FORK)
+      kernel_fork: (): number => {
+        const SYS_FORK_NR = 212;
+        const view = new DataView(memory.buffer);
+        const base = channelOffset;
+        view.setInt32(base + 4, SYS_FORK_NR, true);
+        for (let i = 0; i < 6; i++) view.setInt32(base + 8 + i * 4, 0, true);
+
+        const i32 = new Int32Array(memory.buffer);
+        Atomics.store(i32, base / 4, 1); // CH_PENDING
+        Atomics.notify(i32, base / 4, 1);
+        while (Atomics.wait(i32, base / 4, 1) === "ok") { /* */ }
+
+        const result = view.getInt32(base + 32, true);
+        const err = view.getUint32(base + 36, true);
+        Atomics.store(i32, base / 4, 0);
+
+        if (err) return -err;
+        return result;
+      },
+    };
+
+    // Stub any remaining unresolved function imports
     for (const imp of WebAssembly.Module.imports(module)) {
       if (imp.kind !== "function") continue;
       if (imp.module === "env") {
@@ -1191,52 +1294,8 @@ export async function centralizedWorkerMain(
           };
         }
       } else if (imp.module === "kernel") {
-        // kernel.* imports: __clone calls kernel_clone which goes through
-        // the channel syscall dispatch (SYS_CLONE). We provide a stub that
-        // dispatches clone through the channel like any other syscall.
-        if (imp.name === "kernel_clone") {
-          kernelImports[imp.name] = (fnPtr: number, stackPtr: number, flags: number,
-            arg: number, ptidPtr: number, tlsPtr: number, ctidPtr: number): number => {
-            // Dispatch SYS_CLONE through channel_syscall (same as __syscall5)
-            // The __do_syscall function uses __channel_base TLS variable
-            // which is set up by centralizedWorkerMain.
-            // But we can't call __do_syscall from JS. Instead, we write
-            // directly to the channel and wait.
-            const SYS_CLONE_NR = 201;
-            const view = new DataView(memory.buffer);
-            const base = channelOffset;
-            // Write syscall args in Linux convention: flags, stack, ptid, tls, ctid
-            view.setInt32(base + 4, SYS_CLONE_NR, true);  // syscall nr
-            view.setInt32(base + 8, flags, true);           // a1 = flags
-            view.setInt32(base + 12, stackPtr, true);       // a2 = stack
-            view.setInt32(base + 16, ptidPtr, true);        // a3 = ptid
-            view.setInt32(base + 20, tlsPtr, true);         // a4 = tls
-            view.setInt32(base + 24, ctidPtr, true);        // a5 = ctid
-            view.setInt32(base + 28, 0, true);              // a6 = 0
-
-            // Set status to PENDING and notify
-            const i32 = new Int32Array(memory.buffer);
-            Atomics.store(i32, base / 4, 1); // CH_PENDING
-            Atomics.notify(i32, base / 4, 1);
-
-            // Wait for COMPLETE
-            while (Atomics.wait(i32, base / 4, 1) === "ok") {
-              // re-check
-            }
-
-            const result = view.getInt32(base + 32, true); // return value
-            const err = view.getUint32(base + 36, true);    // errno
-
-            // Reset to IDLE
-            Atomics.store(i32, base / 4, 0);
-
-            if (err) return -err;
-            return result;
-          };
-        } else {
-          kernelImports[imp.name] = (..._args: unknown[]) => {
-            throw new Error(`Unimplemented kernel import: kernel.${imp.name}`);
-          };
+        if (!kernelImports[imp.name]) {
+          kernelImports[imp.name] = (..._args: unknown[]) => 0;
         }
       }
     }
@@ -1247,42 +1306,26 @@ export async function centralizedWorkerMain(
     }
     const instance = await WebAssembly.instantiate(module, importObject);
 
-    // Initialize TLS for this thread
-    const initTls = instance.exports.__wasm_init_tls as
-      ((base: number) => void) | undefined;
-    const tlsSize = instance.exports.__tls_size as
-      WebAssembly.Global | undefined;
-
-    let tlsBlock = 0;
-    if (initTls && tlsSize) {
-      const size = (tlsSize.value as number) || 64;
-      const alignedSize = (size + 15) & ~15;
-      const pages = Math.ceil(alignedSize / 65536) || 1;
-      const page = memory.grow(pages);
-      tlsBlock = page * 65536;
-      initTls(tlsBlock);
-    }
-
     // Set __channel_base in TLS so __do_syscall knows where the channel is.
-    // __channel_base is a _Thread_local uint32_t. Its offset within TLS is
-    // determined by the linker. We need to find the TLS offset of __channel_base
-    // and write the channel offset there.
+    // The main thread's TLS is already initialized by __wasm_init_memory
+    // (the module's start function) during instantiation. We just need to
+    // write __channel_base at the correct TLS offset.
     //
-    // Strategy: the Wasm module should export __channel_base_tls_offset or
-    // we can compute it from the __tls_base global + known TLS layout.
-    // For now, look for a __set_channel_base export or use the TLS symbol.
-    const setChannelBase = instance.exports.__set_channel_base as
-      ((offset: number) => void) | undefined;
-
-    if (setChannelBase) {
-      setChannelBase(channelOffset);
-    } else if (tlsBlock > 0) {
-      // Fallback: __channel_base is typically the first TLS variable.
-      // The .tbss section containing __channel_base starts at offset 0 in TLS.
-      // Write the channel offset at tlsBlock + 0.
+    // __tls_base global points to the start of the current thread's TLS block.
+    // __channel_base is a _Thread_local uint32_t in .tbss, typically at offset 0.
+    const tlsBase = instance.exports.__tls_base as WebAssembly.Global | undefined;
+    if (tlsBase) {
+      const tlsBaseAddr = tlsBase.value as number;
       const view = new DataView(memory.buffer);
-      view.setUint32(tlsBlock, channelOffset, true);
+      // __channel_base is the first (and often only) .tbss variable
+      view.setUint32(tlsBaseAddr, channelOffset, true);
     }
+
+    // Also push argv/env into the kernel process so kernel-side syscalls
+    // (like getenv via channel) can access them. We do this by dispatching
+    // SYS_SETENV through the channel for each env var, and pushing argv
+    // via the kernel imports we just set up.
+    // For now, kernel_push_argv and env are handled by the CRT imports above.
 
     // Signal ready
     port.postMessage({
