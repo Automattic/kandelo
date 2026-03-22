@@ -65,7 +65,7 @@ unsafe extern "C" {
     fn host_exec(path_ptr: *const u8, path_len: u32) -> i32;
     fn host_set_alarm(seconds: u32) -> i32;
     fn host_sigsuspend_wait() -> i32;
-    fn host_call_signal_handler(handler_index: u32, signum: u32) -> i32;
+    fn host_call_signal_handler(handler_index: u32, signum: u32, sa_flags: u32) -> i32;
     fn host_getrandom(buf_ptr: *mut u8, buf_len: u32) -> i32;
     fn host_utimensat(path_ptr: *const u8, path_len: u32, atime_sec: i64, atime_nsec: i64, mtime_sec: i64, mtime_nsec: i64) -> i32;
     fn host_waitpid(pid: i32, options: u32, status_ptr: *mut i32) -> i32;
@@ -408,8 +408,8 @@ impl HostIO for WasmHostIO {
         }
     }
 
-    fn host_call_signal_handler(&mut self, handler_index: u32, signum: u32) -> Result<(), Errno> {
-        let result = unsafe { host_call_signal_handler(handler_index, signum) };
+    fn host_call_signal_handler(&mut self, handler_index: u32, signum: u32, sa_flags: u32) -> Result<(), Errno> {
+        let result = unsafe { host_call_signal_handler(handler_index, signum, sa_flags) };
         i32_to_result(result)
     }
 
@@ -593,9 +593,9 @@ static PROCESS_TABLE: GlobalProcessTable = GlobalProcessTable(UnsafeCell::new(Pr
 /// all kernel access when multiple threads share the same Memory.
 ///
 /// DEPRECATED: In centralized mode (mode=1), GKL is bypassed because the
-/// centralized kernel is single-threaded (one syscall at a time from the
-/// JS event loop). GKL is only needed for mode=0 (traditional) where
-/// multiple threads in a process Worker share the kernel state.
+/// kernel services one syscall at a time from the JS event loop.
+/// GKL is only needed for mode=0 (traditional) where multiple threads
+/// in a process Worker share the kernel state.
 /// When mode=0 is fully removed, GKL and GklGuard can be deleted.
 static GKL: AtomicI32 = AtomicI32::new(0);
 
@@ -713,9 +713,11 @@ fn deliver_pending_signals(proc: &mut Process, host: &mut WasmHostIO) {
         if proc.state == crate::process::ProcessState::Exited {
             break;
         }
-        match proc.signals.get_handler(signum) {
+        let action = proc.signals.get_action(signum);
+        match action.handler {
             SignalHandler::Handler(idx) => {
-                let _ = host.host_call_signal_handler(idx, signum);
+                // Pass sa_flags so host knows whether to use SA_SIGINFO calling convention
+                let _ = host.host_call_signal_handler(idx, signum, action.flags);
             }
             SignalHandler::Default => {
                 match default_action(signum) {
@@ -1258,6 +1260,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
         202 => kernel_gettid(),                    // SYS_GETTID
         203 => kernel_set_tid_address(a1 as u32),  // SYS_SET_TID_ADDRESS
         261 => kernel_set_robust_list(a1 as u32, a2 as u32), // SYS_SET_ROBUST_LIST
+        262 => kernel_get_robust_list(a1 as u32, a2 as u32, a3 as u32), // SYS_GET_ROBUST_LIST
 
         // prctl
         223 => kernel_prctl(a1 as u32, a2 as u32, a3 as *mut u8, a4 as u32), // SYS_PRCTL
@@ -1294,9 +1297,29 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
         346 => kernel_ipc_shmdt(a1),                // SYS_SHMDT
         347 => kernel_ipc_shmctl(a1, a2, a3),       // SYS_SHMCTL
 
+        // epoll
+        239 => kernel_epoll_create1(a1 as u32),     // SYS_EPOLL_CREATE1: (flags)
+        378 => kernel_epoll_create1(0),              // SYS_EPOLL_CREATE: (size) — flags=0
+        240 => kernel_epoll_ctl(a1, a2, a3, a4 as *const u8), // SYS_EPOLL_CTL: (epfd, op, fd, event_ptr)
+        241 => kernel_epoll_pwait(a1, a2 as *mut u8, a3, a4, a5 as u32), // SYS_EPOLL_PWAIT: (epfd, events, maxevents, timeout, sigmask_ptr)
+        379 => kernel_epoll_pwait(a1, a2 as *mut u8, a3, a4, 0), // SYS_EPOLL_WAIT: (epfd, events, maxevents, timeout)
+
+        // eventfd
+        242 => kernel_eventfd2(a1 as u32, a2 as u32), // SYS_EVENTFD2: (initval, flags)
+        380 => kernel_eventfd2(a1 as u32, 0),          // SYS_EVENTFD: (initval) — no flags
+
+        // timerfd
+        243 => kernel_timerfd_create(a1 as u32, a2 as u32), // SYS_TIMERFD_CREATE: (clockid, flags)
+        244 => kernel_timerfd_settime(a1, a2 as u32, a3 as *const u8, a4 as *mut u8), // SYS_TIMERFD_SETTIME
+        245 => kernel_timerfd_gettime(a1, a2 as *mut u8), // SYS_TIMERFD_GETTIME
+
+        // signalfd
+        246 => kernel_signalfd4(a1, a2 as u32, a3 as u32, a4 as u32), // SYS_SIGNALFD4: (fd, mask_ptr, sigsetsize, flags)
+        377 => kernel_signalfd4(a1, a2 as u32, a3 as u32, 0),          // SYS_SIGNALFD: (fd, mask_ptr, sigsetsize)
+
         // Stubs that return 0 or -ENOSYS
         204 => kernel_raise(a2 as u32),            // SYS_TKILL
-        208 | 209 | 226 | 230..=238 | 239..=249 | 252..=254 | 256..=257 | 262 | 265..=268 | 271..=274 | 287 | 289..=293 | 297..=298 | 301..=305 | 306 | 308..=324 | 325..=336 | 348..=349 | 350..=369 | 370..=371 | 373..=383 | 386 => {
+        208 | 209 | 226 | 230..=238 | 247..=249 | 252..=254 | 256..=257 | 262 | 265..=268 | 271..=274 | 287 | 289..=293 | 297..=298 | 301..=305 | 306 | 308..=324 | 325..=336 | 348..=349 | 350..=369 | 370..=371 | 373..=376 | 381..=383 | 386 => {
             // Many of these are stubs in the glue layer too; return ENOSYS
             -(Errno::ENOSYS as i32)
         }
@@ -1646,6 +1669,208 @@ pub extern "C" fn kernel_pipe2(flags: u32, fd_ptr: *mut i32) -> i32 {
             }
             0
         }
+        Err(e) => -(e as i32),
+    };
+    let mut host = WasmHostIO;
+    deliver_pending_signals(proc, &mut host);
+    result
+}
+
+/// Create an eventfd file descriptor.
+/// Returns fd (>= 0) on success, or negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_eventfd2(initval: u32, flags: u32) -> i32 {
+    let (_gkl, proc) = unsafe { get_process() };
+    let result = match syscalls::sys_eventfd2(proc, initval, flags) {
+        Ok(fd) => fd,
+        Err(e) => -(e as i32),
+    };
+    let mut host = WasmHostIO;
+    deliver_pending_signals(proc, &mut host);
+    result
+}
+
+/// Create an epoll instance.
+/// Returns fd (>= 0) on success, or negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_epoll_create1(flags: u32) -> i32 {
+    let (_gkl, proc) = unsafe { get_process() };
+    let result = match syscalls::sys_epoll_create1(proc, flags) {
+        Ok(fd) => fd,
+        Err(e) => -(e as i32),
+    };
+    let mut host = WasmHostIO;
+    deliver_pending_signals(proc, &mut host);
+    result
+}
+
+/// Modify an epoll interest list.
+/// Returns 0 on success, or negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_epoll_ctl(epfd: i32, op: i32, fd: i32, event_ptr: *const u8) -> i32 {
+    let (_gkl, proc) = unsafe { get_process() };
+
+    // Read epoll_event struct from memory: { events: u32, data: u64 }
+    // On wasm32 without packing, u64 may be at offset 4 or 8 depending on alignment.
+    // musl's epoll_event on non-x86_64: events at offset 0 (4B), data at offset 4 (8B) = 12B total.
+    // But wasm32 aligns u64 to 8 bytes, so it's likely: events at 0, pad at 4, data at 8 = 16B.
+    // We'll try reading from offset 4 (packed) since musl doesn't use __packed__ on non-x86_64.
+    // Actually, for epoll_data_t which is a union, the alignment depends on the platform.
+    // On wasm32, the union has 4-byte alignment if the ABI is ILP32, making epoll_event 12 bytes.
+    let (events, data) = if !event_ptr.is_null() {
+        unsafe {
+            let events = core::ptr::read_unaligned(event_ptr as *const u32);
+            let data = core::ptr::read_unaligned(event_ptr.add(4) as *const u64);
+            (events, data)
+        }
+    } else {
+        (0u32, 0u64)
+    };
+
+    let result = match syscalls::sys_epoll_ctl(proc, epfd, op, fd, events, data) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    };
+    let mut host = WasmHostIO;
+    deliver_pending_signals(proc, &mut host);
+    result
+}
+
+/// Wait for events on an epoll instance.
+/// Returns number of ready events (>= 0), or negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_epoll_pwait(
+    epfd: i32,
+    events_ptr: *mut u8,
+    maxevents: i32,
+    timeout: i32,
+    sigmask_ptr: u32,
+) -> i32 {
+    let (_gkl, proc) = unsafe { get_process() };
+    let mut host = WasmHostIO;
+
+    // Read signal mask if provided
+    let sigmask = if sigmask_ptr != 0 {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let ptr = sigmask_ptr as *const u64;
+            Some(unsafe { *ptr })
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        { None }
+    } else {
+        None
+    };
+
+    let result = match syscalls::sys_epoll_pwait(proc, &mut host, epfd, maxevents, timeout, sigmask) {
+        Ok((count, events)) => {
+            // Write events to output buffer
+            // Each epoll_event: { events: u32, data: u64 } = 12 bytes (packed on wasm32)
+            for (i, (ev, data)) in events.iter().enumerate() {
+                let offset = i * 12;
+                unsafe {
+                    core::ptr::write_unaligned(events_ptr.add(offset) as *mut u32, *ev);
+                    core::ptr::write_unaligned(events_ptr.add(offset + 4) as *mut u64, *data);
+                }
+            }
+            count
+        }
+        Err(e) => -(e as i32),
+    };
+    deliver_pending_signals(proc, &mut host);
+    result
+}
+
+/// Create a timerfd.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_timerfd_create(clock_id: u32, flags: u32) -> i32 {
+    let (_gkl, proc) = unsafe { get_process() };
+    let result = match syscalls::sys_timerfd_create(proc, clock_id, flags) {
+        Ok(fd) => fd,
+        Err(e) => -(e as i32),
+    };
+    let mut host = WasmHostIO;
+    deliver_pending_signals(proc, &mut host);
+    result
+}
+
+/// Set or disarm a timerfd timer.
+/// new_value_ptr points to itimerspec (32 bytes: interval_sec, interval_nsec, value_sec, value_nsec).
+/// old_value_ptr (if non-null) receives the old itimerspec.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_timerfd_settime(fd: i32, flags: u32, new_ptr: *const u8, old_ptr: *mut u8) -> i32 {
+    let (_gkl, proc) = unsafe { get_process() };
+    let mut host = WasmHostIO;
+
+    // Read itimerspec: { it_interval: { tv_sec, tv_nsec }, it_value: { tv_sec, tv_nsec } }
+    // On wasm32: each field is i64, so 4 x 8 = 32 bytes total
+    let (isec, insec, vsec, vnsec) = unsafe {
+        let isec = core::ptr::read_unaligned(new_ptr as *const i64);
+        let insec = core::ptr::read_unaligned(new_ptr.add(8) as *const i64);
+        let vsec = core::ptr::read_unaligned(new_ptr.add(16) as *const i64);
+        let vnsec = core::ptr::read_unaligned(new_ptr.add(24) as *const i64);
+        (isec, insec, vsec, vnsec)
+    };
+
+    let result = match syscalls::sys_timerfd_settime(proc, &mut host, fd, flags, isec, insec, vsec, vnsec) {
+        Ok((oisec, oinsec, ovsec, ovnsec)) => {
+            if !old_ptr.is_null() {
+                unsafe {
+                    core::ptr::write_unaligned(old_ptr as *mut i64, oisec);
+                    core::ptr::write_unaligned(old_ptr.add(8) as *mut i64, oinsec);
+                    core::ptr::write_unaligned(old_ptr.add(16) as *mut i64, ovsec);
+                    core::ptr::write_unaligned(old_ptr.add(24) as *mut i64, ovnsec);
+                }
+            }
+            0
+        }
+        Err(e) => -(e as i32),
+    };
+    deliver_pending_signals(proc, &mut host);
+    result
+}
+
+/// Get the remaining time of a timerfd timer.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_timerfd_gettime(fd: i32, cur_ptr: *mut u8) -> i32 {
+    let (_gkl, proc) = unsafe { get_process() };
+    let mut host = WasmHostIO;
+
+    let result = match syscalls::sys_timerfd_gettime(proc, &mut host, fd) {
+        Ok((isec, insec, vsec, vnsec)) => {
+            unsafe {
+                core::ptr::write_unaligned(cur_ptr as *mut i64, isec);
+                core::ptr::write_unaligned(cur_ptr.add(8) as *mut i64, insec);
+                core::ptr::write_unaligned(cur_ptr.add(16) as *mut i64, vsec);
+                core::ptr::write_unaligned(cur_ptr.add(24) as *mut i64, vnsec);
+            }
+            0
+        }
+        Err(e) => -(e as i32),
+    };
+    deliver_pending_signals(proc, &mut host);
+    result
+}
+
+/// Create or update a signalfd.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_signalfd4(fd: i32, mask_ptr: u32, _sigsetsize: u32, flags: u32) -> i32 {
+    let (_gkl, proc) = unsafe { get_process() };
+
+    // Read signal mask from pointer
+    let mask = if mask_ptr != 0 {
+        #[cfg(target_arch = "wasm32")]
+        {
+            unsafe { *(mask_ptr as *const u64) }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        { 0u64 }
+    } else {
+        0u64
+    };
+
+    let result = match syscalls::sys_signalfd4(proc, fd, mask, flags) {
+        Ok(fd) => fd,
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
@@ -2806,8 +3031,9 @@ pub extern "C" fn kernel_mmap(addr: u32, len: u32, prot: u32, flags: u32, fd: i3
         Err(_) => wasm_posix_shared::mmap::MAP_FAILED,
     };
 
-    // Ensure Wasm memory covers the mapped region.
-    if result != wasm_posix_shared::mmap::MAP_FAILED {
+    // Ensure Wasm memory covers the mapped region (skip PROT_NONE mappings
+    // which only reserve address space without needing physical backing).
+    if result != wasm_posix_shared::mmap::MAP_FAILED && prot != 0 {
         let end = result.saturating_add(len);
         ensure_memory_covers(end);
     }
@@ -4000,18 +4226,42 @@ pub extern "C" fn kernel_realpath(
 // execve
 // ---------------------------------------------------------------------------
 
-/// Execute a new program. Returns 0 on success, or negative errno.
+/// Execute a new program. On success, traps (never returns) because the
+/// process image is being replaced asynchronously by the host. On failure,
+/// returns negative errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_execve(path_ptr: *const u8, path_len: u32) -> i32 {
-    let (_gkl, proc) = unsafe { get_process() };
-    let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
-    let mut host = WasmHostIO;
-    let result = match syscalls::sys_execve(proc, &mut host, path) {
-        Ok(()) => 0,
-        Err(e) => -(e as i32),
+    let result = {
+        let (_gkl, proc) = unsafe { get_process() };
+        let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
+        let mut host = WasmHostIO;
+        match syscalls::sys_execve(proc, &mut host, path) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                deliver_pending_signals(proc, &mut host);
+                Err(e)
+            }
+        }
+        // _gkl is dropped here, releasing the Global Kernel Lock
     };
-    deliver_pending_signals(proc, &mut host);
-    result
+
+    match result {
+        Ok(()) => {
+            // Exec succeeded — the host is asynchronously replacing this process
+            // image. Trap to stop the current wasm execution immediately.
+            // GKL must be released before trapping so subsequent kernel calls
+            // (e.g. kernel_get_exec_state) don't deadlock.
+            #[cfg(target_arch = "wasm32")]
+            unsafe {
+                core::arch::wasm32::unreachable();
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                0
+            }
+        }
+        Err(e) => -(e as i32),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -4035,9 +4285,9 @@ pub extern "C" fn kernel_clone(
     fn_ptr: u32, stack_ptr: u32, flags: u32, arg: u32,
     ptid_ptr: u32, tls_ptr: u32, ctid_ptr: u32,
 ) -> i32 {
-    let _gkl = GklGuard::acquire();
+    let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
-    match syscalls::sys_clone(&mut host, fn_ptr, stack_ptr, flags, arg, ptid_ptr, tls_ptr, ctid_ptr) {
+    match syscalls::sys_clone(proc, &mut host, fn_ptr, stack_ptr, flags, arg, ptid_ptr, tls_ptr, ctid_ptr) {
         Ok(tid) => tid,
         Err(e) => -(e as i32),
     }
@@ -4404,10 +4654,10 @@ pub extern "C" fn kernel_getaddrinfo(name_ptr: *const u8, name_len: u32, result_
 }
 
 // ---------------------------------------------------------------------------
-// Runtime init stubs (single-threaded)
+// Thread identity stubs (pre-threading)
 // ---------------------------------------------------------------------------
 
-/// gettid — STUB: returns pid (tid == pid in single-threaded mode).
+/// gettid — returns pid (tid == pid until threading is implemented).
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_gettid() -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
@@ -4421,13 +4671,33 @@ pub extern "C" fn kernel_set_tid_address(_tidptr: u32) -> i32 {
     syscalls::sys_set_tid_address(proc)
 }
 
-/// set_robust_list — STUB: no-op, returns 0.
+/// set_robust_list — stores the robust list head pointer (no-op for now).
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_set_robust_list(_head: u32, _len: u32) -> i32 {
     match syscalls::sys_set_robust_list() {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     }
+}
+
+/// get_robust_list — returns 0 to indicate robust list support.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_get_robust_list(_pid: u32, _head_ptr: u32, _len_ptr: u32) -> i32 {
+    0
+}
+
+/// thread_exit — clean up thread state in the kernel.
+/// Called by the host when a thread Worker exits.
+/// Removes the thread from the process's thread table.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_thread_exit(pid: u32, tid: u32) -> i32 {
+    if crate::is_centralized_mode() {
+        let pt = unsafe { &mut *PROCESS_TABLE.0.get() };
+        if let Some(proc) = pt.get_mut(pid) {
+            proc.remove_thread(tid);
+        }
+    }
+    0
 }
 
 /// futex — real implementation via host Atomics.wait/notify.

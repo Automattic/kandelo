@@ -1,5 +1,12 @@
 extern crate alloc;
 
+use alloc::collections::VecDeque;
+
+/// First real-time signal number.
+pub const SIGRTMIN: u32 = 32;
+/// Last real-time signal number (exclusive upper bound for iteration).
+pub const SIGRTMAX_PLUS1: u32 = 64;
+
 /// Per-signal handler configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignalHandler {
@@ -58,8 +65,11 @@ pub struct SignalState {
     actions: [SignalAction; 64],
     /// Bitmask of blocked signals.
     pub blocked: u64,
-    /// Bitmask of pending signals.
+    /// Bitmask of pending signals (standard signals 1-31 are coalesced here;
+    /// RT signals 32-63 also set a bit here but are queued in `rt_queue`).
     pub pending: u64,
+    /// Queue for real-time signals (32-63). RT signals are queued, not coalesced.
+    rt_queue: VecDeque<u32>,
 }
 
 impl SignalState {
@@ -68,6 +78,7 @@ impl SignalState {
             actions: [SignalAction::default(); 64],
             blocked: 0,
             pending: 0,
+            rt_queue: VecDeque::new(),
         }
     }
 
@@ -117,18 +128,26 @@ impl SignalState {
     }
 
     /// Mark a signal as pending.
+    /// Standard signals (1-31) are coalesced. RT signals (32-63) are queued.
     pub fn raise(&mut self, signum: u32) -> bool {
         if signum == 0 || signum >= 64 {
             return false;
         }
         self.pending |= 1u64 << signum;
+        if signum >= SIGRTMIN {
+            self.rt_queue.push_back(signum);
+        }
         true
     }
 
     /// Clear a pending signal.
+    /// For RT signals, removes all queued instances and clears the pending bit.
     pub fn clear(&mut self, signum: u32) {
         if signum > 0 && signum < 64 {
             self.pending &= !(1u64 << signum);
+            if signum >= SIGRTMIN {
+                self.rt_queue.retain(|&s| s != signum);
+            }
         }
     }
 
@@ -136,6 +155,22 @@ impl SignalState {
     pub fn is_pending(&self, signum: u32) -> bool {
         if signum >= 64 { return false; }
         (self.pending & (1u64 << signum)) != 0
+    }
+
+    /// Return the raw pending signal bitmask.
+    pub fn pending_mask(&self) -> u64 {
+        self.pending
+    }
+
+    /// Clear a signal from the pending set.
+    /// For RT signals, removes all queued instances and clears the pending bit.
+    pub fn clear_pending(&mut self, signum: u32) {
+        if signum > 0 && signum < 64 {
+            self.pending &= !(1u64 << signum);
+            if signum >= SIGRTMIN {
+                self.rt_queue.retain(|&s| s != signum);
+            }
+        }
     }
 
     /// Check if a signal is blocked.
@@ -150,14 +185,28 @@ impl SignalState {
     }
 
     /// Dequeue the lowest-numbered deliverable signal.
-    /// Returns the signal number and clears it from pending.
+    /// Standard signals (1-31) are cleared from the pending bitmask.
+    /// RT signals (32-63) are dequeued from the queue; the pending bit is
+    /// only cleared when no more instances of that signal remain in the queue.
     pub fn dequeue(&mut self) -> Option<u32> {
         let deliverable = self.pending & !self.blocked;
         if deliverable == 0 {
             return None;
         }
         let signum = deliverable.trailing_zeros();
-        self.pending &= !(1u64 << signum);
+        if signum >= SIGRTMIN {
+            // RT signal: dequeue one instance from the queue
+            if let Some(pos) = self.rt_queue.iter().position(|&s| s == signum) {
+                self.rt_queue.remove(pos);
+            }
+            // Only clear the pending bit if no more instances remain
+            if !self.rt_queue.iter().any(|&s| s == signum) {
+                self.pending &= !(1u64 << signum);
+            }
+        } else {
+            // Standard signal: clear from pending bitmask
+            self.pending &= !(1u64 << signum);
+        }
         Some(signum)
     }
 
@@ -182,7 +231,7 @@ impl SignalState {
         for (i, h) in handlers.iter().enumerate() {
             actions[i].handler = *h;
         }
-        SignalState { actions, blocked, pending: 0 }
+        SignalState { actions, blocked, pending: 0, rt_queue: VecDeque::new() }
     }
 
     /// Reconstruct signal state for exec. Preserves pending signals (POSIX).
@@ -191,7 +240,14 @@ impl SignalState {
         for (i, h) in handlers.iter().enumerate() {
             actions[i].handler = *h;
         }
-        SignalState { actions, blocked, pending }
+        // Reconstruct RT queue from pending bits (one instance per signal)
+        let mut rt_queue = VecDeque::new();
+        for sig in SIGRTMIN..SIGRTMAX_PLUS1 {
+            if (pending & (1u64 << sig)) != 0 {
+                rt_queue.push_back(sig);
+            }
+        }
+        SignalState { actions, blocked, pending, rt_queue }
     }
 
     /// Get the raw handlers array for serialization.

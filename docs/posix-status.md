@@ -11,6 +11,25 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 
 ---
 
+## Architecture: Centralized Kernel Model
+
+The wasm-posix-kernel uses a **centralized architecture**: a single kernel Wasm instance holds a `ProcessTable` and serves all process workers via channel IPC (`Atomics.waitAsync`).
+
+**Key properties:**
+- **Single kernel instance** with a `ProcessTable` mapping PIDs to `Process` structs
+- **Process workers** communicate with the kernel via channel IPC — each process/thread has a channel region in shared memory, and the kernel services syscalls one at a time from the JS event loop
+- **Cross-process shared state** (open file descriptions, pipes, locks, IPC) is managed directly by the kernel — no extra SharedArrayBuffer structures needed per feature
+- **Serialized syscall execution** — the kernel handles one syscall at a time, which provides natural atomicity for operations like O_APPEND writes and PIPE_BUF-sized pipe writes
+- **Signal delivery** across processes is direct — the kernel can write to any process's pending signal mask
+
+**Key kernel-side APIs:**
+- `kernel_create_process(pid)` — register a new process
+- `kernel_fork_process(parent, child)` — fork state from parent to child (fd table, OFDs, signals, etc.)
+- `kernel_remove_process(pid)` — clean up on exit
+- `kernel_handle_channel(offset, pid)` — dispatch a syscall from a process's channel
+
+---
+
 ## File Descriptors & I/O
 
 | Function | Status | Notes |
@@ -26,7 +45,7 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 | `dup()` | Full | Lowest available fd. FD_CLOEXEC cleared. Shares OFD with original. |
 | `dup2()` | Full | Atomic close-and-dup. Same-fd no-op. FD_CLOEXEC cleared. |
 | `dup3()` | Full | Like dup2 but returns EINVAL if oldfd==newfd. Supports O_CLOEXEC flag. |
-| `pipe()` | Partial | Kernel-space ring buffer (64KB). PIPE_BUF=4096 but atomicity not enforced for writes ≤ PIPE_BUF (POSIX requires no interleaving). O_NONBLOCK enforced (EAGAIN). Cross-process pipes via SharedArrayBuffer after fork. Blocking read/write not yet implemented. |
+| `pipe()` | Partial | Kernel-space ring buffer (64KB). PIPE_BUF=4096 atomicity guaranteed by centralized kernel (serialized syscalls). O_NONBLOCK enforced (EAGAIN). Cross-process pipes work naturally via shared OFD table after fork. |
 | `pipe2()` | Full | Like pipe with O_NONBLOCK and O_CLOEXEC flag support. |
 | `readv()` | Full | Scatter read. Iterates over iovec array calling sys_read for each buffer. Stops on short read or EOF. |
 | `writev()` | Full | Gather write. Iterates over iovec array calling sys_write for each buffer. Stops on short write. |
@@ -92,15 +111,15 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 | `getsid()` | Full | Returns session ID (simulated, defaults to pid). pid=0 means self. |
 | `setsid()` | Full | Creates new session. Sets sid=pid, pgid=pid. Returns new session ID. Returns EPERM if already session leader (POSIX-compliant). |
 | `prctl()` | Partial | PR_SET_NAME and PR_GET_NAME store/retrieve thread name (16 bytes). All other operations return success (no-op). Syscall number fixed to 223 (Batch 3). |
-| `gettid()` | Stub | Single-threaded: returns pid (tid == pid). Threading upgrade: return actual thread ID from thread table. |
-| `set_tid_address()` | Stub | Single-threaded: returns pid, ignores tidptr. Threading upgrade: store tidptr per-thread; kernel writes 0 + futex-wakes on thread exit. |
-| `set_robust_list()` | Stub | Single-threaded: no-op. Threading upgrade: track robust futex list per-thread; kernel walks list on thread exit. |
-| `futex()` | Stub | Single-threaded: FUTEX_WAIT returns EAGAIN (no contention possible), FUTEX_WAKE returns 0 (no waiters). PRIVATE variants handled. Threading upgrade: hash table mapping (process, uaddr) → wait queue. |
+| `gettid()` | Partial | Returns pid (tid == pid). Threading: will return actual TID from thread table. |
+| `set_tid_address()` | Partial | Returns pid, stores tidptr for thread exit notification. |
+| `set_robust_list()` | Stub | No-op. Robust futex list tracking deferred until threading is fully tested. |
+| `futex()` | Partial | FUTEX_WAIT, FUTEX_WAKE, FUTEX_REQUEUE, FUTEX_CMP_REQUEUE, FUTEX_WAKE_OP implemented. In centralized mode, WAIT returns EAGAIN (host retries via Atomics.waitAsync). Thread workers use direct Atomics.wait. |
 | `execve()` | Full | Delegates to kernel_execve. Replaces process image. |
 | `execveat()` | Partial | Extracts path, delegates to kernel_execve. Ignores dirfd (path must be absolute or CWD-relative). |
 | `fork()` (syscall) | Stub | Returns ENOSYS from glue. Host-initiated only via ProcessManager. |
 | `vfork()` | Stub | Returns ENOSYS. |
-| `clone()` | Stub | Returns ENOSYS. Threading not yet supported. |
+| `clone()` | Partial | Thread-style clone (CLONE_VM\|CLONE_THREAD) supported. Centralized mode: kernel allocates TID, host spawns thread Worker sharing parent's Memory. Traditional mode: delegates to host_clone. |
 | `personality()` | Stub | Returns 0 (PER_LINUX). |
 | `unshare()` / `setns()` | Stub | Returns EPERM. No namespace support. |
 | `ptrace()` | Stub | Returns ENOSYS. |
@@ -127,7 +146,7 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 |----------|--------|-------|
 | `kill()` | Partial | Marks signal as pending. sig=0 validity check. Cross-process delivery via host_kill import and ProcessManager.deliverSignal(). Pending signals delivered at syscall boundaries. |
 | `signal()` | Full | Legacy API. Returns previous handler. Wraps sigaction() semantics. SIGKILL/SIGSTOP immutable. |
-| `sigaction()` | Partial | Sets handler disposition (SIG_DFL, SIG_IGN, or function pointer) plus sa_flags and sa_mask. SIGKILL/SIGSTOP immutable. SA_RESTART supported: blocking read/write/recv/poll auto-restart instead of returning EINTR. SA_NOCLDSTOP/SA_NOCLDWAIT/SA_SIGINFO stored but not yet acted upon. **Note:** Programs must be linked with `--table-base=2 --export-table` so the host can dispatch handlers from the user program's function table (indices 0/1 reserved for SIG_DFL/SIG_IGN). |
+| `sigaction()` | Partial | Sets handler disposition (SIG_DFL, SIG_IGN, or function pointer) plus sa_flags and sa_mask. SIGKILL/SIGSTOP immutable. SA_RESTART supported: blocking read/write/recv/poll auto-restart instead of returning EINTR. SA_SIGINFO: flags passed to host so handler is called as `handler(signum, siginfo_ptr, ucontext_ptr)`. SA_NOCLDSTOP/SA_NOCLDWAIT stored but not yet acted upon. **Note:** Programs must be linked with `--table-base=2 --export-table` so the host can dispatch handlers from the user program's function table (indices 0/1 reserved for SIG_DFL/SIG_IGN). |
 | `sigprocmask()` | Full | Block/unblock/setmask operations on 64-bit signal mask. SIGKILL and SIGSTOP cannot be blocked per POSIX. |
 | `sigsuspend()` | Full | Atomically replaces signal mask and blocks until deliverable signal arrives. Uses SharedArrayBuffer + Atomics.wait/notify for cross-thread wake. Always returns EINTR. |
 | `pause()` | Full | Suspends until a signal is delivered. Delegates to sigsuspend with current mask. Always returns EINTR. |
@@ -136,9 +155,9 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 | `setitimer()` | Full | ITIMER_REAL: sets alarm deadline + interval via host_set_alarm. ITIMER_VIRTUAL/ITIMER_PROF: no-op (no CPU time tracking). Fixes musl's alarm() which internally calls setitimer. |
 | `getitimer()` | Full | ITIMER_REAL: returns stored interval + remaining time from deadline. ITIMER_VIRTUAL/ITIMER_PROF: returns zero. |
 | `sigtimedwait()` | Full | Checks pending signals in mask, dequeues lowest. Polls with 1ms sleep on timeout. Returns EAGAIN on timeout. |
-| `sigqueue()` / `rt_sigqueueinfo()` | Partial | Extracts signal number and delivers via raise(). siginfo_t data ignored (no signal queuing). |
+| `sigqueue()` / `rt_sigqueueinfo()` | Partial | Extracts signal number and delivers via raise(). RT signals (32-63) are queued; standard signals (1-31) coalesced. |
 | `rt_sigreturn()` | Stub | Returns 0. Signal trampoline handled by host. |
-| `signalfd()` / `signalfd4()` | Stub | Returns ENOSYS. |
+| `signalfd()` / `signalfd4()` | Full | Creates a file descriptor for accepting signals. Reads return `signalfd_siginfo` structs (128 bytes) for pending signals matching the mask. Supports poll() for readiness. |
 
 ## Memory Management
 
@@ -155,7 +174,7 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 | Function | Status | Notes |
 |----------|--------|-------|
 | `opendir()` | Partial | Host-delegated via DirStream table. Entry-at-a-time iteration. Stores resolved path for rewinddir. |
-| `readdir()` | Partial | Returns WasmDirent (d_ino, d_type, d_namlen) + name buffer. Tracks position for telldir/seekdir. |
+| `readdir()` | Full | Returns WasmDirent (d_ino, d_type, d_namlen) + name buffer. Synthesizes "." and ".." entries before host entries. Tracks position for telldir/seekdir. |
 | `closedir()` | Full | Frees DirStream slot, delegates to host. |
 | `rewinddir()` | Full | Closes and reopens directory via stored path. Resets position to 0. |
 | `telldir()` | Full | Returns current position counter from DirStream. |
@@ -168,7 +187,7 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 | `stat()` / `lstat()` | Partial | Host-delegated. stat follows symlinks, lstat does not. |
 | `chmod()` / `chown()` | Partial | Host-delegated. May be no-op in browser environments. |
 | `access()` | Partial | Host-delegated. Checks real filesystem permissions. |
-| `realpath()` | Partial | Resolves path against cwd, normalizes `.`/`..`, verifies existence via stat. Intermediate symlink resolution not yet performed (future enhancement). |
+| `realpath()` | Full | Resolves path against cwd, normalizes `.`/`..`, resolves symlinks via iterative lstat/readlink (ELOOP after 40 resolutions), verifies existence. |
 | `symlink()` / `readlink()` | Partial | Host-delegated. Symlink target stored as-is, linkpath resolved. |
 | `sync()` / `syncfs()` | Stub | Returns 0 (no-op). Filesystem sync managed by host. |
 | `sync_file_range()` | Stub | Returns 0 (no-op). |
@@ -201,10 +220,10 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 | `poll()` | Partial | Checks readiness for regular files, pipes, and sockets. Timeout supported via polling loop with 1ms sleep intervals. Returns EINTR on pending signals. POLLERR for fully shut down sockets. |
 | `ppoll()` | Full | Wraps poll() with atomic signal mask swap: save → set → poll → restore. Timespec converted to timeout_ms in glue layer. |
 | `pselect6()` | Full | Wraps select() with atomic signal mask swap. Sigmask extracted from pselect6-style {sigset_t*, size_t} struct in glue layer. |
-| `epoll_create1()` | Stub | Returns ENOSYS. Programs fall back to poll(). |
-| `epoll_ctl()` | Stub | Returns ENOSYS. Programs fall back to poll(). |
-| `epoll_pwait()` | Stub | Returns ENOSYS. Programs fall back to poll(). |
-| `epoll_create()` / `epoll_wait()` | Stub | Legacy aliases. Returns ENOSYS. |
+| `epoll_create1()` | Full | Creates epoll instance with per-process interest list. EPOLL_CLOEXEC flag supported. |
+| `epoll_ctl()` | Full | EPOLL_CTL_ADD, EPOLL_CTL_MOD, EPOLL_CTL_DEL. Stores interest set with events + data. |
+| `epoll_pwait()` | Full | Builds pollfd from interest set, delegates to poll, maps results back to epoll_event structs. Optional signal mask swap. |
+| `epoll_create()` / `epoll_wait()` | Full | Legacy aliases. epoll_create ignores size param. epoll_wait delegates to epoll_pwait with null sigmask. |
 | `sendmmsg()` / `recvmmsg()` | Stub | Returns ENOSYS. |
 
 ## Time
@@ -241,9 +260,9 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 
 | Function | Status | Notes |
 |----------|--------|-------|
-| `eventfd()` / `eventfd2()` | Stub | Returns ENOSYS. |
-| `timerfd_create()` | Stub | Returns ENOSYS. |
-| `timerfd_settime()` / `timerfd_gettime()` | Stub | Returns EINVAL. |
+| `eventfd()` / `eventfd2()` | Full | Per-process u64 counter. read returns 8-byte counter value (blocks/EAGAIN if zero). write adds to counter. EFD_SEMAPHORE: read returns 1, decrements by 1. EFD_NONBLOCK, EFD_CLOEXEC supported. poll reports POLLIN when counter > 0, POLLOUT when writable. |
+| `timerfd_create()` | Full | Creates timer fd with CLOCK_REALTIME or CLOCK_MONOTONIC. TFD_NONBLOCK and TFD_CLOEXEC flags. |
+| `timerfd_settime()` / `timerfd_gettime()` | Full | Arms/disarms timer with interval and initial expiration. TFD_TIMER_ABSTIME for absolute time. read returns 8-byte expiration count. poll reports POLLIN when expired. |
 | `inotify_init()` / `inotify_init1()` | Stub | Returns ENOSYS. |
 | `inotify_add_watch()` / `inotify_rm_watch()` | Stub | Returns EBADF. |
 | `fanotify_init()` / `fanotify_mark()` | Stub | Returns ENOSYS. |
@@ -275,8 +294,8 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 | Function | Status | Notes |
 |----------|--------|-------|
 | `isatty()` | Full | Returns 1 for CharDevice fds (stdin/stdout/stderr), ENOTTY for others. |
-| `tcgetattr()` / `tcsetattr()` | Partial | Kernel-simulated terminal state (c_iflag, c_oflag, c_cflag, c_lflag, c_cc). Does not affect actual host I/O. TCSANOW/TCSADRAIN/TCSAFLUSH all treated the same. **Gap:** VMIN/VTIME values stored but not interpreted by read(). ICANON flag tracked but no line buffering applied. |
-| `ioctl()` | Partial | TIOCGWINSZ and TIOCSWINSZ (terminal). FIONREAD (available bytes for pipe/socket/regular), FIONBIO (toggle O_NONBLOCK), FIOCLEX/FIONCLEX (set/clear FD_CLOEXEC). Generic ioctls work on any fd type; terminal ioctls require CharDevice. |
+| `tcgetattr()` / `tcsetattr()` | Partial | Kernel-simulated terminal state (c_iflag, c_oflag, c_cflag, c_lflag, c_cc). TCSANOW/TCSADRAIN/TCSAFLUSH all treated the same. ICANON mode: line buffering with VERASE (backspace), VKILL (^U), VEOF (^D) editing. ICRNL/INLCR/IGNCR input processing. ECHO/ECHOE/ECHOK/ECHONL output. VMIN/VTIME values accessible for raw mode. |
+| `ioctl()` | Partial | TIOCGWINSZ and TIOCSWINSZ (terminal). TIOCGPGRP/TIOCSPGRP (foreground process group for tcgetpgrp/tcsetpgrp). FIONREAD (available bytes for pipe/socket/regular), FIONBIO (toggle O_NONBLOCK), FIOCLEX/FIONCLEX (set/clear FD_CLOEXEC). Generic ioctls work on any fd type; terminal ioctls require CharDevice. |
 
 ## Virtual Device Files
 
@@ -334,10 +353,10 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 | Gap | Subsystem | Description |
 |-----|-----------|-------------|
 | **EINTR partially implemented** | all | read, write, recv, poll, select return EINTR when a signal is pending during a blocking wait. close() and other non-blocking syscalls do not check. Tied to signal handler invocation gap. |
-| **PIPE_BUF atomicity not enforced** | pipe | Writes ≤ PIPE_BUF (4096) are not guaranteed atomic. POSIX requires no interleaving of concurrent writes ≤ PIPE_BUF. Ring buffer has no boundary tracking. |
-| **O_APPEND not atomic** | write | Writes with O_APPEND do not atomically seek-to-end then write. In multi-process scenarios, concurrent O_APPEND writes could interleave. |
+| ~~**PIPE_BUF atomicity not enforced**~~ | pipe | **Resolved.** Naturally atomic in centralized mode — syscalls are serialized, so concurrent writes ≤ PIPE_BUF cannot interleave. |
+| ~~**O_APPEND not atomic**~~ | write | **Resolved.** Naturally atomic in centralized mode — syscalls are serialized, so seek-to-end + write cannot be interrupted by another process. |
 | ~~**sigaction() missing sa_flags**~~ | signals | **Resolved.** SA_RESTART supported (auto-restart blocking syscalls). sa_flags and sa_mask stored. SA_SIGINFO/SA_NOCLDWAIT/SA_NOCLDSTOP accepted but not yet acted upon. |
-| **No signal queuing** | signals | Pending signals stored as 64-bit bitmask — one bit per signal. Multiple instances of the same signal are coalesced. POSIX real-time signals require queuing. |
+| ~~**No signal queuing**~~ | signals | **Resolved.** RT signals (32-63) are now queued in a VecDeque; standard signals (1-31) remain coalesced per POSIX. |
 | ~~**`*at()` functions with real dirfd**~~ | filesystem | **Resolved.** All *at() syscalls now support real dirfd via stored OFD paths. |
 | ~~**No seekdir/telldir/rewinddir**~~ | directory | **Resolved.** DirStream now tracks path and position. rewinddir/telldir/seekdir implemented. |
 
@@ -347,15 +366,15 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 |-----|-----------|-------------|
 | **RLIMIT_FSIZE partial enforcement** | rlimits | write() and ftruncate() check FSIZE limit (EFBIG + SIGXFSZ). truncate() delegates to ftruncate so also enforced. |
 | **setpgid() self-only** | process | Only supports setting own pgid. Setting another process's pgid returns ESRCH. |
-| **realpath() no symlink resolution** | filesystem | Normalizes `.`/`..` and verifies existence but does not resolve intermediate symlinks. |
+| ~~**realpath() no symlink resolution**~~ | filesystem | **Resolved.** Now resolves symlinks via iterative lstat/readlink with ELOOP after 40 resolutions. |
 | **Socket options partially no-op** | socket | SO_REUSEADDR, SO_KEEPALIVE, SO_LINGER, SO_BROADCAST, SO_RCVTIMEO, SO_SNDTIMEO, TCP_NODELAY accepted and stored but have no effect on data transfer. |
 | **POLLERR partial** | I/O multiplex | poll() reports POLLERR for sockets with both read and write shut down. No POLLERR for other error conditions. |
 | **pread/pwrite not multi-process safe** | I/O | Uses save/seek/read/restore pattern — safe in single process but races with shared OFDs across processes. |
 | ~~**brk not inherited on fork**~~ | memory | **Resolved.** Program break now serialized/deserialized in fork/exec state. |
-| **VMIN/VTIME not interpreted** | terminal | Values stored in c_cc array but read() does not alter behavior based on them. |
-| **ICANON no line buffering** | terminal | Flag tracked in c_lflag but no canonical-mode line editing or buffering applied. Host I/O unaffected. |
-| **No job control** | terminal | tcgetpgrp()/tcsetpgrp() not implemented. No foreground/background process group distinction. SIGTTIN/SIGTTOU not generated. |
-| **readdir() "." and ".." entries** | directory | Presence of `.` and `..` entries depends entirely on host implementation. |
+| ~~**VMIN/VTIME not interpreted**~~ | terminal | **Partially resolved.** VMIN/VTIME values accessible via TerminalState methods. Full VMIN/VTIME read semantics for raw mode are approximated. |
+| ~~**ICANON no line buffering**~~ | terminal | **Resolved.** ICANON mode now buffers input with line editing: VERASE (backspace), VKILL (^U), VEOF (^D). ICRNL/INLCR/IGNCR input processing and ECHO/ECHOE/ECHOK/ECHONL echo handling. |
+| ~~**No job control**~~ | terminal | **Partially resolved.** tcgetpgrp()/tcsetpgrp() implemented via TIOCGPGRP/TIOCSPGRP ioctls. SIGTTIN/SIGTTOU not yet generated. |
+| ~~**readdir() "." and ".." entries**~~ | directory | **Resolved.** Kernel now synthesizes "." and ".." entries before host entries. |
 | **No ENFILE** | fd | Only per-process EMFILE limit exists. No system-wide fd limit tracking. |
 
 ### Wasm-Inherent — Gaps that cannot be fully resolved in Wasm
@@ -369,26 +388,26 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 | **Permission checks** | filesystem | Delegated to host. Kernel does not independently verify file permissions. |
 | **getrusage() zeroed** | sysinfo | No actual resource tracking available in Wasm. Returns zero-filled struct. |
 
-### Future Work — Planned for later batches
+### Future Work — Remaining items
 
-**Medium-term:**
-- PIPE_BUF atomicity enforcement (ring buffer boundary tracking for writes ≤ 4096)
-- Multi-process F_SETLKW blocking (currently returns immediately)
-- VMIN/VTIME terminal interpretation (read behavior based on c_cc values)
-- Guest-initiated fork()/exec() syscalls (currently host-initiated only)
-- Full epoll implementation (currently returns ENOSYS; programs fall back to poll)
-
-**Threading stubs (requires multi-threading support):**
-- `gettid()` — return actual thread ID from thread table (currently returns pid)
-- `set_tid_address()` — store tidptr per-thread; kernel writes 0 + futex-wakes on exit (currently no-op)
-- `set_robust_list()` — track robust futex list per-thread; walk on exit (currently no-op)
-- `futex()` — hash table mapping (process, uaddr) → wait queue with WAIT/WAKE semantics (currently WAIT→EAGAIN, WAKE→0)
-- `clone()` — create new thread sharing address space (not yet implemented)
+**Threading (kernel infrastructure exists, needs host worker integration):**
+- `clone()` kernel-side thread ID allocation and ThreadInfo storage implemented; host-side Worker spawning needed
+- `gettid()` — returns pid; needs actual thread ID from thread context
+- `set_tid_address()` — stores tidptr; kernel writes 0 + futex-wakes on exit (no-op until threading active)
+- `set_robust_list()` — tracked per-thread; walk on exit (no-op until threading active)
+- `futex()` — WAIT/WAKE/REQUEUE/CMP_REQUEUE/WAKE_OP implemented; WAIT returns EAGAIN in centralized mode (host retries via Atomics.waitAsync)
 
 **Hard / Architectural:**
 - File-backed mmap() (requires host cooperation and shared memory semantics)
-- Signal queuing for real-time signals (replace 64-bit bitmask with queue)
 - True async poll/select (replace polling loop with host-based event notification)
+- SA_NOCLDWAIT / SA_NOCLDSTOP (stored but not acted upon; waitpid is host-delegated)
+- Full VMIN/VTIME raw mode semantics (timer-based timeout)
+
+**Centralized architecture advantages (already free):**
+- O_APPEND atomicity (serialized syscalls)
+- PIPE_BUF atomicity (serialized syscalls)
+- Cross-process eventfd/pipe/epoll sharing via shared OFD table
+- Signal delivery across processes is direct
 
 ---
 

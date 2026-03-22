@@ -13,6 +13,10 @@ pub enum FileType {
     Pipe,
     CharDevice,
     Socket,
+    EventFd,
+    Epoll,
+    TimerFd,
+    SignalFd,
 }
 
 #[derive(Clone)]
@@ -27,6 +31,8 @@ pub struct OpenFileDesc {
     /// Host directory handle for getdents64 iteration (lazily opened).
     /// -1 means not yet opened, -2 means exhausted (EOF).
     pub dir_host_handle: i64,
+    /// Synthetic "." / ".." state for getdents64: 0 = emit ".", 1 = emit "..", 2 = host entries
+    pub dir_synth_state: u8,
 }
 
 pub struct OfdTable {
@@ -52,6 +58,7 @@ impl OfdTable {
             owner_pid: 0,
             path,
             dir_host_handle: -1,
+            dir_synth_state: 0,
         };
 
         // Search for a free (None) slot to reuse.
@@ -274,6 +281,7 @@ mod tests {
                 owner_pid: ofd.owner_pid,
                 path: ofd.path.clone(),
                 dir_host_handle: -1,
+            dir_synth_state: 0,
             });
         }
 

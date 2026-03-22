@@ -17,6 +17,8 @@ pub struct DirStream {
     pub host_handle: i64,
     pub path: Vec<u8>,     // resolved directory path (for rewinddir)
     pub position: u64,     // entry counter (for telldir/seekdir)
+    /// Synthetic "." / ".." state: 0 = emit ".", 1 = emit "..", 2 = host entries
+    pub synth_dot_state: u8,
 }
 
 /// Trait for host I/O operations that the kernel delegates to the runtime.
@@ -56,7 +58,10 @@ pub trait HostIO {
     /// Ask the host to invoke a user-space signal handler.
     /// `handler_index` is the Wasm function table index.
     /// `signum` is the signal number being delivered.
-    fn host_call_signal_handler(&mut self, handler_index: u32, signum: u32) -> Result<(), Errno>;
+    /// `sa_flags` is the sigaction flags (SA_SIGINFO, SA_RESTART, etc.)
+    /// When SA_SIGINFO is set, the host should call handler(signum, siginfo_ptr, 0)
+    /// instead of handler(signum).
+    fn host_call_signal_handler(&mut self, handler_index: u32, signum: u32, sa_flags: u32) -> Result<(), Errno>;
     fn host_getrandom(&mut self, buf: &mut [u8]) -> Result<usize, Errno>;
     fn host_utimensat(&mut self, path: &[u8], atime_sec: i64, atime_nsec: i64, mtime_sec: i64, mtime_nsec: i64) -> Result<(), Errno>;
     fn host_waitpid(&mut self, pid: i32, options: u32) -> Result<(i32, i32), Errno>;
@@ -87,6 +92,70 @@ pub trait HostIO {
 pub enum ProcessState {
     Running,
     Exited,
+}
+
+/// Per-thread state within a process.
+#[derive(Debug, Clone)]
+pub struct ThreadInfo {
+    pub tid: u32,
+    pub ctid_ptr: u32,    // CLONE_CHILD_CLEARTID address (futex wake on exit)
+    pub stack_ptr: u32,
+    pub tls_ptr: u32,
+    pub tidptr: u32,       // set_tid_address pointer
+}
+
+impl ThreadInfo {
+    pub fn new(tid: u32, ctid_ptr: u32, stack_ptr: u32, tls_ptr: u32) -> Self {
+        ThreadInfo { tid, ctid_ptr, stack_ptr, tls_ptr, tidptr: 0 }
+    }
+}
+
+/// Per-eventfd state: a u64 counter with optional semaphore semantics.
+#[derive(Debug, Clone)]
+pub struct EventFdState {
+    pub counter: u64,
+    pub semaphore: bool,
+}
+
+/// An entry in an epoll interest list.
+#[derive(Debug, Clone)]
+pub struct EpollInterest {
+    pub fd: i32,
+    pub events: u32,
+    pub data: u64,
+}
+
+/// An epoll instance: a set of monitored file descriptors.
+#[derive(Debug, Clone)]
+pub struct EpollInstance {
+    pub interests: Vec<EpollInterest>,
+}
+
+impl EpollInstance {
+    pub fn new() -> Self {
+        EpollInstance { interests: Vec::new() }
+    }
+}
+
+/// Per-timerfd state: clock, interval, and next expiration.
+#[derive(Debug, Clone)]
+pub struct TimerFdState {
+    pub clock_id: u32,
+    /// Interval for repeating timers (0 = one-shot).
+    pub interval_sec: i64,
+    pub interval_nsec: i64,
+    /// Next expiration time (absolute, in the timer's clock).
+    /// 0/0 = disarmed.
+    pub value_sec: i64,
+    pub value_nsec: i64,
+    /// Number of expirations not yet read.
+    pub expirations: u64,
+}
+
+/// Per-signalfd state: the set of signals to watch.
+#[derive(Debug, Clone)]
+pub struct SignalFdState {
+    pub mask: u64,
 }
 
 /// File descriptor action to apply in a fork child before exec.
@@ -136,6 +205,18 @@ pub struct Process {
     pub fork_fd_actions: Vec<FdAction>,
     /// Next ephemeral port to assign for bind(port=0).
     pub next_ephemeral_port: u16,
+    /// Threads created by this process (centralized mode).
+    pub threads: Vec<ThreadInfo>,
+    /// Next thread ID to allocate.
+    pub next_tid: u32,
+    /// Eventfd instances owned by this process.
+    pub eventfds: Vec<Option<EventFdState>>,
+    /// Epoll instances owned by this process.
+    pub epolls: Vec<Option<EpollInstance>>,
+    /// Timerfd instances owned by this process.
+    pub timerfds: Vec<Option<TimerFdState>>,
+    /// Signalfd instances owned by this process.
+    pub signalfds: Vec<Option<SignalFdState>>,
 }
 
 impl Process {
@@ -193,6 +274,47 @@ impl Process {
             fork_exec_argv: None,
             fork_fd_actions: Vec::new(),
             next_ephemeral_port: 49152,
+            threads: Vec::new(),
+            next_tid: 0, // will be set to pid + 1 after pid is known
+            eventfds: Vec::new(),
+            epolls: Vec::new(),
+            timerfds: Vec::new(),
+            signalfds: Vec::new(),
         }
+    }
+
+    /// Allocate a new thread ID for this process.
+    pub fn alloc_tid(&mut self) -> u32 {
+        // First thread TID starts at pid + 1
+        if self.next_tid == 0 {
+            self.next_tid = self.pid + 1;
+        }
+        let tid = self.next_tid;
+        self.next_tid += 1;
+        tid
+    }
+
+    /// Add a thread to this process.
+    pub fn add_thread(&mut self, info: ThreadInfo) {
+        self.threads.push(info);
+    }
+
+    /// Remove a thread by TID.
+    pub fn remove_thread(&mut self, tid: u32) -> Option<ThreadInfo> {
+        if let Some(idx) = self.threads.iter().position(|t| t.tid == tid) {
+            Some(self.threads.swap_remove(idx))
+        } else {
+            None
+        }
+    }
+
+    /// Find a thread by TID.
+    pub fn get_thread(&self, tid: u32) -> Option<&ThreadInfo> {
+        self.threads.iter().find(|t| t.tid == tid)
+    }
+
+    /// Find a thread by TID (mutable).
+    pub fn get_thread_mut(&mut self, tid: u32) -> Option<&mut ThreadInfo> {
+        self.threads.iter_mut().find(|t| t.tid == tid)
     }
 }

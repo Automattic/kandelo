@@ -87,6 +87,30 @@ int32_t kernel_pipe(int32_t *fildes_ptr);
 KERNEL_IMPORT(kernel_pipe2)
 int32_t kernel_pipe2(uint32_t flags, int32_t *fd_ptr);
 
+KERNEL_IMPORT(kernel_eventfd2)
+int32_t kernel_eventfd2(uint32_t initval, uint32_t flags);
+
+KERNEL_IMPORT(kernel_epoll_create1)
+int32_t kernel_epoll_create1(uint32_t flags);
+
+KERNEL_IMPORT(kernel_epoll_ctl)
+int32_t kernel_epoll_ctl(int32_t epfd, int32_t op, int32_t fd, uint8_t *event_ptr);
+
+KERNEL_IMPORT(kernel_epoll_pwait)
+int32_t kernel_epoll_pwait(int32_t epfd, uint8_t *events_ptr, int32_t maxevents, int32_t timeout, uint32_t sigmask_ptr);
+
+KERNEL_IMPORT(kernel_timerfd_create)
+int32_t kernel_timerfd_create(uint32_t clock_id, uint32_t flags);
+
+KERNEL_IMPORT(kernel_timerfd_settime)
+int32_t kernel_timerfd_settime(int32_t fd, uint32_t flags, const uint8_t *new_ptr, uint8_t *old_ptr);
+
+KERNEL_IMPORT(kernel_timerfd_gettime)
+int32_t kernel_timerfd_gettime(int32_t fd, uint8_t *cur_ptr);
+
+KERNEL_IMPORT(kernel_signalfd4)
+int32_t kernel_signalfd4(int32_t fd, uint32_t mask_ptr, uint32_t sigsetsize, uint32_t flags);
+
 KERNEL_IMPORT(kernel_fcntl)
 int32_t kernel_fcntl(int32_t fd, uint32_t cmd, uint32_t arg);
 
@@ -408,6 +432,9 @@ int32_t kernel_set_tid_address(uint32_t tidptr);
 
 KERNEL_IMPORT(kernel_set_robust_list)
 int32_t kernel_set_robust_list(uint32_t head, uint32_t len);
+
+KERNEL_IMPORT(kernel_get_robust_list)
+int32_t kernel_get_robust_list(uint32_t pid, uint32_t head_ptr, uint32_t len_ptr);
 
 KERNEL_IMPORT(kernel_futex)
 int32_t kernel_futex(uint32_t uaddr, uint32_t op, uint32_t val,

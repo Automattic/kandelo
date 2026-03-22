@@ -11,6 +11,11 @@ mkdir -p host/wasm
 cp target/wasm32-unknown-unknown/release/wasm_posix_kernel.wasm host/wasm/
 cp target/wasm32-unknown-unknown/release/wasm_posix_userspace.wasm host/wasm/
 
+if [ -d programs ] && ls programs/*.c >/dev/null 2>&1; then
+    echo "Building user programs..."
+    bash scripts/build-programs.sh
+fi
+
 echo "Building TypeScript host..."
 cd host
 npm run build

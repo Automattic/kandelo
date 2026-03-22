@@ -949,34 +949,27 @@ export class CentralizedKernelWorker {
    * a thread Worker sharing the parent's Memory.
    */
   private handleClone(channel: ChannelInfo, origArgs: number[]): void {
-    // clone args: (fn_ptr, stack_ptr, flags, arg, ptid_ptr, tls_ptr)
-    // In musl's __syscall6 layout for clone
-    const fnPtr = origArgs[0];
-    const stackPtr = origArgs[1];
-    const _flags = origArgs[2];
-    const _arg = origArgs[3];
-    const _ptidPtr = origArgs[4];
-    const tlsPtr = origArgs[5];
+    // Channel args from musl's __clone override which calls kernel_clone directly:
+    //   kernel_clone(fn_ptr, stack_ptr, flags, arg, ptid_ptr, tls_ptr, ctid_ptr)
+    // But in centralized mode, __clone goes through channel_syscall which
+    // dispatches SYS_CLONE with Linux syscall convention:
+    //   a1=flags, a2=stack, a3=ptid, a4=tls, a5=ctid
+    // The kernel dispatch remaps: kernel_clone(0, a2, a1, 0, a3, a4, a5)
+    //
+    // However, programs using the musl overlay's __clone call kernel_clone
+    // directly as a Wasm import, which means they DON'T go through
+    // channel_syscall. They use the kernel.kernel_clone import provided
+    // by buildThreadKernelStubs or the host kernel. So origArgs here
+    // come from the channel in Linux syscall convention:
+    //   origArgs[0]=flags, [1]=stack, [2]=ptid, [3]=tls, [4]=ctid
 
-    // For clone, we also need ctidPtr. In the kernel dispatch:
-    // 201 => kernel_clone(a1, a2, a3, a4, a5, 0) -- 6th arg is ctid but mapped to 0
-    // Actually the musl clone sends: fn, stack, flags, arg, ptid, tls, ctid
-    // But our syscall only has 6 args. Let's pass through to the kernel for now.
-
-    // Route through the normal kernel_handle_channel for clone — the kernel's
-    // sys_clone will return a TID. The onClone callback handles Worker spawning.
     if (!this.callbacks.onClone) {
-      // No clone handler — return -ENOSYS
       this.completeChannel(channel, SYS_CLONE, origArgs, undefined, -1, 38);
       return;
     }
 
-    // We need ctidPtr which may be embedded differently. For simplicity,
-    // let the kernel handle the clone request and return the TID.
-    // Then call onClone to spawn the thread Worker.
-
-    // Call kernel_handle_channel normally for clone — the kernel allocates
-    // thread state and returns a TID.
+    // Route through kernel_handle_channel — the kernel allocates a TID and
+    // stores ThreadInfo. The dispatch table remaps args correctly.
     const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
     kernelView.setUint32(CH_SYSCALL, SYS_CLONE, true);
     for (let i = 0; i < CH_ARGS_COUNT; i++) {
@@ -991,16 +984,21 @@ export class CentralizedKernelWorker {
     const errVal = kernelView.getUint32(CH_ERRNO, true);
 
     if (retVal < 0) {
-      // Clone failed in kernel
       this.completeChannel(channel, SYS_CLONE, origArgs, undefined, retVal, errVal);
       return;
     }
 
     const tid = retVal;
 
-    // Call onClone to spawn thread Worker, then complete parent's channel with TID
+    // Extract args in Linux syscall convention for onClone callback.
+    // onClone(pid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory)
+    // fn_ptr and arg are 0 — musl sets them on the child's stack before the syscall.
+    const stackPtr = origArgs[1];
+    const tlsPtr = origArgs[3];
+    const ctidPtr = origArgs[4];
+
     this.callbacks.onClone(
-      channel.pid, fnPtr, _arg, stackPtr, tlsPtr, 0, channel.memory,
+      channel.pid, 0 /* fnPtr */, 0 /* argPtr */, stackPtr, tlsPtr, ctidPtr, channel.memory,
     ).then((assignedTid) => {
       if (!this.processes.has(channel.pid)) return;
       this.completeChannel(channel, SYS_CLONE, origArgs, undefined, assignedTid, 0);
@@ -1034,6 +1032,19 @@ export class CentralizedKernelWorker {
     // Notify callback
     if (this.callbacks.onExit) {
       this.callbacks.onExit(channel.pid, exitStatus);
+    }
+  }
+
+  /**
+   * Notify the kernel that a thread has exited.
+   * Removes thread state from the process's thread table.
+   */
+  notifyThreadExit(pid: number, tid: number): void {
+    if (!this.kernelInstance) return;
+    const threadExit = this.kernelInstance.exports.kernel_thread_exit as
+      ((pid: number, tid: number) => number) | undefined;
+    if (threadExit) {
+      threadExit(pid, tid);
     }
   }
 

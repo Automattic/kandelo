@@ -177,6 +177,10 @@ fn file_type_to_u32(ft: FileType) -> u32 {
         FileType::Pipe => 2,
         FileType::CharDevice => 3,
         FileType::Socket => 4,
+        FileType::EventFd => 5,
+        FileType::Epoll => 6,
+        FileType::TimerFd => 7,
+        FileType::SignalFd => 8,
     }
 }
 
@@ -187,6 +191,10 @@ fn u32_to_file_type(v: u32) -> Result<FileType, Errno> {
         2 => Ok(FileType::Pipe),
         3 => Ok(FileType::CharDevice),
         4 => Ok(FileType::Socket),
+        5 => Ok(FileType::EventFd),
+        6 => Ok(FileType::Epoll),
+        7 => Ok(FileType::TimerFd),
+        8 => Ok(FileType::SignalFd),
         _ => Err(Errno::EINVAL),
     }
 }
@@ -453,6 +461,7 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
             owner_pid: child_pid,
             path,
             dir_host_handle: -1,
+            dir_synth_state: 0,
         });
     }
     let ofd_table = OfdTable::from_raw(ofd_entries);
@@ -512,6 +521,9 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
             ws_xpixel,
             ws_ypixel,
         },
+        foreground_pgid: 1,
+        line_buffer: Vec::new(),
+        cooked_buffer: Vec::new(),
     };
 
     // ── Program break ──
@@ -594,6 +606,12 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
         fork_exec_argv,
         fork_fd_actions,
         next_ephemeral_port: 49152,
+        threads: Vec::new(),  // POSIX: child has single thread
+        next_tid: 0,
+        eventfds: Vec::new(),
+        epolls: Vec::new(),
+        timerfds: Vec::new(),
+        signalfds: Vec::new(),
     })
 }
 
@@ -816,6 +834,7 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
             owner_pid: pid,
             path,
             dir_host_handle: -1,
+            dir_synth_state: 0,
         });
     }
     let ofd_table = OfdTable::from_raw(ofd_entries);
@@ -875,6 +894,9 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
             ws_xpixel,
             ws_ypixel,
         },
+        foreground_pgid: 1,
+        line_buffer: Vec::new(),
+        cooked_buffer: Vec::new(),
     };
 
     // ── Program break ──
@@ -915,6 +937,12 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
         fork_exec_argv: None,
         fork_fd_actions: Vec::new(),
         next_ephemeral_port: 49152,
+        threads: Vec::new(),  // exec resets to single thread
+        next_tid: 0,
+        eventfds: Vec::new(),
+        epolls: Vec::new(),
+        timerfds: Vec::new(),
+        signalfds: Vec::new(),
     })
 }
 
@@ -1161,5 +1189,40 @@ mod tests {
         let child = deserialize_exec_state(&buf[..written], 1).unwrap();
 
         assert_eq!(child.memory.get_brk(), 0x02000000);
+    }
+
+    #[test]
+    fn test_fork_does_not_inherit_threads() {
+        use crate::process::ThreadInfo;
+        let mut proc = Process::new(1);
+        // Parent has 2 threads
+        let t1 = proc.alloc_tid();
+        let t2 = proc.alloc_tid();
+        proc.add_thread(ThreadInfo::new(t1, 0, 0x1000, 0));
+        proc.add_thread(ThreadInfo::new(t2, 0, 0x2000, 0));
+        assert_eq!(proc.threads.len(), 2);
+
+        let mut buf = vec![0u8; 64 * 1024];
+        let written = serialize_fork_state(&proc, &mut buf).unwrap();
+        let child = deserialize_fork_state(&buf[..written], 42).unwrap();
+
+        // POSIX: child has a single thread (the calling thread)
+        assert_eq!(child.threads.len(), 0);
+        assert_eq!(child.next_tid, 0);
+    }
+
+    #[test]
+    fn test_exec_resets_threads() {
+        use crate::process::ThreadInfo;
+        let mut proc = Process::new(1);
+        let t1 = proc.alloc_tid();
+        proc.add_thread(ThreadInfo::new(t1, 0, 0x1000, 0));
+
+        let mut buf = vec![0u8; 64 * 1024];
+        let written = serialize_exec_state(&proc, &mut buf).unwrap();
+        let child = deserialize_exec_state(&buf[..written], 1).unwrap();
+
+        assert_eq!(child.threads.len(), 0);
+        assert_eq!(child.next_tid, 0);
     }
 }

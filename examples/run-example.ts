@@ -23,6 +23,8 @@ const builtinPrograms: Record<string, string> = {
     "echo": resolve(repoRoot, "examples/echo.wasm"),
     "/bin/echo": resolve(repoRoot, "examples/echo.wasm"),
     "/usr/bin/echo": resolve(repoRoot, "examples/echo.wasm"),
+    "sh": resolve(repoRoot, "host/wasm/sh.wasm"),
+    "/bin/sh": resolve(repoRoot, "host/wasm/sh.wasm"),
 };
 
 function resolveProgram(path: string): Promise<ArrayBuffer | null> {

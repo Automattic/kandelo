@@ -1442,8 +1442,10 @@ static long __do_syscall(long n, long a1, long a2, long a3,
         return (long)kernel_set_tid_address((uint32_t)(uintptr_t)a1);
 
     case SYS_SET_ROBUST_LIST:
-        /* STUB: single-threaded — no-op */
         return (long)kernel_set_robust_list((uint32_t)(uintptr_t)a1, (uint32_t)a2);
+
+    case SYS_GET_ROBUST_LIST:
+        return (long)kernel_get_robust_list((uint32_t)a1, (uint32_t)(uintptr_t)a2, (uint32_t)(uintptr_t)a3);
 
     /* ============================================================== */
     /* Futex stub (single-threaded)                                    */
@@ -1465,16 +1467,13 @@ static long __do_syscall(long n, long a1, long a2, long a3,
     /* ============================================================== */
 
     case SYS_EPOLL_CREATE1:
-        /* STUB: returns ENOSYS — programs fall back to poll() */
-        return ENOSYS_NEG;
+        return (long)kernel_epoll_create1((uint32_t)a1);
 
     case SYS_EPOLL_CTL:
-        /* STUB: returns ENOSYS — programs fall back to poll() */
-        return ENOSYS_NEG;
+        return (long)kernel_epoll_ctl((int32_t)a1, (int32_t)a2, (int32_t)a3, (uint8_t *)(uintptr_t)a4);
 
     case SYS_EPOLL_PWAIT:
-        /* STUB: returns ENOSYS — programs fall back to poll() */
-        return ENOSYS_NEG;
+        return (long)kernel_epoll_pwait((int32_t)a1, (uint8_t *)(uintptr_t)a2, (int32_t)a3, (int32_t)a4, (uint32_t)(uintptr_t)a5);
 
     /* ============================================================== */
     /* ppoll — poll with signal mask                                    */
@@ -1830,18 +1829,21 @@ static long __do_syscall(long n, long a1, long a2, long a3,
     /* ============================================================== */
 
     case SYS_EVENTFD2:
+        return (long)kernel_eventfd2((uint32_t)a1, (uint32_t)a2);
     case SYS_EVENTFD:
-        return ENOSYS_NEG;
+        return (long)kernel_eventfd2((uint32_t)a1, 0);
 
     case SYS_SIGNALFD4:
+        return (long)kernel_signalfd4((int32_t)a1, (uint32_t)(uintptr_t)a2, (uint32_t)a3, (uint32_t)a4);
     case SYS_SIGNALFD:
-        return ENOSYS_NEG;
+        return (long)kernel_signalfd4((int32_t)a1, (uint32_t)(uintptr_t)a2, (uint32_t)a3, 0);
 
     case SYS_TIMERFD_CREATE:
-        return ENOSYS_NEG;
+        return (long)kernel_timerfd_create((uint32_t)a1, (uint32_t)a2);
     case SYS_TIMERFD_SETTIME:
+        return (long)kernel_timerfd_settime((int32_t)a1, (uint32_t)a2, (const uint8_t *)(uintptr_t)a3, (uint8_t *)(uintptr_t)a4);
     case SYS_TIMERFD_GETTIME:
-        return -22; /* -EINVAL */
+        return (long)kernel_timerfd_gettime((int32_t)a1, (uint8_t *)(uintptr_t)a2);
 
     case SYS_INOTIFY_INIT1:
     case SYS_INOTIFY_INIT:
@@ -1852,8 +1854,9 @@ static long __do_syscall(long n, long a1, long a2, long a3,
 
     /* Legacy epoll aliases */
     case SYS_EPOLL_CREATE:
+        return (long)kernel_epoll_create1(0);
     case SYS_EPOLL_WAIT:
-        return ENOSYS_NEG;
+        return (long)kernel_epoll_pwait((int32_t)a1, (uint8_t *)(uintptr_t)a2, (int32_t)a3, (int32_t)a4, 0);
 
     /* ============================================================== */
     /* SysV IPC — dispatch to kernel imports                           */
@@ -1983,9 +1986,6 @@ static long __do_syscall(long n, long a1, long a2, long a3,
         if (node_ptr) *node_ptr = 0;
         return 0;
     }
-
-    case SYS_GET_ROBUST_LIST:
-        return ENOSYS_NEG;
 
     case SYS_SENDMMSG:
     case SYS_RECVMMSG:

@@ -7,6 +7,8 @@
  */
 
 import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import type { PlatformIO, StatResult } from "../types";
 import { translateOpenFlags } from "../vfs/host-fs";
 
@@ -16,15 +18,30 @@ export class NodePlatformIO implements PlatformIO {
   private fdPositions = new Map<number, number>();
   // Offset from hrtime (monotonic) to epoch, computed once at startup.
   private readonly _epochOffsetNs: bigint;
+  // /dev/shm replacement directory (macOS has no /dev/shm)
+  private readonly _shmDir: string;
 
   constructor() {
     const hrt = process.hrtime.bigint();
     const wallNs = BigInt(Date.now()) * 1_000_000n;
     this._epochOffsetNs = wallNs - hrt;
+    this._shmDir = path.join(os.tmpdir(), "wasm-posix-shm");
+  }
+
+  /** Rewrite /dev/shm/ paths to a tmpdir-backed directory (macOS compat). */
+  private rewritePath(p: string): string {
+    if (p.startsWith("/dev/shm/") || p === "/dev/shm") {
+      const rel = p.slice("/dev/shm".length); // "" or "/foo"
+      const target = this._shmDir + rel;
+      // Ensure the shm directory exists on first use
+      fs.mkdirSync(this._shmDir, { recursive: true });
+      return target;
+    }
+    return p;
   }
 
   open(path: string, flags: number, mode: number): number {
-    const fd = fs.openSync(path, translateOpenFlags(flags), mode);
+    const fd = fs.openSync(this.rewritePath(path), translateOpenFlags(flags), mode);
     this.fdPositions.set(fd, 0);
     return fd;
   }
@@ -109,7 +126,7 @@ export class NodePlatformIO implements PlatformIO {
   }
 
   stat(path: string): StatResult {
-    const s = fs.statSync(path);
+    const s = fs.statSync(this.rewritePath(path));
     return {
       dev: s.dev,
       ino: s.ino,
@@ -125,7 +142,7 @@ export class NodePlatformIO implements PlatformIO {
   }
 
   lstat(path: string): StatResult {
-    const s = fs.lstatSync(path);
+    const s = fs.lstatSync(this.rewritePath(path));
     return {
       dev: s.dev,
       ino: s.ino,
@@ -141,53 +158,53 @@ export class NodePlatformIO implements PlatformIO {
   }
 
   mkdir(path: string, mode: number): void {
-    fs.mkdirSync(path, { mode });
+    fs.mkdirSync(this.rewritePath(path), { mode });
   }
 
   rmdir(path: string): void {
-    fs.rmdirSync(path);
+    fs.rmdirSync(this.rewritePath(path));
   }
 
   unlink(path: string): void {
-    fs.unlinkSync(path);
+    fs.unlinkSync(this.rewritePath(path));
   }
 
   rename(oldPath: string, newPath: string): void {
-    fs.renameSync(oldPath, newPath);
+    fs.renameSync(this.rewritePath(oldPath), this.rewritePath(newPath));
   }
 
   link(existingPath: string, newPath: string): void {
-    fs.linkSync(existingPath, newPath);
+    fs.linkSync(this.rewritePath(existingPath), this.rewritePath(newPath));
   }
 
   symlink(target: string, path: string): void {
-    fs.symlinkSync(target, path);
+    fs.symlinkSync(target, this.rewritePath(path));
   }
 
   readlink(path: string): string {
-    return fs.readlinkSync(path, "utf8");
+    return fs.readlinkSync(this.rewritePath(path), "utf8");
   }
 
   chmod(path: string, mode: number): void {
-    fs.chmodSync(path, mode);
+    fs.chmodSync(this.rewritePath(path), mode);
   }
 
   chown(path: string, uid: number, gid: number): void {
-    fs.chownSync(path, uid, gid);
+    fs.chownSync(this.rewritePath(path), uid, gid);
   }
 
   access(path: string, mode: number): void {
-    fs.accessSync(path, mode);
+    fs.accessSync(this.rewritePath(path), mode);
   }
 
   utimensat(path: string, atimeSec: number, atimeNsec: number, mtimeSec: number, mtimeNsec: number): void {
     const atime = atimeSec + atimeNsec / 1e9;
     const mtime = mtimeSec + mtimeNsec / 1e9;
-    fs.utimesSync(path, atime, mtime);
+    fs.utimesSync(this.rewritePath(path), atime, mtime);
   }
 
   opendir(path: string): number {
-    const dir = fs.opendirSync(path);
+    const dir = fs.opendirSync(this.rewritePath(path));
     const handle = this.nextDirHandle++;
     this.dirHandles.set(handle, dir);
     return handle;

@@ -4,12 +4,16 @@ Failures that cannot be fixed without major architectural changes or Wasm spec e
 
 ## 1. No Guest-Initiated Thread Creation (18 tests)
 
-WebAssembly has no native `pthread_create` equivalent. Wasm threads require SharedArrayBuffer + Web Workers, orchestrated entirely by the host. The kernel returns ENOSYS for `clone`/`pthread_create` syscalls from guest code.
+WebAssembly has no native `pthread_create` equivalent. Wasm threads require SharedArrayBuffer + Web Workers, orchestrated entirely by the host.
+
+**Kernel infrastructure exists:** `sys_clone` allocates thread IDs and stores ThreadInfo (stack ptr, TLS ptr, ctid ptr) in the process. `sys_futex` supports WAIT/WAKE/REQUEUE/CMP_REQUEUE/WAKE_OP operations. `set_tid_address` stores tidptr per-thread. The kernel side is ready for host-managed thread Workers.
+
+**Missing:** Host-side Worker spawning (`onClone` callback in `CentralizedKernelWorker`), shared Memory between parent and child Workers, thread entry point, TLS initialization via `__wasm_init_tls`.
 
 **Affected tests (functional):** `pthread_cancel`, `pthread_cancel-points`, `pthread_cond`, `pthread_mutex`, `pthread_robust`, `pthread_tsd`, `sem_init`, `sem_open`, `tls_init`
 **Affected tests (regression):** `pthread_exit-cancel`, `pthread_rwlock-ebusy`, `raise-race`, `pthread_cond-smasher`, `pthread_create-oom`, `pthread_once-deadlock`, `pthread-robust-detach`, `tls_get_new-dtv`
 
-**Future path:** Host-managed Web Worker pool where the kernel requests thread creation from the host, which spawns a new Worker sharing the same memory. Requires significant host-side orchestration.
+**Future path:** Host-managed Web Worker pool where the kernel requests thread creation from the host, which spawns a new Worker sharing the same Memory. Channel allocation for each thread's syscall dispatch.
 
 ## 2. Limited fork() — Asyncify-Based
 
@@ -43,13 +47,13 @@ This means `fesetround()`, `fegetround()`, `feraiseexcept()`, etc. are functiona
 
 **Impact:** No test failures — math tests correctly skip non-RN rounding checks.
 
-## 6. Hangs on OOM / Resource Exhaustion (4 tests)
+## 6. OOM / Resource Exhaustion (2 tests)
 
-Tests that deliberately exhaust resources (malloc until OOM) hang because Wasm's `memory.grow` doesn't properly signal failure in all musl code paths, and single-threaded execution means spinning loops never yield.
+Tests that deliberately exhaust resources (malloc until OOM) can trigger issues because Wasm memory growth behaves differently from native. Memory limits are now enforced (RLIMIT_AS), and most OOM tests pass. Two remain:
 
-**Affected tests (regression):** `flockfile-list`, `malloc-brk-fail`, `malloc-oom`, `setenv-oom`
+**Affected tests (regression):** `malloc-brk-fail`, `malloc-oom`
 
-**Future path:** Better `brk`/`mmap` failure handling; wasm memory growth limits; host-side timeout and interruption mechanism.
+These tests expect specific brk/mmap failure semantics that differ in Wasm's linear memory model (brk and mmap regions are separate; `memory.grow` failure doesn't perfectly map to native OOM signaling).
 
 ## 7. setjmp Timeout (1 test)
 
@@ -72,6 +76,30 @@ These failures are fixable but require specific features:
 | `execle-env` | `/bin/sh` binary (e.g., dash or mrsh compiled to Wasm) | Medium |
 | `socket` | UDP bind/sendto/recvfrom + TCP listen/accept (loopback) | Medium |
 | `ipc_msg`, `ipc_sem`, `ipc_shm` | SysV IPC (msgget, semget, shmget) | Low |
+
+## 10. Summary: What Cannot Be Implemented in Wasm
+
+| Feature | Why |
+|---------|-----|
+| `mprotect()` | Wasm linear memory has no page-level protection |
+| `sigaltstack` (functional) | Wasm stack is engine-managed, opaque — cannot redirect to alternate stack |
+| FP exceptions / alternate rounding | Wasm FP is non-trapping IEEE 754 with fixed round-to-nearest mode |
+| `getrusage()` with real data | No CPU/memory tracking available in Wasm runtime |
+| `mremap()` | Wasm memory can only grow, not remap regions |
+| Raw server sockets (browser) | Web sandbox prevents listening on ports |
+| `dlopen()` / `dlsym()` | Wasm component model may enable this in future |
+
+## 11. Deferred Items (Not Impossible, Future Work)
+
+| Feature | Notes |
+|---------|-------|
+| Cancellation points (`__syscall_cp_asm`) | Could implement via musl overlay with C-level cancellation check; needs threading first |
+| Real setuid/setgid enforcement | Could add privilege model; low priority |
+| File-backed `mmap(MAP_SHARED, fd)` | Architecturally complex, needs host cooperation |
+| UDP sendto/recvfrom | Needs host dgram socket backend |
+| POSIX timers (timer_create) | Medium effort, signal delivery on expiration |
+| sem_open | Requires file-backed mmap or musl overlay |
+| ENFILE system-wide fd tracking | Trivial in centralized mode (single ProcessTable) |
 
 ## Current Test Results (2026-03-18)
 
