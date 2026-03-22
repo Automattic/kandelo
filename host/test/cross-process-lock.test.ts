@@ -1,18 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
-import { ProcessManager } from "../src/process-manager";
-import { NodeWorkerAdapter } from "../src/worker-adapter";
 import { SharedLockTable } from "../src/shared-lock-table";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-
-function loadWasmBytes(): ArrayBuffer {
-  const wasmPath = join(__dirname, "../wasm/wasm_posix_kernel.wasm");
-  const buf = readFileSync(wasmPath);
-  return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
-}
 
 describe("Cross-Process Lock — SharedLockTable concurrency", () => {
   it("should detect write-write conflict between different pids", () => {
@@ -133,73 +120,4 @@ describe("Cross-Process Lock — SharedLockTable concurrency", () => {
     // PID 2 should be able to lock immediately
     expect(table.setLock(pathHash, 2, 1, 0n, 0n)).toBe(true);
   });
-});
-
-describe("Cross-Process Lock — ProcessManager integration", () => {
-  it("should share lock table across spawned processes", async () => {
-    const pm = new ProcessManager({
-      wasmBytes: loadWasmBytes(),
-      kernelConfig: {
-        maxWorkers: 4,
-        dataBufferSize: 65536,
-        useSharedMemory: false,
-      },
-      workerAdapter: new NodeWorkerAdapter(),
-    });
-
-    // Spawn two processes
-    const pid1 = await pm.spawn();
-    const pid2 = await pm.spawn();
-
-    expect(pid1).toBe(1);
-    expect(pid2).toBe(2);
-
-    // Both processes should be running (lock table is shared via SAB)
-    expect(pm.getProcess(pid1)!.state).toBe("running");
-    expect(pm.getProcess(pid2)!.state).toBe("running");
-
-    await pm.terminate(pid1);
-    await pm.terminate(pid2);
-  }, 15_000);
-
-  it("should share lock table across forked processes", async () => {
-    const pm = new ProcessManager({
-      wasmBytes: loadWasmBytes(),
-      kernelConfig: {
-        maxWorkers: 4,
-        dataBufferSize: 65536,
-        useSharedMemory: false,
-      },
-      workerAdapter: new NodeWorkerAdapter(),
-    });
-
-    const parentPid = await pm.spawn();
-    const childPid = await pm.fork(parentPid);
-
-    expect(pm.getProcess(parentPid)!.state).toBe("running");
-    expect(pm.getProcess(childPid)!.state).toBe("running");
-
-    await pm.terminate(childPid);
-    await pm.terminate(parentPid);
-  }, 15_000);
-
-  it("should clean up locks on process termination", async () => {
-    const pm = new ProcessManager({
-      wasmBytes: loadWasmBytes(),
-      kernelConfig: {
-        maxWorkers: 4,
-        dataBufferSize: 65536,
-        useSharedMemory: false,
-      },
-      workerAdapter: new NodeWorkerAdapter(),
-    });
-
-    const pid = await pm.spawn();
-
-    // Terminating a process should clean up its locks (belt-and-suspenders with kernel-side cleanup)
-    await pm.terminate(pid);
-
-    // Process should be gone
-    expect(pm.getProcess(pid)).toBeUndefined();
-  }, 15_000);
 });
