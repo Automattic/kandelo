@@ -29,7 +29,6 @@ MATH_RELAXED_EXPECTED_FAIL=(tgamma j0 y0 y0f)  # Tests with inline checks that b
 # no file-backed mmap for sem_open).
 FUNCTIONAL_EXPECTED_FAIL=(
     pthread_cancel
-    pthread_cancel-points
     sem_open
     sigaltstack
     # Centralized mode: SysV IPC not wired through host imports
@@ -39,22 +38,14 @@ FUNCTIONAL_EXPECTED_FAIL=(
     # Centralized mode: exec/spawn/popen require full exec support
     popen
     spawn
-    # Centralized mode: pthread_create not yet implemented
-    pthread_tsd
     # Centralized mode: vfork child exec + waitpid tracking
     vfork
 )
 REGRESSION_EXPECTED_FAIL=(
     malloc-brk-fail
     malloc-oom
-    pthread_cancel-sem_wait
-    pthread_cond-smasher
     pthread_cond_wait-cancel_ignored
     pthread_create-oom
-    pthread_exit-cancel
-    pthread_once-deadlock
-    pthread-robust-detach
-    pthread_rwlock-ebusy
     raise-race
     setenv-oom
     sigaltstack

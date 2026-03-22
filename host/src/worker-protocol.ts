@@ -2,6 +2,7 @@
 
 export type HostToWorkerMessage =
   | CentralizedWorkerInitMessage
+  | CentralizedThreadInitMessage
   | WorkerTerminateMessage
   | DeliverSignalMessage
   | ExecReplyMessage;
@@ -34,6 +35,27 @@ export interface CentralizedWorkerInitMessage {
   cwd?: string;
 }
 
+/**
+ * Init message for thread Workers in centralized mode.
+ * Threads share the parent process's Memory and run a function pointer.
+ */
+export interface CentralizedThreadInitMessage {
+  type: "centralized_thread_init";
+  pid: number;
+  tid: number;
+  programBytes: ArrayBuffer;
+  programModule?: WebAssembly.Module;
+  memory: WebAssembly.Memory;
+  channelOffset: number;
+  fnPtr: number;
+  argPtr: number;
+  stackPtr: number;
+  tlsPtr: number;
+  ctidPtr: number;
+  /** Pre-allocated address in shared memory for Wasm TLS initialization */
+  tlsAllocAddr: number;
+}
+
 export interface WorkerTerminateMessage {
   type: "terminate";
 }
@@ -43,6 +65,7 @@ export interface WorkerTerminateMessage {
 export type WorkerToHostMessage =
   | WorkerReadyMessage
   | WorkerExitMessage
+  | ThreadExitMessage
   | WorkerErrorMessage
   | ExecRequestMessage
   | ExecCompleteMessage
@@ -57,6 +80,12 @@ export interface WorkerExitMessage {
   type: "exit";
   pid: number;
   status: number;
+}
+
+export interface ThreadExitMessage {
+  type: "thread_exit";
+  pid: number;
+  tid: number;
 }
 
 export interface WorkerErrorMessage {

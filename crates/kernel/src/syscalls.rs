@@ -4147,8 +4147,10 @@ pub fn sys_clone(
         host.host_clone(fn_ptr, arg, stack_ptr, tls_ptr, ctid_ptr)?
     };
 
-    // Write TID to parent's tid pointer if CLONE_PARENT_SETTID
-    if flags & CLONE_PARENT_SETTID != 0 && ptid_ptr != 0 {
+    // Write TID to parent's tid pointer if CLONE_PARENT_SETTID.
+    // In centralized mode, ptid_ptr is in process memory (not kernel memory),
+    // so the host must handle this write instead.
+    if !crate::is_centralized_mode() && flags & CLONE_PARENT_SETTID != 0 && ptid_ptr != 0 {
         #[cfg(target_arch = "wasm32")]
         unsafe {
             let ptr = ptid_ptr as *mut i32;

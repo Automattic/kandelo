@@ -378,7 +378,7 @@ export interface CentralizedKernelCallbacks {
    * Called when a process calls clone (thread creation). The callback should
    * spawn a thread Worker sharing the parent's Memory. Returns the TID.
    */
-  onClone?: (pid: number, fnPtr: number, argPtr: number, stackPtr: number, tlsPtr: number, ctidPtr: number, memory: WebAssembly.Memory) => Promise<number>;
+  onClone?: (pid: number, tid: number, fnPtr: number, argPtr: number, stackPtr: number, tlsPtr: number, ctidPtr: number, memory: WebAssembly.Memory) => Promise<number>;
 
   /**
    * Called when a process exits.
@@ -395,6 +395,10 @@ export class CentralizedKernelWorker {
   private scratchOffset = 0;
   private initialized = false;
   private nextChildPid = 100;
+  /** Maps "pid:channelOffset" to TID for tracking thread channels */
+  private channelTids = new Map<string, number>();
+  /** Maps "pid:tid" to ctidPtr for CLONE_CHILD_CLEARTID on thread exit */
+  private threadCtidPtrs = new Map<string, number>();
 
   constructor(
     private config: KernelConfig,
@@ -491,6 +495,48 @@ export class CentralizedKernelWorker {
   }
 
   /**
+   * Add a new channel (e.g. for a thread) to an existing process registration.
+   * Uses the process's existing memory. If tid is provided, tracks the mapping
+   * so handleExit can identify thread exits.
+   */
+  addChannel(pid: number, channelOffset: number, tid?: number): void {
+    const registration = this.processes.get(pid);
+    if (!registration) throw new Error(`Process ${pid} not registered`);
+
+    const channel: ChannelInfo = {
+      pid,
+      memory: registration.memory,
+      channelOffset,
+      i32View: new Int32Array(registration.memory.buffer, channelOffset),
+    };
+
+    registration.channels.push(channel);
+    this.activeChannels.push(channel);
+
+    if (tid !== undefined) {
+      this.channelTids.set(`${pid}:${channelOffset}`, tid);
+    }
+
+    this.listenOnChannel(channel);
+  }
+
+  /**
+   * Remove a channel from a process registration (e.g. when a thread exits).
+   */
+  removeChannel(pid: number, channelOffset: number): void {
+    const registration = this.processes.get(pid);
+    if (!registration) return;
+
+    registration.channels = registration.channels.filter(
+      (ch) => ch.channelOffset !== channelOffset,
+    );
+    this.activeChannels = this.activeChannels.filter(
+      (ch) => !(ch.pid === pid && ch.channelOffset === channelOffset),
+    );
+    this.channelTids.delete(`${pid}:${channelOffset}`);
+  }
+
+  /**
    * Listen for a syscall on a channel using Atomics.waitAsync.
    * When the process sets status to PENDING, we handle the syscall.
    */
@@ -551,6 +597,7 @@ export class CentralizedKernelWorker {
       origArgs.push(processView.getInt32(CH_ARGS + i * 4, true));
     }
 
+
     // --- Intercept fork/exec/clone/exit before calling kernel ---
     // These syscalls need special async handling that can't go through
     // the blocking host_fork/host_exec imports.
@@ -572,6 +619,15 @@ export class CentralizedKernelWorker {
 
     if (syscallNr === SYS_EXIT || syscallNr === SYS_EXIT_GROUP) {
       this.handleExit(channel, syscallNr, origArgs);
+      return;
+    }
+
+    // --- Futex: must operate on process memory, not kernel memory ---
+    // The kernel's host_futex_wake/wait imports use kernel memory, but in
+    // centralized mode the futex address is in process memory. Intercept
+    // here and handle directly.
+    if (syscallNr === SYS_FUTEX) {
+      this.handleFutex(channel, origArgs);
       return;
     }
 
@@ -666,7 +722,18 @@ export class CentralizedKernelWorker {
 
     // Call kernel_handle_channel
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as (offset: number, pid: number) => number;
-    handleChannel(this.scratchOffset, channel.pid);
+    try {
+      handleChannel(this.scratchOffset, channel.pid);
+    } catch (err) {
+      // If the kernel throws (e.g., invalid memory access), complete the
+      // channel with -EIO to unblock the process rather than deadlocking.
+      console.error(`[handleSyscall] kernel threw for pid=${channel.pid} syscall=${syscallNr}: ${err}`);
+      this.completeChannelRaw(channel, -5, 5); // -EIO
+      if (this.processes.has(channel.pid)) {
+        queueMicrotask(() => this.listenOnChannel(channel));
+      }
+      return;
+    }
 
     // Read return value and errno from kernel scratch
     const retVal = kernelView.getInt32(CH_RETURN, true);
@@ -774,6 +841,21 @@ export class CentralizedKernelWorker {
     if (this.processes.has(channel.pid)) {
       queueMicrotask(() => this.listenOnChannel(channel));
     }
+  }
+
+  /**
+   * Complete a channel with just return value and errno (no scatter/gather).
+   * Used for thread exit where we need to unblock the worker.
+   */
+  private completeChannelRaw(channel: ChannelInfo, retVal: number, errVal: number): void {
+    const processView = new DataView(channel.memory.buffer, channel.channelOffset);
+    processView.setInt32(CH_RETURN, retVal, true);
+    processView.setUint32(CH_ERRNO, errVal, true);
+
+    const i32View = new Int32Array(channel.memory.buffer, channel.channelOffset);
+    Atomics.store(i32View, CH_STATUS / 4, CH_COMPLETE);
+    Atomics.notify(i32View, CH_STATUS / 4, 1);
+    // Don't re-listen — channel is being removed
   }
 
   /**
@@ -1266,41 +1348,201 @@ export class CentralizedKernelWorker {
 
     const tid = retVal;
 
-    // Extract args in Linux syscall convention for onClone callback.
-    // onClone(pid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory)
-    // fn_ptr and arg are 0 — musl sets them on the child's stack before the syscall.
+    // CLONE_PARENT_SETTID: write TID to ptid_ptr in process memory.
+    // The kernel skips this in centralized mode since ptid_ptr is in
+    // process memory, not kernel memory.
+    const CLONE_PARENT_SETTID = 0x00100000;
+    const flags = origArgs[0];
+    const ptidPtr = origArgs[2];
+    if (flags & CLONE_PARENT_SETTID && ptidPtr !== 0) {
+      const procView = new DataView(channel.memory.buffer);
+      procView.setInt32(ptidPtr, tid, true);
+    }
+
+    // Read fnPtr and argPtr from the channel's CH_DATA area (written by kernel_clone stub)
+    const processView = new DataView(channel.memory.buffer, channel.channelOffset);
+    const fnPtr = processView.getUint32(CH_DATA, true);
+    const argPtr = processView.getUint32(CH_DATA + 4, true);
     const stackPtr = origArgs[1];
     const tlsPtr = origArgs[3];
     const ctidPtr = origArgs[4];
 
     this.callbacks.onClone(
-      channel.pid, 0 /* fnPtr */, 0 /* argPtr */, stackPtr, tlsPtr, ctidPtr, channel.memory,
+      channel.pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, channel.memory,
     ).then((assignedTid) => {
       if (!this.processes.has(channel.pid)) return;
+      // Store ctidPtr for CLONE_CHILD_CLEARTID on thread exit
+      if (ctidPtr !== 0) {
+        this.threadCtidPtrs.set(`${channel.pid}:${assignedTid}`, ctidPtr);
+      }
       this.completeChannel(channel, SYS_CLONE, origArgs, undefined, assignedTid, 0);
-    }).catch(() => {
+    }).catch((err) => {
+      console.error(`[kernel-worker] onClone failed: ${err}`);
       this.completeChannel(channel, SYS_CLONE, origArgs, undefined, -1, 12); // ENOMEM
     });
   }
 
   /**
    * Handle SYS_EXIT/SYS_EXIT_GROUP: notify the kernel and clean up.
+   *
+   * For SYS_EXIT from a non-main channel (thread exit): notify kernel,
+   * remove channel, complete channel to unblock thread worker.
+   * For SYS_EXIT from main channel or SYS_EXIT_GROUP: current behavior.
    */
   private handleExit(channel: ChannelInfo, syscallNr: number, origArgs: number[]): void {
     const exitStatus = origArgs[0];
+    const registration = this.processes.get(channel.pid);
 
-    // Don't route through kernel_handle_channel — kernel_exit traps with
-    // `unreachable` and can't be caught cleanly. Instead, mark the process
-    // as exited via kernel_remove_process (called by unregisterProcess).
-    //
-    // IMPORTANT: Do NOT complete the channel. The worker is blocked on
-    // Atomics.wait in __do_syscall. If we complete the channel, musl's
-    // _exit() would loop calling SYS_exit repeatedly. By leaving the
-    // worker blocked, the host can terminate the worker thread cleanly.
+    // Check if this is a thread exit (non-main channel + SYS_EXIT)
+    const isMainChannel = registration && registration.channels.length > 0 &&
+      registration.channels[0].channelOffset === channel.channelOffset;
 
-    // Notify callback (which should terminate the worker)
+    if (syscallNr === SYS_EXIT && !isMainChannel) {
+      // Thread exit: find TID, notify kernel, remove channel, complete to unblock
+      const tidKey = `${channel.pid}:${channel.channelOffset}`;
+      const tid = this.channelTids.get(tidKey) ?? 0;
+      if (tid > 0) {
+        this.channelTids.delete(tidKey);
+      }
+
+      // CLONE_CHILD_CLEARTID: write 0 to ctidPtr and futex-wake it.
+      // This is normally done by the Linux kernel on thread exit; we must
+      // do it here because the thread worker never returns from __pthread_exit
+      // (it loops on SYS_EXIT).
+      if (tid > 0) {
+        const ctidKey = `${channel.pid}:${tid}`;
+        const ctidPtr = this.threadCtidPtrs.get(ctidKey);
+        if (ctidPtr && ctidPtr !== 0) {
+          this.threadCtidPtrs.delete(ctidKey);
+          const procView = new DataView(channel.memory.buffer);
+          procView.setInt32(ctidPtr, 0, true);
+          const i32View = new Int32Array(channel.memory.buffer);
+          Atomics.notify(i32View, ctidPtr >>> 2, 1);
+        }
+      }
+
+      if (tid > 0) {
+        this.notifyThreadExit(channel.pid, tid);
+      }
+      this.removeChannel(channel.pid, channel.channelOffset);
+      // Complete channel to unblock the thread worker so it can exit cleanly
+      this.completeChannelRaw(channel, 0, 0);
+      return;
+    }
+
+    // Main thread exit or exit_group: don't complete channel, let host terminate worker
     if (this.callbacks.onExit) {
       this.callbacks.onExit(channel.pid, exitStatus);
+    }
+  }
+
+  /**
+   * Handle SYS_FUTEX directly on process memory.
+   *
+   * In centralized mode, the kernel's host_futex_wake/wait imports operate on
+   * kernel memory, but futex addresses are in process memory. We bypass the
+   * kernel entirely and implement the futex ops here.
+   *
+   * FUTEX_WAIT: compare-and-block. If the value at addr matches expected,
+   * use Atomics.waitAsync to wait for a change, then return 0. If it doesn't
+   * match, return -EAGAIN.
+   *
+   * FUTEX_WAKE: wake up to `val` waiters on addr. Returns number woken.
+   */
+  private handleFutex(channel: ChannelInfo, origArgs: number[]): void {
+    const addr = origArgs[0];     // uaddr (byte offset in process memory)
+    const op = origArgs[1];       // futex op (may include PRIVATE flag)
+    const val = origArgs[2];      // value (expected for WAIT, count for WAKE)
+
+    const FUTEX_PRIVATE_FLAG = 128;
+    const FUTEX_CLOCK_REALTIME = 256;
+    const baseOp = op & ~(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME);
+
+    const FUTEX_WAIT = 0;
+    const FUTEX_WAKE = 1;
+    const FUTEX_REQUEUE = 3;
+    const FUTEX_CMP_REQUEUE = 4;
+    const FUTEX_WAKE_OP = 5;
+    const FUTEX_WAIT_BITSET = 9;
+    const FUTEX_WAKE_BITSET = 10;
+
+    const i32View = new Int32Array(channel.memory.buffer);
+    const index = addr >>> 2;
+
+    if (baseOp === FUTEX_WAIT || baseOp === FUTEX_WAIT_BITSET) {
+      // Compare value at addr with expected
+      const currentVal = Atomics.load(i32View, index);
+      if (currentVal !== val) {
+        // Value already changed — return -EAGAIN (Linux convention)
+        this.completeChannelRaw(channel, -EAGAIN, EAGAIN);
+        // Re-listen
+        if (this.processes.has(channel.pid)) {
+          queueMicrotask(() => this.listenOnChannel(channel));
+        }
+        return;
+      }
+
+      // Value matches — wait asynchronously for it to change
+      const waitResult = Atomics.waitAsync(i32View, index, val);
+      if (waitResult.async) {
+        waitResult.value.then(() => {
+          if (!this.processes.has(channel.pid)) return;
+          // Woken — return 0 (success)
+          this.completeChannelRaw(channel, 0, 0);
+          if (this.processes.has(channel.pid)) {
+            queueMicrotask(() => this.listenOnChannel(channel));
+          }
+        });
+      } else {
+        // Already changed — return 0
+        this.completeChannelRaw(channel, 0, 0);
+        if (this.processes.has(channel.pid)) {
+          queueMicrotask(() => this.listenOnChannel(channel));
+        }
+      }
+      return;
+    }
+
+    if (baseOp === FUTEX_WAKE || baseOp === FUTEX_WAKE_BITSET) {
+      const woken = Atomics.notify(i32View, index, val);
+      this.completeChannelRaw(channel, woken, 0);
+      if (this.processes.has(channel.pid)) {
+        queueMicrotask(() => this.listenOnChannel(channel));
+      }
+      return;
+    }
+
+    if (baseOp === FUTEX_REQUEUE || baseOp === FUTEX_CMP_REQUEUE) {
+      // Wake val waiters on uaddr, can't truly requeue with Atomics,
+      // so wake val + val2 on uaddr.
+      const val2 = origArgs[3]; // timeout param repurposed as val2
+      const woken = Atomics.notify(i32View, index, val + val2);
+      this.completeChannelRaw(channel, woken, 0);
+      if (this.processes.has(channel.pid)) {
+        queueMicrotask(() => this.listenOnChannel(channel));
+      }
+      return;
+    }
+
+    if (baseOp === FUTEX_WAKE_OP) {
+      // Wake val waiters on uaddr, then conditionally wake val2 on uaddr2.
+      // Simplified: just wake both.
+      const val2 = origArgs[3];
+      const uaddr2 = origArgs[4];
+      const index2 = uaddr2 >>> 2;
+      let woken = Atomics.notify(i32View, index, val);
+      woken += Atomics.notify(i32View, index2, val2);
+      this.completeChannelRaw(channel, woken, 0);
+      if (this.processes.has(channel.pid)) {
+        queueMicrotask(() => this.listenOnChannel(channel));
+      }
+      return;
+    }
+
+    // Unknown futex op — return -ENOSYS
+    this.completeChannelRaw(channel, -38, 38);
+    if (this.processes.has(channel.pid)) {
+      queueMicrotask(() => this.listenOnChannel(channel));
     }
   }
 

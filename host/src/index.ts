@@ -8,7 +8,7 @@ export { SharedPipeBuffer } from "./shared-pipe-buffer";
 export { SharedLockTable } from "./shared-lock-table";
 export type { LockInfo } from "./shared-lock-table";
 export { NodeWorkerAdapter, MockWorkerAdapter } from "./worker-adapter";
-export { centralizedWorkerMain } from "./worker-main";
+export { centralizedWorkerMain, centralizedThreadWorkerMain } from "./worker-main";
 export type { MessagePort as WorkerMessagePort } from "./worker-main";
 export type { KernelConfig, PlatformIO, StatResult, NetworkIO } from "./types";
 export { TcpNetworkBackend, FetchNetworkBackend } from "./networking";
@@ -26,5 +26,7 @@ export type {
   ExecCompleteMessage,
   AlarmSetMessage,
   CentralizedWorkerInitMessage,
+  CentralizedThreadInitMessage,
+  ThreadExitMessage,
 } from "./worker-protocol";
 export * from "./vfs/index";

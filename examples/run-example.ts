@@ -18,7 +18,7 @@ import { CentralizedKernelWorker } from "../host/src/kernel-worker";
 import { NodePlatformIO } from "../host/src/platform/node";
 import { NodeWorkerAdapter } from "../host/src/worker-adapter";
 import type { WorkerHandle } from "../host/src/worker-adapter";
-import type { CentralizedWorkerInitMessage, WorkerToHostMessage } from "../host/src/worker-protocol";
+import type { CentralizedWorkerInitMessage, CentralizedThreadInitMessage, WorkerToHostMessage } from "../host/src/worker-protocol";
 
 const CH_TOTAL_SIZE = 40 + 65536; // header (40B) + data buffer (64KB)
 
@@ -148,6 +148,56 @@ async function main() {
                 return -38; // ENOSYS for now
             },
 
+            onClone: async (pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory) => {
+                // Allocate channel + TLS from pre-allocated memory (counting down from main channel)
+                // 3 pages: 2 for channel (header + 64KB data) + 1 for Wasm TLS
+                const threadChannelOffset = nextThreadChannelPage * 65536;
+                const tlsAllocAddr = (nextThreadChannelPage - 2) * 65536;
+                nextThreadChannelPage -= 3;
+                new Uint8Array(memory.buffer, threadChannelOffset, CH_TOTAL_SIZE).fill(0);
+                new Uint8Array(memory.buffer, tlsAllocAddr, 65536).fill(0);
+
+                // Register thread channel with kernel worker
+                kernelWorker.addChannel(pid, threadChannelOffset, tid);
+
+                // Spawn thread worker
+                const threadInitData: CentralizedThreadInitMessage = {
+                    type: "centralized_thread_init",
+                    pid,
+                    tid,
+                    programBytes: programBytes.buffer.slice(
+                        programBytes.byteOffset,
+                        programBytes.byteOffset + programBytes.byteLength,
+                    ),
+                    memory,
+                    channelOffset: threadChannelOffset,
+                    fnPtr,
+                    argPtr,
+                    stackPtr,
+                    tlsPtr,
+                    ctidPtr,
+                    tlsAllocAddr,
+                };
+
+                const threadWorker = workerAdapter.createWorker(threadInitData);
+                threadWorker.on("message", (msg: unknown) => {
+                    const m = msg as WorkerToHostMessage;
+                    if (m.type === "thread_exit") {
+                        threadWorker.terminate().catch(() => {});
+                    }
+                });
+                threadWorker.on("error", (err: Error) => {
+                    console.error(`[thread worker error] ${err.message}`);
+                    kernelWorker.notifyThreadExit(pid, tid);
+                    kernelWorker.removeChannel(pid, threadChannelOffset);
+                });
+                threadWorker.on("exit", (code: number) => {
+                    console.error(`[thread worker exit] code=${code}`);
+                });
+
+                return tid;
+            },
+
             onExit: (pid, exitStatus) => {
                 const entry = processExits.get(pid);
                 if (entry) {
@@ -168,6 +218,8 @@ async function main() {
 
     // Create shared memory for the process
     const MAX_PAGES = 16384;
+    // Thread channel allocator: count down from main channel (MAX_PAGES - 2)
+    let nextThreadChannelPage = MAX_PAGES - 4;
     const memory = new WebAssembly.Memory({
         initial: 17,
         maximum: MAX_PAGES,

@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { CentralizedKernelWorker } from "../src/kernel-worker";
 import { NodePlatformIO } from "../src/platform/node";
 import { NodeWorkerAdapter } from "../src/worker-adapter";
-import type { CentralizedWorkerInitMessage, WorkerToHostMessage } from "../src/worker-protocol";
+import type { CentralizedWorkerInitMessage, CentralizedThreadInitMessage, WorkerToHostMessage } from "../src/worker-protocol";
 import type { PlatformIO } from "../src/types";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -83,6 +83,9 @@ export async function runCentralizedProgram(
     rejectExit = reject;
   });
 
+  // Thread channel allocator: count down from main channel
+  let nextThreadChannelPage = MAX_PAGES - 4; // main channel is at MAX_PAGES - 2
+
   const kernelWorker = new CentralizedKernelWorker(
     { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true },
     io,
@@ -122,6 +125,48 @@ export async function runCentralizedProgram(
         return [childChannelOffset];
       },
       onExec: async () => -38, // ENOSYS
+      onClone: async (pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory) => {
+        // Allocate channel + TLS from pre-allocated memory (counting down from main channel)
+        // 3 pages: 2 for channel (header + 64KB data) + 1 for Wasm TLS
+        const threadChannelOffset = nextThreadChannelPage * 65536;
+        const tlsAllocAddr = (nextThreadChannelPage - 2) * 65536;
+        nextThreadChannelPage -= 3;
+        new Uint8Array(memory.buffer, threadChannelOffset, CH_TOTAL_SIZE).fill(0);
+        new Uint8Array(memory.buffer, tlsAllocAddr, 65536).fill(0);
+
+        // Register thread channel with kernel worker
+        kernelWorker.addChannel(pid, threadChannelOffset, tid);
+
+        // Spawn thread worker
+        const threadInitData: CentralizedThreadInitMessage = {
+          type: "centralized_thread_init",
+          pid,
+          tid,
+          programBytes,
+          memory,
+          channelOffset: threadChannelOffset,
+          fnPtr,
+          argPtr,
+          stackPtr,
+          tlsPtr,
+          ctidPtr,
+          tlsAllocAddr,
+        };
+
+        const threadWorker = workerAdapter.createWorker(threadInitData);
+        threadWorker.on("message", (msg: unknown) => {
+          const m = msg as WorkerToHostMessage;
+          if (m.type === "thread_exit") {
+            threadWorker.terminate().catch(() => {});
+          }
+        });
+        threadWorker.on("error", () => {
+          kernelWorker.notifyThreadExit(pid, tid);
+          kernelWorker.removeChannel(pid, threadChannelOffset);
+        });
+
+        return tid;
+      },
       onExit: (pid, exitStatus) => {
         kernelWorker.unregisterProcess(pid);
         if (pid === 1) {
