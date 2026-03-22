@@ -46,7 +46,7 @@ CFLAGS=(
 )
 
 LINK_FLAGS=(
-    "$GLUE_DIR/syscall_glue.c"
+    "$GLUE_DIR/channel_syscall.c"
     "$GLUE_DIR/compiler_rt.c"
     "$SYSROOT/lib/crt1.o"
     "$SYSROOT/lib/libc.a"
@@ -72,9 +72,10 @@ mkdir -p "$OUT_DIR"
 
 build_program() {
     local src="$1"
+    local out_dir="$2"
     local name
     name=$(basename "$src" .c)
-    local wasm="$OUT_DIR/${name}.wasm"
+    local wasm="$out_dir/${name}.wasm"
 
     echo "  Compiling $name..."
     "$CC" "${CFLAGS[@]}" "$src" "${LINK_FLAGS[@]}" -o "$wasm"
@@ -90,6 +91,12 @@ build_program() {
 echo "Building user programs..."
 for src in "$REPO_ROOT/programs/"*.c; do
     [ -f "$src" ] || continue
-    build_program "$src"
+    build_program "$src" "$OUT_DIR"
+done
+
+echo "Building example programs..."
+for src in "$REPO_ROOT/examples/"*.c; do
+    [ -f "$src" ] || continue
+    build_program "$src" "$REPO_ROOT/examples"
 done
 echo "Programs built."

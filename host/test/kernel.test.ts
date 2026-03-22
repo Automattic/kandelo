@@ -2,54 +2,41 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { WasmPosixKernel } from "../src/kernel";
+import { CentralizedKernelWorker } from "../src/kernel-worker";
 import { NodePlatformIO } from "../src/platform/node";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-describe("WasmPosixKernel", () => {
+describe("CentralizedKernelWorker", () => {
   it("should initialize the kernel from wasm bytes", async () => {
     const wasmPath = join(__dirname, "../wasm/wasm_posix_kernel.wasm");
     const wasmBytes = readFileSync(wasmPath);
 
-    const kernel = new WasmPosixKernel(
-      { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: false },
+    const kernelWorker = new CentralizedKernelWorker(
+      { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true },
       new NodePlatformIO(),
     );
 
-    await kernel.init(wasmBytes);
-    // If init doesn't throw, the kernel loaded and wasm start function ran
-
-    // Verify the instance and memory are available
-    expect(kernel.getInstance()).not.toBeNull();
-    expect(kernel.getMemory()).not.toBeNull();
-
-    // Call kernel_init to set up the process
-    const instance = kernel.getInstance()!;
-    const kernelInit = instance.exports.kernel_init as (pid: number) => void;
-    kernelInit(1);
-
-    // Verify we can call an exported function without crashing.
-    // kernel_dup on an invalid fd should return a negative errno.
-    const kernelDup = instance.exports.kernel_dup as (fd: number) => number;
-    const result = kernelDup(99);
-    expect(result).toBeLessThan(0); // EBADF
-  });
-
-  it("should accept onKill callback in constructor", () => {
-    let killArgs: { pid: number; signal: number } | null = null;
-    const kernel = new WasmPosixKernel(
-      { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: false },
-      new NodePlatformIO(),
-      {
-        onKill: (pid, signal) => {
-          killArgs = { pid, signal };
-          return 0;
-        },
-      },
+    await kernelWorker.init(
+      wasmBytes.buffer.slice(
+        wasmBytes.byteOffset,
+        wasmBytes.byteOffset + wasmBytes.byteLength,
+      ),
     );
-    expect(kernel).toBeDefined();
-    // killArgs is unused here but verifies the callback type is accepted
-    expect(killArgs).toBeNull();
+
+    // If init doesn't throw, the kernel loaded and initialized successfully
+    // Verify we can register a process without error
+    const memory = new WebAssembly.Memory({
+      initial: 17,
+      maximum: 256,
+      shared: true,
+    });
+    const channelOffset = (256 - 2) * 65536;
+    memory.grow(256 - 17);
+
+    kernelWorker.registerProcess(1, memory, [channelOffset]);
+
+    // Unregister to clean up
+    kernelWorker.unregisterProcess(1);
   });
 });

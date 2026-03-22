@@ -953,6 +953,22 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
         3 => kernel_read(a1, a2 as *mut u8, a3 as u32), // SYS_READ: (fd, buf, count)
         4 => kernel_write(a1, a2 as *const u8, a3 as u32), // SYS_WRITE: (fd, buf, count)
         5 => kernel_lseek(a1, a2 as u32, a3, a4 as u32) as i32, // SYS_LSEEK: (fd, off_lo, off_hi, whence)
+        119 => {  // SYS__LLSEEK: (fd, off_hi, off_lo, result_ptr, whence)
+            let result = kernel_lseek(a1, a3 as u32, a2, a5 as u32);
+            if result < 0 {
+                result as i32
+            } else {
+                // Write 64-bit result to result_ptr
+                let ptr = a4 as usize as *mut u8;
+                unsafe {
+                    let bytes = result.to_le_bytes();
+                    for i in 0..8 {
+                        *ptr.add(i) = bytes[i];
+                    }
+                }
+                0
+            }
+        }
         6 => kernel_fstat(a1, a2 as *mut u8),      // SYS_FSTAT: (fd, stat_ptr)
         64 => kernel_pread(a1, a2 as *mut u8, a3 as u32, a4 as u32, a5), // SYS_PREAD: (fd, buf, count, off_lo, off_hi)
         65 => kernel_pwrite(a1, a2 as *const u8, a3 as u32, a4 as u32, a5), // SYS_PWRITE
@@ -963,7 +979,13 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
         77 => kernel_dup3(a1, a2, a3 as u32),      // SYS_DUP3
         9 => kernel_pipe(a1 as *mut i32),          // SYS_PIPE: (pipefd_ptr)
         78 => kernel_pipe2(a2 as u32, a1 as *mut i32), // SYS_PIPE2: (pipefd_ptr, flags) → kernel wants (flags, pipefd_ptr)
-        10 => kernel_fcntl(a1, a2 as u32, a3 as u32), // SYS_FCNTL
+        10 => {  // SYS_FCNTL: (fd, cmd, arg)
+            match a2 as u32 {
+                // Lock commands: arg is a pointer to struct flock
+                5 | 6 | 7 | 12 | 13 | 14 => kernel_fcntl_lock(a1, a2 as u32, a3 as *mut u8),
+                _ => kernel_fcntl(a1, a2 as u32, a3 as u32),
+            }
+        }
         121 => kernel_flock(a1, a2 as u32),        // SYS_FLOCK
 
         // Stat — musl: (path, stat_buf) / (path, stat_buf) / (dirfd, path, stat_buf, flags)
@@ -1057,10 +1079,42 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
 
         // Signals
         36 => kernel_sigaction(a1 as u32, a2 as *const u8, a3 as *mut u8), // SYS_SIGACTION
-        37 => kernel_sigprocmask(a1 as u32, a2 as u32, a3 as u32) as i32, // SYS_SIGPROCMASK
+        37 => {  // SYS_SIGPROCMASK: (how, set_ptr, oldset_ptr, sigsetsize)
+            // musl passes pointers to sigset_t (8 bytes). Read set from pointer,
+            // call kernel, write old set to output pointer.
+            let (set_lo, set_hi) = if a2 != 0 {
+                let ptr = a2 as usize as *const u32;
+                unsafe { (*ptr, *ptr.add(1)) }
+            } else {
+                (0u32, 0u32)
+            };
+            let result = kernel_sigprocmask(a1 as u32, set_lo, set_hi);
+            if result < 0 {
+                result as i32
+            } else {
+                if a3 != 0 {
+                    let ptr = a3 as usize as *mut u8;
+                    unsafe {
+                        let bytes = (result as u64).to_le_bytes();
+                        for i in 0..8 {
+                            *ptr.add(i) = bytes[i];
+                        }
+                    }
+                }
+                0
+            }
+        }
         73 => kernel_signal(a1 as u32, a2 as u32), // SYS_SIGNAL
         39 => kernel_alarm(a1 as u32),             // SYS_ALARM
-        110 => kernel_sigsuspend(a1 as u32, a2 as u32), // SYS_SIGSUSPEND
+        110 => {  // SYS_SIGSUSPEND: (mask_ptr, sigsetsize)
+            let (mask_lo, mask_hi) = if a1 != 0 {
+                let ptr = a1 as usize as *const u32;
+                unsafe { (*ptr, *ptr.add(1)) }
+            } else {
+                (0u32, 0u32)
+            };
+            kernel_sigsuspend(mask_lo, mask_hi)
+        }
         111 => kernel_pause(),                     // SYS_PAUSE
         207 => kernel_rt_sigtimedwait(a1 as u32, a2 as u32, a3), // SYS_RT_SIGTIMEDWAIT
 
@@ -1224,6 +1278,17 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
         // Resource limits
         83 => kernel_getrlimit(a1 as u32, a2 as *mut u8), // SYS_GETRLIMIT
         84 => kernel_setrlimit(a1 as u32, a2 as *const u8), // SYS_SETRLIMIT
+        250 => {  // SYS_PRLIMIT64: (pid, resource, new_rlim_ptr, old_rlim_ptr)
+            // Get old limits first, then set new
+            let mut ret = 0i32;
+            if a4 != 0 {
+                ret = kernel_getrlimit(a2 as u32, a4 as *mut u8);
+            }
+            if ret >= 0 && a3 != 0 {
+                ret = kernel_setrlimit(a2 as u32, a3 as *const u8);
+            }
+            ret
+        }
 
         // UID/GID
         90 => kernel_setpgid(a1 as u32, a2 as u32), // SYS_SETPGID
