@@ -187,6 +187,24 @@ impl SignalState {
         }
     }
 
+    /// Consume one instance of a pending signal (for sigwaitinfo/sigtimedwait).
+    /// Unlike dequeue(), this works on any pending signal regardless of blocked mask.
+    /// For RT signals, removes one queued instance; clears pending bit only when
+    /// no more instances remain. For standard signals, clears the pending bit.
+    pub fn consume_one(&mut self, signum: u32) {
+        if signum == 0 || signum >= NSIG { return; }
+        if signum >= SIGRTMIN {
+            if let Some(pos) = self.rt_queue.iter().position(|&s| s == signum) {
+                self.rt_queue.remove(pos);
+            }
+            if !self.rt_queue.iter().any(|&s| s == signum) {
+                self.pending &= !sig_bit(signum);
+            }
+        } else {
+            self.pending &= !sig_bit(signum);
+        }
+    }
+
     /// Check if a signal is blocked.
     pub fn is_blocked(&self, signum: u32) -> bool {
         if signum >= 65 { return false; }

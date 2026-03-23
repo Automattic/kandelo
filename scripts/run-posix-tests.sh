@@ -34,8 +34,7 @@ EXPECTED_FAIL=(
     sigaltstack/6-1
     sigaltstack/7-1
     sigaltstack/8-1
-    # sigwaitinfo: RT signal queuing
-    sigwaitinfo/8-1
+    # (sigwaitinfo/8-1 removed — RT signal queuing now works)
     # munmap: file-backed mmap returns EPERM (not implemented)
     munmap/1-1
     munmap/1-2

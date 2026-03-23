@@ -2163,12 +2163,11 @@ pub fn sys_sigtimedwait(
     // Check if any signal in mask is already pending
     let pending_in_mask = proc.signals.pending & mask;
     if pending_in_mask != 0 {
-        // Dequeue the lowest numbered signal
-        for sig in 1..NSIG {
-            if pending_in_mask & crate::signal::sig_bit(sig) != 0 {
-                proc.signals.pending &= !crate::signal::sig_bit(sig);
-                return Ok(sig);
-            }
+        // Consume the lowest numbered matching signal
+        let signum = pending_in_mask.trailing_zeros() + 1;
+        if signum < NSIG {
+            proc.signals.consume_one(signum);
+            return Ok(signum);
         }
     }
 
@@ -2183,11 +2182,10 @@ pub fn sys_sigtimedwait(
 
         let pending_in_mask = proc.signals.pending & mask;
         if pending_in_mask != 0 {
-            for sig in 1..NSIG {
-                if pending_in_mask & crate::signal::sig_bit(sig) != 0 {
-                    proc.signals.pending &= !crate::signal::sig_bit(sig);
-                    return Ok(sig);
-                }
+            let signum = pending_in_mask.trailing_zeros() + 1;
+            if signum < NSIG {
+                proc.signals.consume_one(signum);
+                return Ok(signum);
             }
         }
     }
@@ -9406,6 +9404,32 @@ mod tests {
         // Only SIGUSR1 should be dequeued
         assert_eq!(proc.signals.pending & crate::signal::sig_bit(10), 0);
         assert_ne!(proc.signals.pending & crate::signal::sig_bit(12), 0);
+    }
+
+    #[test]
+    fn test_sigtimedwait_rt_queued_multiple() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        // Queue SIGRTMIN (32) three times
+        proc.signals.raise(32);
+        proc.signals.raise(32);
+        proc.signals.raise(32);
+        let mask = crate::signal::sig_bit(32);
+        // First dequeue should return signal 32 and leave 2 queued
+        let r1 = sys_sigtimedwait(&mut proc, &mut host, mask, 0).unwrap();
+        assert_eq!(r1, 32);
+        assert!(proc.signals.is_pending(32), "should still be pending with 2 queued");
+        // Second
+        let r2 = sys_sigtimedwait(&mut proc, &mut host, mask, 0).unwrap();
+        assert_eq!(r2, 32);
+        assert!(proc.signals.is_pending(32), "should still be pending with 1 queued");
+        // Third
+        let r3 = sys_sigtimedwait(&mut proc, &mut host, mask, 0).unwrap();
+        assert_eq!(r3, 32);
+        assert!(!proc.signals.is_pending(32), "should no longer be pending");
+        // Fourth should fail
+        let r4 = sys_sigtimedwait(&mut proc, &mut host, mask, 0);
+        assert_eq!(r4, Err(Errno::EAGAIN));
     }
 
     // ===== preadv / pwritev tests =====
