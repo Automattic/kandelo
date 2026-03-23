@@ -2395,7 +2395,7 @@ pub fn sys_clock_getres(
 ) -> Result<WasmTimespec, Errno> {
     use wasm_posix_shared::clock::*;
     match clock_id {
-        CLOCK_REALTIME | CLOCK_MONOTONIC => {
+        CLOCK_REALTIME | CLOCK_MONOTONIC | CLOCK_PROCESS_CPUTIME_ID | CLOCK_THREAD_CPUTIME_ID => {
             Ok(WasmTimespec { tv_sec: 0, tv_nsec: 1_000_000 }) // 1ms
         }
         _ => Err(Errno::EINVAL),

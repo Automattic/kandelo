@@ -18,6 +18,8 @@ export class NodePlatformIO implements PlatformIO {
   private fdPositions = new Map<number, number>();
   // Offset from hrtime (monotonic) to epoch, computed once at startup.
   private readonly _epochOffsetNs: bigint;
+  // hrtime at creation, used as process start for CPUTIME clocks.
+  private readonly _startNs: bigint;
   // /dev/shm replacement directory (macOS has no /dev/shm)
   private readonly _shmDir: string;
 
@@ -25,6 +27,7 @@ export class NodePlatformIO implements PlatformIO {
     const hrt = process.hrtime.bigint();
     const wallNs = BigInt(Date.now()) * 1_000_000n;
     this._epochOffsetNs = wallNs - hrt;
+    this._startNs = hrt;
     this._shmDir = path.join(os.tmpdir(), "wasm-posix-shm");
   }
 
@@ -256,6 +259,12 @@ export class NodePlatformIO implements PlatformIO {
     clockId: number,
   ): { sec: number; nsec: number } {
     const ns = process.hrtime.bigint();
+    if (clockId === 2 || clockId === 3) {
+      // CLOCK_PROCESS_CPUTIME_ID / CLOCK_THREAD_CPUTIME_ID
+      // Return time since process start (in Wasm, CPU ≈ elapsed)
+      const elapsed = ns - this._startNs;
+      return { sec: Number(elapsed / 1000000000n), nsec: Number(elapsed % 1000000000n) };
+    }
     if (clockId === 1) {
       // CLOCK_MONOTONIC
       return { sec: Number(ns / 1000000000n), nsec: Number(ns % 1000000000n) };

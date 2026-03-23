@@ -225,6 +225,7 @@ const SYSCALL_ARGS: Record<number, ArgDesc[]> = {
 
   // Scheduling
   230: [{ argIndex: 1, direction: "out", size: { type: "fixed", size: 36 } }],  // SCHED_GETPARAM: param (36-byte struct)
+  236: [{ argIndex: 1, direction: "out", size: { type: "fixed", size: 16 } }],  // SCHED_RR_GET_INTERVAL: timespec (16 bytes)
 
   // Signals
   206: [{ argIndex: 0, direction: "out", size: { type: "fixed", size: 8 } }],   // RT_SIGPENDING: set

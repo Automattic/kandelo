@@ -1478,7 +1478,30 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
         // SYS_SCHED_SETSCHEDULER: no-op (return 0 for valid pid)
         233 => 0,
 
-        208 | 226 | 236..=238 | 247..=249 | 252..=254 | 256..=257 | 262 | 265..=268 | 271..=274 | 287 | 289..=293 | 297..=298 | 301..=305 | 306 | 308..=324 | 325..=336 | 348..=349 | 350..=369 | 370..=371 | 373..=376 | 381..=383 | 386 => {
+        // SYS_SCHED_RR_GET_INTERVAL: (pid, timespec_ptr)
+        236 => {
+            let (_gkl, proc) = unsafe { get_process() };
+            let pid = a1 as u32;
+            if pid != 0 && pid != proc.pid {
+                -(Errno::ESRCH as i32)
+            } else if a2 == 0 {
+                -(Errno::EFAULT as i32)
+            } else {
+                // Write a reasonable RR interval: 100ms
+                let p = a2 as usize as *mut u8;
+                let sec: i64 = 0;
+                let nsec: i64 = 100_000_000; // 100ms
+                unsafe {
+                    let sec_bytes = sec.to_le_bytes();
+                    let nsec_bytes = nsec.to_le_bytes();
+                    for i in 0..8 { *p.add(i) = sec_bytes[i]; }
+                    for i in 0..8 { *p.add(8 + i) = nsec_bytes[i]; }
+                }
+                0
+            }
+        }
+
+        208 | 226 | 237..=238 | 247..=249 | 252..=254 | 256..=257 | 262 | 265..=268 | 271..=274 | 287 | 289..=293 | 297..=298 | 301..=305 | 306 | 308..=324 | 325..=336 | 348..=349 | 350..=369 | 370..=371 | 373..=376 | 381..=383 | 386 => {
             // Many of these are stubs in the glue layer too; return ENOSYS
             -(Errno::ENOSYS as i32)
         }

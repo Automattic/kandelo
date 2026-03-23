@@ -66,12 +66,9 @@ EXPECTED_FAIL=(
     munlock/10-1
     munlock/11-1
     munlock/7-1
-    # clock(): CLOCK_PROCESS_CPUTIME_ID not available
-    clock/1-1
-    # sched_rr_get_interval: returns ENOSYS
-    sched_rr_get_interval/1-1
-    sched_rr_get_interval/2-1
-    sched_rr_get_interval/3-1
+    # clock/1-1 fixed by adding CLOCK_PROCESS_CPUTIME_ID support
+    # sched_rr_get_interval/1-1,2-1 fixed by implementing syscall 236
+    sched_rr_get_interval/3-1  # needs fork()
     # sched_getparam/sched_getscheduler: tests that need pwd.h (getpwnam)
     sched_getparam/6-1
     sched_getscheduler/7-1
