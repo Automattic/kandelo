@@ -228,6 +228,11 @@ const SYSCALL_ARGS: Record<number, ArgDesc[]> = {
 
   // Signals
   206: [{ argIndex: 0, direction: "out", size: { type: "fixed", size: 8 } }],   // RT_SIGPENDING: set
+  207: [                                                                         // RT_SIGTIMEDWAIT: (mask, info, timeout)
+    { argIndex: 0, direction: "in", size: { type: "fixed", size: 8 } },          //   mask (sigset_t, 8 bytes)
+    { argIndex: 1, direction: "out", size: { type: "fixed", size: 128 } },       //   info (siginfo_t, 128 bytes)
+    { argIndex: 2, direction: "in", size: { type: "fixed", size: 16 } },         //   timeout (timespec, 16 bytes)
+  ],
   209: [                                                                        // SIGALTSTACK: ss + oss
     { argIndex: 0, direction: "in", size: { type: "fixed", size: STACK_T_SIZE } },   // ss (input)
     { argIndex: 1, direction: "out", size: { type: "fixed", size: STACK_T_SIZE } },  // oss (output)
