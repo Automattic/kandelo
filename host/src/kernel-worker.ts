@@ -46,7 +46,7 @@ const SYS_FORK = 212;
 const SYS_VFORK = 213;
 const SYS_CLONE = 201;
 const SYS_EXIT = 34;
-const SYS_EXIT_GROUP = 35;
+const SYS_EXIT_GROUP = 34;  // same as SYS_EXIT on wasm32posix (__NR_exit_group = __NR_exit)
 
 /** Syscall numbers for memory management */
 const SYS_MMAP = 46;

@@ -55,8 +55,6 @@ EXPECTED_FAIL=(
     munmap/4-1
     munmap/9-1
 
-    # kill/sigqueue: tests that fail under channel IPC
-    kill/2-1          # kill(getpid(), 0) — flaky under channel dispatch
     sigqueue/6-1      # sigqueue with signal handler — needs signal delivery
 
     # ── Not implemented / stubs ──
@@ -113,7 +111,6 @@ EXPECTED_FAIL=(
     killpg/1-1        # signal handler not invoked
     killpg/2-1        # killpg(0, 0) fails
     killpg/4-1        # killpg to own group fails
-    killpg/8-1        # invalid pgid not rejected
     # sigismember: invalid signal -1 not rejected
     sigismember/5-1
     # sigqueue: cross-process and RT signal issues
