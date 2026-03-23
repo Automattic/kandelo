@@ -1384,7 +1384,18 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
 
         // Stubs that return 0 or -ENOSYS
         204 => kernel_raise(a2 as u32),            // SYS_TKILL
-        208 | 209 | 226 | 230..=238 | 247..=249 | 252..=254 | 256..=257 | 262 | 265..=268 | 271..=274 | 287 | 289..=293 | 297..=298 | 301..=305 | 306 | 308..=324 | 325..=336 | 348..=349 | 350..=369 | 370..=371 | 373..=376 | 381..=383 | 386 => {
+
+        // SYS_RT_SIGQUEUEINFO: treat like kill (sig=0 check, or raise signal)
+        205 => kernel_kill(a1, a2 as u32),
+
+        // SYS_SIGALTSTACK: no-op in Wasm (no hardware signal stack)
+        209 => 0,
+
+        // SYS_SCHED_GET_PRIORITY_MAX / SYS_SCHED_GET_PRIORITY_MIN
+        // Wasm has a single priority level; return 0 for all policies.
+        234 | 235 => 0,
+
+        208 | 226 | 230..=233 | 236..=238 | 247..=249 | 252..=254 | 256..=257 | 262 | 265..=268 | 271..=274 | 287 | 289..=293 | 297..=298 | 301..=305 | 306 | 308..=324 | 325..=336 | 348..=349 | 350..=369 | 370..=371 | 373..=376 | 381..=383 | 386 => {
             // Many of these are stubs in the glue layer too; return ENOSYS
             -(Errno::ENOSYS as i32)
         }

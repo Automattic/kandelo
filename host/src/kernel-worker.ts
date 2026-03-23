@@ -31,6 +31,7 @@ const CH_COMPLETE = 2;
 
 /** Errno values */
 const EAGAIN = 11;
+const ETIMEDOUT = 110;
 
 /** Syscall numbers for sleep/delay */
 const SYS_NANOSLEEP = 41;
@@ -1482,17 +1483,52 @@ export class CentralizedKernelWorker {
         return;
       }
 
-      // Value matches — wait asynchronously for it to change
-      const waitResult = Atomics.waitAsync(i32View, index, val);
-      if (waitResult.async) {
-        waitResult.value.then(() => {
-          if (!this.processes.has(channel.pid)) return;
-          // Woken — return 0 (success)
-          this.completeChannelRaw(channel, 0, 0);
+      // Read timeout from origArgs[3] (pointer to struct timespec in process memory).
+      // Layout: { int64 tv_sec; int64 tv_nsec } — 16 bytes, relative timeout.
+      let timeoutMs: number | undefined;
+      const timeoutPtr = origArgs[3];
+      if (timeoutPtr !== 0) {
+        const dataView = new DataView(channel.memory.buffer);
+        const tv_sec = Number(dataView.getBigInt64(timeoutPtr, true));
+        const tv_nsec = Number(dataView.getBigInt64(timeoutPtr + 8, true));
+        if (tv_sec < 0 || (tv_sec === 0 && tv_nsec <= 0)) {
+          // Already expired
+          this.completeChannelRaw(channel, -ETIMEDOUT, ETIMEDOUT);
           if (this.processes.has(channel.pid)) {
             queueMicrotask(() => this.listenOnChannel(channel));
           }
-        });
+          return;
+        }
+        timeoutMs = tv_sec * 1000 + Math.ceil(tv_nsec / 1_000_000);
+        if (timeoutMs <= 0) timeoutMs = 1; // minimum 1ms
+      }
+
+      // Value matches — wait asynchronously for it to change
+      const waitResult = Atomics.waitAsync(i32View, index, val);
+      if (waitResult.async) {
+        let settled = false;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+
+        const complete = (retVal: number, errVal: number) => {
+          if (settled) return;
+          settled = true;
+          if (timer !== undefined) clearTimeout(timer);
+          if (!this.processes.has(channel.pid)) return;
+          this.completeChannelRaw(channel, retVal, errVal);
+          if (this.processes.has(channel.pid)) {
+            queueMicrotask(() => this.listenOnChannel(channel));
+          }
+        };
+
+        waitResult.value.then(() => complete(0, 0));
+
+        if (timeoutMs !== undefined) {
+          timer = setTimeout(() => {
+            // Wake ourselves to break out of the Atomics.waitAsync
+            Atomics.notify(i32View, index, 1);
+            complete(-ETIMEDOUT, ETIMEDOUT);
+          }, timeoutMs);
+        }
       } else {
         // Already changed — return 0
         this.completeChannelRaw(channel, 0, 0);

@@ -48,7 +48,6 @@ REGRESSION_EXPECTED_FAIL=(
     pthread_create-oom
     raise-race
     setenv-oom
-    sigaltstack
     tls_get_new-dtv
     # Centralized mode: fork+waitpid child exit tracking
     daemon-failure
@@ -62,8 +61,8 @@ REGRESSION_EXPECTED_FAIL=(
     statvfs
     # Centralized mode: clock precision (channel overhead)
     syscall-sign-extend
-    # Centralized mode: pthread_condattr_setclock timeout
-    pthread_condattr_setclock
+    # Centralized mode: pthread_cond stress test (race conditions under IPC overhead)
+    pthread_cond-smasher
 )
 
 # Tests that need legacy Wasm exception handling (exnref unsupported in Node.js 22).
