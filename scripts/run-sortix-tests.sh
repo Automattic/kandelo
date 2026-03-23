@@ -364,7 +364,7 @@ LINK_FLAGS=(
     -Wl,--shared-memory
     -Wl,--max-memory=1073741824
     -Wl,--allow-undefined
-    -Wl,--table-base=2
+    -Wl,--table-base=3
     -Wl,--export-table
     -Wl,--export=__wasm_init_tls
     -Wl,--export=__tls_base

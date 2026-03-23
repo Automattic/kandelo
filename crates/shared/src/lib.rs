@@ -620,8 +620,24 @@ pub mod channel {
     pub const ERRNO_OFFSET: usize = 36;
     /// Byte offset of the data buffer region.
     pub const DATA_OFFSET: usize = 40;
+    /// Size of the data buffer.
+    pub const DATA_SIZE: usize = 65536;
     /// Minimum total size of a channel in bytes (header + 64 KiB data buffer).
     pub const MIN_CHANNEL_SIZE: usize = 40 + 65536;
+
+    // Signal delivery area — last 32 bytes of the data buffer.
+    // After each syscall, if a signal with a Handler disposition is pending,
+    // the kernel writes delivery info here so the glue code can invoke it.
+    /// Base offset of signal delivery area.
+    pub const SIG_BASE: usize = DATA_OFFSET + DATA_SIZE - 32;
+    /// Signal number to deliver (u32). 0 = no signal.
+    pub const SIG_SIGNUM: usize = SIG_BASE;
+    /// Handler function table index (u32).
+    pub const SIG_HANDLER: usize = SIG_BASE + 4;
+    /// sa_flags from sigaction (u32).
+    pub const SIG_FLAGS: usize = SIG_BASE + 8;
+    /// Saved blocked mask before handler (u64, little-endian).
+    pub const SIG_OLD_MASK: usize = SIG_BASE + 16;
 }
 
 /// Stat structure for the Wasm POSIX interface.

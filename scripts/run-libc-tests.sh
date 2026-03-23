@@ -30,7 +30,6 @@ MATH_RELAXED_EXPECTED_FAIL=(tgamma j0 y0 y0f)  # Tests with inline checks that b
 FUNCTIONAL_EXPECTED_FAIL=(
     pthread_cancel
     sem_open
-    sigaltstack
     # Centralized mode: SysV IPC not wired through host imports
     ipc_msg
     ipc_sem
@@ -55,8 +54,8 @@ REGRESSION_EXPECTED_FAIL=(
     pthread_exit-dtor
     # Centralized mode: exec not fully implemented
     execle-env
-    # Centralized mode: sigreturn not fully wired
-    sigreturn
+    # Wasm stack is opaque — signal handlers can't run on alternate stacks
+    sigaltstack
     # Centralized mode: statvfs returns placeholder values
     statvfs
 )
@@ -133,7 +132,7 @@ LINK_FLAGS=(
     -Wl,--shared-memory
     -Wl,--max-memory=1073741824
     -Wl,--allow-undefined
-    -Wl,--table-base=2
+    -Wl,--table-base=3
     -Wl,--export-table
     -Wl,--export=__wasm_init_tls
     -Wl,--export=__tls_base
