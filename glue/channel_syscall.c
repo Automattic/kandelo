@@ -99,11 +99,11 @@ static long __do_syscall(long n, long a1, long a2, long a3,
     /* Reset status to IDLE for next syscall */
     __c11_atomic_store((_Atomic int32_t *)status, CH_IDLE, __ATOMIC_SEQ_CST);
 
-    /* Set errno if the kernel reported an error */
+    /* Return in musl's expected format: negative errno on error.
+     * musl's __syscall_ret() converts this to set errno and return -1. */
     if (err) {
-        errno = err;
+        return -(long)err;
     }
-
     return result;
 }
 

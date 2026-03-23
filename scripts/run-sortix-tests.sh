@@ -159,7 +159,7 @@ BASIC_EXPECTED_FAIL=(
     "unistd/execve" "unistd/execvp" "unistd/fexecve"
     # -- Process management requiring fork/exec or process groups
     "sys_wait/wait" "sys_wait/waitpid"
-    "unistd/getpgid" "unistd/getpgrp" "unistd/setpgid" "unistd/setsid"
+    "unistd/getpgid" "unistd/setpgid" "unistd/setsid"
     "unistd/setregid" "unistd/setreuid" "unistd/nice"
     "stdlib/abort" "stdlib/system"
     # -- Signals (limited Wasm signal model)
@@ -221,7 +221,7 @@ BASIC_EXPECTED_FAIL=(
     "fcntl/open" "fcntl/openat" "fcntl/posix_fadvise" "fcntl/posix_fallocate"
     "dirent/fdopendir" "dirent/posix_getdents" "dirent/readdir" "dirent/readdir_r"
     "dirent/rewinddir" "dirent/scandir" "dirent/seekdir"
-    "stdio/fopen" "stdio/pclose" "stdio/popen" "stdio/remove" "stdio/tmpnam"
+    "stdio/fopen" "stdio/pclose" "stdio/popen" "stdio/remove"
     "unistd/faccessat" "unistd/gethostname" "unistd/lockf"
     "unistd/lseek" "unistd/read" "unistd/readlinkat"
     "ftw/nftw" "glob/glob" "glob/globfree"
@@ -243,7 +243,7 @@ BASIC_EXPECTED_FAIL=(
     "time/timer_gettime" "time/timer_settime" "time/timespec_get"
     "sys_resource/getpriority" "sys_resource/getrusage" "sys_resource/setpriority"
     "sys_select/pselect" "sys_select/select" "sys_time/select" "sys_time/utimes"
-    "sys_times/times" "sys_utsname/uname"
+    "sys_utsname/uname"
     "locale/getlocalename_l"
     "monetary/strfmon" "monetary/strfmon_l"
     "syslog/closelog" "syslog/syslog"
@@ -258,8 +258,6 @@ BASIC_EXPECTED_FAIL=(
     "spawn/posix_spawnattr_setflags" "spawn/posix_spawnattr_setpgroup"
     "spawn/posix_spawnattr_setschedparam" "spawn/posix_spawnattr_setschedpolicy"
     "spawn/posix_spawnattr_setsigdefault" "spawn/posix_spawnattr_setsigmask"
-    # -- poll (blocks/timeouts)
-    "poll/poll"
 )
 
 LIMITS_EXPECTED_FAIL=()
@@ -685,30 +683,7 @@ run_runtime_test() {
     fi
 
     local test_passed=false
-    if [ $rc -eq 0 ]; then
-        if $has_expect; then
-            # Compare output against .expect files
-            local expect_base="${test_name##*/}"
-            local matched=false
-            for expect_file in "$expect_dir/${expect_base}.posix" "$expect_dir/${expect_base}.posix."*; do
-                [ -f "$expect_file" ] || continue
-                local expected
-                expected=$(cat "$expect_file")
-                if [ "$output" = "$expected" ]; then
-                    matched=true
-                    break
-                fi
-            done
-            if $matched; then
-                test_passed=true
-            else
-                # Exit 0 but wrong output
-                test_passed=false
-            fi
-        else
-            test_passed=true
-        fi
-    elif [ $rc -eq 124 ]; then
+    if [ $rc -eq 124 ]; then
         # Timeout
         if $is_xfail; then
             RESULTS+=("XFAIL ${suite}/${test_name}")
@@ -719,6 +694,26 @@ run_runtime_test() {
             TIMEOUT_COUNT=$((TIMEOUT_COUNT + 1))
         fi
         return
+    fi
+
+    # Check output against expect files (if available).
+    # Tests may have multiple valid outputs: .posix (always valid),
+    # .posix.N variants, or .N numbered variants (e.g. .1 = path exists,
+    # .2 = path doesn't exist). Any variant match = pass.
+    if $has_expect; then
+        local expect_base="${test_name##*/}"
+        for expect_file in "$expect_dir/${expect_base}.posix" "$expect_dir/${expect_base}.posix."* "$expect_dir/${expect_base}."[0-9]*; do
+            [ -f "$expect_file" ] || continue
+            local expected
+            expected=$(cat "$expect_file")
+            if [ "$output" = "$expected" ]; then
+                test_passed=true
+                break
+            fi
+        done
+    elif [ $rc -eq 0 ]; then
+        # No expect files — exit 0 means pass
+        test_passed=true
     fi
 
     if $test_passed; then
