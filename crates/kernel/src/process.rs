@@ -217,6 +217,10 @@ pub struct Process {
     pub timerfds: Vec<Option<TimerFdState>>,
     /// Signalfd instances owned by this process.
     pub signalfds: Vec<Option<SignalFdState>>,
+    /// Alternate signal stack (sigaltstack): ss_sp, ss_flags, ss_size.
+    pub alt_stack_sp: u32,
+    pub alt_stack_flags: u32,
+    pub alt_stack_size: u32,
 }
 
 impl Process {
@@ -280,6 +284,9 @@ impl Process {
             epolls: Vec::new(),
             timerfds: Vec::new(),
             signalfds: Vec::new(),
+            alt_stack_sp: 0,
+            alt_stack_flags: 2, // SS_DISABLE
+            alt_stack_size: 0,
         }
     }
 

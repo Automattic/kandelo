@@ -59,10 +59,6 @@ REGRESSION_EXPECTED_FAIL=(
     sigreturn
     # Centralized mode: statvfs returns placeholder values
     statvfs
-    # Centralized mode: clock precision (channel overhead)
-    syscall-sign-extend
-    # Centralized mode: pthread_cond stress test (race conditions under IPC overhead)
-    pthread_cond-smasher
 )
 
 # Tests that need legacy Wasm exception handling (exnref unsupported in Node.js 22).

@@ -1171,13 +1171,13 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
         61 => kernel_socketpair(a1 as u32, a2 as u32, a3 as u32, a4 as *mut i32), // SYS_SOCKETPAIR
         51 => kernel_bind(a1, a2 as *const u8, a3 as u32), // SYS_BIND
         52 => kernel_listen(a1, a2 as u32),        // SYS_LISTEN
-        53 => kernel_accept(a1),                   // SYS_ACCEPT
+        53 => kernel_accept(a1, a2 as *mut u8, a3 as *mut u8), // SYS_ACCEPT
         54 => kernel_connect(a1, a2 as *const u8, a3 as u32), // SYS_CONNECT
         55 => kernel_send(a1, a2 as *const u8, a3 as u32, a4 as u32), // SYS_SEND
         56 => kernel_recv(a1, a2 as *mut u8, a3 as u32, a4 as u32), // SYS_RECV
         57 => kernel_shutdown(a1, a2 as u32),      // SYS_SHUTDOWN
         58 => kernel_getsockopt(a1, a2 as u32, a3 as u32, a4 as *mut u32), // SYS_GETSOCKOPT
-        59 => kernel_setsockopt(a1, a2 as u32, a3 as u32, a4 as u32), // SYS_SETSOCKOPT
+        59 => kernel_setsockopt(a1, a2 as u32, a3 as u32, a4 as *const u8, a5 as u32), // SYS_SETSOCKOPT
         114 => kernel_getsockname(a1, a2 as u32, a3 as u32), // SYS_GETSOCKNAME
         115 => kernel_getpeername(a1, a2 as u32, a3 as u32), // SYS_GETPEERNAME
         140 => { // SYS_GETADDRINFO: (name, result_buf)
@@ -1388,8 +1388,8 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
         // SYS_RT_SIGQUEUEINFO: treat like kill (sig=0 check, or raise signal)
         205 => kernel_kill(a1, a2 as u32),
 
-        // SYS_SIGALTSTACK: no-op in Wasm (no hardware signal stack)
-        209 => 0,
+        // SYS_SIGALTSTACK: store/retrieve alternate stack state
+        209 => kernel_sigaltstack(a1 as *const u8, a2 as *mut u8),
 
         // SYS_SCHED_GET_PRIORITY_MAX / SYS_SCHED_GET_PRIORITY_MIN
         // Wasm has a single priority level; return 0 for all policies.
@@ -2503,6 +2503,42 @@ pub extern "C" fn kernel_kill(pid: i32, sig: u32) -> i32 {
     result
 }
 
+/// sigaltstack — get/set alternate signal stack state.
+/// ss_ptr points to stack_t (12 bytes on wasm32: u32 ss_sp, u32 ss_flags, u32 ss_size).
+/// oss_ptr receives the previous state (may be null).
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_sigaltstack(ss_ptr: *const u8, oss_ptr: *mut u8) -> i32 {
+    let (_gkl, proc) = unsafe { get_process() };
+
+    // Write old state to oss_ptr if non-null
+    if !oss_ptr.is_null() {
+        let buf = unsafe { slice::from_raw_parts_mut(oss_ptr, 12) };
+        buf[0..4].copy_from_slice(&proc.alt_stack_sp.to_le_bytes());
+        buf[4..8].copy_from_slice(&proc.alt_stack_flags.to_le_bytes());
+        buf[8..12].copy_from_slice(&proc.alt_stack_size.to_le_bytes());
+    }
+
+    // Read new state from ss_ptr if non-null
+    if !ss_ptr.is_null() {
+        let buf = unsafe { slice::from_raw_parts(ss_ptr, 12) };
+        let flags = u32::from_le_bytes(buf[4..8].try_into().unwrap());
+        const SS_DISABLE: u32 = 2;
+        if flags & SS_DISABLE != 0 {
+            proc.alt_stack_sp = 0;
+            proc.alt_stack_flags = SS_DISABLE;
+            proc.alt_stack_size = 0;
+        } else {
+            proc.alt_stack_sp = u32::from_le_bytes(buf[0..4].try_into().unwrap());
+            proc.alt_stack_flags = flags;
+            proc.alt_stack_size = u32::from_le_bytes(buf[8..12].try_into().unwrap());
+        }
+    }
+
+    let mut host = WasmHostIO;
+    deliver_pending_signals(proc, &mut host);
+    0
+}
+
 /// Deliver a signal from an external source (host). Called by host when
 /// another process sends a signal to this one via kill().
 /// Returns 0 on success, -EINVAL for invalid signal.
@@ -3258,11 +3294,19 @@ pub extern "C" fn kernel_listen(fd: i32, backlog: u32) -> i32 {
 
 /// Accept a connection. Returns new fd or negative errno.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_accept(fd: i32) -> i32 {
+pub extern "C" fn kernel_accept(fd: i32, addr_ptr: *mut u8, addrlen_ptr: *mut u8) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_accept(proc, &mut host, fd) {
-        Ok(new_fd) => new_fd,
+        Ok(new_fd) => {
+            // Write addrlen=0 if provided (peer address not yet tracked)
+            if !addrlen_ptr.is_null() {
+                let buf = unsafe { slice::from_raw_parts_mut(addrlen_ptr, 4) };
+                buf.copy_from_slice(&0u32.to_le_bytes());
+            }
+            let _ = addr_ptr; // unused until peer address tracking
+            new_fd
+        }
         Err(e) => -(e as i32),
     };
     deliver_pending_signals(proc, &mut host);
@@ -3342,9 +3386,23 @@ pub extern "C" fn kernel_getsockopt(fd: i32, level: u32, optname: u32, optval_pt
 }
 
 /// Set socket option. Returns 0 on success, negative errno on error.
+/// optval_ptr points to the option value buffer, optlen is its size.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_setsockopt(fd: i32, level: u32, optname: u32, optval: u32) -> i32 {
+pub extern "C" fn kernel_setsockopt(fd: i32, level: u32, optname: u32, optval_ptr: *const u8, optlen: u32) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
+    // Read first 4 bytes as u32 value (covers most int-valued options)
+    let optval = if !optval_ptr.is_null() && optlen >= 4 {
+        let buf = unsafe { slice::from_raw_parts(optval_ptr, 4) };
+        u32::from_le_bytes(buf.try_into().unwrap())
+    } else if !optval_ptr.is_null() && optlen > 0 {
+        // For options smaller than 4 bytes, read what we have
+        let buf = unsafe { slice::from_raw_parts(optval_ptr, optlen as usize) };
+        let mut val_bytes = [0u8; 4];
+        val_bytes[..optlen as usize].copy_from_slice(buf);
+        u32::from_le_bytes(val_bytes)
+    } else {
+        0
+    };
     let result = match syscalls::sys_setsockopt(proc, fd, level, optname, optval) {
         Ok(()) => 0,
         Err(e) => -(e as i32),

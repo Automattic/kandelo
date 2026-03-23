@@ -91,6 +91,7 @@ const WASM_STAT_SIZE = 88;
 const TIMESPEC_SIZE = 16; // { i64 tv_sec, i32 tv_nsec, i32 pad } on wasm32
 const ITIMERVAL_SIZE = 32; // 2 x struct timeval { i64 tv_sec, i64 tv_usec }
 const RLIMIT_SIZE = 16;   // 2 x i64 on wasm32
+const STACK_T_SIZE = 12;  // stack_t: { void* ss_sp, int ss_flags, size_t ss_size } on wasm32
 
 // -----------------------------------------------------------------------
 // Arg descriptor system for pointer redirection
@@ -222,9 +223,20 @@ const SYSCALL_ARGS: Record<number, ArgDesc[]> = {
     { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 } },     //           buf
   ],
 
+  // Signals
+  209: [                                                                        // SIGALTSTACK: ss + oss
+    { argIndex: 0, direction: "in", size: { type: "fixed", size: STACK_T_SIZE } },   // ss (input)
+    { argIndex: 1, direction: "out", size: { type: "fixed", size: STACK_T_SIZE } },  // oss (output)
+  ],
+
   // Sockets
   51: [{ argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 } }],  // BIND: addr
+  53: [                                                                         // ACCEPT: addr + addrlen
+    { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 } },
+    { argIndex: 2, direction: "inout", size: { type: "fixed", size: 4 } },
+  ],
   54: [{ argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 } }],  // CONNECT: addr
+  59: [{ argIndex: 3, direction: "in", size: { type: "arg", argIndex: 4 } }],  // SETSOCKOPT: optval
   114: [                                                                        // GETSOCKNAME: addr + addrlen
     { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 } },     //   addr (output, size from addrlen)
     { argIndex: 2, direction: "inout", size: { type: "fixed", size: 4 } },     //   addrlen (inout, socklen_t = 4 bytes)

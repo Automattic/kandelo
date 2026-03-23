@@ -26,18 +26,13 @@ KERNEL_WASM="$REPO_ROOT/host/wasm/wasm_posix_kernel.wasm"
 
 EXPECTED_FAIL=(
     # ── Wasm limitations ──
-    # sigaltstack: tests requiring actual alternate stack execution (Wasm stack is opaque)
-    sigaltstack/1-1   # timeout: needs alarm + signal on alt stack
-    sigaltstack/2-1   # timeout: needs alarm + signal on alt stack
+    # sigaltstack: tests that need actual execution on alternate stack (Wasm stack is opaque)
     sigaltstack/4-1   # not present (skip)
-    sigaltstack/6-1   # timeout: needs alarm + signal on alt stack
-    sigaltstack/7-1   # timeout: needs alarm + signal on alt stack
     # Signal tests requiring alarm/timer-based signal delivery (Wasm can't interrupt execution)
     kill/1-1          # timeout: fork+kill requires inter-process signal delivery
     raise/1-1         # timeout: sigaction handler with SIGABRT (traps in Wasm)
     raise/2-1         # timeout: raise in signal handler
     raise/4-1         # timeout: raise SIGABRT (traps)
-    raise/10000-1     # timeout: raise 10000 signals
     signal/3-1        # timeout: child process signal test
     sigpending/1-2    # timeout: needs alarm-based signal delivery
     sigpending/1-3    # timeout: needs alarm-based signal delivery
@@ -60,9 +55,7 @@ EXPECTED_FAIL=(
     munmap/4-1
     munmap/9-1
 
-    # sigaltstack no-op: kernel returns 0 but doesn't store/retrieve alternate stack state
-    sigaltstack/5-1   # reads back ss_sp/ss_size which kernel doesn't track
-    # kill/sigqueue: null-signal tests that pass in kernel but fail due to channel IPC overhead
+    # kill/sigqueue: tests that fail under channel IPC
     kill/2-1          # kill(getpid(), 0) — flaky under channel dispatch
     sigqueue/6-1      # sigqueue with signal handler — needs signal delivery
 
@@ -104,7 +97,6 @@ EXPECTED_FAIL=(
     sigprocmask/6-1   # handler called despite signal being masked
     sigprocmask/7-1   # old set missing signal
     sigprocmask/10-1  # SIGKILL incorrectly added to mask
-    sighold/1-1       # signal not blocked after sighold
     sigpending/1-1    # sigpending returns error
     sigpending/2-1    # sigpending returns non-zero
     sigrelse/1-1      # sigrelse issue
@@ -125,12 +117,10 @@ EXPECTED_FAIL=(
     # sigismember: invalid signal -1 not rejected
     sigismember/5-1
     # sigqueue: cross-process and RT signal issues
-    sigqueue/2-2      # ESRCH not returned
     sigqueue/4-1      # RT signal handler issue
     sigqueue/5-1      # RT signal handler issue
     sigqueue/7-1      # sigqueue returns error
     sigqueue/8-1      # RT signal handler issue
-    sigqueue/11-1     # ESRCH not returned
     sigqueue/3-1      # needs pwd.h
     sigqueue/12-1     # needs pwd.h
     # sigwaitinfo: RT signal issues
