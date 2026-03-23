@@ -942,6 +942,13 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
         33 => kernel_getegid() as i32,             // SYS_GETEGID
         89 => kernel_getpgrp() as i32,             // SYS_GETPGRP
         92 => kernel_setsid() as i32,              // SYS_SETSID
+        214 => {                                   // SYS_GETPGID
+            let (_gkl, proc) = unsafe { get_process() };
+            match syscalls::sys_getpgid(proc, a1 as u32) {
+                Ok(pgid) => pgid as i32,
+                Err(e) => -(e as i32),
+            }
+        }
 
         // File operations — musl: (path, flags, mode)
         1 => { // SYS_OPEN

@@ -90,13 +90,11 @@ EXPECTED_FAIL=(
     sigset/7-1        # requires signal handler delivery after sigrelse
 
     # ── Process/permission model ──
-    # kill: no real UID permission enforcement
-    kill/2-2          # ESRCH not returned for non-existent PID
-    kill/3-1          # kill succeeds despite UID mismatch
-    # killpg: process group handling incomplete
+    # kill: PID 1 is our own process, so UID permission tests can't work
+    kill/2-2          # EPERM test: PID 1 is our process, not init
+    kill/3-1          # EPERM test: PID 1 is our process, not init
+    # killpg/2-1 and killpg/4-1 fixed by adding SYS_getpgid dispatch
     killpg/1-1        # signal handler not invoked
-    killpg/2-1        # killpg(0, 0) fails
-    killpg/4-1        # killpg to own group fails
     # sigismember/5-1 fixed by musl overlay returning -1/EINVAL
     # sigqueue: cross-process and RT signal issues
     sigqueue/4-1      # RT signal handler issue

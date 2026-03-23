@@ -1924,6 +1924,15 @@ pub fn sys_getpgrp(proc: &Process) -> u32 {
     proc.pgid
 }
 
+/// getpgid -- get process group ID for a specific process.
+/// pid=0 means current process.
+pub fn sys_getpgid(proc: &Process, pid: u32) -> Result<u32, Errno> {
+    if pid != 0 && pid != proc.pid {
+        return Err(Errno::ESRCH);
+    }
+    Ok(proc.pgid)
+}
+
 /// setpgid -- set process group ID.
 /// pid=0 means current process, pgid=0 means use pid as pgid.
 pub fn sys_setpgid(proc: &mut Process, pid: u32, pgid: u32) -> Result<(), Errno> {
@@ -8272,6 +8281,19 @@ mod tests {
     fn test_getpgrp_default() {
         let proc = Process::new(1);
         assert_eq!(sys_getpgrp(&proc), 1); // pgid == pid
+    }
+
+    #[test]
+    fn test_getpgid_self() {
+        let proc = Process::new(1);
+        assert_eq!(sys_getpgid(&proc, 0), Ok(1)); // pid=0 means current process
+        assert_eq!(sys_getpgid(&proc, 1), Ok(1)); // pid=self works too
+    }
+
+    #[test]
+    fn test_getpgid_other_esrch() {
+        let proc = Process::new(1);
+        assert_eq!(sys_getpgid(&proc, 999), Err(Errno::ESRCH));
     }
 
     #[test]
