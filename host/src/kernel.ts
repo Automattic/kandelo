@@ -18,6 +18,39 @@ import { SharedPipeBuffer } from "./shared-pipe-buffer";
 import { SharedLockTable } from "./shared-lock-table";
 import { SharedIpcTable, type MsgQueueInfo, type SemSetInfo, type ShmSegInfo } from "./shared-ipc-table";
 
+/**
+ * Map Node.js filesystem error codes to negative errno values.
+ * Returns -EIO for unknown errors.
+ */
+function negErrno(err: unknown): number {
+  if (err && typeof err === "object" && "code" in err) {
+    const code = (err as { code: string }).code;
+    switch (code) {
+      case "ENOENT": return -2;
+      case "EACCES": return -13;
+      case "EPERM": return -1;
+      case "EEXIST": return -17;
+      case "ENOTDIR": return -20;
+      case "EISDIR": return -21;
+      case "EINVAL": return -22;
+      case "ENOSPC": return -28;
+      case "EROFS": return -30;
+      case "ENOTEMPTY": return -39;
+      case "ELOOP": return -40;
+      case "ENAMETOOLONG": return -36;
+      case "EBADF": return -9;
+      case "EMFILE": return -24;
+      case "ENFILE": return -23;
+      case "EBUSY": return -16;
+      case "EXDEV": return -18;
+      case "ENODEV": return -19;
+      case "EFAULT": return -14;
+      case "ETXTBSY": return -26;
+    }
+  }
+  return -5; // EIO
+}
+
 /** Size of the WasmStat struct in bytes (repr(C) layout). */
 const WASM_STAT_SIZE = 88;
 
@@ -402,8 +435,8 @@ export class WasmPosixKernel {
       const pathBytes = mem.slice(pathPtr, pathPtr + pathLen);
       const path = new TextDecoder().decode(pathBytes);
       return BigInt(this.io.open(path, flags, mode));
-    } catch {
-      return BigInt(-1);
+    } catch (e) {
+      return BigInt(negErrno(e));
     }
   }
 
@@ -436,8 +469,8 @@ export class WasmPosixKernel {
 
     try {
       return this.io.close(h);
-    } catch {
-      return -1;
+    } catch (e) {
+      return negErrno(e);
     }
   }
 
@@ -475,8 +508,8 @@ export class WasmPosixKernel {
       const mem = this.getMemoryBuffer();
       const buf = mem.subarray(bufPtr, bufPtr + bufLen);
       return this.io.read(h, buf, null, bufLen);
-    } catch {
-      return -1;
+    } catch (e) {
+      return negErrno(e);
     }
   }
 
@@ -523,8 +556,8 @@ export class WasmPosixKernel {
 
     try {
       return this.io.write(h, data, null, bufLen);
-    } catch {
-      return -1;
+    } catch (e) {
+      return negErrno(e);
     }
   }
 
@@ -546,8 +579,8 @@ export class WasmPosixKernel {
 
     try {
       return BigInt(this.io.seek(h, offset, whence));
-    } catch {
-      return BigInt(-1);
+    } catch (e) {
+      return BigInt(negErrno(e));
     }
   }
 
@@ -581,8 +614,8 @@ export class WasmPosixKernel {
       const stat = this.io.fstat(h);
       this.writeStatToMemory(statPtr, stat);
       return 0;
-    } catch {
-      return -1;
+    } catch (e) {
+      return negErrno(e);
     }
   }
 
@@ -646,8 +679,8 @@ export class WasmPosixKernel {
       const stat = this.io.stat(path);
       this.writeStatToMemory(statPtr, stat);
       return 0;
-    } catch {
-      return -1;
+    } catch (e) {
+      return negErrno(e);
     }
   }
 
@@ -664,8 +697,8 @@ export class WasmPosixKernel {
       const stat = this.io.lstat(path);
       this.writeStatToMemory(statPtr, stat);
       return 0;
-    } catch {
-      return -1;
+    } catch (e) {
+      return negErrno(e);
     }
   }
 
@@ -681,8 +714,8 @@ export class WasmPosixKernel {
       const path = this.readPathFromMemory(pathPtr, pathLen);
       this.io.mkdir(path, mode);
       return 0;
-    } catch {
-      return -1;
+    } catch (e) {
+      return negErrno(e);
     }
   }
 
@@ -694,8 +727,8 @@ export class WasmPosixKernel {
       const path = this.readPathFromMemory(pathPtr, pathLen);
       this.io.rmdir(path);
       return 0;
-    } catch {
-      return -1;
+    } catch (e) {
+      return negErrno(e);
     }
   }
 
@@ -707,8 +740,8 @@ export class WasmPosixKernel {
       const path = this.readPathFromMemory(pathPtr, pathLen);
       this.io.unlink(path);
       return 0;
-    } catch {
-      return -1;
+    } catch (e) {
+      return negErrno(e);
     }
   }
 
@@ -726,8 +759,8 @@ export class WasmPosixKernel {
       const newPath = this.readPathFromMemory(newPtr, newLen);
       this.io.rename(oldPath, newPath);
       return 0;
-    } catch {
-      return -1;
+    } catch (e) {
+      return negErrno(e);
     }
   }
 
@@ -745,8 +778,8 @@ export class WasmPosixKernel {
       const newPath = this.readPathFromMemory(newPtr, newLen);
       this.io.link(existingPath, newPath);
       return 0;
-    } catch {
-      return -1;
+    } catch (e) {
+      return negErrno(e);
     }
   }
 
@@ -764,8 +797,8 @@ export class WasmPosixKernel {
       const linkPath = this.readPathFromMemory(linkPtr, linkLen);
       this.io.symlink(target, linkPath);
       return 0;
-    } catch {
-      return -1;
+    } catch (e) {
+      return negErrno(e);
     }
   }
 
@@ -788,8 +821,8 @@ export class WasmPosixKernel {
       const mem = this.getMemoryBuffer();
       mem.set(encoded.subarray(0, n), bufPtr);
       return n;
-    } catch {
-      return -1;
+    } catch (e) {
+      return negErrno(e);
     }
   }
 
@@ -805,8 +838,8 @@ export class WasmPosixKernel {
       const path = this.readPathFromMemory(pathPtr, pathLen);
       this.io.chmod(path, mode);
       return 0;
-    } catch {
-      return -1;
+    } catch (e) {
+      return negErrno(e);
     }
   }
 
@@ -823,8 +856,8 @@ export class WasmPosixKernel {
       const path = this.readPathFromMemory(pathPtr, pathLen);
       this.io.chown(path, uid, gid);
       return 0;
-    } catch {
-      return -1;
+    } catch (e) {
+      return negErrno(e);
     }
   }
 
@@ -840,8 +873,8 @@ export class WasmPosixKernel {
       const path = this.readPathFromMemory(pathPtr, pathLen);
       this.io.access(path, amode);
       return 0;
-    } catch {
-      return -1;
+    } catch (e) {
+      return negErrno(e);
     }
   }
 
@@ -926,8 +959,8 @@ export class WasmPosixKernel {
     try {
       const path = this.readPathFromMemory(pathPtr, pathLen);
       return BigInt(this.io.opendir(path));
-    } catch {
-      return BigInt(-1);
+    } catch (e) {
+      return BigInt(negErrno(e));
     }
   }
 
