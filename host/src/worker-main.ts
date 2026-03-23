@@ -183,11 +183,20 @@ export async function centralizedWorkerMain(
     const instance = await WebAssembly.instantiate(module, importObject);
 
     // Set __channel_base in TLS so __do_syscall knows where the channel is.
-    const tlsBase = instance.exports.__tls_base as WebAssembly.Global | undefined;
-    if (tlsBase) {
-      const tlsBaseAddr = tlsBase.value as number;
+    // Use the exported helper to find __channel_base's actual address in TLS,
+    // since it may not be at offset 0 if the program has its own _Thread_local vars.
+    const getChannelBaseAddr = instance.exports.__get_channel_base_addr as (() => number) | undefined;
+    if (getChannelBaseAddr) {
+      const addr = getChannelBaseAddr();
       const view = new DataView(memory.buffer);
-      view.setUint32(tlsBaseAddr, channelOffset, true);
+      view.setUint32(addr, channelOffset, true);
+    } else {
+      // Fallback for programs without the helper (shouldn't happen with current glue)
+      const tlsBase = instance.exports.__tls_base as WebAssembly.Global | undefined;
+      if (tlsBase) {
+        const view = new DataView(memory.buffer);
+        view.setUint32(tlsBase.value as number, channelOffset, true);
+      }
     }
 
     // Signal ready
@@ -259,12 +268,6 @@ export async function centralizedThreadWorkerMain(
       wasmInitTls(tlsBlock);
     }
 
-    // Set __channel_base in TLS (first TLS variable at offset 0 from __tls_base)
-    if (tlsBlock > 0) {
-      const view = new DataView(memory.buffer);
-      view.setUint32(tlsBlock, channelOffset, true);
-    }
-
     // Set __stack_pointer
     const stackPointer = instance.exports.__stack_pointer as WebAssembly.Global | undefined;
     if (stackPointer) {
@@ -275,11 +278,20 @@ export async function centralizedThreadWorkerMain(
     const wasmThreadInit = instance.exports.__wasm_thread_init as ((tp: number) => void) | undefined;
     if (wasmThreadInit && tlsPtr > 0) {
       wasmThreadInit(tlsPtr);
-      // Re-set __channel_base since __wasm_thread_init may have affected TLS
-      if (tlsBlock > 0) {
-        const view = new DataView(memory.buffer);
-        view.setUint32(tlsBlock, channelOffset, true);
-      }
+    }
+
+    // Set __channel_base in TLS using the exported helper to find its actual address,
+    // since __channel_base may not be at offset 0 from __tls_base if the program
+    // has its own _Thread_local variables.
+    const getChannelBaseAddr = instance.exports.__get_channel_base_addr as (() => number) | undefined;
+    if (getChannelBaseAddr) {
+      const addr = getChannelBaseAddr();
+      const view = new DataView(memory.buffer);
+      view.setUint32(addr, channelOffset, true);
+    } else if (tlsBlock > 0) {
+      // Fallback: assume offset 0 (only for programs without the helper)
+      const view = new DataView(memory.buffer);
+      view.setUint32(tlsBlock, channelOffset, true);
     }
 
     // Call the thread function via indirect function table

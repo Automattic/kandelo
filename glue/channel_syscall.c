@@ -47,6 +47,15 @@ int *__errno_location(void);
 /* Per-thread channel base address, set during TLS init by the host */
 _Thread_local uint32_t __channel_base;
 
+/* Return the address of __channel_base for the current thread.
+ * The host uses this to find where to write the channel offset in TLS,
+ * since __channel_base may not be at TLS offset 0 if the program has
+ * its own _Thread_local variables. */
+__attribute__((export_name("__get_channel_base_addr")))
+uint32_t __get_channel_base_addr(void) {
+    return (uint32_t)(uintptr_t)&__channel_base;
+}
+
 /* SYS_EXIT needs special handling */
 #define SYS_EXIT 34
 

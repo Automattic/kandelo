@@ -56,8 +56,6 @@ REGRESSION_EXPECTED_FAIL=(
     pthread_exit-dtor
     # Centralized mode: exec not fully implemented
     execle-env
-    # Centralized mode: rlimit enforcement edge case
-    rlimit-open-files
     # Centralized mode: sigreturn not fully wired
     sigreturn
     # Centralized mode: statvfs returns placeholder values
