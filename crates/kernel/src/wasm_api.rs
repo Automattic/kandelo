@@ -1082,23 +1082,30 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
         37 => {  // SYS_SIGPROCMASK: (how, set_ptr, oldset_ptr, sigsetsize)
             // musl passes pointers to sigset_t (8 bytes). Read set from pointer,
             // call kernel, write old set to output pointer.
-            let (set_lo, set_hi) = if a2 != 0 {
+            // POSIX: if set is NULL, the signal mask is not changed (query only).
+            if a2 != 0 {
                 let ptr = a2 as usize as *const u32;
-                unsafe { (*ptr, *ptr.add(1)) }
-            } else {
-                (0u32, 0u32)
-            };
-            let result = kernel_sigprocmask(a1 as u32, set_lo, set_hi);
-            if result < 0 {
-                result as i32
-            } else {
+                let (set_lo, set_hi) = unsafe { (*ptr, *ptr.add(1)) };
+                let result = kernel_sigprocmask(a1 as u32, set_lo, set_hi);
+                if result < 0 {
+                    return result as i32;
+                }
                 if a3 != 0 {
                     let ptr = a3 as usize as *mut u8;
                     unsafe {
                         let bytes = (result as u64).to_le_bytes();
-                        for i in 0..8 {
-                            *ptr.add(i) = bytes[i];
-                        }
+                        for i in 0..8 { *ptr.add(i) = bytes[i]; }
+                    }
+                }
+                0
+            } else {
+                // set is NULL: just read the current mask without modifying
+                let (_gkl, proc) = unsafe { get_process() };
+                if a3 != 0 {
+                    let ptr = a3 as usize as *mut u8;
+                    unsafe {
+                        let bytes = proc.signals.blocked.to_le_bytes();
+                        for i in 0..8 { *ptr.add(i) = bytes[i]; }
                     }
                 }
                 0

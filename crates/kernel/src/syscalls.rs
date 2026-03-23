@@ -488,8 +488,8 @@ pub fn sys_read(
             if matching == 0 {
                 return Err(Errno::EAGAIN);
             }
-            // Find lowest matching signal (bit N = signal N)
-            let signo = matching.trailing_zeros();
+            // Find lowest matching signal (bit N = signal N+1, musl 0-based convention)
+            let signo = matching.trailing_zeros() + 1;
             // Consume the signal from pending
             proc.signals.clear_pending(signo);
             // Write signalfd_siginfo (128 bytes): only ssi_signo at offset 0
@@ -2156,8 +2156,8 @@ pub fn sys_sigtimedwait(
     if pending_in_mask != 0 {
         // Dequeue the lowest numbered signal
         for sig in 1..NSIG {
-            if pending_in_mask & (1u64 << sig) != 0 {
-                proc.signals.pending &= !(1u64 << sig);
+            if pending_in_mask & crate::signal::sig_bit(sig) != 0 {
+                proc.signals.pending &= !crate::signal::sig_bit(sig);
                 return Ok(sig);
             }
         }
@@ -2175,8 +2175,8 @@ pub fn sys_sigtimedwait(
         let pending_in_mask = proc.signals.pending & mask;
         if pending_in_mask != 0 {
             for sig in 1..NSIG {
-                if pending_in_mask & (1u64 << sig) != 0 {
-                    proc.signals.pending &= !(1u64 << sig);
+                if pending_in_mask & crate::signal::sig_bit(sig) != 0 {
+                    proc.signals.pending &= !crate::signal::sig_bit(sig);
                     return Ok(sig);
                 }
             }
@@ -2196,7 +2196,7 @@ pub fn sys_sigsuspend(proc: &mut Process, host: &mut dyn HostIO, mask: u64) -> R
 
     let old_mask = proc.signals.blocked;
     // Cannot block SIGKILL or SIGSTOP
-    proc.signals.blocked = mask & !((1u64 << SIGKILL) | (1u64 << SIGSTOP));
+    proc.signals.blocked = mask & !(crate::signal::sig_bit(SIGKILL) | crate::signal::sig_bit(SIGSTOP));
 
     // Check if any signals are already deliverable with new mask
     if proc.signals.deliverable() != 0 {
@@ -2323,7 +2323,7 @@ pub fn sys_sigprocmask(proc: &mut Process, how: u32, set: u64) -> Result<u64, Er
     }
 
     // SIGKILL and SIGSTOP cannot be blocked (POSIX)
-    proc.signals.blocked &= !((1u64 << SIGKILL) | (1u64 << SIGSTOP));
+    proc.signals.blocked &= !(crate::signal::sig_bit(SIGKILL) | crate::signal::sig_bit(SIGSTOP));
 
     Ok(old_mask)
 }
@@ -6421,7 +6421,7 @@ mod tests {
     #[test]
     fn test_sigprocmask_block() {
         let mut proc = Process::new(1);
-        let old = sys_sigprocmask(&mut proc, 0, 1u64 << 2).unwrap(); // SIG_BLOCK SIGINT
+        let old = sys_sigprocmask(&mut proc, 0, crate::signal::sig_bit(2)).unwrap(); // SIG_BLOCK SIGINT
         assert_eq!(old, 0);
         assert!(proc.signals.is_blocked(2));
     }
@@ -6429,7 +6429,7 @@ mod tests {
     #[test]
     fn test_sigprocmask_cannot_block_sigkill() {
         let mut proc = Process::new(1);
-        sys_sigprocmask(&mut proc, 2, (1u64 << 9) | (1u64 << 2)).unwrap(); // SIG_SETMASK SIGKILL+SIGINT
+        sys_sigprocmask(&mut proc, 2, crate::signal::sig_bit(9) | crate::signal::sig_bit(2)).unwrap(); // SIG_SETMASK SIGKILL+SIGINT
         assert!(!proc.signals.is_blocked(9)); // SIGKILL cannot be blocked
         assert!(proc.signals.is_blocked(2)); // SIGINT can be blocked
     }
@@ -6473,7 +6473,7 @@ mod tests {
         // Step 2: Block all signals (SIG_BLOCK with mask=0x7FFFFFFF)
         let result = sys_sigprocmask(&mut proc, 0, 0x7FFFFFFF);
         assert!(result.is_ok());
-        assert!(proc.signals.blocked & (1u64 << SIGINT) != 0, "SIGINT should be blocked");
+        assert!(proc.signals.blocked & crate::signal::sig_bit(SIGINT) != 0, "SIGINT should be blocked");
 
         // Step 3: Raise SIGINT
         let mut host = MockHostIO::new();
@@ -9354,20 +9354,20 @@ mod tests {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         // Raise SIGUSR1 (signal 10)
-        proc.signals.pending |= 1u64 << 10;
+        proc.signals.pending |= crate::signal::sig_bit(10);
         // Wait for SIGUSR1
-        let mask = 1u64 << 10;
+        let mask = crate::signal::sig_bit(10);
         let result = sys_sigtimedwait(&mut proc, &mut host, mask, 0).unwrap();
         assert_eq!(result, 10);
         // Signal should be dequeued
-        assert_eq!(proc.signals.pending & (1u64 << 10), 0);
+        assert_eq!(proc.signals.pending & crate::signal::sig_bit(10), 0);
     }
 
     #[test]
     fn test_sigtimedwait_no_pending_timeout_zero() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
-        let mask = 1u64 << 10;
+        let mask = crate::signal::sig_bit(10);
         let result = sys_sigtimedwait(&mut proc, &mut host, mask, 0);
         assert_eq!(result, Err(Errno::EAGAIN));
     }
@@ -9377,13 +9377,13 @@ mod tests {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         // Raise both SIGUSR1 (10) and SIGUSR2 (12)
-        proc.signals.pending |= (1u64 << 10) | (1u64 << 12);
-        let mask = (1u64 << 10) | (1u64 << 12);
+        proc.signals.pending |= crate::signal::sig_bit(10) | crate::signal::sig_bit(12);
+        let mask = crate::signal::sig_bit(10) | crate::signal::sig_bit(12);
         let result = sys_sigtimedwait(&mut proc, &mut host, mask, 0).unwrap();
         assert_eq!(result, 10); // lowest first
         // Only SIGUSR1 should be dequeued
-        assert_eq!(proc.signals.pending & (1u64 << 10), 0);
-        assert_ne!(proc.signals.pending & (1u64 << 12), 0);
+        assert_eq!(proc.signals.pending & crate::signal::sig_bit(10), 0);
+        assert_ne!(proc.signals.pending & crate::signal::sig_bit(12), 0);
     }
 
     // ===== preadv / pwritev tests =====
@@ -10535,7 +10535,7 @@ mod tests {
     fn test_signalfd4_create() {
         let mut proc = Process::new(1);
         use wasm_posix_shared::signal::SIGINT;
-        let mask = 1u64 << SIGINT;
+        let mask = crate::signal::sig_bit(SIGINT);
         let fd = sys_signalfd4(&mut proc, -1, mask, 0).unwrap();
         assert!(fd >= 3);
 
@@ -10566,11 +10566,11 @@ mod tests {
     fn test_signalfd4_update_existing() {
         let mut proc = Process::new(1);
         use wasm_posix_shared::signal::{SIGINT, SIGTERM};
-        let mask1 = 1u64 << SIGINT;
+        let mask1 = crate::signal::sig_bit(SIGINT);
         let fd = sys_signalfd4(&mut proc, -1, mask1, 0).unwrap();
 
         // Update mask
-        let mask2 = 1u64 << SIGTERM;
+        let mask2 = crate::signal::sig_bit(SIGTERM);
         let fd2 = sys_signalfd4(&mut proc, fd, mask2, 0).unwrap();
         assert_eq!(fd, fd2); // Same fd returned
     }
@@ -10580,7 +10580,7 @@ mod tests {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         use wasm_posix_shared::signal::SIGINT;
-        let mask = 1u64 << SIGINT;
+        let mask = crate::signal::sig_bit(SIGINT);
         let fd = sys_signalfd4(&mut proc, -1, mask, O_NONBLOCK).unwrap();
 
         // No signal pending: read should EAGAIN
@@ -10594,7 +10594,7 @@ mod tests {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         use wasm_posix_shared::signal::SIGINT;
-        let mask = 1u64 << SIGINT;
+        let mask = crate::signal::sig_bit(SIGINT);
         let fd = sys_signalfd4(&mut proc, -1, mask, O_NONBLOCK).unwrap();
 
         // Raise SIGINT
@@ -10627,7 +10627,7 @@ mod tests {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         use wasm_posix_shared::signal::{SIGINT, SIGTERM};
-        let mask = 1u64 << SIGINT; // only watching SIGINT
+        let mask = crate::signal::sig_bit(SIGINT); // only watching SIGINT
         let fd = sys_signalfd4(&mut proc, -1, mask, O_NONBLOCK).unwrap();
 
         // Raise SIGTERM (not in mask)
@@ -10648,7 +10648,7 @@ mod tests {
         use wasm_posix_shared::signal::SIGINT;
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
-        let mask = 1u64 << SIGINT;
+        let mask = crate::signal::sig_bit(SIGINT);
         let fd = sys_signalfd4(&mut proc, -1, mask, O_NONBLOCK).unwrap();
 
         // No signal: poll should report not ready
