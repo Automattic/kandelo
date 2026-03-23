@@ -1123,6 +1123,17 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
             kernel_sigsuspend(mask_lo, mask_hi)
         }
         111 => kernel_pause(),                     // SYS_PAUSE
+        206 => {  // SYS_RT_SIGPENDING: (set_ptr, sigsetsize)
+            let (_gkl, proc) = unsafe { get_process() };
+            if a1 != 0 {
+                let ptr = a1 as usize as *mut u8;
+                unsafe {
+                    let bytes = proc.signals.pending.to_le_bytes();
+                    for i in 0..8 { *ptr.add(i) = bytes[i]; }
+                }
+            }
+            0
+        }
         207 => kernel_rt_sigtimedwait(a1 as u32, a2 as u32, a3), // SYS_RT_SIGTIMEDWAIT
 
         // Time

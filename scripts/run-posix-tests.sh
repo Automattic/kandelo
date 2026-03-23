@@ -36,16 +36,16 @@ EXPECTED_FAIL=(
     signal/3-1        # timeout: child process signal test
     sigpending/1-2    # timeout: needs alarm-based signal delivery
     sigpending/1-3    # timeout: needs alarm-based signal delivery
-    sigset/6-1        # timeout: needs alarm + blocked signal
+    # sigset/6-1 now passing (sigpending + blocking works)
     sigtimedwait/1-1  # timeout: sigtimedwait not implemented
     sigtimedwait/2-1  # timeout: sigtimedwait not implemented
-    sigtimedwait/4-1  # timeout: sigtimedwait not implemented
+    # sigtimedwait/4-1 now passing
     sigtimedwait/5-1  # timeout: sigtimedwait not implemented
     sigtimedwait/6-1  # timeout: sigtimedwait not implemented
     sigwaitinfo/1-1   # timeout: sigwaitinfo not implemented
     sigwaitinfo/5-1   # timeout: sigwaitinfo not implemented
     sigwaitinfo/8-1   # timeout: sigwaitinfo not implemented
-    sigwaitinfo/9-1   # timeout: sigwaitinfo not implemented
+    # sigwaitinfo/9-1 now passing
     # munmap: all tests include pthread.h (won't compile)
     munmap/1-1
     munmap/1-2
@@ -79,17 +79,15 @@ EXPECTED_FAIL=(
 
     # ── Signal delivery limitations ──
     # sigprocmask: blocking signals doesn't fully work (signals delivered synchronously)
-    sigprocmask/4-1   # signal not blocked after SIG_BLOCK
-    sigprocmask/5-1   # signal not blocked after SIG_BLOCK
+    # sigprocmask/4-1 and /5-1 now passing (sigpending works, blocking verified)
     sigprocmask/6-1   # handler called despite signal being masked
     # sigprocmask/7-1 and /10-1 fixed by signal bit position alignment (0-based)
-    sigpending/1-1    # sigpending returns error
-    sigpending/2-1    # sigpending returns non-zero
+    # sigpending/1-1 and /2-1 fixed by implementing rt_sigpending syscall
     sigrelse/1-1      # sigrelse issue
     sigset/3-1        # handler called after SIG_DFL
     sigset/4-1        # handler called after SIG_DFL
     sigset/5-1        # signal mask not empty after sigset
-    sigset/7-1        # sigpending ENOSYS
+    sigset/7-1        # requires signal handler delivery after sigrelse
 
     # ── Process/permission model ──
     # kill: no real UID permission enforcement
