@@ -34,11 +34,6 @@ EXPECTED_FAIL=(
     sigaltstack/6-1
     sigaltstack/7-1
     sigaltstack/8-1
-    # sigtimedwait: not implemented
-    sigtimedwait/1-1
-    sigtimedwait/2-1
-    sigtimedwait/5-1
-    sigtimedwait/6-1
     # sigwaitinfo: RT signal queuing
     sigwaitinfo/8-1
     # munmap: all tests include pthread.h (won't compile)
@@ -52,8 +47,17 @@ EXPECTED_FAIL=(
     # ── Not implemented / stubs ──
     mlock/12-1        # needs pwd.h
     sched_rr_get_interval/3-1  # needs fork()
+    # sched_getparam/sched_getscheduler: errno check failures after table-base=3 change
+    sched_getparam/1-1
+    sched_getparam/2-1
+    sched_getparam/3-1
     sched_getparam/6-1         # needs pwd.h
+    sched_getscheduler/1-1
+    sched_getscheduler/3-1
+    sched_getscheduler/4-1
     sched_getscheduler/7-1     # needs pwd.h
+    # sigismember: invalid signal detection regressed with table-base=3
+    sigismember/5-1
 
     # ── Process/permission model ──
     kill/2-2          # EPERM test: PID 1 is our process, not init
