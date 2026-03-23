@@ -7,6 +7,18 @@ pub const SIGRTMIN: u32 = 32;
 /// Last real-time signal number (exclusive upper bound for iteration).
 pub const SIGRTMAX_PLUS1: u32 = 64;
 
+/// Convert a 1-based signal number to its bitmask position.
+/// musl uses 0-based bit positions: signal N maps to bit (N-1).
+/// Returns 0 for invalid signal numbers (0 or >= 64).
+#[inline]
+pub fn sig_bit(signum: u32) -> u64 {
+    if signum == 0 || signum >= 64 {
+        0
+    } else {
+        1u64 << (signum - 1)
+    }
+}
+
 /// Per-signal handler configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignalHandler {
@@ -129,11 +141,12 @@ impl SignalState {
 
     /// Mark a signal as pending.
     /// Standard signals (1-31) are coalesced. RT signals (32-63) are queued.
+    /// Bit position = signum - 1 (musl convention: signal N uses bit N-1).
     pub fn raise(&mut self, signum: u32) -> bool {
         if signum == 0 || signum >= 64 {
             return false;
         }
-        self.pending |= 1u64 << signum;
+        self.pending |= sig_bit(signum);
         if signum >= SIGRTMIN {
             self.rt_queue.push_back(signum);
         }
@@ -144,7 +157,7 @@ impl SignalState {
     /// For RT signals, removes all queued instances and clears the pending bit.
     pub fn clear(&mut self, signum: u32) {
         if signum > 0 && signum < 64 {
-            self.pending &= !(1u64 << signum);
+            self.pending &= !sig_bit(signum);
             if signum >= SIGRTMIN {
                 self.rt_queue.retain(|&s| s != signum);
             }
@@ -154,7 +167,7 @@ impl SignalState {
     /// Check if a signal is pending.
     pub fn is_pending(&self, signum: u32) -> bool {
         if signum >= 64 { return false; }
-        (self.pending & (1u64 << signum)) != 0
+        (self.pending & sig_bit(signum)) != 0
     }
 
     /// Return the raw pending signal bitmask.
@@ -166,7 +179,7 @@ impl SignalState {
     /// For RT signals, removes all queued instances and clears the pending bit.
     pub fn clear_pending(&mut self, signum: u32) {
         if signum > 0 && signum < 64 {
-            self.pending &= !(1u64 << signum);
+            self.pending &= !sig_bit(signum);
             if signum >= SIGRTMIN {
                 self.rt_queue.retain(|&s| s != signum);
             }
@@ -176,7 +189,7 @@ impl SignalState {
     /// Check if a signal is blocked.
     pub fn is_blocked(&self, signum: u32) -> bool {
         if signum >= 64 { return false; }
-        (self.blocked & (1u64 << signum)) != 0
+        (self.blocked & sig_bit(signum)) != 0
     }
 
     /// Get the set of pending, unblocked signals.
@@ -188,12 +201,14 @@ impl SignalState {
     /// Standard signals (1-31) are cleared from the pending bitmask.
     /// RT signals (32-63) are dequeued from the queue; the pending bit is
     /// only cleared when no more instances of that signal remain in the queue.
+    /// Bit positions are 0-based (musl convention): bit N = signal N+1.
     pub fn dequeue(&mut self) -> Option<u32> {
         let deliverable = self.pending & !self.blocked;
         if deliverable == 0 {
             return None;
         }
-        let signum = deliverable.trailing_zeros();
+        // trailing_zeros gives 0-based bit position; signal number = bit + 1
+        let signum = deliverable.trailing_zeros() + 1;
         if signum >= SIGRTMIN {
             // RT signal: dequeue one instance from the queue
             if let Some(pos) = self.rt_queue.iter().position(|&s| s == signum) {
@@ -201,11 +216,11 @@ impl SignalState {
             }
             // Only clear the pending bit if no more instances remain
             if !self.rt_queue.iter().any(|&s| s == signum) {
-                self.pending &= !(1u64 << signum);
+                self.pending &= !sig_bit(signum);
             }
         } else {
             // Standard signal: clear from pending bitmask
-            self.pending &= !(1u64 << signum);
+            self.pending &= !sig_bit(signum);
         }
         Some(signum)
     }
@@ -217,7 +232,7 @@ impl SignalState {
         if deliverable == 0 {
             return false;
         }
-        let signum = deliverable.trailing_zeros();
+        let signum = deliverable.trailing_zeros() + 1; // 0-based bit → 1-based signal
         if signum >= 64 {
             return false;
         }
@@ -243,7 +258,7 @@ impl SignalState {
         // Reconstruct RT queue from pending bits (one instance per signal)
         let mut rt_queue = VecDeque::new();
         for sig in SIGRTMIN..SIGRTMAX_PLUS1 {
-            if (pending & (1u64 << sig)) != 0 {
+            if (pending & sig_bit(sig)) != 0 {
                 rt_queue.push_back(sig);
             }
         }
@@ -304,7 +319,7 @@ mod tests {
     #[test]
     fn test_blocked_signals() {
         let mut state = SignalState::new();
-        state.blocked = 1u64 << SIGINT;
+        state.blocked = sig_bit(SIGINT);
         assert!(state.is_blocked(SIGINT));
         assert!(!state.is_blocked(SIGTERM));
     }
@@ -314,10 +329,10 @@ mod tests {
         let mut state = SignalState::new();
         state.raise(SIGINT);
         state.raise(SIGTERM);
-        state.blocked = 1u64 << SIGINT;
+        state.blocked = sig_bit(SIGINT);
         let d = state.deliverable();
-        assert_eq!(d & (1u64 << SIGINT), 0); // blocked
-        assert_ne!(d & (1u64 << SIGTERM), 0); // not blocked
+        assert_eq!(d & sig_bit(SIGINT), 0); // blocked
+        assert_ne!(d & sig_bit(SIGTERM), 0); // not blocked
     }
 
     #[test]
@@ -378,7 +393,7 @@ mod tests {
         let mut state = SignalState::new();
         state.raise(SIGINT);  // 2 - blocked
         state.raise(SIGTERM); // 15 - not blocked
-        state.blocked = 1u64 << SIGINT;
+        state.blocked = sig_bit(SIGINT);
         // Should skip SIGINT and return SIGTERM
         assert_eq!(state.dequeue(), Some(SIGTERM));
         // SIGINT is still pending

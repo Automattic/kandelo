@@ -44,7 +44,6 @@ EXPECTED_FAIL=(
     sigtimedwait/6-1  # timeout: sigtimedwait not implemented
     sigwaitinfo/1-1   # timeout: sigwaitinfo not implemented
     sigwaitinfo/5-1   # timeout: sigwaitinfo not implemented
-    sigwaitinfo/6-1   # timeout: sigwaitinfo not implemented
     sigwaitinfo/8-1   # timeout: sigwaitinfo not implemented
     sigwaitinfo/9-1   # timeout: sigwaitinfo not implemented
     # munmap: all tests include pthread.h (won't compile)
@@ -83,8 +82,7 @@ EXPECTED_FAIL=(
     sigprocmask/4-1   # signal not blocked after SIG_BLOCK
     sigprocmask/5-1   # signal not blocked after SIG_BLOCK
     sigprocmask/6-1   # handler called despite signal being masked
-    sigprocmask/7-1   # old set missing signal
-    sigprocmask/10-1  # SIGKILL incorrectly added to mask
+    # sigprocmask/7-1 and /10-1 fixed by signal bit position alignment (0-based)
     sigpending/1-1    # sigpending returns error
     sigpending/2-1    # sigpending returns non-zero
     sigrelse/1-1      # sigrelse issue
@@ -101,8 +99,7 @@ EXPECTED_FAIL=(
     killpg/1-1        # signal handler not invoked
     killpg/2-1        # killpg(0, 0) fails
     killpg/4-1        # killpg to own group fails
-    # sigismember: invalid signal -1 not rejected
-    sigismember/5-1
+    # sigismember/5-1 fixed by musl overlay returning -1/EINVAL
     # sigqueue: cross-process and RT signal issues
     sigqueue/4-1      # RT signal handler issue
     sigqueue/5-1      # RT signal handler issue
