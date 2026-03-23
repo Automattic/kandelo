@@ -157,6 +157,10 @@ BASIC_EXPECTED_FAIL=(
     # -- Process exec (not implemented in centralized mode)
     "unistd/execl" "unistd/execle" "unistd/execlp" "unistd/execv"
     "unistd/execve" "unistd/execvp" "unistd/fexecve"
+    # -- Memory locking (not supported in Wasm)
+    "sys_mman/mlock" "sys_mman/mlockall" "sys_mman/munlock" "sys_mman/munlockall"
+    # -- Privileged operations
+    "time/clock_settime" "unistd/fchownat" "unistd/lchown"
     # -- Process management requiring fork/exec or process groups
     "sys_wait/wait" "sys_wait/waitpid"
     "unistd/getpgid" "unistd/setpgid" "unistd/setsid"
@@ -269,10 +273,33 @@ STDIO_EXPECTED_FAIL=()
 IO_EXPECTED_FAIL=(
     # OFD locks require fork() for cross-process testing
     "ofd-*"
+    # O_CLOFORK is POSIX.1-2024; not in musl
+    "dup3-clofork-fork" "open-clofork-fork"
+    # open() on existing directory with O_CREAT should return EISDIR
+    "open-tmpdir-rdonly-creat"
 )
 
-SIGNAL_EXPECTED_FAIL=()
-PROCESS_EXPECTED_FAIL=()
+SIGNAL_EXPECTED_FAIL=(
+    # Tests requiring exec (not implemented in centralized mode)
+    "default-chld-exec" "default-usr1-exec"
+    "handle-chld-exec" "handle-usr1-exec"
+    "ignore-chld-exec" "ignore-usr1-exec"
+    "sigaction-exec-flags" "sigaltstack-exec" "sigaltstack-raise-exec"
+    # Signal handler invocation via raise() not yet implemented in Wasm
+    "raise" "block-raise-unblock" "block-raise-handle-unblock"
+    "block-chld-unblock" "sigaltstack-raise"
+    # ppoll + signal mask atomicity (depends on signal delivery)
+    "ppoll-*"
+)
+PROCESS_EXPECTED_FAIL=(
+    # Process groups not fully implemented
+    "fork-setpgid*" "fork-setsid*"
+    "limbo-getpgid" "zombie-getpgid" "zombie-setpgid*"
+    # waitpid with PGID (requires process groups)
+    "waitpid-pgid*"
+    # exec not implemented in centralized mode
+    "fork-exec-*"
+)
 PATHS_EXPECTED_FAIL=()
 
 # ── Helper: check if a test matches an expected-failure pattern ──
@@ -674,6 +701,17 @@ run_runtime_test() {
     output=$(cd "$REPO_ROOT" && timeout "$TEST_TIMEOUT" npx tsx examples/run-example.ts "${wasm}" 2>&1)
     rc=$?
     set -e
+
+    # Sortix convention: if output is empty or exit code >= 2,
+    # append "exit: N" to the output (matches os-test/misc/run.sh)
+    if [ -z "$output" ] || [ "$rc" -ge 2 ]; then
+        if [ -n "$output" ]; then
+            output="$output
+exit: $rc"
+        else
+            output="exit: $rc"
+        fi
+    fi
 
     # For suites with .expect files, compare output
     local has_expect=false
