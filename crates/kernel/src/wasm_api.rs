@@ -820,6 +820,42 @@ pub extern "C" fn kernel_is_fork_child_pid(pid: u32) -> i32 {
     }
 }
 
+/// Clear the fork_child flag for a process (centralized mode).
+/// Called by the host after returning 0 to a fork child's SYS_FORK call.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_clear_fork_child(pid: u32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match table.get_mut(pid) {
+        Some(proc) => { proc.fork_child = false; 0 }
+        None => -(Errno::ESRCH as i32),
+    }
+}
+
+/// Get process exit status (centralized mode).
+/// Returns exit_status if process is exited, -1 if still alive, -ESRCH if not found.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_get_process_exit_status(pid: u32) -> i32 {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    match table.get(pid) {
+        Some(proc) if proc.state == crate::process::ProcessState::Exited => proc.exit_status,
+        Some(_) => -1,
+        None => -(Errno::ESRCH as i32),
+    }
+}
+
+/// Reset signal mask for a process (centralized mode).
+/// In centralized mode, fork children re-execute _start, so they don't get
+/// musl's __restore_sigs after fork(). Clear the blocked mask so the child
+/// starts with no signals blocked, matching a fresh process.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_reset_signal_mask(pid: u32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match table.get_mut(pid) {
+        Some(proc) => { proc.signals.blocked = 0; 0 }
+        None => -(Errno::ESRCH as i32),
+    }
+}
+
 /// Get fork exec path for a specific process (centralized mode).
 /// Writes path to buf, returns bytes written, 0 if no exec path, -ESRCH if not found.
 #[unsafe(no_mangle)]
@@ -1563,13 +1599,13 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
         }
 
         // SYS_SCHED_GETPARAM: write sched_priority=0 to param struct
-        230 => kernel_sched_getparam(a2 as *mut u8),
+        230 => kernel_sched_getparam(a1, a2 as *mut u8),
         // SYS_SCHED_SETPARAM: no-op (return 0 for valid pid)
-        231 => 0,
-        // SYS_SCHED_GETSCHEDULER: always SCHED_OTHER (0)
-        232 => 0,
+        231 => kernel_sched_validate_pid(a1),
+        // SYS_SCHED_GETSCHEDULER: always SCHED_OTHER (0) for valid PIDs
+        232 => kernel_sched_validate_pid(a1),
         // SYS_SCHED_SETSCHEDULER: no-op (return 0 for valid pid)
-        233 => 0,
+        233 => kernel_sched_validate_pid(a1),
 
         // SYS_SCHED_RR_GET_INTERVAL: (pid, timespec_ptr)
         236 => {
@@ -2714,8 +2750,36 @@ pub extern "C" fn kernel_setsid() -> i32 {
 /// Send a signal to a process. Returns 0 on success, or negative errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_kill(pid: i32, sig: u32) -> i32 {
+    use wasm_posix_shared::signal::NSIG;
     let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
+
+    // In centralized mode, handle cross-process kill directly via ProcessTable.
+    // sys_kill delegates remote kills to host_kill, which has no implementation
+    // in centralized mode. But the kernel has all processes in its table.
+    let is_local = pid == proc.pid as i32 || pid == 0 || pid == -(proc.pgid as i32);
+    if !is_local && crate::is_centralized_mode() && pid > 0 {
+        if sig >= NSIG && sig != 0 {
+            deliver_pending_signals(proc, &mut host);
+            return -(Errno::EINVAL as i32);
+        }
+        let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+        let result = match table.get_mut(pid as u32) {
+            Some(target) => {
+                if sig > 0 {
+                    target.signals.raise(sig);
+                    // Deliver immediately so Default/Terminate signals take
+                    // effect (e.g., marking the target process as Exited).
+                    deliver_pending_signals(target, &mut host);
+                }
+                0
+            }
+            None => -(Errno::ESRCH as i32),
+        };
+        deliver_pending_signals(proc, &mut host);
+        return result;
+    }
+
     let result = match syscalls::sys_kill(proc, &mut host, pid, sig) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
@@ -2760,13 +2824,30 @@ pub extern "C" fn kernel_sigaltstack(ss_ptr: *const u8, oss_ptr: *mut u8) -> i32
     0
 }
 
+/// Validate a PID exists for sched_* operations (centralized mode).
+/// Returns 0 if PID is valid (pid==0 means current process), -ESRCH if not found.
+fn kernel_sched_validate_pid(pid: i32) -> i32 {
+    if pid == 0 {
+        return 0; // pid 0 means current process
+    }
+    if crate::is_centralized_mode() {
+        let table = unsafe { &*PROCESS_TABLE.0.get() };
+        if table.get(pid as u32).is_none() {
+            return -(Errno::ESRCH as i32);
+        }
+    }
+    0
+}
+
 /// sched_getparam — write scheduling parameters (sched_priority = 0) to param_ptr.
 /// struct sched_param starts with int sched_priority at offset 0.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_sched_getparam(param_ptr: *mut u8) -> i32 {
+pub extern "C" fn kernel_sched_getparam(pid: i32, param_ptr: *mut u8) -> i32 {
     if param_ptr.is_null() {
         return -(Errno::EINVAL as i32);
     }
+    let validate = kernel_sched_validate_pid(pid);
+    if validate < 0 { return validate; }
     // Set sched_priority = 0 (SCHED_OTHER always has priority 0)
     let buf = unsafe { slice::from_raw_parts_mut(param_ptr, 4) };
     buf.copy_from_slice(&0i32.to_le_bytes());

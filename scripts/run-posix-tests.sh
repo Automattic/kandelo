@@ -45,7 +45,7 @@ EXPECTED_FAIL=(
 
     # ── Not implemented / stubs ──
     mlock/12-1        # needs pwd.h
-    sched_rr_get_interval/3-1  # needs fork()
+    # (sched_rr_get_interval/3-1 removed — fork/wait now works)
     sched_getparam/6-1         # needs pwd.h
     sched_getscheduler/7-1     # needs pwd.h
 

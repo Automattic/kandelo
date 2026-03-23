@@ -48,6 +48,10 @@ const SYS_VFORK = 213;
 const SYS_CLONE = 201;
 const SYS_EXIT = 34;
 const SYS_EXIT_GROUP = 34;  // same as SYS_EXIT on wasm32posix (__NR_exit_group = __NR_exit)
+const SYS_WAIT4 = 139;
+
+/** waitpid options */
+const WNOHANG = 1;
 
 /** Syscall numbers for memory management */
 const SYS_MMAP = 46;
@@ -424,6 +428,19 @@ export class CentralizedKernelWorker {
   private channelTids = new Map<string, number>();
   /** Maps "pid:tid" to ctidPtr for CLONE_CHILD_CLEARTID on thread exit */
   private threadCtidPtrs = new Map<string, number>();
+  /** Parent-child process tracking for waitpid */
+  private childToParent = new Map<number, number>();
+  private parentToChildren = new Map<number, Set<number>>();
+  /** Exit statuses of children not yet wait()-ed for: childPid → waitStatus */
+  private exitedChildren = new Map<number, number>();
+  /** Deferred waitpid completions: parentPid → { channel, origArgs, pid, options } */
+  private waitingForChild: Array<{
+    parentPid: number;
+    channel: ChannelInfo;
+    origArgs: number[];
+    pid: number;
+    options: number;
+  }> = [];
 
   constructor(
     private config: KernelConfig,
@@ -644,6 +661,11 @@ export class CentralizedKernelWorker {
 
     if (syscallNr === SYS_EXIT || syscallNr === SYS_EXIT_GROUP) {
       this.handleExit(channel, syscallNr, origArgs);
+      return;
+    }
+
+    if (syscallNr === SYS_WAIT4) {
+      this.handleWaitpid(channel, origArgs);
       return;
     }
 
@@ -986,14 +1008,20 @@ export class CentralizedKernelWorker {
     // delay for the requested timeout then complete with -1/EAGAIN.
     if (syscallNr === SYS_RT_SIGTIMEDWAIT) {
       const timeoutPtr = origArgs[2]; // pointer to timespec in process memory
-      let timeoutMs = 0;
-      if (timeoutPtr !== 0) {
-        const pv = new DataView(channel.memory.buffer, timeoutPtr);
-        // timespec: i64 sec + i64 nsec (time64)
-        const sec = Number(pv.getBigInt64(0, true));
-        const nsec = Number(pv.getBigInt64(8, true));
-        timeoutMs = sec * 1000 + Math.floor(nsec / 1_000_000);
+      if (timeoutPtr === 0) {
+        // NULL timeout = wait indefinitely. Retry after delay.
+        setTimeout(() => {
+          if (this.processes.has(channel.pid)) {
+            this.retrySyscall(channel);
+          }
+        }, EAGAIN_RETRY_MS);
+        return;
       }
+      const pv = new DataView(channel.memory.buffer, timeoutPtr);
+      // timespec: i64 sec + i64 nsec (time64)
+      const sec = Number(pv.getBigInt64(0, true));
+      const nsec = Number(pv.getBigInt64(8, true));
+      const timeoutMs = sec * 1000 + Math.floor(nsec / 1_000_000);
       const EAGAIN_ERRNO = 11;
       if (timeoutMs <= 0) {
         this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], -1, EAGAIN_ERRNO);
@@ -1020,6 +1048,23 @@ export class CentralizedKernelWorker {
    * args still in the process channel.
    */
   private retrySyscall(channel: ChannelInfo): void {
+    // Check if the process was killed by a signal while blocking.
+    // This handles cases like sigsuspend + cross-process SIGABRT where
+    // deliver_pending_signals marks the target as Exited.
+    const getExitStatus = this.kernelInstance!.exports
+      .kernel_get_process_exit_status as ((pid: number) => number) | undefined;
+    if (getExitStatus) {
+      const exitStatus = getExitStatus(channel.pid);
+      if (exitStatus >= 0) {
+        // Process was killed by a signal — encode as signal death wait status.
+        // Exit status from deliver_pending_signals is 128+signum.
+        const signum = exitStatus >= 128 ? exitStatus - 128 : 0;
+        const waitStatus = signum > 0 ? (signum & 0x7f) : ((exitStatus & 0xff) << 8);
+        this.handleProcessTerminated(channel, waitStatus);
+        return;
+      }
+    }
+
     // The process channel still has the original args (we never wrote a response).
     // Just re-handle it.
     this.handleSyscall(channel);
@@ -1300,6 +1345,20 @@ export class CentralizedKernelWorker {
    * then call the onFork callback to spawn the child Worker.
    */
   private handleFork(channel: ChannelInfo, _origArgs: number[]): void {
+    // Check if the calling process is a fork child re-running _start.
+    // In centralized mode, fork children re-execute from _start and call
+    // fork() again. The kernel returns 0 to indicate "you are the child".
+    const isForkChild = this.kernelInstance!.exports.kernel_is_fork_child_pid as
+      (pid: number) => number;
+    if (isForkChild(channel.pid) === 1) {
+      const clearForkChild = this.kernelInstance!.exports.kernel_clear_fork_child as
+        (pid: number) => number;
+      clearForkChild(channel.pid);
+      // Return 0 to child (fork() returns 0 in child process)
+      this.completeChannel(channel, SYS_FORK, _origArgs, undefined, 0, 0);
+      return;
+    }
+
     if (!this.callbacks.onFork) {
       // No fork handler — return -ENOSYS
       this.completeChannel(channel, SYS_FORK, _origArgs, undefined, -1, 38);
@@ -1319,15 +1378,27 @@ export class CentralizedKernelWorker {
       return;
     }
 
+    // In centralized mode, fork children re-execute _start (Wasm call stack
+    // isn't part of linear memory). The child never gets musl's __restore_sigs
+    // after fork(), so it would be stuck with the parent's blocked mask (which
+    // is "all signals blocked" from musl's fork wrapper). Clear it so the child
+    // starts with no signals blocked.
+    const resetSignalMask = this.kernelInstance!.exports.kernel_reset_signal_mask as
+      ((pid: number) => number) | undefined;
+    if (resetSignalMask) resetSignalMask(childPid);
+
+    // Track parent-child relationship for waitpid
+    this.childToParent.set(childPid, parentPid);
+    let children = this.parentToChildren.get(parentPid);
+    if (!children) {
+      children = new Set();
+      this.parentToChildren.set(parentPid, children);
+    }
+    children.add(childPid);
+
     // Call the async fork handler to spawn child Worker
     this.callbacks.onFork(parentPid, childPid, channel.memory).then((childChannelOffsets) => {
       if (!this.processes.has(parentPid)) return;
-
-      // Register the child's channels with the kernel worker.
-      // The callback should have already created the child's Memory as a copy
-      // of the parent's. We need the child's Memory reference.
-      // For now, the onFork callback handles registration externally.
-      // We just need to complete the parent's channel with the child PID.
 
       // Complete parent's channel with child PID
       this.completeChannel(channel, SYS_FORK, _origArgs, undefined, childPid, 0);
@@ -1515,10 +1586,172 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    // Main thread exit or exit_group: don't complete channel, let host terminate worker
-    if (this.callbacks.onExit) {
-      this.callbacks.onExit(channel.pid, exitStatus);
+    // Main thread exit or exit_group: record exit status for waitpid,
+    // then notify the host callback.
+    const exitingPid = channel.pid;
+    const parentPid = this.childToParent.get(exitingPid);
+    if (parentPid !== undefined) {
+      // Encode wait status: exitStatus << 8 (matches WIFEXITED/WEXITSTATUS macros)
+      const waitStatus = (exitStatus & 0xff) << 8;
+      this.exitedChildren.set(exitingPid, waitStatus);
+
+      // Wake any parent blocked in waitpid
+      this.wakeWaitingParent(parentPid, exitingPid, waitStatus);
     }
+
+    if (this.callbacks.onExit) {
+      this.callbacks.onExit(exitingPid, exitStatus);
+    }
+  }
+
+  /**
+   * Handle a process that was terminated by a signal while blocking on a
+   * syscall retry. Records the wait status and notifies the parent.
+   */
+  private handleProcessTerminated(channel: ChannelInfo, waitStatus: number): void {
+    const exitingPid = channel.pid;
+    const parentPid = this.childToParent.get(exitingPid);
+    if (parentPid !== undefined) {
+      this.exitedChildren.set(exitingPid, waitStatus);
+      this.wakeWaitingParent(parentPid, exitingPid, waitStatus);
+    }
+
+    // Do NOT complete the channel — the worker is blocked on Atomics.wait
+    // and waking it would cause the C code to continue executing.
+    // onExit will terminate the worker.
+    if (this.callbacks.onExit) {
+      const exitCode = waitStatus > 0xff ? (waitStatus >> 8) & 0xff : 128 + (waitStatus & 0x7f);
+      this.callbacks.onExit(exitingPid, exitCode);
+    }
+  }
+
+  /**
+   * Handle SYS_WAIT4: wait for a child process to exit.
+   * Args: [pid, wstatus_ptr, options, rusage_ptr]
+   */
+  private handleWaitpid(channel: ChannelInfo, origArgs: number[]): void {
+    const targetPid = origArgs[0]; // pid argument
+    const wstatusPtr = origArgs[1];
+    const options = origArgs[2] >>> 0;
+    const parentPid = channel.pid;
+
+    const children = this.parentToChildren.get(parentPid);
+    if (!children || children.size === 0) {
+      // No children at all → ECHILD
+      this.completeWaitpid(channel, origArgs, -1, 10); // ECHILD = 10
+      return;
+    }
+
+    // Find a matching exited child
+    const matchedChild = this.findExitedChild(parentPid, targetPid);
+    if (matchedChild !== undefined) {
+      const waitStatus = this.exitedChildren.get(matchedChild)!;
+      this.consumeExitedChild(parentPid, matchedChild);
+      this.writeWaitStatus(channel, wstatusPtr, waitStatus);
+      this.completeWaitpid(channel, origArgs, matchedChild, 0);
+      return;
+    }
+
+    // Check if there are living children that could still exit
+    const hasLivingChild = this.hasMatchingLivingChild(parentPid, targetPid);
+    if (!hasLivingChild) {
+      // No matching child exists → ECHILD
+      this.completeWaitpid(channel, origArgs, -1, 10);
+      return;
+    }
+
+    if (options & WNOHANG) {
+      // Non-blocking: no child exited yet
+      this.completeWaitpid(channel, origArgs, 0, 0);
+      return;
+    }
+
+    // Blocking wait: defer completion until a child exits
+    this.waitingForChild.push({
+      parentPid,
+      channel,
+      origArgs,
+      pid: targetPid,
+      options,
+    });
+  }
+
+  /** Find an exited child matching the waitpid pid argument. */
+  private findExitedChild(parentPid: number, targetPid: number): number | undefined {
+    const children = this.parentToChildren.get(parentPid);
+    if (!children) return undefined;
+
+    if (targetPid > 0) {
+      // Wait for specific child
+      if (children.has(targetPid) && this.exitedChildren.has(targetPid)) {
+        return targetPid;
+      }
+      return undefined;
+    }
+
+    // targetPid == -1 or 0: wait for any child
+    for (const childPid of children) {
+      if (this.exitedChildren.has(childPid)) {
+        return childPid;
+      }
+    }
+    return undefined;
+  }
+
+  /** Check if there are living children matching the pid arg. */
+  private hasMatchingLivingChild(parentPid: number, targetPid: number): boolean {
+    const children = this.parentToChildren.get(parentPid);
+    if (!children) return false;
+
+    if (targetPid > 0) {
+      return children.has(targetPid) && !this.exitedChildren.has(targetPid);
+    }
+
+    // targetPid == -1 or 0: any living child
+    for (const childPid of children) {
+      if (!this.exitedChildren.has(childPid)) return true;
+    }
+    return false;
+  }
+
+  /** Remove an exited child from tracking after wait() consumes it. */
+  private consumeExitedChild(parentPid: number, childPid: number): void {
+    this.exitedChildren.delete(childPid);
+    this.childToParent.delete(childPid);
+    const children = this.parentToChildren.get(parentPid);
+    if (children) {
+      children.delete(childPid);
+      if (children.size === 0) {
+        this.parentToChildren.delete(parentPid);
+      }
+    }
+  }
+
+  /** Write wait status to the wstatus pointer in process memory. */
+  private writeWaitStatus(channel: ChannelInfo, wstatusPtr: number, waitStatus: number): void {
+    if (wstatusPtr !== 0) {
+      const procView = new DataView(channel.memory.buffer);
+      procView.setInt32(wstatusPtr, waitStatus, true);
+    }
+  }
+
+  /** Complete a waitpid syscall. */
+  private completeWaitpid(channel: ChannelInfo, origArgs: number[], retVal: number, errVal: number): void {
+    this.completeChannel(channel, SYS_WAIT4, origArgs, undefined, retVal, errVal);
+  }
+
+  /** Wake a parent blocked in waitpid when a child exits. */
+  private wakeWaitingParent(parentPid: number, childPid: number, waitStatus: number): void {
+    const idx = this.waitingForChild.findIndex((w) =>
+      w.parentPid === parentPid && (w.pid <= 0 || w.pid === childPid),
+    );
+    if (idx === -1) return;
+
+    const waiter = this.waitingForChild[idx];
+    this.waitingForChild.splice(idx, 1);
+    this.consumeExitedChild(parentPid, childPid);
+    this.writeWaitStatus(waiter.channel, waiter.origArgs[1], waitStatus);
+    this.completeWaitpid(waiter.channel, waiter.origArgs, childPid, 0);
   }
 
   /**
