@@ -1501,6 +1501,28 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
             }
         }
 
+        // mlock/munlock: no-op in Wasm (all memory is "locked")
+        // Return ENOMEM for addresses beyond Wasm memory bounds
+        279 | 280 => { // mlock, mlock2: (addr, len, ...)
+            let addr = a1 as u32;
+            let len = a2 as u32;
+            if addr.checked_add(len).map_or(true, |end| end > 1_073_741_824) {
+                -(Errno::ENOMEM as i32)
+            } else {
+                0
+            }
+        }
+        281 => { // munlock: (addr, len)
+            let addr = a1 as u32;
+            let len = a2 as u32;
+            if addr.checked_add(len).map_or(true, |end| end > 1_073_741_824) {
+                -(Errno::ENOMEM as i32)
+            } else {
+                0
+            }
+        }
+        282 | 283 => 0, // mlockall, munlockall: success
+
         208 | 226 | 237..=238 | 247..=249 | 252..=254 | 256..=257 | 262 | 265..=268 | 271..=274 | 287 | 289..=293 | 297..=298 | 301..=305 | 306 | 308..=324 | 325..=336 | 348..=349 | 350..=369 | 370..=371 | 373..=376 | 381..=383 | 386 => {
             // Many of these are stubs in the glue layer too; return ENOSYS
             -(Errno::ENOSYS as i32)

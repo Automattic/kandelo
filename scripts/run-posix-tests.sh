@@ -56,16 +56,8 @@ EXPECTED_FAIL=(
     sigqueue/6-1      # sigqueue with signal handler — needs signal delivery
 
     # ── Not implemented / stubs ──
-    # munlockall: returns ENOSYS
-    munlockall/5-1
-    # mlock/munlock: mlock returns ENOMEM in Wasm (no page-level locking)
-    mlock/10-1
-    mlock/5-1
-    mlock/8-1
-    mlock/12-1        # also needs pwd.h
-    munlock/10-1
-    munlock/11-1
-    munlock/7-1
+    # mlock/munlock/munlockall now succeed (no-op in Wasm)
+    mlock/12-1        # needs pwd.h
     # clock/1-1 fixed by adding CLOCK_PROCESS_CPUTIME_ID support
     # sched_rr_get_interval/1-1,2-1 fixed by implementing syscall 236
     sched_rr_get_interval/3-1  # needs fork()
