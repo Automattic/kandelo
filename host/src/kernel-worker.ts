@@ -88,8 +88,8 @@ const SCRATCH_SIZE = CH_TOTAL_SIZE;
 
 /** Struct sizes for output data copying */
 const WASM_STAT_SIZE = 88;
-const TIMESPEC_SIZE = 8;  // 2 x i32 (sec, nsec) on wasm32 — only copies first 8 bytes
-const ITIMERVAL_SIZE = 16; // 2 x timespec
+const TIMESPEC_SIZE = 16; // { i64 tv_sec, i32 tv_nsec, i32 pad } on wasm32
+const ITIMERVAL_SIZE = 32; // 2 x struct timeval { i64 tv_sec, i64 tv_usec }
 const RLIMIT_SIZE = 16;   // 2 x i64 on wasm32
 
 // -----------------------------------------------------------------------
