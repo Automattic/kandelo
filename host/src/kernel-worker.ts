@@ -39,6 +39,7 @@ const SYS_USLEEP = 68;
 const SYS_CLOCK_NANOSLEEP = 124;
 const SYS_FUTEX = 200;
 const SYS_POLL = 60;
+const SYS_RT_SIGTIMEDWAIT = 207;
 
 /** Syscall numbers for fork/exec/clone */
 const SYS_EXECVE = 211;
@@ -977,6 +978,32 @@ export class CentralizedKernelWorker {
           this.retrySyscall(channel);
         }
       }, retryMs);
+      return;
+    }
+
+    // sigtimedwait: kernel returned EAGAIN because no signal is pending.
+    // Instead of retrying (signal won't arrive in single-process mode),
+    // delay for the requested timeout then complete with -1/EAGAIN.
+    if (syscallNr === SYS_RT_SIGTIMEDWAIT) {
+      const timeoutPtr = origArgs[2]; // pointer to timespec in process memory
+      let timeoutMs = 0;
+      if (timeoutPtr !== 0) {
+        const pv = new DataView(channel.memory.buffer, timeoutPtr);
+        // timespec: i64 sec + i64 nsec (time64)
+        const sec = Number(pv.getBigInt64(0, true));
+        const nsec = Number(pv.getBigInt64(8, true));
+        timeoutMs = sec * 1000 + Math.floor(nsec / 1_000_000);
+      }
+      const EAGAIN_ERRNO = 11;
+      if (timeoutMs <= 0) {
+        this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], -1, EAGAIN_ERRNO);
+      } else {
+        setTimeout(() => {
+          if (this.processes.has(channel.pid)) {
+            this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], -1, EAGAIN_ERRNO);
+          }
+        }, timeoutMs);
+      }
       return;
     }
 
