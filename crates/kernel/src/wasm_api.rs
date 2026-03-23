@@ -1392,10 +1392,26 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
         209 => kernel_sigaltstack(a1 as *const u8, a2 as *mut u8),
 
         // SYS_SCHED_GET_PRIORITY_MAX / SYS_SCHED_GET_PRIORITY_MIN
-        // Wasm has a single priority level; return 0 for all policies.
-        234 | 235 => 0,
+        // Wasm has a single priority level; return 0 for valid policies, EINVAL for invalid.
+        234 | 235 => {
+            let policy = a1 as u32;
+            // SCHED_OTHER=0, SCHED_FIFO=1, SCHED_RR=2, SCHED_BATCH=3, SCHED_IDLE=5
+            match policy {
+                0 | 1 | 2 | 3 | 5 => 0,
+                _ => -(Errno::EINVAL as i32),
+            }
+        }
 
-        208 | 226 | 230..=233 | 236..=238 | 247..=249 | 252..=254 | 256..=257 | 262 | 265..=268 | 271..=274 | 287 | 289..=293 | 297..=298 | 301..=305 | 306 | 308..=324 | 325..=336 | 348..=349 | 350..=369 | 370..=371 | 373..=376 | 381..=383 | 386 => {
+        // SYS_SCHED_GETPARAM: write sched_priority=0 to param struct
+        230 => kernel_sched_getparam(a2 as *mut u8),
+        // SYS_SCHED_SETPARAM: no-op (return 0 for valid pid)
+        231 => 0,
+        // SYS_SCHED_GETSCHEDULER: always SCHED_OTHER (0)
+        232 => 0,
+        // SYS_SCHED_SETSCHEDULER: no-op (return 0 for valid pid)
+        233 => 0,
+
+        208 | 226 | 236..=238 | 247..=249 | 252..=254 | 256..=257 | 262 | 265..=268 | 271..=274 | 287 | 289..=293 | 297..=298 | 301..=305 | 306 | 308..=324 | 325..=336 | 348..=349 | 350..=369 | 370..=371 | 373..=376 | 381..=383 | 386 => {
             // Many of these are stubs in the glue layer too; return ENOSYS
             -(Errno::ENOSYS as i32)
         }
@@ -2536,6 +2552,19 @@ pub extern "C" fn kernel_sigaltstack(ss_ptr: *const u8, oss_ptr: *mut u8) -> i32
 
     let mut host = WasmHostIO;
     deliver_pending_signals(proc, &mut host);
+    0
+}
+
+/// sched_getparam — write scheduling parameters (sched_priority = 0) to param_ptr.
+/// struct sched_param starts with int sched_priority at offset 0.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_sched_getparam(param_ptr: *mut u8) -> i32 {
+    if param_ptr.is_null() {
+        return -(Errno::EINVAL as i32);
+    }
+    // Set sched_priority = 0 (SCHED_OTHER always has priority 0)
+    let buf = unsafe { slice::from_raw_parts_mut(param_ptr, 4) };
+    buf.copy_from_slice(&0i32.to_le_bytes());
     0
 }
 

@@ -74,19 +74,9 @@ EXPECTED_FAIL=(
     sched_rr_get_interval/1-1
     sched_rr_get_interval/2-1
     sched_rr_get_interval/3-1
-    # sched_getparam: stub returns ENOSYS
-    sched_getparam/1-1
-    sched_getparam/2-1
-    sched_getparam/3-1
-    sched_getparam/6-1  # also needs pwd.h
-    # sched_getscheduler: stub returns ENOSYS
-    sched_getscheduler/1-1
-    sched_getscheduler/3-1
-    sched_getscheduler/4-1
-    sched_getscheduler/7-1  # also needs pwd.h
-    # sched_get_priority_max/min: invalid policy returns 0 instead of -1/EINVAL
-    sched_get_priority_max/2-1
-    sched_get_priority_min/2-1
+    # sched_getparam/sched_getscheduler: tests that need pwd.h (getpwnam)
+    sched_getparam/6-1
+    sched_getscheduler/7-1
 
     # ── Signal delivery limitations ──
     # sigprocmask: blocking signals doesn't fully work (signals delivered synchronously)
