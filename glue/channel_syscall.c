@@ -43,6 +43,18 @@ int *__errno_location(void);
 #define CH_RETURN   32
 #define CH_ERRNO    36
 #define CH_DATA     40
+#define CH_DATA_SIZE 65536
+
+/* Signal delivery area — last 32 bytes of data buffer */
+#define CH_SIG_BASE     (CH_DATA + CH_DATA_SIZE - 32)
+#define CH_SIG_SIGNUM   (CH_SIG_BASE)
+#define CH_SIG_HANDLER  (CH_SIG_BASE + 4)
+#define CH_SIG_FLAGS    (CH_SIG_BASE + 8)
+#define CH_SIG_OLD_MASK (CH_SIG_BASE + 16)
+
+#define SA_SIGINFO 4
+#define SYS_SIGPROCMASK 37
+#define SIG_SETMASK 2
 
 /* Per-thread channel base address, set during TLS init by the host */
 _Thread_local uint32_t __channel_base;
@@ -58,6 +70,53 @@ uint32_t __get_channel_base_addr(void) {
 
 /* SYS_EXIT needs special handling */
 #define SYS_EXIT 34
+
+/* ------------------------------------------------------------------ */
+/* Signal delivery — invoked after each syscall if a signal is pending */
+/* ------------------------------------------------------------------ */
+
+/* Forward declaration */
+static long __do_syscall(long n, long a1, long a2, long a3,
+                         long a4, long a5, long a6);
+
+static void __deliver_pending_signal(uint32_t base)
+{
+    uint32_t *sig_signum_ptr  = (uint32_t *)(uintptr_t)(base + CH_SIG_SIGNUM);
+    uint32_t *sig_handler_ptr = (uint32_t *)(uintptr_t)(base + CH_SIG_HANDLER);
+    uint32_t *sig_flags_ptr   = (uint32_t *)(uintptr_t)(base + CH_SIG_FLAGS);
+
+    uint32_t signum  = *sig_signum_ptr;
+    if (signum == 0) return;
+
+    uint32_t handler = *sig_handler_ptr;
+    uint32_t flags   = *sig_flags_ptr;
+
+    /* Read saved old blocked mask (8 bytes at CH_SIG_OLD_MASK) */
+    uint64_t old_mask;
+    __builtin_memcpy(&old_mask, (void *)(uintptr_t)(base + CH_SIG_OLD_MASK), 8);
+
+    /* Clear signal delivery area before calling handler */
+    *sig_signum_ptr = 0;
+
+    /* Invoke the signal handler via function pointer.
+     * In Wasm, function pointers are table indices — casting the
+     * handler_index to a function pointer and calling it uses
+     * call_indirect, which looks up the indirect function table. */
+    if (flags & SA_SIGINFO) {
+        void (*sa)(int, void *, void *) =
+            (void (*)(int, void *, void *))(uintptr_t)handler;
+        sa((int)signum, (void *)0, (void *)0);
+    } else {
+        void (*sa)(int) = (void (*)(int))(uintptr_t)handler;
+        sa((int)signum);
+    }
+
+    /* Restore the old blocked mask via sigprocmask syscall.
+     * This also triggers delivery of any further pending signals
+     * (the kernel writes signal info on the sigprocmask return). */
+    __do_syscall(SYS_SIGPROCMASK, SIG_SETMASK,
+                 (long)(uintptr_t)&old_mask, 0, 8, 0, 0);
+}
 
 /* ------------------------------------------------------------------ */
 /* Central dispatch — writes to channel and blocks for result          */
@@ -107,6 +166,13 @@ static long __do_syscall(long n, long a1, long a2, long a3,
 
     /* Reset status to IDLE for next syscall */
     __c11_atomic_store((_Atomic int32_t *)status, CH_IDLE, __ATOMIC_SEQ_CST);
+
+    /* Check for pending signal delivery from the kernel.
+     * The kernel writes signal info to CH_SIG_* after each syscall if
+     * a Handler signal is deliverable. We invoke the handler here,
+     * synchronously before returning to the caller, matching POSIX
+     * semantics (raise() doesn't return until signal handler completes). */
+    __deliver_pending_signal(base);
 
     /* Return in musl's expected format: negative errno on error.
      * musl's __syscall_ret() converts this to set errno and return -1. */

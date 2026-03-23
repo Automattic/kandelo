@@ -197,6 +197,16 @@ impl SignalState {
         self.pending & !self.blocked
     }
 
+    /// Peek at the lowest-numbered deliverable signal without removing it.
+    pub fn peek_deliverable(&self) -> Option<u32> {
+        let deliverable = self.pending & !self.blocked;
+        if deliverable == 0 {
+            return None;
+        }
+        let signum = deliverable.trailing_zeros() + 1;
+        if signum >= 64 { None } else { Some(signum) }
+    }
+
     /// Dequeue the lowest-numbered deliverable signal.
     /// Standard signals (1-31) are cleared from the pending bitmask.
     /// RT signals (32-63) are dequeued from the queue; the pending bit is

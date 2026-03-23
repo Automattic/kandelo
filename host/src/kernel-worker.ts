@@ -82,6 +82,14 @@ const CH_DATA = 40;
 const CH_DATA_SIZE = 65536;
 const CH_TOTAL_SIZE = CH_DATA + CH_DATA_SIZE;
 
+// Signal delivery area — last 32 bytes of data buffer.
+// Written by kernel_dequeue_signal, read by glue channel_syscall.c.
+const CH_SIG_BASE = CH_DATA + CH_DATA_SIZE - 32;
+const CH_SIG_SIGNUM = CH_SIG_BASE;         // u32: signal number (0 = none)
+const CH_SIG_HANDLER = CH_SIG_BASE + 4;    // u32: function table index
+const CH_SIG_FLAGS = CH_SIG_BASE + 8;      // u32: sa_flags
+const CH_SIG_OLD_MASK = CH_SIG_BASE + 16;  // u64: saved blocked mask
+
 /** Scratch area layout in kernel Memory for kernel_handle_channel.
  * Same as channel layout but used as the kernel-side buffer. */
 const SCRATCH_SIZE = CH_TOTAL_SIZE;
@@ -763,6 +771,12 @@ export class CentralizedKernelWorker {
       this.ensureProcessMemoryCovers(channel.memory, syscallNr, retVal, origArgs);
     }
 
+    // --- Signal delivery (centralized mode) ---
+    // After each syscall, check if the kernel has a pending Handler signal.
+    // If so, dequeue it and write delivery info to the process channel.
+    // The glue code (channel_syscall.c) will invoke the handler after waking.
+    this.dequeueSignalForDelivery(channel);
+
     // --- Blocking syscall handling ---
 
     // 1. EAGAIN: kernel returned EAGAIN for a blocking syscall.
@@ -780,6 +794,34 @@ export class CentralizedKernelWorker {
 
     // --- Normal completion ---
     this.completeChannel(channel, syscallNr, origArgs, argDescs, retVal, errVal);
+  }
+
+  /**
+   * Dequeue one pending Handler signal from the kernel and write delivery
+   * info to the process channel. The glue code (channel_syscall.c) reads
+   * this after the syscall returns and invokes the handler.
+   */
+  private dequeueSignalForDelivery(channel: ChannelInfo): void {
+    const dequeueSignal = this.kernelInstance!.exports
+      .kernel_dequeue_signal as ((pid: number, outPtr: number) => number) | undefined;
+    if (!dequeueSignal) return;
+
+    // Use the signal area in kernel scratch as the output buffer
+    const sigOutOffset = this.scratchOffset + CH_SIG_BASE;
+    const sigResult = dequeueSignal(channel.pid, sigOutOffset);
+    if (sigResult > 0) {
+      // Copy 24 bytes of signal delivery info from kernel scratch to process channel
+      const kernelMem = new Uint8Array(this.kernelMemory!.buffer);
+      const processMem = new Uint8Array(channel.memory.buffer);
+      processMem.set(
+        kernelMem.subarray(sigOutOffset, sigOutOffset + 24),
+        channel.channelOffset + CH_SIG_BASE,
+      );
+    } else {
+      // Clear signal delivery area in process channel
+      const processView = new DataView(channel.memory.buffer, channel.channelOffset);
+      processView.setUint32(CH_SIG_SIGNUM, 0, true);
+    }
   }
 
   /**

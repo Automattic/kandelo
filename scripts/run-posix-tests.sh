@@ -26,25 +26,21 @@ KERNEL_WASM="$REPO_ROOT/host/wasm/wasm_posix_kernel.wasm"
 
 EXPECTED_FAIL=(
     # ── Wasm limitations ──
-    # sigaltstack: tests that need actual execution on alternate stack (Wasm stack is opaque)
+    # sigaltstack: Wasm stack is opaque — handlers can't run on alternate stacks
+    sigaltstack/1-1
+    sigaltstack/2-1
+    sigaltstack/3-1
     sigaltstack/4-1   # not present (skip)
-    # Signal tests requiring alarm/timer-based signal delivery (Wasm can't interrupt execution)
-    kill/1-1          # timeout: fork+kill requires inter-process signal delivery
-    raise/1-1         # timeout: sigaction handler with SIGABRT (traps in Wasm)
-    raise/2-1         # timeout: raise in signal handler
-    raise/4-1         # timeout: raise SIGABRT (traps)
-    signal/3-1        # timeout: child process signal test
-    sigpending/1-2    # timeout: needs alarm-based signal delivery
-    sigpending/1-3    # timeout: needs alarm-based signal delivery
-    # sigset/6-1 now passing (sigpending + blocking works)
-    sigtimedwait/1-1  # timeout: sigtimedwait not implemented
-    sigtimedwait/2-1  # timeout: sigtimedwait not implemented
-    # sigtimedwait/4-1 now passing
-    sigtimedwait/5-1  # timeout: sigtimedwait not implemented
-    sigtimedwait/6-1  # timeout: sigtimedwait not implemented
-    # sigwaitinfo/1-1 and sigwaitinfo/5-1 fixed by proper rt_sigtimedwait dispatch
-    sigwaitinfo/8-1   # needs sigqueue (RT signal queuing)
-    # sigwaitinfo/9-1 now passing
+    sigaltstack/6-1
+    sigaltstack/7-1
+    sigaltstack/8-1
+    # sigtimedwait: not implemented
+    sigtimedwait/1-1
+    sigtimedwait/2-1
+    sigtimedwait/5-1
+    sigtimedwait/6-1
+    # sigwaitinfo: RT signal queuing
+    sigwaitinfo/8-1
     # munmap: all tests include pthread.h (won't compile)
     munmap/1-1
     munmap/1-2
@@ -53,43 +49,17 @@ EXPECTED_FAIL=(
     munmap/4-1
     munmap/9-1
 
-    sigqueue/6-1      # sigqueue with signal handler — needs signal delivery
-
     # ── Not implemented / stubs ──
-    # mlock/munlock/munlockall now succeed (no-op in Wasm)
     mlock/12-1        # needs pwd.h
-    # clock/1-1 fixed by adding CLOCK_PROCESS_CPUTIME_ID support
-    # sched_rr_get_interval/1-1,2-1 fixed by implementing syscall 236
     sched_rr_get_interval/3-1  # needs fork()
-    # sched_getparam/sched_getscheduler: tests that need pwd.h (getpwnam)
-    sched_getparam/6-1
-    sched_getscheduler/7-1
-
-    # ── Signal delivery limitations ──
-    # sigprocmask: blocking signals doesn't fully work (signals delivered synchronously)
-    # sigprocmask/4-1 and /5-1 now passing (sigpending works, blocking verified)
-    sigprocmask/6-1   # handler called despite signal being masked
-    # sigprocmask/7-1 and /10-1 fixed by signal bit position alignment (0-based)
-    # sigpending/1-1 and /2-1 fixed by implementing rt_sigpending syscall
-    sigrelse/1-1      # sigrelse issue
-    sigset/3-1        # handler called after SIG_DFL
-    sigset/4-1        # handler called after SIG_DFL
-    sigset/5-1        # signal mask not empty after sigset
-    sigset/7-1        # requires signal handler delivery after sigrelse
+    sched_getparam/6-1         # needs pwd.h
+    sched_getscheduler/7-1     # needs pwd.h
 
     # ── Process/permission model ──
-    # kill: PID 1 is our own process, so UID permission tests can't work
     kill/2-2          # EPERM test: PID 1 is our process, not init
     kill/3-1          # EPERM test: PID 1 is our process, not init
-    # killpg/2-1 and killpg/4-1 fixed by adding SYS_getpgid dispatch
-    killpg/1-1        # signal handler not invoked
-    # sigismember/5-1 fixed by musl overlay returning -1/EINVAL
-    # sigqueue: cross-process and RT signal issues
-    sigqueue/4-1      # RT signal handler issue
-    sigqueue/5-1      # RT signal handler issue
-    sigqueue/7-1      # sigqueue returns error
-    sigqueue/8-1      # RT signal handler issue
     sigqueue/3-1      # needs pwd.h
+    sigqueue/7-1      # sigqueue returns error
     sigqueue/12-1     # needs pwd.h
     # sigwaitinfo: RT signal issues
     sigwaitinfo/2-1   # wrong signal returned
@@ -143,7 +113,7 @@ LINK_FLAGS=(
     -Wl,--shared-memory
     -Wl,--max-memory=1073741824
     -Wl,--allow-undefined
-    -Wl,--table-base=2
+    -Wl,--table-base=3
     -Wl,--export-table
     -Wl,--export=__wasm_init_tls
     -Wl,--export=__tls_base

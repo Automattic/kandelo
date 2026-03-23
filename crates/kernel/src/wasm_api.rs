@@ -709,27 +709,59 @@ fn ensure_memory_covers(_end_addr: u32) {
 /// Check for and deliver pending signals before/after syscall.
 fn deliver_pending_signals(proc: &mut Process, host: &mut WasmHostIO) {
     use crate::signal::{DefaultAction, default_action, SignalHandler};
-    while let Some(signum) = proc.signals.dequeue() {
-        if proc.state == crate::process::ProcessState::Exited {
-            break;
-        }
-        let action = proc.signals.get_action(signum);
-        match action.handler {
-            SignalHandler::Handler(idx) => {
-                // Pass sa_flags so host knows whether to use SA_SIGINFO calling convention
-                let _ = host.host_call_signal_handler(idx, signum, action.flags);
-            }
-            SignalHandler::Default => {
-                match default_action(signum) {
-                    DefaultAction::Terminate | DefaultAction::CoreDump => {
-                        proc.state = crate::process::ProcessState::Exited;
-                        proc.exit_status = 128 + signum as i32;
+    let centralized = crate::is_centralized_mode();
+    loop {
+        // In centralized mode, peek first so we can skip Handler signals
+        // (they'll be delivered by the glue code via kernel_dequeue_signal).
+        if centralized {
+            let signum = match proc.signals.peek_deliverable() {
+                Some(s) if s < 64 => s,
+                _ => break,
+            };
+            let action = proc.signals.get_action(signum);
+            match action.handler {
+                SignalHandler::Handler(_) => break, // Leave for glue-side delivery
+                SignalHandler::Default => {
+                    proc.signals.dequeue();
+                    match default_action(signum) {
+                        DefaultAction::Terminate | DefaultAction::CoreDump => {
+                            proc.state = crate::process::ProcessState::Exited;
+                            proc.exit_status = 128 + signum as i32;
+                        }
+                        _ => {}
                     }
-                    _ => {}
+                }
+                SignalHandler::Ignore => {
+                    proc.signals.dequeue();
                 }
             }
-            SignalHandler::Ignore => {}
+        } else {
+            // Traditional mode: dequeue and handle all signals directly
+            let signum = match proc.signals.dequeue() {
+                Some(s) => s,
+                None => break,
+            };
+            if proc.state == crate::process::ProcessState::Exited {
+                break;
+            }
+            let action = proc.signals.get_action(signum);
+            match action.handler {
+                SignalHandler::Handler(idx) => {
+                    let _ = host.host_call_signal_handler(idx, signum, action.flags);
+                }
+                SignalHandler::Default => {
+                    match default_action(signum) {
+                        DefaultAction::Terminate | DefaultAction::CoreDump => {
+                            proc.state = crate::process::ProcessState::Exited;
+                            proc.exit_status = 128 + signum as i32;
+                        }
+                        _ => {}
+                    }
+                }
+                SignalHandler::Ignore => {}
+            }
         }
+        if proc.state == crate::process::ProcessState::Exited { break; }
     }
 }
 
@@ -804,6 +836,61 @@ pub extern "C" fn kernel_get_fork_exec_path_pid(pid: u32, buf_ptr: *mut u8, buf_
             None => 0,
         },
         None => -(Errno::ESRCH as i32),
+    }
+}
+
+/// Dequeue one pending Handler signal for a process (centralized mode).
+/// Writes signal delivery info to `out_ptr` (24 bytes):
+///   [0..4] signum (u32), [4..8] handler_index (u32), [8..12] sa_flags (u32),
+///   [16..24] old_blocked_mask (u64)
+/// Applies sa_mask | sig_bit(signum) to the process's blocked mask (POSIX).
+/// Returns signum (>0) if a signal was dequeued, 0 if none pending.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_dequeue_signal(pid: u32, out_ptr: *mut u8) -> i32 {
+    use crate::signal::{SignalHandler, sig_bit};
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let proc = match table.get_mut(pid) {
+        Some(p) => p,
+        None => return 0,
+    };
+    loop {
+        let signum = match proc.signals.peek_deliverable() {
+            Some(s) if s < 64 => s,
+            _ => return 0,
+        };
+        let action = proc.signals.get_action(signum);
+        match action.handler {
+            SignalHandler::Handler(idx) => {
+                proc.signals.dequeue();
+                // Save old mask, apply new (POSIX: block sa_mask + the signal itself)
+                let old_mask = proc.signals.blocked;
+                proc.signals.blocked |= action.mask | sig_bit(signum);
+                // Write to output buffer
+                let buf = unsafe { slice::from_raw_parts_mut(out_ptr, 24) };
+                buf[0..4].copy_from_slice(&signum.to_le_bytes());
+                buf[4..8].copy_from_slice(&idx.to_le_bytes());
+                buf[8..12].copy_from_slice(&action.flags.to_le_bytes());
+                buf[12..16].fill(0); // padding
+                buf[16..24].copy_from_slice(&old_mask.to_le_bytes());
+                return signum as i32;
+            }
+            SignalHandler::Default => {
+                use crate::signal::{DefaultAction, default_action};
+                proc.signals.dequeue();
+                match default_action(signum) {
+                    DefaultAction::Terminate | DefaultAction::CoreDump => {
+                        proc.state = crate::process::ProcessState::Exited;
+                        proc.exit_status = 128 + signum as i32;
+                        return 0;
+                    }
+                    _ => continue,
+                }
+            }
+            SignalHandler::Ignore => {
+                proc.signals.dequeue();
+                continue;
+            }
+        }
     }
 }
 
