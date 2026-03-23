@@ -36,7 +36,7 @@ EXPECTED_FAIL=(
     sigaltstack/8-1
     # sigwaitinfo: RT signal queuing
     sigwaitinfo/8-1
-    # munmap: all tests include pthread.h (won't compile)
+    # munmap: file-backed mmap returns EPERM (not implemented)
     munmap/1-1
     munmap/1-2
     munmap/2-1
@@ -54,11 +54,8 @@ EXPECTED_FAIL=(
     kill/2-2          # EPERM test: PID 1 is our process, not init
     kill/3-1          # EPERM test: PID 1 is our process, not init
     sigqueue/3-1      # needs pwd.h
-    sigqueue/7-1      # sigqueue returns error
     sigqueue/12-1     # needs pwd.h
-    # sigwaitinfo: RT signal issues
-    sigwaitinfo/2-1   # wrong signal returned
-    sigwaitinfo/7-1   # wrong signal returned
+    sigwaitinfo/7-1   # RT signal FIFO ordering not implemented
 )
 
 # ── Auto-detect LLVM ──────────────────────────────────────

@@ -715,7 +715,7 @@ fn deliver_pending_signals(proc: &mut Process, host: &mut WasmHostIO) {
         // (they'll be delivered by the glue code via kernel_dequeue_signal).
         if centralized {
             let signum = match proc.signals.peek_deliverable() {
-                Some(s) if s < 64 => s,
+                Some(s) if s < wasm_posix_shared::signal::NSIG => s,
                 _ => break,
             };
             let action = proc.signals.get_action(signum);
@@ -855,7 +855,7 @@ pub extern "C" fn kernel_dequeue_signal(pid: u32, out_ptr: *mut u8) -> i32 {
     };
     loop {
         let signum = match proc.signals.peek_deliverable() {
-            Some(s) if s < 64 => s,
+            Some(s) if s < wasm_posix_shared::signal::NSIG => s,
             _ => return 0,
         };
         let action = proc.signals.get_action(signum);
@@ -1177,24 +1177,30 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
             // musl passes pointers to sigset_t (8 bytes). Read set from pointer,
             // call kernel, write old set to output pointer.
             // POSIX: if set is NULL, the signal mask is not changed (query only).
+            let (_gkl, proc) = unsafe { get_process() };
             if a2 != 0 {
                 let ptr = a2 as usize as *const u32;
                 let (set_lo, set_hi) = unsafe { (*ptr, *ptr.add(1)) };
-                let result = kernel_sigprocmask(a1 as u32, set_lo, set_hi);
-                if result < 0 {
-                    return result as i32;
-                }
+                let set = ((set_hi as u64) << 32) | (set_lo as u64);
+                // Call sys_sigprocmask directly — kernel_sigprocmask returns
+                // old mask as i64 which is negative when bit 63 (signal 64) is
+                // set, causing the old `if result < 0` check to misfire.
+                let old_mask = match syscalls::sys_sigprocmask(proc, a1 as u32, set) {
+                    Ok(old) => old,
+                    Err(e) => return -(e as i32),
+                };
                 if a3 != 0 {
                     let ptr = a3 as usize as *mut u8;
                     unsafe {
-                        let bytes = (result as u64).to_le_bytes();
+                        let bytes = old_mask.to_le_bytes();
                         for i in 0..8 { *ptr.add(i) = bytes[i]; }
                     }
                 }
+                let mut host = WasmHostIO;
+                deliver_pending_signals(proc, &mut host);
                 0
             } else {
                 // set is NULL: just read the current mask without modifying
-                let (_gkl, proc) = unsafe { get_process() };
                 if a3 != 0 {
                     let ptr = a3 as usize as *mut u8;
                     unsafe {

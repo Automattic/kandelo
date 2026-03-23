@@ -715,8 +715,9 @@ pub mod signal {
     pub const SIGXFSZ: u32 = 25;
     pub const SIGWINCH: u32 = 28;
 
-    // Maximum signal number
-    pub const NSIG: u32 = 64;
+    // One past the maximum signal number (matches musl _NSIG=65).
+    // Valid signals are 1..NSIG-1 (i.e. 1..64 inclusive).
+    pub const NSIG: u32 = 65;
 
     // Signal handler special values
     pub const SIG_DFL: u32 = 0;

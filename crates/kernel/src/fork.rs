@@ -409,7 +409,7 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
     // ── Signal state ──
     let blocked = r.read_u64()?;
     let handler_count = r.read_u32()?;
-    let mut handlers = [SignalHandler::Default; 64];
+    let mut handlers = [SignalHandler::Default; 65];
     for _ in 0..handler_count {
         let signum = r.read_u32()?;
         let handler_val = r.read_u32()?;
@@ -783,7 +783,7 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
     // ── Signal state ──
     let blocked = r.read_u64()?;
     let handler_count = r.read_u32()?;
-    let mut handlers = [SignalHandler::Default; 64];
+    let mut handlers = [SignalHandler::Default; 65];
     for _ in 0..handler_count {
         let signum = r.read_u32()?;
         let handler_val = r.read_u32()?;

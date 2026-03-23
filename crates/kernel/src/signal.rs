@@ -1,3 +1,4 @@
+use wasm_posix_shared::signal::NSIG;
 extern crate alloc;
 
 use alloc::collections::VecDeque;
@@ -5,14 +6,14 @@ use alloc::collections::VecDeque;
 /// First real-time signal number.
 pub const SIGRTMIN: u32 = 32;
 /// Last real-time signal number (exclusive upper bound for iteration).
-pub const SIGRTMAX_PLUS1: u32 = 64;
+pub const SIGRTMAX_PLUS1: u32 = 65;
 
 /// Convert a 1-based signal number to its bitmask position.
 /// musl uses 0-based bit positions: signal N maps to bit (N-1).
 /// Returns 0 for invalid signal numbers (0 or >= 64).
 #[inline]
 pub fn sig_bit(signum: u32) -> u64 {
-    if signum == 0 || signum >= 64 {
+    if signum == 0 || signum >= 65 {
         0
     } else {
         1u64 << (signum - 1)
@@ -74,7 +75,7 @@ pub fn default_action(signum: u32) -> DefaultAction {
 /// Per-process signal state.
 pub struct SignalState {
     /// Full action for each signal (indexed by signal number, 0 unused).
-    actions: [SignalAction; 64],
+    actions: [SignalAction; 65],
     /// Bitmask of blocked signals.
     pub blocked: u64,
     /// Bitmask of pending signals (standard signals 1-31 are coalesced here;
@@ -87,7 +88,7 @@ pub struct SignalState {
 impl SignalState {
     pub fn new() -> Self {
         SignalState {
-            actions: [SignalAction::default(); 64],
+            actions: [SignalAction::default(); 65],
             blocked: 0,
             pending: 0,
             rt_queue: VecDeque::new(),
@@ -96,7 +97,7 @@ impl SignalState {
 
     /// Get the handler for a signal.
     pub fn get_handler(&self, signum: u32) -> SignalHandler {
-        if signum == 0 || signum >= 64 {
+        if signum == 0 || signum >= 65 {
             return SignalHandler::Default;
         }
         self.actions[signum as usize].handler
@@ -106,7 +107,7 @@ impl SignalState {
     /// SIGKILL and SIGSTOP cannot have their handlers changed (POSIX).
     pub fn set_handler(&mut self, signum: u32, handler: SignalHandler) -> Result<SignalHandler, ()> {
         use wasm_posix_shared::signal::*;
-        if signum == 0 || signum >= 64 {
+        if signum == 0 || signum >= 65 {
             return Err(());
         }
         if signum == SIGKILL || signum == SIGSTOP {
@@ -119,7 +120,7 @@ impl SignalState {
 
     /// Get the full action for a signal.
     pub fn get_action(&self, signum: u32) -> SignalAction {
-        if signum == 0 || signum >= 64 {
+        if signum == 0 || signum >= 65 {
             return SignalAction::default();
         }
         self.actions[signum as usize]
@@ -128,7 +129,7 @@ impl SignalState {
     /// Set the full action for a signal. Returns the old action.
     pub fn set_action(&mut self, signum: u32, action: SignalAction) -> Result<SignalAction, ()> {
         use wasm_posix_shared::signal::*;
-        if signum == 0 || signum >= 64 {
+        if signum == 0 || signum >= 65 {
             return Err(());
         }
         if signum == SIGKILL || signum == SIGSTOP {
@@ -143,7 +144,7 @@ impl SignalState {
     /// Standard signals (1-31) are coalesced. RT signals (32-63) are queued.
     /// Bit position = signum - 1 (musl convention: signal N uses bit N-1).
     pub fn raise(&mut self, signum: u32) -> bool {
-        if signum == 0 || signum >= 64 {
+        if signum == 0 || signum >= 65 {
             return false;
         }
         self.pending |= sig_bit(signum);
@@ -156,7 +157,7 @@ impl SignalState {
     /// Clear a pending signal.
     /// For RT signals, removes all queued instances and clears the pending bit.
     pub fn clear(&mut self, signum: u32) {
-        if signum > 0 && signum < 64 {
+        if signum > 0 && signum < NSIG {
             self.pending &= !sig_bit(signum);
             if signum >= SIGRTMIN {
                 self.rt_queue.retain(|&s| s != signum);
@@ -166,7 +167,7 @@ impl SignalState {
 
     /// Check if a signal is pending.
     pub fn is_pending(&self, signum: u32) -> bool {
-        if signum >= 64 { return false; }
+        if signum >= 65 { return false; }
         (self.pending & sig_bit(signum)) != 0
     }
 
@@ -178,7 +179,7 @@ impl SignalState {
     /// Clear a signal from the pending set.
     /// For RT signals, removes all queued instances and clears the pending bit.
     pub fn clear_pending(&mut self, signum: u32) {
-        if signum > 0 && signum < 64 {
+        if signum > 0 && signum < NSIG {
             self.pending &= !sig_bit(signum);
             if signum >= SIGRTMIN {
                 self.rt_queue.retain(|&s| s != signum);
@@ -188,7 +189,7 @@ impl SignalState {
 
     /// Check if a signal is blocked.
     pub fn is_blocked(&self, signum: u32) -> bool {
-        if signum >= 64 { return false; }
+        if signum >= 65 { return false; }
         (self.blocked & sig_bit(signum)) != 0
     }
 
@@ -204,7 +205,7 @@ impl SignalState {
             return None;
         }
         let signum = deliverable.trailing_zeros() + 1;
-        if signum >= 64 { None } else { Some(signum) }
+        if signum >= 65 { None } else { Some(signum) }
     }
 
     /// Dequeue the lowest-numbered deliverable signal.
@@ -243,7 +244,7 @@ impl SignalState {
             return false;
         }
         let signum = deliverable.trailing_zeros() + 1; // 0-based bit → 1-based signal
-        if signum >= 64 {
+        if signum >= 65 {
             return false;
         }
         (self.actions[signum as usize].flags & SA_RESTART) != 0
@@ -251,8 +252,8 @@ impl SignalState {
 
     /// Reconstruct signal state from parts. Used by fork deserialization.
     /// Pending signals are cleared (per POSIX, child starts with no pending signals).
-    pub fn from_parts(handlers: [SignalHandler; 64], blocked: u64) -> Self {
-        let mut actions = [SignalAction::default(); 64];
+    pub fn from_parts(handlers: [SignalHandler; 65], blocked: u64) -> Self {
+        let mut actions = [SignalAction::default(); 65];
         for (i, h) in handlers.iter().enumerate() {
             actions[i].handler = *h;
         }
@@ -260,8 +261,8 @@ impl SignalState {
     }
 
     /// Reconstruct signal state for exec. Preserves pending signals (POSIX).
-    pub fn from_parts_with_pending(handlers: [SignalHandler; 64], blocked: u64, pending: u64) -> Self {
-        let mut actions = [SignalAction::default(); 64];
+    pub fn from_parts_with_pending(handlers: [SignalHandler; 65], blocked: u64, pending: u64) -> Self {
+        let mut actions = [SignalAction::default(); 65];
         for (i, h) in handlers.iter().enumerate() {
             actions[i].handler = *h;
         }
@@ -276,8 +277,8 @@ impl SignalState {
     }
 
     /// Get the raw handlers array for serialization.
-    pub fn handlers(&self) -> [SignalHandler; 64] {
-        let mut handlers = [SignalHandler::Default; 64];
+    pub fn handlers(&self) -> [SignalHandler; 65] {
+        let mut handlers = [SignalHandler::Default; 65];
         for (i, a) in self.actions.iter().enumerate() {
             handlers[i] = a.handler;
         }
@@ -355,7 +356,7 @@ mod tests {
 
     #[test]
     fn test_from_parts_clears_pending() {
-        let handlers = [SignalHandler::Default; 64];
+        let handlers = [SignalHandler::Default; 65];
         let state = SignalState::from_parts(handlers, 0x0000_0004);
         assert_eq!(state.blocked, 0x0000_0004);
         assert_eq!(state.pending, 0); // always cleared for fork
@@ -363,7 +364,7 @@ mod tests {
 
     #[test]
     fn test_from_parts_with_pending_preserves_pending() {
-        let handlers = [SignalHandler::Default; 64];
+        let handlers = [SignalHandler::Default; 65];
         let state = SignalState::from_parts_with_pending(handlers, 0x0000_0004, 0x0000_0008);
         assert_eq!(state.blocked, 0x0000_0004);
         assert_eq!(state.pending, 0x0000_0008);
