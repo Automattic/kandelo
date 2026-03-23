@@ -42,9 +42,8 @@ EXPECTED_FAIL=(
     # sigtimedwait/4-1 now passing
     sigtimedwait/5-1  # timeout: sigtimedwait not implemented
     sigtimedwait/6-1  # timeout: sigtimedwait not implemented
-    sigwaitinfo/1-1   # timeout: sigwaitinfo not implemented
-    sigwaitinfo/5-1   # timeout: sigwaitinfo not implemented
-    sigwaitinfo/8-1   # timeout: sigwaitinfo not implemented
+    # sigwaitinfo/1-1 and sigwaitinfo/5-1 fixed by proper rt_sigtimedwait dispatch
+    sigwaitinfo/8-1   # needs sigqueue (RT signal queuing)
     # sigwaitinfo/9-1 now passing
     # munmap: all tests include pthread.h (won't compile)
     munmap/1-1

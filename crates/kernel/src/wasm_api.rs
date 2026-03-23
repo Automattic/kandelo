@@ -1141,7 +1141,49 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
             }
             0
         }
-        207 => kernel_rt_sigtimedwait(a1 as u32, a2 as u32, a3), // SYS_RT_SIGTIMEDWAIT
+        207 => { // SYS_RT_SIGTIMEDWAIT: (mask_ptr, info_ptr, timeout_ptr, sigsetsize)
+            let (_gkl, proc) = unsafe { get_process() };
+            let mut host = WasmHostIO;
+            // Read the 64-bit signal mask from the pointer
+            let mask = if a1 != 0 {
+                let p = a1 as usize as *const u8;
+                let mut bytes = [0u8; 8];
+                unsafe { for i in 0..8 { bytes[i] = *p.add(i); } }
+                u64::from_le_bytes(bytes)
+            } else {
+                0
+            };
+            // Read timeout from timespec pointer (time64: i64 sec + i64 nsec)
+            let timeout_ms = if a3 != 0 {
+                let p = a3 as usize as *const u8;
+                let mut sec_bytes = [0u8; 8];
+                let mut nsec_bytes = [0u8; 8];
+                unsafe {
+                    for i in 0..8 { sec_bytes[i] = *p.add(i); }
+                    for i in 0..8 { nsec_bytes[i] = *p.add(8 + i); }
+                }
+                let sec = i64::from_le_bytes(sec_bytes);
+                let nsec = i64::from_le_bytes(nsec_bytes);
+                (sec * 1000 + nsec / 1_000_000) as i32
+            } else {
+                -1 // NULL timeout = wait indefinitely
+            };
+            let result = match syscalls::sys_sigtimedwait(proc, &mut host, mask, timeout_ms) {
+                Ok(sig) => {
+                    // Write siginfo_t if pointer is non-null
+                    if a2 != 0 {
+                        let p = a2 as usize as *mut u8;
+                        // siginfo_t: si_signo at offset 0 (4 bytes)
+                        let sig_bytes = (sig as i32).to_le_bytes();
+                        unsafe { for i in 0..4 { *p.add(i) = sig_bytes[i]; } }
+                    }
+                    sig as i32
+                }
+                Err(e) => -(e as i32),
+            };
+            deliver_pending_signals(proc, &mut host);
+            result
+        }
 
         // Time
         40 => kernel_clock_gettime(a1 as u32, a2 as *mut u8), // SYS_CLOCK_GETTIME
