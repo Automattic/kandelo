@@ -70,8 +70,6 @@ INCLUDE_EXPECTED_FAIL=(
     "pthread/pthread_cond_clockwait" "pthread/pthread_mutex_clocklock"
     "pthread/pthread_rwlock_clockrdlock" "pthread/pthread_rwlock_clockwrlock"
     "semaphore/sem_clockwait"
-    # -- Signal name/number conversion
-    "signal/sig2str" "signal/SIG2STR_MAX" "signal/str2sig"
     # -- Updated tsearch/tdelete/tfind/twalk signatures
     "search/posix_tnode" "search/tdelete" "search/tfind" "search/tsearch" "search/twalk"
     # -- New spawn actions
@@ -167,8 +165,7 @@ BASIC_EXPECTED_FAIL=(
     "stdlib/abort" "stdlib/system"
     # -- Signals (limited Wasm signal model)
     "signal/kill" "signal/killpg"
-    "signal/sig2str" "signal/sigaltstack"
-    "signal/str2sig"
+    "signal/sigaltstack"
     # -- Timers/signals that block (timeout)
     "aio/aio_error" "aio/aio_fsync" "aio/aio_read"
     "poll/ppoll"
@@ -266,8 +263,6 @@ IO_EXPECTED_FAIL=(
     "ofd-*"
     # O_CLOFORK is POSIX.1-2024; not in musl
     "dup3-clofork-fork" "open-clofork-fork"
-    # open() on existing directory with O_CREAT should return EISDIR
-    "open-tmpdir-rdonly-creat"
 )
 
 SIGNAL_EXPECTED_FAIL=(

@@ -79,3 +79,8 @@ typedef struct __ucontext {
 #define SIGUNUSED SIGSYS
 
 #define _NSIG 65
+
+/* POSIX.1-2024 sig2str/str2sig (Issue 8) */
+#define SIG2STR_MAX 17
+int sig2str(int, char *);
+int str2sig(const char *, int *);

@@ -152,6 +152,15 @@ pub fn sys_open(
         return Ok(fd);
     }
 
+    // POSIX: open() on an existing directory with O_CREAT returns EISDIR
+    if oflags & O_CREAT != 0 {
+        if let Ok(st) = host.host_stat(&resolved) {
+            if st.st_mode & wasm_posix_shared::mode::S_IFMT == wasm_posix_shared::mode::S_IFDIR {
+                return Err(Errno::EISDIR);
+            }
+        }
+    }
+
     let host_handle = host.host_open(&resolved, oflags, effective_mode)?;
 
     let file_type = if oflags & O_DIRECTORY != 0 {
@@ -3713,6 +3722,16 @@ pub fn sys_openat(
     } else {
         mode
     };
+
+    // POSIX: open() on an existing directory with O_CREAT returns EISDIR
+    if oflags & O_CREAT != 0 {
+        if let Ok(st) = host.host_stat(&resolved) {
+            if st.st_mode & wasm_posix_shared::mode::S_IFMT == wasm_posix_shared::mode::S_IFDIR {
+                return Err(Errno::EISDIR);
+            }
+        }
+    }
+
     let host_handle = host.host_open(&resolved, oflags, effective_mode)?;
 
     let file_type = if oflags & O_DIRECTORY != 0 {
