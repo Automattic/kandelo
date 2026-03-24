@@ -285,15 +285,16 @@ SIGNAL_EXPECTED_FAIL=(
     "handle-chld-exec" "handle-usr1-exec"
     "ignore-chld-exec" "ignore-usr1-exec"
     "sigaction-exec-flags" "sigaltstack-exec" "sigaltstack-raise-exec"
-    # Signal handler invocation via raise() not yet implemented in Wasm
-    "raise" "block-raise-unblock" "block-raise-handle-unblock"
-    "block-chld-unblock" "sigaltstack-raise"
+    # sigaltstack not implemented in Wasm (no native stack switching)
+    "sigaltstack-raise"
     # ppoll + signal mask atomicity (depends on signal delivery)
     "ppoll-*"
 )
 PROCESS_EXPECTED_FAIL=(
-    # Process groups not fully implemented
-    "fork-setpgid*" "fork-setsid*"
+    # Process groups: setpgid undo/redo and cross-process not implemented
+    "fork-setpgid-another-*" "fork-setpgid-invalid"
+    "fork-setpgid-undo*"
+    "fork-setsid*"
     "limbo-getpgid" "zombie-getpgid" "zombie-setpgid*"
     # waitpid with PGID (requires process groups)
     "waitpid-pgid*"

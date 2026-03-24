@@ -72,6 +72,19 @@ pub fn default_action(signum: u32) -> DefaultAction {
     }
 }
 
+/// Check whether setting this handler should discard pending signals.
+/// POSIX: "Setting a signal action to SIG_IGN for a signal that is pending shall
+/// cause the pending signal to be discarded." Also: "Setting a signal action to
+/// SIG_DFL for a signal that is pending and whose default action is to ignore the
+/// signal (for example, SIGCHLD), shall cause the pending signal to be discarded."
+fn should_discard_pending(signum: u32, handler: &SignalHandler) -> bool {
+    match handler {
+        SignalHandler::Ignore => true,
+        SignalHandler::Default => default_action(signum) == DefaultAction::Ignore,
+        SignalHandler::Handler(_) => false,
+    }
+}
+
 /// Queued RT signal entry: signal number + optional si_value.
 #[derive(Debug, Clone, Copy)]
 pub struct RtSigEntry {
@@ -115,6 +128,8 @@ impl SignalState {
 
     /// Set the handler for a signal. Returns the old handler.
     /// SIGKILL and SIGSTOP cannot have their handlers changed (POSIX).
+    /// Per POSIX: setting SIG_IGN discards pending signals; setting SIG_DFL
+    /// for signals whose default action is "ignore" also discards pending signals.
     pub fn set_handler(&mut self, signum: u32, handler: SignalHandler) -> Result<SignalHandler, ()> {
         use wasm_posix_shared::signal::*;
         if signum == 0 || signum >= 65 {
@@ -125,6 +140,10 @@ impl SignalState {
         }
         let old = self.actions[signum as usize].handler;
         self.actions[signum as usize].handler = handler;
+        // POSIX: discard pending signals when disposition becomes "ignore"
+        if should_discard_pending(signum, &handler) {
+            self.clear_pending(signum);
+        }
         Ok(old)
     }
 
@@ -137,6 +156,8 @@ impl SignalState {
     }
 
     /// Set the full action for a signal. Returns the old action.
+    /// Per POSIX: setting SIG_IGN discards pending signals; setting SIG_DFL
+    /// for signals whose default action is "ignore" also discards pending signals.
     pub fn set_action(&mut self, signum: u32, action: SignalAction) -> Result<SignalAction, ()> {
         use wasm_posix_shared::signal::*;
         if signum == 0 || signum >= 65 {
@@ -147,6 +168,10 @@ impl SignalState {
         }
         let old = self.actions[signum as usize];
         self.actions[signum as usize] = action;
+        // POSIX: discard pending signals when disposition becomes "ignore"
+        if should_discard_pending(signum, &action.handler) {
+            self.clear_pending(signum);
+        }
         Ok(old)
     }
 
@@ -522,5 +547,62 @@ mod tests {
     fn test_should_restart_no_pending() {
         let state = SignalState::new();
         assert!(!state.should_restart());
+    }
+
+    #[test]
+    fn test_sig_ign_discards_pending() {
+        let mut state = SignalState::new();
+        state.raise(SIGUSR1);
+        assert!(state.is_pending(SIGUSR1));
+        state.set_handler(SIGUSR1, SignalHandler::Ignore).unwrap();
+        assert!(!state.is_pending(SIGUSR1));
+    }
+
+    #[test]
+    fn test_sig_dfl_discards_pending_for_ignored_signal() {
+        // SIGCHLD default action is Ignore, so SIG_DFL should discard pending
+        let mut state = SignalState::new();
+        state.set_handler(SIGCHLD, SignalHandler::Handler(42)).unwrap();
+        state.raise(SIGCHLD);
+        assert!(state.is_pending(SIGCHLD));
+        state.set_handler(SIGCHLD, SignalHandler::Default).unwrap();
+        assert!(!state.is_pending(SIGCHLD));
+    }
+
+    #[test]
+    fn test_sig_dfl_keeps_pending_for_terminate_signal() {
+        // SIGUSR1 default action is Terminate, so SIG_DFL should NOT discard
+        let mut state = SignalState::new();
+        state.raise(SIGUSR1);
+        assert!(state.is_pending(SIGUSR1));
+        state.set_handler(SIGUSR1, SignalHandler::Default).unwrap();
+        assert!(state.is_pending(SIGUSR1));
+    }
+
+    #[test]
+    fn test_sig_ign_discards_rt_queue() {
+        let mut state = SignalState::new();
+        state.raise_with_value(SIGRTMIN, 42);
+        state.raise_with_value(SIGRTMIN, 43);
+        assert!(state.is_pending(SIGRTMIN));
+        state.set_handler(SIGRTMIN, SignalHandler::Ignore).unwrap();
+        assert!(!state.is_pending(SIGRTMIN));
+        assert_eq!(state.dequeue(), None);
+    }
+
+    #[test]
+    fn test_block_raise_ignore_unignore_unblock() {
+        // Mimics sortix signal/block-raise-ignore-unignore-unblock test
+        let mut state = SignalState::new();
+        state.blocked = sig_bit(SIGUSR1);
+        state.raise(SIGUSR1);
+        assert!(state.is_pending(SIGUSR1));
+        // SIG_IGN discards pending
+        state.set_handler(SIGUSR1, SignalHandler::Ignore).unwrap();
+        assert!(!state.is_pending(SIGUSR1));
+        // Set a handler — no pending signal to deliver
+        state.set_handler(SIGUSR1, SignalHandler::Handler(42)).unwrap();
+        state.blocked = 0;
+        assert_eq!(state.deliverable(), 0);
     }
 }

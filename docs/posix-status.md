@@ -148,7 +148,7 @@ The wasm-posix-kernel uses a **centralized architecture**: a single kernel Wasm 
 |----------|--------|-------|
 | `kill()` | Partial | Marks signal as pending. sig=0 validity check. Cross-process delivery via host_kill import and ProcessManager.deliverSignal(). Pending signals delivered at syscall boundaries. |
 | `signal()` | Full | Legacy API. Returns previous handler. Wraps sigaction() semantics. SIGKILL/SIGSTOP immutable. |
-| `sigaction()` | Partial | Sets handler disposition (SIG_DFL, SIG_IGN, or function pointer) plus sa_flags and sa_mask. SIGKILL/SIGSTOP immutable. SA_RESTART supported: blocking read/write/recv/poll auto-restart instead of returning EINTR. SA_SIGINFO: flags passed to host so handler is called as `handler(signum, siginfo_ptr, ucontext_ptr)`. SA_NOCLDSTOP/SA_NOCLDWAIT stored but not yet acted upon. **Note:** Programs must be linked with `--table-base=2 --export-table` so the host can dispatch handlers from the user program's function table (indices 0/1 reserved for SIG_DFL/SIG_IGN). |
+| `sigaction()` | Full | Sets handler disposition (SIG_DFL, SIG_IGN, or function pointer) plus sa_flags and sa_mask. SIGKILL/SIGSTOP immutable. SA_RESTART supported: blocking read/write/recv/poll auto-restart instead of returning EINTR. SA_SIGINFO: flags passed to host so handler is called as `handler(signum, siginfo_ptr, ucontext_ptr)`. SA_NOCLDSTOP/SA_NOCLDWAIT stored but not yet acted upon. SIG_IGN discards pending signals; SIG_DFL discards pending signals for signals whose default action is "ignore" (e.g., SIGCHLD). **Note:** Programs must be linked with `--table-base=2 --export-table` so the host can dispatch handlers from the user program's function table (indices 0/1 reserved for SIG_DFL/SIG_IGN). |
 | `sigprocmask()` | Full | Block/unblock/setmask operations on 64-bit signal mask. SIGKILL and SIGSTOP cannot be blocked per POSIX. |
 | `sigsuspend()` | Full | Atomically replaces signal mask and blocks until deliverable signal arrives. Uses SharedArrayBuffer + Atomics.wait/notify for cross-thread wake. Always returns EINTR. |
 | `pause()` | Full | Suspends until a signal is delivered. Delegates to sigsuspend with current mask. Always returns EINTR. |
@@ -156,8 +156,8 @@ The wasm-posix-kernel uses a **centralized architecture**: a single kernel Wasm 
 | `alarm()` | Full | Sets SIGALRM timer via host setTimeout. Returns previous remaining seconds. alarm(0) cancels. Not inherited by fork, canceled by exec. |
 | `setitimer()` | Full | ITIMER_REAL: sets alarm deadline + interval via host_set_alarm. ITIMER_VIRTUAL/ITIMER_PROF: no-op (no CPU time tracking). Fixes musl's alarm() which internally calls setitimer. |
 | `getitimer()` | Full | ITIMER_REAL: returns stored interval + remaining time from deadline. ITIMER_VIRTUAL/ITIMER_PROF: returns zero. |
-| `sigtimedwait()` | Full | Checks pending signals in mask, dequeues lowest. Polls with 1ms sleep on timeout. Returns EAGAIN on timeout. |
-| `sigqueue()` / `rt_sigqueueinfo()` | Partial | Extracts signal number and delivers via raise(). RT signals (32-63) are queued; standard signals (1-31) coalesced. |
+| `sigtimedwait()` | Full | Checks pending signals in mask, dequeues lowest. Returns si_signo, si_code (SI_USER/SI_QUEUE), and si_value in siginfo_t. Polls with 1ms sleep on timeout. Returns EAGAIN on timeout. |
+| `sigqueue()` / `rt_sigqueueinfo()` | Full | Sends signal with si_value. RT signals (32-63) are queued with FIFO ordering; standard signals (1-31) coalesced. si_code set to SI_QUEUE (-1). |
 | `rt_sigreturn()` | Stub | Returns 0. Signal trampoline handled by host. |
 | `signalfd()` / `signalfd4()` | Full | Creates a file descriptor for accepting signals. Reads return `signalfd_siginfo` structs (128 bytes) for pending signals matching the mask. Supports poll() for readiness. |
 
