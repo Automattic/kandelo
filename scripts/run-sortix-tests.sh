@@ -37,12 +37,6 @@ INCLUDE_EXPECTED_FAIL=(
     "fcntl/F_DUPFD_CLOFORK" "fcntl/FD_CLOFORK" "fcntl/O_CLOFORK"
     "stdlib/O_CLOFORK" "sys_mman/O_CLOFORK" "sys_socket/MSG_CMSG_CLOFORK"
     "sys_socket/SOCK_CLOFORK" "unistd/O_CLOFORK"
-    # -- O_* flags re-exported in stdlib.h, sys/mman.h, unistd.h (2024 requirement)
-    "stdlib/O_APPEND" "stdlib/O_CLOEXEC" "stdlib/O_DSYNC" "stdlib/O_NOCTTY"
-    "stdlib/O_RDWR" "stdlib/O_RSYNC" "stdlib/O_SYNC"
-    "sys_mman/O_CLOEXEC" "sys_mman/O_CREAT" "sys_mman/O_EXCL"
-    "sys_mman/O_RDONLY" "sys_mman/O_RDWR" "sys_mman/O_TRUNC" "sys_mman/O_WRONLY"
-    "unistd/O_CLOEXEC"
     # -- New dirent API (posix_getdents, posix_dent, DT_MQ/SEM/SHM/TMO)
     "dirent/DT_MQ" "dirent/DT_SEM" "dirent/DT_SHM" "dirent/DT_TMO"
     "dirent/posix_getdents" "dirent/reclen_t" "dirent/ssize_t"
@@ -50,22 +44,6 @@ INCLUDE_EXPECTED_FAIL=(
     "dirent/struct-posix_dent-d_name" "dirent/struct-posix_dent-d_reclen"
     "dirent/struct-posix_dent-d_type"
     "sys_types/reclen_t"
-    # -- Alternate month names (langinfo)
-    "langinfo/ABALTMON_1" "langinfo/ABALTMON_2" "langinfo/ABALTMON_3"
-    "langinfo/ABALTMON_4" "langinfo/ABALTMON_5" "langinfo/ABALTMON_6"
-    "langinfo/ABALTMON_7" "langinfo/ABALTMON_8" "langinfo/ABALTMON_9"
-    "langinfo/ABALTMON_10" "langinfo/ABALTMON_11" "langinfo/ABALTMON_12"
-    "langinfo/ALTMON_1" "langinfo/ALTMON_2" "langinfo/ALTMON_3"
-    "langinfo/ALTMON_4" "langinfo/ALTMON_5" "langinfo/ALTMON_6"
-    "langinfo/ALTMON_7" "langinfo/ALTMON_8" "langinfo/ALTMON_9"
-    "langinfo/ALTMON_10" "langinfo/ALTMON_11" "langinfo/ALTMON_12"
-    # -- New math constants (long double variants, golden ratio, etc.)
-    "math/M_1_PIl" "math/M_1_SQRTPI" "math/M_1_SQRTPIl" "math/M_2_PIl"
-    "math/M_2_SQRTPIl" "math/M_EGAMMA" "math/M_EGAMMAl" "math/M_El"
-    "math/M_LN10l" "math/M_LN2l" "math/M_LOG10El" "math/M_LOG2El"
-    "math/M_PHI" "math/M_PHIl" "math/M_PI_2l" "math/M_PI_4l" "math/M_PIl"
-    "math/M_SQRT1_2l" "math/M_SQRT1_3" "math/M_SQRT1_3l" "math/M_SQRT2l"
-    "math/M_SQRT3" "math/M_SQRT3l"
     # -- Clock-aware pthread/semaphore waits
     "pthread/pthread_cond_clockwait" "pthread/pthread_mutex_clocklock"
     "pthread/pthread_rwlock_clockrdlock" "pthread/pthread_rwlock_clockwrlock"
@@ -125,9 +103,6 @@ INCLUDE_EXPECTED_FAIL=(
     "sys_mman/POSIX_TYPED_MEM_ALLOCATE_CONTIG" "sys_mman/posix_typed_mem_get_info"
     "sys_mman/POSIX_TYPED_MEM_MAP_ALLOCATABLE" "sys_mman/posix_typed_mem_open"
     "sys_mman/struct-posix_typed_mem_info" "sys_mman/struct-posix_typed_mem_info-posix_tmi_length"
-    # -- mqueue O_* flags (mqueue.h doesn't re-export these in musl)
-    "mqueue/O_CREAT" "mqueue/O_EXCL" "mqueue/O_NONBLOCK" "mqueue/O_RDONLY"
-    "mqueue/O_RDWR" "mqueue/O_WRONLY"
     # -- sys/shm.h missing symbols
     "sys_shm/intptr_t" "sys_shm/SHM_FAILED"
     # -- sys/stat struct member type issue

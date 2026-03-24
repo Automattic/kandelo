@@ -144,7 +144,12 @@ echo "==> Building sigsetjmp helpers..."
 # ---------------------------------------------------------------
 echo "==> Installing override headers..."
 if [ -d "$OVERLAY_DIR/include" ]; then
-    cp "$OVERLAY_DIR/include/"*.h "$SYSROOT/include/" 2>/dev/null || true
+    cd "$OVERLAY_DIR/include"
+    find . -name '*.h' | while read f; do
+        mkdir -p "$SYSROOT/include/$(dirname "$f")"
+        cp "$f" "$SYSROOT/include/$f"
+    done
+    cd "$REPO_ROOT"
 fi
 
 echo ""
