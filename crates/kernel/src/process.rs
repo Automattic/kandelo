@@ -197,6 +197,9 @@ pub struct Process {
     pub thread_name: [u8; 16],
     /// True if this process is a fork child that should exec on startup.
     pub fork_child: bool,
+    /// Saved signal mask during sigsuspend (centralized mode blocking retry).
+    /// Set on first sigsuspend call, restored when a signal is delivered.
+    pub sigsuspend_saved_mask: Option<u64>,
     /// Path to exec after fork (set by posix_spawn before forking).
     pub fork_exec_path: Option<Vec<u8>>,
     /// Argv for exec after fork.
@@ -274,6 +277,7 @@ impl Process {
             alarm_interval_ns: 0,
             thread_name: [0u8; 16],
             fork_child: false,
+            sigsuspend_saved_mask: None,
             fork_exec_path: None,
             fork_exec_argv: None,
             fork_fd_actions: Vec::new(),

@@ -2201,6 +2201,26 @@ pub fn sys_sigtimedwait(
 pub fn sys_sigsuspend(proc: &mut Process, host: &mut dyn HostIO, mask: u64) -> Result<(), Errno> {
     use wasm_posix_shared::signal::{NSIG, SIGKILL, SIGSTOP};
 
+    // Centralized mode: keep sigsuspend mask active between EAGAIN retries.
+    // On first call, save old mask. On retries, the temp mask is already set.
+    if crate::is_centralized_mode() {
+        if proc.sigsuspend_saved_mask.is_none() {
+            // First call: save old mask and install temporary mask
+            proc.sigsuspend_saved_mask = Some(proc.signals.blocked);
+            proc.signals.blocked = mask & !(crate::signal::sig_bit(SIGKILL) | crate::signal::sig_bit(SIGSTOP));
+        }
+        // Check if any signals are deliverable with the sigsuspend mask
+        if proc.signals.deliverable() != 0 {
+            // Signal arrived — return EINTR but keep temp mask active so that
+            // dequeueSignalForDelivery picks the signal that woke sigsuspend
+            // (deliverable under the temp mask). The mask will be restored in
+            // kernel_dequeue_signal after the dequeue.
+            return Err(Errno::EINTR);
+        }
+        // No signal yet — keep temp mask active, return EAGAIN for async retry
+        return Err(Errno::EAGAIN);
+    }
+
     let old_mask = proc.signals.blocked;
     // Cannot block SIGKILL or SIGSTOP
     proc.signals.blocked = mask & !(crate::signal::sig_bit(SIGKILL) | crate::signal::sig_bit(SIGSTOP));
@@ -2209,12 +2229,6 @@ pub fn sys_sigsuspend(proc: &mut Process, host: &mut dyn HostIO, mask: u64) -> R
     if proc.signals.deliverable() != 0 {
         proc.signals.blocked = old_mask;
         return Err(Errno::EINTR);
-    }
-
-    // Centralized mode: return EAGAIN so the host can wait asynchronously
-    if crate::is_centralized_mode() {
-        proc.signals.blocked = old_mask;
-        return Err(Errno::EAGAIN);
     }
 
     // Block until a deliverable signal arrives
