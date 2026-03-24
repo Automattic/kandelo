@@ -39,6 +39,7 @@ const SYS_USLEEP = 68;
 const SYS_CLOCK_NANOSLEEP = 124;
 const SYS_FUTEX = 200;
 const SYS_POLL = 60;
+const SYS_PPOLL = 251;
 const SYS_RT_SIGTIMEDWAIT = 207;
 
 /** Syscall numbers for fork/exec/clone */
@@ -310,6 +311,7 @@ const SYSCALL_ARGS: Record<number, ArgDesc[]> = {
 
   // Poll/select
   60: [{ argIndex: 0, direction: "inout", size: { type: "arg", argIndex: 1 } }], // POLL: fds (nfds * 8)
+  251: [{ argIndex: 0, direction: "inout", size: { type: "arg", argIndex: 1 } }], // PPOLL: fds (nfds * 8)
 
   // Terminal
   70: [{ argIndex: 1, direction: "out", size: { type: "fixed", size: 256 } }], // TCGETATTR
@@ -779,7 +781,7 @@ export class CentralizedKernelWorker {
         } else if (desc.size.type === "arg") {
           size = origArgs[desc.size.argIndex];
           // Special case for poll: nfds * sizeof(struct pollfd)
-          if (syscallNr === 60) size *= 8;
+          if (syscallNr === SYS_POLL || syscallNr === SYS_PPOLL) size *= 8;
         } else {
           size = desc.size.size;
         }
@@ -802,6 +804,33 @@ export class CentralizedKernelWorker {
         dataOffset += size;
         // Align to 4 bytes for next allocation
         dataOffset = (dataOffset + 3) & ~3;
+      }
+    }
+
+    // ppoll: convert timespec pointer and sigset pointer to scalar values.
+    // musl sends: (fds, nfds, timespec_ptr, sigset_ptr, sigset_size)
+    // kernel expects: (fds, nfds, timeout_ms, has_mask, mask_lo, mask_hi)
+    if (syscallNr === SYS_PPOLL) {
+      const tsPtr = origArgs[2];
+      if (tsPtr !== 0) {
+        // time64: timespec is {int64 sec, int64 nsec} = 16 bytes
+        const pv = new DataView(channel.memory.buffer, tsPtr);
+        const sec = Number(pv.getBigInt64(0, true));
+        const nsec = Number(pv.getBigInt64(8, true));
+        adjustedArgs[2] = sec * 1000 + Math.floor(nsec / 1000000);
+      } else {
+        adjustedArgs[2] = -1; // infinite timeout
+      }
+      const maskPtr = origArgs[3];
+      if (maskPtr !== 0) {
+        const pv = new DataView(channel.memory.buffer, maskPtr);
+        adjustedArgs[3] = 1; // has_mask = true
+        adjustedArgs[4] = pv.getUint32(0, true); // mask_lo
+        adjustedArgs[5] = pv.getUint32(4, true); // mask_hi
+      } else {
+        adjustedArgs[3] = 0; // has_mask = false
+        adjustedArgs[4] = 0;
+        adjustedArgs[5] = 0;
       }
     }
 
@@ -927,7 +956,7 @@ export class CentralizedKernelWorker {
           size = len + 1;
         } else if (desc.size.type === "arg") {
           size = origArgs[desc.size.argIndex];
-          if (syscallNr === SYS_POLL) size *= 8;
+          if (syscallNr === SYS_POLL || syscallNr === SYS_PPOLL) size *= 8;
         } else {
           size = desc.size.size;
         }
@@ -1041,6 +1070,30 @@ export class CentralizedKernelWorker {
       }
       // For timeout > 0, retry after min(timeout, retry_interval)
       const retryMs = timeout > 0 ? Math.min(timeout, EAGAIN_RETRY_MS) : EAGAIN_RETRY_MS;
+      setTimeout(() => {
+        if (this.processes.has(channel.pid)) {
+          this.retrySyscall(channel);
+        }
+      }, retryMs);
+      return;
+    }
+
+    // ppoll: same as poll but timespec is a pointer, not scalar.
+    // Convert timespec to determine timeout behavior.
+    if (syscallNr === SYS_PPOLL) {
+      const tsPtr = origArgs[2];
+      let timeoutMs = -1; // infinite by default
+      if (tsPtr !== 0) {
+        const pv = new DataView(channel.memory.buffer, tsPtr);
+        const sec = Number(pv.getBigInt64(0, true));
+        const nsec = Number(pv.getBigInt64(8, true));
+        timeoutMs = sec * 1000 + Math.floor(nsec / 1000000);
+      }
+      if (timeoutMs === 0) {
+        this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], 0, 0);
+        return;
+      }
+      const retryMs = timeoutMs > 0 ? Math.min(timeoutMs, EAGAIN_RETRY_MS) : EAGAIN_RETRY_MS;
       setTimeout(() => {
         if (this.processes.has(channel.pid)) {
           this.retrySyscall(channel);
