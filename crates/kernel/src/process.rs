@@ -258,7 +258,7 @@ impl Process {
             euid: 1000,
             egid: 1000,
             pgid: pid,
-            sid: pid,
+            sid: 0,
             state: ProcessState::Running,
             exit_status: 0,
             fd_table,

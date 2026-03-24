@@ -277,12 +277,11 @@ SIGNAL_EXPECTED_FAIL=(
     "ppoll-*"
 )
 PROCESS_EXPECTED_FAIL=(
-    # Process groups: setpgid undo/redo and cross-process not implemented
-    "fork-setpgid-another-*"
-    "fork-setpgid-undo*"
-    "fork-setsid*"
-    "limbo-getpgid" "zombie-getpgid" "zombie-setpgid*"
-    # waitpid with PGID (requires process groups)
+    # Cross-process setsid+setpgid with pipe synchronization (timing issue)
+    "fork-setsid-setpgid-in-parent" "fork-setsid-setpgid-in-parent-move"
+    # Zombie process pgid operations
+    "zombie-getpgid" "zombie-setpgid*"
+    # waitpid with PGID matching
     "waitpid-pgid*"
     # exec not implemented in centralized mode
     "fork-exec-*"

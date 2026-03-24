@@ -1522,7 +1522,44 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
         }
 
         // UID/GID
-        90 => kernel_setpgid(a1 as u32, a2 as u32), // SYS_SETPGID
+        90 => {                                    // SYS_SETPGID
+            let pid = a1 as u32;
+            let pgid = a2 as u32;
+            let (_gkl, proc) = unsafe { get_process() };
+            let effective_pid = if pid == 0 { proc.pid } else { pid };
+            if effective_pid == proc.pid {
+                // Self — use syscalls::sys_setpgid
+                match syscalls::sys_setpgid(proc, pid, pgid) {
+                    Ok(()) => {
+                        let mut host = WasmHostIO;
+                        deliver_pending_signals(proc, &mut host);
+                        0
+                    }
+                    Err(e) => -(e as i32),
+                }
+            } else if crate::is_centralized_mode() {
+                // Cross-process setpgid in centralized mode
+                let new_pgid = if pgid == 0 { effective_pid } else { pgid };
+                let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+                match table.get_mut(effective_pid) {
+                    Some(target) => {
+                        // POSIX: can only setpgid on a child of the calling process
+                        if target.ppid != proc.pid {
+                            -(Errno::ESRCH as i32)
+                        } else if target.sid == target.pid {
+                            // POSIX: cannot change pgid of a session leader
+                            -(Errno::EPERM as i32)
+                        } else {
+                            target.pgid = new_pgid;
+                            0
+                        }
+                    }
+                    None => -(Errno::ESRCH as i32),
+                }
+            } else {
+                -(Errno::ESRCH as i32)
+            }
+        }
         91 => kernel_getsid(a1 as u32),            // SYS_GETSID
         104 => kernel_setuid(a1 as u32),           // SYS_SETUID
         105 => kernel_setgid(a1 as u32),           // SYS_SETGID

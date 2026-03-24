@@ -1949,9 +1949,13 @@ pub fn sys_setpgid(proc: &mut Process, pid: u32, pgid: u32) -> Result<(), Errno>
     if (pgid as i32) < 0 {
         return Err(Errno::EINVAL);
     }
-    // Only support setting own pgid (cross-process setpgid not yet implemented)
+    // Only support setting own pgid (cross-process handled in wasm_api dispatch)
     if pid != 0 && pid != proc.pid {
         return Err(Errno::ESRCH);
+    }
+    // POSIX: a session leader cannot change its process group
+    if proc.sid == proc.pid {
+        return Err(Errno::EPERM);
     }
     let new_pgid = if pgid == 0 { proc.pid } else { pgid };
     proc.pgid = new_pgid;
@@ -8366,7 +8370,8 @@ mod tests {
 
     #[test]
     fn test_setpgid_self() {
-        let mut proc = Process::new(1);
+        let mut proc = Process::new(2);
+        proc.sid = 1; // Not a session leader (child of pid 1)
         let result = sys_setpgid(&mut proc, 0, 42); // pid=0 means self
         assert!(result.is_ok());
         assert_eq!(proc.pgid, 42);
@@ -8374,10 +8379,21 @@ mod tests {
 
     #[test]
     fn test_setpgid_zero_pgid() {
-        let mut proc = Process::new(1);
+        let mut proc = Process::new(2);
+        proc.sid = 1; // Not a session leader
         let result = sys_setpgid(&mut proc, 0, 0); // pgid=0 means use pid
         assert!(result.is_ok());
-        assert_eq!(proc.pgid, 1); // pgid set to pid
+        assert_eq!(proc.pgid, 2); // pgid set to pid
+    }
+
+    #[test]
+    fn test_setpgid_session_leader_eperm() {
+        let mut proc = Process::new(1);
+        // Make it a session leader by calling setsid
+        let _ = sys_setsid(&mut proc);
+        assert_eq!(proc.sid, proc.pid); // now a session leader
+        let result = sys_setpgid(&mut proc, 0, 42);
+        assert_eq!(result, Err(Errno::EPERM));
     }
 
     #[test]
@@ -8390,7 +8406,7 @@ mod tests {
     #[test]
     fn test_getsid_self() {
         let proc = Process::new(1);
-        assert_eq!(sys_getsid(&proc, 0), Ok(1)); // sid == pid
+        assert_eq!(sys_getsid(&proc, 0), Ok(0)); // initial process has sid=0 (not a session leader)
     }
 
     #[test]
@@ -8414,7 +8430,11 @@ mod tests {
     #[test]
     fn test_setsid_already_leader_fails() {
         let mut proc = Process::new(1);
-        // pid == sid, so already a session leader
+        // First call setsid to become a session leader
+        let result = sys_setsid(&mut proc);
+        assert_eq!(result, Ok(1));
+        assert_eq!(proc.sid, 1);
+        // Second call should fail — already a session leader
         let result = sys_setsid(&mut proc);
         assert_eq!(result, Err(Errno::EPERM));
     }
