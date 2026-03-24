@@ -158,7 +158,7 @@ BASIC_EXPECTED_FAIL=(
     # -- Memory locking (mlock/munlock are stubs; mlockall/munlockall work)
     # (mlock, mlockall, munlock, munlockall removed — stubs pass basic invocation tests)
     # -- Privileged operations
-    "unistd/fchownat" "unistd/lchown"
+    "unistd/fchownat"
     # -- Process management requiring fork/exec or process groups
     "sys_wait/waitpid"
     "stdlib/abort" "stdlib/system"
@@ -201,16 +201,16 @@ BASIC_EXPECTED_FAIL=(
     "sys_shm/shmat" "sys_shm/shmctl" "sys_shm/shmdt" "sys_shm/shmget"
     # -- Socket operations (test tries actual connect/send/recv)
     "sys_socket/accept" "sys_socket/accept4" "sys_socket/connect"
-    "sys_socket/getpeername" "sys_socket/getsockopt" "sys_socket/recv"
+    "sys_socket/getpeername" "sys_socket/recv"
     "sys_socket/recvfrom" "sys_socket/recvmsg" "sys_socket/send"
-    "sys_socket/sendmsg" "sys_socket/sendto" "sys_socket/setsockopt"
+    "sys_socket/sendmsg" "sys_socket/sendto"
     "sys_socket/shutdown" "sys_socket/sockatmark"
     # -- Network interface (not available in Wasm)
     "net_if/if_freenameindex" "net_if/if_indextoname" "net_if/if_nameindex" "net_if/if_nametoindex"
     "netdb/freeaddrinfo" "netdb/getaddrinfo"
     "arpa_inet/inet_ntop"
     # -- Filesystem-dependent tests (test opens files, needs real FS paths)
-    "fcntl/open" "fcntl/openat" "fcntl/posix_fadvise" "fcntl/posix_fallocate"
+    "fcntl/open" "fcntl/openat" "fcntl/posix_fallocate"
     "dirent/fdopendir" "dirent/posix_getdents" "dirent/readdir" "dirent/readdir_r"
     "dirent/rewinddir" "dirent/scandir" "dirent/seekdir"
     "stdio/fopen" "stdio/pclose" "stdio/popen" "stdio/remove"
@@ -233,7 +233,7 @@ BASIC_EXPECTED_FAIL=(
     "time/clock_getcpuclockid"
     "time/timer_create" "time/timer_delete" "time/timer_getoverrun"
     "time/timer_gettime" "time/timer_settime"
-    "sys_select/pselect" "sys_select/select" "sys_time/select"
+    "sys_select/pselect"
     "locale/getlocalename_l"
     "monetary/strfmon" "monetary/strfmon_l"
     "syslog/closelog" "syslog/syslog"

@@ -1748,7 +1748,8 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
             }
         }
         282 | 283 => 0, // mlockall, munlockall: success
-        285 => { // SYS_GETPRIORITY
+        // SYS_GETPRIORITY
+        285 => {
             let (_gkl, proc) = unsafe { get_process() };
             match syscalls::sys_getpriority(proc, a1, a2 as u32) {
                 Ok(v) => v,
@@ -1763,7 +1764,26 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
             }
         }
 
-        208 | 237..=238 | 247..=249 | 252..=254 | 256..=257 | 262 | 265..=268 | 271..=274 | 287 | 289..=293 | 297..=298 | 301..=305 | 306 | 308..=324 | 325..=336 | 348..=349 | 350..=369 | 370..=371 | 373..=376 | 381..=383 | 386 => {
+        252 => { // SYS_PSELECT6_TIME64: (nfds, readfds, writefds, exceptfds, timeout_ms, mask_ptr)
+            // Args pre-decoded by host: timeout → ms, mask stored at mask_ptr (8 bytes: lo+hi)
+            let mask_ptr = a6 as *const u8;
+            let (mask_lo, mask_hi) = if mask_ptr.is_null() {
+                (0u32, 0u32)
+            } else {
+                let mb = unsafe { core::slice::from_raw_parts(mask_ptr, 8) };
+                (u32::from_le_bytes([mb[0], mb[1], mb[2], mb[3]]),
+                 u32::from_le_bytes([mb[4], mb[5], mb[6], mb[7]]))
+            };
+            kernel_pselect6(a1, a2 as *mut u8, a3 as *mut u8, a4 as *mut u8, a5, mask_lo, mask_hi)
+        }
+        299 => { // SYS_LCHOWN: (path, uid, gid) — treat like chown (no symlink distinction)
+            let p = a1 as *const u8;
+            let len = unsafe { cstr_len(p) };
+            kernel_chown(p, len, a2 as u32, a3 as u32)
+        }
+        307 => 0, // SYS_FADVISE64: advisory, always succeed
+
+        208 | 237..=238 | 247..=249 | 253..=254 | 256..=257 | 262 | 265..=268 | 271..=274 | 287 | 289..=293 | 297..=298 | 301..=305 | 306 | 308..=324 | 325..=336 | 348..=349 | 350..=369 | 370..=371 | 373..=376 | 381..=383 | 386 => {
             // Many of these are stubs in the glue layer too; return ENOSYS
             -(Errno::ENOSYS as i32)
         }
