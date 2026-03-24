@@ -1423,7 +1423,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
 
         // Poll/select
         60 => kernel_poll(a1 as *mut u8, a2 as u32, a3), // SYS_POLL
-        251 => kernel_ppoll(a1 as *mut u8, a2 as u32, a3, a4 as u32, a5 as u32), // SYS_PPOLL
+        251 => kernel_ppoll(a1 as *mut u8, a2 as u32, a3, a4 as u32, a5 as u32, a6 as u32), // SYS_PPOLL
         103 => kernel_select(a1, a2 as *mut u8, a3 as *mut u8, a4 as *mut u8, a5 as i32), // SYS_SELECT
 
         // Terminal
@@ -5299,16 +5299,17 @@ pub extern "C" fn kernel_futex(uaddr: u32, op: u32, val: u32, timeout: u32, uadd
 // ---------------------------------------------------------------------------
 
 /// ppoll — poll with atomic signal mask swap.
+/// has_mask: 1 if a signal mask was provided (even if all-zero), 0 if NULL.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_ppoll(fds_ptr: *mut u8, nfds: u32, timeout_ms: i32, mask_lo: u32, mask_hi: u32) -> i32 {
+pub extern "C" fn kernel_ppoll(fds_ptr: *mut u8, nfds: u32, timeout_ms: i32, has_mask: u32, mask_lo: u32, mask_hi: u32) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
     let fds = unsafe {
         slice::from_raw_parts_mut(fds_ptr as *mut wasm_posix_shared::WasmPollFd, nfds as usize)
     };
-    let mask = if mask_lo == 0 && mask_hi == 0 {
-        None
-    } else {
+    let mask = if has_mask != 0 {
         Some(((mask_hi as u64) << 32) | (mask_lo as u64))
+    } else {
+        None
     };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_ppoll(proc, &mut host, fds, timeout_ms, mask) {

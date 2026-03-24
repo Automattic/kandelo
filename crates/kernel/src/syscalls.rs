@@ -4223,6 +4223,45 @@ pub fn sys_ppoll(
     timeout_ms: i32,
     mask: Option<u64>,
 ) -> Result<i32, Errno> {
+    // Centralized mode: use sigsuspend_saved_mask pattern for atomic mask swap.
+    // The mask stays swapped across EAGAIN retries so cross-process signals
+    // arriving between retries are caught on the next poll.
+    if crate::is_centralized_mode() {
+        if let Some(new_mask) = mask {
+            use wasm_posix_shared::signal::{SIGKILL, SIGSTOP};
+            if proc.sigsuspend_saved_mask.is_none() {
+                // First call: save original mask and install ppoll mask
+                proc.sigsuspend_saved_mask = Some(proc.signals.blocked);
+                proc.signals.blocked = new_mask
+                    & !(crate::signal::sig_bit(SIGKILL) | crate::signal::sig_bit(SIGSTOP));
+            }
+            // Check if any signals are deliverable with the ppoll mask
+            if proc.signals.deliverable() != 0 {
+                // Signal arrived — return EINTR. Keep temp mask active so
+                // kernel_dequeue_signal can deliver the signal and restore
+                // the original mask (via sigsuspend_saved_mask).
+                return Err(Errno::EINTR);
+            }
+        }
+
+        // Check fds (non-blocking) via sys_poll
+        let result = sys_poll(proc, host, fds, timeout_ms);
+        match result {
+            Err(Errno::EAGAIN) => {
+                // Still blocking — keep mask swapped for next retry
+                return Err(Errno::EAGAIN);
+            }
+            _ => {
+                // Poll completed (fds ready, timeout=0, or error) — restore mask
+                if let Some(saved) = proc.sigsuspend_saved_mask.take() {
+                    proc.signals.blocked = saved;
+                }
+                return result;
+            }
+        }
+    }
+
+    // Non-centralized mode: simple save/restore around sys_poll
     let old_mask = if let Some(new_mask) = mask {
         let old = sys_sigprocmask(proc, SIG_SETMASK, new_mask)?;
         Some(old)

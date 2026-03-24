@@ -273,8 +273,8 @@ SIGNAL_EXPECTED_FAIL=(
     "sigaction-exec-flags" "sigaltstack-exec" "sigaltstack-raise-exec"
     # sigaltstack not implemented in Wasm (no native stack switching)
     "sigaltstack-raise"
-    # ppoll + signal mask atomicity (depends on signal delivery)
-    "ppoll-*"
+    # ppoll + fork + cross-process signals (SIGSTOP/SIGCONT not supported)
+    "ppoll-block-sleep-raise" "ppoll-block-sleep-raise-write" "ppoll-block-sleep-write-raise"
 )
 PROCESS_EXPECTED_FAIL=(
     # Cross-process setsid+setpgid with pipe synchronization (timing issue)
