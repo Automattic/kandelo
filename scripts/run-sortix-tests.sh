@@ -277,7 +277,9 @@ SIGNAL_EXPECTED_FAIL=(
     "ppoll-block-sleep-raise" "ppoll-block-sleep-raise-write" "ppoll-block-sleep-write-raise"
 )
 PROCESS_EXPECTED_FAIL=(
-    # Cross-process setsid+setpgid with pipe synchronization (timing issue)
+    # Cross-process pipes don't work: fork child gets empty pipes vec, so pipe
+    # synchronization between parent and child fails (parent reads EOF immediately).
+    # The kernel session check is correct but untestable without shared pipes.
     "fork-setsid-setpgid-in-parent" "fork-setsid-setpgid-in-parent-move"
     # Zombie: setpgid-move requires cross-process kill + pgid group validation
     "zombie-setpgid-move"

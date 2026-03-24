@@ -1546,6 +1546,9 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
                         // POSIX: can only setpgid on a child of the calling process
                         if target.ppid != proc.pid {
                             -(Errno::ESRCH as i32)
+                        } else if target.sid != proc.sid {
+                            // POSIX: both processes must be in the same session
+                            -(Errno::EPERM as i32)
                         } else if target.sid == target.pid {
                             // POSIX: cannot change pgid of a session leader
                             -(Errno::EPERM as i32)
