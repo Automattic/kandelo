@@ -722,7 +722,7 @@ fn deliver_pending_signals(proc: &mut Process, host: &mut WasmHostIO) {
             match action.handler {
                 SignalHandler::Handler(_) => break, // Leave for glue-side delivery
                 SignalHandler::Default => {
-                    proc.signals.dequeue();
+                    let _ = proc.signals.dequeue();
                     match default_action(signum) {
                         DefaultAction::Terminate | DefaultAction::CoreDump => {
                             proc.state = crate::process::ProcessState::Exited;
@@ -732,12 +732,12 @@ fn deliver_pending_signals(proc: &mut Process, host: &mut WasmHostIO) {
                     }
                 }
                 SignalHandler::Ignore => {
-                    proc.signals.dequeue();
+                    let _ = proc.signals.dequeue();
                 }
             }
         } else {
             // Traditional mode: dequeue and handle all signals directly
-            let signum = match proc.signals.dequeue() {
+            let (signum, _si_value) = match proc.signals.dequeue() {
                 Some(s) => s,
                 None => break,
             };
@@ -897,7 +897,7 @@ pub extern "C" fn kernel_dequeue_signal(pid: u32, out_ptr: *mut u8) -> i32 {
         let action = proc.signals.get_action(signum);
         match action.handler {
             SignalHandler::Handler(idx) => {
-                proc.signals.dequeue();
+                let (_dequeued_sig, si_value) = proc.signals.dequeue().unwrap();
                 // If returning from sigsuspend, restore original mask before saving
                 // old_mask for the handler. This ensures the handler's saved mask
                 // is the pre-sigsuspend mask (POSIX: sigsuspend restores mask on return).
@@ -907,18 +907,18 @@ pub extern "C" fn kernel_dequeue_signal(pid: u32, out_ptr: *mut u8) -> i32 {
                 // Save old mask, apply new (POSIX: block sa_mask + the signal itself)
                 let old_mask = proc.signals.blocked;
                 proc.signals.blocked |= action.mask | sig_bit(signum);
-                // Write to output buffer
+                // Write to output buffer: [signum, handler_idx, flags, si_value, old_mask]
                 let buf = unsafe { slice::from_raw_parts_mut(out_ptr, 24) };
                 buf[0..4].copy_from_slice(&signum.to_le_bytes());
                 buf[4..8].copy_from_slice(&idx.to_le_bytes());
                 buf[8..12].copy_from_slice(&action.flags.to_le_bytes());
-                buf[12..16].fill(0); // padding
+                buf[12..16].copy_from_slice(&si_value.to_le_bytes());
                 buf[16..24].copy_from_slice(&old_mask.to_le_bytes());
                 return signum as i32;
             }
             SignalHandler::Default => {
                 use crate::signal::{DefaultAction, default_action};
-                proc.signals.dequeue();
+                let _ = proc.signals.dequeue();
                 match default_action(signum) {
                     DefaultAction::Terminate | DefaultAction::CoreDump => {
                         // Process is dying; clear sigsuspend state
@@ -931,7 +931,7 @@ pub extern "C" fn kernel_dequeue_signal(pid: u32, out_ptr: *mut u8) -> i32 {
                 }
             }
             SignalHandler::Ignore => {
-                proc.signals.dequeue();
+                let _ = proc.signals.dequeue();
                 continue;
             }
         }
@@ -1599,8 +1599,20 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
         // Stubs that return 0 or -ENOSYS
         204 => kernel_raise(a2 as u32),            // SYS_TKILL
 
-        // SYS_RT_SIGQUEUEINFO: treat like kill (sig=0 check, or raise signal)
-        205 => kernel_kill(a1, a2 as u32),
+        // SYS_RT_SIGQUEUEINFO: send signal with si_value (sigqueue)
+        // a1=pid, a2=sig, a3=siginfo_ptr (copied to CH_DATA by host)
+        205 => {
+            // Extract si_value.sival_int from siginfo_t at offset 20
+            // Layout: si_signo(4), si_errno(4), si_code(4), si_pid(4), si_uid(4), si_value(4)
+            let si_value = if a3 != 0 {
+                let info_ptr = a3 as *const u8;
+                let info = unsafe { slice::from_raw_parts(info_ptr, 24) };
+                i32::from_le_bytes(info[20..24].try_into().unwrap())
+            } else {
+                0
+            };
+            kernel_kill_with_value(a1, a2 as u32, si_value)
+        },
 
         // SYS_SIGALTSTACK: store/retrieve alternate stack state
         209 => kernel_sigaltstack(a1 as *const u8, a2 as *mut u8),
@@ -2768,13 +2780,16 @@ pub extern "C" fn kernel_setsid() -> i32 {
 /// Send a signal to a process. Returns 0 on success, or negative errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_kill(pid: i32, sig: u32) -> i32 {
+    kernel_kill_with_value(pid, sig, 0)
+}
+
+/// Send signal with si_value (for sigqueue/rt_sigqueueinfo).
+fn kernel_kill_with_value(pid: i32, sig: u32, si_value: i32) -> i32 {
     use wasm_posix_shared::signal::NSIG;
     let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
 
     // In centralized mode, handle cross-process kill directly via ProcessTable.
-    // sys_kill delegates remote kills to host_kill, which has no implementation
-    // in centralized mode. But the kernel has all processes in its table.
     let is_local = pid == proc.pid as i32 || pid == 0 || pid == -(proc.pgid as i32);
     if !is_local && crate::is_centralized_mode() && pid > 0 {
         if sig >= NSIG && sig != 0 {
@@ -2785,9 +2800,7 @@ pub extern "C" fn kernel_kill(pid: i32, sig: u32) -> i32 {
         let result = match table.get_mut(pid as u32) {
             Some(target) => {
                 if sig > 0 {
-                    target.signals.raise(sig);
-                    // Deliver immediately so Default/Terminate signals take
-                    // effect (e.g., marking the target process as Exited).
+                    target.signals.raise_with_value(sig, si_value);
                     deliver_pending_signals(target, &mut host);
                 }
                 0
@@ -2815,7 +2828,7 @@ pub extern "C" fn kernel_kill(pid: i32, sig: u32) -> i32 {
         for &target_pid in &pids {
             if let Some(target) = table.get_mut(target_pid) {
                 if sig > 0 {
-                    target.signals.raise(sig);
+                    target.signals.raise_with_value(sig, si_value);
                     deliver_pending_signals(target, &mut host);
                 }
             }
@@ -2826,6 +2839,13 @@ pub extern "C" fn kernel_kill(pid: i32, sig: u32) -> i32 {
         return 0;
     }
 
+    // Local or traditional mode: use sys_kill (which uses raise, not raise_with_value)
+    // For local sigqueue, raise with value on the current process directly
+    if si_value != 0 && sig > 0 {
+        proc.signals.raise_with_value(sig, si_value);
+        deliver_pending_signals(proc, &mut host);
+        return 0;
+    }
     let result = match syscalls::sys_kill(proc, &mut host, pid, sig) {
         Ok(()) => 0,
         Err(e) => -(e as i32),

@@ -6514,7 +6514,7 @@ mod tests {
 
         // Step 5: Now dequeue should work
         let sig = proc.signals.dequeue();
-        assert_eq!(sig, Some(SIGINT), "Should dequeue SIGINT");
+        assert_eq!(sig, Some((SIGINT, 0)), "Should dequeue SIGINT");
 
         // And handler should be Handler(42)
         let handler = proc.signals.get_handler(SIGINT);
@@ -11113,9 +11113,9 @@ mod tests {
         state.raise(rt_sig);
 
         // Should dequeue 3 separate instances
-        assert_eq!(state.dequeue(), Some(rt_sig));
-        assert_eq!(state.dequeue(), Some(rt_sig));
-        assert_eq!(state.dequeue(), Some(rt_sig));
+        assert_eq!(state.dequeue(), Some((rt_sig, 0)));
+        assert_eq!(state.dequeue(), Some((rt_sig, 0)));
+        assert_eq!(state.dequeue(), Some((rt_sig, 0)));
         // Now exhausted
         assert_eq!(state.dequeue(), None);
     }
@@ -11131,7 +11131,7 @@ mod tests {
         state.raise(SIGUSR1);
 
         // Should only dequeue once (coalesced)
-        assert_eq!(state.dequeue(), Some(SIGUSR1));
+        assert_eq!(state.dequeue(), Some((SIGUSR1, 0)));
         assert_eq!(state.dequeue(), None);
     }
 
@@ -11146,8 +11146,8 @@ mod tests {
         state.raise(rt1);
 
         // Should dequeue in signal number order (lowest first from bitmask)
-        assert_eq!(state.dequeue(), Some(rt1));
-        assert_eq!(state.dequeue(), Some(rt2));
+        assert_eq!(state.dequeue(), Some((rt1, 0)));
+        assert_eq!(state.dequeue(), Some((rt2, 0)));
         assert_eq!(state.dequeue(), None);
     }
 
@@ -11177,10 +11177,10 @@ mod tests {
         state.raise(SIGINT); // standard signal 2
 
         // Standard signals have lower numbers, so SIGINT dequeues first
-        assert_eq!(state.dequeue(), Some(SIGINT));
+        assert_eq!(state.dequeue(), Some((SIGINT, 0)));
         // Then both RT signal instances
-        assert_eq!(state.dequeue(), Some(rt_sig));
-        assert_eq!(state.dequeue(), Some(rt_sig));
+        assert_eq!(state.dequeue(), Some((rt_sig, 0)));
+        assert_eq!(state.dequeue(), Some((rt_sig, 0)));
         assert_eq!(state.dequeue(), None);
     }
 }

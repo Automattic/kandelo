@@ -200,6 +200,7 @@ const SYSCALL_ARGS: Record<number, ArgDesc[]> = {
     { argIndex: 2, direction: "out", size: { type: "fixed", size: 8 } },      //              oldset
   ],
   110: [{ argIndex: 0, direction: "in", size: { type: "fixed", size: 8 } }],  // SIGSUSPEND: mask
+  205: [{ argIndex: 2, direction: "in", size: { type: "fixed", size: 128 } }], // RT_SIGQUEUEINFO: siginfo_t
 
   // Time
   40: [{ argIndex: 1, direction: "out", size: { type: "fixed", size: TIMESPEC_SIZE } }], // CLOCK_GETTIME
@@ -1092,7 +1093,7 @@ export class CentralizedKernelWorker {
       if (delayMs > 0) {
         setTimeout(() => {
           if (this.processes.has(channel.pid)) {
-            this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], retVal, errVal);
+            this.completeSleepWithSignalCheck(channel, syscallNr, origArgs, retVal, errVal);
           }
         }, delayMs);
         return true;
@@ -1107,7 +1108,7 @@ export class CentralizedKernelWorker {
       if (delayMs > 0) {
         setTimeout(() => {
           if (this.processes.has(channel.pid)) {
-            this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], retVal, errVal);
+            this.completeSleepWithSignalCheck(channel, syscallNr, origArgs, retVal, errVal);
           }
         }, delayMs);
         return true;
@@ -1117,9 +1118,6 @@ export class CentralizedKernelWorker {
     if (syscallNr === SYS_CLOCK_NANOSLEEP && retVal >= 0) {
       // clock_nanosleep: a3 = pointer to timespec in kernel scratch
       const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
-      // The timespec was copied to scratch data at a specific offset.
-      // We need to find where it was placed. Since it's arg index 2 (the 3rd arg),
-      // and it's the only pointer arg for this syscall, it should be at CH_DATA.
       const sec = kernelView.getUint32(CH_DATA, true);
       const nsec = kernelView.getUint32(CH_DATA + 4, true);
       const delayMs = sec * 1000 + Math.floor(nsec / 1_000_000);
@@ -1127,7 +1125,7 @@ export class CentralizedKernelWorker {
       if (delayMs > 0) {
         setTimeout(() => {
           if (this.processes.has(channel.pid)) {
-            this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], retVal, errVal);
+            this.completeSleepWithSignalCheck(channel, syscallNr, origArgs, retVal, errVal);
           }
         }, delayMs);
         return true;
@@ -1135,6 +1133,32 @@ export class CentralizedKernelWorker {
     }
 
     return false;
+  }
+
+  /**
+   * Complete a sleep syscall, checking for pending signals first.
+   * POSIX: sleep interrupted by signal returns EINTR.
+   */
+  private completeSleepWithSignalCheck(
+    channel: ChannelInfo,
+    syscallNr: number,
+    origArgs: number[],
+    retVal: number,
+    errVal: number,
+  ): void {
+    // Check if a signal became pending during the sleep
+    this.dequeueSignalForDelivery(channel);
+
+    // If a signal was dequeued, return EINTR instead of success
+    const processView = new DataView(channel.memory.buffer, channel.channelOffset);
+    const pendingSig = processView.getUint32(CH_SIG_SIGNUM, true);
+    if (pendingSig > 0) {
+      // POSIX: nanosleep/usleep interrupted by signal returns -1/EINTR
+      const EINTR = 4;
+      this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], -1, EINTR);
+    } else {
+      this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], retVal, errVal);
+    }
   }
 
   // -----------------------------------------------------------------------
