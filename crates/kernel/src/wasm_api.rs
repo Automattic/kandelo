@@ -897,7 +897,7 @@ pub extern "C" fn kernel_dequeue_signal(pid: u32, out_ptr: *mut u8) -> i32 {
         let action = proc.signals.get_action(signum);
         match action.handler {
             SignalHandler::Handler(idx) => {
-                let (_dequeued_sig, si_value, _si_code) = proc.signals.dequeue().unwrap();
+                let (_dequeued_sig, si_value, si_code) = proc.signals.dequeue().unwrap();
                 // If returning from sigsuspend, restore original mask before saving
                 // old_mask for the handler. This ensures the handler's saved mask
                 // is the pre-sigsuspend mask (POSIX: sigsuspend restores mask on return).
@@ -907,13 +907,19 @@ pub extern "C" fn kernel_dequeue_signal(pid: u32, out_ptr: *mut u8) -> i32 {
                 // Save old mask, apply new (POSIX: block sa_mask + the signal itself)
                 let old_mask = proc.signals.blocked;
                 proc.signals.blocked |= action.mask | sig_bit(signum);
-                // Write to output buffer: [signum, handler_idx, flags, si_value, old_mask]
-                let buf = unsafe { slice::from_raw_parts_mut(out_ptr, 24) };
+                // Write to output buffer:
+                //   [0..4] signum, [4..8] handler_idx, [8..12] flags,
+                //   [12..16] si_value, [16..24] old_mask,
+                //   [24..28] si_code, [28..32] si_pid, [32..36] si_uid
+                let buf = unsafe { slice::from_raw_parts_mut(out_ptr, 36) };
                 buf[0..4].copy_from_slice(&signum.to_le_bytes());
                 buf[4..8].copy_from_slice(&idx.to_le_bytes());
                 buf[8..12].copy_from_slice(&action.flags.to_le_bytes());
                 buf[12..16].copy_from_slice(&si_value.to_le_bytes());
                 buf[16..24].copy_from_slice(&old_mask.to_le_bytes());
+                buf[24..28].copy_from_slice(&si_code.to_le_bytes());
+                buf[28..32].copy_from_slice(&proc.pid.to_le_bytes());
+                buf[32..36].copy_from_slice(&proc.uid.to_le_bytes());
                 return signum as i32;
             }
             SignalHandler::Default => {
@@ -1320,13 +1326,18 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
                     // Write siginfo_t if pointer is non-null
                     if a2 != 0 {
                         let p = a2 as usize as *mut u8;
-                        // siginfo_t: si_signo at offset 0, si_code at 8, si_value at 20
+                        // siginfo_t layout: si_signo(0), si_errno(4), si_code(8),
+                        //   si_pid(12), si_uid(16), si_value(20)
                         let sig_bytes = (sig as i32).to_le_bytes();
                         let code_bytes = si_code.to_le_bytes();
+                        let pid_bytes = proc.pid.to_le_bytes();
+                        let uid_bytes = proc.uid.to_le_bytes();
                         let val_bytes = si_value.to_le_bytes();
                         unsafe {
                             for i in 0..4 { *p.add(i) = sig_bytes[i]; }
                             for i in 0..4 { *p.add(8 + i) = code_bytes[i]; }
+                            for i in 0..4 { *p.add(12 + i) = pid_bytes[i]; }
+                            for i in 0..4 { *p.add(16 + i) = uid_bytes[i]; }
                             for i in 0..4 { *p.add(20 + i) = val_bytes[i]; }
                         }
                     }
@@ -1623,15 +1634,15 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
         // SYS_SIGALTSTACK: store/retrieve alternate stack state
         209 => kernel_sigaltstack(a1 as *const u8, a2 as *mut u8),
 
-        // SYS_SCHED_GET_PRIORITY_MAX / SYS_SCHED_GET_PRIORITY_MIN
-        // Wasm has a single priority level; return 0 for valid policies, EINVAL for invalid.
-        234 | 235 => {
-            let policy = a1 as u32;
-            // SCHED_OTHER=0, SCHED_FIFO=1, SCHED_RR=2, SCHED_BATCH=3, SCHED_IDLE=5
-            match policy {
-                0 | 1 | 2 | 3 | 5 => 0,
-                _ => -(Errno::EINVAL as i32),
-            }
+        // SYS_SCHED_GET_PRIORITY_MAX: POSIX requires at least 32 levels for SCHED_RR/SCHED_FIFO
+        234 => {
+            let policy = a1;
+            if policy >= 0 && policy <= 2 { 32 } else { -(Errno::EINVAL as i32) }
+        }
+        // SYS_SCHED_GET_PRIORITY_MIN
+        235 => {
+            let policy = a1;
+            if policy >= 0 && policy <= 2 { 1 } else { -(Errno::EINVAL as i32) }
         }
 
         // SYS_SCHED_GETPARAM: write sched_priority=0 to param struct
