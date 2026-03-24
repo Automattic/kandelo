@@ -3043,6 +3043,7 @@ pub fn sys_getsockopt(
             SO_ERROR => Ok(0),
             SO_ACCEPTCONN => Ok(if sock.state == SocketState::Listening { 1 } else { 0 }),
             SO_RCVBUF | SO_SNDBUF => Ok(DEFAULT_PIPE_CAPACITY as u32),
+            SO_REUSEADDR | SO_KEEPALIVE |
             SO_LINGER | SO_RCVTIMEO | SO_SNDTIMEO | SO_BROADCAST => {
                 Ok(sock.get_option(level, optname).unwrap_or(0))
             }

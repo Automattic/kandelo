@@ -41,6 +41,7 @@ const SYS_CLOCK_NANOSLEEP = 124;
 const SYS_FUTEX = 200;
 const SYS_POLL = 60;
 const SYS_PPOLL = 251;
+const SYS_PSELECT6 = 252;
 const SYS_RT_SIGTIMEDWAIT = 207;
 
 /** Syscall numbers for fork/exec/clone */
@@ -759,6 +760,12 @@ export class CentralizedKernelWorker {
       }
     }
 
+    // --- pselect6: fd_sets (inout) + timeout/sigmask decoding ---
+    if (syscallNr === SYS_PSELECT6) {
+      this.handlePselect6(channel, origArgs);
+      return;
+    }
+
     // --- Normal syscall path ---
     const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
 
@@ -1322,6 +1329,128 @@ export class CentralizedKernelWorker {
     }
 
     this.completeChannel(channel, SYS_FCNTL, origArgs, undefined, retVal, errVal);
+  }
+
+  /**
+   * Handle pselect6: copy fd_sets (inout), decode timeout/sigmask from
+   * process memory, call kernel_handle_channel, copy fd_sets back.
+   *
+   * Layout in kernel scratch data area:
+   *   [0..128]   readfds  (fd_set, 128 bytes)
+   *   [128..256] writefds (fd_set, 128 bytes)
+   *   [256..384] exceptfds (fd_set, 128 bytes)
+   *   [384..392] mask (8 bytes: mask_lo + mask_hi)
+   */
+  private handlePselect6(channel: ChannelInfo, origArgs: number[]): void {
+    const FD_SET_SIZE = 128;
+    const processMem = new Uint8Array(channel.memory.buffer);
+    const kernelMem = new Uint8Array(this.kernelMemory!.buffer);
+    const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
+    const dataStart = this.scratchOffset + CH_DATA;
+
+    const nfds = origArgs[0];
+    const readPtr = origArgs[1];
+    const writePtr = origArgs[2];
+    const exceptPtr = origArgs[3];
+    const tsPtr = origArgs[4];
+    const maskDataPtr = origArgs[5]; // pointer to {sigset_t *mask, size_t size}
+
+    // Copy fd_sets from process → kernel scratch
+    if (readPtr !== 0) {
+      kernelMem.set(processMem.subarray(readPtr, readPtr + FD_SET_SIZE), dataStart);
+    } else {
+      kernelMem.fill(0, dataStart, dataStart + FD_SET_SIZE);
+    }
+    if (writePtr !== 0) {
+      kernelMem.set(processMem.subarray(writePtr, writePtr + FD_SET_SIZE), dataStart + FD_SET_SIZE);
+    } else {
+      kernelMem.fill(0, dataStart + FD_SET_SIZE, dataStart + 2 * FD_SET_SIZE);
+    }
+    if (exceptPtr !== 0) {
+      kernelMem.set(processMem.subarray(exceptPtr, exceptPtr + FD_SET_SIZE), dataStart + 2 * FD_SET_SIZE);
+    } else {
+      kernelMem.fill(0, dataStart + 2 * FD_SET_SIZE, dataStart + 3 * FD_SET_SIZE);
+    }
+
+    // Decode timeout: timespec {i64 sec, i64 nsec} → ms
+    let timeoutMs = -1;
+    if (tsPtr !== 0) {
+      const pv = new DataView(channel.memory.buffer, tsPtr);
+      const sec = Number(pv.getBigInt64(0, true));
+      const nsec = Number(pv.getBigInt64(8, true));
+      timeoutMs = sec * 1000 + Math.floor(nsec / 1000000);
+    }
+
+    // Decode sigmask: pselect6 arg6 → pointer to {sigset_t *mask, size_t size}
+    const maskOffset = dataStart + 3 * FD_SET_SIZE;
+    if (maskDataPtr !== 0) {
+      const mdv = new DataView(channel.memory.buffer, maskDataPtr);
+      const maskPtr = mdv.getUint32(0, true);
+      if (maskPtr !== 0) {
+        kernelMem.set(processMem.subarray(maskPtr, maskPtr + 8), maskOffset);
+      } else {
+        kernelMem.fill(0, maskOffset, maskOffset + 8);
+      }
+    } else {
+      kernelMem.fill(0, maskOffset, maskOffset + 8);
+    }
+
+    // Write args: (nfds, readfds_kernel_ptr, writefds_kernel_ptr,
+    //              exceptfds_kernel_ptr, timeout_ms, mask_kernel_ptr)
+    kernelView.setUint32(CH_SYSCALL, SYS_PSELECT6, true);
+    kernelView.setInt32(CH_ARGS + 0, nfds, true);
+    kernelView.setInt32(CH_ARGS + 4, readPtr !== 0 ? dataStart : 0, true);
+    kernelView.setInt32(CH_ARGS + 8, writePtr !== 0 ? dataStart + FD_SET_SIZE : 0, true);
+    kernelView.setInt32(CH_ARGS + 12, exceptPtr !== 0 ? dataStart + 2 * FD_SET_SIZE : 0, true);
+    kernelView.setInt32(CH_ARGS + 16, timeoutMs, true);
+    kernelView.setInt32(CH_ARGS + 20, maskDataPtr !== 0 ? maskOffset : 0, true);
+
+    const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
+      (offset: number, pid: number) => number;
+    handleChannel(this.scratchOffset, channel.pid);
+
+    const retVal = kernelView.getInt32(CH_RETURN, true);
+    const errVal = kernelView.getUint32(CH_ERRNO, true);
+
+    // Copy fd_sets back from kernel → process
+    if (retVal >= 0) {
+      const freshProcessMem = new Uint8Array(channel.memory.buffer);
+      if (readPtr !== 0) {
+        freshProcessMem.set(kernelMem.subarray(dataStart, dataStart + FD_SET_SIZE), readPtr);
+      }
+      if (writePtr !== 0) {
+        freshProcessMem.set(
+          kernelMem.subarray(dataStart + FD_SET_SIZE, dataStart + 2 * FD_SET_SIZE),
+          writePtr,
+        );
+      }
+      if (exceptPtr !== 0) {
+        freshProcessMem.set(
+          kernelMem.subarray(dataStart + 2 * FD_SET_SIZE, dataStart + 3 * FD_SET_SIZE),
+          exceptPtr,
+        );
+      }
+    }
+
+    // Handle signal delivery
+    this.dequeueSignalForDelivery(channel);
+
+    // Handle EAGAIN retry for blocking select
+    if (retVal === -1 && errVal === EAGAIN) {
+      if (timeoutMs === 0) {
+        this.completeChannel(channel, SYS_PSELECT6, origArgs, undefined, 0, 0);
+        return;
+      }
+      const retryMs = timeoutMs > 0 ? Math.min(timeoutMs, EAGAIN_RETRY_MS) : EAGAIN_RETRY_MS;
+      setTimeout(() => {
+        if (this.processes.has(channel.pid)) {
+          this.handlePselect6(channel, origArgs);
+        }
+      }, retryMs);
+      return;
+    }
+
+    this.completeChannel(channel, SYS_PSELECT6, origArgs, undefined, retVal, errVal);
   }
 
   private handleWritev(channel: ChannelInfo, syscallNr: number, origArgs: number[]): void {
