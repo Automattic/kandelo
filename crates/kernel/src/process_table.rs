@@ -93,6 +93,14 @@ impl ProcessTable {
     pub fn get(&self, pid: u32) -> Option<&Process> {
         self.processes.get(&pid)
     }
+
+    /// Collect PIDs of all processes in a given process group.
+    pub fn pids_in_group(&self, pgid: u32) -> Vec<u32> {
+        self.processes.iter()
+            .filter(|(_, p)| p.pgid == pgid)
+            .map(|(&pid, _)| pid)
+            .collect()
+    }
 }
 
 /// Global process table wrapper for static storage.

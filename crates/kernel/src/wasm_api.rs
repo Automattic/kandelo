@@ -851,7 +851,7 @@ pub extern "C" fn kernel_get_process_exit_status(pid: u32) -> i32 {
 pub extern "C" fn kernel_reset_signal_mask(pid: u32) -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     match table.get_mut(pid) {
-        Some(proc) => { proc.signals.blocked = 0; 0 }
+        Some(proc) => { proc.signals.blocked = 0; proc.sigsuspend_saved_mask = None; 0 }
         None => -(Errno::ESRCH as i32),
     }
 }
@@ -898,6 +898,12 @@ pub extern "C" fn kernel_dequeue_signal(pid: u32, out_ptr: *mut u8) -> i32 {
         match action.handler {
             SignalHandler::Handler(idx) => {
                 proc.signals.dequeue();
+                // If returning from sigsuspend, restore original mask before saving
+                // old_mask for the handler. This ensures the handler's saved mask
+                // is the pre-sigsuspend mask (POSIX: sigsuspend restores mask on return).
+                if let Some(saved) = proc.sigsuspend_saved_mask.take() {
+                    proc.signals.blocked = saved;
+                }
                 // Save old mask, apply new (POSIX: block sa_mask + the signal itself)
                 let old_mask = proc.signals.blocked;
                 proc.signals.blocked |= action.mask | sig_bit(signum);
@@ -915,6 +921,8 @@ pub extern "C" fn kernel_dequeue_signal(pid: u32, out_ptr: *mut u8) -> i32 {
                 proc.signals.dequeue();
                 match default_action(signum) {
                     DefaultAction::Terminate | DefaultAction::CoreDump => {
+                        // Process is dying; clear sigsuspend state
+                        proc.sigsuspend_saved_mask = None;
                         proc.state = crate::process::ProcessState::Exited;
                         proc.exit_status = 128 + signum as i32;
                         return 0;
@@ -1067,9 +1075,19 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
         92 => kernel_setsid() as i32,              // SYS_SETSID
         214 => {                                   // SYS_GETPGID
             let (_gkl, proc) = unsafe { get_process() };
-            match syscalls::sys_getpgid(proc, a1 as u32) {
-                Ok(pgid) => pgid as i32,
-                Err(e) => -(e as i32),
+            let pid = a1 as u32;
+            // In centralized mode, support cross-process getpgid via ProcessTable
+            if pid != 0 && pid != proc.pid && crate::is_centralized_mode() {
+                let table = unsafe { &*PROCESS_TABLE.0.get() };
+                match table.get(pid) {
+                    Some(target) => target.pgid as i32,
+                    None => -(Errno::ESRCH as i32),
+                }
+            } else {
+                match syscalls::sys_getpgid(proc, pid) {
+                    Ok(pgid) => pgid as i32,
+                    Err(e) => -(e as i32),
+                }
             }
         }
 
@@ -2778,6 +2796,34 @@ pub extern "C" fn kernel_kill(pid: i32, sig: u32) -> i32 {
         };
         deliver_pending_signals(proc, &mut host);
         return result;
+    }
+    // Centralized mode: kill(-pgid, sig) sends signal to all processes in group |pid|
+    if !is_local && crate::is_centralized_mode() && pid < -1 {
+        if sig >= NSIG && sig != 0 {
+            deliver_pending_signals(proc, &mut host);
+            return -(Errno::EINVAL as i32);
+        }
+        let target_pgid = (-pid) as u32;
+        let caller_pid = proc.pid;
+        let table = unsafe { &*PROCESS_TABLE.0.get() };
+        let pids = table.pids_in_group(target_pgid);
+        if pids.is_empty() {
+            deliver_pending_signals(proc, &mut host);
+            return -(Errno::ESRCH as i32);
+        }
+        let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+        for &target_pid in &pids {
+            if let Some(target) = table.get_mut(target_pid) {
+                if sig > 0 {
+                    target.signals.raise(sig);
+                    deliver_pending_signals(target, &mut host);
+                }
+            }
+        }
+        if let Some(caller) = table.get_mut(caller_pid) {
+            deliver_pending_signals(caller, &mut host);
+        }
+        return 0;
     }
 
     let result = match syscalls::sys_kill(proc, &mut host, pid, sig) {
