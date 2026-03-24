@@ -46,12 +46,15 @@ int *__errno_location(void);
 #define CH_DATA_SIZE 65536
 
 /* Signal delivery area — last 32 bytes of data buffer */
-#define CH_SIG_BASE     (CH_DATA + CH_DATA_SIZE - 32)
+#define CH_SIG_BASE     (CH_DATA + CH_DATA_SIZE - 48)
 #define CH_SIG_SIGNUM   (CH_SIG_BASE)
 #define CH_SIG_HANDLER  (CH_SIG_BASE + 4)
 #define CH_SIG_FLAGS    (CH_SIG_BASE + 8)
 #define CH_SIG_SI_VALUE (CH_SIG_BASE + 12)
 #define CH_SIG_OLD_MASK (CH_SIG_BASE + 16)
+#define CH_SIG_SI_CODE  (CH_SIG_BASE + 24)
+#define CH_SIG_SI_PID   (CH_SIG_BASE + 28)
+#define CH_SIG_SI_UID   (CH_SIG_BASE + 32)
 
 #define SA_SIGINFO 4
 #define SYS_SIGPROCMASK 37
@@ -106,13 +109,18 @@ static void __deliver_pending_signal(uint32_t base)
     if (flags & SA_SIGINFO) {
         /* Build a minimal siginfo_t on the stack for SA_SIGINFO handlers */
         int32_t si_value_int = *(int32_t *)(uintptr_t)(base + CH_SIG_SI_VALUE);
+        int32_t si_code  = *(int32_t *)(uintptr_t)(base + CH_SIG_SI_CODE);
+        int32_t si_pid   = *(int32_t *)(uintptr_t)(base + CH_SIG_SI_PID);
+        int32_t si_uid   = *(int32_t *)(uintptr_t)(base + CH_SIG_SI_UID);
         /* siginfo_t layout (128 bytes):
          *   [0]  si_signo, [4] si_errno, [8] si_code,
          *   [12] si_pid, [16] si_uid, [20] si_value.sival_int */
         char siginfo_buf[128];
         __builtin_memset(siginfo_buf, 0, sizeof(siginfo_buf));
         *(int *)(siginfo_buf + 0) = (int)signum;       /* si_signo */
-        *(int *)(siginfo_buf + 8) = -1;                 /* si_code = SI_QUEUE */
+        *(int *)(siginfo_buf + 8) = si_code;            /* si_code */
+        *(int *)(siginfo_buf + 12) = si_pid;            /* si_pid */
+        *(int *)(siginfo_buf + 16) = si_uid;            /* si_uid */
         *(int *)(siginfo_buf + 20) = si_value_int;      /* si_value.sival_int */
         void (*sa)(int, void *, void *) =
             (void (*)(int, void *, void *))(uintptr_t)handler;

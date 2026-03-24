@@ -193,19 +193,28 @@ impl SignalState {
         }
         self.pending |= sig_bit(signum);
         if signum >= SIGRTMIN {
+            // RT signals: always queue (multiple instances allowed)
             self.rt_queue.push_back(RtSigEntry { signum, si_value, si_code });
+        } else if si_code != 0 {
+            // Standard signal from sigqueue (si_code=SI_QUEUE=-1): store metadata
+            // so si_value/si_code are preserved on delivery. Only one entry per
+            // standard signal (coalesced), so replace any existing entry.
+            if let Some(entry) = self.rt_queue.iter_mut().find(|e| e.signum == signum) {
+                entry.si_value = si_value;
+                entry.si_code = si_code;
+            } else {
+                self.rt_queue.push_back(RtSigEntry { signum, si_value, si_code });
+            }
         }
         true
     }
 
     /// Clear a pending signal.
-    /// For RT signals, removes all queued instances and clears the pending bit.
+    /// Removes all queued instances (RT or standard sigqueue metadata) and clears the pending bit.
     pub fn clear(&mut self, signum: u32) {
         if signum > 0 && signum < NSIG {
             self.pending &= !sig_bit(signum);
-            if signum >= SIGRTMIN {
-                self.rt_queue.retain(|e| e.signum != signum);
-            }
+            self.rt_queue.retain(|e| e.signum != signum);
         }
     }
 
@@ -221,13 +230,11 @@ impl SignalState {
     }
 
     /// Clear a signal from the pending set.
-    /// For RT signals, removes all queued instances and clears the pending bit.
+    /// Removes all queued instances (RT or standard sigqueue metadata).
     pub fn clear_pending(&mut self, signum: u32) {
         if signum > 0 && signum < NSIG {
             self.pending &= !sig_bit(signum);
-            if signum >= SIGRTMIN {
-                self.rt_queue.retain(|e| e.signum != signum);
-            }
+            self.rt_queue.retain(|e| e.signum != signum);
         }
     }
 
@@ -236,24 +243,24 @@ impl SignalState {
     /// For RT signals, removes one queued instance; clears pending bit only when
     /// no more instances remain. For standard signals, clears the pending bit.
     /// Returns (si_value, si_code) of the consumed signal instance.
-    /// Standard signals return (0, 0) i.e. SI_USER.
     pub fn consume_one(&mut self, signum: u32) -> (i32, i32) {
         if signum == 0 || signum >= NSIG { return (0, 0); }
+        let (mut si_value, mut si_code) = (0i32, 0i32);
+        if let Some(pos) = self.rt_queue.iter().position(|e| e.signum == signum) {
+            si_value = self.rt_queue[pos].si_value;
+            si_code = self.rt_queue[pos].si_code;
+            self.rt_queue.remove(pos);
+        }
         if signum >= SIGRTMIN {
-            let (mut si_value, mut si_code) = (0i32, 0i32);
-            if let Some(pos) = self.rt_queue.iter().position(|e| e.signum == signum) {
-                si_value = self.rt_queue[pos].si_value;
-                si_code = self.rt_queue[pos].si_code;
-                self.rt_queue.remove(pos);
-            }
+            // RT signals: only clear pending bit when all instances consumed
             if !self.rt_queue.iter().any(|e| e.signum == signum) {
                 self.pending &= !sig_bit(signum);
             }
-            (si_value, si_code)
         } else {
+            // Standard signals: always clear pending bit (coalesced)
             self.pending &= !sig_bit(signum);
-            (0, 0)
         }
+        (si_value, si_code)
     }
 
     /// Check if a signal is blocked.
@@ -304,6 +311,12 @@ impl SignalState {
         } else {
             // Standard signal: clear from pending bitmask
             self.pending &= !sig_bit(signum);
+            // Check for sigqueue metadata (stored in rt_queue for standard signals too)
+            if let Some(pos) = self.rt_queue.iter().position(|e| e.signum == signum) {
+                si_value = self.rt_queue[pos].si_value;
+                si_code = self.rt_queue[pos].si_code;
+                self.rt_queue.remove(pos);
+            }
         }
         Some((signum, si_value, si_code))
     }

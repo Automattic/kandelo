@@ -168,7 +168,7 @@ BASIC_EXPECTED_FAIL=(
     # -- Signals (limited Wasm signal model)
     "signal/kill" "signal/killpg"
     "signal/sig2str" "signal/sigaltstack"
-    "signal/sigqueue" "signal/sigwaitinfo" "signal/str2sig"
+    "signal/str2sig"
     # -- Timers/signals that block (timeout)
     "aio/aio_error" "aio/aio_fsync" "aio/aio_read"
     "poll/ppoll"
@@ -176,7 +176,7 @@ BASIC_EXPECTED_FAIL=(
     "pthread/pthread_cleanup_pop" "pthread/pthread_cleanup_push"
     "pthread/pthread_condattr_setpshared"
     "pthread/pthread_create"
-    "signal/pthread_kill" "signal/sigtimedwait"
+    "signal/pthread_kill"
     "threads/thrd_create"
     "unistd/pause" "unistd/alarm"
     # -- Pthread features not supported (priority scheduling, pshared)
@@ -190,7 +190,7 @@ BASIC_EXPECTED_FAIL=(
     "pthread/pthread_rwlock_clockwrlock"
     "pthread/pthread_setcancelstate"
     # -- Scheduler (sched_yield is a no-op stub; others have basic stubs)
-    "sched/sched_get_priority_max" "sched/sched_yield"
+    "sched/sched_yield"
     # -- Semaphore named (not supported in Wasm)
     "semaphore/sem_clockwait" "semaphore/sem_close" "semaphore/sem_open" "semaphore/sem_unlink"
     # -- Terminal I/O (no terminal device in Wasm)
