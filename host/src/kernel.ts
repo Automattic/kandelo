@@ -61,6 +61,7 @@ export interface KernelCallbacks {
   onKill?: (pid: number, signal: number) => number;
   onExec?: (path: string) => number;
   onAlarm?: (seconds: number) => number;
+  onPosixTimer?: (timerId: number, signo: number, valueMs: number, intervalMs: number) => number;
   onFork?: (forkSab: SharedArrayBuffer) => void;
   onWaitpid?: (targetPid: number, options: number) => void;
   onClone?: (fnPtr: number, arg: number, stackPtr: number, tlsPtr: number, ctidPtr: number) => number;
@@ -257,6 +258,11 @@ export class WasmPosixKernel {
         },
         host_set_alarm: (seconds: number): number => {
           return this.hostSetAlarm(seconds);
+        },
+        host_set_posix_timer: (timerId: number, signo: number, valueMsLo: number, valueMsHi: number, intervalMsLo: number, intervalMsHi: number): number => {
+          const valueMs = (valueMsHi >>> 0) * 0x100000000 + (valueMsLo >>> 0);
+          const intervalMs = (intervalMsHi >>> 0) * 0x100000000 + (intervalMsLo >>> 0);
+          return this.hostSetPosixTimer(timerId, signo, valueMs, intervalMs);
         },
         host_sigsuspend_wait: (): number => {
           return this.hostSigsuspendWait();
@@ -1122,6 +1128,13 @@ export class WasmPosixKernel {
   private hostSetAlarm(seconds: number): number {
     if (this.callbacks.onAlarm) {
       return this.callbacks.onAlarm(seconds);
+    }
+    return 0;
+  }
+
+  private hostSetPosixTimer(timerId: number, signo: number, valueMs: number, intervalMs: number): number {
+    if (this.callbacks.onPosixTimer) {
+      return this.callbacks.onPosixTimer(timerId, signo, valueMs, intervalMs);
     }
     return 0;
   }

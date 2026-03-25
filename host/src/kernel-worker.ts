@@ -237,6 +237,19 @@ const SYSCALL_ARGS: Record<number, ArgDesc[]> = {
   123: [{ argIndex: 1, direction: "out", size: { type: "fixed", size: TIMESPEC_SIZE } }], // CLOCK_GETRES
   124: [{ argIndex: 2, direction: "in", size: { type: "fixed", size: TIMESPEC_SIZE } }], // CLOCK_NANOSLEEP
 
+  // POSIX timers
+  326: [                                                                                 // TIMER_CREATE: (clock_id, sigevent, *timerid)
+    { argIndex: 1, direction: "in", size: { type: "fixed", size: 16 } },                 //   ksigevent (16 bytes)
+    { argIndex: 2, direction: "out", size: { type: "fixed", size: 4 } },                 //   timerid (i32)
+  ],
+  327: [                                                                                 // TIMER_SETTIME: (timerid, flags, new, old)
+    { argIndex: 2, direction: "in", size: { type: "fixed", size: 32 } },                 //   new itimerspec (4 x i64 = 32 bytes)
+    { argIndex: 3, direction: "out", size: { type: "fixed", size: 32 } },                //   old itimerspec (4 x i64 = 32 bytes)
+  ],
+  328: [                                                                                 // TIMER_GETTIME: (timerid, curr)
+    { argIndex: 1, direction: "out", size: { type: "fixed", size: 32 } },                //   curr itimerspec (4 x i64 = 32 bytes)
+  ],
+
   // UTIMENSAT: (dirfd, path, times, flags)
   125: [
     { argIndex: 1, direction: "in", size: { type: "cstring" } },
@@ -461,6 +474,8 @@ export class CentralizedKernelWorker {
   private currentHandlePid = 0;
   /** Alarm timers per process: pid → NodeJS.Timeout */
   private alarmTimers = new Map<number, ReturnType<typeof setTimeout>>();
+  /** POSIX timers: "pid:timerId" → {timeout, interval?, signo} */
+  private posixTimers = new Map<string, { timeout: ReturnType<typeof setTimeout>; interval?: ReturnType<typeof setInterval>; signo: number }>();
   /** Pending sleep timers per process: pid → {timer, channel, syscallNr, origArgs, retVal, errVal} */
   private pendingSleeps = new Map<number, {
     timer: ReturnType<typeof setTimeout>;
@@ -514,6 +529,56 @@ export class CentralizedKernelWorker {
             }
           }, seconds * 1000);
           this.alarmTimers.set(pid, timer);
+        }
+        return 0;
+      },
+      onPosixTimer: (timerId: number, signo: number, valueMs: number, intervalMs: number): number => {
+        const pid = this.currentHandlePid;
+        if (pid === 0) return 0;
+        const key = `${pid}:${timerId}`;
+
+        // Cancel any existing timer for this slot
+        const existing = this.posixTimers.get(key);
+        if (existing) {
+          clearTimeout(existing.timeout);
+          if (existing.interval) clearInterval(existing.interval);
+          this.posixTimers.delete(key);
+        }
+
+        if (valueMs > 0 || intervalMs > 0) {
+          // valueMs > 0 means armed (0 = disarm, kernel ensures >= 1ms for armed timers)
+          const delay = Math.max(0, valueMs);
+          const timeout = setTimeout(() => {
+            if (!this.processes.has(pid)) {
+              this.posixTimers.delete(key);
+              return;
+            }
+            this.sendSignalToProcess(pid, signo);
+
+            // Set up repeating interval if needed
+            if (intervalMs > 0) {
+              const iv = setInterval(() => {
+                if (!this.processes.has(pid)) {
+                  const entry = this.posixTimers.get(key);
+                  if (entry?.interval) clearInterval(entry.interval);
+                  this.posixTimers.delete(key);
+                  return;
+                }
+                // Check if signal is already pending (overrun) or new cycle
+                const intervalFire = this.kernelInstance!.exports
+                  .kernel_posix_timer_interval_fire as ((pid: number, timerId: number) => number) | undefined;
+                const alreadyPending = intervalFire ? intervalFire(pid, timerId) : 0;
+                if (!alreadyPending) {
+                  this.sendSignalToProcess(pid, signo);
+                }
+              }, intervalMs);
+              const entry = this.posixTimers.get(key);
+              if (entry) entry.interval = iv;
+            } else {
+              this.posixTimers.delete(key);
+            }
+          }, delay);
+          this.posixTimers.set(key, { timeout, signo });
         }
         return 0;
       },
@@ -619,6 +684,14 @@ export class CentralizedKernelWorker {
     if (alarmTimer) {
       clearTimeout(alarmTimer);
       this.alarmTimers.delete(pid);
+    }
+    // Cancel any pending posix timers for this process
+    for (const [key, entry] of this.posixTimers) {
+      if (key.startsWith(`${pid}:`)) {
+        clearTimeout(entry.timeout);
+        if (entry.interval) clearInterval(entry.interval);
+        this.posixTimers.delete(key);
+      }
     }
     // Cancel any pending sleep timer for this process
     const sleepTimer = this.pendingSleeps.get(pid);
@@ -928,7 +1001,6 @@ export class CentralizedKernelWorker {
     // Read return value and errno from kernel scratch
     const retVal = kernelView.getInt32(CH_RETURN, true);
     const errVal = kernelView.getUint32(CH_ERRNO, true);
-
     // --- Process memory growth for brk/mmap/mremap ---
     // In centralized mode, the kernel's ensure_memory_covers() grows the
     // KERNEL's Wasm memory, not the process's. We must grow the process's
@@ -1256,7 +1328,7 @@ export class CentralizedKernelWorker {
     if (syscallNr === SYS_NANOSLEEP && retVal >= 0) {
       const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
       const sec = kernelView.getUint32(CH_DATA, true);
-      const nsec = kernelView.getUint32(CH_DATA + 4, true);
+      const nsec = kernelView.getUint32(CH_DATA + 8, true);
       delayMs = sec * 1000 + Math.floor(nsec / 1_000_000);
     } else if (syscallNr === SYS_USLEEP && retVal >= 0) {
       const usec = origArgs[0] >>> 0;
@@ -1264,7 +1336,7 @@ export class CentralizedKernelWorker {
     } else if (syscallNr === SYS_CLOCK_NANOSLEEP && retVal >= 0) {
       const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
       const sec = kernelView.getUint32(CH_DATA, true);
-      const nsec = kernelView.getUint32(CH_DATA + 4, true);
+      const nsec = kernelView.getUint32(CH_DATA + 8, true);
       delayMs = sec * 1000 + Math.floor(nsec / 1_000_000);
     }
 
@@ -1909,8 +1981,22 @@ export class CentralizedKernelWorker {
     const exitingPid = channel.pid;
     const parentPid = this.childToParent.get(exitingPid);
     if (parentPid !== undefined) {
-      // Encode wait status: exitStatus << 8 (matches WIFEXITED/WEXITSTATUS macros)
-      const waitStatus = (exitStatus & 0xff) << 8;
+      // Check if the kernel marked this process as killed by a signal.
+      // deliver_pending_signals sets exit_status = 128 + signum for default
+      // Terminate/CoreDump actions. We need to encode the wait status
+      // differently for signal death vs normal exit.
+      const getExitStatus = this.kernelInstance!.exports
+        .kernel_get_process_exit_status as ((pid: number) => number) | undefined;
+      const kernelExitStatus = getExitStatus ? getExitStatus(exitingPid) : -1;
+      let waitStatus: number;
+      if (kernelExitStatus >= 128) {
+        // Signal death: encode as signal number in low 7 bits
+        const signum = kernelExitStatus - 128;
+        waitStatus = signum & 0x7f;
+      } else {
+        // Normal exit: exitStatus << 8 (matches WIFEXITED/WEXITSTATUS macros)
+        waitStatus = (exitStatus & 0xff) << 8;
+      }
       this.exitedChildren.set(exitingPid, waitStatus);
 
       // Queue SIGCHLD on parent process in the kernel.
@@ -2425,16 +2511,23 @@ export class CentralizedKernelWorker {
       this.currentHandlePid = 0;
     }
 
-    // If the target process has a pending sleep, interrupt it immediately
+    // If the target process has a pending sleep, interrupt it — but only if
+    // the signal is actually deliverable (not blocked).  When the signal is
+    // blocked, the sleep must continue; the signal stays pending and will be
+    // checked when the sleep naturally completes or a mask change unblocks it.
     const pendingSleep = this.pendingSleeps.get(targetPid);
     if (pendingSleep) {
-      clearTimeout(pendingSleep.timer);
-      this.pendingSleeps.delete(targetPid);
-      // Complete the sleep with signal check — will return EINTR
-      this.completeSleepWithSignalCheck(
-        pendingSleep.channel, pendingSleep.syscallNr, pendingSleep.origArgs,
-        pendingSleep.retVal, pendingSleep.errVal,
-      );
+      const isBlocked = (this.kernelInstance!.exports.kernel_is_signal_blocked as
+        (pid: number, signum: number) => number)(targetPid, signum);
+      if (!isBlocked) {
+        clearTimeout(pendingSleep.timer);
+        this.pendingSleeps.delete(targetPid);
+        // Complete the sleep with signal check — will return EINTR
+        this.completeSleepWithSignalCheck(
+          pendingSleep.channel, pendingSleep.syscallNr, pendingSleep.origArgs,
+          pendingSleep.retVal, pendingSleep.errVal,
+        );
+      }
     }
   }
 

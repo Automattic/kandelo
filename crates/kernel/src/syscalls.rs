@@ -2510,22 +2510,52 @@ pub fn sys_clock_nanosleep(
     clock_id: u32,
     flags: u32,
     req: &WasmTimespec,
+    req_ptr: *const u8,
 ) -> Result<(), Errno> {
     use wasm_posix_shared::clock::*;
     // Validate clock_id
     if clock_id != CLOCK_REALTIME && clock_id != CLOCK_MONOTONIC {
         return Err(Errno::EINVAL);
     }
-    // Only support relative sleep (flags == 0 means TIMER_RELTIME)
-    const TIMER_ABSTIME: u32 = 1;
-    if flags & TIMER_ABSTIME != 0 {
-        return Err(Errno::EOPNOTSUPP);
-    }
     // Validate timespec
     if req.tv_sec < 0 || req.tv_nsec < 0 || req.tv_nsec >= 1_000_000_000 {
         return Err(Errno::EINVAL);
     }
-    host.host_nanosleep(req.tv_sec, req.tv_nsec)
+    const TIMER_ABSTIME: u32 = 1;
+    if flags & TIMER_ABSTIME != 0 {
+        // Absolute sleep: compute relative delay from current clock
+        let (now_sec, now_nsec) = host.host_clock_gettime(clock_id)?;
+        let mut sec = req.tv_sec - now_sec;
+        let mut nsec = req.tv_nsec - now_nsec;
+        if nsec < 0 {
+            sec -= 1;
+            nsec += 1_000_000_000;
+        }
+        // Centralized mode: write relative delay to scratch and return
+        // immediately — the host reads it from CH_DATA and sets up setTimeout.
+        if crate::is_centralized_mode() {
+            let out = unsafe { core::slice::from_raw_parts_mut(req_ptr as *mut u8, 16) };
+            if sec < 0 {
+                // Past deadline — zero out so host sees delayMs=0
+                out[0..16].fill(0);
+            } else {
+                out[0..8].copy_from_slice(&sec.to_le_bytes());
+                out[8..16].copy_from_slice(&nsec.to_le_bytes());
+            }
+            return Ok(());
+        }
+        // Already past the deadline — return immediately
+        if sec < 0 {
+            return Ok(());
+        }
+        host.host_nanosleep(sec, nsec)
+    } else {
+        // Centralized mode: return immediately, host handles the delay
+        if crate::is_centralized_mode() {
+            return Ok(());
+        }
+        host.host_nanosleep(req.tv_sec, req.tv_nsec)
+    }
 }
 
 /// Set file timestamps. Delegates to host.
@@ -5853,6 +5883,10 @@ mod tests {
             Ok(())
         }
 
+        fn host_set_posix_timer(&mut self, _timer_id: i32, _signo: i32, _value_ms: i64, _interval_ms: i64) -> Result<(), Errno> {
+            Ok(())
+        }
+
         fn host_sigsuspend_wait(&mut self) -> Result<u32, Errno> {
             if self.sigsuspend_error {
                 return Err(Errno::EINTR);
@@ -9157,6 +9191,7 @@ mod tests {
         fn host_kill(&mut self, _pid: i32, _sig: u32) -> Result<(), Errno> { Ok(()) }
         fn host_exec(&mut self, _path: &[u8]) -> Result<(), Errno> { Ok(()) }
         fn host_set_alarm(&mut self, _seconds: u32) -> Result<(), Errno> { Ok(()) }
+        fn host_set_posix_timer(&mut self, _timer_id: i32, _signo: i32, _value_ms: i64, _interval_ms: i64) -> Result<(), Errno> { Ok(()) }
         fn host_sigsuspend_wait(&mut self) -> Result<u32, Errno> { Err(Errno::EINTR) }
         fn host_call_signal_handler(&mut self, _handler_index: u32, _signum: u32, _sa_flags: u32) -> Result<(), Errno> { Ok(()) }
         fn host_getrandom(&mut self, buf: &mut [u8]) -> Result<usize, Errno> {
@@ -9465,6 +9500,7 @@ mod tests {
             fn host_kill(&mut self, _p: i32, _s: u32) -> Result<(), Errno> { Ok(()) }
             fn host_exec(&mut self, _p: &[u8]) -> Result<(), Errno> { Ok(()) }
             fn host_set_alarm(&mut self, _s: u32) -> Result<(), Errno> { Ok(()) }
+            fn host_set_posix_timer(&mut self, _t: i32, _s: i32, _v: i64, _i: i64) -> Result<(), Errno> { Ok(()) }
             fn host_sigsuspend_wait(&mut self) -> Result<u32, Errno> { Err(Errno::EINTR) }
             fn host_call_signal_handler(&mut self, _h: u32, _s: u32, _f: u32) -> Result<(), Errno> { Ok(()) }
             fn host_getrandom(&mut self, b: &mut [u8]) -> Result<usize, Errno> { for x in b.iter_mut() { *x = 0x42; } Ok(b.len()) }
@@ -11085,6 +11121,7 @@ mod tests {
             fn host_kill(&mut self, _p: i32, _s: u32) -> Result<(), Errno> { Ok(()) }
             fn host_exec(&mut self, _p: &[u8]) -> Result<(), Errno> { Ok(()) }
             fn host_set_alarm(&mut self, _s: u32) -> Result<(), Errno> { Ok(()) }
+            fn host_set_posix_timer(&mut self, _t: i32, _s: i32, _v: i64, _i: i64) -> Result<(), Errno> { Ok(()) }
             fn host_sigsuspend_wait(&mut self) -> Result<u32, Errno> { Err(Errno::EINTR) }
             fn host_call_signal_handler(&mut self, _h: u32, _s: u32, _f: u32) -> Result<(), Errno> { Ok(()) }
             fn host_getrandom(&mut self, b: &mut [u8]) -> Result<usize, Errno> { for x in b.iter_mut() { *x = 0x42; } Ok(b.len()) }
@@ -11166,6 +11203,7 @@ mod tests {
             fn host_kill(&mut self, _p: i32, _s: u32) -> Result<(), Errno> { Ok(()) }
             fn host_exec(&mut self, _p: &[u8]) -> Result<(), Errno> { Ok(()) }
             fn host_set_alarm(&mut self, _s: u32) -> Result<(), Errno> { Ok(()) }
+            fn host_set_posix_timer(&mut self, _t: i32, _s: i32, _v: i64, _i: i64) -> Result<(), Errno> { Ok(()) }
             fn host_sigsuspend_wait(&mut self) -> Result<u32, Errno> { Err(Errno::EINTR) }
             fn host_call_signal_handler(&mut self, _h: u32, _s: u32, _f: u32) -> Result<(), Errno> { Ok(()) }
             fn host_getrandom(&mut self, b: &mut [u8]) -> Result<usize, Errno> { for x in b.iter_mut() { *x = 0x42; } Ok(b.len()) }
@@ -11256,6 +11294,7 @@ mod tests {
             fn host_kill(&mut self, _p: i32, _s: u32) -> Result<(), Errno> { Ok(()) }
             fn host_exec(&mut self, _p: &[u8]) -> Result<(), Errno> { Ok(()) }
             fn host_set_alarm(&mut self, _s: u32) -> Result<(), Errno> { Ok(()) }
+            fn host_set_posix_timer(&mut self, _t: i32, _s: i32, _v: i64, _i: i64) -> Result<(), Errno> { Ok(()) }
             fn host_sigsuspend_wait(&mut self) -> Result<u32, Errno> { Err(Errno::EINTR) }
             fn host_call_signal_handler(&mut self, _h: u32, _s: u32, _f: u32) -> Result<(), Errno> { Ok(()) }
             fn host_getrandom(&mut self, b: &mut [u8]) -> Result<usize, Errno> { for x in b.iter_mut() { *x = 0x42; } Ok(b.len()) }

@@ -64,6 +64,7 @@ unsafe extern "C" {
     fn host_kill(pid: i32, sig: u32) -> i32;
     fn host_exec(path_ptr: *const u8, path_len: u32) -> i32;
     fn host_set_alarm(seconds: u32) -> i32;
+    fn host_set_posix_timer(timer_id: i32, signo: i32, value_ms_lo: u32, value_ms_hi: u32, interval_ms_lo: u32, interval_ms_hi: u32) -> i32;
     fn host_sigsuspend_wait() -> i32;
     fn host_call_signal_handler(handler_index: u32, signum: u32, sa_flags: u32) -> i32;
     fn host_getrandom(buf_ptr: *mut u8, buf_len: u32) -> i32;
@@ -394,6 +395,17 @@ impl HostIO for WasmHostIO {
 
     fn host_set_alarm(&mut self, seconds: u32) -> Result<(), Errno> {
         let result = unsafe { host_set_alarm(seconds) };
+        i32_to_result(result)
+    }
+
+    fn host_set_posix_timer(&mut self, timer_id: i32, signo: i32, value_ms: i64, interval_ms: i64) -> Result<(), Errno> {
+        let result = unsafe {
+            host_set_posix_timer(
+                timer_id, signo,
+                value_ms as u32, (value_ms >> 32) as u32,
+                interval_ms as u32, (interval_ms >> 32) as u32,
+            )
+        };
         i32_to_result(result)
     }
 
@@ -852,6 +864,20 @@ pub extern "C" fn kernel_reset_signal_mask(pid: u32) -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     match table.get_mut(pid) {
         Some(proc) => { proc.signals.blocked = 0; proc.sigsuspend_saved_mask = None; 0 }
+        None => -(Errno::ESRCH as i32),
+    }
+}
+
+/// Check if a signal is blocked for a process (centralized mode).
+/// Returns 1 if blocked, 0 if not blocked, -ESRCH if process not found.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_is_signal_blocked(pid: u32, signum: u32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match table.get(pid) {
+        Some(proc) => {
+            if signum == 0 || signum >= 65 { return 0; }
+            if proc.signals.blocked & (1u64 << (signum - 1)) != 0 { 1 } else { 0 }
+        }
         None => -(Errno::ESRCH as i32),
     }
 }
@@ -1783,7 +1809,14 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
         }
         307 => 0, // SYS_FADVISE64: advisory, always succeed
 
-        208 | 237..=238 | 247..=249 | 253..=254 | 256..=257 | 262 | 265..=268 | 271..=274 | 287 | 289..=293 | 297..=298 | 301..=305 | 306 | 308..=324 | 325..=336 | 348..=349 | 350..=369 | 370..=371 | 373..=376 | 381..=383 | 386 => {
+        // POSIX timers
+        326 => kernel_timer_create(a1 as u32, a2 as *const u8, a3 as *mut i32), // SYS_TIMER_CREATE
+        327 => kernel_timer_settime(a1 as i32, a2 as i32, a3 as *const u8, a4 as *mut u8), // SYS_TIMER_SETTIME
+        328 => kernel_timer_gettime(a1 as i32, a2 as *mut u8), // SYS_TIMER_GETTIME
+        329 => kernel_timer_getoverrun(a1 as i32), // SYS_TIMER_GETOVERRUN
+        330 => kernel_timer_delete(a1 as i32), // SYS_TIMER_DELETE
+
+        208 | 237..=238 | 247..=249 | 253..=254 | 256..=257 | 262 | 265..=268 | 271..=274 | 287 | 289..=293 | 297..=298 | 301..=305 | 306 | 308..=324 | 325 | 331..=336 | 348..=349 | 350..=369 | 370..=371 | 373..=376 | 381..=383 | 386 => {
             // Many of these are stubs in the glue layer too; return ENOSYS
             -(Errno::ENOSYS as i32)
         }
@@ -3216,7 +3249,7 @@ pub extern "C" fn kernel_clock_nanosleep(clock_id: u32, flags: u32, req_ptr: *co
     let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
     let req = unsafe { &*(req_ptr as *const WasmTimespec) };
-    let result = match syscalls::sys_clock_nanosleep(proc, &mut host, clock_id, flags, req) {
+    let result = match syscalls::sys_clock_nanosleep(proc, &mut host, clock_id, flags, req, req_ptr) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
@@ -5157,6 +5190,244 @@ pub extern "C" fn kernel_getitimer(which: u32, curr_ptr: *mut u8) -> i32 {
     };
     deliver_pending_signals(proc, &mut host);
     result
+}
+
+// ---------------------------------------------------------------------------
+// POSIX timers (timer_create / timer_settime / timer_gettime / etc.)
+// ---------------------------------------------------------------------------
+
+/// SIGEV_SIGNAL = 0, SIGEV_NONE = 1.
+const SIGEV_SIGNAL: u32 = 0;
+/// TIMER_ABSTIME flag for timer_settime.
+const TIMER_ABSTIME: i32 = 1;
+
+/// timer_create(clock_id, sigevent_ptr, timerid_ptr)
+/// musl sends ksigevent = {sigev_value(i32), sigev_signo(i32), sigev_notify(i32), sigev_tid(i32)} = 16 bytes.
+/// Returns 0 on success, negative errno.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_timer_create(clock_id: u32, sevp_ptr: *const u8, timerid_ptr: *mut i32) -> i32 {
+    use crate::process::PosixTimerState;
+
+    let (_gkl, proc) = unsafe { get_process() };
+
+    // Parse sigevent (default: SIGEV_SIGNAL with SIGALRM)
+    let (sigev_signo, sigev_value, sigev_notify) = if sevp_ptr.is_null() {
+        (14u32, 0i32, SIGEV_SIGNAL) // default: SIGALRM
+    } else {
+        let buf = unsafe { slice::from_raw_parts(sevp_ptr, 16) };
+        let value = i32::from_le_bytes(buf[0..4].try_into().unwrap());
+        let signo = i32::from_le_bytes(buf[4..8].try_into().unwrap()) as u32;
+        let notify = i32::from_le_bytes(buf[8..12].try_into().unwrap()) as u32;
+        (signo, value, notify)
+    };
+
+    // Only SIGEV_SIGNAL and SIGEV_NONE are supported
+    if sigev_notify != SIGEV_SIGNAL && sigev_notify != 1 {
+        return -(Errno::EINVAL as i32);
+    }
+
+    // Allocate timer slot
+    let timer_id = {
+        let mut slot = None;
+        for (i, s) in proc.posix_timers.iter().enumerate() {
+            if s.is_none() {
+                slot = Some(i);
+                break;
+            }
+        }
+        match slot {
+            Some(i) => i,
+            None => {
+                let i = proc.posix_timers.len();
+                proc.posix_timers.push(None);
+                i
+            }
+        }
+    };
+
+    proc.posix_timers[timer_id] = Some(PosixTimerState {
+        clock_id,
+        sigev_signo,
+        sigev_value,
+        interval_sec: 0,
+        interval_nsec: 0,
+        value_sec: 0,
+        value_nsec: 0,
+        overrun: 0,
+    });
+
+    if !timerid_ptr.is_null() {
+        unsafe { *timerid_ptr = timer_id as i32; }
+    }
+
+    let mut host = WasmHostIO;
+    deliver_pending_signals(proc, &mut host);
+    0
+}
+
+/// timer_settime(timerid, flags, new_value_ptr, old_value_ptr)
+/// new/old are itimerspec as 4 × i64 = 32 bytes: {interval_sec, interval_nsec, value_sec, value_nsec}.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_timer_settime(timerid: i32, flags: i32, new_ptr: *const u8, old_ptr: *mut u8) -> i32 {
+    let (_gkl, proc) = unsafe { get_process() };
+    let mut host = WasmHostIO;
+
+    let tid = timerid as usize;
+    let timer = match proc.posix_timers.get_mut(tid) {
+        Some(Some(t)) => t,
+        _ => return -(Errno::EINVAL as i32),
+    };
+
+    // Write old value if requested
+    if !old_ptr.is_null() {
+        let buf = unsafe { slice::from_raw_parts_mut(old_ptr, 32) };
+        buf[0..8].copy_from_slice(&timer.interval_sec.to_le_bytes());
+        buf[8..16].copy_from_slice(&timer.interval_nsec.to_le_bytes());
+        buf[16..24].copy_from_slice(&timer.value_sec.to_le_bytes());
+        buf[24..32].copy_from_slice(&timer.value_nsec.to_le_bytes());
+    }
+
+    // Read new value
+    let (int_sec, int_nsec, val_sec, val_nsec) = if new_ptr.is_null() {
+        (0i64, 0i64, 0i64, 0i64)
+    } else {
+        let buf = unsafe { slice::from_raw_parts(new_ptr, 32) };
+        (
+            i64::from_le_bytes(buf[0..8].try_into().unwrap()),
+            i64::from_le_bytes(buf[8..16].try_into().unwrap()),
+            i64::from_le_bytes(buf[16..24].try_into().unwrap()),
+            i64::from_le_bytes(buf[24..32].try_into().unwrap()),
+        )
+    };
+
+    timer.interval_sec = int_sec;
+    timer.interval_nsec = int_nsec;
+    timer.value_sec = val_sec;
+    timer.value_nsec = val_nsec;
+    timer.overrun = 0;
+
+    // Convert to milliseconds for the host timer.
+    // 0 = disarm, 1+ = armed.
+    let value_ms;
+    if val_sec == 0 && val_nsec == 0 {
+        value_ms = 0i64; // disarm
+    } else if flags & TIMER_ABSTIME != 0 {
+        // Absolute time: compute relative delay from current clock
+        let (now_sec, now_nsec) = host.host_clock_gettime(timer.clock_id).unwrap_or((0, 0));
+        let diff_sec = val_sec - now_sec;
+        let diff_nsec = val_nsec - now_nsec;
+        let total_ms = diff_sec * 1000 + diff_nsec / 1_000_000;
+        // Minimum 1ms for armed timers
+        value_ms = if total_ms < 1 { 1 } else { total_ms };
+    } else {
+        // Relative time — minimum 1ms for non-zero values
+        let ms = val_sec * 1000 + val_nsec / 1_000_000;
+        value_ms = if ms < 1 { 1 } else { ms };
+    }
+
+    let interval_ms = if int_sec == 0 && int_nsec == 0 {
+        0i64
+    } else {
+        let ms = int_sec * 1000 + int_nsec / 1_000_000;
+        if ms < 1 { 1 } else { ms } // minimum 1ms for repeating
+    };
+
+    let signo = timer.sigev_signo as i32;
+    let _ = host.host_set_posix_timer(timerid, signo, value_ms, interval_ms);
+
+    deliver_pending_signals(proc, &mut host);
+    0
+}
+
+/// timer_gettime(timerid, curr_value_ptr)
+/// Writes current itimerspec (32 bytes) to curr_value_ptr.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_timer_gettime(timerid: i32, curr_ptr: *mut u8) -> i32 {
+    let (_gkl, proc) = unsafe { get_process() };
+    let mut host = WasmHostIO;
+
+    let tid = timerid as usize;
+    let timer = match proc.posix_timers.get(tid) {
+        Some(Some(t)) => t,
+        _ => return -(Errno::EINVAL as i32),
+    };
+
+    if !curr_ptr.is_null() {
+        let buf = unsafe { slice::from_raw_parts_mut(curr_ptr, 32) };
+        buf[0..8].copy_from_slice(&timer.interval_sec.to_le_bytes());
+        buf[8..16].copy_from_slice(&timer.interval_nsec.to_le_bytes());
+        buf[16..24].copy_from_slice(&timer.value_sec.to_le_bytes());
+        buf[24..32].copy_from_slice(&timer.value_nsec.to_le_bytes());
+    }
+
+    deliver_pending_signals(proc, &mut host);
+    0
+}
+
+/// timer_getoverrun(timerid)
+/// Returns the overrun count on success, negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_timer_getoverrun(timerid: i32) -> i32 {
+    let (_gkl, proc) = unsafe { get_process() };
+    let mut host = WasmHostIO;
+
+    let tid = timerid as usize;
+    let result = match proc.posix_timers.get(tid) {
+        Some(Some(t)) => t.overrun,
+        _ => return -(Errno::EINVAL as i32),
+    };
+
+    deliver_pending_signals(proc, &mut host);
+    result
+}
+
+/// timer_delete(timerid)
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_timer_delete(timerid: i32) -> i32 {
+    let (_gkl, proc) = unsafe { get_process() };
+    let mut host = WasmHostIO;
+
+    let tid = timerid as usize;
+    match proc.posix_timers.get(tid) {
+        Some(Some(_)) => {}
+        _ => return -(Errno::EINVAL as i32),
+    }
+
+    // Disarm the host timer
+    let _ = host.host_set_posix_timer(timerid, 0, 0, 0);
+    proc.posix_timers[tid] = None;
+
+    deliver_pending_signals(proc, &mut host);
+    0
+}
+
+/// Called by the host when a repeating POSIX timer fires to increment the overrun counter.
+/// This is used for timer_getoverrun() support.
+#[unsafe(no_mangle)]
+/// Called by the host when a POSIX timer's interval fires.
+/// If the timer's signal is already pending (blocked), increments overrun and
+/// returns 1 (don't send signal again). If not pending, resets overrun to 0
+/// and returns 0 (host should call sendSignalToProcess for a new delivery cycle).
+pub extern "C" fn kernel_posix_timer_interval_fire(pid: u32, timer_id: u32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    if let Some(proc) = table.get_mut(pid) {
+        if let Some(Some(timer)) = proc.posix_timers.get_mut(timer_id as usize) {
+            let signo = timer.sigev_signo as u64;
+            if signo > 0 && signo <= 64 {
+                let mask = 1u64 << (signo - 1);
+                if proc.signals.pending & mask != 0 {
+                    // Signal already pending — this is an overrun
+                    timer.overrun += 1;
+                    return 1;
+                } else {
+                    // New delivery cycle — reset overrun
+                    timer.overrun = 0;
+                    return 0;
+                }
+            }
+        }
+    }
+    0
 }
 
 // ---------------------------------------------------------------------------

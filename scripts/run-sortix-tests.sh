@@ -205,8 +205,6 @@ BASIC_EXPECTED_FAIL=(
     "grp/getgrnam" "grp/getgrnam_r" "grp/setgrent"
     # -- Misc not supported
     "time/clock_getcpuclockid"
-    "time/timer_create" "time/timer_delete" "time/timer_getoverrun"
-    "time/timer_gettime" "time/timer_settime"
     "sys_select/pselect"
     "locale/getlocalename_l"
     "monetary/strfmon" "monetary/strfmon_l"

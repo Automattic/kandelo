@@ -53,6 +53,12 @@ pub trait HostIO {
     fn host_kill(&mut self, pid: i32, sig: u32) -> Result<(), Errno>;
     fn host_exec(&mut self, path: &[u8]) -> Result<(), Errno>;
     fn host_set_alarm(&mut self, seconds: u32) -> Result<(), Errno>;
+    /// Arm/disarm a POSIX timer on the host.
+    /// `timer_id` is the per-process timer slot index.
+    /// `signo` is the signal to deliver on expiry.
+    /// `value_ms` is the initial delay in milliseconds (0 = disarm).
+    /// `interval_ms` is the repeat interval in milliseconds (0 = one-shot).
+    fn host_set_posix_timer(&mut self, timer_id: i32, signo: i32, value_ms: i64, interval_ms: i64) -> Result<(), Errno>;
     /// Block until a signal is delivered. Returns the signal number.
     fn host_sigsuspend_wait(&mut self) -> Result<u32, Errno>;
     /// Ask the host to invoke a user-space signal handler.
@@ -152,6 +158,23 @@ pub struct TimerFdState {
     pub expirations: u64,
 }
 
+/// POSIX timer (timer_create / timer_settime).
+#[derive(Debug, Clone)]
+pub struct PosixTimerState {
+    pub clock_id: u32,
+    pub sigev_signo: u32,
+    pub sigev_value: i32,
+    /// Interval for repeating timers (0 = one-shot).
+    pub interval_sec: i64,
+    pub interval_nsec: i64,
+    /// Next expiration value (relative, for host-side setTimeout).
+    /// 0/0 = disarmed.
+    pub value_sec: i64,
+    pub value_nsec: i64,
+    /// Number of overruns (expirations not yet handled).
+    pub overrun: i32,
+}
+
 /// Per-signalfd state: the set of signals to watch.
 #[derive(Debug, Clone)]
 pub struct SignalFdState {
@@ -222,6 +245,8 @@ pub struct Process {
     pub timerfds: Vec<Option<TimerFdState>>,
     /// Signalfd instances owned by this process.
     pub signalfds: Vec<Option<SignalFdState>>,
+    /// POSIX timers (timer_create / timer_settime).
+    pub posix_timers: Vec<Option<PosixTimerState>>,
     /// Alternate signal stack (sigaltstack): ss_sp, ss_flags, ss_size.
     pub alt_stack_sp: u32,
     pub alt_stack_flags: u32,
@@ -296,6 +321,7 @@ impl Process {
             epolls: Vec::new(),
             timerfds: Vec::new(),
             signalfds: Vec::new(),
+            posix_timers: Vec::new(),
             alt_stack_sp: 0,
             alt_stack_flags: 2, // SS_DISABLE
             alt_stack_size: 0,
