@@ -148,7 +148,7 @@ BASIC_EXPECTED_FAIL=(
     "pthread/pthread_create"
     "signal/pthread_kill"
     "threads/thrd_create"
-    "unistd/pause" "unistd/alarm"
+    "unistd/pause"
     # -- Pthread features not supported (priority scheduling, pshared)
     "pthread/pthread_atfork" "pthread/pthread_attr_getstack"
     "pthread/pthread_attr_setinheritsched"

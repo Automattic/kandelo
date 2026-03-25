@@ -5093,25 +5093,25 @@ pub extern "C" fn kernel_alarm(seconds: u32) -> i32 {
 // ---------------------------------------------------------------------------
 
 /// setitimer -- set interval timer.
-/// new_ptr points to struct itimerval (32 bytes):
-///   { struct timeval it_interval (16 bytes), struct timeval it_value (16 bytes) }
-///   where struct timeval = { i64 tv_sec, i64 tv_usec } (wasm32 layout)
-/// old_ptr receives the previous itimerval (may be null).
+/// new_ptr points to an array of 4 longs (16 bytes on wasm32):
+///   { interval_sec, interval_usec, value_sec, value_usec }
+/// This matches musl's time64 path which packs values as long[4].
+/// old_ptr receives the previous values as 4 longs (may be null).
 /// Returns 0 on success, negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_setitimer(which: u32, new_ptr: *const u8, old_ptr: *mut u8) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
 
-    // Parse new itimerval from memory
+    // Parse new itimerval from memory (4 x i32 longs on wasm32)
     let (interval_sec, interval_usec, value_sec, value_usec) = if new_ptr.is_null() {
         (0i64, 0i64, 0i64, 0i64)
     } else {
-        let new_bytes = unsafe { slice::from_raw_parts(new_ptr, 32) };
-        let interval_sec = i64::from_le_bytes(new_bytes[0..8].try_into().unwrap());
-        let interval_usec = i64::from_le_bytes(new_bytes[8..16].try_into().unwrap());
-        let value_sec = i64::from_le_bytes(new_bytes[16..24].try_into().unwrap());
-        let value_usec = i64::from_le_bytes(new_bytes[24..32].try_into().unwrap());
+        let new_bytes = unsafe { slice::from_raw_parts(new_ptr, 16) };
+        let interval_sec = i32::from_le_bytes(new_bytes[0..4].try_into().unwrap()) as i64;
+        let interval_usec = i32::from_le_bytes(new_bytes[4..8].try_into().unwrap()) as i64;
+        let value_sec = i32::from_le_bytes(new_bytes[8..12].try_into().unwrap()) as i64;
+        let value_usec = i32::from_le_bytes(new_bytes[12..16].try_into().unwrap()) as i64;
         (interval_sec, interval_usec, value_sec, value_usec)
     };
 
@@ -5121,11 +5121,11 @@ pub extern "C" fn kernel_setitimer(which: u32, new_ptr: *const u8, old_ptr: *mut
     ) {
         Ok((old_isec, old_iusec, old_vsec, old_vusec)) => {
             if !old_ptr.is_null() {
-                let old_bytes = unsafe { slice::from_raw_parts_mut(old_ptr, 32) };
-                old_bytes[0..8].copy_from_slice(&old_isec.to_le_bytes());
-                old_bytes[8..16].copy_from_slice(&old_iusec.to_le_bytes());
-                old_bytes[16..24].copy_from_slice(&old_vsec.to_le_bytes());
-                old_bytes[24..32].copy_from_slice(&old_vusec.to_le_bytes());
+                let old_bytes = unsafe { slice::from_raw_parts_mut(old_ptr, 16) };
+                old_bytes[0..4].copy_from_slice(&(old_isec as i32).to_le_bytes());
+                old_bytes[4..8].copy_from_slice(&(old_iusec as i32).to_le_bytes());
+                old_bytes[8..12].copy_from_slice(&(old_vsec as i32).to_le_bytes());
+                old_bytes[12..16].copy_from_slice(&(old_vusec as i32).to_le_bytes());
             }
             0
         }
@@ -5136,7 +5136,7 @@ pub extern "C" fn kernel_setitimer(which: u32, new_ptr: *const u8, old_ptr: *mut
 }
 
 /// getitimer -- get current value of interval timer.
-/// curr_ptr receives the current itimerval (32 bytes).
+/// curr_ptr receives the current values as 4 longs (16 bytes on wasm32).
 /// Returns 0 on success, negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_getitimer(which: u32, curr_ptr: *mut u8) -> i32 {
@@ -5145,11 +5145,11 @@ pub extern "C" fn kernel_getitimer(which: u32, curr_ptr: *mut u8) -> i32 {
     let result = match syscalls::sys_getitimer(proc, &mut host, which) {
         Ok((isec, iusec, vsec, vusec)) => {
             if !curr_ptr.is_null() {
-                let buf = unsafe { slice::from_raw_parts_mut(curr_ptr, 32) };
-                buf[0..8].copy_from_slice(&isec.to_le_bytes());
-                buf[8..16].copy_from_slice(&iusec.to_le_bytes());
-                buf[16..24].copy_from_slice(&vsec.to_le_bytes());
-                buf[24..32].copy_from_slice(&vusec.to_le_bytes());
+                let buf = unsafe { slice::from_raw_parts_mut(curr_ptr, 16) };
+                buf[0..4].copy_from_slice(&(isec as i32).to_le_bytes());
+                buf[4..8].copy_from_slice(&(iusec as i32).to_le_bytes());
+                buf[8..12].copy_from_slice(&(vsec as i32).to_le_bytes());
+                buf[12..16].copy_from_slice(&(vusec as i32).to_le_bytes());
             }
             0
         }

@@ -73,6 +73,7 @@ const CLD_KILLED = 2;
 
 /** SIGCHLD */
 const SIGCHLD = 17;
+const SIGALRM = 14;
 
 /** Syscall numbers for memory management */
 const SYS_MMAP = 46;
@@ -130,7 +131,7 @@ const SCRATCH_SIZE = CH_TOTAL_SIZE;
 /** Struct sizes for output data copying */
 const WASM_STAT_SIZE = 88;
 const TIMESPEC_SIZE = 16; // { i64 tv_sec, i32 tv_nsec, i32 pad } on wasm32
-const ITIMERVAL_SIZE = 32; // 2 x struct timeval { i64 tv_sec, i64 tv_usec }
+const ITIMERVAL_SIZE = 16; // musl time64 path: 4 x long (4 bytes each on wasm32)
 const RLIMIT_SIZE = 16;   // 2 x i64 on wasm32
 const STACK_T_SIZE = 12;  // stack_t: { void* ss_sp, int ss_flags, size_t ss_size } on wasm32
 
@@ -456,6 +457,19 @@ export class CentralizedKernelWorker {
   private nextChildPid = 100;
   /** Maps "pid:channelOffset" to TID for tracking thread channels */
   private channelTids = new Map<string, number>();
+  /** Tracks the pid currently being serviced by kernel_handle_channel */
+  private currentHandlePid = 0;
+  /** Alarm timers per process: pid → NodeJS.Timeout */
+  private alarmTimers = new Map<number, ReturnType<typeof setTimeout>>();
+  /** Pending sleep timers per process: pid → {timer, channel, syscallNr, origArgs, retVal, errVal} */
+  private pendingSleeps = new Map<number, {
+    timer: ReturnType<typeof setTimeout>;
+    channel: ChannelInfo;
+    syscallNr: number;
+    origArgs: number[];
+    retVal: number;
+    errVal: number;
+  }>();
   /** Maps "pid:tid" to ctidPtr for CLONE_CHILD_CLEARTID on thread exit */
   private threadCtidPtrs = new Map<string, number>();
   /** Parent-child process tracking for waitpid */
@@ -481,7 +495,28 @@ export class CentralizedKernelWorker {
     this.kernel = new WasmPosixKernel(config, io, {
       // In centralized mode, callbacks like onKill/onFork are handled
       // differently — the kernel returns EAGAIN and JS handles them.
-      // For now, provide no-op callbacks.
+      onAlarm: (seconds: number): number => {
+        const pid = this.currentHandlePid;
+        if (pid === 0) return 0;
+
+        // Cancel any existing alarm for this process
+        const existing = this.alarmTimers.get(pid);
+        if (existing) {
+          clearTimeout(existing);
+          this.alarmTimers.delete(pid);
+        }
+
+        if (seconds > 0) {
+          const timer = setTimeout(() => {
+            this.alarmTimers.delete(pid);
+            if (this.processes.has(pid)) {
+              this.sendSignalToProcess(pid, SIGALRM);
+            }
+          }, seconds * 1000);
+          this.alarmTimers.set(pid, timer);
+        }
+        return 0;
+      },
     });
   }
 
@@ -579,6 +614,18 @@ export class CentralizedKernelWorker {
   deactivateProcess(pid: number): void {
     this.activeChannels = this.activeChannels.filter((ch) => ch.pid !== pid);
     this.processes.delete(pid);
+    // Cancel any pending alarm timer for this process
+    const alarmTimer = this.alarmTimers.get(pid);
+    if (alarmTimer) {
+      clearTimeout(alarmTimer);
+      this.alarmTimers.delete(pid);
+    }
+    // Cancel any pending sleep timer for this process
+    const sleepTimer = this.pendingSleeps.get(pid);
+    if (sleepTimer) {
+      clearTimeout(sleepTimer.timer);
+      this.pendingSleeps.delete(pid);
+    }
   }
 
   /**
@@ -862,6 +909,7 @@ export class CentralizedKernelWorker {
 
     // Call kernel_handle_channel
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as (offset: number, pid: number) => number;
+    this.currentHandlePid = channel.pid;
     try {
       handleChannel(this.scratchOffset, channel.pid);
     } catch (err) {
@@ -873,6 +921,8 @@ export class CentralizedKernelWorker {
         queueMicrotask(() => this.listenOnChannel(channel));
       }
       return;
+    } finally {
+      this.currentHandlePid = 0;
     }
 
     // Read return value and errno from kernel scratch
@@ -1201,53 +1251,32 @@ export class CentralizedKernelWorker {
     retVal: number,
     errVal: number,
   ): boolean {
+    let delayMs = 0;
+
     if (syscallNr === SYS_NANOSLEEP && retVal >= 0) {
-      // nanosleep: a1 = pointer to timespec {sec, nsec} in kernel scratch
       const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
       const sec = kernelView.getUint32(CH_DATA, true);
       const nsec = kernelView.getUint32(CH_DATA + 4, true);
-      const delayMs = sec * 1000 + Math.floor(nsec / 1_000_000);
-
-      if (delayMs > 0) {
-        setTimeout(() => {
-          if (this.processes.has(channel.pid)) {
-            this.completeSleepWithSignalCheck(channel, syscallNr, origArgs, retVal, errVal);
-          }
-        }, delayMs);
-        return true;
-      }
-    }
-
-    if (syscallNr === SYS_USLEEP && retVal >= 0) {
-      // usleep: a1 = microseconds
+      delayMs = sec * 1000 + Math.floor(nsec / 1_000_000);
+    } else if (syscallNr === SYS_USLEEP && retVal >= 0) {
       const usec = origArgs[0] >>> 0;
-      const delayMs = Math.max(1, Math.floor(usec / 1000));
-
-      if (delayMs > 0) {
-        setTimeout(() => {
-          if (this.processes.has(channel.pid)) {
-            this.completeSleepWithSignalCheck(channel, syscallNr, origArgs, retVal, errVal);
-          }
-        }, delayMs);
-        return true;
-      }
-    }
-
-    if (syscallNr === SYS_CLOCK_NANOSLEEP && retVal >= 0) {
-      // clock_nanosleep: a3 = pointer to timespec in kernel scratch
+      delayMs = Math.max(1, Math.floor(usec / 1000));
+    } else if (syscallNr === SYS_CLOCK_NANOSLEEP && retVal >= 0) {
       const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
       const sec = kernelView.getUint32(CH_DATA, true);
       const nsec = kernelView.getUint32(CH_DATA + 4, true);
-      const delayMs = sec * 1000 + Math.floor(nsec / 1_000_000);
+      delayMs = sec * 1000 + Math.floor(nsec / 1_000_000);
+    }
 
-      if (delayMs > 0) {
-        setTimeout(() => {
-          if (this.processes.has(channel.pid)) {
-            this.completeSleepWithSignalCheck(channel, syscallNr, origArgs, retVal, errVal);
-          }
-        }, delayMs);
-        return true;
-      }
+    if (delayMs > 0) {
+      const timer = setTimeout(() => {
+        this.pendingSleeps.delete(channel.pid);
+        if (this.processes.has(channel.pid)) {
+          this.completeSleepWithSignalCheck(channel, syscallNr, origArgs, retVal, errVal);
+        }
+      }, delayMs);
+      this.pendingSleeps.set(channel.pid, { timer, channel, syscallNr, origArgs, retVal, errVal });
+      return true;
     }
 
     return false;
@@ -1320,7 +1349,12 @@ export class CentralizedKernelWorker {
 
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
       (offset: number, pid: number) => number;
-    handleChannel(this.scratchOffset, channel.pid);
+    this.currentHandlePid = channel.pid;
+    try {
+      handleChannel(this.scratchOffset, channel.pid);
+    } finally {
+      this.currentHandlePid = 0;
+    }
 
     const retVal = kernelView.getInt32(CH_RETURN, true);
     const errVal = kernelView.getUint32(CH_ERRNO, true);
@@ -1410,7 +1444,12 @@ export class CentralizedKernelWorker {
 
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
       (offset: number, pid: number) => number;
-    handleChannel(this.scratchOffset, channel.pid);
+    this.currentHandlePid = channel.pid;
+    try {
+      handleChannel(this.scratchOffset, channel.pid);
+    } finally {
+      this.currentHandlePid = 0;
+    }
 
     const retVal = kernelView.getInt32(CH_RETURN, true);
     const errVal = kernelView.getUint32(CH_ERRNO, true);
@@ -1505,7 +1544,12 @@ export class CentralizedKernelWorker {
 
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
       (offset: number, pid: number) => number;
-    handleChannel(this.scratchOffset, channel.pid);
+    this.currentHandlePid = channel.pid;
+    try {
+      handleChannel(this.scratchOffset, channel.pid);
+    } finally {
+      this.currentHandlePid = 0;
+    }
 
     const retVal = kernelView.getInt32(CH_RETURN, true);
     const errVal = kernelView.getUint32(CH_ERRNO, true);
@@ -1573,7 +1617,12 @@ export class CentralizedKernelWorker {
 
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
       (offset: number, pid: number) => number;
-    handleChannel(this.scratchOffset, channel.pid);
+    this.currentHandlePid = channel.pid;
+    try {
+      handleChannel(this.scratchOffset, channel.pid);
+    } finally {
+      this.currentHandlePid = 0;
+    }
 
     const retVal = kernelView.getInt32(CH_RETURN, true);
     const errVal = kernelView.getUint32(CH_ERRNO, true);
@@ -1756,7 +1805,12 @@ export class CentralizedKernelWorker {
 
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
       (offset: number, pid: number) => number;
-    handleChannel(this.scratchOffset, channel.pid);
+    this.currentHandlePid = channel.pid;
+    try {
+      handleChannel(this.scratchOffset, channel.pid);
+    } finally {
+      this.currentHandlePid = 0;
+    }
 
     const retVal = kernelView.getInt32(CH_RETURN, true);
     const errVal = kernelView.getUint32(CH_ERRNO, true);
@@ -2361,11 +2415,26 @@ export class CentralizedKernelWorker {
 
     const handleChannel = this.kernelInstance.exports.kernel_handle_channel as
       (offset: number, pid: number) => number;
+    this.currentHandlePid = targetPid;
     try {
       handleChannel(this.scratchOffset, targetPid);
     } catch (err) {
       // Non-fatal — signal delivery is best-effort from the host side
       console.error(`[sendSignalToProcess] kernel threw for pid=${targetPid} sig=${signum}: ${err}`);
+    } finally {
+      this.currentHandlePid = 0;
+    }
+
+    // If the target process has a pending sleep, interrupt it immediately
+    const pendingSleep = this.pendingSleeps.get(targetPid);
+    if (pendingSleep) {
+      clearTimeout(pendingSleep.timer);
+      this.pendingSleeps.delete(targetPid);
+      // Complete the sleep with signal check — will return EINTR
+      this.completeSleepWithSignalCheck(
+        pendingSleep.channel, pendingSleep.syscallNr, pendingSleep.origArgs,
+        pendingSleep.retVal, pendingSleep.errVal,
+      );
     }
   }
 
