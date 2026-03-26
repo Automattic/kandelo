@@ -364,6 +364,10 @@ asyncify_wasm() {
 }
 
 TEST_TIMEOUT=${TEST_TIMEOUT:-30}
+XFAIL_TIMEOUT=${XFAIL_TIMEOUT:-10}  # Shorter timeout for known-failing tests
+PARALLEL=${PARALLEL:-$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)}
+RESULT_DIR=$(mktemp -d)
+trap 'rm -rf "$RESULT_DIR"' EXIT
 
 # ── Test discovery ──────────────────────────────────────────
 
@@ -483,7 +487,7 @@ build_runtime_test() {
 
     "$CC" "${cflags[@]}" \
         "$src" "${LINK_FLAGS[@]}" \
-        -o "$wasm" 2>/tmp/sortix-build-err.txt
+        -o "$wasm" 2>/tmp/sortix-build-err-$$.txt
     asyncify_wasm "$wasm"
 }
 
@@ -532,6 +536,49 @@ check_xfail() {
         *)        return 1 ;;
     esac
     [ ${#xfail_list[@]} -gt 0 ] && is_expected_fail "$test_name" "${xfail_list[@]}"
+}
+
+# Export XFAIL list for a suite as a serialized env var for parallel workers.
+# Workers use _XFAIL_LIST env var (newline-separated patterns).
+_export_xfail_for_suite() {
+    local suite="$1"
+    local -a xfail_list
+    case "$suite" in
+        basic)    xfail_list=("${BASIC_EXPECTED_FAIL[@]:-}") ;;
+        io)       xfail_list=("${IO_EXPECTED_FAIL[@]:-}") ;;
+        signal)   xfail_list=("${SIGNAL_EXPECTED_FAIL[@]:-}") ;;
+        process)  xfail_list=("${PROCESS_EXPECTED_FAIL[@]:-}") ;;
+        limits)   xfail_list=("${LIMITS_EXPECTED_FAIL[@]:-}") ;;
+        malloc)   xfail_list=("${MALLOC_EXPECTED_FAIL[@]:-}") ;;
+        stdio)    xfail_list=("${STDIO_EXPECTED_FAIL[@]:-}") ;;
+        paths)    xfail_list=("${PATHS_EXPECTED_FAIL[@]:-}") ;;
+        *)        xfail_list=() ;;
+    esac
+    # Serialize as newline-separated string for export
+    local serialized=""
+    for pattern in "${xfail_list[@]}"; do
+        serialized="${serialized}${pattern}"$'\n'
+    done
+    export _XFAIL_LIST="$serialized"
+}
+
+# Check if a test is XFAIL using the serialized _XFAIL_LIST env var.
+# Used by parallel workers where bash arrays can't be exported.
+_check_xfail_serialized() {
+    local test_name="$1"
+    [ -z "${_XFAIL_LIST:-}" ] && return 1
+    while IFS= read -r pattern; do
+        [ -z "$pattern" ] && continue
+        # Exact match
+        [ "$pattern" = "$test_name" ] && return 0
+        # Wildcard match
+        if [[ "$pattern" == *"*"* ]]; then
+            case "$test_name" in
+                $pattern) return 0 ;;
+            esac
+        fi
+    done <<< "$_XFAIL_LIST"
+    return 1
 }
 
 # Run include suite in parallel: compile all tests, then analyze results
@@ -646,36 +693,42 @@ run_include_suite() {
     done
 }
 
-# Run a runtime test (compile + execute)
-run_runtime_test() {
+# Run a single runtime test and write result to RESULT_DIR.
+# Designed to be called from xargs for parallel execution.
+# Writes: <result_dir>/<suite>/<test_name>.result with format:
+#   Line 1: STATUS (PASS, FAIL, XFAIL, XPASS, BUILD, TIME)
+#   Line 2+: output (for FAIL/BUILD diagnostics)
+_run_runtime_test_worker() {
     local suite="$1"
     local test_name="$2"
+    local result_dir="$3"
     local wasm="$BUILD_DIR/$suite/${test_name}.wasm"
 
     local is_xfail=false
-    if check_xfail "$suite" "$test_name" 2>/dev/null; then
+    if _check_xfail_serialized "$test_name" 2>/dev/null; then
         is_xfail=true
     fi
 
-    # Build
-    if ! "build_${suite}" "$test_name" 2>/dev/null; then
-        local err
-        err=$(head -5 /tmp/sortix-build-err.txt 2>/dev/null || echo "(no error output)")
+    # Check that the wasm file exists (pre-built)
+    if [ ! -f "$wasm" ]; then
         if $is_xfail; then
-            RESULTS+=("XFAIL ${suite}/${test_name}")
-            XFAIL=$((XFAIL + 1))
+            echo "XFAIL" > "$result_dir/${test_name//\//__}.result"
         else
-            echo "BUILD ${suite}/${test_name}"
-            echo "$err" | head -3 | sed 's/^/  /'
-            RESULTS+=("BUILD ${suite}/${test_name}")
-            BUILD_FAIL=$((BUILD_FAIL + 1))
+            { echo "BUILD"; echo "wasm not found: $wasm"; } > "$result_dir/${test_name//\//__}.result"
         fi
         return
     fi
 
+    # Use shorter timeout for XFAIL tests (they often hang)
+    local this_timeout="$TEST_TIMEOUT"
+    if $is_xfail; then
+        this_timeout="$XFAIL_TIMEOUT"
+    fi
+
     # Run with timeout
+    local output rc
     set +e
-    output=$(cd "$REPO_ROOT" && timeout "$TEST_TIMEOUT" npx tsx examples/run-example.ts "${wasm}" 2>&1)
+    output=$(cd "$REPO_ROOT" && timeout "$this_timeout" npx tsx examples/run-example.ts "${wasm}" 2>&1)
     rc=$?
     set -e
 
@@ -701,20 +754,14 @@ exit: $rc"
     if [ $rc -eq 124 ]; then
         # Timeout
         if $is_xfail; then
-            RESULTS+=("XFAIL ${suite}/${test_name}")
-            XFAIL=$((XFAIL + 1))
+            echo "XFAIL" > "$result_dir/${test_name//\//__}.result"
         else
-            echo "TIME  ${suite}/${test_name} (timeout ${TEST_TIMEOUT}s)"
-            RESULTS+=("TIME  ${suite}/${test_name}")
-            TIMEOUT_COUNT=$((TIMEOUT_COUNT + 1))
+            { echo "TIME"; echo "$output"; } > "$result_dir/${test_name//\//__}.result"
         fi
         return
     fi
 
-    # Check output against expect files (if available).
-    # Tests may have multiple valid outputs: .posix (always valid),
-    # .posix.N variants, or .N numbered variants (e.g. .1 = path exists,
-    # .2 = path doesn't exist). Any variant match = pass.
+    # Check output against expect files
     if $has_expect; then
         local expect_base="${test_name##*/}"
         for expect_file in "$expect_dir/${expect_base}.posix" "$expect_dir/${expect_base}.posix."* "$expect_dir/${expect_base}."[0-9]*; do
@@ -727,31 +774,89 @@ exit: $rc"
             fi
         done
     elif [ $rc -eq 0 ]; then
-        # No expect files — exit 0 means pass
         test_passed=true
     fi
 
     if $test_passed; then
         if $is_xfail; then
-            echo "XPASS ${suite}/${test_name}"
-            RESULTS+=("XPASS ${suite}/${test_name}")
-            XPASS=$((XPASS + 1))
+            echo "XPASS" > "$result_dir/${test_name//\//__}.result"
         else
-            echo "PASS  ${suite}/${test_name}"
-            RESULTS+=("PASS  ${suite}/${test_name}")
-            PASS=$((PASS + 1))
+            echo "PASS" > "$result_dir/${test_name//\//__}.result"
         fi
     else
         if $is_xfail; then
-            RESULTS+=("XFAIL ${suite}/${test_name}")
-            XFAIL=$((XFAIL + 1))
+            echo "XFAIL" > "$result_dir/${test_name//\//__}.result"
         else
-            echo "FAIL  ${suite}/${test_name} (exit $rc)"
-            echo "$output" | tail -5 | head -3 | sed 's/^/  /'
-            RESULTS+=("FAIL  ${suite}/${test_name}")
-            FAIL=$((FAIL + 1))
+            { echo "FAIL"; echo "$output"; } > "$result_dir/${test_name//\//__}.result"
         fi
     fi
+}
+
+# Run a runtime test (compile + execute) — sequential wrapper
+run_runtime_test() {
+    local suite="$1"
+    local test_name="$2"
+    local result_dir="$RESULT_DIR/$suite"
+    mkdir -p "$result_dir"
+
+    _run_runtime_test_worker "$suite" "$test_name" "$result_dir"
+    _collect_result "$suite" "$test_name" "$result_dir"
+}
+
+# Collect one test result from result file into RESULTS array and counters
+_collect_result() {
+    local suite="$1"
+    local test_name="$2"
+    local result_dir="$3"
+    local result_file="$result_dir/${test_name//\//__}.result"
+
+    if [ ! -f "$result_file" ]; then
+        echo "FAIL  ${suite}/${test_name} (no result file)"
+        RESULTS+=("FAIL  ${suite}/${test_name}")
+        FAIL=$((FAIL + 1))
+        return
+    fi
+
+    local status
+    status=$(head -1 "$result_file")
+    case "$status" in
+        PASS)
+            echo "PASS  ${suite}/${test_name}"
+            RESULTS+=("PASS  ${suite}/${test_name}")
+            PASS=$((PASS + 1))
+            ;;
+        FAIL)
+            echo "FAIL  ${suite}/${test_name}"
+            tail -n +2 "$result_file" | tail -5 | head -3 | sed 's/^/  /'
+            RESULTS+=("FAIL  ${suite}/${test_name}")
+            FAIL=$((FAIL + 1))
+            ;;
+        XFAIL)
+            RESULTS+=("XFAIL ${suite}/${test_name}")
+            XFAIL=$((XFAIL + 1))
+            ;;
+        XPASS)
+            echo "XPASS ${suite}/${test_name}"
+            RESULTS+=("XPASS ${suite}/${test_name}")
+            XPASS=$((XPASS + 1))
+            ;;
+        BUILD)
+            echo "BUILD ${suite}/${test_name}"
+            tail -n +2 "$result_file" | head -3 | sed 's/^/  /'
+            RESULTS+=("BUILD ${suite}/${test_name}")
+            BUILD_FAIL=$((BUILD_FAIL + 1))
+            ;;
+        TIME)
+            echo "TIME  ${suite}/${test_name} (timeout)"
+            RESULTS+=("TIME  ${suite}/${test_name}")
+            TIMEOUT_COUNT=$((TIMEOUT_COUNT + 1))
+            ;;
+        *)
+            echo "FAIL  ${suite}/${test_name} (unknown status: $status)"
+            RESULTS+=("FAIL  ${suite}/${test_name}")
+            FAIL=$((FAIL + 1))
+            ;;
+    esac
 }
 
 # ── Run a suite ────────────────────────────────────────────
@@ -795,10 +900,63 @@ run_suite() {
     local count=${#tests[@]}
     echo "  Discovered $count tests"
 
-    for test_name in "${tests[@]}"; do
-        TOTAL=$((TOTAL + 1))
-        run_runtime_test "$suite" "$test_name"
-    done
+    if [ ${#specific_tests[@]} -gt 0 ] || [ "$PARALLEL" -le 1 ]; then
+        # Sequential execution for specific tests or when parallelism disabled
+        for test_name in "${tests[@]}"; do
+            TOTAL=$((TOTAL + 1))
+            run_runtime_test "$suite" "$test_name"
+        done
+    else
+        # Parallel execution: build all tests first, then run in parallel
+        local result_dir="$RESULT_DIR/$suite"
+        mkdir -p "$result_dir"
+
+        echo "  Building $count tests ($PARALLEL parallel)..."
+        # Build in parallel using a wrapper that reconstructs arrays
+        export CC WASM_OPT ASYNCIFY_IMPORTS
+        export CFLAGS_BASE_STR="${CFLAGS_BASE[*]}"
+        export LINK_FLAGS_STR="${LINK_FLAGS[*]}"
+
+        _build_runtime_wrapper() {
+            local suite="$1"
+            local test_name="$2"
+            local src="$OS_TEST/$suite/${test_name}.c"
+            local wasm="$BUILD_DIR/$suite/${test_name}.wasm"
+            mkdir -p "$(dirname "$wasm")"
+            # shellcheck disable=SC2086
+            "$CC" $CFLAGS_BASE_STR -D_GNU_SOURCE -I"$OS_TEST" \
+                "$src" $LINK_FLAGS_STR \
+                -o "$wasm" 2>/dev/null || return 1
+            if [ -n "$WASM_OPT" ]; then
+                "$WASM_OPT" --asyncify \
+                    --pass-arg="asyncify-imports@${ASYNCIFY_IMPORTS}" \
+                    "$wasm" -o "$wasm" 2>/dev/null || true
+            fi
+        }
+        export -f _build_runtime_wrapper
+
+        printf '%s\n' "${tests[@]}" | xargs -P "$PARALLEL" -I{} \
+            bash -c '_build_runtime_wrapper "$1" "$2" 2>/dev/null || true' _ "$suite" {}
+
+        echo "  Running $count tests ($PARALLEL parallel)..."
+
+        # Export everything needed by the worker function
+        export REPO_ROOT BUILD_DIR OS_TEST SYSROOT GLUE_DIR TEST_TIMEOUT XFAIL_TIMEOUT
+        export -f _run_runtime_test_worker _check_xfail_serialized
+
+        # Export serialized XFAIL list for this suite
+        _export_xfail_for_suite "$suite"
+
+        # Run tests in parallel using xargs
+        printf '%s\n' "${tests[@]}" | xargs -P "$PARALLEL" -I{} \
+            bash -c '_run_runtime_test_worker "$1" "$2" "$3"' _ "$suite" {} "$result_dir"
+
+        # Collect results
+        for test_name in "${tests[@]}"; do
+            TOTAL=$((TOTAL + 1))
+            _collect_result "$suite" "$test_name" "$result_dir"
+        done
+    fi
 }
 
 # ── Main ────────────────────────────────────────────────────
@@ -815,6 +973,15 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --report) REPORT_MODE=true; ALL_MODE=true; shift ;;
         --all)    ALL_MODE=true; shift ;;
+        --sequential) PARALLEL=1; shift ;;
+        --parallel)
+            if [ $# -ge 2 ] && [[ "$2" =~ ^[0-9]+$ ]]; then
+                PARALLEL="$2"; shift 2
+            else
+                PARALLEL=$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4); shift
+            fi
+            ;;
+        --parallel=*) PARALLEL="${1#*=}"; shift ;;
         include|limits|basic|malloc|stdio|io|signal|process|paths)
             SUITES+=("$1"); shift
             # Collect specific tests for this suite
