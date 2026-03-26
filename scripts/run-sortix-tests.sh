@@ -204,11 +204,9 @@ BASIC_EXPECTED_FAIL=(
     "grp/endgrent" "grp/getgrent" "grp/getgrgid" "grp/getgrgid_r"
     "grp/getgrnam" "grp/getgrnam_r" "grp/setgrent"
     # -- Misc not supported
-    "time/clock_getcpuclockid"
     "sys_select/pselect"
     "locale/getlocalename_l"
     "monetary/strfmon" "monetary/strfmon_l"
-    "syslog/closelog" "syslog/syslog"
     "strings/ffsll"
     "wchar/swprintf" "wchar/wcslcat" "wchar/wcslcpy"
     # -- posix_spawn (not implemented in centralized mode)

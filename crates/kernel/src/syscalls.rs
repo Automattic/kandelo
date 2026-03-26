@@ -762,6 +762,9 @@ pub fn sys_write(
                     host.host_net_send(net_handle, buf, 0)
                 }
                 SocketDomain::Unix => {
+                    if sock.send_buf_idx.is_none() && sock.sock_type == crate::socket::SocketType::Dgram {
+                        return Ok(buf.len()); // bit-bucket for SOCK_DGRAM (syslog pattern)
+                    }
                     let send_buf_idx = sock.send_buf_idx.ok_or(Errno::ENOTCONN)?;
                     loop {
                         let pipe = proc
@@ -2498,6 +2501,10 @@ pub fn sys_clock_getres(
         CLOCK_REALTIME | CLOCK_MONOTONIC | CLOCK_PROCESS_CPUTIME_ID | CLOCK_THREAD_CPUTIME_ID => {
             Ok(WasmTimespec { tv_sec: 0, tv_nsec: 1_000_000 }) // 1ms
         }
+        id if (id & 7) == 2 => {
+            // Per-process CPU clock: clock_getcpuclockid encodes as (-pid-1)*8 + 2
+            Ok(WasmTimespec { tv_sec: 0, tv_nsec: 1_000_000 })
+        }
         _ => Err(Errno::EINVAL),
     }
 }
@@ -3378,7 +3385,16 @@ pub fn sys_connect(proc: &mut Process, host: &mut dyn HostIO, fd: i32, addr: &[u
                 Ok(())
             }
         }
-        SocketDomain::Unix => Err(Errno::ECONNREFUSED),
+        SocketDomain::Unix => {
+            let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+            if sock.sock_type == SocketType::Dgram {
+                // SOCK_DGRAM connect on AF_UNIX succeeds as a bit-bucket (syslog pattern)
+                sock.state = SocketState::Connected;
+                Ok(())
+            } else {
+                Err(Errno::ECONNREFUSED)
+            }
+        }
     }
 }
 
@@ -3419,6 +3435,13 @@ pub fn sys_sendto(
     }
     let sock_idx = (-(ofd.host_handle + 1)) as usize;
     let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+
+    // AF_UNIX DGRAM connected sockets: bit-bucket (syslog pattern via send→sendto)
+    if sock.domain == SocketDomain::Unix && sock.sock_type == SocketType::Dgram
+        && sock.state == SocketState::Connected
+    {
+        return Ok(buf.len());
+    }
 
     if sock.domain != SocketDomain::Inet || sock.sock_type != SocketType::Dgram {
         return Err(Errno::EOPNOTSUPP);
@@ -9446,7 +9469,7 @@ mod tests {
 
     #[test]
     fn test_unix_socket_connect_still_returns_econnrefused() {
-        // Regression: AF_UNIX connect should still fail
+        // Regression: AF_UNIX SOCK_STREAM connect should still fail
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         use wasm_posix_shared::socket::*;
@@ -9454,6 +9477,30 @@ mod tests {
         let addr = [1, 0]; // AF_UNIX family
         let err = sys_connect(&mut proc, &mut host, fd, &addr).unwrap_err();
         assert_eq!(err, Errno::ECONNREFUSED);
+    }
+
+    #[test]
+    fn test_unix_dgram_connect_succeeds_as_bit_bucket() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+        let fd = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
+        let addr = [1, 0]; // AF_UNIX family
+        sys_connect(&mut proc, &mut host, fd, &addr).unwrap();
+        // Write should succeed and discard data
+        let n = sys_write(&mut proc, &mut host, fd, b"hello syslog").unwrap();
+        assert_eq!(n, 12);
+    }
+
+    #[test]
+    fn test_clock_getres_per_process_cpu_clock() {
+        let proc = Process::new(1);
+        // clock_getcpuclockid(pid) encodes as (-pid-1)*8 + 2
+        // For pid=1: (-1-1)*8 + 2 = -16 + 2 = -14, as u32 = 4294967282
+        let clock_id = ((-1i32 - 1) * 8 + 2) as u32;
+        let res = sys_clock_getres(&proc, clock_id).unwrap();
+        assert_eq!(res.tv_sec, 0);
+        assert_eq!(res.tv_nsec, 1_000_000);
     }
 
     #[test]
