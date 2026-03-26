@@ -3828,12 +3828,37 @@ pub extern "C" fn kernel_accept(fd: i32, addr_ptr: *mut u8, addrlen_ptr: *mut u8
     let mut host = WasmHostIO;
     let result = match syscalls::sys_accept(proc, &mut host, fd) {
         Ok(new_fd) => {
-            // Write addrlen=0 if provided (peer address not yet tracked)
-            if !addrlen_ptr.is_null() {
+            // Write peer address if buffers provided
+            if !addr_ptr.is_null() && !addrlen_ptr.is_null() {
+                let addrlen_buf = unsafe { slice::from_raw_parts_mut(addrlen_ptr, 4) };
+                let max_len = u32::from_le_bytes(addrlen_buf.try_into().unwrap_or([0; 4])) as usize;
+                // Get the accepted socket's peer address
+                let entry = proc.fd_table.get(new_fd);
+                if let Ok(entry) = entry {
+                    let ofd = proc.ofd_table.get(entry.ofd_ref.0);
+                    if let Some(ofd) = ofd {
+                        let sock_idx = (-(ofd.host_handle + 1)) as usize;
+                        if let Some(sock) = proc.sockets.get(sock_idx) {
+                            let mut sa = [0u8; 16];
+                            sa[0] = 2; // AF_INET
+                            let port_be = sock.peer_port.to_be_bytes();
+                            sa[2] = port_be[0];
+                            sa[3] = port_be[1];
+                            sa[4] = sock.peer_addr[0];
+                            sa[5] = sock.peer_addr[1];
+                            sa[6] = sock.peer_addr[2];
+                            sa[7] = sock.peer_addr[3];
+                            let n = max_len.min(16);
+                            let addr_buf = unsafe { slice::from_raw_parts_mut(addr_ptr, n) };
+                            addr_buf.copy_from_slice(&sa[..n]);
+                            addrlen_buf.copy_from_slice(&16u32.to_le_bytes());
+                        }
+                    }
+                }
+            } else if !addrlen_ptr.is_null() {
                 let buf = unsafe { slice::from_raw_parts_mut(addrlen_ptr, 4) };
                 buf.copy_from_slice(&0u32.to_le_bytes());
             }
-            let _ = addr_ptr; // unused until peer address tracking
             new_fd
         }
         Err(e) => -(e as i32),
@@ -3971,7 +3996,11 @@ pub extern "C" fn kernel_sendto(
     let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
     let buf = unsafe { slice::from_raw_parts(buf_ptr, buf_len as usize) };
-    let addr = unsafe { slice::from_raw_parts(addr_ptr, addr_len as usize) };
+    let addr = if addr_ptr.is_null() || addr_len == 0 {
+        &[]
+    } else {
+        unsafe { slice::from_raw_parts(addr_ptr, addr_len as usize) }
+    };
     let result = match syscalls::sys_sendto(proc, &mut host, fd, buf, flags, addr) {
         Ok(n) => n as i32,
         Err(e) => -(e as i32),
@@ -3989,14 +4018,29 @@ pub extern "C" fn kernel_recvfrom(
     buf_len: u32,
     flags: u32,
     addr_ptr: *mut u8,
-    addr_len: u32,
+    addrlen_ptr: u32,
 ) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
     let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
-    let addr_buf = unsafe { slice::from_raw_parts_mut(addr_ptr, addr_len as usize) };
+    // addrlen_ptr is a channel-rewritten pointer to a u32 containing the buffer size
+    let addr_len = if addrlen_ptr != 0 {
+        unsafe { *(addrlen_ptr as *const u32) }
+    } else {
+        0
+    };
+    let addr_buf = if !addr_ptr.is_null() && addr_len > 0 {
+        unsafe { slice::from_raw_parts_mut(addr_ptr, addr_len as usize) }
+    } else {
+        &mut []
+    };
     let result = match syscalls::sys_recvfrom(proc, &mut host, fd, buf, flags, addr_buf) {
-        Ok((n, _addr_len)) => n as i32,
+        Ok((n, actual_addr_len)) => {
+            if addrlen_ptr != 0 {
+                unsafe { *(addrlen_ptr as *mut u32) = actual_addr_len as u32; }
+            }
+            n as i32
+        }
         Err(e) => -(e as i32),
     };
     deliver_pending_signals(proc, &mut host);
@@ -5511,13 +5555,25 @@ pub extern "C" fn kernel_fpathconf(fd: i32, name: i32) -> i64 {
 
 /// getsockname -- get local socket address.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_getsockname(fd: i32, buf_ptr: u32, buf_len: u32) -> i32 {
+pub extern "C" fn kernel_getsockname(fd: i32, buf_ptr: u32, addrlen_ptr: u32) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
+    // addrlen_ptr points to a u32 containing the buffer size (channel-rewritten pointer)
+    let addrlen = if addrlen_ptr != 0 {
+        unsafe { *(addrlen_ptr as *const u32) }
+    } else {
+        0
+    };
     let buf = unsafe {
-        core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len as usize)
+        core::slice::from_raw_parts_mut(buf_ptr as *mut u8, addrlen as usize)
     };
     let result = match syscalls::sys_getsockname(proc, fd, buf) {
-        Ok(n) => n as i32,
+        Ok(n) => {
+            // Write actual addrlen back
+            if addrlen_ptr != 0 {
+                unsafe { *(addrlen_ptr as *mut u32) = n as u32; }
+            }
+            0 // getsockname returns 0 on success
+        }
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
@@ -5527,13 +5583,23 @@ pub extern "C" fn kernel_getsockname(fd: i32, buf_ptr: u32, buf_len: u32) -> i32
 
 /// getpeername -- get remote socket address.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_getpeername(fd: i32, buf_ptr: u32, buf_len: u32) -> i32 {
+pub extern "C" fn kernel_getpeername(fd: i32, buf_ptr: u32, addrlen_ptr: u32) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
+    let addrlen = if addrlen_ptr != 0 {
+        unsafe { *(addrlen_ptr as *const u32) }
+    } else {
+        0
+    };
     let buf = unsafe {
-        core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len as usize)
+        core::slice::from_raw_parts_mut(buf_ptr as *mut u8, addrlen as usize)
     };
     let result = match syscalls::sys_getpeername(proc, fd, buf) {
-        Ok(n) => n as i32,
+        Ok(n) => {
+            if addrlen_ptr != 0 {
+                unsafe { *(addrlen_ptr as *mut u32) = n as u32; }
+            }
+            0
+        }
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;

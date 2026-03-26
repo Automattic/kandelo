@@ -2924,16 +2924,37 @@ pub fn sys_getpeername(proc: &Process, fd: i32, buf: &mut [u8]) -> Result<usize,
             }
         }
     }
-    if buf.len() >= 2 {
-        let family: u16 = match sock.domain {
-            SocketDomain::Inet => 2,  // AF_INET
-            SocketDomain::Inet6 => 10, // AF_INET6
-            SocketDomain::Unix => 1,  // AF_UNIX
-        };
-        buf[0] = family as u8;       // low byte
-        buf[1] = (family >> 8) as u8; // high byte
+    match sock.domain {
+        SocketDomain::Inet => {
+            let mut sa = [0u8; 16];
+            sa[0] = 2; // AF_INET low byte
+            sa[1] = 0;
+            let port_be = sock.peer_port.to_be_bytes();
+            sa[2] = port_be[0];
+            sa[3] = port_be[1];
+            sa[4] = sock.peer_addr[0];
+            sa[5] = sock.peer_addr[1];
+            sa[6] = sock.peer_addr[2];
+            sa[7] = sock.peer_addr[3];
+            let n = buf.len().min(16);
+            buf[..n].copy_from_slice(&sa[..n]);
+            Ok(16)
+        }
+        SocketDomain::Inet6 => {
+            if buf.len() >= 2 {
+                buf[0] = 10; // AF_INET6
+                buf[1] = 0;
+            }
+            Ok(2)
+        }
+        SocketDomain::Unix => {
+            if buf.len() >= 2 {
+                buf[0] = 1; // AF_UNIX
+                buf[1] = 0;
+            }
+            Ok(2)
+        }
     }
-    Ok(2)
 }
 
 /// Shut down part of a full-duplex socket connection.
@@ -3013,6 +3034,10 @@ pub fn sys_send(
 
     match sock.domain {
         SocketDomain::Inet | SocketDomain::Inet6 => {
+            // Loopback path: use pipe buffers if available
+            if sock.send_buf_idx.is_some() {
+                return sys_write(proc, host, fd, buf);
+            }
             let net_handle = sock.host_net_handle.ok_or(Errno::ENOTCONN)?;
             host.host_net_send(net_handle, buf, flags)
         }
@@ -3060,11 +3085,13 @@ pub fn sys_recv(
     }
 
     match sock.domain {
-        SocketDomain::Inet | SocketDomain::Inet6 => {
+        SocketDomain::Inet | SocketDomain::Inet6 if sock.recv_buf_idx.is_none() => {
+            // Host-delegated network path (external connections)
             let net_handle = sock.host_net_handle.ok_or(Errno::ENOTCONN)?;
             host.host_net_recv(net_handle, buf.len() as u32, flags, buf)
         }
-        SocketDomain::Unix => {
+        _ => {
+            // Pipe-backed recv path (AF_UNIX and loopback INET)
             let recv_buf_idx = sock.recv_buf_idx.ok_or(Errno::ENOTCONN)?;
             let peek = flags & MSG_PEEK != 0;
             let nonblock = (status_flags & O_NONBLOCK != 0) || (flags & MSG_DONTWAIT != 0) || crate::is_centralized_mode();
@@ -3355,6 +3382,18 @@ pub fn sys_connect(proc: &mut Process, host: &mut dyn HostIO, fd: i32, addr: &[u
                 let pipe_b_idx = proc.pipes.len();
                 proc.pipes.push(Some(PipeBuffer::new(65536)));
 
+                // Assign ephemeral port/addr to client if unbound
+                let client_sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+                let client_addr = if client_sock.bind_addr == [0; 4] { [127, 0, 0, 1] } else { client_sock.bind_addr };
+                let mut client_port = client_sock.bind_port;
+                if client_port == 0 {
+                    client_port = proc.next_ephemeral_port;
+                    proc.next_ephemeral_port = proc.next_ephemeral_port.wrapping_add(1);
+                    if proc.next_ephemeral_port == 0 {
+                        proc.next_ephemeral_port = 49152;
+                    }
+                }
+
                 // Create accepted socket (server side) with cross-connected pipes
                 let mut accepted_sock = SocketInfo::new(SocketDomain::Inet, SocketType::Stream, 0);
                 accepted_sock.state = SocketState::Connected;
@@ -3362,6 +3401,8 @@ pub fn sys_connect(proc: &mut Process, host: &mut dyn HostIO, fd: i32, addr: &[u
                 accepted_sock.send_buf_idx = Some(pipe_b_idx); // writes to pipe_b (client's reads)
                 accepted_sock.bind_addr = proc.sockets.get(listener_idx).map(|s| s.bind_addr).unwrap_or([0; 4]);
                 accepted_sock.bind_port = proc.sockets.get(listener_idx).map(|s| s.bind_port).unwrap_or(0);
+                accepted_sock.peer_addr = client_addr;
+                accepted_sock.peer_port = client_port;
                 let accepted_idx = proc.sockets.alloc(accepted_sock);
 
                 // Push to listener's backlog
@@ -3373,6 +3414,12 @@ pub fn sys_connect(proc: &mut Process, host: &mut dyn HostIO, fd: i32, addr: &[u
                 client.send_buf_idx = Some(pipe_a_idx); // writes to pipe_a (server's reads)
                 client.recv_buf_idx = Some(pipe_b_idx); // reads from pipe_b (server's writes)
                 client.state = SocketState::Connected;
+                client.peer_addr = ip;
+                client.peer_port = port;
+                if client.bind_port == 0 {
+                    client.bind_port = client_port;
+                    client.bind_addr = [127, 0, 0, 1];
+                }
 
                 Ok(())
             } else {
@@ -3441,6 +3488,11 @@ pub fn sys_sendto(
         && sock.state == SocketState::Connected
     {
         return Ok(buf.len());
+    }
+
+    // sendto with null/empty addr on a connected socket → delegate to send (POSIX)
+    if addr.is_empty() && sock.state == SocketState::Connected {
+        return sys_send(proc, _host, fd, buf, _flags);
     }
 
     if sock.domain != SocketDomain::Inet || sock.sock_type != SocketType::Dgram {
@@ -3512,7 +3564,12 @@ pub fn sys_recvfrom(
     let sock_idx = (-(ofd.host_handle + 1)) as usize;
     let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
 
-    if sock.domain != SocketDomain::Inet || sock.sock_type != SocketType::Dgram {
+    // For STREAM sockets, delegate to sys_recv (musl routes recv→recvfrom)
+    if sock.sock_type == SocketType::Stream {
+        let n = sys_recv(proc, _host, fd, buf, _flags)?;
+        return Ok((n, 0));
+    }
+    if sock.domain != SocketDomain::Inet {
         return Err(Errno::EOPNOTSUPP);
     }
 

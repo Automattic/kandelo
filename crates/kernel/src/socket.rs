@@ -58,6 +58,10 @@ pub struct SocketInfo {
     pub bind_addr: [u8; 4],
     /// Bound port (for AF_INET sockets).
     pub bind_port: u16,
+    /// Peer IPv4 address (for connected AF_INET sockets).
+    pub peer_addr: [u8; 4],
+    /// Peer port (for connected AF_INET sockets).
+    pub peer_port: u16,
     /// Pending connection socket indices (for listening sockets).
     pub listen_backlog: Vec<usize>,
     /// Received UDP datagrams (for DGRAM sockets).
@@ -80,6 +84,8 @@ impl SocketInfo {
             options: Vec::new(),
             bind_addr: [0; 4],
             bind_port: 0,
+            peer_addr: [0; 4],
+            peer_port: 0,
             listen_backlog: Vec::new(),
             dgram_queue: Vec::new(),
         }

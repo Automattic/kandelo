@@ -147,6 +147,7 @@ const STACK_T_SIZE = 12;  // stack_t: { void* ss_sp, int ss_flags, size_t ss_siz
 type SizeSpec =
   | { type: "cstring" }           // null-terminated string
   | { type: "arg"; argIndex: number } // size given by another arg
+  | { type: "deref"; argIndex: number } // size from u32 value at pointer arg (e.g. socklen_t*)
   | { type: "fixed"; size: number };  // fixed-size struct
 
 interface ArgDesc {
@@ -298,17 +299,17 @@ const SYSCALL_ARGS: Record<number, ArgDesc[]> = {
   // Sockets
   51: [{ argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 } }],  // BIND: addr
   53: [                                                                         // ACCEPT: addr + addrlen
-    { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 } },
+    { argIndex: 1, direction: "out", size: { type: "deref", argIndex: 2 } },
     { argIndex: 2, direction: "inout", size: { type: "fixed", size: 4 } },
   ],
   54: [{ argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 } }],  // CONNECT: addr
   59: [{ argIndex: 3, direction: "in", size: { type: "arg", argIndex: 4 } }],  // SETSOCKOPT: optval
   114: [                                                                        // GETSOCKNAME: addr + addrlen
-    { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 } },     //   addr (output, size from addrlen)
+    { argIndex: 1, direction: "out", size: { type: "deref", argIndex: 2 } },   //   addr (output, size from *addrlen)
     { argIndex: 2, direction: "inout", size: { type: "fixed", size: 4 } },     //   addrlen (inout, socklen_t = 4 bytes)
   ],
   115: [                                                                        // GETPEERNAME: addr + addrlen
-    { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 } },
+    { argIndex: 1, direction: "out", size: { type: "deref", argIndex: 2 } },
     { argIndex: 2, direction: "inout", size: { type: "fixed", size: 4 } },
   ],
   55: [{ argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 } }],  // SEND: buf
@@ -328,7 +329,8 @@ const SYSCALL_ARGS: Record<number, ArgDesc[]> = {
   ],
   63: [
     { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 } },     // RECVFROM: buf
-    { argIndex: 4, direction: "out", size: { type: "arg", argIndex: 5 } },     //           src_addr
+    { argIndex: 4, direction: "out", size: { type: "deref", argIndex: 5 } },   //           src_addr (size from *addrlen)
+    { argIndex: 5, direction: "inout", size: { type: "fixed", size: 4 } },     //           addrlen (inout, socklen_t = 4)
   ],
 
   // Poll/select
@@ -922,6 +924,12 @@ export class CentralizedKernelWorker {
           size = origArgs[desc.size.argIndex];
           // Special case for poll: nfds * sizeof(struct pollfd)
           if (syscallNr === SYS_POLL || syscallNr === SYS_PPOLL) size *= 8;
+        } else if (desc.size.type === "deref") {
+          // Dereference: arg is a pointer to a u32 value (e.g. socklen_t*)
+          const derefPtr = origArgs[desc.size.argIndex];
+          if (derefPtr === 0) continue;
+          size = processMem[derefPtr] | (processMem[derefPtr + 1] << 8)
+               | (processMem[derefPtr + 2] << 16) | (processMem[derefPtr + 3] << 24);
         } else {
           size = desc.size.size;
         }
@@ -1099,6 +1107,11 @@ export class CentralizedKernelWorker {
         } else if (desc.size.type === "arg") {
           size = origArgs[desc.size.argIndex];
           if (syscallNr === SYS_POLL || syscallNr === SYS_PPOLL) size *= 8;
+        } else if (desc.size.type === "deref") {
+          const derefPtr = origArgs[desc.size.argIndex];
+          if (derefPtr === 0) continue;
+          size = processMem[derefPtr] | (processMem[derefPtr + 1] << 8)
+               | (processMem[derefPtr + 2] << 16) | (processMem[derefPtr + 3] << 24);
         } else {
           size = desc.size.size;
         }
@@ -1111,6 +1124,7 @@ export class CentralizedKernelWorker {
         if (desc.direction === "out" || desc.direction === "inout") {
           let copySize = size;
           if (desc.direction === "out" && desc.size.type === "arg") {
+            // For read/recv-like syscalls, retVal is bytes read — limit copy to actual data
             if (retVal > 0 && retVal < size) {
               copySize = retVal;
             }
