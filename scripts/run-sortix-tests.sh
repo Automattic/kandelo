@@ -164,7 +164,7 @@ BASIC_EXPECTED_FAIL=(
     "unistd/fchownat"
     # -- Process management requiring fork/exec or process groups
     "sys_wait/waitpid"
-    "stdlib/abort" "stdlib/system"
+    "stdlib/system"
     # -- Signals (limited Wasm signal model)
     "signal/sigaltstack"
     # -- Timers/signals that block (timeout)

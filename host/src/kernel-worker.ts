@@ -1027,6 +1027,22 @@ export class CentralizedKernelWorker {
       this.ensureProcessMemoryCovers(channel.memory, syscallNr, retVal, origArgs);
     }
 
+    // --- Signal-death check (centralized mode) ---
+    // If deliver_pending_signals marked this process as Exited (e.g., abort()
+    // raises SIGABRT with default action Terminate), don't complete the channel.
+    // Instead, record signal-death wait status and terminate the worker.
+    const getExitStatus = this.kernelInstance!.exports
+      .kernel_get_process_exit_status as ((pid: number) => number) | undefined;
+    if (getExitStatus) {
+      const exitStatus = getExitStatus(channel.pid);
+      if (exitStatus >= 0) {
+        const signum = exitStatus >= 128 ? exitStatus - 128 : 0;
+        const waitStatus = signum > 0 ? (signum & 0x7f) : ((exitStatus & 0xff) << 8);
+        this.handleProcessTerminated(channel, waitStatus);
+        return;
+      }
+    }
+
     // --- Signal delivery (centralized mode) ---
     // After each syscall, check if the kernel has a pending Handler signal.
     // If so, dequeue it and write delivery info to the process channel.
