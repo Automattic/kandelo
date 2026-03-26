@@ -944,7 +944,19 @@ export class CentralizedKernelWorker {
           size = desc.size.size;
         }
 
-        if (size <= 0 || dataOffset + size > CH_DATA_SIZE) continue;
+        if (size <= 0) continue;
+
+        // Cap size to fit in the channel data buffer. For read/write-like
+        // syscalls where the size comes from another arg, also update that
+        // arg so the kernel uses the capped count. The caller (musl libc)
+        // will see a short read/write and retry for the remainder.
+        if (dataOffset + size > CH_DATA_SIZE) {
+          size = CH_DATA_SIZE - dataOffset;
+          if (size <= 0) continue;
+          if (desc.size.type === "arg") {
+            adjustedArgs[desc.size.argIndex] = size;
+          }
+        }
 
         const kernelPtr = dataStart + dataOffset;
 
@@ -1142,7 +1154,13 @@ export class CentralizedKernelWorker {
           size = desc.size.size;
         }
 
-        if (size <= 0 || outOffset + size > CH_DATA_SIZE) continue;
+        if (size <= 0) continue;
+
+        // Cap size to match what was done in handleSyscall's input phase
+        if (outOffset + size > CH_DATA_SIZE) {
+          size = CH_DATA_SIZE - outOffset;
+          if (size <= 0) continue;
+        }
 
         const kernelPtr = dataStart + outOffset;
 

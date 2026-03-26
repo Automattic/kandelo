@@ -1483,28 +1483,32 @@ pub fn sys_fcntl_lock(
         _ => return Err(Errno::EINVAL),
     };
 
+    // l_type as u32 for comparison with F_RDLCK/F_WRLCK/F_UNLCK constants
+    let lock_type = flock.l_type as u32;
+
     // For host-backed files, delegate to the shared lock table via host import
     if host_handle >= 0 && !ofd.path.is_empty() {
         // Access mode check
         if base_cmd == F_SETLK || base_cmd == F_SETLKW {
             let access_mode = ofd.status_flags & O_ACCMODE;
-            if flock.l_type == F_RDLCK && access_mode == O_WRONLY {
+            if lock_type == F_RDLCK && access_mode == O_WRONLY {
                 return Err(Errno::EBADF);
             }
-            if flock.l_type == F_WRLCK && access_mode == O_RDONLY {
+            if lock_type == F_WRLCK && access_mode == O_RDONLY {
                 return Err(Errno::EBADF);
             }
         }
         let path = &ofd.path;
         let mut result_buf = [0u8; 24];
         host.host_fcntl_lock(
-            path, lock_owner, base_cmd, flock.l_type,
+            path, lock_owner, base_cmd, lock_type,
             start, flock.l_len, &mut result_buf,
         )?;
         // For GETLK variants, parse result_buf back into flock
         if base_cmd == F_GETLK {
-            flock.l_type = u32::from_le_bytes(result_buf[0..4].try_into().unwrap());
-            if flock.l_type != F_UNLCK {
+            let result_type = u32::from_le_bytes(result_buf[0..4].try_into().unwrap());
+            flock.l_type = result_type as i16;
+            if result_type != F_UNLCK {
                 // OFD locks: POSIX says l_pid should be -1
                 flock.l_pid = if is_ofd { 0xFFFFFFFF } else {
                     u32::from_le_bytes(result_buf[4..8].try_into().unwrap())
@@ -1522,10 +1526,10 @@ pub fn sys_fcntl_lock(
         F_GETLK => {
             match proc
                 .lock_table
-                .get_blocking_lock(host_handle, flock.l_type, start, flock.l_len, lock_owner)
+                .get_blocking_lock(host_handle, lock_type, start, flock.l_len, lock_owner)
             {
                 Some(blocking) => {
-                    flock.l_type = blocking.lock_type;
+                    flock.l_type = blocking.lock_type as i16;
                     flock.l_start = blocking.start;
                     flock.l_len = blocking.len;
                     // OFD locks: POSIX says l_pid should be -1
@@ -1533,21 +1537,21 @@ pub fn sys_fcntl_lock(
                     flock.l_whence = 0;
                 }
                 None => {
-                    flock.l_type = F_UNLCK;
+                    flock.l_type = F_UNLCK as i16;
                 }
             }
             Ok(())
         }
         F_SETLK | F_SETLKW => {
             let access_mode = ofd.status_flags & O_ACCMODE;
-            if flock.l_type == F_RDLCK && access_mode == O_WRONLY {
+            if lock_type == F_RDLCK && access_mode == O_WRONLY {
                 return Err(Errno::EBADF);
             }
-            if flock.l_type == F_WRLCK && access_mode == O_RDONLY {
+            if lock_type == F_WRLCK && access_mode == O_RDONLY {
                 return Err(Errno::EBADF);
             }
 
-            if flock.l_type == F_UNLCK {
+            if lock_type == F_UNLCK {
                 let lock = FileLock {
                     pid: lock_owner,
                     lock_type: F_UNLCK,
@@ -1560,7 +1564,7 @@ pub fn sys_fcntl_lock(
 
             if proc
                 .lock_table
-                .get_blocking_lock(host_handle, flock.l_type, start, flock.l_len, lock_owner)
+                .get_blocking_lock(host_handle, lock_type, start, flock.l_len, lock_owner)
                 .is_some()
             {
                 if base_cmd == F_SETLK {
@@ -1571,7 +1575,7 @@ pub fn sys_fcntl_lock(
 
             let lock = FileLock {
                 pid: lock_owner,
-                lock_type: flock.l_type,
+                lock_type: lock_type,
                 start,
                 len: flock.l_len,
             };
@@ -1600,12 +1604,13 @@ pub fn sys_flock(proc: &mut Process, fd: i32, operation: u32, host: &mut dyn Hos
     let cmd = if lock_type == F_UNLCK || nonblock { F_SETLK } else { F_SETLKW };
 
     let mut flock = WasmFlock {
-        l_type: lock_type,
+        l_type: lock_type as i16,
         l_whence: 0, // SEEK_SET
+        _pad1: 0,
         l_start: 0,
         l_len: 0, // 0 means entire file
         l_pid: proc.pid,
-        _pad: 0,
+        _pad2: 0,
     };
 
     sys_fcntl_lock(proc, fd, cmd, &mut flock, host)
@@ -2807,11 +2812,13 @@ pub fn sys_mmap(
 
 /// munmap -- unmap a previously mapped region.
 pub fn sys_munmap(proc: &mut Process, addr: u32, len: u32) -> Result<(), Errno> {
-    if proc.memory.munmap(addr, len) {
-        Ok(())
-    } else {
-        Err(Errno::EINVAL)
+    if len == 0 {
+        return Err(Errno::EINVAL);
     }
+    // Linux munmap always succeeds (returns 0) even if no mappings overlap.
+    // EINVAL is only for misaligned addr or zero length.
+    proc.memory.munmap(addr, len);
+    Ok(())
 }
 
 /// brk -- set/get the program break.
@@ -6968,26 +6975,28 @@ mod tests {
 
         // Set a write lock on bytes 0-99
         let mut flock = WasmFlock {
-            l_type: F_WRLCK,
+            l_type: F_WRLCK as i16,
             l_whence: 0,
+            _pad1: 0,
             l_start: 0,
             l_len: 100,
             l_pid: 0,
-            _pad: 0,
+            _pad2: 0,
         };
         sys_fcntl_lock(&mut proc, fd, F_SETLK, &mut flock, &mut host).unwrap();
 
         // F_GETLK should report no conflict (same pid)
         let mut query = WasmFlock {
-            l_type: F_WRLCK,
+            l_type: F_WRLCK as i16,
             l_whence: 0,
+            _pad1: 0,
             l_start: 0,
             l_len: 100,
             l_pid: 0,
-            _pad: 0,
+            _pad2: 0,
         };
         sys_fcntl_lock(&mut proc, fd, F_GETLK, &mut query, &mut host).unwrap();
-        assert_eq!(query.l_type, F_UNLCK); // No conflict with self
+        assert_eq!(query.l_type as u32, F_UNLCK); // No conflict with self
     }
 
     #[test]
@@ -6998,22 +7007,24 @@ mod tests {
 
         // Set then unlock
         let mut flock = WasmFlock {
-            l_type: F_WRLCK,
+            l_type: F_WRLCK as i16,
             l_whence: 0,
+            _pad1: 0,
             l_start: 0,
             l_len: 100,
             l_pid: 0,
-            _pad: 0,
+            _pad2: 0,
         };
         sys_fcntl_lock(&mut proc, fd, F_SETLK, &mut flock, &mut host).unwrap();
 
         let mut unlock = WasmFlock {
-            l_type: F_UNLCK,
+            l_type: F_UNLCK as i16,
             l_whence: 0,
+            _pad1: 0,
             l_start: 0,
             l_len: 100,
             l_pid: 0,
-            _pad: 0,
+            _pad2: 0,
         };
         sys_fcntl_lock(&mut proc, fd, F_SETLK, &mut unlock, &mut host).unwrap();
     }
@@ -7025,12 +7036,13 @@ mod tests {
         let fd = sys_open(&mut proc, &mut host, b"/tmp/test", O_WRONLY | O_CREAT, 0o644).unwrap();
 
         let mut flock = WasmFlock {
-            l_type: F_RDLCK,
+            l_type: F_RDLCK as i16,
             l_whence: 0,
+            _pad1: 0,
             l_start: 0,
             l_len: 100,
             l_pid: 0,
-            _pad: 0,
+            _pad2: 0,
         };
         let result = sys_fcntl_lock(&mut proc, fd, F_SETLK, &mut flock, &mut host);
         assert_eq!(result, Err(Errno::EBADF));
@@ -7044,7 +7056,7 @@ mod tests {
 
         // Acquire a write lock (delegates to host for host-backed files)
         let mut flock = WasmFlock {
-            l_type: F_WRLCK, l_whence: 0, l_start: 0, l_len: 100, l_pid: 0, _pad: 0,
+            l_type: F_WRLCK as i16, l_whence: 0, _pad1: 0, l_start: 0, l_len: 100, l_pid: 0, _pad2: 0,
         };
         sys_fcntl_lock(&mut proc, fd, F_SETLK, &mut flock, &mut host).unwrap();
 
@@ -7063,7 +7075,7 @@ mod tests {
 
         // Acquire a write lock (delegates to host for host-backed files)
         let mut flock = WasmFlock {
-            l_type: F_WRLCK, l_whence: 0, l_start: 0, l_len: 100, l_pid: 0, _pad: 0,
+            l_type: F_WRLCK as i16, l_whence: 0, _pad1: 0, l_start: 0, l_len: 100, l_pid: 0, _pad2: 0,
         };
         sys_fcntl_lock(&mut proc, fd, F_SETLK, &mut flock, &mut host).unwrap();
 

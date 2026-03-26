@@ -20,6 +20,12 @@ export const LINK_FLAGS: string[] = [
   '-Wl,--global-base=1114112',
   '-Wl,--table-base=3',
   '-Wl,--export-table',
+  '-Wl,--export=__wasm_init_tls',
+  '-Wl,--export=__tls_base',
+  '-Wl,--export=__tls_size',
+  '-Wl,--export=__tls_align',
+  '-Wl,--export=__stack_pointer',
+  '-Wl,--export=__wasm_thread_init',
 ];
 
 const IGNORED_EXACT = new Set([
