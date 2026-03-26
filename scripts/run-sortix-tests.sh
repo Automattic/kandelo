@@ -82,34 +82,8 @@ INCLUDE_EXPECTED_FAIL=(
     "unistd/_SC_DEVICE_CONTROL" "unistd/_SC_NSIG" "unistd/_SC_XOPEN_UUCP"
     "unistd/_XOPEN_CRYPT" "unistd/_XOPEN_REALTIME" "unistd/_XOPEN_REALTIME_THREADS"
     "unistd/_XOPEN_SHM" "unistd/_XOPEN_UUCP"
-    # -- POSIX.1-2024 langinfo constants (ABALTMON/ALTMON)
-    "langinfo/ABALTMON_1" "langinfo/ABALTMON_2" "langinfo/ABALTMON_3"
-    "langinfo/ABALTMON_4" "langinfo/ABALTMON_5" "langinfo/ABALTMON_6"
-    "langinfo/ABALTMON_7" "langinfo/ABALTMON_8" "langinfo/ABALTMON_9"
-    "langinfo/ABALTMON_10" "langinfo/ABALTMON_11" "langinfo/ABALTMON_12"
-    "langinfo/ALTMON_1" "langinfo/ALTMON_2" "langinfo/ALTMON_3"
-    "langinfo/ALTMON_4" "langinfo/ALTMON_5" "langinfo/ALTMON_6"
-    "langinfo/ALTMON_7" "langinfo/ALTMON_8" "langinfo/ALTMON_9"
-    "langinfo/ALTMON_10" "langinfo/ALTMON_11" "langinfo/ALTMON_12"
-    # -- POSIX.1-2024 math constants (long double variants, M_PHI, M_SQRT, M_EGAMMA)
-    "math/M_1_PIl" "math/M_1_SQRTPI" "math/M_1_SQRTPIl"
-    "math/M_2_PIl" "math/M_2_SQRTPIl"
-    "math/M_EGAMMA" "math/M_EGAMMAl" "math/M_El"
-    "math/M_LN10l" "math/M_LN2l" "math/M_LOG10El" "math/M_LOG2El"
-    "math/M_PHI" "math/M_PHIl"
-    "math/M_PI_2l" "math/M_PI_4l" "math/M_PIl"
-    "math/M_SQRT1_2l" "math/M_SQRT1_3" "math/M_SQRT1_3l"
-    "math/M_SQRT2l" "math/M_SQRT3" "math/M_SQRT3l"
-    # -- POSIX.1-2024 O_* flags not exposed in mqueue/stdlib/sys_mman/unistd headers
-    "mqueue/O_CREAT" "mqueue/O_EXCL" "mqueue/O_NONBLOCK"
-    "mqueue/O_RDONLY" "mqueue/O_RDWR" "mqueue/O_WRONLY"
-    "stdlib/O_APPEND" "stdlib/O_CLOEXEC" "stdlib/O_DSYNC"
-    "stdlib/O_NOCTTY" "stdlib/O_RDWR" "stdlib/O_RSYNC" "stdlib/O_SYNC"
-    "sys_mman/O_CLOEXEC" "sys_mman/O_CREAT" "sys_mman/O_EXCL"
-    "sys_mman/O_RDONLY" "sys_mman/O_RDWR" "sys_mman/O_TRUNC" "sys_mman/O_WRONLY"
-    "unistd/O_CLOEXEC"
-    # -- POSIX.1-2024 sig2str/str2sig
-    "signal/SIG2STR_MAX" "signal/sig2str" "signal/str2sig"
+    # (POSIX.1-2024 langinfo ABALTMON/ALTMON, math constants, O_* flags,
+    #  SIG2STR_MAX, sig2str, str2sig — all now pass after musl sysroot rebuild)
     # -- BSD string functions added in 2024
     "wchar/wcslcat" "wchar/wcslcpy"
     # -- Headers/features not in musl
@@ -205,11 +179,9 @@ BASIC_EXPECTED_FAIL=(
     "sys_socket/sockatmark"
     # -- Network interface (not available in Wasm)
     "net_if/if_freenameindex" "net_if/if_indextoname" "net_if/if_nameindex" "net_if/if_nametoindex"
-    # netdb (getaddrinfo returns EAI_NONAME for non-localhost in Wasm)
-    "netdb/freeaddrinfo" "netdb/getaddrinfo"
+    # (netdb/freeaddrinfo and netdb/getaddrinfo now pass — synthetic /etc/hosts)
     "arpa_inet/inet_ntop"
-    # -- POSIX.1-2024 sig2str/str2sig (not in musl)
-    "signal/sig2str" "signal/str2sig"
+    # (signal/sig2str and signal/str2sig now pass — musl sysroot rebuild)
     # -- Filesystem-dependent tests (test opens files, needs real FS paths)
     "fcntl/open" "fcntl/openat" "fcntl/posix_fallocate"
     "dirent/fdopendir" "dirent/posix_getdents" "dirent/readdir" "dirent/readdir_r"
@@ -225,11 +197,7 @@ BASIC_EXPECTED_FAIL=(
     "sys_statvfs/fstatvfs"
     "sys_mman/msync" "sys_mman/posix_mem_offset" "sys_mman/posix_typed_mem_get_info"
     "sys_mman/posix_typed_mem_open" "sys_mman/shm_open"
-    # -- User/group database (not available in Wasm)
-    "pwd/endpwent" "pwd/getpwent" "pwd/getpwnam" "pwd/getpwnam_r"
-    "pwd/getpwuid" "pwd/getpwuid_r" "pwd/setpwent"
-    "grp/endgrent" "grp/getgrent" "grp/getgrgid" "grp/getgrgid_r"
-    "grp/getgrnam" "grp/getgrnam_r" "grp/setgrent"
+    # (pwd/grp tests now pass — synthetic /etc/passwd and /etc/group)
     # -- Misc not supported
     "sys_select/pselect"
     "locale/getlocalename_l"
