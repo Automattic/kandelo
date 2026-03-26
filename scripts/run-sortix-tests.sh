@@ -201,9 +201,7 @@ BASIC_EXPECTED_FAIL=(
     "sys_msg/msgctl" "sys_msg/msgget" "sys_msg/msgrcv" "sys_msg/msgsnd"
     "sys_sem/semctl" "sys_sem/semget" "sys_sem/semop"
     "sys_shm/shmat" "sys_shm/shmctl" "sys_shm/shmdt" "sys_shm/shmget"
-    # -- Socket operations (remaining: UDP, message-based, sockatmark)
-    "sys_socket/recvfrom" "sys_socket/recvmsg"
-    "sys_socket/sendmsg" "sys_socket/sendto"
+    # -- Socket operations (remaining: sockatmark needs SIOCATMARK ioctl)
     "sys_socket/sockatmark"
     # -- Network interface (not available in Wasm)
     "net_if/if_freenameindex" "net_if/if_indextoname" "net_if/if_nameindex" "net_if/if_nametoindex"

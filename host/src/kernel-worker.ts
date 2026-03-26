@@ -872,6 +872,16 @@ export class CentralizedKernelWorker {
       return;
     }
 
+    // --- sendmsg/recvmsg: decompose msghdr from process memory ---
+    if (syscallNr === 137 /* SYS_SENDMSG */) {
+      this.handleSendmsg(channel, origArgs);
+      return;
+    }
+    if (syscallNr === 138 /* SYS_RECVMSG */) {
+      this.handleRecvmsg(channel, origArgs);
+      return;
+    }
+
     // --- fcntl with struct flock pointer ---
     // When cmd is a lock operation, arg3 is a pointer to struct flock (32 bytes).
     // Handle as inout so the kernel can read/write the flock struct.
@@ -1733,6 +1743,201 @@ export class CentralizedKernelWorker {
     }
 
     this.completeChannel(channel, syscallNr, origArgs, undefined, retVal, errVal);
+  }
+
+  /**
+   * Handle sendmsg: decompose msghdr from process memory, flatten data + addr
+   * into kernel scratch, call kernel_sendmsg which dispatches to sendto/send.
+   */
+  private handleSendmsg(channel: ChannelInfo, origArgs: number[]): void {
+    const fd = origArgs[0];
+    const msgPtr = origArgs[1];
+    const flags = origArgs[2];
+
+    const processMem = new Uint8Array(channel.memory.buffer);
+    const processView = new DataView(channel.memory.buffer);
+    const kernelMem = new Uint8Array(this.kernelMemory!.buffer);
+    const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
+    const dataStart = this.scratchOffset + CH_DATA;
+
+    // Parse msghdr from process memory (wasm32: 28 bytes)
+    // struct msghdr { msg_name(4), msg_namelen(4), msg_iov(4), msg_iovlen(4), ... }
+    const namePtr = processView.getUint32(msgPtr, true);
+    const nameLen = processView.getUint32(msgPtr + 4, true);
+    const iovPtr = processView.getUint32(msgPtr + 8, true);
+    const iovCnt = processView.getUint32(msgPtr + 12, true);
+
+    // Copy msghdr to kernel scratch at offset 0
+    const kMsgPtr = dataStart;
+    kernelMem.set(processMem.subarray(msgPtr, msgPtr + 28), kMsgPtr);
+
+    let dataOff = 28; // after msghdr
+
+    // Copy msg_name to kernel scratch
+    if (namePtr !== 0 && nameLen > 0 && dataOff + nameLen <= CH_DATA_SIZE) {
+      const kNamePtr = dataStart + dataOff;
+      kernelMem.set(processMem.subarray(namePtr, namePtr + nameLen), kNamePtr);
+      new DataView(kernelMem.buffer).setUint32(kMsgPtr, kNamePtr, true); // update msg_name ptr
+      dataOff += nameLen;
+      dataOff = (dataOff + 3) & ~3;
+    }
+
+    // Copy iov array and iov[0] data to kernel scratch
+    if (iovCnt > 0 && iovPtr !== 0) {
+      const iovSize = iovCnt * 8;
+      const kIovPtr = dataStart + dataOff;
+      kernelMem.set(processMem.subarray(iovPtr, iovPtr + iovSize), kIovPtr);
+      new DataView(kernelMem.buffer).setUint32(kMsgPtr + 8, kIovPtr, true); // update msg_iov ptr
+      dataOff += iovSize;
+      dataOff = (dataOff + 3) & ~3;
+
+      // Copy each iov buffer data
+      for (let i = 0; i < iovCnt; i++) {
+        const base = processView.getUint32(iovPtr + i * 8, true);
+        const len = processView.getUint32(iovPtr + i * 8 + 4, true);
+        if (len > 0 && dataOff + len <= CH_DATA_SIZE) {
+          const kBufPtr = dataStart + dataOff;
+          kernelMem.set(processMem.subarray(base, base + len), kBufPtr);
+          // Update iov_base in kernel-side iov entry
+          new DataView(kernelMem.buffer).setUint32(kIovPtr + i * 8, kBufPtr, true);
+          dataOff += len;
+          dataOff = (dataOff + 3) & ~3;
+        }
+      }
+    }
+
+    // Call kernel
+    kernelView.setUint32(CH_SYSCALL, 137, true); // SYS_SENDMSG
+    kernelView.setInt32(CH_ARGS, fd, true);
+    kernelView.setInt32(CH_ARGS + 4, kMsgPtr, true);
+    kernelView.setInt32(CH_ARGS + 8, flags, true);
+
+    const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
+      (offset: number, pid: number) => number;
+    this.currentHandlePid = channel.pid;
+    try {
+      handleChannel(this.scratchOffset, channel.pid);
+    } finally {
+      this.currentHandlePid = 0;
+    }
+
+    const retVal = kernelView.getInt32(CH_RETURN, true);
+    const errVal = kernelView.getUint32(CH_ERRNO, true);
+    this.completeChannel(channel, 137, origArgs, undefined, retVal, errVal);
+  }
+
+  /**
+   * Handle recvmsg: decompose msghdr from process memory, set up buffers in
+   * kernel scratch, call kernel_recvmsg, copy results back.
+   */
+  private handleRecvmsg(channel: ChannelInfo, origArgs: number[]): void {
+    const fd = origArgs[0];
+    const msgPtr = origArgs[1];
+    const flags = origArgs[2];
+
+    const processMem = new Uint8Array(channel.memory.buffer);
+    const processView = new DataView(channel.memory.buffer);
+    const kernelMem = new Uint8Array(this.kernelMemory!.buffer);
+    const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
+    const dataStart = this.scratchOffset + CH_DATA;
+
+    // Parse msghdr from process memory
+    const namePtr = processView.getUint32(msgPtr, true);
+    const nameLen = processView.getUint32(msgPtr + 4, true);
+    const iovPtr = processView.getUint32(msgPtr + 8, true);
+    const iovCnt = processView.getUint32(msgPtr + 12, true);
+
+    // Copy msghdr to kernel scratch
+    const kMsgPtr = dataStart;
+    kernelMem.set(processMem.subarray(msgPtr, msgPtr + 28), kMsgPtr);
+
+    let dataOff = 28;
+
+    // Set up msg_name output buffer
+    let kNamePtr = 0;
+    if (namePtr !== 0 && nameLen > 0 && dataOff + nameLen <= CH_DATA_SIZE) {
+      kNamePtr = dataStart + dataOff;
+      kernelMem.fill(0, kNamePtr, kNamePtr + nameLen);
+      new DataView(kernelMem.buffer).setUint32(kMsgPtr, kNamePtr, true);
+      dataOff += nameLen;
+      dataOff = (dataOff + 3) & ~3;
+    }
+
+    // Set up iov array and output buffers
+    interface IovEntry { base: number; len: number; kernelBase: number }
+    const entries: IovEntry[] = [];
+
+    if (iovCnt > 0 && iovPtr !== 0) {
+      const iovSize = iovCnt * 8;
+      const kIovPtr = dataStart + dataOff;
+      kernelMem.set(processMem.subarray(iovPtr, iovPtr + iovSize), kIovPtr);
+      new DataView(kernelMem.buffer).setUint32(kMsgPtr + 8, kIovPtr, true);
+      dataOff += iovSize;
+      dataOff = (dataOff + 3) & ~3;
+
+      for (let i = 0; i < iovCnt; i++) {
+        const base = processView.getUint32(iovPtr + i * 8, true);
+        const len = processView.getUint32(iovPtr + i * 8 + 4, true);
+        if (len > 0 && dataOff + len <= CH_DATA_SIZE) {
+          const kBufPtr = dataStart + dataOff;
+          kernelMem.fill(0, kBufPtr, kBufPtr + len);
+          new DataView(kernelMem.buffer).setUint32(kIovPtr + i * 8, kBufPtr, true);
+          entries.push({ base, len, kernelBase: kBufPtr });
+          dataOff += len;
+          dataOff = (dataOff + 3) & ~3;
+        }
+      }
+    }
+
+    // Call kernel
+    kernelView.setUint32(CH_SYSCALL, 138, true); // SYS_RECVMSG
+    kernelView.setInt32(CH_ARGS, fd, true);
+    kernelView.setInt32(CH_ARGS + 4, kMsgPtr, true);
+    kernelView.setInt32(CH_ARGS + 8, flags, true);
+
+    const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
+      (offset: number, pid: number) => number;
+    this.currentHandlePid = channel.pid;
+    try {
+      handleChannel(this.scratchOffset, channel.pid);
+    } finally {
+      this.currentHandlePid = 0;
+    }
+
+    const retVal = kernelView.getInt32(CH_RETURN, true);
+    const errVal = kernelView.getUint32(CH_ERRNO, true);
+
+    if (retVal === -1 && errVal === EAGAIN) {
+      this.handleBlockingRetry(channel, 138, origArgs);
+      return;
+    }
+
+    // Copy received data back to process memory
+    if (retVal > 0) {
+      let remaining = retVal;
+      for (const entry of entries) {
+        if (remaining <= 0) break;
+        const copyLen = Math.min(entry.len, remaining);
+        processMem.set(
+          kernelMem.subarray(entry.kernelBase, entry.kernelBase + copyLen),
+          entry.base,
+        );
+        remaining -= copyLen;
+      }
+    }
+
+    // Copy msg_name (source address) back to process memory
+    if (kNamePtr !== 0 && namePtr !== 0 && nameLen > 0) {
+      processMem.set(kernelMem.subarray(kNamePtr, kNamePtr + nameLen), namePtr);
+    }
+
+    // Copy updated msghdr fields back (msg_namelen, msg_controllen, msg_flags)
+    const kMsg = kernelMem.subarray(kMsgPtr, kMsgPtr + 28);
+    processMem.set(kMsg.subarray(4, 8), msgPtr + 4);   // msg_namelen
+    processMem.set(kMsg.subarray(20, 24), msgPtr + 20); // msg_controllen
+    processMem.set(kMsg.subarray(24, 28), msgPtr + 24); // msg_flags
+
+    this.completeChannel(channel, 138, origArgs, undefined, retVal, errVal);
   }
 
   // -----------------------------------------------------------------------

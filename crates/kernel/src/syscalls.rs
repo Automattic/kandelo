@@ -3358,7 +3358,29 @@ pub fn sys_connect(proc: &mut Process, host: &mut dyn HostIO, fd: i32, addr: &[u
             let is_loopback = ip == [127, 0, 0, 1];
 
             if is_loopback && sock.domain == SocketDomain::Inet {
-                // Find listening socket on target port
+                // UDP DGRAM connect: just record peer address (no listener needed)
+                if sock.sock_type == SocketType::Dgram {
+                    let client_sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+                    let mut client_port = client_sock.bind_port;
+                    if client_port == 0 {
+                        client_port = proc.next_ephemeral_port;
+                        proc.next_ephemeral_port = proc.next_ephemeral_port.wrapping_add(1);
+                        if proc.next_ephemeral_port == 0 {
+                            proc.next_ephemeral_port = 49152;
+                        }
+                    }
+                    let client = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+                    client.state = SocketState::Connected;
+                    client.peer_addr = ip;
+                    client.peer_port = port;
+                    if client.bind_port == 0 {
+                        client.bind_port = client_port;
+                        client.bind_addr = [127, 0, 0, 1];
+                    }
+                    return Ok(());
+                }
+
+                // TCP STREAM connect: find listening socket on target port
                 let mut listener_idx = None;
                 let sock_count = proc.sockets.len();
                 for i in 0..sock_count {
