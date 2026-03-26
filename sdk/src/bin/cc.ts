@@ -15,8 +15,9 @@ export function buildClangArgs(userArgs: string[], toolchain: Toolchain): string
 
   const args: string[] = [];
 
-  // Only inject compile flags when there are source files to compile
-  if (hasSourceFiles || parsed.compileOnly || parsed.preprocessOnly || parsed.assemblyOnly) {
+  // Inject compile flags when there are source files, compile-only modes,
+  // or when linking (since the glue .c file needs them).
+  if (hasSourceFiles || parsed.compileOnly || parsed.preprocessOnly || parsed.assemblyOnly || linking) {
     args.push(...COMPILE_FLAGS);
   }
   // Target is always needed (even for link-only, clang needs to know the target)
@@ -37,7 +38,7 @@ export function buildClangArgs(userArgs: string[], toolchain: Toolchain): string
 
   if (linking) {
     args.push(
-      join(toolchain.glueDir, 'syscall_glue.c'),
+      join(toolchain.glueDir, 'channel_syscall.c'),
       join(toolchain.glueDir, 'compiler_rt.c'),
       join(toolchain.sysroot, 'lib', 'crt1.o'),
       join(toolchain.sysroot, 'lib', 'libc.a'),

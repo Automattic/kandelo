@@ -118,11 +118,54 @@ impl MemoryManager {
         }
     }
 
-    /// Unmap a region. Returns true if the region was found and removed.
+    /// Unmap a region [addr, addr+len). Supports partial unmapping:
+    /// - Exact match: removes the mapping entirely
+    /// - Front trim: unmapping the beginning of a mapping shrinks it
+    /// - Back trim: unmapping the end of a mapping shrinks it
+    /// - Split: unmapping the middle of a mapping splits it into two
+    /// Returns true if any overlap was found and handled.
     pub fn munmap(&mut self, addr: u32, len: u32) -> bool {
-        let before = self.mappings.len();
-        self.mappings.retain(|m| !(m.addr == addr && m.len >= len));
-        self.mappings.len() < before
+        if len == 0 {
+            return false;
+        }
+        let unmap_end = addr.saturating_add(len);
+        let mut found = false;
+        let mut new_mappings: Vec<MappedRegion> = Vec::new();
+
+        for m in self.mappings.drain(..) {
+            let m_end = m.addr.saturating_add(m.len);
+
+            // No overlap — keep as is
+            if m_end <= addr || m.addr >= unmap_end {
+                new_mappings.push(m);
+                continue;
+            }
+
+            found = true;
+
+            // Left remnant: mapping starts before unmap region
+            if m.addr < addr {
+                new_mappings.push(MappedRegion {
+                    addr: m.addr,
+                    len: addr - m.addr,
+                    prot: m.prot,
+                    flags: m.flags,
+                });
+            }
+
+            // Right remnant: mapping extends past unmap region
+            if m_end > unmap_end {
+                new_mappings.push(MappedRegion {
+                    addr: unmap_end,
+                    len: m_end - unmap_end,
+                    prot: m.prot,
+                    flags: m.flags,
+                });
+            }
+        }
+
+        self.mappings = new_mappings;
+        found
     }
 
     /// Get the current program break.
@@ -206,6 +249,57 @@ mod tests {
     fn test_munmap_nonexistent() {
         let mut mm = MemoryManager::new();
         assert!(!mm.munmap(0xDEAD0000, 4096));
+    }
+
+    #[test]
+    fn test_munmap_front_trim() {
+        let mut mm = MemoryManager::new();
+        // Create a 3-page mapping
+        let addr = mm.mmap_anonymous(0, 0x30000, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+        assert_ne!(addr, MAP_FAILED);
+        // Unmap the first page
+        assert!(mm.munmap(addr, 0x10000));
+        // First page should no longer be mapped
+        assert!(!mm.is_mapped(addr));
+        // Remaining two pages should still be mapped
+        assert!(mm.is_mapped(addr + 0x10000));
+        assert!(mm.is_mapped(addr + 0x20000));
+    }
+
+    #[test]
+    fn test_munmap_back_trim() {
+        let mut mm = MemoryManager::new();
+        let addr = mm.mmap_anonymous(0, 0x30000, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+        assert_ne!(addr, MAP_FAILED);
+        // Unmap the last page
+        assert!(mm.munmap(addr + 0x20000, 0x10000));
+        assert!(mm.is_mapped(addr));
+        assert!(mm.is_mapped(addr + 0x10000));
+        assert!(!mm.is_mapped(addr + 0x20000));
+    }
+
+    #[test]
+    fn test_munmap_middle_split() {
+        let mut mm = MemoryManager::new();
+        let addr = mm.mmap_anonymous(0, 0x30000, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+        assert_ne!(addr, MAP_FAILED);
+        // Unmap the middle page — splits into two
+        assert!(mm.munmap(addr + 0x10000, 0x10000));
+        assert!(mm.is_mapped(addr));
+        assert!(!mm.is_mapped(addr + 0x10000));
+        assert!(mm.is_mapped(addr + 0x20000));
+    }
+
+    #[test]
+    fn test_munmap_partial_then_mmap_reuses_gap() {
+        let mut mm = MemoryManager::new();
+        // Create a 4-page mapping
+        let addr = mm.mmap_anonymous(0, 0x40000, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+        // Unmap 2 middle pages
+        mm.munmap(addr + 0x10000, 0x20000);
+        // New 2-page mmap should fill the gap
+        let addr2 = mm.mmap_anonymous(0, 0x20000, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+        assert_eq!(addr2, addr + 0x10000);
     }
 
     #[test]

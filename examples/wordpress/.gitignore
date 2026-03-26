@@ -1,0 +1,5 @@
+# Downloaded WordPress files
+wordpress/
+sqlite-database-integration/
+*.tar.gz
+*.zip

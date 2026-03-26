@@ -680,17 +680,22 @@ pub struct WasmDirent {
 
 /// flock structure for advisory record locking.
 ///
-/// Uses `repr(C)` for a stable, predictable memory layout that can be
-/// shared across the Wasm shared-memory boundary.
+/// Matches musl wasm32 layout: `short l_type, short l_whence` (with padding
+/// to align off_t fields to 8 bytes), `off_t l_start`, `off_t l_len`,
+/// `pid_t l_pid`, plus trailing padding for 8-byte struct alignment.
+///
+/// Verified offsets: l_type=0, l_whence=2, l_start=8, l_len=16, l_pid=24.
+/// Total size: 32 bytes.
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct WasmFlock {
-    pub l_type: u32,    // F_RDLCK, F_WRLCK, F_UNLCK
-    pub l_whence: u32,  // SEEK_SET, SEEK_CUR, SEEK_END
-    pub l_start: i64,   // offset
+    pub l_type: i16,    // F_RDLCK, F_WRLCK, F_UNLCK (short)
+    pub l_whence: i16,  // SEEK_SET, SEEK_CUR, SEEK_END (short)
+    pub _pad1: u32,     // padding to align l_start to 8 bytes
+    pub l_start: i64,   // offset (off_t = long long on wasm32)
     pub l_len: i64,     // length (0 = to end of file)
-    pub l_pid: u32,     // process ID
-    pub _pad: u32,      // alignment padding
+    pub l_pid: u32,     // process ID (pid_t = int)
+    pub _pad2: u32,     // trailing padding for struct alignment
 }
 
 /// POSIX signal constants.
