@@ -3433,8 +3433,10 @@ pub extern "C" fn kernel_sendmsg(fd: i32, msg_ptr: *const u8, flags: u32) -> i32
     let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
 
-    // Parse msghdr: msg_iov at offset 8, msg_iovlen at offset 12
+    // Parse msghdr: msg_name(0), msg_namelen(4), msg_iov(8), msg_iovlen(12)
     let msg = unsafe { slice::from_raw_parts(msg_ptr, 28) };
+    let name_ptr = u32::from_le_bytes([msg[0], msg[1], msg[2], msg[3]]) as usize;
+    let name_len = u32::from_le_bytes([msg[4], msg[5], msg[6], msg[7]]) as usize;
     let iov_ptr = u32::from_le_bytes([msg[8], msg[9], msg[10], msg[11]]) as usize;
     let iov_len = u32::from_le_bytes([msg[12], msg[13], msg[14], msg[15]]);
 
@@ -3449,23 +3451,35 @@ pub extern "C" fn kernel_sendmsg(fd: i32, msg_ptr: *const u8, flags: u32) -> i32
     let len = u32::from_le_bytes([iov[4], iov[5], iov[6], iov[7]]) as usize;
 
     let buf = unsafe { slice::from_raw_parts(base as *const u8, len) };
-    let result = match syscalls::sys_sendmsg(proc, &mut host, fd, buf, flags) {
-        Ok(n) => n as i32,
-        Err(e) => -(e as i32),
+
+    // If msg_name is set, use sendto with the destination address
+    let result = if name_ptr != 0 && name_len > 0 {
+        let addr = unsafe { slice::from_raw_parts(name_ptr as *const u8, name_len) };
+        match syscalls::sys_sendto(proc, &mut host, fd, buf, flags, addr) {
+            Ok(n) => n as i32,
+            Err(e) => -(e as i32),
+        }
+    } else {
+        match syscalls::sys_sendmsg(proc, &mut host, fd, buf, flags) {
+            Ok(n) => n as i32,
+            Err(e) => -(e as i32),
+        }
     };
     deliver_pending_signals(proc, &mut host);
     result
 }
 
 /// recvmsg — receive a message from a socket.
-/// Parses msghdr to extract iov[0] and delegates to sys_recvmsg.
+/// Parses msghdr to extract iov[0]. For DGRAM sockets, uses recvfrom to fill msg_name.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_recvmsg(fd: i32, msg_ptr: *mut u8, flags: u32) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
 
-    // Parse msghdr: msg_iov at offset 8, msg_iovlen at offset 12
+    // Parse msghdr: msg_name(0), msg_namelen(4), msg_iov(8), msg_iovlen(12)
     let msg = unsafe { slice::from_raw_parts(msg_ptr, 28) };
+    let name_ptr = u32::from_le_bytes([msg[0], msg[1], msg[2], msg[3]]) as usize;
+    let name_len = u32::from_le_bytes([msg[4], msg[5], msg[6], msg[7]]) as usize;
     let iov_ptr = u32::from_le_bytes([msg[8], msg[9], msg[10], msg[11]]) as usize;
     let iov_len = u32::from_le_bytes([msg[12], msg[13], msg[14], msg[15]]);
 
@@ -3480,9 +3494,24 @@ pub extern "C" fn kernel_recvmsg(fd: i32, msg_ptr: *mut u8, flags: u32) -> i32 {
     let len = u32::from_le_bytes([iov[4], iov[5], iov[6], iov[7]]) as usize;
 
     let buf = unsafe { slice::from_raw_parts_mut(base as *mut u8, len) };
-    let result = match syscalls::sys_recvmsg(proc, &mut host, fd, buf, flags) {
-        Ok(n) => n as i32,
-        Err(e) => -(e as i32),
+
+    // Use recvfrom if msg_name is provided (to fill source address)
+    let result = if name_ptr != 0 && name_len > 0 {
+        let addr_buf = unsafe { slice::from_raw_parts_mut(name_ptr as *mut u8, name_len) };
+        match syscalls::sys_recvfrom(proc, &mut host, fd, buf, flags, addr_buf) {
+            Ok((data_len, addr_written)) => {
+                // Update msg_namelen with actual address length
+                let msg_mut = unsafe { slice::from_raw_parts_mut(msg_ptr, 28) };
+                msg_mut[4..8].copy_from_slice(&(addr_written as u32).to_le_bytes());
+                data_len as i32
+            }
+            Err(e) => -(e as i32),
+        }
+    } else {
+        match syscalls::sys_recvmsg(proc, &mut host, fd, buf, flags) {
+            Ok(n) => n as i32,
+            Err(e) => -(e as i32),
+        }
     };
     // Zero out msg_controllen to indicate no ancillary data
     let msg_mut = unsafe { slice::from_raw_parts_mut(msg_ptr, 28) };
