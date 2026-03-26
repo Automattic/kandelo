@@ -8,7 +8,7 @@ use wasm_posix_shared::fcntl_cmd::*;
 use wasm_posix_shared::lock_type::*;
 use wasm_posix_shared::flock_op::*;
 use wasm_posix_shared::seek::*;
-use wasm_posix_shared::mode::S_IFIFO;
+use wasm_posix_shared::mode::{S_IFIFO, S_IFREG};
 use wasm_posix_shared::{WasmFlock, WasmPollFd, WasmStat, WasmTimespec};
 
 use crate::fd::OpenFileDescRef;
@@ -72,6 +72,20 @@ fn match_virtual_device(path: &[u8]) -> Option<VirtualDevice> {
         b"/dev/zero" => Some(VirtualDevice::Zero),
         b"/dev/urandom" | b"/dev/random" => Some(VirtualDevice::Urandom),
         b"/dev/full" => Some(VirtualDevice::Full),
+        _ => None,
+    }
+}
+
+/// Sentinel host_handle for synthetic in-kernel files (/etc/passwd, etc.).
+const SYNTHETIC_FILE_HANDLE: i64 = -100;
+
+/// Return static content for synthetic /etc files.
+/// These provide a minimal POSIX environment (user/group database, DNS).
+fn synthetic_file_content(path: &[u8]) -> Option<&'static [u8]> {
+    match path {
+        b"/etc/passwd" => Some(b"root:x:0:0:root:/root:/bin/sh\nuser:x:1000:1000:user:/home/user:/bin/sh\n"),
+        b"/etc/group" => Some(b"root:x:0:\nuser:x:1000:\n"),
+        b"/etc/hosts" => Some(b"127.0.0.1\tlocalhost\n::1\tlocalhost\n"),
         _ => None,
     }
 }
@@ -146,6 +160,20 @@ pub fn sys_open(
         let status_flags = oflags & !CREATION_FLAGS;
         let ofd_idx = proc.ofd_table.create(
             FileType::CharDevice, status_flags, dev.host_handle(), resolved,
+        );
+        let fd_flags = if oflags & O_CLOEXEC != 0 { FD_CLOEXEC } else { 0 };
+        let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
+        return Ok(fd);
+    }
+
+    // Synthetic /etc files — in-kernel read-only files (passwd, group, hosts)
+    if synthetic_file_content(&resolved).is_some() {
+        if oflags & (O_WRONLY | O_RDWR) != 0 {
+            return Err(Errno::EACCES);
+        }
+        let status_flags = oflags & !CREATION_FLAGS;
+        let ofd_idx = proc.ofd_table.create(
+            FileType::Regular, status_flags, SYNTHETIC_FILE_HANDLE, resolved,
         );
         let fd_flags = if oflags & O_CLOEXEC != 0 { FD_CLOEXEC } else { 0 };
         let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
@@ -287,8 +315,10 @@ pub fn sys_close(
                 if dir_host_handle >= 0 {
                     let _ = host.host_closedir(dir_host_handle);
                 }
-                // Virtual char devices have no host handle to close
-                if file_type == FileType::CharDevice && host_handle < 0 {
+                // Virtual char devices and synthetic files have no host handle to close
+                if (file_type == FileType::CharDevice && host_handle < 0)
+                    || host_handle == SYNTHETIC_FILE_HANDLE
+                {
                     // Nothing to clean up on host side
                 } else {
                     host.host_close(host_handle)?;
@@ -628,6 +658,22 @@ pub fn sys_read(
                     return Ok(n);
                 }
             }
+            // Synthetic in-kernel files (/etc/passwd, /etc/group, /etc/hosts)
+            if host_handle == SYNTHETIC_FILE_HANDLE {
+                let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+                let content = synthetic_file_content(&ofd.path).unwrap_or(b"");
+                let offset = ofd.offset as usize;
+                if offset >= content.len() {
+                    return Ok(0); // EOF
+                }
+                let remaining = &content[offset..];
+                let n = buf.len().min(remaining.len());
+                buf[..n].copy_from_slice(&remaining[..n]);
+                let ofd = proc.ofd_table.get_mut(ofd_idx).ok_or(Errno::EBADF)?;
+                ofd.offset += n as i64;
+                return Ok(n);
+            }
+
             let n = host.host_read(host_handle, buf)?;
             if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
                 ofd.offset += n as i64;
@@ -888,6 +934,20 @@ pub fn sys_lseek(
     // Virtual char devices: seek is a no-op, always returns 0
     if ofd.file_type == FileType::CharDevice && VirtualDevice::from_host_handle(ofd.host_handle).is_some() {
         return Ok(0);
+    }
+
+    // Synthetic in-kernel files: compute offset without host call
+    if ofd.host_handle == SYNTHETIC_FILE_HANDLE {
+        let size = synthetic_file_content(&ofd.path).map_or(0, |c| c.len() as i64);
+        let new_pos = match whence {
+            SEEK_SET => offset,
+            SEEK_CUR => ofd.offset + offset,
+            SEEK_END => size + offset,
+            _ => return Err(Errno::EINVAL),
+        };
+        if new_pos < 0 { return Err(Errno::EINVAL); }
+        ofd.offset = new_pos;
+        return Ok(new_pos);
     }
 
     let new_offset = match whence {
@@ -1292,6 +1352,21 @@ pub fn sys_fstat(
         st.st_uid = proc.euid;
         st.st_gid = proc.egid;
         Ok(st)
+    } else if ofd.host_handle == SYNTHETIC_FILE_HANDLE {
+        let size = synthetic_file_content(&ofd.path).map_or(0, |c| c.len() as u64);
+        Ok(WasmStat {
+            st_dev: 0,
+            st_ino: 0x45544300, // "ETC\0" — unique inode range for synthetic files
+            st_mode: S_IFREG | 0o444,
+            st_nlink: 1,
+            st_uid: 0,
+            st_gid: 0,
+            st_size: size,
+            st_atime_sec: 0, st_atime_nsec: 0,
+            st_mtime_sec: 0, st_mtime_nsec: 0,
+            st_ctime_sec: 0, st_ctime_nsec: 0,
+            _pad: 0,
+        })
     } else {
         let mut st = host.host_fstat(ofd.host_handle)?;
         st.st_uid = proc.euid;
@@ -1554,6 +1629,15 @@ pub fn sys_stat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resul
             st_ctime_sec: 0, st_ctime_nsec: 0, _pad: 0,
         });
     }
+    if let Some(content) = synthetic_file_content(&resolved) {
+        return Ok(WasmStat {
+            st_dev: 0, st_ino: 0x45544300,
+            st_mode: S_IFREG | 0o444, st_nlink: 1,
+            st_uid: 0, st_gid: 0, st_size: content.len() as u64,
+            st_atime_sec: 0, st_atime_nsec: 0, st_mtime_sec: 0, st_mtime_nsec: 0,
+            st_ctime_sec: 0, st_ctime_nsec: 0, _pad: 0,
+        });
+    }
     let mut st = host.host_stat(&resolved)?;
     st.st_uid = proc.euid;
     st.st_gid = proc.egid;
@@ -1570,6 +1654,15 @@ pub fn sys_lstat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resu
         return Ok(WasmStat {
             st_dev: 5, st_ino: 0, st_mode: S_IFCHR | 0o666, st_nlink: 1,
             st_uid: proc.euid, st_gid: proc.egid, st_size: 0,
+            st_atime_sec: 0, st_atime_nsec: 0, st_mtime_sec: 0, st_mtime_nsec: 0,
+            st_ctime_sec: 0, st_ctime_nsec: 0, _pad: 0,
+        });
+    }
+    if let Some(content) = synthetic_file_content(&resolved) {
+        return Ok(WasmStat {
+            st_dev: 0, st_ino: 0x45544300,
+            st_mode: S_IFREG | 0o444, st_nlink: 1,
+            st_uid: 0, st_gid: 0, st_size: content.len() as u64,
             st_atime_sec: 0, st_atime_nsec: 0, st_mtime_sec: 0, st_mtime_nsec: 0,
             st_ctime_sec: 0, st_ctime_nsec: 0, _pad: 0,
         });
@@ -1632,6 +1725,11 @@ pub fn sys_chown(proc: &mut Process, host: &mut dyn HostIO, path: &[u8], uid: u3
 pub fn sys_access(proc: &mut Process, host: &mut dyn HostIO, path: &[u8], amode: u32) -> Result<(), Errno> {
     let resolved = resolve_path(path, &proc.cwd);
     if match_virtual_device(&resolved).is_some() || match_dev_fd(&resolved).is_some() {
+        return Ok(());
+    }
+    if synthetic_file_content(&resolved).is_some() {
+        // Synthetic files are read-only: allow R_OK and F_OK, deny W_OK/X_OK
+        if amode & 0o2 != 0 { return Err(Errno::EACCES); } // W_OK
         return Ok(());
     }
     host.host_access(&resolved, amode)
@@ -3929,6 +4027,20 @@ pub fn sys_openat(
         return Ok(fd);
     }
 
+    // Synthetic /etc files — in-kernel read-only files
+    if synthetic_file_content(&resolved).is_some() {
+        if oflags & (O_WRONLY | O_RDWR) != 0 {
+            return Err(Errno::EACCES);
+        }
+        let status_flags = oflags & !CREATION_FLAGS;
+        let ofd_idx = proc.ofd_table.create(
+            FileType::Regular, status_flags, SYNTHETIC_FILE_HANDLE, resolved,
+        );
+        let fd_flags = if oflags & O_CLOEXEC != 0 { FD_CLOEXEC } else { 0 };
+        let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
+        return Ok(fd);
+    }
+
     let effective_mode = if oflags & O_CREAT != 0 {
         mode & !proc.umask
     } else {
@@ -3987,6 +4099,15 @@ pub fn sys_fstatat(
         return Ok(WasmStat {
             st_dev: 5, st_ino: 0, st_mode: S_IFCHR | 0o666, st_nlink: 1,
             st_uid: proc.euid, st_gid: proc.egid, st_size: 0,
+            st_atime_sec: 0, st_atime_nsec: 0, st_mtime_sec: 0, st_mtime_nsec: 0,
+            st_ctime_sec: 0, st_ctime_nsec: 0, _pad: 0,
+        });
+    }
+    if let Some(content) = synthetic_file_content(&resolved) {
+        return Ok(WasmStat {
+            st_dev: 0, st_ino: 0x45544300,
+            st_mode: S_IFREG | 0o444, st_nlink: 1,
+            st_uid: 0, st_gid: 0, st_size: content.len() as u64,
             st_atime_sec: 0, st_atime_nsec: 0, st_mtime_sec: 0, st_mtime_nsec: 0,
             st_ctime_sec: 0, st_ctime_nsec: 0, _pad: 0,
         });
@@ -5338,6 +5459,10 @@ pub fn sys_faccessat(
     if match_virtual_device(&resolved).is_some() || match_dev_fd(&resolved).is_some() {
         return Ok(());
     }
+    if synthetic_file_content(&resolved).is_some() {
+        if amode & 0o2 != 0 { return Err(Errno::EACCES); }
+        return Ok(());
+    }
     host.host_access(&resolved, amode)
 }
 
@@ -5798,7 +5923,7 @@ pub fn sys_waitpid(
 mod tests {
     use super::*;
     use crate::process::ProcessState;
-    use wasm_posix_shared::mode::{S_IFDIR, S_IFREG, S_IFLNK};
+    use wasm_posix_shared::mode::{S_IFDIR, S_IFMT, S_IFREG, S_IFLNK};
     use wasm_posix_shared::poll::{POLLIN, POLLOUT};
 
     /// Mock host I/O for testing.
@@ -11540,5 +11665,83 @@ mod tests {
         assert_eq!(state.dequeue(), Some((rt_sig, 0, 0)));
         assert_eq!(state.dequeue(), Some((rt_sig, 0, 0)));
         assert_eq!(state.dequeue(), None);
+    }
+
+    // ── Synthetic /etc file tests ──
+
+    #[test]
+    fn test_synthetic_file_open_read_close() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/etc/passwd", O_RDONLY, 0).unwrap();
+        assert!(fd >= 0);
+
+        let mut buf = [0u8; 256];
+        let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
+        assert!(n > 0);
+        let content = &buf[..n];
+        assert!(content.starts_with(b"root:x:0:0:"));
+
+        // Second read should return remaining or 0 (EOF)
+        let n2 = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
+        // Total should be the full content
+        let passwd_content = synthetic_file_content(b"/etc/passwd").unwrap();
+        assert_eq!(n + n2, passwd_content.len());
+
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn test_synthetic_file_stat() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let st = sys_stat(&mut proc, &mut host, b"/etc/passwd").unwrap();
+        assert_eq!(st.st_mode & S_IFMT, S_IFREG);
+        let passwd_content = synthetic_file_content(b"/etc/passwd").unwrap();
+        assert_eq!(st.st_size, passwd_content.len() as u64);
+    }
+
+    #[test]
+    fn test_synthetic_file_hosts() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/etc/hosts", O_RDONLY, 0).unwrap();
+        let mut buf = [0u8; 256];
+        let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
+        let content = core::str::from_utf8(&buf[..n]).unwrap();
+        assert!(content.contains("127.0.0.1"));
+        assert!(content.contains("localhost"));
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn test_synthetic_file_lseek() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/etc/passwd", O_RDONLY, 0).unwrap();
+
+        // Read a few bytes
+        let mut buf = [0u8; 5];
+        let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
+        assert_eq!(n, 5);
+
+        // Seek back to start
+        let pos = sys_lseek(&mut proc, &mut host, fd, 0, SEEK_SET).unwrap();
+        assert_eq!(pos, 0);
+
+        // Read again — should get same content
+        let n2 = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
+        assert_eq!(n2, 5);
+        assert_eq!(&buf[..5], b"root:");
+
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn test_synthetic_file_write_denied() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let result = sys_open(&mut proc, &mut host, b"/etc/passwd", O_WRONLY, 0);
+        assert_eq!(result.unwrap_err(), Errno::EACCES);
     }
 }
