@@ -3,3 +3,4 @@ wordpress/
 sqlite-database-integration/
 *.tar.gz
 *.zip
+node_modules/

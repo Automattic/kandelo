@@ -1,0 +1,13 @@
+{
+  "name": "wasm-posix-kernel-wordpress-example",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "benchmark": "npx tsx perf/benchmark.ts",
+    "serve": "npx tsx serve.ts"
+  },
+  "dependencies": {
+    "@playwright/test": "^1.58.2",
+    "tsx": "^4.19.4"
+  }
+}

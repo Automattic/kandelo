@@ -498,6 +498,8 @@ export class CentralizedKernelWorker {
   }>();
   /** Separate scratch buffer for TCP data pumping */
   private tcpScratchOffset = 0;
+  /** Node.js net module (loaded dynamically for browser compatibility) */
+  private netModule: typeof import("net") | null = null;
   /** Parent-child process tracking for waitpid */
   private childToParent = new Map<number, number>();
   private parentToChildren = new Map<number, Set<number>>();
@@ -624,6 +626,13 @@ export class CentralizedKernelWorker {
     this.scratchOffset = allocScratch(SCRATCH_SIZE);
     if (this.scratchOffset === 0) {
       throw new Error("Failed to allocate kernel scratch buffer");
+    }
+
+    // Try to load Node.js net module for TCP bridging
+    try {
+      this.netModule = await import("net");
+    } catch {
+      // Not in Node.js environment — TCP bridging disabled
     }
 
     // Allocate a separate scratch buffer for TCP data pumping
@@ -2904,13 +2913,9 @@ export class CentralizedKernelWorker {
     // Avoid duplicate listeners on the same fd
     if (this.tcpListeners.has(fd)) return;
 
-    // Dynamically import net (only available in Node.js)
-    let net: typeof import("net");
-    try {
-      net = require("net");
-    } catch {
-      return; // Not in Node.js environment
-    }
+    if (!this.netModule) return; // Not in Node.js environment
+
+    const net = this.netModule;
 
     const connections = new Set<import("net").Socket>();
     const server = net.createServer((clientSocket) => {
