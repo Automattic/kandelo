@@ -186,7 +186,10 @@ export async function runCentralizedProgram(
 
   // Inject stdout/stderr capture callbacks into the kernel's internal instance.
   // WasmPosixKernel handles fd 1/2 via callbacks, not PlatformIO.write().
+  // Merge with existing callbacks to preserve onAlarm, onPosixTimer, onNetListen.
+  const existingCallbacks = (kernelWorker as any).kernel.callbacks || {};
   (kernelWorker as any).kernel.callbacks = {
+    ...existingCallbacks,
     onStdout: (data: Uint8Array) => {
       stdout += new TextDecoder().decode(data);
     },

@@ -75,6 +75,9 @@ pub trait HostIO {
     fn host_net_send(&mut self, handle: i32, data: &[u8], flags: u32) -> Result<usize, Errno>;
     fn host_net_recv(&mut self, handle: i32, len: u32, flags: u32, buf: &mut [u8]) -> Result<usize, Errno>;
     fn host_net_close(&mut self, handle: i32) -> Result<(), Errno>;
+    /// Notify the host that an AF_INET socket is now listening, so the host
+    /// can open a real TCP server on the given port.
+    fn host_net_listen(&mut self, fd: i32, port: u16, addr: &[u8; 4]) -> Result<(), Errno>;
     fn host_getaddrinfo(&mut self, name: &[u8], result: &mut [u8]) -> Result<usize, Errno>;
     fn host_fcntl_lock(
         &mut self, path: &[u8], pid: u32, cmd: u32, lock_type: u32,

@@ -74,6 +74,7 @@ unsafe extern "C" {
     fn host_net_send(handle: i32, buf_ptr: *const u8, buf_len: u32, flags: u32) -> i32;
     fn host_net_recv(handle: i32, buf_ptr: *mut u8, buf_len: u32, flags: u32) -> i32;
     fn host_net_close(handle: i32) -> i32;
+    fn host_net_listen(fd: i32, port: u32, addr_a: u32, addr_b: u32, addr_c: u32, addr_d: u32) -> i32;
     fn host_getaddrinfo(name_ptr: *const u8, name_len: u32, result_ptr: *mut u8, result_len: u32) -> i32;
     fn host_fcntl_lock(
         path_ptr: *const u8, path_len: u32,
@@ -487,6 +488,13 @@ impl HostIO for WasmHostIO {
 
     fn host_net_close(&mut self, handle: i32) -> Result<(), Errno> {
         let result = unsafe { host_net_close(handle) };
+        i32_to_result(result)
+    }
+
+    fn host_net_listen(&mut self, fd: i32, port: u16, addr: &[u8; 4]) -> Result<(), Errno> {
+        let result = unsafe {
+            host_net_listen(fd, port as u32, addr[0] as u32, addr[1] as u32, addr[2] as u32, addr[3] as u32)
+        };
         i32_to_result(result)
     }
 
@@ -3858,11 +3866,11 @@ pub extern "C" fn kernel_bind(fd: i32, addr_ptr: *const u8, addr_len: u32) -> i3
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_listen(fd: i32, backlog: u32) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
-    let result = match syscalls::sys_listen(proc, fd, backlog) {
+    let mut host = WasmHostIO;
+    let result = match syscalls::sys_listen(proc, &mut host, fd, backlog) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    let mut host = WasmHostIO;
     deliver_pending_signals(proc, &mut host);
     result
 }
@@ -5792,4 +5800,195 @@ pub extern "C" fn kernel_pselect6(
     };
     deliver_pending_signals(proc, &mut host);
     result
+}
+
+// ---------------------------------------------------------------------------
+// TCP bridge exports — used by the host to inject external TCP connections
+// into the kernel's pipe-buffer-backed socket system.
+// ---------------------------------------------------------------------------
+
+/// Inject an external TCP connection into a listening socket's backlog.
+///
+/// Called by the host when a real TCP connection arrives. Creates pipe pairs
+/// and an accepted socket, mirroring the loopback connect pattern.
+///
+/// Returns the recv_pipe_idx on success (host derives send_pipe_idx = recv_pipe_idx + 1),
+/// or negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_inject_connection(
+    pid: u32,
+    listener_fd: i32,
+    peer_addr_a: u32,
+    peer_addr_b: u32,
+    peer_addr_c: u32,
+    peer_addr_d: u32,
+    peer_port: u32,
+) -> i32 {
+    use crate::pipe::PipeBuffer;
+    use crate::socket::{SocketDomain, SocketInfo, SocketState, SocketType};
+    use crate::ofd::FileType;
+
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let proc = match table.get_mut(pid) {
+        Some(p) => p,
+        None => return -(Errno::ESRCH as i32),
+    };
+
+    // Look up the listener socket via fd
+    let entry = match proc.fd_table.get(listener_fd) {
+        Ok(e) => e,
+        Err(e) => return -(e as i32),
+    };
+    let ofd = match proc.ofd_table.get(entry.ofd_ref.0) {
+        Some(o) => o,
+        None => return -(Errno::EBADF as i32),
+    };
+    if ofd.file_type != FileType::Socket {
+        return -(Errno::ENOTSOCK as i32);
+    }
+    let listener_idx = (-(ofd.host_handle + 1)) as usize;
+
+    let sock = match proc.sockets.get(listener_idx) {
+        Some(s) => s,
+        None => return -(Errno::EBADF as i32),
+    };
+    if sock.state != SocketState::Listening {
+        return -(Errno::EINVAL as i32);
+    }
+
+    let bind_addr = sock.bind_addr;
+    let bind_port = sock.bind_port;
+
+    // Allocate two pipe buffers for bidirectional data:
+    //   recv_pipe: host writes (incoming TCP data) → PHP reads
+    //   send_pipe: PHP writes → host reads (outgoing TCP data)
+    let recv_pipe_idx = proc.pipes.len();
+    proc.pipes.push(Some(PipeBuffer::new(65536)));
+    let send_pipe_idx = proc.pipes.len();
+    proc.pipes.push(Some(PipeBuffer::new(65536)));
+
+    // Create accepted socket with pipe buffers
+    let mut accepted_sock = SocketInfo::new(SocketDomain::Inet, SocketType::Stream, 0);
+    accepted_sock.state = SocketState::Connected;
+    accepted_sock.recv_buf_idx = Some(recv_pipe_idx);
+    accepted_sock.send_buf_idx = Some(send_pipe_idx);
+    accepted_sock.bind_addr = bind_addr;
+    accepted_sock.bind_port = bind_port;
+    accepted_sock.peer_addr = [
+        peer_addr_a as u8,
+        peer_addr_b as u8,
+        peer_addr_c as u8,
+        peer_addr_d as u8,
+    ];
+    accepted_sock.peer_port = peer_port as u16;
+    let accepted_idx = proc.sockets.alloc(accepted_sock);
+
+    // Push to listener's backlog
+    let listener = match proc.sockets.get_mut(listener_idx) {
+        Some(s) => s,
+        None => return -(Errno::EBADF as i32),
+    };
+    listener.listen_backlog.push(accepted_idx);
+
+    recv_pipe_idx as i32
+}
+
+/// Read data from a pipe buffer into kernel memory.
+/// Returns number of bytes read, or negative errno.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_pipe_read(pid: u32, pipe_idx: u32, buf_ptr: *mut u8, buf_len: u32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let proc = match table.get_mut(pid) {
+        Some(p) => p,
+        None => return -(Errno::ESRCH as i32),
+    };
+    let pipe = match proc.pipes.get_mut(pipe_idx as usize) {
+        Some(Some(p)) => p,
+        _ => return -(Errno::EBADF as i32),
+    };
+    let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
+    pipe.read(buf) as i32
+}
+
+/// Write data from kernel memory into a pipe buffer.
+/// Returns number of bytes written, or negative errno.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_pipe_write(pid: u32, pipe_idx: u32, buf_ptr: *const u8, buf_len: u32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let proc = match table.get_mut(pid) {
+        Some(p) => p,
+        None => return -(Errno::ESRCH as i32),
+    };
+    let pipe = match proc.pipes.get_mut(pipe_idx as usize) {
+        Some(Some(p)) => p,
+        _ => return -(Errno::EBADF as i32),
+    };
+    let buf = unsafe { slice::from_raw_parts(buf_ptr, buf_len as usize) };
+    pipe.write(buf) as i32
+}
+
+/// Close the write end of a pipe buffer (signals EOF to the reader).
+/// Returns 0 on success, negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_pipe_close_write(pid: u32, pipe_idx: u32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let proc = match table.get_mut(pid) {
+        Some(p) => p,
+        None => return -(Errno::ESRCH as i32),
+    };
+    let pipe = match proc.pipes.get_mut(pipe_idx as usize) {
+        Some(Some(p)) => p,
+        _ => return -(Errno::EBADF as i32),
+    };
+    pipe.close_write_end();
+    0
+}
+
+/// Close the read end of a pipe buffer (signals to the writer that nobody is reading).
+/// Returns 0 on success, negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_pipe_close_read(pid: u32, pipe_idx: u32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let proc = match table.get_mut(pid) {
+        Some(p) => p,
+        None => return -(Errno::ESRCH as i32),
+    };
+    let pipe = match proc.pipes.get_mut(pipe_idx as usize) {
+        Some(Some(p)) => p,
+        _ => return -(Errno::EBADF as i32),
+    };
+    pipe.close_read_end();
+    0
+}
+
+/// Check if a pipe's write end is still open.
+/// Returns 1 if open, 0 if closed, negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_pipe_is_write_open(pid: u32, pipe_idx: u32) -> i32 {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let proc = match table.get(pid) {
+        Some(p) => p,
+        None => return -(Errno::ESRCH as i32),
+    };
+    let pipe = match proc.pipes.get(pipe_idx as usize) {
+        Some(Some(p)) => p,
+        _ => return -(Errno::EBADF as i32),
+    };
+    if pipe.is_write_end_open() { 1 } else { 0 }
+}
+
+/// Check if a pipe's read end is still open.
+/// Returns 1 if open, 0 if closed, negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_pipe_is_read_open(pid: u32, pipe_idx: u32) -> i32 {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let proc = match table.get(pid) {
+        Some(p) => p,
+        None => return -(Errno::ESRCH as i32),
+    };
+    let pipe = match proc.pipes.get(pipe_idx as usize) {
+        Some(Some(p)) => p,
+        _ => return -(Errno::EBADF as i32),
+    };
+    if pipe.is_read_end_open() { 1 } else { 0 }
 }
