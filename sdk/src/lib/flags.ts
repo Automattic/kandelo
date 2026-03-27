@@ -83,6 +83,17 @@ const SOURCE_EXTS = new Set(['.c', '.cc', '.cpp', '.cxx', '.m', '.mm', '.i', '.i
 const OBJECT_EXTS = new Set(['.o']);
 const ARCHIVE_EXTS = new Set(['.a']);
 
+// Flags that consume the next argument as a value (not a file path).
+const FLAGS_WITH_VALUE = new Set([
+  '-MT', '-MF', '-MQ', '-MJ',
+  '-isystem', '-include', '-imacros',
+  '-idirafter', '-iprefix', '-iwithprefix', '-iwithprefixbefore',
+  '-isysroot',
+  '-target', '-arch',
+  '-x',
+  '-D', '-U', '-I', '-L', '-F',
+]);
+
 export function parseArgs(args: string[]): ParsedArgs {
   const result: ParsedArgs = {
     compileOnly: false,
@@ -108,6 +119,11 @@ export function parseArgs(args: string[]): ParsedArgs {
       result.outputFile = args[i] ?? null;
     } else if (arg.startsWith('-o') && arg.length > 2) {
       result.outputFile = arg.substring(2);
+    } else if (FLAGS_WITH_VALUE.has(arg)) {
+      // Flag that takes the next arg as its value — keep both as otherArgs
+      result.otherArgs.push(arg);
+      i++;
+      if (i < args.length) result.otherArgs.push(args[i]);
     } else if (!arg.startsWith('-')) {
       const ext = arg.substring(arg.lastIndexOf('.'));
       if (SOURCE_EXTS.has(ext)) {
