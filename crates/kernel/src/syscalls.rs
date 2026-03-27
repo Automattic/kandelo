@@ -936,6 +936,22 @@ pub fn sys_lseek(
         return Err(Errno::ESPIPE);
     }
 
+    // Directory: lseek(fd, 0, SEEK_SET) rewinds for subsequent getdents64 calls.
+    if ofd.file_type == FileType::Directory {
+        if whence == SEEK_SET && offset == 0 {
+            // Close the existing dir handle if open (not -1=unopened, not -2=exhausted)
+            if ofd.dir_host_handle >= 0 {
+                let _ = host.host_closedir(ofd.dir_host_handle);
+            }
+            ofd.dir_host_handle = -1; // will be reopened by next getdents64
+            ofd.dir_synth_state = 0;
+            ofd.offset = 0;
+            return Ok(0);
+        }
+        // Other seeks on directories: just track offset
+        return Ok(0);
+    }
+
     // Virtual char devices: seek is a no-op, always returns 0
     if ofd.file_type == FileType::CharDevice && VirtualDevice::from_host_handle(ofd.host_handle).is_some() {
         return Ok(0);
