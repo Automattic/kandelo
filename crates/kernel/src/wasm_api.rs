@@ -787,6 +787,23 @@ pub extern "C" fn kernel_set_mode(mode: u32) {
     crate::set_kernel_mode(mode);
 }
 
+/// Allocate a scratch buffer from the kernel's own heap allocator.
+/// Returns the offset in kernel Wasm memory. The caller must ensure
+/// the buffer is not freed (it lives for the lifetime of the kernel).
+/// This is critical: the host must NOT use memory.grow() for scratch
+/// space, as the kernel's allocator would then treat those grown pages
+/// as available heap, leading to overlapping writes and corruption.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_alloc_scratch(size: u32) -> u32 {
+    extern crate alloc;
+    let layout = alloc::alloc::Layout::from_size_align(size as usize, 16).unwrap();
+    let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
+    if ptr.is_null() {
+        return 0;
+    }
+    ptr as u32
+}
+
 /// Create a new process in the process table (centralized mode).
 /// Returns 0 on success, -EEXIST if pid already exists.
 #[unsafe(no_mangle)]
