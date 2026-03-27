@@ -61,7 +61,7 @@ SOURCES=(
     SAX.c SAX2.c threads.c tree.c uri.c valid.c
     xmlIO.c xmlmemory.c xmlstring.c
     # Optional modules enabled by configure
-    c14n.c catalog.c debugXML.c
+    c14n.c catalog.c
     HTMLparser.c HTMLtree.c
     legacy.c
     pattern.c relaxng.c
