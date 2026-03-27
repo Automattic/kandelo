@@ -489,6 +489,15 @@ export class CentralizedKernelWorker {
   }>();
   /** Maps "pid:tid" to ctidPtr for CLONE_CHILD_CLEARTID on thread exit */
   private threadCtidPtrs = new Map<string, number>();
+  /** TCP listeners: fd → { server, pid, port, connections } */
+  private tcpListeners = new Map<number, {
+    server: import("net").Server;
+    pid: number;
+    port: number;
+    connections: Set<import("net").Socket>;
+  }>();
+  /** Separate scratch buffer for TCP data pumping */
+  private tcpScratchOffset = 0;
   /** Parent-child process tracking for waitpid */
   private childToParent = new Map<number, number>();
   private parentToChildren = new Map<number, Set<number>>();
@@ -532,6 +541,12 @@ export class CentralizedKernelWorker {
           }, seconds * 1000);
           this.alarmTimers.set(pid, timer);
         }
+        return 0;
+      },
+      onNetListen: (fd: number, port: number, addr: [number, number, number, number]): number => {
+        const pid = this.currentHandlePid;
+        if (pid === 0) return 0;
+        this.startTcpListener(pid, fd, port);
         return 0;
       },
       onPosixTimer: (timerId: number, signo: number, valueMs: number, intervalMs: number): number => {
@@ -611,6 +626,12 @@ export class CentralizedKernelWorker {
       throw new Error("Failed to allocate kernel scratch buffer");
     }
 
+    // Allocate a separate scratch buffer for TCP data pumping
+    this.tcpScratchOffset = allocScratch(65536);
+    if (this.tcpScratchOffset === 0) {
+      throw new Error("Failed to allocate TCP scratch buffer");
+    }
+
     // Register a SharedLockTable so host_fcntl_lock can handle advisory locks
     // (including OFD locks) within the centralized kernel.
     const lockTable = SharedLockTable.create();
@@ -668,6 +689,9 @@ export class CentralizedKernelWorker {
     // Remove channels from active list
     this.activeChannels = this.activeChannels.filter((ch) => ch.pid !== pid);
 
+    // Clean up TCP listeners for this process
+    this.cleanupTcpListeners(pid);
+
     // Remove from kernel process table
     this.removeFromKernelProcessTable(pid);
 
@@ -702,6 +726,8 @@ export class CentralizedKernelWorker {
       clearTimeout(sleepTimer.timer);
       this.pendingSleeps.delete(pid);
     }
+    // Clean up TCP listeners for this process
+    this.cleanupTcpListeners(pid);
   }
 
   /**
@@ -1031,6 +1057,7 @@ export class CentralizedKernelWorker {
     // Read return value and errno from kernel scratch
     const retVal = kernelView.getInt32(CH_RETURN, true);
     const errVal = kernelView.getUint32(CH_ERRNO, true);
+
 
     // --- Process memory growth for brk/mmap/mremap ---
     // In centralized mode, the kernel's ensure_memory_covers() grows the
@@ -2863,5 +2890,198 @@ export class CentralizedKernelWorker {
   /** Get the kernel Wasm instance. */
   getKernelInstance(): WebAssembly.Instance | null {
     return this.kernelInstance;
+  }
+
+  // ---------------------------------------------------------------------------
+  // TCP bridge — injects real TCP connections into kernel pipe-buffer sockets
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Start a TCP server for a listening socket, bridging real TCP connections
+   * into the kernel's pipe-buffer-backed accept path.
+   */
+  private startTcpListener(pid: number, fd: number, port: number): void {
+    // Avoid duplicate listeners on the same fd
+    if (this.tcpListeners.has(fd)) return;
+
+    // Dynamically import net (only available in Node.js)
+    let net: typeof import("net");
+    try {
+      net = require("net");
+    } catch {
+      return; // Not in Node.js environment
+    }
+
+    const connections = new Set<import("net").Socket>();
+    const server = net.createServer((clientSocket) => {
+      this.handleIncomingTcpConnection(pid, fd, clientSocket, connections);
+    });
+
+    server.listen(port, "0.0.0.0", () => {
+      // Server is ready
+    });
+
+    server.on("error", (err) => {
+      console.error(`TCP listener error on port ${port}:`, err);
+    });
+
+    this.tcpListeners.set(fd, { server, pid, port, connections });
+  }
+
+  /**
+   * Handle an incoming TCP connection: inject it into the kernel's listening
+   * socket's backlog and pump data between the real socket and kernel pipes.
+   */
+  private handleIncomingTcpConnection(
+    pid: number,
+    listenerFd: number,
+    clientSocket: import("net").Socket,
+    connections: Set<import("net").Socket>,
+  ): void {
+    connections.add(clientSocket);
+
+    const remoteAddr = clientSocket.remoteAddress || "127.0.0.1";
+    const remotePort = clientSocket.remotePort || 0;
+
+    // Parse IP address
+    const parts = remoteAddr.replace("::ffff:", "").split(".").map(Number);
+    const addrA = parts[0] || 127;
+    const addrB = parts[1] || 0;
+    const addrC = parts[2] || 0;
+    const addrD = parts[3] || 1;
+
+    // Inject connection into kernel
+    const injectConnection = this.kernelInstance!.exports.kernel_inject_connection as
+      (pid: number, listenerFd: number, a: number, b: number, c: number, d: number, port: number) => number;
+    const recvPipeIdx = injectConnection(pid, listenerFd, addrA, addrB, addrC, addrD, remotePort);
+    if (recvPipeIdx < 0) {
+      clientSocket.destroy();
+      connections.delete(clientSocket);
+      return;
+    }
+
+    const sendPipeIdx = recvPipeIdx + 1;
+
+    // Get kernel pipe access functions
+    const pipeWrite = this.kernelInstance!.exports.kernel_pipe_write as
+      (pid: number, pipeIdx: number, bufPtr: number, bufLen: number) => number;
+    const pipeRead = this.kernelInstance!.exports.kernel_pipe_read as
+      (pid: number, pipeIdx: number, bufPtr: number, bufLen: number) => number;
+    const pipeCloseWrite = this.kernelInstance!.exports.kernel_pipe_close_write as
+      (pid: number, pipeIdx: number) => number;
+    const pipeCloseRead = this.kernelInstance!.exports.kernel_pipe_close_read as
+      (pid: number, pipeIdx: number) => number;
+    const pipeIsReadOpen = this.kernelInstance!.exports.kernel_pipe_is_read_open as
+      (pid: number, pipeIdx: number) => number;
+
+    // Queue for incoming TCP data (written to recv pipe)
+    const inboundQueue: Buffer[] = [];
+    let clientEnded = false;
+    let pumpTimer: ReturnType<typeof setInterval> | null = null;
+
+    // Incoming TCP data → queue for writing to recv pipe
+    clientSocket.on("data", (chunk: Buffer) => {
+      inboundQueue.push(chunk);
+    });
+
+    clientSocket.on("end", () => {
+      clientEnded = true;
+    });
+
+    clientSocket.on("error", () => {
+      clientEnded = true;
+      clientSocket.destroy();
+    });
+
+    clientSocket.on("close", () => {
+      connections.delete(clientSocket);
+    });
+
+    // Pump loop: drain inbound queue → recv pipe, read send pipe → TCP socket
+    const scratchOffset = this.tcpScratchOffset;
+    const kernelMemory = this.kernelMemory!;
+
+    pumpTimer = setInterval(() => {
+      // Check if process still exists
+      if (!this.processes.has(pid)) {
+        cleanup();
+        return;
+      }
+
+      const mem = new Uint8Array(kernelMemory.buffer);
+
+      // 1. Drain inbound queue → recv pipe (host writes incoming TCP data)
+      while (inboundQueue.length > 0) {
+        const chunk = inboundQueue[0]!;
+        const toWrite = Math.min(chunk.length, 65536);
+        mem.set(chunk.subarray(0, toWrite), scratchOffset);
+        const written = pipeWrite(pid, recvPipeIdx, scratchOffset, toWrite);
+        if (written <= 0) break; // Pipe full, retry next tick
+        if (written >= chunk.length) {
+          inboundQueue.shift();
+        } else {
+          inboundQueue[0] = chunk.subarray(written) as Buffer;
+        }
+      }
+
+      // If TCP client closed and all queued data has been drained, close recv pipe write end
+      if (clientEnded && inboundQueue.length === 0) {
+        pipeCloseWrite(pid, recvPipeIdx);
+      }
+
+      // 2. Read send pipe → TCP socket (PHP's output goes to the real TCP client)
+      const readN = pipeRead(pid, sendPipeIdx, scratchOffset, 65536);
+      if (readN > 0) {
+        const outData = Buffer.from(mem.slice(scratchOffset, scratchOffset + readN));
+        // Data read from pipe, send to TCP client
+        if (!clientSocket.destroyed) {
+          clientSocket.write(outData);
+        }
+      }
+
+      // 3. Check if PHP closed its write end of the send pipe → end TCP connection
+      const sendWriteOpen = pipeIsReadOpen(pid, sendPipeIdx);
+      // Check the write end of the send pipe (PHP writes to it)
+      const pipeIsWriteOpen = this.kernelInstance!.exports.kernel_pipe_is_write_open as
+        (pid: number, pipeIdx: number) => number;
+      const writeOpen = pipeIsWriteOpen(pid, sendPipeIdx);
+
+      if (writeOpen === 0 && readN === 0) {
+        // PHP has closed its end and all data has been drained
+        if (!clientSocket.destroyed) {
+          clientSocket.end();
+        }
+        cleanup();
+      }
+    }, 1);
+
+    const cleanup = () => {
+      if (pumpTimer) {
+        clearInterval(pumpTimer);
+        pumpTimer = null;
+      }
+      // Close read end of recv pipe (host was the writer, close the pipe for reads)
+      pipeCloseRead(pid, recvPipeIdx);
+      connections.delete(clientSocket);
+      if (!clientSocket.destroyed) {
+        clientSocket.destroy();
+      }
+    };
+  }
+
+  /**
+   * Clean up all TCP listeners and connections for a process.
+   */
+  private cleanupTcpListeners(pid: number): void {
+    for (const [fd, entry] of this.tcpListeners) {
+      if (entry.pid === pid) {
+        entry.server.close();
+        for (const conn of entry.connections) {
+          conn.destroy();
+        }
+        entry.connections.clear();
+        this.tcpListeners.delete(fd);
+      }
+    }
   }
 }

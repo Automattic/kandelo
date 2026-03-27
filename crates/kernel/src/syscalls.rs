@@ -705,6 +705,11 @@ pub fn sys_write(
     let file_type = ofd.file_type;
     let status_flags = ofd.status_flags;
 
+    // Zero-length write: POSIX returns 0 without writing
+    if buf.is_empty() {
+        return Ok(0);
+    }
+
     match file_type {
         FileType::Pipe => {
             if host_handle >= 0 {
@@ -3369,8 +3374,8 @@ pub fn sys_bind(proc: &mut Process, fd: i32, addr: &[u8]) -> Result<(), Errno> {
 /// Listen for connections on a socket.
 ///
 /// Sets the socket state to Listening so that connect() can find it.
-pub fn sys_listen(proc: &mut Process, fd: i32, _backlog: u32) -> Result<(), Errno> {
-    use crate::socket::{SocketState, SocketType};
+pub fn sys_listen(proc: &mut Process, host: &mut dyn HostIO, fd: i32, _backlog: u32) -> Result<(), Errno> {
+    use crate::socket::{SocketDomain, SocketState, SocketType};
 
     let entry = proc.fd_table.get(fd)?;
     let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
@@ -3386,6 +3391,14 @@ pub fn sys_listen(proc: &mut Process, fd: i32, _backlog: u32) -> Result<(), Errn
         return Err(Errno::EINVAL);
     }
     sock.state = SocketState::Listening;
+
+    // Notify the host for AF_INET sockets so it can open a real TCP server
+    let domain = sock.domain;
+    let port = sock.bind_port;
+    let addr = sock.bind_addr;
+    if domain == SocketDomain::Inet {
+        let _ = host.host_net_listen(fd, port, &addr);
+    }
     Ok(())
 }
 
@@ -6157,6 +6170,9 @@ mod tests {
         fn host_net_close(&mut self, _handle: i32) -> Result<(), Errno> {
             Ok(())
         }
+        fn host_net_listen(&mut self, _fd: i32, _port: u16, _addr: &[u8; 4]) -> Result<(), Errno> {
+            Ok(())
+        }
         fn host_getaddrinfo(&mut self, _name: &[u8], _result: &mut [u8]) -> Result<usize, Errno> {
             Err(Errno::ENOENT)
         }
@@ -7589,7 +7605,7 @@ mod tests {
         let mut addr = [0u8; 16];
         addr[0] = 2;
         sys_bind(&mut proc, fd, &addr).unwrap();
-        let result = sys_listen(&mut proc, fd, 5);
+        let result = sys_listen(&mut proc, &mut host, fd, 5);
         assert_eq!(result, Ok(()));
     }
 
@@ -7602,7 +7618,7 @@ mod tests {
         let mut addr = [0u8; 16];
         addr[0] = 2;
         sys_bind(&mut proc, fd, &addr).unwrap();
-        sys_listen(&mut proc, fd, 5).unwrap();
+        sys_listen(&mut proc, &mut host, fd, 5).unwrap();
         let result = sys_accept(&mut proc, &mut host, fd);
         assert_eq!(result, Err(Errno::EAGAIN));
     }
@@ -9455,6 +9471,9 @@ mod tests {
         fn host_net_close(&mut self, _handle: i32) -> Result<(), Errno> {
             Ok(())
         }
+        fn host_net_listen(&mut self, _fd: i32, _port: u16, _addr: &[u8; 4]) -> Result<(), Errno> {
+            Ok(())
+        }
         fn host_getaddrinfo(&mut self, _name: &[u8], _result: &mut [u8]) -> Result<usize, Errno> {
             Err(Errno::ENOENT)
         }
@@ -9773,6 +9792,7 @@ mod tests {
             fn host_net_send(&mut self, _h: i32, data: &[u8], _f: u32) -> Result<usize, Errno> { Ok(data.len()) }
             fn host_net_recv(&mut self, _h: i32, _l: u32, _f: u32, _b: &mut [u8]) -> Result<usize, Errno> { Ok(0) }
             fn host_net_close(&mut self, _h: i32) -> Result<(), Errno> { Ok(()) }
+            fn host_net_listen(&mut self, _f: i32, _p: u16, _a: &[u8; 4]) -> Result<(), Errno> { Ok(()) }
             fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> { Err(Errno::ENOENT) }
             fn host_fcntl_lock(&mut self, _p: &[u8], _pid: u32, _cmd: u32, _lt: u32, _s: i64, _l: i64, _r: &mut [u8]) -> Result<(), Errno> { Ok(()) }
             fn host_fork(&self) -> i32 { -(Errno::ENOSYS as i32) }
@@ -10281,7 +10301,7 @@ mod tests {
         addr[0] = 2; // AF_INET
         addr[2] = 0x1F; addr[3] = 0x90; // port 8080
         sys_bind(&mut proc, server_fd, &addr).unwrap();
-        sys_listen(&mut proc, server_fd, 5).unwrap();
+        sys_listen(&mut proc, &mut host, server_fd, 5).unwrap();
 
         // Client: socket → connect to 127.0.0.1:8080
         let client_fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
@@ -11394,6 +11414,7 @@ mod tests {
             fn host_net_send(&mut self, _h: i32, data: &[u8], _f: u32) -> Result<usize, Errno> { Ok(data.len()) }
             fn host_net_recv(&mut self, _h: i32, _l: u32, _f: u32, _b: &mut [u8]) -> Result<usize, Errno> { Ok(0) }
             fn host_net_close(&mut self, _h: i32) -> Result<(), Errno> { Ok(()) }
+            fn host_net_listen(&mut self, _f: i32, _p: u16, _a: &[u8; 4]) -> Result<(), Errno> { Ok(()) }
             fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> { Ok(0) }
             fn host_fcntl_lock(&mut self, _p: &[u8], _pid: u32, _c: u32, _t: u32, _s: i64, _l: i64, _r: &mut [u8]) -> Result<(), Errno> { Ok(()) }
             fn host_fork(&self) -> i32 { -1 }
@@ -11476,6 +11497,7 @@ mod tests {
             fn host_net_send(&mut self, _h: i32, data: &[u8], _f: u32) -> Result<usize, Errno> { Ok(data.len()) }
             fn host_net_recv(&mut self, _h: i32, _l: u32, _f: u32, _b: &mut [u8]) -> Result<usize, Errno> { Ok(0) }
             fn host_net_close(&mut self, _h: i32) -> Result<(), Errno> { Ok(()) }
+            fn host_net_listen(&mut self, _f: i32, _p: u16, _a: &[u8; 4]) -> Result<(), Errno> { Ok(()) }
             fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> { Ok(0) }
             fn host_fcntl_lock(&mut self, _p: &[u8], _pid: u32, _c: u32, _t: u32, _s: i64, _l: i64, _r: &mut [u8]) -> Result<(), Errno> { Ok(()) }
             fn host_fork(&self) -> i32 { -1 }
@@ -11567,6 +11589,7 @@ mod tests {
             fn host_net_send(&mut self, _h: i32, data: &[u8], _f: u32) -> Result<usize, Errno> { Ok(data.len()) }
             fn host_net_recv(&mut self, _h: i32, _l: u32, _f: u32, _b: &mut [u8]) -> Result<usize, Errno> { Ok(0) }
             fn host_net_close(&mut self, _h: i32) -> Result<(), Errno> { Ok(()) }
+            fn host_net_listen(&mut self, _f: i32, _p: u16, _a: &[u8; 4]) -> Result<(), Errno> { Ok(()) }
             fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> { Ok(0) }
             fn host_fcntl_lock(&mut self, _p: &[u8], _pid: u32, _c: u32, _t: u32, _s: i64, _l: i64, _r: &mut [u8]) -> Result<(), Errno> { Ok(()) }
             fn host_fork(&self) -> i32 { -1 }

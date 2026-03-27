@@ -65,6 +65,7 @@ export interface KernelCallbacks {
   onFork?: (forkSab: SharedArrayBuffer) => void;
   onWaitpid?: (targetPid: number, options: number) => void;
   onClone?: (fnPtr: number, arg: number, stackPtr: number, tlsPtr: number, ctidPtr: number) => number;
+  onNetListen?: (fd: number, port: number, addr: [number, number, number, number]) => number;
   onStdout?: (data: Uint8Array) => void;
   onStderr?: (data: Uint8Array) => void;
   /** Read up to maxLen bytes from stdin. Return a Uint8Array with available data, or empty/null for EOF. */
@@ -325,6 +326,9 @@ export class WasmPosixKernel {
         },
         host_net_close: (handle: number): number => {
           return this.hostNetClose(handle);
+        },
+        host_net_listen: (fd: number, port: number, addrA: number, addrB: number, addrC: number, addrD: number): number => {
+          return this.hostNetListen(fd, port, addrA, addrB, addrC, addrD);
         },
         host_getaddrinfo: (namePtr: number, nameLen: number, resultPtr: number, resultLen: number): number => {
           return this.hostGetaddrinfo(namePtr, nameLen, resultPtr, resultLen);
@@ -1715,6 +1719,13 @@ export class WasmPosixKernel {
     } catch {
       return 0;
     }
+  }
+
+  private hostNetListen(fd: number, port: number, addrA: number, addrB: number, addrC: number, addrD: number): number {
+    if (this.callbacks.onNetListen) {
+      return this.callbacks.onNetListen(fd, port, [addrA, addrB, addrC, addrD]);
+    }
+    return 0;
   }
 
   private hostGetaddrinfo(namePtr: number, nameLen: number, resultPtr: number, resultLen: number): number {
