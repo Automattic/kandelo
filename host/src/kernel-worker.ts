@@ -600,15 +600,16 @@ export class CentralizedKernelWorker {
     const setMode = this.kernelInstance.exports.kernel_set_mode as (mode: number) => void;
     setMode(1);
 
-    // Allocate scratch area in kernel memory by growing it.
-    // We can't use the existing memory — kernel globals (KERNEL_MODE,
-    // PROCESS_TABLE, etc.) live in the upper region and would be
-    // overwritten. Growing the memory gives us fresh pages that don't
-    // overlap with anything.
-    const prevPages = this.kernelMemory.grow(2); // 2 pages = 128KB > SCRATCH_SIZE
-    this.scratchOffset = prevPages * 65536;
-    // Ensure scratch area is zeroed
-    new Uint8Array(this.kernelMemory.buffer, this.scratchOffset, SCRATCH_SIZE).fill(0);
+    // Allocate scratch area from the kernel's own heap allocator.
+    // IMPORTANT: Do NOT use this.kernelMemory.grow() — the kernel's
+    // allocator (dlmalloc) doesn't know about host-grown pages and will
+    // reuse them as heap, causing corruption (overlapping writes between
+    // scratch data and kernel heap structures like Vec<MappedRegion>).
+    const allocScratch = this.kernelInstance.exports.kernel_alloc_scratch as (size: number) => number;
+    this.scratchOffset = allocScratch(SCRATCH_SIZE);
+    if (this.scratchOffset === 0) {
+      throw new Error("Failed to allocate kernel scratch buffer");
+    }
 
     // Register a SharedLockTable so host_fcntl_lock can handle advisory locks
     // (including OFD locks) within the centralized kernel.
@@ -814,7 +815,6 @@ export class CentralizedKernelWorker {
     for (let i = 0; i < CH_ARGS_COUNT; i++) {
       origArgs.push(processView.getInt32(CH_ARGS + i * 4, true));
     }
-
 
     // --- Intercept fork/exec/clone/exit before calling kernel ---
     // These syscalls need special async handling that can't go through
@@ -1031,6 +1031,7 @@ export class CentralizedKernelWorker {
     // Read return value and errno from kernel scratch
     const retVal = kernelView.getInt32(CH_RETURN, true);
     const errVal = kernelView.getUint32(CH_ERRNO, true);
+
     // --- Process memory growth for brk/mmap/mremap ---
     // In centralized mode, the kernel's ensure_memory_covers() grows the
     // KERNEL's Wasm memory, not the process's. We must grow the process's
@@ -2801,6 +2802,8 @@ export class CentralizedKernelWorker {
     origArgs: number[],
   ): void {
     let endAddr = 0;
+    let mmapAddr = 0;
+    let mmapLen = 0;
 
     if (syscallNr === SYS_BRK) {
       // retVal is the new program break address
@@ -2809,21 +2812,40 @@ export class CentralizedKernelWorker {
       // retVal is the mapped address, origArgs[1] is the length
       const MAP_FAILED = 0xffffffff;
       if ((retVal >>> 0) !== MAP_FAILED) {
-        endAddr = (retVal >>> 0) + (origArgs[1] >>> 0);
+        mmapAddr = retVal >>> 0;
+        mmapLen = origArgs[1] >>> 0;
+        endAddr = mmapAddr + mmapLen;
       }
     } else if (syscallNr === SYS_MREMAP) {
       // retVal is the new address, origArgs[2] is the new length
       const MAP_FAILED = 0xffffffff;
       if ((retVal >>> 0) !== MAP_FAILED) {
-        endAddr = (retVal >>> 0) + (origArgs[2] >>> 0);
+        mmapAddr = retVal >>> 0;
+        mmapLen = origArgs[2] >>> 0;
+        endAddr = mmapAddr + mmapLen;
       }
     }
 
-    if (endAddr > 0) {
-      const currentBytes = processMemory.buffer.byteLength;
-      if (endAddr > currentBytes) {
-        const neededPages = Math.ceil((endAddr - currentBytes) / 65536);
-        processMemory.grow(neededPages);
+    const currentBytes = processMemory.buffer.byteLength;
+
+    if (endAddr > 0 && endAddr > currentBytes) {
+      const neededPages = Math.ceil((endAddr - currentBytes) / 65536);
+      processMemory.grow(neededPages);
+    }
+
+    // Zero the mmap'd region. Anonymous mmap must return zeroed pages (like
+    // Linux). The kernel allocates whole pages, so zero the full page-aligned
+    // region, not just the requested length. On Linux, bytes beyond the
+    // requested length up to the page boundary are also zeroed. Without this,
+    // reused addresses contain stale data from previous allocations,
+    // corrupting musl's malloc metadata (infinite loops / heap corruption).
+    if (mmapLen > 0) {
+      const PAGE_SIZE = 65536; // Wasm page size
+      const alignedLen = Math.ceil(mmapLen / PAGE_SIZE) * PAGE_SIZE;
+      const newBytes = processMemory.buffer.byteLength;
+      const zeroEnd = Math.min(mmapAddr + alignedLen, newBytes);
+      if (mmapAddr < zeroEnd) {
+        new Uint8Array(processMemory.buffer, mmapAddr, zeroEnd - mmapAddr).fill(0);
       }
     }
   }

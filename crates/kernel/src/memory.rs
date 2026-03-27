@@ -391,4 +391,151 @@ mod tests {
         let result = mm.set_brk(initial + 1);
         assert_eq!(result, initial); // unchanged
     }
+
+    /// Helper to check that no mappings overlap.
+    fn assert_no_overlaps(mm: &MemoryManager) {
+        for i in 0..mm.mappings.len() {
+            let a = &mm.mappings[i];
+            let a_end = a.addr + a.len;
+            for j in (i + 1)..mm.mappings.len() {
+                let b = &mm.mappings[j];
+                let b_end = b.addr + b.len;
+                assert!(
+                    a_end <= b.addr || b_end <= a.addr,
+                    "OVERLAP: [{:#x}, {:#x}) and [{:#x}, {:#x})",
+                    a.addr, a_end, b.addr, b_end
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_wordpress_mmap_sequence() {
+        // Reproduce the exact mmap/munmap sequence from WordPress boot log
+        let mut mm = MemoryManager::new();
+        let rw = PROT_READ | PROT_WRITE;
+        let anon = MAP_PRIVATE | MAP_ANONYMOUS;
+        let fixed_anon = MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED;
+
+        // brk operations
+        mm.set_brk(0x1020000);
+
+        // Guard page (MAP_FIXED at brk region)
+        let a = mm.mmap_anonymous(0x1000000, 0x10000, 0, fixed_anon);
+        assert_eq!(a, 0x1000000);
+
+        // First anonymous mmap
+        let a = mm.mmap_anonymous(0, 0x10000, rw, anon);
+        assert_eq!(a, 0x10000000, "first mmap at MMAP_BASE");
+        assert_no_overlaps(&mm);
+
+        // 2MB alloc then free
+        let a = mm.mmap_anonymous(0, 0x200000, rw, anon);
+        assert_eq!(a, 0x10010000);
+        mm.munmap(0x10010000, 0x200000);
+        assert_no_overlaps(&mm);
+
+        // 4MB alloc then partial unmaps (musl pattern)
+        let a = mm.mmap_anonymous(0, 0x3ff000, rw, anon);
+        assert_eq!(a, 0x10010000);
+        mm.munmap(0x10010000, 0x1f0000);  // front trim
+        mm.munmap(0x10400000, 0xf000);    // back trim
+        assert_no_overlaps(&mm);
+
+        // Fill in gap allocations
+        let a = mm.mmap_anonymous(0, 0x30000, rw, anon);
+        assert_eq!(a, 0x10010000);
+        let a = mm.mmap_anonymous(0, 0x20000, rw, anon);
+        assert_eq!(a, 0x10040000);
+        let a = mm.mmap_anonymous(0, 0x10000, rw, anon);
+        assert_eq!(a, 0x10060000);
+        assert_no_overlaps(&mm);
+
+        // More allocations
+        let a = mm.mmap_anonymous(0, 0x60000, rw, anon);
+        assert_eq!(a, 0x10070000);
+        let a = mm.mmap_anonymous(0, 0x10000, rw, anon);
+        assert_eq!(a, 0x100d0000);
+        let a = mm.mmap_anonymous(0, 0x10000, rw, anon);
+        assert_eq!(a, 0x100e0000);
+        let a = mm.mmap_anonymous(0, 0x10000, rw, anon);
+        assert_eq!(a, 0x100f0000);
+        let a = mm.mmap_anonymous(0, 0x10000, rw, anon);
+        assert_eq!(a, 0x10100000);
+        let a = mm.mmap_anonymous(0, 0x10000, rw, anon);
+        assert_eq!(a, 0x10110000);
+        assert_no_overlaps(&mm);
+
+        // Large unaligned alloc (0x20014 → aligns to 0x30000)
+        let a = mm.mmap_anonymous(0, 0x20014, rw, anon);
+        assert_eq!(a, 0x10120000);
+
+        let a = mm.mmap_anonymous(0, 0x10000, rw, anon);
+        assert_eq!(a, 0x10150000);
+        let a = mm.mmap_anonymous(0, 0x10000, rw, anon);
+        assert_eq!(a, 0x10160000);
+        let a = mm.mmap_anonymous(0, 0x10000, rw, anon);
+        assert_eq!(a, 0x10170000);
+        assert_no_overlaps(&mm);
+
+        // munmap/mmap cycle at 0x10170000
+        mm.munmap(0x10170000, 0x10000);
+        let a = mm.mmap_anonymous(0, 0x10000, rw, anon);
+        assert_eq!(a, 0x10170000);
+        mm.munmap(0x10170000, 0x10000);
+        let a = mm.mmap_anonymous(0, 0x10000, rw, anon);
+        assert_eq!(a, 0x10170000);
+        assert_no_overlaps(&mm);
+
+        // More allocations
+        let a = mm.mmap_anonymous(0, 0x10000, rw, anon);
+        assert_eq!(a, 0x10180000);
+        let a = mm.mmap_anonymous(0, 0x20000, rw, anon);
+        assert_eq!(a, 0x10190000);
+        let a = mm.mmap_anonymous(0, 0x10000, rw, anon);
+        assert_eq!(a, 0x101b0000);
+
+        // munmap at 0x10150000 then reallocate
+        mm.munmap(0x10150000, 0x10000);
+        let a = mm.mmap_anonymous(0, 0x10000, rw, anon);
+        assert_eq!(a, 0x10150000);
+        assert_no_overlaps(&mm);
+
+        let a = mm.mmap_anonymous(0, 0x20000, rw, anon);
+        assert_eq!(a, 0x101c0000);
+        let a = mm.mmap_anonymous(0, 0x10000, rw, anon);
+        assert_eq!(a, 0x101e0000);
+        let a = mm.mmap_anonymous(0, 0x10000, rw, anon);
+        assert_eq!(a, 0x101f0000);
+        assert_no_overlaps(&mm);
+
+        // WPS:110 — another musl mmap pattern
+        let a = mm.mmap_anonymous(0, 0x200000, rw, anon);
+        // Should be at 0x10400000 (after the 0x10200000+0x200000 region)
+        mm.munmap(a, 0x200000);
+        let a2 = mm.mmap_anonymous(0, 0x3f0000, rw, anon);
+        mm.munmap(a2, 0x1f0000);
+        let a3 = mm.mmap_anonymous(0, 0x200000, rw, anon);
+        assert_no_overlaps(&mm);
+
+        // WPS:133
+        let a4 = mm.mmap_anonymous(0, 0x40000, rw, anon);
+        let a5 = mm.mmap_anonymous(0, 0x40000, rw, anon);
+        assert_no_overlaps(&mm);
+
+        // After SHORTINIT — another musl pattern
+        let a6 = mm.mmap_anonymous(0, 0x200000, rw, anon);
+        mm.munmap(a6, 0x200000);
+        assert_no_overlaps(&mm);
+
+        // THE PROBLEMATIC MMAP — should NOT return 0x10000000
+        let problematic = mm.mmap_anonymous(0, 0x200000, rw, anon);
+        assert_ne!(problematic, 0x10000000,
+            "mmap returned 0x10000000 which overlaps with existing mapping!");
+        assert_no_overlaps(&mm);
+
+        // Verify the original mapping at 0x10000000 is still there
+        assert!(mm.is_mapped(0x10000000),
+            "mapping at 0x10000000 should still exist");
+    }
 }
