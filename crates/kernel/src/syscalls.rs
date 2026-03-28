@@ -4992,6 +4992,16 @@ pub fn sys_eventfd2(proc: &mut Process, initval: u32, flags: u32) -> Result<i32,
     }
 }
 
+/// inotify_init — create an inotify instance (stub).
+///
+/// Returns a file descriptor that can be polled/closed but never produces
+/// events. Programs that use inotify as an optimization will fall back to
+/// polling. Uses an eventfd internally with counter 0.
+pub fn sys_inotify_init(proc: &mut Process) -> Result<i32, Errno> {
+    // Reuse eventfd with counter=0 to get a valid, pollable fd
+    sys_eventfd2(proc, 0, O_CLOEXEC | O_NONBLOCK)
+}
+
 /// epoll_create1 — create an epoll instance.
 ///
 /// Returns a file descriptor for the new epoll instance.
@@ -11296,6 +11306,27 @@ mod tests {
         let mut buf = [0u8; 8];
         sys_read(&mut proc, &mut host, fd2, &mut buf).unwrap();
         assert_eq!(u64::from_le_bytes(buf), 7);
+    }
+
+    // ── inotify tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_inotify_init_returns_fd() {
+        let mut proc = Process::new(1);
+        let fd = sys_inotify_init(&mut proc).unwrap();
+        assert!(fd >= 3);
+        // The fd should be valid and closeable
+        let mut host = MockHostIO::new();
+        assert_eq!(sys_close(&mut proc, &mut host, fd), Ok(()));
+    }
+
+    #[test]
+    fn test_inotify_init_fd_is_cloexec() {
+        let mut proc = Process::new(1);
+        let fd = sys_inotify_init(&mut proc).unwrap();
+        let entry = proc.fd_table.get(fd).unwrap();
+        // inotify_init stub sets O_CLOEXEC
+        assert_ne!(entry.fd_flags & wasm_posix_shared::fd_flags::FD_CLOEXEC, 0);
     }
 
     // ── timerfd tests ────────────────────────────────────────────────────

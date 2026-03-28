@@ -411,6 +411,14 @@ const SYSCALL_ARGS: Record<number, ArgDesc[]> = {
     { argIndex: 1, direction: "in", size: { type: "cstring" } },               // STATX: path
     { argIndex: 3, direction: "out", size: { type: "fixed", size: 256 } },     //        statxbuf
   ],
+
+  // mknod/mknodat
+  271: [{ argIndex: 0, direction: "in", size: { type: "cstring" } }],          // MKNOD: path
+  272: [{ argIndex: 1, direction: "in", size: { type: "cstring" } }],          // MKNODAT: path
+
+  // faccessat2/fchmodat2
+  382: [{ argIndex: 1, direction: "in", size: { type: "cstring" } }],          // FACCESSAT2: path
+  383: [{ argIndex: 1, direction: "in", size: { type: "cstring" } }],          // FCHMODAT2: path
 };
 
 // Also need a way to compute poll size: nfds * sizeof(struct pollfd) = nfds * 8

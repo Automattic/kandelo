@@ -192,7 +192,8 @@ BASIC_EXPECTED_FAIL=(
     "unistd/lseek" "unistd/read" "unistd/readlinkat"
     "ftw/nftw" "glob/glob" "glob/globfree"
     "wordexp/wordexp" "wordexp/wordfree"
-    "sys_stat/fchmodat" "sys_stat/fstat" "sys_stat/fstatat" "sys_stat/futimens"
+    # (sys_stat/fchmodat now passes — fchmodat2 syscall 383 implemented)
+    "sys_stat/fstat" "sys_stat/fstatat" "sys_stat/futimens"
     "sys_stat/lstat" "sys_stat/mkfifo" "sys_stat/mkfifoat" "sys_stat/mknod"
     "sys_stat/mknodat" "sys_stat/stat"
     "sys_statvfs/fstatvfs"

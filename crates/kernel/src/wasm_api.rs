@@ -2018,7 +2018,71 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
             0
         }
 
-        247..=249 | 253..=254 | 262 | 265..=268 | 271..=272 | 289 | 292 | 301..=303 | 305 | 309..=322 | 324 | 331..=336 | 348..=349 | 350..=369 | 370..=371 | 373..=376 | 381..=383 | 386 => {
+        // --- xattr stubs: no extended attribute support ---
+        // fgetxattr/fsetxattr/fremovexattr/flistxattr
+        350 => -(Errno::ENODATA as i32), // SYS_FGETXATTR: no attrs → ENODATA
+        351 => 0,                         // SYS_FLISTXATTR: empty list → 0 bytes
+        352 => -(Errno::ENODATA as i32), // SYS_FREMOVEXATTR: no attrs → ENODATA
+        353 => 0,                         // SYS_FSETXATTR: silently accept
+        // getxattr/setxattr/removexattr/listxattr (path-based)
+        354 => -(Errno::ENODATA as i32), // SYS_GETXATTR
+        355 => 0,                         // SYS_LISTXATTR: empty list
+        356 => -(Errno::ENODATA as i32), // SYS_LGETXATTR
+        357 => 0,                         // SYS_LLISTXATTR: empty list
+        358 => -(Errno::ENODATA as i32), // SYS_LREMOVEXATTR
+        359 => 0,                         // SYS_LSETXATTR: silently accept
+        360 => -(Errno::ENODATA as i32), // SYS_REMOVEXATTR
+        361 => 0,                         // SYS_SETXATTR: silently accept
+
+        // --- setfsuid/setfsgid: return previous uid/gid ---
+        370 => 1000, // SYS_SETFSUID: return current fsuid (1000)
+        371 => 1000, // SYS_SETFSGID: return current fsgid (1000)
+
+        // --- faccessat2/fchmodat2: delegate to existing implementations ---
+        382 => { // SYS_FACCESSAT2: (dirfd, path, mode, flags)
+            let path = a2 as *const u8;
+            kernel_faccessat(a1, path, unsafe { cstr_len(path) }, a3 as u32, a4 as u32)
+        }
+        383 => { // SYS_FCHMODAT2: (dirfd, path, mode, flags)
+            let path = a2 as *const u8;
+            kernel_fchmodat(a1, path, unsafe { cstr_len(path) }, a3 as u32, a4 as u32)
+        }
+
+        // --- inotify stubs: create eventfd-like fd ---
+        247 | 381 => { // SYS_INOTIFY_INIT1 / SYS_INOTIFY_INIT
+            let (_gkl, proc) = unsafe { get_process() };
+            match syscalls::sys_inotify_init(proc) {
+                Ok(fd) => fd,
+                Err(e) => -(e as i32),
+            }
+        }
+        248 => 1, // SYS_INOTIFY_ADD_WATCH: return dummy watch descriptor
+        249 => 0, // SYS_INOTIFY_RM_WATCH: no-op success
+
+        // --- mknod/mknodat: create regular files only ---
+        271 => { // SYS_MKNOD: (path, mode, dev)
+            let path = a1 as *const u8;
+            let mode = a2 as u32;
+            // Only support regular files (S_IFREG) and mode-only (no type bits = regular)
+            let file_type = mode & 0o170000;
+            if file_type != 0 && file_type != 0o100000 {
+                -(Errno::EPERM as i32)
+            } else {
+                kernel_mknod(path, unsafe { cstr_len(path) }, mode & 0o7777)
+            }
+        }
+        272 => { // SYS_MKNODAT: (dirfd, path, mode, dev)
+            let path = a2 as *const u8;
+            let mode = a3 as u32;
+            let file_type = mode & 0o170000;
+            if file_type != 0 && file_type != 0o100000 {
+                -(Errno::EPERM as i32)
+            } else {
+                kernel_mknodat(a1, path, unsafe { cstr_len(path) }, mode & 0o7777)
+            }
+        }
+
+        253..=254 | 262 | 265..=268 | 289 | 292 | 301..=303 | 305 | 309..=322 | 324 | 331..=336 | 348..=349 | 362..=369 | 373..=376 | 386 => {
             // Remaining stubs: return ENOSYS
             -(Errno::ENOSYS as i32)
         }
@@ -2205,6 +2269,39 @@ pub extern "C" fn kernel_open(
     };
     deliver_pending_signals(proc, &mut host);
     result
+}
+
+/// mknod — create a regular file node.
+/// Only supports S_IFREG (regular files). Creates an empty file via open+close.
+fn kernel_mknod(path_ptr: *const u8, path_len: u32, mode: u32) -> i32 {
+    use wasm_posix_shared::flags::{O_CREAT, O_EXCL, O_WRONLY};
+    let (_gkl, proc) = unsafe { get_process() };
+    let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
+    let mut host = WasmHostIO;
+    let flags = O_CREAT | O_EXCL | O_WRONLY;
+    match syscalls::sys_open(proc, &mut host, path, flags, mode) {
+        Ok(fd) => {
+            let _ = syscalls::sys_close(proc, &mut host, fd);
+            0
+        }
+        Err(e) => -(e as i32),
+    }
+}
+
+/// mknodat — create a regular file node relative to directory fd.
+fn kernel_mknodat(dirfd: i32, path_ptr: *const u8, path_len: u32, mode: u32) -> i32 {
+    use wasm_posix_shared::flags::{O_CREAT, O_EXCL, O_WRONLY};
+    let (_gkl, proc) = unsafe { get_process() };
+    let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
+    let mut host = WasmHostIO;
+    let flags = O_CREAT | O_EXCL | O_WRONLY;
+    match syscalls::sys_openat(proc, &mut host, dirfd, path, flags, mode) {
+        Ok(fd) => {
+            let _ = syscalls::sys_close(proc, &mut host, fd);
+            0
+        }
+        Err(e) => -(e as i32),
+    }
 }
 
 /// Close a file descriptor. Returns 0 on success, or negative errno on error.
