@@ -204,6 +204,37 @@ impl MemoryManager {
     pub fn is_mapped(&self, addr: u32) -> bool {
         self.mappings.iter().any(|m| addr >= m.addr && addr < m.addr + m.len)
     }
+
+    /// Check if `len` bytes starting at `addr` are free (no overlap with existing mappings
+    /// and within address space bounds).
+    pub fn can_grow_at(&self, addr: u32, len: u32) -> bool {
+        let end = match addr.checked_add(len) {
+            Some(e) => e,
+            None => return false,
+        };
+        if end > self.max_addr {
+            return false;
+        }
+        for m in &self.mappings {
+            let m_end = m.addr.saturating_add(m.len);
+            // Check overlap: [addr, end) vs [m.addr, m_end)
+            if addr < m_end && end > m.addr {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Extend an existing mapping at `addr` from `old_len` to `new_len`.
+    /// The caller must ensure the space is free (via `can_grow_at`).
+    pub fn extend_mapping(&mut self, addr: u32, old_len: u32, new_len: u32) {
+        for m in &mut self.mappings {
+            if m.addr == addr && m.len == old_len {
+                m.len = new_len;
+                return;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -537,5 +568,29 @@ mod tests {
         // Verify the original mapping at 0x10000000 is still there
         assert!(mm.is_mapped(0x10000000),
             "mapping at 0x10000000 should still exist");
+    }
+
+    #[test]
+    fn test_can_grow_at() {
+        let mut mm = MemoryManager::new();
+        let rw = PROT_READ | PROT_WRITE;
+        let anon = MAP_PRIVATE | MAP_ANONYMOUS;
+        let addr = mm.mmap_anonymous(0, 0x10000, rw, anon);
+        // Right after the mapping should be free
+        assert!(mm.can_grow_at(addr + 0x10000, 0x10000));
+        // Allocate next page — gap is gone
+        let addr2 = mm.mmap_anonymous(0, 0x10000, rw, anon);
+        assert_eq!(addr2, addr + 0x10000);
+        assert!(!mm.can_grow_at(addr + 0x10000, 0x10000));
+    }
+
+    #[test]
+    fn test_extend_mapping() {
+        let mut mm = MemoryManager::new();
+        let rw = PROT_READ | PROT_WRITE;
+        let anon = MAP_PRIVATE | MAP_ANONYMOUS;
+        let addr = mm.mmap_anonymous(0, 0x10000, rw, anon);
+        mm.extend_mapping(addr, 0x10000, 0x20000);
+        assert!(mm.is_mapped(addr + 0x10000)); // extended area is now mapped
     }
 }

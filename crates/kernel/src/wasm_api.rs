@@ -1919,7 +1919,47 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
             }
         }
 
-        237..=238 | 247..=249 | 253..=254 | 257 | 262 | 265..=268 | 271..=274 | 287 | 289 | 291..=293 | 297..=298 | 301..=305 | 306 | 308..=324 | 325 | 331..=336 | 348..=349 | 350..=369 | 370..=371 | 373..=376 | 381..=383 | 386 => {
+        291 => { // SYS_SPLICE: (fd_in, off_in*, fd_out, off_out*, len, flags)
+            let (_gkl, proc) = unsafe { get_process() };
+            let mut host = WasmHostIO;
+            let off_in_ptr = a2 as *mut u8;
+            let off_out_ptr = a4 as *mut u8;
+            let off_in = if off_in_ptr.is_null() {
+                None
+            } else {
+                let bytes = unsafe { slice::from_raw_parts(off_in_ptr, 8) };
+                Some(i64::from_le_bytes(bytes.try_into().unwrap()))
+            };
+            let off_out = if off_out_ptr.is_null() {
+                None
+            } else {
+                let bytes = unsafe { slice::from_raw_parts(off_out_ptr, 8) };
+                Some(i64::from_le_bytes(bytes.try_into().unwrap()))
+            };
+            match syscalls::sys_splice(proc, &mut host, a1, off_in, a3, off_out, a5 as usize, a6 as u32) {
+                Ok(n) => {
+                    if !off_in_ptr.is_null() {
+                        if let Some(orig) = off_in {
+                            let buf = unsafe { slice::from_raw_parts_mut(off_in_ptr, 8) };
+                            buf.copy_from_slice(&(orig + n as i64).to_le_bytes());
+                        }
+                    }
+                    if !off_out_ptr.is_null() {
+                        if let Some(orig) = off_out {
+                            let buf = unsafe { slice::from_raw_parts_mut(off_out_ptr, 8) };
+                            buf.copy_from_slice(&(orig + n as i64).to_le_bytes());
+                        }
+                    }
+                    n as i32
+                }
+                Err(e) => -(e as i32),
+            }
+        }
+        293 => 0, // SYS_READAHEAD: advisory, always succeed
+        297 => kernel_preadv(a1, a2 as *mut u8, a3, a4 as u32, a5), // SYS_PREADV2 (ignore flags in a6)
+        298 => kernel_pwritev(a1, a2 as *const u8, a3, a4 as u32, a5), // SYS_PWRITEV2 (ignore flags in a6)
+
+        237..=238 | 247..=249 | 253..=254 | 257 | 262 | 265..=268 | 271..=274 | 287 | 289 | 292 | 301..=305 | 306 | 308..=324 | 325 | 331..=336 | 348..=349 | 350..=369 | 370..=371 | 373..=376 | 381..=383 | 386 => {
             // Many of these are stubs in the glue layer too; return ENOSYS
             -(Errno::ENOSYS as i32)
         }
