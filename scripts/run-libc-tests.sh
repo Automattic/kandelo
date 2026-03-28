@@ -51,15 +51,14 @@ REGRESSION_EXPECTED_FAIL=(
     raise-race
     setenv-oom
     tls_get_new-dtv
-    # Centralized mode: fork+waitpid child exit tracking
+    # Centralized mode: fork+waitpid child exit tracking (daemon-failure still fails)
     daemon-failure
-    fflush-exit
+    # (fflush-exit now passes — asyncify fork preserves stdio state)
     # Centralized mode: exec not fully implemented
     execle-env
     # Wasm stack is opaque — signal handlers can't run on alternate stacks
     sigaltstack
-    # Centralized mode: statvfs returns placeholder values
-    statvfs
+    # (statvfs now passes — fixed statfs64 arg layout: buf at argIndex 2)
 )
 
 # Tests that need legacy Wasm exception handling (exnref unsupported in Node.js 22).

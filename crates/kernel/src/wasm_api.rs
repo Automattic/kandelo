@@ -1515,12 +1515,12 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
         86 => kernel_fdatasync(a1),                // SYS_FDATASYNC
         87 => kernel_fchmod(a1, a2 as u32),        // SYS_FCHMOD
         88 => kernel_fchown(a1, a2 as u32, a3 as u32), // SYS_FCHOWN
-        129 => { // SYS_STATFS: (path, statfs_buf)
+        129 => { // SYS_STATFS64: (path, sizeof, statfs_buf)
             let p = a1 as *const u8;
             let len = unsafe { cstr_len(p) };
-            kernel_statfs(p, len, a2 as *mut u8)
+            kernel_statfs(p, len, a3 as *mut u8)
         }
-        130 => kernel_fstatfs(a1, a2 as *mut u8),  // SYS_FSTATFS
+        130 => kernel_fstatfs(a1, a3 as *mut u8),  // SYS_FSTATFS64: (fd, sizeof, buf)
         81 => kernel_writev(a1, a2 as *const u8, a3), // SYS_WRITEV
         82 => kernel_readv(a1, a2 as *mut u8, a3), // SYS_READV
         295 => kernel_preadv(a1, a2 as *mut u8, a3, a4 as u32, a5), // SYS_PREADV

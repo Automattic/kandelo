@@ -346,11 +346,13 @@ const SYSCALL_ARGS: Record<number, ArgDesc[]> = {
 
   // File system
   85: [{ argIndex: 0, direction: "in", size: { type: "cstring" } }],           // TRUNCATE: path
+  // statfs64/fstatfs64: musl sends (path, sizeof, buf) / (fd, sizeof, buf)
+  // because SYS_statfs64 is aliased to SYS_statfs on our platform
   129: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" } },               // STATFS: path
-    { argIndex: 1, direction: "out", size: { type: "fixed", size: 72 } },      //         buf (WasmStatfs = 72 bytes)
+    { argIndex: 0, direction: "in", size: { type: "cstring" } },               // STATFS64: path
+    { argIndex: 2, direction: "out", size: { type: "fixed", size: 72 } },      //           buf (WasmStatfs = 72 bytes)
   ],
-  130: [{ argIndex: 1, direction: "out", size: { type: "fixed", size: 72 } }], // FSTATFS: buf (WasmStatfs = 72 bytes)
+  130: [{ argIndex: 2, direction: "out", size: { type: "fixed", size: 72 } }], // FSTATFS64: buf (WasmStatfs = 72 bytes)
 
   // *at variants
   69: [{ argIndex: 1, direction: "in", size: { type: "cstring" } }],           // OPENAT: path
