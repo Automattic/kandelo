@@ -239,8 +239,6 @@ SIGNAL_EXPECTED_FAIL=(
     "sigaltstack-raise"
 )
 PROCESS_EXPECTED_FAIL=(
-    # waitpid with empty process group (requires process group tracking)
-    "waitpid-pgid-empty-*"
     # exec not implemented in centralized mode
     "fork-exec-*"
 )

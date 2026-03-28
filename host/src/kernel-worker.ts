@@ -54,6 +54,8 @@ const SYS_VFORK = 213;
 const SYS_CLONE = 201;
 const SYS_EXIT = 34;
 const SYS_EXIT_GROUP = 34;  // same as SYS_EXIT on wasm32posix (__NR_exit_group = __NR_exit)
+const SYS_SETPGID = 90;
+const SYS_SETSID = 92;
 const SYS_WAIT4 = 139;
 const SYS_WAITID = 288;
 
@@ -1183,6 +1185,13 @@ export class CentralizedKernelWorker {
     //    to delay the response to simulate the sleep duration.
     if (this.handleSleepDelay(channel, syscallNr, origArgs, retVal, errVal)) {
       return;
+    }
+
+    // --- Process group change: re-check deferred waitpid calls ---
+    // When a process changes its pgid (setpgid/setsid), a parent blocked in
+    // waitpid(-pgid) may no longer have any matching children. Wake it with ECHILD.
+    if (errVal === 0 && (syscallNr === SYS_SETPGID || syscallNr === SYS_SETSID)) {
+      this.recheckDeferredWaitpids();
     }
 
     // --- Normal completion ---
@@ -2608,6 +2617,31 @@ export class CentralizedKernelWorker {
       this.consumeExitedChild(parentPid, childPid);
       this.writeWaitStatus(waiter.channel, waiter.origArgs[1], waitStatus);
       this.completeWaitpid(waiter.channel, waiter.origArgs, childPid, 0);
+    }
+  }
+
+  /**
+   * Re-check deferred waitpid/waitid calls after a process group change.
+   * When a child changes its pgid (setpgid/setsid), a parent waiting on
+   * waitpid(-pgid) may no longer have matching children → return ECHILD.
+   */
+  private recheckDeferredWaitpids(): void {
+    // Iterate backwards to safely splice while iterating
+    for (let i = this.waitingForChild.length - 1; i >= 0; i--) {
+      const waiter = this.waitingForChild[i];
+      // Only re-check waiters targeting a specific process group (pid < -1 or pid == 0)
+      if (waiter.pid > 0 || waiter.pid === -1) continue;
+
+      if (!this.hasMatchingLivingChild(waiter.parentPid, waiter.pid) &&
+          !this.findExitedChild(waiter.parentPid, waiter.pid)) {
+        // No more matching children — wake with ECHILD
+        this.waitingForChild.splice(i, 1);
+        if (waiter.syscallNr === SYS_WAITID) {
+          this.completeChannel(waiter.channel, SYS_WAITID, waiter.origArgs, undefined, -1, 10);
+        } else {
+          this.completeWaitpid(waiter.channel, waiter.origArgs, -1, 10); // ECHILD = 10
+        }
+      }
     }
   }
 
