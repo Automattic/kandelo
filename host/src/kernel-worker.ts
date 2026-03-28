@@ -1305,13 +1305,12 @@ export class CentralizedKernelWorker {
         this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], 0, 0);
         return;
       }
-      // For timeout > 0, retry after min(timeout, retry_interval)
-      const retryMs = timeout > 0 ? Math.min(timeout, EAGAIN_RETRY_MS) : EAGAIN_RETRY_MS;
-      setTimeout(() => {
+      // For timeout > 0 or infinite (-1), retry on next event loop iteration
+      setImmediate(() => {
         if (this.processes.has(channel.pid)) {
           this.retrySyscall(channel);
         }
-      }, retryMs);
+      });
       return;
     }
 
@@ -1330,12 +1329,11 @@ export class CentralizedKernelWorker {
         this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], 0, 0);
         return;
       }
-      const retryMs = timeoutMs > 0 ? Math.min(timeoutMs, EAGAIN_RETRY_MS) : EAGAIN_RETRY_MS;
-      setTimeout(() => {
+      setImmediate(() => {
         if (this.processes.has(channel.pid)) {
           this.retrySyscall(channel);
         }
-      }, retryMs);
+      });
       return;
     }
 
@@ -1371,12 +1369,12 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    // Default: retry after short delay (pipe read/write, socket operations, etc.)
-    setTimeout(() => {
+    // Default: retry on next event loop iteration (pipe read/write, socket operations, etc.)
+    setImmediate(() => {
       if (this.processes.has(channel.pid)) {
         this.retrySyscall(channel);
       }
-    }, EAGAIN_RETRY_MS);
+    });
   }
 
   /**
@@ -1650,12 +1648,11 @@ export class CentralizedKernelWorker {
         this.completeChannel(channel, SYS_PSELECT6, origArgs, undefined, 0, 0);
         return;
       }
-      const retryMs = timeoutMs > 0 ? Math.min(timeoutMs, EAGAIN_RETRY_MS) : EAGAIN_RETRY_MS;
-      setTimeout(() => {
+      setImmediate(() => {
         if (this.processes.has(channel.pid)) {
           this.handlePselect6(channel, origArgs);
         }
-      }, retryMs);
+      });
       return;
     }
 
