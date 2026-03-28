@@ -517,6 +517,14 @@ export class CentralizedKernelWorker {
   /** Cached kernel memory typed array view (invalidated on memory.grow) */
   private cachedKernelMem: Uint8Array | null = null;
   private cachedKernelBuffer: ArrayBuffer | null = null;
+  /** Active TCP connections per process for piggyback flushing */
+  private tcpConnections = new Map<number, Array<{
+    sendPipeIdx: number;
+    scratchOffset: number;
+    clientSocket: import("net").Socket;
+    recvPipeIdx: number;
+    schedulePump: () => void;
+  }>>();
 
   constructor(
     private config: KernelConfig,
@@ -2991,15 +2999,91 @@ export class CentralizedKernelWorker {
     // Queue for incoming TCP data (written to recv pipe)
     const inboundQueue: Buffer[] = [];
     let clientEnded = false;
-    let pumpTimer: ReturnType<typeof setInterval> | null = null;
+    let pumpPending = false;
+    let cleaned = false;
 
-    // Incoming TCP data → queue for writing to recv pipe
+    const scratchOffset = this.tcpScratchOffset;
+
+    const pipeIsWriteOpen = this.kernelInstance!.exports.kernel_pipe_is_write_open as
+      (pid: number, pipeIdx: number) => number;
+
+    // Drain inbound queue into recv pipe
+    const drainInbound = () => {
+      const mem = this.getKernelMem();
+      while (inboundQueue.length > 0) {
+        const chunk = inboundQueue[0]!;
+        const toWrite = Math.min(chunk.length, 65536);
+        mem.set(chunk.subarray(0, toWrite), scratchOffset);
+        const written = pipeWrite(pid, recvPipeIdx, scratchOffset, toWrite);
+        if (written <= 0) break; // Pipe full, retry next pump
+        if (written >= chunk.length) {
+          inboundQueue.shift();
+        } else {
+          inboundQueue[0] = chunk.subarray(written) as Buffer;
+        }
+      }
+      if (clientEnded && inboundQueue.length === 0) {
+        pipeCloseWrite(pid, recvPipeIdx);
+      }
+    };
+
+    // Read send pipe → TCP socket
+    const drainOutbound = () => {
+      const mem = this.getKernelMem();
+      const readN = pipeRead(pid, sendPipeIdx, scratchOffset, 65536);
+      if (readN > 0) {
+        const outData = Buffer.from(mem.slice(scratchOffset, scratchOffset + readN));
+        if (!clientSocket.destroyed) {
+          clientSocket.write(outData);
+        }
+      }
+      return readN;
+    };
+
+    const schedulePump = () => {
+      if (pumpPending || cleaned) return;
+      pumpPending = true;
+      setImmediate(pump);
+    };
+
+    const pump = () => {
+      pumpPending = false;
+      if (cleaned || !this.processes.has(pid)) {
+        cleanup();
+        return;
+      }
+
+      drainInbound();
+      const readN = drainOutbound();
+
+      // Check if PHP closed its write end of the send pipe
+      const writeOpen = pipeIsWriteOpen(pid, sendPipeIdx);
+      if (writeOpen === 0 && readN === 0) {
+        if (!clientSocket.destroyed) {
+          clientSocket.end();
+        }
+        cleanup();
+        return;
+      }
+
+      // If there's still queued inbound data (pipe was full), schedule another pump
+      if (inboundQueue.length > 0) {
+        schedulePump();
+      }
+    };
+
+    // Incoming TCP data → write directly to recv pipe, queue overflow
     clientSocket.on("data", (chunk: Buffer) => {
       inboundQueue.push(chunk);
+      if (!this.processes.has(pid)) { cleanup(); return; }
+      drainInbound();
+      // Schedule pump to handle outbound + close detection
+      schedulePump();
     });
 
     clientSocket.on("end", () => {
       clientEnded = true;
+      schedulePump();
     });
 
     clientSocket.on("error", () => {
@@ -3011,72 +3095,27 @@ export class CentralizedKernelWorker {
       connections.delete(clientSocket);
     });
 
-    // Pump loop: drain inbound queue → recv pipe, read send pipe → TCP socket
-    const scratchOffset = this.tcpScratchOffset;
-    const kernelMemory = this.kernelMemory!;
-
-    pumpTimer = setInterval(() => {
-      // Check if process still exists
-      if (!this.processes.has(pid)) {
-        cleanup();
-        return;
-      }
-
-      const mem = this.getKernelMem();
-
-      // 1. Drain inbound queue → recv pipe (host writes incoming TCP data)
-      while (inboundQueue.length > 0) {
-        const chunk = inboundQueue[0]!;
-        const toWrite = Math.min(chunk.length, 65536);
-        mem.set(chunk.subarray(0, toWrite), scratchOffset);
-        const written = pipeWrite(pid, recvPipeIdx, scratchOffset, toWrite);
-        if (written <= 0) break; // Pipe full, retry next tick
-        if (written >= chunk.length) {
-          inboundQueue.shift();
-        } else {
-          inboundQueue[0] = chunk.subarray(written) as Buffer;
-        }
-      }
-
-      // If TCP client closed and all queued data has been drained, close recv pipe write end
-      if (clientEnded && inboundQueue.length === 0) {
-        pipeCloseWrite(pid, recvPipeIdx);
-      }
-
-      // 2. Read send pipe → TCP socket (PHP's output goes to the real TCP client)
-      const readN = pipeRead(pid, sendPipeIdx, scratchOffset, 65536);
-      if (readN > 0) {
-        const outData = Buffer.from(mem.slice(scratchOffset, scratchOffset + readN));
-        // Data read from pipe, send to TCP client
-        if (!clientSocket.destroyed) {
-          clientSocket.write(outData);
-        }
-      }
-
-      // 3. Check if PHP closed its write end of the send pipe → end TCP connection
-      const sendWriteOpen = pipeIsReadOpen(pid, sendPipeIdx);
-      // Check the write end of the send pipe (PHP writes to it)
-      const pipeIsWriteOpen = this.kernelInstance!.exports.kernel_pipe_is_write_open as
-        (pid: number, pipeIdx: number) => number;
-      const writeOpen = pipeIsWriteOpen(pid, sendPipeIdx);
-
-      if (writeOpen === 0 && readN === 0) {
-        // PHP has closed its end and all data has been drained
-        if (!clientSocket.destroyed) {
-          clientSocket.end();
-        }
-        cleanup();
-      }
-    }, 1);
+    // Register this connection for piggyback flushing
+    let conns = this.tcpConnections.get(pid);
+    if (!conns) {
+      conns = [];
+      this.tcpConnections.set(pid, conns);
+    }
+    const connEntry = { sendPipeIdx, scratchOffset, clientSocket, recvPipeIdx, schedulePump };
+    conns.push(connEntry);
 
     const cleanup = () => {
-      if (pumpTimer) {
-        clearInterval(pumpTimer);
-        pumpTimer = null;
-      }
-      // Close read end of recv pipe (host was the writer, close the pipe for reads)
+      if (cleaned) return;
+      cleaned = true;
       pipeCloseRead(pid, recvPipeIdx);
       connections.delete(clientSocket);
+      // Remove from tcpConnections tracking
+      const arr = this.tcpConnections?.get(pid);
+      if (arr) {
+        const idx = arr.indexOf(connEntry);
+        if (idx >= 0) arr.splice(idx, 1);
+        if (arr.length === 0) this.tcpConnections?.delete(pid);
+      }
       if (!clientSocket.destroyed) {
         clientSocket.destroy();
       }
@@ -3097,5 +3136,6 @@ export class CentralizedKernelWorker {
         this.tcpListeners.delete(fd);
       }
     }
+    this.tcpConnections.delete(pid);
   }
 }
