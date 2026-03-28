@@ -1959,8 +1959,67 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
         297 => kernel_preadv(a1, a2 as *mut u8, a3, a4 as u32, a5), // SYS_PREADV2 (ignore flags in a6)
         298 => kernel_pwritev(a1, a2 as *const u8, a3, a4 as u32, a5), // SYS_PWRITEV2 (ignore flags in a6)
 
-        237..=238 | 247..=249 | 253..=254 | 257 | 262 | 265..=268 | 271..=274 | 287 | 289 | 292 | 301..=305 | 306 | 308..=324 | 325 | 331..=336 | 348..=349 | 350..=369 | 370..=371 | 373..=376 | 381..=383 | 386 => {
-            // Many of these are stubs in the glue layer too; return ENOSYS
+        // -- Scheduling stubs (single-CPU Wasm) --
+        237 => 0, // SYS_SCHED_SETAFFINITY: no-op (single CPU)
+        238 => { // SYS_SCHED_GETAFFINITY: return a 1-bit cpuset
+            let size = a2 as usize;
+            let mask_ptr = a3 as *mut u8;
+            if size == 0 || mask_ptr.is_null() {
+                -(Errno::EINVAL as i32)
+            } else {
+                let mask = unsafe { slice::from_raw_parts_mut(mask_ptr, size) };
+                for b in mask.iter_mut() { *b = 0; }
+                mask[0] = 1; // CPU 0 available
+                0
+            }
+        }
+
+        // -- Memory/sync stubs --
+        257 => 0, // SYS_MEMBARRIER: no-op (single-threaded per process in Wasm)
+        273 => 0, // SYS_SYNC: no-op (all I/O is synchronous to host)
+        274 => 0, // SYS_SYNCFS: no-op
+
+        // -- Process stubs --
+        287 => 0, // SYS_PERSONALITY: return 0 (current personality, PER_LINUX)
+
+        // -- Filesystem --
+        304 => 0, // SYS_SYSLOG (kernel log): no-op (not the libc syslog)
+        306 => { // SYS_RENAMEAT2: (olddirfd, oldpath, newdirfd, newpath, flags)
+            // Ignore flags (RENAME_NOREPLACE, RENAME_EXCHANGE) — delegate to renameat
+            let old = a2 as *const u8;
+            let new = a4 as *const u8;
+            kernel_renameat(a1, old, unsafe { cstr_len(old) }, a3, new, unsafe { cstr_len(new) })
+        }
+        308 => { // SYS_FALLOCATE: (fd, mode, offset_lo, offset_hi, len_lo, len_hi)
+            let mode = a2 as u32;
+            if mode != 0 {
+                -(Errno::EOPNOTSUPP as i32)
+            } else {
+                let (_gkl, proc) = unsafe { get_process() };
+                let mut host = WasmHostIO;
+                let offset = ((a4 as u32 as u64) << 32 | (a3 as u32 as u64)) as i64;
+                let len = ((a6 as u32 as u64) << 32 | (a5 as u32 as u64)) as i64;
+                match syscalls::sys_fallocate(proc, &mut host, a1, offset, len) {
+                    Ok(()) => 0,
+                    Err(e) => -(e as i32),
+                }
+            }
+        }
+        323 => 0, // SYS_SYNC_FILE_RANGE: advisory, no-op
+        325 => { // SYS_GETCPU: (cpu*, node*, unused)
+            let cpu_ptr = a1 as *mut u32;
+            let node_ptr = a2 as *mut u32;
+            if !cpu_ptr.is_null() {
+                unsafe { *cpu_ptr = 0; }
+            }
+            if !node_ptr.is_null() {
+                unsafe { *node_ptr = 0; }
+            }
+            0
+        }
+
+        247..=249 | 253..=254 | 262 | 265..=268 | 271..=272 | 289 | 292 | 301..=303 | 305 | 309..=322 | 324 | 331..=336 | 348..=349 | 350..=369 | 370..=371 | 373..=376 | 381..=383 | 386 => {
+            // Remaining stubs: return ENOSYS
             -(Errno::ENOSYS as i32)
         }
 
