@@ -1245,6 +1245,10 @@ export class CentralizedKernelWorker {
     processView.setInt32(CH_RETURN, retVal, true);
     processView.setUint32(CH_ERRNO, errVal, true);
 
+    // Flush TCP send pipes before notifying the process — gets PHP's
+    // response data to the browser without waiting for the next pump cycle
+    this.flushTcpSendPipes(channel.pid);
+
     // Set status to COMPLETE and notify process
     const i32View = new Int32Array(channel.memory.buffer, channel.channelOffset);
     Atomics.store(i32View, CH_STATUS / 4, CH_COMPLETE);
@@ -1275,6 +1279,25 @@ export class CentralizedKernelWorker {
    * Handle EAGAIN retry for blocking syscalls.
    * The process stays blocked while we retry asynchronously.
    */
+  private flushTcpSendPipes(pid: number): void {
+    const conns = this.tcpConnections.get(pid);
+    if (!conns || conns.length === 0) return;
+
+    const pipeRead = this.kernelInstance!.exports.kernel_pipe_read as
+      (pid: number, pipeIdx: number, bufPtr: number, bufLen: number) => number;
+    const mem = this.getKernelMem();
+
+    for (const conn of conns) {
+      const readN = pipeRead(pid, conn.sendPipeIdx, conn.scratchOffset, 65536);
+      if (readN > 0) {
+        const outData = Buffer.from(mem.slice(conn.scratchOffset, conn.scratchOffset + readN));
+        if (!conn.clientSocket.destroyed) {
+          conn.clientSocket.write(outData);
+        }
+      }
+    }
+  }
+
   private handleBlockingRetry(
     channel: ChannelInfo,
     syscallNr: number,
