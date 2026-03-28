@@ -69,10 +69,17 @@ impl PipeBuffer {
     pub fn write(&mut self, data: &[u8]) -> usize {
         let cap = self.capacity();
         let n = data.len().min(self.free_space());
-        for i in 0..n {
-            self.buf[self.tail] = data[i];
-            self.tail = (self.tail + 1) % cap;
+        if n == 0 {
+            return 0;
         }
+        let first = cap - self.tail;
+        if n <= first {
+            self.buf[self.tail..self.tail + n].copy_from_slice(&data[..n]);
+        } else {
+            self.buf[self.tail..self.tail + first].copy_from_slice(&data[..first]);
+            self.buf[0..n - first].copy_from_slice(&data[first..n]);
+        }
+        self.tail = (self.tail + n) % cap;
         self.len += n;
         n
     }
@@ -87,10 +94,15 @@ impl PipeBuffer {
     pub fn peek(&self, buf: &mut [u8]) -> usize {
         let cap = self.capacity();
         let n = buf.len().min(self.len);
-        let mut src = self.head;
-        for i in 0..n {
-            buf[i] = self.buf[src];
-            src = (src + 1) % cap;
+        if n == 0 {
+            return 0;
+        }
+        let first = cap - self.head;
+        if n <= first {
+            buf[..n].copy_from_slice(&self.buf[self.head..self.head + n]);
+        } else {
+            buf[..first].copy_from_slice(&self.buf[self.head..self.head + first]);
+            buf[first..n].copy_from_slice(&self.buf[0..n - first]);
         }
         n
     }
@@ -102,10 +114,17 @@ impl PipeBuffer {
     pub fn read(&mut self, buf: &mut [u8]) -> usize {
         let cap = self.capacity();
         let n = buf.len().min(self.len);
-        for i in 0..n {
-            buf[i] = self.buf[self.head];
-            self.head = (self.head + 1) % cap;
+        if n == 0 {
+            return 0;
         }
+        let first = cap - self.head;
+        if n <= first {
+            buf[..n].copy_from_slice(&self.buf[self.head..self.head + n]);
+        } else {
+            buf[..first].copy_from_slice(&self.buf[self.head..self.head + first]);
+            buf[first..n].copy_from_slice(&self.buf[0..n - first]);
+        }
+        self.head = (self.head + n) % cap;
         self.len -= n;
         n
     }
