@@ -1838,14 +1838,15 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
         252 => { // SYS_PSELECT6_TIME64: (nfds, readfds, writefds, exceptfds, timeout_ms, mask_ptr)
             // Args pre-decoded by host: timeout → ms, mask stored at mask_ptr (8 bytes: lo+hi)
             let mask_ptr = a6 as *const u8;
-            let (mask_lo, mask_hi) = if mask_ptr.is_null() {
-                (0u32, 0u32)
+            let (has_mask, mask_lo, mask_hi) = if mask_ptr.is_null() {
+                (0u32, 0u32, 0u32)
             } else {
                 let mb = unsafe { core::slice::from_raw_parts(mask_ptr, 8) };
-                (u32::from_le_bytes([mb[0], mb[1], mb[2], mb[3]]),
+                (1u32,
+                 u32::from_le_bytes([mb[0], mb[1], mb[2], mb[3]]),
                  u32::from_le_bytes([mb[4], mb[5], mb[6], mb[7]]))
             };
-            kernel_pselect6(a1, a2 as *mut u8, a3 as *mut u8, a4 as *mut u8, a5, mask_lo, mask_hi)
+            kernel_pselect6(a1, a2 as *mut u8, a3 as *mut u8, a4 as *mut u8, a5, has_mask, mask_lo, mask_hi)
         }
         299 => { // SYS_LCHOWN: (path, uid, gid) — treat like chown (no symlink distinction)
             let p = a1 as *const u8;
@@ -6038,6 +6039,7 @@ pub extern "C" fn kernel_ppoll(fds_ptr: *mut u8, nfds: u32, timeout_ms: i32, has
 }
 
 /// pselect6 — select with atomic signal mask swap.
+/// has_mask: 1 if a signal mask was provided (even if all-zero), 0 if NULL.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_pselect6(
     nfds: i32,
@@ -6045,6 +6047,7 @@ pub extern "C" fn kernel_pselect6(
     writefds_ptr: *mut u8,
     exceptfds_ptr: *mut u8,
     timeout_ms: i32,
+    has_mask: u32,
     mask_lo: u32,
     mask_hi: u32,
 ) -> i32 {
@@ -6066,10 +6069,10 @@ pub extern "C" fn kernel_pselect6(
         Some(unsafe { core::slice::from_raw_parts_mut(exceptfds_ptr, 128) })
     };
 
-    let mask = if mask_lo == 0 && mask_hi == 0 {
-        None
-    } else {
+    let mask = if has_mask != 0 {
         Some(((mask_hi as u64) << 32) | (mask_lo as u64))
+    } else {
+        None
     };
 
     let mut host = WasmHostIO;

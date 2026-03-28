@@ -531,6 +531,12 @@ export class CentralizedKernelWorker {
     channel: ChannelInfo;
     pipeIndices: number[];
   }>();
+  /** Pending pselect6 retries — used for signal-driven wakeup */
+  private pendingSelectRetries = new Map<number, {
+    timer: ReturnType<typeof setImmediate>;
+    channel: ChannelInfo;
+    origArgs: number[];
+  }>();
   /** Active TCP connections per process for piggyback flushing */
   private tcpConnections = new Map<number, Array<{
     sendPipeIdx: number;
@@ -746,6 +752,10 @@ export class CentralizedKernelWorker {
     const pollEntry = this.pendingPollRetries.get(pid);
     if (pollEntry?.timer) clearImmediate(pollEntry.timer);
     this.pendingPollRetries.delete(pid);
+    // Clean up pending select retries
+    const selectEntry = this.pendingSelectRetries.get(pid);
+    if (selectEntry?.timer) clearImmediate(selectEntry.timer);
+    this.pendingSelectRetries.delete(pid);
 
     // Remove from kernel process table
     this.removeFromKernelProcessTable(pid);
@@ -785,6 +795,10 @@ export class CentralizedKernelWorker {
     const pollEntry = this.pendingPollRetries.get(pid);
     if (pollEntry?.timer) clearImmediate(pollEntry.timer);
     this.pendingPollRetries.delete(pid);
+    // Clean up pending select retries
+    const selectEntry = this.pendingSelectRetries.get(pid);
+    if (selectEntry?.timer) clearImmediate(selectEntry.timer);
+    this.pendingSelectRetries.delete(pid);
     // Clean up TCP listeners for this process
     this.cleanupTcpListeners(pid);
   }
@@ -909,7 +923,6 @@ export class CentralizedKernelWorker {
     for (let i = 0; i < CH_ARGS_COUNT; i++) {
       origArgs.push(processView.getInt32(CH_ARGS + i * 4, true));
     }
-
     // --- Intercept fork/exec/clone/exit before calling kernel ---
     // These syscalls need special async handling that can't go through
     // the blocking host_fork/host_exec imports.
@@ -1769,11 +1782,14 @@ export class CentralizedKernelWorker {
         this.completeChannel(channel, SYS_PSELECT6, origArgs, undefined, 0, 0);
         return;
       }
-      setImmediate(() => {
+      const retryFn = () => {
+        this.pendingSelectRetries.delete(channel.pid);
         if (this.processes.has(channel.pid)) {
           this.handlePselect6(channel, origArgs);
         }
-      });
+      };
+      const timer = setImmediate(retryFn);
+      this.pendingSelectRetries.set(channel.pid, { timer, channel, origArgs });
       return;
     }
 
@@ -2919,22 +2935,41 @@ export class CentralizedKernelWorker {
       this.currentHandlePid = 0;
     }
 
-    // If the target process has a pending sleep, interrupt it — but only if
-    // the signal is actually deliverable (not blocked).  When the signal is
-    // blocked, the sleep must continue; the signal stays pending and will be
-    // checked when the sleep naturally completes or a mask change unblocks it.
+    // Check if the signal is deliverable (not blocked by the process)
+    const isBlocked = (this.kernelInstance!.exports.kernel_is_signal_blocked as
+      (pid: number, signum: number) => number)(targetPid, signum);
+    if (isBlocked) return;
+
+    // Signal is deliverable — wake any blocking syscall for this process
+
+    // 1. Pending sleep (nanosleep, usleep, clock_nanosleep)
     const pendingSleep = this.pendingSleeps.get(targetPid);
     if (pendingSleep) {
-      const isBlocked = (this.kernelInstance!.exports.kernel_is_signal_blocked as
-        (pid: number, signum: number) => number)(targetPid, signum);
-      if (!isBlocked) {
-        clearTimeout(pendingSleep.timer);
-        this.pendingSleeps.delete(targetPid);
-        // Complete the sleep with signal check — will return EINTR
-        this.completeSleepWithSignalCheck(
-          pendingSleep.channel, pendingSleep.syscallNr, pendingSleep.origArgs,
-          pendingSleep.retVal, pendingSleep.errVal,
-        );
+      clearTimeout(pendingSleep.timer);
+      this.pendingSleeps.delete(targetPid);
+      this.completeSleepWithSignalCheck(
+        pendingSleep.channel, pendingSleep.syscallNr, pendingSleep.origArgs,
+        pendingSleep.retVal, pendingSleep.errVal,
+      );
+    }
+
+    // 2. Pending ppoll/poll retry
+    const pollEntry = this.pendingPollRetries.get(targetPid);
+    if (pollEntry) {
+      if (pollEntry.timer) clearImmediate(pollEntry.timer);
+      this.pendingPollRetries.delete(targetPid);
+      if (this.processes.has(targetPid)) {
+        this.retrySyscall(pollEntry.channel);
+      }
+    }
+
+    // 3. Pending pselect6 retry
+    const selectEntry = this.pendingSelectRetries.get(targetPid);
+    if (selectEntry) {
+      clearImmediate(selectEntry.timer);
+      this.pendingSelectRetries.delete(targetPid);
+      if (this.processes.has(targetPid)) {
+        this.handlePselect6(selectEntry.channel, selectEntry.origArgs);
       }
     }
   }

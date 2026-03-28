@@ -207,7 +207,7 @@ BASIC_EXPECTED_FAIL=(
     "sys_mman/posix_typed_mem_open" "sys_mman/shm_open"
     # (pwd/grp tests now pass — synthetic /etc/passwd and /etc/group)
     # -- Misc not supported
-    "sys_select/pselect"
+    # (pselect now passes — fixed empty sigmask handling in kernel_pselect6)
     "locale/getlocalename_l"
     "monetary/strfmon" "monetary/strfmon_l"
     "strings/ffsll"
