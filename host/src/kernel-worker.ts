@@ -514,6 +514,9 @@ export class CentralizedKernelWorker {
     options: number;
     syscallNr: number;
   }> = [];
+  /** Cached kernel memory typed array view (invalidated on memory.grow) */
+  private cachedKernelMem: Uint8Array | null = null;
+  private cachedKernelBuffer: ArrayBuffer | null = null;
 
   constructor(
     private config: KernelConfig,
@@ -841,6 +844,15 @@ export class CentralizedKernelWorker {
    * 7. Set status to COMPLETE and notify process
    * 8. Re-listen for next syscall
    */
+  private getKernelMem(): Uint8Array {
+    const buf = this.kernelMemory!.buffer;
+    if (buf !== this.cachedKernelBuffer) {
+      this.cachedKernelMem = new Uint8Array(buf);
+      this.cachedKernelBuffer = buf;
+    }
+    return this.cachedKernelMem!;
+  }
+
   private handleSyscall(channel: ChannelInfo): void {
     const processView = new DataView(channel.memory.buffer, channel.channelOffset);
 
@@ -949,7 +961,7 @@ export class CentralizedKernelWorker {
     if (argDescs) {
       // Re-create typed views (memory may have grown)
       const processMem = new Uint8Array(channel.memory.buffer);
-      const kernelMem = new Uint8Array(this.kernelMemory!.buffer);
+      const kernelMem = this.getKernelMem();
       const dataStart = this.scratchOffset + CH_DATA;
 
       for (const desc of argDescs) {
@@ -1134,7 +1146,7 @@ export class CentralizedKernelWorker {
       // Copy 36 bytes of signal delivery info from kernel scratch to process channel
       // Layout: signum(4) + handler(4) + flags(4) + si_value(4) + old_mask(8)
       //       + si_code(4) + si_pid(4) + si_uid(4) = 36 bytes
-      const kernelMem = new Uint8Array(this.kernelMemory!.buffer);
+      const kernelMem = this.getKernelMem();
       const processMem = new Uint8Array(channel.memory.buffer);
       processMem.set(
         kernelMem.subarray(sigOutOffset, sigOutOffset + 36),
@@ -1163,7 +1175,7 @@ export class CentralizedKernelWorker {
     // Copy output data from kernel scratch back to process memory
     if (argDescs) {
       const processMem = new Uint8Array(channel.memory.buffer);
-      const kernelMem = new Uint8Array(this.kernelMemory!.buffer);
+      const kernelMem = this.getKernelMem();
       const dataStart = this.scratchOffset + CH_DATA;
       let outOffset = 0;
 
@@ -1494,7 +1506,7 @@ export class CentralizedKernelWorker {
     const flockPtr = origArgs[2];
 
     const processMem = new Uint8Array(channel.memory.buffer);
-    const kernelMem = new Uint8Array(this.kernelMemory!.buffer);
+    const kernelMem = this.getKernelMem();
     const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
     const dataStart = this.scratchOffset + CH_DATA;
 
@@ -1546,7 +1558,7 @@ export class CentralizedKernelWorker {
   private handlePselect6(channel: ChannelInfo, origArgs: number[]): void {
     const FD_SET_SIZE = 128;
     const processMem = new Uint8Array(channel.memory.buffer);
-    const kernelMem = new Uint8Array(this.kernelMemory!.buffer);
+    const kernelMem = this.getKernelMem();
     const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
     const dataStart = this.scratchOffset + CH_DATA;
 
@@ -1666,7 +1678,7 @@ export class CentralizedKernelWorker {
 
     const processMem = new Uint8Array(channel.memory.buffer);
     const processView = new DataView(channel.memory.buffer);
-    const kernelMem = new Uint8Array(this.kernelMemory!.buffer);
+    const kernelMem = this.getKernelMem();
     const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
     const dataStart = this.scratchOffset + CH_DATA;
 
@@ -1737,7 +1749,7 @@ export class CentralizedKernelWorker {
 
     const processMem = new Uint8Array(channel.memory.buffer);
     const processView = new DataView(channel.memory.buffer);
-    const kernelMem = new Uint8Array(this.kernelMemory!.buffer);
+    const kernelMem = this.getKernelMem();
     const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
     const dataStart = this.scratchOffset + CH_DATA;
 
@@ -1824,7 +1836,7 @@ export class CentralizedKernelWorker {
 
     const processMem = new Uint8Array(channel.memory.buffer);
     const processView = new DataView(channel.memory.buffer);
-    const kernelMem = new Uint8Array(this.kernelMemory!.buffer);
+    const kernelMem = this.getKernelMem();
     const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
     const dataStart = this.scratchOffset + CH_DATA;
 
@@ -1905,7 +1917,7 @@ export class CentralizedKernelWorker {
 
     const processMem = new Uint8Array(channel.memory.buffer);
     const processView = new DataView(channel.memory.buffer);
-    const kernelMem = new Uint8Array(this.kernelMemory!.buffer);
+    const kernelMem = this.getKernelMem();
     const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
     const dataStart = this.scratchOffset + CH_DATA;
 
@@ -3010,7 +3022,7 @@ export class CentralizedKernelWorker {
         return;
       }
 
-      const mem = new Uint8Array(kernelMemory.buffer);
+      const mem = this.getKernelMem();
 
       // 1. Drain inbound queue → recv pipe (host writes incoming TCP data)
       while (inboundQueue.length > 0) {
