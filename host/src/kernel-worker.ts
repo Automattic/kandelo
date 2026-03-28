@@ -514,6 +514,23 @@ export class CentralizedKernelWorker {
     options: number;
     syscallNr: number;
   }> = [];
+  /** Cached kernel memory typed array view (invalidated on memory.grow) */
+  private cachedKernelMem: Uint8Array | null = null;
+  private cachedKernelBuffer: ArrayBuffer | null = null;
+  /** Pending poll/ppoll retries — used for event-driven wakeup when pipe data arrives */
+  private pendingPollRetries = new Map<number, {
+    timer: ReturnType<typeof setImmediate> | null;
+    channel: ChannelInfo;
+    pipeIndices: number[];
+  }>();
+  /** Active TCP connections per process for piggyback flushing */
+  private tcpConnections = new Map<number, Array<{
+    sendPipeIdx: number;
+    scratchOffset: number;
+    clientSocket: import("net").Socket;
+    recvPipeIdx: number;
+    schedulePump: () => void;
+  }>>();
 
   constructor(
     private config: KernelConfig,
@@ -701,6 +718,11 @@ export class CentralizedKernelWorker {
     // Clean up TCP listeners for this process
     this.cleanupTcpListeners(pid);
 
+    // Clean up pending poll retries
+    const pollEntry = this.pendingPollRetries.get(pid);
+    if (pollEntry?.timer) clearImmediate(pollEntry.timer);
+    this.pendingPollRetries.delete(pid);
+
     // Remove from kernel process table
     this.removeFromKernelProcessTable(pid);
 
@@ -735,6 +757,10 @@ export class CentralizedKernelWorker {
       clearTimeout(sleepTimer.timer);
       this.pendingSleeps.delete(pid);
     }
+    // Clean up pending poll retries
+    const pollEntry = this.pendingPollRetries.get(pid);
+    if (pollEntry?.timer) clearImmediate(pollEntry.timer);
+    this.pendingPollRetries.delete(pid);
     // Clean up TCP listeners for this process
     this.cleanupTcpListeners(pid);
   }
@@ -841,6 +867,15 @@ export class CentralizedKernelWorker {
    * 7. Set status to COMPLETE and notify process
    * 8. Re-listen for next syscall
    */
+  private getKernelMem(): Uint8Array {
+    const buf = this.kernelMemory!.buffer;
+    if (buf !== this.cachedKernelBuffer) {
+      this.cachedKernelMem = new Uint8Array(buf);
+      this.cachedKernelBuffer = buf;
+    }
+    return this.cachedKernelMem!;
+  }
+
   private handleSyscall(channel: ChannelInfo): void {
     const processView = new DataView(channel.memory.buffer, channel.channelOffset);
 
@@ -949,7 +984,7 @@ export class CentralizedKernelWorker {
     if (argDescs) {
       // Re-create typed views (memory may have grown)
       const processMem = new Uint8Array(channel.memory.buffer);
-      const kernelMem = new Uint8Array(this.kernelMemory!.buffer);
+      const kernelMem = this.getKernelMem();
       const dataStart = this.scratchOffset + CH_DATA;
 
       for (const desc of argDescs) {
@@ -1134,7 +1169,7 @@ export class CentralizedKernelWorker {
       // Copy 36 bytes of signal delivery info from kernel scratch to process channel
       // Layout: signum(4) + handler(4) + flags(4) + si_value(4) + old_mask(8)
       //       + si_code(4) + si_pid(4) + si_uid(4) = 36 bytes
-      const kernelMem = new Uint8Array(this.kernelMemory!.buffer);
+      const kernelMem = this.getKernelMem();
       const processMem = new Uint8Array(channel.memory.buffer);
       processMem.set(
         kernelMem.subarray(sigOutOffset, sigOutOffset + 36),
@@ -1163,7 +1198,7 @@ export class CentralizedKernelWorker {
     // Copy output data from kernel scratch back to process memory
     if (argDescs) {
       const processMem = new Uint8Array(channel.memory.buffer);
-      const kernelMem = new Uint8Array(this.kernelMemory!.buffer);
+      const kernelMem = this.getKernelMem();
       const dataStart = this.scratchOffset + CH_DATA;
       let outOffset = 0;
 
@@ -1225,6 +1260,10 @@ export class CentralizedKernelWorker {
     processView.setInt32(CH_RETURN, retVal, true);
     processView.setUint32(CH_ERRNO, errVal, true);
 
+    // Flush TCP send pipes before notifying the process — gets PHP's
+    // response data to the browser without waiting for the next pump cycle
+    this.flushTcpSendPipes(channel.pid);
+
     // Set status to COMPLETE and notify process
     const i32View = new Int32Array(channel.memory.buffer, channel.channelOffset);
     Atomics.store(i32View, CH_STATUS / 4, CH_COMPLETE);
@@ -1255,6 +1294,67 @@ export class CentralizedKernelWorker {
    * Handle EAGAIN retry for blocking syscalls.
    * The process stays blocked while we retry asynchronously.
    */
+  private resolvePollPipeIndices(pid: number, origArgs: number[], syscallNr: number): number[] {
+    const getRecvPipe = this.kernelInstance!.exports.kernel_get_socket_recv_pipe as
+      ((pid: number, fd: number) => number) | undefined;
+    if (!getRecvPipe) return [];
+
+    const fdsPtr = origArgs[0];
+    const nfds = origArgs[1];
+    if (fdsPtr === 0 || nfds === 0) return [];
+
+    // Find the channel for this pid to read process memory
+    const channel = this.activeChannels.find(c => c.pid === pid);
+    if (!channel) return [];
+
+    const indices: number[] = [];
+    const processMem = new DataView(channel.memory.buffer);
+    // struct pollfd: fd(4) + events(2) + revents(2) = 8 bytes
+    for (let i = 0; i < nfds; i++) {
+      const fd = processMem.getInt32(fdsPtr + i * 8, true);
+      if (fd < 0) continue;
+      const pipeIdx = getRecvPipe(pid, fd);
+      if (pipeIdx >= 0) {
+        indices.push(pipeIdx);
+      }
+    }
+    return indices;
+  }
+
+  private wakeBlockedPoll(pid: number, pipeIdx: number): void {
+    const entry = this.pendingPollRetries.get(pid);
+    if (!entry) return;
+    if (!entry.pipeIndices.includes(pipeIdx)) return;
+
+    // Cancel the scheduled retry and fire immediately
+    if (entry.timer !== null) {
+      clearImmediate(entry.timer);
+    }
+    this.pendingPollRetries.delete(pid);
+    if (this.processes.has(pid)) {
+      this.retrySyscall(entry.channel);
+    }
+  }
+
+  private flushTcpSendPipes(pid: number): void {
+    const conns = this.tcpConnections.get(pid);
+    if (!conns || conns.length === 0) return;
+
+    const pipeRead = this.kernelInstance!.exports.kernel_pipe_read as
+      (pid: number, pipeIdx: number, bufPtr: number, bufLen: number) => number;
+    const mem = this.getKernelMem();
+
+    for (const conn of conns) {
+      const readN = pipeRead(pid, conn.sendPipeIdx, conn.scratchOffset, 65536);
+      if (readN > 0) {
+        const outData = Buffer.from(mem.slice(conn.scratchOffset, conn.scratchOffset + readN));
+        if (!conn.clientSocket.destroyed) {
+          conn.clientSocket.write(outData);
+        }
+      }
+    }
+  }
+
   private handleBlockingRetry(
     channel: ChannelInfo,
     syscallNr: number,
@@ -1298,44 +1398,35 @@ export class CentralizedKernelWorker {
     // Poll with timeout: the kernel did a non-blocking check and returned EAGAIN.
     // We retry after a short delay. If poll has timeout=0 (EAGAIN means no events),
     // we should return 0 immediately instead of retrying.
-    if (syscallNr === SYS_POLL) {
-      const timeout = origArgs[2]; // timeout in ms
-      if (timeout === 0) {
-        // Non-blocking poll — return 0 (no events)
-        this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], 0, 0);
-        return;
-      }
-      // For timeout > 0, retry after min(timeout, retry_interval)
-      const retryMs = timeout > 0 ? Math.min(timeout, EAGAIN_RETRY_MS) : EAGAIN_RETRY_MS;
-      setTimeout(() => {
-        if (this.processes.has(channel.pid)) {
-          this.retrySyscall(channel);
+    if (syscallNr === SYS_POLL || syscallNr === SYS_PPOLL) {
+      let timeoutMs = -1;
+      if (syscallNr === SYS_POLL) {
+        timeoutMs = origArgs[2]; // timeout in ms
+      } else {
+        const tsPtr = origArgs[2];
+        if (tsPtr !== 0) {
+          const pv = new DataView(channel.memory.buffer, tsPtr);
+          const sec = Number(pv.getBigInt64(0, true));
+          const nsec = Number(pv.getBigInt64(8, true));
+          timeoutMs = sec * 1000 + Math.floor(nsec / 1000000);
         }
-      }, retryMs);
-      return;
-    }
-
-    // ppoll: same as poll but timespec is a pointer, not scalar.
-    // Convert timespec to determine timeout behavior.
-    if (syscallNr === SYS_PPOLL) {
-      const tsPtr = origArgs[2];
-      let timeoutMs = -1; // infinite by default
-      if (tsPtr !== 0) {
-        const pv = new DataView(channel.memory.buffer, tsPtr);
-        const sec = Number(pv.getBigInt64(0, true));
-        const nsec = Number(pv.getBigInt64(8, true));
-        timeoutMs = sec * 1000 + Math.floor(nsec / 1000000);
       }
       if (timeoutMs === 0) {
         this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], 0, 0);
         return;
       }
-      const retryMs = timeoutMs > 0 ? Math.min(timeoutMs, EAGAIN_RETRY_MS) : EAGAIN_RETRY_MS;
-      setTimeout(() => {
+
+      // Resolve which pipe indices the polled fds map to (for event-driven wakeup)
+      const pipeIndices = this.resolvePollPipeIndices(channel.pid, origArgs, syscallNr);
+
+      const retryFn = () => {
+        this.pendingPollRetries.delete(channel.pid);
         if (this.processes.has(channel.pid)) {
           this.retrySyscall(channel);
         }
-      }, retryMs);
+      };
+      const timer = setImmediate(retryFn);
+      this.pendingPollRetries.set(channel.pid, { timer, channel, pipeIndices });
       return;
     }
 
@@ -1371,12 +1462,12 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    // Default: retry after short delay (pipe read/write, socket operations, etc.)
-    setTimeout(() => {
+    // Default: retry on next event loop iteration (pipe read/write, socket operations, etc.)
+    setImmediate(() => {
       if (this.processes.has(channel.pid)) {
         this.retrySyscall(channel);
       }
-    }, EAGAIN_RETRY_MS);
+    });
   }
 
   /**
@@ -1496,7 +1587,7 @@ export class CentralizedKernelWorker {
     const flockPtr = origArgs[2];
 
     const processMem = new Uint8Array(channel.memory.buffer);
-    const kernelMem = new Uint8Array(this.kernelMemory!.buffer);
+    const kernelMem = this.getKernelMem();
     const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
     const dataStart = this.scratchOffset + CH_DATA;
 
@@ -1548,7 +1639,7 @@ export class CentralizedKernelWorker {
   private handlePselect6(channel: ChannelInfo, origArgs: number[]): void {
     const FD_SET_SIZE = 128;
     const processMem = new Uint8Array(channel.memory.buffer);
-    const kernelMem = new Uint8Array(this.kernelMemory!.buffer);
+    const kernelMem = this.getKernelMem();
     const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
     const dataStart = this.scratchOffset + CH_DATA;
 
@@ -1650,12 +1741,11 @@ export class CentralizedKernelWorker {
         this.completeChannel(channel, SYS_PSELECT6, origArgs, undefined, 0, 0);
         return;
       }
-      const retryMs = timeoutMs > 0 ? Math.min(timeoutMs, EAGAIN_RETRY_MS) : EAGAIN_RETRY_MS;
-      setTimeout(() => {
+      setImmediate(() => {
         if (this.processes.has(channel.pid)) {
           this.handlePselect6(channel, origArgs);
         }
-      }, retryMs);
+      });
       return;
     }
 
@@ -1669,7 +1759,7 @@ export class CentralizedKernelWorker {
 
     const processMem = new Uint8Array(channel.memory.buffer);
     const processView = new DataView(channel.memory.buffer);
-    const kernelMem = new Uint8Array(this.kernelMemory!.buffer);
+    const kernelMem = this.getKernelMem();
     const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
     const dataStart = this.scratchOffset + CH_DATA;
 
@@ -1740,7 +1830,7 @@ export class CentralizedKernelWorker {
 
     const processMem = new Uint8Array(channel.memory.buffer);
     const processView = new DataView(channel.memory.buffer);
-    const kernelMem = new Uint8Array(this.kernelMemory!.buffer);
+    const kernelMem = this.getKernelMem();
     const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
     const dataStart = this.scratchOffset + CH_DATA;
 
@@ -1827,7 +1917,7 @@ export class CentralizedKernelWorker {
 
     const processMem = new Uint8Array(channel.memory.buffer);
     const processView = new DataView(channel.memory.buffer);
-    const kernelMem = new Uint8Array(this.kernelMemory!.buffer);
+    const kernelMem = this.getKernelMem();
     const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
     const dataStart = this.scratchOffset + CH_DATA;
 
@@ -1908,7 +1998,7 @@ export class CentralizedKernelWorker {
 
     const processMem = new Uint8Array(channel.memory.buffer);
     const processView = new DataView(channel.memory.buffer);
-    const kernelMem = new Uint8Array(this.kernelMemory!.buffer);
+    const kernelMem = this.getKernelMem();
     const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
     const dataStart = this.scratchOffset + CH_DATA;
 
@@ -2982,15 +3072,93 @@ export class CentralizedKernelWorker {
     // Queue for incoming TCP data (written to recv pipe)
     const inboundQueue: Buffer[] = [];
     let clientEnded = false;
-    let pumpTimer: ReturnType<typeof setInterval> | null = null;
+    let pumpPending = false;
+    let cleaned = false;
 
-    // Incoming TCP data → queue for writing to recv pipe
+    const scratchOffset = this.tcpScratchOffset;
+
+    const pipeIsWriteOpen = this.kernelInstance!.exports.kernel_pipe_is_write_open as
+      (pid: number, pipeIdx: number) => number;
+
+    // Drain inbound queue into recv pipe
+    const drainInbound = () => {
+      const mem = this.getKernelMem();
+      while (inboundQueue.length > 0) {
+        const chunk = inboundQueue[0]!;
+        const toWrite = Math.min(chunk.length, 65536);
+        mem.set(chunk.subarray(0, toWrite), scratchOffset);
+        const written = pipeWrite(pid, recvPipeIdx, scratchOffset, toWrite);
+        if (written <= 0) break; // Pipe full, retry next pump
+        if (written >= chunk.length) {
+          inboundQueue.shift();
+        } else {
+          inboundQueue[0] = chunk.subarray(written) as Buffer;
+        }
+      }
+      if (clientEnded && inboundQueue.length === 0) {
+        pipeCloseWrite(pid, recvPipeIdx);
+      }
+    };
+
+    // Read send pipe → TCP socket
+    const drainOutbound = () => {
+      const mem = this.getKernelMem();
+      const readN = pipeRead(pid, sendPipeIdx, scratchOffset, 65536);
+      if (readN > 0) {
+        const outData = Buffer.from(mem.slice(scratchOffset, scratchOffset + readN));
+        if (!clientSocket.destroyed) {
+          clientSocket.write(outData);
+        }
+      }
+      return readN;
+    };
+
+    const schedulePump = () => {
+      if (pumpPending || cleaned) return;
+      pumpPending = true;
+      setImmediate(pump);
+    };
+
+    const pump = () => {
+      pumpPending = false;
+      if (cleaned || !this.processes.has(pid)) {
+        cleanup();
+        return;
+      }
+
+      drainInbound();
+      const readN = drainOutbound();
+
+      // Check if PHP closed its write end of the send pipe
+      const writeOpen = pipeIsWriteOpen(pid, sendPipeIdx);
+      if (writeOpen === 0 && readN === 0) {
+        if (!clientSocket.destroyed) {
+          clientSocket.end();
+        }
+        cleanup();
+        return;
+      }
+
+      // If there's still queued inbound data (pipe was full), schedule another pump
+      if (inboundQueue.length > 0) {
+        schedulePump();
+      }
+    };
+
+    // Incoming TCP data → write directly to recv pipe, queue overflow
     clientSocket.on("data", (chunk: Buffer) => {
       inboundQueue.push(chunk);
+      if (!this.processes.has(pid)) { cleanup(); return; }
+      drainInbound();
+      // Wake any process blocked on poll() watching this recv pipe
+      this.wakeBlockedPoll(pid, recvPipeIdx);
+      // Schedule pump to handle outbound + close detection
+      schedulePump();
     });
 
     clientSocket.on("end", () => {
       clientEnded = true;
+      schedulePump();
     });
 
     clientSocket.on("error", () => {
@@ -3002,72 +3170,27 @@ export class CentralizedKernelWorker {
       connections.delete(clientSocket);
     });
 
-    // Pump loop: drain inbound queue → recv pipe, read send pipe → TCP socket
-    const scratchOffset = this.tcpScratchOffset;
-    const kernelMemory = this.kernelMemory!;
-
-    pumpTimer = setInterval(() => {
-      // Check if process still exists
-      if (!this.processes.has(pid)) {
-        cleanup();
-        return;
-      }
-
-      const mem = new Uint8Array(kernelMemory.buffer);
-
-      // 1. Drain inbound queue → recv pipe (host writes incoming TCP data)
-      while (inboundQueue.length > 0) {
-        const chunk = inboundQueue[0]!;
-        const toWrite = Math.min(chunk.length, 65536);
-        mem.set(chunk.subarray(0, toWrite), scratchOffset);
-        const written = pipeWrite(pid, recvPipeIdx, scratchOffset, toWrite);
-        if (written <= 0) break; // Pipe full, retry next tick
-        if (written >= chunk.length) {
-          inboundQueue.shift();
-        } else {
-          inboundQueue[0] = chunk.subarray(written) as Buffer;
-        }
-      }
-
-      // If TCP client closed and all queued data has been drained, close recv pipe write end
-      if (clientEnded && inboundQueue.length === 0) {
-        pipeCloseWrite(pid, recvPipeIdx);
-      }
-
-      // 2. Read send pipe → TCP socket (PHP's output goes to the real TCP client)
-      const readN = pipeRead(pid, sendPipeIdx, scratchOffset, 65536);
-      if (readN > 0) {
-        const outData = Buffer.from(mem.slice(scratchOffset, scratchOffset + readN));
-        // Data read from pipe, send to TCP client
-        if (!clientSocket.destroyed) {
-          clientSocket.write(outData);
-        }
-      }
-
-      // 3. Check if PHP closed its write end of the send pipe → end TCP connection
-      const sendWriteOpen = pipeIsReadOpen(pid, sendPipeIdx);
-      // Check the write end of the send pipe (PHP writes to it)
-      const pipeIsWriteOpen = this.kernelInstance!.exports.kernel_pipe_is_write_open as
-        (pid: number, pipeIdx: number) => number;
-      const writeOpen = pipeIsWriteOpen(pid, sendPipeIdx);
-
-      if (writeOpen === 0 && readN === 0) {
-        // PHP has closed its end and all data has been drained
-        if (!clientSocket.destroyed) {
-          clientSocket.end();
-        }
-        cleanup();
-      }
-    }, 1);
+    // Register this connection for piggyback flushing
+    let conns = this.tcpConnections.get(pid);
+    if (!conns) {
+      conns = [];
+      this.tcpConnections.set(pid, conns);
+    }
+    const connEntry = { sendPipeIdx, scratchOffset, clientSocket, recvPipeIdx, schedulePump };
+    conns.push(connEntry);
 
     const cleanup = () => {
-      if (pumpTimer) {
-        clearInterval(pumpTimer);
-        pumpTimer = null;
-      }
-      // Close read end of recv pipe (host was the writer, close the pipe for reads)
+      if (cleaned) return;
+      cleaned = true;
       pipeCloseRead(pid, recvPipeIdx);
       connections.delete(clientSocket);
+      // Remove from tcpConnections tracking
+      const arr = this.tcpConnections?.get(pid);
+      if (arr) {
+        const idx = arr.indexOf(connEntry);
+        if (idx >= 0) arr.splice(idx, 1);
+        if (arr.length === 0) this.tcpConnections?.delete(pid);
+      }
       if (!clientSocket.destroyed) {
         clientSocket.destroy();
       }
@@ -3088,5 +3211,6 @@ export class CentralizedKernelWorker {
         this.tcpListeners.delete(fd);
       }
     }
+    this.tcpConnections.delete(pid);
   }
 }
