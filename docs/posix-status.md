@@ -63,8 +63,9 @@ The wasm-posix-kernel uses a **centralized architecture**: a single kernel Wasm 
 | `preadv2()` / `pwritev2()` | Partial | Delegates to preadv/pwritev. Extra flags parameter ignored. |
 | `sendfile()` | Full | Emulated with read+write loop (no zero-copy in Wasm). Supports offset parameter for positioned read from input fd. |
 | `fallocate()` | Stub | Returns 0 (no-op). File space managed by host. |
-| `copy_file_range()` | Stub | Returns ENOSYS. Programs fall back to read+write. |
-| `splice()` / `tee()` / `vmsplice()` | Stub | Returns ENOSYS. |
+| `copy_file_range()` | Full | Emulated with pread+pwrite loop. Supports optional offsets for both input and output fds. Cross-fd copy between regular files, pipes, and sockets. |
+| `splice()` | Full | Emulated with pread+pwrite loop. Supports pipe-to-file, file-to-pipe, and pipe-to-pipe transfers with optional offsets. |
+| `tee()` / `vmsplice()` | Stub | Returns ENOSYS. |
 | `readahead()` | Stub | Returns 0 (no-op advisory). |
 | `fstatat()` | Full | AT_FDCWD delegates to stat/lstat. AT_SYMLINK_NOFOLLOW supported. Real dirfd supported via stored OFD paths. |
 | `statx()` | Full | Delegates to fstatat, fills statx struct (256 bytes) from WasmStat. STATX_BASIC_STATS mask. |
@@ -98,10 +99,10 @@ The wasm-posix-kernel uses a **centralized architecture**: a single kernel Wasm 
 
 | Function | Status | Notes |
 |----------|--------|-------|
-| `fork()` | Partial | Host-side ProcessManager.fork() serializes kernel state from parent worker, deserializes in child worker. Binary format covers process scalars, FD/OFD tables, signals, environment, CWD, rlimits, terminal. No Wasm-internal fork syscall yet (host-initiated only). |
-| `exec()` | Partial | Replaces process image with new Wasm binary in same worker. Preserves PID, open fds (closes CLOEXEC), environment, CWD, signal mask. Resets caught handlers to default (SIG_IGN preserved). Host-initiated via ProcessManager.exec() and kernel-initiated via host_exec import. |
-| `waitpid()` | Partial | Host-side ProcessManager.waitpid() with WNOHANG support. Reaps zombie processes. No Wasm-internal waitpid syscall yet (host-initiated only). |
-| `exit()` / `_exit()` | Partial | Closes all fds and dir streams, releases all fcntl locks, sets ProcessState::Exited. SIGCHLD delivered to parent via host ProcessManager. |
+| `fork()` | Full | Centralized mode: kernel serializes full process state (FD/OFD tables, signals, environment, CWD, rlimits, brk, terminal), host spawns child Worker with copied Memory. Children re-execute from `_start` with fork return value 0. Cross-process pipes, signals, and waitpid all functional. |
+| `exec()` | Partial | Host-initiated via onExec callback. Replaces process image. Preserves PID, open fds (closes CLOEXEC), environment, CWD, signal mask. Not yet wired as kernel-initiated syscall in centralized mode. |
+| `waitpid()` | Full | Kernel-internal: blocks parent until child exits (WNOHANG supported). Reaps zombie processes. Supports pid>0 (specific child), pid=-1 (any child), pid=0 (same pgid), pid<-1 (specific pgid). Returns status with WIFEXITED/WEXITSTATUS. |
+| `exit()` / `_exit()` | Full | Closes all fds and dir streams, releases all fcntl locks, sets ProcessState::Exited. SIGCHLD delivered to parent. Zombie state maintained until reaped by waitpid. |
 | `getpid()` | Full | Returns pid from Process struct. |
 | `getppid()` | Full | Returns ppid (0 for init process). |
 | `getuid()` / `geteuid()` | Full | Simulated; defaults to uid=1000. Configurable at init. |
@@ -119,8 +120,8 @@ The wasm-posix-kernel uses a **centralized architecture**: a single kernel Wasm 
 | `futex()` | Partial | FUTEX_WAIT, FUTEX_WAKE, FUTEX_REQUEUE, FUTEX_CMP_REQUEUE, FUTEX_WAKE_OP implemented. In centralized mode, WAIT returns EAGAIN (host retries via Atomics.waitAsync). Thread workers use direct Atomics.wait. |
 | `execve()` | Full | Delegates to kernel_execve. Replaces process image. |
 | `execveat()` | Partial | Extracts path, delegates to kernel_execve. Ignores dirfd (path must be absolute or CWD-relative). |
-| `fork()` (syscall) | Stub | Returns ENOSYS from glue. Host-initiated only via ProcessManager. |
-| `vfork()` | Stub | Returns ENOSYS. |
+| `fork()` (syscall) | Full | Centralized mode: glue traps to kernel via channel IPC. Kernel serializes state, host callback spawns child Worker. Returns child pid to parent, 0 to child. |
+| `vfork()` | Full | Alias for fork() in centralized mode. |
 | `clone()` | Partial | Thread-style clone (CLONE_VM\|CLONE_THREAD) supported. Centralized mode: kernel allocates TID, host spawns thread Worker sharing parent's Memory. Traditional mode: delegates to host_clone. |
 | `personality()` | Stub | Returns 0 (PER_LINUX). |
 | `unshare()` / `setns()` | Stub | Returns EPERM. No namespace support. |
@@ -134,7 +135,7 @@ The wasm-posix-kernel uses a **centralized architecture**: a single kernel Wasm 
 | `acct()` | Stub | Returns ENOSYS. |
 | `reboot()` | Stub | Returns EPERM. |
 | `swapon()` / `swapoff()` | Stub | Returns EPERM. |
-| `syslog()` | Stub | Returns EPERM. |
+| `syslog()` | Full | SYS_SYSLOG (kernel log) returns 0. libc syslog() works via AF_UNIX SOCK_DGRAM bit-bucket pattern — connect/write to `/dev/log` silently discards. |
 | `capget()` / `capset()` | Stub | Returns EPERM. No capabilities model. |
 | `vhangup()` | Stub | Returns EPERM. |
 | `sethostname()` / `setdomainname()` | Stub | Returns EPERM. |
@@ -166,10 +167,10 @@ The wasm-posix-kernel uses a **centralized architecture**: a single kernel Wasm 
 | Function | Status | Notes |
 |----------|--------|-------|
 | `mmap()` | Partial | Anonymous mappings only (MAP_ANONYMOUS). Page-aligned (64KB Wasm pages). File-backed mappings not yet supported. MAP_FIXED not yet supported. |
-| `munmap()` | Full | Removes tracked region. Page-aligned address required. |
+| `munmap()` | Full | Removes tracked region. Page-aligned address required. Partial munmap supported: front trim, back trim, and middle split. |
 | `brk()` / `sbrk()` | Partial | Kernel-managed program break. Initial break at 0x01000000. Growing and shrinking supported. Program break inherited on fork/exec. |
 | `mprotect()` | Stub | Returns ENOSYS. Wasm linear memory has no page-level protection. |
-| `memfd_create()` | Stub | Returns ENOSYS. |
+| `memfd_create()` | Full | In-kernel anonymous file backed by Vec. MFD_CLOEXEC and MFD_ALLOW_SEALING flags. Supports read, write, lseek, ftruncate, fstat, mmap. |
 
 ## Directory Operations
 
@@ -196,7 +197,7 @@ The wasm-posix-kernel uses a **centralized architecture**: a single kernel Wasm 
 | `chroot()` | Stub | Returns EPERM. No filesystem namespace isolation. |
 | `mount()` / `umount2()` | Stub | Returns EPERM. Future: VFS mount/unmount support. |
 | `pivot_root()` | Stub | Returns EPERM. |
-| `mknod()` / `mknodat()` | Stub | Returns EPERM. Device node creation not supported. |
+| `mknod()` / `mknodat()` | Partial | S_IFREG and S_IFIFO file types supported (creates regular file via host). Device nodes (S_IFCHR, S_IFBLK) return EPERM. |
 | `quotactl()` | Stub | Returns ENOSYS. |
 | `renameat2()` | Full | Delegates to renameat. Extra flags parameter ignored. |
 | `faccessat2()` | Full | Delegates to faccessat. Extra flags parameter ignored. |
@@ -210,12 +211,12 @@ The wasm-posix-kernel uses a **centralized architecture**: a single kernel Wasm 
 |----------|--------|-------|
 | `socket()` | Partial | AF_UNIX (kernel-internal) and AF_INET (creation only) supported. SOCK_STREAM and SOCK_DGRAM types. SOCK_NONBLOCK and SOCK_CLOEXEC flags handled. |
 | `socketpair()` | Full | AF_UNIX SOCK_STREAM. Bidirectional ring buffers (64KB each). Returns pre-connected pair. |
-| `bind()` | Stub | Returns ENOSYS. Requires host network stack for AF_INET. |
-| `listen()` | Stub | Returns ENOSYS. Requires host network stack. |
-| `accept()` | Stub | Returns ENOSYS. Requires host network stack. |
-| `connect()` | Stub | Returns ENOSYS. Requires host network stack. |
-| `send()` / `recv()` | Partial | Works for connected Unix domain sockets (via socketpair). MSG_PEEK supported. **Gap:** MSG_WAITALL, MSG_DONTWAIT not supported. |
-| `sendto()` / `recvfrom()` | Stub | Returns ENOSYS. Requires host network stack for UDP. |
+| `bind()` | Full | AF_UNIX (kernel-internal paths) and AF_INET (host-delegated TCP). Stores local address for getsockname. |
+| `listen()` | Full | AF_INET: delegates to host_net_listen. AF_UNIX: EOPNOTSUPP. Marks socket as listening. |
+| `accept()` / `accept4()` | Full | AF_INET: delegates to host_net_accept. Returns new connected socket fd. SOCK_NONBLOCK and SOCK_CLOEXEC flags on accept4. |
+| `connect()` | Full | AF_UNIX (kernel-internal bit-bucket for SOCK_DGRAM, or socketpair endpoint). AF_INET: host-delegated TCP connect. |
+| `send()` / `recv()` | Full | Unix domain sockets (kernel ring buffer) and AF_INET (host-delegated). MSG_PEEK, MSG_DONTWAIT, MSG_NOSIGNAL supported. |
+| `sendto()` / `recvfrom()` | Full | Delegates to send/recv for connected sockets. AF_INET address extraction for recvfrom. |
 | `setsockopt()` / `getsockopt()` | Partial | SOL_SOCKET: SO_TYPE, SO_DOMAIN, SO_ERROR, SO_ACCEPTCONN, SO_RCVBUF, SO_SNDBUF readable; SO_REUSEADDR, SO_KEEPALIVE, SO_LINGER, SO_RCVTIMEO, SO_SNDTIMEO, SO_BROADCAST accepted/stored. IPPROTO_TCP: TCP_NODELAY stored. |
 | `shutdown()` | Full | SHUT_RD, SHUT_WR, SHUT_RDWR. Properly closes buffer endpoints. |
 | `select()` | Partial | Wrapper around poll(). Converts fd_set bitmasks to pollfd array. Timeout supported via polling loop. |
@@ -268,9 +269,10 @@ The wasm-posix-kernel uses a **centralized architecture**: a single kernel Wasm 
 | `inotify_init()` / `inotify_init1()` | Stub | Returns ENOSYS. |
 | `inotify_add_watch()` / `inotify_rm_watch()` | Stub | Returns EBADF. |
 | `fanotify_init()` / `fanotify_mark()` | Stub | Returns ENOSYS. |
-| `timer_create()` | Stub | Returns ENOSYS. POSIX per-process timers not implemented. |
-| `timer_settime()` / `timer_gettime()` | Stub | Returns ENOSYS. |
-| `timer_getoverrun()` / `timer_delete()` | Stub | Returns ENOSYS. |
+| `timer_create()` | Full | CLOCK_REALTIME and CLOCK_MONOTONIC. SIGEV_SIGNAL delivery with si_value. Per-process timer table (max 32). |
+| `timer_settime()` / `timer_gettime()` | Full | Absolute (TIMER_ABSTIME) and relative time. Interval timers with automatic rearming. Host setTimeout-based delivery. |
+| `timer_getoverrun()` | Full | Tracks overrun count when signal is still pending at next interval fire. Reset on successful signal delivery. |
+| `timer_delete()` | Full | Cancels timer and removes from per-process table. |
 
 ## IPC (System V & POSIX Message Queues)
 
@@ -337,8 +339,8 @@ All virtual devices return synthetic `stat()` with `S_IFCHR | 0666`, determinist
 | `getrusage()` | Partial | Returns zeroed rusage struct (144 bytes). RUSAGE_SELF and RUSAGE_CHILDREN supported. No actual resource tracking in Wasm. |
 | `pathconf()` | Full | Returns POSIX compile-time constants: _PC_NAME_MAX=255, _PC_PATH_MAX=4096, _PC_PIPE_BUF=4096, _PC_LINK_MAX=14, etc. |
 | `fpathconf()` | Full | Same as pathconf() but validates fd exists first. Returns EBADF for invalid fd. |
-| `getsockname()` | Partial | Returns AF_UNIX (family=1) for kernel-internal sockets. No real address information. |
-| `getpeername()` | Partial | Returns AF_UNIX for connected kernel-internal sockets. Returns ENOTCONN for unconnected. |
+| `getsockname()` | Full | Returns stored local address (AF_UNIX or AF_INET sockaddr). |
+| `getpeername()` | Full | Returns stored peer address for connected sockets. Returns ENOTCONN for unconnected. |
 
 ---
 
@@ -385,19 +387,19 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 |-----|-----------|--------|
 | **mprotect() returns ENOSYS** | memory | Wasm linear memory has no page-level protection. |
 | **No file-backed mmap** | memory | Would require host cooperation and shared memory semantics. MAP_FIXED also unsupported. |
-| **TCP/UDP sockets** | socket | bind/listen/accept/connect return ENOSYS. Requires host network stack integration. |
+| **UDP sockets** | socket | AF_INET SOCK_DGRAM not yet implemented. TCP (SOCK_STREAM) fully supported via host-delegated networking. |
 | **Setuid/setgid enforcement** | process | Single-user Wasm environment; privilege checks simulated only. |
 | **Permission checks** | filesystem | Delegated to host. Kernel does not independently verify file permissions. |
 | **getrusage() zeroed** | sysinfo | No actual resource tracking available in Wasm. Returns zero-filled struct. |
 
 ### Future Work — Remaining items
 
-**Threading (kernel infrastructure exists, needs host worker integration):**
-- `clone()` kernel-side thread ID allocation and ThreadInfo storage implemented; host-side Worker spawning needed
-- `gettid()` — returns pid; needs actual thread ID from thread context
-- `set_tid_address()` — stores tidptr; kernel writes 0 + futex-wakes on exit (no-op until threading active)
-- `set_robust_list()` — tracked per-thread; walk on exit (no-op until threading active)
-- `futex()` — WAIT/WAKE/REQUEUE/CMP_REQUEUE/WAKE_OP implemented; WAIT returns EAGAIN in centralized mode (host retries via Atomics.waitAsync)
+**Threading (functional in centralized mode):**
+- `clone()` — CLONE_VM|CLONE_THREAD: kernel allocates TID, host spawns thread Worker sharing parent's Memory. TLS initialization via `__wasm_thread_init` export.
+- `gettid()` — returns actual TID for threads, pid for main thread
+- `set_tid_address()` — stores tidptr; kernel writes 0 + futex-wakes on thread exit (CLONE_CHILD_CLEARTID)
+- `futex()` — WAIT/WAKE/REQUEUE/CMP_REQUEUE/WAKE_OP implemented; main-process WAIT returns EAGAIN (host retries via Atomics.waitAsync), thread workers use direct Atomics.wait
+- `pthread_create` — works via clone(). Basic pthreads tested (mutex, join). Cancellation not supported.
 
 **Hard / Architectural:**
 - File-backed mmap() (requires host cooperation and shared memory semantics)
@@ -450,7 +452,7 @@ These features require SharedArrayBuffer (and cross-origin isolation headers in 
 3b. **Phase 3b (Deferred):** Multi-process — fork, exec, waitpid (requires multi-worker architecture)
 4. **Phase 4 (Complete):** Signals — kill, raise, sigaction, sigprocmask. Signal delivery mechanism deferred (needs Asyncify).
 5. **Phase 5 (Complete):** fcntl locking — F_GETLK, F_SETLK, F_SETLKW with byte-range granularity
-6. **Phase 6 (Complete):** Sockets & I/O multiplexing — socket, socketpair, shutdown, send/recv, getsockopt/setsockopt, poll. TCP stubs (bind/listen/accept/connect return ENOSYS).
+6. **Phase 6 (Complete):** Sockets & I/O multiplexing — socket, socketpair, shutdown, send/recv, getsockopt/setsockopt, poll, epoll. AF_INET TCP via host-delegated networking (bind/listen/accept/connect/send/recv).
 7. **Phase 7 (Complete):** Time, TTY, environment — clock_gettime, nanosleep, isatty, getenv/setenv/unsetenv
 8. **Phase 8 (Complete):** Memory management — mmap (anonymous), munmap, brk, mprotect (stub)
 9. **Phase 9 (Complete):** Polish & gaps — tcgetattr/tcsetattr, ioctl (TIOCGWINSZ/TIOCSWINSZ), signal(), fcntl F_GETOWN/F_SETOWN, MSG_PEEK, O_NONBLOCK pipe enforcement, O_NOFOLLOW, time/gettimeofday/usleep/openat wrappers
@@ -507,29 +509,29 @@ Target use case: hosting PHP-WASM (as used by WordPress Playground) on this kern
 
 | Gap | Subsystem | Description | Difficulty |
 |-----|-----------|-------------|------------|
-| **`flock()` syscall** | file locking | PHP sessions and SQLite both use whole-file locking via `flock()`. WordPress calls it heavily. Can map to `fcntl` F_SETLK/F_SETLKW internally. | Medium |
-| ~~`/dev/urandom` virtual device~~ | VFS | **Done.** `/dev/urandom` and `/dev/random` intercept in kernel, delegate to `host_getrandom()` → `crypto.getRandomValues()`. | Easy |
-| ~~`getrandom()` syscall~~ | random | **Done.** Host-delegated to `crypto.getRandomValues()`. | Easy |
-| **`putenv()` syscall** | environment | PHP uses `putenv("KEY=VALUE")` extensively. Different semantics from `setenv()` — takes a single `KEY=VALUE` string. | Easy |
-| ~~Virtual device files in VFS~~ | VFS | **Done.** `/dev/null`, `/dev/zero`, `/dev/urandom`, `/dev/full`, `/dev/fd/N`, `/dev/stdin`, `/dev/stdout`, `/dev/stderr` all handled in-kernel. PHP-WASM also uses `/request/stdout`, `/request/stderr`, `/request/headers` (not yet supported). | Medium |
-| **`initgroups()` stub** | process | ZendAccelerator needs it. Return success (no-op). | Easy |
+| ~~`flock()` syscall~~ | file locking | **Done.** Mapped to fcntl F_SETLK/F_SETLKW internally. LOCK_SH, LOCK_EX, LOCK_UN, LOCK_NB all supported. | ~~Medium~~ |
+| ~~`/dev/urandom` virtual device~~ | VFS | **Done.** `/dev/urandom` and `/dev/random` intercept in kernel, delegate to `host_getrandom()` → `crypto.getRandomValues()`. | ~~Easy~~ |
+| ~~`getrandom()` syscall~~ | random | **Done.** Host-delegated to `crypto.getRandomValues()`. | ~~Easy~~ |
+| ~~`putenv()` syscall~~ | environment | **Done.** Parses `KEY=VALUE` string, delegates to setenv. | ~~Easy~~ |
+| ~~Virtual device files in VFS~~ | VFS | **Done.** `/dev/null`, `/dev/zero`, `/dev/urandom`, `/dev/full`, `/dev/fd/N`, `/dev/stdin`, `/dev/stdout`, `/dev/stderr` all handled in-kernel. | ~~Medium~~ |
+| ~~`initgroups()` stub~~ | process | **Done.** musl's initgroups() calls setgroups(), which is a no-op stub. | ~~Easy~~ |
 
 ### Phase B — Networking (enables WordPress HTTP requests + MySQL)
 
 | Gap | Subsystem | Description | Difficulty |
 |-----|-----------|-------------|------------|
-| **`connect()` for AF_INET** | socket | PHP needs outbound TCP for HTTP requests and database connections. Host-delegated to fetch API bridge (HTTP) or WebSocket-to-TCP proxy (raw TCP). | Hard |
-| **`getaddrinfo()` / `gethostbyname()`** | DNS | Required for any network operation. Host-delegated (browser fetch or DNS-over-HTTPS). | Medium |
-| **`setsockopt()` expansion** | socket | `SO_KEEPALIVE`, `TCP_NODELAY` at minimum. WordPress Playground patches these for MySQL connectivity. | Easy |
-| **Async socket polling bridge** | socket | Bridge between blocking `poll()`/`select()` and async host I/O. Current `Atomics.wait()` approach works in workers. | Medium |
+| ~~`connect()` for AF_INET~~ | socket | **Done.** Host-delegated TCP networking. bind/listen/accept/connect/send/recv all functional. Node.js backend uses `net` module; browser backend uses fetch for HTTP. | ~~Hard~~ |
+| ~~`getaddrinfo()` / `gethostbyname()`~~ | DNS | **Done.** Host-delegated via `host_getaddrinfo` import. Returns AF_INET sockaddr_in. Synthetic `/etc/hosts` for localhost resolution. | ~~Medium~~ |
+| ~~`setsockopt()` expansion~~ | socket | **Done.** SO_KEEPALIVE, TCP_NODELAY, SO_REUSEADDR, SO_LINGER, and many more stored. | ~~Easy~~ |
+| ~~Async socket polling bridge~~ | socket | **Done.** poll/select/epoll all work with socket fds. Centralized mode: kernel checks readiness inline. | ~~Medium~~ |
 
 ### Phase C — Process management (enables wp-cli, Composer, PHPUnit)
 
 | Gap | Subsystem | Description | Difficulty |
 |-----|-----------|-------------|------------|
-| **Guest-initiated `fork()`/`exec()`** | process | Allow Wasm user-space code to trigger process spawning via syscall. Currently host-initiated only. | Hard |
-| **`proc_open()` compatible semantics** | process | Pipe creation + process spawn + wait. WordPress Playground replaces `proc_open` with custom JS shims. | Hard |
-| **Blocking pipe reads with timeout** | pipe | Current pipe blocking depends on SAB. Need proper timeout + EINTR semantics for `proc_open` pipes. | Medium |
+| ~~Guest-initiated `fork()`~~ | process | **Done.** fork() works as a kernel syscall in centralized mode. Children re-execute from `_start` with forked state. Cross-process pipes and signals functional. | ~~Hard~~ |
+| **Guest-initiated `exec()`** | process | exec() exists as host callback but not yet wired as a kernel-initiated syscall path in centralized mode. | Hard |
+| ~~Blocking pipe reads with timeout~~ | pipe | **Done.** Pipes support blocking reads/writes with EINTR on signal delivery. O_NONBLOCK returns EAGAIN. | ~~Medium~~ |
 
 ### Phase D — Browser persistence + PHP compilation
 
@@ -562,7 +564,10 @@ These PHP needs are well-handled by the current kernel:
 - Terminal: isatty, tcgetattr/tcsetattr, ioctl
 - Environment: getenv, setenv, unsetenv
 - Memory: anonymous mmap, munmap, brk
-- Multi-process: fork, exec, waitpid (host-side)
+- Multi-process: fork (kernel syscall), exec (host-initiated), waitpid (kernel syscall)
+- Networking: AF_INET TCP (connect, bind, listen, accept, send, recv), getaddrinfo
+- Dynamic linking: dlopen, dlsym, dlclose, dlerror (Wasm dylink)
+- POSIX timers: timer_create, timer_settime, timer_gettime, timer_delete
 - System info: uname, sysconf, umask, getrlimit/setrlimit
 
 ---
@@ -571,13 +576,9 @@ These PHP needs are well-handled by the current kernel:
 
 The full musl libc-test suite (functional + regression + math) is run via `scripts/run-libc-tests.sh`. Use `--report` to generate `docs/libc-test-failures.md`.
 
-### Summary (as of 2026-03-17)
+### Summary (as of 2026-03-28)
 
-| Category | Pass | Fail | Timeout | Build | Total |
-|----------|------|------|---------|-------|-------|
-| Functional | 46 | 11 | 6 | 0 | 63 |
-| Regression | 43 | 12 | 8 | 0 | 63 |
-| Math | ~89 | ~110 | 0 | 0 | 199 |
+All tests pass (0 unexpected failures). XFAIL (expected failures) and TIME (timeouts) are acceptable. Run `scripts/run-libc-tests.sh` for current results.
 
 ### Known Unfixable Failures
 
