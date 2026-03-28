@@ -5570,6 +5570,31 @@ pub fn sys_ftruncate(
     host.host_ftruncate(ofd.host_handle, length)
 }
 
+/// fallocate -- ensure space is allocated for a file region.
+/// Mode 0 only: extends the file to offset+len if currently shorter.
+pub fn sys_fallocate(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    fd: i32,
+    offset: i64,
+    len: i64,
+) -> Result<(), Errno> {
+    if offset < 0 || len <= 0 {
+        return Err(Errno::EINVAL);
+    }
+    let required = offset + len;
+
+    // Get current file size via fstat
+    let stat = sys_fstat(proc, host, fd)?;
+    let current_size = stat.st_size as i64;
+
+    // Only extend if needed — fallocate never shrinks
+    if required > current_size {
+        sys_ftruncate(proc, host, fd, required)?;
+    }
+    Ok(())
+}
+
 /// fsync -- synchronize file state to storage.
 pub fn sys_fsync(
     proc: &mut Process,

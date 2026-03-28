@@ -183,7 +183,8 @@ BASIC_EXPECTED_FAIL=(
     "arpa_inet/inet_ntop"
     # (signal/sig2str and signal/str2sig now pass — musl sysroot rebuild)
     # -- Filesystem-dependent tests (test opens files, needs real FS paths)
-    "fcntl/open" "fcntl/openat" "fcntl/posix_fallocate"
+    "fcntl/open" "fcntl/openat"
+    # (fcntl/posix_fallocate now passes — fallocate syscall implemented)
     "dirent/fdopendir" "dirent/posix_getdents" "dirent/readdir" "dirent/readdir_r"
     "dirent/rewinddir" "dirent/scandir" "dirent/seekdir"
     "stdio/fopen" "stdio/pclose" "stdio/popen" "stdio/remove"
