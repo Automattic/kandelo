@@ -171,7 +171,7 @@ BASIC_EXPECTED_FAIL=(
     "unistd/tcgetpgrp" "unistd/tcsetpgrp" "unistd/ttyname" "unistd/ttyname_r"
     "stdlib/ptsname" "stdlib/ptsname_r" "stdlib/unlockpt"
     # -- SysV IPC (not wired in centralized mode)
-    "sys_ipc/ftok"
+    # (sys_ipc/ftok now passes — data directory infrastructure)
     "sys_msg/msgctl" "sys_msg/msgget" "sys_msg/msgrcv" "sys_msg/msgsnd"
     "sys_sem/semctl" "sys_sem/semget" "sys_sem/semop"
     "sys_shm/shmat" "sys_shm/shmctl" "sys_shm/shmdt" "sys_shm/shmget"
@@ -182,21 +182,25 @@ BASIC_EXPECTED_FAIL=(
     # (netdb/freeaddrinfo and netdb/getaddrinfo now pass — synthetic /etc/hosts)
     "arpa_inet/inet_ntop"
     # (signal/sig2str and signal/str2sig now pass — musl sysroot rebuild)
-    # -- Filesystem-dependent tests (test opens files, needs real FS paths)
-    "fcntl/open" "fcntl/openat"
+    # -- Filesystem-dependent tests (tests that still need specific FS setup)
+    # (fcntl/open, fcntl/openat now pass — data directory infrastructure)
     # (fcntl/posix_fallocate now passes — fallocate syscall implemented)
-    "dirent/fdopendir" "dirent/posix_getdents" "dirent/readdir" "dirent/readdir_r"
-    "dirent/rewinddir" "dirent/scandir" "dirent/seekdir"
-    "stdio/fopen" "stdio/pclose" "stdio/popen" "stdio/remove"
+    "dirent/posix_getdents" "dirent/seekdir"
+    # (dirent/fdopendir, readdir, readdir_r, rewinddir, scandir now pass — data directory)
+    "stdio/pclose" "stdio/popen" "stdio/remove"
+    # (stdio/fopen now passes — data directory infrastructure)
     "unistd/faccessat"
-    "unistd/lseek" "unistd/read" "unistd/readlinkat"
-    "ftw/nftw" "glob/glob" "glob/globfree"
+    "unistd/readlinkat"
+    # (unistd/lseek, unistd/read now pass — data directory infrastructure)
+    "ftw/nftw"
     "wordexp/wordexp" "wordexp/wordfree"
+    # (glob/glob, glob/globfree now pass — data directory infrastructure)
     # (sys_stat/fchmodat now passes — fchmodat2 syscall 383 implemented)
-    "sys_stat/fstat" "sys_stat/fstatat" "sys_stat/futimens"
+    # (sys_stat/fstat, sys_stat/stat now pass — data directory infrastructure)
+    "sys_stat/fstatat" "sys_stat/futimens"
     "sys_stat/lstat" "sys_stat/mkfifo" "sys_stat/mkfifoat" "sys_stat/mknod"
-    "sys_stat/mknodat" "sys_stat/stat"
-    "sys_statvfs/fstatvfs"
+    "sys_stat/mknodat"
+    # (sys_statvfs/fstatvfs now passes — data directory infrastructure)
     "sys_mman/msync" "sys_mman/posix_mem_offset" "sys_mman/posix_typed_mem_get_info"
     "sys_mman/posix_typed_mem_open" "sys_mman/shm_open"
     # (pwd/grp tests now pass — synthetic /etc/passwd and /etc/group)
@@ -728,15 +732,17 @@ _run_runtime_test_worker() {
     local so="$BUILD_DIR/$suite/${test_name}.so"
     local so_link=""
     if [ -f "$so" ]; then
-        so_link="$REPO_ROOT/${test_name}.so"
+        local so_dir="${SORTIX_DATA_DIR:-$REPO_ROOT}"
+        so_link="$so_dir/${test_name}.so"
         mkdir -p "$(dirname "$so_link")"
         ln -sf "$so" "$so_link" 2>/dev/null || true
     fi
 
-    # Run with timeout
+    # Run with timeout. KERNEL_CWD is the data directory containing symlinks
+    # to test binaries at their expected relative paths (e.g., fcntl/open).
     local output rc
     set +e
-    output=$(cd "$REPO_ROOT" && timeout "$this_timeout" npx tsx examples/run-example.ts "${wasm}" 2>&1)
+    output=$(cd "$REPO_ROOT" && KERNEL_CWD="${SORTIX_DATA_DIR:-$REPO_ROOT}" timeout "$this_timeout" npx tsx examples/run-example.ts "${wasm}" 2>&1)
     rc=$?
     set -e
 
@@ -924,6 +930,7 @@ run_suite() {
 
         echo "  Building $count tests ($PARALLEL parallel)..."
         # Build in parallel using a wrapper that reconstructs arrays
+        export REPO_ROOT BUILD_DIR OS_TEST SYSROOT GLUE_DIR
         export CC WASM_OPT ASYNCIFY_IMPORTS
         export CFLAGS_BASE_STR="${CFLAGS_BASE[*]}"
         export LINK_FLAGS_STR="${LINK_FLAGS[*]}"
@@ -961,6 +968,19 @@ run_suite() {
 
         echo "  Running $count tests ($PARALLEL parallel)..."
 
+        # Create a temp directory with symlinks to test binaries at their
+        # expected relative paths. Many sortix tests open their own binary
+        # via paths like "fcntl/open" from CWD — this makes them accessible.
+        SORTIX_DATA_DIR=$(mktemp -d)
+        for wasm_file in "$BUILD_DIR/$suite"/**/*.wasm; do
+            [ -f "$wasm_file" ] || continue
+            local relpath="${wasm_file#"$BUILD_DIR/$suite/"}"
+            local name="${relpath%.wasm}"
+            mkdir -p "$SORTIX_DATA_DIR/$(dirname "$name")"
+            ln -sf "$wasm_file" "$SORTIX_DATA_DIR/$name"
+        done
+        export SORTIX_DATA_DIR
+
         # Export everything needed by the worker function
         export REPO_ROOT BUILD_DIR OS_TEST SYSROOT GLUE_DIR TEST_TIMEOUT XFAIL_TIMEOUT
         export -f _run_runtime_test_worker _check_xfail_serialized
@@ -971,6 +991,10 @@ run_suite() {
         # Run tests in parallel using xargs
         printf '%s\n' "${tests[@]}" | xargs -P "$PARALLEL" -I{} \
             bash -c '_run_runtime_test_worker "$1" "$2" "$3"' _ "$suite" {} "$result_dir"
+
+        # Clean up data directory
+        rm -rf "$SORTIX_DATA_DIR"
+        unset SORTIX_DATA_DIR
 
         # Collect results
         for test_name in "${tests[@]}"; do
