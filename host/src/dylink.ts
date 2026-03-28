@@ -190,50 +190,23 @@ export interface LoadSharedLibraryOptions {
   got: Map<string, WebAssembly.Global>;
   /** Already-loaded libraries for dedup and dependency resolution */
   loadedLibraries: Map<string, LoadedSharedLibrary>;
-  /** Callback to locate and read a library file by name */
+  /** Callback to locate and read a library file by name (async version) */
   resolveLibrary?: (name: string) => Promise<Uint8Array | null>;
+  /** Callback to locate and read a library file by name (sync version) */
+  resolveLibrarySync?: (name: string) => Uint8Array | null;
 }
 
 /**
- * Load a shared library (.so / side module) into a process's address space.
- *
- * This implements the WebAssembly dynamic linking ABI:
- * 1. Parse dylink.0 section for memory/table requirements
- * 2. Recursively load dependencies
- * 3. Allocate memory and table slots
- * 4. Construct imports with GOT proxy
- * 5. Instantiate the Wasm module
- * 6. Run relocations and constructors
- * 7. Register exports in the global symbol table
+ * Core shared library loading logic — instantiates a pre-parsed Wasm
+ * side module into the process address space. Used by both async and sync
+ * entry points.
  */
-export async function loadSharedLibrary(
+function instantiateSharedLibrary(
   name: string,
   wasmBytes: Uint8Array,
+  metadata: DylinkMetadata,
   options: LoadSharedLibraryOptions,
-): Promise<LoadedSharedLibrary> {
-  // Check if already loaded
-  const existing = options.loadedLibraries.get(name);
-  if (existing) return existing;
-
-  // Parse dylink.0 section
-  const metadata = parseDylinkSection(wasmBytes);
-  if (!metadata) {
-    throw new Error(`${name}: not a shared library (no dylink.0 section)`);
-  }
-
-  // Load dependencies first
-  for (const dep of metadata.neededDynlibs) {
-    if (options.loadedLibraries.has(dep)) continue;
-    if (!options.resolveLibrary) {
-      throw new Error(`${name}: depends on ${dep} but no resolveLibrary callback provided`);
-    }
-    const depBytes = await options.resolveLibrary(dep);
-    if (!depBytes) {
-      throw new Error(`${name}: dependency ${dep} not found`);
-    }
-    await loadSharedLibrary(dep, depBytes, options);
-  }
-
+): LoadedSharedLibrary {
   // Allocate memory region
   const memAlign = 1 << metadata.memoryAlign;
   let memoryBase = 0;
@@ -273,7 +246,6 @@ export async function loadSharedLibrary(
   const getOrCreateGOTEntry = (symName: string): WebAssembly.Global => {
     let entry = options.got.get(symName);
     if (!entry) {
-      // Initialized to 0 (unresolved). Will be filled in by updateGOT.
       entry = new WebAssembly.Global({ value: "i32", mutable: true }, 0);
       options.got.set(symName, entry);
     }
@@ -291,10 +263,8 @@ export async function loadSharedLibrary(
           case "__table_base": return tableBaseGlobal;
           case "__stack_pointer": return options.stackPointer;
         }
-        // Check global symbol table
         const sym = options.globalSymbols.get(prop);
         if (sym !== undefined) return sym;
-        // Return undefined — will be handled as unresolved
         return undefined;
       },
       has(_target, prop: string) {
@@ -315,22 +285,18 @@ export async function loadSharedLibrary(
     }),
   };
 
-  // Compile and instantiate
-  const module = await WebAssembly.compile(wasmBytes);
-  const instance = await WebAssembly.instantiate(module, imports);
+  // Compile and instantiate synchronously
+  const module = new WebAssembly.Module(wasmBytes);
+  const instance = new WebAssembly.Instance(module, imports);
 
   // Relocate exports: data address globals need memoryBase added
   const relocatedExports: Record<string, WebAssembly.ExportValue> = {};
   for (const [exportName, exportValue] of Object.entries(instance.exports)) {
     if (exportValue instanceof WebAssembly.Global) {
-      // Check if it's an immutable global (data address)
       try {
-        // Immutable globals throw on write
         (exportValue as any).value = (exportValue as any).value;
-        // If we get here, it's mutable — don't relocate
         relocatedExports[exportName] = exportValue;
       } catch {
-        // Immutable global — create a relocated copy
         relocatedExports[exportName] = new WebAssembly.Global(
           { value: "i32", mutable: false },
           (exportValue as WebAssembly.Global).value + memoryBase,
@@ -343,10 +309,9 @@ export async function loadSharedLibrary(
 
   // Update GOT with this library's exports
   for (const [exportName, exportValue] of Object.entries(relocatedExports)) {
-    if (exportName.startsWith("__")) continue; // Skip internal symbols
+    if (exportName.startsWith("__")) continue;
 
     if (typeof exportValue === "function") {
-      // Function: add to table and store table index in GOT
       const tableIdx = options.table.length;
       options.table.grow(1);
       options.table.set(tableIdx, exportValue as WebAssembly.Function);
@@ -355,17 +320,13 @@ export async function loadSharedLibrary(
       if (gotEntry) {
         gotEntry.value = tableIdx;
       }
-
-      // Also add to global symbol table
       options.globalSymbols.set(exportName, exportValue as Function);
     } else if (exportValue instanceof WebAssembly.Global) {
-      // Data address global
       const addr = (exportValue as WebAssembly.Global).value;
       const gotEntry = options.got.get(exportName);
       if (gotEntry) {
         gotEntry.value = addr as number;
       }
-
       options.globalSymbols.set(exportName, exportValue);
     }
   }
@@ -393,4 +354,174 @@ export async function loadSharedLibrary(
 
   options.loadedLibraries.set(name, loaded);
   return loaded;
+}
+
+/**
+ * Load a shared library (.so / side module) into a process's address space.
+ * Async version — uses async WebAssembly compilation for large modules and
+ * supports async dependency resolution.
+ */
+export async function loadSharedLibrary(
+  name: string,
+  wasmBytes: Uint8Array,
+  options: LoadSharedLibraryOptions,
+): Promise<LoadedSharedLibrary> {
+  const existing = options.loadedLibraries.get(name);
+  if (existing) return existing;
+
+  const metadata = parseDylinkSection(wasmBytes);
+  if (!metadata) {
+    throw new Error(`${name}: not a shared library (no dylink.0 section)`);
+  }
+
+  // Load dependencies first
+  for (const dep of metadata.neededDynlibs) {
+    if (options.loadedLibraries.has(dep)) continue;
+    if (!options.resolveLibrary) {
+      throw new Error(`${name}: depends on ${dep} but no resolveLibrary callback provided`);
+    }
+    const depBytes = await options.resolveLibrary(dep);
+    if (!depBytes) {
+      throw new Error(`${name}: dependency ${dep} not found`);
+    }
+    await loadSharedLibrary(dep, depBytes, options);
+  }
+
+  return instantiateSharedLibrary(name, wasmBytes, metadata, options);
+}
+
+/**
+ * Load a shared library synchronously. Required for dlopen() which must
+ * return synchronously to C code. Uses synchronous WebAssembly compilation.
+ */
+export function loadSharedLibrarySync(
+  name: string,
+  wasmBytes: Uint8Array,
+  options: LoadSharedLibraryOptions,
+): LoadedSharedLibrary {
+  const existing = options.loadedLibraries.get(name);
+  if (existing) return existing;
+
+  const metadata = parseDylinkSection(wasmBytes);
+  if (!metadata) {
+    throw new Error(`${name}: not a shared library (no dylink.0 section)`);
+  }
+
+  // Load dependencies first (sync)
+  for (const dep of metadata.neededDynlibs) {
+    if (options.loadedLibraries.has(dep)) continue;
+    if (!options.resolveLibrarySync) {
+      throw new Error(`${name}: depends on ${dep} but no resolveLibrarySync callback provided`);
+    }
+    const depBytes = options.resolveLibrarySync(dep);
+    if (!depBytes) {
+      throw new Error(`${name}: dependency ${dep} not found`);
+    }
+    loadSharedLibrarySync(dep, depBytes, options);
+  }
+
+  return instantiateSharedLibrary(name, wasmBytes, metadata, options);
+}
+
+/**
+ * Manages dynamic linking state for a single process. Provides the dlopen/dlsym/
+ * dlclose API that maps to C runtime calls.
+ */
+export class DynamicLinker {
+  private options: LoadSharedLibraryOptions;
+  private handleCounter = 1;
+  private handleMap = new Map<number, LoadedSharedLibrary>();
+  private lastError: string | null = null;
+
+  constructor(options: LoadSharedLibraryOptions) {
+    this.options = options;
+  }
+
+  /** Open a shared library. Returns a handle (>0) or 0 on error. */
+  dlopenSync(name: string, wasmBytes: Uint8Array): number {
+    try {
+      const lib = loadSharedLibrarySync(name, wasmBytes, this.options);
+      // Check if already mapped to a handle
+      for (const [h, l] of this.handleMap) {
+        if (l === lib) return h;
+      }
+      const handle = this.handleCounter++;
+      this.handleMap.set(handle, lib);
+      this.lastError = null;
+      return handle;
+    } catch (e) {
+      this.lastError = e instanceof Error ? e.message : String(e);
+      return 0;
+    }
+  }
+
+  /** Look up a symbol by name. Returns the function or address, or null. */
+  dlsym(handle: number, symbolName: string): Function | number | null {
+    const lib = this.handleMap.get(handle);
+    if (!lib) {
+      this.lastError = "invalid handle";
+      return null;
+    }
+
+    const exp = lib.exports[symbolName];
+    if (exp === undefined) {
+      // Also check global symbol table (symbol may come from a dependency)
+      const global = this.options.globalSymbols.get(symbolName);
+      if (global === undefined) {
+        this.lastError = `symbol not found: ${symbolName}`;
+        return null;
+      }
+      if (typeof global === "function") {
+        this.lastError = null;
+        return global;
+      }
+      if (global instanceof WebAssembly.Global) {
+        this.lastError = null;
+        return global.value as number;
+      }
+    }
+
+    if (typeof exp === "function") {
+      // Return the table index for this function (C function pointers are table indices)
+      const table = this.options.table;
+      for (let i = 0; i < table.length; i++) {
+        if (table.get(i) === exp) {
+          this.lastError = null;
+          return i;
+        }
+      }
+      // Not in table yet — add it
+      const idx = table.length;
+      table.grow(1);
+      table.set(idx, exp as WebAssembly.Function);
+      this.lastError = null;
+      return idx;
+    }
+
+    if (exp instanceof WebAssembly.Global) {
+      this.lastError = null;
+      return (exp as WebAssembly.Global).value as number;
+    }
+
+    this.lastError = `symbol not found: ${symbolName}`;
+    return null;
+  }
+
+  /** Close a library handle. Returns 0 on success. */
+  dlclose(handle: number): number {
+    if (!this.handleMap.has(handle)) {
+      this.lastError = "invalid handle";
+      return -1;
+    }
+    this.handleMap.delete(handle);
+    this.lastError = null;
+    return 0;
+  }
+
+  /** Get the last error message, or null if no error. */
+  dlerror(): string | null {
+    const err = this.lastError;
+    this.lastError = null;
+    return err;
+  }
 }
