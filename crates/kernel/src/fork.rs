@@ -181,6 +181,7 @@ fn file_type_to_u32(ft: FileType) -> u32 {
         FileType::Epoll => 6,
         FileType::TimerFd => 7,
         FileType::SignalFd => 8,
+        FileType::MemFd => 9,
     }
 }
 
@@ -195,6 +196,7 @@ fn u32_to_file_type(v: u32) -> Result<FileType, Errno> {
         6 => Ok(FileType::Epoll),
         7 => Ok(FileType::TimerFd),
         8 => Ok(FileType::SignalFd),
+        9 => Ok(FileType::MemFd),
         _ => Err(Errno::EINVAL),
     }
 }
@@ -621,6 +623,7 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
         alt_stack_flags: 2, // SS_DISABLE
         alt_stack_size: 0,
         fork_pipe_replay: Vec::new(),
+        memfds: Vec::new(),
     })
 }
 
@@ -961,6 +964,7 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
         alt_stack_flags: 2, // SS_DISABLE
         alt_stack_size: 0,
         fork_pipe_replay: Vec::new(),
+        memfds: Vec::new(),
     })
 }
 

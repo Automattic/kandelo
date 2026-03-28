@@ -1865,7 +1865,61 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
             }
         }
 
-        237..=238 | 247..=249 | 253..=254 | 256..=257 | 262 | 265..=268 | 271..=274 | 287 | 289..=293 | 297..=298 | 301..=305 | 306 | 308..=324 | 325 | 331..=336 | 348..=349 | 350..=369 | 370..=371 | 373..=376 | 381..=383 | 386 => {
+        256 => { // SYS_MEMFD_CREATE: (name, flags)
+            let (_gkl, proc) = unsafe { get_process() };
+            let name_ptr = a1 as *const u8;
+            let name_len = unsafe { cstr_len(name_ptr) } as usize;
+            let name = if name_ptr.is_null() || name_len == 0 {
+                &[]
+            } else {
+                unsafe { slice::from_raw_parts(name_ptr, name_len) }
+            };
+            match syscalls::sys_memfd_create(proc, name, a2 as u32) {
+                Ok(fd) => fd,
+                Err(e) => -(e as i32),
+            }
+        }
+        290 => { // SYS_COPY_FILE_RANGE: (fd_in, off_in*, fd_out, off_out*, len, flags)
+            let (_gkl, proc) = unsafe { get_process() };
+            let mut host = WasmHostIO;
+            let off_in_ptr = a2 as *mut u8;
+            let off_out_ptr = a4 as *mut u8;
+            let off_in = if off_in_ptr.is_null() {
+                None
+            } else {
+                let bytes = unsafe { slice::from_raw_parts(off_in_ptr, 8) };
+                Some(i64::from_le_bytes(bytes.try_into().unwrap()))
+            };
+            let off_out = if off_out_ptr.is_null() {
+                None
+            } else {
+                let bytes = unsafe { slice::from_raw_parts(off_out_ptr, 8) };
+                Some(i64::from_le_bytes(bytes.try_into().unwrap()))
+            };
+            match syscalls::sys_copy_file_range(proc, &mut host, a1, off_in, a3, off_out, a5 as usize) {
+                Ok(n) => {
+                    // Update offset pointers if provided
+                    if !off_in_ptr.is_null() {
+                        if let Some(orig) = off_in {
+                            let new_off = orig + n as i64;
+                            let buf = unsafe { slice::from_raw_parts_mut(off_in_ptr, 8) };
+                            buf.copy_from_slice(&new_off.to_le_bytes());
+                        }
+                    }
+                    if !off_out_ptr.is_null() {
+                        if let Some(orig) = off_out {
+                            let new_off = orig + n as i64;
+                            let buf = unsafe { slice::from_raw_parts_mut(off_out_ptr, 8) };
+                            buf.copy_from_slice(&new_off.to_le_bytes());
+                        }
+                    }
+                    n as i32
+                }
+                Err(e) => -(e as i32),
+            }
+        }
+
+        237..=238 | 247..=249 | 253..=254 | 257 | 262 | 265..=268 | 271..=274 | 287 | 289 | 291..=293 | 297..=298 | 301..=305 | 306 | 308..=324 | 325 | 331..=336 | 348..=349 | 350..=369 | 370..=371 | 373..=376 | 381..=383 | 386 => {
             // Many of these are stubs in the glue layer too; return ENOSYS
             -(Errno::ENOSYS as i32)
         }

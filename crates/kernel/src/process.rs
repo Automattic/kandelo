@@ -259,6 +259,8 @@ pub struct Process {
     /// from this list to return the correct FDs when the child re-runs
     /// code before fork(). Empty in non-fork-child processes.
     pub fork_pipe_replay: Vec<(i32, i32)>,
+    /// In-memory file buffers for memfd_create fds.
+    pub memfds: Vec<Option<Vec<u8>>>,
 }
 
 impl Process {
@@ -329,6 +331,7 @@ impl Process {
             alt_stack_flags: 2, // SS_DISABLE
             alt_stack_size: 0,
             fork_pipe_replay: Vec::new(),
+            memfds: Vec::new(),
         }
     }
 

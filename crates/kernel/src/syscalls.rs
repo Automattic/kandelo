@@ -310,6 +310,10 @@ pub fn sys_close(
                 let sfd_idx = (-(host_handle + 1)) as usize;
                 if let Some(slot) = proc.signalfds.get_mut(sfd_idx) { *slot = None; }
             }
+            FileType::MemFd => {
+                let memfd_idx = (-(host_handle + 1)) as usize;
+                if let Some(slot) = proc.memfds.get_mut(memfd_idx) { *slot = None; }
+            }
             _ => {
                 // Close any lazily-opened directory iteration handle
                 if dir_host_handle >= 0 {
@@ -658,6 +662,25 @@ pub fn sys_read(
                     return Ok(n);
                 }
             }
+            // memfd: read from in-memory buffer
+            if file_type == FileType::MemFd {
+                let memfd_idx = (-(host_handle + 1)) as usize;
+                let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+                let offset = ofd.offset as usize;
+                let data = proc.memfds.get(memfd_idx)
+                    .and_then(|s| s.as_ref())
+                    .ok_or(Errno::EBADF)?;
+                if offset >= data.len() {
+                    return Ok(0); // EOF
+                }
+                let remaining = &data[offset..];
+                let n = buf.len().min(remaining.len());
+                buf[..n].copy_from_slice(&remaining[..n]);
+                let ofd = proc.ofd_table.get_mut(ofd_idx).ok_or(Errno::EBADF)?;
+                ofd.offset += n as i64;
+                return Ok(n);
+            }
+
             // Synthetic in-kernel files (/etc/passwd, /etc/group, /etc/hosts)
             if host_handle == SYNTHETIC_FILE_HANDLE {
                 let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
@@ -883,6 +906,24 @@ pub fn sys_write(
             Ok(8)
         }
         _ => {
+            // memfd: write to in-memory buffer
+            if file_type == FileType::MemFd {
+                let memfd_idx = (-(host_handle + 1)) as usize;
+                let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+                let offset = ofd.offset as usize;
+                let data = proc.memfds.get_mut(memfd_idx)
+                    .and_then(|s| s.as_mut())
+                    .ok_or(Errno::EBADF)?;
+                let end = offset + buf.len();
+                if end > data.len() {
+                    data.resize(end, 0);
+                }
+                data[offset..end].copy_from_slice(buf);
+                let ofd = proc.ofd_table.get_mut(ofd_idx).ok_or(Errno::EBADF)?;
+                ofd.offset += buf.len() as i64;
+                return Ok(buf.len());
+            }
+
             // Virtual character devices — handle in-kernel
             if file_type == FileType::CharDevice {
                 if let Some(dev) = VirtualDevice::from_host_handle(host_handle) {
@@ -960,6 +1001,23 @@ pub fn sys_lseek(
     // Synthetic in-kernel files: compute offset without host call
     if ofd.host_handle == SYNTHETIC_FILE_HANDLE {
         let size = synthetic_file_content(&ofd.path).map_or(0, |c| c.len() as i64);
+        let new_pos = match whence {
+            SEEK_SET => offset,
+            SEEK_CUR => ofd.offset + offset,
+            SEEK_END => size + offset,
+            _ => return Err(Errno::EINVAL),
+        };
+        if new_pos < 0 { return Err(Errno::EINVAL); }
+        ofd.offset = new_pos;
+        return Ok(new_pos);
+    }
+
+    // MemFd: compute offset against in-memory buffer
+    if ofd.file_type == FileType::MemFd {
+        let memfd_idx = (-(ofd.host_handle + 1)) as usize;
+        let size = proc.memfds.get(memfd_idx)
+            .and_then(|s| s.as_ref())
+            .map_or(0, |d| d.len() as i64);
         let new_pos = match whence {
             SEEK_SET => offset,
             SEEK_CUR => ofd.offset + offset,
@@ -1144,6 +1202,51 @@ pub fn sys_sendfile(
         total += written;
         if written < n {
             break; // Short write
+        }
+    }
+    Ok(total)
+}
+
+/// copy_file_range -- copy data between file descriptors with offsets.
+/// Emulated with pread+pwrite (no zero-copy in Wasm).
+/// If off_in is None, reads from current position and advances it.
+/// If off_out is None, writes to current position and advances it.
+pub fn sys_copy_file_range(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    fd_in: i32,
+    off_in: Option<i64>,
+    fd_out: i32,
+    off_out: Option<i64>,
+    len: usize,
+) -> Result<usize, Errno> {
+    let mut total = 0usize;
+    let mut buf = [0u8; 4096];
+    let mut cur_off_in = off_in.unwrap_or(-1);
+    let mut cur_off_out = off_out.unwrap_or(-1);
+
+    while total < len {
+        let to_read = (len - total).min(buf.len());
+        let n = if off_in.is_some() {
+            let n = sys_pread(proc, host, fd_in, &mut buf[..to_read], cur_off_in)?;
+            cur_off_in += n as i64;
+            n
+        } else {
+            sys_read(proc, host, fd_in, &mut buf[..to_read])?
+        };
+        if n == 0 {
+            break; // EOF
+        }
+        let written = if off_out.is_some() {
+            let w = sys_pwrite(proc, host, fd_out, &buf[..n], cur_off_out)?;
+            cur_off_out += w as i64;
+            w
+        } else {
+            sys_write(proc, host, fd_out, &buf[..n])?
+        };
+        total += written;
+        if written < n {
+            break;
         }
     }
     Ok(total)
@@ -1373,6 +1476,24 @@ pub fn sys_fstat(
         st.st_uid = proc.euid;
         st.st_gid = proc.egid;
         Ok(st)
+    } else if ofd.file_type == FileType::MemFd {
+        let memfd_idx = (-(ofd.host_handle + 1)) as usize;
+        let size = proc.memfds.get(memfd_idx)
+            .and_then(|s| s.as_ref())
+            .map_or(0, |d| d.len() as u64);
+        Ok(WasmStat {
+            st_dev: 0,
+            st_ino: 0x4D454D00 + memfd_idx as u64, // "MEM\0" + index
+            st_mode: S_IFREG | 0o600,
+            st_nlink: 1,
+            st_uid: proc.euid,
+            st_gid: proc.egid,
+            st_size: size,
+            st_atime_sec: 0, st_atime_nsec: 0,
+            st_mtime_sec: 0, st_mtime_nsec: 0,
+            st_ctime_sec: 0, st_ctime_nsec: 0,
+            _pad: 0,
+        })
     } else if ofd.host_handle == SYNTHETIC_FILE_HANDLE {
         let size = synthetic_file_content(&ofd.path).map_or(0, |c| c.len() as u64);
         Ok(WasmStat {
@@ -3902,7 +4023,7 @@ fn poll_check(proc: &mut Process, fds: &mut [WasmPollFd]) -> i32 {
                     }
                 }
             }
-            FileType::Regular | FileType::CharDevice | FileType::Directory => {
+            FileType::Regular | FileType::CharDevice | FileType::Directory | FileType::MemFd => {
                 // Regular files and char devices are always ready
                 if pollfd.events & POLLIN != 0 {
                     revents |= POLLIN;
@@ -5356,8 +5477,8 @@ pub fn sys_ftruncate(
     let ofd_idx = entry.ofd_ref.0;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
 
-    // Must be a regular file
-    if ofd.file_type != FileType::Regular {
+    // Must be a regular file or memfd
+    if ofd.file_type != FileType::Regular && ofd.file_type != FileType::MemFd {
         return Err(Errno::EINVAL);
     }
 
@@ -5365,6 +5486,16 @@ pub fn sys_ftruncate(
     let access = ofd.status_flags & O_ACCMODE;
     if access == O_RDONLY {
         return Err(Errno::EINVAL);
+    }
+
+    // MemFd: truncate in-memory buffer
+    if ofd.file_type == FileType::MemFd {
+        let memfd_idx = (-(ofd.host_handle + 1)) as usize;
+        let data = proc.memfds.get_mut(memfd_idx)
+            .and_then(|s| s.as_mut())
+            .ok_or(Errno::EBADF)?;
+        data.resize(length as usize, 0);
+        return Ok(());
     }
 
     // RLIMIT_FSIZE: check if truncate target exceeds file size limit
@@ -6046,6 +6177,45 @@ pub fn sys_sysinfo(buf: &mut [u8]) -> Result<(), Errno> {
     // mem_unit @ offset 52
     buf[52..56].copy_from_slice(&1u32.to_le_bytes());
     Ok(())
+}
+
+/// memfd_create — create an anonymous file backed by in-memory storage.
+///
+/// Returns a file descriptor that supports read, write, lseek, ftruncate, fstat.
+/// MFD_CLOEXEC (0x0001) sets close-on-exec on the fd.
+pub fn sys_memfd_create(proc: &mut Process, name: &[u8], flags: u32) -> Result<i32, Errno> {
+    use crate::ofd::FileType;
+    use wasm_posix_shared::fd_flags::FD_CLOEXEC;
+
+    const MFD_CLOEXEC: u32 = 0x0001;
+    const MFD_ALLOW_SEALING: u32 = 0x0002;
+    const MFD_KNOWN_FLAGS: u32 = MFD_CLOEXEC | MFD_ALLOW_SEALING;
+
+    if flags & !MFD_KNOWN_FLAGS != 0 {
+        return Err(Errno::EINVAL);
+    }
+
+    // Allocate a memfd slot
+    let memfd_idx = proc.memfds.len();
+    proc.memfds.push(Some(Vec::new()));
+
+    // Create OFD with MemFd file type.
+    // Use negative host_handle encoding: -(memfd_idx + 1)
+    let host_handle = -((memfd_idx as i64) + 1);
+    // Build path: "memfd:<name>"
+    let mut path = alloc::vec![b'm', b'e', b'm', b'f', b'd', b':'];
+    let name_len = name.len().min(249); // limit path length
+    path.extend_from_slice(&name[..name_len]);
+
+    let ofd_idx = proc.ofd_table.create(
+        FileType::MemFd,
+        O_RDWR,
+        host_handle,
+        path,
+    );
+    let cloexec = if flags & MFD_CLOEXEC != 0 { FD_CLOEXEC } else { 0 };
+    let fd = proc.fd_table.alloc(crate::fd::OpenFileDescRef(ofd_idx), cloexec)?;
+    Ok(fd)
 }
 
 #[cfg(test)]
@@ -11956,5 +12126,125 @@ mod tests {
         };
         let result = sys_fcntl_lock(&mut proc, fd1, F_GETLK, &mut flock, &mut host);
         assert_eq!(result.unwrap_err(), Errno::EINVAL);
+    }
+
+    #[test]
+    fn test_memfd_create_basic() {
+        let mut proc = Process::new(1);
+        let fd = sys_memfd_create(&mut proc, b"test", 0).unwrap();
+        assert!(fd >= 0);
+
+        // fstat should report size 0
+        let mut host = MockHostIO::new();
+        let stat = sys_fstat(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(stat.st_size, 0);
+    }
+
+    #[test]
+    fn test_memfd_write_read() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_memfd_create(&mut proc, b"test", 0).unwrap();
+
+        // Write data
+        let data = b"hello memfd";
+        let n = sys_write(&mut proc, &mut host, fd, data).unwrap();
+        assert_eq!(n, data.len());
+
+        // Seek back to start
+        let pos = sys_lseek(&mut proc, &mut host, fd, 0, SEEK_SET).unwrap();
+        assert_eq!(pos, 0);
+
+        // Read data back
+        let mut buf = [0u8; 32];
+        let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
+        assert_eq!(n, data.len());
+        assert_eq!(&buf[..n], data);
+    }
+
+    #[test]
+    fn test_memfd_ftruncate() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_memfd_create(&mut proc, b"trunc", 0).unwrap();
+
+        // Write some data
+        sys_write(&mut proc, &mut host, fd, b"abcdef").unwrap();
+
+        // Truncate to 3 bytes
+        sys_ftruncate(&mut proc, &mut host, fd, 3).unwrap();
+
+        // fstat should report size 3
+        let stat = sys_fstat(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(stat.st_size, 3);
+
+        // Read from start: should get "abc"
+        sys_lseek(&mut proc, &mut host, fd, 0, SEEK_SET).unwrap();
+        let mut buf = [0u8; 16];
+        let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
+        assert_eq!(n, 3);
+        assert_eq!(&buf[..3], b"abc");
+    }
+
+    #[test]
+    fn test_memfd_lseek_end() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_memfd_create(&mut proc, b"seek", 0).unwrap();
+
+        sys_write(&mut proc, &mut host, fd, b"12345").unwrap();
+
+        // SEEK_END with offset 0 -> should be at position 5
+        let pos = sys_lseek(&mut proc, &mut host, fd, 0, SEEK_END).unwrap();
+        assert_eq!(pos, 5);
+
+        // SEEK_END with negative offset
+        let pos = sys_lseek(&mut proc, &mut host, fd, -2, SEEK_END).unwrap();
+        assert_eq!(pos, 3);
+    }
+
+    #[test]
+    fn test_memfd_close_frees_buffer() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_memfd_create(&mut proc, b"close", 0).unwrap();
+        sys_write(&mut proc, &mut host, fd, b"data").unwrap();
+
+        // Close should succeed
+        sys_close(&mut proc, &mut host, fd).unwrap();
+
+        // fd should no longer be valid
+        assert_eq!(sys_read(&mut proc, &mut host, fd, &mut [0u8; 4]).unwrap_err(), Errno::EBADF);
+    }
+
+    #[test]
+    fn test_memfd_invalid_flags() {
+        let mut proc = Process::new(1);
+        let result = sys_memfd_create(&mut proc, b"bad", 0xFFFF);
+        assert_eq!(result.unwrap_err(), Errno::EINVAL);
+    }
+
+    #[test]
+    fn test_copy_file_range_memfd() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        let src = sys_memfd_create(&mut proc, b"src", 0).unwrap();
+        let dst = sys_memfd_create(&mut proc, b"dst", 0).unwrap();
+
+        // Write data to source
+        sys_write(&mut proc, &mut host, src, b"hello world").unwrap();
+        sys_lseek(&mut proc, &mut host, src, 0, SEEK_SET).unwrap();
+
+        // Copy 5 bytes
+        let copied = sys_copy_file_range(&mut proc, &mut host, src, None, dst, None, 5).unwrap();
+        assert_eq!(copied, 5);
+
+        // Read from destination
+        sys_lseek(&mut proc, &mut host, dst, 0, SEEK_SET).unwrap();
+        let mut buf = [0u8; 16];
+        let n = sys_read(&mut proc, &mut host, dst, &mut buf).unwrap();
+        assert_eq!(n, 5);
+        assert_eq!(&buf[..5], b"hello");
     }
 }

@@ -17,6 +17,7 @@ pub enum FileType {
     Epoll,
     TimerFd,
     SignalFd,
+    MemFd,
 }
 
 #[derive(Clone)]
