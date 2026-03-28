@@ -175,7 +175,7 @@ BASIC_EXPECTED_FAIL=(
     # -- Network interface (not available in Wasm)
     "net_if/if_freenameindex" "net_if/if_indextoname" "net_if/if_nameindex" "net_if/if_nametoindex"
     # (netdb/freeaddrinfo and netdb/getaddrinfo now pass — synthetic /etc/hosts)
-    "arpa_inet/inet_ntop"
+    # (arpa_inet/inet_ntop now passes — fixed IPv6 :: compression in musl overlay)
     # (signal/sig2str and signal/str2sig now pass — musl sysroot rebuild)
     # -- Filesystem-dependent tests (tests that still need specific FS setup)
     # (fcntl/open, fcntl/openat now pass — data directory infrastructure)
@@ -204,7 +204,7 @@ BASIC_EXPECTED_FAIL=(
     # -- Misc not supported
     # (pselect now passes — fixed empty sigmask handling in kernel_pselect6)
     "locale/getlocalename_l"
-    "monetary/strfmon" "monetary/strfmon_l"
+    # (monetary/strfmon and strfmon_l now pass — fixed POSIX locale handling in musl overlay)
     "strings/ffsll"
     "wchar/swprintf" "wchar/wcslcat" "wchar/wcslcpy"
     # -- posix_spawn (not implemented in centralized mode)
