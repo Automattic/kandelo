@@ -185,14 +185,14 @@ BASIC_EXPECTED_FAIL=(
     # -- Filesystem-dependent tests (tests that still need specific FS setup)
     # (fcntl/open, fcntl/openat now pass — data directory infrastructure)
     # (fcntl/posix_fallocate now passes — fallocate syscall implemented)
-    "dirent/posix_getdents" "dirent/seekdir"
-    # (dirent/fdopendir, readdir, readdir_r, rewinddir, scandir now pass — data directory)
+    "dirent/posix_getdents"
+    # (dirent/fdopendir, readdir, readdir_r, rewinddir, scandir, seekdir now pass)
     "stdio/pclose" "stdio/popen" "stdio/remove"
     # (stdio/fopen now passes — data directory infrastructure)
     "unistd/faccessat"
     # (unistd/readlinkat now passes — fixed SYSCALL_ARGS argIndex for readlinkat)
     # (unistd/lseek, unistd/read now pass — data directory infrastructure)
-    "ftw/nftw"
+    # (ftw/nftw now passes — directory detection without O_DIRECTORY)
     "wordexp/wordexp" "wordexp/wordfree"
     # (glob/glob, glob/globfree now pass — data directory infrastructure)
     # (sys_stat/fchmodat now passes — fchmodat2 syscall 383 implemented)
