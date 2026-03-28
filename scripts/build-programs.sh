@@ -58,6 +58,7 @@ LINK_FLAGS=(
     -Wl,--allow-undefined
     -Wl,--table-base=3
     -Wl,--export-table
+    -Wl,--growable-table
     -Wl,--export=__wasm_init_tls
     -Wl,--export=__tls_base
     -Wl,--export=__tls_size

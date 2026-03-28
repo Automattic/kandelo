@@ -144,21 +144,39 @@ function buildDlopenImports(
   memory: WebAssembly.Memory,
   getTable: () => WebAssembly.Table | undefined,
   getStackPointer: () => WebAssembly.Global | undefined,
+  getInstance: () => WebAssembly.Instance | undefined,
 ): Record<string, WebAssembly.ExportValue> {
   let linker: DynamicLinker | null = null;
   const decoder = new TextDecoder();
+
+  // Shared library memory starts at 128MB to avoid conflicting with
+  // the program's malloc heap (which starts at __heap_base, ~1MB).
+  const DYLIB_MEMORY_BASE = 128 * 1024 * 1024;
 
   const getLinker = (): DynamicLinker => {
     if (linker) return linker;
     const table = getTable();
     const sp = getStackPointer();
     if (!table || !sp) throw new Error("dlopen: program has no table or stack pointer");
+
+    // Register main program's exported functions as global symbols
+    // so shared libraries can resolve references to libc, etc.
+    const globalSymbols = new Map<string, Function | WebAssembly.Global>();
+    const inst = getInstance();
+    if (inst) {
+      for (const [name, exp] of Object.entries(inst.exports)) {
+        if (typeof exp === "function" && !name.startsWith("__")) {
+          globalSymbols.set(name, exp);
+        }
+      }
+    }
+
     linker = new DynamicLinker({
       memory,
       table,
       stackPointer: sp,
-      heapPointer: { value: 0 }, // Will be set from __heap_base
-      globalSymbols: new Map(),
+      heapPointer: { value: DYLIB_MEMORY_BASE },
+      globalSymbols,
       got: new Map(),
       loadedLibraries: new Map(),
     });
@@ -166,13 +184,14 @@ function buildDlopenImports(
   };
 
   return {
-    __wasm_dlopen: (bytesPtr: number, bytesLen: number): number => {
+    __wasm_dlopen: (bytesPtr: number, bytesLen: number,
+                    namePtr: number, nameLen: number): number => {
       const bytes = new Uint8Array(memory.buffer, bytesPtr, bytesLen);
-      // Copy bytes since memory.buffer may detach during instantiation
+      // Copy bytes since memory.buffer may detach during Wasm instantiation
       const bytesCopy = new Uint8Array(bytes);
-      const l = getLinker();
-      // Use the buffer location as part of the name for dedup
-      return l.dlopenSync(`dlopen:${bytesPtr}:${bytesLen}`, bytesCopy);
+      const nameBytes = new Uint8Array(memory.buffer, namePtr, nameLen);
+      const name = decoder.decode(nameBytes);
+      return getLinker().dlopenSync(name, bytesCopy);
     },
 
     __wasm_dlsym: (handle: number, namePtr: number, nameLen: number): number => {
@@ -258,6 +277,7 @@ export async function centralizedWorkerMain(
       memory,
       () => processInstance?.exports.__indirect_function_table as WebAssembly.Table | undefined,
       () => processInstance?.exports.__stack_pointer as WebAssembly.Global | undefined,
+      () => processInstance ?? undefined,
     );
 
     const importObject = buildImportObject(module, memory, kernelImports, dlopenImports);
