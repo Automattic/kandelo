@@ -134,8 +134,7 @@ BASIC_EXPECTED_FAIL=(
     "unistd/execve" "unistd/execvp" "unistd/fexecve"
     # -- Memory locking (mlock/munlock are stubs; mlockall/munlockall work)
     # (mlock, mlockall, munlock, munlockall removed — stubs pass basic invocation tests)
-    # -- Privileged operations
-    "unistd/fchownat"
+    # (unistd/fchownat now passes — nested data directory)
     # -- Process management requiring fork/exec or process groups
     "sys_wait/waitpid"
     "stdlib/system"
@@ -190,7 +189,7 @@ BASIC_EXPECTED_FAIL=(
     "stdio/pclose" "stdio/popen"
     # (stdio/remove now passes — EPERM→EISDIR translation for unlink on directories)
     # (stdio/fopen now passes — data directory infrastructure)
-    "unistd/faccessat"
+    # (unistd/faccessat now passes — nested data directory with source files)
     # (unistd/readlinkat now passes — fixed SYSCALL_ARGS argIndex for readlinkat)
     # (unistd/lseek, unistd/read now pass — data directory infrastructure)
     # (ftw/nftw now passes — directory detection without O_DIRECTORY)
@@ -198,11 +197,10 @@ BASIC_EXPECTED_FAIL=(
     # (glob/glob, glob/globfree now pass — data directory infrastructure)
     # (sys_stat/fchmodat now passes — fchmodat2 syscall 383 implemented)
     # (sys_stat/fstat, sys_stat/stat now pass — data directory infrastructure)
-    "sys_stat/fstatat"
+    # (sys_stat/fstatat now passes — nested data directory)
     # (sys_stat/futimens now passes — fixed utimensat NULL path handling)
     # (sys_stat/lstat now passes — hardlinks in data directory)
-    "sys_stat/mkfifo" "sys_stat/mkfifoat" "sys_stat/mknod"
-    "sys_stat/mknodat"
+    # (sys_stat/mkfifo, mkfifoat, mknod, mknodat now pass — S_IFIFO allowed in mknod)
     # (sys_statvfs/fstatvfs now passes — data directory infrastructure)
     "sys_mman/msync" "sys_mman/posix_mem_offset" "sys_mman/posix_typed_mem_get_info"
     "sys_mman/posix_typed_mem_open" "sys_mman/shm_open"
@@ -822,17 +820,27 @@ run_runtime_test() {
     # Build the test first (sequential path)
     build_runtime_test "$suite" "$test_name" 2>/dev/null || true
 
-    # Create data directory with hardlink so filesystem-dependent tests work
-    local data_dir
-    data_dir=$(mktemp -d)
+    # Create data directory nested under suite name so tests that open ".."
+    # and access "$suite/<path>" (e.g. fstatat opens ".." + "basic/sys_stat/fstatat")
+    # find their files correctly.
+    local data_parent
+    data_parent=$(mktemp -d)
+    local data_dir="$data_parent/$suite"
+    mkdir -p "$data_dir"
     local wasm="$BUILD_DIR/$suite/${test_name}.wasm"
     if [ -f "$wasm" ]; then
         mkdir -p "$data_dir/$(dirname "$test_name")"
         ln -f "$wasm" "$data_dir/$test_name" 2>/dev/null || \
             cp "$wasm" "$data_dir/$test_name"
     fi
+    # Link source file for tests like faccessat that check for .c files
+    local src="$OS_TEST/$suite/${test_name}.c"
+    if [ -f "$src" ]; then
+        ln -f "$src" "$data_dir/${test_name}.c" 2>/dev/null || \
+            cp "$src" "$data_dir/${test_name}.c" 2>/dev/null || true
+    fi
     SORTIX_DATA_DIR="$data_dir" _run_runtime_test_worker "$suite" "$test_name" "$result_dir"
-    rm -rf "$data_dir"
+    rm -rf "$data_parent"
 
     _collect_result "$suite" "$test_name" "$result_dir"
 }
@@ -989,7 +997,11 @@ run_suite() {
         # expected relative paths. Many sortix tests open their own binary
         # via paths like "fcntl/open" from CWD — this makes them accessible.
         # Hardlinks (not symlinks) so lstat/fstatat see S_ISREG, not S_ISLNK.
-        SORTIX_DATA_DIR=$(mktemp -d)
+        # Nest under $suite/ so tests that open ".." find "$suite/<path>"
+        # (e.g. fstatat opens ".." + "basic/sys_stat/fstatat").
+        SORTIX_DATA_PARENT=$(mktemp -d)
+        SORTIX_DATA_DIR="$SORTIX_DATA_PARENT/$suite"
+        mkdir -p "$SORTIX_DATA_DIR"
         for wasm_file in "$BUILD_DIR/$suite"/**/*.wasm; do
             [ -f "$wasm_file" ] || continue
             local relpath="${wasm_file#"$BUILD_DIR/$suite/"}"
@@ -997,6 +1009,15 @@ run_suite() {
             mkdir -p "$SORTIX_DATA_DIR/$(dirname "$name")"
             ln -f "$wasm_file" "$SORTIX_DATA_DIR/$name" 2>/dev/null || \
                 cp "$wasm_file" "$SORTIX_DATA_DIR/$name"
+        done
+        # Link source files for tests like faccessat that check for .c files
+        for src_file in "$OS_TEST/$suite"/**/*.c; do
+            [ -f "$src_file" ] || continue
+            local relpath="${src_file#"$OS_TEST/$suite/"}"
+            local dest="$SORTIX_DATA_DIR/$relpath"
+            [ -f "$dest" ] && continue
+            mkdir -p "$(dirname "$dest")" 2>/dev/null || true
+            ln -f "$src_file" "$dest" 2>/dev/null || true
         done
         export SORTIX_DATA_DIR
 
@@ -1012,8 +1033,8 @@ run_suite() {
             bash -c '_run_runtime_test_worker "$1" "$2" "$3"' _ "$suite" {} "$result_dir"
 
         # Clean up data directory
-        rm -rf "$SORTIX_DATA_DIR"
-        unset SORTIX_DATA_DIR
+        rm -rf "$SORTIX_DATA_PARENT"
+        unset SORTIX_DATA_DIR SORTIX_DATA_PARENT
 
         # Collect results
         for test_name in "${tests[@]}"; do

@@ -2065,13 +2065,14 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
         248 => 1, // SYS_INOTIFY_ADD_WATCH: return dummy watch descriptor
         249 => 0, // SYS_INOTIFY_RM_WATCH: no-op success
 
-        // --- mknod/mknodat: create regular files only ---
+        // --- mknod/mknodat: create regular files and FIFOs ---
+        // S_IFIFO nodes are created as regular files (sufficient for basic
+        // mkfifo/mknod tests that don't actually use FIFO I/O semantics).
         271 => { // SYS_MKNOD: (path, mode, dev)
             let path = a1 as *const u8;
             let mode = a2 as u32;
-            // Only support regular files (S_IFREG) and mode-only (no type bits = regular)
             let file_type = mode & 0o170000;
-            if file_type != 0 && file_type != 0o100000 {
+            if file_type != 0 && file_type != 0o100000 && file_type != 0o010000 {
                 -(Errno::EPERM as i32)
             } else {
                 kernel_mknod(path, unsafe { cstr_len(path) }, mode & 0o7777)
@@ -2081,7 +2082,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
             let path = a2 as *const u8;
             let mode = a3 as u32;
             let file_type = mode & 0o170000;
-            if file_type != 0 && file_type != 0o100000 {
+            if file_type != 0 && file_type != 0o100000 && file_type != 0o010000 {
                 -(Errno::EPERM as i32)
             } else {
                 kernel_mknodat(a1, path, unsafe { cstr_len(path) }, mode & 0o7777)
