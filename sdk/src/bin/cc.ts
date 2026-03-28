@@ -1,7 +1,7 @@
 #!/usr/bin/env -S node --experimental-strip-types
 import { join } from 'node:path';
 import { resolveToolchain, type Toolchain } from '../lib/toolchain.ts';
-import { COMPILE_FLAGS, LINK_FLAGS, filterArgs, parseArgs, needsLinking } from '../lib/flags.ts';
+import { COMPILE_FLAGS, LINK_FLAGS, SHARED_LINK_FLAGS, filterArgs, parseArgs, needsLinking } from '../lib/flags.ts';
 import { runPassthrough } from '../lib/exec.ts';
 import { isMain } from '../lib/is-main.ts';
 
@@ -37,13 +37,25 @@ export function buildClangArgs(userArgs: string[], toolchain: Toolchain): string
   args.push(...parsed.archiveFiles);
 
   if (linking) {
-    args.push(
-      join(toolchain.glueDir, 'channel_syscall.c'),
-      join(toolchain.glueDir, 'compiler_rt.c'),
-      join(toolchain.sysroot, 'lib', 'crt1.o'),
-      join(toolchain.sysroot, 'lib', 'libc.a'),
-      ...LINK_FLAGS,
-    );
+    if (parsed.shared) {
+      // Shared library build: no CRT, no libc, no syscall glue
+      if (parsed.pic) args.push('-fPIC');
+      args.push(...SHARED_LINK_FLAGS);
+    } else {
+      // Executable build: link CRT, libc, and syscall glue
+      args.push(
+        join(toolchain.glueDir, 'channel_syscall.c'),
+        join(toolchain.glueDir, 'compiler_rt.c'),
+      );
+      if (parsed.linkDl) {
+        args.push(join(toolchain.glueDir, 'dlopen.c'));
+      }
+      args.push(
+        join(toolchain.sysroot, 'lib', 'crt1.o'),
+        join(toolchain.sysroot, 'lib', 'libc.a'),
+        ...LINK_FLAGS,
+      );
+    }
   }
 
   return args;

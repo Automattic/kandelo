@@ -20,6 +20,7 @@ export const LINK_FLAGS: string[] = [
   '-Wl,--global-base=1114112',
   '-Wl,--table-base=3',
   '-Wl,--export-table',
+  '-Wl,--growable-table',
   '-Wl,--export=__wasm_init_tls',
   '-Wl,--export=__tls_base',
   '-Wl,--export=__tls_size',
@@ -28,10 +29,20 @@ export const LINK_FLAGS: string[] = [
   '-Wl,--export=__wasm_thread_init',
 ];
 
+/** Link flags for building shared Wasm libraries (.so side modules). */
+export const SHARED_LINK_FLAGS: string[] = [
+  '-nostdlib',
+  '-Wl,--experimental-pic',
+  '-Wl,--shared',
+  '-Wl,--shared-memory',
+  '-Wl,--export-all',
+  '-Wl,--allow-undefined',
+];
+
 const IGNORED_EXACT = new Set([
   '-pthread', '-lpthread',
-  '-fPIC', '-fPIE', '-pie',
-  '-ldl', '-lrt', '-lresolv', '-lm', '-lcrypt', '-lutil',
+  '-fPIE', '-pie',
+  '-lrt', '-lresolv', '-lm', '-lcrypt', '-lutil',
   '-rdynamic', '-Wl,-Bsymbolic',
 ]);
 
@@ -42,7 +53,6 @@ const IGNORED_PREFIXES = [
 ];
 
 const WARN_FLAGS = new Set([
-  '-shared',
   '-dynamiclib',
 ]);
 
@@ -72,6 +82,9 @@ export interface ParsedArgs {
   compileOnly: boolean;
   preprocessOnly: boolean;
   assemblyOnly: boolean;
+  shared: boolean;
+  pic: boolean;
+  linkDl: boolean;
   outputFile: string | null;
   sourceFiles: string[];
   objectFiles: string[];
@@ -99,6 +112,9 @@ export function parseArgs(args: string[]): ParsedArgs {
     compileOnly: false,
     preprocessOnly: false,
     assemblyOnly: false,
+    shared: false,
+    pic: false,
+    linkDl: false,
     outputFile: null,
     sourceFiles: [],
     objectFiles: [],
@@ -110,6 +126,12 @@ export function parseArgs(args: string[]): ParsedArgs {
     const arg = args[i];
     if (arg === '-c') {
       result.compileOnly = true;
+    } else if (arg === '-shared') {
+      result.shared = true;
+    } else if (arg === '-fPIC') {
+      result.pic = true;
+    } else if (arg === '-ldl') {
+      result.linkDl = true;
     } else if (arg === '-E') {
       result.preprocessOnly = true;
     } else if (arg === '-S') {

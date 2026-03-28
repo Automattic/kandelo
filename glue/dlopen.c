@@ -23,7 +23,8 @@
 #include <stdlib.h>
 
 /* Host imports — implemented in worker-main.ts */
-extern int __wasm_dlopen(const void *bytes, int len);
+extern int __wasm_dlopen(const void *bytes, int len,
+                         const char *name, int name_len);
 extern int __wasm_dlsym(int handle, const char *name, int name_len);
 extern int __wasm_dlclose(int handle);
 extern int __wasm_dlerror(char *buf, int buf_max);
@@ -100,7 +101,7 @@ void *dlopen(const char *path, int flags) {
     }
 
     /* Call host to compile + instantiate the Wasm side module */
-    int handle = __wasm_dlopen(buf, (int)st.st_size);
+    int handle = __wasm_dlopen(buf, (int)st.st_size, path, (int)strlen(path));
     free(buf);
 
     if (handle <= 0) {
