@@ -88,6 +88,12 @@ define('WP_DEBUG', true);
 define('WP_DEBUG_LOG', true);
 define('WP_DEBUG_DISPLAY', true);
 
+// Dynamic site URL from request Host header — prevents stale DB redirects
+if (isset($_SERVER['HTTP_HOST'])) {
+    define('WP_HOME', 'http://' . $_SERVER['HTTP_HOST']);
+    define('WP_SITEURL', 'http://' . $_SERVER['HTTP_HOST']);
+}
+
 // Disable external HTTP requests (no network needed for install)
 define('WP_HTTP_BLOCK_EXTERNAL', true);
 
