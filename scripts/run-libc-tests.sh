@@ -293,7 +293,7 @@ run_test() {
 
     # Run with timeout
     set +e
-    output=$(cd "$REPO_ROOT" && timeout "$TEST_TIMEOUT" npx tsx examples/run-example.ts "${wasm}" 2>&1)
+    output=$(cd "$REPO_ROOT" && timeout "$TEST_TIMEOUT" node --experimental-wasm-exnref --import tsx/esm examples/run-example.ts "${wasm}" 2>&1)
     rc=$?
     set -e
 
