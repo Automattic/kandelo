@@ -190,7 +190,7 @@ BASIC_EXPECTED_FAIL=(
     "stdio/pclose" "stdio/popen" "stdio/remove"
     # (stdio/fopen now passes — data directory infrastructure)
     "unistd/faccessat"
-    "unistd/readlinkat"
+    # (unistd/readlinkat now passes — fixed SYSCALL_ARGS argIndex for readlinkat)
     # (unistd/lseek, unistd/read now pass — data directory infrastructure)
     "ftw/nftw"
     "wordexp/wordexp" "wordexp/wordfree"

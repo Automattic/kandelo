@@ -371,7 +371,7 @@ const SYSCALL_ARGS: Record<number, ArgDesc[]> = {
   ],
   102: [
     { argIndex: 1, direction: "in", size: { type: "cstring" } },               // READLINKAT: path
-    { argIndex: 3, direction: "out", size: { type: "arg", argIndex: 4 } },     //             buf
+    { argIndex: 2, direction: "out", size: { type: "arg", argIndex: 3 } },     //             buf (a3), bufsiz (a4)
   ],
 
   // Resource limits
@@ -409,7 +409,7 @@ const SYSCALL_ARGS: Record<number, ArgDesc[]> = {
   // statx
   260: [
     { argIndex: 1, direction: "in", size: { type: "cstring" } },               // STATX: path
-    { argIndex: 3, direction: "out", size: { type: "fixed", size: 256 } },     //        statxbuf
+    { argIndex: 4, direction: "out", size: { type: "fixed", size: 256 } },     //        statxbuf (a5)
   ],
 
   // mknod/mknodat
