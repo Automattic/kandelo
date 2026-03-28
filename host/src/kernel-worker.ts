@@ -1345,8 +1345,10 @@ export class CentralizedKernelWorker {
     const mem = this.getKernelMem();
 
     for (const conn of conns) {
-      const readN = pipeRead(pid, conn.sendPipeIdx, conn.scratchOffset, 65536);
-      if (readN > 0) {
+      // Drain all available data from the send pipe (not just one chunk)
+      for (;;) {
+        const readN = pipeRead(pid, conn.sendPipeIdx, conn.scratchOffset, 65536);
+        if (readN <= 0) break;
         const outData = Buffer.from(mem.slice(conn.scratchOffset, conn.scratchOffset + readN));
         if (!conn.clientSocket.destroyed) {
           conn.clientSocket.write(outData);
@@ -3102,23 +3104,33 @@ export class CentralizedKernelWorker {
       }
     };
 
-    // Read send pipe → TCP socket
+    // Read send pipe → TCP socket (drains all available data)
     const drainOutbound = () => {
       const mem = this.getKernelMem();
-      const readN = pipeRead(pid, sendPipeIdx, scratchOffset, 65536);
-      if (readN > 0) {
+      let totalRead = 0;
+      // Loop to drain the entire pipe, not just one 65KB chunk.
+      // Responses larger than 65KB (e.g. 662KB site-editor.php) need
+      // multiple reads to fully transfer.
+      for (;;) {
+        const readN = pipeRead(pid, sendPipeIdx, scratchOffset, 65536);
+        if (readN <= 0) break;
+        totalRead += readN;
         const outData = Buffer.from(mem.slice(scratchOffset, scratchOffset + readN));
         if (!clientSocket.destroyed) {
           clientSocket.write(outData);
         }
       }
-      return readN;
+      return totalRead;
     };
 
-    const schedulePump = () => {
+    const schedulePump = (delayMs = 0) => {
       if (pumpPending || cleaned) return;
       pumpPending = true;
-      setImmediate(pump);
+      if (delayMs > 0) {
+        setTimeout(pump, delayMs);
+      } else {
+        setImmediate(pump);
+      }
     };
 
     const pump = () => {
@@ -3141,9 +3153,15 @@ export class CentralizedKernelWorker {
         return;
       }
 
-      // If there's still queued inbound data (pipe was full), schedule another pump
-      if (inboundQueue.length > 0) {
+      // Always reschedule while connection is alive. After fork(), the child
+      // process writes response data to the same pipe, but flushTcpSendPipes
+      // is keyed by pid and won't find the parent's connections. Without
+      // continuous pumping, response data gets stranded in the pipe.
+      // Use setImmediate when data is flowing, small delay when idle.
+      if (readN > 0 || inboundQueue.length > 0) {
         schedulePump();
+      } else {
+        schedulePump(2);
       }
     };
 
