@@ -254,7 +254,7 @@ function instantiateSharedLibrary(
 
   // Construct imports
   const imports: WebAssembly.Imports = {
-    env: new Proxy({} as Record<string, unknown>, {
+    env: new Proxy({} as Record<string, WebAssembly.ImportValue>, {
       get(_target, prop: string) {
         switch (prop) {
           case "memory": return options.memory;
@@ -286,7 +286,7 @@ function instantiateSharedLibrary(
   };
 
   // Compile and instantiate synchronously
-  const module = new WebAssembly.Module(wasmBytes);
+  const module = new WebAssembly.Module(wasmBytes as unknown as BufferSource);
   const instance = new WebAssembly.Instance(module, imports);
 
   // Relocate exports: data address globals need memoryBase added
@@ -314,7 +314,7 @@ function instantiateSharedLibrary(
     if (typeof exportValue === "function") {
       const tableIdx = options.table.length;
       options.table.grow(1);
-      options.table.set(tableIdx, exportValue as WebAssembly.Function);
+      options.table.set(tableIdx, exportValue as unknown as Function);
 
       const gotEntry = options.got.get(exportName);
       if (gotEntry) {
@@ -493,7 +493,7 @@ export class DynamicLinker {
       // Not in table yet — add it
       const idx = table.length;
       table.grow(1);
-      table.set(idx, exp as WebAssembly.Function);
+      table.set(idx, exp as unknown as Function);
       this.lastError = null;
       return idx;
     }
