@@ -517,6 +517,12 @@ export class CentralizedKernelWorker {
   /** Cached kernel memory typed array view (invalidated on memory.grow) */
   private cachedKernelMem: Uint8Array | null = null;
   private cachedKernelBuffer: ArrayBuffer | null = null;
+  /** Pending poll/ppoll retries — used for event-driven wakeup when pipe data arrives */
+  private pendingPollRetries = new Map<number, {
+    timer: ReturnType<typeof setImmediate> | null;
+    channel: ChannelInfo;
+    pipeIndices: number[];
+  }>();
   /** Active TCP connections per process for piggyback flushing */
   private tcpConnections = new Map<number, Array<{
     sendPipeIdx: number;
@@ -712,6 +718,11 @@ export class CentralizedKernelWorker {
     // Clean up TCP listeners for this process
     this.cleanupTcpListeners(pid);
 
+    // Clean up pending poll retries
+    const pollEntry = this.pendingPollRetries.get(pid);
+    if (pollEntry?.timer) clearImmediate(pollEntry.timer);
+    this.pendingPollRetries.delete(pid);
+
     // Remove from kernel process table
     this.removeFromKernelProcessTable(pid);
 
@@ -746,6 +757,10 @@ export class CentralizedKernelWorker {
       clearTimeout(sleepTimer.timer);
       this.pendingSleeps.delete(pid);
     }
+    // Clean up pending poll retries
+    const pollEntry = this.pendingPollRetries.get(pid);
+    if (pollEntry?.timer) clearImmediate(pollEntry.timer);
+    this.pendingPollRetries.delete(pid);
     // Clean up TCP listeners for this process
     this.cleanupTcpListeners(pid);
   }
@@ -1279,6 +1294,48 @@ export class CentralizedKernelWorker {
    * Handle EAGAIN retry for blocking syscalls.
    * The process stays blocked while we retry asynchronously.
    */
+  private resolvePollPipeIndices(pid: number, origArgs: number[], syscallNr: number): number[] {
+    const getRecvPipe = this.kernelInstance!.exports.kernel_get_socket_recv_pipe as
+      ((pid: number, fd: number) => number) | undefined;
+    if (!getRecvPipe) return [];
+
+    const fdsPtr = origArgs[0];
+    const nfds = origArgs[1];
+    if (fdsPtr === 0 || nfds === 0) return [];
+
+    // Find the channel for this pid to read process memory
+    const channel = this.activeChannels.find(c => c.pid === pid);
+    if (!channel) return [];
+
+    const indices: number[] = [];
+    const processMem = new DataView(channel.memory.buffer);
+    // struct pollfd: fd(4) + events(2) + revents(2) = 8 bytes
+    for (let i = 0; i < nfds; i++) {
+      const fd = processMem.getInt32(fdsPtr + i * 8, true);
+      if (fd < 0) continue;
+      const pipeIdx = getRecvPipe(pid, fd);
+      if (pipeIdx >= 0) {
+        indices.push(pipeIdx);
+      }
+    }
+    return indices;
+  }
+
+  private wakeBlockedPoll(pid: number, pipeIdx: number): void {
+    const entry = this.pendingPollRetries.get(pid);
+    if (!entry) return;
+    if (!entry.pipeIndices.includes(pipeIdx)) return;
+
+    // Cancel the scheduled retry and fire immediately
+    if (entry.timer !== null) {
+      clearImmediate(entry.timer);
+    }
+    this.pendingPollRetries.delete(pid);
+    if (this.processes.has(pid)) {
+      this.retrySyscall(entry.channel);
+    }
+  }
+
   private flushTcpSendPipes(pid: number): void {
     const conns = this.tcpConnections.get(pid);
     if (!conns || conns.length === 0) return;
@@ -1341,42 +1398,35 @@ export class CentralizedKernelWorker {
     // Poll with timeout: the kernel did a non-blocking check and returned EAGAIN.
     // We retry after a short delay. If poll has timeout=0 (EAGAIN means no events),
     // we should return 0 immediately instead of retrying.
-    if (syscallNr === SYS_POLL) {
-      const timeout = origArgs[2]; // timeout in ms
-      if (timeout === 0) {
-        // Non-blocking poll — return 0 (no events)
-        this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], 0, 0);
-        return;
-      }
-      // For timeout > 0 or infinite (-1), retry on next event loop iteration
-      setImmediate(() => {
-        if (this.processes.has(channel.pid)) {
-          this.retrySyscall(channel);
+    if (syscallNr === SYS_POLL || syscallNr === SYS_PPOLL) {
+      let timeoutMs = -1;
+      if (syscallNr === SYS_POLL) {
+        timeoutMs = origArgs[2]; // timeout in ms
+      } else {
+        const tsPtr = origArgs[2];
+        if (tsPtr !== 0) {
+          const pv = new DataView(channel.memory.buffer, tsPtr);
+          const sec = Number(pv.getBigInt64(0, true));
+          const nsec = Number(pv.getBigInt64(8, true));
+          timeoutMs = sec * 1000 + Math.floor(nsec / 1000000);
         }
-      });
-      return;
-    }
-
-    // ppoll: same as poll but timespec is a pointer, not scalar.
-    // Convert timespec to determine timeout behavior.
-    if (syscallNr === SYS_PPOLL) {
-      const tsPtr = origArgs[2];
-      let timeoutMs = -1; // infinite by default
-      if (tsPtr !== 0) {
-        const pv = new DataView(channel.memory.buffer, tsPtr);
-        const sec = Number(pv.getBigInt64(0, true));
-        const nsec = Number(pv.getBigInt64(8, true));
-        timeoutMs = sec * 1000 + Math.floor(nsec / 1000000);
       }
       if (timeoutMs === 0) {
         this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], 0, 0);
         return;
       }
-      setImmediate(() => {
+
+      // Resolve which pipe indices the polled fds map to (for event-driven wakeup)
+      const pipeIndices = this.resolvePollPipeIndices(channel.pid, origArgs, syscallNr);
+
+      const retryFn = () => {
+        this.pendingPollRetries.delete(channel.pid);
         if (this.processes.has(channel.pid)) {
           this.retrySyscall(channel);
         }
-      });
+      };
+      const timer = setImmediate(retryFn);
+      this.pendingPollRetries.set(channel.pid, { timer, channel, pipeIndices });
       return;
     }
 
@@ -3100,6 +3150,8 @@ export class CentralizedKernelWorker {
       inboundQueue.push(chunk);
       if (!this.processes.has(pid)) { cleanup(); return; }
       drainInbound();
+      // Wake any process blocked on poll() watching this recv pipe
+      this.wakeBlockedPoll(pid, recvPipeIdx);
       // Schedule pump to handle outbound + close detection
       schedulePump();
     });

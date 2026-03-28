@@ -5992,3 +5992,36 @@ pub extern "C" fn kernel_pipe_is_read_open(pid: u32, pipe_idx: u32) -> i32 {
     };
     if pipe.is_read_end_open() { 1 } else { 0 }
 }
+
+/// Look up the recv pipe index for a socket fd.
+/// Returns the recv_buf_idx or -1 if the fd is not a connected socket.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_get_socket_recv_pipe(pid: u32, fd: i32) -> i32 {
+    use crate::ofd::FileType;
+
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let proc = match table.get(pid) {
+        Some(p) => p,
+        None => return -1,
+    };
+    let entry = match proc.fd_table.get(fd) {
+        Ok(e) => e,
+        Err(_) => return -1,
+    };
+    let ofd = match proc.ofd_table.get(entry.ofd_ref.0) {
+        Some(o) => o,
+        None => return -1,
+    };
+    if ofd.file_type != FileType::Socket {
+        return -1;
+    }
+    let sock_idx = (-(ofd.host_handle + 1)) as usize;
+    let sock = match proc.sockets.get(sock_idx) {
+        Some(s) => s,
+        None => return -1,
+    };
+    match sock.recv_buf_idx {
+        Some(idx) => idx as i32,
+        None => -1,
+    }
+}
