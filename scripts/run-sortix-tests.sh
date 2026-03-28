@@ -816,7 +816,20 @@ run_runtime_test() {
     local result_dir="$RESULT_DIR/$suite"
     mkdir -p "$result_dir"
 
-    _run_runtime_test_worker "$suite" "$test_name" "$result_dir"
+    # Build the test first (sequential path)
+    build_runtime_test "$suite" "$test_name" 2>/dev/null || true
+
+    # Create data directory with symlink so filesystem-dependent tests work
+    local data_dir
+    data_dir=$(mktemp -d)
+    local wasm="$BUILD_DIR/$suite/${test_name}.wasm"
+    if [ -f "$wasm" ]; then
+        mkdir -p "$data_dir/$(dirname "$test_name")"
+        ln -sf "$wasm" "$data_dir/$test_name"
+    fi
+    SORTIX_DATA_DIR="$data_dir" _run_runtime_test_worker "$suite" "$test_name" "$result_dir"
+    rm -rf "$data_dir"
+
     _collect_result "$suite" "$test_name" "$result_dir"
 }
 
