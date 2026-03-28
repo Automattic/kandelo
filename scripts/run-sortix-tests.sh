@@ -109,7 +109,7 @@ INCLUDE_EXPECTED_FAIL=(
     "sys_shm/intptr_t" "sys_shm/SHM_FAILED"
     # -- sys/stat struct member type issue
     "sys_stat/struct-stat-st_size"
-    # -- siglongjmp (Wasm limitation)
+    # -- siglongjmp (musl defines as macro, not a real function)
     "setjmp/siglongjmp"
 )
 
@@ -127,8 +127,6 @@ BASIC_EXPECTED_FAIL=(
     "mqueue/mq_timedreceive" "mqueue/mq_timedsend" "mqueue/mq_unlink"
     # -- Dynamic linking: dladdr not implemented (dlopen/dlsym/dlclose/dlerror work)
     "dlfcn/dladdr"
-    # -- setjmp/longjmp (Wasm exception handling limitations)
-    "setjmp/longjmp" "setjmp/setjmp" "setjmp/siglongjmp" "setjmp/sigsetjmp"
     # -- Process exec (not implemented in centralized mode)
     "unistd/execl" "unistd/execle" "unistd/execlp" "unistd/execv"
     "unistd/execve" "unistd/execvp" "unistd/fexecve"
@@ -743,7 +741,7 @@ _run_runtime_test_worker() {
     # to test binaries at their expected relative paths (e.g., fcntl/open).
     local output rc
     set +e
-    output=$(cd "$REPO_ROOT" && KERNEL_CWD="${SORTIX_DATA_DIR:-$REPO_ROOT}" timeout "$this_timeout" npx tsx examples/run-example.ts "${wasm}" 2>&1)
+    output=$(cd "$REPO_ROOT" && KERNEL_CWD="${SORTIX_DATA_DIR:-$REPO_ROOT}" timeout "$this_timeout" node --experimental-wasm-exnref --import tsx/esm examples/run-example.ts "${wasm}" 2>&1)
     rc=$?
     set -e
 
