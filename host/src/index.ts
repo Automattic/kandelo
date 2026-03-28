@@ -30,3 +30,5 @@ export type {
   ThreadExitMessage,
 } from "./worker-protocol";
 export * from "./vfs/index";
+export { parseDylinkSection, loadSharedLibrary, loadSharedLibrarySync, DynamicLinker } from "./dylink";
+export type { DylinkMetadata, LoadedSharedLibrary, LoadSharedLibraryOptions } from "./dylink";

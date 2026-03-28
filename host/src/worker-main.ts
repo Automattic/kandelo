@@ -10,6 +10,7 @@ import type {
   CentralizedThreadInitMessage,
   WorkerToHostMessage,
 } from "./worker-protocol";
+import { DynamicLinker } from "./dylink";
 
 export interface MessagePort {
   postMessage(msg: unknown, transferList?: unknown[]): void;
@@ -133,14 +134,85 @@ function buildKernelImports(
 }
 
 /**
+ * Build dlopen host imports for a process. These are called directly from
+ * the user program's dlopen/dlsym/dlclose C stubs (glue/dlopen.c).
+ *
+ * The DynamicLinker is lazily created on first use since most programs
+ * don't use dlopen.
+ */
+function buildDlopenImports(
+  memory: WebAssembly.Memory,
+  getTable: () => WebAssembly.Table | undefined,
+  getStackPointer: () => WebAssembly.Global | undefined,
+): Record<string, WebAssembly.ExportValue> {
+  let linker: DynamicLinker | null = null;
+  const decoder = new TextDecoder();
+
+  const getLinker = (): DynamicLinker => {
+    if (linker) return linker;
+    const table = getTable();
+    const sp = getStackPointer();
+    if (!table || !sp) throw new Error("dlopen: program has no table or stack pointer");
+    linker = new DynamicLinker({
+      memory,
+      table,
+      stackPointer: sp,
+      heapPointer: { value: 0 }, // Will be set from __heap_base
+      globalSymbols: new Map(),
+      got: new Map(),
+      loadedLibraries: new Map(),
+    });
+    return linker;
+  };
+
+  return {
+    __wasm_dlopen: (bytesPtr: number, bytesLen: number): number => {
+      const bytes = new Uint8Array(memory.buffer, bytesPtr, bytesLen);
+      // Copy bytes since memory.buffer may detach during instantiation
+      const bytesCopy = new Uint8Array(bytes);
+      const l = getLinker();
+      // Use the buffer location as part of the name for dedup
+      return l.dlopenSync(`dlopen:${bytesPtr}:${bytesLen}`, bytesCopy);
+    },
+
+    __wasm_dlsym: (handle: number, namePtr: number, nameLen: number): number => {
+      const nameBytes = new Uint8Array(memory.buffer, namePtr, nameLen);
+      const name = decoder.decode(nameBytes);
+      const result = getLinker().dlsym(handle, name);
+      return result === null ? 0 : (result as number);
+    },
+
+    __wasm_dlclose: (handle: number): number => {
+      return getLinker().dlclose(handle);
+    },
+
+    __wasm_dlerror: (bufPtr: number, bufMax: number): number => {
+      const err = getLinker().dlerror();
+      if (!err) return 0;
+      const encoder = new TextEncoder();
+      const encoded = encoder.encode(err);
+      const len = Math.min(encoded.length, bufMax);
+      new Uint8Array(memory.buffer, bufPtr, len).set(encoded.subarray(0, len));
+      return len;
+    },
+  };
+}
+
+/**
  * Build import object for a Wasm module, stubbing unresolved imports.
  */
 function buildImportObject(
   module: WebAssembly.Module,
   memory: WebAssembly.Memory,
   kernelImports: Record<string, WebAssembly.ExportValue>,
+  dlopenImports?: Record<string, WebAssembly.ExportValue>,
 ): WebAssembly.Imports {
   const envImports: Record<string, WebAssembly.ExportValue> = { memory };
+
+  // Add dlopen imports if provided
+  if (dlopenImports) {
+    Object.assign(envImports, dlopenImports);
+  }
 
   // Stub any remaining unresolved function imports
   for (const imp of WebAssembly.Module.imports(module)) {
@@ -179,8 +251,18 @@ export async function centralizedWorkerMain(
     const kernelImports = buildKernelImports(
       memory, channelOffset, initData.argv || [], initData.env || [],
     );
-    const importObject = buildImportObject(module, memory, kernelImports);
+
+    // Late-binding accessors for dlopen — instance isn't created yet
+    let processInstance: WebAssembly.Instance | null = null;
+    const dlopenImports = buildDlopenImports(
+      memory,
+      () => processInstance?.exports.__indirect_function_table as WebAssembly.Table | undefined,
+      () => processInstance?.exports.__stack_pointer as WebAssembly.Global | undefined,
+    );
+
+    const importObject = buildImportObject(module, memory, kernelImports, dlopenImports);
     const instance = await WebAssembly.instantiate(module, importObject);
+    processInstance = instance;
 
     // Set __channel_base in TLS so __do_syscall knows where the channel is.
     // Use the exported helper to find __channel_base's actual address in TLS,
