@@ -123,7 +123,9 @@ async function main() {
                 // Register child with kernel (skip kernel_create_process — already forked)
                 kernelWorker.registerProcess(childPid, childMemory, [childChannelOffset], { skipKernelCreate: true });
 
-                // Spawn child worker
+                // Spawn child worker with asyncify fork support
+                const ASYNCIFY_BUF_SIZE = 16384;
+                const asyncifyBufAddr = childChannelOffset - ASYNCIFY_BUF_SIZE;
                 const childInitData: CentralizedWorkerInitMessage = {
                     type: "centralized_init",
                     pid: childPid,
@@ -134,6 +136,8 @@ async function main() {
                     ),
                     memory: childMemory,
                     channelOffset: childChannelOffset,
+                    isForkChild: true,
+                    asyncifyBufAddr,
                 };
 
                 const childWorker = workerAdapter.createWorker(childInitData);

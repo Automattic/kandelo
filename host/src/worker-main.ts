@@ -256,6 +256,9 @@ function buildImportObject(
   return importObject;
 }
 
+/** Size of the asyncify data buffer used for fork stack save/restore */
+const ASYNCIFY_BUF_SIZE = 16384;
+
 /**
  * Main process worker entry point.
  */
@@ -271,63 +274,157 @@ export async function centralizedWorkerMain(
       memory, channelOffset, initData.argv || [], initData.env || [],
     );
 
-    // Late-binding accessors for dlopen — instance isn't created yet
-    let processInstance: WebAssembly.Instance | null = null;
-    const dlopenImports = buildDlopenImports(
-      memory,
-      () => processInstance?.exports.__indirect_function_table as WebAssembly.Table | undefined,
-      () => processInstance?.exports.__stack_pointer as WebAssembly.Global | undefined,
-      () => processInstance ?? undefined,
-    );
+    // Check if the module has asyncify exports (compiled with wasm-opt --asyncify)
+    const moduleExports = WebAssembly.Module.exports(module);
+    const hasAsyncify = moduleExports.some(e => e.name === "asyncify_get_state");
+    // Asyncify fork state — captured by kernel_fork closure
+    let forkResult = 0;
+    const asyncifyBufAddr = channelOffset - ASYNCIFY_BUF_SIZE;
 
-    const importObject = buildImportObject(module, memory, kernelImports, dlopenImports);
-    const instance = await WebAssembly.instantiate(module, importObject);
-    processInstance = instance;
+    if (hasAsyncify) {
+      // Override kernel_fork with asyncify-aware version.
+      // Late-bound: processInstance is set after instantiation.
+      let processInstance: WebAssembly.Instance | null = null;
 
-    // Set __channel_base in TLS so __do_syscall knows where the channel is.
-    // Use the exported helper to find __channel_base's actual address in TLS,
-    // since it may not be at offset 0 if the program has its own _Thread_local vars.
-    const getChannelBaseAddr = instance.exports.__get_channel_base_addr as (() => number) | undefined;
-    if (getChannelBaseAddr) {
-      const addr = getChannelBaseAddr();
-      const view = new DataView(memory.buffer);
-      view.setUint32(addr, channelOffset, true);
-    } else {
-      // Fallback for programs without the helper (shouldn't happen with current glue)
-      const tlsBase = instance.exports.__tls_base as WebAssembly.Global | undefined;
-      if (tlsBase) {
+      kernelImports.kernel_fork = (): number => {
+        if (!processInstance) return -38; // ENOSYS
+
+        const getState = processInstance.exports.asyncify_get_state as () => number;
+        const state = getState();
+        if (state === 2) {
+          // Rewinding: stop rewind and return the stored fork result
+          (processInstance.exports.asyncify_stop_rewind as () => void)();
+          return forkResult;
+        }
+
+        // Normal call: start asyncify unwind to save the call stack.
+        // SYS_FORK is sent after _start returns (unwind complete).
         const view = new DataView(memory.buffer);
-        view.setUint32(tlsBase.value as number, channelOffset, true);
+        view.setInt32(asyncifyBufAddr, asyncifyBufAddr + 8, true);     // start ptr
+        view.setInt32(asyncifyBufAddr + 4, asyncifyBufAddr + ASYNCIFY_BUF_SIZE, true); // end ptr
+        (processInstance.exports.asyncify_start_unwind as (addr: number) => void)(asyncifyBufAddr);
+        return 0; // ignored during unwind
+      };
+
+      // Build import object and instantiate
+      const dlopenImports = buildDlopenImports(
+        memory,
+        () => processInstance?.exports.__indirect_function_table as WebAssembly.Table | undefined,
+        () => processInstance?.exports.__stack_pointer as WebAssembly.Global | undefined,
+        () => processInstance ?? undefined,
+      );
+      const importObject = buildImportObject(module, memory, kernelImports, dlopenImports);
+      const instance = await WebAssembly.instantiate(module, importObject);
+      processInstance = instance;
+
+      // Set __channel_base in TLS
+      setupChannelBase(instance, memory, channelOffset);
+
+      // Signal ready
+      port.postMessage({ type: "ready", pid } satisfies WorkerToHostMessage);
+
+      // Run with asyncify fork support
+      let exitCode = 0;
+      try {
+        const start = instance.exports._start as () => void;
+        const getState = instance.exports.asyncify_get_state as () => number;
+        const stopUnwind = instance.exports.asyncify_stop_unwind as () => void;
+        const startRewind = instance.exports.asyncify_start_rewind as (addr: number) => void;
+
+        // For fork children: start with rewind to resume from fork point
+        let needsRewind = !!initData.isForkChild;
+        if (needsRewind) {
+          forkResult = 0; // fork() returns 0 in child
+        }
+
+        // Use parent's asyncify buffer address for child rewind
+        const rewindAddr = initData.isForkChild && initData.asyncifyBufAddr != null
+          ? initData.asyncifyBufAddr
+          : asyncifyBufAddr;
+
+        for (;;) {
+          if (needsRewind) {
+            startRewind(rewindAddr);
+            needsRewind = false;
+          }
+
+          try {
+            start();
+          } catch (e) {
+            if (e instanceof Error && e.message.includes("unreachable")) {
+              break; // Normal exit via kernel_exit → unreachable trap
+            }
+            throw e;
+          }
+
+          if (getState() === 1) {
+            // Asyncify unwind completed (fork) — finalize and send SYS_FORK
+            stopUnwind();
+
+            // Send SYS_FORK through the channel now that memory has asyncify data
+            const childPid = sendForkSyscall(memory, channelOffset);
+            if (childPid < 0) {
+              throw new Error(`Fork failed: errno=${-childPid}`);
+            }
+            forkResult = childPid;
+            needsRewind = true;
+            continue;
+          }
+
+          // Normal return — program finished
+          break;
+        }
+      } catch (e) {
+        if (!(e instanceof Error && e.message.includes("unreachable"))) {
+          throw e;
+        }
       }
+
+      port.postMessage({ type: "exit", pid, status: exitCode } satisfies WorkerToHostMessage);
+    } else {
+      // No asyncify — use original channel-based fork (re-execute _start)
+      // Fork children re-execute _start: first kernel_fork call returns 0
+      if (initData.isForkChild) {
+        let firstFork = true;
+        const origKernelFork = kernelImports.kernel_fork;
+        kernelImports.kernel_fork = (): number => {
+          if (firstFork) {
+            firstFork = false;
+            return 0; // fork() returns 0 in child
+          }
+          return (origKernelFork as () => number)();
+        };
+      }
+
+      let processInstance: WebAssembly.Instance | null = null;
+      const dlopenImports = buildDlopenImports(
+        memory,
+        () => processInstance?.exports.__indirect_function_table as WebAssembly.Table | undefined,
+        () => processInstance?.exports.__stack_pointer as WebAssembly.Global | undefined,
+        () => processInstance ?? undefined,
+      );
+      const importObject = buildImportObject(module, memory, kernelImports, dlopenImports);
+      const instance = await WebAssembly.instantiate(module, importObject);
+      processInstance = instance;
+
+      setupChannelBase(instance, memory, channelOffset);
+
+      port.postMessage({ type: "ready", pid } satisfies WorkerToHostMessage);
+
+      let exitCode = 0;
+      try {
+        const start = instance.exports._start as (() => void) | undefined;
+        if (start) start();
+      } catch (e) {
+        if (e instanceof Error && e.message.includes("unreachable")) {
+          exitCode = 0;
+        } else {
+          throw e;
+        }
+      }
+
+      port.postMessage({ type: "exit", pid, status: exitCode } satisfies WorkerToHostMessage);
     }
-
-    // Signal ready
-    port.postMessage({
-      type: "ready",
-      pid,
-    } satisfies WorkerToHostMessage);
-
-    // Run the program
-    let exitCode = 0;
-    try {
-      const start = instance.exports._start as (() => void) | undefined;
-      if (start) {
-        start();
-      }
-    } catch (e) {
-      if (e instanceof Error && e.message.includes("unreachable")) {
-        // Normal exit via kernel_exit → unreachable trap
-        exitCode = 0;
-      } else {
-        throw e;
-      }
-    }
-
-    port.postMessage({
-      type: "exit",
-      pid,
-      status: exitCode,
-    } satisfies WorkerToHostMessage);
   } catch (err) {
     port.postMessage({
       type: "error",
@@ -335,6 +432,56 @@ export async function centralizedWorkerMain(
       message: `Centralized worker failed: ${err instanceof Error ? err.message : String(err)}`,
     } satisfies WorkerToHostMessage);
   }
+}
+
+/**
+ * Set up __channel_base in TLS so __do_syscall knows the channel offset.
+ */
+function setupChannelBase(
+  instance: WebAssembly.Instance,
+  memory: WebAssembly.Memory,
+  channelOffset: number,
+): void {
+  const getChannelBaseAddr = instance.exports.__get_channel_base_addr as (() => number) | undefined;
+  if (getChannelBaseAddr) {
+    const addr = getChannelBaseAddr();
+    new DataView(memory.buffer).setUint32(addr, channelOffset, true);
+  } else {
+    const tlsBase = instance.exports.__tls_base as WebAssembly.Global | undefined;
+    if (tlsBase) {
+      new DataView(memory.buffer).setUint32(tlsBase.value as number, channelOffset, true);
+    }
+  }
+}
+
+/**
+ * Send SYS_FORK through the channel and wait for the result.
+ * Returns child pid on success, or -errno on failure.
+ */
+function sendForkSyscall(memory: WebAssembly.Memory, channelOffset: number): number {
+  const SYS_FORK_NR = 212;
+  const CH_SYSCALL = 4;
+  const CH_ARGS = 8;
+  const CH_RETURN = 32;
+  const CH_ERRNO = 36;
+
+  const view = new DataView(memory.buffer);
+  view.setInt32(channelOffset + CH_SYSCALL, SYS_FORK_NR, true);
+  for (let i = 0; i < 6; i++) {
+    view.setInt32(channelOffset + CH_ARGS + i * 4, 0, true);
+  }
+
+  const i32 = new Int32Array(memory.buffer);
+  Atomics.store(i32, channelOffset / 4, 1); // CH_PENDING
+  Atomics.notify(i32, channelOffset / 4, 1);
+  while (Atomics.wait(i32, channelOffset / 4, 1) === "ok") { /* */ }
+
+  const result = view.getInt32(channelOffset + CH_RETURN, true);
+  const err = view.getUint32(channelOffset + CH_ERRNO, true);
+  Atomics.store(i32, channelOffset / 4, 0);
+
+  if (err) return -err;
+  return result;
 }
 
 /**

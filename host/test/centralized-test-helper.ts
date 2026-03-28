@@ -108,6 +108,13 @@ export async function runCentralizedProgram(
 
         kernelWorker.registerProcess(childPid, childMemory, [childChannelOffset], { skipKernelCreate: true });
 
+        // The asyncify fork data buffer lives at channelOffset - 16384 in the
+        // parent's memory.  Since we copied parentMemory into childMemory and both
+        // use the same channelOffset, the asyncify data is ready for the child to
+        // rewind from the fork point.
+        const ASYNCIFY_BUF_SIZE = 16384;
+        const asyncifyBufAddr = childChannelOffset - ASYNCIFY_BUF_SIZE;
+
         const childInitData: CentralizedWorkerInitMessage = {
           type: "centralized_init",
           pid: childPid,
@@ -115,6 +122,8 @@ export async function runCentralizedProgram(
           programBytes,
           memory: childMemory,
           channelOffset: childChannelOffset,
+          isForkChild: true,
+          asyncifyBufAddr,
         };
 
         const childWorker = workerAdapter.createWorker(childInitData);

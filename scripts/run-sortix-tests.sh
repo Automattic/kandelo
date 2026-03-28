@@ -134,7 +134,6 @@ BASIC_EXPECTED_FAIL=(
     # (mlock, mlockall, munlock, munlockall removed — stubs pass basic invocation tests)
     # (unistd/fchownat now passes — nested data directory)
     # -- Process management requiring fork/exec or process groups
-    "sys_wait/waitpid"
     "stdlib/system"
     # -- Signals (limited Wasm signal model)
     "signal/sigaltstack"
@@ -147,7 +146,6 @@ BASIC_EXPECTED_FAIL=(
     "pthread/pthread_create"
     "signal/pthread_kill"
     "threads/thrd_create"
-    "unistd/pause"
     # -- Pthread features not supported (priority scheduling, pshared)
     "pthread/pthread_atfork" "pthread/pthread_attr_getstack"
     "pthread/pthread_attr_setinheritsched"
@@ -239,14 +237,10 @@ SIGNAL_EXPECTED_FAIL=(
     "sigaction-exec-flags" "sigaltstack-exec" "sigaltstack-raise-exec"
     # sigaltstack not implemented in Wasm (no native stack switching)
     "sigaltstack-raise"
-    # ppoll + fork + cross-process signals (SIGSTOP/SIGCONT not supported)
-    "ppoll-block-sleep-raise" "ppoll-block-sleep-raise-write" "ppoll-block-sleep-write-raise"
 )
 PROCESS_EXPECTED_FAIL=(
-    # Zombie: setpgid-move requires cross-process kill + pgid group validation
-    "zombie-setpgid-move"
-    # waitpid with PGID matching
-    "waitpid-pgid*"
+    # waitpid with empty process group (requires process group tracking)
+    "waitpid-pgid-empty-*"
     # exec not implemented in centralized mode
     "fork-exec-*"
 )

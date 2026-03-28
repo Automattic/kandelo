@@ -75,6 +75,16 @@ uint32_t __get_channel_base_addr(void) {
 /* SYS_EXIT needs special handling */
 #define SYS_EXIT 34
 
+/* SYS_FORK/VFORK route through kernel_fork import for asyncify support.
+ * wasm-opt --asyncify instruments around kernel.kernel_fork, enabling
+ * the host to save/restore the call stack across fork — so the child
+ * resumes from the fork point with all local variables intact. */
+#define SYS_FORK  212
+#define SYS_VFORK 213
+
+__attribute__((import_module("kernel"), import_name("kernel_fork")))
+int32_t kernel_fork(void);
+
 /* ------------------------------------------------------------------ */
 /* Signal delivery — invoked after each syscall if a signal is pending */
 /* ------------------------------------------------------------------ */
@@ -144,6 +154,13 @@ static void __deliver_pending_signal(uint32_t base)
 static long __do_syscall(long n, long a1, long a2, long a3,
                          long a4, long a5, long a6)
 {
+    /* Fork goes through kernel_fork import so asyncify can save/restore
+     * the call stack.  The host-side kernel_fork handles the channel
+     * communication after the asyncify unwind completes. */
+    if (n == SYS_FORK || n == SYS_VFORK) {
+        return (long)kernel_fork();
+    }
+
     uint32_t base = __channel_base;
 
     volatile int32_t *status = (volatile int32_t *)(uintptr_t)(base + CH_STATUS);

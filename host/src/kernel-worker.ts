@@ -2154,20 +2154,6 @@ export class CentralizedKernelWorker {
    * then call the onFork callback to spawn the child Worker.
    */
   private handleFork(channel: ChannelInfo, _origArgs: number[]): void {
-    // Check if the calling process is a fork child re-running _start.
-    // In centralized mode, fork children re-execute from _start and call
-    // fork() again. The kernel returns 0 to indicate "you are the child".
-    const isForkChild = this.kernelInstance!.exports.kernel_is_fork_child_pid as
-      (pid: number) => number;
-    if (isForkChild(channel.pid) === 1) {
-      const clearForkChild = this.kernelInstance!.exports.kernel_clear_fork_child as
-        (pid: number) => number;
-      clearForkChild(channel.pid);
-      // Return 0 to child (fork() returns 0 in child process)
-      this.completeChannel(channel, SYS_FORK, _origArgs, undefined, 0, 0);
-      return;
-    }
-
     if (!this.callbacks.onFork) {
       // No fork handler — return -ENOSYS
       this.completeChannel(channel, SYS_FORK, _origArgs, undefined, -1, 38);
@@ -2187,11 +2173,18 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    // In centralized mode, fork children re-execute _start (Wasm call stack
-    // isn't part of linear memory). The child never gets musl's __restore_sigs
-    // after fork(), so it would be stuck with the parent's blocked mask (which
-    // is "all signals blocked" from musl's fork wrapper). Clear it so the child
-    // starts with no signals blocked.
+    // Clear fork_child flag immediately. With asyncify fork, the child resumes
+    // from the fork point and never checks this flag. Without clearing it, a
+    // nested fork() from the child would hit the isForkChild check above and
+    // return 0 instead of creating a grandchild.
+    const clearForkChild = this.kernelInstance!.exports.kernel_clear_fork_child as
+      ((pid: number) => number) | undefined;
+    if (clearForkChild) clearForkChild(childPid);
+
+    // Clear the child's blocked signal mask. With asyncify fork, musl's
+    // __restore_sigs after fork() runs in the child, but we clear it here
+    // too for safety. Without asyncify, the child re-executes _start and
+    // never gets __restore_sigs.
     const resetSignalMask = this.kernelInstance!.exports.kernel_reset_signal_mask as
       ((pid: number) => number) | undefined;
     if (resetSignalMask) resetSignalMask(childPid);

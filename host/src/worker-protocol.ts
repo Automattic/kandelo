@@ -33,6 +33,10 @@ export interface CentralizedWorkerInitMessage {
   argv?: string[];
   /** Optional cwd */
   cwd?: string;
+  /** If true, this is a fork child created via asyncify — do rewind instead of normal _start */
+  isForkChild?: boolean;
+  /** Address of asyncify data buffer in memory (used for fork child rewind) */
+  asyncifyBufAddr?: number;
 }
 
 /**
