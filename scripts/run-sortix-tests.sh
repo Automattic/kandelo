@@ -125,8 +125,8 @@ BASIC_EXPECTED_FAIL=(
     "mqueue/mq_close" "mqueue/mq_getattr" "mqueue/mq_notify" "mqueue/mq_open"
     "mqueue/mq_receive" "mqueue/mq_send" "mqueue/mq_setattr"
     "mqueue/mq_timedreceive" "mqueue/mq_timedsend" "mqueue/mq_unlink"
-    # -- Dynamic linking (not supported in Wasm)
-    "dlfcn/dladdr" "dlfcn/dlclose" "dlfcn/dlopen" "dlfcn/dlsym"
+    # -- Dynamic linking: dladdr not implemented (dlopen/dlsym/dlclose/dlerror work)
+    "dlfcn/dladdr"
     # -- setjmp/longjmp (Wasm exception handling limitations)
     "setjmp/longjmp" "setjmp/setjmp" "setjmp/siglongjmp" "setjmp/sigsetjmp"
     # -- Process exec (not implemented in centralized mode)
@@ -301,6 +301,7 @@ CFLAGS_BASE=(
 LINK_FLAGS=(
     "$GLUE_DIR/channel_syscall.c"
     "$GLUE_DIR/compiler_rt.c"
+    "$GLUE_DIR/dlopen.c"
     "$SYSROOT/lib/crt1.o"
     "$SYSROOT/lib/libc.a"
     -Wl,--entry=_start
@@ -311,12 +312,32 @@ LINK_FLAGS=(
     -Wl,--allow-undefined
     -Wl,--table-base=3
     -Wl,--export-table
+    -Wl,--growable-table
     -Wl,--export=__wasm_init_tls
     -Wl,--export=__tls_base
     -Wl,--export=__tls_size
     -Wl,--export=__tls_align
     -Wl,--export=__stack_pointer
     -Wl,--export=__wasm_thread_init
+)
+
+# Flags for building shared libraries (.so) for dlopen tests
+SO_CFLAGS=(
+    --target=wasm32-unknown-unknown
+    --sysroot="$SYSROOT"
+    -fPIC
+    -O2
+    -matomics -mbulk-memory
+    -fno-trapping-math
+    -DSHARED
+)
+SO_LINK_FLAGS=(
+    -nostdlib
+    -Wl,--experimental-pic
+    -Wl,--shared
+    -Wl,--shared-memory
+    -Wl,--export-all
+    -Wl,--allow-undefined
 )
 
 WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
@@ -457,6 +478,14 @@ build_runtime_test() {
         "$src" "${LINK_FLAGS[@]}" \
         -o "$wasm" 2>/tmp/sortix-build-err-$$.txt
     asyncify_wasm "$wasm"
+
+    # If source has #ifdef SHARED, also build as a shared library (.so)
+    if grep -q '#ifdef SHARED' "$src" 2>/dev/null; then
+        local so="$BUILD_DIR/$suite/${test_name}.so"
+        "$CC" "${SO_CFLAGS[@]}" \
+            "$src" "${SO_LINK_FLAGS[@]}" \
+            -o "$so" 2>/dev/null || true
+    fi
 }
 
 build_basic()   { build_runtime_test basic "$1"; }
@@ -693,12 +722,24 @@ _run_runtime_test_worker() {
         this_timeout="$XFAIL_TIMEOUT"
     fi
 
+    # If a matching .so file was built, symlink it where the test expects it
+    local so="$BUILD_DIR/$suite/${test_name}.so"
+    local so_link=""
+    if [ -f "$so" ]; then
+        so_link="$REPO_ROOT/${test_name}.so"
+        mkdir -p "$(dirname "$so_link")"
+        ln -sf "$so" "$so_link" 2>/dev/null || true
+    fi
+
     # Run with timeout
     local output rc
     set +e
     output=$(cd "$REPO_ROOT" && timeout "$this_timeout" npx tsx examples/run-example.ts "${wasm}" 2>&1)
     rc=$?
     set -e
+
+    # Clean up .so symlink
+    [ -n "$so_link" ] && rm -f "$so_link" 2>/dev/null || true
 
     # Sortix convention: if output is empty or exit code >= 2,
     # append "exit: N" to the output (matches os-test/misc/run.sh)
@@ -884,6 +925,8 @@ run_suite() {
         export CC WASM_OPT ASYNCIFY_IMPORTS
         export CFLAGS_BASE_STR="${CFLAGS_BASE[*]}"
         export LINK_FLAGS_STR="${LINK_FLAGS[*]}"
+        export SO_CFLAGS_STR="${SO_CFLAGS[*]}"
+        export SO_LINK_FLAGS_STR="${SO_LINK_FLAGS[*]}"
 
         _build_runtime_wrapper() {
             local suite="$1"
@@ -899,6 +942,14 @@ run_suite() {
                 "$WASM_OPT" --asyncify \
                     --pass-arg="asyncify-imports@${ASYNCIFY_IMPORTS}" \
                     "$wasm" -o "$wasm" 2>/dev/null || true
+            fi
+            # Build shared library (.so) if source has #ifdef SHARED
+            if grep -q '#ifdef SHARED' "$src" 2>/dev/null; then
+                local so="$BUILD_DIR/$suite/${test_name}.so"
+                # shellcheck disable=SC2086
+                "$CC" $SO_CFLAGS_STR \
+                    "$src" $SO_LINK_FLAGS_STR \
+                    -o "$so" 2>/dev/null || true
             fi
         }
         export -f _build_runtime_wrapper

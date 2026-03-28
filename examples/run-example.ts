@@ -243,6 +243,7 @@ async function main() {
     // Register process with kernel
     const pid = 1;
     kernelWorker.registerProcess(pid, memory, [channelOffset]);
+    kernelWorker.setCwd(pid, process.cwd());
     kernelWorker.setNextChildPid(2);
 
     // Spawn the process worker

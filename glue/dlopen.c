@@ -87,14 +87,15 @@ void *dlopen(const char *path, int flags) {
     }
 
     ssize_t total = 0;
-    while (total < st.st_size) {
-        ssize_t n = read(fd, (char *)buf + total, (size_t)(st.st_size - total));
+    ssize_t target = (ssize_t)st.st_size;
+    while (total < target) {
+        ssize_t n = read(fd, (char *)buf + total, (size_t)(target - total));
         if (n <= 0) break;
         total += n;
     }
     close(fd);
 
-    if (total != st.st_size) {
+    if (total != target) {
         free(buf);
         set_dl_error("read error");
         return NULL;
