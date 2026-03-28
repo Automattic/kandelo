@@ -1856,7 +1856,16 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
         329 => kernel_timer_getoverrun(a1 as i32), // SYS_TIMER_GETOVERRUN
         330 => kernel_timer_delete(a1 as i32), // SYS_TIMER_DELETE
 
-        208 | 237..=238 | 247..=249 | 253..=254 | 256..=257 | 262 | 265..=268 | 271..=274 | 287 | 289..=293 | 297..=298 | 301..=305 | 306 | 308..=324 | 325 | 331..=336 | 348..=349 | 350..=369 | 370..=371 | 373..=376 | 381..=383 | 386 => {
+        208 => { // SYS_SYSINFO
+            let buf_ptr = a1 as *mut u8;
+            let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, 312) };
+            match syscalls::sys_sysinfo(buf) {
+                Ok(()) => 0,
+                Err(e) => -(e as i32),
+            }
+        }
+
+        237..=238 | 247..=249 | 253..=254 | 256..=257 | 262 | 265..=268 | 271..=274 | 287 | 289..=293 | 297..=298 | 301..=305 | 306 | 308..=324 | 325 | 331..=336 | 348..=349 | 350..=369 | 370..=371 | 373..=376 | 381..=383 | 386 => {
             // Many of these are stubs in the glue layer too; return ENOSYS
             -(Errno::ENOSYS as i32)
         }

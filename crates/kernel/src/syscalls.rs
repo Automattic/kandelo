@@ -1500,7 +1500,16 @@ pub fn sys_fcntl_lock(
     let start = match flock.l_whence {
         0 => flock.l_start,           // SEEK_SET
         1 => ofd.offset + flock.l_start, // SEEK_CUR
-        2 => return Err(Errno::ENOSYS), // SEEK_END needs file size
+        2 => {
+            // SEEK_END: resolve relative to file size
+            if host_handle >= 0 {
+                let stat = host.host_fstat(host_handle)?;
+                (stat.st_size as i64) + flock.l_start
+            } else {
+                // Non-host files (pipes, etc.) — SEEK_END not meaningful
+                return Err(Errno::EINVAL);
+            }
+        }
         _ => return Err(Errno::EINVAL),
     };
 
@@ -1591,7 +1600,9 @@ pub fn sys_fcntl_lock(
                 if base_cmd == F_SETLK {
                     return Err(Errno::EAGAIN);
                 }
-                return Err(Errno::ENOSYS);
+                // F_SETLKW: in a single address space (Wasm), the caller owns
+                // all local locks, so a conflict is always a self-deadlock.
+                return Err(Errno::EDEADLK);
             }
 
             let lock = FileLock {
@@ -3177,6 +3188,10 @@ pub fn sys_send(
             host.host_net_send(net_handle, buf, flags)
         }
         SocketDomain::Unix => {
+            // DGRAM bit-bucket (syslog pattern): data is discarded
+            if sock.sock_type == crate::socket::SocketType::Dgram {
+                return Ok(buf.len());
+            }
             let nosignal = flags & MSG_NOSIGNAL != 0;
             let sigpipe_was_pending = proc.signals.is_pending(wasm_posix_shared::signal::SIGPIPE);
             let result = sys_write(proc, host, fd, buf);
@@ -4666,6 +4681,41 @@ pub fn sys_pselect6(
     timeout_ms: i32,
     mask: Option<u64>,
 ) -> Result<i32, Errno> {
+    // Centralized mode: use sigsuspend_saved_mask pattern for atomic mask swap.
+    // The mask stays swapped across EAGAIN retries so cross-process signals
+    // arriving between retries are caught on the next select.
+    if crate::is_centralized_mode() {
+        if let Some(new_mask) = mask {
+            use wasm_posix_shared::signal::{SIGKILL, SIGSTOP};
+            if proc.sigsuspend_saved_mask.is_none() {
+                // First call: save original mask and install pselect mask
+                proc.sigsuspend_saved_mask = Some(proc.signals.blocked);
+                proc.signals.blocked = new_mask
+                    & !(crate::signal::sig_bit(SIGKILL) | crate::signal::sig_bit(SIGSTOP));
+            }
+            // Check if any signals are deliverable with the pselect mask
+            if proc.signals.deliverable() != 0 {
+                return Err(Errno::EINTR);
+            }
+        }
+
+        let result = sys_select(proc, host, nfds, readfds, writefds, exceptfds, timeout_ms);
+        match result {
+            Err(Errno::EAGAIN) => {
+                // Still blocking — keep mask swapped for next retry
+                return Err(Errno::EAGAIN);
+            }
+            _ => {
+                // Select completed — restore mask
+                if let Some(saved) = proc.sigsuspend_saved_mask.take() {
+                    proc.signals.blocked = saved;
+                }
+                return result;
+            }
+        }
+    }
+
+    // Non-centralized mode: simple save/restore around sys_select
     let old_mask = if let Some(new_mask) = mask {
         let old = sys_sigprocmask(proc, SIG_SETMASK, new_mask)?;
         Some(old)
@@ -5962,6 +6012,40 @@ pub fn sys_waitpid(
     options: u32,
 ) -> Result<(i32, i32), Errno> {
     host.host_waitpid(pid, options)
+}
+
+/// sysinfo — return system information.
+///
+/// Fills a struct sysinfo buffer with plausible values.
+/// On wasm32, unsigned long is 4 bytes. Layout:
+///   uptime(4) loads[3](12) totalram(4) freeram(4) sharedram(4)
+///   bufferram(4) totalswap(4) freeswap(4) procs(2) pad(2)
+///   totalhigh(4) freehigh(4) mem_unit(4) __reserved(256)
+///   Total: 312 bytes
+pub fn sys_sysinfo(buf: &mut [u8]) -> Result<(), Errno> {
+    const SYSINFO_SIZE: usize = 312;
+    if buf.len() < SYSINFO_SIZE {
+        return Err(Errno::EFAULT);
+    }
+    // Zero the buffer first
+    for b in buf[..SYSINFO_SIZE].iter_mut() {
+        *b = 0;
+    }
+    let total_ram: u32 = 512 * 1024 * 1024; // 512 MB
+    let free_ram: u32 = 256 * 1024 * 1024;  // 256 MB
+
+    // uptime = 1 second
+    buf[0..4].copy_from_slice(&1u32.to_le_bytes());
+    // loads[0..3] = 0 (already zeroed)
+    // totalram @ offset 16
+    buf[16..20].copy_from_slice(&total_ram.to_le_bytes());
+    // freeram @ offset 20
+    buf[20..24].copy_from_slice(&free_ram.to_le_bytes());
+    // procs @ offset 40 (u16)
+    buf[40..42].copy_from_slice(&1u16.to_le_bytes());
+    // mem_unit @ offset 52
+    buf[52..56].copy_from_slice(&1u32.to_le_bytes());
+    Ok(())
 }
 
 #[cfg(test)]
@@ -11830,5 +11914,47 @@ mod tests {
         let mut host = MockHostIO::new();
         let result = sys_open(&mut proc, &mut host, b"/etc/passwd", O_WRONLY, 0);
         assert_eq!(result.unwrap_err(), Errno::EACCES);
+    }
+
+    #[test]
+    fn test_sysinfo() {
+        let mut buf = [0u8; 312];
+        sys_sysinfo(&mut buf).unwrap();
+        // uptime = 1
+        assert_eq!(u32::from_le_bytes(buf[0..4].try_into().unwrap()), 1);
+        // totalram = 512 MB
+        assert_eq!(u32::from_le_bytes(buf[16..20].try_into().unwrap()), 512 * 1024 * 1024);
+        // freeram = 256 MB
+        assert_eq!(u32::from_le_bytes(buf[20..24].try_into().unwrap()), 256 * 1024 * 1024);
+        // procs = 1
+        assert_eq!(u16::from_le_bytes(buf[40..42].try_into().unwrap()), 1);
+        // mem_unit = 1
+        assert_eq!(u32::from_le_bytes(buf[52..56].try_into().unwrap()), 1);
+    }
+
+    #[test]
+    fn test_sysinfo_buffer_too_small() {
+        let mut buf = [0u8; 100];
+        assert_eq!(sys_sysinfo(&mut buf).unwrap_err(), Errno::EFAULT);
+    }
+
+    #[test]
+    fn test_fcntl_lock_seek_end_non_host() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (_fd0, fd1) = sys_pipe(&mut proc).unwrap();
+
+        // SEEK_END on non-host file should return EINVAL
+        let mut flock = WasmFlock {
+            l_type: F_RDLCK as i16,
+            l_whence: 2, // SEEK_END
+            _pad1: 0,
+            l_start: 0,
+            l_len: 10,
+            l_pid: 0,
+            _pad2: 0,
+        };
+        let result = sys_fcntl_lock(&mut proc, fd1, F_GETLK, &mut flock, &mut host);
+        assert_eq!(result.unwrap_err(), Errno::EINVAL);
     }
 }
