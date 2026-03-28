@@ -705,6 +705,22 @@ export class CentralizedKernelWorker {
   }
 
   /**
+   * Set the working directory for a process.
+   * Must be called after registerProcess and before the process starts.
+   */
+  setCwd(pid: number, cwd: string): void {
+    if (!this.initialized) throw new Error("Kernel not initialized");
+    const kernelSetCwd = this.kernelInstance!.exports.kernel_set_cwd as
+      ((pid: number, ptr: number, len: number) => number) | undefined;
+    if (!kernelSetCwd) return; // older kernel without this export
+    const encoded = new TextEncoder().encode(cwd);
+    // Use the pre-allocated scratch area in kernel memory
+    const buf = new Uint8Array(this.kernelMemory!.buffer);
+    buf.set(encoded, this.scratchOffset);
+    kernelSetCwd(pid, this.scratchOffset, encoded.length);
+  }
+
+  /**
    * Unregister a process. Stops listening on its channels and removes
    * it from the kernel's process table.
    */

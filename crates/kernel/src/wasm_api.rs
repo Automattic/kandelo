@@ -823,6 +823,21 @@ pub extern "C" fn kernel_create_process(pid: u32) -> i32 {
     }
 }
 
+/// Set the working directory for a process (centralized mode).
+/// Called by host to set the initial cwd before the process starts.
+/// Returns 0 on success, -ESRCH if pid not found.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_set_cwd(pid: u32, path_ptr: *const u8, path_len: u32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    if let Some(proc) = table.get_mut(pid) {
+        let path = unsafe { core::slice::from_raw_parts(path_ptr, path_len as usize) };
+        proc.cwd = path.to_vec();
+        0
+    } else {
+        -(Errno::ESRCH as i32)
+    }
+}
+
 /// Remove a process from the process table (centralized mode).
 /// Returns 0 on success, -ESRCH if pid not found.
 #[unsafe(no_mangle)]

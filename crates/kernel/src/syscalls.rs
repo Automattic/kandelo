@@ -2836,8 +2836,17 @@ pub fn sys_munmap(proc: &mut Process, addr: u32, len: u32) -> Result<(), Errno> 
     if len == 0 {
         return Err(Errno::EINVAL);
     }
-    // Linux munmap always succeeds (returns 0) even if no mappings overlap.
-    // EINVAL is only for misaligned addr or zero length.
+    // POSIX: addr must be page-aligned (Wasm page = 64KB).
+    if addr & 0xFFFF != 0 {
+        return Err(Errno::EINVAL);
+    }
+    // POSIX: addresses in [addr, addr+len) must be within the valid address space.
+    // Reject if the range overflows or extends beyond Wasm linear memory limits.
+    if addr.checked_add(len).is_none() {
+        return Err(Errno::EINVAL);
+    }
+    // Linux munmap succeeds (returns 0) even if no mappings overlap the range,
+    // as long as the address is valid and page-aligned.
     proc.memory.munmap(addr, len);
     Ok(())
 }
@@ -7249,6 +7258,33 @@ mod tests {
         let mut proc = Process::new(1);
         let addr = sys_mmap(&mut proc, 0, 4096, 3, 0x22, -1, 0).unwrap();
         sys_munmap(&mut proc, addr, 0x10000).unwrap();
+    }
+
+    #[test]
+    fn test_munmap_invalid_address_minus_one() {
+        // munmap((void*)-1, 1) — address 0xFFFFFFFF is not page-aligned, should return EINVAL
+        let mut proc = Process::new(1);
+        assert_eq!(sys_munmap(&mut proc, 0xFFFFFFFF, 1), Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn test_munmap_address_overflow() {
+        // Page-aligned address where addr+len overflows u32
+        let mut proc = Process::new(1);
+        assert_eq!(sys_munmap(&mut proc, 0xFFFF0000, 0x20000), Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn test_munmap_unaligned_address() {
+        // munmap with non-page-aligned address should return EINVAL
+        let mut proc = Process::new(1);
+        assert_eq!(sys_munmap(&mut proc, 0x1000, 0x10000), Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn test_munmap_zero_length() {
+        let mut proc = Process::new(1);
+        assert_eq!(sys_munmap(&mut proc, 0x10000, 0), Err(Errno::EINVAL));
     }
 
     #[test]
