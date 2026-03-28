@@ -1352,6 +1352,8 @@ export class CentralizedKernelWorker {
           conn.clientSocket.write(outData);
         }
       }
+      // Schedule pump to detect pipe closure (PHP closing the socket)
+      conn.schedulePump();
     }
   }
 
