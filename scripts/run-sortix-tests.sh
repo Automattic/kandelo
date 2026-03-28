@@ -197,8 +197,10 @@ BASIC_EXPECTED_FAIL=(
     # (glob/glob, glob/globfree now pass — data directory infrastructure)
     # (sys_stat/fchmodat now passes — fchmodat2 syscall 383 implemented)
     # (sys_stat/fstat, sys_stat/stat now pass — data directory infrastructure)
-    "sys_stat/fstatat" "sys_stat/futimens"
-    "sys_stat/lstat" "sys_stat/mkfifo" "sys_stat/mkfifoat" "sys_stat/mknod"
+    "sys_stat/fstatat"
+    # (sys_stat/futimens now passes — fixed utimensat NULL path handling)
+    # (sys_stat/lstat now passes — hardlinks in data directory)
+    "sys_stat/mkfifo" "sys_stat/mkfifoat" "sys_stat/mknod"
     "sys_stat/mknodat"
     # (sys_statvfs/fstatvfs now passes — data directory infrastructure)
     "sys_mman/msync" "sys_mman/posix_mem_offset" "sys_mman/posix_typed_mem_get_info"
@@ -819,13 +821,14 @@ run_runtime_test() {
     # Build the test first (sequential path)
     build_runtime_test "$suite" "$test_name" 2>/dev/null || true
 
-    # Create data directory with symlink so filesystem-dependent tests work
+    # Create data directory with hardlink so filesystem-dependent tests work
     local data_dir
     data_dir=$(mktemp -d)
     local wasm="$BUILD_DIR/$suite/${test_name}.wasm"
     if [ -f "$wasm" ]; then
         mkdir -p "$data_dir/$(dirname "$test_name")"
-        ln -sf "$wasm" "$data_dir/$test_name"
+        ln -f "$wasm" "$data_dir/$test_name" 2>/dev/null || \
+            cp "$wasm" "$data_dir/$test_name"
     fi
     SORTIX_DATA_DIR="$data_dir" _run_runtime_test_worker "$suite" "$test_name" "$result_dir"
     rm -rf "$data_dir"
@@ -981,16 +984,18 @@ run_suite() {
 
         echo "  Running $count tests ($PARALLEL parallel)..."
 
-        # Create a temp directory with symlinks to test binaries at their
+        # Create a temp directory with hardlinks to test binaries at their
         # expected relative paths. Many sortix tests open their own binary
         # via paths like "fcntl/open" from CWD — this makes them accessible.
+        # Hardlinks (not symlinks) so lstat/fstatat see S_ISREG, not S_ISLNK.
         SORTIX_DATA_DIR=$(mktemp -d)
         for wasm_file in "$BUILD_DIR/$suite"/**/*.wasm; do
             [ -f "$wasm_file" ] || continue
             local relpath="${wasm_file#"$BUILD_DIR/$suite/"}"
             local name="${relpath%.wasm}"
             mkdir -p "$SORTIX_DATA_DIR/$(dirname "$name")"
-            ln -sf "$wasm_file" "$SORTIX_DATA_DIR/$name"
+            ln -f "$wasm_file" "$SORTIX_DATA_DIR/$name" 2>/dev/null || \
+                cp "$wasm_file" "$SORTIX_DATA_DIR/$name"
         done
         export SORTIX_DATA_DIR
 

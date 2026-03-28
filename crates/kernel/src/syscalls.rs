@@ -2847,7 +2847,15 @@ pub fn sys_utimensat(
     times: Option<&[WasmTimespec; 2]>,
     _flags: u32,
 ) -> Result<(), Errno> {
-    let resolved = resolve_at_path(proc, dirfd, path)?;
+    // When path is empty (NULL from userspace), operate on dirfd directly.
+    // This is how futimens(fd, times) works: utimensat(fd, NULL, times, 0).
+    let resolved = if path.is_empty() && dirfd != wasm_posix_shared::flags::AT_FDCWD {
+        let entry = proc.fd_table.get(dirfd)?;
+        let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+        ofd.path.clone()
+    } else {
+        resolve_at_path(proc, dirfd, path)?
+    };
 
     // Default: set both to current time
     let (atime_sec, atime_nsec, mtime_sec, mtime_nsec) = if let Some(ts) = times {

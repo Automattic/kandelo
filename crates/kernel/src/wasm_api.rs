@@ -1423,8 +1423,13 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
         123 => kernel_clock_getres(a1 as u32, a2 as *mut u8), // SYS_CLOCK_GETRES
         124 => kernel_clock_nanosleep(a1 as u32, a2 as u32, a3 as *const u8), // SYS_CLOCK_NANOSLEEP
         125 => { // SYS_UTIMENSAT: (dirfd, path, times, flags)
-            let p = a2 as *const u8;
-            let len = unsafe { cstr_len(p) };
+            // path can be NULL (0) for futimens(fd, times) → utimensat(fd, NULL, times, 0)
+            let (p, len) = if a2 == 0 {
+                (core::ptr::null(), 0u32)
+            } else {
+                let p = a2 as *const u8;
+                (p, unsafe { cstr_len(p) })
+            };
             kernel_utimensat(a1, p, len, a3 as *const u8, a4 as u32)
         }
         66 => kernel_time() as i32,                // SYS_TIME
