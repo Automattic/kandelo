@@ -34,6 +34,8 @@ pub struct OpenFileDesc {
     pub dir_host_handle: i64,
     /// Synthetic "." / ".." state for getdents64: 0 = emit ".", 1 = emit "..", 2 = host entries
     pub dir_synth_state: u8,
+    /// Cumulative entry count across getdents64 calls — used as d_off cookie for seekdir.
+    pub dir_entry_offset: i64,
 }
 
 pub struct OfdTable {
@@ -60,6 +62,7 @@ impl OfdTable {
             path,
             dir_host_handle: -1,
             dir_synth_state: 0,
+            dir_entry_offset: 0,
         };
 
         // Search for a free (None) slot to reuse.
@@ -283,6 +286,7 @@ mod tests {
                 path: ofd.path.clone(),
                 dir_host_handle: -1,
             dir_synth_state: 0,
+            dir_entry_offset: 0,
             });
         }
 

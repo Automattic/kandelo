@@ -466,6 +466,7 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
             path,
             dir_host_handle: -1,
             dir_synth_state: 0,
+            dir_entry_offset: 0,
         });
     }
     let ofd_table = OfdTable::from_raw(ofd_entries);
@@ -849,6 +850,7 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
             path,
             dir_host_handle: -1,
             dir_synth_state: 0,
+            dir_entry_offset: 0,
         });
     }
     let ofd_table = OfdTable::from_raw(ofd_entries);

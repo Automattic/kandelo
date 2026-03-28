@@ -193,6 +193,12 @@ pub fn sys_open(
 
     let file_type = if oflags & O_DIRECTORY != 0 {
         FileType::Directory
+    } else if let Ok(st) = host.host_stat(&resolved) {
+        if st.st_mode & wasm_posix_shared::mode::S_IFMT == wasm_posix_shared::mode::S_IFDIR {
+            FileType::Directory
+        } else {
+            FileType::Regular
+        }
     } else {
         FileType::Regular
     };
@@ -977,20 +983,53 @@ pub fn sys_lseek(
         return Err(Errno::ESPIPE);
     }
 
-    // Directory: lseek(fd, 0, SEEK_SET) rewinds for subsequent getdents64 calls.
+    // Directory: lseek(fd, offset, SEEK_SET) supports rewind and seekdir.
+    // musl's seekdir calls lseek(fd, telldir_cookie, SEEK_SET) to restore
+    // directory position. The cookie is the d_off value from getdents64.
     if ofd.file_type == FileType::Directory {
-        if whence == SEEK_SET && offset == 0 {
-            // Close the existing dir handle if open (not -1=unopened, not -2=exhausted)
+        if whence == SEEK_SET {
+            // Close the existing dir handle if open
             if ofd.dir_host_handle >= 0 {
                 let _ = host.host_closedir(ofd.dir_host_handle);
             }
             ofd.dir_host_handle = -1; // will be reopened by next getdents64
             ofd.dir_synth_state = 0;
-            ofd.offset = 0;
-            return Ok(0);
+            ofd.dir_entry_offset = 0;
+            ofd.offset = offset;
+
+            if offset > 0 {
+                // Reopen directory and skip `offset` entries to reach the target position
+                let path = ofd.path.clone();
+                let h = host.host_opendir(&path)?;
+                let ofd = proc.ofd_table.get_mut(ofd_idx).ok_or(Errno::EBADF)?;
+                ofd.dir_host_handle = h;
+                ofd.dir_synth_state = 2; // skip synthetic . and ..
+
+                // Skip entries until we reach the target offset
+                // (d_off cookies are 1-based: . = 1, .. = 2, first host entry = 3, ...)
+                let host_entries_to_skip = (offset - 2).max(0);
+                let mut name_buf = [0u8; 256];
+                let mut skipped = 0i64;
+                while skipped < host_entries_to_skip {
+                    match host.host_readdir(h, &mut name_buf)? {
+                        Some((_, _, name_len)) => {
+                            // Skip host "." and ".." (already counted in synthetic)
+                            if (name_len == 1 && name_buf[0] == b'.') ||
+                               (name_len == 2 && name_buf[0] == b'.' && name_buf[1] == b'.') {
+                                continue;
+                            }
+                            skipped += 1;
+                        }
+                        None => break,
+                    }
+                }
+                let ofd = proc.ofd_table.get_mut(ofd_idx).ok_or(Errno::EBADF)?;
+                ofd.dir_entry_offset = offset;
+            }
+            return Ok(offset);
         }
-        // Other seeks on directories: just track offset
-        return Ok(0);
+        // Other whence values on directories: just return current offset
+        return Ok(ofd.offset);
     }
 
     // Virtual char devices: seek is a no-op, always returns 0
@@ -2167,11 +2206,12 @@ pub fn sys_getdents64(
 
     let mut pos = 0usize;
     let mut name_buf = [0u8; 256];
-    let mut entry_count = 0i64;
+    // Use persistent entry offset from OFD for d_off values (seekdir cookie)
+    let mut entry_offset = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?.dir_entry_offset;
 
     // Helper: write a single linux_dirent64 entry to buf at position pos.
     // Returns the number of bytes written, or 0 if it doesn't fit.
-    fn write_dirent64(buf: &mut [u8], pos: usize, d_ino: u64, entry_count: i64, d_type: u8, name: &[u8]) -> usize {
+    fn write_dirent64(buf: &mut [u8], pos: usize, d_ino: u64, d_off: i64, d_type: u8, name: &[u8]) -> usize {
         let name_len = name.len();
         let reclen_raw = 19 + name_len + 1;
         let reclen = (reclen_raw + 7) & !7;
@@ -2179,7 +2219,7 @@ pub fn sys_getdents64(
             return 0;
         }
         buf[pos..pos + 8].copy_from_slice(&d_ino.to_le_bytes());
-        buf[pos + 8..pos + 16].copy_from_slice(&entry_count.to_le_bytes());
+        buf[pos + 8..pos + 16].copy_from_slice(&d_off.to_le_bytes());
         buf[pos + 16..pos + 18].copy_from_slice(&(reclen as u16).to_le_bytes());
         buf[pos + 18] = d_type;
         buf[pos + 19..pos + 19 + name_len].copy_from_slice(name);
@@ -2195,11 +2235,15 @@ pub fn sys_getdents64(
     if synth_state < 2 {
         let synth_entries: &[&[u8]] = if synth_state == 0 { &[b".", b".."] } else { &[b".."] };
         for name in synth_entries {
-            entry_count += 1;
-            let written = write_dirent64(buf, pos, 1, entry_count, 4 /* DT_DIR */, name);
+            entry_offset += 1;
+            let written = write_dirent64(buf, pos, 1, entry_offset, 4 /* DT_DIR */, name);
             if written == 0 {
                 if pos == 0 {
                     return Err(Errno::EINVAL);
+                }
+                // Save entry_offset before returning
+                if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
+                    ofd.dir_entry_offset = entry_offset - 1; // didn't emit this one
                 }
                 return Ok(pos);
             }
@@ -2219,8 +2263,8 @@ pub fn sys_getdents64(
                     continue;
                 }
 
-                entry_count += 1;
-                let written = write_dirent64(buf, pos, d_ino, entry_count, d_type as u8, &name_buf[..name_len]);
+                entry_offset += 1;
+                let written = write_dirent64(buf, pos, d_ino, entry_offset, d_type as u8, &name_buf[..name_len]);
                 if written == 0 {
                     if pos == 0 {
                         return Err(Errno::EINVAL);
@@ -2239,6 +2283,11 @@ pub fn sys_getdents64(
                 break;
             }
         }
+    }
+
+    // Persist the entry offset for subsequent calls
+    if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
+        ofd.dir_entry_offset = entry_offset;
     }
 
     Ok(pos)
@@ -4311,6 +4360,12 @@ pub fn sys_openat(
 
     let file_type = if oflags & O_DIRECTORY != 0 {
         FileType::Directory
+    } else if let Ok(st) = host.host_stat(&resolved) {
+        if st.st_mode & wasm_posix_shared::mode::S_IFMT == wasm_posix_shared::mode::S_IFDIR {
+            FileType::Directory
+        } else {
+            FileType::Regular
+        }
     } else {
         FileType::Regular
     };
