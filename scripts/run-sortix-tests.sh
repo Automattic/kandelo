@@ -187,7 +187,8 @@ BASIC_EXPECTED_FAIL=(
     # (fcntl/posix_fallocate now passes — fallocate syscall implemented)
     "dirent/posix_getdents"
     # (dirent/fdopendir, readdir, readdir_r, rewinddir, scandir, seekdir now pass)
-    "stdio/pclose" "stdio/popen" "stdio/remove"
+    "stdio/pclose" "stdio/popen"
+    # (stdio/remove now passes — EPERM→EISDIR translation for unlink on directories)
     # (stdio/fopen now passes — data directory infrastructure)
     "unistd/faccessat"
     # (unistd/readlinkat now passes — fixed SYSCALL_ARGS argIndex for readlinkat)

@@ -1900,7 +1900,19 @@ pub fn sys_rmdir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resu
 
 pub fn sys_unlink(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
     let resolved = resolve_path(path, &proc.cwd);
-    host.host_unlink(&resolved)
+    match host.host_unlink(&resolved) {
+        Err(Errno::EPERM) => {
+            // Linux returns EISDIR when unlinking a directory; macOS returns EPERM.
+            // musl's remove() depends on EISDIR to fall through to rmdir().
+            if let Ok(st) = host.host_stat(&resolved) {
+                if st.st_mode & wasm_posix_shared::mode::S_IFMT == wasm_posix_shared::mode::S_IFDIR {
+                    return Err(Errno::EISDIR);
+                }
+            }
+            Err(Errno::EPERM)
+        }
+        other => other,
+    }
 }
 
 pub fn sys_rename(proc: &mut Process, host: &mut dyn HostIO, oldpath: &[u8], newpath: &[u8]) -> Result<(), Errno> {
@@ -4444,7 +4456,18 @@ pub fn sys_unlinkat(
     if flags & AT_REMOVEDIR != 0 {
         host.host_rmdir(&resolved)
     } else {
-        host.host_unlink(&resolved)
+        match host.host_unlink(&resolved) {
+            Err(Errno::EPERM) => {
+                // Linux returns EISDIR when unlinking a directory; macOS returns EPERM.
+                if let Ok(st) = host.host_stat(&resolved) {
+                    if st.st_mode & wasm_posix_shared::mode::S_IFMT == wasm_posix_shared::mode::S_IFDIR {
+                        return Err(Errno::EISDIR);
+                    }
+                }
+                Err(Errno::EPERM)
+            }
+            other => other,
+        }
     }
 }
 
