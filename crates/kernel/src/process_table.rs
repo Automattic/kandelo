@@ -52,15 +52,16 @@ impl ProcessTable {
     }
 
     /// Remove a process from the table.
-    /// Decrements pipe ref counts in the global pipe table for any pipe OFDs
-    /// the process still holds open.
+    /// Cleans up all cross-process resources: pipe ref counts, socket pipes,
+    /// and listening socket backlogs in the global pipe table.
     pub fn remove_process(&mut self, pid: u32) -> Option<Process> {
         let proc = self.processes.remove(&pid)?;
 
-        // Decrement pipe ref counts for any open pipe OFDs.
+        let pipe_table = unsafe { crate::pipe::global_pipe_table() };
+
+        // Clean up pipe OFDs: decrement ref counts in the global pipe table.
         // Each OFD represents one pipe endpoint (one reader or one writer),
         // regardless of how many FDs point to it (ofd.ref_count).
-        let pipe_table = unsafe { crate::pipe::global_pipe_table() };
         for (_ofd_idx, ofd) in proc.ofd_table.iter() {
             if ofd.file_type == FileType::Pipe && ofd.host_handle < 0 {
                 let pipe_idx = (-(ofd.host_handle + 1)) as usize;
@@ -73,6 +74,51 @@ impl ProcessTable {
                     }
                 }
                 pipe_table.free_if_closed(pipe_idx);
+            }
+        }
+
+        // Clean up socket OFDs: close pipe endpoints so peers get EOF/EPIPE.
+        // Without this, a peer process reading from a connected socket would
+        // block forever instead of getting EOF when this process exits.
+        for (_ofd_idx, ofd) in proc.ofd_table.iter() {
+            if ofd.file_type == FileType::Socket && ofd.host_handle < 0 {
+                let sock_idx = (-(ofd.host_handle + 1)) as usize;
+                if let Some(sock) = proc.sockets.get(sock_idx) {
+                    if sock.global_pipes {
+                        // Cross-process socket: close pipe ends in global table
+                        if let Some(send_idx) = sock.send_buf_idx {
+                            if let Some(pipe) = pipe_table.get_mut(send_idx) {
+                                pipe.close_write_end();
+                            }
+                            pipe_table.free_if_closed(send_idx);
+                        }
+                        if let Some(recv_idx) = sock.recv_buf_idx {
+                            if let Some(pipe) = pipe_table.get_mut(recv_idx) {
+                                pipe.close_read_end();
+                            }
+                            pipe_table.free_if_closed(recv_idx);
+                        }
+                    }
+                    // Clean up unaccepted connections in listen backlog
+                    for &backlog_sock_idx in &sock.listen_backlog {
+                        if let Some(backlog_sock) = proc.sockets.get(backlog_sock_idx) {
+                            if backlog_sock.global_pipes {
+                                if let Some(send_idx) = backlog_sock.send_buf_idx {
+                                    if let Some(pipe) = pipe_table.get_mut(send_idx) {
+                                        pipe.close_write_end();
+                                    }
+                                    pipe_table.free_if_closed(send_idx);
+                                }
+                                if let Some(recv_idx) = backlog_sock.recv_buf_idx {
+                                    if let Some(pipe) = pipe_table.get_mut(recv_idx) {
+                                        pipe.close_read_end();
+                                    }
+                                    pipe_table.free_if_closed(recv_idx);
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -126,6 +172,29 @@ impl ProcessTable {
                         pipe.add_reader();
                     } else {
                         pipe.add_writer();
+                    }
+                }
+            }
+        }
+
+        // Increment global pipe ref counts for cross-process socket OFDs.
+        // Without this, the parent closing/exiting would free pipes still
+        // needed by the child (or vice versa).
+        for (_ofd_idx, ofd) in child.ofd_table.iter() {
+            if ofd.file_type == FileType::Socket && ofd.host_handle < 0 {
+                let sock_idx = (-(ofd.host_handle + 1)) as usize;
+                if let Some(sock) = child.sockets.get(sock_idx) {
+                    if sock.global_pipes {
+                        if let Some(send_idx) = sock.send_buf_idx {
+                            if let Some(pipe) = pipe_table.get_mut(send_idx) {
+                                pipe.add_writer();
+                            }
+                        }
+                        if let Some(recv_idx) = sock.recv_buf_idx {
+                            if let Some(pipe) = pipe_table.get_mut(recv_idx) {
+                                pipe.add_reader();
+                            }
+                        }
                     }
                 }
             }
