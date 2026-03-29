@@ -543,6 +543,8 @@ export class CentralizedKernelWorker {
     channel: ChannelInfo;
     origArgs: number[];
   }>();
+  /** Flag to coalesce cross-process wakeup microtasks */
+  private wakeScheduled = false;
   /** Per-process stdin buffers: pid → { data, offset } */
   private stdinBuffers = new Map<number, { data: Uint8Array; offset: number }>();
   /** Active TCP connections per process for piggyback flushing */
@@ -1373,6 +1375,11 @@ export class CentralizedKernelWorker {
     Atomics.store(i32View, CH_STATUS / 4, CH_COMPLETE);
     Atomics.notify(i32View, CH_STATUS / 4, 1);
 
+    // Wake other processes' blocked poll/select retries — a syscall from this
+    // process may have written to a cross-process pipe, accepted a connection,
+    // or changed socket state that another process is waiting on.
+    this.scheduleWakeBlockedRetries();
+
     // Re-listen for next syscall
     this.relistenChannel(channel);
   }
@@ -1452,6 +1459,49 @@ export class CentralizedKernelWorker {
     this.pendingPollRetries.delete(pid);
     if (this.processes.has(pid)) {
       this.retrySyscall(entry.channel);
+    }
+  }
+
+  /**
+   * Schedule a microtask to wake all blocked poll/pselect6 retries.
+   * Coalesced via wakeScheduled flag — multiple calls within the same
+   * microtask batch result in only one wake cycle. This catches cross-process
+   * pipe writes, socket connections, and other state changes that unblock
+   * another process's pending poll/select.
+   */
+  private scheduleWakeBlockedRetries(): void {
+    if (this.wakeScheduled) return;
+    if (this.pendingPollRetries.size === 0 && this.pendingSelectRetries.size === 0) return;
+    this.wakeScheduled = true;
+    queueMicrotask(() => {
+      this.wakeScheduled = false;
+      this.wakeAllBlockedRetries();
+    });
+  }
+
+  /**
+   * Wake all blocked poll/pselect6 retries by cancelling their setImmediate
+   * timers and immediately re-executing the syscalls.
+   */
+  private wakeAllBlockedRetries(): void {
+    // Snapshot and clear — retries may re-add themselves if still not ready
+    const pollEntries = Array.from(this.pendingPollRetries.entries());
+    const selectEntries = Array.from(this.pendingSelectRetries.entries());
+    this.pendingPollRetries.clear();
+    this.pendingSelectRetries.clear();
+
+    for (const [pid, entry] of pollEntries) {
+      if (!this.processes.has(pid)) continue;
+      if (entry.timer !== null) {
+        clearImmediate(entry.timer);
+      }
+      this.retrySyscall(entry.channel);
+    }
+
+    for (const [pid, entry] of selectEntries) {
+      if (!this.processes.has(pid)) continue;
+      clearImmediate(entry.timer);
+      this.handlePselect6(entry.channel, entry.origArgs);
     }
   }
 
@@ -3309,12 +3359,10 @@ export class CentralizedKernelWorker {
       // process writes response data to the same pipe, but flushTcpSendPipes
       // is keyed by pid and won't find the parent's connections. Without
       // continuous pumping, response data gets stranded in the pipe.
-      // Use setImmediate when data is flowing, small delay when idle.
-      if (readN > 0 || inboundQueue.length > 0) {
-        schedulePump();
-      } else {
-        schedulePump(2);
-      }
+      // Use setImmediate for both active and idle — the 2ms idle delay adds
+      // significant latency when fork children write to the send pipe (since
+      // flushTcpSendPipes is keyed by parent pid and won't find child writes).
+      schedulePump();
     };
 
     // Incoming TCP data → write directly to recv pipe, queue overflow
@@ -3322,8 +3370,9 @@ export class CentralizedKernelWorker {
       inboundQueue.push(chunk);
       if (!this.processes.has(pid)) { cleanup(); return; }
       drainInbound();
-      // Wake any process blocked on poll() watching this recv pipe
+      // Wake any process blocked on poll/pselect6 watching this recv pipe
       this.wakeBlockedPoll(pid, recvPipeIdx);
+      this.scheduleWakeBlockedRetries();
       // Schedule pump to handle outbound + close detection
       schedulePump();
     });
