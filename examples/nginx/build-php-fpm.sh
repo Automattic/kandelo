@@ -100,6 +100,8 @@ if [ ! -f Makefile ]; then
         --with-sqlite3 \
         --enable-pdo \
         --with-pdo-sqlite \
+        --with-pdo-mysql=mysqlnd \
+        --with-mysqli=mysqlnd \
         --with-zlib \
         --with-openssl \
         --with-libxml \
