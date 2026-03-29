@@ -84,8 +84,7 @@ INCLUDE_EXPECTED_FAIL=(
     "unistd/_XOPEN_SHM" "unistd/_XOPEN_UUCP"
     # (POSIX.1-2024 langinfo ABALTMON/ALTMON, math constants, O_* flags,
     #  SIG2STR_MAX, sig2str, str2sig — all now pass after musl sysroot rebuild)
-    # -- BSD string functions added in 2024
-    "wchar/wcslcat" "wchar/wcslcpy"
+    # (wchar/wcslcat and wcslcpy now pass — added BSD wcslcpy/wcslcat implementations)
     # -- Headers/features not in musl
     "devctl/posix_devctl" "devctl/size_t"      # device control (Sortix/2024)
     "libintl/dcgettext_l" "libintl/dcngettext_l" "libintl/dgettext_l"
@@ -105,12 +104,9 @@ INCLUDE_EXPECTED_FAIL=(
     "sys_mman/POSIX_TYPED_MEM_ALLOCATE_CONTIG" "sys_mman/posix_typed_mem_get_info"
     "sys_mman/POSIX_TYPED_MEM_MAP_ALLOCATABLE" "sys_mman/posix_typed_mem_open"
     "sys_mman/struct-posix_typed_mem_info" "sys_mman/struct-posix_typed_mem_info-posix_tmi_length"
-    # -- sys/shm.h missing symbols
-    "sys_shm/intptr_t" "sys_shm/SHM_FAILED"
-    # -- sys/stat struct member type issue
-    "sys_stat/struct-stat-st_size"
-    # -- siglongjmp (musl defines as macro, not a real function)
-    "setjmp/siglongjmp"
+    # (sys_shm/intptr_t and SHM_FAILED now pass — added to sys/shm.h overlay)
+    # (sys_stat/struct-stat-st_size now passes — fixed st_size type to long long)
+    # (setjmp/siglongjmp now passes — added real function symbol + declaration)
 )
 
 BASIC_EXPECTED_FAIL=(
@@ -121,7 +117,7 @@ BASIC_EXPECTED_FAIL=(
     "ndbm/dbm_clearerr" "ndbm/dbm_close" "ndbm/dbm_delete" "ndbm/dbm_error"
     "ndbm/dbm_fetch" "ndbm/dbm_firstkey" "ndbm/dbm_nextkey" "ndbm/dbm_open" "ndbm/dbm_store"
     "nl_types/catclose" "nl_types/catgets" "nl_types/catopen"
-    "utmpx/pututxline"
+    # (utmpx/pututxline now passes — added errno=EPERM in pututxline overlay)
     "mqueue/mq_close" "mqueue/mq_getattr" "mqueue/mq_notify" "mqueue/mq_open"
     "mqueue/mq_receive" "mqueue/mq_send" "mqueue/mq_setattr"
     "mqueue/mq_timedreceive" "mqueue/mq_timedsend" "mqueue/mq_unlink"
@@ -206,7 +202,7 @@ BASIC_EXPECTED_FAIL=(
     "locale/getlocalename_l"
     # (monetary/strfmon and strfmon_l now pass — fixed POSIX locale handling in musl overlay)
     "strings/ffsll"
-    "wchar/wcslcat" "wchar/wcslcpy"
+    # (wchar/wcslcat and wcslcpy now pass — added BSD wcslcpy/wcslcat implementations)
     # -- posix_spawn (not implemented in centralized mode)
     "spawn/posix_spawn" "spawn/posix_spawnp"
     "spawn/posix_spawn_file_actions_addchdir" "spawn/posix_spawn_file_actions_addclose"

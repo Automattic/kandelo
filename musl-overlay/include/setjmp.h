@@ -38,6 +38,10 @@ typedef jmp_buf sigjmp_buf;
  */
 void __sigsetjmp_save(void *, int);
 void __siglongjmp_restore(void *);
+/* Real function declaration — visible even after #undef siglongjmp.
+ * The macro below overrides calls for LLVM SjLj compatibility,
+ * but the function symbol exists in libc.a for address-of use. */
+_Noreturn void siglongjmp(sigjmp_buf, int);
 #define sigsetjmp(buf, savemask) \
 	(__sigsetjmp_save((buf), (savemask)), setjmp((buf)))
 #define siglongjmp(buf, val) \

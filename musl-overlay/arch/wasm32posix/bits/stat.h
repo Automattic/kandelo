@@ -15,7 +15,7 @@ struct stat {
 	unsigned int       st_nlink;        /* offset 20 */
 	unsigned int       st_uid;          /* offset 24 */
 	unsigned int       st_gid;          /* offset 28 */
-	unsigned long long st_size;         /* offset 32 */
+	long long          st_size;         /* offset 32 */
 	struct timespec    st_atim;         /* offset 40  (16 bytes on wasm32) */
 	struct timespec    st_mtim;         /* offset 56  (16 bytes) */
 	struct timespec    st_ctim;         /* offset 72  (16 bytes) */
