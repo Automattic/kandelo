@@ -79,11 +79,15 @@ const SIGALRM = 14;
 
 /** Syscall numbers for memory management */
 const SYS_MMAP = 46;
+const SYS_MUNMAP = 47;
 const SYS_BRK = 48;
 const SYS_MREMAP = 126;
+const SYS_MSYNC = 278;
 const SYS_PREAD = 64;
+const SYS_PWRITE = 65;
 
 /** mmap flags */
+const MAP_SHARED = 0x01;
 const MAP_ANONYMOUS = 0x20;
 
 /** Syscall numbers for scatter/gather I/O */
@@ -562,6 +566,12 @@ export class CentralizedKernelWorker {
     clientSocket: import("net").Socket;
     recvPipeIdx: number;
     schedulePump: () => void;
+  }>>();
+  /** Per-process MAP_SHARED file-backed mappings: pid → Map<addr, info> */
+  private sharedMappings = new Map<number, Map<number, {
+    fd: number;
+    fileOffset: number;
+    len: number;
   }>>();
 
   constructor(
@@ -1213,7 +1223,31 @@ export class CentralizedKernelWorker {
       const mmapFlags = origArgs[3] >>> 0;
       if (mmapFd >= 0 && (mmapFlags & MAP_ANONYMOUS) === 0) {
         this.populateMmapFromFile(channel, retVal >>> 0, origArgs);
+        // Track MAP_SHARED file-backed mappings for msync writeback
+        if (mmapFlags & MAP_SHARED) {
+          const pageOffset = origArgs[5] >>> 0;
+          let pidMap = this.sharedMappings.get(channel.pid);
+          if (!pidMap) {
+            pidMap = new Map();
+            this.sharedMappings.set(channel.pid, pidMap);
+          }
+          pidMap.set(retVal >>> 0, {
+            fd: mmapFd,
+            fileOffset: pageOffset * 4096,
+            len: origArgs[1] >>> 0,
+          });
+        }
       }
+    }
+
+    // --- msync: flush MAP_SHARED regions back to file ---
+    if (syscallNr === SYS_MSYNC && retVal === 0) {
+      this.flushSharedMappings(channel, origArgs);
+    }
+
+    // --- munmap: clean up shared mapping tracking ---
+    if (syscallNr === SYS_MUNMAP && retVal === 0) {
+      this.cleanupSharedMappings(channel.pid, origArgs[0] >>> 0, origArgs[1] >>> 0);
     }
 
     // --- Signal-death check (centralized mode) ---
@@ -2614,6 +2648,9 @@ export class CentralizedKernelWorker {
       }
     }
 
+    // Clean up per-process state
+    this.sharedMappings.delete(exitingPid);
+
     // Do NOT complete the channel — the worker is blocked on Atomics.wait
     // and waking it would cause the C code to continue executing.
     // onExit will terminate the worker.
@@ -3298,6 +3335,117 @@ export class CentralizedKernelWorker {
       fileOffset += bytesRead;
 
       if (bytesRead < chunkSize) break; // short read = EOF
+    }
+  }
+
+  /**
+   * Flush MAP_SHARED regions that overlap the msync range back to the file.
+   * Reads from process memory and writes to the file via pwrite.
+   */
+  private flushSharedMappings(
+    channel: ChannelInfo,
+    origArgs: number[],
+  ): void {
+    const syncAddr = origArgs[0] >>> 0;
+    const syncLen = origArgs[1] >>> 0;
+    const pidMap = this.sharedMappings.get(channel.pid);
+    if (!pidMap || pidMap.size === 0) return;
+
+    const syncEnd = syncAddr + syncLen;
+
+    for (const [mapAddr, mapping] of pidMap) {
+      const mapEnd = mapAddr + mapping.len;
+      // Check overlap
+      if (mapAddr >= syncEnd || mapEnd <= syncAddr) continue;
+
+      // Compute overlap region
+      const flushStart = Math.max(syncAddr, mapAddr);
+      const flushEnd = Math.min(syncEnd, mapEnd);
+      const flushLen = flushEnd - flushStart;
+      if (flushLen <= 0) continue;
+
+      // File offset for the flush region
+      const fileOffsetBase = mapping.fileOffset + (flushStart - mapAddr);
+
+      // Read from process memory and write to file via pwrite
+      this.pwriteFromProcessMemory(
+        channel, mapping.fd, flushStart, flushLen, fileOffsetBase,
+      );
+    }
+  }
+
+  /**
+   * Write data from process memory to a file via kernel pwrite syscalls.
+   */
+  private pwriteFromProcessMemory(
+    channel: ChannelInfo,
+    fd: number,
+    processAddr: number,
+    len: number,
+    fileOffset: number,
+  ): void {
+    const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
+      (offset: number, pid: number) => number;
+    const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
+    const kernelMem = new Uint8Array(this.kernelMemory!.buffer);
+    const dataStart = this.scratchOffset + CH_DATA;
+
+    let written = 0;
+    while (written < len) {
+      const chunkSize = Math.min(CH_DATA_SIZE, len - written);
+
+      // Copy chunk from process memory to kernel scratch data area
+      const processMem = new Uint8Array(channel.memory.buffer);
+      kernelMem.set(
+        processMem.subarray(processAddr + written, processAddr + written + chunkSize),
+        dataStart,
+      );
+
+      // Set up pwrite syscall in kernel scratch:
+      // SYS_PWRITE (65): (fd, buf_ptr, count, offset_lo, offset_hi)
+      const curOffset = fileOffset + written;
+      kernelView.setUint32(CH_SYSCALL, SYS_PWRITE, true);
+      kernelView.setInt32(CH_ARGS + 0, fd, true);
+      kernelView.setInt32(CH_ARGS + 4, dataStart, true);
+      kernelView.setInt32(CH_ARGS + 8, chunkSize, true);
+      kernelView.setInt32(CH_ARGS + 12, curOffset & 0xffffffff, true);
+      kernelView.setInt32(CH_ARGS + 16, Math.floor(curOffset / 0x100000000) | 0, true);
+      kernelView.setInt32(CH_ARGS + 20, 0, true);
+
+      this.currentHandlePid = channel.pid;
+      try {
+        handleChannel(this.scratchOffset, channel.pid);
+      } catch {
+        break;
+      }
+      this.currentHandlePid = 0;
+
+      const bytesWritten = kernelView.getInt32(CH_RETURN, true);
+      if (bytesWritten <= 0) break;
+
+      written += bytesWritten;
+      if (bytesWritten < chunkSize) break;
+    }
+  }
+
+  /**
+   * Remove shared mapping entries that overlap the munmap range.
+   */
+  private cleanupSharedMappings(pid: number, addr: number, len: number): void {
+    const pidMap = this.sharedMappings.get(pid);
+    if (!pidMap) return;
+
+    const unmapEnd = addr + len;
+    for (const [mapAddr, mapping] of pidMap) {
+      const mapEnd = mapAddr + mapping.len;
+      // Remove if fully contained in unmap range
+      if (mapAddr >= addr && mapEnd <= unmapEnd) {
+        pidMap.delete(mapAddr);
+      }
+    }
+
+    if (pidMap.size === 0) {
+      this.sharedMappings.delete(pid);
     }
   }
 
