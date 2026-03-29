@@ -472,15 +472,21 @@ function setupChannelBase(
   const tlsBase = instance.exports.__tls_base as WebAssembly.Global | undefined;
   const view = new DataView(memory.buffer);
 
-  // Pre-set channel base at __tls_base before calling __get_channel_base_addr.
+  // Pre-set channel base at __tls_base+0 before calling __get_channel_base_addr.
   // LLVM inserts __wasm_call_ctors into every exported function including
   // __get_channel_base_addr. C++ global constructors may call malloc/brk which
   // dispatch through __do_syscall, reading __channel_base from TLS. If the
   // channel isn't set up yet, __do_syscall writes to address 0 and blocks
-  // forever on Atomics.wait. Pre-setting at __tls_base (offset 0) ensures
-  // the channel is usable before constructors run.
-  if (tlsBase && (tlsBase.value as number) > 0) {
-    view.setUint32(tlsBase.value as number, channelOffset, true);
+  // forever on Atomics.wait. Pre-setting at __tls_base+0 ensures the channel
+  // is usable before constructors run.
+  //
+  // IMPORTANT: this may clobber a user TLS variable at offset 0 if
+  // __channel_base has a non-zero TLS offset. We save and restore below.
+  let savedOffset0: number | undefined;
+  const tlsAddr = tlsBase ? (tlsBase.value as number) : 0;
+  if (tlsAddr > 0) {
+    savedOffset0 = view.getUint32(tlsAddr, true);
+    view.setUint32(tlsAddr, channelOffset, true);
   }
 
   // Now call __get_channel_base_addr to get the actual address (which may
@@ -490,8 +496,12 @@ function setupChannelBase(
   if (getChannelBaseAddr) {
     const addr = getChannelBaseAddr();
     view.setUint32(addr, channelOffset, true);
-  } else if (tlsBase && (tlsBase.value as number) > 0) {
-    // Already set above via __tls_base fallback
+    // Restore the original TLS value at offset 0 if __channel_base is elsewhere
+    if (savedOffset0 !== undefined && addr !== tlsAddr) {
+      view.setUint32(tlsAddr, savedOffset0, true);
+    }
+  } else if (tlsAddr > 0) {
+    // No helper — __channel_base is assumed to be at __tls_base+0
   }
 }
 
@@ -791,7 +801,7 @@ export async function centralizedThreadWorkerMain(
   const { memory, channelOffset, pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, tlsAllocAddr } = initData;
 
   try {
-    console.error(`[thread-worker] tid=${tid} starting, programBytes=${initData.programBytes?.byteLength ?? 'module'}`);
+    // Debug logging removed — pollutes stderr for output-based tests
 
     // Strip the start section AND neuter the constructor function body to prevent
     // constructors from re-running. Thread instances share memory with the main
@@ -802,7 +812,7 @@ export async function centralizedThreadWorkerMain(
     const module = initData.programModule
       ? initData.programModule
       : new WebAssembly.Module(programBytes!);
-    console.error(`[thread-worker] tid=${tid} compiled, instantiating...`);
+    // Debug logging removed — pollutes stderr for output-based tests
 
     const kernelImports = buildKernelImports(memory, channelOffset);
     const importObject = buildImportObject(module, memory, kernelImports);
