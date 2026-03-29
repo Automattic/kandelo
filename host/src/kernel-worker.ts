@@ -81,6 +81,10 @@ const SIGALRM = 14;
 const SYS_MMAP = 46;
 const SYS_BRK = 48;
 const SYS_MREMAP = 126;
+const SYS_PREAD = 64;
+
+/** mmap flags */
+const MAP_ANONYMOUS = 0x20;
 
 /** Syscall numbers for scatter/gather I/O */
 const SYS_WRITEV = 81;
@@ -1201,6 +1205,15 @@ export class CentralizedKernelWorker {
     // WebAssembly.Memory here so the process can access the new addresses.
     if (retVal > 0) {
       this.ensureProcessMemoryCovers(channel.memory, syscallNr, retVal, origArgs);
+    }
+
+    // --- File-backed mmap: populate mapped region with file data ---
+    if (syscallNr === SYS_MMAP && retVal > 0 && (retVal >>> 0) !== 0xffffffff) {
+      const mmapFd = origArgs[4];
+      const mmapFlags = origArgs[3] >>> 0;
+      if (mmapFd >= 0 && (mmapFlags & MAP_ANONYMOUS) === 0) {
+        this.populateMmapFromFile(channel, retVal >>> 0, origArgs);
+      }
     }
 
     // --- Signal-death check (centralized mode) ---
@@ -3224,6 +3237,67 @@ export class CentralizedKernelWorker {
       if (mmapAddr < zeroEnd) {
         new Uint8Array(processMemory.buffer, mmapAddr, zeroEnd - mmapAddr).fill(0);
       }
+    }
+  }
+
+  /**
+   * Populate a file-backed mmap region by reading from the file fd via pread.
+   * Called after the kernel allocates the anonymous region and the host zeroes it.
+   * Reads in CH_DATA_SIZE chunks using the kernel's pread handler.
+   */
+  private populateMmapFromFile(
+    channel: ChannelInfo,
+    mmapAddr: number,
+    origArgs: number[],
+  ): void {
+    const fd = origArgs[4];
+    const mapLen = origArgs[1] >>> 0;
+    // musl sends page offset (off / 4096) as arg[5]
+    const pageOffset = origArgs[5] >>> 0;
+    let fileOffset = pageOffset * 4096;
+
+    const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
+      (offset: number, pid: number) => number;
+    const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
+    const kernelMem = new Uint8Array(this.kernelMemory!.buffer);
+    const dataStart = this.scratchOffset + CH_DATA;
+
+    let written = 0;
+    while (written < mapLen) {
+      const chunkSize = Math.min(CH_DATA_SIZE, mapLen - written);
+
+      // Set up pread syscall in kernel scratch:
+      // SYS_PREAD (64): (fd, buf_ptr, count, offset_lo, offset_hi)
+      kernelView.setUint32(CH_SYSCALL, SYS_PREAD, true);
+      kernelView.setInt32(CH_ARGS + 0, fd, true);        // fd
+      kernelView.setInt32(CH_ARGS + 4, dataStart, true);  // buf_ptr (kernel memory)
+      kernelView.setInt32(CH_ARGS + 8, chunkSize, true);  // count
+      kernelView.setInt32(CH_ARGS + 12, fileOffset & 0xffffffff, true);  // offset_lo
+      kernelView.setInt32(CH_ARGS + 16, Math.floor(fileOffset / 0x100000000) | 0, true); // offset_hi
+      kernelView.setInt32(CH_ARGS + 20, 0, true);
+
+      this.currentHandlePid = channel.pid;
+      try {
+        handleChannel(this.scratchOffset, channel.pid);
+      } catch {
+        break; // pread failed, leave rest as zeros
+      }
+      this.currentHandlePid = 0;
+
+      const bytesRead = kernelView.getInt32(CH_RETURN, true);
+      if (bytesRead <= 0) break; // EOF or error
+
+      // Copy from kernel scratch data area to process memory
+      const processMem = new Uint8Array(channel.memory.buffer);
+      processMem.set(
+        kernelMem.subarray(dataStart, dataStart + bytesRead),
+        mmapAddr + written,
+      );
+
+      written += bytesRead;
+      fileOffset += bytesRead;
+
+      if (bytesRead < chunkSize) break; // short read = EOF
     }
   }
 

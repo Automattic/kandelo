@@ -3094,15 +3094,30 @@ pub fn sys_mmap(
     len: u32,
     prot: u32,
     flags: u32,
-    _fd: i32,     // ignored for anonymous
-    _offset: i64, // ignored for anonymous
+    fd: i32,
+    _offset: i64,
 ) -> Result<u32, Errno> {
-    // Only anonymous mappings supported
+    use wasm_posix_shared::mmap::MAP_SHARED;
     if flags & MAP_ANONYMOUS == 0 {
-        return Err(Errno::ENOSYS);
+        // File-backed mapping: validate the fd is open.
+        // MAP_PRIVATE is supported (host populates the region after allocation).
+        // MAP_SHARED is not yet supported for files.
+        if flags & MAP_SHARED != 0 {
+            return Err(Errno::ENOSYS);
+        }
+        if fd < 0 {
+            return Err(Errno::EBADF);
+        }
+        // Verify the fd is a valid open file descriptor
+        let _fd_entry = proc.fd_table.get(fd)?;
     }
 
-    let result = proc.memory.mmap_anonymous(addr, len, prot, flags);
+    // Allocate the region (both anonymous and file-backed use the same
+    // address space allocator — file-backed MAP_PRIVATE is semantically
+    // a private copy, so we allocate as anonymous and the host fills
+    // the data from the file afterwards).
+    let alloc_flags = flags | MAP_ANONYMOUS;
+    let result = proc.memory.mmap_anonymous(addr, len, prot, alloc_flags);
     if result == MAP_FAILED {
         return Err(Errno::ENOMEM);
     }
@@ -7735,9 +7750,29 @@ mod tests {
     }
 
     #[test]
-    fn test_mmap_file_backed_unsupported() {
+    fn test_mmap_file_backed_private() {
         let mut proc = Process::new(1);
-        let result = sys_mmap(&mut proc, 0, 4096, 3, 0x02, 3, 0); // MAP_PRIVATE without MAP_ANONYMOUS
+        let mut host = MockHostIO::new();
+        // Open a file to get a valid fd
+        let fd = sys_open(&mut proc, &mut host, b"/tmp/mmaptest", 0x42, 0o644).unwrap(); // O_CREAT|O_RDWR
+        // MAP_PRIVATE without MAP_ANONYMOUS should succeed (host populates data)
+        let addr = sys_mmap(&mut proc, 0, 4096, 3, 0x02, fd, 0).unwrap(); // PROT_READ|WRITE, MAP_PRIVATE
+        assert_ne!(addr, 0xFFFFFFFF);
+    }
+
+    #[test]
+    fn test_mmap_file_backed_bad_fd() {
+        let mut proc = Process::new(1);
+        // MAP_PRIVATE with invalid fd should fail
+        let result = sys_mmap(&mut proc, 0, 4096, 3, 0x02, 99, 0);
+        assert_eq!(result, Err(Errno::EBADF));
+    }
+
+    #[test]
+    fn test_mmap_file_backed_shared_unsupported() {
+        let mut proc = Process::new(1);
+        // MAP_SHARED for files is not yet supported
+        let result = sys_mmap(&mut proc, 0, 4096, 3, 0x01, 3, 0);
         assert_eq!(result, Err(Errno::ENOSYS));
     }
 

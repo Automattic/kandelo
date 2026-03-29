@@ -1469,7 +1469,13 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
         68 => kernel_usleep(a1 as u32),            // SYS_USLEEP
 
         // Memory
-        46 => kernel_mmap(a1 as u32, a2 as u32, a3 as u32, a4 as u32, a5, 0, 0) as i32, // SYS_MMAP
+        46 => { // SYS_MMAP: (addr, len, prot, flags, fd, pgoffset)
+            // musl sends page offset (off / 4096) as a6.
+            // Convert to byte offset for kernel_mmap (lo, hi).
+            let pgoff = a6 as u32;
+            let byte_off = (pgoff as u64) << 12; // * 4096
+            kernel_mmap(a1 as u32, a2 as u32, a3 as u32, a4 as u32, a5, byte_off as u32, (byte_off >> 32) as i32) as i32
+        }
         47 => kernel_munmap(a1 as u32, a2 as u32), // SYS_MUNMAP
         48 => kernel_brk(a1 as u32) as i32,        // SYS_BRK
         49 => kernel_mprotect(a1 as u32, a2 as u32, a3 as u32), // SYS_MPROTECT
@@ -2018,6 +2024,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
         257 => 0, // SYS_MEMBARRIER: no-op (single-threaded per process in Wasm)
         273 => 0, // SYS_SYNC: no-op (all I/O is synchronous to host)
         274 => 0, // SYS_SYNCFS: no-op
+        278 => 0, // SYS_MSYNC: no-op (MAP_PRIVATE changes are process-local, file-backed writes go through write())
 
         // -- Process stubs --
         287 => 0, // SYS_PERSONALITY: return 0 (current personality, PER_LINUX)
