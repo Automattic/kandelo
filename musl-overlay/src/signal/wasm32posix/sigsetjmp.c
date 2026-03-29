@@ -50,3 +50,4 @@ void __siglongjmp_restore(void *buf_raw)
 		sigprocmask(SIG_SETMASK, (const sigset_t *)buf->__ss, 0);
 	}
 }
+
