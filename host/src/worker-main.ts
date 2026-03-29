@@ -317,6 +317,26 @@ export async function centralizedWorkerMain(
       const instance = await WebAssembly.instantiate(module, importObject);
       processInstance = instance;
 
+      // For fork children: fix __tls_base after instantiation.
+      // The child's memory is copied from the parent, so the init flag in
+      // __wasm_init_memory is already set — causing it to skip both data
+      // segment initialization AND __wasm_init_tls. This leaves __tls_base
+      // at its initial value (0) instead of the correct TLS segment address.
+      // With __tls_base=0, all TLS variables (__wasm_thread_pointer,
+      // __channel_base, errno via pthread_self) read from the wrong address.
+      // The parent saved its __tls_base before forking; restore it here.
+      if (initData.isForkChild && initData.asyncifyBufAddr != null) {
+        const tlsBaseGlobal = instance.exports.__tls_base as WebAssembly.Global | undefined;
+        if (tlsBaseGlobal) {
+          const savedBase = new DataView(memory.buffer).getUint32(
+            initData.asyncifyBufAddr - 4, true,
+          );
+          if (savedBase > 0) {
+            tlsBaseGlobal.value = savedBase;
+          }
+        }
+      }
+
       // Set __channel_base in TLS
       setupChannelBase(instance, memory, channelOffset);
 
@@ -360,6 +380,12 @@ export async function centralizedWorkerMain(
           if (getState() === 1) {
             // Asyncify unwind completed (fork) — finalize and send SYS_FORK
             stopUnwind();
+
+            // Save TLS data for the fork child before the host copies memory.
+            // The child's WebAssembly.instantiate() will run __wasm_init_memory
+            // which calls __wasm_init_tls, overwriting the TLS area with template
+            // values and resetting __wasm_thread_pointer to 0.
+            saveParentTls(instance, memory, asyncifyBufAddr);
 
             // Send SYS_FORK through the channel now that memory has asyncify data
             const childPid = sendForkSyscall(memory, channelOffset);
@@ -451,6 +477,31 @@ function setupChannelBase(
     if (tlsBase) {
       new DataView(memory.buffer).setUint32(tlsBase.value as number, channelOffset, true);
     }
+  }
+}
+
+/**
+ * Save parent's __tls_base value before fork so the child can restore it.
+ *
+ * The child's memory is copied from the parent. When WebAssembly.instantiate()
+ * runs on that memory, __wasm_init_memory detects the "already initialized" flag
+ * and skips both data segment init and __wasm_init_tls. This leaves __tls_base at
+ * its initial value (0). The parent's TLS data at the correct address is preserved
+ * in memory, but the child would read from address 0 instead.
+ *
+ * Stores __tls_base at [asyncifyBufAddr - 4] in the parent's shared memory.
+ */
+function saveParentTls(
+  instance: WebAssembly.Instance,
+  memory: WebAssembly.Memory,
+  asyncifyBufAddr: number,
+): void {
+  const tlsBaseGlobal = instance.exports.__tls_base as WebAssembly.Global | undefined;
+  if (!tlsBaseGlobal) return;
+
+  const tlsBase = tlsBaseGlobal.value as number;
+  if (tlsBase > 0) {
+    new DataView(memory.buffer).setUint32(asyncifyBufAddr - 4, tlsBase, true);
   }
 }
 
