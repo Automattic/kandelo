@@ -1,6 +1,9 @@
 /**
  * serve.ts — Run nginx.wasm serving static files on the kernel.
  *
+ * Starts nginx with master_process on and 2 worker processes.
+ * The master (pid 1) forks 2 workers that handle connections.
+ *
  * Uses CentralizedKernelWorker which automatically bridges real TCP
  * connections into the kernel's pipe-backed sockets when nginx calls
  * listen().
@@ -11,7 +14,7 @@
  * Then: curl http://localhost:8080/
  */
 
-import { readFileSync, existsSync, mkdirSync, writeFileSync, copyFileSync } from "fs";
+import { readFileSync, existsSync, mkdirSync } from "fs";
 import { resolve, dirname, join } from "path";
 import { CentralizedKernelWorker } from "../../host/src/kernel-worker";
 import { NodePlatformIO } from "../../host/src/platform/node";
@@ -36,6 +39,11 @@ for (const dir of ["client_body_temp", "proxy_temp", "fastcgi_temp"]) {
 }
 mkdirSync(join(tmpDir, "logs"), { recursive: true });
 
+function loadBytes(path: string): ArrayBuffer {
+    const buf = readFileSync(path);
+    return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+}
+
 async function main() {
     const nginxWasm = resolve(scriptDir, "nginx.wasm");
     if (!existsSync(nginxWasm)) {
@@ -43,19 +51,18 @@ async function main() {
         process.exit(1);
     }
 
-    const kernelPath = resolve(repoRoot, "host/wasm/wasm_posix_kernel.wasm");
-    const kernelBytes = readFileSync(kernelPath);
-    const programBytes = readFileSync(nginxWasm);
+    const kernelBytes = loadBytes(resolve(repoRoot, "host/wasm/wasm_posix_kernel.wasm"));
+    const nginxBytes = loadBytes(nginxWasm);
 
     const io = new NodePlatformIO();
-
-    const processExits = new Map<number, { resolve: (status: number) => void }>();
+    const workers = new Map<number, ReturnType<NodeWorkerAdapter["createWorker"]>>();
 
     const kernelWorker = new CentralizedKernelWorker(
-        { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true },
+        { maxWorkers: 8, dataBufferSize: 65536, useSharedMemory: true },
         io,
         {
             onFork: async (parentPid, childPid, parentMemory) => {
+                console.log(`[kernel] fork: pid ${parentPid} → ${childPid}`);
                 const parentBuf = new Uint8Array(parentMemory.buffer);
                 const parentPages = Math.ceil(parentBuf.byteLength / 65536);
                 const childMemory = new WebAssembly.Memory({
@@ -79,10 +86,7 @@ async function main() {
                     type: "centralized_init",
                     pid: childPid,
                     ppid: parentPid,
-                    programBytes: programBytes.buffer.slice(
-                        programBytes.byteOffset,
-                        programBytes.byteOffset + programBytes.byteLength,
-                    ),
+                    programBytes: nginxBytes,
                     memory: childMemory,
                     channelOffset: childChannelOffset,
                     isForkChild: true,
@@ -90,8 +94,10 @@ async function main() {
                 };
 
                 const childWorker = workerAdapter.createWorker(childInitData);
+                workers.set(childPid, childWorker);
                 childWorker.on("error", () => {
                     kernelWorker.unregisterProcess(childPid);
+                    workers.delete(childPid);
                 });
 
                 return [childChannelOffset];
@@ -100,28 +106,21 @@ async function main() {
             onExec: async () => -38, // ENOSYS
 
             onExit: (pid, exitStatus) => {
-                const entry = processExits.get(pid);
-                if (entry) {
-                    entry.resolve(exitStatus);
-                }
+                console.log(`[kernel] process ${pid} exited with status ${exitStatus}`);
                 if (pid === 1) {
                     kernelWorker.unregisterProcess(pid);
                 } else {
                     kernelWorker.deactivateProcess(pid);
                 }
+                workers.delete(pid);
             },
         },
     );
 
     // Initialize kernel
-    await kernelWorker.init(
-        kernelBytes.buffer.slice(
-            kernelBytes.byteOffset,
-            kernelBytes.byteOffset + kernelBytes.byteLength,
-        ),
-    );
+    await kernelWorker.init(kernelBytes);
 
-    // Create shared memory for the process
+    // Create shared memory for the master process
     const memory = new WebAssembly.Memory({
         initial: 17,
         maximum: MAX_PAGES,
@@ -131,22 +130,19 @@ async function main() {
     memory.grow(MAX_PAGES - 17);
     new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
-    // Register process with kernel
+    // Register master process with kernel
     const pid = 1;
     kernelWorker.registerProcess(pid, memory, [channelOffset]);
     kernelWorker.setCwd(pid, prefix);
     kernelWorker.setNextChildPid(2);
 
-    // Spawn the nginx process
+    // Spawn the nginx master process
     const confPath = resolve(scriptDir, "nginx.conf");
     const initData: CentralizedWorkerInitMessage = {
         type: "centralized_init",
         pid,
         ppid: 0,
-        programBytes: programBytes.buffer.slice(
-            programBytes.byteOffset,
-            programBytes.byteOffset + programBytes.byteLength,
-        ),
+        programBytes: nginxBytes,
         memory,
         channelOffset,
         env: [
@@ -160,16 +156,16 @@ async function main() {
         ],
     };
 
-    console.log(`Starting nginx (prefix=${prefix})...`);
+    console.log(`Starting nginx multi-worker (prefix=${prefix})...`);
+    console.log("  master (pid 1) + 2 worker processes");
     console.log("Listening on http://localhost:8080/");
     console.log("Press Ctrl+C to stop.");
 
-    const worker = workerAdapter.createWorker(initData);
+    const masterWorker = workerAdapter.createWorker(initData);
+    workers.set(pid, masterWorker);
 
     const exitPromise = new Promise<number>((resolve, reject) => {
-        processExits.set(pid, { resolve });
-
-        worker.on("message", (msg: unknown) => {
+        masterWorker.on("message", (msg: unknown) => {
             const m = msg as WorkerToHostMessage;
             if (m.type === "exit") {
                 kernelWorker.unregisterProcess(pid);
@@ -180,7 +176,7 @@ async function main() {
             }
         });
 
-        worker.on("error", (err: Error) => {
+        masterWorker.on("error", (err: Error) => {
             reject(err);
         });
     });
@@ -188,12 +184,16 @@ async function main() {
     // Handle Ctrl+C gracefully
     process.on("SIGINT", async () => {
         console.log("\nShutting down...");
-        await worker.terminate().catch(() => {});
+        for (const [, w] of workers) {
+            await w.terminate().catch(() => {});
+        }
         process.exit(0);
     });
 
     const status = await exitPromise;
-    await worker.terminate().catch(() => {});
+    for (const [, w] of workers) {
+        await w.terminate().catch(() => {});
+    }
     process.exit(status);
 }
 
