@@ -32,6 +32,14 @@ const FORK_MAGIC: u32 = 0x464F524B; // "FORK"
 const EXEC_MAGIC: u32 = 0x45584543; // "EXEC"
 const FORK_VERSION: u32 = 4;
 
+// Bounds for deserialization to prevent OOM from malformed buffers.
+const MAX_FDS: u32 = 65536;
+const MAX_OFDS: u32 = 65536;
+const MAX_ENV_VARS: u32 = 65536;
+const MAX_ARGV: u32 = 65536;
+const MAX_PATH_LEN: usize = 1048576; // 1 MiB
+const MAX_STRING_LEN: usize = 1048576; // 1 MiB
+
 // ── Writer helper ───────────────────────────────────────────────────────────
 
 struct Writer<'a> {
@@ -165,6 +173,14 @@ impl<'a> Reader<'a> {
         let data = &self.buf[self.pos..self.pos + len];
         self.pos += len;
         Ok(data)
+    }
+
+    /// Read bytes with an upper bound check to prevent OOM from malformed data.
+    fn read_bounded_bytes(&mut self, len: usize, max: usize) -> Result<&'a [u8], Errno> {
+        if len > max {
+            return Err(Errno::EINVAL);
+        }
+        self.read_bytes(len)
     }
 }
 
@@ -477,6 +493,9 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
     // ── Signal state ──
     let blocked = r.read_u64()?;
     let handler_count = r.read_u32()?;
+    if handler_count > 64 {
+        return Err(Errno::EINVAL);
+    }
     let mut handlers = [SignalHandler::Default; 65];
     for _ in 0..handler_count {
         let signum = r.read_u32()?;
@@ -490,6 +509,9 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
     // ── FD table ──
     let max_fds = r.read_u32()? as usize;
     let fd_count = r.read_u32()?;
+    if fd_count > MAX_FDS {
+        return Err(Errno::EINVAL);
+    }
     let mut fd_entries: Vec<Option<FdEntry>> = Vec::new();
     for _ in 0..fd_count {
         let fd_num = r.read_u32()? as usize;
@@ -507,6 +529,9 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
 
     // ── OFD table ──
     let ofd_count = r.read_u32()?;
+    if ofd_count > MAX_OFDS {
+        return Err(Errno::EINVAL);
+    }
     let mut ofd_entries: Vec<Option<OpenFileDesc>> = Vec::new();
     for _ in 0..ofd_count {
         let index = r.read_u32()? as usize;
@@ -516,7 +541,7 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
         let offset = r.read_i64()?;
         let ref_count = r.read_u32()?;
         let path_len = r.read_u32()? as usize;
-        let path = r.read_bytes(path_len)?.to_vec();
+        let path = r.read_bounded_bytes(path_len, MAX_PATH_LEN)?.to_vec();
         while ofd_entries.len() <= index {
             ofd_entries.push(None);
         }
@@ -537,25 +562,31 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
 
     // ── Environment ──
     let env_count = r.read_u32()?;
+    if env_count > MAX_ENV_VARS {
+        return Err(Errno::EINVAL);
+    }
     let mut environ = Vec::with_capacity(env_count as usize);
     for _ in 0..env_count {
         let len = r.read_u32()? as usize;
-        let data = r.read_bytes(len)?;
+        let data = r.read_bounded_bytes(len, MAX_STRING_LEN)?;
         environ.push(data.to_vec());
     }
 
     // ── Argv ──
     let argv_count = r.read_u32()?;
+    if argv_count > MAX_ARGV {
+        return Err(Errno::EINVAL);
+    }
     let mut argv = Vec::with_capacity(argv_count as usize);
     for _ in 0..argv_count {
         let len = r.read_u32()? as usize;
-        let data = r.read_bytes(len)?;
+        let data = r.read_bounded_bytes(len, MAX_STRING_LEN)?;
         argv.push(data.to_vec());
     }
 
     // ── CWD ──
     let cwd_len = r.read_u32()? as usize;
-    let cwd_data = r.read_bytes(cwd_len)?;
+    let cwd_data = r.read_bounded_bytes(cwd_len, MAX_PATH_LEN)?;
     let cwd = cwd_data.to_vec();
 
     // ── Rlimits ──
@@ -604,7 +635,7 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
     let fork_exec_path = if r.remaining() >= 4 {
         let path_len = r.read_u32()? as usize;
         if path_len > 0 {
-            Some(r.read_bytes(path_len)?.to_vec())
+            Some(r.read_bounded_bytes(path_len, MAX_PATH_LEN)?.to_vec())
         } else {
             None
         }
@@ -614,10 +645,13 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
     let fork_exec_argv = if r.remaining() >= 4 {
         let argc = r.read_u32()? as usize;
         if argc > 0 {
+            if argc > MAX_ARGV as usize {
+                return Err(Errno::EINVAL);
+            }
             let mut args = Vec::with_capacity(argc);
             for _ in 0..argc {
                 let len = r.read_u32()? as usize;
-                args.push(r.read_bytes(len)?.to_vec());
+                args.push(r.read_bounded_bytes(len, MAX_STRING_LEN)?.to_vec());
             }
             Some(args)
         } else {
@@ -939,6 +973,9 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
     // ── Signal state ──
     let blocked = r.read_u64()?;
     let handler_count = r.read_u32()?;
+    if handler_count > 64 {
+        return Err(Errno::EINVAL);
+    }
     let mut handlers = [SignalHandler::Default; 65];
     for _ in 0..handler_count {
         let signum = r.read_u32()?;
@@ -954,6 +991,9 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
     // ── FD table ──
     let max_fds = r.read_u32()? as usize;
     let fd_count = r.read_u32()?;
+    if fd_count > MAX_FDS {
+        return Err(Errno::EINVAL);
+    }
     let mut fd_entries: Vec<Option<FdEntry>> = Vec::new();
     for _ in 0..fd_count {
         let fd_num = r.read_u32()? as usize;
@@ -971,6 +1011,9 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
 
     // ── OFD table ──
     let ofd_count = r.read_u32()?;
+    if ofd_count > MAX_OFDS {
+        return Err(Errno::EINVAL);
+    }
     let mut ofd_entries: Vec<Option<OpenFileDesc>> = Vec::new();
     for _ in 0..ofd_count {
         let index = r.read_u32()? as usize;
@@ -980,7 +1023,7 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
         let offset = r.read_i64()?;
         let ref_count = r.read_u32()?;
         let path_len = r.read_u32()? as usize;
-        let path = r.read_bytes(path_len)?.to_vec();
+        let path = r.read_bounded_bytes(path_len, MAX_PATH_LEN)?.to_vec();
         while ofd_entries.len() <= index {
             ofd_entries.push(None);
         }
@@ -1001,25 +1044,31 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
 
     // ── Environment ──
     let env_count = r.read_u32()?;
+    if env_count > MAX_ENV_VARS {
+        return Err(Errno::EINVAL);
+    }
     let mut environ = Vec::with_capacity(env_count as usize);
     for _ in 0..env_count {
         let len = r.read_u32()? as usize;
-        let data = r.read_bytes(len)?;
+        let data = r.read_bounded_bytes(len, MAX_STRING_LEN)?;
         environ.push(data.to_vec());
     }
 
     // ── Argv ──
     let argv_count = r.read_u32()?;
+    if argv_count > MAX_ARGV {
+        return Err(Errno::EINVAL);
+    }
     let mut argv = Vec::with_capacity(argv_count as usize);
     for _ in 0..argv_count {
         let len = r.read_u32()? as usize;
-        let data = r.read_bytes(len)?;
+        let data = r.read_bounded_bytes(len, MAX_STRING_LEN)?;
         argv.push(data.to_vec());
     }
 
     // ── CWD ──
     let cwd_len = r.read_u32()? as usize;
-    let cwd_data = r.read_bytes(cwd_len)?;
+    let cwd_data = r.read_bounded_bytes(cwd_len, MAX_PATH_LEN)?;
     let cwd = cwd_data.to_vec();
 
     // ── Rlimits ──
@@ -1393,5 +1442,68 @@ mod tests {
 
         assert_eq!(child.threads.len(), 0);
         assert_eq!(child.next_tid, 0);
+    }
+
+    #[test]
+    fn test_deserialize_rejects_huge_env_count() {
+        // Craft a minimal valid fork buffer then set env_count to u32::MAX
+        let proc = Process::new(1);
+        let mut buf = vec![0u8; 64 * 1024];
+        let written = serialize_fork_state(&proc, &mut buf).unwrap();
+
+        // Find env_count field and set it to a huge value.
+        // The env_count immediately follows the OFD table. For an empty
+        // process, it's at a known offset. We'll just set the field that
+        // was serialized as 0 to 0xFFFFFFFF and expect EINVAL.
+        let mut tampered = buf[..written].to_vec();
+        // Search for env_count (currently 0) by scanning after OFD section.
+        // Simpler approach: just corrupt the entire buffer to trigger bounds.
+        // Set bytes at offset 12 (total_size) to a huge value won't help...
+        // Instead, craft a buffer with correct header but malicious counts.
+        let mut w = Writer::new(&mut tampered);
+        w.write_u32(FORK_MAGIC).unwrap();
+        w.write_u32(FORK_VERSION).unwrap();
+        w.write_u32(0).unwrap(); // total_size (ignored on read)
+        // Scalars: ppid, uid, gid, euid, egid, pgid, sid, umask, nice
+        for _ in 0..9 { w.write_u32(0).unwrap(); }
+        // Signal: blocked + handler_count=0
+        w.write_u64(0).unwrap();
+        w.write_u32(0).unwrap();
+        // FD table: max_fds=1024, fd_count=0
+        w.write_u32(1024).unwrap();
+        w.write_u32(0).unwrap();
+        // OFD table: ofd_count=0
+        w.write_u32(0).unwrap();
+        // Environment: env_count = 0xFFFFFFFF (huge!)
+        w.write_u32(0xFFFFFFFF).unwrap();
+        let pos = w.pos;
+        let result = deserialize_fork_state(&tampered[..pos], 42);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_deserialize_rejects_huge_path_len() {
+        let mut buf = vec![0u8; 256];
+        let mut w = Writer::new(&mut buf);
+        w.write_u32(FORK_MAGIC).unwrap();
+        w.write_u32(FORK_VERSION).unwrap();
+        w.write_u32(0).unwrap();
+        for _ in 0..9 { w.write_u32(0).unwrap(); }
+        w.write_u64(0).unwrap();
+        w.write_u32(0).unwrap(); // handler_count
+        w.write_u32(1024).unwrap(); // max_fds
+        w.write_u32(0).unwrap(); // fd_count
+        // OFD table: 1 entry with huge path
+        w.write_u32(1).unwrap(); // ofd_count
+        w.write_u32(0).unwrap(); // index
+        w.write_u32(0).unwrap(); // file_type = Regular
+        w.write_u32(0).unwrap(); // status_flags
+        w.write_i64(0).unwrap(); // host_handle
+        w.write_i64(0).unwrap(); // offset
+        w.write_u32(1).unwrap(); // ref_count
+        w.write_u32(0x10000000).unwrap(); // path_len = 256MB (over MAX_PATH_LEN)
+        let pos = w.pos;
+        let result = deserialize_fork_state(&buf[..pos], 42);
+        assert!(result.is_err());
     }
 }

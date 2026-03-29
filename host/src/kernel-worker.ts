@@ -2548,14 +2548,27 @@ export class CentralizedKernelWorker {
         // Normal exit: exitStatus << 8 (matches WIFEXITED/WEXITSTATUS macros)
         waitStatus = (exitStatus & 0xff) << 8;
       }
-      this.exitedChildren.set(exitingPid, waitStatus);
+      // Check if parent has SA_NOCLDWAIT set (or SIGCHLD set to SIG_IGN).
+      // If so, auto-reap the child — don't store as zombie, and per POSIX,
+      // don't send SIGCHLD.
+      const hasNoCldWait = this.kernelInstance!.exports
+        .kernel_has_sa_nocldwait as ((pid: number) => number) | undefined;
+      const autoReap = hasNoCldWait ? hasNoCldWait(parentPid) === 1 : false;
 
-      // Queue SIGCHLD on parent process in the kernel.
-      // kernel_kill handles cross-process signal delivery in centralized mode.
-      this.sendSignalToProcess(parentPid, SIGCHLD);
+      if (!autoReap) {
+        this.exitedChildren.set(exitingPid, waitStatus);
 
-      // Wake any parent blocked in waitpid
-      this.wakeWaitingParent(parentPid, exitingPid, waitStatus);
+        // Queue SIGCHLD on parent process in the kernel.
+        // kernel_kill handles cross-process signal delivery in centralized mode.
+        this.sendSignalToProcess(parentPid, SIGCHLD);
+
+        // Wake any parent blocked in waitpid
+        this.wakeWaitingParent(parentPid, exitingPid, waitStatus);
+      } else {
+        // Auto-reap: clean up child tracking without leaving a zombie.
+        // SIGCHLD is suppressed per POSIX when SA_NOCLDWAIT is set.
+        this.childToParent.delete(exitingPid);
+      }
     }
 
     if (this.callbacks.onExit) {
@@ -2571,9 +2584,17 @@ export class CentralizedKernelWorker {
     const exitingPid = channel.pid;
     const parentPid = this.childToParent.get(exitingPid);
     if (parentPid !== undefined) {
-      this.exitedChildren.set(exitingPid, waitStatus);
-      this.sendSignalToProcess(parentPid, SIGCHLD);
-      this.wakeWaitingParent(parentPid, exitingPid, waitStatus);
+      const hasNoCldWait = this.kernelInstance!.exports
+        .kernel_has_sa_nocldwait as ((pid: number) => number) | undefined;
+      const autoReap = hasNoCldWait ? hasNoCldWait(parentPid) === 1 : false;
+
+      if (!autoReap) {
+        this.exitedChildren.set(exitingPid, waitStatus);
+        this.sendSignalToProcess(parentPid, SIGCHLD);
+        this.wakeWaitingParent(parentPid, exitingPid, waitStatus);
+      } else {
+        this.childToParent.delete(exitingPid);
+      }
     }
 
     // Do NOT complete the channel — the worker is blocked on Atomics.wait
