@@ -280,6 +280,8 @@ pub fn sys_close(
             }
             FileType::Socket => {
                 let sock_idx = (-(host_handle + 1)) as usize;
+                let mut send_idx_to_free: Option<usize> = None;
+                let mut recv_idx_to_free: Option<usize> = None;
                 if let Some(sock) = proc.sockets.get(sock_idx) {
                     if let Some(net_handle) = sock.host_net_handle {
                         let _ = host.host_net_close(net_handle);
@@ -291,7 +293,14 @@ pub fn sys_close(
                         } else {
                             proc.pipes.get_mut(send_idx).and_then(|p| p.as_mut())
                         };
-                        if let Some(pipe) = pipe { pipe.close_write_end(); }
+                        if let Some(pipe) = pipe {
+                            pipe.close_write_end();
+                            if use_global {
+                                unsafe { crate::pipe::global_pipe_table().free_if_closed(send_idx) };
+                            } else if pipe.is_fully_closed() {
+                                send_idx_to_free = Some(send_idx);
+                            }
+                        }
                     }
                     if let Some(recv_idx) = sock.recv_buf_idx {
                         let pipe = if use_global {
@@ -299,8 +308,22 @@ pub fn sys_close(
                         } else {
                             proc.pipes.get_mut(recv_idx).and_then(|p| p.as_mut())
                         };
-                        if let Some(pipe) = pipe { pipe.close_read_end(); }
+                        if let Some(pipe) = pipe {
+                            pipe.close_read_end();
+                            if use_global {
+                                unsafe { crate::pipe::global_pipe_table().free_if_closed(recv_idx) };
+                            } else if pipe.is_fully_closed() {
+                                recv_idx_to_free = Some(recv_idx);
+                            }
+                        }
                     }
+                }
+                // Free fully-closed process-local pipe slots
+                if let Some(idx) = send_idx_to_free {
+                    if let Some(slot) = proc.pipes.get_mut(idx) { *slot = None; }
+                }
+                if let Some(idx) = recv_idx_to_free {
+                    if let Some(slot) = proc.pipes.get_mut(idx) { *slot = None; }
                 }
                 proc.sockets.free(sock_idx);
             }
@@ -1427,24 +1450,7 @@ pub fn sys_pipe(proc: &mut Process) -> Result<(i32, i32), Errno> {
     let pipe_idx = if crate::is_centralized_mode() {
         unsafe { crate::pipe::global_pipe_table().alloc(pipe) }
     } else {
-        let mut found = None;
-        for (i, slot) in proc.pipes.iter().enumerate() {
-            if slot.is_none() {
-                found = Some(i);
-                break;
-            }
-        }
-        match found {
-            Some(i) => {
-                proc.pipes[i] = Some(pipe);
-                i
-            }
-            None => {
-                let i = proc.pipes.len();
-                proc.pipes.push(Some(pipe));
-                i
-            }
-        }
+        proc.alloc_pipe(pipe)
     };
 
     // Pipe handle is negative: -(pipe_idx + 1)
@@ -3207,10 +3213,10 @@ pub fn sys_socketpair(
     };
 
     // Allocate two ring buffers: buf_ab (A→B) and buf_ba (B→A)
-    let buf_ab_idx = proc.pipes.len();
-    proc.pipes.push(Some(PipeBuffer::new(DEFAULT_PIPE_CAPACITY)));
-    let buf_ba_idx = proc.pipes.len();
-    proc.pipes.push(Some(PipeBuffer::new(DEFAULT_PIPE_CAPACITY)));
+    let (buf_ab_idx, buf_ba_idx) = proc.alloc_pipe_pair(
+        PipeBuffer::new(DEFAULT_PIPE_CAPACITY),
+        PipeBuffer::new(DEFAULT_PIPE_CAPACITY),
+    );
 
     // Socket A: sends to buf_ab, receives from buf_ba
     let mut sock_a = SocketInfo::new(SocketDomain::Unix, stype, 0);
@@ -3829,10 +3835,10 @@ pub fn sys_connect(proc: &mut Process, host: &mut dyn HostIO, fd: i32, addr: &[u
                 // Allocate two pipe buffers for bidirectional data:
                 //   pipe_a: client writes → server reads
                 //   pipe_b: server writes → client reads
-                let pipe_a_idx = proc.pipes.len();
-                proc.pipes.push(Some(PipeBuffer::new(65536)));
-                let pipe_b_idx = proc.pipes.len();
-                proc.pipes.push(Some(PipeBuffer::new(65536)));
+                let (pipe_a_idx, pipe_b_idx) = proc.alloc_pipe_pair(
+                    PipeBuffer::new(65536),
+                    PipeBuffer::new(65536),
+                );
 
                 // Assign ephemeral port/addr to client if unbound
                 let client_sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
@@ -7882,6 +7888,42 @@ mod tests {
         let result = sys_write(&mut proc, &mut host, fd0, b"test");
         assert_eq!(result, Err(Errno::EPIPE));
         assert!(proc.signals.is_pending(wasm_posix_shared::signal::SIGPIPE));
+    }
+
+    #[test]
+    fn test_socketpair_close_both_frees_pipes() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+        let (fd0, fd1) = sys_socketpair(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+
+        // Socketpair creates 2 pipe buffers
+        let pipe_count_before = proc.pipes.iter().filter(|p| p.is_some()).count();
+        assert_eq!(pipe_count_before, 2);
+
+        // Close both fds — pipe buffers should be freed
+        sys_close(&mut proc, &mut host, fd0).unwrap();
+        sys_close(&mut proc, &mut host, fd1).unwrap();
+
+        let pipe_count_after = proc.pipes.iter().filter(|p| p.is_some()).count();
+        assert_eq!(pipe_count_after, 0, "pipe buffers should be freed after both sockets close");
+    }
+
+    #[test]
+    fn test_socketpair_pipe_slots_reused() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+
+        // Create and close a socketpair to free pipe slots
+        let (fd0, fd1) = sys_socketpair(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+        sys_close(&mut proc, &mut host, fd0).unwrap();
+        sys_close(&mut proc, &mut host, fd1).unwrap();
+        let vec_len_after_first = proc.pipes.len();
+
+        // Create another socketpair — should reuse freed slots
+        let (_fd2, _fd3) = sys_socketpair(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+        assert_eq!(proc.pipes.len(), vec_len_after_first, "pipe Vec should not grow when reusing freed slots");
     }
 
     #[test]

@@ -6308,12 +6308,13 @@ pub extern "C" fn kernel_inject_connection(
     let bind_port = sock.bind_port;
 
     // Allocate two pipe buffers for bidirectional data:
-    //   recv_pipe: host writes (incoming TCP data) → PHP reads
-    //   send_pipe: PHP writes → host reads (outgoing TCP data)
-    let recv_pipe_idx = proc.pipes.len();
-    proc.pipes.push(Some(PipeBuffer::new(65536)));
-    let send_pipe_idx = proc.pipes.len();
-    proc.pipes.push(Some(PipeBuffer::new(65536)));
+    //   recv_pipe: host writes (incoming TCP data) → process reads
+    //   send_pipe: process writes → host reads (outgoing TCP data)
+    // Reuse freed consecutive slots to avoid unbounded growth of proc.pipes.
+    let (recv_pipe_idx, send_pipe_idx) = proc.alloc_pipe_pair(
+        PipeBuffer::new(65536),
+        PipeBuffer::new(65536),
+    );
 
     // Create accepted socket with pipe buffers
     let mut accepted_sock = SocketInfo::new(SocketDomain::Inet, SocketType::Stream, 0);
@@ -6389,6 +6390,10 @@ pub extern "C" fn kernel_pipe_close_write(pid: u32, pipe_idx: u32) -> i32 {
         _ => return -(Errno::EBADF as i32),
     };
     pipe.close_write_end();
+    // Free the buffer if both endpoints are now closed
+    if pipe.is_fully_closed() {
+        proc.pipes[pipe_idx as usize] = None;
+    }
     0
 }
 
@@ -6406,6 +6411,10 @@ pub extern "C" fn kernel_pipe_close_read(pid: u32, pipe_idx: u32) -> i32 {
         _ => return -(Errno::EBADF as i32),
     };
     pipe.close_read_end();
+    // Free the buffer if both endpoints are now closed
+    if pipe.is_fully_closed() {
+        proc.pipes[pipe_idx as usize] = None;
+    }
     0
 }
 

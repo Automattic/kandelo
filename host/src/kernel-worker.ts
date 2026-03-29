@@ -3354,7 +3354,11 @@ export class CentralizedKernelWorker {
     const cleanup = () => {
       if (cleaned) return;
       cleaned = true;
-      pipeCloseRead(pid, recvPipeIdx);
+      // Close the host's ends of both pipes:
+      //   recvPipe: host is the writer → close write end
+      //   sendPipe: host is the reader → close read end
+      pipeCloseWrite(pid, recvPipeIdx);
+      pipeCloseRead(pid, sendPipeIdx);
       connections.delete(clientSocket);
       // Remove from tcpConnections tracking
       const arr = this.tcpConnections?.get(pid);
