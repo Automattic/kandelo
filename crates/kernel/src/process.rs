@@ -335,6 +335,36 @@ impl Process {
         }
     }
 
+    /// Allocate a process-local pipe buffer, reusing the first free slot.
+    pub fn alloc_pipe(&mut self, pipe: PipeBuffer) -> usize {
+        for (i, slot) in self.pipes.iter().enumerate() {
+            if slot.is_none() {
+                self.pipes[i] = Some(pipe);
+                return i;
+            }
+        }
+        let idx = self.pipes.len();
+        self.pipes.push(Some(pipe));
+        idx
+    }
+
+    /// Allocate a consecutive pair of process-local pipe buffers, reusing freed
+    /// slots. Preserves adjacency so that `second_idx == first_idx + 1`.
+    pub fn alloc_pipe_pair(&mut self, first: PipeBuffer, second: PipeBuffer) -> (usize, usize) {
+        let len = self.pipes.len();
+        for i in 0..len.saturating_sub(1) {
+            if self.pipes[i].is_none() && self.pipes[i + 1].is_none() {
+                self.pipes[i] = Some(first);
+                self.pipes[i + 1] = Some(second);
+                return (i, i + 1);
+            }
+        }
+        let idx = self.pipes.len();
+        self.pipes.push(Some(first));
+        self.pipes.push(Some(second));
+        (idx, idx + 1)
+    }
+
     /// Allocate a new thread ID for this process.
     pub fn alloc_tid(&mut self) -> u32 {
         // First thread TID starts at pid + 1
@@ -368,5 +398,73 @@ impl Process {
     /// Find a thread by TID (mutable).
     pub fn get_thread_mut(&mut self, tid: u32) -> Option<&mut ThreadInfo> {
         self.threads.iter_mut().find(|t| t.tid == tid)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pipe::PipeBuffer;
+
+    #[test]
+    fn test_alloc_pipe_reuses_freed_slots() {
+        let mut proc = Process::new(1);
+        assert!(proc.pipes.is_empty());
+
+        // Allocate first pipe
+        let idx0 = proc.alloc_pipe(PipeBuffer::new(64));
+        assert_eq!(idx0, 0);
+        let idx1 = proc.alloc_pipe(PipeBuffer::new(64));
+        assert_eq!(idx1, 1);
+        assert_eq!(proc.pipes.len(), 2);
+
+        // Free slot 0
+        proc.pipes[0] = None;
+
+        // Next alloc should reuse slot 0
+        let idx2 = proc.alloc_pipe(PipeBuffer::new(64));
+        assert_eq!(idx2, 0);
+        assert_eq!(proc.pipes.len(), 2); // No growth
+    }
+
+    #[test]
+    fn test_alloc_pipe_pair_reuses_consecutive_slots() {
+        let mut proc = Process::new(1);
+
+        // Allocate 4 pipes (2 pairs)
+        let (a, b) = proc.alloc_pipe_pair(PipeBuffer::new(64), PipeBuffer::new(64));
+        assert_eq!((a, b), (0, 1));
+        let (c, d) = proc.alloc_pipe_pair(PipeBuffer::new(64), PipeBuffer::new(64));
+        assert_eq!((c, d), (2, 3));
+        assert_eq!(proc.pipes.len(), 4);
+
+        // Free first pair
+        proc.pipes[0] = None;
+        proc.pipes[1] = None;
+
+        // Next pair should reuse slots 0,1
+        let (e, f) = proc.alloc_pipe_pair(PipeBuffer::new(64), PipeBuffer::new(64));
+        assert_eq!((e, f), (0, 1));
+        assert_eq!(proc.pipes.len(), 4); // No growth
+    }
+
+    #[test]
+    fn test_alloc_pipe_pair_skips_non_consecutive_free_slots() {
+        let mut proc = Process::new(1);
+
+        // Allocate 4 individual pipes
+        for _ in 0..4 {
+            proc.alloc_pipe(PipeBuffer::new(64));
+        }
+        assert_eq!(proc.pipes.len(), 4);
+
+        // Free only slots 0 and 2 (not consecutive)
+        proc.pipes[0] = None;
+        proc.pipes[2] = None;
+
+        // Pair allocation needs consecutive slots, should append
+        let (a, b) = proc.alloc_pipe_pair(PipeBuffer::new(64), PipeBuffer::new(64));
+        assert_eq!((a, b), (4, 5));
+        assert_eq!(proc.pipes.len(), 6);
     }
 }
