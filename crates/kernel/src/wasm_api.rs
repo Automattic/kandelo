@@ -768,7 +768,17 @@ fn deliver_pending_signals(proc: &mut Process, host: &mut WasmHostIO) {
             let action = proc.signals.get_action(signum);
             match action.handler {
                 SignalHandler::Handler(idx) => {
-                    let _ = host.host_call_signal_handler(idx, signum, action.flags);
+                    if host.host_call_signal_handler(idx, signum, action.flags).is_err() {
+                        // Handler call failed — fall back to default action (POSIX).
+                        // The signal has already been dequeued, so we must handle it here.
+                        match default_action(signum) {
+                            DefaultAction::Terminate | DefaultAction::CoreDump => {
+                                proc.state = crate::process::ProcessState::Exited;
+                                proc.exit_status = 128 + signum as i32;
+                            }
+                            _ => {}
+                        }
+                    }
                 }
                 SignalHandler::Default => {
                     match default_action(signum) {
@@ -892,6 +902,28 @@ pub extern "C" fn kernel_get_process_exit_status(pid: u32) -> i32 {
     match table.get(pid) {
         Some(proc) if proc.state == crate::process::ProcessState::Exited => proc.exit_status,
         Some(_) => -1,
+        None => -(Errno::ESRCH as i32),
+    }
+}
+
+/// Check if a process has SA_NOCLDWAIT set for SIGCHLD (centralized mode).
+/// Returns 1 if SA_NOCLDWAIT is set, 0 if not, -ESRCH if process not found.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_has_sa_nocldwait(pid: u32) -> i32 {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    match table.get(pid) {
+        Some(proc) => {
+            let action = proc.signals.get_action(wasm_posix_shared::signal::SIGCHLD);
+            if action.flags & wasm_posix_shared::signal::SA_NOCLDWAIT != 0 {
+                1
+            } else {
+                // POSIX: setting SIGCHLD to SIG_IGN also implies SA_NOCLDWAIT
+                match action.handler {
+                    crate::signal::SignalHandler::Ignore => 1,
+                    _ => 0,
+                }
+            }
+        }
         None => -(Errno::ESRCH as i32),
     }
 }
