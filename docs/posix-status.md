@@ -166,7 +166,9 @@ The wasm-posix-kernel uses a **centralized architecture**: a single kernel Wasm 
 
 | Function | Status | Notes |
 |----------|--------|-------|
-| `mmap()` | Partial | Anonymous mappings only (MAP_ANONYMOUS). Page-aligned (64KB Wasm pages). File-backed mappings not yet supported. MAP_FIXED not yet supported. |
+| `mmap()` | Partial | Anonymous, file-backed MAP_PRIVATE, and file-backed MAP_SHARED. Page-aligned (64KB Wasm pages). MAP_FIXED supported. Host populates file-backed regions via pread; MAP_SHARED regions are flushed on msync via pwrite. |
+| `msync()` | Full | Flushes MAP_SHARED regions back to the file via pwrite. No-op for MAP_PRIVATE (correct per POSIX). |
+| `shm_open()` / `shm_unlink()` | Full | musl maps to `/dev/shm/` paths; host rewrites to tmpdir on macOS. Works with MAP_SHARED mmap. |
 | `munmap()` | Full | Removes tracked region. Page-aligned address required. Partial munmap supported: front trim, back trim, and middle split. |
 | `brk()` / `sbrk()` | Partial | Kernel-managed program break. Initial break at 0x01000000. Growing and shrinking supported. Program break inherited on fork/exec. |
 | `mprotect()` | Stub | Returns ENOSYS. Wasm linear memory has no page-level protection. |
@@ -386,7 +388,7 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 | Gap | Subsystem | Reason |
 |-----|-----------|--------|
 | **mprotect() returns ENOSYS** | memory | Wasm linear memory has no page-level protection. |
-| **No file-backed mmap** | memory | Would require host cooperation and shared memory semantics. MAP_FIXED also unsupported. |
+| **No cross-process MAP_SHARED** | memory | MAP_SHARED works within a single process (file-backed, with msync writeback). Cross-process shared memory would require SharedArrayBuffer coordination. |
 | **UDP sockets** | socket | AF_INET SOCK_DGRAM not yet implemented. TCP (SOCK_STREAM) fully supported via host-delegated networking. |
 | **Setuid/setgid enforcement** | process | Single-user Wasm environment; privilege checks simulated only. |
 | **Permission checks** | filesystem | Delegated to host. Kernel does not independently verify file permissions. |
@@ -402,7 +404,7 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 - `pthread_create` — works via clone(). Basic pthreads tested (mutex, join). Cancellation not supported.
 
 **Hard / Architectural:**
-- File-backed mmap() (requires host cooperation and shared memory semantics)
+- Cross-process MAP_SHARED mmap (would need SharedArrayBuffer coordination between workers)
 - True async poll/select (replace polling loop with host-based event notification)
 - SA_NOCLDWAIT / SA_NOCLDSTOP (stored but not acted upon; waitpid is host-delegated)
 - Full VMIN/VTIME raw mode semantics (timer-based timeout)

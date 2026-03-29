@@ -3087,7 +3087,9 @@ pub fn sys_unsetenv(proc: &mut Process, name: &[u8]) -> Result<(), Errno> {
     Ok(())
 }
 
-/// mmap -- supports anonymous mappings, with MAP_FIXED.
+/// mmap -- supports anonymous, file-backed MAP_PRIVATE and MAP_SHARED mappings.
+/// File-backed mappings are allocated as anonymous regions; the host populates
+/// them from the file and (for MAP_SHARED) writes back on msync/munmap.
 pub fn sys_mmap(
     proc: &mut Process,
     addr: u32,
@@ -3097,14 +3099,8 @@ pub fn sys_mmap(
     fd: i32,
     _offset: i64,
 ) -> Result<u32, Errno> {
-    use wasm_posix_shared::mmap::MAP_SHARED;
     if flags & MAP_ANONYMOUS == 0 {
         // File-backed mapping: validate the fd is open.
-        // MAP_PRIVATE is supported (host populates the region after allocation).
-        // MAP_SHARED is not yet supported for files.
-        if flags & MAP_SHARED != 0 {
-            return Err(Errno::ENOSYS);
-        }
         if fd < 0 {
             return Err(Errno::EBADF);
         }
@@ -3112,10 +3108,9 @@ pub fn sys_mmap(
         let _fd_entry = proc.fd_table.get(fd)?;
     }
 
-    // Allocate the region (both anonymous and file-backed use the same
-    // address space allocator — file-backed MAP_PRIVATE is semantically
-    // a private copy, so we allocate as anonymous and the host fills
-    // the data from the file afterwards).
+    // Allocate the region. Both anonymous and file-backed use the same
+    // address space allocator. The host populates file-backed regions after
+    // allocation and tracks MAP_SHARED regions for msync writeback.
     let alloc_flags = flags | MAP_ANONYMOUS;
     let result = proc.memory.mmap_anonymous(addr, len, prot, alloc_flags);
     if result == MAP_FAILED {
@@ -7769,11 +7764,14 @@ mod tests {
     }
 
     #[test]
-    fn test_mmap_file_backed_shared_unsupported() {
+    fn test_mmap_file_backed_shared() {
         let mut proc = Process::new(1);
-        // MAP_SHARED for files is not yet supported
-        let result = sys_mmap(&mut proc, 0, 4096, 3, 0x01, 3, 0);
-        assert_eq!(result, Err(Errno::ENOSYS));
+        let mut host = MockHostIO::new();
+        // Open a file to get a valid fd
+        let fd = sys_open(&mut proc, &mut host, b"/tmp/mmaptest_shared", 0x42, 0o644).unwrap(); // O_CREAT|O_RDWR
+        // MAP_SHARED should succeed (allocates region, host does population + tracking)
+        let addr = sys_mmap(&mut proc, 0, 4096, 3, 0x01, fd, 0).unwrap(); // PROT_READ|WRITE, MAP_SHARED
+        assert_ne!(addr, 0xFFFFFFFF);
     }
 
     #[test]

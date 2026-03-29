@@ -138,7 +138,7 @@ BASIC_EXPECTED_FAIL=(
     # -- Signals (limited Wasm signal model)
     "signal/sigaltstack"
     # -- Timers/signals that block (timeout)
-    "aio/aio_error" "aio/aio_fsync" "aio/aio_read"
+    "aio/aio_error" "aio/aio_fsync"
     # poll/ppoll now passes
     "pthread/pthread_barrierattr_setpshared" "pthread/pthread_cancel"
     "pthread/pthread_cleanup_pop" "pthread/pthread_cleanup_push"
@@ -157,8 +157,8 @@ BASIC_EXPECTED_FAIL=(
     "pthread/pthread_rwlock_clockwrlock"
     "pthread/pthread_setcancelstate"
     # -- Scheduler
-    # -- Semaphore named (not supported in Wasm)
-    "semaphore/sem_clockwait" "semaphore/sem_close" "semaphore/sem_open" "semaphore/sem_unlink"
+    # -- Semaphore named
+    "semaphore/sem_clockwait"
     # -- Terminal I/O (no terminal device in Wasm)
     "termios/tcdrain" "termios/tcflow" "termios/tcflush" "termios/tcgetattr"
     "termios/tcgetsid" "termios/tcgetwinsize" "termios/tcsendbreak"
@@ -198,8 +198,8 @@ BASIC_EXPECTED_FAIL=(
     # (sys_stat/lstat now passes — hardlinks in data directory)
     # (sys_stat/mkfifo, mkfifoat, mknod, mknodat now pass — S_IFIFO allowed in mknod)
     # (sys_statvfs/fstatvfs now passes — data directory infrastructure)
-    "sys_mman/msync" "sys_mman/posix_mem_offset" "sys_mman/posix_typed_mem_get_info"
-    "sys_mman/posix_typed_mem_open" "sys_mman/shm_open"
+    "sys_mman/posix_mem_offset" "sys_mman/posix_typed_mem_get_info"
+    "sys_mman/posix_typed_mem_open"
     # (pwd/grp tests now pass — synthetic /etc/passwd and /etc/group)
     # -- Misc not supported
     # (pselect now passes — fixed empty sigmask handling in kernel_pselect6)
