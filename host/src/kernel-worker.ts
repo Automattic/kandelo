@@ -304,6 +304,10 @@ const SYSCALL_ARGS: Record<number, ArgDesc[]> = {
     { argIndex: 1, direction: "out", size: { type: "deref", argIndex: 2 } },
     { argIndex: 2, direction: "inout", size: { type: "fixed", size: 4 } },
   ],
+  384: [                                                                        // ACCEPT4: addr + addrlen (same as accept)
+    { argIndex: 1, direction: "out", size: { type: "deref", argIndex: 2 } },
+    { argIndex: 2, direction: "inout", size: { type: "fixed", size: 4 } },
+  ],
   54: [{ argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 } }],  // CONNECT: addr
   59: [{ argIndex: 3, direction: "in", size: { type: "arg", argIndex: 4 } }],  // SETSOCKOPT: optval
   114: [                                                                        // GETSOCKNAME: addr + addrlen
