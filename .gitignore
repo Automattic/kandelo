@@ -29,6 +29,9 @@ node_modules/
 # Browser example build output
 examples/browser/dist/
 
+# nginx source (downloaded by build.sh)
+examples/nginx/nginx-src/
+
 # libc-test build artifacts (source is a git submodule)
 libc-test/build/
 

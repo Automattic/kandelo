@@ -3679,7 +3679,7 @@ pub fn sys_listen(proc: &mut Process, host: &mut dyn HostIO, fd: i32, _backlog: 
     if sock.sock_type != SocketType::Stream {
         return Err(Errno::EOPNOTSUPP);
     }
-    if sock.state != SocketState::Bound {
+    if sock.state != SocketState::Bound && sock.state != SocketState::Listening {
         return Err(Errno::EINVAL);
     }
     sock.state = SocketState::Listening;
