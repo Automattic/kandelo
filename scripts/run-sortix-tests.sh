@@ -53,11 +53,11 @@ INCLUDE_EXPECTED_FAIL=(
     # -- New spawn actions
     "spawn/posix_spawn_file_actions_addchdir" "spawn/posix_spawn_file_actions_addfchdir"
     # -- New regex/fnmatch/ftw flags
-    "regex/REG_MINIMAL" "fnmatch/FNM_IGNORECASE" "ftw/FTW_XDEV"
-    # -- New limits
-    "limits/GETENTROPY_MAX" "limits/NSIG_MAX"
-    # -- New locale function
-    "locale/getlocalename_l"
+    "regex/REG_MINIMAL"
+    # (fnmatch/FNM_IGNORECASE now passes — aliased to FNM_CASEFOLD in fnmatch.h overlay)
+    # (ftw/FTW_XDEV now passes — aliased to FTW_MOUNT in ftw.h overlay)
+    # (limits/GETENTROPY_MAX and NSIG_MAX now pass — added to limits.h overlay)
+    # (locale/getlocalename_l now passes — added getlocalename_l implementation)
     # -- V8 confstr/sysconf (POSIX.1-2024 issue 8)
     "unistd/_CS_POSIX_V8_ILP32_OFF32_CFLAGS" "unistd/_CS_POSIX_V8_ILP32_OFF32_LDFLAGS"
     "unistd/_CS_POSIX_V8_ILP32_OFF32_LIBS" "unistd/_CS_POSIX_V8_ILP32_OFFBIG_CFLAGS"
@@ -199,7 +199,7 @@ BASIC_EXPECTED_FAIL=(
     # (pwd/grp tests now pass — synthetic /etc/passwd and /etc/group)
     # -- Misc not supported
     # (pselect now passes — fixed empty sigmask handling in kernel_pselect6)
-    "locale/getlocalename_l"
+    # (locale/getlocalename_l now passes — added getlocalename_l implementation)
     # (monetary/strfmon and strfmon_l now pass — fixed POSIX locale handling in musl overlay)
     "strings/ffsll"
     # (wchar/wcslcat and wcslcpy now pass — added BSD wcslcpy/wcslcat implementations)
