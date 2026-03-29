@@ -1,9 +1,9 @@
 /**
- * serve-php.ts — Run nginx + php-fpm on wasm-posix-kernel.
+ * serve-php.ts — Run nginx (multi-worker) + php-fpm on wasm-posix-kernel.
  *
- * Starts two Wasm processes in the same kernel:
- *   - php-fpm (pid 1) listening on 127.0.0.1:9000
- *   - nginx   (pid 3) listening on 0.0.0.0:8080, proxying .php to fpm
+ * Starts multiple Wasm processes in the same kernel:
+ *   - php-fpm master (pid 1) → forks 1 worker (pid 2)
+ *   - nginx master   (pid 3) → forks 2 workers (pid 4, 5)
  *
  * The kernel's cross-process loopback routes nginx → php-fpm traffic
  * through in-kernel pipes.
@@ -74,12 +74,15 @@ async function main() {
 
   const io = new NodePlatformIO();
   const workers = new Map<number, ReturnType<NodeWorkerAdapter["createWorker"]>>();
+  // Track which program each pid is running (for fork children)
+  const pidProgram = new Map<number, ArrayBuffer>();
 
   const kernelWorker = new CentralizedKernelWorker(
     { maxWorkers: 8, dataBufferSize: 65536, useSharedMemory: true },
     io,
     {
       onFork: async (parentPid, childPid, parentMemory) => {
+        console.log(`[kernel] fork: pid ${parentPid} → ${childPid}`);
         const parentBuf = new Uint8Array(parentMemory.buffer);
         const parentPages = Math.ceil(parentBuf.byteLength / 65536);
         const childMemory = new WebAssembly.Memory({
@@ -99,10 +102,9 @@ async function main() {
           skipKernelCreate: true,
         });
 
-        // Determine which program this fork belongs to
-        const parentWorker = workers.get(parentPid);
-        // Use the parent's program bytes for fork children
-        const programBytes = parentPid === 1 ? phpFpmBytes : nginxBytes;
+        // Child inherits parent's program
+        const programBytes = pidProgram.get(parentPid)!;
+        pidProgram.set(childPid, programBytes);
 
         const ASYNCIFY_BUF_SIZE = 16384;
         const asyncifyBufAddr = childChannelOffset - ASYNCIFY_BUF_SIZE;
@@ -122,6 +124,7 @@ async function main() {
         childWorker.on("error", () => {
           kernelWorker.unregisterProcess(childPid);
           workers.delete(childPid);
+          pidProgram.delete(childPid);
         });
 
         return [childChannelOffset];
@@ -137,25 +140,20 @@ async function main() {
           kernelWorker.deactivateProcess(pid);
         }
         workers.delete(pid);
+        pidProgram.delete(pid);
       },
     },
   );
 
   await kernelWorker.init(kernelBytes);
 
-  // Test: try calling kernel_connect to verify debug logging works
-  const kernelInst = kernelWorker.getKernel().getInstance();
-  if (kernelInst) {
-    const exports = kernelInst.exports;
-    console.log("Kernel exports:", Object.keys(exports).filter(k => k.includes("connect") || k.includes("debug")).join(", "));
-  }
-
-  // --- Process 1: php-fpm ---
+  // --- Process 1: php-fpm master ---
   const fpmPid = 1;
   const fpm = createProcessMemory();
   kernelWorker.registerProcess(fpmPid, fpm.memory, [fpm.channelOffset]);
   kernelWorker.setCwd(fpmPid, prefix);
   kernelWorker.setNextChildPid(2);
+  pidProgram.set(fpmPid, phpFpmBytes);
 
   const fpmInitData: CentralizedWorkerInitMessage = {
     type: "centralized_init",
@@ -176,7 +174,7 @@ async function main() {
     ],
   };
 
-  console.log("Starting php-fpm (pid 1) on 127.0.0.1:9000...");
+  console.log("Starting php-fpm master (pid 1) on 127.0.0.1:9000...");
   const fpmWorker = workerAdapter.createWorker(fpmInitData);
   workers.set(fpmPid, fpmWorker);
   fpmWorker.on("error", (err: Error) => {
@@ -187,12 +185,13 @@ async function main() {
   console.log("Waiting for php-fpm to initialize...");
   await new Promise((r) => setTimeout(r, 2000));
 
-  // --- Process 3: nginx ---
+  // --- Process 3: nginx master ---
   // (pid 2 is reserved for php-fpm's fork child)
   const nginxPid = 3;
   const ngx = createProcessMemory();
   kernelWorker.registerProcess(nginxPid, ngx.memory, [ngx.channelOffset]);
   kernelWorker.setCwd(nginxPid, prefix);
+  pidProgram.set(nginxPid, nginxBytes);
 
   const nginxInitData: CentralizedWorkerInitMessage = {
     type: "centralized_init",
@@ -212,14 +211,15 @@ async function main() {
     ],
   };
 
-  console.log("Starting nginx (pid 3) on http://localhost:8080/...");
+  console.log("Starting nginx master (pid 3) on http://localhost:8080/...");
+  console.log("  nginx will fork 2 worker processes");
   const nginxWorker = workerAdapter.createWorker(nginxInitData);
   workers.set(nginxPid, nginxWorker);
   nginxWorker.on("error", (err: Error) => {
     console.error(`nginx error: ${err.message}`);
   });
 
-  console.log("\nnginx + php-fpm running!");
+  console.log("\nnginx (multi-worker) + php-fpm running!");
   console.log("  Static files: curl http://localhost:8080/");
   console.log("  PHP:          curl http://localhost:8080/info.php");
   console.log("\nPress Ctrl+C to stop.");
@@ -227,7 +227,7 @@ async function main() {
   // Handle Ctrl+C
   process.on("SIGINT", async () => {
     console.log("\nShutting down...");
-    for (const [pid, w] of workers) {
+    for (const [, w] of workers) {
       await w.terminate().catch(() => {});
     }
     process.exit(0);
