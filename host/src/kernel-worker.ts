@@ -2829,10 +2829,11 @@ export class CentralizedKernelWorker {
         }
       }
     } else if (idtype === P_PGID) {
-      // TODO: Match children in the specified process group
-      // For now, treat as P_ALL (sufficient for current test coverage)
+      // Match children in the specified process group.
+      // id=0 means caller's own process group.
+      const targetPgid = id === 0 ? this.getProcessPgid(parentPid) : id;
       for (const childPid of children) {
-        if (this.exitedChildren.has(childPid)) {
+        if (this.exitedChildren.has(childPid) && this.getProcessPgid(childPid) === targetPgid) {
           matchedChild = childPid;
           break;
         }
@@ -2851,10 +2852,18 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    // Check for living children
+    // Check for living children matching the target
     let hasLivingChild = false;
     if (idtype === P_PID) {
       hasLivingChild = children.has(id) && !this.exitedChildren.has(id);
+    } else if (idtype === P_PGID) {
+      const targetPgid = id === 0 ? this.getProcessPgid(parentPid) : id;
+      for (const childPid of children) {
+        if (!this.exitedChildren.has(childPid) && this.getProcessPgid(childPid) === targetPgid) {
+          hasLivingChild = true;
+          break;
+        }
+      }
     } else {
       for (const childPid of children) {
         if (!this.exitedChildren.has(childPid)) {
@@ -2880,12 +2889,24 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    // Blocking wait: defer until a child exits
+    // Blocking wait: defer until a child exits.
+    // Convert idtype/id to waitpid-style pid for childMatchesWaitTarget():
+    //   P_PID  → positive pid
+    //   P_ALL  → -1 (any child)
+    //   P_PGID → 0 (caller's pgid) or -pgid (specific group)
+    let waitPid: number;
+    if (idtype === P_PID) {
+      waitPid = id;
+    } else if (idtype === P_PGID) {
+      waitPid = id === 0 ? 0 : -id;
+    } else {
+      waitPid = -1;
+    }
     this.waitingForChild.push({
       parentPid,
       channel,
       origArgs,
-      pid: idtype === P_PID ? id : -1, // -1 for any child
+      pid: waitPid,
       options,
       syscallNr: SYS_WAITID,
     });
