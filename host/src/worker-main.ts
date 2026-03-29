@@ -82,7 +82,6 @@ function buildKernelImports(
     // Clone dispatches through channel (SYS_CLONE)
     kernel_clone: (fnPtr: number, stackPtr: number, flags: number,
       arg: number, ptidPtr: number, tlsPtr: number, ctidPtr: number): number => {
-      console.error(`[kernel_clone] fnPtr=${fnPtr} stackPtr=${stackPtr} flags=0x${flags.toString(16)} arg=${arg} ptidPtr=${ptidPtr} tlsPtr=${tlsPtr} ctidPtr=${ctidPtr}`);
       const SYS_CLONE_NR = 201;
       const view = new DataView(memory.buffer);
       const base = channelOffset;
@@ -268,6 +267,7 @@ export async function centralizedWorkerMain(
 ): Promise<void> {
   try {
     const { memory, programBytes, channelOffset, pid } = initData;
+    console.error(`[worker-main] pid=${pid} compiling ${programBytes.byteLength} bytes...`);
 
     const module = await WebAssembly.compile(programBytes);
     const kernelImports = buildKernelImports(
@@ -452,10 +452,11 @@ export async function centralizedWorkerMain(
       port.postMessage({ type: "exit", pid, status: exitCode } satisfies WorkerToHostMessage);
     }
   } catch (err) {
+    const errMsg = err instanceof Error ? `${err.message}\n${err.stack}` : String(err);
     port.postMessage({
       type: "error",
       pid: initData.pid,
-      message: `Centralized worker failed: ${err instanceof Error ? err.message : String(err)}`,
+      message: `Centralized worker failed: ${errMsg}`,
     } satisfies WorkerToHostMessage);
   }
 }
@@ -468,15 +469,29 @@ function setupChannelBase(
   memory: WebAssembly.Memory,
   channelOffset: number,
 ): void {
+  const tlsBase = instance.exports.__tls_base as WebAssembly.Global | undefined;
+  const view = new DataView(memory.buffer);
+
+  // Pre-set channel base at __tls_base before calling __get_channel_base_addr.
+  // LLVM inserts __wasm_call_ctors into every exported function including
+  // __get_channel_base_addr. C++ global constructors may call malloc/brk which
+  // dispatch through __do_syscall, reading __channel_base from TLS. If the
+  // channel isn't set up yet, __do_syscall writes to address 0 and blocks
+  // forever on Atomics.wait. Pre-setting at __tls_base (offset 0) ensures
+  // the channel is usable before constructors run.
+  if (tlsBase && (tlsBase.value as number) > 0) {
+    view.setUint32(tlsBase.value as number, channelOffset, true);
+  }
+
+  // Now call __get_channel_base_addr to get the actual address (which may
+  // differ from __tls_base if __channel_base has a non-zero TLS offset).
+  // The constructors triggered by this call can now make syscalls safely.
   const getChannelBaseAddr = instance.exports.__get_channel_base_addr as (() => number) | undefined;
   if (getChannelBaseAddr) {
     const addr = getChannelBaseAddr();
-    new DataView(memory.buffer).setUint32(addr, channelOffset, true);
-  } else {
-    const tlsBase = instance.exports.__tls_base as WebAssembly.Global | undefined;
-    if (tlsBase) {
-      new DataView(memory.buffer).setUint32(tlsBase.value as number, channelOffset, true);
-    }
+    view.setUint32(addr, channelOffset, true);
+  } else if (tlsBase && (tlsBase.value as number) > 0) {
+    // Already set above via __tls_base fallback
   }
 }
 
@@ -536,10 +551,234 @@ function sendForkSyscall(memory: WebAssembly.Memory, channelOffset: number): num
 }
 
 /**
+ * Patch a Wasm binary for use in a thread instance (shared memory).
+ *
+ * In LLVM's shared-memory Wasm model:
+ * - The Start function (section id=8) is `__wasm_init_memory` — it initializes
+ *   passive data segments with an atomic guard. Threads must NOT re-run this.
+ * - A separate constructor function (`__wasm_call_ctors`) runs C++ global
+ *   constructors. LLVM inserts a `call` to this function at the beginning of
+ *   every exported function. Threads must NOT re-run constructors either, as
+ *   they would clobber shared global state (e.g. resetting LOGGER::file_log_handler
+ *   to NULL in MariaDB).
+ *
+ * This function:
+ * 1. Removes the Start section so `__wasm_init_memory` doesn't auto-run.
+ * 2. Finds the constructor function (by inspecting the first `call` instruction
+ *    in any export wrapper) and replaces its body with a no-op.
+ */
+export function patchWasmForThread(bytes: ArrayBuffer): ArrayBuffer {
+  const src = new Uint8Array(bytes);
+  if (src.length < 8) return bytes;
+
+  function readLEB128(buf: Uint8Array, off: number): [number, number] {
+    let result = 0;
+    let shift = 0;
+    let pos = off;
+    for (;;) {
+      const byte = buf[pos++];
+      result |= (byte & 0x7f) << shift;
+      if ((byte & 0x80) === 0) break;
+      shift += 7;
+    }
+    return [result, pos - off];
+  }
+
+  function encodeLEB128(value: number): number[] {
+    const result: number[] = [];
+    do {
+      let byte = value & 0x7f;
+      value >>>= 7;
+      if (value !== 0) byte |= 0x80;
+      result.push(byte);
+    } while (value !== 0);
+    return result;
+  }
+
+  // Parse all sections
+  interface Section { id: number; offset: number; totalSize: number; contentOffset: number; contentSize: number; }
+  const sections: Section[] = [];
+  let numFuncImports = 0;
+  let hasStartSection = false;
+  let offset = 8;
+
+  while (offset < src.length) {
+    const sectionId = src[offset];
+    const [sectionSize, sizeBytes] = readLEB128(src, offset + 1);
+    const contentOffset = offset + 1 + sizeBytes;
+    const totalSize = 1 + sizeBytes + sectionSize;
+    sections.push({ id: sectionId, offset, totalSize, contentOffset, contentSize: sectionSize });
+    if (sectionId === 8) hasStartSection = true;
+    offset += totalSize;
+  }
+
+  if (!hasStartSection) return bytes;
+
+  // Count function imports from Import section (id=2)
+  for (const sec of sections) {
+    if (sec.id === 2) {
+      let pos = sec.contentOffset;
+      const [importCount, countBytes] = readLEB128(src, pos);
+      pos += countBytes;
+      for (let i = 0; i < importCount; i++) {
+        const [modLen, modLenBytes] = readLEB128(src, pos);
+        pos += modLenBytes + modLen;
+        const [fieldLen, fieldLenBytes] = readLEB128(src, pos);
+        pos += fieldLenBytes + fieldLen;
+        const kind = src[pos++];
+        if (kind === 0) { // function import
+          numFuncImports++;
+          const [, typeIdxBytes] = readLEB128(src, pos);
+          pos += typeIdxBytes;
+        } else if (kind === 1) { // table
+          pos++; // reftype
+          const flags = src[pos++];
+          const [, minBytes] = readLEB128(src, pos); pos += minBytes;
+          if (flags & 1) { const [, maxBytes] = readLEB128(src, pos); pos += maxBytes; }
+        } else if (kind === 2) { // memory
+          const flags = src[pos++];
+          const [, minBytes] = readLEB128(src, pos); pos += minBytes;
+          if (flags & 1) { const [, maxBytes] = readLEB128(src, pos); pos += maxBytes; }
+        } else if (kind === 3) { // global
+          pos++; // valtype
+          pos++; // mutability
+        }
+      }
+      break;
+    }
+  }
+
+  // Find the constructor function by looking at an export wrapper's first `call`.
+  // In LLVM's shared-memory model, every export wrapper starts with `call $__wasm_call_ctors`.
+  // We find this by locating any exported function's code and reading its first call target.
+  let ctorFuncIndex = -1;
+  let exportedFuncIndices: number[] = [];
+
+  // Collect exported function indices from Export section (id=7)
+  for (const sec of sections) {
+    if (sec.id === 7) {
+      let pos = sec.contentOffset;
+      const [exportCount, countBytes] = readLEB128(src, pos);
+      pos += countBytes;
+      for (let i = 0; i < exportCount; i++) {
+        const [nameLen, nameLenBytes] = readLEB128(src, pos);
+        pos += nameLenBytes + nameLen;
+        const kind = src[pos++];
+        const [idx, idxBytes] = readLEB128(src, pos);
+        pos += idxBytes;
+        if (kind === 0) { // function export
+          exportedFuncIndices.push(idx);
+        }
+      }
+      break;
+    }
+  }
+
+  // Find the Code section and look at an exported function's body
+  for (const sec of sections) {
+    if (sec.id === 10 && exportedFuncIndices.length > 0) {
+      // Use the last exported function (likely a wrapper, not a data export)
+      const targetFunc = exportedFuncIndices[exportedFuncIndices.length - 1];
+      const targetCodeEntry = targetFunc - numFuncImports;
+      if (targetCodeEntry < 0) break;
+
+      let pos = sec.contentOffset;
+      const [, funcCountBytes] = readLEB128(src, pos);
+      pos += funcCountBytes;
+
+      // Skip to the target code entry
+      for (let i = 0; i < targetCodeEntry; i++) {
+        const [bodySize, bodySizeBytes] = readLEB128(src, pos);
+        pos += bodySizeBytes + bodySize;
+      }
+
+      // Read the function body
+      const [bodySize, bodySizeBytes] = readLEB128(src, pos);
+      pos += bodySizeBytes;
+      // Skip locals
+      const [localCount, localCountBytes] = readLEB128(src, pos);
+      pos += localCountBytes;
+      for (let i = 0; i < localCount; i++) {
+        const [, countB] = readLEB128(src, pos); pos += countB;
+        pos++; // valtype
+      }
+      // First instruction should be `call N` (opcode 0x10 followed by LEB128 func index)
+      if (src[pos] === 0x10) {
+        [ctorFuncIndex] = readLEB128(src, pos + 1);
+      }
+      break;
+    }
+  }
+
+  if (ctorFuncIndex < 0) {
+    console.error(`[patchWasmForThread] could not find ctor function; exports=${exportedFuncIndices}`);
+    return bytes;
+  }
+
+  const ctorCodeEntry = ctorFuncIndex - numFuncImports;
+  console.error(`[patchWasmForThread] ctor=func ${ctorFuncIndex} (code entry ${ctorCodeEntry}), numFuncImports=${numFuncImports}`);
+  if (ctorCodeEntry < 0) return bytes; // Constructor is an import?
+
+  // Build output: skip Start section, neuter constructor function in Code section
+  const chunks: Uint8Array[] = [];
+  chunks.push(src.subarray(0, 8)); // Wasm header
+
+  for (const sec of sections) {
+    if (sec.id === 8) {
+      continue; // Skip start section
+    }
+
+    if (sec.id === 10) {
+      // Code section: replace constructor function body with no-op
+      let pos = sec.contentOffset;
+      const [funcCount, funcCountBytes] = readLEB128(src, pos);
+      pos += funcCountBytes;
+
+      // Locate the constructor function body
+      let targetBodyStart = pos;
+      for (let i = 0; i < ctorCodeEntry; i++) {
+        const [bodySize, bodySizeBytes] = readLEB128(src, targetBodyStart);
+        targetBodyStart += bodySizeBytes + bodySize;
+      }
+      const [origBodySize, origBodySizeBytes] = readLEB128(src, targetBodyStart);
+      const origBodyEnd = targetBodyStart + origBodySizeBytes + origBodySize;
+
+      // New body: size=2, content = 0x00 (0 locals) + 0x0B (end)
+      const newBody = new Uint8Array([2, 0, 0x0b]);
+
+      // Compute new section content size
+      const beforeTarget = targetBodyStart - sec.contentOffset;
+      const afterTarget = (sec.contentOffset + sec.contentSize) - origBodyEnd;
+      const newContentSize = beforeTarget + newBody.length + afterTarget;
+      const newSectionSizeBytes = encodeLEB128(newContentSize);
+
+      chunks.push(new Uint8Array([10])); // section id
+      chunks.push(new Uint8Array(newSectionSizeBytes));
+      chunks.push(src.subarray(sec.contentOffset, targetBodyStart)); // func count + bodies before target
+      chunks.push(newBody); // patched function body
+      chunks.push(src.subarray(origBodyEnd, sec.contentOffset + sec.contentSize)); // bodies after target
+    } else {
+      // Copy section as-is
+      chunks.push(src.subarray(sec.offset, sec.offset + sec.totalSize));
+    }
+  }
+
+  // Concatenate chunks
+  const totalLen = chunks.reduce((acc, c) => acc + c.length, 0);
+  const out = new Uint8Array(totalLen);
+  let pos = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, pos);
+    pos += chunk.length;
+  }
+  return out.buffer;
+}
+
+/**
  * Thread worker entry point for centralized mode.
  *
  * Threads share the parent process's Memory. This function:
- * 1. Instantiates the same Wasm module with shared memory
+ * 1. Instantiates the same Wasm module with shared memory (start section stripped)
  * 2. Allocates TLS for the thread
  * 3. Sets the channel base and stack pointer
  * 4. Calls the thread function via the indirect function table
@@ -552,9 +791,18 @@ export async function centralizedThreadWorkerMain(
   const { memory, channelOffset, pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, tlsAllocAddr } = initData;
 
   try {
+    console.error(`[thread-worker] tid=${tid} starting, programBytes=${initData.programBytes?.byteLength ?? 'module'}`);
+
+    // Strip the start section AND neuter the constructor function body to prevent
+    // constructors from re-running. Thread instances share memory with the main
+    // thread; re-running constructors would clobber global state.
+    const programBytes = initData.programModule
+      ? null
+      : patchWasmForThread(initData.programBytes);
     const module = initData.programModule
       ? initData.programModule
-      : new WebAssembly.Module(initData.programBytes);
+      : new WebAssembly.Module(programBytes!);
+    console.error(`[thread-worker] tid=${tid} compiled, instantiating...`);
 
     const kernelImports = buildKernelImports(memory, channelOffset);
     const importObject = buildImportObject(module, memory, kernelImports);
@@ -564,6 +812,7 @@ export async function centralizedThreadWorkerMain(
     // __wasm_init_tls copies template data AND sets __tls_base to the given address.
     const wasmInitTls = instance.exports.__wasm_init_tls as ((addr: number) => void) | undefined;
     const tlsBlock = tlsAllocAddr;
+
     if (wasmInitTls && tlsBlock > 0) {
       wasmInitTls(tlsBlock);
     }
@@ -606,9 +855,12 @@ export async function centralizedThreadWorkerMain(
     }
 
     let result: number;
+    console.error(`[thread-worker] tid=${tid} calling threadFn(${argPtr})...`);
     try {
       result = threadFn(argPtr);
+      console.error(`[thread-worker] tid=${tid} threadFn returned ${result}`);
     } catch (e) {
+      console.error(`[thread-worker] tid=${tid} threadFn threw:`, e);
       if (e instanceof Error && e.message.includes("unreachable")) {
         // Thread exited via kernel_exit → unreachable trap
         result = 0;
@@ -645,6 +897,7 @@ export async function centralizedThreadWorkerMain(
       tid,
     } satisfies WorkerToHostMessage);
   } catch (err) {
+    console.error(`[thread-worker] tid=${tid} CAUGHT ERROR:`, err);
     port.postMessage({
       type: "thread_exit",
       pid,

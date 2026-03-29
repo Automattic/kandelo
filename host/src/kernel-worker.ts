@@ -435,6 +435,8 @@ interface ChannelInfo {
   channelOffset: number;
   /** Int32Array view for Atomics operations */
   i32View: Int32Array;
+  /** Counter for fair scheduling — yield to macrotask queue periodically */
+  consecutiveSyscalls: number;
 }
 
 /** Info about a registered process. */
@@ -541,6 +543,8 @@ export class CentralizedKernelWorker {
     channel: ChannelInfo;
     origArgs: number[];
   }>();
+  /** Per-process stdin buffers: pid → { data, offset } */
+  private stdinBuffers = new Map<number, { data: Uint8Array; offset: number }>();
   /** Active TCP connections per process for piggyback flushing */
   private tcpConnections = new Map<number, Array<{
     sendPipeIdx: number;
@@ -558,6 +562,23 @@ export class CentralizedKernelWorker {
     this.kernel = new WasmPosixKernel(config, io, {
       // In centralized mode, callbacks like onKill/onFork are handled
       // differently — the kernel returns EAGAIN and JS handles them.
+      onStdin: (maxLen: number): Uint8Array | null => {
+        const pid = this.currentHandlePid;
+        const buf = this.stdinBuffers.get(pid);
+        if (!buf) return null; // EOF
+        const remaining = buf.data.length - buf.offset;
+        if (remaining <= 0) {
+          this.stdinBuffers.delete(pid);
+          return null; // EOF
+        }
+        const n = Math.min(remaining, maxLen);
+        const chunk = buf.data.subarray(buf.offset, buf.offset + n);
+        buf.offset += n;
+        if (buf.offset >= buf.data.length) {
+          this.stdinBuffers.delete(pid);
+        }
+        return chunk;
+      },
       onAlarm: (seconds: number): number => {
         const pid = this.currentHandlePid;
         if (pid === 0) return 0;
@@ -710,6 +731,7 @@ export class CentralizedKernelWorker {
       memory,
       channelOffset: offset,
       i32View: new Int32Array(memory.buffer, offset),
+      consecutiveSyscalls: 0,
     }));
 
     const registration: ProcessRegistration = { pid, memory, channels };
@@ -720,6 +742,15 @@ export class CentralizedKernelWorker {
     for (const channel of channels) {
       this.listenOnChannel(channel);
     }
+  }
+
+  /**
+   * Provide data that will be returned when the process reads from stdin (fd 0).
+   * Data is returned in chunks until exhausted, then EOF is returned.
+   * Must be called before the process starts reading stdin.
+   */
+  setStdinData(pid: number, data: Uint8Array): void {
+    this.stdinBuffers.set(pid, { data, offset: 0 });
   }
 
   /**
@@ -830,6 +861,7 @@ export class CentralizedKernelWorker {
       memory: registration.memory,
       channelOffset,
       i32View: new Int32Array(registration.memory.buffer, channelOffset),
+      consecutiveSyscalls: 0,
     };
 
     registration.channels.push(channel);
@@ -871,6 +903,7 @@ export class CentralizedKernelWorker {
 
     // Check if already pending (process might have sent before we started listening)
     const currentStatus = Atomics.load(i32View, statusIndex);
+
     if (currentStatus === CH_PENDING) {
       // Handle immediately
       this.handleSyscall(channel);
@@ -893,7 +926,7 @@ export class CentralizedKernelWorker {
     } else {
       // Synchronous result — status already changed from what we expected
       // Re-check on next tick to avoid stack overflow from tight loops
-      queueMicrotask(() => this.listenOnChannel(channel));
+      this.relistenChannel(channel);
     }
   }
 
@@ -918,6 +951,12 @@ export class CentralizedKernelWorker {
     return this.cachedKernelMem!;
   }
 
+  /** Debug: last N syscalls per pid for crash diagnosis */
+  private syscallRing = new Map<number, string[]>();
+  dumpLastSyscalls(pid: number): string {
+    return (this.syscallRing.get(pid) ?? []).join("\n");
+  }
+
   private handleSyscall(channel: ChannelInfo): void {
     const processView = new DataView(channel.memory.buffer, channel.channelOffset);
 
@@ -927,6 +966,15 @@ export class CentralizedKernelWorker {
     for (let i = 0; i < CH_ARGS_COUNT; i++) {
       origArgs.push(processView.getInt32(CH_ARGS + i * 4, true));
     }
+
+    // Debug: track last 30 syscalls per channel
+    const ringKey = channel.channelOffset;
+    let ring = this.syscallRing.get(ringKey);
+    if (!ring) { ring = []; this.syscallRing.set(ringKey, ring); }
+    ring.push(`  syscall=${syscallNr} args=[${origArgs.join(',')}]`);
+    if (ring.length > 30) ring.shift();
+
+
     // --- Intercept fork/exec/clone/exit before calling kernel ---
     // These syscalls need special async handling that can't go through
     // the blocking host_fork/host_exec imports.
@@ -1131,9 +1179,7 @@ export class CentralizedKernelWorker {
       // channel with -EIO to unblock the process rather than deadlocking.
       console.error(`[handleSyscall] kernel threw for pid=${channel.pid} syscall=${syscallNr}: ${err}`);
       this.completeChannelRaw(channel, -5, 5); // -EIO
-      if (this.processes.has(channel.pid)) {
-        queueMicrotask(() => this.listenOnChannel(channel));
-      }
+      this.relistenChannel(channel);
       return;
     } finally {
       this.currentHandlePid = 0;
@@ -1194,6 +1240,7 @@ export class CentralizedKernelWorker {
     if (errVal === 0 && (syscallNr === SYS_SETPGID || syscallNr === SYS_SETSID)) {
       this.recheckDeferredWaitpids();
     }
+
 
     // --- Normal completion ---
     this.completeChannel(channel, syscallNr, origArgs, argDescs, retVal, errVal);
@@ -1285,6 +1332,16 @@ export class CentralizedKernelWorker {
 
         // Copy output data from kernel to process
         if (desc.direction === "out" || desc.direction === "inout") {
+          // Don't copy pure "out" data back when the syscall failed — the
+          // kernel scratch was zeroed in the input phase and the kernel
+          // didn't produce any output.  Copying zeros back would corrupt
+          // the caller's buffer (e.g. readlink overwrites a valid path
+          // with zeros when the target isn't a symlink).
+          if (desc.direction === "out" && retVal < 0) {
+            outOffset += size;
+            outOffset = (outOffset + 3) & ~3;
+            continue;
+          }
           let copySize = size;
           if (desc.direction === "out" && desc.size.type === "arg") {
             // For read/recv-like syscalls, retVal is bytes read — limit copy to actual data
@@ -1317,7 +1374,23 @@ export class CentralizedKernelWorker {
     Atomics.notify(i32View, CH_STATUS / 4, 1);
 
     // Re-listen for next syscall
-    if (this.processes.has(channel.pid)) {
+    this.relistenChannel(channel);
+  }
+
+  /**
+   * Schedule re-listen on a channel with fair scheduling.
+   * Uses queueMicrotask for low-latency re-listen, but periodically yields
+   * to the macrotask queue (setTimeout) to prevent channel starvation when
+   * one thread makes rapid non-blocking syscalls (e.g., spin-waiting on
+   * clock_gettime).
+   */
+  private relistenChannel(channel: ChannelInfo): void {
+    if (!this.processes.has(channel.pid)) return;
+    channel.consecutiveSyscalls++;
+    if (channel.consecutiveSyscalls >= 8) {
+      channel.consecutiveSyscalls = 0;
+      setTimeout(() => this.listenOnChannel(channel), 0);
+    } else {
       queueMicrotask(() => this.listenOnChannel(channel));
     }
   }
@@ -1334,7 +1407,6 @@ export class CentralizedKernelWorker {
     const i32View = new Int32Array(channel.memory.buffer, channel.channelOffset);
     Atomics.store(i32View, CH_STATUS / 4, CH_COMPLETE);
     Atomics.notify(i32View, CH_STATUS / 4, 1);
-    // Don't re-listen — channel is being removed
   }
 
   /**
@@ -1487,12 +1559,14 @@ export class CentralizedKernelWorker {
     if (syscallNr === SYS_RT_SIGTIMEDWAIT) {
       const timeoutPtr = origArgs[2]; // pointer to timespec in process memory
       if (timeoutPtr === 0) {
-        // NULL timeout = wait indefinitely. Retry after delay.
+        // NULL timeout = wait indefinitely. Use long retry interval since
+        // signals arrive via kernel_kill, not organically. Short retries cause
+        // a tight loop that starves other threads.
         setTimeout(() => {
           if (this.processes.has(channel.pid)) {
             this.retrySyscall(channel);
           }
-        }, EAGAIN_RETRY_MS);
+        }, 100);
         return;
       }
       const pv = new DataView(channel.memory.buffer, timeoutPtr);
@@ -2811,10 +2885,7 @@ export class CentralizedKernelWorker {
       if (currentVal !== val) {
         // Value already changed — return -EAGAIN (Linux convention)
         this.completeChannelRaw(channel, -EAGAIN, EAGAIN);
-        // Re-listen
-        if (this.processes.has(channel.pid)) {
-          queueMicrotask(() => this.listenOnChannel(channel));
-        }
+        this.relistenChannel(channel);
         return;
       }
 
@@ -2829,13 +2900,15 @@ export class CentralizedKernelWorker {
         if (tv_sec < 0 || (tv_sec === 0 && tv_nsec <= 0)) {
           // Already expired
           this.completeChannelRaw(channel, -ETIMEDOUT, ETIMEDOUT);
-          if (this.processes.has(channel.pid)) {
-            queueMicrotask(() => this.listenOnChannel(channel));
-          }
+          this.relistenChannel(channel);
           return;
         }
         timeoutMs = tv_sec * 1000 + Math.ceil(tv_nsec / 1_000_000);
         if (timeoutMs <= 0) timeoutMs = 1; // minimum 1ms
+        // Cap to avoid Node.js TimeoutOverflowWarning (max safe is 2^31-1 ms ≈ 24.8 days).
+        // Without this, huge timeouts from 32-bit LONG_MAX deadlines get clipped to 1ms
+        // by Node.js, causing tight retry loops.
+        if (timeoutMs > 2147483647) timeoutMs = 2147483647;
       }
 
       // Value matches — wait asynchronously for it to change
@@ -2850,12 +2923,13 @@ export class CentralizedKernelWorker {
           if (timer !== undefined) clearTimeout(timer);
           if (!this.processes.has(channel.pid)) return;
           this.completeChannelRaw(channel, retVal, errVal);
-          if (this.processes.has(channel.pid)) {
-            queueMicrotask(() => this.listenOnChannel(channel));
-          }
+          channel.consecutiveSyscalls = 0; // genuinely blocked — reset
+          this.relistenChannel(channel);
         };
 
-        waitResult.value.then(() => complete(0, 0));
+        waitResult.value.then(() => {
+          complete(0, 0);
+        });
 
         if (timeoutMs !== undefined) {
           timer = setTimeout(() => {
@@ -2867,9 +2941,7 @@ export class CentralizedKernelWorker {
       } else {
         // Already changed — return 0
         this.completeChannelRaw(channel, 0, 0);
-        if (this.processes.has(channel.pid)) {
-          queueMicrotask(() => this.listenOnChannel(channel));
-        }
+        this.relistenChannel(channel);
       }
       return;
     }
@@ -2877,9 +2949,7 @@ export class CentralizedKernelWorker {
     if (baseOp === FUTEX_WAKE || baseOp === FUTEX_WAKE_BITSET) {
       const woken = Atomics.notify(i32View, index, val);
       this.completeChannelRaw(channel, woken, 0);
-      if (this.processes.has(channel.pid)) {
-        queueMicrotask(() => this.listenOnChannel(channel));
-      }
+      this.relistenChannel(channel);
       return;
     }
 
@@ -2889,9 +2959,7 @@ export class CentralizedKernelWorker {
       const val2 = origArgs[3]; // timeout param repurposed as val2
       const woken = Atomics.notify(i32View, index, val + val2);
       this.completeChannelRaw(channel, woken, 0);
-      if (this.processes.has(channel.pid)) {
-        queueMicrotask(() => this.listenOnChannel(channel));
-      }
+      this.relistenChannel(channel);
       return;
     }
 
@@ -2904,17 +2972,13 @@ export class CentralizedKernelWorker {
       let woken = Atomics.notify(i32View, index, val);
       woken += Atomics.notify(i32View, index2, val2);
       this.completeChannelRaw(channel, woken, 0);
-      if (this.processes.has(channel.pid)) {
-        queueMicrotask(() => this.listenOnChannel(channel));
-      }
+      this.relistenChannel(channel);
       return;
     }
 
     // Unknown futex op — return -ENOSYS
     this.completeChannelRaw(channel, -38, 38);
-    if (this.processes.has(channel.pid)) {
-      queueMicrotask(() => this.listenOnChannel(channel));
-    }
+    this.relistenChannel(channel);
   }
 
   /**

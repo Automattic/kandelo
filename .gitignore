@@ -38,6 +38,16 @@ examples/nginx/php-fpm-src/
 # PHP-FPM configure cache
 examples/nginx/php-fpm-config.cache
 
+# MariaDB build artifacts (source, host build, cross build, install)
+examples/libs/mariadb/mariadb-src/
+examples/libs/mariadb/mariadb-host-build/
+examples/libs/mariadb/mariadb-cross-build/
+examples/libs/mariadb/mariadb-install/
+examples/libs/mariadb/mariadb-glue-objs/
+
+# MariaDB data directory
+examples/mariadb/data/
+
 # libc-test build artifacts (source is a git submodule)
 libc-test/build/
 

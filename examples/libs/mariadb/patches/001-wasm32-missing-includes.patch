@@ -1,0 +1,20 @@
+--- a/mysys/get_password.c
++++ b/mysys/get_password.c
+@@ -20,6 +20,7 @@
+ */
+ #include <my_global.h>
+ #include <my_sys.h>
++#include <ctype.h>
+ #include "mysql.h"
+ #include <m_string.h>
+ #include <m_ctype.h>
+--- a/mysys/my_largepage.c
++++ b/mysys/my_largepage.c
+@@ -22,7 +22,7 @@
+ #ifdef __linux__
+ #include <dirent.h>
+ #endif
+-#if defined(__linux__) || defined(MAP_ALIGNED)
++#if defined(__linux__) || defined(MAP_ALIGNED) || defined(MAP_HUGETLB)
+ #include "my_bit.h"
+ #endif

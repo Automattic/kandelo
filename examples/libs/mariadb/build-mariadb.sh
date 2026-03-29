@@ -1,0 +1,272 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Build MariaDB 10.5 LTS for wasm32-posix-kernel.
+#
+# Two-step cross-compilation:
+#   1. Host build: generates import_executables.cmake (native helper programs)
+#   2. Cross build: uses CMake toolchain file for wasm32
+#
+# Output: mariadb-install/bin/mysqld (wasm32 binary)
+
+MARIADB_VERSION="${MARIADB_VERSION:-10.5.28}"
+MARIADB_MAJOR="10.5"
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+SRC_DIR="$SCRIPT_DIR/mariadb-src"
+HOST_BUILD_DIR="$SCRIPT_DIR/mariadb-host-build"
+CROSS_BUILD_DIR="$SCRIPT_DIR/mariadb-cross-build"
+INSTALL_DIR="$SCRIPT_DIR/mariadb-install"
+TOOLCHAIN_FILE="$SCRIPT_DIR/wasm32-posix-toolchain.cmake"
+SYSROOT="$REPO_ROOT/sysroot"
+GLUE_DIR="$REPO_ROOT/glue"
+
+NPROC="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
+
+# Homebrew bison (macOS system bison is too old for MariaDB)
+if [ -x /opt/homebrew/opt/bison/bin/bison ]; then
+    export PATH="/opt/homebrew/opt/bison/bin:$PATH"
+fi
+
+# --- Verify prerequisites ---
+if [ ! -f "$SYSROOT/lib/libc.a" ]; then
+    echo "ERROR: sysroot not found. Run: bash build.sh" >&2
+    exit 1
+fi
+
+if [ ! -f "$TOOLCHAIN_FILE" ]; then
+    echo "ERROR: Toolchain file not found at $TOOLCHAIN_FILE" >&2
+    exit 1
+fi
+
+# Check for cmake
+if ! command -v cmake &>/dev/null; then
+    echo "ERROR: cmake not found. Install: brew install cmake" >&2
+    exit 1
+fi
+
+# --- Download MariaDB source ---
+if [ ! -d "$SRC_DIR" ]; then
+    echo "==> Downloading MariaDB $MARIADB_VERSION..."
+    TARBALL="mariadb-${MARIADB_VERSION}.tar.gz"
+    URL="https://archive.mariadb.org/mariadb-${MARIADB_VERSION}/source/${TARBALL}"
+    curl -fsSL "$URL" -o "/tmp/$TARBALL"
+    mkdir -p "$SRC_DIR"
+    tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
+    rm "/tmp/$TARBALL"
+    echo "==> Source extracted to $SRC_DIR"
+fi
+
+# --- Apply wasm32 source patches ---
+echo "==> Applying wasm32 source patches..."
+
+# 1. tpool: Remove try/catch (no C++ exceptions on wasm32)
+TPOOL_FILE="$SRC_DIR/tpool/tpool_generic.cc"
+if grep -q "^  try$" "$TPOOL_FILE" 2>/dev/null; then
+    echo "  Patching tpool/tpool_generic.cc (remove try/catch)..."
+    python3 << 'PYEOF'
+import sys
+path = sys.argv[1] if len(sys.argv) > 1 else ""
+PYEOF
+    python3 -c "
+path='$TPOOL_FILE'
+with open(path) as f:
+    lines = f.readlines()
+out = []
+i = 0
+while i < len(lines):
+    line = lines[i]
+    # Replace 'try' line with comment
+    if line.strip() == 'try':
+        out.append(line.replace('try', '// wasm32: try removed'))
+        i += 1
+        continue
+    # Replace catch line + body with if(0) block
+    if 'catch (std::system_error& e)' in line:
+        out.append('  if (0) // wasm32: catch disabled\n')
+        # next line is '{' — keep it
+        i += 1
+        if i < len(lines):
+            out.append(lines[i])  # opening brace
+            i += 1
+        # replace e.what() refs in the body
+        while i < len(lines):
+            bodyline = lines[i]
+            bodyline = bodyline.replace('e.what()', '\"\"')
+            out.append(bodyline)
+            i += 1
+            if bodyline.strip() == '}':
+                break
+        continue
+    out.append(line)
+    i += 1
+with open(path, 'w') as f:
+    f.writelines(out)
+print('Patched', path)
+"
+fi
+
+# Apply any .patch files from patches/ directory
+PATCH_DIR="$SCRIPT_DIR/patches"
+if [ -d "$PATCH_DIR" ]; then
+    for patch in "$PATCH_DIR"/*.patch; do
+        [ -f "$patch" ] || continue
+        echo "  Applying $(basename "$patch")..."
+        if patch -p1 -N --dry-run --silent -d "$SRC_DIR" < "$patch" 2>/dev/null; then
+            patch -p1 -N -d "$SRC_DIR" < "$patch"
+        else
+            echo "  (already applied)"
+        fi
+    done
+fi
+
+# --- Step 1: Host build (native executables for cross-compile) ---
+if [ ! -f "$HOST_BUILD_DIR/import_executables.cmake" ]; then
+    echo "==> Step 1: Host build (generating import_executables.cmake)..."
+    mkdir -p "$HOST_BUILD_DIR"
+    cd "$HOST_BUILD_DIR"
+
+    cmake "$SRC_DIR" \
+        -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+        -DWITH_UNIT_TESTS=OFF \
+        -DWITH_MARIABACKUP=OFF \
+        -DPLUGIN_CONNECT=NO \
+        -DPLUGIN_ROCKSDB=NO \
+        -DPLUGIN_TOKUDB=NO \
+        -DPLUGIN_MROONGA=NO \
+        -DPLUGIN_SPIDER=NO \
+        -DPLUGIN_OQGRAPH=NO \
+        -DPLUGIN_PERFSCHEMA=NO \
+        -DPLUGIN_SPHINX=NO \
+        -DPLUGIN_COLUMNSTORE=NO \
+        -DPLUGIN_S3=NO \
+        -DPLUGIN_CRACKLIB_PASSWORD_CHECK=NO \
+        -DWITH_SSL=bundled \
+        -DWITH_PCRE=bundled \
+        -DWITH_EDITLINE=bundled \
+        -DWITH_ZLIB=bundled \
+        2>&1 | tail -20
+
+    # Only build the helper executables needed for import_executables.cmake
+    make -j"$NPROC" import_executables 2>&1 | tail -5
+
+    if [ ! -f "$HOST_BUILD_DIR/import_executables.cmake" ]; then
+        echo "ERROR: import_executables.cmake not generated" >&2
+        exit 1
+    fi
+    echo "==> Host build complete."
+fi
+
+# --- Pre-compile glue objects ---
+LLVM_CLANG="/opt/homebrew/opt/llvm/bin/clang"
+WASM32_COMPILE_FLAGS="--target=wasm32-unknown-unknown -matomics -mbulk-memory -mexception-handling -mllvm -wasm-enable-sjlj -fno-exceptions -fno-trapping-math --sysroot=$SYSROOT"
+
+GLUE_OBJ_DIR="$SCRIPT_DIR/mariadb-glue-objs"
+mkdir -p "$GLUE_OBJ_DIR"
+
+if [ ! -f "$GLUE_OBJ_DIR/channel_syscall.o" ]; then
+    echo "==> Compiling glue objects..."
+    $LLVM_CLANG $WASM32_COMPILE_FLAGS -O2 -c "$GLUE_DIR/channel_syscall.c" -o "$GLUE_OBJ_DIR/channel_syscall.o"
+    $LLVM_CLANG $WASM32_COMPILE_FLAGS -O2 -c "$GLUE_DIR/compiler_rt.c" -o "$GLUE_OBJ_DIR/compiler_rt.o"
+    echo "==> Glue objects compiled."
+fi
+
+# --- Step 2: Cross build for wasm32 ---
+echo "==> Step 2: Cross build for wasm32..."
+mkdir -p "$CROSS_BUILD_DIR"
+cd "$CROSS_BUILD_DIR"
+
+export WASM_POSIX_SYSROOT="$SYSROOT"
+
+cmake "$SRC_DIR" \
+    -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+    -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
+    -DCMAKE_INSTALL_PREFIX="$INSTALL_DIR" \
+    -DIMPORT_EXECUTABLES="$HOST_BUILD_DIR/import_executables.cmake" \
+    \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_C_FLAGS_RELEASE="-O2 -DNDEBUG" \
+    -DCMAKE_CXX_FLAGS_RELEASE="-O2 -DNDEBUG" \
+    \
+    -DWITH_UNIT_TESTS=OFF \
+    -DWITH_MARIABACKUP=OFF \
+    -DSECURITY_HARDENED=OFF \
+    -DWITH_SAFEMALLOC=OFF \
+    -DWITH_EMBEDDED_SERVER=OFF \
+    -DENABLED_PROFILING=OFF \
+    -DWITHOUT_DYNAMIC_PLUGIN=ON \
+    -DDISABLE_SHARED=ON \
+    \
+    -DWITH_SSL=OFF \
+    -DWITH_PCRE=system \
+    -DWITH_EDITLINE=bundled \
+    -DWITH_ZLIB=system \
+    -DWITH_SYSTEMD=no \
+    -DWITH_WSREP=OFF \
+    -DDISABLE_THREADPOOL=ON \
+    \
+    -DPLUGIN_INNODB=NO \
+    -DPLUGIN_INNOBASE=NO \
+    -DPLUGIN_XTRADB=NO \
+    -DPLUGIN_CONNECT=NO \
+    -DPLUGIN_ROCKSDB=NO \
+    -DPLUGIN_TOKUDB=NO \
+    -DPLUGIN_MROONGA=NO \
+    -DPLUGIN_SPIDER=NO \
+    -DPLUGIN_OQGRAPH=NO \
+    -DPLUGIN_SPHINX=NO \
+    -DPLUGIN_COLUMNSTORE=NO \
+    -DPLUGIN_S3=NO \
+    -DPLUGIN_PERFSCHEMA=NO \
+    -DPLUGIN_CRACKLIB_PASSWORD_CHECK=NO \
+    -DPLUGIN_AUTH_GSSAPI=NO \
+    -DPLUGIN_AUTH_PAM=NO \
+    -DPLUGIN_FEEDBACK=NO \
+    -DPLUGIN_QUERY_RESPONSE_TIME=NO \
+    -DPLUGIN_SERVER_AUDIT=NO \
+    -DPLUGIN_DISKS=NO \
+    -DPLUGIN_METADATA_LOCK_INFO=NO \
+    -DPLUGIN_QUERY_CACHE_INFO=NO \
+    -DPLUGIN_LOCALE_INFO=NO \
+    -DPLUGIN_SIMPLE_PASSWORD_CHECK=NO \
+    \
+    -DPLUGIN_ARIA=STATIC \
+    -DPLUGIN_MYISAM=STATIC \
+    -DPLUGIN_MYISAMMRG=STATIC \
+    -DPLUGIN_CSV=STATIC \
+    -DPLUGIN_HEAP=STATIC \
+    -DPLUGIN_PARTITION=STATIC \
+    \
+    -DSTACK_DIRECTION=-1 \
+    -DHAVE_LLVM_LIBCPP=OFF \
+    2>&1 | tail -40
+
+echo "==> CMake configuration complete. Starting build..."
+
+# Build mysqld
+make -j"$NPROC" mariadbd 2>&1 | tail -20
+
+# Check if mariadbd was built (10.5+ renames mysqld → mariadbd)
+MYSQLD_BIN="$CROSS_BUILD_DIR/sql/mariadbd"
+if [ -f "$MYSQLD_BIN" ]; then
+    echo "==> MariaDB mysqld built successfully!"
+    ls -lh "$MYSQLD_BIN"
+    file "$MYSQLD_BIN" || true
+
+    # Install to output directory
+    mkdir -p "$INSTALL_DIR/bin" "$INSTALL_DIR/share/mysql"
+    cp "$MYSQLD_BIN" "$INSTALL_DIR/bin/"
+
+    # Copy system tables SQL for bootstrap
+    if [ -d "$SRC_DIR/scripts" ]; then
+        cp "$SRC_DIR/scripts/mysql_system_tables.sql" "$INSTALL_DIR/share/mysql/" 2>/dev/null || true
+        cp "$SRC_DIR/scripts/mysql_system_tables_data.sql" "$INSTALL_DIR/share/mysql/" 2>/dev/null || true
+    fi
+
+    echo "==> MariaDB install directory: $INSTALL_DIR"
+else
+    echo "ERROR: mysqld not found after build" >&2
+    echo "Check build log in $CROSS_BUILD_DIR for errors."
+    exit 1
+fi

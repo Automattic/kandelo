@@ -1476,7 +1476,8 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
         61 => kernel_socketpair(a1 as u32, a2 as u32, a3 as u32, a4 as *mut i32), // SYS_SOCKETPAIR
         51 => kernel_bind(a1, a2 as *const u8, a3 as u32), // SYS_BIND
         52 => kernel_listen(a1, a2 as u32),        // SYS_LISTEN
-        53 => kernel_accept(a1, a2 as *mut u8, a3 as *mut u8), // SYS_ACCEPT
+        53 => kernel_accept4(a1, a2 as *mut u8, a3 as *mut u8, 0), // SYS_ACCEPT
+        384 => kernel_accept4(a1, a2 as *mut u8, a3 as *mut u8, a4 as u32), // SYS_ACCEPT4
         54 => kernel_connect(a1, a2 as *const u8, a3 as u32), // SYS_CONNECT
         55 => kernel_send(a1, a2 as *const u8, a3 as u32, a4 as u32), // SYS_SEND
         56 => kernel_recv(a1, a2 as *mut u8, a3 as u32, a4 as u32), // SYS_RECV
@@ -4157,13 +4158,32 @@ pub extern "C" fn kernel_listen(fd: i32, backlog: u32) -> i32 {
     result
 }
 
-/// Accept a connection. Returns new fd or negative errno.
+/// Accept a connection with flags. Returns new fd or negative errno.
+/// Flags: SOCK_CLOEXEC, SOCK_NONBLOCK (same values as socket()).
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_accept(fd: i32, addr_ptr: *mut u8, addrlen_ptr: *mut u8) -> i32 {
+pub extern "C" fn kernel_accept4(fd: i32, addr_ptr: *mut u8, addrlen_ptr: *mut u8, flags: u32) -> i32 {
+    use wasm_posix_shared::socket::{SOCK_CLOEXEC, SOCK_NONBLOCK};
+    use wasm_posix_shared::fd_flags::FD_CLOEXEC;
+    use wasm_posix_shared::flags::O_NONBLOCK;
+
     let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_accept(proc, &mut host, fd) {
         Ok(new_fd) => {
+            // Apply SOCK_CLOEXEC flag
+            if flags & SOCK_CLOEXEC != 0 {
+                if let Ok(entry) = proc.fd_table.get_mut(new_fd) {
+                    entry.fd_flags |= FD_CLOEXEC;
+                }
+            }
+            // Apply SOCK_NONBLOCK flag
+            if flags & SOCK_NONBLOCK != 0 {
+                if let Ok(entry) = proc.fd_table.get(new_fd) {
+                    if let Some(ofd) = proc.ofd_table.get_mut(entry.ofd_ref.0) {
+                        ofd.status_flags |= O_NONBLOCK;
+                    }
+                }
+            }
             // Write peer address if buffers provided
             if !addr_ptr.is_null() && !addrlen_ptr.is_null() {
                 let addrlen_buf = unsafe { slice::from_raw_parts_mut(addrlen_ptr, 4) };

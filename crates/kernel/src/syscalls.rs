@@ -4120,6 +4120,11 @@ fn poll_check(proc: &mut Process, fds: &mut [WasmPollFd]) -> i32 {
     for pollfd in fds.iter_mut() {
         pollfd.revents = 0;
 
+        // POSIX: negative fd → ignore this entry, revents stays 0
+        if pollfd.fd < 0 {
+            continue;
+        }
+
         // Check if fd is valid
         let entry = match proc.fd_table.get(pollfd.fd) {
             Ok(e) => e,
@@ -8229,6 +8234,18 @@ mod tests {
         let n = sys_poll(&mut proc, &mut host, core::slice::from_mut(&mut pollfd), 0).unwrap();
         assert_eq!(n, 1);
         assert_ne!(pollfd.revents & POLLNVAL, 0);
+    }
+
+    #[test]
+    fn test_poll_negative_fd_ignored() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::WasmPollFd;
+        use wasm_posix_shared::poll::*;
+        let mut pollfd = WasmPollFd { fd: -1, events: POLLIN, revents: 0 };
+        let n = sys_poll(&mut proc, &mut host, core::slice::from_mut(&mut pollfd), 0).unwrap();
+        assert_eq!(n, 0);
+        assert_eq!(pollfd.revents, 0);
     }
 
     #[test]

@@ -1,0 +1,13 @@
+--- a/storage/maria/ma_init.c
++++ b/storage/maria/ma_init.c
+@@ -130,6 +130,10 @@
+ my_bool maria_upgrade()
+ {
+   char name[FN_REFLEN], new_name[FN_REFLEN];
++#ifdef __wasm__
++  /* Skip old maria_log → aria_log renaming — never needed on wasm32 fresh builds */
++  return 0;
++#endif
+   DBUG_ENTER("maria_upgrade");
+
+   fn_format(name, "maria_log_control", maria_data_root, "", MYF(MY_WME));
