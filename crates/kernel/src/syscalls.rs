@@ -284,15 +284,22 @@ pub fn sys_close(
                     if let Some(net_handle) = sock.host_net_handle {
                         let _ = host.host_net_close(net_handle);
                     }
+                    let use_global = sock.global_pipes;
                     if let Some(send_idx) = sock.send_buf_idx {
-                        if let Some(Some(pipe)) = proc.pipes.get_mut(send_idx) {
-                            pipe.close_write_end();
-                        }
+                        let pipe = if use_global {
+                            unsafe { crate::pipe::global_pipe_table().get_mut(send_idx) }
+                        } else {
+                            proc.pipes.get_mut(send_idx).and_then(|p| p.as_mut())
+                        };
+                        if let Some(pipe) = pipe { pipe.close_write_end(); }
                     }
                     if let Some(recv_idx) = sock.recv_buf_idx {
-                        if let Some(Some(pipe)) = proc.pipes.get_mut(recv_idx) {
-                            pipe.close_read_end();
-                        }
+                        let pipe = if use_global {
+                            unsafe { crate::pipe::global_pipe_table().get_mut(recv_idx) }
+                        } else {
+                            proc.pipes.get_mut(recv_idx).and_then(|p| p.as_mut())
+                        };
+                        if let Some(pipe) = pipe { pipe.close_read_end(); }
                     }
                 }
                 proc.sockets.free(sock_idx);
@@ -423,12 +430,13 @@ pub fn sys_read(
                 SocketDomain::Inet | SocketDomain::Inet6 => {
                     // Loopback path: use pipe buffers if available
                     if let Some(recv_buf_idx) = sock.recv_buf_idx {
+                        let use_global = sock.global_pipes;
                         loop {
-                            let pipe = proc
-                                .pipes
-                                .get_mut(recv_buf_idx)
-                                .and_then(|p| p.as_mut())
-                                .ok_or(Errno::EBADF)?;
+                            let pipe = if use_global {
+                                unsafe { crate::pipe::global_pipe_table().get_mut(recv_buf_idx) }
+                            } else {
+                                proc.pipes.get_mut(recv_buf_idx).and_then(|p| p.as_mut())
+                            }.ok_or(Errno::EBADF)?;
                             let n = pipe.read(buf);
                             if n > 0 {
                                 return Ok(n);
@@ -812,12 +820,13 @@ pub fn sys_write(
                 SocketDomain::Inet | SocketDomain::Inet6 => {
                     // Loopback path: use pipe buffers if available
                     if let Some(send_buf_idx) = sock.send_buf_idx {
+                        let use_global = sock.global_pipes;
                         loop {
-                            let pipe = proc
-                                .pipes
-                                .get_mut(send_buf_idx)
-                                .and_then(|p| p.as_mut())
-                                .ok_or(Errno::EBADF)?;
+                            let pipe = if use_global {
+                                unsafe { crate::pipe::global_pipe_table().get_mut(send_buf_idx) }
+                            } else {
+                                proc.pipes.get_mut(send_buf_idx).and_then(|p| p.as_mut())
+                            }.ok_or(Errno::EBADF)?;
                             if !pipe.is_read_end_open() {
                                 proc.signals.raise(wasm_posix_shared::signal::SIGPIPE);
                                 return Err(Errno::EPIPE);
@@ -3370,6 +3379,7 @@ pub fn sys_shutdown(proc: &mut Process, host: &mut dyn HostIO, fd: i32, how: u32
 
     let sock_idx = (-(ofd.host_handle + 1)) as usize;
     let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+    let use_global = sock.global_pipes;
 
     match how {
         SHUT_RD => {
@@ -3378,9 +3388,12 @@ pub fn sys_shutdown(proc: &mut Process, host: &mut dyn HostIO, fd: i32, how: u32
         SHUT_WR => {
             sock.shut_wr = true;
             if let Some(send_idx) = sock.send_buf_idx {
-                if let Some(Some(pipe)) = proc.pipes.get_mut(send_idx) {
-                    pipe.close_write_end();
-                }
+                let pipe = if use_global {
+                    unsafe { crate::pipe::global_pipe_table().get_mut(send_idx) }
+                } else {
+                    proc.pipes.get_mut(send_idx).and_then(|p| p.as_mut())
+                };
+                if let Some(pipe) = pipe { pipe.close_write_end(); }
             }
         }
         SHUT_RDWR => {
@@ -3390,14 +3403,20 @@ pub fn sys_shutdown(proc: &mut Process, host: &mut dyn HostIO, fd: i32, how: u32
                 let _ = host.host_net_close(net_handle);
             }
             if let Some(send_idx) = sock.send_buf_idx {
-                if let Some(Some(pipe)) = proc.pipes.get_mut(send_idx) {
-                    pipe.close_write_end();
-                }
+                let pipe = if use_global {
+                    unsafe { crate::pipe::global_pipe_table().get_mut(send_idx) }
+                } else {
+                    proc.pipes.get_mut(send_idx).and_then(|p| p.as_mut())
+                };
+                if let Some(pipe) = pipe { pipe.close_write_end(); }
             }
             if let Some(recv_idx) = sock.recv_buf_idx {
-                if let Some(Some(pipe)) = proc.pipes.get_mut(recv_idx) {
-                    pipe.close_read_end();
-                }
+                let pipe = if use_global {
+                    unsafe { crate::pipe::global_pipe_table().get_mut(recv_idx) }
+                } else {
+                    proc.pipes.get_mut(recv_idx).and_then(|p| p.as_mut())
+                };
+                if let Some(pipe) = pipe { pipe.close_read_end(); }
             }
         }
         _ => return Err(Errno::EINVAL),
@@ -3495,17 +3514,18 @@ pub fn sys_recv(
         _ => {
             // Pipe-backed recv path (AF_UNIX and loopback INET)
             let recv_buf_idx = sock.recv_buf_idx.ok_or(Errno::ENOTCONN)?;
+            let use_global = sock.global_pipes;
             let peek = flags & MSG_PEEK != 0;
             let nonblock = (status_flags & O_NONBLOCK != 0) || (flags & MSG_DONTWAIT != 0) || crate::is_centralized_mode();
             let waitall = flags & MSG_WAITALL != 0 && !peek;
             let mut total = 0usize;
 
             loop {
-                let pipe = proc
-                    .pipes
-                    .get_mut(recv_buf_idx)
-                    .and_then(|p| p.as_mut())
-                    .ok_or(Errno::EBADF)?;
+                let pipe = if use_global {
+                    unsafe { crate::pipe::global_pipe_table().get_mut(recv_buf_idx) }
+                } else {
+                    proc.pipes.get_mut(recv_buf_idx).and_then(|p| p.as_mut())
+                }.ok_or(Errno::EBADF)?;
                 let n = if peek { pipe.peek(&mut buf[total..]) } else { pipe.read(&mut buf[total..]) };
                 total += n;
                 if total >= buf.len() || (total > 0 && !waitall) {
@@ -3679,7 +3699,7 @@ pub fn sys_listen(proc: &mut Process, host: &mut dyn HostIO, fd: i32, _backlog: 
     if sock.sock_type != SocketType::Stream {
         return Err(Errno::EOPNOTSUPP);
     }
-    if sock.state != SocketState::Bound {
+    if sock.state != SocketState::Bound && sock.state != SocketState::Listening {
         return Err(Errno::EINVAL);
     }
     sock.state = SocketState::Listening;
@@ -4215,7 +4235,12 @@ fn poll_check(proc: &mut Process, fds: &mut [WasmPollFd]) -> i32 {
                     }
                     // Check recv buffer for readability
                     if let Some(recv_idx) = sock.recv_buf_idx {
-                        if let Some(Some(pipe)) = proc.pipes.get(recv_idx) {
+                        let pipe_ref = if sock.global_pipes {
+                            unsafe { crate::pipe::global_pipe_table().get(recv_idx) }
+                        } else {
+                            proc.pipes.get(recv_idx).and_then(|p| p.as_ref())
+                        };
+                        if let Some(pipe) = pipe_ref {
                             if pollfd.events & POLLIN != 0 && pipe.available() > 0 {
                                 revents |= POLLIN;
                             }
@@ -4226,7 +4251,12 @@ fn poll_check(proc: &mut Process, fds: &mut [WasmPollFd]) -> i32 {
                     }
                     // Check send buffer for writability
                     if let Some(send_idx) = sock.send_buf_idx {
-                        if let Some(Some(pipe)) = proc.pipes.get(send_idx) {
+                        let pipe_ref = if sock.global_pipes {
+                            unsafe { crate::pipe::global_pipe_table().get(send_idx) }
+                        } else {
+                            proc.pipes.get(send_idx).and_then(|p| p.as_ref())
+                        };
+                        if let Some(pipe) = pipe_ref {
                             if pollfd.events & POLLOUT != 0 && pipe.free_space() > 0 {
                                 revents |= POLLOUT;
                             }

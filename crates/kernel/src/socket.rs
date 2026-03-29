@@ -66,6 +66,9 @@ pub struct SocketInfo {
     pub listen_backlog: Vec<usize>,
     /// Received UDP datagrams (for DGRAM sockets).
     pub dgram_queue: Vec<Datagram>,
+    /// Whether recv/send pipe indices refer to the global pipe table
+    /// (cross-process loopback) rather than process-local pipes.
+    pub global_pipes: bool,
 }
 
 impl SocketInfo {
@@ -88,6 +91,7 @@ impl SocketInfo {
             peer_port: 0,
             listen_backlog: Vec::new(),
             dgram_queue: Vec::new(),
+            global_pipes: false,
         }
     }
 
@@ -158,6 +162,15 @@ impl SocketTable {
     /// Return the number of slots (for iteration).
     pub fn len(&self) -> usize {
         self.entries.len()
+    }
+
+    /// Insert a socket at a specific index, growing the table if needed.
+    /// Used during fork deserialization to preserve socket indices.
+    pub fn insert_at(&mut self, idx: usize, info: SocketInfo) {
+        while self.entries.len() <= idx {
+            self.entries.push(None);
+        }
+        self.entries[idx] = Some(info);
     }
 }
 

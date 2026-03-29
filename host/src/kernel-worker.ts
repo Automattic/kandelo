@@ -501,8 +501,8 @@ export class CentralizedKernelWorker {
   }>();
   /** Maps "pid:tid" to ctidPtr for CLONE_CHILD_CLEARTID on thread exit */
   private threadCtidPtrs = new Map<string, number>();
-  /** TCP listeners: fd → { server, pid, port, connections } */
-  private tcpListeners = new Map<number, {
+  /** TCP listeners: "pid:fd" → { server, pid, port, connections } */
+  private tcpListeners = new Map<string, {
     server: import("net").Server;
     pid: number;
     port: number;
@@ -1142,7 +1142,6 @@ export class CentralizedKernelWorker {
     // Read return value and errno from kernel scratch
     const retVal = kernelView.getInt32(CH_RETURN, true);
     const errVal = kernelView.getUint32(CH_ERRNO, true);
-
 
     // --- Process memory growth for brk/mmap/mremap ---
     // In centralized mode, the kernel's ensure_memory_covers() grows the
@@ -3092,8 +3091,9 @@ export class CentralizedKernelWorker {
    * into the kernel's pipe-buffer-backed accept path.
    */
   private startTcpListener(pid: number, fd: number, port: number): void {
-    // Avoid duplicate listeners on the same fd
-    if (this.tcpListeners.has(fd)) return;
+    const key = `${pid}:${fd}`;
+    // Avoid duplicate listeners on the same pid:fd
+    if (this.tcpListeners.has(key)) return;
 
     if (!this.netModule) return; // Not in Node.js environment
 
@@ -3112,7 +3112,7 @@ export class CentralizedKernelWorker {
       console.error(`TCP listener error on port ${port}:`, err);
     });
 
-    this.tcpListeners.set(fd, { server, pid, port, connections });
+    this.tcpListeners.set(key, { server, pid, port, connections });
   }
 
   /**

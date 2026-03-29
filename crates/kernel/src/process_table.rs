@@ -30,7 +30,7 @@ use crate::process::Process;
 /// which process is currently being serviced (set by the JS host before
 /// calling `kernel_handle_channel`).
 pub struct ProcessTable {
-    processes: BTreeMap<u32, Process>,
+    pub(crate) processes: BTreeMap<u32, Process>,
     current_pid: u32,
 }
 

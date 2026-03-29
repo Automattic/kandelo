@@ -34,6 +34,7 @@ use crate::syscalls;
 
 #[link(wasm_import_module = "env")]
 unsafe extern "C" {
+    fn host_debug_log(ptr: *const u8, len: u32);
     fn host_open(path_ptr: *const u8, path_len: u32, flags: u32, mode: u32) -> i64;
     fn host_close(handle: i64) -> i32;
     fn host_read(handle: i64, buf_ptr: *mut u8, buf_len: u32) -> i32;
@@ -4203,6 +4204,10 @@ pub extern "C" fn kernel_accept(fd: i32, addr_ptr: *mut u8, addrlen_ptr: *mut u8
 }
 
 /// Connect to an address. Returns 0 on success, negative errno on error.
+///
+/// In centralized mode, if the same-process loopback connect fails with
+/// ECONNREFUSED, searches ALL processes in the ProcessTable for a matching
+/// listener. This enables cross-process loopback (e.g. nginx → php-fpm).
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_connect(fd: i32, addr_ptr: *const u8, addr_len: u32) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
@@ -4210,10 +4215,150 @@ pub extern "C" fn kernel_connect(fd: i32, addr_ptr: *const u8, addr_len: u32) ->
     let addr = unsafe { slice::from_raw_parts(addr_ptr, addr_len as usize) };
     let result = match syscalls::sys_connect(proc, &mut host, fd, addr) {
         Ok(()) => 0,
+        Err(Errno::ECONNREFUSED) if crate::is_centralized_mode() && addr_len >= 8 => {
+            // Check if this is a loopback address
+            let ip = [addr[4], addr[5], addr[6], addr[7]];
+            if ip == [127, 0, 0, 1] {
+                // Try cross-process loopback connect
+                match cross_process_loopback_connect(proc, fd, addr) {
+                    Ok(()) => 0,
+                    Err(e) => -(e as i32),
+                }
+            } else {
+                -(Errno::ECONNREFUSED as i32)
+            }
+        }
         Err(e) => -(e as i32),
     };
     deliver_pending_signals(proc, &mut host);
     result
+}
+
+/// Cross-process loopback TCP connect (centralized mode only).
+///
+/// Searches all processes in the ProcessTable for a listening socket on the
+/// target port, then creates global pipe pairs to connect the two processes.
+fn cross_process_loopback_connect(
+    proc: &mut Process,
+    fd: i32,
+    addr: &[u8],
+) -> Result<(), Errno> {
+    use crate::socket::{SocketDomain, SocketInfo, SocketState, SocketType};
+    use crate::pipe::PipeBuffer;
+
+    let port = u16::from_be_bytes([addr[2], addr[3]]);
+    let ip = [addr[4], addr[5], addr[6], addr[7]];
+
+    // Get the client socket info
+    let entry = proc.fd_table.get(fd)?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    let sock_idx = (-(ofd.host_handle + 1)) as usize;
+
+    // For UDP DGRAM connect, just record peer address (no cross-process search needed)
+    {
+        let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+        if sock.sock_type == SocketType::Dgram {
+            let client = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+            client.state = SocketState::Connected;
+            client.peer_addr = ip;
+            client.peer_port = port;
+            return Ok(());
+        }
+    }
+
+    // Search ALL processes for a listener on the target port
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let my_pid = proc.pid;
+
+    // Find the listener process and socket index
+    let mut listener_pid: Option<u32> = None;
+    let mut listener_sock_idx: Option<usize> = None;
+
+    // Iterate all processes in REVERSE pid order (skip self).
+    // Prefer highest pid — when parent and child both inherit a listener
+    // (e.g. FPM master forks worker), the child (worker) is the one
+    // that actually calls accept().
+    for (&pid, target_proc) in table.processes.iter().rev() {
+        if pid == my_pid {
+            continue;
+        }
+        for idx in 0..target_proc.sockets.len() {
+            if let Some(s) = target_proc.sockets.get(idx) {
+                if s.state == SocketState::Listening
+                    && s.bind_port == port
+                    && s.sock_type == SocketType::Stream
+                    && (s.bind_addr == [0, 0, 0, 0] || s.bind_addr == [127, 0, 0, 1])
+                {
+                    listener_pid = Some(pid);
+                    listener_sock_idx = Some(idx);
+                    break;
+                }
+            }
+        }
+        if listener_pid.is_some() {
+            break;
+        }
+    }
+
+    let listener_pid = listener_pid.ok_or(Errno::ECONNREFUSED)?;
+    let listener_sock_idx = listener_sock_idx.ok_or(Errno::ECONNREFUSED)?;
+
+    // Allocate two pipe buffers in the GLOBAL pipe table for bidirectional data:
+    //   pipe_a: client writes → server reads
+    //   pipe_b: server writes → client reads
+    let pipe_table = unsafe { crate::pipe::global_pipe_table() };
+    let pipe_a_idx = pipe_table.alloc(PipeBuffer::new(65536));
+    let pipe_b_idx = pipe_table.alloc(PipeBuffer::new(65536));
+
+    // Get the current process again (table borrow was released)
+    let proc = table.get_mut(my_pid).ok_or(Errno::ESRCH)?;
+
+    // Set up client socket (in current process)
+    let client_sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+    let client_addr = if client_sock.bind_addr == [0; 4] { [127, 0, 0, 1] } else { client_sock.bind_addr };
+    let mut client_port = client_sock.bind_port;
+    if client_port == 0 {
+        client_port = proc.next_ephemeral_port;
+        proc.next_ephemeral_port = proc.next_ephemeral_port.wrapping_add(1);
+        if proc.next_ephemeral_port == 0 {
+            proc.next_ephemeral_port = 49152;
+        }
+    }
+
+    let client = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+    client.send_buf_idx = Some(pipe_a_idx);
+    client.recv_buf_idx = Some(pipe_b_idx);
+    client.state = SocketState::Connected;
+    client.peer_addr = ip;
+    client.peer_port = port;
+    client.global_pipes = true; // pipes are in global pipe table
+    if client.bind_port == 0 {
+        client.bind_port = client_port;
+        client.bind_addr = [127, 0, 0, 1];
+    }
+
+    // Now set up the accepted socket in the LISTENER's process
+    let listener_proc = table.get_mut(listener_pid).ok_or(Errno::ESRCH)?;
+
+    let listener_bind_addr = listener_proc.sockets.get(listener_sock_idx).map(|s| s.bind_addr).unwrap_or([0; 4]);
+    let listener_bind_port = listener_proc.sockets.get(listener_sock_idx).map(|s| s.bind_port).unwrap_or(0);
+
+    let mut accepted_sock = SocketInfo::new(SocketDomain::Inet, SocketType::Stream, 0);
+    accepted_sock.state = SocketState::Connected;
+    accepted_sock.recv_buf_idx = Some(pipe_a_idx); // reads client's writes
+    accepted_sock.send_buf_idx = Some(pipe_b_idx); // writes to client's reads
+    accepted_sock.bind_addr = listener_bind_addr;
+    accepted_sock.bind_port = listener_bind_port;
+    accepted_sock.peer_addr = client_addr;
+    accepted_sock.peer_port = client_port;
+    accepted_sock.global_pipes = true; // pipes are in global pipe table
+    let accepted_idx = listener_proc.sockets.alloc(accepted_sock);
+
+    // Push to listener's backlog
+    let listener = listener_proc.sockets.get_mut(listener_sock_idx).ok_or(Errno::EBADF)?;
+    listener.listen_backlog.push(accepted_idx);
+
+    Ok(())
 }
 
 /// Send data on a socket. Returns bytes sent or negative errno.

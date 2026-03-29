@@ -22,6 +22,22 @@ pub mod terminal;
 pub mod wasm_api;
 
 // ---------------------------------------------------------------------------
+// Debug logging (temporary)
+// ---------------------------------------------------------------------------
+
+#[cfg(target_arch = "wasm32")]
+pub fn debug_log(msg: &str) {
+    #[link(wasm_import_module = "env")]
+    unsafe extern "C" {
+        fn host_debug_log(ptr: *const u8, len: u32);
+    }
+    unsafe { host_debug_log(msg.as_ptr(), msg.len() as u32); }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn debug_log(_msg: &str) {}
+
+// ---------------------------------------------------------------------------
 // Kernel mode flag
 // ---------------------------------------------------------------------------
 

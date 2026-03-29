@@ -29,6 +29,15 @@ node_modules/
 # Browser example build output
 examples/browser/dist/
 
+# nginx source (downloaded by build.sh)
+examples/nginx/nginx-src/
+
+# PHP-FPM source (downloaded by build-php-fpm.sh)
+examples/nginx/php-fpm-src/
+
+# PHP-FPM configure cache
+examples/nginx/php-fpm-config.cache
+
 # libc-test build artifacts (source is a git submodule)
 libc-test/build/
 
