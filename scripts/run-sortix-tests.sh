@@ -237,6 +237,8 @@ SIGNAL_EXPECTED_FAIL=(
     "sigaction-exec-flags" "sigaltstack-exec" "sigaltstack-raise-exec"
     # sigaltstack not implemented in Wasm (no native stack switching)
     "sigaltstack-raise"
+    # Requires SIGSTOP/SIGCONT to freeze parent before signal delivery
+    "ppoll-block-sleep-write-raise"
 )
 PROCESS_EXPECTED_FAIL=(
     # exec not implemented in centralized mode
