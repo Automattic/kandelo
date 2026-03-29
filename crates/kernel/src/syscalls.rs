@@ -4953,9 +4953,15 @@ pub fn sys_ppoll(
                 return Err(Errno::EAGAIN);
             }
             _ => {
-                // Poll completed (fds ready, timeout=0, or error) — restore mask
-                if let Some(saved) = proc.sigsuspend_saved_mask.take() {
-                    proc.signals.blocked = saved;
+                // Poll completed (fds ready, timeout=0, or error).
+                // If signals became deliverable during the ppoll window,
+                // keep sigsuspend_saved_mask so kernel_dequeue_signal can
+                // deliver them with the ppoll mask active, then restore
+                // the original mask.  Otherwise restore immediately.
+                if proc.signals.deliverable() == 0 {
+                    if let Some(saved) = proc.sigsuspend_saved_mask.take() {
+                        proc.signals.blocked = saved;
+                    }
                 }
                 return result;
             }
@@ -5016,9 +5022,13 @@ pub fn sys_pselect6(
                 return Err(Errno::EAGAIN);
             }
             _ => {
-                // Select completed — restore mask
-                if let Some(saved) = proc.sigsuspend_saved_mask.take() {
-                    proc.signals.blocked = saved;
+                // Select completed — if signals became deliverable during
+                // the pselect window, keep sigsuspend_saved_mask so
+                // kernel_dequeue_signal can deliver them first.
+                if proc.signals.deliverable() == 0 {
+                    if let Some(saved) = proc.sigsuspend_saved_mask.take() {
+                        proc.signals.blocked = saved;
+                    }
                 }
                 return result;
             }
