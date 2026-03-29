@@ -206,7 +206,7 @@ BASIC_EXPECTED_FAIL=(
     "locale/getlocalename_l"
     # (monetary/strfmon and strfmon_l now pass — fixed POSIX locale handling in musl overlay)
     "strings/ffsll"
-    "wchar/swprintf" "wchar/wcslcat" "wchar/wcslcpy"
+    "wchar/wcslcat" "wchar/wcslcpy"
     # -- posix_spawn (not implemented in centralized mode)
     "spawn/posix_spawn" "spawn/posix_spawnp"
     "spawn/posix_spawn_file_actions_addchdir" "spawn/posix_spawn_file_actions_addclose"
