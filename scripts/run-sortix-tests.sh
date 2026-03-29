@@ -166,8 +166,7 @@ BASIC_EXPECTED_FAIL=(
     "sys_msg/msgctl" "sys_msg/msgget" "sys_msg/msgrcv" "sys_msg/msgsnd"
     "sys_sem/semctl" "sys_sem/semget" "sys_sem/semop"
     "sys_shm/shmat" "sys_shm/shmctl" "sys_shm/shmdt" "sys_shm/shmget"
-    # -- Socket operations (remaining: sockatmark needs SIOCATMARK ioctl)
-    "sys_socket/sockatmark"
+    # (sys_socket/sockatmark now passes — MSG_OOB send/recv + SIOCATMARK ioctl)
     # -- Network interface (not available in Wasm)
     "net_if/if_freenameindex" "net_if/if_indextoname" "net_if/if_nameindex" "net_if/if_nametoindex"
     # (netdb/freeaddrinfo and netdb/getaddrinfo now pass — synthetic /etc/hosts)

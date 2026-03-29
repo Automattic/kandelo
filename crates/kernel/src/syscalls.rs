@@ -3452,7 +3452,7 @@ pub fn sys_send(
     flags: u32,
 ) -> Result<usize, Errno> {
     use crate::socket::{SocketDomain, SocketState};
-    use wasm_posix_shared::socket::MSG_NOSIGNAL;
+    use wasm_posix_shared::socket::{MSG_NOSIGNAL, MSG_OOB};
 
     let entry = proc.fd_table.get(fd)?;
     let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
@@ -3463,6 +3463,23 @@ pub fn sys_send(
     let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
     if sock.state != SocketState::Connected {
         return Err(Errno::ENOTCONN);
+    }
+
+    // MSG_OOB: store the last byte as out-of-band data on the peer socket.
+    if flags & MSG_OOB != 0 {
+        if buf.is_empty() {
+            return Err(Errno::EINVAL);
+        }
+        let oob_byte = buf[buf.len() - 1];
+        // Find peer socket and set OOB byte.
+        // For loopback: peer_idx points to socket in same process.
+        // For cross-process: peer is in another process (handled by global pipe path).
+        if let Some(peer_idx) = sock.peer_idx {
+            if let Some(peer_sock) = proc.sockets.get_mut(peer_idx) {
+                peer_sock.oob_byte = Some(oob_byte);
+            }
+        }
+        return Ok(buf.len());
     }
 
     match sock.domain {
@@ -3503,7 +3520,7 @@ pub fn sys_recv(
     flags: u32,
 ) -> Result<usize, Errno> {
     use crate::socket::{SocketDomain, SocketState};
-    use wasm_posix_shared::socket::{MSG_DONTWAIT, MSG_PEEK};
+    use wasm_posix_shared::socket::{MSG_DONTWAIT, MSG_OOB, MSG_PEEK};
     const MSG_WAITALL: u32 = 0x100;
 
     let entry = proc.fd_table.get(fd)?;
@@ -3519,6 +3536,18 @@ pub fn sys_recv(
     }
     if sock.shut_rd {
         return Ok(0);
+    }
+
+    // MSG_OOB: read out-of-band byte stored on this socket.
+    if flags & MSG_OOB != 0 {
+        let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+        if let Some(byte) = sock.oob_byte.take() {
+            if !buf.is_empty() {
+                buf[0] = byte;
+            }
+            return Ok(1);
+        }
+        return Err(Errno::EINVAL); // no OOB data available
     }
 
     match sock.domain {
@@ -3884,10 +3913,15 @@ pub fn sys_connect(proc: &mut Process, host: &mut dyn HostIO, fd: i32, addr: &[u
                 client.state = SocketState::Connected;
                 client.peer_addr = ip;
                 client.peer_port = port;
+                client.peer_idx = Some(accepted_idx);
                 if client.bind_port == 0 {
                     client.bind_port = client_port;
                     client.bind_addr = [127, 0, 0, 1];
                 }
+
+                // Set peer_idx on accepted socket for OOB data exchange
+                let accepted = proc.sockets.get_mut(accepted_idx).ok_or(Errno::EBADF)?;
+                accepted.peer_idx = Some(sock_idx);
 
                 Ok(())
             } else {
@@ -4671,6 +4705,25 @@ pub fn sys_ioctl(proc: &mut Process, fd: i32, request: u32, buf: &mut [u8]) -> R
             _ => 0,
         };
         buf[0..4].copy_from_slice(&avail.to_le_bytes());
+        return Ok(());
+    }
+
+    // SIOCATMARK — check if at out-of-band mark
+    if request == 0x8905 {
+        if buf.len() < 4 {
+            return Err(Errno::EINVAL);
+        }
+        let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+        if ofd.file_type != FileType::Socket {
+            return Err(Errno::ENOTSOCK);
+        }
+        let sock_idx = (-(ofd.host_handle + 1)) as usize;
+        let atmark: i32 = if let Some(sock) = proc.sockets.get(sock_idx) {
+            if sock.oob_byte.is_some() { 1 } else { 0 }
+        } else {
+            0
+        };
+        buf[0..4].copy_from_slice(&atmark.to_le_bytes());
         return Ok(());
     }
 
@@ -8708,6 +8761,56 @@ mod tests {
         sys_ioctl(&mut proc, 0, 0x541B, &mut buf).unwrap();
         let avail = i32::from_le_bytes(buf);
         assert_eq!(avail, 0);
+    }
+
+    // ---- MSG_OOB / SIOCATMARK tests ----
+
+    #[test]
+    fn test_send_recv_msg_oob() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+
+        let (fd0, fd1) = sys_socketpair(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+
+        // No OOB pending: SIOCATMARK returns 0
+        let mut iobuf = [0u8; 4];
+        sys_ioctl(&mut proc, fd1, 0x8905, &mut iobuf).unwrap();
+        assert_eq!(i32::from_le_bytes(iobuf), 0);
+
+        // Send OOB byte from fd0
+        let n = sys_send(&mut proc, &mut host, fd0, b"X", MSG_OOB).unwrap();
+        assert_eq!(n, 1);
+
+        // SIOCATMARK on fd1 returns 1
+        let mut iobuf = [0u8; 4];
+        sys_ioctl(&mut proc, fd1, 0x8905, &mut iobuf).unwrap();
+        assert_eq!(i32::from_le_bytes(iobuf), 1);
+
+        // Recv OOB byte from fd1
+        let mut buf = [0u8; 1];
+        let n = sys_recv(&mut proc, &mut host, fd1, &mut buf, MSG_OOB).unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(buf[0], b'X');
+
+        // After reading OOB, SIOCATMARK returns 0
+        let mut iobuf = [0u8; 4];
+        sys_ioctl(&mut proc, fd1, 0x8905, &mut iobuf).unwrap();
+        assert_eq!(i32::from_le_bytes(iobuf), 0);
+    }
+
+    #[test]
+    fn test_recv_msg_oob_no_data() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+
+        let (_fd0, fd1) = sys_socketpair(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+
+        // Recv OOB with no OOB pending returns EINVAL
+        let mut buf = [0u8; 1];
+        let err = sys_recv(&mut proc, &mut host, fd1, &mut buf, MSG_OOB).unwrap_err();
+        assert_eq!(err, Errno::EINVAL);
     }
 
     // ---- prctl tests ----

@@ -69,6 +69,9 @@ pub struct SocketInfo {
     /// Whether recv/send pipe indices refer to the global pipe table
     /// (cross-process loopback) rather than process-local pipes.
     pub global_pipes: bool,
+    /// Out-of-band byte (if pending). Set by peer's send(MSG_OOB),
+    /// read by recv(MSG_OOB), queried by ioctl(SIOCATMARK).
+    pub oob_byte: Option<u8>,
 }
 
 impl SocketInfo {
@@ -92,6 +95,7 @@ impl SocketInfo {
             listen_backlog: Vec::new(),
             dgram_queue: Vec::new(),
             global_pipes: false,
+            oob_byte: None,
         }
     }
 

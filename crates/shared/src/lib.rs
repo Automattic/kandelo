@@ -538,6 +538,7 @@ pub mod socket {
     pub const SO_SNDTIMEO: u32 = 21;
     pub const IPPROTO_TCP: u32 = 6;
     pub const TCP_NODELAY: u32 = 1;
+    pub const MSG_OOB: u32 = 1;
     pub const MSG_PEEK: u32 = 2;
     pub const MSG_DONTWAIT: u32 = 64;
     pub const MSG_NOSIGNAL: u32 = 0x4000;
