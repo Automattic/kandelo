@@ -170,6 +170,11 @@ export class WasmPosixKernel {
     return {
       env: {
         memory,
+        host_debug_log: (ptr: number, len: number): void => {
+          const buf = new Uint8Array(memory.buffer, ptr, len);
+          const msg = new TextDecoder().decode(buf.slice());
+          console.log(`[KERNEL] ${msg}`);
+        },
         host_open: (pathPtr: number, pathLen: number, flags: number, mode: number): bigint => {
           return this.hostOpen(pathPtr, pathLen, flags, mode);
         },

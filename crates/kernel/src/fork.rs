@@ -30,7 +30,7 @@ use crate::terminal::{TerminalState, WinSize, NCCS};
 
 const FORK_MAGIC: u32 = 0x464F524B; // "FORK"
 const EXEC_MAGIC: u32 = 0x45584543; // "EXEC"
-const FORK_VERSION: u32 = 3;
+const FORK_VERSION: u32 = 4;
 
 // ── Writer helper ───────────────────────────────────────────────────────────
 
@@ -368,6 +368,69 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
         }
     }
 
+    // ── Socket table (v4) ──
+    {
+        use crate::socket::{SocketDomain, SocketType, SocketState};
+        // Count actual sockets
+        let mut sock_count = 0u32;
+        for idx in 0..proc.sockets.len() {
+            if proc.sockets.get(idx).is_some() {
+                sock_count += 1;
+            }
+        }
+        w.write_u32(proc.sockets.len() as u32)?; // total slots (for index preservation)
+        w.write_u32(sock_count)?;
+        for idx in 0..proc.sockets.len() {
+            if let Some(sock) = proc.sockets.get(idx) {
+                w.write_u32(idx as u32)?;
+                w.write_u32(match sock.domain {
+                    SocketDomain::Unix => 0,
+                    SocketDomain::Inet => 1,
+                    SocketDomain::Inet6 => 2,
+                })?;
+                w.write_u32(match sock.sock_type {
+                    SocketType::Stream => 0,
+                    SocketType::Dgram => 1,
+                })?;
+                w.write_u32(sock.protocol)?;
+                w.write_u32(match sock.state {
+                    SocketState::Unbound => 0,
+                    SocketState::Bound => 1,
+                    SocketState::Listening => 2,
+                    SocketState::Connected => 3,
+                    SocketState::Closed => 4,
+                })?;
+                // peer_idx, recv_buf_idx, send_buf_idx as Option<u32> (0xFFFFFFFF = None)
+                w.write_u32(sock.peer_idx.map(|v| v as u32).unwrap_or(0xFFFFFFFF))?;
+                w.write_u32(sock.recv_buf_idx.map(|v| v as u32).unwrap_or(0xFFFFFFFF))?;
+                w.write_u32(sock.send_buf_idx.map(|v| v as u32).unwrap_or(0xFFFFFFFF))?;
+                w.write_u32(if sock.shut_rd { 1 } else { 0 })?;
+                w.write_u32(if sock.shut_wr { 1 } else { 0 })?;
+                w.write_u32(sock.host_net_handle.map(|v| v as u32).unwrap_or(0xFFFFFFFF))?;
+                // Socket options
+                w.write_u32(sock.options.len() as u32)?;
+                for &(level, optname, value) in &sock.options {
+                    w.write_u32(level)?;
+                    w.write_u32(optname)?;
+                    w.write_u32(value)?;
+                }
+                // Bind/peer addresses
+                w.write_bytes(&sock.bind_addr)?;
+                w.write_u32(sock.bind_port as u32)?;
+                w.write_bytes(&sock.peer_addr)?;
+                w.write_u32(sock.peer_port as u32)?;
+                // Listen backlog (socket indices)
+                w.write_u32(sock.listen_backlog.len() as u32)?;
+                for &bl_idx in &sock.listen_backlog {
+                    w.write_u32(bl_idx as u32)?;
+                }
+                // Global pipes flag (cross-process loopback)
+                w.write_u32(if sock.global_pipes { 1 } else { 0 })?;
+                // Skip dgram_queue for fork (child starts with empty queue)
+            }
+        }
+    }
+
     // ── Patch total_size ──
     let total = w.pos as u32;
     w.patch_u32(total_size_offset, total);
@@ -383,7 +446,8 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
 /// - `pid = child_pid`
 /// - `state = ProcessState::Running`
 /// - `exit_status = 0`
-/// - Empty lock table, pipes, sockets, dir_streams, memory (per POSIX)
+/// - Empty lock table, pipes, dir_streams, memory (per POSIX)
+/// - Sockets are cloned from parent (POSIX: child inherits open fds including sockets)
 /// - `signals.pending = 0` (via `SignalState::from_parts`)
 pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Errno> {
     let mut r = Reader::new(buf);
@@ -578,6 +642,86 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
         }
     }
 
+    // ── Socket table (v4) ──
+    let mut sockets = SocketTable::new();
+    if r.remaining() >= 8 {
+        use crate::socket::{SocketDomain, SocketInfo, SocketType, SocketState};
+        let _total_slots = r.read_u32()? as usize;
+        let sock_count = r.read_u32()? as usize;
+        for _ in 0..sock_count {
+            let idx = r.read_u32()? as usize;
+            let domain = match r.read_u32()? {
+                0 => SocketDomain::Unix,
+                1 => SocketDomain::Inet,
+                2 => SocketDomain::Inet6,
+                _ => return Err(Errno::EINVAL),
+            };
+            let sock_type = match r.read_u32()? {
+                0 => SocketType::Stream,
+                1 => SocketType::Dgram,
+                _ => return Err(Errno::EINVAL),
+            };
+            let protocol = r.read_u32()?;
+            let state = match r.read_u32()? {
+                0 => SocketState::Unbound,
+                1 => SocketState::Bound,
+                2 => SocketState::Listening,
+                3 => SocketState::Connected,
+                4 => SocketState::Closed,
+                _ => return Err(Errno::EINVAL),
+            };
+            let peer_idx_raw = r.read_u32()?;
+            let peer_idx = if peer_idx_raw == 0xFFFFFFFF { None } else { Some(peer_idx_raw as usize) };
+            let recv_raw = r.read_u32()?;
+            let recv_buf_idx = if recv_raw == 0xFFFFFFFF { None } else { Some(recv_raw as usize) };
+            let send_raw = r.read_u32()?;
+            let send_buf_idx = if send_raw == 0xFFFFFFFF { None } else { Some(send_raw as usize) };
+            let shut_rd = r.read_u32()? != 0;
+            let shut_wr = r.read_u32()? != 0;
+            let hnh_raw = r.read_u32()?;
+            let host_net_handle = if hnh_raw == 0xFFFFFFFF { None } else { Some(hnh_raw as i32) };
+            // Options
+            let opt_count = r.read_u32()? as usize;
+            let mut options = Vec::new();
+            for _ in 0..opt_count {
+                let level = r.read_u32()?;
+                let optname = r.read_u32()?;
+                let value = r.read_u32()?;
+                options.push((level, optname, value));
+            }
+            // Addresses
+            let mut bind_addr = [0u8; 4];
+            bind_addr.copy_from_slice(r.read_bytes(4)?);
+            let bind_port = r.read_u32()? as u16;
+            let mut peer_addr = [0u8; 4];
+            peer_addr.copy_from_slice(r.read_bytes(4)?);
+            let peer_port = r.read_u32()? as u16;
+            // Listen backlog
+            let bl_count = r.read_u32()? as usize;
+            let mut listen_backlog = Vec::new();
+            for _ in 0..bl_count {
+                listen_backlog.push(r.read_u32()? as usize);
+            }
+
+            let mut sock = SocketInfo::new(domain, sock_type, protocol);
+            sock.state = state;
+            sock.peer_idx = peer_idx;
+            sock.recv_buf_idx = recv_buf_idx;
+            sock.send_buf_idx = send_buf_idx;
+            sock.shut_rd = shut_rd;
+            sock.shut_wr = shut_wr;
+            sock.host_net_handle = host_net_handle;
+            sock.options = options;
+            sock.bind_addr = bind_addr;
+            sock.bind_port = bind_port;
+            sock.peer_addr = peer_addr;
+            sock.peer_port = peer_port;
+            sock.listen_backlog = listen_backlog;
+            sock.global_pipes = r.read_u32()? != 0;
+            sockets.insert_at(idx, sock);
+        }
+    }
+
     Ok(Process {
         pid: child_pid,
         ppid,
@@ -593,7 +737,7 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
         ofd_table,
         lock_table: LockTable::new(),
         pipes: Vec::new(),
-        sockets: SocketTable::new(),
+        sockets,
         cwd,
         dir_streams: Vec::new(),
         signals,

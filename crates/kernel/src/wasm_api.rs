@@ -34,6 +34,7 @@ use crate::syscalls;
 
 #[link(wasm_import_module = "env")]
 unsafe extern "C" {
+    fn host_debug_log(ptr: *const u8, len: u32);
     fn host_open(path_ptr: *const u8, path_len: u32, flags: u32, mode: u32) -> i64;
     fn host_close(handle: i64) -> i32;
     fn host_read(handle: i64, buf_ptr: *mut u8, buf_len: u32) -> i32;
@@ -4273,8 +4274,11 @@ fn cross_process_loopback_connect(
     let mut listener_pid: Option<u32> = None;
     let mut listener_sock_idx: Option<usize> = None;
 
-    // Iterate all processes (skip self — already searched by sys_connect)
-    for (&pid, target_proc) in table.processes.iter() {
+    // Iterate all processes in REVERSE pid order (skip self).
+    // Prefer highest pid — when parent and child both inherit a listener
+    // (e.g. FPM master forks worker), the child (worker) is the one
+    // that actually calls accept().
+    for (&pid, target_proc) in table.processes.iter().rev() {
         if pid == my_pid {
             continue;
         }
@@ -4327,6 +4331,7 @@ fn cross_process_loopback_connect(
     client.state = SocketState::Connected;
     client.peer_addr = ip;
     client.peer_port = port;
+    client.global_pipes = true; // pipes are in global pipe table
     if client.bind_port == 0 {
         client.bind_port = client_port;
         client.bind_addr = [127, 0, 0, 1];
@@ -4346,6 +4351,7 @@ fn cross_process_loopback_connect(
     accepted_sock.bind_port = listener_bind_port;
     accepted_sock.peer_addr = client_addr;
     accepted_sock.peer_port = client_port;
+    accepted_sock.global_pipes = true; // pipes are in global pipe table
     let accepted_idx = listener_proc.sockets.alloc(accepted_sock);
 
     // Push to listener's backlog
