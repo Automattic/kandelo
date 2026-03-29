@@ -110,7 +110,7 @@ async function main() {
       onClone: async (pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory) => {
         const threadChannelOffset = nextThreadChannelPage * 65536;
         const tlsAllocAddr = (nextThreadChannelPage - 2) * 65536;
-        nextThreadChannelPage -= 3;
+        nextThreadChannelPage -= 4;
         new Uint8Array(memory.buffer, threadChannelOffset, CH_TOTAL_SIZE).fill(0);
         new Uint8Array(memory.buffer, tlsAllocAddr, 65536).fill(0);
 
