@@ -522,6 +522,7 @@ pub mod socket {
     pub const SOCK_NONBLOCK: u32 = 0o4000;
     pub const SOCK_CLOEXEC: u32 = 0o2000000;
     pub const SOL_SOCKET: u32 = 1;
+    pub const SCM_RIGHTS: u32 = 1;
     pub const SO_REUSEADDR: u32 = 2;
     pub const SO_ERROR: u32 = 4;
     pub const SO_KEEPALIVE: u32 = 9;

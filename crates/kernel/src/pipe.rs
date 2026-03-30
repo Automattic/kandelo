@@ -1,5 +1,6 @@
 extern crate alloc;
 
+use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 
@@ -9,6 +10,40 @@ pub const DEFAULT_PIPE_CAPACITY: usize = 65536;
 /// POSIX atomicity guarantee threshold: writes of PIPE_BUF bytes or fewer
 /// are guaranteed to be atomic.
 pub const PIPE_BUF: usize = 4096;
+
+/// An FD in transit via SCM_RIGHTS ancillary data.
+///
+/// Stores enough information to reconstruct the file descriptor
+/// in the receiving process without needing access to the sender.
+#[derive(Clone)]
+pub struct InFlightFd {
+    /// FileType discriminant (Pipe=0, Socket=1, Regular=2, etc.)
+    pub file_type: u8,
+    pub status_flags: u32,
+    pub host_handle: i64,
+    pub offset: i64,
+    pub path: Vec<u8>,
+    /// For socket FDs: serialized socket state.
+    pub socket: Option<InFlightSocket>,
+}
+
+/// Serialized socket state for SCM_RIGHTS FD passing.
+#[derive(Clone)]
+pub struct InFlightSocket {
+    pub domain: u8,   // 0=Unix, 1=Inet, 2=Inet6
+    pub sock_type: u8, // 0=Stream, 1=Dgram
+    pub protocol: u32,
+    pub state: u8,    // 0=Unbound, ..., 4=Closed
+    pub send_buf_idx: Option<usize>,
+    pub recv_buf_idx: Option<usize>,
+    pub global_pipes: bool,
+    pub shut_rd: bool,
+    pub shut_wr: bool,
+    pub bind_addr: [u8; 4],
+    pub bind_port: u16,
+    pub peer_addr: [u8; 4],
+    pub peer_port: u16,
+}
 
 /// A ring buffer backing a pipe.
 ///
@@ -25,6 +60,9 @@ pub struct PipeBuffer {
     len: usize,
     read_count: u32,
     write_count: u32,
+    /// Ancillary data queue for SCM_RIGHTS FD passing.
+    /// Each entry is a batch of FDs sent with one sendmsg call.
+    ancillary_fds: VecDeque<Vec<InFlightFd>>,
 }
 
 impl PipeBuffer {
@@ -39,6 +77,7 @@ impl PipeBuffer {
             len: 0,
             read_count: 1,
             write_count: 1,
+            ancillary_fds: VecDeque::new(),
         }
     }
 
@@ -162,6 +201,23 @@ impl PipeBuffer {
     /// Returns true if both endpoints are closed and the pipe can be freed.
     pub fn is_fully_closed(&self) -> bool {
         self.read_count == 0 && self.write_count == 0
+    }
+
+    /// Push ancillary FDs (SCM_RIGHTS) to be delivered with the next recvmsg.
+    pub fn push_ancillary(&mut self, fds: Vec<InFlightFd>) {
+        if !fds.is_empty() {
+            self.ancillary_fds.push_back(fds);
+        }
+    }
+
+    /// Pop ancillary FDs (SCM_RIGHTS) for the next recvmsg call.
+    pub fn pop_ancillary(&mut self) -> Option<Vec<InFlightFd>> {
+        self.ancillary_fds.pop_front()
+    }
+
+    /// Returns true if there are ancillary FDs pending delivery.
+    pub fn has_ancillary(&self) -> bool {
+        !self.ancillary_fds.is_empty()
     }
 }
 

@@ -1836,6 +1836,22 @@ export class CentralizedKernelWorker {
       return;
     }
 
+    // Non-blocking FD check: if the FD has O_NONBLOCK set, return EAGAIN
+    // immediately instead of retrying. This is critical for programs like
+    // nginx that use non-blocking I/O and expect EAGAIN returned promptly.
+    if (READ_LIKE_SYSCALLS.has(syscallNr) || WRITE_LIKE_SYSCALLS.has(syscallNr)) {
+      const fd = origArgs[0];
+      const isFdNonblock = this.kernelInstance!.exports.kernel_is_fd_nonblock as
+        ((pid: number, fd: number) => number) | undefined;
+      if (isFdNonblock) {
+        const nb = isFdNonblock(channel.pid, fd);
+        if (nb === 1) {
+          this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], -1, EAGAIN);
+          return;
+        }
+      }
+    }
+
     // Event-driven pipe/socket wakeup: if this is a read-like syscall on a
     // pipe/socket fd, register the reader so a matching write can wake it
     // immediately instead of polling via setImmediate.
@@ -2353,6 +2369,17 @@ export class CentralizedKernelWorker {
       dataOff = (dataOff + 3) & ~3;
     }
 
+    // Copy msg_control (ancillary data, e.g. SCM_RIGHTS) to kernel scratch
+    const controlPtr = processView.getUint32(msgPtr + 16, true);
+    const controlLen = processView.getUint32(msgPtr + 20, true);
+    if (controlPtr !== 0 && controlLen > 0 && dataOff + controlLen <= CH_DATA_SIZE) {
+      const kCtrlPtr = dataStart + dataOff;
+      kernelMem.set(processMem.subarray(controlPtr, controlPtr + controlLen), kCtrlPtr);
+      new DataView(kernelMem.buffer).setUint32(kMsgPtr + 16, kCtrlPtr, true); // update msg_control ptr
+      dataOff += controlLen;
+      dataOff = (dataOff + 3) & ~3;
+    }
+
     // Copy iov array and iov[0] data to kernel scratch
     if (iovCnt > 0 && iovPtr !== 0) {
       const iovSize = iovCnt * 8;
@@ -2434,6 +2461,18 @@ export class CentralizedKernelWorker {
       dataOff = (dataOff + 3) & ~3;
     }
 
+    // Set up msg_control output buffer for ancillary data (SCM_RIGHTS)
+    const controlPtr = processView.getUint32(msgPtr + 16, true);
+    const controlLen = processView.getUint32(msgPtr + 20, true);
+    let kCtrlPtr = 0;
+    if (controlPtr !== 0 && controlLen > 0 && dataOff + controlLen <= CH_DATA_SIZE) {
+      kCtrlPtr = dataStart + dataOff;
+      kernelMem.fill(0, kCtrlPtr, kCtrlPtr + controlLen);
+      new DataView(kernelMem.buffer).setUint32(kMsgPtr + 16, kCtrlPtr, true);
+      dataOff += controlLen;
+      dataOff = (dataOff + 3) & ~3;
+    }
+
     // Set up iov array and output buffers
     interface IovEntry { base: number; len: number; kernelBase: number }
     const entries: IovEntry[] = [];
@@ -2500,6 +2539,17 @@ export class CentralizedKernelWorker {
     // Copy msg_name (source address) back to process memory
     if (kNamePtr !== 0 && namePtr !== 0 && nameLen > 0) {
       processMem.set(kernelMem.subarray(kNamePtr, kNamePtr + nameLen), namePtr);
+    }
+
+    // Copy msg_control (ancillary data) back to process memory
+    if (kCtrlPtr !== 0 && controlPtr !== 0) {
+      const actualControlLen = new DataView(kernelMem.buffer).getUint32(kMsgPtr + 20, true);
+      if (actualControlLen > 0 && actualControlLen <= controlLen) {
+        processMem.set(
+          kernelMem.subarray(kCtrlPtr, kCtrlPtr + actualControlLen),
+          controlPtr,
+        );
+      }
     }
 
     // Copy updated msghdr fields back (msg_namelen, msg_controllen, msg_flags)

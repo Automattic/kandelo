@@ -20,6 +20,7 @@
 
 extern crate alloc;
 
+use alloc::vec::Vec;
 use core::slice;
 
 use wasm_posix_shared::{Errno, WasmDirent, WasmStat, WasmTimespec};
@@ -3773,24 +3774,146 @@ pub extern "C" fn kernel_setgroups(size: u32, _list_ptr: *const u32) -> i32 {
     result
 }
 
+/// Extract SCM_RIGHTS ancillary FDs from msg_control, returning InFlightFd entries.
+/// Each FD is looked up in the sender's process and serialized for cross-process delivery.
+fn extract_scm_rights(
+    proc: &crate::process::Process,
+    control_ptr: usize,
+    control_len: usize,
+) -> Vec<crate::pipe::InFlightFd> {
+    use crate::pipe::{InFlightFd, InFlightSocket};
+    use crate::socket::{SocketDomain, SocketType, SocketState};
+    use wasm_posix_shared::socket::SOL_SOCKET;
+    use wasm_posix_shared::socket::SCM_RIGHTS;
+
+    let mut result = Vec::new();
+    if control_ptr == 0 || control_len == 0 {
+        return result;
+    }
+
+    let control = unsafe { slice::from_raw_parts(control_ptr as *const u8, control_len) };
+
+    // Walk cmsg list: each cmsghdr is { cmsg_len: u32, cmsg_level: u32, cmsg_type: u32 }
+    // followed by data. Alignment is 4 bytes on wasm32.
+    let mut offset = 0;
+    while offset + 12 <= control_len {
+        let cmsg_len = u32::from_le_bytes([
+            control[offset], control[offset + 1], control[offset + 2], control[offset + 3],
+        ]) as usize;
+        let cmsg_level = u32::from_le_bytes([
+            control[offset + 4], control[offset + 5], control[offset + 6], control[offset + 7],
+        ]);
+        let cmsg_type = u32::from_le_bytes([
+            control[offset + 8], control[offset + 9], control[offset + 10], control[offset + 11],
+        ]);
+
+        if cmsg_len < 12 || offset + cmsg_len > control_len {
+            break;
+        }
+
+        if cmsg_level == SOL_SOCKET && cmsg_type == SCM_RIGHTS {
+            // Data starts at offset + 12, length = cmsg_len - 12
+            let data_len = cmsg_len - 12;
+            let num_fds = data_len / 4;
+            for i in 0..num_fds {
+                let fd_offset = offset + 12 + i * 4;
+                let fd_num = i32::from_le_bytes([
+                    control[fd_offset], control[fd_offset + 1],
+                    control[fd_offset + 2], control[fd_offset + 3],
+                ]);
+
+                // Look up this FD in the sender's process
+                if let Ok(fd_entry) = proc.fd_table.get(fd_num) {
+                    if let Some(ofd) = proc.ofd_table.get(fd_entry.ofd_ref.0) {
+                        let mut in_flight = InFlightFd {
+                            file_type: match ofd.file_type {
+                                crate::ofd::FileType::Pipe => 0,
+                                crate::ofd::FileType::Socket => 1,
+                                crate::ofd::FileType::Regular => 2,
+                                crate::ofd::FileType::Directory => 3,
+                                crate::ofd::FileType::CharDevice => 4,
+                                _ => 5,
+                            },
+                            status_flags: ofd.status_flags,
+                            host_handle: ofd.host_handle,
+                            offset: ofd.offset,
+                            path: ofd.path.clone(),
+                            socket: None,
+                        };
+
+                        // For socket FDs, serialize socket state
+                        if ofd.file_type == crate::ofd::FileType::Socket {
+                            let sock_idx = (-(ofd.host_handle + 1)) as usize;
+                            if let Some(sock) = proc.sockets.get(sock_idx) {
+                                in_flight.socket = Some(InFlightSocket {
+                                    domain: match sock.domain {
+                                        SocketDomain::Unix => 0,
+                                        SocketDomain::Inet => 1,
+                                        SocketDomain::Inet6 => 2,
+                                    },
+                                    sock_type: match sock.sock_type {
+                                        SocketType::Stream => 0,
+                                        SocketType::Dgram => 1,
+                                    },
+                                    protocol: sock.protocol,
+                                    state: match sock.state {
+                                        SocketState::Unbound => 0,
+                                        SocketState::Bound => 1,
+                                        SocketState::Listening => 2,
+                                        SocketState::Connected => 3,
+                                        SocketState::Closed => 4,
+                                    },
+                                    send_buf_idx: sock.send_buf_idx,
+                                    recv_buf_idx: sock.recv_buf_idx,
+                                    global_pipes: sock.global_pipes,
+                                    shut_rd: sock.shut_rd,
+                                    shut_wr: sock.shut_wr,
+                                    bind_addr: sock.bind_addr,
+                                    bind_port: sock.bind_port,
+                                    peer_addr: sock.peer_addr,
+                                    peer_port: sock.peer_port,
+                                });
+                            }
+                        }
+
+                        result.push(in_flight);
+                    }
+                }
+            }
+        }
+
+        // Advance to next cmsg (aligned to 4 bytes)
+        offset += (cmsg_len + 3) & !3;
+    }
+
+    result
+}
+
 /// sendmsg — send a message on a socket.
 /// Parses msghdr to extract iov[0] and delegates to sys_sendmsg.
+/// Handles SCM_RIGHTS ancillary data by serializing FDs into the pipe's ancillary queue.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_sendmsg(fd: i32, msg_ptr: *const u8, flags: u32) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
 
-    // Parse msghdr: msg_name(0), msg_namelen(4), msg_iov(8), msg_iovlen(12)
+    // Parse msghdr: msg_name(0), msg_namelen(4), msg_iov(8), msg_iovlen(12),
+    //               msg_control(16), msg_controllen(20), msg_flags(24)
     let msg = unsafe { slice::from_raw_parts(msg_ptr, 28) };
     let name_ptr = u32::from_le_bytes([msg[0], msg[1], msg[2], msg[3]]) as usize;
     let name_len = u32::from_le_bytes([msg[4], msg[5], msg[6], msg[7]]) as usize;
     let iov_ptr = u32::from_le_bytes([msg[8], msg[9], msg[10], msg[11]]) as usize;
     let iov_len = u32::from_le_bytes([msg[12], msg[13], msg[14], msg[15]]);
+    let control_ptr = u32::from_le_bytes([msg[16], msg[17], msg[18], msg[19]]) as usize;
+    let control_len = u32::from_le_bytes([msg[20], msg[21], msg[22], msg[23]]) as usize;
 
     if iov_len == 0 {
         deliver_pending_signals(proc, &mut host);
         return 0;
     }
+
+    // Extract SCM_RIGHTS ancillary FDs before sending data
+    let ancillary_fds = extract_scm_rights(proc, control_ptr, control_len);
 
     // Parse first iovec: iov_base at offset 0, iov_len at offset 4
     let iov = unsafe { slice::from_raw_parts(iov_ptr as *const u8, 8) };
@@ -3812,23 +3935,170 @@ pub extern "C" fn kernel_sendmsg(fd: i32, msg_ptr: *const u8, flags: u32) -> i32
             Err(e) => -(e as i32),
         }
     };
+
+    // If data was sent successfully and we have ancillary FDs, push them to the pipe
+    if result > 0 && !ancillary_fds.is_empty() {
+        // Increment pipe refcounts for socket FDs being passed BEFORE
+        // borrowing the send pipe (avoids double &mut borrow of global_pipe_table).
+        for in_flight in &ancillary_fds {
+            if let Some(ref sock_info) = in_flight.socket {
+                if sock_info.global_pipes {
+                    let pt = unsafe { crate::pipe::global_pipe_table() };
+                    if let Some(idx) = sock_info.send_buf_idx {
+                        if let Some(p) = pt.get_mut(idx) {
+                            p.add_writer();
+                        }
+                    }
+                    if let Some(idx) = sock_info.recv_buf_idx {
+                        if let Some(p) = pt.get_mut(idx) {
+                            p.add_reader();
+                        }
+                    }
+                }
+            }
+        }
+
+        // Now push ancillary data to the socket's send pipe
+        if let Ok(fd_entry) = proc.fd_table.get(fd) {
+            if let Some(ofd) = proc.ofd_table.get(fd_entry.ofd_ref.0) {
+                if ofd.file_type == crate::ofd::FileType::Socket {
+                    let sock_idx = (-(ofd.host_handle + 1)) as usize;
+                    if let Some(sock) = proc.sockets.get(sock_idx) {
+                        if let Some(send_idx) = sock.send_buf_idx {
+                            let pipe = if sock.global_pipes {
+                                unsafe { crate::pipe::global_pipe_table().get_mut(send_idx) }
+                            } else {
+                                proc.pipes.get_mut(send_idx).and_then(|p| p.as_mut())
+                            };
+                            if let Some(pipe) = pipe {
+                                pipe.push_ancillary(ancillary_fds);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     deliver_pending_signals(proc, &mut host);
     result
 }
 
+/// Install SCM_RIGHTS FDs in the receiver's process, returning the new FD numbers.
+fn install_scm_rights_fds(
+    proc: &mut crate::process::Process,
+    in_flight: Vec<crate::pipe::InFlightFd>,
+) -> Vec<i32> {
+    use crate::ofd::FileType;
+    use crate::socket::{SocketDomain, SocketType, SocketState, SocketInfo};
+
+    let mut new_fds = Vec::new();
+
+    for entry in in_flight {
+        match entry.file_type {
+            1 => {
+                // Socket FD — create new socket in receiver's process
+                if let Some(ref sock_data) = entry.socket {
+                    let domain = match sock_data.domain {
+                        0 => SocketDomain::Unix,
+                        1 => SocketDomain::Inet,
+                        _ => SocketDomain::Inet6,
+                    };
+                    let sock_type = match sock_data.sock_type {
+                        0 => SocketType::Stream,
+                        _ => SocketType::Dgram,
+                    };
+                    let state = match sock_data.state {
+                        0 => SocketState::Unbound,
+                        1 => SocketState::Bound,
+                        2 => SocketState::Listening,
+                        3 => SocketState::Connected,
+                        _ => SocketState::Closed,
+                    };
+
+                    let mut sock = SocketInfo::new(domain, sock_type, sock_data.protocol);
+                    sock.state = state;
+                    sock.send_buf_idx = sock_data.send_buf_idx;
+                    sock.recv_buf_idx = sock_data.recv_buf_idx;
+                    sock.global_pipes = sock_data.global_pipes;
+                    sock.shut_rd = sock_data.shut_rd;
+                    sock.shut_wr = sock_data.shut_wr;
+                    sock.bind_addr = sock_data.bind_addr;
+                    sock.bind_port = sock_data.bind_port;
+                    sock.peer_addr = sock_data.peer_addr;
+                    sock.peer_port = sock_data.peer_port;
+
+                    // Allocate socket slot in receiver
+                    let new_sock_idx = proc.sockets.alloc(sock);
+
+                    let new_host_handle = -((new_sock_idx as i64) + 1);
+                    let ofd_idx = proc.ofd_table.create(
+                        FileType::Socket,
+                        entry.status_flags,
+                        new_host_handle,
+                        entry.path.clone(),
+                    );
+                    if let Ok(new_fd) = proc.fd_table.alloc(crate::fd::OpenFileDescRef(ofd_idx), 0) {
+                        new_fds.push(new_fd);
+                    }
+                }
+            }
+            0 => {
+                // Pipe FD
+                let ofd_idx = proc.ofd_table.create(
+                    FileType::Pipe,
+                    entry.status_flags,
+                    entry.host_handle,
+                    entry.path.clone(),
+                );
+                if let Ok(new_fd) = proc.fd_table.alloc(crate::fd::OpenFileDescRef(ofd_idx), 0) {
+                    new_fds.push(new_fd);
+                }
+            }
+            _ => {
+                // Regular file / directory / char device — share via host_handle
+                let file_type = match entry.file_type {
+                    2 => FileType::Regular,
+                    3 => FileType::Directory,
+                    4 => FileType::CharDevice,
+                    _ => FileType::Regular,
+                };
+                let ofd_idx = proc.ofd_table.create(
+                    file_type,
+                    entry.status_flags,
+                    entry.host_handle,
+                    entry.path.clone(),
+                );
+                if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
+                    ofd.offset = entry.offset;
+                }
+                if let Ok(new_fd) = proc.fd_table.alloc(crate::fd::OpenFileDescRef(ofd_idx), 0) {
+                    new_fds.push(new_fd);
+                }
+            }
+        }
+    }
+
+    new_fds
+}
+
 /// recvmsg — receive a message from a socket.
 /// Parses msghdr to extract iov[0]. For DGRAM sockets, uses recvfrom to fill msg_name.
+/// Delivers SCM_RIGHTS ancillary data by installing FDs in the receiver's process.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_recvmsg(fd: i32, msg_ptr: *mut u8, flags: u32) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
 
-    // Parse msghdr: msg_name(0), msg_namelen(4), msg_iov(8), msg_iovlen(12)
+    // Parse msghdr: msg_name(0), msg_namelen(4), msg_iov(8), msg_iovlen(12),
+    //               msg_control(16), msg_controllen(20), msg_flags(24)
     let msg = unsafe { slice::from_raw_parts(msg_ptr, 28) };
     let name_ptr = u32::from_le_bytes([msg[0], msg[1], msg[2], msg[3]]) as usize;
     let name_len = u32::from_le_bytes([msg[4], msg[5], msg[6], msg[7]]) as usize;
     let iov_ptr = u32::from_le_bytes([msg[8], msg[9], msg[10], msg[11]]) as usize;
     let iov_len = u32::from_le_bytes([msg[12], msg[13], msg[14], msg[15]]);
+    let control_ptr = u32::from_le_bytes([msg[16], msg[17], msg[18], msg[19]]) as usize;
+    let control_len = u32::from_le_bytes([msg[20], msg[21], msg[22], msg[23]]) as usize;
 
     if iov_len == 0 {
         deliver_pending_signals(proc, &mut host);
@@ -3860,9 +4130,80 @@ pub extern "C" fn kernel_recvmsg(fd: i32, msg_ptr: *mut u8, flags: u32) -> i32 {
             Err(e) => -(e as i32),
         }
     };
-    // Zero out msg_controllen to indicate no ancillary data
-    let msg_mut = unsafe { slice::from_raw_parts_mut(msg_ptr, 28) };
-    msg_mut[20..24].copy_from_slice(&0u32.to_le_bytes());
+
+    // Check for SCM_RIGHTS ancillary data on the recv pipe.
+    // Pop ancillary data in a limited scope to avoid holding &mut pipe across
+    // install_scm_rights_fds (which modifies proc).
+    let mut ancillary_delivered = false;
+    if result > 0 {
+        let popped = 'pop: {
+            let (recv_idx, use_global) = {
+                let fd_entry = match proc.fd_table.get(fd) {
+                    Ok(e) => e,
+                    _ => break 'pop None,
+                };
+                let ofd = match proc.ofd_table.get(fd_entry.ofd_ref.0) {
+                    Some(o) if o.file_type == crate::ofd::FileType::Socket => o,
+                    _ => break 'pop None,
+                };
+                let sock_idx = (-(ofd.host_handle + 1)) as usize;
+                match proc.sockets.get(sock_idx) {
+                    Some(s) => (s.recv_buf_idx, s.global_pipes),
+                    None => break 'pop None,
+                }
+            };
+            let recv_idx = match recv_idx {
+                Some(i) => i,
+                None => break 'pop None,
+            };
+            let pipe = if use_global {
+                unsafe { crate::pipe::global_pipe_table().get_mut(recv_idx) }
+            } else {
+                proc.pipes.get_mut(recv_idx).and_then(|p| p.as_mut())
+            };
+            match pipe {
+                Some(p) => p.pop_ancillary(),
+                None => None,
+            }
+        };
+
+        if let Some(in_flight) = popped {
+            let new_fds = install_scm_rights_fds(proc, in_flight);
+            // Build cmsg response in msg_control buffer
+            if control_ptr != 0 && control_len > 0 && !new_fds.is_empty() {
+                let cmsg_data_len = new_fds.len() * 4;
+                let cmsg_len = 12 + cmsg_data_len; // cmsghdr + FD data
+                let cmsg_space = (cmsg_len + 3) & !3; // aligned
+                if cmsg_space <= control_len {
+                    let ctrl = unsafe {
+                        slice::from_raw_parts_mut(control_ptr as *mut u8, control_len)
+                    };
+                    // cmsg_len
+                    ctrl[0..4].copy_from_slice(&(cmsg_len as u32).to_le_bytes());
+                    // cmsg_level = SOL_SOCKET
+                    ctrl[4..8].copy_from_slice(&1u32.to_le_bytes());
+                    // cmsg_type = SCM_RIGHTS
+                    ctrl[8..12].copy_from_slice(&1u32.to_le_bytes());
+                    // FD numbers
+                    for (i, &new_fd) in new_fds.iter().enumerate() {
+                        let off = 12 + i * 4;
+                        ctrl[off..off + 4].copy_from_slice(&new_fd.to_le_bytes());
+                    }
+                    // Set msg_controllen
+                    let msg_mut = unsafe { slice::from_raw_parts_mut(msg_ptr, 28) };
+                    msg_mut[20..24].copy_from_slice(&(cmsg_space as u32).to_le_bytes());
+                    ancillary_delivered = true;
+                }
+            }
+        }
+    }
+
+    if !ancillary_delivered {
+        // Zero out msg_controllen to indicate no ancillary data
+        let msg_mut = unsafe { slice::from_raw_parts_mut(msg_ptr, 28) };
+        msg_mut[20..24].copy_from_slice(&0u32.to_le_bytes());
+    }
+
     deliver_pending_signals(proc, &mut host);
     result
 }
@@ -6559,6 +6900,26 @@ pub extern "C" fn kernel_get_fd_pipe_idx(pid: u32, fd: i32) -> i32 {
         }
         _ => -1,
     }
+}
+
+/// Check if a file descriptor has O_NONBLOCK set.
+/// Returns 1 if non-blocking, 0 if blocking, -1 if fd not found.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_is_fd_nonblock(pid: u32, fd: i32) -> i32 {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let proc = match table.get(pid) {
+        Some(p) => p,
+        None => return -1,
+    };
+    let entry = match proc.fd_table.get(fd) {
+        Ok(e) => e,
+        Err(_) => return -1,
+    };
+    let ofd = match proc.ofd_table.get(entry.ofd_ref.0) {
+        Some(o) => o,
+        None => return -1,
+    };
+    if ofd.status_flags & wasm_posix_shared::flags::O_NONBLOCK != 0 { 1 } else { 0 }
 }
 
 /// Look up the send pipe/buffer index for a fd (for writing).
