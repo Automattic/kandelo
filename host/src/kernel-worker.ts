@@ -1480,10 +1480,11 @@ export class CentralizedKernelWorker {
 
   /**
    * Schedule re-listen on a channel with fair scheduling.
-   * Uses queueMicrotask for low-latency re-listen, but periodically yields
-   * to the macrotask queue (setTimeout) to prevent channel starvation when
-   * one thread makes rapid non-blocking syscalls (e.g., spin-waiting on
-   * clock_gettime).
+   * Uses setImmediate for re-listen so that Atomics.waitAsync resolutions
+   * and other I/O callbacks can interleave between syscalls. This prevents
+   * cross-process starvation when one process makes rapid non-blocking
+   * syscalls (e.g., clock_gettime in a spin loop). Every 8 consecutive
+   * syscalls, yields fully via setTimeout(0).
    */
   private relistenChannel(channel: ChannelInfo): void {
     if (!this.processes.has(channel.pid)) return;
@@ -1492,7 +1493,7 @@ export class CentralizedKernelWorker {
       channel.consecutiveSyscalls = 0;
       setTimeout(() => this.listenOnChannel(channel), 0);
     } else {
-      queueMicrotask(() => this.listenOnChannel(channel));
+      setImmediate(() => this.listenOnChannel(channel));
     }
   }
 
