@@ -6521,3 +6521,81 @@ pub extern "C" fn kernel_get_socket_recv_pipe(pid: u32, fd: i32) -> i32 {
         None => -1,
     }
 }
+
+/// Look up the pipe/buffer index for a fd (for reading).
+/// For pipe fds: returns the pipe index.
+/// For socket fds: returns recv_buf_idx.
+/// Returns -1 if the fd is not a pipe or connected socket.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_get_fd_pipe_idx(pid: u32, fd: i32) -> i32 {
+    use crate::ofd::FileType;
+
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let proc = match table.get(pid) {
+        Some(p) => p,
+        None => return -1,
+    };
+    let entry = match proc.fd_table.get(fd) {
+        Ok(e) => e,
+        Err(_) => return -1,
+    };
+    let ofd = match proc.ofd_table.get(entry.ofd_ref.0) {
+        Some(o) => o,
+        None => return -1,
+    };
+    match ofd.file_type {
+        FileType::Pipe if ofd.host_handle < 0 => {
+            (-(ofd.host_handle + 1)) as i32
+        }
+        FileType::Socket => {
+            let sock_idx = (-(ofd.host_handle + 1)) as usize;
+            match proc.sockets.get(sock_idx) {
+                Some(sock) => match sock.recv_buf_idx {
+                    Some(idx) => idx as i32,
+                    None => -1,
+                },
+                None => -1,
+            }
+        }
+        _ => -1,
+    }
+}
+
+/// Look up the send pipe/buffer index for a fd (for writing).
+/// For pipe fds: returns the pipe index.
+/// For socket fds: returns send_buf_idx.
+/// Returns -1 if the fd is not a pipe or connected socket.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_get_fd_send_pipe_idx(pid: u32, fd: i32) -> i32 {
+    use crate::ofd::FileType;
+
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let proc = match table.get(pid) {
+        Some(p) => p,
+        None => return -1,
+    };
+    let entry = match proc.fd_table.get(fd) {
+        Ok(e) => e,
+        Err(_) => return -1,
+    };
+    let ofd = match proc.ofd_table.get(entry.ofd_ref.0) {
+        Some(o) => o,
+        None => return -1,
+    };
+    match ofd.file_type {
+        FileType::Pipe if ofd.host_handle < 0 => {
+            (-(ofd.host_handle + 1)) as i32
+        }
+        FileType::Socket => {
+            let sock_idx = (-(ofd.host_handle + 1)) as usize;
+            match proc.sockets.get(sock_idx) {
+                Some(sock) => match sock.send_buf_idx {
+                    Some(idx) => idx as i32,
+                    None => -1,
+                },
+                None => -1,
+            }
+        }
+        _ => -1,
+    }
+}

@@ -111,6 +111,14 @@ const F_OFD_SETLKW = 38;
 /** Retry interval for EAGAIN polling (ms) */
 const EAGAIN_RETRY_MS = 1;
 
+/** Profiling: enabled via WASM_POSIX_PROFILE env var. Zero-cost when disabled. */
+const PROFILING = typeof process !== 'undefined' && !!process.env?.WASM_POSIX_PROFILE;
+
+/** Read-like syscalls that may block on pipe/socket data */
+const READ_LIKE_SYSCALLS = new Set([3, 56, 63, 64, 82, 138]); // READ, RECV, RECVFROM, PREAD, READV, RECVMSG
+/** Write-like syscalls that may produce pipe/socket data */
+const WRITE_LIKE_SYSCALLS = new Set([4, 55, 62, 65, 81, 137]); // WRITE, SEND, SENDTO, PWRITE, WRITEV, SENDMSG
+
 /** Channel layout offsets */
 const CH_STATUS = 0;
 const CH_SYSCALL = 4;
@@ -557,6 +565,14 @@ export class CentralizedKernelWorker {
   }>();
   /** Flag to coalesce cross-process wakeup microtasks */
   private wakeScheduled = false;
+  /** Pending pipe/socket readers: pipeIdx → array of waiting channels.
+   * When a read-like syscall returns EAGAIN on a pipe/socket fd, the reader
+   * is registered here instead of using a blind setImmediate retry.
+   * When a write completes to the same pipe, readers are woken immediately. */
+  private pendingPipeReaders = new Map<number, Array<{channel: ChannelInfo, pid: number}>>();
+  /** Profiling data: syscallNr → {count, totalTimeMs, retries} */
+  private profileData: Map<number, {count: number; totalTimeMs: number; retries: number}> | null =
+    PROFILING ? new Map() : null;
   /** Per-process stdin buffers: pid → { data, offset } */
   private stdinBuffers = new Map<number, { data: Uint8Array; offset: number }>();
   /** Active TCP connections per process for piggyback flushing */
@@ -811,6 +827,8 @@ export class CentralizedKernelWorker {
     const selectEntry = this.pendingSelectRetries.get(pid);
     if (selectEntry?.timer) clearImmediate(selectEntry.timer);
     this.pendingSelectRetries.delete(pid);
+    // Clean up pending pipe readers
+    this.cleanupPendingPipeReaders(pid);
 
     // Remove from kernel process table
     this.removeFromKernelProcessTable(pid);
@@ -978,6 +996,25 @@ export class CentralizedKernelWorker {
   }
 
   private handleSyscall(channel: ChannelInfo): void {
+    if (PROFILING) {
+      const pv = new DataView(channel.memory.buffer, channel.channelOffset);
+      const nr = pv.getUint32(CH_SYSCALL, true);
+      const start = performance.now();
+      this._handleSyscallInner(channel);
+      const elapsed = performance.now() - start;
+      let entry = this.profileData!.get(nr);
+      if (!entry) {
+        entry = { count: 0, totalTimeMs: 0, retries: 0 };
+        this.profileData!.set(nr, entry);
+      }
+      entry.count++;
+      entry.totalTimeMs += elapsed;
+      return;
+    }
+    this._handleSyscallInner(channel);
+  }
+
+  private _handleSyscallInner(channel: ChannelInfo): void {
     const processView = new DataView(channel.memory.buffer, channel.channelOffset);
 
     // Read syscall number and args from process channel
@@ -1426,6 +1463,12 @@ export class CentralizedKernelWorker {
     Atomics.store(i32View, CH_STATUS / 4, CH_COMPLETE);
     Atomics.notify(i32View, CH_STATUS / 4, 1);
 
+    // Event-driven pipe wakeup: if a write-like syscall succeeded, wake
+    // any readers blocked on the same pipe/socket.
+    if (retVal > 0 && WRITE_LIKE_SYSCALLS.has(syscallNr)) {
+      this.wakePendingPipeReaders(channel.pid, origArgs[0]);
+    }
+
     // Wake other processes' blocked poll/select retries — a syscall from this
     // process may have written to a cross-process pipe, accepted a connection,
     // or changed socket state that another process is waiting on.
@@ -1522,7 +1565,7 @@ export class CentralizedKernelWorker {
    */
   private scheduleWakeBlockedRetries(): void {
     if (this.wakeScheduled) return;
-    if (this.pendingPollRetries.size === 0 && this.pendingSelectRetries.size === 0) return;
+    if (this.pendingPollRetries.size === 0 && this.pendingSelectRetries.size === 0 && this.pendingPipeReaders.size === 0) return;
     this.wakeScheduled = true;
     queueMicrotask(() => {
       this.wakeScheduled = false;
@@ -1554,6 +1597,102 @@ export class CentralizedKernelWorker {
       clearImmediate(entry.timer);
       this.handlePselect6(entry.channel, entry.origArgs);
     }
+
+    // Also wake all pending pipe readers — a cross-process write may have
+    // made data available on pipes that readers are waiting on.
+    if (this.pendingPipeReaders.size > 0) {
+      const pipeEntries = Array.from(this.pendingPipeReaders.entries());
+      this.pendingPipeReaders.clear();
+      for (const [, readers] of pipeEntries) {
+        for (const reader of readers) {
+          if (this.processes.has(reader.pid)) {
+            this.retrySyscall(reader.channel);
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * Wake pending pipe readers for a pipe that was just written to.
+   * Looks up the write fd's send pipe index and wakes all readers
+   * registered on that pipe.
+   */
+  private wakePendingPipeReaders(pid: number, fd: number): void {
+    if (this.pendingPipeReaders.size === 0) return;
+
+    const getSendPipeIdx = this.kernelInstance!.exports.kernel_get_fd_send_pipe_idx as
+      ((pid: number, fd: number) => number) | undefined;
+    if (!getSendPipeIdx) return;
+
+    const pipeIdx = getSendPipeIdx(pid, fd);
+    if (pipeIdx < 0) return;
+
+    const readers = this.pendingPipeReaders.get(pipeIdx);
+    if (!readers || readers.length === 0) return;
+
+    // Remove all readers for this pipe and wake them
+    this.pendingPipeReaders.delete(pipeIdx);
+    for (const reader of readers) {
+      if (this.processes.has(reader.pid)) {
+        this.retrySyscall(reader.channel);
+      }
+    }
+  }
+
+  /**
+   * Remove a process's entries from pendingPipeReaders.
+   * Called during process cleanup.
+   */
+  private cleanupPendingPipeReaders(pid: number): void {
+    for (const [pipeIdx, readers] of this.pendingPipeReaders) {
+      const filtered = readers.filter(r => r.pid !== pid);
+      if (filtered.length === 0) {
+        this.pendingPipeReaders.delete(pipeIdx);
+      } else {
+        this.pendingPipeReaders.set(pipeIdx, filtered);
+      }
+    }
+  }
+
+  /**
+   * Dump syscall profiling data to stderr. Call from your serve script:
+   *   process.on('SIGINT', () => { kernelWorker.dumpProfile(); process.exit(); });
+   *
+   * Only produces output when WASM_POSIX_PROFILE=1 env var is set.
+   */
+  dumpProfile(): void {
+    if (!this.profileData) {
+      console.error('[profile] Profiling not enabled. Set WASM_POSIX_PROFILE=1');
+      return;
+    }
+
+    const entries = Array.from(this.profileData.entries())
+      .sort((a, b) => b[1].totalTimeMs - a[1].totalTimeMs);
+
+    let totalCalls = 0;
+    let totalTime = 0;
+    let totalRetries = 0;
+
+    console.error('\n=== Syscall Profile ===');
+    console.error(`${'Syscall'.padEnd(8)} ${'Count'.padStart(10)} ${'Time(ms)'.padStart(12)} ${'Avg(ms)'.padStart(10)} ${'Retries'.padStart(10)}`);
+    console.error('-'.repeat(52));
+
+    for (const [nr, data] of entries) {
+      totalCalls += data.count;
+      totalTime += data.totalTimeMs;
+      totalRetries += data.retries;
+      console.error(
+        `${String(nr).padEnd(8)} ${String(data.count).padStart(10)} ${data.totalTimeMs.toFixed(2).padStart(12)} ${(data.totalTimeMs / data.count).toFixed(3).padStart(10)} ${String(data.retries).padStart(10)}`
+      );
+    }
+
+    console.error('-'.repeat(52));
+    console.error(
+      `${'TOTAL'.padEnd(8)} ${String(totalCalls).padStart(10)} ${totalTime.toFixed(2).padStart(12)} ${(totalTime / (totalCalls || 1)).toFixed(3).padStart(10)} ${String(totalRetries).padStart(10)}`
+    );
+    console.error(`Pending pipe readers: ${this.pendingPipeReaders.size}`);
+    console.error('=== End Profile ===\n');
   }
 
   private flushTcpSendPipes(pid: number): void {
@@ -1688,7 +1827,40 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    // Default: retry on next event loop iteration (pipe read/write, socket operations, etc.)
+    // Event-driven pipe/socket wakeup: if this is a read-like syscall on a
+    // pipe/socket fd, register the reader so a matching write can wake it
+    // immediately instead of polling via setImmediate.
+    if (READ_LIKE_SYSCALLS.has(syscallNr)) {
+      const fd = origArgs[0];
+      const getFdPipeIdx = this.kernelInstance!.exports.kernel_get_fd_pipe_idx as
+        ((pid: number, fd: number) => number) | undefined;
+      if (getFdPipeIdx) {
+        const pipeIdx = getFdPipeIdx(channel.pid, fd);
+        if (pipeIdx >= 0) {
+          let readers = this.pendingPipeReaders.get(pipeIdx);
+          if (!readers) {
+            readers = [];
+            this.pendingPipeReaders.set(pipeIdx, readers);
+          }
+          // Avoid duplicate registrations for the same channel
+          if (!readers.some(r => r.channel === channel)) {
+            readers.push({ channel, pid: channel.pid });
+          }
+          if (PROFILING) {
+            const entry = this.profileData!.get(syscallNr);
+            if (entry) entry.retries++;
+          }
+          return;
+        }
+      }
+    }
+
+    if (PROFILING) {
+      const entry = this.profileData!.get(syscallNr);
+      if (entry) entry.retries++;
+    }
+
+    // Default: retry on next event loop iteration (non-pipe operations)
     setImmediate(() => {
       if (this.processes.has(channel.pid)) {
         this.retrySyscall(channel);
@@ -3640,6 +3812,16 @@ export class CentralizedKernelWorker {
       drainInbound();
       // Wake any process blocked on poll/pselect6 watching this recv pipe
       this.wakeBlockedPoll(pid, recvPipeIdx);
+      // Wake any process blocked on read/recv for this pipe
+      const readers = this.pendingPipeReaders.get(recvPipeIdx);
+      if (readers && readers.length > 0) {
+        this.pendingPipeReaders.delete(recvPipeIdx);
+        for (const reader of readers) {
+          if (this.processes.has(reader.pid)) {
+            this.retrySyscall(reader.channel);
+          }
+        }
+      }
       this.scheduleWakeBlockedRetries();
       // Schedule pump to handle outbound + close detection
       schedulePump();

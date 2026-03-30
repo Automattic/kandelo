@@ -168,20 +168,22 @@ impl PipeBuffer {
 /// Table of pipe buffers shared across all processes in centralized mode.
 pub struct PipeTable {
     pipes: Vec<Option<PipeBuffer>>,
+    free_list: Vec<usize>,
 }
 
 impl PipeTable {
     pub const fn new() -> Self {
-        PipeTable { pipes: Vec::new() }
+        PipeTable {
+            pipes: Vec::new(),
+            free_list: Vec::new(),
+        }
     }
 
     /// Allocate a pipe buffer in the table. Returns the index.
     pub fn alloc(&mut self, pipe: PipeBuffer) -> usize {
-        for (i, slot) in self.pipes.iter().enumerate() {
-            if slot.is_none() {
-                self.pipes[i] = Some(pipe);
-                return i;
-            }
+        if let Some(i) = self.free_list.pop() {
+            self.pipes[i] = Some(pipe);
+            return i;
         }
         let i = self.pipes.len();
         self.pipes.push(Some(pipe));
@@ -203,6 +205,7 @@ impl PipeTable {
         if let Some(Some(pipe)) = self.pipes.get(idx) {
             if pipe.is_fully_closed() {
                 self.pipes[idx] = None;
+                self.free_list.push(idx);
             }
         }
     }
