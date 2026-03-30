@@ -1839,7 +1839,10 @@ export class CentralizedKernelWorker {
     // Non-blocking FD check: if the FD has O_NONBLOCK set, return EAGAIN
     // immediately instead of retrying. This is critical for programs like
     // nginx that use non-blocking I/O and expect EAGAIN returned promptly.
-    if (READ_LIKE_SYSCALLS.has(syscallNr) || WRITE_LIKE_SYSCALLS.has(syscallNr)) {
+    // Covers read/write, accept, accept4, and connect syscalls.
+    if (READ_LIKE_SYSCALLS.has(syscallNr) || WRITE_LIKE_SYSCALLS.has(syscallNr)
+        || syscallNr === 53 /* ACCEPT */ || syscallNr === 384 /* ACCEPT4 */
+        || syscallNr === 54 /* CONNECT */) {
       const fd = origArgs[0];
       const isFdNonblock = this.kernelInstance!.exports.kernel_is_fd_nonblock as
         ((pid: number, fd: number) => number) | undefined;
@@ -2421,6 +2424,12 @@ export class CentralizedKernelWorker {
 
     const retVal = kernelView.getInt32(CH_RETURN, true);
     const errVal = kernelView.getUint32(CH_ERRNO, true);
+
+    if (retVal === -1 && errVal === EAGAIN) {
+      this.handleBlockingRetry(channel, 137, origArgs);
+      return;
+    }
+
     this.completeChannel(channel, 137, origArgs, undefined, retVal, errVal);
   }
 
