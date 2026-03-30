@@ -18,6 +18,7 @@ import { VirtualPlatformIO } from "../../../host/src/vfs/vfs";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import { DeviceFileSystem } from "../../../host/src/vfs/device-fs";
 import { BrowserTimeProvider } from "../../../host/src/vfs/time";
+import { patchWasmForThread } from "../../../host/src/worker-main";
 import type {
   CentralizedWorkerInitMessage,
   CentralizedThreadInitMessage,
@@ -48,6 +49,8 @@ export interface BrowserKernelOptions {
   onExec?: (pid: number, path: string) => Promise<ArrayBuffer | null>;
   /** Called when a process requests a TCP listener (for service worker bridging) */
   onListenTcp?: (pid: number, fd: number, port: number) => void;
+  /** Pre-compiled thread module for clone(). Avoids recompiling large wasm for each thread. */
+  threadModule?: WebAssembly.Module;
 }
 
 interface ProcessInfo {
@@ -459,7 +462,9 @@ export class BrowserKernel {
 
     const threadChannelOffset = this.nextThreadChannelPage * PAGE_SIZE;
     const tlsAllocAddr = (this.nextThreadChannelPage - 2) * PAGE_SIZE;
-    this.nextThreadChannelPage -= 3;
+    // Each thread needs 4 pages: 2 for channel (65576 bytes spills past 1 page)
+    // + 1 gap page + 1 for TLS
+    this.nextThreadChannelPage -= 4;
     new Uint8Array(memory.buffer, threadChannelOffset, CH_TOTAL_SIZE).fill(0);
     new Uint8Array(memory.buffer, tlsAllocAddr, PAGE_SIZE).fill(0);
 
@@ -470,6 +475,7 @@ export class BrowserKernel {
       pid,
       tid,
       programBytes: processInfo.programBytes,
+      programModule: this.options.threadModule,
       memory,
       channelOffset: threadChannelOffset,
       fnPtr,

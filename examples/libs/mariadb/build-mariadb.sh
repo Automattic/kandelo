@@ -107,6 +107,13 @@ print('Patched', path)
 "
 fi
 
+# 2. Patch mariadb_connector_c.cmake: disable SSL for cross-builds
+CONC_CMAKE="$SRC_DIR/cmake/mariadb_connector_c.cmake"
+if grep -q 'IF(NOT CONC_WITH_SSL)' "$CONC_CMAKE" 2>/dev/null; then
+    echo "  Patching cmake/mariadb_connector_c.cmake (disable SSL for cross-build)..."
+    sed -i '' 's/IF(NOT CONC_WITH_SSL)/IF(NOT CONC_WITH_SSL AND NOT CONC_WITH_SSL STREQUAL "OFF")/' "$CONC_CMAKE"
+fi
+
 # Apply any .patch files from patches/ directory
 PATCH_DIR="$SCRIPT_DIR/patches"
 if [ -d "$PATCH_DIR" ]; then
@@ -158,8 +165,76 @@ if [ ! -f "$HOST_BUILD_DIR/import_executables.cmake" ]; then
     echo "==> Host build complete."
 fi
 
+# --- Set up libc++ headers for C++ support ---
+LLVM_PREFIX="$(brew --prefix llvm 2>/dev/null || echo /opt/homebrew/opt/llvm)"
+LLVM_CLANG="$LLVM_PREFIX/bin/clang"
+LLVM_CXX_HEADERS="$LLVM_PREFIX/include/c++/v1"
+
+if [ ! -f "$SYSROOT/include/c++/v1/__config" ]; then
+    echo "==> Installing libc++ headers into sysroot..."
+    mkdir -p "$SYSROOT/include/c++/v1"
+    cp -R "$LLVM_CXX_HEADERS/"* "$SYSROOT/include/c++/v1/"
+
+    # Fix __config_site for wasm32/musl target
+    CONFIG_SITE="$SYSROOT/include/c++/v1/__config_site"
+    if [ -f "$CONFIG_SITE" ]; then
+        sed -i '' 's/_LIBCPP_HAS_MUSL_LIBC 0/_LIBCPP_HAS_MUSL_LIBC 1/' "$CONFIG_SITE"
+        sed -i '' 's/_LIBCPP_HAS_THREAD_API_PTHREAD 0/_LIBCPP_HAS_THREAD_API_PTHREAD 1/' "$CONFIG_SITE"
+        sed -i '' 's/^#define _LIBCPP_PSTL_BACKEND_LIBDISPATCH/\/* #undef _LIBCPP_PSTL_BACKEND_LIBDISPATCH *\/\n#define _LIBCPP_PSTL_BACKEND_SERIAL/' "$CONFIG_SITE"
+    fi
+
+    # Create stub libc++ libraries (MariaDB doesn't actually call C++ stdlib at runtime)
+    /opt/homebrew/opt/llvm/bin/llvm-ar rcs "$SYSROOT/lib/libc++.a"
+    /opt/homebrew/opt/llvm/bin/llvm-ar rcs "$SYSROOT/lib/libc++abi.a"
+    echo "==> libc++ headers installed"
+fi
+
+# --- Build PCRE2 for wasm32 if not present ---
+if [ ! -f "$SYSROOT/lib/libpcre2-8.a" ]; then
+    echo "==> Building PCRE2 for wasm32..."
+    PCRE2_VERSION="10.44"
+    PCRE2_DIR="/tmp/pcre2-${PCRE2_VERSION}"
+    PCRE2_BUILD="/tmp/pcre2-wasm-build"
+
+    if [ ! -d "$PCRE2_DIR" ]; then
+        curl -fsSL "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-${PCRE2_VERSION}/pcre2-${PCRE2_VERSION}.tar.gz" -o "/tmp/pcre2.tar.gz"
+        tar xzf "/tmp/pcre2.tar.gz" -C /tmp
+        rm /tmp/pcre2.tar.gz
+    fi
+
+    rm -rf "$PCRE2_BUILD"
+    mkdir -p "$PCRE2_BUILD"
+    cd "$PCRE2_BUILD"
+
+    cmake "$PCRE2_DIR" \
+        -DCMAKE_C_COMPILER="$LLVM_CLANG" \
+        -DCMAKE_C_FLAGS="--target=wasm32-unknown-unknown -matomics -mbulk-memory -mexception-handling -fno-exceptions -fno-trapping-math --sysroot=$SYSROOT -O2 -DNDEBUG" \
+        -DCMAKE_AR="$LLVM_PREFIX/bin/llvm-ar" \
+        -DCMAKE_RANLIB="$LLVM_PREFIX/bin/llvm-ranlib" \
+        -DCMAKE_SYSTEM_NAME=Linux \
+        -DCMAKE_SYSTEM_PROCESSOR=wasm32 \
+        -DCMAKE_CROSSCOMPILING=TRUE \
+        -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
+        -DCMAKE_SIZEOF_VOID_P=4 \
+        -DPCRE2_BUILD_TESTS=OFF \
+        -DPCRE2_BUILD_PCRE2GREP=OFF \
+        -DBUILD_SHARED_LIBS=OFF \
+        -DPCRE2_SUPPORT_JIT=OFF \
+        -DPCRE2_SUPPORT_UNICODE=ON \
+        2>&1 | tail -3
+
+    make -j"$NPROC" pcre2-8-static pcre2-posix-static 2>&1 | tail -3
+
+    cp "$PCRE2_BUILD/libpcre2-8.a" "$SYSROOT/lib/"
+    cp "$PCRE2_BUILD/libpcre2-posix.a" "$SYSROOT/lib/"
+    cp "$PCRE2_BUILD/pcre2.h" "$SYSROOT/include/"
+    cp "$PCRE2_DIR/src/pcre2posix.h" "$SYSROOT/include/"
+
+    cd "$SCRIPT_DIR"
+    echo "==> PCRE2 installed to sysroot"
+fi
+
 # --- Pre-compile glue objects ---
-LLVM_CLANG="/opt/homebrew/opt/llvm/bin/clang"
 WASM32_COMPILE_FLAGS="--target=wasm32-unknown-unknown -matomics -mbulk-memory -mexception-handling -mllvm -wasm-enable-sjlj -fno-exceptions -fno-trapping-math --sysroot=$SYSROOT"
 
 GLUE_OBJ_DIR="$SCRIPT_DIR/mariadb-glue-objs"
@@ -199,6 +274,7 @@ cmake "$SRC_DIR" \
     -DDISABLE_SHARED=ON \
     \
     -DWITH_SSL=OFF \
+    -DCONC_WITH_SSL=OFF \
     -DWITH_PCRE=system \
     -DWITH_EDITLINE=bundled \
     -DWITH_ZLIB=system \
@@ -257,6 +333,7 @@ if [ -f "$MYSQLD_BIN" ]; then
     # Install to output directory
     mkdir -p "$INSTALL_DIR/bin" "$INSTALL_DIR/share/mysql"
     cp "$MYSQLD_BIN" "$INSTALL_DIR/bin/"
+    cp "$MYSQLD_BIN" "$INSTALL_DIR/bin/mariadbd.wasm"  # For Vite browser bundling
 
     # Copy system tables SQL for bootstrap
     if [ -d "$SRC_DIR/scripts" ]; then
