@@ -35,13 +35,10 @@ EXPECTED_FAIL=(
     sigaltstack/7-1
     sigaltstack/8-1
     # (sigwaitinfo/8-1 removed — RT signal queuing now works)
-    # munmap: file-backed mmap returns EPERM (not implemented)
+    # munmap: 1-1 and 1-2 still fail (require real page unmapping)
+    # (2-1, 3-1, 4-1, 9-1 now pass — mmap/munmap improvements in PR #100)
     munmap/1-1
     munmap/1-2
-    munmap/2-1
-    munmap/3-1
-    munmap/4-1
-    munmap/9-1
 
     # ── Not implemented / stubs ──
     mlock/12-1        # needs pwd.h

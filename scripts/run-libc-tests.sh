@@ -29,7 +29,7 @@ MATH_RELAXED_EXPECTED_FAIL=(tgamma j0 y0 y0f)  # Tests with inline checks that b
 # no file-backed mmap for sem_open).
 FUNCTIONAL_EXPECTED_FAIL=(
     pthread_cancel
-    sem_open
+    # (sem_open now passes — MAP_SHARED mmap + shm_open working since PR #100)
     # Centralized mode: SysV IPC not wired through host imports
     ipc_msg
     ipc_sem
