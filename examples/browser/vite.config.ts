@@ -25,6 +25,7 @@ export default defineConfig({
         "nginx-php": path.resolve(__dirname, "pages/nginx-php/index.html"),
         mariadb: path.resolve(__dirname, "pages/mariadb/index.html"),
         wordpress: path.resolve(__dirname, "pages/wordpress/index.html"),
+        lamp: path.resolve(__dirname, "pages/lamp/index.html"),
       },
     },
   },
