@@ -1,7 +1,7 @@
-import { centralizedWorkerMain } from "./worker-main";
-import type { CentralizedWorkerInitMessage } from "./worker-protocol";
+import { centralizedWorkerMain, centralizedThreadWorkerMain } from "./worker-main";
+import type { CentralizedWorkerInitMessage, CentralizedThreadInitMessage } from "./worker-protocol";
 
-// Web Worker / Service Worker global scope
+// Web Worker global scope
 const sw = globalThis as unknown as {
   onmessage: ((e: MessageEvent) => void) | null;
   postMessage(msg: unknown, transfer?: Transferable[]): void;
@@ -20,6 +20,10 @@ sw.onmessage = (e: MessageEvent) => {
   };
   if (data.type === "centralized_init") {
     centralizedWorkerMain(port, e.data as CentralizedWorkerInitMessage);
+  } else if (data.type === "centralized_thread_init") {
+    centralizedThreadWorkerMain(port, e.data as CentralizedThreadInitMessage).catch((err) => {
+      console.error(`[worker-entry-browser] centralizedThreadWorkerMain error:`, err);
+    });
   } else {
     throw new Error(`Unknown worker init type: ${data.type}`);
   }
