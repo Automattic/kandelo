@@ -45,6 +45,16 @@ impl MemoryManager {
         }
     }
 
+    /// Read-only access to the mmap mappings (for fork serialization).
+    pub fn mappings(&self) -> &[MappedRegion] {
+        &self.mappings
+    }
+
+    /// Restore mmap mappings from fork (used by deserialize_fork_state).
+    pub fn set_mappings(&mut self, mappings: Vec<MappedRegion>) {
+        self.mappings = mappings;
+    }
+
     /// Allocate an anonymous mapping. Returns the base address.
     /// If `hint` is non-zero and MAP_FIXED is set, maps at exactly that address
     /// (unmapping any overlapping regions first).

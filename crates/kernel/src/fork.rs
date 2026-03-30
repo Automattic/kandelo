@@ -21,7 +21,7 @@ use wasm_posix_shared::Errno;
 
 use crate::fd::{FdEntry, FdTable, OpenFileDescRef};
 use crate::lock::LockTable;
-use crate::memory::MemoryManager;
+use crate::memory::{MappedRegion, MemoryManager};
 use crate::ofd::{FileType, OfdTable, OpenFileDesc};
 use crate::process::{Process, ProcessState};
 use crate::signal::{SignalHandler, SignalState};
@@ -30,7 +30,7 @@ use crate::terminal::{TerminalState, WinSize, NCCS};
 
 const FORK_MAGIC: u32 = 0x464F524B; // "FORK"
 const EXEC_MAGIC: u32 = 0x45584543; // "EXEC"
-const FORK_VERSION: u32 = 4;
+const FORK_VERSION: u32 = 5;
 
 // Bounds for deserialization to prevent OOM from malformed buffers.
 const MAX_FDS: u32 = 65536;
@@ -341,6 +341,16 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
     // ── Program break ──
     w.write_u32(proc.memory.get_brk())?;
 
+    // ── mmap mappings (v5) ──
+    let mappings = proc.memory.mappings();
+    w.write_u32(mappings.len() as u32)?;
+    for m in mappings {
+        w.write_u32(m.addr)?;
+        w.write_u32(m.len)?;
+        w.write_u32(m.prot)?;
+        w.write_u32(m.flags)?;
+    }
+
     // ── Fork exec state (v3) ──
     // exec_path: u32 len then bytes (0 = none)
     match &proc.fork_exec_path {
@@ -630,6 +640,23 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
     let program_break = r.read_u32()?;
     let mut memory = MemoryManager::new();
     memory.set_brk(program_break);
+
+    // ── mmap mappings (v5) ──
+    if r.remaining() >= 4 {
+        let mapping_count = r.read_u32()? as usize;
+        if mapping_count > 4096 {
+            return Err(Errno::EINVAL);
+        }
+        let mut mappings = Vec::with_capacity(mapping_count);
+        for _ in 0..mapping_count {
+            let addr = r.read_u32()?;
+            let len = r.read_u32()?;
+            let prot = r.read_u32()?;
+            let flags = r.read_u32()?;
+            mappings.push(MappedRegion { addr, len, prot, flags });
+        }
+        memory.set_mappings(mappings);
+    }
 
     // ── Fork exec state (v3) ──
     let fork_exec_path = if r.remaining() >= 4 {
@@ -1395,6 +1422,38 @@ mod tests {
         let child = deserialize_fork_state(&buf[..written], 42).unwrap();
 
         assert_eq!(child.memory.get_brk(), 0x02000000);
+    }
+
+    #[test]
+    fn test_fork_inherits_mmap_mappings() {
+        use wasm_posix_shared::mmap::*;
+        let mut proc = Process::new(1);
+        // Parent has several mmap allocations
+        let a1 = proc.memory.mmap_anonymous(0, 0x10000, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+        let a2 = proc.memory.mmap_anonymous(0, 0x20000, PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS);
+        let a3 = proc.memory.mmap_anonymous(0, 0x30000, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS);
+        assert_ne!(a1, MAP_FAILED);
+        assert_ne!(a2, MAP_FAILED);
+        assert_ne!(a3, MAP_FAILED);
+
+        let mut buf = vec![0u8; 64 * 1024];
+        let written = serialize_fork_state(&proc, &mut buf).unwrap();
+        let mut child = deserialize_fork_state(&buf[..written], 42).unwrap();
+
+        // Child must inherit all parent's mmap mappings
+        let child_mappings = child.memory.mappings();
+        assert_eq!(child_mappings.len(), 3);
+        assert_eq!(child_mappings[0].addr, a1);
+        assert_eq!(child_mappings[0].len, 0x10000);
+        assert_eq!(child_mappings[1].addr, a2);
+        assert_eq!(child_mappings[1].len, 0x20000);
+        assert_eq!(child_mappings[2].addr, a3);
+        assert_eq!(child_mappings[2].len, 0x30000);
+
+        // Child's next mmap must NOT overlap parent's regions
+        let a4 = child.memory.mmap_anonymous(0, 0x10000, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+        assert_ne!(a4, MAP_FAILED);
+        assert!(a4 >= a3 + 0x30000, "child mmap at {:#x} overlaps parent mapping at {:#x}", a4, a3);
     }
 
     #[test]
