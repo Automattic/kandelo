@@ -484,12 +484,13 @@ pub fn sys_read(
                 }
                 SocketDomain::Unix => {
                     let recv_buf_idx = sock.recv_buf_idx.ok_or(Errno::ENOTCONN)?;
+                    let use_global = sock.global_pipes;
                     loop {
-                        let pipe = proc
-                            .pipes
-                            .get_mut(recv_buf_idx)
-                            .and_then(|p| p.as_mut())
-                            .ok_or(Errno::EBADF)?;
+                        let pipe = if use_global {
+                            unsafe { crate::pipe::global_pipe_table().get_mut(recv_buf_idx) }
+                        } else {
+                            proc.pipes.get_mut(recv_buf_idx).and_then(|p| p.as_mut())
+                        }.ok_or(Errno::EBADF)?;
                         let n = pipe.read(buf);
                         if n > 0 {
                             return Ok(n);
@@ -878,12 +879,13 @@ pub fn sys_write(
                         return Ok(buf.len()); // bit-bucket for SOCK_DGRAM (syslog pattern)
                     }
                     let send_buf_idx = sock.send_buf_idx.ok_or(Errno::ENOTCONN)?;
+                    let use_global = sock.global_pipes;
                     loop {
-                        let pipe = proc
-                            .pipes
-                            .get_mut(send_buf_idx)
-                            .and_then(|p| p.as_mut())
-                            .ok_or(Errno::EBADF)?;
+                        let pipe = if use_global {
+                            unsafe { crate::pipe::global_pipe_table().get_mut(send_buf_idx) }
+                        } else {
+                            proc.pipes.get_mut(send_buf_idx).and_then(|p| p.as_mut())
+                        }.ok_or(Errno::EBADF)?;
                         if !pipe.is_read_end_open() {
                             proc.signals.raise(wasm_posix_shared::signal::SIGPIPE);
                             return Err(Errno::EPIPE);
@@ -3222,23 +3224,25 @@ pub fn sys_socketpair(
         _ => return Err(Errno::EPROTOTYPE),
     };
 
-    // Allocate two ring buffers: buf_ab (A→B) and buf_ba (B→A)
-    let (buf_ab_idx, buf_ba_idx) = proc.alloc_pipe_pair(
-        PipeBuffer::new(DEFAULT_PIPE_CAPACITY),
-        PipeBuffer::new(DEFAULT_PIPE_CAPACITY),
-    );
+    // Allocate two ring buffers in the GLOBAL pipe table so they survive fork.
+    // After fork, both parent and child share these buffers (like POSIX).
+    let pipe_table = unsafe { crate::pipe::global_pipe_table() };
+    let buf_ab_idx = pipe_table.alloc(PipeBuffer::new(DEFAULT_PIPE_CAPACITY));
+    let buf_ba_idx = pipe_table.alloc(PipeBuffer::new(DEFAULT_PIPE_CAPACITY));
 
     // Socket A: sends to buf_ab, receives from buf_ba
     let mut sock_a = SocketInfo::new(SocketDomain::Unix, stype, 0);
     sock_a.state = SocketState::Connected;
     sock_a.send_buf_idx = Some(buf_ab_idx);
     sock_a.recv_buf_idx = Some(buf_ba_idx);
+    sock_a.global_pipes = true;
 
     // Socket B: sends to buf_ba, receives from buf_ab
     let mut sock_b = SocketInfo::new(SocketDomain::Unix, stype, 0);
     sock_b.state = SocketState::Connected;
     sock_b.send_buf_idx = Some(buf_ba_idx);
     sock_b.recv_buf_idx = Some(buf_ab_idx);
+    sock_b.global_pipes = true;
 
     let sock_a_idx = proc.sockets.alloc(sock_a);
     let sock_b_idx = proc.sockets.alloc(sock_b);
@@ -4659,6 +4663,21 @@ pub fn sys_ioctl(proc: &mut Process, fd: i32, request: u32, buf: &mut [u8]) -> R
             ofd.status_flags |= wasm_posix_shared::flags::O_NONBLOCK;
         } else {
             ofd.status_flags &= !wasm_posix_shared::flags::O_NONBLOCK;
+        }
+        return Ok(());
+    }
+
+    // FIOASYNC — toggle O_ASYNC on the OFD status_flags
+    if request == 0x5452 {
+        if buf.len() < 4 {
+            return Err(Errno::EINVAL);
+        }
+        let val = i32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
+        let ofd = proc.ofd_table.get_mut(ofd_idx).ok_or(Errno::EBADF)?;
+        if val != 0 {
+            ofd.status_flags |= wasm_posix_shared::flags::O_ASYNC;
+        } else {
+            ofd.status_flags &= !wasm_posix_shared::flags::O_ASYNC;
         }
         return Ok(());
     }
@@ -7993,33 +8012,52 @@ mod tests {
         use wasm_posix_shared::socket::*;
         let (fd0, fd1) = sys_socketpair(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
 
-        // Socketpair creates 2 pipe buffers
-        let pipe_count_before = proc.pipes.iter().filter(|p| p.is_some()).count();
-        assert_eq!(pipe_count_before, 2);
+        // Get the pipe indices used by these sockets
+        let pipe_table = unsafe { crate::pipe::global_pipe_table() };
+        let ofd0 = proc.ofd_table.get(proc.fd_table.get(fd0).unwrap().ofd_ref.0).unwrap();
+        let sock0_idx = (-(ofd0.host_handle + 1)) as usize;
+        let send0 = proc.sockets.get(sock0_idx).unwrap().send_buf_idx.unwrap();
+        let recv0 = proc.sockets.get(sock0_idx).unwrap().recv_buf_idx.unwrap();
+
+        // Verify pipes exist before close
+        assert!(pipe_table.get(send0).is_some());
+        assert!(pipe_table.get(recv0).is_some());
 
         // Close both fds — pipe buffers should be freed
         sys_close(&mut proc, &mut host, fd0).unwrap();
         sys_close(&mut proc, &mut host, fd1).unwrap();
 
-        let pipe_count_after = proc.pipes.iter().filter(|p| p.is_some()).count();
-        assert_eq!(pipe_count_after, 0, "pipe buffers should be freed after both sockets close");
+        // Verify the specific pipe slots are freed
+        assert!(pipe_table.get(send0).is_none(), "send pipe should be freed after both sockets close");
+        assert!(pipe_table.get(recv0).is_none(), "recv pipe should be freed after both sockets close");
     }
 
     #[test]
-    fn test_socketpair_pipe_slots_reused() {
+    fn test_socketpair_uses_global_pipes() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         use wasm_posix_shared::socket::*;
 
-        // Create and close a socketpair to free pipe slots
         let (fd0, fd1) = sys_socketpair(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+
+        // Both sockets should use global pipes (for cross-fork sharing)
+        let ofd0 = proc.ofd_table.get(proc.fd_table.get(fd0).unwrap().ofd_ref.0).unwrap();
+        let sock0_idx = (-(ofd0.host_handle + 1)) as usize;
+        assert!(proc.sockets.get(sock0_idx).unwrap().global_pipes, "sock_a should use global pipes");
+
+        let ofd1 = proc.ofd_table.get(proc.fd_table.get(fd1).unwrap().ofd_ref.0).unwrap();
+        let sock1_idx = (-(ofd1.host_handle + 1)) as usize;
+        assert!(proc.sockets.get(sock1_idx).unwrap().global_pipes, "sock_b should use global pipes");
+
+        // Verify pipes exist in the global table
+        let pipe_table = unsafe { crate::pipe::global_pipe_table() };
+        let send0 = proc.sockets.get(sock0_idx).unwrap().send_buf_idx.unwrap();
+        let recv0 = proc.sockets.get(sock0_idx).unwrap().recv_buf_idx.unwrap();
+        assert!(pipe_table.get(send0).is_some(), "send pipe should be in global table");
+        assert!(pipe_table.get(recv0).is_some(), "recv pipe should be in global table");
+
         sys_close(&mut proc, &mut host, fd0).unwrap();
         sys_close(&mut proc, &mut host, fd1).unwrap();
-        let vec_len_after_first = proc.pipes.len();
-
-        // Create another socketpair — should reuse freed slots
-        let (_fd2, _fd3) = sys_socketpair(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
-        assert_eq!(proc.pipes.len(), vec_len_after_first, "pipe Vec should not grow when reusing freed slots");
     }
 
     #[test]
