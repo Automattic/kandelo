@@ -19,12 +19,20 @@ import { SharedLockTable } from "./shared-lock-table";
 import { SharedIpcTable, type MsgQueueInfo, type SemSetInfo, type ShmSegInfo } from "./shared-ipc-table";
 
 /**
- * Map Node.js filesystem error codes to negative errno values.
+ * Map filesystem error codes to negative errno values.
+ * Handles both Node.js-style string codes ("ENOENT") and
+ * numeric codes from SFSError (2, 17, etc.).
  * Returns -EIO for unknown errors.
  */
 function negErrno(err: unknown): number {
   if (err && typeof err === "object" && "code" in err) {
-    const code = (err as { code: string }).code;
+    const code = (err as { code: string | number }).code;
+    // Numeric errno (e.g. SFSError from MemoryFileSystem/SharedFS)
+    // SharedFS uses negative codes (-2 for ENOENT, -17 for EEXIST, etc.)
+    if (typeof code === "number" && code !== 0) {
+      return code < 0 ? code : -code;
+    }
+    // String error code (Node.js fs errors)
     switch (code) {
       case "ENOENT": return -2;
       case "EACCES": return -13;

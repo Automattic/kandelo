@@ -16,13 +16,13 @@ const encoder = new TextEncoder();
 export function handleHttpRequest(
   kernel: BrowserKernel,
   bridge: HttpBridgeHost,
-  slot: number,
+  requestId: number,
   request: HttpRequest,
   listenerPort: number,
 ): void {
   const target = kernel.pickListenerTarget(listenerPort);
   if (!target) {
-    bridge.error(slot);
+    bridge.error(requestId, "No listener target available");
     return;
   }
 
@@ -33,7 +33,7 @@ export function handleHttpRequest(
     Math.floor(Math.random() * 60000) + 1024,
   );
   if (recvPipeIdx < 0) {
-    bridge.error(slot);
+    bridge.error(requestId, "Failed to inject connection");
     return;
   }
 
@@ -57,7 +57,7 @@ export function handleHttpRequest(
   kernel.wakeBlockedReaders(recvPipeIdx);
 
   // Start pumping response from send pipe
-  pumpResponse(kernel, bridge, slot, target.pid, sendPipeIdx);
+  pumpResponse(kernel, bridge, requestId, target.pid, sendPipeIdx);
 }
 
 /**
@@ -99,15 +99,13 @@ function buildRawHttpRequest(request: HttpRequest): Uint8Array {
 function pumpResponse(
   kernel: BrowserKernel,
   bridge: HttpBridgeHost,
-  slot: number,
+  requestId: number,
   pid: number,
   sendPipeIdx: number,
 ): void {
   const chunks: Uint8Array[] = [];
-  let pumpCount = 0;
 
   const pump = () => {
-    pumpCount++;
     const data = kernel.pipeRead(pid, sendPipeIdx);
     if (data) {
       chunks.push(data);
@@ -120,7 +118,7 @@ function pumpResponse(
       kernel.pipeCloseRead(pid, sendPipeIdx);
       const rawResponse = concatChunks(chunks);
       const parsed = parseRawHttpResponse(rawResponse);
-      bridge.respond(slot, parsed);
+      bridge.respond(requestId, parsed);
       return;
     }
 
@@ -161,7 +159,6 @@ function parseRawHttpResponse(data: Uint8Array): HttpResponse {
   }
 
   const headerText = text.slice(0, headerEnd);
-  const bodyStart = headerEnd + 4;
 
   // Parse status line
   const lines = headerText.split("\r\n");
@@ -181,7 +178,6 @@ function parseRawHttpResponse(data: Uint8Array): HttpResponse {
   }
 
   // Body is everything after header separator (use byte offset, not string offset)
-  // We need to find the byte offset of \r\n\r\n in the original data
   let byteHeaderEnd = 0;
   for (let i = 0; i < data.length - 3; i++) {
     if (

@@ -10,6 +10,7 @@ export default defineConfig({
     headers: {
       "Cross-Origin-Opener-Policy": "same-origin",
       "Cross-Origin-Embedder-Policy": "require-corp",
+      "Service-Worker-Allowed": "/",
     },
     fs: {
       allow: [repoRoot],
@@ -19,9 +20,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         main: path.resolve(__dirname, "index.html"),
-        // Additional pages will be added here as they're created:
-        // nginx: path.resolve(__dirname, "pages/nginx/index.html"),
-        // php: path.resolve(__dirname, "pages/php/index.html"),
+        nginx: path.resolve(__dirname, "pages/nginx/index.html"),
       },
     },
   },

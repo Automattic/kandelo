@@ -735,7 +735,11 @@ export class CentralizedKernelWorker {
 
     // Try to load Node.js net module for TCP bridging
     try {
-      this.netModule = await import("net");
+      const net = await import("net");
+      // Verify it's a real module (Vite externalizes it as an empty stub in browsers)
+      if (typeof net.createServer === "function") {
+        this.netModule = net;
+      }
     } catch {
       // Not in Node.js environment — TCP bridging disabled
     }
@@ -3800,9 +3804,9 @@ export class CentralizedKernelWorker {
     // Avoid duplicate listeners on the same pid:fd
     if (this.tcpListeners.has(key)) return;
 
-    if (!this.netModule) return; // Not in Node.js environment
-
-    // Register this pid:fd as a target for this port
+    // Register this pid:fd as a target for this port (needed for both
+    // Node.js TCP bridging and browser service worker bridging via
+    // pickListenerTarget + injectConnection)
     if (!this.tcpListenerTargets.has(port)) {
       this.tcpListenerTargets.set(port, []);
       this.tcpListenerRRIndex.set(port, 0);
@@ -3811,6 +3815,8 @@ export class CentralizedKernelWorker {
     if (!targets.some(t => t.pid === pid && t.fd === fd)) {
       targets.push({ pid, fd });
     }
+
+    if (!this.netModule) return; // Not in Node.js environment — no real TCP server
 
     // If another process already has a TCP server on this port, share it
     for (const [, listener] of this.tcpListeners) {

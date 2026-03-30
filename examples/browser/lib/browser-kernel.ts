@@ -69,6 +69,7 @@ export class BrowserKernel {
   > &
     BrowserKernelOptions;
   private kernelInstance: WebAssembly.Instance | null = null;
+  private kernelMemory: WebAssembly.Memory | null = null;
   private exitResolvers = new Map<number, (status: number) => void>();
 
   // Thread channel allocator (counting down from main channel region)
@@ -172,6 +173,7 @@ export class BrowserKernel {
 
     await this.kernelWorker.init(wasmBytes);
     this.kernelInstance = kw.kernelInstance;
+    this.kernelMemory = (kw as any).kernelMemory;
   }
 
   /**
@@ -273,7 +275,7 @@ export class BrowserKernel {
     ) => number;
     const scratchOffset = (this.kernelWorker as any).tcpScratchOffset || (this.kernelWorker as any).scratchOffset;
     const mem = new Uint8Array(
-      (this.kernelInstance.exports.memory as WebAssembly.Memory).buffer,
+      this.kernelMemory!.buffer,
     );
     let written = 0;
     while (written < data.length) {
@@ -299,7 +301,7 @@ export class BrowserKernel {
     ) => number;
     const scratchOffset = (this.kernelWorker as any).tcpScratchOffset || (this.kernelWorker as any).scratchOffset;
     const mem = new Uint8Array(
-      (this.kernelInstance.exports.memory as WebAssembly.Memory).buffer,
+      this.kernelMemory!.buffer,
     );
     const chunks: Uint8Array[] = [];
     for (;;) {

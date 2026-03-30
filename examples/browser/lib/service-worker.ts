@@ -1,20 +1,10 @@
 /**
  * Service Worker — intercepts fetch events for app URLs and bridges them
- * to the POSIX kernel via SharedArrayBuffer HTTP bridge.
+ * to the POSIX kernel via MessageChannel HTTP bridge.
  */
-import {
-  bridgeFetch,
-  STATUS_IDLE,
-  type HttpRequest,
-} from "./http-bridge";
+import { bridgeFetch, initBridgePort, isBridgeReady } from "./http-bridge";
 
-// The shared buffer and configuration are received via postMessage from the main thread.
-let bridgeBuffer: SharedArrayBuffer | null = null;
-let numSlots = 4;
 let appPrefix = "/app/";
-let nextSlot = 0;
-// Track which slots are currently in use
-const slotInUse = new Set<number>();
 
 const sw = globalThis as unknown as ServiceWorkerGlobalScope;
 
@@ -35,10 +25,12 @@ sw.addEventListener("activate", (event) => {
 sw.addEventListener("message", (event) => {
   const msg = event.data;
   if (msg?.type === "init-bridge") {
-    bridgeBuffer = msg.buffer as SharedArrayBuffer;
-    numSlots = msg.numSlots ?? 4;
-    appPrefix = msg.appPrefix ?? "/app/";
-    slotInUse.clear();
+    // Receive the MessagePort for communicating with the main thread
+    const port = event.ports[0];
+    if (port) {
+      initBridgePort(port);
+      appPrefix = msg.appPrefix ?? "/app/";
+    }
   }
 });
 
@@ -51,7 +43,7 @@ sw.addEventListener("fetch", (event: FetchEvent) => {
   if (!url.pathname.startsWith(appPrefix)) return;
 
   // If bridge not initialized, fall through
-  if (!bridgeBuffer) return;
+  if (!isBridgeReady()) return;
 
   event.respondWith(handleAppRequest(event.request, url));
 });
@@ -60,18 +52,13 @@ async function handleAppRequest(
   request: Request,
   url: URL,
 ): Promise<Response> {
-  if (!bridgeBuffer) {
-    return new Response("Service worker bridge not initialized", { status: 503 });
-  }
-
-  // Find a free slot
-  const slot = acquireSlot();
-  if (slot < 0) {
-    return new Response("All bridge slots busy", { status: 503 });
+  if (!isBridgeReady()) {
+    return new Response("Service worker bridge not initialized", {
+      status: 503,
+    });
   }
 
   try {
-    // Build the HTTP request that nginx/PHP will see
     // Strip the app prefix so nginx sees the original path
     const appPath = url.pathname.slice(appPrefix.length - 1); // Keep leading /
 
@@ -90,14 +77,12 @@ async function handleAppRequest(
       }
     }
 
-    const bridgeReq: HttpRequest = {
+    const bridgeResp = await bridgeFetch({
       method: request.method,
       url: appPath + url.search,
       headers,
       body,
-    };
-
-    const bridgeResp = await bridgeFetch(bridgeBuffer, slot, bridgeReq);
+    });
 
     // Build Response object
     const respHeaders = new Headers();
@@ -114,33 +99,19 @@ async function handleAppRequest(
       respHeaders.set(key, value);
     }
 
+    // Ensure COEP/CORP headers so content can load in cross-origin isolated context
+    if (!respHeaders.has("Cross-Origin-Embedder-Policy")) {
+      respHeaders.set("Cross-Origin-Embedder-Policy", "require-corp");
+    }
+    if (!respHeaders.has("Cross-Origin-Resource-Policy")) {
+      respHeaders.set("Cross-Origin-Resource-Policy", "same-origin");
+    }
+
     return new Response(bridgeResp.body, {
       status: bridgeResp.status,
       headers: respHeaders,
     });
   } catch (err) {
     return new Response(`Bridge error: ${err}`, { status: 502 });
-  } finally {
-    releaseSlot(slot);
   }
-}
-
-function acquireSlot(): number {
-  // Find a slot that isn't in use
-  for (let i = 0; i < numSlots; i++) {
-    const slot = (nextSlot + i) % numSlots;
-    if (!slotInUse.has(slot)) {
-      const header = new Int32Array(bridgeBuffer!, slot * (256 * 1024), 1);
-      if (Atomics.load(header, 0) === STATUS_IDLE) {
-        slotInUse.add(slot);
-        nextSlot = (slot + 1) % numSlots;
-        return slot;
-      }
-    }
-  }
-  return -1;
-}
-
-function releaseSlot(slot: number): void {
-  slotInUse.delete(slot);
 }
