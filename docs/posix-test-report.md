@@ -1,94 +1,200 @@
 # Open POSIX Test Suite Report
 
-Generated: 2026-03-22 00:00 UTC
+Generated: 2026-03-30
 
 Source: LTP open_posix_testsuite (conformance/interfaces)
 
 | Status | Count |
 |--------|-------|
-| PASS | 96 |
+| PASS | 161 |
 | FAIL | 0 |
-| XFAIL | 81 |
+| XFAIL | 13 |
 | XPASS | 0 |
-| SKIP | 2 |
+| SKIP | 4 |
 | BUILD | 0 |
-| UNRESOLVED | 0 |
+| UNRESOLVED | 1 |
 | TIMEOUT | 0 |
 | **TOTAL** | **179** |
 
-## Expected Failures -- XFAIL (81)
+## Expected Failures — XFAIL (13)
+
+| Test | Interface | Reason |
+|------|-----------|--------|
+| `2-2` | kill | EPERM test: PID 1 is our process, not init |
+| `3-1` | kill | EPERM test: PID 1 is our process, not init |
+| `12-1` | mlock | Needs pwd.h (getpwnam) |
+| `1-1` | munmap | Requires real page unmapping |
+| `1-2` | munmap | Requires real page unmapping |
+| `1-1` | sigaltstack | Wasm stack is opaque — no alternate stack support |
+| `2-1` | sigaltstack | Wasm stack is opaque — no alternate stack support |
+| `3-1` | sigaltstack | Wasm stack is opaque — no alternate stack support |
+| `6-1` | sigaltstack | Wasm stack is opaque — no alternate stack support |
+| `7-1` | sigaltstack | Wasm stack is opaque — no alternate stack support |
+| `8-1` | sigaltstack | Wasm stack is opaque — no alternate stack support |
+| `3-1` | sigqueue | Needs pwd.h (getpwnam) |
+| `12-1` | sigqueue | Needs pwd.h (getpwnam) |
+
+## Skipped Tests (4)
+
+| Test | Interface | Reason |
+|------|-----------|--------|
+| `1-3` | sched_get_priority_max | Requires SCHED_SPORADIC |
+| `1-3` | sched_get_priority_min | Requires SCHED_SPORADIC |
+| `6-1` | sched_getparam | Needs pwd.h — fails to build |
+| `7-1` | sched_getscheduler | Needs pwd.h — fails to build |
+
+## Unresolved (1)
+
+| Test | Interface | Reason |
+|------|-----------|--------|
+| `9-1` | sigaltstack | SS_DISABLE check — exits unresolved due to Wasm stack model |
+
+## Passing Tests (161)
+
+<details>
+<summary>Click to expand</summary>
 
 | Test | Interface |
 |------|-----------|
+| `1-1` | asctime |
 | `1-1` | clock |
+| `2-1` | clock |
+| `1-1` | ctime |
+| `1-1` | difftime |
+| `4-1` | fsync |
+| `5-1` | fsync |
+| `7-1` | fsync |
+| `1-1` | gmtime |
+| `2-1` | gmtime |
 | `1-1` | kill |
-| `2-2` | kill |
-| `3-1` | kill |
+| `1-2` | kill |
+| `2-1` | kill |
 | `1-1` | killpg |
+| `1-2` | killpg |
 | `2-1` | killpg |
 | `4-1` | killpg |
+| `5-1` | killpg |
+| `6-1` | killpg |
 | `8-1` | killpg |
+| `1-1` | localtime |
+| `1-1` | mktime |
 | `10-1` | mlock |
-| `12-1` | mlock |
 | `5-1` | mlock |
 | `8-1` | mlock |
 | `10-1` | munlock |
 | `11-1` | munlock |
 | `7-1` | munlock |
 | `5-1` | munlockall |
-| `1-1` | munmap |
-| `1-2` | munmap |
 | `2-1` | munmap |
 | `3-1` | munmap |
 | `4-1` | munmap |
+| `8-1` | munmap |
 | `9-1` | munmap |
 | `1-1` | raise |
+| `1-2` | raise |
 | `10000-1` | raise |
 | `2-1` | raise |
 | `4-1` | raise |
+| `6-1` | raise |
+| `7-1` | raise |
+| `1-1` | sched_get_priority_max |
+| `1-2` | sched_get_priority_max |
+| `1-4` | sched_get_priority_max |
 | `2-1` | sched_get_priority_max |
+| `1-1` | sched_get_priority_min |
+| `1-2` | sched_get_priority_min |
+| `1-4` | sched_get_priority_min |
 | `2-1` | sched_get_priority_min |
 | `1-1` | sched_getparam |
 | `2-1` | sched_getparam |
 | `3-1` | sched_getparam |
-| `6-1` | sched_getparam |
+| `4-1` | sched_getparam |
 | `1-1` | sched_getscheduler |
 | `3-1` | sched_getscheduler |
 | `4-1` | sched_getscheduler |
-| `7-1` | sched_getscheduler |
+| `5-1` | sched_getscheduler |
 | `1-1` | sched_rr_get_interval |
 | `2-1` | sched_rr_get_interval |
 | `3-1` | sched_rr_get_interval |
-| `1-1` | sigaltstack |
-| `2-1` | sigaltstack |
-| `6-1` | sigaltstack |
-| `7-1` | sigaltstack |
+| `1-1` | sigaddset |
+| `1-2` | sigaddset |
+| `1-3` | sigaddset |
+| `2-1` | sigaddset |
+| `4-1` | sigaddset |
+| `10-1` | sigaltstack |
+| `11-1` | sigaltstack |
+| `12-1` | sigaltstack |
+| `5-1` | sigaltstack |
+| `1-1` | sigdelset |
+| `1-2` | sigdelset |
+| `1-3` | sigdelset |
+| `1-4` | sigdelset |
+| `4-1` | sigdelset |
+| `1-1` | sigemptyset |
+| `2-1` | sigemptyset |
+| `1-1` | sigfillset |
+| `2-1` | sigfillset |
 | `1-1` | sighold |
+| `2-1` | sighold |
+| `3-1` | sighold |
+| `1-1` | sigignore |
+| `4-1` | sigignore |
+| `5-1` | sigignore |
+| `6-1` | sigignore |
+| `6-2` | sigignore |
+| `3-1` | sigismember |
+| `4-1` | sigismember |
 | `5-1` | sigismember |
+| `1-1` | signal |
+| `2-1` | signal |
 | `3-1` | signal |
+| `5-1` | signal |
+| `6-1` | signal |
+| `7-1` | signal |
 | `1-1` | sigpending |
 | `1-2` | sigpending |
 | `1-3` | sigpending |
 | `2-1` | sigpending |
 | `10-1` | sigprocmask |
+| `12-1` | sigprocmask |
+| `15-1` | sigprocmask |
+| `17-1` | sigprocmask |
 | `4-1` | sigprocmask |
 | `5-1` | sigprocmask |
 | `6-1` | sigprocmask |
 | `7-1` | sigprocmask |
+| `8-1` | sigprocmask |
+| `8-2` | sigprocmask |
+| `8-3` | sigprocmask |
+| `9-1` | sigprocmask |
+| `1-1` | sigqueue |
+| `10-1` | sigqueue |
 | `11-1` | sigqueue |
-| `12-1` | sigqueue |
+| `2-1` | sigqueue |
 | `2-2` | sigqueue |
-| `3-1` | sigqueue |
 | `4-1` | sigqueue |
 | `5-1` | sigqueue |
+| `6-1` | sigqueue |
 | `7-1` | sigqueue |
 | `8-1` | sigqueue |
+| `9-1` | sigqueue |
 | `1-1` | sigrelse |
+| `2-1` | sigrelse |
+| `3-1` | sigrelse |
+| `1-1` | sigset |
+| `10-1` | sigset |
+| `2-1` | sigset |
 | `3-1` | sigset |
 | `4-1` | sigset |
 | `5-1` | sigset |
 | `6-1` | sigset |
 | `7-1` | sigset |
+| `8-1` | sigset |
+| `9-1` | sigset |
+| `1-1` | sigsuspend |
+| `3-1` | sigsuspend |
+| `4-1` | sigsuspend |
+| `6-1` | sigsuspend |
 | `1-1` | sigtimedwait |
 | `2-1` | sigtimedwait |
 | `4-1` | sigtimedwait |
@@ -96,114 +202,20 @@ Source: LTP open_posix_testsuite (conformance/interfaces)
 | `6-1` | sigtimedwait |
 | `1-1` | sigwaitinfo |
 | `2-1` | sigwaitinfo |
+| `3-1` | sigwaitinfo |
 | `5-1` | sigwaitinfo |
 | `6-1` | sigwaitinfo |
 | `7-1` | sigwaitinfo |
 | `8-1` | sigwaitinfo |
 | `9-1` | sigwaitinfo |
-
-## Passing Tests (96)
-
-<details>
-<summary>Click to expand</summary>
-
-| Test | Interface |
-|------|-----------|
-| `1-1` |  asctime |
-| `2-1` |  clock |
-| `1-1` |  ctime |
-| `1-1` |  difftime |
-| `4-1` |  fsync |
-| `5-1` |  fsync |
-| `7-1` |  fsync |
-| `1-1` |  gmtime |
-| `2-1` |  gmtime |
-| `1-2` |  kill |
-| `2-1` |  kill |
-| `1-2` |  killpg |
-| `5-1` |  killpg |
-| `6-1` |  killpg |
-| `1-1` |  localtime |
-| `1-1` |  mktime |
-| `8-1` |  munmap |
-| `1-2` |  raise |
-| `6-1` |  raise |
-| `7-1` |  raise |
-| `1-1` |  sched_get_priority_max |
-| `1-2` |  sched_get_priority_max |
-| `1-4` |  sched_get_priority_max |
-| `1-1` |  sched_get_priority_min |
-| `1-2` |  sched_get_priority_min |
-| `1-4` |  sched_get_priority_min |
-| `4-1` |  sched_getparam |
-| `5-1` |  sched_getscheduler |
-| `1-1` |  sigaddset |
-| `1-2` |  sigaddset |
-| `1-3` |  sigaddset |
-| `2-1` |  sigaddset |
-| `4-1` |  sigaddset |
-| `10-1` |  sigaltstack |
-| `11-1` |  sigaltstack |
-| `12-1` |  sigaltstack |
-| `3-1` |  sigaltstack |
-| `5-1` |  sigaltstack |
-| `8-1` |  sigaltstack |
-| `9-1` |  sigaltstack |
-| `1-1` |  sigdelset |
-| `1-2` |  sigdelset |
-| `1-3` |  sigdelset |
-| `1-4` |  sigdelset |
-| `4-1` |  sigdelset |
-| `1-1` |  sigemptyset |
-| `2-1` |  sigemptyset |
-| `1-1` |  sigfillset |
-| `2-1` |  sigfillset |
-| `2-1` |  sighold |
-| `3-1` |  sighold |
-| `1-1` |  sigignore |
-| `4-1` |  sigignore |
-| `5-1` |  sigignore |
-| `6-1` |  sigignore |
-| `6-2` |  sigignore |
-| `3-1` |  sigismember |
-| `4-1` |  sigismember |
-| `1-1` |  signal |
-| `2-1` |  signal |
-| `5-1` |  signal |
-| `6-1` |  signal |
-| `7-1` |  signal |
-| `12-1` |  sigprocmask |
-| `15-1` |  sigprocmask |
-| `17-1` |  sigprocmask |
-| `8-1` |  sigprocmask |
-| `8-2` |  sigprocmask |
-| `8-3` |  sigprocmask |
-| `9-1` |  sigprocmask |
-| `1-1` |  sigqueue |
-| `10-1` |  sigqueue |
-| `2-1` |  sigqueue |
-| `6-1` |  sigqueue |
-| `9-1` |  sigqueue |
-| `2-1` |  sigrelse |
-| `3-1` |  sigrelse |
-| `1-1` |  sigset |
-| `10-1` |  sigset |
-| `2-1` |  sigset |
-| `8-1` |  sigset |
-| `9-1` |  sigset |
-| `1-1` |  sigsuspend |
-| `3-1` |  sigsuspend |
-| `4-1` |  sigsuspend |
-| `6-1` |  sigsuspend |
-| `3-1` |  sigwaitinfo |
-| `1-1` |  strchr |
-| `1-1` |  strcpy |
-| `1-1` |  strftime |
-| `2-1` |  strftime |
-| `3-1` |  strftime |
-| `1-1` |  strlen |
-| `1-1` |  strncpy |
-| `2-1` |  strncpy |
-| `1-1` |  time |
+| `1-1` | strchr |
+| `1-1` | strcpy |
+| `1-1` | strftime |
+| `2-1` | strftime |
+| `3-1` | strftime |
+| `1-1` | strlen |
+| `1-1` | strncpy |
+| `2-1` | strncpy |
+| `1-1` | time |
 
 </details>

@@ -30,28 +30,22 @@ EXPECTED_FAIL=(
     sigaltstack/1-1
     sigaltstack/2-1
     sigaltstack/3-1
-    sigaltstack/4-1   # not present (skip)
     sigaltstack/6-1
     sigaltstack/7-1
     sigaltstack/8-1
-    # (sigwaitinfo/8-1 removed — RT signal queuing now works)
     # munmap: 1-1 and 1-2 still fail (require real page unmapping)
-    # (2-1, 3-1, 4-1, 9-1 now pass — mmap/munmap improvements in PR #100)
     munmap/1-1
     munmap/1-2
 
     # ── Not implemented / stubs ──
     mlock/12-1        # needs pwd.h
-    # (sched_rr_get_interval/3-1 removed — fork/wait now works)
-    sched_getparam/6-1         # needs pwd.h
-    sched_getscheduler/7-1     # needs pwd.h
+    # sched_getparam/6-1 and sched_getscheduler/7-1 SKIP (pwd.h build failure)
 
     # ── Process/permission model ──
     kill/2-2          # EPERM test: PID 1 is our process, not init
     kill/3-1          # EPERM test: PID 1 is our process, not init
     sigqueue/3-1      # needs pwd.h
     sigqueue/12-1     # needs pwd.h
-    # (sigwaitinfo/7-1 removed — RT signal si_value now returned by sigtimedwait)
 )
 
 # ── Auto-detect LLVM ──────────────────────────────────────
