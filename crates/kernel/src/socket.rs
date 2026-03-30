@@ -72,6 +72,10 @@ pub struct SocketInfo {
     /// Out-of-band byte (if pending). Set by peer's send(MSG_OOB),
     /// read by recv(MSG_OOB), queried by ioctl(SIOCATMARK).
     pub oob_byte: Option<u8>,
+    /// Receive timeout in microseconds (0 = no timeout).
+    pub recv_timeout_us: u64,
+    /// Send timeout in microseconds (0 = no timeout).
+    pub send_timeout_us: u64,
 }
 
 impl SocketInfo {
@@ -96,6 +100,8 @@ impl SocketInfo {
             dgram_queue: Vec::new(),
             global_pipes: false,
             oob_byte: None,
+            recv_timeout_us: 0,
+            send_timeout_us: 0,
         }
     }
 

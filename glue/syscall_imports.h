@@ -613,11 +613,11 @@ int32_t kernel_shutdown(int32_t fd, uint32_t how);
 
 KERNEL_IMPORT(kernel_getsockopt)
 int32_t kernel_getsockopt(int32_t fd, uint32_t level, uint32_t optname,
-                          uint32_t *optval_ptr);
+                          uint8_t *optval_ptr, uint32_t *optlen_ptr);
 
 KERNEL_IMPORT(kernel_setsockopt)
 int32_t kernel_setsockopt(int32_t fd, uint32_t level, uint32_t optname,
-                          uint32_t optval);
+                          const uint8_t *optval_ptr, uint32_t optlen);
 
 KERNEL_IMPORT(kernel_getsockname)
 int32_t kernel_getsockname(int32_t fd, uint32_t buf_ptr, uint32_t buf_len);

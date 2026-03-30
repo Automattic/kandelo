@@ -336,7 +336,10 @@ const SYSCALL_ARGS: Record<number, ArgDesc[]> = {
   ],
   55: [{ argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 } }],  // SEND: buf
   56: [{ argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 } }], // RECV: buf
-  58: [{ argIndex: 3, direction: "out", size: { type: "fixed", size: 4 } }],   // GETSOCKOPT: val
+  58: [                                                                        // GETSOCKOPT: optval + optlen
+    { argIndex: 3, direction: "out", size: { type: "deref", argIndex: 4 } },   //   optval (output, size from *optlen)
+    { argIndex: 4, direction: "inout", size: { type: "fixed", size: 4 } },     //   optlen (inout, socklen_t = 4 bytes)
+  ],
   61: [{ argIndex: 3, direction: "out", size: { type: "fixed", size: 8 } }],   // SOCKETPAIR: sv
 
   140: [
@@ -575,6 +578,11 @@ export class CentralizedKernelWorker {
    * is registered here instead of using a blind setImmediate retry.
    * When a write completes to the same pipe, readers are woken immediately. */
   private pendingPipeReaders = new Map<number, Array<{channel: ChannelInfo, pid: number}>>();
+  /** Socket timeout timers: channel → timer. When a socket read/write
+   * blocks and has SO_RCVTIMEO/SO_SNDTIMEO set, a timer is scheduled
+   * to complete the syscall with ETIMEDOUT. Cleared when the operation
+   * completes before the timeout. */
+  private socketTimeoutTimers = new Map<ChannelInfo, ReturnType<typeof setTimeout>>();
   /** Profiling data: syscallNr → {count, totalTimeMs, retries} */
   private profileData: Map<number, {count: number; totalTimeMs: number; retries: number}> | null =
     PROFILING ? new Map() : null;
@@ -836,6 +844,13 @@ export class CentralizedKernelWorker {
     this.pendingSelectRetries.delete(pid);
     // Clean up pending pipe readers
     this.cleanupPendingPipeReaders(pid);
+    // Clean up socket timeout timers for this process
+    for (const [ch, timer] of this.socketTimeoutTimers) {
+      if (ch.pid === pid) {
+        clearTimeout(timer);
+        this.socketTimeoutTimers.delete(ch);
+      }
+    }
 
     // Remove from kernel process table
     this.removeFromKernelProcessTable(pid);
@@ -1461,6 +1476,9 @@ export class CentralizedKernelWorker {
     processView.setInt32(CH_RETURN, retVal, true);
     processView.setUint32(CH_ERRNO, errVal, true);
 
+    // Cancel any pending socket timeout timer for this channel
+    this.clearSocketTimeout(channel);
+
     // Flush TCP send pipes before notifying the process — gets PHP's
     // response data to the browser without waiting for the next pump cycle
     this.flushTcpSendPipes(channel.pid);
@@ -1513,6 +1531,9 @@ export class CentralizedKernelWorker {
     const processView = new DataView(channel.memory.buffer, channel.channelOffset);
     processView.setInt32(CH_RETURN, retVal, true);
     processView.setUint32(CH_ERRNO, errVal, true);
+
+    // Cancel any pending socket timeout timer for this channel
+    this.clearSocketTimeout(channel);
 
     const i32View = new Int32Array(channel.memory.buffer, channel.channelOffset);
     Atomics.store(i32View, CH_STATUS / 4, CH_COMPLETE);
@@ -1659,6 +1680,32 @@ export class CentralizedKernelWorker {
       if (filtered.length === 0) {
         this.pendingPipeReaders.delete(pipeIdx);
       } else {
+        this.pendingPipeReaders.set(pipeIdx, filtered);
+      }
+    }
+  }
+
+  /**
+   * Cancel a pending socket timeout timer for a channel.
+   */
+  private clearSocketTimeout(channel: ChannelInfo): void {
+    const timer = this.socketTimeoutTimers.get(channel);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      this.socketTimeoutTimers.delete(channel);
+    }
+  }
+
+  /**
+   * Remove a channel from pending pipe readers (all pipes).
+   * Called when a socket timeout fires to clean up the reader registration.
+   */
+  private removePendingPipeReader(channel: ChannelInfo): void {
+    for (const [pipeIdx, readers] of this.pendingPipeReaders) {
+      const filtered = readers.filter(r => r.channel !== channel);
+      if (filtered.length === 0) {
+        this.pendingPipeReaders.delete(pipeIdx);
+      } else if (filtered.length !== readers.length) {
         this.pendingPipeReaders.set(pipeIdx, filtered);
       }
     }
@@ -1851,6 +1898,29 @@ export class CentralizedKernelWorker {
         if (nb === 1) {
           this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], -1, EAGAIN);
           return;
+        }
+      }
+    }
+
+    // Socket timeout check: if a read/write-like syscall blocks on a socket
+    // with SO_RCVTIMEO or SO_SNDTIMEO set, schedule a timer for ETIMEDOUT.
+    if (READ_LIKE_SYSCALLS.has(syscallNr) || WRITE_LIKE_SYSCALLS.has(syscallNr)) {
+      const fd = origArgs[0];
+      const getTimeout = this.kernelInstance!.exports.kernel_get_socket_timeout_ms as
+        ((pid: number, fd: number, isRecv: number) => bigint) | undefined;
+      if (getTimeout && !this.socketTimeoutTimers.has(channel)) {
+        const isRecv = READ_LIKE_SYSCALLS.has(syscallNr) ? 1 : 0;
+        const timeoutMs = Number(getTimeout(channel.pid, fd, isRecv));
+        if (timeoutMs > 0) {
+          const timer = setTimeout(() => {
+            this.socketTimeoutTimers.delete(channel);
+            // Remove from pending pipe readers if registered
+            this.removePendingPipeReader(channel);
+            if (this.processes.has(channel.pid)) {
+              this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], -1, ETIMEDOUT);
+            }
+          }, timeoutMs);
+          this.socketTimeoutTimers.set(channel, timer);
         }
       }
     }

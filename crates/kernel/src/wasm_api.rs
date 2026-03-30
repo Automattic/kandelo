@@ -1521,7 +1521,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
         55 => kernel_send(a1, a2 as *const u8, a3 as u32, a4 as u32), // SYS_SEND
         56 => kernel_recv(a1, a2 as *mut u8, a3 as u32, a4 as u32), // SYS_RECV
         57 => kernel_shutdown(a1, a2 as u32),      // SYS_SHUTDOWN
-        58 => kernel_getsockopt(a1, a2 as u32, a3 as u32, a4 as *mut u32), // SYS_GETSOCKOPT
+        58 => kernel_getsockopt(a1, a2 as u32, a3 as u32, a4 as *mut u8, a5 as *mut u32), // SYS_GETSOCKOPT
         59 => kernel_setsockopt(a1, a2 as u32, a3 as u32, a4 as *const u8, a5 as u32), // SYS_SETSOCKOPT
         114 => kernel_getsockname(a1, a2 as u32, a3 as u32), // SYS_GETSOCKNAME
         115 => kernel_getpeername(a1, a2 as u32, a3 as u32), // SYS_GETPEERNAME
@@ -4803,13 +4803,42 @@ pub extern "C" fn kernel_shutdown(fd: i32, how: u32) -> i32 {
 }
 
 /// Get socket option. Returns 0 on success, negative errno on error.
-/// Writes the option value to optval_ptr.
+/// Writes the option value to optval_ptr. optlen_ptr points to buffer size
+/// on input, receives actual written size on output.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_getsockopt(fd: i32, level: u32, optname: u32, optval_ptr: *mut u32) -> i32 {
+pub extern "C" fn kernel_getsockopt(fd: i32, level: u32, optname: u32, optval_ptr: *mut u8, optlen_ptr: *mut u32) -> i32 {
+    use wasm_posix_shared::socket::*;
     let (_gkl, proc) = unsafe { get_process() };
+
+    // Handle struct timeval options (SO_RCVTIMEO, SO_SNDTIMEO)
+    if level == SOL_SOCKET && (optname == SO_RCVTIMEO || optname == SO_SNDTIMEO) {
+        let result = match syscalls::sys_getsockopt_timeout(proc, fd, optname) {
+            Ok(timeout_us) => {
+                let tv_sec = (timeout_us / 1_000_000) as i64;
+                let tv_usec = (timeout_us % 1_000_000) as i64;
+                let buf = unsafe { slice::from_raw_parts_mut(optval_ptr, 16) };
+                buf[0..8].copy_from_slice(&tv_sec.to_le_bytes());
+                buf[8..16].copy_from_slice(&tv_usec.to_le_bytes());
+                if !optlen_ptr.is_null() {
+                    unsafe { *optlen_ptr = 16; }
+                }
+                0
+            }
+            Err(e) => -(e as i32),
+        };
+        let mut host = WasmHostIO;
+        deliver_pending_signals(proc, &mut host);
+        return result;
+    }
+
     let result = match syscalls::sys_getsockopt(proc, fd, level, optname) {
         Ok(val) => {
-            unsafe { *optval_ptr = val; }
+            // Write as u32 (4 bytes) for int-valued options
+            let val_ptr = optval_ptr as *mut u32;
+            unsafe { *val_ptr = val; }
+            if !optlen_ptr.is_null() {
+                unsafe { *optlen_ptr = 4; }
+            }
             0
         }
         Err(e) => -(e as i32),
@@ -4823,7 +4852,35 @@ pub extern "C" fn kernel_getsockopt(fd: i32, level: u32, optname: u32, optval_pt
 /// optval_ptr points to the option value buffer, optlen is its size.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_setsockopt(fd: i32, level: u32, optname: u32, optval_ptr: *const u8, optlen: u32) -> i32 {
+    use wasm_posix_shared::socket::*;
     let (_gkl, proc) = unsafe { get_process() };
+
+    // Handle struct timeval options (SO_RCVTIMEO, SO_SNDTIMEO).
+    // On wasm32 time64: struct timeval = { i64 tv_sec, i64 tv_usec } = 16 bytes.
+    if level == SOL_SOCKET && (optname == SO_RCVTIMEO || optname == SO_SNDTIMEO) {
+        if optval_ptr.is_null() || optlen < 16 {
+            let mut host = WasmHostIO;
+            deliver_pending_signals(proc, &mut host);
+            return -(Errno::EINVAL as i32);
+        }
+        let buf = unsafe { slice::from_raw_parts(optval_ptr, 16) };
+        let tv_sec = i64::from_le_bytes(buf[0..8].try_into().unwrap());
+        let tv_usec = i64::from_le_bytes(buf[8..16].try_into().unwrap());
+        if tv_sec < 0 || tv_usec < 0 || tv_usec >= 1_000_000 {
+            let mut host = WasmHostIO;
+            deliver_pending_signals(proc, &mut host);
+            return -(Errno::EINVAL as i32);
+        }
+        let timeout_us = (tv_sec as u64) * 1_000_000 + (tv_usec as u64);
+        let result = match syscalls::sys_setsockopt_timeout(proc, fd, optname, timeout_us) {
+            Ok(()) => 0,
+            Err(e) => -(e as i32),
+        };
+        let mut host = WasmHostIO;
+        deliver_pending_signals(proc, &mut host);
+        return result;
+    }
+
     // Read first 4 bytes as u32 value (covers most int-valued options)
     let optval = if !optval_ptr.is_null() && optlen >= 4 {
         let buf = unsafe { slice::from_raw_parts(optval_ptr, 4) };
@@ -6920,6 +6977,43 @@ pub extern "C" fn kernel_is_fd_nonblock(pid: u32, fd: i32) -> i32 {
         None => return -1,
     };
     if ofd.status_flags & wasm_posix_shared::flags::O_NONBLOCK != 0 { 1 } else { 0 }
+}
+
+/// Get socket timeout in milliseconds for a fd.
+/// is_recv: 1 = SO_RCVTIMEO, 0 = SO_SNDTIMEO.
+/// Returns timeout in ms, 0 if no timeout, -1 if fd is not a socket.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_get_socket_timeout_ms(pid: u32, fd: i32, is_recv: i32) -> i64 {
+    use crate::ofd::FileType;
+
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let proc = match table.get(pid) {
+        Some(p) => p,
+        None => return -1,
+    };
+    let entry = match proc.fd_table.get(fd) {
+        Ok(e) => e,
+        Err(_) => return -1,
+    };
+    let ofd = match proc.ofd_table.get(entry.ofd_ref.0) {
+        Some(o) => o,
+        None => return -1,
+    };
+    if ofd.file_type != FileType::Socket {
+        return -1;
+    }
+    let sock_idx = (-(ofd.host_handle + 1)) as usize;
+    let sock = match proc.sockets.get(sock_idx) {
+        Some(s) => s,
+        None => return -1,
+    };
+    let timeout_us = if is_recv != 0 { sock.recv_timeout_us } else { sock.send_timeout_us };
+    // Convert microseconds to milliseconds (round up to avoid 0ms for non-zero timeouts)
+    if timeout_us == 0 {
+        0
+    } else {
+        ((timeout_us + 999) / 1000) as i64
+    }
 }
 
 /// Look up the send pipe/buffer index for a fd (for writing).

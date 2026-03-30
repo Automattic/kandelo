@@ -1179,16 +1179,19 @@ static long __do_syscall(long n, long a1, long a2, long a3,
     case SYS_SHUTDOWN:
         return (long)kernel_shutdown((int32_t)a1, (uint32_t)a2);
 
-    /* getsockopt — (fd, level, optname, optval_ptr) */
+    /* getsockopt — (fd, level, optname, optval_ptr, optlen_ptr) */
     case SYS_GETSOCKOPT:
         return (long)kernel_getsockopt((int32_t)a1, (uint32_t)a2,
                                        (uint32_t)a3,
-                                       (uint32_t *)(uintptr_t)a4);
+                                       (uint8_t *)(uintptr_t)a4,
+                                       (uint32_t *)(uintptr_t)a5);
 
-    /* setsockopt — (fd, level, optname, optval) */
+    /* setsockopt — (fd, level, optname, optval_ptr, optlen) */
     case SYS_SETSOCKOPT:
         return (long)kernel_setsockopt((int32_t)a1, (uint32_t)a2,
-                                       (uint32_t)a3, (uint32_t)a4);
+                                       (uint32_t)a3,
+                                       (const uint8_t *)(uintptr_t)a4,
+                                       (uint32_t)a5);
 
     /* getsockname — (fd, addr, addrlen_ptr) */
     case SYS_GETSOCKNAME: {

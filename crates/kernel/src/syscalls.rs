@@ -3631,9 +3631,10 @@ pub fn sys_getsockopt(
             SO_ACCEPTCONN => Ok(if sock.state == SocketState::Listening { 1 } else { 0 }),
             SO_RCVBUF | SO_SNDBUF => Ok(DEFAULT_PIPE_CAPACITY as u32),
             SO_REUSEADDR | SO_KEEPALIVE |
-            SO_LINGER | SO_RCVTIMEO | SO_SNDTIMEO | SO_BROADCAST => {
+            SO_LINGER | SO_BROADCAST => {
                 Ok(sock.get_option(level, optname).unwrap_or(0))
             }
+            // SO_RCVTIMEO/SO_SNDTIMEO handled by sys_getsockopt_timeout
             _ => Err(Errno::ENOPROTOOPT),
         },
         IPPROTO_TCP => match optname {
@@ -3642,6 +3643,24 @@ pub fn sys_getsockopt(
         },
         _ => Err(Errno::ENOPROTOOPT),
     }
+}
+
+/// Get socket timeout value in microseconds (SO_RCVTIMEO / SO_SNDTIMEO).
+pub fn sys_getsockopt_timeout(
+    proc: &Process,
+    fd: i32,
+    optname: u32,
+) -> Result<u64, Errno> {
+    use wasm_posix_shared::socket::*;
+
+    let entry = proc.fd_table.get(fd)?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    if ofd.file_type != FileType::Socket {
+        return Err(Errno::ENOTSOCK);
+    }
+    let sock_idx = (-(ofd.host_handle + 1)) as usize;
+    let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+    Ok(if optname == SO_RCVTIMEO { sock.recv_timeout_us } else { sock.send_timeout_us })
 }
 
 /// Set socket option value.
@@ -3666,10 +3685,11 @@ pub fn sys_setsockopt(
     match level {
         SOL_SOCKET => match optname {
             SO_REUSEADDR | SO_KEEPALIVE | SO_RCVBUF | SO_SNDBUF |
-            SO_LINGER | SO_RCVTIMEO | SO_SNDTIMEO | SO_BROADCAST => {
+            SO_LINGER | SO_BROADCAST => {
                 sock.set_option(level, optname, value);
                 Ok(())
             }
+            // SO_RCVTIMEO/SO_SNDTIMEO handled by sys_setsockopt_timeout
             _ => Err(Errno::ENOPROTOOPT),
         },
         IPPROTO_TCP => match optname {
@@ -3681,6 +3701,30 @@ pub fn sys_setsockopt(
         },
         _ => Err(Errno::ENOPROTOOPT),
     }
+}
+
+/// Set socket timeout (SO_RCVTIMEO / SO_SNDTIMEO) in microseconds.
+pub fn sys_setsockopt_timeout(
+    proc: &mut Process,
+    fd: i32,
+    optname: u32,
+    timeout_us: u64,
+) -> Result<(), Errno> {
+    use wasm_posix_shared::socket::*;
+
+    let entry = proc.fd_table.get(fd)?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    if ofd.file_type != FileType::Socket {
+        return Err(Errno::ENOTSOCK);
+    }
+    let sock_idx = (-(ofd.host_handle + 1)) as usize;
+    let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+    if optname == SO_RCVTIMEO {
+        sock.recv_timeout_us = timeout_us;
+    } else {
+        sock.send_timeout_us = timeout_us;
+    }
+    Ok(())
 }
 
 /// Bind a socket to an address.
