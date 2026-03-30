@@ -327,9 +327,9 @@ if [ ! -f Makefile ]; then
 #ifndef NGX_HAVE_PWRITE
 #define NGX_HAVE_PWRITE  1
 #endif
-/* nginx wants to mmap files for sendfile; we don't support that */
+/* mmap(MAP_ANON|MAP_SHARED) is supported — needed for nginx shared memory zones */
 #ifndef NGX_HAVE_MAP_ANON
-#define NGX_HAVE_MAP_ANON  0
+#define NGX_HAVE_MAP_ANON  1
 #endif
 CONFIG_EOF
 fi
@@ -396,6 +396,16 @@ fi
 
 echo "  Linking nginx.wasm..."
 wasm32posix-cc "${OBJS[@]}" -o "$SCRIPT_DIR/nginx.wasm" -lcrypt
+
+# Asyncify for fork support (master_process on requires fork children to
+# resume from the fork point rather than re-executing _start)
+WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
+if [ -n "$WASM_OPT" ]; then
+    echo "  Applying asyncify transform..."
+    "$WASM_OPT" --asyncify \
+        --pass-arg="asyncify-imports@kernel.kernel_fork" \
+        "$SCRIPT_DIR/nginx.wasm" -o "$SCRIPT_DIR/nginx.wasm"
+fi
 
 echo "==> nginx.wasm built successfully!"
 ls -la "$SCRIPT_DIR/nginx.wasm"

@@ -530,6 +530,11 @@ export class CentralizedKernelWorker {
     port: number;
     connections: Set<import("net").Socket>;
   }>();
+  /** TCP listener targets: port → list of {pid, fd} for round-robin dispatch.
+   *  When multiple processes share a listening socket (e.g., nginx master forks
+   *  workers), incoming connections are distributed among them. */
+  private tcpListenerTargets = new Map<number, Array<{pid: number, fd: number}>>();
+  private tcpListenerRRIndex = new Map<number, number>();
   /** Separate scratch buffer for TCP data pumping */
   private tcpScratchOffset = 0;
   /** Node.js net module (loaded dynamically for browser compatibility) */
@@ -778,6 +783,8 @@ export class CentralizedKernelWorker {
     for (const channel of channels) {
       this.listenOnChannel(channel);
     }
+
+
   }
 
   /**
@@ -1462,6 +1469,7 @@ export class CentralizedKernelWorker {
     const i32View = new Int32Array(channel.memory.buffer, channel.channelOffset);
     Atomics.store(i32View, CH_STATUS / 4, CH_COMPLETE);
     Atomics.notify(i32View, CH_STATUS / 4, 1);
+
 
     // Event-driven pipe wakeup: if a write-like syscall succeeded, wake
     // any readers blocked on the same pipe/socket.
@@ -2519,6 +2527,10 @@ export class CentralizedKernelWorker {
     }
 
     const parentPid = channel.pid;
+    // Skip pids that are already registered (e.g., pid 3 is nginx master)
+    while (this.processes.has(this.nextChildPid)) {
+      this.nextChildPid++;
+    }
     const childPid = this.nextChildPid++;
 
     // Clone the Process in the kernel's ProcessTable
@@ -2559,6 +2571,15 @@ export class CentralizedKernelWorker {
     // Call the async fork handler to spawn child Worker
     this.callbacks.onFork(parentPid, childPid, channel.memory).then((childChannelOffsets) => {
       if (!this.processes.has(parentPid)) return;
+
+      // Inherit TCP listener targets: if parent listens on a port, register
+      // the child as an additional target (fork children share listening sockets)
+      for (const [port, targets] of this.tcpListenerTargets) {
+        const parentTarget = targets.find(t => t.pid === parentPid);
+        if (parentTarget && !targets.some(t => t.pid === childPid)) {
+          targets.push({ pid: childPid, fd: parentTarget.fd });
+        }
+      }
 
       // Complete parent's channel with child PID
       this.completeChannel(channel, SYS_FORK, _origArgs, undefined, childPid, 0);
@@ -3652,11 +3673,35 @@ export class CentralizedKernelWorker {
 
     if (!this.netModule) return; // Not in Node.js environment
 
+    // Register this pid:fd as a target for this port
+    if (!this.tcpListenerTargets.has(port)) {
+      this.tcpListenerTargets.set(port, []);
+      this.tcpListenerRRIndex.set(port, 0);
+    }
+    const targets = this.tcpListenerTargets.get(port)!;
+    if (!targets.some(t => t.pid === pid && t.fd === fd)) {
+      targets.push({ pid, fd });
+    }
+
+    // If another process already has a TCP server on this port, share it
+    for (const [, listener] of this.tcpListeners) {
+      if (listener.port === port) {
+        this.tcpListeners.set(key, listener);
+        return;
+      }
+    }
+
     const net = this.netModule;
 
     const connections = new Set<import("net").Socket>();
     const server = net.createServer((clientSocket) => {
-      this.handleIncomingTcpConnection(pid, fd, clientSocket, connections);
+      // Pick target via round-robin among registered processes for this port
+      const target = this.pickListenerTarget(port);
+      if (target) {
+        this.handleIncomingTcpConnection(target.pid, target.fd, clientSocket, connections);
+      } else {
+        clientSocket.destroy();
+      }
     });
 
     server.listen(port, "0.0.0.0", () => {
@@ -3668,6 +3713,38 @@ export class CentralizedKernelWorker {
     });
 
     this.tcpListeners.set(key, { server, pid, port, connections });
+  }
+
+  /**
+   * Pick the next listener target for a port via round-robin.
+   * Only considers processes that are still registered.
+   */
+  private pickListenerTarget(port: number): {pid: number, fd: number} | null {
+    const targets = this.tcpListenerTargets.get(port);
+    if (!targets || targets.length === 0) return null;
+
+    // Filter out dead processes
+    const alive = targets.filter(t => this.processes.has(t.pid));
+    if (alive.length === 0) return null;
+
+    // Update targets list to remove dead processes
+    if (alive.length !== targets.length) {
+      this.tcpListenerTargets.set(port, alive);
+    }
+
+    // If there are fork children among targets, prefer them over the original
+    // listener (the master doesn't accept connections, workers do).
+    let candidates = alive;
+    if (alive.length > 1) {
+      const children = alive.filter(t => this.childToParent.has(t.pid));
+      if (children.length > 0) {
+        candidates = children;
+      }
+    }
+
+    const idx = (this.tcpListenerRRIndex.get(port) ?? 0) % candidates.length;
+    this.tcpListenerRRIndex.set(port, idx + 1);
+    return candidates[idx]!;
   }
 
   /**
@@ -3701,6 +3778,10 @@ export class CentralizedKernelWorker {
       connections.delete(clientSocket);
       return;
     }
+
+    // Wake any blocked poll/accept in the target process — the listening
+    // socket's backlog now has a new entry (POLLIN should be set).
+    this.scheduleWakeBlockedRetries();
 
     const sendPipeIdx = recvPipeIdx + 1;
 
@@ -3877,14 +3958,29 @@ export class CentralizedKernelWorker {
    * Clean up all TCP listeners and connections for a process.
    */
   private cleanupTcpListeners(pid: number): void {
-    for (const [fd, entry] of this.tcpListeners) {
+    // Remove this pid from listener targets
+    for (const [port, targets] of this.tcpListenerTargets) {
+      const filtered = targets.filter(t => t.pid !== pid);
+      if (filtered.length === 0) {
+        this.tcpListenerTargets.delete(port);
+        this.tcpListenerRRIndex.delete(port);
+      } else {
+        this.tcpListenerTargets.set(port, filtered);
+      }
+    }
+
+    for (const [key, entry] of this.tcpListeners) {
       if (entry.pid === pid) {
-        entry.server.close();
-        for (const conn of entry.connections) {
-          conn.destroy();
+        // Only close the server if no other processes share this port
+        const hasOtherTargets = this.tcpListenerTargets.has(entry.port);
+        if (!hasOtherTargets) {
+          entry.server.close();
+          for (const conn of entry.connections) {
+            conn.destroy();
+          }
+          entry.connections.clear();
         }
-        entry.connections.clear();
-        this.tcpListeners.delete(fd);
+        this.tcpListeners.delete(key);
       }
     }
     this.tcpConnections.delete(pid);

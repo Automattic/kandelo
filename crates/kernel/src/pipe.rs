@@ -209,6 +209,17 @@ impl PipeTable {
             }
         }
     }
+
+    /// Total number of slots (including freed).
+    pub fn len(&self) -> usize {
+        self.pipes.len()
+    }
+
+    /// Number of active (non-None) pipe buffers.
+    #[cfg(test)]
+    pub fn count_active(&self) -> usize {
+        self.pipes.iter().filter(|p| p.is_some()).count()
+    }
 }
 
 /// Global pipe table wrapper for static storage.

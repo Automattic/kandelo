@@ -1,8 +1,8 @@
 /**
  * Regression test — nginx serving static HTML via wasm-posix-kernel.
  *
- * Starts nginx.wasm in centralized mode, sends an HTTP request to port 8080
- * through the TCP bridge, verifies the response, and tears down.
+ * Starts nginx.wasm in centralized mode with master_process on + 2 workers,
+ * sends HTTP requests through the TCP bridge, verifies responses, and tears down.
  */
 import { describe, it, expect } from "vitest";
 import { readFileSync, existsSync } from "node:fs";
@@ -22,6 +22,7 @@ const repoRoot = join(__dirname, "../..");
 
 const MAX_PAGES = 16384;
 const CH_TOTAL_SIZE = 40 + 65536;
+const ASYNCIFY_BUF_SIZE = 16384;
 
 const nginxWasmPath = join(repoRoot, "examples/nginx/nginx.wasm");
 const nginxPrefix = join(repoRoot, "examples/nginx");
@@ -68,25 +69,69 @@ describe.skipIf(!existsSync(nginxWasmPath))(
       const workerAdapter = new NodeWorkerAdapter();
       const io = new NodePlatformIO();
 
+      const workers = new Map<number, ReturnType<NodeWorkerAdapter["createWorker"]>>();
       let resolveExit: (status: number) => void;
       const exitPromise = new Promise<number>((r) => (resolveExit = r));
 
       const kw = new CentralizedKernelWorker(
-        { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true },
+        { maxWorkers: 8, dataBufferSize: 65536, useSharedMemory: true },
         io,
         {
-          onFork: async () => { throw new Error("unexpected fork"); },
+          onFork: async (parentPid, childPid, parentMemory) => {
+            const parentBuf = new Uint8Array(parentMemory.buffer);
+            const parentPages = Math.ceil(parentBuf.byteLength / 65536);
+            const childMemory = new WebAssembly.Memory({
+              initial: parentPages,
+              maximum: MAX_PAGES,
+              shared: true,
+            });
+            if (parentPages < MAX_PAGES) {
+              childMemory.grow(MAX_PAGES - parentPages);
+            }
+            new Uint8Array(childMemory.buffer).set(parentBuf);
+
+            const childChannelOffset = (MAX_PAGES - 2) * 65536;
+            new Uint8Array(childMemory.buffer, childChannelOffset, CH_TOTAL_SIZE).fill(0);
+
+            kw.registerProcess(childPid, childMemory, [childChannelOffset], { skipKernelCreate: true });
+
+            const asyncifyBufAddr = childChannelOffset - ASYNCIFY_BUF_SIZE;
+            const childInitData: CentralizedWorkerInitMessage = {
+              type: "centralized_init",
+              pid: childPid,
+              ppid: parentPid,
+              programBytes,
+              memory: childMemory,
+              channelOffset: childChannelOffset,
+              isForkChild: true,
+              asyncifyBufAddr,
+            };
+
+            const childWorker = workerAdapter.createWorker(childInitData);
+            workers.set(childPid, childWorker);
+            childWorker.on("error", () => {
+              kw.unregisterProcess(childPid);
+              workers.delete(childPid);
+            });
+
+            return [childChannelOffset];
+          },
           onExec: async () => -38,
           onExit: (pid, status) => {
-            kw.unregisterProcess(pid);
-            if (pid === 1) resolveExit!(status);
+            if (pid === 1) {
+              kw.unregisterProcess(pid);
+              resolveExit!(status);
+            } else {
+              kw.deactivateProcess(pid);
+            }
+            workers.delete(pid);
           },
         },
       );
 
       await kw.init(kernelBytes);
 
-      // Create process memory
+      // Create process memory for master
       const memory = new WebAssembly.Memory({
         initial: 17,
         maximum: MAX_PAGES,
@@ -111,15 +156,16 @@ describe.skipIf(!existsSync(nginxWasmPath))(
         argv: ["nginx", "-p", nginxPrefix + "/", "-c", nginxConf],
       };
 
-      const worker = workerAdapter.createWorker(initData);
-      worker.on("error", () => {});
+      const masterWorker = workerAdapter.createWorker(initData);
+      workers.set(1, masterWorker);
+      masterWorker.on("error", () => {});
 
       // Wait for the TCP listener to be ready (poll until port 8080 accepts)
       let ready = false;
-      for (let i = 0; i < 40; i++) {
-        await new Promise((r) => setTimeout(r, 100));
+      for (let i = 0; i < 80; i++) {
+        await new Promise((r) => setTimeout(r, 250));
         try {
-          await httpGet(8080, "/", 500);
+          await httpGet(8080, "/", 1000);
           ready = true;
           break;
         } catch {
@@ -140,10 +186,13 @@ describe.skipIf(!existsSync(nginxWasmPath))(
         const resp404 = await httpGet(8080, "/nonexistent");
         expect(resp404).toContain("404");
       } finally {
-        // Tear down
-        await worker.terminate().catch(() => {});
-        kw.unregisterProcess(1);
+        // Tear down all workers
+        for (const [pid, w] of workers) {
+          await w.terminate().catch(() => {});
+          kw.unregisterProcess(pid);
+        }
+        workers.clear();
       }
-    }, 30_000);
+    }, 60_000);
   },
 );

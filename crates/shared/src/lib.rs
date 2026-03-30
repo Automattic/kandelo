@@ -446,6 +446,7 @@ pub mod flags {
     pub const O_TRUNC: u32 = 0o1000;
     pub const O_APPEND: u32 = 0o2000;
     pub const O_NONBLOCK: u32 = 0o4000;
+    pub const O_ASYNC: u32 = 0o20000;
     pub const O_DIRECTORY: u32 = 0o200000;
     pub const O_NOFOLLOW: u32 = 0o400000;
     pub const O_CLOEXEC: u32 = 0o2000000;
