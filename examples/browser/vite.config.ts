@@ -23,10 +23,13 @@ export default defineConfig({
         nginx: path.resolve(__dirname, "pages/nginx/index.html"),
         php: path.resolve(__dirname, "pages/php/index.html"),
         "nginx-php": path.resolve(__dirname, "pages/nginx-php/index.html"),
+        mariadb: path.resolve(__dirname, "pages/mariadb/index.html"),
+        wordpress: path.resolve(__dirname, "pages/wordpress/index.html"),
       },
     },
   },
   worker: {
     format: "es",
   },
+  assetsInclude: ["**/*.wasm", "**/*.sql"],
 });

@@ -1,0 +1,29 @@
+--- a/mysys/my_new.cc
++++ b/mysys/my_new.cc
+@@ -29,22 +29,22 @@
+ 
+ void *operator new (size_t sz)
+ {
+-  return (void *) my_malloc (sz ? sz : 1, MYF(0));
++  return (void *) my_malloc (PSI_NOT_INSTRUMENTED, sz ? sz : 1, MYF(0));
+ }
+ 
+ void *operator new[] (size_t sz)
+ {
+-  return (void *) my_malloc (sz ? sz : 1, MYF(0));
++  return (void *) my_malloc (PSI_NOT_INSTRUMENTED, sz ? sz : 1, MYF(0));
+ }
+ 
+ void* operator new(std::size_t sz, const std::nothrow_t&) throw()
+ {
+-  return (void *) my_malloc (sz ? sz : 1, MYF(0));
++  return (void *) my_malloc (PSI_NOT_INSTRUMENTED, sz ? sz : 1, MYF(0));
+ }
+ 
+ void* operator new[](std::size_t sz, const std::nothrow_t&) throw()
+ {
+-  return (void *) my_malloc (sz ? sz : 1, MYF(0));
++  return (void *) my_malloc (PSI_NOT_INSTRUMENTED, sz ? sz : 1, MYF(0));
+ }
+ 
+ void operator delete (void *ptr, std::size_t)

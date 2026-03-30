@@ -28,6 +28,7 @@ node_modules/
 
 # Browser example build output
 examples/browser/dist/
+examples/browser/public/wp-bundle.json
 
 # nginx source (downloaded by build.sh)
 examples/nginx/nginx-src/
@@ -47,6 +48,10 @@ examples/libs/mariadb/mariadb-glue-objs/
 
 # MariaDB data directory
 examples/mariadb/data/
+
+# WordPress download artifacts
+examples/wordpress/wordpress/
+examples/wordpress/sqlite-database-integration/
 
 # libc-test build artifacts (source is a git submodule)
 libc-test/build/

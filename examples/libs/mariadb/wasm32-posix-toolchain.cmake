@@ -80,7 +80,7 @@ set(WASM32_FLAGS
 string(REPLACE ";" " " WASM32_FLAGS_STR "${WASM32_FLAGS}")
 
 set(CMAKE_C_FLAGS_INIT "${WASM32_FLAGS_STR}")
-set(CMAKE_CXX_FLAGS_INIT "${WASM32_FLAGS_STR} -nostdinc++ -isystem ${WASM_POSIX_SYSROOT}/include/c++/v1")
+set(CMAKE_CXX_FLAGS_INIT "${WASM32_FLAGS_STR} -nostdinc++ -isystem ${WASM_POSIX_SYSROOT}/include/c++/v1 -D_LIBCPP_HAS_MUSL_LIBC -D_LIBCPP_HAS_THREAD_API_PTHREAD -D_LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE")
 
 # --- Linker flags (mirror sdk/src/lib/flags.ts LINK_FLAGS) ---
 set(WASM32_LINK_FLAGS
@@ -201,6 +201,25 @@ set(HAVE_LINK_H 0 CACHE INTERNAL "")
 set(HAVE_MALLOC_H 0 CACHE INTERNAL "")
 set(HAVE_SETUPTERM 0 CACHE INTERNAL "")
 set(HAVE_VIDATTR 0 CACHE INTERNAL "")
+
+# --- Disable SSL/TLS for both server and client library ---
+# The server uses -DWITH_SSL=OFF, but libmariadb (connector/C) has its own
+# SSL handling. Prevent FindGnuTLS from being called by pre-setting results.
+set(WITH_SSL "OFF" CACHE STRING "Disable SSL" FORCE)
+set(GNUTLS_FOUND FALSE CACHE BOOL "" FORCE)
+set(GNUTLS_LIBRARY "GNUTLS_LIBRARY-NOTFOUND" CACHE FILEPATH "" FORCE)
+set(GNUTLS_INCLUDE_DIR "GNUTLS_INCLUDE_DIR-NOTFOUND" CACHE PATH "" FORCE)
+set(OPENSSL_FOUND FALSE CACHE BOOL "" FORCE)
+
+# --- Curses/terminfo stubs ---
+# MariaDB's bundled editline requires curses. Our sysroot doesn't have it,
+# but MariaDB only uses it for the interactive mysql CLI (not mariadbd).
+# Satisfy the cmake check with stubs.
+set(CURSES_FOUND TRUE CACHE BOOL "Curses found (stub)" FORCE)
+set(CURSES_LIBRARY "${WASM_POSIX_SYSROOT}/lib/libc.a" CACHE FILEPATH "Curses library (stub)" FORCE)
+set(CURSES_INCLUDE_PATH "${WASM_POSIX_SYSROOT}/include" CACHE PATH "Curses include path" FORCE)
+set(CURSES_HAVE_CURSES_H FALSE CACHE BOOL "" FORCE)
+set(CURSES_HAVE_NCURSES_H FALSE CACHE BOOL "" FORCE)
 
 # --- Disable DTrace ---
 # DTrace probes require host dtrace tool which can't target wasm32.
