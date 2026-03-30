@@ -22,6 +22,7 @@ export default defineConfig({
         main: path.resolve(__dirname, "index.html"),
         nginx: path.resolve(__dirname, "pages/nginx/index.html"),
         php: path.resolve(__dirname, "pages/php/index.html"),
+        "nginx-php": path.resolve(__dirname, "pages/nginx-php/index.html"),
       },
     },
   },

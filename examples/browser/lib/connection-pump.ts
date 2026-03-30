@@ -50,14 +50,16 @@ export function handleHttpRequest(
     );
   }
 
-  // Close write end — signals end of request body
-  kernel.pipeCloseWrite(target.pid, recvPipeIdx);
+  // Don't close the recv pipe write end here — closing it causes POLLHUP
+  // on the pipe, which nginx interprets as "client disconnected" when it
+  // polls the client fd while waiting for an upstream (FastCGI) response.
+  // The Connection: close header tells nginx the request is complete.
 
   // Wake any blocked readers
   kernel.wakeBlockedReaders(recvPipeIdx);
 
   // Start pumping response from send pipe
-  pumpResponse(kernel, bridge, requestId, target.pid, sendPipeIdx);
+  pumpResponse(kernel, bridge, requestId, target.pid, sendPipeIdx, recvPipeIdx);
 }
 
 /**
@@ -102,8 +104,10 @@ function pumpResponse(
   requestId: number,
   pid: number,
   sendPipeIdx: number,
+  recvPipeIdx: number,
 ): void {
   const chunks: Uint8Array[] = [];
+  let sawWriteOpen = false;
 
   const pump = () => {
     const data = kernel.pipeRead(pid, sendPipeIdx);
@@ -111,11 +115,18 @@ function pumpResponse(
       chunks.push(data);
     }
 
-    // Check if the write end is closed (response complete)
     const writeOpen = kernel.pipeIsWriteOpen(pid, sendPipeIdx);
-    if (!writeOpen && !data) {
-      // Response complete
+    if (writeOpen) {
+      sawWriteOpen = true;
+    }
+
+    // Only treat write-end-closed as "response complete" if we've seen it
+    // open first. Before the server accepts the connection, the pipe's write
+    // end isn't associated with any process yet and appears closed.
+    if (sawWriteOpen && !writeOpen && !data) {
+      // Response complete — clean up both pipes
       kernel.pipeCloseRead(pid, sendPipeIdx);
+      kernel.pipeCloseWrite(pid, recvPipeIdx);
       const rawResponse = concatChunks(chunks);
       const parsed = parseRawHttpResponse(rawResponse);
       bridge.respond(requestId, parsed);
@@ -190,7 +201,52 @@ function parseRawHttpResponse(data: Uint8Array): HttpResponse {
       break;
     }
   }
-  const body = data.subarray(byteHeaderEnd);
+  let body = data.subarray(byteHeaderEnd);
+
+  // Decode chunked transfer encoding if present
+  const te = headers["Transfer-Encoding"] || headers["transfer-encoding"];
+  if (te && te.toLowerCase().includes("chunked")) {
+    body = decodeChunked(body);
+    // Remove Transfer-Encoding since we decoded it
+    delete headers["Transfer-Encoding"];
+    delete headers["transfer-encoding"];
+  }
 
   return { status, headers, body: new Uint8Array(body) };
+}
+
+/**
+ * Decode chunked transfer encoding from raw bytes.
+ */
+function decodeChunked(data: Uint8Array): Uint8Array {
+  const result: Uint8Array[] = [];
+  let pos = 0;
+
+  while (pos < data.length) {
+    // Find \r\n that ends the chunk size line
+    let lineEnd = -1;
+    for (let i = pos; i < data.length - 1; i++) {
+      if (data[i] === 0x0d && data[i + 1] === 0x0a) {
+        lineEnd = i;
+        break;
+      }
+    }
+    if (lineEnd < 0) break;
+
+    // Parse chunk size (ASCII hex)
+    const sizeLine = decoder.decode(data.subarray(pos, lineEnd)).trim();
+    const chunkSize = parseInt(sizeLine, 16);
+    if (isNaN(chunkSize) || chunkSize === 0) break;
+
+    const chunkStart = lineEnd + 2;
+    const chunkEnd = chunkStart + chunkSize;
+    if (chunkEnd > data.length) break;
+
+    result.push(data.subarray(chunkStart, chunkEnd));
+
+    // Skip past chunk data + \r\n
+    pos = chunkEnd + 2;
+  }
+
+  return concatChunks(result);
 }
