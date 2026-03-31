@@ -30,7 +30,8 @@ function base64Decode(str: string): Uint8Array {
     const b = b64Chars.indexOf(str[i + 1]);
     const c = b64Chars.indexOf(str[i + 2]);
     const d = b64Chars.indexOf(str[i + 3]);
-    const n = (a << 18) | (b << 12) | (c << 6) | d;
+    // Padding characters ('=') return -1 from indexOf; treat as 0
+    const n = (a << 18) | (b << 12) | (Math.max(0, c) << 6) | Math.max(0, d);
     bytes[pos++] = (n >> 16) & 0xff;
     if (pos < bytes.length) bytes[pos++] = (n >> 8) & 0xff;
     if (pos < bytes.length) bytes[pos++] = n & 0xff;
