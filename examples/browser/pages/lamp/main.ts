@@ -64,8 +64,6 @@ http {
     client_body_temp_path /tmp/nginx_client_temp;
     fastcgi_temp_path /tmp/nginx_fastcgi_temp;
     proxy_temp_path /tmp/nginx_proxy_temp;
-    uwsgi_temp_path /tmp/nginx_uwsgi_temp;
-    scgi_temp_path /tmp/nginx_scgi_temp;
 
     types {
         text/html  html htm;

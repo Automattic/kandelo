@@ -17,9 +17,10 @@
 // clamp on nested setTimeout means ~8ms per cycle (4ms processing + 4ms delay), giving
 // ~50K+ syscalls/sec while guaranteeing responsive timer callbacks every ~8ms.
 if (typeof globalThis.setImmediate === "undefined") {
-  const _immQueue: Array<{ fn: (...args: any[]) => void; args: any[] }> = [];
+  const _immQueue: Array<{ id: number; fn: (...args: any[]) => void; args: any[] }> = [];
   let _immNextId = 0;
   let _immScheduled = false;
+  const _immCancelled = new Set<number>();
 
   function _immFlush() {
     _immScheduled = false;
@@ -27,6 +28,10 @@ if (typeof globalThis.setImmediate === "undefined") {
     let count = 0;
     while (_immQueue.length > 0) {
       const entry = _immQueue.shift()!;
+      if (_immCancelled.has(entry.id)) {
+        _immCancelled.delete(entry.id);
+        continue;
+      }
       entry.fn(...entry.args);
       count++;
       // Check wall clock every 16 items to limit performance.now() overhead
@@ -40,15 +45,15 @@ if (typeof globalThis.setImmediate === "undefined") {
 
   (globalThis as any).setImmediate = (fn: (...args: any[]) => void, ...args: any[]) => {
     const id = ++_immNextId;
-    _immQueue.push({ fn, args });
+    _immQueue.push({ id, fn, args });
     if (!_immScheduled) {
       _immScheduled = true;
       setTimeout(_immFlush, 0);
     }
     return id;
   };
-  (globalThis as any).clearImmediate = (id: any) => {
-    void id;
+  (globalThis as any).clearImmediate = (id: number) => {
+    _immCancelled.add(id);
   };
 }
 
