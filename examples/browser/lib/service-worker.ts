@@ -31,6 +31,11 @@ sw.addEventListener("message", (event) => {
       initBridgePort(port);
       appPrefix = msg.appPrefix ?? "/app/";
     }
+    // Confirm bridge initialization to the caller
+    const replyPort = event.ports[1];
+    if (replyPort) {
+      replyPort.postMessage({ type: "bridge-ready" });
+    }
   }
 });
 

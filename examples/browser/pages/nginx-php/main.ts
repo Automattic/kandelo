@@ -338,11 +338,23 @@ async function registerServiceWorker(
       });
     }
 
+    // Wait for the SW to claim this client so fetch events are intercepted
+    if (!navigator.serviceWorker.controller) {
+      await new Promise<void>((resolve) => {
+        navigator.serviceWorker.addEventListener("controllerchange", () => resolve());
+      });
+    }
+
+    // Send bridge port and wait for SW to confirm it's initialized
     const activeSw = reg.active!;
-    activeSw.postMessage(
-      { type: "init-bridge", appPrefix: "/app/" },
-      [bridge.getSwPort()],
-    );
+    await new Promise<void>((resolve) => {
+      const reply = new MessageChannel();
+      reply.port1.onmessage = () => resolve();
+      activeSw.postMessage(
+        { type: "init-bridge", appPrefix: "/app/" },
+        [bridge.getSwPort(), reply.port2],
+      );
+    });
 
     return reg;
   } catch (err) {
