@@ -489,10 +489,27 @@ cmd_run() {
 cmd_browser() {
     local BROWSER_DIR="$REPO_ROOT/examples/browser"
 
-    # Build minimal required wasm artifacts
+    # Build all wasm artifacts needed by browser demos:
+    #   simple: kernel + programs
+    #   shell:  kernel + dash + coreutils + grep + sed
+    #   php:    kernel + php
+    #   nginx:  kernel + nginx
+    #   nginx-php: kernel + nginx + php-fpm
+    #   mariadb: kernel + mariadb
+    #   wordpress: kernel + nginx + php-fpm + wp-bundle
+    #   lamp: kernel + nginx + php-fpm + mariadb + wp-bundle
     build_kernel
     build_sysroot
     build_programs
+    build_dash
+    build_coreutils
+    build_grep
+    build_sed
+    build_nginx
+    build_php
+    build_php_fpm
+    build_mariadb
+    build_wp_bundle
 
     # Install browser deps if needed
     if [ ! -d "$BROWSER_DIR/node_modules" ]; then

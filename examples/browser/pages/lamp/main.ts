@@ -400,10 +400,21 @@ async function start() {
       "--max-connections=10",
     ]);
 
-    // Wait for MariaDB to initialize
-    appendLog("Waiting for MariaDB to initialize...\n", "info");
-    await new Promise((r) => setTimeout(r, 8000));
-    appendLog("MariaDB ready\n", "info");
+    // Poll for MariaDB listener instead of blind wait
+    appendLog("Waiting for MariaDB to accept connections...\n", "info");
+    for (let attempt = 1; attempt <= 30; attempt++) {
+      await new Promise((r) => setTimeout(r, 1000));
+      if (kernel.pickListenerTarget(3306)) {
+        appendLog(`MariaDB ready (after ${attempt}s)\n`, "info");
+        break;
+      }
+      if (attempt === 30) {
+        throw new Error("MariaDB did not start listening within 30s");
+      }
+      if (attempt % 5 === 0) {
+        appendLog(`Still waiting for MariaDB... (${attempt}s)\n`, "info");
+      }
+    }
 
     // =====================================================================
     // Phase 3: Start PHP-FPM

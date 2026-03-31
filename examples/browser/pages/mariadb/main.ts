@@ -192,16 +192,27 @@ async function start() {
       "--max-connections=10",
     ]);
 
-    // Wait for server to initialize
-    appendLog("Waiting for server to initialize...\n", "info");
-    await new Promise((r) => setTimeout(r, 8000));
+    // --- Phase 3: Connect MySQL client (with retry) ---
+    setStatus("Waiting for MariaDB to accept connections...", "loading");
+    appendLog("Waiting for server to accept connections...\n", "info");
 
-    // --- Phase 3: Connect MySQL client ---
-    setStatus("Connecting to MariaDB...", "loading");
-    appendLog("Connecting MySQL client...\n", "info");
-
-    mysqlClient = await MySqlBrowserClient.connect(kernel, 3306);
-    appendLog("Connected!\n", "info");
+    // Poll for listener instead of blind wait — MariaDB startup time varies
+    const maxRetries = 30;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      await new Promise((r) => setTimeout(r, 1000));
+      try {
+        mysqlClient = await MySqlBrowserClient.connect(kernel, 3306);
+        appendLog(`Connected! (after ${attempt}s)\n`, "info");
+        break;
+      } catch {
+        if (attempt === maxRetries) {
+          throw new Error("MariaDB did not start accepting connections within 30s");
+        }
+        if (attempt % 5 === 0) {
+          appendLog(`Still waiting... (${attempt}s)\n`, "info");
+        }
+      }
+    }
 
     setStatus("MariaDB running! Execute SQL queries.", "running");
     executeBtn.disabled = false;

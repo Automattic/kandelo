@@ -99,7 +99,12 @@ else
 fi
 
 echo "==> dash built successfully!"
-ls -lh "$DASH_BIN"
+
+# Copy to bin/ with .wasm extension (consistent with coreutils/grep/sed, needed for Vite)
+mkdir -p "$SCRIPT_DIR/bin"
+cp "$DASH_BIN" "$SCRIPT_DIR/bin/dash.wasm"
+
+ls -lh "$SCRIPT_DIR/bin/dash.wasm"
 echo ""
 echo "Run with:"
 echo "  npx tsx examples/shell/serve.ts"

@@ -168,4 +168,9 @@ echo "==> Building PHP..."
 make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" cli
 
 echo "==> PHP CLI built successfully!"
-ls -la sapi/cli/php
+
+# Copy to bin/ with .wasm extension (needed for Vite browser demos)
+mkdir -p "$SCRIPT_DIR/bin"
+cp sapi/cli/php "$SCRIPT_DIR/bin/php.wasm"
+
+ls -la "$SCRIPT_DIR/bin/php.wasm"

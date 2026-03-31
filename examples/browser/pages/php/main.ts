@@ -4,7 +4,7 @@
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
 import kernelWasmUrl from "../../../../host/wasm/wasm_posix_kernel.wasm?url";
-import phpWasmUrl from "../../../../examples/libs/php/php-src/sapi/cli/php.wasm?url";
+import phpWasmUrl from "../../../../examples/libs/php/bin/php.wasm?url";
 
 const codeEl = document.getElementById("code") as HTMLTextAreaElement;
 const output = document.getElementById("output") as HTMLPreElement;
