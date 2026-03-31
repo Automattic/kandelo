@@ -521,6 +521,7 @@ cmd_browser() {
     #   nginx-php: kernel + nginx + php-fpm
     #   mariadb: kernel + mariadb
     #   wordpress: kernel + nginx + php-fpm + wp-bundle
+    #   redis: kernel + redis
     #   lamp: kernel + nginx + php-fpm + mariadb + wp-bundle
     build_kernel
     build_sysroot
@@ -533,6 +534,7 @@ cmd_browser() {
     build_php
     build_php_fpm
     build_mariadb
+    build_redis
     build_wp_bundle
 
     # Install browser deps if needed

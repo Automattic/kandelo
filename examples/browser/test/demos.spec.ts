@@ -168,6 +168,41 @@ test("@slow mariadb: bootstraps and accepts queries", async ({ page }) => {
   await assertNoError(page);
 });
 
+// ─── Redis ─────────────────────────────────────────────────────
+
+test("@slow redis: starts and accepts commands", async ({ page }) => {
+  test.setTimeout(120_000);
+  await gotoOrSkip(page, "/pages/redis/");
+
+  await page.click("#start");
+
+  // Wait for execute button to be enabled (Redis is ready)
+  await page.waitForFunction(
+    () => {
+      const btn = document.getElementById("execute") as HTMLButtonElement;
+      return btn && !btn.disabled;
+    },
+    { timeout: 90_000 },
+  );
+
+  // Verify PING worked during startup
+  const log = await page.locator("#log").textContent();
+  expect(log).toContain("Connected!");
+  expect(log).toContain("PONG");
+
+  // Send a SET command
+  await page.fill("#cmd", "SET e2e_key hello_world");
+  await page.click("#execute");
+  await waitForText(page, "#result", "OK", 10_000);
+
+  // Send a GET command
+  await page.fill("#cmd", "GET e2e_key");
+  await page.click("#execute");
+  await waitForText(page, "#result", "hello_world", 10_000);
+
+  await assertNoError(page);
+});
+
 // ─── WordPress ──────────────────────────────────────────────────────
 
 test("@slow wordpress: loads and shows running", async ({ page }) => {
