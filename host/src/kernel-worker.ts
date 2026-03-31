@@ -2962,6 +2962,24 @@ export class CentralizedKernelWorker {
       return;
     }
 
+    // Run the kernel's exit path so it closes all FDs (including pipe
+    // write ends). kernel_exit calls sys_exit then traps — catch the trap.
+    {
+      const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
+      kernelView.setUint32(CH_SYSCALL, syscallNr, true);
+      kernelView.setInt32(CH_ARGS, exitStatus, true);
+      const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
+        (offset: number, pid: number) => number;
+      this.currentHandlePid = channel.pid;
+      try {
+        handleChannel(this.scratchOffset, channel.pid);
+      } catch {
+        // Expected: kernel_exit traps with unreachable after closing FDs
+      } finally {
+        this.currentHandlePid = 0;
+      }
+    }
+
     // Main thread exit or exit_group: record exit status for waitpid,
     // queue SIGCHLD to parent, then notify the host callback.
     const exitingPid = channel.pid;
@@ -3005,6 +3023,11 @@ export class CentralizedKernelWorker {
         this.childToParent.delete(exitingPid);
       }
     }
+
+    // Wake any processes blocked on pipe reads/polls — the exiting process's
+    // FDs were closed by the kernel (sys_exit), so pipes with no remaining
+    // writers should now return EOF to readers.
+    this.scheduleWakeBlockedRetries();
 
     if (this.callbacks.onExit) {
       this.callbacks.onExit(exitingPid, exitStatus);
