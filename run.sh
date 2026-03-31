@@ -563,13 +563,31 @@ cmd_test() {
                     failed=1
                 fi
                 ;;
+            browser)
+                step "Running browser E2E tests"
+                cd "$REPO_ROOT/examples/browser"
+                [ -d node_modules ] || npm install
+                if ! npx playwright test --grep-invert "@slow"; then
+                    failed=1
+                fi
+                cd "$REPO_ROOT"
+                ;;
+            browser-all)
+                step "Running ALL browser E2E tests (including @slow)"
+                cd "$REPO_ROOT/examples/browser"
+                [ -d node_modules ] || npm install
+                if ! npx playwright test; then
+                    failed=1
+                fi
+                cd "$REPO_ROOT"
+                ;;
             all)
-                cmd_test cargo vitest libc posix sortix
+                cmd_test cargo vitest libc posix sortix browser
                 return $?
                 ;;
             *)
                 err "Unknown test suite: $suite"
-                err "Available: cargo, vitest, libc, posix, sortix, all"
+                err "Available: cargo, vitest, libc, posix, sortix, browser, browser-all, all"
                 exit 1
                 ;;
         esac
@@ -621,7 +639,9 @@ cmd_list() {
     echo "  ./run.sh test libc                   musl libc-test conformance"
     echo "  ./run.sh test posix                  Open POSIX test suite"
     echo "  ./run.sh test sortix                 Sortix os-test suite"
-    echo "  ./run.sh test all                    All suites including sortix"
+    echo "  ./run.sh test browser                Browser E2E tests (fast only)"
+    echo "  ./run.sh test browser-all            Browser E2E tests (including slow)"
+    echo "  ./run.sh test all                    All suites including sortix + browser"
 }
 
 # ─── Main dispatch ────────────────────────────────────────────────────────────
