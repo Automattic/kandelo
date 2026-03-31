@@ -46,7 +46,7 @@ export interface BrowserKernelOptions {
   /** Called when a process writes to stderr */
   onStderr?: (data: Uint8Array) => void;
   /** Called when the kernel wants to resolve an exec path to wasm bytes */
-  onExec?: (pid: number, path: string) => Promise<ArrayBuffer | null>;
+  onExec?: (pid: number, path: string, argv: string[], envp: string[]) => Promise<ArrayBuffer | null>;
   /** Called when a process requests a TCP listener (for service worker bridging) */
   onListenTcp?: (pid: number, fd: number, port: number) => void;
   /** Pre-compiled thread module for clone(). Avoids recompiling large wasm for each thread. */
@@ -136,15 +136,57 @@ export class BrowserKernel {
       {
         onFork: (parentPid, childPid, parentMemory) =>
           this.handleFork(parentPid, childPid, parentMemory),
-        onExec: async (pid, path) => {
-          if (this.options.onExec) {
-            const bytes = await this.options.onExec(pid, path);
-            if (bytes) {
-              // Re-spawn the process with new binary
-              return 0;
-            }
+        onExec: async (pid, path, argv, envp) => {
+          if (!this.options.onExec) return -38; // ENOSYS
+          const bytes = await this.options.onExec(pid, path, argv, envp);
+          if (!bytes) return -2; // ENOENT
+
+          // Terminate old worker
+          const oldInfo = this.processes.get(pid);
+          if (oldInfo?.worker) {
+            await oldInfo.worker.terminate().catch(() => {});
           }
-          return -38; // ENOSYS
+
+          // Create fresh memory for the new program
+          const newMemory = new WebAssembly.Memory({
+            initial: 17,
+            maximum: MAX_PAGES,
+            shared: true,
+          });
+          const newChannelOffset = (MAX_PAGES - 2) * PAGE_SIZE;
+          newMemory.grow(MAX_PAGES - 17);
+          new Uint8Array(newMemory.buffer, newChannelOffset, CH_TOTAL_SIZE).fill(0);
+
+          // Re-register with fresh memory (kernel pid already exists)
+          this.kernelWorker.registerProcess(pid, newMemory, [newChannelOffset], {
+            skipKernelCreate: true,
+          });
+
+          // Spawn new worker with exec'd program
+          const execInitData: CentralizedWorkerInitMessage = {
+            type: "centralized_init",
+            pid,
+            ppid: 0,
+            programBytes: bytes,
+            memory: newMemory,
+            channelOffset: newChannelOffset,
+            argv,
+            env: envp,
+          };
+
+          const newWorker = this.workerAdapter.createWorker(execInitData);
+          newWorker.on("error", (err: Error) => {
+            console.error(`[BrowserKernel] exec worker error pid=${pid}:`, err.message);
+          });
+
+          this.processes.set(pid, {
+            memory: newMemory,
+            programBytes: bytes,
+            worker: newWorker,
+            channelOffset: newChannelOffset,
+          });
+
+          return 0;
         },
         onClone: (pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory) =>
           this.handleClone(

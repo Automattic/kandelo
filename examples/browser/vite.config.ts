@@ -26,6 +26,7 @@ export default defineConfig({
         mariadb: path.resolve(__dirname, "pages/mariadb/index.html"),
         wordpress: path.resolve(__dirname, "pages/wordpress/index.html"),
         lamp: path.resolve(__dirname, "pages/lamp/index.html"),
+        shell: path.resolve(__dirname, "pages/shell/index.html"),
       },
     },
   },

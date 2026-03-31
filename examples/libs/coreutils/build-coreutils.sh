@@ -215,6 +215,8 @@ if [ ! -f Makefile ]; then
     export ac_cv_func__set_invalid_parameter_handler=no
     export ac_cv_func_fclonefileat=no
     export ac_cv_func_getattrat=no
+    export ac_cv_func_pstat_getprocvm=no
+    export ac_cv_func_mquery=no
 
     # Wasm32 type sizes
     export ac_cv_sizeof_long=4

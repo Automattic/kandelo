@@ -816,6 +816,27 @@ export class CentralizedKernelWorker {
   }
 
   /**
+   * Append data to a process's stdin buffer without marking stdin as a pipe.
+   * Used for interactive stdin where data arrives incrementally.
+   * Wakes any blocked stdin readers after appending.
+   */
+  appendStdinData(pid: number, data: Uint8Array): void {
+    const existing = this.stdinBuffers.get(pid);
+    if (existing) {
+      // Concatenate with remaining unread data
+      const remaining = existing.data.subarray(existing.offset);
+      const combined = new Uint8Array(remaining.length + data.length);
+      combined.set(remaining);
+      combined.set(data, remaining.length);
+      this.stdinBuffers.set(pid, { data: combined, offset: 0 });
+    } else {
+      this.stdinBuffers.set(pid, { data, offset: 0 });
+    }
+    // Wake any blocked readers for this process
+    this.scheduleWakeBlockedRetries();
+  }
+
+  /**
    * Set the working directory for a process.
    * Must be called after registerProcess and before the process starts.
    */
