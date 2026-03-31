@@ -217,6 +217,14 @@ test("@slow wordpress: loads and shows running", async ({ page }) => {
   expect(log).toContain("nginx");
   expect(log).toContain("PHP-FPM");
   await assertNoError(page);
+
+  // Verify the iframe shows WordPress content, not the default Vite index page.
+  // This catches service worker timing races where fetch("/app/") falls through.
+  const frame = page.frameLocator("#frame");
+  await expect(frame.locator("body")).not.toBeEmpty({ timeout: 30_000 });
+  const frameSrc = await page.locator("#frame").getAttribute("srcdoc");
+  expect(frameSrc).not.toContain("wasm-posix-kernel Browser Demo");
+  expect(frameSrc?.toLowerCase()).toContain("wordpress");
 });
 
 // ─── LAMP ───────────────────────────────────────────────────────────
