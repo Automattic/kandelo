@@ -780,6 +780,15 @@ export class CentralizedKernelWorker {
       }
     }
 
+    // Cap mmap address space at the channel offset to prevent overlap
+    const setMaxAddr = this.kernelInstance!.exports.kernel_set_max_addr as
+      ((pid: number, maxAddr: number) => number) | undefined;
+    if (setMaxAddr && channelOffsets.length > 0) {
+      // Use the lowest channel offset as the upper bound for mmap
+      const minChannelOffset = Math.min(...channelOffsets);
+      setMaxAddr(pid, minChannelOffset);
+    }
+
     const channels: ChannelInfo[] = channelOffsets.map((offset) => ({
       pid,
       memory,

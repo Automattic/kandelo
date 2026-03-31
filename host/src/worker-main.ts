@@ -338,7 +338,7 @@ export async function centralizedWorkerMain(
       }
 
       // Set __channel_base in TLS
-      setupChannelBase(instance, memory, channelOffset);
+      setupChannelBase(instance, memory, channelOffset, programBytes as ArrayBuffer);
 
       // Signal ready
       port.postMessage({ type: "ready", pid } satisfies WorkerToHostMessage);
@@ -433,7 +433,7 @@ export async function centralizedWorkerMain(
       const instance = await WebAssembly.instantiate(module, importObject);
       processInstance = instance;
 
-      setupChannelBase(instance, memory, channelOffset);
+      setupChannelBase(instance, memory, channelOffset, programBytes as ArrayBuffer);
 
       port.postMessage({ type: "ready", pid } satisfies WorkerToHostMessage);
 
@@ -464,44 +464,189 @@ export async function centralizedWorkerMain(
 /**
  * Set up __channel_base in TLS so __do_syscall knows the channel offset.
  */
+/**
+ * Detect __channel_base's TLS offset by inspecting the Wasm binary.
+ *
+ * The __get_channel_base_addr function has a simple body:
+ *   i32.const <offset>
+ *   global.get <__tls_base>
+ *   i32.add
+ *   return
+ *
+ * We find this function by looking at the export wrapper's call target.
+ * Returns the i32.const value, or -1 if detection fails.
+ */
+function detectChannelBaseTlsOffset(programBytes: ArrayBuffer): number {
+  const src = new Uint8Array(programBytes);
+  if (src.length < 8) return -1;
+
+  function readLEB128(buf: Uint8Array, off: number): [number, number] {
+    let result = 0, shift = 0, pos = off;
+    for (;;) {
+      const byte = buf[pos++];
+      result |= (byte & 0x7f) << shift;
+      if ((byte & 0x80) === 0) break;
+      shift += 7;
+    }
+    return [result, pos - off];
+  }
+
+  // Parse sections to find Export and Code sections
+  interface Section { id: number; contentOffset: number; contentSize: number; }
+  const sections: Section[] = [];
+  let numFuncImports = 0;
+  let offset = 8;
+
+  while (offset < src.length) {
+    const sectionId = src[offset];
+    const [sectionSize, sizeBytes] = readLEB128(src, offset + 1);
+    sections.push({ id: sectionId, contentOffset: offset + 1 + sizeBytes, contentSize: sectionSize });
+    offset += 1 + sizeBytes + sectionSize;
+  }
+
+  // Count function imports (section 2)
+  for (const sec of sections) {
+    if (sec.id === 2) {
+      let pos = sec.contentOffset;
+      const [importCount, countBytes] = readLEB128(src, pos);
+      pos += countBytes;
+      for (let i = 0; i < importCount; i++) {
+        const [modLen, modLenBytes] = readLEB128(src, pos); pos += modLenBytes + modLen;
+        const [fieldLen, fieldLenBytes] = readLEB128(src, pos); pos += fieldLenBytes + fieldLen;
+        const kind = src[pos++];
+        if (kind === 0) { numFuncImports++; const [, n] = readLEB128(src, pos); pos += n; }
+        else if (kind === 1) { pos++; const f = src[pos++]; const [, n] = readLEB128(src, pos); pos += n; if (f & 1) { const [, n2] = readLEB128(src, pos); pos += n2; } }
+        else if (kind === 2) { const f = src[pos++]; const [, n] = readLEB128(src, pos); pos += n; if (f & 1) { const [, n2] = readLEB128(src, pos); pos += n2; } }
+        else if (kind === 3) { pos += 2; }
+      }
+      break;
+    }
+  }
+
+  // Find __get_channel_base_addr export
+  let channelBaseExportFuncIdx = -1;
+  for (const sec of sections) {
+    if (sec.id === 7) {
+      let pos = sec.contentOffset;
+      const [exportCount, countBytes] = readLEB128(src, pos); pos += countBytes;
+      for (let i = 0; i < exportCount; i++) {
+        const [nameLen, nameLenBytes] = readLEB128(src, pos); pos += nameLenBytes;
+        const name = new TextDecoder().decode(src.subarray(pos, pos + nameLen)); pos += nameLen;
+        const kind = src[pos++];
+        const [idx, idxBytes] = readLEB128(src, pos); pos += idxBytes;
+        if (kind === 0 && name === "__get_channel_base_addr") {
+          channelBaseExportFuncIdx = idx;
+          break;
+        }
+      }
+      break;
+    }
+  }
+
+  if (channelBaseExportFuncIdx < 0) return -1;
+
+  // The export may be either:
+  // 1. A direct export (no ctors): i32.const <offset>; global.get; i32.add; ...
+  // 2. A wrapper: call __wasm_call_ctors; call <actual>; end
+  const exportCodeEntry = channelBaseExportFuncIdx - numFuncImports;
+  if (exportCodeEntry < 0) return -1;
+
+  for (const sec of sections) {
+    if (sec.id !== 10) continue;
+    let pos = sec.contentOffset;
+    const [, funcCountBytes] = readLEB128(src, pos); pos += funcCountBytes;
+
+    // Skip to the exported function's body
+    for (let i = 0; i < exportCodeEntry; i++) {
+      const [bodySize, bodySizeBytes] = readLEB128(src, pos);
+      pos += bodySizeBytes + bodySize;
+    }
+    const [, bodySizeBytes] = readLEB128(src, pos); pos += bodySizeBytes;
+    // Skip locals
+    const [localCount, lcBytes] = readLEB128(src, pos); pos += lcBytes;
+    for (let i = 0; i < localCount; i++) { const [, n] = readLEB128(src, pos); pos += n; pos++; }
+
+    // Pattern 1: direct export — starts with i32.const <offset>
+    if (src[pos] === 0x41) {
+      pos++;
+      const [tlsOffset] = readLEB128(src, pos);
+      return tlsOffset;
+    }
+
+    // Pattern 2: wrapper — call <ctors>; call <actual>; end
+    if (src[pos] !== 0x10) return -1;
+    pos++;
+    const [, ctorIdxBytes] = readLEB128(src, pos); pos += ctorIdxBytes;
+    if (src[pos] !== 0x10) return -1;
+    pos++;
+    const [actualFuncIdx] = readLEB128(src, pos);
+
+    const actualCodeEntry = actualFuncIdx - numFuncImports;
+    if (actualCodeEntry < 0) return -1;
+
+    let pos2 = sec.contentOffset;
+    const [, fcb2] = readLEB128(src, pos2); pos2 += fcb2;
+    for (let i = 0; i < actualCodeEntry; i++) {
+      const [bs, bsb] = readLEB128(src, pos2);
+      pos2 += bsb + bs;
+    }
+    const [, bsb2] = readLEB128(src, pos2); pos2 += bsb2;
+    const [lc2, lcb2] = readLEB128(src, pos2); pos2 += lcb2;
+    for (let i = 0; i < lc2; i++) { const [, n] = readLEB128(src, pos2); pos2 += n; pos2++; }
+
+    if (src[pos2] !== 0x41) return -1;
+    pos2++;
+    const [tlsOffset] = readLEB128(src, pos2);
+    return tlsOffset;
+  }
+
+  return -1;
+}
+
 function setupChannelBase(
   instance: WebAssembly.Instance,
   memory: WebAssembly.Memory,
   channelOffset: number,
+  programBytes?: ArrayBuffer,
 ): void {
   const tlsBase = instance.exports.__tls_base as WebAssembly.Global | undefined;
   const view = new DataView(memory.buffer);
 
-  // Pre-set channel base at __tls_base+0 before calling __get_channel_base_addr.
-  // LLVM inserts __wasm_call_ctors into every exported function including
-  // __get_channel_base_addr. C++ global constructors may call malloc/brk which
-  // dispatch through __do_syscall, reading __channel_base from TLS. If the
-  // channel isn't set up yet, __do_syscall writes to address 0 and blocks
-  // forever on Atomics.wait. Pre-setting at __tls_base+0 ensures the channel
-  // is usable before constructors run.
-  //
-  // IMPORTANT: this may clobber a user TLS variable at offset 0 if
-  // __channel_base has a non-zero TLS offset. We save and restore below.
-  let savedOffset0: number | undefined;
   const tlsAddr = tlsBase ? (tlsBase.value as number) : 0;
-  if (tlsAddr > 0) {
-    savedOffset0 = view.getUint32(tlsAddr, true);
+
+  // Try to detect the exact TLS offset of __channel_base from the binary.
+  // This avoids corrupting other TLS variables during constructor execution.
+  let detectedOffset = -1;
+  if (programBytes) {
+    detectedOffset = detectChannelBaseTlsOffset(programBytes);
+  }
+
+  if (tlsAddr > 0 && detectedOffset >= 0) {
+    // We know the exact offset — pre-set it before calling the export.
+    // This avoids the chicken-and-egg problem: the export wrapper runs
+    // __wasm_call_ctors which may call malloc/brk, but __channel_base
+    // is already set at the correct TLS location.
+    view.setUint32(tlsAddr + detectedOffset, channelOffset, true);
+  } else if (tlsAddr > 0) {
+    // Fallback: set at offset 0 (works for programs where __channel_base
+    // happens to be the first TLS variable)
     view.setUint32(tlsAddr, channelOffset, true);
   }
 
-  // Now call __get_channel_base_addr to get the actual address (which may
-  // differ from __tls_base if __channel_base has a non-zero TLS offset).
-  // The constructors triggered by this call can now make syscalls safely.
+  // Call __get_channel_base_addr to confirm the address and trigger ctors.
   const getChannelBaseAddr = instance.exports.__get_channel_base_addr as (() => number) | undefined;
   if (getChannelBaseAddr) {
     const addr = getChannelBaseAddr();
     view.setUint32(addr, channelOffset, true);
-    // Restore the original TLS value at offset 0 if __channel_base is elsewhere
-    if (savedOffset0 !== undefined && addr !== tlsAddr) {
-      view.setUint32(tlsAddr, savedOffset0, true);
+    // If we set at offset 0 as fallback and the real offset is different,
+    // restore offset 0 to its original value
+    if (detectedOffset < 0 && addr !== tlsAddr && tlsAddr > 0) {
+      // The original value was overwritten with channelOffset; restore to 0
+      // (since __wasm_init_memory initialized .tdata, it was the template value
+      // which got set to channelOffset — we can't easily recover it, but the
+      // constructor may have already corrupted state anyway)
+      view.setUint32(tlsAddr, 0, true);
     }
-  } else if (tlsAddr > 0) {
-    // No helper — __channel_base is assumed to be at __tls_base+0
   }
 }
 

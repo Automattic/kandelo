@@ -835,6 +835,20 @@ pub extern "C" fn kernel_create_process(pid: u32) -> i32 {
     }
 }
 
+/// Set the mmap address space upper bound for a process.
+/// Used to prevent mmap from overlapping the channel region.
+/// Returns 0 on success, -ESRCH if pid not found.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_set_max_addr(pid: u32, max_addr: u32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    if let Some(proc) = table.get_mut(pid) {
+        proc.memory.set_max_addr(max_addr);
+        0
+    } else {
+        -(Errno::ESRCH as i32)
+    }
+}
+
 /// Set the working directory for a process (centralized mode).
 /// Called by host to set the initial cwd before the process starts.
 /// Returns 0 on success, -ESRCH if pid not found.

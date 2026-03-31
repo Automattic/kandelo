@@ -25,9 +25,11 @@ pub struct MemoryManager {
 }
 
 impl MemoryManager {
-    /// Default mmap region starts at 256MB (0x10000000).
-    /// This leaves plenty of room for stack and heap below.
-    const MMAP_BASE: u32 = 0x10000000;
+    /// Default mmap region starts at 64MB (0x04000000).
+    /// This leaves room for stack and heap below (brk starts at 16MB).
+    /// Programs like CPython need large contiguous mmap regions, so we
+    /// keep MMAP_BASE low to maximize available space.
+    const MMAP_BASE: u32 = 0x04000000;
 
     /// Default initial program break at 16MB.
     const INITIAL_BRK: u32 = 0x01000000;
@@ -233,6 +235,12 @@ impl MemoryManager {
             }
         }
         true
+    }
+
+    /// Set the upper bound for mmap allocation.
+    /// Used by the host to cap allocations below the channel region.
+    pub fn set_max_addr(&mut self, addr: u32) {
+        self.max_addr = addr;
     }
 
     /// Extend an existing mapping at `addr` from `old_len` to `new_len`.
@@ -452,107 +460,108 @@ mod tests {
 
     #[test]
     fn test_wordpress_mmap_sequence() {
-        // Reproduce the exact mmap/munmap sequence from WordPress boot log
+        // Reproduce the exact mmap/munmap sequence from WordPress boot log.
+        // All addresses are relative to MMAP_BASE (B).
         let mut mm = MemoryManager::new();
         let rw = PROT_READ | PROT_WRITE;
         let anon = MAP_PRIVATE | MAP_ANONYMOUS;
         let fixed_anon = MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED;
+        let b = MemoryManager::MMAP_BASE;
 
         // brk operations
         mm.set_brk(0x1020000);
 
-        // Guard page (MAP_FIXED at brk region)
+        // Guard page (MAP_FIXED at brk region — below MMAP_BASE)
         let a = mm.mmap_anonymous(0x1000000, 0x10000, 0, fixed_anon);
         assert_eq!(a, 0x1000000);
 
         // First anonymous mmap
         let a = mm.mmap_anonymous(0, 0x10000, rw, anon);
-        assert_eq!(a, 0x10000000, "first mmap at MMAP_BASE");
+        assert_eq!(a, b, "first mmap at MMAP_BASE");
         assert_no_overlaps(&mm);
 
         // 2MB alloc then free
         let a = mm.mmap_anonymous(0, 0x200000, rw, anon);
-        assert_eq!(a, 0x10010000);
-        mm.munmap(0x10010000, 0x200000);
+        assert_eq!(a, b + 0x10000);
+        mm.munmap(b + 0x10000, 0x200000);
         assert_no_overlaps(&mm);
 
         // 4MB alloc then partial unmaps (musl pattern)
         let a = mm.mmap_anonymous(0, 0x3ff000, rw, anon);
-        assert_eq!(a, 0x10010000);
-        mm.munmap(0x10010000, 0x1f0000);  // front trim
-        mm.munmap(0x10400000, 0xf000);    // back trim
+        assert_eq!(a, b + 0x10000);
+        mm.munmap(b + 0x10000, 0x1f0000);  // front trim
+        mm.munmap(b + 0x400000, 0xf000);   // back trim
         assert_no_overlaps(&mm);
 
         // Fill in gap allocations
         let a = mm.mmap_anonymous(0, 0x30000, rw, anon);
-        assert_eq!(a, 0x10010000);
+        assert_eq!(a, b + 0x10000);
         let a = mm.mmap_anonymous(0, 0x20000, rw, anon);
-        assert_eq!(a, 0x10040000);
+        assert_eq!(a, b + 0x40000);
         let a = mm.mmap_anonymous(0, 0x10000, rw, anon);
-        assert_eq!(a, 0x10060000);
+        assert_eq!(a, b + 0x60000);
         assert_no_overlaps(&mm);
 
         // More allocations
         let a = mm.mmap_anonymous(0, 0x60000, rw, anon);
-        assert_eq!(a, 0x10070000);
+        assert_eq!(a, b + 0x70000);
         let a = mm.mmap_anonymous(0, 0x10000, rw, anon);
-        assert_eq!(a, 0x100d0000);
+        assert_eq!(a, b + 0xd0000);
         let a = mm.mmap_anonymous(0, 0x10000, rw, anon);
-        assert_eq!(a, 0x100e0000);
+        assert_eq!(a, b + 0xe0000);
         let a = mm.mmap_anonymous(0, 0x10000, rw, anon);
-        assert_eq!(a, 0x100f0000);
+        assert_eq!(a, b + 0xf0000);
         let a = mm.mmap_anonymous(0, 0x10000, rw, anon);
-        assert_eq!(a, 0x10100000);
+        assert_eq!(a, b + 0x100000);
         let a = mm.mmap_anonymous(0, 0x10000, rw, anon);
-        assert_eq!(a, 0x10110000);
+        assert_eq!(a, b + 0x110000);
         assert_no_overlaps(&mm);
 
         // Large unaligned alloc (0x20014 → aligns to 0x30000)
         let a = mm.mmap_anonymous(0, 0x20014, rw, anon);
-        assert_eq!(a, 0x10120000);
+        assert_eq!(a, b + 0x120000);
 
         let a = mm.mmap_anonymous(0, 0x10000, rw, anon);
-        assert_eq!(a, 0x10150000);
+        assert_eq!(a, b + 0x150000);
         let a = mm.mmap_anonymous(0, 0x10000, rw, anon);
-        assert_eq!(a, 0x10160000);
+        assert_eq!(a, b + 0x160000);
         let a = mm.mmap_anonymous(0, 0x10000, rw, anon);
-        assert_eq!(a, 0x10170000);
+        assert_eq!(a, b + 0x170000);
         assert_no_overlaps(&mm);
 
-        // munmap/mmap cycle at 0x10170000
-        mm.munmap(0x10170000, 0x10000);
+        // munmap/mmap cycle
+        mm.munmap(b + 0x170000, 0x10000);
         let a = mm.mmap_anonymous(0, 0x10000, rw, anon);
-        assert_eq!(a, 0x10170000);
-        mm.munmap(0x10170000, 0x10000);
+        assert_eq!(a, b + 0x170000);
+        mm.munmap(b + 0x170000, 0x10000);
         let a = mm.mmap_anonymous(0, 0x10000, rw, anon);
-        assert_eq!(a, 0x10170000);
+        assert_eq!(a, b + 0x170000);
         assert_no_overlaps(&mm);
 
         // More allocations
         let a = mm.mmap_anonymous(0, 0x10000, rw, anon);
-        assert_eq!(a, 0x10180000);
+        assert_eq!(a, b + 0x180000);
         let a = mm.mmap_anonymous(0, 0x20000, rw, anon);
-        assert_eq!(a, 0x10190000);
+        assert_eq!(a, b + 0x190000);
         let a = mm.mmap_anonymous(0, 0x10000, rw, anon);
-        assert_eq!(a, 0x101b0000);
+        assert_eq!(a, b + 0x1b0000);
 
-        // munmap at 0x10150000 then reallocate
-        mm.munmap(0x10150000, 0x10000);
+        // munmap then reallocate
+        mm.munmap(b + 0x150000, 0x10000);
         let a = mm.mmap_anonymous(0, 0x10000, rw, anon);
-        assert_eq!(a, 0x10150000);
+        assert_eq!(a, b + 0x150000);
         assert_no_overlaps(&mm);
 
         let a = mm.mmap_anonymous(0, 0x20000, rw, anon);
-        assert_eq!(a, 0x101c0000);
+        assert_eq!(a, b + 0x1c0000);
         let a = mm.mmap_anonymous(0, 0x10000, rw, anon);
-        assert_eq!(a, 0x101e0000);
+        assert_eq!(a, b + 0x1e0000);
         let a = mm.mmap_anonymous(0, 0x10000, rw, anon);
-        assert_eq!(a, 0x101f0000);
+        assert_eq!(a, b + 0x1f0000);
         assert_no_overlaps(&mm);
 
         // WPS:110 — another musl mmap pattern
         let a = mm.mmap_anonymous(0, 0x200000, rw, anon);
-        // Should be at 0x10400000 (after the 0x10200000+0x200000 region)
         mm.munmap(a, 0x200000);
         let a2 = mm.mmap_anonymous(0, 0x3f0000, rw, anon);
         mm.munmap(a2, 0x1f0000);
@@ -569,15 +578,15 @@ mod tests {
         mm.munmap(a6, 0x200000);
         assert_no_overlaps(&mm);
 
-        // THE PROBLEMATIC MMAP — should NOT return 0x10000000
+        // THE PROBLEMATIC MMAP — should NOT return MMAP_BASE
         let problematic = mm.mmap_anonymous(0, 0x200000, rw, anon);
-        assert_ne!(problematic, 0x10000000,
-            "mmap returned 0x10000000 which overlaps with existing mapping!");
+        assert_ne!(problematic, b,
+            "mmap returned MMAP_BASE which overlaps with existing mapping!");
         assert_no_overlaps(&mm);
 
-        // Verify the original mapping at 0x10000000 is still there
-        assert!(mm.is_mapped(0x10000000),
-            "mapping at 0x10000000 should still exist");
+        // Verify the original mapping at MMAP_BASE is still there
+        assert!(mm.is_mapped(b),
+            "mapping at MMAP_BASE should still exist");
     }
 
     #[test]
