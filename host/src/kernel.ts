@@ -518,7 +518,8 @@ export class WasmPosixKernel {
     if (h === 0) {
       if (this.callbacks.onStdin) {
         const data = this.callbacks.onStdin(bufLen);
-        if (!data || data.length === 0) return 0; // EOF
+        if (data === null) return 0; // EOF
+        if (data.length === 0) return -11; // EAGAIN — no data yet, retry later
         const mem = this.getMemoryBuffer();
         const n = Math.min(data.length, bufLen);
         mem.set(data.subarray(0, n), bufPtr);

@@ -589,6 +589,9 @@ export class CentralizedKernelWorker {
     PROFILING ? new Map() : null;
   /** Per-process stdin buffers: pid → { data, offset } */
   private stdinBuffers = new Map<number, { data: Uint8Array; offset: number }>();
+  /** Processes with finite stdin (setStdinData). Reads return EOF when buffer exhausted.
+   *  Processes NOT in this set get EAGAIN (blocking) when no stdin data is available. */
+  private stdinFinite = new Set<number>();
   /** Active TCP connections per process for piggyback flushing */
   private tcpConnections = new Map<number, Array<{
     sendPipeIdx: number;
@@ -615,11 +618,15 @@ export class CentralizedKernelWorker {
       onStdin: (maxLen: number): Uint8Array | null => {
         const pid = this.currentHandlePid;
         const buf = this.stdinBuffers.get(pid);
-        if (!buf) return null; // EOF
+        if (!buf) {
+          // No buffer: finite stdin → EOF, otherwise block (EAGAIN)
+          return this.stdinFinite.has(pid) ? null : new Uint8Array(0);
+        }
         const remaining = buf.data.length - buf.offset;
         if (remaining <= 0) {
           this.stdinBuffers.delete(pid);
-          return null; // EOF
+          // Buffer exhausted: finite stdin → EOF, otherwise block
+          return this.stdinFinite.has(pid) ? null : new Uint8Array(0);
         }
         const n = Math.min(remaining, maxLen);
         const chunk = buf.data.subarray(buf.offset, buf.offset + n);
@@ -816,6 +823,7 @@ export class CentralizedKernelWorker {
    */
   setStdinData(pid: number, data: Uint8Array): void {
     this.stdinBuffers.set(pid, { data, offset: 0 });
+    this.stdinFinite.add(pid); // EOF after data is consumed
     // Mark stdin as a pipe so terminal echo is disabled and isatty(0) = false
     const kernelSetStdinPipe = this.kernelInstance!.exports.kernel_set_stdin_pipe as
       ((pid: number) => number) | undefined;
@@ -897,6 +905,8 @@ export class CentralizedKernelWorker {
     this.removeFromKernelProcessTable(pid);
 
     this.processes.delete(pid);
+    this.stdinFinite.delete(pid);
+    this.stdinBuffers.delete(pid);
   }
 
   /**
@@ -907,6 +917,8 @@ export class CentralizedKernelWorker {
   deactivateProcess(pid: number): void {
     this.activeChannels = this.activeChannels.filter((ch) => ch.pid !== pid);
     this.processes.delete(pid);
+    this.stdinFinite.delete(pid);
+    this.stdinBuffers.delete(pid);
     // Cancel any pending alarm timer for this process
     const alarmTimer = this.alarmTimers.get(pid);
     if (alarmTimer) {
@@ -2808,7 +2820,9 @@ export class CentralizedKernelWorker {
     while (ptr + len < mem.length && mem[ptr + len] !== 0 && len < maxLen) {
       len++;
     }
-    return new TextDecoder().decode(mem.subarray(ptr, ptr + len));
+    // .slice() copies from SharedArrayBuffer into a regular ArrayBuffer
+    // because TextDecoder.decode() doesn't accept SharedArrayBuffer views.
+    return new TextDecoder().decode(mem.slice(ptr, ptr + len));
   }
 
   /**
