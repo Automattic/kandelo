@@ -28,6 +28,7 @@ export default defineConfig({
         wordpress: path.resolve(__dirname, "pages/wordpress/index.html"),
         lamp: path.resolve(__dirname, "pages/lamp/index.html"),
         shell: path.resolve(__dirname, "pages/shell/index.html"),
+        python: path.resolve(__dirname, "pages/python/index.html"),
       },
     },
   },
