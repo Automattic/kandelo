@@ -39,6 +39,8 @@ export interface RunProgramOptions {
   timeout?: number;
   /** Custom PlatformIO (defaults to NodePlatformIO) */
   io?: PlatformIO;
+  /** Map of virtual path → .wasm file path for exec targets */
+  execPrograms?: Map<string, string>;
 }
 
 export interface RunProgramResult {
@@ -70,7 +72,7 @@ export async function runCentralizedProgram(
 
   let stdout = "";
   let stderr = "";
-  let mainWorker: ReturnType<NodeWorkerAdapter["createWorker"]> | null = null;
+  const workers = new Map<number, ReturnType<NodeWorkerAdapter["createWorker"]>>();
 
   const io = options.io ?? new NodePlatformIO();
   const workerAdapter = new NodeWorkerAdapter();
@@ -127,13 +129,60 @@ export async function runCentralizedProgram(
         };
 
         const childWorker = workerAdapter.createWorker(childInitData);
+        workers.set(childPid, childWorker);
         childWorker.on("error", () => {
           kernelWorker.unregisterProcess(childPid);
+          workers.delete(childPid);
         });
 
         return [childChannelOffset];
       },
-      onExec: async () => -38, // ENOSYS
+      onExec: async (pid, path, argv, envp) => {
+        const wasmPath = options.execPrograms?.get(path);
+        if (!wasmPath) return -2; // ENOENT
+
+        const newProgramBytes = loadProgramWasm(wasmPath);
+
+        // Terminate old worker
+        const oldWorker = workers.get(pid);
+        if (oldWorker) {
+          await oldWorker.terminate().catch(() => {});
+          workers.delete(pid);
+        }
+
+        // Create fresh memory for the new program
+        const newMemory = new WebAssembly.Memory({
+          initial: 17,
+          maximum: MAX_PAGES,
+          shared: true,
+        });
+        const newChannelOffset = (MAX_PAGES - 2) * 65536;
+        newMemory.grow(MAX_PAGES - 17);
+        new Uint8Array(newMemory.buffer, newChannelOffset, CH_TOTAL_SIZE).fill(0);
+
+        // Register new process with same pid (kernel process table already cleaned by exec_setup)
+        kernelWorker.registerProcess(pid, newMemory, [newChannelOffset], { skipKernelCreate: true });
+
+        // Create new worker
+        const initData: CentralizedWorkerInitMessage = {
+          type: "centralized_init",
+          pid,
+          ppid: 0,
+          programBytes: newProgramBytes,
+          memory: newMemory,
+          channelOffset: newChannelOffset,
+          argv,
+          env: envp,
+        };
+
+        const newWorker = workerAdapter.createWorker(initData);
+        workers.set(pid, newWorker);
+        newWorker.on("error", (err: Error) => {
+          console.error(`[exec] worker error for pid ${pid}:`, err);
+        });
+
+        return 0;
+      },
       onClone: async (pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory) => {
         // Allocate channel + TLS from pre-allocated memory (counting down from main channel)
         // 3 pages: 2 for channel (header + 64KB data) + 1 for Wasm TLS
@@ -180,14 +229,21 @@ export async function runCentralizedProgram(
         if (pid === 1) {
           // Main process exited — full cleanup
           kernelWorker.unregisterProcess(pid);
-          if (mainWorker) {
-            mainWorker.terminate().catch(() => {});
+          const w = workers.get(pid);
+          if (w) {
+            w.terminate().catch(() => {});
+            workers.delete(pid);
           }
           resolveExit(exitStatus);
         } else {
           // Child process exited — deactivate channels but keep in kernel
           // process table as zombie until reaped by wait/waitpid
           kernelWorker.deactivateProcess(pid);
+          const w = workers.get(pid);
+          if (w) {
+            w.terminate().catch(() => {});
+            workers.delete(pid);
+          }
         }
       },
     },
@@ -233,11 +289,12 @@ export async function runCentralizedProgram(
     argv: options.argv ?? [options.programPath],
   };
 
-  mainWorker = workerAdapter.createWorker(initData);
+  const mainWorker = workerAdapter.createWorker(initData);
+  workers.set(pid, mainWorker);
 
   // Set up timeout
   const timer = setTimeout(() => {
-    if (mainWorker) mainWorker.terminate().catch(() => {});
+    for (const [, w] of workers) w.terminate().catch(() => {});
     rejectExit(new Error(`Program timed out after ${timeout}ms`));
   }, timeout);
 
