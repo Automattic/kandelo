@@ -47,10 +47,9 @@ function readStdin(): Promise<Buffer> {
 }
 
 async function main() {
-  const dashBinary = resolve(
-    repoRoot,
-    "examples/libs/dash/dash-src/src/dash",
-  );
+  const dashBinPath = resolve(repoRoot, "examples/libs/dash/bin/dash.wasm");
+  const dashSrcPath = resolve(repoRoot, "examples/libs/dash/dash-src/src/dash");
+  const dashBinary = existsSync(dashBinPath) ? dashBinPath : dashSrcPath;
   if (!existsSync(dashBinary)) {
     console.error(
       "dash binary not found. Run: bash examples/libs/dash/build-dash.sh",
