@@ -41,6 +41,10 @@ has_php_fpm()   { [ -f "$REPO_ROOT/examples/nginx/php-fpm.wasm" ]; }
 has_mariadb()   { [ -f "$REPO_ROOT/examples/libs/mariadb/mariadb-install/bin/mariadbd" ]; }
 has_wordpress() { [ -f "$REPO_ROOT/examples/wordpress/wordpress/wp-settings.php" ]; }
 has_wp_bundle() { [ -f "$REPO_ROOT/examples/browser/public/wp-bundle.json" ]; }
+has_dash()      { [ -f "$REPO_ROOT/examples/libs/dash/bin/dash.wasm" ]; }
+has_coreutils() { [ -f "$REPO_ROOT/examples/libs/coreutils/bin/ls.wasm" ]; }
+has_grep()      { [ -f "$REPO_ROOT/examples/libs/grep/bin/grep.wasm" ]; }
+has_sed()       { [ -f "$REPO_ROOT/examples/libs/sed/bin/sed.wasm" ]; }
 has_dlopen()    { [ -f "$REPO_ROOT/examples/dlopen/hello-lib.so" ] && \
                   [ -f "$REPO_ROOT/examples/dlopen/main.wasm" ]; }
 
@@ -204,6 +208,54 @@ build_wp_bundle() {
     fi
 }
 
+build_dash() {
+    need_kernel
+    need_sdk
+    if ! has_dash; then
+        step "Building dash shell"
+        bash "$REPO_ROOT/examples/libs/dash/build-dash.sh"
+        info "dash built"
+    else
+        info "dash"
+    fi
+}
+
+build_coreutils() {
+    need_kernel
+    need_sdk
+    if ! has_coreutils; then
+        step "Building GNU coreutils"
+        bash "$REPO_ROOT/examples/libs/coreutils/build-coreutils.sh"
+        info "coreutils built"
+    else
+        info "coreutils"
+    fi
+}
+
+build_grep() {
+    need_kernel
+    need_sdk
+    if ! has_grep; then
+        step "Building GNU grep"
+        bash "$REPO_ROOT/examples/libs/grep/build-grep.sh"
+        info "grep built"
+    else
+        info "grep"
+    fi
+}
+
+build_sed() {
+    need_kernel
+    need_sdk
+    if ! has_sed; then
+        step "Building GNU sed"
+        bash "$REPO_ROOT/examples/libs/sed/build-sed.sh"
+        info "sed built"
+    else
+        info "sed"
+    fi
+}
+
 build_dlopen() {
     need_sysroot
     if ! has_dlopen; then
@@ -226,6 +278,10 @@ build_target() {
         nginx)      build_nginx ;;
         php)        build_php ;;
         php-fpm)    build_php_fpm ;;
+        dash)       build_dash ;;
+        coreutils)  build_coreutils ;;
+        grep)       build_grep ;;
+        sed)        build_sed ;;
         mariadb)    build_mariadb ;;
         wordpress)  build_wordpress ;;
         wp-bundle)  build_wp_bundle ;;
@@ -241,6 +297,10 @@ build_all() {
     build_sdk
     build_host
     build_programs
+    build_dash
+    build_coreutils
+    build_grep
+    build_sed
     build_nginx
     build_php
     build_php_fpm
@@ -279,6 +339,22 @@ clean_target() {
                 cp "$REPO_ROOT/target/wasm32-unknown-unknown/release/wasm_posix_userspace.wasm" "$REPO_ROOT/host/wasm/"
             fi
             warn "Cleaned programs" ;;
+        dash)
+            rm -rf "$REPO_ROOT/examples/libs/dash/dash-src" \
+                   "$REPO_ROOT/examples/libs/dash/bin"
+            warn "Cleaned dash" ;;
+        coreutils)
+            rm -rf "$REPO_ROOT/examples/libs/coreutils/coreutils-src" \
+                   "$REPO_ROOT/examples/libs/coreutils/bin"
+            warn "Cleaned coreutils" ;;
+        grep)
+            rm -rf "$REPO_ROOT/examples/libs/grep/grep-src" \
+                   "$REPO_ROOT/examples/libs/grep/bin"
+            warn "Cleaned grep" ;;
+        sed)
+            rm -rf "$REPO_ROOT/examples/libs/sed/sed-src" \
+                   "$REPO_ROOT/examples/libs/sed/bin"
+            warn "Cleaned sed" ;;
         nginx)
             rm -rf "$REPO_ROOT/examples/nginx/nginx-src"
             rm -f "$REPO_ROOT/examples/nginx/nginx.wasm"
@@ -306,7 +382,7 @@ clean_target() {
                   "$REPO_ROOT/examples/dlopen/main.wasm"
             warn "Cleaned dlopen" ;;
         all)
-            for t in kernel sysroot host programs nginx php php-fpm mariadb wordpress wp-bundle dlopen; do
+            for t in kernel sysroot host programs dash coreutils grep sed nginx php php-fpm mariadb wordpress wp-bundle dlopen; do
                 clean_target "$t"
             done ;;
         *)  err "Unknown clean target: $target"; exit 1 ;;
@@ -344,7 +420,7 @@ cmd_rebuild() {
 cmd_run() {
     if [ $# -eq 0 ]; then
         err "Usage: $0 run <example> [args...]"
-        err "Examples: nginx, mariadb, wordpress, wordpress-nginx, lamp, dlopen"
+        err "Examples: shell, nginx, mariadb, wordpress, wordpress-nginx, lamp, dlopen"
         exit 1
     fi
 
@@ -387,6 +463,16 @@ cmd_run() {
             step "Starting LAMP stack (MariaDB + PHP-FPM + nginx + WordPress)"
             exec npx tsx "$REPO_ROOT/examples/lamp/serve.ts" "$@"
             ;;
+        shell)
+            build_programs
+            build_dash
+            build_coreutils
+            build_grep
+            build_sed
+            need_host
+            step "Starting interactive shell"
+            exec npx tsx "$REPO_ROOT/examples/shell/serve.ts" "$@"
+            ;;
         dlopen)
             build_dlopen
             step "Running dlopen example"
@@ -394,7 +480,7 @@ cmd_run() {
             ;;
         *)
             err "Unknown example: $example"
-            err "Available: nginx, mariadb, wordpress, wordpress-nginx, lamp, dlopen"
+            err "Available: shell, nginx, mariadb, wordpress, wordpress-nginx, lamp, dlopen"
             exit 1
             ;;
     esac
@@ -486,6 +572,10 @@ cmd_list() {
     echo "  sdk         SDK cross-compilation tools           $(has_sdk && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  host        TypeScript host (tsup)                $(has_host && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  programs    Simple C programs (sh, cat, ls, ...)  $(has_programs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  dash        dash 0.5.12 shell                      $(has_dash && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  coreutils   GNU coreutils 9.6                      $(has_coreutils && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  grep        GNU grep 3.11                          $(has_grep && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  sed         GNU sed 4.9                            $(has_sed && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  nginx       nginx 1.24 Wasm binary                $(has_nginx && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  php         PHP 8.3 CLI binary                    $(has_php && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  php-fpm     PHP-FPM Wasm binary                   $(has_php_fpm && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
@@ -496,6 +586,7 @@ cmd_list() {
     echo "  all         Build everything"
     echo ""
     echo "${BOLD}Run examples:${RESET}"
+    echo "  ./run.sh run shell                   Interactive shell (dash + coreutils + grep + sed)"
     echo "  ./run.sh run nginx [port]            nginx HTTP server"
     echo "  ./run.sh run mariadb                 MariaDB standalone"
     echo "  ./run.sh run wordpress [port]        WordPress (PHP built-in + SQLite)"
