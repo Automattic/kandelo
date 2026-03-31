@@ -258,7 +258,7 @@ async function start() {
     // Create kernel with thread support + large FS for WordPress
     kernel = new BrowserKernel({
       maxWorkers: 16,
-      fsSize: 64 * 1024 * 1024, // 64MB
+      fsSize: 128 * 1024 * 1024, // 128MB for WordPress bundle + MariaDB data
       threadModule,
       onStdout: (data) => appendLog(decoder.decode(data)),
       onStderr: (data) => appendLog(decoder.decode(data), "stderr"),
@@ -320,7 +320,7 @@ async function start() {
     // Phase 1: Bootstrap MariaDB
     // =====================================================================
     setStatus("Bootstrapping MariaDB system tables...", "loading");
-    appendLog("Bootstrapping MariaDB system tables...\n", "info");
+    appendLog("Bootstrapping MariaDB system tables (this may take a few minutes in browser)...\n", "info");
 
     const bootstrapSql = `use mysql;\n${systemTablesSql}\n${systemDataSql}\n`;
     const bootstrapStdin = new TextEncoder().encode(bootstrapSql);
@@ -341,16 +341,22 @@ async function start() {
       stdin: bootstrapStdin,
     });
 
+    // Browser wasm is much slower than Node.js — give bootstrap plenty of time
     const bootstrapTimeout = new Promise<number>((r) =>
-      setTimeout(() => r(-1), 90000),
+      setTimeout(() => r(-1), 180000),
     );
+
+    const progressInterval = setInterval(() => {
+      appendLog("  Bootstrap still running...\n", "info");
+    }, 15000);
+
     const bootstrapResult = await Promise.race([bootstrapExit, bootstrapTimeout]);
+    clearInterval(progressInterval);
 
     if (bootstrapResult === -1) {
-      appendLog("Bootstrap timed out, proceeding...\n", "info");
-    } else {
-      appendLog(`Bootstrap exited with code ${bootstrapResult}\n`, "info");
+      throw new Error("MariaDB bootstrap timed out after 3 minutes. Try reloading the page.");
     }
+    appendLog(`Bootstrap exited with code ${bootstrapResult}\n`, "info");
 
     // Create wordpress database
     appendLog("Creating wordpress database...\n", "info");
@@ -371,7 +377,7 @@ async function start() {
     });
 
     const createTimeout = new Promise<number>((r) =>
-      setTimeout(() => r(-1), 30000),
+      setTimeout(() => r(-1), 60000),
     );
     await Promise.race([createDbExit, createTimeout]);
     appendLog("WordPress database ready\n", "info");

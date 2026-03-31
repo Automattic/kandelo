@@ -92,7 +92,7 @@ async function start() {
     // Create kernel with thread support
     kernel = new BrowserKernel({
       maxWorkers: 12,
-      fsSize: 32 * 1024 * 1024,
+      fsSize: 64 * 1024 * 1024, // 64MB for bootstrap system tables + data
       threadModule,
       onStdout: (data) => appendLog(decoder.decode(data)),
       onStderr: (data) => appendLog(decoder.decode(data), "stderr"),
@@ -113,7 +113,7 @@ async function start() {
 
     // --- Phase 1: Bootstrap system tables ---
     setStatus("Bootstrapping MariaDB system tables...", "loading");
-    appendLog("Bootstrapping system tables (this takes ~30s)...\n", "info");
+    appendLog("Bootstrapping system tables (this may take a few minutes in browser)...\n", "info");
 
     const bootstrapSql = `use mysql;\n${systemTablesSql}\n${systemDataSql}\n`;
     const bootstrapStdin = new TextEncoder().encode(bootstrapSql);
@@ -134,17 +134,23 @@ async function start() {
       stdin: bootstrapStdin,
     });
 
-    // Wait for bootstrap (with timeout)
+    // Wait for bootstrap — browser wasm is much slower than Node.js
     const bootstrapTimeout = new Promise<number>((r) =>
-      setTimeout(() => r(-1), 60000),
+      setTimeout(() => r(-1), 180000),
     );
+
+    // Show progress updates while waiting
+    const progressInterval = setInterval(() => {
+      appendLog("  Bootstrap still running...\n", "info");
+    }, 15000);
+
     const bootstrapResult = await Promise.race([bootstrapExit, bootstrapTimeout]);
+    clearInterval(progressInterval);
 
     if (bootstrapResult === -1) {
-      appendLog("Bootstrap timed out, proceeding...\n", "info");
-    } else {
-      appendLog(`Bootstrap exited with code ${bootstrapResult}\n`, "info");
+      throw new Error("Bootstrap timed out after 3 minutes. Try reloading the page.");
     }
+    appendLog(`Bootstrap exited with code ${bootstrapResult}\n`, "info");
 
     // Create test database
     appendLog("Creating test database...\n", "info");
@@ -165,7 +171,7 @@ async function start() {
     });
 
     const createTimeout = new Promise<number>((r) =>
-      setTimeout(() => r(-1), 30000),
+      setTimeout(() => r(-1), 60000),
     );
     await Promise.race([createDbExit, createTimeout]);
     appendLog("Test database ready\n", "info");

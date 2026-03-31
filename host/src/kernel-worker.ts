@@ -3051,6 +3051,11 @@ export class CentralizedKernelWorker {
       }
     }
 
+    // Complete the channel so the worker unblocks from Atomics.wait().
+    // Without this, the worker stays blocked and Node.js aborts when
+    // trying to terminate worker threads during process.exit().
+    this.completeChannelRaw(channel, 0, 0);
+
     // Wake any processes blocked on pipe reads/polls — the exiting process's
     // FDs were closed by the kernel (sys_exit), so pipes with no remaining
     // writers should now return EOF to readers.

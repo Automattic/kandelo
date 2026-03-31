@@ -536,8 +536,9 @@ pub mod socket {
     pub const SHUT_RDWR: u32 = 2;
     pub const SO_BROADCAST: u32 = 6;
     pub const SO_LINGER: u32 = 13;
-    pub const SO_RCVTIMEO: u32 = 20;
-    pub const SO_SNDTIMEO: u32 = 21;
+    // time64 values used by musl on wasm32 (where __LONG_MAX == 0x7fffffff)
+    pub const SO_RCVTIMEO: u32 = 66;
+    pub const SO_SNDTIMEO: u32 = 67;
     pub const IPPROTO_TCP: u32 = 6;
     pub const TCP_NODELAY: u32 = 1;
     pub const MSG_OOB: u32 = 1;

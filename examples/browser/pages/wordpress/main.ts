@@ -164,7 +164,7 @@ async function start() {
     // Create kernel with larger FS for WordPress
     kernel = new BrowserKernel({
       maxWorkers: 8,
-      fsSize: 64 * 1024 * 1024, // 64MB for WordPress
+      fsSize: 128 * 1024 * 1024, // 128MB for WordPress (bundle is ~52MB + metadata)
       onStdout: (data) => appendLog(decoder.decode(data)),
       onStderr: (data) => appendLog(decoder.decode(data), "stderr"),
     });
