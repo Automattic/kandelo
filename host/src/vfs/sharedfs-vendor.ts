@@ -791,6 +791,9 @@ export class SharedFS {
     const dirSize = this.r64(inoOff + INO_SIZE);
     const needed = align4(DIRENT_HEADER_SIZE + name.length);
 
+    // Track last entry position for potential recLen extension
+    let lastEntAbs = -1;
+
     // Scan existing entries for a deleted slot or slack space
     let pos = 0;
     while (pos < dirSize) {
@@ -834,14 +837,39 @@ export class SharedFS {
           return 0;
         }
 
+        lastEntAbs = abs;
         off += recLen;
       }
       pos += remain;
     }
 
-    // No space found — append a new entry at the end
-    const fileBlock = Math.floor(dirSize / BLOCK_SIZE);
-    const blockOff = dirSize % BLOCK_SIZE;
+    // No space found — append a new entry at the end.
+    // Directory entries must not cross block boundaries (like ext2).
+    let appendPos = dirSize;
+    let fileBlock = Math.floor(appendPos / BLOCK_SIZE);
+    let blockOff = appendPos % BLOCK_SIZE;
+
+    if (blockOff !== 0 && blockOff + needed > BLOCK_SIZE) {
+      // Entry doesn't fit in remaining space — skip to next block.
+      const gap = BLOCK_SIZE - blockOff;
+      if (gap >= DIRENT_HEADER_SIZE) {
+        // Write a padding entry (ino=0) to fill the gap
+        const padPhys = this.inodeBlockMap(dirIno, fileBlock, false);
+        if (padPhys > 0) {
+          const padAbs = padPhys * BLOCK_SIZE + blockOff;
+          this.w32(padAbs, 0);
+          this.view.setUint16(padAbs + 4, gap, true);
+          this.view.setUint16(padAbs + 6, 0, true);
+        }
+      } else if (lastEntAbs >= 0) {
+        // Gap too small for a padding entry — extend last entry's recLen
+        const oldRecLen = this.view.getUint16(lastEntAbs + 4, true);
+        this.view.setUint16(lastEntAbs + 4, oldRecLen + gap, true);
+      }
+      appendPos = (fileBlock + 1) * BLOCK_SIZE;
+      fileBlock++;
+      blockOff = 0;
+    }
 
     // Need a new block?
     let phys: number;
@@ -859,7 +887,7 @@ export class SharedFS {
     this.view.setUint16(abs + 6, name.length, true);
     this.u8.set(name, abs + DIRENT_HEADER_SIZE);
 
-    this.w64(inoOff + INO_SIZE, dirSize + needed);
+    this.w64(inoOff + INO_SIZE, appendPos + needed);
     return 0;
   }
 

@@ -11,6 +11,7 @@ Systems software to port to wasm-posix-kernel, prioritized by POSIX depth and br
 | CPython | ✓ | ✓ | — | ✓ | ✓ | ✓ | heavy | ✓ | ✓ | heavy |
 | Git | heavy | heavy | — | — | ✓ | heavy | — | — | — | — |
 | Redis | ✓ | — | — | — | ✓ | ✓ | light | ✓ | — | ✓ |
+| Node.js | ✓ | ✓ | — | — | ✓ | ✓ | heavy | heavy | ✓ | heavy |
 | curl | — | — | — | — | ✓ | — | ✓ | heavy | — | — |
 
 ## Targets
@@ -32,7 +33,7 @@ Systems software to port to wasm-posix-kernel, prioritized by POSIX depth and br
 - **Build notes:** Small C codebase (~15k lines), autoconf. Minimal dependencies. Good first target.
 
 ### CPython
-- **Status:** not started
+- **Status:** done (PR #133) — CPython 3.13.3 REPL and script runner, browser demo
 - **Priority:** high
 - **POSIX surface:** Threading, fork, signals, mmap, dlopen (extension modules), setjmp/longjmp, select, locale, regex
 - **Browser value:** Python interpreter in the browser. Huge standalone appeal. Pyodide exists on Emscripten but a native POSIX build is a different proposition.
@@ -54,6 +55,14 @@ Systems software to port to wasm-posix-kernel, prioritized by POSIX depth and br
 - **Browser value:** In-memory cache and pub/sub alongside the LAMP stack.
 - **Kernel gaps:** Mostly covered. fork + event loop + signals are well-tested already.
 - **Build notes:** Simple Makefile, minimal dependencies. Single-threaded core (threads only for background I/O in Redis 6+, can be disabled). Should be one of the easier builds.
+
+### Node.js
+- **Status:** not started
+- **Priority:** medium
+- **POSIX surface:** Threads (libuv thread pool), epoll/kqueue event loop, pipes, sockets, signals, mmap, dlopen (native addons), fork+exec (child_process), pty (for stdio)
+- **Browser value:** JavaScript runtime in the browser. Enables running npm scripts, build tools (webpack, vite, tsc), and server-side JS frameworks.
+- **Kernel gaps:** libuv's event loop needs solid epoll/poll. Thread pool (4+ threads by default) stresses clone/thread support. dlopen for native addons. child_process needs fork+exec.
+- **Build notes:** GN or autoconf build system. V8 engine is the bulk of the build. Can start with a minimal build (--without-intl, --without-ssl, --without-inspector). libuv is the critical POSIX interface layer — if libuv works, most of Node.js works. Consider building libuv standalone first as a stepping stone.
 
 ### curl / libcurl
 - **Status:** not started

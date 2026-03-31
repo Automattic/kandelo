@@ -41,7 +41,8 @@ function setStatus(text: string, type: "loading" | "running" | "error") {
   statusDiv.className = `status ${type}`;
 }
 
-// nginx config for WordPress — routes PHP through FastCGI
+// nginx config for WordPress — all requests go through the FPM router
+// (nginx built without PCRE, so regex locations are unavailable)
 const NGINX_CONF = `daemon off;
 master_process on;
 worker_processes 2;
@@ -58,57 +59,76 @@ http {
     client_body_temp_path /tmp/nginx_client_temp;
     fastcgi_temp_path /tmp/nginx_fastcgi_temp;
     proxy_temp_path /tmp/nginx_proxy_temp;
-    uwsgi_temp_path /tmp/nginx_uwsgi_temp;
-    scgi_temp_path /tmp/nginx_scgi_temp;
 
-    types {
-        text/html  html htm;
-        text/css   css;
-        text/javascript js;
-        application/javascript js;
-        application/json json;
-        image/png png;
-        image/jpeg jpg jpeg;
-        image/gif gif;
-        image/svg+xml svg;
-        image/x-icon ico;
-        font/woff woff;
-        font/woff2 woff2;
-        application/x-font-ttf ttf;
-    }
     default_type application/octet-stream;
 
     server {
         listen 8080;
         server_name localhost;
         root /var/www/html;
-        index index.php index.html;
 
-        # Try static files first, then pass to PHP
         location / {
-            try_files $uri $uri/ /index.php?$args;
-        }
-
-        # Pass all .php files to PHP-FPM
-        location ~ \\.php$ {
             fastcgi_pass 127.0.0.1:9000;
-            fastcgi_index index.php;
-            fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+            fastcgi_param SCRIPT_FILENAME /var/www/fpm-router.php;
+            fastcgi_param DOCUMENT_ROOT $document_root;
+            fastcgi_param DOCUMENT_URI $document_uri;
             fastcgi_param QUERY_STRING $query_string;
             fastcgi_param REQUEST_METHOD $request_method;
             fastcgi_param CONTENT_TYPE $content_type;
             fastcgi_param CONTENT_LENGTH $content_length;
+            fastcgi_param REQUEST_URI $request_uri;
             fastcgi_param SERVER_PROTOCOL $server_protocol;
             fastcgi_param SERVER_PORT $server_port;
             fastcgi_param SERVER_NAME $server_name;
-            fastcgi_param REQUEST_URI $request_uri;
-            fastcgi_param DOCUMENT_URI $document_uri;
-            fastcgi_param DOCUMENT_ROOT $document_root;
-            fastcgi_param REDIRECT_STATUS 200;
             fastcgi_param HTTP_HOST $http_host;
+            fastcgi_param REDIRECT_STATUS 200;
         }
     }
 }
+`;
+
+// PHP FPM router — serves static files directly, routes PHP through WordPress
+const FPM_ROUTER_PHP = `<?php
+$uri = urldecode(parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH));
+$docRoot = $_SERVER['DOCUMENT_ROOT'];
+$file = $docRoot . $uri;
+
+$staticTypes = [
+    'css'   => 'text/css',
+    'js'    => 'text/javascript',
+    'json'  => 'application/json',
+    'png'   => 'image/png',
+    'jpg'   => 'image/jpeg',
+    'jpeg'  => 'image/jpeg',
+    'gif'   => 'image/gif',
+    'svg'   => 'image/svg+xml',
+    'ico'   => 'image/x-icon',
+    'woff'  => 'font/woff',
+    'woff2' => 'font/woff2',
+    'ttf'   => 'font/ttf',
+    'eot'   => 'application/vnd.ms-fontobject',
+    'map'   => 'application/json',
+    'xml'   => 'application/xml',
+    'txt'   => 'text/plain',
+];
+
+if ($uri !== '/' && is_file($file)) {
+    $ext = strtolower(pathinfo($file, PATHINFO_EXTENSION));
+    if (isset($staticTypes[$ext])) {
+        header('Content-Type: ' . $staticTypes[$ext]);
+        header('Content-Length: ' . filesize($file));
+        readfile($file);
+        exit;
+    }
+    if ($ext === 'php') {
+        chdir(dirname($file));
+        include $file;
+        exit;
+    }
+}
+
+chdir($docRoot);
+include $docRoot . '/index.php';
 `;
 
 const PHP_FPM_CONF = `[global]
@@ -182,8 +202,6 @@ async function start() {
       "/tmp/nginx_client_temp",
       "/tmp/nginx_fastcgi_temp",
       "/tmp/nginx_proxy_temp",
-      "/tmp/nginx_uwsgi_temp",
-      "/tmp/nginx_scgi_temp",
       "/tmp/nginx-wasm/logs",
       "/etc/php-fpm.d",
     ]) {
@@ -199,6 +217,7 @@ async function start() {
     await loadFiles(fs, [
       { path: "/etc/nginx/nginx.conf", data: NGINX_CONF },
       { path: "/etc/php-fpm.conf", data: PHP_FPM_CONF },
+      { path: "/var/www/fpm-router.php", data: FPM_ROUTER_PHP },
     ]);
 
     // Load WordPress bundle
