@@ -10,8 +10,8 @@
  *   bash examples/libs/dash/build-dash.sh
  */
 
-import { existsSync, readFileSync } from "fs";
-import { resolve, dirname } from "path";
+import { existsSync, readFileSync, readdirSync } from "fs";
+import { resolve, dirname, basename } from "path";
 import { fileURLToPath } from "url";
 import { CentralizedKernelWorker } from "../../host/src/kernel-worker";
 import { NodePlatformIO } from "../../host/src/platform/node";
@@ -73,6 +73,49 @@ async function main() {
 
   const kernelBytes = loadBytes(kernelWasmPath);
   const programBytes = loadBytes(dashBinary);
+
+  // --- Load external programs for exec ---
+  // Maps virtual filesystem paths to wasm binary bytes.
+  const execPrograms = new Map<string, ArrayBuffer>();
+
+  // Load coreutils single binary (if built)
+  const coreutilsBinary = resolve(
+    repoRoot,
+    "examples/libs/coreutils/bin/coreutils.wasm",
+  );
+  if (existsSync(coreutilsBinary)) {
+    const coreutilsBytes = loadBytes(coreutilsBinary);
+    // The coreutils single binary uses argv[0] to determine which utility to run.
+    // Register it under all standard utility names.
+    const coreutilsNames = [
+      "arch", "b2sum", "base32", "base64", "basename", "basenc", "cat",
+      "chcon", "chgrp", "chmod", "chown", "chroot", "cksum", "comm", "cp",
+      "csplit", "cut", "date", "dd", "df", "dir", "dircolors", "dirname",
+      "du", "echo", "env", "expand", "expr", "factor", "false", "fmt",
+      "fold", "groups", "head", "hostid", "id", "install", "join", "link",
+      "ln", "logname", "ls", "md5sum", "mkdir", "mkfifo", "mknod", "mktemp",
+      "mv", "nice", "nl", "nohup", "nproc", "numfmt", "od", "paste",
+      "pathchk", "pr", "printenv", "printf", "ptx", "pwd", "readlink",
+      "realpath", "rm", "rmdir", "runcon", "seq", "sha1sum", "sha224sum",
+      "sha256sum", "sha384sum", "sha512sum", "shred", "shuf", "sleep",
+      "sort", "split", "stat", "stty", "sum", "sync", "tac", "tail",
+      "tee", "test", "timeout", "touch", "tr", "true", "truncate", "tsort",
+      "tty", "uname", "unexpand", "uniq", "unlink", "vdir", "wc", "whoami",
+      "yes",
+    ];
+    for (const name of coreutilsNames) {
+      execPrograms.set(`/bin/${name}`, coreutilsBytes);
+      execPrograms.set(`/usr/bin/${name}`, coreutilsBytes);
+    }
+    // Also register [  (test alias)
+    execPrograms.set("/bin/[", coreutilsBytes);
+    execPrograms.set("/usr/bin/[", coreutilsBytes);
+    console.error(`Loaded ${coreutilsNames.length} coreutils commands`);
+  }
+
+  // Load dash as /bin/sh
+  execPrograms.set("/bin/sh", programBytes);
+  execPrograms.set("/bin/dash", programBytes);
 
   const io = new NodePlatformIO();
   const workerAdapter = new NodeWorkerAdapter();
@@ -139,7 +182,67 @@ async function main() {
 
         return [childChannelOffset];
       },
-      onExec: async () => -2, // ENOENT — no external programs available yet
+      onExec: async (pid, path, argv, envp) => {
+        // Resolve the path to a wasm binary
+        let wasmBytes: ArrayBuffer | undefined;
+
+        if (path.startsWith("/")) {
+          // Absolute path — look up directly
+          wasmBytes = execPrograms.get(path);
+        } else {
+          // Bare command — search PATH
+          const pathEnv = envp.find(e => e.startsWith("PATH="))?.slice(5)
+            ?? "/usr/local/bin:/usr/bin:/bin";
+          for (const dir of pathEnv.split(":")) {
+            const full = `${dir}/${path}`;
+            wasmBytes = execPrograms.get(full);
+            if (wasmBytes) break;
+          }
+        }
+
+        if (!wasmBytes) return -2; // ENOENT
+
+        // Terminate old worker
+        const oldWorker = workers.get(pid);
+        if (oldWorker) {
+          await oldWorker.terminate().catch(() => {});
+          workers.delete(pid);
+        }
+
+        // Create fresh memory for the new program
+        const newMemory = new WebAssembly.Memory({
+          initial: 17,
+          maximum: MAX_PAGES,
+          shared: true,
+        });
+        const newChannelOffset = (MAX_PAGES - 2) * 65536;
+        newMemory.grow(MAX_PAGES - 17);
+        new Uint8Array(newMemory.buffer, newChannelOffset, CH_TOTAL_SIZE).fill(0);
+
+        // Re-register process with fresh memory
+        kernelWorker.registerProcess(pid, newMemory, [newChannelOffset], { skipKernelCreate: true });
+
+        // Create new worker with the exec'd program
+        const execInitData: CentralizedWorkerInitMessage = {
+          type: "centralized_init",
+          pid,
+          ppid: 0,
+          programBytes: wasmBytes,
+          memory: newMemory,
+          channelOffset: newChannelOffset,
+          argv,
+          env: envp,
+        };
+
+        const newWorker = workerAdapter.createWorker(execInitData);
+        workers.set(pid, newWorker);
+        newWorker.on("error", () => {
+          kernelWorker.unregisterProcess(pid);
+          workers.delete(pid);
+        });
+
+        return 0;
+      },
       onClone: async (
         pid,
         tid,

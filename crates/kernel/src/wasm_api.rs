@@ -850,6 +850,24 @@ pub extern "C" fn kernel_set_cwd(pid: u32, path_ptr: *const u8, path_len: u32) -
     }
 }
 
+/// Mark a process's stdin (fd 0) as a pipe instead of a terminal.
+/// This disables terminal line discipline (no ECHO, no ICANON) and makes
+/// isatty(0) return false. Used when providing buffered stdin data.
+/// Returns 0 on success, -ESRCH if pid not found.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_set_stdin_pipe(pid: u32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    if let Some(proc) = table.get_mut(pid) {
+        // Change OFD 0 (stdin) from CharDevice to Pipe
+        if let Some(ofd) = proc.ofd_table.get_mut(0) {
+            ofd.file_type = crate::ofd::FileType::Pipe;
+        }
+        0
+    } else {
+        -(Errno::ESRCH as i32)
+    }
+}
+
 /// Remove a process from the process table (centralized mode).
 /// Returns 0 on success, -ESRCH if pid not found.
 #[unsafe(no_mangle)]

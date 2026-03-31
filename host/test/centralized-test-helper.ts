@@ -41,6 +41,8 @@ export interface RunProgramOptions {
   io?: PlatformIO;
   /** Map of virtual path → .wasm file path for exec targets */
   execPrograms?: Map<string, string>;
+  /** Data to provide on stdin (process will see EOF after this data) */
+  stdin?: string;
 }
 
 export interface RunProgramResult {
@@ -277,6 +279,11 @@ export async function runCentralizedProgram(
 
   const pid = 1;
   kernelWorker.registerProcess(pid, memory, [channelOffset]);
+
+  // Provide stdin data if specified
+  if (options.stdin != null) {
+    kernelWorker.setStdinData(pid, new TextEncoder().encode(options.stdin));
+  }
 
   const initData: CentralizedWorkerInitMessage = {
     type: "centralized_init",

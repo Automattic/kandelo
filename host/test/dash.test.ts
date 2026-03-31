@@ -116,3 +116,63 @@ describe.skipIf(!hasDash)("dash shell", () => {
     expect(result.stdout.trim()).toBe("hello world");
   });
 });
+
+const coreutilsBinary = join(
+  __dirname,
+  "../../examples/libs/coreutils/bin/coreutils.wasm",
+);
+const hasCoreutils = existsSync(coreutilsBinary);
+
+describe.skipIf(!hasDash || !hasCoreutils)("dash + coreutils exec", () => {
+  function dashExec(cmd: string, timeout = 15_000) {
+    // Build exec program map: register coreutils under /bin/*
+    const coreutilsPath = coreutilsBinary;
+    const execPrograms = new Map<string, string>();
+    const names = [
+      "cat", "echo", "env", "true", "false", "basename", "dirname",
+      "wc", "head", "tail", "sort", "uniq", "tr", "cut", "printf",
+      "expr", "test", "ls", "mkdir", "rm", "cp", "mv", "touch",
+      "chmod", "tee",
+    ];
+    for (const name of names) {
+      execPrograms.set(`/bin/${name}`, coreutilsPath);
+      execPrograms.set(`/usr/bin/${name}`, coreutilsPath);
+    }
+    execPrograms.set("/bin/[", coreutilsPath);
+    return runCentralizedProgram({
+      programPath: dashBinary,
+      argv: ["dash", "-c", cmd],
+      env: ["PATH=/bin:/usr/bin", "HOME=/tmp"],
+      execPrograms,
+      timeout,
+    });
+  }
+
+  it("execs /bin/echo via dash", async () => {
+    const result = await dashExec("/bin/echo hello from exec");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("hello from exec");
+  });
+
+  it("execs cat via PATH lookup", async () => {
+    const result = await dashExec("echo hi | cat");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("hi");
+  });
+
+  it("pipes between coreutils", async () => {
+    const result = await dashExec(
+      "printf 'cherry\\napple\\nbanana\\n' | sort"
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("apple\nbanana\ncherry");
+  });
+
+  it("uses command substitution with exec", async () => {
+    const result = await dashExec(
+      "x=$(/bin/basename /usr/local/bin/test); echo $x"
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("test");
+  });
+});
