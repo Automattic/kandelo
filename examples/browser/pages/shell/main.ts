@@ -8,6 +8,8 @@ import { BrowserKernel } from "../../lib/browser-kernel";
 import kernelWasmUrl from "../../../../host/wasm/wasm_posix_kernel.wasm?url";
 import dashWasmUrl from "../../../../examples/libs/dash/dash-src/src/dash?url";
 import coreutilsWasmUrl from "../../../../examples/libs/coreutils/bin/coreutils.wasm?url";
+import grepWasmUrl from "../../../../examples/libs/grep/bin/grep.wasm?url";
+import sedWasmUrl from "../../../../examples/libs/sed/bin/sed.wasm?url";
 
 // --- DOM elements ---
 const terminalEl = document.getElementById("terminal") as HTMLDivElement;
@@ -79,19 +81,25 @@ const COREUTILS_NAMES = [
 let kernelBytes: ArrayBuffer | null = null;
 let dashBytes: ArrayBuffer | null = null;
 let coreutilsBytes: ArrayBuffer | null = null;
+let grepBytes: ArrayBuffer | null = null;
+let sedBytes: ArrayBuffer | null = null;
 
 async function loadBinaries(): Promise<string> {
   if (kernelBytes && dashBytes) return "";
 
-  setStatus("Loading kernel, dash, and coreutils wasm...", "loading");
+  setStatus("Loading kernel, dash, coreutils, grep, sed...", "loading");
   const results = await Promise.all([
     fetch(kernelWasmUrl).then((r) => r.arrayBuffer()),
     fetch(dashWasmUrl).then((r) => r.arrayBuffer()),
     fetch(coreutilsWasmUrl).then((r) => r.arrayBuffer()).catch(() => null),
+    fetch(grepWasmUrl).then((r) => r.arrayBuffer()).catch(() => null),
+    fetch(sedWasmUrl).then((r) => r.arrayBuffer()).catch(() => null),
   ]);
   kernelBytes = results[0];
   dashBytes = results[1];
   coreutilsBytes = results[2];
+  grepBytes = results[3];
+  sedBytes = results[4];
 
   const parts = [
     `Kernel: ${(kernelBytes.byteLength / 1024).toFixed(0)}KB`,
@@ -100,6 +108,8 @@ async function loadBinaries(): Promise<string> {
   if (coreutilsBytes) {
     parts.push(`coreutils: ${(coreutilsBytes.byteLength / (1024 * 1024)).toFixed(1)}MB`);
   }
+  if (grepBytes) parts.push(`grep: ${(grepBytes.byteLength / 1024).toFixed(0)}KB`);
+  if (sedBytes) parts.push(`sed: ${(sedBytes.byteLength / 1024).toFixed(0)}KB`);
   return parts.join(", ") + "\n";
 }
 
@@ -107,8 +117,11 @@ async function loadBinaries(): Promise<string> {
 function resolveExecPath(path: string, _argv: string[], envp: string[]): ArrayBuffer | null {
   if (path.startsWith("/")) {
     if (path === "/bin/sh" || path === "/bin/dash") return dashBytes;
+    // grep/egrep/fgrep
+    const name = path.split("/").pop()!;
+    if (grepBytes && (name === "grep" || name === "egrep" || name === "fgrep")) return grepBytes;
+    if (sedBytes && name === "sed") return sedBytes;
     if (coreutilsBytes) {
-      const name = path.split("/").pop()!;
       if (COREUTILS_NAMES.includes(name) || name === "[") return coreutilsBytes;
     }
     return null;

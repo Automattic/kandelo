@@ -113,6 +113,35 @@ async function main() {
     console.error(`Loaded ${coreutilsNames.length} coreutils commands`);
   }
 
+  // Load GNU grep (if built)
+  const grepBinary = resolve(
+    repoRoot,
+    "examples/libs/grep/bin/grep.wasm",
+  );
+  if (existsSync(grepBinary)) {
+    const grepBytes = loadBytes(grepBinary);
+    execPrograms.set("/bin/grep", grepBytes);
+    execPrograms.set("/usr/bin/grep", grepBytes);
+    // Also register egrep and fgrep (grep invokes itself differently based on argv[0])
+    execPrograms.set("/bin/egrep", grepBytes);
+    execPrograms.set("/usr/bin/egrep", grepBytes);
+    execPrograms.set("/bin/fgrep", grepBytes);
+    execPrograms.set("/usr/bin/fgrep", grepBytes);
+    console.error("Loaded GNU grep");
+  }
+
+  // Load GNU sed (if built)
+  const sedBinary = resolve(
+    repoRoot,
+    "examples/libs/sed/bin/sed.wasm",
+  );
+  if (existsSync(sedBinary)) {
+    const sedBytes = loadBytes(sedBinary);
+    execPrograms.set("/bin/sed", sedBytes);
+    execPrograms.set("/usr/bin/sed", sedBytes);
+    console.error("Loaded GNU sed");
+  }
+
   // Load dash as /bin/sh
   execPrograms.set("/bin/sh", programBytes);
   execPrograms.set("/bin/dash", programBytes);
