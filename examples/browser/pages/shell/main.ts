@@ -136,6 +136,35 @@ function resolveExecPath(path: string, _argv: string[], envp: string[]): ArrayBu
   return null;
 }
 
+/**
+ * Populate the virtual filesystem with executable stubs so that dash's
+ * PATH search (which uses stat()) finds commands before calling execve.
+ * Without these, dash calls stat() on /bin/cat etc. and gets ENOENT,
+ * so it never even tries execve.
+ */
+function populateExecStubs(fs: import("../../lib/browser-kernel").BrowserKernel["fs"]): void {
+  // Create /bin and /usr/bin directories
+  for (const dir of ["/bin", "/usr", "/usr/bin", "/usr/local", "/usr/local/bin"]) {
+    try { fs.mkdir(dir, 0o755); } catch { /* exists */ }
+  }
+
+  // All command names that have wasm binaries
+  const commands: string[] = ["sh", "dash", ...COREUTILS_NAMES, "["];
+  if (grepBytes) commands.push("grep", "egrep", "fgrep");
+  if (sedBytes) commands.push("sed");
+
+  // Create empty executable stubs in /bin and /usr/bin
+  // O_WRONLY | O_CREAT = 0o101
+  for (const name of commands) {
+    for (const dir of ["/bin", "/usr/bin"]) {
+      try {
+        const fd = fs.open(`${dir}/${name}`, 0o101, 0o755);
+        fs.close(fd);
+      } catch { /* exists */ }
+    }
+  }
+}
+
 // ============================================================
 // Interactive mode
 // ============================================================
@@ -174,6 +203,7 @@ async function startInteractiveShell() {
     });
 
     await kernel.init(kernelBytes!);
+    populateExecStubs(kernel.fs);
     activeKernel = kernel;
 
     // Spawn dash in interactive mode (no stdin data = terminal mode)
@@ -228,12 +258,11 @@ terminalEl.addEventListener("keydown", (e: KeyboardEvent) => {
 
   if (e.key === "Enter") {
     e.preventDefault();
-    // Send current line + newline to stdin
-    const line = inputBuffer + "\n";
+    // Characters were already sent individually — just send the newline
     inputBuffer = "";
     (activeKernel.worker as any).appendStdinData(
       activePid,
-      encoder.encode(line),
+      encoder.encode("\n"),
     );
   } else if (e.key === "Backspace") {
     e.preventDefault();
@@ -484,6 +513,7 @@ async function runBatch() {
     });
 
     await kernel.init(kernelBytes!);
+    populateExecStubs(kernel.fs);
 
     const exitCode = await kernel.spawn(dashBytes!, ["dash"], {
       env: [
