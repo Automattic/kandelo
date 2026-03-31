@@ -49,6 +49,11 @@ examples/libs/mariadb/mariadb-glue-objs/
 # MariaDB data directory
 examples/mariadb/data/
 
+# Redis build artifacts
+examples/libs/redis/redis-src/
+examples/libs/redis/redis-*.tar.gz
+examples/libs/redis/bin/
+
 # WordPress download artifacts
 examples/wordpress/wordpress/
 examples/wordpress/sqlite-database-integration/

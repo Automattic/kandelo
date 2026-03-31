@@ -45,6 +45,7 @@ has_dash()      { [ -f "$REPO_ROOT/examples/libs/dash/bin/dash.wasm" ]; }
 has_coreutils() { [ -f "$REPO_ROOT/examples/libs/coreutils/bin/ls.wasm" ]; }
 has_grep()      { [ -f "$REPO_ROOT/examples/libs/grep/bin/grep.wasm" ]; }
 has_sed()       { [ -f "$REPO_ROOT/examples/libs/sed/bin/sed.wasm" ]; }
+has_redis()     { [ -f "$REPO_ROOT/examples/libs/redis/bin/redis-server.wasm" ]; }
 has_dlopen()    { [ -f "$REPO_ROOT/examples/dlopen/hello-lib.so" ] && \
                   [ -f "$REPO_ROOT/examples/dlopen/main.wasm" ]; }
 
@@ -256,6 +257,18 @@ build_sed() {
     fi
 }
 
+build_redis() {
+    need_kernel
+    need_sdk
+    if ! has_redis; then
+        step "Building Redis"
+        bash "$REPO_ROOT/examples/libs/redis/build-redis.sh"
+        info "Redis built"
+    else
+        info "Redis"
+    fi
+}
+
 build_dlopen() {
     need_sysroot
     if ! has_dlopen; then
@@ -283,6 +296,7 @@ build_target() {
         grep)       build_grep ;;
         sed)        build_sed ;;
         mariadb)    build_mariadb ;;
+        redis)      build_redis ;;
         wordpress)  build_wordpress ;;
         wp-bundle)  build_wp_bundle ;;
         dlopen)     build_dlopen ;;
@@ -305,6 +319,7 @@ build_all() {
     build_php
     build_php_fpm
     build_mariadb
+    build_redis
     build_wordpress
     build_wp_bundle
     build_dlopen
@@ -371,6 +386,10 @@ clean_target() {
             rm -rf "$REPO_ROOT/examples/libs/mariadb/mariadb-src" \
                    "$REPO_ROOT/examples/libs/mariadb/mariadb-install"
             warn "Cleaned MariaDB" ;;
+        redis)
+            rm -rf "$REPO_ROOT/examples/libs/redis/redis-src" \
+                   "$REPO_ROOT/examples/libs/redis/bin"
+            warn "Cleaned Redis" ;;
         wordpress)
             rm -rf "$REPO_ROOT/examples/wordpress/wordpress"
             warn "Cleaned WordPress" ;;
@@ -382,7 +401,7 @@ clean_target() {
                   "$REPO_ROOT/examples/dlopen/main.wasm"
             warn "Cleaned dlopen" ;;
         all)
-            for t in kernel sysroot host programs dash coreutils grep sed nginx php php-fpm mariadb wordpress wp-bundle dlopen; do
+            for t in kernel sysroot host programs dash coreutils grep sed nginx php php-fpm mariadb redis wordpress wp-bundle dlopen; do
                 clean_target "$t"
             done ;;
         *)  err "Unknown clean target: $target"; exit 1 ;;
@@ -420,7 +439,7 @@ cmd_rebuild() {
 cmd_run() {
     if [ $# -eq 0 ]; then
         err "Usage: $0 run <example> [args...]"
-        err "Examples: shell, nginx, mariadb, wordpress, wordpress-nginx, lamp, dlopen"
+        err "Examples: shell, nginx, redis, mariadb, wordpress, wordpress-nginx, lamp, dlopen"
         exit 1
     fi
 
@@ -437,6 +456,11 @@ cmd_run() {
             build_mariadb
             step "Starting MariaDB"
             exec npx tsx "$REPO_ROOT/examples/mariadb/serve.ts" "$@"
+            ;;
+        redis)
+            build_redis
+            step "Starting Redis"
+            exec npx tsx "$REPO_ROOT/examples/redis/serve.ts" "$@"
             ;;
         wordpress)
             build_php
@@ -480,7 +504,7 @@ cmd_run() {
             ;;
         *)
             err "Unknown example: $example"
-            err "Available: shell, nginx, mariadb, wordpress, wordpress-nginx, lamp, dlopen"
+            err "Available: shell, nginx, redis, mariadb, wordpress, wordpress-nginx, lamp, dlopen"
             exit 1
             ;;
     esac
@@ -615,6 +639,7 @@ cmd_list() {
     echo "  php         PHP 8.3 CLI binary                    $(has_php && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  php-fpm     PHP-FPM Wasm binary                   $(has_php_fpm && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  mariadb     MariaDB 10.5 Wasm binary              $(has_mariadb && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  redis       Redis 7.2 Wasm binary                 $(has_redis && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  wordpress   WordPress + SQLite plugin             $(has_wordpress && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  wp-bundle   WordPress browser bundle              $(has_wp_bundle && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  dlopen      dlopen shared library example          $(has_dlopen && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
@@ -623,6 +648,7 @@ cmd_list() {
     echo "${BOLD}Run examples:${RESET}"
     echo "  ./run.sh run shell                   Interactive shell (dash + coreutils + grep + sed)"
     echo "  ./run.sh run nginx [port]            nginx HTTP server"
+    echo "  ./run.sh run redis [port]            Redis key-value store"
     echo "  ./run.sh run mariadb                 MariaDB standalone"
     echo "  ./run.sh run wordpress [port]        WordPress (PHP built-in + SQLite)"
     echo "  ./run.sh run wordpress-nginx [port]  WordPress (nginx + PHP-FPM + SQLite)"

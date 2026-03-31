@@ -136,7 +136,7 @@ async function start() {
 
     // Wait for bootstrap — browser wasm is much slower than Node.js
     const bootstrapTimeout = new Promise<number>((r) =>
-      setTimeout(() => r(-1), 180000),
+      setTimeout(() => r(-1), 600000),
     );
 
     // Show progress updates while waiting
@@ -148,7 +148,7 @@ async function start() {
     clearInterval(progressInterval);
 
     if (bootstrapResult === -1) {
-      throw new Error("Bootstrap timed out after 3 minutes. Try reloading the page.");
+      throw new Error("Bootstrap timed out after 10 minutes. Try reloading the page.");
     }
     appendLog(`Bootstrap exited with code ${bootstrapResult}\n`, "info");
 

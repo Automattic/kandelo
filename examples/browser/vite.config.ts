@@ -24,6 +24,7 @@ export default defineConfig({
         php: path.resolve(__dirname, "pages/php/index.html"),
         "nginx-php": path.resolve(__dirname, "pages/nginx-php/index.html"),
         mariadb: path.resolve(__dirname, "pages/mariadb/index.html"),
+        redis: path.resolve(__dirname, "pages/redis/index.html"),
         wordpress: path.resolve(__dirname, "pages/wordpress/index.html"),
         lamp: path.resolve(__dirname, "pages/lamp/index.html"),
         shell: path.resolve(__dirname, "pages/shell/index.html"),

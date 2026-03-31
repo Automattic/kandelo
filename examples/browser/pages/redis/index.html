@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MariaDB on wasm-posix-kernel (Browser)</title>
+  <title>Redis on wasm-posix-kernel (Browser)</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
@@ -14,10 +14,9 @@
     button { cursor: pointer; }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
     .panels { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
-    textarea {
-      width: 100%; min-height: 80px; font-family: 'SF Mono', 'Fira Code', monospace;
-      font-size: 0.85rem; padding: 0.75rem; border: 1px solid #ccc; border-radius: 4px;
-      resize: vertical; tab-size: 4;
+    input[type="text"] {
+      flex: 1; font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 0.9rem; padding: 0.4rem 0.75rem; border: 1px solid #ccc; border-radius: 4px;
     }
     #log {
       background: #1e1e1e; color: #d4d4d4; padding: 1rem;
@@ -27,54 +26,54 @@
     #result {
       background: #f8f8f8; padding: 1rem; border-radius: 4px;
       min-height: 300px; max-height: 400px; overflow: auto; font-size: 0.85rem;
+      font-family: 'SF Mono', 'Fira Code', monospace;
     }
     .stderr { color: #f48771; }
     .info { color: #6a9955; }
+    .cmd { color: #569cd6; }
+    .resp { color: #d4d4d4; }
     .status { margin-bottom: 1rem; padding: 0.5rem; border-radius: 4px; font-size: 0.9rem; }
     .status.loading { background: #fff3cd; }
     .status.running { background: #d4edda; }
     .status.error { background: #f8d7da; }
-    table.result-table { border-collapse: collapse; width: 100%; font-size: 0.8rem; }
-    table.result-table th, table.result-table td {
-      border: 1px solid #ddd; padding: 0.3rem 0.5rem; text-align: left;
-    }
-    table.result-table th { background: #e8e8e8; font-weight: 600; }
-    table.result-table tr:nth-child(even) { background: #f0f0f0; }
     @media (max-width: 700px) {
       .panels { grid-template-columns: 1fr; }
     }
   </style>
 </head>
 <body>
-  <h1>MariaDB on wasm-posix-kernel</h1>
+  <h1>Redis on wasm-posix-kernel</h1>
   <nav style="margin-bottom: 1rem; padding: 0.75rem; background: #f5f5f5; border-radius: 4px;">
     <strong>Demos:</strong>
     <a href="/" style="margin-left: 0.5rem;">Simple Programs</a>
     <a href="/pages/nginx/" style="margin-left: 0.5rem;">nginx</a>
     <a href="/pages/php/" style="margin-left: 0.5rem;">PHP CLI</a>
     <a href="/pages/nginx-php/" style="margin-left: 0.5rem;">nginx + PHP-FPM</a>
-    <a href="/pages/mariadb/" style="margin-left: 0.5rem; font-weight: bold;">MariaDB</a>
-    <a href="/pages/redis/" style="margin-left: 0.5rem;">Redis</a>
+    <a href="/pages/mariadb/" style="margin-left: 0.5rem;">MariaDB</a>
+    <a href="/pages/redis/" style="margin-left: 0.5rem; font-weight: bold;">Redis</a>
     <a href="/pages/wordpress/" style="margin-left: 0.5rem;">WordPress</a>
     <a href="/pages/lamp/" style="margin-left: 0.5rem;">LAMP</a>
     <a href="/pages/shell/" style="margin-left: 0.5rem;">Shell</a>
   </nav>
-  <p class="subtitle">MariaDB 10.5 running inside a POSIX kernel compiled to WebAssembly</p>
+  <p class="subtitle">Redis 7.2 running inside a POSIX kernel compiled to WebAssembly</p>
   <div class="controls">
-    <button id="start">Start MariaDB</button>
+    <button id="start">Start Redis</button>
     <select id="examples">
-      <option value="">-- Example Queries --</option>
-      <option value="version">Server Version</option>
-      <option value="create">Create Table</option>
-      <option value="insert">Insert Data</option>
-      <option value="select">Select Data</option>
-      <option value="show">Show Tables</option>
-      <option value="databases">Show Databases</option>
+      <option value="">-- Example Commands --</option>
+      <option value="ping">PING</option>
+      <option value="set">SET hello world</option>
+      <option value="get">GET hello</option>
+      <option value="incr">INCR counter</option>
+      <option value="lpush">LPUSH mylist a b c</option>
+      <option value="lrange">LRANGE mylist 0 -1</option>
+      <option value="info">INFO server</option>
+      <option value="dbsize">DBSIZE</option>
     </select>
-    <button id="execute" disabled>Execute SQL</button>
   </div>
-  <div style="margin-bottom: 1rem;">
-    <textarea id="sql" placeholder="Enter SQL query...">SELECT VERSION(), @@version_comment;</textarea>
+  <div class="controls" style="margin-bottom: 1rem;">
+    <span style="color: #c33; font-weight: bold; font-family: monospace;">redis&gt;</span>
+    <input type="text" id="cmd" placeholder="Enter Redis command..." value="PING">
+    <button id="execute" disabled>Send</button>
   </div>
   <div id="status" class="status" style="display:none"></div>
   <div class="panels">
@@ -83,8 +82,8 @@
       <pre id="log"></pre>
     </div>
     <div>
-      <h3 style="margin-bottom: 0.5rem">Query Result</h3>
-      <div id="result"><p style="color:#999">Start MariaDB and execute a query</p></div>
+      <h3 style="margin-bottom: 0.5rem">Redis Output</h3>
+      <pre id="result"><span style="color:#999">Start Redis and send commands</span></pre>
     </div>
   </div>
   <script type="module" src="./main.ts"></script>

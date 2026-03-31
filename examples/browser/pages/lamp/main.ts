@@ -343,7 +343,7 @@ async function start() {
 
     // Browser wasm is much slower than Node.js — give bootstrap plenty of time
     const bootstrapTimeout = new Promise<number>((r) =>
-      setTimeout(() => r(-1), 180000),
+      setTimeout(() => r(-1), 600000),
     );
 
     const progressInterval = setInterval(() => {
@@ -354,7 +354,7 @@ async function start() {
     clearInterval(progressInterval);
 
     if (bootstrapResult === -1) {
-      throw new Error("MariaDB bootstrap timed out after 3 minutes. Try reloading the page.");
+      throw new Error("MariaDB bootstrap timed out after 10 minutes. Try reloading the page.");
     }
     appendLog(`Bootstrap exited with code ${bootstrapResult}\n`, "info");
 

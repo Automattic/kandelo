@@ -458,7 +458,7 @@ interface ChannelInfo {
   channelOffset: number;
   /** Int32Array view for Atomics operations */
   i32View: Int32Array;
-  /** Counter for fair scheduling — yield to macrotask queue periodically */
+  /** @deprecated Kept for compat — no longer used after relistenChannel simplification. */
   consecutiveSyscalls: number;
 }
 
@@ -1565,21 +1565,22 @@ export class CentralizedKernelWorker {
   }
 
   /**
-   * Schedule re-listen on a channel with fair scheduling.
-   * Uses setImmediate for re-listen so that Atomics.waitAsync resolutions
-   * and other I/O callbacks can interleave between syscalls. This prevents
-   * cross-process starvation when one process makes rapid non-blocking
-   * syscalls (e.g., clock_gettime in a spin loop). Every 8 consecutive
-   * syscalls, yields fully via setTimeout(0).
+   * Schedule re-listen on a channel.
+   *
+   * Uses queueMicrotask for speed (near-zero delay between syscalls).
+   * Every 64th call, yields via setImmediate so timer callbacks
+   * (setTimeout/setInterval) can fire — prevents event loop starvation
+   * while keeping throughput close to Node.js native setImmediate.
    */
+  private relistenCount = 0;
   private relistenChannel(channel: ChannelInfo): void {
     if (!this.processes.has(channel.pid)) return;
-    channel.consecutiveSyscalls++;
-    if (channel.consecutiveSyscalls >= 8) {
-      channel.consecutiveSyscalls = 0;
-      setTimeout(() => this.listenOnChannel(channel), 0);
-    } else {
+    this.relistenCount++;
+    if (this.relistenCount >= 64) {
+      this.relistenCount = 0;
       setImmediate(() => this.listenOnChannel(channel));
+    } else {
+      queueMicrotask(() => this.listenOnChannel(channel));
     }
   }
 
@@ -1657,7 +1658,12 @@ export class CentralizedKernelWorker {
     if (this.wakeScheduled) return;
     if (this.pendingPollRetries.size === 0 && this.pendingSelectRetries.size === 0 && this.pendingPipeReaders.size === 0) return;
     this.wakeScheduled = true;
-    queueMicrotask(() => {
+    // Use setImmediate (not queueMicrotask) so that timer callbacks
+    // (setTimeout/setInterval) can interleave.  In browsers, microtask
+    // chains from queueMicrotask starve all macrotasks, breaking progress
+    // updates and timeouts.  setImmediate goes through the polyfill which
+    // yields to the timer queue periodically.
+    setImmediate(() => {
       this.wakeScheduled = false;
       this.wakeAllBlockedRetries();
     });
@@ -1867,8 +1873,9 @@ export class CentralizedKernelWorker {
             }
           });
         } else {
-          // Already changed
-          queueMicrotask(() => this.retrySyscall(channel));
+          // Already changed — use setImmediate (not queueMicrotask) to avoid
+          // microtask chains that starve the browser event loop.
+          setImmediate(() => this.retrySyscall(channel));
         }
         return;
       }

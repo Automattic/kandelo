@@ -5,11 +5,51 @@
  * and TCP connection injection for service worker bridging.
  */
 
-// Polyfill setImmediate/clearImmediate for browsers (kernel-worker.ts uses them)
+// Polyfill setImmediate/clearImmediate for browsers (kernel-worker.ts uses them).
+//
+// The kernel worker calls setImmediate after each syscall to re-listen on the channel.
+// Requirements for the polyfill:
+//   1. Fast — can't use small fixed-count batches with setTimeout (4ms clamp wastes time).
+//   2. Must yield to timers — so setTimeout/setInterval callbacks can fire.
+//
+// Solution: setTimeout with time-based batching.  Process items for up to 4ms per flush,
+// then yield via setTimeout(0).  Timer callbacks interleave between flushes.  The 4ms
+// clamp on nested setTimeout means ~8ms per cycle (4ms processing + 4ms delay), giving
+// ~50K+ syscalls/sec while guaranteeing responsive timer callbacks every ~8ms.
 if (typeof globalThis.setImmediate === "undefined") {
-  (globalThis as any).setImmediate = (fn: (...args: any[]) => void, ...args: any[]) =>
-    setTimeout(fn, 0, ...args);
-  (globalThis as any).clearImmediate = (id: any) => clearTimeout(id);
+  const _immQueue: Array<{ fn: (...args: any[]) => void; args: any[] }> = [];
+  let _immNextId = 0;
+  let _immScheduled = false;
+
+  function _immFlush() {
+    _immScheduled = false;
+    const deadline = performance.now() + 4;
+    let count = 0;
+    while (_immQueue.length > 0) {
+      const entry = _immQueue.shift()!;
+      entry.fn(...entry.args);
+      count++;
+      // Check wall clock every 16 items to limit performance.now() overhead
+      if ((count & 15) === 0 && performance.now() >= deadline) break;
+    }
+    if (_immQueue.length > 0 && !_immScheduled) {
+      _immScheduled = true;
+      setTimeout(_immFlush, 0);
+    }
+  }
+
+  (globalThis as any).setImmediate = (fn: (...args: any[]) => void, ...args: any[]) => {
+    const id = ++_immNextId;
+    _immQueue.push({ fn, args });
+    if (!_immScheduled) {
+      _immScheduled = true;
+      setTimeout(_immFlush, 0);
+    }
+    return id;
+  };
+  (globalThis as any).clearImmediate = (id: any) => {
+    void id;
+  };
 }
 
 import { CentralizedKernelWorker } from "../../../host/src/kernel-worker";
