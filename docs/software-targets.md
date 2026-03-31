@@ -24,7 +24,7 @@ Systems software to port to wasm-posix-kernel, prioritized by POSIX depth and br
 - **Build notes:** Large C codebase, autoconf-based. Needs libreadline or libedit for psql client. Server (postgres) is the main target.
 
 ### dash (POSIX shell)
-- **Status:** not started
+- **Status:** done (PR #124)
 - **Priority:** high
 - **POSIX surface:** fork+exec for every command, pipes, process groups (setpgid), job control (SIGTSTP/SIGCONT/SIGTTIN/SIGTTOU), here-documents, command substitution via pipes, wait/waitpid, signal masking
 - **Browser value:** Interactive terminal environment. Enables running shell scripts (configure, make) which unlocks self-hosting build tools.
@@ -48,7 +48,7 @@ Systems software to port to wasm-posix-kernel, prioritized by POSIX depth and br
 - **Build notes:** Makefile-based (not autoconf). Needs zlib, optionally openssl and curl. Can build with NO_CURL, NO_OPENSSL for a minimal version.
 
 ### Redis
-- **Status:** not started
+- **Status:** done (PR #132) — Redis 7.2 with 3 background threads, browser + Node.js demos
 - **Priority:** medium
 - **POSIX surface:** fork() for BGSAVE snapshots, epoll/select event loop, pipes for parent-child communication, signals, mmap for RDB loading
 - **Browser value:** In-memory cache and pub/sub alongside the LAMP stack.
@@ -66,6 +66,11 @@ Systems software to port to wasm-posix-kernel, prioritized by POSIX depth and br
 ## Completed
 
 - nginx 1.24 — fork, sockets, signals, non-blocking I/O, SCM_RIGHTS
-- PHP 8.3 (CLI + FPM) — fork, threads, sockets, file I/O, dlopen
+- PHP 8.4 (CLI + FPM) — fork, threads, sockets, file I/O, dlopen
 - MariaDB 10.5 — threads, file I/O, sockets, signals (no-threads mode)
 - WordPress 6.7 — full LAMP stack integration test
+- dash — fork+exec, pipes, process groups, signals
+- GNU coreutils 9.6 — cat, cut, head, tail, sort, uniq, wc, tr, printf, etc.
+- GNU grep 3.11 — regex, file I/O
+- GNU sed 4.9 — stream editing
+- Redis 7.2 — threads, sockets, signals, event loop
