@@ -23,7 +23,7 @@ const log = document.getElementById("log") as HTMLPreElement;
 const startBtn = document.getElementById("start") as HTMLButtonElement;
 const reloadBtn = document.getElementById("reload") as HTMLButtonElement;
 const statusDiv = document.getElementById("status") as HTMLDivElement;
-const frame = document.getElementById("frame") as HTMLIFrameElement;
+let frame = document.getElementById("frame") as HTMLIFrameElement;
 
 const decoder = new TextDecoder();
 
@@ -146,6 +146,60 @@ request_slowlog_trace_depth = 0
 request_terminate_timeout = 120
 `;
 
+// Custom wp-config.php — sets WP_HOME/WP_SITEURL with /app prefix so
+// WordPress generates URLs the service worker can intercept
+const WP_CONFIG_PHP = `<?php
+define('DB_NAME', 'wordpress');
+define('DB_USER', '');
+define('DB_PASSWORD', '');
+define('DB_HOST', '');
+define('DB_CHARSET', 'utf8');
+define('DB_COLLATE', '');
+
+define('DB_DIR', __DIR__ . '/wp-content/database/');
+define('DB_FILE', 'wordpress.db');
+
+define('AUTH_KEY',         'wasm-posix-kernel-dev');
+define('SECURE_AUTH_KEY',  'wasm-posix-kernel-dev');
+define('LOGGED_IN_KEY',    'wasm-posix-kernel-dev');
+define('NONCE_KEY',        'wasm-posix-kernel-dev');
+define('AUTH_SALT',        'wasm-posix-kernel-dev');
+define('SECURE_AUTH_SALT', 'wasm-posix-kernel-dev');
+define('LOGGED_IN_SALT',   'wasm-posix-kernel-dev');
+define('NONCE_SALT',       'wasm-posix-kernel-dev');
+
+$table_prefix = 'wp_';
+
+define('WP_DEBUG', true);
+define('WP_DEBUG_LOG', true);
+define('WP_DEBUG_DISPLAY', true);
+
+// Site URL includes /app prefix — the service worker intercepts /app/*
+// and strips it before sending to nginx
+if (isset($_SERVER['HTTP_HOST'])) {
+    define('WP_HOME', 'http://' . $_SERVER['HTTP_HOST'] . '/app');
+    define('WP_SITEURL', 'http://' . $_SERVER['HTTP_HOST'] . '/app');
+}
+
+define('WP_HTTP_BLOCK_EXTERNAL', true);
+define('DISABLE_WP_CRON', true);
+
+if ( ! defined( 'ABSPATH' ) ) {
+    define( 'ABSPATH', __DIR__ . '/' );
+}
+
+require_once ABSPATH . 'wp-settings.php';
+`;
+
+// mu-plugin to disable operations that hang or are unnecessary in Wasm
+const MU_PLUGIN_PHP = `<?php
+add_filter('pre_wp_mail', '__return_false');
+add_filter('pre_http_request', function($pre, $args, $url) {
+    return new WP_Error('http_disabled', 'HTTP requests disabled in Wasm');
+}, 10, 3);
+if (!defined('DISALLOW_FILE_MODS')) define('DISALLOW_FILE_MODS', true);
+`;
+
 let kernel: BrowserKernel | null = null;
 let bridge: HttpBridgeHost | null = null;
 
@@ -182,9 +236,12 @@ async function start() {
     appendLog("Service worker active\n", "info");
 
     // Create kernel with larger FS for WordPress
+    // Use 4096 pages (256MB) per process instead of default 16384 (1GB)
+    // to avoid exhausting browser memory with 5+ concurrent processes
     kernel = new BrowserKernel({
       maxWorkers: 8,
-      fsSize: 128 * 1024 * 1024, // 128MB for WordPress (bundle is ~52MB + metadata)
+      fsSize: 256 * 1024 * 1024, // 256MB for full WordPress bundle
+      maxMemoryPages: 4096, // 256MB per process
       onStdout: (data) => appendLog(decoder.decode(data)),
       onStderr: (data) => appendLog(decoder.decode(data), "stderr"),
     });
@@ -198,6 +255,7 @@ async function start() {
       "/var/www/html",
       "/var/www/html/wp-content",
       "/var/www/html/wp-content/database",
+      "/var/www/html/wp-content/mu-plugins",
       "/var/log/nginx",
       "/tmp/nginx_client_temp",
       "/tmp/nginx_fastcgi_temp",
@@ -230,8 +288,17 @@ async function start() {
     });
     appendLog(`WordPress loaded: ${loaded} files\n`, "info");
 
+    // Overwrite wp-config.php so WordPress generates URLs with the /app/
+    // prefix that the service worker intercepts
+    await loadFiles(fs, [
+      { path: "/var/www/html/wp-config.php", data: WP_CONFIG_PHP },
+      { path: "/var/www/html/wp-content/mu-plugins/wasm-optimizations.php", data: MU_PLUGIN_PHP },
+    ]);
+
     // Set up the bridge to handle incoming requests
     bridge.onRequest((requestId, request) => {
+      console.log(`[wp-bridge] request #${requestId}: ${request.method} ${request.url}`);
+      appendLog(`[bridge] ${request.method} ${request.url}\n`, "info");
       handleHttpRequest(kernel!, bridge!, requestId, request, 8080);
     });
 
@@ -295,14 +362,14 @@ async function start() {
   }
 }
 
-async function loadFrame() {
-  try {
-    const resp = await fetch("/app/");
-    const html = await resp.text();
-    frame.srcdoc = html;
-  } catch (err) {
-    frame.srcdoc = `<p style="color:red;padding:1rem">Failed to load: ${err}</p>`;
-  }
+function loadFrame() {
+  // Replace the iframe entirely — removing srcdoc and setting src on the
+  // same element doesn't reliably trigger navigation in Chromium.
+  const next = document.createElement("iframe");
+  next.id = "frame";
+  next.src = "/app/";
+  frame.replaceWith(next);
+  frame = next;
 }
 
 async function registerServiceWorker(

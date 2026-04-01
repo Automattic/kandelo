@@ -29,7 +29,7 @@ const log = document.getElementById("log") as HTMLPreElement;
 const startBtn = document.getElementById("start") as HTMLButtonElement;
 const reloadBtn = document.getElementById("reload") as HTMLButtonElement;
 const statusDiv = document.getElementById("status") as HTMLDivElement;
-const frame = document.getElementById("frame") as HTMLIFrameElement;
+let frame = document.getElementById("frame") as HTMLIFrameElement;
 
 const decoder = new TextDecoder();
 
@@ -494,14 +494,12 @@ async function start() {
   }
 }
 
-async function loadFrame() {
-  try {
-    const resp = await fetch("/app/");
-    const html = await resp.text();
-    frame.srcdoc = html;
-  } catch (err) {
-    frame.srcdoc = `<p style="color:red;padding:1rem">Failed to load: ${err}</p>`;
-  }
+function loadFrame() {
+  const next = document.createElement("iframe");
+  next.id = "frame";
+  next.src = "/app/";
+  frame.replaceWith(next);
+  frame = next;
 }
 
 async function registerServiceWorker(

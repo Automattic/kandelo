@@ -19,7 +19,9 @@ sw.onmessage = (e: MessageEvent) => {
     },
   };
   if (data.type === "centralized_init") {
-    centralizedWorkerMain(port, e.data as CentralizedWorkerInitMessage);
+    centralizedWorkerMain(port, e.data as CentralizedWorkerInitMessage).catch((err) => {
+      console.error(`[worker-entry-browser] centralizedWorkerMain error pid=${(data as any).pid}:`, err);
+    });
   } else if (data.type === "centralized_thread_init") {
     centralizedThreadWorkerMain(port, e.data as CentralizedThreadInitMessage).catch((err) => {
       console.error(`[worker-entry-browser] centralizedThreadWorkerMain error:`, err);

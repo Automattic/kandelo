@@ -267,8 +267,6 @@ export async function centralizedWorkerMain(
 ): Promise<void> {
   try {
     const { memory, programBytes, channelOffset, pid } = initData;
-    // Debug logging removed — pollutes stdout/stderr for output-based tests
-
     const module = await WebAssembly.compile(programBytes);
     const kernelImports = buildKernelImports(
       memory, channelOffset, initData.argv || [], initData.env || [],

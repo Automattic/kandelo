@@ -49,7 +49,7 @@ export async function loadFiles(
       typeof file.data === "string"
         ? new TextEncoder().encode(file.data)
         : file.data!;
-    const fd = memfs.open(file.path, 0o101, file.mode ?? 0o644); // O_WRONLY | O_CREAT
+    const fd = memfs.open(file.path, 0o1101, file.mode ?? 0o644); // O_WRONLY | O_CREAT | O_TRUNC
     memfs.write(fd, data, 0, data.length);
     memfs.close(fd);
   }
@@ -68,7 +68,7 @@ export async function loadFiles(
 
     for (const { path, data, mode } of results) {
       ensureParentDirs(memfs, path);
-      const fd = memfs.open(path, 0o101, mode ?? 0o644);
+      const fd = memfs.open(path, 0o1101, mode ?? 0o644); // O_WRONLY | O_CREAT | O_TRUNC
       memfs.write(fd, data, 0, data.length);
       memfs.close(fd);
     }
@@ -145,7 +145,7 @@ function extractTar(
       // Regular file (type '0' or '\0')
       ensureParentDirs(memfs, filePath);
       const fileData = data.subarray(offset, offset + size);
-      const fd = memfs.open(filePath, 0o101, mode);
+      const fd = memfs.open(filePath, 0o1101, mode); // O_WRONLY | O_CREAT | O_TRUNC
       memfs.write(fd, fileData, 0, fileData.length);
       memfs.close(fd);
     }

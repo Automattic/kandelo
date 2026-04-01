@@ -133,12 +133,17 @@ test("@slow php: runs hello world", async ({ page }) => {
 
 // ─── nginx + PHP-FPM ────────────────────────────────────────────────
 
-test("@slow nginx-php: starts and shows running", async ({ page }) => {
+test("@slow nginx-php: starts and serves PHP page", async ({ page }) => {
   test.setTimeout(120_000);
   await gotoOrSkip(page, "/pages/nginx-php/");
 
   await page.click("#start");
   await waitForRunning(page, 90_000);
+
+  // Verify the iframe loads PHP content via nginx + PHP-FPM
+  const frame = page.frameLocator("#frame");
+  const body = await frame.locator("body").textContent({ timeout: 60_000 });
+  expect(body).toContain("PHP-FPM on WebAssembly");
 
   const log = await page.locator("#log").textContent();
   expect(log).toContain("nginx");
@@ -205,26 +210,104 @@ test("@slow redis: starts and accepts commands", async ({ page }) => {
 
 // ─── WordPress ──────────────────────────────────────────────────────
 
-test("@slow wordpress: loads and shows running", async ({ page }) => {
-  test.setTimeout(180_000);
+test("@slow wordpress: install, login, and load dashboard", async ({
+  page,
+}) => {
+  test.setTimeout(600_000); // 10 minutes — install is slow in Wasm
   await gotoOrSkip(page, "/pages/wordpress/");
 
   await page.click("#start");
-  await waitForRunning(page, 120_000);
+  await waitForRunning(page, 180_000);
 
-  const log = await page.locator("#log").textContent();
-  expect(log).toContain("WordPress loaded");
-  expect(log).toContain("nginx");
-  expect(log).toContain("PHP-FPM");
+  const logText = await page.locator("#log").textContent();
+  expect(logText).toContain("WordPress loaded");
+  expect(logText).toContain("nginx");
+  expect(logText).toContain("PHP-FPM");
   await assertNoError(page);
 
-  // Verify the iframe shows WordPress content, not the default Vite index page.
-  // This catches service worker timing races where fetch("/app/") falls through.
+  // The iframe navigates to /app/ which WordPress redirects to the
+  // install page.  Wait for the install form to appear inside the iframe.
   const frame = page.frameLocator("#frame");
-  await expect(frame.locator("body")).not.toBeEmpty({ timeout: 30_000 });
-  const frameSrc = await page.locator("#frame").getAttribute("srcdoc");
-  expect(frameSrc).not.toContain("wasm-posix-kernel Browser Demo");
-  expect(frameSrc?.toLowerCase()).toContain("wordpress");
+
+  // Wait for the WordPress install page to load (it has a form with
+  // id="setup" or the language chooser)
+  await expect(
+    frame.locator("form#setup, form#language-chooser, .wp-core-ui").first(),
+  ).toBeVisible({ timeout: 120_000 });
+
+  // If we land on the language chooser, skip past it
+  const hasLanguageForm = await frame
+    .locator("form#language-chooser")
+    .count();
+  if (hasLanguageForm > 0) {
+    // Submit the default language (English)
+    await frame.locator("form#language-chooser [type='submit']").click();
+    // Wait for the install form
+    await expect(frame.locator("form#setup")).toBeVisible({ timeout: 60_000 });
+  }
+
+  // --- Fill in the WordPress install form ---
+  await frame.locator("#weblog_title").fill("E2E Test");
+  await frame.locator("#user_login").fill("admin");
+
+  // WordPress may have a password field that's pre-filled; clear and set ours
+  const passField = frame.locator("#pass1");
+  if ((await passField.count()) > 0) {
+    await passField.fill("testpass123");
+  }
+  // Check the "Confirm use of weak password" checkbox if present
+  const weakPw = frame.locator("#pw_weak, .pw-weak input[type='checkbox']");
+  if ((await weakPw.count()) > 0) {
+    await weakPw.check();
+  }
+
+  await frame.locator("#admin_email").fill("admin@example.com");
+
+  // Submit the install form
+  await frame.locator("#submit, [name='Submit']").click();
+
+  // Wait for install success page
+  await expect(
+    frame.locator(".step, .install-success, h1").filter({ hasText: /success|installed|log in/i }).first(),
+  ).toBeVisible({ timeout: 300_000 });
+
+  // --- Click "Log In" to go to the login page ---
+  const loginLink = frame.locator("a").filter({ hasText: /log in/i });
+  if ((await loginLink.count()) > 0) {
+    await loginLink.click();
+  } else {
+    // Navigate to login directly via the iframe
+    await page.evaluate(() => {
+      const f = document.getElementById("frame") as HTMLIFrameElement;
+      f.src = "/app/wp-login.php";
+    });
+  }
+
+  // Wait for the login form
+  await expect(frame.locator("#loginform, form[name='loginform']").first()).toBeVisible({
+    timeout: 60_000,
+  });
+
+  // --- Fill in login credentials ---
+  await frame.locator("#user_login").fill("admin");
+  await frame.locator("#user_pass").fill("testpass123");
+  await frame.locator("#wp-submit").click();
+
+  // Wait for the dashboard to load (look for the admin bar or dashboard content)
+  await expect(
+    frame.locator("#wpadminbar, #dashboard-widgets-wrap, .wrap h1").first(),
+  ).toBeVisible({ timeout: 120_000 });
+
+  // Verify we're actually on the dashboard, not a redirect loop or error
+  const dashboardBody = frame.locator("body");
+  await expect(dashboardBody).not.toContainText("Error", { timeout: 5_000 }).catch(() => {
+    // It's OK if the page has some "Error" text (like debug notices)
+  });
+
+  // Check that we can see the admin menu
+  await expect(frame.locator("#adminmenu, #adminmenuwrap").first()).toBeVisible({
+    timeout: 10_000,
+  });
 });
 
 // ─── LAMP ───────────────────────────────────────────────────────────

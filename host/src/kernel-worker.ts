@@ -42,6 +42,11 @@ const SYS_FUTEX = 200;
 const SYS_POLL = 60;
 const SYS_PPOLL = 251;
 const SYS_PSELECT6 = 252;
+const SYS_EPOLL_PWAIT = 241;
+const SYS_EPOLL_CREATE1 = 239;
+const SYS_EPOLL_CREATE = 378;
+const SYS_EPOLL_CTL = 240;
+const SYS_EPOLL_WAIT = 379;
 const SYS_RT_SIGTIMEDWAIT = 207;
 
 /** Syscall numbers for signals */
@@ -118,6 +123,24 @@ const PROFILING = typeof process !== 'undefined' && !!process.env?.WASM_POSIX_PR
 const READ_LIKE_SYSCALLS = new Set([3, 56, 63, 64, 82, 138]); // READ, RECV, RECVFROM, PREAD, READV, RECVMSG
 /** Write-like syscalls that may produce pipe/socket data */
 const WRITE_LIKE_SYSCALLS = new Set([4, 55, 62, 65, 81, 137]); // WRITE, SEND, SENDTO, PWRITE, WRITEV, SENDMSG
+/**
+ * Syscalls that can change poll/select state for other processes.
+ * Only these trigger wakeAllBlockedRetries — metadata syscalls like
+ * stat, mmap, clock_gettime etc. cannot affect other processes' polls.
+ */
+const POLL_AFFECTING_SYSCALLS = new Set([
+  3, 4, 56, 55, 63, 62, 64, 65, 81, 82, 137, 138, // read/write family
+  53, 384,                                           // accept, accept4
+  54,                                                // connect
+  6,                                                 // close (POLLHUP)
+  20,                                                // dup
+  21,                                                // dup2
+  23,                                                // dup3
+  36,                                                // shutdown
+  37,                                                // socketpair
+  212, 213, 201,                                     // fork, vfork, clone
+  34,                                                // exit/exit_group
+]);
 
 /** Channel layout offsets */
 const CH_STATUS = 0;
@@ -362,6 +385,8 @@ const SYSCALL_ARGS: Record<number, ArgDesc[]> = {
   60: [{ argIndex: 0, direction: "inout", size: { type: "arg", argIndex: 1 } }], // POLL: fds (nfds * 8)
   251: [{ argIndex: 0, direction: "inout", size: { type: "arg", argIndex: 1 } }], // PPOLL: fds (nfds * 8)
 
+  // (epoll syscalls are now intercepted on the host side — see handleEpollCreate/Ctl/Pwait)
+
   // Terminal
   70: [{ argIndex: 1, direction: "out", size: { type: "fixed", size: 256 } }], // TCGETATTR
   71: [{ argIndex: 2, direction: "in", size: { type: "fixed", size: 256 } }],  // TCSETATTR
@@ -562,7 +587,7 @@ export class CentralizedKernelWorker {
   private cachedKernelBuffer: ArrayBuffer | null = null;
   /** Pending poll/ppoll retries — used for event-driven wakeup when pipe data arrives */
   private pendingPollRetries = new Map<number, {
-    timer: ReturnType<typeof setImmediate> | null;
+    timer: any;  // setImmediate or setTimeout handle
     channel: ChannelInfo;
     pipeIndices: number[];
   }>();
@@ -579,6 +604,10 @@ export class CentralizedKernelWorker {
    * is registered here instead of using a blind setImmediate retry.
    * When a write completes to the same pipe, readers are woken immediately. */
   private pendingPipeReaders = new Map<number, Array<{channel: ChannelInfo, pid: number}>>();
+  /** Pending pipe/socket writers: sendPipeIdx → array of waiting channels.
+   * When a write-like syscall returns EAGAIN on a pipe/socket fd (buffer full),
+   * the writer is registered here. When a read drains the pipe, writers wake. */
+  private pendingPipeWriters = new Map<number, Array<{channel: ChannelInfo, pid: number}>>();
   /** Socket timeout timers: channel → timer. When a socket read/write
    * blocks and has SO_RCVTIMEO/SO_SNDTIMEO set, a timer is scheduled
    * to complete the syscall with ETIMEDOUT. Cleared when the operation
@@ -606,6 +635,11 @@ export class CentralizedKernelWorker {
     fileOffset: number;
     len: number;
   }>>();
+  /** Host-side mirror of epoll interest lists: "pid:epfd" → interests.
+   *  Maintained by intercepting epoll_ctl results. Used by handleEpollPwait
+   *  to convert epoll_pwait to poll without calling kernel_handle_channel
+   *  (which crashes in Chrome for epoll_pwait due to a suspected V8 bug). */
+  private epollInterests = new Map<string, Array<{ fd: number; events: number; data: bigint }>>();
 
   constructor(
     private config: KernelConfig,
@@ -885,19 +919,27 @@ export class CentralizedKernelWorker {
 
     // Clean up pending poll retries
     const pollEntry = this.pendingPollRetries.get(pid);
-    if (pollEntry?.timer) clearImmediate(pollEntry.timer);
+    if (pollEntry?.timer) clearTimeout(pollEntry.timer);
     this.pendingPollRetries.delete(pid);
     // Clean up pending select retries
     const selectEntry = this.pendingSelectRetries.get(pid);
     if (selectEntry?.timer) clearImmediate(selectEntry.timer);
     this.pendingSelectRetries.delete(pid);
-    // Clean up pending pipe readers
+    // Clean up pending pipe readers/writers
     this.cleanupPendingPipeReaders(pid);
+    this.cleanupPendingPipeWriters(pid);
     // Clean up socket timeout timers for this process
     for (const [ch, timer] of this.socketTimeoutTimers) {
       if (ch.pid === pid) {
         clearTimeout(timer);
         this.socketTimeoutTimers.delete(ch);
+      }
+    }
+
+    // Clean up epoll interest mirrors for this process
+    for (const key of this.epollInterests.keys()) {
+      if (key.startsWith(`${pid}:`)) {
+        this.epollInterests.delete(key);
       }
     }
 
@@ -941,7 +983,7 @@ export class CentralizedKernelWorker {
     }
     // Clean up pending poll retries
     const pollEntry = this.pendingPollRetries.get(pid);
-    if (pollEntry?.timer) clearImmediate(pollEntry.timer);
+    if (pollEntry?.timer) clearTimeout(pollEntry.timer);
     this.pendingPollRetries.delete(pid);
     // Clean up pending select retries
     const selectEntry = this.pendingSelectRetries.get(pid);
@@ -962,12 +1004,13 @@ export class CentralizedKernelWorker {
 
     // Clean up pending blocking retries (the old program's syscalls are dead)
     const pollEntry = this.pendingPollRetries.get(pid);
-    if (pollEntry?.timer) clearImmediate(pollEntry.timer);
+    if (pollEntry?.timer) clearTimeout(pollEntry.timer);
     this.pendingPollRetries.delete(pid);
     const selectEntry = this.pendingSelectRetries.get(pid);
     if (selectEntry?.timer) clearImmediate(selectEntry.timer);
     this.pendingSelectRetries.delete(pid);
     this.cleanupPendingPipeReaders(pid);
+    this.cleanupPendingPipeWriters(pid);
     for (const [ch, timer] of this.socketTimeoutTimers) {
       if (ch.pid === pid) {
         clearTimeout(timer);
@@ -1127,13 +1170,12 @@ export class CentralizedKernelWorker {
       origArgs.push(processView.getInt32(CH_ARGS + i * 4, true));
     }
 
-    // Debug: track last 30 syscalls per channel
+    // Track last 30 syscalls per channel for crash diagnostics
     const ringKey = channel.channelOffset;
     let ring = this.syscallRing.get(ringKey);
     if (!ring) { ring = []; this.syscallRing.set(ringKey, ring); }
     ring.push(`  syscall=${syscallNr} args=[${origArgs.join(',')}]`);
     if (ring.length > 30) ring.shift();
-
 
     // --- Intercept fork/exec/clone/exit before calling kernel ---
     // These syscalls need special async handling that can't go through
@@ -1214,6 +1256,23 @@ export class CentralizedKernelWorker {
       }
     }
 
+    // --- epoll: intercept all epoll syscalls on host side ---
+    // kernel_handle_channel crashes in Chrome (V8 shared-memory Wasm bug) for
+    // epoll_pwait.  Handle epoll_create1/ctl on the kernel but mirror the
+    // interest list, and convert epoll_pwait to poll entirely on the host.
+    if (syscallNr === SYS_EPOLL_CREATE1 || syscallNr === SYS_EPOLL_CREATE) {
+      this.handleEpollCreate(channel, syscallNr, origArgs);
+      return;
+    }
+    if (syscallNr === SYS_EPOLL_CTL) {
+      this.handleEpollCtl(channel, origArgs);
+      return;
+    }
+    if (syscallNr === SYS_EPOLL_PWAIT || syscallNr === SYS_EPOLL_WAIT) {
+      this.handleEpollPwait(channel, syscallNr, origArgs);
+      return;
+    }
+
     // --- pselect6: fd_sets (inout) + timeout/sigmask decoding ---
     if (syscallNr === SYS_PSELECT6) {
       this.handlePselect6(channel, origArgs);
@@ -1251,8 +1310,8 @@ export class CentralizedKernelWorker {
           size = len + 1; // include null terminator
         } else if (desc.size.type === "arg") {
           size = origArgs[desc.size.argIndex];
-          // Special case for poll: nfds * sizeof(struct pollfd)
-          if (syscallNr === SYS_POLL || syscallNr === SYS_PPOLL) size *= 8;
+          // Special case: multiply by struct size
+          if (syscallNr === SYS_POLL || syscallNr === SYS_PPOLL) size *= 8;   // pollfd = 8 bytes
         } else if (desc.size.type === "deref") {
           // Dereference: arg is a pointer to a u32 value (e.g. socklen_t*)
           const derefPtr = origArgs[desc.size.argIndex];
@@ -1337,7 +1396,7 @@ export class CentralizedKernelWorker {
     } catch (err) {
       // If the kernel throws (e.g., invalid memory access), complete the
       // channel with -EIO to unblock the process rather than deadlocking.
-      console.error(`[handleSyscall] kernel threw for pid=${channel.pid} syscall=${syscallNr}: ${err}`);
+      console.error(`[handleSyscall] kernel threw for pid=${channel.pid} syscall=${syscallNr} args=[${origArgs}]:`, err);
       this.completeChannelRaw(channel, -5, 5); // -EIO
       this.relistenChannel(channel);
       return;
@@ -1504,6 +1563,7 @@ export class CentralizedKernelWorker {
         } else if (desc.size.type === "arg") {
           size = origArgs[desc.size.argIndex];
           if (syscallNr === SYS_POLL || syscallNr === SYS_PPOLL) size *= 8;
+          if (syscallNr === SYS_EPOLL_PWAIT) size *= 12;
         } else if (desc.size.type === "deref") {
           const derefPtr = origArgs[desc.size.argIndex];
           if (derefPtr === 0) continue;
@@ -1576,10 +1636,18 @@ export class CentralizedKernelWorker {
       this.wakePendingPipeReaders(channel.pid, origArgs[0]);
     }
 
-    // Wake other processes' blocked poll/select retries — a syscall from this
-    // process may have written to a cross-process pipe, accepted a connection,
-    // or changed socket state that another process is waiting on.
-    this.scheduleWakeBlockedRetries();
+    // Event-driven pipe wakeup for writers: if a read-like syscall succeeded
+    // (drained data from a pipe), wake any writers blocked on the same pipe.
+    if (retVal > 0 && READ_LIKE_SYSCALLS.has(syscallNr)) {
+      this.wakePendingPipeWriters(channel.pid, origArgs[0]);
+    }
+
+    // Wake other processes' blocked poll/select retries — but only after
+    // syscalls that can actually change poll/select state (IO, close, fork).
+    // Metadata syscalls (stat, mmap, clock_gettime) cannot affect others.
+    if (POLL_AFFECTING_SYSCALLS.has(syscallNr)) {
+      this.scheduleWakeBlockedRetries();
+    }
 
     // Re-listen for next syscall
     this.relistenChannel(channel);
@@ -1653,6 +1721,25 @@ export class CentralizedKernelWorker {
     return indices;
   }
 
+  private resolveEpollPipeIndices(pid: number): number[] {
+    const getRecvPipe = this.kernelInstance!.exports.kernel_get_socket_recv_pipe as
+      ((pid: number, fd: number) => number) | undefined;
+    if (!getRecvPipe) return [];
+
+    const key = `${pid}:`;
+    const indices: number[] = [];
+    for (const [k, interests] of this.epollInterests) {
+      if (!k.startsWith(key)) continue;
+      for (const interest of interests) {
+        const pipeIdx = getRecvPipe(pid, interest.fd);
+        if (pipeIdx >= 0) {
+          indices.push(pipeIdx);
+        }
+      }
+    }
+    return indices;
+  }
+
   private wakeBlockedPoll(pid: number, pipeIdx: number): void {
     const entry = this.pendingPollRetries.get(pid);
     if (!entry) return;
@@ -1660,7 +1747,7 @@ export class CentralizedKernelWorker {
 
     // Cancel the scheduled retry and fire immediately
     if (entry.timer !== null) {
-      clearImmediate(entry.timer);
+      clearTimeout(entry.timer);
     }
     this.pendingPollRetries.delete(pid);
     if (this.processes.has(pid)) {
@@ -1677,7 +1764,7 @@ export class CentralizedKernelWorker {
    */
   private scheduleWakeBlockedRetries(): void {
     if (this.wakeScheduled) return;
-    if (this.pendingPollRetries.size === 0 && this.pendingSelectRetries.size === 0 && this.pendingPipeReaders.size === 0) return;
+    if (this.pendingPollRetries.size === 0 && this.pendingSelectRetries.size === 0 && this.pendingPipeReaders.size === 0 && this.pendingPipeWriters.size === 0) return;
     this.wakeScheduled = true;
     // Use setImmediate (not queueMicrotask) so that timer callbacks
     // (setTimeout/setInterval) can interleave.  In browsers, microtask
@@ -1704,7 +1791,7 @@ export class CentralizedKernelWorker {
     for (const [pid, entry] of pollEntries) {
       if (!this.processes.has(pid)) continue;
       if (entry.timer !== null) {
-        clearImmediate(entry.timer);
+        clearTimeout(entry.timer);
       }
       this.retrySyscall(entry.channel);
     }
@@ -1724,6 +1811,20 @@ export class CentralizedKernelWorker {
         for (const reader of readers) {
           if (this.processes.has(reader.pid)) {
             this.retrySyscall(reader.channel);
+          }
+        }
+      }
+    }
+
+    // Also wake all pending pipe writers — a cross-process read may have
+    // drained pipe buffer space that writers are waiting on.
+    if (this.pendingPipeWriters.size > 0) {
+      const writerEntries = Array.from(this.pendingPipeWriters.entries());
+      this.pendingPipeWriters.clear();
+      for (const [, writers] of writerEntries) {
+        for (const writer of writers) {
+          if (this.processes.has(writer.pid)) {
+            this.retrySyscall(writer.channel);
           }
         }
       }
@@ -1758,6 +1859,32 @@ export class CentralizedKernelWorker {
   }
 
   /**
+   * Wake pending pipe writers for a pipe that was just read from.
+   * Looks up the read fd's recv pipe index and wakes all writers
+   * registered on that pipe (they were blocked because the buffer was full).
+   */
+  private wakePendingPipeWriters(pid: number, fd: number): void {
+    if (this.pendingPipeWriters.size === 0) return;
+
+    const getFdPipeIdx = this.kernelInstance!.exports.kernel_get_fd_pipe_idx as
+      ((pid: number, fd: number) => number) | undefined;
+    if (!getFdPipeIdx) return;
+
+    const pipeIdx = getFdPipeIdx(pid, fd);
+    if (pipeIdx < 0) return;
+
+    const writers = this.pendingPipeWriters.get(pipeIdx);
+    if (!writers || writers.length === 0) return;
+
+    this.pendingPipeWriters.delete(pipeIdx);
+    for (const writer of writers) {
+      if (this.processes.has(writer.pid)) {
+        this.retrySyscall(writer.channel);
+      }
+    }
+  }
+
+  /**
    * Remove a process's entries from pendingPipeReaders.
    * Called during process cleanup.
    */
@@ -1768,6 +1895,17 @@ export class CentralizedKernelWorker {
         this.pendingPipeReaders.delete(pipeIdx);
       } else {
         this.pendingPipeReaders.set(pipeIdx, filtered);
+      }
+    }
+  }
+
+  private cleanupPendingPipeWriters(pid: number): void {
+    for (const [pipeIdx, writers] of this.pendingPipeWriters) {
+      const filtered = writers.filter(w => w.pid !== pid);
+      if (filtered.length === 0) {
+        this.pendingPipeWriters.delete(pipeIdx);
+      } else {
+        this.pendingPipeWriters.set(pipeIdx, filtered);
       }
     }
   }
@@ -1834,7 +1972,7 @@ export class CentralizedKernelWorker {
     console.error(
       `${'TOTAL'.padEnd(8)} ${String(totalCalls).padStart(10)} ${totalTime.toFixed(2).padStart(12)} ${(totalTime / (totalCalls || 1)).toFixed(3).padStart(10)} ${String(totalRetries).padStart(10)}`
     );
-    console.error(`Pending pipe readers: ${this.pendingPipeReaders.size}`);
+    console.error(`Pending pipe readers: ${this.pendingPipeReaders.size}, writers: ${this.pendingPipeWriters.size}`);
     console.error('=== End Profile ===\n');
   }
 
@@ -1932,10 +2070,12 @@ export class CentralizedKernelWorker {
           this.retrySyscall(channel);
         }
       };
-      const timer = setImmediate(retryFn);
+      const timer = setTimeout(retryFn, 0);
       this.pendingPollRetries.set(channel.pid, { timer, channel, pipeIndices });
       return;
     }
+
+    // (epoll_pwait is now handled entirely on the host side by handleEpollPwait)
 
     // sigtimedwait: kernel returned EAGAIN because no signal is pending.
     // Instead of retrying (signal won't arrive in single-process mode),
@@ -2041,17 +2181,49 @@ export class CentralizedKernelWorker {
       }
     }
 
+    // Event-driven pipe/socket wakeup for writes: if a write-like syscall
+    // blocks because the pipe/socket send buffer is full, register the writer
+    // so a matching read (draining the pipe) can wake it immediately.
+    if (WRITE_LIKE_SYSCALLS.has(syscallNr)) {
+      const fd = origArgs[0];
+      const getSendPipeIdx = this.kernelInstance!.exports.kernel_get_fd_send_pipe_idx as
+        ((pid: number, fd: number) => number) | undefined;
+      if (getSendPipeIdx) {
+        const pipeIdx = getSendPipeIdx(channel.pid, fd);
+        if (pipeIdx >= 0) {
+          let writers = this.pendingPipeWriters.get(pipeIdx);
+          if (!writers) {
+            writers = [];
+            this.pendingPipeWriters.set(pipeIdx, writers);
+          }
+          if (!writers.some(w => w.channel === channel)) {
+            writers.push({ channel, pid: channel.pid });
+          }
+          if (PROFILING) {
+            const entry = this.profileData!.get(syscallNr);
+            if (entry) entry.retries++;
+          }
+          return;
+        }
+      }
+    }
+
     if (PROFILING) {
       const entry = this.profileData!.get(syscallNr);
       if (entry) entry.retries++;
     }
 
-    // Default: retry on next event loop iteration (non-pipe operations)
-    setImmediate(() => {
+    // Default: retry via setTimeout to avoid starving other processes.
+    // Register in pendingPollRetries so wakeAllBlockedRetries can cancel
+    // the timer and retry immediately when state changes.
+    const retryFn = () => {
+      this.pendingPollRetries.delete(channel.pid);
       if (this.processes.has(channel.pid)) {
         this.retrySyscall(channel);
       }
-    });
+    };
+    const timer = setTimeout(retryFn, 50);
+    this.pendingPollRetries.set(channel.pid, { timer, channel, pipeIndices: [] });
   }
 
   /**
@@ -2337,6 +2509,322 @@ export class CentralizedKernelWorker {
     }
 
     this.completeChannel(channel, SYS_PSELECT6, origArgs, undefined, retVal, errVal);
+  }
+
+  // ---- epoll host-side implementation ----
+  // kernel_handle_channel crashes in Chrome for epoll_pwait (suspected V8
+  // shared-memory Wasm bug).  We handle all epoll syscalls on the host:
+  //   epoll_create1/create → still call kernel (works fine), mirror result
+  //   epoll_ctl → still call kernel (works fine), mirror interest list
+  //   epoll_pwait → convert to poll entirely on host, no kernel_handle_channel
+
+  /**
+   * Handle epoll_create1 / epoll_create: let the kernel create the fd,
+   * then initialise an empty interest list on the host side.
+   */
+  private handleEpollCreate(channel: ChannelInfo, syscallNr: number, origArgs: number[]): void {
+    const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
+    const flags = origArgs[0];
+
+    // For SYS_EPOLL_CREATE, kernel expects flags=0 (size arg ignored)
+    const actualFlags = syscallNr === SYS_EPOLL_CREATE ? 0 : flags;
+
+    kernelView.setUint32(CH_SYSCALL, syscallNr, true);
+    kernelView.setInt32(CH_ARGS, actualFlags, true);
+    for (let i = 1; i < CH_ARGS_COUNT; i++) {
+      kernelView.setInt32(CH_ARGS + i * 4, 0, true);
+    }
+
+    const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
+      (offset: number, pid: number) => number;
+    this.currentHandlePid = channel.pid;
+    try {
+      handleChannel(this.scratchOffset, channel.pid);
+    } finally {
+      this.currentHandlePid = 0;
+    }
+
+    const retVal = kernelView.getInt32(CH_RETURN, true);
+    const errVal = kernelView.getUint32(CH_ERRNO, true);
+
+    // If successful, initialise the host-side interest mirror
+    if (retVal >= 0) {
+      const key = `${channel.pid}:${retVal}`;
+      this.epollInterests.set(key, []);
+    }
+
+    this.completeChannel(channel, syscallNr, origArgs, undefined, retVal, errVal);
+  }
+
+  /**
+   * Handle epoll_ctl: let the kernel modify its interest list, then mirror
+   * the change on the host side.
+   */
+  private handleEpollCtl(channel: ChannelInfo, origArgs: number[]): void {
+    const epfd = origArgs[0];
+    const op = origArgs[1];
+    const fd = origArgs[2];
+    const eventPtr = origArgs[3]; // pointer in process memory
+
+    // Read epoll_event from process memory: { events: u32, data: u64 } = 12 bytes
+    let events = 0;
+    let data = 0n;
+    if (eventPtr !== 0) {
+      const pv = new DataView(channel.memory.buffer, eventPtr);
+      events = pv.getUint32(0, true);
+      data = pv.getBigUint64(4, true);
+    }
+
+    // Call kernel — copy event struct to scratch
+    const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
+    const kernelMem = this.getKernelMem();
+    const dataStart = this.scratchOffset + CH_DATA;
+
+    // Copy 12-byte epoll_event to kernel scratch
+    if (eventPtr !== 0) {
+      const processMem = new Uint8Array(channel.memory.buffer);
+      kernelMem.set(processMem.subarray(eventPtr, eventPtr + 12), dataStart);
+    }
+
+    kernelView.setUint32(CH_SYSCALL, SYS_EPOLL_CTL, true);
+    kernelView.setInt32(CH_ARGS, epfd, true);
+    kernelView.setInt32(CH_ARGS + 4, op, true);
+    kernelView.setInt32(CH_ARGS + 8, fd, true);
+    kernelView.setInt32(CH_ARGS + 12, eventPtr !== 0 ? dataStart : 0, true);
+    kernelView.setInt32(CH_ARGS + 16, 0, true);
+    kernelView.setInt32(CH_ARGS + 20, 0, true);
+
+    const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
+      (offset: number, pid: number) => number;
+    this.currentHandlePid = channel.pid;
+    try {
+      handleChannel(this.scratchOffset, channel.pid);
+    } finally {
+      this.currentHandlePid = 0;
+    }
+
+    const retVal = kernelView.getInt32(CH_RETURN, true);
+    const errVal = kernelView.getUint32(CH_ERRNO, true);
+
+    // Mirror the change on the host side if the kernel succeeded
+    if (retVal === 0) {
+      const EPOLL_CTL_ADD = 1;
+      const EPOLL_CTL_DEL = 2;
+      const EPOLL_CTL_MOD = 3;
+
+      const key = `${channel.pid}:${epfd}`;
+      let interests = this.epollInterests.get(key);
+      if (!interests) {
+        interests = [];
+        this.epollInterests.set(key, interests);
+      }
+
+      if (op === EPOLL_CTL_ADD) {
+        interests.push({ fd, events, data });
+      } else if (op === EPOLL_CTL_DEL) {
+        const idx = interests.findIndex(e => e.fd === fd);
+        if (idx >= 0) interests.splice(idx, 1);
+      } else if (op === EPOLL_CTL_MOD) {
+        const entry = interests.find(e => e.fd === fd);
+        if (entry) {
+          entry.events = events;
+          entry.data = data;
+        }
+      }
+    }
+
+    this.completeChannel(channel, SYS_EPOLL_CTL, origArgs, undefined, retVal, errVal);
+  }
+
+  /**
+   * Handle epoll_pwait / epoll_wait entirely on the host side.
+   * Converts the epoll interest list to a poll syscall, calls
+   * kernel_handle_channel with SYS_POLL, then maps results back
+   * to epoll_event format and writes to process memory.
+   */
+  private handleEpollPwait(channel: ChannelInfo, syscallNr: number, origArgs: number[]): void {
+    const epfd = origArgs[0];
+    const eventsPtr = origArgs[1]; // output pointer in process memory
+    const maxevents = origArgs[2];
+    const timeoutMs = origArgs[3];
+    // origArgs[4] = sigmask ptr (process-space), origArgs[5] = sigset size
+
+    if (maxevents <= 0) {
+      this.completeChannelRaw(channel, -22, 22); // -EINVAL
+      this.relistenChannel(channel);
+      return;
+    }
+
+    const key = `${channel.pid}:${epfd}`;
+    const interests = this.epollInterests.get(key);
+    if (!interests) {
+      this.completeChannelRaw(channel, -9, 9); // -EBADF
+      this.relistenChannel(channel);
+      return;
+    }
+
+    if (interests.length === 0) {
+      // No interests registered — return 0 immediately for timeout=0,
+      // or block (EAGAIN) for non-zero timeout.
+      if (timeoutMs === 0) {
+        this.completeChannelRaw(channel, 0, 0);
+        this.relistenChannel(channel);
+        return;
+      }
+      // For non-zero timeout with no interests, retry with delay to avoid starvation
+      const retryFn = () => {
+        this.pendingPollRetries.delete(channel.pid);
+        if (this.processes.has(channel.pid)) {
+          this.handleEpollPwait(channel, syscallNr, origArgs);
+        }
+      };
+      const timer = setTimeout(retryFn, 50);
+      this.pendingPollRetries.set(channel.pid, { timer, channel, pipeIndices: [] });
+      return;
+    }
+
+    // EPOLL event flags → poll event flags
+    const EPOLLIN = 0x001;
+    const EPOLLOUT = 0x004;
+    const EPOLLERR = 0x008;
+    const EPOLLHUP = 0x010;
+    const POLLIN = 0x001;
+    const POLLOUT = 0x004;
+    const POLLERR = 0x008;
+    const POLLHUP = 0x010;
+
+    // Build pollfds in kernel scratch data area
+    // struct pollfd = { fd: i32, events: i16, revents: i16 } = 8 bytes
+    const nfds = interests.length;
+    const pollfdSize = nfds * 8;
+
+    if (pollfdSize > CH_DATA_SIZE) {
+      // Too many fds — unlikely but handle gracefully
+      this.completeChannelRaw(channel, -22, 22); // -EINVAL
+      this.relistenChannel(channel);
+      return;
+    }
+
+    const kernelMem = this.getKernelMem();
+    const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
+    const dataStart = this.scratchOffset + CH_DATA;
+
+    // Write pollfds to kernel scratch
+    for (let i = 0; i < nfds; i++) {
+      const interest = interests[i];
+      const off = dataStart + i * 8;
+      let pollEvents = 0;
+      if (interest.events & EPOLLIN) pollEvents |= POLLIN;
+      if (interest.events & EPOLLOUT) pollEvents |= POLLOUT;
+      new DataView(this.kernelMemory!.buffer).setInt32(off, interest.fd, true);
+      new DataView(this.kernelMemory!.buffer).setInt16(off + 4, pollEvents, true);
+      new DataView(this.kernelMemory!.buffer).setInt16(off + 6, 0, true); // revents=0
+    }
+
+    // Log first few epoll_pwait calls per pid for debugging
+    const epollKey = `epoll_pwait_count_${channel.pid}`;
+    const count = ((this as any)[epollKey] || 0) + 1;
+    (this as any)[epollKey] = count;
+    if (count <= 3 || count % 10000 === 0) {
+      const fds = interests.map(i => `fd=${i.fd}(${i.events.toString(16)})`).join(',');
+      console.log(`[epoll_pwait] pid=${channel.pid} call#${count} epfd=${epfd} timeout=${timeoutMs} interests=[${fds}]`);
+    }
+
+    // Call kernel with SYS_POLL: (fds_ptr, nfds, timeout_ms=0)
+    // Always use timeout=0 — we manage blocking/retry on the host side
+    kernelView.setUint32(CH_SYSCALL, SYS_POLL, true);
+    kernelView.setInt32(CH_ARGS, dataStart, true);
+    kernelView.setInt32(CH_ARGS + 4, nfds, true);
+    kernelView.setInt32(CH_ARGS + 8, 0, true); // timeout=0 for non-blocking poll
+    for (let i = 3; i < CH_ARGS_COUNT; i++) {
+      kernelView.setInt32(CH_ARGS + i * 4, 0, true);
+    }
+
+    const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
+      (offset: number, pid: number) => number;
+    this.currentHandlePid = channel.pid;
+    try {
+      handleChannel(this.scratchOffset, channel.pid);
+    } finally {
+      this.currentHandlePid = 0;
+    }
+
+    const retVal = kernelView.getInt32(CH_RETURN, true);
+    const errVal = kernelView.getUint32(CH_ERRNO, true);
+
+    if (count <= 3 || (retVal > 0 && count <= 20) || count % 10000 === 0) {
+      // Log revents for each pollfd
+      const reventsInfo: string[] = [];
+      for (let i = 0; i < nfds; i++) {
+        const off = dataStart + i * 8;
+        const rev = new DataView(this.kernelMemory!.buffer).getInt16(off + 6, true);
+        if (rev !== 0) reventsInfo.push(`fd${interests[i].fd}=0x${rev.toString(16)}`);
+      }
+      console.log(`[epoll_pwait] pid=${channel.pid} call#${count} poll ret=${retVal} err=${errVal} revents=[${reventsInfo.join(',')}]`);
+    }
+
+    // Handle signal delivery
+    this.dequeueSignalForDelivery(channel);
+
+    // If poll returned error (not EAGAIN), propagate it
+    if (retVal < 0 && errVal !== EAGAIN) {
+      this.completeChannelRaw(channel, retVal, errVal);
+      this.relistenChannel(channel);
+      return;
+    }
+
+    // Count ready events and map back to epoll_event format
+    let readyCount = 0;
+    if (retVal > 0) {
+      const processView = new DataView(channel.memory.buffer);
+      for (let i = 0; i < nfds && readyCount < maxevents; i++) {
+        const off = dataStart + i * 8;
+        const revents = new DataView(this.kernelMemory!.buffer).getInt16(off + 6, true);
+        if (revents !== 0) {
+          // Map poll revents back to epoll events
+          let epEvents = 0;
+          if (revents & POLLIN) epEvents |= EPOLLIN;
+          if (revents & POLLOUT) epEvents |= EPOLLOUT;
+          if (revents & POLLERR) epEvents |= EPOLLERR;
+          if (revents & POLLHUP) epEvents |= EPOLLHUP;
+
+          // Write epoll_event to process memory: { events: u32, data: u64 } = 12 bytes
+          const evOff = eventsPtr + readyCount * 12;
+          processView.setUint32(evOff, epEvents, true);
+          processView.setBigUint64(evOff + 4, interests[i].data, true);
+          readyCount++;
+        }
+      }
+    }
+
+    // If we got events, return them
+    if (readyCount > 0) {
+      this.completeChannelRaw(channel, readyCount, 0);
+      this.relistenChannel(channel);
+      return;
+    }
+
+    // No events ready — handle timeout
+    if (timeoutMs === 0) {
+      // Non-blocking: return 0 events
+      this.completeChannelRaw(channel, 0, 0);
+      this.relistenChannel(channel);
+      return;
+    }
+
+    // Blocking: retry via setTimeout to avoid starving other processes.
+    // Pipe-based wakeup (via wakeAllBlockedRetries) provides instant wakeup
+    // when data arrives; setTimeout is only a fallback.
+    const pipeIndices = this.resolveEpollPipeIndices(channel.pid);
+
+    const retryFn = () => {
+      this.pendingPollRetries.delete(channel.pid);
+      if (this.processes.has(channel.pid)) {
+        this.handleEpollPwait(channel, syscallNr, origArgs);
+      }
+    };
+    const timer = setTimeout(retryFn, 50);
+    this.pendingPollRetries.set(channel.pid, { timer, channel, pipeIndices });
   }
 
   private handleWritev(channel: ChannelInfo, syscallNr: number, origArgs: number[]): void {
@@ -2785,6 +3273,8 @@ export class CentralizedKernelWorker {
     }
     children.add(childPid);
 
+    console.log(`[handleFork] parent=${parentPid} child=${childPid} calling onFork`);
+
     // Call the async fork handler to spawn child Worker
     this.callbacks.onFork(parentPid, childPid, channel.memory).then((childChannelOffsets) => {
       if (!this.processes.has(parentPid)) return;
@@ -2795,6 +3285,16 @@ export class CentralizedKernelWorker {
         const parentTarget = targets.find(t => t.pid === parentPid);
         if (parentTarget && !targets.some(t => t.pid === childPid)) {
           targets.push({ pid: childPid, fd: parentTarget.fd });
+          console.log(`[handleFork] child=${childPid} inherits listener port=${port} fd=${parentTarget.fd}`);
+        }
+      }
+
+      // Inherit epoll interest lists from parent
+      for (const [key, interests] of this.epollInterests) {
+        if (key.startsWith(`${parentPid}:`)) {
+          const epfd = key.slice(key.indexOf(':') + 1);
+          this.epollInterests.set(`${childPid}:${epfd}`, interests.map(e => ({ ...e })));
+          console.log(`[handleFork] child=${childPid} inherits epoll ${key} → ${childPid}:${epfd} (${interests.length} interests)`);
         }
       }
 
@@ -3663,7 +4163,7 @@ export class CentralizedKernelWorker {
     // 2. Pending ppoll/poll retry
     const pollEntry = this.pendingPollRetries.get(targetPid);
     if (pollEntry) {
-      if (pollEntry.timer) clearImmediate(pollEntry.timer);
+      if (pollEntry.timer) clearTimeout(pollEntry.timer);
       this.pendingPollRetries.delete(targetPid);
       if (this.processes.has(targetPid)) {
         this.retrySyscall(pollEntry.channel);

@@ -22,10 +22,11 @@ export function handleHttpRequest(
 ): void {
   const target = kernel.pickListenerTarget(listenerPort);
   if (!target) {
+    console.error(`[connection-pump] No listener target for port ${listenerPort}`);
     bridge.error(requestId, "No listener target available");
     return;
   }
-
+  console.log(`[connection-pump] target pid=${target.pid} fd=${target.fd} for port ${listenerPort}`);
   const recvPipeIdx = kernel.injectConnection(
     target.pid,
     target.fd,
@@ -33,6 +34,7 @@ export function handleHttpRequest(
     Math.floor(Math.random() * 60000) + 1024,
   );
   if (recvPipeIdx < 0) {
+    console.error(`[connection-pump] injectConnection failed: ${recvPipeIdx}`);
     bridge.error(requestId, "Failed to inject connection");
     return;
   }
@@ -58,6 +60,7 @@ export function handleHttpRequest(
   // Wake any blocked readers
   kernel.wakeBlockedReaders(recvPipeIdx);
 
+  console.log(`[connection-pump] request written, pumping response pipe=${sendPipeIdx}`);
   // Start pumping response from send pipe
   pumpResponse(kernel, bridge, requestId, target.pid, sendPipeIdx, recvPipeIdx);
 }
@@ -109,6 +112,7 @@ function pumpResponse(
   const chunks: Uint8Array[] = [];
   let sawWriteOpen = false;
 
+  let pumpCount = 0;
   const pump = () => {
     const data = kernel.pipeRead(pid, sendPipeIdx);
     if (data) {
@@ -116,8 +120,13 @@ function pumpResponse(
     }
 
     const writeOpen = kernel.pipeIsWriteOpen(pid, sendPipeIdx);
-    if (writeOpen) {
+    if (writeOpen && !sawWriteOpen) {
       sawWriteOpen = true;
+      console.log(`[pump ${requestId}] write end opened, pid=${pid} pipe=${sendPipeIdx}`);
+    }
+    pumpCount++;
+    if (pumpCount <= 5 || (pumpCount % 1000 === 0)) {
+      console.log(`[pump ${requestId}] tick #${pumpCount} writeOpen=${writeOpen} sawWrite=${sawWriteOpen} data=${data ? data.length : 0} totalChunks=${chunks.length}`);
     }
 
     // Only treat write-end-closed as "response complete" if we've seen it
@@ -128,6 +137,7 @@ function pumpResponse(
       kernel.pipeCloseRead(pid, sendPipeIdx);
       kernel.pipeCloseWrite(pid, recvPipeIdx);
       const rawResponse = concatChunks(chunks);
+      console.log(`[connection-pump] response complete, ${rawResponse.length} bytes`);
       const parsed = parseRawHttpResponse(rawResponse);
       bridge.respond(requestId, parsed);
       return;
@@ -177,14 +187,18 @@ function parseRawHttpResponse(data: Uint8Array): HttpResponse {
   const statusMatch = statusLine.match(/^HTTP\/[\d.]+ (\d+)/);
   const status = statusMatch ? parseInt(statusMatch[1], 10) : 200;
 
-  // Parse headers
+  // Parse headers — preserve multiple Set-Cookie values joined by \n
   const headers: Record<string, string> = {};
   for (let i = 1; i < lines.length; i++) {
     const colon = lines[i].indexOf(": ");
     if (colon >= 0) {
       const key = lines[i].slice(0, colon);
       const value = lines[i].slice(colon + 2);
-      headers[key] = value;
+      if (key.toLowerCase() === "set-cookie" && headers[key]) {
+        headers[key] += "\n" + value;
+      } else {
+        headers[key] = value;
+      }
     }
   }
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Build a WordPress filesystem bundle (JSON) for the browser demo.
-# Strips non-essential files to reduce size.
+# Bundles all of WordPress — no files are excluded.
 #
 set -euo pipefail
 
@@ -33,32 +33,9 @@ const wpDir = process.argv[2];
 const sqliteDir = process.argv[3];
 const outFile = process.argv[4];
 
-// File patterns to exclude (reduce bundle size)
-const EXCLUDE_PATTERNS = [
-  /\.txt$/i,
-  /\.md$/i,
-  /README/i,
-  /LICENSE/i,
-  /CHANGELOG/i,
-  /\.pot$/,        // translation templates
-  /\.po$/,         // translations
-  /\.mo$/,         // compiled translations
-  /\.min\.map$/,   // source maps
-  /\.map$/,        // all source maps
-  /wp-content\/themes\/twentytwentyfour/,
-  /wp-content\/themes\/twentytwentythree/,
-  /wp-content\/plugins\/akismet/,
-  /wp-content\/plugins\/hello\.php/,
-  /wp-includes\/fonts\//,         // web fonts (not needed for basic demo)
-  /wp-includes\/js\/dist\//,      // block editor JS bundles (huge)
-  /wp-includes\/blocks\//,        // block assets
-  /wp-includes\/css\/dist\//,     // block editor CSS
-  /wp-admin\/css\/colors\//,      // admin color schemes (keep default only)
-  /wp-admin\/images\//,           // admin images
-];
-
-function shouldExclude(relPath: string): boolean {
-  return EXCLUDE_PATTERNS.some(p => p.test(relPath));
+// No exclusions — bundle all of WordPress
+function shouldExclude(_relPath: string): boolean {
+  return false;
 }
 
 interface BundleEntry {

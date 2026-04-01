@@ -824,6 +824,28 @@ pub extern "C" fn kernel_alloc_scratch(size: u32) -> u32 {
     ptr as u32
 }
 
+/// Read the approximate Wasm stack pointer for debugging.
+/// Returns the address of a stack variable, which is close to the current SP.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_get_stack_pointer() -> u32 {
+    let sentinel: u32 = 0xDEAD;
+    &sentinel as *const u32 as u32
+}
+
+/// Return the current Wasm memory size in pages using the `memory.size` instruction.
+/// This is the true internal page count — may differ from what JS reports for shared memory.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_get_memory_pages() -> u32 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        core::arch::wasm32::memory_size(0) as u32
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        0
+    }
+}
+
 /// Create a new process in the process table (centralized mode).
 /// Returns 0 on success, -EEXIST if pid already exists.
 #[unsafe(no_mangle)]

@@ -13,7 +13,7 @@ const log = document.getElementById("log") as HTMLPreElement;
 const startBtn = document.getElementById("start") as HTMLButtonElement;
 const reloadBtn = document.getElementById("reload") as HTMLButtonElement;
 const statusDiv = document.getElementById("status") as HTMLDivElement;
-const frame = document.getElementById("frame") as HTMLIFrameElement;
+let frame = document.getElementById("frame") as HTMLIFrameElement;
 
 const decoder = new TextDecoder();
 
@@ -208,17 +208,12 @@ async function start() {
   }
 }
 
-async function loadFrame() {
-  try {
-    // Fetch via JS — the service worker intercepts /app/* fetch requests
-    // (iframe navigations don't work well with COEP + credentialless)
-    const resp = await fetch("/app/");
-    const html = await resp.text();
-    // Use srcdoc to display the fetched HTML
-    frame.srcdoc = html;
-  } catch (err) {
-    frame.srcdoc = `<p style="color:red;padding:1rem">Failed to load: ${err}</p>`;
-  }
+function loadFrame() {
+  const next = document.createElement("iframe");
+  next.id = "frame";
+  next.src = "/app/";
+  frame.replaceWith(next);
+  frame = next;
 }
 
 async function registerServiceWorker(

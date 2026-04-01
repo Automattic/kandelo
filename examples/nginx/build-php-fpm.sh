@@ -152,6 +152,11 @@ if [ -n "$WASM_OPT" ]; then
     "$WASM_OPT" --asyncify \
         --pass-arg="asyncify-imports@kernel.kernel_fork" \
         "$SCRIPT_DIR/php-fpm.wasm" -o "$SCRIPT_DIR/php-fpm.wasm"
+    # Optimize after asyncify to reduce binary size and V8 native stack pressure.
+    # Without this, the asyncified binary is ~32MB and overflows the V8 call stack
+    # in browser web workers during PHP-FPM initialization.
+    echo "==> Optimizing asyncified binary..."
+    "$WASM_OPT" -O2 "$SCRIPT_DIR/php-fpm.wasm" -o "$SCRIPT_DIR/php-fpm.wasm"
 fi
 
 echo "==> PHP-FPM built successfully!"

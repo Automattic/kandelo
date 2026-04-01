@@ -72,7 +72,7 @@ import type {
 import kernelWasmUrl from "../../../host/wasm/wasm_posix_kernel.wasm?url";
 import workerEntryUrl from "../../../host/src/worker-entry-browser.ts?worker&url";
 
-const MAX_PAGES = 16384;
+const DEFAULT_MAX_PAGES = 16384;
 const PAGE_SIZE = 65536;
 const CH_TOTAL_SIZE = 40 + PAGE_SIZE; // channel header + data buffer
 const ASYNCIFY_BUF_SIZE = 16384;
@@ -82,6 +82,9 @@ export interface BrowserKernelOptions {
   maxWorkers?: number;
   /** SharedArrayBuffer size for MemoryFileSystem (default: 16MB) */
   fsSize?: number;
+  /** Maximum wasm memory pages per process (default: 16384 = 1GB). Reduce for
+   *  multi-process demos to avoid exhausting browser memory limits. */
+  maxMemoryPages?: number;
   /** Additional VFS mount points */
   extraMounts?: Array<{ mountPoint: string; backend: { open: Function } }>;
   /** Environment variables for spawned processes */
@@ -112,6 +115,7 @@ export class BrowserKernel {
   private io: VirtualPlatformIO;
   private processes = new Map<number, ProcessInfo>();
   private nextPid = 1;
+  private maxPages: number;
   private options: Required<
     Pick<BrowserKernelOptions, "maxWorkers" | "fsSize" | "env">
   > &
@@ -121,9 +125,11 @@ export class BrowserKernel {
   private exitResolvers = new Map<number, (status: number) => void>();
 
   // Thread channel allocator (counting down from main channel region)
-  private nextThreadChannelPage = MAX_PAGES - 4;
+  private nextThreadChannelPage: number;
 
   constructor(options: BrowserKernelOptions = {}) {
+    this.maxPages = options.maxMemoryPages ?? DEFAULT_MAX_PAGES;
+    this.nextThreadChannelPage = this.maxPages - 4;
     this.options = {
       maxWorkers: 4,
       fsSize: 16 * 1024 * 1024,
@@ -195,11 +201,11 @@ export class BrowserKernel {
           // Create fresh memory for the new program
           const newMemory = new WebAssembly.Memory({
             initial: 17,
-            maximum: MAX_PAGES,
+            maximum: this.maxPages,
             shared: true,
           });
-          const newChannelOffset = (MAX_PAGES - 2) * PAGE_SIZE;
-          newMemory.grow(MAX_PAGES - 17);
+          const newChannelOffset = (this.maxPages - 2) * PAGE_SIZE;
+          newMemory.grow(this.maxPages - 17);
           new Uint8Array(newMemory.buffer, newChannelOffset, CH_TOTAL_SIZE).fill(0);
 
           // Re-register with fresh memory (kernel pid already exists)
@@ -277,11 +283,11 @@ export class BrowserKernel {
     const pid = this.nextPid++;
     const memory = new WebAssembly.Memory({
       initial: 17,
-      maximum: MAX_PAGES,
+      maximum: this.maxPages,
       shared: true,
     });
-    const channelOffset = (MAX_PAGES - 2) * PAGE_SIZE;
-    memory.grow(MAX_PAGES - 17);
+    const channelOffset = (this.maxPages - 2) * PAGE_SIZE;
+    memory.grow(this.maxPages - 17);
     new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
     this.kernelWorker.registerProcess(pid, memory, [channelOffset]);
@@ -347,7 +353,8 @@ export class BrowserKernel {
       peerPort,
     );
     if (recvPipeIdx >= 0) {
-      (this.kernelWorker as any).scheduleWakeBlockedRetries();
+      const kw = this.kernelWorker as any;
+      kw.scheduleWakeBlockedRetries();
     }
     return recvPipeIdx;
   }
@@ -487,15 +494,15 @@ export class BrowserKernel {
     const parentPages = Math.ceil(parentBuf.byteLength / PAGE_SIZE);
     const childMemory = new WebAssembly.Memory({
       initial: parentPages,
-      maximum: MAX_PAGES,
+      maximum: this.maxPages,
       shared: true,
     });
-    if (parentPages < MAX_PAGES) {
-      childMemory.grow(MAX_PAGES - parentPages);
+    if (parentPages < this.maxPages) {
+      childMemory.grow(this.maxPages - parentPages);
     }
     new Uint8Array(childMemory.buffer).set(parentBuf);
 
-    const childChannelOffset = (MAX_PAGES - 2) * PAGE_SIZE;
+    const childChannelOffset = (this.maxPages - 2) * PAGE_SIZE;
     new Uint8Array(
       childMemory.buffer,
       childChannelOffset,
@@ -520,8 +527,21 @@ export class BrowserKernel {
     };
 
     const childWorker = this.workerAdapter.createWorker(childInitData);
-    childWorker.on("error", () => {
+    childWorker.on("message", (msg: unknown) => {
+      const m = msg as { type?: string; pid?: number; status?: number; message?: string };
+      if (m?.type === "exit") {
+        this.kernelWorker.unregisterProcess(childPid);
+        this.processes.delete(childPid);
+      } else if (m?.type === "error") {
+        console.error(`[BrowserKernel] fork child=${childPid} error: ${m.message}`);
+        this.kernelWorker.unregisterProcess(childPid);
+        this.processes.delete(childPid);
+      }
+    });
+    childWorker.on("error", (err: Error) => {
+      console.error(`[BrowserKernel] fork child=${childPid} worker error:`, err);
       this.kernelWorker.unregisterProcess(childPid);
+      this.processes.delete(childPid);
     });
 
     this.processes.set(childPid, {
