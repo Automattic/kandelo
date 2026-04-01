@@ -2721,15 +2721,6 @@ export class CentralizedKernelWorker {
       new DataView(this.kernelMemory!.buffer).setInt16(off + 6, 0, true); // revents=0
     }
 
-    // Log first few epoll_pwait calls per pid for debugging
-    const epollKey = `epoll_pwait_count_${channel.pid}`;
-    const count = ((this as any)[epollKey] || 0) + 1;
-    (this as any)[epollKey] = count;
-    if (count <= 3 || count % 10000 === 0) {
-      const fds = interests.map(i => `fd=${i.fd}(${i.events.toString(16)})`).join(',');
-      console.log(`[epoll_pwait] pid=${channel.pid} call#${count} epfd=${epfd} timeout=${timeoutMs} interests=[${fds}]`);
-    }
-
     // Call kernel with SYS_POLL: (fds_ptr, nfds, timeout_ms=0)
     // Always use timeout=0 — we manage blocking/retry on the host side
     kernelView.setUint32(CH_SYSCALL, SYS_POLL, true);
@@ -2751,17 +2742,6 @@ export class CentralizedKernelWorker {
 
     const retVal = kernelView.getInt32(CH_RETURN, true);
     const errVal = kernelView.getUint32(CH_ERRNO, true);
-
-    if (count <= 3 || (retVal > 0 && count <= 20) || count % 10000 === 0) {
-      // Log revents for each pollfd
-      const reventsInfo: string[] = [];
-      for (let i = 0; i < nfds; i++) {
-        const off = dataStart + i * 8;
-        const rev = new DataView(this.kernelMemory!.buffer).getInt16(off + 6, true);
-        if (rev !== 0) reventsInfo.push(`fd${interests[i].fd}=0x${rev.toString(16)}`);
-      }
-      console.log(`[epoll_pwait] pid=${channel.pid} call#${count} poll ret=${retVal} err=${errVal} revents=[${reventsInfo.join(',')}]`);
-    }
 
     // Handle signal delivery
     this.dequeueSignalForDelivery(channel);
@@ -3273,8 +3253,6 @@ export class CentralizedKernelWorker {
     }
     children.add(childPid);
 
-    console.log(`[handleFork] parent=${parentPid} child=${childPid} calling onFork`);
-
     // Call the async fork handler to spawn child Worker
     this.callbacks.onFork(parentPid, childPid, channel.memory).then((childChannelOffsets) => {
       if (!this.processes.has(parentPid)) return;
@@ -3285,7 +3263,6 @@ export class CentralizedKernelWorker {
         const parentTarget = targets.find(t => t.pid === parentPid);
         if (parentTarget && !targets.some(t => t.pid === childPid)) {
           targets.push({ pid: childPid, fd: parentTarget.fd });
-          console.log(`[handleFork] child=${childPid} inherits listener port=${port} fd=${parentTarget.fd}`);
         }
       }
 
@@ -3294,7 +3271,6 @@ export class CentralizedKernelWorker {
         if (key.startsWith(`${parentPid}:`)) {
           const epfd = key.slice(key.indexOf(':') + 1);
           this.epollInterests.set(`${childPid}:${epfd}`, interests.map(e => ({ ...e })));
-          console.log(`[handleFork] child=${childPid} inherits epoll ${key} → ${childPid}:${epfd} (${interests.length} interests)`);
         }
       }
 
