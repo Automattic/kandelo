@@ -6,6 +6,7 @@ export { SyscallChannel, ChannelStatus } from "./channel";
 export { NodePlatformIO } from "./platform/node";
 export { SharedPipeBuffer } from "./shared-pipe-buffer";
 export { SharedIpcTable } from "./shared-ipc-table";
+export { PosixMqueueTable } from "./posix-mqueue";
 export type { MsgQueueInfo, SemSetInfo, ShmSegInfo } from "./shared-ipc-table";
 export { SharedLockTable } from "./shared-lock-table";
 export type { LockInfo } from "./shared-lock-table";

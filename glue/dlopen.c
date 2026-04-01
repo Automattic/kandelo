@@ -163,3 +163,22 @@ char *dlerror(void) {
     dl_error_set = 0;
     return dl_error_buf;
 }
+
+typedef struct {
+    const char *dli_fname;
+    void *dli_fbase;
+    const char *dli_sname;
+    void *dli_saddr;
+} Dl_info;
+
+int dladdr(const void *addr, Dl_info *info) {
+    if (!addr || !info) return 0;
+    /* In Wasm there are no shared libraries with address ranges to look up.
+     * Return success with minimal info — the address belongs to the main
+     * program (the only "module"). */
+    info->dli_fname = "";
+    info->dli_fbase = (void *)0;
+    info->dli_sname = NULL;
+    info->dli_saddr = NULL;
+    return 1;
+}

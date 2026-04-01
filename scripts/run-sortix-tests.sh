@@ -93,8 +93,7 @@ INCLUDE_EXPECTED_FAIL=(
     "ndbm/dbm_clearerr" "ndbm/dbm_close" "ndbm/dbm_delete" "ndbm/dbm_error"
     "ndbm/dbm_fetch" "ndbm/dbm_firstkey" "ndbm/DBM_INSERT" "ndbm/dbm_nextkey"
     "ndbm/dbm_open" "ndbm/DBM_REPLACE" "ndbm/dbm_store" "ndbm/mode_t" "ndbm/size_t"
-    "dlfcn/Dl_info_t" "dlfcn/Dl_info_t-dli_fbase" "dlfcn/Dl_info_t-dli_fname"
-    "dlfcn/Dl_info_t-dli_saddr" "dlfcn/Dl_info_t-dli_sname" "dlfcn/dladdr"
+    # (Dl_info_t and dladdr now pass — dlfcn.h overlay with Dl_info_t typedef + dladdr stub)
     "sched/SCHED_SPORADIC" "sched/struct-sched_param-sched_ss_init_budget"
     "sched/struct-sched_param-sched_ss_low_priority"
     "sched/struct-sched_param-sched_ss_max_repl"
@@ -118,11 +117,8 @@ BASIC_EXPECTED_FAIL=(
     "ndbm/dbm_fetch" "ndbm/dbm_firstkey" "ndbm/dbm_nextkey" "ndbm/dbm_open" "ndbm/dbm_store"
     "nl_types/catclose" "nl_types/catgets" "nl_types/catopen"
     # (utmpx/pututxline now passes — added errno=EPERM in pututxline overlay)
-    "mqueue/mq_close" "mqueue/mq_getattr" "mqueue/mq_notify" "mqueue/mq_open"
-    "mqueue/mq_receive" "mqueue/mq_send" "mqueue/mq_setattr"
-    "mqueue/mq_timedreceive" "mqueue/mq_timedsend" "mqueue/mq_unlink"
-    # -- Dynamic linking: dladdr not implemented (dlopen/dlsym/dlclose/dlerror work)
-    "dlfcn/dladdr"
+    # (mqueue tests now pass — POSIX mqueue implementation in centralized mode)
+    # (dlfcn/dladdr now passes — dladdr stub in glue/dlopen.c)
     # -- Process exec (not implemented in centralized mode)
     "unistd/execl" "unistd/execle" "unistd/execlp" "unistd/execv"
     "unistd/execve" "unistd/execvp" "unistd/fexecve"
@@ -143,7 +139,8 @@ BASIC_EXPECTED_FAIL=(
     "signal/pthread_kill"
     "threads/thrd_create"
     # -- Pthread features not supported (priority scheduling, pshared)
-    "pthread/pthread_atfork" "pthread/pthread_attr_getstack"
+    # (pthread_atfork now passes — fork overlay calls __fork_handler)
+    "pthread/pthread_attr_getstack"
     "pthread/pthread_attr_setinheritsched"
     "pthread/pthread_cond_clockwait"
     "pthread/pthread_mutex_clocklock"
