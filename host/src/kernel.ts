@@ -100,6 +100,14 @@ export class WasmPosixKernel {
   pid = 0;
 
   /**
+   * Merge additional callbacks into the existing set.
+   * Existing callbacks not specified in the argument are preserved.
+   */
+  mergeCallbacks(callbacks: Partial<KernelCallbacks>): void {
+    this.callbacks = { ...this.callbacks, ...callbacks };
+  }
+
+  /**
    * Set the user program's indirect function table so signal handlers
    * registered by the program can be called from the kernel.
    */

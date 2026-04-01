@@ -1,14 +1,17 @@
 import { describe, it, expect } from "vitest";
 import { join, dirname } from "node:path";
+import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { runCentralizedProgram } from "./centralized-test-helper";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const pthreadBinary = join(__dirname, "../../examples/test-pthread.wasm");
+const hasBinary = existsSync(pthreadBinary);
 
-describe("pthread", () => {
+describe.skipIf(!hasBinary)("pthread", () => {
   it("creates a thread that modifies shared state and returns a value", async () => {
     const { exitCode, stdout } = await runCentralizedProgram({
-      programPath: join(__dirname, "../../examples/test-pthread.wasm"),
+      programPath: pthreadBinary,
       timeout: 30_000,
     });
 

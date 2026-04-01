@@ -53,9 +53,7 @@ async function main() {
   );
 
   // Capture stdout/stderr with timestamps
-  const existingCallbacks = (kernelWorker as any).kernel.callbacks || {};
-  (kernelWorker as any).kernel.callbacks = {
-    ...existingCallbacks,
+  kernelWorker.setOutputCallbacks({
     onStdout: (data: Uint8Array) => {
       const text = new TextDecoder().decode(data);
       console.error(`[${Date.now()}] [stdout] ${text.substring(0, 200)}`);
@@ -66,7 +64,7 @@ async function main() {
       console.error(`[${Date.now()}] [stderr] ${text.substring(0, 200)}`);
       process.stderr.write(data);
     },
-  };
+  });
 
   console.error(`[${Date.now()}] Initializing kernel...`);
   await kernelWorker.init(kernelWasmBytes);

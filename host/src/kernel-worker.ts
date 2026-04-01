@@ -867,6 +867,17 @@ export class CentralizedKernelWorker {
   }
 
   /**
+   * Set stdout/stderr capture callbacks on the underlying kernel instance.
+   * Must be called after construction but works at any time.
+   */
+  setOutputCallbacks(callbacks: {
+    onStdout?: (data: Uint8Array) => void;
+    onStderr?: (data: Uint8Array) => void;
+  }): void {
+    this.kernel.mergeCallbacks(callbacks);
+  }
+
+  /**
    * Append data to a process's stdin buffer without marking stdin as a pipe.
    * Used for interactive stdin where data arrives incrementally.
    * Wakes any blocked stdin readers after appending.

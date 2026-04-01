@@ -1,14 +1,17 @@
 import { describe, it, expect } from "vitest";
 import { join, dirname } from "node:path";
+import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { runCentralizedProgram } from "./centralized-test-helper";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const mmapBinary = join(__dirname, "../../examples/mmap_file_test.wasm");
+const hasBinary = existsSync(mmapBinary);
 
-describe("file-backed mmap", () => {
+describe.skipIf(!hasBinary)("file-backed mmap", () => {
   it("reads file content through mmap MAP_PRIVATE", async () => {
     const result = await runCentralizedProgram({
-      programPath: join(__dirname, "../../examples/mmap_file_test.wasm"),
+      programPath: mmapBinary,
       timeout: 10000,
     });
     expect(result.exitCode).toBe(0);

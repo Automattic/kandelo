@@ -1,15 +1,16 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { centralizedWorkerMain } from "../src/worker-main";
 import type { CentralizedWorkerInitMessage } from "../src/worker-protocol";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const helloWasm = join(__dirname, "../../examples/hello.wasm");
+const hasBinary = existsSync(helloWasm);
 
 function loadProgramBytes(): ArrayBuffer {
-  const wasmPath = join(__dirname, "../../examples/hello.wasm");
-  const buf = readFileSync(wasmPath);
+  const buf = readFileSync(helloWasm);
   return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 }
 
@@ -24,7 +25,7 @@ function createMockPort() {
   };
 }
 
-describe("centralizedWorkerMain", () => {
+describe.skipIf(!hasBinary)("centralizedWorkerMain", () => {
   it("should initialize program and send ready then exit", async () => {
     const port = createMockPort();
 

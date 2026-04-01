@@ -3,20 +3,26 @@
  */
 import { describe, it, expect } from "vitest";
 import { join, dirname } from "node:path";
+import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { runCentralizedProgram } from "./centralized-test-helper";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const wasmDir = join(__dirname, "../wasm");
+const execCallerBinary = join(wasmDir, "exec-caller.wasm");
+const forkExecBinary = join(wasmDir, "fork-exec.wasm");
 
 const execPrograms = new Map<string, string>([
   ["/bin/exec-child", join(wasmDir, "exec-child.wasm")],
 ]);
 
+const hasExecCaller = existsSync(execCallerBinary);
+const hasForkExec = existsSync(forkExecBinary);
+
 describe("execve", () => {
-  it("replaces the current process with a new program", async () => {
+  it.skipIf(!hasExecCaller)("replaces the current process with a new program", async () => {
     const result = await runCentralizedProgram({
-      programPath: join(wasmDir, "exec-caller.wasm"),
+      programPath: execCallerBinary,
       argv: ["exec-caller"],
       timeout: 15_000,
       execPrograms,
@@ -36,9 +42,9 @@ describe("execve", () => {
     expect(result.stdout).toContain("TEST=exec");
   });
 
-  it("fork + exec: child execs while parent waits", async () => {
+  it.skipIf(!hasForkExec)("fork + exec: child execs while parent waits", async () => {
     const result = await runCentralizedProgram({
-      programPath: join(wasmDir, "fork-exec.wasm"),
+      programPath: forkExecBinary,
       argv: ["fork-exec"],
       timeout: 15_000,
       execPrograms,

@@ -156,10 +156,11 @@ describe.skipIf(!!SKIP_REASON)("WordPress HTTP Server", () => {
       },
     );
 
-    const existingCallbacks = (kernelWorker as any).kernel.callbacks;
-    existingCallbacks.onStderr = (data: Uint8Array) => {
-      serverStderr += new TextDecoder().decode(data);
-    };
+    kernelWorker.setOutputCallbacks({
+      onStderr: (data: Uint8Array) => {
+        serverStderr += new TextDecoder().decode(data);
+      },
+    });
 
     await kernelWorker.init(kernelWasmBytes);
 

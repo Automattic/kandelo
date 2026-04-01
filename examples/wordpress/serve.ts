@@ -160,18 +160,15 @@ async function main() {
     },
   );
 
-  // Forward stdout/stderr to console (merge with existing callbacks to
-  // preserve onAlarm, onPosixTimer, onNetListen set by the constructor)
-  const existingCallbacks = (kernelWorker as any).kernel.callbacks || {};
-  (kernelWorker as any).kernel.callbacks = {
-    ...existingCallbacks,
+  // Forward stdout/stderr to console
+  kernelWorker.setOutputCallbacks({
     onStdout: (data: Uint8Array) => {
       process.stdout.write(data);
     },
     onStderr: (data: Uint8Array) => {
       process.stderr.write(data);
     },
-  };
+  });
 
   await kernelWorker.init(kernelWasmBytes);
 
