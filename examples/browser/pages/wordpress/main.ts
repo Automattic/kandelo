@@ -112,6 +112,15 @@ $staticTypes = [
     'txt'   => 'text/plain',
 ];
 
+// Resolve directory URLs to index.php (e.g. /wp-admin/ → /wp-admin/index.php)
+if (is_dir($file)) {
+    $idx = rtrim($file, '/') . '/index.php';
+    if (is_file($idx)) {
+        $file = $idx;
+        $uri = rtrim($uri, '/') . '/index.php';
+    }
+}
+
 if ($uri !== '/' && is_file($file)) {
     $ext = strtolower(pathinfo($file, PATHINFO_EXTENSION));
     if (isset($staticTypes[$ext])) {
@@ -141,9 +150,6 @@ listen = 127.0.0.1:9000
 pm = static
 pm.max_children = 1
 clear_env = no
-slowlog = /dev/null
-request_slowlog_trace_depth = 0
-request_terminate_timeout = 120
 `;
 
 // Custom wp-config.php — sets WP_HOME/WP_SITEURL with /app prefix so
@@ -172,7 +178,8 @@ $table_prefix = 'wp_';
 
 define('WP_DEBUG', true);
 define('WP_DEBUG_LOG', true);
-define('WP_DEBUG_DISPLAY', true);
+define('WP_DEBUG_DISPLAY', false);
+@ini_set('display_errors', '0');
 
 // Site URL includes /app prefix — the service worker intercepts /app/*
 // and strips it before sending to nginx
@@ -240,7 +247,7 @@ async function start() {
     // to avoid exhausting browser memory with 5+ concurrent processes
     kernel = new BrowserKernel({
       maxWorkers: 8,
-      fsSize: 256 * 1024 * 1024, // 256MB for full WordPress bundle
+      fsSize: 256 * 1024 * 1024,
       maxMemoryPages: 4096, // 256MB per process
       onStdout: (data) => appendLog(decoder.decode(data)),
       onStderr: (data) => appendLog(decoder.decode(data), "stderr"),
@@ -271,38 +278,17 @@ async function start() {
       }
     }
 
-    // Write config files
+    // Write config files (minimal — just enough for PHP-FPM and nginx to start)
     await loadFiles(fs, [
       { path: "/etc/nginx/nginx.conf", data: NGINX_CONF },
       { path: "/etc/php-fpm.conf", data: PHP_FPM_CONF },
       { path: "/var/www/fpm-router.php", data: FPM_ROUTER_PHP },
     ]);
 
-    // Load WordPress bundle
-    setStatus("Loading WordPress files...", "loading");
-    appendLog("Loading WordPress bundle...\n", "info");
-    const loaded = await loadWordPressBundle(fs, "/wp-bundle.json", (current, total) => {
-      if (current % 500 === 0 || current === total) {
-        appendLog(`  ${current}/${total} files\n`, "info");
-      }
-    });
-    appendLog(`WordPress loaded: ${loaded} files\n`, "info");
-
-    // Overwrite wp-config.php so WordPress generates URLs with the /app/
-    // prefix that the service worker intercepts
-    await loadFiles(fs, [
-      { path: "/var/www/html/wp-config.php", data: WP_CONFIG_PHP },
-      { path: "/var/www/html/wp-content/mu-plugins/wasm-optimizations.php", data: MU_PLUGIN_PHP },
-    ]);
-
-    // Set up the bridge to handle incoming requests
-    bridge.onRequest((requestId, request) => {
-      console.log(`[wp-bridge] request #${requestId}: ${request.method} ${request.url}`);
-      appendLog(`[bridge] ${request.method} ${request.url}\n`, "info");
-      handleHttpRequest(kernel!, bridge!, requestId, request, 8080);
-    });
-
-    // --- Start php-fpm (pid 1) ---
+    // --- Start php-fpm BEFORE loading WordPress bundle ---
+    // By starting processes and forking before loading the WordPress bundle,
+    // fork children get a lightweight memory snapshot.  The VFS uses
+    // SharedArrayBuffer, so files loaded after fork are visible to all.
     setStatus("Starting PHP-FPM...", "loading");
     appendLog("Starting PHP-FPM...\n", "info");
 
@@ -320,8 +306,7 @@ async function start() {
     });
 
     // Wait for php-fpm to start and fork worker
-    await new Promise((r) => setTimeout(r, 3000));
-    appendLog("PHP-FPM ready\n", "info");
+    await new Promise((r) => setTimeout(r, 5000));
 
     // --- Start nginx ---
     setStatus("Starting nginx...", "loading");
@@ -340,7 +325,33 @@ async function start() {
     });
 
     // Wait for nginx to start and fork workers
-    await new Promise((r) => setTimeout(r, 2000));
+    await new Promise((r) => setTimeout(r, 3000));
+
+    // --- Load WordPress bundle AFTER all forks are done ---
+    setStatus("Loading WordPress files...", "loading");
+    const loaded = await loadWordPressBundle(fs, "/wp-bundle.json", (current, total) => {
+      if (current % 500 === 0 || current === total) {
+        appendLog(`  ${current}/${total} files\n`, "info");
+      }
+    });
+    appendLog(`WordPress loaded: ${loaded} files\n`, "info");
+
+    // Remove any pre-existing database so WordPress starts with a fresh install
+    try { fs.unlink("/var/www/html/wp-content/database/wordpress.db"); } catch { /* not present */ }
+
+    // Overwrite wp-config.php so WordPress generates URLs with the /app/
+    // prefix that the service worker intercepts
+    await loadFiles(fs, [
+      { path: "/var/www/html/wp-config.php", data: WP_CONFIG_PHP },
+      { path: "/var/www/html/wp-content/mu-plugins/wasm-optimizations.php", data: MU_PLUGIN_PHP },
+    ]);
+
+    // Set up the bridge to handle incoming requests
+    bridge.onRequest((requestId, request) => {
+      console.log(`[wp-bridge] request #${requestId}: ${request.method} ${request.url}`);
+      appendLog(`[bridge] ${request.method} ${request.url}\n`, "info");
+      handleHttpRequest(kernel!, bridge!, requestId, request, 8080);
+    });
 
     setStatus("WordPress running! Loading page...", "running");
     reloadBtn.disabled = false;

@@ -267,7 +267,10 @@ export async function centralizedWorkerMain(
 ): Promise<void> {
   try {
     const { memory, programBytes, channelOffset, pid } = initData;
-    const module = await WebAssembly.compile(programBytes);
+    // Use pre-compiled module if provided (avoids recompilation in web workers)
+    const module = initData.programModule
+      ? initData.programModule
+      : await WebAssembly.compile(programBytes);
     const kernelImports = buildKernelImports(
       memory, channelOffset, initData.argv || [], initData.env || [],
     );

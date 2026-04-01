@@ -33,8 +33,9 @@ const wpDir = process.argv[2];
 const sqliteDir = process.argv[3];
 const outFile = process.argv[4];
 
-// No exclusions — bundle all of WordPress
-function shouldExclude(_relPath: string): boolean {
+// Exclude runtime-generated database files — WordPress must start fresh
+function shouldExclude(relPath: string): boolean {
+  if (relPath.endsWith(".db")) return true;
   return false;
 }
 

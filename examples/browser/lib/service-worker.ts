@@ -58,6 +58,13 @@ function storeCookies(setCookieValues: string[]): void {
     if (cookie.expires !== undefined && cookie.expires < Date.now()) {
       cookieJar.delete(cookie.name);
     } else {
+      // Prepend app prefix to cookie path so it matches browser-side URLs.
+      // WordPress sets paths like "/" or "/wp-admin/" but the browser sees
+      // "/app/" or "/app/wp-admin/".
+      const prefix = appPrefix.slice(0, -1); // "/app"
+      if (!cookie.path.startsWith(prefix)) {
+        cookie.path = prefix + cookie.path;
+      }
       cookieJar.set(cookie.name, cookie);
     }
   }
