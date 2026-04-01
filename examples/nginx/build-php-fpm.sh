@@ -145,16 +145,22 @@ make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" fpm
 # Copy FPM binary
 cp sapi/fpm/php-fpm "$SCRIPT_DIR/php-fpm.wasm"
 
-# Asyncify for fork support (FPM forks worker children)
+# Asyncify for fork support (FPM forks worker children).
+# Use asyncify-onlylist to restrict instrumentation to the ~30 functions on
+# the actual fork call path.  Without this, asyncify instruments every function
+# that can transitively reach kernel_fork through the call graph (~15K+ for
+# PHP-FPM), inflating per-frame V8 native stack usage and causing "Maximum
+# call stack size exceeded" in browser web workers.
 WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
 if [ -n "$WASM_OPT" ]; then
-    echo "==> Applying asyncify instrumentation..."
+    ONLYLIST="$SCRIPT_DIR/asyncify-fpm-onlylist.txt"
+    ONLY_FUNCS=$(grep -v '^#' "$ONLYLIST" | grep -v '^$' | tr '\n' ',' | sed 's/,$//')
+
+    echo "==> Applying asyncify instrumentation (onlylist: $(echo "$ONLY_FUNCS" | tr ',' '\n' | wc -l | tr -d ' ') functions)..."
     "$WASM_OPT" --asyncify \
         --pass-arg="asyncify-imports@kernel.kernel_fork" \
+        --pass-arg="asyncify-onlylist@${ONLY_FUNCS}" \
         "$SCRIPT_DIR/php-fpm.wasm" -o "$SCRIPT_DIR/php-fpm.wasm"
-    # Optimize after asyncify to reduce binary size and V8 native stack pressure.
-    # Without this, the asyncified binary is ~32MB and overflows the V8 call stack
-    # in browser web workers during PHP-FPM initialization.
     echo "==> Optimizing asyncified binary..."
     "$WASM_OPT" -O2 "$SCRIPT_DIR/php-fpm.wasm" -o "$SCRIPT_DIR/php-fpm.wasm"
 fi

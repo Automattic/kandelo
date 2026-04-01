@@ -104,6 +104,7 @@ export interface BrowserKernelOptions {
 interface ProcessInfo {
   memory: WebAssembly.Memory;
   programBytes: ArrayBuffer;
+  programModule?: WebAssembly.Module;
   worker: ReturnType<BrowserWorkerAdapter["createWorker"]>;
   channelOffset: number;
 }
@@ -506,6 +507,16 @@ export class BrowserKernel {
     const parentInfo = this.processes.get(parentPid);
     if (!parentInfo) throw new Error(`Unknown parent pid ${parentPid}`);
 
+    // Pre-compile the wasm module on the main thread if not already cached.
+    // This is critical for fork children: V8 web workers have a limited native
+    // stack (~1MB). If the child compiles from scratch, it gets Liftoff (baseline)
+    // code with larger stack frames. A pre-compiled module has TurboFan-optimized
+    // code with smaller frames, allowing the asyncify rewind's deep call stack
+    // to fit within the web worker's native stack limit.
+    if (!parentInfo.programModule) {
+      parentInfo.programModule = await WebAssembly.compile(parentInfo.programBytes);
+    }
+
     const parentBuf = new Uint8Array(parentMemory.buffer);
     const parentPages = Math.ceil(parentBuf.byteLength / PAGE_SIZE);
     const childMemory = new WebAssembly.Memory({
@@ -536,6 +547,7 @@ export class BrowserKernel {
       pid: childPid,
       ppid: parentPid,
       programBytes: parentInfo.programBytes,
+      programModule: parentInfo.programModule,
       memory: childMemory,
       channelOffset: childChannelOffset,
       isForkChild: true,
@@ -563,6 +575,7 @@ export class BrowserKernel {
     this.processes.set(childPid, {
       memory: childMemory,
       programBytes: parentInfo.programBytes,
+      programModule: parentInfo.programModule,
       worker: childWorker,
       channelOffset: childChannelOffset,
     });

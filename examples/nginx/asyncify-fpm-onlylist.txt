@@ -1,0 +1,48 @@
+# Functions that must be asyncify-instrumented for PHP-FPM fork support.
+# Only these functions (and their call chain to kernel_fork) get asyncify
+# overhead. All other functions remain lightweight, avoiding V8 stack
+# overflow in browser web workers.
+
+# CRT startup path
+_start
+_start_c
+__libc_start_main
+libc_start_main_stage2
+__libc_start_init
+libc_start_init
+__init_libc
+
+# PHP-FPM main
+main
+
+# FPM initialization (daemonize fork path)
+fpm_init
+fpm_unix_init_main
+
+# FPM startup fork path
+fpm_run
+fpm_children_create_initial
+fpm_children_make
+
+# Functions called between fpm_children_make entry and fork()
+fpm_pctl_can_spawn_children
+fpm_resources_prepare
+fpm_child_alloc
+fpm_stdio_prepare_pipes
+fpm_scoreboard_proc_alloc
+fpm_signals_child_block
+
+# Event loop fork paths (worker respawn, dynamic PM, on-demand)
+fpm_event_loop
+fpm_event_fire
+fpm_got_signal
+fpm_postponed_children_bury
+fpm_children_bury
+fpm_pctl_perform_idle_server_maintenance_heartbeat
+fpm_pctl_perform_idle_server_maintenance
+fpm_pctl_on_socket_accept
+
+# Our fork override in channel_syscall.c
+fork
+_Fork
+vfork

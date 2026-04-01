@@ -75,15 +75,45 @@ uint32_t __get_channel_base_addr(void) {
 /* SYS_EXIT needs special handling */
 #define SYS_EXIT 34
 
-/* SYS_FORK/VFORK route through kernel_fork import for asyncify support.
+/* SYS_FORK/VFORK — kernel_fork import provides asyncify-based fork.
  * wasm-opt --asyncify instruments around kernel.kernel_fork, enabling
  * the host to save/restore the call stack across fork — so the child
- * resumes from the fork point with all local variables intact. */
+ * resumes from the fork point with all local variables intact.
+ *
+ * IMPORTANT: fork()/vfork()/_Fork() call kernel_fork() directly below,
+ * NOT through __do_syscall(). This keeps asyncify instrumentation limited
+ * to the fork call chain. If kernel_fork were reachable from __do_syscall,
+ * asyncify would instrument every function that makes any syscall (~54K
+ * functions in PHP-FPM), bloating frame sizes and overflowing V8's stack
+ * in browser web workers. */
 #define SYS_FORK  212
 #define SYS_VFORK 213
 
 __attribute__((import_module("kernel"), import_name("kernel_fork")))
 int32_t kernel_fork(void);
+
+/* Direct fork/vfork/_Fork — call kernel_fork without going through the
+ * general syscall dispatcher.  This ensures asyncify only instruments
+ * fork callers, not every function that makes any syscall. */
+int fork(void)
+{
+    long ret = (long)kernel_fork();
+    if (ret < 0) {
+        *__errno_location() = (int)(-ret);
+        return -1;
+    }
+    return (int)ret;
+}
+
+int _Fork(void)
+{
+    return fork();
+}
+
+int vfork(void)
+{
+    return fork();
+}
 
 /* ------------------------------------------------------------------ */
 /* Signal delivery — invoked after each syscall if a signal is pending */
@@ -154,11 +184,12 @@ static void __deliver_pending_signal(uint32_t base)
 static long __do_syscall(long n, long a1, long a2, long a3,
                          long a4, long a5, long a6)
 {
-    /* Fork goes through kernel_fork import so asyncify can save/restore
-     * the call stack.  The host-side kernel_fork handles the channel
-     * communication after the asyncify unwind completes. */
+    /* Fork/vfork are handled by fork()/_Fork()/vfork() overrides above,
+     * which call kernel_fork() directly.  If we somehow get here (e.g. a
+     * program calls __syscall(SYS_fork) directly), return ENOSYS because
+     * asyncify can't save the call stack through the channel path. */
     if (n == SYS_FORK || n == SYS_VFORK) {
-        return (long)kernel_fork();
+        return -38; /* ENOSYS */
     }
 
     uint32_t base = __channel_base;
