@@ -8,8 +8,9 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { runCentralizedProgram } from "../../../../host/test/centralized-test-helper";
 
@@ -19,8 +20,10 @@ const PHP_AVAILABLE = existsSync(phpBinaryPath);
 
 describe.skipIf(!PHP_AVAILABLE)("PHP concurrent SQLite access", () => {
     it("two PHP processes safely insert rows with proper locking", async () => {
+        const tmpDir = mkdtempSync(join(tmpdir(), "php-sqlite-test-"));
+        const dbPath = join(tmpDir, "test.db");
         const phpScript = `
-$db = new PDO('sqlite:/tmp/concurrent_test.db');
+$db = new PDO('sqlite:${dbPath}');
 $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 $db->exec('CREATE TABLE IF NOT EXISTS t(id INTEGER PRIMARY KEY AUTOINCREMENT, val TEXT)');
 for ($i = 0; $i < 10; $i++) {
@@ -45,5 +48,7 @@ echo "count=$count\\n";
         });
         expect(result2.exitCode).toBe(0);
         expect(result2.stdout).toContain("count=20");
+
+        rmSync(tmpDir, { recursive: true, force: true });
     }, 120_000);
 });

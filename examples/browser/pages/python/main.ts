@@ -189,7 +189,7 @@ terminalEl.addEventListener("keydown", (e: KeyboardEvent) => {
     e.preventDefault();
     const line = inputBuffer + "\n";
     inputBuffer = "";
-    (activeKernel.worker as any).appendStdinData(
+    activeKernel.appendStdinData(
       activePid,
       encoder.encode(line),
     );
@@ -197,7 +197,7 @@ terminalEl.addEventListener("keydown", (e: KeyboardEvent) => {
     e.preventDefault();
     if (inputBuffer.length > 0) {
       inputBuffer = inputBuffer.slice(0, -1);
-      (activeKernel.worker as any).appendStdinData(
+      activeKernel.appendStdinData(
         activePid,
         new Uint8Array([0x7f]),
       );
@@ -205,20 +205,20 @@ terminalEl.addEventListener("keydown", (e: KeyboardEvent) => {
   } else if (e.key === "c" && e.ctrlKey) {
     e.preventDefault();
     inputBuffer = "";
-    (activeKernel.worker as any).appendStdinData(
+    activeKernel.appendStdinData(
       activePid,
       new Uint8Array([0x03]),
     );
   } else if (e.key === "d" && e.ctrlKey) {
     e.preventDefault();
-    (activeKernel.worker as any).appendStdinData(
+    activeKernel.appendStdinData(
       activePid,
       new Uint8Array([0x04]),
     );
   } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
     e.preventDefault();
     inputBuffer += e.key;
-    (activeKernel.worker as any).appendStdinData(
+    activeKernel.appendStdinData(
       activePid,
       encoder.encode(e.key),
     );
@@ -244,7 +244,7 @@ snippetsEl.addEventListener("change", () => {
   if (key && snippets[key] && activeKernel && activePid) {
     const text = snippets[key];
     inputBuffer += text;
-    (activeKernel.worker as any).appendStdinData(
+    activeKernel.appendStdinData(
       activePid,
       encoder.encode(text),
     );

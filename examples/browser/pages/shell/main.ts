@@ -260,7 +260,7 @@ terminalEl.addEventListener("keydown", (e: KeyboardEvent) => {
     e.preventDefault();
     // Characters were already sent individually — just send the newline
     inputBuffer = "";
-    (activeKernel.worker as any).appendStdinData(
+    activeKernel.appendStdinData(
       activePid,
       encoder.encode("\n"),
     );
@@ -269,7 +269,7 @@ terminalEl.addEventListener("keydown", (e: KeyboardEvent) => {
     if (inputBuffer.length > 0) {
       inputBuffer = inputBuffer.slice(0, -1);
       // Send backspace character to terminal (kernel echo will handle display)
-      (activeKernel.worker as any).appendStdinData(
+      activeKernel.appendStdinData(
         activePid,
         new Uint8Array([0x7f]), // DEL character
       );
@@ -278,14 +278,14 @@ terminalEl.addEventListener("keydown", (e: KeyboardEvent) => {
     e.preventDefault();
     // Send SIGINT (Ctrl+C) — send ETX character
     inputBuffer = "";
-    (activeKernel.worker as any).appendStdinData(
+    activeKernel.appendStdinData(
       activePid,
       new Uint8Array([0x03]),
     );
   } else if (e.key === "d" && e.ctrlKey) {
     e.preventDefault();
     // Send EOF (Ctrl+D) — send EOT character
-    (activeKernel.worker as any).appendStdinData(
+    activeKernel.appendStdinData(
       activePid,
       new Uint8Array([0x04]),
     );
@@ -293,7 +293,7 @@ terminalEl.addEventListener("keydown", (e: KeyboardEvent) => {
     e.preventDefault();
     inputBuffer += e.key;
     // Send character to stdin (kernel echo will display it)
-    (activeKernel.worker as any).appendStdinData(
+    activeKernel.appendStdinData(
       activePid,
       encoder.encode(e.key),
     );
@@ -323,7 +323,7 @@ snippetsEl.addEventListener("change", () => {
     // Type the snippet into the terminal
     const text = snippets[key];
     inputBuffer += text;
-    (activeKernel.worker as any).appendStdinData(
+    activeKernel.appendStdinData(
       activePid,
       encoder.encode(text),
     );

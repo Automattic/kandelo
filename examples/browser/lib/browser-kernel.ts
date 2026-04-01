@@ -475,6 +475,22 @@ export class BrowserKernel {
     return (this.kernelWorker as any).pickListenerTarget(port);
   }
 
+  /**
+   * Append data to a process's stdin buffer and wake any blocked reader.
+   * For interactive input (REPL, shell) where data arrives incrementally.
+   */
+  appendStdinData(pid: number, data: Uint8Array): void {
+    this.kernelWorker.appendStdinData(pid, data);
+  }
+
+  /**
+   * Set a process's stdin data (complete buffer with implicit EOF at end).
+   * For batch input where the full content is known upfront.
+   */
+  setStdinData(pid: number, data: Uint8Array): void {
+    this.kernelWorker.setStdinData(pid, data);
+  }
+
   /** Get the underlying CentralizedKernelWorker (for advanced use) */
   get worker(): CentralizedKernelWorker {
     return this.kernelWorker;
