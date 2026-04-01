@@ -18,6 +18,7 @@ const examplesDir = join(repoRoot, "examples");
 const TEST_PROGRAMS = [
   "putenv_test.c",
   "getaddrinfo_test.c",
+  "sysv_ipc_test.c",
 ];
 
 function needsRebuild(cFile: string, wasmFile: string): boolean {
