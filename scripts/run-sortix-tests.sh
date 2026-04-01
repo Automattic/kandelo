@@ -33,25 +33,16 @@ KERNEL_WASM="$REPO_ROOT/host/wasm/wasm_posix_kernel.wasm"
 # Format: "header/symbol" matching the test path under os-test/include/
 INCLUDE_EXPECTED_FAIL=(
     # POSIX.1-2024 additions not yet in musl (musl targets POSIX.1-2008)
-    # -- O_CLOFORK and related close-on-fork flags
-    "fcntl/F_DUPFD_CLOFORK" "fcntl/FD_CLOFORK" "fcntl/O_CLOFORK"
-    "stdlib/O_CLOFORK" "sys_mman/O_CLOFORK" "sys_socket/MSG_CMSG_CLOFORK"
-    "sys_socket/SOCK_CLOFORK" "unistd/O_CLOFORK"
-    # -- New dirent API (posix_getdents, posix_dent, DT_MQ/SEM/SHM/TMO)
-    "dirent/DT_MQ" "dirent/DT_SEM" "dirent/DT_SHM" "dirent/DT_TMO"
-    "dirent/posix_getdents" "dirent/reclen_t" "dirent/ssize_t"
-    "dirent/struct-posix_dent" "dirent/struct-posix_dent-d_ino"
-    "dirent/struct-posix_dent-d_name" "dirent/struct-posix_dent-d_reclen"
-    "dirent/struct-posix_dent-d_type"
-    "sys_types/reclen_t"
+    # (O_CLOFORK, FD_CLOFORK, F_DUPFD_CLOFORK, SOCK_CLOFORK, MSG_CMSG_CLOFORK
+    #  now pass — fcntl.h, sys/socket.h overlays)
+    # (DT_MQ/SEM/SHM/TMO, posix_dent, posix_getdents, reclen_t now pass — dirent.h,
+    #  sys/types.h overlays + posix_getdents stub)
+    # (posix_tnode, tdelete/tfind/tsearch/twalk now pass — search.h overlay)
+    # (posix_spawn_file_actions_addchdir/addfchdir now pass — spawn.h overlay + stubs)
     # -- Clock-aware pthread/semaphore waits
     "pthread/pthread_cond_clockwait" "pthread/pthread_mutex_clocklock"
     "pthread/pthread_rwlock_clockrdlock" "pthread/pthread_rwlock_clockwrlock"
     "semaphore/sem_clockwait"
-    # -- Updated tsearch/tdelete/tfind/twalk signatures
-    "search/posix_tnode" "search/tdelete" "search/tfind" "search/tsearch" "search/twalk"
-    # -- New spawn actions
-    "spawn/posix_spawn_file_actions_addchdir" "spawn/posix_spawn_file_actions_addfchdir"
     # -- New regex/fnmatch/ftw flags
     "regex/REG_MINIMAL"
     # (fnmatch/FNM_IGNORECASE now passes — aliased to FNM_CASEFOLD in fnmatch.h overlay)
