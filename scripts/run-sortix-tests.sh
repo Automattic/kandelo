@@ -161,11 +161,8 @@ BASIC_EXPECTED_FAIL=(
     "termios/tcsetattr" "termios/tcsetwinsize"
     "unistd/tcgetpgrp" "unistd/tcsetpgrp" "unistd/ttyname" "unistd/ttyname_r"
     "stdlib/ptsname" "stdlib/ptsname_r" "stdlib/unlockpt"
-    # -- SysV IPC (not wired in centralized mode)
+    # (SysV IPC now passes — host-side IPC handlers in centralized mode)
     # (sys_ipc/ftok now passes — data directory infrastructure)
-    "sys_msg/msgctl" "sys_msg/msgget" "sys_msg/msgrcv" "sys_msg/msgsnd"
-    "sys_sem/semctl" "sys_sem/semget" "sys_sem/semop"
-    "sys_shm/shmat" "sys_shm/shmctl" "sys_shm/shmdt" "sys_shm/shmget"
     # (sys_socket/sockatmark now passes — MSG_OOB send/recv + SIOCATMARK ioctl)
     # -- Network interface (not available in Wasm)
     "net_if/if_freenameindex" "net_if/if_indextoname" "net_if/if_nameindex" "net_if/if_nametoindex"

@@ -302,7 +302,6 @@
 #define __NR_settimeofday   367
 #define __NR_semtimedop     368
 #define __NR_vmsplice       369
-#define __NR_ipc            373
 #define __NR_set_thread_area 374
 #define __NR_ioperm         375
 #define __NR_iopl           376

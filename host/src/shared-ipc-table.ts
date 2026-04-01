@@ -264,16 +264,16 @@ export class SharedIpcTable {
   // Message Queue Operations
   // =========================================================================
 
-  msgget(key: number, flags: number, pid: number): number {
+  msgget(key: number, flags: number, pid: number, uid = 0, gid = 0): number {
     this.acquire();
     try {
-      return this._msgget(key, flags, pid);
+      return this._msgget(key, flags, pid, uid, gid);
     } finally {
       this.release();
     }
   }
 
-  private _msgget(key: number, flags: number, pid: number): number {
+  private _msgget(key: number, flags: number, pid: number, uid: number, gid: number): number {
     const create = (flags & IPC_CREAT) !== 0;
     const excl = (flags & IPC_EXCL) !== 0;
     const mode = flags & 0o777;
@@ -310,10 +310,10 @@ export class SharedIpcTable {
     this.setI32(off + MQ_KEY, key);
     this.setI32(off + MQ_ID, id);
     this.setI32(off + MQ_MODE, mode);
-    this.setI32(off + MQ_CUID, 0);   // euid
-    this.setI32(off + MQ_CGID, 0);   // egid
-    this.setI32(off + MQ_UID, 0);
-    this.setI32(off + MQ_GID, 0);
+    this.setI32(off + MQ_CUID, uid);
+    this.setI32(off + MQ_CGID, gid);
+    this.setI32(off + MQ_UID, uid);
+    this.setI32(off + MQ_GID, gid);
     this.setI32(off + MQ_QBYTES, 16384); // default max bytes
     this.setI32(off + MQ_QNUM, 0);
     this.setI32(off + MQ_CBYTES, 0);
@@ -602,16 +602,16 @@ export class SharedIpcTable {
   // Semaphore Operations
   // =========================================================================
 
-  semget(key: number, nsems: number, flags: number, pid: number): number {
+  semget(key: number, nsems: number, flags: number, pid: number, uid = 0, gid = 0): number {
     this.acquire();
     try {
-      return this._semget(key, nsems, flags, pid);
+      return this._semget(key, nsems, flags, pid, uid, gid);
     } finally {
       this.release();
     }
   }
 
-  private _semget(key: number, nsems: number, flags: number, pid: number): number {
+  private _semget(key: number, nsems: number, flags: number, pid: number, uid: number, gid: number): number {
     const create = (flags & IPC_CREAT) !== 0;
     const excl = (flags & IPC_EXCL) !== 0;
     const mode = flags & 0o777;
@@ -649,10 +649,10 @@ export class SharedIpcTable {
     this.setI32(off + SS_KEY, key);
     this.setI32(off + SS_ID, id);
     this.setI32(off + SS_MODE, mode);
-    this.setI32(off + SS_CUID, 0);
-    this.setI32(off + SS_CGID, 0);
-    this.setI32(off + SS_UID, 0);
-    this.setI32(off + SS_GID, 0);
+    this.setI32(off + SS_CUID, uid);
+    this.setI32(off + SS_CGID, gid);
+    this.setI32(off + SS_UID, uid);
+    this.setI32(off + SS_GID, gid);
     this.setI32(off + SS_NSEMS, nsems);
     this.setI32(off + SS_SEQ, 0);
     this.setI64(off + SS_OTIME_LO, 0);
@@ -850,16 +850,16 @@ export class SharedIpcTable {
   // Shared Memory Operations
   // =========================================================================
 
-  shmget(key: number, size: number, flags: number, pid: number): number {
+  shmget(key: number, size: number, flags: number, pid: number, uid = 0, gid = 0): number {
     this.acquire();
     try {
-      return this._shmget(key, size, flags, pid);
+      return this._shmget(key, size, flags, pid, uid, gid);
     } finally {
       this.release();
     }
   }
 
-  private _shmget(key: number, size: number, flags: number, pid: number): number {
+  private _shmget(key: number, size: number, flags: number, pid: number, uid: number, gid: number): number {
     const create = (flags & IPC_CREAT) !== 0;
     const excl = (flags & IPC_EXCL) !== 0;
     const mode = flags & 0o777;
@@ -896,10 +896,10 @@ export class SharedIpcTable {
     this.setI32(off + SM_KEY, key);
     this.setI32(off + SM_ID, id);
     this.setI32(off + SM_MODE, mode);
-    this.setI32(off + SM_CUID, 0);
-    this.setI32(off + SM_CGID, 0);
-    this.setI32(off + SM_UID, 0);
-    this.setI32(off + SM_GID, 0);
+    this.setI32(off + SM_CUID, uid);
+    this.setI32(off + SM_CGID, gid);
+    this.setI32(off + SM_UID, uid);
+    this.setI32(off + SM_GID, gid);
     this.setI32(off + SM_SEGSZ, size);
     this.setI32(off + SM_CPID, pid);
     this.setI32(off + SM_LPID, 0);

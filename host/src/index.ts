@@ -5,6 +5,8 @@ export type { CentralizedKernelCallbacks } from "./kernel-worker";
 export { SyscallChannel, ChannelStatus } from "./channel";
 export { NodePlatformIO } from "./platform/node";
 export { SharedPipeBuffer } from "./shared-pipe-buffer";
+export { SharedIpcTable } from "./shared-ipc-table";
+export type { MsgQueueInfo, SemSetInfo, ShmSegInfo } from "./shared-ipc-table";
 export { SharedLockTable } from "./shared-lock-table";
 export type { LockInfo } from "./shared-lock-table";
 export { NodeWorkerAdapter, MockWorkerAdapter } from "./worker-adapter";
