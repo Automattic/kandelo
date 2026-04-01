@@ -43,6 +43,9 @@ export interface RunProgramOptions {
   execPrograms?: Map<string, string>;
   /** Data to provide on stdin (process will see EOF after this data) */
   stdin?: string;
+  /** Callback invoked with the kernel worker after the process starts.
+   *  Use this to call appendStdinData() for interactive stdin testing. */
+  onStarted?: (kernelWorker: CentralizedKernelWorker, pid: number) => void | Promise<void>;
 }
 
 export interface RunProgramResult {
@@ -298,6 +301,11 @@ export async function runCentralizedProgram(
 
   const mainWorker = workerAdapter.createWorker(initData);
   workers.set(pid, mainWorker);
+
+  // Fire onStarted callback (for interactive stdin tests)
+  if (options.onStarted) {
+    await options.onStarted(kernelWorker, pid);
+  }
 
   // Set up timeout
   const timer = setTimeout(() => {
