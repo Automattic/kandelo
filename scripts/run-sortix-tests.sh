@@ -58,30 +58,7 @@ INCLUDE_EXPECTED_FAIL=(
     # (ftw/FTW_XDEV now passes — aliased to FTW_MOUNT in ftw.h overlay)
     # (limits/GETENTROPY_MAX and NSIG_MAX now pass — added to limits.h overlay)
     # (locale/getlocalename_l now passes — added getlocalename_l implementation)
-    # -- V8 confstr/sysconf (POSIX.1-2024 issue 8)
-    "unistd/_CS_POSIX_V8_ILP32_OFF32_CFLAGS" "unistd/_CS_POSIX_V8_ILP32_OFF32_LDFLAGS"
-    "unistd/_CS_POSIX_V8_ILP32_OFF32_LIBS" "unistd/_CS_POSIX_V8_ILP32_OFFBIG_CFLAGS"
-    "unistd/_CS_POSIX_V8_ILP32_OFFBIG_LDFLAGS" "unistd/_CS_POSIX_V8_ILP32_OFFBIG_LIBS"
-    "unistd/_CS_POSIX_V8_LP64_OFF64_CFLAGS" "unistd/_CS_POSIX_V8_LP64_OFF64_LDFLAGS"
-    "unistd/_CS_POSIX_V8_LP64_OFF64_LIBS" "unistd/_CS_POSIX_V8_LPBIG_OFFBIG_CFLAGS"
-    "unistd/_CS_POSIX_V8_LPBIG_OFFBIG_LDFLAGS" "unistd/_CS_POSIX_V8_LPBIG_OFFBIG_LIBS"
-    "unistd/_CS_POSIX_V8_THREADS_CFLAGS" "unistd/_CS_POSIX_V8_THREADS_LDFLAGS"
-    "unistd/_CS_POSIX_V8_WIDTH_RESTRICTED_ENVS" "unistd/_CS_V8_ENV"
-    "unistd/_SC_V8_ILP32_OFF32" "unistd/_SC_V8_ILP32_OFFBIG"
-    "unistd/_SC_V8_LP64_OFF64" "unistd/_SC_V8_LPBIG_OFFBIG"
-    # -- New pathconf values
-    "unistd/_PC_FALLOC" "unistd/_PC_TEXTDOMAIN_MAX" "unistd/_PC_TIMESTAMP_RESOLUTION"
-    # -- Feature test macros for unimplemented optional features
-    "unistd/_POSIX_DEVICE_CONTROL" "unistd/_POSIX_PRIORITIZED_IO"
-    "unistd/_POSIX_PRIORITY_SCHEDULING" "unistd/_POSIX_SPORADIC_SERVER"
-    "unistd/_POSIX_SYNCHRONIZED_IO" "unistd/_POSIX_THREAD_PRIO_INHERIT"
-    "unistd/_POSIX_THREAD_PRIO_PROTECT" "unistd/_POSIX_THREAD_ROBUST_PRIO_INHERIT"
-    "unistd/_POSIX_THREAD_ROBUST_PRIO_PROTECT" "unistd/_POSIX_THREAD_SPORADIC_SERVER"
-    "unistd/_POSIX_TYPED_MEMORY_OBJECTS"
-    "unistd/_POSIX2_C_DEV" "unistd/_POSIX2_FORT_RUN" "unistd/_POSIX2_SW_DEV" "unistd/_POSIX2_UPE"
-    "unistd/_SC_DEVICE_CONTROL" "unistd/_SC_NSIG" "unistd/_SC_XOPEN_UUCP"
-    "unistd/_XOPEN_CRYPT" "unistd/_XOPEN_REALTIME" "unistd/_XOPEN_REALTIME_THREADS"
-    "unistd/_XOPEN_SHM" "unistd/_XOPEN_UUCP"
+    # (V8 confstr/sysconf, pathconf, feature test macros now pass — unistd.h overlay)
     # (POSIX.1-2024 langinfo ABALTMON/ALTMON, math constants, O_* flags,
     #  SIG2STR_MAX, sig2str, str2sig — all now pass after musl sysroot rebuild)
     # (wchar/wcslcat and wcslcpy now pass — added BSD wcslcpy/wcslcat implementations)

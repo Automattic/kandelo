@@ -475,6 +475,64 @@ pid_t gettid(void);
 #define _CS_POSIX_V7_THREADS_CFLAGS	1150
 #define _CS_POSIX_V7_THREADS_LDFLAGS	1151
 
+/* POSIX.1-2024 (Issue 8) V8 confstr constants */
+#define _CS_POSIX_V8_ILP32_OFF32_CFLAGS	1152
+#define _CS_POSIX_V8_ILP32_OFF32_LDFLAGS	1153
+#define _CS_POSIX_V8_ILP32_OFF32_LIBS	1154
+#define _CS_POSIX_V8_ILP32_OFFBIG_CFLAGS	1155
+#define _CS_POSIX_V8_ILP32_OFFBIG_LDFLAGS	1156
+#define _CS_POSIX_V8_ILP32_OFFBIG_LIBS	1157
+#define _CS_POSIX_V8_LP64_OFF64_CFLAGS	1158
+#define _CS_POSIX_V8_LP64_OFF64_LDFLAGS	1159
+#define _CS_POSIX_V8_LP64_OFF64_LIBS	1160
+#define _CS_POSIX_V8_LPBIG_OFFBIG_CFLAGS	1161
+#define _CS_POSIX_V8_LPBIG_OFFBIG_LDFLAGS	1162
+#define _CS_POSIX_V8_LPBIG_OFFBIG_LIBS	1163
+#define _CS_POSIX_V8_THREADS_CFLAGS	1164
+#define _CS_POSIX_V8_THREADS_LDFLAGS	1165
+#define _CS_POSIX_V8_WIDTH_RESTRICTED_ENVS	1166
+#define _CS_V8_ENV	1167
+
+/* POSIX.1-2024 V8 sysconf constants */
+#define _SC_V8_ILP32_OFF32	251
+#define _SC_V8_ILP32_OFFBIG	252
+#define _SC_V8_LP64_OFF64	253
+#define _SC_V8_LPBIG_OFFBIG	254
+
+/* Additional sysconf constants */
+#define _SC_NSIG	255
+#define _SC_DEVICE_CONTROL	256
+#define _SC_XOPEN_UUCP	257
+
+/* Additional pathconf constants */
+#define _PC_FALLOC	21
+#define _PC_TEXTDOMAIN_MAX	22
+#define _PC_TIMESTAMP_RESOLUTION	23
+
+/* Feature test macros — unsupported features (set to -1 per POSIX) */
+#define _POSIX_DEVICE_CONTROL          (-1)
+#define _POSIX_SPORADIC_SERVER         (-1)
+#define _POSIX_THREAD_SPORADIC_SERVER  (-1)
+#define _POSIX_TYPED_MEMORY_OBJECTS    (-1)
+#define _POSIX_THREAD_PRIO_INHERIT     (-1)
+#define _POSIX_THREAD_PRIO_PROTECT     (-1)
+#define _POSIX_THREAD_ROBUST_PRIO_INHERIT  (-1)
+#define _POSIX_THREAD_ROBUST_PRIO_PROTECT  (-1)
+#define _POSIX2_FORT_RUN               (-1)
+#define _POSIX2_UPE                    (-1)
+#define _XOPEN_UUCP                   (-1)
+
+/* Feature test macros — supported or partially supported features */
+#define _POSIX_PRIORITIZED_IO          _POSIX_VERSION
+#define _POSIX_PRIORITY_SCHEDULING     _POSIX_VERSION
+#define _POSIX_SYNCHRONIZED_IO         _POSIX_VERSION
+#define _POSIX2_C_DEV                  (-1)
+#define _POSIX2_SW_DEV                 (-1)
+#define _XOPEN_CRYPT                   1
+#define _XOPEN_REALTIME                1
+#define _XOPEN_REALTIME_THREADS        1
+#define _XOPEN_SHM                     1
+
 #ifdef __cplusplus
 }
 #endif
