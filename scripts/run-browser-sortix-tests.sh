@@ -53,7 +53,7 @@ BASIC_EXPECTED_FAIL=(
     "unistd/execve" "unistd/execvp" "unistd/fexecve"
     "stdlib/system"
     "signal/sigaltstack"
-    "aio/aio_error" "aio/aio_fsync"
+    "aio/aio_fsync"
     "pthread/pthread_barrierattr_setpshared" "pthread/pthread_cancel"
     "pthread/pthread_cleanup_pop" "pthread/pthread_cleanup_push"
     "pthread/pthread_condattr_setpshared"
@@ -171,46 +171,25 @@ BROWSER_MALLOC_EXPECTED_FAIL=()
 BROWSER_STDIO_EXPECTED_FAIL=()
 
 BROWSER_IO_EXPECTED_FAIL=(
-    # OFD lock reopen tests: VFS reopen semantics differ in browser
-    "ofd-setlk-rd-reopen-wr" "ofd-setlk-wr-reopen-rd" "ofd-setlk-wr-reopen-wr"
     # O_DIRECTORY with mkstemp: VFS lacks O_DIRECTORY enforcement
     "open-mkstemp-rdonly-directory" "open-mkstemp-rdonly-trunc-directory"
     "open-mkstemp-wronly-directory" "open-mkstemp-wronly-trunc-directory"
-    # tmpdir tests: /tmp directory handling differs in browser VFS
-    "open-tmpdir-rdonly-creat" "open-tmpdir-rdonly-trunc"
-    "open-tmpdir-rdwr-append" "open-tmpdir-rdwr-creat" "open-tmpdir-rdwr-directory"
-    "open-tmpdir-rdwr-trunc" "open-tmpdir-rdwr"
-    "open-tmpdir-wronly-append" "open-tmpdir-wronly-creat" "open-tmpdir-wronly-directory"
-    "open-tmpdir-wronly-trunc" "open-tmpdir-wronly"
 )
 
 BROWSER_SIGNAL_EXPECTED_FAIL=(
-    # ppoll + signal interaction: timing-sensitive tests fail in browser
-    "ppoll-block-close-raise" "ppoll-block-raise-write" "ppoll-block-raise"
-    "ppoll-block-sleep-raise-write" "ppoll-block-sleep-raise"
-    "ppoll-block-sleep-write-raise"
+    # All previously-failing ppoll tests now pass with stderr+stdout merging
 )
 
 BROWSER_PROCESS_EXPECTED_FAIL=(
-    # Process group management: some setpgid/setsid combos fail in browser
-    "fork-setpgid-invalid" "fork-setpgid-on-parent-move" "fork-setpgid-on-parent"
-    "fork-setsid-setpgid-in-parent-move" "fork-setsid-setpgid-in-parent"
-    "fork-setsid-setpgid-move" "fork-setsid-setpgid"
-    "limbo-getpgid" "limbo-setpgid"
-    "waitpid-pgid-empty-on-setpgid-rejoin" "waitpid-pgid-empty-on-setpgid"
-    "waitpid-pgid-empty-on-setsid"
+    # All previously-failing process tests now pass with stderr+stdout merging
 )
 
-# paths: only /dev/{null,zero,full,stdin,stdout,stderr}, /dev, /, /tmp, /root exist in browser VFS
+# paths: most non-existent paths now match .2 expect files (ENOENT on stderr)
+# Remaining failures: device nodes and /bin/sh not present in browser VFS
 BROWSER_PATHS_EXPECTED_FAIL=(
-    "bin-sh" "bin" "boot"
+    "bin-sh"
     "dev-console" "dev-fd" "dev-ptc" "dev-ptm" "dev-ptmx" "dev-pts"
     "dev-random" "dev-tty" "dev-urandom"
-    "etc" "lib" "proc" "run" "sbin" "srv" "sys"
-    "usr-bin-env" "usr-bin" "usr-games" "usr-include" "usr-lib"
-    "usr-libexec" "usr-man" "usr-sbin" "usr-share-man" "usr-share" "usr"
-    "var-cache" "var-empty" "var-lib" "var-lock" "var-log"
-    "var-run" "var-spool" "var-tmp" "var"
 )
 
 # ── Helpers ──────────────────────────────────────────────────────
@@ -592,11 +571,12 @@ run_runtime_suite() {
     while IFS= read -r line; do
         [[ "$line" != "{"* ]] && continue
 
-        local exitCode error duration stdout
+        local exitCode error duration stdout stderr
         exitCode=$(echo "$line" | python3 -c "import sys,json; print(json.load(sys.stdin).get('exitCode',-1))" 2>/dev/null || echo "-1")
         error=$(echo "$line" | python3 -c "import sys,json; e=json.load(sys.stdin).get('error',''); print(e if e else '')" 2>/dev/null || echo "")
         duration=$(echo "$line" | python3 -c "import sys,json; print(json.load(sys.stdin).get('durationMs',0))" 2>/dev/null || echo "0")
         stdout=$(echo "$line" | python3 -c "import sys,json; print(json.load(sys.stdin).get('stdout',''))" 2>/dev/null || echo "")
+        stderr=$(echo "$line" | python3 -c "import sys,json; print(json.load(sys.stdin).get('stderr',''))" 2>/dev/null || echo "")
 
         if [ $idx -ge ${#test_names[@]} ]; then
             break
@@ -650,8 +630,16 @@ run_runtime_suite() {
                     [ -f "$expect_file" ] || continue
                     local expected
                     expected=$(cat "$expect_file")
-                    # Build output like Node.js runner: stdout + "exit: N" if needed
+                    # Build output like Node.js runner (2>&1): combine stdout+stderr
                     local full_output="$stdout"
+                    if [ -n "$stderr" ]; then
+                        if [ -n "$full_output" ]; then
+                            full_output="${full_output}
+${stderr}"
+                        else
+                            full_output="$stderr"
+                        fi
+                    fi
                     if [ -z "$full_output" ] || [ "$exitCode" -ge 2 ] 2>/dev/null; then
                         if [ -n "$full_output" ]; then
                             full_output="${full_output}
