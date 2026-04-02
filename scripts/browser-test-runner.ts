@@ -168,6 +168,7 @@ async function main() {
   let testTimeout = DEFAULT_TIMEOUT;
   let jsonOutput = false;
   let listFile: string | null = null;
+  let reloadInterval = 3; // Default: reload every 3 tests to prevent OOM
   const paths: string[] = [];
 
   for (let i = 0; i < args.length; i++) {
@@ -178,6 +179,9 @@ async function main() {
       jsonOutput = true;
     } else if (args[i] === "--list" && args[i + 1]) {
       listFile = args[i + 1];
+      i++;
+    } else if (args[i] === "--reload-interval" && args[i + 1]) {
+      reloadInterval = parseInt(args[i + 1], 10);
       i++;
     } else {
       paths.push(args[i]);
@@ -243,11 +247,10 @@ async function main() {
       console.error("Test runner ready. Running tests...\n");
     }
 
-    // Run each test — reload page every RELOAD_INTERVAL tests to prevent OOM.
+    // Run each test — reload page every reloadInterval tests to prevent OOM.
     // Each test creates a 1GB SharedArrayBuffer (16384 pages, pre-allocated
     // for shared memory). Chrome's virtual address space fills up after ~3-4
     // tests. Reload frequently to release address space.
-    const RELOAD_INTERVAL = 3;
     const results: TestResult[] = [];
     let testsSinceReload = 0;
 
@@ -284,7 +287,7 @@ async function main() {
       }
 
       // Periodic reload to prevent OOM accumulation
-      if (testsSinceReload >= RELOAD_INTERVAL && i < wasmFiles.length - 1) {
+      if (testsSinceReload >= reloadInterval && i < wasmFiles.length - 1) {
         await waitForTestRunner(page);
         testsSinceReload = 0;
         continue;
