@@ -49,11 +49,10 @@ REGRESSION_EXPECTED_FAIL=(
     raise-race
     setenv-oom
     tls_get_new-dtv
-    # fflush-exit: pread returns EBADF after fork+_exit (pre-existing, fails on main too)
+    # fflush-exit: pread returns EBADF after fork+_exit (OFD refcount issue)
     fflush-exit
-    # Centralized mode: fork+waitpid child exit tracking (daemon-failure still fails)
+    # daemon-failure: fork+waitpid+pipe+daemon() — child exit tracking
     daemon-failure
-    # (fflush-exit now passes — asyncify fork preserves stdio state)
     # Centralized mode: exec not fully implemented
     execle-env
     # Wasm stack is opaque — signal handlers can't run on alternate stacks

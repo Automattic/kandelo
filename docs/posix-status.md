@@ -100,7 +100,7 @@ The wasm-posix-kernel uses a **centralized architecture**: a single kernel Wasm 
 | Function | Status | Notes |
 |----------|--------|-------|
 | `fork()` | Full | Centralized mode: kernel serializes full process state (FD/OFD tables, signals, environment, CWD, rlimits, brk, terminal), host spawns child Worker with copied Memory. Children re-execute from `_start` with fork return value 0. Cross-process pipes, signals, and waitpid all functional. |
-| `exec()` | Partial | Host-initiated via onExec callback. Replaces process image. Preserves PID, open fds (closes CLOEXEC), environment, CWD, signal mask. Not yet wired as kernel-initiated syscall in centralized mode. |
+| `exec()` | Full | Kernel-initiated via SYS_EXECVE (syscall 211). Host `handleExec` reads path/argv/envp from process memory, calls `onExec` callback. Replaces process image. Preserves PID, open fds (closes CLOEXEC), environment, CWD, signal mask. |
 | `waitpid()` | Full | Kernel-internal: blocks parent until child exits (WNOHANG supported). Reaps zombie processes. Supports pid>0 (specific child), pid=-1 (any child), pid=0 (same pgid), pid<-1 (specific pgid). Returns status with WIFEXITED/WEXITSTATUS. |
 | `exit()` / `_exit()` | Full | Closes all fds and dir streams, releases all fcntl locks, sets ProcessState::Exited. SIGCHLD delivered to parent. Zombie state maintained until reaped by waitpid. |
 | `getpid()` | Full | Returns pid from Process struct. |
@@ -114,7 +114,7 @@ The wasm-posix-kernel uses a **centralized architecture**: a single kernel Wasm 
 | `getsid()` | Full | Returns session ID (simulated, defaults to pid). pid=0 means self. |
 | `setsid()` | Full | Creates new session. Sets sid=pid, pgid=pid. Returns new session ID. Returns EPERM if already session leader (POSIX-compliant). |
 | `prctl()` | Partial | PR_SET_NAME and PR_GET_NAME store/retrieve thread name (16 bytes). All other operations return success (no-op). Syscall number fixed to 223 (Batch 3). |
-| `gettid()` | Partial | Returns pid (tid == pid). Threading: will return actual TID from thread table. |
+| `gettid()` | Partial | Returns pid for all threads. Thread TIDs are tracked in ProcessTable but the channel IPC only passes PID, so the kernel cannot distinguish which thread is calling. |
 | `set_tid_address()` | Partial | Returns pid, stores tidptr for thread exit notification. |
 | `set_robust_list()` | Stub | No-op. Robust futex list tracking deferred until threading is fully tested. |
 | `futex()` | Partial | FUTEX_WAIT, FUTEX_WAKE, FUTEX_REQUEUE, FUTEX_CMP_REQUEUE, FUTEX_WAKE_OP implemented. In centralized mode, WAIT returns EAGAIN (host retries via Atomics.waitAsync). Thread workers use direct Atomics.wait. |
@@ -149,7 +149,7 @@ The wasm-posix-kernel uses a **centralized architecture**: a single kernel Wasm 
 |----------|--------|-------|
 | `kill()` | Partial | Marks signal as pending. sig=0 validity check. Cross-process delivery via host_kill import and ProcessManager.deliverSignal(). Pending signals delivered at syscall boundaries. |
 | `signal()` | Full | Legacy API. Returns previous handler. Wraps sigaction() semantics. SIGKILL/SIGSTOP immutable. |
-| `sigaction()` | Full | Sets handler disposition (SIG_DFL, SIG_IGN, or function pointer) plus sa_flags and sa_mask. SIGKILL/SIGSTOP immutable. SA_RESTART supported: blocking read/write/recv/poll auto-restart instead of returning EINTR. SA_SIGINFO: flags passed to host so handler is called as `handler(signum, siginfo_ptr, ucontext_ptr)`. SA_NOCLDSTOP/SA_NOCLDWAIT stored but not yet acted upon. SIG_IGN discards pending signals; SIG_DFL discards pending signals for signals whose default action is "ignore" (e.g., SIGCHLD). **Note:** Programs must be linked with `--table-base=2 --export-table` so the host can dispatch handlers from the user program's function table (indices 0/1 reserved for SIG_DFL/SIG_IGN). |
+| `sigaction()` | Full | Sets handler disposition (SIG_DFL, SIG_IGN, or function pointer) plus sa_flags and sa_mask. SIGKILL/SIGSTOP immutable. SA_RESTART supported: blocking read/write/recv/poll auto-restart instead of returning EINTR. SA_SIGINFO: flags passed to host so handler is called as `handler(signum, siginfo_ptr, ucontext_ptr)`. SA_NOCLDWAIT auto-reaps children and suppresses SIGCHLD. SA_NOCLDSTOP stored but not yet acted upon (no job control). SIG_IGN discards pending signals; SIG_DFL discards pending signals for signals whose default action is "ignore" (e.g., SIGCHLD). **Note:** Programs must be linked with `--table-base=3 --export-table` so the host can dispatch handlers from the user program's function table (indices 0/1 reserved for SIG_DFL/SIG_IGN, index 2 reserved for `__main_void`). |
 | `sigprocmask()` | Full | Block/unblock/setmask operations on 64-bit signal mask. SIGKILL and SIGSTOP cannot be blocked per POSIX. |
 | `sigsuspend()` | Full | Atomically replaces signal mask and blocks until deliverable signal arrives. Uses SharedArrayBuffer + Atomics.wait/notify for cross-thread wake. Always returns EINTR. |
 | `pause()` | Full | Suspends until a signal is delivered. Delegates to sigsuspend with current mask. Always returns EINTR. |
@@ -171,7 +171,7 @@ The wasm-posix-kernel uses a **centralized architecture**: a single kernel Wasm 
 | `shm_open()` / `shm_unlink()` | Full | musl maps to `/dev/shm/` paths; host rewrites to tmpdir on macOS. Works with MAP_SHARED mmap. |
 | `munmap()` | Full | Removes tracked region. Page-aligned address required. Partial munmap supported: front trim, back trim, and middle split. |
 | `brk()` / `sbrk()` | Partial | Kernel-managed program break. Initial break at 0x01000000. Growing and shrinking supported. Program break inherited on fork/exec. |
-| `mprotect()` | Stub | Returns ENOSYS. Wasm linear memory has no page-level protection. |
+| `mprotect()` | Partial | Returns success (no-op). Wasm linear memory has no page-level protection, so protection changes are silently accepted. |
 | `memfd_create()` | Full | In-kernel anonymous file backed by Vec. MFD_CLOEXEC and MFD_ALLOW_SEALING flags. Supports read, write, lseek, ftruncate, fstat, mmap. |
 
 ## Directory Operations
@@ -336,7 +336,7 @@ All virtual devices return synthetic `stat()` with `S_IFCHR | 0666`, determinist
 | Function | Status | Notes |
 |----------|--------|-------|
 | `uname()` | Full | Returns sysname="wasm-posix", nodename="localhost", release="1.0.0", version="wasm-posix-kernel", machine="wasm32". 5 x 65-byte null-terminated strings. |
-| `sysconf()` | Partial | Returns _SC_PAGE_SIZE=65536 (Wasm page), _SC_OPEN_MAX=1024, _SC_NPROCESSORS_ONLN=1, _SC_CLK_TCK=100. Unknown names return EINVAL. |
+| `sysconf()` | Partial | Handles _SC_CHILD_MAX, _SC_CLK_TCK=100, _SC_PAGE_SIZE=65536, _SC_OPEN_MAX=1024, _SC_NPROCESSORS_ONLN=1, _SC_NPROCESSORS_CONF=1, _SC_MONOTONIC_CLOCK=1, _SC_THREAD_SAFE_FUNCTIONS=1, plus 100+ POSIX.1-2024 constants via musl overlay. Unknown names return EINVAL. |
 | `umask()` | Full | Set file creation mask, returns previous mask. Default 0o022. Applied in open() and mkdir(). Masked to 0o777. |
 | `getrlimit()` | Full | Returns (soft, hard) resource limits. Defaults: NOFILE=(1024,4096), STACK=(8MB,infinity), others infinity. |
 | `setrlimit()` | Partial | Sets resource limits. Validates soft <= hard. RLIMIT_NOFILE enforced via FdTable max_fds sync. RLIMIT_FSIZE enforced in write()/ftruncate() (EFBIG + SIGXFSZ). |
@@ -363,7 +363,7 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 | **EINTR partially implemented** | all | read, write, recv, poll, select return EINTR when a signal is pending during a blocking wait. close() and other non-blocking syscalls do not check. Tied to signal handler invocation gap. |
 | ~~**PIPE_BUF atomicity not enforced**~~ | pipe | **Resolved.** Naturally atomic in centralized mode — syscalls are serialized, so concurrent writes ≤ PIPE_BUF cannot interleave. |
 | ~~**O_APPEND not atomic**~~ | write | **Resolved.** Naturally atomic in centralized mode — syscalls are serialized, so seek-to-end + write cannot be interrupted by another process. |
-| ~~**sigaction() missing sa_flags**~~ | signals | **Resolved.** SA_RESTART supported (auto-restart blocking syscalls). sa_flags and sa_mask stored. SA_SIGINFO/SA_NOCLDWAIT/SA_NOCLDSTOP accepted but not yet acted upon. |
+| ~~**sigaction() missing sa_flags**~~ | signals | **Resolved.** SA_RESTART supported (auto-restart blocking syscalls). sa_flags and sa_mask stored. SA_SIGINFO handler delivery with siginfo_t. SA_NOCLDWAIT auto-reaps children. SA_NOCLDSTOP accepted but not acted upon (no job control). |
 | ~~**No signal queuing**~~ | signals | **Resolved.** RT signals (32-63) are now queued in a VecDeque; standard signals (1-31) remain coalesced per POSIX. |
 | ~~**`*at()` functions with real dirfd**~~ | filesystem | **Resolved.** All *at() syscalls now support real dirfd via stored OFD paths. |
 | ~~**No seekdir/telldir/rewinddir**~~ | directory | **Resolved.** DirStream now tracks path and position. rewinddir/telldir/seekdir implemented. |
@@ -534,7 +534,7 @@ Target use case: hosting PHP-WASM (as used by WordPress Playground) on this kern
 | Gap | Subsystem | Description | Difficulty |
 |-----|-----------|-------------|------------|
 | ~~Guest-initiated `fork()`~~ | process | **Done.** fork() works as a kernel syscall in centralized mode. Children re-execute from `_start` with forked state. Cross-process pipes and signals functional. | ~~Hard~~ |
-| **Guest-initiated `exec()`** | process | exec() exists as host callback but not yet wired as a kernel-initiated syscall path in centralized mode. | Hard |
+| ~~**Guest-initiated `exec()`**~~ | process | **Done.** exec() wired as SYS_EXECVE (syscall 211) in centralized mode. Host `handleExec` reads path/argv/envp from process memory, calls `onExec` callback. Fork+exec tested. | ~~Hard~~ |
 | ~~Blocking pipe reads with timeout~~ | pipe | **Done.** Pipes support blocking reads/writes with EINTR on signal delivery. O_NONBLOCK returns EAGAIN. | ~~Medium~~ |
 
 ### Phase D — Browser persistence + PHP compilation
@@ -586,19 +586,17 @@ All tests pass (0 unexpected failures). XFAIL (expected failures) and TIME (time
 
 ### Known Unfixable Failures
 
-These require features fundamentally unavailable in single-threaded Wasm:
+These require features fundamentally unavailable in the Wasm architecture:
 
 - **Wasm FP exceptions (110 math tests):** WebAssembly has no floating-point exception flags (`fenv.h`). All `fe*` math tests fail. `long double` variants pass because they use software fp128.
-- **No pthreads (17+ tests):** `pthread_create`, `pthread_cancel`, `pthread_mutex`, `sem_init`, etc.
-- **No fork/vfork (5+ tests):** `daemon-failure`, `fflush-exit`, `spawn`, `vfork`.
-- **No exec + /bin/sh (1 test):** `execle-env` requires a real shell.
-- **No SysV IPC (3 tests):** `ipc_msg`, `ipc_sem`, `ipc_shm` — ENOSYS by design.
-- **No dlopen/TLS (1+ tests):** `tls_get_new-dtv_dso`.
-- **No stack switching (1 test):** `sigaltstack` — signal handler runs but Wasm cannot switch stacks.
+- **No pthread_cancel:** Wasm has no async cancellation mechanism or cancel-point assembly. `pthread_create` works; `pthread_cancel` does not.
+- **No exec + /bin/sh:** `popen`, `system`, `wordexp`, `execle-env` require a shell binary registered at `/bin/sh`. `posix_spawn` tests require exec with spawnable binaries.
+- **No dlopen/TLS:** `tls_get_new-dtv_dso` requires loading a shared library with TLS at runtime.
+- **No stack switching:** `sigaltstack` — signal handler runs but Wasm cannot switch stacks.
 
 ### Linker Requirements for Signal Handlers
 
 Programs must be linked with two extra flags for signal handler dispatch to work:
 
-- `--table-base=2`: Reserves function table indices 0 (SIG_DFL) and 1 (SIG_IGN) so they don't collide with real C function pointers.
+- `--table-base=3`: Reserves function table indices 0 (SIG_DFL), 1 (SIG_IGN), and 2 (`__main_void` wrapper) so they don't collide with real C function pointers.
 - `--export-table`: Exports `__indirect_function_table` so the host can look up handler functions to call them.

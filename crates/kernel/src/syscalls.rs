@@ -5763,7 +5763,7 @@ pub fn sys_uname(buf: &mut [u8]) -> Result<(), Errno> {
 pub fn sys_sysconf(name: i32) -> Result<i64, Errno> {
     match name {
         0 => Ok(4096),   // _SC_ARG_MAX
-        1 => Ok(0),      // _SC_CHILD_MAX (no fork)
+        1 => Ok(0),      // _SC_CHILD_MAX (unspecified)
         2 => Ok(100),    // _SC_CLK_TCK
         4 => Ok(1024),   // _SC_OPEN_MAX
         6 => Ok(1),      // _SC_NPROCESSORS_ONLN
