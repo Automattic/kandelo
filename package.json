@@ -7,6 +7,7 @@
     "wordpress:benchmark": "npx tsx examples/wordpress/perf/benchmark.ts"
   },
   "devDependencies": {
+    "playwright": "^1.59.1",
     "tsx": "^4.21.0"
   }
 }

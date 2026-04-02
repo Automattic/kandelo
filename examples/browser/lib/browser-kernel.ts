@@ -516,6 +516,26 @@ export class BrowserKernel {
     return this.kernelWorker;
   }
 
+  /** Destroy the kernel and release all resources. */
+  async destroy(): Promise<void> {
+    // Terminate all process workers
+    for (const [pid, info] of this.processes) {
+      if (info.worker) {
+        await info.worker.terminate().catch(() => {});
+      }
+      try {
+        this.kernelWorker.unregisterProcess(pid);
+      } catch {}
+    }
+    this.processes.clear();
+    this.exitResolvers.clear();
+
+    // Clear kernel references to allow GC
+    this.kernelInstance = null;
+    this.kernelMemory = null;
+    (this as any).kernelWorker = null;
+  }
+
   // --- Private handlers ---
 
   private async handleFork(
