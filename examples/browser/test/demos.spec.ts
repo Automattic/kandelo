@@ -214,6 +214,17 @@ test("@slow wordpress: install, login, and load dashboard", async ({
   page,
 }) => {
   test.setTimeout(600_000);
+
+  // Capture browser console for debugging
+  const consoleMessages: string[] = [];
+  page.on("console", (msg) => {
+    const text = `[${msg.type()}] ${msg.text()}`;
+    consoleMessages.push(text);
+  });
+  page.on("pageerror", (err) => {
+    consoleMessages.push(`[pageerror] ${err.message}`);
+  });
+
   await gotoOrSkip(page, "/pages/wordpress/");
 
   await page.click("#start");
@@ -228,9 +239,19 @@ test("@slow wordpress: install, login, and load dashboard", async ({
   // The iframe navigates to /app/ which WordPress redirects to the install page.
   const frame = page.frameLocator("#frame");
 
-  await expect(
-    frame.locator("form#setup, form#language-chooser, .wp-core-ui").first(),
-  ).toBeVisible({ timeout: 120_000 });
+  try {
+    await expect(
+      frame.locator("form#setup, form#language-chooser, .wp-core-ui").first(),
+    ).toBeVisible({ timeout: 120_000 });
+  } catch (e) {
+    // Dump console messages on failure
+    const errors = consoleMessages.filter(m => m.includes("error") || m.includes("Error") || m.includes("Maximum") || m.includes("stack") || m.includes("crash") || m.includes("502") || m.includes("fork"));
+    console.log("=== BROWSER CONSOLE ERRORS ===");
+    for (const msg of errors.slice(-50)) console.log(msg);
+    console.log("=== ALL CONSOLE (last 30) ===");
+    for (const msg of consoleMessages.slice(-30)) console.log(msg);
+    throw e;
+  }
 
   // If we land on the language chooser, skip past it
   if ((await frame.locator("form#language-chooser").count()) > 0) {
@@ -253,9 +274,14 @@ test("@slow wordpress: install, login, and load dashboard", async ({
     await pass2Field.fill("testpass123");
   }
   // Check the "Confirm use of weak password" checkbox if visible.
+  // WordPress JS may hide this element, so use a short timeout.
   const weakPw = frame.locator("#pw_weak, .pw-weak input[type='checkbox']");
-  if ((await weakPw.count()) > 0 && await weakPw.isVisible().catch(() => false)) {
-    await weakPw.check();
+  if ((await weakPw.count()) > 0) {
+    try {
+      await weakPw.check({ timeout: 5000 });
+    } catch {
+      // Checkbox hidden by WordPress JS — not needed
+    }
   }
 
   await frame.locator("#admin_email").fill("admin@example.com");
@@ -306,6 +332,19 @@ test("@slow wordpress: install, login, and load dashboard", async ({
   await expect(
     frame.locator("#adminmenu").first(),
   ).toBeAttached({ timeout: 30_000 });
+
+  // --- Navigate to the Site Editor ---
+  await page.evaluate(() => {
+    const f = document.getElementById("frame") as HTMLIFrameElement;
+    f.src = "/app/wp-admin/site-editor.php";
+  });
+
+  // The site editor loads the Gutenberg block editor via heavy JS bundles.
+  // Wait for the editor interface to appear — the .edit-site class on the
+  // body or the editor iframe/canvas indicates it loaded.
+  await expect(
+    frame.locator(".edit-site, .edit-site-layout, #site-editor, .interface-interface-skeleton").first(),
+  ).toBeAttached({ timeout: 300_000 });
 });
 
 // ─── LAMP ───────────────────────────────────────────────────────────

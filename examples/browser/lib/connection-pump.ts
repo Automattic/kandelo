@@ -117,6 +117,10 @@ function pumpResponse(
     const data = kernel.pipeRead(pid, sendPipeIdx);
     if (data) {
       chunks.push(data);
+      // Wake any process blocked writing to this pipe — our read freed
+      // buffer space, so a blocked writer (e.g. nginx sending a large
+      // response) can now continue.
+      kernel.wakeBlockedWriters(sendPipeIdx);
     }
 
     const writeOpen = kernel.pipeIsWriteOpen(pid, sendPipeIdx);

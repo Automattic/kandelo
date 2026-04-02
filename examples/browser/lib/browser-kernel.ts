@@ -451,7 +451,7 @@ export class BrowserKernel {
       pid: number,
       pipeIdx: number,
     ) => number;
-    return fn(pid, pipeIdx) !== 0;
+    return fn(pid, pipeIdx) === 1;
   }
 
   /**
@@ -465,6 +465,25 @@ export class BrowserKernel {
       for (const reader of readers) {
         if (kw.processes.has(reader.pid)) {
           kw.retrySyscall(reader.channel);
+        }
+      }
+    }
+    kw.scheduleWakeBlockedRetries();
+  }
+
+  /**
+   * Wake any process blocked on a write to the given pipe.
+   * Called after pipeRead drains data from a pipe — the freed buffer space
+   * allows blocked writers to continue.
+   */
+  wakeBlockedWriters(pipeIdx: number): void {
+    const kw = this.kernelWorker as any;
+    const writers = kw.pendingPipeWriters?.get(pipeIdx);
+    if (writers && writers.length > 0) {
+      kw.pendingPipeWriters.delete(pipeIdx);
+      for (const writer of writers) {
+        if (kw.processes.has(writer.pid)) {
+          kw.retrySyscall(writer.channel);
         }
       }
     }
