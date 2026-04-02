@@ -1,31 +1,31 @@
-#include <errno.h>
+/* POSIX.1-2024 clock-aware wait functions.
+ * Delegate to the timed variants, ignoring the clock parameter
+ * (all clocks are equivalent in Wasm — single monotonic time source). */
 
-/* Stub implementations for POSIX.1-2024 clock-aware wait functions.
- * These exist to provide linkable symbols so programs can compile.
- * They return EINVAL since no clock is actually supported. */
-
-typedef void *restrict_ptr;
 struct timespec;
-struct __pthread_mutex_s;
-struct __pthread_cond_s;
-struct __pthread_rwlock_s;
 
-int pthread_mutex_clocklock(void *restrict m, int clock, const void *restrict at)
+/* Forward-declare the timed variants (defined in musl) */
+int pthread_mutex_timedlock(void *restrict, const struct timespec *restrict);
+int pthread_cond_timedwait(void *restrict, void *restrict, const struct timespec *restrict);
+int pthread_rwlock_timedrdlock(void *restrict, const struct timespec *restrict);
+int pthread_rwlock_timedwrlock(void *restrict, const struct timespec *restrict);
+
+int pthread_mutex_clocklock(void *restrict m, int clock, const struct timespec *restrict at)
 {
-	return EINVAL;
+	return pthread_mutex_timedlock(m, at);
 }
 
-int pthread_cond_clockwait(void *restrict c, void *restrict m, int clock, const void *restrict at)
+int pthread_cond_clockwait(void *restrict c, void *restrict m, int clock, const struct timespec *restrict at)
 {
-	return EINVAL;
+	return pthread_cond_timedwait(c, m, at);
 }
 
-int pthread_rwlock_clockrdlock(void *restrict rw, int clock, const void *restrict at)
+int pthread_rwlock_clockrdlock(void *restrict rw, int clock, const struct timespec *restrict at)
 {
-	return EINVAL;
+	return pthread_rwlock_timedrdlock(rw, at);
 }
 
-int pthread_rwlock_clockwrlock(void *restrict rw, int clock, const void *restrict at)
+int pthread_rwlock_clockwrlock(void *restrict rw, int clock, const struct timespec *restrict at)
 {
-	return EINVAL;
+	return pthread_rwlock_timedwrlock(rw, at);
 }
