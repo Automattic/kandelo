@@ -160,6 +160,7 @@ export class BrowserKernel {
     this.memfs.mkdir("/tmp", 0o777);
     this.memfs.mkdir("/home", 0o755);
     this.memfs.mkdir("/dev", 0o755);
+    this.memfs.mkdir("/dev/shm", 0o1777);
     this.memfs.mkdir("/etc", 0o755);
 
     // Populate /etc/services for getservbyname/getservbyport

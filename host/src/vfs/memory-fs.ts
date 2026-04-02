@@ -35,8 +35,8 @@ export class MemoryFileSystem implements FileSystemBackend {
     };
   }
 
-  open(path: string, flags: number, _mode: number): number {
-    return this.fs.open(path, flags);
+  open(path: string, flags: number, mode: number): number {
+    return this.fs.open(path, flags, mode);
   }
 
   close(handle: number): number {
@@ -93,8 +93,9 @@ export class MemoryFileSystem implements FileSystemBackend {
   // SharedFS is memory-backed, fsync is a no-op
   fsync(_handle: number): void {}
 
-  // SharedFS doesn't track permissions beyond mode — these are no-ops
-  fchmod(_handle: number, _mode: number): void {}
+  fchmod(handle: number, mode: number): void {
+    this.fs.fchmod(handle, mode);
+  }
   fchown(_handle: number, _uid: number, _gid: number): void {}
 
   stat(path: string): StatResult {
@@ -106,8 +107,8 @@ export class MemoryFileSystem implements FileSystemBackend {
     return this.stat(path);
   }
 
-  mkdir(path: string, _mode: number): void {
-    this.fs.mkdir(path);
+  mkdir(path: string, mode: number): void {
+    this.fs.mkdir(path, mode);
   }
 
   rmdir(path: string): void {
@@ -122,9 +123,8 @@ export class MemoryFileSystem implements FileSystemBackend {
     this.fs.rename(oldPath, newPath);
   }
 
-  // SharedFS doesn't support hard links
-  link(_existingPath: string, _newPath: string): void {
-    throw new Error("ENOSYS: hard links not supported in MemoryFileSystem");
+  link(existingPath: string, newPath: string): void {
+    this.fs.link(existingPath, newPath);
   }
 
   symlink(target: string, path: string): void {
@@ -135,8 +135,9 @@ export class MemoryFileSystem implements FileSystemBackend {
     return this.fs.readlink(path);
   }
 
-  // SharedFS doesn't track permissions — no-ops
-  chmod(_path: string, _mode: number): void {}
+  chmod(path: string, mode: number): void {
+    this.fs.chmod(path, mode);
+  }
   chown(_path: string, _uid: number, _gid: number): void {}
 
   // access: check if path exists by stat'ing it (stat throws on error)
@@ -144,10 +145,8 @@ export class MemoryFileSystem implements FileSystemBackend {
     this.fs.stat(path);
   }
 
-  utimensat(path: string, _atimeSec: number, _atimeNsec: number, _mtimeSec: number, _mtimeNsec: number): void {
-    // Verify path exists (throws ENOENT if not)
-    this.fs.stat(path);
-    // SharedFS doesn't expose timestamp mutation — no-op after existence check
+  utimensat(path: string, atimeSec: number, atimeNsec: number, mtimeSec: number, mtimeNsec: number): void {
+    this.fs.utimens(path, atimeSec, atimeNsec, mtimeSec, mtimeNsec);
   }
 
   opendir(path: string): number {

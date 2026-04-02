@@ -126,16 +126,12 @@ BROWSER_BASIC_EXPECTED_FAIL=(
     "sys_mman/shm_open" "sys_mman/shm_unlink"
     # Terminal: no terminal device
     "stdlib/grantpt" "stdlib/posix_openpt"
-    # VFS doesn't support chmod/utimensat
-    "sys_stat/chmod" "sys_stat/fchmod" "sys_stat/fchmodat"
-    "sys_stat/fstatat" "sys_stat/futimens" "sys_stat/utimensat"
-    "sys_time/utimes"
+    # fstatat: test creates files in /tmp which may not exist
+    "sys_stat/fstatat"
     # No tty
     "unistd/getlogin"
     # faccessat: access checking differs in VFS
     "unistd/faccessat"
-    # Hard links not supported
-    "unistd/link" "unistd/linkat"
     # aio_read: timeout
     "aio/aio_read"
 )

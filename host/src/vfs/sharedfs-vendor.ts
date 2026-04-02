@@ -55,6 +55,7 @@ const DIRENT_HEADER_SIZE = 8;
 const DIRENT_ALIGN = 4;
 
 // Error codes
+export const EPERM = -1;
 export const ENOENT = -2;
 export const EIO = -5;
 export const EBADF = -9;
@@ -93,6 +94,9 @@ const INO_LOCK_STATE = 0;
 const INO_MODE = 8;
 const INO_LINK_COUNT = 12;
 const INO_SIZE = 16; // uint64
+const INO_MTIME = 24; // uint64 (milliseconds since epoch)
+const INO_CTIME = 32; // uint64 (milliseconds since epoch)
+const INO_ATIME = 40; // uint64 (milliseconds since epoch)
 const INO_DIRECT = 48; // 10 * 4 bytes
 const INO_INDIRECT = 88;
 const INO_DOUBLE_INDIRECT = 92;
@@ -1152,15 +1156,15 @@ export class SharedFS {
       mode: this.r32(off + INO_MODE),
       linkCount: this.r32(off + INO_LINK_COUNT),
       size: this.r64(off + INO_SIZE),
-      mtime: this.r64(off + 24),
-      ctime: this.r64(off + 32),
-      atime: this.r64(off + 40),
+      mtime: this.r64(off + INO_MTIME),
+      ctime: this.r64(off + INO_CTIME),
+      atime: this.r64(off + INO_ATIME),
     };
   }
 
   // ── Public API: File operations ──────────────────────────────────
 
-  open(path: string, flags: number): number {
+  open(path: string, flags: number, createMode: number = 0o644): number {
     const accMode = flags & O_ACCMODE;
     const creating = (flags & O_CREAT) !== 0;
 
@@ -1181,9 +1185,13 @@ export class SharedFS {
           if (newIno < 0) throw new SFSError(ENOSPC);
 
           const newOff = this.inodeOffset(newIno);
-          this.w32(newOff + INO_MODE, S_IFREG | 0o644);
+          this.w32(newOff + INO_MODE, S_IFREG | (createMode & 0o7777));
           this.w32(newOff + INO_LINK_COUNT, 1);
           this.w64(newOff + INO_SIZE, 0);
+          const now = Date.now();
+          this.w64(newOff + INO_ATIME, now);
+          this.w64(newOff + INO_MTIME, now);
+          this.w64(newOff + INO_CTIME, now);
 
           const rc = this.dirAddEntry(parentIno, nameBytes, newIno);
           if (rc < 0) {
@@ -1455,6 +1463,10 @@ export class SharedFS {
       this.w32(newOff + INO_MODE, S_IFDIR | mode);
       this.w32(newOff + INO_LINK_COUNT, 2);
       this.w64(newOff + INO_SIZE, 0);
+      const now = Date.now();
+      this.w64(newOff + INO_ATIME, now);
+      this.w64(newOff + INO_MTIME, now);
+      this.w64(newOff + INO_CTIME, now);
 
       // Allocate data block for . and ..
       const blk = this.blockAllocWithGrow();
@@ -1572,6 +1584,86 @@ export class SharedFS {
       if (rc < 0) {
         this.inodeFree(newIno);
         throw new SFSError(rc);
+      }
+    } finally {
+      this.inodeWriteUnlock(parentIno);
+    }
+  }
+
+  chmod(path: string, mode: number): void {
+    const ino = this.pathResolve(path, true);
+    if (ino < 0) throw new SFSError(ino);
+    this.inodeWriteLock(ino);
+    try {
+      const off = this.inodeOffset(ino);
+      const oldMode = this.r32(off + INO_MODE);
+      this.w32(off + INO_MODE, (oldMode & S_IFMT) | (mode & 0o7777));
+      this.w64(off + INO_CTIME, Date.now());
+    } finally {
+      this.inodeWriteUnlock(ino);
+    }
+  }
+
+  fchmod(fd: number, mode: number): void {
+    const entry = this.fdGet(fd);
+    if (!entry) throw new SFSError(EBADF);
+    this.inodeWriteLock(entry.ino);
+    try {
+      const off = this.inodeOffset(entry.ino);
+      const oldMode = this.r32(off + INO_MODE);
+      this.w32(off + INO_MODE, (oldMode & S_IFMT) | (mode & 0o7777));
+      this.w64(off + INO_CTIME, Date.now());
+    } finally {
+      this.inodeWriteUnlock(entry.ino);
+    }
+  }
+
+  utimens(path: string, atimeSec: number, atimeNsec: number, mtimeSec: number, mtimeNsec: number): void {
+    const ino = this.pathResolve(path, true);
+    if (ino < 0) throw new SFSError(ino);
+    this.inodeWriteLock(ino);
+    try {
+      const off = this.inodeOffset(ino);
+      const UTIME_NOW = 0x3fffffff;
+      const UTIME_OMIT = 0x3ffffffe;
+      const now = Date.now();
+      if (atimeNsec !== UTIME_OMIT) {
+        const atimeMs = atimeNsec === UTIME_NOW ? now : atimeSec * 1000 + Math.floor(atimeNsec / 1_000_000);
+        this.w64(off + INO_ATIME, atimeMs);
+      }
+      if (mtimeNsec !== UTIME_OMIT) {
+        const mtimeMs = mtimeNsec === UTIME_NOW ? now : mtimeSec * 1000 + Math.floor(mtimeNsec / 1_000_000);
+        this.w64(off + INO_MTIME, mtimeMs);
+      }
+      this.w64(off + INO_CTIME, now);
+    } finally {
+      this.inodeWriteUnlock(ino);
+    }
+  }
+
+  link(existingPath: string, newPath: string): void {
+    const srcIno = this.pathResolve(existingPath, true);
+    if (srcIno < 0) throw new SFSError(srcIno);
+    const srcOff = this.inodeOffset(srcIno);
+    const srcMode = this.r32(srcOff + INO_MODE);
+    if ((srcMode & S_IFMT) === S_IFDIR) throw new SFSError(EPERM);
+
+    const { parentIno, name } = this.pathResolveParent(newPath);
+    const nameBytes = encoder.encode(name);
+
+    this.inodeWriteLock(parentIno);
+    try {
+      const existing = this.dirLookup(parentIno, nameBytes);
+      if (existing >= 0) throw new SFSError(EEXIST);
+      const rc = this.dirAddEntry(parentIno, nameBytes, srcIno);
+      if (rc < 0) throw new SFSError(rc);
+      this.inodeWriteLock(srcIno);
+      try {
+        const linkCount = this.r32(srcOff + INO_LINK_COUNT);
+        this.w32(srcOff + INO_LINK_COUNT, linkCount + 1);
+        this.w64(srcOff + INO_CTIME, Date.now());
+      } finally {
+        this.inodeWriteUnlock(srcIno);
       }
     } finally {
       this.inodeWriteUnlock(parentIno);
