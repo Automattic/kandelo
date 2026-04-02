@@ -39,12 +39,8 @@ INCLUDE_EXPECTED_FAIL=(
     #  sys/types.h overlays + posix_getdents stub)
     # (posix_tnode, tdelete/tfind/tsearch/twalk now pass — search.h overlay)
     # (posix_spawn_file_actions_addchdir/addfchdir now pass — spawn.h overlay + stubs)
-    # -- Clock-aware pthread/semaphore waits
-    "pthread/pthread_cond_clockwait" "pthread/pthread_mutex_clocklock"
-    "pthread/pthread_rwlock_clockrdlock" "pthread/pthread_rwlock_clockwrlock"
-    "semaphore/sem_clockwait"
-    # -- New regex/fnmatch/ftw flags
-    "regex/REG_MINIMAL"
+    # (pthread clock-aware waits now pass — pthread.h/semaphore.h overlays + stubs)
+    # (REG_MINIMAL now passes — regex.h overlay)
     # (fnmatch/FNM_IGNORECASE now passes — aliased to FNM_CASEFOLD in fnmatch.h overlay)
     # (ftw/FTW_XDEV now passes — aliased to FTW_MOUNT in ftw.h overlay)
     # (limits/GETENTROPY_MAX and NSIG_MAX now pass — added to limits.h overlay)
@@ -55,17 +51,11 @@ INCLUDE_EXPECTED_FAIL=(
     # (wchar/wcslcat and wcslcpy now pass — added BSD wcslcpy/wcslcat implementations)
     # -- Headers/features not in musl
     "devctl/posix_devctl" "devctl/size_t"      # device control (Sortix/2024)
-    "libintl/dcgettext_l" "libintl/dcngettext_l" "libintl/dgettext_l"
-    "libintl/dngettext_l" "libintl/gettext_l" "libintl/locale_t" "libintl/ngettext_l"
-    "ndbm/datum" "ndbm/datum-dptr" "ndbm/datum-dsize" "ndbm/DBM"
-    "ndbm/dbm_clearerr" "ndbm/dbm_close" "ndbm/dbm_delete" "ndbm/dbm_error"
-    "ndbm/dbm_fetch" "ndbm/dbm_firstkey" "ndbm/DBM_INSERT" "ndbm/dbm_nextkey"
-    "ndbm/dbm_open" "ndbm/DBM_REPLACE" "ndbm/dbm_store" "ndbm/mode_t" "ndbm/size_t"
+    # (libintl _l variants now pass — libintl.h overlay + stubs)
+    # (ndbm now passes — ndbm.h overlay + stubs)
     # (Dl_info_t and dladdr now pass — dlfcn.h overlay with Dl_info_t typedef + dladdr stub)
-    "sched/SCHED_SPORADIC" "sched/struct-sched_param-sched_ss_init_budget"
-    "sched/struct-sched_param-sched_ss_low_priority"
-    "sched/struct-sched_param-sched_ss_max_repl"
-    "sched/struct-sched_param-sched_ss_repl_period"
+    # (SCHED_SPORADIC + sched_param fields now pass — sched.h overlay)
+    # (REG_MINIMAL now passes — regex.h overlay)
     # (typed memory objects now pass — sys/mman.h overlay + stubs)
     # (sys_shm/intptr_t and SHM_FAILED now pass — added to sys/shm.h overlay)
     # (sys_stat/struct-stat-st_size now passes — fixed st_size type to long long)
@@ -75,8 +65,8 @@ INCLUDE_EXPECTED_FAIL=(
 BASIC_EXPECTED_FAIL=(
     # -- Headers/libraries not available in musl or Wasm
     "devctl/posix_devctl"                                 # device control (2024)
-    "libintl/bindtextdomain" "libintl/dcgettext_l" "libintl/dcngettext_l"
-    "libintl/dgettext_l" "libintl/dngettext_l" "libintl/gettext_l" "libintl/ngettext_l"
+    "libintl/bindtextdomain"
+    # (libintl _l variants now pass — stubs delegate to non-_l versions)
     "ndbm/dbm_clearerr" "ndbm/dbm_close" "ndbm/dbm_delete" "ndbm/dbm_error"
     "ndbm/dbm_fetch" "ndbm/dbm_firstkey" "ndbm/dbm_nextkey" "ndbm/dbm_open" "ndbm/dbm_store"
     "nl_types/catclose" "nl_types/catgets" "nl_types/catopen"
@@ -164,7 +154,7 @@ BASIC_EXPECTED_FAIL=(
     "spawn/posix_spawn_file_actions_addchdir" "spawn/posix_spawn_file_actions_addclose"
     "spawn/posix_spawn_file_actions_adddup2" "spawn/posix_spawn_file_actions_addfchdir"
     "spawn/posix_spawn_file_actions_addopen" "spawn/posix_spawn_file_actions_init"
-    "spawn/posix_spawnattr_getschedparam" "spawn/posix_spawnattr_getschedpolicy"
+    # (posix_spawnattr_getschedparam/getschedpolicy now pass — override musl ENOSYS stubs)
     "spawn/posix_spawnattr_setflags" "spawn/posix_spawnattr_setpgroup"
     "spawn/posix_spawnattr_setschedparam" "spawn/posix_spawnattr_setschedpolicy"
     "spawn/posix_spawnattr_setsigdefault" "spawn/posix_spawnattr_setsigmask"

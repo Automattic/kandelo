@@ -21,28 +21,19 @@ KERNEL_WASM="$REPO_ROOT/host/wasm/wasm_posix_kernel.wasm"
 
 # ── Expected failures (same as Node.js version) ──────────────────────
 INCLUDE_EXPECTED_FAIL=(
-    "pthread/pthread_cond_clockwait" "pthread/pthread_mutex_clocklock"
-    "pthread/pthread_rwlock_clockrdlock" "pthread/pthread_rwlock_clockwrlock"
-    "semaphore/sem_clockwait"
-    "regex/REG_MINIMAL"
+    # (pthread clock-aware waits now pass — pthread.h/semaphore.h overlays + stubs)
+    # (REG_MINIMAL now passes — regex.h overlay)
     "devctl/posix_devctl" "devctl/size_t"
-    "libintl/dcgettext_l" "libintl/dcngettext_l" "libintl/dgettext_l"
-    "libintl/dngettext_l" "libintl/gettext_l" "libintl/locale_t" "libintl/ngettext_l"
-    "ndbm/datum" "ndbm/datum-dptr" "ndbm/datum-dsize" "ndbm/DBM"
-    "ndbm/dbm_clearerr" "ndbm/dbm_close" "ndbm/dbm_delete" "ndbm/dbm_error"
-    "ndbm/dbm_fetch" "ndbm/dbm_firstkey" "ndbm/DBM_INSERT" "ndbm/dbm_nextkey"
-    "ndbm/dbm_open" "ndbm/DBM_REPLACE" "ndbm/dbm_store" "ndbm/mode_t" "ndbm/size_t"
-    "sched/SCHED_SPORADIC" "sched/struct-sched_param-sched_ss_init_budget"
-    "sched/struct-sched_param-sched_ss_low_priority"
-    "sched/struct-sched_param-sched_ss_max_repl"
-    "sched/struct-sched_param-sched_ss_repl_period"
+    # (libintl _l variants now pass — libintl.h overlay + stubs)
+    # (ndbm now passes — ndbm.h overlay + stubs)
+    # (SCHED_SPORADIC + sched_param fields now pass — sched.h overlay)
     # (typed memory objects now pass — sys/mman.h overlay + stubs)
 )
 
 BASIC_EXPECTED_FAIL=(
     "devctl/posix_devctl"
-    "libintl/bindtextdomain" "libintl/dcgettext_l" "libintl/dcngettext_l"
-    "libintl/dgettext_l" "libintl/dngettext_l" "libintl/gettext_l" "libintl/ngettext_l"
+    "libintl/bindtextdomain"
+    # (libintl _l variants now pass — stubs delegate to non-_l versions)
     "ndbm/dbm_clearerr" "ndbm/dbm_close" "ndbm/dbm_delete" "ndbm/dbm_error"
     "ndbm/dbm_fetch" "ndbm/dbm_firstkey" "ndbm/dbm_nextkey" "ndbm/dbm_open" "ndbm/dbm_store"
     "nl_types/catclose" "nl_types/catgets" "nl_types/catopen"
@@ -81,7 +72,7 @@ BASIC_EXPECTED_FAIL=(
     "spawn/posix_spawn_file_actions_addchdir" "spawn/posix_spawn_file_actions_addclose"
     "spawn/posix_spawn_file_actions_adddup2" "spawn/posix_spawn_file_actions_addfchdir"
     "spawn/posix_spawn_file_actions_addopen" "spawn/posix_spawn_file_actions_init"
-    "spawn/posix_spawnattr_getschedparam" "spawn/posix_spawnattr_getschedpolicy"
+    # (posix_spawnattr_getschedparam/getschedpolicy now pass — override musl ENOSYS stubs)
     "spawn/posix_spawnattr_setflags" "spawn/posix_spawnattr_setpgroup"
     "spawn/posix_spawnattr_setschedparam" "spawn/posix_spawnattr_setschedpolicy"
     "spawn/posix_spawnattr_setsigdefault" "spawn/posix_spawnattr_setsigmask"
