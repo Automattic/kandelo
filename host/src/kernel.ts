@@ -56,6 +56,23 @@ function negErrno(err: unknown): number {
       case "ETXTBSY": return -26;
     }
   }
+  // Check error message for errno names (e.g. plain Error("ENOENT") from DeviceFS)
+  if (err instanceof Error) {
+    const msg = err.message;
+    if (msg.startsWith("ENOENT")) return -2;
+    if (msg.startsWith("EACCES")) return -13;
+    if (msg.startsWith("EPERM")) return -1;
+    if (msg.startsWith("EEXIST")) return -17;
+    if (msg.startsWith("ENOTDIR")) return -20;
+    if (msg.startsWith("EISDIR")) return -21;
+    if (msg.startsWith("EINVAL")) return -22;
+    if (msg.startsWith("ENOSPC")) return -28;
+    if (msg.startsWith("ENOTEMPTY")) return -39;
+    if (msg.startsWith("EBADF")) return -9;
+    if (msg.startsWith("ENOSYS")) return -38;
+    if (msg.startsWith("ENXIO")) return -6;
+    if (msg.startsWith("EXDEV")) return -18;
+  }
   return -5; // EIO
 }
 
