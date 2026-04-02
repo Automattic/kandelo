@@ -46,6 +46,10 @@ if [ ! -f "$SYSROOT/lib/libssl.a" ]; then
     OPENSSL_DIR="$LIBS_DIR/openssl/openssl-install"
     cp -r "$OPENSSL_DIR/include/openssl" "$SYSROOT/include/"
     cp "$OPENSSL_DIR/lib/libssl.a" "$OPENSSL_DIR/lib/libcrypto.a" "$SYSROOT/lib/"
+    mkdir -p "$SYSROOT/lib/pkgconfig"
+    if [ -d "$OPENSSL_DIR/lib/pkgconfig" ]; then
+        cp "$OPENSSL_DIR/lib/pkgconfig/"*.pc "$SYSROOT/lib/pkgconfig/"
+    fi
 fi
 
 # libxml2
@@ -55,6 +59,11 @@ if [ ! -f "$SYSROOT/lib/libxml2.a" ]; then
     LIBXML2_DIR="$LIBS_DIR/libxml2/libxml2-install"
     cp -r "$LIBXML2_DIR/include/libxml" "$SYSROOT/include/"
     cp "$LIBXML2_DIR/lib/libxml2.a" "$SYSROOT/lib/"
+    mkdir -p "$SYSROOT/lib/pkgconfig"
+    if [ -f "$LIBXML2_DIR/lib/pkgconfig/libxml-2.0.pc" ]; then
+        sed "s|^prefix=.*|prefix=$SYSROOT|" "$LIBXML2_DIR/lib/pkgconfig/libxml-2.0.pc" \
+            > "$SYSROOT/lib/pkgconfig/libxml-2.0.pc"
+    fi
 fi
 
 # Download PHP source
@@ -112,7 +121,8 @@ if [ ! -f Makefile ]; then
         --enable-xmlwriter \
         --cache-file="$SCRIPT_DIR/php-fpm-config.cache" \
         --prefix="/usr/local/php" \
-        CFLAGS="-O2 -DZEND_USE_ASM_ARITHMETIC=0"
+        CFLAGS="-O2 -gline-tables-only -DZEND_USE_ASM_ARITHMETIC=0" \
+        LDFLAGS="--no-wasm-opt"
 
     # Patch config.h
     echo "==> Patching main/php_config.h for Wasm..."
@@ -146,18 +156,27 @@ make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" fpm
 cp sapi/fpm/php-fpm "$SCRIPT_DIR/php-fpm.wasm"
 
 # Asyncify for fork support (FPM forks worker children).
-# Use asyncify-onlylist to restrict instrumentation to the ~30 functions on
-# the actual fork call path.  Without this, asyncify instruments every function
-# that can transitively reach kernel_fork through the call graph (~15K+ for
-# PHP-FPM), inflating per-frame V8 native stack usage and causing "Maximum
-# call stack size exceeded" in browser web workers.
+# channel_syscall.c separates the fork path — fork()/vfork()/_Fork() call
+# kernel_fork() directly instead of going through __do_syscall(). This limits
+# asyncify instrumentation to functions on the fork call path rather than every
+# function that makes any syscall.
+#
+# The asyncify-onlylist restricts instrumentation to ~30 named functions on the
+# fork call path. This keeps the binary small (~10MB vs ~21MB for full asyncify)
+# and avoids V8 stack overflow in browser web workers.
+#
+# Requirements for onlylist to work:
+#   - CFLAGS includes -gline-tables-only (puts function names in .o files)
+#   - LDFLAGS includes --no-wasm-opt (prevents clang's wasm-opt from stripping
+#     the name section after linking)
+#   - wasm-opt -g flag (tells wasm-opt to read the name section)
 WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
 if [ -n "$WASM_OPT" ]; then
     ONLYLIST="$SCRIPT_DIR/asyncify-fpm-onlylist.txt"
     ONLY_FUNCS=$(grep -v '^#' "$ONLYLIST" | grep -v '^$' | tr '\n' ',' | sed 's/,$//')
-
-    echo "==> Applying asyncify instrumentation (onlylist: $(echo "$ONLY_FUNCS" | tr ',' '\n' | wc -l | tr -d ' ') functions)..."
-    "$WASM_OPT" --asyncify \
+    FUNC_COUNT=$(echo "$ONLY_FUNCS" | tr ',' '\n' | wc -l | tr -d ' ')
+    echo "==> Applying asyncify with onlylist ($FUNC_COUNT functions)..."
+    "$WASM_OPT" -g --asyncify \
         --pass-arg="asyncify-imports@kernel.kernel_fork" \
         --pass-arg="asyncify-onlylist@${ONLY_FUNCS}" \
         "$SCRIPT_DIR/php-fpm.wasm" -o "$SCRIPT_DIR/php-fpm.wasm"
