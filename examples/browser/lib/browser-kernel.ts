@@ -140,6 +140,7 @@ export class BrowserKernel {
         "TERM=xterm-256color",
         "LANG=en_US.UTF-8",
         "USER=browser",
+        "LOGNAME=browser",
       ],
       ...options,
     };
@@ -149,7 +150,11 @@ export class BrowserKernel {
       new SharedArrayBuffer(this.options.fsSize),
     );
     const devfs = new DeviceFileSystem();
+    const shmfs = MemoryFileSystem.create(
+      new SharedArrayBuffer(1024 * 1024),
+    );
     const mounts: Array<{ mountPoint: string; backend: any }> = [
+      { mountPoint: "/dev/shm", backend: shmfs },
       { mountPoint: "/dev", backend: devfs },
       { mountPoint: "/", backend: this.memfs },
       ...(this.options.extraMounts ?? []),
@@ -160,7 +165,6 @@ export class BrowserKernel {
     this.memfs.mkdir("/tmp", 0o777);
     this.memfs.mkdir("/home", 0o755);
     this.memfs.mkdir("/dev", 0o755);
-    this.memfs.mkdir("/dev/shm", 0o1777);
     this.memfs.mkdir("/etc", 0o755);
 
     // Populate /etc/services for getservbyname/getservbyport

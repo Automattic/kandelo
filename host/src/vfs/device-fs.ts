@@ -28,6 +28,12 @@ const zeroDevice: DeviceNode = {
   mode: S_IFCHR | 0o666,
 };
 
+const ttyDevice: DeviceNode = {
+  reader: () => { throw new Error("ENXIO"); },
+  writer: () => { throw new Error("ENXIO"); },
+  mode: S_IFCHR | 0o666,
+};
+
 function makeRandomDevice(): DeviceNode {
   return {
     reader: (buf, len) => {
@@ -64,6 +70,8 @@ export class DeviceFileSystem implements FileSystemBackend {
     this.devices.set("zero", zeroDevice);
     this.devices.set("urandom", random);
     this.devices.set("random", random);
+    this.devices.set("console", ttyDevice);
+    this.devices.set("tty", ttyDevice);
     this.deviceNames = [...this.devices.keys()];
   }
 

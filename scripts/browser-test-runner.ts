@@ -98,6 +98,7 @@ function buildDataFiles(
   wasmPath: string,
   dataPrefix: string | null,
   sourceDir: string | null,
+  suite: string | null = null,
 ): { dataFiles: DataFileSpec[]; cwd: string | null } {
   if (!dataPrefix) return { dataFiles: [], cwd: null };
 
@@ -105,14 +106,17 @@ function buildDataFiles(
   const relToPrefix = relative(resolve(dataPrefix), wasmPath);
   const testName = relToPrefix.replace(/\.wasm$/, "");
 
-  // Data directory root in VFS
+  // Data directory root in VFS.
+  // When suite is provided, nest under /data/<suite> so that ".." from CWD
+  // reaches /data which contains <suite>/, matching the Node.js layout.
   const dataRoot = "/data";
+  const cwd = suite ? `${dataRoot}/${suite}` : dataRoot;
   const dataFiles: DataFileSpec[] = [];
 
   // Add the wasm binary at its expected path (tests open themselves by name).
   // Use useWasmBytes flag to avoid re-sending the binary through JSON.
   dataFiles.push({
-    path: `${dataRoot}/${testName}`,
+    path: `${cwd}/${testName}`,
     useWasmBytes: true,
   });
 
@@ -122,13 +126,13 @@ function buildDataFiles(
     if (existsSync(srcPath)) {
       const srcBytes = readFileSync(srcPath);
       dataFiles.push({
-        path: `${dataRoot}/${testName}.c`,
+        path: `${cwd}/${testName}.c`,
         data: Array.from(srcBytes),
       });
     }
   }
 
-  return { dataFiles, cwd: dataRoot };
+  return { dataFiles, cwd };
 }
 
 async function runSingleTest(
@@ -137,12 +141,13 @@ async function runSingleTest(
   testTimeout: number,
   dataPrefix: string | null = null,
   sourceDir: string | null = null,
+  suite: string | null = null,
 ): Promise<TestResult> {
   const wasmBytes = readFileSync(wasmPath);
   const start = performance.now();
   const relPath = relative(REPO_ROOT, wasmPath);
 
-  const { dataFiles, cwd } = buildDataFiles(wasmPath, dataPrefix, sourceDir);
+  const { dataFiles, cwd } = buildDataFiles(wasmPath, dataPrefix, sourceDir, suite);
 
   try {
     const result = await page.evaluate(
@@ -217,6 +222,7 @@ async function main() {
   let reloadInterval = 3; // Default: reload every 3 tests to prevent OOM
   let dataPrefix: string | null = null; // Base path for constructing VFS data files
   let sourceDir: string | null = null; // Directory containing .c source files
+  let suiteName: string | null = null; // Suite name for nested data directory layout
   const paths: string[] = [];
 
   for (let i = 0; i < args.length; i++) {
@@ -236,6 +242,9 @@ async function main() {
       i++;
     } else if (args[i] === "--source-dir" && args[i + 1]) {
       sourceDir = resolve(args[i + 1]);
+      i++;
+    } else if (args[i] === "--suite" && args[i + 1]) {
+      suiteName = args[i + 1];
       i++;
     } else {
       paths.push(args[i]);
@@ -312,7 +321,7 @@ async function main() {
       const wasmPath = wasmFiles[i];
       const relPath = relative(REPO_ROOT, wasmPath);
 
-      let result = await runSingleTest(page, wasmPath, testTimeout, dataPrefix, sourceDir);
+      let result = await runSingleTest(page, wasmPath, testTimeout, dataPrefix, sourceDir, suiteName);
 
       // If OOM, reload and retry once
       if (result.error && result.error.includes("could not allocate memory")) {
@@ -321,7 +330,7 @@ async function main() {
         }
         await waitForTestRunner(page);
         testsSinceReload = 0;
-        result = await runSingleTest(page, wasmPath, testTimeout, dataPrefix, sourceDir);
+        result = await runSingleTest(page, wasmPath, testTimeout, dataPrefix, sourceDir, suiteName);
       }
 
       results.push(result);

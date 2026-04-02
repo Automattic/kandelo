@@ -43,6 +43,7 @@ export const O_RDWR = 0x0002;
 export const O_CREAT = 0x0040;
 export const O_TRUNC = 0x0200;
 export const O_APPEND = 0x0400;
+export const O_DIRECTORY = 0x010000;
 export const O_ACCMODE = 0x0003;
 
 // Seek
@@ -1212,6 +1213,11 @@ export class SharedFS {
 
     if ((mode & S_IFMT) === S_IFDIR) {
       if (accMode !== O_RDONLY) throw new SFSError(EISDIR);
+    }
+
+    // O_DIRECTORY: reject non-directories
+    if ((flags & O_DIRECTORY) && (mode & S_IFMT) !== S_IFDIR) {
+      throw new SFSError(ENOTDIR);
     }
 
     // Truncate if requested

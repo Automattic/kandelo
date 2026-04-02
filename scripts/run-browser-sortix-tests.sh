@@ -121,18 +121,9 @@ BROWSER_BASIC_EXPECTED_FAIL=(
     "dlfcn/dlclose" "dlfcn/dlopen" "dlfcn/dlsym"
     # pthread_atfork: fork behavior differs in browser
     "pthread/pthread_atfork"
-    # Named semaphores/shm: VFS shm_open I/O error
-    "semaphore/sem_close" "semaphore/sem_open" "semaphore/sem_unlink"
-    "sys_mman/shm_open" "sys_mman/shm_unlink"
     # Terminal: no terminal device
     "stdlib/grantpt" "stdlib/posix_openpt"
-    # fstatat: test creates files in /tmp which may not exist
-    "sys_stat/fstatat"
-    # No tty
-    "unistd/getlogin"
-    # faccessat: access checking differs in VFS
-    "unistd/faccessat"
-    # aio_read: timeout
+    # aio_read: timeout (needs pthread_create for aio worker thread)
     "aio/aio_read"
 )
 
@@ -142,9 +133,6 @@ BROWSER_MALLOC_EXPECTED_FAIL=()
 BROWSER_STDIO_EXPECTED_FAIL=()
 
 BROWSER_IO_EXPECTED_FAIL=(
-    # O_DIRECTORY with mkstemp: VFS lacks O_DIRECTORY enforcement
-    "open-mkstemp-rdonly-directory" "open-mkstemp-rdonly-trunc-directory"
-    "open-mkstemp-wronly-directory" "open-mkstemp-wronly-trunc-directory"
 )
 
 BROWSER_SIGNAL_EXPECTED_FAIL=(
@@ -159,8 +147,6 @@ BROWSER_PROCESS_EXPECTED_FAIL=(
 # Remaining failures: device nodes and /bin/sh not present in browser VFS
 BROWSER_PATHS_EXPECTED_FAIL=(
     "bin-sh"
-    "dev-console" "dev-fd" "dev-ptc" "dev-ptm" "dev-ptmx" "dev-pts"
-    "dev-tty"
 )
 
 # ── Helpers ──────────────────────────────────────────────────────
@@ -535,6 +521,7 @@ run_runtime_suite() {
         --reload-interval 10 \
         --data-prefix "$BUILD_DIR/$suite" \
         --source-dir "$OS_TEST/$suite" \
+        --suite "$suite" \
         "${wasm_files[@]}" > "$RESULT_FILE" 2>"$STDERR_FILE" || true
     cat "$STDERR_FILE" >&2
     rm -f "$STDERR_FILE"
