@@ -66,11 +66,7 @@ INCLUDE_EXPECTED_FAIL=(
     "sched/struct-sched_param-sched_ss_low_priority"
     "sched/struct-sched_param-sched_ss_max_repl"
     "sched/struct-sched_param-sched_ss_repl_period"
-    # -- Typed memory objects (not in musl)
-    "sys_mman/posix_mem_offset" "sys_mman/POSIX_TYPED_MEM_ALLOCATE"
-    "sys_mman/POSIX_TYPED_MEM_ALLOCATE_CONTIG" "sys_mman/posix_typed_mem_get_info"
-    "sys_mman/POSIX_TYPED_MEM_MAP_ALLOCATABLE" "sys_mman/posix_typed_mem_open"
-    "sys_mman/struct-posix_typed_mem_info" "sys_mman/struct-posix_typed_mem_info-posix_tmi_length"
+    # (typed memory objects now pass — sys/mman.h overlay + stubs)
     # (sys_shm/intptr_t and SHM_FAILED now pass — added to sys/shm.h overlay)
     # (sys_stat/struct-stat-st_size now passes — fixed st_size type to long long)
     # (setjmp/siglongjmp now passes — added real function symbol + declaration)
@@ -137,7 +133,7 @@ BASIC_EXPECTED_FAIL=(
     # -- Filesystem-dependent tests (tests that still need specific FS setup)
     # (fcntl/open, fcntl/openat now pass — data directory infrastructure)
     # (fcntl/posix_fallocate now passes — fallocate syscall implemented)
-    "dirent/posix_getdents"
+    # (dirent/posix_getdents now passes — real posix_getdents implementation)
     # (dirent/fdopendir, readdir, readdir_r, rewinddir, scandir, seekdir now pass)
     "stdio/pclose" "stdio/popen"
     # (stdio/remove now passes — EPERM→EISDIR translation for unlink on directories)
@@ -155,8 +151,7 @@ BASIC_EXPECTED_FAIL=(
     # (sys_stat/lstat now passes — hardlinks in data directory)
     # (sys_stat/mkfifo, mkfifoat, mknod, mknodat now pass — S_IFIFO allowed in mknod)
     # (sys_statvfs/fstatvfs now passes — data directory infrastructure)
-    "sys_mman/posix_mem_offset" "sys_mman/posix_typed_mem_get_info"
-    "sys_mman/posix_typed_mem_open"
+    # (sys_mman/posix_mem_offset, posix_typed_mem_get_info, posix_typed_mem_open now pass — stubs)
     # (pwd/grp tests now pass — synthetic /etc/passwd and /etc/group)
     # -- Misc not supported
     # (pselect now passes — fixed empty sigmask handling in kernel_pselect6)

@@ -36,10 +36,7 @@ INCLUDE_EXPECTED_FAIL=(
     "sched/struct-sched_param-sched_ss_low_priority"
     "sched/struct-sched_param-sched_ss_max_repl"
     "sched/struct-sched_param-sched_ss_repl_period"
-    "sys_mman/posix_mem_offset" "sys_mman/POSIX_TYPED_MEM_ALLOCATE"
-    "sys_mman/POSIX_TYPED_MEM_ALLOCATE_CONTIG" "sys_mman/posix_typed_mem_get_info"
-    "sys_mman/POSIX_TYPED_MEM_MAP_ALLOCATABLE" "sys_mman/posix_typed_mem_open"
-    "sys_mman/struct-posix_typed_mem_info" "sys_mman/struct-posix_typed_mem_info-posix_tmi_length"
+    # (typed memory objects now pass — sys/mman.h overlay + stubs)
 )
 
 BASIC_EXPECTED_FAIL=(
@@ -76,10 +73,9 @@ BASIC_EXPECTED_FAIL=(
     "unistd/tcgetpgrp" "unistd/tcsetpgrp" "unistd/ttyname" "unistd/ttyname_r"
     "stdlib/ptsname" "stdlib/ptsname_r" "stdlib/unlockpt"
     "net_if/if_freenameindex" "net_if/if_indextoname" "net_if/if_nameindex" "net_if/if_nametoindex"
-    "dirent/posix_getdents"
+    # (dirent/posix_getdents now passes — real posix_getdents implementation)
     "stdio/pclose" "stdio/popen"
-    "sys_mman/posix_mem_offset" "sys_mman/posix_typed_mem_get_info"
-    "sys_mman/posix_typed_mem_open"
+    # (sys_mman/posix_mem_offset, posix_typed_mem_get_info, posix_typed_mem_open now pass — stubs)
     "strings/ffsll"
     "spawn/posix_spawn" "spawn/posix_spawnp"
     "spawn/posix_spawn_file_actions_addchdir" "spawn/posix_spawn_file_actions_addclose"

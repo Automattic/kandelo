@@ -144,6 +144,20 @@ int mincore (void *, size_t, unsigned char *);
 int shm_open (const char *, int, mode_t);
 int shm_unlink (const char *);
 
+/* POSIX Typed Memory Objects (TYM) — POSIX.1-2024 */
+#define POSIX_TYPED_MEM_ALLOCATE         0x0001
+#define POSIX_TYPED_MEM_ALLOCATE_CONTIG  0x0002
+#define POSIX_TYPED_MEM_MAP_ALLOCATABLE  0x0004
+
+struct posix_typed_mem_info {
+	size_t posix_tmi_length;
+};
+
+int posix_typed_mem_open (const char *, int, int);
+int posix_typed_mem_get_info (int, struct posix_typed_mem_info *);
+int posix_mem_offset (const void *__restrict, size_t, off_t *__restrict,
+                      size_t *__restrict, int *__restrict);
+
 #if defined(_LARGEFILE64_SOURCE)
 #define mmap64 mmap
 #define off64_t off_t
