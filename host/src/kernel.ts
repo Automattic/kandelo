@@ -318,7 +318,11 @@ export class WasmPosixKernel {
             const mem = this.getMemoryBuffer();
             const target = mem.subarray(bufPtr, bufPtr + bufLen);
             if (typeof globalThis.crypto !== "undefined" && globalThis.crypto.getRandomValues) {
-              globalThis.crypto.getRandomValues(target);
+              // crypto.getRandomValues rejects SharedArrayBuffer-backed views in browsers.
+              // Use a temporary non-shared buffer and copy.
+              const tmp = new Uint8Array(bufLen);
+              globalThis.crypto.getRandomValues(tmp);
+              target.set(tmp);
             } else {
               for (let i = 0; i < bufLen; i++) target[i] = (Math.random() * 256) | 0;
             }

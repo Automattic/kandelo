@@ -88,30 +88,76 @@ async function waitForTestRunner(page: Page, timeout = 30_000): Promise<void> {
   );
 }
 
+interface DataFileSpec {
+  path: string;
+  data?: number[];
+  useWasmBytes?: boolean;
+}
+
+function buildDataFiles(
+  wasmPath: string,
+  dataPrefix: string | null,
+  sourceDir: string | null,
+): { dataFiles: DataFileSpec[]; cwd: string | null } {
+  if (!dataPrefix) return { dataFiles: [], cwd: null };
+
+  // Extract test name from wasm filename: "fcntl/open.wasm" -> "fcntl/open"
+  const relToPrefix = relative(resolve(dataPrefix), wasmPath);
+  const testName = relToPrefix.replace(/\.wasm$/, "");
+
+  // Data directory root in VFS
+  const dataRoot = "/data";
+  const dataFiles: DataFileSpec[] = [];
+
+  // Add the wasm binary at its expected path (tests open themselves by name).
+  // Use useWasmBytes flag to avoid re-sending the binary through JSON.
+  dataFiles.push({
+    path: `${dataRoot}/${testName}`,
+    useWasmBytes: true,
+  });
+
+  // Add the .c source file if it exists
+  if (sourceDir) {
+    const srcPath = resolve(sourceDir, testName + ".c");
+    if (existsSync(srcPath)) {
+      const srcBytes = readFileSync(srcPath);
+      dataFiles.push({
+        path: `${dataRoot}/${testName}.c`,
+        data: Array.from(srcBytes),
+      });
+    }
+  }
+
+  return { dataFiles, cwd: dataRoot };
+}
+
 async function runSingleTest(
   page: Page,
   wasmPath: string,
   testTimeout: number,
+  dataPrefix: string | null = null,
+  sourceDir: string | null = null,
 ): Promise<TestResult> {
   const wasmBytes = readFileSync(wasmPath);
   const start = performance.now();
   const relPath = relative(REPO_ROOT, wasmPath);
 
-  try {
-    // Convert to ArrayBuffer for transfer to browser
-    const buffer = wasmBytes.buffer.slice(
-      wasmBytes.byteOffset,
-      wasmBytes.byteOffset + wasmBytes.byteLength,
-    );
+  const { dataFiles, cwd } = buildDataFiles(wasmPath, dataPrefix, sourceDir);
 
+  try {
     const result = await page.evaluate(
-      async ({ bytes, timeout }) => {
+      async ({ bytes, timeout, dataFiles: df, cwd: cwdPath }) => {
         const ab = new Uint8Array(bytes).buffer;
-        return await (window as any).__runTest(ab, ["test"], timeout);
+        const options = df.length > 0 || cwdPath
+          ? { dataFiles: df, cwd: cwdPath ?? undefined }
+          : undefined;
+        return await (window as any).__runTest(ab, ["test"], timeout, options);
       },
       {
         bytes: Array.from(wasmBytes),
         timeout: testTimeout,
+        dataFiles,
+        cwd,
       },
     );
 
@@ -169,6 +215,8 @@ async function main() {
   let jsonOutput = false;
   let listFile: string | null = null;
   let reloadInterval = 3; // Default: reload every 3 tests to prevent OOM
+  let dataPrefix: string | null = null; // Base path for constructing VFS data files
+  let sourceDir: string | null = null; // Directory containing .c source files
   const paths: string[] = [];
 
   for (let i = 0; i < args.length; i++) {
@@ -182,6 +230,12 @@ async function main() {
       i++;
     } else if (args[i] === "--reload-interval" && args[i + 1]) {
       reloadInterval = parseInt(args[i + 1], 10);
+      i++;
+    } else if (args[i] === "--data-prefix" && args[i + 1]) {
+      dataPrefix = resolve(args[i + 1]);
+      i++;
+    } else if (args[i] === "--source-dir" && args[i + 1]) {
+      sourceDir = resolve(args[i + 1]);
       i++;
     } else {
       paths.push(args[i]);
@@ -258,7 +312,7 @@ async function main() {
       const wasmPath = wasmFiles[i];
       const relPath = relative(REPO_ROOT, wasmPath);
 
-      let result = await runSingleTest(page, wasmPath, testTimeout);
+      let result = await runSingleTest(page, wasmPath, testTimeout, dataPrefix, sourceDir);
 
       // If OOM, reload and retry once
       if (result.error && result.error.includes("could not allocate memory")) {
@@ -267,7 +321,7 @@ async function main() {
         }
         await waitForTestRunner(page);
         testsSinceReload = 0;
-        result = await runSingleTest(page, wasmPath, testTimeout);
+        result = await runSingleTest(page, wasmPath, testTimeout, dataPrefix, sourceDir);
       }
 
       results.push(result);

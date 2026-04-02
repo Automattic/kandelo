@@ -118,50 +118,34 @@ PATHS_EXPECTED_FAIL=()
 
 BROWSER_BASIC_EXPECTED_FAIL=(
     # -- Tests that fail in browser but pass on Node.js --
-    # dirent: browser VFS directory operations differ from host FS
+    # dirent: browser VFS readdir returns EPERM
     "dirent/fdopendir" "dirent/readdir_r" "dirent/readdir"
     "dirent/rewinddir" "dirent/scandir" "dirent/seekdir" "dirent/telldir"
-    # dlfcn: dynamic linking not supported in browser (no file-backed .so loading)
+    # dlfcn: dynamic linking not supported in browser
     "dlfcn/dlclose" "dlfcn/dlopen" "dlfcn/dlsym"
-    # fcntl: file open flag tests rely on host FS behaviors
-    "fcntl/open" "fcntl/openat"
-    # ftw/nftw: file tree walk needs real directory hierarchy
+    # ftw/nftw/glob: needs readdir support in VFS
     "ftw/nftw"
-    # glob: needs filesystem directory listing
     "glob/glob" "glob/globfree"
-    # netdb: /etc/services not available in browser VFS
-    "netdb/getservbyname" "netdb/getservbyport"
     # pthread_atfork: fork behavior differs in browser
     "pthread/pthread_atfork"
-    # Named semaphores/shm: VFS shm_open I/O error in browser
+    # Named semaphores/shm: VFS shm_open I/O error
     "semaphore/sem_close" "semaphore/sem_open" "semaphore/sem_unlink"
     "sys_mman/shm_open" "sys_mman/shm_unlink"
-    # Terminal: no terminal device in browser
+    # Terminal: no terminal device
     "stdlib/grantpt" "stdlib/posix_openpt"
-    # stdio/fopen: specific fopen test behaviors differ in browser VFS
-    "stdio/fopen"
-    # File permissions/metadata/stat: VFS doesn't fully support chmod/stat/utimensat
+    # VFS doesn't support chmod/utimensat
     "sys_stat/chmod" "sys_stat/fchmod" "sys_stat/fchmodat"
-    "sys_stat/fstat" "sys_stat/fstatat" "sys_stat/futimens"
-    "sys_stat/lstat" "sys_stat/stat" "sys_stat/utimensat"
+    "sys_stat/fstatat" "sys_stat/futimens" "sys_stat/utimensat"
     "sys_time/utimes"
-    # sys_statvfs: browser VFS doesn't provide full statvfs info
-    "sys_statvfs/fstatvfs"
-    # sys_ipc/ftok: needs real inode numbers from filesystem
-    "sys_ipc/ftok"
-    # getentropy: not available in browser
-    "unistd/getentropy"
-    # getlogin: no tty in browser
+    # No tty
     "unistd/getlogin"
-    # faccessat: file access checking differs in browser VFS
+    # faccessat: access checking differs in VFS
     "unistd/faccessat"
-    # Hard links: not supported in browser VFS
+    # Hard links not supported
     "unistd/link" "unistd/linkat"
-    # lseek/read: specific test behaviors differ in browser VFS
-    "unistd/lseek" "unistd/read"
-    # readlink/readlinkat: symlinks not fully supported in browser VFS
+    # Symlinks not fully supported
     "unistd/readlink" "unistd/readlinkat"
-    # aio_read: timeout in browser
+    # aio_read: timeout
     "aio/aio_read"
 )
 
@@ -189,7 +173,7 @@ BROWSER_PROCESS_EXPECTED_FAIL=(
 BROWSER_PATHS_EXPECTED_FAIL=(
     "bin-sh"
     "dev-console" "dev-fd" "dev-ptc" "dev-ptm" "dev-ptmx" "dev-pts"
-    "dev-random" "dev-tty" "dev-urandom"
+    "dev-tty"
 )
 
 # ── Helpers ──────────────────────────────────────────────────────
@@ -562,6 +546,8 @@ run_runtime_suite() {
     cd "$REPO_ROOT"
     npx tsx scripts/browser-test-runner.ts --json --timeout "$TEST_TIMEOUT" \
         --reload-interval 10 \
+        --data-prefix "$BUILD_DIR/$suite" \
+        --source-dir "$OS_TEST/$suite" \
         "${wasm_files[@]}" > "$RESULT_FILE" 2>"$STDERR_FILE" || true
     cat "$STDERR_FILE" >&2
     rm -f "$STDERR_FILE"
