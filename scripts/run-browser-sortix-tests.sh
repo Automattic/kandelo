@@ -32,10 +32,9 @@ INCLUDE_EXPECTED_FAIL=(
 
 BASIC_EXPECTED_FAIL=(
     "devctl/posix_devctl"
-    "libintl/bindtextdomain"
+    # (libintl/bindtextdomain now passes — dcngettext overlay returns default /usr/share/locale)
     # (libintl _l variants now pass — stubs delegate to non-_l versions)
-    "ndbm/dbm_clearerr" "ndbm/dbm_close" "ndbm/dbm_delete" "ndbm/dbm_error"
-    "ndbm/dbm_fetch" "ndbm/dbm_firstkey" "ndbm/dbm_nextkey" "ndbm/dbm_open" "ndbm/dbm_store"
+    # (ndbm basic tests now pass — in-memory ndbm implementation)
     "nl_types/catclose" "nl_types/catgets" "nl_types/catopen"
     "unistd/execl" "unistd/execle" "unistd/execlp" "unistd/execv"
     "unistd/execve" "unistd/execvp" "unistd/fexecve"
@@ -50,20 +49,18 @@ BASIC_EXPECTED_FAIL=(
     "threads/thrd_create"
     "pthread/pthread_attr_getstack"
     "pthread/pthread_attr_setinheritsched"
-    "pthread/pthread_cond_clockwait"
-    "pthread/pthread_mutex_clocklock"
+    # (pthread clock-aware waits now pass — delegate to timed variants)
     "pthread/pthread_mutex_getprioceiling" "pthread/pthread_mutex_setprioceiling"
     "pthread/pthread_mutexattr_getprioceiling" "pthread/pthread_mutexattr_setprioceiling"
-    "pthread/pthread_mutexattr_setpshared" "pthread/pthread_rwlock_clockrdlock"
-    "pthread/pthread_rwlock_clockwrlock"
+    "pthread/pthread_mutexattr_setpshared"
     "pthread/pthread_setcancelstate"
-    "semaphore/sem_clockwait"
+    # (semaphore/sem_clockwait now passes — delegates to sem_timedwait)
     "termios/tcdrain" "termios/tcflow" "termios/tcflush" "termios/tcgetattr"
     "termios/tcgetsid" "termios/tcgetwinsize" "termios/tcsendbreak"
     "termios/tcsetattr" "termios/tcsetwinsize"
     "unistd/tcgetpgrp" "unistd/tcsetpgrp" "unistd/ttyname" "unistd/ttyname_r"
     "stdlib/ptsname" "stdlib/ptsname_r" "stdlib/unlockpt"
-    "net_if/if_freenameindex" "net_if/if_indextoname" "net_if/if_nameindex" "net_if/if_nametoindex"
+    # (net_if now passes — synthetic loopback interface implementation)
     # (dirent/posix_getdents now passes — real posix_getdents implementation)
     "stdio/pclose" "stdio/popen"
     # (sys_mman/posix_mem_offset, posix_typed_mem_get_info, posix_typed_mem_open now pass — stubs)
