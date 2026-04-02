@@ -92,7 +92,7 @@ BASIC_EXPECTED_FAIL=(
     "signal/pthread_kill"
     "threads/thrd_create"
     # -- Pthread features not supported (priority scheduling, pshared)
-    "pthread/pthread_atfork"
+    # (pthread/pthread_atfork now passes — fork() calls __fork_handler in channel_syscall.c)
     "pthread/pthread_attr_getstack"
     "pthread/pthread_attr_setinheritsched"
     # (pthread clock-aware waits now pass — delegate to timed variants)
