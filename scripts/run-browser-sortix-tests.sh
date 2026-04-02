@@ -117,15 +117,8 @@ PATHS_EXPECTED_FAIL=()
 # Primarily: tests needing data directory (KERNEL_CWD), /etc/passwd, /etc/hosts.
 
 BROWSER_BASIC_EXPECTED_FAIL=(
-    # -- Tests that fail in browser but pass on Node.js --
-    # dirent: browser VFS readdir returns EPERM
-    "dirent/fdopendir" "dirent/readdir_r" "dirent/readdir"
-    "dirent/rewinddir" "dirent/scandir" "dirent/seekdir" "dirent/telldir"
     # dlfcn: dynamic linking not supported in browser
     "dlfcn/dlclose" "dlfcn/dlopen" "dlfcn/dlsym"
-    # ftw/nftw/glob: needs readdir support in VFS
-    "ftw/nftw"
-    "glob/glob" "glob/globfree"
     # pthread_atfork: fork behavior differs in browser
     "pthread/pthread_atfork"
     # Named semaphores/shm: VFS shm_open I/O error
@@ -143,8 +136,6 @@ BROWSER_BASIC_EXPECTED_FAIL=(
     "unistd/faccessat"
     # Hard links not supported
     "unistd/link" "unistd/linkat"
-    # Symlinks not fully supported
-    "unistd/readlink" "unistd/readlinkat"
     # aio_read: timeout
     "aio/aio_read"
 )

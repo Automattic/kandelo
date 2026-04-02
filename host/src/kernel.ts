@@ -1032,8 +1032,8 @@ export class WasmPosixKernel {
       mem.set(encoded.subarray(0, n), namePtr);
 
       return 1;
-    } catch {
-      return -1;
+    } catch (e) {
+      return negErrno(e);
     }
   }
 

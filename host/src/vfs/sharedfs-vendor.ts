@@ -151,6 +151,17 @@ export class SFSError extends Error {
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
+/**
+ * Safely decode a Uint8Array that may be backed by SharedArrayBuffer.
+ * Browsers reject SAB-backed views in TextDecoder.decode().
+ */
+function safeDecode(view: Uint8Array): string {
+  if (view.buffer instanceof SharedArrayBuffer) {
+    return decoder.decode(new Uint8Array(view));
+  }
+  return decoder.decode(view);
+}
+
 function align4(x: number): number {
   return (x + 3) & ~3;
 }
@@ -1018,7 +1029,7 @@ export class SharedFS {
           const linkSize = this.r64(childOff + INO_SIZE);
           let target: string;
           if (linkSize <= INLINE_SYMLINK_SIZE) {
-            target = decoder.decode(
+            target = safeDecode(
               this.u8.subarray(
                 childOff + INO_DIRECT,
                 childOff + INO_DIRECT + linkSize,
@@ -1577,7 +1588,7 @@ export class SharedFS {
 
     const size = this.r64(inoOff + INO_SIZE);
     if (size <= INLINE_SYMLINK_SIZE) {
-      return decoder.decode(
+      return safeDecode(
         this.u8.subarray(inoOff + INO_DIRECT, inoOff + INO_DIRECT + size),
       );
     }
@@ -1635,7 +1646,7 @@ export class SharedFS {
       this.w64(base + FD_OFFSET, pos + recLen);
 
       if (entIno !== 0) {
-        const nameStr = decoder.decode(
+        const nameStr = safeDecode(
           this.u8.subarray(
             abs + DIRENT_HEADER_SIZE,
             abs + DIRENT_HEADER_SIZE + entNameLen,
