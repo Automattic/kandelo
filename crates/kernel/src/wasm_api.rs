@@ -1731,7 +1731,23 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
                 -(Errno::ESRCH as i32)
             }
         }
-        91 => kernel_getsid(a1 as u32),            // SYS_GETSID
+        91 => {                                    // SYS_GETSID
+            let (_gkl, proc) = unsafe { get_process() };
+            let pid = a1 as u32;
+            // In centralized mode, support cross-process getsid via ProcessTable
+            if pid != 0 && pid != proc.pid && crate::is_centralized_mode() {
+                let table = unsafe { &*PROCESS_TABLE.0.get() };
+                match table.get(pid) {
+                    Some(target) => target.sid as i32,
+                    None => -(Errno::ESRCH as i32),
+                }
+            } else {
+                match syscalls::sys_getsid(proc, pid) {
+                    Ok(sid) => sid as i32,
+                    Err(e) => -(e as i32),
+                }
+            }
+        }
         104 => kernel_setuid(a1 as u32),           // SYS_SETUID
         105 => kernel_setgid(a1 as u32),           // SYS_SETGID
         106 => kernel_seteuid(a1 as u32),          // SYS_SETEUID

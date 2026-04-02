@@ -280,12 +280,14 @@ The wasm-posix-kernel uses a **centralized architecture**: a single kernel Wasm 
 
 | Function | Status | Notes |
 |----------|--------|-------|
-| `msgget()` / `msgsnd()` / `msgrcv()` / `msgctl()` | Stub | Returns ENOSYS. SysV message queues not implemented. |
-| `semget()` / `semop()` / `semctl()` / `semtimedop()` | Stub | Returns ENOSYS. SysV semaphores not implemented. |
-| `shmget()` / `shmat()` / `shmdt()` / `shmctl()` | Stub | Returns ENOSYS. SysV shared memory not implemented. |
-| `mq_open()` / `mq_unlink()` | Stub | Returns ENOSYS. POSIX message queues not implemented. |
-| `mq_timedsend()` / `mq_timedreceive()` | Stub | Returns ENOSYS. |
-| `mq_notify()` / `mq_getsetattr()` | Stub | Returns ENOSYS. |
+| `msgget()` / `msgsnd()` / `msgrcv()` / `msgctl()` | Full | Host-side SysV message queues via SharedIpcTable. Key-based creation, blocking send/recv with message types, IPC_STAT/IPC_SET/IPC_RMID control. |
+| `semget()` / `semop()` / `semctl()` / `semtimedop()` | Full | Host-side SysV semaphore sets. Atomic multi-semaphore operations, SEM_UNDO support, IPC_STAT/SETVAL/GETVAL/SETALL/GETALL. |
+| `shmget()` / `shmat()` / `shmdt()` / `shmctl()` | Full | Host-side SysV shared memory segments. Attach/detach via kernel mmap, IPC_STAT/IPC_RMID control. Cross-process sharing via SharedIpcTable. |
+| `ftok()` | Full | Standard ftok algorithm using stat inode + proj_id. |
+| `mq_open()` / `mq_close()` / `mq_unlink()` | Full | Host-side POSIX message queues via PosixMqueueTable. O_CREAT/O_EXCL/O_RDONLY/O_WRONLY/O_RDWR/O_NONBLOCK. Descriptor range 0x40000000+. |
+| `mq_timedsend()` / `mq_timedreceive()` | Full | Priority-ordered message delivery. Blocking with timeout support. O_NONBLOCK returns EAGAIN. |
+| `mq_notify()` | Full | SIGEV_SIGNAL notification on message arrival to empty queue. One registration per queue. |
+| `mq_getattr()` / `mq_setattr()` | Full | Get/set queue attributes (mq_flags, mq_maxmsg, mq_msgsize, mq_curmsgs). |
 
 ## Extended Attributes
 

@@ -95,7 +95,11 @@ int32_t kernel_fork(void);
 /* Direct fork/vfork/_Fork — call kernel_fork without going through the
  * general syscall dispatcher.  This ensures asyncify only instruments
  * fork callers, not every function that makes any syscall. */
-int fork(void)
+
+void __fork_handler(int);
+
+/* _Fork: raw fork without atfork handlers (POSIX async-signal-safe) */
+int _Fork(void)
 {
     long ret = (long)kernel_fork();
     if (ret < 0) {
@@ -105,9 +109,13 @@ int fork(void)
     return (int)ret;
 }
 
-int _Fork(void)
+/* fork: wraps _Fork with pthread_atfork handlers */
+int fork(void)
 {
-    return fork();
+    __fork_handler(-1);
+    int ret = _Fork();
+    __fork_handler(!ret);
+    return ret;
 }
 
 int vfork(void)
