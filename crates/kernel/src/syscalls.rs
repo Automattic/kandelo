@@ -3,7 +3,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 use wasm_posix_shared::Errno;
 use wasm_posix_shared::flags::*;
-use wasm_posix_shared::fd_flags::FD_CLOEXEC;
+use wasm_posix_shared::fd_flags::{FD_CLOEXEC, FD_CLOFORK};
 use wasm_posix_shared::fcntl_cmd::*;
 use wasm_posix_shared::lock_type::*;
 use wasm_posix_shared::flock_op::*;
@@ -21,7 +21,16 @@ use wasm_posix_shared::signal::{SIG_DFL, SIG_IGN, SIG_BLOCK, SIG_UNBLOCK, SIG_SE
 use wasm_posix_shared::mmap::{MAP_ANONYMOUS, MAP_FAILED};
 
 /// Creation flags that are stripped from status_flags after open.
-const CREATION_FLAGS: u32 = O_CREAT | O_EXCL | O_TRUNC | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW;
+const CREATION_FLAGS: u32 = O_CREAT | O_EXCL | O_TRUNC | O_CLOEXEC | O_CLOFORK | O_DIRECTORY | O_NOFOLLOW;
+
+/// Convert O_CLOEXEC / O_CLOFORK open flags to FD_CLOEXEC / FD_CLOFORK fd flags.
+#[inline]
+fn oflags_to_fd_flags(oflags: u32) -> u32 {
+    let mut fd_flags = 0;
+    if oflags & O_CLOEXEC != 0 { fd_flags |= FD_CLOEXEC; }
+    if oflags & O_CLOFORK != 0 { fd_flags |= FD_CLOFORK; }
+    fd_flags
+}
 
 /// Virtual character devices handled entirely in-kernel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,7 +159,7 @@ pub fn sys_open(
         let entry = proc.fd_table.get(target_fd)?;
         let ofd_ref = entry.ofd_ref;
         proc.ofd_table.inc_ref(ofd_ref.0);
-        let fd_flags = if oflags & O_CLOEXEC != 0 { FD_CLOEXEC } else { 0 };
+        let fd_flags = oflags_to_fd_flags(oflags);
         let fd = proc.fd_table.alloc(ofd_ref, fd_flags)?;
         return Ok(fd);
     }
@@ -161,7 +170,7 @@ pub fn sys_open(
         let ofd_idx = proc.ofd_table.create(
             FileType::CharDevice, status_flags, dev.host_handle(), resolved,
         );
-        let fd_flags = if oflags & O_CLOEXEC != 0 { FD_CLOEXEC } else { 0 };
+        let fd_flags = oflags_to_fd_flags(oflags);
         let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
         return Ok(fd);
     }
@@ -175,7 +184,7 @@ pub fn sys_open(
         let ofd_idx = proc.ofd_table.create(
             FileType::Regular, status_flags, SYNTHETIC_FILE_HANDLE, resolved,
         );
-        let fd_flags = if oflags & O_CLOEXEC != 0 { FD_CLOEXEC } else { 0 };
+        let fd_flags = oflags_to_fd_flags(oflags);
         let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
         return Ok(fd);
     }
@@ -208,11 +217,7 @@ pub fn sys_open(
 
     let ofd_idx = proc.ofd_table.create(file_type, status_flags, host_handle, resolved);
 
-    let fd_flags = if oflags & O_CLOEXEC != 0 {
-        FD_CLOEXEC
-    } else {
-        0
-    };
+    let fd_flags = oflags_to_fd_flags(oflags);
 
     let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
     Ok(fd)
@@ -1424,10 +1429,11 @@ pub fn sys_dup3(
     // Reuse dup2 logic: close newfd if open, then dup oldfd to newfd.
     let result = sys_dup2(proc, host, oldfd, newfd)?;
 
-    // Apply O_CLOEXEC flag to the new fd.
-    if flags & O_CLOEXEC != 0 {
+    // Apply O_CLOEXEC / O_CLOFORK flags to the new fd.
+    let new_fd_flags = oflags_to_fd_flags(flags);
+    if new_fd_flags != 0 {
         if let Ok(entry) = proc.fd_table.get_mut(newfd) {
-            entry.fd_flags = FD_CLOEXEC;
+            entry.fd_flags = new_fd_flags;
         }
     }
 
@@ -1489,12 +1495,13 @@ pub fn sys_pipe(proc: &mut Process) -> Result<(i32, i32), Errno> {
 pub fn sys_pipe2(proc: &mut Process, flags: u32) -> Result<(i32, i32), Errno> {
     let (read_fd, write_fd) = sys_pipe(proc)?;
 
-    if flags & O_CLOEXEC != 0 {
+    let pipe_fd_flags = oflags_to_fd_flags(flags);
+    if pipe_fd_flags != 0 {
         if let Ok(entry) = proc.fd_table.get_mut(read_fd) {
-            entry.fd_flags = FD_CLOEXEC;
+            entry.fd_flags = pipe_fd_flags;
         }
         if let Ok(entry) = proc.fd_table.get_mut(write_fd) {
-            entry.fd_flags = FD_CLOEXEC;
+            entry.fd_flags = pipe_fd_flags;
         }
     }
 
@@ -1598,7 +1605,7 @@ pub fn sys_fcntl(
     arg: u32,
 ) -> Result<i32, Errno> {
     match cmd {
-        F_DUPFD | F_DUPFD_CLOEXEC => {
+        F_DUPFD | F_DUPFD_CLOEXEC | F_DUPFD_CLOFORK => {
             let entry = proc.fd_table.get(fd)?;
             let ofd_ref = entry.ofd_ref;
 
@@ -1606,6 +1613,8 @@ pub fn sys_fcntl(
 
             let new_fd_flags = if cmd == F_DUPFD_CLOEXEC {
                 FD_CLOEXEC
+            } else if cmd == F_DUPFD_CLOFORK {
+                FD_CLOFORK
             } else {
                 0
             };
@@ -4456,7 +4465,7 @@ pub fn sys_openat(
         let entry = proc.fd_table.get(target_fd)?;
         let ofd_ref = entry.ofd_ref;
         proc.ofd_table.inc_ref(ofd_ref.0);
-        let fd_flags = if oflags & O_CLOEXEC != 0 { FD_CLOEXEC } else { 0 };
+        let fd_flags = oflags_to_fd_flags(oflags);
         let fd = proc.fd_table.alloc(ofd_ref, fd_flags)?;
         return Ok(fd);
     }
@@ -4467,7 +4476,7 @@ pub fn sys_openat(
         let ofd_idx = proc.ofd_table.create(
             FileType::CharDevice, status_flags, dev.host_handle(), resolved,
         );
-        let fd_flags = if oflags & O_CLOEXEC != 0 { FD_CLOEXEC } else { 0 };
+        let fd_flags = oflags_to_fd_flags(oflags);
         let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
         return Ok(fd);
     }
@@ -4481,7 +4490,7 @@ pub fn sys_openat(
         let ofd_idx = proc.ofd_table.create(
             FileType::Regular, status_flags, SYNTHETIC_FILE_HANDLE, resolved,
         );
-        let fd_flags = if oflags & O_CLOEXEC != 0 { FD_CLOEXEC } else { 0 };
+        let fd_flags = oflags_to_fd_flags(oflags);
         let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
         return Ok(fd);
     }
@@ -4518,11 +4527,7 @@ pub fn sys_openat(
     let status_flags = oflags & !CREATION_FLAGS;
     let ofd_idx = proc.ofd_table.create(file_type, status_flags, host_handle, resolved);
 
-    let fd_flags = if oflags & O_CLOEXEC != 0 {
-        FD_CLOEXEC
-    } else {
-        0
-    };
+    let fd_flags = oflags_to_fd_flags(oflags);
 
     let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
     Ok(fd)
@@ -12808,5 +12813,128 @@ mod tests {
         assert_ne!(new_addr, addr1); // moved
         assert!(proc.memory.is_mapped(new_addr));
         assert!(!proc.memory.is_mapped(addr1)); // old freed
+    }
+
+    // ---- O_CLOFORK / FD_CLOFORK tests ----
+
+    #[test]
+    fn test_open_clofork_sets_fd_flag() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/tmp/clofork", O_CREAT | O_RDWR | O_CLOFORK, 0o644).unwrap();
+        let entry = proc.fd_table.get(fd).unwrap();
+        assert_ne!(entry.fd_flags & FD_CLOFORK, 0);
+        assert_eq!(entry.fd_flags & FD_CLOEXEC, 0); // only CLOFORK, not CLOEXEC
+    }
+
+    #[test]
+    fn test_open_clofork_and_cloexec() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/tmp/both", O_CREAT | O_RDWR | O_CLOFORK | O_CLOEXEC, 0o644).unwrap();
+        let entry = proc.fd_table.get(fd).unwrap();
+        assert_ne!(entry.fd_flags & FD_CLOFORK, 0);
+        assert_ne!(entry.fd_flags & FD_CLOEXEC, 0);
+    }
+
+    #[test]
+    fn test_pipe2_clofork() {
+        let mut proc = Process::new(1);
+        let (r, w) = sys_pipe2(&mut proc, O_CLOFORK).unwrap();
+        let r_entry = proc.fd_table.get(r).unwrap();
+        let w_entry = proc.fd_table.get(w).unwrap();
+        assert_ne!(r_entry.fd_flags & FD_CLOFORK, 0);
+        assert_ne!(w_entry.fd_flags & FD_CLOFORK, 0);
+        assert_eq!(r_entry.fd_flags & FD_CLOEXEC, 0);
+    }
+
+    #[test]
+    fn test_pipe2_clofork_and_cloexec() {
+        let mut proc = Process::new(1);
+        let (r, w) = sys_pipe2(&mut proc, O_CLOFORK | O_CLOEXEC).unwrap();
+        let r_entry = proc.fd_table.get(r).unwrap();
+        let w_entry = proc.fd_table.get(w).unwrap();
+        assert_eq!(r_entry.fd_flags, FD_CLOFORK | FD_CLOEXEC);
+        assert_eq!(w_entry.fd_flags, FD_CLOFORK | FD_CLOEXEC);
+    }
+
+    #[test]
+    fn test_dup3_clofork() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (r, _w) = sys_pipe(&mut proc).unwrap();
+        let new_fd = sys_dup3(&mut proc, &mut host, r, 10, O_CLOFORK).unwrap();
+        assert_eq!(new_fd, 10);
+        let entry = proc.fd_table.get(new_fd).unwrap();
+        assert_ne!(entry.fd_flags & FD_CLOFORK, 0);
+        assert_eq!(entry.fd_flags & FD_CLOEXEC, 0);
+    }
+
+    #[test]
+    fn test_dup3_clofork_and_cloexec() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (r, _w) = sys_pipe(&mut proc).unwrap();
+        let new_fd = sys_dup3(&mut proc, &mut host, r, 10, O_CLOFORK | O_CLOEXEC).unwrap();
+        let entry = proc.fd_table.get(new_fd).unwrap();
+        assert_eq!(entry.fd_flags, FD_CLOFORK | FD_CLOEXEC);
+    }
+
+    #[test]
+    fn test_fcntl_dupfd_clofork() {
+        let mut proc = Process::new(1);
+        let (r, _w) = sys_pipe(&mut proc).unwrap();
+        let new_fd = sys_fcntl(&mut proc, r, F_DUPFD_CLOFORK, 0).unwrap();
+        let entry = proc.fd_table.get(new_fd).unwrap();
+        assert_ne!(entry.fd_flags & FD_CLOFORK, 0);
+        assert_eq!(entry.fd_flags & FD_CLOEXEC, 0);
+    }
+
+    #[test]
+    fn test_fcntl_setfd_clofork() {
+        let mut proc = Process::new(1);
+        let (r, _w) = sys_pipe(&mut proc).unwrap();
+        // Initially no flags
+        let flags = sys_fcntl(&mut proc, r, F_GETFD, 0).unwrap();
+        assert_eq!(flags, 0);
+        // Set FD_CLOFORK
+        sys_fcntl(&mut proc, r, F_SETFD, FD_CLOFORK).unwrap();
+        let flags = sys_fcntl(&mut proc, r, F_GETFD, 0).unwrap();
+        assert_eq!(flags as u32 & FD_CLOFORK, FD_CLOFORK);
+    }
+
+    #[test]
+    fn test_fcntl_setfd_clofork_and_cloexec() {
+        let mut proc = Process::new(1);
+        let (r, _w) = sys_pipe(&mut proc).unwrap();
+        sys_fcntl(&mut proc, r, F_SETFD, FD_CLOFORK | FD_CLOEXEC).unwrap();
+        let flags = sys_fcntl(&mut proc, r, F_GETFD, 0).unwrap();
+        assert_eq!(flags as u32, FD_CLOFORK | FD_CLOEXEC);
+    }
+
+    #[test]
+    fn test_fork_skips_clofork_fds() {
+        use crate::process_table::ProcessTable;
+        let mut table = ProcessTable::new();
+        table.create_process(1).unwrap();
+
+        // Create a pipe in the parent
+        {
+            let parent = table.get_mut(1).unwrap();
+            let (_r, _w) = sys_pipe(parent).unwrap();
+            // r=fd 0, w=fd 1 (Process::new starts with empty fd table in tests)
+            // Mark fd 0 as FD_CLOFORK
+            let entry = parent.fd_table.get_mut(0).unwrap();
+            entry.fd_flags = FD_CLOFORK;
+            // fd 1 stays with no flags
+        }
+
+        // Fork
+        table.fork_process(1, 2).unwrap();
+
+        // Child should NOT have fd 0 (CLOFORK), but SHOULD have fd 1
+        let child = table.get(2).unwrap();
+        assert!(child.fd_table.get(0).is_err(), "fd 0 with FD_CLOFORK should not be inherited");
+        assert!(child.fd_table.get(1).is_ok(), "fd 1 without FD_CLOFORK should be inherited");
     }
 }

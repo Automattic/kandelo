@@ -527,6 +527,10 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
         let fd_num = r.read_u32()? as usize;
         let ofd_index = r.read_u32()? as usize;
         let fd_flags = r.read_u32()?;
+        // FD_CLOFORK: skip FDs marked close-on-fork
+        if fd_flags & wasm_posix_shared::fd_flags::FD_CLOFORK != 0 {
+            continue;
+        }
         while fd_entries.len() <= fd_num {
             fd_entries.push(None);
         }

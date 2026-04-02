@@ -97,7 +97,6 @@ MALLOC_EXPECTED_FAIL=()
 STDIO_EXPECTED_FAIL=()
 
 IO_EXPECTED_FAIL=(
-    "dup3-clofork-fork" "open-clofork-fork"
 )
 
 SIGNAL_EXPECTED_FAIL=(

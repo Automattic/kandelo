@@ -450,6 +450,7 @@ pub mod flags {
     pub const O_DIRECTORY: u32 = 0o200000;
     pub const O_NOFOLLOW: u32 = 0o400000;
     pub const O_CLOEXEC: u32 = 0o2000000;
+    pub const O_CLOFORK: u32 = 0o40000000;
     pub const AT_FDCWD: i32 = -100;
     pub const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
     pub const AT_REMOVEDIR: u32 = 0x200;
@@ -458,6 +459,7 @@ pub mod flags {
 /// File descriptor flags (FD_*).
 pub mod fd_flags {
     pub const FD_CLOEXEC: u32 = 1;
+    pub const FD_CLOFORK: u32 = 2;
 }
 
 /// fcntl command constants (F_*).
@@ -473,6 +475,7 @@ pub mod fcntl_cmd {
     pub const F_SETOWN: u32 = 8;
     pub const F_GETOWN: u32 = 9;
     pub const F_DUPFD_CLOEXEC: u32 = 1030;
+    pub const F_DUPFD_CLOFORK: u32 = 1028;
     pub const F_OFD_GETLK: u32 = 36;
     pub const F_OFD_SETLK: u32 = 37;
     pub const F_OFD_SETLKW: u32 = 38;

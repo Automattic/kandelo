@@ -107,7 +107,7 @@ BASIC_EXPECTED_FAIL=(
     "signal/pthread_kill"
     "threads/thrd_create"
     # -- Pthread features not supported (priority scheduling, pshared)
-    # (pthread_atfork now passes — fork overlay calls __fork_handler)
+    "pthread/pthread_atfork"
     "pthread/pthread_attr_getstack"
     "pthread/pthread_attr_setinheritsched"
     "pthread/pthread_cond_clockwait"
@@ -182,8 +182,6 @@ MALLOC_EXPECTED_FAIL=()
 STDIO_EXPECTED_FAIL=()
 
 IO_EXPECTED_FAIL=(
-    # O_CLOFORK is POSIX.1-2024; not in musl
-    "dup3-clofork-fork" "open-clofork-fork"
 )
 
 SIGNAL_EXPECTED_FAIL=(
