@@ -8,7 +8,7 @@ use wasm_posix_shared::fcntl_cmd::*;
 use wasm_posix_shared::lock_type::*;
 use wasm_posix_shared::flock_op::*;
 use wasm_posix_shared::seek::*;
-use wasm_posix_shared::mode::{S_IFIFO, S_IFREG};
+use wasm_posix_shared::mode::{S_IFCHR, S_IFIFO, S_IFREG};
 use wasm_posix_shared::{WasmFlock, WasmPollFd, WasmStat, WasmTimespec};
 
 use crate::fd::OpenFileDescRef;
@@ -1551,7 +1551,24 @@ pub fn sys_fstat(
         if let Some(dev) = VirtualDevice::from_host_handle(ofd.host_handle) {
             return Ok(virtual_device_stat(dev, proc.euid, proc.egid));
         }
-        // Real char device (stdin/stdout/stderr) — delegate to host
+        // Standard streams (0=stdin, 1=stdout, 2=stderr) — handle in-kernel
+        // so browser hosts without real file descriptors still work.
+        if ofd.host_handle >= 0 && ofd.host_handle <= 2 {
+            return Ok(WasmStat {
+                st_dev: 0,
+                st_ino: 0x54545900 + ofd.host_handle as u64, // "TTY\0" + stream index
+                st_mode: S_IFCHR | 0o620,
+                st_nlink: 1,
+                st_uid: proc.euid,
+                st_gid: proc.egid,
+                st_size: 0,
+                st_atime_sec: 0, st_atime_nsec: 0,
+                st_mtime_sec: 0, st_mtime_nsec: 0,
+                st_ctime_sec: 0, st_ctime_nsec: 0,
+                _pad: 0,
+            });
+        }
+        // Other char devices — delegate to host
         let mut st = host.host_fstat(ofd.host_handle)?;
         st.st_uid = proc.euid;
         st.st_gid = proc.egid;
