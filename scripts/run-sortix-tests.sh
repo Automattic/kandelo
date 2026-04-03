@@ -72,14 +72,13 @@ BASIC_EXPECTED_FAIL=(
     # (utmpx/pututxline now passes — added errno=EPERM in pututxline overlay)
     # (mqueue tests now pass — POSIX mqueue implementation in centralized mode)
     # (dlfcn/dladdr now passes — dladdr stub in glue/dlopen.c)
-    # -- Process exec (not implemented in centralized mode)
-    "unistd/execl" "unistd/execle" "unistd/execlp" "unistd/execv"
-    "unistd/execve" "unistd/execvp" "unistd/fexecve"
+    # -- exec (exec variants now work; fexecve still blocked)
+    # (execl, execle, execlp, execv, execve, execvp now pass — exec support in run-example.ts)
+    "unistd/fexecve"
     # -- Memory locking (mlock/munlock are stubs; mlockall/munlockall work)
     # (mlock, mlockall, munlock, munlockall removed — stubs pass basic invocation tests)
     # (unistd/fchownat now passes — nested data directory)
-    # -- Process management requiring fork/exec or process groups
-    "stdlib/system"
+    # (stdlib/system now passes — exec support in run-example.ts)
     # -- Signals (limited Wasm signal model)
     "signal/sigaltstack"
     # -- Timers/signals that block (timeout)
@@ -121,7 +120,7 @@ BASIC_EXPECTED_FAIL=(
     # (fcntl/posix_fallocate now passes — fallocate syscall implemented)
     # (dirent/posix_getdents now passes — real posix_getdents implementation)
     # (dirent/fdopendir, readdir, readdir_r, rewinddir, scandir, seekdir now pass)
-    "stdio/pclose" "stdio/popen"
+    # (stdio/pclose and stdio/popen now pass — posix_spawn applies fd actions directly)
     # (stdio/remove now passes — EPERM→EISDIR translation for unlink on directories)
     # (stdio/fopen now passes — data directory infrastructure)
     # (unistd/faccessat now passes — nested data directory with source files)
@@ -145,14 +144,13 @@ BASIC_EXPECTED_FAIL=(
     # (monetary/strfmon and strfmon_l now pass — fixed POSIX locale handling in musl overlay)
     "strings/ffsll"
     # (wchar/wcslcat and wcslcpy now pass — added BSD wcslcpy/wcslcat implementations)
-    # -- posix_spawn (not implemented in centralized mode)
-    "spawn/posix_spawn" "spawn/posix_spawnp"
+    # -- posix_spawn (basic spawn works; some attribute tests still fail)
+    # (posix_spawn, posix_spawn_file_actions_addopen, posix_spawn_file_actions_init,
+    #  posix_spawnattr_setschedparam, posix_spawnattr_setschedpolicy now pass)
+    "spawn/posix_spawnp"
     "spawn/posix_spawn_file_actions_addchdir" "spawn/posix_spawn_file_actions_addclose"
     "spawn/posix_spawn_file_actions_adddup2" "spawn/posix_spawn_file_actions_addfchdir"
-    "spawn/posix_spawn_file_actions_addopen" "spawn/posix_spawn_file_actions_init"
-    # (posix_spawnattr_getschedparam/getschedpolicy now pass — override musl ENOSYS stubs)
     "spawn/posix_spawnattr_setflags" "spawn/posix_spawnattr_setpgroup"
-    "spawn/posix_spawnattr_setschedparam" "spawn/posix_spawnattr_setschedpolicy"
     "spawn/posix_spawnattr_setsigdefault" "spawn/posix_spawnattr_setsigmask"
 )
 
@@ -166,17 +164,14 @@ IO_EXPECTED_FAIL=(
 )
 
 SIGNAL_EXPECTED_FAIL=(
-    # Tests requiring exec (not implemented in centralized mode)
-    "default-chld-exec" "default-usr1-exec"
-    "handle-chld-exec" "handle-usr1-exec"
-    "ignore-chld-exec" "ignore-usr1-exec"
-    "sigaction-exec-flags" "sigaltstack-exec" "sigaltstack-raise-exec"
+    # (exec signal tests now pass — exec support in run-example.ts)
+    "sigaction-exec-flags"
     # sigaltstack not implemented in Wasm (no native stack switching)
     "sigaltstack-raise"
 )
 PROCESS_EXPECTED_FAIL=(
-    # exec not implemented in centralized mode
-    "fork-exec-*"
+    # (fork-exec-setpgid-in-child now passes — exec support)
+    "fork-exec-setpgid-in-parent"
 )
 PATHS_EXPECTED_FAIL=()
 

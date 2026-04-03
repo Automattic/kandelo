@@ -1105,6 +1105,50 @@ pub extern "C" fn kernel_dequeue_signal(pid: u32, out_ptr: *mut u8) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_exec_setup(pid: u32) -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    {
+        let proc = match table.get_mut(pid) {
+            Some(p) => p,
+            None => return -(Errno::ESRCH as i32),
+        };
+
+        // Apply pending fork fd actions (from posix_spawn) before exec.
+        // These are dup2/close ops that rearrange fds (e.g., pipe write end → fd 1)
+        // and must take effect before CLOEXEC removal during exec serialization.
+        if !proc.fork_fd_actions.is_empty() {
+            let actions: alloc::vec::Vec<_> = proc.fork_fd_actions.drain(..).collect();
+            let mut host = WasmHostIO;
+            for action in actions {
+                use crate::process::FdAction;
+                match action {
+                    FdAction::Dup2 { old_fd, new_fd } => {
+                        if let Err(e) = syscalls::sys_dup2(proc, &mut host, old_fd, new_fd) {
+                            return -(e as i32);
+                        }
+                    }
+                    FdAction::Close { fd } => {
+                        if let Err(e) = syscalls::sys_close(proc, &mut host, fd) {
+                            return -(e as i32);
+                        }
+                    }
+                    FdAction::Open { fd, ref path, flags, mode } => {
+                        match syscalls::sys_open(proc, &mut host, path, flags as u32, mode as u32) {
+                            Ok(opened_fd) => {
+                                if opened_fd != fd {
+                                    if let Err(e) = syscalls::sys_dup2(proc, &mut host, opened_fd, fd) {
+                                        return -(e as i32);
+                                    }
+                                    let _ = syscalls::sys_close(proc, &mut host, opened_fd);
+                                }
+                            }
+                            Err(e) => return -(e as i32),
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Re-borrow after fd action scope ends
     let proc = match table.get(pid) {
         Some(p) => p,
         None => return -(Errno::ESRCH as i32),

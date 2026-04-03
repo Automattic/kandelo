@@ -26,13 +26,44 @@ const repoRoot = resolve(dirname(new URL(import.meta.url).pathname), "..");
 const workerAdapter = new NodeWorkerAdapter();
 
 // Built-in program resolution
+const coreutilsWasm = resolve(repoRoot, "examples/libs/coreutils/bin/coreutils.wasm");
+const dashWasm = resolve(repoRoot, "examples/libs/dash/bin/dash.wasm");
+const shWasm = resolve(repoRoot, "host/wasm/sh.wasm");
+const grepWasm = resolve(repoRoot, "examples/libs/grep/bin/grep.wasm");
+const sedWasm = resolve(repoRoot, "examples/libs/sed/bin/sed.wasm");
+
+// GNU coreutils multi-call binary supports all of these as argv[0]
+const coreutilsNames = [
+    "cat", "ls", "cp", "mv", "rm", "mkdir", "rmdir", "ln", "chmod", "chown",
+    "head", "tail", "wc", "sort", "uniq", "tr", "cut", "paste", "tee",
+    "true", "false", "yes", "env", "printenv", "printf", "expr", "test", "[",
+    "basename", "dirname", "readlink", "realpath", "stat", "touch", "date",
+    "sleep", "id", "whoami", "uname", "hostname", "pwd", "dd", "od", "md5sum",
+    "sha256sum", "base64", "seq", "factor", "nproc", "du", "df",
+];
+
 const builtinPrograms: Record<string, string> = {
     "echo": resolve(repoRoot, "examples/echo.wasm"),
     "/bin/echo": resolve(repoRoot, "examples/echo.wasm"),
     "/usr/bin/echo": resolve(repoRoot, "examples/echo.wasm"),
-    "sh": resolve(repoRoot, "host/wasm/sh.wasm"),
-    "/bin/sh": resolve(repoRoot, "host/wasm/sh.wasm"),
+    "sh": shWasm,
+    "/bin/sh": shWasm,
+    "dash": dashWasm,
+    "/bin/dash": dashWasm,
+    "grep": grepWasm,
+    "/bin/grep": grepWasm,
+    "/usr/bin/grep": grepWasm,
+    "sed": sedWasm,
+    "/bin/sed": sedWasm,
+    "/usr/bin/sed": sedWasm,
 };
+
+// Add coreutils mappings for all known tool names
+for (const name of coreutilsNames) {
+    builtinPrograms[name] = coreutilsWasm;
+    builtinPrograms[`/bin/${name}`] = coreutilsWasm;
+    builtinPrograms[`/usr/bin/${name}`] = coreutilsWasm;
+}
 
 function resolveProgram(path: string): ArrayBuffer | null {
     const mapped = builtinPrograms[path];
@@ -40,10 +71,14 @@ function resolveProgram(path: string): ArrayBuffer | null {
         const bytes = readFileSync(mapped);
         return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
     }
+    const kernelCwd = process.env.KERNEL_CWD || process.cwd();
     const candidates = [
         path,
         path.endsWith(".wasm") ? path : `${path}.wasm`,
         resolve(repoRoot, `examples/${path}.wasm`),
+        // Resolve relative to kernel CWD (sortix tests exec themselves by relative path)
+        resolve(kernelCwd, path),
+        resolve(kernelCwd, path.endsWith(".wasm") ? path : `${path}.wasm`),
     ];
     for (const c of candidates) {
         if (existsSync(c)) {
@@ -71,8 +106,10 @@ async function main() {
 
     const io = new NodePlatformIO();
 
-    // Track process exits
+    // Track process exits and workers per-pid
     const processExits = new Map<number, { resolve: (status: number) => void }>();
+    const workers = new Map<number, WorkerHandle>();
+    const processProgramBytes = new Map<number, ArrayBuffer>();
 
     function setupChildWorkerHandlers(worker: WorkerHandle, pid: number) {
         worker.on("message", (msg: unknown) => {
@@ -83,6 +120,8 @@ async function main() {
                     entry.resolve(m.status);
                 }
                 kernelWorker.unregisterProcess(m.pid);
+                workers.delete(m.pid);
+                processProgramBytes.delete(m.pid);
                 worker.terminate().catch(() => {});
             }
         });
@@ -92,6 +131,8 @@ async function main() {
                 entry.resolve(1);
             }
             kernelWorker.unregisterProcess(pid);
+            workers.delete(pid);
+            processProgramBytes.delete(pid);
         });
     }
 
@@ -126,14 +167,15 @@ async function main() {
                 // Spawn child worker with asyncify fork support
                 const ASYNCIFY_BUF_SIZE = 16384;
                 const asyncifyBufAddr = childChannelOffset - ASYNCIFY_BUF_SIZE;
+                // Use per-pid program bytes if available (fork-after-exec), else initial program
+                const parentProgram = processProgramBytes.get(parentPid) ??
+                    programBytes.buffer.slice(programBytes.byteOffset, programBytes.byteOffset + programBytes.byteLength);
+
                 const childInitData: CentralizedWorkerInitMessage = {
                     type: "centralized_init",
                     pid: childPid,
                     ppid: parentPid,
-                    programBytes: programBytes.buffer.slice(
-                        programBytes.byteOffset,
-                        programBytes.byteOffset + programBytes.byteLength,
-                    ),
+                    programBytes: parentProgram,
                     memory: childMemory,
                     channelOffset: childChannelOffset,
                     isForkChild: true,
@@ -141,15 +183,57 @@ async function main() {
                 };
 
                 const childWorker = workerAdapter.createWorker(childInitData);
+                workers.set(childPid, childWorker);
+                processProgramBytes.set(childPid, parentProgram);
                 setupChildWorkerHandlers(childWorker, childPid);
 
                 return [childChannelOffset];
             },
 
-            onExec: async (_pid, path) => {
+            onExec: async (pid, path, argv, envp) => {
                 const resolved = resolveProgram(path);
                 if (!resolved) return -2; // ENOENT
-                return -38; // ENOSYS for now
+
+                // Terminate old worker
+                const oldWorker = workers.get(pid);
+                if (oldWorker) {
+                    await oldWorker.terminate().catch(() => {});
+                    workers.delete(pid);
+                }
+
+                // Create fresh memory for the new program
+                const newMemory = new WebAssembly.Memory({
+                    initial: 17,
+                    maximum: MAX_PAGES,
+                    shared: true,
+                });
+                const newChannelOffset = (MAX_PAGES - 2) * 65536;
+                newMemory.grow(MAX_PAGES - 17);
+                new Uint8Array(newMemory.buffer, newChannelOffset, CH_TOTAL_SIZE).fill(0);
+
+                // Register new process with same pid
+                kernelWorker.registerProcess(pid, newMemory, [newChannelOffset], { skipKernelCreate: true });
+
+                // Track new program bytes for this pid (for fork-after-exec)
+                processProgramBytes.set(pid, resolved);
+
+                // Spawn new worker
+                const execInitData: CentralizedWorkerInitMessage = {
+                    type: "centralized_init",
+                    pid,
+                    ppid: 0,
+                    programBytes: resolved,
+                    memory: newMemory,
+                    channelOffset: newChannelOffset,
+                    argv,
+                    env: envp,
+                };
+
+                const newWorker = workerAdapter.createWorker(execInitData);
+                workers.set(pid, newWorker);
+                setupChildWorkerHandlers(newWorker, pid);
+
+                return 0;
             },
 
             onClone: async (pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory) => {
@@ -165,14 +249,15 @@ async function main() {
                 kernelWorker.addChannel(pid, threadChannelOffset, tid);
 
                 // Spawn thread worker
+                // Use per-pid program bytes if available (thread after exec), else initial program
+                const threadProgram = processProgramBytes.get(pid) ??
+                    programBytes.buffer.slice(programBytes.byteOffset, programBytes.byteOffset + programBytes.byteLength);
+
                 const threadInitData: CentralizedThreadInitMessage = {
                     type: "centralized_thread_init",
                     pid,
                     tid,
-                    programBytes: programBytes.buffer.slice(
-                        programBytes.byteOffset,
-                        programBytes.byteOffset + programBytes.byteLength,
-                    ),
+                    programBytes: threadProgram,
                     memory,
                     channelOffset: threadChannelOffset,
                     fnPtr,
