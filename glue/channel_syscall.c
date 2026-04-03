@@ -55,6 +55,8 @@ int *__errno_location(void);
 #define CH_SIG_SI_CODE  (CH_SIG_BASE + 24)
 #define CH_SIG_SI_PID   (CH_SIG_BASE + 28)
 #define CH_SIG_SI_UID   (CH_SIG_BASE + 32)
+#define CH_SIG_ALT_SP   (CH_SIG_BASE + 36)
+#define CH_SIG_ALT_SIZE (CH_SIG_BASE + 40)
 
 #define SA_SIGINFO 4
 #define SYS_SIGPROCMASK 37
@@ -148,8 +150,27 @@ static void __deliver_pending_signal(uint32_t base)
     uint64_t old_mask;
     __builtin_memcpy(&old_mask, (void *)(uintptr_t)(base + CH_SIG_OLD_MASK), 8);
 
+    /* Read alt stack info — non-zero alt_sp means we need to switch
+     * the wasm shadow stack (__stack_pointer) to the alt stack buffer
+     * before calling the handler.  This makes &local_var land inside
+     * the alt stack range, matching real sigaltstack behavior. */
+    uint32_t alt_sp   = *(uint32_t *)(uintptr_t)(base + CH_SIG_ALT_SP);
+    uint32_t alt_size = *(uint32_t *)(uintptr_t)(base + CH_SIG_ALT_SIZE);
+
     /* Clear signal delivery area before calling handler */
     *sig_signum_ptr = 0;
+
+    /* Save the current shadow stack pointer and switch to alt stack
+     * if the kernel told us to.  We use inline asm to access the wasm
+     * __stack_pointer global directly.  The saved_sp local lives in a
+     * wasm register (not on the shadow stack) so it survives the switch. */
+    void *saved_sp = 0;
+    if (alt_sp != 0) {
+        __asm__ volatile("global.get __stack_pointer\nlocal.set %0" : "=r"(saved_sp));
+        void *new_sp = (void *)(uintptr_t)(alt_sp + alt_size);
+        /* Shadow stack grows downward — set to top of alt stack buffer */
+        __asm__ volatile("local.get %0\nglobal.set __stack_pointer" :: "r"(new_sp));
+    }
 
     /* Invoke the signal handler via function pointer.
      * In Wasm, function pointers are table indices — casting the
@@ -177,6 +198,11 @@ static void __deliver_pending_signal(uint32_t base)
     } else {
         void (*sa)(int) = (void (*)(int))(uintptr_t)handler;
         sa((int)signum);
+    }
+
+    /* Restore shadow stack before making further syscalls */
+    if (saved_sp != 0) {
+        __asm__ volatile("local.get %0\nglobal.set __stack_pointer" :: "r"(saved_sp));
     }
 
     /* Notify kernel that signal handler has returned.

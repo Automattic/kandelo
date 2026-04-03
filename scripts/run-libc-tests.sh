@@ -53,8 +53,7 @@ REGRESSION_EXPECTED_FAIL=(
     # daemon-failure: fork+waitpid+pipe+daemon() — child exit tracking
     daemon-failure
     # (execle-env now passes — exec support added)
-    # Wasm stack is opaque — signal handlers can't run on alternate stacks
-    sigaltstack
+    # (sigaltstack now passes — glue swaps __stack_pointer to alt stack buffer)
     # (statvfs now passes — fixed statfs64 arg layout: buf at argIndex 2)
 )
 

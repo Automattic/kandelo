@@ -1066,18 +1066,26 @@ pub extern "C" fn kernel_dequeue_signal(pid: u32, out_ptr: *mut u8) -> i32 {
                 const SA_ONSTACK: u32 = 0x08000000;
                 const SS_ONSTACK: u32 = 1;
                 const SS_DISABLE: u32 = 2;
+                // Track whether we're transitioning onto the alt stack
+                let mut switch_to_alt_stack = false;
                 if action.flags & SA_ONSTACK != 0
                     && proc.alt_stack_flags & SS_DISABLE == 0
                     && proc.alt_stack_sp != 0
                 {
+                    // Only switch stacks when first entering alt stack (depth 0 → 1).
+                    // Nested signals on the alt stack keep the current __stack_pointer.
+                    if proc.alt_stack_depth == 0 {
+                        switch_to_alt_stack = true;
+                    }
                     proc.alt_stack_depth += 1;
                     proc.alt_stack_flags |= SS_ONSTACK;
                 }
                 // Write to output buffer:
                 //   [0..4] signum, [4..8] handler_idx, [8..12] flags,
                 //   [12..16] si_value, [16..24] old_mask,
-                //   [24..28] si_code, [28..32] si_pid, [32..36] si_uid
-                let buf = unsafe { slice::from_raw_parts_mut(out_ptr, 36) };
+                //   [24..28] si_code, [28..32] si_pid, [32..36] si_uid,
+                //   [36..40] alt_sp (0 if no switch), [40..44] alt_size
+                let buf = unsafe { slice::from_raw_parts_mut(out_ptr, 44) };
                 buf[0..4].copy_from_slice(&signum.to_le_bytes());
                 buf[4..8].copy_from_slice(&idx.to_le_bytes());
                 buf[8..12].copy_from_slice(&action.flags.to_le_bytes());
@@ -1086,6 +1094,12 @@ pub extern "C" fn kernel_dequeue_signal(pid: u32, out_ptr: *mut u8) -> i32 {
                 buf[24..28].copy_from_slice(&si_code.to_le_bytes());
                 buf[28..32].copy_from_slice(&proc.pid.to_le_bytes());
                 buf[32..36].copy_from_slice(&proc.uid.to_le_bytes());
+                if switch_to_alt_stack {
+                    buf[36..40].copy_from_slice(&proc.alt_stack_sp.to_le_bytes());
+                    buf[40..44].copy_from_slice(&proc.alt_stack_size.to_le_bytes());
+                } else {
+                    buf[36..44].fill(0);
+                }
                 return signum as i32;
             }
             SignalHandler::Default => {

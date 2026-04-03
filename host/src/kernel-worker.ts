@@ -193,6 +193,8 @@ const CH_SIG_OLD_MASK = CH_SIG_BASE + 16;  // u64: saved blocked mask
 const CH_SIG_SI_CODE = CH_SIG_BASE + 24;   // i32: si_code
 const CH_SIG_SI_PID = CH_SIG_BASE + 28;    // u32: si_pid
 const CH_SIG_SI_UID = CH_SIG_BASE + 32;    // u32: si_uid
+const CH_SIG_ALT_SP = CH_SIG_BASE + 36;   // u32: alt stack sp (0 = no switch)
+const CH_SIG_ALT_SIZE = CH_SIG_BASE + 40;  // u32: alt stack size
 
 /** Scratch area layout in kernel Memory for kernel_handle_channel.
  * Same as channel layout but used as the kernel-side buffer. */
@@ -1596,13 +1598,13 @@ export class CentralizedKernelWorker {
     const sigOutOffset = this.scratchOffset + CH_SIG_BASE;
     const sigResult = dequeueSignal(channel.pid, sigOutOffset);
     if (sigResult > 0) {
-      // Copy 36 bytes of signal delivery info from kernel scratch to process channel
+      // Copy 44 bytes of signal delivery info from kernel scratch to process channel
       // Layout: signum(4) + handler(4) + flags(4) + si_value(4) + old_mask(8)
-      //       + si_code(4) + si_pid(4) + si_uid(4) = 36 bytes
+      //       + si_code(4) + si_pid(4) + si_uid(4) + alt_sp(4) + alt_size(4) = 44 bytes
       const kernelMem = this.getKernelMem();
       const processMem = new Uint8Array(channel.memory.buffer);
       processMem.set(
-        kernelMem.subarray(sigOutOffset, sigOutOffset + 36),
+        kernelMem.subarray(sigOutOffset, sigOutOffset + 44),
         channel.channelOffset + CH_SIG_BASE,
       );
     } else {
