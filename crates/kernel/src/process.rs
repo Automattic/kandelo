@@ -254,6 +254,9 @@ pub struct Process {
     pub alt_stack_sp: u32,
     pub alt_stack_flags: u32,
     pub alt_stack_size: u32,
+    /// Number of nested signal handlers running with SA_ONSTACK on alt stack.
+    /// When > 0, SS_ONSTACK is set in alt_stack_flags.
+    pub alt_stack_depth: u32,
     /// Pipe FD pairs inherited from parent, for replay during fork child
     /// re-execution. Each entry is (read_fd, write_fd). sys_pipe pops
     /// from this list to return the correct FDs when the child re-runs
@@ -332,6 +335,7 @@ impl Process {
             alt_stack_sp: 0,
             alt_stack_flags: 2, // SS_DISABLE
             alt_stack_size: 0,
+            alt_stack_depth: 0,
             fork_pipe_replay: Vec::new(),
             memfds: Vec::new(),
             has_exec: false,

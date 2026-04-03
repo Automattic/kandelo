@@ -1061,6 +1061,18 @@ pub extern "C" fn kernel_dequeue_signal(pid: u32, out_ptr: *mut u8) -> i32 {
                 // Save old mask, apply new (POSIX: block sa_mask + the signal itself)
                 let old_mask = proc.signals.blocked;
                 proc.signals.blocked |= action.mask | sig_bit(signum);
+                // If SA_ONSTACK and alt stack is configured (not SS_DISABLE),
+                // mark that we're executing on the alt stack.
+                const SA_ONSTACK: u32 = 0x08000000;
+                const SS_ONSTACK: u32 = 1;
+                const SS_DISABLE: u32 = 2;
+                if action.flags & SA_ONSTACK != 0
+                    && proc.alt_stack_flags & SS_DISABLE == 0
+                    && proc.alt_stack_sp != 0
+                {
+                    proc.alt_stack_depth += 1;
+                    proc.alt_stack_flags |= SS_ONSTACK;
+                }
                 // Write to output buffer:
                 //   [0..4] signum, [4..8] handler_idx, [8..12] flags,
                 //   [12..16] si_value, [16..24] old_mask,
@@ -1912,6 +1924,19 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
             };
             kernel_kill_with_value(a1, a2 as u32, si_value)
         },
+
+        // SYS_RT_SIGRETURN: signal handler return — clean up alt stack state
+        208 => {
+            let (_gkl, proc) = unsafe { get_process() };
+            if proc.alt_stack_depth > 0 {
+                proc.alt_stack_depth -= 1;
+                if proc.alt_stack_depth == 0 {
+                    const SS_ONSTACK: u32 = 1;
+                    proc.alt_stack_flags &= !SS_ONSTACK;
+                }
+            }
+            0
+        }
 
         // SYS_SIGALTSTACK: store/retrieve alternate stack state
         209 => kernel_sigaltstack(a1 as *const u8, a2 as *mut u8),
@@ -3487,9 +3512,14 @@ pub extern "C" fn kernel_sigaltstack(ss_ptr: *const u8, oss_ptr: *mut u8) -> i32
 
     // Read new state from ss_ptr if non-null
     if !ss_ptr.is_null() {
+        // POSIX: cannot modify alt stack while executing on it (SS_ONSTACK)
+        const SS_ONSTACK: u32 = 1;
+        const SS_DISABLE: u32 = 2;
+        if proc.alt_stack_flags & SS_ONSTACK != 0 {
+            return -(Errno::EPERM as i32);
+        }
         let buf = unsafe { slice::from_raw_parts(ss_ptr, 12) };
         let flags = u32::from_le_bytes(buf[4..8].try_into().unwrap());
-        const SS_DISABLE: u32 = 2;
         if flags & SS_DISABLE != 0 {
             proc.alt_stack_sp = 0;
             proc.alt_stack_flags = SS_DISABLE;
