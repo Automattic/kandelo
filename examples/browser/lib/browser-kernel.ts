@@ -9,18 +9,23 @@
 //
 // The kernel worker calls setImmediate after each syscall to re-listen on the channel.
 // Requirements for the polyfill:
-//   1. Fast — can't use small fixed-count batches with setTimeout (4ms clamp wastes time).
+//   1. Fast — can't use setTimeout(0) due to browser 4ms timer clamp.
 //   2. Must yield to timers — so setTimeout/setInterval callbacks can fire.
 //
-// Solution: setTimeout with time-based batching.  Process items for up to 4ms per flush,
-// then yield via setTimeout(0).  Timer callbacks interleave between flushes.  The 4ms
-// clamp on nested setTimeout means ~8ms per cycle (4ms processing + 4ms delay), giving
-// ~50K+ syscalls/sec while guaranteeing responsive timer callbacks every ~8ms.
+// Solution: MessageChannel.postMessage (~0ms dispatch) as the fast path, with a
+// periodic setTimeout yield every 8ms to prevent timer starvation. MessageChannel
+// messages are macrotasks that bypass the 4ms clamp, roughly doubling syscall
+// throughput compared to the setTimeout-only approach.
 if (typeof globalThis.setImmediate === "undefined") {
   const _immQueue: Array<{ id: number; fn: (...args: any[]) => void; args: any[] }> = [];
   let _immNextId = 0;
   let _immScheduled = false;
   const _immCancelled = new Set<number>();
+  let _immLastYield = performance.now();
+
+  // MessageChannel for fast (~0ms) dispatch
+  const _immChannel = new MessageChannel();
+  _immChannel.port1.onmessage = _immFlush;
 
   function _immFlush() {
     _immScheduled = false;
@@ -39,7 +44,15 @@ if (typeof globalThis.setImmediate === "undefined") {
     }
     if (_immQueue.length > 0 && !_immScheduled) {
       _immScheduled = true;
-      setTimeout(_immFlush, 0);
+      const now = performance.now();
+      if (now - _immLastYield >= 8) {
+        // Yield to timers via setTimeout periodically to prevent starvation
+        _immLastYield = now;
+        setTimeout(_immFlush, 0);
+      } else {
+        // Fast path: MessageChannel bypasses 4ms timer clamp
+        _immChannel.port2.postMessage(null);
+      }
     }
   }
 
@@ -48,7 +61,7 @@ if (typeof globalThis.setImmediate === "undefined") {
     _immQueue.push({ id, fn, args });
     if (!_immScheduled) {
       _immScheduled = true;
-      setTimeout(_immFlush, 0);
+      _immChannel.port2.postMessage(null);
     }
     return id;
   };

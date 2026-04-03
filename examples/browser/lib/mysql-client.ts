@@ -68,7 +68,14 @@ export class MySqlBrowserClient {
     kernel.wakeBlockedReaders(recvPipeIdx);
 
     const client = new MySqlBrowserClient(kernel, target.pid, recvPipeIdx, sendPipeIdx);
-    await client.handshake();
+    try {
+      await client.handshake();
+    } catch (e) {
+      // Clean up pipe pairs on handshake failure to avoid stale connections
+      // accumulating in the accept backlog
+      client.close();
+      throw e;
+    }
     return client;
   }
 
@@ -237,11 +244,11 @@ export class MySqlBrowserClient {
   }
 
   private async readBytes(): Promise<Uint8Array | null> {
-    // Poll the pipe for data with timeout
-    for (let i = 0; i < 2000; i++) {
+    // Poll the pipe for data with timeout (30s = 1500 × 20ms)
+    for (let i = 0; i < 1500; i++) {
       const data = this.kernel.pipeRead(this.pid, this.sendPipeIdx);
       if (data && data.length > 0) return data;
-      await new Promise((r) => setTimeout(r, 5));
+      await new Promise((r) => setTimeout(r, 20));
     }
     return null;
   }

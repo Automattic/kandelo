@@ -2182,7 +2182,7 @@ export class CentralizedKernelWorker {
           if (this.processes.has(channel.pid)) {
             this.retrySyscall(channel);
           }
-        }, 100);
+        }, 50);
         return;
       }
       const pv = new DataView(channel.memory.buffer, timeoutPtr);
@@ -2300,6 +2300,33 @@ export class CentralizedKernelWorker {
       }
     }
 
+    // Event-driven wakeup for accept/accept4: register the listening socket's
+    // pipe index so injectConnection → scheduleWakeBlockedRetries wakes the
+    // accept immediately instead of waiting for the fallback timer.
+    if (syscallNr === 53 /* ACCEPT */ || syscallNr === 384 /* ACCEPT4 */) {
+      const fd = origArgs[0];
+      const getFdPipeIdx = this.kernelInstance!.exports.kernel_get_fd_pipe_idx as
+        ((pid: number, fd: number) => number) | undefined;
+      if (getFdPipeIdx) {
+        const pipeIdx = getFdPipeIdx(channel.pid, fd);
+        if (pipeIdx >= 0) {
+          let readers = this.pendingPipeReaders.get(pipeIdx);
+          if (!readers) {
+            readers = [];
+            this.pendingPipeReaders.set(pipeIdx, readers);
+          }
+          if (!readers.some(r => r.channel === channel)) {
+            readers.push({ channel, pid: channel.pid });
+          }
+          if (PROFILING) {
+            const entry = this.profileData!.get(syscallNr);
+            if (entry) entry.retries++;
+          }
+          return;
+        }
+      }
+    }
+
     if (PROFILING) {
       const entry = this.profileData!.get(syscallNr);
       if (entry) entry.retries++;
@@ -2314,7 +2341,7 @@ export class CentralizedKernelWorker {
         this.retrySyscall(channel);
       }
     };
-    const timer = setTimeout(retryFn, 50);
+    const timer = setTimeout(retryFn, 10);
     this.pendingPollRetries.set(channel.pid, { timer, channel, pipeIndices: [] });
   }
 
@@ -2770,7 +2797,7 @@ export class CentralizedKernelWorker {
           this.handleEpollPwait(channel, syscallNr, origArgs);
         }
       };
-      const timer = setTimeout(retryFn, 50);
+      const timer = setTimeout(retryFn, 10);
       this.pendingPollRetries.set(channel.pid, { timer, channel, pipeIndices: [] });
       return;
     }
@@ -2895,7 +2922,7 @@ export class CentralizedKernelWorker {
         this.handleEpollPwait(channel, syscallNr, origArgs);
       }
     };
-    const timer = setTimeout(retryFn, 50);
+    const timer = setTimeout(retryFn, 10);
     this.pendingPollRetries.set(channel.pid, { timer, channel, pipeIndices });
   }
 

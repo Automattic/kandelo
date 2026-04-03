@@ -198,25 +198,42 @@ async function start() {
       "--max-connections=10",
     ]);
 
-    // --- Phase 3: Connect MySQL client (with retry) ---
+    // --- Phase 3: Connect MySQL client (two-phase: wait for listener, then connect) ---
     setStatus("Waiting for MariaDB to accept connections...", "loading");
-    appendLog("Waiting for server to accept connections...\n", "info");
+    appendLog("Waiting for server to bind port 3306...\n", "info");
 
-    // Poll for listener instead of blind wait — MariaDB startup time varies
-    const maxRetries = 30;
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    // Phase 3a: Poll pickListenerTarget until non-null — confirms server has
+    // bound and is listening. No connection attempts until this succeeds.
+    const listenerTimeout = 60;
+    for (let s = 1; s <= listenerTimeout; s++) {
       await new Promise((r) => setTimeout(r, 1000));
+      const target = kernel.pickListenerTarget(3306);
+      if (target) {
+        appendLog(`Server listening (after ${s}s)\n`, "info");
+        break;
+      }
+      if (s === listenerTimeout) {
+        throw new Error("MariaDB did not bind port 3306 within 60s");
+      }
+      if (s % 10 === 0) {
+        appendLog(`Still waiting for listener... (${s}s)\n`, "info");
+      }
+    }
+
+    // Phase 3b: Server is provably accepting — connect with retry for handshake
+    appendLog("Connecting MySQL client...\n", "info");
+    const maxRetries = 10;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
         mysqlClient = await MySqlBrowserClient.connect(kernel, 3306);
-        appendLog(`Connected! (after ${attempt}s)\n`, "info");
+        appendLog(`Connected! (attempt ${attempt})\n`, "info");
         break;
-      } catch {
+      } catch (e) {
         if (attempt === maxRetries) {
-          throw new Error("MariaDB did not start accepting connections within 30s");
+          throw new Error(`MySQL handshake failed after ${maxRetries} attempts: ${e}`);
         }
-        if (attempt % 5 === 0) {
-          appendLog(`Still waiting... (${attempt}s)\n`, "info");
-        }
+        appendLog(`Connect attempt ${attempt} failed, retrying...\n`, "info");
+        await new Promise((r) => setTimeout(r, 2000));
       }
     }
 
