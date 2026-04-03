@@ -26,7 +26,8 @@ KERNEL_WASM="$REPO_ROOT/host/wasm/wasm_posix_kernel.wasm"
 
 EXPECTED_FAIL=(
     # ── Wasm limitations ──
-    # sigaltstack: Wasm stack is opaque — handlers can't run on alternate stacks
+    # sigaltstack: 1-1 checks actual stack pointer (impossible in Wasm)
+    # 2-1, 3-1, 6-1, 7-1, 8-1: handler signature mismatch (void() vs void(int))
     sigaltstack/1-1
     sigaltstack/2-1
     sigaltstack/3-1

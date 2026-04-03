@@ -68,7 +68,7 @@ BASIC_EXPECTED_FAIL=(
     # (libintl/bindtextdomain now passes — dcngettext overlay returns default /usr/share/locale)
     # (libintl _l variants now pass — stubs delegate to non-_l versions)
     # (ndbm basic tests now pass — in-memory ndbm implementation)
-    "nl_types/catclose" "nl_types/catgets" "nl_types/catopen"
+    # (nl_types tests now pass — gencat wasm binary for catalog compilation)
     # (utmpx/pututxline now passes — added errno=EPERM in pututxline overlay)
     # (mqueue tests now pass — POSIX mqueue implementation in centralized mode)
     # (dlfcn/dladdr now passes — dladdr stub in glue/dlopen.c)
@@ -80,7 +80,7 @@ BASIC_EXPECTED_FAIL=(
     # (unistd/fchownat now passes — nested data directory)
     # (stdlib/system now passes — exec support in run-example.ts)
     # -- Signals (limited Wasm signal model)
-    "signal/sigaltstack"
+    # (signal/sigaltstack now passes — SS_ONSTACK flag emulation in kernel_dequeue_signal)
     # -- Timers/signals that block (timeout)
     "aio/aio_error" "aio/aio_fsync"
     # poll/ppoll now passes
@@ -92,7 +92,7 @@ BASIC_EXPECTED_FAIL=(
     "threads/thrd_create"
     # -- Pthread features not supported (priority scheduling, pshared)
     # (pthread/pthread_atfork now passes — fork() calls __fork_handler in channel_syscall.c)
-    "pthread/pthread_attr_getstack"
+    # (pthread/pthread_attr_getstack now passes — musl patch: return NULL/default when no stack set)
     "pthread/pthread_attr_setinheritsched"
     # (pthread clock-aware waits now pass — delegate to timed variants)
     "pthread/pthread_mutex_getprioceiling" "pthread/pthread_mutex_setprioceiling"
@@ -163,8 +163,7 @@ IO_EXPECTED_FAIL=(
 SIGNAL_EXPECTED_FAIL=(
     # (exec signal tests now pass — exec support in run-example.ts)
     # (sigaction-exec-flags now passes — exec clears sa_flags correctly)
-    # sigaltstack not implemented in Wasm (no native stack switching)
-    "sigaltstack-raise"
+    # (sigaltstack-raise now passes — SS_ONSTACK flag emulation via rt_sigreturn)
 )
 PROCESS_EXPECTED_FAIL=(
     # (fork-exec-setpgid-in-child now passes — exec support)

@@ -58,6 +58,7 @@ int *__errno_location(void);
 
 #define SA_SIGINFO 4
 #define SYS_SIGPROCMASK 37
+#define SYS_RT_SIGRETURN 208
 #define SIG_SETMASK 2
 
 /* Per-thread channel base address, set during TLS init by the host */
@@ -177,6 +178,10 @@ static void __deliver_pending_signal(uint32_t base)
         void (*sa)(int) = (void (*)(int))(uintptr_t)handler;
         sa((int)signum);
     }
+
+    /* Notify kernel that signal handler has returned.
+     * This clears SS_ONSTACK if we were on the alt stack. */
+    __do_syscall(SYS_RT_SIGRETURN, 0, 0, 0, 0, 0, 0);
 
     /* Restore the old blocked mask via sigprocmask syscall.
      * This also triggers delivery of any further pending signals

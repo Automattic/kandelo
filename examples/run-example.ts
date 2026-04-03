@@ -56,6 +56,8 @@ const builtinPrograms: Record<string, string> = {
     "sed": sedWasm,
     "/bin/sed": sedWasm,
     "/usr/bin/sed": sedWasm,
+    "gencat": resolve(repoRoot, "examples/gencat.wasm"),
+    "/usr/bin/gencat": resolve(repoRoot, "examples/gencat.wasm"),
 };
 
 // Add coreutils mappings for all known tool names
