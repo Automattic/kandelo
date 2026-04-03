@@ -23,6 +23,8 @@ export interface CentralizedWorkerInitMessage {
   ppid: number;
   /** User program bytes (compiled with channel_syscall.c — no kernel imports) */
   programBytes: ArrayBuffer;
+  /** Pre-compiled WebAssembly module (avoids recompilation in web workers) */
+  programModule?: WebAssembly.Module;
   /** Shared Memory for this process (also shared with CentralizedKernelWorker) */
   memory: WebAssembly.Memory;
   /** Channel offset within the shared Memory for this thread's syscall channel */
