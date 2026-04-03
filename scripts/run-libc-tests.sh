@@ -31,8 +31,7 @@ FUNCTIONAL_EXPECTED_FAIL=(
     pthread_cancel
     # (sem_open now passes — MAP_SHARED mmap + shm_open working since PR #100)
     # (ipc_msg/ipc_sem/ipc_shm now pass — SysV IPC wired through host-side handlers)
-    # fcntl: SIGABRT in advisory lock test (pre-existing, fails on main too)
-    fcntl
+    # (fcntl now passes — host handle refcounting across fork)
     # tls_init: TLS fixed-init value not preserved (patchWasmForThread ctor missing)
     tls_init
     # popen: requires /bin/sh to exec commands (shell hangs in pipe mode)
@@ -48,8 +47,7 @@ REGRESSION_EXPECTED_FAIL=(
     raise-race
     setenv-oom
     tls_get_new-dtv
-    # fflush-exit: pread returns EBADF after fork+_exit (OFD refcount issue)
-    fflush-exit
+    # (fflush-exit now passes — host handle refcounting across fork)
     # daemon-failure: fork+waitpid+pipe+daemon() — child exit tracking
     daemon-failure
     # (execle-env now passes — exec support added)

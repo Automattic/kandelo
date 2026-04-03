@@ -177,6 +177,20 @@ impl ProcessTable {
             }
         }
 
+        // Increment cross-process refcount for host file handles (regular files,
+        // directories, etc.) so that fork children closing their FDs don't
+        // invalidate host handles the parent still uses.
+        for (_ofd_idx, ofd) in child.ofd_table.iter() {
+            if ofd.host_handle >= 0 {
+                match ofd.file_type {
+                    FileType::Regular | FileType::Directory | FileType::CharDevice | FileType::Pipe => {
+                        crate::ofd::host_handle_fork_ref(ofd.host_handle);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         // Increment global pipe ref counts for cross-process socket OFDs.
         // Without this, the parent closing/exiting would free pipes still
         // needed by the child (or vice versa).
