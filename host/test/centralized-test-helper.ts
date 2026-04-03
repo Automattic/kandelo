@@ -237,24 +237,24 @@ export async function runCentralizedProgram(
 
         return tid;
       },
-      onExit: (pid, exitStatus) => {
-        if (pid === 1) {
+      onExit: (exitPid, exitStatus) => {
+        if (exitPid === pid) {
           // Main process exited — full cleanup
-          kernelWorker.unregisterProcess(pid);
-          const w = workers.get(pid);
+          kernelWorker.unregisterProcess(exitPid);
+          const w = workers.get(exitPid);
           if (w) {
             w.terminate().catch(() => {});
-            workers.delete(pid);
+            workers.delete(exitPid);
           }
           resolveExit(exitStatus);
         } else {
           // Child process exited — deactivate channels but keep in kernel
           // process table as zombie until reaped by wait/waitpid
-          kernelWorker.deactivateProcess(pid);
-          const w = workers.get(pid);
+          kernelWorker.deactivateProcess(exitPid);
+          const w = workers.get(exitPid);
           if (w) {
             w.terminate().catch(() => {});
-            workers.delete(pid);
+            workers.delete(exitPid);
           }
         }
       },
@@ -283,7 +283,7 @@ export async function runCentralizedProgram(
   memory.grow(MAX_PAGES - 17);
   new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
-  const pid = 1;
+  const pid = 100;
   kernelWorker.registerProcess(pid, memory, [channelOffset]);
 
   // Provide stdin data if specified
