@@ -586,6 +586,17 @@ function detectChannelBaseTlsOffset(programBytes: ArrayBuffer): number {
       return tlsOffset;
     }
 
+    // Pattern 3: post-asyncify — global.get <tls_base>; i32.const <offset>; i32.add
+    if (src[pos] === 0x23) {
+      let p3 = pos + 1;
+      const [, globalIdxBytes] = readLEB128(src, p3); p3 += globalIdxBytes;
+      if (src[p3] === 0x41) {
+        p3++;
+        const [tlsOffset] = readLEB128(src, p3);
+        return tlsOffset;
+      }
+    }
+
     // Pattern 2: wrapper — call <ctors>; call <actual>; end
     if (src[pos] !== 0x10) return -1;
     pos++;
@@ -630,6 +641,7 @@ function setupChannelBase(
   // Try to detect the exact TLS offset of __channel_base from the binary.
   // This avoids corrupting other TLS variables during constructor execution.
   let detectedOffset = -1;
+  let savedTlsValue = 0;
   if (programBytes) {
     detectedOffset = detectChannelBaseTlsOffset(programBytes);
   }
@@ -642,7 +654,8 @@ function setupChannelBase(
     view.setUint32(tlsAddr + detectedOffset, channelOffset, true);
   } else if (tlsAddr > 0) {
     // Fallback: set at offset 0 (works for programs where __channel_base
-    // happens to be the first TLS variable)
+    // happens to be the first TLS variable). Save original value for restore.
+    savedTlsValue = view.getUint32(tlsAddr, true);
     view.setUint32(tlsAddr, channelOffset, true);
   }
 
@@ -654,11 +667,7 @@ function setupChannelBase(
     // If we set at offset 0 as fallback and the real offset is different,
     // restore offset 0 to its original value
     if (detectedOffset < 0 && addr !== tlsAddr && tlsAddr > 0) {
-      // The original value was overwritten with channelOffset; restore to 0
-      // (since __wasm_init_memory initialized .tdata, it was the template value
-      // which got set to channelOffset — we can't easily recover it, but the
-      // constructor may have already corrupted state anyway)
-      view.setUint32(tlsAddr, 0, true);
+      view.setUint32(tlsAddr, savedTlsValue, true);
     }
   }
 }

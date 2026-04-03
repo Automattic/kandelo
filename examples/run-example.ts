@@ -46,8 +46,8 @@ const builtinPrograms: Record<string, string> = {
     "echo": resolve(repoRoot, "examples/echo.wasm"),
     "/bin/echo": resolve(repoRoot, "examples/echo.wasm"),
     "/usr/bin/echo": resolve(repoRoot, "examples/echo.wasm"),
-    "sh": shWasm,
-    "/bin/sh": shWasm,
+    "sh": dashWasm,
+    "/bin/sh": dashWasm,
     "dash": dashWasm,
     "/bin/dash": dashWasm,
     "grep": grepWasm,
@@ -296,17 +296,17 @@ async function main() {
                 return tid;
             },
 
-            onExit: (pid, exitStatus) => {
-                const entry = processExits.get(pid);
+            onExit: (exitPid, exitStatus) => {
+                const entry = processExits.get(exitPid);
                 if (entry) {
                     entry.resolve(exitStatus);
                 }
-                if (pid === 1) {
-                    kernelWorker.unregisterProcess(pid);
+                if (exitPid === pid) {
+                    kernelWorker.unregisterProcess(exitPid);
                 } else {
                     // Child: deactivate channels but keep in kernel process table
                     // as zombie until reaped by wait/waitpid
-                    kernelWorker.deactivateProcess(pid);
+                    kernelWorker.deactivateProcess(exitPid);
                 }
             },
         },
@@ -339,10 +339,10 @@ async function main() {
     new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
     // Register process with kernel
-    const pid = 1;
+    const pid = 100;
     kernelWorker.registerProcess(pid, memory, [channelOffset]);
     kernelWorker.setCwd(pid, process.env.KERNEL_CWD || process.cwd());
-    kernelWorker.setNextChildPid(2);
+    kernelWorker.setNextChildPid(101);
 
     // Spawn the process worker
     const initData: CentralizedWorkerInitMessage = {

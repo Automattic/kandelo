@@ -24,6 +24,7 @@ use alloc::vec::Vec;
 use core::slice;
 
 use wasm_posix_shared::{Errno, WasmDirent, WasmStat, WasmTimespec};
+use wasm_posix_shared::fd_flags::FD_CLOEXEC;
 
 use crate::ofd::FileType;
 use crate::process::{HostIO, Process};
@@ -1174,13 +1175,33 @@ pub extern "C" fn kernel_exec_setup(pid: u32) -> i32 {
         }
     }
 
+    // Close CLOEXEC fds BEFORE serialization so pipe/host-handle refcounts
+    // are properly decremented. Without this, the exec serialization silently
+    // drops CLOEXEC fds from the FD table without adjusting global refcounts,
+    // leaving pipes with phantom writers and preventing EOF on reads.
+    {
+        let proc = match table.get_mut(pid) {
+            Some(p) => p,
+            None => return -(Errno::ESRCH as i32),
+        };
+        let cloexec_fds: alloc::vec::Vec<i32> = proc.fd_table.iter()
+            .filter(|(_, entry)| entry.fd_flags & FD_CLOEXEC != 0)
+            .map(|(fd, _)| fd)
+            .collect();
+        let mut host = WasmHostIO;
+        for fd in cloexec_fds {
+            let _ = syscalls::sys_close(proc, &mut host, fd);
+        }
+    }
+
     // Re-borrow after fd action scope ends
     let proc = match table.get(pid) {
         Some(p) => p,
         None => return -(Errno::ESRCH as i32),
     };
 
-    // Serialize as exec state (handles CLOEXEC fd removal, signal handler reset, etc.)
+    // Serialize as exec state (signal handler reset, etc.)
+    // CLOEXEC fds were already closed above, so serialization just preserves what's left.
     let mut buf = alloc::vec![0u8; 64 * 1024];
     let written = match crate::fork::serialize_exec_state(proc, &mut buf) {
         Ok(n) => n,

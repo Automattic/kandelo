@@ -40,11 +40,12 @@ EXPECTED_FAIL=(
 
     # ── Not implemented / stubs ──
     mlock/12-1        # needs pwd.h
-    # sched_getparam/6-1 and sched_getscheduler/7-1 SKIP (pwd.h build failure)
 
     # ── Process/permission model ──
-    kill/2-2          # EPERM test: PID 1 is our process, not init
-    kill/3-1          # EPERM test: PID 1 is our process, not init
+    kill/2-2          # EPERM test: no multi-user permission model
+    kill/3-1          # EPERM test: no multi-user permission model
+    sched_getparam/6-1      # EPERM test: no multi-user permission model
+    sched_getscheduler/7-1  # EPERM test: no multi-user permission model
     sigqueue/3-1      # needs pwd.h
     sigqueue/12-1     # needs pwd.h
 )

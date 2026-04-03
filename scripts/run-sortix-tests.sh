@@ -127,7 +127,7 @@ BASIC_EXPECTED_FAIL=(
     # (unistd/readlinkat now passes — fixed SYSCALL_ARGS argIndex for readlinkat)
     # (unistd/lseek, unistd/read now pass — data directory infrastructure)
     # (ftw/nftw now passes — directory detection without O_DIRECTORY)
-    "wordexp/wordexp" "wordexp/wordfree"
+    # (wordexp/wordexp, wordexp/wordfree now pass — popen CLOEXEC pipe refcount fix + /bin/sh→dash)
     # (glob/glob, glob/globfree now pass — data directory infrastructure)
     # (sys_stat/fchmodat now passes — fchmodat2 syscall 383 implemented)
     # (sys_stat/fstat, sys_stat/stat now pass — data directory infrastructure)

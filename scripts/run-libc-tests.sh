@@ -32,10 +32,8 @@ FUNCTIONAL_EXPECTED_FAIL=(
     # (sem_open now passes — MAP_SHARED mmap + shm_open working since PR #100)
     # (ipc_msg/ipc_sem/ipc_shm now pass — SysV IPC wired through host-side handlers)
     # (fcntl now passes — host handle refcounting across fork)
-    # tls_init: TLS fixed-init value not preserved (patchWasmForThread ctor missing)
-    tls_init
-    # popen: requires /bin/sh to exec commands (shell hangs in pipe mode)
-    popen
+    # (tls_init now passes — fixed detectChannelBaseTlsOffset for post-asyncify binaries + save/restore fallback)
+    # (popen now passes — exec CLOEXEC pipe refcount fix + dash Linux signal table + /bin/sh→dash)
     # (spawn now passes — __stack_pointer restored in fork child + sysroot rebuilt)
     # (vfork now passes — exec support added)
 )
@@ -48,8 +46,7 @@ REGRESSION_EXPECTED_FAIL=(
     setenv-oom
     tls_get_new-dtv
     # (fflush-exit now passes — host handle refcounting across fork)
-    # daemon-failure: fork+waitpid+pipe+daemon() — child exit tracking
-    daemon-failure
+    # (daemon-failure now passes — initial PID changed from 1 so ppid≠1 for fork children)
     # (execle-env now passes — exec support added)
     # (sigaltstack now passes — glue swaps __stack_pointer to alt stack buffer)
     # (statvfs now passes — fixed statfs64 arg layout: buf at argIndex 2)

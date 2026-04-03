@@ -3815,6 +3815,11 @@ export class CentralizedKernelWorker {
 
   /** Complete a waitpid syscall. */
   private completeWaitpid(channel: ChannelInfo, origArgs: number[], retVal: number, errVal: number): void {
+    // Waitpid is handled host-side (never goes through kernel_handle_channel),
+    // so we must check for pending signals here. Without this, cross-process
+    // signals (e.g., kill from child to parent) are lost — the signal is queued
+    // in the kernel but never dequeued for the blocked parent.
+    this.dequeueSignalForDelivery(channel);
     this.completeChannel(channel, SYS_WAIT4, origArgs, undefined, retVal, errVal);
   }
 
@@ -3834,6 +3839,7 @@ export class CentralizedKernelWorker {
       if (!(waiter.options & WNOWAIT)) {
         this.consumeExitedChild(parentPid, childPid);
       }
+      this.dequeueSignalForDelivery(waiter.channel);
       this.completeChannel(waiter.channel, SYS_WAITID, waiter.origArgs, undefined, 0, 0);
     } else {
       // wait4: write wstatus, consume zombie
