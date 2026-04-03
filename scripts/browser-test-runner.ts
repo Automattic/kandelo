@@ -29,6 +29,8 @@ interface TestResult {
   durationMs: number;
 }
 
+let viteAlive = false;
+
 async function startViteServer(): Promise<ChildProcess> {
   return new Promise((resolvePromise, reject) => {
     const proc = spawn(
@@ -53,6 +55,7 @@ async function startViteServer(): Promise<ChildProcess> {
       const text = data.toString();
       if (!started && text.includes("Local:")) {
         started = true;
+        viteAlive = true;
         clearTimeout(timeout);
         // Give Vite a moment to fully initialize
         setTimeout(() => resolvePromise(proc), 500);
@@ -71,6 +74,7 @@ async function startViteServer(): Promise<ChildProcess> {
     });
 
     proc.on("exit", (code) => {
+      viteAlive = false;
       if (!started) {
         clearTimeout(timeout);
         reject(new Error(`Vite exited with code ${code}`));
@@ -282,6 +286,32 @@ async function main() {
   let viteProc: ChildProcess | null = null;
   let browser: Browser | null = null;
 
+  async function ensureVite(): Promise<void> {
+    if (viteAlive && viteProc && !viteProc.killed) return;
+    // Kill old process if it exists
+    if (viteProc) {
+      try { viteProc.kill(); } catch {}
+      await new Promise<void>((r) => {
+        viteProc!.on("exit", () => r());
+        setTimeout(r, 2000);
+      });
+    }
+    if (!jsonOutput) {
+      process.stderr.write("  Restarting Vite server...\n");
+    }
+    viteProc = await startViteServer();
+  }
+
+  async function safeWaitForTestRunner(page: Page): Promise<void> {
+    try {
+      await waitForTestRunner(page);
+    } catch {
+      // Vite may have crashed — restart it and retry
+      await ensureVite();
+      await waitForTestRunner(page);
+    }
+  }
+
   try {
     viteProc = await startViteServer();
 
@@ -293,8 +323,8 @@ async function main() {
       ],
     });
 
-    const context = await browser.newContext();
-    const page = await context.newPage();
+    let context = await browser.newContext();
+    let page = await context.newPage();
 
     // Forward browser console for debugging
     page.on("console", (msg) => {
@@ -304,7 +334,7 @@ async function main() {
     });
 
     // Navigate to test runner and wait for it to be ready
-    await waitForTestRunner(page);
+    await safeWaitForTestRunner(page);
 
     if (!jsonOutput) {
       console.error("Test runner ready. Running tests...\n");
@@ -313,7 +343,7 @@ async function main() {
     // Run each test — reload page every reloadInterval tests to prevent OOM.
     // Each test creates a 1GB SharedArrayBuffer (16384 pages, pre-allocated
     // for shared memory). Chrome's virtual address space fills up after ~3-4
-    // tests. Reload frequently to release address space.
+    // tests. Use fresh browser contexts periodically to fully release address space.
     const results: TestResult[] = [];
     let testsSinceReload = 0;
 
@@ -323,12 +353,20 @@ async function main() {
 
       let result = await runSingleTest(page, wasmPath, testTimeout, dataPrefix, sourceDir, suiteName);
 
-      // If OOM, reload and retry once
+      // If OOM, create fresh context and retry once
       if (result.error && result.error.includes("could not allocate memory")) {
         if (!jsonOutput) {
-          process.stderr.write("  OOM detected, reloading page...\n");
+          process.stderr.write("  OOM detected, creating fresh context...\n");
         }
-        await waitForTestRunner(page);
+        await context.close();
+        context = await browser.newContext();
+        page = await context.newPage();
+        page.on("console", (msg) => {
+          if (msg.type() === "error") {
+            console.error(`[browser] ${msg.text()}`);
+          }
+        });
+        await safeWaitForTestRunner(page);
         testsSinceReload = 0;
         result = await runSingleTest(page, wasmPath, testTimeout, dataPrefix, sourceDir, suiteName);
       }
@@ -349,10 +387,26 @@ async function main() {
         process.stderr.write(`[${i + 1}/${wasmFiles.length}] ${status} ${relPath} (${result.durationMs}ms)\n`);
       }
 
-      // Periodic reload to prevent OOM accumulation
+      // Periodic reload to prevent OOM accumulation.
+      // Use fresh browser context every 15 tests (5 reload cycles) to fully
+      // release SharedArrayBuffer address space.
       if (testsSinceReload >= reloadInterval && i < wasmFiles.length - 1) {
-        await waitForTestRunner(page);
-        testsSinceReload = 0;
+        if (testsSinceReload >= reloadInterval * 5) {
+          // Fresh context for full memory release
+          await context.close();
+          context = await browser.newContext();
+          page = await context.newPage();
+          page.on("console", (msg) => {
+            if (msg.type() === "error") {
+              console.error(`[browser] ${msg.text()}`);
+            }
+          });
+          await safeWaitForTestRunner(page);
+          testsSinceReload = 0;
+        } else {
+          await safeWaitForTestRunner(page);
+          testsSinceReload = 0;
+        }
         continue;
       }
 
@@ -364,7 +418,7 @@ async function main() {
         if (!jsonOutput) {
           process.stderr.write("  Page crashed, reloading...\n");
         }
-        await waitForTestRunner(page);
+        await safeWaitForTestRunner(page);
         testsSinceReload = 0;
       }
     }
