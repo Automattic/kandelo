@@ -1164,7 +1164,10 @@ pub extern "C" fn kernel_exec_setup(pid: u32) -> i32 {
     // Deserialize back to replace the process with exec-sanitized version
     match crate::fork::deserialize_exec_state(&buf[..written], pid) {
         Ok(new_proc) => {
-            table.get_mut(pid).map(|p| *p = new_proc);
+            table.get_mut(pid).map(|p| {
+                *p = new_proc;
+                p.has_exec = true;
+            });
             0
         }
         Err(e) => -(e as i32),
@@ -1758,6 +1761,9 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
                         // POSIX: can only setpgid on a child of the calling process
                         if target.ppid != proc.pid {
                             -(Errno::ESRCH as i32)
+                        } else if target.has_exec {
+                            // POSIX: cannot setpgid on a child that has called exec
+                            -(Errno::EACCES as i32)
                         } else if target.sid != proc.sid {
                             // POSIX: both processes must be in the same session
                             -(Errno::EPERM as i32)

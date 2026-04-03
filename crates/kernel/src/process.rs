@@ -261,6 +261,8 @@ pub struct Process {
     pub fork_pipe_replay: Vec<(i32, i32)>,
     /// In-memory file buffers for memfd_create fds.
     pub memfds: Vec<Option<Vec<u8>>>,
+    /// True if this process has called exec (for POSIX setpgid EACCES check).
+    pub has_exec: bool,
 }
 
 impl Process {
@@ -332,6 +334,7 @@ impl Process {
             alt_stack_size: 0,
             fork_pipe_replay: Vec::new(),
             memfds: Vec::new(),
+            has_exec: false,
         }
     }
 

@@ -162,13 +162,13 @@ IO_EXPECTED_FAIL=(
 
 SIGNAL_EXPECTED_FAIL=(
     # (exec signal tests now pass — exec support in run-example.ts)
-    "sigaction-exec-flags"
+    # (sigaction-exec-flags now passes — exec clears sa_flags correctly)
     # sigaltstack not implemented in Wasm (no native stack switching)
     "sigaltstack-raise"
 )
 PROCESS_EXPECTED_FAIL=(
     # (fork-exec-setpgid-in-child now passes — exec support)
-    "fork-exec-setpgid-in-parent"
+    # (fork-exec-setpgid-in-parent now passes — has_exec EACCES check)
 )
 PATHS_EXPECTED_FAIL=()
 
@@ -703,7 +703,7 @@ exit: $rc"
     # Check output against expect files
     if $has_expect; then
         local expect_base="${test_name##*/}"
-        for expect_file in "$expect_dir/${expect_base}.posix" "$expect_dir/${expect_base}.posix."* "$expect_dir/${expect_base}."[0-9]*; do
+        for expect_file in "$expect_dir/${expect_base}.posix" "$expect_dir/${expect_base}.posix."* "$expect_dir/${expect_base}."[0-9]* "$expect_dir/${expect_base}.unknown."*; do
             [ -f "$expect_file" ] || continue
             local expected
             expected=$(cat "$expect_file")
