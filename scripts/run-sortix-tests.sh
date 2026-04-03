@@ -147,7 +147,8 @@ BASIC_EXPECTED_FAIL=(
     # -- posix_spawn (most tests pass; addchdir/addfchdir/addclose need exec failure recovery)
     # (posix_spawn, file_actions_addopen/adddup2/init, spawnattr_set* now pass)
     # (posix_spawnp now passes — exec failure returns ENOENT instead of destroying process)
-    "spawn/posix_spawn_file_actions_addchdir" "spawn/posix_spawn_file_actions_addclose"
+    # (posix_spawn_file_actions_addclose now passes — host handle refcounting across fork)
+    "spawn/posix_spawn_file_actions_addchdir"
     "spawn/posix_spawn_file_actions_addfchdir"
 )
 

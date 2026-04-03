@@ -259,8 +259,10 @@ pub fn sys_close(
         match file_type {
             FileType::Pipe => {
                 if host_handle >= 0 {
-                    // Host-delegated pipe: let host handle cleanup
-                    let _ = host.host_close(host_handle);
+                    // Host-delegated pipe: only close if no other process shares it
+                    if crate::ofd::host_handle_close_ref(host_handle) {
+                        let _ = host.host_close(host_handle);
+                    }
                 } else {
                     // Kernel-internal pipe
                     let pipe_idx = (-(host_handle + 1)) as usize;
@@ -365,7 +367,10 @@ pub fn sys_close(
                     || host_handle == SYNTHETIC_FILE_HANDLE
                 {
                     // Nothing to clean up on host side
-                } else {
+                } else if crate::ofd::host_handle_close_ref(host_handle) {
+                    // Cross-process refcount reached 0 — safe to close the host handle.
+                    // If the handle was never shared (not in the refcount table),
+                    // host_handle_close_ref returns true immediately.
                     host.host_close(host_handle)?;
                 }
             }

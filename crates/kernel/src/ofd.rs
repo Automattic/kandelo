@@ -1,7 +1,56 @@
 extern crate alloc;
 
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
+use core::cell::UnsafeCell;
 use wasm_posix_shared::flags::{O_APPEND, O_NONBLOCK};
+
+// ── Global host handle refcount table ──
+//
+// Tracks how many processes share each host file handle (host_handle >= 0).
+// Handles NOT in this table have an implicit refcount of 1 (single owner).
+//
+// - fork_process: increments for each inherited host_handle >= 0
+// - sys_close: decrements; only calls host_close when the count reaches 0
+//
+// This prevents fork children from invalidating host file handles that the
+// parent (or other children) still use.
+
+struct HostHandleRefs(UnsafeCell<Option<BTreeMap<i64, u32>>>);
+unsafe impl Sync for HostHandleRefs {}
+
+static HOST_HANDLE_REFS: HostHandleRefs = HostHandleRefs(UnsafeCell::new(None));
+
+fn get_host_handle_refs() -> &'static mut BTreeMap<i64, u32> {
+    let opt = unsafe { &mut *HOST_HANDLE_REFS.0.get() };
+    opt.get_or_insert_with(BTreeMap::new)
+}
+
+/// Register that a host handle is now shared by one more process (fork).
+/// If the handle is being forked for the first time, sets count to 2
+/// (parent + child). Otherwise increments by 1.
+pub fn host_handle_fork_ref(h: i64) {
+    let refs = get_host_handle_refs();
+    let count = refs.entry(h).or_insert(1); // 1 = the parent already has it
+    *count += 1; // +1 for the child
+}
+
+/// Decrement the cross-process refcount for a host handle.
+/// Returns `true` if the handle should be closed (refcount reached 0 or
+/// the handle was never shared).
+pub fn host_handle_close_ref(h: i64) -> bool {
+    let refs = get_host_handle_refs();
+    if let Some(count) = refs.get_mut(&h) {
+        *count -= 1;
+        if *count == 0 {
+            refs.remove(&h);
+            return true;
+        }
+        return false;
+    }
+    // Not in the table → single owner, safe to close
+    true
+}
 
 /// The set of flags that F_SETFL is allowed to modify (POSIX semantics).
 const SETFL_MODIFIABLE: u32 = O_APPEND | O_NONBLOCK;
