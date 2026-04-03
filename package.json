@@ -9,5 +9,8 @@
   "devDependencies": {
     "playwright": "^1.59.1",
     "tsx": "^4.21.0"
+  },
+  "dependencies": {
+    "vite": "^8.0.3"
   }
 }

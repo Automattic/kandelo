@@ -102,8 +102,7 @@ PATHS_EXPECTED_FAIL=()
 BROWSER_BASIC_EXPECTED_FAIL=(
     # dlfcn: dynamic linking not supported in browser
     "dlfcn/dlclose" "dlfcn/dlopen" "dlfcn/dlsym"
-    # pthread_atfork: fork behavior differs in browser
-    "pthread/pthread_atfork"
+    # (pthread_atfork now passes — fork() calls __fork_handler in channel_syscall.c)
     # Terminal: no terminal device
     "stdlib/grantpt" "stdlib/posix_openpt"
     # aio_read: timeout (needs pthread_create for aio worker thread)
@@ -631,14 +630,14 @@ _get_xfail_list() {
     local suite="$1"
     _XFAIL_LIST=()
     case "$suite" in
-        include)  _XFAIL_LIST=("${INCLUDE_EXPECTED_FAIL[@]}" ${BROWSER_INCLUDE_EXPECTED_FAIL[@]+"${BROWSER_INCLUDE_EXPECTED_FAIL[@]}"}) ;;
-        basic)    _XFAIL_LIST=("${BASIC_EXPECTED_FAIL[@]}" ${BROWSER_BASIC_EXPECTED_FAIL[@]+"${BROWSER_BASIC_EXPECTED_FAIL[@]}"}) ;;
+        include)  _XFAIL_LIST=(${INCLUDE_EXPECTED_FAIL[@]+"${INCLUDE_EXPECTED_FAIL[@]}"} ${BROWSER_INCLUDE_EXPECTED_FAIL[@]+"${BROWSER_INCLUDE_EXPECTED_FAIL[@]}"}) ;;
+        basic)    _XFAIL_LIST=(${BASIC_EXPECTED_FAIL[@]+"${BASIC_EXPECTED_FAIL[@]}"} ${BROWSER_BASIC_EXPECTED_FAIL[@]+"${BROWSER_BASIC_EXPECTED_FAIL[@]}"}) ;;
         limits)   _XFAIL_LIST=(${LIMITS_EXPECTED_FAIL[@]+"${LIMITS_EXPECTED_FAIL[@]}"} ${BROWSER_LIMITS_EXPECTED_FAIL[@]+"${BROWSER_LIMITS_EXPECTED_FAIL[@]}"}) ;;
         malloc)   _XFAIL_LIST=(${MALLOC_EXPECTED_FAIL[@]+"${MALLOC_EXPECTED_FAIL[@]}"} ${BROWSER_MALLOC_EXPECTED_FAIL[@]+"${BROWSER_MALLOC_EXPECTED_FAIL[@]}"}) ;;
         stdio)    _XFAIL_LIST=(${STDIO_EXPECTED_FAIL[@]+"${STDIO_EXPECTED_FAIL[@]}"} ${BROWSER_STDIO_EXPECTED_FAIL[@]+"${BROWSER_STDIO_EXPECTED_FAIL[@]}"}) ;;
-        io)       _XFAIL_LIST=("${IO_EXPECTED_FAIL[@]}" ${BROWSER_IO_EXPECTED_FAIL[@]+"${BROWSER_IO_EXPECTED_FAIL[@]}"}) ;;
-        signal)   _XFAIL_LIST=("${SIGNAL_EXPECTED_FAIL[@]}" ${BROWSER_SIGNAL_EXPECTED_FAIL[@]+"${BROWSER_SIGNAL_EXPECTED_FAIL[@]}"}) ;;
-        process)  _XFAIL_LIST=("${PROCESS_EXPECTED_FAIL[@]}" ${BROWSER_PROCESS_EXPECTED_FAIL[@]+"${BROWSER_PROCESS_EXPECTED_FAIL[@]}"}) ;;
+        io)       _XFAIL_LIST=(${IO_EXPECTED_FAIL[@]+"${IO_EXPECTED_FAIL[@]}"} ${BROWSER_IO_EXPECTED_FAIL[@]+"${BROWSER_IO_EXPECTED_FAIL[@]}"}) ;;
+        signal)   _XFAIL_LIST=(${SIGNAL_EXPECTED_FAIL[@]+"${SIGNAL_EXPECTED_FAIL[@]}"} ${BROWSER_SIGNAL_EXPECTED_FAIL[@]+"${BROWSER_SIGNAL_EXPECTED_FAIL[@]}"}) ;;
+        process)  _XFAIL_LIST=(${PROCESS_EXPECTED_FAIL[@]+"${PROCESS_EXPECTED_FAIL[@]}"} ${BROWSER_PROCESS_EXPECTED_FAIL[@]+"${BROWSER_PROCESS_EXPECTED_FAIL[@]}"}) ;;
         paths)    _XFAIL_LIST=(${PATHS_EXPECTED_FAIL[@]+"${PATHS_EXPECTED_FAIL[@]}"} ${BROWSER_PATHS_EXPECTED_FAIL[@]+"${BROWSER_PATHS_EXPECTED_FAIL[@]}"}) ;;
     esac
 }
