@@ -1045,6 +1045,16 @@ export class CentralizedKernelWorker {
   }
 
   /**
+   * Run kernel-side exec setup: close CLOEXEC fds, reset signal handlers.
+   * Returns 0 on success, negative errno on failure.
+   * Called by onExec callbacks after confirming the target program exists.
+   */
+  kernelExecSetup(pid: number): number {
+    const fn = this.kernelInstance!.exports.kernel_exec_setup as (pid: number) => number;
+    return fn(pid);
+  }
+
+  /**
    * Remove old channel/registration state for a process about to exec.
    * Does NOT remove from kernel process table (exec keeps the same pid).
    * Does NOT cancel timers (POSIX: timers are preserved across exec).
@@ -3408,31 +3418,23 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    // Handle exec-related process cleanup in kernel (close CLOEXEC, reset signals)
-    const kernelExecSetup = this.kernelInstance!.exports.kernel_exec_setup as
-      (pid: number) => number;
-    const setupResult = kernelExecSetup(channel.pid);
-    if (setupResult < 0) {
-      this.completeChannel(channel, SYS_EXECVE, origArgs, undefined, -1, (-setupResult) >>> 0);
-      return;
-    }
-
-    // Remove old channel registration before exec replaces the process
-    this.prepareProcessForExec(channel.pid);
-
-    // Call the async exec handler
+    // Call the async exec handler FIRST — onExec returns ENOENT early if the
+    // program doesn't exist, allowing posix_spawnp/execvpe PATH search to retry.
+    // kernel_exec_setup and prepareProcessForExec are deferred until after
+    // onExec confirms the program exists (returns 0).
     this.callbacks.onExec(channel.pid, path, argv, envp).then((result) => {
       if (result < 0) {
-        // Exec failed — but we already removed the old registration.
-        // The process is in a bad state; best we can do is signal failure.
-        // In practice, exec failures should be handled by the caller
-        // (fork child exits on exec failure).
-        console.error(`[kernel] exec failed for pid ${channel.pid}: errno ${-result}`);
+        // Exec failed (e.g. ENOENT) — process is still alive.
+        // Complete the channel so the calling process can handle the error
+        // (e.g., __execvpe tries the next PATH entry).
+        this.completeChannel(channel, SYS_EXECVE, origArgs, undefined, -1, (-result) >>> 0);
       }
-      // On success, execve doesn't return — the Worker has been reinitialized
-      // with the new program via registerProcess. Don't complete the old channel.
+      // On success (result === 0), execve doesn't return — the Worker has been
+      // reinitialized with the new program via registerProcess. The old channel
+      // is dead (prepareProcessForExec removed it in onExec).
     }).catch((err) => {
       console.error(`[kernel] exec error for pid ${channel.pid}:`, err);
+      this.completeChannel(channel, SYS_EXECVE, origArgs, undefined, -1, 5); // EIO
     });
   }
 

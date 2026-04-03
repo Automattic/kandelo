@@ -144,9 +144,9 @@ BASIC_EXPECTED_FAIL=(
     # (monetary/strfmon and strfmon_l now pass — fixed POSIX locale handling in musl overlay)
     "strings/ffsll"
     # (wchar/wcslcat and wcslcpy now pass — added BSD wcslcpy/wcslcat implementations)
-    # -- posix_spawn (most tests pass; addchdir/addfchdir/addclose/spawnp still fail)
+    # -- posix_spawn (most tests pass; addchdir/addfchdir/addclose need exec failure recovery)
     # (posix_spawn, file_actions_addopen/adddup2/init, spawnattr_set* now pass)
-    "spawn/posix_spawnp"
+    # (posix_spawnp now passes — exec failure returns ENOENT instead of destroying process)
     "spawn/posix_spawn_file_actions_addchdir" "spawn/posix_spawn_file_actions_addclose"
     "spawn/posix_spawn_file_actions_addfchdir"
 )

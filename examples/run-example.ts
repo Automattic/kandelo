@@ -192,7 +192,14 @@ async function main() {
 
             onExec: async (pid, path, argv, envp) => {
                 const resolved = resolveProgram(path);
-                if (!resolved) return -2; // ENOENT
+                if (!resolved) return -2; // ENOENT — process stays alive for retry
+
+                // Program found — run kernel exec setup (close CLOEXEC, reset signals)
+                const setupResult = kernelWorker.kernelExecSetup(pid);
+                if (setupResult < 0) return setupResult;
+
+                // Prepare process for replacement
+                kernelWorker.prepareProcessForExec(pid);
 
                 // Terminate old worker
                 const oldWorker = workers.get(pid);

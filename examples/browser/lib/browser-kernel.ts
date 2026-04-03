@@ -226,7 +226,14 @@ export class BrowserKernel {
         onExec: async (pid, path, argv, envp) => {
           if (!this.options.onExec) return -38; // ENOSYS
           const bytes = await this.options.onExec(pid, path, argv, envp);
-          if (!bytes) return -2; // ENOENT
+          if (!bytes) return -2; // ENOENT — process stays alive for retry
+
+          // Program found — run kernel exec setup (close CLOEXEC, reset signals)
+          const setupResult = this.kernelWorker.kernelExecSetup(pid);
+          if (setupResult < 0) return setupResult;
+
+          // Prepare process for replacement
+          this.kernelWorker.prepareProcessForExec(pid);
 
           // Terminate old worker
           const oldInfo = this.processes.get(pid);
