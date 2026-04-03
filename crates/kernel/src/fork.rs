@@ -24,7 +24,7 @@ use crate::lock::LockTable;
 use crate::memory::{MappedRegion, MemoryManager};
 use crate::ofd::{FileType, OfdTable, OpenFileDesc};
 use crate::process::{Process, ProcessState};
-use crate::signal::{SignalHandler, SignalState};
+use crate::signal::{SignalAction, SignalHandler, SignalState};
 use crate::socket::SocketTable;
 use crate::terminal::{TerminalState, WinSize, NCCS};
 
@@ -265,17 +265,21 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
     // ── Signal state ──
     w.write_u64(proc.signals.blocked)?;
 
-    // Count non-default handlers
-    let handlers = proc.signals.handlers();
-    let non_default_count = handlers.iter().enumerate().filter(|(i, h)| {
-        *i > 0 && **h != SignalHandler::Default
+    // Count non-default actions (handler, flags, mask)
+    let non_default_count = (1..65u32).filter(|&i| {
+        proc.signals.get_handler(i) != SignalHandler::Default
+            || proc.signals.get_action(i).flags != 0
+            || proc.signals.get_action(i).mask != 0
     }).count() as u32;
     w.write_u32(non_default_count)?;
 
-    for (i, h) in handlers.iter().enumerate() {
-        if i > 0 && *h != SignalHandler::Default {
-            w.write_u32(i as u32)?;
-            w.write_u32(handler_to_u32(*h))?;
+    for i in 1..65u32 {
+        let action = proc.signals.get_action(i);
+        if action.handler != SignalHandler::Default || action.flags != 0 || action.mask != 0 {
+            w.write_u32(i)?;
+            w.write_u32(handler_to_u32(action.handler))?;
+            w.write_u32(action.flags)?;
+            w.write_u64(action.mask)?;
         }
     }
 
@@ -506,15 +510,21 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
     if handler_count > 64 {
         return Err(Errno::EINVAL);
     }
-    let mut handlers = [SignalHandler::Default; 65];
+    let mut actions = [SignalAction::default(); 65];
     for _ in 0..handler_count {
         let signum = r.read_u32()?;
         let handler_val = r.read_u32()?;
-        if (signum as usize) < 64 {
-            handlers[signum as usize] = u32_to_handler(handler_val);
+        let flags = r.read_u32()?;
+        let mask = r.read_u64()?;
+        if (signum as usize) < 65 {
+            actions[signum as usize] = SignalAction {
+                handler: u32_to_handler(handler_val),
+                flags,
+                mask,
+            };
         }
     }
-    let signals = SignalState::from_parts(handlers, blocked);
+    let signals = SignalState::from_actions(actions, blocked);
 
     // ── FD table ──
     let max_fds = r.read_u32()? as usize;

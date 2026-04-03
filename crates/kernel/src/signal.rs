@@ -345,6 +345,11 @@ impl SignalState {
         SignalState { actions, blocked, pending: 0, rt_queue: VecDeque::new() }
     }
 
+    /// Reconstruct signal state from full actions array (preserves flags/mask).
+    pub fn from_actions(actions: [SignalAction; 65], blocked: u64) -> Self {
+        SignalState { actions, blocked, pending: 0, rt_queue: VecDeque::new() }
+    }
+
     /// Reconstruct signal state for exec. Preserves pending signals (POSIX).
     pub fn from_parts_with_pending(handlers: [SignalHandler; 65], blocked: u64, pending: u64) -> Self {
         let mut actions = [SignalAction::default(); 65];

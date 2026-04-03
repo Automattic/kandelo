@@ -144,14 +144,11 @@ BASIC_EXPECTED_FAIL=(
     # (monetary/strfmon and strfmon_l now pass — fixed POSIX locale handling in musl overlay)
     "strings/ffsll"
     # (wchar/wcslcat and wcslcpy now pass — added BSD wcslcpy/wcslcat implementations)
-    # -- posix_spawn (basic spawn works; some attribute tests still fail)
-    # (posix_spawn, posix_spawn_file_actions_addopen, posix_spawn_file_actions_init,
-    #  posix_spawnattr_setschedparam, posix_spawnattr_setschedpolicy now pass)
+    # -- posix_spawn (most tests pass; addchdir/addfchdir/addclose/spawnp still fail)
+    # (posix_spawn, file_actions_addopen/adddup2/init, spawnattr_set* now pass)
     "spawn/posix_spawnp"
     "spawn/posix_spawn_file_actions_addchdir" "spawn/posix_spawn_file_actions_addclose"
-    "spawn/posix_spawn_file_actions_adddup2" "spawn/posix_spawn_file_actions_addfchdir"
-    "spawn/posix_spawnattr_setflags" "spawn/posix_spawnattr_setpgroup"
-    "spawn/posix_spawnattr_setsigdefault" "spawn/posix_spawnattr_setsigmask"
+    "spawn/posix_spawn_file_actions_addfchdir"
 )
 
 LIMITS_EXPECTED_FAIL=()
