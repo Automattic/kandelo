@@ -32,9 +32,9 @@
 
 static stack_t alternate_s;
 
-static void handler()
+static void handler(int sig)
 {
-
+	(void)sig;
 	stack_t handler_s;
 
 	if (sigaltstack(NULL, &handler_s) == -1) {

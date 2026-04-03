@@ -95,8 +95,7 @@ BASIC_EXPECTED_FAIL=(
     # (pthread/pthread_attr_getstack now passes — musl patch: return NULL/default when no stack set)
     "pthread/pthread_attr_setinheritsched"
     # (pthread clock-aware waits now pass — delegate to timed variants)
-    "pthread/pthread_mutex_getprioceiling" "pthread/pthread_mutex_setprioceiling"
-    "pthread/pthread_mutexattr_getprioceiling" "pthread/pthread_mutexattr_setprioceiling"
+    # (pthread prioceiling tests now pass — PRIO_PROTECT stub + prioceiling get/set stubs in musl overlay)
     "pthread/pthread_mutexattr_setpshared"
     "pthread/pthread_setcancelstate"
     # -- Scheduler

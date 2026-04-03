@@ -26,14 +26,7 @@ KERNEL_WASM="$REPO_ROOT/host/wasm/wasm_posix_kernel.wasm"
 
 EXPECTED_FAIL=(
     # ── Wasm limitations ──
-    # sigaltstack: 1-1 checks actual stack pointer (impossible in Wasm)
-    # 2-1, 3-1, 6-1, 7-1, 8-1: handler signature mismatch (void() vs void(int))
-    sigaltstack/1-1
-    sigaltstack/2-1
-    sigaltstack/3-1
-    sigaltstack/6-1
-    sigaltstack/7-1
-    sigaltstack/8-1
+    # (sigaltstack 1-1..8-1 now pass — fixed handler signatures void() → void(int) for Wasm call_indirect type checking)
     # munmap: 1-1 and 1-2 still fail (require real page unmapping)
     munmap/1-1
     munmap/1-2

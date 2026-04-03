@@ -28,8 +28,9 @@
 
 static stack_t altstack1;
 
-static void handler()
+static void handler(int sig)
 {
+	(void)sig;
 	stack_t altstack2;
 
 	if ((altstack2.ss_sp = malloc(SIGSTKSZ)) == NULL) {
