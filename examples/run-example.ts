@@ -27,8 +27,8 @@ const workerAdapter = new NodeWorkerAdapter();
 
 // Built-in program resolution
 const coreutilsWasm = resolve(repoRoot, "examples/libs/coreutils/bin/coreutils.wasm");
-const dashWasm = resolve(repoRoot, "examples/libs/dash/bin/dash.wasm");
-const shWasm = resolve(repoRoot, "host/wasm/sh.wasm");
+const dashBuilt = resolve(repoRoot, "examples/libs/dash/bin/dash.wasm");
+const dashWasm = existsSync(dashBuilt) ? dashBuilt : resolve(repoRoot, "host/wasm/sh.wasm");
 const grepWasm = resolve(repoRoot, "examples/libs/grep/bin/grep.wasm");
 const sedWasm = resolve(repoRoot, "examples/libs/sed/bin/sed.wasm");
 
