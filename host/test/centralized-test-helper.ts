@@ -148,6 +148,13 @@ export async function runCentralizedProgram(
 
         const newProgramBytes = loadProgramWasm(wasmPath);
 
+        // Run kernel exec setup (close CLOEXEC fds, reset signals, set has_exec)
+        const setupResult = kernelWorker.kernelExecSetup(pid);
+        if (setupResult < 0) return setupResult;
+
+        // Prepare process for replacement (remove old channels, clean up pending retries)
+        kernelWorker.prepareProcessForExec(pid);
+
         // Terminate old worker
         const oldWorker = workers.get(pid);
         if (oldWorker) {
@@ -165,7 +172,7 @@ export async function runCentralizedProgram(
         newMemory.grow(MAX_PAGES - 17);
         new Uint8Array(newMemory.buffer, newChannelOffset, CH_TOTAL_SIZE).fill(0);
 
-        // Register new process with same pid (kernel process table already cleaned by exec_setup)
+        // Register new process with same pid
         kernelWorker.registerProcess(pid, newMemory, [newChannelOffset], { skipKernelCreate: true });
 
         // Create new worker
