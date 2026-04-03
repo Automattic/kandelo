@@ -2483,11 +2483,52 @@ pub fn sys_fork(_proc: &mut Process, host: &dyn HostIO) -> Result<u32, Errno> {
 /// Execute a new program. Delegates to host for binary loading.
 /// On success, the kernel process will be replaced (POSIX: exec doesn't return on success).
 /// On failure, returns the error.
-pub fn sys_execve(_proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
+pub fn sys_execve(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
     if path.is_empty() {
         return Err(Errno::ENOENT);
     }
-    host.host_exec(path)
+    // Resolve relative paths against process CWD so the host sees absolute paths.
+    // This is critical for posix_spawn with chdir file actions — the child's CWD
+    // may differ from the initial data directory the host knows about.
+    let resolved = crate::path::resolve_path(path, &proc.cwd);
+    host.host_exec(&resolved)
+}
+
+/// Execute a new program using a file descriptor (fexecve / execveat).
+/// When AT_EMPTY_PATH is set and path is empty, resolves the fd's file path.
+/// Otherwise resolves path relative to the directory fd.
+pub fn sys_execveat(proc: &mut Process, host: &mut dyn HostIO, dirfd: i32, path: &[u8], flags: u32) -> Result<(), Errno> {
+    const AT_EMPTY_PATH: u32 = 0x1000;
+
+    if flags & AT_EMPTY_PATH != 0 && path.is_empty() {
+        // fexecve path: exec the file referenced by dirfd
+        let entry = proc.fd_table.get(dirfd)?;
+        let ofd_idx = entry.ofd_ref.0;
+        let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+        if ofd.path.is_empty() {
+            return Err(Errno::ENOENT);
+        }
+        let exec_path = ofd.path.clone();
+        host.host_exec(&exec_path)
+    } else if path.is_empty() {
+        Err(Errno::ENOENT)
+    } else if path[0] == b'/' {
+        // Absolute path — ignore dirfd
+        host.host_exec(path)
+    } else {
+        // Relative path — resolve against dirfd or CWD
+        let base = if dirfd == -100 {
+            // AT_FDCWD
+            proc.cwd.clone()
+        } else {
+            let entry = proc.fd_table.get(dirfd)?;
+            let ofd_idx = entry.ofd_ref.0;
+            let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+            ofd.path.clone()
+        };
+        let resolved = crate::path::resolve_path(path, &base);
+        host.host_exec(&resolved)
+    }
 }
 
 /// Schedule a SIGALRM signal after `seconds` seconds.

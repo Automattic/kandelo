@@ -72,9 +72,9 @@ BASIC_EXPECTED_FAIL=(
     # (utmpx/pututxline now passes — added errno=EPERM in pututxline overlay)
     # (mqueue tests now pass — POSIX mqueue implementation in centralized mode)
     # (dlfcn/dladdr now passes — dladdr stub in glue/dlopen.c)
-    # -- exec (exec variants now work; fexecve still blocked)
+    # -- exec (all exec variants now work including fexecve)
     # (execl, execle, execlp, execv, execve, execvp now pass — exec support in run-example.ts)
-    "unistd/fexecve"
+    # (unistd/fexecve now passes — SYS_EXECVEAT + kernel_get_fd_path resolves fd to OFD path)
     # -- Memory locking (mlock/munlock are stubs; mlockall/munlockall work)
     # (mlock, mlockall, munlock, munlockall removed — stubs pass basic invocation tests)
     # (unistd/fchownat now passes — nested data directory)
@@ -143,12 +143,11 @@ BASIC_EXPECTED_FAIL=(
     # (monetary/strfmon and strfmon_l now pass — fixed POSIX locale handling in musl overlay)
     "strings/ffsll"
     # (wchar/wcslcat and wcslcpy now pass — added BSD wcslcpy/wcslcat implementations)
-    # -- posix_spawn (most tests pass; addchdir/addfchdir/addclose need exec failure recovery)
+    # -- posix_spawn (all tests pass)
     # (posix_spawn, file_actions_addopen/adddup2/init, spawnattr_set* now pass)
     # (posix_spawnp now passes — exec failure returns ENOENT instead of destroying process)
     # (posix_spawn_file_actions_addclose now passes — host handle refcounting across fork)
-    "spawn/posix_spawn_file_actions_addchdir"
-    "spawn/posix_spawn_file_actions_addfchdir"
+    # (addchdir/addfchdir now pass — exec CWD resolution via kernel_get_cwd + kernel_get_fd_path)
 )
 
 LIMITS_EXPECTED_FAIL=()

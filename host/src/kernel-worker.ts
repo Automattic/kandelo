@@ -56,6 +56,7 @@ const SYS_KILL = 35;
 
 /** Syscall numbers for fork/exec/clone */
 const SYS_EXECVE = 211;
+const SYS_EXECVEAT = 386;
 const SYS_FORK = 212;
 const SYS_VFORK = 213;
 const SYS_CLONE = 201;
@@ -1251,6 +1252,11 @@ export class CentralizedKernelWorker {
 
     if (syscallNr === SYS_EXECVE) {
       this.handleExec(channel, origArgs);
+      return;
+    }
+
+    if (syscallNr === SYS_EXECVEAT) {
+      this.handleExecveat(channel, origArgs);
       return;
     }
 
@@ -3411,9 +3417,15 @@ export class CentralizedKernelWorker {
     const processMem = new Uint8Array(channel.memory.buffer);
 
     // Read path (arg 0), argv (arg 1), envp (arg 2) from process memory
-    const path = this.readCStringFromProcess(processMem, origArgs[0]);
+    let path = this.readCStringFromProcess(processMem, origArgs[0]);
     const argv = this.readStringArrayFromProcess(processMem, origArgs[1]);
     const envp = this.readStringArrayFromProcess(processMem, origArgs[2]);
+
+    // Resolve relative exec paths against process CWD (not initial KERNEL_CWD).
+    // Critical for posix_spawn with chdir file actions where child CWD != parent CWD.
+    if (path && !path.startsWith("/")) {
+      path = this.resolveExecPathAgainstCwd(channel.pid, path);
+    }
 
     if (!this.callbacks.onExec) {
       this.completeChannel(channel, SYS_EXECVE, origArgs, undefined, -1, 38); // ENOSYS
@@ -3437,6 +3449,94 @@ export class CentralizedKernelWorker {
     }).catch((err) => {
       console.error(`[kernel] exec error for pid ${channel.pid}:`, err);
       this.completeChannel(channel, SYS_EXECVE, origArgs, undefined, -1, 5); // EIO
+    });
+  }
+
+  /**
+   * Resolve a relative exec path against the process's kernel CWD.
+   * Returns absolute path if CWD can be queried, otherwise returns path unchanged.
+   */
+  private resolveExecPathAgainstCwd(pid: number, path: string): string {
+    const getCwd = this.kernelInstance!.exports.kernel_get_cwd as
+      ((pid: number, bufPtr: number, bufLen: number) => number) | undefined;
+    if (!getCwd) return path;
+    const cwdLen = getCwd(pid, this.scratchOffset, 4096);
+    if (cwdLen <= 0) return path;
+    const kernelBuf = new Uint8Array(this.kernelMemory!.buffer);
+    const cwd = new TextDecoder().decode(kernelBuf.slice(this.scratchOffset, this.scratchOffset + cwdLen));
+    return cwd.endsWith("/") ? cwd + path : cwd + "/" + path;
+  }
+
+  /**
+   * Handle SYS_EXECVEAT: execveat(dirfd, path, argv, envp, flags).
+   * Used by fexecve which calls execveat(fd, "", argv, envp, AT_EMPTY_PATH).
+   * Resolves the fd path via kernel_get_fd_path, then delegates to exec flow.
+   */
+  private handleExecveat(channel: ChannelInfo, origArgs: number[]): void {
+    const AT_EMPTY_PATH = 0x1000;
+    const dirfd = origArgs[0];
+    const flags = origArgs[4];
+
+    const processMem = new Uint8Array(channel.memory.buffer);
+
+    // Read path from process memory
+    const pathStr = this.readCStringFromProcess(processMem, origArgs[1]);
+    const argv = this.readStringArrayFromProcess(processMem, origArgs[2]);
+    const envp = this.readStringArrayFromProcess(processMem, origArgs[3]);
+
+    let execPath: string;
+
+    if ((flags & AT_EMPTY_PATH) !== 0 && pathStr === "") {
+      // fexecve path: resolve fd to file path via kernel
+      const getFdPath = this.kernelInstance!.exports.kernel_get_fd_path as
+        ((pid: number, fd: number, bufPtr: number, bufLen: number) => number) | undefined;
+      if (!getFdPath) {
+        this.completeChannel(channel, SYS_EXECVEAT, origArgs, undefined, -1, 38); // ENOSYS
+        return;
+      }
+      const result = getFdPath(channel.pid, dirfd, this.scratchOffset, 4096);
+      if (result <= 0) {
+        const errno = result < 0 ? (-result) >>> 0 : 2; // ENOENT
+        this.completeChannel(channel, SYS_EXECVEAT, origArgs, undefined, -1, errno);
+        return;
+      }
+      const kernelBuf = new Uint8Array(this.kernelMemory!.buffer);
+      execPath = new TextDecoder().decode(kernelBuf.slice(this.scratchOffset, this.scratchOffset + result));
+    } else if (pathStr.startsWith("/")) {
+      execPath = pathStr;
+    } else {
+      // Relative path — let kernel resolve against dirfd/CWD.
+      // For simplicity, resolve against process CWD here.
+      // The kernel's sys_execveat already resolves this, but since we intercept
+      // host-side, we need to do it ourselves.
+      const getCwd = this.kernelInstance!.exports.kernel_get_cwd as
+        ((pid: number, bufPtr: number, bufLen: number) => number) | undefined;
+      if (getCwd) {
+        const cwdLen = getCwd(channel.pid, this.scratchOffset, 4096);
+        if (cwdLen > 0) {
+          const kernelBuf = new Uint8Array(this.kernelMemory!.buffer);
+          const cwd = new TextDecoder().decode(kernelBuf.slice(this.scratchOffset, this.scratchOffset + cwdLen));
+          execPath = cwd.endsWith("/") ? cwd + pathStr : cwd + "/" + pathStr;
+        } else {
+          execPath = pathStr;
+        }
+      } else {
+        execPath = pathStr;
+      }
+    }
+
+    if (!this.callbacks.onExec) {
+      this.completeChannel(channel, SYS_EXECVEAT, origArgs, undefined, -1, 38); // ENOSYS
+      return;
+    }
+
+    this.callbacks.onExec(channel.pid, execPath, argv, envp).then((result) => {
+      if (result < 0) {
+        this.completeChannel(channel, SYS_EXECVEAT, origArgs, undefined, -1, (-result) >>> 0);
+      }
+    }).catch((err) => {
+      console.error(`[kernel] execveat error for pid ${channel.pid}:`, err);
+      this.completeChannel(channel, SYS_EXECVEAT, origArgs, undefined, -1, 5); // EIO
     });
   }
 

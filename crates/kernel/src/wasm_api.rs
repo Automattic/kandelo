@@ -1030,6 +1030,53 @@ pub extern "C" fn kernel_get_fork_exec_path_pid(pid: u32, buf_ptr: *mut u8, buf_
     }
 }
 
+/// Get the CWD for a specific process (centralized mode).
+/// Writes CWD to buf, returns bytes written, negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_get_cwd(pid: u32, buf_ptr: *mut u8, buf_len: u32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match table.get(pid) {
+        Some(proc) => {
+            let len = proc.cwd.len().min(buf_len as usize);
+            let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, len) };
+            buf.copy_from_slice(&proc.cwd[..len]);
+            len as i32
+        }
+        None => -(Errno::ESRCH as i32),
+    }
+}
+
+/// Get the file path for an fd in a specific process (centralized mode).
+/// Used by the host to resolve fexecve fd paths.
+/// Writes path to buf, returns bytes written, negative errno on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_get_fd_path(pid: u32, fd: i32, buf_ptr: *mut u8, buf_len: u32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match table.get(pid) {
+        Some(proc) => {
+            match proc.fd_table.get(fd) {
+                Ok(entry) => {
+                    let ofd_idx = entry.ofd_ref.0;
+                    match proc.ofd_table.get(ofd_idx) {
+                        Some(ofd) => {
+                            if ofd.path.is_empty() {
+                                return -(Errno::ENOENT as i32);
+                            }
+                            let len = ofd.path.len().min(buf_len as usize);
+                            let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, len) };
+                            buf.copy_from_slice(&ofd.path[..len]);
+                            len as i32
+                        }
+                        None => -(Errno::EBADF as i32),
+                    }
+                }
+                Err(e) => -(e as i32),
+            }
+        }
+        None => -(Errno::ESRCH as i32),
+    }
+}
+
 /// Dequeue one pending Handler signal for a process (centralized mode).
 /// Writes signal delivery info to `out_ptr` (24 bytes):
 ///   [0..4] signum (u32), [4..8] handler_index (u32), [8..12] sa_flags (u32),
@@ -1865,6 +1912,11 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
             let p = a1 as *const u8;
             let len = unsafe { cstr_len(p) };
             kernel_execve(p, len)
+        }
+        386 => { // SYS_EXECVEAT: (dirfd, path, argv, envp, flags)
+            let p = a2 as *const u8;
+            let len = unsafe { cstr_len(p) };
+            kernel_execveat(a1 as i32, p, len, a5 as u32)
         }
         212 => kernel_fork(),                      // SYS_FORK
         213 => kernel_fork(),                      // SYS_VFORK (treat as fork)
@@ -6080,6 +6132,38 @@ pub extern "C" fn kernel_execve(path_ptr: *const u8, path_len: u32) -> i32 {
             // image. Trap to stop the current wasm execution immediately.
             // GKL must be released before trapping so subsequent kernel calls
             // (e.g. kernel_get_exec_state) don't deadlock.
+            #[cfg(target_arch = "wasm32")]
+            unsafe {
+                core::arch::wasm32::unreachable();
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                0
+            }
+        }
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Execute a new program via file descriptor (fexecve / execveat).
+/// Same trap-on-success semantics as kernel_execve.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_execveat(dirfd: i32, path_ptr: *const u8, path_len: u32, flags: u32) -> i32 {
+    let result = {
+        let (_gkl, proc) = unsafe { get_process() };
+        let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
+        let mut host = WasmHostIO;
+        match syscalls::sys_execveat(proc, &mut host, dirfd, path, flags) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                deliver_pending_signals(proc, &mut host);
+                Err(e)
+            }
+        }
+    };
+
+    match result {
+        Ok(()) => {
             #[cfg(target_arch = "wasm32")]
             unsafe {
                 core::arch::wasm32::unreachable();
