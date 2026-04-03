@@ -35,11 +35,10 @@ FUNCTIONAL_EXPECTED_FAIL=(
     fcntl
     # tls_init: TLS fixed-init value not preserved (patchWasmForThread ctor missing)
     tls_init
-    # Centralized mode: exec/spawn/popen require full exec support
+    # popen: requires /bin/sh to exec commands (shell hangs in pipe mode)
     popen
-    spawn
-    # Centralized mode: vfork child exec + waitpid tracking
-    vfork
+    # (spawn now passes — __stack_pointer restored in fork child + sysroot rebuilt)
+    # (vfork now passes — exec support added)
 )
 REGRESSION_EXPECTED_FAIL=(
     malloc-brk-fail
@@ -53,8 +52,7 @@ REGRESSION_EXPECTED_FAIL=(
     fflush-exit
     # daemon-failure: fork+waitpid+pipe+daemon() — child exit tracking
     daemon-failure
-    # Centralized mode: exec not fully implemented
-    execle-env
+    # (execle-env now passes — exec support added)
     # Wasm stack is opaque — signal handlers can't run on alternate stacks
     sigaltstack
     # (statvfs now passes — fixed statfs64 arg layout: buf at argIndex 2)

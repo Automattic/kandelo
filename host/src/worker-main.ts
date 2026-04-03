@@ -318,22 +318,34 @@ export async function centralizedWorkerMain(
       const instance = await WebAssembly.instantiate(module, importObject);
       processInstance = instance;
 
-      // For fork children: fix __tls_base after instantiation.
-      // The child's memory is copied from the parent, so the init flag in
-      // __wasm_init_memory is already set — causing it to skip both data
-      // segment initialization AND __wasm_init_tls. This leaves __tls_base
-      // at its initial value (0) instead of the correct TLS segment address.
-      // With __tls_base=0, all TLS variables (__wasm_thread_pointer,
-      // __channel_base, errno via pthread_self) read from the wrong address.
-      // The parent saved its __tls_base before forking; restore it here.
+      // For fork children: fix __tls_base and __stack_pointer after instantiation.
+      // Both globals are reset to defaults by WebAssembly.instantiate() but need
+      // the parent's values for correct operation.
       if (initData.isForkChild && initData.asyncifyBufAddr != null) {
+        const view = new DataView(memory.buffer);
+
+        // Restore __tls_base: child's __wasm_init_memory skips __wasm_init_tls
+        // because the init flag is already set (copied from parent memory),
+        // leaving __tls_base at 0 instead of the correct TLS segment address.
         const tlsBaseGlobal = instance.exports.__tls_base as WebAssembly.Global | undefined;
         if (tlsBaseGlobal) {
-          const savedBase = new DataView(memory.buffer).getUint32(
-            initData.asyncifyBufAddr - 4, true,
-          );
+          const savedBase = view.getUint32(initData.asyncifyBufAddr - 4, true);
           if (savedBase > 0) {
             tlsBaseGlobal.value = savedBase;
+          }
+        }
+
+        // Restore __stack_pointer: the child's fresh wasm instance has the
+        // module default __stack_pointer (top of shadow stack). But the parent's
+        // was lower (stack grows down). Asyncify rewind restores wasm locals but
+        // NOT globals. Without this, function calls in the child allocate shadow
+        // stack frames from the wrong base, overlapping the parent function's
+        // locals (corrupting arrays, structs on the shadow stack).
+        const stackPtrGlobal = instance.exports.__stack_pointer as WebAssembly.Global | undefined;
+        if (stackPtrGlobal) {
+          const savedSp = view.getUint32(initData.asyncifyBufAddr - 8, true);
+          if (savedSp > 0) {
+            stackPtrGlobal.value = savedSp;
           }
         }
       }
@@ -652,27 +664,42 @@ function setupChannelBase(
 }
 
 /**
- * Save parent's __tls_base value before fork so the child can restore it.
+ * Save parent's __tls_base and __stack_pointer before fork so the child can
+ * restore them.
  *
- * The child's memory is copied from the parent. When WebAssembly.instantiate()
- * runs on that memory, __wasm_init_memory detects the "already initialized" flag
- * and skips both data segment init and __wasm_init_tls. This leaves __tls_base at
- * its initial value (0). The parent's TLS data at the correct address is preserved
- * in memory, but the child would read from address 0 instead.
+ * __tls_base: The child's WebAssembly.instantiate() skips __wasm_init_tls
+ * (init flag is set from copied parent memory), leaving __tls_base at 0.
+ * Stored at [asyncifyBufAddr - 4].
  *
- * Stores __tls_base at [asyncifyBufAddr - 4] in the parent's shared memory.
+ * __stack_pointer: The child gets a fresh wasm instance whose __stack_pointer
+ * is the module default (top of shadow stack). But the parent's __stack_pointer
+ * was lower (stack grows down). After asyncify rewind, wasm locals are restored
+ * but __stack_pointer (a global) is NOT. Any function call in the child would
+ * allocate its shadow stack frame from the wrong base, overlapping and corrupting
+ * the parent function's shadow stack locals (arrays, structs).
+ * Stored at [asyncifyBufAddr - 8].
  */
 function saveParentTls(
   instance: WebAssembly.Instance,
   memory: WebAssembly.Memory,
   asyncifyBufAddr: number,
 ): void {
-  const tlsBaseGlobal = instance.exports.__tls_base as WebAssembly.Global | undefined;
-  if (!tlsBaseGlobal) return;
+  const view = new DataView(memory.buffer);
 
-  const tlsBase = tlsBaseGlobal.value as number;
-  if (tlsBase > 0) {
-    new DataView(memory.buffer).setUint32(asyncifyBufAddr - 4, tlsBase, true);
+  const tlsBaseGlobal = instance.exports.__tls_base as WebAssembly.Global | undefined;
+  if (tlsBaseGlobal) {
+    const tlsBase = tlsBaseGlobal.value as number;
+    if (tlsBase > 0) {
+      view.setUint32(asyncifyBufAddr - 4, tlsBase, true);
+    }
+  }
+
+  const stackPtrGlobal = instance.exports.__stack_pointer as WebAssembly.Global | undefined;
+  if (stackPtrGlobal) {
+    const stackPtr = stackPtrGlobal.value as number;
+    if (stackPtr > 0) {
+      view.setUint32(asyncifyBufAddr - 8, stackPtr, true);
+    }
   }
 }
 

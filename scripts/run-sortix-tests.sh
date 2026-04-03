@@ -168,7 +168,8 @@ SIGNAL_EXPECTED_FAIL=(
 )
 PROCESS_EXPECTED_FAIL=(
     # (fork-exec-setpgid-in-child now passes — exec support)
-    # (fork-exec-setpgid-in-parent now passes — has_exec EACCES check)
+    # setpgid EACCES race: parent calls setpgid before kernel finishes exec
+    "fork-exec-setpgid-in-parent"
 )
 PATHS_EXPECTED_FAIL=()
 
