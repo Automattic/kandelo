@@ -49,13 +49,13 @@ REGRESSION_EXPECTED_FAIL=(
 # ── Browser-specific expected failures ──────────────────────────
 # Tests that pass on Node.js but fail in the browser due to platform differences.
 BROWSER_FUNCTIONAL_EXPECTED_FAIL=(
-    sem_open            # timeout — shm_open I/O error in browser VFS
+    # (sem_open now passes — shm_open works in browser VFS)
     setjmp_legacy       # timeout — unknown browser-specific hang
-    pthread_cancel-points  # shm_open fails with I/O error in browser VFS
+    # (pthread_cancel-points now passes — shm_open works in browser VFS)
 )
 BROWSER_REGRESSION_EXPECTED_FAIL=(
-    regex-backref-0     # OOM — Chrome can't allocate 1GB SharedArrayBuffer
-    regex-bracket-icase # OOM — Chrome can't allocate 1GB SharedArrayBuffer
+    # (regex-backref-0 now passes — fresh browser context prevents OOM)
+    # (regex-bracket-icase now passes — fresh browser context prevents OOM)
     syscall-sign-extend # clock_gettime monotonicity — browser timer resolution
 )
 BROWSER_MATH_EXPECTED_FAIL=()
