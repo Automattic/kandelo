@@ -137,6 +137,8 @@ export class BrowserKernel {
   private kernelInstance: WebAssembly.Instance | null = null;
   private kernelMemory: WebAssembly.Memory | null = null;
   private exitResolvers = new Map<number, (status: number) => void>();
+  /** PTY index by pid (for processes spawned with pty: true) */
+  private ptyByPid = new Map<number, number>();
 
   // Thread channel allocator (counting down from main channel region)
   private nextThreadChannelPage: number;
@@ -330,11 +332,13 @@ export class BrowserKernel {
 
   /**
    * Spawn a new process and return a promise that resolves with the exit code.
+   * When `pty: true`, fds 0/1/2 are wired to a PTY slave and input/output
+   * goes through the kernel's line discipline instead of stdin buffers.
    */
   async spawn(
     programBytes: ArrayBuffer,
     argv: string[],
-    options?: { env?: string[]; cwd?: string; stdin?: Uint8Array },
+    options?: { env?: string[]; cwd?: string; stdin?: Uint8Array; pty?: boolean },
   ): Promise<number> {
     const pid = this.nextPid++;
     const memory = new WebAssembly.Memory({
@@ -352,7 +356,10 @@ export class BrowserKernel {
       this.kernelWorker.setCwd(pid, options.cwd);
     }
 
-    if (options?.stdin) {
+    if (options?.pty) {
+      const ptyIdx = this.kernelWorker.setupPty(pid);
+      this.ptyByPid.set(pid, ptyIdx);
+    } else if (options?.stdin) {
       this.kernelWorker.setStdinData(pid, options.stdin);
     }
 
@@ -573,6 +580,36 @@ export class BrowserKernel {
   /** Get the underlying CentralizedKernelWorker (for advanced use) */
   get worker(): CentralizedKernelWorker {
     return this.kernelWorker;
+  }
+
+  // ── PTY methods ──
+
+  /**
+   * Write data to the PTY master for a process (host → line discipline → slave).
+   * Use this instead of appendStdinData for PTY-backed processes.
+   */
+  ptyWrite(pid: number, data: Uint8Array): void {
+    const ptyIdx = this.ptyByPid.get(pid);
+    if (ptyIdx === undefined) return;
+    this.kernelWorker.ptyMasterWrite(ptyIdx, data);
+  }
+
+  /**
+   * Resize the PTY for a process and send SIGWINCH.
+   */
+  ptyResize(pid: number, rows: number, cols: number): void {
+    const ptyIdx = this.ptyByPid.get(pid);
+    if (ptyIdx === undefined) return;
+    this.kernelWorker.ptySetWinsize(ptyIdx, rows, cols);
+  }
+
+  /**
+   * Register a callback for PTY output data from a process.
+   */
+  onPtyOutput(pid: number, callback: (data: Uint8Array) => void): void {
+    const ptyIdx = this.ptyByPid.get(pid);
+    if (ptyIdx === undefined) return;
+    this.kernelWorker.onPtyOutput(ptyIdx, callback);
   }
 
   /** Destroy the kernel and release all resources. */

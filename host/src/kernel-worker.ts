@@ -678,6 +678,12 @@ export class CentralizedKernelWorker {
   private shmMappings = new Map<number, Map<number, { segId: number; size: number }>>();
   /** POSIX message queue table */
   private mqueueTable = new PosixMqueueTable();
+  /** PTY index → pid mapping (for draining output after syscalls) */
+  private ptyIndexByPid = new Map<number, number>();
+  /** Set of active PTY indices to drain after each syscall */
+  private activePtyIndices = new Set<number>();
+  /** PTY output callbacks: ptyIdx → callback */
+  private ptyOutputCallbacks = new Map<number, (data: Uint8Array) => void>();
 
   constructor(
     private config: KernelConfig,
@@ -941,6 +947,96 @@ export class CentralizedKernelWorker {
     this.scheduleWakeBlockedRetries();
   }
 
+  // ── PTY management ──
+
+  /**
+   * Create a PTY pair and wire fds 0/1/2 of `pid` to the slave side.
+   * Returns the PTY index, or throws on failure.
+   */
+  setupPty(pid: number): number {
+    const kernelPtyCreate = this.kernelInstance!.exports.kernel_pty_create as
+      ((pid: number) => number) | undefined;
+    if (!kernelPtyCreate) throw new Error("Kernel missing kernel_pty_create export");
+    const ptyIdx = kernelPtyCreate(pid);
+    if (ptyIdx < 0) throw new Error(`kernel_pty_create failed: errno ${-ptyIdx}`);
+    this.ptyIndexByPid.set(pid, ptyIdx);
+    this.activePtyIndices.add(ptyIdx);
+    return ptyIdx;
+  }
+
+  /**
+   * Write data to a PTY master (host → line discipline → slave).
+   * Wakes any process blocked on reading the slave side.
+   */
+  ptyMasterWrite(ptyIdx: number, data: Uint8Array): void {
+    const kernelPtyMasterWrite = this.kernelInstance!.exports.kernel_pty_master_write as
+      ((ptyIdx: number, bufPtr: number, bufLen: number) => number) | undefined;
+    if (!kernelPtyMasterWrite) return;
+    const buf = new Uint8Array(this.kernelMemory!.buffer);
+    buf.set(data, this.scratchOffset);
+    kernelPtyMasterWrite(ptyIdx, this.scratchOffset, data.length);
+    // Drain echo/output produced by the line discipline
+    this.drainPtyOutput(ptyIdx);
+    // Wake any process blocked on slave read
+    this.scheduleWakeBlockedRetries();
+  }
+
+  /**
+   * Read all available data from a PTY master (slave output → host).
+   * Returns data or null if empty.
+   */
+  ptyMasterRead(ptyIdx: number): Uint8Array | null {
+    const kernelPtyMasterRead = this.kernelInstance!.exports.kernel_pty_master_read as
+      ((ptyIdx: number, bufPtr: number, bufLen: number) => number) | undefined;
+    if (!kernelPtyMasterRead) return null;
+    const SCRATCH_READ_SIZE = 4096;
+    const n = kernelPtyMasterRead(ptyIdx, this.scratchOffset, SCRATCH_READ_SIZE);
+    if (n <= 0) return null;
+    const buf = new Uint8Array(this.kernelMemory!.buffer);
+    return buf.slice(this.scratchOffset, this.scratchOffset + n);
+  }
+
+  /**
+   * Resize a PTY and send SIGWINCH to the foreground process group.
+   */
+  ptySetWinsize(ptyIdx: number, rows: number, cols: number): void {
+    const kernelPtySetWinsize = this.kernelInstance!.exports.kernel_pty_set_winsize as
+      ((ptyIdx: number, rows: number, cols: number) => number) | undefined;
+    if (!kernelPtySetWinsize) return;
+    kernelPtySetWinsize(ptyIdx, rows, cols);
+  }
+
+  /**
+   * Register a callback for PTY output data.
+   */
+  onPtyOutput(ptyIdx: number, callback: (data: Uint8Array) => void): void {
+    this.ptyOutputCallbacks.set(ptyIdx, callback);
+  }
+
+  /**
+   * Drain output from a PTY master and invoke the registered callback.
+   */
+  private drainPtyOutput(ptyIdx: number): void {
+    const callback = this.ptyOutputCallbacks.get(ptyIdx);
+    if (!callback) return;
+    for (;;) {
+      const data = this.ptyMasterRead(ptyIdx);
+      if (!data) break;
+      callback(data);
+    }
+  }
+
+  /**
+   * Drain all active PTY outputs. Called after each syscall completion
+   * to flush any program output produced during the syscall.
+   */
+  private drainAllPtyOutputs(): void {
+    if (this.activePtyIndices.size === 0) return;
+    for (const ptyIdx of this.activePtyIndices) {
+      this.drainPtyOutput(ptyIdx);
+    }
+  }
+
   /**
    * Set the working directory for a process.
    * Must be called after registerProcess and before the process starts.
@@ -1003,6 +1099,14 @@ export class CentralizedKernelWorker {
     this.processes.delete(pid);
     this.stdinFinite.delete(pid);
     this.stdinBuffers.delete(pid);
+
+    // Clean up PTY state
+    const ptyIdx = this.ptyIndexByPid.get(pid);
+    if (ptyIdx !== undefined) {
+      this.ptyIndexByPid.delete(pid);
+      this.activePtyIndices.delete(ptyIdx);
+      this.ptyOutputCallbacks.delete(ptyIdx);
+    }
   }
 
   /**
@@ -1711,6 +1815,10 @@ export class CentralizedKernelWorker {
 
     // Cancel any pending socket timeout timer for this channel
     this.clearSocketTimeout(channel);
+
+    // Drain PTY output buffers before notifying the process — slave writes
+    // produce data in the PTY output_buf that needs to reach the host (xterm.js).
+    this.drainAllPtyOutputs();
 
     // Flush TCP send pipes before notifying the process — gets PHP's
     // response data to the browser without waiting for the next pump cycle
