@@ -187,11 +187,11 @@ terminalEl.addEventListener("keydown", (e: KeyboardEvent) => {
 
   if (e.key === "Enter") {
     e.preventDefault();
-    const line = inputBuffer + "\n";
     inputBuffer = "";
+    // Only send newline — individual characters were already sent as typed
     activeKernel.appendStdinData(
       activePid,
-      encoder.encode(line),
+      encoder.encode("\n"),
     );
   } else if (e.key === "Backspace") {
     e.preventDefault();
