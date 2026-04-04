@@ -67,6 +67,8 @@ pub enum FileType {
     TimerFd,
     SignalFd,
     MemFd,
+    PtyMaster,
+    PtySlave,
 }
 
 #[derive(Clone)]

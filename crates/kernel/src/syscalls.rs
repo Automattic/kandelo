@@ -32,6 +32,17 @@ fn oflags_to_fd_flags(oflags: u32) -> u32 {
     fd_flags
 }
 
+/// Parse a byte slice as an ASCII unsigned integer.
+fn parse_ascii_usize(bytes: &[u8]) -> Option<usize> {
+    if bytes.is_empty() { return None; }
+    let mut val: usize = 0;
+    for &b in bytes {
+        if b < b'0' || b > b'9' { return None; }
+        val = val.checked_mul(10)?.checked_add((b - b'0') as usize)?;
+    }
+    Some(val)
+}
+
 /// Virtual character devices handled entirely in-kernel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VirtualDevice {
@@ -175,6 +186,65 @@ pub fn sys_open(
         return Ok(fd);
     }
 
+    // /dev/ptmx — allocate a new PTY master
+    if resolved == b"/dev/ptmx" {
+        let pty_idx = crate::pty::alloc_pty().ok_or(Errno::ENOSPC)?;
+        let pty = crate::pty::get_pty(pty_idx).ok_or(Errno::EIO)?;
+        pty.master_refs += 1;
+        let status_flags = oflags & !CREATION_FLAGS;
+        let ofd_idx = proc.ofd_table.create(
+            FileType::PtyMaster, status_flags, pty_idx as i64, resolved,
+        );
+        let fd_flags = oflags_to_fd_flags(oflags);
+        let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
+        return Ok(fd);
+    }
+
+    // /dev/pts/N — open PTY slave
+    if resolved.starts_with(b"/dev/pts/") {
+        let num_str = &resolved[9..];
+        let pty_idx = parse_ascii_usize(num_str).ok_or(Errno::ENOENT)?;
+        let pty = crate::pty::get_pty(pty_idx).ok_or(Errno::ENOENT)?;
+        if pty.locked {
+            return Err(Errno::EIO); // must call unlockpt first
+        }
+        pty.slave_refs += 1;
+        let status_flags = oflags & !CREATION_FLAGS;
+        let ofd_idx = proc.ofd_table.create(
+            FileType::PtySlave, status_flags, pty_idx as i64, resolved,
+        );
+        let fd_flags = oflags_to_fd_flags(oflags);
+        let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
+        return Ok(fd);
+    }
+
+    // /dev/tty — open controlling terminal (alias for current session's PTY or stdin)
+    if resolved == b"/dev/tty" {
+        // Check if any open fd refers to a PTY slave — use that
+        for fd_i in 0..1024i32 {
+            if let Ok(entry) = proc.fd_table.get(fd_i as i32) {
+                if let Some(ofd) = proc.ofd_table.get(entry.ofd_ref.0) {
+                    if ofd.file_type == FileType::PtySlave {
+                        // Dup this fd
+                        proc.ofd_table.inc_ref(entry.ofd_ref.0);
+                        let fd_flags = oflags_to_fd_flags(oflags);
+                        let fd = proc.fd_table.alloc(entry.ofd_ref, fd_flags)?;
+                        return Ok(fd);
+                    }
+                }
+            }
+        }
+        // Fallback: dup stdin (fd 0) as the controlling terminal
+        if let Ok(entry) = proc.fd_table.get(0) {
+            let ofd_ref = entry.ofd_ref;
+            proc.ofd_table.inc_ref(ofd_ref.0);
+            let fd_flags = oflags_to_fd_flags(oflags);
+            let fd = proc.fd_table.alloc(ofd_ref, fd_flags)?;
+            return Ok(fd);
+        }
+        return Err(Errno::ENXIO);
+    }
+
     // Synthetic /etc files — in-kernel read-only files (passwd, group, hosts)
     if synthetic_file_content(&resolved).is_some() {
         if oflags & (O_WRONLY | O_RDWR) != 0 {
@@ -241,7 +311,8 @@ pub fn sys_close(
 
     // POSIX: closing any fd for a file releases all advisory locks on that file
     // held by this process, regardless of which fd acquired the lock.
-    if host_handle >= 0 && file_type != FileType::Pipe && file_type != FileType::Socket {
+    if host_handle >= 0 && file_type != FileType::Pipe && file_type != FileType::Socket
+        && file_type != FileType::PtyMaster && file_type != FileType::PtySlave {
         proc.lock_table.remove_for_handle(host_handle, proc.pid);
         // Also release in the shared (cross-process) lock table
         if !path.is_empty() {
@@ -356,6 +427,20 @@ pub fn sys_close(
             FileType::MemFd => {
                 let memfd_idx = (-(host_handle + 1)) as usize;
                 if let Some(slot) = proc.memfds.get_mut(memfd_idx) { *slot = None; }
+            }
+            FileType::PtyMaster => {
+                let pty_idx = host_handle as usize;
+                if let Some(pty) = crate::pty::get_pty(pty_idx) {
+                    if pty.master_refs > 0 { pty.master_refs -= 1; }
+                    if !pty.is_alive() { crate::pty::free_pty(pty_idx); }
+                }
+            }
+            FileType::PtySlave => {
+                let pty_idx = host_handle as usize;
+                if let Some(pty) = crate::pty::get_pty(pty_idx) {
+                    if pty.slave_refs > 0 { pty.slave_refs -= 1; }
+                    if !pty.is_alive() { crate::pty::free_pty(pty_idx); }
+                }
             }
             _ => {
                 // Close any lazily-opened directory iteration handle
@@ -653,6 +738,38 @@ pub fn sys_read(
             };
             buf[..8].copy_from_slice(&value.to_le_bytes());
             Ok(8)
+        }
+        FileType::PtyMaster => {
+            let pty_idx = host_handle as usize;
+            let pty = crate::pty::get_pty(pty_idx).ok_or(Errno::EIO)?;
+            if pty.slave_refs == 0 {
+                return Ok(0); // EOF — slave side closed
+            }
+            let n = pty.master_read(buf);
+            if n > 0 {
+                return Ok(n);
+            }
+            // No data available
+            if status_flags & O_NONBLOCK != 0 || crate::is_centralized_mode() {
+                return Err(Errno::EAGAIN);
+            }
+            Ok(0)
+        }
+        FileType::PtySlave => {
+            let pty_idx = host_handle as usize;
+            let pty = crate::pty::get_pty(pty_idx).ok_or(Errno::EIO)?;
+            if pty.master_refs == 0 {
+                return Ok(0); // EOF — master side closed (hangup)
+            }
+            let n = pty.slave_read(buf);
+            if n > 0 {
+                return Ok(n);
+            }
+            // No data available
+            if status_flags & O_NONBLOCK != 0 || crate::is_centralized_mode() {
+                return Err(Errno::EAGAIN);
+            }
+            Ok(0)
         }
         _ => {
             // Virtual character devices — handle in-kernel
@@ -955,6 +1072,30 @@ pub fn sys_write(
             efd.counter += value;
             Ok(8)
         }
+        FileType::PtyMaster => {
+            let pty_idx = host_handle as usize;
+            let pty = crate::pty::get_pty(pty_idx).ok_or(Errno::EIO)?;
+            if pty.slave_refs == 0 {
+                proc.signals.raise(wasm_posix_shared::signal::SIGPIPE);
+                return Err(Errno::EIO);
+            }
+            // Master write → line discipline → slave input
+            for &byte in buf.iter() {
+                pty.process_master_input(byte);
+            }
+            Ok(buf.len())
+        }
+        FileType::PtySlave => {
+            let pty_idx = host_handle as usize;
+            let pty = crate::pty::get_pty(pty_idx).ok_or(Errno::EIO)?;
+            if pty.master_refs == 0 {
+                proc.signals.raise(wasm_posix_shared::signal::SIGPIPE);
+                return Err(Errno::EIO);
+            }
+            // Slave write → output processing → master read
+            let n = pty.slave_write(buf);
+            Ok(n)
+        }
         _ => {
             // memfd: write to in-memory buffer
             if file_type == FileType::MemFd {
@@ -1023,7 +1164,7 @@ pub fn sys_lseek(
     let ofd = proc.ofd_table.get_mut(ofd_idx).ok_or(Errno::EBADF)?;
 
     // Non-seekable file types.
-    if matches!(ofd.file_type, FileType::Pipe | FileType::Socket | FileType::EventFd | FileType::Epoll | FileType::TimerFd | FileType::SignalFd) {
+    if matches!(ofd.file_type, FileType::Pipe | FileType::Socket | FileType::EventFd | FileType::Epoll | FileType::TimerFd | FileType::SignalFd | FileType::PtyMaster | FileType::PtySlave) {
         return Err(Errno::ESPIPE);
     }
 
@@ -1152,7 +1293,7 @@ pub fn sys_pread(
     }
 
     // pread is only valid for seekable fds
-    if matches!(ofd.file_type, FileType::Pipe | FileType::Socket | FileType::EventFd | FileType::Epoll | FileType::TimerFd | FileType::SignalFd) {
+    if matches!(ofd.file_type, FileType::Pipe | FileType::Socket | FileType::EventFd | FileType::Epoll | FileType::TimerFd | FileType::SignalFd | FileType::PtyMaster | FileType::PtySlave) {
         return Err(Errno::ESPIPE);
     }
 
@@ -1185,7 +1326,7 @@ pub fn sys_pwrite(
         return Err(Errno::EBADF);
     }
 
-    if matches!(ofd.file_type, FileType::Pipe | FileType::Socket | FileType::EventFd | FileType::Epoll | FileType::TimerFd | FileType::SignalFd) {
+    if matches!(ofd.file_type, FileType::Pipe | FileType::Socket | FileType::EventFd | FileType::Epoll | FileType::TimerFd | FileType::SignalFd | FileType::PtyMaster | FileType::PtySlave) {
         return Err(Errno::ESPIPE);
     }
 
@@ -1578,6 +1719,21 @@ pub fn sys_fstat(
         st.st_uid = proc.euid;
         st.st_gid = proc.egid;
         Ok(st)
+    } else if matches!(ofd.file_type, FileType::PtyMaster | FileType::PtySlave) {
+        let pty_idx = ofd.host_handle as usize;
+        Ok(WasmStat {
+            st_dev: 5, // synthetic devpts device
+            st_ino: 0x50545900 + pty_idx as u64, // "PTY\0" + index
+            st_mode: S_IFCHR | 0o620,
+            st_nlink: 1,
+            st_uid: proc.euid,
+            st_gid: proc.egid,
+            st_size: 0,
+            st_atime_sec: 0, st_atime_nsec: 0,
+            st_mtime_sec: 0, st_mtime_nsec: 0,
+            st_ctime_sec: 0, st_ctime_nsec: 0,
+            _pad: 0,
+        })
     } else if ofd.file_type == FileType::MemFd {
         let memfd_idx = (-(ofd.host_handle + 1)) as usize;
         let size = proc.memfds.get(memfd_idx)
@@ -1877,10 +2033,29 @@ use wasm_posix_shared::WasmDirent;
 use crate::process::{DirStream, ProcessState};
 use crate::path::resolve_path;
 
+/// Check if a resolved path is a PTY or terminal device path.
+/// Returns a synthetic stat for /dev/ptmx, /dev/pts/N, /dev/tty.
+fn match_pty_stat(resolved: &[u8], uid: u32, gid: u32) -> Option<WasmStat> {
+    if resolved == b"/dev/ptmx" || resolved == b"/dev/tty" || resolved.starts_with(b"/dev/pts/") {
+        Some(WasmStat {
+            st_dev: 5, st_ino: 0x50545900,
+            st_mode: S_IFCHR | 0o620, st_nlink: 1,
+            st_uid: uid, st_gid: gid, st_size: 0,
+            st_atime_sec: 0, st_atime_nsec: 0, st_mtime_sec: 0, st_mtime_nsec: 0,
+            st_ctime_sec: 0, st_ctime_nsec: 0, _pad: 0,
+        })
+    } else {
+        None
+    }
+}
+
 pub fn sys_stat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<WasmStat, Errno> {
     let resolved = resolve_path(path, &proc.cwd);
     if let Some(dev) = match_virtual_device(&resolved) {
         return Ok(virtual_device_stat(dev, proc.euid, proc.egid));
+    }
+    if let Some(st) = match_pty_stat(&resolved, proc.euid, proc.egid) {
+        return Ok(st);
     }
     if match_dev_fd(&resolved).is_some() {
         use wasm_posix_shared::mode::S_IFCHR;
@@ -1910,6 +2085,9 @@ pub fn sys_lstat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resu
     let resolved = resolve_path(path, &proc.cwd);
     if let Some(dev) = match_virtual_device(&resolved) {
         return Ok(virtual_device_stat(dev, proc.euid, proc.egid));
+    }
+    if let Some(st) = match_pty_stat(&resolved, proc.euid, proc.egid) {
+        return Ok(st);
     }
     if match_dev_fd(&resolved).is_some() {
         use wasm_posix_shared::mode::S_IFCHR;
@@ -1983,6 +2161,24 @@ pub fn sys_symlink(proc: &mut Process, host: &mut dyn HostIO, target: &[u8], lin
 
 pub fn sys_readlink(proc: &mut Process, host: &mut dyn HostIO, path: &[u8], buf: &mut [u8]) -> Result<usize, Errno> {
     let resolved = resolve_path(path, &proc.cwd);
+
+    // /proc/self/fd/N — resolve to the path stored in the OFD.
+    // Required by ttyname_r to resolve PTY slave paths.
+    if resolved.starts_with(b"/proc/self/fd/") {
+        let num_part = &resolved[14..];
+        if let Some(fd_num) = parse_ascii_usize(num_part) {
+            if let Ok(entry) = proc.fd_table.get(fd_num as i32) {
+                if let Some(ofd) = proc.ofd_table.get(entry.ofd_ref.0) {
+                    let path_bytes = &ofd.path;
+                    let n = buf.len().min(path_bytes.len());
+                    buf[..n].copy_from_slice(&path_bytes[..n]);
+                    return Ok(n);
+                }
+            }
+            return Err(Errno::EBADF);
+        }
+    }
+
     host.host_readlink(&resolved, buf)
 }
 
@@ -1998,7 +2194,8 @@ pub fn sys_chown(proc: &mut Process, host: &mut dyn HostIO, path: &[u8], uid: u3
 
 pub fn sys_access(proc: &mut Process, host: &mut dyn HostIO, path: &[u8], amode: u32) -> Result<(), Errno> {
     let resolved = resolve_path(path, &proc.cwd);
-    if match_virtual_device(&resolved).is_some() || match_dev_fd(&resolved).is_some() {
+    if match_virtual_device(&resolved).is_some() || match_dev_fd(&resolved).is_some()
+        || match_pty_stat(&resolved, 0, 0).is_some() {
         return Ok(());
     }
     if synthetic_file_content(&resolved).is_some() {
@@ -3086,13 +3283,13 @@ pub fn sys_mremap(
 }
 
 /// Check if a file descriptor refers to a terminal.
-/// Returns 1 if it's a terminal (CharDevice), Err(ENOTTY) otherwise.
+/// Returns 1 if it's a terminal (CharDevice, PtyMaster, or PtySlave), Err(ENOTTY) otherwise.
 pub fn sys_isatty(proc: &Process, fd: i32) -> Result<i32, Errno> {
     let entry = proc.fd_table.get(fd)?;
     let ofd_idx = entry.ofd_ref.0;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
 
-    if ofd.file_type == FileType::CharDevice {
+    if matches!(ofd.file_type, FileType::CharDevice | FileType::PtyMaster | FileType::PtySlave) {
         Ok(1)
     } else {
         Err(Errno::ENOTTY)
@@ -4358,6 +4555,34 @@ fn poll_check(proc: &mut Process, fds: &mut [WasmPollFd]) -> i32 {
                     revents |= POLLOUT;
                 }
             }
+            FileType::PtyMaster => {
+                let pty_idx = ofd.host_handle as usize;
+                if let Some(pty) = crate::pty::get_pty(pty_idx) {
+                    if pollfd.events & POLLIN != 0 && pty.master_has_data() {
+                        revents |= POLLIN;
+                    }
+                    if pollfd.events & POLLOUT != 0 {
+                        revents |= POLLOUT; // master write always ready
+                    }
+                    if pty.slave_refs == 0 {
+                        revents |= POLLHUP;
+                    }
+                }
+            }
+            FileType::PtySlave => {
+                let pty_idx = ofd.host_handle as usize;
+                if let Some(pty) = crate::pty::get_pty(pty_idx) {
+                    if pollfd.events & POLLIN != 0 && pty.slave_has_data() {
+                        revents |= POLLIN;
+                    }
+                    if pollfd.events & POLLOUT != 0 {
+                        revents |= POLLOUT; // slave write always ready
+                    }
+                    if pty.master_refs == 0 {
+                        revents |= POLLHUP;
+                    }
+                }
+            }
             FileType::Pipe => {
                 if ofd.host_handle >= 0 {
                     // Host-delegated pipe: report as ready (non-blocking)
@@ -4544,6 +4769,62 @@ pub fn sys_openat(
         return Ok(fd);
     }
 
+    // /dev/ptmx — allocate a new PTY master
+    if resolved == b"/dev/ptmx" {
+        let pty_idx = crate::pty::alloc_pty().ok_or(Errno::ENOSPC)?;
+        let pty = crate::pty::get_pty(pty_idx).ok_or(Errno::EIO)?;
+        pty.master_refs += 1;
+        let status_flags = oflags & !CREATION_FLAGS;
+        let ofd_idx = proc.ofd_table.create(
+            FileType::PtyMaster, status_flags, pty_idx as i64, resolved,
+        );
+        let fd_flags = oflags_to_fd_flags(oflags);
+        let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
+        return Ok(fd);
+    }
+
+    // /dev/pts/N — open PTY slave
+    if resolved.starts_with(b"/dev/pts/") {
+        let num_str = &resolved[9..];
+        let pty_idx = parse_ascii_usize(num_str).ok_or(Errno::ENOENT)?;
+        let pty = crate::pty::get_pty(pty_idx).ok_or(Errno::ENOENT)?;
+        if pty.locked {
+            return Err(Errno::EIO);
+        }
+        pty.slave_refs += 1;
+        let status_flags = oflags & !CREATION_FLAGS;
+        let ofd_idx = proc.ofd_table.create(
+            FileType::PtySlave, status_flags, pty_idx as i64, resolved,
+        );
+        let fd_flags = oflags_to_fd_flags(oflags);
+        let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
+        return Ok(fd);
+    }
+
+    // /dev/tty — open controlling terminal
+    if resolved == b"/dev/tty" {
+        for fd_i in 0..1024i32 {
+            if let Ok(entry) = proc.fd_table.get(fd_i as i32) {
+                if let Some(ofd) = proc.ofd_table.get(entry.ofd_ref.0) {
+                    if ofd.file_type == FileType::PtySlave {
+                        proc.ofd_table.inc_ref(entry.ofd_ref.0);
+                        let fd_flags = oflags_to_fd_flags(oflags);
+                        let fd = proc.fd_table.alloc(entry.ofd_ref, fd_flags)?;
+                        return Ok(fd);
+                    }
+                }
+            }
+        }
+        if let Ok(entry) = proc.fd_table.get(0) {
+            let ofd_ref = entry.ofd_ref;
+            proc.ofd_table.inc_ref(ofd_ref.0);
+            let fd_flags = oflags_to_fd_flags(oflags);
+            let fd = proc.fd_table.alloc(ofd_ref, fd_flags)?;
+            return Ok(fd);
+        }
+        return Err(Errno::ENXIO);
+    }
+
     // Synthetic /etc files — in-kernel read-only files
     if synthetic_file_content(&resolved).is_some() {
         if oflags & (O_WRONLY | O_RDWR) != 0 {
@@ -4699,19 +4980,28 @@ pub fn sys_renameat(
     host.host_rename(&old_resolved, &new_resolved)
 }
 
-/// tcgetattr -- get terminal attributes.
-/// Writes c_iflag, c_oflag, c_cflag, c_lflag (4 x u32 = 16 bytes) then c_cc (32 bytes) = 48 bytes total.
+/// tcgetattr -- get terminal attributes (custom syscall 70).
+/// Uses kernel's 48-byte format for backward compat: 4×u32 flags + c_cc[32].
 pub fn sys_tcgetattr(proc: &mut Process, fd: i32, buf: &mut [u8]) -> Result<(), Errno> {
     let entry = proc.fd_table.get(fd)?;
     let ofd_idx = entry.ofd_ref.0;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
-    if ofd.file_type != FileType::CharDevice {
+    if !matches!(ofd.file_type, FileType::CharDevice | FileType::PtyMaster | FileType::PtySlave) {
         return Err(Errno::ENOTTY);
     }
     if buf.len() < 48 {
         return Err(Errno::EINVAL);
     }
-    let ts = &proc.terminal;
+    let ts = match ofd.file_type {
+        FileType::PtyMaster | FileType::PtySlave => {
+            let pty_idx = ofd.host_handle as usize;
+            let pty = crate::pty::get_pty(pty_idx).ok_or(Errno::EIO)?;
+            &pty.terminal as *const crate::terminal::TerminalState
+        }
+        _ => &proc.terminal as *const crate::terminal::TerminalState,
+    };
+    // Safety: we hold &mut proc, and PTY table is kernel-global with single-threaded access
+    let ts = unsafe { &*ts };
     buf[0..4].copy_from_slice(&ts.c_iflag.to_le_bytes());
     buf[4..8].copy_from_slice(&ts.c_oflag.to_le_bytes());
     buf[8..12].copy_from_slice(&ts.c_cflag.to_le_bytes());
@@ -4720,25 +5010,36 @@ pub fn sys_tcgetattr(proc: &mut Process, fd: i32, buf: &mut [u8]) -> Result<(), 
     Ok(())
 }
 
-/// tcsetattr -- set terminal attributes.
-/// Reads c_iflag, c_oflag, c_cflag, c_lflag (4 x u32 = 16 bytes) then c_cc (32 bytes) = 48 bytes.
-/// action: 0=TCSANOW, 1=TCSADRAIN, 2=TCSAFLUSH (all treated same — no output queue to drain).
+/// tcsetattr -- set terminal attributes (custom syscall 71).
+/// Uses kernel's 48-byte format for backward compat: 4×u32 flags + c_cc[32].
 pub fn sys_tcsetattr(proc: &mut Process, fd: i32, _action: u32, buf: &[u8]) -> Result<(), Errno> {
     let entry = proc.fd_table.get(fd)?;
     let ofd_idx = entry.ofd_ref.0;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
-    if ofd.file_type != FileType::CharDevice {
+    if !matches!(ofd.file_type, FileType::CharDevice | FileType::PtyMaster | FileType::PtySlave) {
         return Err(Errno::ENOTTY);
     }
     if buf.len() < 48 {
         return Err(Errno::EINVAL);
     }
-    let ts = &mut proc.terminal;
-    ts.c_iflag = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
-    ts.c_oflag = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
-    ts.c_cflag = u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]);
-    ts.c_lflag = u32::from_le_bytes([buf[12], buf[13], buf[14], buf[15]]);
-    ts.c_cc.copy_from_slice(&buf[16..48]);
+    match ofd.file_type {
+        FileType::PtyMaster | FileType::PtySlave => {
+            let pty_idx = ofd.host_handle as usize;
+            let pty = crate::pty::get_pty(pty_idx).ok_or(Errno::EIO)?;
+            pty.terminal.c_iflag = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
+            pty.terminal.c_oflag = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
+            pty.terminal.c_cflag = u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]);
+            pty.terminal.c_lflag = u32::from_le_bytes([buf[12], buf[13], buf[14], buf[15]]);
+            pty.terminal.c_cc.copy_from_slice(&buf[16..48]);
+        }
+        _ => {
+            proc.terminal.c_iflag = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
+            proc.terminal.c_oflag = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
+            proc.terminal.c_cflag = u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]);
+            proc.terminal.c_lflag = u32::from_le_bytes([buf[12], buf[13], buf[14], buf[15]]);
+            proc.terminal.c_cc.copy_from_slice(&buf[16..48]);
+        }
+    }
     Ok(())
 }
 
@@ -4833,6 +5134,24 @@ pub fn sys_ioctl(proc: &mut Process, fd: i32, request: u32, buf: &mut [u8]) -> R
                     0
                 }
             }
+            FileType::PtyMaster => {
+                let pty_idx = ofd.host_handle as usize;
+                crate::pty::get_pty(pty_idx)
+                    .map(|p| p.output_buf.len() as i32)
+                    .unwrap_or(0)
+            }
+            FileType::PtySlave => {
+                let pty_idx = ofd.host_handle as usize;
+                crate::pty::get_pty(pty_idx)
+                    .map(|p| {
+                        if p.terminal.is_canonical() {
+                            p.terminal.cooked_buffer.len() as i32
+                        } else {
+                            p.input_buf.len() as i32
+                        }
+                    })
+                    .unwrap_or(0)
+            }
             _ => 0,
         };
         buf[0..4].copy_from_slice(&avail.to_le_bytes());
@@ -4858,60 +5177,280 @@ pub fn sys_ioctl(proc: &mut Process, fd: i32, request: u32, buf: &mut [u8]) -> R
         return Ok(());
     }
 
-    // TIOCGPGRP / TIOCSPGRP — foreground process group
-    if request == 0x540F { // TIOCGPGRP
+    // --- PTY-specific ioctls (work on PtyMaster only) ---
+    {
         let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
-        if ofd.file_type != FileType::CharDevice {
-            return Err(Errno::ENOTTY);
+
+        // TIOCGPTN — get PTY number
+        if request == crate::terminal::TIOCGPTN {
+            if ofd.file_type != FileType::PtyMaster {
+                return Err(Errno::ENOTTY);
+            }
+            if buf.len() < 4 {
+                return Err(Errno::EINVAL);
+            }
+            let pty_idx = ofd.host_handle as u32;
+            buf[0..4].copy_from_slice(&pty_idx.to_le_bytes());
+            return Ok(());
         }
-        if buf.len() < 4 {
-            return Err(Errno::EINVAL);
+
+        // TIOCSPTLCK — set/clear PTY lock
+        if request == crate::terminal::TIOCSPTLCK {
+            if ofd.file_type != FileType::PtyMaster {
+                return Err(Errno::ENOTTY);
+            }
+            if buf.len() < 4 {
+                return Err(Errno::EINVAL);
+            }
+            let lock_val = i32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
+            let pty_idx = ofd.host_handle as usize;
+            if let Some(pty) = crate::pty::get_pty(pty_idx) {
+                pty.locked = lock_val != 0;
+            }
+            return Ok(());
         }
-        buf[0..4].copy_from_slice(&proc.terminal.foreground_pgid.to_le_bytes());
-        return Ok(());
-    }
-    if request == 0x5410 { // TIOCSPGRP
-        let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
-        if ofd.file_type != FileType::CharDevice {
-            return Err(Errno::ENOTTY);
-        }
-        if buf.len() < 4 {
-            return Err(Errno::EINVAL);
-        }
-        let pgid = i32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
-        if pgid <= 0 {
-            return Err(Errno::EINVAL);
-        }
-        proc.terminal.foreground_pgid = pgid;
-        return Ok(());
     }
 
-    // Terminal-specific ioctls: require CharDevice
+    // --- Terminal ioctls (work on CharDevice, PtyMaster, PtySlave) ---
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
-    if ofd.file_type != FileType::CharDevice {
+    let file_type = ofd.file_type;
+    let host_handle = ofd.host_handle;
+
+    let is_terminal = matches!(file_type, FileType::CharDevice | FileType::PtyMaster | FileType::PtySlave);
+    if !is_terminal {
         return Err(Errno::ENOTTY);
     }
+
+    // Helper: get mutable reference to the appropriate TerminalState.
+    // For PTY fds → PTY pair's terminal state; for CharDevice → process terminal state.
+    // We handle this by dispatching per-request below.
+
+    use crate::terminal::*;
+
     match request {
-        0x5413 => { // TIOCGWINSZ
+        TCGETS => {
+            if buf.len() < TERMIOS_SIZE {
+                return Err(Errno::EINVAL);
+            }
+            match file_type {
+                FileType::PtyMaster | FileType::PtySlave => {
+                    let pty_idx = host_handle as usize;
+                    let pty = crate::pty::get_pty(pty_idx).ok_or(Errno::EIO)?;
+                    pty.terminal.write_termios(buf);
+                }
+                _ => {
+                    proc.terminal.write_termios(buf);
+                }
+            }
+            Ok(())
+        }
+        TCSETS | TCSETSW | TCSETSF => {
+            if buf.len() < TERMIOS_SIZE {
+                return Err(Errno::EINVAL);
+            }
+            // TCSETSF: also flush input queue
+            if request == TCSETSF {
+                match file_type {
+                    FileType::PtyMaster | FileType::PtySlave => {
+                        let pty_idx = host_handle as usize;
+                        if let Some(pty) = crate::pty::get_pty(pty_idx) {
+                            pty.input_buf.clear();
+                            pty.terminal.line_buffer.clear();
+                            pty.terminal.cooked_buffer.clear();
+                        }
+                    }
+                    _ => {
+                        proc.terminal.line_buffer.clear();
+                        proc.terminal.cooked_buffer.clear();
+                    }
+                }
+            }
+            match file_type {
+                FileType::PtyMaster | FileType::PtySlave => {
+                    let pty_idx = host_handle as usize;
+                    let pty = crate::pty::get_pty(pty_idx).ok_or(Errno::EIO)?;
+                    pty.terminal.read_termios(buf);
+                }
+                _ => {
+                    proc.terminal.read_termios(buf);
+                }
+            }
+            Ok(())
+        }
+        TIOCGPGRP => {
+            if buf.len() < 4 {
+                return Err(Errno::EINVAL);
+            }
+            let pgid = match file_type {
+                FileType::PtyMaster | FileType::PtySlave => {
+                    let pty_idx = host_handle as usize;
+                    crate::pty::get_pty(pty_idx)
+                        .map(|p| p.terminal.foreground_pgid)
+                        .unwrap_or(1)
+                }
+                _ => proc.terminal.foreground_pgid,
+            };
+            buf[0..4].copy_from_slice(&pgid.to_le_bytes());
+            Ok(())
+        }
+        TIOCSPGRP => {
+            if buf.len() < 4 {
+                return Err(Errno::EINVAL);
+            }
+            let pgid = i32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
+            if pgid <= 0 {
+                return Err(Errno::EINVAL);
+            }
+            match file_type {
+                FileType::PtyMaster | FileType::PtySlave => {
+                    let pty_idx = host_handle as usize;
+                    if let Some(pty) = crate::pty::get_pty(pty_idx) {
+                        pty.terminal.foreground_pgid = pgid;
+                    }
+                }
+                _ => {
+                    proc.terminal.foreground_pgid = pgid;
+                }
+            }
+            Ok(())
+        }
+        TIOCGWINSZ => {
             if buf.len() < 8 {
                 return Err(Errno::EINVAL);
             }
-            let ws = &proc.terminal.winsize;
+            let ws = match file_type {
+                FileType::PtyMaster | FileType::PtySlave => {
+                    let pty_idx = host_handle as usize;
+                    crate::pty::get_pty(pty_idx)
+                        .map(|p| p.terminal.winsize)
+                        .unwrap_or(WinSize { ws_row: 24, ws_col: 80, ws_xpixel: 0, ws_ypixel: 0 })
+                }
+                _ => proc.terminal.winsize,
+            };
             buf[0..2].copy_from_slice(&ws.ws_row.to_le_bytes());
             buf[2..4].copy_from_slice(&ws.ws_col.to_le_bytes());
             buf[4..6].copy_from_slice(&ws.ws_xpixel.to_le_bytes());
             buf[6..8].copy_from_slice(&ws.ws_ypixel.to_le_bytes());
             Ok(())
         }
-        0x5414 => { // TIOCSWINSZ
+        TIOCSWINSZ => {
             if buf.len() < 8 {
                 return Err(Errno::EINVAL);
             }
-            let ws = &mut proc.terminal.winsize;
-            ws.ws_row = u16::from_le_bytes([buf[0], buf[1]]);
-            ws.ws_col = u16::from_le_bytes([buf[2], buf[3]]);
-            ws.ws_xpixel = u16::from_le_bytes([buf[4], buf[5]]);
-            ws.ws_ypixel = u16::from_le_bytes([buf[6], buf[7]]);
+            let ws = WinSize {
+                ws_row: u16::from_le_bytes([buf[0], buf[1]]),
+                ws_col: u16::from_le_bytes([buf[2], buf[3]]),
+                ws_xpixel: u16::from_le_bytes([buf[4], buf[5]]),
+                ws_ypixel: u16::from_le_bytes([buf[6], buf[7]]),
+            };
+            let fg_pgid = match file_type {
+                FileType::PtyMaster | FileType::PtySlave => {
+                    let pty_idx = host_handle as usize;
+                    if let Some(pty) = crate::pty::get_pty(pty_idx) {
+                        pty.terminal.winsize = ws;
+                        pty.terminal.foreground_pgid
+                    } else { 0 }
+                }
+                _ => {
+                    proc.terminal.winsize = ws;
+                    proc.terminal.foreground_pgid
+                }
+            };
+            // POSIX: TIOCSWINSZ sends SIGWINCH to the foreground process group
+            if fg_pgid > 0 {
+                proc.signals.raise(wasm_posix_shared::signal::SIGWINCH);
+            }
+            Ok(())
+        }
+        TCSBRK => {
+            // tcdrain (arg=1) and tcsendbreak (arg=0): no-op — no real serial hardware
+            Ok(())
+        }
+        TCXONC => {
+            // tcflow: no-op — no flow control in virtual terminals
+            Ok(())
+        }
+        TCFLSH => {
+            // tcflush: flush input/output queues
+            if buf.len() < 4 {
+                return Err(Errno::EINVAL);
+            }
+            let queue = i32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
+            match file_type {
+                FileType::PtyMaster | FileType::PtySlave => {
+                    let pty_idx = host_handle as usize;
+                    if let Some(pty) = crate::pty::get_pty(pty_idx) {
+                        if queue == 0 || queue == 2 { // TCIFLUSH or TCIOFLUSH
+                            pty.input_buf.clear();
+                            pty.terminal.line_buffer.clear();
+                            pty.terminal.cooked_buffer.clear();
+                        }
+                        if queue == 1 || queue == 2 { // TCOFLUSH or TCIOFLUSH
+                            pty.output_buf.clear();
+                        }
+                    }
+                }
+                _ => {
+                    if queue == 0 || queue == 2 {
+                        proc.terminal.line_buffer.clear();
+                        proc.terminal.cooked_buffer.clear();
+                    }
+                    // Output flush is a no-op for non-PTY terminals
+                }
+            }
+            Ok(())
+        }
+        TIOCGSID => {
+            // tcgetsid: return session ID of the terminal
+            if buf.len() < 4 {
+                return Err(Errno::EINVAL);
+            }
+            let sid = match file_type {
+                FileType::PtyMaster | FileType::PtySlave => {
+                    let pty_idx = host_handle as usize;
+                    crate::pty::get_pty(pty_idx)
+                        .map(|p| p.terminal.session_id)
+                        .unwrap_or(proc.sid as i32)
+                }
+                _ => proc.terminal.session_id,
+            };
+            // Return process's session ID if terminal session_id is not set
+            let effective_sid = if sid != 0 { sid } else { proc.sid as i32 };
+            buf[0..4].copy_from_slice(&effective_sid.to_le_bytes());
+            Ok(())
+        }
+        TIOCSCTTY => {
+            // Set controlling terminal: sets this terminal as the session's ctty
+            // Also sets foreground pgrp to the calling process's pgid (POSIX)
+            let pgid = proc.pgid as i32;
+            match file_type {
+                FileType::PtyMaster | FileType::PtySlave => {
+                    let pty_idx = host_handle as usize;
+                    if let Some(pty) = crate::pty::get_pty(pty_idx) {
+                        pty.terminal.session_id = proc.sid as i32;
+                        pty.terminal.foreground_pgid = pgid;
+                    }
+                }
+                _ => {
+                    proc.terminal.session_id = proc.sid as i32;
+                    proc.terminal.foreground_pgid = pgid;
+                }
+            }
+            Ok(())
+        }
+        TIOCNOTTY => {
+            // Give up controlling terminal
+            match file_type {
+                FileType::PtyMaster | FileType::PtySlave => {
+                    let pty_idx = host_handle as usize;
+                    if let Some(pty) = crate::pty::get_pty(pty_idx) {
+                        pty.terminal.session_id = 0;
+                    }
+                }
+                _ => {
+                    proc.terminal.session_id = 0;
+                }
+            }
             Ok(())
         }
         _ => Err(Errno::ENOTTY),
@@ -6189,6 +6728,23 @@ pub fn sys_readlinkat(
     buf: &mut [u8],
 ) -> Result<usize, Errno> {
     let resolved = resolve_at_path(proc, dirfd, path)?;
+
+    // /proc/self/fd/N — resolve to OFD path (for ttyname_r)
+    if resolved.starts_with(b"/proc/self/fd/") {
+        let num_part = &resolved[14..];
+        if let Some(fd_num) = parse_ascii_usize(num_part) {
+            if let Ok(entry) = proc.fd_table.get(fd_num as i32) {
+                if let Some(ofd) = proc.ofd_table.get(entry.ofd_ref.0) {
+                    let path_bytes = &ofd.path;
+                    let n = buf.len().min(path_bytes.len());
+                    buf[..n].copy_from_slice(&path_bytes[..n]);
+                    return Ok(n);
+                }
+            }
+            return Err(Errno::EBADF);
+        }
+    }
+
     host.host_readlink(&resolved, buf)
 }
 

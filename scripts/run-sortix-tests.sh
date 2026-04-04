@@ -101,12 +101,10 @@ BASIC_EXPECTED_FAIL=(
     # -- Scheduler
     # -- Semaphore named
     # (semaphore/sem_clockwait now passes — delegates to sem_timedwait)
-    # -- Terminal I/O (no terminal device in Wasm)
-    "termios/tcdrain" "termios/tcflow" "termios/tcflush" "termios/tcgetattr"
-    "termios/tcgetsid" "termios/tcgetwinsize" "termios/tcsendbreak"
-    "termios/tcsetattr" "termios/tcsetwinsize"
-    "unistd/tcgetpgrp" "unistd/tcsetpgrp" "unistd/ttyname" "unistd/ttyname_r"
-    "stdlib/ptsname" "stdlib/ptsname_r" "stdlib/unlockpt"
+    # (All terminal I/O tests now pass — PTY support implemented:
+    #  tcdrain, tcflow, tcflush, tcgetattr, tcgetsid, tcgetwinsize, tcsendbreak,
+    #  tcsetattr, tcsetwinsize, tcgetpgrp, tcsetpgrp, ttyname, ttyname_r,
+    #  ptsname, ptsname_r, unlockpt)
     # (SysV IPC now passes — host-side IPC handlers in centralized mode)
     # (sys_ipc/ftok now passes — data directory infrastructure)
     # (sys_socket/sockatmark now passes — MSG_OOB send/recv + SIOCATMARK ioctl)

@@ -13,6 +13,7 @@ pub mod path;
 pub mod pipe;
 pub mod process;
 pub mod process_table;
+pub mod pty;
 pub mod signal;
 pub mod socket;
 pub mod syscalls;

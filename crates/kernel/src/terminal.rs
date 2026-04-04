@@ -49,9 +49,28 @@ pub const TCSANOW: u32 = 0;
 pub const TCSADRAIN: u32 = 1;
 pub const TCSAFLUSH: u32 = 2;
 
-/// ioctl commands
+/// ioctl commands — terminal
+pub const TCGETS: u32 = 0x5401;
+pub const TCSETS: u32 = 0x5402;
+pub const TCSETSW: u32 = 0x5403;
+pub const TCSETSF: u32 = 0x5404;
+pub const TCSBRK: u32 = 0x5409;
+pub const TCXONC: u32 = 0x540A;
+pub const TCFLSH: u32 = 0x540B;
+pub const TIOCSCTTY: u32 = 0x540E;
+pub const TIOCGPGRP: u32 = 0x540F;
+pub const TIOCSPGRP: u32 = 0x5410;
 pub const TIOCGWINSZ: u32 = 0x5413;
 pub const TIOCSWINSZ: u32 = 0x5414;
+pub const TIOCNOTTY: u32 = 0x5422;
+pub const TIOCGSID: u32 = 0x5429;
+
+/// ioctl commands — PTY
+pub const TIOCGPTN: u32 = 0x80045430;
+pub const TIOCSPTLCK: u32 = 0x40045431;
+
+/// musl struct termios size: 4 flags (16) + c_line (1) + c_cc (32) + pad (3) + speeds (8) = 60
+pub const TERMIOS_SIZE: usize = 60;
 
 /// Window size structure
 #[repr(C)]
@@ -70,10 +89,15 @@ pub struct TerminalState {
     pub c_oflag: u32,
     pub c_cflag: u32,
     pub c_lflag: u32,
+    pub c_line: u8,
     pub c_cc: [u8; NCCS],
+    pub c_ispeed: u32,
+    pub c_ospeed: u32,
     pub winsize: WinSize,
     /// Foreground process group ID (for tcgetpgrp/tcsetpgrp via TIOCGPGRP/TIOCSPGRP).
     pub foreground_pgid: i32,
+    /// Session ID that owns this terminal (for tcgetsid / TIOCGSID).
+    pub session_id: i32,
     /// Line buffer for ICANON mode line editing.
     pub line_buffer: Vec<u8>,
     /// Completed lines ready to be read (includes the terminating newline).
@@ -95,12 +119,18 @@ impl TerminalState {
         c_cc[VMIN] = 1;
         c_cc[VTIME] = 0;
 
+        // B38400 = 0o0000017 = 15 — default baud rate for PTYs
+        const B38400: u32 = 0o0000017;
+
         TerminalState {
             c_iflag: ICRNL | IXON | IXANY | IMAXBEL,
             c_oflag: OPOST | ONLCR,
-            c_cflag: CS8 | CREAD | HUPCL,
+            c_cflag: CS8 | CREAD | HUPCL | B38400,
             c_lflag: ECHO | ECHOE | ECHOK | ICANON | ISIG | IEXTEN,
+            c_line: 0,
             c_cc,
+            c_ispeed: B38400,
+            c_ospeed: B38400,
             winsize: WinSize {
                 ws_row: 24,
                 ws_col: 80,
@@ -108,9 +138,37 @@ impl TerminalState {
                 ws_ypixel: 0,
             },
             foreground_pgid: 1, // default to PID 1's group
+            session_id: 0,
             line_buffer: Vec::new(),
             cooked_buffer: Vec::new(),
         }
+    }
+
+    /// Serialize terminal attributes to musl's 60-byte `struct termios` layout.
+    /// Layout: c_iflag(4) + c_oflag(4) + c_cflag(4) + c_lflag(4) + c_line(1) +
+    ///         c_cc(32) + pad(3) + __c_ispeed(4) + __c_ospeed(4) = 60 bytes.
+    pub fn write_termios(&self, buf: &mut [u8]) {
+        buf[0..4].copy_from_slice(&self.c_iflag.to_le_bytes());
+        buf[4..8].copy_from_slice(&self.c_oflag.to_le_bytes());
+        buf[8..12].copy_from_slice(&self.c_cflag.to_le_bytes());
+        buf[12..16].copy_from_slice(&self.c_lflag.to_le_bytes());
+        buf[16] = self.c_line;
+        buf[17..49].copy_from_slice(&self.c_cc);
+        buf[49..52].copy_from_slice(&[0, 0, 0]); // padding
+        buf[52..56].copy_from_slice(&self.c_ispeed.to_le_bytes());
+        buf[56..60].copy_from_slice(&self.c_ospeed.to_le_bytes());
+    }
+
+    /// Deserialize terminal attributes from musl's 60-byte `struct termios` layout.
+    pub fn read_termios(&mut self, buf: &[u8]) {
+        self.c_iflag = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
+        self.c_oflag = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
+        self.c_cflag = u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]);
+        self.c_lflag = u32::from_le_bytes([buf[12], buf[13], buf[14], buf[15]]);
+        self.c_line = buf[16];
+        self.c_cc.copy_from_slice(&buf[17..49]);
+        self.c_ispeed = u32::from_le_bytes([buf[52], buf[53], buf[54], buf[55]]);
+        self.c_ospeed = u32::from_le_bytes([buf[56], buf[57], buf[58], buf[59]]);
     }
 
     /// Check if ICANON mode is enabled.

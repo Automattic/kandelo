@@ -56,6 +56,24 @@ impl<'a> Writer<'a> {
         self.buf.len().saturating_sub(self.pos)
     }
 
+    fn write_u8(&mut self, v: u8) -> Result<(), Errno> {
+        if self.remaining() < 1 {
+            return Err(Errno::ENOMEM);
+        }
+        self.buf[self.pos] = v;
+        self.pos += 1;
+        Ok(())
+    }
+
+    fn write_i32(&mut self, v: i32) -> Result<(), Errno> {
+        if self.remaining() < 4 {
+            return Err(Errno::ENOMEM);
+        }
+        self.buf[self.pos..self.pos + 4].copy_from_slice(&v.to_le_bytes());
+        self.pos += 4;
+        Ok(())
+    }
+
     fn write_u16(&mut self, v: u16) -> Result<(), Errno> {
         if self.remaining() < 2 {
             return Err(Errno::ENOMEM);
@@ -121,6 +139,29 @@ impl<'a> Reader<'a> {
 
     fn remaining(&self) -> usize {
         self.buf.len().saturating_sub(self.pos)
+    }
+
+    fn read_u8(&mut self) -> Result<u8, Errno> {
+        if self.remaining() < 1 {
+            return Err(Errno::EINVAL);
+        }
+        let v = self.buf[self.pos];
+        self.pos += 1;
+        Ok(v)
+    }
+
+    fn read_i32(&mut self) -> Result<i32, Errno> {
+        if self.remaining() < 4 {
+            return Err(Errno::EINVAL);
+        }
+        let v = i32::from_le_bytes([
+            self.buf[self.pos],
+            self.buf[self.pos + 1],
+            self.buf[self.pos + 2],
+            self.buf[self.pos + 3],
+        ]);
+        self.pos += 4;
+        Ok(v)
     }
 
     fn read_u16(&mut self) -> Result<u16, Errno> {
@@ -198,6 +239,8 @@ fn file_type_to_u32(ft: FileType) -> u32 {
         FileType::TimerFd => 7,
         FileType::SignalFd => 8,
         FileType::MemFd => 9,
+        FileType::PtyMaster => 10,
+        FileType::PtySlave => 11,
     }
 }
 
@@ -213,6 +256,8 @@ fn u32_to_file_type(v: u32) -> Result<FileType, Errno> {
         7 => Ok(FileType::TimerFd),
         8 => Ok(FileType::SignalFd),
         9 => Ok(FileType::MemFd),
+        10 => Ok(FileType::PtyMaster),
+        11 => Ok(FileType::PtySlave),
         _ => Err(Errno::EINVAL),
     }
 }
@@ -331,7 +376,7 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
         w.write_u64(pair[1])?;
     }
 
-    // ── Terminal (56 bytes) ──
+    // ── Terminal ──
     w.write_u32(proc.terminal.c_iflag)?;
     w.write_u32(proc.terminal.c_oflag)?;
     w.write_u32(proc.terminal.c_cflag)?;
@@ -341,6 +386,10 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
     w.write_u16(proc.terminal.winsize.ws_col)?;
     w.write_u16(proc.terminal.winsize.ws_xpixel)?;
     w.write_u16(proc.terminal.winsize.ws_ypixel)?;
+    w.write_u8(proc.terminal.c_line)?;
+    w.write_u32(proc.terminal.c_ispeed)?;
+    w.write_u32(proc.terminal.c_ospeed)?;
+    w.write_i32(proc.terminal.session_id)?;
 
     // ── Program break ──
     w.write_u32(proc.memory.get_brk())?;
@@ -632,13 +681,20 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
     let ws_col = r.read_u16()?;
     let ws_xpixel = r.read_u16()?;
     let ws_ypixel = r.read_u16()?;
+    let c_line = r.read_u8().unwrap_or(0);
+    let c_ispeed = r.read_u32().unwrap_or(0o0000017); // B38400
+    let c_ospeed = r.read_u32().unwrap_or(0o0000017);
+    let session_id = r.read_i32().unwrap_or(0);
 
     let terminal = TerminalState {
         c_iflag,
         c_oflag,
         c_cflag,
         c_lflag,
+        c_line,
         c_cc,
+        c_ispeed,
+        c_ospeed,
         winsize: WinSize {
             ws_row,
             ws_col,
@@ -646,6 +702,7 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
             ws_ypixel,
         },
         foreground_pgid: 1,
+        session_id,
         line_buffer: Vec::new(),
         cooked_buffer: Vec::new(),
     };
@@ -959,7 +1016,7 @@ pub fn serialize_exec_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
         w.write_u64(pair[1])?;
     }
 
-    // ── Terminal (56 bytes) ──
+    // ── Terminal ──
     w.write_u32(proc.terminal.c_iflag)?;
     w.write_u32(proc.terminal.c_oflag)?;
     w.write_u32(proc.terminal.c_cflag)?;
@@ -969,6 +1026,10 @@ pub fn serialize_exec_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
     w.write_u16(proc.terminal.winsize.ws_col)?;
     w.write_u16(proc.terminal.winsize.ws_xpixel)?;
     w.write_u16(proc.terminal.winsize.ws_ypixel)?;
+    w.write_u8(proc.terminal.c_line)?;
+    w.write_u32(proc.terminal.c_ispeed)?;
+    w.write_u32(proc.terminal.c_ospeed)?;
+    w.write_i32(proc.terminal.session_id)?;
 
     // ── Program break ──
     w.write_u32(proc.memory.get_brk())?;
@@ -1133,13 +1194,20 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
     let ws_col = r.read_u16()?;
     let ws_xpixel = r.read_u16()?;
     let ws_ypixel = r.read_u16()?;
+    let c_line = r.read_u8().unwrap_or(0);
+    let c_ispeed = r.read_u32().unwrap_or(0o0000017); // B38400
+    let c_ospeed = r.read_u32().unwrap_or(0o0000017);
+    let session_id = r.read_i32().unwrap_or(0);
 
     let terminal = TerminalState {
         c_iflag,
         c_oflag,
         c_cflag,
         c_lflag,
+        c_line,
         c_cc,
+        c_ispeed,
+        c_ospeed,
         winsize: WinSize {
             ws_row,
             ws_col,
@@ -1147,6 +1215,7 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
             ws_ypixel,
         },
         foreground_pgid: 1,
+        session_id,
         line_buffer: Vec::new(),
         cooked_buffer: Vec::new(),
     };

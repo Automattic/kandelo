@@ -77,6 +77,27 @@ impl ProcessTable {
             }
         }
 
+        // Clean up PTY OFDs: decrement master/slave refcounts on PTY pairs.
+        for (_ofd_idx, ofd) in proc.ofd_table.iter() {
+            match ofd.file_type {
+                FileType::PtyMaster => {
+                    let pty_idx = ofd.host_handle as usize;
+                    if let Some(pty) = crate::pty::get_pty(pty_idx) {
+                        if pty.master_refs > 0 { pty.master_refs -= 1; }
+                        if !pty.is_alive() { crate::pty::free_pty(pty_idx); }
+                    }
+                }
+                FileType::PtySlave => {
+                    let pty_idx = ofd.host_handle as usize;
+                    if let Some(pty) = crate::pty::get_pty(pty_idx) {
+                        if pty.slave_refs > 0 { pty.slave_refs -= 1; }
+                        if !pty.is_alive() { crate::pty::free_pty(pty_idx); }
+                    }
+                }
+                _ => {}
+            }
+        }
+
         // Clean up socket OFDs: close pipe endpoints so peers get EOF/EPIPE.
         // Without this, a peer process reading from a connected socket would
         // block forever instead of getting EOF when this process exits.
@@ -188,6 +209,25 @@ impl ProcessTable {
                     }
                     _ => {}
                 }
+            }
+        }
+
+        // Increment PTY refcounts for inherited PTY OFDs.
+        for (_ofd_idx, ofd) in child.ofd_table.iter() {
+            match ofd.file_type {
+                FileType::PtyMaster => {
+                    let pty_idx = ofd.host_handle as usize;
+                    if let Some(pty) = crate::pty::get_pty(pty_idx) {
+                        pty.master_refs += 1;
+                    }
+                }
+                FileType::PtySlave => {
+                    let pty_idx = ofd.host_handle as usize;
+                    if let Some(pty) = crate::pty::get_pty(pty_idx) {
+                        pty.slave_refs += 1;
+                    }
+                }
+                _ => {}
             }
         }
 

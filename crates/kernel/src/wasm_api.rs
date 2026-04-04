@@ -4069,6 +4069,8 @@ fn extract_scm_rights(
                                 crate::ofd::FileType::Regular => 2,
                                 crate::ofd::FileType::Directory => 3,
                                 crate::ofd::FileType::CharDevice => 4,
+                                crate::ofd::FileType::PtyMaster => 6,
+                                crate::ofd::FileType::PtySlave => 7,
                                 _ => 5,
                             },
                             status_flags: ofd.status_flags,
@@ -4284,6 +4286,24 @@ fn install_scm_rights_fds(
                 // Pipe FD
                 let ofd_idx = proc.ofd_table.create(
                     FileType::Pipe,
+                    entry.status_flags,
+                    entry.host_handle,
+                    entry.path.clone(),
+                );
+                if let Ok(new_fd) = proc.fd_table.alloc(crate::fd::OpenFileDescRef(ofd_idx), 0) {
+                    new_fds.push(new_fd);
+                }
+            }
+            6 | 7 => {
+                // PTY master (6) or slave (7) — share by incrementing refs
+                let is_master = entry.file_type == 6;
+                let file_type = if is_master { FileType::PtyMaster } else { FileType::PtySlave };
+                let pty_idx = entry.host_handle as usize;
+                if let Some(pty) = crate::pty::get_pty(pty_idx) {
+                    if is_master { pty.master_refs += 1; } else { pty.slave_refs += 1; }
+                }
+                let ofd_idx = proc.ofd_table.create(
+                    file_type,
                     entry.status_flags,
                     entry.host_handle,
                     entry.path.clone(),
