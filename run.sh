@@ -424,7 +424,9 @@ clean_target() {
             warn "Cleaned PHP-FPM" ;;
         mariadb)
             rm -rf "$REPO_ROOT/examples/libs/mariadb/mariadb-src" \
-                   "$REPO_ROOT/examples/libs/mariadb/mariadb-install"
+                   "$REPO_ROOT/examples/libs/mariadb/mariadb-install" \
+                   "$REPO_ROOT/examples/libs/mariadb/pcre2-"* \
+                   "$REPO_ROOT/examples/libs/mariadb/pcre2-wasm-build"
             warn "Cleaned MariaDB" ;;
         redis)
             rm -rf "$REPO_ROOT/examples/libs/redis/redis-src" \

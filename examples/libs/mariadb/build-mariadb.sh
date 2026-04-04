@@ -193,13 +193,14 @@ fi
 if [ ! -f "$SYSROOT/lib/libpcre2-8.a" ]; then
     echo "==> Building PCRE2 for wasm32..."
     PCRE2_VERSION="10.44"
-    PCRE2_DIR="/tmp/pcre2-${PCRE2_VERSION}"
-    PCRE2_BUILD="/tmp/pcre2-wasm-build"
+    PCRE2_DIR="$SCRIPT_DIR/pcre2-${PCRE2_VERSION}"
+    PCRE2_BUILD="$SCRIPT_DIR/pcre2-wasm-build"
 
-    if [ ! -d "$PCRE2_DIR" ]; then
-        curl -fsSL "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-${PCRE2_VERSION}/pcre2-${PCRE2_VERSION}.tar.gz" -o "/tmp/pcre2.tar.gz"
-        tar xzf "/tmp/pcre2.tar.gz" -C /tmp
-        rm /tmp/pcre2.tar.gz
+    if [ ! -f "$PCRE2_DIR/CMakeLists.txt" ]; then
+        rm -rf "$PCRE2_DIR"
+        curl -fsSL "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-${PCRE2_VERSION}/pcre2-${PCRE2_VERSION}.tar.gz" -o "$SCRIPT_DIR/pcre2.tar.gz"
+        tar xzf "$SCRIPT_DIR/pcre2.tar.gz" -C "$SCRIPT_DIR"
+        rm "$SCRIPT_DIR/pcre2.tar.gz"
     fi
 
     rm -rf "$PCRE2_BUILD"

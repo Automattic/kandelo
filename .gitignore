@@ -49,6 +49,8 @@ examples/libs/mariadb/mariadb-host-build/
 examples/libs/mariadb/mariadb-cross-build/
 examples/libs/mariadb/mariadb-install/
 examples/libs/mariadb/mariadb-glue-objs/
+examples/libs/mariadb/pcre2-*/
+examples/libs/mariadb/pcre2-wasm-build/
 
 # MariaDB data directory
 examples/mariadb/data/
