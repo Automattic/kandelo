@@ -45,11 +45,20 @@ impl PtyPair {
     /// Process a byte through the line discipline (for master→slave input).
     /// Returns echo bytes that should be appended to the output buffer (master read side).
     pub fn process_master_input(&mut self, byte: u8) {
+        let opost = self.terminal.c_oflag & crate::terminal::OPOST != 0;
+        let onlcr = self.terminal.c_oflag & crate::terminal::ONLCR != 0;
+
         if self.terminal.is_canonical() {
             let echo = self.terminal.process_input_byte(byte);
             // Echo bytes go to the output buffer (master reads them back)
+            // Apply OPOST/ONLCR to echo just like slave_write does
             for &b in &echo {
-                self.output_buf.push_back(b);
+                if opost && onlcr && b == b'\n' {
+                    self.output_buf.push_back(b'\r');
+                    self.output_buf.push_back(b'\n');
+                } else {
+                    self.output_buf.push_back(b);
+                }
             }
             // Cooked data goes to the input buffer (slave reads it)
             // Note: process_input_byte puts completed lines in cooked_buffer
@@ -57,7 +66,12 @@ impl PtyPair {
             // Raw mode: pass through directly to slave
             self.input_buf.push_back(byte);
             if self.terminal.c_lflag & crate::terminal::ECHO != 0 {
-                self.output_buf.push_back(byte);
+                if opost && onlcr && byte == b'\n' {
+                    self.output_buf.push_back(b'\r');
+                    self.output_buf.push_back(b'\n');
+                } else {
+                    self.output_buf.push_back(byte);
+                }
             }
         }
     }
@@ -258,7 +272,7 @@ mod tests {
         // Master should have echo data
         assert!(pty.master_has_data());
         let n = pty.master_read(&mut buf);
-        assert_eq!(&buf[..n], b"hi\n"); // echo of typed characters
+        assert_eq!(&buf[..n], b"hi\r\n"); // echo with ONLCR: \n → \r\n
 
         reset_table();
     }
