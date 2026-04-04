@@ -5,6 +5,7 @@
 # Usage:
 #   ./run.sh build [target...]    Build specific targets (or all)
 #   ./run.sh rebuild [target...]  Force-rebuild (clean + build)
+#   ./run.sh clean [target...]    Remove build artifacts
 #   ./run.sh run <example> [args] Run a Node.js example
 #   ./run.sh browser [args]       Start the Vite browser dev server
 #   ./run.sh list                 Show available targets and examples
@@ -46,6 +47,8 @@ has_coreutils() { [ -f "$REPO_ROOT/examples/libs/coreutils/bin/coreutils.wasm" ]
 has_grep()      { [ -f "$REPO_ROOT/examples/libs/grep/bin/grep.wasm" ]; }
 has_sed()       { [ -f "$REPO_ROOT/examples/libs/sed/bin/sed.wasm" ]; }
 has_redis()     { [ -f "$REPO_ROOT/examples/libs/redis/bin/redis-server.wasm" ]; }
+has_cpython()   { [ -f "$REPO_ROOT/examples/libs/cpython/bin/python.wasm" ]; }
+has_python_bundle() { [ -f "$REPO_ROOT/examples/browser/public/python-bundle.json" ]; }
 has_dlopen()    { [ -f "$REPO_ROOT/examples/dlopen/hello-lib.so" ] && \
                   [ -f "$REPO_ROOT/examples/dlopen/main.wasm" ]; }
 
@@ -269,6 +272,29 @@ build_redis() {
     fi
 }
 
+build_cpython() {
+    need_kernel
+    need_sdk
+    if ! has_cpython; then
+        step "Building CPython 3.13"
+        bash "$REPO_ROOT/examples/libs/cpython/build-cpython.sh"
+        info "CPython built"
+    else
+        info "CPython"
+    fi
+}
+
+build_python_bundle() {
+    build_cpython
+    if ! has_python_bundle; then
+        step "Building Python stdlib browser bundle"
+        bash "$REPO_ROOT/examples/browser/scripts/build-python-bundle.sh"
+        info "Python bundle built"
+    else
+        info "Python bundle"
+    fi
+}
+
 build_dlopen() {
     need_sysroot
     if ! has_dlopen; then
@@ -297,6 +323,8 @@ build_target() {
         sed)        build_sed ;;
         mariadb)    build_mariadb ;;
         redis)      build_redis ;;
+        cpython)    build_cpython ;;
+        python-bundle) build_python_bundle ;;
         wordpress)  build_wordpress ;;
         wp-bundle)  build_wp_bundle ;;
         dlopen)     build_dlopen ;;
@@ -320,6 +348,8 @@ build_all() {
     build_php_fpm
     build_mariadb
     build_redis
+    build_cpython
+    build_python_bundle
     build_wordpress
     build_wp_bundle
     build_dlopen
@@ -390,6 +420,16 @@ clean_target() {
             rm -rf "$REPO_ROOT/examples/libs/redis/redis-src" \
                    "$REPO_ROOT/examples/libs/redis/bin"
             warn "Cleaned Redis" ;;
+        cpython)
+            rm -rf "$REPO_ROOT/examples/libs/cpython/cpython-src" \
+                   "$REPO_ROOT/examples/libs/cpython/cpython-host-build" \
+                   "$REPO_ROOT/examples/libs/cpython/cpython-cross-build" \
+                   "$REPO_ROOT/examples/libs/cpython/cpython-install" \
+                   "$REPO_ROOT/examples/libs/cpython/bin"
+            warn "Cleaned CPython" ;;
+        python-bundle)
+            rm -f "$REPO_ROOT/examples/browser/public/python-bundle.json"
+            warn "Cleaned Python bundle" ;;
         wordpress)
             rm -rf "$REPO_ROOT/examples/wordpress/wordpress"
             warn "Cleaned WordPress" ;;
@@ -401,7 +441,7 @@ clean_target() {
                   "$REPO_ROOT/examples/dlopen/main.wasm"
             warn "Cleaned dlopen" ;;
         all)
-            for t in kernel sysroot host programs dash coreutils grep sed nginx php php-fpm mariadb redis wordpress wp-bundle dlopen; do
+            for t in kernel sysroot host programs dash coreutils grep sed nginx php php-fpm mariadb redis cpython python-bundle wordpress wp-bundle dlopen; do
                 clean_target "$t"
             done ;;
         *)  err "Unknown clean target: $target"; exit 1 ;;
@@ -420,6 +460,19 @@ cmd_build() {
     fi
     echo ""
     info "Build complete"
+}
+
+cmd_clean() {
+    if [ $# -eq 0 ]; then
+        err "Usage: $0 clean <target...>"
+        err "Use 'clean all' to clean everything"
+        exit 1
+    fi
+    for t in "$@"; do
+        clean_target "$t"
+    done
+    echo ""
+    info "Clean complete"
 }
 
 cmd_rebuild() {
@@ -520,6 +573,7 @@ cmd_browser() {
     #   nginx:  kernel + nginx
     #   nginx-php: kernel + nginx + php-fpm
     #   mariadb: kernel + mariadb
+    #   python: kernel + cpython + python-bundle
     #   wordpress: kernel + nginx + php-fpm + wp-bundle
     #   redis: kernel + redis
     #   lamp: kernel + nginx + php-fpm + mariadb + wp-bundle
@@ -535,6 +589,7 @@ cmd_browser() {
     build_php_fpm
     build_mariadb
     build_redis
+    build_python_bundle
     build_wp_bundle
 
     # Install browser deps if needed
@@ -642,10 +697,18 @@ cmd_list() {
     echo "  php-fpm     PHP-FPM Wasm binary                   $(has_php_fpm && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  mariadb     MariaDB 10.5 Wasm binary              $(has_mariadb && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  redis       Redis 7.2 Wasm binary                 $(has_redis && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  cpython     CPython 3.13 Wasm binary              $(has_cpython && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  python-bundle  Python stdlib browser bundle       $(has_python_bundle && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  wordpress   WordPress + SQLite plugin             $(has_wordpress && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  wp-bundle   WordPress browser bundle              $(has_wp_bundle && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  dlopen      dlopen shared library example          $(has_dlopen && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  all         Build everything"
+    echo ""
+    echo ""
+    echo "${BOLD}Clean/rebuild:${RESET}"
+    echo "  ./run.sh clean <target...>           Remove build artifacts"
+    echo "  ./run.sh clean all                   Remove all build artifacts"
+    echo "  ./run.sh rebuild <target...>         Clean + rebuild specific targets"
     echo ""
     echo "${BOLD}Run examples:${RESET}"
     echo "  ./run.sh run shell                   Interactive shell (dash + coreutils + grep + sed)"
@@ -677,6 +740,7 @@ cmd_list() {
 case "${1:-list}" in
     build)    cmd_build "${@:2}" ;;
     rebuild)  cmd_rebuild "${@:2}" ;;
+    clean)    cmd_clean "${@:2}" ;;
     run)      cmd_run "${@:2}" ;;
     browser)  cmd_browser "${@:2}" ;;
     test)     cmd_test "${@:2}" ;;
