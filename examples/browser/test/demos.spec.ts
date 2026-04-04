@@ -155,22 +155,61 @@ test("@slow nginx-php: starts and serves PHP page", async ({ page }) => {
 
 test("@slow mariadb: bootstraps and accepts queries", async ({ page }) => {
   test.setTimeout(300_000);
+
+  // Capture console for diagnostics on failure
+  const consoleMessages: string[] = [];
+  page.on("console", (msg) => {
+    consoleMessages.push(`[${msg.type()}] ${msg.text()}`);
+  });
+  page.on("pageerror", (err) => {
+    consoleMessages.push(`[pageerror] ${err.message}`);
+  });
+
   await gotoOrSkip(page, "/pages/mariadb/");
 
   await page.click("#start");
 
   // Wait for MariaDB to be ready (execute button enabled)
-  await page.waitForFunction(
-    () => {
-      const btn = document.getElementById("execute") as HTMLButtonElement;
-      return btn && !btn.disabled;
-    },
-    { timeout: 240_000 },
-  );
+  try {
+    await page.waitForFunction(
+      () => {
+        const btn = document.getElementById("execute") as HTMLButtonElement;
+        return btn && !btn.disabled;
+      },
+      { timeout: 240_000 },
+    );
+  } catch (e) {
+    const errors = consoleMessages.filter(m => m.includes("error") || m.includes("Error") || m.includes("timeout") || m.includes("EAGAIN"));
+    console.log("=== MARIADB CONSOLE ERRORS ===");
+    for (const msg of errors.slice(-30)) console.log(msg);
+    console.log("=== ALL CONSOLE (last 20) ===");
+    for (const msg of consoleMessages.slice(-20)) console.log(msg);
+    throw e;
+  }
 
+  // VERSION query auto-runs on startup
   const result = await page.locator("#result").textContent();
   expect(result).toContain("MariaDB");
   await assertNoError(page);
+
+  // --- CRUD verification ---
+  // CREATE TABLE
+  await page.selectOption("#examples", "create");
+  await page.click("#execute");
+  await waitForText(page, "#log", "Query OK", 30_000);
+
+  // INSERT
+  await page.selectOption("#examples", "insert");
+  await page.click("#execute");
+  await page.waitForTimeout(5000); // allow insert to complete
+
+  // SELECT
+  await page.selectOption("#examples", "select");
+  await page.click("#execute");
+  await waitForText(page, "#result", "Alice", 30_000);
+  const selectResult = await page.locator("#result").textContent();
+  expect(selectResult).toContain("Bob");
+  expect(selectResult).toContain("Charlie");
 });
 
 // ─── Redis ─────────────────────────────────────────────────────

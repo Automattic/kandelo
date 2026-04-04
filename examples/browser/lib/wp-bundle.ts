@@ -51,6 +51,12 @@ export async function loadWordPressBundle(
   onProgress?: (current: number, total: number) => void,
 ): Promise<number> {
   const response = await fetch(bundleUrl);
+  if (!response.ok) {
+    throw new Error(
+      `Failed to load WordPress bundle from ${bundleUrl} (${response.status}). ` +
+      `Run: bash examples/browser/scripts/build-wp-bundle.sh`
+    );
+  }
   const bundle: WpBundle = await response.json();
 
   const createdDirs = new Set<string>();
