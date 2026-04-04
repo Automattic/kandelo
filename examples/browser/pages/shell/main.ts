@@ -1,18 +1,20 @@
 /**
  * Shell browser demo — runs dash + GNU coreutils inside the POSIX kernel.
  * Two modes:
- *   - Interactive: terminal-like UI with prompt, type commands one at a time
+ *   - Interactive: xterm.js terminal with PTY-backed I/O (real terminal)
  *   - Batch (Script): textarea for entering a full script, click Run
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
+import { PtyTerminal } from "../../lib/pty-terminal";
 import kernelWasmUrl from "../../../../host/wasm/wasm_posix_kernel.wasm?url";
 import dashWasmUrl from "../../../../examples/libs/dash/bin/dash.wasm?url";
 import coreutilsWasmUrl from "../../../../examples/libs/coreutils/bin/coreutils.wasm?url";
 import grepWasmUrl from "../../../../examples/libs/grep/bin/grep.wasm?url";
 import sedWasmUrl from "../../../../examples/libs/sed/bin/sed.wasm?url";
+import "@xterm/xterm/css/xterm.css";
 
 // --- DOM elements ---
-const terminalEl = document.getElementById("terminal") as HTMLDivElement;
+const terminalContainer = document.getElementById("terminal") as HTMLDivElement;
 const startBtn = document.getElementById("start") as HTMLButtonElement;
 const stopBtn = document.getElementById("stop") as HTMLButtonElement;
 const snippetsEl = document.getElementById("snippets") as HTMLSelectElement;
@@ -26,7 +28,6 @@ const modeBatchBtn = document.getElementById("mode-batch") as HTMLButtonElement;
 const interactiveView = document.getElementById("interactive-view") as HTMLDivElement;
 const batchView = document.getElementById("batch-view") as HTMLDivElement;
 
-const decoder = new TextDecoder();
 const encoder = new TextEncoder();
 
 // --- Mode switching ---
@@ -170,33 +171,21 @@ function populateExecStubs(fs: import("../../lib/browser-kernel").BrowserKernel[
 // ============================================================
 
 let activeKernel: BrowserKernel | null = null;
-let activePid: number = 0;
-// Buffer for current input line being typed
-let inputBuffer = "";
-
-function appendTerminal(text: string, cls?: string) {
-  const span = document.createElement("span");
-  if (cls) span.className = cls;
-  span.textContent = text;
-  terminalEl.appendChild(span);
-  terminalEl.scrollTop = terminalEl.scrollHeight;
-}
+let activePtyTerminal: PtyTerminal | null = null;
 
 async function startInteractiveShell() {
   startBtn.disabled = true;
   stopBtn.disabled = false;
-  terminalEl.textContent = "";
-  inputBuffer = "";
+
+  // Clear the container for xterm.js
+  terminalContainer.innerHTML = "";
 
   try {
     const info = await loadBinaries();
-    if (info) appendTerminal(info, "info");
 
     setStatus("Starting shell...", "running");
 
     const kernel = new BrowserKernel({
-      onStdout: (data) => appendTerminal(decoder.decode(data)),
-      onStderr: (data) => appendTerminal(decoder.decode(data), "stderr"),
       onExec: async (_pid, path, argv, envp) => {
         return resolveExecPath(path, argv, envp);
       },
@@ -206,106 +195,53 @@ async function startInteractiveShell() {
     populateExecStubs(kernel.fs);
     activeKernel = kernel;
 
-    // Spawn dash in interactive mode (no stdin data = terminal mode)
-    const pid = 1;
-    activePid = pid;
+    // Create PTY terminal
+    const ptyTerminal = new PtyTerminal(terminalContainer, kernel);
+    activePtyTerminal = ptyTerminal;
 
-    // Use spawn but don't await — it resolves when the process exits
-    const exitPromise = kernel.spawn(dashBytes!, ["dash", "-i"], {
+    if (info) {
+      ptyTerminal.terminal.writeln(info.trimEnd());
+    }
+
+    hideStatus();
+    ptyTerminal.terminal.focus();
+
+    // Spawn dash in interactive mode with PTY
+    const exitCode = await ptyTerminal.spawn(dashBytes!, ["dash", "-i"], {
       env: [
         "HOME=/home",
         "TMPDIR=/tmp",
-        "TERM=dumb",
+        "TERM=xterm-256color",
         "LANG=en_US.UTF-8",
         "PATH=/usr/local/bin:/usr/bin:/bin",
         "PS1=$ ",
       ],
     });
 
-    hideStatus();
-    terminalEl.focus();
-
-    // Wait for process exit
-    const exitCode = await exitPromise;
-    appendTerminal(`\n[Shell exited with code ${exitCode}]\n`, "info");
+    ptyTerminal.terminal.writeln(`\r\n[Shell exited with code ${exitCode}]`);
   } catch (e) {
-    appendTerminal(`\nError: ${e}\n`, "stderr");
+    if (activePtyTerminal) {
+      activePtyTerminal.terminal.writeln(`\r\nError: ${e}`);
+    }
     setStatus(`Error: ${e}`, "error");
     console.error(e);
   } finally {
     activeKernel = null;
-    activePid = 0;
     startBtn.disabled = false;
     stopBtn.disabled = true;
   }
 }
 
 function stopInteractiveShell() {
-  if (activeKernel && activePid) {
-    // Send EOF (Ctrl+D) by closing stdin — send empty data
-    // Actually, just stop the kernel by letting it gc
-    activeKernel = null;
-    activePid = 0;
-    startBtn.disabled = false;
-    stopBtn.disabled = true;
-    appendTerminal("\n[Shell stopped]\n", "info");
+  if (activePtyTerminal) {
+    activePtyTerminal.terminal.writeln("\r\n[Shell stopped]");
+    activePtyTerminal.dispose();
+    activePtyTerminal = null;
   }
+  activeKernel = null;
+  startBtn.disabled = false;
+  stopBtn.disabled = true;
 }
-
-// Handle keyboard input on terminal
-terminalEl.addEventListener("keydown", (e: KeyboardEvent) => {
-  if (!activeKernel || !activePid) return;
-
-  if (e.key === "Enter") {
-    e.preventDefault();
-    // Characters were already sent individually — just send the newline
-    inputBuffer = "";
-    activeKernel.appendStdinData(
-      activePid,
-      encoder.encode("\n"),
-    );
-  } else if (e.key === "Backspace") {
-    e.preventDefault();
-    if (inputBuffer.length > 0) {
-      inputBuffer = inputBuffer.slice(0, -1);
-      // Send backspace character to terminal (kernel echo will handle display)
-      activeKernel.appendStdinData(
-        activePid,
-        new Uint8Array([0x7f]), // DEL character
-      );
-    }
-  } else if (e.key === "c" && e.ctrlKey) {
-    e.preventDefault();
-    // Send SIGINT (Ctrl+C) — send ETX character
-    inputBuffer = "";
-    activeKernel.appendStdinData(
-      activePid,
-      new Uint8Array([0x03]),
-    );
-  } else if (e.key === "d" && e.ctrlKey) {
-    e.preventDefault();
-    // Send EOF (Ctrl+D) — send EOT character
-    activeKernel.appendStdinData(
-      activePid,
-      new Uint8Array([0x04]),
-    );
-  } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
-    e.preventDefault();
-    inputBuffer += e.key;
-    // Send character to stdin (kernel echo will display it)
-    activeKernel.appendStdinData(
-      activePid,
-      encoder.encode(e.key),
-    );
-  }
-});
-
-// Prevent tab from leaving terminal
-terminalEl.addEventListener("keydown", (e: KeyboardEvent) => {
-  if (e.key === "Tab") {
-    e.preventDefault();
-  }
-});
 
 startBtn.addEventListener("click", startInteractiveShell);
 stopBtn.addEventListener("click", stopInteractiveShell);
@@ -319,14 +255,9 @@ snippetsEl.addEventListener("change", () => {
     files: "echo test > /tmp/f.txt && cat /tmp/f.txt",
   };
   const key = snippetsEl.value;
-  if (key && snippets[key] && activeKernel && activePid) {
-    // Type the snippet into the terminal
-    const text = snippets[key];
-    inputBuffer += text;
-    activeKernel.appendStdinData(
-      activePid,
-      encoder.encode(text),
-    );
+  if (key && snippets[key] && activePtyTerminal) {
+    // Type the snippet text followed by Enter
+    activePtyTerminal.write(snippets[key] + "\n");
   }
   snippetsEl.value = "";
 });
@@ -334,6 +265,8 @@ snippetsEl.addEventListener("change", () => {
 // ============================================================
 // Batch mode
 // ============================================================
+
+const decoder = new TextDecoder();
 
 const EXAMPLES: Record<string, string> = {
   hello: `echo "Hello from dash on WebAssembly!"

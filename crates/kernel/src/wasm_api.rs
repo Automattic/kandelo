@@ -7343,3 +7343,134 @@ pub extern "C" fn kernel_get_fd_send_pipe_idx(pid: u32, fd: i32) -> i32 {
         _ => -1,
     }
 }
+
+// ── PTY host exports ──
+// These exports allow the host to create and drive PTY pairs from outside
+// the kernel's syscall channel (e.g. for browser xterm.js integration).
+
+/// Create a PTY pair and wire fds 0/1/2 of `pid` to the slave side.
+/// Returns the PTY index on success, or negative errno on failure.
+///
+/// This replaces the default CharDevice stdin/stdout/stderr with a PtySlave
+/// so that `isatty()` returns true and the process gets a real terminal.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_pty_create(pid: u32) -> i32 {
+    use crate::fd::OpenFileDescRef;
+    use crate::ofd::FileType;
+    use wasm_posix_shared::flags::O_RDWR;
+
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let proc = match table.get_mut(pid) {
+        Some(p) => p,
+        None => return -(Errno::ESRCH as i32),
+    };
+
+    // Allocate a new PTY pair
+    let pty_idx = match crate::pty::alloc_pty() {
+        Some(idx) => idx,
+        None => return -(Errno::ENOSPC as i32),
+    };
+
+    // Configure the PTY pair
+    let pty = crate::pty::get_pty(pty_idx).unwrap();
+    pty.locked = false; // unlockpt equivalent
+    pty.slave_refs = 1; // one OFD references the slave
+    pty.master_refs = 1; // host holds the master side
+
+    // Set controlling terminal
+    pty.terminal.session_id = pid as i32;
+    pty.terminal.foreground_pgid = pid as i32;
+
+    // Create a PtySlave OFD. host_handle stores pty_idx for the kernel's
+    // read/write handlers to find the right PTY pair.
+    let path = {
+        extern crate alloc;
+        use alloc::format;
+        format!("/dev/pts/{}", pty_idx).into_bytes()
+    };
+    let ofd_idx = proc.ofd_table.create(FileType::PtySlave, O_RDWR, pty_idx as i64, path);
+
+    // Close the existing CharDevice OFDs for fds 0, 1, 2
+    for fd in 0..3i32 {
+        if let Ok(entry) = proc.fd_table.get(fd) {
+            let old_ofd_ref = entry.ofd_ref.0;
+            proc.ofd_table.dec_ref(old_ofd_ref);
+        }
+    }
+
+    // Point fds 0, 1, 2 to the shared PtySlave OFD (ref_count = 3)
+    // The OFD was created with ref_count=1, so inc_ref twice more
+    proc.ofd_table.inc_ref(ofd_idx);
+    proc.ofd_table.inc_ref(ofd_idx);
+    let _ = proc.fd_table.set_at(0, OpenFileDescRef(ofd_idx), 0);
+    let _ = proc.fd_table.set_at(1, OpenFileDescRef(ofd_idx), 0);
+    let _ = proc.fd_table.set_at(2, OpenFileDescRef(ofd_idx), 0);
+
+    // Set the session ID on the process itself
+    proc.sid = pid;
+
+    pty_idx as i32
+}
+
+/// Write data from the host (master side) to a PTY's input, processing
+/// it through the line discipline. Returns bytes consumed.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_pty_master_write(pty_idx: u32, buf_ptr: *const u8, buf_len: u32) -> i32 {
+    let pty = match crate::pty::get_pty(pty_idx as usize) {
+        Some(p) => p,
+        None => return -(Errno::ENOENT as i32),
+    };
+
+    let data = unsafe { core::slice::from_raw_parts(buf_ptr, buf_len as usize) };
+    for &byte in data {
+        pty.process_master_input(byte);
+    }
+
+    // After writing input, wake any slave reader by ensuring data is available.
+    // The host is responsible for calling scheduleWakeBlockedRetries().
+    buf_len as i32
+}
+
+/// Read data from the PTY output buffer (master side reads slave's output).
+/// Returns bytes read, or 0 if the output buffer is empty.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_pty_master_read(pty_idx: u32, buf_ptr: *mut u8, buf_len: u32) -> i32 {
+    let pty = match crate::pty::get_pty(pty_idx as usize) {
+        Some(p) => p,
+        None => return -(Errno::ENOENT as i32),
+    };
+
+    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
+    pty.master_read(buf) as i32
+}
+
+/// Set the window size of a PTY and send SIGWINCH to the foreground process group.
+/// Returns 0 on success, negative errno on failure.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_pty_set_winsize(pty_idx: u32, rows: u32, cols: u32) -> i32 {
+    let pty = match crate::pty::get_pty(pty_idx as usize) {
+        Some(p) => p,
+        None => return -(Errno::ENOENT as i32),
+    };
+
+    pty.terminal.winsize = crate::terminal::WinSize {
+        ws_row: rows as u16,
+        ws_col: cols as u16,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+
+    // Send SIGWINCH to foreground process group
+    let fg_pgid = pty.terminal.foreground_pgid;
+    if fg_pgid > 0 {
+        let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+        let pids = table.pids_in_group(fg_pgid as u32);
+        for pid in pids {
+            if let Some(proc) = table.get_mut(pid) {
+                proc.signals.raise(wasm_posix_shared::signal::SIGWINCH);
+            }
+        }
+    }
+
+    0
+}

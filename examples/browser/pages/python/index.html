@@ -14,13 +14,8 @@
     button { cursor: pointer; }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
     #terminal {
-      background: #1e1e1e; color: #d4d4d4; padding: 1rem;
-      border-radius: 4px; min-height: 400px; max-height: 600px; overflow: auto;
-      white-space: pre-wrap; word-break: break-all; font-size: 0.85rem;
-      font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
-      cursor: text;
+      background: #1e1e1e; border-radius: 4px; height: 450px;
     }
-    #terminal:focus { outline: 2px solid #4a9eff; }
     .stderr { color: #f48771; }
     .info { color: #6a9955; }
     .status { margin-bottom: 1rem; padding: 0.5rem; border-radius: 4px; font-size: 0.9rem; }
@@ -90,7 +85,7 @@
         <option value="sys">import sys; print(sys.version)</option>
       </select>
     </div>
-    <div id="terminal" tabindex="0"></div>
+    <div id="terminal"></div>
   </div>
 
   <!-- Script mode -->

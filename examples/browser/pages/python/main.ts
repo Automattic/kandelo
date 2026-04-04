@@ -1,16 +1,18 @@
 /**
  * Python browser demo — CPython 3.13.3 running inside the POSIX kernel.
  * Two modes:
- *   - REPL: interactive Python prompt, type expressions one at a time
+ *   - REPL: xterm.js terminal with PTY-backed I/O (real terminal)
  *   - Script: textarea for entering a full script, click Run
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
+import { PtyTerminal } from "../../lib/pty-terminal";
 import { loadPythonBundle } from "../../lib/python-bundle";
 import kernelWasmUrl from "../../../../host/wasm/wasm_posix_kernel.wasm?url";
 import pythonWasmUrl from "../../../../examples/libs/cpython/bin/python.wasm?url";
+import "@xterm/xterm/css/xterm.css";
 
 // --- DOM elements ---
-const terminalEl = document.getElementById("terminal") as HTMLDivElement;
+const terminalContainer = document.getElementById("terminal") as HTMLDivElement;
 const startBtn = document.getElementById("start") as HTMLButtonElement;
 const stopBtn = document.getElementById("stop") as HTMLButtonElement;
 const snippetsEl = document.getElementById("snippets") as HTMLSelectElement;
@@ -80,10 +82,12 @@ async function loadBinaries(): Promise<string> {
 
 /** Initialize a kernel and load the Python stdlib bundle into its VFS. */
 async function initKernelWithStdlib(
-  onStdout: (data: Uint8Array) => void,
-  onStderr: (data: Uint8Array) => void,
+  options?: { onStdout?: (data: Uint8Array) => void; onStderr?: (data: Uint8Array) => void },
 ): Promise<BrowserKernel> {
-  const kernel = new BrowserKernel({ onStdout, onStderr });
+  const kernel = new BrowserKernel({
+    onStdout: options?.onStdout,
+    onStderr: options?.onStderr,
+  });
   await kernel.init(kernelBytes!);
 
   // Create directories Python expects
@@ -105,7 +109,7 @@ async function initKernelWithStdlib(
 const PYTHON_ENV = [
   "HOME=/home",
   "TMPDIR=/tmp",
-  "TERM=dumb",
+  "TERM=xterm-256color",
   "LANG=en_US.UTF-8",
   "PATH=/usr/local/bin:/usr/bin:/bin",
   "PYTHONHOME=/usr",
@@ -117,117 +121,62 @@ const PYTHON_ENV = [
 // ============================================================
 
 let activeKernel: BrowserKernel | null = null;
-let activePid: number = 0;
-let inputBuffer = "";
-
-function appendTerminal(text: string, cls?: string) {
-  const span = document.createElement("span");
-  if (cls) span.className = cls;
-  span.textContent = text;
-  terminalEl.appendChild(span);
-  terminalEl.scrollTop = terminalEl.scrollHeight;
-}
+let activePtyTerminal: PtyTerminal | null = null;
 
 async function startInteractiveRepl() {
   startBtn.disabled = true;
   stopBtn.disabled = false;
-  terminalEl.textContent = "";
-  inputBuffer = "";
+
+  // Clear the container for xterm.js
+  terminalContainer.innerHTML = "";
 
   try {
     const info = await loadBinaries();
-    if (info) appendTerminal(info, "info");
 
-    const kernel = await initKernelWithStdlib(
-      (data) => appendTerminal(decoder.decode(data)),
-      (data) => appendTerminal(decoder.decode(data), "stderr"),
-    );
+    const kernel = await initKernelWithStdlib();
     activeKernel = kernel;
 
+    // Create PTY terminal
+    const ptyTerminal = new PtyTerminal(terminalContainer, kernel);
+    activePtyTerminal = ptyTerminal;
+
+    if (info) {
+      ptyTerminal.terminal.writeln(info.trimEnd());
+    }
+
     setStatus("Starting Python REPL...", "running");
+    hideStatus();
+    ptyTerminal.terminal.focus();
 
-    const pid = 1;
-    activePid = pid;
-
-    // Spawn python3 in interactive mode (no stdin = terminal mode)
-    const exitPromise = kernel.spawn(pythonBytes!, ["python3", "-i"], {
+    // Spawn python3 in interactive mode with PTY
+    const exitCode = await ptyTerminal.spawn(pythonBytes!, ["python3", "-i"], {
       env: PYTHON_ENV,
     });
 
-    hideStatus();
-    terminalEl.focus();
-
-    const exitCode = await exitPromise;
-    appendTerminal(`\n[Python exited with code ${exitCode}]\n`, "info");
+    ptyTerminal.terminal.writeln(`\r\n[Python exited with code ${exitCode}]`);
   } catch (e) {
-    appendTerminal(`\nError: ${e}\n`, "stderr");
+    if (activePtyTerminal) {
+      activePtyTerminal.terminal.writeln(`\r\nError: ${e}`);
+    }
     setStatus(`Error: ${e}`, "error");
     console.error(e);
   } finally {
     activeKernel = null;
-    activePid = 0;
     startBtn.disabled = false;
     stopBtn.disabled = true;
   }
 }
 
 function stopRepl() {
-  if (activeKernel) {
-    activeKernel = null;
-    activePid = 0;
-    startBtn.disabled = false;
-    stopBtn.disabled = true;
-    appendTerminal("\n[Python stopped]\n", "info");
+  if (activePtyTerminal) {
+    activePtyTerminal.terminal.writeln("\r\n[Python stopped]");
+    activePtyTerminal.dispose();
+    activePtyTerminal = null;
   }
+  activeKernel = null;
+  startBtn.disabled = false;
+  stopBtn.disabled = true;
 }
-
-// Handle keyboard input on terminal
-terminalEl.addEventListener("keydown", (e: KeyboardEvent) => {
-  if (!activeKernel || !activePid) return;
-
-  if (e.key === "Enter") {
-    e.preventDefault();
-    inputBuffer = "";
-    // Only send newline — individual characters were already sent as typed
-    activeKernel.appendStdinData(
-      activePid,
-      encoder.encode("\n"),
-    );
-  } else if (e.key === "Backspace") {
-    e.preventDefault();
-    if (inputBuffer.length > 0) {
-      inputBuffer = inputBuffer.slice(0, -1);
-      activeKernel.appendStdinData(
-        activePid,
-        new Uint8Array([0x7f]),
-      );
-    }
-  } else if (e.key === "c" && e.ctrlKey) {
-    e.preventDefault();
-    inputBuffer = "";
-    activeKernel.appendStdinData(
-      activePid,
-      new Uint8Array([0x03]),
-    );
-  } else if (e.key === "d" && e.ctrlKey) {
-    e.preventDefault();
-    activeKernel.appendStdinData(
-      activePid,
-      new Uint8Array([0x04]),
-    );
-  } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
-    e.preventDefault();
-    inputBuffer += e.key;
-    activeKernel.appendStdinData(
-      activePid,
-      encoder.encode(e.key),
-    );
-  }
-});
-
-terminalEl.addEventListener("keydown", (e: KeyboardEvent) => {
-  if (e.key === "Tab") e.preventDefault();
-});
 
 startBtn.addEventListener("click", startInteractiveRepl);
 stopBtn.addEventListener("click", stopRepl);
@@ -241,13 +190,8 @@ snippetsEl.addEventListener("change", () => {
     sys: "import sys; print(sys.version)",
   };
   const key = snippetsEl.value;
-  if (key && snippets[key] && activeKernel && activePid) {
-    const text = snippets[key];
-    inputBuffer += text;
-    activeKernel.appendStdinData(
-      activePid,
-      encoder.encode(text),
-    );
+  if (key && snippets[key] && activePtyTerminal) {
+    activePtyTerminal.write(snippets[key] + "\n");
   }
   snippetsEl.value = "";
 });
@@ -404,10 +348,10 @@ async function runBatch() {
 
     const code = codeEl.value;
 
-    const kernel = await initKernelWithStdlib(
-      (data) => appendBatchOutput(decoder.decode(data)),
-      (data) => appendBatchOutput(decoder.decode(data), "stderr"),
-    );
+    const kernel = await initKernelWithStdlib({
+      onStdout: (data) => appendBatchOutput(decoder.decode(data)),
+      onStderr: (data) => appendBatchOutput(decoder.decode(data), "stderr"),
+    });
 
     // Write script to a file in the VFS
     const scriptPath = "/tmp/script.py";
