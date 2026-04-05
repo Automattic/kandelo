@@ -623,11 +623,12 @@ export class CentralizedKernelWorker {
     channel: ChannelInfo;
     pipeIndices: number[];
   }>();
-  /** Pending pselect6 retries — used for signal-driven wakeup */
+  /** Pending pselect6 retries — used for signal-driven wakeup and timeout tracking */
   private pendingSelectRetries = new Map<number, {
-    timer: ReturnType<typeof setImmediate>;
+    timer: any;  // setTimeout or setImmediate handle
     channel: ChannelInfo;
     origArgs: number[];
+    deadline: number;  // Date.now() deadline, -1 for infinite
   }>();
   /** Flag to coalesce cross-process wakeup microtasks */
   private wakeScheduled = false;
@@ -2008,6 +2009,8 @@ export class CentralizedKernelWorker {
 
     for (const [pid, entry] of selectEntries) {
       if (!this.processes.has(pid)) continue;
+      // Cancel both setTimeout and setImmediate handles (one will be a no-op)
+      clearTimeout(entry.timer);
       clearImmediate(entry.timer);
       this.handlePselect6(entry.channel, entry.origArgs);
     }
@@ -2274,11 +2277,32 @@ export class CentralizedKernelWorker {
       // Resolve which pipe indices the polled fds map to (for event-driven wakeup)
       const pipeIndices = this.resolvePollPipeIndices(channel.pid, origArgs, syscallNr);
 
+      // For finite timeout, track the deadline so we return 0 (timeout) when it
+      // expires instead of retrying forever. The nfds=0 case (pure sleep) is
+      // optimized to skip retries entirely — just wait for the deadline.
+      const nfds = origArgs[1]; // poll(fds, nfds, ...) / ppoll(fds, nfds, ...)
+      if (timeoutMs > 0 && nfds === 0) {
+        // Pure sleep: no fds to poll, just wait for timeout
+        const timer = setTimeout(() => {
+          this.pendingPollRetries.delete(channel.pid);
+          if (this.processes.has(channel.pid)) {
+            this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], 0, 0);
+          }
+        }, timeoutMs);
+        this.pendingPollRetries.set(channel.pid, { timer, channel, pipeIndices });
+        return;
+      }
+
+      const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : -1;
       const retryFn = () => {
         this.pendingPollRetries.delete(channel.pid);
-        if (this.processes.has(channel.pid)) {
-          this.retrySyscall(channel);
+        if (!this.processes.has(channel.pid)) return;
+        // Check deadline for finite timeout
+        if (deadline > 0 && Date.now() >= deadline) {
+          this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], 0, 0);
+          return;
         }
+        this.retrySyscall(channel);
       };
       const timer = setTimeout(retryFn, 0);
       this.pendingPollRetries.set(channel.pid, { timer, channel, pipeIndices });
@@ -2294,13 +2318,16 @@ export class CentralizedKernelWorker {
       const timeoutPtr = origArgs[2]; // pointer to timespec in process memory
       if (timeoutPtr === 0) {
         // NULL timeout = wait indefinitely. Use long retry interval since
-        // signals arrive via kernel_kill, not organically. Short retries cause
-        // a tight loop that starves other threads.
+        // signals arrive via kernel_kill, not organically. In the browser,
+        // short retries starve the event loop when multiple threads are active
+        // (e.g. MariaDB's signal handler thread). 500ms is adequate because
+        // cross-process signals are rare, and immediate delivery for kill()
+        // works via scheduleWakeBlockedRetries.
         setTimeout(() => {
           if (this.processes.has(channel.pid)) {
             this.retrySyscall(channel);
           }
-        }, 50);
+        }, 500);
         return;
       }
       const pv = new DataView(channel.memory.buffer, timeoutPtr);
@@ -2734,14 +2761,36 @@ export class CentralizedKernelWorker {
         this.completeChannel(channel, SYS_PSELECT6, origArgs, undefined, 0, 0);
         return;
       }
+
+      const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : -1;
+
+      // For select(0, NULL, NULL, NULL, &timeout) — nfds=0, pure sleep.
+      // Just wait for the timeout instead of retrying in a tight loop.
+      // Still registered in pendingSelectRetries so wakeAllBlockedRetries
+      // can check for signals (EINTR).
+      if (timeoutMs > 0 && nfds === 0) {
+        const timer = setTimeout(() => {
+          this.pendingSelectRetries.delete(channel.pid);
+          if (this.processes.has(channel.pid)) {
+            this.completeChannel(channel, SYS_PSELECT6, origArgs, undefined, 0, 0);
+          }
+        }, timeoutMs);
+        this.pendingSelectRetries.set(channel.pid, { timer, channel, origArgs, deadline });
+        return;
+      }
+
+      // For finite timeout with actual fds, track the deadline
       const retryFn = () => {
         this.pendingSelectRetries.delete(channel.pid);
-        if (this.processes.has(channel.pid)) {
-          this.handlePselect6(channel, origArgs);
+        if (!this.processes.has(channel.pid)) return;
+        if (deadline > 0 && Date.now() >= deadline) {
+          this.completeChannel(channel, SYS_PSELECT6, origArgs, undefined, 0, 0);
+          return;
         }
+        this.handlePselect6(channel, origArgs);
       };
       const timer = setImmediate(retryFn);
-      this.pendingSelectRetries.set(channel.pid, { timer, channel, origArgs });
+      this.pendingSelectRetries.set(channel.pid, { timer, channel, origArgs, deadline });
       return;
     }
 
