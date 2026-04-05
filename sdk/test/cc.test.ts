@@ -28,20 +28,20 @@ describe('buildClangArgs', () => {
     expect(args).toContain('--target=wasm32-unknown-unknown');
     expect(args).toContain('-Wl,--entry=_start');
     expect(args).toContain('-Wl,--import-memory');
-    expect(args.join(' ')).toContain('syscall_glue.c');
+    expect(args.join(' ')).toContain('channel_syscall.c');
     expect(args.join(' ')).toContain('compiler_rt.c');
     expect(args.join(' ')).toContain('crt1.o');
     expect(args.join(' ')).toContain('libc.a');
   });
 
-  it('link-only: object files without -c get link flags but not compile-only flags', () => {
+  it('link-only: object files without -c get link flags plus compile flags for glue', () => {
     const args = buildClangArgs(['foo.o', 'bar.o', '-o', 'out.wasm'], toolchain);
     expect(args).toContain('-Wl,--entry=_start');
     expect(args.join(' ')).toContain('libc.a');
     expect(args).toContain('--target=wasm32-unknown-unknown');
-    // Compile-only flags should not be present in link-only mode
-    expect(args).not.toContain('-fno-exceptions');
-    expect(args).not.toContain('-fno-trapping-math');
+    // Compile flags are present because glue .c files are compiled during linking
+    expect(args).toContain('-fno-exceptions');
+    expect(args.join(' ')).toContain('channel_syscall.c');
   });
 
   it('preprocess-only: no link flags', () => {

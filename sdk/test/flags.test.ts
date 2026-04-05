@@ -9,16 +9,16 @@ describe('filterArgs', () => {
   });
 
   it('silently removes ignored flags', () => {
-    const result = filterArgs(['-O2', '-pthread', '-fPIC', '-ldl', 'main.c']);
+    const result = filterArgs(['-O2', '-pthread', '-fPIE', '-pie', 'main.c']);
     expect(result.filtered).toEqual(['-O2', 'main.c']);
     expect(result.warnings).toEqual([]);
   });
 
-  it('warns on -shared but removes it', () => {
-    const result = filterArgs(['-shared', 'foo.o']);
+  it('warns on -dynamiclib but removes it', () => {
+    const result = filterArgs(['-dynamiclib', 'foo.o']);
     expect(result.filtered).toEqual(['foo.o']);
     expect(result.warnings.length).toBe(1);
-    expect(result.warnings[0]).toContain('-shared');
+    expect(result.warnings[0]).toContain('-dynamiclib');
   });
 
   it('removes -Wl,-rpath,/some/path', () => {
