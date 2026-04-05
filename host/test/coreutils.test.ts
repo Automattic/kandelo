@@ -154,8 +154,7 @@ describe.skipIf(!hasCoreutils)("GNU coreutils", () => {
     expect(result.stdout.trim()).toBe("line3\nline4");
   });
 
-  // seq uses floating-point math (strtod/isfinite) that currently hangs — skip for now
-  it.skip("seq generates sequence", async () => {
+  it("seq generates sequence", async () => {
     const result = await runCentralizedProgram({
       programPath: coreutilsBinary,
       argv: ["seq", "1", "5"],

@@ -933,6 +933,126 @@ fp128 __floatunsitf(unsigned int a) {
     return f64_to_fp128((double)a);
 }
 
+/* Convert unsigned 64-bit integer to fp128 (exact — fp128 has 113-bit significand) */
+fp128 __floatunditf(unsigned long long a) {
+    if (a == 0) {
+        fp128_bits out;
+        out.u[0] = 0;
+        out.u[1] = 0;
+        fp128 result;
+        memcpy(&result, &out, sizeof(result));
+        return result;
+    }
+
+    /* Find the position of the highest set bit */
+    int lz = 0;
+    uint64_t x = a;
+    if (x <= 0x00000000FFFFFFFFULL) { lz += 32; x <<= 32; }
+    if (x <= 0x0000FFFFFFFFFFFFULL) { lz += 16; x <<= 16; }
+    if (x <= 0x00FFFFFFFFFFFFFFULL) { lz += 8;  x <<= 8;  }
+    if (x <= 0x0FFFFFFFFFFFFFFFULL) { lz += 4;  x <<= 4;  }
+    if (x <= 0x3FFFFFFFFFFFFFFFULL) { lz += 2;  x <<= 2;  }
+    if (x <= 0x7FFFFFFFFFFFFFFFULL) { lz += 1; }
+    int msb = 63 - lz; /* bit position of highest set bit (0-based) */
+
+    /* Exponent: value is a = significand * 2^msb, biased exp = msb + 16383 */
+    uint64_t exp128 = (uint64_t)(msb + 16383);
+
+    /* Remove the implicit leading 1 bit, leaving msb fraction bits.
+     * We need to place these into the 112-bit fraction field.
+     * Fraction: hi[47:0] = bits [111:64], lo = bits [63:0]. */
+    uint64_t val = a & ~(1ULL << msb); /* clear implicit bit */
+
+    /* val has 'msb' significant bits. Shift left to fill 112-bit fraction.
+     * shift_amount = 112 - msb */
+    fp128_bits out;
+    int shift = 112 - msb;
+    if (shift >= 64) {
+        out.u[1] = val << (shift - 64);
+        out.u[0] = 0;
+    } else if (shift > 0) {
+        out.u[1] = val >> (64 - shift);
+        out.u[0] = val << shift;
+    } else {
+        /* shift == 0: msb == 112, impossible for 64-bit input */
+        out.u[1] = 0;
+        out.u[0] = val;
+    }
+
+    /* Mask fraction into hi, combine with sign (0) and exponent */
+    out.u[1] = (exp128 << 48) | (out.u[1] & 0x0000FFFFFFFFFFFFULL);
+
+    fp128 result;
+    memcpy(&result, &out, sizeof(result));
+    return result;
+}
+
+/* Convert signed 64-bit integer to fp128 (exact) */
+fp128 __floatditf(long long a) {
+    if (a == 0) {
+        fp128_bits out;
+        out.u[0] = 0;
+        out.u[1] = 0;
+        fp128 result;
+        memcpy(&result, &out, sizeof(result));
+        return result;
+    }
+
+    uint32_t sign = 0;
+    unsigned long long ua;
+    if (a < 0) {
+        sign = 1;
+        /* Handle INT64_MIN carefully: -(-2^63) overflows, but (unsigned)-2^63 = 2^63 */
+        ua = (unsigned long long)(-(a + 1)) + 1ULL;
+    } else {
+        ua = (unsigned long long)a;
+    }
+
+    /* Use unsigned conversion, then set sign bit */
+    fp128 tmp = __floatunditf(ua);
+    if (sign) {
+        fp128_bits bits;
+        memcpy(&bits, &tmp, sizeof(bits));
+        bits.u[1] |= (1ULL << 63);
+        memcpy(&tmp, &bits, sizeof(tmp));
+    }
+    return tmp;
+}
+
+/* Convert fp128 to unsigned 64-bit integer (truncate toward zero, clamp negatives to 0) */
+unsigned long long __fixunstfdi(fp128 a) {
+    fp128_bits ua;
+    memcpy(&ua, &a, sizeof(ua));
+
+    uint32_t sign = (ua.u[1] >> 63) & 1;
+    int32_t exp = (ua.u[1] >> 48) & 0x7FFF;
+    uint128_t_ sig = { ua.u[0], ua.u[1] & 0x0000FFFFFFFFFFFFULL };
+
+    if (exp == 0) return 0; /* zero or subnormal → 0 */
+    if (sign) return 0;     /* negative → 0 for unsigned */
+    if (exp == 0x7FFF) return 0; /* NaN/Inf → 0 (undefined behavior) */
+
+    /* Add implicit bit */
+    sig = u128_or(sig, u128_shl(u128_from64(1), FP128_FRAC_BITS));
+
+    int32_t unbiased = exp - FP128_EXP_BIAS;
+    if (unbiased < 0) return 0;
+    if (unbiased >= 64) return 0xFFFFFFFFFFFFFFFFULL; /* overflow → saturate */
+
+    /* sig has implicit bit at position 112. Shift to get integer value. */
+    int shift = FP128_FRAC_BITS - unbiased; /* 112 - unbiased */
+    uint64_t result;
+    if (shift >= 64) {
+        result = sig.hi >> (shift - 64);
+    } else if (shift > 0) {
+        result = (sig.hi << (64 - shift)) | (sig.lo >> shift);
+    } else {
+        result = sig.lo << (-shift);
+    }
+
+    return result;
+}
+
 /* ===== Public API: Comparisons ===== */
 
 /* Proper fp128 comparison — returns -1, 0, or 1.
