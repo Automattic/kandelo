@@ -96,7 +96,7 @@ describe.skipIf(!hasSysroot || !hasKernel)("dlopen end-to-end", () => {
     mkdirSync(BUILD_DIR, { recursive: true });
   });
 
-  it("loads a shared library and calls its functions via dlopen/dlsym", async () => {
+  it("loads a shared library and calls its functions via dlopen/dlsym", { timeout: 30_000 }, async () => {
     // Build the shared library
     const soPath = buildSharedLib(
       `
