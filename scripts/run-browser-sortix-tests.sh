@@ -39,7 +39,7 @@ BASIC_EXPECTED_FAIL=(
     "unistd/execl" "unistd/execle" "unistd/execlp" "unistd/execv"
     "unistd/execve" "unistd/execvp" "unistd/fexecve"
     "stdlib/system"
-    "signal/sigaltstack"
+    # (signal/sigaltstack now passes — glue stack pointer swap for SA_ONSTACK)
     "aio/aio_fsync"
     "pthread/pthread_barrierattr_setpshared" "pthread/pthread_cancel"
     "pthread/pthread_cleanup_pop" "pthread/pthread_cleanup_push"
@@ -47,31 +47,21 @@ BASIC_EXPECTED_FAIL=(
     "pthread/pthread_create"
     "signal/pthread_kill"
     "threads/thrd_create"
-    "pthread/pthread_attr_getstack"
+    # (pthread_attr_getstack now passes)
     "pthread/pthread_attr_setinheritsched"
-    # (pthread clock-aware waits now pass — delegate to timed variants)
-    "pthread/pthread_mutex_getprioceiling" "pthread/pthread_mutex_setprioceiling"
-    "pthread/pthread_mutexattr_getprioceiling" "pthread/pthread_mutexattr_setprioceiling"
+    # (pthread prioceiling now passes — override musl ENOSYS stubs)
     "pthread/pthread_mutexattr_setpshared"
     "pthread/pthread_setcancelstate"
-    # (semaphore/sem_clockwait now passes — delegates to sem_timedwait)
-    "termios/tcdrain" "termios/tcflow" "termios/tcflush" "termios/tcgetattr"
-    "termios/tcgetsid" "termios/tcgetwinsize" "termios/tcsendbreak"
-    "termios/tcsetattr" "termios/tcsetwinsize"
-    "unistd/tcgetpgrp" "unistd/tcsetpgrp" "unistd/ttyname" "unistd/ttyname_r"
-    "stdlib/ptsname" "stdlib/ptsname_r" "stdlib/unlockpt"
-    # (net_if now passes — synthetic loopback interface implementation)
-    # (dirent/posix_getdents now passes — real posix_getdents implementation)
+    # (terminal/PTY tests now pass — full PTY support in PR #181)
     "stdio/pclose" "stdio/popen"
-    # (sys_mman/posix_mem_offset, posix_typed_mem_get_info, posix_typed_mem_open now pass — stubs)
     "strings/ffsll"
     "spawn/posix_spawn" "spawn/posix_spawnp"
     "spawn/posix_spawn_file_actions_addchdir" "spawn/posix_spawn_file_actions_addclose"
     "spawn/posix_spawn_file_actions_adddup2" "spawn/posix_spawn_file_actions_addfchdir"
     "spawn/posix_spawn_file_actions_addopen" "spawn/posix_spawn_file_actions_init"
-    # (posix_spawnattr_getschedparam/getschedpolicy now pass — override musl ENOSYS stubs)
+    # (posix_spawnattr_getschedparam/getschedpolicy/setschedpolicy now pass)
     "spawn/posix_spawnattr_setflags" "spawn/posix_spawnattr_setpgroup"
-    "spawn/posix_spawnattr_setschedparam" "spawn/posix_spawnattr_setschedpolicy"
+    "spawn/posix_spawnattr_setschedparam"
     "spawn/posix_spawnattr_setsigdefault" "spawn/posix_spawnattr_setsigmask"
     "wordexp/wordexp" "wordexp/wordfree"
 )
@@ -103,8 +93,7 @@ BROWSER_BASIC_EXPECTED_FAIL=(
     # dlfcn: dynamic linking not supported in browser
     "dlfcn/dlclose" "dlfcn/dlopen" "dlfcn/dlsym"
     # (pthread_atfork now passes — fork() calls __fork_handler in channel_syscall.c)
-    # Terminal: no terminal device
-    "stdlib/grantpt" "stdlib/posix_openpt"
+    # (terminal/PTY tests now pass — grantpt, posix_openpt, ptsname, unlockpt in PR #181)
     # aio_read: timeout (needs pthread_create for aio worker thread)
     "aio/aio_read"
 )

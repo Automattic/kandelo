@@ -317,8 +317,9 @@ The wasm-posix-kernel uses a **centralized architecture**: a single kernel Wasm 
 | `/dev/stdin` | Full | Alias for `/dev/fd/0`. |
 | `/dev/stdout` | Full | Alias for `/dev/fd/1`. |
 | `/dev/stderr` | Full | Alias for `/dev/fd/2`. |
-| `/dev/tty` | Not yet | Controlling terminal — requires process-group shared state. |
-| `/dev/pts/*` | Not yet | Pseudo-terminal pairs — requires cross-process coordination. |
+| `/dev/tty` | Full | Controlling terminal. Opens the session's controlling PTY slave (ENXIO if none). |
+| `/dev/ptmx` | Full | PTY master multiplexer. `open()` allocates a new PTY pair, returns master fd. |
+| `/dev/pts/*` | Full | PTY slave devices. `posix_openpt()` + `grantpt()` + `unlockpt()` + `ptsname()`. Full line discipline, canonical/raw mode, OPOST/ONLCR, 16 terminal ioctls. |
 | `/dev/shm/*` | Not yet | POSIX shared memory — requires cross-process SharedArrayBuffer. |
 
 All virtual devices return synthetic `stat()` with `S_IFCHR | 0666`, deterministic inode numbers, and `st_dev=5`. Path interception in kernel before host delegation — no host filesystem changes needed. `access()` returns OK for all virtual devices.
