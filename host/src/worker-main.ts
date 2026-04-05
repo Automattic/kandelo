@@ -224,6 +224,7 @@ function buildImportObject(
   memory: WebAssembly.Memory,
   kernelImports: Record<string, WebAssembly.ExportValue>,
   dlopenImports?: Record<string, WebAssembly.ExportValue>,
+  getInstance?: () => WebAssembly.Instance | undefined,
 ): WebAssembly.Imports {
   const envImports: Record<string, WebAssembly.ExportValue> = { memory };
 
@@ -231,6 +232,67 @@ function buildImportObject(
   if (dlopenImports) {
     Object.assign(envImports, dlopenImports);
   }
+
+  // C++ operator new/delete fallbacks — delegate to the wasm instance's malloc/free.
+  // Normally resolved by MariaDB's my_new.cc (USE_MYSYS_NEW), but kept as safety net.
+  if (getInstance) {
+    const cppMalloc = (size: number): number => {
+      const inst = getInstance();
+      const malloc = inst?.exports.malloc as ((n: number) => number) | undefined;
+      if (!malloc) return 0;
+      return malloc(size || 1);
+    };
+    const cppFree = (ptr: number): void => {
+      const inst = getInstance();
+      const free = inst?.exports.free as ((p: number) => void) | undefined;
+      if (free) free(ptr);
+    };
+    envImports._Znwm = cppMalloc;            // operator new(size_t)
+    envImports._Znam = cppMalloc;            // operator new[](size_t)
+    envImports._ZdlPv = cppFree;             // operator delete(void*)
+    envImports._ZdlPvm = cppFree;            // operator delete(void*, size_t)
+    envImports._ZdaPv = cppFree;             // operator delete[](void*)
+    envImports._ZdaPvm = cppFree;            // operator delete[](void*, size_t)
+    envImports._ZnwmRKSt9nothrow_t = cppMalloc; // operator new(size_t, nothrow)
+    envImports._ZnamRKSt9nothrow_t = cppMalloc; // operator new[](size_t, nothrow)
+  }
+
+  // C++ runtime stubs — libc++/libc++abi functions that may be imported when
+  // the wasm binary links against empty stub archives.
+  // __cxa_guard_acquire/release: thread-safe static initialization.
+  // Wasm is single-threaded per instance so no real locking needed.
+  envImports.__cxa_guard_acquire = (guardPtr: number): number => {
+    const view = new Uint8Array(memory.buffer);
+    if (view[guardPtr]) return 0; // already initialized
+    return 1; // needs initialization
+  };
+  envImports.__cxa_guard_release = (guardPtr: number): void => {
+    const view = new Uint8Array(memory.buffer);
+    view[guardPtr] = 1; // mark initialized
+  };
+  envImports.__cxa_guard_abort = (_guardPtr: number): void => { /* no-op */ };
+  envImports.__cxa_pure_virtual = (): void => {
+    throw new Error("pure virtual method called");
+  };
+  envImports.__cxa_atexit = (): number => 0; // no-op, return success
+  // __dynamic_cast: RTTI — returns dest if cast succeeds, 0 otherwise.
+  // Simplified: always return the source pointer (assume cast succeeds).
+  envImports.__dynamic_cast = (src: number): number => src;
+  // libc++ verbose abort
+  envImports._ZNSt3__122__libcpp_verbose_abortEPKcz = (): void => {
+    throw new Error("libc++: abort");
+  };
+  // std::sort specialization — sort uint64 array in-place
+  envImports['_ZNSt3__16__sortIRNS_6__lessIyyEEPyEEvT0_S5_T_'] = (
+    begin: number, end: number,
+  ): void => {
+    const view = new DataView(memory.buffer);
+    const count = (end - begin) / 8;
+    const arr: bigint[] = [];
+    for (let i = 0; i < count; i++) arr.push(view.getBigUint64(begin + i * 8, true));
+    arr.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    for (let i = 0; i < count; i++) view.setBigUint64(begin + i * 8, arr[i], true);
+  };
 
   // Stub any remaining unresolved function imports
   for (const imp of WebAssembly.Module.imports(module)) {
@@ -314,7 +376,8 @@ export async function centralizedWorkerMain(
         () => processInstance?.exports.__stack_pointer as WebAssembly.Global | undefined,
         () => processInstance ?? undefined,
       );
-      const importObject = buildImportObject(module, memory, kernelImports, dlopenImports);
+      const importObject = buildImportObject(module, memory, kernelImports, dlopenImports,
+        () => processInstance ?? undefined);
       const instance = await WebAssembly.instantiate(module, importObject);
       processInstance = instance;
 
@@ -442,7 +505,8 @@ export async function centralizedWorkerMain(
         () => processInstance?.exports.__stack_pointer as WebAssembly.Global | undefined,
         () => processInstance ?? undefined,
       );
-      const importObject = buildImportObject(module, memory, kernelImports, dlopenImports);
+      const importObject = buildImportObject(module, memory, kernelImports, dlopenImports,
+        () => processInstance ?? undefined);
       const instance = await WebAssembly.instantiate(module, importObject);
       processInstance = instance;
 
@@ -997,8 +1061,11 @@ export async function centralizedThreadWorkerMain(
     // Debug logging removed — pollutes stderr for output-based tests
 
     const kernelImports = buildKernelImports(memory, channelOffset);
-    const importObject = buildImportObject(module, memory, kernelImports);
+    let threadInstance: WebAssembly.Instance | undefined;
+    const importObject = buildImportObject(module, memory, kernelImports, undefined,
+      () => threadInstance);
     const instance = new WebAssembly.Instance(module, importObject);
+    threadInstance = instance;
 
     // Initialize Wasm TLS for this thread using the pre-allocated address.
     // __wasm_init_tls copies template data AND sets __tls_base to the given address.

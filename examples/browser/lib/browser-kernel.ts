@@ -128,7 +128,8 @@ export class BrowserKernel {
   private memfs: MemoryFileSystem;
   private io: VirtualPlatformIO;
   private processes = new Map<number, ProcessInfo>();
-  private nextPid = 1;
+  /** @internal exposed for bootstrap stdin-consumption detection */
+  nextPid = 1;
   private maxPages: number;
   private options: Required<
     Pick<BrowserKernelOptions, "maxWorkers" | "fsSize" | "env">
@@ -139,6 +140,8 @@ export class BrowserKernel {
   private exitResolvers = new Map<number, (status: number) => void>();
   /** PTY index by pid (for processes spawned with pty: true) */
   private ptyByPid = new Map<number, number>();
+  /** Thread workers per process (for terminateProcess cleanup) */
+  private threadWorkers = new Map<number, Array<{ worker: ReturnType<BrowserWorkerAdapter["createWorker"]>; channelOffset: number; tid: number }>>();
 
   // Thread channel allocator (counting down from main channel region)
   private nextThreadChannelPage: number;
@@ -577,6 +580,15 @@ export class BrowserKernel {
     this.kernelWorker.setStdinData(pid, data);
   }
 
+  /**
+   * Check if a process's finite stdin buffer has been fully consumed.
+   * Returns true when the process has read all data provided via setStdinData/spawn stdin option.
+   */
+  isStdinConsumed(pid: number): boolean {
+    const kw = this.kernelWorker as any;
+    return kw.stdinFinite.has(pid) && !kw.stdinBuffers.has(pid);
+  }
+
   /** Get the underlying CentralizedKernelWorker (for advanced use) */
   get worker(): CentralizedKernelWorker {
     return this.kernelWorker;
@@ -610,6 +622,43 @@ export class BrowserKernel {
     const ptyIdx = this.ptyByPid.get(pid);
     if (ptyIdx === undefined) return;
     this.kernelWorker.onPtyOutput(ptyIdx, callback);
+  }
+
+  /**
+   * Terminate a specific process and all its threads.
+   * Resolves the exit promise with the given status code.
+   */
+  async terminateProcess(pid: number, status = -1): Promise<void> {
+    // Terminate thread workers
+    const threads = this.threadWorkers.get(pid);
+    if (threads) {
+      for (const t of threads) {
+        await t.worker.terminate().catch(() => {});
+        try {
+          this.kernelWorker.notifyThreadExit(pid, t.tid);
+          this.kernelWorker.removeChannel(pid, t.channelOffset);
+        } catch {}
+      }
+      this.threadWorkers.delete(pid);
+    }
+
+    // Terminate main process worker
+    const info = this.processes.get(pid);
+    if (info?.worker) {
+      await info.worker.terminate().catch(() => {});
+    }
+
+    // Unregister from kernel
+    try {
+      this.kernelWorker.unregisterProcess(pid);
+    } catch {}
+
+    this.processes.delete(pid);
+
+    // Resolve exit promise
+    const resolver = this.exitResolvers.get(pid);
+    this.exitResolvers.delete(pid);
+    if (resolver) resolver(status);
   }
 
   /** Destroy the kernel and release all resources. */
@@ -758,15 +807,29 @@ export class BrowserKernel {
     };
 
     const threadWorker = this.workerAdapter.createWorker(threadInitData);
+    if (!this.threadWorkers.has(pid)) this.threadWorkers.set(pid, []);
+    const threadEntry = { worker: threadWorker, channelOffset: threadChannelOffset, tid };
+    this.threadWorkers.get(pid)!.push(threadEntry);
+
     threadWorker.on("message", (msg: unknown) => {
       const m = msg as WorkerToHostMessage;
       if (m.type === "thread_exit") {
         threadWorker.terminate().catch(() => {});
+        const threads = this.threadWorkers.get(pid);
+        if (threads) {
+          const idx = threads.indexOf(threadEntry);
+          if (idx >= 0) threads.splice(idx, 1);
+        }
       }
     });
     threadWorker.on("error", () => {
       this.kernelWorker.notifyThreadExit(pid, tid);
       this.kernelWorker.removeChannel(pid, threadChannelOffset);
+      const threads = this.threadWorkers.get(pid);
+      if (threads) {
+        const idx = threads.indexOf(threadEntry);
+        if (idx >= 0) threads.splice(idx, 1);
+      }
     });
 
     return tid;

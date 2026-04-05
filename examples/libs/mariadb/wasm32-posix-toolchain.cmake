@@ -167,6 +167,10 @@ set(HAVE_BACKTRACE_SYMBOLS_FD 0 CACHE INTERNAL "")
 set(HAVE_ACCEPT4 0 CACHE INTERNAL "")
 # Note: musl provides dl stubs; keep HAVE_DLOPEN default (1) to avoid Dl_info conflict
 set(HAVE_ABI_CXA_DEMANGLE 0 CACHE INTERNAL "")
+# Force USE_MYSYS_NEW: compile my_new.cc operator new/delete using MariaDB's
+# allocator. Without this, try_compile falsely detects CXX new support
+# (static lib compile always succeeds) and the operators become unresolved imports.
+set(HAVE_CXX_NEW 0 CACHE INTERNAL "")
 set(HAVE_CRYPT 0 CACHE INTERNAL "")
 set(HAVE_CUSERID 0 CACHE INTERNAL "")
 set(HAVE_FEDISABLEEXCEPT 0 CACHE INTERNAL "")

@@ -674,6 +674,7 @@ export class CentralizedKernelWorker {
   private epollInterests = new Map<string, Array<{ fd: number; events: number; data: bigint }>>();
   /** SharedIpcTable for SysV IPC (message queues, semaphores, shared memory) */
   private ipcTable: SharedIpcTable | null = null;
+  private lockTable: SharedLockTable | null = null;
   /** Per-process shared memory mappings: pid → Map<addr, {segId, size}> */
   private shmMappings = new Map<number, Map<number, { segId: number; size: number }>>();
   /** POSIX message queue table */
@@ -838,8 +839,8 @@ export class CentralizedKernelWorker {
 
     // Register a SharedLockTable so host_fcntl_lock can handle advisory locks
     // (including OFD locks) within the centralized kernel.
-    const lockTable = SharedLockTable.create();
-    this.kernel.registerSharedLockTable(lockTable.getBuffer());
+    this.lockTable = SharedLockTable.create();
+    this.kernel.registerSharedLockTable(this.lockTable.getBuffer());
 
     // Register a SharedIpcTable so SysV IPC (msgget/msgsnd/msgrcv, semget/semop,
     // shmget/shmat/shmdt) works across processes.
@@ -1091,6 +1092,15 @@ export class CentralizedKernelWorker {
       if (key.startsWith(`${pid}:`)) {
         this.epollInterests.delete(key);
       }
+    }
+
+    // Release all advisory file locks held by this process.
+    // Force-reset the spinlock first: a terminated worker may have been holding it,
+    // and Atomics.wait is not allowed on the browser main thread.
+    if (this.lockTable) {
+      const lockBuf = this.lockTable.getBuffer();
+      Atomics.store(new Int32Array(lockBuf), 0, 0); // force-release spinlock
+      this.lockTable.removeLocksByPid(pid);
     }
 
     // Remove from kernel process table
