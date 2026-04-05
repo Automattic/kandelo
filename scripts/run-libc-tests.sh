@@ -40,9 +40,6 @@ REGRESSION_EXPECTED_FAIL=(
     tls_get_new-dtv             # requires dlopen TLS (dynamic TLS not supported)
 )
 
-# Tests that need legacy Wasm exception handling (exnref unsupported in Node.js 22).
-USE_LEGACY_EH=(setjmp)
-
 # ── Helper: check if a test is in an expected-failure list ──
 
 is_expected_fail() {
@@ -86,7 +83,7 @@ CFLAGS_BASE=(
     -matomics -mbulk-memory
     -fno-trapping-math
     -mllvm -wasm-enable-sjlj
-    -mllvm -wasm-use-legacy-eh=false
+    -mllvm -wasm-use-legacy-eh=true
     -D_GNU_SOURCE
 )
 CFLAGS=("${CFLAGS_BASE[@]}" -I"$LIBC_TEST/src/common")
@@ -180,13 +177,7 @@ build_functional() {
     local wasm="$BUILD_DIR/functional/${test_name}.wasm"
     mkdir -p "$BUILD_DIR/functional"
 
-    local -a cflags=("${CFLAGS[@]}")
-    # Use legacy EH for tests that emit exnref (unsupported in Node.js 22)
-    if is_expected_fail "$test_name" "${USE_LEGACY_EH[@]}"; then
-        cflags=("${cflags[@]/-wasm-use-legacy-eh=false/-wasm-use-legacy-eh=true}")
-    fi
-
-    "$CC" "${cflags[@]}" \
+    "$CC" "${CFLAGS[@]}" \
         "$src" "${COMMON_SRCS[@]}" "${LINK_FLAGS[@]}" \
         -o "$wasm" 2>/tmp/libc-test-build-err.txt
     asyncify_wasm "$wasm"

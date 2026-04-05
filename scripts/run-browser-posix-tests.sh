@@ -72,7 +72,7 @@ CFLAGS=(
     -matomics -mbulk-memory
     -fno-trapping-math
     -mllvm -wasm-enable-sjlj
-    -mllvm -wasm-use-legacy-eh=false
+    -mllvm -wasm-use-legacy-eh=true
     -D_GNU_SOURCE
     -D_POSIX_C_SOURCE=200112L
     -I"$POSIX_TEST/include"

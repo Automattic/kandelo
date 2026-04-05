@@ -60,7 +60,6 @@ BROWSER_REGRESSION_EXPECTED_FAIL=(
 )
 BROWSER_MATH_EXPECTED_FAIL=()
 
-USE_LEGACY_EH=(setjmp)
 
 # ── Helpers ──────────────────────────────────────────────────────
 
@@ -97,7 +96,7 @@ CFLAGS_BASE=(
     -matomics -mbulk-memory
     -fno-trapping-math
     -mllvm -wasm-enable-sjlj
-    -mllvm -wasm-use-legacy-eh=false
+    -mllvm -wasm-use-legacy-eh=true
     -D_GNU_SOURCE
 )
 CFLAGS=("${CFLAGS_BASE[@]}" -I"$LIBC_TEST/src/common")
@@ -180,12 +179,7 @@ build_functional() {
     local wasm="$BUILD_DIR/functional/${test_name}.wasm"
     mkdir -p "$BUILD_DIR/functional"
 
-    local -a cflags=("${CFLAGS[@]}")
-    if is_expected_fail "$test_name" "${USE_LEGACY_EH[@]}"; then
-        cflags=("${cflags[@]/-wasm-use-legacy-eh=false/-wasm-use-legacy-eh=true}")
-    fi
-
-    "$CC" "${cflags[@]}" \
+    "$CC" "${CFLAGS[@]}" \
         "$src" "${COMMON_SRCS[@]}" "${LINK_FLAGS[@]}" \
         -o "$wasm" 2>/tmp/libc-test-build-err.txt
     asyncify_wasm "$wasm"
