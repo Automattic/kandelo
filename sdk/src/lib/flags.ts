@@ -4,7 +4,7 @@ export const COMPILE_FLAGS: string[] = [
   '-mbulk-memory',
   '-mexception-handling',
   '-mllvm', '-wasm-enable-sjlj',
-  '-mllvm', '-wasm-use-legacy-eh=false',
+  '-mllvm', '-wasm-use-legacy-eh=true',
   '-fno-exceptions',
   '-fno-trapping-math',
 ];

@@ -111,7 +111,7 @@ CFLAGS_BASE=(
     -matomics -mbulk-memory
     -fno-trapping-math
     -mllvm -wasm-enable-sjlj
-    -mllvm -wasm-use-legacy-eh=false
+    -mllvm -wasm-use-legacy-eh=true
     # Tell Sortix tests this platform lacks SIGSTOP/SIGCONT and getifaddrs,
     # so they use race-based timing or skip those features instead.
     -D__sortix__
