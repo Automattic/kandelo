@@ -28,28 +28,16 @@ MATH_RELAXED_EXPECTED_FAIL=(tgamma j0 y0 y0f)  # Tests with inline checks that b
 # Tests blocked by fundamental Wasm limitations (no cancel-point asm, opaque stack,
 # no file-backed mmap for sem_open).
 FUNCTIONAL_EXPECTED_FAIL=(
-    pthread_cancel
-    # (sem_open now passes — MAP_SHARED mmap + shm_open working since PR #100)
-    # (ipc_msg/ipc_sem/ipc_shm now pass — SysV IPC wired through host-side handlers)
-    # (fcntl now passes — host handle refcounting across fork)
-    # (tls_init now passes — fixed detectChannelBaseTlsOffset for post-asyncify binaries + save/restore fallback)
-    # (popen now passes — exec CLOEXEC pipe refcount fix + dash Linux signal table + /bin/sh→dash)
-    # (spawn now passes — __stack_pointer restored in fork child + sysroot rebuilt)
-    # (vfork now passes — exec support added)
+    pthread_cancel              # no cancel-point asm (__syscall_cp_asm) for Wasm
 )
 REGRESSION_EXPECTED_FAIL=(
-    malloc-brk-fail
-    malloc-oom
-    pthread_cond_wait-cancel_ignored
-    pthread_create-oom
-    raise-race
-    setenv-oom
-    tls_get_new-dtv
-    # (fflush-exit now passes — host handle refcounting across fork)
-    # (daemon-failure now passes — initial PID changed from 1 so ppid≠1 for fork children)
-    # (execle-env now passes — exec support added)
-    # (sigaltstack now passes — glue swaps __stack_pointer to alt stack buffer)
-    # (statvfs now passes — fixed statfs64 arg layout: buf at argIndex 2)
+    malloc-brk-fail             # OOM behavior differs in Wasm linear memory
+    malloc-oom                  # OOM behavior differs in Wasm linear memory
+    pthread_cond_wait-cancel_ignored  # requires pthread_cancel
+    pthread_create-oom          # no guest-initiated pthread_create
+    raise-race                  # requires pthread_create + signal race
+    setenv-oom                  # OOM behavior differs in Wasm linear memory
+    tls_get_new-dtv             # requires dlopen TLS (dynamic TLS not supported)
 )
 
 # Tests that need legacy Wasm exception handling (exnref unsupported in Node.js 22).
