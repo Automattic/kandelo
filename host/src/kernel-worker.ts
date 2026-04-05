@@ -3782,7 +3782,16 @@ export class CentralizedKernelWorker {
     if (cwdLen <= 0) return path;
     const kernelBuf = new Uint8Array(this.kernelMemory!.buffer);
     const cwd = new TextDecoder().decode(kernelBuf.slice(this.scratchOffset, this.scratchOffset + cwdLen));
-    return cwd.endsWith("/") ? cwd + path : cwd + "/" + path;
+    const joined = cwd.endsWith("/") ? cwd + path : cwd + "/" + path;
+    // Normalize . and .. components (e.g. /data/spawn/./prog → /data/spawn/prog)
+    const parts = joined.split("/");
+    const normalized: string[] = [];
+    for (const part of parts) {
+      if (part === "." || part === "") continue;
+      if (part === ".." && normalized.length > 0) { normalized.pop(); continue; }
+      normalized.push(part);
+    }
+    return "/" + normalized.join("/");
   }
 
   /**

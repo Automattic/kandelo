@@ -44,8 +44,7 @@ BASIC_EXPECTED_FAIL=(
     "pthread/pthread_mutexattr_setpshared"
     "pthread/pthread_setcancelstate"
     "strings/ffsll"
-    # spawn addchdir/addfchdir: need CWD-aware exec resolution not yet wired
-    "spawn/posix_spawn_file_actions_addchdir" "spawn/posix_spawn_file_actions_addfchdir"
+    # (spawn addchdir/addfchdir now pass — exec path normalization fix)
 )
 
 LIMITS_EXPECTED_FAIL=()
@@ -57,8 +56,7 @@ IO_EXPECTED_FAIL=(
 
 SIGNAL_EXPECTED_FAIL=(
     # (exec-based signal tests now pass — browser exec support)
-    # sigaction-exec-flags: .unknown.N expect files not matched by .[0-9]* glob
-    "sigaction-exec-flags"
+    # (sigaction-exec-flags now passes — .unknown.* glob pattern added)
 )
 PROCESS_EXPECTED_FAIL=(
     # (fork-exec tests now pass — browser exec support)
@@ -538,7 +536,7 @@ run_runtime_suite() {
             # Check output against expect files if available
             if $has_expect; then
                 local expect_base="${test_name##*/}"
-                for expect_file in "$expect_dir/${expect_base}.posix" "$expect_dir/${expect_base}.posix."* "$expect_dir/${expect_base}."[0-9]*; do
+                for expect_file in "$expect_dir/${expect_base}.posix" "$expect_dir/${expect_base}.posix."* "$expect_dir/${expect_base}."[0-9]* "$expect_dir/${expect_base}.unknown."*; do
                     [ -f "$expect_file" ] || continue
                     local expected
                     expected=$(cat "$expect_file")
