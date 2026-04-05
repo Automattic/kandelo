@@ -119,7 +119,7 @@ The wasm-posix-kernel uses a **centralized architecture**: a single kernel Wasm 
 | `set_robust_list()` | Stub | No-op. Robust futex list tracking deferred until threading is fully tested. |
 | `futex()` | Partial | FUTEX_WAIT, FUTEX_WAKE, FUTEX_REQUEUE, FUTEX_CMP_REQUEUE, FUTEX_WAKE_OP implemented. In centralized mode, WAIT returns EAGAIN (host retries via Atomics.waitAsync). Thread workers use direct Atomics.wait. |
 | `execve()` | Full | Delegates to kernel_execve. Replaces process image. |
-| `execveat()` | Partial | Extracts path, delegates to kernel_execve. Ignores dirfd (path must be absolute or CWD-relative). |
+| `execveat()` | Full | SYS_EXECVEAT (386). Resolves fd path via `kernel_get_fd_path`. Supports AT_EMPTY_PATH for `fexecve()`. Relative paths resolved against process CWD. |
 | `fork()` (syscall) | Full | Centralized mode: glue traps to kernel via channel IPC. Kernel serializes state, host callback spawns child Worker. Returns child pid to parent, 0 to child. |
 | `vfork()` | Full | Alias for fork() in centralized mode. |
 | `clone()` | Partial | Thread-style clone (CLONE_VM\|CLONE_THREAD) supported. Centralized mode: kernel allocates TID, host spawns thread Worker sharing parent's Memory. Traditional mode: delegates to host_clone. |
@@ -301,9 +301,15 @@ The wasm-posix-kernel uses a **centralized architecture**: a single kernel Wasm 
 
 | Function | Status | Notes |
 |----------|--------|-------|
-| `isatty()` | Full | Returns 1 for CharDevice fds (stdin/stdout/stderr), ENOTTY for others. |
-| `tcgetattr()` / `tcsetattr()` | Partial | Kernel-simulated terminal state (c_iflag, c_oflag, c_cflag, c_lflag, c_cc). TCSANOW/TCSADRAIN/TCSAFLUSH all treated the same. ICANON mode: line buffering with VERASE (backspace), VKILL (^U), VEOF (^D) editing. ICRNL/INLCR/IGNCR input processing. ECHO/ECHOE/ECHOK/ECHONL output. VMIN/VTIME values accessible for raw mode. |
-| `ioctl()` | Partial | TIOCGWINSZ and TIOCSWINSZ (terminal). TIOCGPGRP/TIOCSPGRP (foreground process group for tcgetpgrp/tcsetpgrp). FIONREAD (available bytes for pipe/socket/regular), FIONBIO (toggle O_NONBLOCK), FIOCLEX/FIONCLEX (set/clear FD_CLOEXEC). Generic ioctls work on any fd type; terminal ioctls require CharDevice. |
+| `isatty()` | Full | Returns 1 for CharDevice, PtyMaster, and PtySlave fds; ENOTTY for others. |
+| `tcgetattr()` / `tcsetattr()` | Full | Full termios support on CharDevice and PTY fds. c_iflag, c_oflag, c_cflag, c_lflag, c_cc. TCSANOW/TCSADRAIN/TCSAFLUSH all treated the same. ICANON mode: line buffering with VERASE (backspace), VKILL (^U), VEOF (^D) editing. ICRNL/INLCR/IGNCR input processing. ECHO/ECHOE/ECHOK/ECHONL output. VMIN/VTIME values accessible for raw mode. Uses musl's 60-byte termios layout. |
+| `ioctl()` | Full | 16 terminal ioctls: TCGETS/TCSETS/TCSETSW/TCSETSF (termios), TIOCGPTN (PTY number), TIOCSPTLCK (unlock PTY), TIOCGPGRP/TIOCSPGRP (foreground pgid), TIOCGWINSZ/TIOCSWINSZ (window size + SIGWINCH), TCSBRK/TCXONC/TCFLSH, TIOCGSID/TIOCSCTTY/TIOCNOTTY (session/controlling terminal). Generic: FIONREAD, FIONBIO, FIOCLEX/FIONCLEX, FIOASYNC. Works on CharDevice, PtyMaster, and PtySlave fds. |
+| `posix_openpt()` | Full | Opens `/dev/ptmx`, allocates PTY pair, returns master fd. |
+| `grantpt()` / `unlockpt()` | Full | `grantpt()` is a no-op (no permissions to set). `unlockpt()` clears the lock flag on the PTY pair. |
+| `ptsname()` | Full | Returns `/dev/pts/N` path for the slave side. |
+| `ttyname()` | Full | Via `/proc/self/fd/N` readlink on PTY slave fds. |
+| `tcgetsid()` | Full | Via TIOCGSID ioctl. Returns session ID of the controlling terminal. |
+| `tcgetpgrp()` / `tcsetpgrp()` | Full | Via TIOCGPGRP/TIOCSPGRP ioctls. Gets/sets foreground process group. |
 
 ## Virtual Device Files
 
@@ -390,7 +396,7 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 
 | Gap | Subsystem | Reason |
 |-----|-----------|--------|
-| **mprotect() returns ENOSYS** | memory | Wasm linear memory has no page-level protection. |
+| **mprotect() is a no-op** | memory | Returns success but does not enforce. Wasm linear memory has no page-level protection. |
 | **No cross-process MAP_SHARED** | memory | MAP_SHARED works within a single process (file-backed, with msync writeback). Cross-process shared memory would require SharedArrayBuffer coordination. |
 | **UDP sockets** | socket | AF_INET SOCK_DGRAM not yet implemented. TCP (SOCK_STREAM) fully supported via host-delegated networking. |
 | **Setuid/setgid enforcement** | process | Single-user Wasm environment; privilege checks simulated only. |
@@ -581,7 +587,7 @@ These PHP needs are well-handled by the current kernel:
 
 The full musl libc-test suite (functional + regression + math) is run via `scripts/run-libc-tests.sh`. Use `--report` to generate `docs/libc-test-failures.md`.
 
-### Summary (as of 2026-03-28)
+### Summary (as of 2026-04-04)
 
 All tests pass (0 unexpected failures). XFAIL (expected failures) and TIME (timeouts) are acceptable. Run `scripts/run-libc-tests.sh` for current results.
 
@@ -591,9 +597,7 @@ These require features fundamentally unavailable in the Wasm architecture:
 
 - **Wasm FP exceptions (110 math tests):** WebAssembly has no floating-point exception flags (`fenv.h`). All `fe*` math tests fail. `long double` variants pass because they use software fp128.
 - **No pthread_cancel:** Wasm has no async cancellation mechanism or cancel-point assembly. `pthread_create` works; `pthread_cancel` does not.
-- **No exec + /bin/sh:** `popen`, `system`, `wordexp`, `execle-env` require a shell binary registered at `/bin/sh`. `posix_spawn` tests require exec with spawnable binaries.
 - **No dlopen/TLS:** `tls_get_new-dtv_dso` requires loading a shared library with TLS at runtime.
-- **No stack switching:** `sigaltstack` — signal handler runs but Wasm cannot switch stacks.
 
 ### Linker Requirements for Signal Handlers
 
