@@ -13,13 +13,14 @@
 //   2. Must yield to timers — so setTimeout/setInterval callbacks can fire.
 //
 // Solution: MessageChannel.postMessage (~0ms dispatch) as the fast path, with a
-// periodic setTimeout yield every 8ms to prevent timer starvation. MessageChannel
+// periodic setTimeout yield every 4ms to prevent timer starvation. MessageChannel
 // messages are macrotasks that bypass the 4ms clamp, roughly doubling syscall
 // throughput compared to the setTimeout-only approach.
 if (typeof globalThis.setImmediate === "undefined") {
   const _immQueue: Array<{ id: number; fn: (...args: any[]) => void; args: any[] }> = [];
   let _immNextId = 0;
   let _immScheduled = false;
+  let _immFlushing = false;
   const _immCancelled = new Set<number>();
   let _immLastYield = performance.now();
 
@@ -29,7 +30,8 @@ if (typeof globalThis.setImmediate === "undefined") {
 
   function _immFlush() {
     _immScheduled = false;
-    const deadline = performance.now() + 4;
+    _immFlushing = true;
+    const deadline = performance.now() + 2;
     let count = 0;
     while (_immQueue.length > 0) {
       const entry = _immQueue.shift()!;
@@ -37,20 +39,26 @@ if (typeof globalThis.setImmediate === "undefined") {
         _immCancelled.delete(entry.id);
         continue;
       }
-      entry.fn(...entry.args);
+      try {
+        entry.fn(...entry.args);
+      } catch (e) {
+        console.error("[setImmediate] callback threw:", e);
+      }
       count++;
-      // Check wall clock every 16 items to limit performance.now() overhead
-      if ((count & 15) === 0 && performance.now() >= deadline) break;
+      if (count > 500) {
+        console.warn(`[setImmediate] RUNAWAY: ${count} items, q=${_immQueue.length}`);
+        break;
+      }
+      if ((count & 3) === 0 && performance.now() >= deadline) break;
     }
+    _immFlushing = false;
     if (_immQueue.length > 0 && !_immScheduled) {
       _immScheduled = true;
       const now = performance.now();
-      if (now - _immLastYield >= 8) {
-        // Yield to timers via setTimeout periodically to prevent starvation
+      if (now - _immLastYield >= 4) {
         _immLastYield = now;
         setTimeout(_immFlush, 0);
       } else {
-        // Fast path: MessageChannel bypasses 4ms timer clamp
         _immChannel.port2.postMessage(null);
       }
     }
@@ -59,7 +67,7 @@ if (typeof globalThis.setImmediate === "undefined") {
   (globalThis as any).setImmediate = (fn: (...args: any[]) => void, ...args: any[]) => {
     const id = ++_immNextId;
     _immQueue.push({ id, fn, args });
-    if (!_immScheduled) {
+    if (!_immScheduled && !_immFlushing) {
       _immScheduled = true;
       _immChannel.port2.postMessage(null);
     }
@@ -314,6 +322,12 @@ export class BrowserKernel {
         onExit: (pid, exitStatus) => this.handleExit(pid, exitStatus),
       },
     );
+
+    // In the browser the kernel runs on the main thread, so yield to the
+    // event loop after every syscall to prevent rendering starvation.
+    // The browser setImmediate polyfill (MessageChannel) batches these
+    // efficiently while still allowing animation frames between batches.
+    this.kernelWorker.usePolling = true;
 
     // Inject stdout/stderr callbacks
     const kw = this.kernelWorker as any;
