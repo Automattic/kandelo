@@ -13,13 +13,14 @@
 //   2. Must yield to timers — so setTimeout/setInterval callbacks can fire.
 //
 // Solution: MessageChannel.postMessage (~0ms dispatch) as the fast path, with a
-// periodic setTimeout yield every 8ms to prevent timer starvation. MessageChannel
+// periodic setTimeout yield every 4ms to prevent timer starvation. MessageChannel
 // messages are macrotasks that bypass the 4ms clamp, roughly doubling syscall
 // throughput compared to the setTimeout-only approach.
 if (typeof globalThis.setImmediate === "undefined") {
   const _immQueue: Array<{ id: number; fn: (...args: any[]) => void; args: any[] }> = [];
   let _immNextId = 0;
   let _immScheduled = false;
+  let _immFlushing = false;
   const _immCancelled = new Set<number>();
   let _immLastYield = performance.now();
 
@@ -29,7 +30,8 @@ if (typeof globalThis.setImmediate === "undefined") {
 
   function _immFlush() {
     _immScheduled = false;
-    const deadline = performance.now() + 4;
+    _immFlushing = true;
+    const deadline = performance.now() + 2;
     let count = 0;
     while (_immQueue.length > 0) {
       const entry = _immQueue.shift()!;
@@ -37,20 +39,26 @@ if (typeof globalThis.setImmediate === "undefined") {
         _immCancelled.delete(entry.id);
         continue;
       }
-      entry.fn(...entry.args);
+      try {
+        entry.fn(...entry.args);
+      } catch (e) {
+        console.error("[setImmediate] callback threw:", e);
+      }
       count++;
-      // Check wall clock every 16 items to limit performance.now() overhead
-      if ((count & 15) === 0 && performance.now() >= deadline) break;
+      if (count > 500) {
+        console.warn(`[setImmediate] RUNAWAY: ${count} items, q=${_immQueue.length}`);
+        break;
+      }
+      if ((count & 3) === 0 && performance.now() >= deadline) break;
     }
+    _immFlushing = false;
     if (_immQueue.length > 0 && !_immScheduled) {
       _immScheduled = true;
       const now = performance.now();
-      if (now - _immLastYield >= 8) {
-        // Yield to timers via setTimeout periodically to prevent starvation
+      if (now - _immLastYield >= 4) {
         _immLastYield = now;
         setTimeout(_immFlush, 0);
       } else {
-        // Fast path: MessageChannel bypasses 4ms timer clamp
         _immChannel.port2.postMessage(null);
       }
     }
@@ -59,7 +67,7 @@ if (typeof globalThis.setImmediate === "undefined") {
   (globalThis as any).setImmediate = (fn: (...args: any[]) => void, ...args: any[]) => {
     const id = ++_immNextId;
     _immQueue.push({ id, fn, args });
-    if (!_immScheduled) {
+    if (!_immScheduled && !_immFlushing) {
       _immScheduled = true;
       _immChannel.port2.postMessage(null);
     }
@@ -128,7 +136,8 @@ export class BrowserKernel {
   private memfs: MemoryFileSystem;
   private io: VirtualPlatformIO;
   private processes = new Map<number, ProcessInfo>();
-  private nextPid = 1;
+  /** @internal exposed for bootstrap stdin-consumption detection */
+  nextPid = 1;
   private maxPages: number;
   private options: Required<
     Pick<BrowserKernelOptions, "maxWorkers" | "fsSize" | "env">
@@ -139,6 +148,8 @@ export class BrowserKernel {
   private exitResolvers = new Map<number, (status: number) => void>();
   /** PTY index by pid (for processes spawned with pty: true) */
   private ptyByPid = new Map<number, number>();
+  /** Thread workers per process (for terminateProcess cleanup) */
+  private threadWorkers = new Map<number, Array<{ worker: ReturnType<BrowserWorkerAdapter["createWorker"]>; channelOffset: number; tid: number }>>();
 
   // Thread channel allocator (counting down from main channel region)
   private nextThreadChannelPage: number;
@@ -311,6 +322,12 @@ export class BrowserKernel {
         onExit: (pid, exitStatus) => this.handleExit(pid, exitStatus),
       },
     );
+
+    // In the browser the kernel runs on the main thread, so yield to the
+    // event loop after every syscall to prevent rendering starvation.
+    // The browser setImmediate polyfill (MessageChannel) batches these
+    // efficiently while still allowing animation frames between batches.
+    this.kernelWorker.usePolling = true;
 
     // Inject stdout/stderr callbacks
     const kw = this.kernelWorker as any;
@@ -577,6 +594,15 @@ export class BrowserKernel {
     this.kernelWorker.setStdinData(pid, data);
   }
 
+  /**
+   * Check if a process's finite stdin buffer has been fully consumed.
+   * Returns true when the process has read all data provided via setStdinData/spawn stdin option.
+   */
+  isStdinConsumed(pid: number): boolean {
+    const kw = this.kernelWorker as any;
+    return kw.stdinFinite.has(pid) && !kw.stdinBuffers.has(pid);
+  }
+
   /** Get the underlying CentralizedKernelWorker (for advanced use) */
   get worker(): CentralizedKernelWorker {
     return this.kernelWorker;
@@ -610,6 +636,43 @@ export class BrowserKernel {
     const ptyIdx = this.ptyByPid.get(pid);
     if (ptyIdx === undefined) return;
     this.kernelWorker.onPtyOutput(ptyIdx, callback);
+  }
+
+  /**
+   * Terminate a specific process and all its threads.
+   * Resolves the exit promise with the given status code.
+   */
+  async terminateProcess(pid: number, status = -1): Promise<void> {
+    // Terminate thread workers
+    const threads = this.threadWorkers.get(pid);
+    if (threads) {
+      for (const t of threads) {
+        await t.worker.terminate().catch(() => {});
+        try {
+          this.kernelWorker.notifyThreadExit(pid, t.tid);
+          this.kernelWorker.removeChannel(pid, t.channelOffset);
+        } catch {}
+      }
+      this.threadWorkers.delete(pid);
+    }
+
+    // Terminate main process worker
+    const info = this.processes.get(pid);
+    if (info?.worker) {
+      await info.worker.terminate().catch(() => {});
+    }
+
+    // Unregister from kernel
+    try {
+      this.kernelWorker.unregisterProcess(pid);
+    } catch {}
+
+    this.processes.delete(pid);
+
+    // Resolve exit promise
+    const resolver = this.exitResolvers.get(pid);
+    this.exitResolvers.delete(pid);
+    if (resolver) resolver(status);
   }
 
   /** Destroy the kernel and release all resources. */
@@ -758,15 +821,29 @@ export class BrowserKernel {
     };
 
     const threadWorker = this.workerAdapter.createWorker(threadInitData);
+    if (!this.threadWorkers.has(pid)) this.threadWorkers.set(pid, []);
+    const threadEntry = { worker: threadWorker, channelOffset: threadChannelOffset, tid };
+    this.threadWorkers.get(pid)!.push(threadEntry);
+
     threadWorker.on("message", (msg: unknown) => {
       const m = msg as WorkerToHostMessage;
       if (m.type === "thread_exit") {
         threadWorker.terminate().catch(() => {});
+        const threads = this.threadWorkers.get(pid);
+        if (threads) {
+          const idx = threads.indexOf(threadEntry);
+          if (idx >= 0) threads.splice(idx, 1);
+        }
       }
     });
     threadWorker.on("error", () => {
       this.kernelWorker.notifyThreadExit(pid, tid);
       this.kernelWorker.removeChannel(pid, threadChannelOffset);
+      const threads = this.threadWorkers.get(pid);
+      if (threads) {
+        const idx = threads.indexOf(threadEntry);
+        if (idx >= 0) threads.splice(idx, 1);
+      }
     });
 
     return tid;

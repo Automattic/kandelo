@@ -181,6 +181,12 @@ async function main() {
 
     await kernelWorker.init(kernelBytes);
 
+    const decoder = new TextDecoder();
+    kernelWorker.setOutputCallbacks({
+        onStdout: (data) => process.stdout.write(decoder.decode(data)),
+        onStderr: (data) => process.stderr.write(decoder.decode(data)),
+    });
+
     const memory = new WebAssembly.Memory({
         initial: 17,
         maximum: MAX_PAGES,

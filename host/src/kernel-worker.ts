@@ -517,6 +517,10 @@ interface ChannelInfo {
   i32View: Int32Array;
   /** @deprecated Kept for compat — no longer used after relistenChannel simplification. */
   consecutiveSyscalls: number;
+  /** True while this channel is being handled by handleSyscall or an async
+   *  retry/sleep/fork/exec path. Prevents the poller from re-entering a
+   *  channel that is already in flight. Only used when usePolling=true. */
+  handling?: boolean;
 }
 
 /** Info about a registered process. */
@@ -623,11 +627,12 @@ export class CentralizedKernelWorker {
     channel: ChannelInfo;
     pipeIndices: number[];
   }>();
-  /** Pending pselect6 retries — used for signal-driven wakeup */
+  /** Pending pselect6 retries — used for signal-driven wakeup and timeout tracking */
   private pendingSelectRetries = new Map<number, {
-    timer: ReturnType<typeof setImmediate>;
+    timer: any;  // setTimeout or setImmediate handle
     channel: ChannelInfo;
     origArgs: number[];
+    deadline: number;  // Date.now() deadline, -1 for infinite
   }>();
   /** Flag to coalesce cross-process wakeup microtasks */
   private wakeScheduled = false;
@@ -674,6 +679,7 @@ export class CentralizedKernelWorker {
   private epollInterests = new Map<string, Array<{ fd: number; events: number; data: bigint }>>();
   /** SharedIpcTable for SysV IPC (message queues, semaphores, shared memory) */
   private ipcTable: SharedIpcTable | null = null;
+  private lockTable: SharedLockTable | null = null;
   /** Per-process shared memory mappings: pid → Map<addr, {segId, size}> */
   private shmMappings = new Map<number, Map<number, { segId: number; size: number }>>();
   /** POSIX message queue table */
@@ -838,8 +844,8 @@ export class CentralizedKernelWorker {
 
     // Register a SharedLockTable so host_fcntl_lock can handle advisory locks
     // (including OFD locks) within the centralized kernel.
-    const lockTable = SharedLockTable.create();
-    this.kernel.registerSharedLockTable(lockTable.getBuffer());
+    this.lockTable = SharedLockTable.create();
+    this.kernel.registerSharedLockTable(this.lockTable.getBuffer());
 
     // Register a SharedIpcTable so SysV IPC (msgget/msgsnd/msgrcv, semget/semop,
     // shmget/shmat/shmdt) works across processes.
@@ -891,12 +897,15 @@ export class CentralizedKernelWorker {
     this.processes.set(pid, registration);
     this.activeChannels.push(...channels);
 
-    // Start listening on each channel
-    for (const channel of channels) {
-      this.listenOnChannel(channel);
+    if (this.usePolling) {
+      // Polling mode: start the poller (no per-channel listeners)
+      this.startPolling();
+    } else {
+      // Event-driven mode: start listening on each channel
+      for (const channel of channels) {
+        this.listenOnChannel(channel);
+      }
     }
-
-
   }
 
   /**
@@ -1093,12 +1102,26 @@ export class CentralizedKernelWorker {
       }
     }
 
+    // Release all advisory file locks held by this process.
+    // Force-reset the spinlock first: a terminated worker may have been holding it,
+    // and Atomics.wait is not allowed on the browser main thread.
+    if (this.lockTable) {
+      const lockBuf = this.lockTable.getBuffer();
+      Atomics.store(new Int32Array(lockBuf), 0, 0); // force-release spinlock
+      this.lockTable.removeLocksByPid(pid);
+    }
+
     // Remove from kernel process table
     this.removeFromKernelProcessTable(pid);
 
     this.processes.delete(pid);
     this.stdinFinite.delete(pid);
     this.stdinBuffers.delete(pid);
+
+    // Stop poller if no more processes
+    if (this.usePolling && this.processes.size === 0) {
+      this.stopPolling();
+    }
 
     // Clean up PTY state
     const ptyIdx = this.ptyIndexByPid.get(pid);
@@ -1223,7 +1246,10 @@ export class CentralizedKernelWorker {
       this.channelTids.set(`${pid}:${channelOffset}`, tid);
     }
 
-    this.listenOnChannel(channel);
+    // In polling mode, the poller picks up new channels automatically.
+    if (!this.usePolling) {
+      this.listenOnChannel(channel);
+    }
   }
 
   /**
@@ -1257,8 +1283,19 @@ export class CentralizedKernelWorker {
     const currentStatus = Atomics.load(i32View, statusIndex);
 
     if (currentStatus === CH_PENDING) {
-      // Handle immediately
-      this.handleSyscall(channel);
+      // Handle the syscall. In browser mode (relistenBatchSize=1), defer via
+      // setImmediate so that Atomics.waitAsync microtask resolutions don't
+      // create tight chains that starve the event loop. In Node.js (default
+      // batchSize=64), handle immediately for throughput.
+      if (this.relistenBatchSize <= 1) {
+        setImmediate(() => {
+          if (this.processes.has(channel.pid)) {
+            this.handleSyscall(channel);
+          }
+        });
+      } else {
+        this.handleSyscall(channel);
+      }
       return;
     }
 
@@ -1809,6 +1846,9 @@ export class CentralizedKernelWorker {
       }
     }
 
+    // Clear handling flag (channel is done — poller can pick it up for next syscall)
+    channel.handling = false;
+
     // Write result to process channel
     processView.setInt32(CH_RETURN, retVal, true);
     processView.setUint32(CH_ERRNO, errVal, true);
@@ -1857,15 +1897,107 @@ export class CentralizedKernelWorker {
    * Schedule re-listen on a channel.
    *
    * Uses queueMicrotask for speed (near-zero delay between syscalls).
-   * Every 64th call, yields via setImmediate so timer callbacks
-   * (setTimeout/setInterval) can fire — prevents event loop starvation
-   * while keeping throughput close to Node.js native setImmediate.
+   * Every Nth call (relistenBatchSize), yields via setImmediate so timer
+   * callbacks (setTimeout/setInterval) can fire — prevents event loop
+   * starvation while keeping throughput close to Node.js native setImmediate.
+   *
+   * In the browser (main thread), set relistenBatchSize=1 so every syscall
+   * yields via setImmediate. The browser setImmediate polyfill (MessageChannel)
+   * batches these efficiently while still allowing rendering frames between
+   * batches. Without this, microtask chains from multi-threaded programs
+   * (e.g. MariaDB's 5 threads) starve requestAnimationFrame and rendering.
    */
   private relistenCount = 0;
+  /** How many syscalls to process via microtask before yielding to the event
+   *  loop via setImmediate. Default 64 is optimal for Node.js. Set to 1 in
+   *  browser environments where the kernel runs on the main thread. */
+  relistenBatchSize = 64;
+
+  /**
+   * When true, use a MessageChannel-based poller to check all channels
+   * instead of per-channel Atomics.waitAsync listeners.
+   *
+   * This avoids a V8 bug where Atomics.waitAsync microtask chains from
+   * multiple concurrent processes freeze the main thread. The poller
+   * uses MessageChannel for ~0ms dispatch (bypassing the browser's 4ms
+   * timer clamp on setTimeout/setInterval), with periodic setTimeout
+   * yields every 4ms to keep timers and rendering alive.
+   *
+   * Enable this in browser environments where the kernel runs on the
+   * main thread. In Node.js (where setImmediate is native), the default
+   * event-driven mode (Atomics.waitAsync) is preferred.
+   */
+  usePolling = false;
+  private pollMC: MessageChannel | null = null;
+  private pollScheduled = false;
+  private pollLastYield = 0;
+
+  /** Start the channel poller. Called automatically when usePolling=true
+   *  and a process is registered. */
+  private startPolling(): void {
+    if (this.pollMC !== null) return;
+    this.pollMC = new MessageChannel();
+    this.pollMC.port1.onmessage = () => this.pollTick();
+    this.pollLastYield = performance.now();
+    this.schedulePoll();
+  }
+
+  /** Stop the channel poller. Called when all processes are unregistered. */
+  private stopPolling(): void {
+    if (this.pollMC !== null) {
+      this.pollMC.port1.close();
+      this.pollMC = null;
+      this.pollScheduled = false;
+    }
+  }
+
+  /** Schedule the next poll tick. Uses MessageChannel for ~0ms dispatch,
+   *  with a setTimeout yield every 4ms to prevent timer starvation. */
+  private schedulePoll(): void {
+    if (this.pollScheduled || !this.pollMC) return;
+    this.pollScheduled = true;
+    const now = performance.now();
+    if (now - this.pollLastYield >= 4) {
+      // Yield to timers/rendering
+      this.pollLastYield = now;
+      setTimeout(() => {
+        this.pollScheduled = false;
+        this.pollTick();
+      }, 0);
+    } else {
+      this.pollMC.port2.postMessage(null);
+    }
+  }
+
+  /** Poll all active channels for PENDING syscalls. */
+  private pollTick(): void {
+    this.pollScheduled = false;
+    if (!this.pollMC || this.activeChannels.length === 0) return;
+
+    // Snapshot to handle mutations during iteration (addChannel/removeChannel)
+    const channels = this.activeChannels.slice();
+    for (const channel of channels) {
+      if (channel.handling) continue;
+      // Re-create view in case memory was grown
+      const i32View = new Int32Array(channel.memory.buffer, channel.channelOffset);
+      channel.i32View = i32View;
+      if (Atomics.load(i32View, 0) === CH_PENDING) {
+        channel.handling = true;
+        this.handleSyscall(channel);
+      }
+    }
+
+    this.schedulePoll();
+  }
+
   private relistenChannel(channel: ChannelInfo): void {
+    // Clear handling flag so the poller can pick up this channel again
+    channel.handling = false;
     if (!this.processes.has(channel.pid)) return;
+    // In polling mode, don't re-listen — the poller will pick up the next syscall
+    if (this.usePolling) return;
     this.relistenCount++;
-    if (this.relistenCount >= 64) {
+    if (this.relistenCount >= this.relistenBatchSize) {
       this.relistenCount = 0;
       setImmediate(() => this.listenOnChannel(channel));
     } else {
@@ -1878,6 +2010,9 @@ export class CentralizedKernelWorker {
    * Used for thread exit where we need to unblock the worker.
    */
   private completeChannelRaw(channel: ChannelInfo, retVal: number, errVal: number): void {
+    // Clear handling flag (channel is done — poller can pick it up for next syscall)
+    channel.handling = false;
+
     const processView = new DataView(channel.memory.buffer, channel.channelOffset);
     processView.setInt32(CH_RETURN, retVal, true);
     processView.setUint32(CH_ERRNO, errVal, true);
@@ -1998,6 +2133,8 @@ export class CentralizedKernelWorker {
 
     for (const [pid, entry] of selectEntries) {
       if (!this.processes.has(pid)) continue;
+      // Cancel both setTimeout and setImmediate handles (one will be a no-op)
+      clearTimeout(entry.timer);
       clearImmediate(entry.timer);
       this.handlePselect6(entry.channel, entry.origArgs);
     }
@@ -2264,11 +2401,32 @@ export class CentralizedKernelWorker {
       // Resolve which pipe indices the polled fds map to (for event-driven wakeup)
       const pipeIndices = this.resolvePollPipeIndices(channel.pid, origArgs, syscallNr);
 
+      // For finite timeout, track the deadline so we return 0 (timeout) when it
+      // expires instead of retrying forever. The nfds=0 case (pure sleep) is
+      // optimized to skip retries entirely — just wait for the deadline.
+      const nfds = origArgs[1]; // poll(fds, nfds, ...) / ppoll(fds, nfds, ...)
+      if (timeoutMs > 0 && nfds === 0) {
+        // Pure sleep: no fds to poll, just wait for timeout
+        const timer = setTimeout(() => {
+          this.pendingPollRetries.delete(channel.pid);
+          if (this.processes.has(channel.pid)) {
+            this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], 0, 0);
+          }
+        }, timeoutMs);
+        this.pendingPollRetries.set(channel.pid, { timer, channel, pipeIndices });
+        return;
+      }
+
+      const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : -1;
       const retryFn = () => {
         this.pendingPollRetries.delete(channel.pid);
-        if (this.processes.has(channel.pid)) {
-          this.retrySyscall(channel);
+        if (!this.processes.has(channel.pid)) return;
+        // Check deadline for finite timeout
+        if (deadline > 0 && Date.now() >= deadline) {
+          this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], 0, 0);
+          return;
         }
+        this.retrySyscall(channel);
       };
       const timer = setTimeout(retryFn, 0);
       this.pendingPollRetries.set(channel.pid, { timer, channel, pipeIndices });
@@ -2284,13 +2442,16 @@ export class CentralizedKernelWorker {
       const timeoutPtr = origArgs[2]; // pointer to timespec in process memory
       if (timeoutPtr === 0) {
         // NULL timeout = wait indefinitely. Use long retry interval since
-        // signals arrive via kernel_kill, not organically. Short retries cause
-        // a tight loop that starves other threads.
+        // signals arrive via kernel_kill, not organically. In the browser,
+        // short retries starve the event loop when multiple threads are active
+        // (e.g. MariaDB's signal handler thread). 500ms is adequate because
+        // cross-process signals are rare, and immediate delivery for kill()
+        // works via scheduleWakeBlockedRetries.
         setTimeout(() => {
           if (this.processes.has(channel.pid)) {
             this.retrySyscall(channel);
           }
-        }, 50);
+        }, 500);
         return;
       }
       const pv = new DataView(channel.memory.buffer, timeoutPtr);
@@ -2724,14 +2885,36 @@ export class CentralizedKernelWorker {
         this.completeChannel(channel, SYS_PSELECT6, origArgs, undefined, 0, 0);
         return;
       }
+
+      const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : -1;
+
+      // For select(0, NULL, NULL, NULL, &timeout) — nfds=0, pure sleep.
+      // Just wait for the timeout instead of retrying in a tight loop.
+      // Still registered in pendingSelectRetries so wakeAllBlockedRetries
+      // can check for signals (EINTR).
+      if (timeoutMs > 0 && nfds === 0) {
+        const timer = setTimeout(() => {
+          this.pendingSelectRetries.delete(channel.pid);
+          if (this.processes.has(channel.pid)) {
+            this.completeChannel(channel, SYS_PSELECT6, origArgs, undefined, 0, 0);
+          }
+        }, timeoutMs);
+        this.pendingSelectRetries.set(channel.pid, { timer, channel, origArgs, deadline });
+        return;
+      }
+
+      // For finite timeout with actual fds, track the deadline
       const retryFn = () => {
         this.pendingSelectRetries.delete(channel.pid);
-        if (this.processes.has(channel.pid)) {
-          this.handlePselect6(channel, origArgs);
+        if (!this.processes.has(channel.pid)) return;
+        if (deadline > 0 && Date.now() >= deadline) {
+          this.completeChannel(channel, SYS_PSELECT6, origArgs, undefined, 0, 0);
+          return;
         }
+        this.handlePselect6(channel, origArgs);
       };
       const timer = setImmediate(retryFn);
-      this.pendingSelectRetries.set(channel.pid, { timer, channel, origArgs });
+      this.pendingSelectRetries.set(channel.pid, { timer, channel, origArgs, deadline });
       return;
     }
 
