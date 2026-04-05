@@ -32,120 +32,22 @@ KERNEL_WASM="$REPO_ROOT/host/wasm/wasm_posix_kernel.wasm"
 # Include tests for headers/features our musl sysroot doesn't provide.
 # Format: "header/symbol" matching the test path under os-test/include/
 INCLUDE_EXPECTED_FAIL=(
-    # POSIX.1-2024 additions not yet in musl (musl targets POSIX.1-2008)
-    # (O_CLOFORK, FD_CLOFORK, F_DUPFD_CLOFORK, SOCK_CLOFORK, MSG_CMSG_CLOFORK
-    #  now pass — fcntl.h, sys/socket.h overlays)
-    # (DT_MQ/SEM/SHM/TMO, posix_dent, posix_getdents, reclen_t now pass — dirent.h,
-    #  sys/types.h overlays + posix_getdents stub)
-    # (posix_tnode, tdelete/tfind/tsearch/twalk now pass — search.h overlay)
-    # (posix_spawn_file_actions_addchdir/addfchdir now pass — spawn.h overlay + stubs)
-    # (pthread clock-aware waits now pass — pthread.h/semaphore.h overlays + stubs)
-    # (REG_MINIMAL now passes — regex.h overlay)
-    # (fnmatch/FNM_IGNORECASE now passes — aliased to FNM_CASEFOLD in fnmatch.h overlay)
-    # (ftw/FTW_XDEV now passes — aliased to FTW_MOUNT in ftw.h overlay)
-    # (limits/GETENTROPY_MAX and NSIG_MAX now pass — added to limits.h overlay)
-    # (locale/getlocalename_l now passes — added getlocalename_l implementation)
-    # (V8 confstr/sysconf, pathconf, feature test macros now pass — unistd.h overlay)
-    # (POSIX.1-2024 langinfo ABALTMON/ALTMON, math constants, O_* flags,
-    #  SIG2STR_MAX, sig2str, str2sig — all now pass after musl sysroot rebuild)
-    # (wchar/wcslcat and wcslcpy now pass — added BSD wcslcpy/wcslcat implementations)
-    # -- Headers/features not in musl
-    "devctl/posix_devctl" "devctl/size_t"      # device control (Sortix/2024)
-    # (libintl _l variants now pass — libintl.h overlay + stubs)
-    # (ndbm now passes — ndbm.h overlay + stubs)
-    # (Dl_info_t and dladdr now pass — dlfcn.h overlay with Dl_info_t typedef + dladdr stub)
-    # (SCHED_SPORADIC + sched_param fields now pass — sched.h overlay)
-    # (REG_MINIMAL now passes — regex.h overlay)
-    # (typed memory objects now pass — sys/mman.h overlay + stubs)
-    # (sys_shm/intptr_t and SHM_FAILED now pass — added to sys/shm.h overlay)
-    # (sys_stat/struct-stat-st_size now passes — fixed st_size type to long long)
-    # (setjmp/siglongjmp now passes — added real function symbol + declaration)
+    "devctl/posix_devctl" "devctl/size_t"      # device control (Sortix/2024, not in musl)
 )
 
 BASIC_EXPECTED_FAIL=(
-    # -- Headers/libraries not available in musl or Wasm
-    "devctl/posix_devctl"                                 # device control (2024)
-    # (libintl/bindtextdomain now passes — dcngettext overlay returns default /usr/share/locale)
-    # (libintl _l variants now pass — stubs delegate to non-_l versions)
-    # (ndbm basic tests now pass — in-memory ndbm implementation)
-    # (nl_types tests now pass — gencat wasm binary for catalog compilation)
-    # (utmpx/pututxline now passes — added errno=EPERM in pututxline overlay)
-    # (mqueue tests now pass — POSIX mqueue implementation in centralized mode)
-    # (dlfcn/dladdr now passes — dladdr stub in glue/dlopen.c)
-    # -- exec (all exec variants now work including fexecve)
-    # (execl, execle, execlp, execv, execve, execvp now pass — exec support in run-example.ts)
-    # (unistd/fexecve now passes — SYS_EXECVEAT + kernel_get_fd_path resolves fd to OFD path)
-    # -- Memory locking (mlock/munlock are stubs; mlockall/munlockall work)
-    # (mlock, mlockall, munlock, munlockall removed — stubs pass basic invocation tests)
-    # (unistd/fchownat now passes — nested data directory)
-    # (stdlib/system now passes — exec support in run-example.ts)
-    # -- Signals (limited Wasm signal model)
-    # (signal/sigaltstack now passes — SS_ONSTACK flag emulation in kernel_dequeue_signal)
-    # -- Timers/signals that block (timeout)
-    "aio/aio_error" "aio/aio_fsync"
-    # poll/ppoll now passes
+    "devctl/posix_devctl"                                 # device control (Sortix/2024, not in musl)
+    "aio/aio_error" "aio/aio_fsync"                       # AIO requires threads (musl uses pthread)
     "pthread/pthread_barrierattr_setpshared" "pthread/pthread_cancel"
     "pthread/pthread_cleanup_pop" "pthread/pthread_cleanup_push"
     "pthread/pthread_condattr_setpshared"
-    "pthread/pthread_create"
+    "pthread/pthread_create"                              # no guest-initiated pthread_create
     "signal/pthread_kill"
-    "threads/thrd_create"
-    # -- Pthread features not supported (priority scheduling, pshared)
-    # (pthread/pthread_atfork now passes — fork() calls __fork_handler in channel_syscall.c)
-    # (pthread/pthread_attr_getstack now passes — musl patch: return NULL/default when no stack set)
-    "pthread/pthread_attr_setinheritsched"
-    # (pthread clock-aware waits now pass — delegate to timed variants)
-    # (pthread prioceiling tests now pass — PRIO_PROTECT stub + prioceiling get/set stubs in musl overlay)
-    "pthread/pthread_mutexattr_setpshared"
-    "pthread/pthread_setcancelstate"
-    # -- Scheduler
-    # -- Semaphore named
-    # (semaphore/sem_clockwait now passes — delegates to sem_timedwait)
-    # (All terminal I/O tests now pass — PTY support implemented:
-    #  tcdrain, tcflow, tcflush, tcgetattr, tcgetsid, tcgetwinsize, tcsendbreak,
-    #  tcsetattr, tcsetwinsize, tcgetpgrp, tcsetpgrp, ttyname, ttyname_r,
-    #  ptsname, ptsname_r, unlockpt)
-    # (SysV IPC now passes — host-side IPC handlers in centralized mode)
-    # (sys_ipc/ftok now passes — data directory infrastructure)
-    # (sys_socket/sockatmark now passes — MSG_OOB send/recv + SIOCATMARK ioctl)
-    # (net_if now passes — synthetic loopback interface implementation)
-    # (netdb/freeaddrinfo and netdb/getaddrinfo now pass — synthetic /etc/hosts)
-    # (arpa_inet/inet_ntop now passes — fixed IPv6 :: compression in musl overlay)
-    # (signal/sig2str and signal/str2sig now pass — musl sysroot rebuild)
-    # -- Filesystem-dependent tests (tests that still need specific FS setup)
-    # (fcntl/open, fcntl/openat now pass — data directory infrastructure)
-    # (fcntl/posix_fallocate now passes — fallocate syscall implemented)
-    # (dirent/posix_getdents now passes — real posix_getdents implementation)
-    # (dirent/fdopendir, readdir, readdir_r, rewinddir, scandir, seekdir now pass)
-    # (stdio/pclose and stdio/popen now pass — posix_spawn applies fd actions directly)
-    # (stdio/remove now passes — EPERM→EISDIR translation for unlink on directories)
-    # (stdio/fopen now passes — data directory infrastructure)
-    # (unistd/faccessat now passes — nested data directory with source files)
-    # (unistd/readlinkat now passes — fixed SYSCALL_ARGS argIndex for readlinkat)
-    # (unistd/lseek, unistd/read now pass — data directory infrastructure)
-    # (ftw/nftw now passes — directory detection without O_DIRECTORY)
-    # (wordexp/wordexp, wordexp/wordfree now pass — popen CLOEXEC pipe refcount fix + /bin/sh→dash)
-    # (glob/glob, glob/globfree now pass — data directory infrastructure)
-    # (sys_stat/fchmodat now passes — fchmodat2 syscall 383 implemented)
-    # (sys_stat/fstat, sys_stat/stat now pass — data directory infrastructure)
-    # (sys_stat/fstatat now passes — nested data directory)
-    # (sys_stat/futimens now passes — fixed utimensat NULL path handling)
-    # (sys_stat/lstat now passes — hardlinks in data directory)
-    # (sys_stat/mkfifo, mkfifoat, mknod, mknodat now pass — S_IFIFO allowed in mknod)
-    # (sys_statvfs/fstatvfs now passes — data directory infrastructure)
-    # (sys_mman/posix_mem_offset, posix_typed_mem_get_info, posix_typed_mem_open now pass — stubs)
-    # (pwd/grp tests now pass — synthetic /etc/passwd and /etc/group)
-    # -- Misc not supported
-    # (pselect now passes — fixed empty sigmask handling in kernel_pselect6)
-    # (locale/getlocalename_l now passes — added getlocalename_l implementation)
-    # (monetary/strfmon and strfmon_l now pass — fixed POSIX locale handling in musl overlay)
-    "strings/ffsll"
-    # (wchar/wcslcat and wcslcpy now pass — added BSD wcslcpy/wcslcat implementations)
-    # -- posix_spawn (all tests pass)
-    # (posix_spawn, file_actions_addopen/adddup2/init, spawnattr_set* now pass)
-    # (posix_spawnp now passes — exec failure returns ENOENT instead of destroying process)
-    # (posix_spawn_file_actions_addclose now passes — host handle refcounting across fork)
-    # (addchdir/addfchdir now pass — exec CWD resolution via kernel_get_cwd + kernel_get_fd_path)
+    "threads/thrd_create"                                 # C11 threads (requires pthread_create)
+    "pthread/pthread_attr_setinheritsched"                # priority scheduling not supported
+    "pthread/pthread_mutexattr_setpshared"                # PSHARED not supported
+    "pthread/pthread_setcancelstate"                      # cancellation not supported
+    "strings/ffsll"                                       # wasm32 test bug (long vs long long)
 )
 
 LIMITS_EXPECTED_FAIL=()
@@ -157,15 +59,8 @@ STDIO_EXPECTED_FAIL=()
 IO_EXPECTED_FAIL=(
 )
 
-SIGNAL_EXPECTED_FAIL=(
-    # (exec signal tests now pass — exec support in run-example.ts)
-    # (sigaction-exec-flags now passes — exec clears sa_flags correctly)
-    # (sigaltstack-raise now passes — SS_ONSTACK flag emulation via rt_sigreturn)
-)
-PROCESS_EXPECTED_FAIL=(
-    # (fork-exec-setpgid-in-child now passes — exec support)
-    # (fork-exec-setpgid-in-parent now passes — kernelExecSetup sets has_exec)
-)
+SIGNAL_EXPECTED_FAIL=()
+PROCESS_EXPECTED_FAIL=()
 PATHS_EXPECTED_FAIL=()
 
 # ── Helper: check if a test matches an expected-failure pattern ──

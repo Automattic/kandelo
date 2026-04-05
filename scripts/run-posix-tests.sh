@@ -25,22 +25,15 @@ KERNEL_WASM="$REPO_ROOT/host/wasm/wasm_posix_kernel.wasm"
 # Tests that fail due to Wasm limitations or unimplemented features.
 
 EXPECTED_FAIL=(
-    # ── Wasm limitations ──
-    # (sigaltstack 1-1..8-1 now pass — fixed handler signatures void() → void(int) for Wasm call_indirect type checking)
-    # munmap: 1-1 and 1-2 still fail (require real page unmapping)
-    munmap/1-1
-    munmap/1-2
-
-    # ── Not implemented / stubs ──
-    mlock/12-1        # needs pwd.h
-
-    # ── Process/permission model ──
-    kill/2-2          # EPERM test: no multi-user permission model
-    kill/3-1          # EPERM test: no multi-user permission model
-    sched_getparam/6-1      # EPERM test: no multi-user permission model
-    sched_getscheduler/7-1  # EPERM test: no multi-user permission model
-    sigqueue/3-1      # needs pwd.h
-    sigqueue/12-1     # needs pwd.h
+    munmap/1-1                  # requires real page unmapping
+    munmap/1-2                  # requires real page unmapping
+    mlock/12-1                  # needs pwd.h (getpwnam)
+    kill/2-2                    # EPERM: no multi-user permission model
+    kill/3-1                    # EPERM: no multi-user permission model
+    sched_getparam/6-1          # EPERM: no multi-user permission model
+    sched_getscheduler/7-1      # EPERM: no multi-user permission model
+    sigqueue/3-1                # needs pwd.h (getpwnam)
+    sigqueue/12-1               # needs pwd.h (getpwnam)
 )
 
 # ── Auto-detect LLVM ──────────────────────────────────────
