@@ -103,8 +103,8 @@ function buildDataFiles(
   dataPrefix: string | null,
   sourceDir: string | null,
   suite: string | null = null,
-): { dataFiles: DataFileSpec[]; cwd: string | null } {
-  if (!dataPrefix) return { dataFiles: [], cwd: null };
+): { dataFiles: DataFileSpec[]; cwd: string | null; testName: string | null } {
+  if (!dataPrefix) return { dataFiles: [], cwd: null, testName: null };
 
   // Extract test name from wasm filename: "fcntl/open.wasm" -> "fcntl/open"
   const relToPrefix = relative(resolve(dataPrefix), wasmPath);
@@ -136,7 +136,7 @@ function buildDataFiles(
     }
   }
 
-  return { dataFiles, cwd };
+  return { dataFiles, cwd, testName };
 }
 
 async function runSingleTest(
@@ -151,22 +151,45 @@ async function runSingleTest(
   const start = performance.now();
   const relPath = relative(REPO_ROOT, wasmPath);
 
-  const { dataFiles, cwd } = buildDataFiles(wasmPath, dataPrefix, sourceDir, suite);
+  const { dataFiles, cwd, testName } = buildDataFiles(wasmPath, dataPrefix, sourceDir, suite);
+
+  // Use test name as argv[0] so self-exec tests (execlp(argv[0],...)) work.
+  // Build env with PATH including CWD for bare-name execlp resolution.
+  const argv = testName ? [testName] : ["test"];
+  const env = cwd
+    ? [
+        `PATH=${cwd}:/usr/local/bin:/usr/bin:/bin`,
+        "HOME=/home",
+        "TMPDIR=/tmp",
+        "TERM=xterm-256color",
+        "LANG=en_US.UTF-8",
+        "USER=browser",
+        "LOGNAME=browser",
+      ]
+    : undefined;
 
   try {
     const result = await page.evaluate(
-      async ({ bytes, timeout, dataFiles: df, cwd: cwdPath }) => {
+      async ({ bytes, timeout, dataFiles: df, cwd: cwdPath, argv: av, env: ev }) => {
         const ab = new Uint8Array(bytes).buffer;
-        const options = df.length > 0 || cwdPath
-          ? { dataFiles: df, cwd: cwdPath ?? undefined }
-          : undefined;
-        return await (window as any).__runTest(ab, ["test"], timeout, options);
+        const options: Record<string, any> = {};
+        if (df.length > 0) options.dataFiles = df;
+        if (cwdPath) options.cwd = cwdPath;
+        if (ev) options.env = ev;
+        return await (window as any).__runTest(
+          ab,
+          av,
+          timeout,
+          Object.keys(options).length > 0 ? options : undefined,
+        );
       },
       {
         bytes: Array.from(wasmBytes),
         timeout: testTimeout,
         dataFiles,
         cwd,
+        argv,
+        env,
       },
     );
 

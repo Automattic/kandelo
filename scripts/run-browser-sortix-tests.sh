@@ -32,14 +32,7 @@ INCLUDE_EXPECTED_FAIL=(
 
 BASIC_EXPECTED_FAIL=(
     "devctl/posix_devctl"
-    # (libintl/bindtextdomain now passes — dcngettext overlay returns default /usr/share/locale)
-    # (libintl _l variants now pass — stubs delegate to non-_l versions)
-    # (ndbm basic tests now pass — in-memory ndbm implementation)
-    "nl_types/catclose" "nl_types/catgets" "nl_types/catopen"
-    "unistd/execl" "unistd/execle" "unistd/execlp" "unistd/execv"
-    "unistd/execve" "unistd/execvp" "unistd/fexecve"
-    "stdlib/system"
-    # (signal/sigaltstack now passes — glue stack pointer swap for SA_ONSTACK)
+    # (exec/spawn/popen/system/wordexp now pass — browser exec support with tool binaries)
     "aio/aio_fsync"
     "pthread/pthread_barrierattr_setpshared" "pthread/pthread_cancel"
     "pthread/pthread_cleanup_pop" "pthread/pthread_cleanup_push"
@@ -47,23 +40,12 @@ BASIC_EXPECTED_FAIL=(
     "pthread/pthread_create"
     "signal/pthread_kill"
     "threads/thrd_create"
-    # (pthread_attr_getstack now passes)
     "pthread/pthread_attr_setinheritsched"
-    # (pthread prioceiling now passes — override musl ENOSYS stubs)
     "pthread/pthread_mutexattr_setpshared"
     "pthread/pthread_setcancelstate"
-    # (terminal/PTY tests now pass — full PTY support in PR #181)
-    "stdio/pclose" "stdio/popen"
     "strings/ffsll"
-    "spawn/posix_spawn" "spawn/posix_spawnp"
-    "spawn/posix_spawn_file_actions_addchdir" "spawn/posix_spawn_file_actions_addclose"
-    "spawn/posix_spawn_file_actions_adddup2" "spawn/posix_spawn_file_actions_addfchdir"
-    "spawn/posix_spawn_file_actions_addopen" "spawn/posix_spawn_file_actions_init"
-    # (posix_spawnattr_getschedparam/getschedpolicy/setschedpolicy now pass)
-    "spawn/posix_spawnattr_setflags" "spawn/posix_spawnattr_setpgroup"
-    "spawn/posix_spawnattr_setschedparam"
-    "spawn/posix_spawnattr_setsigdefault" "spawn/posix_spawnattr_setsigmask"
-    "wordexp/wordexp" "wordexp/wordfree"
+    # spawn addchdir/addfchdir: need CWD-aware exec resolution not yet wired
+    "spawn/posix_spawn_file_actions_addchdir" "spawn/posix_spawn_file_actions_addfchdir"
 )
 
 LIMITS_EXPECTED_FAIL=()
@@ -74,14 +56,12 @@ IO_EXPECTED_FAIL=(
 )
 
 SIGNAL_EXPECTED_FAIL=(
-    "default-chld-exec" "default-usr1-exec"
-    "handle-chld-exec" "handle-usr1-exec"
-    "ignore-chld-exec" "ignore-usr1-exec"
-    "sigaction-exec-flags" "sigaltstack-exec" "sigaltstack-raise-exec"
-    "sigaltstack-raise"
+    # (exec-based signal tests now pass — browser exec support)
+    # sigaction-exec-flags: .unknown.N expect files not matched by .[0-9]* glob
+    "sigaction-exec-flags"
 )
 PROCESS_EXPECTED_FAIL=(
-    "fork-exec-*"
+    # (fork-exec tests now pass — browser exec support)
 )
 PATHS_EXPECTED_FAIL=()
 
@@ -107,7 +87,8 @@ BROWSER_IO_EXPECTED_FAIL=(
 )
 
 BROWSER_SIGNAL_EXPECTED_FAIL=(
-    # All previously-failing ppoll tests now pass with stderr+stdout merging
+    # Intermittent timing failure in browser polling mode
+    "ppoll-block-sleep-write-raise"
 )
 
 BROWSER_PROCESS_EXPECTED_FAIL=(
@@ -117,7 +98,7 @@ BROWSER_PROCESS_EXPECTED_FAIL=(
 # paths: most non-existent paths now match .2 expect files (ENOENT on stderr)
 # Remaining failures: device nodes and /bin/sh not present in browser VFS
 BROWSER_PATHS_EXPECTED_FAIL=(
-    "bin-sh"
+    # (bin-sh now passes — exec stubs populate /bin/sh)
 )
 
 # ── Helpers ──────────────────────────────────────────────────────
