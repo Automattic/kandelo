@@ -21,7 +21,7 @@ Systems software to port to wasm-posix-kernel, prioritized by POSIX depth and br
 - **Priority:** high
 - **POSIX surface:** Fork-per-connection, SysV shared memory (shmget/shmat) or mmap MAP_SHARED, POSIX semaphores, select/poll event loop, signals for backend coordination, fcntl advisory locks
 - **Browser value:** Full ACID SQL database
-- **Kernel gaps:** SysV shared memory and semaphores are unimplemented. Fork-heavy architecture will stress multi-process coordination harder than MariaDB (which uses --thread-handling=no-threads).
+- **Kernel gaps:** SysV shared memory and semaphores are implemented (PR #146) but PostgreSQL's heavy fork-per-connection model will stress multi-process coordination harder than MariaDB (which uses --thread-handling=no-threads).
 - **Build notes:** Large C codebase, autoconf-based. Needs libreadline or libedit for psql client. Server (postgres) is the main target.
 
 ### dash (POSIX shell)
@@ -83,3 +83,4 @@ Systems software to port to wasm-posix-kernel, prioritized by POSIX depth and br
 - GNU grep 3.11 — regex, file I/O
 - GNU sed 4.9 — stream editing
 - Redis 7.2 — threads, sockets, signals, event loop
+- CPython 3.13.3 — mmap, signals, fork, file I/O, REPL + script runner

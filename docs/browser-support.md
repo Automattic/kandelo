@@ -2,7 +2,7 @@
 
 ## Overview
 
-The wasm-posix-kernel runs in modern browsers with SharedArrayBuffer support (Chrome 91+, Firefox 79+, Safari 16.4+). Single-process programs work on the main thread. Multi-process coordination is available via Web Workers.
+The wasm-posix-kernel runs in modern browsers with SharedArrayBuffer support (Chrome 91+, Firefox 79+, Safari 16.4+). The centralized kernel architecture uses one kernel Wasm instance on the main thread, with each process running in a dedicated Web Worker.
 
 ## Required HTTP Headers
 
@@ -15,118 +15,94 @@ Cross-Origin-Embedder-Policy: require-corp
 
 Without these headers, `SharedArrayBuffer` is undefined and the kernel cannot initialize.
 
-## Entry Points
+## Architecture
 
-```javascript
-// Auto-resolved by bundlers with "browser" condition (vite, webpack):
-import { WasmPosixKernel, ProgramRunner, ... } from "wasm-posix-host";
+The browser uses `BrowserKernel` (`examples/browser/lib/browser-kernel.ts`) which wraps `CentralizedKernelWorker`. Key components:
 
-// Explicit browser import:
-import { WasmPosixKernel, ProgramRunner, ... } from "wasm-posix-host/browser";
+| Component | Purpose |
+|-----------|---------|
+| `CentralizedKernelWorker` | Kernel instance on main thread, handles all syscalls |
+| `BrowserKernel` | High-level wrapper with fork/exec/clone/exit handling |
+| Web Workers | One per process, communicates via SharedArrayBuffer + Atomics |
+| Service Worker | Intercepts HTTP for nginx/WordPress demos |
+| `BrowserWorkerAdapter` | Creates Web Workers for process/thread spawning |
 
-// Worker entry (auto-resolved for browser):
-import "wasm-posix-host/worker-entry";
+### Syscall Flow
 
-// Explicit browser worker entry:
-import "wasm-posix-host/worker-entry-browser";
+```
+Process Worker → SharedArrayBuffer channel → Atomics.notify
+→ CentralizedKernelWorker.handleChannel() → kernel_handle_channel()
+→ result written to channel → Atomics.notify → Process Worker resumes
 ```
 
-## Browser API
+## Capabilities
 
-Available from `wasm-posix-host/browser`:
+### Multi-Process
+- `fork()` via Asyncify snapshot/restore — child runs in new Worker with copied memory
+- `exec()` via `onExec` callback — resolves paths to Wasm binaries, replaces process
+- `posix_spawn()` — fork+exec with file actions (addchdir, addfchdir, addclose, adddup2)
+- Process groups, wait/waitpid, cross-process signals, pipes
 
-| Export | Purpose |
-|--------|---------|
-| `WasmPosixKernel` | Core kernel loader |
-| `ProgramRunner` | Run user programs against the kernel |
-| `VirtualPlatformIO` | Mount-based virtual filesystem |
-| `MemoryFileSystem` | In-memory filesystem backend |
-| `BrowserTimeProvider` | Browser-compatible time (performance.now) |
-| `ProcessManager` | Multi-process management via Web Workers |
-| `BrowserWorkerAdapter` | Web Worker creation adapter |
-| `SyscallChannel` | Shared memory syscall channel |
-| `SharedPipeBuffer` | Inter-process pipe via SharedArrayBuffer |
+### Threads
+- `clone()` with `CLONE_VM|CLONE_THREAD` — shared Memory between parent and thread Workers
+- Used by MariaDB (5 threads), Redis (3 background threads)
 
-## Single-Process Usage (Main Thread)
+### Networking
+- TCP via `FetchBackend` (browser fetch API mapped to kernel sockets)
+- Service worker cookie jar for session persistence (WordPress)
+- nginx serves static files and proxies to PHP-FPM via Unix domain sockets
 
-```typescript
-import { WasmPosixKernel, ProgramRunner } from "wasm-posix-host/browser";
-import { VirtualPlatformIO } from "wasm-posix-host/browser";
-import { MemoryFileSystem } from "wasm-posix-host/browser";
-import { BrowserTimeProvider } from "wasm-posix-host/browser";
+### Filesystem
+- `MemoryFileSystem` — in-memory VFS for all demos
+- `OpfsFileSystem` — Origin Private File System for browser persistence
+- `SharedFS` — SharedArrayBuffer-based FS shared between workers
 
-// 1. Create virtual filesystem
-const memfs = MemoryFileSystem.create(new SharedArrayBuffer(16 * 1024 * 1024));
-const io = new VirtualPlatformIO(
-  [{ mountPoint: "/", backend: memfs }],
-  new BrowserTimeProvider(),
-);
-memfs.mkdir("/tmp", 0o777);
+### Terminal
+- PTY support with full line discipline (PR #181)
+- Interactive stdin via `appendStdinData` for incremental input
 
-// 2. Create kernel
-const kernel = new WasmPosixKernel(
-  { maxWorkers: 1, dataBufferSize: 65536, useSharedMemory: true },
-  io,
-  {
-    onStdout: (data) => console.log(new TextDecoder().decode(data)),
-    onStderr: (data) => console.error(new TextDecoder().decode(data)),
-  },
-);
-await kernel.init(kernelWasmBytes);
+## Browser Demos
 
-// 3. Run program
-const runner = new ProgramRunner(kernel);
-const exitCode = await runner.run(programWasmBytes);
-```
+Located in `examples/browser/pages/`:
 
-## Known Limitations
+| Demo | Software | Features |
+|------|----------|----------|
+| simple | C programs | Basic file I/O, printf |
+| shell | dash + coreutils | Interactive shell with exec, pipes, PATH lookup |
+| python | CPython 3.13 | REPL + script runner |
+| php | PHP CLI | Script execution |
+| nginx | nginx | Static file serving |
+| nginx-php | nginx + PHP-FPM | FastCGI, fork workers |
+| mariadb | MariaDB 10.5 | SQL database with threads |
+| redis | Redis 7.2 | In-memory store with threads |
+| wordpress | nginx + PHP-FPM + WP | Full LAMP stack |
 
-### No fork() from user-space Wasm
-
-The `fork()` C library call is not available from within Wasm programs. Multi-process must be orchestrated from the host (JavaScript) side using `ProcessManager.spawn()` and `ProcessManager.fork()`.
-
-This is a fundamental design constraint: WebAssembly cannot create threads or workers directly.
-
-### nanosleep() blocks the calling thread
-
-`nanosleep()` uses `Atomics.wait()` which blocks the calling thread. On the main thread, this freezes the UI. In a Web Worker, it blocks that worker. Programs that sleep will work correctly but will be unresponsive during the sleep.
-
-### Memory-only filesystem
-
-Browser workers cannot access the host filesystem. Only `MemoryFileSystem` is available. Programs that need files must have them pre-created in the memory filesystem before execution.
-
-### File permission stubs
-
-`MemoryFileSystem` does not enforce POSIX permissions. `chmod()`, `chown()`, and `access()` are no-ops or always succeed. Files are readable/writable by all.
-
-### Program loading for exec()
-
-When user-space code calls `execve()`, the host receives the path but must provide the Wasm binary. There is no built-in mechanism to map filesystem paths to Wasm binaries. The current `ProcessManager` reloads the same kernel binary on exec.
-
-### No host filesystem access
-
-`HostFileSystem` and `NodePlatformIO` are not available in browser builds. All filesystem operations go through `VirtualPlatformIO` with `MemoryFileSystem` backends.
+Run demos: `cd examples/browser && npx vite --port 5198`
 
 ## Vite Configuration
 
-For local development with Vite:
-
 ```typescript
 // vite.config.ts
-import { fileURLToPath } from "url";
-import path from "path";
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
 export default {
   server: {
     headers: {
       "Cross-Origin-Opener-Policy": "same-origin",
       "Cross-Origin-Embedder-Policy": "require-corp",
     },
-    fs: {
-      allow: [path.resolve(__dirname, "../..")], // allow serving wasm files
-    },
   },
 };
 ```
+
+## Known Limitations
+
+### SharedArrayBuffer restrictions
+Chrome rejects SharedArrayBuffer-backed views in `TextDecoder.decode()` and `crypto.getRandomValues()`. Always copy to a temporary non-shared buffer first.
+
+### nanosleep() blocks the thread
+`nanosleep()` uses `Atomics.wait()` which blocks the calling thread. On the main thread, this freezes the UI. Process Workers are unaffected since they run in dedicated Web Workers.
+
+### No raw server sockets
+Browser sandbox prevents listening on ports. nginx/PHP-FPM demos use a service worker to intercept HTTP requests and inject them as kernel TCP connections.
+
+### Main thread kernel
+The kernel runs on the main thread (not a Worker) because it needs synchronous access to all process memories. Long-running kernel operations can briefly block the UI.
