@@ -61,33 +61,54 @@ const COREUTILS_NAMES = [
   "yes",
 ];
 
-/** Resolve an exec path to a known tool binary. */
-function resolveToolExec(path: string): ArrayBuffer | null {
-  const name = path.split("/").pop()!;
-  if (dashBytes && (name === "sh" || name === "dash")) return dashBytes;
-  if (grepBytes && (name === "grep" || name === "egrep" || name === "fgrep")) return grepBytes;
-  if (sedBytes && name === "sed") return sedBytes;
-  if (genCatBytes && name === "gencat") return genCatBytes;
-  if (coreutilsBytes && (COREUTILS_NAMES.includes(name) || name === "[")) return coreutilsBytes;
-  return null;
+/** Write a binary file to the virtual filesystem. */
+function writeFileToFs(fs: import("../../lib/browser-kernel").BrowserKernel["fs"], path: string, data: ArrayBuffer): void {
+  const bytes = new Uint8Array(data);
+  const fd = fs.open(path, 0x241 /* O_WRONLY|O_CREAT|O_TRUNC */, 0o755);
+  fs.write(fd, bytes, null, bytes.length);
+  fs.close(fd);
 }
 
-/** Populate VFS with executable stubs for PATH-based lookup. */
-function populateExecStubs(fs: import("../../lib/browser-kernel").BrowserKernel["fs"]): void {
+/** Populate VFS with actual executable binaries and symlinks for exec. */
+function populateExecBinaries(fs: import("../../lib/browser-kernel").BrowserKernel["fs"]): void {
   for (const dir of ["/bin", "/usr", "/usr/bin", "/usr/local", "/usr/local/bin"]) {
     try { fs.mkdir(dir, 0o755); } catch { /* exists */ }
   }
-  const commands: string[] = ["sh", "dash", ...COREUTILS_NAMES, "["];
-  if (grepBytes) commands.push("grep", "egrep", "fgrep");
-  if (sedBytes) commands.push("sed");
-  if (genCatBytes) commands.push("gencat");
-  for (const name of commands) {
-    for (const dir of ["/bin", "/usr/bin"]) {
-      try {
-        const fd = fs.open(`${dir}/${name}`, 0o101 /* O_WRONLY|O_CREAT */, 0o755);
-        fs.close(fd);
-      } catch { /* exists */ }
+
+  if (dashBytes) {
+    writeFileToFs(fs, "/bin/dash", dashBytes);
+    try { fs.symlink("/bin/dash", "/bin/sh"); } catch { /* exists */ }
+    try { fs.symlink("/bin/dash", "/usr/bin/dash"); } catch { /* exists */ }
+    try { fs.symlink("/bin/dash", "/usr/bin/sh"); } catch { /* exists */ }
+  }
+
+  if (coreutilsBytes) {
+    writeFileToFs(fs, "/bin/coreutils", coreutilsBytes);
+    for (const name of COREUTILS_NAMES) {
+      try { fs.symlink("/bin/coreutils", `/bin/${name}`); } catch { /* exists */ }
+      try { fs.symlink("/bin/coreutils", `/usr/bin/${name}`); } catch { /* exists */ }
     }
+    try { fs.symlink("/bin/coreutils", "/bin/["); } catch { /* exists */ }
+    try { fs.symlink("/bin/coreutils", "/usr/bin/["); } catch { /* exists */ }
+  }
+
+  if (grepBytes) {
+    writeFileToFs(fs, "/bin/grep", grepBytes);
+    try { fs.symlink("/bin/grep", "/bin/egrep"); } catch { /* exists */ }
+    try { fs.symlink("/bin/grep", "/bin/fgrep"); } catch { /* exists */ }
+    try { fs.symlink("/bin/grep", "/usr/bin/grep"); } catch { /* exists */ }
+    try { fs.symlink("/bin/grep", "/usr/bin/egrep"); } catch { /* exists */ }
+    try { fs.symlink("/bin/grep", "/usr/bin/fgrep"); } catch { /* exists */ }
+  }
+
+  if (sedBytes) {
+    writeFileToFs(fs, "/bin/sed", sedBytes);
+    try { fs.symlink("/bin/sed", "/usr/bin/sed"); } catch { /* exists */ }
+  }
+
+  if (genCatBytes) {
+    writeFileToFs(fs, "/bin/gencat", genCatBytes);
+    try { fs.symlink("/bin/gencat", "/usr/bin/gencat"); } catch { /* exists */ }
   }
 }
 
@@ -123,18 +144,6 @@ async function init() {
     let stdout = "";
     let stderr = "";
 
-    // Build a map of VFS path → ArrayBuffer for exec resolution.
-    // This avoids reading from VFS (which has write-order issues) and
-    // directly maps data file paths to their original binary content.
-    const execMap = new Map<string, ArrayBuffer>();
-    if (options?.dataFiles) {
-      for (const file of options.dataFiles) {
-        if (file.useWasmBytes) {
-          execMap.set(file.path, wasmBytes);
-        }
-      }
-    }
-
     const kernel = new BrowserKernel({
       onStdout: (data: Uint8Array) => {
         stdout += new TextDecoder().decode(data);
@@ -142,17 +151,11 @@ async function init() {
       onStderr: (data: Uint8Array) => {
         stderr += new TextDecoder().decode(data);
       },
-      onExec: async (_pid, path, _argv, _envp) => {
-        // Check exec map first (handles self-exec tests)
-        if (execMap.has(path)) return execMap.get(path)!;
-        // Fall back to known tool binaries
-        return resolveToolExec(path);
-      },
     });
 
     try {
       await kernel.init(kernelWasmBytes!);
-      populateExecStubs(kernel.fs);
+      populateExecBinaries(kernel.fs);
 
       // Populate VFS with data files if provided
       if (options?.dataFiles) {

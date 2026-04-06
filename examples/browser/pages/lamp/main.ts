@@ -16,7 +16,6 @@ import { BrowserKernel } from "../../lib/browser-kernel";
 import { loadFiles } from "../../lib/fs-loader";
 import { loadWordPressBundle } from "../../lib/wp-bundle";
 import { HttpBridgeHost } from "../../lib/http-bridge";
-import { handleHttpRequest } from "../../lib/connection-pump";
 import { patchWasmForThread } from "../../../../host/src/worker-main";
 import kernelWasmUrl from "../../../../host/wasm/wasm_posix_kernel.wasm?url";
 import nginxWasmUrl from "../../../../examples/nginx/nginx.wasm?url";
@@ -408,7 +407,7 @@ async function start() {
     appendLog("Waiting for MariaDB to accept connections...\n", "info");
     for (let attempt = 1; attempt <= 30; attempt++) {
       await new Promise((r) => setTimeout(r, 1000));
-      if (kernel.pickListenerTarget(3306)) {
+      if (await kernel.pickListenerTarget(3306)) {
         appendLog(`MariaDB ready (after ${attempt}s)\n`, "info");
         break;
       }
@@ -449,10 +448,8 @@ async function start() {
     setStatus("Starting nginx...", "loading");
     appendLog("Starting nginx on 127.0.0.1:8080...\n", "info");
 
-    // Set up the bridge to handle incoming requests
-    bridge.onRequest((requestId, request) => {
-      handleHttpRequest(kernel!, bridge!, requestId, request, 8080);
-    });
+    // Transfer bridge host port to the kernel worker for connection pump (nginx on 8080)
+    kernel.sendBridgePort(bridge.detachHostPort(), 8080);
 
     const nginxExitPromise = kernel.spawn(nginxBytes, [
       "nginx",

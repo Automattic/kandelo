@@ -1,5 +1,5 @@
 /**
- * E2E browser demo tests — validates each demo page starts successfully.
+ * E2E browser demo tests — exercises each demo through its intended use case.
  *
  * Run all:       cd examples/browser && npx playwright test
  * Fast only:     cd examples/browser && npx playwright test --grep-invert @slow
@@ -105,6 +105,53 @@ test("shell: runs batch script", async ({ page }) => {
   await assertNoError(page);
 });
 
+test("shell: pipes between coreutils", async ({ page }) => {
+  await gotoOrSkip(page, "/pages/shell/");
+
+  await page.click("#mode-batch");
+  await page.fill(
+    "#code",
+    'echo "hello world" | wc -c\nprintf "beta\\nalpha\\n" | sort\necho foo | cat\n',
+  );
+  await page.click("#run");
+
+  // Wait for the last command's output ("foo" from echo foo | cat)
+  await waitForText(page, "#batch-output", "foo", 30_000);
+  const output = await page.locator("#batch-output").textContent();
+  // wc -c counts 12 bytes ("hello world\n")
+  expect(output).toContain("12");
+  // sort should produce alpha before beta
+  expect(output).toContain("alpha");
+  expect(output).toContain("beta");
+  // cat should pass through
+  expect(output).toContain("foo");
+  await assertNoError(page);
+});
+
+test("shell: file I/O and command substitution", async ({ page }) => {
+  await gotoOrSkip(page, "/pages/shell/");
+
+  await page.click("#mode-batch");
+  await page.fill(
+    "#code",
+    [
+      'echo "first line" > /tmp/test.txt',
+      'echo "second line" >> /tmp/test.txt',
+      "cat /tmp/test.txt",
+      "wc -l < /tmp/test.txt",
+      'result=$(cat /tmp/test.txt | wc -l)',
+      'echo "lines: $result"',
+    ].join("\n") + "\n",
+  );
+  await page.click("#run");
+
+  await waitForText(page, "#batch-output", "lines: 2", 30_000);
+  const output = await page.locator("#batch-output").textContent();
+  expect(output).toContain("first line");
+  expect(output).toContain("second line");
+  await assertNoError(page);
+});
+
 // ─── nginx ──────────────────────────────────────────────────────────
 
 test("nginx: starts and serves page", async ({ page }) => {
@@ -112,8 +159,12 @@ test("nginx: starts and serves page", async ({ page }) => {
   await page.click("#start");
   await waitForRunning(page, 60_000);
 
-  const log = await page.locator("#log").textContent();
-  expect(log).toContain("nginx");
+  // Verify nginx actually serves the page in the iframe
+  const frame = page.frameLocator("#frame");
+  await expect(frame.locator("body")).toContainText("Hello from nginx on WebAssembly", {
+    timeout: 30_000,
+  });
+
   await assertNoError(page);
 });
 
@@ -131,6 +182,37 @@ test("@slow php: runs hello world", async ({ page }) => {
   expect(output).toContain("PHP version:");
 });
 
+// ─── Python ────────────────────────────────────────────────────────
+
+test("@slow python: runs script with stdlib", async ({ page }) => {
+  test.setTimeout(120_000);
+  await gotoOrSkip(page, "/pages/python/");
+
+  await page.click("#mode-batch");
+  await page.fill(
+    "#code",
+    [
+      "import sys",
+      "import json",
+      "import math",
+      'print(f"Python {sys.version_info.major}.{sys.version_info.minor}")',
+      'print(f"pi = {math.pi:.4f}")',
+      "data = json.dumps({'key': 'value', 'nums': [1, 2, 3]})",
+      "parsed = json.loads(data)",
+      'print(f"json roundtrip: {parsed[\'key\']}, len={len(parsed[\'nums\'])})")',
+      "print([x**2 for x in range(5)])",
+    ].join("\n") + "\n",
+  );
+  await page.click("#run");
+
+  await waitForText(page, "#batch-output", "Python 3.", 90_000);
+  const output = await page.locator("#batch-output").textContent();
+  expect(output).toContain("pi = 3.141");
+  expect(output).toContain("json roundtrip: value, len=3");
+  expect(output).toContain("[0, 1, 4, 9, 16]");
+  await assertNoError(page);
+});
+
 // ─── nginx + PHP-FPM ────────────────────────────────────────────────
 
 test("@slow nginx-php: starts and serves PHP page", async ({ page }) => {
@@ -142,8 +224,9 @@ test("@slow nginx-php: starts and serves PHP page", async ({ page }) => {
 
   // Verify the iframe loads PHP content via nginx + PHP-FPM
   const frame = page.frameLocator("#frame");
-  const body = await frame.locator("body").textContent({ timeout: 60_000 });
-  expect(body).toContain("PHP-FPM on WebAssembly");
+  await expect(frame.locator("body")).toContainText("PHP-FPM on WebAssembly", {
+    timeout: 60_000,
+  });
 
   const log = await page.locator("#log").textContent();
   expect(log).toContain("nginx");
@@ -388,7 +471,7 @@ test("@slow wordpress: install, login, and load dashboard", async ({
 
 // ─── LAMP ───────────────────────────────────────────────────────────
 
-test("@slow lamp: full stack starts", async ({ page }) => {
+test("@slow lamp: full stack serves WordPress", async ({ page }) => {
   test.setTimeout(360_000);
   await gotoOrSkip(page, "/pages/lamp/");
 
@@ -401,4 +484,10 @@ test("@slow lamp: full stack starts", async ({ page }) => {
   expect(log).toContain("PHP-FPM");
   expect(log).toContain("nginx");
   await assertNoError(page);
+
+  // Verify WordPress install page actually loads in the iframe
+  const frame = page.frameLocator("#frame");
+  await expect(
+    frame.locator("form#setup, form#language-chooser, .wp-core-ui").first(),
+  ).toBeVisible({ timeout: 120_000 });
 });

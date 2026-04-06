@@ -14,7 +14,6 @@ import { BrowserKernel } from "../../lib/browser-kernel";
 import { loadFiles } from "../../lib/fs-loader";
 import { loadWordPressBundle } from "../../lib/wp-bundle";
 import { HttpBridgeHost } from "../../lib/http-bridge";
-import { handleHttpRequest } from "../../lib/connection-pump";
 import kernelWasmUrl from "../../../../host/wasm/wasm_posix_kernel.wasm?url";
 import nginxWasmUrl from "../../../../examples/nginx/nginx.wasm?url";
 import phpFpmWasmUrl from "../../../../examples/nginx/php-fpm.wasm?url";
@@ -346,12 +345,8 @@ async function start() {
       { path: "/var/www/html/wp-content/mu-plugins/wasm-optimizations.php", data: MU_PLUGIN_PHP },
     ]);
 
-    // Set up the bridge to handle incoming requests
-    bridge.onRequest((requestId, request) => {
-      console.log(`[wp-bridge] request #${requestId}: ${request.method} ${request.url}`);
-      appendLog(`[bridge] ${request.method} ${request.url}\n`, "info");
-      handleHttpRequest(kernel!, bridge!, requestId, request, 8080);
-    });
+    // Transfer bridge host port to the kernel worker for connection pump (nginx on 8080)
+    kernel.sendBridgePort(bridge.detachHostPort(), 8080);
 
     setStatus("WordPress running! Loading page...", "running");
     reloadBtn.disabled = false;

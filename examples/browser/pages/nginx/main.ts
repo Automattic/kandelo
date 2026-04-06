@@ -5,7 +5,6 @@
 import { BrowserKernel } from "../../lib/browser-kernel";
 import { loadFiles } from "../../lib/fs-loader";
 import { HttpBridgeHost } from "../../lib/http-bridge";
-import { handleHttpRequest } from "../../lib/connection-pump";
 import kernelWasmUrl from "../../../../host/wasm/wasm_posix_kernel.wasm?url";
 import nginxWasmUrl from "../../../../examples/nginx/nginx.wasm?url";
 
@@ -163,11 +162,8 @@ async function start() {
       { path: "/var/www/html/index.html", data: INDEX_HTML },
     ]);
 
-    // Set up the bridge to handle incoming requests
-    bridge.onRequest((requestId, request) => {
-      appendLog(`[bridge] ${request.method} ${request.url}\n`, "info");
-      handleHttpRequest(kernel!, bridge!, requestId, request, 8080);
-    });
+    // Transfer bridge host port to the kernel worker for connection pump (nginx on 8080)
+    kernel.sendBridgePort(bridge.detachHostPort(), 8080);
 
     // Start nginx
     setStatus("Starting nginx (forking workers)...", "loading");

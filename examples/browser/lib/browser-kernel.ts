@@ -1,102 +1,22 @@
 /**
- * BrowserKernel — Reusable CentralizedKernelWorker setup for browser examples.
+ * BrowserKernel — Thin proxy that communicates with a dedicated kernel
+ * web worker via MessagePort. The kernel worker owns the Wasm instance
+ * and all process lifecycle (fork/exec/clone/exit).
  *
- * Handles memory allocation, fork/clone/exit plumbing, process spawning,
- * and TCP connection injection for service worker bridging.
+ * The main thread handles only UI, filesystem setup, and application-level
+ * clients (MySQL, Redis) via async pipe operations.
  */
 
-// Polyfill setImmediate/clearImmediate for browsers (kernel-worker.ts uses them).
-//
-// The kernel worker calls setImmediate after each syscall to re-listen on the channel.
-// Requirements for the polyfill:
-//   1. Fast — can't use setTimeout(0) due to browser 4ms timer clamp.
-//   2. Must yield to timers — so setTimeout/setInterval callbacks can fire.
-//
-// Solution: MessageChannel.postMessage (~0ms dispatch) as the fast path, with a
-// periodic setTimeout yield every 4ms to prevent timer starvation. MessageChannel
-// messages are macrotasks that bypass the 4ms clamp, roughly doubling syscall
-// throughput compared to the setTimeout-only approach.
-if (typeof globalThis.setImmediate === "undefined") {
-  const _immQueue: Array<{ id: number; fn: (...args: any[]) => void; args: any[] }> = [];
-  let _immNextId = 0;
-  let _immScheduled = false;
-  let _immFlushing = false;
-  const _immCancelled = new Set<number>();
-  let _immLastYield = performance.now();
-
-  // MessageChannel for fast (~0ms) dispatch
-  const _immChannel = new MessageChannel();
-  _immChannel.port1.onmessage = _immFlush;
-
-  function _immFlush() {
-    _immScheduled = false;
-    _immFlushing = true;
-    const deadline = performance.now() + 2;
-    let count = 0;
-    while (_immQueue.length > 0) {
-      const entry = _immQueue.shift()!;
-      if (_immCancelled.has(entry.id)) {
-        _immCancelled.delete(entry.id);
-        continue;
-      }
-      try {
-        entry.fn(...entry.args);
-      } catch (e) {
-        console.error("[setImmediate] callback threw:", e);
-      }
-      count++;
-      if (count > 500) {
-        console.warn(`[setImmediate] RUNAWAY: ${count} items, q=${_immQueue.length}`);
-        break;
-      }
-      if ((count & 3) === 0 && performance.now() >= deadline) break;
-    }
-    _immFlushing = false;
-    if (_immQueue.length > 0 && !_immScheduled) {
-      _immScheduled = true;
-      const now = performance.now();
-      if (now - _immLastYield >= 4) {
-        _immLastYield = now;
-        setTimeout(_immFlush, 0);
-      } else {
-        _immChannel.port2.postMessage(null);
-      }
-    }
-  }
-
-  (globalThis as any).setImmediate = (fn: (...args: any[]) => void, ...args: any[]) => {
-    const id = ++_immNextId;
-    _immQueue.push({ id, fn, args });
-    if (!_immScheduled && !_immFlushing) {
-      _immScheduled = true;
-      _immChannel.port2.postMessage(null);
-    }
-    return id;
-  };
-  (globalThis as any).clearImmediate = (id: number) => {
-    _immCancelled.add(id);
-  };
-}
-
-import { CentralizedKernelWorker } from "../../../host/src/kernel-worker";
-import { BrowserWorkerAdapter } from "../../../host/src/worker-adapter-browser";
-import { VirtualPlatformIO } from "../../../host/src/vfs/vfs";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
-import { DeviceFileSystem } from "../../../host/src/vfs/device-fs";
-import { BrowserTimeProvider } from "../../../host/src/vfs/time";
-import { patchWasmForThread } from "../../../host/src/worker-main";
 import type {
-  CentralizedWorkerInitMessage,
-  CentralizedThreadInitMessage,
-  WorkerToHostMessage,
-} from "../../../host/src/worker-protocol";
+  MainToKernelMessage,
+  KernelToMainMessage,
+} from "./kernel-worker-protocol";
 import kernelWasmUrl from "../../../host/wasm/wasm_posix_kernel.wasm?url";
 import workerEntryUrl from "../../../host/src/worker-entry-browser.ts?worker&url";
+import kernelWorkerEntryUrl from "./kernel-worker-entry.ts?worker&url";
 
 const DEFAULT_MAX_PAGES = 16384;
-const PAGE_SIZE = 65536;
-const CH_TOTAL_SIZE = 40 + PAGE_SIZE; // channel header + data buffer
-const ASYNCIFY_BUF_SIZE = 16384;
 
 export interface BrowserKernelOptions {
   /** Maximum concurrent workers (default: 4) */
@@ -114,49 +34,31 @@ export interface BrowserKernelOptions {
   onStdout?: (data: Uint8Array) => void;
   /** Called when a process writes to stderr */
   onStderr?: (data: Uint8Array) => void;
-  /** Called when the kernel wants to resolve an exec path to wasm bytes */
-  onExec?: (pid: number, path: string, argv: string[], envp: string[]) => Promise<ArrayBuffer | null>;
   /** Called when a process requests a TCP listener (for service worker bridging) */
   onListenTcp?: (pid: number, fd: number, port: number) => void;
   /** Pre-compiled thread module for clone(). Avoids recompiling large wasm for each thread. */
   threadModule?: WebAssembly.Module;
 }
 
-interface ProcessInfo {
-  memory: WebAssembly.Memory;
-  programBytes: ArrayBuffer;
-  programModule?: WebAssembly.Module;
-  worker: ReturnType<BrowserWorkerAdapter["createWorker"]>;
-  channelOffset: number;
-}
-
 export class BrowserKernel {
-  private kernelWorker!: CentralizedKernelWorker;
-  private workerAdapter: BrowserWorkerAdapter;
+  private kernelWorkerHandle!: Worker;
   private memfs: MemoryFileSystem;
-  private io: VirtualPlatformIO;
-  private processes = new Map<number, ProcessInfo>();
-  /** @internal exposed for bootstrap stdin-consumption detection */
-  nextPid = 1;
+  private fsSab: SharedArrayBuffer;
+  private shmSab: SharedArrayBuffer;
   private maxPages: number;
+  /** @internal exposed for PtyTerminal pid tracking */
+  nextPid = 1;
   private options: Required<
     Pick<BrowserKernelOptions, "maxWorkers" | "fsSize" | "env">
   > &
     BrowserKernelOptions;
-  private kernelInstance: WebAssembly.Instance | null = null;
-  private kernelMemory: WebAssembly.Memory | null = null;
   private exitResolvers = new Map<number, (status: number) => void>();
-  /** PTY index by pid (for processes spawned with pty: true) */
-  private ptyByPid = new Map<number, number>();
-  /** Thread workers per process (for terminateProcess cleanup) */
-  private threadWorkers = new Map<number, Array<{ worker: ReturnType<BrowserWorkerAdapter["createWorker"]>; channelOffset: number; tid: number }>>();
-
-  // Thread channel allocator (counting down from main channel region)
-  private nextThreadChannelPage: number;
+  private pendingRequests = new Map<number, { resolve: (val: any) => void; reject: (err: Error) => void }>();
+  private nextRequestId = 1;
+  private ptyOutputCallbacks = new Map<number, (data: Uint8Array) => void>();
 
   constructor(options: BrowserKernelOptions = {}) {
     this.maxPages = options.maxMemoryPages ?? DEFAULT_MAX_PAGES;
-    this.nextThreadChannelPage = this.maxPages - 4;
     this.options = {
       maxWorkers: 4,
       fsSize: 16 * 1024 * 1024,
@@ -171,21 +73,10 @@ export class BrowserKernel {
       ...options,
     };
 
-    this.workerAdapter = new BrowserWorkerAdapter(workerEntryUrl);
-    this.memfs = MemoryFileSystem.create(
-      new SharedArrayBuffer(this.options.fsSize),
-    );
-    const devfs = new DeviceFileSystem();
-    const shmfs = MemoryFileSystem.create(
-      new SharedArrayBuffer(1024 * 1024),
-    );
-    const mounts: Array<{ mountPoint: string; backend: any }> = [
-      { mountPoint: "/dev/shm", backend: shmfs },
-      { mountPoint: "/dev", backend: devfs },
-      { mountPoint: "/", backend: this.memfs },
-      ...(this.options.extraMounts ?? []),
-    ];
-    this.io = new VirtualPlatformIO(mounts, new BrowserTimeProvider());
+    this.fsSab = new SharedArrayBuffer(this.options.fsSize);
+    this.shmSab = new SharedArrayBuffer(1024 * 1024);
+    this.memfs = MemoryFileSystem.create(this.fsSab);
+    MemoryFileSystem.create(this.shmSab); // format shm SAB for kernel worker
 
     // Create standard directories
     this.memfs.mkdir("/tmp", 0o777);
@@ -228,129 +119,65 @@ export class BrowserKernel {
     return this.memfs;
   }
 
-  /** Access the VirtualPlatformIO instance */
-  get platformIO(): VirtualPlatformIO {
-    return this.io;
-  }
-
-  /** Initialize the kernel with wasm bytes (fetched automatically if not provided) */
+  /** Initialize the kernel by spawning the dedicated kernel worker */
   async init(kernelWasmBytes?: ArrayBuffer): Promise<void> {
     const wasmBytes =
       kernelWasmBytes ??
       (await fetch(kernelWasmUrl).then((r) => r.arrayBuffer()));
 
-    this.kernelWorker = new CentralizedKernelWorker(
-      {
-        maxWorkers: this.options.maxWorkers,
-        dataBufferSize: PAGE_SIZE,
-        useSharedMemory: true,
-      },
-      this.io,
-      {
-        onFork: (parentPid, childPid, parentMemory) =>
-          this.handleFork(parentPid, childPid, parentMemory),
-        onExec: async (pid, path, argv, envp) => {
-          if (!this.options.onExec) return -38; // ENOSYS
-          const bytes = await this.options.onExec(pid, path, argv, envp);
-          if (!bytes) return -2; // ENOENT — process stays alive for retry
+    // Create the kernel worker
+    this.kernelWorkerHandle = new Worker(kernelWorkerEntryUrl, { type: "module" });
 
-          // Program found — run kernel exec setup (close CLOEXEC, reset signals)
-          const setupResult = this.kernelWorker.kernelExecSetup(pid);
-          if (setupResult < 0) return setupResult;
-
-          // Prepare process for replacement
-          this.kernelWorker.prepareProcessForExec(pid);
-
-          // Terminate old worker
-          const oldInfo = this.processes.get(pid);
-          if (oldInfo?.worker) {
-            await oldInfo.worker.terminate().catch(() => {});
-          }
-
-          // Create fresh memory for the new program
-          const newMemory = new WebAssembly.Memory({
-            initial: 17,
-            maximum: this.maxPages,
-            shared: true,
-          });
-          const newChannelOffset = (this.maxPages - 2) * PAGE_SIZE;
-          newMemory.grow(this.maxPages - 17);
-          new Uint8Array(newMemory.buffer, newChannelOffset, CH_TOTAL_SIZE).fill(0);
-
-          // Re-register with fresh memory (kernel pid already exists)
-          this.kernelWorker.registerProcess(pid, newMemory, [newChannelOffset], {
-            skipKernelCreate: true,
-          });
-
-          // Spawn new worker with exec'd program
-          const execInitData: CentralizedWorkerInitMessage = {
-            type: "centralized_init",
-            pid,
-            ppid: 0,
-            programBytes: bytes,
-            memory: newMemory,
-            channelOffset: newChannelOffset,
-            argv,
-            env: envp,
-          };
-
-          const newWorker = this.workerAdapter.createWorker(execInitData);
-          newWorker.on("error", (err: Error) => {
-            console.error(`[BrowserKernel] exec worker error pid=${pid}:`, err.message);
-          });
-
-          this.processes.set(pid, {
-            memory: newMemory,
-            programBytes: bytes,
-            worker: newWorker,
-            channelOffset: newChannelOffset,
-          });
-
-          return 0;
-        },
-        onClone: (pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory) =>
-          this.handleClone(
-            pid,
-            tid,
-            fnPtr,
-            argPtr,
-            stackPtr,
-            tlsPtr,
-            ctidPtr,
-            memory,
-          ),
-        onExit: (pid, exitStatus) => this.handleExit(pid, exitStatus),
-      },
-    );
-
-    // In the browser the kernel runs on the main thread, so yield to the
-    // event loop after every syscall to prevent rendering starvation.
-    // The browser setImmediate polyfill (MessageChannel) batches these
-    // efficiently while still allowing animation frames between batches.
-    this.kernelWorker.usePolling = true;
-
-    // Inject stdout/stderr callbacks
-    const kw = this.kernelWorker as any;
-    const existingCallbacks = kw.kernel.callbacks || {};
-    kw.kernel.callbacks = {
-      ...existingCallbacks,
-      onStdout: (data: Uint8Array) => this.options.onStdout?.(data),
-      onStderr: (data: Uint8Array) => this.options.onStderr?.(data),
-      onListenTcp: (_fd: number, port: number) => {
-        const pid = kw.currentHandlePid;
-        this.options.onListenTcp?.(pid, _fd, port);
-      },
+    // Set up message handler
+    this.kernelWorkerHandle.onmessage = (e: MessageEvent) => {
+      this.handleWorkerMessage(e.data as KernelToMainMessage);
+    };
+    this.kernelWorkerHandle.onerror = (e: ErrorEvent) => {
+      console.error("[BrowserKernel] Kernel worker error:", e.message);
     };
 
-    await this.kernelWorker.init(wasmBytes);
-    this.kernelInstance = kw.kernelInstance;
-    this.kernelMemory = (kw as any).kernelMemory;
+    // Send init message and wait for ready
+    await new Promise<void>((resolve) => {
+      const readyHandler = (e: MessageEvent) => {
+        if (e.data?.type === "ready") {
+          this.kernelWorkerHandle.removeEventListener("message", readyHandler);
+          resolve();
+        }
+      };
+      this.kernelWorkerHandle.addEventListener("message", readyHandler);
+
+      const initMsg: MainToKernelMessage = {
+        type: "init",
+        kernelWasmBytes: wasmBytes,
+        fsSab: this.fsSab,
+        shmSab: this.shmSab,
+        workerEntryUrl,
+        config: {
+          maxWorkers: this.options.maxWorkers,
+          maxMemoryPages: this.maxPages,
+          env: this.options.env,
+        },
+      };
+
+      this.kernelWorkerHandle.postMessage(initMsg, [wasmBytes]);
+    });
+  }
+
+  /**
+   * Send the HTTP bridge host port to the kernel worker for connection pump handling.
+   * Call after init() but before spawning processes that listen on ports.
+   * The port should come from HttpBridgeHost.detachHostPort().
+   * @param httpPort The specific TCP port to route HTTP bridge requests to (e.g. 8080 for nginx).
+   */
+  sendBridgePort(hostPort: MessagePort, httpPort?: number): void {
+    this.kernelWorkerHandle.postMessage(
+      { type: "set_bridge_port", bridgePort: hostPort, httpPort },
+      [hostPort],
+    );
   }
 
   /**
    * Spawn a new process and return a promise that resolves with the exit code.
-   * When `pty: true`, fds 0/1/2 are wired to a PTY slave and input/output
-   * goes through the kernel's line discipline instead of stdin buffers.
    */
   async spawn(
     programBytes: ArrayBuffer,
@@ -358,317 +185,167 @@ export class BrowserKernel {
     options?: { env?: string[]; cwd?: string; stdin?: Uint8Array; pty?: boolean },
   ): Promise<number> {
     const pid = this.nextPid++;
-    const memory = new WebAssembly.Memory({
-      initial: 17,
-      maximum: this.maxPages,
-      shared: true,
-    });
-    const channelOffset = (this.maxPages - 2) * PAGE_SIZE;
-    memory.grow(this.maxPages - 17);
-    new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
-
-    this.kernelWorker.registerProcess(pid, memory, [channelOffset]);
-
-    if (options?.cwd) {
-      this.kernelWorker.setCwd(pid, options.cwd);
-    }
-
-    if (options?.pty) {
-      const ptyIdx = this.kernelWorker.setupPty(pid);
-      this.ptyByPid.set(pid, ptyIdx);
-    } else if (options?.stdin) {
-      this.kernelWorker.setStdinData(pid, options.stdin);
-    }
+    const requestId = this.nextRequestId++;
 
     const exitPromise = new Promise<number>((resolve) => {
       this.exitResolvers.set(pid, resolve);
     });
 
-    const initData: CentralizedWorkerInitMessage = {
-      type: "centralized_init",
+    // Clone programBytes since it gets transferred (detached)
+    const bytesToSend = programBytes.slice(0);
+
+    await this.request(requestId, {
+      type: "spawn",
+      requestId,
       pid,
-      ppid: 0,
-      programBytes,
-      memory,
-      channelOffset,
-      env: options?.env ?? this.options.env,
+      programBytes: bytesToSend,
       argv,
+      env: options?.env ?? this.options.env,
       cwd: options?.cwd,
-    };
+      pty: options?.pty,
+      stdin: options?.stdin,
+      maxPages: this.maxPages,
+    }, [bytesToSend]);
 
-    const worker = this.workerAdapter.createWorker(initData);
-    this.processes.set(pid, { memory, programBytes, worker, channelOffset });
-
-    worker.on("error", (err: Error) => {
-      console.error(`[BrowserKernel] Worker error pid=${pid}:`, err.message);
-    });
+    // Register PTY output callback if pty was requested
+    if (options?.pty) {
+      this.sendToKernel({ type: "register_pty_output", pid });
+    }
 
     return exitPromise;
   }
 
   /**
-   * Inject an external HTTP connection into the kernel's listening socket.
-   * Returns the recv pipe index (send pipe is recv + 1), or -1 on failure.
+   * Inject an external TCP connection into the kernel's listening socket.
+   * Returns the recv pipe index, or -1 on failure.
    */
-  injectConnection(
+  async injectConnection(
     pid: number,
     listenerFd: number,
     peerAddr: [number, number, number, number] = [127, 0, 0, 1],
     peerPort: number = 0,
-  ): number {
-    if (!this.kernelInstance) return -1;
-    const injectConnection = this.kernelInstance.exports
-      .kernel_inject_connection as (
-      pid: number,
-      fd: number,
-      a: number,
-      b: number,
-      c: number,
-      d: number,
-      port: number,
-    ) => number;
-    const recvPipeIdx = injectConnection(
+  ): Promise<number> {
+    const requestId = this.nextRequestId++;
+    return this.request(requestId, {
+      type: "inject_connection",
+      requestId,
       pid,
-      listenerFd,
-      peerAddr[0],
-      peerAddr[1],
-      peerAddr[2],
-      peerAddr[3],
+      fd: listenerFd,
+      peerAddr,
       peerPort,
-    );
-    if (recvPipeIdx >= 0) {
-      const kw = this.kernelWorker as any;
-      kw.scheduleWakeBlockedRetries();
-    }
-    return recvPipeIdx;
+    }) as Promise<number>;
   }
 
-  /**
-   * Write data to a kernel pipe (for injecting HTTP request data).
-   */
-  pipeWrite(pid: number, pipeIdx: number, data: Uint8Array): number {
-    if (!this.kernelInstance) return -1;
-    const pipeWrite = this.kernelInstance.exports.kernel_pipe_write as (
-      pid: number,
-      pipeIdx: number,
-      bufPtr: number,
-      bufLen: number,
-    ) => number;
-    const scratchOffset = (this.kernelWorker as any).tcpScratchOffset || (this.kernelWorker as any).scratchOffset;
-    const mem = new Uint8Array(
-      this.kernelMemory!.buffer,
-    );
-    let written = 0;
-    while (written < data.length) {
-      const chunk = Math.min(data.length - written, PAGE_SIZE);
-      mem.set(data.subarray(written, written + chunk), scratchOffset);
-      const n = pipeWrite(pid, pipeIdx, scratchOffset, chunk);
-      if (n <= 0) break;
-      written += n;
-    }
-    return written;
+  /** Write data to a kernel pipe. */
+  async pipeWrite(pid: number, pipeIdx: number, data: Uint8Array): Promise<number> {
+    const requestId = this.nextRequestId++;
+    return this.request(requestId, {
+      type: "pipe_write",
+      requestId,
+      pid,
+      pipeIdx,
+      data,
+    }) as Promise<number>;
   }
 
-  /**
-   * Read data from a kernel pipe (for reading HTTP response data).
-   */
-  pipeRead(pid: number, pipeIdx: number): Uint8Array | null {
-    if (!this.kernelInstance) return null;
-    const pipeRead = this.kernelInstance.exports.kernel_pipe_read as (
-      pid: number,
-      pipeIdx: number,
-      bufPtr: number,
-      bufLen: number,
-    ) => number;
-    const scratchOffset = (this.kernelWorker as any).tcpScratchOffset || (this.kernelWorker as any).scratchOffset;
-    const mem = new Uint8Array(
-      this.kernelMemory!.buffer,
-    );
-    const chunks: Uint8Array[] = [];
-    for (;;) {
-      const n = pipeRead(pid, pipeIdx, scratchOffset, PAGE_SIZE);
-      if (n <= 0) break;
-      chunks.push(mem.slice(scratchOffset, scratchOffset + n));
-    }
-    if (chunks.length === 0) return null;
-    const total = chunks.reduce((s, c) => s + c.length, 0);
-    const result = new Uint8Array(total);
-    let offset = 0;
-    for (const chunk of chunks) {
-      result.set(chunk, offset);
-      offset += chunk.length;
-    }
-    return result;
+  /** Read data from a kernel pipe. */
+  async pipeRead(pid: number, pipeIdx: number): Promise<Uint8Array | null> {
+    const requestId = this.nextRequestId++;
+    return this.request(requestId, {
+      type: "pipe_read",
+      requestId,
+      pid,
+      pipeIdx,
+    }) as Promise<Uint8Array | null>;
   }
 
-  /**
-   * Close the write end of a pipe (signals EOF to the reader).
-   */
+  /** Close the write end of a pipe. */
   pipeCloseWrite(pid: number, pipeIdx: number): void {
-    if (!this.kernelInstance) return;
-    const fn = this.kernelInstance.exports.kernel_pipe_close_write as (
-      pid: number,
-      pipeIdx: number,
-    ) => number;
-    fn(pid, pipeIdx);
+    this.sendToKernel({ type: "pipe_close_write", pid, pipeIdx });
   }
 
-  /**
-   * Close the read end of a pipe.
-   */
+  /** Close the read end of a pipe. */
   pipeCloseRead(pid: number, pipeIdx: number): void {
-    if (!this.kernelInstance) return;
-    const fn = this.kernelInstance.exports.kernel_pipe_close_read as (
-      pid: number,
-      pipeIdx: number,
-    ) => number;
-    fn(pid, pipeIdx);
+    this.sendToKernel({ type: "pipe_close_read", pid, pipeIdx });
   }
 
-  /**
-   * Check if a pipe's write end is still open.
-   */
-  pipeIsWriteOpen(pid: number, pipeIdx: number): boolean {
-    if (!this.kernelInstance) return false;
-    const fn = this.kernelInstance.exports.kernel_pipe_is_write_open as (
-      pid: number,
-      pipeIdx: number,
-    ) => number;
-    return fn(pid, pipeIdx) === 1;
+  /** Check if a pipe's write end is still open. */
+  async pipeIsWriteOpen(pid: number, pipeIdx: number): Promise<boolean> {
+    const requestId = this.nextRequestId++;
+    return this.request(requestId, {
+      type: "pipe_is_write_open",
+      requestId,
+      pid,
+      pipeIdx,
+    }) as Promise<boolean>;
   }
 
-  /**
-   * Wake any process blocked on poll/accept watching the given pipe.
-   */
+  /** Wake any process blocked on reading the given pipe. */
   wakeBlockedReaders(pipeIdx: number): void {
-    const kw = this.kernelWorker as any;
-    const readers = kw.pendingPipeReaders?.get(pipeIdx);
-    if (readers && readers.length > 0) {
-      kw.pendingPipeReaders.delete(pipeIdx);
-      for (const reader of readers) {
-        if (kw.processes.has(reader.pid)) {
-          kw.retrySyscall(reader.channel);
-        }
-      }
-    }
-    kw.scheduleWakeBlockedRetries();
+    this.sendToKernel({ type: "wake_blocked_readers", pipeIdx });
   }
 
-  /**
-   * Wake any process blocked on a write to the given pipe.
-   * Called after pipeRead drains data from a pipe — the freed buffer space
-   * allows blocked writers to continue.
-   */
+  /** Wake any process blocked on writing to the given pipe. */
   wakeBlockedWriters(pipeIdx: number): void {
-    const kw = this.kernelWorker as any;
-    const writers = kw.pendingPipeWriters?.get(pipeIdx);
-    if (writers && writers.length > 0) {
-      kw.pendingPipeWriters.delete(pipeIdx);
-      for (const writer of writers) {
-        if (kw.processes.has(writer.pid)) {
-          kw.retrySyscall(writer.channel);
-        }
-      }
-    }
-    kw.scheduleWakeBlockedRetries();
+    this.sendToKernel({ type: "wake_blocked_writers", pipeIdx });
   }
 
-  /** Pick a listener target for the given port (round-robin among fork children) */
-  pickListenerTarget(port: number): { pid: number; fd: number } | null {
-    return (this.kernelWorker as any).pickListenerTarget(port);
+  /** Pick a listener target for the given port. */
+  async pickListenerTarget(port: number): Promise<{ pid: number; fd: number } | null> {
+    const requestId = this.nextRequestId++;
+    return this.request(requestId, {
+      type: "pick_listener_target",
+      requestId,
+      port,
+    }) as Promise<{ pid: number; fd: number } | null>;
   }
 
-  /**
-   * Append data to a process's stdin buffer and wake any blocked reader.
-   * For interactive input (REPL, shell) where data arrives incrementally.
-   */
+  /** Append data to a process's stdin buffer. */
   appendStdinData(pid: number, data: Uint8Array): void {
-    this.kernelWorker.appendStdinData(pid, data);
+    this.sendToKernel({ type: "append_stdin_data", pid, data });
   }
 
-  /**
-   * Set a process's stdin data (complete buffer with implicit EOF at end).
-   * For batch input where the full content is known upfront.
-   */
+  /** Set a process's stdin data (complete buffer with implicit EOF). */
   setStdinData(pid: number, data: Uint8Array): void {
-    this.kernelWorker.setStdinData(pid, data);
+    this.sendToKernel({ type: "set_stdin_data", pid, data });
   }
 
-  /**
-   * Check if a process's finite stdin buffer has been fully consumed.
-   * Returns true when the process has read all data provided via setStdinData/spawn stdin option.
-   */
-  isStdinConsumed(pid: number): boolean {
-    const kw = this.kernelWorker as any;
-    return kw.stdinFinite.has(pid) && !kw.stdinBuffers.has(pid);
-  }
-
-  /** Get the underlying CentralizedKernelWorker (for advanced use) */
-  get worker(): CentralizedKernelWorker {
-    return this.kernelWorker;
+  /** Check if a process's stdin buffer has been fully consumed. */
+  async isStdinConsumed(pid: number): Promise<boolean> {
+    const requestId = this.nextRequestId++;
+    return this.request(requestId, {
+      type: "is_stdin_consumed",
+      requestId,
+      pid,
+    }) as Promise<boolean>;
   }
 
   // ── PTY methods ──
 
-  /**
-   * Write data to the PTY master for a process (host → line discipline → slave).
-   * Use this instead of appendStdinData for PTY-backed processes.
-   */
+  /** Write data to the PTY master for a process. */
   ptyWrite(pid: number, data: Uint8Array): void {
-    const ptyIdx = this.ptyByPid.get(pid);
-    if (ptyIdx === undefined) return;
-    this.kernelWorker.ptyMasterWrite(ptyIdx, data);
+    this.sendToKernel({ type: "pty_write", pid, data });
   }
 
-  /**
-   * Resize the PTY for a process and send SIGWINCH.
-   */
+  /** Resize the PTY for a process. */
   ptyResize(pid: number, rows: number, cols: number): void {
-    const ptyIdx = this.ptyByPid.get(pid);
-    if (ptyIdx === undefined) return;
-    this.kernelWorker.ptySetWinsize(ptyIdx, rows, cols);
+    this.sendToKernel({ type: "pty_resize", pid, rows, cols });
   }
 
-  /**
-   * Register a callback for PTY output data from a process.
-   */
+  /** Register a callback for PTY output data from a process. */
   onPtyOutput(pid: number, callback: (data: Uint8Array) => void): void {
-    const ptyIdx = this.ptyByPid.get(pid);
-    if (ptyIdx === undefined) return;
-    this.kernelWorker.onPtyOutput(ptyIdx, callback);
+    this.ptyOutputCallbacks.set(pid, callback);
   }
 
-  /**
-   * Terminate a specific process and all its threads.
-   * Resolves the exit promise with the given status code.
-   */
+  /** Terminate a specific process. */
   async terminateProcess(pid: number, status = -1): Promise<void> {
-    // Terminate thread workers
-    const threads = this.threadWorkers.get(pid);
-    if (threads) {
-      for (const t of threads) {
-        await t.worker.terminate().catch(() => {});
-        try {
-          this.kernelWorker.notifyThreadExit(pid, t.tid);
-          this.kernelWorker.removeChannel(pid, t.channelOffset);
-        } catch {}
-      }
-      this.threadWorkers.delete(pid);
-    }
-
-    // Terminate main process worker
-    const info = this.processes.get(pid);
-    if (info?.worker) {
-      await info.worker.terminate().catch(() => {});
-    }
-
-    // Unregister from kernel
-    try {
-      this.kernelWorker.unregisterProcess(pid);
-    } catch {}
-
-    this.processes.delete(pid);
-
+    const requestId = this.nextRequestId++;
+    await this.request(requestId, {
+      type: "terminate_process",
+      requestId,
+      pid,
+      status,
+    });
     // Resolve exit promise
     const resolver = this.exitResolvers.get(pid);
     this.exitResolvers.delete(pid);
@@ -677,193 +354,63 @@ export class BrowserKernel {
 
   /** Destroy the kernel and release all resources. */
   async destroy(): Promise<void> {
-    // Terminate all process workers
-    for (const [pid, info] of this.processes) {
-      if (info.worker) {
-        await info.worker.terminate().catch(() => {});
-      }
-      try {
-        this.kernelWorker.unregisterProcess(pid);
-      } catch {}
-    }
-    this.processes.clear();
+    const requestId = this.nextRequestId++;
+    await this.request(requestId, {
+      type: "destroy",
+      requestId,
+    });
+    this.kernelWorkerHandle.terminate();
     this.exitResolvers.clear();
-
-    // Clear kernel references to allow GC
-    this.kernelInstance = null;
-    this.kernelMemory = null;
-    (this as any).kernelWorker = null;
+    this.pendingRequests.clear();
   }
 
-  // --- Private handlers ---
+  // ── Private helpers ──
 
-  private async handleFork(
-    parentPid: number,
-    childPid: number,
-    parentMemory: WebAssembly.Memory,
-  ): Promise<number[]> {
-    const parentInfo = this.processes.get(parentPid);
-    if (!parentInfo) throw new Error(`Unknown parent pid ${parentPid}`);
-
-    // Pre-compile the wasm module on the main thread if not already cached.
-    // This is critical for fork children: V8 web workers have a limited native
-    // stack (~1MB). If the child compiles from scratch, it gets Liftoff (baseline)
-    // code with larger stack frames. A pre-compiled module has TurboFan-optimized
-    // code with smaller frames, allowing the asyncify rewind's deep call stack
-    // to fit within the web worker's native stack limit.
-    if (!parentInfo.programModule) {
-      parentInfo.programModule = await WebAssembly.compile(parentInfo.programBytes);
-    }
-
-    const parentBuf = new Uint8Array(parentMemory.buffer);
-    const parentPages = Math.ceil(parentBuf.byteLength / PAGE_SIZE);
-    const childMemory = new WebAssembly.Memory({
-      initial: parentPages,
-      maximum: this.maxPages,
-      shared: true,
-    });
-    if (parentPages < this.maxPages) {
-      childMemory.grow(this.maxPages - parentPages);
-    }
-    new Uint8Array(childMemory.buffer).set(parentBuf);
-
-    const childChannelOffset = (this.maxPages - 2) * PAGE_SIZE;
-    new Uint8Array(
-      childMemory.buffer,
-      childChannelOffset,
-      CH_TOTAL_SIZE,
-    ).fill(0);
-
-    this.kernelWorker.registerProcess(childPid, childMemory, [childChannelOffset], {
-      skipKernelCreate: true,
-    });
-
-    const asyncifyBufAddr = childChannelOffset - ASYNCIFY_BUF_SIZE;
-
-    const childInitData: CentralizedWorkerInitMessage = {
-      type: "centralized_init",
-      pid: childPid,
-      ppid: parentPid,
-      programBytes: parentInfo.programBytes,
-      programModule: parentInfo.programModule,
-      memory: childMemory,
-      channelOffset: childChannelOffset,
-      isForkChild: true,
-      asyncifyBufAddr,
-    };
-
-    const childWorker = this.workerAdapter.createWorker(childInitData);
-    childWorker.on("message", (msg: unknown) => {
-      const m = msg as { type?: string; pid?: number; status?: number; message?: string };
-      if (m?.type === "exit") {
-        this.kernelWorker.unregisterProcess(childPid);
-        this.processes.delete(childPid);
-      } else if (m?.type === "error") {
-        console.error(`[BrowserKernel] fork child=${childPid} error: ${m.message}`);
-        this.kernelWorker.unregisterProcess(childPid);
-        this.processes.delete(childPid);
-      }
-    });
-    childWorker.on("error", (err: Error) => {
-      console.error(`[BrowserKernel] fork child=${childPid} worker error:`, err);
-      this.kernelWorker.unregisterProcess(childPid);
-      this.processes.delete(childPid);
-    });
-
-    this.processes.set(childPid, {
-      memory: childMemory,
-      programBytes: parentInfo.programBytes,
-      programModule: parentInfo.programModule,
-      worker: childWorker,
-      channelOffset: childChannelOffset,
-    });
-
-    return [childChannelOffset];
+  private sendToKernel(msg: MainToKernelMessage, transfer?: Transferable[]): void {
+    this.kernelWorkerHandle.postMessage(msg, transfer ?? []);
   }
 
-  private async handleClone(
-    pid: number,
-    tid: number,
-    fnPtr: number,
-    argPtr: number,
-    stackPtr: number,
-    tlsPtr: number,
-    ctidPtr: number,
-    memory: WebAssembly.Memory,
-  ): Promise<number> {
-    const processInfo = this.processes.get(pid);
-    if (!processInfo) throw new Error(`Unknown pid ${pid} for clone`);
+  private request(requestId: number, msg: MainToKernelMessage, transfer?: Transferable[]): Promise<any> {
+    return new Promise((resolve, reject) => {
+      this.pendingRequests.set(requestId, { resolve, reject });
+      this.sendToKernel(msg, transfer);
+    });
+  }
 
-    const threadChannelOffset = this.nextThreadChannelPage * PAGE_SIZE;
-    const tlsAllocAddr = (this.nextThreadChannelPage - 2) * PAGE_SIZE;
-    // Each thread needs 4 pages: 2 for channel (65576 bytes spills past 1 page)
-    // + 1 gap page + 1 for TLS
-    this.nextThreadChannelPage -= 4;
-    new Uint8Array(memory.buffer, threadChannelOffset, CH_TOTAL_SIZE).fill(0);
-    new Uint8Array(memory.buffer, tlsAllocAddr, PAGE_SIZE).fill(0);
-
-    this.kernelWorker.addChannel(pid, threadChannelOffset, tid);
-
-    const threadInitData: CentralizedThreadInitMessage = {
-      type: "centralized_thread_init",
-      pid,
-      tid,
-      programBytes: processInfo.programBytes,
-      programModule: this.options.threadModule,
-      memory,
-      channelOffset: threadChannelOffset,
-      fnPtr,
-      argPtr,
-      stackPtr,
-      tlsPtr,
-      ctidPtr,
-      tlsAllocAddr,
-    };
-
-    const threadWorker = this.workerAdapter.createWorker(threadInitData);
-    if (!this.threadWorkers.has(pid)) this.threadWorkers.set(pid, []);
-    const threadEntry = { worker: threadWorker, channelOffset: threadChannelOffset, tid };
-    this.threadWorkers.get(pid)!.push(threadEntry);
-
-    threadWorker.on("message", (msg: unknown) => {
-      const m = msg as WorkerToHostMessage;
-      if (m.type === "thread_exit") {
-        threadWorker.terminate().catch(() => {});
-        const threads = this.threadWorkers.get(pid);
-        if (threads) {
-          const idx = threads.indexOf(threadEntry);
-          if (idx >= 0) threads.splice(idx, 1);
+  private handleWorkerMessage(msg: KernelToMainMessage): void {
+    switch (msg.type) {
+      case "response": {
+        const pending = this.pendingRequests.get(msg.requestId);
+        if (pending) {
+          this.pendingRequests.delete(msg.requestId);
+          if (msg.error) {
+            pending.reject(new Error(msg.error));
+          } else {
+            pending.resolve(msg.result);
+          }
         }
+        break;
       }
-    });
-    threadWorker.on("error", () => {
-      this.kernelWorker.notifyThreadExit(pid, tid);
-      this.kernelWorker.removeChannel(pid, threadChannelOffset);
-      const threads = this.threadWorkers.get(pid);
-      if (threads) {
-        const idx = threads.indexOf(threadEntry);
-        if (idx >= 0) threads.splice(idx, 1);
+      case "exit": {
+        const resolver = this.exitResolvers.get(msg.pid);
+        this.exitResolvers.delete(msg.pid);
+        if (resolver) resolver(msg.status);
+        break;
       }
-    });
-
-    return tid;
-  }
-
-  private handleExit(pid: number, exitStatus: number): void {
-    const resolver = this.exitResolvers.get(pid);
-    const info = this.processes.get(pid);
-
-    if (pid === this.nextPid - 1 || !this.processes.has(pid)) {
-      // Last spawned process or already cleaned up
-      this.kernelWorker.unregisterProcess(pid);
-      if (info?.worker) info.worker.terminate().catch(() => {});
-    } else {
-      // Child process — deactivate but keep in kernel for waitpid
-      this.kernelWorker.deactivateProcess(pid);
+      case "stdout":
+        this.options.onStdout?.(msg.data);
+        break;
+      case "stderr":
+        this.options.onStderr?.(msg.data);
+        break;
+      case "pty_output": {
+        const cb = this.ptyOutputCallbacks.get(msg.pid);
+        if (cb) cb(msg.data);
+        break;
+      }
+      case "listen_tcp":
+        this.options.onListenTcp?.(msg.pid, msg.fd, msg.port);
+        break;
     }
-
-    this.processes.delete(pid);
-    this.exitResolvers.delete(pid);
-    if (resolver) resolver(exitStatus);
   }
 }
