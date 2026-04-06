@@ -319,9 +319,11 @@ async function start() {
     setStatus("Bootstrapping MariaDB system tables...", "loading");
     appendLog("Bootstrapping MariaDB system tables (this may take a few minutes in browser)...\n", "info");
 
-    const bootstrapSql = `use mysql;\n${systemTablesSql}\n${systemDataSql}\n`;
+    // Include CREATE DATABASE in the bootstrap SQL so we only need one bootstrap pass
+    const bootstrapSql = `use mysql;\n${systemTablesSql}\n${systemDataSql}\nCREATE DATABASE IF NOT EXISTS wordpress;\n`;
     const bootstrapStdin = new TextEncoder().encode(bootstrapSql);
 
+    const bootstrapPid = kernel.nextPid;
     const bootstrapExit = kernel.spawn(mariadbBytes, [
       "mariadbd",
       "--no-defaults",
@@ -338,7 +340,20 @@ async function start() {
       stdin: bootstrapStdin,
     });
 
-    // Browser wasm is much slower than Node.js — give bootstrap plenty of time
+    // MariaDB bootstrap hangs during shutdown waiting for signal handler thread,
+    // so we can't rely on process exit. Poll for stdin consumption instead.
+    const stdinConsumed = new Promise<number>((resolve) => {
+      const check = async () => {
+        if (await kernel!.isStdinConsumed(bootstrapPid)) {
+          // Give MariaDB a moment to flush writes after consuming last SQL
+          setTimeout(() => resolve(0), 2000);
+        } else {
+          setTimeout(check, 500);
+        }
+      };
+      setTimeout(check, 1000);
+    });
+
     const bootstrapTimeout = new Promise<number>((r) =>
       setTimeout(() => r(-1), 600000),
     );
@@ -347,36 +362,18 @@ async function start() {
       appendLog("  Bootstrap still running...\n", "info");
     }, 15000);
 
-    const bootstrapResult = await Promise.race([bootstrapExit, bootstrapTimeout]);
+    const bootstrapResult = await Promise.race([bootstrapExit, stdinConsumed, bootstrapTimeout]);
     clearInterval(progressInterval);
 
     if (bootstrapResult === -1) {
       throw new Error("MariaDB bootstrap timed out after 10 minutes. Try reloading the page.");
     }
-    appendLog(`Bootstrap exited with code ${bootstrapResult}\n`, "info");
+    appendLog("Bootstrap complete\n", "info");
 
-    // Create wordpress database
-    appendLog("Creating wordpress database...\n", "info");
-    const createDbExit = kernel.spawn(mariadbBytes, [
-      "mariadbd",
-      "--no-defaults",
-      "--datadir=/data",
-      "--tmpdir=/data/tmp",
-      "--default-storage-engine=Aria",
-      "--skip-grant-tables",
-      "--key-buffer-size=1048576",
-      "--table-open-cache=10",
-      "--sort-buffer-size=262144",
-      "--bootstrap",
-      "--log-warnings=0",
-    ], {
-      stdin: new TextEncoder().encode("CREATE DATABASE IF NOT EXISTS wordpress;\n"),
-    });
-
-    const createTimeout = new Promise<number>((r) =>
-      setTimeout(() => r(-1), 60000),
-    );
-    await Promise.race([createDbExit, createTimeout]);
+    // Terminate the bootstrap process — it hangs during shutdown waiting for
+    // signal handler thread. Must terminate before server starts so Aria lock
+    // files and data directory are released.
+    await kernel.terminateProcess(bootstrapPid);
     appendLog("WordPress database ready\n", "info");
 
     // =====================================================================

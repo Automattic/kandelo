@@ -244,7 +244,8 @@ function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>) {
       const ptyIdx = kernelWorker.setupPty(pid);
       ptyByPid.set(pid, ptyIdx);
     } else if (msg.stdin) {
-      kernelWorker.setStdinData(pid, msg.stdin);
+      const stdinData = msg.stdin instanceof Uint8Array ? msg.stdin : new Uint8Array(msg.stdin);
+      kernelWorker.setStdinData(pid, stdinData);
     }
 
     const initData: CentralizedWorkerInitMessage = {
