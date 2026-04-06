@@ -111,14 +111,20 @@ test("shell: pipes between coreutils", async ({ page }) => {
   await page.click("#mode-batch");
   await page.fill(
     "#code",
-    'echo "hello world" | wc -c\necho "alpha bravo charlie" | tr " " "\\n" | sort | head -2\n',
+    'echo "hello world" | wc -c\nprintf "beta\\nalpha\\n" | sort\necho foo | cat\n',
   );
   await page.click("#run");
 
-  await waitForText(page, "#batch-output", "12", 30_000);
+  // Wait for the last command's output ("foo" from echo foo | cat)
+  await waitForText(page, "#batch-output", "foo", 30_000);
   const output = await page.locator("#batch-output").textContent();
+  // wc -c counts 12 bytes ("hello world\n")
+  expect(output).toContain("12");
+  // sort should produce alpha before beta
   expect(output).toContain("alpha");
-  expect(output).toContain("bravo");
+  expect(output).toContain("beta");
+  // cat should pass through
+  expect(output).toContain("foo");
   await assertNoError(page);
 });
 

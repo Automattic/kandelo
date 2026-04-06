@@ -687,13 +687,16 @@ function setupConnectionPump(port: number) {
 function handleHttpRequest(requestId: number, request: any) {
   if (!kernelInstance || !bridgePort) return;
 
-  // Determine listener port from the Host header or URL
-  const hostHeader = request.headers?.host || request.headers?.Host || "";
-  let listenerPort = 8080; // default
-  const portMatch = hostHeader.match(/:(\d+)/);
-  if (portMatch) listenerPort = parseInt(portMatch[1], 10);
-
-  const target = (kernelWorker as any).pickListenerTarget(listenerPort);
+  // Find a listener target. The Host header from the browser contains the
+  // external port (e.g. Vite dev server :5198), not the internal port nginx
+  // listens on. Try all registered listener ports to find a match.
+  const kw = kernelWorker as any;
+  const targetPorts: number[] = Array.from(kw.tcpListenerTargets?.keys() ?? []);
+  let target: { pid: number; fd: number } | null = null;
+  for (const port of targetPorts) {
+    target = kw.pickListenerTarget(port);
+    if (target) break;
+  }
   if (!target) {
     bridgePort.postMessage({
       type: "http-error",
@@ -727,7 +730,6 @@ function handleHttpRequest(requestId: number, request: any) {
   pipeWriteDirect(target.pid, recvPipeIdx, rawRequest);
 
   // Wake blocked readers
-  const kw = kernelWorker as any;
   const readers = kw.pendingPipeReaders?.get(recvPipeIdx);
   if (readers && readers.length > 0) {
     kw.pendingPipeReaders.delete(recvPipeIdx);
@@ -959,7 +961,7 @@ function readFileFromFs(path: string): ArrayBuffer | null {
       const size = stat.size;
       if (size <= 0) { memfs.close(fd); return null; }
       const buf = new Uint8Array(size);
-      const nread = memfs.read(fd, buf, size, 0);
+      const nread = memfs.read(fd, buf, null, size);
       memfs.close(fd);
       if (nread <= 0) return null;
       return buf.buffer.slice(buf.byteOffset, buf.byteOffset + nread);

@@ -76,6 +76,7 @@ export class BrowserKernel {
     this.fsSab = new SharedArrayBuffer(this.options.fsSize);
     this.shmSab = new SharedArrayBuffer(1024 * 1024);
     this.memfs = MemoryFileSystem.create(this.fsSab);
+    MemoryFileSystem.create(this.shmSab); // format shm SAB for kernel worker
 
     // Create standard directories
     this.memfs.mkdir("/tmp", 0o777);
