@@ -6,6 +6,7 @@
  *   - Reads responses (simple strings, errors, integers, bulk strings, arrays)
  *
  * Operates entirely over kernel pipe pairs (no real TCP).
+ * All pipe operations are async (message round-trip to kernel worker).
  */
 import type { BrowserKernel } from "./browser-kernel";
 
@@ -46,10 +47,10 @@ export class RedisBrowserClient {
     kernel: BrowserKernel,
     port: number,
   ): Promise<RedisBrowserClient> {
-    const target = kernel.pickListenerTarget(port);
+    const target = await kernel.pickListenerTarget(port);
     if (!target) throw new Error("No listener on port " + port);
 
-    const recvPipeIdx = kernel.injectConnection(
+    const recvPipeIdx = await kernel.injectConnection(
       target.pid,
       target.fd,
     );
@@ -71,7 +72,7 @@ export class RedisBrowserClient {
     }
 
     // Send command
-    this.kernel.pipeWrite(this.pid, this.recvPipeIdx, encoder.encode(cmd));
+    await this.kernel.pipeWrite(this.pid, this.recvPipeIdx, encoder.encode(cmd));
     this.kernel.wakeBlockedReaders(this.recvPipeIdx);
 
     // Read response
@@ -166,7 +167,7 @@ export class RedisBrowserClient {
   private async fillBuffer(): Promise<void> {
     // Poll for data from the kernel pipe
     for (let attempt = 0; attempt < 200; attempt++) {
-      const data = this.kernel.pipeRead(this.pid, this.sendPipeIdx);
+      const data = await this.kernel.pipeRead(this.pid, this.sendPipeIdx);
       if (data && data.length > 0) {
         const merged = new Uint8Array(this.readBuffer.length + data.length);
         merged.set(this.readBuffer);

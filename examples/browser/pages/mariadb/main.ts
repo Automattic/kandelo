@@ -139,8 +139,8 @@ async function start() {
     // MariaDB hangs during shutdown waiting for signal handler thread, so we can't
     // rely on process exit. Once stdin is fully consumed, the SQL has been executed.
     const stdinConsumed = new Promise<number>((resolve) => {
-      const check = () => {
-        if (kernel!.isStdinConsumed(bootstrapPid)) {
+      const check = async () => {
+        if (await kernel!.isStdinConsumed(bootstrapPid)) {
           // Give MariaDB a moment to flush writes after consuming last SQL
           setTimeout(() => resolve(0), 2000);
         } else {
@@ -203,7 +203,7 @@ async function start() {
     const listenerTimeout = 60;
     for (let s = 1; s <= listenerTimeout; s++) {
       await new Promise((r) => setTimeout(r, 1000));
-      const target = kernel.pickListenerTarget(3306);
+      const target = await kernel.pickListenerTarget(3306);
       if (target) {
         appendLog(`Server listening (after ${s}s)\n`, "info");
         break;

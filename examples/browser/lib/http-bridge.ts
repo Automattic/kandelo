@@ -155,4 +155,15 @@ export class HttpBridgeHost {
       error: message || "Internal error",
     });
   }
+
+  /**
+   * Detach and return the host-side port for transfer to the kernel worker.
+   * After calling this, the HttpBridgeHost can no longer be used for direct
+   * request handling — the kernel worker takes over.
+   */
+  detachHostPort(): MessagePort {
+    this.port.onmessage = null;
+    this.handler = null;
+    return this.port;
+  }
 }

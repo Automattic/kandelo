@@ -114,55 +114,59 @@ async function loadBinaries(): Promise<string> {
   return parts.join(", ") + "\n";
 }
 
-// --- Exec path resolution ---
-function resolveExecPath(path: string, _argv: string[], envp: string[]): ArrayBuffer | null {
-  if (path.startsWith("/")) {
-    if (path === "/bin/sh" || path === "/bin/dash") return dashBytes;
-    // grep/egrep/fgrep
-    const name = path.split("/").pop()!;
-    if (grepBytes && (name === "grep" || name === "egrep" || name === "fgrep")) return grepBytes;
-    if (sedBytes && name === "sed") return sedBytes;
-    if (coreutilsBytes) {
-      if (COREUTILS_NAMES.includes(name) || name === "[") return coreutilsBytes;
-    }
-    return null;
-  }
-
-  const pathEnv = envp.find((e) => e.startsWith("PATH="))?.slice(5)
-    ?? "/usr/local/bin:/usr/bin:/bin";
-  for (const dir of pathEnv.split(":")) {
-    const result = resolveExecPath(`${dir}/${path}`, _argv, envp);
-    if (result) return result;
-  }
-  return null;
+/**
+ * Write a binary file to the virtual filesystem.
+ */
+function writeFileToFs(fs: import("../../lib/browser-kernel").BrowserKernel["fs"], path: string, data: ArrayBuffer): void {
+  const bytes = new Uint8Array(data);
+  const fd = fs.open(path, 0x241 /* O_WRONLY|O_CREAT|O_TRUNC */, 0o755);
+  fs.write(fd, bytes, null, bytes.length);
+  fs.close(fd);
 }
 
 /**
- * Populate the virtual filesystem with executable stubs so that dash's
- * PATH search (which uses stat()) finds commands before calling execve.
- * Without these, dash calls stat() on /bin/cat etc. and gets ENOENT,
- * so it never even tries execve.
+ * Populate the virtual filesystem with actual executable binaries so that
+ * the kernel worker can read them during exec(). Uses symlinks for
+ * multicall binaries (coreutils) to avoid duplicating large binaries.
  */
-function populateExecStubs(fs: import("../../lib/browser-kernel").BrowserKernel["fs"]): void {
-  // Create /bin and /usr/bin directories
+function populateExecBinaries(fs: import("../../lib/browser-kernel").BrowserKernel["fs"]): void {
   for (const dir of ["/bin", "/usr", "/usr/bin", "/usr/local", "/usr/local/bin"]) {
     try { fs.mkdir(dir, 0o755); } catch { /* exists */ }
   }
 
-  // All command names that have wasm binaries
-  const commands: string[] = ["sh", "dash", ...COREUTILS_NAMES, "["];
-  if (grepBytes) commands.push("grep", "egrep", "fgrep");
-  if (sedBytes) commands.push("sed");
+  // Write dash binary and create symlinks
+  if (dashBytes) {
+    writeFileToFs(fs, "/bin/dash", dashBytes);
+    try { fs.symlink("/bin/dash", "/bin/sh"); } catch { /* exists */ }
+    try { fs.symlink("/bin/dash", "/usr/bin/dash"); } catch { /* exists */ }
+    try { fs.symlink("/bin/dash", "/usr/bin/sh"); } catch { /* exists */ }
+  }
 
-  // Create empty executable stubs in /bin and /usr/bin
-  // O_WRONLY | O_CREAT = 0o101
-  for (const name of commands) {
-    for (const dir of ["/bin", "/usr/bin"]) {
-      try {
-        const fd = fs.open(`${dir}/${name}`, 0o101, 0o755);
-        fs.close(fd);
-      } catch { /* exists */ }
+  // Write coreutils binary to canonical path, symlink all commands
+  if (coreutilsBytes) {
+    writeFileToFs(fs, "/bin/coreutils", coreutilsBytes);
+    for (const name of COREUTILS_NAMES) {
+      try { fs.symlink("/bin/coreutils", `/bin/${name}`); } catch { /* exists */ }
+      try { fs.symlink("/bin/coreutils", `/usr/bin/${name}`); } catch { /* exists */ }
     }
+    try { fs.symlink("/bin/coreutils", "/bin/["); } catch { /* exists */ }
+    try { fs.symlink("/bin/coreutils", "/usr/bin/["); } catch { /* exists */ }
+  }
+
+  // Write grep binary and create symlinks
+  if (grepBytes) {
+    writeFileToFs(fs, "/bin/grep", grepBytes);
+    try { fs.symlink("/bin/grep", "/bin/egrep"); } catch { /* exists */ }
+    try { fs.symlink("/bin/grep", "/bin/fgrep"); } catch { /* exists */ }
+    try { fs.symlink("/bin/grep", "/usr/bin/grep"); } catch { /* exists */ }
+    try { fs.symlink("/bin/grep", "/usr/bin/egrep"); } catch { /* exists */ }
+    try { fs.symlink("/bin/grep", "/usr/bin/fgrep"); } catch { /* exists */ }
+  }
+
+  // Write sed binary and create symlinks
+  if (sedBytes) {
+    writeFileToFs(fs, "/bin/sed", sedBytes);
+    try { fs.symlink("/bin/sed", "/usr/bin/sed"); } catch { /* exists */ }
   }
 }
 
@@ -185,14 +189,10 @@ async function startInteractiveShell() {
 
     setStatus("Starting shell...", "running");
 
-    const kernel = new BrowserKernel({
-      onExec: async (_pid, path, argv, envp) => {
-        return resolveExecPath(path, argv, envp);
-      },
-    });
+    const kernel = new BrowserKernel();
 
     await kernel.init(kernelBytes!);
-    populateExecStubs(kernel.fs);
+    populateExecBinaries(kernel.fs);
     activeKernel = kernel;
 
     // Create PTY terminal
@@ -440,13 +440,10 @@ async function runBatch() {
     const kernel = new BrowserKernel({
       onStdout: (data) => appendBatchOutput(decoder.decode(data)),
       onStderr: (data) => appendBatchOutput(decoder.decode(data), "stderr"),
-      onExec: async (_pid, path, argv, envp) => {
-        return resolveExecPath(path, argv, envp);
-      },
     });
 
     await kernel.init(kernelBytes!);
-    populateExecStubs(kernel.fs);
+    populateExecBinaries(kernel.fs);
 
     const exitCode = await kernel.spawn(dashBytes!, ["dash"], {
       env: [

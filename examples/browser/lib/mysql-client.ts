@@ -7,6 +7,7 @@
  *   3. Send COM_QUERY and read result sets
  *
  * Operates entirely over kernel pipe pairs (no real TCP).
+ * All pipe operations are async (message round-trip to kernel worker).
  */
 import type { BrowserKernel } from "./browser-kernel";
 
@@ -53,10 +54,10 @@ export class MySqlBrowserClient {
     kernel: BrowserKernel,
     port: number,
   ): Promise<MySqlBrowserClient> {
-    const target = kernel.pickListenerTarget(port);
+    const target = await kernel.pickListenerTarget(port);
     if (!target) throw new Error("No listener on port " + port);
 
-    const recvPipeIdx = kernel.injectConnection(
+    const recvPipeIdx = await kernel.injectConnection(
       target.pid,
       target.fd,
       [127, 0, 0, 1],
@@ -87,7 +88,7 @@ export class MySqlBrowserClient {
     const payload = new Uint8Array(1 + encoder.encode(sql).length);
     payload[0] = 0x03; // COM_QUERY
     payload.set(encoder.encode(sql), 1);
-    this.sendPacket(payload);
+    await this.sendPacket(payload);
     this.kernel.wakeBlockedReaders(this.recvPipeIdx);
 
     const resp = await this.readPacket();
@@ -192,7 +193,7 @@ export class MySqlBrowserClient {
     // Auth response length + data (empty for skip-grant)
     responsePayload[wp++] = 0; // auth data length = 0
 
-    this.sendPacket(responsePayload.subarray(0, wp));
+    await this.sendPacket(responsePayload.subarray(0, wp));
     this.kernel.wakeBlockedReaders(this.recvPipeIdx);
 
     // Read OK or ERR
@@ -205,7 +206,7 @@ export class MySqlBrowserClient {
     // 0x00 = OK, 0xfe = auth switch (shouldn't happen with skip-grant)
   }
 
-  private sendPacket(payload: Uint8Array): void {
+  private async sendPacket(payload: Uint8Array): Promise<void> {
     const packet = new Uint8Array(4 + payload.length);
     // 3-byte length
     packet[0] = payload.length & 0xff;
@@ -215,7 +216,7 @@ export class MySqlBrowserClient {
     packet[3] = this.seqNum++;
     packet.set(payload, 4);
 
-    this.kernel.pipeWrite(this.pid, this.recvPipeIdx, packet);
+    await this.kernel.pipeWrite(this.pid, this.recvPipeIdx, packet);
   }
 
   private async readPacket(): Promise<Uint8Array | null> {
@@ -246,7 +247,7 @@ export class MySqlBrowserClient {
   private async readBytes(): Promise<Uint8Array | null> {
     // Poll the pipe for data with timeout (30s = 1500 × 20ms)
     for (let i = 0; i < 1500; i++) {
-      const data = this.kernel.pipeRead(this.pid, this.sendPipeIdx);
+      const data = await this.kernel.pipeRead(this.pid, this.sendPipeIdx);
       if (data && data.length > 0) return data;
       await new Promise((r) => setTimeout(r, 20));
     }
