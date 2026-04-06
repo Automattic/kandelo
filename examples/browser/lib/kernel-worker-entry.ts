@@ -564,6 +564,18 @@ function handlePipeWrite(msg: Extract<MainToKernelMessage, { type: "pipe_write" 
     if (n <= 0) break;
     written += n;
   }
+  // After writing, wake any blocked readers on this pipe
+  const kw = kernelWorker as any;
+  const readers = kw.pendingPipeReaders?.get(msg.pipeIdx);
+  if (readers && readers.length > 0) {
+    kw.pendingPipeReaders.delete(msg.pipeIdx);
+    for (const reader of readers) {
+      if (kw.processes.has(reader.pid)) {
+        kw.retrySyscall(reader.channel);
+      }
+    }
+  }
+  kw.scheduleWakeBlockedRetries();
   respond(msg.requestId, written);
 }
 
@@ -635,7 +647,9 @@ function handleIsStdinConsumed(msg: Extract<MainToKernelMessage, { type: "is_std
 }
 
 function handlePickListenerTarget(msg: Extract<MainToKernelMessage, { type: "pick_listener_target" }>) {
-  respond(msg.requestId, (kernelWorker as any).pickListenerTarget(msg.port));
+  const kw = kernelWorker as any;
+  const result = kw.pickListenerTarget(msg.port);
+  respond(msg.requestId, result);
 }
 
 function handleDestroy(msg: Extract<MainToKernelMessage, { type: "destroy" }>) {
@@ -977,7 +991,6 @@ const sw = globalThis as unknown as {
 
 sw.onmessage = (e: MessageEvent) => {
   const msg = e.data as MainToKernelMessage;
-
   switch (msg.type) {
     case "init": handleInit(msg); break;
     case "spawn": handleSpawn(msg); break;

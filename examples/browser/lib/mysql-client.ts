@@ -34,6 +34,7 @@ export class MySqlBrowserClient {
   private recvPipeIdx: number; // write to this to send data to server
   private sendPipeIdx: number; // read from this to get data from server
   private seqNum = 0;
+  private readBuffer = new Uint8Array(0);
 
   private constructor(
     kernel: BrowserKernel,
@@ -220,31 +221,38 @@ export class MySqlBrowserClient {
   }
 
   private async readPacket(): Promise<Uint8Array | null> {
-    // Read data from the send pipe until we get a complete packet
-    const data = await this.readBytes();
-    if (!data || data.length < 4) return null;
-
-    const payloadLen = data[0] | (data[1] << 8) | (data[2] << 16);
-    this.seqNum = data[3] + 1;
-
-    if (data.length < 4 + payloadLen) {
-      // Need more data — accumulate
-      const accumulated = new Uint8Array(4 + payloadLen);
-      accumulated.set(data);
-      let offset = data.length;
-      while (offset < 4 + payloadLen) {
-        const more = await this.readBytes();
-        if (!more) break;
-        accumulated.set(more, offset);
-        offset += more.length;
-      }
-      return accumulated.subarray(4, 4 + payloadLen);
+    // Ensure we have at least the 4-byte header in the buffer
+    while (this.readBuffer.length < 4) {
+      const more = await this.readBytesFromPipe();
+      if (!more) return null;
+      this.appendToBuffer(more);
     }
 
-    return data.subarray(4, 4 + payloadLen);
+    const payloadLen =
+      this.readBuffer[0] | (this.readBuffer[1] << 8) | (this.readBuffer[2] << 16);
+    this.seqNum = this.readBuffer[3] + 1;
+
+    // Ensure we have the full packet payload
+    while (this.readBuffer.length < 4 + payloadLen) {
+      const more = await this.readBytesFromPipe();
+      if (!more) break;
+      this.appendToBuffer(more);
+    }
+
+    const packet = new Uint8Array(this.readBuffer.subarray(4, 4 + payloadLen));
+    // Consume the packet from the buffer, keeping leftover bytes
+    this.readBuffer = new Uint8Array(this.readBuffer.subarray(4 + payloadLen));
+    return packet;
   }
 
-  private async readBytes(): Promise<Uint8Array | null> {
+  private appendToBuffer(data: Uint8Array): void {
+    const combined = new Uint8Array(this.readBuffer.length + data.length);
+    combined.set(this.readBuffer);
+    combined.set(data, this.readBuffer.length);
+    this.readBuffer = combined;
+  }
+
+  private async readBytesFromPipe(): Promise<Uint8Array | null> {
     // Poll the pipe for data with timeout (30s = 1500 × 20ms)
     for (let i = 0; i < 1500; i++) {
       const data = await this.kernel.pipeRead(this.pid, this.sendPipeIdx);

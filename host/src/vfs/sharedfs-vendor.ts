@@ -1739,7 +1739,9 @@ export class SharedFS {
 
       if (recLen === 0) return null;
 
-      // Advance offset
+      // Advance offset — update both the SAB (persistent) and the local
+      // snapshot so the while loop progresses past deleted entries (entIno=0).
+      entry.offset = pos + recLen;
       const base = FD_TABLE_OFFSET + dd * FD_ENTRY_SIZE;
       this.w64(base + FD_OFFSET, pos + recLen);
 
