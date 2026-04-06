@@ -167,10 +167,11 @@ export class BrowserKernel {
    * Send the HTTP bridge host port to the kernel worker for connection pump handling.
    * Call after init() but before spawning processes that listen on ports.
    * The port should come from HttpBridgeHost.detachHostPort().
+   * @param httpPort The specific TCP port to route HTTP bridge requests to (e.g. 8080 for nginx).
    */
-  sendBridgePort(hostPort: MessagePort): void {
+  sendBridgePort(hostPort: MessagePort, httpPort?: number): void {
     this.kernelWorkerHandle.postMessage(
-      { type: "set_bridge_port", bridgePort: hostPort },
+      { type: "set_bridge_port", bridgePort: hostPort, httpPort },
       [hostPort],
     );
   }

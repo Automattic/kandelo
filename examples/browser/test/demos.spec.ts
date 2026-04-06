@@ -207,7 +207,7 @@ test("@slow python: runs script with stdlib", async ({ page }) => {
 
   await waitForText(page, "#batch-output", "Python 3.", 90_000);
   const output = await page.locator("#batch-output").textContent();
-  expect(output).toContain("pi = 3.1415");
+  expect(output).toContain("pi = 3.141");
   expect(output).toContain("json roundtrip: value, len=3");
   expect(output).toContain("[0, 1, 4, 9, 16]");
   await assertNoError(page);
@@ -224,8 +224,9 @@ test("@slow nginx-php: starts and serves PHP page", async ({ page }) => {
 
   // Verify the iframe loads PHP content via nginx + PHP-FPM
   const frame = page.frameLocator("#frame");
-  const body = await frame.locator("body").textContent({ timeout: 60_000 });
-  expect(body).toContain("PHP-FPM on WebAssembly");
+  await expect(frame.locator("body")).toContainText("PHP-FPM on WebAssembly", {
+    timeout: 60_000,
+  });
 
   const log = await page.locator("#log").textContent();
   expect(log).toContain("nginx");

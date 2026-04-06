@@ -345,8 +345,8 @@ async function start() {
       { path: "/var/www/html/wp-content/mu-plugins/wasm-optimizations.php", data: MU_PLUGIN_PHP },
     ]);
 
-    // Transfer bridge host port to the kernel worker for connection pump
-    kernel.sendBridgePort(bridge.detachHostPort());
+    // Transfer bridge host port to the kernel worker for connection pump (nginx on 8080)
+    kernel.sendBridgePort(bridge.detachHostPort(), 8080);
 
     setStatus("WordPress running! Loading page...", "running");
     reloadBtn.disabled = false;

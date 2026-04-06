@@ -231,8 +231,8 @@ async function start() {
       { path: "/var/www/html/index.php", data: INDEX_PHP },
     ]);
 
-    // Transfer bridge host port to the kernel worker for connection pump
-    kernel.sendBridgePort(bridge.detachHostPort());
+    // Transfer bridge host port to the kernel worker for connection pump (nginx on 8080)
+    kernel.sendBridgePort(bridge.detachHostPort(), 8080);
 
     // --- Start php-fpm first (pid 1) ---
     setStatus("Starting PHP-FPM...", "loading");

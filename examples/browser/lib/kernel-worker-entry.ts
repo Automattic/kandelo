@@ -23,8 +23,10 @@ if (typeof globalThis.setImmediate === "undefined") {
   function _immFlush() {
     _immScheduled = false;
     _immFlushing = true;
-    // Process all queued items — no deadline needed in a dedicated worker
-    while (_immQueue.length > 0) {
+    // Process only items queued at flush start — items added during the flush
+    // are deferred to a new macrotask so onmessage handlers can interleave.
+    const count = _immQueue.length;
+    for (let i = 0; i < count && _immQueue.length > 0; i++) {
       const entry = _immQueue.shift()!;
       if (_immCancelled.has(entry.id)) {
         _immCancelled.delete(entry.id);
@@ -37,6 +39,11 @@ if (typeof globalThis.setImmediate === "undefined") {
       }
     }
     _immFlushing = false;
+    // Schedule another flush if new items were added during processing
+    if (_immQueue.length > 0 && !_immScheduled) {
+      _immScheduled = true;
+      _immChannel.port2.postMessage(null);
+    }
   }
 
   (globalThis as any).setImmediate = (fn: (...args: any[]) => void, ...args: any[]) => {
@@ -106,6 +113,7 @@ let kernelMemory: WebAssembly.Memory | null = null;
 
 // HTTP bridge port (transferred from main thread → service worker comms)
 let bridgePort: MessagePort | null = null;
+let bridgeTargetPort: number | null = null; // The specific HTTP port to route bridge requests to
 
 function post(msg: KernelToMainMessage, transfer?: Transferable[]) {
   (globalThis as any).postMessage(msg, transfer ?? []);
@@ -162,6 +170,9 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // In a dedicated worker, use Atomics.waitAsync directly — no V8 microtask
   // chain freeze bug (that's main-thread-only).
   kernelWorker.usePolling = false;
+  // Yield after every syscall so onmessage handlers (pipe ops, bridge port,
+  // spawn) can interleave with syscall processing.
+  (kernelWorker as any).relistenBatchSize = 1;
 
   // Inject stdout/stderr/listen callbacks
   const kw = kernelWorker as any;
@@ -170,13 +181,14 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     ...existingCallbacks,
     onStdout: (data: Uint8Array) => post({ type: "stdout", pid: kw.currentHandlePid || 0, data }),
     onStderr: (data: Uint8Array) => post({ type: "stderr", pid: kw.currentHandlePid || 0, data }),
-    onListenTcp: (_fd: number, port: number) => {
+    onNetListen: (_fd: number, port: number, addr: [number, number, number, number]) => {
       const pid = kw.currentHandlePid;
-      post({ type: "listen_tcp", pid, fd: _fd, port });
-      // Set up connection pump if bridge port available
-      if (bridgePort) {
-        setupConnectionPump(port);
+      if (pid !== 0) {
+        // Register the listener target for pickListenerTarget
+        kw.startTcpListener(pid, _fd, port);
       }
+      post({ type: "listen_tcp", pid, fd: _fd, port });
+      return 0;
     },
   };
 
@@ -663,39 +675,21 @@ function handleRegisterPtyOutput(msg: Extract<MainToKernelMessage, { type: "regi
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
-// Track which ports have the pump wired up
-const pumpedPorts = new Set<number>();
-
-function setupConnectionPump(port: number) {
-  if (!bridgePort || pumpedPorts.has(port)) return;
-  pumpedPorts.add(port);
-
-  // We listen on the bridge port for all HTTP requests; the port number
-  // is used to find the right listener target.
-  // The first call sets up the listener; subsequent ports are handled by
-  // the same onmessage handler.
-  if (pumpedPorts.size === 1) {
-    bridgePort.onmessage = (event: MessageEvent) => {
-      const msg = event.data;
-      if (msg?.type === "http-request") {
-        handleHttpRequest(msg.requestId, msg);
-      }
-    };
-  }
-}
-
 function handleHttpRequest(requestId: number, request: any) {
   if (!kernelInstance || !bridgePort) return;
 
-  // Find a listener target. The Host header from the browser contains the
-  // external port (e.g. Vite dev server :5198), not the internal port nginx
-  // listens on. Try all registered listener ports to find a match.
+  // Find a listener target for the bridge's target HTTP port.
   const kw = kernelWorker as any;
-  const targetPorts: number[] = Array.from(kw.tcpListenerTargets?.keys() ?? []);
   let target: { pid: number; fd: number } | null = null;
-  for (const port of targetPorts) {
-    target = kw.pickListenerTarget(port);
-    if (target) break;
+  if (bridgeTargetPort !== null) {
+    target = kw.pickListenerTarget(bridgeTargetPort);
+  } else {
+    // Fallback: try all registered listener ports
+    const targetPorts: number[] = Array.from(kw.tcpListenerTargets?.keys() ?? []);
+    for (const port of targetPorts) {
+      target = kw.pickListenerTarget(port);
+      if (target) break;
+    }
   }
   if (!target) {
     bridgePort.postMessage({
@@ -1009,7 +1003,10 @@ sw.onmessage = (e: MessageEvent) => {
       const raw = e.data as any;
       if (raw?.type === "set_bridge_port" && raw.bridgePort) {
         bridgePort = raw.bridgePort;
-        // Wire up connection pump for any existing listener ports
+        if (typeof raw.httpPort === "number") {
+          bridgeTargetPort = raw.httpPort;
+        }
+        // Wire up connection pump
         if (bridgePort) {
           bridgePort.onmessage = (event: MessageEvent) => {
             const m = event.data;

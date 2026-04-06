@@ -448,8 +448,8 @@ async function start() {
     setStatus("Starting nginx...", "loading");
     appendLog("Starting nginx on 127.0.0.1:8080...\n", "info");
 
-    // Transfer bridge host port to the kernel worker for connection pump
-    kernel.sendBridgePort(bridge.detachHostPort());
+    // Transfer bridge host port to the kernel worker for connection pump (nginx on 8080)
+    kernel.sendBridgePort(bridge.detachHostPort(), 8080);
 
     const nginxExitPromise = kernel.spawn(nginxBytes, [
       "nginx",

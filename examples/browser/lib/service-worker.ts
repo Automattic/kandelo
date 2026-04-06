@@ -225,6 +225,12 @@ async function handleAppRequest(
       headers: respHeaders,
     });
   } catch (err) {
-    return new Response(`Bridge error: ${err}`, { status: 502 });
+    return new Response(`Bridge error: ${err}`, {
+      status: 502,
+      headers: {
+        "Cross-Origin-Embedder-Policy": "require-corp",
+        "Cross-Origin-Resource-Policy": "same-origin",
+      },
+    });
   }
 }
