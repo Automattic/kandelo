@@ -16,25 +16,30 @@
 // ============================================================
 if (typeof window !== "undefined") {
   if (!window.crossOriginIsolated && "serviceWorker" in navigator) {
-    // Register this script as the service worker, then reload once active
-    const scriptUrl = document.currentScript && document.currentScript.src;
-    if (scriptUrl) {
-      navigator.serviceWorker
-        .register(scriptUrl)
-        .then(function (reg) {
-          var sw = reg.active || reg.installing || reg.waiting;
-          if (!sw) return;
-          if (sw.state === "activated") {
-            window.location.reload();
-            return;
-          }
-          sw.addEventListener("statechange", function () {
-            if (sw.state === "activated") window.location.reload();
+    // If a SW is already controlling this page but we're still not
+    // crossOriginIsolated, one reload should fix it (the SW will add headers).
+    if (navigator.serviceWorker.controller) {
+      window.location.reload();
+    } else {
+      // Register this script as the service worker.
+      // Reload once the SW takes control (controllerchange fires after
+      // clients.claim() completes, guaranteeing the SW intercepts fetches).
+      var scriptUrl = document.currentScript && document.currentScript.src;
+      if (scriptUrl) {
+        navigator.serviceWorker
+          .register(scriptUrl)
+          .then(function () {
+            navigator.serviceWorker.addEventListener(
+              "controllerchange",
+              function () {
+                window.location.reload();
+              },
+            );
+          })
+          .catch(function (err) {
+            console.warn("[COI SW] registration failed:", err);
           });
-        })
-        .catch(function (err) {
-          console.warn("[COI SW] registration failed:", err);
-        });
+      }
     }
   }
   // Stop executing — the rest is service worker code
