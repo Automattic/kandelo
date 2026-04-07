@@ -289,18 +289,19 @@ if (typeof window !== "undefined") {
           }
         }
 
-        // Rewrite redirect Location if it doesn't include app prefix
+        // Rewrite redirect Location: match protocol to request (avoid mixed
+        // content on HTTPS) and add app prefix if missing.
         if (bridgeResp.status >= 300 && bridgeResp.status < 400) {
           var location =
             bridgeResp.headers["Location"] || bridgeResp.headers["location"];
           if (location) {
             try {
               var locUrl = new URL(location, url.origin);
-              if (
-                locUrl.origin === url.origin &&
-                !locUrl.pathname.startsWith(appPrefix)
-              ) {
-                locUrl.pathname = appPrefix.slice(0, -1) + locUrl.pathname;
+              if (locUrl.hostname === url.hostname) {
+                locUrl.protocol = url.protocol;
+                if (!locUrl.pathname.startsWith(appPrefix)) {
+                  locUrl.pathname = appPrefix.slice(0, -1) + locUrl.pathname;
+                }
                 respHeaders.set("Location", locUrl.toString());
               }
             } catch (e) {
