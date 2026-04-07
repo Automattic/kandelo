@@ -40,7 +40,7 @@ http {
         }
     }
 }
-`,I=`<?php
+`,k=`<?php
 $uri = urldecode(parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH));
 $docRoot = $_SERVER['DOCUMENT_ROOT'];
 $file = $docRoot . $uri;
@@ -90,7 +90,7 @@ if ($uri !== '/' && is_file($file)) {
 
 chdir($docRoot);
 include $docRoot . '/index.php';
-`,k=`[global]
+`,I=`[global]
 daemonize = no
 error_log = /dev/stderr
 log_level = notice
@@ -152,9 +152,9 @@ if (!defined('DISALLOW_FILE_MODS')) define('DISALLOW_FILE_MODS', true);
 `,"info");const[t,i,r]=await Promise.all([fetch(S).then(e=>e.arrayBuffer()),fetch(H).then(e=>e.arrayBuffer()),fetch(B).then(e=>e.arrayBuffer())]);if(n(`Kernel: ${(t.byteLength/1024).toFixed(0)}KB, nginx: ${(i.byteLength/(1024*1024)).toFixed(1)}MB, PHP-FPM: ${(r.byteLength/(1024*1024)).toFixed(1)}MB
 `,"info"),l=new y,n(`Initializing service worker bridge...
 `,"info"),!await N(l)){o("Service worker initialization failed","error");return}n(`Service worker bridge ready
-`,"info"),s=new v({maxWorkers:8,fsSize:256*1024*1024,maxMemoryPages:4096,onStdout:e=>n(E.decode(e)),onStderr:e=>n(E.decode(e),"stderr")}),await s.init(t);const a=s.fs;for(const e of["/etc/nginx","/var/www/html","/var/www/html/wp-content","/var/www/html/wp-content/database","/var/www/html/wp-content/mu-plugins","/var/log/nginx","/tmp/nginx_client_temp","/tmp/nginx_fastcgi_temp","/tmp/nginx_proxy_temp","/tmp/nginx-wasm/logs","/etc/php-fpm.d"]){const p=e.split("/").filter(Boolean);let _="";for(const R of p){_+="/"+R;try{a.mkdir(_,493)}catch{}}}await m(a,[{path:"/etc/nginx/nginx.conf",data:L},{path:"/etc/php-fpm.conf",data:k},{path:"/var/www/fpm-router.php",data:I}]),o("Starting PHP-FPM...","loading"),n(`Starting PHP-FPM...
+`,"info"),s=new v({maxWorkers:8,fsSize:256*1024*1024,maxMemoryPages:4096,onStdout:e=>n(E.decode(e)),onStderr:e=>n(E.decode(e),"stderr")}),await s.init(t);const a=s.fs;for(const e of["/etc/nginx","/var/www/html","/var/www/html/wp-content","/var/www/html/wp-content/database","/var/www/html/wp-content/mu-plugins","/var/log/nginx","/tmp/nginx_client_temp","/tmp/nginx_fastcgi_temp","/tmp/nginx_proxy_temp","/tmp/nginx-wasm/logs","/etc/php-fpm.d"]){const p=e.split("/").filter(Boolean);let _="";for(const R of p){_+="/"+R;try{a.mkdir(_,493)}catch{}}}await m(a,[{path:"/etc/nginx/nginx.conf",data:L},{path:"/etc/php-fpm.conf",data:I},{path:"/var/www/fpm-router.php",data:k}]),o("Starting PHP-FPM...","loading"),n(`Starting PHP-FPM...
 `,"info");const P=s.spawn(r,["php-fpm","-y","/etc/php-fpm.conf","-c","/dev/null","--nodaemonize"],{env:["HOME=/tmp","TMPDIR=/tmp","PATH=/usr/local/bin:/usr/bin:/bin"]});await new Promise(e=>setTimeout(e,5e3)),o("Starting nginx...","loading"),n(`Starting nginx...
-`,"info");const T=s.spawn(i,["nginx","-p","/etc/nginx","-c","nginx.conf"],{env:["HOME=/tmp","TMPDIR=/tmp","PATH=/usr/bin:/bin"]});await new Promise(e=>setTimeout(e,3e3)),o("Loading WordPress files...","loading");const $=await O(a,"/wp-bundle.json",(e,p)=>{(e%500===0||e===p)&&n(`  ${e}/${p} files
+`,"info");const T=s.spawn(i,["nginx","-p","/etc/nginx","-c","nginx.conf"],{env:["HOME=/tmp","TMPDIR=/tmp","PATH=/usr/bin:/bin"]});await new Promise(e=>setTimeout(e,3e3)),o("Loading WordPress files...","loading");const $=await O(a,"/wasm-posix-kernel/wp-bundle.json",(e,p)=>{(e%500===0||e===p)&&n(`  ${e}/${p} files
 `,"info")});n(`WordPress loaded: ${$} files
 `,"info");try{a.unlink("/var/www/html/wp-content/database/wordpress.db")}catch{}await m(a,[{path:"/var/www/html/wp-config.php",data:A},{path:"/var/www/html/wp-content/mu-plugins/wasm-optimizations.php",data:D}]),s.sendBridgePort(l.detachHostPort(),8080),o("WordPress running! Loading page...","running"),u.disabled=!1,x(),P.then(e=>{n(`
 php-fpm exited with code ${e}

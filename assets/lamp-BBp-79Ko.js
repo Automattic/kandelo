@@ -1,4 +1,4 @@
-import{k as N,B as U}from"./browser-kernel-BPDGIj33.js";import{n as W,H as F,l as j}from"./nginx-DS843j_U.js";import{l as G}from"./wp-bundle-CEfoOdTg.js";import{p as q}from"./worker-main-N8-Fr_O9.js";import{p as z}from"./php-fpm-D0N2565k.js";import{m as K,s as V,a as Y}from"./mysql_system_tables_data-BEXINe6V.js";const g="/wasm-posix-kernel/app/",P="/wasm-posix-kernel/app",c=document.getElementById("log"),m=document.getElementById("start"),x=document.getElementById("reload"),l=document.getElementById("status");let E=document.getElementById("frame");const T=new TextDecoder;function t(n,a){const s=document.createElement("span");a&&(s.className=a),s.textContent=n,c.appendChild(s),c.scrollTop=c.scrollHeight}function r(n,a){l.style.display="block",l.textContent=n,l.className=`status ${a}`}const Q=`daemon off;
+import{k as N,B as U}from"./browser-kernel-BPDGIj33.js";import{n as W,H as F,l as j}from"./nginx-DS843j_U.js";import{l as G}from"./wp-bundle-CEfoOdTg.js";import{p as q}from"./worker-main-N8-Fr_O9.js";import{p as z}from"./php-fpm-D0N2565k.js";import{m as K,s as V,a as Y}from"./mysql_system_tables_data-BEXINe6V.js";const g="/wasm-posix-kernel/app/",P="/wasm-posix-kernel/app",l=document.getElementById("log"),m=document.getElementById("start"),x=document.getElementById("reload"),c=document.getElementById("status");let E=document.getElementById("frame");const T=new TextDecoder;function t(n,a){const s=document.createElement("span");a&&(s.className=a),s.textContent=n,l.appendChild(s),l.scrollTop=l.scrollHeight}function r(n,a){c.style.display="block",c.textContent=n,c.className=`status ${a}`}const Q=`daemon off;
 master_process on;
 worker_processes 2;
 error_log stderr info;
@@ -145,14 +145,14 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 require_once ABSPATH . 'wp-settings.php';
-`;let i=null,f=null;async function ee(){m.disabled=!0,c.textContent="",r("Loading LAMP stack...","loading");try{t(`Fetching wasm binaries + MariaDB bootstrap SQL...
+`;let i=null,f=null;async function ee(){m.disabled=!0,l.textContent="",r("Loading LAMP stack...","loading");try{t(`Fetching wasm binaries + MariaDB bootstrap SQL...
 `,"info");const[n,a,s,d,y,B]=await Promise.all([fetch(N).then(e=>e.arrayBuffer()),fetch(K).then(e=>e.arrayBuffer()),fetch(W).then(e=>e.arrayBuffer()),fetch(z).then(e=>e.arrayBuffer()),fetch(V).then(e=>e.text()),fetch(Y).then(e=>e.text())]);t(`Kernel: ${(n.byteLength/1024).toFixed(0)}KB, MariaDB: ${(a.byteLength/(1024*1024)).toFixed(1)}MB, nginx: ${(s.byteLength/(1024*1024)).toFixed(1)}MB, PHP-FPM: ${(d.byteLength/(1024*1024)).toFixed(1)}MB
 `,"info"),t(`Pre-compiling MariaDB thread module...
 `,"info"),r("Pre-compiling MariaDB thread module...","loading");const $=q(a),b=await WebAssembly.compile($);if(t(`Thread module ready
 `,"info"),f=new F,t(`Initializing service worker bridge...
 `,"info"),!await te(f)){r("Service worker initialization failed","error");return}t(`Service worker bridge ready
 `,"info"),i=new U({maxWorkers:16,fsSize:128*1024*1024,threadModule:b,onStdout:e=>t(T.decode(e)),onStderr:e=>t(T.decode(e),"stderr")}),await i.init(n);const p=i.fs;for(const e of["/data","/data/mysql","/data/tmp","/data/test","/etc/nginx","/var/www/html","/var/www/html/wp-content","/var/log/nginx","/tmp/nginx_client_temp","/tmp/nginx_fastcgi_temp","/tmp/nginx_proxy_temp","/tmp/nginx_uwsgi_temp","/tmp/nginx_scgi_temp","/tmp/nginx-wasm/logs","/etc/php-fpm.d"]){const o=e.split("/").filter(Boolean);let h="";for(const I of o){h+="/"+I;try{p.mkdir(h,493)}catch{}}}await j(p,[{path:"/etc/nginx/nginx.conf",data:Q},{path:"/etc/php-fpm.conf",data:X},{path:"/var/www/fpm-router.php",data:J}]),r("Loading WordPress files...","loading"),t(`Loading WordPress bundle...
-`,"info");const R=await G(p,"/wp-bundle.json",(e,o)=>{(e%500===0||e===o)&&t(`  ${e}/${o} files
+`,"info");const R=await G(p,"/wasm-posix-kernel/wp-bundle.json",(e,o)=>{(e%500===0||e===o)&&t(`  ${e}/${o} files
 `,"info")});t(`WordPress loaded: ${R} files
 `,"info");const _=new TextEncoder().encode(Z),w=p.open("/var/www/html/wp-config.php",578,420);p.write(w,_,0,_.length),p.close(w),r("Bootstrapping MariaDB system tables...","loading"),t(`Bootstrapping MariaDB system tables (this may take a few minutes in browser)...
 `,"info");const v=`use mysql;
