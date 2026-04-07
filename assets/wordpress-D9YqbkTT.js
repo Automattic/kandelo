@@ -1,4 +1,4 @@
-import{k as S,B as v}from"./browser-kernel-BPDGIj33.js";import{n as H,H as y,l as m}from"./nginx-DS843j_U.js";import{l as O}from"./wp-bundle-CEfoOdTg.js";import{p as B}from"./php-fpm-CKFa0twM.js";const h="/wasm-posix-kernel/app/",g="/wasm-posix-kernel/app",d=document.getElementById("log"),f=document.getElementById("start"),u=document.getElementById("reload"),c=document.getElementById("status");let w=document.getElementById("frame");const E=new TextDecoder;function n(t,i){const r=document.createElement("span");i&&(r.className=i),r.textContent=t,d.appendChild(r),d.scrollTop=d.scrollHeight}function o(t,i){c.style.display="block",c.textContent=t,c.className=`status ${i}`}const L=`daemon off;
+import{k as S,B as v}from"./browser-kernel-BPDGIj33.js";import{n as H,H as y,l as m}from"./nginx-DS843j_U.js";import{l as O}from"./wp-bundle-CEfoOdTg.js";import{p as B}from"./php-fpm-CKFa0twM.js";const u="/wasm-posix-kernel/app/",g="/wasm-posix-kernel/app",d=document.getElementById("log"),f=document.getElementById("start"),x=document.getElementById("reload"),c=document.getElementById("status");let w=document.getElementById("frame");const E=new TextDecoder;function n(t,i){const r=document.createElement("span");i&&(r.className=i),r.textContent=t,d.appendChild(r),d.scrollTop=d.scrollHeight}function o(t,i){c.style.display="block",c.textContent=t,c.className=`status ${i}`}const L=`daemon off;
 master_process on;
 worker_processes 2;
 error_log stderr info;
@@ -130,8 +130,8 @@ define('WP_DEBUG_DISPLAY', false);
 // Site URL includes app prefix — the service worker intercepts app/*
 // and strips it before sending to nginx
 if (isset($_SERVER['HTTP_HOST'])) {
-    define('WP_HOME', 'http://' . $_SERVER['HTTP_HOST'] . '${g}');
-    define('WP_SITEURL', 'http://' . $_SERVER['HTTP_HOST'] . '${g}');
+    define('WP_HOME', '//' . $_SERVER['HTTP_HOST'] . '${g}');
+    define('WP_SITEURL', '//' . $_SERVER['HTTP_HOST'] . '${g}');
 }
 
 define('WP_HTTP_BLOCK_EXTERNAL', true);
@@ -156,12 +156,12 @@ if (!defined('DISALLOW_FILE_MODS')) define('DISALLOW_FILE_MODS', true);
 `,"info");const P=s.spawn(r,["php-fpm","-y","/etc/php-fpm.conf","-c","/dev/null","--nodaemonize"],{env:["HOME=/tmp","TMPDIR=/tmp","PATH=/usr/local/bin:/usr/bin:/bin"]});await new Promise(e=>setTimeout(e,5e3)),o("Starting nginx...","loading"),n(`Starting nginx...
 `,"info");const T=s.spawn(i,["nginx","-p","/etc/nginx","-c","nginx.conf"],{env:["HOME=/tmp","TMPDIR=/tmp","PATH=/usr/bin:/bin"]});await new Promise(e=>setTimeout(e,3e3)),o("Loading WordPress files...","loading");const $=await O(a,"/wasm-posix-kernel/wp-bundle.json",(e,p)=>{(e%500===0||e===p)&&n(`  ${e}/${p} files
 `,"info")});n(`WordPress loaded: ${$} files
-`,"info");try{a.unlink("/var/www/html/wp-content/database/wordpress.db")}catch{}await m(a,[{path:"/var/www/html/wp-config.php",data:A},{path:"/var/www/html/wp-content/mu-plugins/wasm-optimizations.php",data:D}]),s.sendBridgePort(l.detachHostPort(),8080),o("WordPress running! Loading page...","running"),u.disabled=!1,x(),P.then(e=>{n(`
+`,"info");try{a.unlink("/var/www/html/wp-content/database/wordpress.db")}catch{}await m(a,[{path:"/var/www/html/wp-config.php",data:A},{path:"/var/www/html/wp-content/mu-plugins/wasm-optimizations.php",data:D}]),s.sendBridgePort(l.detachHostPort(),8080),o("WordPress running! Loading page...","running"),x.disabled=!1,h(),P.then(e=>{n(`
 php-fpm exited with code ${e}
 `,"info")}),T.then(e=>{n(`
 nginx exited with code ${e}
 `,"info")})}catch(t){n(`
 Error: ${t}
-`,"stderr"),o(`Error: ${t}`,"error"),console.error(t),f.disabled=!1}}function x(){const t=document.createElement("iframe");t.id="frame",t.src=h,w.replaceWith(t),w=t}async function N(t){if(!("serviceWorker"in navigator))return n(`Service Workers not supported
-`,"stderr"),!1;try{await navigator.serviceWorker.register("/wasm-posix-kernel/service-worker.js");const i=await navigator.serviceWorker.ready;return await new Promise(r=>{const a=new MessageChannel;a.port1.onmessage=()=>r(),i.active.postMessage({type:"init-bridge",appPrefix:h},[t.getSwPort(),a.port2])}),!0}catch(i){return n(`Service worker error: ${i}
-`,"stderr"),!1}}f.addEventListener("click",b);u.addEventListener("click",x);
+`,"stderr"),o(`Error: ${t}`,"error"),console.error(t),f.disabled=!1}}function h(){const t=document.createElement("iframe");t.id="frame",t.src=u,w.replaceWith(t),w=t}async function N(t){if(!("serviceWorker"in navigator))return n(`Service Workers not supported
+`,"stderr"),!1;try{await navigator.serviceWorker.register("/wasm-posix-kernel/service-worker.js");const i=await navigator.serviceWorker.ready;return await new Promise(r=>{const a=new MessageChannel;a.port1.onmessage=()=>r(),i.active.postMessage({type:"init-bridge",appPrefix:u},[t.getSwPort(),a.port2])}),!0}catch(i){return n(`Service worker error: ${i}
+`,"stderr"),!1}}f.addEventListener("click",b);x.addEventListener("click",h);
