@@ -65,6 +65,7 @@ async function main() {
 
   let mainWorker: ReturnType<NodeWorkerAdapter["createWorker"]> | null = null;
   let nextThreadChannelPage = MAX_PAGES - 4;
+  const freeThreadPages: number[] = [];
 
   const kernelWorker = new CentralizedKernelWorker(
     { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true },
@@ -108,9 +109,15 @@ async function main() {
       },
       onExec: async () => -38, // ENOSYS
       onClone: async (pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory) => {
-        const threadChannelOffset = nextThreadChannelPage * 65536;
-        const tlsAllocAddr = (nextThreadChannelPage - 2) * 65536;
-        nextThreadChannelPage -= 4;
+        let basePage: number;
+        if (freeThreadPages.length > 0) {
+          basePage = freeThreadPages.pop()!;
+        } else {
+          basePage = nextThreadChannelPage;
+          nextThreadChannelPage -= 4;
+        }
+        const threadChannelOffset = basePage * 65536;
+        const tlsAllocAddr = (basePage - 2) * 65536;
         new Uint8Array(memory.buffer, threadChannelOffset, CH_TOTAL_SIZE).fill(0);
         new Uint8Array(memory.buffer, tlsAllocAddr, 65536).fill(0);
 
@@ -135,12 +142,14 @@ async function main() {
         threadWorker.on("message", (msg: unknown) => {
           const m = msg as WorkerToHostMessage;
           if (m.type === "thread_exit") {
+            freeThreadPages.push(basePage);
             threadWorker.terminate().catch(() => {});
           }
         });
         threadWorker.on("error", () => {
           kernelWorker.notifyThreadExit(pid, tid);
           kernelWorker.removeChannel(pid, threadChannelOffset);
+          freeThreadPages.push(basePage);
         });
 
         return tid;

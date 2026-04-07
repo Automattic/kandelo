@@ -158,6 +158,7 @@ async function main() {
   });
 
   let nextThreadChannelPage = MAX_PAGES - 4;
+  const freeThreadPages: number[] = [];
 
   const kernelWorker = new CentralizedKernelWorker(
     { maxWorkers: 8, dataBufferSize: 65536, useSharedMemory: true },
@@ -281,9 +282,15 @@ async function main() {
         _ctidPtr,
         memory,
       ) => {
-        const threadChannelOffset = nextThreadChannelPage * 65536;
-        const tlsAllocAddr = (nextThreadChannelPage - 2) * 65536;
-        nextThreadChannelPage -= 3;
+        let basePage: number;
+        if (freeThreadPages.length > 0) {
+          basePage = freeThreadPages.pop()!;
+        } else {
+          basePage = nextThreadChannelPage;
+          nextThreadChannelPage -= 3;
+        }
+        const threadChannelOffset = basePage * 65536;
+        const tlsAllocAddr = (basePage - 2) * 65536;
         new Uint8Array(
           memory.buffer,
           threadChannelOffset,
@@ -312,12 +319,14 @@ async function main() {
         threadWorker.on("message", (msg: unknown) => {
           const m = msg as WorkerToHostMessage;
           if (m.type === "thread_exit") {
+            freeThreadPages.push(basePage);
             threadWorker.terminate().catch(() => {});
           }
         });
         threadWorker.on("error", () => {
           kernelWorker.notifyThreadExit(pid, tid);
           kernelWorker.removeChannel(pid, threadChannelOffset);
+          freeThreadPages.push(basePage);
         });
 
         return tid;

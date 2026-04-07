@@ -186,7 +186,6 @@ async function start() {
       "--key-buffer-size=1048576",
       "--table-open-cache=10",
       "--sort-buffer-size=262144",
-      "--thread-handling=no-threads",
       "--skip-networking=0",
       "--port=3306",
       "--bind-address=0.0.0.0",

@@ -64,6 +64,7 @@ async function main() {
     // Main channel at (MAX_PAGES - 2) * 65536
     // Each thread needs 4 pages: 2 for channel + 1 gap + 1 TLS
     let nextThreadChannelPage = MAX_PAGES - 4;
+    const freeThreadPages: number[] = [];
 
     const kernelWorker = new CentralizedKernelWorker(
         { maxWorkers: 8, dataBufferSize: 65536, useSharedMemory: true },
@@ -75,9 +76,15 @@ async function main() {
             },
 
             onClone: async (pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory) => {
-                const threadChannelOffset = nextThreadChannelPage * 65536;
-                const tlsAllocAddr = (nextThreadChannelPage - 2) * 65536;
-                nextThreadChannelPage -= 4;
+                let basePage: number;
+                if (freeThreadPages.length > 0) {
+                    basePage = freeThreadPages.pop()!;
+                } else {
+                    basePage = nextThreadChannelPage;
+                    nextThreadChannelPage -= 4;
+                }
+                const threadChannelOffset = basePage * 65536;
+                const tlsAllocAddr = (basePage - 2) * 65536;
 
                 console.log(`[kernel] clone: pid=${pid} tid=${tid} fn=${fnPtr} channelOff=${threadChannelOffset}`);
 
@@ -109,6 +116,7 @@ async function main() {
                         console.log(`[kernel] thread ${tid} exited`);
                         kernelWorker.notifyThreadExit(pid, tid);
                         kernelWorker.removeChannel(pid, threadChannelOffset);
+                        freeThreadPages.push(basePage);
                         threadWorker.terminate().catch(() => {});
                     }
                 });
@@ -116,6 +124,7 @@ async function main() {
                     console.error(`[kernel] thread ${tid} error: ${err.message}`);
                     kernelWorker.notifyThreadExit(pid, tid);
                     kernelWorker.removeChannel(pid, threadChannelOffset);
+                    freeThreadPages.push(basePage);
                 });
 
                 return tid;

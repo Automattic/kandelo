@@ -90,6 +90,7 @@ let io: VirtualPlatformIO;
 let maxPages = DEFAULT_MAX_PAGES;
 let defaultEnv: string[] = [];
 let nextThreadChannelPage = DEFAULT_MAX_PAGES - 4;
+const freeThreadPages: number[] = []; // reclaimed thread channel page offsets
 
 // Process tracking
 interface ProcessInfo {
@@ -132,6 +133,7 @@ function respondError(requestId: number, error: string) {
 async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   maxPages = msg.config.maxMemoryPages;
   nextThreadChannelPage = maxPages - 4;
+  freeThreadPages.length = 0;
   defaultEnv = msg.config.env;
 
   // Create VFS from shared SABs
@@ -423,9 +425,15 @@ async function handleClone(
   const processInfo = processes.get(pid);
   if (!processInfo) throw new Error(`Unknown pid ${pid} for clone`);
 
-  const threadChannelOffset = nextThreadChannelPage * PAGE_SIZE;
-  const tlsAllocAddr = (nextThreadChannelPage - 2) * PAGE_SIZE;
-  nextThreadChannelPage -= 4;
+  let basePage: number;
+  if (freeThreadPages.length > 0) {
+    basePage = freeThreadPages.pop()!;
+  } else {
+    basePage = nextThreadChannelPage;
+    nextThreadChannelPage -= 4;
+  }
+  const threadChannelOffset = basePage * PAGE_SIZE;
+  const tlsAllocAddr = (basePage - 2) * PAGE_SIZE;
   new Uint8Array(memory.buffer, threadChannelOffset, CH_TOTAL_SIZE).fill(0);
   new Uint8Array(memory.buffer, tlsAllocAddr, PAGE_SIZE).fill(0);
 
@@ -448,28 +456,29 @@ async function handleClone(
 
   const threadWorker = workerAdapter.createWorker(threadInitData);
   if (!threadWorkers.has(pid)) threadWorkers.set(pid, []);
-  const threadEntry = { worker: threadWorker, channelOffset: threadChannelOffset, tid };
+  const threadEntry = { worker: threadWorker, channelOffset: threadChannelOffset, tid, basePage };
   threadWorkers.get(pid)!.push(threadEntry);
 
-  threadWorker.on("message", (msg: unknown) => {
-    const m = msg as WorkerToHostMessage;
-    if (m.type === "thread_exit") {
-      threadWorker.terminate().catch(() => {});
-      const threads = threadWorkers.get(pid);
-      if (threads) {
-        const idx = threads.indexOf(threadEntry);
-        if (idx >= 0) threads.splice(idx, 1);
-      }
-    }
-  });
-  threadWorker.on("error", () => {
-    kernelWorker.notifyThreadExit(pid, tid);
-    kernelWorker.removeChannel(pid, threadChannelOffset);
+  const reclaimThread = () => {
+    freeThreadPages.push(basePage);
     const threads = threadWorkers.get(pid);
     if (threads) {
       const idx = threads.indexOf(threadEntry);
       if (idx >= 0) threads.splice(idx, 1);
     }
+  };
+
+  threadWorker.on("message", (msg: unknown) => {
+    const m = msg as WorkerToHostMessage;
+    if (m.type === "thread_exit") {
+      threadWorker.terminate().catch(() => {});
+      reclaimThread();
+    }
+  });
+  threadWorker.on("error", () => {
+    kernelWorker.notifyThreadExit(pid, tid);
+    kernelWorker.removeChannel(pid, threadChannelOffset);
+    reclaimThread();
   });
 
   return tid;
