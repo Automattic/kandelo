@@ -7,7 +7,7 @@
  *   pid 1: php-fpm master → forks pid 2 (worker)
  *   pid 3: nginx master   → forks pid 4, 5 (workers)
  *
- * Service worker intercepts /app/* requests and routes them through
+ * Service worker intercepts ${BASE_URL}app/* requests and routes them through
  * the kernel's TCP stack to nginx.
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
@@ -17,6 +17,10 @@ import { HttpBridgeHost } from "../../lib/http-bridge";
 import kernelWasmUrl from "../../../../host/wasm/wasm_posix_kernel.wasm?url";
 import nginxWasmUrl from "../../../../examples/nginx/nginx.wasm?url";
 import phpFpmWasmUrl from "../../../../examples/nginx/php-fpm.wasm?url";
+
+const APP_PREFIX = import.meta.env.BASE_URL + "app/";
+// Without trailing slash, for embedding in PHP config strings
+const APP_PATH = import.meta.env.BASE_URL + "app";
 
 const log = document.getElementById("log") as HTMLPreElement;
 const startBtn = document.getElementById("start") as HTMLButtonElement;
@@ -151,7 +155,7 @@ pm.max_children = 1
 clear_env = no
 `;
 
-// Custom wp-config.php — sets WP_HOME/WP_SITEURL with /app prefix so
+// Custom wp-config.php — sets WP_HOME/WP_SITEURL with app prefix so
 // WordPress generates URLs the service worker can intercept
 const WP_CONFIG_PHP = `<?php
 define('DB_NAME', 'wordpress');
@@ -180,11 +184,11 @@ define('WP_DEBUG_LOG', true);
 define('WP_DEBUG_DISPLAY', false);
 @ini_set('display_errors', '0');
 
-// Site URL includes /app prefix — the service worker intercepts /app/*
+// Site URL includes app prefix — the service worker intercepts app/*
 // and strips it before sending to nginx
 if (isset($_SERVER['HTTP_HOST'])) {
-    define('WP_HOME', 'http://' . $_SERVER['HTTP_HOST'] . '/app');
-    define('WP_SITEURL', 'http://' . $_SERVER['HTTP_HOST'] . '/app');
+    define('WP_HOME', 'http://' . $_SERVER['HTTP_HOST'] . '${APP_PATH}');
+    define('WP_SITEURL', 'http://' . $_SERVER['HTTP_HOST'] . '${APP_PATH}');
 }
 
 define('WP_HTTP_BLOCK_EXTERNAL', true);
@@ -232,14 +236,13 @@ async function start() {
     // Set up HTTP bridge
     bridge = new HttpBridgeHost();
 
-    // Register service worker
-    appendLog("Registering service worker...\n", "info");
-    const swRegistration = await registerServiceWorker(bridge);
-    if (!swRegistration) {
-      setStatus("Service worker registration failed", "error");
+    // Initialize service worker bridge
+    appendLog("Initializing service worker bridge...\n", "info");
+    if (!(await initBridge(bridge))) {
+      setStatus("Service worker initialization failed", "error");
       return;
     }
-    appendLog("Service worker active\n", "info");
+    appendLog("Service worker bridge ready\n", "info");
 
     // Create kernel with larger FS for WordPress
     // Use 4096 pages (256MB) per process instead of default 16384 (1GB)
@@ -338,7 +341,7 @@ async function start() {
     // Remove any pre-existing database so WordPress starts with a fresh install
     try { fs.unlink("/var/www/html/wp-content/database/wordpress.db"); } catch { /* not present */ }
 
-    // Overwrite wp-config.php so WordPress generates URLs with the /app/
+    // Overwrite wp-config.php so WordPress generates URLs with the app
     // prefix that the service worker intercepts
     await loadFiles(fs, [
       { path: "/var/www/html/wp-config.php", data: WP_CONFIG_PHP },
@@ -373,62 +376,40 @@ function loadFrame() {
   // same element doesn't reliably trigger navigation in Chromium.
   const next = document.createElement("iframe");
   next.id = "frame";
-  next.src = "/app/";
+  next.src = APP_PREFIX;
   frame.replaceWith(next);
   frame = next;
 }
 
-async function registerServiceWorker(
-  bridge: HttpBridgeHost,
-): Promise<ServiceWorkerRegistration | null> {
+async function initBridge(bridge: HttpBridgeHost): Promise<boolean> {
   if (!("serviceWorker" in navigator)) {
     appendLog("Service Workers not supported\n", "stderr");
-    return null;
+    return false;
   }
 
   try {
-    const reg = await navigator.serviceWorker.register(
-      new URL("../../lib/service-worker.ts", import.meta.url),
-      { type: "module", scope: "/" },
+    // Register the unified service worker (no-op if already registered by COI script)
+    await navigator.serviceWorker.register(
+      import.meta.env.BASE_URL + "service-worker.js",
     );
 
-    const sw = reg.active || reg.installing || reg.waiting;
-    if (!sw) {
-      appendLog("No service worker found after registration\n", "stderr");
-      return null;
-    }
-
-    if (sw.state !== "activated") {
-      await new Promise<void>((resolve) => {
-        sw.addEventListener("statechange", () => {
-          if (sw.state === "activated") resolve();
-        });
-        if (sw.state === "activated") resolve();
-      });
-    }
-
-    // Wait for the SW to claim this client so fetch events are intercepted
-    if (!navigator.serviceWorker.controller) {
-      await new Promise<void>((resolve) => {
-        navigator.serviceWorker.addEventListener("controllerchange", () => resolve());
-      });
-    }
+    // Wait for the service worker to activate and claim this client
+    const reg = await navigator.serviceWorker.ready;
 
     // Send bridge port and wait for SW to confirm it's initialized
-    const activeSw = reg.active!;
     await new Promise<void>((resolve) => {
       const reply = new MessageChannel();
       reply.port1.onmessage = () => resolve();
-      activeSw.postMessage(
-        { type: "init-bridge", appPrefix: "/app/" },
+      reg.active!.postMessage(
+        { type: "init-bridge", appPrefix: APP_PREFIX },
         [bridge.getSwPort(), reply.port2],
       );
     });
 
-    return reg;
+    return true;
   } catch (err) {
     appendLog(`Service worker error: ${err}\n`, "stderr");
-    return null;
+    return false;
   }
 }
 
