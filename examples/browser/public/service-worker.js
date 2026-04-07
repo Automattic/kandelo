@@ -9,6 +9,7 @@
  *    - Adds COOP/COEP/CORP headers to ALL fetch responses → enables SharedArrayBuffer
  *    - Handles HTTP bridge for nginx/wordpress/lamp demos (MessagePort from page)
  *    - Includes cookie jar for WordPress sessions
+ *    - Revalidates navigation requests to ensure fresh HTML (cache busting)
  */
 
 // ============================================================
@@ -19,15 +20,21 @@ if (typeof window !== "undefined") {
     // If a SW is already controlling this page but we're still not
     // crossOriginIsolated, one reload should fix it (the SW will add headers).
     if (navigator.serviceWorker.controller) {
+      // Trigger update check so a new SW version is picked up on next visit
+      navigator.serviceWorker.ready.then(function (reg) {
+        reg.update();
+      });
       window.location.reload();
     } else {
       // Register this script as the service worker.
+      // updateViaCache: "none" ensures the browser always fetches the SW
+      // script from the network, so deploys take effect immediately.
       // Reload once the SW takes control (controllerchange fires after
       // clients.claim() completes, guaranteeing the SW intercepts fetches).
       var scriptUrl = document.currentScript && document.currentScript.src;
       if (scriptUrl) {
         navigator.serviceWorker
-          .register(scriptUrl)
+          .register(scriptUrl, { updateViaCache: "none" })
           .then(function () {
             navigator.serviceWorker.addEventListener(
               "controllerchange",
@@ -41,6 +48,11 @@ if (typeof window !== "undefined") {
           });
       }
     }
+  } else if (window.crossOriginIsolated && "serviceWorker" in navigator) {
+    // Already isolated — just ensure SW stays up to date
+    navigator.serviceWorker.ready.then(function (reg) {
+      reg.update();
+    });
   }
   // Stop executing — the rest is service worker code
 } else {
@@ -167,7 +179,18 @@ if (typeof window !== "undefined") {
   });
 
   self.addEventListener("activate", function (event) {
-    event.waitUntil(self.clients.claim());
+    event.waitUntil(
+      // Clear any Cache Storage entries from previous SW versions, then claim
+      caches.keys().then(function (names) {
+        return Promise.all(
+          names.map(function (name) {
+            return caches.delete(name);
+          }),
+        );
+      }).then(function () {
+        return self.clients.claim();
+      }),
+    );
   });
 
   // --- Configuration via postMessage ---
@@ -200,27 +223,41 @@ if (typeof window !== "undefined") {
 
     // All other requests — pass through but add COI headers
     event.respondWith(
-      fetch(event.request).then(function (response) {
-        // Can't modify opaque or redirect responses
-        if (response.type === "opaque" || response.type === "opaqueredirect") {
-          return response;
-        }
-        var headers = new Headers(response.headers);
-        if (!headers.has("Cross-Origin-Opener-Policy")) {
-          headers.set("Cross-Origin-Opener-Policy", "same-origin");
-        }
-        if (!headers.has("Cross-Origin-Embedder-Policy")) {
-          headers.set("Cross-Origin-Embedder-Policy", "require-corp");
-        }
-        if (!headers.has("Cross-Origin-Resource-Policy")) {
-          headers.set("Cross-Origin-Resource-Policy", "same-origin");
-        }
-        return new Response(response.body, {
-          status: response.status,
-          statusText: response.statusText,
-          headers: headers,
+      (function () {
+        // Navigation requests (HTML pages): revalidate with the server so
+        // deploys take effect immediately. Vite's content-hashed asset
+        // filenames handle JS/CSS/wasm cache busting, but only if the
+        // HTML referencing them is fresh.
+        var fetchOptions =
+          event.request.mode === "navigate"
+            ? new Request(event.request, { cache: "no-cache" })
+            : event.request;
+
+        return fetch(fetchOptions).then(function (response) {
+          // Can't modify opaque or redirect responses
+          if (
+            response.type === "opaque" ||
+            response.type === "opaqueredirect"
+          ) {
+            return response;
+          }
+          var headers = new Headers(response.headers);
+          if (!headers.has("Cross-Origin-Opener-Policy")) {
+            headers.set("Cross-Origin-Opener-Policy", "same-origin");
+          }
+          if (!headers.has("Cross-Origin-Embedder-Policy")) {
+            headers.set("Cross-Origin-Embedder-Policy", "require-corp");
+          }
+          if (!headers.has("Cross-Origin-Resource-Policy")) {
+            headers.set("Cross-Origin-Resource-Policy", "same-origin");
+          }
+          return new Response(response.body, {
+            status: response.status,
+            statusText: response.statusText,
+            headers: headers,
+          });
         });
-      })
+      })(),
     );
   });
 
