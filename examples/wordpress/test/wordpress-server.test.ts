@@ -73,6 +73,7 @@ describe.skipIf(!!SKIP_REASON)("WordPress HTTP Server", () => {
 
     let mainWorker: ReturnType<NodeWorkerAdapter["createWorker"]> | null = null;
     let nextThreadChannelPage = MAX_PAGES - 4;
+    const freeThreadPages: number[] = [];
     let serverStderr = "";
 
     const kernelWorker = new CentralizedKernelWorker(
@@ -112,9 +113,15 @@ describe.skipIf(!!SKIP_REASON)("WordPress HTTP Server", () => {
         },
         onExec: async () => -38,
         onClone: async (pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory) => {
-          const threadChannelOffset = nextThreadChannelPage * 65536;
-          const tlsAllocAddr = (nextThreadChannelPage - 2) * 65536;
-          nextThreadChannelPage -= 3;
+          let basePage: number;
+          if (freeThreadPages.length > 0) {
+            basePage = freeThreadPages.pop()!;
+          } else {
+            basePage = nextThreadChannelPage;
+            nextThreadChannelPage -= 3;
+          }
+          const threadChannelOffset = basePage * 65536;
+          const tlsAllocAddr = (basePage - 2) * 65536;
           new Uint8Array(memory.buffer, threadChannelOffset, CH_TOTAL_SIZE).fill(0);
           new Uint8Array(memory.buffer, tlsAllocAddr, 65536).fill(0);
           kernelWorker.addChannel(pid, threadChannelOffset, tid);
@@ -136,12 +143,14 @@ describe.skipIf(!!SKIP_REASON)("WordPress HTTP Server", () => {
           threadWorker.on("message", (msg: unknown) => {
             const m = msg as WorkerToHostMessage;
             if (m.type === "thread_exit") {
+              freeThreadPages.push(basePage);
               threadWorker.terminate().catch(() => {});
             }
           });
           threadWorker.on("error", () => {
             kernelWorker.notifyThreadExit(pid, tid);
             kernelWorker.removeChannel(pid, threadChannelOffset);
+            freeThreadPages.push(basePage);
           });
           return tid;
         },

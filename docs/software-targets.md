@@ -21,7 +21,7 @@ Systems software to port to wasm-posix-kernel, prioritized by POSIX depth and br
 - **Priority:** high
 - **POSIX surface:** Fork-per-connection, SysV shared memory (shmget/shmat) or mmap MAP_SHARED, POSIX semaphores, select/poll event loop, signals for backend coordination, fcntl advisory locks
 - **Browser value:** Full ACID SQL database
-- **Kernel gaps:** SysV shared memory and semaphores are implemented (PR #146) but PostgreSQL's heavy fork-per-connection model will stress multi-process coordination harder than MariaDB (which uses --thread-handling=no-threads).
+- **Kernel gaps:** SysV shared memory and semaphores are implemented (PR #146) but PostgreSQL's heavy fork-per-connection model will stress multi-process coordination harder than MariaDB's thread-per-connection model.
 - **Build notes:** Large C codebase, autoconf-based. Needs libreadline or libedit for psql client. Server (postgres) is the main target.
 
 ### dash (POSIX shell)
@@ -76,7 +76,7 @@ Systems software to port to wasm-posix-kernel, prioritized by POSIX depth and br
 
 - nginx 1.24 — fork, sockets, signals, non-blocking I/O, SCM_RIGHTS
 - PHP 8.4 (CLI + FPM) — fork, threads, sockets, file I/O, dlopen
-- MariaDB 10.5 — threads, file I/O, sockets, signals (no-threads mode)
+- MariaDB 10.5 — threads, file I/O, sockets, signals (thread-per-connection)
 - WordPress 6.7 — full LAMP stack integration test
 - dash — fork+exec, pipes, process groups, signals
 - GNU coreutils 9.6 — cat, cut, head, tail, sort, uniq, wc, tr, printf, etc.

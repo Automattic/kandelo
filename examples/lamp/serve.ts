@@ -126,6 +126,7 @@ async function main() {
 
   // Thread channel allocation for MariaDB
   let nextThreadChannelPage = MAX_PAGES - 4;
+  const freeThreadPages: number[] = [];
 
   const kernelWorker = new CentralizedKernelWorker(
     { maxWorkers: 12, dataBufferSize: 65536, useSharedMemory: true },
@@ -180,9 +181,15 @@ async function main() {
       },
 
       onClone: async (pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory) => {
-        const threadChannelOffset = nextThreadChannelPage * 65536;
-        const tlsAllocAddr = (nextThreadChannelPage - 2) * 65536;
-        nextThreadChannelPage -= 4;
+        let basePage: number;
+        if (freeThreadPages.length > 0) {
+          basePage = freeThreadPages.pop()!;
+        } else {
+          basePage = nextThreadChannelPage;
+          nextThreadChannelPage -= 4;
+        }
+        const threadChannelOffset = basePage * 65536;
+        const tlsAllocAddr = (basePage - 2) * 65536;
 
         new Uint8Array(memory.buffer, threadChannelOffset, CH_TOTAL_SIZE).fill(0);
         new Uint8Array(memory.buffer, tlsAllocAddr, 65536).fill(0);
@@ -211,12 +218,14 @@ async function main() {
           if (m.type === "thread_exit") {
             kernelWorker.notifyThreadExit(pid, tid);
             kernelWorker.removeChannel(pid, threadChannelOffset);
+            freeThreadPages.push(basePage);
             threadWorker.terminate().catch(() => {});
           }
         });
         threadWorker.on("error", () => {
           kernelWorker.notifyThreadExit(pid, tid);
           kernelWorker.removeChannel(pid, threadChannelOffset);
+          freeThreadPages.push(basePage);
         });
 
         return tid;
@@ -350,6 +359,7 @@ async function main() {
   const dbServer = createProcessMemory();
   // Reset thread channel allocation for fresh server
   nextThreadChannelPage = MAX_PAGES - 4;
+  freeThreadPages.length = 0;
   kernelWorker.registerProcess(dbPid, dbServer.memory, [dbServer.channelOffset]);
   kernelWorker.setCwd(dbPid, dataDir);
   kernelWorker.setNextChildPid(2);
@@ -369,7 +379,6 @@ async function main() {
       "--default-storage-engine=Aria", "--skip-grant-tables",
       "--key-buffer-size=1048576", "--table-open-cache=10",
       "--sort-buffer-size=262144",
-      "--thread-handling=no-threads",
       "--skip-networking=0", "--port=3306",
       "--bind-address=0.0.0.0", "--socket=",
       "--max-connections=10",
