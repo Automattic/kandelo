@@ -190,8 +190,8 @@ define('WP_DEBUG_LOG', true);
 define('WP_DEBUG_DISPLAY', true);
 
 if (isset($_SERVER['HTTP_HOST'])) {
-    define('WP_HOME', 'http://' . $_SERVER['HTTP_HOST']);
-    define('WP_SITEURL', 'http://' . $_SERVER['HTTP_HOST']);
+    define('WP_HOME', 'http://' . $_SERVER['HTTP_HOST'] . '/app');
+    define('WP_SITEURL', 'http://' . $_SERVER['HTTP_HOST'] . '/app');
 }
 
 define('WP_HTTP_BLOCK_EXTERNAL', true);
