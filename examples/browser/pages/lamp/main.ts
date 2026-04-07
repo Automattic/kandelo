@@ -150,6 +150,15 @@ $staticTypes = [
     'txt'   => 'text/plain',
 ];
 
+// Resolve directory URLs to index.php (e.g. /wp-admin/ → /wp-admin/index.php)
+if (is_dir($file)) {
+    $idx = rtrim($file, '/') . '/index.php';
+    if (is_file($idx)) {
+        $file = $idx;
+        $uri = rtrim($uri, '/') . '/index.php';
+    }
+}
+
 if ($uri !== '/' && is_file($file)) {
     $ext = strtolower(pathinfo($file, PATHINFO_EXTENSION));
     if (isset($staticTypes[$ext])) {
@@ -206,6 +215,15 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 require_once ABSPATH . 'wp-settings.php';
+`;
+
+// mu-plugin to disable operations that hang or are unnecessary in Wasm
+const MU_PLUGIN_PHP = `<?php
+add_filter('pre_wp_mail', '__return_false');
+add_filter('pre_http_request', function($pre, $args, $url) {
+    return new WP_Error('http_disabled', 'HTTP requests disabled in Wasm');
+}, 10, 3);
+if (!defined('DISALLOW_FILE_MODS')) define('DISALLOW_FILE_MODS', true);
 `;
 
 let kernel: BrowserKernel | null = null;
@@ -276,6 +294,7 @@ async function start() {
       "/etc/nginx",
       "/var/www/html",
       "/var/www/html/wp-content",
+      "/var/www/html/wp-content/mu-plugins",
       "/var/log/nginx",
       "/tmp/nginx_client_temp",
       "/tmp/nginx_fastcgi_temp",
@@ -310,11 +329,11 @@ async function start() {
     });
     appendLog(`WordPress loaded: ${loaded} files\n`, "info");
 
-    // Overwrite wp-config.php with MySQL version
-    const wpConfigData = new TextEncoder().encode(WP_CONFIG_PHP);
-    const wpConfigFd = fs.open("/var/www/html/wp-config.php", 0o1102, 0o644); // O_WRONLY|O_CREAT|O_TRUNC
-    fs.write(wpConfigFd, wpConfigData, 0, wpConfigData.length);
-    fs.close(wpConfigFd);
+    // Overwrite wp-config.php with MySQL version + install mu-plugin
+    await loadFiles(fs, [
+      { path: "/var/www/html/wp-config.php", data: WP_CONFIG_PHP },
+      { path: "/var/www/html/wp-content/mu-plugins/wasm-optimizations.php", data: MU_PLUGIN_PHP },
+    ]);
 
     // =====================================================================
     // Phase 1: Bootstrap MariaDB
