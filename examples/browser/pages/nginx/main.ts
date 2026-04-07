@@ -8,6 +8,8 @@ import { HttpBridgeHost } from "../../lib/http-bridge";
 import kernelWasmUrl from "../../../../host/wasm/wasm_posix_kernel.wasm?url";
 import nginxWasmUrl from "../../../../examples/nginx/nginx.wasm?url";
 
+const APP_PREFIX = import.meta.env.BASE_URL + "app/";
+
 const log = document.getElementById("log") as HTMLPreElement;
 const startBtn = document.getElementById("start") as HTMLButtonElement;
 const reloadBtn = document.getElementById("reload") as HTMLButtonElement;
@@ -120,14 +122,13 @@ async function start() {
     // Set up HTTP bridge (MessageChannel-based)
     bridge = new HttpBridgeHost();
 
-    // Register service worker
-    appendLog("Registering service worker...\n", "info");
-    const swRegistration = await registerServiceWorker(bridge);
-    if (!swRegistration) {
-      setStatus("Service worker registration failed", "error");
+    // Initialize service worker bridge
+    appendLog("Initializing service worker bridge...\n", "info");
+    if (!(await initBridge(bridge))) {
+      setStatus("Service worker initialization failed", "error");
       return;
     }
-    appendLog("Service worker active\n", "info");
+    appendLog("Service worker bridge ready\n", "info");
 
     // Create kernel
     kernel = new BrowserKernel({
@@ -207,65 +208,40 @@ async function start() {
 function loadFrame() {
   const next = document.createElement("iframe");
   next.id = "frame";
-  next.src = "/app/";
+  next.src = APP_PREFIX;
   frame.replaceWith(next);
   frame = next;
 }
 
-async function registerServiceWorker(
-  bridge: HttpBridgeHost,
-): Promise<ServiceWorkerRegistration | null> {
+async function initBridge(bridge: HttpBridgeHost): Promise<boolean> {
   if (!("serviceWorker" in navigator)) {
     appendLog("Service Workers not supported in this browser\n", "stderr");
-    return null;
+    return false;
   }
 
   try {
-    // The service worker file needs to be served from the same origin
-    const reg = await navigator.serviceWorker.register(
-      new URL("../../lib/service-worker.ts", import.meta.url),
-      { type: "module", scope: "/" },
+    // Register the unified service worker (no-op if already registered by COI script)
+    await navigator.serviceWorker.register(
+      import.meta.env.BASE_URL + "service-worker.js",
     );
 
-    // Wait for the service worker to be active
-    const sw = reg.active || reg.installing || reg.waiting;
-    if (!sw) {
-      appendLog("No service worker found after registration\n", "stderr");
-      return null;
-    }
-
-    if (sw.state !== "activated") {
-      await new Promise<void>((resolve) => {
-        sw.addEventListener("statechange", () => {
-          if (sw.state === "activated") resolve();
-        });
-        // Resolve immediately if already activated
-        if (sw.state === "activated") resolve();
-      });
-    }
-
-    // Wait for the SW to claim this client so fetch events are intercepted
-    if (!navigator.serviceWorker.controller) {
-      await new Promise<void>((resolve) => {
-        navigator.serviceWorker.addEventListener("controllerchange", () => resolve());
-      });
-    }
+    // Wait for the service worker to activate and claim this client
+    const reg = await navigator.serviceWorker.ready;
 
     // Send bridge port and wait for SW to confirm it's initialized
-    const activeSw = reg.active!;
     await new Promise<void>((resolve) => {
       const reply = new MessageChannel();
       reply.port1.onmessage = () => resolve();
-      activeSw.postMessage(
-        { type: "init-bridge", appPrefix: "/app/" },
+      reg.active!.postMessage(
+        { type: "init-bridge", appPrefix: APP_PREFIX },
         [bridge.getSwPort(), reply.port2],
       );
     });
 
-    return reg;
+    return true;
   } catch (err) {
     appendLog(`Service worker error: ${err}\n`, "stderr");
-    return null;
+    return false;
   }
 }
 
