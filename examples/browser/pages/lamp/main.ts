@@ -303,7 +303,7 @@ async function start() {
     // Load WordPress bundle (excludes SQLite plugin, uses MySQL wp-config)
     setStatus("Loading WordPress files...", "loading");
     appendLog("Loading WordPress bundle...\n", "info");
-    const loaded = await loadWordPressBundle(fs, "/wp-bundle.json", (current, total) => {
+    const loaded = await loadWordPressBundle(fs, import.meta.env.BASE_URL + "wp-bundle.json", (current, total) => {
       if (current % 500 === 0 || current === total) {
         appendLog(`  ${current}/${total} files\n`, "info");
       }

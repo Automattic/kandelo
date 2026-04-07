@@ -98,7 +98,7 @@ async function initKernelWithStdlib(
 
   // Load stdlib bundle
   setStatus("Loading Python stdlib...", "loading");
-  const loaded = await loadPythonBundle(fs, "/python-bundle.json", (current, total) => {
+  const loaded = await loadPythonBundle(fs, import.meta.env.BASE_URL + "python-bundle.json", (current, total) => {
     setStatus(`Loading Python stdlib... ${current}/${total} files`, "loading");
   });
   setStatus(`Stdlib loaded (${loaded} files). Starting Python...`, "loading");

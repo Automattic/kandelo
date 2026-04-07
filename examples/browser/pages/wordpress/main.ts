@@ -331,7 +331,7 @@ async function start() {
 
     // --- Load WordPress bundle AFTER all forks are done ---
     setStatus("Loading WordPress files...", "loading");
-    const loaded = await loadWordPressBundle(fs, "/wp-bundle.json", (current, total) => {
+    const loaded = await loadWordPressBundle(fs, import.meta.env.BASE_URL + "wp-bundle.json", (current, total) => {
       if (current % 500 === 0 || current === total) {
         appendLog(`  ${current}/${total} files\n`, "info");
       }
