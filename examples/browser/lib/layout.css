@@ -1,0 +1,522 @@
+/* Shared layout for wasm-posix-kernel browser demos */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* ── Sidebar ────────────────────────────────── */
+
+.sidebar {
+  background: #1a1a2e;
+  color: #ccc;
+  display: flex;
+  flex-direction: column;
+  padding: 1rem 0;
+  overflow-y: auto;
+}
+
+.sidebar-title {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #888;
+  padding: 0 1rem 0.75rem;
+}
+
+.sidebar a {
+  color: #ccc;
+  text-decoration: none;
+  padding: 0.5rem 1rem;
+  font-size: 0.9rem;
+  transition: background 0.15s;
+}
+
+.sidebar a:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+.sidebar a[aria-current="page"] {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  font-weight: 600;
+  border-left: 3px solid #6c8cff;
+  padding-left: calc(1rem - 3px);
+}
+
+/* ── Main area ──────────────────────────────── */
+
+.main {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.main-header {
+  flex-shrink: 0;
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid #e5e5e5;
+}
+
+.main-header h1 {
+  margin: 0 0 0.25rem;
+  font-size: 1.4rem;
+}
+
+.subtitle {
+  color: #666;
+  font-size: 0.85rem;
+  margin: 0 0 0.75rem;
+}
+
+/* ── Controls row ───────────────────────────── */
+
+.controls {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.controls select,
+.controls button,
+.controls input[type="text"] {
+  padding: 0.4rem 0.75rem;
+  font-size: 0.85rem;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+}
+
+.controls button {
+  background: #333;
+  color: #fff;
+  border: none;
+  cursor: pointer;
+}
+
+.controls button:hover { background: #444; }
+.controls button:disabled { opacity: 0.5; cursor: default; }
+
+.controls input[type="text"] {
+  flex: 1;
+  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+}
+
+/* ── Status bar ─────────────────────────────── */
+
+.status {
+  padding: 0.4rem 0.75rem;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  margin-top: 0.5rem;
+}
+
+.status.loading { background: #fff3cd; color: #856404; }
+.status.running { background: #d4edda; color: #155724; }
+.status.error   { background: #f8d7da; color: #721c24; }
+
+/* ── Preview area ───────────────────────────── */
+
+.preview-area {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+/* ── Split panels (log + iframe or log + result) */
+
+.split-panels {
+  display: grid;
+  grid-template-columns: 300px 1fr;
+  gap: 0;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.split-panels > * {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.log-panel {
+  border-right: 1px solid #e5e5e5;
+  padding: 0.75rem;
+}
+
+.log-panel h3,
+.iframe-panel h3,
+.result-panel h3 {
+  margin: 0 0 0.5rem;
+  font-size: 0.85rem;
+  color: #666;
+  flex-shrink: 0;
+}
+
+.iframe-panel,
+.result-panel {
+  padding: 0.75rem;
+}
+
+.log-panel pre {
+  flex: 1;
+  margin: 0;
+  padding: 0.75rem;
+  background: #1e1e1e;
+  color: #d4d4d4;
+  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  overflow-y: auto;
+  border-radius: 4px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.frame-container {
+  flex: 1;
+  min-height: 0;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.frame-container iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+}
+
+/* ── Code panels (textarea + output side-by-side) */
+
+.code-panels {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.code-panels > * {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0.75rem;
+}
+
+.code-panels > *:first-child {
+  border-right: 1px solid #e5e5e5;
+}
+
+.code-panels h3 {
+  margin: 0 0 0.5rem;
+  font-size: 0.85rem;
+  color: #666;
+  flex-shrink: 0;
+}
+
+.code-panels textarea {
+  flex: 1;
+  margin: 0;
+  padding: 0.75rem;
+  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: 0.85rem;
+  line-height: 1.4;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  resize: none;
+  background: #1e1e1e;
+  color: #d4d4d4;
+}
+
+.code-panels pre {
+  flex: 1;
+  margin: 0;
+  padding: 0.75rem;
+  background: #1e1e1e;
+  color: #d4d4d4;
+  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  overflow-y: auto;
+  border-radius: 4px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ── Terminal area (shell, python interactive) ── */
+
+.terminal-area {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0.75rem;
+}
+
+.terminal-area #terminal {
+  flex: 1;
+  min-height: 0;
+  background: #1e1e1e;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+/* ── Batch view panels ──────────────────────── */
+
+.batch-panel {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.batch-panel > * {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0.75rem;
+}
+
+.batch-panel > *:first-child {
+  border-right: 1px solid #e5e5e5;
+}
+
+.batch-panel h3 {
+  margin: 0 0 0.5rem;
+  font-size: 0.85rem;
+  color: #666;
+  flex-shrink: 0;
+}
+
+.batch-panel textarea {
+  flex: 1;
+  margin: 0;
+  padding: 0.75rem;
+  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: 0.85rem;
+  line-height: 1.4;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  resize: none;
+  background: #1e1e1e;
+  color: #d4d4d4;
+}
+
+.batch-panel pre {
+  flex: 1;
+  margin: 0;
+  padding: 0.75rem;
+  background: #1e1e1e;
+  color: #d4d4d4;
+  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  overflow-y: auto;
+  border-radius: 4px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ── Simple output (index page) ─────────────── */
+
+.output-area {
+  flex: 1;
+  min-height: 0;
+  padding: 0.75rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+}
+
+.output-area pre {
+  flex: 1;
+  margin: 0;
+  padding: 0.75rem;
+  background: #1e1e1e;
+  color: #d4d4d4;
+  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  overflow-y: auto;
+  border-radius: 4px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ── Result panel (mariadb, redis) ──────────── */
+
+.result-panel pre {
+  flex: 1;
+  margin: 0;
+  padding: 0.75rem;
+  background: #f8f8f8;
+  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  overflow-y: auto;
+  border-radius: 4px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.result-panel .result-content {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+table.result-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+table.result-table th,
+table.result-table td {
+  border: 1px solid #ddd;
+  padding: 0.4rem 0.6rem;
+  text-align: left;
+}
+
+table.result-table th { background: #e8e8e8; font-weight: 600; }
+table.result-table tr:nth-child(even) { background: #f0f0f0; }
+
+/* ── Mode toggle (shell, python) ────────────── */
+
+.mode-toggle {
+  display: flex;
+  gap: 0;
+  margin-bottom: 0.5rem;
+}
+
+.mode-toggle button {
+  padding: 0.35rem 1rem;
+  font-size: 0.85rem;
+  border: 1px solid #ccc;
+  background: #fff;
+  color: #333;
+  cursor: pointer;
+}
+
+.mode-toggle button:first-child { border-radius: 4px 0 0 4px; }
+.mode-toggle button:last-child  { border-radius: 0 4px 4px 0; border-left: none; }
+
+.mode-toggle button.active {
+  background: #333;
+  color: #fff;
+  border-color: #333;
+}
+
+/* ── SQL / command textarea ─────────────────── */
+
+.sql-input {
+  margin-top: 0.5rem;
+}
+
+.sql-input textarea {
+  width: 100%;
+  padding: 0.5rem;
+  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: 0.85rem;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  resize: vertical;
+  min-height: 60px;
+  max-height: 120px;
+}
+
+/* ── Redis command colors ───────────────────── */
+
+.cmd  { color: #569cd6; }
+.resp { color: #d4d4d4; }
+
+/* ── Shared span colors ─────────────────────── */
+
+.stderr { color: #f48771; }
+.info   { color: #6a9955; }
+
+/* ── View panel (shell/python mode toggle) ──── */
+
+.view-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+/* ── Utility ────────────────────────────────── */
+
+.hidden { display: none !important; }
+
+.hint {
+  color: #999;
+  font-size: 0.8rem;
+}
+
+.placeholder-text {
+  color: #999;
+  padding: 1rem;
+}
+
+/* ── Redis prompt ───────────────────────────── */
+
+.redis-prompt {
+  color: #c33;
+  font-weight: bold;
+  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+}
+
+/* ── Responsive ─────────────────────────────── */
+
+@media (max-width: 768px) {
+  body {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+
+  .sidebar {
+    flex-direction: row;
+    overflow-x: auto;
+    padding: 0.5rem;
+    gap: 0.25rem;
+  }
+
+  .sidebar-title { display: none; }
+
+  .sidebar a {
+    white-space: nowrap;
+    padding: 0.35rem 0.75rem;
+    border-radius: 4px;
+    font-size: 0.8rem;
+  }
+
+  .sidebar a[aria-current="page"] {
+    border-left: none;
+    padding-left: 0.75rem;
+  }
+
+  .split-panels { grid-template-columns: 1fr; }
+  .code-panels  { grid-template-columns: 1fr; }
+  .batch-panel  { grid-template-columns: 1fr; }
+
+  .log-panel { border-right: none; border-bottom: 1px solid #e5e5e5; }
+  .code-panels > *:first-child { border-right: none; border-bottom: 1px solid #e5e5e5; }
+  .batch-panel > *:first-child { border-right: none; border-bottom: 1px solid #e5e5e5; }
+}

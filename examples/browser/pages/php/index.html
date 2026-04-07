@@ -3,79 +3,56 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>PHP CLI on wasm-posix-kernel (Browser)</title>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
-    h1 { font-size: 1.4rem; margin-bottom: 0.5rem; }
-    .subtitle { color: #666; margin-bottom: 1rem; font-size: 0.9rem; }
-    .controls { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 1rem; }
-    button, select { font-size: 0.95rem; padding: 0.4rem 0.8rem; }
-    button { cursor: pointer; }
-    button:disabled { opacity: 0.5; cursor: not-allowed; }
-    .panels { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
-    textarea {
-      width: 100%; min-height: 200px; font-family: 'SF Mono', 'Fira Code', monospace;
-      font-size: 0.85rem; padding: 0.75rem; border: 1px solid #ccc; border-radius: 4px;
-      resize: vertical; tab-size: 4;
-    }
-    #output {
-      background: #1e1e1e; color: #d4d4d4; padding: 1rem;
-      border-radius: 4px; min-height: 200px; max-height: 400px; overflow: auto;
-      white-space: pre-wrap; word-break: break-all; font-size: 0.85rem;
-    }
-    .stderr { color: #f48771; }
-    .info { color: #6a9955; }
-    .status { margin-bottom: 1rem; padding: 0.5rem; border-radius: 4px; font-size: 0.9rem; }
-    .status.loading { background: #fff3cd; }
-    .status.running { background: #d4edda; }
-    .status.error { background: #f8d7da; }
-    @media (max-width: 700px) {
-      .panels { grid-template-columns: 1fr; }
-    }
-  </style>
+  <title>PHP CLI — wasm-posix-kernel</title>
+  <link rel="stylesheet" href="../../lib/layout.css">
 </head>
 <body>
-  <h1>PHP CLI on wasm-posix-kernel</h1>
-  <nav style="margin-bottom: 1rem; padding: 0.75rem; background: #f5f5f5; border-radius: 4px;">
-    <strong>Demos:</strong>
-    <a href="/" style="margin-left: 0.5rem;">Simple Programs</a>
-    <a href="/pages/nginx/" style="margin-left: 0.5rem;">nginx</a>
-    <a href="/pages/php/" style="margin-left: 0.5rem; font-weight: bold;">PHP CLI</a>
-    <a href="/pages/nginx-php/" style="margin-left: 0.5rem;">nginx + PHP-FPM</a>
-    <a href="/pages/mariadb/" style="margin-left: 0.5rem;">MariaDB</a>
-    <a href="/pages/redis/" style="margin-left: 0.5rem;">Redis</a>
-    <a href="/pages/wordpress/" style="margin-left: 0.5rem;">WordPress</a>
-    <a href="/pages/lamp/" style="margin-left: 0.5rem;">LAMP</a>
-    <a href="/pages/shell/" style="margin-left: 0.5rem;">Shell</a>
-    <a href="/pages/python/" style="margin-left: 0.5rem;">Python</a>
+  <nav class="sidebar">
+    <div class="sidebar-title">Demos</div>
+    <a href="/">Simple Programs</a>
+    <a href="/pages/nginx/">nginx</a>
+    <a href="/pages/php/" aria-current="page">PHP CLI</a>
+    <a href="/pages/nginx-php/">nginx + PHP-FPM</a>
+    <a href="/pages/mariadb/">MariaDB</a>
+    <a href="/pages/redis/">Redis</a>
+    <a href="/pages/wordpress/">WordPress</a>
+    <a href="/pages/lamp/">LAMP</a>
+    <a href="/pages/shell/">Shell</a>
+    <a href="/pages/python/">Python</a>
   </nav>
-  <p class="subtitle">PHP 8.4 CLI running inside a POSIX kernel compiled to WebAssembly</p>
-  <div class="controls">
-    <select id="examples">
-      <option value="">-- Load Example --</option>
-      <option value="hello">Hello World</option>
-      <option value="fibonacci">Fibonacci</option>
-      <option value="sqlite">SQLite3</option>
-      <option value="json">JSON Processing</option>
-      <option value="classes">Classes & OOP</option>
-      <option value="arrays">Array Functions</option>
-    </select>
-    <button id="run">Run</button>
-  </div>
-  <div id="status" class="status" style="display:none"></div>
-  <div class="panels">
-    <div>
-      <h3 style="margin-bottom: 0.5rem">PHP Code</h3>
-      <textarea id="code">&lt;?php
+  <div class="main">
+    <div class="main-header">
+      <h1>PHP CLI on wasm-posix-kernel</h1>
+      <p class="subtitle">PHP 8.4 CLI running inside a POSIX kernel compiled to WebAssembly</p>
+      <div class="controls">
+        <select id="examples">
+          <option value="">-- Load Example --</option>
+          <option value="hello">Hello World</option>
+          <option value="fibonacci">Fibonacci</option>
+          <option value="sqlite">SQLite3</option>
+          <option value="json">JSON Processing</option>
+          <option value="classes">Classes & OOP</option>
+          <option value="arrays">Array Functions</option>
+        </select>
+        <button id="run">Run</button>
+      </div>
+      <div id="status" class="status" style="display:none"></div>
+    </div>
+    <div class="preview-area">
+      <div class="code-panels">
+        <div>
+          <h3>PHP Code</h3>
+          <textarea id="code">&lt;?php
 echo "Hello from PHP on WebAssembly!\n";
 echo "PHP version: " . PHP_VERSION . "\n";
 echo "OS: " . PHP_OS . "\n";
 </textarea>
-    </div>
-    <div>
-      <h3 style="margin-bottom: 0.5rem">Output</h3>
-      <pre id="output"></pre>
+        </div>
+        <div>
+          <h3>Output</h3>
+          <pre id="output"></pre>
+        </div>
+      </div>
     </div>
   </div>
   <script type="module" src="./main.ts"></script>
