@@ -89,6 +89,7 @@ http {
             fastcgi_param REQUEST_URI $request_uri;
             fastcgi_param DOCUMENT_URI $document_uri;
             fastcgi_param DOCUMENT_ROOT $document_root;
+            fastcgi_param HTTP_X_FORWARDED_PROTO $http_x_forwarded_proto;
             fastcgi_param REDIRECT_STATUS 200;
         }
     }

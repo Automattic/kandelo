@@ -104,6 +104,7 @@ http {
             fastcgi_param SERVER_PORT $server_port;
             fastcgi_param SERVER_NAME $server_name;
             fastcgi_param HTTP_HOST $http_host;
+            fastcgi_param HTTP_X_FORWARDED_PROTO $http_x_forwarded_proto;
             fastcgi_param REDIRECT_STATUS 200;
         }
     }
