@@ -1398,7 +1398,18 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
             let len = unsafe { cstr_len(p) };
             kernel_open(p, len, a2 as u32, a3 as u32)
         }
-        2 => kernel_close(a1),                     // SYS_CLOSE
+        2 => { // SYS_CLOSE
+            // Check if this is a mqueue descriptor
+            let mq_table = unsafe { crate::mqueue::global_mqueue_table() };
+            if mq_table.is_mqd(a1 as u32) {
+                match mq_table.mq_close(a1 as u32) {
+                    Ok(()) => 0,
+                    Err(e) => -(e as i32),
+                }
+            } else {
+                kernel_close(a1)
+            }
+        }
         3 => kernel_read(a1, a2 as *mut u8, a3 as u32), // SYS_READ: (fd, buf, count)
         4 => kernel_write(a1, a2 as *const u8, a3 as u32), // SYS_WRITE: (fd, buf, count)
         5 => kernel_lseek(a1, a2 as u32, a3, a4 as u32) as i32, // SYS_LSEEK: (fd, off_lo, off_hi, whence)
@@ -2363,7 +2374,127 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
             }
         }
 
-        253..=254 | 262 | 265..=268 | 289 | 292 | 301..=303 | 305 | 309..=322 | 324 | 331..=336 | 348..=349 | 362..=369 | 373..=376 | 386 => {
+        // POSIX message queues
+        331 => { // SYS_MQ_OPEN: (name_ptr, flags, mode, attr_ptr)
+            let p = a1 as *const u8;
+            let name_len = unsafe { cstr_len(p) };
+            let name = unsafe { core::str::from_utf8_unchecked(core::slice::from_raw_parts(p, name_len as usize)) };
+            let flags = a2 as u32;
+            let mode = a3 as u32;
+            let has_attr = a4 != 0 && (flags & 0o100) != 0; // O_CREAT
+            let (maxmsg, msgsize) = if has_attr {
+                let attr_ptr = a4 as *const u8;
+                let maxmsg = unsafe { i32::from_le_bytes([*attr_ptr.add(4), *attr_ptr.add(5), *attr_ptr.add(6), *attr_ptr.add(7)]) } as u32;
+                let msgsize = unsafe { i32::from_le_bytes([*attr_ptr.add(8), *attr_ptr.add(9), *attr_ptr.add(10), *attr_ptr.add(11)]) } as u32;
+                (maxmsg, msgsize)
+            } else {
+                (0, 0)
+            };
+            let table = unsafe { crate::mqueue::global_mqueue_table() };
+            match table.mq_open(name, flags, mode, maxmsg, msgsize, has_attr) {
+                Ok(mqd) => mqd as i32,
+                Err(e) => -(e as i32),
+            }
+        }
+        332 => { // SYS_MQ_UNLINK: (name_ptr)
+            let p = a1 as *const u8;
+            let name_len = unsafe { cstr_len(p) };
+            let name = unsafe { core::str::from_utf8_unchecked(core::slice::from_raw_parts(p, name_len as usize)) };
+            let table = unsafe { crate::mqueue::global_mqueue_table() };
+            match table.mq_unlink(name) {
+                Ok(()) => 0,
+                Err(e) => -(e as i32),
+            }
+        }
+        333 => { // SYS_MQ_TIMEDSEND: (mqd, msg_ptr, msg_len, priority, timeout_ptr)
+            let data = unsafe { core::slice::from_raw_parts(a2 as *const u8, a3 as usize) };
+            let table = unsafe { crate::mqueue::global_mqueue_table() };
+            match table.mq_send(a1 as u32, data, a4 as u32) {
+                Ok(result) => {
+                    if let Some(notif) = result.notification {
+                        table.set_pending_notification(notif);
+                    }
+                    0
+                }
+                Err(e) => -(e as i32),
+            }
+        }
+        334 => { // SYS_MQ_TIMEDRECEIVE: (mqd, msg_ptr, msg_len, prio_ptr, timeout_ptr)
+            let table = unsafe { crate::mqueue::global_mqueue_table() };
+            match table.mq_receive(a1 as u32, a3 as u32) {
+                Ok(result) => {
+                    // Write message data to kernel memory (msg_ptr adjusted by host)
+                    let dst = unsafe { core::slice::from_raw_parts_mut(a2 as *mut u8, result.data.len()) };
+                    dst.copy_from_slice(&result.data);
+                    // Write priority if pointer provided
+                    if a4 != 0 {
+                        let prio_ptr = a4 as *mut u8;
+                        let prio_bytes = result.priority.to_le_bytes();
+                        unsafe {
+                            *prio_ptr = prio_bytes[0];
+                            *prio_ptr.add(1) = prio_bytes[1];
+                            *prio_ptr.add(2) = prio_bytes[2];
+                            *prio_ptr.add(3) = prio_bytes[3];
+                        }
+                    }
+                    result.data.len() as i32
+                }
+                Err(e) => -(e as i32),
+            }
+        }
+        335 => { // SYS_MQ_NOTIFY: (mqd, sev_ptr)
+            let table = unsafe { crate::mqueue::global_mqueue_table() };
+            let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
+            if a2 == 0 {
+                // NULL sigevent = unregister
+                match table.mq_notify(a1 as u32, pid, None, 0) {
+                    Ok(()) => 0,
+                    Err(e) => -(e as i32),
+                }
+            } else {
+                let sev_ptr = a2 as *const u8;
+                let signo = unsafe { i32::from_le_bytes([*sev_ptr.add(4), *sev_ptr.add(5), *sev_ptr.add(6), *sev_ptr.add(7)]) } as u32;
+                let notify = unsafe { i32::from_le_bytes([*sev_ptr.add(8), *sev_ptr.add(9), *sev_ptr.add(10), *sev_ptr.add(11)]) } as u32;
+                match table.mq_notify(a1 as u32, pid, Some(notify), signo) {
+                    Ok(()) => 0,
+                    Err(e) => -(e as i32),
+                }
+            }
+        }
+        336 => { // SYS_MQ_GETSETATTR: (mqd, new_attr_ptr, old_attr_ptr)
+            let table = unsafe { crate::mqueue::global_mqueue_table() };
+            let new_flags = if a2 != 0 {
+                let ptr = a2 as *const u8;
+                let flags = unsafe { i32::from_le_bytes([*ptr, *ptr.add(1), *ptr.add(2), *ptr.add(3)]) };
+                Some(flags as u32)
+            } else {
+                None
+            };
+            match table.mq_getsetattr(a1 as u32, new_flags) {
+                Ok(attr) => {
+                    if a3 != 0 {
+                        let out = a3 as *mut u8;
+                        unsafe {
+                            // Write struct mq_attr: { long mq_flags, mq_maxmsg, mq_msgsize, mq_curmsgs, __unused[4] }
+                            let f = (attr.flags as i32).to_le_bytes();
+                            let mm = (attr.maxmsg as i32).to_le_bytes();
+                            let ms = (attr.msgsize as i32).to_le_bytes();
+                            let cm = (attr.curmsgs as i32).to_le_bytes();
+                            for i in 0..4 { *out.add(i) = f[i]; }
+                            for i in 0..4 { *out.add(4 + i) = mm[i]; }
+                            for i in 0..4 { *out.add(8 + i) = ms[i]; }
+                            for i in 0..4 { *out.add(12 + i) = cm[i]; }
+                            // Zero __unused[4]
+                            for i in 16..32 { *out.add(i) = 0; }
+                        }
+                    }
+                    0
+                }
+                Err(e) => -(e as i32),
+            }
+        }
+
+        253..=254 | 262 | 265..=268 | 289 | 292 | 301..=303 | 305 | 309..=322 | 324 | 348..=349 | 362..=369 | 373..=376 | 386 => {
             // Remaining stubs: return ENOSYS
             -(Errno::ENOSYS as i32)
         }
@@ -2429,6 +2560,38 @@ pub extern "C" fn kernel_ipc_shmdt(addr: i32) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_ipc_shmctl(shmid: i32, cmd: i32, buf_ptr: i32) -> i32 {
     unsafe { host_ipc_shmctl(shmid, cmd, buf_ptr) }
+}
+
+// ---------------------------------------------------------------------------
+// POSIX mqueue kernel exports
+// ---------------------------------------------------------------------------
+
+/// Drain pending mqueue notification. Writes (pid: u32, signo: u32) to out_ptr.
+/// Returns 1 if a notification was pending, 0 otherwise.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_mq_drain_notification(out_ptr: *mut u8) -> i32 {
+    let table = unsafe { crate::mqueue::global_mqueue_table() };
+    match table.take_pending_notification() {
+        Some(notif) => {
+            if !out_ptr.is_null() {
+                let pid_bytes = notif.pid.to_le_bytes();
+                let signo_bytes = notif.signo.to_le_bytes();
+                unsafe {
+                    for i in 0..4 { *out_ptr.add(i) = pid_bytes[i]; }
+                    for i in 0..4 { *out_ptr.add(4 + i) = signo_bytes[i]; }
+                }
+            }
+            1
+        }
+        None => 0,
+    }
+}
+
+/// Check if an fd is a mqueue descriptor.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_mq_is_mqd(fd: i32) -> i32 {
+    let table = unsafe { crate::mqueue::global_mqueue_table() };
+    if table.is_mqd(fd as u32) { 1 } else { 0 }
 }
 
 /// Initialize the kernel with a new process.

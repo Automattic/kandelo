@@ -24,7 +24,7 @@
 import { WasmPosixKernel } from "./kernel";
 import { SharedIpcTable, type MsgQueueInfo, type SemSetInfo, type ShmSegInfo } from "./shared-ipc-table";
 import { SharedLockTable } from "./shared-lock-table";
-import { PosixMqueueTable, type MqNotification } from "./posix-mqueue";
+
 import type { KernelConfig, PlatformIO } from "./types";
 
 /** Channel status values */
@@ -121,12 +121,7 @@ const SYS_SHMDT = 346;
 const SYS_SHMCTL = 347;
 
 /** POSIX message queue syscall numbers */
-const SYS_MQ_OPEN = 331;
-const SYS_MQ_UNLINK = 332;
 const SYS_MQ_TIMEDSEND = 333;
-const SYS_MQ_TIMEDRECEIVE = 334;
-const SYS_MQ_NOTIFY = 335;
-const SYS_MQ_GETSETATTR = 336;
 
 const SYS_CLOSE = 2;
 
@@ -503,6 +498,29 @@ const SYSCALL_ARGS: Record<number, ArgDesc[]> = {
   // faccessat2/fchmodat2
   382: [{ argIndex: 1, direction: "in", size: { type: "cstring" } }],          // FACCESSAT2: path
   383: [{ argIndex: 1, direction: "in", size: { type: "cstring" } }],          // FCHMODAT2: path
+
+  // POSIX message queues
+  331: [                                                                        // MQ_OPEN: (name, flags, mode, attr)
+    { argIndex: 0, direction: "in", size: { type: "cstring" } },               //   name
+    { argIndex: 3, direction: "in", size: { type: "fixed", size: 32 } },        //   mq_attr (if O_CREAT && non-null)
+  ],
+  332: [{ argIndex: 0, direction: "in", size: { type: "cstring" } }],          // MQ_UNLINK: name
+  333: [                                                                        // MQ_TIMEDSEND: (mqd, msg_ptr, msg_len, priority, timeout)
+    { argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 } },      //   message data
+    { argIndex: 4, direction: "in", size: { type: "fixed", size: 16 } },        //   timespec (optional)
+  ],
+  334: [                                                                        // MQ_TIMEDRECEIVE: (mqd, msg_ptr, msg_len, prio_ptr, timeout)
+    { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 } },     //   message buffer (out)
+    { argIndex: 3, direction: "out", size: { type: "fixed", size: 4 } },        //   priority (out)
+    { argIndex: 4, direction: "in", size: { type: "fixed", size: 16 } },        //   timespec (optional)
+  ],
+  335: [                                                                        // MQ_NOTIFY: (mqd, sigevent)
+    { argIndex: 1, direction: "in", size: { type: "fixed", size: 16 } },        //   sigevent (optional)
+  ],
+  336: [                                                                        // MQ_GETSETATTR: (mqd, new_attr, old_attr)
+    { argIndex: 1, direction: "in", size: { type: "fixed", size: 32 } },        //   new mq_attr (optional)
+    { argIndex: 2, direction: "out", size: { type: "fixed", size: 32 } },       //   old mq_attr (out)
+  ],
 };
 
 // Also need a way to compute poll size: nfds * sizeof(struct pollfd) = nfds * 8
@@ -682,8 +700,7 @@ export class CentralizedKernelWorker {
   private lockTable: SharedLockTable | null = null;
   /** Per-process shared memory mappings: pid → Map<addr, {segId, size}> */
   private shmMappings = new Map<number, Map<number, { segId: number; size: number }>>();
-  /** POSIX message queue table */
-  private mqueueTable = new PosixMqueueTable();
+
   /** PTY index → pid mapping (for draining output after syscalls) */
   private ptyIndexByPid = new Map<number, number>();
   /** Set of active PTY indices to drain after each syscall */
@@ -1492,19 +1509,7 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    // --- POSIX message queues: intercept on host side ---
-    if (syscallNr >= SYS_MQ_OPEN && syscallNr <= SYS_MQ_GETSETATTR) {
-      this.handleMqueue(channel, syscallNr, origArgs);
-      return;
-    }
-
-    // --- close: intercept for mqueue descriptors ---
-    if (syscallNr === SYS_CLOSE && this.mqueueTable.isMqd(origArgs[0])) {
-      const result = this.mqueueTable.mqClose(origArgs[0]);
-      this.completeChannelRaw(channel, result, result < 0 ? -result : 0);
-      this.relistenChannel(channel);
-      return;
-    }
+    // (POSIX mqueue syscalls 331-336 now go through the normal kernel path)
 
     // --- pselect6: fd_sets (inout) + timeout/sigmask decoding ---
     if (syscallNr === SYS_PSELECT6) {
@@ -1696,6 +1701,13 @@ export class CentralizedKernelWorker {
         this.handleProcessTerminated(channel, waitStatus);
         return;
       }
+    }
+
+    // --- POSIX mqueue notification (centralized mode) ---
+    // After mq_timedsend, the kernel may have a pending notification (signal
+    // to deliver when a message arrives on a previously empty queue).
+    if (syscallNr === SYS_MQ_TIMEDSEND && retVal === 0) {
+      this.drainMqueueNotification();
     }
 
     // --- Signal delivery (centralized mode) ---
@@ -5249,7 +5261,6 @@ export class CentralizedKernelWorker {
     }
     this.tcpConnections.delete(pid);
     this.shmMappings.delete(pid);
-    this.mqueueTable.cleanupProcess(pid);
   }
 
   // =========================================================================
@@ -5530,185 +5541,29 @@ export class CentralizedKernelWorker {
   }
 
   // =========================================================================
-  // POSIX message queue handlers — intercept in centralized mode
-  //
-  // Like SysV IPC, mq syscalls pass user-space pointers that reference
-  // the process's WebAssembly.Memory. We handle all mq syscalls on the
-  // host side via PosixMqueueTable.
+  // POSIX mqueue notification drain
   // =========================================================================
 
-  private handleMqueue(channel: ChannelInfo, syscallNr: number, args: number[]): void {
-    let result: number;
+  /**
+   * After mq_timedsend, check if the kernel has a pending notification
+   * (a signal to deliver when a message arrives on a previously empty queue).
+   * The notification is stored in the kernel's MqueueTable and drained here.
+   */
+  private drainMqueueNotification(): void {
+    const drain = this.kernelInstance!.exports
+      .kernel_mq_drain_notification as ((outPtr: number) => number) | undefined;
+    if (!drain) return;
 
-    switch (syscallNr) {
-      case SYS_MQ_OPEN:
-        result = this.handleMqOpen(channel, args);
-        break;
-      case SYS_MQ_UNLINK:
-        result = this.handleMqUnlink(channel, args);
-        break;
-      case SYS_MQ_TIMEDSEND:
-        result = this.handleMqTimedSend(channel, args);
-        break;
-      case SYS_MQ_TIMEDRECEIVE:
-        result = this.handleMqTimedReceive(channel, args);
-        break;
-      case SYS_MQ_NOTIFY:
-        result = this.handleMqNotify(channel, args);
-        break;
-      case SYS_MQ_GETSETATTR:
-        result = this.handleMqGetSetAttr(channel, args);
-        break;
-      default:
-        result = -38; // ENOSYS
-    }
-
-    this.completeChannelRaw(channel, result, result < 0 ? -result : 0);
-    this.relistenChannel(channel);
-  }
-
-  /** Read a NUL-terminated string from process memory */
-  private readProcessString(memory: WebAssembly.Memory, ptr: number): string {
-    const mem = new Uint8Array(memory.buffer);
-    let end = ptr;
-    while (end < mem.length && mem[end] !== 0) end++;
-    return new TextDecoder().decode(mem.slice(ptr, end));
-  }
-
-  private handleMqOpen(channel: ChannelInfo, args: number[]): number {
-    const [namePtr, flags, mode, attrPtr] = args;
-    const name = this.readProcessString(channel.memory, namePtr);
-
-    let hasAttr = false;
-    let maxmsg = 0;
-    let msgsize = 0;
-
-    if (attrPtr !== 0 && (flags & 0o100) !== 0) {
-      // O_CREAT set and attr provided — read struct mq_attr from process memory
-      // struct mq_attr on wasm32: { long mq_flags, mq_maxmsg, mq_msgsize, mq_curmsgs, __unused[4] }
-      // long = 4 bytes on wasm32
-      const dv = new DataView(channel.memory.buffer);
-      // mq_flags at offset 0 (ignored by mq_open on Linux)
-      maxmsg = dv.getInt32(attrPtr + 4, true);  // mq_maxmsg
-      msgsize = dv.getInt32(attrPtr + 8, true);  // mq_msgsize
-      hasAttr = true;
-    }
-
-    return this.mqueueTable.mqOpen(name, flags, mode, maxmsg, msgsize, hasAttr);
-  }
-
-  private handleMqUnlink(channel: ChannelInfo, args: number[]): number {
-    const [namePtr] = args;
-    const name = this.readProcessString(channel.memory, namePtr);
-    return this.mqueueTable.mqUnlink(name);
-  }
-
-  private handleMqTimedSend(channel: ChannelInfo, args: number[]): number {
-    const [mqd, msgPtr, msgLen, priority, timeoutPtr] = args;
-
-    // Read message data from process memory
-    const processMem = new Uint8Array(channel.memory.buffer);
-    const data = processMem.slice(msgPtr, msgPtr + msgLen);
-
-    // Read timeout if provided (time64 format: {i32 sec_lo, i32 sec_hi, i32 nsec})
-    let hasTimeout = false;
-    let nsecLo = 0, nsecHi = 0, nsec = 0;
-    if (timeoutPtr !== 0) {
-      const dv = new DataView(channel.memory.buffer);
-      nsecLo = dv.getInt32(timeoutPtr, true);
-      nsecHi = dv.getInt32(timeoutPtr + 4, true);
-      nsec = dv.getInt32(timeoutPtr + 8, true);
-      hasTimeout = true;
-    }
-
-    const { result, notification } = this.mqueueTable.mqTimedSend(
-      mqd, data, priority, nsecLo, nsecHi, nsec, hasTimeout
-    );
-
-    // Fire notification signal if needed
-    if (notification && notification.signo > 0) {
-      this.sendSignalToProcess(notification.pid, notification.signo);
-    }
-
-    return result;
-  }
-
-  private handleMqTimedReceive(channel: ChannelInfo, args: number[]): number {
-    const [mqd, msgPtr, msgLen, prioPtr, timeoutPtr] = args;
-
-    // Read timeout if provided
-    let hasTimeout = false;
-    let nsecLo = 0, nsecHi = 0, nsec = 0;
-    if (timeoutPtr !== 0) {
-      const dv = new DataView(channel.memory.buffer);
-      nsecLo = dv.getInt32(timeoutPtr, true);
-      nsecHi = dv.getInt32(timeoutPtr + 4, true);
-      nsec = dv.getInt32(timeoutPtr + 8, true);
-      hasTimeout = true;
-    }
-
-    const result = this.mqueueTable.mqTimedReceive(
-      mqd, msgLen, nsecLo, nsecHi, nsec, hasTimeout
-    );
-
-    if ("error" in result) return result.error;
-
-    // Write message data to process memory
-    const processMem = new Uint8Array(channel.memory.buffer);
-    processMem.set(result.data, msgPtr);
-
-    // Write priority to process memory if pointer provided
-    if (prioPtr !== 0) {
-      const dv = new DataView(channel.memory.buffer);
-      dv.setUint32(prioPtr, result.priority, true);
-    }
-
-    return result.length;
-  }
-
-  private handleMqNotify(channel: ChannelInfo, args: number[]): number {
-    const [mqd, sevPtr] = args;
-
-    if (sevPtr === 0) {
-      // NULL sigevent = unregister
-      return this.mqueueTable.mqNotify(mqd, channel.pid, null, 0);
-    }
-
-    // Read struct sigevent from process memory
-    // Layout on wasm32: { union sigval (4B), int sigev_signo (4B), int sigev_notify (4B), ... }
-    const dv = new DataView(channel.memory.buffer);
-    const signo = dv.getInt32(sevPtr + 4, true);   // sigev_signo
-    const notify = dv.getInt32(sevPtr + 8, true);   // sigev_notify
-
-    return this.mqueueTable.mqNotify(mqd, channel.pid, notify, signo);
-  }
-
-  private handleMqGetSetAttr(channel: ChannelInfo, args: number[]): number {
-    const [mqd, newAttrPtr, oldAttrPtr] = args;
-
-    // Read new flags if provided
-    let newFlags: number | null = null;
-    if (newAttrPtr !== 0) {
-      const dv = new DataView(channel.memory.buffer);
-      newFlags = dv.getInt32(newAttrPtr, true); // mq_flags at offset 0
-    }
-
-    const result = this.mqueueTable.mqGetSetAttr(mqd, newFlags);
-    if (typeof result === "number") return result;
-
-    // Write old attributes to process memory if pointer provided
-    if (oldAttrPtr !== 0) {
-      const dv = new DataView(channel.memory.buffer);
-      dv.setInt32(oldAttrPtr, result.flags, true);      // mq_flags
-      dv.setInt32(oldAttrPtr + 4, result.maxmsg, true);  // mq_maxmsg
-      dv.setInt32(oldAttrPtr + 8, result.msgsize, true);  // mq_msgsize
-      dv.setInt32(oldAttrPtr + 12, result.curmsgs, true); // mq_curmsgs
-      // Zero out __unused[4]
-      for (let i = 0; i < 4; i++) {
-        dv.setInt32(oldAttrPtr + 16 + i * 4, 0, true);
+    // Use kernel scratch as output buffer for (pid: u32, signo: u32)
+    const outOffset = this.scratchOffset;
+    const hasPending = drain(outOffset);
+    if (hasPending) {
+      const dv = new DataView(this.kernelMemory!.buffer, outOffset);
+      const pid = dv.getUint32(0, true);
+      const signo = dv.getUint32(4, true);
+      if (signo > 0) {
+        this.sendSignalToProcess(pid, signo);
       }
     }
-
-    return 0;
   }
 }

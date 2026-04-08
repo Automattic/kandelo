@@ -143,12 +143,21 @@ impl ProcessTable {
             }
         }
 
+        // Clean up mqueue notifications for this process
+        let mq_table = unsafe { crate::mqueue::global_mqueue_table() };
+        mq_table.cleanup_process(pid);
+
         Some(proc)
     }
 
     /// Set the current pid for syscall dispatch.
     pub fn set_current_pid(&mut self, pid: u32) {
         self.current_pid = pid;
+    }
+
+    /// Get the current pid.
+    pub fn current_pid(&self) -> u32 {
+        self.current_pid
     }
 
     /// Get a mutable reference to the current process.

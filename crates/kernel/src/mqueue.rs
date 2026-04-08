@@ -88,6 +88,7 @@ pub struct MqueueTable {
     queues: BTreeMap<String, MqQueue>,
     descriptors: BTreeMap<u32, MqDescriptor>,
     next_mqd: u32,
+    pending_notification: Option<MqNotification>,
 }
 
 impl MqueueTable {
@@ -96,7 +97,18 @@ impl MqueueTable {
             queues: BTreeMap::new(),
             descriptors: BTreeMap::new(),
             next_mqd: MQD_BASE,
+            pending_notification: None,
         }
+    }
+
+    /// Store a pending notification for the host to read after mq_send.
+    pub fn set_pending_notification(&mut self, notif: MqNotification) {
+        self.pending_notification = Some(notif);
+    }
+
+    /// Take and return the pending notification, if any.
+    pub fn take_pending_notification(&mut self) -> Option<MqNotification> {
+        self.pending_notification.take()
     }
 
     /// Returns true if `fd` is a message queue descriptor.
