@@ -27,6 +27,8 @@ import systemDataUrl from "../../../../examples/libs/mariadb/mariadb-install/sha
 const APP_PREFIX = import.meta.env.BASE_URL + "app/";
 // Without trailing slash, for embedding in PHP config strings
 const APP_PATH = import.meta.env.BASE_URL + "app";
+// Capture the real page protocol so wp-config.php generates correct URLs
+const PROTO = window.location.protocol === "https:" ? "https" : "http";
 
 const log = document.getElementById("log") as HTMLPreElement;
 const startBtn = document.getElementById("start") as HTMLButtonElement;
@@ -104,7 +106,6 @@ http {
             fastcgi_param SERVER_PORT $server_port;
             fastcgi_param SERVER_NAME $server_name;
             fastcgi_param HTTP_HOST $http_host;
-            fastcgi_param HTTP_X_FORWARDED_PROTO $http_x_forwarded_proto;
             fastcgi_param REDIRECT_STATUS 200;
         }
     }
@@ -204,11 +205,9 @@ define('WP_DEBUG_LOG', true);
 define('WP_DEBUG_DISPLAY', true);
 
 if (isset($_SERVER['HTTP_HOST'])) {
-    $proto = 'http';
-    if (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') $proto = 'https';
-    elseif (!empty($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https') $proto = 'https';
-    define('WP_HOME', $proto . '://' . $_SERVER['HTTP_HOST'] . '${APP_PATH}');
-    define('WP_SITEURL', $proto . '://' . $_SERVER['HTTP_HOST'] . '${APP_PATH}');
+    if ('${PROTO}' === 'https') { $_SERVER['HTTPS'] = 'on'; }
+    define('WP_HOME', '${PROTO}://' . $_SERVER['HTTP_HOST'] . '${APP_PATH}');
+    define('WP_SITEURL', '${PROTO}://' . $_SERVER['HTTP_HOST'] . '${APP_PATH}');
 }
 
 define('WP_HTTP_BLOCK_EXTERNAL', true);
