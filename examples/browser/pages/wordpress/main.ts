@@ -187,8 +187,11 @@ define('WP_DEBUG_DISPLAY', false);
 // Site URL includes app prefix — the service worker intercepts app/*
 // and strips it before sending to nginx
 if (isset($_SERVER['HTTP_HOST'])) {
-    define('WP_HOME', '//' . $_SERVER['HTTP_HOST'] . '${APP_PATH}');
-    define('WP_SITEURL', '//' . $_SERVER['HTTP_HOST'] . '${APP_PATH}');
+    $proto = 'http';
+    if (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') $proto = 'https';
+    elseif (!empty($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https') $proto = 'https';
+    define('WP_HOME', $proto . '://' . $_SERVER['HTTP_HOST'] . '${APP_PATH}');
+    define('WP_SITEURL', $proto . '://' . $_SERVER['HTTP_HOST'] . '${APP_PATH}');
 }
 
 define('WP_HTTP_BLOCK_EXTERNAL', true);

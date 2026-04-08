@@ -203,8 +203,11 @@ define('WP_DEBUG_LOG', true);
 define('WP_DEBUG_DISPLAY', true);
 
 if (isset($_SERVER['HTTP_HOST'])) {
-    define('WP_HOME', '//' . $_SERVER['HTTP_HOST'] . '${APP_PATH}');
-    define('WP_SITEURL', '//' . $_SERVER['HTTP_HOST'] . '${APP_PATH}');
+    $proto = 'http';
+    if (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') $proto = 'https';
+    elseif (!empty($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https') $proto = 'https';
+    define('WP_HOME', $proto . '://' . $_SERVER['HTTP_HOST'] . '${APP_PATH}');
+    define('WP_SITEURL', $proto . '://' . $_SERVER['HTTP_HOST'] . '${APP_PATH}');
 }
 
 define('WP_HTTP_BLOCK_EXTERNAL', true);
@@ -279,7 +282,12 @@ async function start() {
       fsSize: 128 * 1024 * 1024, // 128MB for WordPress bundle + MariaDB data
       threadModule,
       onStdout: (data) => appendLog(decoder.decode(data)),
-      onStderr: (data) => appendLog(decoder.decode(data), "stderr"),
+      onStderr: (data) => {
+        const text = decoder.decode(data);
+        appendLog(text, "stderr");
+        // Log ALL stderr to console for debugging
+        console.log(`[STDERR] ${text.trim()}`);
+      },
     });
 
     await kernel.init(kernelBytes);
@@ -328,6 +336,10 @@ async function start() {
       }
     });
     appendLog(`WordPress loaded: ${loaded} files\n`, "info");
+
+    // Remove SQLite db.php drop-in — the bundle includes it for the WordPress-only
+    // demo, but the LAMP demo uses MariaDB via the MySQL wp-config below.
+    try { fs.unlink("/var/www/html/wp-content/db.php"); } catch { /* not present */ }
 
     // Overwrite wp-config.php with MySQL version + install mu-plugin
     await loadFiles(fs, [
@@ -419,6 +431,7 @@ async function start() {
       "--bind-address=0.0.0.0",
       "--socket=",
       "--max-connections=10",
+      "--thread-handling=no-threads",
     ]);
 
     // Poll for MariaDB listener instead of blind wait
