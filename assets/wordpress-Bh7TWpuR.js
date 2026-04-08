@@ -1,4 +1,4 @@
-import{k as S,B as v}from"./browser-kernel-3EHx8tzG.js";/* empty css               */import{n as O,H,l as m}from"./nginx-DS843j_U.js";import{l as y}from"./wp-bundle-CEfoOdTg.js";import{p as B}from"./php-fpm-twWFbNDX.js";const T="/wasm-posix-kernel/app/",g="/wasm-posix-kernel/app",d=document.getElementById("log"),c=document.getElementById("start"),P=document.getElementById("reload"),_=document.getElementById("status");let w=document.getElementById("frame");const E=new TextDecoder;function n(t,i){const r=document.createElement("span");i&&(r.className=i),r.textContent=t,d.appendChild(r),d.scrollTop=d.scrollHeight}function o(t,i){_.style.display="block",_.textContent=t,_.className=`status ${i}`}const D=`daemon off;
+import{k as v,B as O}from"./browser-kernel-3EHx8tzG.js";/* empty css               */import{n as H,H as y,l as m}from"./nginx-DS843j_U.js";import{l as B}from"./wp-bundle-CEfoOdTg.js";import{p as L}from"./php-fpm-twWFbNDX.js";const u="/wasm-posix-kernel/app/",g="/wasm-posix-kernel/app",w=window.location.protocol==="https:"?"https":"http",d=document.getElementById("log"),f=document.getElementById("start"),x=document.getElementById("reload"),c=document.getElementById("status");let E=document.getElementById("frame");const h=new TextDecoder;function n(t,i){const r=document.createElement("span");i&&(r.className=i),r.textContent=t,d.appendChild(r),d.scrollTop=d.scrollHeight}function o(t,i){c.style.display="block",c.textContent=t,c.className=`status ${i}`}const k=`daemon off;
 master_process on;
 worker_processes 2;
 error_log stderr info;
@@ -36,12 +36,11 @@ http {
             fastcgi_param SERVER_PORT $server_port;
             fastcgi_param SERVER_NAME $server_name;
             fastcgi_param HTTP_HOST $http_host;
-            fastcgi_param HTTP_X_FORWARDED_PROTO $http_x_forwarded_proto;
             fastcgi_param REDIRECT_STATUS 200;
         }
     }
 }
-`,L=`<?php
+`,I=`<?php
 $uri = urldecode(parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH));
 $docRoot = $_SERVER['DOCUMENT_ROOT'];
 $file = $docRoot . $uri;
@@ -101,7 +100,7 @@ listen = 127.0.0.1:9000
 pm = static
 pm.max_children = 1
 clear_env = no
-`,k=`<?php
+`,D=`<?php
 define('DB_NAME', 'wordpress');
 define('DB_USER', '');
 define('DB_PASSWORD', '');
@@ -131,11 +130,8 @@ define('WP_DEBUG_DISPLAY', false);
 // Site URL includes app prefix — the service worker intercepts app/*
 // and strips it before sending to nginx
 if (isset($_SERVER['HTTP_HOST'])) {
-    $proto = 'http';
-    if (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') $proto = 'https';
-    elseif (!empty($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https') $proto = 'https';
-    define('WP_HOME', $proto . '://' . $_SERVER['HTTP_HOST'] . '${g}');
-    define('WP_SITEURL', $proto . '://' . $_SERVER['HTTP_HOST'] . '${g}');
+    define('WP_HOME', '${w}://' . $_SERVER['HTTP_HOST'] . '${g}');
+    define('WP_SITEURL', '${w}://' . $_SERVER['HTTP_HOST'] . '${g}');
 }
 
 define('WP_HTTP_BLOCK_EXTERNAL', true);
@@ -146,26 +142,26 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 require_once ABSPATH . 'wp-settings.php';
-`,I=`<?php
+`,b=`<?php
 add_filter('pre_wp_mail', '__return_false');
 add_filter('pre_http_request', function($pre, $args, $url) {
     return new WP_Error('http_disabled', 'HTTP requests disabled in Wasm');
 }, 10, 3);
 if (!defined('DISALLOW_FILE_MODS')) define('DISALLOW_FILE_MODS', true);
-`;let s=null,f=null;async function b(){c.disabled=!0,d.textContent="",o("Loading WordPress...","loading");try{n(`Fetching wasm binaries + WordPress bundle...
-`,"info");const[t,i,r]=await Promise.all([fetch(S).then(e=>e.arrayBuffer()),fetch(O).then(e=>e.arrayBuffer()),fetch(B).then(e=>e.arrayBuffer())]);if(n(`Kernel: ${(t.byteLength/1024).toFixed(0)}KB, nginx: ${(i.byteLength/(1024*1024)).toFixed(1)}MB, PHP-FPM: ${(r.byteLength/(1024*1024)).toFixed(1)}MB
-`,"info"),f=new H,n(`Initializing service worker bridge...
-`,"info"),!await N(f)){o("Service worker initialization failed","error");return}n(`Service worker bridge ready
-`,"info"),s=new v({maxWorkers:8,fsSize:256*1024*1024,maxMemoryPages:4096,onStdout:e=>n(E.decode(e)),onStderr:e=>n(E.decode(e),"stderr")}),await s.init(t);const a=s.fs;for(const e of["/etc/nginx","/var/www/html","/var/www/html/wp-content","/var/www/html/wp-content/database","/var/www/html/wp-content/mu-plugins","/var/log/nginx","/tmp/nginx_client_temp","/tmp/nginx_fastcgi_temp","/tmp/nginx_proxy_temp","/tmp/nginx-wasm/logs","/etc/php-fpm.d"]){const p=e.split("/").filter(Boolean);let l="";for(const R of p){l+="/"+R;try{a.mkdir(l,493)}catch{}}}await m(a,[{path:"/etc/nginx/nginx.conf",data:D},{path:"/etc/php-fpm.conf",data:A},{path:"/var/www/fpm-router.php",data:L}]),o("Starting PHP-FPM...","loading"),n(`Starting PHP-FPM...
-`,"info");const x=s.spawn(r,["php-fpm","-y","/etc/php-fpm.conf","-c","/dev/null","--nodaemonize"],{env:["HOME=/tmp","TMPDIR=/tmp","PATH=/usr/local/bin:/usr/bin:/bin"]});await new Promise(e=>setTimeout(e,5e3)),o("Starting nginx...","loading"),n(`Starting nginx...
-`,"info");const u=s.spawn(i,["nginx","-p","/etc/nginx","-c","nginx.conf"],{env:["HOME=/tmp","TMPDIR=/tmp","PATH=/usr/bin:/bin"]});await new Promise(e=>setTimeout(e,3e3)),o("Loading WordPress files...","loading");const $=await y(a,"/wasm-posix-kernel/wp-bundle.json",(e,p)=>{(e%500===0||e===p)&&n(`  ${e}/${p} files
-`,"info")});n(`WordPress loaded: ${$} files
-`,"info");try{a.unlink("/var/www/html/wp-content/database/wordpress.db")}catch{}await m(a,[{path:"/var/www/html/wp-config.php",data:k},{path:"/var/www/html/wp-content/mu-plugins/wasm-optimizations.php",data:I}]),s.sendBridgePort(f.detachHostPort(),8080),o("WordPress running! Loading page...","running"),P.disabled=!1,h(),x.then(e=>{n(`
+`;let s=null,l=null;async function N(){f.disabled=!0,d.textContent="",o("Loading WordPress...","loading");try{n(`Fetching wasm binaries + WordPress bundle...
+`,"info");const[t,i,r]=await Promise.all([fetch(v).then(e=>e.arrayBuffer()),fetch(H).then(e=>e.arrayBuffer()),fetch(L).then(e=>e.arrayBuffer())]);if(n(`Kernel: ${(t.byteLength/1024).toFixed(0)}KB, nginx: ${(i.byteLength/(1024*1024)).toFixed(1)}MB, PHP-FPM: ${(r.byteLength/(1024*1024)).toFixed(1)}MB
+`,"info"),l=new y,n(`Initializing service worker bridge...
+`,"info"),!await U(l)){o("Service worker initialization failed","error");return}n(`Service worker bridge ready
+`,"info"),s=new O({maxWorkers:8,fsSize:256*1024*1024,maxMemoryPages:4096,onStdout:e=>n(h.decode(e)),onStderr:e=>n(h.decode(e),"stderr")}),await s.init(t);const a=s.fs;for(const e of["/etc/nginx","/var/www/html","/var/www/html/wp-content","/var/www/html/wp-content/database","/var/www/html/wp-content/mu-plugins","/var/log/nginx","/tmp/nginx_client_temp","/tmp/nginx_fastcgi_temp","/tmp/nginx_proxy_temp","/tmp/nginx-wasm/logs","/etc/php-fpm.d"]){const p=e.split("/").filter(Boolean);let _="";for(const S of p){_+="/"+S;try{a.mkdir(_,493)}catch{}}}await m(a,[{path:"/etc/nginx/nginx.conf",data:k},{path:"/etc/php-fpm.conf",data:A},{path:"/var/www/fpm-router.php",data:I}]),o("Starting PHP-FPM...","loading"),n(`Starting PHP-FPM...
+`,"info");const T=s.spawn(r,["php-fpm","-y","/etc/php-fpm.conf","-c","/dev/null","--nodaemonize"],{env:["HOME=/tmp","TMPDIR=/tmp","PATH=/usr/local/bin:/usr/bin:/bin"]});await new Promise(e=>setTimeout(e,5e3)),o("Starting nginx...","loading"),n(`Starting nginx...
+`,"info");const $=s.spawn(i,["nginx","-p","/etc/nginx","-c","nginx.conf"],{env:["HOME=/tmp","TMPDIR=/tmp","PATH=/usr/bin:/bin"]});await new Promise(e=>setTimeout(e,3e3)),o("Loading WordPress files...","loading");const R=await B(a,"/wasm-posix-kernel/wp-bundle.json",(e,p)=>{(e%500===0||e===p)&&n(`  ${e}/${p} files
+`,"info")});n(`WordPress loaded: ${R} files
+`,"info");try{a.unlink("/var/www/html/wp-content/database/wordpress.db")}catch{}await m(a,[{path:"/var/www/html/wp-config.php",data:D},{path:"/var/www/html/wp-content/mu-plugins/wasm-optimizations.php",data:b}]),s.sendBridgePort(l.detachHostPort(),8080),o("WordPress running! Loading page...","running"),x.disabled=!1,P(),T.then(e=>{n(`
 php-fpm exited with code ${e}
-`,"info")}),u.then(e=>{n(`
+`,"info")}),$.then(e=>{n(`
 nginx exited with code ${e}
 `,"info")})}catch(t){n(`
 Error: ${t}
-`,"stderr"),o(`Error: ${t}`,"error"),console.error(t),c.disabled=!1}}function h(){const t=document.createElement("iframe");t.id="frame",t.src=T,w.replaceWith(t),w=t}async function N(t){if(!("serviceWorker"in navigator))return n(`Service Workers not supported
-`,"stderr"),!1;try{await navigator.serviceWorker.register("/wasm-posix-kernel/service-worker.js");const i=await navigator.serviceWorker.ready;return await new Promise(r=>{const a=new MessageChannel;a.port1.onmessage=()=>r(),i.active.postMessage({type:"init-bridge",appPrefix:T},[t.getSwPort(),a.port2])}),!0}catch(i){return n(`Service worker error: ${i}
-`,"stderr"),!1}}c.addEventListener("click",b);P.addEventListener("click",h);
+`,"stderr"),o(`Error: ${t}`,"error"),console.error(t),f.disabled=!1}}function P(){const t=document.createElement("iframe");t.id="frame",t.src=u,E.replaceWith(t),E=t}async function U(t){if(!("serviceWorker"in navigator))return n(`Service Workers not supported
+`,"stderr"),!1;try{await navigator.serviceWorker.register("/wasm-posix-kernel/service-worker.js");const i=await navigator.serviceWorker.ready;return await new Promise(r=>{const a=new MessageChannel;a.port1.onmessage=()=>r(),i.active.postMessage({type:"init-bridge",appPrefix:u},[t.getSwPort(),a.port2])}),!0}catch(i){return n(`Service worker error: ${i}
+`,"stderr"),!1}}f.addEventListener("click",N);x.addEventListener("click",P);

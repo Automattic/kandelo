@@ -1,4 +1,4 @@
-import{k as y,B as v}from"./browser-kernel-3EHx8tzG.js";/* empty css               */import{n as b,H as R,l as T}from"./nginx-DS843j_U.js";import{p as S}from"./php-fpm-twWFbNDX.js";const h="/wasm-posix-kernel/app/",d=document.getElementById("log"),c=document.getElementById("start"),_=document.getElementById("reload"),l=document.getElementById("status");let g=document.getElementById("frame");const f=new TextDecoder;function r(t,n){const o=document.createElement("span");n&&(o.className=n),o.textContent=t,d.appendChild(o),d.scrollTop=d.scrollHeight}function i(t,n){l.style.display="block",l.textContent=t,l.className=`status ${n}`}const k=`daemon off;
+import{k as y,B as v}from"./browser-kernel-3EHx8tzG.js";/* empty css               */import{n as b,H as S,l as k}from"./nginx-DS843j_U.js";import{p as R}from"./php-fpm-twWFbNDX.js";const h="/wasm-posix-kernel/app/",d=document.getElementById("log"),p=document.getElementById("start"),_=document.getElementById("reload"),l=document.getElementById("status");let g=document.getElementById("frame");const f=new TextDecoder;function r(t,n){const o=document.createElement("span");n&&(o.className=n),o.textContent=t,d.appendChild(o),d.scrollTop=d.scrollHeight}function i(t,n){l.style.display="block",l.textContent=t,l.className=`status ${n}`}const T=`daemon off;
 master_process on;
 worker_processes 2;
 error_log stderr info;
@@ -47,12 +47,11 @@ http {
             fastcgi_param REQUEST_URI $request_uri;
             fastcgi_param DOCUMENT_URI $document_uri;
             fastcgi_param DOCUMENT_ROOT $document_root;
-            fastcgi_param HTTP_X_FORWARDED_PROTO $http_x_forwarded_proto;
             fastcgi_param REDIRECT_STATUS 200;
         }
     }
 }
-`,$=`[global]
+`,M=`[global]
 daemonize = no
 error_log = /dev/stderr
 log_level = notice
@@ -64,7 +63,7 @@ pm.max_children = 1
 clear_env = no
 slowlog = /dev/null
 request_slowlog_trace_depth = 0
-`,H=`<?php
+`,$=`<?php
 $uptime = time();
 $mem = memory_get_usage(true);
 $extensions = get_loaded_extensions();
@@ -116,12 +115,12 @@ sort($extensions);
     </ol>
 </body>
 </html>
-`;let a=null,p=null;async function M(){c.disabled=!0,d.textContent="",i("Loading kernel, nginx, and PHP-FPM...","loading");try{r(`Fetching wasm binaries...
-`,"info");const[t,n,o]=await Promise.all([fetch(y).then(e=>e.arrayBuffer()),fetch(b).then(e=>e.arrayBuffer()),fetch(S).then(e=>e.arrayBuffer())]);if(r(`Kernel: ${(t.byteLength/1024).toFixed(0)}KB, nginx: ${(n.byteLength/(1024*1024)).toFixed(1)}MB, PHP-FPM: ${(o.byteLength/(1024*1024)).toFixed(1)}MB
-`,"info"),p=new R,r(`Initializing service worker bridge...
-`,"info"),!await F(p)){i("Service worker initialization failed","error");return}r(`Service worker bridge ready
+`;let a=null,c=null;async function H(){p.disabled=!0,d.textContent="",i("Loading kernel, nginx, and PHP-FPM...","loading");try{r(`Fetching wasm binaries...
+`,"info");const[t,n,o]=await Promise.all([fetch(y).then(e=>e.arrayBuffer()),fetch(b).then(e=>e.arrayBuffer()),fetch(R).then(e=>e.arrayBuffer())]);if(r(`Kernel: ${(t.byteLength/1024).toFixed(0)}KB, nginx: ${(n.byteLength/(1024*1024)).toFixed(1)}MB, PHP-FPM: ${(o.byteLength/(1024*1024)).toFixed(1)}MB
+`,"info"),c=new S,r(`Initializing service worker bridge...
+`,"info"),!await F(c)){i("Service worker initialization failed","error");return}r(`Service worker bridge ready
 `,"info"),a=new v({onStdout:e=>r(f.decode(e)),onStderr:e=>r(f.decode(e),"stderr")}),await a.init(t),r(`Populating filesystem...
-`,"info");const s=a.fs;for(const e of["/etc/nginx","/var/www/html","/var/log/nginx","/tmp/nginx_client_temp","/tmp/nginx_fastcgi_temp","/tmp/nginx-wasm/logs","/etc/php-fpm.d"]){const w=e.split("/").filter(Boolean);let m="";for(const E of w){m+="/"+E;try{s.mkdir(m,493)}catch{}}}await T(s,[{path:"/etc/nginx/nginx.conf",data:k},{path:"/etc/php-fpm.conf",data:$},{path:"/var/www/html/index.php",data:H}]),a.sendBridgePort(p.detachHostPort(),8080),i("Starting PHP-FPM...","loading"),r(`Starting PHP-FPM (pid 1)...
+`,"info");const s=a.fs;for(const e of["/etc/nginx","/var/www/html","/var/log/nginx","/tmp/nginx_client_temp","/tmp/nginx_fastcgi_temp","/tmp/nginx-wasm/logs","/etc/php-fpm.d"]){const w=e.split("/").filter(Boolean);let m="";for(const E of w){m+="/"+E;try{s.mkdir(m,493)}catch{}}}await k(s,[{path:"/etc/nginx/nginx.conf",data:T},{path:"/etc/php-fpm.conf",data:M},{path:"/var/www/html/index.php",data:$}]),a.sendBridgePort(c.detachHostPort(),8080),i("Starting PHP-FPM...","loading"),r(`Starting PHP-FPM (pid 1)...
 `,"info");const u=a.spawn(o,["php-fpm","-y","/etc/php-fpm.conf","-c","/dev/null","--nodaemonize"],{env:["HOME=/tmp","TMPDIR=/tmp","PATH=/usr/local/bin:/usr/bin:/bin"]});await new Promise(e=>setTimeout(e,3e3)),r(`PHP-FPM ready
 `,"info"),i("Starting nginx...","loading"),r(`Starting nginx (pid 3)...
 `,"info");const x=a.spawn(n,["nginx","-p","/etc/nginx","-c","nginx.conf"],{env:["HOME=/tmp","TMPDIR=/tmp","PATH=/usr/bin:/bin"]});await new Promise(e=>setTimeout(e,2e3)),i("nginx + PHP-FPM running! Loading page...","running"),_.disabled=!1,P(),u.then(e=>{r(`
@@ -130,6 +129,6 @@ php-fpm exited with code ${e}
 nginx exited with code ${e}
 `,"info")})}catch(t){r(`
 Error: ${t}
-`,"stderr"),i(`Error: ${t}`,"error"),console.error(t),c.disabled=!1}}function P(){const t=document.createElement("iframe");t.id="frame",t.src=h+"index.php",g.replaceWith(t),g=t}async function F(t){if(!("serviceWorker"in navigator))return r(`Service Workers not supported
+`,"stderr"),i(`Error: ${t}`,"error"),console.error(t),p.disabled=!1}}function P(){const t=document.createElement("iframe");t.id="frame",t.src=h+"index.php",g.replaceWith(t),g=t}async function F(t){if(!("serviceWorker"in navigator))return r(`Service Workers not supported
 `,"stderr"),!1;try{await navigator.serviceWorker.register("/wasm-posix-kernel/service-worker.js");const n=await navigator.serviceWorker.ready;return await new Promise(o=>{const s=new MessageChannel;s.port1.onmessage=()=>o(),n.active.postMessage({type:"init-bridge",appPrefix:h},[t.getSwPort(),s.port2])}),!0}catch(n){return r(`Service worker error: ${n}
-`,"stderr"),!1}}c.addEventListener("click",M);_.addEventListener("click",P);
+`,"stderr"),!1}}p.addEventListener("click",H);_.addEventListener("click",P);
