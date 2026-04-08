@@ -266,7 +266,7 @@ impl IpcTable {
             lrpid: 0,
             stime: 0,
             rtime: 0,
-            ctime: 0,
+            ctime: crate::current_time_secs(),
             seq,
         });
 
@@ -299,7 +299,7 @@ impl IpcTable {
             data: Vec::from(data),
         });
         q.lspid = pid as i32;
-        q.stime = 0; // No real time in kernel
+        q.stime = crate::current_time_secs();
 
         Ok(())
     }
@@ -365,7 +365,7 @@ impl IpcTable {
 
         q.cbytes = q.cbytes.saturating_sub(data.len() as u32);
         q.lrpid = pid as i32;
-        q.rtime = 0;
+        q.rtime = crate::current_time_secs();
 
         Ok(MsgRcvResult { mtype: msg.mtype, data })
     }
@@ -399,7 +399,7 @@ impl IpcTable {
             }
             IPC_SET => {
                 let q = self.msg_queues.get_mut(&qid).ok_or(Errno::EINVAL)?;
-                q.ctime = 0;
+                q.ctime = crate::current_time_secs();
                 Ok(None)
             }
             _ => Err(Errno::EINVAL),
@@ -459,7 +459,7 @@ impl IpcTable {
             nsems,
             values,
             otime: 0,
-            ctime: 0,
+            ctime: crate::current_time_secs(),
             seq,
         });
 
@@ -503,7 +503,7 @@ impl IpcTable {
             }
             sem.pid = pid;
         }
-        s.otime = 0;
+        s.otime = crate::current_time_secs();
 
         Ok(())
     }
@@ -539,7 +539,7 @@ impl IpcTable {
             }
             IPC_SET => {
                 let s = self.sem_sets.get_mut(&semid).ok_or(Errno::EINVAL)?;
-                s.ctime = 0;
+                s.ctime = crate::current_time_secs();
                 Ok(SemCtlResult::Ok)
             }
             GETVAL => {
@@ -558,7 +558,7 @@ impl IpcTable {
                     return Err(Errno::ERANGE);
                 }
                 s.values[semnum as usize].val = arg as u16;
-                s.ctime = 0;
+                s.ctime = crate::current_time_secs();
                 Ok(SemCtlResult::Ok)
             }
             GETALL => {
@@ -605,7 +605,7 @@ impl IpcTable {
         for (i, &v) in values.iter().enumerate() {
             s.values[i].val = v;
         }
-        s.ctime = 0;
+        s.ctime = crate::current_time_secs();
         Ok(())
     }
 
@@ -662,7 +662,7 @@ impl IpcTable {
             nattch: 0,
             atime: 0,
             dtime: 0,
-            ctime: 0,
+            ctime: crate::current_time_secs(),
             seq,
         });
 
@@ -675,7 +675,7 @@ impl IpcTable {
         let seg = self.shm_segments.get_mut(&shmid).ok_or(Errno::EINVAL)?;
         seg.nattch += 1;
         seg.lpid = pid as i32;
-        seg.atime = 0;
+        seg.atime = crate::current_time_secs();
         Ok(seg.segsz)
     }
 
@@ -722,7 +722,7 @@ impl IpcTable {
         let seg = self.shm_segments.get_mut(&shmid).ok_or(Errno::EINVAL)?;
         seg.nattch = seg.nattch.saturating_sub(1);
         seg.lpid = pid as i32;
-        seg.dtime = 0;
+        seg.dtime = crate::current_time_secs();
         Ok(())
     }
 
@@ -754,7 +754,7 @@ impl IpcTable {
             }
             IPC_SET => {
                 let seg = self.shm_segments.get_mut(&shmid).ok_or(Errno::EINVAL)?;
-                seg.ctime = 0;
+                seg.ctime = crate::current_time_secs();
                 Ok(None)
             }
             _ => Err(Errno::EINVAL),

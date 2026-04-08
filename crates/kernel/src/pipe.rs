@@ -60,6 +60,8 @@ pub struct PipeBuffer {
     len: usize,
     read_count: u32,
     write_count: u32,
+    /// Index of this pipe in the PipeTable (for wakeup events).
+    pipe_idx: u32,
     /// Ancillary data queue for SCM_RIGHTS FD passing.
     /// Each entry is a batch of FDs sent with one sendmsg call.
     ancillary_fds: VecDeque<Vec<InFlightFd>>,
@@ -77,6 +79,7 @@ impl PipeBuffer {
             len: 0,
             read_count: 1,
             write_count: 1,
+            pipe_idx: 0,
             ancillary_fds: VecDeque::new(),
         }
     }
@@ -120,6 +123,8 @@ impl PipeBuffer {
         }
         self.tail = (self.tail + n) % cap;
         self.len += n;
+        // Data written → pipe became readable
+        crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_READABLE);
         n
     }
 
@@ -165,17 +170,23 @@ impl PipeBuffer {
         }
         self.head = (self.head + n) % cap;
         self.len -= n;
+        // Data consumed → pipe became writable
+        crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_WRITABLE);
         n
     }
 
     /// Close one read end of the pipe. Decrements the read reference count.
     pub fn close_read_end(&mut self) {
         self.read_count = self.read_count.saturating_sub(1);
+        // Read end closed → pipe became writable (writers get EPIPE/SIGPIPE)
+        crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_WRITABLE);
     }
 
     /// Close one write end of the pipe. Decrements the write reference count.
     pub fn close_write_end(&mut self) {
         self.write_count = self.write_count.saturating_sub(1);
+        // Write end closed → pipe became readable (readers get EOF)
+        crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_READABLE);
     }
 
     /// Add a reader reference (e.g., after fork or dup).
@@ -236,12 +247,14 @@ impl PipeTable {
     }
 
     /// Allocate a pipe buffer in the table. Returns the index.
-    pub fn alloc(&mut self, pipe: PipeBuffer) -> usize {
+    pub fn alloc(&mut self, mut pipe: PipeBuffer) -> usize {
         if let Some(i) = self.free_list.pop() {
+            pipe.pipe_idx = i as u32;
             self.pipes[i] = Some(pipe);
             return i;
         }
         let i = self.pipes.len();
+        pipe.pipe_idx = i as u32;
         self.pipes.push(Some(pipe));
         i
     }

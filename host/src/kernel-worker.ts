@@ -142,25 +142,6 @@ const PROFILING = typeof process !== 'undefined' && !!process.env?.WASM_POSIX_PR
 const READ_LIKE_SYSCALLS = new Set([3, 56, 63, 64, 82, 138]); // READ, RECV, RECVFROM, PREAD, READV, RECVMSG
 /** Write-like syscalls that may produce pipe/socket data */
 const WRITE_LIKE_SYSCALLS = new Set([4, 55, 62, 65, 81, 137]); // WRITE, SEND, SENDTO, PWRITE, WRITEV, SENDMSG
-/**
- * Syscalls that can change poll/select state for other processes.
- * Only these trigger wakeAllBlockedRetries — metadata syscalls like
- * stat, mmap, clock_gettime etc. cannot affect other processes' polls.
- */
-const POLL_AFFECTING_SYSCALLS = new Set([
-  3, 4, 56, 55, 63, 62, 64, 65, 81, 82, 137, 138, // read/write family
-  53, 384,                                           // accept, accept4
-  54,                                                // connect
-  6,                                                 // close (POLLHUP)
-  20,                                                // dup
-  21,                                                // dup2
-  23,                                                // dup3
-  36,                                                // shutdown
-  37,                                                // socketpair
-  212, 213, 201,                                     // fork, vfork, clone
-  34,                                                // exit/exit_group
-]);
-
 /** Channel layout offsets */
 const CH_STATUS = 0;
 const CH_SYSCALL = 4;
@@ -1888,24 +1869,8 @@ export class CentralizedKernelWorker {
     Atomics.notify(i32View, CH_STATUS / 4, 1);
 
 
-    // Event-driven pipe wakeup: if a write-like syscall succeeded, wake
-    // any readers blocked on the same pipe/socket.
-    if (retVal > 0 && WRITE_LIKE_SYSCALLS.has(syscallNr)) {
-      this.wakePendingPipeReaders(channel.pid, origArgs[0]);
-    }
-
-    // Event-driven pipe wakeup for writers: if a read-like syscall succeeded
-    // (drained data from a pipe), wake any writers blocked on the same pipe.
-    if (retVal > 0 && READ_LIKE_SYSCALLS.has(syscallNr)) {
-      this.wakePendingPipeWriters(channel.pid, origArgs[0]);
-    }
-
-    // Wake other processes' blocked poll/select retries — but only after
-    // syscalls that can actually change poll/select state (IO, close, fork).
-    // Metadata syscalls (stat, mmap, clock_gettime) cannot affect others.
-    if (POLL_AFFECTING_SYSCALLS.has(syscallNr)) {
-      this.scheduleWakeBlockedRetries();
-    }
+    // Drain kernel wakeup events and process targeted wakeups.
+    this.drainAndProcessWakeupEvents();
 
     // Re-listen for next syscall
     this.relistenChannel(channel);
@@ -2109,6 +2074,70 @@ export class CentralizedKernelWorker {
   }
 
   /**
+   * Drain kernel wakeup events and process targeted pipe wakeups.
+   * Called after each syscall completion. The kernel pushes events from
+   * PipeBuffer operations (read/write/close). Each event identifies a pipe
+   * and whether it became readable or writable.
+   */
+  private drainAndProcessWakeupEvents(): void {
+    const drainFn = this.kernelInstance!.exports.kernel_drain_wakeup_events as
+      ((outPtr: number, outLen: number, maxEvents: number) => number) | undefined;
+    if (!drainFn) return;
+
+    const MAX_EVENTS = 256;
+    const BYTES_PER_EVENT = 5;
+    const bufSize = MAX_EVENTS * BYTES_PER_EVENT;
+
+    const count = drainFn(this.scratchOffset, bufSize, MAX_EVENTS);
+    if (count === 0) return;
+
+    const kernelMem = new Uint8Array(this.kernelMemory!.buffer);
+    const WAKE_READABLE = 1;
+    const WAKE_WRITABLE = 2;
+    let needBroadWake = false;
+
+    for (let i = 0; i < count; i++) {
+      const off = this.scratchOffset + i * BYTES_PER_EVENT;
+      const pipeIdx = kernelMem[off] | (kernelMem[off + 1] << 8) |
+                      (kernelMem[off + 2] << 16) | (kernelMem[off + 3] << 24);
+      const wakeType = kernelMem[off + 4];
+
+      if (wakeType & WAKE_READABLE) {
+        // Pipe became readable — wake pending readers on this pipe
+        const readers = this.pendingPipeReaders.get(pipeIdx);
+        if (readers && readers.length > 0) {
+          this.pendingPipeReaders.delete(pipeIdx);
+          for (const reader of readers) {
+            if (this.processes.has(reader.pid)) {
+              this.retrySyscall(reader.channel);
+            }
+          }
+        }
+      }
+
+      if (wakeType & WAKE_WRITABLE) {
+        // Pipe became writable — wake pending writers on this pipe
+        const writers = this.pendingPipeWriters.get(pipeIdx);
+        if (writers && writers.length > 0) {
+          this.pendingPipeWriters.delete(pipeIdx);
+          for (const writer of writers) {
+            if (this.processes.has(writer.pid)) {
+              this.retrySyscall(writer.channel);
+            }
+          }
+        }
+      }
+
+      needBroadWake = true;
+    }
+
+    // If any pipe state changed, also wake poll/select retries
+    if (needBroadWake) {
+      this.scheduleWakeBlockedRetries();
+    }
+  }
+
+  /**
    * Schedule a microtask to wake all blocked poll/pselect6 retries.
    * Coalesced via wakeScheduled flag — multiple calls within the same
    * microtask batch result in only one wake cycle. This catches cross-process
@@ -2182,59 +2211,6 @@ export class CentralizedKernelWorker {
             this.retrySyscall(writer.channel);
           }
         }
-      }
-    }
-  }
-
-  /**
-   * Wake pending pipe readers for a pipe that was just written to.
-   * Looks up the write fd's send pipe index and wakes all readers
-   * registered on that pipe.
-   */
-  private wakePendingPipeReaders(pid: number, fd: number): void {
-    if (this.pendingPipeReaders.size === 0) return;
-
-    const getSendPipeIdx = this.kernelInstance!.exports.kernel_get_fd_send_pipe_idx as
-      ((pid: number, fd: number) => number) | undefined;
-    if (!getSendPipeIdx) return;
-
-    const pipeIdx = getSendPipeIdx(pid, fd);
-    if (pipeIdx < 0) return;
-
-    const readers = this.pendingPipeReaders.get(pipeIdx);
-    if (!readers || readers.length === 0) return;
-
-    // Remove all readers for this pipe and wake them
-    this.pendingPipeReaders.delete(pipeIdx);
-    for (const reader of readers) {
-      if (this.processes.has(reader.pid)) {
-        this.retrySyscall(reader.channel);
-      }
-    }
-  }
-
-  /**
-   * Wake pending pipe writers for a pipe that was just read from.
-   * Looks up the read fd's recv pipe index and wakes all writers
-   * registered on that pipe (they were blocked because the buffer was full).
-   */
-  private wakePendingPipeWriters(pid: number, fd: number): void {
-    if (this.pendingPipeWriters.size === 0) return;
-
-    const getFdPipeIdx = this.kernelInstance!.exports.kernel_get_fd_pipe_idx as
-      ((pid: number, fd: number) => number) | undefined;
-    if (!getFdPipeIdx) return;
-
-    const pipeIdx = getFdPipeIdx(pid, fd);
-    if (pipeIdx < 0) return;
-
-    const writers = this.pendingPipeWriters.get(pipeIdx);
-    if (!writers || writers.length === 0) return;
-
-    this.pendingPipeWriters.delete(pipeIdx);
-    for (const writer of writers) {
-      if (this.processes.has(writer.pid)) {
-        this.retrySyscall(writer.channel);
       }
     }
   }

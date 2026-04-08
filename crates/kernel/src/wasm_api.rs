@@ -7893,3 +7893,17 @@ pub extern "C" fn kernel_pty_set_winsize(pty_idx: u32, rows: u32, cols: u32) -> 
 
     0
 }
+
+// ---------------------------------------------------------------------------
+// Wakeup event drain
+// ---------------------------------------------------------------------------
+
+/// Drain pending wakeup events into the output buffer.
+///
+/// Each event is 5 bytes: pipe_idx (u32 LE) + wake_type (u8).
+/// Returns the number of events written.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_drain_wakeup_events(out_ptr: *mut u8, out_len: u32, max_events: u32) -> u32 {
+    let out = unsafe { slice::from_raw_parts_mut(out_ptr, out_len as usize) };
+    crate::wakeup::drain(out, max_events)
+}

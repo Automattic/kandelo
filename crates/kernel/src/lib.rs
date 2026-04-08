@@ -20,6 +20,7 @@ pub mod signal;
 pub mod socket;
 pub mod syscalls;
 pub mod terminal;
+pub mod wakeup;
 
 #[cfg(target_arch = "wasm32")]
 pub mod wasm_api;
@@ -39,6 +40,30 @@ pub fn debug_log(msg: &str) {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn debug_log(_msg: &str) {}
+
+// ---------------------------------------------------------------------------
+// Current time helper
+// ---------------------------------------------------------------------------
+
+/// Get current real time in seconds (CLOCK_REALTIME).
+/// On wasm32, calls the host import. On native (tests), returns 0.
+pub fn current_time_secs() -> i64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        #[link(wasm_import_module = "env")]
+        unsafe extern "C" {
+            fn host_clock_gettime(clock_id: u32, sec_ptr: *mut i64, nsec_ptr: *mut i64) -> i32;
+        }
+        let mut sec: i64 = 0;
+        let mut nsec: i64 = 0;
+        unsafe { host_clock_gettime(0, &mut sec as *mut i64, &mut nsec as *mut i64); }
+        sec
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        0
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Kernel mode flag
