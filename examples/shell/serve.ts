@@ -20,6 +20,7 @@ import type {
   CentralizedWorkerInitMessage,
   WorkerToHostMessage,
 } from "../../host/src/worker-protocol";
+import { ThreadPageAllocator } from "../../host/src/thread-allocator";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "../..");
@@ -157,8 +158,7 @@ async function main() {
     resolveExit = resolve;
   });
 
-  let nextThreadChannelPage = MAX_PAGES - 4;
-  const freeThreadPages: number[] = [];
+  const threadAllocator = new ThreadPageAllocator(MAX_PAGES);
 
   const kernelWorker = new CentralizedKernelWorker(
     { maxWorkers: 8, dataBufferSize: 65536, useSharedMemory: true },
@@ -282,23 +282,9 @@ async function main() {
         _ctidPtr,
         memory,
       ) => {
-        let basePage: number;
-        if (freeThreadPages.length > 0) {
-          basePage = freeThreadPages.pop()!;
-        } else {
-          basePage = nextThreadChannelPage;
-          nextThreadChannelPage -= 3;
-        }
-        const threadChannelOffset = basePage * 65536;
-        const tlsAllocAddr = (basePage - 2) * 65536;
-        new Uint8Array(
-          memory.buffer,
-          threadChannelOffset,
-          CH_TOTAL_SIZE,
-        ).fill(0);
-        new Uint8Array(memory.buffer, tlsAllocAddr, 65536).fill(0);
+        const alloc = threadAllocator.allocate(memory);
 
-        kernelWorker.addChannel(pid, threadChannelOffset, tid);
+        kernelWorker.addChannel(pid, alloc.channelOffset, tid);
 
         const threadInitData = {
           type: "centralized_thread_init" as const,
@@ -306,27 +292,27 @@ async function main() {
           tid,
           programBytes,
           memory,
-          channelOffset: threadChannelOffset,
+          channelOffset: alloc.channelOffset,
           fnPtr: _fnPtr,
           argPtr: _argPtr,
           stackPtr: _stackPtr,
           tlsPtr: _tlsPtr,
           ctidPtr: _ctidPtr,
-          tlsAllocAddr,
+          tlsAllocAddr: alloc.tlsAllocAddr,
         };
 
         const threadWorker = workerAdapter.createWorker(threadInitData);
         threadWorker.on("message", (msg: unknown) => {
           const m = msg as WorkerToHostMessage;
           if (m.type === "thread_exit") {
-            freeThreadPages.push(basePage);
+            threadAllocator.free(alloc.basePage);
             threadWorker.terminate().catch(() => {});
           }
         });
         threadWorker.on("error", () => {
           kernelWorker.notifyThreadExit(pid, tid);
-          kernelWorker.removeChannel(pid, threadChannelOffset);
-          freeThreadPages.push(basePage);
+          kernelWorker.removeChannel(pid, alloc.channelOffset);
+          threadAllocator.free(alloc.basePage);
         });
 
         return tid;

@@ -72,6 +72,7 @@ import type {
   CentralizedThreadInitMessage,
   WorkerToHostMessage,
 } from "../../../host/src/worker-protocol";
+import { ThreadPageAllocator } from "../../../host/src/thread-allocator";
 import type {
   MainToKernelMessage,
   KernelToMainMessage,
@@ -89,8 +90,7 @@ let memfs: MemoryFileSystem;
 let io: VirtualPlatformIO;
 let maxPages = DEFAULT_MAX_PAGES;
 let defaultEnv: string[] = [];
-let nextThreadChannelPage = DEFAULT_MAX_PAGES - 4;
-const freeThreadPages: number[] = []; // reclaimed thread channel page offsets
+let threadAllocator: ThreadPageAllocator;
 
 // Process tracking
 interface ProcessInfo {
@@ -132,8 +132,7 @@ function respondError(requestId: number, error: string) {
 
 async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   maxPages = msg.config.maxMemoryPages;
-  nextThreadChannelPage = maxPages - 4;
-  freeThreadPages.length = 0;
+  threadAllocator = new ThreadPageAllocator(maxPages);
   defaultEnv = msg.config.env;
 
   // Create VFS from shared SABs
@@ -425,19 +424,9 @@ async function handleClone(
   const processInfo = processes.get(pid);
   if (!processInfo) throw new Error(`Unknown pid ${pid} for clone`);
 
-  let basePage: number;
-  if (freeThreadPages.length > 0) {
-    basePage = freeThreadPages.pop()!;
-  } else {
-    basePage = nextThreadChannelPage;
-    nextThreadChannelPage -= 4;
-  }
-  const threadChannelOffset = basePage * PAGE_SIZE;
-  const tlsAllocAddr = (basePage - 2) * PAGE_SIZE;
-  new Uint8Array(memory.buffer, threadChannelOffset, CH_TOTAL_SIZE).fill(0);
-  new Uint8Array(memory.buffer, tlsAllocAddr, PAGE_SIZE).fill(0);
+  const alloc = threadAllocator.allocate(memory);
 
-  kernelWorker.addChannel(pid, threadChannelOffset, tid);
+  kernelWorker.addChannel(pid, alloc.channelOffset, tid);
 
   const threadInitData: CentralizedThreadInitMessage = {
     type: "centralized_thread_init",
@@ -445,22 +434,22 @@ async function handleClone(
     tid,
     programBytes: processInfo.programBytes,
     memory,
-    channelOffset: threadChannelOffset,
+    channelOffset: alloc.channelOffset,
     fnPtr,
     argPtr,
     stackPtr,
     tlsPtr,
     ctidPtr,
-    tlsAllocAddr,
+    tlsAllocAddr: alloc.tlsAllocAddr,
   };
 
   const threadWorker = workerAdapter.createWorker(threadInitData);
   if (!threadWorkers.has(pid)) threadWorkers.set(pid, []);
-  const threadEntry = { worker: threadWorker, channelOffset: threadChannelOffset, tid, basePage };
+  const threadEntry = { worker: threadWorker, channelOffset: alloc.channelOffset, tid, basePage: alloc.basePage };
   threadWorkers.get(pid)!.push(threadEntry);
 
   const reclaimThread = () => {
-    freeThreadPages.push(basePage);
+    threadAllocator.free(alloc.basePage);
     const threads = threadWorkers.get(pid);
     if (threads) {
       const idx = threads.indexOf(threadEntry);
@@ -477,7 +466,7 @@ async function handleClone(
   });
   threadWorker.on("error", () => {
     kernelWorker.notifyThreadExit(pid, tid);
-    kernelWorker.removeChannel(pid, threadChannelOffset);
+    kernelWorker.removeChannel(pid, alloc.channelOffset);
     reclaimThread();
   });
 

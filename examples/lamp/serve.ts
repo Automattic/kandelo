@@ -25,6 +25,7 @@ import { resolve, dirname, join } from "path";
 import { CentralizedKernelWorker } from "../../host/src/kernel-worker";
 import { NodePlatformIO } from "../../host/src/platform/node";
 import { NodeWorkerAdapter } from "../../host/src/worker-adapter";
+import { ThreadPageAllocator } from "../../host/src/thread-allocator";
 import { patchWasmForThread } from "../../host/src/worker-main";
 import type {
   CentralizedWorkerInitMessage,
@@ -125,8 +126,7 @@ async function main() {
   const pidProgram = new Map<number, ArrayBuffer>();
 
   // Thread channel allocation for MariaDB
-  let nextThreadChannelPage = MAX_PAGES - 4;
-  const freeThreadPages: number[] = [];
+  let threadAllocator = new ThreadPageAllocator(MAX_PAGES);
 
   const kernelWorker = new CentralizedKernelWorker(
     { maxWorkers: 12, dataBufferSize: 65536, useSharedMemory: true },
@@ -181,20 +181,9 @@ async function main() {
       },
 
       onClone: async (pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory) => {
-        let basePage: number;
-        if (freeThreadPages.length > 0) {
-          basePage = freeThreadPages.pop()!;
-        } else {
-          basePage = nextThreadChannelPage;
-          nextThreadChannelPage -= 4;
-        }
-        const threadChannelOffset = basePage * 65536;
-        const tlsAllocAddr = (basePage - 2) * 65536;
+        const alloc = threadAllocator.allocate(memory);
 
-        new Uint8Array(memory.buffer, threadChannelOffset, CH_TOTAL_SIZE).fill(0);
-        new Uint8Array(memory.buffer, tlsAllocAddr, 65536).fill(0);
-
-        kernelWorker.addChannel(pid, threadChannelOffset, tid);
+        kernelWorker.addChannel(pid, alloc.channelOffset, tid);
 
         const threadInitData: CentralizedThreadInitMessage = {
           type: "centralized_thread_init",
@@ -203,13 +192,13 @@ async function main() {
           programBytes: mysqldBytes,
           programModule: threadModule,
           memory,
-          channelOffset: threadChannelOffset,
+          channelOffset: alloc.channelOffset,
           fnPtr,
           argPtr,
           stackPtr,
           tlsPtr,
           ctidPtr,
-          tlsAllocAddr,
+          tlsAllocAddr: alloc.tlsAllocAddr,
         };
 
         const threadWorker = workerAdapter.createWorker(threadInitData);
@@ -217,15 +206,15 @@ async function main() {
           const m = msg as WorkerToHostMessage;
           if (m.type === "thread_exit") {
             kernelWorker.notifyThreadExit(pid, tid);
-            kernelWorker.removeChannel(pid, threadChannelOffset);
-            freeThreadPages.push(basePage);
+            kernelWorker.removeChannel(pid, alloc.channelOffset);
+            threadAllocator.free(alloc.basePage);
             threadWorker.terminate().catch(() => {});
           }
         });
         threadWorker.on("error", () => {
           kernelWorker.notifyThreadExit(pid, tid);
-          kernelWorker.removeChannel(pid, threadChannelOffset);
-          freeThreadPages.push(basePage);
+          kernelWorker.removeChannel(pid, alloc.channelOffset);
+          threadAllocator.free(alloc.basePage);
         });
 
         return tid;
@@ -358,8 +347,7 @@ async function main() {
   console.log("Starting MariaDB on 127.0.0.1:3306...");
   const dbServer = createProcessMemory();
   // Reset thread channel allocation for fresh server
-  nextThreadChannelPage = MAX_PAGES - 4;
-  freeThreadPages.length = 0;
+  threadAllocator = new ThreadPageAllocator(MAX_PAGES);
   kernelWorker.registerProcess(dbPid, dbServer.memory, [dbServer.channelOffset]);
   kernelWorker.setCwd(dbPid, dataDir);
   kernelWorker.setNextChildPid(2);

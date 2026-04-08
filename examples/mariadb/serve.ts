@@ -22,6 +22,7 @@ import type {
     CentralizedThreadInitMessage,
     WorkerToHostMessage,
 } from "../../host/src/worker-protocol";
+import { ThreadPageAllocator } from "../../host/src/thread-allocator";
 
 const CH_TOTAL_SIZE = 40 + 65536;
 const MAX_PAGES = 16384;
@@ -63,12 +64,7 @@ async function main() {
     const io = new NodePlatformIO();
     const workers = new Map<number, ReturnType<NodeWorkerAdapter["createWorker"]>>();
 
-    // Thread channel allocation: count down from main channel
-    // Main channel is at (MAX_PAGES - 2) * 65536
-    // Each thread needs 4 pages: 2 for channel (65576 bytes spills past 1 page)
-    // + 1 gap page + 1 for TLS
-    let nextThreadChannelPage = MAX_PAGES - 4;
-    const freeThreadPages: number[] = [];
+    const threadAllocator = new ThreadPageAllocator(MAX_PAGES);
 
     const kernelWorker = new CentralizedKernelWorker(
         { maxWorkers: 8, dataBufferSize: 65536, useSharedMemory: true },
@@ -117,22 +113,11 @@ async function main() {
             },
 
             onClone: async (pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory) => {
-                let basePage: number;
-                if (freeThreadPages.length > 0) {
-                    basePage = freeThreadPages.pop()!;
-                } else {
-                    basePage = nextThreadChannelPage;
-                    nextThreadChannelPage -= 4;
-                }
-                const threadChannelOffset = basePage * 65536;
-                const tlsAllocAddr = (basePage - 2) * 65536;
+                const alloc = threadAllocator.allocate(memory);
 
-                console.log(`[kernel] clone: pid=${pid} tid=${tid} fn=${fnPtr} channelOff=${threadChannelOffset} tlsAddr=${tlsAllocAddr}`);
+                console.log(`[kernel] clone: pid=${pid} tid=${tid} fn=${fnPtr} channelOff=${alloc.channelOffset} tlsAddr=${alloc.tlsAllocAddr}`);
 
-                new Uint8Array(memory.buffer, threadChannelOffset, CH_TOTAL_SIZE).fill(0);
-                new Uint8Array(memory.buffer, tlsAllocAddr, 65536).fill(0);
-
-                kernelWorker.addChannel(pid, threadChannelOffset, tid);
+                kernelWorker.addChannel(pid, alloc.channelOffset, tid);
 
                 const threadInitData: CentralizedThreadInitMessage = {
                     type: "centralized_thread_init",
@@ -141,13 +126,13 @@ async function main() {
                     programBytes: mysqldBytes,
                     programModule: threadModule,
                     memory,
-                    channelOffset: threadChannelOffset,
+                    channelOffset: alloc.channelOffset,
                     fnPtr,
                     argPtr,
                     stackPtr,
                     tlsPtr,
                     ctidPtr,
-                    tlsAllocAddr,
+                    tlsAllocAddr: alloc.tlsAllocAddr,
                 };
 
                 const threadWorker = workerAdapter.createWorker(threadInitData);
@@ -156,16 +141,16 @@ async function main() {
                     if (m.type === "thread_exit") {
                         console.error(`[kernel] thread ${tid} exited`);
                         kernelWorker.notifyThreadExit(pid, tid);
-                        kernelWorker.removeChannel(pid, threadChannelOffset);
-                        freeThreadPages.push(basePage);
+                        kernelWorker.removeChannel(pid, alloc.channelOffset);
+                        threadAllocator.free(alloc.basePage);
                         threadWorker.terminate().catch(() => {});
                     }
                 });
                 threadWorker.on("error", (err: Error) => {
                     console.error(`[kernel] thread ${tid} error: ${err.message}`);
                     kernelWorker.notifyThreadExit(pid, tid);
-                    kernelWorker.removeChannel(pid, threadChannelOffset);
-                    freeThreadPages.push(basePage);
+                    kernelWorker.removeChannel(pid, alloc.channelOffset);
+                    threadAllocator.free(alloc.basePage);
                 });
                 threadWorker.on("exit", (code: number) => {
                     console.error(`[kernel] thread ${tid} worker EXIT code=${code}`);

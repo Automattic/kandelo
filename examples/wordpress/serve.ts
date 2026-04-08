@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import { CentralizedKernelWorker } from "../../host/src/kernel-worker.ts";
 import { NodePlatformIO } from "../../host/src/platform/node.ts";
 import { NodeWorkerAdapter } from "../../host/src/worker-adapter.ts";
+import { ThreadPageAllocator } from "../../host/src/thread-allocator.ts";
 import type {
   CentralizedWorkerInitMessage,
   CentralizedThreadInitMessage,
@@ -64,8 +65,7 @@ async function main() {
   const workerAdapter = new NodeWorkerAdapter();
 
   let mainWorker: ReturnType<NodeWorkerAdapter["createWorker"]> | null = null;
-  let nextThreadChannelPage = MAX_PAGES - 4;
-  const freeThreadPages: number[] = [];
+  const threadAllocator = new ThreadPageAllocator(MAX_PAGES);
 
   const kernelWorker = new CentralizedKernelWorker(
     { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true },
@@ -109,19 +109,9 @@ async function main() {
       },
       onExec: async () => -38, // ENOSYS
       onClone: async (pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory) => {
-        let basePage: number;
-        if (freeThreadPages.length > 0) {
-          basePage = freeThreadPages.pop()!;
-        } else {
-          basePage = nextThreadChannelPage;
-          nextThreadChannelPage -= 4;
-        }
-        const threadChannelOffset = basePage * 65536;
-        const tlsAllocAddr = (basePage - 2) * 65536;
-        new Uint8Array(memory.buffer, threadChannelOffset, CH_TOTAL_SIZE).fill(0);
-        new Uint8Array(memory.buffer, tlsAllocAddr, 65536).fill(0);
+        const alloc = threadAllocator.allocate(memory);
 
-        kernelWorker.addChannel(pid, threadChannelOffset, tid);
+        kernelWorker.addChannel(pid, alloc.channelOffset, tid);
 
         const threadInitData: CentralizedThreadInitMessage = {
           type: "centralized_thread_init",
@@ -129,27 +119,27 @@ async function main() {
           tid,
           programBytes,
           memory,
-          channelOffset: threadChannelOffset,
+          channelOffset: alloc.channelOffset,
           fnPtr,
           argPtr,
           stackPtr,
           tlsPtr,
           ctidPtr,
-          tlsAllocAddr,
+          tlsAllocAddr: alloc.tlsAllocAddr,
         };
 
         const threadWorker = workerAdapter.createWorker(threadInitData);
         threadWorker.on("message", (msg: unknown) => {
           const m = msg as WorkerToHostMessage;
           if (m.type === "thread_exit") {
-            freeThreadPages.push(basePage);
+            threadAllocator.free(alloc.basePage);
             threadWorker.terminate().catch(() => {});
           }
         });
         threadWorker.on("error", () => {
           kernelWorker.notifyThreadExit(pid, tid);
-          kernelWorker.removeChannel(pid, threadChannelOffset);
-          freeThreadPages.push(basePage);
+          kernelWorker.removeChannel(pid, alloc.channelOffset);
+          threadAllocator.free(alloc.basePage);
         });
 
         return tid;
