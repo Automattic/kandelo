@@ -272,6 +272,7 @@ if (typeof window !== "undefined") {
           headers[key] = value;
         });
         headers["host"] = url.host;
+        headers["x-forwarded-proto"] = url.protocol.replace(":", "");
 
         // Inject cookies from our jar
         var jarCookies = getCookiesForPath(url.pathname);
