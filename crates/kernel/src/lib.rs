@@ -8,6 +8,7 @@ pub mod fd;
 pub mod fork;
 pub mod lock;
 pub mod memory;
+pub mod mqueue;
 pub mod ofd;
 pub mod path;
 pub mod pipe;
