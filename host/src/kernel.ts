@@ -16,7 +16,6 @@
 import type { KernelConfig, PlatformIO, StatResult } from "./types";
 import { SharedPipeBuffer } from "./shared-pipe-buffer";
 import { SharedLockTable } from "./shared-lock-table";
-import { SharedIpcTable, type MsgQueueInfo, type SemSetInfo, type ShmSegInfo } from "./shared-ipc-table";
 
 /**
  * Map filesystem error codes to negative errno values.
@@ -106,9 +105,6 @@ export class WasmPosixKernel {
   private sharedPipes = new Map<number, { pipe: SharedPipeBuffer; end: "read" | "write" }>();
   private signalWakeSab: SharedArrayBuffer | null = null;
   private sharedLockTable: SharedLockTable | null = null;
-  private sharedIpcTable: SharedIpcTable | null = null;
-  /** Per-process shmat mappings: wasmAddr → {segId, size} */
-  private shmMappings = new Map<number, { segId: number; size: number }>();
   private programFuncTable: WebAssembly.Table | null = null;
   private forkSab: SharedArrayBuffer | null = null;
   private waitpidSab: SharedArrayBuffer | null = null;
@@ -157,10 +153,6 @@ export class WasmPosixKernel {
 
   registerSharedLockTable(sab: SharedArrayBuffer): void {
     this.sharedLockTable = SharedLockTable.fromBuffer(sab);
-  }
-
-  registerSharedIpcTable(sab: SharedArrayBuffer): void {
-    this.sharedIpcTable = SharedIpcTable.fromBuffer(sab);
   }
 
   registerForkSab(sab: SharedArrayBuffer): void {
@@ -398,40 +390,6 @@ export class WasmPosixKernel {
         },
         host_is_thread_worker: (): number => {
           return this.isThreadWorker ? 1 : 0;
-        },
-        // --- SysV IPC imports ---
-        host_ipc_msgget: (key: number, flags: number): number => {
-          return this.hostIpcMsgget(key, flags);
-        },
-        host_ipc_msgsnd: (qid: number, msgPtr: number, msgSz: number, flags: number): number => {
-          return this.hostIpcMsgsnd(qid, msgPtr, msgSz, flags);
-        },
-        host_ipc_msgrcv: (qid: number, msgPtr: number, msgSz: number, msgtyp: number, flags: number): number => {
-          return this.hostIpcMsgrcv(qid, msgPtr, msgSz, msgtyp, flags);
-        },
-        host_ipc_msgctl: (qid: number, cmd: number, bufPtr: number): number => {
-          return this.hostIpcMsgctl(qid, cmd, bufPtr);
-        },
-        host_ipc_semget: (key: number, nsems: number, flags: number): number => {
-          return this.hostIpcSemget(key, nsems, flags);
-        },
-        host_ipc_semop: (semid: number, sopsPtr: number, nsops: number): number => {
-          return this.hostIpcSemop(semid, sopsPtr, nsops);
-        },
-        host_ipc_semctl: (semid: number, semnum: number, cmd: number, arg: number): number => {
-          return this.hostIpcSemctl(semid, semnum, cmd, arg);
-        },
-        host_ipc_shmget: (key: number, size: number, flags: number): number => {
-          return this.hostIpcShmget(key, size, flags);
-        },
-        host_ipc_shmat: (shmid: number, shmaddr: number, flags: number): number => {
-          return this.hostIpcShmat(shmid, shmaddr, flags);
-        },
-        host_ipc_shmdt: (addr: number): number => {
-          return this.hostIpcShmdt(addr);
-        },
-        host_ipc_shmctl: (shmid: number, cmd: number, bufPtr: number): number => {
-          return this.hostIpcShmctl(shmid, cmd, bufPtr);
         },
       },
     };
@@ -1920,184 +1878,4 @@ export class WasmPosixKernel {
     return -38; // -ENOSYS — no clone handler registered
   }
 
-  // =========================================================================
-  // SysV IPC host imports
-  // =========================================================================
-
-  private hostIpcMsgget(key: number, flags: number): number {
-    if (!this.sharedIpcTable) return -38; // ENOSYS
-    return this.sharedIpcTable.msgget(key, flags, this.pid);
-  }
-
-  private hostIpcMsgsnd(qid: number, msgPtr: number, msgSz: number, flags: number): number {
-    if (!this.sharedIpcTable || !this.memory) return -38;
-    const mem = new Uint8Array(this.memory.buffer);
-    // User passes {long mtype; char mtext[]} at msgPtr.
-    // msgsnd signature: msgsnd(qid, msgp, msgsz, flags)
-    // msgp points to {long type; char data[msgsz]}
-    const dv = this.getMemoryDataView();
-    const msgType = dv.getInt32(msgPtr, true); // long is 4 bytes on wasm32
-    const data = mem.slice(msgPtr + 4, msgPtr + 4 + msgSz);
-    return this.sharedIpcTable.msgsnd(qid, msgType, data, flags, this.pid);
-  }
-
-  private hostIpcMsgrcv(qid: number, msgPtr: number, msgSz: number, msgtyp: number, flags: number): number {
-    if (!this.sharedIpcTable || !this.memory) return -38;
-    const result = this.sharedIpcTable.msgrcv(qid, msgSz, msgtyp, flags, this.pid);
-    if (typeof result === "number") return result; // error
-    // Write {long type; char data[]} to msgPtr
-    const dv = this.getMemoryDataView();
-    dv.setInt32(msgPtr, result.type, true); // long type
-    const mem = new Uint8Array(this.memory.buffer);
-    mem.set(result.data, msgPtr + 4);
-    return result.data.length;
-  }
-
-  private hostIpcMsgctl(qid: number, cmd: number, bufPtr: number): number {
-    if (!this.sharedIpcTable) return -38;
-    // musl adds IPC_64 (0x100) to cmd; strip it
-    cmd = cmd & ~0x100;
-    const result = this.sharedIpcTable.msgctl(qid, cmd, this.pid);
-    if (typeof result === "number") return result; // error or success(0)
-    // IPC_STAT: write msqid_ds struct to bufPtr
-    if (bufPtr !== 0 && this.memory) {
-      const dv = this.getMemoryDataView();
-      SharedIpcTable.writeMsqidDs(dv, bufPtr, result as MsgQueueInfo);
-    }
-    return 0;
-  }
-
-  private hostIpcSemget(key: number, nsems: number, flags: number): number {
-    if (!this.sharedIpcTable) return -38;
-    return this.sharedIpcTable.semget(key, nsems, flags, this.pid);
-  }
-
-  private hostIpcSemop(semid: number, sopsPtr: number, nsops: number): number {
-    if (!this.sharedIpcTable || !this.memory) return -38;
-    // Read struct sembuf[] from Wasm memory
-    // Each sembuf: sem_num(u16) @0, sem_op(i16) @2, sem_flg(i16) @4, total 6 bytes
-    // But sizeof(sembuf)=6, and arrays pack tightly
-    const dv = this.getMemoryDataView();
-    const sops: { num: number; op: number; flg: number }[] = [];
-    for (let i = 0; i < nsops; i++) {
-      const base = sopsPtr + i * 6;
-      sops.push({
-        num: dv.getUint16(base, true),
-        op: dv.getInt16(base + 2, true),
-        flg: dv.getInt16(base + 4, true),
-      });
-    }
-    return this.sharedIpcTable.semop(semid, sops, this.pid);
-  }
-
-  private hostIpcSemctl(semid: number, semnum: number, cmd: number, arg: number): number {
-    if (!this.sharedIpcTable) return -38;
-    // musl adds IPC_64 (0x100) to cmd; strip it
-    cmd = cmd & ~0x100;
-    const IPC_STAT = 2;
-    const IPC_RMID = 0;
-    const GETVAL = 12;
-    const SETVAL = 16;
-    const GETPID = 11;
-    const GETNCNT = 14;
-    const GETZCNT = 15;
-    const GETALL = 13;
-    const SETALL = 17;
-
-    if (cmd === IPC_STAT) {
-      const result = this.sharedIpcTable.semctl(semid, semnum, cmd, this.pid);
-      if (typeof result === "number") return result;
-      // arg is a pointer to union semun { ..., struct semid_ds *buf, ... }
-      // In musl's semctl wrapper, for IPC_STAT the arg is the buf pointer directly
-      if (arg !== 0 && this.memory) {
-        const dv = this.getMemoryDataView();
-        SharedIpcTable.writeSemidDs(dv, arg, result as SemSetInfo);
-      }
-      return 0;
-    }
-
-    if (cmd === SETALL && this.memory) {
-      // arg points to unsigned short[] array
-      const dv = this.getMemoryDataView();
-      // Need nsems — get from semctl IPC_STAT
-      const info = this.sharedIpcTable.semctl(semid, 0, IPC_STAT, this.pid);
-      if (typeof info === "number") return info;
-      const nsems = (info as SemSetInfo).nsems;
-      const values: number[] = [];
-      for (let i = 0; i < nsems; i++) {
-        values.push(dv.getUint16(arg + i * 2, true));
-      }
-      return this.sharedIpcTable.semctlSetAll(semid, values);
-    }
-
-    if (cmd === GETALL) {
-      const result = this.sharedIpcTable.semctl(semid, semnum, cmd, this.pid);
-      if (typeof result === "number") return result;
-      // result is Uint8Array of u16 values; write to arg pointer
-      if (arg !== 0 && this.memory) {
-        const mem = new Uint8Array(this.memory.buffer);
-        mem.set(result as Uint8Array, arg);
-      }
-      return 0;
-    }
-
-    const result = this.sharedIpcTable.semctl(semid, semnum, cmd, this.pid, arg);
-    if (typeof result === "number") return result;
-    return 0;
-  }
-
-  private hostIpcShmget(key: number, size: number, flags: number): number {
-    if (!this.sharedIpcTable) return -38;
-    return this.sharedIpcTable.shmget(key, size, flags, this.pid);
-  }
-
-  private hostIpcShmat(shmid: number, _shmaddr: number, _flags: number): number {
-    if (!this.sharedIpcTable || !this.memory) return -38;
-    const result = this.sharedIpcTable.shmat(shmid, this.pid);
-    if (typeof result === "number") return result;
-
-    const { data, size } = result;
-
-    // Grow Wasm memory to allocate space for the segment
-    const pages = Math.ceil(size / 65536);
-    const oldPages = this.memory.grow(pages);
-    const addr = oldPages * 65536;
-
-    // Copy segment data into the newly grown region
-    const mem = new Uint8Array(this.memory.buffer);
-    mem.set(data, addr);
-
-    // Track this mapping for shmdt
-    this.shmMappings.set(addr, { segId: shmid, size });
-
-    return addr;
-  }
-
-  private hostIpcShmdt(addr: number): number {
-    if (!this.sharedIpcTable || !this.memory) return -38;
-    const mapping = this.shmMappings.get(addr);
-    if (!mapping) return -22; // EINVAL
-
-    // Copy data back from Wasm memory to segment SAB
-    const mem = new Uint8Array(this.memory.buffer);
-    const data = mem.slice(addr, addr + mapping.size);
-    const result = this.sharedIpcTable.shmdt(mapping.segId, data, this.pid);
-
-    this.shmMappings.delete(addr);
-    return result;
-  }
-
-  private hostIpcShmctl(shmid: number, cmd: number, bufPtr: number): number {
-    if (!this.sharedIpcTable) return -38;
-    // musl adds IPC_64 (0x100) to cmd; strip it
-    cmd = cmd & ~0x100;
-    const result = this.sharedIpcTable.shmctl(shmid, cmd, this.pid);
-    if (typeof result === "number") return result;
-    // IPC_STAT: write shmid_ds struct to bufPtr
-    if (bufPtr !== 0 && this.memory) {
-      const dv = this.getMemoryDataView();
-      SharedIpcTable.writeShmidDs(dv, bufPtr, result as ShmSegInfo);
-    }
-    return 0;
-  }
 }

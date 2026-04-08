@@ -91,18 +91,6 @@ unsafe extern "C" {
     fn host_futex_wake(addr: u32, count: u32) -> i32;
     fn host_clone(fn_ptr: u32, arg: u32, stack_ptr: u32, tls_ptr: u32, ctid_ptr: u32) -> i32;
     fn host_is_thread_worker() -> i32;
-    // SysV IPC
-    fn host_ipc_msgget(key: i32, flags: i32) -> i32;
-    fn host_ipc_msgsnd(qid: i32, msg_ptr: i32, msg_sz: i32, flags: i32) -> i32;
-    fn host_ipc_msgrcv(qid: i32, msg_ptr: i32, msg_sz: i32, msgtyp: i32, flags: i32) -> i32;
-    fn host_ipc_msgctl(qid: i32, cmd: i32, buf_ptr: i32) -> i32;
-    fn host_ipc_semget(key: i32, nsems: i32, flags: i32) -> i32;
-    fn host_ipc_semop(semid: i32, sops_ptr: i32, nsops: i32) -> i32;
-    fn host_ipc_semctl(semid: i32, semnum: i32, cmd: i32, arg: i32) -> i32;
-    fn host_ipc_shmget(key: i32, size: i32, flags: i32) -> i32;
-    fn host_ipc_shmat(shmid: i32, shmaddr: i32, flags: i32) -> i32;
-    fn host_ipc_shmdt(addr: i32) -> i32;
-    fn host_ipc_shmctl(shmid: i32, cmd: i32, buf_ptr: i32) -> i32;
 }
 
 // ---------------------------------------------------------------------------
@@ -1972,18 +1960,192 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
             kernel_statx(a1, p, len, a3 as u32, a4 as u32, a5 as *mut u8)
         }
 
-        // SysV IPC
-        337 => kernel_ipc_msgget(a1, a2),          // SYS_MSGGET
-        338 => kernel_ipc_msgrcv(a1, a2, a3, a4, a5), // SYS_MSGRCV
-        339 => kernel_ipc_msgsnd(a1, a2, a3, a4),  // SYS_MSGSND
-        340 => kernel_ipc_msgctl(a1, a2, a3),       // SYS_MSGCTL
-        341 => kernel_ipc_semget(a1, a2, a3),       // SYS_SEMGET
-        342 => kernel_ipc_semop(a1, a2, a3),        // SYS_SEMOP
-        343 => kernel_ipc_semctl(a1, a2, a3, a4),   // SYS_SEMCTL
-        344 => kernel_ipc_shmget(a1, a2, a3),       // SYS_SHMGET
-        345 => kernel_ipc_shmat(a1, a2, a3),        // SYS_SHMAT
-        346 => kernel_ipc_shmdt(a1),                // SYS_SHMDT
-        347 => kernel_ipc_shmctl(a1, a2, a3),       // SYS_SHMCTL
+        // SysV IPC — handled by kernel IpcTable
+        337 => { // SYS_MSGGET: (key, flags)
+            let ipc = unsafe { crate::ipc::global_ipc_table() };
+            let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
+            // Get uid/gid from current process
+            let (uid, gid) = unsafe {
+                let pt = &*PROCESS_TABLE.0.get();
+                match pt.get(pid) {
+                    Some(p) => (p.euid, p.egid),
+                    None => (0, 0),
+                }
+            };
+            match ipc.msgget(a1, a2 as u32, pid, uid, gid) {
+                Ok(id) => id,
+                Err(e) => -(e as i32),
+            }
+        }
+        338 => { // SYS_MSGRCV: (qid, msgp, msgsz, msgtyp, flags)
+            let ipc = unsafe { crate::ipc::global_ipc_table() };
+            let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
+            match ipc.msgrcv(a1, a3 as u32, a4, a5 as u32, pid) {
+                Ok(result) => {
+                    // Write {mtype (4B), mtext} to msgp (kernel scratch)
+                    let out = a2 as *mut u8;
+                    let mtype_bytes = result.mtype.to_le_bytes();
+                    unsafe {
+                        for i in 0..4 { *out.add(i) = mtype_bytes[i]; }
+                        for (i, &b) in result.data.iter().enumerate() {
+                            *out.add(4 + i) = b;
+                        }
+                    }
+                    result.data.len() as i32
+                }
+                Err(e) => -(e as i32),
+            }
+        }
+        339 => { // SYS_MSGSND: (qid, msgp, msgsz, flags)
+            let ipc = unsafe { crate::ipc::global_ipc_table() };
+            let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
+            // Read mtype from msgp, mtext from msgp+4
+            let msgp = a2 as *const u8;
+            let msgsz = a3 as usize;
+            let mtype = unsafe {
+                i32::from_le_bytes([*msgp, *msgp.add(1), *msgp.add(2), *msgp.add(3)])
+            };
+            let data = unsafe { core::slice::from_raw_parts(msgp.add(4), msgsz) };
+            match ipc.msgsnd(a1, mtype, data, a4 as u32, pid) {
+                Ok(()) => 0,
+                Err(e) => -(e as i32),
+            }
+        }
+        340 => { // SYS_MSGCTL: (qid, cmd, buf_ptr)
+            let ipc = unsafe { crate::ipc::global_ipc_table() };
+            let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
+            let cmd = a2 & !0x100; // strip IPC_64
+            match ipc.msgctl(a1, cmd, pid) {
+                Ok(Some(info)) => {
+                    if a3 != 0 {
+                        let out = a3 as *mut u8;
+                        unsafe { write_msqid_ds(out, &info); }
+                    }
+                    0
+                }
+                Ok(None) => 0,
+                Err(e) => -(e as i32),
+            }
+        }
+        341 => { // SYS_SEMGET: (key, nsems, flags)
+            let ipc = unsafe { crate::ipc::global_ipc_table() };
+            let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
+            let (uid, gid) = unsafe {
+                let pt = &*PROCESS_TABLE.0.get();
+                match pt.get(pid) {
+                    Some(p) => (p.euid, p.egid),
+                    None => (0, 0),
+                }
+            };
+            match ipc.semget(a1, a2 as u32, a3 as u32, pid, uid, gid) {
+                Ok(id) => id,
+                Err(e) => -(e as i32),
+            }
+        }
+        342 => { // SYS_SEMOP: (semid, sops_ptr, nsops)
+            let ipc = unsafe { crate::ipc::global_ipc_table() };
+            let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
+            let nsops = a3 as usize;
+            let sops_ptr = a2 as *const u8;
+            let mut sops = alloc::vec::Vec::with_capacity(nsops);
+            for i in 0..nsops {
+                let base = unsafe { sops_ptr.add(i * 6) };
+                let num = unsafe { u16::from_le_bytes([*base, *base.add(1)]) };
+                let op = unsafe { i16::from_le_bytes([*base.add(2), *base.add(3)]) };
+                let flg = unsafe { u16::from_le_bytes([*base.add(4), *base.add(5)]) };
+                sops.push(crate::ipc::SemOp { num, op, flg });
+            }
+            match ipc.semop(a1, &sops, pid) {
+                Ok(()) => 0,
+                Err(e) => -(e as i32),
+            }
+        }
+        343 => { // SYS_SEMCTL: (semid, semnum, cmd, arg)
+            let ipc = unsafe { crate::ipc::global_ipc_table() };
+            let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
+            let cmd = a3 & !0x100; // strip IPC_64
+            // SETALL (17): arg points to u16[] in scratch
+            if cmd == 17 {
+                // First get nsems via IPC_STAT
+                match ipc.semctl(a1, 0, 2, pid, 0) { // IPC_STAT=2
+                    Ok(crate::ipc::SemCtlResult::Stat(info)) => {
+                        let nsems = info.nsems as usize;
+                        let ptr = a4 as *const u8;
+                        let mut vals = alloc::vec::Vec::with_capacity(nsems);
+                        for i in 0..nsems {
+                            let base = unsafe { ptr.add(i * 2) };
+                            vals.push(unsafe { u16::from_le_bytes([*base, *base.add(1)]) });
+                        }
+                        match ipc.semctl_set_all(a1, &vals) {
+                            Ok(()) => 0,
+                            Err(e) => -(e as i32),
+                        }
+                    }
+                    _ => -(Errno::EINVAL as i32),
+                }
+            } else {
+                match ipc.semctl(a1, a2, cmd, pid, a4) {
+                    Ok(crate::ipc::SemCtlResult::Ok) => 0,
+                    Ok(crate::ipc::SemCtlResult::Value(v)) => v,
+                    Ok(crate::ipc::SemCtlResult::Stat(info)) => {
+                        if a4 != 0 {
+                            let out = a4 as *mut u8;
+                            unsafe { write_semid_ds(out, &info); }
+                        }
+                        0
+                    }
+                    Ok(crate::ipc::SemCtlResult::All(vals)) => {
+                        // GETALL: write u16[] to arg pointer
+                        if a4 != 0 {
+                            let out = a4 as *mut u8;
+                            for (i, &v) in vals.iter().enumerate() {
+                                let bytes = v.to_le_bytes();
+                                unsafe {
+                                    *out.add(i * 2) = bytes[0];
+                                    *out.add(i * 2 + 1) = bytes[1];
+                                }
+                            }
+                        }
+                        0
+                    }
+                    Err(e) => -(e as i32),
+                }
+            }
+        }
+        344 => { // SYS_SHMGET: (key, size, flags)
+            let ipc = unsafe { crate::ipc::global_ipc_table() };
+            let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
+            let (uid, gid) = unsafe {
+                let pt = &*PROCESS_TABLE.0.get();
+                match pt.get(pid) {
+                    Some(p) => (p.euid, p.egid),
+                    None => (0, 0),
+                }
+            };
+            match ipc.shmget(a1, a2 as u32, a3 as u32, pid, uid, gid) {
+                Ok(id) => id,
+                Err(e) => -(e as i32),
+            }
+        }
+        // SYS_SHMAT (345), SYS_SHMDT (346): intercepted by host for process memory management
+        345 => kernel_ipc_shmat(a1, a2, a3),
+        346 => kernel_ipc_shmdt(a1),
+        347 => { // SYS_SHMCTL: (shmid, cmd, buf_ptr)
+            let ipc = unsafe { crate::ipc::global_ipc_table() };
+            let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
+            let cmd = a2 & !0x100; // strip IPC_64
+            match ipc.shmctl(a1, cmd, pid) {
+                Ok(Some(info)) => {
+                    if a3 != 0 {
+                        let out = a3 as *mut u8;
+                        unsafe { write_shmid_ds(out, &info); }
+                    }
+                    0
+                }
+                Ok(None) => 0,
+                Err(e) => -(e as i32),
+            }
+        }
 
         // epoll
         239 => kernel_epoll_create1(a1 as u32),     // SYS_EPOLL_CREATE1: (flags)
@@ -2504,62 +2666,156 @@ fn dispatch_channel_syscall(nr: u32, args: &[i32; 6]) -> i32 {
 }
 
 // ---------------------------------------------------------------------------
-// SysV IPC kernel exports — thin wrappers to host imports
+// SysV IPC kernel exports
 // ---------------------------------------------------------------------------
 
+/// Set the current process for subsequent kernel_ipc_* calls.
+/// Host must call this before kernel_ipc_shmat/shmdt/shm_read_chunk/shm_write_chunk.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_ipc_msgget(key: i32, flags: i32) -> i32 {
-    unsafe { host_ipc_msgget(key, flags) }
+pub extern "C" fn kernel_set_current_pid(pid: u32) {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    table.set_current_pid(pid);
 }
 
+/// Attach to shared memory segment. Returns segment size, or negative errno.
+/// Host uses this + kernel_ipc_shm_read_chunk to transfer data to process memory.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_ipc_msgsnd(qid: i32, msg_ptr: i32, msg_sz: i32, flags: i32) -> i32 {
-    unsafe { host_ipc_msgsnd(qid, msg_ptr, msg_sz, flags) }
+pub extern "C" fn kernel_ipc_shmat(shmid: i32, _shmaddr: i32, _flags: i32) -> i32 {
+    let ipc = unsafe { crate::ipc::global_ipc_table() };
+    let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
+    match ipc.shmat(shmid, pid) {
+        Ok(size) => size as i32,
+        Err(e) => -(e as i32),
+    }
 }
 
+/// Detach from shared memory segment.
+/// Host should call kernel_ipc_shm_write_chunk first to sync data back.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_ipc_msgrcv(qid: i32, msg_ptr: i32, msg_sz: i32, msgtyp: i32, flags: i32) -> i32 {
-    unsafe { host_ipc_msgrcv(qid, msg_ptr, msg_sz, msgtyp, flags) }
+pub extern "C" fn kernel_ipc_shmdt(shmid: i32) -> i32 {
+    let ipc = unsafe { crate::ipc::global_ipc_table() };
+    let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
+    match ipc.shmdt(shmid, pid) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
 }
 
+/// Read a chunk of shared memory segment data into scratch area.
+/// Returns bytes written to out_ptr.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_ipc_msgctl(qid: i32, cmd: i32, buf_ptr: i32) -> i32 {
-    unsafe { host_ipc_msgctl(qid, cmd, buf_ptr) }
+pub extern "C" fn kernel_ipc_shm_read_chunk(shmid: i32, offset: u32, out_ptr: *mut u8, max_len: u32) -> i32 {
+    let ipc = unsafe { crate::ipc::global_ipc_table() };
+    let buf = unsafe { core::slice::from_raw_parts_mut(out_ptr, max_len as usize) };
+    match ipc.shm_read_chunk(shmid, offset, buf) {
+        Ok(n) => n as i32,
+        Err(e) => -(e as i32),
+    }
 }
 
+/// Write a chunk of data from scratch area into shared memory segment.
+/// Returns bytes written.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_ipc_semget(key: i32, nsems: i32, flags: i32) -> i32 {
-    unsafe { host_ipc_semget(key, nsems, flags) }
+pub extern "C" fn kernel_ipc_shm_write_chunk(shmid: i32, offset: u32, data_ptr: *const u8, data_len: u32) -> i32 {
+    let ipc = unsafe { crate::ipc::global_ipc_table() };
+    let data = unsafe { core::slice::from_raw_parts(data_ptr, data_len as usize) };
+    match ipc.shm_write_chunk(shmid, offset, data) {
+        Ok(n) => n as i32,
+        Err(e) => -(e as i32),
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_ipc_semop(semid: i32, sops_ptr: i32, nsops: i32) -> i32 {
-    unsafe { host_ipc_semop(semid, sops_ptr, nsops) }
+// ---------------------------------------------------------------------------
+// SysV IPC struct serialization helpers (wasm32 layout)
+// ---------------------------------------------------------------------------
+
+/// Write struct ipc_perm to kernel memory (36 bytes).
+unsafe fn write_ipc_perm(out: *mut u8, key: i32, uid: u32, gid: u32, cuid: u32, cgid: u32, mode: u32, seq: i32) {
+    let write_i32 = |ptr: *mut u8, off: usize, val: i32| {
+        let bytes = val.to_le_bytes();
+        for i in 0..4 { *ptr.add(off + i) = bytes[i]; }
+    };
+    let write_u32 = |ptr: *mut u8, off: usize, val: u32| {
+        let bytes = val.to_le_bytes();
+        for i in 0..4 { *ptr.add(off + i) = bytes[i]; }
+    };
+    write_i32(out, 0, key);
+    write_u32(out, 4, uid);
+    write_u32(out, 8, gid);
+    write_u32(out, 12, cuid);
+    write_u32(out, 16, cgid);
+    write_u32(out, 20, mode);
+    write_i32(out, 24, seq);
+    // Padding bytes 28-35
+    for i in 28..36 { *out.add(i) = 0; }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_ipc_semctl(semid: i32, semnum: i32, cmd: i32, arg: i32) -> i32 {
-    unsafe { host_ipc_semctl(semid, semnum, cmd, arg) }
+/// Write i64 as two i32 halves (little-endian) at offset.
+unsafe fn write_time(out: *mut u8, offset: usize, secs: i64) {
+    let lo = (secs & 0xFFFF_FFFF) as i32;
+    let hi = (secs >> 32) as i32;
+    let lo_bytes = lo.to_le_bytes();
+    let hi_bytes = hi.to_le_bytes();
+    for i in 0..4 { *out.add(offset + i) = lo_bytes[i]; }
+    for i in 0..4 { *out.add(offset + 4 + i) = hi_bytes[i]; }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_ipc_shmget(key: i32, size: i32, flags: i32) -> i32 {
-    unsafe { host_ipc_shmget(key, size, flags) }
+/// Write struct msqid_ds to kernel memory (96 bytes).
+unsafe fn write_msqid_ds(out: *mut u8, info: &crate::ipc::MsgQueueInfo) {
+    // Zero the whole struct first
+    for i in 0..96 { *out.add(i) = 0; }
+    write_ipc_perm(out, info.key, info.uid, info.gid, info.cuid, info.cgid, info.mode, info.seq);
+    // 36-39: padding
+    write_time(out, 40, info.stime);
+    write_time(out, 48, info.rtime);
+    write_time(out, 56, info.ctime);
+    let write_u32 = |ptr: *mut u8, off: usize, val: u32| {
+        let bytes = val.to_le_bytes();
+        for i in 0..4 { *ptr.add(off + i) = bytes[i]; }
+    };
+    let write_i32 = |ptr: *mut u8, off: usize, val: i32| {
+        let bytes = val.to_le_bytes();
+        for i in 0..4 { *ptr.add(off + i) = bytes[i]; }
+    };
+    write_u32(out, 64, info.cbytes);
+    write_u32(out, 68, info.qnum);
+    write_u32(out, 72, info.qbytes);
+    write_i32(out, 76, info.lspid);
+    write_i32(out, 80, info.lrpid);
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_ipc_shmat(shmid: i32, shmaddr: i32, flags: i32) -> i32 {
-    unsafe { host_ipc_shmat(shmid, shmaddr, flags) }
+/// Write struct semid_ds to kernel memory (72 bytes).
+unsafe fn write_semid_ds(out: *mut u8, info: &crate::ipc::SemSetInfo) {
+    for i in 0..72 { *out.add(i) = 0; }
+    write_ipc_perm(out, info.key, info.uid, info.gid, info.cuid, info.cgid, info.mode, info.seq);
+    // 36-39: padding
+    write_time(out, 40, info.otime);
+    write_time(out, 48, info.ctime);
+    // nsems at 56 as u16
+    let nsems_bytes = (info.nsems as u16).to_le_bytes();
+    *out.add(56) = nsems_bytes[0];
+    *out.add(57) = nsems_bytes[1];
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_ipc_shmdt(addr: i32) -> i32 {
-    unsafe { host_ipc_shmdt(addr) }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_ipc_shmctl(shmid: i32, cmd: i32, buf_ptr: i32) -> i32 {
-    unsafe { host_ipc_shmctl(shmid, cmd, buf_ptr) }
+/// Write struct shmid_ds to kernel memory (88 bytes).
+unsafe fn write_shmid_ds(out: *mut u8, info: &crate::ipc::ShmSegInfo) {
+    for i in 0..88 { *out.add(i) = 0; }
+    write_ipc_perm(out, info.key, info.uid, info.gid, info.cuid, info.cgid, info.mode, info.seq);
+    let write_u32 = |ptr: *mut u8, off: usize, val: u32| {
+        let bytes = val.to_le_bytes();
+        for i in 0..4 { *ptr.add(off + i) = bytes[i]; }
+    };
+    let write_i32 = |ptr: *mut u8, off: usize, val: i32| {
+        let bytes = val.to_le_bytes();
+        for i in 0..4 { *ptr.add(off + i) = bytes[i]; }
+    };
+    write_u32(out, 36, info.segsz);
+    write_time(out, 40, info.atime);
+    write_time(out, 48, info.dtime);
+    write_time(out, 56, info.ctime);
+    write_i32(out, 64, info.cpid);
+    write_i32(out, 68, info.lpid);
+    write_u32(out, 72, info.nattch);
 }
 
 // ---------------------------------------------------------------------------

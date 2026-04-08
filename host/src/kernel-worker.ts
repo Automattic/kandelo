@@ -22,7 +22,6 @@
  */
 
 import { WasmPosixKernel } from "./kernel";
-import { SharedIpcTable, type MsgQueueInfo, type SemSetInfo, type ShmSegInfo } from "./shared-ipc-table";
 import { SharedLockTable } from "./shared-lock-table";
 
 import type { KernelConfig, PlatformIO } from "./types";
@@ -107,18 +106,13 @@ const SYS_PWRITEV = 296;
 /** fcntl commands that take a struct flock pointer */
 const SYS_FCNTL = 10;
 
-/** SysV IPC syscall numbers */
-const SYS_MSGGET = 337;
+/** SysV IPC syscall numbers (only those still intercepted on host) */
 const SYS_MSGRCV = 338;
 const SYS_MSGSND = 339;
-const SYS_MSGCTL = 340;
-const SYS_SEMGET = 341;
 const SYS_SEMOP = 342;
 const SYS_SEMCTL = 343;
-const SYS_SHMGET = 344;
 const SYS_SHMAT = 345;
 const SYS_SHMDT = 346;
-const SYS_SHMCTL = 347;
 
 /** POSIX message queue syscall numbers */
 const SYS_MQ_TIMEDSEND = 333;
@@ -521,6 +515,13 @@ const SYSCALL_ARGS: Record<number, ArgDesc[]> = {
     { argIndex: 1, direction: "in", size: { type: "fixed", size: 32 } },        //   new mq_attr (optional)
     { argIndex: 2, direction: "out", size: { type: "fixed", size: 32 } },       //   old mq_attr (out)
   ],
+
+  // SysV IPC
+  338: [{ argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 } }],  // MSGRCV: msgp ({mtype, mtext})
+  339: [{ argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 } }],   // MSGSND: msgp ({mtype, mtext})
+  340: [{ argIndex: 2, direction: "inout", size: { type: "fixed", size: 96 } }], // MSGCTL: msqid_ds buf
+  342: [{ argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 } }],   // SEMOP: sembuf[] (nsops * 6)
+  347: [{ argIndex: 2, direction: "inout", size: { type: "fixed", size: 88 } }], // SHMCTL: shmid_ds buf
 };
 
 // Also need a way to compute poll size: nfds * sizeof(struct pollfd) = nfds * 8
@@ -695,8 +696,6 @@ export class CentralizedKernelWorker {
    *  to convert epoll_pwait to poll without calling kernel_handle_channel
    *  (which crashes in Chrome for epoll_pwait due to a suspected V8 bug). */
   private epollInterests = new Map<string, Array<{ fd: number; events: number; data: bigint }>>();
-  /** SharedIpcTable for SysV IPC (message queues, semaphores, shared memory) */
-  private ipcTable: SharedIpcTable | null = null;
   private lockTable: SharedLockTable | null = null;
   /** Per-process shared memory mappings: pid → Map<addr, {segId, size}> */
   private shmMappings = new Map<number, Map<number, { segId: number; size: number }>>();
@@ -863,11 +862,6 @@ export class CentralizedKernelWorker {
     // (including OFD locks) within the centralized kernel.
     this.lockTable = SharedLockTable.create();
     this.kernel.registerSharedLockTable(this.lockTable.getBuffer());
-
-    // Register a SharedIpcTable so SysV IPC (msgget/msgsnd/msgrcv, semget/semop,
-    // shmget/shmat/shmdt) works across processes.
-    this.ipcTable = SharedIpcTable.create();
-    this.kernel.registerSharedIpcTable(this.ipcTable.getBuffer());
 
     this.initialized = true;
   }
@@ -1500,12 +1494,18 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    // --- SysV IPC: intercept on host side ---
-    // In centralized mode, IPC syscalls pass user-space pointers that the
-    // kernel can't dereference (kernel has separate memory). Handle entirely
-    // on the host side via SharedIpcTable, reading/writing process memory.
-    if (syscallNr >= SYS_MSGGET && syscallNr <= SYS_SHMCTL) {
-      this.handleIpc(channel, syscallNr, origArgs);
+    // --- SysV IPC: shmat/shmdt need host-side process memory management ---
+    if (syscallNr === SYS_SHMAT) {
+      this.handleIpcShmat(channel, origArgs);
+      return;
+    }
+    if (syscallNr === SYS_SHMDT) {
+      this.handleIpcShmdt(channel, origArgs);
+      return;
+    }
+    // --- SysV IPC: semctl has cmd-dependent arg types (scalar vs pointer) ---
+    if (syscallNr === SYS_SEMCTL) {
+      this.handleSemctl(channel, origArgs);
       return;
     }
 
@@ -1548,8 +1548,10 @@ export class CentralizedKernelWorker {
           size = len + 1; // include null terminator
         } else if (desc.size.type === "arg") {
           size = origArgs[desc.size.argIndex];
-          // Special case: multiply by struct size
+          // Special cases: struct size multipliers and prefixes
           if (syscallNr === SYS_POLL || syscallNr === SYS_PPOLL) size *= 8;   // pollfd = 8 bytes
+          if (syscallNr === SYS_MSGSND || syscallNr === SYS_MSGRCV) size += 4; // mtype (long) prefix
+          if (syscallNr === SYS_SEMOP) size *= 6;   // struct sembuf = 6 bytes
         } else if (desc.size.type === "deref") {
           // Dereference: arg is a pointer to a u32 value (e.g. socklen_t*)
           const derefPtr = origArgs[desc.size.argIndex];
@@ -1809,6 +1811,8 @@ export class CentralizedKernelWorker {
           size = origArgs[desc.size.argIndex];
           if (syscallNr === SYS_POLL || syscallNr === SYS_PPOLL) size *= 8;
           if (syscallNr === SYS_EPOLL_PWAIT) size *= 12;
+          if (syscallNr === SYS_MSGSND || syscallNr === SYS_MSGRCV) size += 4; // mtype prefix
+          if (syscallNr === SYS_SEMOP) size *= 6;  // struct sembuf = 6 bytes
         } else if (desc.size.type === "deref") {
           const derefPtr = origArgs[desc.size.argIndex];
           if (derefPtr === 0) continue;
@@ -1845,6 +1849,8 @@ export class CentralizedKernelWorker {
             // For read/recv-like syscalls, retVal is bytes read — limit copy to actual data
             if (retVal > 0 && retVal < size) {
               copySize = retVal;
+              // msgrcv retVal is mtext length, but scratch also has mtype (4B) prefix
+              if (syscallNr === SYS_MSGRCV) copySize += 4;
             }
           }
           processMem.set(
@@ -5264,209 +5270,138 @@ export class CentralizedKernelWorker {
   }
 
   // =========================================================================
-  // SysV IPC handlers — intercept in centralized mode
+  // SysV IPC handlers — shmat/shmdt/semctl need host-side interception
   //
-  // In centralized mode, IPC syscalls pass user-space pointers that reference
-  // the process's WebAssembly.Memory, not the kernel's. We handle all IPC
-  // syscalls entirely on the host side via SharedIpcTable, reading/writing
-  // process memory directly.
+  // Most IPC syscalls now go through the kernel via SYSCALL_ARGS marshalling.
+  // shmat/shmdt are intercepted because they require process memory management
+  // (mmap address allocation, data transfer between kernel and process memory).
+  // semctl is intercepted because arg[3] is cmd-dependent (scalar vs pointer).
   // =========================================================================
 
-  /** Query the kernel for a process's effective uid/gid via synthesized syscall */
-  private getProcessCredentials(pid: number): { uid: number; gid: number } {
-    const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
-    const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as (offset: number, pid: number) => number;
-
-    // Get euid (syscall 31)
-    kernelView.setUint32(CH_SYSCALL, 31, true); // SYS_GETEUID
-    for (let i = 0; i < CH_ARGS_COUNT; i++) kernelView.setInt32(CH_ARGS + i * 4, 0, true);
-    this.currentHandlePid = pid;
-    try { handleChannel(this.scratchOffset, pid); } finally { this.currentHandlePid = 0; }
-    const uid = kernelView.getInt32(CH_RETURN, true);
-
-    // Get egid (syscall 33)
-    kernelView.setUint32(CH_SYSCALL, 33, true); // SYS_GETEGID
-    for (let i = 0; i < CH_ARGS_COUNT; i++) kernelView.setInt32(CH_ARGS + i * 4, 0, true);
-    this.currentHandlePid = pid;
-    try { handleChannel(this.scratchOffset, pid); } finally { this.currentHandlePid = 0; }
-    const gid = kernelView.getInt32(CH_RETURN, true);
-
-    return { uid, gid };
-  }
-
-  private handleIpc(channel: ChannelInfo, syscallNr: number, args: number[]): void {
-    if (!this.ipcTable) {
-      this.completeChannelRaw(channel, -38, 38); // ENOSYS
-      this.relistenChannel(channel);
-      return;
-    }
-
-    let result: number;
-    // For *get operations that create IPC objects, fetch process credentials
-    let creds: { uid: number; gid: number } | null = null;
-    if (syscallNr === SYS_MSGGET || syscallNr === SYS_SEMGET || syscallNr === SYS_SHMGET) {
-      creds = this.getProcessCredentials(channel.pid);
-    }
-
-    switch (syscallNr) {
-      case SYS_MSGGET:
-        result = this.ipcTable.msgget(args[0], args[1], channel.pid, creds!.uid, creds!.gid);
-        break;
-      case SYS_MSGSND:
-        result = this.handleIpcMsgsnd(channel, args);
-        break;
-      case SYS_MSGRCV:
-        result = this.handleIpcMsgrcv(channel, args);
-        break;
-      case SYS_MSGCTL:
-        result = this.handleIpcMsgctl(channel, args);
-        break;
-      case SYS_SEMGET:
-        result = this.ipcTable.semget(args[0], args[1], args[2], channel.pid, creds!.uid, creds!.gid);
-        break;
-      case SYS_SEMOP:
-        result = this.handleIpcSemop(channel, args);
-        break;
-      case SYS_SEMCTL:
-        result = this.handleIpcSemctl(channel, args);
-        break;
-      case SYS_SHMGET:
-        result = this.ipcTable.shmget(args[0], args[1], args[2], channel.pid, creds!.uid, creds!.gid);
-        break;
-      case SYS_SHMAT:
-        result = this.handleIpcShmat(channel, args);
-        break;
-      case SYS_SHMDT:
-        result = this.handleIpcShmdt(channel, args);
-        break;
-      case SYS_SHMCTL:
-        result = this.handleIpcShmctl(channel, args);
-        break;
-      default:
-        result = -38; // ENOSYS
-    }
-
-    if (result < 0) {
-      this.completeChannelRaw(channel, result, -result);
-    } else {
-      this.completeChannelRaw(channel, result, 0);
-    }
-    this.relistenChannel(channel);
-  }
-
-  /** msgsnd: read {long mtype; char mtext[msgsz]} from process memory */
-  private handleIpcMsgsnd(channel: ChannelInfo, args: number[]): number {
-    const [qid, msgPtr, msgSz, flags] = args;
-    const processMem = new Uint8Array(channel.memory.buffer);
-    const dv = new DataView(channel.memory.buffer);
-    // long is 4 bytes on wasm32
-    const msgType = dv.getInt32(msgPtr, true);
-    const data = processMem.slice(msgPtr + 4, msgPtr + 4 + msgSz);
-    return this.ipcTable!.msgsnd(qid, msgType, data, flags, channel.pid);
-  }
-
-  /** msgrcv: write {long mtype; char mtext[]} to process memory */
-  private handleIpcMsgrcv(channel: ChannelInfo, args: number[]): number {
-    const [qid, msgPtr, msgSz, msgtyp, flags] = args;
-    const result = this.ipcTable!.msgrcv(qid, msgSz, msgtyp, flags, channel.pid);
-    if (typeof result === "number") return result; // error
-    // Write {long type; char data[]} to process memory
-    const dv = new DataView(channel.memory.buffer);
-    dv.setInt32(msgPtr, result.type, true);
-    const processMem = new Uint8Array(channel.memory.buffer);
-    processMem.set(result.data, msgPtr + 4);
-    return result.data.length;
-  }
-
-  /** msgctl: handle IPC_STAT by writing msqid_ds to process memory */
-  private handleIpcMsgctl(channel: ChannelInfo, args: number[]): number {
-    const [qid, rawCmd, bufPtr] = args;
-    const cmd = rawCmd & ~IPC_64; // musl adds IPC_64
-    const result = this.ipcTable!.msgctl(qid, cmd, channel.pid);
-    if (typeof result === "number") return result;
-    // IPC_STAT: write msqid_ds struct to process memory
-    if (bufPtr !== 0) {
-      const dv = new DataView(channel.memory.buffer);
-      SharedIpcTable.writeMsqidDs(dv, bufPtr, result as MsgQueueInfo);
-    }
-    return 0;
-  }
-
-  /** semop: read struct sembuf[] from process memory */
-  private handleIpcSemop(channel: ChannelInfo, args: number[]): number {
-    const [semid, sopsPtr, nsops] = args;
-    const dv = new DataView(channel.memory.buffer);
-    // Each sembuf: sem_num(u16) @0, sem_op(i16) @2, sem_flg(i16) @4 = 6 bytes
-    const sops: { num: number; op: number; flg: number }[] = [];
-    for (let i = 0; i < nsops; i++) {
-      const base = sopsPtr + i * 6;
-      sops.push({
-        num: dv.getUint16(base, true),
-        op: dv.getInt16(base + 2, true),
-        flg: dv.getInt16(base + 4, true),
-      });
-    }
-    return this.ipcTable!.semop(semid, sops, channel.pid);
-  }
-
-  /** semctl: handle various commands with process memory I/O */
-  private handleIpcSemctl(channel: ChannelInfo, args: number[]): number {
-    const [semid, semnum, rawCmd, arg] = args;
+  /** semctl: cmd-dependent arg handling — can't use SYSCALL_ARGS since arg[3]
+   *  is a scalar for some commands and a pointer for others. */
+  private handleSemctl(channel: ChannelInfo, origArgs: number[]): void {
+    const [semid, semnum, rawCmd, arg] = origArgs;
     const cmd = rawCmd & ~IPC_64;
     const IPC_STAT = 2;
     const GETALL = 13;
     const SETALL = 17;
 
-    if (cmd === IPC_STAT) {
-      const result = this.ipcTable!.semctl(semid, semnum, cmd, channel.pid);
-      if (typeof result === "number") return result;
-      if (arg !== 0) {
-        const dv = new DataView(channel.memory.buffer);
-        SharedIpcTable.writeSemidDs(dv, arg, result as SemSetInfo);
-      }
-      return 0;
-    }
+    const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
+    const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as (offset: number, pid: number) => number;
+    const kernelMem = this.getKernelMem();
+    const dataStart = this.scratchOffset + CH_DATA;
 
-    if (cmd === GETALL) {
-      const result = this.ipcTable!.semctl(semid, semnum, cmd, channel.pid);
-      if (typeof result === "number") return result;
-      // result is Uint8Array of u16 values; write to arg pointer
-      if (arg !== 0) {
+    if (cmd === IPC_STAT && arg !== 0) {
+      // arg is an output pointer to semid_ds (72 bytes)
+      kernelView.setUint32(CH_SYSCALL, SYS_SEMCTL, true);
+      kernelView.setInt32(CH_ARGS + 0, semid, true);
+      kernelView.setInt32(CH_ARGS + 4, semnum, true);
+      kernelView.setInt32(CH_ARGS + 8, rawCmd, true);
+      kernelView.setInt32(CH_ARGS + 12, dataStart, true); // redirect to scratch
+      kernelView.setInt32(CH_ARGS + 16, 0, true);
+      kernelView.setInt32(CH_ARGS + 20, 0, true);
+      kernelMem.fill(0, dataStart, dataStart + 72);
+
+      this.currentHandlePid = channel.pid;
+      try { handleChannel(this.scratchOffset, channel.pid); } finally { this.currentHandlePid = 0; }
+
+      const retVal = kernelView.getInt32(CH_RETURN, true);
+      if (retVal >= 0) {
+        // Copy 72-byte struct back to process memory
         const processMem = new Uint8Array(channel.memory.buffer);
-        processMem.set(result as Uint8Array, arg);
+        processMem.set(kernelMem.subarray(dataStart, dataStart + 72), arg);
       }
-      return 0;
+      this.completeChannelRaw(channel, retVal, retVal < 0 ? -retVal : 0);
+      this.relistenChannel(channel);
+      return;
     }
 
-    if (cmd === SETALL) {
-      // arg points to unsigned short[] array in process memory
-      const info = this.ipcTable!.semctl(semid, 0, IPC_STAT, channel.pid);
-      if (typeof info === "number") return info;
-      const nsems = (info as SemSetInfo).nsems;
-      const dv = new DataView(channel.memory.buffer);
-      const values: number[] = [];
-      for (let i = 0; i < nsems; i++) {
-        values.push(dv.getUint16(arg + i * 2, true));
+    if (cmd === GETALL && arg !== 0) {
+      // arg is an output pointer to u16[nsems] — allocate generous space
+      const maxBytes = 1024; // up to 512 semaphores
+      kernelView.setUint32(CH_SYSCALL, SYS_SEMCTL, true);
+      kernelView.setInt32(CH_ARGS + 0, semid, true);
+      kernelView.setInt32(CH_ARGS + 4, semnum, true);
+      kernelView.setInt32(CH_ARGS + 8, rawCmd, true);
+      kernelView.setInt32(CH_ARGS + 12, dataStart, true);
+      kernelView.setInt32(CH_ARGS + 16, 0, true);
+      kernelView.setInt32(CH_ARGS + 20, 0, true);
+      kernelMem.fill(0, dataStart, dataStart + maxBytes);
+
+      this.currentHandlePid = channel.pid;
+      try { handleChannel(this.scratchOffset, channel.pid); } finally { this.currentHandlePid = 0; }
+
+      const retVal = kernelView.getInt32(CH_RETURN, true);
+      if (retVal >= 0) {
+        // Copy written data back — kernel wrote u16[] to scratch
+        const processMem = new Uint8Array(channel.memory.buffer);
+        processMem.set(kernelMem.subarray(dataStart, dataStart + maxBytes), arg);
       }
-      return this.ipcTable!.semctlSetAll(semid, values);
+      this.completeChannelRaw(channel, retVal, retVal < 0 ? -retVal : 0);
+      this.relistenChannel(channel);
+      return;
     }
 
-    // Simple scalar commands: GETVAL, SETVAL, GETPID, GETNCNT, GETZCNT, IPC_RMID
-    const result = this.ipcTable!.semctl(semid, semnum, cmd, channel.pid, arg);
-    if (typeof result === "number") return result;
-    return 0;
+    if (cmd === SETALL && arg !== 0) {
+      // arg is an input pointer to u16[nsems] — copy generous amount to scratch
+      const maxBytes = 1024;
+      const processMem = new Uint8Array(channel.memory.buffer);
+      kernelMem.set(processMem.subarray(arg, arg + maxBytes), dataStart);
+
+      kernelView.setUint32(CH_SYSCALL, SYS_SEMCTL, true);
+      kernelView.setInt32(CH_ARGS + 0, semid, true);
+      kernelView.setInt32(CH_ARGS + 4, semnum, true);
+      kernelView.setInt32(CH_ARGS + 8, rawCmd, true);
+      kernelView.setInt32(CH_ARGS + 12, dataStart, true);
+      kernelView.setInt32(CH_ARGS + 16, 0, true);
+      kernelView.setInt32(CH_ARGS + 20, 0, true);
+
+      this.currentHandlePid = channel.pid;
+      try { handleChannel(this.scratchOffset, channel.pid); } finally { this.currentHandlePid = 0; }
+
+      const retVal = kernelView.getInt32(CH_RETURN, true);
+      this.completeChannelRaw(channel, retVal, retVal < 0 ? -retVal : 0);
+      this.relistenChannel(channel);
+      return;
+    }
+
+    // Scalar commands (SETVAL, GETVAL, GETPID, GETNCNT, GETZCNT, IPC_RMID):
+    // arg is a scalar value, pass through directly to kernel
+    kernelView.setUint32(CH_SYSCALL, SYS_SEMCTL, true);
+    kernelView.setInt32(CH_ARGS + 0, semid, true);
+    kernelView.setInt32(CH_ARGS + 4, semnum, true);
+    kernelView.setInt32(CH_ARGS + 8, rawCmd, true);
+    kernelView.setInt32(CH_ARGS + 12, arg, true);
+    kernelView.setInt32(CH_ARGS + 16, 0, true);
+    kernelView.setInt32(CH_ARGS + 20, 0, true);
+
+    this.currentHandlePid = channel.pid;
+    try { handleChannel(this.scratchOffset, channel.pid); } finally { this.currentHandlePid = 0; }
+
+    const retVal = kernelView.getInt32(CH_RETURN, true);
+    this.completeChannelRaw(channel, retVal, retVal < 0 ? -retVal : 0);
+    this.relistenChannel(channel);
   }
 
   /** shmat: allocate address via kernel mmap, copy segment data to process memory */
-  private handleIpcShmat(channel: ChannelInfo, args: number[]): number {
+  private handleIpcShmat(channel: ChannelInfo, args: number[]): void {
     const [shmid, _shmaddr, _flags] = args;
-    const result = this.ipcTable!.shmat(shmid, channel.pid);
-    if (typeof result === "number") return result;
 
-    const { data, size } = result;
+    // Set current pid for kernel_ipc_* exports
+    const setCurrentPid = this.kernelInstance!.exports.kernel_set_current_pid as ((pid: number) => void) | undefined;
+    if (setCurrentPid) setCurrentPid(channel.pid);
 
-    // Use the kernel's mmap to allocate virtual address space for this pid.
-    // Synthesize a MAP_ANONYMOUS|MAP_PRIVATE mmap syscall through kernel_handle_channel.
+    const kernelShmat = this.kernelInstance!.exports.kernel_ipc_shmat as (shmid: number, shmaddr: number, flags: number) => number;
+    const sizeOrErr = kernelShmat(shmid, _shmaddr, _flags);
+    if (sizeOrErr < 0) {
+      this.completeChannelRaw(channel, sizeOrErr, -sizeOrErr);
+      this.relistenChannel(channel);
+      return;
+    }
+    const size = sizeOrErr;
+
+    // Synthesize mmap to allocate virtual address space for this pid
     const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
     kernelView.setUint32(CH_SYSCALL, SYS_MMAP, true);
     kernelView.setInt32(CH_ARGS + 0, 0, true);          // addr hint = NULL
@@ -5482,21 +5417,38 @@ export class CentralizedKernelWorker {
       handleChannel(this.scratchOffset, channel.pid);
     } catch (err) {
       console.error(`[handleIpcShmat] mmap failed for pid=${channel.pid}:`, err);
-      return -12; // ENOMEM
+      this.completeChannelRaw(channel, -12, 12); // ENOMEM
+      this.relistenChannel(channel);
+      return;
     } finally {
       this.currentHandlePid = 0;
     }
 
     const addr = kernelView.getInt32(CH_RETURN, true);
-    const MAP_FAILED = -1;
-    if (addr === MAP_FAILED || addr < 0) return -12; // ENOMEM
+    if (addr < 0) {
+      this.completeChannelRaw(channel, -12, 12); // ENOMEM
+      this.relistenChannel(channel);
+      return;
+    }
 
     // Grow process memory to cover the allocated address
     this.ensureProcessMemoryCovers(channel.memory, SYS_MMAP, addr, [0, size, 3, 0x22, -1, 0]);
 
-    // Copy segment data into process memory at the allocated address
+    // Transfer segment data from kernel to process memory via read_chunk
+    const readChunk = this.kernelInstance!.exports.kernel_ipc_shm_read_chunk as (shmid: number, offset: number, outPtr: number, maxLen: number) => number;
     const processMem = new Uint8Array(channel.memory.buffer);
-    processMem.set(data.subarray(0, size), addr >>> 0);
+    const kernelMem = this.getKernelMem();
+    const chunkSize = CH_DATA_SIZE;
+    const chunkPtr = this.scratchOffset + CH_DATA;
+    let transferred = 0;
+    while (transferred < size) {
+      const remaining = size - transferred;
+      const toRead = Math.min(remaining, chunkSize);
+      const nRead = readChunk(shmid, transferred, chunkPtr, toRead);
+      if (nRead <= 0) break;
+      processMem.set(kernelMem.subarray(chunkPtr, chunkPtr + nRead), (addr >>> 0) + transferred);
+      transferred += nRead;
+    }
 
     // Track the mapping for shmdt
     let pidMappings = this.shmMappings.get(channel.pid);
@@ -5506,38 +5458,58 @@ export class CentralizedKernelWorker {
     }
     pidMappings.set(addr >>> 0, { segId: shmid, size });
 
-    return addr;
+    this.completeChannelRaw(channel, addr, 0);
+    this.relistenChannel(channel);
   }
 
   /** shmdt: copy process memory back to segment, untrack mapping */
-  private handleIpcShmdt(channel: ChannelInfo, args: number[]): number {
+  private handleIpcShmdt(channel: ChannelInfo, args: number[]): void {
     const addr = args[0];
     const pidMappings = this.shmMappings.get(channel.pid);
-    if (!pidMappings) return -22; // EINVAL
+    if (!pidMappings) {
+      this.completeChannelRaw(channel, -22, 22); // EINVAL
+      this.relistenChannel(channel);
+      return;
+    }
     const mapping = pidMappings.get(addr);
-    if (!mapping) return -22; // EINVAL
+    if (!mapping) {
+      this.completeChannelRaw(channel, -22, 22); // EINVAL
+      this.relistenChannel(channel);
+      return;
+    }
 
-    // Copy data back from process memory to segment SAB
+    // Set current pid for kernel exports
+    const setCurrentPid = this.kernelInstance!.exports.kernel_set_current_pid as ((pid: number) => void) | undefined;
+    if (setCurrentPid) setCurrentPid(channel.pid);
+
+    // Sync process memory back to kernel segment via write_chunk
+    const writeChunk = this.kernelInstance!.exports.kernel_ipc_shm_write_chunk as (shmid: number, offset: number, dataPtr: number, dataLen: number) => number;
     const processMem = new Uint8Array(channel.memory.buffer);
-    const data = processMem.slice(addr, addr + mapping.size);
-    const result = this.ipcTable!.shmdt(mapping.segId, data, channel.pid);
+    const kernelMem = this.getKernelMem();
+    const chunkSize = CH_DATA_SIZE;
+    const chunkPtr = this.scratchOffset + CH_DATA;
+    let transferred = 0;
+    while (transferred < mapping.size) {
+      const remaining = mapping.size - transferred;
+      const toWrite = Math.min(remaining, chunkSize);
+      kernelMem.set(processMem.subarray(addr + transferred, addr + transferred + toWrite), chunkPtr);
+      const nWritten = writeChunk(mapping.segId, transferred, chunkPtr, toWrite);
+      if (nWritten <= 0) break;
+      transferred += nWritten;
+    }
+
+    // Kernel-side detach bookkeeping
+    const kernelShmdt = this.kernelInstance!.exports.kernel_ipc_shmdt as (shmid: number) => number;
+    const result = kernelShmdt(mapping.segId);
 
     pidMappings.delete(addr);
-    return result;
-  }
 
-  /** shmctl: handle IPC_STAT by writing shmid_ds to process memory */
-  private handleIpcShmctl(channel: ChannelInfo, args: number[]): number {
-    const [shmid, rawCmd, bufPtr] = args;
-    const cmd = rawCmd & ~IPC_64;
-    const result = this.ipcTable!.shmctl(shmid, cmd, channel.pid);
-    if (typeof result === "number") return result;
-    // IPC_STAT: write shmid_ds struct to process memory
-    if (bufPtr !== 0) {
-      const dv = new DataView(channel.memory.buffer);
-      SharedIpcTable.writeShmidDs(dv, bufPtr, result as ShmSegInfo);
+    if (result < 0) {
+      this.completeChannelRaw(channel, result, -result);
+    } else {
+      this.completeChannelRaw(channel, 0, 0);
     }
-    return 0;
+    this.relistenChannel(channel);
   }
 
   // =========================================================================
