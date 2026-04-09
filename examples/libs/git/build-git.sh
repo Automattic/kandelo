@@ -56,8 +56,16 @@ AR = wasm32posix-ar
 RANLIB = wasm32posix-ranlib
 STRIP = wasm32posix-strip
 
+# Install paths — must match wasm VFS layout so git finds /etc/gitconfig
+prefix = /usr
+sysconfdir = /etc
+
 # Optimization
 CFLAGS = -O2
+
+# Increase shadow stack from default 64KB to 1MB — git's deeply nested
+# calls (strbuf_realpath, config parsing, snprintf) overflow 64KB.
+LDFLAGS = -Wl,-z,stack-size=1048576
 
 # Disable optional features that need unavailable infrastructure
 NO_PERL = YesPlease

@@ -159,7 +159,10 @@ export class BrowserKernel {
         },
       };
 
-      this.kernelWorkerHandle.postMessage(initMsg, [wasmBytes]);
+      // Slice so the caller's ArrayBuffer isn't detached (allows restart)
+      const transferBuf = wasmBytes.slice(0);
+      initMsg.kernelWasmBytes = transferBuf;
+      this.kernelWorkerHandle.postMessage(initMsg, [transferBuf]);
     });
   }
 

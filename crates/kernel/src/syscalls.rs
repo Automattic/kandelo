@@ -2235,11 +2235,15 @@ pub fn sys_fchdir(proc: &mut Process, fd: i32) -> Result<(), Errno> {
 /// Writes the cwd path to `buf` and returns the number of bytes written.
 /// Returns ERANGE if the buffer is too small.
 pub fn sys_getcwd(proc: &Process, buf: &mut [u8]) -> Result<usize, Errno> {
-    if buf.len() < proc.cwd.len() {
+    // Linux getcwd returns the path WITH a null terminator and the length
+    // includes the null byte.  musl expects this convention.
+    let needed = proc.cwd.len() + 1; // +1 for NUL
+    if buf.len() < needed {
         return Err(Errno::ERANGE);
     }
     buf[..proc.cwd.len()].copy_from_slice(&proc.cwd);
-    Ok(proc.cwd.len())
+    buf[proc.cwd.len()] = 0;
+    Ok(needed)
 }
 
 /// Open a directory for reading. Returns a directory stream handle.
@@ -7747,7 +7751,8 @@ mod tests {
         let proc = Process::new(1);
         let mut buf = [0u8; 256];
         let n = sys_getcwd(&proc, &mut buf).unwrap();
-        assert_eq!(&buf[..n], b"/");
+        // Linux convention: returned length includes the NUL terminator
+        assert_eq!(&buf[..n], b"/\0");
     }
 
     #[test]
@@ -7757,7 +7762,7 @@ mod tests {
         sys_chdir(&mut proc, &mut host, b"/tmp").unwrap();
         let mut buf = [0u8; 256];
         let n = sys_getcwd(&proc, &mut buf).unwrap();
-        assert_eq!(&buf[..n], b"/tmp");
+        assert_eq!(&buf[..n], b"/tmp\0");
     }
 
     #[test]
@@ -7770,7 +7775,7 @@ mod tests {
         sys_chdir(&mut proc, &mut host, b"subdir").unwrap();
         let mut buf = [0u8; 256];
         let n = sys_getcwd(&proc, &mut buf).unwrap();
-        assert_eq!(&buf[..n], b"/tmp/subdir");
+        assert_eq!(&buf[..n], b"/tmp/subdir\0");
     }
 
     #[test]
