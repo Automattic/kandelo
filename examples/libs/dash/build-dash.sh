@@ -75,6 +75,54 @@ if [ ! -f Makefile ]; then
     echo "==> Configure complete."
 fi
 
+# --- Fix signal name table ---
+# mksignames runs on the build host and generates signames.c using macOS
+# signal numbers (e.g., SIGUSR1=30). Replace with Linux/wasm32 numbers.
+echo "==> Patching signames.c for Linux/wasm32 signal numbers..."
+cat > src/signames.c << 'SIGEOF'
+/* Linux/wasm32 signal names — generated from musl bits/signal.h.
+   The host-generated version has macOS signal numbers which are wrong
+   for wasm32 (e.g., SIGUSR1=30 on macOS vs 10 on Linux). */
+
+#include <signal.h>
+
+const char *const signal_names[NSIG + 1] = {
+    "EXIT",     /*  0 */
+    "HUP",      /*  1 */
+    "INT",      /*  2 */
+    "QUIT",     /*  3 */
+    "ILL",      /*  4 */
+    "TRAP",     /*  5 */
+    "ABRT",     /*  6 */
+    "BUS",      /*  7 */
+    "FPE",      /*  8 */
+    "KILL",     /*  9 */
+    "USR1",     /* 10 */
+    "SEGV",     /* 11 */
+    "USR2",     /* 12 */
+    "PIPE",     /* 13 */
+    "ALRM",     /* 14 */
+    "TERM",     /* 15 */
+    "STKFLT",   /* 16 */
+    "CHLD",     /* 17 */
+    "CONT",     /* 18 */
+    "STOP",     /* 19 */
+    "TSTP",     /* 20 */
+    "TTIN",     /* 21 */
+    "TTOU",     /* 22 */
+    "URG",      /* 23 */
+    "XCPU",     /* 24 */
+    "XFSZ",     /* 25 */
+    "VTALRM",   /* 26 */
+    "PROF",     /* 27 */
+    "WINCH",    /* 28 */
+    "IO",       /* 29 */
+    "PWR",      /* 30 */
+    "SYS",      /* 31 */
+    /* entries 32..NSIG are implicitly zero-initialized (NULL) */
+};
+SIGEOF
+
 # --- Build ---
 echo "==> Building dash..."
 make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" 2>&1 | tail -10
