@@ -44,6 +44,8 @@ export interface RunProgramOptions {
   execPrograms?: Map<string, string>;
   /** Data to provide on stdin (process will see EOF after this data) */
   stdin?: string;
+  /** Binary data to provide on stdin (alternative to stdin string) */
+  stdinBytes?: Uint8Array;
   /** Callback invoked with the kernel worker after the process starts.
    *  Use this to call appendStdinData() for interactive stdin testing. */
   onStarted?: (kernelWorker: CentralizedKernelWorker, pid: number) => void | Promise<void>;
@@ -53,6 +55,8 @@ export interface RunProgramResult {
   exitCode: number;
   stdout: string;
   stderr: string;
+  /** Raw stdout bytes (for binary output like compressed data) */
+  stdoutBytes: Uint8Array;
 }
 
 /**
@@ -78,6 +82,7 @@ export async function runCentralizedProgram(
 
   let stdout = "";
   let stderr = "";
+  const stdoutChunks: Uint8Array[] = [];
   const workers = new Map<number, ReturnType<NodeWorkerAdapter["createWorker"]>>();
 
   const io = options.io ?? new NodePlatformIO();
@@ -275,6 +280,7 @@ export async function runCentralizedProgram(
   kernelWorker.setOutputCallbacks({
     onStdout: (data: Uint8Array) => {
       stdout += new TextDecoder().decode(data);
+      stdoutChunks.push(new Uint8Array(data));
     },
     onStderr: (data: Uint8Array) => {
       stderr += new TextDecoder().decode(data);
@@ -297,7 +303,9 @@ export async function runCentralizedProgram(
   kernelWorker.registerProcess(pid, memory, [channelOffset]);
 
   // Provide stdin data if specified
-  if (options.stdin != null) {
+  if (options.stdinBytes != null) {
+    kernelWorker.setStdinData(pid, options.stdinBytes);
+  } else if (options.stdin != null) {
     kernelWorker.setStdinData(pid, new TextEncoder().encode(options.stdin));
   }
 
@@ -335,5 +343,14 @@ export async function runCentralizedProgram(
   const exitCode = await exitPromise;
   clearTimeout(timer);
 
-  return { exitCode, stdout, stderr };
+  // Concatenate stdout chunks into a single Uint8Array
+  const totalLen = stdoutChunks.reduce((sum, c) => sum + c.length, 0);
+  const stdoutBytes = new Uint8Array(totalLen);
+  let offset = 0;
+  for (const chunk of stdoutChunks) {
+    stdoutBytes.set(chunk, offset);
+    offset += chunk.length;
+  }
+
+  return { exitCode, stdout, stderr, stdoutBytes };
 }
