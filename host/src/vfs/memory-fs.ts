@@ -5,8 +5,18 @@ import {
   type StatResult as SfsStatResult,
 } from "./sharedfs-vendor";
 
+/** Serializable lazy file entry for transfer between instances. */
+export interface LazyFileEntry {
+  ino: number;
+  path: string;
+  url: string;
+  size: number;
+}
+
 export class MemoryFileSystem implements FileSystemBackend {
   private fs: SharedFS;
+  /** Lazy files: inode → { path, url, size }. Cleared per-inode after materialization. */
+  private lazyFiles = new Map<number, { path: string; url: string; size: number }>();
 
   private constructor(fs: SharedFS) {
     this.fs = fs;
@@ -18,6 +28,66 @@ export class MemoryFileSystem implements FileSystemBackend {
 
   static fromExisting(sab: SharedArrayBuffer): MemoryFileSystem {
     return new MemoryFileSystem(SharedFS.mount(sab));
+  }
+
+  /**
+   * Register a lazy file: creates an empty stub in SharedFS and records
+   * metadata so that read() will fetch content on demand via sync XHR.
+   * Returns the inode number (useful for forwarding to other instances).
+   */
+  registerLazyFile(path: string, url: string, size: number, mode = 0o755): number {
+    // Ensure parent directories exist
+    const parts = path.split("/").filter(Boolean);
+    let current = "";
+    for (let i = 0; i < parts.length - 1; i++) {
+      current += "/" + parts[i];
+      try { this.fs.mkdir(current, 0o755); } catch { /* exists */ }
+    }
+    // Create empty stub file
+    const fd = this.fs.open(path, 0o1101, mode); // O_WRONLY | O_CREAT | O_TRUNC
+    this.fs.close(fd);
+    // Get inode
+    const st = this.fs.stat(path);
+    this.lazyFiles.set(st.ino, { path, url, size });
+    return st.ino;
+  }
+
+  /**
+   * Import lazy file entries from another instance (e.g., main thread → worker).
+   * Does not create files — assumes the files already exist in the SharedArrayBuffer.
+   */
+  importLazyEntries(entries: LazyFileEntry[]): void {
+    for (const e of entries) {
+      this.lazyFiles.set(e.ino, { path: e.path, url: e.url, size: e.size });
+    }
+  }
+
+  /** Export all pending lazy entries for transfer to another instance. */
+  exportLazyEntries(): LazyFileEntry[] {
+    const entries: LazyFileEntry[] = [];
+    for (const [ino, { path, url, size }] of this.lazyFiles) {
+      entries.push({ ino, path, url, size });
+    }
+    return entries;
+  }
+
+  /**
+   * Materialize a lazy file: sync XHR fetch the content and write to SharedFS.
+   * Must be called from a web worker (sync XHR is blocked on the main thread).
+   */
+  private materialize(ino: number, entry: { path: string; url: string; size: number }): void {
+    const xhr = new XMLHttpRequest();
+    xhr.open("GET", entry.url, false); // synchronous
+    xhr.responseType = "arraybuffer";
+    xhr.send();
+    if (xhr.status < 200 || xhr.status >= 300) {
+      throw new Error(`Failed to fetch lazy file ${entry.path}: HTTP ${xhr.status}`);
+    }
+    const data = new Uint8Array(xhr.response as ArrayBuffer);
+    const fd = this.fs.open(entry.path, 0o1101, 0o755); // O_WRONLY | O_CREAT | O_TRUNC
+    this.fs.write(fd, data);
+    this.fs.close(fd);
+    this.lazyFiles.delete(ino);
   }
 
   private adaptStat(s: SfsStatResult): StatResult {
@@ -50,6 +120,15 @@ export class MemoryFileSystem implements FileSystemBackend {
     offset: number | null,
     length: number,
   ): number {
+    // Materialize lazy files on first content read
+    if (this.lazyFiles.size > 0) {
+      const st = this.fs.fstat(handle);
+      const entry = this.lazyFiles.get(st.ino);
+      if (entry) {
+        this.materialize(st.ino, entry);
+      }
+    }
+
     if (offset !== null) {
       // pread semantics: read at offset without changing file position
       const savedPos = this.fs.lseek(handle, 0, 1); // SEEK_CUR
@@ -83,7 +162,13 @@ export class MemoryFileSystem implements FileSystemBackend {
   }
 
   fstat(handle: number): StatResult {
-    return this.adaptStat(this.fs.fstat(handle));
+    const result = this.adaptStat(this.fs.fstat(handle));
+    // Override size for unmaterialized lazy files
+    const entry = this.lazyFiles.get(result.ino);
+    if (entry) {
+      result.size = entry.size;
+    }
+    return result;
   }
 
   ftruncate(handle: number, length: number): void {
@@ -99,7 +184,13 @@ export class MemoryFileSystem implements FileSystemBackend {
   fchown(_handle: number, _uid: number, _gid: number): void {}
 
   stat(path: string): StatResult {
-    return this.adaptStat(this.fs.stat(path));
+    const result = this.adaptStat(this.fs.stat(path));
+    // Override size for unmaterialized lazy files
+    const entry = this.lazyFiles.get(result.ino);
+    if (entry) {
+      result.size = entry.size;
+    }
+    return result;
   }
 
   // SharedFS doesn't distinguish symlinks in lstat vs stat

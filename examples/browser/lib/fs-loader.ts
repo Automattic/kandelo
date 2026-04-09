@@ -6,12 +6,17 @@ import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 /**
  * A file entry to load into the filesystem.
  * Provide either `url` (fetched at load time) or `data` (inline content).
+ * Set `lazy: true` with `url` and `size` to defer fetching until first read.
  */
 export interface FileEntry {
   path: string;
   url?: string;
   data?: Uint8Array | string;
   mode?: number;
+  /** If true, register as a lazy file (fetched on first read via sync XHR). Requires url and size. */
+  lazy?: boolean;
+  /** Declared file size for lazy files. Required when lazy=true. */
+  size?: number;
 }
 
 /**
@@ -38,9 +43,15 @@ export async function loadFiles(
   memfs: MemoryFileSystem,
   files: FileEntry[],
 ): Promise<void> {
-  // Separate URL-based and inline files
-  const urlFiles = files.filter((f) => f.url);
+  // Separate lazy, URL-based, and inline files
+  const lazyFiles = files.filter((f) => f.lazy && f.url && f.size != null);
+  const urlFiles = files.filter((f) => f.url && !f.lazy);
   const inlineFiles = files.filter((f) => f.data !== undefined);
+
+  // Register lazy files (no fetch, just metadata)
+  for (const file of lazyFiles) {
+    memfs.registerLazyFile(file.path, file.url!, file.size!, file.mode ?? 0o755);
+  }
 
   // Write inline files first
   for (const file of inlineFiles) {

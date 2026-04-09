@@ -142,6 +142,11 @@ export interface RegisterPtyOutputMessage {
   pid: number;
 }
 
+export interface RegisterLazyFilesMessage {
+  type: "register_lazy_files";
+  entries: Array<{ ino: number; path: string; url: string; size: number }>;
+}
+
 export type MainToKernelMessage =
   | InitMessage
   | SpawnMessage
@@ -161,7 +166,8 @@ export type MainToKernelMessage =
   | IsStdinConsumedMessage
   | PickListenerTargetMessage
   | DestroyMessage
-  | RegisterPtyOutputMessage;
+  | RegisterPtyOutputMessage
+  | RegisterLazyFilesMessage;
 
 // ── Kernel Worker → Main Thread ──
 
