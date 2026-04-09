@@ -1,0 +1,69 @@
+# Functions that must be asyncify-instrumented for vim fork() support.
+# Only these functions get asyncify overhead — all others remain lightweight.
+#
+# Vim uses fork+exec for: :!command, :{range}!filter, :shell, :make,
+# :grep, system()/systemlist() vimscript, wildcard expansion, :diffpatch.
+# Without asyncify, fork children restart from _start() with empty argv.
+
+# CRT startup path
+_start
+__libc_start_main
+libc_start_main_stage2
+libc_start_init
+
+# Vim entry and main loop
+main
+vim_main2
+main_loop
+
+# Normal mode command dispatch
+normal_cmd
+do_pending_operator
+nv_operator
+nv_colon
+op_colon
+
+# Ex mode
+do_exmode
+
+# Ex command execution
+do_cmdline
+
+# Shell/bang commands (:!, :{range}!, :shell)
+ex_bang
+ex_shell
+do_bang
+do_shell
+do_filter
+
+# Make/grep (quickfix)
+ex_make
+
+# Diff
+ex_diffpatch
+
+# VimScript system() / systemlist()
+call_func
+call_internal_func
+f_system
+f_systemlist
+get_cmd_output
+
+# Wildcard expansion
+expand_wildcards
+gen_expand_wildcards
+mch_expand_wildcards
+
+# Tab completion (command-line expansion)
+getcmdline
+ExpandOne
+ExpandFromContext
+showmatches
+
+# Shell execution core — all fork paths converge here
+call_shell
+mch_call_shell
+
+# Fork overrides in channel_syscall.c
+fork
+_Fork

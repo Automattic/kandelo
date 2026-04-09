@@ -49,6 +49,7 @@ const zipWasm = resolve(repoRoot, "examples/libs/zip/bin/zip.wasm");
 const unzipWasm = resolve(repoRoot, "examples/libs/unzip/bin/unzip.wasm");
 const lsofWasm = resolve(repoRoot, "examples/lsof.wasm");
 const rubyWasm = resolve(repoRoot, "examples/libs/ruby/bin/ruby.wasm");
+const vimWasm = resolve(repoRoot, "examples/libs/vim/bin/vim.wasm");
 
 // GNU coreutils multi-call binary supports all of these as argv[0]
 const coreutilsNames = [
@@ -172,6 +173,12 @@ const builtinPrograms: Record<string, string> = {
     "ruby": rubyWasm,
     "/usr/bin/ruby": rubyWasm,
     "/bin/ruby": rubyWasm,
+    "vim": vimWasm,
+    "/usr/bin/vim": vimWasm,
+    "/bin/vim": vimWasm,
+    "vi": vimWasm,
+    "/usr/bin/vi": vimWasm,
+    "/bin/vi": vimWasm,
 };
 
 // Add coreutils mappings for all known tool names
@@ -472,6 +479,12 @@ async function main() {
             `GIT_CONFIG_VALUE_${i}=${val}`,
         ]),
     ];
+
+    // When stdin is not a terminal (piped or redirected), set it as finite
+    // so reads return EOF instead of blocking forever.
+    if (!process.stdin.isTTY) {
+        kernelWorker.setStdinData(pid, new Uint8Array(0));
+    }
 
     // Spawn the process worker
     const initData: CentralizedWorkerInitMessage = {

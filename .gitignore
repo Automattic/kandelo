@@ -77,6 +77,16 @@ libc-test/build/
 # Open POSIX Test Suite build artifacts
 open-posix-testsuite/build/
 
+# ncurses build artifacts
+examples/libs/ncurses/ncurses-src/
+examples/libs/ncurses/ncurses-host-build/
+examples/libs/ncurses/ncurses-wasm-build/
+examples/libs/ncurses/terminfo/
+
+# Vim build artifacts
+examples/libs/vim/vim-src/
+examples/libs/vim/bin/
+
 # Debug/trace artifacts
 examples/fp128*.c
 examples/fp128*.wasm
