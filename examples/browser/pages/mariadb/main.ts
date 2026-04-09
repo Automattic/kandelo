@@ -24,7 +24,6 @@ import {
   writeInitDescriptor,
   ensureDir,
 } from "../../lib/init/vfs-utils";
-import { patchWasmForThread } from "../../../../host/src/worker-main";
 import { MySqlBrowserClient } from "../../lib/mysql-client";
 import kernelWasmUrl from "../../../../host/wasm/wasm_posix_kernel.wasm?url";
 import mariadbWasmUrl from "../../../../examples/libs/mariadb/mariadb-install/bin/mariadbd.wasm?url";
@@ -101,7 +100,7 @@ async function start() {
   setStatus("Loading MariaDB...", "loading");
 
   try {
-    // Fetch all resources in parallel — MariaDB eagerly (needed for thread module)
+    // Fetch all resources in parallel — MariaDB eagerly (written to VFS)
     appendLog("Fetching resources...\n", "info");
     const [kernelBytes, mariadbBytes, systemTablesSql, systemDataSql, dashBytes] =
       await Promise.all([
@@ -119,13 +118,6 @@ async function start() {
       "info",
     );
 
-    // Pre-compile thread module for MariaDB's background threads
-    appendLog("Pre-compiling thread module...\n", "info");
-    setStatus("Pre-compiling thread module...", "loading");
-    const threadPatchedBytes = patchWasmForThread(mariadbBytes);
-    const threadModule = await WebAssembly.compile(threadPatchedBytes);
-    appendLog("Thread module ready\n", "info");
-
     // Fetch sizes for shell utility binaries
     const lazyDefs = [
       { url: coreutilsWasmUrl, path: "/bin/coreutils", symlinks: [...COREUTILS_NAMES, "["].flatMap(n => [`/bin/${n}`, `/usr/bin/${n}`]) },
@@ -140,11 +132,10 @@ async function start() {
       }
     }
 
-    // Create kernel with thread support
+    // Create kernel — thread module is auto-compiled on first clone()
     kernel = new BrowserKernel({
       maxWorkers: 12,
       fsSize: 64 * 1024 * 1024, // 64MB for bootstrap system tables + data
-      threadModule,
       onStdout: (data) => appendLog(decoder.decode(data)),
       onStderr: (data) => appendLog(decoder.decode(data), "stderr"),
     });
@@ -158,7 +149,7 @@ async function start() {
     // Shell binaries (dash eager, utilities lazy)
     populateShellBinaries(kernel, dashBytes, lazyBinaries);
 
-    // MariaDB binary — write eagerly since we already fetched it for threadModule
+    // MariaDB binary — write eagerly since we already fetched it
     ensureDir(fs, "/usr/sbin");
     writeVfsBinary(fs, "/usr/sbin/mariadbd", new Uint8Array(mariadbBytes));
 

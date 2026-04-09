@@ -34,7 +34,6 @@ import {
   ensureDirRecursive,
 } from "../../lib/init/vfs-utils";
 import { loadWordPressBundle } from "../../lib/wp-bundle";
-import { patchWasmForThread } from "../../../../host/src/worker-main";
 import kernelWasmUrl from "../../../../host/wasm/wasm_posix_kernel.wasm?url";
 import mariadbWasmUrl from "../../../../examples/libs/mariadb/mariadb-install/bin/mariadbd.wasm?url";
 import nginxWasmUrl from "../../../../examples/nginx/nginx.wasm?url";
@@ -165,7 +164,7 @@ async function start() {
   setStatus("Loading LAMP stack...", "loading");
 
   try {
-    // Fetch kernel, MariaDB (eager — needed for threadModule), dash, and bootstrap SQL
+    // Fetch kernel, MariaDB (eager — written to VFS), dash, and bootstrap SQL
     appendLog("Fetching resources...\n", "info");
     const [kernelBytes, mariadbBytes, dashBytes, systemTablesSql, systemDataSql, nginxSize, phpFpmSize] =
       await Promise.all([
@@ -187,13 +186,6 @@ async function start() {
       "info",
     );
 
-    // Pre-compile thread module for MariaDB's background threads
-    appendLog("Pre-compiling MariaDB thread module...\n", "info");
-    setStatus("Pre-compiling MariaDB thread module...", "loading");
-    const threadPatchedBytes = patchWasmForThread(mariadbBytes);
-    const threadModule = await WebAssembly.compile(threadPatchedBytes);
-    appendLog("Thread module ready\n", "info");
-
     // Fetch sizes for shell utility binaries
     const lazyDefs = [
       { url: coreutilsWasmUrl, path: "/bin/coreutils", symlinks: [...COREUTILS_NAMES, "["].flatMap(n => [`/bin/${n}`, `/usr/bin/${n}`]) },
@@ -208,11 +200,10 @@ async function start() {
       }
     }
 
-    // Create kernel with thread support + large FS for WordPress + MariaDB
+    // Create kernel — thread module is auto-compiled on first clone()
     kernel = new BrowserKernel({
       maxWorkers: 16,
       fsSize: 128 * 1024 * 1024, // 128MB for WordPress bundle + MariaDB data
-      threadModule,
       onStdout: (data) => appendLog(decoder.decode(data)),
       onStderr: (data) => {
         const text = decoder.decode(data);
@@ -230,7 +221,7 @@ async function start() {
     // Shell binaries (dash eager, utilities lazy)
     populateShellBinaries(kernel, dashBytes, lazyBinaries);
 
-    // MariaDB binary — write eagerly since we already fetched it for threadModule
+    // MariaDB binary — write eagerly since we already fetched it
     ensureDir(fs, "/usr/sbin");
     writeVfsBinary(fs, "/usr/sbin/mariadbd", new Uint8Array(mariadbBytes));
 

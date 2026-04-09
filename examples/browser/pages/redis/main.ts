@@ -21,7 +21,6 @@ import {
   writeInitDescriptor,
   ensureDirs,
 } from "../../lib/init/vfs-utils";
-import { patchWasmForThread } from "../../../../host/src/worker-main";
 import { RedisBrowserClient } from "../../lib/redis-client";
 import kernelWasmUrl from "../../../../host/wasm/wasm_posix_kernel.wasm?url";
 import redisWasmUrl from "../../../../examples/libs/redis/bin/redis-server.wasm?url";
@@ -106,7 +105,7 @@ async function start() {
   setStatus("Starting Redis...", "loading");
 
   try {
-    // Fetch kernel, redis (eager — needed for thread patching), and dash
+    // Fetch kernel, redis (eager — written to VFS), and dash
     appendLog("Fetching resources...\n", "info");
     const [kernelBytes, redisBytes, dashBytes] = await Promise.all([
       fetch(kernelWasmUrl).then((r) => r.arrayBuffer()),
@@ -119,13 +118,6 @@ async function start() {
       `dash: ${(dashBytes.byteLength / 1024).toFixed(0)}KB\n`,
       "info",
     );
-
-    // Pre-compile thread module from redis binary
-    appendLog("Pre-compiling thread module...\n", "info");
-    setStatus("Pre-compiling thread module...", "loading");
-    const threadPatchedBytes = patchWasmForThread(redisBytes);
-    const threadModule = await WebAssembly.compile(threadPatchedBytes);
-    appendLog("Thread module ready\n", "info");
 
     // Fetch sizes for shell utility binaries
     const lazyDefs = [
@@ -141,10 +133,9 @@ async function start() {
       }
     }
 
-    // Create kernel with thread module
+    // Create kernel — thread module is auto-compiled on first clone()
     kernel = new BrowserKernel({
       maxWorkers: 8,
-      threadModule,
       onStdout: (data) => appendLog(decoder.decode(data)),
       onStderr: (data) => appendLog(decoder.decode(data), "stderr"),
     });
@@ -158,7 +149,7 @@ async function start() {
     // Shell binaries (dash eager, utilities lazy)
     populateShellBinaries(kernel, dashBytes, lazyBinaries);
 
-    // Redis binary — write eagerly since we already fetched it for threadModule
+    // Redis binary — write eagerly since we already fetched it
     try { fs.mkdir("/usr/sbin", 0o755); } catch { /* exists */ }
     writeVfsBinary(fs, "/usr/sbin/redis-server", new Uint8Array(redisBytes));
 
