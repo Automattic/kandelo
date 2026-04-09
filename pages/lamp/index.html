@@ -4,14 +4,19 @@
   <script src="/wasm-posix-kernel/service-worker.js"></script>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>LAMP Stack — wasm-posix-kernel</title>
-  <script type="module" crossorigin src="/wasm-posix-kernel/assets/lamp-B0WfvC5C.js"></script>
-  <link rel="modulepreload" crossorigin href="/wasm-posix-kernel/assets/browser-kernel-BnKUUWNh.js">
-  <link rel="modulepreload" crossorigin href="/wasm-posix-kernel/assets/nginx-_X8VvCpG.js">
+  <title>WordPress (LEMP) — wasm-posix-kernel</title>
+  <script type="module" crossorigin src="/wasm-posix-kernel/assets/lamp-B8CcsZOK.js"></script>
+  <link rel="modulepreload" crossorigin href="/wasm-posix-kernel/assets/browser-kernel-CeVfDkIW.js">
+  <link rel="modulepreload" crossorigin href="/wasm-posix-kernel/assets/xterm-CyPUMFhC.js">
+  <link rel="modulepreload" crossorigin href="/wasm-posix-kernel/assets/terminal-panel-sc5ZsZwc.js">
+  <link rel="modulepreload" crossorigin href="/wasm-posix-kernel/assets/shell-binaries-DvtU7PcP.js">
+  <link rel="modulepreload" crossorigin href="/wasm-posix-kernel/assets/nginx-B-LiObMC.js">
+  <link rel="modulepreload" crossorigin href="/wasm-posix-kernel/assets/php-fpm-SjRjAukT.js">
+  <link rel="modulepreload" crossorigin href="/wasm-posix-kernel/assets/mysql_system_tables_data-CJXMtRxP.js">
   <link rel="modulepreload" crossorigin href="/wasm-posix-kernel/assets/wp-bundle-CEfoOdTg.js">
-  <link rel="modulepreload" crossorigin href="/wasm-posix-kernel/assets/worker-main-N8-Fr_O9.js">
-  <link rel="modulepreload" crossorigin href="/wasm-posix-kernel/assets/php-fpm-B79FgP1G.js">
-  <link rel="modulepreload" crossorigin href="/wasm-posix-kernel/assets/mysql_system_tables_data-BEXINe6V.js">
+  <link rel="modulepreload" crossorigin href="/wasm-posix-kernel/assets/sed-C3GaF0T-.js">
+  <link rel="stylesheet" crossorigin href="/wasm-posix-kernel/assets/xterm-6GBZ9nXN.css">
+  <link rel="stylesheet" crossorigin href="/wasm-posix-kernel/assets/terminal-panel-D_pjJMV3.css">
   <link rel="stylesheet" crossorigin href="/wasm-posix-kernel/assets/layout-CgaJCU8K.css">
 </head>
 <body>
@@ -23,35 +28,40 @@
     <a href="/wasm-posix-kernel/pages/nginx-php/">nginx + PHP-FPM</a>
     <a href="/wasm-posix-kernel/pages/mariadb/">MariaDB</a>
     <a href="/wasm-posix-kernel/pages/redis/">Redis</a>
-    <a href="/wasm-posix-kernel/pages/wordpress/">WordPress</a>
-    <a href="/wasm-posix-kernel/pages/lamp/" aria-current="page">LAMP</a>
+    <a href="/wasm-posix-kernel/pages/wordpress/">WordPress (LEMP-but-SQLite)</a>
+    <a href="/wasm-posix-kernel/pages/lamp/" aria-current="page">WordPress (LEMP)</a>
     <a href="/wasm-posix-kernel/pages/shell/">Shell</a>
     <a href="/wasm-posix-kernel/pages/python/">Python</a>
+    <a href="/wasm-posix-kernel/pages/perl/">Perl</a>
+    <a href="/wasm-posix-kernel/pages/ruby/">Ruby</a>
   </nav>
-  <div class="main">
-    <div class="main-header">
-      <h1>LAMP Stack on wasm-posix-kernel</h1>
-      <p class="subtitle">Full LAMP stack: MariaDB + PHP-FPM + nginx + WordPress, all running inside a POSIX kernel compiled to WebAssembly</p>
-      <div class="controls">
-        <button id="start">Start LAMP Stack</button>
-        <button id="reload" disabled>Reload page</button>
-      </div>
-      <div id="status" class="status" style="display:none"></div>
-    </div>
-    <div class="preview-area">
-      <div class="split-panels">
-        <div class="log-panel">
-          <h3>Kernel Log</h3>
-          <pre id="log"></pre>
+  <div class="main" style="display:flex;flex-direction:column;overflow:hidden">
+    <div style="flex:1;overflow:auto;display:flex;flex-direction:column;min-height:0">
+      <div class="main-header">
+        <h1>WordPress (LEMP) on wasm-posix-kernel</h1>
+        <p class="subtitle">Full LEMP stack: nginx + MariaDB + PHP-FPM + WordPress, all running inside a POSIX kernel compiled to WebAssembly</p>
+        <div class="controls">
+          <button id="start">Start WordPress (LEMP)</button>
+          <button id="reload" disabled>Reload page</button>
         </div>
-        <div class="iframe-panel">
-          <h3>WordPress (MySQL)</h3>
-          <div class="frame-container">
-            <iframe id="frame" srcdoc="<p style='padding:1rem;color:#999'>Click 'Start LAMP Stack' to begin</p>"></iframe>
+        <div id="status" class="status" style="display:none"></div>
+      </div>
+      <div class="preview-area">
+        <div class="split-panels">
+          <div class="log-panel">
+            <h3>Kernel Log</h3>
+            <pre id="log"></pre>
+          </div>
+          <div class="iframe-panel">
+            <h3>WordPress (MySQL)</h3>
+            <div class="frame-container">
+              <iframe id="frame" srcdoc="<p style='padding:1rem;color:#999'>Click 'Start WordPress (LEMP)' to begin</p>"></iframe>
+            </div>
           </div>
         </div>
       </div>
     </div>
+    <div id="terminal-panel"></div>
   </div>
 </body>
 </html>

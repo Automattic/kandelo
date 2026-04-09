@@ -5,9 +5,15 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>nginx — wasm-posix-kernel</title>
-  <script type="module" crossorigin src="/wasm-posix-kernel/assets/nginx-CqoC9ozO.js"></script>
-  <link rel="modulepreload" crossorigin href="/wasm-posix-kernel/assets/browser-kernel-BnKUUWNh.js">
-  <link rel="modulepreload" crossorigin href="/wasm-posix-kernel/assets/nginx-_X8VvCpG.js">
+  <script type="module" crossorigin src="/wasm-posix-kernel/assets/nginx-QE1r6EQT.js"></script>
+  <link rel="modulepreload" crossorigin href="/wasm-posix-kernel/assets/browser-kernel-CeVfDkIW.js">
+  <link rel="modulepreload" crossorigin href="/wasm-posix-kernel/assets/xterm-CyPUMFhC.js">
+  <link rel="modulepreload" crossorigin href="/wasm-posix-kernel/assets/terminal-panel-sc5ZsZwc.js">
+  <link rel="modulepreload" crossorigin href="/wasm-posix-kernel/assets/shell-binaries-DvtU7PcP.js">
+  <link rel="modulepreload" crossorigin href="/wasm-posix-kernel/assets/nginx-B-LiObMC.js">
+  <link rel="modulepreload" crossorigin href="/wasm-posix-kernel/assets/sed-C3GaF0T-.js">
+  <link rel="stylesheet" crossorigin href="/wasm-posix-kernel/assets/xterm-6GBZ9nXN.css">
+  <link rel="stylesheet" crossorigin href="/wasm-posix-kernel/assets/terminal-panel-D_pjJMV3.css">
   <link rel="stylesheet" crossorigin href="/wasm-posix-kernel/assets/layout-CgaJCU8K.css">
 </head>
 <body>
@@ -19,35 +25,40 @@
     <a href="/wasm-posix-kernel/pages/nginx-php/">nginx + PHP-FPM</a>
     <a href="/wasm-posix-kernel/pages/mariadb/">MariaDB</a>
     <a href="/wasm-posix-kernel/pages/redis/">Redis</a>
-    <a href="/wasm-posix-kernel/pages/wordpress/">WordPress</a>
-    <a href="/wasm-posix-kernel/pages/lamp/">LAMP</a>
+    <a href="/wasm-posix-kernel/pages/wordpress/">WordPress (LEMP-but-SQLite)</a>
+    <a href="/wasm-posix-kernel/pages/lamp/">WordPress (LEMP)</a>
     <a href="/wasm-posix-kernel/pages/shell/">Shell</a>
     <a href="/wasm-posix-kernel/pages/python/">Python</a>
+    <a href="/wasm-posix-kernel/pages/perl/">Perl</a>
+    <a href="/wasm-posix-kernel/pages/ruby/">Ruby</a>
   </nav>
-  <div class="main">
-    <div class="main-header">
-      <h1>nginx on wasm-posix-kernel</h1>
-      <p class="subtitle">nginx running inside a POSIX kernel compiled to WebAssembly, served via Service Worker</p>
-      <div class="controls">
-        <button id="start">Start nginx</button>
-        <button id="reload" disabled>Reload page</button>
-      </div>
-      <div id="status" class="status" style="display:none"></div>
-    </div>
-    <div class="preview-area">
-      <div class="split-panels">
-        <div class="log-panel">
-          <h3>Kernel Log</h3>
-          <pre id="log"></pre>
+  <div class="main" style="display:flex;flex-direction:column;overflow:hidden">
+    <div style="flex:1;overflow:auto;display:flex;flex-direction:column;min-height:0">
+      <div class="main-header">
+        <h1>nginx on wasm-posix-kernel</h1>
+        <p class="subtitle">nginx running inside a POSIX kernel compiled to WebAssembly, served via Service Worker</p>
+        <div class="controls">
+          <button id="start">Start nginx</button>
+          <button id="reload" disabled>Reload page</button>
         </div>
-        <div class="iframe-panel">
-          <h3>Served Page</h3>
-          <div class="frame-container">
-            <iframe id="frame" srcdoc="<p style='padding:1rem;color:#999'>Click 'Start nginx' to begin</p>"></iframe>
+        <div id="status" class="status" style="display:none"></div>
+      </div>
+      <div class="preview-area">
+        <div class="split-panels">
+          <div class="log-panel">
+            <h3>Kernel Log</h3>
+            <pre id="log"></pre>
+          </div>
+          <div class="iframe-panel">
+            <h3>Served Page</h3>
+            <div class="frame-container">
+              <iframe id="frame" srcdoc="<p style='padding:1rem;color:#999'>Click 'Start nginx' to begin</p>"></iframe>
+            </div>
           </div>
         </div>
       </div>
     </div>
+    <div id="terminal-panel"></div>
   </div>
 </body>
 </html>
