@@ -47,6 +47,7 @@ const xzWasm = resolve(repoRoot, "examples/libs/xz/bin/xz.wasm");
 const zstdWasm = resolve(repoRoot, "examples/libs/zstd/bin/zstd.wasm");
 const zipWasm = resolve(repoRoot, "examples/libs/zip/bin/zip.wasm");
 const unzipWasm = resolve(repoRoot, "examples/libs/unzip/bin/unzip.wasm");
+const perlWasm = resolve(repoRoot, "examples/libs/perl/bin/perl.wasm");
 
 // GNU coreutils multi-call binary supports all of these as argv[0]
 const coreutilsNames = [
@@ -164,6 +165,9 @@ const builtinPrograms: Record<string, string> = {
     "funzip": unzipWasm,
     "/usr/bin/funzip": unzipWasm,
     "/bin/funzip": unzipWasm,
+    "perl": perlWasm,
+    "/usr/bin/perl": perlWasm,
+    "/bin/perl": perlWasm,
 };
 
 // Add coreutils mappings for all known tool names
@@ -205,9 +209,14 @@ async function main() {
     }
 
     const kernelPath = resolve("host/wasm/wasm_posix_kernel.wasm");
-    const programPath = name.endsWith(".wasm")
-        ? resolve(name)
-        : resolve(`examples/${name}.wasm`);
+    let programPath: string;
+    if (name.endsWith(".wasm")) {
+        programPath = resolve(name);
+    } else if (builtinPrograms[name] && existsSync(builtinPrograms[name])) {
+        programPath = builtinPrograms[name];
+    } else {
+        programPath = resolve(`examples/${name}.wasm`);
+    }
 
     const kernelBytes = readFileSync(kernelPath);
     const programBytes = readFileSync(programPath);
