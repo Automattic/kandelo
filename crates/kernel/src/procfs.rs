@@ -92,6 +92,11 @@ impl ProcfsEntry {
     }
 }
 
+/// Extract the pid from a ProcfsEntry (0 for root/net entries).
+pub fn entry_pid(entry: &ProcfsEntry) -> u32 {
+    entry_ids(entry).0
+}
+
 // ── Path matching ───────────────────────────────────────────────────────────
 
 /// Parse an ASCII byte slice as a u32.
@@ -509,12 +514,21 @@ pub fn procfs_open(
     }
 
     if entry.is_dir() {
+        // Validate that the target pid exists for pid-scoped directories
+        let target_pid = entry_pid(entry);
+        if target_pid != 0 {
+            validate_pid(proc, target_pid)?;
+        }
         let ofd_idx = proc.ofd_table.create(
             FileType::Directory,
             status_flags,
             PROCFS_DIR_HANDLE,
             resolved_path,
         );
+        // Set dir_host_handle so sys_getdents64 recognizes this as a procfs dir
+        if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
+            ofd.dir_host_handle = PROCFS_DIR_HANDLE;
+        }
         let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
         return Ok(fd);
     }
@@ -537,32 +551,37 @@ pub fn procfs_open(
 /// Generate content for a procfs regular file entry.
 fn generate_content(proc: &Process, entry: &ProcfsEntry) -> Result<Vec<u8>, Errno> {
     match entry {
-        ProcfsEntry::Stat(pid) => {
+        ProcfsEntry::Stat(pid) | ProcfsEntry::Status(pid) | ProcfsEntry::Cmdline(pid)
+        | ProcfsEntry::Environ(pid) | ProcfsEntry::Maps(pid) => {
             validate_pid(proc, *pid)?;
-            Ok(generate_stat(proc))
-        }
-        ProcfsEntry::Status(pid) => {
-            validate_pid(proc, *pid)?;
-            Ok(generate_status(proc))
-        }
-        ProcfsEntry::Cmdline(pid) => {
-            validate_pid(proc, *pid)?;
-            Ok(generate_cmdline(proc))
-        }
-        ProcfsEntry::Environ(pid) => {
-            validate_pid(proc, *pid)?;
-            Ok(generate_environ(proc))
-        }
-        ProcfsEntry::Maps(pid) => {
-            validate_pid(proc, *pid)?;
-            Ok(generate_maps(proc))
+            if *pid == proc.pid {
+                match entry {
+                    ProcfsEntry::Stat(_) => Ok(generate_stat(proc)),
+                    ProcfsEntry::Status(_) => Ok(generate_status(proc)),
+                    ProcfsEntry::Cmdline(_) => Ok(generate_cmdline(proc)),
+                    ProcfsEntry::Environ(_) => Ok(generate_environ(proc)),
+                    ProcfsEntry::Maps(_) => Ok(generate_maps(proc)),
+                    _ => unreachable!(),
+                }
+            } else {
+                #[cfg(target_arch = "wasm32")]
+                { crate::wasm_api::procfs_generate_for_pid(*pid, entry).ok_or(Errno::ENOENT) }
+                #[cfg(not(target_arch = "wasm32"))]
+                { Err(Errno::ENOENT) }
+            }
         }
         ProcfsEntry::FdInfo(pid, fd) => {
             validate_pid(proc, *pid)?;
-            generate_fdinfo(proc, *fd).ok_or(Errno::ENOENT)
+            if *pid == proc.pid {
+                generate_fdinfo(proc, *fd).ok_or(Errno::ENOENT)
+            } else {
+                #[cfg(target_arch = "wasm32")]
+                { crate::wasm_api::procfs_generate_for_pid(*pid, entry).ok_or(Errno::ENOENT) }
+                #[cfg(not(target_arch = "wasm32"))]
+                { let _ = fd; Err(Errno::ENOENT) }
+            }
         }
         ProcfsEntry::NetTcp => {
-            // Simplified: just return header for now
             Ok(b"  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n".to_vec())
         }
         ProcfsEntry::NetUnix => {
@@ -572,17 +591,21 @@ fn generate_content(proc: &Process, entry: &ProcfsEntry) -> Result<Vec<u8>, Errn
     }
 }
 
-/// Validate that the pid matches the current process (for now, only self-access).
+/// Validate that a pid is accessible. Self-access always works.
+/// Cross-process access delegates to wasm_api helpers.
 fn validate_pid(proc: &Process, pid: u32) -> Result<(), Errno> {
     if pid == proc.pid {
-        Ok(())
-    } else {
-        // Cross-process access is possible in centralized mode but
-        // requires PROCESS_TABLE access. For now, only support self-access
-        // from within the Process struct. Cross-process access is handled
-        // at the wasm_api level.
-        Err(Errno::ENOENT)
+        return Ok(());
     }
+    // Cross-process: check if pid exists via process table
+    #[cfg(target_arch = "wasm32")]
+    {
+        let all_pids = crate::wasm_api::procfs_all_pids();
+        if all_pids.contains(&pid) {
+            return Ok(());
+        }
+    }
+    Err(Errno::ENOENT)
 }
 
 /// Allocate a procfs buffer slot, reusing freed slots.
@@ -617,36 +640,34 @@ pub fn procfs_readlink(
             let s = format!("{}/task/{}", proc.pid, proc.pid);
             s.into_bytes()
         }
-        ProcfsEntry::FdLink(pid, fd) => {
+        ProcfsEntry::FdLink(pid, _) | ProcfsEntry::Cwd(pid) | ProcfsEntry::Exe(pid)
+        | ProcfsEntry::Root_(pid) => {
             if *pid != proc.pid {
+                #[cfg(target_arch = "wasm32")]
+                {
+                    return crate::wasm_api::procfs_readlink_for_pid(*pid, entry, buf)
+                        .ok_or(Errno::ENOENT);
+                }
+                #[cfg(not(target_arch = "wasm32"))]
                 return Err(Errno::ENOENT);
             }
-            let entry = proc.fd_table.get(*fd).map_err(|_| Errno::EBADF)?;
-            let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
-            ofd.path.clone()
-        }
-        ProcfsEntry::Cwd(pid) => {
-            if *pid != proc.pid {
-                return Err(Errno::ENOENT);
+            match entry {
+                ProcfsEntry::FdLink(_, fd) => {
+                    let fe = proc.fd_table.get(*fd).map_err(|_| Errno::EBADF)?;
+                    let ofd = proc.ofd_table.get(fe.ofd_ref.0).ok_or(Errno::EBADF)?;
+                    ofd.path.clone()
+                }
+                ProcfsEntry::Cwd(_) => proc.cwd.clone(),
+                ProcfsEntry::Exe(_) => {
+                    if !proc.argv.is_empty() {
+                        proc.argv[0].clone()
+                    } else {
+                        b"/usr/bin/unknown".to_vec()
+                    }
+                }
+                ProcfsEntry::Root_(_) => b"/".to_vec(),
+                _ => unreachable!(),
             }
-            proc.cwd.clone()
-        }
-        ProcfsEntry::Exe(pid) => {
-            if *pid != proc.pid {
-                return Err(Errno::ENOENT);
-            }
-            // Use argv[0] or a fallback
-            if !proc.argv.is_empty() {
-                proc.argv[0].clone()
-            } else {
-                b"/usr/bin/unknown".to_vec()
-            }
-        }
-        ProcfsEntry::Root_(pid) => {
-            if *pid != proc.pid {
-                return Err(Errno::ENOENT);
-            }
-            b"/".to_vec()
         }
         _ => return Err(Errno::EINVAL),
     };

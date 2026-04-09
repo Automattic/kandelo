@@ -855,7 +855,7 @@ export class CentralizedKernelWorker {
     pid: number,
     memory: WebAssembly.Memory,
     channelOffsets: number[],
-    options?: { skipKernelCreate?: boolean },
+    options?: { skipKernelCreate?: boolean; argv?: string[] },
   ): void {
     if (!this.initialized) throw new Error("Kernel not initialized");
 
@@ -865,6 +865,22 @@ export class CentralizedKernelWorker {
       const result = createProcess(pid);
       if (result < 0) {
         throw new Error(`Failed to create process ${pid}: errno ${-result}`);
+      }
+    }
+
+    // Set process argv in kernel for /proc/<pid>/cmdline
+    if (options?.argv && options.argv.length > 0) {
+      const setArgv = this.kernelInstance!.exports.kernel_set_process_argv as
+        ((pid: number, dataPtr: number, dataLen: number) => number) | undefined;
+      if (setArgv) {
+        const encoder = new TextEncoder();
+        const nullSep = options.argv.join("\0");
+        const encoded = encoder.encode(nullSep);
+        // Write to kernel scratch area
+        const kernelMem = new Uint8Array(this.kernelMemory!.buffer);
+        const scratchOffset = this.scratchOffset!;
+        kernelMem.set(encoded, scratchOffset);
+        setArgv(pid, scratchOffset, encoded.length);
       }
     }
 

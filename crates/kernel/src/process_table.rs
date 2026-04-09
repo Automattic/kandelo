@@ -293,6 +293,11 @@ impl ProcessTable {
         self.processes.get(&pid)
     }
 
+    /// Collect all active PIDs.
+    pub fn all_pids(&self) -> Vec<u32> {
+        self.processes.keys().copied().collect()
+    }
+
     /// Collect PIDs of all processes in a given process group.
     pub fn pids_in_group(&self, pgid: u32) -> Vec<u32> {
         self.processes.iter()

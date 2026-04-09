@@ -2534,7 +2534,36 @@ pub fn sys_getdents64(
             return Ok(0); // exhausted
         }
         let entry_offset = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?.dir_entry_offset;
-        let pids = alloc::vec![proc.pid]; // For now, only self
+
+        // Get all PIDs for /proc root listing; includes self + other processes
+        #[cfg(target_arch = "wasm32")]
+        let mut pids = crate::wasm_api::procfs_all_pids();
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut pids = alloc::vec::Vec::<u32>::new();
+        if pids.is_empty() {
+            pids.push(proc.pid); // fallback: at least self
+        }
+
+        // Check if this is a cross-process directory (e.g. /proc/<other_pid>/fd)
+        #[cfg(target_arch = "wasm32")]
+        if let Some(entry) = crate::procfs::match_procfs(&path, proc.pid) {
+            let target_pid = crate::procfs::entry_pid(&entry);
+            if target_pid != 0 && target_pid != proc.pid {
+                if let Some((bytes, new_offset, exhausted)) =
+                    crate::wasm_api::procfs_getdents64_for_pid(target_pid, &path, buf, entry_offset)
+                {
+                    if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
+                        ofd.dir_entry_offset = new_offset;
+                        if exhausted {
+                            ofd.dir_host_handle = -2;
+                        }
+                    }
+                    return Ok(bytes);
+                }
+                return Err(Errno::ENOENT);
+            }
+        }
+
         let (bytes, new_offset, exhausted) =
             crate::procfs::procfs_getdents64(proc, &path, buf, entry_offset, &pids)?;
         if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
