@@ -524,6 +524,7 @@ async function handleTerminateProcess(msg: Extract<MainToKernelMessage, { type: 
   } catch {}
 
   processes.delete(pid);
+  ptyByPid.delete(pid);
   respond(msg.requestId, true);
 }
 
