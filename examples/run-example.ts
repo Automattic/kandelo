@@ -48,6 +48,7 @@ const zstdWasm = resolve(repoRoot, "examples/libs/zstd/bin/zstd.wasm");
 const zipWasm = resolve(repoRoot, "examples/libs/zip/bin/zip.wasm");
 const unzipWasm = resolve(repoRoot, "examples/libs/unzip/bin/unzip.wasm");
 const lsofWasm = resolve(repoRoot, "examples/lsof.wasm");
+const rubyWasm = resolve(repoRoot, "examples/libs/ruby/bin/ruby.wasm");
 
 // GNU coreutils multi-call binary supports all of these as argv[0]
 const coreutilsNames = [
@@ -168,6 +169,9 @@ const builtinPrograms: Record<string, string> = {
     "lsof": lsofWasm,
     "/usr/bin/lsof": lsofWasm,
     "/bin/lsof": lsofWasm,
+    "ruby": rubyWasm,
+    "/usr/bin/ruby": rubyWasm,
+    "/bin/ruby": rubyWasm,
 };
 
 // Add coreutils mappings for all known tool names
