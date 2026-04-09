@@ -2,6 +2,8 @@
  * nginx + PHP-FPM browser demo — runs nginx and php-fpm inside the POSIX
  * kernel, with a service worker intercepting fetch requests.
  *
+ * Uses SystemInit to orchestrate boot from /etc/init.d/ service descriptors.
+ *
  * Process layout:
  *   pid 1: php-fpm master → forks pid 2 (worker)
  *   pid 3: nginx master   → forks pid 4, 5 (workers)
@@ -9,18 +11,33 @@
  * FastCGI traffic flows over kernel loopback (127.0.0.1:9000).
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
-import { loadFiles } from "../../lib/fs-loader";
-import { HttpBridgeHost } from "../../lib/http-bridge";
+import { SystemInit } from "../../lib/init/system-init";
+import { populateNginxConfig } from "../../lib/init/nginx-config";
+import { populatePhpFpmConfig } from "../../lib/init/php-fpm-config";
+import {
+  populateShellBinaries,
+  type BinaryDef,
+  COREUTILS_NAMES,
+} from "../../lib/init/shell-binaries";
+import { writeVfsFile, writeInitDescriptor } from "../../lib/init/vfs-utils";
 import kernelWasmUrl from "../../../../host/wasm/wasm_posix_kernel.wasm?url";
 import nginxWasmUrl from "../../../../examples/nginx/nginx.wasm?url";
 import phpFpmWasmUrl from "../../../../examples/nginx/php-fpm.wasm?url";
+import dashWasmUrl from "../../../../examples/libs/dash/bin/dash.wasm?url";
+import coreutilsWasmUrl from "../../../../examples/libs/coreutils/bin/coreutils.wasm?url";
+import grepWasmUrl from "../../../../examples/libs/grep/bin/grep.wasm?url";
+import sedWasmUrl from "../../../../examples/libs/sed/bin/sed.wasm?url";
+import "@xterm/xterm/css/xterm.css";
+import "../../lib/terminal-panel.css";
 
 const APP_PREFIX = import.meta.env.BASE_URL + "app/";
+const SW_URL = import.meta.env.BASE_URL + "service-worker.js";
 
 const log = document.getElementById("log") as HTMLPreElement;
 const startBtn = document.getElementById("start") as HTMLButtonElement;
 const reloadBtn = document.getElementById("reload") as HTMLButtonElement;
 const statusDiv = document.getElementById("status") as HTMLDivElement;
+const terminalPanel = document.getElementById("terminal-panel") as HTMLDivElement;
 let frame = document.getElementById("frame") as HTMLIFrameElement;
 
 const decoder = new TextDecoder();
@@ -38,76 +55,6 @@ function setStatus(text: string, type: "loading" | "running" | "error") {
   statusDiv.textContent = text;
   statusDiv.className = `status ${type}`;
 }
-
-// nginx config for browser — with FastCGI to php-fpm
-const NGINX_CONF = `daemon off;
-master_process on;
-worker_processes 2;
-error_log stderr info;
-pid /tmp/nginx.pid;
-
-events {
-    worker_connections 64;
-    use poll;
-}
-
-http {
-    access_log /dev/stderr;
-    client_body_temp_path /tmp/nginx_client_temp;
-    fastcgi_temp_path /tmp/nginx_fastcgi_temp;
-
-    types {
-        text/html  html htm;
-        text/css   css;
-        text/javascript js;
-        application/json json;
-        image/png png;
-        image/svg+xml svg;
-    }
-    default_type application/octet-stream;
-
-    server {
-        listen 8080;
-        server_name localhost;
-        root /var/www/html;
-        index index.php index.html;
-
-        location / {
-        }
-
-        # Exact match — no PCRE regex needed
-        location = /index.php {
-            fastcgi_pass 127.0.0.1:9000;
-            fastcgi_param SCRIPT_FILENAME $document_root/index.php;
-            fastcgi_param QUERY_STRING $query_string;
-            fastcgi_param REQUEST_METHOD $request_method;
-            fastcgi_param CONTENT_TYPE $content_type;
-            fastcgi_param CONTENT_LENGTH $content_length;
-            fastcgi_param SERVER_PROTOCOL $server_protocol;
-            fastcgi_param SERVER_PORT $server_port;
-            fastcgi_param SERVER_NAME $server_name;
-            fastcgi_param REQUEST_URI $request_uri;
-            fastcgi_param DOCUMENT_URI $document_uri;
-            fastcgi_param DOCUMENT_ROOT $document_root;
-            fastcgi_param REDIRECT_STATUS 200;
-        }
-    }
-}
-`;
-
-const PHP_FPM_CONF = `[global]
-daemonize = no
-error_log = /dev/stderr
-log_level = notice
-
-[www]
-listen = 127.0.0.1:9000
-pm = static
-pm.max_children = 1
-clear_env = no
-slowlog = /dev/null
-request_slowlog_trace_depth = 0
-`;
 
 const INDEX_PHP = `<?php
 $uptime = time();
@@ -163,39 +110,73 @@ sort($extensions);
 </html>
 `;
 
+/** FastCGI location block for routing .php requests to php-fpm. */
+const FASTCGI_LOCATION = `        # Exact match — no PCRE regex needed
+        location = /index.php {
+            fastcgi_pass 127.0.0.1:9000;
+            fastcgi_param SCRIPT_FILENAME $document_root/index.php;
+            fastcgi_param QUERY_STRING $query_string;
+            fastcgi_param REQUEST_METHOD $request_method;
+            fastcgi_param CONTENT_TYPE $content_type;
+            fastcgi_param CONTENT_LENGTH $content_length;
+            fastcgi_param SERVER_PROTOCOL $server_protocol;
+            fastcgi_param SERVER_PORT $server_port;
+            fastcgi_param SERVER_NAME $server_name;
+            fastcgi_param REQUEST_URI $request_uri;
+            fastcgi_param DOCUMENT_URI $document_uri;
+            fastcgi_param DOCUMENT_ROOT $document_root;
+            fastcgi_param REDIRECT_STATUS 200;
+        }`;
+
+/** Fetch file size via HEAD request. Returns 0 on failure. */
+async function fetchSize(url: string): Promise<number> {
+  try {
+    const resp = await fetch(url, { method: "HEAD" });
+    if (!resp.ok) return 0;
+    return parseInt(resp.headers.get("content-length") || "0", 10) || 0;
+  } catch {
+    return 0;
+  }
+}
+
 let kernel: BrowserKernel | null = null;
-let bridge: HttpBridgeHost | null = null;
+let init: SystemInit | null = null;
 
 async function start() {
   startBtn.disabled = true;
   log.textContent = "";
-  setStatus("Loading kernel, nginx, and PHP-FPM...", "loading");
+  setStatus("Loading kernel, nginx, PHP-FPM, and dash...", "loading");
 
   try {
-    // Fetch all wasm binaries in parallel
-    appendLog("Fetching wasm binaries...\n", "info");
-    const [kernelBytes, nginxBytes, phpFpmBytes] = await Promise.all([
+    // Fetch kernel and dash eagerly; get nginx/php-fpm sizes for lazy registration
+    appendLog("Fetching kernel and dash wasm...\n", "info");
+    const [kernelBytes, dashBytes, nginxSize, phpFpmSize] = await Promise.all([
       fetch(kernelWasmUrl).then((r) => r.arrayBuffer()),
-      fetch(nginxWasmUrl).then((r) => r.arrayBuffer()),
-      fetch(phpFpmWasmUrl).then((r) => r.arrayBuffer()),
+      fetch(dashWasmUrl).then((r) => r.arrayBuffer()),
+      fetchSize(nginxWasmUrl),
+      fetchSize(phpFpmWasmUrl),
     ]);
     appendLog(
       `Kernel: ${(kernelBytes.byteLength / 1024).toFixed(0)}KB, ` +
-      `nginx: ${(nginxBytes.byteLength / (1024 * 1024)).toFixed(1)}MB, ` +
-      `PHP-FPM: ${(phpFpmBytes.byteLength / (1024 * 1024)).toFixed(1)}MB\n`,
+      `dash: ${(dashBytes.byteLength / 1024).toFixed(0)}KB, ` +
+      `nginx: ${(nginxSize / (1024 * 1024)).toFixed(1)}MB (lazy), ` +
+      `PHP-FPM: ${(phpFpmSize / (1024 * 1024)).toFixed(1)}MB (lazy)\n`,
       "info",
     );
 
-    // Set up HTTP bridge
-    bridge = new HttpBridgeHost();
-
-    // Initialize service worker bridge
-    appendLog("Initializing service worker bridge...\n", "info");
-    if (!(await initBridge(bridge))) {
-      setStatus("Service worker initialization failed", "error");
-      return;
+    // Fetch sizes for shell utility binaries
+    const lazyDefs = [
+      { url: coreutilsWasmUrl, path: "/bin/coreutils", symlinks: [...COREUTILS_NAMES, "["].flatMap(n => [`/bin/${n}`, `/usr/bin/${n}`]) },
+      { url: grepWasmUrl, path: "/usr/bin/grep", symlinks: ["/bin/grep", "/usr/bin/egrep", "/bin/egrep", "/usr/bin/fgrep", "/bin/fgrep"] },
+      { url: sedWasmUrl, path: "/usr/bin/sed", symlinks: ["/bin/sed"] },
+    ];
+    const sizes = await Promise.all(lazyDefs.map((d) => fetchSize(d.url)));
+    const lazyBinaries: BinaryDef[] = [];
+    for (let i = 0; i < lazyDefs.length; i++) {
+      if (sizes[i] > 0) {
+        lazyBinaries.push({ ...lazyDefs[i], size: sizes[i] });
+      }
     }
-    appendLog("Service worker bridge ready\n", "info");
 
     // Create kernel
     kernel = new BrowserKernel({
@@ -205,89 +186,78 @@ async function start() {
 
     await kernel.init(kernelBytes);
 
-    // Populate filesystem
+    // Populate VFS
     appendLog("Populating filesystem...\n", "info");
     const fs = kernel.fs;
 
-    for (const dir of [
-      "/etc/nginx",
-      "/var/www/html",
-      "/var/log/nginx",
-      "/tmp/nginx_client_temp",
-      "/tmp/nginx_fastcgi_temp",
-      "/tmp/nginx-wasm/logs",
-      "/etc/php-fpm.d",
-    ]) {
-      const parts = dir.split("/").filter(Boolean);
-      let cur = "";
-      for (const p of parts) {
-        cur += "/" + p;
-        try { fs.mkdir(cur, 0o755); } catch { /* exists */ }
-      }
+    // Shell binaries (dash eager, utilities lazy)
+    populateShellBinaries(kernel, dashBytes, lazyBinaries);
+
+    // nginx and php-fpm binaries as lazy files
+    const lazyFiles: Array<{ path: string; url: string; size: number; mode: number }> = [];
+    if (nginxSize > 0) {
+      lazyFiles.push({ path: "/usr/sbin/nginx", url: nginxWasmUrl, size: nginxSize, mode: 0o755 });
     }
+    if (phpFpmSize > 0) {
+      lazyFiles.push({ path: "/usr/sbin/php-fpm", url: phpFpmWasmUrl, size: phpFpmSize, mode: 0o755 });
+    }
+    if (lazyFiles.length > 0) {
+      kernel.registerLazyFiles(lazyFiles);
+    }
+    // Create /usr/sbin if populateShellBinaries didn't
+    try { fs.mkdir("/usr/sbin", 0o755); } catch { /* exists */ }
 
-    await loadFiles(fs, [
-      { path: "/etc/nginx/nginx.conf", data: NGINX_CONF },
-      { path: "/etc/php-fpm.conf", data: PHP_FPM_CONF },
-      { path: "/var/www/html/index.php", data: INDEX_PHP },
-    ]);
-
-    // Transfer bridge host port to the kernel worker for connection pump (nginx on 8080)
-    kernel.sendBridgePort(bridge.detachHostPort(), 8080);
-
-    // --- Start php-fpm first (pid 1) ---
-    setStatus("Starting PHP-FPM...", "loading");
-    appendLog("Starting PHP-FPM (pid 1)...\n", "info");
-
-    const fpmExitPromise = kernel.spawn(phpFpmBytes, [
-      "php-fpm",
-      "-y", "/etc/php-fpm.conf",
-      "-c", "/dev/null",
-      "--nodaemonize",
-    ], {
-      env: [
-        "HOME=/tmp",
-        "TMPDIR=/tmp",
-        "PATH=/usr/local/bin:/usr/bin:/bin",
-      ],
+    // nginx config and directories (with FastCGI location block)
+    populateNginxConfig(fs, {
+      extraLocations: FASTCGI_LOCATION,
     });
 
-    // Wait for php-fpm to start and fork worker
-    await new Promise((r) => setTimeout(r, 3000));
-    appendLog("PHP-FPM ready\n", "info");
+    // php-fpm config and directories
+    populatePhpFpmConfig(fs);
 
-    // --- Start nginx (pid 3, since pid 2 = php-fpm worker) ---
-    setStatus("Starting nginx...", "loading");
-    appendLog("Starting nginx (pid 3)...\n", "info");
+    // Static content — the index.php served by nginx + php-fpm
+    writeVfsFile(fs, "/var/www/html/index.php", INDEX_PHP);
 
-    const nginxExitPromise = kernel.spawn(nginxBytes, [
-      "nginx",
-      "-p", "/etc/nginx",
-      "-c", "nginx.conf",
-    ], {
-      env: [
-        "HOME=/tmp",
-        "TMPDIR=/tmp",
-        "PATH=/usr/bin:/bin",
-      ],
+    // Write init service descriptors
+    writeInitDescriptor(fs, "10-php-fpm", {
+      type: "daemon",
+      command: "/usr/sbin/php-fpm -y /etc/php-fpm.conf -c /dev/null --nodaemonize",
+      ready: "delay:3000",
     });
 
-    // Wait for nginx to start and fork workers
-    await new Promise((r) => setTimeout(r, 2000));
-
-    setStatus("nginx + PHP-FPM running! Loading page...", "running");
-    reloadBtn.disabled = false;
-
-    // Load the PHP page via the service worker bridge
-    loadFrame();
-
-    // Neither should exit normally
-    fpmExitPromise.then((code) => {
-      appendLog(`\nphp-fpm exited with code ${code}\n`, "info");
+    writeInitDescriptor(fs, "20-nginx", {
+      type: "daemon",
+      command: "/usr/sbin/nginx -p /etc/nginx -c nginx.conf",
+      depends: "php-fpm",
+      ready: "delay:2000",
+      bridge: "8080",
     });
-    nginxExitPromise.then((code) => {
-      appendLog(`\nnginx exited with code ${code}\n`, "info");
+
+    writeInitDescriptor(fs, "99-shell", {
+      type: "interactive",
+      command: "/bin/dash -i",
+      env: "TERM=xterm-256color PS1=\\w\\$\\  HOME=/root PATH=/usr/local/bin:/usr/bin:/bin",
+      pty: "true",
+      cwd: "/root",
     });
+
+    // Create SystemInit and boot
+    setStatus("Booting system...", "loading");
+    init = new SystemInit(kernel, {
+      onLog: (msg, level) => appendLog(msg + "\n", level === "info" ? "info" : "stderr"),
+      terminalContainer: terminalPanel,
+      serviceWorkerUrl: SW_URL,
+      appPrefix: APP_PREFIX,
+      onServiceReady: (name) => {
+        if (name === "nginx") {
+          setStatus("nginx + PHP-FPM running! Loading page...", "running");
+          reloadBtn.disabled = false;
+          loadFrame();
+        }
+      },
+    });
+
+    await init.boot();
   } catch (e) {
     appendLog(`\nError: ${e}\n`, "stderr");
     setStatus(`Error: ${e}`, "error");
@@ -302,38 +272,6 @@ function loadFrame() {
   next.src = APP_PREFIX + "index.php";
   frame.replaceWith(next);
   frame = next;
-}
-
-async function initBridge(bridge: HttpBridgeHost): Promise<boolean> {
-  if (!("serviceWorker" in navigator)) {
-    appendLog("Service Workers not supported\n", "stderr");
-    return false;
-  }
-
-  try {
-    // Register the unified service worker (no-op if already registered by COI script)
-    await navigator.serviceWorker.register(
-      import.meta.env.BASE_URL + "service-worker.js",
-    );
-
-    // Wait for the service worker to activate and claim this client
-    const reg = await navigator.serviceWorker.ready;
-
-    // Send bridge port and wait for SW to confirm it's initialized
-    await new Promise<void>((resolve) => {
-      const reply = new MessageChannel();
-      reply.port1.onmessage = () => resolve();
-      reg.active!.postMessage(
-        { type: "init-bridge", appPrefix: APP_PREFIX },
-        [bridge.getSwPort(), reply.port2],
-      );
-    });
-
-    return true;
-  } catch (err) {
-    appendLog(`Service worker error: ${err}\n`, "stderr");
-    return false;
-  }
 }
 
 startBtn.addEventListener("click", start);
