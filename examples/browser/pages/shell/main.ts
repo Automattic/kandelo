@@ -6,6 +6,11 @@
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
 import { PtyTerminal } from "../../lib/pty-terminal";
+import {
+  populateShellBinaries,
+  COREUTILS_NAMES,
+  type BinaryDef,
+} from "../../lib/init/shell-binaries";
 import kernelWasmUrl from "../../../../host/wasm/wasm_posix_kernel.wasm?url";
 import dashWasmUrl from "../../../../examples/libs/dash/bin/dash.wasm?url";
 import coreutilsWasmUrl from "../../../../examples/libs/coreutils/bin/coreutils.wasm?url";
@@ -27,23 +32,7 @@ import xzWasmUrl from "../../../../examples/libs/xz/bin/xz.wasm?url";
 import zstdWasmUrl from "../../../../examples/libs/zstd/bin/zstd.wasm?url";
 import zipWasmUrl from "../../../../examples/libs/zip/bin/zip.wasm?url";
 import unzipWasmUrl from "../../../../examples/libs/unzip/bin/unzip.wasm?url";
-import lsofWasmUrl from "../../../../examples/lsof.wasm?url";
-import vimWasmUrl from "../../../../examples/libs/vim/bin/vim.wasm?url";
-import gawkWasmUrl from "../../../../examples/libs/gawk/bin/gawk.wasm?url";
-import findWasmUrl from "../../../../examples/libs/findutils/bin/find.wasm?url";
-import xargsWasmUrl from "../../../../examples/libs/findutils/bin/xargs.wasm?url";
-import diffWasmUrl from "../../../../examples/libs/diffutils/bin/diff.wasm?url";
-import cmpWasmUrl from "../../../../examples/libs/diffutils/bin/cmp.wasm?url";
-import sdiffWasmUrl from "../../../../examples/libs/diffutils/bin/sdiff.wasm?url";
-import diff3WasmUrl from "../../../../examples/libs/diffutils/bin/diff3.wasm?url";
-import perlWasmUrl from "../../../../examples/libs/perl/bin/perl.wasm?url";
 import "@xterm/xterm/css/xterm.css";
-
-// Vim runtime files — imported as raw text via Vite glob
-const vimRuntimeModules = import.meta.glob(
-  "../../../../examples/libs/vim/runtime/**/*.vim",
-  { query: "?raw", import: "default", eager: true }
-) as Record<string, string>;
 
 // --- DOM elements ---
 const terminalContainer = document.getElementById("terminal") as HTMLDivElement;
@@ -92,36 +81,10 @@ function hideStatus() {
   statusDiv.style.display = "none";
 }
 
-// --- Coreutils command names for exec ---
-const COREUTILS_NAMES = [
-  "arch", "b2sum", "base32", "base64", "basename", "basenc", "cat",
-  "chcon", "chgrp", "chmod", "chown", "chroot", "cksum", "comm", "cp",
-  "csplit", "cut", "date", "dd", "df", "dir", "dircolors", "dirname",
-  "du", "echo", "env", "expand", "expr", "factor", "false", "fmt",
-  "fold", "groups", "head", "hostid", "id", "install", "join", "link",
-  "ln", "logname", "ls", "md5sum", "mkdir", "mkfifo", "mknod", "mktemp",
-  "mv", "nice", "nl", "nohup", "nproc", "numfmt", "od", "paste",
-  "pathchk", "pr", "printenv", "printf", "ptx", "pwd", "readlink",
-  "realpath", "rm", "rmdir", "runcon", "seq", "sha1sum", "sha224sum",
-  "sha256sum", "sha384sum", "sha512sum", "shred", "shuf", "sleep",
-  "sort", "split", "stat", "stty", "sum", "sync", "tac", "tail",
-  "tee", "test", "timeout", "touch", "tr", "true", "truncate", "tsort",
-  "tty", "uname", "unexpand", "uniq", "unlink", "vdir", "wc", "whoami",
-  "yes",
-];
-
 // --- Binary loading ---
 let kernelBytes: ArrayBuffer | null = null;
 let dashBytes: ArrayBuffer | null = null;
-
-/** Lazy-loaded utility binaries: fetched on demand when first exec'd. */
-interface LazyBinary {
-  url: string;
-  path: string;
-  size: number;
-  symlinks: string[];
-}
-let lazyBinaries: LazyBinary[] = [];
+let lazyBinaries: BinaryDef[] = [];
 
 /** Data files to load eagerly (small, needed at runtime by utilities). */
 interface DataFile {
@@ -175,16 +138,6 @@ async function loadBinaries(): Promise<string> {
     { url: zstdWasmUrl, path: "/usr/bin/zstd", symlinks: ["/bin/zstd", "/usr/bin/unzstd", "/bin/unzstd", "/usr/bin/zstdcat", "/bin/zstdcat"] },
     { url: zipWasmUrl, path: "/usr/bin/zip", symlinks: ["/bin/zip"] },
     { url: unzipWasmUrl, path: "/usr/bin/unzip", symlinks: ["/bin/unzip", "/usr/bin/zipinfo", "/bin/zipinfo", "/usr/bin/funzip", "/bin/funzip"] },
-    { url: lsofWasmUrl, path: "/usr/bin/lsof", symlinks: ["/bin/lsof"] },
-    { url: vimWasmUrl, path: "/usr/bin/vim", symlinks: ["/bin/vim", "/usr/bin/vi", "/bin/vi"] },
-    { url: gawkWasmUrl, path: "/usr/bin/gawk", symlinks: ["/bin/gawk", "/usr/bin/awk", "/bin/awk"] },
-    { url: findWasmUrl, path: "/usr/bin/find", symlinks: ["/bin/find"] },
-    { url: xargsWasmUrl, path: "/usr/bin/xargs", symlinks: ["/bin/xargs"] },
-    { url: diffWasmUrl, path: "/usr/bin/diff", symlinks: ["/bin/diff"] },
-    { url: cmpWasmUrl, path: "/usr/bin/cmp", symlinks: ["/bin/cmp"] },
-    { url: sdiffWasmUrl, path: "/usr/bin/sdiff", symlinks: ["/bin/sdiff"] },
-    { url: diff3WasmUrl, path: "/usr/bin/diff3", symlinks: ["/bin/diff3"] },
-    { url: perlWasmUrl, path: "/usr/bin/perl", symlinks: ["/bin/perl"] },
   ];
 
   // Fetch sizes for lazy binaries and data files in parallel
@@ -225,115 +178,18 @@ async function loadBinaries(): Promise<string> {
 }
 
 /**
- * Write a binary file to the virtual filesystem.
- */
-function writeFileToFs(fs: import("../../lib/browser-kernel").BrowserKernel["fs"], path: string, data: ArrayBuffer): void {
-  const bytes = new Uint8Array(data);
-  const fd = fs.open(path, 0x241 /* O_WRONLY|O_CREAT|O_TRUNC */, 0o755);
-  fs.write(fd, bytes, null, bytes.length);
-  fs.close(fd);
-}
-
-/**
  * Populate the virtual filesystem with executable binaries.
- * Dash is written eagerly (required for shell startup).
- * Utilities (coreutils, grep, sed) are registered as lazy files
- * and fetched on demand when first exec'd.
+ * Delegates to the shared populateShellBinaries() helper.
  */
-function populateExecBinaries(kernel: import("../../lib/browser-kernel").BrowserKernel): void {
-  const fs = kernel.fs;
-  for (const dir of ["/bin", "/usr", "/usr/bin", "/usr/local", "/usr/local/bin", "/usr/share", "/usr/share/misc", "/usr/share/file", "/etc", "/root"]) {
-    try { fs.mkdir(dir, 0o755); } catch { /* exists */ }
-  }
-
-  // Write shell profile: color aliases for interactive sessions.
-  // dash reads the file pointed to by $ENV on interactive startup.
-  const profile = "alias ls='ls --color=auto'\nalias grep='grep --color=auto'\n";
-  const profileBytes = new TextEncoder().encode(profile);
-  const pfd = fs.open("/etc/profile", 0x241, 0o644);
-  fs.write(pfd, profileBytes, null, profileBytes.length);
-  fs.close(pfd);
-
-  // Write git system config: disable maintenance/gc (fork+exec not fully
-  // supported for background daemons), use cat as pager, set default user.
-  const gitconfig = [
-    "[maintenance]",
-    "\tauto = false",
-    "[gc]",
-    "\tauto = 0",
-    "[core]",
-    "\tpager = cat",
-    "[user]",
-    "\tname = User",
-    "\temail = user@wasm.local",
-    "[init]",
-    "\tdefaultBranch = main",
-    "",
-  ].join("\n");
-  const gitconfigBytes = new TextEncoder().encode(gitconfig);
-  const gfd = fs.open("/etc/gitconfig", 0x241, 0o644);
-  fs.write(gfd, gitconfigBytes, null, gitconfigBytes.length);
-  fs.close(gfd);
-
-  // Write dash binary eagerly and create symlinks
-  if (dashBytes) {
-    writeFileToFs(fs, "/bin/dash", dashBytes);
-    try { fs.symlink("/bin/dash", "/bin/sh"); } catch { /* exists */ }
-    try { fs.symlink("/bin/dash", "/usr/bin/dash"); } catch { /* exists */ }
-    try { fs.symlink("/bin/dash", "/usr/bin/sh"); } catch { /* exists */ }
-  }
-
-  // Register lazy binaries and create symlinks
-  if (lazyBinaries.length > 0) {
-    kernel.registerLazyFiles(lazyBinaries.map(lb => ({
-      path: lb.path,
-      url: lb.url,
-      size: lb.size,
-      mode: 0o755,
-    })));
-    for (const lb of lazyBinaries) {
-      for (const link of lb.symlinks) {
-        try { fs.symlink(lb.path, link); } catch { /* exists */ }
-      }
-    }
-  }
-
-  // Write data files (magic database, etc.)
-  for (const df of dataFiles) {
-    if (df.data) {
-      writeFileToFs(fs, df.path, df.data);
-    }
-  }
-
-  // Write Vim runtime files for syntax highlighting and filetype detection
-  const vimRuntimeBase = "/usr/share/vim/vim91";
-  const vimRuntimeDirs = new Set<string>();
-  const enc = new TextEncoder();
-  for (const [importPath, content] of Object.entries(vimRuntimeModules)) {
-    // importPath looks like "../../../../examples/libs/vim/runtime/syntax/c.vim"
-    // We need the relative path after "runtime/"
-    const runtimeIdx = importPath.indexOf("/runtime/");
-    if (runtimeIdx < 0) continue;
-    const relPath = importPath.slice(runtimeIdx + "/runtime/".length);
-    const vfsPath = `${vimRuntimeBase}/${relPath}`;
-
-    // Ensure parent directories exist
-    const parts = vfsPath.split("/");
-    for (let i = 1; i < parts.length - 1; i++) {
-      const dir = parts.slice(0, i + 1).join("/");
-      if (!vimRuntimeDirs.has(dir)) {
-        vimRuntimeDirs.add(dir);
-        try { fs.mkdir(dir, 0o755); } catch { /* exists */ }
-      }
-    }
-
-    // Write the file
-    const data = enc.encode(content as string);
-    const fd = fs.open(vfsPath, 0x241 /* O_WRONLY|O_CREAT|O_TRUNC */, 0o644);
-    fs.write(fd, data, null, data.length);
-    fs.close(fd);
-  }
-
+function populateExecBinaries(kernel: BrowserKernel): void {
+  populateShellBinaries(
+    kernel,
+    dashBytes!,
+    lazyBinaries,
+    dataFiles
+      .filter((df) => df.data)
+      .map((df) => ({ path: df.path, data: new Uint8Array(df.data!) })),
+  );
 }
 
 // ============================================================
@@ -380,9 +236,7 @@ async function startInteractiveShell() {
         "TERM=xterm-256color",
         "LANG=en_US.UTF-8",
         "PATH=/usr/local/bin:/usr/bin:/bin",
-        "VIMRUNTIME=/usr/share/vim/vim91",
         "PS1=$ ",
-        "ENV=/etc/profile",
       ],
     });
 
