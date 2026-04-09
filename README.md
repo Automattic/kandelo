@@ -8,18 +8,36 @@ A POSIX-compliant kernel for WebAssembly. Compile C programs against a real musl
 
 Real, unmodified software compiled to WebAssembly:
 
-| Software | Version | Features |
-|----------|---------|----------|
-| nginx | 1.27 | Static file serving, reverse proxy, FastCGI, multi-worker fork |
+| Software | Version | Notes |
+|----------|---------|-------|
+| nginx | 1.27 | Static serving, reverse proxy, FastCGI, multi-worker fork |
 | PHP | 8.4 | CLI + PHP-FPM, FastCGI protocol |
-| MariaDB | 10.5 | Full SQL database, 5 threads (Aria storage engine) |
+| MariaDB | 10.5 | SQL database, Aria storage engine, 5 threads |
 | Redis | 7.2 | In-memory store, 3 background threads |
-| WordPress | 6.7 | Full CMS with nginx + PHP-FPM + SQLite/MariaDB |
+| WordPress | 6.7 | Full CMS: nginx + PHP-FPM + SQLite or MariaDB |
 | CPython | 3.13 | REPL, script execution, stdlib |
+| Git | 2.47 | Core version control operations |
+| Vim | 9.1 | Full editor with ncurses terminal UI |
+| Perl | 5.40 | Interpreter with core modules |
+| Ruby | 3.3 | Interpreter with core stdlib |
+| QuickJS-NG | 0.12 | ES2023 JavaScript engine + Node.js compat layer |
+| GNU nano | 8.3 | Terminal text editor |
 | dash | 0.5.12 | POSIX shell with pipes, redirects, job control |
-| GNU coreutils | 9.6 | 50+ utilities (ls, cat, grep, sed, sort, etc.) |
+| GNU coreutils | 9.6 | 50+ utilities (ls, cat, sort, wc, etc.) |
 | GNU grep | 3.11 | Regular expression search |
 | GNU sed | 4.9 | Stream editor |
+| GNU make | 4.4 | Build automation |
+| curl | 8.11 | HTTP client with TLS |
+| wget | 1.25 | HTTP file retrieval |
+| gawk | 5.3 | Pattern scanning and processing |
+| GNU findutils | 4.10 | find, xargs |
+| GNU diffutils | 3.10 | diff, cmp |
+| tar | 1.35 | Archive utility |
+| gzip, bzip2, xz, zstd | — | Compression utilities |
+| less | 668 | Terminal pager |
+| bc | 1.07 | Calculator |
+| m4 | 1.4.19 | Macro processor |
+| file | 5.46 | File type identification |
 
 All run in both Node.js and the browser with no source modifications.
 
@@ -44,7 +62,7 @@ A centralized kernel serves all processes via channel IPC (SharedArrayBuffer + A
 └─────────────────────────────────────────┘
 ```
 
-- **Kernel** (Rust → Wasm) — 140+ syscall implementations. One instance manages all processes via a `ProcessTable`.
+- **Kernel** (Rust → Wasm) — 170+ syscall implementations. One instance manages all processes via a `ProcessTable`.
 - **Host** (TypeScript) — Loads kernel and user Wasm binaries, provides host I/O, bridges blocking syscalls to async APIs via `Atomics.waitAsync`.
 - **Glue** (C) — Syscall dispatcher compiled into every user program. Translates musl's `__syscall` ABI into channel writes that the kernel reads.
 
@@ -52,22 +70,24 @@ See [docs/architecture.md](docs/architecture.md) for the full architecture refer
 
 ## What's Implemented
 
-140+ POSIX syscalls across these subsystems:
+170+ POSIX syscalls across these subsystems:
 
 | Subsystem | Highlights |
 |-----------|------------|
-| File I/O | open, close, read, write, seek, dup/dup2/dup3, pipe, readv/writev, pread/pwrite, sendfile, ftruncate, fsync |
+| File I/O | open, close, read, write, seek, dup/dup2/dup3, pipe, readv/writev, pread/pwrite, sendfile, ftruncate, fsync, copy_file_range, splice, statx |
 | fcntl | Advisory locking (F_GETLK/F_SETLK/F_SETLKW), file flags, FD_CLOEXEC, cross-process locks |
 | Process | fork (Asyncify), exec, posix_spawn, exit, getpid/getppid, process groups, sessions, waitpid |
 | Threads | clone with CLONE_VM\|CLONE_THREAD, per-thread TLS and channels |
-| Signals | kill, sigaction (SA_SIGINFO), sigprocmask, sigsuspend, sigaltstack, alarm, setitimer/getitimer, RT signals |
-| Memory | mmap (MAP_ANONYMOUS + MAP_PRIVATE file), munmap, brk/sbrk, RLIMIT_AS |
-| Networking | AF_INET sockets, AF_UNIX sockets, connect, send/recv, getaddrinfo, SCM_RIGHTS |
-| Directories | opendir/readdir, mkdir, rmdir, rename, symlink, readlink, chmod, chown, statvfs |
-| Time | clock_gettime, gettimeofday, nanosleep, utimensat, timer_create/settime |
-| Terminal | Full PTY support (/dev/ptmx + /dev/pts/N), line discipline, tcgetattr/tcsetattr, TIOCGWINSZ |
-| Virtual devices | /dev/null, /dev/zero, /dev/urandom, /dev/full, /dev/fd/N, /dev/stdin, /dev/stdout, /dev/stderr |
+| Signals | kill, sigaction (SA_SIGINFO), sigprocmask, sigsuspend, sigaltstack, alarm, setitimer/getitimer, RT signals, sigqueue, sigtimedwait, signalfd |
+| Memory | mmap (MAP_ANONYMOUS + MAP_PRIVATE file + MAP_SHARED file), munmap, mremap, brk/sbrk, memfd_create |
+| Networking | AF_INET sockets, AF_UNIX sockets, connect, send/recv, sendmsg/recvmsg, SCM_RIGHTS |
+| Directories | opendir/readdir, mkdir, rmdir, rename, symlink, readlink, chmod, chown, statvfs, all *at() variants |
+| Time | clock_gettime, gettimeofday, nanosleep, utimensat, timer_create/settime/gettime/delete |
+| Terminal | Full PTY support (/dev/ptmx + /dev/pts/N), line discipline, canonical/raw mode, 16 terminal ioctls |
+| Virtual devices | /dev/null, /dev/zero, /dev/urandom, /dev/full, /dev/fd/N, /dev/tty, /dev/ptmx, /dev/pts/* |
+| Procfs | /proc/self, /proc/\<pid\>/stat, status, cmdline, environ, maps, fd/\*, /proc/net/tcp, unix |
 | IPC | SysV msg queues, semaphores, shared memory; POSIX mqueues |
+| Event/Notification | eventfd, timerfd, signalfd |
 | Poll/Select | poll, ppoll, pselect6, epoll (host-intercepted in browser) |
 
 See [docs/posix-status.md](docs/posix-status.md) for the full syscall-by-syscall status.
@@ -128,7 +148,7 @@ npm install
 npx vite --port 5198
 ```
 
-Open `http://localhost:5198` to run C programs, an interactive shell, Python REPL, nginx, MariaDB, Redis, or full WordPress — all in the browser.
+Open `http://localhost:5198` to try 12 interactive demos — C programs, interactive shell, Python/Perl/Ruby REPLs, nginx, MariaDB, Redis, full WordPress, and a LAMP stack — all running in the browser.
 
 ## Porting Software
 
@@ -141,6 +161,14 @@ bash examples/libs/php/build-php.sh             # PHP 8.4
 bash examples/libs/redis/build-redis.sh         # Redis 7.2
 bash examples/libs/mariadb/build-mariadb.sh     # MariaDB 10.5
 bash examples/libs/cpython/build-cpython.sh     # CPython 3.13
+bash examples/libs/git/build-git.sh             # Git 2.47
+bash examples/libs/vim/build-vim.sh             # Vim 9.1
+bash examples/libs/perl/build-perl.sh           # Perl 5.40
+bash examples/libs/ruby/build-ruby.sh           # Ruby 3.3
+bash examples/libs/quickjs/build-quickjs.sh     # QuickJS-NG + Node.js compat
+bash examples/libs/nano/build-nano.sh           # GNU nano 8.3
+bash examples/libs/curl/build-curl.sh           # curl
+bash examples/libs/make/build-make.sh           # GNU make
 ```
 
 See [docs/porting-guide.md](docs/porting-guide.md) for how to port your own software.
@@ -148,10 +176,10 @@ See [docs/porting-guide.md](docs/porting-guide.md) for how to port your own soft
 ## Running Tests
 
 ```bash
-# Kernel unit tests (610+ tests)
+# Kernel unit tests (700 tests)
 cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib
 
-# Host integration tests (227+ tests)
+# Host integration tests (276 tests)
 cd host && npx vitest run
 
 # musl libc-test suite (0 unexpected failures)
@@ -173,7 +201,7 @@ crates/
   userspace/         User-space stub library
 host/
   src/               TypeScript host runtime (kernel loader, VFS, networking, workers)
-  test/              Vitest integration tests (227+ tests)
+  test/              Vitest integration tests
   wasm/              Compiled Wasm binaries
 sdk/
   src/bin/           CLI tool wrappers for LLVM cross-compilation
@@ -186,8 +214,8 @@ musl-overlay/        Wasm32-specific architecture patches for musl
 scripts/             Build scripts, test runners (libc-test, POSIX, Sortix)
 examples/
   *.c / *.wasm       Simple C example programs
-  browser/           Browser demo app (Vite + 10 demo pages)
-  libs/              Build scripts for ported software (PHP, MariaDB, Redis, etc.)
+  browser/           Browser demo app (Vite + 12 demo pages)
+  libs/              Build scripts for ported software (36 packages)
 docs/
   architecture.md    Architecture reference
   sdk-guide.md       SDK usage guide
@@ -224,4 +252,11 @@ docs/
 
 ## License
 
-MIT
+This project uses a split license model:
+
+- **GPL-2.0-or-later** — The platform (kernel, host runtime, SDK, build scripts, examples)
+- **MIT** — Runtime library components linked into user programs (musl-overlay/ and glue/)
+
+You can compile and run your own programs — including proprietary ones — without the GPL applying to your code. The runtime code linked into your program is MIT-licensed, and the kernel communicates via IPC, not linking.
+
+See [LICENSE](LICENSE) for full details.
