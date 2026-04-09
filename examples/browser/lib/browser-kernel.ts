@@ -7,7 +7,7 @@
  * clients (MySQL, Redis) via async pipe operations.
  */
 
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import { MemoryFileSystem, type LazyFileEntry } from "../../../host/src/vfs/memory-fs";
 import type {
   MainToKernelMessage,
   KernelToMainMessage,
@@ -298,6 +298,19 @@ export class BrowserKernel {
       requestId,
       port,
     }) as Promise<{ pid: number; fd: number } | null>;
+  }
+
+  /**
+   * Register lazy files: creates stubs in the VFS and forwards metadata
+   * to the kernel worker so it can materialize on demand via sync XHR.
+   */
+  registerLazyFiles(entries: Array<{ path: string; url: string; size: number; mode?: number }>): void {
+    const lazyEntries: LazyFileEntry[] = [];
+    for (const e of entries) {
+      const ino = this.memfs.registerLazyFile(e.path, e.url, e.size, e.mode);
+      lazyEntries.push({ ino, path: e.path, url: e.url, size: e.size });
+    }
+    this.sendToKernel({ type: "register_lazy_files", entries: lazyEntries });
   }
 
   /** Append data to a process's stdin buffer. */

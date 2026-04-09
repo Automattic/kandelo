@@ -81,36 +81,63 @@ const COREUTILS_NAMES = [
 // --- Binary loading ---
 let kernelBytes: ArrayBuffer | null = null;
 let dashBytes: ArrayBuffer | null = null;
-let coreutilsBytes: ArrayBuffer | null = null;
-let grepBytes: ArrayBuffer | null = null;
-let sedBytes: ArrayBuffer | null = null;
+
+/** Lazy-loaded utility binaries: fetched on demand when first exec'd. */
+interface LazyBinary {
+  url: string;
+  path: string;
+  size: number;
+  symlinks: string[];
+}
+let lazyBinaries: LazyBinary[] = [];
+
+/** Fetch file size via HEAD request. Returns 0 on failure. */
+async function fetchSize(url: string): Promise<number> {
+  try {
+    const resp = await fetch(url, { method: "HEAD" });
+    if (!resp.ok) return 0;
+    return parseInt(resp.headers.get("content-length") || "0", 10) || 0;
+  } catch {
+    return 0;
+  }
+}
 
 async function loadBinaries(): Promise<string> {
   if (kernelBytes && dashBytes) return "";
 
-  setStatus("Loading kernel, dash, coreutils, grep, sed...", "loading");
-  const results = await Promise.all([
+  setStatus("Loading kernel and dash...", "loading");
+
+  // Eagerly fetch only the kernel and dash (required for startup)
+  const [kernelResult, dashResult] = await Promise.all([
     fetch(kernelWasmUrl).then((r) => r.arrayBuffer()),
     fetch(dashWasmUrl).then((r) => r.arrayBuffer()),
-    fetch(coreutilsWasmUrl).then((r) => r.arrayBuffer()).catch(() => null),
-    fetch(grepWasmUrl).then((r) => r.arrayBuffer()).catch(() => null),
-    fetch(sedWasmUrl).then((r) => r.arrayBuffer()).catch(() => null),
   ]);
-  kernelBytes = results[0];
-  dashBytes = results[1];
-  coreutilsBytes = results[2];
-  grepBytes = results[3];
-  sedBytes = results[4];
+  kernelBytes = kernelResult;
+  dashBytes = dashResult;
+
+  // Fetch sizes for lazy-loaded utilities (HEAD requests, ~200 bytes each)
+  const lazyDefs = [
+    { url: coreutilsWasmUrl, path: "/bin/coreutils", symlinks: [...COREUTILS_NAMES, "["].flatMap(n => [`/bin/${n}`, `/usr/bin/${n}`]) },
+    { url: grepWasmUrl, path: "/bin/grep", symlinks: ["/bin/egrep", "/bin/fgrep", "/usr/bin/grep", "/usr/bin/egrep", "/usr/bin/fgrep"] },
+    { url: sedWasmUrl, path: "/bin/sed", symlinks: ["/usr/bin/sed"] },
+  ];
+
+  const sizes = await Promise.all(lazyDefs.map(d => fetchSize(d.url)));
+  lazyBinaries = [];
+  for (let i = 0; i < lazyDefs.length; i++) {
+    if (sizes[i] > 0) {
+      lazyBinaries.push({ ...lazyDefs[i], size: sizes[i] });
+    }
+  }
 
   const parts = [
     `Kernel: ${(kernelBytes.byteLength / 1024).toFixed(0)}KB`,
     `dash: ${(dashBytes.byteLength / 1024).toFixed(0)}KB`,
   ];
-  if (coreutilsBytes) {
-    parts.push(`coreutils: ${(coreutilsBytes.byteLength / (1024 * 1024)).toFixed(1)}MB`);
+  for (const lb of lazyBinaries) {
+    const name = lb.path.split("/").pop()!;
+    parts.push(`${name}: ${(lb.size / (1024 * 1024)).toFixed(1)}MB (lazy)`);
   }
-  if (grepBytes) parts.push(`grep: ${(grepBytes.byteLength / 1024).toFixed(0)}KB`);
-  if (sedBytes) parts.push(`sed: ${(sedBytes.byteLength / 1024).toFixed(0)}KB`);
   return parts.join(", ") + "\n";
 }
 
@@ -125,16 +152,18 @@ function writeFileToFs(fs: import("../../lib/browser-kernel").BrowserKernel["fs"
 }
 
 /**
- * Populate the virtual filesystem with actual executable binaries so that
- * the kernel worker can read them during exec(). Uses symlinks for
- * multicall binaries (coreutils) to avoid duplicating large binaries.
+ * Populate the virtual filesystem with executable binaries.
+ * Dash is written eagerly (required for shell startup).
+ * Utilities (coreutils, grep, sed) are registered as lazy files
+ * and fetched on demand when first exec'd.
  */
-function populateExecBinaries(fs: import("../../lib/browser-kernel").BrowserKernel["fs"]): void {
+function populateExecBinaries(kernel: import("../../lib/browser-kernel").BrowserKernel): void {
+  const fs = kernel.fs;
   for (const dir of ["/bin", "/usr", "/usr/bin", "/usr/local", "/usr/local/bin"]) {
     try { fs.mkdir(dir, 0o755); } catch { /* exists */ }
   }
 
-  // Write dash binary and create symlinks
+  // Write dash binary eagerly and create symlinks
   if (dashBytes) {
     writeFileToFs(fs, "/bin/dash", dashBytes);
     try { fs.symlink("/bin/dash", "/bin/sh"); } catch { /* exists */ }
@@ -142,31 +171,19 @@ function populateExecBinaries(fs: import("../../lib/browser-kernel").BrowserKern
     try { fs.symlink("/bin/dash", "/usr/bin/sh"); } catch { /* exists */ }
   }
 
-  // Write coreutils binary to canonical path, symlink all commands
-  if (coreutilsBytes) {
-    writeFileToFs(fs, "/bin/coreutils", coreutilsBytes);
-    for (const name of COREUTILS_NAMES) {
-      try { fs.symlink("/bin/coreutils", `/bin/${name}`); } catch { /* exists */ }
-      try { fs.symlink("/bin/coreutils", `/usr/bin/${name}`); } catch { /* exists */ }
+  // Register lazy binaries and create symlinks
+  if (lazyBinaries.length > 0) {
+    kernel.registerLazyFiles(lazyBinaries.map(lb => ({
+      path: lb.path,
+      url: lb.url,
+      size: lb.size,
+      mode: 0o755,
+    })));
+    for (const lb of lazyBinaries) {
+      for (const link of lb.symlinks) {
+        try { fs.symlink(lb.path, link); } catch { /* exists */ }
+      }
     }
-    try { fs.symlink("/bin/coreutils", "/bin/["); } catch { /* exists */ }
-    try { fs.symlink("/bin/coreutils", "/usr/bin/["); } catch { /* exists */ }
-  }
-
-  // Write grep binary and create symlinks
-  if (grepBytes) {
-    writeFileToFs(fs, "/bin/grep", grepBytes);
-    try { fs.symlink("/bin/grep", "/bin/egrep"); } catch { /* exists */ }
-    try { fs.symlink("/bin/grep", "/bin/fgrep"); } catch { /* exists */ }
-    try { fs.symlink("/bin/grep", "/usr/bin/grep"); } catch { /* exists */ }
-    try { fs.symlink("/bin/grep", "/usr/bin/egrep"); } catch { /* exists */ }
-    try { fs.symlink("/bin/grep", "/usr/bin/fgrep"); } catch { /* exists */ }
-  }
-
-  // Write sed binary and create symlinks
-  if (sedBytes) {
-    writeFileToFs(fs, "/bin/sed", sedBytes);
-    try { fs.symlink("/bin/sed", "/usr/bin/sed"); } catch { /* exists */ }
   }
 }
 
@@ -192,7 +209,7 @@ async function startInteractiveShell() {
     const kernel = new BrowserKernel();
 
     await kernel.init(kernelBytes!);
-    populateExecBinaries(kernel.fs);
+    populateExecBinaries(kernel);
     activeKernel = kernel;
 
     // Create PTY terminal
@@ -443,7 +460,7 @@ async function runBatch() {
     });
 
     await kernel.init(kernelBytes!);
-    populateExecBinaries(kernel.fs);
+    populateExecBinaries(kernel);
 
     const exitCode = await kernel.spawn(dashBytes!, ["dash"], {
       env: [
