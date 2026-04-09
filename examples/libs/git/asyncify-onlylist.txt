@@ -1,0 +1,265 @@
+# Functions that must be asyncify-instrumented for git fork() support.
+# Only these functions get asyncify overhead — all others remain lightweight.
+#
+# Git uses fork+exec for: running pager, hooks, git gc --auto, credential
+# helpers, external diff/merge tools, and many subcommands (pull, rebase, etc).
+# Without asyncify, fork children restart from _start() with empty argv.
+
+# CRT startup path
+_start
+_start_c
+__libc_start_main
+libc_start_main_stage2
+__libc_start_init
+libc_start_init
+__init_libc
+
+# Git top-level dispatch (git.c)
+main
+cmd_main
+run_argv
+handle_builtin
+run_builtin
+handle_alias
+execv_dashed_external
+
+# Pager setup (pager.c) — any command using USE_PAGER or setup_pager
+commit_pager_choice
+setup_auto_pager
+setup_pager
+prepare_pager_args
+
+# Run-command infrastructure (run-command.c) — ALL forks flow through here
+child_process_init
+start_command
+prepare_cmd
+run_command
+finish_command
+wait_or_whine
+pipe_command
+pump_io
+run_processes_parallel
+run_processes_parallel_tr2
+pp_init
+pp_start_one
+pp_collect_finished
+pp_cleanup
+pp_buffer_stderr
+pp_output
+start_async
+start_bg_command
+run_auto_maintenance
+prepare_auto_maintenance
+
+# Direct fork paths (not through start_command)
+daemonize
+
+# Hook execution (hook.c)
+run_hooks
+run_hooks_l
+run_hooks_opt
+pick_next_hook
+notify_hook_finished
+run_commit_hook
+run_found_hooks
+
+# Editor (editor.c)
+launch_editor
+launch_sequence_editor
+launch_specified_editor
+strbuf_edit_interactively
+
+# Credential helpers (credential.c)
+run_credential_helper
+credential_do
+credential_fill
+credential_approve
+credential_reject
+
+# Prompt / askpass (prompt.c)
+git_prompt
+do_askpass
+
+# Connected check (connected.c)
+check_connected
+
+# Sequencer — rebase/cherry-pick/revert (sequencer.c)
+run_git_commit
+run_command_silent_on_success
+do_exec
+reset_merge
+pick_commits
+sequencer_continue
+sequencer_pick_revisions
+do_pick_commit
+do_merge
+
+# GPG signing (gpg-interface.c)
+sign_buffer
+check_signature
+verify_signed_buffer
+
+# Diff infrastructure (diff.c)
+run_external_diff
+run_diff_cmd
+diff_flush
+builtin_diff
+
+# Transport / connect (connect.c, transport.c, transport-helper.c)
+git_connect
+git_connect_git
+transport_push
+transport_fetch_refs
+bidirectional_transfer_loop
+tloop_spawnwait_tasks
+
+# Subprocess (sub-process.c)
+subprocess_start
+
+# Column output (column.c)
+run_column_filter
+stop_column_filter
+
+# Send/fetch pack (send-pack.c, fetch-pack.c)
+pack_objects
+send_pack
+get_pack
+do_fetch_pack
+do_fetch_pack_v2
+
+# Archive filter (archive-tar.c)
+write_tar_filter_archive
+
+# Merge strategy (merge.c, merge-ll.c)
+try_merge_strategy
+ll_ext_merge
+
+# Parallel checkout (parallel-checkout.c)
+run_checkout_workers
+
+# Trailer command (trailer.c)
+apply_command
+
+# Add patch / interactive (add-patch.c, add-interactive.c)
+run_apply_check
+apply_patch
+edit_hunk_loop
+patch_update_file
+
+# Ref filter format (ref-filter.c, pretty.c) — calls pipe_command
+format_ref_array_item
+format_commit_message
+
+# Bundle (bundle.c)
+create_bundle
+unbundle
+
+# Bisect (bisect.c)
+bisect_next_all
+bisect_autostart
+
+# ------ Builtin commands that can reach fork ------
+# run_builtin dispatches via indirect call, so asyncify needs
+# all cmd_* functions that are on the stack when fork occurs.
+
+cmd_add
+cmd_am
+cmd_annotate
+cmd_archive
+cmd_bisect
+cmd_blame
+cmd_branch
+cmd_bugreport
+cmd_bundle
+cmd_checkout
+cmd_checkout__worker
+cmd_cherry
+cmd_cherry_pick
+cmd_clean
+cmd_clone
+cmd_column
+cmd_commit
+cmd_commit_graph
+cmd_config
+cmd_count_objects
+cmd_credential
+cmd_credential_cache
+cmd_credential_cache_daemon
+cmd_describe
+cmd_diagnose
+cmd_diff
+cmd_diff_files
+cmd_diff_index
+cmd_diff_tree
+cmd_difftool
+cmd_fast_export
+cmd_fast_import
+cmd_fetch
+cmd_fetch_pack
+cmd_for_each_repo
+cmd_format_patch
+cmd_fsck
+cmd_fsmonitor__daemon
+cmd_gc
+cmd_grep
+cmd_help
+cmd_hook
+cmd_index_pack
+cmd_init_db
+cmd_interpret_trailers
+cmd_log
+cmd_ls_remote
+cmd_maintenance
+cmd_merge
+cmd_merge_index
+cmd_merge_recursive
+cmd_merge_tree
+cmd_multi_pack_index
+cmd_notes
+cmd_pack_objects
+cmd_prune
+cmd_pull
+cmd_push
+cmd_range_diff
+cmd_read_tree
+cmd_rebase
+cmd_receive_pack
+cmd_reflog
+cmd_refs
+cmd_remote
+cmd_remote_ext
+cmd_remote_fd
+cmd_repack
+cmd_replace
+cmd_replay
+cmd_rerere
+cmd_reset
+cmd_restore
+cmd_rev_list
+cmd_revert
+cmd_rm
+cmd_send_pack
+cmd_shortlog
+cmd_show
+cmd_show_branch
+cmd_sparse_checkout
+cmd_stash
+cmd_status
+cmd_submodule__helper
+cmd_switch
+cmd_tag
+cmd_unpack_file
+cmd_upload_archive
+cmd_upload_archive_writer
+cmd_upload_pack
+cmd_verify_commit
+cmd_verify_pack
+cmd_verify_tag
+cmd_whatchanged
+cmd_worktree
+cmd_write_tree
+
+# Fork overrides in channel_syscall.c
+fork
+_Fork
+vfork

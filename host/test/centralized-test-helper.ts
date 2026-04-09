@@ -94,6 +94,9 @@ export async function runCentralizedProgram(
   // Thread channel allocator: count down from main channel
   const threadAllocator = new ThreadPageAllocator(MAX_PAGES);
 
+  // Track program bytes per pid for fork-after-exec support
+  const processProgramBytes = new Map<number, ArrayBuffer>();
+
   const kernelWorker = new CentralizedKernelWorker(
     { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true },
     io,
@@ -123,11 +126,14 @@ export async function runCentralizedProgram(
         const ASYNCIFY_BUF_SIZE = 16384;
         const asyncifyBufAddr = childChannelOffset - ASYNCIFY_BUF_SIZE;
 
+        // Use per-pid program bytes if available (fork-after-exec), else initial program
+        const parentProgram = processProgramBytes.get(parentPid) ?? programBytes;
+
         const childInitData: CentralizedWorkerInitMessage = {
           type: "centralized_init",
           pid: childPid,
           ppid: parentPid,
-          programBytes,
+          programBytes: parentProgram,
           memory: childMemory,
           channelOffset: childChannelOffset,
           isForkChild: true,
@@ -136,6 +142,7 @@ export async function runCentralizedProgram(
 
         const childWorker = workerAdapter.createWorker(childInitData);
         workers.set(childPid, childWorker);
+        processProgramBytes.set(childPid, parentProgram);
         childWorker.on("error", () => {
           kernelWorker.unregisterProcess(childPid);
           workers.delete(childPid);
@@ -175,6 +182,9 @@ export async function runCentralizedProgram(
 
         // Register new process with same pid
         kernelWorker.registerProcess(pid, newMemory, [newChannelOffset], { skipKernelCreate: true });
+
+        // Track new program bytes for this pid (for fork-after-exec)
+        processProgramBytes.set(pid, newProgramBytes);
 
         // Create new worker
         const initData: CentralizedWorkerInitMessage = {
@@ -239,6 +249,7 @@ export async function runCentralizedProgram(
         if (exitPid === pid) {
           // Main process exited — full cleanup
           kernelWorker.unregisterProcess(exitPid);
+          processProgramBytes.delete(exitPid);
           const w = workers.get(exitPid);
           if (w) {
             w.terminate().catch(() => {});
@@ -249,6 +260,7 @@ export async function runCentralizedProgram(
           // Child process exited — deactivate channels but keep in kernel
           // process table as zombie until reaped by wait/waitpid
           kernelWorker.deactivateProcess(exitPid);
+          processProgramBytes.delete(exitPid);
           const w = workers.get(exitPid);
           if (w) {
             w.terminate().catch(() => {});

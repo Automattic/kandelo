@@ -5,6 +5,10 @@ set -euo pipefail
 #
 # Git uses a Makefile-based build system (no autoconf). Cross-compilation
 # is done via config.mak overrides.
+#
+# Asyncify is applied with an onlylist so fork+exec works properly
+# (git gc --auto, hooks, pager, credential helpers, etc.).
+#
 # Output: examples/libs/git/bin/git.wasm
 
 GIT_VERSION="${GIT_VERSION:-2.47.1}"
@@ -13,6 +17,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 SRC_DIR="$SCRIPT_DIR/git-src"
 BIN_DIR="$SCRIPT_DIR/bin"
 SYSROOT="$REPO_ROOT/sysroot"
+ONLYLIST="$SCRIPT_DIR/asyncify-onlylist.txt"
 
 # --- Prerequisites ---
 if ! command -v wasm32posix-cc &>/dev/null; then
@@ -30,6 +35,13 @@ export WASM_POSIX_SYSROOT="$SYSROOT"
 # Check for zlib (required)
 if [ ! -f "$SYSROOT/lib/libz.a" ]; then
     echo "ERROR: zlib not found in sysroot. Build it first." >&2
+    exit 1
+fi
+
+# Check for wasm-opt (required for asyncify)
+WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
+if [ -z "$WASM_OPT" ]; then
+    echo "ERROR: wasm-opt not found. Install binaryen." >&2
     exit 1
 fi
 
@@ -60,12 +72,17 @@ STRIP = wasm32posix-strip
 prefix = /usr
 sysconfdir = /etc
 
-# Optimization
-CFLAGS = -O2
+# Optimization + debug info for function names (needed by asyncify-onlylist).
+# -gline-tables-only emits DWARF line tables + function name section without
+# full debug info, so wasm-opt can match function names in the onlylist.
+CFLAGS = -O2 -gline-tables-only
 
 # Increase shadow stack from default 64KB to 1MB — git's deeply nested
 # calls (strbuf_realpath, config parsing, snprintf) overflow 64KB.
-LDFLAGS = -Wl,-z,stack-size=1048576
+# --no-wasm-opt prevents clang's built-in wasm-opt from stripping the
+# name section after linking (required for asyncify-onlylist to work).
+# Must NOT use -Wl, prefix — this is a clang driver flag, not a linker flag.
+LDFLAGS = -Wl,-z,stack-size=1048576 --no-wasm-opt
 
 # Disable optional features that need unavailable infrastructure
 NO_PERL = YesPlease
@@ -131,15 +148,33 @@ make uname_S=Wasm32 -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" git 2>&1 | tai
 echo "==> Collecting binary..."
 mkdir -p "$BIN_DIR"
 
-if [ -f "$SRC_DIR/git" ]; then
-    cp "$SRC_DIR/git" "$BIN_DIR/git.wasm"
-    echo "==> Built git"
-    ls -lh "$BIN_DIR/git.wasm"
-else
+if [ ! -f "$SRC_DIR/git" ]; then
     echo "ERROR: git binary not found after build" >&2
     exit 1
 fi
 
+cp "$SRC_DIR/git" "$BIN_DIR/git.wasm"
+SIZE_BEFORE=$(wc -c < "$BIN_DIR/git.wasm" | tr -d ' ')
+echo "==> Pre-asyncify size: $(echo "$SIZE_BEFORE" | numfmt --to=iec 2>/dev/null || echo "${SIZE_BEFORE} bytes")"
+
+# --- Asyncify transform with onlylist ---
+echo "==> Applying asyncify with onlylist..."
+
+# Build comma-separated function list from onlylist file (skip comments and blanks)
+ONLY_FUNCS=$(grep -v '^#' "$ONLYLIST" | grep -v '^\s*$' | tr -d ' ' | tr '\n' ',' | sed 's/,$//')
+
+# -g tells wasm-opt to read the name section from the binary
+"$WASM_OPT" -g --asyncify \
+    --pass-arg="asyncify-imports@kernel.kernel_fork" \
+    --pass-arg="asyncify-onlylist@${ONLY_FUNCS}" \
+    "$BIN_DIR/git.wasm" -o "$BIN_DIR/git.wasm"
+
+# Optimize after asyncify to clean up
+"$WASM_OPT" -O2 "$BIN_DIR/git.wasm" -o "$BIN_DIR/git.wasm"
+
+SIZE_AFTER=$(wc -c < "$BIN_DIR/git.wasm" | tr -d ' ')
+echo "==> Post-asyncify size: $(echo "$SIZE_AFTER" | numfmt --to=iec 2>/dev/null || echo "${SIZE_AFTER} bytes")"
+
 echo ""
-echo "==> git built successfully!"
+echo "==> git built successfully with asyncify fork support!"
 echo "Binary: $BIN_DIR/git.wasm"

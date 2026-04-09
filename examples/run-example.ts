@@ -382,6 +382,25 @@ async function main() {
     kernelWorker.setCwd(pid, process.env.KERNEL_CWD || process.cwd());
     kernelWorker.setNextChildPid(101);
 
+    // Git system config via environment (Node.js VFS is the host filesystem,
+    // so we can't write /etc/gitconfig; use GIT_CONFIG_COUNT instead).
+    const gitConfigEntries: [string, string][] = [
+        ["gc.auto", "0"],
+        ["maintenance.auto", "false"],
+        ["core.pager", "cat"],
+        ["user.name", "User"],
+        ["user.email", "user@wasm.local"],
+        ["init.defaultBranch", "main"],
+    ];
+    const gitEnv: string[] = [
+        "GIT_CONFIG_NOSYSTEM=1",
+        `GIT_CONFIG_COUNT=${gitConfigEntries.length}`,
+        ...gitConfigEntries.flatMap(([key, val], i) => [
+            `GIT_CONFIG_KEY_${i}=${key}`,
+            `GIT_CONFIG_VALUE_${i}=${val}`,
+        ]),
+    ];
+
     // Spawn the process worker
     const initData: CentralizedWorkerInitMessage = {
         type: "centralized_init",
@@ -393,9 +412,12 @@ async function main() {
         ),
         memory,
         channelOffset,
-        env: Object.entries(process.env)
-            .filter(([, v]) => v !== undefined)
-            .map(([k, v]) => `${k}=${v}`),
+        env: [
+            ...Object.entries(process.env)
+                .filter(([, v]) => v !== undefined)
+                .map(([k, v]) => `${k}=${v}`),
+            ...gitEnv,
+        ],
         argv: [programPath, ...process.argv.slice(3)],
     };
 
