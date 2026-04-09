@@ -192,9 +192,14 @@ export class MemoryFileSystem implements FileSystemBackend {
     return result;
   }
 
-  // SharedFS doesn't distinguish symlinks in lstat vs stat
   lstat(path: string): StatResult {
-    return this.stat(path);
+    const result = this.adaptStat(this.fs.lstat(path));
+    // Override size for unmaterialized lazy files
+    const entry = this.lazyFiles.get(result.ino);
+    if (entry) {
+      result.size = entry.size;
+    }
+    return result;
   }
 
   mkdir(path: string, mode: number): void {
