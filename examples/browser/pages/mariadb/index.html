@@ -20,40 +20,43 @@
     <a href="/pages/shell/">Shell</a>
     <a href="/pages/python/">Python</a>
   </nav>
-  <div class="main">
-    <div class="main-header">
-      <h1>MariaDB on wasm-posix-kernel</h1>
-      <p class="subtitle">MariaDB 10.5 running inside a POSIX kernel compiled to WebAssembly</p>
-      <div class="controls">
-        <button id="start">Start MariaDB</button>
-        <select id="examples">
-          <option value="">-- Example Queries --</option>
-          <option value="version">Server Version</option>
-          <option value="create">Create Table</option>
-          <option value="insert">Insert Data</option>
-          <option value="select">Select Data</option>
-          <option value="show">Show Tables</option>
-          <option value="databases">Show Databases</option>
-        </select>
-        <button id="execute" disabled>Execute SQL</button>
-      </div>
-      <div class="sql-input">
-        <textarea id="sql" placeholder="Enter SQL query...">SELECT VERSION(), @@version_comment;</textarea>
-      </div>
-      <div id="status" class="status" style="display:none"></div>
-    </div>
-    <div class="preview-area">
-      <div class="split-panels">
-        <div class="log-panel">
-          <h3>Kernel Log</h3>
-          <pre id="log"></pre>
+  <div class="main" style="display:flex;flex-direction:column;overflow:hidden">
+    <div style="flex:1;overflow:auto;display:flex;flex-direction:column;min-height:0">
+      <div class="main-header">
+        <h1>MariaDB on wasm-posix-kernel</h1>
+        <p class="subtitle">MariaDB 10.5 running inside a POSIX kernel compiled to WebAssembly</p>
+        <div class="controls">
+          <button id="start">Start MariaDB</button>
+          <select id="examples">
+            <option value="">-- Example Queries --</option>
+            <option value="version">Server Version</option>
+            <option value="create">Create Table</option>
+            <option value="insert">Insert Data</option>
+            <option value="select">Select Data</option>
+            <option value="show">Show Tables</option>
+            <option value="databases">Show Databases</option>
+          </select>
+          <button id="execute" disabled>Execute SQL</button>
         </div>
-        <div class="result-panel">
-          <h3>Query Result</h3>
-          <div id="result" class="result-content"><p class="placeholder-text">Start MariaDB and execute a query</p></div>
+        <div class="sql-input">
+          <textarea id="sql" placeholder="Enter SQL query...">SELECT VERSION(), @@version_comment;</textarea>
+        </div>
+        <div id="status" class="status" style="display:none"></div>
+      </div>
+      <div class="preview-area">
+        <div class="split-panels">
+          <div class="log-panel">
+            <h3>Kernel Log</h3>
+            <pre id="log"></pre>
+          </div>
+          <div class="result-panel">
+            <h3>Query Result</h3>
+            <div id="result" class="result-content"><p class="placeholder-text">Start MariaDB and execute a query</p></div>
+          </div>
         </div>
       </div>
     </div>
+    <div id="terminal-panel"></div>
   </div>
   <script type="module" src="./main.ts"></script>
 </body>
