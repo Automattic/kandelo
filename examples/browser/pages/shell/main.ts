@@ -36,6 +36,7 @@ import diffWasmUrl from "../../../../examples/libs/diffutils/bin/diff.wasm?url";
 import cmpWasmUrl from "../../../../examples/libs/diffutils/bin/cmp.wasm?url";
 import sdiffWasmUrl from "../../../../examples/libs/diffutils/bin/sdiff.wasm?url";
 import diff3WasmUrl from "../../../../examples/libs/diffutils/bin/diff3.wasm?url";
+import perlWasmUrl from "../../../../examples/libs/perl/bin/perl.wasm?url";
 import "@xterm/xterm/css/xterm.css";
 
 // Vim runtime files — imported as raw text via Vite glob
@@ -183,6 +184,7 @@ async function loadBinaries(): Promise<string> {
     { url: cmpWasmUrl, path: "/usr/bin/cmp", symlinks: ["/bin/cmp"] },
     { url: sdiffWasmUrl, path: "/usr/bin/sdiff", symlinks: ["/bin/sdiff"] },
     { url: diff3WasmUrl, path: "/usr/bin/diff3", symlinks: ["/bin/diff3"] },
+    { url: perlWasmUrl, path: "/usr/bin/perl", symlinks: ["/bin/perl"] },
   ];
 
   // Fetch sizes for lazy binaries and data files in parallel
