@@ -1,0 +1,58 @@
+# Test suite for GNU tar.                             -*- Autotest -*-
+# Copyright 2020-2023 Free Software Foundation, Inc.
+#
+# This file is part of GNU tar.
+#
+# GNU tar is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 3 of the License, or
+# (at your option) any later version.
+#
+# GNU tar is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+AT_SETUP([--no-overwrite-dir])
+AT_KEYWORDS([extract extrac23 no-overwrite-dir])
+
+# Description: Implementation of the --no-overwrite-dir option was flawed in
+# tar versions up to 1.32.90.  This option is intended to preserve metadata
+# of existing directories.  In fact it worked only for non-empty directories.
+# Moreover, if the actual directory was owned by the user tar runs as and the
+# S_IWUSR bit was not set in its actual permissions, tar failed to create files
+# in it.
+#
+# Reported by: Michael Kaufmann <mail@michael-kaufmann.ch>
+# References: <20200207112934.Horde.anXzYhAj2CHiwUrw5CuT0G-@webmail.michael-kaufmann.ch>,
+#   https://lists.gnu.org/archive/html/bug-tar/2020-02/msg00003.html
+
+AT_TAR_CHECK([
+# Test if the directory permissions are restored properly.
+mkdir dir
+chmod 755 dir
+tar cf a.tar dir
+chmod 777 dir
+tar -xf a.tar --no-overwrite-dir
+genfile --stat=mode.777 dir
+
+# Test if temporary permissions are set correctly to allow the owner
+# to write to the directory.
+genfile --file dir/file
+tar cf a.tar dir
+rm dir/file
+chmod 400 dir
+tar -xf a.tar --no-overwrite-dir
+genfile --stat=mode.777 dir
+chmod 700 dir
+find dir
+],
+[0],
+[777
+400
+dir
+dir/file
+])
+AT_CLEANUP

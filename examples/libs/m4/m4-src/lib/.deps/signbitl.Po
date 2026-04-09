@@ -1,0 +1,48 @@
+signbitl.o: signbitl.c config.h math.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/math.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/features.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/alltypes.h \
+  string.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/string.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/strings.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/stddef.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/stddef.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stddef_header_macro.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stddef_ptrdiff_t.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stddef_size_t.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stddef_wchar_t.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stddef_null.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stddef_max_align_t.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stddef_offsetof.h \
+  isnanl-nolibm.h float+.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/float.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/float.h \
+  limits.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/limits.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/limits.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/limits.h
+config.h:
+math.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/math.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/features.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/alltypes.h:
+string.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/string.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/strings.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/stddef.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/stddef.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stddef_header_macro.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stddef_ptrdiff_t.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stddef_size_t.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stddef_wchar_t.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stddef_null.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stddef_max_align_t.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stddef_offsetof.h:
+isnanl-nolibm.h:
+float+.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/float.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/float.h:
+limits.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/limits.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/limits.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/limits.h:

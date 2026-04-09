@@ -1,0 +1,3121 @@
+# Mesajele în limba română pentru GNU tar
+# Copyright © 2005, 2020, 2022, 2023 Free Software Foundation, Inc.
+# This file is distributed under the same license as the tar package.
+#
+# Laurentiu Buzdugan <lbuz@rolix.org>>, 2005.
+# Florentina Mușat <florentina.musat.28@gmail.com>, 2020.
+# Remus-Gabriel Chelu <remusgabriel.chelu@disroot.org>, 2022 - 2023.
+#
+# Cronologia traducerii fișierului „tar”:
+# Traducerea inițială, făcută de LB, pentru versiunea tar 1.15.1.
+# Actualizare a traducerii pentru versiunea 1.32.90, făcută de FM, 2020.
+# Actualizare a mesajelor, de la fișierul „tar-1.32.90.pot”.
+# Actualizare a algoritmului formelor de plural (de la „trei-vechi” la „trei-actual”).
+# NU și a mesajelor traduse (acestea au rămas neschimbate).
+# Eliminare a mesajelor ce-au dispărut în ultima versiune.
+# Actualizări realizate de Remus-Gabriel Chelu <remusgabriel.chelu@disroot.org>, 15.01.2022.
+# Actualizare a traducerii pentru versiunea 1.34, făcută de R-GC, mai-2023.
+# Actualizare a traducerii pentru versiunea Y, făcută de X, Z(luna-anul).
+#
+#: src/create.c:1579
+msgid ""
+msgstr ""
+"Project-Id-Version: tar 1.34\n"
+"Report-Msgid-Bugs-To: bug-tar@gnu.org\n"
+"POT-Creation-Date: 2023-07-18 09:55+0300\n"
+"PO-Revision-Date: 2023-05-03 03:30+0200\n"
+"Last-Translator: Remus-Gabriel Chelu <remusgabriel.chelu@disroot.org>\n"
+"Language-Team: Romanian <translation-team-ro@lists.sourceforge.net>\n"
+"Language: ro\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=3; plural=(n==1 ? 0 : (n==0 || (n%100 > 0 && n%100 < "
+"20)) ? 1 : 2);\n"
+"X-Bugs: Report translation errors to the Language-Team address.\n"
+"X-Generator: Poedit 3.2.2\n"
+
+#: gnu/argmatch.c:145
+#, c-format
+msgid "invalid argument %s for %s"
+msgstr "argument invalid %s pentru %s"
+
+#: gnu/argmatch.c:146
+#, c-format
+msgid "ambiguous argument %s for %s"
+msgstr "argument ambiguu %s pentru %s"
+
+#: gnu/argmatch.c:165
+msgid "Valid arguments are:"
+msgstr "Argumente valide sunt:"
+
+#: gnu/argp-help.c:151
+#, c-format
+msgid "ARGP_HELP_FMT: %s value is less than or equal to %s"
+msgstr "ARGP_HELP_FMT: %s valoarea este mai mică sau egală cu %s"
+
+#: gnu/argp-help.c:227
+#, c-format
+msgid "%.*s: ARGP_HELP_FMT parameter requires a value"
+msgstr "%.*s: parametrul ARGP_HELP_FMT necesită o valoare"
+
+#: gnu/argp-help.c:237
+#, c-format
+msgid "%.*s: Unknown ARGP_HELP_FMT parameter"
+msgstr "%.*s: parametru ARGP_HELP_FMT necunoscut"
+
+#: gnu/argp-help.c:250
+#, c-format
+msgid "Garbage in ARGP_HELP_FMT: %s"
+msgstr "Gunoi în ARGP_HELP_FMT: %s"
+
+#: gnu/argp-help.c:1363
+msgid ""
+"Mandatory or optional arguments to long options are also mandatory or "
+"optional for any corresponding short options."
+msgstr ""
+"Argumentele obligatorii sau opționale pentru opțiunile lungi sunt "
+"obligatorii sau opționale și pentru opțiunile corespunzătoare scurte."
+
+#: gnu/argp-help.c:1729
+msgid "Usage:"
+msgstr "Utilizare:"
+
+#: gnu/argp-help.c:1733
+msgid "  or: "
+msgstr " sau: "
+
+#: gnu/argp-help.c:1745
+msgid " [OPTION...]"
+msgstr " [OPȚIUNE...]"
+
+#: gnu/argp-help.c:1772
+#, c-format
+msgid "Try '%s --help' or '%s --usage' for more information.\n"
+msgstr "Încercați «%s --help« sau «%s --usage» pentru mai multe informații.\n"
+
+#: gnu/argp-help.c:1800
+#, c-format
+msgid "Report bugs to %s.\n"
+msgstr "Raportați erorile la: %s.\n"
+
+#: gnu/argp-help.c:2001 gnu/error.c:194
+msgid "Unknown system error"
+msgstr "Eroare sistem necunoscută"
+
+#: gnu/argp-parse.c:80
+msgid "give this help list"
+msgstr "oferă această listă de ajutor"
+
+#: gnu/argp-parse.c:81
+msgid "give a short usage message"
+msgstr "oferă un mesaj de utilizare scurt"
+
+#: gnu/argp-parse.c:82 src/tar.c:554 src/tar.c:556 src/tar.c:661
+#: tests/genfile.c:134
+msgid "NAME"
+msgstr "NUME"
+
+#: gnu/argp-parse.c:83
+msgid "set the program name"
+msgstr "stabilește numele programului"
+
+#: gnu/argp-parse.c:84
+msgid "SECS"
+msgstr "SECS"
+
+#: gnu/argp-parse.c:85
+msgid "hang for SECS seconds (default 3600)"
+msgstr "suspendă pentru SECS secunde (implicit 3600)"
+
+#: gnu/argp-parse.c:142
+msgid "print program version"
+msgstr "afișează versiunea programului"
+
+#: gnu/argp-parse.c:159
+msgid "(PROGRAM ERROR) No version known!?"
+msgstr "(EROARE DE PROGRAM) Nicio versiune cunoscută!?"
+
+#: gnu/argp-parse.c:612
+#, c-format
+msgid "%s: Too many arguments\n"
+msgstr "%s: Prea multe argumente\n"
+
+#: gnu/argp-parse.c:758
+msgid "(PROGRAM ERROR) Option should have been recognized!?"
+msgstr "(EROARE DE PROGRAM) Opțiunea ar fi trebuit să fie recunoscută?"
+
+#: gnu/closeout.c:121
+msgid "write error"
+msgstr "eroare de scriere"
+
+#: gnu/getopt.c:278
+#, c-format
+msgid "%s: option '%s%s' is ambiguous\n"
+msgstr "%s: opțiunea „%s%s” este ambiguă\n"
+
+#: gnu/getopt.c:284
+#, c-format
+msgid "%s: option '%s%s' is ambiguous; possibilities:"
+msgstr "%s: opțiunea „%s%s” este ambiguă; posibilități:"
+
+#: gnu/getopt.c:319
+#, c-format
+msgid "%s: unrecognized option '%s%s'\n"
+msgstr "%s: opțiune nerecunoscută „%s%s”\n"
+
+#: gnu/getopt.c:345
+#, c-format
+msgid "%s: option '%s%s' doesn't allow an argument\n"
+msgstr "%s: opțiunea „%s%s” nu permite un argument\n"
+
+#: gnu/getopt.c:360
+#, c-format
+msgid "%s: option '%s%s' requires an argument\n"
+msgstr "%s: opțiunea „%s%s” necesită un argument\n"
+
+#: gnu/getopt.c:621
+#, c-format
+msgid "%s: invalid option -- '%c'\n"
+msgstr "%s: opțiune nevalidă -- „%c”\n"
+
+#: gnu/getopt.c:636 gnu/getopt.c:682
+#, c-format
+msgid "%s: option requires an argument -- '%c'\n"
+msgstr "%s: opțiunea necesită un argument -- „%c”\n"
+
+#: gnu/obstack.c:337 gnu/obstack.c:339 gnu/xalloc-die.c:34
+msgid "memory exhausted"
+msgstr "memorie epuizată"
+
+#: gnu/openat-die.c:38
+#, c-format
+msgid "unable to record current working directory"
+msgstr "nu se poate înregistra directorul de lucru curent"
+
+#: gnu/openat-die.c:57
+#, c-format
+msgid "failed to return to initial working directory"
+msgstr "nu s-a putut întoarce la directorul de lucru inițial"
+
+#. TRANSLATORS:
+#. Get translations for open and closing quotation marks.
+#. The message catalog should translate "`" to a left
+#. quotation mark suitable for the locale, and similarly for
+#. "'".  For example, a French Unicode local should translate
+#. these to U+00AB (LEFT-POINTING DOUBLE ANGLE
+#. QUOTATION MARK), and U+00BB (RIGHT-POINTING DOUBLE ANGLE
+#. QUOTATION MARK), respectively.
+#.
+#. If the catalog has no translation, we will try to
+#. use Unicode U+2018 (LEFT SINGLE QUOTATION MARK) and
+#. Unicode U+2019 (RIGHT SINGLE QUOTATION MARK).  If the
+#. current locale is not Unicode, locale_quoting_style
+#. will quote 'like this', and clocale_quoting_style will
+#. quote "like this".  You should always include translations
+#. for "`" and "'" even if U+2018 and U+2019 are appropriate
+#. for your locale.
+#.
+#. If you don't know what to put here, please see
+#. <https://en.wikipedia.org/wiki/Quotation_marks_in_other_languages>
+#. and use glyphs suitable for your language.
+#: gnu/quotearg.c:354
+msgid "`"
+msgstr "„"
+
+#: gnu/quotearg.c:355
+msgid "'"
+msgstr "”"
+
+#. TRANSLATORS: A regular expression testing for an affirmative answer
+#. (english: "yes").  Testing the first character may be sufficient.
+#. Take care to consider upper and lower case.
+#. To enquire the regular expression that your system uses for this
+#. purpose, you can use the command
+#. locale -k LC_MESSAGES | grep '^yesexpr='
+#: gnu/rpmatch.c:149
+msgid "^[yY]"
+msgstr "^[dDyY]"
+
+#. TRANSLATORS: A regular expression testing for a negative answer
+#. (english: "no").  Testing the first character may be sufficient.
+#. Take care to consider upper and lower case.
+#. To enquire the regular expression that your system uses for this
+#. purpose, you can use the command
+#. locale -k LC_MESSAGES | grep '^noexpr='
+#: gnu/rpmatch.c:162
+msgid "^[nN]"
+msgstr "^[nN]"
+
+#: gnu/version-etc.c:73
+#, c-format
+msgid "Packaged by %s (%s)\n"
+msgstr "Împachetat de %s (%s)\n"
+
+#: gnu/version-etc.c:76
+#, c-format
+msgid "Packaged by %s\n"
+msgstr "Împachetat de %s\n"
+
+#. TRANSLATORS: Translate "(C)" to the copyright symbol
+#. (C-in-a-circle), if this symbol is available in the user's
+#. locale.  Otherwise, do not translate "(C)"; leave it as-is.
+#: gnu/version-etc.c:83
+msgid "(C)"
+msgstr "©"
+
+#. TRANSLATORS: The %s placeholder is the web address of the GPL license.
+#: gnu/version-etc.c:88
+#, c-format
+msgid ""
+"License GPLv3+: GNU GPL version 3 or later <%s>.\n"
+"This is free software: you are free to change and redistribute it.\n"
+"There is NO WARRANTY, to the extent permitted by law.\n"
+msgstr ""
+"Licența GPLv3+: GNU GPL versiunea 3 sau ulterioară <%s>.\n"
+"Acesta este software liber: sunteți liber să îl modificați și să îl "
+"redistribuiți.\n"
+"NU există NICIO GARANȚIE, în măsura permisă de lege.\n"
+
+#. TRANSLATORS: %s denotes an author name.
+#: gnu/version-etc.c:105
+#, c-format
+msgid "Written by %s.\n"
+msgstr "Scris de %s.\n"
+
+#. TRANSLATORS: Each %s denotes an author name.
+#: gnu/version-etc.c:109
+#, c-format
+msgid "Written by %s and %s.\n"
+msgstr "Scris de %s și %s.\n"
+
+#. TRANSLATORS: Each %s denotes an author name.
+#: gnu/version-etc.c:113
+#, c-format
+msgid "Written by %s, %s, and %s.\n"
+msgstr "Scris de %s, %s, și %s.\n"
+
+#. TRANSLATORS: Each %s denotes an author name.
+#. You can use line breaks, estimating that each author name occupies
+#. ca. 16 screen columns and that a screen line has ca. 80 columns.
+#: gnu/version-etc.c:120
+#, c-format
+msgid ""
+"Written by %s, %s, %s,\n"
+"and %s.\n"
+msgstr ""
+"Scris de %s, %s, %s,\n"
+"și %s.\n"
+
+#. TRANSLATORS: Each %s denotes an author name.
+#. You can use line breaks, estimating that each author name occupies
+#. ca. 16 screen columns and that a screen line has ca. 80 columns.
+#: gnu/version-etc.c:127
+#, c-format
+msgid ""
+"Written by %s, %s, %s,\n"
+"%s, and %s.\n"
+msgstr ""
+"Scris de %s, %s, %s,\n"
+"%s, și %s.\n"
+
+#. TRANSLATORS: Each %s denotes an author name.
+#. You can use line breaks, estimating that each author name occupies
+#. ca. 16 screen columns and that a screen line has ca. 80 columns.
+#: gnu/version-etc.c:134
+#, c-format
+msgid ""
+"Written by %s, %s, %s,\n"
+"%s, %s, and %s.\n"
+msgstr ""
+"Scris de %s, %s, %s,\n"
+"%s, %s, și %s.\n"
+
+#. TRANSLATORS: Each %s denotes an author name.
+#. You can use line breaks, estimating that each author name occupies
+#. ca. 16 screen columns and that a screen line has ca. 80 columns.
+#: gnu/version-etc.c:142
+#, c-format
+msgid ""
+"Written by %s, %s, %s,\n"
+"%s, %s, %s, and %s.\n"
+msgstr ""
+"Scris de %s, %s, %s,\n"
+"%s, %s, %s, și %s.\n"
+
+#. TRANSLATORS: Each %s denotes an author name.
+#. You can use line breaks, estimating that each author name occupies
+#. ca. 16 screen columns and that a screen line has ca. 80 columns.
+#: gnu/version-etc.c:150
+#, c-format
+msgid ""
+"Written by %s, %s, %s,\n"
+"%s, %s, %s, %s,\n"
+"and %s.\n"
+msgstr ""
+"Scris de %s, %s, %s,\n"
+"%s, %s, %s, %s,\n"
+"și %s.\n"
+
+#. TRANSLATORS: Each %s denotes an author name.
+#. You can use line breaks, estimating that each author name occupies
+#. ca. 16 screen columns and that a screen line has ca. 80 columns.
+#: gnu/version-etc.c:159
+#, c-format
+msgid ""
+"Written by %s, %s, %s,\n"
+"%s, %s, %s, %s,\n"
+"%s, and %s.\n"
+msgstr ""
+"Scris de %s, %s, %s,\n"
+"%s, %s, %s, %s,\n"
+"%s, și %s.\n"
+
+#. TRANSLATORS: Each %s denotes an author name.
+#. You can use line breaks, estimating that each author name occupies
+#. ca. 16 screen columns and that a screen line has ca. 80 columns.
+#: gnu/version-etc.c:170
+#, c-format
+msgid ""
+"Written by %s, %s, %s,\n"
+"%s, %s, %s, %s,\n"
+"%s, %s, and others.\n"
+msgstr ""
+"Scris de %s, %s, %s,\n"
+"%s, %s, %s, %s,\n"
+"%s, %s, și alții.\n"
+
+#. TRANSLATORS: The placeholder indicates the bug-reporting address
+#. for this package.  Please add _another line_ saying
+#. "Report translation bugs to <...>\n" with the address for translation
+#. bugs (typically your translation team's web or email address).
+#: gnu/version-etc.c:249
+#, c-format
+msgid "Report bugs to: %s\n"
+msgstr ""
+"Raportați erorile din program la: %s\n"
+"Raportați greșelile de traducere la: <translation-team-ro@lists.sourceforge."
+"net>\n"
+
+#: gnu/version-etc.c:251
+#, c-format
+msgid "Report %s bugs to: %s\n"
+msgstr "Raportați erorile din %s la: %s\n"
+
+#: gnu/version-etc.c:255 gnu/version-etc.c:257
+#, c-format
+msgid "%s home page: <%s>\n"
+msgstr "%s pagină principală: <%s>\n"
+
+#: gnu/version-etc.c:260
+#, c-format
+msgid "General help using GNU software: <%s>\n"
+msgstr "Ajutor general pentru utilizarea software-ului GNU: <%s>\n"
+
+#. TRANSLATORS: %s after `Cannot' is a function name, e.g. `Cannot open'.
+#. Directly translating this to another language will not work, first because
+#. %s itself is not translated.
+#. Translate it as `%s: Function %s failed'.
+#: lib/paxerror.c:60 lib/paxerror.c:73
+#, c-format
+msgid "%s: Cannot %s"
+msgstr "%s: Funcția %s a eșuat"
+
+#. TRANSLATORS: %s after `Cannot' is a function name, e.g. `Cannot open'.
+#. Directly translating this to another language will not work, first because
+#. %s itself is not translated.
+#. Translate it as `%s: Function %s failed'.
+#: lib/paxerror.c:86
+#, c-format
+msgid "%s: Warning: Cannot %s"
+msgstr "%s: Avertisment: Funcția %s a eșuat"
+
+#: lib/paxerror.c:95
+#, c-format
+msgid "%s: Cannot change mode to %s"
+msgstr "%s: Nu se poate schimba modul la %s"
+
+#: lib/paxerror.c:104
+#, fuzzy, c-format
+#| msgid "%s: Cannot change ownership to uid %lu, gid %lu"
+msgid "%s: Cannot change ownership to uid %ju, gid %ju"
+msgstr "%s: Nu se poate schimba proprietarul la uid %lu, gid %lu"
+
+#: lib/paxerror.c:130
+#, c-format
+msgid "%s: Cannot hard link to %s"
+msgstr "%s: Nu se poate crea legătura dura către %s"
+
+#: lib/paxerror.c:182 lib/paxerror.c:212
+#, fuzzy, c-format
+#| msgid "%s: Read error at byte %s, while reading %lu byte"
+#| msgid_plural "%s: Read error at byte %s, while reading %lu bytes"
+msgid "%s: Read error at byte %jd, while reading %zu byte"
+msgid_plural "%s: Read error at byte %jd, while reading %zu bytes"
+msgstr[0] "%s: Eroare de citire la octetul %s, în timpul citirii %lu octet"
+msgstr[1] "%s: Eroare de citire la octetul %s, în timpul citirii a %lu octeți"
+msgstr[2] ""
+"%s: Eroare de citire la octetul %s, în timpul citirii a %lu de octeți"
+
+#: lib/paxerror.c:194
+#, fuzzy, c-format
+#| msgid "%s: Warning: Read error at byte %s, while reading %lu byte"
+#| msgid_plural "%s: Warning: Read error at byte %s, while reading %lu bytes"
+msgid "%s: Warning: Read error at byte %jd, while reading %zu byte"
+msgid_plural "%s: Warning: Read error at byte %jd, while reading %zu bytes"
+msgstr[0] ""
+"%s: Avertisment: Eroare de citire la octetul %s, în timpul citirii %lu octet"
+msgstr[1] ""
+"%s: Avertisment: Eroare de citire la octetul %s, în timpul citirii a %lu "
+"octeți"
+msgstr[2] ""
+"%s: Avertisment: Eroare de citire la octetul %s, în timpul citirii a %lu de "
+"octeți"
+
+#: lib/paxerror.c:259
+#, fuzzy, c-format
+#| msgid "%s: Cannot seek to %s"
+msgid "%s: Cannot seek to %jd"
+msgstr "%s: Nu s-a putut ajunge la poziția la %s în fișier"
+
+#: lib/paxerror.c:273
+#, fuzzy, c-format
+#| msgid "%s: Warning: Cannot seek to %s"
+msgid "%s: Warning: Cannot seek to %jd"
+msgstr "%s: Avertisment: Nu s-a putut ajunge la poziția la %s în fișier"
+
+#: lib/paxerror.c:281
+#, c-format
+msgid "%s: Cannot create symlink to %s"
+msgstr "%s: Nu se poate crea legătura simbolică către %s"
+
+#: lib/paxerror.c:346
+#, fuzzy, c-format
+#| msgid "%s: Wrote only %lu of %lu byte"
+#| msgid_plural "%s: Wrote only %lu of %lu bytes"
+msgid "%s: Wrote only %zu of %zu byte"
+msgid_plural "%s: Wrote only %zu of %zu bytes"
+msgstr[0] "%s: S-a scris doar %lu din %lu octet"
+msgstr[1] "%s: S-au scris doar %lu din %lu octeți"
+msgstr[2] "%s: S-au scris doar %lu din %lu de octeți"
+
+#: lib/paxnames.c:140
+#, c-format
+msgid "Removing leading `%s' from member names"
+msgstr "Se elimină primul „%s” din numele membrilor"
+
+#: lib/paxnames.c:141
+#, c-format
+msgid "Removing leading `%s' from hard link targets"
+msgstr "Se elimină primul „%s” din destinațiile legăturilor dure"
+
+#: lib/paxnames.c:154
+msgid "Substituting `.' for empty member name"
+msgstr "Se înlocuiește cu „.” numele de membru gol."
+
+#: lib/paxnames.c:155
+msgid "Substituting `.' for empty hard link target"
+msgstr "Se înlocuiește cu „.” destinația de legătură dură goală"
+
+#: lib/rtapelib.c:295
+#, c-format
+msgid "exec/tcp: Service not available"
+msgstr "exec/tcp: Serviciu indisponibil"
+
+#: lib/rtapelib.c:299
+#, c-format
+msgid "stdin"
+msgstr "intrarea standard (stdin)"
+
+#: lib/rtapelib.c:302 src/tar.c:2771
+#, c-format
+msgid "stdout"
+msgstr "ieșirea standard (stdout)"
+
+#: lib/rtapelib.c:457
+#, c-format
+msgid "Cannot connect to %s: resolve failed"
+msgstr "Nu se poate conecta la %s: rezolvarea a eșuat"
+
+#: lib/rtapelib.c:539
+#, c-format
+msgid "Cannot redirect files for remote shell"
+msgstr "Nu se pot redirecționa fișierele pentru shell-ul de la distanță"
+
+#: lib/rtapelib.c:544
+#, fuzzy, c-format
+#| msgid "cannot set time on `%s'"
+msgid "Cannot reset uid and gid: %s"
+msgstr "nu se poate stabili ora pe „%s”"
+
+#: lib/rtapelib.c:556
+#, c-format
+msgid "Cannot execute remote shell"
+msgstr "Nu se poate executa shell-ul de la distanță"
+
+#: rmt/rmt.c:434
+msgid "Seek direction out of range"
+msgstr "Direcția "
+
+#: rmt/rmt.c:440
+msgid "Invalid seek direction"
+msgstr "Direcție de deplasare nevalidă"
+
+#: rmt/rmt.c:448
+msgid "Invalid seek offset"
+msgstr "Decalaj de deplasare nevalid"
+
+#: rmt/rmt.c:454
+msgid "Seek offset out of range"
+msgstr "Decalaj de deplasare în afara intervalului"
+
+#: rmt/rmt.c:495 rmt/rmt.c:546 rmt/rmt.c:610
+msgid "Invalid byte count"
+msgstr "Număr de octeți nevalid"
+
+#: rmt/rmt.c:501 rmt/rmt.c:552 rmt/rmt.c:616 rmt/rmt.c:627
+msgid "Byte count out of range"
+msgstr "Număr de octeți în afara intervalului"
+
+#: rmt/rmt.c:560
+msgid "Premature eof"
+msgstr "Sfârșit de fișier(EOF) prematur"
+
+#: rmt/rmt.c:603
+msgid "Invalid operation code"
+msgstr "Cod de operație nevalid"
+
+#: rmt/rmt.c:638 rmt/rmt.c:682
+msgid "Operation not supported"
+msgstr "Operația nu este acceptată"
+
+#: rmt/rmt.c:666
+msgid "Unexpected arguments"
+msgstr "Argumente neașteptate"
+
+#: rmt/rmt.c:691
+msgid "Manipulate a tape drive, accepting commands from a remote process"
+msgstr ""
+"Manipulează o unitate de bandă magnetică, acceptând comenzi de la un proces "
+"de la distanță"
+
+#: rmt/rmt.c:698 src/tar.c:485 src/tar.c:489 src/tar.c:658 src/tar.c:674
+#: src/tar.c:763 src/tar.c:774 tests/genfile.c:179
+msgid "NUMBER"
+msgstr "NUMĂR"
+
+#: rmt/rmt.c:699
+msgid "set debug level"
+msgstr "stabilește nivelul de depanare"
+
+#: rmt/rmt.c:700 src/names.c:77 src/names.c:81 src/names.c:99 src/names.c:109
+#: src/names.c:112 src/names.c:115 src/names.c:118 src/names.c:120
+#: src/tar.c:483 src/tar.c:558 src/tar.c:560 src/tar.c:665 src/tar.c:791
+#: tests/genfile.c:136 tests/genfile.c:193 tests/genfile.c:197
+#: tests/genfile.c:200 tests/genfile.c:206
+msgid "FILE"
+msgstr "FIŞIER"
+
+#: rmt/rmt.c:701
+msgid "set debug output file name"
+msgstr "stabilește numele fișierului de ieșire de depanare"
+
+#: rmt/rmt.c:717 rmt/rmt.c:785
+#, c-format
+msgid "cannot open %s"
+msgstr "nu se poate deschide %s"
+
+#: rmt/rmt.c:782 tests/genfile.c:1036
+#, c-format
+msgid "too many arguments"
+msgstr "prea multe argumente"
+
+#: rmt/rmt.c:824
+msgid "Garbage command"
+msgstr "Comandă gunoi"
+
+#: src/buffer.c:451 src/buffer.c:456 src/buffer.c:779 src/buffer.c:1396
+#: src/buffer.c:1433 src/buffer.c:1445 src/buffer.c:1474 src/delete.c:219
+#: src/list.c:281 src/update.c:193
+msgid "This does not look like a tar archive"
+msgstr "Aceasta nu pare a fi o arhivă tar"
+
+#: src/buffer.c:567
+msgid "Total bytes read"
+msgstr "Total octeți citiți"
+
+#: src/buffer.c:569
+msgid "Total bytes written"
+msgstr "Total octeți scriși"
+
+#: src/buffer.c:570
+msgid "Total bytes deleted"
+msgstr "Total octeți șterși"
+
+#: src/buffer.c:649
+msgid "(pipe)"
+msgstr "(conductă)"
+
+#: src/buffer.c:673
+msgid "Refusing to read archive contents from terminal (missing -f option?)"
+msgstr ""
+"Se refuză citirea conținutului arhivei de la terminal (lipsește opțiunea „-"
+"f”?)"
+
+#: src/buffer.c:675
+msgid "Refusing to write archive contents to terminal (missing -f option?)"
+msgstr ""
+"Se refuză scrierea conținutului arhivei în terminal (lipsește opțiunea „-f?)"
+
+#: src/buffer.c:717
+msgid "Invalid value for record_size"
+msgstr "Valoare inevalidă pentru record_size"
+
+#: src/buffer.c:720
+msgid "No archive name given"
+msgstr "Nu a fost dat niciun nume de arhivă"
+
+#: src/buffer.c:763
+msgid "Cannot verify stdin/stdout archive"
+msgstr "Nu se pot verifica arhivele la intrarea sau ieșirea standard"
+
+#: src/buffer.c:776
+#, c-format
+msgid "Archive is compressed. Use %s option"
+msgstr "Arhiva este comprimată. Utilizați opțiunea %s"
+
+#: src/buffer.c:832 src/tar.c:2523
+msgid "Cannot update compressed archives"
+msgstr "Nu se pot actualiza arhive comprimate"
+
+#: src/buffer.c:919
+msgid "At beginning of tape, quitting now"
+msgstr "La începutul benzii magnetice, se iese acum"
+
+#: src/buffer.c:925
+msgid "Too many errors, quitting"
+msgstr "Prea multe erori, se abandonează"
+
+#: src/buffer.c:958
+#, c-format
+msgid "Record size = %lu block"
+msgid_plural "Record size = %lu blocks"
+msgstr[0] "Dimensiune înregistrare = %lu bloc"
+msgstr[1] "Dimensiune înregistrare = %lu blocuri"
+msgstr[2] "Dimensiune înregistrare = %lu de blocuri"
+
+#: src/buffer.c:979
+#, c-format
+msgid "Unaligned block (%lu byte) in archive"
+msgid_plural "Unaligned block (%lu bytes) in archive"
+msgstr[0] "Bloc nealiniat (%lu octet) în arhivă"
+msgstr[1] "Bloc nealiniat (%lu octeți) în arhivă"
+msgstr[2] "Bloc nealiniat (%lu de octeți) în arhivă"
+
+#: src/buffer.c:1057
+msgid "Cannot backspace archive file; it may be unreadable without -i"
+msgstr ""
+"Nu se poate merge înapoi în fișierul arhivă; acesta ar putea fi de necitit "
+"fără opțiunea „-i”"
+
+#: src/buffer.c:1089
+msgid "rmtlseek not stopped at a record boundary"
+msgstr "rmtlseek nu s-a oprit la limita unei înregistrări"
+
+#: src/buffer.c:1150
+#, c-format
+msgid "%s: contains invalid volume number"
+msgstr "%s: conține un număr de volum nevalid"
+
+#: src/buffer.c:1185
+msgid "Volume number overflow"
+msgstr "Depășire în numărul de volum"
+
+#: src/buffer.c:1200
+#, c-format
+msgid "Prepare volume #%d for %s and hit return: "
+msgstr "Pregătiți volumul #%d pentru %s și apăsați tasta «Enter»: "
+
+#: src/buffer.c:1206
+msgid "EOF where user reply was expected"
+msgstr "sfârșit de fișier, în timp ce se aștepta răspunsul utilizatorului"
+
+#: src/buffer.c:1211 src/buffer.c:1243
+msgid "WARNING: Archive is incomplete"
+msgstr "AVERTISMENT: Arhiva este incompletă"
+
+#: src/buffer.c:1225
+#, c-format
+msgid ""
+" n name        Give a new file name for the next (and subsequent) volume(s)\n"
+" q             Abort tar\n"
+" y or newline  Continue operation\n"
+msgstr ""
+" n nume        Dă un nume de fișier nou pentru următorul(ele) (și "
+"ulterioare) volum(e)\n"
+" q             Închide tar\n"
+" y sau «Enter»  Continuă operația\n"
+
+#: src/buffer.c:1230
+#, c-format
+msgid " !             Spawn a subshell\n"
+msgstr " !             Creează un subshell\n"
+
+#: src/buffer.c:1231
+#, c-format
+msgid " ?             Print this list\n"
+msgstr " ?             Afișează această listă\n"
+
+#: src/buffer.c:1238
+msgid "No new volume; exiting.\n"
+msgstr "Nici un volum nou; se iese.\n"
+
+#: src/buffer.c:1271
+msgid "File name not specified. Try again.\n"
+msgstr "Numele fișierului nu este specificat. Încercați din nou.\n"
+
+#: src/buffer.c:1283
+#, c-format
+msgid "Invalid input. Type ? for help.\n"
+msgstr "Intrare nevalidă. Tastați „?” pentru ajutor.\n"
+
+#: src/buffer.c:1334
+#, c-format
+msgid "%s command failed"
+msgstr "comanda %s a eșuat"
+
+#: src/buffer.c:1510 src/buffer.c:1526
+#, c-format
+msgid "%s is not continued on this volume"
+msgstr "%s nu este continuat pe acest volum"
+
+#: src/buffer.c:1522
+#, c-format
+msgid "%s is possibly continued on this volume: header contains truncated name"
+msgstr ""
+"%s este posibil să fie continuat pe acest volum: antetul conține numele "
+"trunchiat"
+
+#: src/buffer.c:1540
+#, c-format
+msgid "%s is the wrong size (%s != %s + %s)"
+msgstr "%s este de dimensiune greșită (%s != %s + %s)"
+
+#: src/buffer.c:1555
+#, c-format
+msgid "This volume is out of sequence (%s - %s != %s)"
+msgstr "Acest volum se află în afara secvenței (%s - %s != %s)"
+
+#: src/buffer.c:1633 src/buffer.c:1651
+#, c-format
+msgid "Archive not labeled to match %s"
+msgstr "Arhiva nu este etichetată să se potrivească cu %s"
+
+#: src/buffer.c:1655
+#, c-format
+msgid "Volume %s does not match %s"
+msgstr "Volumul %s nu se potrivește cu %s"
+
+#: src/buffer.c:1749
+#, c-format
+msgid ""
+"%s: file name too long to be stored in a GNU multivolume header, truncated"
+msgstr ""
+"%s: numele de fișier este prea lung pentru a fi stocat într-un antet de "
+"multivolum GNU, se trunchiază"
+
+#: src/buffer.c:1942
+msgid "write did not end on a block boundary"
+msgstr "scrierea nu s-a terminat într-o limită de bloc"
+
+#: src/compare.c:96
+#, c-format
+msgid "Could only read %lu of %lu byte"
+msgid_plural "Could only read %lu of %lu bytes"
+msgstr[0] "S-a putut citi doar %lu din %lu octet"
+msgstr[1] "S-au putut citi doar %lu din %lu octeți"
+msgstr[2] "S-au putut citi doar %lu din %lu de octeți"
+
+#: src/compare.c:106 src/compare.c:396
+msgid "Contents differ"
+msgstr "Conținuturile diferă"
+
+#: src/compare.c:132 src/extract.c:1316 src/incremen.c:1511 src/list.c:502
+#: src/list.c:1427 src/xheader.c:801
+msgid "Unexpected EOF in archive"
+msgstr "Sfârșit de fișier neașteptat în arhivă"
+
+#: src/compare.c:180 src/compare.c:196 src/compare.c:315 src/compare.c:420
+msgid "File type differs"
+msgstr "Tipul fișierelor diferă"
+
+#: src/compare.c:183 src/compare.c:203 src/compare.c:329
+msgid "Mode differs"
+msgstr "Modurile diferă"
+
+#: src/compare.c:206
+msgid "Uid differs"
+msgstr "Identificatoarele „uid” diferă"
+
+#: src/compare.c:208
+msgid "Gid differs"
+msgstr "Identificatoarele „gid” diferă"
+
+#: src/compare.c:212
+msgid "Mod time differs"
+msgstr "Data și ora de modificare diferă"
+
+#: src/compare.c:216 src/compare.c:430
+msgid "Size differs"
+msgstr "Dimensiunea diferă"
+
+#: src/compare.c:265
+#, c-format
+msgid "Not linked to %s"
+msgstr "Nu este vinculat cu %s"
+
+#: src/compare.c:291
+msgid "Symlink differs"
+msgstr "Legăturile simbolice diferă"
+
+#: src/compare.c:323
+msgid "Device number differs"
+msgstr "Numărul de dispozitiv diferă"
+
+#: src/compare.c:471
+#, c-format
+msgid "Verify "
+msgstr "Verifică "
+
+#: src/compare.c:478
+#, c-format
+msgid "%s: Unknown file type '%c', diffed as normal file"
+msgstr "%s: Tip de fișier necunoscut „%c”, diferit de un fișier obișnuit"
+
+#: src/compare.c:533
+msgid "Archive contains file names with leading prefixes removed."
+msgstr "Arhiva conține nume de fișiere cu prefixele eliminate."
+
+#: src/compare.c:539
+msgid "Archive contains transformed file names."
+msgstr "Arhiva conține nume de fișiere transformate."
+
+#: src/compare.c:544
+msgid "Verification may fail to locate original files."
+msgstr "Verificare ar putea eșua să găsească fișierele originale."
+
+#: src/compare.c:599
+#, c-format
+msgid "VERIFY FAILURE: %d invalid header detected"
+msgid_plural "VERIFY FAILURE: %d invalid headers detected"
+msgstr[0] "EȘEC DE VERIFICARE: %d antet nevalid detectat"
+msgstr[1] "EȘEC DE VERIFICARE: %d anteturi nevalide detectate"
+msgstr[2] "EȘEC DE VERIFICARE: %d de anteturi nevalide detectate"
+
+#: src/compare.c:617 src/list.c:251
+#, c-format
+msgid "A lone zero block at %s"
+msgstr "Un bloc zero singuratic la %s"
+
+#: src/create.c:74
+#, c-format
+msgid "%s: contains a cache directory tag %s; %s"
+msgstr "%s: conține o etichetă de director de cache %s; %s"
+
+#: src/create.c:263
+#, c-format
+msgid "value %s out of %s range %s..%s; substituting %s"
+msgstr "valoarea %s în afara %s intervalului %s..%s; se înlocuiește %s"
+
+#: src/create.c:269
+#, c-format
+msgid "value %s out of %s range %s..%s"
+msgstr "valoarea %s în afara %s intervalului %s..%s"
+
+#: src/create.c:329
+msgid "Generating negative octal headers"
+msgstr "Se generează antete octale negative"
+
+#: src/create.c:606 src/create.c:669
+#, c-format
+msgid "%s: file name is too long (max %d); not dumped"
+msgstr "%s: numele fișierului este prea lung (maxim %d); nimic generat"
+
+#: src/create.c:616
+#, c-format
+msgid "%s: file name is too long (cannot be split); not dumped"
+msgstr ""
+"%s: numele fișierului este prea lung (nu poate fi divizat); nimic generat"
+
+#: src/create.c:643
+#, c-format
+msgid "%s: link name is too long; not dumped"
+msgstr "%s: numele legăturii este prea lung; nimic generat"
+
+#: src/create.c:1095
+#, c-format
+msgid "%s: File shrank by %s byte; padding with zeros"
+msgid_plural "%s: File shrank by %s bytes; padding with zeros"
+msgstr[0] "%s: Fișierul s-a redus cu %s octet; se umple cu zerouri"
+msgstr[1] "%s: Fișierul s-a redus cu %s octeți; se umple cu zerouri"
+msgstr[2] "%s: Fișierul s-a redus cu %s de octeți; se umple cu zerouri"
+
+#: src/create.c:1193
+#, c-format
+msgid "%s: file is on a different filesystem; not dumped"
+msgstr "%s: fișierul este pe un sistem de fișiere diferit; nimic generat"
+
+#: src/create.c:1236 src/create.c:1247 src/incremen.c:619 src/incremen.c:626
+msgid "contents not dumped"
+msgstr "conținutul nu este transferat"
+
+#: src/create.c:1445
+#, c-format
+msgid "%s: Unknown file type; file ignored"
+msgstr "%s: Tip de fișier necunoscut; fișier ignorat"
+
+#: src/create.c:1556
+#, c-format
+msgid "Missing links to %s."
+msgstr "Legături lipsă către %s."
+
+#: src/create.c:1716
+#, c-format
+msgid "%s: file is unchanged; not dumped"
+msgstr "%s: fișierul este neschimbat; nimic generat"
+
+#: src/create.c:1725
+#, fuzzy, c-format
+#| msgid "%s: file is on a different filesystem; not dumped"
+msgid "%s: archive cannot contain itself; not dumped"
+msgstr "%s: fișierul este pe un sistem de fișiere diferit; nimic generat"
+
+#: src/create.c:1753 src/incremen.c:612
+msgid "directory not dumped"
+msgstr "directorul nu este transferat"
+
+#: src/create.c:1847
+#, c-format
+msgid "%s: file changed as we read it"
+msgstr "%s: fișier s-a modificat în timp ce era citit"
+
+#: src/create.c:1924
+#, c-format
+msgid "%s: socket ignored"
+msgstr "%s: soclu ignorat"
+
+# R-GC, scrie:
+# «door» echivalentul în sistemele Sun, pentru «port»
+#: src/create.c:1930
+#, c-format
+msgid "%s: door ignored"
+msgstr "%s: poartă(door) ignorată"
+
+#: src/delete.c:224 src/list.c:294 src/update.c:197
+msgid "Skipping to next header"
+msgstr "Se sare la următorul antet"
+
+#: src/delete.c:362
+msgid "Deleting non-header from archive"
+msgstr "Se șterge non-antet din arhivă"
+
+#: src/extract.c:354
+#, c-format
+msgid "%s: implausibly old time stamp %s"
+msgstr "%s: înregistrare de timp (dată+oră) neverosimilă %s"
+
+#: src/extract.c:372
+#, c-format
+msgid "%s: time stamp %s is %s s in the future"
+msgstr "%s: marcajul de oră %s este %s secunde în viitor"
+
+#: src/extract.c:630
+#, c-format
+msgid "%s: Unexpected inconsistency when making directory"
+msgstr "%s: Inconsistență neașteptată când se crea directorul"
+
+#: src/extract.c:864
+#, c-format
+msgid "%s: skipping existing file"
+msgstr "%s: se omite fișierul existent"
+
+#: src/extract.c:976
+#, c-format
+msgid "%s: Directory renamed before its status could be extracted"
+msgstr "%s: Director redenumit înainte de a fi putut extrage starea sa"
+
+#: src/extract.c:1198
+msgid "Extracting contiguous files as regular files"
+msgstr "Se extrag fișierele contigue ca fișiere normale"
+
+#: src/extract.c:1597
+msgid "Attempting extraction of symbolic links as hard links"
+msgstr "Se încearcă extragerea legăturilor simbolice ca legături dure"
+
+#: src/extract.c:1732
+#, c-format
+msgid "%s: Cannot extract -- file is continued from another volume"
+msgstr "%s: Nu se poate extrage -- fișierul este continuat din alt volum"
+
+#: src/extract.c:1738 src/list.c:1188
+msgid "Unexpected long name header"
+msgstr "Antet de nume lung neașteptat"
+
+#: src/extract.c:1744
+#, c-format
+msgid "%s: Unknown file type '%c', extracted as normal file"
+msgstr "%s: Tip de fișier necunoscut „%c”, extras ca fișier normal"
+
+#: src/extract.c:1774
+#, c-format
+msgid "Current %s is newer or same age"
+msgstr "%s-ul curent este mai nou sau de aceeași vârstă"
+
+#: src/extract.c:1804
+#, c-format
+msgid "%s: Member name contains '..'"
+msgstr "%s: Numele membrului conține „..”"
+
+#: src/extract.c:1836
+#, c-format
+msgid "%s: Was unable to backup this file"
+msgstr "%s: Nu s-a putut arhiva (backup) acest fișier"
+
+#: src/extract.c:1994
+#, c-format
+msgid "Cannot rename %s to %s"
+msgstr "Nu se poate redenumi %s la %s"
+
+#: src/incremen.c:501 src/incremen.c:544
+#, c-format
+msgid "%s: Directory has been renamed from %s"
+msgstr "%s: Directorul a fost redenumit de la %s"
+
+#: src/incremen.c:558
+#, c-format
+msgid "%s: Directory is new"
+msgstr "%s: Directorul este nou"
+
+#: src/incremen.c:575
+#, c-format
+msgid "%s: directory is on a different filesystem; not dumped"
+msgstr ""
+"%s: directorul este pe un sistem de fișiere diferit; nu este transferat"
+
+#: src/incremen.c:596
+#, c-format
+msgid "%s: Directory has been renamed"
+msgstr "%s: Directorul a fost redenumit"
+
+#: src/incremen.c:1006 src/incremen.c:1021
+msgid "Invalid time stamp"
+msgstr "Marcaj de timp nevalid"
+
+#: src/incremen.c:1050
+msgid "Invalid modification time"
+msgstr "Timp de modificare nevalid"
+
+#: src/incremen.c:1060
+msgid "Invalid modification time (nanoseconds)"
+msgstr "Timp de modificare nevalid (nanosecunde)"
+
+#: src/incremen.c:1076
+msgid "Invalid device number"
+msgstr "Număr de dispozitiv nevalid"
+
+# R-GC, scrie:
+# am modificat de la „inode” la „nod-i”,
+# pentru a fi în concordanță cu celelalte
+# traduceri, și mai ales cu:
+#
+# «inode este (index node)», adică:
+# „nod de index”, așa că am folosit forma,
+# prescurtată folosită, adaptată la limba
+# română → « nod-i ».
+# Sursa folosită:
+# https://en.wikipedia.org/wiki/Inode, aici se
+# găsește explicația „etimologică :)” a
+# cuvîntului,
+# oferită de Dennis Ritchie, «autorul»
+# acestui cuvînt.
+# ***
+# Am omogenizat modificarea făcută, în tot
+# fișierul.
+#: src/incremen.c:1084
+msgid "Invalid inode number"
+msgstr "Număr nod-i nevalid"
+
+#: src/incremen.c:1140
+#, c-format
+msgid "%s: byte %s: %s %.*s... too long"
+msgstr "%s: octet %s: %s %.*s... prea lung"
+
+#: src/incremen.c:1156 src/incremen.c:1214 src/incremen.c:1276
+msgid "Unexpected EOF in snapshot file"
+msgstr "Sfârșit de fișier neașteptat în fișierul instantaneu"
+
+#: src/incremen.c:1164
+#, c-format
+msgid "%s: byte %s: %s %s followed by invalid byte 0x%02x"
+msgstr "%s: octet %s: %s %s urmat de octetul nevalid 0x%02x"
+
+#: src/incremen.c:1177
+#, c-format
+msgid ""
+"%s: byte %s: (valid range %s..%s)\n"
+"\t%s %s"
+msgstr ""
+"%s: octet %s: (intervalul valid %s..%s)\n"
+"\t%s %s"
+
+#: src/incremen.c:1184
+#, c-format
+msgid "%s: byte %s: %s %s"
+msgstr "%s: octet %s: %s %s"
+
+#: src/incremen.c:1265
+#, c-format
+msgid "%s: byte %s: %s"
+msgstr "%s: octet %s: %s"
+
+#: src/incremen.c:1268
+msgid "Missing record terminator"
+msgstr "Terminator de înregistrare lipsă"
+
+#: src/incremen.c:1374 src/incremen.c:1377
+msgid "Bad incremental file format"
+msgstr "Format de fișier incremental greșit"
+
+#: src/incremen.c:1396
+#, c-format
+msgid "Unsupported incremental format version: %<PRIuMAX>"
+msgstr "Versiune de format incremental nesuportat: %<PRIuMAX>"
+
+#: src/incremen.c:1552
+#, c-format
+msgid "Malformed dumpdir: expected '%c' but found %#3o"
+msgstr ""
+"Director de transferare malformat: s-a așteptat „%c” dar s-a găsit %#3o"
+
+#: src/incremen.c:1562
+msgid "Malformed dumpdir: 'X' duplicated"
+msgstr "Director de transferare malformat: „X” duplicat"
+
+#: src/incremen.c:1575
+msgid "Malformed dumpdir: empty name in 'R'"
+msgstr "Director de transfer malformat: nume gol în „R”"
+
+#: src/incremen.c:1588
+msgid "Malformed dumpdir: 'T' not preceded by 'R'"
+msgstr "Director de transferare malformat: „T” nu este precedat de „R”"
+
+#: src/incremen.c:1594
+msgid "Malformed dumpdir: empty name in 'T'"
+msgstr "Director de transfer malformat: nume gol în „T”"
+
+#: src/incremen.c:1614
+#, c-format
+msgid "Malformed dumpdir: expected '%c' but found end of data"
+msgstr ""
+"Director de transferare malformat: s-a așteptat „%c” dar s-a găsit sfârșitul "
+"datelor"
+
+#: src/incremen.c:1621
+msgid "Malformed dumpdir: 'X' never used"
+msgstr "Director de transferare malformat: „X” niciodată utilizat"
+
+#: src/incremen.c:1665
+#, c-format
+msgid "Cannot create temporary directory using template %s"
+msgstr "Nu se poate crea directorul temporar utilizând șablonul %s"
+
+#: src/incremen.c:1726
+#, c-format
+msgid "%s: Not purging directory: unable to stat"
+msgstr ""
+"%s: Nu se poate curăța directorul: nu se poate determina starea acestuia"
+
+#: src/incremen.c:1739
+#, c-format
+msgid "%s: directory is on a different device: not purging"
+msgstr "%s: directorul este pe un dispozitiv diferit; nu se curăța"
+
+#: src/incremen.c:1747
+#, c-format
+msgid "%s: Deleting %s\n"
+msgstr "%s: Se șterge %s\n"
+
+#: src/incremen.c:1752
+#, c-format
+msgid "%s: Cannot remove"
+msgstr "%s: Nu se poate șterge"
+
+#: src/list.c:218
+#, c-format
+msgid "%s: Omitting"
+msgstr "%s: Se omite"
+
+#: src/list.c:236
+#, c-format
+msgid "block %s: ** Block of NULs **\n"
+msgstr "bloc %s: ** Bloc de NUL-uri **\n"
+
+#: src/list.c:263
+#, fuzzy, c-format
+#| msgid "A lone zero block at %s"
+msgid "Terminating zero blocks missing at %s"
+msgstr "Un bloc zero singuratic la %s"
+
+#: src/list.c:269
+#, c-format
+msgid "block %s: ** End of File **\n"
+msgstr "bloc %s: ** Sfârşit de fişier **\n"
+
+#: src/list.c:291 src/list.c:1157 src/list.c:1393
+#, c-format
+msgid "block %s: "
+msgstr "bloc %s: "
+
+#. TRANSLATORS: %s is type of the value (gid_t, uid_t,
+#. etc.)
+#: src/list.c:775
+#, c-format
+msgid "Blanks in header where numeric %s value expected"
+msgstr "Spații libere în antet unde valoarea %s numerică era așteptată"
+
+#. TRANSLATORS: Second %s is a type name (gid_t,uid_t,etc.)
+#: src/list.c:830
+#, c-format
+msgid "Archive octal value %.*s is out of %s range; assuming two's complement"
+msgstr ""
+"Valoarea octală %.*s este în afara %s intervalului; se presupune că este "
+"complementul lui doi"
+
+#. TRANSLATORS: Second %s is a type name (gid_t,uid_t,etc.)
+#: src/list.c:841
+#, c-format
+msgid "Archive octal value %.*s is out of %s range"
+msgstr "Valoarea octală a arhivei %.*s este în afara %s intervalului"
+
+#: src/list.c:862
+msgid "Archive contains obsolescent base-64 headers"
+msgstr "Arhiva conține antete în baza-64 depășite"
+
+#: src/list.c:876
+#, c-format
+msgid "Archive signed base-64 string %s is out of %s range"
+msgstr "Șir în baza-64 (semnătura arhivei) %s este în afara %s intervalului"
+
+#: src/list.c:908
+#, c-format
+msgid "Archive base-256 value is out of %s range"
+msgstr "Valoarea în baza-256 a arhivei este în afara %s intervalului"
+
+#. TRANSLATORS: Second %s is a type name (gid_t,uid_t,etc.)
+#: src/list.c:937
+#, c-format
+msgid "Archive contains %.*s where numeric %s value expected"
+msgstr "Arhiva conține %.*s unde valoarea %s numerică era așteptată"
+
+#. TRANSLATORS: Second %s is type name (gid_t,uid_t,etc.)
+#: src/list.c:959
+#, c-format
+msgid "Archive value %s is out of %s range %s..%s"
+msgstr "Valoarea arhivei %s este în afara intervalului %s %s..%s"
+
+#: src/list.c:1293
+#, c-format
+msgid " link to %s\n"
+msgstr " legătură către %s\n"
+
+#: src/list.c:1301
+#, c-format
+msgid " unknown file type %s\n"
+msgstr " tip de fișier necunoscut %s\n"
+
+#: src/list.c:1319
+#, c-format
+msgid "--Long Link--\n"
+msgstr "--Legătură lungă--\n"
+
+#: src/list.c:1323
+#, c-format
+msgid "--Long Name--\n"
+msgstr "--Nume Lung--\n"
+
+#: src/list.c:1327
+#, c-format
+msgid "--Volume Header--\n"
+msgstr "--Antet Volum--\n"
+
+#: src/list.c:1335
+#, c-format
+msgid "--Continued at byte %s--\n"
+msgstr "--Continuat la octet %s--\n"
+
+#: src/list.c:1398
+msgid "Creating directory:"
+msgstr "Se creează directorul:"
+
+#: src/misc.c:766
+#, c-format
+msgid "Renaming %s to %s\n"
+msgstr "Se redenumește %s ca %s\n"
+
+#: src/misc.c:775 src/misc.c:794
+#, c-format
+msgid "%s: Cannot rename to %s"
+msgstr "%s: Nu se poate redenumi ca %s"
+
+#: src/misc.c:799
+#, c-format
+msgid "Renaming %s back to %s\n"
+msgstr "Se redenumește %s înapoi la %s\n"
+
+#: src/misc.c:1186
+#, c-format
+msgid "%s: File removed before we read it"
+msgstr "%s: Fișier eliminat înainte de a-l putea citi"
+
+#: src/misc.c:1200
+msgid "child process"
+msgstr "proces-copil"
+
+#: src/misc.c:1209
+msgid "interprocess channel"
+msgstr "canal între-procese"
+
+#: src/names.c:75
+msgid "Local file name selection:"
+msgstr "Selecție de nume de fișier local:"
+
+#: src/names.c:78
+msgid "add given FILE to the archive (useful if its name starts with a dash)"
+msgstr ""
+"adaugă FIȘIERUL dat la arhivă (util dacă numele acestuia începe cu o liniuță)"
+
+#: src/names.c:79 src/tar.c:535
+msgid "DIR"
+msgstr "DIR"
+
+#: src/names.c:80
+msgid "change to directory DIR"
+msgstr "schimbă în directorul DIR"
+
+#: src/names.c:82
+msgid "get names to extract or create from FILE"
+msgstr "obține numele de extras sau de împachetat din FIȘIER"
+
+#: src/names.c:84
+msgid "-T reads null-terminated names; implies --verbatim-files-from"
+msgstr ""
+"„-T” citește numele terminate în null; implică prezența opțiunii „--verbatim-"
+"files-from”"
+
+#: src/names.c:87
+msgid "disable the effect of the previous --null option"
+msgstr "dezactivează efectul opțiunii „--null” precedentă"
+
+#: src/names.c:89
+msgid "unquote input file or member names (default)"
+msgstr ""
+"elimină ghilimelele din numele fișierului de intrare sau din numele "
+"membrilor (implicit)"
+
+#: src/names.c:91
+msgid "do not unquote input file or member names"
+msgstr ""
+"nu elimină ghilimelele din numele fișierului de intrare sau din numele "
+"membrilor "
+
+#: src/names.c:93
+msgid "-T reads file names verbatim (no escape or option handling)"
+msgstr ""
+"„-T” citește numele de fișier textual (fără gestionarea eludărilor sau a "
+"opțiunilor)"
+
+#: src/names.c:95
+msgid "-T treats file names starting with dash as options (default)"
+msgstr ""
+"„-T” tratează numele de fișier care încep cu o liniuță ca opțiuni (implicit)"
+
+#: src/names.c:97 tests/genfile.c:140
+msgid "PATTERN"
+msgstr "MODEL"
+
+#: src/names.c:98
+msgid "exclude files, given as a PATTERN"
+msgstr "exclude fișierele, date ca un MODEL"
+
+#: src/names.c:100
+msgid "exclude patterns listed in FILE"
+msgstr "exclude modelele care sunt listate în FIȘIER"
+
+#: src/names.c:102
+msgid ""
+"exclude contents of directories containing CACHEDIR.TAG, except for the tag "
+"file itself"
+msgstr ""
+"exclude conținutul directoarelor care conțin CACHEDIR.TAG, cu excepția "
+"fișierului etichetă însuși"
+
+#: src/names.c:105
+msgid "exclude everything under directories containing CACHEDIR.TAG"
+msgstr "exclude tot sub directoare care conțin CACHEDIR.TAG"
+
+#: src/names.c:108
+msgid "exclude directories containing CACHEDIR.TAG"
+msgstr "exclude directoarele care conțin CACHEDIR.TAG"
+
+#: src/names.c:110
+msgid "exclude contents of directories containing FILE, except for FILE itself"
+msgstr ""
+"exclude conținutul directoarelor care conțin FIȘIERUL, cu excepția "
+"FIȘIERULUI însuși"
+
+#: src/names.c:113
+msgid "read exclude patterns for each directory from FILE, if it exists"
+msgstr ""
+"citește modelele de excludere pentru fiecare director din FIȘIER, dacă există"
+
+#: src/names.c:116
+msgid ""
+"read exclude patterns for each directory and its subdirectories from FILE, "
+"if it exists"
+msgstr ""
+"citește modelele de excludere pentru fiecare director și subdirectoarele "
+"acestuia din FIȘIER, dacă există"
+
+#: src/names.c:119
+msgid "exclude everything under directories containing FILE"
+msgstr "exclude tot sub directoarele care conțin FIȘIERUL"
+
+#: src/names.c:121
+msgid "exclude directories containing FILE"
+msgstr "exclude directoarele care conțin FIȘIERUL"
+
+#: src/names.c:123
+msgid "exclude version control system directories"
+msgstr "exclude directoarele sistemului de control al versiunii"
+
+#: src/names.c:125
+msgid "read exclude patterns from the VCS ignore files"
+msgstr "citește modelele de excludere de la fișierele de ignorare VCS"
+
+#: src/names.c:127
+msgid "exclude backup and lock files"
+msgstr "exclude fișierele de copii de rezervă și blocare"
+
+#: src/names.c:129
+msgid "recurse into directories (default)"
+msgstr "coboară recursiv în directoare (implicit)"
+
+#: src/names.c:131
+msgid "avoid descending automatically in directories"
+msgstr "evită coborârea automată în directoare"
+
+#: src/names.c:134
+msgid "File name matching options (affect both exclude and include patterns):"
+msgstr ""
+"Nume de fișier care se potrivesc cu opțiunile (afectează amândouă modelele "
+"de excludere și includere):"
+
+#: src/names.c:137
+msgid "patterns match file name start"
+msgstr "modelele se potrivesc cu începutul numelui fișierului"
+
+#: src/names.c:139
+msgid "patterns match after any '/' (default for exclusion)"
+msgstr "modelele se potrivesc după fiecare „/” (implicit pentru excludere)"
+
+#: src/names.c:141
+msgid "ignore case"
+msgstr "ignoră majusculele"
+
+#: src/names.c:143
+msgid "case sensitive matching (default)"
+msgstr "potrivire sensibilă la majuscule (implicit)"
+
+#: src/names.c:145
+msgid "use wildcards (default for exclusion)"
+msgstr "utilizează metacaractere (implicit pentru excludere)"
+
+#: src/names.c:147
+msgid "verbatim string matching"
+msgstr "potrivire a șirului textuală"
+
+#: src/names.c:149
+msgid "wildcards match '/' (default for exclusion)"
+msgstr "metacaracterele se potrivesc cu „/” (implicit pentru excludere)"
+
+#: src/names.c:151
+msgid "wildcards do not match '/'"
+msgstr "metacaracterele nu se potrivesc cu „/”"
+
+#: src/names.c:208
+#, c-format
+msgid "%s:%lu: unrecognized option"
+msgstr "%s:%lu: opțiune nerecunoscută"
+
+#: src/names.c:747
+#, fuzzy
+#| msgid ""
+#| "The following options were used after any non-optional arguments in "
+#| "archive create or update mode.  These options are positional and affect "
+#| "only arguments that follow them.  Please, rearrange them properly."
+msgid ""
+"The following options were used after non-option arguments.  These options "
+"are positional and affect only arguments that follow them.  Please, "
+"rearrange them properly."
+msgstr ""
+"Următoarele opțiuni au fost utilizate după orice argumente neopționale în "
+"modul de creare a arhivei sau actualizare.  Aceste opțiuni sunt poziționale "
+"și afectează doar argumentele care le urmează.  Rearanjați-le cum trebuie."
+
+#: src/names.c:758
+#, c-format
+msgid "-C %s has no effect"
+msgstr "-C %s nu are efect"
+
+#: src/names.c:763
+#, c-format
+msgid "--%s %s has no effect"
+msgstr "--%s %s nu are efect"
+
+#: src/names.c:767
+#, c-format
+msgid "--%s has no effect"
+msgstr "--%s nu are efect"
+
+#: src/names.c:902
+msgid "command line"
+msgstr "linie de comandă"
+
+#: src/names.c:920
+#, c-format
+msgid "%s: file list requested from %s already read from %s"
+msgstr "%s: lista de fișiere cerută de la %s deja citită de la %s"
+
+#: src/names.c:1000 src/checkpoint.c:308
+#, c-format
+msgid "cannot split string '%s': %s"
+msgstr "nu se poate separa șirul „%s”: %s"
+
+#: src/names.c:1049
+#, c-format
+msgid "%s: file name read contains nul character"
+msgstr "%s: numele de fișier citit conține caracterul nul"
+
+#: src/names.c:1412
+msgid "Pattern matching characters used in file names"
+msgstr "Model care se potrivește caracterelor utilizate în nume de fișiere"
+
+#: src/names.c:1414
+msgid ""
+"Use --wildcards to enable pattern matching, or --no-wildcards to suppress "
+"this warning"
+msgstr ""
+"Utilizați opțiunea „--wildcards” pentru a activa potrivirea modelelor, sau "
+"opțiunea „--no-wildcards” pentru a suprima acest avertisment"
+
+#: src/names.c:1432 src/names.c:1448
+#, c-format
+msgid "%s: Not found in archive"
+msgstr "%s: Nu a fost găsit în arhivă"
+
+#: src/names.c:1433
+#, c-format
+msgid "%s: Required occurrence not found in archive"
+msgstr "%s: Potrivirea cerută nu a fost găsită în arhivă"
+
+#: src/names.c:1467
+#, c-format
+msgid "Archive label mismatch"
+msgstr "Nepotrivire a etichetei arhivei"
+
+#: src/names.c:1762
+msgid ""
+"Using -C option inside file list is not allowed with --listed-incremental"
+msgstr ""
+"Utilizarea opțiunii „-C” înăuntrul listei de fișiere nu este permisă cu „--"
+"listed-incremental”"
+
+#: src/names.c:1768
+msgid "Only one -C option is allowed with --listed-incremental"
+msgstr "Doar o opțiune „-C” este permisă cu „--listed-incremental”"
+
+#: src/tar.c:88
+#, c-format
+msgid "Options '%s' and '%s' both want standard input"
+msgstr "Opțiunile „%s” și „%s” vor amândouă să aibă intrare standard"
+
+#: src/tar.c:165
+#, c-format
+msgid "%s: Invalid archive format"
+msgstr "%s: Format de arhivă nevalid"
+
+#: src/tar.c:197
+msgid "GNU features wanted on incompatible archive format"
+msgstr "Caracteristici GNU cerute pentru un format de arhivă incompatibil"
+
+#: src/tar.c:265
+#, c-format
+msgid ""
+"Unknown quoting style '%s'. Try '%s --quoting-style=help' to get a list."
+msgstr ""
+"Stil de punere între ghilimele necunoscut „%s”. Încercați «%s --quoting-"
+"style=help» pentru a obține o listă."
+
+#: src/tar.c:355
+msgid ""
+"GNU 'tar' saves many files together into a single tape or disk archive, and "
+"can restore individual files from the archive.\n"
+"\n"
+"Examples:\n"
+"  tar -cf archive.tar foo bar  # Create archive.tar from files foo and bar.\n"
+"  tar -tvf archive.tar         # List all files in archive.tar verbosely.\n"
+"  tar -xf archive.tar          # Extract all files from archive.tar.\n"
+msgstr ""
+"GNU „tar” salvează multe fișiere împreună într-o singură arhivă de disc sau "
+"de bandă, și poate restaura fișiere individuale de la arhivă.\n"
+"\n"
+"Exemple:\n"
+"  tar -cf arhiva.tar foo bar  # Creează arhiva.ar de la fișierele foo și "
+"bar.\n"
+"  tar -tvf arhiva.tar         # Listează detaliat toate arhivele în arhiva."
+"tar.\n"
+"  tar -xf arhiva.tar          #Extrage toate fișierele de la arhiva.tar.\n"
+
+#: src/tar.c:364
+msgid ""
+"The backup suffix is '~', unless set with --suffix or SIMPLE_BACKUP_SUFFIX.\n"
+"The version control may be set with --backup or VERSION_CONTROL, values "
+"are:\n"
+"\n"
+"  none, off       never make backups\n"
+"  t, numbered     make numbered backups\n"
+"  nil, existing   numbered if numbered backups exist, simple otherwise\n"
+"  never, simple   always make simple backups\n"
+msgstr ""
+"Sufixul copie de rezervă este „~”, decât dacă nu este stabilit cu --sufix "
+"sau SIMPLE_BACKUP_SUFIX.\n"
+"Versiunea de control poate fi stabilită cu --backup sau VERSION_CONTROL, "
+"valorile sunt:\n"
+"\n"
+"  none, oprit      nu face copii de rezervă niciodată\n"
+"  t, numerotat     face copii de rezervă numerotate\n"
+"  nil, existent   numerotat dacă copiile de rezervă numerotate există, "
+"simplu în caz contrar\n"
+"  never, simplu   întotdeauna face copii de rezervă simple\n"
+
+#: src/tar.c:447
+msgid "Main operation mode:"
+msgstr "Mod de operare principal:"
+
+#: src/tar.c:450
+msgid "list the contents of an archive"
+msgstr "listează conținutul unei arhive"
+
+#: src/tar.c:452
+msgid "extract files from an archive"
+msgstr "extrage fișierele dintr-o arhivă"
+
+#: src/tar.c:455
+msgid "create a new archive"
+msgstr "creează o nouă arhivă"
+
+#: src/tar.c:457
+msgid "find differences between archive and file system"
+msgstr "găsește diferențele dintre arhive și sistemul de fișiere"
+
+#: src/tar.c:460
+msgid "append files to the end of an archive"
+msgstr "adaugă fișiere la sfârșitul unei arhive"
+
+#: src/tar.c:462
+msgid "only append files newer than copy in archive"
+msgstr "adaugă numai fișierele mai noi decât copia din arhivă"
+
+#: src/tar.c:464
+msgid "append tar files to an archive"
+msgstr "adaugă fișiere tar la o arhivă"
+
+#: src/tar.c:467
+msgid "delete from the archive (not on mag tapes!)"
+msgstr "șterge din arhivă (nu pe benzi magnetice!)"
+
+#: src/tar.c:469
+msgid "test the archive volume label and exit"
+msgstr "testează eticheta de volum a arhivei și iese"
+
+#: src/tar.c:472
+msgid "Operation modifiers:"
+msgstr "Modificatori operație:"
+
+#: src/tar.c:475
+msgid "handle sparse files efficiently"
+msgstr "manipulează eficient fișierele dispersate"
+
+#: src/tar.c:476
+msgid "TYPE"
+msgstr "TIP"
+
+#: src/tar.c:477
+msgid "technique to detect holes"
+msgstr "tehnică de detectare a găurilor"
+
+#: src/tar.c:478
+msgid "MAJOR[.MINOR]"
+msgstr "MAJOR[.MINOR]"
+
+#: src/tar.c:479
+msgid "set version of the sparse format to use (implies --sparse)"
+msgstr ""
+"stabilește versiunea formatului dispersat de utilizat (implică „--sparse”)"
+
+#: src/tar.c:482
+msgid "handle old GNU-format incremental backup"
+msgstr "folosește vechiul format GNU pentru copie de rezervă incrementală"
+
+#: src/tar.c:484
+msgid "handle new GNU-format incremental backup"
+msgstr "folosește noul format GNU pentru copie de rezervă incrementală"
+
+#: src/tar.c:486
+msgid "dump level for created listed-incremental archive"
+msgstr "nivelul de transfer pentru arhiva listată incremental creată"
+
+#: src/tar.c:488
+msgid "do not exit with nonzero on unreadable files"
+msgstr ""
+"nu termină cu un cod de ieșire non-zero pentru fișiere ce nu pot fi citite"
+
+#: src/tar.c:490
+msgid ""
+"process only the NUMBERth occurrence of each file in the archive; this "
+"option is valid only in conjunction with one of the subcommands --delete, --"
+"diff, --extract or --list and when a list of files is given either on the "
+"command line or via the -T option; NUMBER defaults to 1"
+msgstr ""
+"procesează doar cazul al NUMĂR-ulea al fiecărui fișier din arhivă; această "
+"opțiune este validă doar în conjuncție cu una din subcomenzile „--delete”, "
+"„--diff”, „--extract” sau „--list” și când o listă de fișiere este dată fie "
+"în linia de comandă fie via opțiunii „-T”; NUMĂR revine implicit la 1"
+
+#: src/tar.c:496
+msgid "archive is seekable"
+msgstr "arhiva este derulabilă"
+
+#: src/tar.c:498
+msgid "archive is not seekable"
+msgstr "arhiva nu este derulabilă"
+
+#: src/tar.c:500
+msgid "do not check device numbers when creating incremental archives"
+msgstr ""
+"nu verifică numerele dispozitivului când se creează arhivele incrementale"
+
+#: src/tar.c:503
+msgid "check device numbers when creating incremental archives (default)"
+msgstr ""
+"verifică numerele dispozitivelor când se creează arhivele incrementale "
+"(implicit)"
+
+#: src/tar.c:507
+msgid "Overwrite control:"
+msgstr "Suprascrie controlul:"
+
+#: src/tar.c:510
+msgid "attempt to verify the archive after writing it"
+msgstr "încearcă să verifice arhiva după scrierea sa"
+
+#: src/tar.c:512
+msgid "remove files after adding them to the archive"
+msgstr "elimină fișierele după ce acestea sunt adăugate la arhivă"
+
+#: src/tar.c:514
+msgid "don't replace existing files when extracting, treat them as errors"
+msgstr ""
+"nu înlocuiește fișierele existente când se extrage, le tratează ca erori"
+
+#: src/tar.c:517
+msgid "don't replace existing files when extracting, silently skip over them"
+msgstr ""
+"nu înlocuiește fișierele existente când se extrage, trece silențios peste ele"
+
+#: src/tar.c:520
+msgid "don't replace existing files that are newer than their archive copies"
+msgstr ""
+"nu înlocuiește fișierele existente care sunt mai noi decât copiile acestora "
+"din arhivă"
+
+#: src/tar.c:522
+msgid "overwrite existing files when extracting"
+msgstr "suprascrie fișierele existente la extragere"
+
+#: src/tar.c:524
+msgid "remove each file prior to extracting over it"
+msgstr "elimină fiecare fișier înainte de a extrage fișierul de după acesta"
+
+#: src/tar.c:526
+msgid "empty hierarchies prior to extracting directory"
+msgstr "golește ierarhiile înainte de a extrage un director"
+
+#: src/tar.c:528
+msgid "preserve metadata of existing directories"
+msgstr "păstrează metadata directoarelor existente"
+
+#: src/tar.c:530
+msgid "overwrite metadata of existing directories when extracting (default)"
+msgstr ""
+"suprascrie datele meta a directoarelor existente când se extrage (implicit)"
+
+#: src/tar.c:533
+msgid "preserve existing symlinks to directories when extracting"
+msgstr "păstrează legăturile simbolice existente la directoare când se extrage"
+
+#: src/tar.c:536
+msgid "create a subdirectory to avoid having loose files extracted"
+msgstr "creează un subdirector pentru a evita extragere fișierelor libere"
+
+#: src/tar.c:540
+msgid "Select output stream:"
+msgstr "Selectați fluxul de ieșire:"
+
+#: src/tar.c:543
+msgid "extract files to standard output"
+msgstr "extrage fișierele la ieșirea standard"
+
+#: src/tar.c:544 src/tar.c:648 src/tar.c:651 tests/genfile.c:203
+msgid "COMMAND"
+msgstr "COMANDĂ"
+
+#: src/tar.c:545
+msgid "pipe extracted files to another program"
+msgstr "conduce fișierele extrase la un alt program"
+
+#: src/tar.c:547
+msgid "ignore exit codes of children"
+msgstr "ignoră codurile de ieșire a proceselor-copil"
+
+#: src/tar.c:549
+msgid "treat non-zero exit codes of children as error"
+msgstr "tratează codurile de ieșire non-zero ale proceselor-copil ca eroare"
+
+#: src/tar.c:552
+msgid "Handling of file attributes:"
+msgstr "Manipulare atribute fișiere:"
+
+#: src/tar.c:555
+msgid "force NAME as owner for added files"
+msgstr "forțează NUME ca proprietar pentru fișierele adăugate"
+
+#: src/tar.c:557
+msgid "force NAME as group for added files"
+msgstr "forțează NUME ca grup pentru fișierele adăugate"
+
+#: src/tar.c:559
+msgid "use FILE to map file owner UIDs and names"
+msgstr ""
+"utilizează FIȘIERUL pentru a asocia UID-urile deținătorului de fișier și "
+"numele"
+
+#: src/tar.c:561
+msgid "use FILE to map file owner GIDs and names"
+msgstr ""
+"utilizați FIȘIERUL pentru a asocia GID-urile deținătorului de fișier și "
+"numele"
+
+#: src/tar.c:562 src/tar.c:750
+msgid "DATE-OR-FILE"
+msgstr "DATA-SAU-FIȘIERUL"
+
+#: src/tar.c:563
+msgid "set mtime for added files from DATE-OR-FILE"
+msgstr "stabilește mtime pentru fișierele adăugate de la DATA-SAU-FIȘIERUL"
+
+#: src/tar.c:565
+msgid ""
+"only set time when the file is more recent than what was given with --mtime"
+msgstr ""
+"stabilește timpul doar când fișierul este mai recent decât a fost dat cu „--"
+"mtime”"
+
+#: src/tar.c:566
+msgid "CHANGES"
+msgstr "SCHIMBĂRI"
+
+#: src/tar.c:567
+msgid "force (symbolic) mode CHANGES for added files"
+msgstr "forțează mod (simbolic) SCHIMBĂRI pentru fișierele adăugate"
+
+#: src/tar.c:569
+msgid "METHOD"
+msgstr "METODĂ"
+
+#: src/tar.c:570
+msgid ""
+"preserve access times on dumped files, either by restoring the times after "
+"reading (METHOD='replace'; default) or by not setting the times in the first "
+"place (METHOD='system')"
+msgstr ""
+"păstrează timpii de acces la fișierele transferate, fie prin restaurarea "
+"timpilor după citire (METODĂ=„replace”; implicit) fie prin nestabilirea "
+"timpilor în primul rând (METODĂ=„system”)"
+
+#: src/tar.c:574
+msgid "don't extract file modified time"
+msgstr "nu extrage timpul de modificare al fişierului"
+
+#: src/tar.c:576
+msgid ""
+"try extracting files with the same ownership as exists in the archive "
+"(default for superuser)"
+msgstr ""
+"încearcă extragerea fișierelor cu aceeași proprietate care există în arhivă "
+"(implicit pentru superutilizator)"
+
+#: src/tar.c:578
+msgid "extract files as yourself (default for ordinary users)"
+msgstr "extrage fișierele ca tine (implicit pentru utilizatorii obișnuiți)"
+
+#: src/tar.c:580
+msgid "always use numbers for user/group names"
+msgstr "folosește întotdeauna numere pentru numele utilizator/grup"
+
+#: src/tar.c:582
+msgid "extract information about file permissions (default for superuser)"
+msgstr ""
+"extrage informații despre permisiunile fișierului (implicit pentru "
+"superutlizator)"
+
+#: src/tar.c:586
+msgid ""
+"apply the user's umask when extracting permissions from the archive (default "
+"for ordinary users)"
+msgstr ""
+"aplică demascarea utilizatorului când se extrag permisiunile de la arhivă "
+"(implicit pentru utilizatorii obișnuiți)"
+
+#: src/tar.c:588
+msgid ""
+"member arguments are listed in the same order as the files in the archive"
+msgstr ""
+"argumentele membrilor sunt listate în aceeași ordine ca fișierele în arhivă"
+
+#: src/tar.c:592
+msgid ""
+"delay setting modification times and permissions of extracted directories "
+"until the end of extraction"
+msgstr ""
+"întârzie configurarea de timpi de modificare și permisiuni ale directoarelor "
+"extrase până la sfârșitul extragerii"
+
+#: src/tar.c:595
+msgid "cancel the effect of --delay-directory-restore option"
+msgstr "anulează efectul opțiunii „--delay-directory-restore”"
+
+#: src/tar.c:596
+msgid "ORDER"
+msgstr "ORDINE"
+
+#: src/tar.c:598
+msgid "directory sorting order: none (default), name or inode"
+msgstr "ordine de sortare a directorului: nimic (implicit), nume sau nod-i"
+
+#: src/tar.c:600
+msgid "directory sorting order: none (default) or name"
+msgstr "ordine de sortare a directorului: nimic (implicit) sau nume"
+
+#: src/tar.c:605
+msgid "Handling of extended file attributes:"
+msgstr "Manipularea de atribute de fișier extinse:"
+
+#: src/tar.c:608
+msgid "Enable extended attributes support"
+msgstr "Activează suportul de atribute extinse"
+
+#: src/tar.c:610
+msgid "Disable extended attributes support"
+msgstr "Dezactivează suportul de atribute extinse"
+
+#: src/tar.c:611 src/tar.c:613
+msgid "MASK"
+msgstr "MASCĂ"
+
+#: src/tar.c:612
+msgid "specify the include pattern for xattr keys"
+msgstr "specifică modelul de includere pentru cheile xattr"
+
+#: src/tar.c:614
+msgid "specify the exclude pattern for xattr keys"
+msgstr "specifică modelul de excludere pentru cheile xattr"
+
+#: src/tar.c:616
+msgid "Enable the SELinux context support"
+msgstr "Activează suportul de context SELinux"
+
+#: src/tar.c:618
+msgid "Disable the SELinux context support"
+msgstr "Dezactivează suportul de context SELinux"
+
+#: src/tar.c:620
+msgid "Enable the POSIX ACLs support"
+msgstr "Activează suportul ACL POSIX"
+
+#: src/tar.c:622
+msgid "Disable the POSIX ACLs support"
+msgstr "Dezactivează suportul ACL POSIX"
+
+#: src/tar.c:625
+msgid "Device selection and switching:"
+msgstr "Selectare și schimbare unitate:"
+
+#: src/tar.c:627
+msgid "ARCHIVE"
+msgstr "ARHIVĂ"
+
+#: src/tar.c:628
+msgid "use archive file or device ARCHIVE"
+msgstr "folosește fișier arhivă sau unitate ARHIVĂ"
+
+#: src/tar.c:632
+msgid "specify drive and density"
+msgstr "specifică unitatea și densitatea"
+
+#: src/tar.c:646
+msgid "archive file is local even if it has a colon"
+msgstr "fișierul arhivă este local chiar dacă are două puncte"
+
+#: src/tar.c:649
+msgid "use given rmt COMMAND instead of rmt"
+msgstr "folosește rmt COMANDĂ în loc de rmt"
+
+#: src/tar.c:652
+msgid "use remote COMMAND instead of rsh"
+msgstr "folosește COMANDA de la distanță în loc de rsh"
+
+#: src/tar.c:656
+msgid "create/list/extract multi-volume archive"
+msgstr "creează/listează/extrage arhiva pe volume multiple"
+
+#: src/tar.c:659
+msgid "change tape after writing NUMBER x 1024 bytes"
+msgstr "schimbă banda după scrierea a NUMĂR x 1024 octeți"
+
+#: src/tar.c:662
+msgid "run script at end of each tape (implies -M)"
+msgstr "rulează script la terminarea fiecărei benzi (implică „-M”)"
+
+#: src/tar.c:666
+msgid "use/update the volume number in FILE"
+msgstr "folosește/actualizează numărul de volum în FIȘIER"
+
+#: src/tar.c:670
+msgid "Device blocking:"
+msgstr "Blocuri unitate:"
+
+#: src/tar.c:672
+msgid "BLOCKS"
+msgstr "BLOCURI"
+
+#: src/tar.c:673
+msgid "BLOCKS x 512 bytes per record"
+msgstr "BLOCURI x 512 octeți pe înregistrare"
+
+#: src/tar.c:675
+msgid "NUMBER of bytes per record, multiple of 512"
+msgstr "NUMĂRUL de octeți per înregistrare, multiplu de 512"
+
+#: src/tar.c:677
+msgid "ignore zeroed blocks in archive (means EOF)"
+msgstr "ignoră blocuri zero-uate în arhivă (înseamnă sfârșit de fișier)"
+
+#: src/tar.c:679
+msgid "reblock as we read (for 4.2BSD pipes)"
+msgstr "redimensionează bloc în timpul citirii (pentru conducte BSD4.2)"
+
+#: src/tar.c:682
+msgid "Archive format selection:"
+msgstr "Selecție format arhivă:"
+
+#: src/tar.c:684 tests/genfile.c:158
+msgid "FORMAT"
+msgstr "FORMAT"
+
+#: src/tar.c:685
+msgid "create archive of the given format"
+msgstr "creează o arhivă în formatul dat"
+
+#: src/tar.c:687
+msgid "FORMAT is one of the following:"
+msgstr "FORMATUL este unul din următoarele:"
+
+#: src/tar.c:688
+msgid "old V7 tar format"
+msgstr "vechiul format tar V7"
+
+#: src/tar.c:691
+msgid "GNU format as per tar <= 1.12"
+msgstr "Format GNU ca per tar <= 1.12"
+
+#: src/tar.c:693
+msgid "GNU tar 1.13.x format"
+msgstr "Formatul GNU tar 1.13x"
+
+#: src/tar.c:695
+msgid "POSIX 1003.1-1988 (ustar) format"
+msgstr "Formatul POSIX 1003.1-1988 (ustar)"
+
+#: src/tar.c:697
+msgid "POSIX 1003.1-2001 (pax) format"
+msgstr "Formatul POSIX 1003.1-2001 (pax)"
+
+#: src/tar.c:698
+msgid "same as pax"
+msgstr "la fel ca pax"
+
+#: src/tar.c:702
+msgid "same as --format=v7"
+msgstr "ca și --format=v7"
+
+#: src/tar.c:705
+msgid "same as --format=posix"
+msgstr "ca și --format=posix"
+
+#: src/tar.c:706
+msgid "keyword[[:]=value][,keyword[[:]=value]]..."
+msgstr "cuvânt cheie[[:]=valoare][,cuvânt cheie[[:]=valoare]]..."
+
+#: src/tar.c:707
+msgid "control pax keywords"
+msgstr "controlează cuvintele cheie pax"
+
+#: src/tar.c:708
+msgid "TEXT"
+msgstr "TEXT"
+
+#: src/tar.c:709
+msgid ""
+"create archive with volume name TEXT; at list/extract time, use TEXT as a "
+"globbing pattern for volume name"
+msgstr ""
+"creează o arhivă cu numele de volum TEXT; la timpul de listare/extragere, "
+"utilizează TEXT ca un model de expandare pentru numele volumului"
+
+#: src/tar.c:713
+msgid "Compression options:"
+msgstr "Opțiuni de compresie:"
+
+#: src/tar.c:715
+msgid "use archive suffix to determine the compression program"
+msgstr "utilizează sufixul arhivei pentru a determina programul de comprimare"
+
+#: src/tar.c:718
+msgid "do not use archive suffix to determine the compression program"
+msgstr ""
+"nu utilizează sufixul arhivei pentru a determina programul de comprimare"
+
+#: src/tar.c:720
+msgid "PROG"
+msgstr "PROG"
+
+#: src/tar.c:721
+msgid "filter through PROG (must accept -d)"
+msgstr "filtrează prin PROG (trebuie să accepte „-d”)"
+
+#: src/tar.c:736
+msgid "Local file selection:"
+msgstr "Selecție fișier local:"
+
+#: src/tar.c:738
+msgid "stay in local file system when creating archive"
+msgstr "stă în sistemul de fișiere local la crearea arhivei"
+
+#: src/tar.c:740
+msgid "don't strip leading '/'s from file names"
+msgstr "nu elimină „/” din fruntea numelor de fișiere"
+
+#: src/tar.c:742
+msgid "follow symlinks; archive and dump the files they point to"
+msgstr ""
+"urmărește legăturile simbolice; arhivează și transferă fișierele la care "
+"arată"
+
+#: src/tar.c:745
+msgid "follow hard links; archive and dump the files they refer to"
+msgstr ""
+"urmărește legăturile dure; arhivează și transferă fișierele la care se referă"
+
+#: src/tar.c:747
+msgid "MEMBER-NAME"
+msgstr "NUME-MEMBRU"
+
+#: src/tar.c:748
+msgid "begin at member MEMBER-NAME when reading the archive"
+msgstr "începe la membrul NUME-MEMBRU când se citește arhiva"
+
+#: src/tar.c:751
+msgid "only store files newer than DATE-OR-FILE"
+msgstr "stochează numai fișiere mai noi decât DATA-FIȘIERULUI"
+
+#: src/tar.c:753
+msgid "DATE"
+msgstr "DATA"
+
+#: src/tar.c:754
+msgid "compare date and time when data changed only"
+msgstr "compară data și ora numai când a fost schimbată data"
+
+#: src/tar.c:755
+msgid "CONTROL"
+msgstr "CONTROL"
+
+#: src/tar.c:756
+msgid "backup before removal, choose version CONTROL"
+msgstr ""
+"faceți o copie de rezervă înainte de-a șterge, alegeți CONTROL pentru "
+"versiuni"
+
+#: src/tar.c:757 src/tar.c:807 src/tar.c:809 tests/genfile.c:182
+msgid "STRING"
+msgstr "ŞIR"
+
+#: src/tar.c:758
+msgid ""
+"backup before removal, override usual suffix ('~' unless overridden by "
+"environment variable SIMPLE_BACKUP_SUFFIX)"
+msgstr ""
+"faceți o copie de rezervă înaintea eliminării, suprascrie sufixul uzual („~” "
+"dacă nu este suprascris de variabila de mediu SIMPLE_BACKUP_SUFFIX)"
+
+#: src/tar.c:762
+msgid "File name transformations:"
+msgstr "Transformări de nume de fișier:"
+
+#: src/tar.c:764
+msgid "strip NUMBER leading components from file names on extraction"
+msgstr ""
+"scoateți componentele din frunte NUMĂR de la numele de fișier la extragere"
+
+#: src/tar.c:766
+msgid "EXPRESSION"
+msgstr "EXPRESIE"
+
+#: src/tar.c:767
+msgid "use sed replace EXPRESSION to transform file names"
+msgstr ""
+"utilizează «sed» pentru a înlocui EXPRESIA pentru a transforma numele de "
+"fișier"
+
+#: src/tar.c:772
+msgid "Informative output:"
+msgstr "Ieșire informativă:"
+
+#: src/tar.c:775
+msgid "display progress messages every NUMBERth record (default 10)"
+msgstr ""
+"afișează mesajele de progres la fiecare al NUMĂR-ulea înregistrare (implicit "
+"10)"
+
+#: src/tar.c:777
+msgid "ACTION"
+msgstr "ACȚIUNE"
+
+#: src/tar.c:778
+msgid "execute ACTION on each checkpoint"
+msgstr "execută ACȚIUNEA la fiecare punct de verificare"
+
+#: src/tar.c:781
+msgid "print a message if not all links are dumped"
+msgstr "afișează un mesaj dacă nu toate legăturile sunt prelucrate"
+
+#: src/tar.c:782
+msgid "SIGNAL"
+msgstr "SEMNAL"
+
+#: src/tar.c:783
+msgid ""
+"print total bytes after processing the archive; with an argument - print "
+"total bytes when this SIGNAL is delivered; Allowed signals are: SIGHUP, "
+"SIGQUIT, SIGINT, SIGUSR1 and SIGUSR2; the names without SIG prefix are also "
+"accepted"
+msgstr ""
+"afișează octeții totali după procesarea arhivei; cu un argument „-” afișează "
+"octeții totali când acest SEMNAL este primit; Semnalele permise sunt SIGHUP, "
+"SIGQUIT, SIGINT, SIGUSR1 și SIGUSR2; numele fără prefixul SIG sunt, de "
+"asemenea, acceptate"
+
+#: src/tar.c:788
+msgid "print file modification times in UTC"
+msgstr "afișează timpii (data+ora) de modificare a fișierului în UTC"
+
+#: src/tar.c:790
+msgid "print file time to its full resolution"
+msgstr "afișează ora fișierului la rezoluția completă"
+
+#: src/tar.c:792
+msgid "send verbose output to FILE"
+msgstr "trimite ieșire detaliată în FIȘIER"
+
+#: src/tar.c:794
+msgid "show block number within archive with each message"
+msgstr "arată numărul blocului din arhivă pentru fiecare mesaj"
+
+#: src/tar.c:796
+msgid "show tar defaults"
+msgstr "afișează valorile implicite tar"
+
+#: src/tar.c:798
+msgid "show valid ranges for snapshot-file fields"
+msgstr "arată intervalele valide pentru câmpurile de fișier instantaneu"
+
+#: src/tar.c:800
+msgid ""
+"when listing or extracting, list each directory that does not match search "
+"criteria"
+msgstr ""
+"când se listează sau se extrage, listează fiecare director care nu se "
+"potrivește cu criteriile de căutare"
+
+#: src/tar.c:802
+msgid "show file or archive names after transformation"
+msgstr "afișează numele de fișier sau arhivă după transformare"
+
+#: src/tar.c:805
+msgid "STYLE"
+msgstr "STIL"
+
+#: src/tar.c:806
+msgid "set name quoting style; see below for valid STYLE values"
+msgstr ""
+"stabilește stilul de punere între ghilimele al numelui; vedeți mai jos "
+"pentru valorile de STIL valide"
+
+#: src/tar.c:808
+msgid "additionally quote characters from STRING"
+msgstr "pune adițional între ghilimele caractere de la ȘIR"
+
+#: src/tar.c:810
+msgid "disable quoting for characters from STRING"
+msgstr "dezactivează punerea între ghilimele pentru caractere de la ȘIR"
+
+#: src/tar.c:812
+msgid "ask for confirmation for every action"
+msgstr "cere confirmare pentru fiecare acţiune"
+
+#: src/tar.c:815
+msgid "verbosely list files processed"
+msgstr "listează cu amănunte fișierele procesate"
+
+#: src/tar.c:816
+msgid "KEYWORD"
+msgstr "CUVÂNT CHEIE"
+
+#: src/tar.c:817
+msgid "warning control"
+msgstr "control de avertisment"
+
+#: src/tar.c:820
+msgid "Compatibility options:"
+msgstr "Opțiuni compatibilitate:"
+
+#: src/tar.c:823
+msgid ""
+"when creating, same as --old-archive; when extracting, same as --no-same-"
+"owner"
+msgstr ""
+"când se creează, la fel ca „--old-archive”; când se extrage, la fel ca „--no-"
+"same-owner”"
+
+#: src/tar.c:826
+msgid "Other options:"
+msgstr "Alte opţiuni:"
+
+#: src/tar.c:829
+msgid "disable use of some potentially harmful options"
+msgstr "dezactivează utilizarea unor opțiuni potențial dăunătoare"
+
+#. TRANSLATORS: Both %s in this statement are replaced with
+#. option names.
+#: src/tar.c:888
+#, c-format
+msgid "'%s' cannot be used with '%s'"
+msgstr "„%s” nu poate fi utilizat cu „%s”"
+
+#: src/tar.c:977
+msgid ""
+"You may not specify more than one '-Acdtrux', '--delete' or  '--test-label' "
+"option"
+msgstr ""
+"Nu puteți specifica mai mult decât o opțiune „-Acdtrux”, „--delete” sau „--"
+"test-label”"
+
+#: src/tar.c:989
+msgid "Conflicting compression options"
+msgstr "Opțiunile de comprimare sunt în conflict"
+
+#: src/tar.c:1043
+#, c-format
+msgid "Unknown signal name: %s"
+msgstr "Nume de semnal necunoscut: %s"
+
+#: src/tar.c:1073
+msgid "Date sample file not found"
+msgstr "Fișierul mostră de dată nu a fost găsit"
+
+#: src/tar.c:1081
+#, c-format
+msgid "Substituting %s for unknown date format %s"
+msgstr "Se înlocuiește %s pentru formatul de dată necunoscut %s"
+
+#: src/tar.c:1110
+#, c-format
+msgid "Option %s: Treating date '%s' as %s"
+msgstr "Opțiunea %s: Se tratează data „%s” ca %s"
+
+#: src/tar.c:1150 src/tar.c:1154 src/tar.c:1158 src/tar.c:1162 src/tar.c:1166
+#: src/tar.c:1170 src/tar.c:1174 src/tar.c:1178
+#, c-format
+msgid "filter the archive through %s"
+msgstr "filtrează arhiva prin %s"
+
+#: src/tar.c:1186
+msgid "Valid arguments for the --quoting-style option are:"
+msgstr "Argumentele valide pentru opțiunea „--quoting-style” sunt:"
+
+#: src/tar.c:1190
+msgid ""
+"\n"
+"*This* tar defaults to:\n"
+msgstr ""
+"\n"
+"*Acest* tar folosește implicit:\n"
+
+#: src/tar.c:1302
+msgid "Invalid owner or group ID"
+msgstr "ID de deținător sau grup nevalid"
+
+#: src/tar.c:1405
+msgid "Invalid blocking factor"
+msgstr "Factor blocuri invalid"
+
+#: src/tar.c:1466
+#, c-format
+msgid "Malformed density argument: %s"
+msgstr "Argument de densitate malformat: %s"
+
+#: src/tar.c:1492
+#, c-format
+msgid "Unknown density: '%c'"
+msgstr "Densitate necunoscută: '%c'"
+
+#: src/tar.c:1509
+#, c-format
+msgid "Options '-[0-7][lmh]' not supported by *this* tar"
+msgstr "Opțiunile „-[0-7][lmh]” nu sunt suportate de *acest* tar"
+
+#: src/tar.c:1590
+msgid "Invalid tape length"
+msgstr "Lungime de bandă nevalidă"
+
+#: src/tar.c:1604
+msgid "Invalid incremental level value"
+msgstr "Valoare de nivel incremental nevalidă"
+
+#: src/tar.c:1650
+msgid "More than one threshold date"
+msgstr "Mai mult de o singură dată limită"
+
+#: src/tar.c:1717 src/tar.c:1720
+msgid "Invalid sparse version value"
+msgstr "Valoare de versiune dispersată nevalidă"
+
+#: src/tar.c:1796
+msgid "--atime-preserve='system' is not supported on this platform"
+msgstr "--atime-preserve=„system” nu este acceptat pe această platformă"
+
+#: src/tar.c:1821
+msgid "--checkpoint value is not an integer"
+msgstr "valoarea „--checkpoint” nu este un întreg"
+
+#: src/tar.c:1899
+msgid "Invalid mode given on option"
+msgstr "Mod nevalid furnizat ca opțiune"
+
+#: src/tar.c:1932
+msgid "Invalid number"
+msgstr "Număr nevalid"
+
+#: src/tar.c:1996
+msgid "Invalid record size"
+msgstr "Dimensiune înregistrare nevalidă"
+
+#: src/tar.c:1999
+#, c-format
+msgid "Record size must be a multiple of %d."
+msgstr "Dimensiunea înregistrării trebuie să fie un multiplu de %d."
+
+#: src/tar.c:2045
+msgid "Invalid number of elements"
+msgstr "Număr nevalid de elemente"
+
+#: src/tar.c:2070
+msgid "Only one --to-command option allowed"
+msgstr "Doar o opțiune „--to-command” este permisă"
+
+#: src/tar.c:2135
+#, c-format
+msgid "%s:%lu: location of the error"
+msgstr "%s:%lu: locația erorii"
+
+#: src/tar.c:2138
+#, c-format
+msgid "error parsing %s"
+msgstr "eroare la analizarea %s"
+
+#: src/tar.c:2156
+msgid "[FILE]..."
+msgstr "[FIŞIER]..."
+
+#: src/tar.c:2257
+#, c-format
+msgid "cannot split TAR_OPTIONS: %s"
+msgstr "nu se poate separa TAR_OPTIONS: %s"
+
+#: src/tar.c:2272
+#, c-format
+msgid "non-option arguments in %s"
+msgstr "argumente non-opțiune în %s"
+
+#: src/tar.c:2360
+#, c-format
+msgid "Old option '%c' requires an argument."
+msgstr "Opțiunea veche „%c” necesită un argument."
+
+#: src/tar.c:2432
+msgid "--occurrence is meaningless without a file list"
+msgstr "„--occurrence” n-are sens fără o listă de fișiere"
+
+#: src/tar.c:2458
+msgid "Multiple archive files require '-M' option"
+msgstr "Fișierele de arhivă multiple necesită opțiunea „-M”"
+
+#: src/tar.c:2475
+msgid "--level is meaningless without --listed-incremental"
+msgstr "„--level” nu are sens fără „--listed-incremental”"
+
+#: src/tar.c:2492
+#, c-format
+msgid "%s: Volume label is too long (limit is %lu byte)"
+msgid_plural "%s: Volume label is too long (limit is %lu bytes)"
+msgstr[0] "%s: Eticheta volumului este prea lungă (limita este %lu octet)"
+msgstr[1] "%s: Eticheta volumului este prea lungă (limita este %lu octeți)"
+msgstr[2] "%s: Eticheta volumului este prea lungă (limita este %lu de octeți)"
+
+#: src/tar.c:2505
+msgid "Cannot verify multi-volume archives"
+msgstr "Nu se pot verifica arhive pe volume multiple"
+
+#: src/tar.c:2507
+msgid "Cannot verify compressed archives"
+msgstr "Nu se pot verifica arhive comprimate"
+
+#: src/tar.c:2521
+msgid "Cannot use multi-volume compressed archives"
+msgstr "Nu se pot folosi arhive comprimate pe volume multiple"
+
+#: src/tar.c:2525
+msgid "Cannot concatenate compressed archives"
+msgstr "Nu se pot concatena arhivele comprimate"
+
+#: src/tar.c:2532
+msgid "--clamp-mtime needs a date specified using --mtime"
+msgstr "„--clamp-mtime” are nevoie de o dată specificată utilizând „-mtime”"
+
+#: src/tar.c:2542
+msgid "--pax-option can be used only on POSIX archives"
+msgstr "„--pax-option” poate fi folosită numai pentru arhive POSIX"
+
+#: src/tar.c:2549
+msgid "--acls can be used only on POSIX archives"
+msgstr "„--acls” poate fi utilizată doar pe arhive POSIX"
+
+#: src/tar.c:2554
+msgid "--selinux can be used only on POSIX archives"
+msgstr "„--selinux” poate fi utilizată doar pe arhive POSIX"
+
+#: src/tar.c:2559
+msgid "--xattrs can be used only on POSIX archives"
+msgstr "„--xattrs” poate fi utilizată doar pe arhive POSIX"
+
+#: src/tar.c:2608
+msgid ""
+"Cannot deduce top-level directory name; please set it explicitly with --one-"
+"top-level=DIR"
+msgstr ""
+"Nu se poate deduce numele de director de nivelul de top; stabiliți-l "
+"explicit cu „--one-top-level=DIR”"
+
+#: src/tar.c:2641
+msgid "Volume length cannot be less than record size"
+msgstr "Lungimea volumului nu poate fi mai mică decât dimensiunea înregistrată"
+
+#: src/tar.c:2665
+msgid "Cowardly refusing to create an empty archive"
+msgstr "Refuz categoric să creez o arhivă goală"
+
+#: src/tar.c:2691
+msgid "Options '-Aru' are incompatible with '-f -'"
+msgstr "Opțiunile „-Aru” nu sunt compatibile cu „-f -”"
+
+#: src/tar.c:2775
+msgid "failed to assert availability of the standard file descriptors"
+msgstr ""
+"nu a reușit să se confirme disponibilitatea descriptorilor de fișiere "
+"standard"
+
+#: src/tar.c:2805
+msgid ""
+"You must specify one of the '-Acdtrux', '--delete' or '--test-label' options"
+msgstr ""
+"Trebuie să specificați una dintre opțiunile „-Acdtrux”, „--delete” sau „--"
+"test-label”"
+
+#: src/tar.c:2865
+#, c-format
+msgid "Exiting with failure status due to previous errors"
+msgstr "Se iese cu starea de eșec din cauza erorilor anterioare"
+
+#: src/xheader.c:163
+#, c-format
+msgid "Keyword %s is unknown or not yet implemented"
+msgstr "Cuvântul cheie %s nu este cunoscut sau nu este încă implementat"
+
+#: src/xheader.c:172
+msgid "Time stamp is out of allowed range"
+msgstr "Datarea este în afara intervalului permis"
+
+#: src/xheader.c:187
+#, c-format
+msgid "Malformed pax option: %s"
+msgstr "Opțiune pax malformată: %s"
+
+#: src/xheader.c:206
+#, c-format
+msgid "Pattern %s cannot be used"
+msgstr "Modelul %s nu poate fi folosit"
+
+#: src/xheader.c:220
+#, c-format
+msgid "Keyword %s cannot be overridden"
+msgstr "Cuvânt_cheie %s nu poate fi înlocuit"
+
+#: src/xheader.c:492
+msgid "can't update global extended header record"
+msgstr "nu se poate actualiza înregistrarea de antet extins global"
+
+#: src/xheader.c:622
+msgid "Malformed extended header: missing length"
+msgstr "Antet extins malformat: lipsește lungimea"
+
+#: src/xheader.c:631
+#, fuzzy, c-format
+#| msgid "Extended header length %*s is out of range"
+msgid "Extended header length %.*s is out of range"
+msgstr "Lungimea de antet extinsă %*s este în afara intervalului"
+
+#: src/xheader.c:643
+msgid "Malformed extended header: missing blank after length"
+msgstr "Antet extins malformat: lipsește linia goală după lungime"
+
+#: src/xheader.c:651
+msgid "Malformed extended header: missing equal sign"
+msgstr "Antet extins malformat: lipsește semnul egal"
+
+#: src/xheader.c:657
+msgid "Malformed extended header: missing newline"
+msgstr "Antet extins malformat: lipsește o linie nouă"
+
+#: src/xheader.c:695
+#, c-format
+msgid "Ignoring unknown extended header keyword '%s'"
+msgstr "Se ignoră cuvântul cheie de antet extins necunoscut „%s”"
+
+#: src/xheader.c:977
+#, c-format
+msgid "Generated keyword/value pair is too long (keyword=%s, length=%s)"
+msgstr ""
+"Perechea cuvânt_cheie/valoare generată este prea lungă (cuvânt cheie=%s, "
+"lungime=%s)"
+
+#. TRANSLATORS: The first %s is the pax extended header keyword
+#. (atime, gid, etc.).
+#: src/xheader.c:1007
+#, c-format
+msgid "Extended header %s=%s is out of range %s..%s"
+msgstr "Antetul extins %s=%s este în afara intervalului %s..%s"
+
+#: src/xheader.c:1058 src/xheader.c:1064 src/xheader.c:1097 src/xheader.c:1450
+#, c-format
+msgid "Malformed extended header: invalid %s=%s"
+msgstr "Antet extins malformat: nevalid %s=%s"
+
+#: src/xheader.c:1403 src/xheader.c:1428 src/xheader.c:1483
+#, c-format
+msgid "Malformed extended header: excess %s=%s"
+msgstr "Antet extins malformat: exces %s=%s"
+
+#: src/xheader.c:1496
+#, c-format
+msgid "Malformed extended header: invalid %s: unexpected delimiter %c"
+msgstr "Antet extins nevalid: %s nevalid: delimitator neașteptat %c"
+
+#: src/xheader.c:1506
+#, c-format
+msgid "Malformed extended header: invalid %s: odd number of values"
+msgstr "Antet extins malformat: %s nevalid: număr impar de valori"
+
+#: src/checkpoint.c:133
+#, c-format
+msgid "%s: not a valid timeout"
+msgstr "%s: nu este o limită de timp validă"
+
+#: src/checkpoint.c:146
+#, c-format
+msgid "%s: unknown checkpoint action"
+msgstr "%s: acțiune de punct de verificare necunoscută"
+
+#: src/checkpoint.c:236
+msgid "write"
+msgstr "scrie"
+
+#: src/checkpoint.c:236
+msgid "read"
+msgstr "citește"
+
+#. TRANSLATORS: This is a "checkpoint of write operation",
+#. *not* "Writing a checkpoint".
+#. E.g. in Spanish "Punto de comprobaci@'on de escritura",
+#. *not* "Escribiendo un punto de comprobaci@'on"
+#: src/checkpoint.c:252
+#, c-format
+msgid "Write checkpoint %u"
+msgstr "Punct de verificare al scrierii %u"
+
+#. TRANSLATORS: This is a "checkpoint of read operation",
+#. *not* "Reading a checkpoint".
+#. E.g. in Spanish "Punto de comprobaci@'on de lectura",
+#. *not* "Leyendo un punto de comprobaci@'on"
+#: src/checkpoint.c:258
+#, c-format
+msgid "Read checkpoint %u"
+msgstr "Punct de verificare al citirii %u"
+
+#: tests/genfile.c:115
+msgid ""
+"genfile manipulates data files for GNU paxutils test suite.\n"
+"OPTIONS are:\n"
+msgstr ""
+"genfile manipulează fișiere de date pentru suita de teste paxutils GNU.\n"
+"OPȚIUNILE sunt:\n"
+
+#: tests/genfile.c:131
+msgid "File creation options:"
+msgstr "Opțiuni de creare a fișierului:"
+
+#: tests/genfile.c:132 tests/genfile.c:143
+msgid "SIZE"
+msgstr "DIMENSIUNE"
+
+#: tests/genfile.c:133
+msgid "Create file of the given SIZE"
+msgstr "Creează un fișier cu DIMENSIUNEA dată"
+
+#: tests/genfile.c:135
+msgid "Write to file NAME, instead of standard output"
+msgstr "Scrie la NUMELE de fișier, în loc de ieșirea standard"
+
+#: tests/genfile.c:137
+msgid "Read file names from FILE"
+msgstr "Citește numele de fișiere de la FIȘIER"
+
+#: tests/genfile.c:139
+msgid "-T reads null-terminated names"
+msgstr "„-T” citește nume terminate cu null"
+
+#: tests/genfile.c:141
+msgid "Fill the file with the given PATTERN. PATTERN is 'default' or 'zeros'"
+msgstr ""
+"Umple fișierul cu MODELUL dat. MODELUL este „default (implicit)” sau „zeros "
+"(zerouri)”"
+
+#: tests/genfile.c:144
+msgid "Size of a block for sparse file"
+msgstr "Dimensiunea unui bloc pentru un fișier dispersat"
+
+#: tests/genfile.c:146
+msgid "Generate sparse file. Rest of the command line gives the file map."
+msgstr ""
+"Generează un fișier dispersat. Restul liniei de comandă oferă harta "
+"fișierului."
+
+#: tests/genfile.c:148
+msgid "OFFSET"
+msgstr "DECALAJ"
+
+#: tests/genfile.c:149
+msgid "Seek to the given offset before writing data"
+msgstr "Derulează la decalajul dat înaintea scrierii datelor"
+
+#: tests/genfile.c:152
+msgid "Suppress non-fatal diagnostic messages"
+msgstr "Suprimă mesajele de diagnostic ne-fatale"
+
+#: tests/genfile.c:156
+msgid "File statistics options:"
+msgstr "Opțiunile de statistici de fișier:"
+
+#: tests/genfile.c:159
+msgid "Print contents of struct stat for each given file. Default FORMAT is: "
+msgstr ""
+"Afișează conținutul de la structura de statistici pentru fiecare fișier dat. "
+"FORMATUL implicit este: "
+
+#: tests/genfile.c:163
+msgid "stat symbolic links instead of referenced files"
+msgstr ""
+
+#: tests/genfile.c:167
+msgid ""
+"Set access and modification times of the files to the time supplied by --"
+"date option"
+msgstr ""
+
+#: tests/genfile.c:174
+msgid "Synchronous execution options:"
+msgstr "Opțiunile de execuție sincronic:"
+
+#: tests/genfile.c:176
+msgid "N"
+msgstr "N"
+
+#: tests/genfile.c:177
+msgid ""
+"Execute ARGS. Trigger checkpoints every Nth record (default 1). Useful with "
+"--checkpoint and one of --cut, --append, --touch, --unlink"
+msgstr ""
+"Execută ARGS. Declanșează punctele de verificare la fiecare al N-lea "
+"înregistrare (implicit 1). Util cu --checkpoint și una din --cut, --append, "
+"--touch, --unlink"
+
+#: tests/genfile.c:180
+msgid "Perform given action (see below) upon reaching checkpoint NUMBER"
+msgstr ""
+"Execută acțiunea dată (vedeți mai jos) la atingerea punctului de verificare "
+"NUMĂR"
+
+#: tests/genfile.c:183
+msgid "Set date for next --touch option"
+msgstr "Stabiliți data pentru următoarea opțiune „--touch”"
+
+#: tests/genfile.c:186
+msgid "Display executed checkpoints and exit status of COMMAND"
+msgstr ""
+"Afișează punctele de verificare executate și starea de ieșire a COMENZII"
+
+#: tests/genfile.c:191
+msgid ""
+"Synchronous execution actions. These are executed when checkpoint number "
+"given by --checkpoint option is reached."
+msgstr ""
+"Acțiuni de executare sincronice. Acestea sunt executate când numărul de "
+"punct de verificare dat de opțiunea „--checkpoint” este atinsă."
+
+#: tests/genfile.c:194
+msgid ""
+"Truncate FILE to the size specified by previous --length option (or 0, if it "
+"is not given)"
+msgstr ""
+"Trunchiază FIȘIERUL la dimensiunea specificată de opțiunea „--length” "
+"anterioară (sau 0, dacă nu este dată)"
+
+#: tests/genfile.c:198
+msgid "Append SIZE bytes to FILE. SIZE is given by previous --length option."
+msgstr ""
+"Adaugă DIMENSIUNE octeți la FIȘIER. DIMENSIUNEA este dată de opțiunea „--"
+"length” anterioară."
+
+#: tests/genfile.c:201
+msgid "Update the access and modification times of FILE"
+msgstr "Actualizează timpii de acces și de modificare a FIȘIERULUI"
+
+#: tests/genfile.c:204
+msgid "Execute COMMAND"
+msgstr "Execută COMANDA"
+
+#: tests/genfile.c:207
+msgid "Delete FILE"
+msgstr "Șterge FIȘIERUL"
+
+#: tests/genfile.c:258
+#, c-format
+msgid "Invalid size: %s"
+msgstr "Dimensiune nevalidă: %s"
+
+#: tests/genfile.c:263
+#, c-format
+msgid "Number out of allowed range: %s"
+msgstr "Numărul din intervalul permis: %s"
+
+#: tests/genfile.c:266
+#, c-format
+msgid "Negative size: %s"
+msgstr "Dimensiune negativă: %s"
+
+#: tests/genfile.c:279 tests/genfile.c:672
+#, c-format
+msgid "stat(%s) failed"
+msgstr "stat(%s) a eșuat"
+
+#: tests/genfile.c:284
+#, fuzzy, c-format
+#| msgid "requested file length %lu, actual %lu"
+msgid "requested file length %jd, actual %jd"
+msgstr "lungime de fișier cerută %lu, actuală %lu"
+
+#: tests/genfile.c:289
+#, c-format
+msgid "created file is not sparse"
+msgstr "fișierul creat nu este dispers"
+
+#: tests/genfile.c:390
+#, c-format
+msgid "Error parsing number near `%s'"
+msgstr "Eroare la analizarea numărului lângă „%s”"
+
+#: tests/genfile.c:396
+#, c-format
+msgid "Unknown date format"
+msgstr "Format de dată necunoscut"
+
+#: tests/genfile.c:420
+msgid "[ARGS...]"
+msgstr "[ARGU...]"
+
+#: tests/genfile.c:457 tests/genfile.c:497 tests/genfile.c:598
+#: tests/genfile.c:787 tests/genfile.c:801
+#, c-format
+msgid "cannot open `%s'"
+msgstr "nu se poate deschide „%s”"
+
+#: tests/genfile.c:463
+msgid "cannot seek"
+msgstr "nu se poate derula"
+
+#: tests/genfile.c:480
+#, c-format
+msgid "file name contains null character"
+msgstr "numele fișierului conține caracterul null"
+
+#: tests/genfile.c:593
+#, c-format
+msgid "cannot generate sparse files on standard output, use --file option"
+msgstr ""
+"nu se pot genera fișiere rare la ieșirea standard, utilizați opțiunea „--"
+"file”"
+
+#: tests/genfile.c:699
+#, c-format
+msgid "incorrect mask (near `%s')"
+msgstr "mască incorectă (lângă „%s”)"
+
+#: tests/genfile.c:705 tests/genfile.c:738
+#, c-format
+msgid "Unknown field `%s'"
+msgstr "Câmp necunoscut „%s”"
+
+#: tests/genfile.c:756 tests/genfile.c:776
+#, c-format
+msgid "cannot set time on `%s'"
+msgstr "nu se poate stabili ora pe „%s”"
+
+#: tests/genfile.c:806
+#, c-format
+msgid "cannot truncate `%s'"
+msgstr "nu se poate trunchia „%s”"
+
+#: tests/genfile.c:815
+#, c-format
+msgid "command failed: %s"
+msgstr "comanda a eșuat: %s"
+
+#: tests/genfile.c:822
+#, c-format
+msgid "cannot stat `%s'"
+msgstr "nu se poate face stat la „%s”"
+
+#: tests/genfile.c:826
+#, c-format
+msgid "cannot remove directory `%s'"
+msgstr "nu se poate elimina directorul „%s”"
+
+#: tests/genfile.c:829
+#, c-format
+msgid "cannot unlink `%s'"
+msgstr "nu se poate elimina legătura „%s”"
+
+#: tests/genfile.c:969
+#, c-format
+msgid "Command exited successfully\n"
+msgstr "Comanda a ieșit cu succes\n"
+
+#: tests/genfile.c:971
+#, c-format
+msgid "Command failed with status %d\n"
+msgstr "Comanda a eșuat cu starea %d\n"
+
+#: tests/genfile.c:975
+#, c-format
+msgid "Command terminated on signal %d\n"
+msgstr "Comanda s-a terminat la semnalul %d\n"
+
+#: tests/genfile.c:977
+#, c-format
+msgid "Command stopped on signal %d\n"
+msgstr "Comanda s-a terminat la semnalul %d\n"
+
+#: tests/genfile.c:980
+#, c-format
+msgid "Command dumped core\n"
+msgstr "Comanda a transferat conținutul memoriei\n"
+
+#: tests/genfile.c:983
+#, c-format
+msgid "Command terminated\n"
+msgstr "Comanda s-a terminat\n"
+
+#: tests/genfile.c:1015
+#, c-format
+msgid "--stat requires file names"
+msgstr "opțiunea „--stat” necesită nume de fișiere"
+
+#: tests/genfile.c:1023
+#, fuzzy, c-format
+#| msgid "--stat requires file names"
+msgid "--set-times requires file names"
+msgstr "opțiunea „--stat” necesită nume de fișiere"
+
+#, c-format
+#~ msgid "%s: file is the archive; not dumped"
+#~ msgstr "%s: fișierul este în arhivă; nimic generat"
+
+#, c-format
+#~ msgid "%s: File shrank by %s byte"
+#~ msgid_plural "%s: File shrank by %s bytes"
+#~ msgstr[0] "%s: Fișierul s-a redus cu %s octet"
+#~ msgstr[1] "%s: Fișierul s-a redus cu %s octeți"
+#~ msgstr[2] "%s: Fișierul s-a redus cu %s de octeți"
+
+#~ msgid "%s home page: <https://www.gnu.org/software/%s/>\n"
+#~ msgstr "%s pagină principală: <https://www.gnu.org/software/%s/>\n"

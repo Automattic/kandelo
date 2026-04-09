@@ -1,0 +1,41 @@
+# Test suite for GNU tar.                             -*- autotest -*-
+# Copyright 2021-2023 Free Software Foundation, Inc.
+#
+# This file is part of GNU tar.
+#
+# GNU tar is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 3 of the License, or
+# (at your option) any later version.
+#
+# GNU tar is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+AT_SETUP([--to-stdout])
+AT_KEYWORDS([extract extrac24 to-stdout])
+
+# Description: When extracting over pipe, only regular files should be
+# extracted.  In tar 1.33 this was broken, so that members of other types
+# (in particular, directories) were extracted as usual.  This test ensures
+# that this is no longer the case.
+#
+# References: https://bugs.archlinux.org/task/69373,
+#             https://savannah.gnu.org/bugs/?60002
+
+AT_TAR_CHECK([
+mkdir dir/
+echo TEXT > dir/file
+tar cf a.tar dir
+rm -r dir
+tar --extract --to-stdout --file a.tar
+test -d dir
+],
+[1],
+[TEXT
+])
+
+AT_CLEANUP

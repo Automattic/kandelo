@@ -1,0 +1,115 @@
+libgnu_a-rename.o: rename.c ../src/config.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/stdbool.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/stdbool.h \
+  assert.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/assert.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/features.h \
+  stdio.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/stdio.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/alltypes.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/stdarg.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/stdarg.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stdarg_header_macro.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stdarg___gnuc_va_list.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stdarg_va_list.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stdarg_va_arg.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stdarg___va_copy.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stdarg_va_copy.h \
+  stddef.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/stddef.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/stddef.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stddef_header_macro.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stddef_ptrdiff_t.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stddef_size_t.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stddef_wchar_t.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stddef_null.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stddef_max_align_t.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stddef_offsetof.h \
+  sys/types.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/types.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/endian.h \
+  sys/select.h sys/time.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/time.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/select.h \
+  signal.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/signal.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/signal.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/errno.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/errno.h \
+  stdlib.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/stdlib.h \
+  fcntl.h sys/stat.h time.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/time.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/stat.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/stat.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/fcntl.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/fcntl.h \
+  unistd.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/unistd.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/posix.h \
+  alloca.h string.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/string.h \
+  strings.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/strings.h \
+  dirname.h filename.h basename-lgpl.h same-inode.h
+../src/config.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/stdbool.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/stdbool.h:
+assert.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/assert.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/features.h:
+stdio.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/stdio.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/alltypes.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/stdarg.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/stdarg.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stdarg_header_macro.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stdarg___gnuc_va_list.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stdarg_va_list.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stdarg_va_arg.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stdarg___va_copy.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stdarg_va_copy.h:
+stddef.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/stddef.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/stddef.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stddef_header_macro.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stddef_ptrdiff_t.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stddef_size_t.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stddef_wchar_t.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stddef_null.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stddef_max_align_t.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stddef_offsetof.h:
+sys/types.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/types.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/endian.h:
+sys/select.h:
+sys/time.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/time.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/select.h:
+signal.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/signal.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/signal.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/errno.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/errno.h:
+stdlib.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/stdlib.h:
+fcntl.h:
+sys/stat.h:
+time.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/time.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/stat.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/stat.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/fcntl.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/fcntl.h:
+unistd.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/unistd.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/posix.h:
+alloca.h:
+string.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/string.h:
+strings.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/strings.h:
+dirname.h:
+filename.h:
+basename-lgpl.h:
+same-inode.h:

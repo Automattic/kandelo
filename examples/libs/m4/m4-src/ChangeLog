@@ -1,0 +1,573 @@
+2021-05-28  Eric Blake  <eblake@redhat.com>
+
+	version 1.4.19
+	* NEWS: Record release date.
+
+2021-05-28  Eric Blake  <eblake@redhat.com>
+
+	tests: Skip signal detection on Haiku
+	On Haiku, using 'kill -9' fromm /bin/shactually causes a process to
+	die with the non-standard SIGKILLTHR 15, which causes 198.sysval to
+	fail from the unexpected value.
+
+	* doc/m4.texi (Sysval): Skip test on Haiku.
+	Reported by Bruno Haible,
+	https://lists.gnu.org/archive/html/bug-m4/2021-05/msg00004.html
+
+2021-05-26  Bruno Haible  <bruno@clisp.org>
+
+	Enable more single-thread optimizations in gnulib code
+	On many systems (esp. BSD ones), building a recent m4 snapshot produces these
+	warnings:
+
+	--------------------------------------------------------------------------------
+	  CC       regex.o
+	In file included from ../../lib/regex_internal.h:57:0,
+	                 from ../../lib/regex.c:70:
+	../../lib/regcomp.c: In function 'rpl_regfree':
+	../../lib/glthread/lock.h:640:38: warning: statement with no effect [-Wunused-value]
+	 # define glthread_lock_destroy(NAME) 0
+	                                      ^
+	../../lib/regex_internal.h:60:26: note: in expansion of macro 'glthread_lock_destroy'
+	 # define lock_fini(lock) glthread_lock_destroy (&(lock))
+	                          ^
+	...
+	--------------------------------------------------------------------------------
+	According to the Gnulib documentation section "Optimizations of multithreaded
+	code" several more optimizations can be enabled. This patch
+	  - enables these single-threading optimizations,
+	  - by doing so, gets rid of the warnings in regex.c,
+	  - causes no test failures.
+
+	* configure.ac (GNULIB_REGEX_SINGLE_THREAD, GNULIB_MBRTOWC_SINGLE_THREAD,
+	GNULIB_WCHAR_SINGLE_LOCALE): Define as C macros.
+	Message-Id: <3311608.oHEOCP8NKg@omega>
+
+2021-05-26  Eric Blake  <eblake@redhat.com>
+
+	maint: Update to newer gnulib
+	Gnulib has improved stack overflow detection (the c-stack module now
+	uses gnulib's stripped-down libsigsegv on more platforms, without
+	having to install GNU libsigsegv); with this update, GNU Linux systems
+	get stack overflow protection without an external library dependency.
+	* gnulib: Update to latest.
+	* NEWS: Mention the impact.
+
+2021-05-12  Eric Blake  <eblake@redhat.com>
+
+	maint: translation string tweak
+	* src/m4.c (usage): Tweak translation of a newline.
+	Reported by Benno Schulenberg,
+	https://lists.gnu.org/archive/html/m4-discuss/2021-05/msg00011.html
+
+2021-05-11  Eric Blake  <eblake@redhat.com>
+
+	maint: post-release administrivia
+	* NEWS: Add header line for next release.
+	* .prev-version: Record previous version.
+	* cfg.mk (old_NEWS_hash): Auto-update.
+
+	version 1.4.18d
+	* NEWS: Recored release date.
+
+2021-05-10  Eric Blake  <eblake@redhat.com>
+
+	po: fix syntax-check
+	* po/POTFILES.in: Update list to match previous patch.
+
+	m4: translate more strings
+	* src/m4.c (usage): Split large paragraphs, and mark for translation.
+	(main): Translate more strings.
+	* src/builtin.c: Likewise.
+	* src/eval.c (evaluate): Likewise.
+	* src/format.c (expand_format): Likewise.
+	* src/freeze.c: Likewise.
+	* src/input.c: Likewise.
+	* src/macro.c: Likewise.
+	* src/output.c: Likewise.
+	Reported by Benno Schulenberg:
+	https://lists.gnu.org/archive/html/m4-discuss/2021-05/msg00005.html
+
+2021-05-10  Eric Blake  <eblake@redhat.com>
+
+	maint: update gnulib
+	Fix several issues reported by Bruno Haible while testing 1.4.18b:
+	https://lists.gnu.org/archive/html/bug-m4/2021-05/msg00002.html
+	https://lists.gnu.org/archive/html/bug-m4/2021-05/msg00003.html
+
+	* gnulib: Bump to latest, for various fixes.
+	* NEWS: Mention this.
+
+2021-05-10  Eric Blake  <eblake@redhat.com>
+
+	maint: update m4-latest* symlinks during upload
+	Avoid the situation we had for several years where m4-latest.tar.xz
+	pointed to m4-1.4.17.tar.xz in spite of m4-1.4.18.tar.xz existing.
+	https://lists.gnu.org/archive/html/m4-discuss/2021-05/msg00003.html
+
+	* cfg.mk (GNUPLOADFLAGS): Update *-latest symlinks during gnupload.
+
+2021-05-10  Eric Blake  <eblake@redhat.com>
+
+	maint: mention ci project
+	Bruno Haible has added a continuous integration environment:
+	https://lists.gnu.org/archive/html/bug-m4/2020-03/msg00000.html
+
+	* HACKING (Continuous Integration): New section.
+
+2021-05-10  Bruno Haible  <bruno@clisp.org>
+
+	eval: avoid undefined behaviour when parsing -2147483648
+	* src/eval.c (eval_lex): Use an unsigned variable for accumulating the
+	value.
+	https://lists.gnu.org/archive/html/bug-m4/2021-05/msg00001.html
+
+2021-05-07  Eric Blake  <eblake@redhat.com>
+
+	maint: post-release administrivia
+	* NEWS: Add header line for next release.
+	* .prev-version: Record previous version.
+	* cfg.mk (old_NEWS_hash): Auto-update.
+
+	version 1.4.18b
+	* NEWS: Record release date.
+
+	maint: prepare for beta release
+	* all: Prefer https over http in URLs.
+	* doc/m4.texi (History): Update URLs to follow redirects.
+	* NEWS: Prepare for release.
+	* cfg.mk (old_NEWS_hash): Regenerate via 'make update-NEWS-hash'
+	* HACKING: Update URL to gnulib, drop reference to CVS.
+
+	maint: update gnulib to latest
+	* gnulib: Pick up latest in preparation for release.
+
+2021-05-07  Eric Blake  <eblake@redhat.com>
+
+	maint: update bootstrap, (re-)enable po file generation
+	In commit 4694c4e67, I disabled bootstrap pulling in po files, because
+	I got an error while attempting to get them, and remembered that while
+	the experimental 2.0 has a .pot file, branch-1.4 (and the 1.4.18
+	release) historically did not.  Basically, since the translation
+	project does not have any m4.pot corresponding to a released m4 that
+	needs it, they deleted tp/latest/m4, and with nothing to pull from,
+	rsync fails.  I did not, however, realize that commit 610290de had
+	intentionally added translation support, such that m4 1.4.19 WILL have
+	translations; so until I get that directory reinstated by releasing
+	1.4.18b, I'll just use './bootstrap --skip-po'.
+
+	Meanwhile, Gary's upstream bootstrap has had some commits
+	(https://github.com/gnulib-modules/bootstrap.git)
+	Regenerate them via:
+	for f in gl/build-aux/*; do cp ~/bootstrap/build-aux/$(basename $f) $f; done
+	gl/build-aux/inline-source gl/build-aux/bootstrap.in > bootstrap
+
+	* gl/build-aux/*: Sync from upstream.
+	* bootstrap: Regenerate.
+	* bootstrap.conf (m4_bootstrap_options_prep): Re-enable po.
+	* NEWS: Document this as intentional.
+	Fixes: 4694c4e67
+
+2021-05-07  Eric Blake  <eblake@redhat.com>
+
+	maint: fix syntax-check issues
+	* src/Makefile.am (m4_LDADD): Rename...
+	(LDADD): ...to this, and use spelling that satisfies syntax-check.
+	* po/POTFILES.in: Update to satisfy syntax-check.
+	* cfg.mk (old_NEWS_hash): Update with 'make update-NEWS-hash'.
+
+	maint: bump copyright year
+	* all: Use 'make update-copyright' to add 2021.
+
+	README: add GNU Project notice
+	* README: Add section to attract more people towards the GNU project.
+	Inspired by a suggestion from Jose E. Marchesi <jemarch@gnu.org> on
+	the gnu-prog-discuss mailing list.
+
+2021-04-22  Eric Blake  <eblake@redhat.com>
+
+	m4: change command-line -H default
+	* src/m4.h (HASHMAX): Bump to ~64k.
+	* doc/m4.texi (Limits control): Document it.
+	* NEWS: Likewise.
+
+	maint: another gnulib update
+	* gnulib: Update to latest, to fix build on rawhide.
+
+2021-04-21  Eric Blake  <eblake@redhat.com>
+
+	symtab: use less memory in pushdef stacks
+	No need to xstrdup identical names when we can share the same name
+	across the pushdef stack.
+
+	* src/symtab.c (free_symbol): Don't free shared name.
+	(lookup_symbol): Share name across pushdef stack.
+
+2021-04-21  Eric Blake  <eblake@redhat.com>
+
+	symtab: make symtab private
+	No need for a leaky abstraction of freezing to have to duplicate how
+	our symbol hash table is organized; use the public function
+	hack_all_symbols instead.  This will make it easier to refactor the
+	symbol table (such as automatic resizing, or switching to a trie).
+
+	* src/m4.h (symtab, SYMBOL_NEXT): Make private.
+	* src/freeze.c (produce_frozen_state): Split out...
+	(freeze_symbol): ...new helper, for use by hack_all_symbols.
+	* src/symtab.c (lookup_symbol, symtab_print_list): Update to treat
+	next as internal-only code.
+
+2021-04-21  Eric Blake  <eblake@redhat.com>
+
+	symtab: sort by hash before name
+	It is faster to do an integer compare than a string compare when
+	managing hash table collisions (reserving a string compare for ties).
+	Testing with CFLAGS=-DDEBUG_SYM=1 and 'time M4=src/m4 autoconf -f',
+	the results are noticeable; on my machine, execution speeds up from
+	2.3s to 2.2s, and the debug trace that used to report:
+
+	m4: lookup mode 0 called 1243301 times, 7859589 compares, 6734330 misses, 23941043 bytes
+
+	now reports
+
+	m4: lookup mode 0 called 1243301 times, 1125259 compares, 0 misses, 12433237 bytes
+
+	* src/m4.h (struct symbol): Add hash member.
+	* src/symtab.c (lookup_symbol): Sort by hash first, then name.
+	(symtab_print_list): Add hash debug.
+
+2021-04-21  Eric Blake  <eblake@redhat.com>
+
+	maint: switch from git:// to https:// for gnulib submodule
+	https:// is nicer than git:// for a transport for avoiding
+	man-in-the-middle attacks, provided that the server is using a
+	new-enough version of git to make https:// efficient (which
+	savannah does).
+	* .gitmodules: Prefer better URL.
+
+2021-04-21  Paul Eggert  <eggert@cs.ucla.edu>
+
+	maint: port to Solaris 10
+	Add libraries needed by current Gnulib.
+	* src/Makefile.am (m4_LDADD): Add LIB_CLOCK_GETTIME,
+	LIB_GETRANDOM, LIB_HARD_LOCALE, LIB_POSIX_SPAWN,
+	LIB_SETLOCALE_NULL, LIBUNISTRING, INTL_MACOSX_LIBS.
+	These are all needed by current Gnulib, according to gnulib-tool.
+	LIB_CLOCK_GETTIME is certainly needed for Solaris 10; otherwise
+	the m4 link fails with clock_gettime not found.
+
+	maint: port to macOS 11.2.3 (arm64)
+	* m4/gnulib-cache.m4: Add fopen-gnu, replacing cloexec and fopen.
+	Avoid getopt-posix-tests, since they are not needed for m4
+	and currently fail on macOS 11.2.3 (arm64).
+	* src/builtin.c (m4_incr, m4_decr): Avoid undefined behavior
+	on integer overflow that causes tests to fail on macOS.
+	* src/debug.c (debug_set_output):
+	* src/output.c (m4_tmpfile, m4_tmpopen):
+	* src/path.c (m4_fopen):
+	Use GNU fopen with "e" rather than set_cloexec_flag.  This is
+	simpler, and works around a Gnulib bug on macOS with fopen
+	being replaced by rpl_fopen sometimes but not other times.
+	* src/freeze.c (produce_frozen_state): Use GNU fopen with "e";
+	no need to expose the fd to subprocesses.
+
+	build: update gnulib submodule to latest
+
+2021-04-17  Eric Blake  <eblake@redhat.com>
+
+	symtab: drop redundant symbol flag
+	In writing the previous patch, I noticed that the shadow flag is only
+	ever set when a pushdef stack is present, which makes it redundant now
+	that the pushdef stack is separate from the hash collision stack.
+
+	* src/m4.h (SYMBOL_SHADOWED): Delete.
+	* src/builtin.c (dump_symbol): Simplify, now that hack_all_symbols
+	no longer visits shadowed macros.
+	* src/symtab.c (lookup_symbol, symtab_print_list): Simplify.
+
+2021-04-17  Eric Blake  <eblake@redhat.com>
+
+	symtab: better handling of macro stacks
+	I ran into a scenario where running a program took 22s with the
+	default -H509, but less than a second with -H517 [1].  The culprit?  A
+	collision between 'stack' and 'substr' in the default hash table size
+	caused lookups for substr to get progressively slower as pushdef stack
+	got deeper.  This is easy enough to fix, and may also make it easier
+	to dynamically grow the hashtable.
+
+	[1] https://lists.gnu.org/archive/html/bug-m4/2021-04/msg00000.html
+
+	* src/m4.h (struct symbol): Add stack member.
+	* src/symtab.c (lookup_symbol): Separate stack from bucket list.
+	(symtab_print_list): Update traversal to match.
+	* src/freeze.c (produce_frozen_state): Likewise.
+	(reverse_symbol_list): Reverse stack, not bucket.
+
+2021-04-17  Eric Blake  <eblake@redhat.com>
+
+	input: optimize macro tail-call memory usage
+	I encountered an m4 program that performed over 20 million iterations
+	of a tail-call recursion paradigm.  Without this patch, memory usage
+	grew to over 6 gigabytes, pausing the program for several seconds when
+	the recursion finally ended just to reclaim the memory.  But with the
+	patch, m4 never needed more than 3 megabytes of resident memory.
+
+	* src/input.c (push_string_init): Prune empty string blocks before
+	starting another one.
+
+2021-04-17  Eric Blake  <eblake@redhat.com>
+
+	maint: update gnulib and fix build failures
+	I got failures when trying to bootstrap:
+
+	bootstrap: getting translations into po/.reference for m4...
+	receiving incremental file list
+	rsync: change_dir "/latest/m4" (in tp) failed: No such file or directory (2)
+
+	since m4-1.4 has no translation files, and the translation project
+	dropped the stale .po files for the unreleased 1.9 development branch.
+
+	Once that was fixed, I also got compilation failures, from an
+	incomplete update to the gnulib execute module:
+
+	builtin.c: In function 'm4_syscmd':
+	builtin.c:968:44: error: passing argument 3 of 'execute' from incompatible pointer type [-Werror=incompatible-pointer-types]
+	  968 |   status = execute (ARG (0), SYSCMD_SHELL, prog_args, NULL, false,
+	      |                                            ^~~~~~~~~
+	      |                                            |
+	      |                                            const char **
+
+	Fixes: 4e5c2c0157
+
+	* gnulib: Update to latest.
+	* bootstrap.conf (copyright_holder): Silence bootstrap warning.
+	(m4_bootstrap_options_prep): Turn off po update.
+
+2020-12-12  Bruno Haible  <bruno@clisp.org>
+
+	Update after gnulib changed.
+	* src/builtin.c (m4_syscmd): Update 'execute' invocation.
+	(m4_esyscmd): Update 'create_pipe_in' invocation.
+	* po/POTFILES.in: Remove lib/w32spawn.h. Add lib/openat-die.c, lib/os2-spawn.c.
+
+2020-08-23  Paul Eggert  <eggert@cs.ucla.edu>
+
+	* HACKING: Autoconf 2.64 required now.
+
+2020-08-23  Bruno Haible  <bruno@clisp.org>
+
+	build: Fix bootstrap failure with the newest gnulib.
+	* configure.ac: Require Autoconf 2.64 at least.
+
+2020-07-17  Paul Eggert  <eggert@cs.ucla.edu>
+
+	Port recent changes to AIX 7.1
+	* src/Makefile.am (m4_LDADD): Add LIB_MBRTOWC, LIB_SETLOCALE.
+	AIX 7.1 needs these to get the pthread support linked in.
+
+2020-07-13  Paul Eggert  <eggert@cs.ucla.edu>
+
+	Support gettext and proper names
+	This way, ‘m4 --version’ outputs “Written by René Seindal”
+	instead of “Written by Rene' Seindal” when in a UTF-8 locale.
+	As the Translation project adds translations, NLS should
+	get better.
+	* .gitignore: Add translation-related file names.
+	* AUTHORS, ChangeLog-2014, NEWS, README, acinclude.m4, c-boxes.el:
+	Spell “François” and “René” without ASCIIfying.
+	* HACKING: Add Gettext as a prereq.
+	* Makefile.am (SUBDIRS): Add po.
+	* configure.ac: Do not use -Wvla.  Add AM_GNU_GETTEXT
+	and AM_GNU_GETTEXT_VERSION calls.
+	* lib/Makefile.am (MAINTAINERCLEANFILES): Define to empty.
+	* m4/gnulib-cache.m4: Add configmake, gettext-h, propername,
+	and setlocale modules.
+	* po/POTFILES.in: New file.
+	* src/Makefile.am (m4_LDADD): Add $(LIBICONV), $(LIBINTL).
+	* src/m4.c: Include configmake.h, propername.h.
+	(main): Set the locale.
+	* src/m4.h: Include locale.h, gettext.h.
+	(textdomain, bindtextdomain) [!ENABLE_NLS]: Provide defaults.
+	(_): Now an alias for gettext, instead of a no-op.
+
+	Use c-ctype.h instead of ctype.h
+	This simplifies the code a bit, and prepares for setlocale.
+	* m4/gnulib-cache.m4: Add c-ctype module.
+	* src/builtin.c (numeric_arg, m4_undivert, expand_user_macro):
+	* src/eval.c (eval_lex):
+	* src/format.c (arg_int, arg_long, arg_double, expand_format):
+	* src/freeze.c (GET_NUMBER): m
+	* src/input.c (next_token, peek_token):
+	* src/macro.c (expand_argument):
+	Prefer c-ctype macros to ctype macros.
+	Omit now-unnecessary calls to to_uchar.
+	* src/m4.h: Include c-ctype.h instead of ctype.h.
+
+2020-07-11  Paul Eggert  <eggert@cs.ucla.edu>
+
+	Regenerate bootstrap
+
+	Convert m4.texi from Latin-1 to UTF-8
+	* HACKING: Texinfo 4.11 and Autoconf 2.63 are now prereqs.
+	* doc/m4.texi: Convert to UTF-8.
+
+2020-07-05  Paul Eggert  <eggert@cs.ucla.edu>
+
+	Port to recent GCC with --enable-gcc-warnings
+	* m4/gnulib-cache.m4: Add attribute, verify.
+	* src/m4.c (m4_failure, m4_failure_at_line): New functions.
+	These replace all uses of M4ERROR ((EXIT_FAILURE, ...)) and
+	M4ERROR_WITH_LINE ((EXIT_FAILURE, ...), so that the compiler can
+	deduce they do not return.
+	* src/m4.h: Include attribute.h, verify.h.
+	(M4_GNUC_ATTRIBUTE, M4_GNUC_UNUSED, M4_GNUC_PRINTF)
+	(M4_GNUC_NORETURN, M4_GNUC_PURE): Remove.
+	All uses replaced by corresponding attributes from attribute.h.
+	Also, use attribute.h’s FALLTHROUGH macro as needed in all files.
+	* src/macro.c (expand_macro): Cast to uintptr_t instead of to char *
+	to pacify GCC alignment warning.
+
+	maint: update copyright date
+	Arrived at via:
+	make update-copyright
+	gl/build-aux/inline-source gl/build-aux/bootstrap.in > bootstrap
+
+	build: adjust to gnulib changes
+	* configure.ac: Require Autoconf 2.63; needed by Gnulib.
+	* m4/gnulib-cache.m4: Regenerate.
+
+2020-07-05  Bruno Haible  <bruno@clisp.org>
+
+	Update after gnulib changed
+	* src/output.c (m4_tmpfile, m4_tmpopen): Update fopen_temp invocations.
+	* gl/lib/clean-temp.c.diff: Remove file, no longer needed.
+
+2020-07-05  Paul Eggert  <eggert@cs.ucla.edu>
+
+	build: update gnulib submodule to latest
+
+2017-01-02  Eric Blake  <eblake@redhat.com>
+
+	maint: bump copyright year
+	Needed to keep 'make syntax-check' passing.
+
+	* gnulib: Update to latest.
+	* bootstrap: Regenerate.
+	* all files: Use 'make update-copyright' to bump year.
+
+2016-12-31  Eric Blake  <eblake@redhat.com>
+
+	maint: post-release administrivia
+	* NEWS: Add header line for next release.
+	* .prev-version: Record previous version.
+	* cfg.mk (old_NEWS_hash): Auto-update.
+
+	version 1.4.18
+	* NEWS: Record release date.
+
+	doc: abbreviate and update release history
+	* doc/m4.texi (History): Shorten, and call out today's release.
+
+2016-12-31  Eric Blake  <eblake@redhat.com>
+
+	maint: automate creation of release tag
+	The gnulib makefile was already set up to automate things with
+	'make release ...', but we were still doing things by hand, and
+	thereby risking missing some steps.
+
+	* m4/gnulib-cache.m4 (gl_MODULES): Import do-release-commit-and-tag.
+	* gnulib: Update, for latest version of the script.
+	* HACKING: Mention its use.
+
+2016-12-31  Eric Blake  <eblake@redhat.com>
+
+	maint: generate ChangeLog from git commits
+	Follow the practice set in numerous other GNU projects, where
+	the ChangeLog (since 2015) is generated from git commit messages.
+	This avoids duplication or subtle differences between the two,
+	as well as making it easier to merge patches across branches
+	(as good as Bruno Haible's 'git-merge-changelog' helper program
+	is, it still doesn't handle cross-branch cherry-picks very well).
+
+	* ChangeLog: Move...
+	* ChangeLog-2014: ...to this.
+	* Makefile.am (EXTRA_DIST): Ship renamed file.
+	(gen-ChangeLog): New rule, copied mostly from coreutils.
+	(dist-hook): Generate the ChangeLog.
+	* m4/gnulib-cache.m4 (gl_MODULES): Import gitlog-to-changelog.
+	* .gitignore: Ignore ChangeLog.
+	* .gitattributes: Likewise.
+	* HACKING: Reword to match new procedure, and simplify by
+	referring to an external description of ChangeLog style.
+
+2016-12-31  Eric Blake  <eblake@redhat.com>
+
+	maint: summarize highlights of pending release
+	* NEWS: Add some blurbs.
+
+2016-12-31  Eric Blake  <eblake@redhat.com>
+
+	maint: make silent builds the default
+	The user still has full control over verbosity levels, both setting
+	their per-project defaults at configure time (or even in a config.site
+	file), as well as a per-run override. But these days, most projects
+	are defaulting to silent rules without user intervention.
+
+	* configure.ac (AM_SILENT_RULES): Add, to match what most projects
+	are doing these days.
+
+2016-12-31  Eric Blake  <eblake@redhat.com>
+
+	maint: release no longer creates a diff file
+	Ever since commit f1cf390 (1.4.14 release), we no longer create
+	diff files as part of the release process.  These days, it is
+	assumed that it is easier to download a fresh tarball rather
+	than to try and use a diff file to patch an older tarball.
+
+2016-12-30  Eric Blake  <eblake@redhat.com>
+
+	doc: drop obsolete @setcontentsaftertitlepage
+	texinfo 6.1 complains (during 'make dvi'):
+
+	/home/eblake/m4-1.4/doc/./m4.texi:9: @setcontentsaftertitlepage has been remove
+	d as a Texinfo command; move your @contents command if you want the contents af
+	ter the title page..
+
+	It turns out that eliminating the command has no effect - modern
+	tools correctly emit the contents in-place, right after the title
+	page, so it was leftover cruft from an older time.
+
+	* doc/m4.texi: Satisfy newer texinfo.
+
+2016-12-29  Eric Blake  <eblake@redhat.com>
+
+	build: update to latest gnulib
+	I hit a weird failure during 'make check', and traced it to a recent
+	gnulib regression in parallel test safety.  Pick up the gnulib fix.
+
+	* gnulib: Update to latest, to fix failure in getopt tests.
+
+2016-12-29  Eric Blake  <eblake@redhat.com>
+
+	maint: regenerate bootstrap
+	Missed during the copyright update.
+
+	* bootstrap: Regenerate.
+
+2016-12-29  Eric Blake  <eblake@redhat.com>
+
+	maint: bump copyright year
+	Sadly, there's no commit in 2015, which means we don't get to benefit
+	from using a copyright range.
+
+	Done with 'make update-copyright'.
+
+	* all files: Version control now has a commit in 2016.
+
+2016-12-29  Eric Blake  <eblake@redhat.com>
+
+	gnulib: Update to latest
+	* gnulib: Update to latest.
+	* m4/gnulib-cache.m4: Regenerate.
+	* src/macro.c (expand_macro): Deal with obstack API change.
+	* src/builtin.c (mkstemp_helper): Likewise.

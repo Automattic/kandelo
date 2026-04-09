@@ -32,6 +32,7 @@ const dashBuilt = resolve(repoRoot, "examples/libs/dash/bin/dash.wasm");
 const dashWasm = existsSync(dashBuilt) ? dashBuilt : resolve(repoRoot, "host/wasm/sh.wasm");
 const grepWasm = resolve(repoRoot, "examples/libs/grep/bin/grep.wasm");
 const sedWasm = resolve(repoRoot, "examples/libs/sed/bin/sed.wasm");
+<<<<<<< HEAD
 const gitWasm = resolve(repoRoot, "examples/libs/git/bin/git.wasm");
 const bcWasm = resolve(repoRoot, "examples/libs/bc/bin/bc.wasm");
 const fileWasm = resolve(repoRoot, "examples/libs/file/bin/file.wasm");
@@ -50,6 +51,26 @@ const unzipWasm = resolve(repoRoot, "examples/libs/unzip/bin/unzip.wasm");
 const lsofWasm = resolve(repoRoot, "examples/lsof.wasm");
 const rubyWasm = resolve(repoRoot, "examples/libs/ruby/bin/ruby.wasm");
 const vimWasm = resolve(repoRoot, "examples/libs/vim/bin/vim.wasm");
+=======
+const gawkWasm = resolve(repoRoot, "examples/libs/gawk/bin/gawk.wasm");
+const findWasm = resolve(repoRoot, "examples/libs/findutils/bin/find.wasm");
+const xargsWasm = resolve(repoRoot, "examples/libs/findutils/bin/xargs.wasm");
+const diffWasm = resolve(repoRoot, "examples/libs/diffutils/bin/diff.wasm");
+const cmpWasm = resolve(repoRoot, "examples/libs/diffutils/bin/cmp.wasm");
+const sdiffWasm = resolve(repoRoot, "examples/libs/diffutils/bin/sdiff.wasm");
+const diff3Wasm = resolve(repoRoot, "examples/libs/diffutils/bin/diff3.wasm");
+const tarWasm = resolve(repoRoot, "examples/libs/tar/bin/tar.wasm");
+const gzipWasm = resolve(repoRoot, "examples/libs/gzip/bin/gzip.wasm");
+const bzip2Wasm = resolve(repoRoot, "examples/libs/bzip2/bin/bzip2.wasm");
+const xzWasm = resolve(repoRoot, "examples/libs/xz/bin/xz.wasm");
+const lessWasm = resolve(repoRoot, "examples/libs/less/bin/less.wasm");
+const bcWasm = resolve(repoRoot, "examples/libs/bc/bin/bc.wasm");
+const m4Wasm = resolve(repoRoot, "examples/libs/m4/bin/m4.wasm");
+const makeWasm = resolve(repoRoot, "examples/libs/make/bin/make.wasm");
+const fileWasm = resolve(repoRoot, "examples/libs/file/bin/file.wasm");
+const wgetWasm = resolve(repoRoot, "examples/libs/wget/bin/wget.wasm");
+const curlWasm = resolve(repoRoot, "examples/libs/curl/bin/curl.wasm");
+>>>>>>> 426ec1b (feat: add build scripts for 14 Unix utilities)
 
 // GNU coreutils multi-call binary supports all of these as argv[0]
 const coreutilsNames = [
@@ -83,6 +104,7 @@ const builtinPrograms: Record<string, string> = {
     "/usr/bin/sed": sedWasm,
     "gencat": resolve(repoRoot, "examples/gencat.wasm"),
     "/usr/bin/gencat": resolve(repoRoot, "examples/gencat.wasm"),
+<<<<<<< HEAD
     "git": gitWasm,
     "/usr/bin/git": gitWasm,
     "/bin/git": gitWasm,
@@ -179,6 +201,71 @@ const builtinPrograms: Record<string, string> = {
     "vi": vimWasm,
     "/usr/bin/vi": vimWasm,
     "/bin/vi": vimWasm,
+=======
+    "gawk": gawkWasm,
+    "/bin/gawk": gawkWasm,
+    "/usr/bin/gawk": gawkWasm,
+    "awk": gawkWasm,
+    "/bin/awk": gawkWasm,
+    "/usr/bin/awk": gawkWasm,
+    "find": findWasm,
+    "/bin/find": findWasm,
+    "/usr/bin/find": findWasm,
+    "xargs": xargsWasm,
+    "/bin/xargs": xargsWasm,
+    "/usr/bin/xargs": xargsWasm,
+    "diff": diffWasm,
+    "/bin/diff": diffWasm,
+    "/usr/bin/diff": diffWasm,
+    "cmp": cmpWasm,
+    "/bin/cmp": cmpWasm,
+    "/usr/bin/cmp": cmpWasm,
+    "sdiff": sdiffWasm,
+    "/bin/sdiff": sdiffWasm,
+    "/usr/bin/sdiff": sdiffWasm,
+    "diff3": diff3Wasm,
+    "/bin/diff3": diff3Wasm,
+    "/usr/bin/diff3": diff3Wasm,
+    "tar": tarWasm,
+    "/bin/tar": tarWasm,
+    "/usr/bin/tar": tarWasm,
+    "gzip": gzipWasm,
+    "/bin/gzip": gzipWasm,
+    "/usr/bin/gzip": gzipWasm,
+    "gunzip": gzipWasm,
+    "/bin/gunzip": gzipWasm,
+    "bzip2": bzip2Wasm,
+    "/bin/bzip2": bzip2Wasm,
+    "/usr/bin/bzip2": bzip2Wasm,
+    "bunzip2": bzip2Wasm,
+    "/bin/bunzip2": bzip2Wasm,
+    "xz": xzWasm,
+    "/bin/xz": xzWasm,
+    "/usr/bin/xz": xzWasm,
+    "unxz": xzWasm,
+    "/bin/unxz": xzWasm,
+    "less": lessWasm,
+    "/bin/less": lessWasm,
+    "/usr/bin/less": lessWasm,
+    "bc": bcWasm,
+    "/bin/bc": bcWasm,
+    "/usr/bin/bc": bcWasm,
+    "m4": m4Wasm,
+    "/bin/m4": m4Wasm,
+    "/usr/bin/m4": m4Wasm,
+    "make": makeWasm,
+    "/bin/make": makeWasm,
+    "/usr/bin/make": makeWasm,
+    "file": fileWasm,
+    "/bin/file": fileWasm,
+    "/usr/bin/file": fileWasm,
+    "wget": wgetWasm,
+    "/bin/wget": wgetWasm,
+    "/usr/bin/wget": wgetWasm,
+    "curl": curlWasm,
+    "/bin/curl": curlWasm,
+    "/usr/bin/curl": curlWasm,
+>>>>>>> 426ec1b (feat: add build scripts for 14 Unix utilities)
 };
 
 // Add coreutils mappings for all known tool names

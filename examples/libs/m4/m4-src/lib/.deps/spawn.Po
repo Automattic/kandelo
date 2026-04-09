@@ -1,0 +1,29 @@
+spawn.o: spawn.c config.h spawn.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/spawn.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/features.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/alltypes.h \
+  sched.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sched.h \
+  sys/types.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/types.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/endian.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/select.h \
+  signal.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/signal.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/signal.h \
+  spawn_int.h
+config.h:
+spawn.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/spawn.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/features.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/alltypes.h:
+sched.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sched.h:
+sys/types.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/types.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/endian.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/select.h:
+signal.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/signal.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/signal.h:
+spawn_int.h:

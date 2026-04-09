@@ -1,0 +1,13 @@
+# This is a generated file.  Do not edit.
+buildinfo.configure.tool: configure
+buildinfo.configure.args:  '--host=wasm32-unknown-none' '--prefix=/usr' '--disable-nls' '--disable-shared' '--enable-static' '--with-openssl' '--with-zlib' '--without-brotli' '--without-zstd' '--without-nghttp2' '--without-libidn2' '--without-libssh2' '--without-librtmp' '--without-winidn' '--without-libpsl' '--disable-ldap' '--disable-ldaps' '--disable-rtsp' '--disable-dict' '--disable-telnet' '--disable-tftp' '--disable-pop3' '--disable-imap' '--disable-smb' '--disable-smtp' '--disable-gopher' '--disable-mqtt' '--disable-threaded-resolver' '--disable-manual' '--disable-docs' '--disable-ntlm' '--disable-unix-sockets' '--without-libgsasl' '--disable-tls-srp' 'host_alias=wasm32-unknown-none' 'CC=wasm32posix-cc' 'CFLAGS=' 'LDFLAGS=' 'LIBS= -ldl'
+buildinfo.host: aarch64-apple-darwin25.4.0
+buildinfo.host.cpu: aarch64
+buildinfo.host.os: darwin25.4.0
+buildinfo.target: wasm32-unknown-none
+buildinfo.target.cpu: wasm32
+buildinfo.target.os: none
+buildinfo.target.flags: CROSS
+buildinfo.compiler: CLANG
+buildinfo.compiler.version: 21.1
+buildinfo.sysroot: 
