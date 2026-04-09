@@ -60,6 +60,7 @@ const cmpWasm = resolve(repoRoot, "examples/libs/diffutils/bin/cmp.wasm");
 const sdiffWasm = resolve(repoRoot, "examples/libs/diffutils/bin/sdiff.wasm");
 const diff3Wasm = resolve(repoRoot, "examples/libs/diffutils/bin/diff3.wasm");
 const perlWasm = resolve(repoRoot, "examples/libs/perl/bin/perl.wasm");
+const nanoWasm = resolve(repoRoot, "examples/libs/nano/bin/nano.wasm");
 
 // GNU coreutils multi-call binary supports all of these as argv[0]
 const coreutilsNames = [
@@ -225,6 +226,9 @@ const builtinPrograms: Record<string, string> = {
     "perl": perlWasm,
     "/usr/bin/perl": perlWasm,
     "/bin/perl": perlWasm,
+    "nano": nanoWasm,
+    "/usr/bin/nano": nanoWasm,
+    "/bin/nano": nanoWasm,
 };
 
 // Add coreutils mappings for all known tool names

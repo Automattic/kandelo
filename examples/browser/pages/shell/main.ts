@@ -26,6 +26,7 @@ import tarWasmUrl from "../../../../examples/libs/tar/bin/tar.wasm?url";
 import curlWasmUrl from "../../../../examples/libs/curl/bin/curl.wasm?url";
 import wgetWasmUrl from "../../../../examples/libs/wget/bin/wget.wasm?url";
 import gitWasmUrl from "../../../../examples/libs/git/bin/git.wasm?url";
+import nanoWasmUrl from "../../../../examples/libs/nano/bin/nano.wasm?url";
 import lsofWasmUrl from "../../../../examples/lsof.wasm?url";
 import "@xterm/xterm/css/xterm.css";
 
@@ -128,6 +129,7 @@ async function loadBinaries(): Promise<string> {
     { url: wgetWasmUrl, path: "/usr/bin/wget", symlinks: ["/bin/wget"] },
     { url: gitWasmUrl, path: "/usr/bin/git", symlinks: ["/bin/git"] },
     { url: lsofWasmUrl, path: "/usr/bin/lsof", symlinks: ["/bin/lsof"] },
+    { url: nanoWasmUrl, path: "/usr/bin/nano", symlinks: ["/bin/nano"] },
   ];
 
   // Fetch sizes for lazy binaries and data files in parallel
