@@ -41,6 +41,12 @@ const makeWasm = resolve(repoRoot, "examples/libs/make/bin/make.wasm");
 const tarWasm = resolve(repoRoot, "examples/libs/tar/bin/tar.wasm");
 const curlWasm = resolve(repoRoot, "examples/libs/curl/bin/curl.wasm");
 const wgetWasm = resolve(repoRoot, "examples/libs/wget/bin/wget.wasm");
+const gzipWasm = resolve(repoRoot, "examples/libs/gzip/bin/gzip.wasm");
+const bzip2Wasm = resolve(repoRoot, "examples/libs/bzip2/bin/bzip2.wasm");
+const xzWasm = resolve(repoRoot, "examples/libs/xz/bin/xz.wasm");
+const zstdWasm = resolve(repoRoot, "examples/libs/zstd/bin/zstd.wasm");
+const zipWasm = resolve(repoRoot, "examples/libs/zip/bin/zip.wasm");
+const unzipWasm = resolve(repoRoot, "examples/libs/unzip/bin/unzip.wasm");
 
 // GNU coreutils multi-call binary supports all of these as argv[0]
 const coreutilsNames = [
@@ -101,6 +107,63 @@ const builtinPrograms: Record<string, string> = {
     "wget": wgetWasm,
     "/usr/bin/wget": wgetWasm,
     "/bin/wget": wgetWasm,
+    "gzip": gzipWasm,
+    "/usr/bin/gzip": gzipWasm,
+    "/bin/gzip": gzipWasm,
+    "gunzip": gzipWasm,
+    "/usr/bin/gunzip": gzipWasm,
+    "/bin/gunzip": gzipWasm,
+    "zcat": gzipWasm,
+    "/usr/bin/zcat": gzipWasm,
+    "/bin/zcat": gzipWasm,
+    "bzip2": bzip2Wasm,
+    "/usr/bin/bzip2": bzip2Wasm,
+    "/bin/bzip2": bzip2Wasm,
+    "bunzip2": bzip2Wasm,
+    "/usr/bin/bunzip2": bzip2Wasm,
+    "/bin/bunzip2": bzip2Wasm,
+    "bzcat": bzip2Wasm,
+    "/usr/bin/bzcat": bzip2Wasm,
+    "/bin/bzcat": bzip2Wasm,
+    "xz": xzWasm,
+    "/usr/bin/xz": xzWasm,
+    "/bin/xz": xzWasm,
+    "unxz": xzWasm,
+    "/usr/bin/unxz": xzWasm,
+    "/bin/unxz": xzWasm,
+    "xzcat": xzWasm,
+    "/usr/bin/xzcat": xzWasm,
+    "/bin/xzcat": xzWasm,
+    "lzma": xzWasm,
+    "/usr/bin/lzma": xzWasm,
+    "/bin/lzma": xzWasm,
+    "unlzma": xzWasm,
+    "/usr/bin/unlzma": xzWasm,
+    "/bin/unlzma": xzWasm,
+    "lzcat": xzWasm,
+    "/usr/bin/lzcat": xzWasm,
+    "/bin/lzcat": xzWasm,
+    "zstd": zstdWasm,
+    "/usr/bin/zstd": zstdWasm,
+    "/bin/zstd": zstdWasm,
+    "unzstd": zstdWasm,
+    "/usr/bin/unzstd": zstdWasm,
+    "/bin/unzstd": zstdWasm,
+    "zstdcat": zstdWasm,
+    "/usr/bin/zstdcat": zstdWasm,
+    "/bin/zstdcat": zstdWasm,
+    "zip": zipWasm,
+    "/usr/bin/zip": zipWasm,
+    "/bin/zip": zipWasm,
+    "unzip": unzipWasm,
+    "/usr/bin/unzip": unzipWasm,
+    "/bin/unzip": unzipWasm,
+    "zipinfo": unzipWasm,
+    "/usr/bin/zipinfo": unzipWasm,
+    "/bin/zipinfo": unzipWasm,
+    "funzip": unzipWasm,
+    "/usr/bin/funzip": unzipWasm,
+    "/bin/funzip": unzipWasm,
 };
 
 // Add coreutils mappings for all known tool names

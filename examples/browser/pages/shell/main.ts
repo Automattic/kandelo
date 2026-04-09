@@ -21,6 +21,12 @@ import tarWasmUrl from "../../../../examples/libs/tar/bin/tar.wasm?url";
 import curlWasmUrl from "../../../../examples/libs/curl/bin/curl.wasm?url";
 import wgetWasmUrl from "../../../../examples/libs/wget/bin/wget.wasm?url";
 import gitWasmUrl from "../../../../examples/libs/git/bin/git.wasm?url";
+import gzipWasmUrl from "../../../../examples/libs/gzip/bin/gzip.wasm?url";
+import bzip2WasmUrl from "../../../../examples/libs/bzip2/bin/bzip2.wasm?url";
+import xzWasmUrl from "../../../../examples/libs/xz/bin/xz.wasm?url";
+import zstdWasmUrl from "../../../../examples/libs/zstd/bin/zstd.wasm?url";
+import zipWasmUrl from "../../../../examples/libs/zip/bin/zip.wasm?url";
+import unzipWasmUrl from "../../../../examples/libs/unzip/bin/unzip.wasm?url";
 import "@xterm/xterm/css/xterm.css";
 
 // --- DOM elements ---
@@ -147,6 +153,12 @@ async function loadBinaries(): Promise<string> {
     { url: curlWasmUrl, path: "/usr/bin/curl", symlinks: ["/bin/curl"] },
     { url: wgetWasmUrl, path: "/usr/bin/wget", symlinks: ["/bin/wget"] },
     { url: gitWasmUrl, path: "/usr/bin/git", symlinks: ["/bin/git"] },
+    { url: gzipWasmUrl, path: "/usr/bin/gzip", symlinks: ["/bin/gzip", "/usr/bin/gunzip", "/bin/gunzip", "/usr/bin/zcat", "/bin/zcat"] },
+    { url: bzip2WasmUrl, path: "/usr/bin/bzip2", symlinks: ["/bin/bzip2", "/usr/bin/bunzip2", "/bin/bunzip2", "/usr/bin/bzcat", "/bin/bzcat"] },
+    { url: xzWasmUrl, path: "/usr/bin/xz", symlinks: ["/bin/xz", "/usr/bin/unxz", "/bin/unxz", "/usr/bin/xzcat", "/bin/xzcat", "/usr/bin/lzma", "/bin/lzma", "/usr/bin/unlzma", "/bin/unlzma", "/usr/bin/lzcat", "/bin/lzcat"] },
+    { url: zstdWasmUrl, path: "/usr/bin/zstd", symlinks: ["/bin/zstd", "/usr/bin/unzstd", "/bin/unzstd", "/usr/bin/zstdcat", "/bin/zstdcat"] },
+    { url: zipWasmUrl, path: "/usr/bin/zip", symlinks: ["/bin/zip"] },
+    { url: unzipWasmUrl, path: "/usr/bin/unzip", symlinks: ["/bin/unzip", "/usr/bin/zipinfo", "/bin/zipinfo", "/usr/bin/funzip", "/bin/funzip"] },
   ];
 
   // Fetch sizes for lazy binaries and data files in parallel
