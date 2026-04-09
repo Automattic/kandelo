@@ -11,7 +11,6 @@ import dashWasmUrl from "../../../../examples/libs/dash/bin/dash.wasm?url";
 import coreutilsWasmUrl from "../../../../examples/libs/coreutils/bin/coreutils.wasm?url";
 import grepWasmUrl from "../../../../examples/libs/grep/bin/grep.wasm?url";
 import sedWasmUrl from "../../../../examples/libs/sed/bin/sed.wasm?url";
-<<<<<<< HEAD
 import bcWasmUrl from "../../../../examples/libs/bc/bin/bc.wasm?url";
 import fileWasmUrl from "../../../../examples/libs/file/bin/file.wasm?url";
 import fileMagicUrl from "../../../../examples/libs/file/bin/magic.lite?url";
@@ -30,21 +29,13 @@ import zipWasmUrl from "../../../../examples/libs/zip/bin/zip.wasm?url";
 import unzipWasmUrl from "../../../../examples/libs/unzip/bin/unzip.wasm?url";
 import lsofWasmUrl from "../../../../examples/lsof.wasm?url";
 import vimWasmUrl from "../../../../examples/libs/vim/bin/vim.wasm?url";
-=======
 import gawkWasmUrl from "../../../../examples/libs/gawk/bin/gawk.wasm?url";
 import findWasmUrl from "../../../../examples/libs/findutils/bin/find.wasm?url";
 import xargsWasmUrl from "../../../../examples/libs/findutils/bin/xargs.wasm?url";
 import diffWasmUrl from "../../../../examples/libs/diffutils/bin/diff.wasm?url";
 import cmpWasmUrl from "../../../../examples/libs/diffutils/bin/cmp.wasm?url";
-import tarWasmUrl from "../../../../examples/libs/tar/bin/tar.wasm?url";
-import gzipWasmUrl from "../../../../examples/libs/gzip/bin/gzip.wasm?url";
-import bzip2WasmUrl from "../../../../examples/libs/bzip2/bin/bzip2.wasm?url";
-import xzWasmUrl from "../../../../examples/libs/xz/bin/xz.wasm?url";
-import lessWasmUrl from "../../../../examples/libs/less/bin/less.wasm?url";
-import bcWasmUrl from "../../../../examples/libs/bc/bin/bc.wasm?url";
-import m4WasmUrl from "../../../../examples/libs/m4/bin/m4.wasm?url";
-import makeWasmUrl from "../../../../examples/libs/make/bin/make.wasm?url";
->>>>>>> 426ec1b (feat: add build scripts for 14 Unix utilities)
+import sdiffWasmUrl from "../../../../examples/libs/diffutils/bin/sdiff.wasm?url";
+import diff3WasmUrl from "../../../../examples/libs/diffutils/bin/diff3.wasm?url";
 import "@xterm/xterm/css/xterm.css";
 
 // Vim runtime files — imported as raw text via Vite glob
@@ -121,7 +112,6 @@ const COREUTILS_NAMES = [
 // --- Binary loading ---
 let kernelBytes: ArrayBuffer | null = null;
 let dashBytes: ArrayBuffer | null = null;
-<<<<<<< HEAD
 
 /** Lazy-loaded utility binaries: fetched on demand when first exec'd. */
 interface LazyBinary {
@@ -150,29 +140,10 @@ async function fetchSize(url: string): Promise<number> {
     return 0;
   }
 }
-=======
-let coreutilsBytes: ArrayBuffer | null = null;
-let grepBytes: ArrayBuffer | null = null;
-let sedBytes: ArrayBuffer | null = null;
-let gawkBytes: ArrayBuffer | null = null;
-let findBytes: ArrayBuffer | null = null;
-let xargsBytes: ArrayBuffer | null = null;
-let diffBytes: ArrayBuffer | null = null;
-let cmpBytes: ArrayBuffer | null = null;
-let tarBytes: ArrayBuffer | null = null;
-let gzipBytes: ArrayBuffer | null = null;
-let bzip2Bytes: ArrayBuffer | null = null;
-let xzBytes: ArrayBuffer | null = null;
-let lessBytes: ArrayBuffer | null = null;
-let bcBytes: ArrayBuffer | null = null;
-let m4Bytes: ArrayBuffer | null = null;
-let makeBytes: ArrayBuffer | null = null;
->>>>>>> 426ec1b (feat: add build scripts for 14 Unix utilities)
 
 async function loadBinaries(): Promise<string> {
   if (kernelBytes && dashBytes) return "";
 
-<<<<<<< HEAD
   setStatus("Loading kernel and dash...", "loading");
 
   // Eagerly fetch only the kernel and dash (required for startup)
@@ -205,6 +176,13 @@ async function loadBinaries(): Promise<string> {
     { url: unzipWasmUrl, path: "/usr/bin/unzip", symlinks: ["/bin/unzip", "/usr/bin/zipinfo", "/bin/zipinfo", "/usr/bin/funzip", "/bin/funzip"] },
     { url: lsofWasmUrl, path: "/usr/bin/lsof", symlinks: ["/bin/lsof"] },
     { url: vimWasmUrl, path: "/usr/bin/vim", symlinks: ["/bin/vim", "/usr/bin/vi", "/bin/vi"] },
+    { url: gawkWasmUrl, path: "/usr/bin/gawk", symlinks: ["/bin/gawk", "/usr/bin/awk", "/bin/awk"] },
+    { url: findWasmUrl, path: "/usr/bin/find", symlinks: ["/bin/find"] },
+    { url: xargsWasmUrl, path: "/usr/bin/xargs", symlinks: ["/bin/xargs"] },
+    { url: diffWasmUrl, path: "/usr/bin/diff", symlinks: ["/bin/diff"] },
+    { url: cmpWasmUrl, path: "/usr/bin/cmp", symlinks: ["/bin/cmp"] },
+    { url: sdiffWasmUrl, path: "/usr/bin/sdiff", symlinks: ["/bin/sdiff"] },
+    { url: diff3WasmUrl, path: "/usr/bin/diff3", symlinks: ["/bin/diff3"] },
   ];
 
   // Fetch sizes for lazy binaries and data files in parallel
@@ -232,47 +210,6 @@ async function loadBinaries(): Promise<string> {
       dataFiles.push({ ...dataFileDefs[i], data: dataResults[i]! });
     }
   }
-=======
-  setStatus("Loading kernel and utilities...", "loading");
-  const results = await Promise.all([
-    fetch(kernelWasmUrl).then((r) => r.arrayBuffer()),
-    fetch(dashWasmUrl).then((r) => r.arrayBuffer()),
-    fetch(coreutilsWasmUrl).then((r) => r.arrayBuffer()).catch(() => null),
-    fetch(grepWasmUrl).then((r) => r.arrayBuffer()).catch(() => null),
-    fetch(sedWasmUrl).then((r) => r.arrayBuffer()).catch(() => null),
-    fetch(gawkWasmUrl).then((r) => r.arrayBuffer()).catch(() => null),
-    fetch(findWasmUrl).then((r) => r.arrayBuffer()).catch(() => null),
-    fetch(xargsWasmUrl).then((r) => r.arrayBuffer()).catch(() => null),
-    fetch(diffWasmUrl).then((r) => r.arrayBuffer()).catch(() => null),
-    fetch(cmpWasmUrl).then((r) => r.arrayBuffer()).catch(() => null),
-    fetch(tarWasmUrl).then((r) => r.arrayBuffer()).catch(() => null),
-    fetch(gzipWasmUrl).then((r) => r.arrayBuffer()).catch(() => null),
-    fetch(bzip2WasmUrl).then((r) => r.arrayBuffer()).catch(() => null),
-    fetch(xzWasmUrl).then((r) => r.arrayBuffer()).catch(() => null),
-    fetch(lessWasmUrl).then((r) => r.arrayBuffer()).catch(() => null),
-    fetch(bcWasmUrl).then((r) => r.arrayBuffer()).catch(() => null),
-    fetch(m4WasmUrl).then((r) => r.arrayBuffer()).catch(() => null),
-    fetch(makeWasmUrl).then((r) => r.arrayBuffer()).catch(() => null),
-  ]);
-  kernelBytes = results[0];
-  dashBytes = results[1];
-  coreutilsBytes = results[2];
-  grepBytes = results[3];
-  sedBytes = results[4];
-  gawkBytes = results[5];
-  findBytes = results[6];
-  xargsBytes = results[7];
-  diffBytes = results[8];
-  cmpBytes = results[9];
-  tarBytes = results[10];
-  gzipBytes = results[11];
-  bzip2Bytes = results[12];
-  xzBytes = results[13];
-  lessBytes = results[14];
-  bcBytes = results[15];
-  m4Bytes = results[16];
-  makeBytes = results[17];
->>>>>>> 426ec1b (feat: add build scripts for 14 Unix utilities)
 
   const parts = [
     `Kernel: ${(kernelBytes.byteLength / 1024).toFixed(0)}KB`,
@@ -282,15 +219,6 @@ async function loadBinaries(): Promise<string> {
     const name = lb.path.split("/").pop()!;
     parts.push(`${name}: ${(lb.size / (1024 * 1024)).toFixed(1)}MB (lazy)`);
   }
-<<<<<<< HEAD
-=======
-  if (grepBytes) parts.push(`grep: ${(grepBytes.byteLength / 1024).toFixed(0)}KB`);
-  if (sedBytes) parts.push(`sed: ${(sedBytes.byteLength / 1024).toFixed(0)}KB`);
-  const extraCount = [gawkBytes, findBytes, xargsBytes, diffBytes, cmpBytes,
-    tarBytes, gzipBytes, bzip2Bytes, xzBytes, lessBytes, bcBytes, m4Bytes, makeBytes]
-    .filter(Boolean).length;
-  if (extraCount > 0) parts.push(`+${extraCount} utilities`);
->>>>>>> 426ec1b (feat: add build scripts for 14 Unix utilities)
   return parts.join(", ") + "\n";
 }
 
@@ -404,30 +332,6 @@ function populateExecBinaries(kernel: import("../../lib/browser-kernel").Browser
     fs.close(fd);
   }
 
-  // Helper for simple single-binary utilities
-  const simpleBinaries: [ArrayBuffer | null, string, string[]][] = [
-    [gawkBytes, "/bin/gawk", ["/bin/awk", "/usr/bin/gawk", "/usr/bin/awk"]],
-    [findBytes, "/bin/find", ["/usr/bin/find"]],
-    [xargsBytes, "/bin/xargs", ["/usr/bin/xargs"]],
-    [diffBytes, "/bin/diff", ["/usr/bin/diff"]],
-    [cmpBytes, "/bin/cmp", ["/usr/bin/cmp"]],
-    [tarBytes, "/bin/tar", ["/usr/bin/tar"]],
-    [gzipBytes, "/bin/gzip", ["/usr/bin/gzip", "/bin/gunzip"]],
-    [bzip2Bytes, "/bin/bzip2", ["/usr/bin/bzip2", "/bin/bunzip2"]],
-    [xzBytes, "/bin/xz", ["/usr/bin/xz", "/bin/unxz"]],
-    [lessBytes, "/bin/less", ["/usr/bin/less"]],
-    [bcBytes, "/bin/bc", ["/usr/bin/bc"]],
-    [m4Bytes, "/bin/m4", ["/usr/bin/m4"]],
-    [makeBytes, "/bin/make", ["/usr/bin/make"]],
-  ];
-  for (const [bytes, canonical, links] of simpleBinaries) {
-    if (bytes) {
-      writeFileToFs(fs, canonical, bytes);
-      for (const link of links) {
-        try { fs.symlink(canonical, link); } catch { /* exists */ }
-      }
-    }
-  }
 }
 
 // ============================================================
