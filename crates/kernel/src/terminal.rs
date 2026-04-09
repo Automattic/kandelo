@@ -11,6 +11,8 @@ pub const ICANON: u32 = 0o0002;
 pub const ISIG: u32 = 0o0001;
 pub const IEXTEN: u32 = 0o100000;
 pub const TOSTOP: u32 = 0o0400;
+pub const NOFLSH: u32 = 0o0200;
+pub const ECHOCTL: u32 = 0o1000;
 
 /// Terminal attribute flags (c_iflag)
 pub const ICRNL: u32 = 0o0400;
@@ -176,9 +178,11 @@ impl TerminalState {
         self.c_lflag & ICANON != 0
     }
 
-    /// Process a byte through the ICANON line discipline.
-    /// Returns echo bytes that should be written back to the terminal.
-    pub fn process_input_byte(&mut self, byte: u8) -> Vec<u8> {
+    /// Process a byte through the line discipline.
+    /// Returns echo bytes and an optional signal number if ISIG matched.
+    /// ISIG is checked independently of ICANON — signal characters generate
+    /// signals in both canonical and raw modes when ISIG is set.
+    pub fn process_input_byte(&mut self, byte: u8) -> (Vec<u8>, Option<u32>) {
         let mut echo = Vec::new();
         let do_echo = self.c_lflag & ECHO != 0;
 
@@ -188,10 +192,45 @@ impl TerminalState {
         } else if self.c_iflag & INLCR != 0 && byte == b'\n' {
             b'\r'
         } else if self.c_iflag & IGNCR != 0 && byte == b'\r' {
-            return echo; // discard CR
+            return (echo, None); // discard CR
         } else {
             byte
         };
+
+        // ISIG: check for signal-generating characters before line editing.
+        // This works in both canonical and raw modes.
+        if self.c_lflag & ISIG != 0 {
+            use wasm_posix_shared::signal;
+            let sig = if byte == self.c_cc[VINTR] {
+                Some(signal::SIGINT)
+            } else if byte == self.c_cc[VQUIT] {
+                Some(signal::SIGQUIT)
+            } else if byte == self.c_cc[VSUSP] {
+                Some(signal::SIGTSTP)
+            } else {
+                None
+            };
+
+            if let Some(signum) = sig {
+                // Echo the control character as ^X
+                if do_echo {
+                    echo.push(b'^');
+                    echo.push(byte ^ 0x40); // 0x03 → 'C', 0x1A → 'Z', 0x1C → '\\'
+                    echo.push(b'\n');
+                }
+                // Flush input queues unless NOFLSH is set
+                if self.c_lflag & NOFLSH == 0 {
+                    self.line_buffer.clear();
+                    self.cooked_buffer.clear();
+                }
+                return (echo, Some(signum));
+            }
+        }
+
+        // The rest is ICANON-only line editing (raw mode handled by caller)
+        if self.c_lflag & ICANON == 0 {
+            return (echo, None);
+        }
 
         // Check for VERASE (backspace/delete)
         if byte == self.c_cc[VERASE] {
@@ -202,7 +241,7 @@ impl TerminalState {
                     echo.extend_from_slice(b"\x08 \x08");
                 }
             }
-            return echo;
+            return (echo, None);
         }
 
         // Check for VKILL (kill line, ^U)
@@ -214,7 +253,7 @@ impl TerminalState {
                 }
             }
             self.line_buffer.clear();
-            return echo;
+            return (echo, None);
         }
 
         // Check for VEOF (^D)
@@ -222,7 +261,7 @@ impl TerminalState {
             // Flush current line buffer without adding the EOF character
             self.cooked_buffer.extend_from_slice(&self.line_buffer);
             self.line_buffer.clear();
-            return echo;
+            return (echo, None);
         }
 
         // Newline or VEOL: complete the line
@@ -233,7 +272,7 @@ impl TerminalState {
             if do_echo || (self.c_lflag & ECHONL != 0 && byte == b'\n') {
                 echo.push(byte);
             }
-            return echo;
+            return (echo, None);
         }
 
         // Regular character: add to line buffer
@@ -241,7 +280,7 @@ impl TerminalState {
         if do_echo {
             echo.push(byte);
         }
-        echo
+        (echo, None)
     }
 
     /// Read from the cooked buffer (for ICANON mode).
@@ -398,12 +437,14 @@ mod tests {
         let mut ts = TerminalState::new();
 
         // Typing 'a' should echo 'a'
-        let echo = ts.process_input_byte(b'a');
+        let (echo, sig) = ts.process_input_byte(b'a');
         assert_eq!(echo, vec![b'a']);
+        assert!(sig.is_none());
 
         // Newline should echo newline
-        let echo = ts.process_input_byte(b'\n');
+        let (echo, sig) = ts.process_input_byte(b'\n');
         assert_eq!(echo, vec![b'\n']);
+        assert!(sig.is_none());
     }
 
     #[test]
@@ -411,7 +452,7 @@ mod tests {
         let mut ts = TerminalState::new();
         ts.c_lflag &= !ECHO; // disable echo
 
-        let echo = ts.process_input_byte(b'a');
+        let (echo, _) = ts.process_input_byte(b'a');
         assert!(echo.is_empty());
     }
 
@@ -421,10 +462,10 @@ mod tests {
         ts.c_lflag &= !ECHO;
         ts.c_lflag |= ECHONL;
 
-        let echo = ts.process_input_byte(b'a');
+        let (echo, _) = ts.process_input_byte(b'a');
         assert!(echo.is_empty()); // no echo for regular chars
 
-        let echo = ts.process_input_byte(b'\n');
+        let (echo, _) = ts.process_input_byte(b'\n');
         assert_eq!(echo, vec![b'\n']); // but newline is echoed
     }
 
@@ -433,7 +474,7 @@ mod tests {
         let mut ts = TerminalState::new();
 
         ts.process_input_byte(b'x');
-        let echo = ts.process_input_byte(0x7F); // DEL
+        let (echo, _) = ts.process_input_byte(0x7F); // DEL
         // Should echo BS-SPACE-BS (erase character from display)
         assert_eq!(echo, b"\x08 \x08");
     }
@@ -443,7 +484,7 @@ mod tests {
         let mut ts = TerminalState::new();
 
         // Backspace on empty line should do nothing
-        let echo = ts.process_input_byte(0x7F);
+        let (echo, _) = ts.process_input_byte(0x7F);
         assert!(echo.is_empty());
     }
 
@@ -488,5 +529,101 @@ mod tests {
         let mut buf = [0u8; 64];
         let n = ts.read_cooked(&mut buf);
         assert_eq!(&buf[..n], b"ab\n");
+    }
+
+    #[test]
+    fn test_isig_ctrl_c_generates_sigint() {
+        let mut ts = TerminalState::new();
+        // ISIG is on by default
+
+        for &b in b"hello" {
+            ts.process_input_byte(b);
+        }
+        assert_eq!(ts.line_buffer.len(), 5);
+
+        // Ctrl-C should generate SIGINT and flush line buffer
+        let (echo, sig) = ts.process_input_byte(0x03);
+        assert_eq!(sig, Some(wasm_posix_shared::signal::SIGINT));
+        assert_eq!(echo, b"^C\n"); // echo ^C + newline
+        assert!(ts.line_buffer.is_empty()); // flushed
+        assert!(ts.cooked_buffer.is_empty()); // flushed
+    }
+
+    #[test]
+    fn test_isig_ctrl_backslash_generates_sigquit() {
+        let mut ts = TerminalState::new();
+
+        let (_, sig) = ts.process_input_byte(0x1C); // Ctrl-backslash
+        assert_eq!(sig, Some(wasm_posix_shared::signal::SIGQUIT));
+    }
+
+    #[test]
+    fn test_isig_ctrl_z_generates_sigtstp() {
+        let mut ts = TerminalState::new();
+
+        let (_, sig) = ts.process_input_byte(0x1A); // Ctrl-Z
+        assert_eq!(sig, Some(wasm_posix_shared::signal::SIGTSTP));
+    }
+
+    #[test]
+    fn test_isig_disabled_no_signal() {
+        let mut ts = TerminalState::new();
+        ts.c_lflag &= !ISIG; // disable ISIG
+
+        let (_, sig) = ts.process_input_byte(0x03); // Ctrl-C
+        assert!(sig.is_none());
+        // Ctrl-C is added to line buffer as a regular character
+        assert_eq!(ts.line_buffer, vec![0x03]);
+    }
+
+    #[test]
+    fn test_isig_noflsh_preserves_buffers() {
+        let mut ts = TerminalState::new();
+        ts.c_lflag |= NOFLSH;
+
+        for &b in b"hello" {
+            ts.process_input_byte(b);
+        }
+        assert_eq!(ts.line_buffer.len(), 5);
+
+        let (_, sig) = ts.process_input_byte(0x03); // Ctrl-C
+        assert_eq!(sig, Some(wasm_posix_shared::signal::SIGINT));
+        // With NOFLSH, buffers are preserved
+        assert_eq!(ts.line_buffer.len(), 5);
+    }
+
+    #[test]
+    fn test_isig_flushes_cooked_buffer() {
+        let mut ts = TerminalState::new();
+
+        // Complete a line to put data in cooked buffer
+        for &b in b"line1\n" {
+            ts.process_input_byte(b);
+        }
+        assert!(ts.has_cooked_data());
+
+        // Ctrl-C should flush both buffers
+        let (_, sig) = ts.process_input_byte(0x03);
+        assert_eq!(sig, Some(wasm_posix_shared::signal::SIGINT));
+        assert!(!ts.has_cooked_data()); // cooked buffer flushed
+    }
+
+    #[test]
+    fn test_isig_works_in_raw_mode() {
+        let mut ts = TerminalState::new();
+        ts.c_lflag &= !ICANON; // raw mode, but ISIG still set
+
+        let (_, sig) = ts.process_input_byte(0x03);
+        assert_eq!(sig, Some(wasm_posix_shared::signal::SIGINT));
+    }
+
+    #[test]
+    fn test_isig_no_echo_when_echo_disabled() {
+        let mut ts = TerminalState::new();
+        ts.c_lflag &= !ECHO;
+
+        let (echo, sig) = ts.process_input_byte(0x03);
+        assert_eq!(sig, Some(wasm_posix_shared::signal::SIGINT));
+        assert!(echo.is_empty()); // no echo when ECHO is off
     }
 }

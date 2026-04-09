@@ -43,27 +43,38 @@ impl PtyPair {
     }
 
     /// Process a byte through the line discipline (for master→slave input).
-    /// Returns echo bytes that should be appended to the output buffer (master read side).
-    pub fn process_master_input(&mut self, byte: u8) {
+    /// Returns an optional signal number if ISIG matched a signal character.
+    /// Echo bytes are appended to the output buffer (master read side).
+    pub fn process_master_input(&mut self, byte: u8) -> Option<u32> {
         let opost = self.terminal.c_oflag & crate::terminal::OPOST != 0;
         let onlcr = self.terminal.c_oflag & crate::terminal::ONLCR != 0;
 
-        if self.terminal.is_canonical() {
-            let echo = self.terminal.process_input_byte(byte);
-            // Echo bytes go to the output buffer (master reads them back)
-            // Apply OPOST/ONLCR to echo just like slave_write does
-            for &b in &echo {
-                if opost && onlcr && b == b'\n' {
-                    self.output_buf.push_back(b'\r');
-                    self.output_buf.push_back(b'\n');
-                } else {
-                    self.output_buf.push_back(b);
-                }
+        // process_input_byte handles both ISIG (in any mode) and ICANON line editing
+        let (echo, signal) = self.terminal.process_input_byte(byte);
+
+        // If a signal was generated, flush input_buf too (unless NOFLSH)
+        if signal.is_some() && self.terminal.c_lflag & crate::terminal::NOFLSH == 0 {
+            self.input_buf.clear();
+        }
+
+        // Echo bytes go to the output buffer (master reads them back)
+        // Apply OPOST/ONLCR to echo just like slave_write does
+        for &b in &echo {
+            if opost && onlcr && b == b'\n' {
+                self.output_buf.push_back(b'\r');
+                self.output_buf.push_back(b'\n');
+            } else {
+                self.output_buf.push_back(b);
             }
-            // Cooked data goes to the input buffer (slave reads it)
-            // Note: process_input_byte puts completed lines in cooked_buffer
-        } else {
-            // Raw mode: pass through directly to slave
+        }
+
+        if signal.is_some() {
+            return signal;
+        }
+
+        // In raw mode (non-canonical), pass byte directly to slave input.
+        // process_input_byte only handles ISIG in raw mode, not regular input.
+        if !self.terminal.is_canonical() {
             self.input_buf.push_back(byte);
             if self.terminal.c_lflag & crate::terminal::ECHO != 0 {
                 if opost && onlcr && byte == b'\n' {
@@ -74,6 +85,8 @@ impl PtyPair {
                 }
             }
         }
+
+        None
     }
 
     /// Read from the slave side. In canonical mode, reads from cooked buffer.
@@ -291,6 +304,77 @@ mod tests {
         let mut buf = [0u8; 32];
         let n = pty.master_read(&mut buf);
         assert_eq!(&buf[..n], b"a\r\nb"); // NL → CR+NL
+
+        reset_table();
+    }
+
+    #[test]
+    fn test_pty_isig_canonical() {
+        let _lock = PTY_TEST_LOCK.lock().unwrap();
+        reset_table();
+
+        let idx = alloc_pty().unwrap();
+        let pty = get_pty(idx).unwrap();
+        // Default: canonical + ISIG + ECHO
+
+        // Type some chars then Ctrl-C
+        for &b in b"hello" {
+            assert!(pty.process_master_input(b).is_none());
+        }
+        let sig = pty.process_master_input(0x03); // Ctrl-C
+        assert_eq!(sig, Some(wasm_posix_shared::signal::SIGINT));
+
+        // Input buffers should be flushed
+        assert!(!pty.slave_has_data());
+
+        // Master should have echo output: "hello" + "^C\r\n" (ONLCR converts \n → \r\n)
+        assert!(pty.master_has_data());
+        let mut buf = [0u8; 64];
+        let n = pty.master_read(&mut buf);
+        assert_eq!(&buf[..n], b"hello^C\r\n");
+
+        reset_table();
+    }
+
+    #[test]
+    fn test_pty_isig_raw_mode() {
+        let _lock = PTY_TEST_LOCK.lock().unwrap();
+        reset_table();
+
+        let idx = alloc_pty().unwrap();
+        let pty = get_pty(idx).unwrap();
+        pty.terminal.c_lflag &= !crate::terminal::ICANON; // raw mode
+        // ISIG still set by default
+
+        // Ctrl-C in raw mode with ISIG should still generate signal
+        let sig = pty.process_master_input(0x03);
+        assert_eq!(sig, Some(wasm_posix_shared::signal::SIGINT));
+
+        // No data passed to slave (signal consumed the byte)
+        assert!(!pty.slave_has_data());
+
+        reset_table();
+    }
+
+    #[test]
+    fn test_pty_isig_disabled_raw_mode() {
+        let _lock = PTY_TEST_LOCK.lock().unwrap();
+        reset_table();
+
+        let idx = alloc_pty().unwrap();
+        let pty = get_pty(idx).unwrap();
+        pty.terminal.c_lflag &= !crate::terminal::ICANON; // raw mode
+        pty.terminal.c_lflag &= !crate::terminal::ISIG;   // disable ISIG
+        pty.terminal.c_lflag &= !crate::terminal::ECHO;   // no echo
+
+        // Ctrl-C without ISIG should pass through as data
+        let sig = pty.process_master_input(0x03);
+        assert!(sig.is_none());
+        assert!(pty.slave_has_data());
+
+        let mut buf = [0u8; 8];
+        let n = pty.slave_read(&mut buf);
+        assert_eq!(&buf[..n], &[0x03]); // raw byte passed through
 
         reset_table();
     }
