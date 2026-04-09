@@ -20,30 +20,33 @@
     <a href="/pages/shell/">Shell</a>
     <a href="/pages/python/">Python</a>
   </nav>
-  <div class="main">
-    <div class="main-header">
-      <h1>WordPress on wasm-posix-kernel</h1>
-      <p class="subtitle">WordPress 6.7 running on nginx + PHP-FPM + SQLite, all inside a POSIX kernel compiled to WebAssembly</p>
-      <div class="controls">
-        <button id="start">Start WordPress</button>
-        <button id="reload" disabled>Reload page</button>
-      </div>
-      <div id="status" class="status" style="display:none"></div>
-    </div>
-    <div class="preview-area">
-      <div class="split-panels">
-        <div class="log-panel">
-          <h3>Kernel Log</h3>
-          <pre id="log"></pre>
+  <div class="main" style="display:flex;flex-direction:column;overflow:hidden">
+    <div style="flex:1;overflow:auto;display:flex;flex-direction:column;min-height:0">
+      <div class="main-header">
+        <h1>WordPress on wasm-posix-kernel</h1>
+        <p class="subtitle">WordPress 6.7 running on nginx + PHP-FPM + SQLite, all inside a POSIX kernel compiled to WebAssembly</p>
+        <div class="controls">
+          <button id="start">Start WordPress</button>
+          <button id="reload" disabled>Reload page</button>
         </div>
-        <div class="iframe-panel">
-          <h3>WordPress</h3>
-          <div class="frame-container">
-            <iframe id="frame" srcdoc="<p style='padding:1rem;color:#999'>Click 'Start WordPress' to begin</p>"></iframe>
+        <div id="status" class="status" style="display:none"></div>
+      </div>
+      <div class="preview-area">
+        <div class="split-panels">
+          <div class="log-panel">
+            <h3>Kernel Log</h3>
+            <pre id="log"></pre>
+          </div>
+          <div class="iframe-panel">
+            <h3>WordPress</h3>
+            <div class="frame-container">
+              <iframe id="frame" srcdoc="<p style='padding:1rem;color:#999'>Click 'Start WordPress' to begin</p>"></iframe>
+            </div>
           </div>
         </div>
       </div>
     </div>
+    <div id="terminal-panel"></div>
   </div>
   <script type="module" src="./main.ts"></script>
 </body>
