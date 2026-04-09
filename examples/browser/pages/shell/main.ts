@@ -136,8 +136,8 @@ async function loadBinaries(): Promise<string> {
   // Fetch sizes for lazy-loaded utilities (HEAD requests, ~200 bytes each)
   const lazyDefs = [
     { url: coreutilsWasmUrl, path: "/bin/coreutils", symlinks: [...COREUTILS_NAMES, "["].flatMap(n => [`/bin/${n}`, `/usr/bin/${n}`]) },
-    { url: grepWasmUrl, path: "/bin/grep", symlinks: ["/bin/egrep", "/bin/fgrep", "/usr/bin/grep", "/usr/bin/egrep", "/usr/bin/fgrep"] },
-    { url: sedWasmUrl, path: "/bin/sed", symlinks: ["/usr/bin/sed"] },
+    { url: grepWasmUrl, path: "/usr/bin/grep", symlinks: ["/bin/grep", "/usr/bin/egrep", "/bin/egrep", "/usr/bin/fgrep", "/bin/fgrep"] },
+    { url: sedWasmUrl, path: "/usr/bin/sed", symlinks: ["/bin/sed"] },
     { url: bcWasmUrl, path: "/usr/bin/bc", symlinks: ["/bin/bc"] },
     { url: fileWasmUrl, path: "/usr/bin/file", symlinks: ["/bin/file"] },
     { url: lessWasmUrl, path: "/usr/bin/less", symlinks: ["/bin/less"] },
