@@ -816,7 +816,7 @@ pub fn sys_read(
                             return Ok(0); // host EOF
                         }
                         for &byte in &raw[..raw_n] {
-                            let echo = proc.terminal.process_input_byte(byte);
+                            let (echo, _sig) = proc.terminal.process_input_byte(byte);
                             if !echo.is_empty() {
                                 // Echo back to terminal (stdout = host_handle 1)
                                 let _ = host.host_write(1, &echo);
