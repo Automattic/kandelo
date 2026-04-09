@@ -28,7 +28,14 @@ import zstdWasmUrl from "../../../../examples/libs/zstd/bin/zstd.wasm?url";
 import zipWasmUrl from "../../../../examples/libs/zip/bin/zip.wasm?url";
 import unzipWasmUrl from "../../../../examples/libs/unzip/bin/unzip.wasm?url";
 import lsofWasmUrl from "../../../../examples/lsof.wasm?url";
+import vimWasmUrl from "../../../../examples/libs/vim/bin/vim.wasm?url";
 import "@xterm/xterm/css/xterm.css";
+
+// Vim runtime files — imported as raw text via Vite glob
+const vimRuntimeModules = import.meta.glob(
+  "../../../../examples/libs/vim/runtime/**/*.vim",
+  { query: "?raw", import: "default", eager: true }
+) as Record<string, string>;
 
 // --- DOM elements ---
 const terminalContainer = document.getElementById("terminal") as HTMLDivElement;
@@ -161,6 +168,7 @@ async function loadBinaries(): Promise<string> {
     { url: zipWasmUrl, path: "/usr/bin/zip", symlinks: ["/bin/zip"] },
     { url: unzipWasmUrl, path: "/usr/bin/unzip", symlinks: ["/bin/unzip", "/usr/bin/zipinfo", "/bin/zipinfo", "/usr/bin/funzip", "/bin/funzip"] },
     { url: lsofWasmUrl, path: "/usr/bin/lsof", symlinks: ["/bin/lsof"] },
+    { url: vimWasmUrl, path: "/usr/bin/vim", symlinks: ["/bin/vim", "/usr/bin/vi", "/bin/vi"] },
   ];
 
   // Fetch sizes for lazy binaries and data files in parallel
@@ -272,6 +280,35 @@ function populateExecBinaries(kernel: import("../../lib/browser-kernel").Browser
       writeFileToFs(fs, df.path, df.data);
     }
   }
+
+  // Write Vim runtime files for syntax highlighting and filetype detection
+  const vimRuntimeBase = "/usr/share/vim/vim91";
+  const vimRuntimeDirs = new Set<string>();
+  const enc = new TextEncoder();
+  for (const [importPath, content] of Object.entries(vimRuntimeModules)) {
+    // importPath looks like "../../../../examples/libs/vim/runtime/syntax/c.vim"
+    // We need the relative path after "runtime/"
+    const runtimeIdx = importPath.indexOf("/runtime/");
+    if (runtimeIdx < 0) continue;
+    const relPath = importPath.slice(runtimeIdx + "/runtime/".length);
+    const vfsPath = `${vimRuntimeBase}/${relPath}`;
+
+    // Ensure parent directories exist
+    const parts = vfsPath.split("/");
+    for (let i = 1; i < parts.length - 1; i++) {
+      const dir = parts.slice(0, i + 1).join("/");
+      if (!vimRuntimeDirs.has(dir)) {
+        vimRuntimeDirs.add(dir);
+        try { fs.mkdir(dir, 0o755); } catch { /* exists */ }
+      }
+    }
+
+    // Write the file
+    const data = enc.encode(content as string);
+    const fd = fs.open(vfsPath, 0x241 /* O_WRONLY|O_CREAT|O_TRUNC */, 0o644);
+    fs.write(fd, data, null, data.length);
+    fs.close(fd);
+  }
 }
 
 // ============================================================
@@ -318,6 +355,7 @@ async function startInteractiveShell() {
         "TERM=xterm-256color",
         "LANG=en_US.UTF-8",
         "PATH=/usr/local/bin:/usr/bin:/bin",
+        "VIMRUNTIME=/usr/share/vim/vim91",
         "PS1=$ ",
       ],
     });
