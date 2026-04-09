@@ -222,6 +222,14 @@ function populateExecBinaries(kernel: import("../../lib/browser-kernel").Browser
     try { fs.mkdir(dir, 0o755); } catch { /* exists */ }
   }
 
+  // Write shell profile: color aliases for interactive sessions.
+  // dash reads the file pointed to by $ENV on interactive startup.
+  const profile = "alias ls='ls --color=auto'\nalias grep='grep --color=auto'\n";
+  const profileBytes = new TextEncoder().encode(profile);
+  const pfd = fs.open("/etc/profile", 0x241, 0o644);
+  fs.write(pfd, profileBytes, null, profileBytes.length);
+  fs.close(pfd);
+
   // Write git system config: disable maintenance/gc (fork+exec not fully
   // supported for background daemons), use cat as pager, set default user.
   const gitconfig = [
@@ -319,6 +327,7 @@ async function startInteractiveShell() {
         "LANG=en_US.UTF-8",
         "PATH=/usr/local/bin:/usr/bin:/bin",
         "PS1=$ ",
+        "ENV=/etc/profile",
       ],
     });
 
