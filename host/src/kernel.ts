@@ -1693,7 +1693,8 @@ export class WasmPosixKernel {
       const mem = new Uint8Array(this.memory!.buffer);
       const data = mem.slice(bufPtr, bufPtr + bufLen);
       return this.io.network.send(handle, data, flags);
-    } catch {
+    } catch (e: any) {
+      if (e?.errno === 11) return -11; // -EAGAIN
       return -32; // -EPIPE
     }
   }
@@ -1707,7 +1708,8 @@ export class WasmPosixKernel {
         mem.set(data, bufPtr);
       }
       return data.length;
-    } catch {
+    } catch (e: any) {
+      if (e?.errno === 11) return -11; // -EAGAIN
       return -104; // -ECONNRESET
     }
   }

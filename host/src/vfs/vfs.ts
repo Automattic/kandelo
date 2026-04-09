@@ -1,4 +1,4 @@
-import type { PlatformIO, StatResult } from "../types";
+import type { NetworkIO, PlatformIO, StatResult } from "../types";
 import type { FileSystemBackend, MountConfig, TimeProvider } from "./types";
 
 interface MountEntry {
@@ -26,6 +26,7 @@ export class VirtualPlatformIO implements PlatformIO {
   private dirHandles = new Map<number, HandleInfo>();
   private nextFileHandle = 100;
   private nextDirHandle = 1;
+  network?: NetworkIO;
 
   constructor(mounts: MountConfig[], time: TimeProvider) {
     this.mounts = mounts

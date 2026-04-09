@@ -1,5 +1,11 @@
 import type { NetworkIO } from "../types";
 
+/** Error with errno property for EAGAIN propagation to the kernel host imports. */
+export class EagainError extends Error {
+  readonly errno = 11;
+  constructor() { super("EAGAIN"); }
+}
+
 interface ConnectionState {
   ip: Uint8Array;
   port: number;
@@ -64,7 +70,9 @@ export class FetchNetworkBackend implements NetworkIO {
       return data.length; // Still waiting for body
     }
 
-    // We have a complete request — parse and issue fetch
+    // We have a complete request — parse and issue fetch asynchronously.
+    // Don't block with Atomics.wait — that deadlocks in web workers where the
+    // event loop must yield for fetch() promises to resolve.
     const { method, path, headers, body } = parseHttpRequest(conn.sendBuf, headerEnd);
     const host = headers.get("host") || `${conn.ip[0]}.${conn.ip[1]}.${conn.ip[2]}.${conn.ip[3]}`;
     const url = `http://${host}${path}`;
@@ -83,10 +91,10 @@ export class FetchNetworkBackend implements NetworkIO {
     const fetchBody: Uint8Array<ArrayBuffer> | undefined =
       body && body.length > 0 ? new Uint8Array(body) as Uint8Array<ArrayBuffer> : undefined;
 
-    // Issue fetch synchronously via Atomics.wait
-    const sab = new SharedArrayBuffer(4);
-    const flag = new Int32Array(sab);
-
+    // Fire-and-forget: start the async fetch. The response will be available
+    // when recv() is called later. If recv() is called before the fetch completes,
+    // it throws EagainError → kernel returns EAGAIN → handleBlockingRetry retries
+    // after yielding the event loop (allowing this promise to resolve).
     const doFetch = async () => {
       try {
         let response: Response;
@@ -115,16 +123,11 @@ export class FetchNetworkBackend implements NetworkIO {
         conn.fetchError = e as Error;
         conn.fetchDone = true;
       }
-      Atomics.store(flag, 0, 1);
-      Atomics.notify(flag, 0);
     };
 
     doFetch();
-    Atomics.wait(flag, 0, 0, 30000);
-
-    if (conn.fetchError) {
-      throw conn.fetchError;
-    }
+    // Clear the send buffer now that the request is dispatched
+    conn.sendBuf = new Uint8Array(0);
 
     return data.length;
   }
@@ -133,9 +136,16 @@ export class FetchNetworkBackend implements NetworkIO {
     const conn = this.connections.get(handle);
     if (!conn) throw new Error("ENOTCONN");
 
+    if (!conn.fetchDone) {
+      // Fetch still in progress — throw EAGAIN so the kernel retries after
+      // yielding the event loop (allowing the fetch promise to resolve).
+      throw new EagainError();
+    }
+
+    if (conn.fetchError) throw conn.fetchError;
+
     if (!conn.responseBuf) {
-      if (conn.fetchError) throw conn.fetchError;
-      return new Uint8Array(0); // No data yet
+      return new Uint8Array(0); // EOF
     }
 
     const remaining = conn.responseBuf.length - conn.responseOffset;

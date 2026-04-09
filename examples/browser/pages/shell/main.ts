@@ -18,6 +18,8 @@ import lessWasmUrl from "../../../../examples/libs/less/bin/less.wasm?url";
 import m4WasmUrl from "../../../../examples/libs/m4/bin/m4.wasm?url";
 import makeWasmUrl from "../../../../examples/libs/make/bin/make.wasm?url";
 import tarWasmUrl from "../../../../examples/libs/tar/bin/tar.wasm?url";
+import curlWasmUrl from "../../../../examples/libs/curl/bin/curl.wasm?url";
+import wgetWasmUrl from "../../../../examples/libs/wget/bin/wget.wasm?url";
 import "@xterm/xterm/css/xterm.css";
 
 // --- DOM elements ---
@@ -141,6 +143,8 @@ async function loadBinaries(): Promise<string> {
     { url: m4WasmUrl, path: "/usr/bin/m4", symlinks: ["/bin/m4"] },
     { url: makeWasmUrl, path: "/usr/bin/make", symlinks: ["/bin/make"] },
     { url: tarWasmUrl, path: "/usr/bin/tar", symlinks: ["/bin/tar"] },
+    { url: curlWasmUrl, path: "/usr/bin/curl", symlinks: ["/bin/curl"] },
+    { url: wgetWasmUrl, path: "/usr/bin/wget", symlinks: ["/bin/wget"] },
   ];
 
   // Fetch sizes for lazy binaries and data files in parallel

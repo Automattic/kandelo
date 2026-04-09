@@ -66,6 +66,7 @@ import { VirtualPlatformIO } from "../../../host/src/vfs/vfs";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import { DeviceFileSystem } from "../../../host/src/vfs/device-fs";
 import { BrowserTimeProvider } from "../../../host/src/vfs/time";
+import { FetchNetworkBackend } from "../../../host/src/networking/fetch-backend";
 import { patchWasmForThread } from "../../../host/src/worker-main";
 import type {
   CentralizedWorkerInitMessage,
@@ -145,6 +146,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     { mountPoint: "/", backend: memfs },
   ];
   io = new VirtualPlatformIO(mounts, new BrowserTimeProvider());
+  io.network = new FetchNetworkBackend();
 
   // Create worker adapter for spawning sub-workers
   workerAdapter = new BrowserWorkerAdapter(msg.workerEntryUrl);

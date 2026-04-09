@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { FetchNetworkBackend } from "../src/networking/fetch-backend";
+import { FetchNetworkBackend, EagainError } from "../src/networking/fetch-backend";
 
 describe("FetchNetworkBackend", () => {
   describe("getaddrinfo", () => {
@@ -44,11 +44,10 @@ describe("FetchNetworkBackend", () => {
   });
 
   describe("recv without send", () => {
-    it("returns empty buffer when no fetch has completed", () => {
+    it("throws EAGAIN when no fetch has completed", () => {
       const backend = new FetchNetworkBackend();
       backend.connect(1, new Uint8Array([93, 184, 216, 34]), 80);
-      const data = backend.recv(1, 100, 0);
-      expect(data.length).toBe(0);
+      expect(() => backend.recv(1, 100, 0)).toThrow(EagainError);
     });
   });
 });
