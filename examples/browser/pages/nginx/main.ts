@@ -1,19 +1,35 @@
 /**
  * nginx browser demo — runs nginx inside the POSIX kernel,
  * with a service worker intercepting fetch requests to serve pages.
+ *
+ * Uses SystemInit to orchestrate boot from /etc/init.d/ service descriptors.
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
-import { loadFiles } from "../../lib/fs-loader";
-import { HttpBridgeHost } from "../../lib/http-bridge";
+import { SystemInit } from "../../lib/init/system-init";
+import { populateNginxConfig } from "../../lib/init/nginx-config";
+import {
+  populateShellBinaries,
+  type BinaryDef,
+  COREUTILS_NAMES,
+} from "../../lib/init/shell-binaries";
+import { writeVfsFile, writeInitDescriptor } from "../../lib/init/vfs-utils";
 import kernelWasmUrl from "../../../../host/wasm/wasm_posix_kernel.wasm?url";
 import nginxWasmUrl from "../../../../examples/nginx/nginx.wasm?url";
+import dashWasmUrl from "../../../../examples/libs/dash/bin/dash.wasm?url";
+import coreutilsWasmUrl from "../../../../examples/libs/coreutils/bin/coreutils.wasm?url";
+import grepWasmUrl from "../../../../examples/libs/grep/bin/grep.wasm?url";
+import sedWasmUrl from "../../../../examples/libs/sed/bin/sed.wasm?url";
+import "@xterm/xterm/css/xterm.css";
+import "../../lib/terminal-panel.css";
 
 const APP_PREFIX = import.meta.env.BASE_URL + "app/";
+const SW_URL = import.meta.env.BASE_URL + "service-worker.js";
 
 const log = document.getElementById("log") as HTMLPreElement;
 const startBtn = document.getElementById("start") as HTMLButtonElement;
 const reloadBtn = document.getElementById("reload") as HTMLButtonElement;
 const statusDiv = document.getElementById("status") as HTMLDivElement;
+const terminalPanel = document.getElementById("terminal-panel") as HTMLDivElement;
 let frame = document.getElementById("frame") as HTMLIFrameElement;
 
 const decoder = new TextDecoder();
@@ -32,44 +48,7 @@ function setStatus(text: string, type: "loading" | "running" | "error") {
   statusDiv.className = `status ${type}`;
 }
 
-// nginx config for browser — simpler, no FastCGI
-const NGINX_CONF = `daemon off;
-master_process on;
-worker_processes 2;
-error_log stderr info;
-pid /tmp/nginx.pid;
-
-events {
-    worker_connections 64;
-    use poll;
-}
-
-http {
-    access_log /dev/stderr;
-    client_body_temp_path /tmp/nginx_client_temp;
-
-    types {
-        text/html  html htm;
-        text/css   css;
-        text/javascript js;
-        application/json json;
-        image/png png;
-        image/svg+xml svg;
-    }
-    default_type application/octet-stream;
-
-    server {
-        listen 8080;
-        server_name localhost;
-        root /var/www/html;
-        index index.html;
-
-        location / {
-        }
-    }
-}
-`;
-
+/** Static HTML served by nginx. */
 const INDEX_HTML = `<!DOCTYPE html>
 <html>
 <head>
@@ -102,33 +81,53 @@ const INDEX_HTML = `<!DOCTYPE html>
 </html>
 `;
 
+/** Fetch file size via HEAD request. Returns 0 on failure. */
+async function fetchSize(url: string): Promise<number> {
+  try {
+    const resp = await fetch(url, { method: "HEAD" });
+    if (!resp.ok) return 0;
+    return parseInt(resp.headers.get("content-length") || "0", 10) || 0;
+  } catch {
+    return 0;
+  }
+}
+
 let kernel: BrowserKernel | null = null;
-let bridge: HttpBridgeHost | null = null;
+let init: SystemInit | null = null;
 
 async function start() {
   startBtn.disabled = true;
   log.textContent = "";
-  setStatus("Loading kernel and nginx...", "loading");
+  setStatus("Loading kernel, nginx, and dash...", "loading");
 
   try {
-    // Fetch kernel and nginx wasm in parallel
-    appendLog("Fetching kernel and nginx wasm...\n", "info");
-    const [kernelBytes, nginxBytes] = await Promise.all([
+    // Fetch kernel and dash eagerly; get nginx size for lazy registration
+    appendLog("Fetching kernel and dash wasm...\n", "info");
+    const [kernelBytes, dashBytes, nginxSize] = await Promise.all([
       fetch(kernelWasmUrl).then((r) => r.arrayBuffer()),
-      fetch(nginxWasmUrl).then((r) => r.arrayBuffer()),
+      fetch(dashWasmUrl).then((r) => r.arrayBuffer()),
+      fetchSize(nginxWasmUrl),
     ]);
-    appendLog(`Kernel: ${(kernelBytes.byteLength / 1024).toFixed(0)}KB, nginx: ${(nginxBytes.byteLength / 1024).toFixed(0)}KB\n`, "info");
+    appendLog(
+      `Kernel: ${(kernelBytes.byteLength / 1024).toFixed(0)}KB, ` +
+      `dash: ${(dashBytes.byteLength / 1024).toFixed(0)}KB, ` +
+      `nginx: ${(nginxSize / (1024 * 1024)).toFixed(1)}MB (lazy)\n`,
+      "info",
+    );
 
-    // Set up HTTP bridge (MessageChannel-based)
-    bridge = new HttpBridgeHost();
-
-    // Initialize service worker bridge
-    appendLog("Initializing service worker bridge...\n", "info");
-    if (!(await initBridge(bridge))) {
-      setStatus("Service worker initialization failed", "error");
-      return;
+    // Fetch sizes for shell utility binaries
+    const lazyDefs = [
+      { url: coreutilsWasmUrl, path: "/bin/coreutils", symlinks: [...COREUTILS_NAMES, "["].flatMap(n => [`/bin/${n}`, `/usr/bin/${n}`]) },
+      { url: grepWasmUrl, path: "/usr/bin/grep", symlinks: ["/bin/grep", "/usr/bin/egrep", "/bin/egrep", "/usr/bin/fgrep", "/bin/fgrep"] },
+      { url: sedWasmUrl, path: "/usr/bin/sed", symlinks: ["/bin/sed"] },
+    ];
+    const sizes = await Promise.all(lazyDefs.map((d) => fetchSize(d.url)));
+    const lazyBinaries: BinaryDef[] = [];
+    for (let i = 0; i < lazyDefs.length; i++) {
+      if (sizes[i] > 0) {
+        lazyBinaries.push({ ...lazyDefs[i], size: sizes[i] });
+      }
     }
-    appendLog("Service worker bridge ready\n", "info");
 
     // Create kernel
     kernel = new BrowserKernel({
@@ -138,65 +137,61 @@ async function start() {
 
     await kernel.init(kernelBytes);
 
-    // Populate filesystem
+    // Populate VFS
     appendLog("Populating filesystem...\n", "info");
     const fs = kernel.fs;
 
-    // Create directories nginx expects
-    for (const dir of [
-      "/etc/nginx",
-      "/var/www/html",
-      "/var/log/nginx",
-      "/tmp/nginx_client_temp",
-      "/tmp/nginx-wasm/logs",
-    ]) {
-      const parts = dir.split("/").filter(Boolean);
-      let cur = "";
-      for (const p of parts) {
-        cur += "/" + p;
-        try { fs.mkdir(cur, 0o755); } catch { /* exists */ }
-      }
+    // Shell binaries (dash eager, utilities lazy)
+    populateShellBinaries(kernel, dashBytes, lazyBinaries);
+
+    // nginx binary as lazy file
+    if (nginxSize > 0) {
+      kernel.registerLazyFiles([
+        { path: "/usr/sbin/nginx", url: nginxWasmUrl, size: nginxSize, mode: 0o755 },
+      ]);
     }
+    // Create /usr/sbin if populateShellBinaries didn't
+    try { fs.mkdir("/usr/sbin", 0o755); } catch { /* exists */ }
 
-    await loadFiles(fs, [
-      { path: "/etc/nginx/nginx.conf", data: NGINX_CONF },
-      { path: "/var/www/html/index.html", data: INDEX_HTML },
-    ]);
+    // nginx config and directories
+    populateNginxConfig(fs);
 
-    // Transfer bridge host port to the kernel worker for connection pump (nginx on 8080)
-    kernel.sendBridgePort(bridge.detachHostPort(), 8080);
+    // Static content
+    writeVfsFile(fs, "/var/www/html/index.html", INDEX_HTML);
 
-    // Start nginx
-    setStatus("Starting nginx (forking workers)...", "loading");
-    appendLog("Starting nginx...\n", "info");
-
-    // nginx needs prefix path for finding config
-    const exitPromise = kernel.spawn(nginxBytes, [
-      "nginx",
-      "-p", "/etc/nginx",
-      "-c", "nginx.conf",
-    ], {
-      env: [
-        "HOME=/root",
-        "TMPDIR=/tmp",
-        "PATH=/usr/bin:/bin",
-      ],
+    // Write init service descriptors
+    writeInitDescriptor(fs, "10-nginx", {
+      type: "daemon",
+      command: "/usr/sbin/nginx -p /etc/nginx -c nginx.conf",
+      ready: "delay:2000",
+      bridge: "8080",
     });
 
-    // Wait a bit for nginx to start and fork workers
-    await new Promise((r) => setTimeout(r, 2000));
-
-    setStatus("nginx is running! Loading page in iframe...", "running");
-    reloadBtn.disabled = false;
-
-    // Load the served page in the iframe
-    loadFrame();
-
-    // nginx runs indefinitely — don't await exit
-    exitPromise.then((code) => {
-      appendLog(`\nnginx exited with code ${code}\n`, "info");
-      setStatus(`nginx exited (code ${code})`, "error");
+    writeInitDescriptor(fs, "99-shell", {
+      type: "interactive",
+      command: "/bin/dash -i",
+      env: "TERM=xterm-256color PS1=\\w\\$\\  HOME=/root PATH=/usr/local/bin:/usr/bin:/bin",
+      pty: "true",
+      cwd: "/root",
     });
+
+    // Create SystemInit and boot
+    setStatus("Booting system...", "loading");
+    init = new SystemInit(kernel, {
+      onLog: (msg, level) => appendLog(msg + "\n", level === "info" ? "info" : "stderr"),
+      terminalContainer: terminalPanel,
+      serviceWorkerUrl: SW_URL,
+      appPrefix: APP_PREFIX,
+      onServiceReady: (name) => {
+        if (name === "nginx") {
+          setStatus("nginx is running! Loading page in iframe...", "running");
+          reloadBtn.disabled = false;
+          loadFrame();
+        }
+      },
+    });
+
+    await init.boot();
   } catch (e) {
     appendLog(`\nError: ${e}\n`, "stderr");
     setStatus(`Error: ${e}`, "error");
@@ -211,38 +206,6 @@ function loadFrame() {
   next.src = APP_PREFIX;
   frame.replaceWith(next);
   frame = next;
-}
-
-async function initBridge(bridge: HttpBridgeHost): Promise<boolean> {
-  if (!("serviceWorker" in navigator)) {
-    appendLog("Service Workers not supported in this browser\n", "stderr");
-    return false;
-  }
-
-  try {
-    // Register the unified service worker (no-op if already registered by COI script)
-    await navigator.serviceWorker.register(
-      import.meta.env.BASE_URL + "service-worker.js",
-    );
-
-    // Wait for the service worker to activate and claim this client
-    const reg = await navigator.serviceWorker.ready;
-
-    // Send bridge port and wait for SW to confirm it's initialized
-    await new Promise<void>((resolve) => {
-      const reply = new MessageChannel();
-      reply.port1.onmessage = () => resolve();
-      reg.active!.postMessage(
-        { type: "init-bridge", appPrefix: APP_PREFIX },
-        [bridge.getSwPort(), reply.port2],
-      );
-    });
-
-    return true;
-  } catch (err) {
-    appendLog(`Service worker error: ${err}\n`, "stderr");
-    return false;
-  }
 }
 
 startBtn.addEventListener("click", start);
