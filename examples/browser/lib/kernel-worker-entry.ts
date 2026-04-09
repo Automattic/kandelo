@@ -489,6 +489,7 @@ function handleExit(pid: number, exitStatus: number): void {
     info.worker.terminate().catch(() => {});
   }
   processes.delete(pid);
+  ptyByPid.delete(pid);
 
   // Notify main thread
   post({ type: "exit", pid, status: exitStatus });
@@ -814,13 +815,14 @@ function pipeCloseWriteDirect(pid: number, pipeIdx: number): void {
 
 function buildRawHttpRequest(request: any): Uint8Array {
   let header = `${request.method} ${request.url} HTTP/1.1\r\n`;
+  const headerKeys = Object.keys(request.headers).map((k: string) => k.toLowerCase());
   for (const [key, value] of Object.entries(request.headers)) {
     header += `${key}: ${value}\r\n`;
   }
-  if (request.body && !request.headers["content-length"]) {
+  if (request.body && !headerKeys.includes("content-length")) {
     header += `Content-Length: ${request.body.length}\r\n`;
   }
-  if (!request.headers["connection"]) {
+  if (!headerKeys.includes("connection")) {
     header += `Connection: close\r\n`;
   }
   header += `\r\n`;
@@ -834,6 +836,8 @@ function buildRawHttpRequest(request: any): Uint8Array {
   return result;
 }
 
+const HTTP_PUMP_TIMEOUT_MS = 30_000;
+
 function pumpResponse(
   requestId: number,
   pid: number,
@@ -842,8 +846,23 @@ function pumpResponse(
 ) {
   const chunks: Uint8Array[] = [];
   let sawWriteOpen = false;
+  const startTime = Date.now();
 
   const pump = () => {
+    if (Date.now() - startTime > HTTP_PUMP_TIMEOUT_MS) {
+      // Timeout — clean up and send error response
+      pipeCloseReadDirect(pid, sendPipeIdx);
+      pipeCloseWriteDirect(pid, recvPipeIdx);
+      bridgePort!.postMessage({
+        type: "http-response",
+        requestId,
+        status: 504,
+        headers: {},
+        body: new Uint8Array(0),
+      });
+      return;
+    }
+
     const data = pipeReadDirect(pid, sendPipeIdx);
     if (data) {
       chunks.push(data);

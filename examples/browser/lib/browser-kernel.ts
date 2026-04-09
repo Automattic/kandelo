@@ -134,6 +134,12 @@ export class BrowserKernel {
     };
     this.kernelWorkerHandle.onerror = (e: ErrorEvent) => {
       console.error("[BrowserKernel] Kernel worker error:", e.message);
+      // Reject all pending requests so callers don't hang forever
+      const err = new Error(`Kernel worker error: ${e.message}`);
+      for (const [, { reject }] of this.pendingRequests) {
+        reject(err);
+      }
+      this.pendingRequests.clear();
     };
 
     // Send init message and wait for ready
@@ -378,6 +384,7 @@ export class BrowserKernel {
     this.kernelWorkerHandle.terminate();
     this.exitResolvers.clear();
     this.pendingRequests.clear();
+    this.ptyOutputCallbacks.clear();
   }
 
   // ── Private helpers ──
