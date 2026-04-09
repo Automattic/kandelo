@@ -1,10 +1,14 @@
 /**
  * Full LAMP stack browser demo — MariaDB + PHP-FPM + nginx + WordPress.
  *
+ * Uses SystemInit to orchestrate boot from /etc/init.d/ service descriptors.
+ *
  * Process layout:
- *   pid 1: mariadbd (main process, spawns 5 background threads)
- *   pid 3: php-fpm master → forks pid 4 (worker)
- *   pid 5: nginx master   → forks pid 6, 7 (workers)
+ *   pid 1: mariadbd --bootstrap (oneshot, terminated after stdin consumed)
+ *   pid 2: mariadbd server (daemon, spawns 5 background threads)
+ *   pid N: php-fpm master -> forks worker
+ *   pid N: nginx master   -> forks workers
+ *   pid N: dash -i (interactive shell with PTY)
  *
  * MariaDB listens on 127.0.0.1:3306, PHP-FPM on 127.0.0.1:9000,
  * nginx on 127.0.0.1:8080. All inter-process communication flows
@@ -13,27 +17,48 @@
  * Service worker intercepts ${BASE_URL}app/* requests and routes them to nginx.
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
-import { loadFiles } from "../../lib/fs-loader";
+import { SystemInit } from "../../lib/init/system-init";
+import { populateNginxConfig } from "../../lib/init/nginx-config";
+import { populatePhpFpmConfig } from "../../lib/init/php-fpm-config";
+import { populateMariadbDirs } from "../../lib/init/mariadb-config";
+import {
+  populateShellBinaries,
+  type BinaryDef,
+  COREUTILS_NAMES,
+} from "../../lib/init/shell-binaries";
+import {
+  writeVfsBinary,
+  writeVfsFile,
+  writeInitDescriptor,
+  ensureDir,
+  ensureDirRecursive,
+} from "../../lib/init/vfs-utils";
 import { loadWordPressBundle } from "../../lib/wp-bundle";
-import { HttpBridgeHost } from "../../lib/http-bridge";
-import { patchWasmForThread } from "../../../../host/src/worker-main";
 import kernelWasmUrl from "../../../../host/wasm/wasm_posix_kernel.wasm?url";
+import mariadbWasmUrl from "../../../../examples/libs/mariadb/mariadb-install/bin/mariadbd.wasm?url";
 import nginxWasmUrl from "../../../../examples/nginx/nginx.wasm?url";
 import phpFpmWasmUrl from "../../../../examples/nginx/php-fpm.wasm?url";
-import mariadbWasmUrl from "../../../../examples/libs/mariadb/mariadb-install/bin/mariadbd.wasm?url";
 import systemTablesUrl from "../../../../examples/libs/mariadb/mariadb-install/share/mysql/mysql_system_tables.sql?url";
 import systemDataUrl from "../../../../examples/libs/mariadb/mariadb-install/share/mysql/mysql_system_tables_data.sql?url";
+import dashWasmUrl from "../../../../examples/libs/dash/bin/dash.wasm?url";
+import coreutilsWasmUrl from "../../../../examples/libs/coreutils/bin/coreutils.wasm?url";
+import grepWasmUrl from "../../../../examples/libs/grep/bin/grep.wasm?url";
+import sedWasmUrl from "../../../../examples/libs/sed/bin/sed.wasm?url";
+import "@xterm/xterm/css/xterm.css";
+import "../../lib/terminal-panel.css";
 
 const APP_PREFIX = import.meta.env.BASE_URL + "app/";
 // Without trailing slash, for embedding in PHP config strings
 const APP_PATH = import.meta.env.BASE_URL + "app";
 // Capture the real page protocol so wp-config.php generates correct URLs
 const PROTO = window.location.protocol === "https:" ? "https" : "http";
+const SW_URL = import.meta.env.BASE_URL + "service-worker.js";
 
 const log = document.getElementById("log") as HTMLPreElement;
 const startBtn = document.getElementById("start") as HTMLButtonElement;
 const reloadBtn = document.getElementById("reload") as HTMLButtonElement;
 const statusDiv = document.getElementById("status") as HTMLDivElement;
+const terminalPanel = document.getElementById("terminal-panel") as HTMLDivElement;
 let frame = document.getElementById("frame") as HTMLIFrameElement;
 
 const decoder = new TextDecoder();
@@ -52,47 +77,8 @@ function setStatus(text: string, type: "loading" | "running" | "error") {
   statusDiv.className = `status ${type}`;
 }
 
-// nginx config — all requests go through the FPM router
-const NGINX_CONF = `daemon off;
-master_process on;
-worker_processes 2;
-error_log stderr info;
-pid /tmp/nginx.pid;
-
-events {
-    worker_connections 64;
-    use poll;
-}
-
-http {
-    access_log /dev/stderr;
-    client_body_temp_path /tmp/nginx_client_temp;
-    fastcgi_temp_path /tmp/nginx_fastcgi_temp;
-    proxy_temp_path /tmp/nginx_proxy_temp;
-
-    types {
-        text/html  html htm;
-        text/css   css;
-        text/javascript js;
-        application/javascript js;
-        application/json json;
-        image/png png;
-        image/jpeg jpg jpeg;
-        image/gif gif;
-        image/svg+xml svg;
-        image/x-icon ico;
-        font/woff woff;
-        font/woff2 woff2;
-        application/x-font-ttf ttf;
-    }
-    default_type application/octet-stream;
-
-    server {
-        listen 8080;
-        server_name localhost;
-        root /var/www/html;
-
-        location / {
+/** FastCGI location block — routes ALL requests through the FPM router. */
+const FASTCGI_LOCATION = `        location / {
             fastcgi_pass 127.0.0.1:9000;
             fastcgi_param SCRIPT_FILENAME /var/www/fpm-router.php;
             fastcgi_param DOCUMENT_ROOT $document_root;
@@ -107,78 +93,7 @@ http {
             fastcgi_param SERVER_NAME $server_name;
             fastcgi_param HTTP_HOST $http_host;
             fastcgi_param REDIRECT_STATUS 200;
-        }
-    }
-}
-`;
-
-const PHP_FPM_CONF = `[global]
-daemonize = no
-error_log = /dev/stderr
-log_level = notice
-
-[www]
-listen = 127.0.0.1:9000
-pm = static
-pm.max_children = 1
-clear_env = no
-slowlog = /dev/null
-request_slowlog_trace_depth = 0
-request_terminate_timeout = 120
-`;
-
-// FPM router: serves static files directly, routes PHP through WordPress
-const FPM_ROUTER_PHP = `<?php
-$uri = urldecode(parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH));
-$docRoot = $_SERVER['DOCUMENT_ROOT'];
-$file = $docRoot . $uri;
-
-$staticTypes = [
-    'css'   => 'text/css',
-    'js'    => 'text/javascript',
-    'json'  => 'application/json',
-    'png'   => 'image/png',
-    'jpg'   => 'image/jpeg',
-    'jpeg'  => 'image/jpeg',
-    'gif'   => 'image/gif',
-    'svg'   => 'image/svg+xml',
-    'ico'   => 'image/x-icon',
-    'woff'  => 'font/woff',
-    'woff2' => 'font/woff2',
-    'ttf'   => 'font/ttf',
-    'eot'   => 'application/vnd.ms-fontobject',
-    'map'   => 'application/json',
-    'xml'   => 'application/xml',
-    'txt'   => 'text/plain',
-];
-
-// Resolve directory URLs to index.php (e.g. /wp-admin/ → /wp-admin/index.php)
-if (is_dir($file)) {
-    $idx = rtrim($file, '/') . '/index.php';
-    if (is_file($idx)) {
-        $file = $idx;
-        $uri = rtrim($uri, '/') . '/index.php';
-    }
-}
-
-if ($uri !== '/' && is_file($file)) {
-    $ext = strtolower(pathinfo($file, PATHINFO_EXTENSION));
-    if (isset($staticTypes[$ext])) {
-        header('Content-Type: ' . $staticTypes[$ext]);
-        header('Content-Length: ' . filesize($file));
-        readfile($file);
-        exit;
-    }
-    if ($ext === 'php') {
-        chdir(dirname($file));
-        include $file;
-        exit;
-    }
-}
-
-chdir($docRoot);
-include $docRoot . '/index.php';
-`;
+        }`;
 
 // WordPress wp-config.php for MySQL/MariaDB
 const WP_CONFIG_PHP = `<?php
@@ -229,8 +144,19 @@ add_filter('pre_http_request', function($pre, $args, $url) {
 if (!defined('DISALLOW_FILE_MODS')) define('DISALLOW_FILE_MODS', true);
 `;
 
+/** Fetch file size via HEAD request. Returns 0 on failure. */
+async function fetchSize(url: string): Promise<number> {
+  try {
+    const resp = await fetch(url, { method: "HEAD" });
+    if (!resp.ok) return 0;
+    return parseInt(resp.headers.get("content-length") || "0", 10) || 0;
+  } catch {
+    return 0;
+  }
+}
+
 let kernel: BrowserKernel | null = null;
-let bridge: HttpBridgeHost | null = null;
+let init: SystemInit | null = null;
 
 async function start() {
   startBtn.disabled = true;
@@ -238,285 +164,185 @@ async function start() {
   setStatus("Loading LAMP stack...", "loading");
 
   try {
-    // Fetch all resources in parallel
-    appendLog("Fetching wasm binaries + MariaDB bootstrap SQL...\n", "info");
-    const [kernelBytes, mariadbBytes, nginxBytes, phpFpmBytes, systemTablesSql, systemDataSql] =
+    // Fetch kernel, MariaDB (eager — written to VFS), dash, and bootstrap SQL
+    appendLog("Fetching resources...\n", "info");
+    const [kernelBytes, mariadbBytes, dashBytes, systemTablesSql, systemDataSql, nginxSize, phpFpmSize] =
       await Promise.all([
         fetch(kernelWasmUrl).then((r) => r.arrayBuffer()),
         fetch(mariadbWasmUrl).then((r) => r.arrayBuffer()),
-        fetch(nginxWasmUrl).then((r) => r.arrayBuffer()),
-        fetch(phpFpmWasmUrl).then((r) => r.arrayBuffer()),
+        fetch(dashWasmUrl).then((r) => r.arrayBuffer()),
         fetch(systemTablesUrl).then((r) => r.text()),
         fetch(systemDataUrl).then((r) => r.text()),
+        fetchSize(nginxWasmUrl),
+        fetchSize(phpFpmWasmUrl),
       ]);
 
     appendLog(
       `Kernel: ${(kernelBytes.byteLength / 1024).toFixed(0)}KB, ` +
         `MariaDB: ${(mariadbBytes.byteLength / (1024 * 1024)).toFixed(1)}MB, ` +
-        `nginx: ${(nginxBytes.byteLength / (1024 * 1024)).toFixed(1)}MB, ` +
-        `PHP-FPM: ${(phpFpmBytes.byteLength / (1024 * 1024)).toFixed(1)}MB\n`,
+        `dash: ${(dashBytes.byteLength / 1024).toFixed(0)}KB, ` +
+        `nginx: ${(nginxSize / (1024 * 1024)).toFixed(1)}MB (lazy), ` +
+        `PHP-FPM: ${(phpFpmSize / (1024 * 1024)).toFixed(1)}MB (lazy)\n`,
       "info",
     );
 
-    // Pre-compile thread module for MariaDB's background threads
-    appendLog("Pre-compiling MariaDB thread module...\n", "info");
-    setStatus("Pre-compiling MariaDB thread module...", "loading");
-    const threadPatchedBytes = patchWasmForThread(mariadbBytes);
-    const threadModule = await WebAssembly.compile(threadPatchedBytes);
-    appendLog("Thread module ready\n", "info");
-
-    // Set up HTTP bridge
-    bridge = new HttpBridgeHost();
-
-    // Initialize service worker bridge
-    appendLog("Initializing service worker bridge...\n", "info");
-    if (!(await initBridge(bridge))) {
-      setStatus("Service worker initialization failed", "error");
-      return;
+    // Fetch sizes for shell utility binaries
+    const lazyDefs = [
+      { url: coreutilsWasmUrl, path: "/bin/coreutils", symlinks: [...COREUTILS_NAMES, "["].flatMap(n => [`/bin/${n}`, `/usr/bin/${n}`]) },
+      { url: grepWasmUrl, path: "/usr/bin/grep", symlinks: ["/bin/grep", "/usr/bin/egrep", "/bin/egrep", "/usr/bin/fgrep", "/bin/fgrep"] },
+      { url: sedWasmUrl, path: "/usr/bin/sed", symlinks: ["/bin/sed"] },
+    ];
+    const sizes = await Promise.all(lazyDefs.map((d) => fetchSize(d.url)));
+    const lazyBinaries: BinaryDef[] = [];
+    for (let i = 0; i < lazyDefs.length; i++) {
+      if (sizes[i] > 0) {
+        lazyBinaries.push({ ...lazyDefs[i], size: sizes[i] });
+      }
     }
-    appendLog("Service worker bridge ready\n", "info");
 
-    // Create kernel with thread support + large FS for WordPress
+    // Create kernel — thread module is auto-compiled on first clone()
     kernel = new BrowserKernel({
       maxWorkers: 16,
       fsSize: 128 * 1024 * 1024, // 128MB for WordPress bundle + MariaDB data
-      threadModule,
       onStdout: (data) => appendLog(decoder.decode(data)),
       onStderr: (data) => {
         const text = decoder.decode(data);
         appendLog(text, "stderr");
-        // Log ALL stderr to console for debugging
         console.log(`[STDERR] ${text.trim()}`);
       },
     });
 
     await kernel.init(kernelBytes);
 
-    // Create directory structure
+    // Populate VFS
+    appendLog("Populating filesystem...\n", "info");
     const fs = kernel.fs;
-    for (const dir of [
-      "/data",
-      "/data/mysql",
-      "/data/tmp",
-      "/data/test",
-      "/etc/nginx",
-      "/var/www/html",
-      "/var/www/html/wp-content",
-      "/var/www/html/wp-content/mu-plugins",
-      "/var/log/nginx",
-      "/tmp/nginx_client_temp",
-      "/tmp/nginx_fastcgi_temp",
-      "/tmp/nginx_proxy_temp",
-      "/tmp/nginx_uwsgi_temp",
-      "/tmp/nginx_scgi_temp",
-      "/tmp/nginx-wasm/logs",
-      "/etc/php-fpm.d",
-    ]) {
-      const parts = dir.split("/").filter(Boolean);
-      let cur = "";
-      for (const p of parts) {
-        cur += "/" + p;
-        try { fs.mkdir(cur, 0o755); } catch { /* exists */ }
-      }
+
+    // Shell binaries (dash eager, utilities lazy)
+    populateShellBinaries(kernel, dashBytes, lazyBinaries);
+
+    // MariaDB binary — write eagerly since we already fetched it
+    ensureDir(fs, "/usr/sbin");
+    writeVfsBinary(fs, "/usr/sbin/mariadbd", new Uint8Array(mariadbBytes));
+
+    // MariaDB data directories
+    populateMariadbDirs(fs);
+
+    // nginx and PHP-FPM as lazy files
+    const lazyFiles: Array<{ path: string; url: string; size: number; mode: number }> = [];
+    if (nginxSize > 0) {
+      lazyFiles.push({ path: "/usr/sbin/nginx", url: nginxWasmUrl, size: nginxSize, mode: 0o755 });
+    }
+    if (phpFpmSize > 0) {
+      lazyFiles.push({ path: "/usr/sbin/php-fpm", url: phpFpmWasmUrl, size: phpFpmSize, mode: 0o755 });
+    }
+    if (lazyFiles.length > 0) {
+      kernel.registerLazyFiles(lazyFiles);
     }
 
-    // Write config files
-    await loadFiles(fs, [
-      { path: "/etc/nginx/nginx.conf", data: NGINX_CONF },
-      { path: "/etc/php-fpm.conf", data: PHP_FPM_CONF },
-      { path: "/var/www/fpm-router.php", data: FPM_ROUTER_PHP },
-    ]);
-
-    // Load WordPress bundle (excludes SQLite plugin, uses MySQL wp-config)
-    setStatus("Loading WordPress files...", "loading");
-    appendLog("Loading WordPress bundle...\n", "info");
-    const loaded = await loadWordPressBundle(fs, import.meta.env.BASE_URL + "wp-bundle.json", (current, total) => {
-      if (current % 500 === 0 || current === total) {
-        appendLog(`  ${current}/${total} files\n`, "info");
-      }
+    // nginx config and directories — WordPress routes all requests through FPM router
+    populateNginxConfig(fs, {
+      extraLocations: FASTCGI_LOCATION,
     });
-    appendLog(`WordPress loaded: ${loaded} files\n`, "info");
 
-    // Remove SQLite db.php drop-in — the bundle includes it for the WordPress-only
-    // demo, but the LAMP demo uses MariaDB via the MySQL wp-config below.
-    try { fs.unlink("/var/www/html/wp-content/db.php"); } catch { /* not present */ }
+    // PHP-FPM config and directories
+    populatePhpFpmConfig(fs);
 
-    // Overwrite wp-config.php with MySQL version + install mu-plugin
-    await loadFiles(fs, [
-      { path: "/var/www/html/wp-config.php", data: WP_CONFIG_PHP },
-      { path: "/var/www/html/wp-content/mu-plugins/wasm-optimizations.php", data: MU_PLUGIN_PHP },
-    ]);
+    // WordPress-specific directories
+    ensureDirRecursive(fs, "/var/www/html/wp-content/mu-plugins");
 
-    // =====================================================================
-    // Phase 1: Bootstrap MariaDB
-    // =====================================================================
-    setStatus("Bootstrapping MariaDB system tables...", "loading");
-    appendLog("Bootstrapping MariaDB system tables (this may take a few minutes in browser)...\n", "info");
-
-    // Include CREATE DATABASE in the bootstrap SQL so we only need one bootstrap pass
+    // Write the bootstrap SQL to VFS
     const bootstrapSql = `use mysql;\n${systemTablesSql}\n${systemDataSql}\nCREATE DATABASE IF NOT EXISTS wordpress;\n`;
-    const bootstrapStdin = new TextEncoder().encode(bootstrapSql);
+    ensureDir(fs, "/etc/mariadb");
+    writeVfsFile(fs, "/etc/mariadb/bootstrap.sql", bootstrapSql);
 
-    const bootstrapPid = kernel.nextPid;
-    const bootstrapExit = kernel.spawn(mariadbBytes, [
-      "mariadbd",
-      "--no-defaults",
-      "--datadir=/data",
-      "--tmpdir=/data/tmp",
-      "--default-storage-engine=Aria",
-      "--skip-grant-tables",
-      "--key-buffer-size=1048576",
-      "--table-open-cache=10",
-      "--sort-buffer-size=262144",
-      "--bootstrap",
-      "--log-warnings=0",
-    ], {
-      stdin: bootstrapStdin,
+    // Write init service descriptors
+    writeInitDescriptor(fs, "05-mariadb-bootstrap", {
+      type: "oneshot",
+      command: "/usr/sbin/mariadbd --bootstrap --datadir=/data --tmpdir=/data/tmp --skip-networking --log-error=/data/bootstrap.log",
+      stdin: "/etc/mariadb/bootstrap.sql",
+      ready: "stdin-consumed",
+      terminate: "true",
     });
 
-    // MariaDB bootstrap hangs during shutdown waiting for signal handler thread,
-    // so we can't rely on process exit. Poll for stdin consumption instead.
-    const stdinConsumed = new Promise<number>((resolve) => {
-      const check = async () => {
-        if (await kernel!.isStdinConsumed(bootstrapPid)) {
-          // Give MariaDB a moment to flush writes after consuming last SQL
-          setTimeout(() => resolve(0), 2000);
-        } else {
-          setTimeout(check, 500);
+    writeInitDescriptor(fs, "10-mariadb", {
+      type: "daemon",
+      command: "/usr/sbin/mariadbd --datadir=/data --tmpdir=/data/tmp --skip-networking=0 --port=3306 --thread-handling=no-threads --skip-grant-tables --default-storage-engine=Aria --log-error=/data/error.log",
+      depends: "mariadb-bootstrap",
+      ready: "port:3306",
+    });
+
+    writeInitDescriptor(fs, "20-php-fpm", {
+      type: "daemon",
+      command: "/usr/sbin/php-fpm -y /etc/php-fpm.conf -c /dev/null --nodaemonize",
+      depends: "mariadb",
+      ready: "delay:3000",
+    });
+
+    writeInitDescriptor(fs, "30-nginx", {
+      type: "daemon",
+      command: "/usr/sbin/nginx -p /etc/nginx -c nginx.conf",
+      depends: "php-fpm",
+      ready: "delay:2000",
+      bridge: "8080",
+    });
+
+    writeInitDescriptor(fs, "99-shell", {
+      type: "interactive",
+      command: "/bin/dash -i",
+      env: "TERM=xterm-256color PS1=\\w\\$\\  HOME=/root PATH=/usr/local/bin:/usr/bin:/bin",
+      pty: "true",
+      cwd: "/root",
+    });
+
+    // Create SystemInit and boot
+    setStatus("Booting system...", "loading");
+    init = new SystemInit(kernel, {
+      onLog: (msg, level) => appendLog(msg + "\n", level === "info" ? "info" : "stderr"),
+      terminalContainer: terminalPanel,
+      serviceWorkerUrl: SW_URL,
+      appPrefix: APP_PREFIX,
+      onBeforeService: async (name) => {
+        if (name === "shell") {
+          // Load WordPress bundle after daemons are running but before the shell
+          setStatus("Loading WordPress files...", "loading");
+          const loaded = await loadWordPressBundle(
+            kernel!.fs,
+            import.meta.env.BASE_URL + "wp-bundle.json",
+            (current, total) => {
+              if (current % 500 === 0 || current === total) {
+                appendLog(`  ${current}/${total} files\n`, "info");
+              }
+            },
+          );
+          appendLog(`WordPress loaded: ${loaded} files\n`, "info");
+
+          // Remove SQLite db.php drop-in — the bundle includes it for the WordPress-only
+          // demo, but the LAMP demo uses MariaDB via the MySQL wp-config below.
+          try { kernel!.fs.unlink("/var/www/html/wp-content/db.php"); } catch { /* not present */ }
+
+          // Overwrite wp-config.php with MySQL version + install mu-plugin
+          writeVfsFile(kernel!.fs, "/var/www/html/wp-config.php", WP_CONFIG_PHP);
+          writeVfsFile(kernel!.fs, "/var/www/html/wp-content/mu-plugins/wasm-optimizations.php", MU_PLUGIN_PHP);
         }
-      };
-      setTimeout(check, 1000);
+      },
+      onServiceReady: (name) => {
+        if (name === "mariadb-bootstrap") {
+          appendLog("Bootstrap complete\n", "info");
+        }
+        if (name === "nginx") {
+          setStatus("LAMP stack running! Loading WordPress...", "running");
+          reloadBtn.disabled = false;
+          loadFrame();
+        }
+      },
     });
 
-    const bootstrapTimeout = new Promise<number>((r) =>
-      setTimeout(() => r(-1), 600000),
-    );
-
-    const progressInterval = setInterval(() => {
-      appendLog("  Bootstrap still running...\n", "info");
-    }, 15000);
-
-    const bootstrapResult = await Promise.race([bootstrapExit, stdinConsumed, bootstrapTimeout]);
-    clearInterval(progressInterval);
-
-    if (bootstrapResult === -1) {
-      throw new Error("MariaDB bootstrap timed out after 10 minutes. Try reloading the page.");
-    }
-    appendLog("Bootstrap complete\n", "info");
-
-    // Terminate the bootstrap process — it hangs during shutdown waiting for
-    // signal handler thread. Must terminate before server starts so Aria lock
-    // files and data directory are released.
-    await kernel.terminateProcess(bootstrapPid);
-    appendLog("WordPress database ready\n", "info");
-
-    // =====================================================================
-    // Phase 2: Start MariaDB server
-    // =====================================================================
-    setStatus("Starting MariaDB server...", "loading");
-    appendLog("Starting MariaDB server on 127.0.0.1:3306...\n", "info");
-
-    kernel.spawn(mariadbBytes, [
-      "mariadbd",
-      "--no-defaults",
-      "--datadir=/data",
-      "--tmpdir=/data/tmp",
-      "--default-storage-engine=Aria",
-      "--skip-grant-tables",
-      "--key-buffer-size=1048576",
-      "--table-open-cache=10",
-      "--sort-buffer-size=262144",
-      "--skip-networking=0",
-      "--port=3306",
-      "--bind-address=0.0.0.0",
-      "--socket=",
-      "--max-connections=10",
-      "--thread-handling=no-threads",
-    ]);
-
-    // Poll for MariaDB listener instead of blind wait
-    appendLog("Waiting for MariaDB to accept connections...\n", "info");
-    for (let attempt = 1; attempt <= 30; attempt++) {
-      await new Promise((r) => setTimeout(r, 1000));
-      if (await kernel.pickListenerTarget(3306)) {
-        appendLog(`MariaDB ready (after ${attempt}s)\n`, "info");
-        break;
-      }
-      if (attempt === 30) {
-        throw new Error("MariaDB did not start listening within 30s");
-      }
-      if (attempt % 5 === 0) {
-        appendLog(`Still waiting for MariaDB... (${attempt}s)\n`, "info");
-      }
-    }
-
-    // =====================================================================
-    // Phase 3: Start PHP-FPM
-    // =====================================================================
-    setStatus("Starting PHP-FPM...", "loading");
-    appendLog("Starting PHP-FPM on 127.0.0.1:9000...\n", "info");
-
-    const fpmExitPromise = kernel.spawn(phpFpmBytes, [
-      "php-fpm",
-      "-y", "/etc/php-fpm.conf",
-      "-c", "/dev/null",
-      "--nodaemonize",
-    ], {
-      env: [
-        "HOME=/tmp",
-        "TMPDIR=/tmp",
-        "PATH=/usr/local/bin:/usr/bin:/bin",
-      ],
-    });
-
-    // Wait for PHP-FPM to start and fork worker
-    await new Promise((r) => setTimeout(r, 3000));
-    appendLog("PHP-FPM ready\n", "info");
-
-    // =====================================================================
-    // Phase 4: Start nginx
-    // =====================================================================
-    setStatus("Starting nginx...", "loading");
-    appendLog("Starting nginx on 127.0.0.1:8080...\n", "info");
-
-    // Transfer bridge host port to the kernel worker for connection pump (nginx on 8080)
-    kernel.sendBridgePort(bridge.detachHostPort(), 8080);
-
-    const nginxExitPromise = kernel.spawn(nginxBytes, [
-      "nginx",
-      "-p", "/etc/nginx",
-      "-c", "nginx.conf",
-    ], {
-      env: [
-        "HOME=/tmp",
-        "TMPDIR=/tmp",
-        "PATH=/usr/bin:/bin",
-      ],
-    });
-
-    // Wait for nginx to start and fork workers
-    await new Promise((r) => setTimeout(r, 2000));
-
-    setStatus("LAMP stack running! Loading WordPress...", "running");
-    reloadBtn.disabled = false;
-    appendLog("\n=== LAMP stack running ===\n", "info");
-    appendLog("  MariaDB: 127.0.0.1:3306\n", "info");
-    appendLog("  PHP-FPM: 127.0.0.1:9000\n", "info");
-    appendLog("  nginx:   127.0.0.1:8080\n", "info");
-    appendLog(`  WordPress: ${APP_PREFIX}\n\n`, "info");
-
-    // Load WordPress via the service worker bridge
-    loadFrame();
-
-    fpmExitPromise.then((code) => {
-      appendLog(`\nphp-fpm exited with code ${code}\n`, "info");
-    });
-    nginxExitPromise.then((code) => {
-      appendLog(`\nnginx exited with code ${code}\n`, "info");
-    });
-  } catch (e) {
-    appendLog(`\nError: ${e}\n`, "stderr");
-    setStatus(`Error: ${e}`, "error");
+    await init.boot();
+  } catch (e: any) {
+    const msg = e?.message || String(e);
+    appendLog(`\nError: ${msg}\n`, "stderr");
+    setStatus(`Error: ${msg}`, "error");
     console.error(e);
     startBtn.disabled = false;
   }
@@ -528,38 +354,6 @@ function loadFrame() {
   next.src = APP_PREFIX;
   frame.replaceWith(next);
   frame = next;
-}
-
-async function initBridge(bridge: HttpBridgeHost): Promise<boolean> {
-  if (!("serviceWorker" in navigator)) {
-    appendLog("Service Workers not supported\n", "stderr");
-    return false;
-  }
-
-  try {
-    // Register the unified service worker (no-op if already registered by COI script)
-    await navigator.serviceWorker.register(
-      import.meta.env.BASE_URL + "service-worker.js",
-    );
-
-    // Wait for the service worker to activate and claim this client
-    const reg = await navigator.serviceWorker.ready;
-
-    // Send bridge port and wait for SW to confirm it's initialized
-    await new Promise<void>((resolve) => {
-      const reply = new MessageChannel();
-      reply.port1.onmessage = () => resolve();
-      reg.active!.postMessage(
-        { type: "init-bridge", appPrefix: APP_PREFIX },
-        [bridge.getSwPort(), reply.port2],
-      );
-    });
-
-    return true;
-  } catch (err) {
-    appendLog(`Service worker error: ${err}\n`, "stderr");
-    return false;
-  }
 }
 
 startBtn.addEventListener("click", start);

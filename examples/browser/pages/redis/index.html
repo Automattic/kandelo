@@ -20,43 +20,46 @@
     <a href="/pages/shell/">Shell</a>
     <a href="/pages/python/">Python</a>
   </nav>
-  <div class="main">
-    <div class="main-header">
-      <h1>Redis on wasm-posix-kernel</h1>
-      <p class="subtitle">Redis 7.2 running inside a POSIX kernel compiled to WebAssembly</p>
-      <div class="controls">
-        <button id="start">Start Redis</button>
-        <select id="examples">
-          <option value="">-- Example Commands --</option>
-          <option value="ping">PING</option>
-          <option value="set">SET hello world</option>
-          <option value="get">GET hello</option>
-          <option value="incr">INCR counter</option>
-          <option value="lpush">LPUSH mylist a b c</option>
-          <option value="lrange">LRANGE mylist 0 -1</option>
-          <option value="info">INFO server</option>
-          <option value="dbsize">DBSIZE</option>
-        </select>
-      </div>
-      <div class="controls">
-        <span class="redis-prompt">redis&gt;</span>
-        <input type="text" id="cmd" placeholder="Enter Redis command..." value="PING">
-        <button id="execute" disabled>Send</button>
-      </div>
-      <div id="status" class="status" style="display:none"></div>
-    </div>
-    <div class="preview-area">
-      <div class="split-panels">
-        <div class="log-panel">
-          <h3>Kernel Log</h3>
-          <pre id="log"></pre>
+  <div class="main" style="display:flex;flex-direction:column;overflow:hidden">
+    <div style="flex:1;overflow:auto;display:flex;flex-direction:column;min-height:0">
+      <div class="main-header">
+        <h1>Redis on wasm-posix-kernel</h1>
+        <p class="subtitle">Redis 7.2 running inside a POSIX kernel compiled to WebAssembly</p>
+        <div class="controls">
+          <button id="start">Start Redis</button>
+          <select id="examples">
+            <option value="">-- Example Commands --</option>
+            <option value="ping">PING</option>
+            <option value="set">SET hello world</option>
+            <option value="get">GET hello</option>
+            <option value="incr">INCR counter</option>
+            <option value="lpush">LPUSH mylist a b c</option>
+            <option value="lrange">LRANGE mylist 0 -1</option>
+            <option value="info">INFO server</option>
+            <option value="dbsize">DBSIZE</option>
+          </select>
         </div>
-        <div class="result-panel">
-          <h3>Redis Output</h3>
-          <pre id="result"><span class="placeholder-text">Start Redis and send commands</span></pre>
+        <div class="controls">
+          <span class="redis-prompt">redis&gt;</span>
+          <input type="text" id="cmd" placeholder="Enter Redis command..." value="PING">
+          <button id="execute" disabled>Send</button>
+        </div>
+        <div id="status" class="status" style="display:none"></div>
+      </div>
+      <div class="preview-area">
+        <div class="split-panels">
+          <div class="log-panel">
+            <h3>Kernel Log</h3>
+            <pre id="log"></pre>
+          </div>
+          <div class="result-panel">
+            <h3>Redis Output</h3>
+            <pre id="result"><span class="placeholder-text">Start Redis and send commands</span></pre>
+          </div>
         </div>
       </div>
     </div>
+    <div id="terminal-panel"></div>
   </div>
   <script type="module" src="./main.ts"></script>
 </body>

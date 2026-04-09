@@ -1,0 +1,16 @@
+getopt.o: getopt.c ../config.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/stdio.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/features.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/alltypes.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/string.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/strings.h \
+  ../h/getopt.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/ctype.h
+../config.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/stdio.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/features.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/alltypes.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/string.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/strings.h:
+../h/getopt.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/ctype.h:

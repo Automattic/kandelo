@@ -264,6 +264,11 @@ pub fn sys_open(
         return crate::procfs::procfs_open(proc, &entry, resolved, oflags);
     }
 
+    // Devfs (/dev, /dev/pts, etc.) — in-kernel directory listing
+    if crate::devfs::match_devfs_dir(&resolved).is_some() {
+        return crate::devfs::devfs_open_dir(proc, resolved, oflags);
+    }
+
     // POSIX: open() on an existing directory with O_CREAT returns EISDIR
     if oflags & O_CREAT != 0 {
         if let Ok(st) = host.host_stat(&resolved) {
@@ -458,8 +463,9 @@ pub fn sys_close(
                     if let Some(slot) = proc.procfs_bufs.get_mut(buf_idx) {
                         *slot = None;
                     }
-                } else if host_handle == crate::procfs::PROCFS_DIR_HANDLE {
-                    // Procfs directory: nothing to clean up
+                } else if host_handle == crate::procfs::PROCFS_DIR_HANDLE
+                    || host_handle == crate::devfs::DEVFS_DIR_HANDLE {
+                    // Procfs/devfs directory: nothing to clean up
                 // Virtual char devices and synthetic files have no host handle to close
                 } else if (file_type == FileType::CharDevice && host_handle < 0)
                     || host_handle == SYNTHETIC_FILE_HANDLE
@@ -1254,8 +1260,9 @@ pub fn sys_lseek(
         return Ok(0);
     }
 
-    // Procfs directory: lseek resets position
-    if ofd.host_handle == crate::procfs::PROCFS_DIR_HANDLE {
+    // Procfs/devfs directory: lseek resets position
+    if ofd.host_handle == crate::procfs::PROCFS_DIR_HANDLE
+        || ofd.host_handle == crate::devfs::DEVFS_DIR_HANDLE {
         if whence == SEEK_SET {
             ofd.dir_synth_state = 0;
             ofd.dir_entry_offset = 0;
@@ -1843,6 +1850,15 @@ pub fn sys_fstat(
         } else {
             Ok(crate::procfs::procfs_stat(&crate::procfs::ProcfsEntry::Root, 0, true))
         }
+    } else if ofd.host_handle == crate::devfs::DEVFS_DIR_HANDLE {
+        Ok(crate::devfs::match_devfs_stat(&ofd.path, proc.euid, proc.egid)
+            .unwrap_or(WasmStat {
+                st_dev: 6, st_ino: 0xDE0100,
+                st_mode: wasm_posix_shared::mode::S_IFDIR | 0o755, st_nlink: 2,
+                st_uid: proc.euid, st_gid: proc.egid, st_size: 0,
+                st_atime_sec: 0, st_atime_nsec: 0, st_mtime_sec: 0, st_mtime_nsec: 0,
+                st_ctime_sec: 0, st_ctime_nsec: 0, _pad: 0,
+            }))
     } else {
         let mut st = host.host_fstat(ofd.host_handle)?;
         st.st_uid = proc.euid;
@@ -2154,6 +2170,9 @@ pub fn sys_stat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resul
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
         return Ok(crate::procfs::procfs_stat(&entry, 0, true));
     }
+    if let Some(st) = crate::devfs::match_devfs_stat(&resolved, proc.euid, proc.egid) {
+        return Ok(st);
+    }
     let mut st = host.host_stat(&resolved)?;
     st.st_uid = proc.euid;
     st.st_gid = proc.egid;
@@ -2188,6 +2207,9 @@ pub fn sys_lstat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resu
     }
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
         return Ok(crate::procfs::procfs_stat(&entry, 0, false));
+    }
+    if let Some(st) = crate::devfs::match_devfs_stat(&resolved, proc.euid, proc.egid) {
+        return Ok(st);
     }
     let mut st = host.host_lstat(&resolved)?;
     st.st_uid = proc.euid;
@@ -2269,7 +2291,8 @@ pub fn sys_chown(proc: &mut Process, host: &mut dyn HostIO, path: &[u8], uid: u3
 pub fn sys_access(proc: &mut Process, host: &mut dyn HostIO, path: &[u8], amode: u32) -> Result<(), Errno> {
     let resolved = resolve_path(path, &proc.cwd);
     if match_virtual_device(&resolved).is_some() || match_dev_fd(&resolved).is_some()
-        || match_pty_stat(&resolved, 0, 0).is_some() {
+        || match_pty_stat(&resolved, 0, 0).is_some()
+        || crate::devfs::match_devfs_dir(&resolved).is_some() {
         return Ok(());
     }
     if synthetic_file_content(&resolved).is_some() {
@@ -2528,13 +2551,59 @@ pub fn sys_getdents64(
         ofd.dir_host_handle
     };
 
+    // Devfs directories: generate entries in-kernel
+    if dir_handle == crate::devfs::DEVFS_DIR_HANDLE || dir_handle == -2 && crate::devfs::match_devfs_dir(&path).is_some() {
+        if dir_handle == -2 {
+            return Ok(0); // exhausted
+        }
+        let entry_offset = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?.dir_entry_offset;
+        let (bytes, new_offset, exhausted) =
+            crate::devfs::devfs_getdents64(proc, &path, buf, entry_offset)?;
+        if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
+            ofd.dir_entry_offset = new_offset;
+            if exhausted {
+                ofd.dir_host_handle = -2;
+            }
+        }
+        return Ok(bytes);
+    }
+
     // Procfs directories: generate entries in-kernel
     if dir_handle == crate::procfs::PROCFS_DIR_HANDLE || dir_handle == -2 && crate::procfs::match_procfs(&path, proc.pid).is_some() {
         if dir_handle == -2 {
             return Ok(0); // exhausted
         }
         let entry_offset = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?.dir_entry_offset;
-        let pids = alloc::vec![proc.pid]; // For now, only self
+
+        // Get all PIDs for /proc root listing; includes self + other processes
+        #[cfg(target_arch = "wasm32")]
+        let mut pids = crate::wasm_api::procfs_all_pids();
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut pids = alloc::vec::Vec::<u32>::new();
+        if pids.is_empty() {
+            pids.push(proc.pid); // fallback: at least self
+        }
+
+        // Check if this is a cross-process directory (e.g. /proc/<other_pid>/fd)
+        #[cfg(target_arch = "wasm32")]
+        if let Some(entry) = crate::procfs::match_procfs(&path, proc.pid) {
+            let target_pid = crate::procfs::entry_pid(&entry);
+            if target_pid != 0 && target_pid != proc.pid {
+                if let Some((bytes, new_offset, exhausted)) =
+                    crate::wasm_api::procfs_getdents64_for_pid(target_pid, &path, buf, entry_offset)
+                {
+                    if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
+                        ofd.dir_entry_offset = new_offset;
+                        if exhausted {
+                            ofd.dir_host_handle = -2;
+                        }
+                    }
+                    return Ok(bytes);
+                }
+                return Err(Errno::ENOENT);
+            }
+        }
+
         let (bytes, new_offset, exhausted) =
             crate::procfs::procfs_getdents64(proc, &path, buf, entry_offset, &pids)?;
         if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
@@ -4945,6 +5014,11 @@ pub fn sys_openat(
         return crate::procfs::procfs_open(proc, &entry, resolved, oflags);
     }
 
+    // Devfs (/dev, /dev/pts, etc.) — in-kernel directory listing
+    if crate::devfs::match_devfs_dir(&resolved).is_some() {
+        return crate::devfs::devfs_open_dir(proc, resolved, oflags);
+    }
+
     let effective_mode = if oflags & O_CREAT != 0 {
         mode & !proc.umask
     } else {
@@ -5021,6 +5095,9 @@ pub fn sys_fstatat(
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
         let follow = flags & AT_SYMLINK_NOFOLLOW == 0;
         return Ok(crate::procfs::procfs_stat(&entry, 0, follow));
+    }
+    if let Some(st) = crate::devfs::match_devfs_stat(&resolved, proc.euid, proc.egid) {
+        return Ok(st);
     }
     let mut st = if flags & AT_SYMLINK_NOFOLLOW != 0 {
         host.host_lstat(&resolved)?
@@ -6759,7 +6836,8 @@ pub fn sys_faccessat(
     _flags: u32,
 ) -> Result<(), Errno> {
     let resolved = resolve_at_path(proc, dirfd, path)?;
-    if match_virtual_device(&resolved).is_some() || match_dev_fd(&resolved).is_some() {
+    if match_virtual_device(&resolved).is_some() || match_dev_fd(&resolved).is_some()
+        || crate::devfs::match_devfs_dir(&resolved).is_some() {
         return Ok(());
     }
     if synthetic_file_content(&resolved).is_some() {

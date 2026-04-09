@@ -1,0 +1,60 @@
+# Test suite for GNU tar.                             -*- Autotest -*-
+# Copyright 2017-2023 Free Software Foundation, Inc.
+#
+# This file is part of GNU tar.
+#
+# GNU tar is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 3 of the License, or
+# (at your option) any later version.
+#
+# GNU tar is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+AT_SETUP([delay-directory-restore on reversed ordering])
+
+# The --delay-directory-resore option worked incorrectly on archives with
+# reversed member ordering (which was documented, anyway). This is illustrated
+# in
+#   http://lists.gnu.org/archive/html/bug-tar/2019-03/msg00022.html
+# which was taken as a base for this testcase.
+# The bug affected tar versions <= 1.32.
+
+AT_KEYWORDS([extract extrac22 delay delay-reversed])
+AT_TAR_CHECK([
+AT_UNPRIVILEGED_PREREQ
+AT_SORT_PREREQ
+mkdir t
+(cd t
+ genfile --length 100 --file data1
+ mkdir dir1
+ cp data1 dir1
+ mkdir dir2
+ cd dir2
+ ln -s ../dir1/data1 data2
+ cd ..
+ chmod -w dir2)
+
+AT_DATA([filelist],
+[./dir2/data2
+./dir2
+./dir1/data1
+./dir1
+./data1
+])
+
+tar -C t -c -f a.tar --no-recursion -T filelist
+
+mkdir restore
+tar -x -p --delay-directory-restore -C restore -f a.tar
+# Previous versions of tar would fail here with the following diagnostics:
+# tar: ./dir2/data2: Cannot unlink: Permission denied
+],
+[0],
+[])
+AT_CLEANUP

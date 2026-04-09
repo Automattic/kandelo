@@ -1,0 +1,88 @@
+# Test suite for GNU tar.
+# Copyright 2020-2023 Free Software Foundation, Inc.
+#
+# This file is part of GNU tar.
+#
+# GNU tar is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 3 of the License, or
+# (at your option) any later version.
+#
+# GNU tar is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+AT_SETUP([chained renames])
+AT_KEYWORDS([incremental rename06 rename])
+
+# Description: test whether chained renames are processed correctly
+# during the incremental archive creation.  Tar 1.32.90 failed to
+# encode them.
+# Reported by: Deweloper <deweloper@wp.pl>
+# References: <20200214100922.44c43334@amazur-u.kat.adbgroup.pl>,
+#   https://lists.gnu.org/archive/html/bug-tar/2020-02/msg00008.html
+
+AT_TAR_CHECK([
+AT_SORT_PREREQ
+decho Creating directory structure
+mkdir test test/d1 test/d2
+genfile --file test/d1/file1
+genfile --file test/d2/file2
+
+decho First dump
+tar -c -g 0.snar -C test -f backup0.tar .
+
+decho Altering directory structure
+genfile --file test/d2/file3
+mv test/d1 test/d3
+mv test/d2 test/d1
+
+decho Second dump
+cp 0.snar 1.snar
+tar -vc -g 1.snar -C test -f backup1.tar .
+
+mkdir test1
+
+decho First extract
+tar -C test1 -x -g /dev/null -f backup0.tar
+
+decho Second extract
+tar -C test1 -x -g /dev/null -f backup1.tar
+
+decho Resulting directory
+find test1 | sort
+],
+[0],
+[Creating directory structure
+First dump
+Altering directory structure
+Second dump
+./
+./d1/
+./d3/
+./d1/file3
+First extract
+Second extract
+Resulting directory
+test1
+test1/d1
+test1/d1/file2
+test1/d1/file3
+test1/d3
+test1/d3/file1
+],
+[Creating directory structure
+First dump
+Altering directory structure
+Second dump
+tar: ./d1: Directory has been renamed from './d2'
+tar: ./d3: Directory has been renamed from './d1'
+First extract
+Second extract
+Resulting directory
+],[],[],[gnu, oldgnu, posix])
+AT_CLEANUP

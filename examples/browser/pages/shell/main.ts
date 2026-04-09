@@ -6,6 +6,11 @@
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
 import { PtyTerminal } from "../../lib/pty-terminal";
+import {
+  populateShellBinaries,
+  COREUTILS_NAMES,
+  type BinaryDef,
+} from "../../lib/init/shell-binaries";
 import kernelWasmUrl from "../../../../host/wasm/wasm_posix_kernel.wasm?url";
 import dashWasmUrl from "../../../../examples/libs/dash/bin/dash.wasm?url";
 import coreutilsWasmUrl from "../../../../examples/libs/coreutils/bin/coreutils.wasm?url";
@@ -21,12 +26,7 @@ import tarWasmUrl from "../../../../examples/libs/tar/bin/tar.wasm?url";
 import curlWasmUrl from "../../../../examples/libs/curl/bin/curl.wasm?url";
 import wgetWasmUrl from "../../../../examples/libs/wget/bin/wget.wasm?url";
 import gitWasmUrl from "../../../../examples/libs/git/bin/git.wasm?url";
-import gzipWasmUrl from "../../../../examples/libs/gzip/bin/gzip.wasm?url";
-import bzip2WasmUrl from "../../../../examples/libs/bzip2/bin/bzip2.wasm?url";
-import xzWasmUrl from "../../../../examples/libs/xz/bin/xz.wasm?url";
-import zstdWasmUrl from "../../../../examples/libs/zstd/bin/zstd.wasm?url";
-import zipWasmUrl from "../../../../examples/libs/zip/bin/zip.wasm?url";
-import unzipWasmUrl from "../../../../examples/libs/unzip/bin/unzip.wasm?url";
+import lsofWasmUrl from "../../../../examples/lsof.wasm?url";
 import "@xterm/xterm/css/xterm.css";
 
 // --- DOM elements ---
@@ -76,36 +76,10 @@ function hideStatus() {
   statusDiv.style.display = "none";
 }
 
-// --- Coreutils command names for exec ---
-const COREUTILS_NAMES = [
-  "arch", "b2sum", "base32", "base64", "basename", "basenc", "cat",
-  "chcon", "chgrp", "chmod", "chown", "chroot", "cksum", "comm", "cp",
-  "csplit", "cut", "date", "dd", "df", "dir", "dircolors", "dirname",
-  "du", "echo", "env", "expand", "expr", "factor", "false", "fmt",
-  "fold", "groups", "head", "hostid", "id", "install", "join", "link",
-  "ln", "logname", "ls", "md5sum", "mkdir", "mkfifo", "mknod", "mktemp",
-  "mv", "nice", "nl", "nohup", "nproc", "numfmt", "od", "paste",
-  "pathchk", "pr", "printenv", "printf", "ptx", "pwd", "readlink",
-  "realpath", "rm", "rmdir", "runcon", "seq", "sha1sum", "sha224sum",
-  "sha256sum", "sha384sum", "sha512sum", "shred", "shuf", "sleep",
-  "sort", "split", "stat", "stty", "sum", "sync", "tac", "tail",
-  "tee", "test", "timeout", "touch", "tr", "true", "truncate", "tsort",
-  "tty", "uname", "unexpand", "uniq", "unlink", "vdir", "wc", "whoami",
-  "yes",
-];
-
 // --- Binary loading ---
 let kernelBytes: ArrayBuffer | null = null;
 let dashBytes: ArrayBuffer | null = null;
-
-/** Lazy-loaded utility binaries: fetched on demand when first exec'd. */
-interface LazyBinary {
-  url: string;
-  path: string;
-  size: number;
-  symlinks: string[];
-}
-let lazyBinaries: LazyBinary[] = [];
+let lazyBinaries: BinaryDef[] = [];
 
 /** Data files to load eagerly (small, needed at runtime by utilities). */
 interface DataFile {
@@ -153,12 +127,7 @@ async function loadBinaries(): Promise<string> {
     { url: curlWasmUrl, path: "/usr/bin/curl", symlinks: ["/bin/curl"] },
     { url: wgetWasmUrl, path: "/usr/bin/wget", symlinks: ["/bin/wget"] },
     { url: gitWasmUrl, path: "/usr/bin/git", symlinks: ["/bin/git"] },
-    { url: gzipWasmUrl, path: "/usr/bin/gzip", symlinks: ["/bin/gzip", "/usr/bin/gunzip", "/bin/gunzip", "/usr/bin/zcat", "/bin/zcat"] },
-    { url: bzip2WasmUrl, path: "/usr/bin/bzip2", symlinks: ["/bin/bzip2", "/usr/bin/bunzip2", "/bin/bunzip2", "/usr/bin/bzcat", "/bin/bzcat"] },
-    { url: xzWasmUrl, path: "/usr/bin/xz", symlinks: ["/bin/xz", "/usr/bin/unxz", "/bin/unxz", "/usr/bin/xzcat", "/bin/xzcat", "/usr/bin/lzma", "/bin/lzma", "/usr/bin/unlzma", "/bin/unlzma", "/usr/bin/lzcat", "/bin/lzcat"] },
-    { url: zstdWasmUrl, path: "/usr/bin/zstd", symlinks: ["/bin/zstd", "/usr/bin/unzstd", "/bin/unzstd", "/usr/bin/zstdcat", "/bin/zstdcat"] },
-    { url: zipWasmUrl, path: "/usr/bin/zip", symlinks: ["/bin/zip"] },
-    { url: unzipWasmUrl, path: "/usr/bin/unzip", symlinks: ["/bin/unzip", "/usr/bin/zipinfo", "/bin/zipinfo", "/usr/bin/funzip", "/bin/funzip"] },
+    { url: lsofWasmUrl, path: "/usr/bin/lsof", symlinks: ["/bin/lsof"] },
   ];
 
   // Fetch sizes for lazy binaries and data files in parallel
@@ -199,77 +168,29 @@ async function loadBinaries(): Promise<string> {
 }
 
 /**
- * Write a binary file to the virtual filesystem.
- */
-function writeFileToFs(fs: import("../../lib/browser-kernel").BrowserKernel["fs"], path: string, data: ArrayBuffer): void {
-  const bytes = new Uint8Array(data);
-  const fd = fs.open(path, 0x241 /* O_WRONLY|O_CREAT|O_TRUNC */, 0o755);
-  fs.write(fd, bytes, null, bytes.length);
-  fs.close(fd);
-}
-
-/**
  * Populate the virtual filesystem with executable binaries.
- * Dash is written eagerly (required for shell startup).
- * Utilities (coreutils, grep, sed) are registered as lazy files
- * and fetched on demand when first exec'd.
+ * Delegates to the shared populateShellBinaries() helper.
  */
-function populateExecBinaries(kernel: import("../../lib/browser-kernel").BrowserKernel): void {
+function populateExecBinaries(kernel: BrowserKernel): void {
   const fs = kernel.fs;
-  for (const dir of ["/bin", "/usr", "/usr/bin", "/usr/local", "/usr/local/bin", "/usr/share", "/usr/share/misc", "/usr/share/file", "/etc", "/root"]) {
-    try { fs.mkdir(dir, 0o755); } catch { /* exists */ }
-  }
 
-  // Write git system config: disable maintenance/gc (fork+exec not fully
-  // supported for background daemons), use cat as pager, set default user.
-  const gitconfig = [
-    "[maintenance]",
-    "\tauto = false",
-    "[gc]",
-    "\tauto = 0",
-    "[core]",
-    "\tpager = cat",
-    "[user]",
-    "\tname = User",
-    "\temail = user@wasm.local",
-    "[init]",
-    "\tdefaultBranch = main",
-    "",
-  ].join("\n");
-  const gitconfigBytes = new TextEncoder().encode(gitconfig);
-  const gfd = fs.open("/etc/gitconfig", 0x241, 0o644);
-  fs.write(gfd, gitconfigBytes, null, gitconfigBytes.length);
-  fs.close(gfd);
+  // Use shared helper for dirs, gitconfig, dash, lazy binaries, data files
+  populateShellBinaries(
+    kernel,
+    dashBytes!,
+    lazyBinaries,
+    dataFiles
+      .filter((df) => df.data)
+      .map((df) => ({ path: df.path, data: new Uint8Array(df.data!) })),
+  );
 
-  // Write dash binary eagerly and create symlinks
-  if (dashBytes) {
-    writeFileToFs(fs, "/bin/dash", dashBytes);
-    try { fs.symlink("/bin/dash", "/bin/sh"); } catch { /* exists */ }
-    try { fs.symlink("/bin/dash", "/usr/bin/dash"); } catch { /* exists */ }
-    try { fs.symlink("/bin/dash", "/usr/bin/sh"); } catch { /* exists */ }
-  }
-
-  // Register lazy binaries and create symlinks
-  if (lazyBinaries.length > 0) {
-    kernel.registerLazyFiles(lazyBinaries.map(lb => ({
-      path: lb.path,
-      url: lb.url,
-      size: lb.size,
-      mode: 0o755,
-    })));
-    for (const lb of lazyBinaries) {
-      for (const link of lb.symlinks) {
-        try { fs.symlink(lb.path, link); } catch { /* exists */ }
-      }
-    }
-  }
-
-  // Write data files (magic database, etc.)
-  for (const df of dataFiles) {
-    if (df.data) {
-      writeFileToFs(fs, df.path, df.data);
-    }
-  }
+  // Write shell profile: color aliases for interactive sessions.
+  // dash reads the file pointed to by $ENV on interactive startup.
+  const profile = "alias ls='ls --color=auto'\nalias grep='grep --color=auto'\n";
+  const profileBytes = new TextEncoder().encode(profile);
+  const pfd = fs.open("/etc/profile", 0x241, 0o644);
+  fs.write(pfd, profileBytes, null, profileBytes.length);
+  fs.close(pfd);
 }
 
 // ============================================================
@@ -317,6 +238,7 @@ async function startInteractiveShell() {
         "LANG=en_US.UTF-8",
         "PATH=/usr/local/bin:/usr/bin:/bin",
         "PS1=$ ",
+        "ENV=/etc/profile",
       ],
     });
 

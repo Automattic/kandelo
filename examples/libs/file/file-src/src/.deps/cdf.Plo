@@ -1,0 +1,93 @@
+cdf.lo: cdf.c file.h ../config.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/stdint.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/stdint.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/alltypes.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/stdint.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/inttypes.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/inttypes.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/features.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/stdio.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/errno.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/errno.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/fcntl.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/fcntl.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/regex.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/time.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/types.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/endian.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/select.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/param.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/resource.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/time.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/resource.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/limits.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/limits.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/limits.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/stat.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/stat.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/stdarg.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/stdarg.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stdarg_header_macro.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stdarg___gnuc_va_list.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stdarg_va_list.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stdarg_va_arg.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stdarg___va_copy.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stdarg_va_copy.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/locale.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/assert.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/stdlib.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/alloca.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/unistd.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/posix.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/string.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/strings.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/ctype.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/byteswap.h \
+  cdf.h
+file.h:
+../config.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/stdint.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/stdint.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/alltypes.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/stdint.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/inttypes.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/inttypes.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/features.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/stdio.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/errno.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/errno.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/fcntl.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/fcntl.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/regex.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/time.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/types.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/endian.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/select.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/param.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/resource.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/time.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/resource.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/limits.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/limits.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/limits.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/stat.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/stat.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/stdarg.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/stdarg.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stdarg_header_macro.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stdarg___gnuc_va_list.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stdarg_va_list.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stdarg_va_arg.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stdarg___va_copy.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stdarg_va_copy.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/locale.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/assert.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/stdlib.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/alloca.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/unistd.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/posix.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/string.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/strings.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/ctype.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/byteswap.h:
+cdf.h:

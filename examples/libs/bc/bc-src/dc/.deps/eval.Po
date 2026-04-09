@@ -1,0 +1,27 @@
+eval.o: eval.c ../config.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/stdio.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/features.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/alltypes.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/string.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/strings.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/signal.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/signal.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/unistd.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/fcntl.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/fcntl.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/posix.h \
+  dc.h dc-proto.h
+../config.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/stdio.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/features.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/alltypes.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/string.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/strings.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/signal.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/signal.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/unistd.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/fcntl.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/fcntl.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/posix.h:
+dc.h:
+dc-proto.h:

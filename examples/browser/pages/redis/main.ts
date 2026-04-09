@@ -2,15 +2,34 @@
  * Redis browser demo — runs Redis 7.2 inside the POSIX kernel with
  * 3 background threads, and lets users send commands via RESP protocol.
  *
+ * Uses SystemInit to orchestrate boot from /etc/init.d/ service descriptors.
+ *
  * Process layout:
  *   pid 1: redis-server (main process, spawns 3 background threads:
  *           BIO_CLOSE_FILE, BIO_AOF_FSYNC, BIO_LAZY_FREE)
+ *   pid 2: dash -i (interactive shell with PTY)
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
-import { patchWasmForThread } from "../../../../host/src/worker-main";
+import { SystemInit } from "../../lib/init/system-init";
+import {
+  populateShellBinaries,
+  type BinaryDef,
+  COREUTILS_NAMES,
+} from "../../lib/init/shell-binaries";
+import {
+  writeVfsBinary,
+  writeInitDescriptor,
+  ensureDirs,
+} from "../../lib/init/vfs-utils";
 import { RedisBrowserClient } from "../../lib/redis-client";
 import kernelWasmUrl from "../../../../host/wasm/wasm_posix_kernel.wasm?url";
 import redisWasmUrl from "../../../../examples/libs/redis/bin/redis-server.wasm?url";
+import dashWasmUrl from "../../../../examples/libs/dash/bin/dash.wasm?url";
+import coreutilsWasmUrl from "../../../../examples/libs/coreutils/bin/coreutils.wasm?url";
+import grepWasmUrl from "../../../../examples/libs/grep/bin/grep.wasm?url";
+import sedWasmUrl from "../../../../examples/libs/sed/bin/sed.wasm?url";
+import "@xterm/xterm/css/xterm.css";
+import "../../lib/terminal-panel.css";
 
 const log = document.getElementById("log") as HTMLPreElement;
 const startBtn = document.getElementById("start") as HTMLButtonElement;
@@ -19,6 +38,7 @@ const cmdInput = document.getElementById("cmd") as HTMLInputElement;
 const statusDiv = document.getElementById("status") as HTMLDivElement;
 const resultDiv = document.getElementById("result") as HTMLPreElement;
 const examplesSelect = document.getElementById("examples") as HTMLSelectElement;
+const terminalPanel = document.getElementById("terminal-panel") as HTMLDivElement;
 
 const decoder = new TextDecoder();
 
@@ -64,106 +84,127 @@ examplesSelect.addEventListener("change", () => {
   examplesSelect.selectedIndex = 0;
 });
 
-let redisClient: RedisBrowserClient | null = null;
+/** Fetch file size via HEAD request. Returns 0 on failure. */
+async function fetchSize(url: string): Promise<number> {
+  try {
+    const resp = await fetch(url, { method: "HEAD" });
+    if (!resp.ok) return 0;
+    return parseInt(resp.headers.get("content-length") || "0", 10) || 0;
+  } catch {
+    return 0;
+  }
+}
 
-startBtn.addEventListener("click", async () => {
+let redisClient: RedisBrowserClient | null = null;
+let kernel: BrowserKernel | null = null;
+let init: SystemInit | null = null;
+
+async function start() {
   startBtn.disabled = true;
+  log.textContent = "";
   setStatus("Starting Redis...", "loading");
 
   try {
-    // Fetch resources
+    // Fetch kernel, redis (eager — written to VFS), and dash
     appendLog("Fetching resources...\n", "info");
-    const [kernelBytes, redisBytes] = await Promise.all([
+    const [kernelBytes, redisBytes, dashBytes] = await Promise.all([
       fetch(kernelWasmUrl).then((r) => r.arrayBuffer()),
       fetch(redisWasmUrl).then((r) => r.arrayBuffer()),
+      fetch(dashWasmUrl).then((r) => r.arrayBuffer()),
     ]);
     appendLog(
-      `  Kernel: ${(kernelBytes.byteLength / 1024).toFixed(0)}KB, Redis: ${(redisBytes.byteLength / 1024 / 1024).toFixed(1)}MB\n`,
+      `Kernel: ${(kernelBytes.byteLength / 1024).toFixed(0)}KB, ` +
+      `Redis: ${(redisBytes.byteLength / 1024 / 1024).toFixed(1)}MB, ` +
+      `dash: ${(dashBytes.byteLength / 1024).toFixed(0)}KB\n`,
       "info",
     );
 
-    // Pre-compile thread module
-    appendLog("Pre-compiling thread module...\n", "info");
-    setStatus("Pre-compiling thread module...", "loading");
-    const threadPatchedBytes = patchWasmForThread(redisBytes);
-    const threadModule = await WebAssembly.compile(threadPatchedBytes);
-    appendLog("Thread module ready\n", "info");
+    // Fetch sizes for shell utility binaries
+    const lazyDefs = [
+      { url: coreutilsWasmUrl, path: "/bin/coreutils", symlinks: [...COREUTILS_NAMES, "["].flatMap(n => [`/bin/${n}`, `/usr/bin/${n}`]) },
+      { url: grepWasmUrl, path: "/usr/bin/grep", symlinks: ["/bin/grep", "/usr/bin/egrep", "/bin/egrep", "/usr/bin/fgrep", "/bin/fgrep"] },
+      { url: sedWasmUrl, path: "/usr/bin/sed", symlinks: ["/bin/sed"] },
+    ];
+    const sizes = await Promise.all(lazyDefs.map((d) => fetchSize(d.url)));
+    const lazyBinaries: BinaryDef[] = [];
+    for (let i = 0; i < lazyDefs.length; i++) {
+      if (sizes[i] > 0) {
+        lazyBinaries.push({ ...lazyDefs[i], size: sizes[i] });
+      }
+    }
 
-    // Create kernel
-    const kernel = new BrowserKernel({
+    // Create kernel — thread module is auto-compiled on first clone()
+    kernel = new BrowserKernel({
       maxWorkers: 8,
-      threadModule,
       onStdout: (data) => appendLog(decoder.decode(data)),
       onStderr: (data) => appendLog(decoder.decode(data), "stderr"),
     });
 
     await kernel.init(kernelBytes);
 
-    // Create data directory
-    kernel.fs.mkdir("/data", 0o755);
-    kernel.fs.mkdir("/data/tmp", 0o755);
+    // Populate VFS
+    appendLog("Populating filesystem...\n", "info");
+    const fs = kernel.fs;
 
-    // Start redis-server
-    setStatus("Starting Redis server...", "loading");
-    appendLog("Starting Redis server...\n", "info");
-    const exitPromise = kernel.spawn(redisBytes, [
-      "redis-server",
-      "--port", "6379",
-      "--bind", "0.0.0.0",
-      "--dir", "/data",
-      "--save", "",
-      "--appendonly", "no",
-      "--loglevel", "notice",
-      "--daemonize", "no",
-      "--databases", "16",
-      "--io-threads", "1",
-    ]);
+    // Shell binaries (dash eager, utilities lazy)
+    populateShellBinaries(kernel, dashBytes, lazyBinaries);
 
-    // Wait for Redis to start listening (poll for the listener)
-    appendLog("Waiting for Redis to accept connections...\n", "info");
-    setStatus("Waiting for Redis to accept connections...", "loading");
-    let connected = false;
-    for (let attempt = 0; attempt < 100; attempt++) {
-      await new Promise((r) => setTimeout(r, 200));
-      try {
-        redisClient = await RedisBrowserClient.connect(kernel, 6379);
-        connected = true;
-        break;
-      } catch {
-        // Not ready yet
-        if (attempt > 0 && attempt % 10 === 0) {
-          appendLog(`  Still waiting... (${attempt * 0.2}s)\n`, "info");
-        }
-      }
-    }
+    // Redis binary — write eagerly since we already fetched it
+    try { fs.mkdir("/usr/sbin", 0o755); } catch { /* exists */ }
+    writeVfsBinary(fs, "/usr/sbin/redis-server", new Uint8Array(redisBytes));
 
-    if (!connected) {
-      throw new Error("Redis did not start within 20 seconds");
-    }
+    // Data directories
+    ensureDirs(fs, ["/data", "/data/tmp"]);
 
-    // Verify with PING
-    const pingResult = await redisClient!.command("PING");
-    appendLog(`Connected! PING → ${RedisBrowserClient.formatResult(pingResult)}\n`, "info");
-
-    setStatus("Redis is running!", "running");
-    executeBtn.disabled = false;
-    cmdInput.focus();
-
-    // Handle process exit
-    exitPromise.then((code) => {
-      appendLog(`\nRedis exited with code ${code}\n`, "stderr");
-      setStatus("Redis stopped", "error");
-      executeBtn.disabled = true;
-      startBtn.disabled = false;
-      redisClient = null;
+    // Write init service descriptors
+    writeInitDescriptor(fs, "10-redis", {
+      type: "daemon",
+      command: "/usr/sbin/redis-server --port 6379 --bind 0.0.0.0 --save \"\" --appendonly no --io-threads 1",
+      ready: "port:6379",
     });
+
+    writeInitDescriptor(fs, "99-shell", {
+      type: "interactive",
+      command: "/bin/dash -i",
+      env: "TERM=xterm-256color PS1=\\w\\$\\  HOME=/root PATH=/usr/local/bin:/usr/bin:/bin",
+      pty: "true",
+      cwd: "/root",
+    });
+
+    // Create SystemInit and boot
+    setStatus("Booting system...", "loading");
+    init = new SystemInit(kernel, {
+      onLog: (msg, level) => appendLog(msg + "\n", level === "info" ? "info" : "stderr"),
+      terminalContainer: terminalPanel,
+      onServiceReady: async (name) => {
+        if (name === "redis") {
+          // Connect Redis RESP client
+          appendLog("Connecting Redis client...\n", "info");
+          try {
+            redisClient = await RedisBrowserClient.connect(kernel!, 6379);
+            const pingResult = await redisClient.command("PING");
+            appendLog(`Connected! PING -> ${RedisBrowserClient.formatResult(pingResult)}\n`, "info");
+
+            setStatus("Redis is running!", "running");
+            executeBtn.disabled = false;
+            cmdInput.focus();
+          } catch (e: any) {
+            appendLog(`Failed to connect Redis client: ${e.message}\n`, "stderr");
+            setStatus("Redis started but client connection failed", "error");
+          }
+        }
+      },
+    });
+
+    await init.boot();
   } catch (e: any) {
     const msg = e?.message || String(e);
     setStatus(`Error: ${msg}`, "error");
     appendLog(`Error: ${msg}\n`, "stderr");
+    console.error(e);
     startBtn.disabled = false;
   }
-});
+}
 
 async function executeCommand() {
   if (!redisClient) return;
@@ -212,6 +253,7 @@ async function executeCommand() {
   cmdInput.focus();
 }
 
+startBtn.addEventListener("click", start);
 executeBtn.addEventListener("click", executeCommand);
 cmdInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !executeBtn.disabled) {

@@ -1,0 +1,238 @@
+tar.o: tar.c ../lib/system.h ../config.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/stdbool.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/stdbool.h \
+  ../gnu/assert.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/assert.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/features.h \
+  ../gnu/alloca.h ../gnu/sys/types.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/types.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/alltypes.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/endian.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/select.h \
+  ../gnu/ctype.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/ctype.h \
+  ../gnu/string.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/string.h \
+  ../gnu/strings.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/strings.h \
+  ../gnu/stddef.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/stddef.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/stddef.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stddef_header_macro.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stddef_ptrdiff_t.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stddef_size_t.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stddef_wchar_t.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stddef_null.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stddef_max_align_t.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stddef_offsetof.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/errno.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/errno.h \
+  ../gnu/fcntl.h ../gnu/sys/stat.h ../gnu/time.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/time.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/stat.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/stat.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/fcntl.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/fcntl.h \
+  ../gnu/unistd.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/unistd.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/posix.h \
+  ../gnu/stdlib.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/stdlib.h \
+  ../gnu/getopt-cdefs.h ../gnu/getopt-pfx-core.h ../gnu/getopt-core.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/sysmacros.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/wait.h \
+  ../gnu/signal.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/signal.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/signal.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/resource.h \
+  ../gnu/sys/time.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/time.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/resource.h \
+  ../gnu/stdio.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/stdio.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/stdarg.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/stdarg.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stdarg_header_macro.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stdarg___gnuc_va_list.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stdarg_va_list.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stdarg_va_arg.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stdarg___va_copy.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stdarg_va_copy.h \
+  ../gnu/limits.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/limits.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/limits.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/limits.h \
+  ../gnu/inttypes.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/inttypes.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/inttypes.h \
+  ../gnu/stdint.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/stdint.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/stdint.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/stdint.h \
+  ../gnu/intprops.h ../gnu/intprops-internal.h ../gnu/locale.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/locale.h \
+  ../gnu/setlocale_null.h ../gnu/arg-nonnull.h ../gnu/dirname.h \
+  ../gnu/filename.h ../gnu/basename-lgpl.h ../gnu/error.h \
+  ../gnu/savedir.h ../gnu/dirent.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/dirent.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/dirent.h \
+  ../gnu/unlocked-io.h ../gnu/xalloc.h ../gnu/idx.h ../gnu/gettext.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/pwd.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/grp.h \
+  ../lib/paxlib.h ../gnu/fnmatch.h ../gnu/argp.h ../gnu/getopt.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/getopt.h \
+  ../gnu/getopt-pfx-ext.h ../gnu/getopt-ext.h ../gnu/argp-namefrob.h \
+  ../gnu/argp-fmtstream.h ../gnu/argp-version-etc.h common.h tar.h \
+  arith.h ../gnu/attribute.h ../gnu/backupfile.h ../gnu/exclude.h \
+  ../gnu/full-write.h ../gnu/inttostr.h ../gnu/modechange.h \
+  ../gnu/quote.h ../gnu/safe-read.h ../gnu/full-read.h \
+  ../gnu/stat-time.h \
+  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/stdckdint.h \
+  ../gnu/timespec.h ../gnu/obstack.h ../gnu/progname.h \
+  ../gnu/xvasprintf.h xattrs.h ../gnu/argmatch.h ../gnu/closeout.h \
+  ../gnu/configmake.h ../gnu/exitfail.h ../gnu/parse-datetime.h \
+  ../lib/rmt.h ../lib/rmt-command.h ../lib/wordsplit.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sysexits.h \
+  ../gnu/quotearg.h ../gnu/verify.h ../gnu/version-etc.h \
+  ../gnu/xstrtol.h ../gnu/stdopen.h ../gnu/priv-set.h
+../lib/system.h:
+../config.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/stdbool.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/stdbool.h:
+../gnu/assert.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/assert.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/features.h:
+../gnu/alloca.h:
+../gnu/sys/types.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/types.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/alltypes.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/endian.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/select.h:
+../gnu/ctype.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/ctype.h:
+../gnu/string.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/string.h:
+../gnu/strings.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/strings.h:
+../gnu/stddef.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/stddef.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/stddef.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stddef_header_macro.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stddef_ptrdiff_t.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stddef_size_t.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stddef_wchar_t.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stddef_null.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stddef_max_align_t.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stddef_offsetof.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/errno.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/errno.h:
+../gnu/fcntl.h:
+../gnu/sys/stat.h:
+../gnu/time.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/time.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/stat.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/stat.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/fcntl.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/fcntl.h:
+../gnu/unistd.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/unistd.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/posix.h:
+../gnu/stdlib.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/stdlib.h:
+../gnu/getopt-cdefs.h:
+../gnu/getopt-pfx-core.h:
+../gnu/getopt-core.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/sysmacros.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/wait.h:
+../gnu/signal.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/signal.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/signal.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/resource.h:
+../gnu/sys/time.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/time.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/resource.h:
+../gnu/stdio.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/stdio.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/stdarg.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/stdarg.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stdarg_header_macro.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stdarg___gnuc_va_list.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stdarg_va_list.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stdarg_va_arg.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stdarg___va_copy.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/__stdarg_va_copy.h:
+../gnu/limits.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/limits.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/limits.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/limits.h:
+../gnu/inttypes.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/inttypes.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/inttypes.h:
+../gnu/stdint.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/stdint.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/stdint.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/stdint.h:
+../gnu/intprops.h:
+../gnu/intprops-internal.h:
+../gnu/locale.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/locale.h:
+../gnu/setlocale_null.h:
+../gnu/arg-nonnull.h:
+../gnu/dirname.h:
+../gnu/filename.h:
+../gnu/basename-lgpl.h:
+../gnu/error.h:
+../gnu/savedir.h:
+../gnu/dirent.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/dirent.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/dirent.h:
+../gnu/unlocked-io.h:
+../gnu/xalloc.h:
+../gnu/idx.h:
+../gnu/gettext.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/pwd.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/grp.h:
+../lib/paxlib.h:
+../gnu/fnmatch.h:
+../gnu/argp.h:
+../gnu/getopt.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/getopt.h:
+../gnu/getopt-pfx-ext.h:
+../gnu/getopt-ext.h:
+../gnu/argp-namefrob.h:
+../gnu/argp-fmtstream.h:
+../gnu/argp-version-etc.h:
+common.h:
+tar.h:
+arith.h:
+../gnu/attribute.h:
+../gnu/backupfile.h:
+../gnu/exclude.h:
+../gnu/full-write.h:
+../gnu/inttostr.h:
+../gnu/modechange.h:
+../gnu/quote.h:
+../gnu/safe-read.h:
+../gnu/full-read.h:
+../gnu/stat-time.h:
+/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/stdckdint.h:
+../gnu/timespec.h:
+../gnu/obstack.h:
+../gnu/progname.h:
+../gnu/xvasprintf.h:
+xattrs.h:
+../gnu/argmatch.h:
+../gnu/closeout.h:
+../gnu/configmake.h:
+../gnu/exitfail.h:
+../gnu/parse-datetime.h:
+../lib/rmt.h:
+../lib/rmt-command.h:
+../lib/wordsplit.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sysexits.h:
+../gnu/quotearg.h:
+../gnu/verify.h:
+../gnu/version-etc.h:
+../gnu/xstrtol.h:
+../gnu/stdopen.h:
+../gnu/priv-set.h:

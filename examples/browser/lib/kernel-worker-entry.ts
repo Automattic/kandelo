@@ -102,6 +102,10 @@ interface ProcessInfo {
   channelOffset: number;
 }
 const processes = new Map<number, ProcessInfo>();
+
+// Per-PID thread module cache: lazily compiled on first clone(), shared across
+// all threads of the same process. Keyed by PID of the process that spawned threads.
+const threadModuleCache = new Map<number, WebAssembly.Module>();
 const threadWorkers = new Map<number, Array<{
   worker: ReturnType<BrowserWorkerAdapter["createWorker"]>;
   channelOffset: number;
@@ -406,6 +410,9 @@ async function handleExec(
     console.error(`[kernel-worker] exec worker error pid=${pid}:`, err.message);
   });
 
+  // Clear cached thread module — the new program binary is different
+  threadModuleCache.delete(pid);
+
   processes.set(pid, {
     memory: newMemory,
     programBytes: bytes,
@@ -429,6 +436,18 @@ async function handleClone(
   const processInfo = processes.get(pid);
   if (!processInfo) throw new Error(`Unknown pid ${pid} for clone`);
 
+  // Auto-compile thread module if not already cached.
+  // The cache is per-PID so each process's module is compiled once and reused
+  // for all its threads. Async compilation is fine since clone() blocks on the channel.
+  // We keep this separate from processInfo.programModule (which is the unpatched
+  // module used for fork children) to avoid conflating the two.
+  let threadModule = threadModuleCache.get(pid);
+  if (!threadModule) {
+    const patched = patchWasmForThread(processInfo.programBytes);
+    threadModule = await WebAssembly.compile(patched);
+    threadModuleCache.set(pid, threadModule);
+  }
+
   const alloc = threadAllocator.allocate(memory);
 
   kernelWorker.addChannel(pid, alloc.channelOffset, tid);
@@ -438,6 +457,7 @@ async function handleClone(
     pid,
     tid,
     programBytes: processInfo.programBytes,
+    programModule: threadModule,
     memory,
     channelOffset: alloc.channelOffset,
     fnPtr,
@@ -489,6 +509,7 @@ function handleExit(pid: number, exitStatus: number): void {
     info.worker.terminate().catch(() => {});
   }
   processes.delete(pid);
+  threadModuleCache.delete(pid);
   ptyByPid.delete(pid);
 
   // Notify main thread
@@ -524,6 +545,7 @@ async function handleTerminateProcess(msg: Extract<MainToKernelMessage, { type: 
   } catch {}
 
   processes.delete(pid);
+  threadModuleCache.delete(pid);
   ptyByPid.delete(pid);
   respond(msg.requestId, true);
 }
@@ -665,6 +687,7 @@ function handleDestroy(msg: Extract<MainToKernelMessage, { type: "destroy" }>) {
     try { kernelWorker.unregisterProcess(pid); } catch {}
   }
   processes.clear();
+  threadModuleCache.clear();
   respond(msg.requestId, true);
 }
 
