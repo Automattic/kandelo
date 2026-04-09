@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>LAMP Stack — wasm-posix-kernel</title>
+  <title>WordPress (LEMP) — wasm-posix-kernel</title>
   <link rel="stylesheet" href="../../lib/layout.css">
 </head>
 <body>
@@ -15,8 +15,8 @@
     <a href="/pages/nginx-php/">nginx + PHP-FPM</a>
     <a href="/pages/mariadb/">MariaDB</a>
     <a href="/pages/redis/">Redis</a>
-    <a href="/pages/wordpress/">WordPress</a>
-    <a href="/pages/lamp/" aria-current="page">LAMP</a>
+    <a href="/pages/wordpress/">WordPress (LEMP-but-SQLite)</a>
+    <a href="/pages/lamp/" aria-current="page">WordPress (LEMP)</a>
     <a href="/pages/shell/">Shell</a>
     <a href="/pages/python/">Python</a>
     <a href="/pages/perl/">Perl</a>
@@ -25,10 +25,10 @@
   <div class="main" style="display:flex;flex-direction:column;overflow:hidden">
     <div style="flex:1;overflow:auto;display:flex;flex-direction:column;min-height:0">
       <div class="main-header">
-        <h1>LAMP Stack on wasm-posix-kernel</h1>
-        <p class="subtitle">Full LAMP stack: MariaDB + PHP-FPM + nginx + WordPress, all running inside a POSIX kernel compiled to WebAssembly</p>
+        <h1>WordPress (LEMP) on wasm-posix-kernel</h1>
+        <p class="subtitle">Full LEMP stack: nginx + MariaDB + PHP-FPM + WordPress, all running inside a POSIX kernel compiled to WebAssembly</p>
         <div class="controls">
-          <button id="start">Start LAMP Stack</button>
+          <button id="start">Start WordPress (LEMP)</button>
           <button id="reload" disabled>Reload page</button>
         </div>
         <div id="status" class="status" style="display:none"></div>
@@ -42,7 +42,7 @@
           <div class="iframe-panel">
             <h3>WordPress (MySQL)</h3>
             <div class="frame-container">
-              <iframe id="frame" srcdoc="<p style='padding:1rem;color:#999'>Click 'Start LAMP Stack' to begin</p>"></iframe>
+              <iframe id="frame" srcdoc="<p style='padding:1rem;color:#999'>Click 'Start WordPress (LEMP)' to begin</p>"></iframe>
             </div>
           </div>
         </div>

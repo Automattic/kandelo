@@ -70,6 +70,150 @@ if [ ! -d "$SRC_DIR" ]; then
     rm "/tmp/$CROSS_TARBALL"
 
     echo "==> Source prepared with perl-cross overlay"
+
+    # Patch perl-cross for non-ELF hosts (macOS uses Mach-O).
+    # checksize() uses readelf to get sizeof from ELF symbol tables, which
+    # fails on macOS. Patch to fall back to compile-and-run.
+    echo "==> Patching perl-cross for macOS..."
+
+    # Replace the readelf-only checksize() with a version that falls back
+    # to compile-and-run when readelf returns no useful output.
+    python3 - "$SRC_DIR/cnf/configure_type.sh" << 'PYEOF'
+import sys
+
+path = sys.argv[1]
+with open(path) as f:
+    content = f.read()
+
+# Find the checksize function and replace the readelf-based size detection
+# with a fallback to compile-and-run for non-ELF hosts (macOS Mach-O)
+old_block = "\tif not try_readelf --syms > try.out 2>>$cfglog; then\n\t\tresult 'unknown'\n\t\tdie \"Cannot determine sizeof($2), use -D${1}size=\"\n\t\treturn\n\tfi\n\n\tresult=`grep foo try.out | sed -r -e 's/.*: [0-9]+ +//' -e 's/ .*//' -e 's/^0+//g'`\n\tif [ -z \"$result\" ]; then\n\t\tresult \"unknown\"\n\t\tdie \"Cannot determine sizeof($2)\"\n\telif [ \"$result\" -gt 0 ]; then\n\t\tdefine $1 \"$result\"\n\t\tresult $result\\ `bytes $result`\n\telse\n\t\tresult \"unknown\"\n\t\tdie \"Cannot determine sizeof($2)\"\n\tfi"
+
+new_block = """\t_result=""
+\tif try_readelf --syms > try.out 2>>$cfglog; then
+\t\t_result=`grep foo try.out | sed -r -e 's/.*: [0-9]+ +//' -e 's/ .*//' -e 's/^0+//g'`
+\tfi
+
+\t# Fall back to compile-and-run if readelf failed or returned nothing
+\t# (e.g. macOS Mach-O objects that readelf can't parse usefully)
+\tif [ -z "$_result" ] || ! [ "$_result" -gt 0 ] 2>/dev/null; then
+\t\ttry_start
+\t\ttry_includes $3
+\t\ttry_add "#include <stdio.h>"
+\t\ttry_add "int main(void) { printf(\\"%lu\\", (unsigned long)sizeof($2)); return 0; }"
+\t\tif try_link && run ./try > try.out 2>>$cfglog; then
+\t\t\t_result=`cat try.out | tr -d '\\n'`
+\t\telse
+\t\t\t_result=""
+\t\tfi
+\tfi
+
+\tif [ -z "$_result" ]; then
+\t\tresult "unknown"
+\t\tdie "Cannot determine sizeof($2)"
+\telif [ "$_result" -gt 0 ] 2>/dev/null; then
+\t\tdefine $1 "$_result"
+\t\tresult $_result\\ `bytes $_result`
+\telse
+\t\tresult "unknown"
+\t\tdie "Cannot determine sizeof($2)"
+\tfi"""
+
+if old_block not in content:
+    print("WARNING: checksize pattern not found (may already be patched)", file=sys.stderr)
+    sys.exit(0)
+
+content = content.replace(old_block, new_block)
+with open(path, 'w') as f:
+    f.write(content)
+print("Patched checksize() in configure_type.sh")
+PYEOF
+
+    # Patch byteorder detection to fall back to compile-and-run when
+    # objdump fails on Mach-O objects (macOS)
+    python3 - "$SRC_DIR/cnf/configure_type_sel.sh" << 'PYEOF2'
+import sys
+
+path = sys.argv[1]
+with open(path) as f:
+    content = f.read()
+
+old = """\t# Most targets use .data but PowerPC has .sdata instead
+\tif try_compile && try_objdump -j .data -j .sdata -s; then
+\t\tbo=`grep '11' try.out | grep '44' | sed -e 's/  .*//' -e 's/[^1-8]//g' -e 's/\\([1-8]\\)\\1/\\1/g'`
+\telse
+\t\tbo=''
+\tfi
+
+\tif [ -n "$bo" ]; then
+\t\tdefine byteorder "$bo"
+\t\tresult "$bo"
+\telse
+\t\tresult "unknown"
+\t\tmsg "Cannot determine byteorder for this target,"
+\t\tmsg "please supply -Dbyteorder= in the command line."
+\t\tmsg "Common values: 1234 for 32bit little-endian, 4321 for 32bit big-endian."
+\t\texit 255
+\tfi"""
+
+new = """\t# Most targets use .data but PowerPC has .sdata instead
+\tif try_compile && try_objdump -j .data -j .sdata -s; then
+\t\tbo=`grep '11' try.out | grep '44' | sed -e 's/  .*//' -e 's/[^1-8]//g' -e 's/\\([1-8]\\)\\1/\\1/g'`
+\telse
+\t\tbo=''
+\tfi
+
+\t# Fall back to compile-and-run if objdump failed (macOS Mach-O)
+\tif [ -z "$bo" ]; then
+\t\ttry_start
+\t\ttry_add "#include <stdio.h>"
+\t\ttry_add "#include <stdint.h>"
+\t\ttry_add "int main(void) {"
+\t\tif [ "$uvsize" = 8 ]; then
+\t\t\ttry_add "  union { uint64_t i; unsigned char c[8]; } u;"
+\t\t\ttry_add "  u.i = 0x0807060504030201ULL;"
+\t\t\ttry_add "  int i; for (i = 0; i < 8; i++) printf(\\"%d\\", (int)u.c[i]);"
+\t\telse
+\t\t\ttry_add "  union { uint32_t i; unsigned char c[4]; } u;"
+\t\t\ttry_add "  u.i = 0x04030201;"
+\t\t\ttry_add "  int i; for (i = 0; i < 4; i++) printf(\\"%d\\", (int)u.c[i]);"
+\t\tfi
+\t\ttry_add "  return 0;"
+\t\ttry_add "}"
+\t\tif try_link && run ./try > try.out 2>>$cfglog; then
+\t\t\tbo=`cat try.out | tr -d '\\n'`
+\t\tfi
+\tfi
+
+\tif [ -n "$bo" ]; then
+\t\tdefine byteorder "$bo"
+\t\tresult "$bo"
+\telse
+\t\tresult "unknown"
+\t\tmsg "Cannot determine byteorder for this target,"
+\t\tmsg "please supply -Dbyteorder= in the command line."
+\t\tmsg "Common values: 1234 for 32bit little-endian, 4321 for 32bit big-endian."
+\t\texit 255
+\tfi"""
+
+if old not in content:
+    print("WARNING: byteorder pattern not found (may already be patched)", file=sys.stderr)
+    sys.exit(0)
+
+content = content.replace(old, new)
+with open(path, 'w') as f:
+    f.write(content)
+print("Patched byteorder detection in configure_type_sel.sh")
+PYEOF2
+
+    # Also make readelf optional (macOS doesn't have native readelf, and
+    # llvm-readelf can't parse Mach-O .o files produced by host cc)
+    # Make readelf and objdump optional (macOS doesn't have native versions,
+    # and llvm versions can't parse Mach-O .o files)
+    sed -i.bak \
+        -e "s/whichprog readelf READELF readelf || die \"Cannot find readelf\"/whichprog readelf READELF readelf || true/" \
+        -e "s/whichprog objdump OBJDUMP objdump || die \"Cannot find objdump\"/whichprog objdump OBJDUMP objdump || true/" \
+        "$SRC_DIR/cnf/configure_tool.sh"
 fi
 
 cd "$SRC_DIR"
@@ -296,6 +440,10 @@ if [ ! -f config.sh ]; then
         2>&1 | tee "$SCRIPT_DIR/configure.log" | tail -50
 
     echo "==> Configure complete."
+
+    # Fix xconfig.h: perl-cross may generate broken preprocessor directives
+    # when function detection fails (e.g. "# HAS_NANOSLEEP" without "define")
+    sed -i.bak -e 's/^# HAS_\([A-Z_]*\)\([ \t]\)/#define HAS_\1\2/' xconfig.h
 
     # Patch Makefile.config:
     # - Remove -lc (our toolchain links libc automatically)

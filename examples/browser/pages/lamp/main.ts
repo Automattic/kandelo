@@ -1,5 +1,5 @@
 /**
- * Full LAMP stack browser demo — MariaDB + PHP-FPM + nginx + WordPress.
+ * WordPress (LEMP) browser demo — nginx + MariaDB + PHP-FPM + WordPress.
  *
  * Uses SystemInit to orchestrate boot from /etc/init.d/ service descriptors.
  *
@@ -161,7 +161,7 @@ let init: SystemInit | null = null;
 async function start() {
   startBtn.disabled = true;
   log.textContent = "";
-  setStatus("Loading LAMP stack...", "loading");
+  setStatus("Loading WordPress (LEMP)...", "loading");
 
   try {
     // Fetch kernel, MariaDB (eager — written to VFS), dash, and bootstrap SQL
@@ -331,7 +331,7 @@ async function start() {
           appendLog("Bootstrap complete\n", "info");
         }
         if (name === "nginx") {
-          setStatus("LAMP stack running! Loading WordPress...", "running");
+          setStatus("LEMP stack running! Loading WordPress...", "running");
           reloadBtn.disabled = false;
           loadFrame();
         }
