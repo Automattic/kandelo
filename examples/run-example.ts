@@ -47,6 +47,7 @@ const xzWasm = resolve(repoRoot, "examples/libs/xz/bin/xz.wasm");
 const zstdWasm = resolve(repoRoot, "examples/libs/zstd/bin/zstd.wasm");
 const zipWasm = resolve(repoRoot, "examples/libs/zip/bin/zip.wasm");
 const unzipWasm = resolve(repoRoot, "examples/libs/unzip/bin/unzip.wasm");
+const qjsWasm = resolve(repoRoot, "examples/libs/quickjs/bin/qjs.wasm");
 
 // GNU coreutils multi-call binary supports all of these as argv[0]
 const coreutilsNames = [
@@ -164,6 +165,14 @@ const builtinPrograms: Record<string, string> = {
     "funzip": unzipWasm,
     "/usr/bin/funzip": unzipWasm,
     "/bin/funzip": unzipWasm,
+    // QuickJS-NG JavaScript interpreter (NOT Node.js — node-compatible alias)
+    "qjs": qjsWasm,
+    "/usr/bin/qjs": qjsWasm,
+    "/bin/qjs": qjsWasm,
+    "node": qjsWasm,
+    "/usr/bin/node": qjsWasm,
+    "/bin/node": qjsWasm,
+    "/usr/local/bin/node": qjsWasm,
 };
 
 // Add coreutils mappings for all known tool names
