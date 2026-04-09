@@ -32,6 +32,7 @@ const dashBuilt = resolve(repoRoot, "examples/libs/dash/bin/dash.wasm");
 const dashWasm = existsSync(dashBuilt) ? dashBuilt : resolve(repoRoot, "host/wasm/sh.wasm");
 const grepWasm = resolve(repoRoot, "examples/libs/grep/bin/grep.wasm");
 const sedWasm = resolve(repoRoot, "examples/libs/sed/bin/sed.wasm");
+const gitWasm = resolve(repoRoot, "examples/libs/git/bin/git.wasm");
 
 // GNU coreutils multi-call binary supports all of these as argv[0]
 const coreutilsNames = [
@@ -59,6 +60,9 @@ const builtinPrograms: Record<string, string> = {
     "/usr/bin/sed": sedWasm,
     "gencat": resolve(repoRoot, "examples/gencat.wasm"),
     "/usr/bin/gencat": resolve(repoRoot, "examples/gencat.wasm"),
+    "git": gitWasm,
+    "/usr/bin/git": gitWasm,
+    "/bin/git": gitWasm,
 };
 
 // Add coreutils mappings for all known tool names
