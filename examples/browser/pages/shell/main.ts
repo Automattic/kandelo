@@ -20,6 +20,7 @@ import makeWasmUrl from "../../../../examples/libs/make/bin/make.wasm?url";
 import tarWasmUrl from "../../../../examples/libs/tar/bin/tar.wasm?url";
 import curlWasmUrl from "../../../../examples/libs/curl/bin/curl.wasm?url";
 import wgetWasmUrl from "../../../../examples/libs/wget/bin/wget.wasm?url";
+import gitWasmUrl from "../../../../examples/libs/git/bin/git.wasm?url";
 import "@xterm/xterm/css/xterm.css";
 
 // --- DOM elements ---
@@ -145,6 +146,7 @@ async function loadBinaries(): Promise<string> {
     { url: tarWasmUrl, path: "/usr/bin/tar", symlinks: ["/bin/tar"] },
     { url: curlWasmUrl, path: "/usr/bin/curl", symlinks: ["/bin/curl"] },
     { url: wgetWasmUrl, path: "/usr/bin/wget", symlinks: ["/bin/wget"] },
+    { url: gitWasmUrl, path: "/usr/bin/git", symlinks: ["/bin/git"] },
   ];
 
   // Fetch sizes for lazy binaries and data files in parallel
@@ -202,9 +204,30 @@ function writeFileToFs(fs: import("../../lib/browser-kernel").BrowserKernel["fs"
  */
 function populateExecBinaries(kernel: import("../../lib/browser-kernel").BrowserKernel): void {
   const fs = kernel.fs;
-  for (const dir of ["/bin", "/usr", "/usr/bin", "/usr/local", "/usr/local/bin", "/usr/share", "/usr/share/misc", "/usr/share/file"]) {
+  for (const dir of ["/bin", "/usr", "/usr/bin", "/usr/local", "/usr/local/bin", "/usr/share", "/usr/share/misc", "/usr/share/file", "/etc", "/root"]) {
     try { fs.mkdir(dir, 0o755); } catch { /* exists */ }
   }
+
+  // Write git system config: disable maintenance/gc (fork+exec not fully
+  // supported for background daemons), use cat as pager, set default user.
+  const gitconfig = [
+    "[maintenance]",
+    "\tauto = false",
+    "[gc]",
+    "\tauto = 0",
+    "[core]",
+    "\tpager = cat",
+    "[user]",
+    "\tname = User",
+    "\temail = user@wasm.local",
+    "[init]",
+    "\tdefaultBranch = main",
+    "",
+  ].join("\n");
+  const gitconfigBytes = new TextEncoder().encode(gitconfig);
+  const gfd = fs.open("/etc/gitconfig", 0x241, 0o644);
+  fs.write(gfd, gitconfigBytes, null, gitconfigBytes.length);
+  fs.close(gfd);
 
   // Write dash binary eagerly and create symlinks
   if (dashBytes) {
