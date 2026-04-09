@@ -55,7 +55,24 @@ function makeRandomDevice(): DeviceNode {
 }
 
 interface OpenHandle {
-  device: DeviceNode;
+  device: DeviceNode | null; // null for directory handles
+}
+
+/** Subdirectory names that exist under /dev (kernel-managed). */
+const SUBDIRS = ["pts", "shm", "mqueue"];
+
+/** Extra entries to list in /dev readdir (kernel-managed, not in devices map). */
+const EXTRA_ENTRIES: DirEntry[] = [
+  { name: "ptmx", type: 2 /* DT_CHR */, ino: 0x100 },
+  { name: "pts", type: 4 /* DT_DIR */, ino: 0x101 },
+  { name: "fd", type: 10 /* DT_LNK */, ino: 0x102 },
+  { name: "stdin", type: 10 /* DT_LNK */, ino: 0x103 },
+  { name: "stdout", type: 10 /* DT_LNK */, ino: 0x104 },
+  { name: "stderr", type: 10 /* DT_LNK */, ino: 0x105 },
+];
+
+function isRootPath(path: string): boolean {
+  return path === "/" || path === "" || path === ".";
 }
 
 export class DeviceFileSystem implements FileSystemBackend {
@@ -83,6 +100,13 @@ export class DeviceFileSystem implements FileSystemBackend {
   }
 
   open(path: string, _flags: number, _mode: number): number {
+    const name = path.startsWith("/") ? path.slice(1) : path;
+    // Directory open: root or known subdirectory
+    if (isRootPath(path) || SUBDIRS.includes(name)) {
+      const handle = this.nextHandle++;
+      this.handles.set(handle, { device: null });
+      return handle;
+    }
     const device = this.getDevice(path);
     const handle = this.nextHandle++;
     this.handles.set(handle, { device });
@@ -97,12 +121,14 @@ export class DeviceFileSystem implements FileSystemBackend {
   read(handle: number, buffer: Uint8Array, _offset: number | null, length: number): number {
     const h = this.handles.get(handle);
     if (!h) throw new Error("EBADF");
+    if (!h.device) throw new Error("EISDIR");
     return h.device.reader(buffer, Math.min(length, buffer.length));
   }
 
   write(handle: number, buffer: Uint8Array, _offset: number | null, length: number): number {
     const h = this.handles.get(handle);
     if (!h) throw new Error("EBADF");
+    if (!h.device) throw new Error("EISDIR");
     return h.device.writer(buffer, Math.min(length, buffer.length));
   }
 
@@ -114,6 +140,14 @@ export class DeviceFileSystem implements FileSystemBackend {
     const h = this.handles.get(handle);
     if (!h) throw new Error("EBADF");
     const now = Date.now();
+    if (!h.device) {
+      // Directory handle
+      return {
+        dev: 5, ino: 0, mode: S_IFDIR | 0o755, nlink: 2,
+        uid: 0, gid: 0, size: 0,
+        atimeMs: now, mtimeMs: now, ctimeMs: now,
+      };
+    }
     return {
       dev: 5, ino: 0, mode: h.device.mode, nlink: 1,
       uid: 0, gid: 0, size: 0,
@@ -127,16 +161,24 @@ export class DeviceFileSystem implements FileSystemBackend {
   fchown(_handle: number, _uid: number, _gid: number): void {}
 
   stat(path: string): StatResult {
-    if (path === "/" || path === "" || path === ".") {
-      const now = Date.now();
+    const now = Date.now();
+    if (isRootPath(path)) {
       return {
         dev: 5, ino: 0, mode: S_IFDIR | 0o755, nlink: 2 + this.devices.size,
         uid: 0, gid: 0, size: 0,
         atimeMs: now, mtimeMs: now, ctimeMs: now,
       };
     }
+    // Known subdirectories (pts, shm, mqueue)
+    const name = path.startsWith("/") ? path.slice(1) : path;
+    if (SUBDIRS.includes(name)) {
+      return {
+        dev: 5, ino: 0, mode: S_IFDIR | 0o755, nlink: 2,
+        uid: 0, gid: 0, size: 0,
+        atimeMs: now, mtimeMs: now, ctimeMs: now,
+      };
+    }
     const dev = this.getDevice(path);
-    const now = Date.now();
     return {
       dev: 5, ino: 0, mode: dev.mode, nlink: 1,
       uid: 0, gid: 0, size: 0,
@@ -187,24 +229,37 @@ export class DeviceFileSystem implements FileSystemBackend {
     // No-op for device files
   }
 
-  // Directory iteration for /dev itself
-  private dirHandles = new Map<number, number>();
+  // Directory iteration for /dev and subdirectories
+  private dirHandles = new Map<number, { idx: number; entries: DirEntry[] }>();
   private nextDirHandle = 1;
 
   opendir(path: string): number {
-    if (path !== "/" && path !== "" && path !== ".") throw new Error("ENOTDIR");
+    const name = path.startsWith("/") ? path.slice(1) : path;
+    let entries: DirEntry[];
+    if (isRootPath(path)) {
+      // /dev root: device nodes + extra kernel-managed entries
+      entries = [
+        ...this.deviceNames.map((n, i) => ({ name: n, type: 2 /* DT_CHR */, ino: i + 1 })),
+        ...EXTRA_ENTRIES.filter(e => !this.devices.has(e.name)),
+      ];
+    } else if (SUBDIRS.includes(name)) {
+      // Subdirectories like /dev/pts — empty (PTYs managed by kernel)
+      entries = [];
+    } else {
+      throw new Error("ENOTDIR");
+    }
     const handle = this.nextDirHandle++;
-    this.dirHandles.set(handle, 0);
+    this.dirHandles.set(handle, { idx: 0, entries });
     return handle;
   }
 
   readdir(handle: number): DirEntry | null {
-    const idx = this.dirHandles.get(handle);
-    if (idx === undefined) throw new Error("EBADF");
-    if (idx >= this.deviceNames.length) return null;
-    this.dirHandles.set(handle, idx + 1);
-    const name = this.deviceNames[idx];
-    return { name, type: 2 /* DT_CHR */, ino: idx + 1 };
+    const state = this.dirHandles.get(handle);
+    if (!state) throw new Error("EBADF");
+    if (state.idx >= state.entries.length) return null;
+    const entry = state.entries[state.idx];
+    state.idx++;
+    return entry;
   }
 
   closedir(handle: number): void {

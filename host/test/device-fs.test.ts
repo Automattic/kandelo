@@ -84,17 +84,50 @@ describe("DeviceFileSystem", () => {
   it("readdir lists all device files", () => {
     const fs = new DeviceFileSystem();
     const dh = fs.opendir("/");
-    const entries: string[] = [];
+    const entries: { name: string; type: number }[] = [];
     let entry;
     while ((entry = fs.readdir(dh)) !== null) {
-      entries.push(entry.name);
-      expect(entry.type).toBe(2); // DT_CHR
+      entries.push({ name: entry.name, type: entry.type });
     }
     fs.closedir(dh);
-    expect(entries).toContain("null");
-    expect(entries).toContain("zero");
-    expect(entries).toContain("urandom");
-    expect(entries).toContain("random");
+    const names = entries.map(e => e.name);
+    expect(names).toContain("null");
+    expect(names).toContain("zero");
+    expect(names).toContain("urandom");
+    expect(names).toContain("random");
+    // Kernel-managed entries
+    expect(names).toContain("ptmx");
+    expect(names).toContain("pts");
+    expect(names).toContain("fd");
+    expect(names).toContain("stdin");
+    expect(names).toContain("stdout");
+    expect(names).toContain("stderr");
+    // Type checks: pts is a directory, fd/stdin/stdout/stderr are symlinks
+    expect(entries.find(e => e.name === "pts")!.type).toBe(4); // DT_DIR
+    expect(entries.find(e => e.name === "fd")!.type).toBe(10); // DT_LNK
+  });
+
+  it("open /dev root as directory succeeds", () => {
+    const fs = new DeviceFileSystem();
+    const h = fs.open("/", 0, 0);
+    expect(h).toBeGreaterThan(0);
+    const st = fs.fstat(h);
+    expect(st.mode & 0o170000).toBe(0o040000); // S_IFDIR
+    fs.close(h);
+  });
+
+  it("stat /dev/pts returns directory", () => {
+    const fs = new DeviceFileSystem();
+    const st = fs.stat("/pts");
+    expect(st.mode & 0o170000).toBe(0o040000); // S_IFDIR
+  });
+
+  it("read/write on directory handle throws EISDIR", () => {
+    const fs = new DeviceFileSystem();
+    const h = fs.open("/", 0, 0);
+    expect(() => fs.read(h, new Uint8Array(1), null, 1)).toThrow("EISDIR");
+    expect(() => fs.write(h, new Uint8Array(1), null, 1)).toThrow("EISDIR");
+    fs.close(h);
   });
 
   it("seek is a no-op on character devices", () => {
@@ -140,5 +173,32 @@ describe("DeviceFileSystem", () => {
     const rbuf = new Uint8Array(32);
     expect(io.read(h3, rbuf, null, 32)).toBe(32);
     io.close(h3);
+
+    // Open /dev as directory (O_RDONLY|O_DIRECTORY) — the scenario that was broken
+    const O_DIRECTORY = 0o200000;
+    const dh = io.open("/dev", O_DIRECTORY, 0);
+    const st = io.fstat(dh);
+    expect(st.mode & 0o170000).toBe(0o040000); // S_IFDIR
+    io.close(dh);
+
+    // stat /dev returns directory
+    const devStat = io.stat("/dev");
+    expect(devStat.mode & 0o170000).toBe(0o040000);
+
+    // stat /dev/pts returns directory
+    const ptsStat = io.stat("/dev/pts");
+    expect(ptsStat.mode & 0o170000).toBe(0o040000);
+
+    // opendir/readdir through VFS
+    const dirH = io.opendir("/dev");
+    const entries: string[] = [];
+    let ent;
+    while ((ent = io.readdir(dirH)) !== null) {
+      entries.push(ent.name);
+    }
+    io.closedir(dirH);
+    expect(entries).toContain("null");
+    expect(entries).toContain("ptmx");
+    expect(entries).toContain("pts");
   });
 });
