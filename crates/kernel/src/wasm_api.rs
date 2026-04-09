@@ -596,6 +596,70 @@ use crate::process_table::{GlobalProcessTable, ProcessTable};
 static PROCESS_TABLE: GlobalProcessTable = GlobalProcessTable(UnsafeCell::new(ProcessTable::new()));
 
 // ---------------------------------------------------------------------------
+// 3b. Cross-process procfs helpers
+// ---------------------------------------------------------------------------
+// These functions are called from syscalls.rs during procfs operations.
+// SAFETY: Only called while inside kernel_handle_channel (GKL held or
+// centralized mode which is single-threaded).
+
+/// Get all active PIDs from the process table.
+/// Returns empty Vec in mode=0 (single-process).
+pub(crate) fn procfs_all_pids() -> Vec<u32> {
+    if crate::is_centralized_mode() {
+        let table = unsafe { &*PROCESS_TABLE.0.get() };
+        table.all_pids()
+    } else {
+        Vec::new()
+    }
+}
+
+/// Generate procfs content for a foreign process (cross-process access).
+/// Returns None if the pid doesn't exist or is the current process
+/// (caller should use the local Process for self-access).
+pub(crate) fn procfs_generate_for_pid(pid: u32, entry: &crate::procfs::ProcfsEntry) -> Option<Vec<u8>> {
+    if !crate::is_centralized_mode() {
+        return None;
+    }
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let proc = table.get(pid)?;
+    match entry {
+        crate::procfs::ProcfsEntry::Stat(_) => Some(crate::procfs::generate_stat(proc)),
+        crate::procfs::ProcfsEntry::Status(_) => Some(crate::procfs::generate_status(proc)),
+        crate::procfs::ProcfsEntry::Cmdline(_) => Some(crate::procfs::generate_cmdline(proc)),
+        crate::procfs::ProcfsEntry::Environ(_) => Some(crate::procfs::generate_environ(proc)),
+        crate::procfs::ProcfsEntry::Maps(_) => Some(crate::procfs::generate_maps(proc)),
+        crate::procfs::ProcfsEntry::FdInfo(_, fd) => crate::procfs::generate_fdinfo(proc, *fd),
+        _ => None,
+    }
+}
+
+/// Get the readlink target for a procfs symlink in a foreign process.
+pub(crate) fn procfs_readlink_for_pid(pid: u32, entry: &crate::procfs::ProcfsEntry, buf: &mut [u8]) -> Option<usize> {
+    if !crate::is_centralized_mode() {
+        return None;
+    }
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let proc = table.get(pid)?;
+    crate::procfs::procfs_readlink(proc, entry, buf).ok()
+}
+
+/// Generate directory entries for a foreign process's procfs directory.
+pub(crate) fn procfs_getdents64_for_pid(
+    pid: u32,
+    ofd_path: &[u8],
+    buf: &mut [u8],
+    offset: i64,
+) -> Option<(usize, i64, bool)> {
+    if !crate::is_centralized_mode() {
+        return None;
+    }
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let proc = table.get(pid)?;
+    let pids = table.all_pids();
+    crate::procfs::procfs_getdents64(proc, ofd_path, buf, offset, &pids).ok()
+}
+
+// ---------------------------------------------------------------------------
 // 3a. Global Kernel Lock (GKL)
 // ---------------------------------------------------------------------------
 
@@ -869,6 +933,28 @@ pub extern "C" fn kernel_set_cwd(pid: u32, path_ptr: *const u8, path_len: u32) -
     if let Some(proc) = table.get_mut(pid) {
         let path = unsafe { core::slice::from_raw_parts(path_ptr, path_len as usize) };
         proc.cwd = path.to_vec();
+        0
+    } else {
+        -(Errno::ESRCH as i32)
+    }
+}
+
+/// Set the argv for a process (centralized mode).
+/// The argv is a null-separated concatenation of arguments.
+/// Called by host to populate /proc/<pid>/cmdline.
+/// Returns 0 on success, -ESRCH if pid not found.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_set_process_argv(pid: u32, data_ptr: *const u8, data_len: u32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    if let Some(proc) = table.get_mut(pid) {
+        let data = unsafe { core::slice::from_raw_parts(data_ptr, data_len as usize) };
+        proc.argv.clear();
+        // Split on null bytes
+        for arg in data.split(|&b| b == 0) {
+            if !arg.is_empty() {
+                proc.argv.push(arg.to_vec());
+            }
+        }
         0
     } else {
         -(Errno::ESRCH as i32)

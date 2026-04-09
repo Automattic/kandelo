@@ -27,6 +27,7 @@ import xzWasmUrl from "../../../../examples/libs/xz/bin/xz.wasm?url";
 import zstdWasmUrl from "../../../../examples/libs/zstd/bin/zstd.wasm?url";
 import zipWasmUrl from "../../../../examples/libs/zip/bin/zip.wasm?url";
 import unzipWasmUrl from "../../../../examples/libs/unzip/bin/unzip.wasm?url";
+import lsofWasmUrl from "../../../../examples/lsof.wasm?url";
 import "@xterm/xterm/css/xterm.css";
 
 // --- DOM elements ---
@@ -159,6 +160,7 @@ async function loadBinaries(): Promise<string> {
     { url: zstdWasmUrl, path: "/usr/bin/zstd", symlinks: ["/bin/zstd", "/usr/bin/unzstd", "/bin/unzstd", "/usr/bin/zstdcat", "/bin/zstdcat"] },
     { url: zipWasmUrl, path: "/usr/bin/zip", symlinks: ["/bin/zip"] },
     { url: unzipWasmUrl, path: "/usr/bin/unzip", symlinks: ["/bin/unzip", "/usr/bin/zipinfo", "/bin/zipinfo", "/usr/bin/funzip", "/bin/funzip"] },
+    { url: lsofWasmUrl, path: "/usr/bin/lsof", symlinks: ["/bin/lsof"] },
   ];
 
   // Fetch sizes for lazy binaries and data files in parallel

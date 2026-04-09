@@ -47,6 +47,7 @@ const xzWasm = resolve(repoRoot, "examples/libs/xz/bin/xz.wasm");
 const zstdWasm = resolve(repoRoot, "examples/libs/zstd/bin/zstd.wasm");
 const zipWasm = resolve(repoRoot, "examples/libs/zip/bin/zip.wasm");
 const unzipWasm = resolve(repoRoot, "examples/libs/unzip/bin/unzip.wasm");
+const lsofWasm = resolve(repoRoot, "examples/lsof.wasm");
 
 // GNU coreutils multi-call binary supports all of these as argv[0]
 const coreutilsNames = [
@@ -164,6 +165,9 @@ const builtinPrograms: Record<string, string> = {
     "funzip": unzipWasm,
     "/usr/bin/funzip": unzipWasm,
     "/bin/funzip": unzipWasm,
+    "lsof": lsofWasm,
+    "/usr/bin/lsof": lsofWasm,
+    "/bin/lsof": lsofWasm,
 };
 
 // Add coreutils mappings for all known tool names
@@ -441,7 +445,8 @@ async function main() {
 
     // Register process with kernel
     const pid = 100;
-    kernelWorker.registerProcess(pid, memory, [channelOffset]);
+    const processArgv = [programPath, ...process.argv.slice(3)];
+    kernelWorker.registerProcess(pid, memory, [channelOffset], { argv: processArgv });
     kernelWorker.setCwd(pid, process.env.KERNEL_CWD || process.cwd());
     kernelWorker.setNextChildPid(101);
 
