@@ -1,9 +1,8 @@
 /**
  * QuickJS-NG integration tests.
  *
- * QuickJS-NG is a JavaScript interpreter (NOT Node.js) registered as a
- * shell utility. It provides `qjs` and `node` commands. The `node` command
- * is a convenience alias — no Node.js API is available.
+ * Tests the `qjs` command — a standalone QuickJS-NG JavaScript interpreter
+ * with ES2023 support and POSIX os/std modules.
  */
 
 import { describe, it, expect } from "vitest";
