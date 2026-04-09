@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Python — wasm-posix-kernel</title>
+  <title>Ruby — wasm-posix-kernel</title>
   <link rel="stylesheet" href="../../lib/layout.css">
 </head>
 <body>
@@ -18,14 +18,14 @@
     <a href="/pages/wordpress/">WordPress</a>
     <a href="/pages/lamp/">LAMP</a>
     <a href="/pages/shell/">Shell</a>
-    <a href="/pages/python/" aria-current="page">Python</a>
+    <a href="/pages/python/">Python</a>
     <a href="/pages/perl/">Perl</a>
-    <a href="/pages/ruby/">Ruby</a>
+    <a href="/pages/ruby/" aria-current="page">Ruby</a>
   </nav>
   <div class="main">
     <div class="main-header">
-      <h1>Python on wasm-posix-kernel</h1>
-      <p class="subtitle">CPython 3.13.3 running inside a POSIX kernel compiled to WebAssembly</p>
+      <h1>Ruby on wasm-posix-kernel</h1>
+      <p class="subtitle">Ruby 3.3.6 running inside a POSIX kernel compiled to WebAssembly</p>
       <div class="mode-toggle">
         <button id="mode-interactive" class="active">REPL</button>
         <button id="mode-batch">Script</button>
@@ -36,15 +36,15 @@
       <!-- Interactive REPL mode -->
       <div id="interactive-view" class="view-panel">
         <div class="controls" style="padding:0.75rem;flex-shrink:0">
-          <button id="start">Start Python REPL</button>
+          <button id="start">Start Ruby REPL</button>
           <button id="stop" disabled>Stop</button>
           <select id="snippets">
             <option value="">-- Insert Snippet --</option>
-            <option value="hello">print("Hello, World!")</option>
-            <option value="math">import math; print(f"pi = {math.pi}")</option>
-            <option value="list">[x**2 for x in range(10)]</option>
-            <option value="dict">d = {"a": 1, "b": 2}; print(d)</option>
-            <option value="sys">import sys; print(sys.version)</option>
+            <option value="hello">puts "Hello, World!"</option>
+            <option value="version">puts RUBY_VERSION</option>
+            <option value="array">[1,2,3,4,5].map { |x| x ** 2 }</option>
+            <option value="hash">{a: 1, b: 2}.each { |k,v| puts "#{k}=#{v}" }</option>
+            <option value="block">3.times { |i| puts "iteration #{i}" }</option>
           </select>
         </div>
         <div class="terminal-area">
@@ -57,30 +57,27 @@
           <select id="examples">
             <option value="">-- Load Example --</option>
             <option value="hello">Hello World</option>
-            <option value="fib">Fibonacci</option>
-            <option value="json">JSON Processing</option>
-            <option value="collections">Collections</option>
-            <option value="classes">Classes & OOP</option>
-            <option value="functional">Functional Programming</option>
+            <option value="blocks">Blocks & Iterators</option>
+            <option value="hash">Hashes & Data</option>
+            <option value="file">File I/O</option>
+            <option value="functional">Enumerable</option>
+            <option value="oop">Classes & OOP</option>
           </select>
           <button id="run">Run</button>
           <span class="hint">Ctrl+Enter to run</span>
         </div>
         <div class="batch-panel">
           <div>
-            <h3>Python Code</h3>
-            <textarea id="code">import sys
-import json
-import math
+            <h3>Ruby Code</h3>
+            <textarea id="code">numbers = (1..20).to_a
+squares = numbers.map { |n| n ** 2 }
+evens = squares.select(&:even?)
 
-data = {
-    "platform": sys.platform,
-    "version": sys.version,
-    "pi": round(math.pi, 10),
-    "powers": [2**i for i in range(16)],
-}
-
-print(json.dumps(data, indent=2))
+puts "Squares of 1..20:"
+puts squares.join(", ")
+puts
+puts "Even squares:"
+puts evens.join(", ")
 </textarea>
           </div>
           <div>
