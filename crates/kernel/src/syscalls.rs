@@ -259,6 +259,11 @@ pub fn sys_open(
         return Ok(fd);
     }
 
+    // Procfs (/proc/...) — in-kernel virtual filesystem
+    if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
+        return crate::procfs::procfs_open(proc, &entry, resolved, oflags);
+    }
+
     // POSIX: open() on an existing directory with O_CREAT returns EISDIR
     if oflags & O_CREAT != 0 {
         if let Ok(st) = host.host_stat(&resolved) {
@@ -447,8 +452,16 @@ pub fn sys_close(
                 if dir_host_handle >= 0 {
                     let _ = host.host_closedir(dir_host_handle);
                 }
+                // Procfs buffers: free the content buffer
+                if crate::procfs::is_procfs_buf_handle(host_handle) {
+                    let buf_idx = crate::procfs::procfs_buf_idx(host_handle);
+                    if let Some(slot) = proc.procfs_bufs.get_mut(buf_idx) {
+                        *slot = None;
+                    }
+                } else if host_handle == crate::procfs::PROCFS_DIR_HANDLE {
+                    // Procfs directory: nothing to clean up
                 // Virtual char devices and synthetic files have no host handle to close
-                if (file_type == FileType::CharDevice && host_handle < 0)
+                } else if (file_type == FileType::CharDevice && host_handle < 0)
                     || host_handle == SYNTHETIC_FILE_HANDLE
                 {
                     // Nothing to clean up on host side
@@ -827,6 +840,25 @@ pub fn sys_read(
                     return Ok(n);
                 }
             }
+            // procfs: read from snapshot buffer
+            if crate::procfs::is_procfs_buf_handle(host_handle) {
+                let buf_idx = crate::procfs::procfs_buf_idx(host_handle);
+                let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+                let offset = ofd.offset as usize;
+                let data = proc.procfs_bufs.get(buf_idx)
+                    .and_then(|s| s.as_ref())
+                    .ok_or(Errno::EBADF)?;
+                if offset >= data.len() {
+                    return Ok(0); // EOF
+                }
+                let remaining = &data[offset..];
+                let n = buf.len().min(remaining.len());
+                buf[..n].copy_from_slice(&remaining[..n]);
+                let ofd = proc.ofd_table.get_mut(ofd_idx).ok_or(Errno::EBADF)?;
+                ofd.offset += n as i64;
+                return Ok(n);
+            }
+
             // memfd: read from in-memory buffer
             if file_type == FileType::MemFd {
                 let memfd_idx = (-(host_handle + 1)) as usize;
@@ -1220,6 +1252,34 @@ pub fn sys_lseek(
     // Virtual char devices: seek is a no-op, always returns 0
     if ofd.file_type == FileType::CharDevice && VirtualDevice::from_host_handle(ofd.host_handle).is_some() {
         return Ok(0);
+    }
+
+    // Procfs directory: lseek resets position
+    if ofd.host_handle == crate::procfs::PROCFS_DIR_HANDLE {
+        if whence == SEEK_SET {
+            ofd.dir_synth_state = 0;
+            ofd.dir_entry_offset = 0;
+            ofd.offset = offset;
+            return Ok(offset);
+        }
+        return Ok(ofd.offset);
+    }
+
+    // Procfs file buffers: compute offset against snapshot length
+    if crate::procfs::is_procfs_buf_handle(ofd.host_handle) {
+        let buf_idx = crate::procfs::procfs_buf_idx(ofd.host_handle);
+        let size = proc.procfs_bufs.get(buf_idx)
+            .and_then(|s| s.as_ref())
+            .map_or(0, |d| d.len() as i64);
+        let new_pos = match whence {
+            SEEK_SET => offset,
+            SEEK_CUR => ofd.offset + offset,
+            SEEK_END => size + offset,
+            _ => return Err(Errno::EINVAL),
+        };
+        if new_pos < 0 { return Err(Errno::EINVAL); }
+        ofd.offset = new_pos;
+        return Ok(new_pos);
     }
 
     // Synthetic in-kernel files: compute offset without host call
@@ -1767,6 +1827,22 @@ pub fn sys_fstat(
             st_ctime_sec: 0, st_ctime_nsec: 0,
             _pad: 0,
         })
+    } else if crate::procfs::is_procfs_buf_handle(ofd.host_handle) {
+        let buf_idx = crate::procfs::procfs_buf_idx(ofd.host_handle);
+        let size = proc.procfs_bufs.get(buf_idx)
+            .and_then(|s| s.as_ref())
+            .map_or(0, |d| d.len() as u64);
+        if let Some(entry) = crate::procfs::match_procfs(&ofd.path, proc.pid) {
+            Ok(crate::procfs::procfs_stat(&entry, size, true))
+        } else {
+            Ok(crate::procfs::procfs_stat(&crate::procfs::ProcfsEntry::Stat(proc.pid), size, true))
+        }
+    } else if ofd.host_handle == crate::procfs::PROCFS_DIR_HANDLE {
+        if let Some(entry) = crate::procfs::match_procfs(&ofd.path, proc.pid) {
+            Ok(crate::procfs::procfs_stat(&entry, 0, true))
+        } else {
+            Ok(crate::procfs::procfs_stat(&crate::procfs::ProcfsEntry::Root, 0, true))
+        }
     } else {
         let mut st = host.host_fstat(ofd.host_handle)?;
         st.st_uid = proc.euid;
@@ -2075,6 +2151,9 @@ pub fn sys_stat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resul
             st_ctime_sec: 0, st_ctime_nsec: 0, _pad: 0,
         });
     }
+    if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
+        return Ok(crate::procfs::procfs_stat(&entry, 0, true));
+    }
     let mut st = host.host_stat(&resolved)?;
     st.st_uid = proc.euid;
     st.st_gid = proc.egid;
@@ -2106,6 +2185,9 @@ pub fn sys_lstat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resu
             st_atime_sec: 0, st_atime_nsec: 0, st_mtime_sec: 0, st_mtime_nsec: 0,
             st_ctime_sec: 0, st_ctime_nsec: 0, _pad: 0,
         });
+    }
+    if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
+        return Ok(crate::procfs::procfs_stat(&entry, 0, false));
     }
     let mut st = host.host_lstat(&resolved)?;
     st.st_uid = proc.euid;
@@ -2162,21 +2244,13 @@ pub fn sys_symlink(proc: &mut Process, host: &mut dyn HostIO, target: &[u8], lin
 pub fn sys_readlink(proc: &mut Process, host: &mut dyn HostIO, path: &[u8], buf: &mut [u8]) -> Result<usize, Errno> {
     let resolved = resolve_path(path, &proc.cwd);
 
-    // /proc/self/fd/N — resolve to the path stored in the OFD.
-    // Required by ttyname_r to resolve PTY slave paths.
-    if resolved.starts_with(b"/proc/self/fd/") {
-        let num_part = &resolved[14..];
-        if let Some(fd_num) = parse_ascii_usize(num_part) {
-            if let Ok(entry) = proc.fd_table.get(fd_num as i32) {
-                if let Some(ofd) = proc.ofd_table.get(entry.ofd_ref.0) {
-                    let path_bytes = &ofd.path;
-                    let n = buf.len().min(path_bytes.len());
-                    buf[..n].copy_from_slice(&path_bytes[..n]);
-                    return Ok(n);
-                }
-            }
-            return Err(Errno::EBADF);
+    // Procfs symlinks — /proc/self, /proc/self/fd/N, /proc/self/cwd, /proc/self/exe, etc.
+    if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
+        if entry.is_symlink() {
+            return crate::procfs::procfs_readlink(proc, &entry, buf);
         }
+        // Not a symlink — EINVAL per POSIX
+        return Err(Errno::EINVAL);
     }
 
     host.host_readlink(&resolved, buf)
@@ -2201,6 +2275,11 @@ pub fn sys_access(proc: &mut Process, host: &mut dyn HostIO, path: &[u8], amode:
     if synthetic_file_content(&resolved).is_some() {
         // Synthetic files are read-only: allow R_OK and F_OK, deny W_OK/X_OK
         if amode & 0o2 != 0 { return Err(Errno::EACCES); } // W_OK
+        return Ok(());
+    }
+    if crate::procfs::match_procfs(&resolved, proc.pid).is_some() {
+        // Procfs entries are read-only: allow R_OK/F_OK/X_OK(dirs), deny W_OK
+        if amode & 0o2 != 0 { return Err(Errno::EACCES); }
         return Ok(());
     }
     host.host_access(&resolved, amode)
@@ -2448,6 +2527,24 @@ pub fn sys_getdents64(
         let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
         ofd.dir_host_handle
     };
+
+    // Procfs directories: generate entries in-kernel
+    if dir_handle == crate::procfs::PROCFS_DIR_HANDLE || dir_handle == -2 && crate::procfs::match_procfs(&path, proc.pid).is_some() {
+        if dir_handle == -2 {
+            return Ok(0); // exhausted
+        }
+        let entry_offset = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?.dir_entry_offset;
+        let pids = alloc::vec![proc.pid]; // For now, only self
+        let (bytes, new_offset, exhausted) =
+            crate::procfs::procfs_getdents64(proc, &path, buf, entry_offset, &pids)?;
+        if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
+            ofd.dir_entry_offset = new_offset;
+            if exhausted {
+                ofd.dir_host_handle = -2; // mark exhausted
+            }
+        }
+        return Ok(bytes);
+    }
 
     if dir_handle == -2 {
         // Already exhausted — return 0 (EOF)
@@ -4843,6 +4940,11 @@ pub fn sys_openat(
         return Ok(fd);
     }
 
+    // Procfs (/proc/...) — in-kernel virtual filesystem
+    if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
+        return crate::procfs::procfs_open(proc, &entry, resolved, oflags);
+    }
+
     let effective_mode = if oflags & O_CREAT != 0 {
         mode & !proc.umask
     } else {
@@ -4915,6 +5017,10 @@ pub fn sys_fstatat(
             st_atime_sec: 0, st_atime_nsec: 0, st_mtime_sec: 0, st_mtime_nsec: 0,
             st_ctime_sec: 0, st_ctime_nsec: 0, _pad: 0,
         });
+    }
+    if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
+        let follow = flags & AT_SYMLINK_NOFOLLOW == 0;
+        return Ok(crate::procfs::procfs_stat(&entry, 0, follow));
     }
     let mut st = if flags & AT_SYMLINK_NOFOLLOW != 0 {
         host.host_lstat(&resolved)?
@@ -6660,6 +6766,10 @@ pub fn sys_faccessat(
         if amode & 0o2 != 0 { return Err(Errno::EACCES); }
         return Ok(());
     }
+    if crate::procfs::match_procfs(&resolved, proc.pid).is_some() {
+        if amode & 0o2 != 0 { return Err(Errno::EACCES); }
+        return Ok(());
+    }
     host.host_access(&resolved, amode)
 }
 
@@ -6733,20 +6843,12 @@ pub fn sys_readlinkat(
 ) -> Result<usize, Errno> {
     let resolved = resolve_at_path(proc, dirfd, path)?;
 
-    // /proc/self/fd/N — resolve to OFD path (for ttyname_r)
-    if resolved.starts_with(b"/proc/self/fd/") {
-        let num_part = &resolved[14..];
-        if let Some(fd_num) = parse_ascii_usize(num_part) {
-            if let Ok(entry) = proc.fd_table.get(fd_num as i32) {
-                if let Some(ofd) = proc.ofd_table.get(entry.ofd_ref.0) {
-                    let path_bytes = &ofd.path;
-                    let n = buf.len().min(path_bytes.len());
-                    buf[..n].copy_from_slice(&path_bytes[..n]);
-                    return Ok(n);
-                }
-            }
-            return Err(Errno::EBADF);
+    // Procfs symlinks — /proc/self, /proc/self/fd/N, /proc/self/cwd, etc.
+    if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
+        if entry.is_symlink() {
+            return crate::procfs::procfs_readlink(proc, &entry, buf);
         }
+        return Err(Errno::EINVAL);
     }
 
     host.host_readlink(&resolved, buf)
@@ -13560,5 +13662,122 @@ mod tests {
         let child = table.get(2).unwrap();
         assert!(child.fd_table.get(0).is_err(), "fd 0 with FD_CLOFORK should not be inherited");
         assert!(child.fd_table.get(1).is_ok(), "fd 1 without FD_CLOFORK should be inherited");
+    }
+
+    // ── Procfs integration tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_procfs_self_stat_open_read_close() {
+        let mut proc = Process::new(1);
+        proc.argv.push(b"test".to_vec());
+        let mut host = MockHostIO::new();
+
+        // open /proc/self/stat
+        let fd = sys_open(&mut proc, &mut host, b"/proc/self/stat", O_RDONLY, 0).unwrap();
+        assert!(fd >= 3); // after stdio
+
+        // read content
+        let mut buf = [0u8; 1024];
+        let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
+        assert!(n > 0);
+        let content = core::str::from_utf8(&buf[..n]).unwrap();
+        assert!(content.starts_with("1 (test) R"));
+
+        // lseek back to start and re-read
+        let pos = sys_lseek(&mut proc, &mut host, fd, 0, SEEK_SET).unwrap();
+        assert_eq!(pos, 0);
+        let n2 = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
+        assert_eq!(n, n2); // same content (snapshot)
+
+        // fstat
+        let st = sys_fstat(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(st.st_mode & S_IFMT, S_IFREG);
+        assert_eq!(st.st_dev, 0x50);
+
+        // close
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn test_procfs_readlink_self() {
+        let mut proc = Process::new(42);
+        let mut host = MockHostIO::new();
+        let mut buf = [0u8; 64];
+        let n = sys_readlink(&mut proc, &mut host, b"/proc/self", &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"42");
+    }
+
+    #[test]
+    fn test_procfs_readlink_cwd() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let mut buf = [0u8; 64];
+        let n = sys_readlink(&mut proc, &mut host, b"/proc/self/cwd", &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"/");
+    }
+
+    #[test]
+    fn test_procfs_stat_dir() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let st = sys_stat(&mut proc, &mut host, b"/proc").unwrap();
+        assert_eq!(st.st_mode & S_IFMT, S_IFDIR);
+        assert_eq!(st.st_mode & 0o777, 0o555);
+    }
+
+    #[test]
+    fn test_procfs_lstat_self_symlink() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let st = sys_lstat(&mut proc, &mut host, b"/proc/self").unwrap();
+        assert_eq!(st.st_mode & S_IFMT, S_IFLNK);
+    }
+
+    #[test]
+    fn test_procfs_fd_dir_getdents64() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        // open /proc/self/fd
+        let fd = sys_open(&mut proc, &mut host, b"/proc/self/fd", O_RDONLY | O_DIRECTORY, 0).unwrap();
+
+        // getdents64
+        let mut buf = [0u8; 4096];
+        let n = sys_getdents64(&mut proc, &mut host, fd, &mut buf).unwrap();
+        assert!(n > 0);
+
+        // Subsequent call should return 0 (exhausted)
+        let n2 = sys_getdents64(&mut proc, &mut host, fd, &mut buf).unwrap();
+        assert_eq!(n2, 0);
+
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn test_procfs_access() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        // F_OK should succeed for /proc/self/stat
+        sys_access(&mut proc, &mut host, b"/proc/self/stat", 0).unwrap();
+
+        // R_OK should succeed
+        sys_access(&mut proc, &mut host, b"/proc/self/stat", 4).unwrap();
+
+        // W_OK should fail
+        assert_eq!(
+            sys_access(&mut proc, &mut host, b"/proc/self/stat", 2).unwrap_err(),
+            Errno::EACCES,
+        );
+    }
+
+    #[test]
+    fn test_procfs_open_write_fails() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        assert_eq!(
+            sys_open(&mut proc, &mut host, b"/proc/self/stat", O_WRONLY, 0).unwrap_err(),
+            Errno::EACCES,
+        );
     }
 }

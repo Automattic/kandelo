@@ -13,6 +13,7 @@ pub mod ipc;
 pub mod ofd;
 pub mod path;
 pub mod pipe;
+pub mod procfs;
 pub mod process;
 pub mod process_table;
 pub mod pty;
