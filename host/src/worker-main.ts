@@ -11,6 +11,7 @@ import type {
   WorkerToHostMessage,
 } from "./worker-protocol";
 import { DynamicLinker } from "./dylink";
+import { WasiShim, WasiExit, isWasiModule, wasiModuleDefinesMemory } from "./wasi-shim";
 
 export interface MessagePort {
   postMessage(msg: unknown, transferList?: unknown[]): void;
@@ -333,6 +334,67 @@ export async function centralizedWorkerMain(
     const module = initData.programModule
       ? initData.programModule
       : await WebAssembly.compile(programBytes);
+    // --- WASI module detection and handling ---
+    if (isWasiModule(module)) {
+      if (wasiModuleDefinesMemory(module)) {
+        throw new Error(
+          "WASI module defines its own memory. Only modules that import memory " +
+          "(compiled with --import-memory) are supported.",
+        );
+      }
+
+      const wasiShim = new WasiShim(
+        memory, channelOffset, initData.argv || [], initData.env || [],
+      );
+      const wasiImports = wasiShim.getImports();
+
+      // Build import object: provide wasi_snapshot_preview1 namespace + env.memory
+      const importObject: WebAssembly.Imports = {
+        wasi_snapshot_preview1: wasiImports as Record<string, WebAssembly.ExportValue>,
+        env: { memory },
+      };
+
+      // Stub any additional env imports the module needs
+      const moduleImports = WebAssembly.Module.imports(module);
+      for (const imp of moduleImports) {
+        if (imp.module === "env" && imp.name !== "memory") {
+          if (!(importObject.env as Record<string, unknown>)[imp.name]) {
+            (importObject.env as Record<string, unknown>)[imp.name] =
+              imp.kind === "function"
+                ? (..._args: unknown[]) => { throw new Error(`Unimplemented WASI env import: ${imp.name}`); }
+                : undefined;
+          }
+        }
+      }
+
+      const instance = await WebAssembly.instantiate(module, importObject);
+
+      // Initialize preopened directories
+      wasiShim.init();
+
+      // Signal ready
+      port.postMessage({ type: "ready", pid } satisfies WorkerToHostMessage);
+
+      // Run _start
+      let exitCode = 0;
+      try {
+        const start = instance.exports._start as (() => void) | undefined;
+        if (start) start();
+      } catch (e) {
+        if (e instanceof WasiExit) {
+          exitCode = e.code;
+        } else if (e instanceof Error && e.message.includes("unreachable")) {
+          exitCode = 0;
+        } else {
+          throw e;
+        }
+      }
+
+      port.postMessage({ type: "exit", pid, status: exitCode } satisfies WorkerToHostMessage);
+      return;
+    }
+
+    // --- SDK module path (existing) ---
     const kernelImports = buildKernelImports(
       memory, channelOffset, initData.argv || [], initData.env || [],
     );

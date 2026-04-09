@@ -35,3 +35,4 @@ export type { DylinkMetadata, LoadedSharedLibrary, LoadSharedLibraryOptions } fr
 export { WASM_PAGE_SIZE, CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD } from "./constants";
 export { ThreadPageAllocator } from "./thread-allocator";
 export type { ThreadAllocation } from "./thread-allocator";
+export { WasiShim, WasiExit, isWasiModule, wasiModuleImportsMemory, wasiModuleDefinesMemory } from "./wasi-shim";
