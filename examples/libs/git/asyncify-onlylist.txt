@@ -113,6 +113,30 @@ transport_fetch_refs
 bidirectional_transfer_loop
 tloop_spawnwait_tasks
 
+# Transport helper (transport-helper.c) — HTTP/HTTPS remote helper spawning.
+# These functions are on the call stack between transport_fetch_refs and
+# start_command when git forks to exec git-remote-http/https.
+get_helper
+release_helper
+disconnect_helper
+run_connect
+process_connect
+process_connect_service
+connect_helper
+set_helper_option
+fetch
+fetch_with_fetch
+fetch_with_import
+push_refs_with_push
+push_refs_with_export
+
+# HTTP transport (http.c, http-walker.c)
+http_init
+http_cleanup
+http_get_strbuf
+http_fetch_ref
+http_get_info_packs
+
 # Subprocess (sub-process.c)
 subprocess_start
 

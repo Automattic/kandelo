@@ -9,7 +9,13 @@ set -euo pipefail
 # Asyncify is applied with an onlylist so fork+exec works properly
 # (git gc --auto, hooks, pager, credential helpers, etc.).
 #
+# If libcurl is available in the sysroot, HTTP/HTTPS transport support is
+# built (git-remote-http helper). HTTPS URLs are rewritten to HTTP at
+# runtime via gitconfig; the browser's fetch() API + CORS proxy handles
+# the actual TLS.
+#
 # Output: examples/libs/git/bin/git.wasm
+#         examples/libs/git/bin/git-remote-http.wasm (if libcurl available)
 
 GIT_VERSION="${GIT_VERSION:-2.47.1}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -36,6 +42,15 @@ export WASM_POSIX_SYSROOT="$SYSROOT"
 if [ ! -f "$SYSROOT/lib/libz.a" ]; then
     echo "ERROR: zlib not found in sysroot. Build it first." >&2
     exit 1
+fi
+
+# Check for libcurl (optional — enables HTTP/HTTPS transport)
+USE_CURL=no
+if [ -f "$SYSROOT/lib/libcurl.a" ] && [ -f "$SYSROOT/include/curl/curl.h" ]; then
+    USE_CURL=yes
+    echo "==> libcurl found in sysroot, building with HTTP transport support"
+else
+    echo "==> libcurl not found, building without HTTP transport (git clone over HTTP won't work)"
 fi
 
 # Check for wasm-opt (required for asyncify)
@@ -90,7 +105,6 @@ NO_PYTHON = YesPlease
 NO_TCLTK = YesPlease
 NO_GETTEXT = YesPlease
 NO_EXPAT = YesPlease
-NO_CURL = YesPlease
 NO_ICONV = YesPlease
 NO_REGEX = NeedsStartEnd
 NO_NSEC = YesPlease
@@ -138,14 +152,34 @@ PROGRAMS =
 EXTLIBS = -lz
 ENDMAK
 
+# Add curl-specific config if libcurl is available
+if [ "$USE_CURL" = "yes" ]; then
+    cat >> config.mak << ENDCURL
+
+# HTTP/HTTPS transport via libcurl
+# Note: NO_CURL is NOT set — this enables git-remote-http/https
+CURL_CFLAGS = -I$SYSROOT/include
+CURL_LDFLAGS = -L$SYSROOT/lib
+CURL_LIBCURL = -lcurl -lssl -lcrypto -ldl -lz
+ENDCURL
+else
+    echo "NO_CURL = YesPlease" >> config.mak
+fi
+
 # --- Build ---
 echo "==> Building git..."
+NCPU="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
+
 # Override uname_S to prevent config.mak.uname from applying Darwin-specific
 # settings (HAVE_BSD_SYSCTL, precompose_utf8, etc.). Must be on the command
 # line so it takes effect before config.mak.uname conditionals.
-make uname_S=Wasm32 -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" git 2>&1 | tail -50
+BUILD_TARGETS="git"
+if [ "$USE_CURL" = "yes" ]; then
+    BUILD_TARGETS="git git-remote-http"
+fi
+make uname_S=Wasm32 -j"$NCPU" $BUILD_TARGETS 2>&1 | tail -50
 
-echo "==> Collecting binary..."
+echo "==> Collecting binaries..."
 mkdir -p "$BIN_DIR"
 
 if [ ! -f "$SRC_DIR/git" ]; then
@@ -154,6 +188,12 @@ if [ ! -f "$SRC_DIR/git" ]; then
 fi
 
 cp "$SRC_DIR/git" "$BIN_DIR/git.wasm"
+
+# Collect git-remote-http if built
+if [ "$USE_CURL" = "yes" ] && [ -f "$SRC_DIR/git-remote-http" ]; then
+    cp "$SRC_DIR/git-remote-http" "$BIN_DIR/git-remote-http.wasm"
+    echo "==> Collected git-remote-http.wasm"
+fi
 SIZE_BEFORE=$(wc -c < "$BIN_DIR/git.wasm" | tr -d ' ')
 echo "==> Pre-asyncify size: $(echo "$SIZE_BEFORE" | numfmt --to=iec 2>/dev/null || echo "${SIZE_BEFORE} bytes")"
 
@@ -178,3 +218,6 @@ echo "==> Post-asyncify size: $(echo "$SIZE_AFTER" | numfmt --to=iec 2>/dev/null
 echo ""
 echo "==> git built successfully with asyncify fork support!"
 echo "Binary: $BIN_DIR/git.wasm"
+if [ "$USE_CURL" = "yes" ] && [ -f "$BIN_DIR/git-remote-http.wasm" ]; then
+    echo "HTTP transport: $BIN_DIR/git-remote-http.wasm"
+fi

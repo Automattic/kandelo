@@ -146,7 +146,9 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     { mountPoint: "/", backend: memfs },
   ];
   io = new VirtualPlatformIO(mounts, new BrowserTimeProvider());
-  io.network = new FetchNetworkBackend();
+  io.network = new FetchNetworkBackend(
+    msg.config.corsProxyUrl ? { corsProxyUrl: msg.config.corsProxyUrl } : undefined,
+  );
 
   // Create worker adapter for spawning sub-workers
   workerAdapter = new BrowserWorkerAdapter(msg.workerEntryUrl);

@@ -7,6 +7,7 @@ export class EagainError extends Error {
 }
 
 interface ConnectionState {
+  hostname: string;
   ip: Uint8Array;
   port: number;
   sendBuf: Uint8Array;
@@ -22,6 +23,7 @@ export interface FetchBackendOptions {
 
 export class FetchNetworkBackend implements NetworkIO {
   private connections = new Map<number, ConnectionState>();
+  private hostnameMap = new Map<string, string>(); // ip string → hostname
   private options: FetchBackendOptions;
 
   constructor(options?: FetchBackendOptions) {
@@ -29,11 +31,10 @@ export class FetchNetworkBackend implements NetworkIO {
   }
 
   connect(handle: number, addr: Uint8Array, port: number): void {
-    // HTTPS not supported in browser fetch backend
-    if (port === 443) {
-      throw Object.assign(new Error("HTTPS not supported in browser fetch backend"), { code: "ECONNREFUSED" });
-    }
+    const ipStr = `${addr[0]}.${addr[1]}.${addr[2]}.${addr[3]}`;
+    const hostname = this.hostnameMap.get(ipStr) || ipStr;
     this.connections.set(handle, {
+      hostname,
       ip: new Uint8Array(addr),
       port,
       sendBuf: new Uint8Array(0),
@@ -74,8 +75,10 @@ export class FetchNetworkBackend implements NetworkIO {
     // Don't block with Atomics.wait — that deadlocks in web workers where the
     // event loop must yield for fetch() promises to resolve.
     const { method, path, headers, body } = parseHttpRequest(conn.sendBuf, headerEnd);
-    const host = headers.get("host") || `${conn.ip[0]}.${conn.ip[1]}.${conn.ip[2]}.${conn.ip[3]}`;
-    const url = `http://${host}${path}`;
+    const host = headers.get("host") || conn.hostname;
+    const scheme = conn.port === 443 ? "https" : "http";
+    const portSuffix = (conn.port === 80 || conn.port === 443) ? "" : `:${conn.port}`;
+    const url = `${scheme}://${host}${portSuffix}${path}`;
 
     // Convert headers map to Headers object (skip Host and Connection)
     const fetchHeaders = new Headers();
@@ -169,7 +172,13 @@ export class FetchNetworkBackend implements NetworkIO {
     for (let i = 0; i < hostname.length; i++) {
       hash = ((hash << 5) - hash + hostname.charCodeAt(i)) | 0;
     }
-    return new Uint8Array([10, (hash >> 16) & 0xff, (hash >> 8) & 0xff, hash & 0xff]);
+    const ip = new Uint8Array([10, (hash >> 16) & 0xff, (hash >> 8) & 0xff, hash & 0xff]);
+    // Store hostname→IP mapping so connect() can recover the hostname
+    // (needed when program connects to port 443 where Host header may not be present
+    // before TLS handshake, or for constructing proper URLs)
+    const ipStr = `${ip[0]}.${ip[1]}.${ip[2]}.${ip[3]}`;
+    this.hostnameMap.set(ipStr, hostname);
+    return ip;
   }
 }
 

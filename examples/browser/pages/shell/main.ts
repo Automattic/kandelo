@@ -21,6 +21,7 @@ import tarWasmUrl from "../../../../examples/libs/tar/bin/tar.wasm?url";
 import curlWasmUrl from "../../../../examples/libs/curl/bin/curl.wasm?url";
 import wgetWasmUrl from "../../../../examples/libs/wget/bin/wget.wasm?url";
 import gitWasmUrl from "../../../../examples/libs/git/bin/git.wasm?url";
+import gitRemoteHttpWasmUrl from "../../../../examples/libs/git/bin/git-remote-http.wasm?url";
 import gzipWasmUrl from "../../../../examples/libs/gzip/bin/gzip.wasm?url";
 import bzip2WasmUrl from "../../../../examples/libs/bzip2/bin/bzip2.wasm?url";
 import xzWasmUrl from "../../../../examples/libs/xz/bin/xz.wasm?url";
@@ -154,6 +155,7 @@ async function loadBinaries(): Promise<string> {
     { url: curlWasmUrl, path: "/usr/bin/curl", symlinks: ["/bin/curl"] },
     { url: wgetWasmUrl, path: "/usr/bin/wget", symlinks: ["/bin/wget"] },
     { url: gitWasmUrl, path: "/usr/bin/git", symlinks: ["/bin/git"] },
+    { url: gitRemoteHttpWasmUrl, path: "/usr/bin/git-remote-http", symlinks: ["/usr/bin/git-remote-https", "/usr/bin/git-remote-ftp", "/usr/bin/git-remote-ftps"] },
     { url: gzipWasmUrl, path: "/usr/bin/gzip", symlinks: ["/bin/gzip", "/usr/bin/gunzip", "/bin/gunzip", "/usr/bin/zcat", "/bin/zcat"] },
     { url: bzip2WasmUrl, path: "/usr/bin/bzip2", symlinks: ["/bin/bzip2", "/usr/bin/bunzip2", "/bin/bunzip2", "/usr/bin/bzcat", "/bin/bzcat"] },
     { url: xzWasmUrl, path: "/usr/bin/xz", symlinks: ["/bin/xz", "/usr/bin/unxz", "/bin/unxz", "/usr/bin/xzcat", "/bin/xzcat", "/usr/bin/lzma", "/bin/lzma", "/usr/bin/unlzma", "/bin/unlzma", "/usr/bin/lzcat", "/bin/lzcat"] },
@@ -236,6 +238,12 @@ function populateExecBinaries(kernel: import("../../lib/browser-kernel").Browser
     "\temail = user@wasm.local",
     "[init]",
     "\tdefaultBranch = main",
+    // Rewrite HTTPS URLs to HTTP so libcurl doesn't attempt TLS handshakes.
+    // The browser's fetch() API handles TLS natively via the CORS proxy.
+    '[url "http://"]',
+    "\tinsteadOf = https://",
+    "[http]",
+    "\tsslVerify = false",
     "",
   ].join("\n");
   const gitconfigBytes = new TextEncoder().encode(gitconfig);
@@ -293,7 +301,9 @@ async function startInteractiveShell() {
 
     setStatus("Starting shell...", "running");
 
-    const kernel = new BrowserKernel();
+    const kernel = new BrowserKernel({
+      corsProxyUrl: "https://wordpress-playground-cors-proxy.net/?",
+    });
 
     await kernel.init(kernelBytes!);
     populateExecBinaries(kernel);
@@ -544,6 +554,7 @@ async function runBatch() {
     const kernel = new BrowserKernel({
       onStdout: (data) => appendBatchOutput(decoder.decode(data)),
       onStderr: (data) => appendBatchOutput(decoder.decode(data), "stderr"),
+      corsProxyUrl: "https://wordpress-playground-cors-proxy.net/?",
     });
 
     await kernel.init(kernelBytes!);
