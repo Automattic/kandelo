@@ -1358,6 +1358,17 @@ export class SharedFS {
     }
   }
 
+  lstat(path: string): StatResult {
+    const ino = this.pathResolve(path, false); // don't follow symlinks
+    if (ino < 0) throw new SFSError(ino);
+    this.inodeReadLock(ino);
+    try {
+      return this.buildStat(ino);
+    } finally {
+      this.inodeReadUnlock(ino);
+    }
+  }
+
   unlink(path: string): void {
     const { parentIno, name } = this.pathResolveParent(path);
     const nameBytes = encoder.encode(name);
