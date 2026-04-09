@@ -194,7 +194,7 @@ export class SystemInit {
     const binaryPath = descriptor.command[0];
     let programBytes: ArrayBuffer;
     try {
-      programBytes = this.readBinaryFromVfs(binaryPath);
+      programBytes = await this.readBinaryFromVfs(binaryPath);
     } catch (e) {
       this.log(`Failed to read binary ${binaryPath}: ${e}`, "error");
       return;
@@ -459,9 +459,13 @@ export class SystemInit {
 
   /**
    * Read a binary file from the VFS, following symlinks.
+   * Materializes lazy files (fetching content from URL) before reading.
    */
-  private readBinaryFromVfs(path: string): ArrayBuffer {
+  private async readBinaryFromVfs(path: string): Promise<ArrayBuffer> {
     const fs = this.kernel.fs;
+
+    // Materialize lazy files (empty stubs with URL metadata) before reading
+    await fs.ensureMaterialized(path);
 
     // Try to follow symlinks
     let resolvedPath = path;
@@ -486,8 +490,18 @@ export class SystemInit {
    * Read a text file from the VFS.
    */
   private readTextFromVfs(path: string): string {
-    const bytes = this.readBinaryFromVfs(path);
-    return decoder.decode(bytes);
+    const fs = this.kernel.fs;
+    let resolvedPath = path;
+    try { resolvedPath = fs.readlink(path); } catch { /* not a symlink */ }
+    const fd = fs.open(resolvedPath, 0 /* O_RDONLY */, 0);
+    try {
+      const stat = fs.fstat(fd);
+      const buf = new Uint8Array(stat.size);
+      fs.read(fd, buf, 0, buf.length);
+      return decoder.decode(buf);
+    } finally {
+      fs.close(fd);
+    }
   }
 
   /**
