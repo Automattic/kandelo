@@ -49,3 +49,6 @@ export {
 
 // MariaDB directory setup
 export { populateMariadbDirs } from "./mariadb-config";
+
+// System init orchestrator
+export { SystemInit, type SystemInitOptions } from "./system-init";
