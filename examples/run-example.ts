@@ -33,6 +33,14 @@ const dashWasm = existsSync(dashBuilt) ? dashBuilt : resolve(repoRoot, "host/was
 const grepWasm = resolve(repoRoot, "examples/libs/grep/bin/grep.wasm");
 const sedWasm = resolve(repoRoot, "examples/libs/sed/bin/sed.wasm");
 const gitWasm = resolve(repoRoot, "examples/libs/git/bin/git.wasm");
+const bcWasm = resolve(repoRoot, "examples/libs/bc/bin/bc.wasm");
+const fileWasm = resolve(repoRoot, "examples/libs/file/bin/file.wasm");
+const lessWasm = resolve(repoRoot, "examples/libs/less/bin/less.wasm");
+const m4Wasm = resolve(repoRoot, "examples/libs/m4/bin/m4.wasm");
+const makeWasm = resolve(repoRoot, "examples/libs/make/bin/make.wasm");
+const tarWasm = resolve(repoRoot, "examples/libs/tar/bin/tar.wasm");
+const curlWasm = resolve(repoRoot, "examples/libs/curl/bin/curl.wasm");
+const wgetWasm = resolve(repoRoot, "examples/libs/wget/bin/wget.wasm");
 
 // GNU coreutils multi-call binary supports all of these as argv[0]
 const coreutilsNames = [
@@ -55,6 +63,12 @@ const builtinPrograms: Record<string, string> = {
     "grep": grepWasm,
     "/bin/grep": grepWasm,
     "/usr/bin/grep": grepWasm,
+    "egrep": grepWasm,
+    "/bin/egrep": grepWasm,
+    "/usr/bin/egrep": grepWasm,
+    "fgrep": grepWasm,
+    "/bin/fgrep": grepWasm,
+    "/usr/bin/fgrep": grepWasm,
     "sed": sedWasm,
     "/bin/sed": sedWasm,
     "/usr/bin/sed": sedWasm,
@@ -63,6 +77,30 @@ const builtinPrograms: Record<string, string> = {
     "git": gitWasm,
     "/usr/bin/git": gitWasm,
     "/bin/git": gitWasm,
+    "bc": bcWasm,
+    "/usr/bin/bc": bcWasm,
+    "/bin/bc": bcWasm,
+    "file": fileWasm,
+    "/usr/bin/file": fileWasm,
+    "/bin/file": fileWasm,
+    "less": lessWasm,
+    "/usr/bin/less": lessWasm,
+    "/bin/less": lessWasm,
+    "m4": m4Wasm,
+    "/usr/bin/m4": m4Wasm,
+    "/bin/m4": m4Wasm,
+    "make": makeWasm,
+    "/usr/bin/make": makeWasm,
+    "/bin/make": makeWasm,
+    "tar": tarWasm,
+    "/usr/bin/tar": tarWasm,
+    "/bin/tar": tarWasm,
+    "curl": curlWasm,
+    "/usr/bin/curl": curlWasm,
+    "/bin/curl": curlWasm,
+    "wget": wgetWasm,
+    "/usr/bin/wget": wgetWasm,
+    "/bin/wget": wgetWasm,
 };
 
 // Add coreutils mappings for all known tool names
