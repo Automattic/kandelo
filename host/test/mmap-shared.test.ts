@@ -8,7 +8,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 describe("MAP_SHARED mmap + msync", () => {
   it("writes through MAP_SHARED mapping and flushes with msync", async () => {
     const result = await runCentralizedProgram({
-      programPath: join(__dirname, "../../examples/mmap_shared_test.wasm"),
+      programPath: join(__dirname, "../wasm/mmap_shared_test.wasm"),
       timeout: 10000,
     });
     expect(result.exitCode).toBe(0);
