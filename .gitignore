@@ -21,6 +21,7 @@ node_modules/
 # Wasm binaries (except committed kernel/userspace in host/wasm/)
 *.wasm
 !host/wasm/*.wasm
+!host/test/fixtures/*.wasm
 
 # OS noise
 .DS_Store

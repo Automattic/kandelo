@@ -1,25 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-<<<<<<< HEAD
-# Build GNU gzip 1.14 for wasm32-posix-kernel.
+# Build GNU wget 1.24.5 for wasm32-posix-kernel.
 #
+# Links against pre-built OpenSSL and zlib if available.
 # Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
-# gzip has its own deflate implementation (does NOT link zlib).
-# Output: examples/libs/gzip/bin/gzip.wasm
-
-GZIP_VERSION="${GZIP_VERSION:-1.14}"
-=======
-# Build GNU gzip 1.13 for wasm32-posix-kernel.
 #
-# Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
-# Output: examples/libs/gzip/bin/gzip.wasm
+# Output: examples/libs/wget/bin/wget.wasm
 
-GZIP_VERSION="${GZIP_VERSION:-1.13}"
->>>>>>> 426ec1b (feat: add build scripts for 14 Unix utilities)
+WGET_VERSION="${WGET_VERSION:-1.24.5}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/gzip-src"
+SRC_DIR="$SCRIPT_DIR/wget-src"
 BIN_DIR="$SCRIPT_DIR/bin"
 SYSROOT="$REPO_ROOT/sysroot"
 
@@ -36,14 +28,41 @@ fi
 
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
-# --- Download gzip source ---
+# --- Locate OpenSSL and zlib ---
+OPENSSL_DIR="$REPO_ROOT/examples/libs/openssl/openssl-install"
+ZLIB_DIR="$REPO_ROOT/examples/libs/zlib/zlib-install"
+
+SSL_FLAGS=()
+EXTRA_CFLAGS=""
+EXTRA_LDFLAGS=""
+
+if [ -f "$OPENSSL_DIR/lib/libssl.a" ] && [ -f "$OPENSSL_DIR/lib/libcrypto.a" ]; then
+    echo "==> Found OpenSSL at $OPENSSL_DIR"
+    SSL_FLAGS+=("--with-ssl=openssl")
+    EXTRA_CFLAGS="-I$OPENSSL_DIR/include"
+    EXTRA_LDFLAGS="-L$OPENSSL_DIR/lib"
+else
+    echo "==> OpenSSL not found, building without SSL support"
+    SSL_FLAGS+=("--without-ssl")
+fi
+
+if [ -f "$ZLIB_DIR/lib/libz.a" ]; then
+    echo "==> Found zlib at $ZLIB_DIR"
+    EXTRA_CFLAGS="$EXTRA_CFLAGS -I$ZLIB_DIR/include"
+    EXTRA_LDFLAGS="$EXTRA_LDFLAGS -L$ZLIB_DIR/lib"
+else
+    echo "==> zlib not found, building without zlib support"
+    SSL_FLAGS+=("--without-zlib")
+fi
+
+# --- Download wget source ---
 if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading gzip $GZIP_VERSION..."
-    TARBALL="gzip-${GZIP_VERSION}.tar.xz"
-    URL="https://ftp.gnu.org/gnu/gzip/${TARBALL}"
+    echo "==> Downloading wget $WGET_VERSION..."
+    TARBALL="wget-${WGET_VERSION}.tar.gz"
+    URL="https://ftp.gnu.org/gnu/wget/${TARBALL}"
     curl -fsSL "$URL" -o "/tmp/$TARBALL"
     mkdir -p "$SRC_DIR"
-    tar xJf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
+    tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
     rm "/tmp/$TARBALL"
     echo "==> Source extracted to $SRC_DIR"
 fi
@@ -52,13 +71,9 @@ cd "$SRC_DIR"
 
 # --- Configure ---
 if [ ! -f Makefile ]; then
-    echo "==> Configuring gzip for wasm32..."
+    echo "==> Configuring wget for wasm32..."
 
-<<<<<<< HEAD
-    # gnulib cross-compilation overrides (same pattern as tar/grep)
-=======
-    # gnulib cross-compilation overrides (same pattern as grep/sed/coreutils)
->>>>>>> 426ec1b (feat: add build scripts for 14 Unix utilities)
+    # gnulib cross-compilation overrides
     export gl_cv_func_working_getdelim=yes
     export gl_cv_func_working_strerror=yes
     export gl_cv_func_strerror_0_works=yes
@@ -152,13 +167,6 @@ if [ ! -f Makefile ]; then
     export ac_cv_func_pstat_getstatic=no
     export ac_cv_func__set_invalid_parameter_handler=no
 
-<<<<<<< HEAD
-    # musl doesn't have utimens/lutimens (uses utimensat instead)
-    export ac_cv_func_utimens=no
-    export ac_cv_func_lutimens=no
-
-=======
->>>>>>> 426ec1b (feat: add build scripts for 14 Unix utilities)
     # Cross-compilation values
     export ac_cv_func_closedir_void=no
     export ac_cv_func_malloc_0_nonnull=yes
@@ -176,29 +184,56 @@ if [ ! -f Makefile ]; then
     export ac_cv_sizeof_int=4
     export ac_cv_sizeof_size_t=4
 
+    # wget-specific: getaddrinfo detection for cross-compile
+    export ac_cv_func_getaddrinfo=yes
+    export ac_cv_func_gai_strerror=yes
+
+    # RAND_egd was removed in OpenSSL 3.x
+    export ac_cv_func_RAND_egd=no
+
+    # group_member is a glibc extension not in musl.
+    # wget uses it unconditionally in utils.c without #ifdef guard.
+    # Patch the source to add a declaration before use.
+    if ! grep -q 'group_member stub' "$SRC_DIR/src/utils.c"; then
+        sed -i.bak '/#include "wget.h"/a\
+/* musl lacks group_member(); stub always returns 0. group_member stub */\
+static inline int group_member(int gid) { (void)gid; return 0; }
+' "$SRC_DIR/src/utils.c"
+        rm -f "$SRC_DIR/src/utils.c.bak"
+    fi
+
     wasm32posix-configure \
         --disable-nls \
+        --disable-iri \
+        --without-metalink \
+        --disable-pcre \
+        --disable-pcre2 \
+        --without-libuuid \
+        --without-libpsl \
+        "${SSL_FLAGS[@]}" \
+        CFLAGS="$EXTRA_CFLAGS" \
+        LDFLAGS="$EXTRA_LDFLAGS" \
         2>&1 | tail -30
 
     echo "==> Configure complete."
 fi
 
 # --- Build ---
-echo "==> Building gzip..."
+echo "==> Building wget..."
 make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" 2>&1 | tail -30
 
 echo "==> Collecting binary..."
 mkdir -p "$BIN_DIR"
 
-if [ -f "$SRC_DIR/gzip" ]; then
-    cp "$SRC_DIR/gzip" "$BIN_DIR/gzip.wasm"
-    echo "==> Built gzip"
-    ls -lh "$BIN_DIR/gzip.wasm"
+if [ -f "$SRC_DIR/src/wget" ]; then
+    cp "$SRC_DIR/src/wget" "$BIN_DIR/wget.wasm"
+    echo "==> Built wget"
+    ls -lh "$BIN_DIR/wget.wasm"
 else
-    echo "ERROR: gzip binary not found after build" >&2
+    echo "ERROR: wget binary not found after build" >&2
     exit 1
 fi
 
 echo ""
-echo "==> gzip built successfully!"
-echo "Binary: $BIN_DIR/gzip.wasm"
+echo "==> wget built successfully!"
+echo "Binary: $BIN_DIR/wget.wasm"

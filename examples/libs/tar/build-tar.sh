@@ -1,25 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-<<<<<<< HEAD
-# Build GNU gzip 1.14 for wasm32-posix-kernel.
+# Build GNU tar 1.35 for wasm32-posix-kernel.
 #
 # Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
-# gzip has its own deflate implementation (does NOT link zlib).
-# Output: examples/libs/gzip/bin/gzip.wasm
+# Output: examples/libs/tar/bin/tar.wasm
 
-GZIP_VERSION="${GZIP_VERSION:-1.14}"
-=======
-# Build GNU gzip 1.13 for wasm32-posix-kernel.
-#
-# Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
-# Output: examples/libs/gzip/bin/gzip.wasm
-
-GZIP_VERSION="${GZIP_VERSION:-1.13}"
->>>>>>> 426ec1b (feat: add build scripts for 14 Unix utilities)
+TAR_VERSION="${TAR_VERSION:-1.35}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/gzip-src"
+SRC_DIR="$SCRIPT_DIR/tar-src"
 BIN_DIR="$SCRIPT_DIR/bin"
 SYSROOT="$REPO_ROOT/sysroot"
 
@@ -36,11 +26,15 @@ fi
 
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
-# --- Download gzip source ---
+# Note: GNU tar uses external compressor programs (gzip, bzip2, xz) via
+# fork+exec rather than linking against zlib directly. Compression support
+# requires having the corresponding wasm binaries available at runtime.
+
+# --- Download tar source ---
 if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading gzip $GZIP_VERSION..."
-    TARBALL="gzip-${GZIP_VERSION}.tar.xz"
-    URL="https://ftp.gnu.org/gnu/gzip/${TARBALL}"
+    echo "==> Downloading tar $TAR_VERSION..."
+    TARBALL="tar-${TAR_VERSION}.tar.xz"
+    URL="https://ftp.gnu.org/gnu/tar/${TARBALL}"
     curl -fsSL "$URL" -o "/tmp/$TARBALL"
     mkdir -p "$SRC_DIR"
     tar xJf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
@@ -52,13 +46,9 @@ cd "$SRC_DIR"
 
 # --- Configure ---
 if [ ! -f Makefile ]; then
-    echo "==> Configuring gzip for wasm32..."
+    echo "==> Configuring tar for wasm32..."
 
-<<<<<<< HEAD
-    # gnulib cross-compilation overrides (same pattern as tar/grep)
-=======
-    # gnulib cross-compilation overrides (same pattern as grep/sed/coreutils)
->>>>>>> 426ec1b (feat: add build scripts for 14 Unix utilities)
+    # gnulib cross-compilation overrides (same pattern as coreutils/grep)
     export gl_cv_func_working_getdelim=yes
     export gl_cv_func_working_strerror=yes
     export gl_cv_func_strerror_0_works=yes
@@ -133,7 +123,30 @@ if [ ! -f Makefile ]; then
     export gl_cv_struct_dirent_d_type=yes
     export gl_cv_func_fflush_stdin=yes
 
-    # Functions musl doesn't have
+    # tar-specific gnulib overrides
+    export gl_cv_func_futimens_works=yes
+    export gl_cv_func_utimensat_works=yes
+    export gl_cv_func_futimesat_works=yes
+    export gl_cv_func_working_utimes=yes
+    export gl_cv_func_linkat_nofollow=yes
+    export gl_cv_func_linkat_slash=yes
+    export gl_cv_func_link_follows_symlink=no
+    export gl_cv_func_symlink_works=yes
+    export gl_cv_func_readlink_works=yes
+    export gl_cv_func_readlinkat_works=yes
+    export gl_cv_func_rename_slash_dst_works=yes
+    export gl_cv_func_rename_slash_src_works=yes
+    export gl_cv_func_rename_link_works=yes
+    export gl_cv_func_rename_dest_works=yes
+    export gl_cv_func_rmdir_works=yes
+    export gl_cv_func_mkdir_trailing_dot_works=yes
+    export gl_cv_func_mkdir_trailing_slash_works=yes
+    export gl_cv_func_chown_slash_works=yes
+    export gl_cv_func_chown_ctime_works=yes
+    export gl_cv_func_lchown_works=yes
+
+    # Functions musl doesn't have (Linux-specific or glibc-specific)
+    export ac_cv_func_renameat2=no
     export ac_cv_header_error_h=no
     export ac_cv_func_error=no
     export ac_cv_func_error_at_line=no
@@ -152,13 +165,6 @@ if [ ! -f Makefile ]; then
     export ac_cv_func_pstat_getstatic=no
     export ac_cv_func__set_invalid_parameter_handler=no
 
-<<<<<<< HEAD
-    # musl doesn't have utimens/lutimens (uses utimensat instead)
-    export ac_cv_func_utimens=no
-    export ac_cv_func_lutimens=no
-
-=======
->>>>>>> 426ec1b (feat: add build scripts for 14 Unix utilities)
     # Cross-compilation values
     export ac_cv_func_closedir_void=no
     export ac_cv_func_malloc_0_nonnull=yes
@@ -178,27 +184,30 @@ if [ ! -f Makefile ]; then
 
     wasm32posix-configure \
         --disable-nls \
+        --without-selinux \
+        --without-posix-acls \
+        --with-xattrs=no \
         2>&1 | tail -30
 
     echo "==> Configure complete."
 fi
 
 # --- Build ---
-echo "==> Building gzip..."
+echo "==> Building tar..."
 make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" 2>&1 | tail -30
 
 echo "==> Collecting binary..."
 mkdir -p "$BIN_DIR"
 
-if [ -f "$SRC_DIR/gzip" ]; then
-    cp "$SRC_DIR/gzip" "$BIN_DIR/gzip.wasm"
-    echo "==> Built gzip"
-    ls -lh "$BIN_DIR/gzip.wasm"
+if [ -f "$SRC_DIR/src/tar" ]; then
+    cp "$SRC_DIR/src/tar" "$BIN_DIR/tar.wasm"
+    echo "==> Built tar"
+    ls -lh "$BIN_DIR/tar.wasm"
 else
-    echo "ERROR: gzip binary not found after build" >&2
+    echo "ERROR: tar binary not found after build" >&2
     exit 1
 fi
 
 echo ""
-echo "==> gzip built successfully!"
-echo "Binary: $BIN_DIR/gzip.wasm"
+echo "==> tar built successfully!"
+echo "Binary: $BIN_DIR/tar.wasm"

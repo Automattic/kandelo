@@ -1,25 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-<<<<<<< HEAD
-# Build GNU gzip 1.14 for wasm32-posix-kernel.
+# Build GNU findutils 4.10.0 for wasm32-posix-kernel.
 #
 # Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
-# gzip has its own deflate implementation (does NOT link zlib).
-# Output: examples/libs/gzip/bin/gzip.wasm
+# Output: examples/libs/findutils/bin/find.wasm, bin/xargs.wasm
 
-GZIP_VERSION="${GZIP_VERSION:-1.14}"
-=======
-# Build GNU gzip 1.13 for wasm32-posix-kernel.
-#
-# Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
-# Output: examples/libs/gzip/bin/gzip.wasm
-
-GZIP_VERSION="${GZIP_VERSION:-1.13}"
->>>>>>> 426ec1b (feat: add build scripts for 14 Unix utilities)
+FINDUTILS_VERSION="${FINDUTILS_VERSION:-4.10.0}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/gzip-src"
+SRC_DIR="$SCRIPT_DIR/findutils-src"
 BIN_DIR="$SCRIPT_DIR/bin"
 SYSROOT="$REPO_ROOT/sysroot"
 
@@ -36,11 +26,11 @@ fi
 
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
-# --- Download gzip source ---
+# --- Download findutils source ---
 if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading gzip $GZIP_VERSION..."
-    TARBALL="gzip-${GZIP_VERSION}.tar.xz"
-    URL="https://ftp.gnu.org/gnu/gzip/${TARBALL}"
+    echo "==> Downloading findutils $FINDUTILS_VERSION..."
+    TARBALL="findutils-${FINDUTILS_VERSION}.tar.xz"
+    URL="https://ftp.gnu.org/gnu/findutils/${TARBALL}"
     curl -fsSL "$URL" -o "/tmp/$TARBALL"
     mkdir -p "$SRC_DIR"
     tar xJf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
@@ -52,13 +42,9 @@ cd "$SRC_DIR"
 
 # --- Configure ---
 if [ ! -f Makefile ]; then
-    echo "==> Configuring gzip for wasm32..."
+    echo "==> Configuring findutils for wasm32..."
 
-<<<<<<< HEAD
-    # gnulib cross-compilation overrides (same pattern as tar/grep)
-=======
     # gnulib cross-compilation overrides (same pattern as grep/sed/coreutils)
->>>>>>> 426ec1b (feat: add build scripts for 14 Unix utilities)
     export gl_cv_func_working_getdelim=yes
     export gl_cv_func_working_strerror=yes
     export gl_cv_func_strerror_0_works=yes
@@ -152,13 +138,6 @@ if [ ! -f Makefile ]; then
     export ac_cv_func_pstat_getstatic=no
     export ac_cv_func__set_invalid_parameter_handler=no
 
-<<<<<<< HEAD
-    # musl doesn't have utimens/lutimens (uses utimensat instead)
-    export ac_cv_func_utimens=no
-    export ac_cv_func_lutimens=no
-
-=======
->>>>>>> 426ec1b (feat: add build scripts for 14 Unix utilities)
     # Cross-compilation values
     export ac_cv_func_closedir_void=no
     export ac_cv_func_malloc_0_nonnull=yes
@@ -169,6 +148,9 @@ if [ ! -f Makefile ]; then
     export ac_cv_have_decl_strerror_r=yes
     export ac_cv_header_sys_inotify_h=no
 
+    # findutils-specific overrides
+    export ac_cv_func_getpgrp_void=yes
+
     # Wasm32 type sizes
     export ac_cv_sizeof_long=4
     export ac_cv_sizeof_long_long=8
@@ -178,27 +160,45 @@ if [ ! -f Makefile ]; then
 
     wasm32posix-configure \
         --disable-nls \
+        --without-selinux \
+        --localstatedir=/var \
         2>&1 | tail -30
 
     echo "==> Configure complete."
 fi
 
 # --- Build ---
-echo "==> Building gzip..."
+echo "==> Building findutils..."
 make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" 2>&1 | tail -30
 
-echo "==> Collecting binary..."
+echo "==> Collecting binaries..."
 mkdir -p "$BIN_DIR"
 
-if [ -f "$SRC_DIR/gzip" ]; then
-    cp "$SRC_DIR/gzip" "$BIN_DIR/gzip.wasm"
-    echo "==> Built gzip"
-    ls -lh "$BIN_DIR/gzip.wasm"
+FOUND=0
+
+if [ -f "$SRC_DIR/find/find" ]; then
+    cp "$SRC_DIR/find/find" "$BIN_DIR/find.wasm"
+    echo "==> Built find"
+    ls -lh "$BIN_DIR/find.wasm"
+    FOUND=$((FOUND + 1))
 else
-    echo "ERROR: gzip binary not found after build" >&2
+    echo "WARNING: find binary not found after build" >&2
+fi
+
+if [ -f "$SRC_DIR/xargs/xargs" ]; then
+    cp "$SRC_DIR/xargs/xargs" "$BIN_DIR/xargs.wasm"
+    echo "==> Built xargs"
+    ls -lh "$BIN_DIR/xargs.wasm"
+    FOUND=$((FOUND + 1))
+else
+    echo "WARNING: xargs binary not found after build" >&2
+fi
+
+if [ "$FOUND" -eq 0 ]; then
+    echo "ERROR: No binaries were produced" >&2
     exit 1
 fi
 
 echo ""
-echo "==> gzip built successfully!"
-echo "Binary: $BIN_DIR/gzip.wasm"
+echo "==> findutils built successfully!"
+echo "Binaries: $BIN_DIR/find.wasm $BIN_DIR/xargs.wasm"

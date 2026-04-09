@@ -1,25 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-<<<<<<< HEAD
-# Build GNU gzip 1.14 for wasm32-posix-kernel.
+# Build GNU diffutils 3.10 for wasm32-posix-kernel.
 #
 # Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
-# gzip has its own deflate implementation (does NOT link zlib).
-# Output: examples/libs/gzip/bin/gzip.wasm
+# Output: examples/libs/diffutils/bin/{diff,cmp,sdiff,diff3}.wasm
 
-GZIP_VERSION="${GZIP_VERSION:-1.14}"
-=======
-# Build GNU gzip 1.13 for wasm32-posix-kernel.
-#
-# Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
-# Output: examples/libs/gzip/bin/gzip.wasm
-
-GZIP_VERSION="${GZIP_VERSION:-1.13}"
->>>>>>> 426ec1b (feat: add build scripts for 14 Unix utilities)
+DIFFUTILS_VERSION="${DIFFUTILS_VERSION:-3.10}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/gzip-src"
+SRC_DIR="$SCRIPT_DIR/diffutils-src"
 BIN_DIR="$SCRIPT_DIR/bin"
 SYSROOT="$REPO_ROOT/sysroot"
 
@@ -36,11 +26,11 @@ fi
 
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
-# --- Download gzip source ---
+# --- Download diffutils source ---
 if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading gzip $GZIP_VERSION..."
-    TARBALL="gzip-${GZIP_VERSION}.tar.xz"
-    URL="https://ftp.gnu.org/gnu/gzip/${TARBALL}"
+    echo "==> Downloading diffutils $DIFFUTILS_VERSION..."
+    TARBALL="diffutils-${DIFFUTILS_VERSION}.tar.xz"
+    URL="https://ftp.gnu.org/gnu/diffutils/${TARBALL}"
     curl -fsSL "$URL" -o "/tmp/$TARBALL"
     mkdir -p "$SRC_DIR"
     tar xJf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
@@ -52,13 +42,9 @@ cd "$SRC_DIR"
 
 # --- Configure ---
 if [ ! -f Makefile ]; then
-    echo "==> Configuring gzip for wasm32..."
+    echo "==> Configuring diffutils for wasm32..."
 
-<<<<<<< HEAD
-    # gnulib cross-compilation overrides (same pattern as tar/grep)
-=======
-    # gnulib cross-compilation overrides (same pattern as grep/sed/coreutils)
->>>>>>> 426ec1b (feat: add build scripts for 14 Unix utilities)
+    # gnulib cross-compilation overrides (same pattern as coreutils/grep)
     export gl_cv_func_working_getdelim=yes
     export gl_cv_func_working_strerror=yes
     export gl_cv_func_strerror_0_works=yes
@@ -151,14 +137,9 @@ if [ ! -f Makefile ]; then
     export ac_cv_func_pstat_getdynamic=no
     export ac_cv_func_pstat_getstatic=no
     export ac_cv_func__set_invalid_parameter_handler=no
+    export ac_cv_func_strcasecoll=no
+    export ac_cv_func_stricoll=no
 
-<<<<<<< HEAD
-    # musl doesn't have utimens/lutimens (uses utimensat instead)
-    export ac_cv_func_utimens=no
-    export ac_cv_func_lutimens=no
-
-=======
->>>>>>> 426ec1b (feat: add build scripts for 14 Unix utilities)
     # Cross-compilation values
     export ac_cv_func_closedir_void=no
     export ac_cv_func_malloc_0_nonnull=yes
@@ -184,21 +165,24 @@ if [ ! -f Makefile ]; then
 fi
 
 # --- Build ---
-echo "==> Building gzip..."
+echo "==> Building diffutils..."
 make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" 2>&1 | tail -30
 
-echo "==> Collecting binary..."
+echo "==> Collecting binaries..."
 mkdir -p "$BIN_DIR"
 
-if [ -f "$SRC_DIR/gzip" ]; then
-    cp "$SRC_DIR/gzip" "$BIN_DIR/gzip.wasm"
-    echo "==> Built gzip"
-    ls -lh "$BIN_DIR/gzip.wasm"
-else
-    echo "ERROR: gzip binary not found after build" >&2
-    exit 1
-fi
+BINARIES=("diff" "cmp" "sdiff" "diff3")
+for bin in "${BINARIES[@]}"; do
+    if [ -f "$SRC_DIR/src/$bin" ]; then
+        cp "$SRC_DIR/src/$bin" "$BIN_DIR/$bin.wasm"
+        echo "==> Built $bin"
+        ls -lh "$BIN_DIR/$bin.wasm"
+    else
+        echo "ERROR: $bin binary not found after build" >&2
+        exit 1
+    fi
+done
 
 echo ""
-echo "==> gzip built successfully!"
-echo "Binary: $BIN_DIR/gzip.wasm"
+echo "==> diffutils built successfully!"
+echo "Binaries: $BIN_DIR/{diff,cmp,sdiff,diff3}.wasm"
