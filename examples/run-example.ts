@@ -480,6 +480,12 @@ async function main() {
         ]),
     ];
 
+    // When stdin is not a terminal (piped or redirected), set it as finite
+    // so reads return EOF instead of blocking forever.
+    if (!process.stdin.isTTY) {
+        kernelWorker.setStdinData(pid, new Uint8Array(0));
+    }
+
     // Spawn the process worker
     const initData: CentralizedWorkerInitMessage = {
         type: "centralized_init",
