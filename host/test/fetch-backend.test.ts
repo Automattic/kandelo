@@ -26,11 +26,11 @@ describe("FetchNetworkBackend", () => {
       }).not.toThrow();
     });
 
-    it("throws for port 443 (HTTPS not supported)", () => {
+    it("succeeds for port 443 (uses https:// scheme for fetch)", () => {
       const backend = new FetchNetworkBackend();
       expect(() => {
         backend.connect(1, new Uint8Array([93, 184, 216, 34]), 443);
-      }).toThrow(/HTTPS/);
+      }).not.toThrow();
     });
   });
 

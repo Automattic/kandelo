@@ -54,7 +54,8 @@ perl Configure linux-generic32 \
     no-apps \
     no-autoerrinit \
     no-posix-io \
-    --prefix="$INSTALL_DIR"
+    --prefix="$INSTALL_DIR" \
+    --openssldir=/etc/ssl
 
 # Patch Makefile: remove cross-compile settings that conflict
 echo "==> Patching Makefile..."
