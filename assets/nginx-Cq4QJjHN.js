@@ -29,10 +29,10 @@ http {
         root ${n};
         index index.html;
 
-        location / {
-        }
 ${o?`
 `+o+`
-`:""}    }
+`:`        location / {
+        }
+`}    }
 }
 `}function p(t,e){const n=["/etc/nginx","/var/www/html","/var/log/nginx","/tmp/nginx_client_temp","/tmp/nginx-wasm/logs"];for(const s of n)r(t,s);i(t,"/etc/nginx/nginx.conf",a(e))}const l="/wasm-posix-kernel/assets/nginx-4p5Zt3rr.wasm";export{l as n,p};
