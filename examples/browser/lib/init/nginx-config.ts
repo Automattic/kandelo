@@ -58,9 +58,7 @@ http {
         root ${root};
         index index.html;
 
-        location / {
-        }
-${extraLocations ? "\n" + extraLocations + "\n" : ""}    }
+${extraLocations ? "\n" + extraLocations + "\n" : "        location / {\n        }\n"}    }
 }
 `;
 }
