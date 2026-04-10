@@ -6,6 +6,7 @@
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
 import { PtyTerminal } from "../../lib/pty-terminal";
+import { loadPerlBundle } from "../../lib/perl-bundle";
 import kernelWasmUrl from "../../../../host/wasm/wasm_posix_kernel.wasm?url";
 import perlWasmUrl from "../../../../examples/libs/perl/bin/perl.wasm?url";
 import "@xterm/xterm/css/xterm.css";
@@ -87,6 +88,32 @@ const PERL_ENV = [
   "PATH=/usr/local/bin:/usr/bin:/bin",
 ];
 
+/** Initialize a kernel and load the Perl stdlib bundle into its VFS. */
+async function initKernelWithStdlib(
+  options?: { onStdout?: (data: Uint8Array) => void; onStderr?: (data: Uint8Array) => void },
+): Promise<BrowserKernel> {
+  const kernel = new BrowserKernel({
+    onStdout: options?.onStdout,
+    onStderr: options?.onStderr,
+  });
+  await kernel.init(kernelBytes!);
+
+  // Create directories Perl expects
+  const fs = kernel.fs;
+  for (const d of ["/usr", "/usr/lib", "/usr/lib/perl5", "/usr/lib/perl5/5.40.3", "/tmp", "/home"]) {
+    try { fs.mkdir(d, 0o755); } catch { /* exists */ }
+  }
+
+  // Load stdlib bundle
+  setStatus("Loading Perl stdlib...", "loading");
+  const loaded = await loadPerlBundle(fs, import.meta.env.BASE_URL + "perl-bundle.json", (current, total) => {
+    setStatus(`Loading Perl stdlib... ${current}/${total} files`, "loading");
+  });
+  setStatus(`Stdlib loaded (${loaded} files). Starting Perl...`, "loading");
+
+  return kernel;
+}
+
 // A simple REPL script written to the VFS. Perl doesn't have a built-in
 // interactive mode, so we provide a minimal eval loop.
 const REPL_SCRIPT = `
@@ -142,15 +169,8 @@ async function startInteractiveRepl() {
   try {
     const info = await loadBinaries();
 
-    const kernel = new BrowserKernel();
-    await kernel.init(kernelBytes!);
-
-    // Create directories and write REPL script
-    const fs = kernel.fs;
-    for (const d of ["/tmp", "/home", "/usr", "/usr/bin"]) {
-      try { fs.mkdir(d, 0o755); } catch { /* exists */ }
-    }
-    writeFile(fs, "/tmp/repl.pl", REPL_SCRIPT);
+    const kernel = await initKernelWithStdlib();
+    writeFile(kernel.fs, "/tmp/repl.pl", REPL_SCRIPT);
 
     activeKernel = kernel;
 
@@ -447,24 +467,17 @@ async function runBatch() {
 
     const code = codeEl.value;
 
-    const kernel = new BrowserKernel({
+    const kernel = await initKernelWithStdlib({
       onStdout: (data) => appendBatchOutput(decoder.decode(data)),
       onStderr: (data) => appendBatchOutput(decoder.decode(data), "stderr"),
     });
-    await kernel.init(kernelBytes!);
-
-    // Create directories
-    const fs = kernel.fs;
-    for (const d of ["/tmp", "/home"]) {
-      try { fs.mkdir(d, 0o755); } catch { /* exists */ }
-    }
 
     // Write script to a file in the VFS
     const scriptPath = "/tmp/script.pl";
     const scriptBytes = encoder.encode(code);
-    const fd = fs.open(scriptPath, 0x241 /* O_WRONLY|O_CREAT|O_TRUNC */, 0o644);
-    fs.write(fd, scriptBytes, null, scriptBytes.length);
-    fs.close(fd);
+    const fd = kernel.fs.open(scriptPath, 0x241 /* O_WRONLY|O_CREAT|O_TRUNC */, 0o644);
+    kernel.fs.write(fd, scriptBytes, null, scriptBytes.length);
+    kernel.fs.close(fd);
 
     setStatus("Running Perl...", "running");
 

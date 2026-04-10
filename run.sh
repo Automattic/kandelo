@@ -49,6 +49,7 @@ has_sed()       { [ -f "$REPO_ROOT/examples/libs/sed/bin/sed.wasm" ]; }
 has_redis()     { [ -f "$REPO_ROOT/examples/libs/redis/bin/redis-server.wasm" ]; }
 has_cpython()   { [ -f "$REPO_ROOT/examples/libs/cpython/bin/python.wasm" ]; }
 has_python_bundle() { [ -f "$REPO_ROOT/examples/browser/public/python-bundle.json" ]; }
+has_perl_bundle() { [ -f "$REPO_ROOT/examples/browser/public/perl-bundle.json" ]; }
 has_dlopen()    { [ -f "$REPO_ROOT/examples/dlopen/hello-lib.so" ] && \
                   [ -f "$REPO_ROOT/examples/dlopen/main.wasm" ]; }
 
@@ -295,6 +296,20 @@ build_python_bundle() {
     fi
 }
 
+build_perl_bundle() {
+    if ! has_perl_bundle; then
+        if [ ! -f "$REPO_ROOT/examples/libs/perl/perl-src/lib/strict.pm" ]; then
+            warn "Perl source not found, skipping perl-bundle"
+            return
+        fi
+        step "Building Perl stdlib browser bundle"
+        bash "$REPO_ROOT/examples/browser/scripts/build-perl-bundle.sh"
+        info "Perl bundle built"
+    else
+        info "Perl bundle"
+    fi
+}
+
 build_dlopen() {
     need_sysroot
     if ! has_dlopen; then
@@ -325,6 +340,7 @@ build_target() {
         redis)      build_redis ;;
         cpython)    build_cpython ;;
         python-bundle) build_python_bundle ;;
+        perl-bundle) build_perl_bundle ;;
         wordpress)  build_wordpress ;;
         wp-bundle)  build_wp_bundle ;;
         dlopen)     build_dlopen ;;
@@ -335,7 +351,7 @@ build_target() {
 }
 
 # All targets needed for browser demos
-BROWSER_DEPS=(kernel sysroot programs dash coreutils grep sed nginx php php-fpm mariadb redis cpython python-bundle wordpress wp-bundle)
+BROWSER_DEPS=(kernel sysroot programs dash coreutils grep sed nginx php php-fpm mariadb redis cpython python-bundle perl-bundle wordpress wp-bundle)
 
 build_browser() {
     for t in "${BROWSER_DEPS[@]}"; do
@@ -442,6 +458,9 @@ clean_target() {
         python-bundle)
             rm -f "$REPO_ROOT/examples/browser/public/python-bundle.json"
             warn "Cleaned Python bundle" ;;
+        perl-bundle)
+            rm -f "$REPO_ROOT/examples/browser/public/perl-bundle.json"
+            warn "Cleaned Perl bundle" ;;
         wordpress)
             rm -rf "$REPO_ROOT/examples/wordpress/wordpress"
             warn "Cleaned WordPress" ;;
@@ -457,7 +476,7 @@ clean_target() {
                 clean_target "$t"
             done ;;
         all)
-            for t in kernel sysroot host programs dash coreutils grep sed nginx php php-fpm mariadb redis cpython python-bundle wordpress wp-bundle dlopen; do
+            for t in kernel sysroot host programs dash coreutils grep sed nginx php php-fpm mariadb redis cpython python-bundle perl-bundle wordpress wp-bundle dlopen; do
                 clean_target "$t"
             done ;;
         *)  err "Unknown clean target: $target"; exit 1 ;;
@@ -691,6 +710,7 @@ cmd_list() {
     echo "  redis       Redis 7.2 Wasm binary                 $(has_redis && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  cpython     CPython 3.13 Wasm binary              $(has_cpython && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  python-bundle  Python stdlib browser bundle       $(has_python_bundle && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  perl-bundle    Perl stdlib browser bundle         $(has_perl_bundle && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  wordpress   WordPress + SQLite plugin             $(has_wordpress && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  wp-bundle   WordPress browser bundle              $(has_wp_bundle && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  dlopen      dlopen shared library example          $(has_dlopen && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
