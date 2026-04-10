@@ -128,6 +128,12 @@ export default defineConfig({
     },
   },
   build: {
+    // Use terser instead of esbuild for minification. esbuild's minifier
+    // drops variable declarations from TypeScript const-enum IIFEs in
+    // @xterm/xterm's pre-built ESM bundle, producing assignments to
+    // undeclared variables that throw ReferenceError in strict mode
+    // (Firefox).
+    minify: "terser",
     rollupOptions: {
       input: {
         main: path.resolve(__dirname, "index.html"),
