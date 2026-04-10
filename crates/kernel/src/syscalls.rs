@@ -2620,6 +2620,43 @@ pub fn sys_getdents64(
         return Ok(0);
     }
 
+    // Host entries exhausted but virtual entries still pending (root dir only)
+    if dir_handle == -3 && path == b"/" {
+        let mut pos = 0usize;
+        let mut entry_offset = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?.dir_entry_offset;
+        let virtuals: &[&[u8]] = &[b"dev", b"proc"];
+        let virt_base = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?.dir_synth_state;
+        let virt_start = if virt_base > 2 { (virt_base - 2) as usize } else { 0 };
+        for (i, name) in virtuals.iter().enumerate() {
+            if i < virt_start {
+                continue;
+            }
+            entry_offset += 1;
+            let written = write_dirent64(buf, pos, 2, entry_offset, 4 /* DT_DIR */, name);
+            if written == 0 {
+                if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
+                    ofd.dir_entry_offset = entry_offset - 1;
+                    ofd.dir_synth_state = 2 + i as u8;
+                }
+                if pos == 0 {
+                    return Err(Errno::EINVAL);
+                }
+                return Ok(pos);
+            }
+            pos += written;
+        }
+        if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
+            ofd.dir_entry_offset = entry_offset;
+            ofd.dir_host_handle = -2;
+        }
+        return Ok(pos);
+    }
+
+    if dir_handle == -3 {
+        // Non-root with -3 state — shouldn't happen, treat as exhausted
+        return Ok(0);
+    }
+
     let dir_handle = if dir_handle == -1 {
         // Open the directory for iteration
         let h = host.host_opendir(&path)?;
@@ -2701,12 +2738,41 @@ pub fn sys_getdents64(
                 pos += written;
             }
             None => {
-                // End of directory — mark as exhausted
+                // Close the host dir handle
+                let _ = host.host_closedir(dir_handle);
+
+                // Inject synthetic entries for virtual filesystems when listing "/"
+                if path == b"/" {
+                    let virtuals: &[&[u8]] = &[b"proc"];
+                    // synth_state tracks how many virtual entries we've emitted (2 = done with . and ..)
+                    let virt_base = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?.dir_synth_state;
+                    let virt_start = if virt_base > 2 { (virt_base - 2) as usize } else { 0 };
+                    for (i, name) in virtuals.iter().enumerate() {
+                        if i < virt_start {
+                            continue;
+                        }
+                        entry_offset += 1;
+                        let written = write_dirent64(buf, pos, 2, entry_offset, 4 /* DT_DIR */, name);
+                        if written == 0 {
+                            // Save progress — we'll resume from here on next call
+                            if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
+                                ofd.dir_entry_offset = entry_offset - 1;
+                                ofd.dir_host_handle = -3; // signal: host exhausted, virtuals pending
+                                ofd.dir_synth_state = 2 + i as u8;
+                            }
+                            if pos == 0 {
+                                return Err(Errno::EINVAL);
+                            }
+                            return Ok(pos);
+                        }
+                        pos += written;
+                    }
+                }
+
+                // Mark as fully exhausted
                 if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
                     ofd.dir_host_handle = -2;
                 }
-                // Close the host dir handle
-                let _ = host.host_closedir(dir_handle);
                 break;
             }
         }
