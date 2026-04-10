@@ -2,18 +2,18 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 /// Resolve a path against a working directory.
-/// If path is absolute (starts with '/'), return it as-is.
-/// If path is relative, prepend cwd + '/'.
+/// If path is absolute (starts with '/'), normalize and return it.
+/// If path is relative, prepend cwd + '/' and normalize.
 pub fn resolve_path(path: &[u8], cwd: &[u8]) -> Vec<u8> {
     if path.first() == Some(&b'/') {
-        return path.to_vec();
+        return normalize_path(path);
     }
     let mut resolved = cwd.to_vec();
     if resolved.last() != Some(&b'/') {
         resolved.push(b'/');
     }
     resolved.extend_from_slice(path);
-    resolved
+    normalize_path(&resolved)
 }
 
 /// Normalize an absolute path by resolving `.` and `..` components.
@@ -71,13 +71,31 @@ mod tests {
     #[test]
     fn test_dot_relative_path() {
         let resolved = resolve_path(b"./file.txt", b"/working/dir");
-        assert_eq!(resolved, b"/working/dir/./file.txt");
+        assert_eq!(resolved, b"/working/dir/file.txt");
     }
 
     #[test]
     fn test_empty_path() {
         let resolved = resolve_path(b"", b"/working/dir");
-        assert_eq!(resolved, b"/working/dir/");
+        assert_eq!(resolved, b"/working/dir");
+    }
+
+    #[test]
+    fn test_dot_resolves_to_cwd() {
+        let resolved = resolve_path(b".", b"/dev");
+        assert_eq!(resolved, b"/dev");
+    }
+
+    #[test]
+    fn test_dotdot_relative_path() {
+        let resolved = resolve_path(b"../file.txt", b"/working/dir");
+        assert_eq!(resolved, b"/working/file.txt");
+    }
+
+    #[test]
+    fn test_absolute_path_normalized() {
+        let resolved = resolve_path(b"/dev/./pts/../null", b"/working/dir");
+        assert_eq!(resolved, b"/dev/null");
     }
 
     #[test]
