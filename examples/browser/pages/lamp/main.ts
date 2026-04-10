@@ -259,7 +259,7 @@ async function start() {
     // Write init service descriptors
     writeInitDescriptor(fs, "05-mariadb-bootstrap", {
       type: "oneshot",
-      command: "/usr/sbin/mariadbd --bootstrap --datadir=/data --tmpdir=/data/tmp --skip-networking --log-error=/data/bootstrap.log",
+      command: "/usr/sbin/mariadbd --no-defaults --bootstrap --datadir=/data --tmpdir=/data/tmp --default-storage-engine=Aria --skip-grant-tables --key-buffer-size=1048576 --table-open-cache=10 --sort-buffer-size=262144 --skip-networking --log-warnings=0 --log-error=/data/bootstrap.log",
       stdin: "/etc/mariadb/bootstrap.sql",
       ready: "stdin-consumed",
       terminate: "true",
@@ -267,7 +267,7 @@ async function start() {
 
     writeInitDescriptor(fs, "10-mariadb", {
       type: "daemon",
-      command: "/usr/sbin/mariadbd --datadir=/data --tmpdir=/data/tmp --skip-networking=0 --port=3306 --thread-handling=no-threads --skip-grant-tables --default-storage-engine=Aria --log-error=/data/error.log",
+      command: "/usr/sbin/mariadbd --no-defaults --datadir=/data --tmpdir=/data/tmp --default-storage-engine=Aria --skip-grant-tables --key-buffer-size=1048576 --table-open-cache=10 --sort-buffer-size=262144 --skip-networking=0 --port=3306 --bind-address=0.0.0.0 --socket= --max-connections=10 --thread-handling=no-threads --log-error=/data/error.log",
       depends: "mariadb-bootstrap",
       ready: "port:3306",
     });
