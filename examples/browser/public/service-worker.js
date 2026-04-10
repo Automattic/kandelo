@@ -213,6 +213,8 @@ if (typeof window !== "undefined") {
 
   // --- CORS proxy URL (injected at build time, empty string in dev) ---
   var CORS_PROXY_URL = "__CORS_PROXY_URL__";
+  // In dev mode the placeholder is not replaced — treat as unconfigured
+  if (CORS_PROXY_URL.indexOf("__") === 0) CORS_PROXY_URL = "";
 
   /**
    * Check if a URL is cross-origin relative to the service worker's origin.
