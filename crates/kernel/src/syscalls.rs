@@ -2312,6 +2312,22 @@ pub fn sys_access(proc: &mut Process, host: &mut dyn HostIO, path: &[u8], amode:
 /// Validates that the path exists and is a directory via host_stat.
 pub fn sys_chdir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
     let resolved = crate::path::resolve_path(path, &proc.cwd);
+    // Check virtual filesystems first (procfs, devfs), then fall through to host
+    if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
+        let st = crate::procfs::procfs_stat(&entry, 0, true);
+        if st.st_mode & wasm_posix_shared::mode::S_IFMT != wasm_posix_shared::mode::S_IFDIR {
+            return Err(Errno::ENOTDIR);
+        }
+        proc.cwd = resolved;
+        return Ok(());
+    }
+    if let Some(st) = crate::devfs::match_devfs_stat(&resolved, proc.euid, proc.egid) {
+        if st.st_mode & wasm_posix_shared::mode::S_IFMT != wasm_posix_shared::mode::S_IFDIR {
+            return Err(Errno::ENOTDIR);
+        }
+        proc.cwd = resolved;
+        return Ok(());
+    }
     // Validate the path exists and is a directory
     let stat = host.host_stat(&resolved)?;
     let file_type = stat.st_mode & wasm_posix_shared::mode::S_IFMT;
