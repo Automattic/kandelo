@@ -1,0 +1,2 @@
+vfprintf.o: vfprintf.c ../config.h
+../config.h:

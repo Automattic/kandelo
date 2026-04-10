@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+<<<<<<< HEAD
 # Build XZ Utils 5.6.4 for wasm32-posix-kernel.
 #
 # Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
@@ -9,6 +10,14 @@ set -euo pipefail
 # Also installs liblzma.a + headers to sysroot.
 
 XZ_VERSION="${XZ_VERSION:-5.6.4}"
+=======
+# Build xz-utils 5.6.3 for wasm32-posix-kernel.
+#
+# Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
+# Output: examples/libs/xz/bin/xz.wasm
+
+XZ_VERSION="${XZ_VERSION:-5.6.3}"
+>>>>>>> 426ec1b (feat: add build scripts for 14 Unix utilities)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 SRC_DIR="$SCRIPT_DIR/xz-src"
@@ -31,6 +40,7 @@ export WASM_POSIX_SYSROOT="$SYSROOT"
 # --- Download xz source ---
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading xz $XZ_VERSION..."
+<<<<<<< HEAD
     TARBALL="xz-${XZ_VERSION}.tar.gz"
     URL="https://github.com/tukaani-project/xz/releases/download/v${XZ_VERSION}/${TARBALL}"
     curl -fsSL "$URL" -o "/tmp/$TARBALL"
@@ -42,6 +52,21 @@ if [ ! -d "$SRC_DIR" ]; then
     # Patch: xz excludes __wasm__ from sigprocmask path, but our sysroot has it
     sed -i '' 's/!defined(__wasm__)/!defined(__wasm_no_signal__)/' "$SRC_DIR/src/common/mythread.h"
     echo "==> Patched mythread.h for wasm signal support"
+=======
+    TARBALL="xz-${XZ_VERSION}.tar.xz"
+    URL="https://github.com/tukaani-project/xz/releases/download/v${XZ_VERSION}/${TARBALL}"
+    curl -fsSL "$URL" -o "/tmp/$TARBALL"
+    mkdir -p "$SRC_DIR"
+    tar xJf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
+    rm "/tmp/$TARBALL"
+    echo "==> Source extracted to $SRC_DIR"
+
+    # Patch: xz's mythread.h excludes mythread_sigmask() on __wasm__ even in
+    # single-threaded mode (no MYTHREAD_* defined). Our wasm32 target has
+    # sigprocmask, so remove the __wasm__ exclusion.
+    sed -i.bak 's/!defined(__wasm__)/1/' "$SRC_DIR/src/common/mythread.h"
+    echo "==> Patched mythread.h for wasm32"
+>>>>>>> 426ec1b (feat: add build scripts for 14 Unix utilities)
 fi
 
 cd "$SRC_DIR"
@@ -55,10 +80,14 @@ if [ ! -f Makefile ]; then
     export ac_cv_func_malloc_0_nonnull=yes
     export ac_cv_func_realloc_0_nonnull=yes
     export ac_cv_func_calloc_0_nonnull=yes
+<<<<<<< HEAD
 
     # No Capsicum (FreeBSD sandbox) or pledge (OpenBSD)
     export ac_cv_header_sys_capsicum_h=no
     export ac_cv_func_cap_rights_limit=no
+=======
+    export ac_cv_header_sys_inotify_h=no
+>>>>>>> 426ec1b (feat: add build scripts for 14 Unix utilities)
 
     # Wasm32 type sizes
     export ac_cv_sizeof_long=4
@@ -72,11 +101,21 @@ if [ ! -f Makefile ]; then
         --disable-threads \
         --disable-shared \
         --enable-static \
+<<<<<<< HEAD
         --disable-doc \
         --disable-scripts \
         --disable-lzmadec \
         --disable-lzmainfo \
         --enable-sandbox=no \
+=======
+        --disable-assembler \
+        --disable-doc \
+        --disable-scripts \
+        --enable-sandbox=no \
+        --disable-xzdec \
+        --disable-lzmadec \
+        --disable-lzmainfo \
+>>>>>>> 426ec1b (feat: add build scripts for 14 Unix utilities)
         2>&1 | tail -30
 
     echo "==> Configure complete."
@@ -98,6 +137,7 @@ else
     exit 1
 fi
 
+<<<<<<< HEAD
 # --- Install library to sysroot ---
 echo "==> Installing liblzma.a and headers to sysroot..."
 if [ -f "$SRC_DIR/src/liblzma/.libs/liblzma.a" ]; then
@@ -108,6 +148,8 @@ if [ -f "$SRC_DIR/src/liblzma/.libs/liblzma.a" ]; then
     echo "==> Installed liblzma.a and headers"
 fi
 
+=======
+>>>>>>> 426ec1b (feat: add build scripts for 14 Unix utilities)
 echo ""
 echo "==> xz built successfully!"
 echo "Binary: $BIN_DIR/xz.wasm"

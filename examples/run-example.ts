@@ -47,7 +47,20 @@ const xzWasm = resolve(repoRoot, "examples/libs/xz/bin/xz.wasm");
 const zstdWasm = resolve(repoRoot, "examples/libs/zstd/bin/zstd.wasm");
 const zipWasm = resolve(repoRoot, "examples/libs/zip/bin/zip.wasm");
 const unzipWasm = resolve(repoRoot, "examples/libs/unzip/bin/unzip.wasm");
+const qjsWasm = resolve(repoRoot, "examples/libs/quickjs/bin/qjs.wasm");
+const nodeWasm = resolve(repoRoot, "examples/libs/quickjs/bin/node.wasm");
 const lsofWasm = resolve(repoRoot, "examples/lsof.wasm");
+const rubyWasm = resolve(repoRoot, "examples/libs/ruby/bin/ruby.wasm");
+const vimWasm = resolve(repoRoot, "examples/libs/vim/bin/vim.wasm");
+const gawkWasm = resolve(repoRoot, "examples/libs/gawk/bin/gawk.wasm");
+const findWasm = resolve(repoRoot, "examples/libs/findutils/bin/find.wasm");
+const xargsWasm = resolve(repoRoot, "examples/libs/findutils/bin/xargs.wasm");
+const diffWasm = resolve(repoRoot, "examples/libs/diffutils/bin/diff.wasm");
+const cmpWasm = resolve(repoRoot, "examples/libs/diffutils/bin/cmp.wasm");
+const sdiffWasm = resolve(repoRoot, "examples/libs/diffutils/bin/sdiff.wasm");
+const diff3Wasm = resolve(repoRoot, "examples/libs/diffutils/bin/diff3.wasm");
+const perlWasm = resolve(repoRoot, "examples/libs/perl/bin/perl.wasm");
+const nanoWasm = resolve(repoRoot, "examples/libs/nano/bin/nano.wasm");
 
 // GNU coreutils multi-call binary supports all of these as argv[0]
 const coreutilsNames = [
@@ -165,9 +178,57 @@ const builtinPrograms: Record<string, string> = {
     "funzip": unzipWasm,
     "/usr/bin/funzip": unzipWasm,
     "/bin/funzip": unzipWasm,
+    // QuickJS-NG JavaScript interpreter
+    "qjs": qjsWasm,
+    "/usr/bin/qjs": qjsWasm,
+    "/bin/qjs": qjsWasm,
+    // Node.js-compatible runtime (QuickJS-NG with Node.js API compat layer)
+    "node": nodeWasm,
+    "/usr/bin/node": nodeWasm,
+    "/bin/node": nodeWasm,
+    "/usr/local/bin/node": nodeWasm,
     "lsof": lsofWasm,
     "/usr/bin/lsof": lsofWasm,
     "/bin/lsof": lsofWasm,
+    "ruby": rubyWasm,
+    "/usr/bin/ruby": rubyWasm,
+    "/bin/ruby": rubyWasm,
+    "vim": vimWasm,
+    "/usr/bin/vim": vimWasm,
+    "/bin/vim": vimWasm,
+    "vi": vimWasm,
+    "/usr/bin/vi": vimWasm,
+    "/bin/vi": vimWasm,
+    "gawk": gawkWasm,
+    "/bin/gawk": gawkWasm,
+    "/usr/bin/gawk": gawkWasm,
+    "awk": gawkWasm,
+    "/bin/awk": gawkWasm,
+    "/usr/bin/awk": gawkWasm,
+    "find": findWasm,
+    "/bin/find": findWasm,
+    "/usr/bin/find": findWasm,
+    "xargs": xargsWasm,
+    "/bin/xargs": xargsWasm,
+    "/usr/bin/xargs": xargsWasm,
+    "diff": diffWasm,
+    "/bin/diff": diffWasm,
+    "/usr/bin/diff": diffWasm,
+    "cmp": cmpWasm,
+    "/bin/cmp": cmpWasm,
+    "/usr/bin/cmp": cmpWasm,
+    "sdiff": sdiffWasm,
+    "/bin/sdiff": sdiffWasm,
+    "/usr/bin/sdiff": sdiffWasm,
+    "diff3": diff3Wasm,
+    "/bin/diff3": diff3Wasm,
+    "/usr/bin/diff3": diff3Wasm,
+    "perl": perlWasm,
+    "/usr/bin/perl": perlWasm,
+    "/bin/perl": perlWasm,
+    "nano": nanoWasm,
+    "/usr/bin/nano": nanoWasm,
+    "/bin/nano": nanoWasm,
 };
 
 // Add coreutils mappings for all known tool names
@@ -209,9 +270,14 @@ async function main() {
     }
 
     const kernelPath = resolve("host/wasm/wasm_posix_kernel.wasm");
-    const programPath = name.endsWith(".wasm")
-        ? resolve(name)
-        : resolve(`examples/${name}.wasm`);
+    let programPath: string;
+    if (name.endsWith(".wasm")) {
+        programPath = resolve(name);
+    } else if (builtinPrograms[name] && existsSync(builtinPrograms[name])) {
+        programPath = builtinPrograms[name];
+    } else {
+        programPath = resolve(`examples/${name}.wasm`);
+    }
 
     const kernelBytes = readFileSync(kernelPath);
     const programBytes = readFileSync(programPath);
@@ -468,6 +534,12 @@ async function main() {
             `GIT_CONFIG_VALUE_${i}=${val}`,
         ]),
     ];
+
+    // When stdin is not a terminal (piped or redirected), set it as finite
+    // so reads return EOF instead of blocking forever.
+    if (!process.stdin.isTTY) {
+        kernelWorker.setStdinData(pid, new Uint8Array(0));
+    }
 
     // Spawn the process worker
     const initData: CentralizedWorkerInitMessage = {

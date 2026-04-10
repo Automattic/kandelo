@@ -1,0 +1,66 @@
+/* ── Collapsible terminal panel ────────────── */
+
+.terminal-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 32px;
+  border-top: 1px solid #333;
+  background: #1e1e1e;
+  overflow: hidden;
+}
+
+.terminal-panel-bar {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  cursor: pointer;
+  user-select: none;
+  flex-shrink: 0;
+  height: 32px;
+  background: #252526;
+  transition: background 0.15s;
+}
+
+.terminal-panel-bar:hover {
+  background: #2a2d2e;
+}
+
+.terminal-panel-toggle {
+  display: inline-block;
+  font-size: 10px;
+  color: #ccc;
+  transition: transform 0.2s ease;
+  transform: rotate(0deg);
+}
+
+.terminal-panel-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #ccc;
+  letter-spacing: 0.02em;
+}
+
+.terminal-panel-status {
+  font-size: 0.75rem;
+  color: #888;
+  margin-left: auto;
+}
+
+.terminal-panel-body {
+  flex: 1;
+  display: none;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ── Expanded state ───────────────────────── */
+
+.terminal-panel.expanded .terminal-panel-toggle {
+  transform: rotate(90deg);
+}
+
+.terminal-panel.expanded .terminal-panel-body {
+  display: block;
+}

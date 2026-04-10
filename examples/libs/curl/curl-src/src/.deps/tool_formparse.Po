@@ -1,0 +1,104 @@
+tool_formparse.o: tool_formparse.c tool_setup.h ../lib/curl_setup.h \
+  ../lib/curl_config.h ../include/curl/system.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/types.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/features.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/alltypes.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/endian.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/select.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/socket.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/socket.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/stdio.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/assert.h \
+  ../lib/curl_setup_once.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/stdlib.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/fcntl.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/fcntl.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/alloca.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/string.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/strings.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/stdarg.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/time.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/errno.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/errno.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/stat.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/stat.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/time.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/stdbool.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/unistd.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/posix.h \
+  ../lib/functypes.h ../lib/curl_ctype.h ../include/curl/curl.h \
+  ../include/curl/curlver.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/limits.h \
+  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/limits.h \
+  ../include/curl/easy.h ../include/curl/multi.h \
+  ../include/curl/urlapi.h ../include/curl/options.h \
+  ../include/curl/header.h ../include/curl/websockets.h ../lib/strcase.h \
+  ../lib/curlx.h ../lib/curl_printf.h ../include/curl/mprintf.h \
+  ../lib/strtoofft.h ../lib/nonblock.h ../lib/warnless.h \
+  ../lib/curl_multibyte.h ../lib/version_win32.h tool_cfgable.h \
+  tool_sdecls.h tool_urlglob.h var.h tool_getparam.h ../lib/dynbuf.h \
+  tool_msgs.h tool_binmode.h tool_paramhlp.h tool_libinfo.h \
+  tool_formparse.h ../lib/memdebug.h
+tool_setup.h:
+../lib/curl_setup.h:
+../lib/curl_config.h:
+../include/curl/system.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/types.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/features.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/alltypes.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/endian.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/select.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/socket.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/socket.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/stdio.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/assert.h:
+../lib/curl_setup_once.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/stdlib.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/fcntl.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/fcntl.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/alloca.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/string.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/strings.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/stdarg.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/time.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/errno.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/errno.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/stat.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/stat.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/sys/time.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/stdbool.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/unistd.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/posix.h:
+../lib/functypes.h:
+../lib/curl_ctype.h:
+../include/curl/curl.h:
+../include/curl/curlver.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/limits.h:
+/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/limits.h:
+../include/curl/easy.h:
+../include/curl/multi.h:
+../include/curl/urlapi.h:
+../include/curl/options.h:
+../include/curl/header.h:
+../include/curl/websockets.h:
+../lib/strcase.h:
+../lib/curlx.h:
+../lib/curl_printf.h:
+../include/curl/mprintf.h:
+../lib/strtoofft.h:
+../lib/nonblock.h:
+../lib/warnless.h:
+../lib/curl_multibyte.h:
+../lib/version_win32.h:
+tool_cfgable.h:
+tool_sdecls.h:
+tool_urlglob.h:
+var.h:
+tool_getparam.h:
+../lib/dynbuf.h:
+tool_msgs.h:
+tool_binmode.h:
+tool_paramhlp.h:
+tool_libinfo.h:
+tool_formparse.h:
+../lib/memdebug.h:

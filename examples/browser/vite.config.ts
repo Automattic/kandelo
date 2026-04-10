@@ -80,6 +80,8 @@ export default defineConfig({
         lamp: path.resolve(__dirname, "pages/lamp/index.html"),
         shell: path.resolve(__dirname, "pages/shell/index.html"),
         python: path.resolve(__dirname, "pages/python/index.html"),
+        perl: path.resolve(__dirname, "pages/perl/index.html"),
+        ruby: path.resolve(__dirname, "pages/ruby/index.html"),
         "test-runner": path.resolve(__dirname, "pages/test-runner/index.html"),
       },
     },

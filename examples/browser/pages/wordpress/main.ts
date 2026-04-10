@@ -3,31 +3,52 @@
  * with WordPress + SQLite Database Integration plugin pre-loaded into
  * the in-memory filesystem.
  *
+ * Uses SystemInit to orchestrate boot from /etc/init.d/ service descriptors.
+ *
  * Process layout:
- *   pid 1: php-fpm master → forks pid 2 (worker)
- *   pid 3: nginx master   → forks pid 4, 5 (workers)
+ *   pid 1: php-fpm master -> forks pid 2 (worker)
+ *   pid 3: nginx master   -> forks pid 4, 5 (workers)
+ *
+ * WordPress bundle is loaded AFTER daemons start (via onBeforeService for
+ * the shell service) but BEFORE the interactive shell. The VFS uses
+ * SharedArrayBuffer, so files loaded after fork are visible to all workers.
  *
  * Service worker intercepts ${BASE_URL}app/* requests and routes them through
  * the kernel's TCP stack to nginx.
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
-import { loadFiles } from "../../lib/fs-loader";
+import { SystemInit } from "../../lib/init/system-init";
+import { populateNginxConfig } from "../../lib/init/nginx-config";
+import { populatePhpFpmConfig } from "../../lib/init/php-fpm-config";
+import {
+  populateShellBinaries,
+  type BinaryDef,
+  COREUTILS_NAMES,
+} from "../../lib/init/shell-binaries";
+import { writeVfsFile, writeInitDescriptor, ensureDirRecursive } from "../../lib/init/vfs-utils";
 import { loadWordPressBundle } from "../../lib/wp-bundle";
-import { HttpBridgeHost } from "../../lib/http-bridge";
 import kernelWasmUrl from "../../../../host/wasm/wasm_posix_kernel.wasm?url";
 import nginxWasmUrl from "../../../../examples/nginx/nginx.wasm?url";
 import phpFpmWasmUrl from "../../../../examples/nginx/php-fpm.wasm?url";
+import dashWasmUrl from "../../../../examples/libs/dash/bin/dash.wasm?url";
+import coreutilsWasmUrl from "../../../../examples/libs/coreutils/bin/coreutils.wasm?url";
+import grepWasmUrl from "../../../../examples/libs/grep/bin/grep.wasm?url";
+import sedWasmUrl from "../../../../examples/libs/sed/bin/sed.wasm?url";
+import "@xterm/xterm/css/xterm.css";
+import "../../lib/terminal-panel.css";
 
 const APP_PREFIX = import.meta.env.BASE_URL + "app/";
 // Without trailing slash, for embedding in PHP config strings
 const APP_PATH = import.meta.env.BASE_URL + "app";
 // Capture the real page protocol so wp-config.php generates correct URLs
 const PROTO = window.location.protocol === "https:" ? "https" : "http";
+const SW_URL = import.meta.env.BASE_URL + "service-worker.js";
 
 const log = document.getElementById("log") as HTMLPreElement;
 const startBtn = document.getElementById("start") as HTMLButtonElement;
 const reloadBtn = document.getElementById("reload") as HTMLButtonElement;
 const statusDiv = document.getElementById("status") as HTMLDivElement;
+const terminalPanel = document.getElementById("terminal-panel") as HTMLDivElement;
 let frame = document.getElementById("frame") as HTMLIFrameElement;
 
 const decoder = new TextDecoder();
@@ -46,33 +67,10 @@ function setStatus(text: string, type: "loading" | "running" | "error") {
   statusDiv.className = `status ${type}`;
 }
 
-// nginx config for WordPress — all requests go through the FPM router
-// (nginx built without PCRE, so regex locations are unavailable)
-const NGINX_CONF = `daemon off;
-master_process on;
-worker_processes 2;
-error_log stderr info;
-pid /tmp/nginx.pid;
-
-events {
-    worker_connections 64;
-    use poll;
-}
-
-http {
-    access_log /dev/stderr;
-    client_body_temp_path /tmp/nginx_client_temp;
-    fastcgi_temp_path /tmp/nginx_fastcgi_temp;
-    proxy_temp_path /tmp/nginx_proxy_temp;
-
-    default_type application/octet-stream;
-
-    server {
-        listen 8080;
-        server_name localhost;
-        root /var/www/html;
-
-        location / {
+/** FastCGI location block — routes ALL requests through the FPM router.
+ * WordPress needs every URL to go through its routing, so the FPM router
+ * handles static files, directory index resolution, and front controller. */
+const FASTCGI_LOCATION = `        location / {
             fastcgi_pass 127.0.0.1:9000;
             fastcgi_param SCRIPT_FILENAME /var/www/fpm-router.php;
             fastcgi_param DOCUMENT_ROOT $document_root;
@@ -87,75 +85,7 @@ http {
             fastcgi_param SERVER_NAME $server_name;
             fastcgi_param HTTP_HOST $http_host;
             fastcgi_param REDIRECT_STATUS 200;
-        }
-    }
-}
-`;
-
-// PHP FPM router — serves static files directly, routes PHP through WordPress
-const FPM_ROUTER_PHP = `<?php
-$uri = urldecode(parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH));
-$docRoot = $_SERVER['DOCUMENT_ROOT'];
-$file = $docRoot . $uri;
-
-$staticTypes = [
-    'css'   => 'text/css',
-    'js'    => 'text/javascript',
-    'json'  => 'application/json',
-    'png'   => 'image/png',
-    'jpg'   => 'image/jpeg',
-    'jpeg'  => 'image/jpeg',
-    'gif'   => 'image/gif',
-    'svg'   => 'image/svg+xml',
-    'ico'   => 'image/x-icon',
-    'woff'  => 'font/woff',
-    'woff2' => 'font/woff2',
-    'ttf'   => 'font/ttf',
-    'eot'   => 'application/vnd.ms-fontobject',
-    'map'   => 'application/json',
-    'xml'   => 'application/xml',
-    'txt'   => 'text/plain',
-];
-
-// Resolve directory URLs to index.php (e.g. /wp-admin/ → /wp-admin/index.php)
-if (is_dir($file)) {
-    $idx = rtrim($file, '/') . '/index.php';
-    if (is_file($idx)) {
-        $file = $idx;
-        $uri = rtrim($uri, '/') . '/index.php';
-    }
-}
-
-if ($uri !== '/' && is_file($file)) {
-    $ext = strtolower(pathinfo($file, PATHINFO_EXTENSION));
-    if (isset($staticTypes[$ext])) {
-        header('Content-Type: ' . $staticTypes[$ext]);
-        header('Content-Length: ' . filesize($file));
-        readfile($file);
-        exit;
-    }
-    if ($ext === 'php') {
-        chdir(dirname($file));
-        include $file;
-        exit;
-    }
-}
-
-chdir($docRoot);
-include $docRoot . '/index.php';
-`;
-
-const PHP_FPM_CONF = `[global]
-daemonize = no
-error_log = /dev/stderr
-log_level = notice
-
-[www]
-listen = 127.0.0.1:9000
-pm = static
-pm.max_children = 1
-clear_env = no
-`;
+        }`;
 
 // Custom wp-config.php — sets WP_HOME/WP_SITEURL with app prefix so
 // WordPress generates URLs the service worker can intercept
@@ -213,8 +143,19 @@ add_filter('pre_http_request', function($pre, $args, $url) {
 if (!defined('DISALLOW_FILE_MODS')) define('DISALLOW_FILE_MODS', true);
 `;
 
+/** Fetch file size via HEAD request. Returns 0 on failure. */
+async function fetchSize(url: string): Promise<number> {
+  try {
+    const resp = await fetch(url, { method: "HEAD" });
+    if (!resp.ok) return 0;
+    return parseInt(resp.headers.get("content-length") || "0", 10) || 0;
+  } catch {
+    return 0;
+  }
+}
+
 let kernel: BrowserKernel | null = null;
-let bridge: HttpBridgeHost | null = null;
+let init: SystemInit | null = null;
 
 async function start() {
   startBtn.disabled = true;
@@ -222,30 +163,35 @@ async function start() {
   setStatus("Loading WordPress...", "loading");
 
   try {
-    // Fetch all resources in parallel
-    appendLog("Fetching wasm binaries + WordPress bundle...\n", "info");
-    const [kernelBytes, nginxBytes, phpFpmBytes] = await Promise.all([
+    // Fetch kernel and dash eagerly; get nginx/php-fpm sizes for lazy registration
+    appendLog("Fetching kernel and dash wasm...\n", "info");
+    const [kernelBytes, dashBytes, nginxSize, phpFpmSize] = await Promise.all([
       fetch(kernelWasmUrl).then((r) => r.arrayBuffer()),
-      fetch(nginxWasmUrl).then((r) => r.arrayBuffer()),
-      fetch(phpFpmWasmUrl).then((r) => r.arrayBuffer()),
+      fetch(dashWasmUrl).then((r) => r.arrayBuffer()),
+      fetchSize(nginxWasmUrl),
+      fetchSize(phpFpmWasmUrl),
     ]);
     appendLog(
       `Kernel: ${(kernelBytes.byteLength / 1024).toFixed(0)}KB, ` +
-        `nginx: ${(nginxBytes.byteLength / (1024 * 1024)).toFixed(1)}MB, ` +
-        `PHP-FPM: ${(phpFpmBytes.byteLength / (1024 * 1024)).toFixed(1)}MB\n`,
+      `dash: ${(dashBytes.byteLength / 1024).toFixed(0)}KB, ` +
+      `nginx: ${(nginxSize / (1024 * 1024)).toFixed(1)}MB (lazy), ` +
+      `PHP-FPM: ${(phpFpmSize / (1024 * 1024)).toFixed(1)}MB (lazy)\n`,
       "info",
     );
 
-    // Set up HTTP bridge
-    bridge = new HttpBridgeHost();
-
-    // Initialize service worker bridge
-    appendLog("Initializing service worker bridge...\n", "info");
-    if (!(await initBridge(bridge))) {
-      setStatus("Service worker initialization failed", "error");
-      return;
+    // Fetch sizes for shell utility binaries
+    const lazyDefs = [
+      { url: coreutilsWasmUrl, path: "/bin/coreutils", symlinks: [...COREUTILS_NAMES, "["].flatMap(n => [`/bin/${n}`, `/usr/bin/${n}`]) },
+      { url: grepWasmUrl, path: "/usr/bin/grep", symlinks: ["/bin/grep", "/usr/bin/egrep", "/bin/egrep", "/usr/bin/fgrep", "/bin/fgrep"] },
+      { url: sedWasmUrl, path: "/usr/bin/sed", symlinks: ["/bin/sed"] },
+    ];
+    const sizes = await Promise.all(lazyDefs.map((d) => fetchSize(d.url)));
+    const lazyBinaries: BinaryDef[] = [];
+    for (let i = 0; i < lazyDefs.length; i++) {
+      if (sizes[i] > 0) {
+        lazyBinaries.push({ ...lazyDefs[i], size: sizes[i] });
+      }
     }
-    appendLog("Service worker bridge ready\n", "info");
 
     // Create kernel with larger FS for WordPress
     // Use 4096 pages (256MB) per process instead of default 16384 (1GB)
@@ -253,119 +199,110 @@ async function start() {
     kernel = new BrowserKernel({
       maxWorkers: 8,
       fsSize: 256 * 1024 * 1024,
-      maxMemoryPages: 4096, // 256MB per process
+      maxMemoryPages: 4096,
       onStdout: (data) => appendLog(decoder.decode(data)),
       onStderr: (data) => appendLog(decoder.decode(data), "stderr"),
     });
 
     await kernel.init(kernelBytes);
 
-    // Create directory structure
+    // Populate VFS
+    appendLog("Populating filesystem...\n", "info");
     const fs = kernel.fs;
-    for (const dir of [
-      "/etc/nginx",
-      "/var/www/html",
-      "/var/www/html/wp-content",
-      "/var/www/html/wp-content/database",
-      "/var/www/html/wp-content/mu-plugins",
-      "/var/log/nginx",
-      "/tmp/nginx_client_temp",
-      "/tmp/nginx_fastcgi_temp",
-      "/tmp/nginx_proxy_temp",
-      "/tmp/nginx-wasm/logs",
-      "/etc/php-fpm.d",
-    ]) {
-      const parts = dir.split("/").filter(Boolean);
-      let cur = "";
-      for (const p of parts) {
-        cur += "/" + p;
-        try { fs.mkdir(cur, 0o755); } catch { /* exists */ }
-      }
+
+    // Shell binaries (dash eager, utilities lazy)
+    populateShellBinaries(kernel, dashBytes, lazyBinaries);
+
+    // nginx and php-fpm binaries as lazy files
+    const lazyFiles: Array<{ path: string; url: string; size: number; mode: number }> = [];
+    if (nginxSize > 0) {
+      lazyFiles.push({ path: "/usr/sbin/nginx", url: nginxWasmUrl, size: nginxSize, mode: 0o755 });
     }
+    if (phpFpmSize > 0) {
+      lazyFiles.push({ path: "/usr/sbin/php-fpm", url: phpFpmWasmUrl, size: phpFpmSize, mode: 0o755 });
+    }
+    if (lazyFiles.length > 0) {
+      kernel.registerLazyFiles(lazyFiles);
+    }
+    // Create /usr/sbin if populateShellBinaries didn't
+    try { fs.mkdir("/usr/sbin", 0o755); } catch { /* exists */ }
 
-    // Write config files (minimal — just enough for PHP-FPM and nginx to start)
-    await loadFiles(fs, [
-      { path: "/etc/nginx/nginx.conf", data: NGINX_CONF },
-      { path: "/etc/php-fpm.conf", data: PHP_FPM_CONF },
-      { path: "/var/www/fpm-router.php", data: FPM_ROUTER_PHP },
-    ]);
-
-    // --- Start php-fpm BEFORE loading WordPress bundle ---
-    // By starting processes and forking before loading the WordPress bundle,
-    // fork children get a lightweight memory snapshot.  The VFS uses
-    // SharedArrayBuffer, so files loaded after fork are visible to all.
-    setStatus("Starting PHP-FPM...", "loading");
-    appendLog("Starting PHP-FPM...\n", "info");
-
-    const fpmExitPromise = kernel.spawn(phpFpmBytes, [
-      "php-fpm",
-      "-y", "/etc/php-fpm.conf",
-      "-c", "/dev/null",
-      "--nodaemonize",
-    ], {
-      env: [
-        "HOME=/tmp",
-        "TMPDIR=/tmp",
-        "PATH=/usr/local/bin:/usr/bin:/bin",
-      ],
+    // nginx config and directories — WordPress routes all requests through FPM router
+    populateNginxConfig(fs, {
+      extraLocations: FASTCGI_LOCATION,
     });
 
-    // Wait for php-fpm to start and fork worker
-    await new Promise((r) => setTimeout(r, 5000));
+    // php-fpm config and directories
+    populatePhpFpmConfig(fs);
 
-    // --- Start nginx ---
-    setStatus("Starting nginx...", "loading");
-    appendLog("Starting nginx...\n", "info");
+    // WordPress-specific directories
+    ensureDirRecursive(fs, "/var/www/html/wp-content/database");
+    ensureDirRecursive(fs, "/var/www/html/wp-content/mu-plugins");
 
-    const nginxExitPromise = kernel.spawn(nginxBytes, [
-      "nginx",
-      "-p", "/etc/nginx",
-      "-c", "nginx.conf",
-    ], {
-      env: [
-        "HOME=/tmp",
-        "TMPDIR=/tmp",
-        "PATH=/usr/bin:/bin",
-      ],
+    // Write init service descriptors
+    writeInitDescriptor(fs, "10-php-fpm", {
+      type: "daemon",
+      command: "/usr/sbin/php-fpm -y /etc/php-fpm.conf -c /dev/null --nodaemonize",
+      ready: "delay:5000",
     });
 
-    // Wait for nginx to start and fork workers
-    await new Promise((r) => setTimeout(r, 3000));
-
-    // --- Load WordPress bundle AFTER all forks are done ---
-    setStatus("Loading WordPress files...", "loading");
-    const loaded = await loadWordPressBundle(fs, import.meta.env.BASE_URL + "wp-bundle.json", (current, total) => {
-      if (current % 500 === 0 || current === total) {
-        appendLog(`  ${current}/${total} files\n`, "info");
-      }
+    writeInitDescriptor(fs, "20-nginx", {
+      type: "daemon",
+      command: "/usr/sbin/nginx -p /etc/nginx -c nginx.conf",
+      depends: "php-fpm",
+      ready: "delay:3000",
+      bridge: "8080",
     });
-    appendLog(`WordPress loaded: ${loaded} files\n`, "info");
 
-    // Remove any pre-existing database so WordPress starts with a fresh install
-    try { fs.unlink("/var/www/html/wp-content/database/wordpress.db"); } catch { /* not present */ }
-
-    // Overwrite wp-config.php so WordPress generates URLs with the app
-    // prefix that the service worker intercepts
-    await loadFiles(fs, [
-      { path: "/var/www/html/wp-config.php", data: WP_CONFIG_PHP },
-      { path: "/var/www/html/wp-content/mu-plugins/wasm-optimizations.php", data: MU_PLUGIN_PHP },
-    ]);
-
-    // Transfer bridge host port to the kernel worker for connection pump (nginx on 8080)
-    kernel.sendBridgePort(bridge.detachHostPort(), 8080);
-
-    setStatus("WordPress running! Loading page...", "running");
-    reloadBtn.disabled = false;
-
-    // Load WordPress via the service worker bridge
-    loadFrame();
-
-    fpmExitPromise.then((code) => {
-      appendLog(`\nphp-fpm exited with code ${code}\n`, "info");
+    writeInitDescriptor(fs, "99-shell", {
+      type: "interactive",
+      command: "/bin/dash -i",
+      env: "TERM=xterm-256color PS1=\\w\\$\\  HOME=/root PATH=/usr/local/bin:/usr/bin:/bin",
+      pty: "true",
+      cwd: "/root",
     });
-    nginxExitPromise.then((code) => {
-      appendLog(`\nnginx exited with code ${code}\n`, "info");
+
+    // Create SystemInit and boot
+    setStatus("Booting system...", "loading");
+    init = new SystemInit(kernel, {
+      onLog: (msg, level) => appendLog(msg + "\n", level === "info" ? "info" : "stderr"),
+      terminalContainer: terminalPanel,
+      serviceWorkerUrl: SW_URL,
+      appPrefix: APP_PREFIX,
+      onBeforeService: async (name) => {
+        if (name === "shell") {
+          // Load WordPress bundle after daemons are running but before the shell
+          setStatus("Loading WordPress files...", "loading");
+          const loaded = await loadWordPressBundle(
+            kernel!.fs,
+            import.meta.env.BASE_URL + "wp-bundle.json",
+            (current, total) => {
+              if (current % 500 === 0 || current === total) {
+                appendLog(`  ${current}/${total} files\n`, "info");
+              }
+            },
+          );
+          appendLog(`WordPress loaded: ${loaded} files\n`, "info");
+
+          // Remove any pre-existing database so WordPress starts with a fresh install
+          try { kernel!.fs.unlink("/var/www/html/wp-content/database/wordpress.db"); } catch { /* not present */ }
+
+          // Overwrite wp-config.php so WordPress generates URLs with the app
+          // prefix that the service worker intercepts
+          writeVfsFile(kernel!.fs, "/var/www/html/wp-config.php", WP_CONFIG_PHP);
+          writeVfsFile(kernel!.fs, "/var/www/html/wp-content/mu-plugins/wasm-optimizations.php", MU_PLUGIN_PHP);
+        }
+      },
+      onServiceReady: (name) => {
+        if (name === "nginx") {
+          setStatus("WordPress running! Loading page...", "running");
+          reloadBtn.disabled = false;
+          loadFrame();
+        }
+      },
     });
+
+    await init.boot();
   } catch (e) {
     appendLog(`\nError: ${e}\n`, "stderr");
     setStatus(`Error: ${e}`, "error");
@@ -382,38 +319,6 @@ function loadFrame() {
   next.src = APP_PREFIX;
   frame.replaceWith(next);
   frame = next;
-}
-
-async function initBridge(bridge: HttpBridgeHost): Promise<boolean> {
-  if (!("serviceWorker" in navigator)) {
-    appendLog("Service Workers not supported\n", "stderr");
-    return false;
-  }
-
-  try {
-    // Register the unified service worker (no-op if already registered by COI script)
-    await navigator.serviceWorker.register(
-      import.meta.env.BASE_URL + "service-worker.js",
-    );
-
-    // Wait for the service worker to activate and claim this client
-    const reg = await navigator.serviceWorker.ready;
-
-    // Send bridge port and wait for SW to confirm it's initialized
-    await new Promise<void>((resolve) => {
-      const reply = new MessageChannel();
-      reply.port1.onmessage = () => resolve();
-      reg.active!.postMessage(
-        { type: "init-bridge", appPrefix: APP_PREFIX },
-        [bridge.getSwPort(), reply.port2],
-      );
-    });
-
-    return true;
-  } catch (err) {
-    appendLog(`Service worker error: ${err}\n`, "stderr");
-    return false;
-  }
 }
 
 startBtn.addEventListener("click", start);

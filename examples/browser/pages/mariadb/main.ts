@@ -3,17 +3,38 @@
  * bootstraps system tables, starts the server, and lets users run SQL
  * queries via a minimal MySQL wire protocol client.
  *
+ * Uses SystemInit to orchestrate boot from /etc/init.d/ service descriptors.
+ *
  * Process layout:
- *   pid 1: mariadbd (main process, spawns 5 background threads)
+ *   pid 1: mariadbd --bootstrap (oneshot, terminated after stdin consumed)
+ *   pid 2: mariadbd server (daemon, spawns 5 background threads)
+ *   pid N: dash -i (interactive shell with PTY)
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
-import { loadFiles } from "../../lib/fs-loader";
-import { patchWasmForThread } from "../../../../host/src/worker-main";
+import { SystemInit } from "../../lib/init/system-init";
+import { populateMariadbDirs } from "../../lib/init/mariadb-config";
+import {
+  populateShellBinaries,
+  type BinaryDef,
+  COREUTILS_NAMES,
+} from "../../lib/init/shell-binaries";
+import {
+  writeVfsBinary,
+  writeVfsFile,
+  writeInitDescriptor,
+  ensureDir,
+} from "../../lib/init/vfs-utils";
 import { MySqlBrowserClient } from "../../lib/mysql-client";
 import kernelWasmUrl from "../../../../host/wasm/wasm_posix_kernel.wasm?url";
 import mariadbWasmUrl from "../../../../examples/libs/mariadb/mariadb-install/bin/mariadbd.wasm?url";
 import systemTablesUrl from "../../../../examples/libs/mariadb/mariadb-install/share/mysql/mysql_system_tables.sql?url";
 import systemDataUrl from "../../../../examples/libs/mariadb/mariadb-install/share/mysql/mysql_system_tables_data.sql?url";
+import dashWasmUrl from "../../../../examples/libs/dash/bin/dash.wasm?url";
+import coreutilsWasmUrl from "../../../../examples/libs/coreutils/bin/coreutils.wasm?url";
+import grepWasmUrl from "../../../../examples/libs/grep/bin/grep.wasm?url";
+import sedWasmUrl from "../../../../examples/libs/sed/bin/sed.wasm?url";
+import "@xterm/xterm/css/xterm.css";
+import "../../lib/terminal-panel.css";
 
 const log = document.getElementById("log") as HTMLPreElement;
 const startBtn = document.getElementById("start") as HTMLButtonElement;
@@ -22,6 +43,7 @@ const sqlInput = document.getElementById("sql") as HTMLTextAreaElement;
 const statusDiv = document.getElementById("status") as HTMLDivElement;
 const resultDiv = document.getElementById("result") as HTMLDivElement;
 const examplesSelect = document.getElementById("examples") as HTMLSelectElement;
+const terminalPanel = document.getElementById("terminal-panel") as HTMLDivElement;
 
 const decoder = new TextDecoder();
 
@@ -58,7 +80,19 @@ const EXAMPLES: Record<string, string> = {
 };
 
 let kernel: BrowserKernel | null = null;
+let init: SystemInit | null = null;
 let mysqlClient: MySqlBrowserClient | null = null;
+
+/** Fetch file size via HEAD request. Returns 0 on failure. */
+async function fetchSize(url: string): Promise<number> {
+  try {
+    const resp = await fetch(url, { method: "HEAD" });
+    if (!resp.ok) return 0;
+    return parseInt(resp.headers.get("content-length") || "0", 10) || 0;
+  } catch {
+    return 0;
+  }
+}
 
 async function start() {
   startBtn.disabled = true;
@@ -66,180 +100,132 @@ async function start() {
   setStatus("Loading MariaDB...", "loading");
 
   try {
-    // Fetch all resources in parallel
+    // Fetch all resources in parallel — MariaDB eagerly (written to VFS)
     appendLog("Fetching resources...\n", "info");
-    const [kernelBytes, mariadbBytes, systemTablesSql, systemDataSql] =
+    const [kernelBytes, mariadbBytes, systemTablesSql, systemDataSql, dashBytes] =
       await Promise.all([
         fetch(kernelWasmUrl).then((r) => r.arrayBuffer()),
         fetch(mariadbWasmUrl).then((r) => r.arrayBuffer()),
         fetch(systemTablesUrl).then((r) => r.text()),
         fetch(systemDataUrl).then((r) => r.text()),
+        fetch(dashWasmUrl).then((r) => r.arrayBuffer()),
       ]);
 
     appendLog(
       `Kernel: ${(kernelBytes.byteLength / 1024).toFixed(0)}KB, ` +
-        `MariaDB: ${(mariadbBytes.byteLength / (1024 * 1024)).toFixed(1)}MB\n`,
+        `MariaDB: ${(mariadbBytes.byteLength / (1024 * 1024)).toFixed(1)}MB, ` +
+        `dash: ${(dashBytes.byteLength / 1024).toFixed(0)}KB\n`,
       "info",
     );
 
-    // Pre-compile thread module for MariaDB's background threads
-    appendLog("Pre-compiling thread module...\n", "info");
-    setStatus("Pre-compiling thread module...", "loading");
-    const threadPatchedBytes = patchWasmForThread(mariadbBytes);
-    const threadModule = await WebAssembly.compile(threadPatchedBytes);
-    appendLog("Thread module ready\n", "info");
+    // Fetch sizes for shell utility binaries
+    const lazyDefs = [
+      { url: coreutilsWasmUrl, path: "/bin/coreutils", symlinks: [...COREUTILS_NAMES, "["].flatMap(n => [`/bin/${n}`, `/usr/bin/${n}`]) },
+      { url: grepWasmUrl, path: "/usr/bin/grep", symlinks: ["/bin/grep", "/usr/bin/egrep", "/bin/egrep", "/usr/bin/fgrep", "/bin/fgrep"] },
+      { url: sedWasmUrl, path: "/usr/bin/sed", symlinks: ["/bin/sed"] },
+    ];
+    const sizes = await Promise.all(lazyDefs.map((d) => fetchSize(d.url)));
+    const lazyBinaries: BinaryDef[] = [];
+    for (let i = 0; i < lazyDefs.length; i++) {
+      if (sizes[i] > 0) {
+        lazyBinaries.push({ ...lazyDefs[i], size: sizes[i] });
+      }
+    }
 
-    // Create kernel with thread support
+    // Create kernel — thread module is auto-compiled on first clone()
     kernel = new BrowserKernel({
       maxWorkers: 12,
       fsSize: 64 * 1024 * 1024, // 64MB for bootstrap system tables + data
-      threadModule,
       onStdout: (data) => appendLog(decoder.decode(data)),
       onStderr: (data) => appendLog(decoder.decode(data), "stderr"),
     });
 
     await kernel.init(kernelBytes);
 
-    // Create data directory structure
+    // Populate VFS
+    appendLog("Populating filesystem...\n", "info");
     const fs = kernel.fs;
-    for (const dir of [
-      "/data",
-      "/data/mysql",
-      "/data/tmp",
-      "/data/test",
-    ]) {
-      try { fs.mkdir(dir, 0o755); } catch { /* exists */ }
-    }
 
-    // --- Phase 1: Bootstrap system tables ---
-    setStatus("Bootstrapping MariaDB system tables...", "loading");
-    appendLog("Bootstrapping system tables (this may take a few minutes in browser)...\n", "info");
+    // Shell binaries (dash eager, utilities lazy)
+    populateShellBinaries(kernel, dashBytes, lazyBinaries);
 
+    // MariaDB binary — write eagerly since we already fetched it
+    ensureDir(fs, "/usr/sbin");
+    writeVfsBinary(fs, "/usr/sbin/mariadbd", new Uint8Array(mariadbBytes));
+
+    // MariaDB data directories
+    populateMariadbDirs(fs);
+
+    // Write the bootstrap SQL to VFS
     const bootstrapSql = `use mysql;\n${systemTablesSql}\n${systemDataSql}\nCREATE DATABASE IF NOT EXISTS test;\n`;
-    const bootstrapStdin = new TextEncoder().encode(bootstrapSql);
+    ensureDir(fs, "/etc/mariadb");
+    writeVfsFile(fs, "/etc/mariadb/bootstrap.sql", bootstrapSql);
 
-    const bootstrapPid = kernel.nextPid;
-    const bootstrapExit = kernel.spawn(mariadbBytes, [
-      "mariadbd",
-      "--no-defaults",
-      "--datadir=/data",
-      "--tmpdir=/data/tmp",
-      "--default-storage-engine=Aria",
-      "--skip-grant-tables",
-      "--key-buffer-size=1048576",
-      "--table-open-cache=10",
-      "--sort-buffer-size=262144",
-      "--bootstrap",
-      "--log-warnings=0",
-    ], {
-      stdin: bootstrapStdin,
+    // Write init service descriptors
+    writeInitDescriptor(fs, "05-mariadb-bootstrap", {
+      type: "oneshot",
+      command: "/usr/sbin/mariadbd --bootstrap --datadir=/data --tmpdir=/data/tmp --skip-networking --log-error=/data/bootstrap.log",
+      stdin: "/etc/mariadb/bootstrap.sql",
+      ready: "stdin-consumed",
+      terminate: "true",
     });
 
-    // Wait for bootstrap: poll for stdin consumption (all SQL processed) or process exit.
-    // MariaDB hangs during shutdown waiting for signal handler thread, so we can't
-    // rely on process exit. Once stdin is fully consumed, the SQL has been executed.
-    const stdinConsumed = new Promise<number>((resolve) => {
-      const check = async () => {
-        if (await kernel!.isStdinConsumed(bootstrapPid)) {
-          // Give MariaDB a moment to flush writes after consuming last SQL
-          setTimeout(() => resolve(0), 2000);
-        } else {
-          setTimeout(check, 500);
-        }
-      };
-      setTimeout(check, 1000);
+    writeInitDescriptor(fs, "10-mariadb", {
+      type: "daemon",
+      command: "/usr/sbin/mariadbd --datadir=/data --tmpdir=/data/tmp --skip-networking=0 --port=3306 --thread-handling=no-threads --skip-grant-tables --default-storage-engine=Aria --log-error=/data/error.log",
+      depends: "mariadb-bootstrap",
+      ready: "port:3306",
     });
 
-    const bootstrapTimeout = new Promise<number>((r) =>
-      setTimeout(() => r(-1), 300000),
-    );
+    writeInitDescriptor(fs, "99-shell", {
+      type: "interactive",
+      command: "/bin/dash -i",
+      env: "TERM=xterm-256color PS1=\\w\\$\\  HOME=/root PATH=/usr/local/bin:/usr/bin:/bin",
+      pty: "true",
+      cwd: "/root",
+    });
 
-    // Show progress updates while waiting
-    const progressInterval = setInterval(() => {
-      appendLog("  Bootstrap still running...\n", "info");
-    }, 15000);
-
-    const bootstrapResult = await Promise.race([bootstrapExit, stdinConsumed, bootstrapTimeout]);
-    clearInterval(progressInterval);
-
-    if (bootstrapResult === -1) {
-      throw new Error("Bootstrap timed out after 5 minutes. Try reloading the page.");
-    }
-    appendLog("Bootstrap complete\n", "info");
-
-    // Terminate the bootstrap process — it hangs during shutdown waiting for
-    // signal handler thread. Must terminate before server starts so Aria lock
-    // files and data directory are released.
-    await kernel.terminateProcess(bootstrapPid);
-
-    // --- Phase 2: Start server ---
-    setStatus("Starting MariaDB server...", "loading");
-    appendLog("Starting MariaDB server on 127.0.0.1:3306...\n", "info");
-
-    kernel.spawn(mariadbBytes, [
-      "mariadbd",
-      "--no-defaults",
-      "--datadir=/data",
-      "--tmpdir=/data/tmp",
-      "--default-storage-engine=Aria",
-      "--skip-grant-tables",
-      "--key-buffer-size=1048576",
-      "--table-open-cache=10",
-      "--sort-buffer-size=262144",
-      "--skip-networking=0",
-      "--port=3306",
-      "--bind-address=0.0.0.0",
-      "--socket=",
-      "--max-connections=10",
-    ]);
-
-    // --- Phase 3: Connect MySQL client (two-phase: wait for listener, then connect) ---
-    setStatus("Waiting for MariaDB to accept connections...", "loading");
-    appendLog("Waiting for server to bind port 3306...\n", "info");
-
-    // Phase 3a: Poll pickListenerTarget until non-null — confirms server has
-    // bound and is listening. No connection attempts until this succeeds.
-    const listenerTimeout = 60;
-    for (let s = 1; s <= listenerTimeout; s++) {
-      await new Promise((r) => setTimeout(r, 1000));
-      const target = await kernel.pickListenerTarget(3306);
-      if (target) {
-        appendLog(`Server listening (after ${s}s)\n`, "info");
-        break;
-      }
-      if (s === listenerTimeout) {
-        throw new Error("MariaDB did not bind port 3306 within 60s");
-      }
-      if (s % 10 === 0) {
-        appendLog(`Still waiting for listener... (${s}s)\n`, "info");
-      }
-    }
-
-    // Phase 3b: Server is provably accepting — connect with retry for handshake
-    appendLog("Connecting MySQL client...\n", "info");
-    const maxRetries = 10;
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      try {
-        mysqlClient = await MySqlBrowserClient.connect(kernel, 3306);
-        appendLog(`Connected! (attempt ${attempt})\n`, "info");
-        break;
-      } catch (e) {
-        if (attempt === maxRetries) {
-          throw new Error(`MySQL handshake failed after ${maxRetries} attempts: ${e}`);
+    // Create SystemInit and boot
+    setStatus("Booting system...", "loading");
+    init = new SystemInit(kernel, {
+      onLog: (msg, level) => appendLog(msg + "\n", level === "info" ? "info" : "stderr"),
+      terminalContainer: terminalPanel,
+      onServiceReady: async (name) => {
+        if (name === "mariadb-bootstrap") {
+          appendLog("Bootstrap complete\n", "info");
         }
-        appendLog(`Connect attempt ${attempt} failed, retrying...\n`, "info");
-        await new Promise((r) => setTimeout(r, 2000));
-      }
-    }
+        if (name === "mariadb") {
+          // Connect MySQL client with retry for handshake
+          appendLog("Connecting MySQL client...\n", "info");
+          const maxRetries = 10;
+          for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+              mysqlClient = await MySqlBrowserClient.connect(kernel!, 3306);
+              appendLog(`Connected! (attempt ${attempt})\n`, "info");
+              break;
+            } catch (e) {
+              if (attempt === maxRetries) {
+                throw new Error(`MySQL handshake failed after ${maxRetries} attempts: ${e}`);
+              }
+              appendLog(`Connect attempt ${attempt} failed, retrying...\n`, "info");
+              await new Promise((r) => setTimeout(r, 2000));
+            }
+          }
 
-    setStatus("MariaDB running! Execute SQL queries.", "running");
-    executeBtn.disabled = false;
+          setStatus("MariaDB running! Execute SQL queries.", "running");
+          executeBtn.disabled = false;
 
-    // Auto-run the default query
-    await executeQuery();
-  } catch (e) {
-    appendLog(`\nError: ${e}\n`, "stderr");
-    setStatus(`Error: ${e}`, "error");
+          // Auto-run the default query
+          await executeQuery();
+        }
+      },
+    });
+
+    await init.boot();
+  } catch (e: any) {
+    const msg = e?.message || String(e);
+    appendLog(`\nError: ${msg}\n`, "stderr");
+    setStatus(`Error: ${msg}`, "error");
     console.error(e);
     startBtn.disabled = false;
   }
