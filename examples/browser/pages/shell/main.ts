@@ -34,7 +34,10 @@ import zstdWasmUrl from "../../../../examples/libs/zstd/bin/zstd.wasm?url";
 import zipWasmUrl from "../../../../examples/libs/zip/bin/zip.wasm?url";
 import unzipWasmUrl from "../../../../examples/libs/unzip/bin/unzip.wasm?url";
 import nanoWasmUrl from "../../../../examples/libs/nano/bin/nano.wasm?url";
+import vimWasmUrl from "../../../../examples/libs/vim/bin/vim.wasm?url";
+import vimRuntimeBundleUrl from "../../public/vim-runtime-bundle.json?url";
 import lsofWasmUrl from "../../../../examples/lsof.wasm?url";
+import { loadVimRuntime } from "../../lib/vim-runtime";
 import "@xterm/xterm/css/xterm.css";
 
 // --- DOM elements ---
@@ -144,6 +147,7 @@ async function loadBinaries(): Promise<string> {
     { url: unzipWasmUrl, path: "/usr/bin/unzip", symlinks: ["/bin/unzip", "/usr/bin/zipinfo", "/bin/zipinfo", "/usr/bin/funzip", "/bin/funzip"] },
     { url: lsofWasmUrl, path: "/usr/bin/lsof", symlinks: ["/bin/lsof"] },
     { url: nanoWasmUrl, path: "/usr/bin/nano", symlinks: ["/bin/nano"] },
+    { url: vimWasmUrl, path: "/usr/bin/vim", symlinks: ["/bin/vim", "/usr/bin/vi", "/bin/vi"] },
   ];
 
   // Fetch sizes for lazy binaries and data files in parallel
@@ -187,7 +191,7 @@ async function loadBinaries(): Promise<string> {
  * Populate the virtual filesystem with executable binaries.
  * Delegates to the shared populateShellBinaries() helper.
  */
-function populateExecBinaries(kernel: BrowserKernel): void {
+async function populateExecBinaries(kernel: BrowserKernel): Promise<void> {
   const fs = kernel.fs;
 
   // Use shared helper for dirs, gitconfig, dash, lazy binaries, data files
@@ -221,6 +225,9 @@ function populateExecBinaries(kernel: BrowserKernel): void {
   const pfd = fs.open("/etc/profile", 0x241, 0o644);
   fs.write(pfd, profileBytes, null, profileBytes.length);
   fs.close(pfd);
+
+  // Load Vim runtime files (syntax highlighting, filetype detection, etc.)
+  await loadVimRuntime(fs, vimRuntimeBundleUrl);
 }
 
 // ============================================================
@@ -247,7 +254,7 @@ async function startInteractiveShell() {
     });
 
     await kernel.init(kernelBytes!);
-    populateExecBinaries(kernel);
+    await populateExecBinaries(kernel);
     activeKernel = kernel;
 
     // Create PTY terminal
@@ -500,7 +507,7 @@ async function runBatch() {
     });
 
     await kernel.init(kernelBytes!);
-    populateExecBinaries(kernel);
+    await populateExecBinaries(kernel);
 
     const exitCode = await kernel.spawn(dashBytes!, ["dash"], {
       env: [

@@ -120,9 +120,33 @@ if [ ! -f "$WASM_BUILD_DIR/lib/libncurses.a" ]; then
             --enable-widec \
             2>&1 | tail -20
 
+        # Pre-populate fallback.c with a stub so make doesn't try to run
+        # tic (which fails in cross-compilation). We regenerate it properly
+        # after make using the host-built tic/infocmp.
+        cat > ncurses/fallback.c <<'STUB'
+#include <curses.priv.h>
+NCURSES_EXPORT(const TERMTYPE2 *)
+_nc_fallback2(const char *name GCC_UNUSED)
+{ return (0); }
+#if NCURSES_EXT_NUMBERS
+NCURSES_EXPORT(const TERMTYPE *)
+_nc_fallback(const char *name GCC_UNUSED)
+{ return (0); }
+#endif
+STUB
+
         echo "==> Building ncurses..."
         make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" 2>&1 | tail -20
     )
+    # Compile terminfo database using host tic (needed before fallback generation)
+    TERMINFO_DIR="$SCRIPT_DIR/terminfo"
+    if [ ! -f "$TERMINFO_DIR/x/xterm-256color" ]; then
+        echo "==> Compiling terminfo database..."
+        mkdir -p "$TERMINFO_DIR"
+        TERMINFO="$TERMINFO_DIR" "$HOST_TIC" -x -e xterm-256color,xterm,vt100,dumb \
+            "$SRC_DIR/misc/terminfo.src" 2>&1 | tail -5 || true
+    fi
+
     # Regenerate fallback.c with host tic+infocmp — the cross-build can't
     # run tic to generate the compiled-in terminal entries, so fallback.c
     # ends up empty. We use the host-built tools to produce correct data.
@@ -178,8 +202,8 @@ if [ ! -f "$SYSROOT/lib/libncursesw.a" ]; then
     echo "==> ncurses installed into sysroot"
 fi
 
-# --- Compile minimal terminfo database ---
-TERMINFO_DIR="$SCRIPT_DIR/terminfo"
+# --- Compile minimal terminfo database (if not already done above) ---
+TERMINFO_DIR="${TERMINFO_DIR:-$SCRIPT_DIR/terminfo}"
 if [ ! -f "$TERMINFO_DIR/x/xterm-256color" ]; then
     echo "==> Compiling terminfo database..."
     mkdir -p "$TERMINFO_DIR"

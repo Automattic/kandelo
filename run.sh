@@ -50,6 +50,7 @@ has_redis()     { [ -f "$REPO_ROOT/examples/libs/redis/bin/redis-server.wasm" ];
 has_cpython()   { [ -f "$REPO_ROOT/examples/libs/cpython/bin/python.wasm" ]; }
 has_python_bundle() { [ -f "$REPO_ROOT/examples/browser/public/python-bundle.json" ]; }
 has_perl_bundle() { [ -f "$REPO_ROOT/examples/browser/public/perl-bundle.json" ]; }
+has_vim_runtime_bundle() { [ -f "$REPO_ROOT/examples/browser/public/vim-runtime-bundle.json" ]; }
 has_dlopen()    { [ -f "$REPO_ROOT/examples/dlopen/hello-lib.so" ] && \
                   [ -f "$REPO_ROOT/examples/dlopen/main.wasm" ]; }
 
@@ -310,6 +311,20 @@ build_perl_bundle() {
     fi
 }
 
+build_vim_runtime_bundle() {
+    if ! has_vim_runtime_bundle; then
+        if [ ! -d "$REPO_ROOT/examples/libs/vim/runtime" ]; then
+            warn "Vim runtime not found, skipping vim-runtime-bundle"
+            return
+        fi
+        step "Building Vim runtime browser bundle"
+        bash "$REPO_ROOT/examples/browser/scripts/build-vim-runtime-bundle.sh"
+        info "Vim runtime bundle built"
+    else
+        info "Vim runtime bundle"
+    fi
+}
+
 build_dlopen() {
     need_sysroot
     if ! has_dlopen; then
@@ -341,6 +356,7 @@ build_target() {
         cpython)    build_cpython ;;
         python-bundle) build_python_bundle ;;
         perl-bundle) build_perl_bundle ;;
+        vim-runtime-bundle) build_vim_runtime_bundle ;;
         wordpress)  build_wordpress ;;
         wp-bundle)  build_wp_bundle ;;
         dlopen)     build_dlopen ;;
@@ -351,7 +367,7 @@ build_target() {
 }
 
 # All targets needed for browser demos
-BROWSER_DEPS=(kernel sysroot programs dash coreutils grep sed nginx php php-fpm mariadb redis cpython python-bundle perl-bundle wordpress wp-bundle)
+BROWSER_DEPS=(kernel sysroot programs dash coreutils grep sed nginx php php-fpm mariadb redis cpython python-bundle perl-bundle vim-runtime-bundle wordpress wp-bundle)
 
 build_browser() {
     for t in "${BROWSER_DEPS[@]}"; do
@@ -461,6 +477,9 @@ clean_target() {
         perl-bundle)
             rm -f "$REPO_ROOT/examples/browser/public/perl-bundle.json"
             warn "Cleaned Perl bundle" ;;
+        vim-runtime-bundle)
+            rm -f "$REPO_ROOT/examples/browser/public/vim-runtime-bundle.json"
+            warn "Cleaned Vim runtime bundle" ;;
         wordpress)
             rm -rf "$REPO_ROOT/examples/wordpress/wordpress"
             warn "Cleaned WordPress" ;;
@@ -476,7 +495,7 @@ clean_target() {
                 clean_target "$t"
             done ;;
         all)
-            for t in kernel sysroot host programs dash coreutils grep sed nginx php php-fpm mariadb redis cpython python-bundle perl-bundle wordpress wp-bundle dlopen; do
+            for t in kernel sysroot host programs dash coreutils grep sed nginx php php-fpm mariadb redis cpython python-bundle perl-bundle vim-runtime-bundle wordpress wp-bundle dlopen; do
                 clean_target "$t"
             done ;;
         *)  err "Unknown clean target: $target"; exit 1 ;;
@@ -711,6 +730,7 @@ cmd_list() {
     echo "  cpython     CPython 3.13 Wasm binary              $(has_cpython && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  python-bundle  Python stdlib browser bundle       $(has_python_bundle && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  perl-bundle    Perl stdlib browser bundle         $(has_perl_bundle && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  vim-runtime-bundle Vim runtime browser bundle     $(has_vim_runtime_bundle && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  wordpress   WordPress + SQLite plugin             $(has_wordpress && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  wp-bundle   WordPress browser bundle              $(has_wp_bundle && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  dlopen      dlopen shared library example          $(has_dlopen && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"

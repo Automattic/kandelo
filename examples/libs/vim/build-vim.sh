@@ -135,17 +135,24 @@ if [ ! -f src/auto/config.mk ]; then
 
     echo "==> Configure complete."
 
-    # Patch osdef.h — musl defines sigsetjmp as a macro, so the extern
-    # declaration in osdef.h conflicts. The osdef.sh script that generates
-    # this file runs on the host and can't detect the target's macros.
-    if grep -q 'extern int.*sigsetjmp' src/auto/osdef.h 2>/dev/null; then
-        sed -i.bak 's/extern int.*sigsetjmp.*/\/* sigsetjmp is a macro in musl *\//' src/auto/osdef.h
-        rm -f src/auto/osdef.h.bak
-        echo "==> Patched osdef.h (sigsetjmp macro conflict)"
-    fi
 fi
 
 # --- Build ---
+# First pass: generate auto/osdef.h (make will fail due to sigsetjmp conflict)
+if [ ! -f src/auto/osdef.h ]; then
+    echo "==> Generating osdef.h..."
+    make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" 2>&1 | tail -5 || true
+fi
+
+# Patch osdef.h — musl defines sigsetjmp as a macro, so the extern
+# declaration in osdef.h conflicts. The osdef.sh script that generates
+# this file runs on the host and can't detect the target's macros.
+if grep -q 'extern int.*sigsetjmp' src/auto/osdef.h 2>/dev/null; then
+    sed -i.bak 's/extern int.*sigsetjmp.*/\/* sigsetjmp is a macro in musl *\//' src/auto/osdef.h
+    rm -f src/auto/osdef.h.bak
+    echo "==> Patched osdef.h (sigsetjmp macro conflict)"
+fi
+
 echo "==> Building vim..."
 make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" 2>&1 | tail -30
 
