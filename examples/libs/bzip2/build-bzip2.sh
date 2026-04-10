@@ -3,15 +3,9 @@ set -euo pipefail
 
 # Build bzip2 1.0.8 for wasm32-posix-kernel.
 #
-<<<<<<< HEAD
 # Plain Makefile build with CC/AR/RANLIB overrides.
 # Output: examples/libs/bzip2/bin/bzip2.wasm
 # Also installs libbz2.a + bzlib.h to sysroot.
-=======
-# bzip2 uses a plain Makefile (no autotools), so we cross-compile by
-# setting CC, AR, RANLIB directly.
-# Output: examples/libs/bzip2/bin/bzip2.wasm
->>>>>>> 426ec1b (feat: add build scripts for 14 Unix utilities)
 
 BZIP2_VERSION="${BZIP2_VERSION:-1.0.8}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -49,7 +43,6 @@ cd "$SRC_DIR"
 
 # --- Build ---
 echo "==> Building bzip2..."
-<<<<<<< HEAD
 make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" \
     CC=wasm32posix-cc \
     AR=wasm32posix-ar \
@@ -57,23 +50,6 @@ make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" \
     CFLAGS="-Wall -Winline -O2 -D_FILE_OFFSET_BITS=64" \
     LDFLAGS="" \
     bzip2 bzip2recover libbz2.a \
-=======
-
-# Clean any previous build
-make clean 2>/dev/null || true
-
-# bzip2's Makefile uses CC, AR, RANLIB directly.
-# We override LDFLAGS="" to prevent -s (strip) which wasm-ld doesn't support.
-# CFLAGS: the Makefile appends its own -Wall -Winline etc, we just need
-# to avoid native flags.
-make \
-    CC=wasm32posix-cc \
-    AR=wasm32posix-ar \
-    RANLIB=wasm32posix-ranlib \
-    LDFLAGS="" \
-    CFLAGS="-O2 -D_FILE_OFFSET_BITS=64" \
-    bzip2 \
->>>>>>> 426ec1b (feat: add build scripts for 14 Unix utilities)
     2>&1 | tail -30
 
 echo "==> Collecting binary..."
@@ -88,15 +64,12 @@ else
     exit 1
 fi
 
-<<<<<<< HEAD
 # --- Install library to sysroot ---
 echo "==> Installing libbz2.a and bzlib.h to sysroot..."
 cp "$SRC_DIR/libbz2.a" "$SYSROOT/lib/"
 cp "$SRC_DIR/bzlib.h" "$SYSROOT/include/"
 echo "==> Installed libbz2.a and bzlib.h"
 
-=======
->>>>>>> 426ec1b (feat: add build scripts for 14 Unix utilities)
 echo ""
 echo "==> bzip2 built successfully!"
 echo "Binary: $BIN_DIR/bzip2.wasm"

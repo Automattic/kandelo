@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-<<<<<<< HEAD
 # Build GNU gzip 1.14 for wasm32-posix-kernel.
 #
 # Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
@@ -9,14 +8,6 @@ set -euo pipefail
 # Output: examples/libs/gzip/bin/gzip.wasm
 
 GZIP_VERSION="${GZIP_VERSION:-1.14}"
-=======
-# Build GNU gzip 1.13 for wasm32-posix-kernel.
-#
-# Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
-# Output: examples/libs/gzip/bin/gzip.wasm
-
-GZIP_VERSION="${GZIP_VERSION:-1.13}"
->>>>>>> 426ec1b (feat: add build scripts for 14 Unix utilities)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 SRC_DIR="$SCRIPT_DIR/gzip-src"
@@ -54,11 +45,7 @@ cd "$SRC_DIR"
 if [ ! -f Makefile ]; then
     echo "==> Configuring gzip for wasm32..."
 
-<<<<<<< HEAD
     # gnulib cross-compilation overrides (same pattern as tar/grep)
-=======
-    # gnulib cross-compilation overrides (same pattern as grep/sed/coreutils)
->>>>>>> 426ec1b (feat: add build scripts for 14 Unix utilities)
     export gl_cv_func_working_getdelim=yes
     export gl_cv_func_working_strerror=yes
     export gl_cv_func_strerror_0_works=yes
@@ -152,13 +139,10 @@ if [ ! -f Makefile ]; then
     export ac_cv_func_pstat_getstatic=no
     export ac_cv_func__set_invalid_parameter_handler=no
 
-<<<<<<< HEAD
     # musl doesn't have utimens/lutimens (uses utimensat instead)
     export ac_cv_func_utimens=no
     export ac_cv_func_lutimens=no
 
-=======
->>>>>>> 426ec1b (feat: add build scripts for 14 Unix utilities)
     # Cross-compilation values
     export ac_cv_func_closedir_void=no
     export ac_cv_func_malloc_0_nonnull=yes
