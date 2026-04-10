@@ -38,9 +38,6 @@ export interface BrowserKernelOptions {
   onListenTcp?: (pid: number, fd: number, port: number) => void;
   /** Pre-compiled thread module for clone(). Avoids recompiling large wasm for each thread. */
   threadModule?: WebAssembly.Module;
-  /** CORS proxy URL for cross-origin HTTP requests (e.g. "https://proxy.example.com/?").
-   *  The target URL is appended after the proxy URL. */
-  corsProxyUrl?: string;
 }
 
 export class BrowserKernel {
@@ -167,7 +164,6 @@ export class BrowserKernel {
           maxWorkers: this.options.maxWorkers,
           maxMemoryPages: this.maxPages,
           env: this.options.env,
-          corsProxyUrl: this.options.corsProxyUrl,
         },
       };
 
