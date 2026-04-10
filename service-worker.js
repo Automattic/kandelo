@@ -212,7 +212,7 @@ if (typeof window !== "undefined") {
   });
 
   // --- CORS proxy URL (injected at build time, empty string in dev) ---
-  var CORS_PROXY_URL = "https://wordpress-playground-cors-proxy.com/?";
+  var CORS_PROXY_URL = "https://wordpress-playground-cors-proxy.net/?";
 
   /**
    * Check if a URL is cross-origin relative to the service worker's origin.
@@ -230,7 +230,7 @@ if (typeof window !== "undefined") {
 
     // If we have a CORS proxy, route through it
     if (CORS_PROXY_URL) {
-      var proxyUrl = CORS_PROXY_URL + encodeURIComponent(targetUrl);
+      var proxyUrl = CORS_PROXY_URL + targetUrl;
       return fetch(proxyUrl).then(function (response) {
         var headers = new Headers(response.headers);
         headers.set("Cross-Origin-Resource-Policy", "cross-origin");
