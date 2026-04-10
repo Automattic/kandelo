@@ -2,6 +2,7 @@ import { concatUint8Arrays } from '../shims';
 
 import { ServerNameExtension } from '../extensions/0_server_name';
 import { ECPointFormatsExtension } from '../extensions/11_ec_point_formats';
+import { ExtendedMasterSecretExtension } from '../extensions/23_extended_master_secret';
 import { RenegotiationInfoExtension } from '../extensions/65281_renegotiation_info';
 import { CipherSuitesNames } from '../cipher-suites';
 import { CipherSuites } from '../cipher-suites';
@@ -333,6 +334,10 @@ export class TLS_1_2_Connection {
 			MessageEncoder.serverHelloDone()
 		);
 
+		// Check if client requested Extended Master Secret (RFC 7627)
+		const useEMS = clientHelloRecord.body.extensions.some(
+			(ext: any) => ext.type === 'extended_master_secret'
+		);
 		// Step 3: Receive the client's response, encryption keys, and
 		//         decrypt the first encrypted message.
 		const clientKeyExchangeRecord = await this.readNextHandshakeMessage(
@@ -351,6 +356,7 @@ export class TLS_1_2_Connection {
 				false,
 				[]
 			),
+			useEMS,
 		});
 
 		await this.readNextHandshakeMessage(HandshakeType.Finished);
@@ -377,18 +383,20 @@ export class TLS_1_2_Connection {
 
 	/**
 	 * Derives the session keys from the random values and the
-	 * pre-master secret – as per RFC 5246.
+	 * pre-master secret – as per RFC 5246 and RFC 7627 (EMS).
 	 */
 	private async deriveSessionKeys({
 		clientRandom,
 		serverRandom,
 		serverPrivateKey,
 		clientPublicKey,
+		useEMS = false,
 	}: {
 		clientRandom: Uint8Array;
 		serverRandom: Uint8Array;
 		serverPrivateKey: CryptoKey;
 		clientPublicKey: CryptoKey;
+		useEMS?: boolean;
 	}): Promise<SessionKeys> {
 		const preMasterSecret = await crypto.subtle.deriveBits(
 			{
@@ -399,14 +407,34 @@ export class TLS_1_2_Connection {
 			256 // Length of the derived secret (256 bits for P-256)
 		);
 
-		const masterSecret = new Uint8Array(
-			await tls12Prf(
-				preMasterSecret,
-				new TextEncoder().encode('master secret'),
-				concatUint8Arrays([clientRandom, serverRandom]),
-				48
-			)
-		);
+		let masterSecret: Uint8Array;
+		if (useEMS) {
+			// RFC 7627: Extended Master Secret uses hash of handshake
+			// transcript instead of client/server randoms.
+			const sessionHash = new Uint8Array(
+				await crypto.subtle.digest(
+					'SHA-256',
+					concatUint8Arrays(this.handshakeMessages)
+				)
+			);
+			masterSecret = new Uint8Array(
+				await tls12Prf(
+					preMasterSecret,
+					new TextEncoder().encode('extended master secret'),
+					sessionHash,
+					48
+				)
+			);
+		} else {
+			masterSecret = new Uint8Array(
+				await tls12Prf(
+					preMasterSecret,
+					new TextEncoder().encode('master secret'),
+					concatUint8Arrays([clientRandom, serverRandom]),
+					48
+				)
+			);
+		}
 
 		const keyBlock = await tls12Prf(
 			masterSecret,
@@ -536,7 +564,6 @@ export class TLS_1_2_Connection {
 				const descriptionCode = record.fragment[1];
 				const severity = AlertLevelNames[level];
 				const description = AlertDescriptionNames[descriptionCode];
-
 				if (
 					level === AlertLevels.Warning &&
 					descriptionCode === AlertDescriptions.CloseNotify
@@ -807,12 +834,15 @@ class TLSDecoder {
 	 */
 	static parseCipherSuites(buffer: ArrayBufferLike): string[] {
 		const reader = new ArrayBufferReader(buffer);
-		// Skip the length of the cipher suites
-		reader.readUint16();
+		// Note: this reads the first cipher suite as a "length" and discards it
+		// (bug from upstream WP Playground code — benign since 0xc02f is never first)
+		const firstSuite = reader.readUint16();
 
 		const cipherSuites = [];
+		const allSuiteIds: number[] = [firstSuite]; // track ALL including skipped first
 		while (!reader.isFinished()) {
 			const suite = reader.readUint16();
+			allSuiteIds.push(suite);
 			if (!(suite in CipherSuitesNames)) {
 				continue;
 			}
@@ -1201,10 +1231,29 @@ class MessageEncoder {
 						 * doesn't support renegotiation, that's all we need to handle.
 						 */
 						return RenegotiationInfoExtension.encodeForClient();
+					case 'extended_master_secret':
+						/**
+						 * RFC 7627: Extended Master Secret. The server echoes this
+						 * extension to signal EMS support. When active, the master
+						 * secret is derived using a hash of the handshake transcript
+						 * instead of client/server randoms. Required by OpenSSL 3.x.
+						 */
+						return ExtendedMasterSecretExtension.encodeForClient();
 				}
 				return undefined;
 			})
 			.filter((x): x is Uint8Array => x !== undefined);
+
+		// RFC 5746 Section 3.6: The server MUST include renegotiation_info
+		// in ServerHello if the client signaled support via EITHER the
+		// extension OR the TLS_EMPTY_RENEGOTIATION_INFO_SCSV cipher suite
+		// value (0x00FF). OpenSSL 3.x uses SCSV by default.
+		const hasRenegExt = extensionsParts.length > 0 &&
+			clientHello.extensions.some((ext) => ext.type === 'renegotiation_info');
+		if (!hasRenegExt) {
+			// Client likely used SCSV — always include renegotiation_info
+			extensionsParts.push(RenegotiationInfoExtension.encodeForClient());
+		}
 		const extensions = concatUint8Arrays(extensionsParts);
 
 		const body = new Uint8Array([

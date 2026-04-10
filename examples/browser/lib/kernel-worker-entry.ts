@@ -66,7 +66,7 @@ import { VirtualPlatformIO } from "../../../host/src/vfs/vfs";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import { DeviceFileSystem } from "../../../host/src/vfs/device-fs";
 import { BrowserTimeProvider } from "../../../host/src/vfs/time";
-import { FetchNetworkBackend } from "../../../host/src/networking/fetch-backend";
+import { TlsNetworkBackend } from "./tls-network-backend";
 import { patchWasmForThread } from "../../../host/src/worker-main";
 import type {
   CentralizedWorkerInitMessage,
@@ -150,9 +150,28 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     { mountPoint: "/", backend: memfs },
   ];
   io = new VirtualPlatformIO(mounts, new BrowserTimeProvider());
-  io.network = new FetchNetworkBackend(
+
+  // Create TLS-MITM network backend. Programs do real TLS handshakes via
+  // their compiled-in OpenSSL; the backend terminates TLS locally, makes
+  // real fetch() requests, and re-encrypts the responses.
+  const tlsBackend = new TlsNetworkBackend(
     msg.config.corsProxyUrl ? { corsProxyUrl: msg.config.corsProxyUrl } : undefined,
   );
+  await tlsBackend.init();
+  io.network = tlsBackend;
+
+  // Install the MITM CA certificate in the VFS so OpenSSL trusts it.
+  const caCertPem = tlsBackend.getCACertPEM();
+  try {
+    try { memfs.mkdir("/etc/ssl", 0o755); } catch { /* exists */ }
+    try { memfs.mkdir("/etc/ssl/certs", 0o755); } catch { /* exists */ }
+    const certBytes = new TextEncoder().encode(caCertPem);
+    const certFd = memfs.open("/etc/ssl/certs/ca-certificates.crt", 0o1101, 0o644);
+    memfs.write(certFd, certBytes, 0, certBytes.length);
+    memfs.close(certFd);
+  } catch (e) {
+    console.error("[kernel-worker] Failed to write CA cert to VFS:", e);
+  }
 
   // Create worker adapter for spawning sub-workers
   workerAdapter = new BrowserWorkerAdapter(msg.workerEntryUrl);

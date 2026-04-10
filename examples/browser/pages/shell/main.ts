@@ -204,20 +204,6 @@ async function populateExecBinaries(kernel: BrowserKernel): Promise<void> {
       .map((df) => ({ path: df.path, data: new Uint8Array(df.data!) })),
   );
 
-  // Append HTTPS→HTTP rewrite to gitconfig so libcurl doesn't attempt TLS
-  // handshakes — the browser's fetch() API handles TLS natively via CORS proxy.
-  const gitHttpConfig = [
-    '[url "http://"]',
-    "\tinsteadOf = https://",
-    "[http]",
-    "\tsslVerify = false",
-    "",
-  ].join("\n");
-  const gitHttpBytes = new TextEncoder().encode(gitHttpConfig);
-  const gfd = fs.open("/etc/gitconfig", 0x401, 0o644); // O_WRONLY | O_APPEND
-  fs.write(gfd, gitHttpBytes, null, gitHttpBytes.length);
-  fs.close(gfd);
-
   // Write shell profile: color aliases for interactive sessions.
   // dash reads the file pointed to by $ENV on interactive startup.
   const profile = "alias ls='ls --color=auto'\nalias grep='grep --color=auto'\n";
@@ -250,7 +236,7 @@ async function startInteractiveShell() {
     setStatus("Starting shell...", "running");
 
     const kernel = new BrowserKernel({
-      corsProxyUrl: "https://wordpress-playground-cors-proxy.net/?",
+      corsProxyUrl: "/cors-proxy?url=",
     });
 
     await kernel.init(kernelBytes!);
@@ -503,7 +489,7 @@ async function runBatch() {
     const kernel = new BrowserKernel({
       onStdout: (data) => appendBatchOutput(decoder.decode(data)),
       onStderr: (data) => appendBatchOutput(decoder.decode(data), "stderr"),
-      corsProxyUrl: "https://wordpress-playground-cors-proxy.net/?",
+      corsProxyUrl: "/cors-proxy?url=",
     });
 
     await kernel.init(kernelBytes!);

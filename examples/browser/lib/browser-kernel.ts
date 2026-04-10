@@ -72,6 +72,8 @@ export class BrowserKernel {
         "LANG=en_US.UTF-8",
         "USER=browser",
         "LOGNAME=browser",
+        "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
+        "SSL_CERT_DIR=/etc/ssl/certs",
       ],
       ...options,
     };
@@ -213,7 +215,7 @@ export class BrowserKernel {
       pid,
       programBytes: bytesToSend,
       argv,
-      env: options?.env ?? this.options.env,
+      env: this.mergeEnv(options?.env ?? this.options.env),
       cwd: options?.cwd,
       pty: options?.pty,
       stdin: options?.stdin,
@@ -392,6 +394,24 @@ export class BrowserKernel {
   }
 
   // ── Private helpers ──
+
+  /** Ensure SSL cert env vars are present in the environment array.
+   *  These are needed because OpenSSL's compiled-in openssldir is a host
+   *  path that doesn't exist in the Wasm VFS. */
+  private mergeEnv(env: string[]): string[] {
+    const sslVars = [
+      "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
+      "SSL_CERT_DIR=/etc/ssl/certs",
+    ];
+    const result = [...env];
+    for (const v of sslVars) {
+      const key = v.split("=")[0];
+      if (!result.some(e => e.startsWith(key + "="))) {
+        result.push(v);
+      }
+    }
+    return result;
+  }
 
   private sendToKernel(msg: MainToKernelMessage, transfer?: Transferable[]): void {
     this.kernelWorkerHandle.postMessage(msg, transfer ?? []);
