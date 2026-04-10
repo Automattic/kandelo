@@ -211,6 +211,57 @@ if (typeof window !== "undefined") {
     }
   });
 
+  // --- CORS proxy URL (injected at build time, empty string in dev) ---
+  var CORS_PROXY_URL = "__CORS_PROXY_URL__";
+
+  /**
+   * Check if a URL is cross-origin relative to the service worker's origin.
+   */
+  function isCrossOrigin(url) {
+    return url.origin !== self.location.origin;
+  }
+
+  /**
+   * Fetch a cross-origin URL, routing through the CORS proxy if configured.
+   * Returns a Response with CORP headers added so COEP: require-corp is satisfied.
+   */
+  function fetchCrossOrigin(request) {
+    var targetUrl = request.url;
+
+    // If we have a CORS proxy, route through it
+    if (CORS_PROXY_URL) {
+      var proxyUrl = CORS_PROXY_URL + encodeURIComponent(targetUrl);
+      return fetch(proxyUrl).then(function (response) {
+        var headers = new Headers(response.headers);
+        headers.set("Cross-Origin-Resource-Policy", "cross-origin");
+        if (!headers.has("Cross-Origin-Embedder-Policy")) {
+          headers.set("Cross-Origin-Embedder-Policy", "require-corp");
+        }
+        return new Response(response.body, {
+          status: response.status,
+          statusText: response.statusText,
+          headers: headers,
+        });
+      });
+    }
+
+    // No CORS proxy — try direct fetch and add CORP headers
+    return fetch(request).then(function (response) {
+      if (response.type === "opaque" || response.type === "opaqueredirect") {
+        return response;
+      }
+      var headers = new Headers(response.headers);
+      if (!headers.has("Cross-Origin-Resource-Policy")) {
+        headers.set("Cross-Origin-Resource-Policy", "cross-origin");
+      }
+      return new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: headers,
+      });
+    });
+  }
+
   // --- Fetch interception ---
   self.addEventListener("fetch", function (event) {
     var url = new URL(event.request.url);
@@ -221,7 +272,13 @@ if (typeof window !== "undefined") {
       return;
     }
 
-    // All other requests — pass through but add COI headers
+    // Cross-origin requests — route through CORS proxy if available
+    if (isCrossOrigin(url)) {
+      event.respondWith(fetchCrossOrigin(event.request));
+      return;
+    }
+
+    // Same-origin requests — pass through but add COI headers
     event.respondWith(
       (function () {
         // Navigation requests (HTML pages): revalidate with the server so

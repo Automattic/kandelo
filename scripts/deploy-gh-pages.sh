@@ -9,15 +9,17 @@
 set -euo pipefail
 
 REPO_NAME="${1:-wasm-posix-kernel}"
+CORS_PROXY="${VITE_CORS_PROXY_URL:-https://wordpress-playground-cors-proxy.com/?}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 BROWSER_DIR="$ROOT_DIR/examples/browser"
 
 echo "=== Building browser demos for /${REPO_NAME}/ ==="
+echo "    CORS proxy: ${CORS_PROXY}"
 
 cd "$BROWSER_DIR"
 npm install --no-save
-VITE_BASE="/${REPO_NAME}/" npx vite build
+VITE_BASE="/${REPO_NAME}/" VITE_CORS_PROXY_URL="${CORS_PROXY}" npx vite build
 
 echo ""
 echo "=== Build complete: $BROWSER_DIR/dist/ ==="
