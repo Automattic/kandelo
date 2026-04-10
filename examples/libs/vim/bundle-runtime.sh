@@ -23,7 +23,8 @@ echo "==> Bundling minimal Vim runtime..."
 
 rm -rf "$RUNTIME_OUT"
 mkdir -p "$RUNTIME_OUT/syntax" "$RUNTIME_OUT/colors" "$RUNTIME_OUT/ftplugin" \
-         "$RUNTIME_OUT/indent" "$RUNTIME_OUT/plugin" "$RUNTIME_OUT/autoload"
+         "$RUNTIME_OUT/indent" "$RUNTIME_OUT/plugin" "$RUNTIME_OUT/autoload" \
+         "$RUNTIME_OUT/doc"
 
 # Core vim scripts
 for f in defaults.vim filetype.vim scripts.vim; do
@@ -79,6 +80,18 @@ done
 
 # A basic color scheme
 [ -f "$RUNTIME_SRC/colors/default.vim" ] && cp "$RUNTIME_SRC/colors/default.vim" "$RUNTIME_OUT/colors/default.vim"
+
+# Help files (doc/*.txt + tags) — enables :help
+# Excludes version history files (version4-9.txt, ~4.7MB) which are rarely needed.
+if [ -d "$RUNTIME_SRC/doc" ]; then
+    for f in "$RUNTIME_SRC"/doc/*.txt; do
+        case "$(basename "$f")" in
+            version[0-9]*.txt) ;; # skip version history
+            *) cp "$f" "$RUNTIME_OUT/doc/" ;;
+        esac
+    done
+    [ -f "$RUNTIME_SRC/doc/tags" ] && cp "$RUNTIME_SRC/doc/tags" "$RUNTIME_OUT/doc/tags"
+fi
 
 # Count files and total size
 FILE_COUNT=$(find "$RUNTIME_OUT" -type f | wc -l | tr -d ' ')
