@@ -13,6 +13,8 @@ import type { SignatureAlgorithms } from './13_signature_algorithms';
 import { SignatureAlgorithmsExtension } from './13_signature_algorithms';
 import type { RenegotiationInfo } from './65281_renegotiation_info';
 import { RenegotiationInfoExtension } from './65281_renegotiation_info';
+import type { ExtendedMasterSecret } from './23_extended_master_secret';
+import { ExtendedMasterSecretExtension } from './23_extended_master_secret';
 import { ExtensionNames } from './types';
 
 export const TLSExtensionsHandlers = {
@@ -21,6 +23,7 @@ export const TLSExtensionsHandlers = {
 	supported_groups: SupportedGroupsExtension,
 	ec_point_formats: ECPointFormatsExtension,
 	renegotiation_info: RenegotiationInfoExtension,
+	extended_master_secret: ExtendedMasterSecretExtension,
 } as const;
 
 export type SupportedTLSExtension = keyof typeof TLSExtensionsHandlers;
@@ -49,6 +52,11 @@ export type ParsedExtension =
 	| {
 			type: 'renegotiation_info';
 			data: RenegotiationInfo;
+			raw: Uint8Array;
+	  }
+	| {
+			type: 'extended_master_secret';
+			data: ExtendedMasterSecret;
 			raw: Uint8Array;
 	  };
 

@@ -4832,6 +4832,25 @@ fn poll_check(proc: &mut Process, fds: &mut [WasmPollFd]) -> i32 {
                             }
                         }
                     }
+                    // Host-delegated external socket (no pipe buffers): report
+                    // ready for requested events. The kernel can't see async
+                    // host state (e.g. pending fetch), so we always report ready.
+                    // If recv has no data yet, host_net_recv returns EAGAIN;
+                    // non-blocking FDs get EAGAIN back immediately, and the
+                    // program's poll loop retries — each iteration yields to the
+                    // JS event loop, allowing the async fetch to complete.
+                    if sock.host_net_handle.is_some()
+                        && sock.recv_buf_idx.is_none()
+                        && sock.send_buf_idx.is_none()
+                        && sock.state == SocketState::Connected
+                    {
+                        if pollfd.events & POLLOUT != 0 {
+                            revents |= POLLOUT;
+                        }
+                        if pollfd.events & POLLIN != 0 {
+                            revents |= POLLIN;
+                        }
+                    }
                 }
             }
         }

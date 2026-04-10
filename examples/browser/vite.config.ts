@@ -54,9 +54,69 @@ function injectCoiServiceWorker(): Plugin {
   };
 }
 
+/**
+ * Vite plugin: same-origin CORS proxy for development.
+ * Cross-Origin-Embedder-Policy: require-corp blocks all cross-origin fetches
+ * from web workers unless the remote server sends CORP headers (most don't).
+ * This middleware proxies external requests through the dev server so they
+ * appear same-origin.  URL: /cors-proxy?url=<encoded-url>
+ */
+function corsProxyPlugin(): Plugin {
+  return {
+    name: "cors-proxy",
+    configureServer(server) {
+      server.middlewares.use("/cors-proxy", async (req, res) => {
+        const url = new URL(req.url!, `http://${req.headers.host}`);
+        const targetUrl = url.searchParams.get("url");
+        if (!targetUrl) {
+          res.writeHead(400, { "Content-Type": "text/plain" });
+          res.end("Missing ?url= parameter");
+          return;
+        }
+        try {
+          // Use Node.js http/https modules for more reliable proxying
+          const { default: https } = await import("https");
+          const { default: http } = await import("http");
+          const parsedUrl = new URL(targetUrl);
+          const client = parsedUrl.protocol === "https:" ? https : http;
+
+          const proxyReq = client.request(targetUrl, {
+            method: req.method || "GET",
+            rejectUnauthorized: false, // Dev proxy — skip cert verification
+            headers: {
+              "User-Agent": req.headers["user-agent"] || "wasm-posix-kernel-proxy",
+              "Accept": req.headers["accept"] || "*/*",
+            },
+          }, (proxyRes) => {
+            const headers: Record<string, string> = {
+              "Access-Control-Allow-Origin": "*",
+              "Cross-Origin-Resource-Policy": "cross-origin",
+            };
+            if (proxyRes.headers["content-type"]) {
+              headers["Content-Type"] = proxyRes.headers["content-type"];
+            }
+            res.writeHead(proxyRes.statusCode || 502, headers);
+            proxyRes.pipe(res);
+          });
+          proxyReq.on("error", (err) => {
+            console.error("[cors-proxy] Request error:", err.message);
+            res.writeHead(502, { "Content-Type": "text/plain" });
+            res.end(`Proxy error: ${err.message}`);
+          });
+          proxyReq.end();
+        } catch (err: any) {
+          console.error("[cors-proxy] Error:", err);
+          res.writeHead(502, { "Content-Type": "text/plain" });
+          res.end(`Proxy error: ${err?.message || err}`);
+        }
+      });
+    },
+  };
+}
+
 export default defineConfig({
   base: process.env.VITE_BASE || "/",
-  plugins: [rewriteNavLinks(), injectCoiServiceWorker()],
+  plugins: [rewriteNavLinks(), injectCoiServiceWorker(), corsProxyPlugin()],
   server: {
     headers: {
       "Cross-Origin-Opener-Policy": "same-origin",

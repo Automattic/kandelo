@@ -229,7 +229,7 @@ async function startInteractiveShell() {
     setStatus("Starting shell...", "running");
 
     const kernel = new BrowserKernel({
-      corsProxyUrl: "https://wordpress-playground-cors-proxy.net/?",
+      corsProxyUrl: "/cors-proxy?url=",
     });
 
     await kernel.init(kernelBytes!);
@@ -482,7 +482,7 @@ async function runBatch() {
     const kernel = new BrowserKernel({
       onStdout: (data) => appendBatchOutput(decoder.decode(data)),
       onStderr: (data) => appendBatchOutput(decoder.decode(data), "stderr"),
-      corsProxyUrl: "https://wordpress-playground-cors-proxy.net/?",
+      corsProxyUrl: "/cors-proxy?url=",
     });
 
     await kernel.init(kernelBytes!);

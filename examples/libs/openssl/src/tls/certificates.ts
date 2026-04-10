@@ -210,34 +210,34 @@ class CertificateGenerator {
 	}
 
 	private static keyUsage(keyUsage?: KeyUsage) {
+		// X.509 KeyUsage is a BIT STRING where bit 0 is the MSB (0x80),
+		// per ASN.1 named bit list encoding (RFC 5280 Section 4.2.1.3).
 		const keyUsageBits = new Uint8Array([0b00000000]);
 		if (keyUsage?.digitalSignature) {
-			keyUsageBits[0] |= 0b00000001;
-		}
-		if (keyUsage?.nonRepudiation) {
-			keyUsageBits[0] |= 0b00000010;
-		}
-		if (keyUsage?.keyEncipherment) {
-			keyUsageBits[0] |= 0b00000100;
-		}
-		if (keyUsage?.dataEncipherment) {
-			keyUsageBits[0] |= 0b00001000;
-		}
-		if (keyUsage?.keyAgreement) {
-			keyUsageBits[0] |= 0b00010000;
-		}
-		if (keyUsage?.keyCertSign) {
-			keyUsageBits[0] |= 0b00100000;
-		}
-		if (keyUsage?.cRLSign) {
-			keyUsageBits[0] |= 0b01000000;
-		}
-		if (keyUsage?.encipherOnly) {
 			keyUsageBits[0] |= 0b10000000;
 		}
-		if (keyUsage?.decipherOnly) {
+		if (keyUsage?.nonRepudiation) {
 			keyUsageBits[0] |= 0b01000000;
 		}
+		if (keyUsage?.keyEncipherment) {
+			keyUsageBits[0] |= 0b00100000;
+		}
+		if (keyUsage?.dataEncipherment) {
+			keyUsageBits[0] |= 0b00010000;
+		}
+		if (keyUsage?.keyAgreement) {
+			keyUsageBits[0] |= 0b00001000;
+		}
+		if (keyUsage?.keyCertSign) {
+			keyUsageBits[0] |= 0b00000100;
+		}
+		if (keyUsage?.cRLSign) {
+			keyUsageBits[0] |= 0b00000010;
+		}
+		if (keyUsage?.encipherOnly) {
+			keyUsageBits[0] |= 0b00000001;
+		}
+		// decipherOnly is bit 8 — would need a second byte. Not used in practice.
 		return ASN1Encoder.sequence([
 			ASN1Encoder.objectIdentifier(oidByName('keyUsage')),
 			ASN1Encoder.boolean(true), // Critical
@@ -294,15 +294,18 @@ class CertificateGenerator {
 	}
 
 	private static subjectAltName(altNames: SubjectAltNames) {
+		// SAN GeneralName uses IMPLICIT context-specific tags, meaning the
+		// context tag replaces the inner type tag. Pass raw bytes, not
+		// pre-encoded IA5String (which would double-wrap the tag).
 		const generalNames =
 			altNames.dnsNames?.map((name) => {
-				const dnsName = ASN1Encoder.ia5String(name);
-				return ASN1Encoder.contextSpecific(2, dnsName);
+				const dnsNameBytes = new TextEncoder().encode(name);
+				return ASN1Encoder.contextSpecific(2, dnsNameBytes);
 			}) || [];
 		const ipAddresses =
 			altNames.ipAddresses?.map((ip) => {
-				const ipAddress = ASN1Encoder.ia5String(ip);
-				return ASN1Encoder.contextSpecific(7, ipAddress);
+				const ipBytes = new TextEncoder().encode(ip);
+				return ASN1Encoder.contextSpecific(7, ipBytes);
 			}) || [];
 		const sanExtensionValue = ASN1Encoder.octetString(
 			ASN1Encoder.sequence([...generalNames, ...ipAddresses])

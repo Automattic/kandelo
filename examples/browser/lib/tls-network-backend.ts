@@ -303,7 +303,6 @@ export class TlsNetworkBackend implements NetworkIO {
 
     // Generate server cert and start TLS handshake (async, fire-and-forget)
     this.startHandshake(handle, conn).catch((err) => {
-      console.error(`[tls-mitm] Handshake setup error for ${hostname}:`, err);
       conn.error = err;
       conn.closed = true;
     });
@@ -335,7 +334,6 @@ export class TlsNetworkBackend implements NetworkIO {
       conn.handshakeDone = true;
     }).catch((err) => {
       if (!conn.closed) {
-        console.error(`[tls-mitm] Handshake error for ${conn.hostname}:`, err);
         conn.error = err;
       }
       conn.closed = true;
@@ -433,10 +431,9 @@ export class TlsNetworkBackend implements NetworkIO {
         } catch (e) {
           // Try CORS proxy if configured
           if (this.options.corsProxyUrl) {
-            response = await fetch(`${this.options.corsProxyUrl}${url}`, {
+            const proxyUrl = `${this.options.corsProxyUrl}${encodeURIComponent(url)}`;
+            response = await fetch(proxyUrl, {
               method,
-              headers: fetchHeaders,
-              body: method !== "GET" && method !== "HEAD" ? fetchBody : undefined,
             });
           } else {
             throw e;
@@ -520,10 +517,8 @@ export class TlsNetworkBackend implements NetworkIO {
           });
         } catch (e) {
           if (this.options.corsProxyUrl) {
-            response = await fetch(`${this.options.corsProxyUrl}${url}`, {
+            response = await fetch(`${this.options.corsProxyUrl}${encodeURIComponent(url)}`, {
               method,
-              headers: fetchHeaders,
-              body: fetchBody,
             });
           } else {
             throw e;
