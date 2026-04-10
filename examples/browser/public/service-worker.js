@@ -230,7 +230,7 @@ if (typeof window !== "undefined") {
 
     // If we have a CORS proxy, route through it
     if (CORS_PROXY_URL) {
-      var proxyUrl = CORS_PROXY_URL + encodeURIComponent(targetUrl);
+      var proxyUrl = CORS_PROXY_URL + targetUrl;
       return fetch(proxyUrl).then(function (response) {
         var headers = new Headers(response.headers);
         headers.set("Cross-Origin-Resource-Policy", "cross-origin");
