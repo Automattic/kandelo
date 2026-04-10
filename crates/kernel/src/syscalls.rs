@@ -6972,66 +6972,144 @@ pub fn sys_select(
 
     let nfds = nfds as usize;
 
-    // Build pollfd array from fd_sets
-    let mut pollfds: alloc::vec::Vec<WasmPollFd> = alloc::vec::Vec::new();
-    // Track which fds are in which sets
-    let mut fd_info: alloc::vec::Vec<(usize, bool, bool, bool)> = alloc::vec::Vec::new();
+    // Inline readiness check — avoids Vec allocations that leak with the
+    // bump allocator. We check each fd directly from the fd_sets.
+    let mut ready = 0i32;
+    let mut any_interested = false;
+
+    // Save input fd_sets before clearing (we need to know which fds were requested)
+    // Use a fixed-size buffer: nfds <= 1024, so max 128 bytes per set.
+    let mut in_read_buf = [0u8; 128];
+    let mut in_write_buf = [0u8; 128];
+    let mut in_except_buf = [0u8; 128];
+    let set_bytes = nfds.div_ceil(8);
+
+    if let Some(ref s) = readfds {
+        in_read_buf[..set_bytes].copy_from_slice(&s[..set_bytes]);
+    }
+    if let Some(ref s) = writefds {
+        in_write_buf[..set_bytes].copy_from_slice(&s[..set_bytes]);
+    }
+    if let Some(ref s) = exceptfds {
+        in_except_buf[..set_bytes].copy_from_slice(&s[..set_bytes]);
+    }
+
+    // Clear output fd_sets
+    if let Some(ref mut s) = readfds { s[..set_bytes].fill(0); }
+    if let Some(ref mut s) = writefds { s[..set_bytes].fill(0); }
+    if let Some(ref mut s) = exceptfds { s[..set_bytes].fill(0); }
 
     for fd in 0..nfds {
         let byte = fd / 8;
         let bit = fd % 8;
 
-        let in_read = readfds.as_ref().map_or(false, |s| (s[byte] >> bit) & 1 != 0);
-        let in_write = writefds.as_ref().map_or(false, |s| (s[byte] >> bit) & 1 != 0);
-        let in_except = exceptfds.as_ref().map_or(false, |s| (s[byte] >> bit) & 1 != 0);
+        let want_read = (in_read_buf[byte] >> bit) & 1 != 0;
+        let want_write = (in_write_buf[byte] >> bit) & 1 != 0;
+        let want_except = (in_except_buf[byte] >> bit) & 1 != 0;
 
-        if in_read || in_write || in_except {
-            let mut events: i16 = 0;
-            if in_read { events |= POLLIN; }
-            if in_write { events |= POLLOUT; }
-            if in_except { events |= POLLPRI; }
-
-            pollfds.push(WasmPollFd {
-                fd: fd as i32,
-                events,
-                revents: 0,
-            });
-            fd_info.push((fd, in_read, in_write, in_except));
+        if !want_read && !want_write && !want_except {
+            continue;
         }
-    }
+        any_interested = true;
 
-    // Run poll with timeout forwarded
-    sys_poll(proc, host, &mut pollfds, timeout_ms)?;
+        let mut events: i16 = 0;
+        if want_read { events |= POLLIN; }
+        if want_write { events |= POLLOUT; }
+        if want_except { events |= POLLPRI; }
 
-    // Clear the output fd_sets
-    if let Some(ref mut s) = readfds { s[..nfds.div_ceil(8)].fill(0); }
-    if let Some(ref mut s) = writefds { s[..nfds.div_ceil(8)].fill(0); }
-    if let Some(ref mut s) = exceptfds { s[..nfds.div_ceil(8)].fill(0); }
+        let mut pollfd = WasmPollFd { fd: fd as i32, events, revents: 0 };
+        poll_check(proc, core::slice::from_mut(&mut pollfd));
 
-    // Convert poll results back to fd_sets
-    let mut ready = 0i32;
-    for (i, pollfd) in pollfds.iter().enumerate() {
-        let (fd, in_read, in_write, in_except) = fd_info[i];
-        let byte = fd / 8;
-        let bit = fd % 8;
+        let revents = pollfd.revents;
         let mut counted = false;
 
-        if in_read && (pollfd.revents & (POLLIN | POLLHUP | POLLERR)) != 0 {
+        if want_read && (revents & (POLLIN | POLLHUP | POLLERR)) != 0 {
             if let Some(ref mut s) = readfds { s[byte] |= 1 << bit; }
             counted = true;
         }
-        if in_write && (pollfd.revents & (POLLOUT | POLLERR)) != 0 {
+        if want_write && (revents & (POLLOUT | POLLERR)) != 0 {
             if let Some(ref mut s) = writefds { s[byte] |= 1 << bit; }
             counted = true;
         }
-        if in_except && (pollfd.revents & POLLPRI) != 0 {
+        if want_except && (revents & POLLPRI) != 0 {
             if let Some(ref mut s) = exceptfds { s[byte] |= 1 << bit; }
             counted = true;
         }
         if counted { ready += 1; }
     }
 
-    Ok(ready)
+    if ready > 0 || timeout_ms == 0 || !any_interested {
+        return Ok(ready);
+    }
+
+    // Centralized mode: return EAGAIN so the host JS can retry asynchronously
+    if crate::is_centralized_mode() {
+        return Err(Errno::EAGAIN);
+    }
+
+    // Non-centralized mode: blocking poll loop
+    let deadline_ns: Option<u64> = if timeout_ms > 0 {
+        let (sec, nsec) = host.host_clock_gettime(1)?;
+        let now = sec as u64 * 1_000_000_000 + nsec as u64;
+        Some(now + (timeout_ms as u64) * 1_000_000)
+    } else {
+        None
+    };
+
+    loop {
+        if proc.signals.deliverable() != 0 {
+            if !proc.signals.should_restart() {
+                return Err(Errno::EINTR);
+            }
+        }
+
+        let _ = host.host_nanosleep(0, 1_000_000);
+
+        // Re-check readiness
+        ready = 0;
+        if let Some(ref mut s) = readfds { s[..set_bytes].fill(0); }
+        if let Some(ref mut s) = writefds { s[..set_bytes].fill(0); }
+        if let Some(ref mut s) = exceptfds { s[..set_bytes].fill(0); }
+
+        for fd in 0..nfds {
+            let byte = fd / 8;
+            let bit = fd % 8;
+            let want_read = (in_read_buf[byte] >> bit) & 1 != 0;
+            let want_write = (in_write_buf[byte] >> bit) & 1 != 0;
+            let want_except = (in_except_buf[byte] >> bit) & 1 != 0;
+            if !want_read && !want_write && !want_except { continue; }
+
+            let mut pollfd = WasmPollFd { fd: fd as i32, events: 0, revents: 0 };
+            if want_read { pollfd.events |= POLLIN; }
+            if want_write { pollfd.events |= POLLOUT; }
+            if want_except { pollfd.events |= POLLPRI; }
+            poll_check(proc, core::slice::from_mut(&mut pollfd));
+
+            let revents = pollfd.revents;
+            let mut counted = false;
+            if want_read && (revents & (POLLIN | POLLHUP | POLLERR)) != 0 {
+                if let Some(ref mut s) = readfds { s[byte] |= 1 << bit; }
+                counted = true;
+            }
+            if want_write && (revents & (POLLOUT | POLLERR)) != 0 {
+                if let Some(ref mut s) = writefds { s[byte] |= 1 << bit; }
+                counted = true;
+            }
+            if want_except && (revents & POLLPRI) != 0 {
+                if let Some(ref mut s) = exceptfds { s[byte] |= 1 << bit; }
+                counted = true;
+            }
+            if counted { ready += 1; }
+        }
+
+        if ready > 0 { return Ok(ready); }
+
+        if let Some(dl) = deadline_ns {
+            let (sec, nsec) = host.host_clock_gettime(1)?;
+            let now = sec as u64 * 1_000_000_000 + nsec as u64;
+            if now >= dl { return Ok(0); }
+        }
+    }
 }
 
 /// setuid -- set real and effective user ID (simulated).
