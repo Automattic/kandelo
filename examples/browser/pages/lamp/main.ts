@@ -324,16 +324,16 @@ async function start() {
           // Overwrite wp-config.php with MySQL version + install mu-plugin
           writeVfsFile(kernel!.fs, "/var/www/html/wp-config.php", WP_CONFIG_PHP);
           writeVfsFile(kernel!.fs, "/var/www/html/wp-content/mu-plugins/wasm-optimizations.php", MU_PLUGIN_PHP);
+
+          // Load the frame now that WordPress files are in the VFS
+          setStatus("LEMP stack running!", "running");
+          reloadBtn.disabled = false;
+          loadFrame();
         }
       },
       onServiceReady: (name) => {
         if (name === "mariadb-bootstrap") {
           appendLog("Bootstrap complete\n", "info");
-        }
-        if (name === "nginx") {
-          setStatus("LEMP stack running! Loading WordPress...", "running");
-          reloadBtn.disabled = false;
-          loadFrame();
         }
       },
     });

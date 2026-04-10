@@ -291,11 +291,9 @@ async function start() {
           // prefix that the service worker intercepts
           writeVfsFile(kernel!.fs, "/var/www/html/wp-config.php", WP_CONFIG_PHP);
           writeVfsFile(kernel!.fs, "/var/www/html/wp-content/mu-plugins/wasm-optimizations.php", MU_PLUGIN_PHP);
-        }
-      },
-      onServiceReady: (name) => {
-        if (name === "nginx") {
-          setStatus("WordPress running! Loading page...", "running");
+
+          // Load the frame now that WordPress files are in the VFS
+          setStatus("WordPress running!", "running");
           reloadBtn.disabled = false;
           loadFrame();
         }
