@@ -18,7 +18,6 @@ export interface InitMessage {
     maxWorkers: number;
     maxMemoryPages: number;
     env: string[];
-    corsProxyUrl?: string;
   };
 }
 

@@ -1,5 +1,6 @@
 import { fileURLToPath } from "url";
 import path from "path";
+import fs from "fs";
 import { defineConfig, type Plugin } from "vite";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -114,9 +115,39 @@ function corsProxyPlugin(): Plugin {
   };
 }
 
+/**
+ * Vite plugin: inject CORS proxy URL into service-worker.js during build.
+ * Replaces the __CORS_PROXY_URL__ placeholder with the value from
+ * VITE_CORS_PROXY_URL env var. In dev mode this is a no-op (the dev server's
+ * cors-proxy middleware handles it instead).
+ */
+function injectCorsProxyUrl(): Plugin {
+  let corsProxyUrl = "";
+  return {
+    name: "inject-cors-proxy-url",
+    configResolved() {
+      corsProxyUrl = process.env.VITE_CORS_PROXY_URL || "";
+    },
+    writeBundle(_, bundle) {
+      // service-worker.js is in public/ and gets copied as-is to dist/
+      const swPath = path.resolve(__dirname, "dist", "service-worker.js");
+      if (fs.existsSync(swPath)) {
+        let content = fs.readFileSync(swPath, "utf-8");
+        content = content.replace("__CORS_PROXY_URL__", corsProxyUrl);
+        fs.writeFileSync(swPath, content);
+      }
+    },
+  };
+}
+
 export default defineConfig({
   base: process.env.VITE_BASE || "/",
-  plugins: [rewriteNavLinks(), injectCoiServiceWorker(), corsProxyPlugin()],
+  plugins: [
+    rewriteNavLinks(),
+    injectCoiServiceWorker(),
+    corsProxyPlugin(),
+    injectCorsProxyUrl(),
+  ],
   server: {
     headers: {
       "Cross-Origin-Opener-Policy": "same-origin",

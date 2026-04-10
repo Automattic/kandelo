@@ -135,13 +135,15 @@ function formatHttpResponse(
 // ------------------------------------------------------------------ backend
 
 export interface TlsNetworkBackendOptions {
+  /** CORS proxy URL prefix. The target URL (percent-encoded) is appended.
+   *  In dev: "/cors-proxy?url=" (vite middleware). In prod: set via service worker. */
   corsProxyUrl?: string;
 }
 
 export class TlsNetworkBackend implements NetworkIO {
   private connections = new Map<number, ConnectionState>();
   private hostnameMap = new Map<string, string>(); // ip string → hostname
-  private options: TlsNetworkBackendOptions;
+  private corsProxyUrl: string;
 
   // MITM CA state
   private caKeyPair: CryptoKeyPair | null = null;
@@ -150,7 +152,7 @@ export class TlsNetworkBackend implements NetworkIO {
   private initialized = false;
 
   constructor(options?: TlsNetworkBackendOptions) {
-    this.options = options ?? {};
+    this.corsProxyUrl = options?.corsProxyUrl ?? "";
   }
 
   /**
@@ -429,12 +431,11 @@ export class TlsNetworkBackend implements NetworkIO {
             body: method !== "GET" && method !== "HEAD" ? fetchBody : undefined,
           });
         } catch (e) {
-          // Try CORS proxy if configured
-          if (this.options.corsProxyUrl) {
-            const proxyUrl = `${this.options.corsProxyUrl}${encodeURIComponent(url)}`;
-            response = await fetch(proxyUrl, {
-              method,
-            });
+          if (this.corsProxyUrl) {
+            response = await fetch(
+              `${this.corsProxyUrl}${encodeURIComponent(url)}`,
+              { method },
+            );
           } else {
             throw e;
           }
@@ -516,10 +517,11 @@ export class TlsNetworkBackend implements NetworkIO {
             body: fetchBody,
           });
         } catch (e) {
-          if (this.options.corsProxyUrl) {
-            response = await fetch(`${this.options.corsProxyUrl}${encodeURIComponent(url)}`, {
-              method,
-            });
+          if (this.corsProxyUrl) {
+            response = await fetch(
+              `${this.corsProxyUrl}${encodeURIComponent(url)}`,
+              { method },
+            );
           } else {
             throw e;
           }
