@@ -51,6 +51,7 @@ has_cpython()   { [ -f "$REPO_ROOT/examples/libs/cpython/bin/python.wasm" ]; }
 has_python_bundle() { [ -f "$REPO_ROOT/examples/browser/public/python-bundle.json" ]; }
 has_perl_bundle() { [ -f "$REPO_ROOT/examples/browser/public/perl-bundle.json" ]; }
 has_vim_runtime_bundle() { [ -f "$REPO_ROOT/examples/browser/public/vim-runtime-bundle.json" ]; }
+has_erlang()    { [ -f "$REPO_ROOT/examples/libs/erlang/bin/beam.wasm" ]; }
 has_dlopen()    { [ -f "$REPO_ROOT/examples/dlopen/hello-lib.so" ] && \
                   [ -f "$REPO_ROOT/examples/dlopen/main.wasm" ]; }
 
@@ -325,6 +326,18 @@ build_vim_runtime_bundle() {
     fi
 }
 
+build_erlang() {
+    need_kernel
+    need_sdk
+    if ! has_erlang; then
+        step "Building Erlang/OTP 28 BEAM"
+        bash "$REPO_ROOT/examples/libs/erlang/build-erlang.sh"
+        info "Erlang built"
+    else
+        info "Erlang"
+    fi
+}
+
 build_dlopen() {
     need_sysroot
     if ! has_dlopen; then
@@ -359,6 +372,7 @@ build_target() {
         vim-runtime-bundle) build_vim_runtime_bundle ;;
         wordpress)  build_wordpress ;;
         wp-bundle)  build_wp_bundle ;;
+        erlang)     build_erlang ;;
         dlopen)     build_dlopen ;;
         browser)    build_browser ;;
         all)        build_all ;;
@@ -394,6 +408,7 @@ build_all() {
     build_python_bundle
     build_wordpress
     build_wp_bundle
+    build_erlang
     build_dlopen
 }
 
@@ -486,6 +501,11 @@ clean_target() {
         wp-bundle)
             rm -f "$REPO_ROOT/examples/browser/public/wp-bundle.json"
             warn "Cleaned WP bundle" ;;
+        erlang)
+            rm -rf "$REPO_ROOT/examples/libs/erlang/erlang-src" \
+                   "$REPO_ROOT/examples/libs/erlang/erlang-install" \
+                   "$REPO_ROOT/examples/libs/erlang/bin"
+            warn "Cleaned Erlang" ;;
         dlopen)
             rm -f "$REPO_ROOT/examples/dlopen/hello-lib.so" \
                   "$REPO_ROOT/examples/dlopen/main.wasm"
@@ -495,7 +515,7 @@ clean_target() {
                 clean_target "$t"
             done ;;
         all)
-            for t in kernel sysroot host programs dash coreutils grep sed nginx php php-fpm mariadb redis cpython python-bundle perl-bundle vim-runtime-bundle wordpress wp-bundle dlopen; do
+            for t in kernel sysroot host programs dash coreutils grep sed nginx php php-fpm mariadb redis cpython python-bundle perl-bundle vim-runtime-bundle wordpress wp-bundle erlang dlopen; do
                 clean_target "$t"
             done ;;
         *)  err "Unknown clean target: $target"; exit 1 ;;
@@ -546,7 +566,7 @@ cmd_rebuild() {
 cmd_run() {
     if [ $# -eq 0 ]; then
         err "Usage: $0 run <example> [args...]"
-        err "Examples: shell, nginx, redis, mariadb, wordpress, wordpress-nginx, lamp, dlopen"
+        err "Examples: shell, nginx, redis, mariadb, wordpress, wordpress-nginx, lamp, erlang, dlopen"
         exit 1
     fi
 
@@ -604,6 +624,11 @@ cmd_run() {
             step "Starting interactive shell"
             exec npx tsx "$REPO_ROOT/examples/shell/serve.ts" "$@"
             ;;
+        erlang)
+            build_erlang
+            step "Starting Erlang BEAM"
+            exec npx tsx "$REPO_ROOT/examples/erlang/serve.ts" "$@"
+            ;;
         dlopen)
             build_dlopen
             step "Running dlopen example"
@@ -611,7 +636,7 @@ cmd_run() {
             ;;
         *)
             err "Unknown example: $example"
-            err "Available: shell, nginx, redis, mariadb, wordpress, wordpress-nginx, lamp, dlopen"
+            err "Available: shell, nginx, redis, mariadb, wordpress, wordpress-nginx, lamp, erlang, dlopen"
             exit 1
             ;;
     esac
@@ -757,6 +782,7 @@ cmd_list() {
     echo "  vim-runtime-bundle Vim runtime browser bundle     $(has_vim_runtime_bundle && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  wordpress   WordPress + SQLite plugin             $(has_wordpress && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  wp-bundle   WordPress browser bundle              $(has_wp_bundle && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  erlang      Erlang/OTP 28 BEAM VM                   $(has_erlang && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  dlopen      dlopen shared library example          $(has_dlopen && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  browser     All browser demo dependencies"
     echo "  all         Build everything"
@@ -774,6 +800,7 @@ cmd_list() {
     echo "  ./run.sh run wordpress [port]        WordPress (PHP built-in + SQLite)"
     echo "  ./run.sh run wordpress-nginx [port]  WordPress (nginx + PHP-FPM + SQLite)"
     echo "  ./run.sh run lamp [port]             Full LAMP stack (MariaDB + nginx + PHP-FPM)"
+    echo "  ./run.sh run erlang [-eval 'Expr']    Erlang BEAM VM"
     echo "  ./run.sh run dlopen                  dlopen shared library demo"
     echo ""
     echo "${BOLD}Browser:${RESET}"
