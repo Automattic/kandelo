@@ -692,13 +692,19 @@ cmd_test() {
                 fi
                 cd "$REPO_ROOT"
                 ;;
+            sqlite-upstream)
+                step "Running SQLite upstream test suite"
+                if ! bash "$REPO_ROOT/scripts/run-sqlite-upstream-tests.sh" --quick; then
+                    failed=1
+                fi
+                ;;
             all)
                 cmd_test cargo vitest libc posix sortix browser
                 return $?
                 ;;
             *)
                 err "Unknown test suite: $suite"
-                err "Available: cargo, vitest, libc, posix, sortix, browser, browser-all, all"
+                err "Available: cargo, vitest, libc, posix, sortix, sqlite-upstream, browser, browser-all, all"
                 exit 1
                 ;;
         esac

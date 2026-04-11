@@ -1,0 +1,4 @@
+tcl-src/
+tcl-build/
+tcl-install/
+bin/
