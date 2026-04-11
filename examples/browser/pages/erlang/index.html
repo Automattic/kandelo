@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>PHP CLI — wasm-posix-kernel</title>
+  <title>Erlang — wasm-posix-kernel</title>
   <link rel="stylesheet" href="../../lib/layout.css">
 </head>
 <body>
@@ -11,7 +11,7 @@
     <div class="sidebar-title">Demos</div>
     <a href="/">Simple Programs</a>
     <a href="/pages/nginx/">nginx</a>
-    <a href="/pages/php/" aria-current="page">PHP CLI</a>
+    <a href="/pages/php/">PHP CLI</a>
     <a href="/pages/nginx-php/">nginx + PHP-FPM</a>
     <a href="/pages/mariadb/">MariaDB</a>
     <a href="/pages/redis/">Redis</a>
@@ -21,35 +21,38 @@
     <a href="/pages/python/">Python</a>
     <a href="/pages/perl/">Perl</a>
     <a href="/pages/ruby/">Ruby</a>
-    <a href="/pages/erlang/">Erlang</a>
+    <a href="/pages/erlang/" aria-current="page">Erlang</a>
   </nav>
   <div class="main">
     <div class="main-header">
-      <h1>PHP CLI on wasm-posix-kernel</h1>
-      <p class="subtitle">PHP 8.4 CLI running inside a POSIX kernel compiled to WebAssembly</p>
-      <div class="controls">
+      <h1>Erlang on wasm-posix-kernel</h1>
+      <p class="subtitle">Erlang/OTP 28 BEAM VM running inside a POSIX kernel compiled to WebAssembly</p>
+      <div class="controls" style="padding:0">
         <select id="examples">
           <option value="">-- Load Example --</option>
           <option value="hello">Hello World</option>
-          <option value="fibonacci">Fibonacci</option>
-          <option value="sqlite">SQLite3</option>
-          <option value="json">JSON Processing</option>
-          <option value="classes">Classes & OOP</option>
-          <option value="arrays">Array Functions</option>
+          <option value="ring">Ring Benchmark</option>
+          <option value="fib">Fibonacci</option>
+          <option value="processes">Process Spawning</option>
+          <option value="lists">List Operations</option>
+          <option value="patterns">Pattern Matching</option>
         </select>
         <button id="run">Run</button>
+        <button id="stop" disabled>Stop</button>
+        <span class="hint">Ctrl+Enter to run</span>
       </div>
       <div id="status" class="status" style="display:none"></div>
     </div>
     <div class="preview-area">
-      <div class="code-panels">
+      <div class="batch-panel">
         <div>
-          <h3>PHP Code</h3>
-          <textarea id="code">&lt;?php
-echo "Hello from PHP on WebAssembly!\n";
-echo "PHP version: " . PHP_VERSION . "\n";
-echo "OS: " . PHP_OS . "\n";
-</textarea>
+          <h3>Erlang Code</h3>
+          <textarea id="code">io:format("Hello from Erlang/OTP 28 on WebAssembly!~n"),
+io:format("System: ~s~n", [erlang:system_info(system_version)]),
+io:format("Word size: ~p bytes~n", [erlang:system_info(wordsize)]),
+io:format("Schedulers: ~p~n", [erlang:system_info(schedulers)]),
+io:format("Process limit: ~p~n", [erlang:system_info(process_limit)]),
+io:format("Processes: ~p~n", [length(erlang:processes())]).</textarea>
         </div>
         <div>
           <h3>Output</h3>
