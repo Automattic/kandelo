@@ -698,13 +698,19 @@ cmd_test() {
                     failed=1
                 fi
                 ;;
+            browser-mariadb)
+                info "Running MariaDB mysql-test suite (browser)..."
+                if ! bash "$REPO_ROOT/scripts/run-browser-mariadb-tests.sh"; then
+                    failed=1
+                fi
+                ;;
             all)
                 cmd_test cargo vitest libc posix sortix browser
                 return $?
                 ;;
             *)
                 err "Unknown test suite: $suite"
-                err "Available: cargo, vitest, libc, posix, sortix, browser, browser-all, mariadb, all"
+                err "Available: cargo, vitest, libc, posix, sortix, browser, browser-all, mariadb, browser-mariadb, all"
                 exit 1
                 ;;
         esac
@@ -770,6 +776,8 @@ cmd_list() {
     echo "  ./run.sh test sortix                 Sortix os-test suite"
     echo "  ./run.sh test browser                Browser E2E tests (fast only)"
     echo "  ./run.sh test browser-all            Browser E2E tests (including slow)"
+    echo "  ./run.sh test mariadb                MariaDB mysql-test suite (Node.js)"
+    echo "  ./run.sh test browser-mariadb        MariaDB mysql-test suite (browser)"
     echo "  ./run.sh test all                    All suites including sortix + browser"
 }
 

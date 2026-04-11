@@ -180,6 +180,7 @@ export default defineConfig({
         perl: path.resolve(__dirname, "pages/perl/index.html"),
         ruby: path.resolve(__dirname, "pages/ruby/index.html"),
         "test-runner": path.resolve(__dirname, "pages/test-runner/index.html"),
+        "mariadb-test": path.resolve(__dirname, "pages/mariadb-test/index.html"),
       },
     },
   },
