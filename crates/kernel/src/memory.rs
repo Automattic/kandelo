@@ -76,7 +76,11 @@ impl MemoryManager {
 
         let addr = if hint != 0 && (flags & MAP_FIXED) != 0 {
             // MAP_FIXED: use the exact address, removing any overlapping mappings
+            // Reject if the region extends past max_addr (protects thread TLS/channel pages)
             let end = hint.saturating_add(aligned_len);
+            if end > self.max_addr {
+                return wasm_posix_shared::mmap::MAP_FAILED;
+            }
             self.mappings.retain(|m| {
                 let m_end = m.addr.saturating_add(m.len);
                 // Keep mappings that don't overlap [hint, end)
@@ -237,10 +241,14 @@ impl MemoryManager {
         true
     }
 
-    /// Set the upper bound for mmap allocation.
-    /// Used by the host to cap allocations below the channel region.
+    /// Lower the upper bound for mmap allocation.
+    /// Used by the host to cap allocations below the channel/TLS region.
+    /// Only lowers the ceiling — never raises it — so that pre-computed safe
+    /// values (accounting for all future thread allocations) are preserved.
     pub fn set_max_addr(&mut self, addr: u32) {
-        self.max_addr = addr;
+        if addr < self.max_addr {
+            self.max_addr = addr;
+        }
     }
 
     /// Extend an existing mapping at `addr` from `old_len` to `new_len`.

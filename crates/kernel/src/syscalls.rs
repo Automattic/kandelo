@@ -7120,9 +7120,12 @@ pub fn sys_select(
         if counted { ready += 1; }
     }
 
-    if ready > 0 || timeout_ms == 0 || !any_interested {
+    if ready > 0 || timeout_ms == 0 {
         return Ok(ready);
     }
+    // nfds=0 with no interested FDs but non-zero timeout: on Linux this
+    // blocks until a signal arrives (like sigsuspend). Fall through to
+    // EAGAIN/blocking path rather than returning immediately.
 
     // Centralized mode: return EAGAIN so the host JS can retry asynchronously
     if crate::is_centralized_mode() {

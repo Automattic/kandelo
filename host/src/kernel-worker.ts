@@ -508,6 +508,67 @@ const SYSCALL_ARGS: Record<number, ArgDesc[]> = {
 // Also need a way to compute poll size: nfds * sizeof(struct pollfd) = nfds * 8
 // This is handled as a special case in the size computation.
 
+/** Syscall number → name mapping for logging */
+const SYSCALL_NAMES: Record<number, string> = {
+  1: "open", 2: "close", 3: "read", 4: "write", 5: "lseek", 6: "fstat",
+  7: "dup", 8: "dup2", 9: "pipe", 10: "fcntl", 11: "stat", 12: "lstat",
+  13: "mkdir", 14: "rmdir", 15: "unlink", 16: "rename", 17: "link",
+  18: "symlink", 19: "readlink", 20: "chmod", 21: "chown", 22: "access",
+  23: "getcwd", 24: "chdir", 25: "opendir", 26: "readdir", 27: "closedir",
+  28: "getpid", 29: "getppid", 30: "getuid", 31: "geteuid", 32: "getgid",
+  33: "getegid", 34: "exit", 35: "kill", 36: "sigaction", 37: "sigprocmask",
+  38: "raise", 40: "clock_gettime", 41: "nanosleep", 43: "getenv",
+  44: "setenv", 45: "unsetenv", 46: "mmap", 47: "munmap", 48: "brk",
+  50: "socket", 51: "bind", 52: "listen", 53: "accept", 54: "connect",
+  55: "send", 56: "recv", 57: "shutdown", 58: "getsockopt", 59: "setsockopt",
+  60: "poll", 61: "socketpair", 62: "sendto", 63: "recvfrom",
+  64: "pread", 65: "pwrite", 68: "usleep", 69: "openat", 70: "tcgetattr",
+  71: "tcsetattr", 72: "ioctl", 75: "uname", 77: "dup3", 78: "pipe2",
+  81: "writev", 82: "readv", 83: "getrlimit", 84: "setrlimit",
+  85: "truncate", 86: "ftruncate", 87: "fsync", 88: "fdatasync",
+  89: "getpgrp", 90: "setpgid", 92: "setsid", 93: "fstatat",
+  94: "unlinkat", 95: "mkdirat", 96: "renameat", 97: "faccessat",
+  98: "fchmodat", 99: "fchownat", 100: "linkat", 101: "symlinkat",
+  102: "readlinkat", 107: "fchmod", 108: "getrusage", 109: "realpath",
+  110: "sigsuspend", 114: "getsockname", 115: "getpeername",
+  119: "_llseek", 120: "getrandom", 121: "flock", 122: "getdents64",
+  123: "clock_getres", 124: "clock_nanosleep", 125: "utimensat",
+  126: "mremap", 127: "fchdir", 129: "statfs64", 130: "fstatfs64",
+  132: "getresuid", 134: "getresgid", 137: "sendmsg", 138: "recvmsg",
+  139: "wait4", 140: "getaddrinfo", 200: "futex", 201: "clone",
+  205: "rt_sigqueueinfo", 206: "rt_sigpending", 207: "rt_sigtimedwait",
+  208: "rt_sigreturn", 209: "sigaltstack", 211: "execve", 212: "fork",
+  213: "vfork", 214: "getpgid", 224: "getitimer", 225: "setitimer",
+  230: "sched_getparam", 236: "sched_rr_get_interval",
+  239: "epoll_create1", 240: "epoll_ctl", 241: "epoll_pwait",
+  250: "prlimit64", 251: "ppoll", 252: "pselect6", 260: "statx",
+  271: "mknod", 272: "mknodat", 278: "msync", 288: "waitid",
+  295: "preadv", 296: "pwritev", 326: "timer_create",
+  327: "timer_settime", 328: "timer_gettime", 329: "timer_getoverrun",
+  330: "timer_delete", 331: "mq_open", 332: "mq_unlink",
+  333: "mq_timedsend", 334: "mq_timedreceive", 335: "mq_notify",
+  336: "mq_getsetattr", 337: "msgget", 338: "msgrcv", 339: "msgsnd",
+  340: "msgctl", 341: "semget", 342: "semop", 343: "semctl",
+  344: "shmget", 345: "shmat", 346: "shmdt", 347: "shmctl",
+  378: "epoll_create", 379: "epoll_wait", 382: "faccessat2",
+  383: "fchmodat2", 384: "accept4", 386: "execveat",
+};
+
+/** Errno number → name mapping for logging */
+const ERRNO_NAMES: Record<number, string> = {
+  1: "EPERM", 2: "ENOENT", 3: "ESRCH", 4: "EINTR", 5: "EIO",
+  6: "ENXIO", 7: "E2BIG", 8: "ENOEXEC", 9: "EBADF", 10: "ECHILD",
+  11: "EAGAIN", 12: "ENOMEM", 13: "EACCES", 14: "EFAULT", 16: "EBUSY",
+  17: "EEXIST", 19: "ENODEV", 20: "ENOTDIR", 21: "EISDIR", 22: "EINVAL",
+  28: "ENOSPC", 29: "ESPIPE", 30: "EROFS", 36: "ENAMETOOLONG",
+  38: "ENOSYS", 39: "ENOTEMPTY", 61: "ENODATA", 75: "EOVERFLOW",
+  88: "ENOTSOCK", 90: "EMSGSIZE", 92: "ENOPROTOOPT", 93: "EPROTONOSUPPORT",
+  95: "EOPNOTSUPP", 97: "EAFNOSUPPORT", 98: "EADDRINUSE",
+  99: "EADDRNOTAVAIL", 100: "ENETDOWN", 103: "ECONNABORTED",
+  104: "ECONNRESET", 106: "EISCONN", 107: "ENOTCONN",
+  110: "ETIMEDOUT", 111: "ECONNREFUSED", 115: "EINPROGRESS",
+};
+
 /** Info about a registered thread channel. */
 interface ChannelInfo {
   pid: number;
@@ -1254,6 +1315,16 @@ export class CentralizedKernelWorker {
       this.channelTids.set(`${pid}:${channelOffset}`, tid);
     }
 
+    // Lower the kernel's mmap ceiling to prevent overlap with thread TLS/channel pages.
+    // Thread layout: channelOffset (2 pages), gap (1 page), TLS (1 page).
+    // The TLS page is at channelOffset - 2*WASM_PAGE_SIZE, which is the lowest address used.
+    const setMaxAddr = this.kernelInstance!.exports.kernel_set_max_addr as
+      ((pid: number, maxAddr: number) => number) | undefined;
+    if (setMaxAddr) {
+      const tlsPageAddr = channelOffset - 2 * 65536;
+      setMaxAddr(pid, tlsPageAddr);
+    }
+
     // In polling mode, the poller picks up new channels automatically.
     if (!this.usePolling) {
       this.listenOnChannel(channel);
@@ -1354,6 +1425,95 @@ export class CentralizedKernelWorker {
     return (this.syscallRing.get(pid) ?? []).join("\n");
   }
 
+  /** Read a null-terminated C string from process memory */
+  private readCString(memory: WebAssembly.Memory, ptr: number, maxLen = 256): string {
+    if (ptr === 0) return "(null)";
+    const mem = new Uint8Array(memory.buffer);
+    let len = 0;
+    while (len < maxLen && ptr + len < mem.length && mem[ptr + len] !== 0) len++;
+    return new TextDecoder().decode(mem.subarray(ptr, ptr + len));
+  }
+
+  /** Format a syscall for logging, decoding path/string args from process memory */
+  private formatSyscallEntry(channel: ChannelInfo, syscallNr: number, args: number[]): string {
+    const name = SYSCALL_NAMES[syscallNr] ?? `syscall_${syscallNr}`;
+    const pid = channel.pid;
+
+    // Decode args based on syscall type
+    switch (syscallNr) {
+      case 1: // open(path, flags, mode)
+        return `[${pid}] open("${this.readCString(channel.memory, args[0])}", 0x${(args[1] >>> 0).toString(16)}, 0o${(args[2] >>> 0).toString(8)})`;
+      case 69: // openat(dirfd, path, flags, mode)
+        return `[${pid}] openat(${args[0]}, "${this.readCString(channel.memory, args[1])}", 0x${(args[2] >>> 0).toString(16)}, 0o${(args[3] >>> 0).toString(8)})`;
+      case 11: // stat(path, buf)
+        return `[${pid}] stat("${this.readCString(channel.memory, args[0])}")`;
+      case 12: // lstat(path, buf)
+        return `[${pid}] lstat("${this.readCString(channel.memory, args[0])}")`;
+      case 93: // fstatat(dirfd, path, buf, flags)
+        return `[${pid}] fstatat(${args[0]}, "${this.readCString(channel.memory, args[1])}", 0x${(args[3] >>> 0).toString(16)})`;
+      case 22: // access(path, mode)
+        return `[${pid}] access("${this.readCString(channel.memory, args[0])}", ${args[1]})`;
+      case 97: // faccessat(dirfd, path, mode, flags)
+        return `[${pid}] faccessat(${args[0]}, "${this.readCString(channel.memory, args[1])}", ${args[2]})`;
+      case 24: // chdir(path)
+        return `[${pid}] chdir("${this.readCString(channel.memory, args[0])}")`;
+      case 25: // opendir(path)
+        return `[${pid}] opendir("${this.readCString(channel.memory, args[0])}")`;
+      case 19: // readlink(path, buf, bufsiz)
+        return `[${pid}] readlink("${this.readCString(channel.memory, args[0])}", ${args[2]})`;
+      case 102: // readlinkat(dirfd, path, buf, bufsiz)
+        return `[${pid}] readlinkat(${args[0]}, "${this.readCString(channel.memory, args[1])}", ${args[3]})`;
+      case 109: // realpath(path, buf, bufsiz)
+        return `[${pid}] realpath("${this.readCString(channel.memory, args[0])}")`;
+      case 3: // read(fd, buf, count)
+        return `[${pid}] read(${args[0]}, ${args[2]})`;
+      case 4: // write(fd, buf, count)
+        return `[${pid}] write(${args[0]}, ${args[2]})`;
+      case 2: // close(fd)
+        return `[${pid}] close(${args[0]})`;
+      case 6: // fstat(fd, buf)
+        return `[${pid}] fstat(${args[0]})`;
+      case 10: // fcntl(fd, cmd, arg)
+        return `[${pid}] fcntl(${args[0]}, ${args[1]}, ${args[2]})`;
+      case 46: // mmap(addr, len, prot, flags, fd, offset)
+        return `[${pid}] mmap(0x${(args[0] >>> 0).toString(16)}, ${args[1] >>> 0}, ${args[2]}, 0x${(args[3] >>> 0).toString(16)}, ${args[4]}, ${args[5] >>> 0})`;
+      case 47: // munmap(addr, len)
+        return `[${pid}] munmap(0x${(args[0] >>> 0).toString(16)}, ${args[1] >>> 0})`;
+      case 48: // brk(addr)
+        return `[${pid}] brk(0x${(args[0] >>> 0).toString(16)})`;
+      case 211: // execve(path, argv, envp)
+        return `[${pid}] execve("${this.readCString(channel.memory, args[0])}")`;
+      case 212: return `[${pid}] fork()`;
+      case 213: return `[${pid}] vfork()`;
+      case 201: // clone(flags, stack, ptid, tls, ctid)
+        return `[${pid}] clone(0x${(args[0] >>> 0).toString(16)})`;
+      case 34: return `[${pid}] exit(${args[0]})`;
+      case 60: // poll(fds, nfds, timeout)
+        return `[${pid}] poll(${args[1]}, ${args[2]})`;
+      case 72: // ioctl(fd, cmd, arg)
+        return `[${pid}] ioctl(${args[0]}, 0x${(args[1] >>> 0).toString(16)})`;
+      default:
+        return `[${pid}] ${name}(${args.filter((_, i) => i < 3).join(", ")})`;
+    }
+  }
+
+  /** Format a syscall return value for logging */
+  private formatSyscallReturn(syscallNr: number, retVal: number, errVal: number): string {
+    if (retVal < 0 || errVal !== 0) {
+      const errName = ERRNO_NAMES[errVal] ?? `errno=${errVal}`;
+      return ` = ${retVal} (${errName})`;
+    }
+    // Format return value based on syscall type
+    switch (syscallNr) {
+      case 46: // mmap
+        return ` = 0x${(retVal >>> 0).toString(16)}`;
+      case 48: // brk
+        return ` = 0x${(retVal >>> 0).toString(16)}`;
+      default:
+        return ` = ${retVal}`;
+    }
+  }
+
   private handleSyscall(channel: ChannelInfo): void {
     if (PROFILING) {
       const pv = new DataView(channel.memory.buffer, channel.channelOffset);
@@ -1390,31 +1550,43 @@ export class CentralizedKernelWorker {
     ring.push(`  syscall=${syscallNr} args=[${origArgs.join(',')}]`);
     if (ring.length > 30) ring.shift();
 
+    // Syscall logging
+    const logging = this.config.enableSyscallLog;
+    let logEntry = "";
+    if (logging) {
+      logEntry = this.formatSyscallEntry(channel, syscallNr, origArgs);
+    }
+
     // --- Intercept fork/exec/clone/exit before calling kernel ---
     // These syscalls need special async handling that can't go through
     // the blocking host_fork/host_exec imports.
 
     if (syscallNr === SYS_FORK || syscallNr === SYS_VFORK) {
+      if (logging) console.error(logEntry);
       this.handleFork(channel, origArgs);
       return;
     }
 
     if (syscallNr === SYS_EXECVE) {
+      if (logging) console.error(logEntry);
       this.handleExec(channel, origArgs);
       return;
     }
 
     if (syscallNr === SYS_EXECVEAT) {
+      if (logging) console.error(logEntry);
       this.handleExecveat(channel, origArgs);
       return;
     }
 
     if (syscallNr === SYS_CLONE) {
+      if (logging) console.error(logEntry);
       this.handleClone(channel, origArgs);
       return;
     }
 
     if (syscallNr === SYS_EXIT || syscallNr === SYS_EXIT_GROUP) {
+      if (logging) console.error(logEntry);
       this.handleExit(channel, syscallNr, origArgs);
       return;
     }
@@ -1633,6 +1805,7 @@ export class CentralizedKernelWorker {
     } catch (err) {
       // If the kernel throws (e.g., invalid memory access), complete the
       // channel with -EIO to unblock the process rather than deadlocking.
+      if (logging) console.error(logEntry + " = KERNEL THROW");
       console.error(`[handleSyscall] kernel threw for pid=${channel.pid} syscall=${syscallNr} args=[${origArgs}]:`, err);
       this.completeChannelRaw(channel, -5, 5); // -EIO
       this.relistenChannel(channel);
@@ -1651,6 +1824,25 @@ export class CentralizedKernelWorker {
     // WebAssembly.Memory here so the process can access the new addresses.
     if (retVal > 0) {
       this.ensureProcessMemoryCovers(channel.memory, syscallNr, retVal, origArgs);
+    }
+
+    // --- DEBUG: detect memory operations in thread region ---
+    if (syscallNr === SYS_MMAP && retVal > 0 && (retVal >>> 0) !== 0xffffffff) {
+      const mmapAddr = retVal >>> 0;
+      const mmapLen = origArgs[1] >>> 0;
+      if (mmapAddr + mmapLen > 0x3fdc0000) {
+        console.error(`[MMAP ALERT] pid=${channel.pid} mmap returned 0x${mmapAddr.toString(16)} len=${mmapLen} — OVERLAPS THREAD REGION! args=[${origArgs.map(a => '0x' + (a >>> 0).toString(16)).join(',')}]`);
+      }
+    }
+    if (syscallNr === SYS_MREMAP && retVal > 0 && (retVal >>> 0) !== 0xffffffff) {
+      const mremapAddr = retVal >>> 0;
+      const mremapLen = origArgs[2] >>> 0;
+      if (mremapAddr + mremapLen > 0x3fdc0000) {
+        console.error(`[MREMAP ALERT] pid=${channel.pid} mremap returned 0x${mremapAddr.toString(16)} len=${mremapLen} — OVERLAPS THREAD REGION!`);
+      }
+    }
+    if (syscallNr === SYS_BRK && retVal > 0x3fdc0000) {
+      console.error(`[BRK ALERT] pid=${channel.pid} brk returned 0x${(retVal >>> 0).toString(16)} — IN THREAD REGION!`);
     }
 
     // --- File-backed mmap: populate mapped region with file data ---
@@ -1720,6 +1912,9 @@ export class CentralizedKernelWorker {
     // 1. EAGAIN: kernel returned EAGAIN for a blocking syscall.
     //    Schedule async retry — the process stays blocked on Atomics.wait.
     if (retVal === -1 && errVal === EAGAIN) {
+      if (logging) {
+        console.error(logEntry + " = -1 (EAGAIN, will retry)");
+      }
       this.handleBlockingRetry(channel, syscallNr, origArgs);
       return;
     }
@@ -1739,6 +1934,9 @@ export class CentralizedKernelWorker {
 
 
     // --- Normal completion ---
+    if (logging) {
+      console.error(logEntry + this.formatSyscallReturn(syscallNr, retVal, errVal));
+    }
     this.completeChannel(channel, syscallNr, origArgs, argDescs, retVal, errVal);
   }
 
@@ -1760,15 +1958,21 @@ export class CentralizedKernelWorker {
       // Layout: signum(4) + handler(4) + flags(4) + si_value(4) + old_mask(8)
       //       + si_code(4) + si_pid(4) + si_uid(4) + alt_sp(4) + alt_size(4) = 44 bytes
       const kernelMem = this.getKernelMem();
+      // DEBUG: Log signal delivery details
+      const kView = new DataView(kernelMem.buffer, sigOutOffset);
+      const signum = kView.getUint32(0, true);
+      const handler = kView.getUint32(4, true);
+      const flags = kView.getUint32(8, true);
+      console.error(`[signal] pid=${channel.pid} signum=${signum} handler=${handler} flags=0x${flags.toString(16)}`);
       const processMem = new Uint8Array(channel.memory.buffer);
       processMem.set(
         kernelMem.subarray(sigOutOffset, sigOutOffset + 44),
         channel.channelOffset + CH_SIG_BASE,
       );
     } else {
-      // Clear signal delivery area in process channel
-      const processView = new DataView(channel.memory.buffer, channel.channelOffset);
-      processView.setUint32(CH_SIG_SIGNUM, 0, true);
+      // Clear entire signal delivery area in process channel (48 bytes)
+      const sigStart = channel.channelOffset + CH_SIG_BASE;
+      new Uint8Array(channel.memory.buffer, sigStart, 48).fill(0);
     }
   }
 
@@ -2866,6 +3070,8 @@ export class CentralizedKernelWorker {
     const retVal = kernelView.getInt32(CH_RETURN, true);
     const errVal = kernelView.getUint32(CH_ERRNO, true);
 
+    // pselect6 debug logging disabled
+
     // Copy fd_sets back from kernel → process
     if (retVal >= 0) {
       const freshProcessMem = new Uint8Array(channel.memory.buffer);
@@ -2898,18 +3104,23 @@ export class CentralizedKernelWorker {
 
       const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : -1;
 
-      // For select(0, NULL, NULL, NULL, &timeout) — nfds=0, pure sleep.
-      // Just wait for the timeout instead of retrying in a tight loop.
-      // Still registered in pendingSelectRetries so wakeAllBlockedRetries
-      // can check for signals (EINTR).
-      if (timeoutMs > 0 && nfds === 0) {
-        const timer = setTimeout(() => {
-          this.pendingSelectRetries.delete(channel.pid);
-          if (this.processes.has(channel.pid)) {
-            this.completeChannel(channel, SYS_PSELECT6, origArgs, undefined, 0, 0);
-          }
-        }, timeoutMs);
-        this.pendingSelectRetries.set(channel.pid, { timer, channel, origArgs, deadline });
+      // nfds=0: pure sleep/sigsuspend-like behavior.
+      // With finite timeout: sleep for that duration.
+      // With infinite timeout: block until signal (wakeAllBlockedRetries).
+      if (nfds === 0) {
+        if (timeoutMs > 0) {
+          const timer = setTimeout(() => {
+            this.pendingSelectRetries.delete(channel.pid);
+            if (this.processes.has(channel.pid)) {
+              this.completeChannel(channel, SYS_PSELECT6, origArgs, undefined, 0, 0);
+            }
+          }, timeoutMs);
+          this.pendingSelectRetries.set(channel.pid, { timer, channel, origArgs, deadline });
+        } else {
+          // Infinite timeout with nfds=0: wait for signal delivery.
+          // No timer — wakeAllBlockedRetries will trigger the retry.
+          this.pendingSelectRetries.set(channel.pid, { timer: null as any, channel, origArgs, deadline: -1 });
+        }
         return;
       }
 
@@ -3309,76 +3520,170 @@ export class CentralizedKernelWorker {
     const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
     const dataStart = this.scratchOffset + CH_DATA;
 
-    // Read iov entries from process memory and build kernel-side copies
-    const iovSize = iovcnt * 8;
-    let dataOff = iovSize;
-
-    interface IovEntry { base: number; len: number; kernelBase: number }
+    // Read iov entries from process memory
+    interface IovEntry { base: number; len: number }
     const entries: IovEntry[] = [];
-
+    let totalData = 0;
     for (let i = 0; i < iovcnt; i++) {
       const base = processView.getUint32(iovPtr + i * 8, true);
       const len = processView.getUint32(iovPtr + i * 8 + 4, true);
-      const kernelBase = dataStart + dataOff;
+      entries.push({ base, len });
+      totalData += len;
+    }
 
-      entries.push({ base, len, kernelBase });
+    // Max data that fits in scratch: CH_DATA_SIZE minus space for one iov entry (8 bytes)
+    const maxDataPerCall = CH_DATA_SIZE - 8;
 
-      // Zero the kernel output buffer
-      if (len > 0 && dataOff + len <= CH_DATA_SIZE) {
-        kernelMem.fill(0, kernelBase, kernelBase + len);
+    if (totalData <= maxDataPerCall && iovcnt <= Math.floor(CH_DATA_SIZE / 8)) {
+      // Fast path: everything fits in one kernel call
+      const iovSize = iovcnt * 8;
+      let dataOff = iovSize;
+      const kernelEntries: { base: number; kernelBase: number; len: number }[] = [];
+
+      for (let i = 0; i < iovcnt; i++) {
+        const kernelBase = dataStart + dataOff;
+        kernelEntries.push({ base: entries[i].base, kernelBase, len: entries[i].len });
+
+        if (entries[i].len > 0) {
+          kernelMem.fill(0, kernelBase, kernelBase + entries[i].len);
+        }
+
+        const iovAddr = dataStart + i * 8;
+        new DataView(kernelMem.buffer).setUint32(iovAddr, kernelBase, true);
+        new DataView(kernelMem.buffer).setUint32(iovAddr + 4, entries[i].len, true);
+
+        dataOff += entries[i].len;
+        dataOff = (dataOff + 3) & ~3;
       }
 
-      // Write adjusted iov entry
-      const iovAddr = dataStart + i * 8;
-      new DataView(kernelMem.buffer).setUint32(iovAddr, kernelBase, true);
-      new DataView(kernelMem.buffer).setUint32(iovAddr + 4, len, true);
+      kernelView.setUint32(CH_SYSCALL, syscallNr, true);
+      kernelView.setInt32(CH_ARGS, fd, true);
+      kernelView.setInt32(CH_ARGS + 4, dataStart, true);
+      kernelView.setInt32(CH_ARGS + 8, iovcnt, true);
+      if (syscallNr === SYS_PREADV) {
+        kernelView.setInt32(CH_ARGS + 12, origArgs[3], true);
+        kernelView.setInt32(CH_ARGS + 16, origArgs[4], true);
+      }
 
-      dataOff += len;
-      dataOff = (dataOff + 3) & ~3;
-    }
+      const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
+        (offset: number, pid: number) => number;
+      this.currentHandlePid = channel.pid;
+      try {
+        handleChannel(this.scratchOffset, channel.pid);
+      } finally {
+        this.currentHandlePid = 0;
+      }
 
-    // Write args
-    kernelView.setUint32(CH_SYSCALL, syscallNr, true);
-    kernelView.setInt32(CH_ARGS, fd, true);
-    kernelView.setInt32(CH_ARGS + 4, dataStart, true);
-    kernelView.setInt32(CH_ARGS + 8, iovcnt, true);
-    if (syscallNr === SYS_PREADV) {
-      kernelView.setInt32(CH_ARGS + 12, origArgs[3], true);
-      kernelView.setInt32(CH_ARGS + 16, origArgs[4], true);
-    }
+      const retVal = kernelView.getInt32(CH_RETURN, true);
+      const errVal = kernelView.getUint32(CH_ERRNO, true);
 
-    const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
-      (offset: number, pid: number) => number;
-    this.currentHandlePid = channel.pid;
-    try {
-      handleChannel(this.scratchOffset, channel.pid);
-    } finally {
-      this.currentHandlePid = 0;
-    }
+      if (retVal === -1 && errVal === EAGAIN) {
+        this.handleBlockingRetry(channel, syscallNr, origArgs);
+        return;
+      }
 
-    const retVal = kernelView.getInt32(CH_RETURN, true);
-    const errVal = kernelView.getUint32(CH_ERRNO, true);
+      if (retVal > 0) {
+        let remaining = retVal;
+        for (const entry of kernelEntries) {
+          if (remaining <= 0) break;
+          const copyLen = Math.min(entry.len, remaining);
+          processMem.set(
+            kernelMem.subarray(entry.kernelBase, entry.kernelBase + copyLen),
+            entry.base,
+          );
+          remaining -= copyLen;
+        }
+      }
 
-    if (retVal === -1 && errVal === EAGAIN) {
-      this.handleBlockingRetry(channel, syscallNr, origArgs);
-      return;
-    }
+      this.completeChannel(channel, syscallNr, origArgs, undefined, retVal, errVal);
+    } else {
+      // Slow path: total data exceeds scratch buffer. Issue one SYS_READ per iov entry,
+      // chunked to fit in CH_DATA_SIZE. Use pread to maintain file offset for preadv.
+      const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
+        (offset: number, pid: number) => number;
+      const isPreadv = syscallNr === SYS_PREADV;
+      let fileOffset = isPreadv
+        ? (origArgs[3] | 0) + (origArgs[4] | 0) * 0x100000000
+        : 0;
+      let totalRead = 0;
+      let lastErr = 0;
+      let gotEagain = false;
 
-    // Copy read data from kernel scratch back to process memory
-    if (retVal > 0) {
-      let remaining = retVal;
       for (const entry of entries) {
-        if (remaining <= 0) break;
-        const copyLen = Math.min(entry.len, remaining);
-        processMem.set(
-          kernelMem.subarray(entry.kernelBase, entry.kernelBase + copyLen),
-          entry.base,
-        );
-        remaining -= copyLen;
-      }
-    }
+        if (entry.len === 0) continue;
+        let entryRead = 0;
 
-    this.completeChannel(channel, syscallNr, origArgs, undefined, retVal, errVal);
+        while (entryRead < entry.len) {
+          const chunkLen = Math.min(entry.len - entryRead, maxDataPerCall);
+          const kernelBuf = dataStart + 8; // single iov entry at dataStart, data after
+
+          // Set up single iov entry
+          new DataView(kernelMem.buffer).setUint32(dataStart, kernelBuf, true);
+          new DataView(kernelMem.buffer).setUint32(dataStart + 4, chunkLen, true);
+          kernelMem.fill(0, kernelBuf, kernelBuf + chunkLen);
+
+          if (isPreadv) {
+            // Use preadv with 1 iov
+            kernelView.setUint32(CH_SYSCALL, SYS_PREADV, true);
+            kernelView.setInt32(CH_ARGS, fd, true);
+            kernelView.setInt32(CH_ARGS + 4, dataStart, true);
+            kernelView.setInt32(CH_ARGS + 8, 1, true);
+            kernelView.setInt32(CH_ARGS + 12, fileOffset & 0xFFFFFFFF, true);
+            kernelView.setInt32(CH_ARGS + 16, Math.floor(fileOffset / 0x100000000), true);
+          } else {
+            // Use readv with 1 iov
+            kernelView.setUint32(CH_SYSCALL, SYS_READV, true);
+            kernelView.setInt32(CH_ARGS, fd, true);
+            kernelView.setInt32(CH_ARGS + 4, dataStart, true);
+            kernelView.setInt32(CH_ARGS + 8, 1, true);
+          }
+
+          this.currentHandlePid = channel.pid;
+          try {
+            handleChannel(this.scratchOffset, channel.pid);
+          } finally {
+            this.currentHandlePid = 0;
+          }
+
+          const retVal = kernelView.getInt32(CH_RETURN, true);
+          const errVal = kernelView.getUint32(CH_ERRNO, true);
+
+          if (retVal === -1) {
+            if (errVal === EAGAIN && totalRead === 0) {
+              gotEagain = true;
+              break;
+            }
+            lastErr = errVal;
+            break;
+          }
+
+          if (retVal === 0) break; // EOF
+
+          // Copy data to process memory
+          processMem.set(
+            kernelMem.subarray(kernelBuf, kernelBuf + retVal),
+            entry.base + entryRead,
+          );
+
+          entryRead += retVal;
+          totalRead += retVal;
+          if (isPreadv) fileOffset += retVal;
+
+          if (retVal < chunkLen) break; // short read
+        }
+
+        if (gotEagain || lastErr) break;
+      }
+
+      if (gotEagain) {
+        this.handleBlockingRetry(channel, syscallNr, origArgs);
+        return;
+      }
+
+      const finalRet = totalRead > 0 ? totalRead : (lastErr ? -1 : 0);
+      const finalErr = totalRead > 0 ? 0 : lastErr;
+      this.completeChannel(channel, syscallNr, origArgs, undefined, finalRet, finalErr);
+    }
   }
 
   /**
@@ -4918,6 +5223,19 @@ export class CentralizedKernelWorker {
   /** Set the next child PID to allocate. */
   setNextChildPid(pid: number): void {
     this.nextChildPid = pid;
+  }
+
+  /**
+   * Set the mmap address space ceiling for a process.
+   * Must be called before the process worker starts to prevent mmap
+   * from allocating in the thread channel/TLS region.
+   */
+  setMaxAddr(pid: number, maxAddr: number): void {
+    const setMaxAddrFn = this.kernelInstance!.exports.kernel_set_max_addr as
+      ((pid: number, maxAddr: number) => number) | undefined;
+    if (setMaxAddrFn) {
+      setMaxAddrFn(pid, maxAddr);
+    }
   }
 
   /** Get the underlying kernel instance for direct access. */
