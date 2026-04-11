@@ -12,7 +12,19 @@ import type {
 } from "./worker-protocol";
 import { DynamicLinker } from "./dylink";
 import { WasiShim, WasiExit, isWasiModule, wasiModuleDefinesMemory } from "./wasi-shim";
-import { writeFileSync, appendFileSync } from "fs";
+// Debug file logging — Node.js only; no-op in browser workers where "fs" is unavailable.
+const _fsNoop = (..._args: unknown[]) => {};
+let writeFileSync: (...args: unknown[]) => void = _fsNoop;
+let appendFileSync: (...args: unknown[]) => void = _fsNoop;
+if (typeof process !== "undefined" && process.versions?.node) {
+  try {
+    // Dynamic import with variable name to prevent Vite from resolving "fs" at build time.
+    const m = "fs";
+    const fs = await import(/* @vite-ignore */ m);
+    writeFileSync = fs.writeFileSync;
+    appendFileSync = fs.appendFileSync;
+  } catch {}
+}
 
 export interface MessagePort {
   postMessage(msg: unknown, transferList?: unknown[]): void;
