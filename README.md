@@ -4,6 +4,8 @@ A POSIX-compliant multi-process kernel for WebAssembly. Compile C programs again
 
 **Live demo**: [brandonpayton.github.io/wasm-posix-kernel](https://brandonpayton.github.io/wasm-posix-kernel/)
 
+***ATTENTION:*** This repo may contain .wasm binary builds in its history. In the future, history will likely be rewritten to remove these as they are offloaded to a better data store.
+
 ## What runs on it
 
 Real, unmodified software compiled to WebAssembly:
