@@ -2,6 +2,8 @@ export interface KernelConfig {
   maxWorkers: number;
   dataBufferSize: number;
   useSharedMemory: boolean;
+  /** Log every syscall with decoded args and return values to stderr */
+  enableSyscallLog?: boolean;
 }
 
 export interface StatResult {

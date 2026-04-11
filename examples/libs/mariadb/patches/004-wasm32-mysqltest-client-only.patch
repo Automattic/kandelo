@@ -1,0 +1,19 @@
+diff --git a/client/mysqltest.cc b/client/mysqltest.cc
+index 1234567..abcdefg 100644
+--- a/client/mysqltest.cc
++++ b/client/mysqltest.cc
+@@ -37,6 +37,15 @@
+
+ #include "client_priv.h"
+
++/*
++ * wasm32: mysqltest links against libmariadbclient (not embedded server).
++ * Redirect mysql_server_init/end to the client-library stubs so the binary
++ * doesn't pull in the full server initialisation path from mysys.
++ */
++#define mysql_server_init(a,b,c) mysql_client_plugin_init()
++#define mysql_server_end()       mysql_client_plugin_deinit()
++
+ #include <mysql_version.h>
+ #include <mysqld_error.h>
+ #include <sql_common.h>

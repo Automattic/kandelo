@@ -36,6 +36,7 @@ struct MqMessage {
 }
 
 /// A named message queue.
+#[allow(dead_code)]
 struct MqQueue {
     name: String,
     maxmsg: u32,

@@ -8,7 +8,7 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
-use wasm_posix_shared::mode::{S_IFCHR, S_IFDIR, S_IFLNK};
+use wasm_posix_shared::mode::S_IFDIR;
 use wasm_posix_shared::{Errno, WasmStat};
 
 /// Sentinel host_handle for devfs directory OFDs.

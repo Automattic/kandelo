@@ -76,7 +76,11 @@ impl MemoryManager {
 
         let addr = if hint != 0 && (flags & MAP_FIXED) != 0 {
             // MAP_FIXED: use the exact address, removing any overlapping mappings
+            // Reject if the region extends past max_addr (protects thread TLS/channel pages)
             let end = hint.saturating_add(aligned_len);
+            if end > self.max_addr {
+                return wasm_posix_shared::mmap::MAP_FAILED;
+            }
             self.mappings.retain(|m| {
                 let m_end = m.addr.saturating_add(m.len);
                 // Keep mappings that don't overlap [hint, end)
@@ -237,10 +241,14 @@ impl MemoryManager {
         true
     }
 
-    /// Set the upper bound for mmap allocation.
-    /// Used by the host to cap allocations below the channel region.
+    /// Lower the upper bound for mmap allocation.
+    /// Used by the host to cap allocations below the channel/TLS region.
+    /// Only lowers the ceiling — never raises it — so that pre-computed safe
+    /// values (accounting for all future thread allocations) are preserved.
     pub fn set_max_addr(&mut self, addr: u32) {
-        self.max_addr = addr;
+        if addr < self.max_addr {
+            self.max_addr = addr;
+        }
     }
 
     /// Extend an existing mapping at `addr` from `old_len` to `new_len`.
@@ -565,12 +573,12 @@ mod tests {
         mm.munmap(a, 0x200000);
         let a2 = mm.mmap_anonymous(0, 0x3f0000, rw, anon);
         mm.munmap(a2, 0x1f0000);
-        let a3 = mm.mmap_anonymous(0, 0x200000, rw, anon);
+        let _a3 = mm.mmap_anonymous(0, 0x200000, rw, anon);
         assert_no_overlaps(&mm);
 
         // WPS:133
-        let a4 = mm.mmap_anonymous(0, 0x40000, rw, anon);
-        let a5 = mm.mmap_anonymous(0, 0x40000, rw, anon);
+        let _a4 = mm.mmap_anonymous(0, 0x40000, rw, anon);
+        let _a5 = mm.mmap_anonymous(0, 0x40000, rw, anon);
         assert_no_overlaps(&mm);
 
         // After SHORTINIT — another musl pattern

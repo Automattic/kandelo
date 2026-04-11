@@ -63,6 +63,7 @@ const perlWasm = resolve(repoRoot, "examples/libs/perl/bin/perl.wasm");
 const nanoWasm = resolve(repoRoot, "examples/libs/nano/bin/nano.wasm");
 const tclshWasm = resolve(repoRoot, "examples/libs/tcl/bin/tclsh.wasm");
 const testfixtureWasm = resolve(repoRoot, "examples/libs/sqlite/bin/testfixture.wasm");
+const mysqltestWasm = resolve(repoRoot, "examples/libs/mariadb/mariadb-install/bin/mysqltest.wasm");
 
 // GNU coreutils multi-call binary supports all of these as argv[0]
 const coreutilsNames = [
@@ -240,6 +241,9 @@ const builtinPrograms: Record<string, string> = {
     "testfixture": testfixtureWasm,
     "/usr/bin/testfixture": testfixtureWasm,
     "/bin/testfixture": testfixtureWasm,
+    "mysqltest": mysqltestWasm,
+    "/usr/bin/mysqltest": mysqltestWasm,
+    "/bin/mysqltest": mysqltestWasm,
 };
 
 // Add coreutils mappings for all known tool names
@@ -546,10 +550,14 @@ async function main() {
         ]),
     ];
 
-    // When stdin is not a terminal (piped or redirected), set it as finite
-    // so reads return EOF instead of blocking forever.
+    // When stdin is not a terminal (piped or redirected), read all piped
+    // data and set it as finite stdin so reads get the data then EOF.
     if (!process.stdin.isTTY) {
-        kernelWorker.setStdinData(pid, new Uint8Array(0));
+        const chunks: Buffer[] = [];
+        for await (const chunk of process.stdin) {
+            chunks.push(chunk);
+        }
+        kernelWorker.setStdinData(pid, new Uint8Array(Buffer.concat(chunks)));
     }
 
     // Spawn the process worker

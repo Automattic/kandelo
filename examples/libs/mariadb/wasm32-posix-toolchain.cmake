@@ -225,6 +225,14 @@ set(CURSES_INCLUDE_PATH "${WASM_POSIX_SYSROOT}/include" CACHE PATH "Curses inclu
 set(CURSES_HAVE_CURSES_H FALSE CACHE BOOL "" FORCE)
 set(CURSES_HAVE_NCURSES_H FALSE CACHE BOOL "" FORCE)
 
+# --- PCRE2 paths ---
+# Force PCRE2 include path to sysroot to avoid picking up Homebrew native headers.
+# The PCRE2_DEBIAN_HACK check uses CHECK_LIBRARY_EXISTS which always passes with
+# static library try_compile, so pre-set it to avoid macro conflicts.
+set(PCRE2_INCLUDE_DIR "${WASM_POSIX_SYSROOT}/include" CACHE PATH "PCRE2 include dir" FORCE)
+set(PCRE_INCLUDE_DIRS "${WASM_POSIX_SYSROOT}/include" CACHE PATH "PCRE include dirs" FORCE)
+set(NEEDS_PCRE2_DEBIAN_HACK FALSE CACHE BOOL "No PCRE2 debian hack needed" FORCE)
+
 # --- Disable DTrace ---
 # DTrace probes require host dtrace tool which can't target wasm32.
 set(ENABLE_DTRACE OFF CACHE BOOL "Disable DTrace for wasm32" FORCE)

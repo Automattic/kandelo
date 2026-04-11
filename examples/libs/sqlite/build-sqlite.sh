@@ -24,12 +24,18 @@ if [ ! -d "$SRC_DIR" ]; then
     rm /tmp/sqlite.zip
 fi
 
-echo "==> Compiling SQLite for Wasm..."
-wasm32posix-cc -c -O2 \
+SQLITE_CFLAGS="-O2 \
     -DSQLITE_OMIT_LOAD_EXTENSION \
     -DSQLITE_THREADSAFE=0 \
     -DSQLITE_OMIT_WAL \
     -DSQLITE_DEFAULT_SYNCHRONOUS=0 \
+    -DSQLITE_ENABLE_FTS5 \
+    -DSQLITE_ENABLE_JSON1 \
+    -DSQLITE_ENABLE_MATH_FUNCTIONS"
+
+echo "==> Compiling SQLite for Wasm..."
+# shellcheck disable=SC2086
+wasm32posix-cc -c $SQLITE_CFLAGS \
     "$SRC_DIR/sqlite3.c" -o "$SRC_DIR/sqlite3.o"
 
 wasm32posix-ar rcs "$SRC_DIR/libsqlite3.a" "$SRC_DIR/sqlite3.o"
@@ -55,10 +61,19 @@ Libs: -L\${libdir} -lsqlite3
 Cflags: -I\${includedir}
 PCEOF
 
-if [ -f "$INSTALL_DIR/lib/libsqlite3.a" ]; then
+# Build sqlite3 CLI binary
+echo "==> Building sqlite3 CLI..."
+mkdir -p "$INSTALL_DIR/bin"
+# shellcheck disable=SC2086
+wasm32posix-cc $SQLITE_CFLAGS \
+    "$SRC_DIR/shell.c" "$SRC_DIR/sqlite3.c" \
+    -o "$INSTALL_DIR/bin/sqlite3.wasm" -lm
+
+if [ -f "$INSTALL_DIR/lib/libsqlite3.a" ] && [ -f "$INSTALL_DIR/bin/sqlite3.wasm" ]; then
     echo "==> SQLite build complete!"
     ls -lh "$INSTALL_DIR/lib/libsqlite3.a"
+    ls -lh "$INSTALL_DIR/bin/sqlite3.wasm"
 else
-    echo "ERROR: Build failed — library not found" >&2
+    echo "ERROR: Build failed — library or binary not found" >&2
     exit 1
 fi

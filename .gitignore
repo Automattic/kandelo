@@ -34,6 +34,7 @@ node_modules/
 examples/browser/dist/
 examples/browser/public/wp-bundle.json
 examples/browser/public/python-bundle.json
+examples/browser/public/mariadb-test-bundle.json
 
 # nginx source (downloaded by build.sh)
 examples/nginx/nginx-src/
@@ -98,3 +99,4 @@ examples/div_trace.wasm
 examples/mul_*.c
 examples/mul_*.wasm
 examples/snprintf_debug.wasm
+examples/mariadb-test/test-data/

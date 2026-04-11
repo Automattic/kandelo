@@ -5801,6 +5801,7 @@ pub fn sys_futex(
 ) -> Result<i32, Errno> {
     const FUTEX_WAIT: u32 = 0;
     const FUTEX_WAKE: u32 = 1;
+    #[allow(dead_code)]
     const FUTEX_FD: u32 = 2;
     const FUTEX_REQUEUE: u32 = 3;
     const FUTEX_CMP_REQUEUE: u32 = 4;
@@ -5895,6 +5896,7 @@ pub fn sys_clone(
     const CLONE_VM: u32 = 0x00000100;
     const CLONE_THREAD: u32 = 0x00010000;
     const CLONE_PARENT_SETTID: u32 = 0x00100000;
+    #[allow(dead_code)]
     const CLONE_CHILD_SETTID: u32 = 0x01000000;
     const CLONE_CHILD_CLEARTID: u32 = 0x00200000;
     const CLONE_SETTLS: u32 = 0x00080000;
@@ -6329,6 +6331,7 @@ pub fn sys_epoll_pwait(
     const EPOLLOUT: u32 = 0x004;
     const EPOLLERR: u32 = 0x008;
     const EPOLLHUP: u32 = 0x010;
+    #[allow(dead_code)]
     const EPOLLRDHUP: u32 = 0x2000;
 
     // Build pollfds from interests
@@ -7057,7 +7060,6 @@ pub fn sys_select(
     // Inline readiness check — avoids Vec allocations that leak with the
     // bump allocator. We check each fd directly from the fd_sets.
     let mut ready = 0i32;
-    let mut any_interested = false;
 
     // Save input fd_sets before clearing (we need to know which fds were requested)
     // Use a fixed-size buffer: nfds <= 1024, so max 128 bytes per set.
@@ -7092,8 +7094,6 @@ pub fn sys_select(
         if !want_read && !want_write && !want_except {
             continue;
         }
-        any_interested = true;
-
         let mut events: i16 = 0;
         if want_read { events |= POLLIN; }
         if want_write { events |= POLLOUT; }
@@ -7120,9 +7120,12 @@ pub fn sys_select(
         if counted { ready += 1; }
     }
 
-    if ready > 0 || timeout_ms == 0 || !any_interested {
+    if ready > 0 || timeout_ms == 0 {
         return Ok(ready);
     }
+    // nfds=0 with no interested FDs but non-zero timeout: on Linux this
+    // blocks until a signal arrives (like sigsuspend). Fall through to
+    // EAGAIN/blocking path rather than returning immediately.
 
     // Centralized mode: return EAGAIN so the host JS can retry asynchronously
     if crate::is_centralized_mode() {

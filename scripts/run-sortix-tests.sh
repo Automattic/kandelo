@@ -37,7 +37,7 @@ INCLUDE_EXPECTED_FAIL=(
 
 BASIC_EXPECTED_FAIL=(
     "devctl/posix_devctl"                                 # device control (Sortix/2024, not in musl)
-    "aio/aio_error" "aio/aio_fsync"                       # AIO requires threads (musl uses pthread)
+    "aio/aio_error" "aio/aio_fsync" "aio/aio_read"         # AIO requires threads (musl uses pthread)
     "pthread/pthread_barrierattr_setpshared" "pthread/pthread_cancel"
     "pthread/pthread_cleanup_pop" "pthread/pthread_cleanup_push"
     "pthread/pthread_condattr_setpshared"

@@ -16,7 +16,7 @@
  *
  * Each thread has its own channel region within the process's shared
  * WebAssembly.Memory. The base address is stored in __channel_base,
- * a _Thread_local variable set during TLS initialization.
+ * an imported WebAssembly global set by the host at instantiation time.
  *
  * This file replaces syscall_glue.c — no kernel.* Wasm imports are used.
  * User programs compiled with this glue have zero kernel imports.
@@ -63,16 +63,30 @@ int *__errno_location(void);
 #define SYS_RT_SIGRETURN 208
 #define SIG_SETMASK 2
 
-/* Per-thread channel base address, set during TLS init by the host */
-_Thread_local uint32_t __channel_base;
+/* Per-thread channel base address.
+ *
+ * Stored as an imported WebAssembly global — each wasm instance (thread)
+ * gets its own copy, immune to cross-thread shared memory corruption.
+ * The host provides the value via WebAssembly.Global at instantiation time.
+ *
+ * Unlike _Thread_local (which stores in shared linear memory at __tls_base +
+ * offset), wasm globals are instance-local and cannot be corrupted by other
+ * threads' pointer arithmetic into the same memory region. */
+__asm__(".globaltype __channel_base, i32\n");
 
-/* Return the address of __channel_base for the current thread.
- * The host uses this to find where to write the channel offset in TLS,
- * since __channel_base may not be at TLS offset 0 if the program has
- * its own _Thread_local variables. */
+static inline uint32_t get_channel_base(void) {
+    uint32_t val;
+    __asm__ volatile("global.get __channel_base\n"
+                     "local.set %0" : "=r"(val));
+    return val;
+}
+
+/* Return 0 to signal that channel base uses a wasm global import,
+ * not a TLS memory address. The host checks: if this returns 0,
+ * skip TLS-based channel setup (the global is set at instantiation). */
 __attribute__((export_name("__get_channel_base_addr")))
 uint32_t __get_channel_base_addr(void) {
-    return (uint32_t)(uintptr_t)&__channel_base;
+    return 0;
 }
 
 /* SYS_EXIT needs special handling */
@@ -231,54 +245,80 @@ static long __do_syscall(long n, long a1, long a2, long a3,
         return -38; /* ENOSYS */
     }
 
-    uint32_t base = __channel_base;
+    /* IMPORTANT: In multi-threaded wasm programs (like BEAM), all threads
+     * share the same linear memory. The compiler may spill local variables
+     * to the shadow stack (linear memory). If another thread's pointer
+     * arithmetic overwrites the shadow stack, spilled values get corrupted.
+     *
+     * To avoid this, we use get_channel_base() (inline asm: global.get)
+     * at each point where we need the channel base, rather than caching it
+     * in a local variable that might be spilled to the shadow stack.
+     * The wasm global is per-instance and immune to cross-thread corruption. */
 
-    volatile int32_t *status = (volatile int32_t *)(uintptr_t)(base + CH_STATUS);
-    int32_t *syscall_nr      = (int32_t *)(uintptr_t)(base + CH_SYSCALL);
-    int32_t *args             = (int32_t *)(uintptr_t)(base + CH_ARGS);
-    int32_t *ret_ptr          = (int32_t *)(uintptr_t)(base + CH_RETURN);
-    int32_t *err_ptr          = (int32_t *)(uintptr_t)(base + CH_ERRNO);
+    uint32_t base = get_channel_base();
 
-    /* Write syscall number and arguments */
-    *syscall_nr = (int32_t)n;
-    args[0] = (int32_t)a1;
-    args[1] = (int32_t)a2;
-    args[2] = (int32_t)a3;
-    args[3] = (int32_t)a4;
-    args[4] = (int32_t)a5;
-    args[5] = (int32_t)a6;
+    /* Write syscall number and arguments directly using base offsets.
+     * These are one-shot writes — if the shadow stack value of 'base' is
+     * corrupted after these writes, it doesn't matter because we re-read
+     * the global for the atomic operations below. */
+    *(int32_t *)(uintptr_t)(base + CH_SYSCALL) = (int32_t)n;
+    *(int32_t *)(uintptr_t)(base + CH_ARGS + 0)  = (int32_t)a1;
+    *(int32_t *)(uintptr_t)(base + CH_ARGS + 4)  = (int32_t)a2;
+    *(int32_t *)(uintptr_t)(base + CH_ARGS + 8)  = (int32_t)a3;
+    *(int32_t *)(uintptr_t)(base + CH_ARGS + 12) = (int32_t)a4;
+    *(int32_t *)(uintptr_t)(base + CH_ARGS + 16) = (int32_t)a5;
+    *(int32_t *)(uintptr_t)(base + CH_ARGS + 20) = (int32_t)a6;
 
     /* Set status to PENDING and wake the kernel worker.
-     * Use __c11_atomic_store for the atomic store, and the Wasm-specific
-     * builtins for notify/wait (memory.atomic.notify, memory.atomic.wait32). */
-    __c11_atomic_store((_Atomic int32_t *)status, CH_PENDING, __ATOMIC_SEQ_CST);
-    __builtin_wasm_memory_atomic_notify((int32_t *)status, 1);
-
-    /* Block until the kernel sets status to COMPLETE or ERROR.
-     * memory.atomic.wait32 returns:
-     *   0 = "ok" (woken by notify)
-     *   1 = "not-equal" (value already changed)
-     *   2 = "timed-out"
-     * We loop until status is no longer PENDING. */
-    while (__builtin_wasm_memory_atomic_wait32((int32_t *)status, CH_PENDING, -1) == 0) {
-        /* Re-check: wait returns 0 on wake, but status might still be
-         * PENDING if it was a spurious wakeup. The atomic_wait will
-         * immediately return "not-equal" if status has changed. */
+     * Use inline asm to read __channel_base directly from the wasm global,
+     * bypassing any shadow stack spills that might be corrupted. */
+    {
+        uint32_t addr;
+        __asm__ volatile(
+            "global.get __channel_base\n"
+            "local.set %0"
+            : "=r"(addr)
+        );
+        __c11_atomic_store((_Atomic int32_t *)(uintptr_t)(addr + CH_STATUS),
+                           CH_PENDING, __ATOMIC_SEQ_CST);
+        __builtin_wasm_memory_atomic_notify(
+            (int32_t *)(uintptr_t)(addr + CH_STATUS), 1);
     }
 
-    /* Read result */
-    long result = (long)*ret_ptr;
-    int32_t err = *err_ptr;
+    /* Block until the kernel sets status to COMPLETE or ERROR.
+     * CRITICAL: Re-read __channel_base from the wasm global on every
+     * iteration. The compiler at -O0 would spill the address to the
+     * shadow stack, where cross-thread memory writes can corrupt it.
+     * Reading from the global (a per-instance register) is immune. */
+    {
+        int wait_ret;
+        do {
+            uint32_t addr;
+            __asm__ volatile(
+                "global.get __channel_base\n"
+                "local.set %0"
+                : "=r"(addr)
+            );
+            wait_ret = __builtin_wasm_memory_atomic_wait32(
+                (int32_t *)(uintptr_t)(addr + CH_STATUS), CH_PENDING, -1);
+        } while (wait_ret == 0);
+    }
+
+    /* Read result — re-read base from global for safety */
+    base = get_channel_base();
+    long result = (long)*(int32_t *)(uintptr_t)(base + CH_RETURN);
+    int32_t err = *(int32_t *)(uintptr_t)(base + CH_ERRNO);
 
     /* Reset status to IDLE for next syscall */
-    __c11_atomic_store((_Atomic int32_t *)status, CH_IDLE, __ATOMIC_SEQ_CST);
+    __c11_atomic_store((_Atomic int32_t *)(uintptr_t)(base + CH_STATUS),
+                       CH_IDLE, __ATOMIC_SEQ_CST);
 
     /* Check for pending signal delivery from the kernel.
      * The kernel writes signal info to CH_SIG_* after each syscall if
      * a Handler signal is deliverable. We invoke the handler here,
      * synchronously before returning to the caller, matching POSIX
      * semantics (raise() doesn't return until signal handler completes). */
-    __deliver_pending_signal(base);
+    __deliver_pending_signal(get_channel_base());
 
     /* Return in musl's expected format: negative errno on error.
      * musl's __syscall_ret() converts this to set errno and return -1. */
