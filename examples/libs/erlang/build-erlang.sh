@@ -460,6 +460,28 @@ if ! grep -q '__wasm32__' "$SYS_DRIVERS" 2>/dev/null; then
     echo "==> Patched sys_drivers.c to skip forker on wasm32"
 fi
 
+# Patch global.h: ESTACK/WSTACK explicit field initialization on wasm32.
+# LLVM's wasm32 backend miscompiles aggregate initialization of structs
+# containing pointers to shadow-stack local arrays at -O2.
+GLOBAL_H="$SRC_DIR/erts/emulator/beam/global.h"
+if ! grep -q 'estack_make_default_' "$GLOBAL_H" 2>/dev/null; then
+    python3 "$SCRIPT_DIR/patches/patch-global-h.py" "$GLOBAL_H"
+    echo "==> Patched global.h ESTACK/WSTACK for wasm32"
+fi
+
+# Patch Makefile: compile erl_unicode.c at -O1.
+# LLVM miscompiles iodata traversal in this file at -O2 on wasm32.
+EMU_MAKEFILE="$SRC_DIR/erts/emulator/wasm32-unknown-wasi/Makefile"
+if [ -f "$EMU_MAKEFILE" ] && ! grep -q 'erl_unicode.o:' "$EMU_MAKEFILE"; then
+    sed -i '' '/\$(OBJDIR)\/beam_emu\.o: beam\/emu\/beam_emu\.c/i\
+# wasm32: erl_unicode.c miscompiles at -O2 (iodata traversal returns garbage).\
+$(OBJDIR)/erl_unicode.o: beam/erl_unicode.c\
+	$(V_CC) $(subst -O2,-O1,$(CFLAGS)) $(INCLUDES) -c $< -o $@\
+
+' "$EMU_MAKEFILE"
+    echo "==> Patched Makefile: erl_unicode.c at -O1"
+fi
+
 echo "==> Starting build..."
 
 # Build
