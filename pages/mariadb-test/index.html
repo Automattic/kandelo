@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <script src="/wasm-posix-kernel/service-worker.js"></script>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MariaDB Test Runner — wasm-posix-kernel</title>
+  <style>
+    body { font-family: monospace; padding: 1rem; background: #1a1a2e; color: #e0e0e0; }
+    #status { padding: 0.5rem; margin: 0.5rem 0; border-radius: 4px; }
+    #log { white-space: pre-wrap; font-size: 12px; max-height: 80vh; overflow-y: auto; }
+    .info { color: #64b5f6; }
+    .error { color: #ef5350; }
+  </style>
+  <script type="module" crossorigin src="/wasm-posix-kernel/assets/mariadb-test-D-e23tF8.js"></script>
+  <link rel="modulepreload" crossorigin href="/wasm-posix-kernel/assets/browser-kernel-CBFqFvro.js">
+  <link rel="modulepreload" crossorigin href="/wasm-posix-kernel/assets/pty-terminal-SgyAMfZW.js">
+  <link rel="modulepreload" crossorigin href="/wasm-posix-kernel/assets/system-init-CduyywLQ.js">
+  <link rel="modulepreload" crossorigin href="/wasm-posix-kernel/assets/vfs-utils-Bg0GbIxd.js">
+  <link rel="modulepreload" crossorigin href="/wasm-posix-kernel/assets/mysql_system_tables_data-Bbj8c-IH.js">
+</head>
+<body>
+  <h3>MariaDB mysql-test Browser Runner</h3>
+  <div id="status">Initializing...</div>
+  <pre id="log"></pre>
+</body>
+</html>

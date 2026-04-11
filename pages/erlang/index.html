@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <script src="/wasm-posix-kernel/service-worker.js"></script>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Erlang — wasm-posix-kernel</title>
+  <script type="module" crossorigin src="/wasm-posix-kernel/assets/erlang-CDjDSa9k.js"></script>
+  <link rel="modulepreload" crossorigin href="/wasm-posix-kernel/assets/browser-kernel-CBFqFvro.js">
+  <link rel="stylesheet" crossorigin href="/wasm-posix-kernel/assets/layout-CgaJCU8K.css">
+</head>
+<body>
+  <nav class="sidebar">
+    <div class="sidebar-title">Demos</div>
+    <a href="/wasm-posix-kernel/">Simple Programs</a>
+    <a href="/wasm-posix-kernel/pages/nginx/">nginx</a>
+    <a href="/wasm-posix-kernel/pages/php/">PHP CLI</a>
+    <a href="/wasm-posix-kernel/pages/nginx-php/">nginx + PHP-FPM</a>
+    <a href="/wasm-posix-kernel/pages/mariadb/">MariaDB</a>
+    <a href="/wasm-posix-kernel/pages/redis/">Redis</a>
+    <a href="/wasm-posix-kernel/pages/wordpress/">WordPress (LEMP-but-SQLite)</a>
+    <a href="/wasm-posix-kernel/pages/lamp/">WordPress (LEMP)</a>
+    <a href="/wasm-posix-kernel/pages/shell/">Shell</a>
+    <a href="/wasm-posix-kernel/pages/python/">Python</a>
+    <a href="/wasm-posix-kernel/pages/perl/">Perl</a>
+    <a href="/wasm-posix-kernel/pages/ruby/">Ruby</a>
+    <a href="/wasm-posix-kernel/pages/erlang/" aria-current="page">Erlang</a>
+  </nav>
+  <div class="main">
+    <div class="main-header">
+      <h1>Erlang on wasm-posix-kernel</h1>
+      <p class="subtitle">Erlang/OTP 28 BEAM VM running inside a POSIX kernel compiled to WebAssembly</p>
+      <div class="controls" style="padding:0">
+        <select id="examples">
+          <option value="">-- Load Example --</option>
+          <option value="hello">Hello World</option>
+          <option value="ring">Ring Benchmark</option>
+          <option value="fib">Fibonacci</option>
+          <option value="processes">Process Spawning</option>
+          <option value="lists">List Operations</option>
+          <option value="patterns">Pattern Matching</option>
+        </select>
+        <button id="run">Run</button>
+        <button id="stop" disabled>Stop</button>
+        <span class="hint">Ctrl+Enter to run</span>
+      </div>
+      <div id="status" class="status" style="display:none"></div>
+    </div>
+    <div class="preview-area">
+      <div class="batch-panel">
+        <div>
+          <h3>Erlang Code</h3>
+          <textarea id="code">io:format("Hello from Erlang/OTP 28 on WebAssembly!~n"),
+io:format("System: ~s~n", [erlang:system_info(system_version)]),
+io:format("Word size: ~p bytes~n", [erlang:system_info(wordsize)]),
+io:format("Schedulers: ~p~n", [erlang:system_info(schedulers)]),
+io:format("Process limit: ~p~n", [erlang:system_info(process_limit)]),
+io:format("Processes: ~p~n", [length(erlang:processes())]).</textarea>
+        </div>
+        <div>
+          <h3>Output</h3>
+          <pre id="output"></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
