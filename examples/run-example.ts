@@ -61,6 +61,8 @@ const sdiffWasm = resolve(repoRoot, "examples/libs/diffutils/bin/sdiff.wasm");
 const diff3Wasm = resolve(repoRoot, "examples/libs/diffutils/bin/diff3.wasm");
 const perlWasm = resolve(repoRoot, "examples/libs/perl/bin/perl.wasm");
 const nanoWasm = resolve(repoRoot, "examples/libs/nano/bin/nano.wasm");
+const tclshWasm = resolve(repoRoot, "examples/libs/tcl/bin/tclsh.wasm");
+const testfixtureWasm = resolve(repoRoot, "examples/libs/sqlite/bin/testfixture.wasm");
 const mysqltestWasm = resolve(repoRoot, "examples/libs/mariadb/mariadb-install/bin/mysqltest.wasm");
 
 // GNU coreutils multi-call binary supports all of these as argv[0]
@@ -230,6 +232,15 @@ const builtinPrograms: Record<string, string> = {
     "nano": nanoWasm,
     "/usr/bin/nano": nanoWasm,
     "/bin/nano": nanoWasm,
+    "tclsh": tclshWasm,
+    "tclsh8.6": tclshWasm,
+    "/usr/bin/tclsh": tclshWasm,
+    "/usr/bin/tclsh8.6": tclshWasm,
+    "/bin/tclsh": tclshWasm,
+    "/bin/tclsh8.6": tclshWasm,
+    "testfixture": testfixtureWasm,
+    "/usr/bin/testfixture": testfixtureWasm,
+    "/bin/testfixture": testfixtureWasm,
     "mysqltest": mysqltestWasm,
     "/usr/bin/mysqltest": mysqltestWasm,
     "/bin/mysqltest": mysqltestWasm,
@@ -573,9 +584,10 @@ async function main() {
 
     // Register main process in processExits so onExit callback can resolve it
     const exitPromise = new Promise<number>((resolve, reject) => {
+        const timeoutMs = parseInt(process.env.TIMEOUT || "30000", 10);
         const timeout = setTimeout(() => {
             reject(new Error("Process timed out"));
-        }, 30_000);
+        }, timeoutMs);
 
         processExits.set(pid, {
             resolve: (status: number) => {

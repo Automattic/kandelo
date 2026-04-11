@@ -1,4 +1,7 @@
 node_modules/
 sqlite-src/
+sqlite-full-src/
 sqlite-install/
+testfixture-build/
+bin/
 *.wasm

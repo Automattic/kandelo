@@ -1,0 +1,89 @@
+# config.site for cross-compiling TCL 8.6 to wasm32-posix-kernel.
+#
+# Our linker uses --allow-undefined, so ALL link-based function detection
+# passes. We must explicitly disable everything we don't have.
+
+# --- Type sizes (wasm32 ILP32) ---
+ac_cv_sizeof_int=4
+ac_cv_sizeof_long=4
+ac_cv_sizeof_long_long=8
+ac_cv_sizeof_void_p=4
+ac_cv_sizeof_short=2
+ac_cv_sizeof_char=1
+ac_cv_sizeof_off_t=8
+ac_cv_sizeof_time_t=8
+
+# --- Endianness ---
+ac_cv_c_bigendian=no
+
+# --- TCL-specific run-test overrides ---
+tcl_cv_putenv_copy=no
+tcl_cv_strtoul_unbroken=ok
+tcl_cv_strstr_unbroken=ok
+tcl_cv_strtod_buggy=ok
+tcl_cv_strtod_unbroken=ok
+
+# Pretend Linux so configure picks the right code paths
+tcl_cv_sys_version=Linux
+
+# --- Functions we have ---
+ac_cv_func_getcwd=yes
+ac_cv_func_opendir=yes
+ac_cv_func_strtol=yes
+ac_cv_func_strtoll=yes
+ac_cv_func_strtoul=yes
+ac_cv_func_strtoull=yes
+ac_cv_func_strtod=yes
+ac_cv_func_memcmp=yes
+ac_cv_func_memmove=yes
+ac_cv_func_strncasecmp=yes
+ac_cv_func_select=yes
+ac_cv_func_fork=yes
+ac_cv_func_waitpid=yes
+ac_cv_func_gettimeofday=yes
+ac_cv_func_getaddrinfo=yes
+ac_cv_func_freeaddrinfo=yes
+ac_cv_func_getnameinfo=yes
+ac_cv_func_localtime_r=yes
+ac_cv_func_gmtime_r=yes
+ac_cv_func_mktime=yes
+ac_cv_func_mkstemp=yes
+ac_cv_func_getpwuid_r=yes
+ac_cv_func_getgrnam_r=yes
+ac_cv_func_getgrgid_r=yes
+
+# --- Functions we DON'T have ---
+ac_cv_func_uname=no
+ac_cv_func_chown=no
+ac_cv_func_chroot=no
+ac_cv_func_copyfile=no
+ac_cv_func_fstatfs=no
+ac_cv_func_getrusage=no
+ac_cv_func_pthread_attr_setstacksize=no
+ac_cv_func_pthread_atfork=no
+ac_cv_func_mach_absolute_time=no
+
+# --- Headers ---
+ac_cv_header_sys_resource_h=yes
+ac_cv_header_sys_time_h=yes
+ac_cv_header_sys_select_h=yes
+ac_cv_header_dlfcn_h=yes
+ac_cv_header_sys_param_h=yes
+ac_cv_header_sys_stat_h=yes
+ac_cv_header_sys_ioctl_h=yes
+ac_cv_header_sys_filio_h=no
+ac_cv_header_sys_modem_h=no
+ac_cv_header_net_errno_h=no
+ac_cv_header_copyfile_h=no
+
+# --- No dynamic loading ---
+ac_cv_lib_dl_dlopen=no
+ac_cv_func_dlopen=no
+
+# --- No CoreFoundation (macOS) ---
+ac_cv_header_CoreFoundation_CoreFoundation_h=no
+ac_cv_header_libkern_OSAtomic_h=no
+
+# --- Timezone / locale ---
+tcl_cv_timezone_long=yes
+tcl_cv_timezone_time=yes

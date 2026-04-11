@@ -741,13 +741,19 @@ cmd_test() {
                     failed=1
                 fi
                 ;;
+            sqlite-upstream)
+                step "Running SQLite upstream test suite"
+                if ! bash "$REPO_ROOT/scripts/run-sqlite-upstream-tests.sh" --quick; then
+                    failed=1
+                fi
+                ;;
             all)
                 cmd_test cargo vitest libc posix sortix browser
                 return $?
                 ;;
             *)
                 err "Unknown test suite: $suite"
-                err "Available: cargo, vitest, libc, posix, sortix, browser, browser-all, mariadb, browser-mariadb, nginx, sqlite, all"
+                err "Available: cargo, vitest, libc, posix, sortix, sqlite-upstream, browser, browser-all, mariadb, browser-mariadb, nginx, sqlite, all"
                 exit 1
                 ;;
         esac
