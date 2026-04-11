@@ -1,0 +1,7 @@
+erlang-src/
+erlang-host-build/
+erlang-install/
+bin/
+build.log
+configure.log
+*.wasm

@@ -45,6 +45,21 @@ export class ThreadPageAllocator {
     const channelOffset = basePage * WASM_PAGE_SIZE;
     const tlsAllocAddr = (basePage - 2) * WASM_PAGE_SIZE;
 
+    // Check if TLS page already has data (diagnostic: detect address space overlap)
+    const preCheck = new DataView(memory.buffer);
+    let nonZeroCount = 0;
+    for (let i = 0; i < 64; i += 4) {
+      if (preCheck.getUint32(tlsAllocAddr + i, true) !== 0) nonZeroCount++;
+    }
+    if (nonZeroCount > 0) {
+      const vals: string[] = [];
+      for (let i = 0; i < 64; i += 4) {
+        vals.push(`0x${preCheck.getUint32(tlsAllocAddr + i, true).toString(16).padStart(8, '0')}`);
+      }
+      console.error(`[thread-alloc] WARNING: TLS page 0x${tlsAllocAddr.toString(16)} has ${nonZeroCount}/16 non-zero dwords BEFORE zeroing!`);
+      console.error(`[thread-alloc]   data: ${vals.join(' ')}`);
+    }
+
     // Zero channel and TLS regions
     new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
     new Uint8Array(memory.buffer, tlsAllocAddr, WASM_PAGE_SIZE).fill(0);
