@@ -269,9 +269,12 @@ async function runBatch() {
 
     let code = codeEl.value.trim();
 
-    // Auto-append halt if user code doesn't end with one
+    // Auto-append halt if user code doesn't call halt().
+    // Erlang -eval expects a single expression sequence: "expr1, expr2, expr3."
+    // Strip trailing period, append halt as the last expression.
     if (!/halt\s*\(/.test(code)) {
-      code += "\nhalt(0, [{flush, false}]).";
+      code = code.replace(/\.\s*$/, "");
+      code += ",\nhalt(0, [{flush, false}]).";
     }
 
     setStatus("Loading OTP runtime...", "loading");
