@@ -539,10 +539,14 @@ async function main() {
         ]),
     ];
 
-    // When stdin is not a terminal (piped or redirected), set it as finite
-    // so reads return EOF instead of blocking forever.
+    // When stdin is not a terminal (piped or redirected), read all piped
+    // data and set it as finite stdin so reads get the data then EOF.
     if (!process.stdin.isTTY) {
-        kernelWorker.setStdinData(pid, new Uint8Array(0));
+        const chunks: Buffer[] = [];
+        for await (const chunk of process.stdin) {
+            chunks.push(chunk);
+        }
+        kernelWorker.setStdinData(pid, new Uint8Array(Buffer.concat(chunks)));
     }
 
     // Spawn the process worker

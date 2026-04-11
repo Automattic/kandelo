@@ -704,13 +704,25 @@ cmd_test() {
                     failed=1
                 fi
                 ;;
+            nginx)
+                info "Running nginx test suite..."
+                if ! bash "$REPO_ROOT/scripts/run-nginx-tests.sh"; then
+                    failed=1
+                fi
+                ;;
+            sqlite)
+                info "Running SQLite test suite..."
+                if ! bash "$REPO_ROOT/scripts/run-sqlite-tests.sh"; then
+                    failed=1
+                fi
+                ;;
             all)
                 cmd_test cargo vitest libc posix sortix browser
                 return $?
                 ;;
             *)
                 err "Unknown test suite: $suite"
-                err "Available: cargo, vitest, libc, posix, sortix, browser, browser-all, mariadb, browser-mariadb, all"
+                err "Available: cargo, vitest, libc, posix, sortix, browser, browser-all, mariadb, browser-mariadb, nginx, sqlite, all"
                 exit 1
                 ;;
         esac
@@ -778,6 +790,8 @@ cmd_list() {
     echo "  ./run.sh test browser-all            Browser E2E tests (including slow)"
     echo "  ./run.sh test mariadb                MariaDB mysql-test suite (Node.js)"
     echo "  ./run.sh test browser-mariadb        MariaDB mysql-test suite (browser)"
+    echo "  ./run.sh test nginx                  nginx test suite (32 upstream tests)"
+    echo "  ./run.sh test sqlite                 SQLite test suite (17 SQL tests)"
     echo "  ./run.sh test all                    All suites including sortix + browser"
 }
 
