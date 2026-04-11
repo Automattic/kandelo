@@ -324,6 +324,10 @@ echo "==> CMake configuration complete. Starting build..."
 # Build mysqld
 make -j"$NPROC" mariadbd 2>&1 | tail -20
 
+# Build mysqltest client (mariadb-test target)
+echo "==> Building mysqltest..."
+make -j"$NPROC" mariadb-test 2>&1 | tail -20
+
 # Check if mariadbd was built (10.5+ renames mysqld → mariadbd)
 MYSQLD_BIN="$CROSS_BUILD_DIR/sql/mariadbd"
 if [ -f "$MYSQLD_BIN" ]; then
@@ -347,4 +351,36 @@ else
     echo "ERROR: mysqld not found after build" >&2
     echo "Check build log in $CROSS_BUILD_DIR for errors."
     exit 1
+fi
+
+# --- Install mysqltest ---
+MYSQLTEST_BIN="$CROSS_BUILD_DIR/client/mariadb-test"
+if [ -f "$MYSQLTEST_BIN" ]; then
+    echo "==> mysqltest built successfully!"
+    ls -lh "$MYSQLTEST_BIN"
+    cp "$MYSQLTEST_BIN" "$INSTALL_DIR/bin/mysqltest.wasm"
+else
+    echo "WARNING: mysqltest not found at $MYSQLTEST_BIN (skipping)" >&2
+fi
+
+# --- Copy mysql-test suite data ---
+# MariaDB 10.5 layout: main test suite is in mysql-test/main/ (not t/ and r/).
+# The .test and .result files are both in main/.
+MYSQL_TEST_SRC="$SRC_DIR/mysql-test"
+if [ -d "$MYSQL_TEST_SRC" ]; then
+    echo "==> Copying mysql-test suite data..."
+    MYSQL_TEST_DST="$INSTALL_DIR/mysql-test"
+    mkdir -p "$MYSQL_TEST_DST"
+    for subdir in main include std_data suite; do
+        if [ -d "$MYSQL_TEST_SRC/$subdir" ]; then
+            cp -R "$MYSQL_TEST_SRC/$subdir" "$MYSQL_TEST_DST/"
+        fi
+    done
+    # Copy top-level helper files needed by mysqltest
+    for f in unstable-tests suite.pm; do
+        [ -f "$MYSQL_TEST_SRC/$f" ] && cp "$MYSQL_TEST_SRC/$f" "$MYSQL_TEST_DST/"
+    done
+    echo "==> mysql-test data copied to $MYSQL_TEST_DST"
+else
+    echo "WARNING: mysql-test directory not found in source tree" >&2
 fi
