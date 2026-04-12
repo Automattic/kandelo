@@ -47,7 +47,6 @@ BASIC_EXPECTED_FAIL=(
     "pthread/pthread_attr_setinheritsched"                # priority scheduling not supported
     "pthread/pthread_mutexattr_setpshared"                # PSHARED not supported
     "pthread/pthread_setcancelstate"                      # cancellation not supported
-    "strings/ffsll"                                       # wasm32 test bug (long vs long long)
 )
 
 LIMITS_EXPECTED_FAIL=()
@@ -129,6 +128,7 @@ LINK_FLAGS=(
     -Wl,--shared-memory
     -Wl,--max-memory=1073741824
     -Wl,--allow-undefined
+    -Wl,--allow-multiple-definition
     -Wl,--table-base=3
     -Wl,--export-table
     -Wl,--growable-table
@@ -152,6 +152,7 @@ SO_CFLAGS=(
 )
 SO_LINK_FLAGS=(
     -nostdlib
+    -Wl,-mwasm64
     -Wl,--experimental-pic
     -Wl,--shared
     -Wl,--shared-memory

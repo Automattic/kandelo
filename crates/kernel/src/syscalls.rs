@@ -3120,7 +3120,7 @@ pub fn sys_sigtimedwait(
     host: &mut dyn HostIO,
     mask: u64,
     timeout_ms: i32,
-) -> Result<(u32, i32, i32), Errno> {
+) -> Result<(u32, i64, i32), Errno> {
     use wasm_posix_shared::signal::NSIG;
 
     // Check if any signal in mask is already pending
@@ -7809,8 +7809,8 @@ mod tests {
             Err(Errno::ENOENT)
         }
         fn host_fcntl_lock(&mut self, _path: &[u8], _pid: u32, cmd: u32, _lock_type: u32, _start: i64, _len: i64, result_buf: &mut [u8]) -> Result<(), Errno> {
-            // For F_GETLK (12): write F_UNLCK (2) to indicate no conflict
-            if cmd == 12 && result_buf.len() >= 4 {
+            // For F_GETLK (5): write F_UNLCK (2) to indicate no conflict
+            if cmd == 5 && result_buf.len() >= 4 {
                 result_buf[0..4].copy_from_slice(&2u32.to_le_bytes()); // F_UNLCK
             }
             Ok(())

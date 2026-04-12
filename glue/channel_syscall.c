@@ -24,6 +24,7 @@
  */
 
 #include <stdint.h>
+#include <signal.h>
 
 /* musl's errno is a macro expanding to (*__errno_location()). We only
  * need to set it on error, so we reference the function directly to
@@ -52,13 +53,13 @@ int *__errno_location(void);
 #define CH_SIG_SIGNUM   (CH_SIG_BASE)
 #define CH_SIG_HANDLER  (CH_SIG_BASE + 4)
 #define CH_SIG_FLAGS    (CH_SIG_BASE + 8)
-#define CH_SIG_SI_VALUE (CH_SIG_BASE + 12)
-#define CH_SIG_OLD_MASK (CH_SIG_BASE + 16)
-#define CH_SIG_SI_CODE  (CH_SIG_BASE + 24)
-#define CH_SIG_SI_PID   (CH_SIG_BASE + 28)
-#define CH_SIG_SI_UID   (CH_SIG_BASE + 32)
-#define CH_SIG_ALT_SP   (CH_SIG_BASE + 36)
-#define CH_SIG_ALT_SIZE (CH_SIG_BASE + 44)
+#define CH_SIG_SI_VALUE (CH_SIG_BASE + 12) /* i64: LP64 union sigval (8 bytes) */
+#define CH_SIG_OLD_MASK (CH_SIG_BASE + 20) /* u64: saved blocked mask */
+#define CH_SIG_SI_CODE  (CH_SIG_BASE + 28)
+#define CH_SIG_SI_PID   (CH_SIG_BASE + 32)
+#define CH_SIG_SI_UID   (CH_SIG_BASE + 36)
+#define CH_SIG_ALT_SP   (CH_SIG_BASE + 40) /* u64: alt stack sp */
+#define CH_SIG_ALT_SIZE (CH_SIG_BASE + 48) /* u64: alt stack size */
 
 #define SA_SIGINFO 4
 #define SYS_SIGPROCMASK 37
@@ -199,24 +200,23 @@ static void __deliver_pending_signal(uintptr_t base)
      * handler_index to a function pointer and calling it uses
      * call_indirect, which looks up the indirect function table. */
     if (flags & SA_SIGINFO) {
-        /* Build a minimal siginfo_t on the stack for SA_SIGINFO handlers */
-        int32_t si_value_int = *(int32_t *)(base + CH_SIG_SI_VALUE);
-        int32_t si_code  = *(int32_t *)(base + CH_SIG_SI_CODE);
-        int32_t si_pid   = *(int32_t *)(base + CH_SIG_SI_PID);
-        int32_t si_uid   = *(int32_t *)(base + CH_SIG_SI_UID);
-        /* siginfo_t layout (128 bytes):
-         *   [0]  si_signo, [4] si_errno, [8] si_code,
-         *   [12] si_pid, [16] si_uid, [20] si_value.sival_int */
-        char siginfo_buf[128];
-        __builtin_memset(siginfo_buf, 0, sizeof(siginfo_buf));
-        *(int *)(siginfo_buf + 0) = (int)signum;       /* si_signo */
-        *(int *)(siginfo_buf + 8) = si_code;            /* si_code */
-        *(int *)(siginfo_buf + 12) = si_pid;            /* si_pid */
-        *(int *)(siginfo_buf + 16) = si_uid;            /* si_uid */
-        *(int *)(siginfo_buf + 20) = si_value_int;      /* si_value.sival_int */
+        /* Build a minimal siginfo_t on the stack for SA_SIGINFO handlers.
+         * Use the actual siginfo_t struct to get correct field offsets
+         * (LP64 has 4 bytes padding after si_code before the union). */
+        int64_t ch_si_value = *(int64_t *)(base + CH_SIG_SI_VALUE);
+        int32_t ch_si_code  = *(int32_t *)(base + CH_SIG_SI_CODE);
+        int32_t ch_si_pid   = *(int32_t *)(base + CH_SIG_SI_PID);
+        int32_t ch_si_uid   = *(int32_t *)(base + CH_SIG_SI_UID);
+        siginfo_t si;
+        __builtin_memset(&si, 0, sizeof(si));
+        si.si_signo = (int)signum;
+        si.si_code = ch_si_code;
+        si.si_pid = ch_si_pid;
+        si.si_uid = ch_si_uid;
+        si.si_value.sival_ptr = (void *)(uintptr_t)ch_si_value;
         void (*sa)(int, void *, void *) =
             (void (*)(int, void *, void *))(uintptr_t)handler;
-        sa((int)signum, (void *)siginfo_buf, (void *)0);
+        sa((int)signum, (void *)&si, (void *)0);
     } else {
         void (*sa)(int) = (void (*)(int))(uintptr_t)handler;
         sa((int)signum);

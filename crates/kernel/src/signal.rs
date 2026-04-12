@@ -89,7 +89,8 @@ fn should_discard_pending(signum: u32, handler: &SignalHandler) -> bool {
 #[derive(Debug, Clone, Copy)]
 pub struct RtSigEntry {
     pub signum: u32,
-    pub si_value: i32,
+    /// Signal value (union sigval) — 8 bytes on LP64 to hold sival_ptr.
+    pub si_value: i64,
     /// SI_QUEUE (-1) if sent via sigqueue(), SI_USER (0) if via kill()/raise().
     pub si_code: i32,
 }
@@ -183,11 +184,11 @@ impl SignalState {
     }
 
     /// Mark a signal as pending with an si_value (for sigqueue — SI_QUEUE).
-    pub fn raise_with_value(&mut self, signum: u32, si_value: i32) -> bool {
+    pub fn raise_with_value(&mut self, signum: u32, si_value: i64) -> bool {
         self.raise_internal(signum, si_value, -1) // SI_QUEUE
     }
 
-    fn raise_internal(&mut self, signum: u32, si_value: i32, si_code: i32) -> bool {
+    fn raise_internal(&mut self, signum: u32, si_value: i64, si_code: i32) -> bool {
         if signum == 0 || signum >= 65 {
             return false;
         }
@@ -243,9 +244,9 @@ impl SignalState {
     /// For RT signals, removes one queued instance; clears pending bit only when
     /// no more instances remain. For standard signals, clears the pending bit.
     /// Returns (si_value, si_code) of the consumed signal instance.
-    pub fn consume_one(&mut self, signum: u32) -> (i32, i32) {
+    pub fn consume_one(&mut self, signum: u32) -> (i64, i32) {
         if signum == 0 || signum >= NSIG { return (0, 0); }
-        let (mut si_value, mut si_code) = (0i32, 0i32);
+        let (mut si_value, mut si_code) = (0i64, 0i32);
         if let Some(pos) = self.rt_queue.iter().position(|e| e.signum == signum) {
             si_value = self.rt_queue[pos].si_value;
             si_code = self.rt_queue[pos].si_code;
@@ -289,14 +290,14 @@ impl SignalState {
     /// RT signals (32-63) are dequeued from the queue; the pending bit is
     /// only cleared when no more instances of that signal remain in the queue.
     /// Returns (signum, si_value, si_code). si_value and si_code are 0 for standard signals.
-    pub fn dequeue(&mut self) -> Option<(u32, i32, i32)> {
+    pub fn dequeue(&mut self) -> Option<(u32, i64, i32)> {
         let deliverable = self.pending & !self.blocked;
         if deliverable == 0 {
             return None;
         }
         // trailing_zeros gives 0-based bit position; signal number = bit + 1
         let signum = deliverable.trailing_zeros() + 1;
-        let (mut si_value, mut si_code) = (0i32, 0i32);
+        let (mut si_value, mut si_code) = (0i64, 0i32);
         if signum >= SIGRTMIN {
             // RT signal: dequeue one instance from the queue
             if let Some(pos) = self.rt_queue.iter().position(|e| e.signum == signum) {

@@ -161,13 +161,13 @@ const CH_SIG_BASE = CH_DATA + CH_DATA_SIZE - 56;
 const CH_SIG_SIGNUM = CH_SIG_BASE;         // u32: signal number (0 = none)
 const CH_SIG_HANDLER = CH_SIG_BASE + 4;    // u32: function table index
 const CH_SIG_FLAGS = CH_SIG_BASE + 8;      // u32: sa_flags
-const CH_SIG_SI_VALUE = CH_SIG_BASE + 12;  // i32: si_value.sival_int
-const CH_SIG_OLD_MASK = CH_SIG_BASE + 16;  // u64: saved blocked mask
-const CH_SIG_SI_CODE = CH_SIG_BASE + 24;   // i32: si_code
-const CH_SIG_SI_PID = CH_SIG_BASE + 28;    // u32: si_pid
-const CH_SIG_SI_UID = CH_SIG_BASE + 32;    // u32: si_uid
-const CH_SIG_ALT_SP = CH_SIG_BASE + 36;    // u64: alt stack sp (0 = no switch) — 8 bytes on wasm64
-const CH_SIG_ALT_SIZE = CH_SIG_BASE + 44;  // u64: alt stack size — 8 bytes on wasm64
+const CH_SIG_SI_VALUE = CH_SIG_BASE + 12;  // i64: si_value (LP64 union sigval, 8 bytes)
+const CH_SIG_OLD_MASK = CH_SIG_BASE + 20;  // u64: saved blocked mask
+const CH_SIG_SI_CODE = CH_SIG_BASE + 28;   // i32: si_code
+const CH_SIG_SI_PID = CH_SIG_BASE + 32;    // u32: si_pid
+const CH_SIG_SI_UID = CH_SIG_BASE + 36;    // u32: si_uid
+const CH_SIG_ALT_SP = CH_SIG_BASE + 40;    // u64: alt stack sp (0 = no switch) — 8 bytes on wasm64
+const CH_SIG_ALT_SIZE = CH_SIG_BASE + 48;  // u64: alt stack size — 8 bytes on wasm64
 
 /** Scratch area layout in kernel Memory for kernel_handle_channel.
  * Same as channel layout but used as the kernel-side buffer. */
@@ -502,9 +502,9 @@ const SYSCALL_ARGS: Record<number, ArgDesc[]> = {
   // SysV IPC
   338: [{ argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 } }],  // MSGRCV: msgp ({mtype, mtext})
   339: [{ argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 } }],   // MSGSND: msgp ({mtype, mtext})
-  340: [{ argIndex: 2, direction: "inout", size: { type: "fixed", size: 96 } }], // MSGCTL: msqid_ds buf
+  340: [{ argIndex: 2, direction: "inout", size: { type: "fixed", size: 120 } }], // MSGCTL: msqid_ds buf (LP64: 120 bytes)
   342: [{ argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 } }],   // SEMOP: sembuf[] (nsops * 6)
-  347: [{ argIndex: 2, direction: "inout", size: { type: "fixed", size: 88 } }], // SHMCTL: shmid_ds buf
+  347: [{ argIndex: 2, direction: "inout", size: { type: "fixed", size: 112 } }], // SHMCTL: shmid_ds buf (LP64: 112 bytes)
 };
 
 // Also need a way to compute poll size: nfds * sizeof(struct pollfd) = nfds * 8
@@ -1956,13 +1956,13 @@ export class CentralizedKernelWorker {
     const sigOutOffset = this.scratchOffset + CH_SIG_BASE;
     const sigResult = dequeueSignal(channel.pid, BigInt(sigOutOffset));
     if (sigResult > 0) {
-      // Copy 52 bytes of signal delivery info from kernel scratch to process channel
-      // Layout: signum(4) + handler(4) + flags(4) + si_value(4) + old_mask(8)
-      //       + si_code(4) + si_pid(4) + si_uid(4) + alt_sp(8) + alt_size(8) = 52 bytes
+      // Copy 56 bytes of signal delivery info from kernel scratch to process channel
+      // Layout: signum(4) + handler(4) + flags(4) + si_value(8) + old_mask(8)
+      //       + si_code(4) + si_pid(4) + si_uid(4) + alt_sp(8) + alt_size(8) = 56 bytes
       const kernelMem = this.getKernelMem();
       const processMem = new Uint8Array(channel.memory.buffer);
       processMem.set(
-        kernelMem.subarray(sigOutOffset, sigOutOffset + 52),
+        kernelMem.subarray(sigOutOffset, sigOutOffset + 56),
         channel.channelOffset + CH_SIG_BASE,
       );
     } else {
@@ -5601,7 +5601,8 @@ export class CentralizedKernelWorker {
     const dataStart = this.scratchOffset + CH_DATA;
 
     if (cmd === IPC_STAT && arg !== 0) {
-      // arg is an output pointer to semid_ds (72 bytes)
+      // arg is an output pointer to semid_ds (LP64: 88 bytes)
+      const SEMID_DS_SIZE = 88;
       kernelView.setUint32(CH_SYSCALL, SYS_SEMCTL, true);
       kernelView.setBigInt64(CH_ARGS + 0 * CH_ARG_SIZE, BigInt(semid), true);
       kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(semnum), true);
@@ -5609,16 +5610,16 @@ export class CentralizedKernelWorker {
       kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, BigInt(dataStart), true); // redirect to scratch
       kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, 0n, true);
       kernelView.setBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, 0n, true);
-      kernelMem.fill(0, dataStart, dataStart + 72);
+      kernelMem.fill(0, dataStart, dataStart + SEMID_DS_SIZE);
 
       this.currentHandlePid = channel.pid;
       try { handleChannel(BigInt(this.scratchOffset), channel.pid); } finally { this.currentHandlePid = 0; }
 
       const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
       if (retVal >= 0) {
-        // Copy 72-byte struct back to process memory
+        // Copy struct back to process memory
         const processMem = new Uint8Array(channel.memory.buffer);
-        processMem.set(kernelMem.subarray(dataStart, dataStart + 72), arg);
+        processMem.set(kernelMem.subarray(dataStart, dataStart + SEMID_DS_SIZE), arg);
       }
       this.completeChannelRaw(channel, retVal, retVal < 0 ? -retVal : 0);
       this.relistenChannel(channel);

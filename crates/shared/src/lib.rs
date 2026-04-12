@@ -477,9 +477,11 @@ pub mod fcntl_cmd {
     pub const F_SETFD: u32 = 2;
     pub const F_GETFL: u32 = 3;
     pub const F_SETFL: u32 = 4;
-    pub const F_GETLK: u32 = 12;
-    pub const F_SETLK: u32 = 13;
-    pub const F_SETLKW: u32 = 14;
+    // LP64: native 64-bit offsets, use POSIX values (5/6/7)
+    // ILP32 used 64-bit variants (12/13/14) since long was 32-bit
+    pub const F_GETLK: u32 = 5;
+    pub const F_SETLK: u32 = 6;
+    pub const F_SETLKW: u32 = 7;
     pub const F_SETOWN: u32 = 8;
     pub const F_GETOWN: u32 = 9;
     pub const F_DUPFD_CLOEXEC: u32 = 1030;
@@ -547,9 +549,10 @@ pub mod socket {
     pub const SHUT_RDWR: u32 = 2;
     pub const SO_BROADCAST: u32 = 6;
     pub const SO_LINGER: u32 = 13;
-    // time64 values used by musl on wasm32 (where __LONG_MAX == 0x7fffffff)
-    pub const SO_RCVTIMEO: u32 = 66;
-    pub const SO_SNDTIMEO: u32 = 67;
+    // LP64 values (wasm64: __LONG_MAX == 0x7fffffffffffffff)
+    // ILP32 used time64 variants (66/67); LP64 uses native (20/21)
+    pub const SO_RCVTIMEO: u32 = 20;
+    pub const SO_SNDTIMEO: u32 = 21;
     pub const IPPROTO_TCP: u32 = 6;
     pub const TCP_NODELAY: u32 = 1;
     pub const MSG_OOB: u32 = 1;

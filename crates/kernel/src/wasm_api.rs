@@ -101,6 +101,11 @@ unsafe extern "C" {
 /// Size of a pointer/size_t in bytes (8 on wasm64/aarch64).
 const PTR_SIZE: usize = core::mem::size_of::<usize>();
 
+/// Size of C `long` / `unsigned long` in bytes.
+/// On LP64 (wasm64, aarch64): 8 bytes. On ILP32 (wasm32): 4 bytes.
+/// Same as PTR_SIZE on all our targets.
+const LONG_SIZE: usize = PTR_SIZE;
+
 /// Size of an iovec struct: iov_base (ptr) + iov_len (size_t).
 const IOV_SIZE: usize = 2 * PTR_SIZE;
 
@@ -1263,25 +1268,25 @@ pub extern "C" fn kernel_dequeue_signal(pid: u32, out_ptr: *mut u8) -> i32 {
                     proc.alt_stack_flags |= SS_ONSTACK;
                 }
                 // Write to output buffer (matches glue signal area layout):
-                //   [0..4] signum (u32), [4..8] handler_idx (u32),
-                //   [8..12] flags (u32), [12..16] si_value (i32),
-                //   [16..24] old_mask (u64),
-                //   [24..28] si_code (i32), [28..32] si_pid (u32), [32..36] si_uid (u32),
-                //   [36..44] alt_sp (usize, 8B on wasm64), [44..52] alt_size (usize, 8B)
-                let buf = unsafe { slice::from_raw_parts_mut(out_ptr, 52) };
+                //   [0..4]   signum (u32), [4..8] handler_idx (u32),
+                //   [8..12]  flags (u32), [12..20] si_value (i64, LP64 union sigval),
+                //   [20..28] old_mask (u64),
+                //   [28..32] si_code (i32), [32..36] si_pid (u32), [36..40] si_uid (u32),
+                //   [40..48] alt_sp (usize, 8B), [48..56] alt_size (usize, 8B)
+                let buf = unsafe { slice::from_raw_parts_mut(out_ptr, 56) };
                 buf[0..4].copy_from_slice(&signum.to_le_bytes());
                 buf[4..8].copy_from_slice(&(idx as u32).to_le_bytes());
                 buf[8..12].copy_from_slice(&action.flags.to_le_bytes());
-                buf[12..16].copy_from_slice(&si_value.to_le_bytes());
-                buf[16..24].copy_from_slice(&old_mask.to_le_bytes());
-                buf[24..28].copy_from_slice(&si_code.to_le_bytes());
-                buf[28..32].copy_from_slice(&proc.pid.to_le_bytes());
-                buf[32..36].copy_from_slice(&proc.uid.to_le_bytes());
+                buf[12..20].copy_from_slice(&si_value.to_le_bytes());
+                buf[20..28].copy_from_slice(&old_mask.to_le_bytes());
+                buf[28..32].copy_from_slice(&si_code.to_le_bytes());
+                buf[32..36].copy_from_slice(&proc.pid.to_le_bytes());
+                buf[36..40].copy_from_slice(&proc.uid.to_le_bytes());
                 if switch_to_alt_stack {
-                    buf[36..36 + PTR_SIZE].copy_from_slice(&proc.alt_stack_sp.to_le_bytes());
-                    buf[44..44 + PTR_SIZE].copy_from_slice(&proc.alt_stack_size.to_le_bytes());
+                    buf[40..40 + PTR_SIZE].copy_from_slice(&proc.alt_stack_sp.to_le_bytes());
+                    buf[48..48 + PTR_SIZE].copy_from_slice(&proc.alt_stack_size.to_le_bytes());
                 } else {
-                    buf[36..52].fill(0);
+                    buf[40..56].fill(0);
                 }
                 return signum as i32;
             }
@@ -1567,7 +1572,8 @@ fn dispatch_channel_syscall_inner(nr: u32, a1: i64, a2: i64, a3: i64, a4: i64, a
         }
         3 => kernel_read(a1 as i32, a2 as *mut u8, a3 as u32), // SYS_READ: (fd, buf, count)
         4 => kernel_write(a1 as i32, a2 as *const u8, a3 as u32), // SYS_WRITE: (fd, buf, count)
-        5 => kernel_lseek(a1 as i32, a2 as u32, a3 as i32, a4 as u32) as i32, // SYS_LSEEK: (fd, off_lo, off_hi, whence)
+        // SYS_LSEEK: LP64 sends (fd, offset, whence) — offset is full 64-bit in a2
+        5 => kernel_lseek(a1 as i32, a2 as u32, (a2 >> 32) as i32, a3 as u32) as i32,
         119 => {  // SYS__LLSEEK: (fd, off_hi, off_lo, result_ptr, whence)
             let result = kernel_lseek(a1 as i32, a3 as u32, a2 as i32, a5 as u32);
             if result < 0 {
@@ -1585,8 +1591,9 @@ fn dispatch_channel_syscall_inner(nr: u32, a1: i64, a2: i64, a3: i64, a4: i64, a
             }
         }
         6 => kernel_fstat(a1 as i32, a2 as *mut u8),      // SYS_FSTAT: (fd, stat_ptr)
-        64 => kernel_pread(a1 as i32, a2 as *mut u8, a3 as u32, a4 as u32, a5 as i32), // SYS_PREAD: (fd, buf, count, off_lo, off_hi)
-        65 => kernel_pwrite(a1 as i32, a2 as *const u8, a3 as u32, a4 as u32, a5 as i32), // SYS_PWRITE
+        // SYS_PREAD/PWRITE: LP64 sends (fd, buf, count, offset) — offset is full 64-bit in a4
+        64 => kernel_pread(a1 as i32, a2 as *mut u8, a3 as u32, a4 as u32, (a4 >> 32) as i32),
+        65 => kernel_pwrite(a1 as i32, a2 as *const u8, a3 as u32, a4 as u32, (a4 >> 32) as i32),
 
         // FD operations
         7 => kernel_dup(a1 as i32),                       // SYS_DUP
@@ -1787,10 +1794,10 @@ fn dispatch_channel_syscall_inner(nr: u32, a1: i64, a2: i64, a3: i64, a4: i64, a
             let result = match syscalls::sys_sigtimedwait(proc, &mut host, mask, timeout_ms) {
                 Ok((sig, si_value, si_code)) => {
                     // Write siginfo_t if pointer is non-null
+                    // LP64 layout: si_signo(0), si_errno(4), si_code(8),
+                    //   [4B pad], si_pid(16), si_uid(20), si_value(24, 8B)
                     if a2 != 0 {
                         let p = a2 as usize as *mut u8;
-                        // siginfo_t layout: si_signo(0), si_errno(4), si_code(8),
-                        //   si_pid(12), si_uid(16), si_value(20)
                         let sig_bytes = (sig as i32).to_le_bytes();
                         let code_bytes = si_code.to_le_bytes();
                         let pid_bytes = proc.pid.to_le_bytes();
@@ -1799,9 +1806,9 @@ fn dispatch_channel_syscall_inner(nr: u32, a1: i64, a2: i64, a3: i64, a4: i64, a
                         unsafe {
                             for i in 0..4 { *p.add(i) = sig_bytes[i]; }
                             for i in 0..4 { *p.add(8 + i) = code_bytes[i]; }
-                            for i in 0..4 { *p.add(12 + i) = pid_bytes[i]; }
-                            for i in 0..4 { *p.add(16 + i) = uid_bytes[i]; }
-                            for i in 0..4 { *p.add(20 + i) = val_bytes[i]; }
+                            for i in 0..4 { *p.add(16 + i) = pid_bytes[i]; }
+                            for i in 0..4 { *p.add(20 + i) = uid_bytes[i]; }
+                            for i in 0..8 { *p.add(24 + i) = val_bytes[i]; }
                         }
                     }
                     sig as i32
@@ -1895,12 +1902,13 @@ fn dispatch_channel_syscall_inner(nr: u32, a1: i64, a2: i64, a3: i64, a4: i64, a
         72 => kernel_ioctl(a1 as i32, a2 as u32, a3 as *mut u8, 256), // SYS_IOCTL
 
         // File system
-        79 => kernel_ftruncate(a1 as i32, a2 as u32, a3 as u32), // SYS_FTRUNCATE
+        // SYS_FTRUNCATE: LP64 sends (fd, length) — length is full 64-bit in a2
+        79 => kernel_ftruncate(a1 as i32, a2 as u32, (a2 >> 32) as u32),
         80 => kernel_fsync(a1 as i32),                    // SYS_FSYNC
-        85 => { // SYS_TRUNCATE: (path, len_lo, len_hi)
+        85 => { // SYS_TRUNCATE: LP64 sends (path, length) — length is full 64-bit in a2
             let p = a1 as *const u8;
             let plen = unsafe { cstr_len(p) };
-            kernel_truncate(p, plen, a2 as u32, a3 as u32)
+            kernel_truncate(p, plen, a2 as u32, (a2 >> 32) as u32)
         }
         86 => kernel_fdatasync(a1 as i32),                // SYS_FDATASYNC
         87 => kernel_fchmod(a1 as i32, a2 as u32),        // SYS_FCHMOD
@@ -2326,12 +2334,13 @@ fn dispatch_channel_syscall_inner(nr: u32, a1: i64, a2: i64, a3: i64, a4: i64, a
         // SYS_RT_SIGQUEUEINFO: send signal with si_value (sigqueue)
         // a1=pid, a2=sig, a3=siginfo_ptr (copied to CH_DATA by host)
         205 => {
-            // Extract si_value.sival_int from siginfo_t at offset 20
-            // Layout: si_signo(4), si_errno(4), si_code(4), si_pid(4), si_uid(4), si_value(4)
+            // LP64 siginfo_t layout: si_signo(4), si_errno(4), si_code(4),
+            //   [4B padding], union{si_pid(4)+si_uid(4)+si_value(8B)} at offset 16
+            // si_value (union sigval) is at offset 24, size 8
             let si_value = if a3 != 0 {
                 let info_ptr = a3 as *const u8;
-                let info = unsafe { slice::from_raw_parts(info_ptr, 24) };
-                i32::from_le_bytes(info[20..24].try_into().unwrap())
+                let info = unsafe { slice::from_raw_parts(info_ptr, 32) };
+                i64::from_le_bytes(info[24..32].try_into().unwrap())
             } else {
                 0
             };
@@ -2596,15 +2605,15 @@ fn dispatch_channel_syscall_inner(nr: u32, a1: i64, a2: i64, a3: i64, a4: i64, a
             let new = a4 as *const u8;
             kernel_renameat(a1 as i32, old, unsafe { cstr_len(old) }, a3 as i32, new, unsafe { cstr_len(new) })
         }
-        308 => { // SYS_FALLOCATE: (fd, mode, offset_lo, offset_hi, len_lo, len_hi)
+        308 => { // SYS_FALLOCATE: LP64 sends (fd, mode, offset, len) — no lo/hi split
             let mode = a2 as u32;
             if mode != 0 {
                 -(Errno::EOPNOTSUPP as i32)
             } else {
                 let (_gkl, proc) = unsafe { get_process() };
                 let mut host = WasmHostIO;
-                let offset = ((a4 as u32 as u64) << 32 | (a3 as u32 as u64)) as i64;
-                let len = ((a6 as u32 as u64) << 32 | (a5 as u32 as u64)) as i64;
+                let offset = a3 as i64;
+                let len = a4 as i64;
                 match syscalls::sys_fallocate(proc, &mut host, a1 as i32, offset, len) {
                     Ok(()) => 0,
                     Err(e) => -(e as i32),
@@ -2769,9 +2778,10 @@ fn dispatch_channel_syscall_inner(nr: u32, a1: i64, a2: i64, a3: i64, a4: i64, a
                     Err(e) => -(e as i32),
                 }
             } else {
+                // LP64 sigevent layout: union sigval (8B) + int signo (4B @offset 8) + int notify (4B @offset 12)
                 let sev_ptr = a2 as *const u8;
-                let signo = unsafe { i32::from_le_bytes([*sev_ptr.add(4), *sev_ptr.add(5), *sev_ptr.add(6), *sev_ptr.add(7)]) } as u32;
-                let notify = unsafe { i32::from_le_bytes([*sev_ptr.add(8), *sev_ptr.add(9), *sev_ptr.add(10), *sev_ptr.add(11)]) } as u32;
+                let signo = unsafe { i32::from_le_bytes([*sev_ptr.add(8), *sev_ptr.add(9), *sev_ptr.add(10), *sev_ptr.add(11)]) } as u32;
+                let notify = unsafe { i32::from_le_bytes([*sev_ptr.add(12), *sev_ptr.add(13), *sev_ptr.add(14), *sev_ptr.add(15)]) } as u32;
                 match table.mq_notify(a1 as u32, pid, Some(notify), signo) {
                     Ok(()) => 0,
                     Err(e) => -(e as i32),
@@ -2879,10 +2889,111 @@ pub extern "C" fn kernel_ipc_shm_write_chunk(shmid: i32, offset: u32, data_ptr: 
 }
 
 // ---------------------------------------------------------------------------
-// SysV IPC struct serialization helpers (wasm32 layout)
+// SysV IPC struct serialization helpers (LP64-aware: uses LONG_SIZE/PTR_SIZE)
+//
+// musl struct layouts from arch/generic/bits/{ipc,msg,sem,shm}.h:
+//
+// struct ipc_perm:                                   ILP32 (36B)   LP64 (48B)
+//   key_t key                    4B                  off 0         off 0
+//   uid_t uid                    4B                  off 4         off 4
+//   gid_t gid                    4B                  off 8         off 8
+//   uid_t cuid                   4B                  off 12        off 12
+//   gid_t cgid                   4B                  off 16        off 16
+//   mode_t mode                  4B                  off 20        off 20
+//   int seq                      4B                  off 24        off 24
+//   [padding to align long]                          -             off 28 (4B)
+//   long __pad1                  LONG_SIZE           off 28        off 32
+//   long __pad2                  LONG_SIZE           off 28+L      off 32+L
+//   Total:                                           36            48
+//
+// IPC_PERM_SIZE captures this dynamically.
 // ---------------------------------------------------------------------------
 
-/// Write struct ipc_perm to kernel memory (36 bytes).
+/// Size of struct ipc_perm: 7 * i32 fields (28B) + align to LONG_SIZE + 2 * LONG_SIZE.
+const IPC_PERM_SIZE: usize = {
+    let fields_end = 28; // 7 x 4-byte fields
+    let aligned = (fields_end + LONG_SIZE - 1) & !(LONG_SIZE - 1);
+    aligned + 2 * LONG_SIZE
+};
+
+/// Size of struct msqid_ds.
+/// Layout: ipc_perm + pad_to_8 + 3*time_t(8) + 3*unsigned_long + 2*pid_t(4) +
+///         pad_to_long + 2*unsigned_long + tail padding.
+const MSQID_DS_SIZE: usize = {
+    // Align to 8 for time_t (long long) after ipc_perm
+    let times_start = (IPC_PERM_SIZE + 7) & !7;
+    let after_times = times_start + 3 * 8;
+    // 3 unsigned long fields (cbytes, qnum, qbytes)
+    let after_ulongs = after_times + 3 * LONG_SIZE;
+    // 2 pid_t fields (lspid, lrpid) = 8 bytes
+    let after_pids = after_ulongs + 2 * 4;
+    // Align to LONG_SIZE for unsigned long __unused[2]
+    let aligned = (after_pids + LONG_SIZE - 1) & !(LONG_SIZE - 1);
+    // 2 unsigned long __unused
+    let end = aligned + 2 * LONG_SIZE;
+    // Struct alignment = max(8, LONG_SIZE) = 8; round up
+    (end + 7) & !7
+};
+
+/// Size of struct semid_ds.
+/// Layout: ipc_perm + pad_to_8 + 2*time_t(8) + {u16 nsems + pad to LONG} + 2*long.
+const SEMID_DS_SIZE: usize = {
+    // Align to 8 for time_t after ipc_perm
+    let times_start = (IPC_PERM_SIZE + 7) & !7;
+    let after_times = times_start + 2 * 8;
+    // u16 sem_nsems + padding to LONG_SIZE
+    let after_nsems = after_times + LONG_SIZE; // u16 + pad fills one LONG_SIZE slot
+    // 2 long __unused
+    let end = after_nsems + 2 * LONG_SIZE;
+    (end + 7) & !7
+};
+
+/// Size of struct shmid_ds.
+/// Layout: ipc_perm + size_t + 3*time_t + 2*pid_t + pad + 3*unsigned_long.
+const SHMID_DS_SIZE: usize = {
+    // size_t shm_segsz (PTR_SIZE, aligned to PTR_SIZE after ipc_perm)
+    let segsz_start = (IPC_PERM_SIZE + PTR_SIZE - 1) & !(PTR_SIZE - 1);
+    let after_segsz = segsz_start + PTR_SIZE;
+    // 3 time_t fields (already 8-byte aligned because size_t is >= 4)
+    let times_start = (after_segsz + 7) & !7;
+    let after_times = times_start + 3 * 8;
+    // 2 pid_t (4B each) = 8B
+    let after_pids = after_times + 2 * 4;
+    // Align to LONG_SIZE for unsigned long shm_nattch
+    let aligned = (after_pids + LONG_SIZE - 1) & !(LONG_SIZE - 1);
+    // shm_nattch + __pad1 + __pad2 = 3 unsigned long
+    let end = aligned + 3 * LONG_SIZE;
+    (end + 7) & !7
+};
+
+// Static assertions for LP64 struct sizes (PTR_SIZE=8, LONG_SIZE=8).
+// On aarch64 (native tests) and wasm64, these must match musl's layouts.
+#[cfg(target_pointer_width = "64")]
+const _: () = {
+    assert!(IPC_PERM_SIZE == 48, "ipc_perm LP64 size mismatch");
+    assert!(MSQID_DS_SIZE == 120, "msqid_ds LP64 size mismatch");
+    assert!(SEMID_DS_SIZE == 88, "semid_ds LP64 size mismatch");
+    assert!(SHMID_DS_SIZE == 112, "shmid_ds LP64 size mismatch");
+};
+
+// Static assertions for ILP32 struct sizes (PTR_SIZE=4, LONG_SIZE=4).
+#[cfg(target_pointer_width = "32")]
+const _: () = {
+    assert!(IPC_PERM_SIZE == 36, "ipc_perm ILP32 size mismatch");
+    assert!(MSQID_DS_SIZE == 96, "msqid_ds ILP32 size mismatch");
+    assert!(SEMID_DS_SIZE == 72, "semid_ds ILP32 size mismatch");
+    assert!(SHMID_DS_SIZE == 88, "shmid_ds ILP32 size mismatch");
+};
+
+/// Write struct ipc_perm to kernel memory (IPC_PERM_SIZE bytes).
+///
+/// Layout (LP64 with LONG_SIZE=8):
+///   0: key(4) 4: uid(4) 8: gid(4) 12: cuid(4) 16: cgid(4) 20: mode(4)
+///   24: seq(4) 28: pad(4) 32: __pad1(8) 40: __pad2(8)  => 48 bytes
+///
+/// Layout (ILP32 with LONG_SIZE=4):
+///   0: key(4) 4: uid(4) 8: gid(4) 12: cuid(4) 16: cgid(4) 20: mode(4)
+///   24: seq(4) 28: __pad1(4) 32: __pad2(4)  => 36 bytes
 unsafe fn write_ipc_perm(out: *mut u8, key: i32, uid: u32, gid: u32, cuid: u32, cgid: u32, mode: u32, seq: i32) {
     let write_i32 = |ptr: *mut u8, off: usize, val: i32| {
         let bytes = val.to_le_bytes();
@@ -2899,76 +3010,136 @@ unsafe fn write_ipc_perm(out: *mut u8, key: i32, uid: u32, gid: u32, cuid: u32, 
     write_u32(out, 16, cgid);
     write_u32(out, 20, mode);
     write_i32(out, 24, seq);
-    // Padding bytes 28-35
-    for i in 28..36 { *out.add(i) = 0; }
+    // Zero remaining bytes (padding + two long pads)
+    for i in 28..IPC_PERM_SIZE { *out.add(i) = 0; }
 }
 
-/// Write i64 as two i32 halves (little-endian) at offset.
+/// Write i64 (time_t) as 8 little-endian bytes at offset.
 unsafe fn write_time(out: *mut u8, offset: usize, secs: i64) {
-    let lo = (secs & 0xFFFF_FFFF) as i32;
-    let hi = (secs >> 32) as i32;
-    let lo_bytes = lo.to_le_bytes();
-    let hi_bytes = hi.to_le_bytes();
-    for i in 0..4 { *out.add(offset + i) = lo_bytes[i]; }
-    for i in 0..4 { *out.add(offset + 4 + i) = hi_bytes[i]; }
+    let bytes = secs.to_le_bytes();
+    for i in 0..8 { *out.add(offset + i) = bytes[i]; }
 }
 
-/// Write struct msqid_ds to kernel memory (96 bytes).
+/// Write an unsigned long (LONG_SIZE bytes) at offset.
+unsafe fn write_ulong(out: *mut u8, offset: usize, val: u64) {
+    if LONG_SIZE == 8 {
+        let bytes = val.to_le_bytes();
+        for i in 0..8 { *out.add(offset + i) = bytes[i]; }
+    } else {
+        let bytes = (val as u32).to_le_bytes();
+        for i in 0..4 { *out.add(offset + i) = bytes[i]; }
+    }
+}
+
+/// Write struct msqid_ds to kernel memory (MSQID_DS_SIZE bytes).
+///
+/// LP64 layout (120 bytes):
+///   0-47: ipc_perm (48B)
+///   48: msg_stime (time_t=8) 56: msg_rtime (8) 64: msg_ctime (8)
+///   72: msg_cbytes (ulong=8) 80: msg_qnum (ulong=8) 88: msg_qbytes (ulong=8)
+///   96: msg_lspid (pid_t=4) 100: msg_lrpid (pid_t=4)
+///   104: __unused[0] (ulong=8) 112: __unused[1] (ulong=8)  => 120
+///
+/// ILP32 layout (96 bytes):
+///   0-35: ipc_perm (36B) 36-39: pad
+///   40: stime(8) 48: rtime(8) 56: ctime(8)
+///   64: cbytes(4) 68: qnum(4) 72: qbytes(4)
+///   76: lspid(4) 80: lrpid(4) 84: __unused[2](8) 92: pad(4) => 96
 unsafe fn write_msqid_ds(out: *mut u8, info: &crate::ipc::MsgQueueInfo) {
-    // Zero the whole struct first
-    for i in 0..96 { *out.add(i) = 0; }
+    for i in 0..MSQID_DS_SIZE { *out.add(i) = 0; }
     write_ipc_perm(out, info.key, info.uid, info.gid, info.cuid, info.cgid, info.mode, info.seq);
-    // 36-39: padding
-    write_time(out, 40, info.stime);
-    write_time(out, 48, info.rtime);
-    write_time(out, 56, info.ctime);
-    let write_u32 = |ptr: *mut u8, off: usize, val: u32| {
+
+    // Align to 8 for time_t (long long) fields
+    let mut off = (IPC_PERM_SIZE + 7) & !7;
+    write_time(out, off, info.stime);       off += 8;
+    write_time(out, off, info.rtime);       off += 8;
+    write_time(out, off, info.ctime);       off += 8;
+    write_ulong(out, off, info.cbytes as u64);  off += LONG_SIZE;
+    write_ulong(out, off, info.qnum as u64);    off += LONG_SIZE;
+    write_ulong(out, off, info.qbytes as u64);  off += LONG_SIZE;
+
+    let write_i32 = |ptr: *mut u8, o: usize, val: i32| {
         let bytes = val.to_le_bytes();
-        for i in 0..4 { *ptr.add(off + i) = bytes[i]; }
+        for i in 0..4 { *ptr.add(o + i) = bytes[i]; }
     };
-    let write_i32 = |ptr: *mut u8, off: usize, val: i32| {
-        let bytes = val.to_le_bytes();
-        for i in 0..4 { *ptr.add(off + i) = bytes[i]; }
-    };
-    write_u32(out, 64, info.cbytes);
-    write_u32(out, 68, info.qnum);
-    write_u32(out, 72, info.qbytes);
-    write_i32(out, 76, info.lspid);
-    write_i32(out, 80, info.lrpid);
+    write_i32(out, off, info.lspid);    // off += 4
+    write_i32(out, off + 4, info.lrpid);
+    // __unused[2] already zeroed
 }
 
-/// Write struct semid_ds to kernel memory (72 bytes).
+/// Write struct semid_ds to kernel memory (SEMID_DS_SIZE bytes).
+///
+/// LP64 layout (88 bytes):
+///   0-47: ipc_perm (48B)
+///   48: sem_otime (time_t=8) 56: sem_ctime (8)
+///   64: sem_nsems (u16) + 6B pad (to fill one long=8 slot)
+///   72: __unused3 (long=8) 80: __unused4 (long=8)  => 88
+///
+/// ILP32 layout (72 bytes):
+///   0-35: ipc_perm (36B) 36-39: pad
+///   40: otime(8) 48: ctime(8)
+///   56: nsems(u16) + 2B pad  60: __unused3(4) 64: __unused4(4) 68: pad(4) => 72
 unsafe fn write_semid_ds(out: *mut u8, info: &crate::ipc::SemSetInfo) {
-    for i in 0..72 { *out.add(i) = 0; }
+    for i in 0..SEMID_DS_SIZE { *out.add(i) = 0; }
     write_ipc_perm(out, info.key, info.uid, info.gid, info.cuid, info.cgid, info.mode, info.seq);
-    // 36-39: padding
-    write_time(out, 40, info.otime);
-    write_time(out, 48, info.ctime);
-    // nsems at 56 as u16
+
+    // Align to 8 for time_t fields
+    let mut off = (IPC_PERM_SIZE + 7) & !7;
+    write_time(out, off, info.otime);   off += 8;
+    write_time(out, off, info.ctime);   off += 8;
+    // sem_nsems as u16 at current offset (rest of LONG_SIZE slot is zero-padded)
     let nsems_bytes = (info.nsems as u16).to_le_bytes();
-    *out.add(56) = nsems_bytes[0];
-    *out.add(57) = nsems_bytes[1];
+    *out.add(off) = nsems_bytes[0];
+    *out.add(off + 1) = nsems_bytes[1];
+    // __unused3, __unused4 already zeroed
 }
 
-/// Write struct shmid_ds to kernel memory (88 bytes).
+/// Write struct shmid_ds to kernel memory (SHMID_DS_SIZE bytes).
+///
+/// LP64 layout (112 bytes):
+///   0-47: ipc_perm (48B)
+///   48: shm_segsz (size_t=8)
+///   56: shm_atime (time_t=8) 64: shm_dtime (8) 72: shm_ctime (8)
+///   80: shm_cpid (pid_t=4) 84: shm_lpid (pid_t=4)
+///   88: shm_nattch (ulong=8) 96: __pad1 (ulong=8) 104: __pad2 (ulong=8) => 112
+///
+/// ILP32 layout (88 bytes):
+///   0-35: ipc_perm (36B)
+///   36: segsz(4) 40: atime(8) 48: dtime(8) 56: ctime(8)
+///   64: cpid(4) 68: lpid(4) 72: nattch(4) 76: __pad1(4) 80: __pad2(4)
+///   84: pad(4) => 88
 unsafe fn write_shmid_ds(out: *mut u8, info: &crate::ipc::ShmSegInfo) {
-    for i in 0..88 { *out.add(i) = 0; }
+    for i in 0..SHMID_DS_SIZE { *out.add(i) = 0; }
     write_ipc_perm(out, info.key, info.uid, info.gid, info.cuid, info.cgid, info.mode, info.seq);
-    let write_u32 = |ptr: *mut u8, off: usize, val: u32| {
+
+    // Align to PTR_SIZE for size_t shm_segsz
+    let mut off = (IPC_PERM_SIZE + PTR_SIZE - 1) & !(PTR_SIZE - 1);
+    // size_t shm_segsz
+    if PTR_SIZE == 8 {
+        let bytes = (info.segsz as u64).to_le_bytes();
+        for i in 0..8 { *out.add(off + i) = bytes[i]; }
+    } else {
+        let bytes = info.segsz.to_le_bytes();
+        for i in 0..4 { *out.add(off + i) = bytes[i]; }
+    }
+    off += PTR_SIZE;
+
+    // Align to 8 for time_t fields
+    off = (off + 7) & !7;
+    write_time(out, off, info.atime);   off += 8;
+    write_time(out, off, info.dtime);   off += 8;
+    write_time(out, off, info.ctime);   off += 8;
+
+    let write_i32 = |ptr: *mut u8, o: usize, val: i32| {
         let bytes = val.to_le_bytes();
-        for i in 0..4 { *ptr.add(off + i) = bytes[i]; }
+        for i in 0..4 { *ptr.add(o + i) = bytes[i]; }
     };
-    let write_i32 = |ptr: *mut u8, off: usize, val: i32| {
-        let bytes = val.to_le_bytes();
-        for i in 0..4 { *ptr.add(off + i) = bytes[i]; }
-    };
-    write_u32(out, 36, info.segsz);
-    write_time(out, 40, info.atime);
-    write_time(out, 48, info.dtime);
-    write_time(out, 56, info.ctime);
-    write_i32(out, 64, info.cpid);
-    write_i32(out, 68, info.lpid);
-    write_u32(out, 72, info.nattch);
+    write_i32(out, off, info.cpid);         off += 4;
+    write_i32(out, off, info.lpid);         off += 4;
+    // Align to LONG_SIZE for shm_nattch
+    off = (off + LONG_SIZE - 1) & !(LONG_SIZE - 1);
+    write_ulong(out, off, info.nattch as u64);
+    // __pad1, __pad2 already zeroed
 }
 
 // ---------------------------------------------------------------------------
@@ -4084,7 +4255,7 @@ pub extern "C" fn kernel_kill(pid: i32, sig: u32) -> i32 {
 }
 
 /// Send signal with si_value (for sigqueue/rt_sigqueueinfo).
-fn kernel_kill_with_value(pid: i32, sig: u32, si_value: i32) -> i32 {
+fn kernel_kill_with_value(pid: i32, sig: u32, si_value: i64) -> i32 {
     use wasm_posix_shared::signal::NSIG;
     let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
@@ -7048,10 +7219,11 @@ pub extern "C" fn kernel_timer_create(clock_id: u32, sevp_ptr: *const u8, timeri
     let (sigev_signo, sigev_value, sigev_notify) = if sevp_ptr.is_null() {
         (14u32, 0i32, SIGEV_SIGNAL) // default: SIGALRM
     } else {
-        let buf = unsafe { slice::from_raw_parts(sevp_ptr, 16) };
-        let value = i32::from_le_bytes(buf[0..4].try_into().unwrap());
-        let signo = i32::from_le_bytes(buf[4..8].try_into().unwrap()) as u32;
-        let notify = i32::from_le_bytes(buf[8..12].try_into().unwrap()) as u32;
+        // LP64 ksigevent layout: union sigval (8B) + int signo (4B) + int notify (4B) + int tid (4B)
+        let buf = unsafe { slice::from_raw_parts(sevp_ptr, 20) };
+        let value = i32::from_le_bytes(buf[0..4].try_into().unwrap()); // sival_int (low 4 bytes of union)
+        let signo = i32::from_le_bytes(buf[8..12].try_into().unwrap()) as u32;
+        let notify = i32::from_le_bytes(buf[12..16].try_into().unwrap()) as u32;
         (signo, value, notify)
     };
 

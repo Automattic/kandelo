@@ -1757,9 +1757,10 @@ export class WasmPosixKernel {
   }
 
   // fcntl lock constants (must match crates/shared/src/lib.rs)
-  private static readonly F_GETLK = 12;
-  private static readonly F_SETLK = 13;
-  private static readonly F_SETLKW = 14;
+  // LP64: native 64-bit lock commands (ILP32 used 12/13/14)
+  private static readonly F_GETLK = 5;
+  private static readonly F_SETLK = 6;
+  private static readonly F_SETLKW = 7;
   private static readonly F_UNLCK = 2;
 
   private hostFcntlLock(
