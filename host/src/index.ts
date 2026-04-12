@@ -7,7 +7,7 @@ export { NodePlatformIO } from "./platform/node";
 export { SharedPipeBuffer } from "./shared-pipe-buffer";
 export { SharedLockTable } from "./shared-lock-table";
 export type { LockInfo } from "./shared-lock-table";
-export { NodeWorkerAdapter, MockWorkerAdapter } from "./worker-adapter";
+export { NodeWorkerAdapter, MockWorkerAdapter, MockWorkerHandle } from "./worker-adapter";
 export { centralizedWorkerMain, centralizedThreadWorkerMain } from "./worker-main";
 export type { MessagePort as WorkerMessagePort } from "./worker-main";
 export type { KernelConfig, PlatformIO, StatResult, NetworkIO } from "./types";
@@ -28,6 +28,7 @@ export type {
   CentralizedWorkerInitMessage,
   CentralizedThreadInitMessage,
   ThreadExitMessage,
+  WorkerTerminateMessage,
 } from "./worker-protocol";
 export * from "./vfs/index";
 export { parseDylinkSection, loadSharedLibrary, loadSharedLibrarySync, DynamicLinker } from "./dylink";

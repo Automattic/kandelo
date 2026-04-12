@@ -61,6 +61,7 @@
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
+    "docs": "typedoc",
     "test": "vitest"
   },
   "devDependencies": {
@@ -68,6 +69,7 @@
     "@types/node": "^25.3.5",
     "tsup": "^8.0.0",
     "tsx": "^4.21.0",
+    "typedoc": "^0.28.18",
     "typescript": "^5.4.0",
     "vitest": "^3.0.0"
   }

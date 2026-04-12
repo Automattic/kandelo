@@ -5,6 +5,7 @@
 /target
 /sysroot/
 host/dist/
+host/docs/
 
 # Dependencies
 node_modules/
