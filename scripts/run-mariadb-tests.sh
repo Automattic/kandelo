@@ -32,17 +32,263 @@ CURATED_TESTS=()
 # Categories:
 #
 # innodb         — InnoDB storage engine not available (Aria only)
-# exec           — uses --exec/--system shell commands (not supported)
 # debug          — requires debug build (debug_dbug, debug_sync, have_debug)
-# ssl            — SSL/TLS not compiled in
-# binlog         — requires binary log (have_log_bin)
-# plugin         — requires dynamic plugin loading (not supported on wasm32)
-# big_test       — requires BIG_TEST variable (extremely long tests)
-# timeout        — test too large/slow for 120s timeout on wasm
-# feature        — requires unavailable feature (profiling, staging, etc.)
+# grants         — --skip-grant-tables prevents user management
+# exec           — uses --exec/--system/perl shell commands (not supported)
+# stale_state    — test isolation: leftover tables/databases/functions
+# locale         — locale error message files (errmsg.sys) read failure
+# event          — event scheduler disabled or table schema mismatch
+# timeout        — test too slow for wasm (>300s)
+# aria           — Aria storage engine corruption/limitations
+# key_length     — Aria max key length (2000) vs InnoDB (3072)
+# behavior       — behavioral differences in Aria-only wasm build
+# filesystem     — filesystem path issues (tmp, LOAD DATA, etc.)
+# feature        — requires feature not compiled in (LDML collations, etc.)
 
 EXPECTED_FAIL=(
-    # Will be populated after full test suite triage
+    # innodb — InnoDB storage engine not available (58 tests)
+    alter_events
+    alter_table
+    alter_table_autoinc-5574
+    alter_table_errors
+    alter_table_online
+    alter_table_trans
+    analyze_stmt_orderby
+    auto_increment_ranges_innodb
+    bug46760
+    cache_innodb
+    check_constraint_innodb
+    column_compression
+    commit
+    concurrent_innodb_safelog
+    concurrent_innodb_unsafelog
+    consistent_snapshot
+    cte_recursive
+    ctype_sjis_innodb
+    ctype_uca_innodb
+    ctype_utf8mb3_innodb
+    ctype_utf8mb4_innodb
+    deadlock_innodb
+    default
+    default_innodb
+    delete_innodb
+    derived_cond_pushdown_innodb
+    derived_split_innodb
+    endspace
+    explain_innodb
+    explain_json_innodb
+    ext_key_noPK_6794
+    fast_prefix_index_fetch_innodb
+    flush-innodb
+    flush_block_commit
+    foreign_key
+    func_analyse
+    func_group_innodb
+    func_rollback
+    function_defaults_innodb
+    group_by_innodb
+    group_min_max
+    group_min_max_innodb
+    group_min_max_notembedded
+    index_intersect_innodb
+    information_schema_inno
+    innodb_ext_key
+    innodb_icp
+    innodb_icp_debug
+    innodb_mrr_cpk
+    insert_innodb
+    join_cache
+    join_outer_innodb
+    keyread
+    loaddata_autocom_innodb
+    lock_kill
+    lock_tables_lost_commit
+    locked_temporary-5955
+    long_unique_innodb
+
+    # debug — requires debug build (16 tests)
+    alter_table_debug
+    alter_table_upgrade_myisam_debug
+    analyze_debug
+    cache_temporal_4265
+    connect2
+    connect_debug
+    frm-debug
+    func_debug
+    func_regexp_pcre_debug
+    gis-debug
+    invisible_field_debug
+    invisible_field_grant_completely
+    join_cache_debug
+    json_debug_nonembedded_noasan
+    log_slow_debug
+    long_unique_debug
+
+    # grants — --skip-grant-tables prevents user management (33 tests)
+    alter_user
+    analyze_stmt_privileges
+    analyze_stmt_privileges2
+    bug58669
+    change_user_notembedded
+    connect
+    create_drop_role
+    create_user
+    cte_grant
+    cte_nonrecursive_not_embedded
+    delete_returning_grant
+    derived
+    enforce_storage_engine
+    events_trans_notembedded
+    failed_auth_3909
+    grant2
+    grant3
+    grant4
+    grant5
+    grant_binlog_replay
+    grant_cache_no_prot
+    grant_explain_non_select
+    grant_kill
+    grant_master_admin
+    grant_server
+    grant_slave_admin
+    grant_slave_monitor
+    information_schema
+    init_connect
+    init_file_set_password-7656
+    invisible_field_grant_system
+    kill-2
+    lock_user
+
+    # exec — uses --exec/--system/perl or spawns external processes (29 tests)
+    analyze_stmt_slow_query_log
+    binary_to_hex
+    bootstrap
+    bug47671
+    client
+    client_xml
+    crash_commit_before
+    ctype_upgrade
+    ctype_utf32_not_embedded
+    ddl_i18n_koi8r
+    ddl_i18n_utf8
+    delayed
+    delimiter_command_case_sensitivity
+    dirty_close
+    distinct
+    distinct_notembedded
+    drop
+    drop_bad_db_type
+    drop_combinations
+    empty_server_name-8224
+    events_restart
+    file_contents
+    grant_not_windows
+    ipv4_and_ipv6
+    ipv6
+    load_timezones_with_alter_algorithm_inplace
+    loadxml
+    log_errchk
+    log_slow
+
+    # stale_state — leftover tables/databases from prior tests (29 tests)
+    ctype_create
+    engine_error_in_alter-8453
+    error_simulation
+    errors
+    events_logs_tests
+    except
+    except_all
+    explain
+    flush
+    func_bit
+    func_compress
+    gis-rtree
+    gis_notembedded
+    grant
+    grant_read_only
+    grant_repair
+    information_schema_chmod
+    information_schema_db
+    init_file
+    init_file_longline_3816
+    item_types
+    join_outer
+    join_outer_jcl6
+    log_tables
+    log_tables_debug
+    log_tables_upgrade
+    long_unique_bugs_no_sp_protocol
+    long_unique_delayed
+    long_unique_update
+
+    # locale — errmsg.sys read failure for non-English locales (9 tests)
+    ctype_errors
+    ctype_ucs
+    ctype_utf8
+    ctype_utf8mb4
+    date_formats
+    default_session
+    features
+    func_time
+    locale
+
+    # event — event scheduler disabled or table schema mismatch (7 tests)
+    events_1
+    events_2
+    events_bugs
+    events_grant
+    events_scheduling
+    events_slowlog
+    events_trans
+
+    # timeout — too slow for wasm (9 tests)
+    assign_key_cache
+    ctype_binary
+    ctype_cp1251
+    ctype_latin1
+    gis
+    gis-precise
+    gis-rt-precise
+    huge_frm-6224
+    key_cache
+
+    # aria — table corruption or I/O issues (6 tests)
+    create
+    derived_view
+    empty_user_table
+    fulltext
+    fulltext2
+    fulltext_update
+
+    # behavior — behavioral differences in Aria-only wasm build (8 tests)
+    comments
+    empty_string_literal
+    enforce_storage_engine_opt
+    flush2
+    func_hybrid_type
+    func_json
+    function_defaults
+    insert_select
+
+    # key_length — Aria max key 2000 vs InnoDB 3072 (5 tests)
+    ctype_utf16
+    ctype_utf16le
+    ctype_utf32
+    long_unique
+    long_unique_bugs
+
+    # filesystem — path issues (3 tests)
+    analyze_stmt
+    flush_logs_not_windows
+    loaddata
+
+    # feature — not compiled in (2 tests)
+    ctype_ldml
+    ctype_like_range
+
+    # insert_delayed — INSERT DELAYED not supported on Aria (2 tests)
+    insert
+    invisible_field
 )
 
 # ── Helper functions ──────────────────────────────────────

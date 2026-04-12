@@ -121,6 +121,11 @@ let autoRestartOnServerExit = false;
 let serverRestartPromise: Promise<boolean> | null = null;
 const serverThreadWorkers = new Set<ReturnType<NodeWorkerAdapter["createWorker"]>>();
 
+// Track current running test for thread crash abort
+let currentTestReject: ((err: Error) => void) | null = null;
+let currentTestWorker: ReturnType<NodeWorkerAdapter["createWorker"]> | null = null;
+let needsRestart = false;
+
 async function main() {
     const mysqldPath = resolve(installDir, "bin/mariadbd");
     const mysqlTestPath = resolve(installDir, "bin/mysqltest.wasm");
@@ -188,7 +193,6 @@ async function main() {
 
     let resolveServerExit: ((status: number) => void) | null = null;
     let serverPort = 0;
-    let needsRestart = false;
 
     // Create kernel worker once (persistent for entire session)
     const kernelWorker = new CentralizedKernelWorker(
@@ -255,11 +259,21 @@ async function main() {
                         threadWorker.terminate().catch(() => {});
                     }
                 });
-                threadWorker.on("error", () => {
+                threadWorker.on("error", (err) => {
                     serverThreadWorkers.delete(threadWorker);
-                    kernelWorker.notifyThreadExit(pid, tid);
-                    kernelWorker.removeChannel(pid, alloc.channelOffset);
+                    try { kernelWorker.notifyThreadExit(pid, tid); } catch {}
+                    try { kernelWorker.removeChannel(pid, alloc.channelOffset); } catch {}
                     threadAllocator.free(alloc.basePage);
+                    // Server thread crashed — mark for restart and abort current test
+                    const msg = err?.message || "server thread crashed";
+                    console.error(`[thread-worker] tid=${tid} CAUGHT ERROR: ${msg}`);
+                    needsRestart = true;
+                    if (currentTestReject) {
+                        currentTestWorker?.terminate().catch(() => {});
+                        currentTestReject(new Error(`Server thread crash: ${msg}`));
+                        currentTestReject = null;
+                        currentTestWorker = null;
+                    }
                 });
                 return tid;
             },
@@ -528,8 +542,44 @@ CREATE DATABASE test;
 
     let consecutiveRestartFailures = 0;
     const MAX_CONSECUTIVE_RESTART_FAILURES = 5;
+    // Hard per-iteration timeout: test timeout + 120s for reset/restart overhead
+    const iterationTimeout = testTimeout + 120000;
 
     for (const testName of testNames) {
+        // Run GC before each test to keep memory pressure low
+        if (typeof globalThis.gc === "function") {
+            globalThis.gc();
+        }
+
+        // Wrap entire iteration in a hard timeout to prevent hangs
+        const iterationResult = await Promise.race([
+            runTestIteration(testName),
+            new Promise<TestResult>((resolve) =>
+                setTimeout(() => resolve({
+                    test: testName, status: "fail" as const, time_ms: iterationTimeout,
+                    stderr: `Hard timeout: test iteration exceeded ${iterationTimeout}ms`,
+                }), iterationTimeout)
+            ),
+        ]);
+
+        results.push(iterationResult);
+        outputResult(iterationResult);
+        const errText = iterationResult.stderr || "";
+        if (iterationResult.status === "fail" && (
+            errText.includes("Could not open connection") ||
+            errText.includes("Can't connect to") ||
+            errText.includes("timed out") ||
+            errText.includes("null function or function signature") ||
+            errText.includes("Aborting") ||
+            errText.includes("Server thread crash") ||
+            errText.includes("table index is out of bounds") ||
+            errText.includes("Hard timeout")
+        )) {
+            needsRestart = true;
+        }
+    }
+
+    async function runTestIteration(testName: string): Promise<TestResult> {
         // Restart server if previous test caused issues
         if (needsRestart) {
             if (consecutiveRestartFailures >= MAX_CONSECUTIVE_RESTART_FAILURES) {
@@ -553,9 +603,7 @@ CREATE DATABASE test;
                     console.error("Re-bootstrap complete.");
                 } catch (e) {
                     console.error("Re-bootstrap failed:", e);
-                    results.push({ test: testName, status: "fail", time_ms: 0, stderr: "re-bootstrap failed" });
-                    outputResult(results[results.length - 1]);
-                    continue;
+                    return { test: testName, status: "fail", time_ms: 0, stderr: "re-bootstrap failed" };
                 }
             } else {
                 console.error("Restarting server after previous timeout...");
@@ -567,9 +615,7 @@ CREATE DATABASE test;
                 } catch (e) {
                     consecutiveRestartFailures++;
                     console.error(`Server restart failed (${consecutiveRestartFailures}/${MAX_CONSECUTIVE_RESTART_FAILURES}):`, e);
-                    results.push({ test: testName, status: "fail", time_ms: 0, stderr: "server restart failed" });
-                    outputResult(results[results.length - 1]);
-                    continue;
+                    return { test: testName, status: "fail", time_ms: 0, stderr: "server restart failed" };
                 }
             }
         }
@@ -578,9 +624,7 @@ CREATE DATABASE test;
         const resultFile = resolve(mysqlTestDir, "main", `${testName}.result`);
 
         if (!existsSync(testFile)) {
-            results.push({ test: testName, status: "skip", time_ms: 0, stderr: "test file not found" });
-            outputResult(results[results.length - 1]);
-            continue;
+            return { test: testName, status: "skip", time_ms: 0, stderr: "test file not found" };
         }
 
         // Reset test database (non-fatal)
@@ -595,7 +639,7 @@ CREATE DATABASE test;
         }
 
         if (needsRestart) {
-            // Don't run the test — restart first on next iteration
+            // Don't run the test — restart first
             console.error(`Restarting server before ${testName}...`);
             try {
                 await restartServer();
@@ -609,9 +653,7 @@ CREATE DATABASE test;
                     );
                 } catch {}
             } catch (e) {
-                results.push({ test: testName, status: "fail", time_ms: 0, stderr: "server restart failed" });
-                outputResult(results[results.length - 1]);
-                continue;
+                return { test: testName, status: "fail", time_ms: 0, stderr: "server restart failed" };
             }
         }
 
@@ -646,25 +688,7 @@ CREATE DATABASE test;
             }
         }
 
-        results.push(result);
-        outputResult(result);
-
-        // Periodic GC to prevent OOM on long runs
-        if (typeof globalThis.gc === "function" && results.length % 10 === 0) {
-            globalThis.gc();
-        }
-
-        // If test failed with connection error, restart server
-        const errText = result.stderr || "";
-        if (result.status === "fail" && (
-            errText.includes("Could not open connection") ||
-            errText.includes("Can't connect to") ||
-            errText.includes("timed out") ||
-            errText.includes("null function or function signature") ||
-            errText.includes("Aborting")
-        )) {
-            needsRestart = true;
-        }
+        return result;
     }
 
     // Tear down
@@ -891,6 +915,10 @@ async function runMysqlTest(
 
     worker.on("error", (err: Error) => { rejectExit(err); });
 
+    // Track current test worker so thread crash handler can abort it
+    currentTestReject = rejectExit;
+    currentTestWorker = worker;
+
     const timer = setTimeout(() => {
         worker.terminate().catch(() => {});
         rejectExit(new Error(`Test ${testName} timed out after ${timeout}ms`));
@@ -902,6 +930,10 @@ async function runMysqlTest(
     } finally {
         clearTimeout(timer);
         clientExitResolvers.delete(pid);
+        if (currentTestWorker === worker) {
+            currentTestReject = null;
+            currentTestWorker = null;
+        }
         await worker.terminate().catch(() => {});
         kernelWorker.unregisterProcess(pid);
         workers.delete(pid);
