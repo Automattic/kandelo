@@ -501,7 +501,7 @@ export async function centralizedWorkerMain(
       }
 
       // Set __channel_base in TLS
-      setupChannelBase(instance, memory, channelOffset, programBytes as ArrayBuffer);
+      setupChannelBase(instance, module, memory, channelOffset, programBytes as ArrayBuffer);
 
       // Signal ready
       port.postMessage({ type: "ready", pid } satisfies WorkerToHostMessage);
@@ -597,7 +597,7 @@ export async function centralizedWorkerMain(
       const instance = await WebAssembly.instantiate(module, importObject);
       processInstance = instance;
 
-      setupChannelBase(instance, memory, channelOffset, programBytes as ArrayBuffer);
+      setupChannelBase(instance, module, memory, channelOffset, programBytes as ArrayBuffer);
 
       port.postMessage({ type: "ready", pid } satisfies WorkerToHostMessage);
 
@@ -780,40 +780,35 @@ function detectChannelBaseTlsOffset(programBytes: ArrayBuffer): number {
 
 function setupChannelBase(
   instance: WebAssembly.Instance,
+  module: WebAssembly.Module,
   memory: WebAssembly.Memory,
   channelOffset: number,
   programBytes?: ArrayBuffer,
 ): void {
-  // Check if the module uses the new global-based approach.
-  // __get_channel_base_addr returns 0 when __channel_base is a wasm global import
-  // (already set at instantiation via WebAssembly.Global in buildImportObject).
-  const getChannelBaseAddr = instance.exports.__get_channel_base_addr as (() => number) | undefined;
-  if (getChannelBaseAddr) {
-    const addr = getChannelBaseAddr();
-    if (addr === 0) {
-      // Global-based — nothing to do, the import was set at instantiation
-      return;
-    }
-    // Legacy TLS-based approach: write channelOffset to TLS memory
-    const view = new DataView(memory.buffer);
-    view.setUint32(addr, channelOffset, true);
+  // If the module imports env.__channel_base as a global, the channel offset was
+  // already set at instantiation via WebAssembly.Global in buildImportObject.
+  const moduleImports = WebAssembly.Module.imports(module);
+  if (moduleImports.some(i => i.module === "env" && i.name === "__channel_base" && i.kind === "global")) {
     return;
   }
 
-  // Fallback for programs without the export: try TLS offset detection
+  // Legacy TLS-based approach: write channelOffset into the TLS slot.
+  // IMPORTANT: Do NOT call __get_channel_base_addr() here. On older binaries
+  // compiled with shared memory (threads), the export calls __wasm_call_ctors
+  // which runs C++ static constructors. Those may call malloc→sbrk→syscall,
+  // but __channel_base is still 0 at this point so the syscall writes to the
+  // wrong memory offset. The kernel never sees it and the process deadlocks.
+  // Instead, use __tls_base + detected TLS offset (or offset 0 as fallback).
   const tlsBase = instance.exports.__tls_base as WebAssembly.Global | undefined;
   const view = new DataView(memory.buffer);
   const tlsAddr = tlsBase ? (tlsBase.value as number) : 0;
 
-  let detectedOffset = -1;
-  if (programBytes) {
-    detectedOffset = detectChannelBaseTlsOffset(programBytes);
-  }
-
-  if (tlsAddr > 0 && detectedOffset >= 0) {
-    view.setUint32(tlsAddr + detectedOffset, channelOffset, true);
-  } else if (tlsAddr > 0) {
-    view.setUint32(tlsAddr, channelOffset, true);
+  if (tlsAddr > 0) {
+    let detectedOffset = -1;
+    if (programBytes) {
+      detectedOffset = detectChannelBaseTlsOffset(programBytes);
+    }
+    view.setUint32(tlsAddr + (detectedOffset >= 0 ? detectedOffset : 0), channelOffset, true);
   }
 }
 
