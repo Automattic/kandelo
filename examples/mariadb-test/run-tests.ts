@@ -87,12 +87,39 @@ function discoverTests(): string[] {
         .sort();
 }
 
+/** Patch include files to work in our wasm environment. */
+function patchIncludeFiles(testDir: string) {
+    const includeDir = resolve(testDir, "include");
+    const patches: [string, RegExp, string][] = [
+        // Replace --exec echo "..." with --echo ... (no shell available)
+        ["start_mysqld.inc", /--exec echo "(.*)"/g, "--echo $1"],
+        // Replace --exec echo '...' variant too
+        ["start_mysqld.inc", /--exec echo '(.*)'/g, "--echo $1"],
+    ];
+    for (const [file, pattern, replacement] of patches) {
+        const filePath = resolve(includeDir, file);
+        try {
+            const content = readFileSync(filePath, "utf-8");
+            const patched = content.replace(pattern, replacement);
+            if (patched !== content) {
+                writeFileSync(filePath, patched);
+                console.error(`Patched ${file}`);
+            }
+        } catch {}
+    }
+}
+
 // Module-level state
 let serverStderr = "";
 let tmpTestDir = "/tmp";
 const clientExitResolvers = new Map<number, (status: number) => void>();
 let _nextPid = 10;
 function nextPid(): number { return _nextPid++; }
+
+// Server mid-test restart state
+let autoRestartOnServerExit = false;
+let serverRestartPromise: Promise<boolean> | null = null;
+const serverThreadWorkers = new Set<ReturnType<NodeWorkerAdapter["createWorker"]>>();
 
 async function main() {
     const mysqldPath = resolve(installDir, "bin/mariadbd");
@@ -133,6 +160,9 @@ async function main() {
         process.exit(1);
     }
 
+    // Patch include files: replace --exec echo with --echo (no shell in wasm)
+    patchIncludeFiles(mysqlTestDir);
+
     // Load wasm binaries
     const kernelBytes = loadBytes(kernelPath);
     const mysqldBytes = loadBytes(mysqldPath);
@@ -154,7 +184,7 @@ async function main() {
     const io = new NodePlatformIO();
     const workerAdapter = new NodeWorkerAdapter();
     const workers = new Map<number, ReturnType<NodeWorkerAdapter["createWorker"]>>();
-    const threadAllocator = new ThreadPageAllocator(MAX_PAGES);
+    let threadAllocator = new ThreadPageAllocator(MAX_PAGES);
 
     let resolveServerExit: ((status: number) => void) | null = null;
     let serverPort = 0;
@@ -214,9 +244,11 @@ async function main() {
                     tlsAllocAddr: alloc.tlsAllocAddr,
                 };
                 const threadWorker = workerAdapter.createWorker(threadInitData);
+                serverThreadWorkers.add(threadWorker);
                 threadWorker.on("message", (msg: unknown) => {
                     const m = msg as WorkerToHostMessage;
                     if (m.type === "thread_exit") {
+                        serverThreadWorkers.delete(threadWorker);
                         kernelWorker.notifyThreadExit(pid, tid);
                         kernelWorker.removeChannel(pid, alloc.channelOffset);
                         threadAllocator.free(alloc.basePage);
@@ -224,6 +256,7 @@ async function main() {
                     }
                 });
                 threadWorker.on("error", () => {
+                    serverThreadWorkers.delete(threadWorker);
                     kernelWorker.notifyThreadExit(pid, tid);
                     kernelWorker.removeChannel(pid, alloc.channelOffset);
                     threadAllocator.free(alloc.basePage);
@@ -236,13 +269,22 @@ async function main() {
             onExit: (exitPid, exitStatus) => {
                 if (exitPid === 1) {
                     kernelWorker.unregisterProcess(exitPid);
-                    if (resolveServerExit) resolveServerExit(exitStatus);
+                    workers.delete(exitPid);
+                    if (autoRestartOnServerExit) {
+                        // Server shutdown mid-test — auto-restart
+                        console.error(`[restart] Server exited (status=${exitStatus}), auto-restarting on port ${serverPort}...`);
+                        serverRestartPromise = performMidTestRestart(
+                            kernelWorker, workerAdapter, workers, mysqldBytes, dataDir, serverPort,
+                        );
+                    } else if (resolveServerExit) {
+                        resolveServerExit(exitStatus);
+                    }
                 } else {
                     const resolver = clientExitResolvers.get(exitPid);
                     if (resolver) resolver(exitStatus);
                     kernelWorker.deactivateProcess(exitPid);
+                    workers.delete(exitPid);
                 }
-                workers.delete(exitPid);
             },
         },
     );
@@ -266,16 +308,77 @@ async function main() {
         serverStderr = "";
     }
 
+    // .expect file path for MTR restart protocol
+    const expectFilePath = resolve(dataDir, "tmp", "tmp.expect");
+
+    /** Perform mid-test server restart (called from onExit when server shuts down). */
+    async function performMidTestRestart(
+        kw: CentralizedKernelWorker,
+        wa: NodeWorkerAdapter,
+        ws: Map<number, ReturnType<NodeWorkerAdapter["createWorker"]>>,
+        serverBytes: ArrayBuffer,
+        dDir: string,
+        port: number,
+    ): Promise<boolean> {
+        // Terminate remaining server thread workers
+        for (const tw of serverThreadWorkers) {
+            await tw.terminate().catch(() => {});
+        }
+        serverThreadWorkers.clear();
+        threadAllocator = new ThreadPageAllocator(MAX_PAGES);
+
+        // Clean Aria control/log files
+        const { unlinkSync, readdirSync: readdir, readFileSync: readf } = await import("fs");
+        for (const f of readdir(dDir)) {
+            if (f.startsWith("aria_log")) {
+                try { unlinkSync(resolve(dDir, f)); } catch {}
+            }
+        }
+
+        // Read .expect file for restart options
+        let extraArgs: string[] = [];
+        try {
+            const content = readf(expectFilePath, "utf-8").trim();
+            const lastLine = content.split("\n").pop()?.trim() ?? "";
+            if (lastLine.startsWith("restart:")) {
+                const opts = lastLine.slice("restart:".length).trim();
+                if (opts.length > 0) {
+                    extraArgs = opts.split(/\s+/);
+                    console.error(`[restart] With options: ${extraArgs.join(" ")}`);
+                }
+            }
+        } catch {}
+
+        // Start server on same port with optional extra args
+        startServer(kw, wa, ws, serverBytes, dDir, port, extraArgs);
+
+        // Wait for TCP readiness
+        for (let i = 0; i < 120; i++) {
+            await new Promise((r) => setTimeout(r, 500));
+            if (await tryConnect(port)) {
+                console.error(`[restart] Server restarted successfully.`);
+                return true;
+            }
+        }
+        console.error(`[restart] Server failed to restart within 60s.`);
+        return false;
+    }
+
     let restartFailCount = 0;
 
     /** Kill all workers and start a fresh server instance. */
     async function restartServer(): Promise<void> {
-        // Terminate all workers
+        // Terminate all workers (including server threads)
+        for (const tw of serverThreadWorkers) {
+            await tw.terminate().catch(() => {});
+        }
+        serverThreadWorkers.clear();
         for (const [pid, w] of workers) {
             await w.terminate().catch(() => {});
             try { kernelWorker.unregisterProcess(pid); } catch {}
         }
         workers.clear();
+        threadAllocator = new ThreadPageAllocator(MAX_PAGES);
 
         // Clean Aria control/log files to prevent checksum mismatch on restart
         const { unlinkSync, readdirSync: readdir } = await import("fs");
@@ -491,6 +594,13 @@ CREATE DATABASE test;
             }
         }
 
+        // Enable auto-restart during test execution
+        autoRestartOnServerExit = true;
+        serverRestartPromise = null;
+
+        // Clean stale .expect file before test
+        try { const { unlinkSync: ul } = await import("fs"); ul(expectFilePath); } catch {}
+
         const start = Date.now();
         let result: TestResult;
         try {
@@ -503,6 +613,18 @@ CREATE DATABASE test;
             const errMsg = e instanceof Error ? e.message : String(e);
             result = { test: testName, status: "fail", time_ms: elapsed, stderr: errMsg };
         }
+
+        autoRestartOnServerExit = false;
+
+        // If a mid-test restart was triggered, wait for it to complete
+        if (serverRestartPromise) {
+            const ok = await serverRestartPromise;
+            serverRestartPromise = null;
+            if (!ok) {
+                needsRestart = true;
+            }
+        }
+
         results.push(result);
         outputResult(result);
 
@@ -619,6 +741,7 @@ function startServer(
     mysqldBytes: ArrayBuffer,
     dataDir: string,
     port: number,
+    extraArgs: string[] = [],
 ) {
     const memory = new WebAssembly.Memory({ initial: 17, maximum: MAX_PAGES, shared: true });
     const channelOffset = (MAX_PAGES - 2) * 65536;
@@ -641,6 +764,7 @@ function startServer(
         "--net-read-timeout=10", "--net-write-timeout=10",
         "--lock-wait-timeout=10",
         `--lc-messages-dir=${resolve(installDir, "share")}`,
+        ...extraArgs,
     ];
 
     const initData: CentralizedWorkerInitMessage = {
