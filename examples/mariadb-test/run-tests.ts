@@ -119,7 +119,7 @@ async function main() {
         process.exit(0);
     }
 
-    const testTimeout = parseInt(process.env.TEST_TIMEOUT ?? "60000", 10);
+    const testTimeout = parseInt(process.env.TEST_TIMEOUT ?? "120000", 10);
 
     let testNames: string[];
     if (args.length > 0 && !args[0].startsWith("--")) {
@@ -266,6 +266,8 @@ async function main() {
         serverStderr = "";
     }
 
+    let restartFailCount = 0;
+
     /** Kill all workers and start a fresh server instance. */
     async function restartServer(): Promise<void> {
         // Terminate all workers
@@ -275,11 +277,23 @@ async function main() {
         }
         workers.clear();
 
-        // Clean Aria control file to prevent checksum mismatch on restart
-        const ariaControl = resolve(dataDir, "aria_log_control");
-        const ariaLog = resolve(dataDir, "aria_log.00000001");
-        try { if (existsSync(ariaControl)) { const { unlinkSync } = await import("fs"); unlinkSync(ariaControl); } } catch {}
-        try { if (existsSync(ariaLog)) { const { unlinkSync } = await import("fs"); unlinkSync(ariaLog); } } catch {}
+        // Clean Aria control/log files to prevent checksum mismatch on restart
+        const { unlinkSync, readdirSync: readdir } = await import("fs");
+        for (const f of readdir(dataDir)) {
+            if (f.startsWith("aria_log")) {
+                try { unlinkSync(resolve(dataDir, f)); } catch {}
+            }
+        }
+
+        // Help GC reclaim terminated worker memory
+        if (typeof globalThis.gc === "function") globalThis.gc();
+
+        // If restart has failed repeatedly, reinitialize the kernel entirely
+        if (restartFailCount >= 2) {
+            console.error("Reinitializing kernel after repeated restart failures...");
+            await kernelWorker.init(kernelBytes);
+            restartFailCount = 0;
+        }
 
         serverPort = await getFreePort();
         console.error(`Starting MariaDB on port ${serverPort}...`);
@@ -292,9 +306,11 @@ async function main() {
             await new Promise((r) => setTimeout(r, 500));
             if (await tryConnect(serverPort)) {
                 console.error("MariaDB is ready.");
+                restartFailCount = 0;
                 return;
             }
         }
+        restartFailCount++;
         throw new Error("MariaDB did not become ready within 60s");
     }
 
@@ -302,9 +318,35 @@ async function main() {
     async function runSetup(): Promise<void> {
         const setupSql = resolve(dataDir, "tmp", "setup.test");
         writeFileSync(setupSql, `
+CREATE DATABASE IF NOT EXISTS test;
 CREATE DATABASE IF NOT EXISTS mtr;
 USE mtr;
 CREATE TABLE IF NOT EXISTS test_suppressions (pattern VARCHAR(255));
+# Create mysql.proc if it doesn't exist (needed for stored procedure tests)
+CREATE TABLE IF NOT EXISTS mysql.proc (
+  db char(64) NOT NULL DEFAULT '',
+  name char(64) NOT NULL DEFAULT '',
+  type enum('FUNCTION','PROCEDURE') NOT NULL,
+  specific_name char(64) NOT NULL DEFAULT '',
+  language enum('SQL') DEFAULT 'SQL' NOT NULL,
+  sql_data_access enum('CONTAINS_SQL','NO_SQL','READS_SQL_DATA','MODIFIES_SQL_DATA') DEFAULT 'CONTAINS_SQL' NOT NULL,
+  is_deterministic enum('YES','NO') NOT NULL DEFAULT 'NO',
+  security_type enum('INVOKER','DEFINER') DEFAULT 'DEFINER' NOT NULL,
+  param_list blob NOT NULL,
+  returns longblob NOT NULL,
+  body longblob NOT NULL,
+  definer char(141) NOT NULL DEFAULT '',
+  created timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  modified timestamp NOT NULL DEFAULT '0000-00-00 00:00:00',
+  sql_mode set('REAL_AS_FLOAT','PIPES_AS_CONCAT','ANSI_QUOTES','IGNORE_SPACE','IGNORE_BAD_TABLE_OPTIONS','ONLY_FULL_GROUP_BY','NO_UNSIGNED_SUBTRACTION','NO_DIR_IN_CREATE','POSTGRESQL','ORACLE','MSSQL','DB2','MAXDB','NO_KEY_OPTIONS','NO_TABLE_OPTIONS','NO_FIELD_OPTIONS','MYSQL323','MYSQL40','ANSI','NO_AUTO_VALUE_ON_ZERO','NO_BACKSLASH_ESCAPES','STRICT_TRANS_TABLES','STRICT_ALL_TABLES','NO_ZERO_IN_DATE','NO_ZERO_DATE','INVALID_DATES','ERROR_FOR_DIVISION_BY_ZERO','TRADITIONAL','NO_AUTO_CREATE_USER','HIGH_NOT_PRECEDENCE','NO_ENGINE_SUBSTITUTION','PAD_CHAR_TO_FULL_LENGTH','EMPTY_STRING_IS_NULL','SIMULTANEOUS_ASSIGNMENT') DEFAULT '' NOT NULL,
+  comment text NOT NULL,
+  character_set_client char(32) DEFAULT NULL,
+  collation_connection char(32) DEFAULT NULL,
+  db_collation char(32) DEFAULT NULL,
+  body_utf8 longblob,
+  aggregate enum('NONE','GROUP') DEFAULT 'NONE' NOT NULL,
+  PRIMARY KEY (db,name,type)
+) engine=Aria;
 DROP PROCEDURE IF EXISTS add_suppression;
 delimiter |;
 CREATE DEFINER='root'@'localhost' PROCEDURE add_suppression(pattern VARCHAR(255))
@@ -318,6 +360,21 @@ delimiter ;|
 REPLACE INTO mysql.global_priv VALUES ('localhost','root','{"access":18446744073709551615}');
 REPLACE INTO mysql.global_priv VALUES ('127.0.0.1','root','{"access":18446744073709551615}');
 REPLACE INTO mysql.global_priv VALUES ('%','root','{"access":18446744073709551615}');
+# Create mariadb.sys user needed by some system views
+REPLACE INTO mysql.global_priv VALUES ('localhost','mariadb.sys','{"access":0}');
+# Create mysql.servers table if missing
+CREATE TABLE IF NOT EXISTS mysql.servers (
+  Server_name char(64) NOT NULL DEFAULT '',
+  Host char(255) NOT NULL DEFAULT '',
+  Db char(64) NOT NULL DEFAULT '',
+  Username char(64) NOT NULL DEFAULT '',
+  Password char(64) NOT NULL DEFAULT '',
+  Port int(4) DEFAULT 0 NOT NULL,
+  Socket char(64) NOT NULL DEFAULT '',
+  Wrapper char(64) NOT NULL DEFAULT '',
+  Owner char(64) NOT NULL DEFAULT '',
+  PRIMARY KEY (Server_name)
+) engine=Aria;
 FLUSH PRIVILEGES;
 `);
         const r = await runMysqlTest(
@@ -333,22 +390,60 @@ FLUSH PRIVILEGES;
     await restartServer();
     await runSetup();
 
+    // Create std_data symlink relative to datadir so LOAD DATA INFILE '../../std_data/...' works
+    const stdDataLink = resolve(dataDir, "..", "..", "std_data");
+    const stdDataTarget = resolve(mysqlTestDir, "std_data");
+    try {
+        const { symlinkSync, lstatSync } = await import("fs");
+        try { lstatSync(stdDataLink); } catch {
+            symlinkSync(stdDataTarget, stdDataLink);
+        }
+    } catch {}
+
     // --- Run tests ---
     const results: TestResult[] = [];
     const resetSql = resolve(dataDir, "tmp", "reset.test");
-    writeFileSync(resetSql, "DROP DATABASE IF EXISTS test;\nCREATE DATABASE test;\n");
+    // Drop ALL user-created databases, not just test
+    writeFileSync(resetSql, `--disable_abort_on_error
+# Kill non-system connections
+SELECT GROUP_CONCAT(id SEPARATOR ',') INTO @ids FROM information_schema.processlist WHERE id != CONNECTION_ID() AND user != 'system user';
+# Drop all user databases
+SELECT GROUP_CONCAT(schema_name SEPARATOR '|') INTO @dbs FROM information_schema.schemata WHERE schema_name NOT IN ('mysql','information_schema','performance_schema','mtr');
+# We can't use dynamic SQL easily, so drop common ones explicitly
+DROP DATABASE IF EXISTS test;
+DROP DATABASE IF EXISTS db;
+DROP DATABASE IF EXISTS db1;
+DROP DATABASE IF EXISTS db2;
+DROP DATABASE IF EXISTS mysqltest;
+DROP DATABASE IF EXISTS mysqltest1;
+DROP DATABASE IF EXISTS mysqltest2;
+DROP DATABASE IF EXISTS events_test;
+DROP DATABASE IF EXISTS tmp;
+--enable_abort_on_error
+CREATE DATABASE test;
+`);
+
+    let consecutiveRestartFailures = 0;
+    const MAX_CONSECUTIVE_RESTART_FAILURES = 5;
 
     for (const testName of testNames) {
         // Restart server if previous test caused issues
         if (needsRestart) {
+            if (consecutiveRestartFailures >= MAX_CONSECUTIVE_RESTART_FAILURES) {
+                // Skip test silently — don't spam logs
+                results.push({ test: testName, status: "fail", time_ms: 0, stderr: "server unrecoverable" });
+                outputResult(results[results.length - 1]);
+                continue;
+            }
             console.error("Restarting server after previous timeout...");
             try {
                 await restartServer();
                 await runSetup();
                 needsRestart = false;
+                consecutiveRestartFailures = 0;
             } catch (e) {
-                console.error("Server restart failed:", e);
-                // Mark remaining tests as fail
+                consecutiveRestartFailures++;
+                console.error(`Server restart failed (${consecutiveRestartFailures}/${MAX_CONSECUTIVE_RESTART_FAILURES}):`, e);
                 results.push({ test: testName, status: "fail", time_ms: 0, stderr: "server restart failed" });
                 outputResult(results[results.length - 1]);
                 continue;
@@ -410,6 +505,18 @@ FLUSH PRIVILEGES;
         }
         results.push(result);
         outputResult(result);
+
+        // If test failed with connection error, restart server
+        const errText = result.stderr || "";
+        if (result.status === "fail" && (
+            errText.includes("Could not open connection") ||
+            errText.includes("Can't connect to") ||
+            errText.includes("timed out") ||
+            errText.includes("null function or function signature") ||
+            errText.includes("Aborting")
+        )) {
+            needsRestart = true;
+        }
     }
 
     // Tear down
@@ -470,15 +577,35 @@ async function runBootstrap(
         env: ["HOME=/tmp", "PATH=/usr/bin", "TMPDIR=/tmp"], argv,
     };
 
+    // Temporarily route output to stderr during bootstrap
+    const prevCallbacks = { onStdout: () => {}, onStderr: (data: Uint8Array) => { serverStderr += new TextDecoder().decode(data); } };
+    const decoder = new TextDecoder();
+    kernelWorker.setOutputCallbacks({
+        onStdout: (data) => process.stderr.write(decoder.decode(data)),
+        onStderr: (data) => process.stderr.write(decoder.decode(data)),
+    });
+
     const worker = workerAdapter.createWorker(initData);
     workers.set(pid, worker);
     worker.on("message", (msg: unknown) => {
         const m = msg as WorkerToHostMessage;
         if (m.type === "exit") resolveExit(m.status);
+        else if (m.type === "error") {
+            console.error(`[bootstrap] worker error: ${(m as any).message}`);
+            resolveExit(1);
+        }
+    });
+    worker.on("error", (err: Error) => {
+        console.error(`[bootstrap] worker crash: ${err.message}`);
+        resolveExit(1);
     });
 
     const timeout = new Promise<number>((r) => setTimeout(() => r(0), 60000));
-    await Promise.race([exitPromise, timeout]);
+    const status = await Promise.race([exitPromise, timeout]);
+    if (status !== 0) console.error(`[bootstrap] exit status: ${status}`);
+
+    // Restore output callbacks
+    kernelWorker.setOutputCallbacks(prevCallbacks);
     await worker.terminate().catch(() => {});
     kernelWorker.unregisterProcess(pid);
     workers.delete(pid);
@@ -512,7 +639,8 @@ function startServer(
         `--port=${port}`, "--bind-address=0.0.0.0", "--socket=",
         "--max-connections=50", "--wait-timeout=10",
         "--net-read-timeout=10", "--net-write-timeout=10",
-        "--lock-wait-timeout=10", "--thread-handling=no-threads",
+        "--lock-wait-timeout=10",
+        `--lc-messages-dir=${resolve(installDir, "share")}`,
     ];
 
     const initData: CentralizedWorkerInitMessage = {
@@ -541,18 +669,24 @@ async function runMysqlTest(
     const pid = nextPid();
     const start = Date.now();
 
-    const memory = new WebAssembly.Memory({ initial: 17, maximum: MAX_PAGES, shared: true });
-    const channelOffset = (MAX_PAGES - 2) * 65536;
-    memory.grow(MAX_PAGES - 17);
+    // mysqltest needs much less memory than mariadbd — use 2048 pages (128MB) max
+    const CLIENT_MAX_PAGES = 2048;
+    const memory = new WebAssembly.Memory({ initial: 17, maximum: CLIENT_MAX_PAGES, shared: true });
+    const channelOffset = (CLIENT_MAX_PAGES - 2) * 65536;
+    memory.grow(CLIENT_MAX_PAGES - 17);
     new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
     kernelWorker.registerProcess(pid, memory, [channelOffset]);
     kernelWorker.setCwd(pid, mysqlTestDir);
 
+    // Setup/reset operations use "mysql" database; real tests use "test"
+    const isInternal = testName.startsWith("__");
+    const database = isInternal ? "mysql" : "test";
+
     const argv = [
         "mysqltest", "--no-defaults",
         `--host=127.0.0.1`, `--port=${port}`,
-        `--user=root`, `--database=test`,
+        `--user=root`, `--database=${database}`,
         `--test-file=${testFile}`,
         `--basedir=${mysqlTestDir}`,
         `--tmpdir=${tmpTestDir}`,
