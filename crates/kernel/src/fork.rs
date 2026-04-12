@@ -265,19 +265,19 @@ fn u32_to_file_type(v: u32) -> Result<FileType, Errno> {
 
 // ── SignalHandler encoding ──────────────────────────────────────────────────
 
-fn handler_to_u32(h: SignalHandler) -> u32 {
+fn handler_to_u64(h: SignalHandler) -> u64 {
     match h {
         SignalHandler::Default => 0,
         SignalHandler::Ignore => 1,
-        SignalHandler::Handler(ptr) => 2 + ptr,
+        SignalHandler::Handler(ptr) => 2 + ptr as u64,
     }
 }
 
-fn u32_to_handler(v: u32) -> SignalHandler {
+fn u64_to_handler(v: u64) -> SignalHandler {
     match v {
         0 => SignalHandler::Default,
         1 => SignalHandler::Ignore,
-        n => SignalHandler::Handler(n - 2),
+        n => SignalHandler::Handler((n - 2) as usize),
     }
 }
 
@@ -323,7 +323,7 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
         let action = proc.signals.get_action(i);
         if action.handler != SignalHandler::Default || action.flags != 0 || action.mask != 0 {
             w.write_u32(i)?;
-            w.write_u32(handler_to_u32(action.handler))?;
+            w.write_u64(handler_to_u64(action.handler))?;
             w.write_u32(action.flags)?;
             w.write_u64(action.mask)?;
         }
@@ -563,12 +563,12 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
     let mut actions = [SignalAction::default(); 65];
     for _ in 0..handler_count {
         let signum = r.read_u32()?;
-        let handler_val = r.read_u32()?;
+        let handler_val = r.read_u64()?;
         let flags = r.read_u32()?;
         let mask = r.read_u64()?;
         if (signum as usize) < 65 {
             actions[signum as usize] = SignalAction {
-                handler: u32_to_handler(handler_val),
+                handler: u64_to_handler(handler_val),
                 flags,
                 mask,
             };
@@ -953,7 +953,7 @@ pub fn serialize_exec_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
     for (i, h) in handlers.iter().enumerate() {
         if i > 0 && *h == SignalHandler::Ignore {
             w.write_u32(i as u32)?;
-            w.write_u32(handler_to_u32(*h))?;
+            w.write_u64(handler_to_u64(*h))?;
         }
     }
 
@@ -1085,9 +1085,9 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
     let mut handlers = [SignalHandler::Default; 65];
     for _ in 0..handler_count {
         let signum = r.read_u32()?;
-        let handler_val = r.read_u32()?;
+        let handler_val = r.read_u64()?;
         if (signum as usize) < 64 {
-            handlers[signum as usize] = u32_to_handler(handler_val);
+            handlers[signum as usize] = u64_to_handler(handler_val);
         }
     }
     // Read pending signals (exec preserves them, unlike fork)

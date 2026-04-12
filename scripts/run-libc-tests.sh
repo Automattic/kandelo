@@ -76,7 +76,7 @@ CC="$LLVM_BIN/clang"
 
 # Common compile flags (CFLAGS_BASE excludes -I common for overlay builds)
 CFLAGS_BASE=(
-    --target=wasm32-unknown-unknown
+    --target=wasm64-unknown-unknown
     --sysroot="$SYSROOT"
     -nostdlib
     -O2

@@ -56,6 +56,7 @@ LINK_FLAGS=(
     -Wl,--shared-memory
     -Wl,--max-memory=1073741824
     -Wl,--allow-undefined
+    -Wl,--allow-multiple-definition
     -Wl,--table-base=3
     -Wl,--export-table
     -Wl,--growable-table

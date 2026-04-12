@@ -879,8 +879,8 @@ export class CentralizedKernelWorker {
     // allocator (dlmalloc) doesn't know about host-grown pages and will
     // reuse them as heap, causing corruption (overlapping writes between
     // scratch data and kernel heap structures like Vec<MappedRegion>).
-    const allocScratch = this.kernelInstance.exports.kernel_alloc_scratch as (size: number) => number;
-    this.scratchOffset = allocScratch(SCRATCH_SIZE);
+    const allocScratch = this.kernelInstance.exports.kernel_alloc_scratch as (size: number) => bigint;
+    this.scratchOffset = Number(allocScratch(SCRATCH_SIZE));
     if (this.scratchOffset === 0) {
       throw new Error("Failed to allocate kernel scratch buffer");
     }
@@ -897,7 +897,7 @@ export class CentralizedKernelWorker {
     }
 
     // Allocate a separate scratch buffer for TCP data pumping
-    this.tcpScratchOffset = allocScratch(65536);
+    this.tcpScratchOffset = Number(allocScratch(65536));
     if (this.tcpScratchOffset === 0) {
       throw new Error("Failed to allocate TCP scratch buffer");
     }
@@ -934,7 +934,7 @@ export class CentralizedKernelWorker {
     // Set process argv in kernel for /proc/<pid>/cmdline
     if (options?.argv && options.argv.length > 0) {
       const setArgv = this.kernelInstance!.exports.kernel_set_process_argv as
-        ((pid: number, dataPtr: number, dataLen: number) => number) | undefined;
+        ((pid: number, dataPtr: bigint, dataLen: number) => number) | undefined;
       if (setArgv) {
         const encoder = new TextEncoder();
         const nullSep = options.argv.join("\0");
@@ -943,17 +943,17 @@ export class CentralizedKernelWorker {
         const kernelMem = new Uint8Array(this.kernelMemory!.buffer);
         const scratchOffset = this.scratchOffset!;
         kernelMem.set(encoded, scratchOffset);
-        setArgv(pid, scratchOffset, encoded.length);
+        setArgv(pid, BigInt(scratchOffset), encoded.length);
       }
     }
 
     // Cap mmap address space at the channel offset to prevent overlap
     const setMaxAddr = this.kernelInstance!.exports.kernel_set_max_addr as
-      ((pid: number, maxAddr: number) => number) | undefined;
+      ((pid: number, maxAddr: bigint) => number) | undefined;
     if (setMaxAddr && channelOffsets.length > 0) {
       // Use the lowest channel offset as the upper bound for mmap
       const minChannelOffset = Math.min(...channelOffsets);
-      setMaxAddr(pid, minChannelOffset);
+      setMaxAddr(pid, BigInt(minChannelOffset));
     }
 
     const channels: ChannelInfo[] = channelOffsets.map((offset) => ({
@@ -1050,11 +1050,11 @@ export class CentralizedKernelWorker {
    */
   ptyMasterWrite(ptyIdx: number, data: Uint8Array): void {
     const kernelPtyMasterWrite = this.kernelInstance!.exports.kernel_pty_master_write as
-      ((ptyIdx: number, bufPtr: number, bufLen: number) => number) | undefined;
+      ((ptyIdx: number, bufPtr: bigint, bufLen: number) => number) | undefined;
     if (!kernelPtyMasterWrite) return;
     const buf = new Uint8Array(this.kernelMemory!.buffer);
     buf.set(data, this.scratchOffset);
-    kernelPtyMasterWrite(ptyIdx, this.scratchOffset, data.length);
+    kernelPtyMasterWrite(ptyIdx, BigInt(this.scratchOffset), data.length);
     // Drain echo/output produced by the line discipline
     this.drainPtyOutput(ptyIdx);
     // Wake any process blocked on slave read
@@ -1067,10 +1067,10 @@ export class CentralizedKernelWorker {
    */
   ptyMasterRead(ptyIdx: number): Uint8Array | null {
     const kernelPtyMasterRead = this.kernelInstance!.exports.kernel_pty_master_read as
-      ((ptyIdx: number, bufPtr: number, bufLen: number) => number) | undefined;
+      ((ptyIdx: number, bufPtr: bigint, bufLen: number) => number) | undefined;
     if (!kernelPtyMasterRead) return null;
     const SCRATCH_READ_SIZE = 4096;
-    const n = kernelPtyMasterRead(ptyIdx, this.scratchOffset, SCRATCH_READ_SIZE);
+    const n = kernelPtyMasterRead(ptyIdx, BigInt(this.scratchOffset), SCRATCH_READ_SIZE);
     if (n <= 0) return null;
     const buf = new Uint8Array(this.kernelMemory!.buffer);
     return buf.slice(this.scratchOffset, this.scratchOffset + n);
@@ -1124,13 +1124,13 @@ export class CentralizedKernelWorker {
   setCwd(pid: number, cwd: string): void {
     if (!this.initialized) throw new Error("Kernel not initialized");
     const kernelSetCwd = this.kernelInstance!.exports.kernel_set_cwd as
-      ((pid: number, ptr: number, len: number) => number) | undefined;
+      ((pid: number, ptr: bigint, len: number) => number) | undefined;
     if (!kernelSetCwd) return; // older kernel without this export
     const encoded = new TextEncoder().encode(cwd);
     // Use the pre-allocated scratch area in kernel memory
     const buf = new Uint8Array(this.kernelMemory!.buffer);
     buf.set(encoded, this.scratchOffset);
-    kernelSetCwd(pid, this.scratchOffset, encoded.length);
+    kernelSetCwd(pid, BigInt(this.scratchOffset), encoded.length);
   }
 
   /**
@@ -1321,10 +1321,10 @@ export class CentralizedKernelWorker {
     // Thread layout: channelOffset (2 pages), gap (1 page), TLS (1 page).
     // The TLS page is at channelOffset - 2*WASM_PAGE_SIZE, which is the lowest address used.
     const setMaxAddr = this.kernelInstance!.exports.kernel_set_max_addr as
-      ((pid: number, maxAddr: number) => number) | undefined;
+      ((pid: number, maxAddr: bigint) => number) | undefined;
     if (setMaxAddr) {
       const tlsPageAddr = channelOffset - 2 * 65536;
-      setMaxAddr(pid, tlsPageAddr);
+      setMaxAddr(pid, BigInt(tlsPageAddr));
     }
 
     // In polling mode, the poller picks up new channels automatically.
@@ -1800,10 +1800,10 @@ export class CentralizedKernelWorker {
     }
 
     // Call kernel_handle_channel
-    const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as (offset: number, pid: number) => number;
+    const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as (offset: bigint, pid: number) => bigint;
     this.currentHandlePid = channel.pid;
     try {
-      handleChannel(this.scratchOffset, channel.pid);
+      handleChannel(BigInt(this.scratchOffset), channel.pid);
     } catch (err) {
       // If the kernel throws (e.g., invalid memory access), complete the
       // channel with -EIO to unblock the process rather than deadlocking.
@@ -1949,12 +1949,12 @@ export class CentralizedKernelWorker {
    */
   private dequeueSignalForDelivery(channel: ChannelInfo): void {
     const dequeueSignal = this.kernelInstance!.exports
-      .kernel_dequeue_signal as ((pid: number, outPtr: number) => number) | undefined;
+      .kernel_dequeue_signal as ((pid: number, outPtr: bigint) => number) | undefined;
     if (!dequeueSignal) return;
 
     // Use the signal area in kernel scratch as the output buffer
     const sigOutOffset = this.scratchOffset + CH_SIG_BASE;
-    const sigResult = dequeueSignal(channel.pid, sigOutOffset);
+    const sigResult = dequeueSignal(channel.pid, BigInt(sigOutOffset));
     if (sigResult > 0) {
       // Copy 52 bytes of signal delivery info from kernel scratch to process channel
       // Layout: signum(4) + handler(4) + flags(4) + si_value(4) + old_mask(8)
@@ -2297,14 +2297,14 @@ export class CentralizedKernelWorker {
    */
   private drainAndProcessWakeupEvents(): void {
     const drainFn = this.kernelInstance!.exports.kernel_drain_wakeup_events as
-      ((outPtr: number, outLen: number, maxEvents: number) => number) | undefined;
+      ((outPtr: bigint, outLen: number, maxEvents: number) => number) | undefined;
     if (!drainFn) return;
 
     const MAX_EVENTS = 256;
     const BYTES_PER_EVENT = 5;
     const bufSize = MAX_EVENTS * BYTES_PER_EVENT;
 
-    const count = drainFn(this.scratchOffset, bufSize, MAX_EVENTS);
+    const count = drainFn(BigInt(this.scratchOffset), bufSize, MAX_EVENTS);
     if (count === 0) return;
 
     const kernelMem = new Uint8Array(this.kernelMemory!.buffer);
@@ -2528,13 +2528,13 @@ export class CentralizedKernelWorker {
     if (!conns || conns.length === 0) return;
 
     const pipeRead = this.kernelInstance!.exports.kernel_pipe_read as
-      (pid: number, pipeIdx: number, bufPtr: number, bufLen: number) => number;
+      (pid: number, pipeIdx: number, bufPtr: bigint, bufLen: number) => number;
     const mem = this.getKernelMem();
 
     for (const conn of conns) {
       // Drain all available data from the send pipe (not just one chunk)
       for (;;) {
-        const readN = pipeRead(pid, conn.sendPipeIdx, conn.scratchOffset, 65536);
+        const readN = pipeRead(pid, conn.sendPipeIdx, BigInt(conn.scratchOffset), 65536);
         if (readN <= 0) break;
         const outData = Buffer.from(mem.slice(conn.scratchOffset, conn.scratchOffset + readN));
         if (!conn.clientSocket.destroyed) {
@@ -2960,10 +2960,10 @@ export class CentralizedKernelWorker {
     }
 
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
-      (offset: number, pid: number) => number;
+      (offset: bigint, pid: number) => bigint;
     this.currentHandlePid = channel.pid;
     try {
-      handleChannel(this.scratchOffset, channel.pid);
+      handleChannel(BigInt(this.scratchOffset), channel.pid);
     } finally {
       this.currentHandlePid = 0;
     }
@@ -3056,10 +3056,10 @@ export class CentralizedKernelWorker {
     kernelView.setBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, BigInt(maskDataPtr !== 0 ? maskOffset : 0), true);
 
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
-      (offset: number, pid: number) => number;
+      (offset: bigint, pid: number) => bigint;
     this.currentHandlePid = channel.pid;
     try {
-      handleChannel(this.scratchOffset, channel.pid);
+      handleChannel(BigInt(this.scratchOffset), channel.pid);
     } finally {
       this.currentHandlePid = 0;
     }
@@ -3164,10 +3164,10 @@ export class CentralizedKernelWorker {
     }
 
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
-      (offset: number, pid: number) => number;
+      (offset: bigint, pid: number) => bigint;
     this.currentHandlePid = channel.pid;
     try {
-      handleChannel(this.scratchOffset, channel.pid);
+      handleChannel(BigInt(this.scratchOffset), channel.pid);
     } finally {
       this.currentHandlePid = 0;
     }
@@ -3223,10 +3223,10 @@ export class CentralizedKernelWorker {
     kernelView.setBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, 0n, true);
 
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
-      (offset: number, pid: number) => number;
+      (offset: bigint, pid: number) => bigint;
     this.currentHandlePid = channel.pid;
     try {
-      handleChannel(this.scratchOffset, channel.pid);
+      handleChannel(BigInt(this.scratchOffset), channel.pid);
     } finally {
       this.currentHandlePid = 0;
     }
@@ -3360,10 +3360,10 @@ export class CentralizedKernelWorker {
     }
 
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
-      (offset: number, pid: number) => number;
+      (offset: bigint, pid: number) => bigint;
     this.currentHandlePid = channel.pid;
     try {
-      handleChannel(this.scratchOffset, channel.pid);
+      handleChannel(BigInt(this.scratchOffset), channel.pid);
     } finally {
       this.currentHandlePid = 0;
     }
@@ -3482,10 +3482,10 @@ export class CentralizedKernelWorker {
     }
 
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
-      (offset: number, pid: number) => number;
+      (offset: bigint, pid: number) => bigint;
     this.currentHandlePid = channel.pid;
     try {
-      handleChannel(this.scratchOffset, channel.pid);
+      handleChannel(BigInt(this.scratchOffset), channel.pid);
     } finally {
       this.currentHandlePid = 0;
     }
@@ -3561,10 +3561,10 @@ export class CentralizedKernelWorker {
       }
 
       const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
-        (offset: number, pid: number) => number;
+        (offset: bigint, pid: number) => bigint;
       this.currentHandlePid = channel.pid;
       try {
-        handleChannel(this.scratchOffset, channel.pid);
+        handleChannel(BigInt(this.scratchOffset), channel.pid);
       } finally {
         this.currentHandlePid = 0;
       }
@@ -3595,7 +3595,7 @@ export class CentralizedKernelWorker {
       // Slow path: total data exceeds scratch buffer. Issue one SYS_READ per iov entry,
       // chunked to fit in CH_DATA_SIZE. Use pread to maintain file offset for preadv.
       const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
-        (offset: number, pid: number) => number;
+        (offset: bigint, pid: number) => bigint;
       const isPreadv = syscallNr === SYS_PREADV;
       let fileOffset = isPreadv
         ? (origArgs[3] | 0) + (origArgs[4] | 0) * 0x100000000
@@ -3634,7 +3634,7 @@ export class CentralizedKernelWorker {
 
           this.currentHandlePid = channel.pid;
           try {
-            handleChannel(this.scratchOffset, channel.pid);
+            handleChannel(BigInt(this.scratchOffset), channel.pid);
           } finally {
             this.currentHandlePid = 0;
           }
@@ -3761,10 +3761,10 @@ export class CentralizedKernelWorker {
     kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(flags), true);
 
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
-      (offset: number, pid: number) => number;
+      (offset: bigint, pid: number) => bigint;
     this.currentHandlePid = channel.pid;
     try {
-      handleChannel(this.scratchOffset, channel.pid);
+      handleChannel(BigInt(this.scratchOffset), channel.pid);
     } finally {
       this.currentHandlePid = 0;
     }
@@ -3863,10 +3863,10 @@ export class CentralizedKernelWorker {
     kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(flags), true);
 
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
-      (offset: number, pid: number) => number;
+      (offset: bigint, pid: number) => bigint;
     this.currentHandlePid = channel.pid;
     try {
-      handleChannel(this.scratchOffset, channel.pid);
+      handleChannel(BigInt(this.scratchOffset), channel.pid);
     } finally {
       this.currentHandlePid = 0;
     }
@@ -4088,9 +4088,9 @@ export class CentralizedKernelWorker {
    */
   private resolveExecPathAgainstCwd(pid: number, path: string): string {
     const getCwd = this.kernelInstance!.exports.kernel_get_cwd as
-      ((pid: number, bufPtr: number, bufLen: number) => number) | undefined;
+      ((pid: number, bufPtr: bigint, bufLen: number) => number) | undefined;
     if (!getCwd) return path;
-    const cwdLen = getCwd(pid, this.scratchOffset, 4096);
+    const cwdLen = getCwd(pid, BigInt(this.scratchOffset), 4096);
     if (cwdLen <= 0) return path;
     const kernelBuf = new Uint8Array(this.kernelMemory!.buffer);
     const cwd = new TextDecoder().decode(kernelBuf.slice(this.scratchOffset, this.scratchOffset + cwdLen));
@@ -4128,12 +4128,12 @@ export class CentralizedKernelWorker {
     if ((flags & AT_EMPTY_PATH) !== 0 && pathStr === "") {
       // fexecve path: resolve fd to file path via kernel
       const getFdPath = this.kernelInstance!.exports.kernel_get_fd_path as
-        ((pid: number, fd: number, bufPtr: number, bufLen: number) => number) | undefined;
+        ((pid: number, fd: number, bufPtr: bigint, bufLen: number) => number) | undefined;
       if (!getFdPath) {
         this.completeChannel(channel, SYS_EXECVEAT, origArgs, undefined, -1, 38); // ENOSYS
         return;
       }
-      const result = getFdPath(channel.pid, dirfd, this.scratchOffset, 4096);
+      const result = getFdPath(channel.pid, dirfd, BigInt(this.scratchOffset), 4096);
       if (result <= 0) {
         const errno = result < 0 ? (-result) >>> 0 : 2; // ENOENT
         this.completeChannel(channel, SYS_EXECVEAT, origArgs, undefined, -1, errno);
@@ -4149,9 +4149,9 @@ export class CentralizedKernelWorker {
       // The kernel's sys_execveat already resolves this, but since we intercept
       // host-side, we need to do it ourselves.
       const getCwd = this.kernelInstance!.exports.kernel_get_cwd as
-        ((pid: number, bufPtr: number, bufLen: number) => number) | undefined;
+        ((pid: number, bufPtr: bigint, bufLen: number) => number) | undefined;
       if (getCwd) {
-        const cwdLen = getCwd(channel.pid, this.scratchOffset, 4096);
+        const cwdLen = getCwd(channel.pid, BigInt(this.scratchOffset), 4096);
         if (cwdLen > 0) {
           const kernelBuf = new Uint8Array(this.kernelMemory!.buffer);
           const cwd = new TextDecoder().decode(kernelBuf.slice(this.scratchOffset, this.scratchOffset + cwdLen));
@@ -4212,10 +4212,10 @@ export class CentralizedKernelWorker {
     }
 
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
-      (offset: number, pid: number) => number;
+      (offset: bigint, pid: number) => bigint;
     this.currentHandlePid = channel.pid;
     try {
-      handleChannel(this.scratchOffset, channel.pid);
+      handleChannel(BigInt(this.scratchOffset), channel.pid);
     } finally {
       this.currentHandlePid = 0;
     }
@@ -4320,10 +4320,10 @@ export class CentralizedKernelWorker {
       kernelView.setUint32(CH_SYSCALL, syscallNr, true);
       kernelView.setBigInt64(CH_ARGS, BigInt(exitStatus), true);
       const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
-        (offset: number, pid: number) => number;
+        (offset: bigint, pid: number) => bigint;
       this.currentHandlePid = channel.pid;
       try {
-        handleChannel(this.scratchOffset, channel.pid);
+        handleChannel(BigInt(this.scratchOffset), channel.pid);
       } catch {
         // Expected: kernel_exit traps with unreachable after closing FDs
       } finally {
@@ -4931,10 +4931,10 @@ export class CentralizedKernelWorker {
     }
 
     const handleChannel = this.kernelInstance.exports.kernel_handle_channel as
-      (offset: number, pid: number) => number;
+      (offset: bigint, pid: number) => bigint;
     this.currentHandlePid = targetPid;
     try {
-      handleChannel(this.scratchOffset, targetPid);
+      handleChannel(BigInt(this.scratchOffset), targetPid);
     } catch (err) {
       // Non-fatal — signal delivery is best-effort from the host side
       console.error(`[sendSignalToProcess] kernel threw for pid=${targetPid} sig=${signum}: ${err}`);
@@ -5063,7 +5063,7 @@ export class CentralizedKernelWorker {
     let fileOffset = pageOffset * 4096;
 
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
-      (offset: number, pid: number) => number;
+      (offset: bigint, pid: number) => bigint;
     const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
     const kernelMem = new Uint8Array(this.kernelMemory!.buffer);
     const dataStart = this.scratchOffset + CH_DATA;
@@ -5084,7 +5084,7 @@ export class CentralizedKernelWorker {
 
       this.currentHandlePid = channel.pid;
       try {
-        handleChannel(this.scratchOffset, channel.pid);
+        handleChannel(BigInt(this.scratchOffset), channel.pid);
       } catch {
         break; // pread failed, leave rest as zeros
       }
@@ -5154,7 +5154,7 @@ export class CentralizedKernelWorker {
     fileOffset: number,
   ): void {
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
-      (offset: number, pid: number) => number;
+      (offset: bigint, pid: number) => bigint;
     const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
     const kernelMem = new Uint8Array(this.kernelMemory!.buffer);
     const dataStart = this.scratchOffset + CH_DATA;
@@ -5183,7 +5183,7 @@ export class CentralizedKernelWorker {
 
       this.currentHandlePid = channel.pid;
       try {
-        handleChannel(this.scratchOffset, channel.pid);
+        handleChannel(BigInt(this.scratchOffset), channel.pid);
       } catch {
         break;
       }
@@ -5230,9 +5230,9 @@ export class CentralizedKernelWorker {
    */
   setMaxAddr(pid: number, maxAddr: number): void {
     const setMaxAddrFn = this.kernelInstance!.exports.kernel_set_max_addr as
-      ((pid: number, maxAddr: number) => number) | undefined;
+      ((pid: number, maxAddr: bigint) => number) | undefined;
     if (setMaxAddrFn) {
-      setMaxAddrFn(pid, maxAddr);
+      setMaxAddrFn(pid, BigInt(maxAddr));
     }
   }
 
@@ -5377,9 +5377,9 @@ export class CentralizedKernelWorker {
 
     // Get kernel pipe access functions
     const pipeWrite = this.kernelInstance!.exports.kernel_pipe_write as
-      (pid: number, pipeIdx: number, bufPtr: number, bufLen: number) => number;
+      (pid: number, pipeIdx: number, bufPtr: bigint, bufLen: number) => number;
     const pipeRead = this.kernelInstance!.exports.kernel_pipe_read as
-      (pid: number, pipeIdx: number, bufPtr: number, bufLen: number) => number;
+      (pid: number, pipeIdx: number, bufPtr: bigint, bufLen: number) => number;
     const pipeCloseWrite = this.kernelInstance!.exports.kernel_pipe_close_write as
       (pid: number, pipeIdx: number) => number;
     const pipeCloseRead = this.kernelInstance!.exports.kernel_pipe_close_read as
@@ -5405,7 +5405,7 @@ export class CentralizedKernelWorker {
         const chunk = inboundQueue[0]!;
         const toWrite = Math.min(chunk.length, 65536);
         mem.set(chunk.subarray(0, toWrite), scratchOffset);
-        const written = pipeWrite(pid, recvPipeIdx, scratchOffset, toWrite);
+        const written = pipeWrite(pid, recvPipeIdx, BigInt(scratchOffset), toWrite);
         if (written <= 0) break; // Pipe full, retry next pump
         if (written >= chunk.length) {
           inboundQueue.shift();
@@ -5426,7 +5426,7 @@ export class CentralizedKernelWorker {
       // Responses larger than 65KB (e.g. 662KB site-editor.php) need
       // multiple reads to fully transfer.
       for (;;) {
-        const readN = pipeRead(pid, sendPipeIdx, scratchOffset, 65536);
+        const readN = pipeRead(pid, sendPipeIdx, BigInt(scratchOffset), 65536);
         if (readN <= 0) break;
         totalRead += readN;
         const outData = Buffer.from(mem.slice(scratchOffset, scratchOffset + readN));
@@ -5596,7 +5596,7 @@ export class CentralizedKernelWorker {
     const SETALL = 17;
 
     const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
-    const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as (offset: number, pid: number) => number;
+    const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as (offset: bigint, pid: number) => bigint;
     const kernelMem = this.getKernelMem();
     const dataStart = this.scratchOffset + CH_DATA;
 
@@ -5612,7 +5612,7 @@ export class CentralizedKernelWorker {
       kernelMem.fill(0, dataStart, dataStart + 72);
 
       this.currentHandlePid = channel.pid;
-      try { handleChannel(this.scratchOffset, channel.pid); } finally { this.currentHandlePid = 0; }
+      try { handleChannel(BigInt(this.scratchOffset), channel.pid); } finally { this.currentHandlePid = 0; }
 
       const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
       if (retVal >= 0) {
@@ -5638,7 +5638,7 @@ export class CentralizedKernelWorker {
       kernelMem.fill(0, dataStart, dataStart + maxBytes);
 
       this.currentHandlePid = channel.pid;
-      try { handleChannel(this.scratchOffset, channel.pid); } finally { this.currentHandlePid = 0; }
+      try { handleChannel(BigInt(this.scratchOffset), channel.pid); } finally { this.currentHandlePid = 0; }
 
       const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
       if (retVal >= 0) {
@@ -5666,7 +5666,7 @@ export class CentralizedKernelWorker {
       kernelView.setBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, 0n, true);
 
       this.currentHandlePid = channel.pid;
-      try { handleChannel(this.scratchOffset, channel.pid); } finally { this.currentHandlePid = 0; }
+      try { handleChannel(BigInt(this.scratchOffset), channel.pid); } finally { this.currentHandlePid = 0; }
 
       const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
       this.completeChannelRaw(channel, retVal, retVal < 0 ? -retVal : 0);
@@ -5685,7 +5685,7 @@ export class CentralizedKernelWorker {
     kernelView.setBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, 0n, true);
 
     this.currentHandlePid = channel.pid;
-    try { handleChannel(this.scratchOffset, channel.pid); } finally { this.currentHandlePid = 0; }
+    try { handleChannel(BigInt(this.scratchOffset), channel.pid); } finally { this.currentHandlePid = 0; }
 
     const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
     this.completeChannelRaw(channel, retVal, retVal < 0 ? -retVal : 0);
@@ -5719,10 +5719,10 @@ export class CentralizedKernelWorker {
     kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, -1n, true);         // fd = -1
     kernelView.setBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, 0n, true);          // offset = 0
 
-    const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as (offset: number, pid: number) => number;
+    const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as (offset: bigint, pid: number) => bigint;
     this.currentHandlePid = channel.pid;
     try {
-      handleChannel(this.scratchOffset, channel.pid);
+      handleChannel(BigInt(this.scratchOffset), channel.pid);
     } catch (err) {
       console.error(`[handleIpcShmat] mmap failed for pid=${channel.pid}:`, err);
       this.completeChannelRaw(channel, -12, 12); // ENOMEM
@@ -5743,7 +5743,7 @@ export class CentralizedKernelWorker {
     this.ensureProcessMemoryCovers(channel.memory, SYS_MMAP, addr, [0, size, 3, 0x22, -1, 0]);
 
     // Transfer segment data from kernel to process memory via read_chunk
-    const readChunk = this.kernelInstance!.exports.kernel_ipc_shm_read_chunk as (shmid: number, offset: number, outPtr: number, maxLen: number) => number;
+    const readChunk = this.kernelInstance!.exports.kernel_ipc_shm_read_chunk as (shmid: number, offset: number, outPtr: bigint, maxLen: number) => number;
     const processMem = new Uint8Array(channel.memory.buffer);
     const kernelMem = this.getKernelMem();
     const chunkSize = CH_DATA_SIZE;
@@ -5752,7 +5752,7 @@ export class CentralizedKernelWorker {
     while (transferred < size) {
       const remaining = size - transferred;
       const toRead = Math.min(remaining, chunkSize);
-      const nRead = readChunk(shmid, transferred, chunkPtr, toRead);
+      const nRead = readChunk(shmid, transferred, BigInt(chunkPtr), toRead);
       if (nRead <= 0) break;
       processMem.set(kernelMem.subarray(chunkPtr, chunkPtr + nRead), (addr >>> 0) + transferred);
       transferred += nRead;
@@ -5791,7 +5791,7 @@ export class CentralizedKernelWorker {
     if (setCurrentPid) setCurrentPid(channel.pid);
 
     // Sync process memory back to kernel segment via write_chunk
-    const writeChunk = this.kernelInstance!.exports.kernel_ipc_shm_write_chunk as (shmid: number, offset: number, dataPtr: number, dataLen: number) => number;
+    const writeChunk = this.kernelInstance!.exports.kernel_ipc_shm_write_chunk as (shmid: number, offset: number, dataPtr: bigint, dataLen: number) => number;
     const processMem = new Uint8Array(channel.memory.buffer);
     const kernelMem = this.getKernelMem();
     const chunkSize = CH_DATA_SIZE;
@@ -5801,7 +5801,7 @@ export class CentralizedKernelWorker {
       const remaining = mapping.size - transferred;
       const toWrite = Math.min(remaining, chunkSize);
       kernelMem.set(processMem.subarray(addr + transferred, addr + transferred + toWrite), chunkPtr);
-      const nWritten = writeChunk(mapping.segId, transferred, chunkPtr, toWrite);
+      const nWritten = writeChunk(mapping.segId, transferred, BigInt(chunkPtr), toWrite);
       if (nWritten <= 0) break;
       transferred += nWritten;
     }
@@ -5831,12 +5831,12 @@ export class CentralizedKernelWorker {
    */
   private drainMqueueNotification(): void {
     const drain = this.kernelInstance!.exports
-      .kernel_mq_drain_notification as ((outPtr: number) => number) | undefined;
+      .kernel_mq_drain_notification as ((outPtr: bigint) => number) | undefined;
     if (!drain) return;
 
     // Use kernel scratch as output buffer for (pid: u32, signo: u32)
     const outOffset = this.scratchOffset;
-    const hasPending = drain(outOffset);
+    const hasPending = drain(BigInt(outOffset));
     if (hasPending) {
       const dv = new DataView(this.kernelMemory!.buffer, outOffset);
       const pid = dv.getUint32(0, true);

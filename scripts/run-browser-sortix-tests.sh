@@ -133,7 +133,7 @@ LLVM_BIN="$(find_llvm_bin)"
 CC="$LLVM_BIN/clang"
 
 CFLAGS_BASE=(
-    --target=wasm32-unknown-unknown
+    --target=wasm64-unknown-unknown
     --sysroot="$SYSROOT"
     -nostdlib -O2
     -matomics -mbulk-memory

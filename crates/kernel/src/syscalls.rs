@@ -3230,10 +3230,10 @@ pub fn sys_pause(proc: &mut Process, host: &mut dyn HostIO) -> Result<(), Errno>
 pub fn sys_sigaction(
     proc: &mut Process,
     sig: u32,
-    handler_val: u32,
+    handler_val: usize,
     flags: u32,
     mask: u64,
-) -> Result<(u32, u32, u64), Errno> {
+) -> Result<(usize, u32, u64), Errno> {
     if sig == 0 || sig >= NSIG {
         return Err(Errno::EINVAL);
     }
@@ -3242,8 +3242,8 @@ pub fn sys_sigaction(
     }
 
     let new_handler = match handler_val {
-        SIG_DFL => SignalHandler::Default,
-        SIG_IGN => SignalHandler::Ignore,
+        v if v == SIG_DFL as usize => SignalHandler::Default,
+        v if v == SIG_IGN as usize => SignalHandler::Ignore,
         ptr => SignalHandler::Handler(ptr),
     };
 
@@ -3257,8 +3257,8 @@ pub fn sys_sigaction(
         .map_err(|_| Errno::EINVAL)?;
 
     let old_handler_val = match old.handler {
-        SignalHandler::Default => SIG_DFL,
-        SignalHandler::Ignore => SIG_IGN,
+        SignalHandler::Default => SIG_DFL as usize,
+        SignalHandler::Ignore => SIG_IGN as usize,
         SignalHandler::Handler(ptr) => ptr,
     };
 
@@ -3267,10 +3267,10 @@ pub fn sys_sigaction(
 
 /// signal() — set signal handler (legacy API, wraps sigaction semantics)
 /// Returns previous handler value: SIG_DFL=0, SIG_IGN=1, or function pointer
-pub fn sys_signal(proc: &mut Process, signum: u32, handler_val: u32) -> Result<i32, Errno> {
+pub fn sys_signal(proc: &mut Process, signum: u32, handler_val: usize) -> Result<i32, Errno> {
     let new_handler = match handler_val {
-        SIG_DFL => SignalHandler::Default,
-        SIG_IGN => SignalHandler::Ignore,
+        v if v == SIG_DFL as usize => SignalHandler::Default,
+        v if v == SIG_IGN as usize => SignalHandler::Ignore,
         ptr => SignalHandler::Handler(ptr),
     };
 
@@ -5792,11 +5792,11 @@ pub fn sys_set_robust_list() -> Result<(), Errno> {
 /// futex — real implementation using host Atomics.wait/notify.
 pub fn sys_futex(
     host: &mut dyn HostIO,
-    uaddr: u32,
+    uaddr: usize,
     op: u32,
     val: u32,
     timeout: u32,
-    uaddr2: u32,
+    uaddr2: usize,
     val3: u32,
 ) -> Result<i32, Errno> {
     const FUTEX_WAIT: u32 = 0;
@@ -5820,10 +5820,10 @@ pub fn sys_futex(
                 return Err(Errno::EAGAIN);
             }
             // timeout is a pointer to struct timespec in Wasm memory.
-            // Layout (wasm32 time64): { tv_sec: i64, padding: 0, tv_nsec: i32, padding: 0 } = 16 bytes
+            // LP64 layout: { tv_sec: i64 (8B @ 0), tv_nsec: i64 (8B @ 8) } = 16 bytes
             // For FUTEX_WAIT_BITSET, val3 is the bitmask (we ignore it, treat as full mask)
             let timeout_ns: i64 = if timeout != 0 {
-                // Read timespec from Wasm memory (16 bytes for time64 layout)
+                // Read timespec from Wasm memory (16 bytes)
                 let mem = unsafe {
                     core::slice::from_raw_parts(timeout as *const u8, 16)
                 };
@@ -5831,8 +5831,11 @@ pub fn sys_futex(
                     mem[0], mem[1], mem[2], mem[3],
                     mem[4], mem[5], mem[6], mem[7],
                 ]);
-                // tv_nsec is a long (4 bytes on wasm32) at offset 8
-                let nsec = i32::from_le_bytes([mem[8], mem[9], mem[10], mem[11]]) as i64;
+                // tv_nsec is a long (8 bytes on LP64) at offset 8
+                let nsec = i64::from_le_bytes([
+                    mem[8], mem[9], mem[10], mem[11],
+                    mem[12], mem[13], mem[14], mem[15],
+                ]);
                 sec * 1_000_000_000 + nsec
             } else {
                 -1 // infinite wait
@@ -5883,13 +5886,13 @@ pub fn sys_futex(
 pub fn sys_clone(
     proc: &mut Process,
     host: &mut dyn HostIO,
-    fn_ptr: u32,
-    stack_ptr: u32,
+    fn_ptr: usize,
+    stack_ptr: usize,
     flags: u32,
-    arg: u32,
-    ptid_ptr: u32,
-    tls_ptr: u32,
-    ctid_ptr: u32,
+    arg: usize,
+    ptid_ptr: usize,
+    tls_ptr: usize,
+    ctid_ptr: usize,
 ) -> Result<i32, Errno> {
     use crate::process::ThreadInfo;
 
@@ -5924,7 +5927,7 @@ pub fn sys_clone(
     // In centralized mode, ptid_ptr is in process memory (not kernel memory),
     // so the host must handle this write instead.
     if !crate::is_centralized_mode() && flags & CLONE_PARENT_SETTID != 0 && ptid_ptr != 0 {
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(target_family = "wasm")]
         unsafe {
             let ptr = ptid_ptr as *mut i32;
             *ptr = tid;
@@ -7815,13 +7818,13 @@ mod tests {
         fn host_fork(&self) -> i32 {
             -(Errno::ENOSYS as i32)
         }
-        fn host_futex_wait(&mut self, _addr: u32, _expected: u32, _timeout_ns: i64) -> Result<i32, Errno> {
+        fn host_futex_wait(&mut self, _addr: usize, _expected: u32, _timeout_ns: i64) -> Result<i32, Errno> {
             Err(Errno::EAGAIN)
         }
-        fn host_futex_wake(&mut self, _addr: u32, _count: u32) -> Result<i32, Errno> {
+        fn host_futex_wake(&mut self, _addr: usize, _count: u32) -> Result<i32, Errno> {
             Ok(0)
         }
-        fn host_clone(&mut self, _fn_ptr: u32, _arg: u32, _stack_ptr: u32, _tls_ptr: u32, _ctid_ptr: u32) -> Result<i32, Errno> {
+        fn host_clone(&mut self, _fn_ptr: usize, _arg: usize, _stack_ptr: usize, _tls_ptr: usize, _ctid_ptr: usize) -> Result<i32, Errno> {
             Err(Errno::ENOSYS)
         }
     }
@@ -11281,13 +11284,13 @@ mod tests {
         fn host_fork(&self) -> i32 {
             -(Errno::ENOSYS as i32)
         }
-        fn host_futex_wait(&mut self, _addr: u32, _expected: u32, _timeout_ns: i64) -> Result<i32, Errno> {
+        fn host_futex_wait(&mut self, _addr: usize, _expected: u32, _timeout_ns: i64) -> Result<i32, Errno> {
             Err(Errno::EAGAIN)
         }
-        fn host_futex_wake(&mut self, _addr: u32, _count: u32) -> Result<i32, Errno> {
+        fn host_futex_wake(&mut self, _addr: usize, _count: u32) -> Result<i32, Errno> {
             Ok(0)
         }
-        fn host_clone(&mut self, _fn_ptr: u32, _arg: u32, _stack_ptr: u32, _tls_ptr: u32, _ctid_ptr: u32) -> Result<i32, Errno> {
+        fn host_clone(&mut self, _fn_ptr: usize, _arg: usize, _stack_ptr: usize, _tls_ptr: usize, _ctid_ptr: usize) -> Result<i32, Errno> {
             Err(Errno::ENOSYS)
         }
     }
@@ -11594,9 +11597,9 @@ mod tests {
             fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> { Err(Errno::ENOENT) }
             fn host_fcntl_lock(&mut self, _p: &[u8], _pid: u32, _cmd: u32, _lt: u32, _s: i64, _l: i64, _r: &mut [u8]) -> Result<(), Errno> { Ok(()) }
             fn host_fork(&self) -> i32 { -(Errno::ENOSYS as i32) }
-            fn host_futex_wait(&mut self, _a: u32, _e: u32, _t: i64) -> Result<i32, Errno> { Err(Errno::EAGAIN) }
-            fn host_futex_wake(&mut self, _a: u32, _c: u32) -> Result<i32, Errno> { Ok(0) }
-            fn host_clone(&mut self, _f: u32, _a: u32, _s: u32, _t: u32, _c: u32) -> Result<i32, Errno> { Err(Errno::ENOSYS) }
+            fn host_futex_wait(&mut self, _a: usize, _e: u32, _t: i64) -> Result<i32, Errno> { Err(Errno::EAGAIN) }
+            fn host_futex_wake(&mut self, _a: usize, _c: u32) -> Result<i32, Errno> { Ok(0) }
+            fn host_clone(&mut self, _f: usize, _a: usize, _s: usize, _t: usize, _c: usize) -> Result<i32, Errno> { Err(Errno::ENOSYS) }
         }
 
         let mut proc = Process::new(1);
@@ -13237,9 +13240,9 @@ mod tests {
             fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> { Ok(0) }
             fn host_fcntl_lock(&mut self, _p: &[u8], _pid: u32, _c: u32, _t: u32, _s: i64, _l: i64, _r: &mut [u8]) -> Result<(), Errno> { Ok(()) }
             fn host_fork(&self) -> i32 { -1 }
-            fn host_futex_wait(&mut self, _a: u32, _e: u32, _t: i64) -> Result<i32, Errno> { Ok(0) }
-            fn host_futex_wake(&mut self, _a: u32, _c: u32) -> Result<i32, Errno> { Ok(0) }
-            fn host_clone(&mut self, _f: u32, _a: u32, _s: u32, _t: u32, _c: u32) -> Result<i32, Errno> { Err(Errno::ENOSYS) }
+            fn host_futex_wait(&mut self, _a: usize, _e: u32, _t: i64) -> Result<i32, Errno> { Ok(0) }
+            fn host_futex_wake(&mut self, _a: usize, _c: u32) -> Result<i32, Errno> { Ok(0) }
+            fn host_clone(&mut self, _f: usize, _a: usize, _s: usize, _t: usize, _c: usize) -> Result<i32, Errno> { Err(Errno::ENOSYS) }
         }
 
         let mut proc = Process::new(1);
@@ -13320,9 +13323,9 @@ mod tests {
             fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> { Ok(0) }
             fn host_fcntl_lock(&mut self, _p: &[u8], _pid: u32, _c: u32, _t: u32, _s: i64, _l: i64, _r: &mut [u8]) -> Result<(), Errno> { Ok(()) }
             fn host_fork(&self) -> i32 { -1 }
-            fn host_futex_wait(&mut self, _a: u32, _e: u32, _t: i64) -> Result<i32, Errno> { Ok(0) }
-            fn host_futex_wake(&mut self, _a: u32, _c: u32) -> Result<i32, Errno> { Ok(0) }
-            fn host_clone(&mut self, _f: u32, _a: u32, _s: u32, _t: u32, _c: u32) -> Result<i32, Errno> { Err(Errno::ENOSYS) }
+            fn host_futex_wait(&mut self, _a: usize, _e: u32, _t: i64) -> Result<i32, Errno> { Ok(0) }
+            fn host_futex_wake(&mut self, _a: usize, _c: u32) -> Result<i32, Errno> { Ok(0) }
+            fn host_clone(&mut self, _f: usize, _a: usize, _s: usize, _t: usize, _c: usize) -> Result<i32, Errno> { Err(Errno::ENOSYS) }
         }
 
         let mut proc = Process::new(1);
@@ -13412,9 +13415,9 @@ mod tests {
             fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> { Ok(0) }
             fn host_fcntl_lock(&mut self, _p: &[u8], _pid: u32, _c: u32, _t: u32, _s: i64, _l: i64, _r: &mut [u8]) -> Result<(), Errno> { Ok(()) }
             fn host_fork(&self) -> i32 { -1 }
-            fn host_futex_wait(&mut self, _a: u32, _e: u32, _t: i64) -> Result<i32, Errno> { Ok(0) }
-            fn host_futex_wake(&mut self, _a: u32, _c: u32) -> Result<i32, Errno> { Ok(0) }
-            fn host_clone(&mut self, _f: u32, _a: u32, _s: u32, _t: u32, _c: u32) -> Result<i32, Errno> { Err(Errno::ENOSYS) }
+            fn host_futex_wait(&mut self, _a: usize, _e: u32, _t: i64) -> Result<i32, Errno> { Ok(0) }
+            fn host_futex_wake(&mut self, _a: usize, _c: u32) -> Result<i32, Errno> { Ok(0) }
+            fn host_clone(&mut self, _f: usize, _a: usize, _s: usize, _t: usize, _c: usize) -> Result<i32, Errno> { Err(Errno::ENOSYS) }
         }
 
         let mut proc = Process::new(1);

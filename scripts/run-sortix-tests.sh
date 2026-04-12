@@ -104,7 +104,7 @@ CC="$LLVM_BIN/clang"
 # ── Compile flags ──
 
 CFLAGS_BASE=(
-    --target=wasm32-unknown-unknown
+    --target=wasm64-unknown-unknown
     --sysroot="$SYSROOT"
     -nostdlib
     -O2
@@ -142,7 +142,7 @@ LINK_FLAGS=(
 
 # Flags for building shared libraries (.so) for dlopen tests
 SO_CFLAGS=(
-    --target=wasm32-unknown-unknown
+    --target=wasm64-unknown-unknown
     --sysroot="$SYSROOT"
     -fPIC
     -O2

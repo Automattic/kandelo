@@ -18,6 +18,7 @@ export const LINK_FLAGS: string[] = [
   '-Wl,--shared-memory',
   '-Wl,--max-memory=1073741824',
   '-Wl,--allow-undefined',
+  '-Wl,--allow-multiple-definition',
   '-Wl,--global-base=1114112',
   '-Wl,--table-base=3',
   '-Wl,--export-table',

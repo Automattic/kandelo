@@ -25,7 +25,7 @@ pub fn sig_bit(signum: u32) -> u64 {
 pub enum SignalHandler {
     Default,
     Ignore,
-    Handler(u32), // Function pointer (index) in guest Wasm -- for future use
+    Handler(usize), // Function pointer (index) in guest Wasm
 }
 
 /// Full sigaction information: handler + flags + mask.

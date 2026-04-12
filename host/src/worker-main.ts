@@ -53,35 +53,35 @@ function buildKernelImports(
   return {
     // CRT argv support
     kernel_get_argc: (): number => _argv.length,
-    kernel_argv_read: (index: number, bufPtr: number, bufMax: number): number => {
+    kernel_argv_read: (index: number, bufPtr: number | bigint, bufMax: number): number => {
       if (index >= _argv.length) return 0;
       const encoded = encoder.encode(_argv[index]);
       const len = Math.min(encoded.length, bufMax);
-      new Uint8Array(memory.buffer, bufPtr, len).set(encoded.subarray(0, len));
+      new Uint8Array(memory.buffer, Number(bufPtr), len).set(encoded.subarray(0, len));
       return len;
     },
 
     // CRT environ support
     kernel_environ_count: (): number => _envVars.length,
-    kernel_environ_get: (index: number, bufPtr: number, bufMax: number): number => {
+    kernel_environ_get: (index: number, bufPtr: number | bigint, bufMax: number): number => {
       if (index >= _envVars.length) return -1;
       const encoded = encoder.encode(_envVars[index]);
       const len = Math.min(encoded.length, bufMax);
-      new Uint8Array(memory.buffer, bufPtr, len).set(encoded.subarray(0, len));
+      new Uint8Array(memory.buffer, Number(bufPtr), len).set(encoded.subarray(0, len));
       return len;
     },
 
     // Fork/exec state — not a fork child in centralized mode
     kernel_is_fork_child: (): number => 0,
     kernel_apply_fork_fd_actions: (): number => 0,
-    kernel_get_fork_exec_path: (_buf: number, _max: number): number => 0,
+    kernel_get_fork_exec_path: (_buf: number | bigint, _max: number): number => 0,
     kernel_get_fork_exec_argc: (): number => 0,
-    kernel_get_fork_exec_argv: (_index: number, _buf: number, _max: number): number => 0,
-    kernel_push_argv: (_ptr: number, _len: number): number => 0,
+    kernel_get_fork_exec_argv: (_index: number, _buf: number | bigint, _max: number): number => 0,
+    kernel_push_argv: (_ptr: number | bigint, _len: number): number => 0,
     kernel_clear_fork_exec: (): number => 0,
 
     // Exec dispatches through channel
-    kernel_execve: (_pathPtr: number): number => -38, // ENOSYS
+    kernel_execve: (_pathPtr: number | bigint, _pathLen: number): number => -38, // ENOSYS
 
     // Exit dispatches through channel (SYS_EXIT)
     kernel_exit: (status: number): void => {
@@ -206,18 +206,19 @@ function buildDlopenImports(
   };
 
   return {
-    __wasm_dlopen: (bytesPtr: number, bytesLen: number,
-                    namePtr: number, nameLen: number): number => {
-      const bytes = new Uint8Array(memory.buffer, bytesPtr, bytesLen);
+    // On wasm64, pointer params are i64 (BigInt in JS)
+    __wasm_dlopen: (bytesPtr: bigint, bytesLen: number,
+                    namePtr: bigint, nameLen: number): number => {
+      const bytes = new Uint8Array(memory.buffer, Number(bytesPtr), bytesLen);
       // Copy bytes since memory.buffer may detach during Wasm instantiation
       const bytesCopy = new Uint8Array(bytes);
-      const nameBytes = new Uint8Array(memory.buffer, namePtr, nameLen);
+      const nameBytes = new Uint8Array(memory.buffer, Number(namePtr), nameLen);
       const name = decoder.decode(nameBytes);
       return getLinker().dlopenSync(name, bytesCopy);
     },
 
-    __wasm_dlsym: (handle: number, namePtr: number, nameLen: number): number => {
-      const nameBytes = new Uint8Array(memory.buffer, namePtr, nameLen);
+    __wasm_dlsym: (handle: number, namePtr: bigint, nameLen: number): number => {
+      const nameBytes = new Uint8Array(memory.buffer, Number(namePtr), nameLen);
       const name = decoder.decode(nameBytes);
       const result = getLinker().dlsym(handle, name);
       return result === null ? 0 : (result as number);
@@ -227,13 +228,13 @@ function buildDlopenImports(
       return getLinker().dlclose(handle);
     },
 
-    __wasm_dlerror: (bufPtr: number, bufMax: number): number => {
+    __wasm_dlerror: (bufPtr: bigint, bufMax: number): number => {
       const err = getLinker().dlerror();
       if (!err) return 0;
       const encoder = new TextEncoder();
       const encoded = encoder.encode(err);
       const len = Math.min(encoded.length, bufMax);
-      new Uint8Array(memory.buffer, bufPtr, len).set(encoded.subarray(0, len));
+      new Uint8Array(memory.buffer, Number(bufPtr), len).set(encoded.subarray(0, len));
       return len;
     },
   };
@@ -268,15 +269,16 @@ function buildImportObject(
   // C++ operator new/delete fallbacks — delegate to the wasm instance's malloc/free.
   // Normally resolved by MariaDB's my_new.cc (USE_MYSYS_NEW), but kept as safety net.
   if (getInstance) {
-    const cppMalloc = (size: number): number => {
+    // On wasm64, size_t and void* are i64 (BigInt in JS)
+    const cppMalloc = (size: bigint): bigint => {
       const inst = getInstance();
-      const malloc = inst?.exports.malloc as ((n: number) => number) | undefined;
-      if (!malloc) return 0;
-      return malloc(size || 1);
+      const malloc = inst?.exports.malloc as ((n: bigint) => bigint) | undefined;
+      if (!malloc) return 0n;
+      return malloc(size || 1n);
     };
-    const cppFree = (ptr: number): void => {
+    const cppFree = (ptr: bigint): void => {
       const inst = getInstance();
-      const free = inst?.exports.free as ((p: number) => void) | undefined;
+      const free = inst?.exports.free as ((p: bigint) => void) | undefined;
       if (free) free(ptr);
     };
     envImports._Znwm = cppMalloc;            // operator new(size_t)
@@ -293,37 +295,42 @@ function buildImportObject(
   // the wasm binary links against empty stub archives.
   // __cxa_guard_acquire/release: thread-safe static initialization.
   // Wasm is single-threaded per instance so no real locking needed.
-  envImports.__cxa_guard_acquire = (guardPtr: number): number => {
+  // On wasm64, guard pointers are i64 (BigInt in JS)
+  envImports.__cxa_guard_acquire = (guardPtr: bigint): number => {
     const view = new Uint8Array(memory.buffer);
-    if (view[guardPtr]) return 0; // already initialized
+    if (view[Number(guardPtr)]) return 0; // already initialized
     return 1; // needs initialization
   };
-  envImports.__cxa_guard_release = (guardPtr: number): void => {
+  envImports.__cxa_guard_release = (guardPtr: bigint): void => {
     const view = new Uint8Array(memory.buffer);
-    view[guardPtr] = 1; // mark initialized
+    view[Number(guardPtr)] = 1; // mark initialized
   };
-  envImports.__cxa_guard_abort = (_guardPtr: number): void => { /* no-op */ };
+  envImports.__cxa_guard_abort = (_guardPtr: bigint): void => { /* no-op */ };
   envImports.__cxa_pure_virtual = (): void => {
     throw new Error("pure virtual method called");
   };
   envImports.__cxa_atexit = (): number => 0; // no-op, return success
   // __dynamic_cast: RTTI — returns dest if cast succeeds, 0 otherwise.
   // Simplified: always return the source pointer (assume cast succeeds).
-  envImports.__dynamic_cast = (src: number): number => src;
+  // On wasm64, pointer params/returns are i64 (BigInt in JS)
+  envImports.__dynamic_cast = (src: bigint, _dst: bigint, _src2: bigint, _hint: bigint): bigint => src;
   // libc++ verbose abort
-  envImports._ZNSt3__122__libcpp_verbose_abortEPKcz = (): void => {
+  envImports._ZNSt3__122__libcpp_verbose_abortEPKcz = (_fmt: bigint, ..._args: bigint[]): void => {
     throw new Error("libc++: abort");
   };
   // std::sort specialization — sort uint64 array in-place
+  // On wasm64, pointers are i64 (BigInt in JS)
   envImports['_ZNSt3__16__sortIRNS_6__lessIyyEEPyEEvT0_S5_T_'] = (
-    begin: number, end: number,
+    begin: bigint, end: bigint, _less: bigint,
   ): void => {
+    const nBegin = Number(begin);
+    const nEnd = Number(end);
     const view = new DataView(memory.buffer);
-    const count = (end - begin) / 8;
+    const count = (nEnd - nBegin) / 8;
     const arr: bigint[] = [];
-    for (let i = 0; i < count; i++) arr.push(view.getBigUint64(begin + i * 8, true));
+    for (let i = 0; i < count; i++) arr.push(view.getBigUint64(nBegin + i * 8, true));
     arr.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-    for (let i = 0; i < count; i++) view.setBigUint64(begin + i * 8, arr[i], true);
+    for (let i = 0; i < count; i++) view.setBigUint64(nBegin + i * 8, arr[i], true);
   };
 
   // Stub any remaining unresolved function imports
@@ -459,7 +466,7 @@ export async function centralizedWorkerMain(
         const view = new DataView(memory.buffer);
         view.setBigInt64(asyncifyBufAddr, BigInt(asyncifyBufAddr + 16), true);     // start ptr (i64)
         view.setBigInt64(asyncifyBufAddr + 8, BigInt(asyncifyBufAddr + ASYNCIFY_BUF_SIZE), true); // end ptr (i64)
-        (processInstance.exports.asyncify_start_unwind as (addr: number) => void)(asyncifyBufAddr);
+        (processInstance.exports.asyncify_start_unwind as (addr: bigint) => void)(BigInt(asyncifyBufAddr));
         return 0; // ignored during unwind
       };
 
@@ -521,7 +528,7 @@ export async function centralizedWorkerMain(
         const start = instance.exports._start as () => void;
         const getState = instance.exports.asyncify_get_state as () => number;
         const stopUnwind = instance.exports.asyncify_stop_unwind as () => void;
-        const startRewind = instance.exports.asyncify_start_rewind as (addr: number) => void;
+        const startRewind = instance.exports.asyncify_start_rewind as (addr: bigint) => void;
 
         // For fork children: start with rewind to resume from fork point
         let needsRewind = !!initData.isForkChild;
@@ -536,7 +543,7 @@ export async function centralizedWorkerMain(
 
         for (;;) {
           if (needsRewind) {
-            startRewind(rewindAddr);
+            startRewind(BigInt(rewindAddr));
             needsRewind = false;
           }
 
@@ -1196,13 +1203,13 @@ export async function centralizedThreadWorkerMain(
     // This avoids a corruption issue where unidentified wasm code writes to
     // page-aligned addresses in the thread region, overwriting __channel_base.
     // The channel spill page has 65496 bytes free after the header; we only need 8.
-    const wasmInitTls = instance.exports.__wasm_init_tls as ((addr: number) => void) | undefined;
+    const wasmInitTls = instance.exports.__wasm_init_tls as ((addr: bigint) => void) | undefined;
     const CH_TOTAL = CH_HEADER_SIZE + 65536; // 72 + 65536 = 65608 on wasm64
     const safeTlsAddr = channelOffset + CH_TOTAL; // inside channel spill page, 8-byte aligned
     const tlsBlock = safeTlsAddr;
 
     if (wasmInitTls && tlsBlock > 0) {
-      wasmInitTls(tlsBlock);
+      wasmInitTls(BigInt(tlsBlock));
       tlog(`[thread-worker] tid=${tid} __wasm_init_tls(${tlsBlock}) done`);
     }
 
@@ -1222,10 +1229,10 @@ export async function centralizedThreadWorkerMain(
     }
 
     // Initialize musl thread pointer if available
-    const wasmThreadInit = instance.exports.__wasm_thread_init as ((tp: number) => void) | undefined;
+    const wasmThreadInit = instance.exports.__wasm_thread_init as ((tp: bigint) => void) | undefined;
     if (wasmThreadInit && tlsPtr > 0) {
       const tlsBaseBeforeInit = Number((instance.exports.__tls_base as WebAssembly.Global)?.value ?? 0);
-      wasmThreadInit(tlsPtr);
+      wasmThreadInit(BigInt(tlsPtr));
       const tlsBaseAfterInit = Number((instance.exports.__tls_base as WebAssembly.Global)?.value ?? 0);
       tlog(`[thread-worker] tid=${tid} __wasm_thread_init(${tlsPtr}) done, __tls_base: ${tlsBaseBeforeInit} → ${tlsBaseAfterInit}${tlsBaseBeforeInit !== tlsBaseAfterInit ? ' CHANGED!' : ''}`);
     }
@@ -1258,7 +1265,8 @@ export async function centralizedThreadWorkerMain(
       throw new Error("No __indirect_function_table export — cannot call thread function");
     }
 
-    const threadFn = table.get(fnPtr) as ((arg: number) => number) | null;
+    // On wasm64, thread function takes void* (i64/BigInt) and returns void* (i64/BigInt)
+    const threadFn = table.get(fnPtr) as ((arg: bigint) => bigint) | null;
     if (!threadFn) {
       throw new Error(`Thread function at table index ${fnPtr} is null`);
     }
@@ -1270,7 +1278,7 @@ export async function centralizedThreadWorkerMain(
     let result: number;
     tlog(`[thread-worker] tid=${tid} calling threadFn(${argPtr})...`);
     try {
-      result = threadFn(argPtr);
+      result = Number(threadFn(BigInt(argPtr)));
       tlog(`[thread-worker] tid=${tid} threadFn returned ${result}`);
     } catch (e) {
       tlog(`[thread-worker] tid=${tid} threadFn threw: ${e}`);

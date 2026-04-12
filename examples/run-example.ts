@@ -21,7 +21,7 @@ import type { WorkerHandle } from "../host/src/worker-adapter";
 import type { CentralizedWorkerInitMessage, CentralizedThreadInitMessage, WorkerToHostMessage } from "../host/src/worker-protocol";
 import { ThreadPageAllocator } from "../host/src/thread-allocator";
 
-const CH_TOTAL_SIZE = 40 + 65536; // header (40B) + data buffer (64KB)
+const CH_TOTAL_SIZE = 72 + 65536; // header (72B wasm64) + data buffer (64KB)
 
 const repoRoot = resolve(dirname(new URL(import.meta.url).pathname), "..");
 const workerAdapter = new NodeWorkerAdapter();
@@ -340,13 +340,14 @@ async function main() {
                 const parentBuf = new Uint8Array(parentMemory.buffer);
                 const parentPages = Math.ceil(parentBuf.byteLength / 65536);
                 const childMemory = new WebAssembly.Memory({
-                    initial: parentPages,
-                    maximum: MAX_PAGES,
+                    initial: BigInt(parentPages),
+                    maximum: BigInt(MAX_PAGES),
                     shared: true,
-                });
+                    address: 'i64',
+                } as any);
                 // Grow child to same size as parent
                 if (parentPages < MAX_PAGES) {
-                    childMemory.grow(MAX_PAGES - parentPages);
+                    childMemory.grow(BigInt(MAX_PAGES - parentPages));
                 }
                 new Uint8Array(childMemory.buffer).set(parentBuf);
 
@@ -403,12 +404,13 @@ async function main() {
 
                 // Create fresh memory for the new program
                 const newMemory = new WebAssembly.Memory({
-                    initial: 17,
-                    maximum: MAX_PAGES,
+                    initial: 17n,
+                    maximum: BigInt(MAX_PAGES),
                     shared: true,
-                });
+                    address: 'i64',
+                } as any);
                 const newChannelOffset = (MAX_PAGES - 2) * 65536;
-                newMemory.grow(MAX_PAGES - 17);
+                newMemory.grow(BigInt(MAX_PAGES - 17));
                 new Uint8Array(newMemory.buffer, newChannelOffset, CH_TOTAL_SIZE).fill(0);
 
                 // Register new process with same pid
@@ -511,17 +513,18 @@ async function main() {
     const MAX_PAGES = 16384;
     const threadAllocator = new ThreadPageAllocator(MAX_PAGES);
     const memory = new WebAssembly.Memory({
-        initial: 17,
-        maximum: MAX_PAGES,
+        initial: 17n,
+        maximum: BigInt(MAX_PAGES),
         shared: true,
-    });
+        address: 'i64',
+    } as any);
 
     // Place channel at the LAST 2 pages of the address space so it
     // doesn't collide with the heap (brk grows up from __heap_base)
     // or mmap (starts at 256 MB). Growing to max is instant since
     // shared memory pre-allocates the backing store.
     const channelOffset = (MAX_PAGES - 2) * 65536;
-    memory.grow(MAX_PAGES - 17); // grow to max
+    memory.grow(BigInt(MAX_PAGES - 17)); // grow to max
     new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
     // Register process with kernel

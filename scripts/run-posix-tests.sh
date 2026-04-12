@@ -58,7 +58,7 @@ CC="$LLVM_BIN/clang"
 # ── Compile flags ─────────────────────────────────────────
 
 CFLAGS=(
-    --target=wasm32-unknown-unknown
+    --target=wasm64-unknown-unknown
     --sysroot="$SYSROOT"
     -nostdlib
     -O2

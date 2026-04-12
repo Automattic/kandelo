@@ -170,10 +170,11 @@ export class WasmPosixKernel {
    */
   async init(wasmBytes: BufferSource): Promise<void> {
     const memory = new WebAssembly.Memory({
-      initial: 17,
-      maximum: 16384,
+      initial: 17n,
+      maximum: 16384n,
       shared: true,
-    });
+      address: 'i64',
+    } as any);
     this.memory = memory;
     const importObject = this.buildImportObject(memory);
     const module = await WebAssembly.compile(wasmBytes as BufferSource);
@@ -195,76 +196,77 @@ export class WasmPosixKernel {
     return {
       env: {
         memory,
-        host_debug_log: (ptr: number, len: number): void => {
-          const buf = new Uint8Array(memory.buffer, ptr, len);
+        host_debug_log: (ptr: bigint, len: number): void => {
+          const nPtr = Number(ptr);
+          const buf = new Uint8Array(memory.buffer, nPtr, len);
           const msg = new TextDecoder().decode(buf.slice());
           console.log(`[KERNEL] ${msg}`);
         },
-        host_open: (pathPtr: number, pathLen: number, flags: number, mode: number): bigint => {
-          return this.hostOpen(pathPtr, pathLen, flags, mode);
+        host_open: (pathPtr: bigint, pathLen: number, flags: number, mode: number): bigint => {
+          return this.hostOpen(Number(pathPtr), pathLen, flags, mode);
         },
         host_close: (handle: bigint): number => {
           return this.hostClose(handle);
         },
-        host_read: (handle: bigint, bufPtr: number, bufLen: number): number => {
-          return this.hostRead(handle, bufPtr, bufLen);
+        host_read: (handle: bigint, bufPtr: bigint, bufLen: number): number => {
+          return this.hostRead(handle, Number(bufPtr), bufLen);
         },
-        host_write: (handle: bigint, bufPtr: number, bufLen: number): number => {
-          return this.hostWrite(handle, bufPtr, bufLen);
+        host_write: (handle: bigint, bufPtr: bigint, bufLen: number): number => {
+          return this.hostWrite(handle, Number(bufPtr), bufLen);
         },
         host_seek: (handle: bigint, offsetLo: number, offsetHi: number, whence: number): bigint => {
           return this.hostSeek(handle, offsetLo, offsetHi, whence);
         },
-        host_fstat: (handle: bigint, statPtr: number): number => {
-          return this.hostFstat(handle, statPtr);
+        host_fstat: (handle: bigint, statPtr: bigint): number => {
+          return this.hostFstat(handle, Number(statPtr));
         },
-        host_stat: (pathPtr: number, pathLen: number, statPtr: number): number => {
-          return this.hostStat(pathPtr, pathLen, statPtr);
+        host_stat: (pathPtr: bigint, pathLen: number, statPtr: bigint): number => {
+          return this.hostStat(Number(pathPtr), pathLen, Number(statPtr));
         },
-        host_lstat: (pathPtr: number, pathLen: number, statPtr: number): number => {
-          return this.hostLstat(pathPtr, pathLen, statPtr);
+        host_lstat: (pathPtr: bigint, pathLen: number, statPtr: bigint): number => {
+          return this.hostLstat(Number(pathPtr), pathLen, Number(statPtr));
         },
-        host_mkdir: (pathPtr: number, pathLen: number, mode: number): number => {
-          return this.hostMkdir(pathPtr, pathLen, mode);
+        host_mkdir: (pathPtr: bigint, pathLen: number, mode: number): number => {
+          return this.hostMkdir(Number(pathPtr), pathLen, mode);
         },
-        host_rmdir: (pathPtr: number, pathLen: number): number => {
-          return this.hostRmdir(pathPtr, pathLen);
+        host_rmdir: (pathPtr: bigint, pathLen: number): number => {
+          return this.hostRmdir(Number(pathPtr), pathLen);
         },
-        host_unlink: (pathPtr: number, pathLen: number): number => {
-          return this.hostUnlink(pathPtr, pathLen);
+        host_unlink: (pathPtr: bigint, pathLen: number): number => {
+          return this.hostUnlink(Number(pathPtr), pathLen);
         },
-        host_rename: (oldPtr: number, oldLen: number, newPtr: number, newLen: number): number => {
-          return this.hostRename(oldPtr, oldLen, newPtr, newLen);
+        host_rename: (oldPtr: bigint, oldLen: number, newPtr: bigint, newLen: number): number => {
+          return this.hostRename(Number(oldPtr), oldLen, Number(newPtr), newLen);
         },
-        host_link: (oldPtr: number, oldLen: number, newPtr: number, newLen: number): number => {
-          return this.hostLink(oldPtr, oldLen, newPtr, newLen);
+        host_link: (oldPtr: bigint, oldLen: number, newPtr: bigint, newLen: number): number => {
+          return this.hostLink(Number(oldPtr), oldLen, Number(newPtr), newLen);
         },
-        host_symlink: (targetPtr: number, targetLen: number, linkPtr: number, linkLen: number): number => {
-          return this.hostSymlink(targetPtr, targetLen, linkPtr, linkLen);
+        host_symlink: (targetPtr: bigint, targetLen: number, linkPtr: bigint, linkLen: number): number => {
+          return this.hostSymlink(Number(targetPtr), targetLen, Number(linkPtr), linkLen);
         },
-        host_readlink: (pathPtr: number, pathLen: number, bufPtr: number, bufLen: number): number => {
-          return this.hostReadlink(pathPtr, pathLen, bufPtr, bufLen);
+        host_readlink: (pathPtr: bigint, pathLen: number, bufPtr: bigint, bufLen: number): number => {
+          return this.hostReadlink(Number(pathPtr), pathLen, Number(bufPtr), bufLen);
         },
-        host_chmod: (pathPtr: number, pathLen: number, mode: number): number => {
-          return this.hostChmod(pathPtr, pathLen, mode);
+        host_chmod: (pathPtr: bigint, pathLen: number, mode: number): number => {
+          return this.hostChmod(Number(pathPtr), pathLen, mode);
         },
-        host_chown: (pathPtr: number, pathLen: number, uid: number, gid: number): number => {
-          return this.hostChown(pathPtr, pathLen, uid, gid);
+        host_chown: (pathPtr: bigint, pathLen: number, uid: number, gid: number): number => {
+          return this.hostChown(Number(pathPtr), pathLen, uid, gid);
         },
-        host_access: (pathPtr: number, pathLen: number, amode: number): number => {
-          return this.hostAccess(pathPtr, pathLen, amode);
+        host_access: (pathPtr: bigint, pathLen: number, amode: number): number => {
+          return this.hostAccess(Number(pathPtr), pathLen, amode);
         },
-        host_opendir: (pathPtr: number, pathLen: number): bigint => {
-          return this.hostOpendir(pathPtr, pathLen);
+        host_opendir: (pathPtr: bigint, pathLen: number): bigint => {
+          return this.hostOpendir(Number(pathPtr), pathLen);
         },
-        host_readdir: (dirHandle: bigint, direntPtr: number, namePtr: number, nameLen: number): number => {
-          return this.hostReaddir(dirHandle, direntPtr, namePtr, nameLen);
+        host_readdir: (dirHandle: bigint, direntPtr: bigint, namePtr: bigint, nameLen: number): number => {
+          return this.hostReaddir(dirHandle, Number(direntPtr), Number(namePtr), nameLen);
         },
         host_closedir: (dirHandle: bigint): number => {
           return this.hostClosedir(dirHandle);
         },
-        host_clock_gettime: (clockId: number, secPtr: number, nsecPtr: number): number => {
-          return this.hostClockGettime(clockId, secPtr, nsecPtr);
+        host_clock_gettime: (clockId: number, secPtr: bigint, nsecPtr: bigint): number => {
+          return this.hostClockGettime(clockId, Number(secPtr), Number(nsecPtr));
         },
         host_nanosleep: (sec: bigint, nsec: bigint): number => {
           return this.hostNanosleep(sec, nsec);
@@ -284,8 +286,8 @@ export class WasmPosixKernel {
         host_kill: (pid: number, sig: number): number => {
           return this.hostKill(pid, sig);
         },
-        host_exec: (pathPtr: number, pathLen: number): number => {
-          return this.hostExec(pathPtr, pathLen);
+        host_exec: (pathPtr: bigint, pathLen: number): number => {
+          return this.hostExec(Number(pathPtr), pathLen);
         },
         host_set_alarm: (seconds: number): number => {
           return this.hostSetAlarm(seconds);
@@ -322,10 +324,11 @@ export class WasmPosixKernel {
           }
           return -22; // EINVAL
         },
-        host_getrandom: (bufPtr: number, bufLen: number): number => {
+        host_getrandom: (bufPtr: bigint, bufLen: number): number => {
           try {
+            const nBufPtr = Number(bufPtr);
             const mem = this.getMemoryBuffer();
-            const target = mem.subarray(bufPtr, bufPtr + bufLen);
+            const target = mem.subarray(nBufPtr, nBufPtr + bufLen);
             if (typeof globalThis.crypto !== "undefined" && globalThis.crypto.getRandomValues) {
               // crypto.getRandomValues rejects SharedArrayBuffer-backed views in browsers.
               // Use a temporary non-shared buffer and copy.
@@ -341,22 +344,22 @@ export class WasmPosixKernel {
           }
         },
         host_utimensat: (
-          pathPtr: number, pathLen: number,
+          pathPtr: bigint, pathLen: number,
           atimeSec: bigint, atimeNsec: bigint, mtimeSec: bigint, mtimeNsec: bigint,
         ): number => {
-          return this.hostUtimensat(pathPtr, pathLen, atimeSec, atimeNsec, mtimeSec, mtimeNsec);
+          return this.hostUtimensat(Number(pathPtr), pathLen, atimeSec, atimeNsec, mtimeSec, mtimeNsec);
         },
-        host_waitpid: (pid: number, options: number, statusPtr: number): number => {
-          return this.hostWaitpid(pid, options, statusPtr);
+        host_waitpid: (pid: number, options: number, statusPtr: bigint): number => {
+          return this.hostWaitpid(pid, options, Number(statusPtr));
         },
-        host_net_connect: (handle: number, addrPtr: number, addrLen: number, port: number): number => {
-          return this.hostNetConnect(handle, addrPtr, addrLen, port);
+        host_net_connect: (handle: number, addrPtr: bigint, addrLen: number, port: number): number => {
+          return this.hostNetConnect(handle, Number(addrPtr), addrLen, port);
         },
-        host_net_send: (handle: number, bufPtr: number, bufLen: number, flags: number): number => {
-          return this.hostNetSend(handle, bufPtr, bufLen, flags);
+        host_net_send: (handle: number, bufPtr: bigint, bufLen: number, flags: number): number => {
+          return this.hostNetSend(handle, Number(bufPtr), bufLen, flags);
         },
-        host_net_recv: (handle: number, bufPtr: number, bufLen: number, flags: number): number => {
-          return this.hostNetRecv(handle, bufPtr, bufLen, flags);
+        host_net_recv: (handle: number, bufPtr: bigint, bufLen: number, flags: number): number => {
+          return this.hostNetRecv(handle, Number(bufPtr), bufLen, flags);
         },
         host_net_close: (handle: number): number => {
           return this.hostNetClose(handle);
@@ -364,17 +367,17 @@ export class WasmPosixKernel {
         host_net_listen: (fd: number, port: number, addrA: number, addrB: number, addrC: number, addrD: number): number => {
           return this.hostNetListen(fd, port, addrA, addrB, addrC, addrD);
         },
-        host_getaddrinfo: (namePtr: number, nameLen: number, resultPtr: number, resultLen: number): number => {
-          return this.hostGetaddrinfo(namePtr, nameLen, resultPtr, resultLen);
+        host_getaddrinfo: (namePtr: bigint, nameLen: number, resultPtr: bigint, resultLen: number): number => {
+          return this.hostGetaddrinfo(Number(namePtr), nameLen, Number(resultPtr), resultLen);
         },
         host_fcntl_lock: (
-          pathPtr: number, pathLen: number,
+          pathPtr: bigint, pathLen: number,
           pid: number, cmd: number, lockType: number,
           startLo: number, startHi: number,
           lenLo: number, lenHi: number,
-          resultPtr: number,
+          resultPtr: bigint,
         ): number => {
-          return this.hostFcntlLock(pathPtr, pathLen, pid, cmd, lockType, startLo, startHi, lenLo, lenHi, resultPtr);
+          return this.hostFcntlLock(Number(pathPtr), pathLen, pid, cmd, lockType, startLo, startHi, lenLo, lenHi, Number(resultPtr));
         },
         host_fork: (): number => {
           return this.hostFork();
@@ -1193,14 +1196,14 @@ export class WasmPosixKernel {
       domain: number,
       type: number,
       protocol: number,
-      svPtr: number,
+      svPtr: bigint,
     ) => number;
     // Use a scratch area in Wasm memory for the two i32 results.
     // We use offset 0 of the data buffer (safe for temp use since no
     // concurrent host operations touch it).
     const dv = this.getMemoryDataView();
     const scratchPtr = 4; // offset 4 to avoid address 0
-    const result = fn(domain, type, protocol, scratchPtr);
+    const result = fn(domain, type, protocol, BigInt(scratchPtr));
     if (result < 0) throw new Error(`socketpair failed: errno ${-result}`);
     const fd0 = dv.getInt32(scratchPtr, true);
     const fd1 = dv.getInt32(scratchPtr + 4, true);
@@ -1225,7 +1228,7 @@ export class WasmPosixKernel {
   send(fd: number, data: Uint8Array, flags: number = 0): number {
     const fn = this.instance!.exports.kernel_send as (
       fd: number,
-      bufPtr: number,
+      bufPtr: bigint,
       bufLen: number,
       flags: number,
     ) => number;
@@ -1233,7 +1236,7 @@ export class WasmPosixKernel {
     const mem = this.getMemoryBuffer();
     const tmpPtr = 16; // scratch area
     mem.set(data, tmpPtr);
-    const result = fn(fd, tmpPtr, data.length, flags);
+    const result = fn(fd, BigInt(tmpPtr), data.length, flags);
     if (result < 0) throw new Error(`send failed: errno ${-result}`);
     return result;
   }
@@ -1244,12 +1247,12 @@ export class WasmPosixKernel {
   recv(fd: number, maxLen: number, flags: number = 0): Uint8Array {
     const fn = this.instance!.exports.kernel_recv as (
       fd: number,
-      bufPtr: number,
+      bufPtr: bigint,
       bufLen: number,
       flags: number,
     ) => number;
     const tmpPtr = 16; // scratch area
-    const result = fn(fd, tmpPtr, maxLen, flags);
+    const result = fn(fd, BigInt(tmpPtr), maxLen, flags);
     if (result < 0) throw new Error(`recv failed: errno ${-result}`);
     const mem = this.getMemoryBuffer();
     return mem.slice(tmpPtr, tmpPtr + result);
@@ -1264,7 +1267,7 @@ export class WasmPosixKernel {
     timeout: number,
   ): Array<{ fd: number; events: number; revents: number }> {
     const fn = this.instance!.exports.kernel_poll as (
-      fdsPtr: number,
+      fdsPtr: bigint,
       nfds: number,
       timeout: number,
     ) => number;
@@ -1278,7 +1281,7 @@ export class WasmPosixKernel {
       dv.setInt16(off + 4, fds[i].events, true);
       dv.setInt16(off + 6, 0, true);
     }
-    const result = fn(tmpPtr, nfds, timeout);
+    const result = fn(BigInt(tmpPtr), nfds, timeout);
     if (result < 0) throw new Error(`poll failed: errno ${-result}`);
     return fds.map((f, i) => ({
       fd: f.fd,
@@ -1295,11 +1298,12 @@ export class WasmPosixKernel {
       fd: number,
       level: number,
       optname: number,
-      optvalPtr: number,
+      optvalPtr: bigint,
+      optlenPtr: bigint,
     ) => number;
     const dv = this.getMemoryDataView();
     const scratchPtr = 4;
-    const result = fn(fd, level, optname, scratchPtr);
+    const result = fn(fd, level, optname, BigInt(scratchPtr), 0n);
     if (result < 0) throw new Error(`getsockopt failed: errno ${-result}`);
     return dv.getUint32(scratchPtr, true);
   }
@@ -1312,9 +1316,15 @@ export class WasmPosixKernel {
       fd: number,
       level: number,
       optname: number,
-      optval: number,
+      optvalPtr: bigint,
+      optlen: number,
     ) => number;
-    const result = fn(fd, level, optname, value);
+    // Write value as u32 to scratch, pass pointer
+    const mem = this.getMemoryBuffer();
+    const dv = this.getMemoryDataView();
+    const scratchPtr = 4;
+    dv.setUint32(scratchPtr, value, true);
+    const result = fn(fd, level, optname, BigInt(scratchPtr), 4);
     if (result < 0) throw new Error(`setsockopt failed: errno ${-result}`);
   }
 
@@ -1326,11 +1336,11 @@ export class WasmPosixKernel {
   tcgetattr(fd: number): Uint8Array {
     const fn = this.instance!.exports.kernel_tcgetattr as (
       fd: number,
-      bufPtr: number,
+      bufPtr: bigint,
       bufLen: number,
     ) => number;
     const tmpPtr = 16;
-    const result = fn(fd, tmpPtr, 48);
+    const result = fn(fd, BigInt(tmpPtr), 48);
     if (result < 0) throw new Error(`tcgetattr failed: errno ${-result}`);
     const mem = this.getMemoryBuffer();
     return mem.slice(tmpPtr, tmpPtr + 48);
@@ -1344,13 +1354,13 @@ export class WasmPosixKernel {
     const fn = this.instance!.exports.kernel_tcsetattr as (
       fd: number,
       action: number,
-      bufPtr: number,
+      bufPtr: bigint,
       bufLen: number,
     ) => number;
     const mem = this.getMemoryBuffer();
     const tmpPtr = 16;
     mem.set(attrs, tmpPtr);
-    const result = fn(fd, action, tmpPtr, attrs.length);
+    const result = fn(fd, action, BigInt(tmpPtr), attrs.length);
     if (result < 0) throw new Error(`tcsetattr failed: errno ${-result}`);
   }
 
@@ -1363,14 +1373,14 @@ export class WasmPosixKernel {
     const fn = this.instance!.exports.kernel_ioctl as (
       fd: number,
       request: number,
-      bufPtr: number,
+      bufPtr: bigint,
       bufLen: number,
     ) => number;
     const mem = this.getMemoryBuffer();
     const tmpPtr = 16;
     const bufLen = buf ? buf.length : 8;
     if (buf) mem.set(buf, tmpPtr);
-    const result = fn(fd, request, tmpPtr, bufLen);
+    const result = fn(fd, request, BigInt(tmpPtr), bufLen);
     if (result < 0) throw new Error(`ioctl failed: errno ${-result}`);
     return mem.slice(tmpPtr, tmpPtr + bufLen);
   }
@@ -1403,9 +1413,9 @@ export class WasmPosixKernel {
    * Get system identification. Returns object with sysname, nodename, release, version, machine.
    */
   uname(): { sysname: string; nodename: string; release: string; version: string; machine: string } {
-    const fn = this.instance!.exports.kernel_uname as (bufPtr: number, bufLen: number) => number;
+    const fn = this.instance!.exports.kernel_uname as (bufPtr: bigint, bufLen: number) => number;
     const tmpPtr = 16;
-    const result = fn(tmpPtr, 325);
+    const result = fn(BigInt(tmpPtr), 325);
     if (result < 0) throw new Error(`uname failed: errno ${-result}`);
     const mem = this.getMemoryBuffer();
     const decoder = new TextDecoder();
@@ -1450,11 +1460,11 @@ export class WasmPosixKernel {
    */
   pipe2(flags: number): [number, number] {
     const fn = this.instance!.exports.kernel_pipe2 as (
-      flags: number, fdPtr: number
+      flags: number, fdPtr: bigint
     ) => number;
     const dv = this.getMemoryDataView();
     const scratchPtr = 4;
-    const result = fn(flags, scratchPtr);
+    const result = fn(flags, BigInt(scratchPtr));
     if (result < 0) throw new Error(`pipe2 failed: errno ${-result}`);
     return [dv.getInt32(scratchPtr, true), dv.getInt32(scratchPtr + 4, true)];
   }
@@ -1488,11 +1498,11 @@ export class WasmPosixKernel {
    */
   truncate(pathPtr: number, pathLen: number, length: number): void {
     const fn = this.instance!.exports.kernel_truncate as (
-      pathPtr: number, pathLen: number, lengthLo: number, lengthHi: number
+      pathPtr: bigint, pathLen: number, lengthLo: number, lengthHi: number
     ) => number;
     const lo = length & 0xFFFFFFFF;
     const hi = Math.floor(length / 0x100000000);
-    const result = fn(pathPtr, pathLen, lo, hi);
+    const result = fn(BigInt(pathPtr), pathLen, lo, hi);
     if (result < 0) throw new Error(`truncate failed: errno ${-result}`);
   }
 
@@ -1607,10 +1617,10 @@ export class WasmPosixKernel {
    */
   getrusage(who: number): Uint8Array {
     const fn = this.instance!.exports.kernel_getrusage as (
-      who: number, bufPtr: number, bufLen: number
+      who: number, bufPtr: bigint, bufLen: number
     ) => number;
     const tmpPtr = 16;
-    const result = fn(who, tmpPtr, 144);
+    const result = fn(who, BigInt(tmpPtr), 144);
     if (result < 0) throw new Error(`getrusage failed: errno ${-result}`);
     const mem = this.getMemoryBuffer();
     return mem.slice(tmpPtr, tmpPtr + 144);
@@ -1627,7 +1637,7 @@ export class WasmPosixKernel {
     exceptfds: number[] | null,
   ): { readReady: number[]; writeReady: number[]; exceptReady: number[] } {
     const fn = this.instance!.exports.kernel_select as (
-      nfds: number, readPtr: number, writePtr: number, exceptPtr: number, timeout: number
+      nfds: number, readPtr: bigint, writePtr: bigint, exceptPtr: bigint, timeout: number
     ) => number;
 
     const mem = this.getMemoryBuffer();
@@ -1657,7 +1667,7 @@ export class WasmPosixKernel {
       }
     }
 
-    const result = fn(nfds, readPtr, writePtr, exceptPtr, 0);
+    const result = fn(nfds, BigInt(readPtr), BigInt(writePtr), BigInt(exceptPtr), 0);
     if (result < 0) throw new Error(`select failed: errno ${-result}`);
 
     // Extract results
