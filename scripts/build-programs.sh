@@ -35,7 +35,7 @@ if [ ! -f "$SYSROOT/lib/libc.a" ]; then
 fi
 
 CFLAGS=(
-    --target=wasm32-unknown-unknown
+    --target=wasm64-unknown-unknown
     --sysroot="$SYSROOT"
     -nostdlib
     -O2

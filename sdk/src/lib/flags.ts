@@ -1,5 +1,5 @@
 export const COMPILE_FLAGS: string[] = [
-  '--target=wasm32-unknown-unknown',
+  '--target=wasm64-unknown-unknown',
   '-matomics',
   '-mbulk-memory',
   '-mexception-handling',
@@ -70,7 +70,7 @@ export function filterArgs(args: string[]): FilterResult {
     if (IGNORED_EXACT.has(arg)) continue;
     if (IGNORED_PREFIXES.some(p => arg.startsWith(p))) continue;
     if (WARN_FLAGS.has(arg)) {
-      warnings.push(`wasm32posix-cc: warning: ${arg} is not supported for Wasm targets (ignored)`);
+      warnings.push(`wasm64posix-cc: warning: ${arg} is not supported for Wasm targets (ignored)`);
       continue;
     }
     filtered.push(arg);

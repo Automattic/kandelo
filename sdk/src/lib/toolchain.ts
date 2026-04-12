@@ -29,12 +29,12 @@ export async function findLlvmDir(): Promise<string> {
     throw new Error(`WASM_POSIX_LLVM_DIR="${envDir}" does not contain clang`);
   }
 
-  // Check if clang on PATH supports wasm32
+  // Check if clang on PATH supports wasm64
   const pathResult = await run('which', ['clang']);
   if (pathResult.exitCode === 0) {
     const clangPath = pathResult.stdout.trim();
     const testResult = await run(clangPath, [
-      '--target=wasm32-unknown-unknown', '-x', 'c', '-c', '-o', '/dev/null', '/dev/null',
+      '--target=wasm64-unknown-unknown', '-x', 'c', '-c', '-o', '/dev/null', '/dev/null',
     ]);
     if (testResult.exitCode === 0) {
       return dirname(clangPath);
@@ -57,7 +57,7 @@ export async function findLlvmDir(): Promise<string> {
   }
 
   throw new Error(
-    'Could not find a wasm32-capable LLVM/clang installation.\n' +
+    'Could not find a wasm64-capable LLVM/clang installation.\n' +
     'Install LLVM via:\n' +
     '  macOS:  brew install llvm\n' +
     '  Ubuntu: apt install llvm clang lld\n' +

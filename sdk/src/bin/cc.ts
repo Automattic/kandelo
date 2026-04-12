@@ -21,8 +21,8 @@ export function buildClangArgs(userArgs: string[], toolchain: Toolchain): string
     args.push(...COMPILE_FLAGS);
   }
   // Target is always needed (even for link-only, clang needs to know the target)
-  if (!args.includes('--target=wasm32-unknown-unknown')) {
-    args.push('--target=wasm32-unknown-unknown');
+  if (!args.includes('--target=wasm64-unknown-unknown')) {
+    args.push('--target=wasm64-unknown-unknown');
   }
   args.push(`--sysroot=${toolchain.sysroot}`);
 

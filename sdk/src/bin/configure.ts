@@ -5,13 +5,13 @@ import { isMain } from '../lib/is-main.ts';
 export function buildConfigureEnv(): Record<string, string> {
   return {
     ...process.env as Record<string, string>,
-    CC: 'wasm32posix-cc',
-    CXX: 'wasm32posix-c++',
-    AR: 'wasm32posix-ar',
-    RANLIB: 'wasm32posix-ranlib',
-    NM: 'wasm32posix-nm',
-    STRIP: 'wasm32posix-strip',
-    PKG_CONFIG: 'wasm32posix-pkg-config',
+    CC: 'wasm64posix-cc',
+    CXX: 'wasm64posix-c++',
+    AR: 'wasm64posix-ar',
+    RANLIB: 'wasm64posix-ranlib',
+    NM: 'wasm64posix-nm',
+    STRIP: 'wasm64posix-strip',
+    PKG_CONFIG: 'wasm64posix-pkg-config',
     CFLAGS: process.env.CFLAGS ?? '',
     CXXFLAGS: process.env.CXXFLAGS ?? '',
     LDFLAGS: process.env.LDFLAGS ?? '',
@@ -20,7 +20,7 @@ export function buildConfigureEnv(): Record<string, string> {
 
 export function buildConfigureArgs(userArgs: string[]): string[] {
   return [
-    '--host=wasm32-unknown-none',
+    '--host=wasm64-unknown-none',
     '--prefix=/usr',
     ...userArgs,
   ];
