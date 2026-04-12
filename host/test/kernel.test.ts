@@ -27,12 +27,13 @@ describe("CentralizedKernelWorker", () => {
     // If init doesn't throw, the kernel loaded and initialized successfully
     // Verify we can register a process without error
     const memory = new WebAssembly.Memory({
-      initial: 17,
-      maximum: 256,
+      initial: 17n,
+      maximum: 256n,
       shared: true,
-    });
+      address: 'i64',
+    } as any);
     const channelOffset = (256 - 2) * 65536;
-    memory.grow(256 - 17);
+    memory.grow(BigInt(256 - 17));
 
     kernelWorker.registerProcess(1, memory, [channelOffset]);
 

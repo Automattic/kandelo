@@ -225,28 +225,30 @@ function instantiateSharedLibrary(
     new Uint8Array(options.memory.buffer, memoryBase, metadata.memorySize).fill(0);
   }
 
-  // Allocate table slots
+  // Allocate table slots (table64: length/grow use BigInt for module-exported tables)
   let tableBase = 0;
   if (metadata.tableSize > 0) {
-    tableBase = options.table.length;
-    options.table.grow(metadata.tableSize);
+    const tblLen = options.table.length;
+    tableBase = typeof tblLen === "bigint" ? Number(tblLen as unknown as bigint) : (tblLen as number);
+    const growAmt = typeof tblLen === "bigint" ? BigInt(metadata.tableSize) as unknown as number : metadata.tableSize;
+    options.table.grow(growAmt);
   }
 
-  // Create immutable globals for memory_base and table_base
+  // Create immutable globals for memory_base and table_base (i64 for memory64/wasm64)
   const memoryBaseGlobal = new WebAssembly.Global(
-    { value: "i32", mutable: false },
-    memoryBase,
+    { value: "i64", mutable: false },
+    BigInt(memoryBase),
   );
   const tableBaseGlobal = new WebAssembly.Global(
-    { value: "i32", mutable: false },
-    tableBase,
+    { value: "i64", mutable: false },
+    BigInt(tableBase),
   );
 
   // Build GOT proxy for imports
   const getOrCreateGOTEntry = (symName: string): WebAssembly.Global => {
     let entry = options.got.get(symName);
     if (!entry) {
-      entry = new WebAssembly.Global({ value: "i32", mutable: true }, 0);
+      entry = new WebAssembly.Global({ value: "i64", mutable: true }, 0n);
       options.got.set(symName, entry);
     }
     return entry;
@@ -297,9 +299,14 @@ function instantiateSharedLibrary(
         (exportValue as any).value = (exportValue as any).value;
         relocatedExports[exportName] = exportValue;
       } catch {
+        // Immutable global — create relocated copy (i64 for wasm64)
+        const val = (exportValue as WebAssembly.Global).value;
+        const relocated = typeof val === "bigint"
+          ? BigInt(memoryBase) + val
+          : (val as number) + memoryBase;
         relocatedExports[exportName] = new WebAssembly.Global(
-          { value: "i32", mutable: false },
-          (exportValue as WebAssembly.Global).value + memoryBase,
+          { value: typeof val === "bigint" ? "i64" : "i32", mutable: false },
+          relocated,
         );
       }
     } else {
@@ -308,24 +315,27 @@ function instantiateSharedLibrary(
   }
 
   // Update GOT with this library's exports
+  // table64: module-exported tables use BigInt for length/get/set/grow
+  const tblLen = options.table.length;
+  const isTable64 = typeof tblLen === "bigint";
   for (const [exportName, exportValue] of Object.entries(relocatedExports)) {
     if (exportName.startsWith("__")) continue;
 
     if (typeof exportValue === "function") {
       const tableIdx = options.table.length;
-      options.table.grow(1);
-      options.table.set(tableIdx, exportValue as unknown as Function);
+      options.table.grow(isTable64 ? 1n as unknown as number : 1);
+      options.table.set(tableIdx as unknown as number, exportValue as unknown as Function);
 
       const gotEntry = options.got.get(exportName);
       if (gotEntry) {
-        gotEntry.value = tableIdx;
+        gotEntry.value = isTable64 ? tableIdx as unknown as bigint : BigInt(tableIdx as number);
       }
       options.globalSymbols.set(exportName, exportValue as Function);
     } else if (exportValue instanceof WebAssembly.Global) {
       const addr = (exportValue as WebAssembly.Global).value;
       const gotEntry = options.got.get(exportName);
       if (gotEntry) {
-        gotEntry.value = addr as number;
+        gotEntry.value = typeof addr === "bigint" ? addr : BigInt(addr as number);
       }
       options.globalSymbols.set(exportName, exportValue);
     }
@@ -477,30 +487,36 @@ export class DynamicLinker {
       }
       if (global instanceof WebAssembly.Global) {
         this.lastError = null;
-        return global.value as number;
+        const v = global.value;
+        return typeof v === "bigint" ? Number(v) : (v as number);
       }
     }
 
     if (typeof exp === "function") {
       // Return the table index for this function (C function pointers are table indices)
       const table = this.options.table;
-      for (let i = 0; i < table.length; i++) {
-        if (table.get(i) === exp) {
+      const tblLen = table.length;
+      const isTable64 = typeof tblLen === "bigint";
+      const len = isTable64 ? Number(tblLen as unknown as bigint) : (tblLen as number);
+      for (let i = 0; i < len; i++) {
+        const idx = isTable64 ? BigInt(i) as unknown as number : i;
+        if (table.get(idx) === exp) {
           this.lastError = null;
           return i;
         }
       }
       // Not in table yet — add it
-      const idx = table.length;
-      table.grow(1);
-      table.set(idx, exp as unknown as Function);
+      const newIdx = table.length;
+      table.grow(isTable64 ? 1n as unknown as number : 1);
+      table.set(newIdx as unknown as number, exp as unknown as Function);
       this.lastError = null;
-      return idx;
+      return isTable64 ? Number(newIdx as unknown as bigint) : (newIdx as number);
     }
 
     if (exp instanceof WebAssembly.Global) {
       this.lastError = null;
-      return (exp as WebAssembly.Global).value as number;
+      const v = (exp as WebAssembly.Global).value;
+      return typeof v === "bigint" ? Number(v) : (v as number);
     }
 
     this.lastError = `symbol not found: ${symbolName}`;

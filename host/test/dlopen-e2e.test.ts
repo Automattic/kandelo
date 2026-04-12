@@ -33,11 +33,11 @@ function buildSharedLib(source: string, name: string): string {
   writeFileSync(srcPath, source);
 
   execSync(
-    `${CLANG} --target=wasm32-unknown-unknown -fPIC -O2 -matomics -mbulk-memory -c ${srcPath} -o ${objPath}`,
+    `${CLANG} --target=wasm64-unknown-unknown -fPIC -O2 -matomics -mbulk-memory -c ${srcPath} -o ${objPath}`,
     { stdio: "pipe" },
   );
   execSync(
-    `${WASM_LD} --experimental-pic --shared --shared-memory --export-all --allow-undefined -o ${soPath} ${objPath}`,
+    `${WASM_LD} -mwasm64 --experimental-pic --shared --shared-memory --export-all --allow-undefined -o ${soPath} ${objPath}`,
     { stdio: "pipe" },
   );
 
@@ -52,7 +52,7 @@ function buildMainProgram(source: string, name: string): string {
   writeFileSync(srcPath, source);
 
   const cflags = [
-    "--target=wasm32-unknown-unknown",
+    "--target=wasm64-unknown-unknown",
     `--sysroot=${SYSROOT}`,
     "-nostdlib",
     "-O2",
@@ -83,6 +83,7 @@ function buildMainProgram(source: string, name: string): string {
     "-Wl,--export=__tls_align",
     "-Wl,--export=__stack_pointer",
     "-Wl,--export=__wasm_thread_init",
+    "-Wl,--allow-multiple-definition",
   ];
 
   const allArgs = [...cflags, srcPath, ...linkFlags, "-o", wasmPath];

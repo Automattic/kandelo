@@ -22,7 +22,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "../..");
 
 const MAX_PAGES = 16384;
-const CH_TOTAL_SIZE = 40 + 65536;
+const CH_TOTAL_SIZE = 72 + 65536;
 const ASYNCIFY_BUF_SIZE = 16384;
 
 const nginxWasmPath = join(repoRoot, "examples/nginx/nginx.wasm");
@@ -102,12 +102,13 @@ describe.skipIf(!existsSync(nginxWasmPath))(
             const parentBuf = new Uint8Array(parentMemory.buffer);
             const parentPages = Math.ceil(parentBuf.byteLength / 65536);
             const childMemory = new WebAssembly.Memory({
-              initial: parentPages,
-              maximum: MAX_PAGES,
+              initial: BigInt(parentPages),
+              maximum: BigInt(MAX_PAGES),
               shared: true,
-            });
+              address: 'i64',
+            } as any);
             if (parentPages < MAX_PAGES) {
-              childMemory.grow(MAX_PAGES - parentPages);
+              childMemory.grow(BigInt(MAX_PAGES - parentPages));
             }
             new Uint8Array(childMemory.buffer).set(parentBuf);
 
@@ -154,12 +155,13 @@ describe.skipIf(!existsSync(nginxWasmPath))(
 
       // Create process memory for master
       const memory = new WebAssembly.Memory({
-        initial: 17,
-        maximum: MAX_PAGES,
+        initial: 17n,
+        maximum: BigInt(MAX_PAGES),
         shared: true,
-      });
+        address: 'i64',
+      } as any);
       const channelOffset = (MAX_PAGES - 2) * 65536;
-      memory.grow(MAX_PAGES - 17);
+      memory.grow(BigInt(MAX_PAGES - 17));
       new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
       kw.registerProcess(1, memory, [channelOffset]);

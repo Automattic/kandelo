@@ -32,13 +32,14 @@ describe.skipIf(!hasBinary)("centralizedWorkerMain", () => {
     // Create shared memory with channel region
     const MAX_PAGES = 256; // smaller for tests
     const memory = new WebAssembly.Memory({
-      initial: 17,
-      maximum: MAX_PAGES,
+      initial: 17n,
+      maximum: BigInt(MAX_PAGES),
       shared: true,
-    });
+      address: 'i64',
+    } as any);
     const channelOffset = (MAX_PAGES - 2) * 65536;
-    memory.grow(MAX_PAGES - 17);
-    new Uint8Array(memory.buffer, channelOffset, 40 + 65536).fill(0);
+    memory.grow(BigInt(MAX_PAGES - 17));
+    new Uint8Array(memory.buffer, channelOffset, 72 + 65536).fill(0);
 
     const initData: CentralizedWorkerInitMessage = {
       type: "centralized_init",

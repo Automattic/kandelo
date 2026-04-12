@@ -2135,15 +2135,15 @@ fn dispatch_channel_syscall_inner(nr: u32, a1: i64, a2: i64, a3: i64, a4: i64, a
         338 => { // SYS_MSGRCV: (qid, msgp, msgsz, msgtyp, flags)
             let ipc = unsafe { crate::ipc::global_ipc_table() };
             let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
-            match ipc.msgrcv(a1 as i32, a3 as u32, a4 as i32, a5 as u32, pid) {
+            match ipc.msgrcv(a1 as i32, a3 as u32, a4 as i64, a5 as u32, pid) {
                 Ok(result) => {
-                    // Write {mtype (4B), mtext} to msgp (kernel scratch)
+                    // Write {mtype (long = 8B on LP64), mtext} to msgp (kernel scratch)
                     let out = a2 as *mut u8;
                     let mtype_bytes = result.mtype.to_le_bytes();
                     unsafe {
-                        for i in 0..4 { *out.add(i) = mtype_bytes[i]; }
+                        for i in 0..8 { *out.add(i) = mtype_bytes[i]; }
                         for (i, &b) in result.data.iter().enumerate() {
-                            *out.add(4 + i) = b;
+                            *out.add(8 + i) = b;
                         }
                     }
                     result.data.len() as i32
@@ -2154,13 +2154,11 @@ fn dispatch_channel_syscall_inner(nr: u32, a1: i64, a2: i64, a3: i64, a4: i64, a
         339 => { // SYS_MSGSND: (qid, msgp, msgsz, flags)
             let ipc = unsafe { crate::ipc::global_ipc_table() };
             let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
-            // Read mtype from msgp, mtext from msgp+4
+            // Read mtype (long = 8B on LP64) from msgp, mtext from msgp+8
             let msgp = a2 as *const u8;
             let msgsz = a3 as usize;
-            let mtype = unsafe {
-                i32::from_le_bytes([*msgp, *msgp.add(1), *msgp.add(2), *msgp.add(3)])
-            };
-            let data = unsafe { core::slice::from_raw_parts(msgp.add(4), msgsz) };
+            let mtype = unsafe { read_i64_le(msgp, 0) };
+            let data = unsafe { core::slice::from_raw_parts(msgp.add(8), msgsz) };
             match ipc.msgsnd(a1 as i32, mtype, data, a4 as u32, pid) {
                 Ok(()) => 0,
                 Err(e) => -(e as i32),

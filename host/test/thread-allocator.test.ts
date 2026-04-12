@@ -5,7 +5,7 @@ import { WASM_PAGE_SIZE, PAGES_PER_THREAD, CH_TOTAL_SIZE } from "../src/constant
 const MAX_PAGES = 256;
 
 function makeMemory(): WebAssembly.Memory {
-  return new WebAssembly.Memory({ initial: MAX_PAGES, maximum: MAX_PAGES, shared: true });
+  return new WebAssembly.Memory({ initial: BigInt(MAX_PAGES), maximum: BigInt(MAX_PAGES), shared: true, address: 'i64' } as any);
 }
 
 describe("ThreadPageAllocator", () => {

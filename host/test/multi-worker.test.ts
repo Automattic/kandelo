@@ -12,7 +12,7 @@ import { NodePlatformIO } from "../src/platform/node";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const MAX_PAGES = 256; // small for tests
-const CH_TOTAL_SIZE = 40 + 65536;
+const CH_TOTAL_SIZE = 72 + 65536;
 
 function loadKernelWasm(): ArrayBuffer {
   const buf = readFileSync(join(__dirname, "../wasm/wasm_posix_kernel.wasm"));
@@ -21,12 +21,13 @@ function loadKernelWasm(): ArrayBuffer {
 
 function createProcessMemory(): { memory: WebAssembly.Memory; channelOffset: number } {
   const memory = new WebAssembly.Memory({
-    initial: 17,
-    maximum: MAX_PAGES,
+    initial: 17n,
+    maximum: BigInt(MAX_PAGES),
     shared: true,
-  });
+    address: 'i64',
+  } as any);
   const channelOffset = (MAX_PAGES - 2) * 65536;
-  memory.grow(MAX_PAGES - 17);
+  memory.grow(BigInt(MAX_PAGES - 17));
   new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
   return { memory, channelOffset };
 }

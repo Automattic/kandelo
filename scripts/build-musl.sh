@@ -43,6 +43,15 @@ if [ -d "$OVERLAY_DIR/src" ]; then
         rm -rf "$MUSL_DIR/src/$rel"
     done
     cp -r "$OVERLAY_DIR/src/"* "$MUSL_DIR/src/"
+
+    # Remove generic C implementations that conflict with arch-specific overrides.
+    # musl's Makefile compiles both src/thread/clone.c and src/thread/$ARCH/clone.c;
+    # the generic one returns -ENOSYS and would shadow our wasm64posix override in
+    # the archive since it appears first alphabetically.
+    for f in "$OVERLAY_DIR"/src/thread/wasm64posix/*.c; do
+        base=$(basename "$f")
+        rm -f "$MUSL_DIR/src/thread/$base"
+    done
 fi
 
 # Copy CRT overlay (e.g., Wasm-specific crt1.c with proper main signature)

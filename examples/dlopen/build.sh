@@ -39,9 +39,9 @@ echo "=== Building dlopen example ==="
 
 # 1. Build shared library (hello-lib.so)
 echo "  Compiling hello-lib.so..."
-"$CC" --target=wasm32-unknown-unknown -fPIC -O2 -matomics -mbulk-memory \
+"$CC" --target=wasm64-unknown-unknown -fPIC -O2 -matomics -mbulk-memory \
     -c "$SCRIPT_DIR/hello-lib.c" -o "$SCRIPT_DIR/hello-lib.o"
-"$WASM_LD" --experimental-pic --shared --shared-memory \
+"$WASM_LD" -mwasm64 --experimental-pic --shared --shared-memory \
     --export-all --allow-undefined \
     -o "$SCRIPT_DIR/hello-lib.so" "$SCRIPT_DIR/hello-lib.o"
 rm -f "$SCRIPT_DIR/hello-lib.o"
@@ -49,7 +49,7 @@ rm -f "$SCRIPT_DIR/hello-lib.o"
 # 2. Build main program (main.wasm) with dlopen support
 echo "  Compiling main.wasm..."
 CFLAGS=(
-    --target=wasm32-unknown-unknown
+    --target=wasm64-unknown-unknown
     --sysroot="$SYSROOT"
     -nostdlib -O2
     -matomics -mbulk-memory
@@ -78,6 +78,7 @@ LINK_FLAGS=(
     -Wl,--export=__tls_align
     -Wl,--export=__stack_pointer
     -Wl,--export=__wasm_thread_init
+    -Wl,--allow-multiple-definition
 )
 
 "$CC" "${CFLAGS[@]}" "$SCRIPT_DIR/main.c" "${LINK_FLAGS[@]}" -o "$SCRIPT_DIR/main.wasm"

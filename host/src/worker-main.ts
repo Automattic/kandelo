@@ -98,23 +98,24 @@ function buildKernelImports(
     },
 
     // Clone dispatches through channel (SYS_CLONE)
-    kernel_clone: (fnPtr: number, stackPtr: number, flags: number,
-      arg: number, ptidPtr: number, tlsPtr: number, ctidPtr: number): number => {
+    // wasm64 signature: (i64, i64, i32, i64, i64, i64, i64) -> i32
+    kernel_clone: (fnPtr: bigint, stackPtr: bigint, flags: number,
+      arg: bigint, ptidPtr: bigint, tlsPtr: bigint, ctidPtr: bigint): number => {
       const SYS_CLONE_NR = 201;
       const view = new DataView(memory.buffer);
       const base = channelOffset;
       view.setInt32(base + 4, SYS_CLONE_NR, true);
       // Args are i64 on wasm64 (offset 8, 6 x 8 bytes)
       view.setBigInt64(base + 8, BigInt(flags), true);
-      view.setBigInt64(base + 16, BigInt(stackPtr), true);
-      view.setBigInt64(base + 24, BigInt(ptidPtr), true);
-      view.setBigInt64(base + 32, BigInt(tlsPtr), true);
-      view.setBigInt64(base + 40, BigInt(ctidPtr), true);
+      view.setBigInt64(base + 16, stackPtr, true);
+      view.setBigInt64(base + 24, ptidPtr, true);
+      view.setBigInt64(base + 32, tlsPtr, true);
+      view.setBigInt64(base + 40, ctidPtr, true);
       view.setBigInt64(base + 48, 0n, true);
       // Write fn_ptr and arg_ptr to CH_DATA area for handleClone
       // CH_DATA starts at offset 72 (CH_HEADER_SIZE)
-      view.setBigUint64(base + CH_HEADER_SIZE, BigInt(fnPtr), true);
-      view.setBigUint64(base + CH_HEADER_SIZE + 8, BigInt(arg), true);
+      view.setBigUint64(base + CH_HEADER_SIZE, fnPtr, true);
+      view.setBigUint64(base + CH_HEADER_SIZE + 8, arg, true);
 
       const i32 = new Int32Array(memory.buffer);
       Atomics.store(i32, base / 4, 1); // CH_PENDING
@@ -1266,7 +1267,8 @@ export async function centralizedThreadWorkerMain(
     }
 
     // On wasm64, thread function takes void* (i64/BigInt) and returns void* (i64/BigInt)
-    const threadFn = table.get(fnPtr) as ((arg: bigint) => bigint) | null;
+    // On wasm64, table indices are i64 — table.get() requires BigInt
+    const threadFn = table.get(BigInt(fnPtr) as unknown as number) as ((arg: bigint) => bigint) | null;
     if (!threadFn) {
       throw new Error(`Thread function at table index ${fnPtr} is null`);
     }

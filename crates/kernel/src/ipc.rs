@@ -44,7 +44,7 @@ const SEMMSL: usize = 32;       // max semaphores per set
 
 /// A single message in a SysV message queue.
 struct MsgEntry {
-    mtype: i32,
+    mtype: i64,
     data: Vec<u8>,
 }
 
@@ -91,7 +91,7 @@ pub struct MsgQueueInfo {
 /// Result of msgrcv.
 #[derive(Debug)]
 pub struct MsgRcvResult {
-    pub mtype: i32,
+    pub mtype: i64,
     pub data: Vec<u8>,
 }
 
@@ -274,7 +274,7 @@ impl IpcTable {
     }
 
     /// Send a message to a queue.
-    pub fn msgsnd(&mut self, qid: i32, mtype: i32, data: &[u8], flags: u32, pid: u32) -> Result<(), Errno> {
+    pub fn msgsnd(&mut self, qid: i32, mtype: i64, data: &[u8], flags: u32, pid: u32) -> Result<(), Errno> {
         if mtype <= 0 {
             return Err(Errno::EINVAL);
         }
@@ -309,7 +309,7 @@ impl IpcTable {
         &mut self,
         qid: i32,
         max_size: u32,
-        msgtype: i32,
+        msgtype: i64,
         flags: u32,
         pid: u32,
     ) -> Result<MsgRcvResult, Errno> {

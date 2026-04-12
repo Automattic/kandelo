@@ -307,7 +307,8 @@ export class WasmPosixKernel {
           if (!table) {
             return -22; // EINVAL
           }
-          const handler = table.get(handler_index);
+          // table64 requires BigInt index; TS types haven't caught up
+          const handler = table.get(BigInt(handler_index) as unknown as number);
           if (handler) {
             try {
               if (sa_flags & SA_SIGINFO) {
@@ -382,14 +383,14 @@ export class WasmPosixKernel {
         host_fork: (): number => {
           return this.hostFork();
         },
-        host_futex_wait: (addr: number, expected: number, timeoutLo: number, timeoutHi: number): number => {
-          return this.hostFutexWait(addr, expected, timeoutLo, timeoutHi);
+        host_futex_wait: (addr: bigint, expected: number, timeoutLo: number, timeoutHi: number): number => {
+          return this.hostFutexWait(Number(addr), expected, timeoutLo, timeoutHi);
         },
-        host_futex_wake: (addr: number, count: number): number => {
-          return this.hostFutexWake(addr, count);
+        host_futex_wake: (addr: bigint, count: number): number => {
+          return this.hostFutexWake(Number(addr), count);
         },
-        host_clone: (fnPtr: number, arg: number, stackPtr: number, tlsPtr: number, ctidPtr: number): number => {
-          return this.hostClone(fnPtr, arg, stackPtr, tlsPtr, ctidPtr);
+        host_clone: (fnPtr: bigint, arg: bigint, stackPtr: bigint, tlsPtr: bigint, ctidPtr: bigint): number => {
+          return this.hostClone(Number(fnPtr), Number(arg), Number(stackPtr), Number(tlsPtr), Number(ctidPtr));
         },
         host_is_thread_worker: (): number => {
           return this.isThreadWorker ? 1 : 0;

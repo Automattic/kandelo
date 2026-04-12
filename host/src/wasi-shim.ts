@@ -715,10 +715,10 @@ export class WasiShim {
     const view = new DataView(this.memory.buffer);
     const mem = new Uint8Array(this.memory.buffer);
 
-    // Calculate total read size from iovecs
+    // Calculate total read size from iovecs (wasm64: 16-byte entries, i64 base + i64 len)
     let totalLen = 0;
     for (let i = 0; i < iovsLen; i++) {
-      totalLen += view.getUint32(iovsPtr + i * 8 + 4, true);
+      totalLen += Number(view.getBigUint64(iovsPtr + i * 16 + 8, true));
     }
     totalLen = Math.min(totalLen, CH_DATA_SIZE - 256);
 
@@ -733,8 +733,8 @@ export class WasiShim {
     let remaining = result;
     let srcOff = 0;
     for (let i = 0; i < iovsLen && remaining > 0; i++) {
-      const bufPtr = view.getUint32(iovsPtr + i * 8, true);
-      const bufLen = view.getUint32(iovsPtr + i * 8 + 4, true);
+      const bufPtr = Number(view.getBigUint64(iovsPtr + i * 16, true));
+      const bufLen = Number(view.getBigUint64(iovsPtr + i * 16 + 8, true));
       const copyLen = Math.min(bufLen, remaining);
       mem.copyWithin(bufPtr, this.dataArea + srcOff, this.dataArea + srcOff + copyLen);
       srcOff += copyLen;
@@ -751,11 +751,11 @@ export class WasiShim {
     const view = new DataView(this.memory.buffer);
     const mem = new Uint8Array(this.memory.buffer);
 
-    // Gather iovec data into data area
+    // Gather iovec data into data area (wasm64: 16-byte entries, i64 base + i64 len)
     let totalLen = 0;
     for (let i = 0; i < iovsLen; i++) {
-      const bufPtr = view.getUint32(iovsPtr + i * 8, true);
-      const bufLen = view.getUint32(iovsPtr + i * 8 + 4, true);
+      const bufPtr = Number(view.getBigUint64(iovsPtr + i * 16, true));
+      const bufLen = Number(view.getBigUint64(iovsPtr + i * 16 + 8, true));
       const copyLen = Math.min(bufLen, CH_DATA_SIZE - 256 - totalLen);
       mem.copyWithin(this.dataArea + totalLen, bufPtr, bufPtr + copyLen);
       totalLen += copyLen;
@@ -1378,10 +1378,10 @@ export class WasiShim {
     const view = new DataView(this.memory.buffer);
     const mem = new Uint8Array(this.memory.buffer);
 
-    // Gather total size from iovecs, read into data area, then scatter
+    // Gather total size from iovecs (wasm64: 16-byte entries, i64 base + i64 len)
     let totalLen = 0;
     for (let i = 0; i < iovsLen; i++) {
-      totalLen += view.getUint32(iovsPtr + i * 8 + 4, true);
+      totalLen += Number(view.getBigUint64(iovsPtr + i * 16 + 8, true));
     }
     totalLen = Math.min(totalLen, CH_DATA_SIZE - 256);
 
@@ -1394,8 +1394,8 @@ export class WasiShim {
     let remaining = result;
     let srcOff = 0;
     for (let i = 0; i < iovsLen && remaining > 0; i++) {
-      const bufPtr = view.getUint32(iovsPtr + i * 8, true);
-      const bufLen = view.getUint32(iovsPtr + i * 8 + 4, true);
+      const bufPtr = Number(view.getBigUint64(iovsPtr + i * 16, true));
+      const bufLen = Number(view.getBigUint64(iovsPtr + i * 16 + 8, true));
       const copyLen = Math.min(bufLen, remaining);
       mem.copyWithin(bufPtr, this.dataArea + srcOff, this.dataArea + srcOff + copyLen);
       srcOff += copyLen;
@@ -1414,11 +1414,11 @@ export class WasiShim {
     const view = new DataView(this.memory.buffer);
     const mem = new Uint8Array(this.memory.buffer);
 
-    // Gather from iovecs into data area
+    // Gather from iovecs into data area (wasm64: 16-byte entries, i64 base + i64 len)
     let totalLen = 0;
     for (let i = 0; i < iovsLen; i++) {
-      const bufPtr = view.getUint32(iovsPtr + i * 8, true);
-      const bufLen = view.getUint32(iovsPtr + i * 8 + 4, true);
+      const bufPtr = Number(view.getBigUint64(iovsPtr + i * 16, true));
+      const bufLen = Number(view.getBigUint64(iovsPtr + i * 16 + 8, true));
       const copyLen = Math.min(bufLen, CH_DATA_SIZE - 256 - totalLen);
       mem.copyWithin(this.dataArea + totalLen, bufPtr, bufPtr + copyLen);
       totalLen += copyLen;

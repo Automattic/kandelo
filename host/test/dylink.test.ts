@@ -12,6 +12,34 @@ import { tmpdir } from "node:os";
 const CLANG = "/opt/homebrew/opt/llvm@21/bin/clang";
 const WASM_LD = "/opt/homebrew/bin/wasm-ld";
 
+/**
+ * Create a real table64 via a wasm module export.
+ * V8's JS API `new WebAssembly.Table({ index: "i64" })` creates an i32 table
+ * that wasm64 modules reject on import. Module-exported table64 works correctly.
+ */
+function createTable64(initial: number): WebAssembly.Table {
+  // Minimal wasm module: (table (export "t") i64 <initial> funcref)
+  const initBytes: number[] = [];
+  // LEB128 encode initial
+  let val = initial;
+  do {
+    let byte = val & 0x7f;
+    val >>>= 7;
+    if (val !== 0) byte |= 0x80;
+    initBytes.push(byte);
+  } while (val !== 0);
+
+  const tableContent = [0x01, 0x70, 0x04, ...initBytes]; // 1 table, funcref, i64-no-max, initial
+  const exportContent = [0x01, 0x01, 0x74, 0x01, 0x00];  // 1 export, "t", table, index 0
+  const bytes = new Uint8Array([
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,  // magic + version
+    0x04, tableContent.length, ...tableContent,         // table section
+    0x07, exportContent.length, ...exportContent,       // export section
+  ]);
+  const inst = new WebAssembly.Instance(new WebAssembly.Module(bytes));
+  return inst.exports.t as WebAssembly.Table;
+}
+
 /** Build a shared Wasm library from C source. */
 function buildSharedLib(source: string, name: string, opts?: { allowUndefined?: boolean }): Uint8Array {
   const dir = join(tmpdir(), "wasm-dylink-test");
@@ -24,12 +52,12 @@ function buildSharedLib(source: string, name: string, opts?: { allowUndefined?: 
   writeFileSync(srcPath, source);
 
   execSync(
-    `${CLANG} --target=wasm32-unknown-unknown -fPIC -O2 -c ${srcPath} -o ${objPath}`,
+    `${CLANG} --target=wasm64-unknown-unknown -fPIC -O2 -matomics -mbulk-memory -c ${srcPath} -o ${objPath}`,
     { stdio: "pipe" },
   );
   const ldFlags = opts?.allowUndefined ? " --allow-undefined" : "";
   execSync(
-    `${WASM_LD} --experimental-pic --shared --export-all${ldFlags} -o ${soPath} ${objPath}`,
+    `${WASM_LD} -mwasm64 --experimental-pic --shared --shared-memory --export-all${ldFlags} -o ${soPath} ${objPath}`,
     { stdio: "pipe" },
   );
 
@@ -81,11 +109,11 @@ describe("dylink.0 parser", () => {
 
 describe("shared library loading", () => {
   function createLoadOptions(): LoadSharedLibraryOptions {
-    const memory = new WebAssembly.Memory({ initial: 1, maximum: 100 });
-    const table = new WebAssembly.Table({ initial: 1, element: "anyfunc" });
+    const memory = new WebAssembly.Memory({ initial: 1n, maximum: 16384n, shared: true, address: "i64" } as any);
+    const table = createTable64(1);
     const stackPointer = new WebAssembly.Global(
-      { value: "i32", mutable: true },
-      65536, // Stack at end of first page
+      { value: "i64", mutable: true },
+      65536n, // Stack at end of first page
     );
     return {
       memory,
@@ -236,8 +264,8 @@ describe("shared library loading", () => {
 
 describe("synchronous loading (loadSharedLibrarySync)", () => {
   function createLoadOptions(): LoadSharedLibraryOptions {
-    const memory = new WebAssembly.Memory({ initial: 1, maximum: 100 });
-    const table = new WebAssembly.Table({ initial: 1, element: "anyfunc" });
+    const memory = new WebAssembly.Memory({ initial: 1n, maximum: 16384n, shared: true, address: "i64" } as any);
+    const table = createTable64(1);
     const stackPointer = new WebAssembly.Global(
       { value: "i32", mutable: true },
       65536,
@@ -269,8 +297,8 @@ describe("synchronous loading (loadSharedLibrarySync)", () => {
 
 describe("DynamicLinker", () => {
   function createLinker(): DynamicLinker {
-    const memory = new WebAssembly.Memory({ initial: 1, maximum: 100 });
-    const table = new WebAssembly.Table({ initial: 1, element: "anyfunc" });
+    const memory = new WebAssembly.Memory({ initial: 1n, maximum: 16384n, shared: true, address: "i64" } as any);
+    const table = createTable64(1);
     const stackPointer = new WebAssembly.Global(
       { value: "i32", mutable: true },
       65536,
