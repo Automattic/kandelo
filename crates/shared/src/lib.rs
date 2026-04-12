@@ -663,19 +663,32 @@ pub mod channel {
     /// Minimum total size of a channel in bytes (header + 64 KiB data buffer).
     pub const MIN_CHANNEL_SIZE: usize = DATA_OFFSET + DATA_SIZE;
 
-    // Signal delivery area — last 32 bytes of the data buffer.
+    // Signal delivery area — last 56 bytes of the data buffer.
     // After each syscall, if a signal with a Handler disposition is pending,
     // the kernel writes delivery info here so the glue code can invoke it.
+    // On wasm64, alt_sp and alt_size are pointer-sized (8 bytes each).
     /// Base offset of signal delivery area.
-    pub const SIG_BASE: usize = DATA_OFFSET + DATA_SIZE - 32;
+    pub const SIG_BASE: usize = DATA_OFFSET + DATA_SIZE - 56;
     /// Signal number to deliver (u32). 0 = no signal.
     pub const SIG_SIGNUM: usize = SIG_BASE;
     /// Handler function table index (u32).
     pub const SIG_HANDLER: usize = SIG_BASE + 4;
     /// sa_flags from sigaction (u32).
     pub const SIG_FLAGS: usize = SIG_BASE + 8;
+    /// si_value from sigqueue (i32).
+    pub const SIG_SI_VALUE: usize = SIG_BASE + 12;
     /// Saved blocked mask before handler (u64, little-endian).
     pub const SIG_OLD_MASK: usize = SIG_BASE + 16;
+    /// si_code (i32).
+    pub const SIG_SI_CODE: usize = SIG_BASE + 24;
+    /// si_pid (i32).
+    pub const SIG_SI_PID: usize = SIG_BASE + 28;
+    /// si_uid (i32).
+    pub const SIG_SI_UID: usize = SIG_BASE + 32;
+    /// Alt stack pointer (usize — 8 bytes on wasm64).
+    pub const SIG_ALT_SP: usize = SIG_BASE + 36;
+    /// Alt stack size (usize — 8 bytes on wasm64).
+    pub const SIG_ALT_SIZE: usize = SIG_BASE + 44;
 }
 
 /// Stat structure for the Wasm POSIX interface.

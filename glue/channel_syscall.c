@@ -5,14 +5,15 @@
  * number and arguments to a shared-memory channel, notifies the kernel
  * worker, and blocks until the result is ready.
  *
- * The channel layout matches wasm_posix_shared::channel:
+ * The channel layout matches wasm_posix_shared::channel (wasm64 LP64):
  *   Offset  Size  Field
  *   0       4B    status (IDLE=0, PENDING=1, COMPLETE=2, ERROR=3)
  *   4       4B    syscall number
- *   8       24B   arguments (6 x i32)
- *   32      4B    return value
- *   36      4B    errno
- *   40      64KB  data transfer buffer
+ *   8       48B   arguments (6 x i64)
+ *   56      8B    return value (i64)
+ *   64      4B    errno
+ *   68      4B    padding
+ *   72      64KB  data transfer buffer
  *
  * Each thread has its own channel region within the process's shared
  * WebAssembly.Memory. The base address is stored in __channel_base,
@@ -36,17 +37,18 @@ int *__errno_location(void);
 #define CH_COMPLETE 2
 #define CH_ERROR    3
 
-/* Channel layout offsets */
+/* Channel layout offsets (wasm64: 6 x i64 args, i64 return) */
 #define CH_STATUS   0
 #define CH_SYSCALL  4
 #define CH_ARGS     8
-#define CH_RETURN   32
-#define CH_ERRNO    36
-#define CH_DATA     40
+#define CH_RETURN   56
+#define CH_ERRNO    64
+#define CH_DATA     72
 #define CH_DATA_SIZE 65536
 
-/* Signal delivery area — last 32 bytes of data buffer */
-#define CH_SIG_BASE     (CH_DATA + CH_DATA_SIZE - 48)
+/* Signal delivery area — last 56 bytes of data buffer.
+ * On wasm64, alt_sp and alt_size are pointer-sized (8 bytes each). */
+#define CH_SIG_BASE     (CH_DATA + CH_DATA_SIZE - 56)
 #define CH_SIG_SIGNUM   (CH_SIG_BASE)
 #define CH_SIG_HANDLER  (CH_SIG_BASE + 4)
 #define CH_SIG_FLAGS    (CH_SIG_BASE + 8)
@@ -56,7 +58,7 @@ int *__errno_location(void);
 #define CH_SIG_SI_PID   (CH_SIG_BASE + 28)
 #define CH_SIG_SI_UID   (CH_SIG_BASE + 32)
 #define CH_SIG_ALT_SP   (CH_SIG_BASE + 36)
-#define CH_SIG_ALT_SIZE (CH_SIG_BASE + 40)
+#define CH_SIG_ALT_SIZE (CH_SIG_BASE + 44)
 
 #define SA_SIGINFO 4
 #define SYS_SIGPROCMASK 37
@@ -71,11 +73,13 @@ int *__errno_location(void);
  *
  * Unlike _Thread_local (which stores in shared linear memory at __tls_base +
  * offset), wasm globals are instance-local and cannot be corrupted by other
- * threads' pointer arithmetic into the same memory region. */
-__asm__(".globaltype __channel_base, i32\n");
+ * threads' pointer arithmetic into the same memory region.
+ *
+ * On wasm64, the global is i64 (memory addresses are 64-bit). */
+__asm__(".globaltype __channel_base, i64\n");
 
-static inline uint32_t get_channel_base(void) {
-    uint32_t val;
+static inline uintptr_t get_channel_base(void) {
+    uintptr_t val;
     __asm__ volatile("global.get __channel_base\n"
                      "local.set %0" : "=r"(val));
     return val;
@@ -85,7 +89,7 @@ static inline uint32_t get_channel_base(void) {
  * not a TLS memory address. The host checks: if this returns 0,
  * skip TLS-based channel setup (the global is set at instantiation). */
 __attribute__((export_name("__get_channel_base_addr")))
-uint32_t __get_channel_base_addr(void) {
+uintptr_t __get_channel_base_addr(void) {
     return 0;
 }
 
@@ -148,11 +152,11 @@ int vfork(void)
 static long __do_syscall(long n, long a1, long a2, long a3,
                          long a4, long a5, long a6);
 
-static void __deliver_pending_signal(uint32_t base)
+static void __deliver_pending_signal(uintptr_t base)
 {
-    uint32_t *sig_signum_ptr  = (uint32_t *)(uintptr_t)(base + CH_SIG_SIGNUM);
-    uint32_t *sig_handler_ptr = (uint32_t *)(uintptr_t)(base + CH_SIG_HANDLER);
-    uint32_t *sig_flags_ptr   = (uint32_t *)(uintptr_t)(base + CH_SIG_FLAGS);
+    uint32_t *sig_signum_ptr  = (uint32_t *)(base + CH_SIG_SIGNUM);
+    uint32_t *sig_handler_ptr = (uint32_t *)(base + CH_SIG_HANDLER);
+    uint32_t *sig_flags_ptr   = (uint32_t *)(base + CH_SIG_FLAGS);
 
     uint32_t signum  = *sig_signum_ptr;
     if (signum == 0) return;
@@ -162,14 +166,18 @@ static void __deliver_pending_signal(uint32_t base)
 
     /* Read saved old blocked mask (8 bytes at CH_SIG_OLD_MASK) */
     uint64_t old_mask;
-    __builtin_memcpy(&old_mask, (void *)(uintptr_t)(base + CH_SIG_OLD_MASK), 8);
+    __builtin_memcpy(&old_mask, (void *)(base + CH_SIG_OLD_MASK), 8);
 
     /* Read alt stack info — non-zero alt_sp means we need to switch
      * the wasm shadow stack (__stack_pointer) to the alt stack buffer
      * before calling the handler.  This makes &local_var land inside
-     * the alt stack range, matching real sigaltstack behavior. */
-    uint32_t alt_sp   = *(uint32_t *)(uintptr_t)(base + CH_SIG_ALT_SP);
-    uint32_t alt_size = *(uint32_t *)(uintptr_t)(base + CH_SIG_ALT_SIZE);
+     * the alt stack range, matching real sigaltstack behavior.
+     *
+     * On wasm64, alt_sp and alt_size are pointer-sized (8 bytes). */
+    uintptr_t alt_sp;
+    uintptr_t alt_size;
+    __builtin_memcpy(&alt_sp, (void *)(base + CH_SIG_ALT_SP), sizeof(uintptr_t));
+    __builtin_memcpy(&alt_size, (void *)(base + CH_SIG_ALT_SIZE), sizeof(uintptr_t));
 
     /* Clear signal delivery area before calling handler */
     *sig_signum_ptr = 0;
@@ -181,7 +189,7 @@ static void __deliver_pending_signal(uint32_t base)
     void *saved_sp = 0;
     if (alt_sp != 0) {
         __asm__ volatile("global.get __stack_pointer\nlocal.set %0" : "=r"(saved_sp));
-        void *new_sp = (void *)(uintptr_t)(alt_sp + alt_size);
+        void *new_sp = (void *)(alt_sp + alt_size);
         /* Shadow stack grows downward — set to top of alt stack buffer */
         __asm__ volatile("local.get %0\nglobal.set __stack_pointer" :: "r"(new_sp));
     }
@@ -192,10 +200,10 @@ static void __deliver_pending_signal(uint32_t base)
      * call_indirect, which looks up the indirect function table. */
     if (flags & SA_SIGINFO) {
         /* Build a minimal siginfo_t on the stack for SA_SIGINFO handlers */
-        int32_t si_value_int = *(int32_t *)(uintptr_t)(base + CH_SIG_SI_VALUE);
-        int32_t si_code  = *(int32_t *)(uintptr_t)(base + CH_SIG_SI_CODE);
-        int32_t si_pid   = *(int32_t *)(uintptr_t)(base + CH_SIG_SI_PID);
-        int32_t si_uid   = *(int32_t *)(uintptr_t)(base + CH_SIG_SI_UID);
+        int32_t si_value_int = *(int32_t *)(base + CH_SIG_SI_VALUE);
+        int32_t si_code  = *(int32_t *)(base + CH_SIG_SI_CODE);
+        int32_t si_pid   = *(int32_t *)(base + CH_SIG_SI_PID);
+        int32_t si_uid   = *(int32_t *)(base + CH_SIG_SI_UID);
         /* siginfo_t layout (128 bytes):
          *   [0]  si_signo, [4] si_errno, [8] si_code,
          *   [12] si_pid, [16] si_uid, [20] si_value.sival_int */
@@ -255,62 +263,59 @@ static long __do_syscall(long n, long a1, long a2, long a3,
      * in a local variable that might be spilled to the shadow stack.
      * The wasm global is per-instance and immune to cross-thread corruption. */
 
-    uint32_t base = get_channel_base();
+    uintptr_t base = get_channel_base();
 
     /* Write syscall number and arguments directly using base offsets.
-     * These are one-shot writes — if the shadow stack value of 'base' is
-     * corrupted after these writes, it doesn't matter because we re-read
-     * the global for the atomic operations below. */
-    *(int32_t *)(uintptr_t)(base + CH_SYSCALL) = (int32_t)n;
-    *(int32_t *)(uintptr_t)(base + CH_ARGS + 0)  = (int32_t)a1;
-    *(int32_t *)(uintptr_t)(base + CH_ARGS + 4)  = (int32_t)a2;
-    *(int32_t *)(uintptr_t)(base + CH_ARGS + 8)  = (int32_t)a3;
-    *(int32_t *)(uintptr_t)(base + CH_ARGS + 12) = (int32_t)a4;
-    *(int32_t *)(uintptr_t)(base + CH_ARGS + 16) = (int32_t)a5;
-    *(int32_t *)(uintptr_t)(base + CH_ARGS + 20) = (int32_t)a6;
+     * Args are i64 on wasm64 (LP64: long = 8 bytes). */
+    *(int32_t *)(base + CH_SYSCALL) = (int32_t)n;
+    *(int64_t *)(base + CH_ARGS + 0)  = (int64_t)a1;
+    *(int64_t *)(base + CH_ARGS + 8)  = (int64_t)a2;
+    *(int64_t *)(base + CH_ARGS + 16) = (int64_t)a3;
+    *(int64_t *)(base + CH_ARGS + 24) = (int64_t)a4;
+    *(int64_t *)(base + CH_ARGS + 32) = (int64_t)a5;
+    *(int64_t *)(base + CH_ARGS + 40) = (int64_t)a6;
 
     /* Set status to PENDING and wake the kernel worker.
      * Use inline asm to read __channel_base directly from the wasm global,
      * bypassing any shadow stack spills that might be corrupted. */
     {
-        uint32_t addr;
+        uintptr_t addr;
         __asm__ volatile(
             "global.get __channel_base\n"
             "local.set %0"
             : "=r"(addr)
         );
-        __c11_atomic_store((_Atomic int32_t *)(uintptr_t)(addr + CH_STATUS),
+        __c11_atomic_store((_Atomic int32_t *)(addr + CH_STATUS),
                            CH_PENDING, __ATOMIC_SEQ_CST);
+        /* memory.atomic.notify still takes i32* on memory64 */
         __builtin_wasm_memory_atomic_notify(
-            (int32_t *)(uintptr_t)(addr + CH_STATUS), 1);
+            (int32_t *)(addr + CH_STATUS), 1);
     }
 
     /* Block until the kernel sets status to COMPLETE or ERROR.
      * CRITICAL: Re-read __channel_base from the wasm global on every
-     * iteration. The compiler at -O0 would spill the address to the
-     * shadow stack, where cross-thread memory writes can corrupt it.
-     * Reading from the global (a per-instance register) is immune. */
+     * iteration. memory.atomic.wait32 still works on memory64. */
     {
         int wait_ret;
         do {
-            uint32_t addr;
+            uintptr_t addr;
             __asm__ volatile(
                 "global.get __channel_base\n"
                 "local.set %0"
                 : "=r"(addr)
             );
             wait_ret = __builtin_wasm_memory_atomic_wait32(
-                (int32_t *)(uintptr_t)(addr + CH_STATUS), CH_PENDING, -1);
+                (int32_t *)(addr + CH_STATUS), CH_PENDING, -1);
         } while (wait_ret == 0);
     }
 
     /* Read result — re-read base from global for safety */
     base = get_channel_base();
-    long result = (long)*(int32_t *)(uintptr_t)(base + CH_RETURN);
-    int32_t err = *(int32_t *)(uintptr_t)(base + CH_ERRNO);
+    long result = (long)*(int64_t *)(base + CH_RETURN);
+    int32_t err = *(int32_t *)(base + CH_ERRNO);
 
     /* Reset status to IDLE for next syscall */
-    __c11_atomic_store((_Atomic int32_t *)(uintptr_t)(base + CH_STATUS),
+    __c11_atomic_store((_Atomic int32_t *)(base + CH_STATUS),
                        CH_IDLE, __ATOMIC_SEQ_CST);
 
     /* Check for pending signal delivery from the kernel.
@@ -375,4 +380,3 @@ long __syscall_cp(long n, long a1, long a2, long a3, long a4, long a5,
 {
     return __do_syscall(n, a1, a2, a3, a4, a5, a6);
 }
-
