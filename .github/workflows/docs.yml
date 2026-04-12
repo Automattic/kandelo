@@ -1,0 +1,37 @@
+name: Deploy API docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'host/src/**'
+      - 'host/typedoc.json'
+      - 'host/package.json'
+
+jobs:
+  deploy-docs:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        working-directory: host
+        run: npm ci
+
+      - name: Build API docs
+        working-directory: host
+        run: npx typedoc
+
+      - name: Deploy to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: host/docs
+          destination_dir: api
+          keep_files: true
