@@ -388,8 +388,11 @@ async function main() {
             }
         }
 
-        // Help GC reclaim terminated worker memory
-        if (typeof globalThis.gc === "function") globalThis.gc();
+        // Force GC to reclaim terminated worker memory (especially 1GB Wasm memories)
+        if (typeof globalThis.gc === "function") {
+            globalThis.gc();
+            globalThis.gc(); // Double GC: first pass marks, second pass sweeps Wasm
+        }
 
         // If restart has failed repeatedly, reinitialize the kernel entirely
         if (restartFailCount >= 2) {
