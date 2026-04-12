@@ -519,8 +519,8 @@ pub mod mmap {
     pub const MAP_ANONYMOUS: u32 = 0x20;
     pub const MAP_ANON: u32 = MAP_ANONYMOUS;
 
-    // Return value for failure
-    pub const MAP_FAILED: u32 = 0xFFFFFFFF;
+    // Return value for failure (pointer-sized: usize::MAX)
+    pub const MAP_FAILED: usize = usize::MAX;
 }
 
 /// Socket constants.
@@ -627,25 +627,41 @@ pub mod mode {
 }
 
 /// Shared-memory channel layout offsets and sizes.
+///
+/// wasm64 LP64 layout: args and return are i64 (8 bytes each).
+/// Status and syscall remain u32 for Atomics.wait32 compatibility.
+///
+/// ```text
+/// Offset  Size   Field
+/// 0       4B     status (i32, atomic — Atomics.wait32)
+/// 4       4B     syscall number (u32)
+/// 8       48B    arguments (6 × i64)
+/// 56      8B     return value (i64)
+/// 64      4B     errno (u32)
+/// 68      4B     padding (alignment)
+/// 72      64KB   data transfer buffer
+/// ```
 pub mod channel {
     /// Byte offset of the status field (u32, atomic).
     pub const STATUS_OFFSET: usize = 0;
     /// Byte offset of the syscall number field (u32).
     pub const SYSCALL_OFFSET: usize = 4;
-    /// Byte offset of the first argument slot (u32 each).
+    /// Byte offset of the first argument slot (i64 each, 8 bytes).
     pub const ARGS_OFFSET: usize = 8;
     /// Number of argument slots.
     pub const ARGS_COUNT: usize = 6;
-    /// Byte offset of the return value field (i32).
-    pub const RETURN_OFFSET: usize = 32;
+    /// Size of each argument slot in bytes.
+    pub const ARG_SIZE: usize = 8;
+    /// Byte offset of the return value field (i64).
+    pub const RETURN_OFFSET: usize = 56;
     /// Byte offset of the errno field (u32).
-    pub const ERRNO_OFFSET: usize = 36;
+    pub const ERRNO_OFFSET: usize = 64;
     /// Byte offset of the data buffer region.
-    pub const DATA_OFFSET: usize = 40;
+    pub const DATA_OFFSET: usize = 72;
     /// Size of the data buffer.
     pub const DATA_SIZE: usize = 65536;
     /// Minimum total size of a channel in bytes (header + 64 KiB data buffer).
-    pub const MIN_CHANNEL_SIZE: usize = 40 + 65536;
+    pub const MIN_CHANNEL_SIZE: usize = DATA_OFFSET + DATA_SIZE;
 
     // Signal delivery area — last 32 bytes of the data buffer.
     // After each syscall, if a signal with a Handler disposition is pending,
@@ -831,20 +847,20 @@ pub struct WasmPollFd {
 /// Statfs structure for the Wasm POSIX interface.
 ///
 /// Uses `repr(C)` for a stable, predictable memory layout matching
-/// musl's struct statfs on 32-bit targets.
+/// musl's struct statfs on LP64 targets (wasm64: sizeof(long)=8).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct WasmStatfs {
-    pub f_type: u32,
-    pub f_bsize: u32,
-    pub f_blocks: u64,
-    pub f_bfree: u64,
-    pub f_bavail: u64,
-    pub f_files: u64,
-    pub f_ffree: u64,
-    pub f_fsid: u64,
-    pub f_namelen: u32,
-    pub f_frsize: u32,
-    pub f_flags: u32,
-    pub _pad: u32,
+    pub f_type: u64,     // unsigned long on LP64
+    pub f_bsize: u64,    // unsigned long on LP64
+    pub f_blocks: u64,   // fsblkcnt_t
+    pub f_bfree: u64,    // fsblkcnt_t
+    pub f_bavail: u64,   // fsblkcnt_t
+    pub f_files: u64,    // fsfilcnt_t
+    pub f_ffree: u64,    // fsfilcnt_t
+    pub f_fsid: u64,     // fsid_t (2 × int, 8 bytes)
+    pub f_namelen: u64,  // unsigned long on LP64
+    pub f_frsize: u64,   // unsigned long on LP64
+    pub f_flags: u64,    // unsigned long on LP64
+    pub _pad: u64,       // padding
 }

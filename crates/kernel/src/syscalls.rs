@@ -3471,8 +3471,8 @@ pub fn sys_utimensat(
 /// Memory advice hint. No-op in Wasm — there's no virtual memory paging.
 pub fn sys_madvise(
     _proc: &mut Process,
-    _addr: u32,
-    _len: u32,
+    _addr: usize,
+    _len: usize,
     _advice: u32,
 ) -> Result<(), Errno> {
     Ok(())
@@ -3484,11 +3484,11 @@ pub fn sys_madvise(
 /// and MREMAP_MAYMOVE (allocate new mapping, old mapping is freed).
 pub fn sys_mremap(
     proc: &mut Process,
-    old_addr: u32,
-    old_len: u32,
-    new_len: u32,
+    old_addr: usize,
+    old_len: usize,
+    new_len: usize,
     flags: u32,
-) -> Result<u32, Errno> {
+) -> Result<usize, Errno> {
     const MREMAP_MAYMOVE: u32 = 1;
 
     if old_len == 0 || new_len == 0 {
@@ -3615,13 +3615,13 @@ pub fn sys_unsetenv(proc: &mut Process, name: &[u8]) -> Result<(), Errno> {
 /// them from the file and (for MAP_SHARED) writes back on msync/munmap.
 pub fn sys_mmap(
     proc: &mut Process,
-    addr: u32,
-    len: u32,
+    addr: usize,
+    len: usize,
     prot: u32,
     flags: u32,
     fd: i32,
     _offset: i64,
-) -> Result<u32, Errno> {
+) -> Result<usize, Errno> {
     if flags & MAP_ANONYMOUS == 0 {
         // File-backed mapping: validate the fd is open.
         if fd < 0 {
@@ -3643,7 +3643,7 @@ pub fn sys_mmap(
 }
 
 /// munmap -- unmap a previously mapped region.
-pub fn sys_munmap(proc: &mut Process, addr: u32, len: u32) -> Result<(), Errno> {
+pub fn sys_munmap(proc: &mut Process, addr: usize, len: usize) -> Result<(), Errno> {
     if len == 0 {
         return Err(Errno::EINVAL);
     }
@@ -3665,7 +3665,7 @@ pub fn sys_munmap(proc: &mut Process, addr: u32, len: u32) -> Result<(), Errno> 
 /// brk -- set/get the program break.
 /// If addr is 0, returns the current break.
 /// Otherwise, sets the break to addr and returns the new break.
-pub fn sys_brk(proc: &mut Process, addr: u32) -> u32 {
+pub fn sys_brk(proc: &mut Process, addr: usize) -> usize {
     if addr == 0 {
         proc.memory.get_brk()
     } else {
@@ -3675,7 +3675,7 @@ pub fn sys_brk(proc: &mut Process, addr: u32) -> u32 {
 
 /// mprotect -- Wasm linear memory has no page-level protection.
 /// Returns success (no-op) so callers like Zend's allocator don't fail.
-pub fn sys_mprotect(_proc: &Process, _addr: u32, _len: u32, _prot: u32) -> Result<(), Errno> {
+pub fn sys_mprotect(_proc: &Process, _addr: usize, _len: usize, _prot: u32) -> Result<(), Errno> {
     Ok(())
 }
 
@@ -8848,7 +8848,7 @@ mod tests {
     fn test_mmap_anonymous() {
         let mut proc = Process::new(1);
         let addr = sys_mmap(&mut proc, 0, 4096, 3, 0x22, -1, 0).unwrap(); // PROT_READ|WRITE, MAP_PRIVATE|ANON
-        assert_ne!(addr, 0xFFFFFFFF);
+        assert_ne!(addr, wasm_posix_shared::mmap::MAP_FAILED);
     }
 
     #[test]
@@ -8859,7 +8859,7 @@ mod tests {
         let fd = sys_open(&mut proc, &mut host, b"/tmp/mmaptest", 0x42, 0o644).unwrap(); // O_CREAT|O_RDWR
         // MAP_PRIVATE without MAP_ANONYMOUS should succeed (host populates data)
         let addr = sys_mmap(&mut proc, 0, 4096, 3, 0x02, fd, 0).unwrap(); // PROT_READ|WRITE, MAP_PRIVATE
-        assert_ne!(addr, 0xFFFFFFFF);
+        assert_ne!(addr, wasm_posix_shared::mmap::MAP_FAILED);
     }
 
     #[test]
@@ -8878,7 +8878,7 @@ mod tests {
         let fd = sys_open(&mut proc, &mut host, b"/tmp/mmaptest_shared", 0x42, 0o644).unwrap(); // O_CREAT|O_RDWR
         // MAP_SHARED should succeed (allocates region, host does population + tracking)
         let addr = sys_mmap(&mut proc, 0, 4096, 3, 0x01, fd, 0).unwrap(); // PROT_READ|WRITE, MAP_SHARED
-        assert_ne!(addr, 0xFFFFFFFF);
+        assert_ne!(addr, wasm_posix_shared::mmap::MAP_FAILED);
     }
 
     #[test]
@@ -8897,9 +8897,10 @@ mod tests {
 
     #[test]
     fn test_munmap_address_overflow() {
-        // Page-aligned address where addr+len overflows u32
+        // Page-aligned address where addr+len overflows usize
         let mut proc = Process::new(1);
-        assert_eq!(sys_munmap(&mut proc, 0xFFFF0000, 0x20000), Err(Errno::EINVAL));
+        let high_addr = usize::MAX - 0xFFFF; // page-aligned (all bits set except low 16)
+        assert_eq!(sys_munmap(&mut proc, high_addr, 0x20000), Err(Errno::EINVAL));
     }
 
     #[test]

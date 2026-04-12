@@ -10,7 +10,8 @@
 //! - CWD (variable): current working directory bytes
 //! - Rlimits (256 bytes): 16 pairs of u64
 //! - Terminal (56 bytes): flags, control chars, window size
-//! - Program break (4 bytes): current brk value
+//! - Program break (8 bytes): current brk value (u64)
+//! - mmap mappings (variable, fork only): count (u32), then each (u64 addr, u64 len, u32 prot, u32 flags)
 
 extern crate alloc;
 
@@ -392,14 +393,14 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
     w.write_i32(proc.terminal.session_id)?;
 
     // ── Program break ──
-    w.write_u32(proc.memory.get_brk())?;
+    w.write_u64(proc.memory.get_brk() as u64)?;
 
     // ── mmap mappings (v5) ──
     let mappings = proc.memory.mappings();
     w.write_u32(mappings.len() as u32)?;
     for m in mappings {
-        w.write_u32(m.addr)?;
-        w.write_u32(m.len)?;
+        w.write_u64(m.addr as u64)?;
+        w.write_u64(m.len as u64)?;
         w.write_u32(m.prot)?;
         w.write_u32(m.flags)?;
     }
@@ -708,7 +709,7 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
     };
 
     // ── Program break ──
-    let program_break = r.read_u32()?;
+    let program_break = r.read_u64()? as usize;
     let mut memory = MemoryManager::new();
     memory.set_brk(program_break);
 
@@ -720,8 +721,8 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
         }
         let mut mappings = Vec::with_capacity(mapping_count);
         for _ in 0..mapping_count {
-            let addr = r.read_u32()?;
-            let len = r.read_u32()?;
+            let addr = r.read_u64()? as usize;
+            let len = r.read_u64()? as usize;
             let prot = r.read_u32()?;
             let flags = r.read_u32()?;
             mappings.push(MappedRegion { addr, len, prot, flags });
@@ -1033,7 +1034,7 @@ pub fn serialize_exec_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
     w.write_i32(proc.terminal.session_id)?;
 
     // ── Program break ──
-    w.write_u32(proc.memory.get_brk())?;
+    w.write_u64(proc.memory.get_brk() as u64)?;
 
     // ── Patch total_size ──
     let total = w.pos as u32;
@@ -1222,7 +1223,7 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
     };
 
     // ── Program break ──
-    let program_break = r.read_u32()?;
+    let program_break = r.read_u64()? as usize;
     let mut memory = MemoryManager::new();
     memory.set_brk(program_break);
 

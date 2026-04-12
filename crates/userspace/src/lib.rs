@@ -1,10 +1,11 @@
-#![cfg_attr(target_arch = "wasm32", no_std)]
-#![cfg_attr(target_arch = "wasm32", no_main)]
+#![cfg_attr(target_family = "wasm", no_std)]
+#![cfg_attr(target_family = "wasm", no_main)]
+#![cfg_attr(target_arch = "wasm64", feature(simd_wasm64))]
 
 extern crate alloc;
 extern crate wasm_posix_shared;
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 mod wasm {
     use core::alloc::{GlobalAlloc, Layout};
 
@@ -14,7 +15,7 @@ mod wasm {
         unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
             // Grow linear memory in pages (64 KiB each).
             let pages = (layout.size() + layout.align() + 65535) / 65536;
-            let prev = core::arch::wasm32::memory_grow(0, pages);
+            let prev = wasm_memory_grow(pages);
             if prev == usize::MAX {
                 return core::ptr::null_mut();
             }
@@ -28,11 +29,24 @@ mod wasm {
         }
     }
 
+    #[cfg(target_arch = "wasm64")]
+    fn wasm_memory_grow(pages: usize) -> usize {
+        core::arch::wasm64::memory_grow(0, pages)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn wasm_memory_grow(pages: usize) -> usize {
+        core::arch::wasm32::memory_grow(0, pages)
+    }
+
     #[global_allocator]
     static ALLOC: WasmAlloc = WasmAlloc;
 
     #[panic_handler]
     fn panic(_info: &core::panic::PanicInfo) -> ! {
-        core::arch::wasm32::unreachable()
+        #[cfg(target_arch = "wasm64")]
+        { core::arch::wasm64::unreachable() }
+        #[cfg(target_arch = "wasm32")]
+        { core::arch::wasm32::unreachable() }
     }
 }
