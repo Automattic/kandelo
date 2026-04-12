@@ -6,8 +6,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SRC_DIR="$SCRIPT_DIR/php-src"
 INSTALL_DIR="$SCRIPT_DIR/php-install"
 
-if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
+if ! command -v wasm64posix-cc &>/dev/null; then
+    echo "ERROR: wasm64posix-cc not found. Run 'npm link' in sdk/ first." >&2
     exit 1
 fi
 
@@ -104,7 +104,7 @@ fi
 
 echo "==> Configuring PHP for Wasm..."
 if [ ! -f Makefile ]; then
-    wasm32posix-configure \
+    wasm64posix-configure \
         --disable-all \
         --disable-cgi \
         --disable-phpdbg \

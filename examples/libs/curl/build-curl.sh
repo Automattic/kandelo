@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Build curl 8.11.1 for wasm32-posix-kernel.
 #
-# Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
+# Uses the SDK's wasm64posix-configure wrapper for cross-compilation.
 # Requires OpenSSL and zlib already built and installed in the sysroot.
 # Output: examples/libs/curl/bin/curl.wasm
 
@@ -15,8 +15,8 @@ BIN_DIR="$SCRIPT_DIR/bin"
 SYSROOT="$REPO_ROOT/sysroot"
 
 # --- Prerequisites ---
-if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
+if ! command -v wasm64posix-cc &>/dev/null; then
+    echo "ERROR: wasm64posix-cc not found. Run 'npm link' in sdk/ first." >&2
     exit 1
 fi
 
@@ -142,7 +142,7 @@ if [ ! -f Makefile ]; then
     # Extra LIBS needed for static OpenSSL (it depends on -ldl)
     export LIBS="${LIBS:-} -ldl"
 
-    wasm32posix-configure \
+    wasm64posix-configure \
         --disable-nls \
         --disable-shared \
         --enable-static \

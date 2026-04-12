@@ -7,8 +7,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SRC_DIR="$SCRIPT_DIR/libxml2-src"
 INSTALL_DIR="$SCRIPT_DIR/libxml2-install"
 
-if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
+if ! command -v wasm64posix-cc &>/dev/null; then
+    echo "ERROR: wasm64posix-cc not found. Run 'npm link' in sdk/ first." >&2
     exit 1
 fi
 
@@ -43,7 +43,7 @@ cd "$SRC_DIR"
 # Run configure to generate config.h and xmlversion.h, but we won't use make
 echo "==> Configuring libxml2 for Wasm..."
 if [ ! -f config.h ]; then
-    wasm32posix-configure \
+    wasm64posix-configure \
         --disable-shared --enable-static \
         --without-python --without-readline --without-iconv \
         --without-icu --without-lzma --without-http --without-ftp \
@@ -78,13 +78,13 @@ OBJS=()
 for src in "${SOURCES[@]}"; do
     if [ -f "$src" ]; then
         obj="${src%.c}.o"
-        wasm32posix-cc $CFLAGS -c "$src" -o "$obj"
+        wasm64posix-cc $CFLAGS -c "$src" -o "$obj"
         OBJS+=("$obj")
     fi
 done
 
 echo "==> Creating libxml2.a (${#OBJS[@]} objects)..."
-wasm32posix-ar rcs libxml2.a "${OBJS[@]}"
+wasm64posix-ar rcs libxml2.a "${OBJS[@]}"
 
 # Install
 echo "==> Installing to $INSTALL_DIR..."

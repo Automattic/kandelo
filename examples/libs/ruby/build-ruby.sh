@@ -27,8 +27,8 @@ SYSROOT="$REPO_ROOT/sysroot"
 
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
-if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
+if ! command -v wasm64posix-cc &>/dev/null; then
+    echo "ERROR: wasm64posix-cc not found. Run 'npm link' in sdk/ first." >&2
     exit 1
 fi
 
@@ -67,7 +67,7 @@ if [ ! -f "$LIBYAML_DIR/lib/libyaml.a" ]; then
     fi
     cd "$LIBYAML_SRC"
     if [ ! -f Makefile ]; then
-        wasm32posix-configure --prefix="$LIBYAML_DIR" --disable-shared --enable-static
+        wasm64posix-configure --prefix="$LIBYAML_DIR" --disable-shared --enable-static
     fi
     make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
     make install
@@ -86,7 +86,7 @@ fi
 # Ensure WASI stub libraries exist (Ruby's wasi detection injects -lwasi-emulated-*)
 for lib in libwasi-emulated-signal.a libwasi-emulated-getpid.a libwasi-emulated-process-clocks.a libwasi-emulated-mman.a; do
     if [ ! -f "$SYSROOT/lib/$lib" ]; then
-        wasm32posix-ar rcs "$SYSROOT/lib/$lib"
+        wasm64posix-ar rcs "$SYSROOT/lib/$lib"
     fi
 done
 
@@ -492,13 +492,13 @@ SITE_EOF
     # CC/AR/RANLIB/NM so it's only used for the existence check.
     CONFIG_SITE="$CONFIG_SITE" \
     WASI_SDK_PATH="$SYSROOT" \
-    CC=wasm32posix-cc \
-    LD=wasm32posix-cc \
-    AR=wasm32posix-ar \
-    RANLIB=wasm32posix-ranlib \
-    NM=wasm32posix-nm \
-    STRIP=wasm32posix-strip \
-    PKG_CONFIG=wasm32posix-pkg-config \
+    CC=wasm64posix-cc \
+    LD=wasm64posix-cc \
+    AR=wasm64posix-ar \
+    RANLIB=wasm64posix-ranlib \
+    NM=wasm64posix-nm \
+    STRIP=wasm64posix-strip \
+    PKG_CONFIG=wasm64posix-pkg-config \
     CFLAGS="-O2 -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS" \
     LDFLAGS="" \
     "$SRC_DIR/configure" \

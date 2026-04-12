@@ -26,8 +26,8 @@ SYSROOT="$REPO_ROOT/sysroot"
 ONLYLIST="$SCRIPT_DIR/asyncify-onlylist.txt"
 
 # --- Prerequisites ---
-if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
+if ! command -v wasm64posix-cc &>/dev/null; then
+    echo "ERROR: wasm64posix-cc not found. Run 'npm link' in sdk/ first." >&2
     exit 1
 fi
 
@@ -78,10 +78,10 @@ cd "$SRC_DIR"
 echo "==> Creating config.mak for wasm32 cross-compilation..."
 cat > config.mak << ENDMAK
 # Cross-compilation for wasm32-posix-kernel
-CC = wasm32posix-cc
-AR = wasm32posix-ar
-RANLIB = wasm32posix-ranlib
-STRIP = wasm32posix-strip
+CC = wasm64posix-cc
+AR = wasm64posix-ar
+RANLIB = wasm64posix-ranlib
+STRIP = wasm64posix-strip
 
 # Install paths — must match wasm VFS layout so git finds /etc/gitconfig
 prefix = /usr

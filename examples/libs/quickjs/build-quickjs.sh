@@ -18,8 +18,8 @@ BIN_DIR="$SCRIPT_DIR/bin"
 GEN_DIR="$BIN_DIR/gen"
 
 # SDK tools
-CC="${CC:-wasm32posix-cc}"
-AR="${AR:-wasm32posix-ar}"
+CC="${CC:-wasm64posix-cc}"
+AR="${AR:-wasm64posix-ar}"
 
 SYSROOT="$REPO_ROOT/sysroot"
 if [ ! -f "$SYSROOT/lib/libc.a" ]; then

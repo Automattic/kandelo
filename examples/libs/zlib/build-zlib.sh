@@ -6,8 +6,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SRC_DIR="$SCRIPT_DIR/zlib-src"
 INSTALL_DIR="$SCRIPT_DIR/zlib-install"
 
-if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
+if ! command -v wasm64posix-cc &>/dev/null; then
+    echo "ERROR: wasm64posix-cc not found. Run 'npm link' in sdk/ first." >&2
     exit 1
 fi
 
@@ -23,18 +23,18 @@ fi
 cd "$SRC_DIR"
 
 echo "==> Configuring zlib for Wasm..."
-CC=wasm32posix-cc AR=wasm32posix-ar RANLIB=wasm32posix-ranlib \
-    LDSHARED="wasm32posix-cc -shared" \
+CC=wasm64posix-cc AR=wasm64posix-ar RANLIB=wasm64posix-ranlib \
+    LDSHARED="wasm64posix-cc -shared" \
     ./configure --static --prefix="$INSTALL_DIR"
 
 # On macOS, zlib's configure uses 'libtool' which is the Xcode one — not wasm-aware.
-# Patch the Makefile to use wasm32posix-ar instead.
+# Patch the Makefile to use wasm64posix-ar instead.
 echo "==> Patching Makefile for Wasm ar..."
 sed -i.bak \
-    -e 's|^AR=.*|AR=wasm32posix-ar|' \
+    -e 's|^AR=.*|AR=wasm64posix-ar|' \
     -e 's|^ARFLAGS=.*|ARFLAGS=rcs|' \
-    -e 's|^RANLIB=.*|RANLIB=wasm32posix-ranlib|' \
-    -e 's|libtool -o|wasm32posix-ar rcs|g' \
+    -e 's|^RANLIB=.*|RANLIB=wasm64posix-ranlib|' \
+    -e 's|libtool -o|wasm64posix-ar rcs|g' \
     Makefile && rm -f Makefile.bak
 
 echo "==> Building zlib..."

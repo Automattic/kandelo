@@ -7,8 +7,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SRC_DIR="$SCRIPT_DIR/sqlite-src"
 INSTALL_DIR="$SCRIPT_DIR/sqlite-install"
 
-if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
+if ! command -v wasm64posix-cc &>/dev/null; then
+    echo "ERROR: wasm64posix-cc not found. Run 'npm link' in sdk/ first." >&2
     exit 1
 fi
 
@@ -35,10 +35,10 @@ SQLITE_CFLAGS="-O2 \
 
 echo "==> Compiling SQLite for Wasm..."
 # shellcheck disable=SC2086
-wasm32posix-cc -c $SQLITE_CFLAGS \
+wasm64posix-cc -c $SQLITE_CFLAGS \
     "$SRC_DIR/sqlite3.c" -o "$SRC_DIR/sqlite3.o"
 
-wasm32posix-ar rcs "$SRC_DIR/libsqlite3.a" "$SRC_DIR/sqlite3.o"
+wasm64posix-ar rcs "$SRC_DIR/libsqlite3.a" "$SRC_DIR/sqlite3.o"
 
 # Install to local install dir (same pattern as OpenSSL)
 echo "==> Installing to $INSTALL_DIR..."
@@ -65,7 +65,7 @@ PCEOF
 echo "==> Building sqlite3 CLI..."
 mkdir -p "$INSTALL_DIR/bin"
 # shellcheck disable=SC2086
-wasm32posix-cc $SQLITE_CFLAGS \
+wasm64posix-cc $SQLITE_CFLAGS \
     "$SRC_DIR/shell.c" "$SRC_DIR/sqlite3.c" \
     -o "$INSTALL_DIR/bin/sqlite3.wasm" -lm
 

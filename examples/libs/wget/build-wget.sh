@@ -4,7 +4,7 @@ set -euo pipefail
 # Build GNU wget 1.24.5 for wasm32-posix-kernel.
 #
 # Links against pre-built OpenSSL and zlib if available.
-# Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
+# Uses the SDK's wasm64posix-configure wrapper for cross-compilation.
 #
 # Output: examples/libs/wget/bin/wget.wasm
 
@@ -16,8 +16,8 @@ BIN_DIR="$SCRIPT_DIR/bin"
 SYSROOT="$REPO_ROOT/sysroot"
 
 # --- Prerequisites ---
-if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
+if ! command -v wasm64posix-cc &>/dev/null; then
+    echo "ERROR: wasm64posix-cc not found. Run 'npm link' in sdk/ first." >&2
     exit 1
 fi
 
@@ -202,7 +202,7 @@ static inline int group_member(int gid) { (void)gid; return 0; }
         rm -f "$SRC_DIR/src/utils.c.bak"
     fi
 
-    wasm32posix-configure \
+    wasm64posix-configure \
         --disable-nls \
         --disable-iri \
         --without-metalink \

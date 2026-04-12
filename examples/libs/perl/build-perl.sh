@@ -22,8 +22,8 @@ BIN_DIR="$SCRIPT_DIR/bin"
 SYSROOT="$REPO_ROOT/sysroot"
 
 # --- Prerequisites ---
-if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
+if ! command -v wasm64posix-cc &>/dev/null; then
+    echo "ERROR: wasm64posix-cc not found. Run 'npm link' in sdk/ first." >&2
     exit 1
 fi
 
@@ -232,13 +232,13 @@ if [ ! -f config.sh ]; then
     export HOSTCFLAGS="-Wno-format"
 
     ./configure \
-        --target=wasm32-unknown-none \
+        --target=wasm64-unknown-none \
         --prefix=/usr \
-        -Dcc=wasm32posix-cc \
-        -Dld=wasm32posix-cc \
-        -Dar=wasm32posix-ar \
-        -Dranlib=wasm32posix-ranlib \
-        -Dnm=wasm32posix-nm \
+        -Dcc=wasm64posix-cc \
+        -Dld=wasm64posix-cc \
+        -Dar=wasm64posix-ar \
+        -Dranlib=wasm64posix-ranlib \
+        -Dnm=wasm64posix-nm \
         -Doptimize="-O2" \
         -Dccflags="-D_GNU_SOURCE -DNO_ENV_ARRAY_IN_MAIN -fvisibility=default" \
         -Dldflags="" \

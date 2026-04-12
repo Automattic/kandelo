@@ -18,8 +18,8 @@ INSTALL_DIR="$SCRIPT_DIR/tcl-install"
 SYSROOT="$REPO_ROOT/sysroot"
 
 # --- Prerequisites ---
-if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
+if ! command -v wasm64posix-cc &>/dev/null; then
+    echo "ERROR: wasm64posix-cc not found. Run 'npm link' in sdk/ first." >&2
     exit 1
 fi
 
@@ -50,12 +50,12 @@ if [ ! -f Makefile ]; then
     echo "==> Configuring TCL for wasm32..."
 
     CONFIG_SITE="$SCRIPT_DIR/config.site-wasm32-posix" \
-    CC=wasm32posix-cc \
-    AR=wasm32posix-ar \
-    RANLIB=wasm32posix-ranlib \
+    CC=wasm64posix-cc \
+    AR=wasm64posix-ar \
+    RANLIB=wasm64posix-ranlib \
     CFLAGS="-O2" \
     "$SRC_DIR/unix/configure" \
-        --host=wasm32-unknown-none \
+        --host=wasm64-unknown-none \
         --build="$(uname -m)-apple-darwin" \
         --prefix=/usr \
         --disable-threads \

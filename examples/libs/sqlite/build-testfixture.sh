@@ -22,8 +22,8 @@ ZLIB_INSTALL="$SCRIPT_DIR/../zlib/zlib-install"
 BUILD_DIR="$SCRIPT_DIR/testfixture-build"
 
 # --- Prerequisites ---
-if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
+if ! command -v wasm64posix-cc &>/dev/null; then
+    echo "ERROR: wasm64posix-cc not found. Run 'npm link' in sdk/ first." >&2
     exit 1
 fi
 
@@ -210,10 +210,10 @@ TESTSRC_FILES=(
 # functions are visible to the test files (which reference them as extern).
 # Without this, the amalgamation defines them as static.
 echo "==> Compiling SQLite amalgamation..."
-wasm32posix-cc -c "${CFLAGS[@]}" -DSQLITE_PRIVATE= "$SQLITE_SRC/sqlite3.c" -o sqlite3.o
+wasm64posix-cc -c "${CFLAGS[@]}" -DSQLITE_PRIVATE= "$SQLITE_SRC/sqlite3.c" -o sqlite3.o
 
 echo "==> Compiling tclsqlite.c..."
-wasm32posix-cc -c "${CFLAGS[@]}" "$SQLITE_FULL/src/tclsqlite.c" -o tclsqlite.o
+wasm64posix-cc -c "${CFLAGS[@]}" "$SQLITE_FULL/src/tclsqlite.c" -o tclsqlite.o
 
 echo "==> Compiling test source files (${#TESTSRC_FILES[@]} files)..."
 OBJ_FILES=(sqlite3.o tclsqlite.o)
@@ -225,7 +225,7 @@ for src in "${TESTSRC_FILES[@]}"; do
     # Handle name collisions from different directories
     dir="$(basename "$(dirname "$src")")"
     obj="${dir}_${base}.o"
-    wasm32posix-cc -c "${CFLAGS[@]}" "$src" -o "$obj" &
+    wasm64posix-cc -c "${CFLAGS[@]}" "$src" -o "$obj" &
     OBJ_FILES+=("$obj")
     COMPILE_JOBS=$((COMPILE_JOBS + 1))
     if [ "$COMPILE_JOBS" -ge "$NPROC" ]; then
@@ -237,11 +237,11 @@ wait
 
 # Compile stubs for excluded test modules
 echo "==> Compiling wasm stubs..."
-wasm32posix-cc -c "${CFLAGS[@]}" "$SCRIPT_DIR/wasm_stubs.c" -o wasm_stubs.o
+wasm64posix-cc -c "${CFLAGS[@]}" "$SCRIPT_DIR/wasm_stubs.c" -o wasm_stubs.o
 OBJ_FILES+=(wasm_stubs.o)
 
 echo "==> Linking testfixture (${#OBJ_FILES[@]} object files)..."
-wasm32posix-cc "${CFLAGS[@]}" \
+wasm64posix-cc "${CFLAGS[@]}" \
     "${OBJ_FILES[@]}" \
     -L"$TCL_INSTALL/lib" -ltcl8.6 \
     -L"$ZLIB_INSTALL/lib" -lz \

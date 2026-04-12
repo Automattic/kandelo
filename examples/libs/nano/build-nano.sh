@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Build GNU nano 8.3 for wasm32-posix-kernel.
 #
-# Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
+# Uses the SDK's wasm64posix-configure wrapper for cross-compilation.
 # Links against ncurses (must be built first via build-ncurses.sh).
 #
 # Output: examples/libs/nano/bin/nano.wasm
@@ -16,8 +16,8 @@ BIN_DIR="$SCRIPT_DIR/bin"
 SYSROOT="$REPO_ROOT/sysroot"
 
 # --- Prerequisites ---
-if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
+if ! command -v wasm64posix-cc &>/dev/null; then
+    echo "ERROR: wasm64posix-cc not found. Run 'npm link' in sdk/ first." >&2
     exit 1
 fi
 
@@ -170,7 +170,7 @@ if [ ! -f Makefile ]; then
     export NCURSESW_CFLAGS="-I${SYSROOT}/include/ncursesw"
     export NCURSESW_LIBS="-lncursesw -ltinfow"
 
-    wasm32posix-configure \
+    wasm64posix-configure \
         --disable-nls \
         --disable-browser \
         --disable-speller \

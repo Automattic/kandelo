@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Build GNU findutils 4.10.0 for wasm32-posix-kernel.
 #
-# Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
+# Uses the SDK's wasm64posix-configure wrapper for cross-compilation.
 # Output: examples/libs/findutils/bin/find.wasm, bin/xargs.wasm
 
 FINDUTILS_VERSION="${FINDUTILS_VERSION:-4.10.0}"
@@ -14,8 +14,8 @@ BIN_DIR="$SCRIPT_DIR/bin"
 SYSROOT="$REPO_ROOT/sysroot"
 
 # --- Prerequisites ---
-if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
+if ! command -v wasm64posix-cc &>/dev/null; then
+    echo "ERROR: wasm64posix-cc not found. Run 'npm link' in sdk/ first." >&2
     exit 1
 fi
 
@@ -158,7 +158,7 @@ if [ ! -f Makefile ]; then
     export ac_cv_sizeof_int=4
     export ac_cv_sizeof_size_t=4
 
-    wasm32posix-configure \
+    wasm64posix-configure \
         --disable-nls \
         --without-selinux \
         --localstatedir=/var \

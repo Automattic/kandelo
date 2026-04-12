@@ -19,8 +19,8 @@ BIN_DIR="$SCRIPT_DIR/bin"
 SYSROOT="$REPO_ROOT/sysroot"
 
 # --- Prerequisites ---
-if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
+if ! command -v wasm64posix-cc &>/dev/null; then
+    echo "ERROR: wasm64posix-cc not found. Run 'npm link' in sdk/ first." >&2
     exit 1
 fi
 
@@ -192,7 +192,7 @@ export ac_cv_sizeof_unsigned_long=4
 export ac_cv_sizeof_int=4
 export ac_cv_sizeof_size_t=4
 
-wasm32posix-configure \
+wasm64posix-configure \
     --enable-static \
     --disable-shared \
     --disable-libseccomp \

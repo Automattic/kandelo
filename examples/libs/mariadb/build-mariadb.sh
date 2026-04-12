@@ -209,7 +209,7 @@ if [ ! -f "$SYSROOT/lib/libpcre2-8.a" ]; then
 
     cmake "$PCRE2_DIR" \
         -DCMAKE_C_COMPILER="$LLVM_CLANG" \
-        -DCMAKE_C_FLAGS="--target=wasm32-unknown-unknown -matomics -mbulk-memory -mexception-handling -fno-exceptions -fno-trapping-math --sysroot=$SYSROOT -O2 -DNDEBUG" \
+        -DCMAKE_C_FLAGS="--target=wasm64-unknown-unknown -matomics -mbulk-memory -mexception-handling -fno-exceptions -fno-trapping-math --sysroot=$SYSROOT -O2 -DNDEBUG" \
         -DCMAKE_AR="$LLVM_PREFIX/bin/llvm-ar" \
         -DCMAKE_RANLIB="$LLVM_PREFIX/bin/llvm-ranlib" \
         -DCMAKE_SYSTEM_NAME=Linux \
@@ -236,7 +236,7 @@ if [ ! -f "$SYSROOT/lib/libpcre2-8.a" ]; then
 fi
 
 # --- Pre-compile glue objects ---
-WASM32_COMPILE_FLAGS="--target=wasm32-unknown-unknown -matomics -mbulk-memory -mexception-handling -mllvm -wasm-enable-sjlj -fno-exceptions -fno-trapping-math --sysroot=$SYSROOT"
+WASM32_COMPILE_FLAGS="--target=wasm64-unknown-unknown -matomics -mbulk-memory -mexception-handling -mllvm -wasm-enable-sjlj -fno-exceptions -fno-trapping-math --sysroot=$SYSROOT"
 
 GLUE_OBJ_DIR="$SCRIPT_DIR/mariadb-glue-objs"
 mkdir -p "$GLUE_OBJ_DIR"

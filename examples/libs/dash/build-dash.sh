@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build dash 0.5.12 for wasm32-posix-kernel.
+# Build dash 0.5.12 for wasm64-posix-kernel.
 #
-# Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
-# Output: examples/libs/dash/dash-src/src/dash (wasm32 binary)
+# Uses the SDK's wasm64posix-configure wrapper for cross-compilation.
+# Output: examples/libs/dash/dash-src/src/dash (wasm64 binary)
 
 DASH_VERSION="${DASH_VERSION:-0.5.12}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -13,8 +13,8 @@ SRC_DIR="$SCRIPT_DIR/dash-src"
 SYSROOT="$REPO_ROOT/sysroot"
 
 # --- Prerequisites ---
-if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
+if ! command -v wasm64posix-cc &>/dev/null; then
+    echo "ERROR: wasm64posix-cc not found. Run 'npm link' in sdk/ first." >&2
     exit 1
 fi
 
@@ -41,11 +41,11 @@ cd "$SRC_DIR"
 
 # --- Configure ---
 if [ ! -f Makefile ]; then
-    echo "==> Configuring dash for wasm32..."
+    echo "==> Configuring dash for wasm64..."
 
     # Cross-compilation can't run test programs, so link-based checks fail.
-    # Override with correct results for musl on wasm32.
-    wasm32posix-configure \
+    # Override with correct results for musl on wasm64.
+    wasm64posix-configure \
         --with-libedit=no \
         ac_cv_func_fnmatch_works=yes \
         ac_cv_func_strtod=yes \
@@ -77,12 +77,12 @@ fi
 
 # --- Fix signal name table ---
 # mksignames runs on the build host and generates signames.c using macOS
-# signal numbers (e.g., SIGUSR1=30). Replace with Linux/wasm32 numbers.
-echo "==> Patching signames.c for Linux/wasm32 signal numbers..."
+# signal numbers (e.g., SIGUSR1=30). Replace with Linux/wasm64 numbers.
+echo "==> Patching signames.c for Linux/wasm64 signal numbers..."
 cat > src/signames.c << 'SIGEOF'
-/* Linux/wasm32 signal names — generated from musl bits/signal.h.
+/* Linux/wasm64 signal names — generated from musl bits/signal.h.
    The host-generated version has macOS signal numbers which are wrong
-   for wasm32 (e.g., SIGUSR1=30 on macOS vs 10 on Linux). */
+   for wasm64 (e.g., SIGUSR1=30 on macOS vs 10 on Linux). */
 
 #include <signal.h>
 

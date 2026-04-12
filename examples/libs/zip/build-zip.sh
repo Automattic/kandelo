@@ -15,8 +15,8 @@ BIN_DIR="$SCRIPT_DIR/bin"
 SYSROOT="$REPO_ROOT/sysroot"
 
 # --- Prerequisites ---
-if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
+if ! command -v wasm64posix-cc &>/dev/null; then
+    echo "ERROR: wasm64posix-cc not found. Run 'npm link' in sdk/ first." >&2
     exit 1
 fi
 
@@ -46,7 +46,7 @@ cd "$SRC_DIR"
 # Our sysroot has standard C library functions (memset, strchr, mktime, etc).
 echo "==> Building zip..."
 cat > flags <<'FLAGSEOF'
-CC="wasm32posix-cc" CFLAGS="-I. -DUNIX -O2 -DUIDGID_NOT_16BIT -DHAVE_DIRENT_H -DHAVE_TERMIOS_H -DLARGE_FILE_SUPPORT" CPP="wasm32posix-cc -E" OBJA="" OCRCU8="crc32_.o " OCRCTB="" BINDIR=/usr/local/bin MANDIR=manl LFLAGS1="" LFLAGS2="" LN="ln -s" IZ_BZIP2="" LIB_BZ=""
+CC="wasm64posix-cc" CFLAGS="-I. -DUNIX -O2 -DUIDGID_NOT_16BIT -DHAVE_DIRENT_H -DHAVE_TERMIOS_H -DLARGE_FILE_SUPPORT" CPP="wasm64posix-cc -E" OBJA="" OCRCU8="crc32_.o " OCRCTB="" BINDIR=/usr/local/bin MANDIR=manl LFLAGS1="" LFLAGS2="" LN="ln -s" IZ_BZIP2="" LIB_BZ=""
 FLAGSEOF
 
 eval make -f unix/Makefile zips $(cat flags) 2>&1 | tail -30

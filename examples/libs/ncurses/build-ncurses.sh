@@ -17,8 +17,8 @@ SRC_DIR="$SCRIPT_DIR/ncurses-src"
 SYSROOT="$REPO_ROOT/sysroot"
 
 # --- Prerequisites ---
-if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
+if ! command -v wasm64posix-cc &>/dev/null; then
+    echo "ERROR: wasm64posix-cc not found. Run 'npm link' in sdk/ first." >&2
     exit 1
 fi
 
@@ -91,15 +91,15 @@ if [ ! -f "$WASM_BUILD_DIR/lib/libncurses.a" ]; then
     (
         cd "$WASM_BUILD_DIR"
 
-        CC=wasm32posix-cc \
-        CXX=wasm32posix-c++ \
-        AR=wasm32posix-ar \
-        RANLIB=wasm32posix-ranlib \
-        LD=wasm32posix-cc \
+        CC=wasm64posix-cc \
+        CXX=wasm64posix-c++ \
+        AR=wasm64posix-ar \
+        RANLIB=wasm64posix-ranlib \
+        LD=wasm64posix-cc \
         CFLAGS="-O2" \
         LDFLAGS="" \
         "$SRC_DIR/configure" \
-            --host=wasm32-unknown-none \
+            --host=wasm64-unknown-none \
             --prefix="$SYSROOT" \
             --without-cxx \
             --without-cxx-binding \
@@ -162,11 +162,11 @@ STUB
     # Recompile fallback.o and update the library
     (
         cd "$WASM_BUILD_DIR"
-        wasm32posix-cc -I./ncurses -I./include -I"$SRC_DIR/ncurses" -I"$SRC_DIR/include" \
+        wasm64posix-cc -I./ncurses -I./include -I"$SRC_DIR/ncurses" -I"$SRC_DIR/include" \
             -DHAVE_CONFIG_H -DNDEBUG -O2 -DNCURSES_STATIC -DUSE_TERMLIB \
             -c ncurses/fallback.c -o objects/fallback.o 2>&1 | grep -v warning || true
-        wasm32posix-ar r lib/libtinfow.a objects/fallback.o 2>&1
-        wasm32posix-ranlib lib/libtinfow.a
+        wasm64posix-ar r lib/libtinfow.a objects/fallback.o 2>&1
+        wasm64posix-ranlib lib/libtinfow.a
     )
     echo "==> Fallback entries compiled"
 

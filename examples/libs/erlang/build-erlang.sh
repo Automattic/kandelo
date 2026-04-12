@@ -34,8 +34,8 @@ if [ ! -f "$SYSROOT/lib/libc.a" ]; then
     exit 1
 fi
 
-if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
+if ! command -v wasm64posix-cc &>/dev/null; then
+    echo "ERROR: wasm64posix-cc not found. Run 'npm link' in sdk/ first." >&2
     exit 1
 fi
 
@@ -298,11 +298,11 @@ make MAKE_CLEAN=clean 2>/dev/null || true
 # The key: OTP's cross-compilation needs --host to be a recognized config.sub triplet.
 # wasm32-unknown-wasi is recognized and closest to our platform.
 CONFIG_SITE="$CONFIG_SITE" \
-CC="wasm32posix-cc" \
-CXX="wasm32posix-c++" \
-AR="wasm32posix-ar" \
-RANLIB="wasm32posix-ranlib" \
-LD="wasm32posix-cc" \
+CC="wasm64posix-cc" \
+CXX="wasm64posix-c++" \
+AR="wasm64posix-ar" \
+RANLIB="wasm64posix-ranlib" \
+LD="wasm64posix-cc" \
 LDFLAGS="-Wl,--allow-multiple-definition" \
 CFLAGS="-O2 -DNO_JUMP_TABLE -fno-stack-protector -D__linux__ -D_GNU_SOURCE" \
 LIBS="" \

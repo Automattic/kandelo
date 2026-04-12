@@ -1,9 +1,9 @@
-# CMake toolchain file for cross-compiling to wasm32 via wasm-posix-kernel SDK.
+# CMake toolchain file for cross-compiling to wasm64 via wasm-posix-kernel SDK.
 #
 # Usage:
 #   cmake -DCMAKE_TOOLCHAIN_FILE=.../wasm32-posix-toolchain.cmake ...
 #
-# Requires: LLVM 19+ clang with wasm32 support (Homebrew llvm)
+# Requires: LLVM 19+ clang with wasm64 support (Homebrew llvm)
 #           wasm-posix-kernel sysroot built via scripts/build-musl.sh
 
 cmake_minimum_required(VERSION 3.13)
@@ -11,7 +11,7 @@ cmake_minimum_required(VERSION 3.13)
 # --- System identification ---
 # Use "Linux" to activate POSIX code paths in MariaDB's CMake.
 set(CMAKE_SYSTEM_NAME Linux)
-set(CMAKE_SYSTEM_PROCESSOR wasm32)
+set(CMAKE_SYSTEM_PROCESSOR wasm64)
 set(CMAKE_CROSSCOMPILING TRUE)
 
 # --- Locate LLVM clang ---
@@ -68,7 +68,7 @@ set(CMAKE_NM "${LLVM_NM}" CACHE FILEPATH "NM")
 
 # --- Compiler flags (mirror sdk/src/lib/flags.ts COMPILE_FLAGS) ---
 set(WASM32_FLAGS
-  "--target=wasm32-unknown-unknown"
+  "--target=wasm64-unknown-unknown"
   "-matomics"
   "-mbulk-memory"
   "-mexception-handling"
@@ -116,21 +116,21 @@ set(CMAKE_EXE_LINKER_FLAGS_INIT
   "${WASM32_LINK_FLAGS_STR} ${WASM_POSIX_SYSROOT}/lib/crt1.o ${_GLUE_OBJ_DIR}/channel_syscall.o ${_GLUE_OBJ_DIR}/compiler_rt.o -lc++ -lc++abi -lc"
 )
 
-# --- Type sizes for wasm32 ILP32 ---
+# --- Type sizes for wasm64 LP64 ---
 # These prevent CMake from trying to run test programs.
-set(CMAKE_SIZEOF_VOID_P 4)
-set(CMAKE_C_SIZEOF_DATA_PTR 4)
-set(CMAKE_CXX_SIZEOF_DATA_PTR 4)
+set(CMAKE_SIZEOF_VOID_P 8)
+set(CMAKE_C_SIZEOF_DATA_PTR 8)
+set(CMAKE_CXX_SIZEOF_DATA_PTR 8)
 
-# Hardcode type sizes — wasm32 is ILP32 with 64-bit off_t.
+# Hardcode type sizes — wasm64 is LP64 (long=8, pointer=8).
 set(SIZEOF_CHAR 1 CACHE STRING "sizeof(char)")
 set(SIZEOF_SHORT 2 CACHE STRING "sizeof(short)")
 set(SIZEOF_INT 4 CACHE STRING "sizeof(int)")
-set(SIZEOF_LONG 4 CACHE STRING "sizeof(long)")
+set(SIZEOF_LONG 8 CACHE STRING "sizeof(long)")
 set(SIZEOF_LONG_LONG 8 CACHE STRING "sizeof(long long)")
 set(SIZEOF_OFF_T 8 CACHE STRING "sizeof(off_t)")
-set(SIZEOF_CHARP 4 CACHE STRING "sizeof(char*)")
-set(SIZEOF_VOIDP 4 CACHE STRING "sizeof(void*)")
+set(SIZEOF_CHARP 8 CACHE STRING "sizeof(char*)")
+set(SIZEOF_VOIDP 8 CACHE STRING "sizeof(void*)")
 
 # --- Search paths ---
 set(CMAKE_FIND_ROOT_PATH "${WASM_POSIX_SYSROOT}")
@@ -234,5 +234,5 @@ set(PCRE_INCLUDE_DIRS "${WASM_POSIX_SYSROOT}/include" CACHE PATH "PCRE include d
 set(NEEDS_PCRE2_DEBIAN_HACK FALSE CACHE BOOL "No PCRE2 debian hack needed" FORCE)
 
 # --- Disable DTrace ---
-# DTrace probes require host dtrace tool which can't target wasm32.
-set(ENABLE_DTRACE OFF CACHE BOOL "Disable DTrace for wasm32" FORCE)
+# DTrace probes require host dtrace tool which can't target wasm64.
+set(ENABLE_DTRACE OFF CACHE BOOL "Disable DTrace for wasm64" FORCE)

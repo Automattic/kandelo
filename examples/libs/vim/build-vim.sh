@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Build Vim 9.1 for wasm32-posix-kernel.
 #
-# Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
+# Uses the SDK's wasm64posix-configure wrapper for cross-compilation.
 # Links against ncurses (must be built first via build-ncurses.sh).
 # Applies asyncify with an onlylist so fork+exec works (:!command, filters).
 #
@@ -18,8 +18,8 @@ SYSROOT="$REPO_ROOT/sysroot"
 ONLYLIST="$SCRIPT_DIR/asyncify-onlylist.txt"
 
 # --- Prerequisites ---
-if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
+if ! command -v wasm64posix-cc &>/dev/null; then
+    echo "ERROR: wasm64posix-cc not found. Run 'npm link' in sdk/ first." >&2
     exit 1
 fi
 
@@ -108,7 +108,7 @@ if [ ! -f src/auto/config.mk ]; then
     export LDFLAGS="--no-wasm-opt -Wl,-z,stack-size=1048576"
     export LIBS="-lncursesw -ltinfow"
 
-    wasm32posix-configure \
+    wasm64posix-configure \
         --with-features=normal \
         --with-tlib=tinfow \
         --disable-gui \

@@ -9,8 +9,8 @@ SRC_DIR="$SCRIPT_DIR/openssl-src"
 INSTALL_DIR="$SCRIPT_DIR/openssl-install"
 
 # Verify SDK tools are available
-if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
+if ! command -v wasm64posix-cc &>/dev/null; then
+    echo "ERROR: wasm64posix-cc not found. Run 'npm link' in sdk/ first." >&2
     exit 1
 fi
 
@@ -34,9 +34,9 @@ fi
 
 # Configure for Wasm using linux-generic32 target
 echo "==> Configuring OpenSSL for Wasm..."
-CC=wasm32posix-cc \
-AR=wasm32posix-ar \
-RANLIB=wasm32posix-ranlib \
+CC=wasm64posix-cc \
+AR=wasm64posix-ar \
+RANLIB=wasm64posix-ranlib \
 perl Configure linux-generic32 \
     -DHAVE_FORK=0 \
     -DOPENSSL_NO_AFALGENG=1 \

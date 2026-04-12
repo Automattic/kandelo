@@ -12,8 +12,8 @@ SRC_DIR="$SCRIPT_DIR/redis-src"
 BIN_DIR="$SCRIPT_DIR/bin"
 
 # Check SDK
-if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "Error: wasm32posix-cc not found. Install the SDK first." >&2
+if ! command -v wasm64posix-cc &>/dev/null; then
+    echo "Error: wasm64posix-cc not found. Install the SDK first." >&2
     exit 1
 fi
 
@@ -43,9 +43,9 @@ echo "  -> lua"
 cd lua/src
 make clean 2>/dev/null || true
 make \
-    CC="wasm32posix-cc" \
-    AR="wasm32posix-ar rcu" \
-    RANLIB="wasm32posix-ranlib" \
+    CC="wasm64posix-cc" \
+    AR="wasm64posix-ar rcu" \
+    RANLIB="wasm64posix-ranlib" \
     MYCFLAGS="-DLUA_USE_POSIX -DLUA_USE_DLOPEN" \
     MYLDFLAGS="" \
     MYLIBS="" \
@@ -57,9 +57,9 @@ echo "  -> hiredis"
 cd hiredis
 make clean 2>/dev/null || true
 make \
-    CC="wasm32posix-cc" \
-    AR="wasm32posix-ar" \
-    RANLIB="wasm32posix-ranlib" \
+    CC="wasm64posix-cc" \
+    AR="wasm64posix-ar" \
+    RANLIB="wasm64posix-ranlib" \
     OPTIMIZATION="-O2" \
     static 2>&1 | tail -3
 cd ..
@@ -67,7 +67,7 @@ cd ..
 # Build linenoise
 echo "  -> linenoise"
 cd linenoise
-wasm32posix-cc -c -O2 -Wall -W linenoise.c -o linenoise.o
+wasm64posix-cc -c -O2 -Wall -W linenoise.c -o linenoise.o
 cd ..
 
 # Build hdr_histogram
@@ -75,16 +75,16 @@ echo "  -> hdr_histogram"
 cd hdr_histogram
 make clean 2>/dev/null || true
 make \
-    CC="wasm32posix-cc" \
-    AR="wasm32posix-ar" \
-    RANLIB="wasm32posix-ranlib" 2>&1 | tail -3
+    CC="wasm64posix-cc" \
+    AR="wasm64posix-ar" \
+    RANLIB="wasm64posix-ranlib" 2>&1 | tail -3
 cd ..
 
 # Build fpconv
 echo "  -> fpconv"
 cd fpconv
-wasm32posix-cc -c -O2 -std=c99 fpconv_dtoa.c -o fpconv_dtoa.o
-wasm32posix-ar rcs libfpconv.a fpconv_dtoa.o
+wasm64posix-cc -c -O2 -std=c99 fpconv_dtoa.c -o fpconv_dtoa.o
+wasm64posix-ar rcs libfpconv.a fpconv_dtoa.o
 cd ..
 
 cd "$SRC_DIR"
@@ -124,9 +124,9 @@ cd src
 make clean 2>/dev/null || true
 
 make \
-    CC="wasm32posix-cc" \
-    AR="wasm32posix-ar" \
-    RANLIB="wasm32posix-ranlib" \
+    CC="wasm64posix-cc" \
+    AR="wasm64posix-ar" \
+    RANLIB="wasm64posix-ranlib" \
     MALLOC=libc \
     USE_SYSTEMD=no \
     BUILD_TLS=no \

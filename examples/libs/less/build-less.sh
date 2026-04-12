@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Build less 661 for wasm32-posix-kernel.
 #
-# Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
+# Uses the SDK's wasm64posix-configure wrapper for cross-compilation.
 # Output: examples/libs/less/bin/less.wasm
 #
 # less requires termcap functions (tgetent, tgetstr, etc.) which musl
@@ -19,8 +19,8 @@ BIN_DIR="$SCRIPT_DIR/bin"
 SYSROOT="$REPO_ROOT/sysroot"
 
 # --- Prerequisites ---
-if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
+if ! command -v wasm64posix-cc &>/dev/null; then
+    echo "ERROR: wasm64posix-cc not found. Run 'npm link' in sdk/ first." >&2
     exit 1
 fi
 
@@ -37,8 +37,8 @@ if [ ! -f "$TERMCAP_DIR/libtermcap.a" ]; then
     echo "==> Building termcap stub library..."
     mkdir -p "$TERMCAP_DIR/include"
     cp "$SCRIPT_DIR/termcap.h" "$TERMCAP_DIR/include/termcap.h"
-    wasm32posix-cc -I"$TERMCAP_DIR/include" -c "$SCRIPT_DIR/termcap-stub.c" -o "$TERMCAP_DIR/termcap-stub.o"
-    wasm32posix-ar rcs "$TERMCAP_DIR/libtermcap.a" "$TERMCAP_DIR/termcap-stub.o"
+    wasm64posix-cc -I"$TERMCAP_DIR/include" -c "$SCRIPT_DIR/termcap-stub.c" -o "$TERMCAP_DIR/termcap-stub.o"
+    wasm64posix-ar rcs "$TERMCAP_DIR/libtermcap.a" "$TERMCAP_DIR/termcap-stub.o"
     rm "$TERMCAP_DIR/termcap-stub.o"
     echo "==> termcap stub library built"
 fi
@@ -94,7 +94,7 @@ if [ ! -f Makefile ]; then
     export LDFLAGS="-L${TERMCAP_DIR}"
     export LIBS="-ltermcap"
 
-    wasm32posix-configure \
+    wasm64posix-configure \
         --with-regex=posix \
         2>&1 | tail -30
 

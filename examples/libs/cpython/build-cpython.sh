@@ -12,8 +12,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 SYSROOT="$REPO_ROOT/sysroot"
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
-if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
+if ! command -v wasm64posix-cc &>/dev/null; then
+    echo "ERROR: wasm64posix-cc not found. Run 'npm link' in sdk/ first." >&2
     exit 1
 fi
 
@@ -35,7 +35,7 @@ sed "s|^prefix=.*|prefix=$SYSROOT|" "$ZLIB_DIR/lib/pkgconfig/zlib.pc" \
 # Ensure WASI stub libraries exist (CPython's wasi detection injects -lwasi-emulated-*)
 for lib in libwasi-emulated-signal.a libwasi-emulated-getpid.a libwasi-emulated-process-clocks.a; do
     if [ ! -f "$SYSROOT/lib/$lib" ]; then
-        wasm32posix-ar rcs "$SYSROOT/lib/$lib"
+        wasm64posix-ar rcs "$SYSROOT/lib/$lib"
     fi
 done
 
@@ -429,16 +429,16 @@ mkdir -p "$CROSS_BUILD_DIR"
 cd "$CROSS_BUILD_DIR"
 
 if [ ! -f Makefile ]; then
-    # Run configure directly (not via wasm32posix-configure) because CPython
-    # requires --host=wasm32-unknown-wasi, not wasm32-unknown-none.
+    # Run configure directly (not via wasm64posix-configure) because CPython
+    # requires --host=wasm32-unknown-wasi, not wasm64-unknown-none.
     CONFIG_SITE="$CONFIG_SITE" \
-    CC=wasm32posix-cc \
-    CXX=wasm32posix-c++ \
-    AR=wasm32posix-ar \
-    RANLIB=wasm32posix-ranlib \
-    NM=wasm32posix-nm \
-    STRIP=wasm32posix-strip \
-    PKG_CONFIG=wasm32posix-pkg-config \
+    CC=wasm64posix-cc \
+    CXX=wasm64posix-c++ \
+    AR=wasm64posix-ar \
+    RANLIB=wasm64posix-ranlib \
+    NM=wasm64posix-nm \
+    STRIP=wasm64posix-strip \
+    PKG_CONFIG=wasm64posix-pkg-config \
     "$SRC_DIR/configure" \
         --host=wasm32-unknown-wasi \
         --build="$(uname -m)-apple-darwin" \

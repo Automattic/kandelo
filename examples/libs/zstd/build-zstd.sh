@@ -15,8 +15,8 @@ BIN_DIR="$SCRIPT_DIR/bin"
 SYSROOT="$REPO_ROOT/sysroot"
 
 # --- Prerequisites ---
-if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
+if ! command -v wasm64posix-cc &>/dev/null; then
+    echo "ERROR: wasm64posix-cc not found. Run 'npm link' in sdk/ first." >&2
     exit 1
 fi
 
@@ -45,9 +45,9 @@ cd "$SRC_DIR"
 echo "==> Building zstd..."
 make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" \
     -C programs \
-    CC=wasm32posix-cc \
-    AR=wasm32posix-ar \
-    RANLIB=wasm32posix-ranlib \
+    CC=wasm64posix-cc \
+    AR=wasm64posix-ar \
+    RANLIB=wasm64posix-ranlib \
     HAVE_THREAD=0 \
     HAVE_ZLIB=0 \
     HAVE_LZMA=0 \
