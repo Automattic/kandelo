@@ -155,10 +155,11 @@ trap 'rm -f "$RESULTS_FILE" "$STDERR_FILE"' EXIT
 export SKIP_RESULT="${SKIP_RESULT:-1}"
 
 set +e
+NODE_OPTS="--experimental-wasm-exnref --expose-gc --max-old-space-size=8192 --import tsx/esm"
 if $ALL_MODE; then
-    node --experimental-wasm-exnref --import tsx/esm "$HARNESS" > "$RESULTS_FILE" 2>"$STDERR_FILE"
+    node $NODE_OPTS "$HARNESS" > "$RESULTS_FILE" 2>"$STDERR_FILE"
 else
-    node --experimental-wasm-exnref --import tsx/esm "$HARNESS" "${TEST_ARGS[@]}" > "$RESULTS_FILE" 2>"$STDERR_FILE"
+    node $NODE_OPTS "$HARNESS" "${TEST_ARGS[@]}" > "$RESULTS_FILE" 2>"$STDERR_FILE"
 fi
 HARNESS_EXIT=$?
 set -e

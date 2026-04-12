@@ -146,7 +146,7 @@ async function main() {
         process.exit(0);
     }
 
-    const testTimeout = parseInt(process.env.TEST_TIMEOUT ?? "120000", 10);
+    const testTimeout = parseInt(process.env.TEST_TIMEOUT ?? "300000", 10);
 
     let testNames: string[];
     if (args.length > 0 && !args[0].startsWith("--")) {
@@ -506,13 +506,8 @@ FLUSH PRIVILEGES;
     // --- Run tests ---
     const results: TestResult[] = [];
     const resetSql = resolve(dataDir, "tmp", "reset.test");
-    // Drop ALL user-created databases, not just test
+    // Drop user-created databases and reset between tests
     writeFileSync(resetSql, `--disable_abort_on_error
-# Kill non-system connections
-SELECT GROUP_CONCAT(id SEPARATOR ',') INTO @ids FROM information_schema.processlist WHERE id != CONNECTION_ID() AND user != 'system user';
-# Drop all user databases
-SELECT GROUP_CONCAT(schema_name SEPARATOR '|') INTO @dbs FROM information_schema.schemata WHERE schema_name NOT IN ('mysql','information_schema','performance_schema','mtr');
-# We can't use dynamic SQL easily, so drop common ones explicitly
 DROP DATABASE IF EXISTS test;
 DROP DATABASE IF EXISTS db;
 DROP DATABASE IF EXISTS db1;
@@ -520,8 +515,10 @@ DROP DATABASE IF EXISTS db2;
 DROP DATABASE IF EXISTS mysqltest;
 DROP DATABASE IF EXISTS mysqltest1;
 DROP DATABASE IF EXISTS mysqltest2;
+DROP DATABASE IF EXISTS mysqltest_1;
 DROP DATABASE IF EXISTS events_test;
 DROP DATABASE IF EXISTS tmp;
+DROP DATABASE IF EXISTS client_test_db;
 --enable_abort_on_error
 CREATE DATABASE test;
 `);
@@ -533,23 +530,44 @@ CREATE DATABASE test;
         // Restart server if previous test caused issues
         if (needsRestart) {
             if (consecutiveRestartFailures >= MAX_CONSECUTIVE_RESTART_FAILURES) {
-                // Skip test silently — don't spam logs
-                results.push({ test: testName, status: "fail", time_ms: 0, stderr: "server unrecoverable" });
-                outputResult(results[results.length - 1]);
-                continue;
-            }
-            console.error("Restarting server after previous timeout...");
-            try {
-                await restartServer();
-                await runSetup();
-                needsRestart = false;
-                consecutiveRestartFailures = 0;
-            } catch (e) {
-                consecutiveRestartFailures++;
-                console.error(`Server restart failed (${consecutiveRestartFailures}/${MAX_CONSECUTIVE_RESTART_FAILURES}):`, e);
-                results.push({ test: testName, status: "fail", time_ms: 0, stderr: "server restart failed" });
-                outputResult(results[results.length - 1]);
-                continue;
+                // Nuclear recovery: re-bootstrap from scratch
+                console.error("Server unrecoverable — re-bootstrapping from scratch...");
+                try {
+                    // Clean data directory
+                    const { rmSync, mkdirSync: mkd } = await import("fs");
+                    rmSync(dataDir, { recursive: true, force: true });
+                    mkd(resolve(dataDir, "mysql"), { recursive: true });
+                    mkd(resolve(dataDir, "tmp"), { recursive: true });
+                    tmpTestDir = resolve(dataDir, "tmp", "mysqltest");
+                    mkd(tmpTestDir, { recursive: true });
+                    // Reinit kernel and re-bootstrap
+                    await kernelWorker.init(kernelBytes);
+                    await runBootstrap(kernelWorker, workerAdapter, workers, mysqldBytes, dataDir);
+                    await restartServer();
+                    await runSetup();
+                    needsRestart = false;
+                    consecutiveRestartFailures = 0;
+                    console.error("Re-bootstrap complete.");
+                } catch (e) {
+                    console.error("Re-bootstrap failed:", e);
+                    results.push({ test: testName, status: "fail", time_ms: 0, stderr: "re-bootstrap failed" });
+                    outputResult(results[results.length - 1]);
+                    continue;
+                }
+            } else {
+                console.error("Restarting server after previous timeout...");
+                try {
+                    await restartServer();
+                    await runSetup();
+                    needsRestart = false;
+                    consecutiveRestartFailures = 0;
+                } catch (e) {
+                    consecutiveRestartFailures++;
+                    console.error(`Server restart failed (${consecutiveRestartFailures}/${MAX_CONSECUTIVE_RESTART_FAILURES}):`, e);
+                    results.push({ test: testName, status: "fail", time_ms: 0, stderr: "server restart failed" });
+                    outputResult(results[results.length - 1]);
+                    continue;
+                }
             }
         }
 
@@ -627,6 +645,11 @@ CREATE DATABASE test;
 
         results.push(result);
         outputResult(result);
+
+        // Periodic GC to prevent OOM on long runs
+        if (typeof globalThis.gc === "function" && results.length % 10 === 0) {
+            globalThis.gc();
+        }
 
         // If test failed with connection error, restart server
         const errText = result.stderr || "";
@@ -848,6 +871,14 @@ async function runMysqlTest(
             `MYSQL_TEST_DIR=${mysqlTestDir}`,
             `MYSQLTEST_VARDIR=${resolve(scriptDir, "test-data")}`,
             `MYSQL_TMP_DIR=${tmpTestDir}`,
+            // Standard MTR environment variables expected by test scripts
+            `MASTER_MYPORT=${port}`,
+            `MASTER_MYPORT1=${port}`,
+            `MASTER_MYSOCK=/tmp/mysql.sock`,
+            `MYSQLD_DATADIR=${resolve(scriptDir, "test-data")}`,
+            `MYSQL_BINDIR=${resolve(installDir, "bin")}`,
+            `MYSQL_SHAREDIR=${resolve(installDir, "share")}`,
+            `MYSQL_LIBDIR=${resolve(installDir, "lib")}`,
         ],
         argv,
     };
