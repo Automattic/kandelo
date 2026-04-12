@@ -301,9 +301,114 @@ function buildImportObject(
     throw new Error("pure virtual method called");
   };
   envImports.__cxa_atexit = (): number => 0; // no-op, return success
-  // __dynamic_cast: RTTI — returns dest if cast succeeds, 0 otherwise.
-  // Simplified: always return the source pointer (assume cast succeeds).
-  envImports.__dynamic_cast = (src: number): number => src;
+  const dcTiClassCache = new Map<number, number>(); // typeinfo addr → metaclass (0=leaf, 1=SI, 2=VMI)
+  // __dynamic_cast: Itanium C++ ABI dynamic_cast implementation.
+  // Reads RTTI from the object's vtable and walks the type hierarchy to
+  // check if dst_type is reachable from the object's runtime type.
+  // Args: (src_ptr, src_typeinfo*, dst_typeinfo*, src2dst_hint)
+  envImports.__dynamic_cast = (srcPtr: number, _srcType: number, dstType: number, _src2dst: number): number => {
+    if (srcPtr === 0) return 0;
+    const view = new DataView(memory.buffer);
+    const memSize = memory.buffer.byteLength;
+
+    // Read vtable pointer from object (Itanium ABI: first word is vtable ptr)
+    const vtablePtr = view.getUint32(srcPtr, true);
+    if (vtablePtr === 0 || vtablePtr >= memSize) return 0;
+
+    // Itanium ABI vtable layout (32-bit):
+    //   vtable[-8] = offset_to_top (ptrdiff_t)
+    //   vtable[-4] = RTTI pointer (typeinfo*)
+    //   vtable[0]  = first virtual function
+    if (vtablePtr < 8) return 0;
+    const rttiPtr = view.getUint32(vtablePtr - 4, true);
+    if (rttiPtr === 0 || rttiPtr >= memSize) return 0;
+    const offsetToTop = view.getInt32(vtablePtr - 8, true);
+
+    // Direct match: runtime type IS the destination type
+    if (rttiPtr === dstType) return srcPtr + offsetToTop;
+
+    // Walk the type hierarchy from the runtime type, checking if dstType
+    // is a base class. Without libc++abi linked in, we can't determine the
+    // typeinfo metaclass by vtable pointer. Instead, we try both SI and VMI
+    // interpretations: for each typeinfo, first try field[8] as a base type
+    // pointer (SI), then try field[8] as flags with field[12] as base_count (VMI).
+    //
+    // typeinfo layout:
+    //   [0] vtable ptr (for the typeinfo meta-class)
+    //   [4] name ptr (mangled type name)
+    //   -- __si_class_type_info adds:
+    //   [8] base typeinfo ptr
+    //   -- __vmi_class_type_info adds:
+    //   [8] flags (uint32, 0-3)
+    //   [12] base_count (uint32)
+    //   [16 + i*8] base_info[i].base_type (typeinfo ptr)
+    //   [20 + i*8] base_info[i].offset_flags (long)
+
+    // Cache: map typeinfo address → metaclass (0=leaf, 1=SI, 2=VMI)
+    // to avoid re-classifying on repeated calls.
+    const tiClassCache = dcTiClassCache;
+
+    const isTypeAncestor = (ti: number, target: number, visited: Set<number>): boolean => {
+      if (ti === target) return true;
+      if (ti === 0 || ti >= memSize || visited.has(ti)) return false;
+      visited.add(ti);
+
+      if (ti + 12 > memSize) return false;
+      const field8 = view.getUint32(ti + 8, true);
+
+      // Check cache first
+      const cached = tiClassCache.get(ti);
+      if (cached === 0) return false; // leaf
+      if (cached === 1) return isTypeAncestor(field8, target, visited); // SI
+      if (cached === 2) {
+        // VMI
+        const baseCount = view.getUint32(ti + 12, true);
+        for (let i = 0; i < baseCount; i++) {
+          const baseType = view.getUint32(ti + 16 + i * 8, true);
+          if (baseType > 0 && isTypeAncestor(baseType, target, visited)) return true;
+        }
+        return false;
+      }
+
+      // Not cached — classify by trying SI first, then VMI
+
+      // Try SI: field8 is a pointer to another typeinfo
+      if (field8 > 0x100 && field8 + 8 <= memSize) {
+        // Validate: dereferencing field8 should give something that looks
+        // like a typeinfo. The vtable pointer may be 0 if libc++abi is not
+        // linked, so we only check the name pointer is plausible.
+        const possibleTiName = view.getUint32(field8 + 4, true);
+        if (possibleTiName > 0 && possibleTiName < memSize) {
+          tiClassCache.set(ti, 1);
+          if (isTypeAncestor(field8, target, visited)) return true;
+          // SI path didn't find target — might still be VMI (ambiguous case)
+          tiClassCache.delete(ti);
+        }
+      }
+
+      // Try VMI: field8 is flags (0-3), [12] is base_count
+      if (field8 <= 3 && ti + 16 <= memSize) {
+        const baseCount = view.getUint32(ti + 12, true);
+        if (baseCount > 0 && baseCount < 100 && ti + 16 + baseCount * 8 <= memSize) {
+          tiClassCache.set(ti, 2);
+          for (let i = 0; i < baseCount; i++) {
+            const baseType = view.getUint32(ti + 16 + i * 8, true);
+            if (baseType > 0 && isTypeAncestor(baseType, target, visited)) return true;
+          }
+          return false;
+        }
+      }
+
+      // No bases found — leaf type
+      tiClassCache.set(ti, 0);
+      return false;
+    };
+
+    if (isTypeAncestor(rttiPtr, dstType, new Set())) {
+      return srcPtr + offsetToTop;
+    }
+    return 0;
+  };
   // libc++ verbose abort
   envImports._ZNSt3__122__libcpp_verbose_abortEPKcz = (): void => {
     throw new Error("libc++: abort");
