@@ -11,14 +11,15 @@
  *   - On syscall: copy args from process Memory → kernel scratch,
  *     call kernel_handle_channel, copy result back, notify process
  *
- * Channel layout in process Memory (matches wasm_posix_shared::channel):
+ * Channel layout in process Memory (matches wasm_posix_shared::channel, wasm64 LP64):
  *   Offset  Size  Field
  *   0       4B    status (IDLE=0, PENDING=1, COMPLETE=2, ERROR=3)
  *   4       4B    syscall number
- *   8       24B   arguments (6 x i32)
- *   32      4B    return value
- *   36      4B    errno
- *   40      64KB  data transfer buffer
+ *   8       48B   arguments (6 x i64)
+ *   56      8B    return value (i64)
+ *   64      4B    errno
+ *   68      4B    padding
+ *   72      64KB  data transfer buffer
  */
 
 import { WasmPosixKernel } from "./kernel";
@@ -142,20 +143,21 @@ const PROFILING = typeof process !== 'undefined' && !!process.env?.WASM_POSIX_PR
 const READ_LIKE_SYSCALLS = new Set([3, 56, 63, 64, 82, 138]); // READ, RECV, RECVFROM, PREAD, READV, RECVMSG
 /** Write-like syscalls that may produce pipe/socket data */
 const WRITE_LIKE_SYSCALLS = new Set([4, 55, 62, 65, 81, 137]); // WRITE, SEND, SENDTO, PWRITE, WRITEV, SENDMSG
-/** Channel layout offsets */
+/** Channel layout offsets (wasm64 LP64) */
 const CH_STATUS = 0;
 const CH_SYSCALL = 4;
 const CH_ARGS = 8;
+const CH_ARG_SIZE = 8; // i64
 const CH_ARGS_COUNT = 6;
-const CH_RETURN = 32;
-const CH_ERRNO = 36;
-const CH_DATA = 40;
+const CH_RETURN = 56;
+const CH_ERRNO = 64;
+const CH_DATA = 72;
 const CH_DATA_SIZE = 65536;
 const CH_TOTAL_SIZE = CH_DATA + CH_DATA_SIZE;
 
-// Signal delivery area — last 48 bytes of data buffer.
+// Signal delivery area — last 56 bytes of data buffer (wasm64: alt_sp/alt_size are 8 bytes).
 // Written by kernel_dequeue_signal, read by glue channel_syscall.c.
-const CH_SIG_BASE = CH_DATA + CH_DATA_SIZE - 48;
+const CH_SIG_BASE = CH_DATA + CH_DATA_SIZE - 56;
 const CH_SIG_SIGNUM = CH_SIG_BASE;         // u32: signal number (0 = none)
 const CH_SIG_HANDLER = CH_SIG_BASE + 4;    // u32: function table index
 const CH_SIG_FLAGS = CH_SIG_BASE + 8;      // u32: sa_flags
@@ -164,8 +166,8 @@ const CH_SIG_OLD_MASK = CH_SIG_BASE + 16;  // u64: saved blocked mask
 const CH_SIG_SI_CODE = CH_SIG_BASE + 24;   // i32: si_code
 const CH_SIG_SI_PID = CH_SIG_BASE + 28;    // u32: si_pid
 const CH_SIG_SI_UID = CH_SIG_BASE + 32;    // u32: si_uid
-const CH_SIG_ALT_SP = CH_SIG_BASE + 36;   // u32: alt stack sp (0 = no switch)
-const CH_SIG_ALT_SIZE = CH_SIG_BASE + 40;  // u32: alt stack size
+const CH_SIG_ALT_SP = CH_SIG_BASE + 36;    // u64: alt stack sp (0 = no switch) — 8 bytes on wasm64
+const CH_SIG_ALT_SIZE = CH_SIG_BASE + 44;  // u64: alt stack size — 8 bytes on wasm64
 
 /** Scratch area layout in kernel Memory for kernel_handle_channel.
  * Same as channel layout but used as the kernel-side buffer. */
@@ -173,10 +175,10 @@ const SCRATCH_SIZE = CH_TOTAL_SIZE;
 
 /** Struct sizes for output data copying */
 const WASM_STAT_SIZE = 88;
-const TIMESPEC_SIZE = 16; // { i64 tv_sec, i32 tv_nsec, i32 pad } on wasm32
-const ITIMERVAL_SIZE = 16; // musl time64 path: 4 x long (4 bytes each on wasm32)
-const RLIMIT_SIZE = 16;   // 2 x i64 on wasm32
-const STACK_T_SIZE = 12;  // stack_t: { void* ss_sp, int ss_flags, size_t ss_size } on wasm32
+const TIMESPEC_SIZE = 16; // { i64 tv_sec, i64 tv_nsec } — same on wasm64 LP64 (long = 8)
+const ITIMERVAL_SIZE = 32; // wasm64 LP64: 4 x long (8 bytes each) = 32 bytes
+const RLIMIT_SIZE = 16;   // 2 x i64 — unchanged
+const STACK_T_SIZE = 24;  // stack_t on wasm64 LP64: { void*(8), int(4)+pad(4), size_t(8) } = 24
 
 // -----------------------------------------------------------------------
 // Arg descriptor system for pointer redirection
@@ -190,7 +192,7 @@ const STACK_T_SIZE = 12;  // stack_t: { void* ss_sp, int ss_flags, size_t ss_siz
 type SizeSpec =
   | { type: "cstring" }           // null-terminated string
   | { type: "arg"; argIndex: number } // size given by another arg
-  | { type: "deref"; argIndex: number } // size from u32 value at pointer arg (e.g. socklen_t*)
+  | { type: "deref"; argIndex: number } // size from u32 value at pointer arg (socklen_t is still 32-bit)
   | { type: "fixed"; size: number };  // fixed-size struct
 
 interface ArgDesc {
@@ -1540,7 +1542,7 @@ export class CentralizedKernelWorker {
     const syscallNr = processView.getUint32(CH_SYSCALL, true);
     const origArgs: number[] = [];
     for (let i = 0; i < CH_ARGS_COUNT; i++) {
-      origArgs.push(processView.getInt32(CH_ARGS + i * 4, true));
+      origArgs.push(Number(processView.getBigInt64(CH_ARGS + i * CH_ARG_SIZE, true)));
     }
 
     // Track last 30 syscalls per channel for crash diagnostics
@@ -1719,10 +1721,10 @@ export class CentralizedKernelWorker {
           size = origArgs[desc.size.argIndex];
           // Special cases: struct size multipliers and prefixes
           if (syscallNr === SYS_POLL || syscallNr === SYS_PPOLL) size *= 8;   // pollfd = 8 bytes
-          if (syscallNr === SYS_MSGSND || syscallNr === SYS_MSGRCV) size += 4; // mtype (long) prefix
+          if (syscallNr === SYS_MSGSND || syscallNr === SYS_MSGRCV) size += 8; // mtype (long=8 on LP64) prefix
           if (syscallNr === SYS_SEMOP) size *= 6;   // struct sembuf = 6 bytes
         } else if (desc.size.type === "deref") {
-          // Dereference: arg is a pointer to a u32 value (e.g. socklen_t*)
+          // Dereference: arg is a pointer to a u32 value (socklen_t is still 32-bit)
           const derefPtr = origArgs[desc.size.argIndex];
           if (derefPtr === 0) continue;
           size = processMem[derefPtr] | (processMem[derefPtr + 1] << 8)
@@ -1759,8 +1761,8 @@ export class CentralizedKernelWorker {
         adjustedArgs[desc.argIndex] = kernelPtr;
 
         dataOffset += size;
-        // Align to 4 bytes for next allocation
-        dataOffset = (dataOffset + 3) & ~3;
+        // Align to 8 bytes for next allocation (wasm64 LP64)
+        dataOffset = (dataOffset + 7) & ~7;
       }
     }
 
@@ -1794,7 +1796,7 @@ export class CentralizedKernelWorker {
     // Write adjusted args to kernel scratch
     kernelView.setUint32(CH_SYSCALL, syscallNr, true);
     for (let i = 0; i < CH_ARGS_COUNT; i++) {
-      kernelView.setInt32(CH_ARGS + i * 4, adjustedArgs[i], true);
+      kernelView.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, BigInt(adjustedArgs[i]), true);
     }
 
     // Call kernel_handle_channel
@@ -1815,7 +1817,7 @@ export class CentralizedKernelWorker {
     }
 
     // Read return value and errno from kernel scratch
-    const retVal = kernelView.getInt32(CH_RETURN, true);
+    const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
     const errVal = kernelView.getUint32(CH_ERRNO, true);
 
     // --- Process memory growth for brk/mmap/mremap ---
@@ -1954,19 +1956,19 @@ export class CentralizedKernelWorker {
     const sigOutOffset = this.scratchOffset + CH_SIG_BASE;
     const sigResult = dequeueSignal(channel.pid, sigOutOffset);
     if (sigResult > 0) {
-      // Copy 44 bytes of signal delivery info from kernel scratch to process channel
+      // Copy 52 bytes of signal delivery info from kernel scratch to process channel
       // Layout: signum(4) + handler(4) + flags(4) + si_value(4) + old_mask(8)
-      //       + si_code(4) + si_pid(4) + si_uid(4) + alt_sp(4) + alt_size(4) = 44 bytes
+      //       + si_code(4) + si_pid(4) + si_uid(4) + alt_sp(8) + alt_size(8) = 52 bytes
       const kernelMem = this.getKernelMem();
       const processMem = new Uint8Array(channel.memory.buffer);
       processMem.set(
-        kernelMem.subarray(sigOutOffset, sigOutOffset + 44),
+        kernelMem.subarray(sigOutOffset, sigOutOffset + 52),
         channel.channelOffset + CH_SIG_BASE,
       );
     } else {
-      // Clear entire signal delivery area in process channel (48 bytes)
+      // Clear entire signal delivery area in process channel (56 bytes)
       const sigStart = channel.channelOffset + CH_SIG_BASE;
-      new Uint8Array(channel.memory.buffer, sigStart, 48).fill(0);
+      new Uint8Array(channel.memory.buffer, sigStart, 56).fill(0);
     }
   }
 
@@ -2006,7 +2008,7 @@ export class CentralizedKernelWorker {
           size = origArgs[desc.size.argIndex];
           if (syscallNr === SYS_POLL || syscallNr === SYS_PPOLL) size *= 8;
           if (syscallNr === SYS_EPOLL_PWAIT) size *= 12;
-          if (syscallNr === SYS_MSGSND || syscallNr === SYS_MSGRCV) size += 4; // mtype prefix
+          if (syscallNr === SYS_MSGSND || syscallNr === SYS_MSGRCV) size += 8; // mtype (long=8 on LP64) prefix
           if (syscallNr === SYS_SEMOP) size *= 6;  // struct sembuf = 6 bytes
         } else if (desc.size.type === "deref") {
           const derefPtr = origArgs[desc.size.argIndex];
@@ -2036,7 +2038,7 @@ export class CentralizedKernelWorker {
           // with zeros when the target isn't a symlink).
           if (desc.direction === "out" && retVal < 0) {
             outOffset += size;
-            outOffset = (outOffset + 3) & ~3;
+            outOffset = (outOffset + 7) & ~7;
             continue;
           }
           let copySize = size;
@@ -2044,8 +2046,8 @@ export class CentralizedKernelWorker {
             // For read/recv-like syscalls, retVal is bytes read — limit copy to actual data
             if (retVal > 0 && retVal < size) {
               copySize = retVal;
-              // msgrcv retVal is mtext length, but scratch also has mtype (4B) prefix
-              if (syscallNr === SYS_MSGRCV) copySize += 4;
+              // msgrcv retVal is mtext length, but scratch also has mtype (long=8B) prefix
+              if (syscallNr === SYS_MSGRCV) copySize += 8;
             }
           }
           processMem.set(
@@ -2055,15 +2057,15 @@ export class CentralizedKernelWorker {
         }
 
         outOffset += size;
-        outOffset = (outOffset + 3) & ~3;
+        outOffset = (outOffset + 7) & ~7;
       }
     }
 
     // Clear handling flag (channel is done — poller can pick it up for next syscall)
     channel.handling = false;
 
-    // Write result to process channel
-    processView.setInt32(CH_RETURN, retVal, true);
+    // Write result to process channel (return is i64 on wasm64, errno is still i32)
+    processView.setBigInt64(CH_RETURN, BigInt(retVal), true);
     processView.setUint32(CH_ERRNO, errVal, true);
 
     // Cancel any pending socket timeout timer for this channel
@@ -2211,7 +2213,7 @@ export class CentralizedKernelWorker {
     channel.handling = false;
 
     const processView = new DataView(channel.memory.buffer, channel.channelOffset);
-    processView.setInt32(CH_RETURN, retVal, true);
+    processView.setBigInt64(CH_RETURN, BigInt(retVal), true);
     processView.setUint32(CH_ERRNO, errVal, true);
 
     // Cancel any pending socket timeout timer for this channel
@@ -2865,16 +2867,16 @@ export class CentralizedKernelWorker {
 
     if (syscallNr === SYS_NANOSLEEP && retVal >= 0) {
       const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
-      const sec = kernelView.getUint32(CH_DATA, true);
-      const nsec = kernelView.getUint32(CH_DATA + 8, true);
+      const sec = Number(kernelView.getBigInt64(CH_DATA, true));
+      const nsec = Number(kernelView.getBigInt64(CH_DATA + 8, true));
       delayMs = sec * 1000 + Math.floor(nsec / 1_000_000);
     } else if (syscallNr === SYS_USLEEP && retVal >= 0) {
       const usec = origArgs[0] >>> 0;
       delayMs = Math.max(1, Math.floor(usec / 1000));
     } else if (syscallNr === SYS_CLOCK_NANOSLEEP && retVal >= 0) {
       const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
-      const sec = kernelView.getUint32(CH_DATA, true);
-      const nsec = kernelView.getUint32(CH_DATA + 8, true);
+      const sec = Number(kernelView.getBigInt64(CH_DATA, true));
+      const nsec = Number(kernelView.getBigInt64(CH_DATA + 8, true));
       delayMs = sec * 1000 + Math.floor(nsec / 1_000_000);
     }
 
@@ -2922,7 +2924,7 @@ export class CentralizedKernelWorker {
   // Scatter/gather I/O handling (writev/readv/pwritev/preadv)
   //
   // These syscalls use struct iovec arrays with nested pointers:
-  //   struct iovec { void *iov_base; size_t iov_len; }  (8 bytes on wasm32)
+  //   struct iovec { void *iov_base; size_t iov_len; }  (16 bytes on wasm64 LP64)
   // Both the iov array AND each iov_base buffer must be in kernel memory.
   // -----------------------------------------------------------------------
 
@@ -2950,11 +2952,11 @@ export class CentralizedKernelWorker {
 
     // Write syscall header to kernel scratch
     kernelView.setUint32(CH_SYSCALL, SYS_FCNTL, true);
-    kernelView.setInt32(CH_ARGS + 0, origArgs[0], true); // fd
-    kernelView.setInt32(CH_ARGS + 4, origArgs[1], true); // cmd
-    kernelView.setInt32(CH_ARGS + 8, flockPtr !== 0 ? dataStart : 0, true); // flock_ptr in kernel memory
+    kernelView.setBigInt64(CH_ARGS + 0 * CH_ARG_SIZE, BigInt(origArgs[0]), true); // fd
+    kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(origArgs[1]), true); // cmd
+    kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(flockPtr !== 0 ? dataStart : 0), true); // flock_ptr in kernel memory
     for (let i = 3; i < CH_ARGS_COUNT; i++) {
-      kernelView.setInt32(CH_ARGS + i * 4, origArgs[i], true);
+      kernelView.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, BigInt(origArgs[i]), true);
     }
 
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
@@ -2966,7 +2968,7 @@ export class CentralizedKernelWorker {
       this.currentHandlePid = 0;
     }
 
-    const retVal = kernelView.getInt32(CH_RETURN, true);
+    const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
     const errVal = kernelView.getUint32(CH_ERRNO, true);
 
     // Copy flock struct back from kernel → process (F_GETLK writes to it)
@@ -3029,10 +3031,11 @@ export class CentralizedKernelWorker {
     }
 
     // Decode sigmask: pselect6 arg6 → pointer to {sigset_t *mask, size_t size}
+    // On wasm64 LP64, pointer is 8 bytes
     const maskOffset = dataStart + 3 * FD_SET_SIZE;
     if (maskDataPtr !== 0) {
       const mdv = new DataView(channel.memory.buffer, maskDataPtr);
-      const maskPtr = mdv.getUint32(0, true);
+      const maskPtr = Number(mdv.getBigUint64(0, true));
       if (maskPtr !== 0) {
         kernelMem.set(processMem.subarray(maskPtr, maskPtr + 8), maskOffset);
       } else {
@@ -3045,12 +3048,12 @@ export class CentralizedKernelWorker {
     // Write args: (nfds, readfds_kernel_ptr, writefds_kernel_ptr,
     //              exceptfds_kernel_ptr, timeout_ms, mask_kernel_ptr)
     kernelView.setUint32(CH_SYSCALL, SYS_PSELECT6, true);
-    kernelView.setInt32(CH_ARGS + 0, nfds, true);
-    kernelView.setInt32(CH_ARGS + 4, readPtr !== 0 ? dataStart : 0, true);
-    kernelView.setInt32(CH_ARGS + 8, writePtr !== 0 ? dataStart + FD_SET_SIZE : 0, true);
-    kernelView.setInt32(CH_ARGS + 12, exceptPtr !== 0 ? dataStart + 2 * FD_SET_SIZE : 0, true);
-    kernelView.setInt32(CH_ARGS + 16, timeoutMs, true);
-    kernelView.setInt32(CH_ARGS + 20, maskDataPtr !== 0 ? maskOffset : 0, true);
+    kernelView.setBigInt64(CH_ARGS + 0 * CH_ARG_SIZE, BigInt(nfds), true);
+    kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(readPtr !== 0 ? dataStart : 0), true);
+    kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(writePtr !== 0 ? dataStart + FD_SET_SIZE : 0), true);
+    kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, BigInt(exceptPtr !== 0 ? dataStart + 2 * FD_SET_SIZE : 0), true);
+    kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, BigInt(timeoutMs), true);
+    kernelView.setBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, BigInt(maskDataPtr !== 0 ? maskOffset : 0), true);
 
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
       (offset: number, pid: number) => number;
@@ -3061,7 +3064,7 @@ export class CentralizedKernelWorker {
       this.currentHandlePid = 0;
     }
 
-    const retVal = kernelView.getInt32(CH_RETURN, true);
+    const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
     const errVal = kernelView.getUint32(CH_ERRNO, true);
 
     // pselect6 debug logging disabled
@@ -3155,9 +3158,9 @@ export class CentralizedKernelWorker {
     const actualFlags = syscallNr === SYS_EPOLL_CREATE ? 0 : flags;
 
     kernelView.setUint32(CH_SYSCALL, syscallNr, true);
-    kernelView.setInt32(CH_ARGS, actualFlags, true);
+    kernelView.setBigInt64(CH_ARGS, BigInt(actualFlags), true);
     for (let i = 1; i < CH_ARGS_COUNT; i++) {
-      kernelView.setInt32(CH_ARGS + i * 4, 0, true);
+      kernelView.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, 0n, true);
     }
 
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
@@ -3169,7 +3172,7 @@ export class CentralizedKernelWorker {
       this.currentHandlePid = 0;
     }
 
-    const retVal = kernelView.getInt32(CH_RETURN, true);
+    const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
     const errVal = kernelView.getUint32(CH_ERRNO, true);
 
     // If successful, initialise the host-side interest mirror
@@ -3212,12 +3215,12 @@ export class CentralizedKernelWorker {
     }
 
     kernelView.setUint32(CH_SYSCALL, SYS_EPOLL_CTL, true);
-    kernelView.setInt32(CH_ARGS, epfd, true);
-    kernelView.setInt32(CH_ARGS + 4, op, true);
-    kernelView.setInt32(CH_ARGS + 8, fd, true);
-    kernelView.setInt32(CH_ARGS + 12, eventPtr !== 0 ? dataStart : 0, true);
-    kernelView.setInt32(CH_ARGS + 16, 0, true);
-    kernelView.setInt32(CH_ARGS + 20, 0, true);
+    kernelView.setBigInt64(CH_ARGS + 0 * CH_ARG_SIZE, BigInt(epfd), true);
+    kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(op), true);
+    kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(fd), true);
+    kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, BigInt(eventPtr !== 0 ? dataStart : 0), true);
+    kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, 0n, true);
+    kernelView.setBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, 0n, true);
 
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
       (offset: number, pid: number) => number;
@@ -3228,7 +3231,7 @@ export class CentralizedKernelWorker {
       this.currentHandlePid = 0;
     }
 
-    const retVal = kernelView.getInt32(CH_RETURN, true);
+    const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
     const errVal = kernelView.getUint32(CH_ERRNO, true);
 
     // Mirror the change on the host side if the kernel succeeded
@@ -3349,11 +3352,11 @@ export class CentralizedKernelWorker {
     // Call kernel with SYS_POLL: (fds_ptr, nfds, timeout_ms=0)
     // Always use timeout=0 — we manage blocking/retry on the host side
     kernelView.setUint32(CH_SYSCALL, SYS_POLL, true);
-    kernelView.setInt32(CH_ARGS, dataStart, true);
-    kernelView.setInt32(CH_ARGS + 4, nfds, true);
-    kernelView.setInt32(CH_ARGS + 8, 0, true); // timeout=0 for non-blocking poll
+    kernelView.setBigInt64(CH_ARGS + 0 * CH_ARG_SIZE, BigInt(dataStart), true);
+    kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(nfds), true);
+    kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, 0n, true); // timeout=0 for non-blocking poll
     for (let i = 3; i < CH_ARGS_COUNT; i++) {
-      kernelView.setInt32(CH_ARGS + i * 4, 0, true);
+      kernelView.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, 0n, true);
     }
 
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
@@ -3365,7 +3368,7 @@ export class CentralizedKernelWorker {
       this.currentHandlePid = 0;
     }
 
-    const retVal = kernelView.getInt32(CH_RETURN, true);
+    const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
     const errVal = kernelView.getUint32(CH_ERRNO, true);
 
     // Handle signal delivery
@@ -3443,15 +3446,15 @@ export class CentralizedKernelWorker {
     const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
     const dataStart = this.scratchOffset + CH_DATA;
 
-    // Layout in scratch data area:
-    //   [0..iovcnt*8]     new iov array with kernel-space base pointers
-    //   [iovcnt*8..]      concatenated data buffers
-    const iovSize = iovcnt * 8;
+    // Layout in scratch data area (wasm64: iovec is 16 bytes = 2 x i64):
+    //   [0..iovcnt*16]    new iov array with kernel-space base pointers
+    //   [iovcnt*16..]     concatenated data buffers
+    const iovSize = iovcnt * 16;
     let dataOff = iovSize;
 
     for (let i = 0; i < iovcnt; i++) {
-      const base = processView.getUint32(iovPtr + i * 8, true);
-      const len = processView.getUint32(iovPtr + i * 8 + 4, true);
+      const base = Number(processView.getBigUint64(iovPtr + i * 16, true));
+      const len = Number(processView.getBigUint64(iovPtr + i * 16 + 8, true));
 
       const kernelBase = dataStart + dataOff;
 
@@ -3460,23 +3463,22 @@ export class CentralizedKernelWorker {
         kernelMem.set(processMem.subarray(base, base + len), kernelBase);
       }
 
-      // Write adjusted iov entry
-      const iovAddr = dataStart + i * 8;
-      new DataView(kernelMem.buffer).setUint32(iovAddr, kernelBase, true);
-      new DataView(kernelMem.buffer).setUint32(iovAddr + 4, len, true);
+      // Write adjusted iov entry (kernel is wasm64 too: iov_base/iov_len are i64)
+      const iovAddr = dataStart + i * 16;
+      new DataView(kernelMem.buffer).setBigUint64(iovAddr, BigInt(kernelBase), true);
+      new DataView(kernelMem.buffer).setBigUint64(iovAddr + 8, BigInt(len), true);
 
       dataOff += len;
-      dataOff = (dataOff + 3) & ~3; // align
+      dataOff = (dataOff + 7) & ~7; // align to 8 bytes
     }
 
     // Write args to kernel scratch
     kernelView.setUint32(CH_SYSCALL, syscallNr, true);
-    kernelView.setInt32(CH_ARGS, fd, true);
-    kernelView.setInt32(CH_ARGS + 4, dataStart, true); // adjusted iov ptr
-    kernelView.setInt32(CH_ARGS + 8, iovcnt, true);
+    kernelView.setBigInt64(CH_ARGS, BigInt(fd), true);
+    kernelView.setBigInt64(CH_ARGS + CH_ARG_SIZE, BigInt(dataStart), true); // adjusted iov ptr
+    kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(iovcnt), true);
     if (syscallNr === SYS_PWRITEV) {
-      kernelView.setInt32(CH_ARGS + 12, origArgs[3], true); // off_lo
-      kernelView.setInt32(CH_ARGS + 16, origArgs[4], true); // off_hi
+      kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, BigInt(origArgs[3]), true); // offset
     }
 
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
@@ -3488,7 +3490,7 @@ export class CentralizedKernelWorker {
       this.currentHandlePid = 0;
     }
 
-    const retVal = kernelView.getInt32(CH_RETURN, true);
+    const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
     const errVal = kernelView.getUint32(CH_ERRNO, true);
 
     if (retVal === -1 && errVal === EAGAIN) {
@@ -3514,23 +3516,23 @@ export class CentralizedKernelWorker {
     const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
     const dataStart = this.scratchOffset + CH_DATA;
 
-    // Read iov entries from process memory
+    // Read iov entries from process memory (wasm64: iovec is 16 bytes)
     interface IovEntry { base: number; len: number }
     const entries: IovEntry[] = [];
     let totalData = 0;
     for (let i = 0; i < iovcnt; i++) {
-      const base = processView.getUint32(iovPtr + i * 8, true);
-      const len = processView.getUint32(iovPtr + i * 8 + 4, true);
+      const base = Number(processView.getBigUint64(iovPtr + i * 16, true));
+      const len = Number(processView.getBigUint64(iovPtr + i * 16 + 8, true));
       entries.push({ base, len });
       totalData += len;
     }
 
-    // Max data that fits in scratch: CH_DATA_SIZE minus space for one iov entry (8 bytes)
-    const maxDataPerCall = CH_DATA_SIZE - 8;
+    // Max data that fits in scratch: CH_DATA_SIZE minus space for one iov entry (16 bytes on wasm64)
+    const maxDataPerCall = CH_DATA_SIZE - 16;
 
-    if (totalData <= maxDataPerCall && iovcnt <= Math.floor(CH_DATA_SIZE / 8)) {
+    if (totalData <= maxDataPerCall && iovcnt <= Math.floor(CH_DATA_SIZE / 16)) {
       // Fast path: everything fits in one kernel call
-      const iovSize = iovcnt * 8;
+      const iovSize = iovcnt * 16;
       let dataOff = iovSize;
       const kernelEntries: { base: number; kernelBase: number; len: number }[] = [];
 
@@ -3542,21 +3544,20 @@ export class CentralizedKernelWorker {
           kernelMem.fill(0, kernelBase, kernelBase + entries[i].len);
         }
 
-        const iovAddr = dataStart + i * 8;
-        new DataView(kernelMem.buffer).setUint32(iovAddr, kernelBase, true);
-        new DataView(kernelMem.buffer).setUint32(iovAddr + 4, entries[i].len, true);
+        const iovAddr = dataStart + i * 16;
+        new DataView(kernelMem.buffer).setBigUint64(iovAddr, BigInt(kernelBase), true);
+        new DataView(kernelMem.buffer).setBigUint64(iovAddr + 8, BigInt(entries[i].len), true);
 
         dataOff += entries[i].len;
-        dataOff = (dataOff + 3) & ~3;
+        dataOff = (dataOff + 7) & ~7;
       }
 
       kernelView.setUint32(CH_SYSCALL, syscallNr, true);
-      kernelView.setInt32(CH_ARGS, fd, true);
-      kernelView.setInt32(CH_ARGS + 4, dataStart, true);
-      kernelView.setInt32(CH_ARGS + 8, iovcnt, true);
+      kernelView.setBigInt64(CH_ARGS + 0 * CH_ARG_SIZE, BigInt(fd), true);
+      kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(dataStart), true);
+      kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(iovcnt), true);
       if (syscallNr === SYS_PREADV) {
-        kernelView.setInt32(CH_ARGS + 12, origArgs[3], true);
-        kernelView.setInt32(CH_ARGS + 16, origArgs[4], true);
+        kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, BigInt(origArgs[3]), true); // offset
       }
 
       const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
@@ -3568,7 +3569,7 @@ export class CentralizedKernelWorker {
         this.currentHandlePid = 0;
       }
 
-      const retVal = kernelView.getInt32(CH_RETURN, true);
+      const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
       const errVal = kernelView.getUint32(CH_ERRNO, true);
 
       if (retVal === -1 && errVal === EAGAIN) {
@@ -3611,25 +3612,24 @@ export class CentralizedKernelWorker {
           const chunkLen = Math.min(entry.len - entryRead, maxDataPerCall);
           const kernelBuf = dataStart + 8; // single iov entry at dataStart, data after
 
-          // Set up single iov entry
-          new DataView(kernelMem.buffer).setUint32(dataStart, kernelBuf, true);
-          new DataView(kernelMem.buffer).setUint32(dataStart + 4, chunkLen, true);
+          // Set up single iov entry (16 bytes on wasm64)
+          new DataView(kernelMem.buffer).setBigUint64(dataStart, BigInt(kernelBuf), true);
+          new DataView(kernelMem.buffer).setBigUint64(dataStart + 8, BigInt(chunkLen), true);
           kernelMem.fill(0, kernelBuf, kernelBuf + chunkLen);
 
           if (isPreadv) {
             // Use preadv with 1 iov
             kernelView.setUint32(CH_SYSCALL, SYS_PREADV, true);
-            kernelView.setInt32(CH_ARGS, fd, true);
-            kernelView.setInt32(CH_ARGS + 4, dataStart, true);
-            kernelView.setInt32(CH_ARGS + 8, 1, true);
-            kernelView.setInt32(CH_ARGS + 12, fileOffset & 0xFFFFFFFF, true);
-            kernelView.setInt32(CH_ARGS + 16, Math.floor(fileOffset / 0x100000000), true);
+            kernelView.setBigInt64(CH_ARGS + 0 * CH_ARG_SIZE, BigInt(fd), true);
+            kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(dataStart), true);
+            kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, 1n, true);
+            kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, BigInt(fileOffset), true); // offset (single i64 on wasm64)
           } else {
             // Use readv with 1 iov
             kernelView.setUint32(CH_SYSCALL, SYS_READV, true);
-            kernelView.setInt32(CH_ARGS, fd, true);
-            kernelView.setInt32(CH_ARGS + 4, dataStart, true);
-            kernelView.setInt32(CH_ARGS + 8, 1, true);
+            kernelView.setBigInt64(CH_ARGS + 0 * CH_ARG_SIZE, BigInt(fd), true);
+            kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(dataStart), true);
+            kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, 1n, true);
           }
 
           this.currentHandlePid = channel.pid;
@@ -3639,7 +3639,7 @@ export class CentralizedKernelWorker {
             this.currentHandlePid = 0;
           }
 
-          const retVal = kernelView.getInt32(CH_RETURN, true);
+          const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
           const errVal = kernelView.getUint32(CH_ERRNO, true);
 
           if (retVal === -1) {
@@ -3695,68 +3695,70 @@ export class CentralizedKernelWorker {
     const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
     const dataStart = this.scratchOffset + CH_DATA;
 
-    // Parse msghdr from process memory (wasm32: 28 bytes)
-    // struct msghdr { msg_name(4), msg_namelen(4), msg_iov(4), msg_iovlen(4), ... }
-    const namePtr = processView.getUint32(msgPtr, true);
-    const nameLen = processView.getUint32(msgPtr + 4, true);
-    const iovPtr = processView.getUint32(msgPtr + 8, true);
-    const iovCnt = processView.getUint32(msgPtr + 12, true);
+    // Parse msghdr from process memory (wasm64 LP64: 56 bytes)
+    // struct msghdr { msg_name(8), msg_namelen(4)+pad(4), msg_iov(8),
+    //   msg_iovlen(4)+pad(4), msg_control(8), msg_controllen(4)+pad(4), msg_flags(4)+pad(4) }
+    const MSGHDR_SIZE = 56;
+    const namePtr = Number(processView.getBigUint64(msgPtr, true));
+    const nameLen = processView.getUint32(msgPtr + 8, true); // socklen_t
+    const iovPtr = Number(processView.getBigUint64(msgPtr + 16, true));
+    const iovCnt = processView.getUint32(msgPtr + 24, true); // int
 
     // Copy msghdr to kernel scratch at offset 0
     const kMsgPtr = dataStart;
-    kernelMem.set(processMem.subarray(msgPtr, msgPtr + 28), kMsgPtr);
+    kernelMem.set(processMem.subarray(msgPtr, msgPtr + MSGHDR_SIZE), kMsgPtr);
 
-    let dataOff = 28; // after msghdr
+    let dataOff = MSGHDR_SIZE; // after msghdr
 
     // Copy msg_name to kernel scratch
     if (namePtr !== 0 && nameLen > 0 && dataOff + nameLen <= CH_DATA_SIZE) {
       const kNamePtr = dataStart + dataOff;
       kernelMem.set(processMem.subarray(namePtr, namePtr + nameLen), kNamePtr);
-      new DataView(kernelMem.buffer).setUint32(kMsgPtr, kNamePtr, true); // update msg_name ptr
+      new DataView(kernelMem.buffer).setBigUint64(kMsgPtr, BigInt(kNamePtr), true); // update msg_name ptr
       dataOff += nameLen;
-      dataOff = (dataOff + 3) & ~3;
+      dataOff = (dataOff + 7) & ~7;
     }
 
     // Copy msg_control (ancillary data, e.g. SCM_RIGHTS) to kernel scratch
-    const controlPtr = processView.getUint32(msgPtr + 16, true);
-    const controlLen = processView.getUint32(msgPtr + 20, true);
+    const controlPtr = Number(processView.getBigUint64(msgPtr + 32, true));
+    const controlLen = processView.getUint32(msgPtr + 40, true); // socklen_t
     if (controlPtr !== 0 && controlLen > 0 && dataOff + controlLen <= CH_DATA_SIZE) {
       const kCtrlPtr = dataStart + dataOff;
       kernelMem.set(processMem.subarray(controlPtr, controlPtr + controlLen), kCtrlPtr);
-      new DataView(kernelMem.buffer).setUint32(kMsgPtr + 16, kCtrlPtr, true); // update msg_control ptr
+      new DataView(kernelMem.buffer).setBigUint64(kMsgPtr + 32, BigInt(kCtrlPtr), true); // update msg_control ptr
       dataOff += controlLen;
-      dataOff = (dataOff + 3) & ~3;
+      dataOff = (dataOff + 7) & ~7;
     }
 
-    // Copy iov array and iov[0] data to kernel scratch
+    // Copy iov array and iov buffer data to kernel scratch (iovec is 16 bytes on wasm64)
     if (iovCnt > 0 && iovPtr !== 0) {
-      const iovSize = iovCnt * 8;
+      const iovSize = iovCnt * 16;
       const kIovPtr = dataStart + dataOff;
       kernelMem.set(processMem.subarray(iovPtr, iovPtr + iovSize), kIovPtr);
-      new DataView(kernelMem.buffer).setUint32(kMsgPtr + 8, kIovPtr, true); // update msg_iov ptr
+      new DataView(kernelMem.buffer).setBigUint64(kMsgPtr + 16, BigInt(kIovPtr), true); // update msg_iov ptr
       dataOff += iovSize;
-      dataOff = (dataOff + 3) & ~3;
+      dataOff = (dataOff + 7) & ~7;
 
       // Copy each iov buffer data
       for (let i = 0; i < iovCnt; i++) {
-        const base = processView.getUint32(iovPtr + i * 8, true);
-        const len = processView.getUint32(iovPtr + i * 8 + 4, true);
+        const base = Number(processView.getBigUint64(iovPtr + i * 16, true));
+        const len = Number(processView.getBigUint64(iovPtr + i * 16 + 8, true));
         if (len > 0 && dataOff + len <= CH_DATA_SIZE) {
           const kBufPtr = dataStart + dataOff;
           kernelMem.set(processMem.subarray(base, base + len), kBufPtr);
           // Update iov_base in kernel-side iov entry
-          new DataView(kernelMem.buffer).setUint32(kIovPtr + i * 8, kBufPtr, true);
+          new DataView(kernelMem.buffer).setBigUint64(kIovPtr + i * 16, BigInt(kBufPtr), true);
           dataOff += len;
-          dataOff = (dataOff + 3) & ~3;
+          dataOff = (dataOff + 7) & ~7;
         }
       }
     }
 
     // Call kernel
     kernelView.setUint32(CH_SYSCALL, 137, true); // SYS_SENDMSG
-    kernelView.setInt32(CH_ARGS, fd, true);
-    kernelView.setInt32(CH_ARGS + 4, kMsgPtr, true);
-    kernelView.setInt32(CH_ARGS + 8, flags, true);
+    kernelView.setBigInt64(CH_ARGS + 0 * CH_ARG_SIZE, BigInt(fd), true);
+    kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(kMsgPtr), true);
+    kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(flags), true);
 
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
       (offset: number, pid: number) => number;
@@ -3767,7 +3769,7 @@ export class CentralizedKernelWorker {
       this.currentHandlePid = 0;
     }
 
-    const retVal = kernelView.getInt32(CH_RETURN, true);
+    const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
     const errVal = kernelView.getUint32(CH_ERRNO, true);
 
     if (retVal === -1 && errVal === EAGAIN) {
@@ -3793,71 +3795,72 @@ export class CentralizedKernelWorker {
     const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
     const dataStart = this.scratchOffset + CH_DATA;
 
-    // Parse msghdr from process memory
-    const namePtr = processView.getUint32(msgPtr, true);
-    const nameLen = processView.getUint32(msgPtr + 4, true);
-    const iovPtr = processView.getUint32(msgPtr + 8, true);
-    const iovCnt = processView.getUint32(msgPtr + 12, true);
+    // Parse msghdr from process memory (wasm64 LP64: 56 bytes)
+    const MSGHDR_SIZE = 56;
+    const namePtr = Number(processView.getBigUint64(msgPtr, true));
+    const nameLen = processView.getUint32(msgPtr + 8, true); // socklen_t
+    const iovPtr = Number(processView.getBigUint64(msgPtr + 16, true));
+    const iovCnt = processView.getUint32(msgPtr + 24, true); // int
 
     // Copy msghdr to kernel scratch
     const kMsgPtr = dataStart;
-    kernelMem.set(processMem.subarray(msgPtr, msgPtr + 28), kMsgPtr);
+    kernelMem.set(processMem.subarray(msgPtr, msgPtr + MSGHDR_SIZE), kMsgPtr);
 
-    let dataOff = 28;
+    let dataOff = MSGHDR_SIZE;
 
     // Set up msg_name output buffer
     let kNamePtr = 0;
     if (namePtr !== 0 && nameLen > 0 && dataOff + nameLen <= CH_DATA_SIZE) {
       kNamePtr = dataStart + dataOff;
       kernelMem.fill(0, kNamePtr, kNamePtr + nameLen);
-      new DataView(kernelMem.buffer).setUint32(kMsgPtr, kNamePtr, true);
+      new DataView(kernelMem.buffer).setBigUint64(kMsgPtr, BigInt(kNamePtr), true);
       dataOff += nameLen;
-      dataOff = (dataOff + 3) & ~3;
+      dataOff = (dataOff + 7) & ~7;
     }
 
     // Set up msg_control output buffer for ancillary data (SCM_RIGHTS)
-    const controlPtr = processView.getUint32(msgPtr + 16, true);
-    const controlLen = processView.getUint32(msgPtr + 20, true);
+    const controlPtr = Number(processView.getBigUint64(msgPtr + 32, true));
+    const controlLen = processView.getUint32(msgPtr + 40, true); // socklen_t
     let kCtrlPtr = 0;
     if (controlPtr !== 0 && controlLen > 0 && dataOff + controlLen <= CH_DATA_SIZE) {
       kCtrlPtr = dataStart + dataOff;
       kernelMem.fill(0, kCtrlPtr, kCtrlPtr + controlLen);
-      new DataView(kernelMem.buffer).setUint32(kMsgPtr + 16, kCtrlPtr, true);
+      new DataView(kernelMem.buffer).setBigUint64(kMsgPtr + 32, BigInt(kCtrlPtr), true);
       dataOff += controlLen;
-      dataOff = (dataOff + 3) & ~3;
+      dataOff = (dataOff + 7) & ~7;
     }
 
-    // Set up iov array and output buffers
+    // Set up iov array and output buffers (iovec is 16 bytes on wasm64)
     interface IovEntry { base: number; len: number; kernelBase: number }
     const entries: IovEntry[] = [];
 
     if (iovCnt > 0 && iovPtr !== 0) {
-      const iovSize = iovCnt * 8;
+      const iovSize = iovCnt * 16;
       const kIovPtr = dataStart + dataOff;
       kernelMem.set(processMem.subarray(iovPtr, iovPtr + iovSize), kIovPtr);
-      new DataView(kernelMem.buffer).setUint32(kMsgPtr + 8, kIovPtr, true);
+      new DataView(kernelMem.buffer).setBigUint64(kMsgPtr + 16, BigInt(kIovPtr), true);
       dataOff += iovSize;
-      dataOff = (dataOff + 3) & ~3;
+      dataOff = (dataOff + 7) & ~7;
 
       for (let i = 0; i < iovCnt; i++) {
-        const base = processView.getUint32(iovPtr + i * 8, true);
-        const len = processView.getUint32(iovPtr + i * 8 + 4, true);
+        const base = Number(processView.getBigUint64(iovPtr + i * 16, true));
+        const len = Number(processView.getBigUint64(iovPtr + i * 16 + 8, true));
         if (len > 0 && dataOff + len <= CH_DATA_SIZE) {
           const kBufPtr = dataStart + dataOff;
           kernelMem.fill(0, kBufPtr, kBufPtr + len);
-          new DataView(kernelMem.buffer).setUint32(kIovPtr + i * 8, kBufPtr, true);
+          new DataView(kernelMem.buffer).setBigUint64(kIovPtr + i * 16, BigInt(kBufPtr), true);
           entries.push({ base, len, kernelBase: kBufPtr });
           dataOff += len;
-          dataOff = (dataOff + 3) & ~3;
+          dataOff = (dataOff + 7) & ~7;
         }
       }
     }
 
     // Call kernel
     kernelView.setUint32(CH_SYSCALL, 138, true); // SYS_RECVMSG
-    kernelView.setInt32(CH_ARGS, fd, true);
-    kernelView.setInt32(CH_ARGS + 4, kMsgPtr, true);
-    kernelView.setInt32(CH_ARGS + 8, flags, true);
+    kernelView.setBigInt64(CH_ARGS + 0 * CH_ARG_SIZE, BigInt(fd), true);
+    kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(kMsgPtr), true);
+    kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(flags), true);
 
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
       (offset: number, pid: number) => number;
@@ -3868,7 +3871,7 @@ export class CentralizedKernelWorker {
       this.currentHandlePid = 0;
     }
 
-    const retVal = kernelView.getInt32(CH_RETURN, true);
+    const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
     const errVal = kernelView.getUint32(CH_ERRNO, true);
 
     if (retVal === -1 && errVal === EAGAIN) {
@@ -3897,7 +3900,7 @@ export class CentralizedKernelWorker {
 
     // Copy msg_control (ancillary data) back to process memory
     if (kCtrlPtr !== 0 && controlPtr !== 0) {
-      const actualControlLen = new DataView(kernelMem.buffer).getUint32(kMsgPtr + 20, true);
+      const actualControlLen = new DataView(kernelMem.buffer).getUint32(kMsgPtr + 40, true); // msg_controllen at offset 40
       if (actualControlLen > 0 && actualControlLen <= controlLen) {
         processMem.set(
           kernelMem.subarray(kCtrlPtr, kCtrlPtr + actualControlLen),
@@ -3906,11 +3909,11 @@ export class CentralizedKernelWorker {
       }
     }
 
-    // Copy updated msghdr fields back (msg_namelen, msg_controllen, msg_flags)
-    const kMsg = kernelMem.subarray(kMsgPtr, kMsgPtr + 28);
-    processMem.set(kMsg.subarray(4, 8), msgPtr + 4);   // msg_namelen
-    processMem.set(kMsg.subarray(20, 24), msgPtr + 20); // msg_controllen
-    processMem.set(kMsg.subarray(24, 28), msgPtr + 24); // msg_flags
+    // Copy updated msghdr fields back (wasm64 LP64 offsets)
+    const kMsg = kernelMem.subarray(kMsgPtr, kMsgPtr + MSGHDR_SIZE);
+    processMem.set(kMsg.subarray(8, 12), msgPtr + 8);   // msg_namelen (4 bytes at offset 8)
+    processMem.set(kMsg.subarray(40, 48), msgPtr + 40);  // msg_controllen + pad (8 bytes at offset 40)
+    processMem.set(kMsg.subarray(48, 52), msgPtr + 48);  // msg_flags (4 bytes at offset 48)
 
     this.completeChannel(channel, 138, origArgs, undefined, retVal, errVal);
   }
@@ -4022,14 +4025,14 @@ export class CentralizedKernelWorker {
 
   /**
    * Read a null-terminated array of string pointers from process memory.
-   * Each element is a 32-bit pointer to a null-terminated string.
+   * Each element is a 64-bit pointer to a null-terminated string (wasm64 LP64).
    */
   private readStringArrayFromProcess(mem: Uint8Array, arrayPtr: number): string[] {
     if (arrayPtr === 0) return [];
     const result: string[] = [];
     const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
     for (let i = 0; i < 1024; i++) {
-      const strPtr = view.getUint32(arrayPtr + i * 4, true);
+      const strPtr = Number(view.getBigUint64(arrayPtr + i * 8, true));
       if (strPtr === 0) break;
       result.push(this.readCStringFromProcess(mem, strPtr));
     }
@@ -4205,7 +4208,7 @@ export class CentralizedKernelWorker {
     const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
     kernelView.setUint32(CH_SYSCALL, SYS_CLONE, true);
     for (let i = 0; i < CH_ARGS_COUNT; i++) {
-      kernelView.setInt32(CH_ARGS + i * 4, origArgs[i], true);
+      kernelView.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, BigInt(origArgs[i]), true);
     }
 
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
@@ -4217,7 +4220,7 @@ export class CentralizedKernelWorker {
       this.currentHandlePid = 0;
     }
 
-    const retVal = kernelView.getInt32(CH_RETURN, true);
+    const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
     const errVal = kernelView.getUint32(CH_ERRNO, true);
 
     if (retVal < 0) {
@@ -4239,9 +4242,10 @@ export class CentralizedKernelWorker {
     }
 
     // Read fnPtr and argPtr from the channel's CH_DATA area (written by kernel_clone stub)
+    // On wasm64, pointers are 8 bytes
     const processView = new DataView(channel.memory.buffer, channel.channelOffset);
-    const fnPtr = processView.getUint32(CH_DATA, true);
-    const argPtr = processView.getUint32(CH_DATA + 4, true);
+    const fnPtr = Number(processView.getBigUint64(CH_DATA, true));
+    const argPtr = Number(processView.getBigUint64(CH_DATA + 8, true));
     const stackPtr = origArgs[1];
     const tlsPtr = origArgs[3];
     const ctidPtr = origArgs[4];
@@ -4314,7 +4318,7 @@ export class CentralizedKernelWorker {
     {
       const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
       kernelView.setUint32(CH_SYSCALL, syscallNr, true);
-      kernelView.setInt32(CH_ARGS, exitStatus, true);
+      kernelView.setBigInt64(CH_ARGS, BigInt(exitStatus), true);
       const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
         (offset: number, pid: number) => number;
       this.currentHandlePid = channel.pid;
@@ -4920,10 +4924,10 @@ export class CentralizedKernelWorker {
     const kernelView = new DataView(this.kernelMemory.buffer, this.scratchOffset);
     // Write SYS_KILL into scratch: kill(targetPid, signum)
     kernelView.setUint32(CH_SYSCALL, SYS_KILL, true);
-    kernelView.setInt32(CH_ARGS, targetPid, true);       // arg0 = pid
-    kernelView.setInt32(CH_ARGS + 4, signum, true);      // arg1 = sig
+    kernelView.setBigInt64(CH_ARGS + 0 * CH_ARG_SIZE, BigInt(targetPid), true);   // arg0 = pid
+    kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(signum), true);      // arg1 = sig
     for (let i = 2; i < CH_ARGS_COUNT; i++) {
-      kernelView.setInt32(CH_ARGS + i * 4, 0, true);
+      kernelView.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, 0n, true);
     }
 
     const handleChannel = this.kernelInstance.exports.kernel_handle_channel as
@@ -5069,14 +5073,14 @@ export class CentralizedKernelWorker {
       const chunkSize = Math.min(CH_DATA_SIZE, mapLen - written);
 
       // Set up pread syscall in kernel scratch:
-      // SYS_PREAD (64): (fd, buf_ptr, count, offset_lo, offset_hi)
+      // SYS_PREAD (64): (fd, buf_ptr, count, offset) — offset is single i64 on wasm64
       kernelView.setUint32(CH_SYSCALL, SYS_PREAD, true);
-      kernelView.setInt32(CH_ARGS + 0, fd, true);        // fd
-      kernelView.setInt32(CH_ARGS + 4, dataStart, true);  // buf_ptr (kernel memory)
-      kernelView.setInt32(CH_ARGS + 8, chunkSize, true);  // count
-      kernelView.setInt32(CH_ARGS + 12, fileOffset & 0xffffffff, true);  // offset_lo
-      kernelView.setInt32(CH_ARGS + 16, Math.floor(fileOffset / 0x100000000) | 0, true); // offset_hi
-      kernelView.setInt32(CH_ARGS + 20, 0, true);
+      kernelView.setBigInt64(CH_ARGS + 0 * CH_ARG_SIZE, BigInt(fd), true);
+      kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(dataStart), true);
+      kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(chunkSize), true);
+      kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, BigInt(fileOffset), true);
+      kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, 0n, true);
+      kernelView.setBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, 0n, true);
 
       this.currentHandlePid = channel.pid;
       try {
@@ -5086,7 +5090,7 @@ export class CentralizedKernelWorker {
       }
       this.currentHandlePid = 0;
 
-      const bytesRead = kernelView.getInt32(CH_RETURN, true);
+      const bytesRead = Number(kernelView.getBigInt64(CH_RETURN, true));
       if (bytesRead <= 0) break; // EOF or error
 
       // Copy from kernel scratch data area to process memory
@@ -5167,15 +5171,15 @@ export class CentralizedKernelWorker {
       );
 
       // Set up pwrite syscall in kernel scratch:
-      // SYS_PWRITE (65): (fd, buf_ptr, count, offset_lo, offset_hi)
+      // SYS_PWRITE (65): (fd, buf_ptr, count, offset) — offset is single i64 on wasm64
       const curOffset = fileOffset + written;
       kernelView.setUint32(CH_SYSCALL, SYS_PWRITE, true);
-      kernelView.setInt32(CH_ARGS + 0, fd, true);
-      kernelView.setInt32(CH_ARGS + 4, dataStart, true);
-      kernelView.setInt32(CH_ARGS + 8, chunkSize, true);
-      kernelView.setInt32(CH_ARGS + 12, curOffset & 0xffffffff, true);
-      kernelView.setInt32(CH_ARGS + 16, Math.floor(curOffset / 0x100000000) | 0, true);
-      kernelView.setInt32(CH_ARGS + 20, 0, true);
+      kernelView.setBigInt64(CH_ARGS + 0 * CH_ARG_SIZE, BigInt(fd), true);
+      kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(dataStart), true);
+      kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(chunkSize), true);
+      kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, BigInt(curOffset), true);
+      kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, 0n, true);
+      kernelView.setBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, 0n, true);
 
       this.currentHandlePid = channel.pid;
       try {
@@ -5185,7 +5189,7 @@ export class CentralizedKernelWorker {
       }
       this.currentHandlePid = 0;
 
-      const bytesWritten = kernelView.getInt32(CH_RETURN, true);
+      const bytesWritten = Number(kernelView.getBigInt64(CH_RETURN, true));
       if (bytesWritten <= 0) break;
 
       written += bytesWritten;
@@ -5599,18 +5603,18 @@ export class CentralizedKernelWorker {
     if (cmd === IPC_STAT && arg !== 0) {
       // arg is an output pointer to semid_ds (72 bytes)
       kernelView.setUint32(CH_SYSCALL, SYS_SEMCTL, true);
-      kernelView.setInt32(CH_ARGS + 0, semid, true);
-      kernelView.setInt32(CH_ARGS + 4, semnum, true);
-      kernelView.setInt32(CH_ARGS + 8, rawCmd, true);
-      kernelView.setInt32(CH_ARGS + 12, dataStart, true); // redirect to scratch
-      kernelView.setInt32(CH_ARGS + 16, 0, true);
-      kernelView.setInt32(CH_ARGS + 20, 0, true);
+      kernelView.setBigInt64(CH_ARGS + 0 * CH_ARG_SIZE, BigInt(semid), true);
+      kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(semnum), true);
+      kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(rawCmd), true);
+      kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, BigInt(dataStart), true); // redirect to scratch
+      kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, 0n, true);
+      kernelView.setBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, 0n, true);
       kernelMem.fill(0, dataStart, dataStart + 72);
 
       this.currentHandlePid = channel.pid;
       try { handleChannel(this.scratchOffset, channel.pid); } finally { this.currentHandlePid = 0; }
 
-      const retVal = kernelView.getInt32(CH_RETURN, true);
+      const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
       if (retVal >= 0) {
         // Copy 72-byte struct back to process memory
         const processMem = new Uint8Array(channel.memory.buffer);
@@ -5625,18 +5629,18 @@ export class CentralizedKernelWorker {
       // arg is an output pointer to u16[nsems] — allocate generous space
       const maxBytes = 1024; // up to 512 semaphores
       kernelView.setUint32(CH_SYSCALL, SYS_SEMCTL, true);
-      kernelView.setInt32(CH_ARGS + 0, semid, true);
-      kernelView.setInt32(CH_ARGS + 4, semnum, true);
-      kernelView.setInt32(CH_ARGS + 8, rawCmd, true);
-      kernelView.setInt32(CH_ARGS + 12, dataStart, true);
-      kernelView.setInt32(CH_ARGS + 16, 0, true);
-      kernelView.setInt32(CH_ARGS + 20, 0, true);
+      kernelView.setBigInt64(CH_ARGS + 0 * CH_ARG_SIZE, BigInt(semid), true);
+      kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(semnum), true);
+      kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(rawCmd), true);
+      kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, BigInt(dataStart), true);
+      kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, 0n, true);
+      kernelView.setBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, 0n, true);
       kernelMem.fill(0, dataStart, dataStart + maxBytes);
 
       this.currentHandlePid = channel.pid;
       try { handleChannel(this.scratchOffset, channel.pid); } finally { this.currentHandlePid = 0; }
 
-      const retVal = kernelView.getInt32(CH_RETURN, true);
+      const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
       if (retVal >= 0) {
         // Copy written data back — kernel wrote u16[] to scratch
         const processMem = new Uint8Array(channel.memory.buffer);
@@ -5654,17 +5658,17 @@ export class CentralizedKernelWorker {
       kernelMem.set(processMem.subarray(arg, arg + maxBytes), dataStart);
 
       kernelView.setUint32(CH_SYSCALL, SYS_SEMCTL, true);
-      kernelView.setInt32(CH_ARGS + 0, semid, true);
-      kernelView.setInt32(CH_ARGS + 4, semnum, true);
-      kernelView.setInt32(CH_ARGS + 8, rawCmd, true);
-      kernelView.setInt32(CH_ARGS + 12, dataStart, true);
-      kernelView.setInt32(CH_ARGS + 16, 0, true);
-      kernelView.setInt32(CH_ARGS + 20, 0, true);
+      kernelView.setBigInt64(CH_ARGS + 0 * CH_ARG_SIZE, BigInt(semid), true);
+      kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(semnum), true);
+      kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(rawCmd), true);
+      kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, BigInt(dataStart), true);
+      kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, 0n, true);
+      kernelView.setBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, 0n, true);
 
       this.currentHandlePid = channel.pid;
       try { handleChannel(this.scratchOffset, channel.pid); } finally { this.currentHandlePid = 0; }
 
-      const retVal = kernelView.getInt32(CH_RETURN, true);
+      const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
       this.completeChannelRaw(channel, retVal, retVal < 0 ? -retVal : 0);
       this.relistenChannel(channel);
       return;
@@ -5673,17 +5677,17 @@ export class CentralizedKernelWorker {
     // Scalar commands (SETVAL, GETVAL, GETPID, GETNCNT, GETZCNT, IPC_RMID):
     // arg is a scalar value, pass through directly to kernel
     kernelView.setUint32(CH_SYSCALL, SYS_SEMCTL, true);
-    kernelView.setInt32(CH_ARGS + 0, semid, true);
-    kernelView.setInt32(CH_ARGS + 4, semnum, true);
-    kernelView.setInt32(CH_ARGS + 8, rawCmd, true);
-    kernelView.setInt32(CH_ARGS + 12, arg, true);
-    kernelView.setInt32(CH_ARGS + 16, 0, true);
-    kernelView.setInt32(CH_ARGS + 20, 0, true);
+    kernelView.setBigInt64(CH_ARGS + 0 * CH_ARG_SIZE, BigInt(semid), true);
+    kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(semnum), true);
+    kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(rawCmd), true);
+    kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, BigInt(arg), true);
+    kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, 0n, true);
+    kernelView.setBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, 0n, true);
 
     this.currentHandlePid = channel.pid;
     try { handleChannel(this.scratchOffset, channel.pid); } finally { this.currentHandlePid = 0; }
 
-    const retVal = kernelView.getInt32(CH_RETURN, true);
+    const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
     this.completeChannelRaw(channel, retVal, retVal < 0 ? -retVal : 0);
     this.relistenChannel(channel);
   }
@@ -5708,12 +5712,12 @@ export class CentralizedKernelWorker {
     // Synthesize mmap to allocate virtual address space for this pid
     const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
     kernelView.setUint32(CH_SYSCALL, SYS_MMAP, true);
-    kernelView.setInt32(CH_ARGS + 0, 0, true);          // addr hint = NULL
-    kernelView.setInt32(CH_ARGS + 4, size, true);        // length
-    kernelView.setInt32(CH_ARGS + 8, 3, true);           // prot = PROT_READ|PROT_WRITE
-    kernelView.setInt32(CH_ARGS + 12, 0x22, true);       // flags = MAP_PRIVATE|MAP_ANONYMOUS
-    kernelView.setInt32(CH_ARGS + 16, -1, true);         // fd = -1
-    kernelView.setInt32(CH_ARGS + 20, 0, true);          // offset = 0
+    kernelView.setBigInt64(CH_ARGS + 0 * CH_ARG_SIZE, 0n, true);          // addr hint = NULL
+    kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(size), true); // length
+    kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, 3n, true);          // prot = PROT_READ|PROT_WRITE
+    kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, 0x22n, true);       // flags = MAP_PRIVATE|MAP_ANONYMOUS
+    kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, -1n, true);         // fd = -1
+    kernelView.setBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, 0n, true);          // offset = 0
 
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as (offset: number, pid: number) => number;
     this.currentHandlePid = channel.pid;
@@ -5728,7 +5732,7 @@ export class CentralizedKernelWorker {
       this.currentHandlePid = 0;
     }
 
-    const addr = kernelView.getInt32(CH_RETURN, true);
+    const addr = Number(kernelView.getBigInt64(CH_RETURN, true));
     if (addr < 0) {
       this.completeChannelRaw(channel, -12, 12); // ENOMEM
       this.relistenChannel(channel);

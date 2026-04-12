@@ -2,15 +2,16 @@
  * Shared-memory syscall channel for communication between the Wasm
  * userspace module and the host kernel.
  *
- * Memory layout (must match `wasm_posix_shared::channel`):
+ * Memory layout (must match `wasm_posix_shared::channel`, wasm64 LP64):
  *
  *   Offset  Size  Field
  *   0..3    4B    status (IDLE=0, PENDING=1, COMPLETE=2, ERROR=3)
  *   4..7    4B    syscall number
- *   8..31   24B   arguments (6 x i32)
- *   32..35  4B    return value
- *   36..39  4B    errno
- *   40..N         data transfer buffer
+ *   8..55   48B   arguments (6 x i64)
+ *   56..63  8B    return value (i64)
+ *   64..67  4B    errno
+ *   68..71  4B    padding
+ *   72..N         data transfer buffer
  */
 
 /** Byte offsets matching `wasm_posix_shared::channel`. */
@@ -18,9 +19,10 @@ const STATUS_OFFSET = 0;
 const SYSCALL_OFFSET = 4;
 const ARGS_OFFSET = 8;
 const ARGS_COUNT = 6;
-const RETURN_OFFSET = 32;
-const ERRNO_OFFSET = 36;
-const DATA_OFFSET = 40;
+const ARG_SIZE = 8; // i64
+const RETURN_OFFSET = 56;
+const ERRNO_OFFSET = 64;
+const DATA_OFFSET = 72;
 
 export const enum ChannelStatus {
   Idle = 0,
@@ -68,7 +70,9 @@ export class SyscallChannel {
     return this.view.getUint32(SYSCALL_OFFSET, true);
   }
 
-  // ---- Arguments (offset 8, 6 x 4 bytes) ----
+  // ---- Arguments (offset 8, 6 x 8 bytes = 48 bytes) ----
+  // Args are i64 on wasm64. We read as BigInt64 and convert to Number
+  // (safe for values < 2^53, which covers all current addresses).
 
   getArg(index: number): number {
     if (index < 0 || index >= ARGS_COUNT) {
@@ -76,22 +80,32 @@ export class SyscallChannel {
         `Argument index ${index} out of range [0, ${ARGS_COUNT})`,
       );
     }
-    return this.view.getInt32(ARGS_OFFSET + index * 4, true);
+    return Number(this.view.getBigInt64(ARGS_OFFSET + index * ARG_SIZE, true));
   }
 
-  // ---- Return value (offset 32, 4 bytes) ----
+  /** Get arg as BigInt (for values that may exceed Number.MAX_SAFE_INTEGER). */
+  getArgBigInt(index: number): bigint {
+    if (index < 0 || index >= ARGS_COUNT) {
+      throw new RangeError(
+        `Argument index ${index} out of range [0, ${ARGS_COUNT})`,
+      );
+    }
+    return this.view.getBigInt64(ARGS_OFFSET + index * ARG_SIZE, true);
+  }
+
+  // ---- Return value (offset 56, 8 bytes) ----
 
   setReturn(value: number): void {
-    this.view.setInt32(RETURN_OFFSET, value, true);
+    this.view.setBigInt64(RETURN_OFFSET, BigInt(value), true);
   }
 
-  // ---- Errno (offset 36, 4 bytes) ----
+  // ---- Errno (offset 64, 4 bytes) ----
 
   setErrno(value: number): void {
     this.view.setUint32(ERRNO_OFFSET, value, true);
   }
 
-  // ---- Data transfer buffer (offset 40..end) ----
+  // ---- Data transfer buffer (offset 72..end) ----
 
   get dataBuffer(): Uint8Array {
     return new Uint8Array(

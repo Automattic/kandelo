@@ -1,8 +1,8 @@
 /** WebAssembly page size (64 KiB) */
 export const WASM_PAGE_SIZE = 65536;
 
-/** Channel header size in bytes */
-export const CH_HEADER_SIZE = 40;
+/** Channel header size in bytes (wasm64: 6×i64 args + i64 return) */
+export const CH_HEADER_SIZE = 72;
 
 /** Channel data buffer size */
 export const CH_DATA_SIZE = 65536;
