@@ -1,17 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { execSync, execFileSync } from "node:child_process";
 import { Worker } from "node:worker_threads";
+import { runCentralizedProgram } from "../../../../host/test/centralized-test-helper";
+import { NodePlatformIO } from "../../../../host/src/platform/node";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-
-function repoRoot(): string {
-    return execSync("git rev-parse --show-toplevel", {
-        cwd: __dirname, encoding: "utf-8",
-    }).trim();
-}
 
 /**
  * Network backend that delegates TCP operations to a worker thread.
@@ -270,48 +264,29 @@ parentPort.on("message", ({ cmdBuf, dataBuf }) => {
 
 describe("HTTPS GET via OpenSSL over real TCP", () => {
     it("performs a full TLS handshake and HTTP GET to example.com", async () => {
-        const root = repoRoot();
-        const { WasmPosixKernel } = await import(join(root, "host/src/kernel.ts"));
-        const { ProgramRunner } = await import(join(root, "host/src/program-runner.ts"));
-        const { NodePlatformIO } = await import(join(root, "host/src/platform/node.ts"));
-
-        const kernelWasm = readFileSync(join(root, "host/wasm/wasm_posix_kernel.wasm"));
-        const programWasm = readFileSync(join(__dirname, "https_get.wasm"));
-
-        let stdout = "";
-        let stderr = "";
-        const io = new NodePlatformIO();
         const backend = new WorkerTcpBackend();
+        const io = new NodePlatformIO();
         (io as any).network = backend;
 
-        const kernel = new WasmPosixKernel(
-            { maxWorkers: 1, dataBufferSize: 65536, useSharedMemory: false },
-            io,
-            {
-                onStdout: (data: Uint8Array) => { stdout += new TextDecoder().decode(data); },
-                onStderr: (data: Uint8Array) => { stderr += new TextDecoder().decode(data); },
-            },
-        );
-
         try {
-            await kernel.init(kernelWasm);
-
-            const runner = new ProgramRunner(kernel);
-            const exitCode = await runner.run(programWasm, {
+            const result = await runCentralizedProgram({
+                programPath: join(__dirname, "https_get.wasm"),
                 argv: ["https_get", "example.com"],
+                timeout: 60_000,
+                io,
             });
 
             // Log output for debugging if something goes wrong
-            if (exitCode !== 0) {
-                console.log("STDOUT:", stdout);
-                console.log("STDERR:", stderr);
+            if (result.exitCode !== 0) {
+                console.log("STDOUT:", result.stdout);
+                console.log("STDERR:", result.stderr);
             }
 
-            expect(stdout).toContain("OK: connected to example.com:443");
-            expect(stdout).toContain("OK: TLS handshake complete");
-            expect(stdout).toContain("OK: response: HTTP/1.1");
-            expect(stdout).toContain("PASS");
-            expect(exitCode).toBe(0);
+            expect(result.stdout).toContain("OK: connected to example.com:443");
+            expect(result.stdout).toContain("OK: TLS handshake complete");
+            expect(result.stdout).toContain("OK: response: HTTP/1.1");
+            expect(result.stdout).toContain("PASS");
+            expect(result.exitCode).toBe(0);
         } finally {
             backend.terminate();
         }

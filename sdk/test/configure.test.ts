@@ -4,7 +4,7 @@ import { buildConfigureEnv, buildConfigureArgs } from '../src/bin/configure.ts';
 describe('buildConfigureArgs', () => {
   it('includes --host and --prefix', () => {
     const args = buildConfigureArgs([]);
-    expect(args).toContain('--host=wasm32-unknown-none');
+    expect(args).toContain('--host=wasm64-unknown-none');
     expect(args).toContain('--prefix=/usr');
   });
 
@@ -16,10 +16,10 @@ describe('buildConfigureArgs', () => {
 });
 
 describe('buildConfigureEnv', () => {
-  it('sets CC to wasm32posix-cc', () => {
+  it('sets CC to wasm64posix-cc', () => {
     const env = buildConfigureEnv();
-    expect(env.CC).toBe('wasm32posix-cc');
-    expect(env.AR).toBe('wasm32posix-ar');
-    expect(env.STRIP).toBe('wasm32posix-strip');
+    expect(env.CC).toBe('wasm64posix-cc');
+    expect(env.AR).toBe('wasm64posix-ar');
+    expect(env.STRIP).toBe('wasm64posix-strip');
   });
 });

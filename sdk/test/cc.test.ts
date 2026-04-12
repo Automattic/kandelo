@@ -15,7 +15,7 @@ describe('buildClangArgs', () => {
 
   it('compile-only: adds compile flags, no link flags', () => {
     const args = buildClangArgs(['-c', 'foo.c', '-o', 'foo.o'], toolchain);
-    expect(args).toContain('--target=wasm32-unknown-unknown');
+    expect(args).toContain('--target=wasm64-unknown-unknown');
     expect(args).toContain('--sysroot=/tmp/sysroot');
     expect(args).toContain('-c');
     expect(args).toContain('foo.c');
@@ -25,7 +25,7 @@ describe('buildClangArgs', () => {
 
   it('compile+link: adds both compile and link flags plus glue', () => {
     const args = buildClangArgs(['foo.c', '-o', 'foo.wasm'], toolchain);
-    expect(args).toContain('--target=wasm32-unknown-unknown');
+    expect(args).toContain('--target=wasm64-unknown-unknown');
     expect(args).toContain('-Wl,--entry=_start');
     expect(args).toContain('-Wl,--import-memory');
     expect(args.join(' ')).toContain('channel_syscall.c');
@@ -38,7 +38,7 @@ describe('buildClangArgs', () => {
     const args = buildClangArgs(['foo.o', 'bar.o', '-o', 'out.wasm'], toolchain);
     expect(args).toContain('-Wl,--entry=_start');
     expect(args.join(' ')).toContain('libc.a');
-    expect(args).toContain('--target=wasm32-unknown-unknown');
+    expect(args).toContain('--target=wasm64-unknown-unknown');
     // Compile flags are present because glue .c files are compiled during linking
     expect(args).toContain('-fno-exceptions');
     expect(args.join(' ')).toContain('channel_syscall.c');
