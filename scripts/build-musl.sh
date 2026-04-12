@@ -1,11 +1,11 @@
 #!/bin/bash
 set -euo pipefail
 
-# Build musl libc as a static library targeting wasm32.
+# Build musl libc as a static library targeting wasm64.
 #
 # Approach:
-#   1. Copy overlay files from musl-overlay/ into musl/arch/wasm32posix/
-#   2. Write config.mak directly (bypassing configure which doesn't know wasm32posix)
+#   1. Copy overlay files from musl-overlay/ into musl/arch/wasm64posix/
+#   2. Write config.mak directly (bypassing configure which doesn't know wasm64posix)
 #   3. Run make to build libc.a and CRT objects
 #   4. Install headers + libs into sysroot/
 
@@ -32,13 +32,13 @@ done
 # 1. Copy overlay files into musl source tree
 # ---------------------------------------------------------------
 echo "==> Copying overlay files..."
-rm -rf "$MUSL_DIR/arch/wasm32posix"
-cp -r "$OVERLAY_DIR/arch/wasm32posix" "$MUSL_DIR/arch/"
+rm -rf "$MUSL_DIR/arch/wasm64posix"
+cp -r "$OVERLAY_DIR/arch/wasm64posix" "$MUSL_DIR/arch/"
 
 # Copy source file overlays (e.g., Wasm-specific __libc_start_main.c)
-# First, clean wasm32posix dirs in musl tree to remove stale overlay files
+# First, clean wasm64posix dirs in musl tree to remove stale overlay files
 if [ -d "$OVERLAY_DIR/src" ]; then
-    find "$OVERLAY_DIR/src" -type d -name wasm32posix | while read dir; do
+    find "$OVERLAY_DIR/src" -type d \( -name wasm64posix -o -name wasm64 \) | while read dir; do
         rel="${dir#$OVERLAY_DIR/src/}"
         rm -rf "$MUSL_DIR/src/$rel"
     done
@@ -55,10 +55,10 @@ fi
 # ---------------------------------------------------------------
 echo "==> Writing config.mak..."
 cat > "$MUSL_DIR/config.mak" << EOF
-ARCH = wasm32posix
+ARCH = wasm64posix
 srcdir = .
 prefix = $SYSROOT
-CC = $CC --target=wasm32-unknown-unknown
+CC = $CC --target=wasm64-unknown-unknown
 AR = $AR
 RANLIB = $RANLIB
 CFLAGS = -O2 -matomics -mbulk-memory -fno-exceptions -fno-trapping-math
@@ -112,7 +112,7 @@ make install
 # 6. Build __main_void wrapper and add to libc.a
 # ---------------------------------------------------------------
 echo "==> Building __main_void wrapper..."
-"$CC" --target=wasm32-unknown-unknown -O2 -c \
+"$CC" --target=wasm64-unknown-unknown -O2 -c \
     "$OVERLAY_DIR/src/env/__main_void.c" \
     -o "$SYSROOT/lib/__main_void.o"
 "$AR" rcs "$SYSROOT/lib/libc.a" "$SYSROOT/lib/__main_void.o"
@@ -121,10 +121,10 @@ echo "==> Building __main_void wrapper..."
 # 7. Build setjmp runtime (requires -fwasm-exceptions for __builtin_wasm_throw)
 # ---------------------------------------------------------------
 echo "==> Building setjmp runtime..."
-"$CC" --target=wasm32-unknown-unknown -O2 \
+"$CC" --target=wasm64-unknown-unknown -O2 \
     -fwasm-exceptions -matomics -mbulk-memory \
     -I"$SYSROOT/include" \
-    -c "$OVERLAY_DIR/src/setjmp/wasm32/rt.c" \
+    -c "$OVERLAY_DIR/src/setjmp/wasm64/rt.c" \
     -o "$SYSROOT/lib/wasm_setjmp_rt.o"
 "$AR" rcs "$SYSROOT/lib/libc.a" "$SYSROOT/lib/wasm_setjmp_rt.o"
 
@@ -132,10 +132,10 @@ echo "==> Building setjmp runtime..."
 # 8. Build sigsetjmp helpers and add to libc.a
 # ---------------------------------------------------------------
 echo "==> Building sigsetjmp helpers..."
-"$CC" --target=wasm32-unknown-unknown -O2 \
+"$CC" --target=wasm64-unknown-unknown -O2 \
     -matomics -mbulk-memory \
     -I"$SYSROOT/include" \
-    -c "$OVERLAY_DIR/src/signal/wasm32posix/sigsetjmp.c" \
+    -c "$OVERLAY_DIR/src/signal/wasm64posix/sigsetjmp.c" \
     -o "$SYSROOT/lib/sigsetjmp_helpers.o"
 "$AR" rcs "$SYSROOT/lib/libc.a" "$SYSROOT/lib/sigsetjmp_helpers.o"
 
