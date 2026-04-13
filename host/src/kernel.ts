@@ -170,10 +170,11 @@ export class WasmPosixKernel {
    */
   async init(wasmBytes: BufferSource): Promise<void> {
     const memory = new WebAssembly.Memory({
-      initial: 17,
-      maximum: 16384,
+      initial: 17n,
+      maximum: 16384n,
       shared: true,
-    });
+      address: "i64",
+    } as unknown as WebAssembly.MemoryDescriptor);
     this.memory = memory;
     const importObject = this.buildImportObject(memory);
     const module = await WebAssembly.compile(wasmBytes as BufferSource);
@@ -195,76 +196,76 @@ export class WasmPosixKernel {
     return {
       env: {
         memory,
-        host_debug_log: (ptr: number, len: number): void => {
-          const buf = new Uint8Array(memory.buffer, ptr, len);
+        host_debug_log: (ptr: bigint, len: number): void => {
+          const buf = new Uint8Array(memory.buffer, Number(ptr), len);
           const msg = new TextDecoder().decode(buf.slice());
           console.log(`[KERNEL] ${msg}`);
         },
-        host_open: (pathPtr: number, pathLen: number, flags: number, mode: number): bigint => {
-          return this.hostOpen(pathPtr, pathLen, flags, mode);
+        host_open: (pathPtr: bigint, pathLen: number, flags: number, mode: number): bigint => {
+          return this.hostOpen(Number(pathPtr), pathLen, flags, mode);
         },
         host_close: (handle: bigint): number => {
           return this.hostClose(handle);
         },
-        host_read: (handle: bigint, bufPtr: number, bufLen: number): number => {
-          return this.hostRead(handle, bufPtr, bufLen);
+        host_read: (handle: bigint, bufPtr: bigint, bufLen: number): number => {
+          return this.hostRead(handle, Number(bufPtr), bufLen);
         },
-        host_write: (handle: bigint, bufPtr: number, bufLen: number): number => {
-          return this.hostWrite(handle, bufPtr, bufLen);
+        host_write: (handle: bigint, bufPtr: bigint, bufLen: number): number => {
+          return this.hostWrite(handle, Number(bufPtr), bufLen);
         },
         host_seek: (handle: bigint, offsetLo: number, offsetHi: number, whence: number): bigint => {
           return this.hostSeek(handle, offsetLo, offsetHi, whence);
         },
-        host_fstat: (handle: bigint, statPtr: number): number => {
-          return this.hostFstat(handle, statPtr);
+        host_fstat: (handle: bigint, statPtr: bigint): number => {
+          return this.hostFstat(handle, Number(statPtr));
         },
-        host_stat: (pathPtr: number, pathLen: number, statPtr: number): number => {
-          return this.hostStat(pathPtr, pathLen, statPtr);
+        host_stat: (pathPtr: bigint, pathLen: number, statPtr: bigint): number => {
+          return this.hostStat(Number(pathPtr), pathLen, Number(statPtr));
         },
-        host_lstat: (pathPtr: number, pathLen: number, statPtr: number): number => {
-          return this.hostLstat(pathPtr, pathLen, statPtr);
+        host_lstat: (pathPtr: bigint, pathLen: number, statPtr: bigint): number => {
+          return this.hostLstat(Number(pathPtr), pathLen, Number(statPtr));
         },
-        host_mkdir: (pathPtr: number, pathLen: number, mode: number): number => {
-          return this.hostMkdir(pathPtr, pathLen, mode);
+        host_mkdir: (pathPtr: bigint, pathLen: number, mode: number): number => {
+          return this.hostMkdir(Number(pathPtr), pathLen, mode);
         },
-        host_rmdir: (pathPtr: number, pathLen: number): number => {
-          return this.hostRmdir(pathPtr, pathLen);
+        host_rmdir: (pathPtr: bigint, pathLen: number): number => {
+          return this.hostRmdir(Number(pathPtr), pathLen);
         },
-        host_unlink: (pathPtr: number, pathLen: number): number => {
-          return this.hostUnlink(pathPtr, pathLen);
+        host_unlink: (pathPtr: bigint, pathLen: number): number => {
+          return this.hostUnlink(Number(pathPtr), pathLen);
         },
-        host_rename: (oldPtr: number, oldLen: number, newPtr: number, newLen: number): number => {
-          return this.hostRename(oldPtr, oldLen, newPtr, newLen);
+        host_rename: (oldPtr: bigint, oldLen: number, newPtr: bigint, newLen: number): number => {
+          return this.hostRename(Number(oldPtr), oldLen, Number(newPtr), newLen);
         },
-        host_link: (oldPtr: number, oldLen: number, newPtr: number, newLen: number): number => {
-          return this.hostLink(oldPtr, oldLen, newPtr, newLen);
+        host_link: (oldPtr: bigint, oldLen: number, newPtr: bigint, newLen: number): number => {
+          return this.hostLink(Number(oldPtr), oldLen, Number(newPtr), newLen);
         },
-        host_symlink: (targetPtr: number, targetLen: number, linkPtr: number, linkLen: number): number => {
-          return this.hostSymlink(targetPtr, targetLen, linkPtr, linkLen);
+        host_symlink: (targetPtr: bigint, targetLen: number, linkPtr: bigint, linkLen: number): number => {
+          return this.hostSymlink(Number(targetPtr), targetLen, Number(linkPtr), linkLen);
         },
-        host_readlink: (pathPtr: number, pathLen: number, bufPtr: number, bufLen: number): number => {
-          return this.hostReadlink(pathPtr, pathLen, bufPtr, bufLen);
+        host_readlink: (pathPtr: bigint, pathLen: number, bufPtr: bigint, bufLen: number): number => {
+          return this.hostReadlink(Number(pathPtr), pathLen, Number(bufPtr), bufLen);
         },
-        host_chmod: (pathPtr: number, pathLen: number, mode: number): number => {
-          return this.hostChmod(pathPtr, pathLen, mode);
+        host_chmod: (pathPtr: bigint, pathLen: number, mode: number): number => {
+          return this.hostChmod(Number(pathPtr), pathLen, mode);
         },
-        host_chown: (pathPtr: number, pathLen: number, uid: number, gid: number): number => {
-          return this.hostChown(pathPtr, pathLen, uid, gid);
+        host_chown: (pathPtr: bigint, pathLen: number, uid: number, gid: number): number => {
+          return this.hostChown(Number(pathPtr), pathLen, uid, gid);
         },
-        host_access: (pathPtr: number, pathLen: number, amode: number): number => {
-          return this.hostAccess(pathPtr, pathLen, amode);
+        host_access: (pathPtr: bigint, pathLen: number, amode: number): number => {
+          return this.hostAccess(Number(pathPtr), pathLen, amode);
         },
-        host_opendir: (pathPtr: number, pathLen: number): bigint => {
-          return this.hostOpendir(pathPtr, pathLen);
+        host_opendir: (pathPtr: bigint, pathLen: number): bigint => {
+          return this.hostOpendir(Number(pathPtr), pathLen);
         },
-        host_readdir: (dirHandle: bigint, direntPtr: number, namePtr: number, nameLen: number): number => {
-          return this.hostReaddir(dirHandle, direntPtr, namePtr, nameLen);
+        host_readdir: (dirHandle: bigint, direntPtr: bigint, namePtr: bigint, nameLen: number): number => {
+          return this.hostReaddir(dirHandle, Number(direntPtr), Number(namePtr), nameLen);
         },
         host_closedir: (dirHandle: bigint): number => {
           return this.hostClosedir(dirHandle);
         },
-        host_clock_gettime: (clockId: number, secPtr: number, nsecPtr: number): number => {
-          return this.hostClockGettime(clockId, secPtr, nsecPtr);
+        host_clock_gettime: (clockId: number, secPtr: bigint, nsecPtr: bigint): number => {
+          return this.hostClockGettime(clockId, Number(secPtr), Number(nsecPtr));
         },
         host_nanosleep: (sec: bigint, nsec: bigint): number => {
           return this.hostNanosleep(sec, nsec);
@@ -284,8 +285,8 @@ export class WasmPosixKernel {
         host_kill: (pid: number, sig: number): number => {
           return this.hostKill(pid, sig);
         },
-        host_exec: (pathPtr: number, pathLen: number): number => {
-          return this.hostExec(pathPtr, pathLen);
+        host_exec: (pathPtr: bigint, pathLen: number): number => {
+          return this.hostExec(Number(pathPtr), pathLen);
         },
         host_set_alarm: (seconds: number): number => {
           return this.hostSetAlarm(seconds);
@@ -322,10 +323,11 @@ export class WasmPosixKernel {
           }
           return -22; // EINVAL
         },
-        host_getrandom: (bufPtr: number, bufLen: number): number => {
+        host_getrandom: (bufPtr: bigint, bufLen: number): number => {
           try {
             const mem = this.getMemoryBuffer();
-            const target = mem.subarray(bufPtr, bufPtr + bufLen);
+            const ptr = Number(bufPtr);
+            const target = mem.subarray(ptr, ptr + bufLen);
             if (typeof globalThis.crypto !== "undefined" && globalThis.crypto.getRandomValues) {
               // crypto.getRandomValues rejects SharedArrayBuffer-backed views in browsers.
               // Use a temporary non-shared buffer and copy.
@@ -341,22 +343,22 @@ export class WasmPosixKernel {
           }
         },
         host_utimensat: (
-          pathPtr: number, pathLen: number,
+          pathPtr: bigint, pathLen: number,
           atimeSec: bigint, atimeNsec: bigint, mtimeSec: bigint, mtimeNsec: bigint,
         ): number => {
-          return this.hostUtimensat(pathPtr, pathLen, atimeSec, atimeNsec, mtimeSec, mtimeNsec);
+          return this.hostUtimensat(Number(pathPtr), pathLen, atimeSec, atimeNsec, mtimeSec, mtimeNsec);
         },
-        host_waitpid: (pid: number, options: number, statusPtr: number): number => {
-          return this.hostWaitpid(pid, options, statusPtr);
+        host_waitpid: (pid: number, options: number, statusPtr: bigint): number => {
+          return this.hostWaitpid(pid, options, Number(statusPtr));
         },
-        host_net_connect: (handle: number, addrPtr: number, addrLen: number, port: number): number => {
-          return this.hostNetConnect(handle, addrPtr, addrLen, port);
+        host_net_connect: (handle: number, addrPtr: bigint, addrLen: number, port: number): number => {
+          return this.hostNetConnect(handle, Number(addrPtr), addrLen, port);
         },
-        host_net_send: (handle: number, bufPtr: number, bufLen: number, flags: number): number => {
-          return this.hostNetSend(handle, bufPtr, bufLen, flags);
+        host_net_send: (handle: number, bufPtr: bigint, bufLen: number, flags: number): number => {
+          return this.hostNetSend(handle, Number(bufPtr), bufLen, flags);
         },
-        host_net_recv: (handle: number, bufPtr: number, bufLen: number, flags: number): number => {
-          return this.hostNetRecv(handle, bufPtr, bufLen, flags);
+        host_net_recv: (handle: number, bufPtr: bigint, bufLen: number, flags: number): number => {
+          return this.hostNetRecv(handle, Number(bufPtr), bufLen, flags);
         },
         host_net_close: (handle: number): number => {
           return this.hostNetClose(handle);
@@ -364,29 +366,29 @@ export class WasmPosixKernel {
         host_net_listen: (fd: number, port: number, addrA: number, addrB: number, addrC: number, addrD: number): number => {
           return this.hostNetListen(fd, port, addrA, addrB, addrC, addrD);
         },
-        host_getaddrinfo: (namePtr: number, nameLen: number, resultPtr: number, resultLen: number): number => {
-          return this.hostGetaddrinfo(namePtr, nameLen, resultPtr, resultLen);
+        host_getaddrinfo: (namePtr: bigint, nameLen: number, resultPtr: bigint, resultLen: number): number => {
+          return this.hostGetaddrinfo(Number(namePtr), nameLen, Number(resultPtr), resultLen);
         },
         host_fcntl_lock: (
-          pathPtr: number, pathLen: number,
+          pathPtr: bigint, pathLen: number,
           pid: number, cmd: number, lockType: number,
           startLo: number, startHi: number,
           lenLo: number, lenHi: number,
-          resultPtr: number,
+          resultPtr: bigint,
         ): number => {
-          return this.hostFcntlLock(pathPtr, pathLen, pid, cmd, lockType, startLo, startHi, lenLo, lenHi, resultPtr);
+          return this.hostFcntlLock(Number(pathPtr), pathLen, pid, cmd, lockType, startLo, startHi, lenLo, lenHi, Number(resultPtr));
         },
         host_fork: (): number => {
           return this.hostFork();
         },
-        host_futex_wait: (addr: number, expected: number, timeoutLo: number, timeoutHi: number): number => {
-          return this.hostFutexWait(addr, expected, timeoutLo, timeoutHi);
+        host_futex_wait: (addr: bigint, expected: number, timeoutLo: number, timeoutHi: number): number => {
+          return this.hostFutexWait(Number(addr), expected, timeoutLo, timeoutHi);
         },
-        host_futex_wake: (addr: number, count: number): number => {
-          return this.hostFutexWake(addr, count);
+        host_futex_wake: (addr: bigint, count: number): number => {
+          return this.hostFutexWake(Number(addr), count);
         },
-        host_clone: (fnPtr: number, arg: number, stackPtr: number, tlsPtr: number, ctidPtr: number): number => {
-          return this.hostClone(fnPtr, arg, stackPtr, tlsPtr, ctidPtr);
+        host_clone: (fnPtr: bigint, arg: bigint, stackPtr: bigint, tlsPtr: bigint, ctidPtr: bigint): number => {
+          return this.hostClone(Number(fnPtr), Number(arg), Number(stackPtr), Number(tlsPtr), Number(ctidPtr));
         },
         host_is_thread_worker: (): number => {
           return this.isThreadWorker ? 1 : 0;

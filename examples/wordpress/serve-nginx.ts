@@ -30,7 +30,7 @@ import type {
   CentralizedWorkerInitMessage,
 } from "../../host/src/worker-protocol";
 
-const CH_TOTAL_SIZE = 40 + 65536;
+const CH_TOTAL_SIZE = 72 + 65536;
 const MAX_PAGES = 16384;
 
 const scriptDir = dirname(new URL(import.meta.url).pathname);

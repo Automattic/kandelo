@@ -1,5 +1,13 @@
 [build]
-target = "wasm32-unknown-unknown"
+target = "wasm64-unknown-unknown"
 
 [target.wasm32-unknown-unknown]
 rustflags = ["-C", "target-feature=+atomics,+bulk-memory,+mutable-globals"]
+
+[target.wasm64-unknown-unknown]
+rustflags = [
+  "-C", "target-feature=+atomics,+bulk-memory,+mutable-globals",
+  "-C", "link-arg=--export-memory",
+  "-C", "link-arg=--shared-memory",
+  "-C", "link-arg=--max-memory=1073741824",
+]

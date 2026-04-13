@@ -36,7 +36,7 @@ const routerScript = join(__dirname, "router.php");
 const port = parseInt(process.argv[2] || "3000", 10);
 
 const MAX_PAGES = 16384;
-const CH_TOTAL_SIZE = 40 + 65536;
+const CH_TOTAL_SIZE = 72 + 65536;
 
 // Validate prerequisites
 if (!existsSync(phpBinaryPath)) {

@@ -24,6 +24,7 @@ if [ ! -f "$SYSROOT/lib/libc.a" ]; then
 fi
 
 export WASM_POSIX_SYSROOT="$SYSROOT"
+export WASM_POSIX_GLUE_DIR="$REPO_ROOT/glue"
 
 # --- Download dash source ---
 if [ ! -d "$SRC_DIR" ]; then

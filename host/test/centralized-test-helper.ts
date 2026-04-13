@@ -17,7 +17,7 @@ import type { PlatformIO } from "../src/types";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const MAX_PAGES = 16384;
-const CH_TOTAL_SIZE = 40 + 65536;
+const CH_TOTAL_SIZE = 72 + 65536;
 
 function loadKernelWasm(): ArrayBuffer {
   const buf = readFileSync(join(__dirname, "../wasm/wasm_posix_kernel.wasm"));

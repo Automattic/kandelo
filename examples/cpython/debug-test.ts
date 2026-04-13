@@ -16,7 +16,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "../..");
 
 const MAX_PAGES = 16384;
-const CH_TOTAL_SIZE = 40 + 65536;
+const CH_TOTAL_SIZE = 72 + 65536;
 
 function loadBytes(path: string): ArrayBuffer {
   const buf = readFileSync(path);

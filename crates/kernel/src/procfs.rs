@@ -564,9 +564,9 @@ fn generate_content(proc: &Process, entry: &ProcfsEntry) -> Result<Vec<u8>, Errn
                     _ => unreachable!(),
                 }
             } else {
-                #[cfg(target_arch = "wasm32")]
+                #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
                 { crate::wasm_api::procfs_generate_for_pid(*pid, entry).ok_or(Errno::ENOENT) }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
                 { Err(Errno::ENOENT) }
             }
         }
@@ -575,9 +575,9 @@ fn generate_content(proc: &Process, entry: &ProcfsEntry) -> Result<Vec<u8>, Errn
             if *pid == proc.pid {
                 generate_fdinfo(proc, *fd).ok_or(Errno::ENOENT)
             } else {
-                #[cfg(target_arch = "wasm32")]
+                #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
                 { crate::wasm_api::procfs_generate_for_pid(*pid, entry).ok_or(Errno::ENOENT) }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
                 { let _ = fd; Err(Errno::ENOENT) }
             }
         }
@@ -598,7 +598,7 @@ fn validate_pid(proc: &Process, pid: u32) -> Result<(), Errno> {
         return Ok(());
     }
     // Cross-process: check if pid exists via process table
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
     {
         let all_pids = crate::wasm_api::procfs_all_pids();
         if all_pids.contains(&pid) {
@@ -643,12 +643,12 @@ pub fn procfs_readlink(
         ProcfsEntry::FdLink(pid, _) | ProcfsEntry::Cwd(pid) | ProcfsEntry::Exe(pid)
         | ProcfsEntry::Root_(pid) => {
             if *pid != proc.pid {
-                #[cfg(target_arch = "wasm32")]
+                #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
                 {
                     return crate::wasm_api::procfs_readlink_for_pid(*pid, entry, buf)
                         .ok_or(Errno::ENOENT);
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
                 return Err(Errno::ENOENT);
             }
             match entry {

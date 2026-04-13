@@ -21,7 +21,7 @@ import type { WorkerHandle } from "../host/src/worker-adapter";
 import type { CentralizedWorkerInitMessage, CentralizedThreadInitMessage, WorkerToHostMessage } from "../host/src/worker-protocol";
 import { ThreadPageAllocator } from "../host/src/thread-allocator";
 
-const CH_TOTAL_SIZE = 40 + 65536; // header (40B) + data buffer (64KB)
+const CH_TOTAL_SIZE = 72 + 65536; // header (72B) + data buffer (64KB)
 
 const repoRoot = resolve(dirname(new URL(import.meta.url).pathname), "..");
 const workerAdapter = new NodeWorkerAdapter();

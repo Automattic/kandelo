@@ -519,8 +519,8 @@ pub mod mmap {
     pub const MAP_ANONYMOUS: u32 = 0x20;
     pub const MAP_ANON: u32 = MAP_ANONYMOUS;
 
-    // Return value for failure
-    pub const MAP_FAILED: u32 = 0xFFFFFFFF;
+    // Return value for failure (usize::MAX — works for both wasm32 and wasm64)
+    pub const MAP_FAILED: usize = usize::MAX;
 }
 
 /// Socket constants.
@@ -635,31 +635,45 @@ pub mod mode {
 }
 
 /// Shared-memory channel layout offsets and sizes.
+///
+/// Channel layout (i64 args for wasm32/wasm64 dual ABI):
+///   Offset  Size  Field
+///   0       4B    status (i32 atomic — must stay i32 for Atomics.wait32)
+///   4       4B    syscall number (i32)
+///   8       48B   arguments (6 × i64)
+///   56      8B    return value (i64)
+///   64      4B    errno (i32)
+///   68      4B    reserved/pad
+///   72      64KB  data transfer buffer
 pub mod channel {
-    /// Byte offset of the status field (u32, atomic).
+    /// Byte offset of the status field (i32, atomic).
     pub const STATUS_OFFSET: usize = 0;
-    /// Byte offset of the syscall number field (u32).
+    /// Byte offset of the syscall number field (i32).
     pub const SYSCALL_OFFSET: usize = 4;
-    /// Byte offset of the first argument slot (u32 each).
+    /// Byte offset of the first argument slot (i64 each, 8 bytes).
     pub const ARGS_OFFSET: usize = 8;
     /// Number of argument slots.
     pub const ARGS_COUNT: usize = 6;
-    /// Byte offset of the return value field (i32).
-    pub const RETURN_OFFSET: usize = 32;
-    /// Byte offset of the errno field (u32).
-    pub const ERRNO_OFFSET: usize = 36;
+    /// Size of each argument slot in bytes.
+    pub const ARG_SIZE: usize = 8;
+    /// Byte offset of the return value field (i64).
+    pub const RETURN_OFFSET: usize = 56;
+    /// Byte offset of the errno field (i32).
+    pub const ERRNO_OFFSET: usize = 64;
     /// Byte offset of the data buffer region.
-    pub const DATA_OFFSET: usize = 40;
+    pub const DATA_OFFSET: usize = 72;
     /// Size of the data buffer.
     pub const DATA_SIZE: usize = 65536;
+    /// Total header size before data buffer.
+    pub const HEADER_SIZE: usize = 72;
     /// Minimum total size of a channel in bytes (header + 64 KiB data buffer).
-    pub const MIN_CHANNEL_SIZE: usize = 40 + 65536;
+    pub const MIN_CHANNEL_SIZE: usize = HEADER_SIZE + DATA_SIZE;
 
-    // Signal delivery area — last 32 bytes of the data buffer.
+    // Signal delivery area — last 48 bytes of the data buffer.
     // After each syscall, if a signal with a Handler disposition is pending,
     // the kernel writes delivery info here so the glue code can invoke it.
     /// Base offset of signal delivery area.
-    pub const SIG_BASE: usize = DATA_OFFSET + DATA_SIZE - 32;
+    pub const SIG_BASE: usize = DATA_OFFSET + DATA_SIZE - 48;
     /// Signal number to deliver (u32). 0 = no signal.
     pub const SIG_SIGNUM: usize = SIG_BASE;
     /// Handler function table index (u32).

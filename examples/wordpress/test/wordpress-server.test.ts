@@ -43,7 +43,7 @@ const SKIP_REASON = !PHP_AVAILABLE
       : "";
 
 const MAX_PAGES = 16384;
-const CH_TOTAL_SIZE = 40 + 65536;
+const CH_TOTAL_SIZE = 72 + 65536;
 
 function loadFile(path: string): ArrayBuffer {
   const buf = readFileSync(path);

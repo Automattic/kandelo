@@ -38,7 +38,7 @@ describe.skipIf(!hasBinary)("centralizedWorkerMain", () => {
     });
     const channelOffset = (MAX_PAGES - 2) * 65536;
     memory.grow(MAX_PAGES - 17);
-    new Uint8Array(memory.buffer, channelOffset, 40 + 65536).fill(0);
+    new Uint8Array(memory.buffer, channelOffset, 72 + 65536).fill(0);
 
     const initData: CentralizedWorkerInitMessage = {
       type: "centralized_init",

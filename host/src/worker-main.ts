@@ -87,7 +87,7 @@ function buildKernelImports(
       const view = new DataView(memory.buffer);
       const base = channelOffset;
       view.setInt32(base + 4, 34, true); // SYS_EXIT = 34
-      view.setInt32(base + 8, status, true);
+      view.setBigInt64(base + 8, BigInt(status), true); // arg0 as i64
       const i32 = new Int32Array(memory.buffer);
       Atomics.store(i32, base / 4, 1); // CH_PENDING
       Atomics.notify(i32, base / 4, 1);
@@ -99,27 +99,32 @@ function buildKernelImports(
     // Clone dispatches through channel (SYS_CLONE)
     kernel_clone: (fnPtr: number, stackPtr: number, flags: number,
       arg: number, ptidPtr: number, tlsPtr: number, ctidPtr: number): number => {
+      // Debug logging removed (require('fs') not available in ESM worker context)
       const SYS_CLONE_NR = 201;
+      const CH_ARG_SIZE = 8;
+      const CH_RETURN = 56;
+      const CH_ERRNO = 64;
+      const CH_DATA = 72;
       const view = new DataView(memory.buffer);
       const base = channelOffset;
       view.setInt32(base + 4, SYS_CLONE_NR, true);
-      view.setInt32(base + 8, flags, true);
-      view.setInt32(base + 12, stackPtr, true);
-      view.setInt32(base + 16, ptidPtr, true);
-      view.setInt32(base + 20, tlsPtr, true);
-      view.setInt32(base + 24, ctidPtr, true);
-      view.setInt32(base + 28, 0, true);
+      view.setBigInt64(base + 8 + 0 * CH_ARG_SIZE, BigInt(flags), true);
+      view.setBigInt64(base + 8 + 1 * CH_ARG_SIZE, BigInt(stackPtr), true);
+      view.setBigInt64(base + 8 + 2 * CH_ARG_SIZE, BigInt(ptidPtr), true);
+      view.setBigInt64(base + 8 + 3 * CH_ARG_SIZE, BigInt(tlsPtr), true);
+      view.setBigInt64(base + 8 + 4 * CH_ARG_SIZE, BigInt(ctidPtr), true);
+      view.setBigInt64(base + 8 + 5 * CH_ARG_SIZE, 0n, true);
       // Write fn_ptr and arg_ptr to CH_DATA area for handleClone
-      view.setUint32(base + 40, fnPtr, true);
-      view.setUint32(base + 44, arg, true);
+      view.setUint32(base + CH_DATA, fnPtr, true);
+      view.setUint32(base + CH_DATA + 4, arg, true);
 
       const i32 = new Int32Array(memory.buffer);
       Atomics.store(i32, base / 4, 1); // CH_PENDING
       Atomics.notify(i32, base / 4, 1);
       while (Atomics.wait(i32, base / 4, 1) === "ok") { /* */ }
 
-      const result = view.getInt32(base + 32, true);
-      const err = view.getUint32(base + 36, true);
+      const result = Number(view.getBigInt64(base + CH_RETURN, true));
+      const err = view.getUint32(base + CH_ERRNO, true);
       Atomics.store(i32, base / 4, 0);
 
       if (err) return -err;
@@ -129,18 +134,21 @@ function buildKernelImports(
     // Fork dispatches through channel (SYS_FORK)
     kernel_fork: (): number => {
       const SYS_FORK_NR = 212;
+      const CH_ARG_SIZE = 8;
+      const CH_RETURN = 56;
+      const CH_ERRNO = 64;
       const view = new DataView(memory.buffer);
       const base = channelOffset;
       view.setInt32(base + 4, SYS_FORK_NR, true);
-      for (let i = 0; i < 6; i++) view.setInt32(base + 8 + i * 4, 0, true);
+      for (let i = 0; i < 6; i++) view.setBigInt64(base + 8 + i * CH_ARG_SIZE, 0n, true);
 
       const i32 = new Int32Array(memory.buffer);
       Atomics.store(i32, base / 4, 1); // CH_PENDING
       Atomics.notify(i32, base / 4, 1);
       while (Atomics.wait(i32, base / 4, 1) === "ok") { /* */ }
 
-      const result = view.getInt32(base + 32, true);
-      const err = view.getUint32(base + 36, true);
+      const result = Number(view.getBigInt64(base + CH_RETURN, true));
+      const err = view.getUint32(base + CH_ERRNO, true);
       Atomics.store(i32, base / 4, 0);
 
       if (err) return -err;
@@ -712,12 +720,14 @@ export async function centralizedWorkerMain(
         if (start) start();
       } catch (e) {
         if (e instanceof Error && e.message.includes("unreachable")) {
+          console.error(`[worker] pid=${pid} _start() hit unreachable trap: ${e.message}`);
           exitCode = 0;
         } else {
           throw e;
         }
       }
 
+      console.error(`[worker] pid=${pid} _start() returned, exitCode=${exitCode}`);
       port.postMessage({ type: "exit", pid, status: exitCode } satisfies WorkerToHostMessage);
     }
   } catch (err) {
@@ -965,13 +975,14 @@ function sendForkSyscall(memory: WebAssembly.Memory, channelOffset: number): num
   const SYS_FORK_NR = 212;
   const CH_SYSCALL = 4;
   const CH_ARGS = 8;
-  const CH_RETURN = 32;
-  const CH_ERRNO = 36;
+  const CH_ARG_SIZE = 8; // each arg is i64 (8 bytes)
+  const CH_RETURN = 56;
+  const CH_ERRNO = 64;
 
   const view = new DataView(memory.buffer);
   view.setInt32(channelOffset + CH_SYSCALL, SYS_FORK_NR, true);
   for (let i = 0; i < 6; i++) {
-    view.setInt32(channelOffset + CH_ARGS + i * 4, 0, true);
+    view.setBigInt64(channelOffset + CH_ARGS + i * CH_ARG_SIZE, 0n, true);
   }
 
   const i32 = new Int32Array(memory.buffer);
@@ -979,7 +990,7 @@ function sendForkSyscall(memory: WebAssembly.Memory, channelOffset: number): num
   Atomics.notify(i32, channelOffset / 4, 1);
   while (Atomics.wait(i32, channelOffset / 4, 1) === "ok") { /* */ }
 
-  const result = view.getInt32(channelOffset + CH_RETURN, true);
+  const result = Number(view.getBigInt64(channelOffset + CH_RETURN, true));
   const err = view.getUint32(channelOffset + CH_ERRNO, true);
   Atomics.store(i32, channelOffset / 4, 0);
 
@@ -1279,12 +1290,12 @@ export async function centralizedThreadWorkerMain(
 
     // Initialize Wasm TLS for this thread.
     // IMPORTANT: We place TLS data inside the channel's spill page (after the
-    // 40-byte channel header spill) rather than on the separate TLS page.
+    // 72-byte channel header spill) rather than on the separate TLS page.
     // This avoids a corruption issue where unidentified wasm code writes to
     // page-aligned addresses in the thread region, overwriting __channel_base.
-    // The channel spill page has 65496 bytes free after the header; we only need 8.
+    // The channel spill page has 65464 bytes free after the header; we only need 8.
     const wasmInitTls = instance.exports.__wasm_init_tls as ((addr: number) => void) | undefined;
-    const CH_TOTAL = 65576; // CH_HEADER_SIZE + CH_DATA_SIZE
+    const CH_TOTAL = 65608; // CH_HEADER_SIZE (72) + CH_DATA_SIZE (65536)
     const safeTlsAddr = channelOffset + CH_TOTAL; // inside channel spill page, 4-byte aligned
     const tlsBlock = safeTlsAddr;
 
