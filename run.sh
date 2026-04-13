@@ -35,7 +35,7 @@ has_kernel()    { [ -f "$REPO_ROOT/host/wasm/wasm_posix_kernel.wasm" ]; }
 has_sysroot()   { [ -f "$REPO_ROOT/sysroot/lib/libc.a" ]; }
 has_sdk()       { command -v wasm32posix-cc &>/dev/null; }
 has_host()      { [ -d "$REPO_ROOT/host/dist" ]; }
-has_programs()  { [ -f "$REPO_ROOT/host/wasm/sh.wasm" ]; }
+has_programs()  { [ -f "$REPO_ROOT/host/wasm/fork-exec.wasm" ]; }
 has_nginx()     { [ -f "$REPO_ROOT/examples/nginx/nginx.wasm" ]; }
 has_php()       { [ -f "$REPO_ROOT/examples/libs/php/php-src/sapi/cli/php" ]; }
 has_php_fpm()   { [ -f "$REPO_ROOT/examples/nginx/php-fpm.wasm" ]; }
@@ -52,6 +52,27 @@ has_python_bundle() { [ -f "$REPO_ROOT/examples/browser/public/python-bundle.jso
 has_perl_bundle() { [ -f "$REPO_ROOT/examples/browser/public/perl-bundle.json" ]; }
 has_vim_runtime_bundle() { [ -f "$REPO_ROOT/examples/browser/public/vim-runtime-bundle.json" ]; }
 has_erlang()    { [ -f "$REPO_ROOT/examples/libs/erlang/bin/beam.wasm" ]; }
+has_erlang_bundle() { [ -f "$REPO_ROOT/examples/browser/public/erlang-bundle.json" ]; }
+has_bc()        { [ -f "$REPO_ROOT/examples/libs/bc/bin/bc.wasm" ]; }
+has_file()      { [ -f "$REPO_ROOT/examples/libs/file/bin/file.wasm" ]; }
+has_less()      { [ -f "$REPO_ROOT/examples/libs/less/bin/less.wasm" ]; }
+has_m4()        { [ -f "$REPO_ROOT/examples/libs/m4/bin/m4.wasm" ]; }
+has_make()      { [ -f "$REPO_ROOT/examples/libs/make/bin/make.wasm" ]; }
+has_tar()       { [ -f "$REPO_ROOT/examples/libs/tar/bin/tar.wasm" ]; }
+has_curl()      { [ -f "$REPO_ROOT/examples/libs/curl/bin/curl.wasm" ]; }
+has_wget()      { [ -f "$REPO_ROOT/examples/libs/wget/bin/wget.wasm" ]; }
+has_gzip()      { [ -f "$REPO_ROOT/examples/libs/gzip/bin/gzip.wasm" ]; }
+has_bzip2()     { [ -f "$REPO_ROOT/examples/libs/bzip2/bin/bzip2.wasm" ]; }
+has_xz()        { [ -f "$REPO_ROOT/examples/libs/xz/bin/xz.wasm" ]; }
+has_zstd()      { [ -f "$REPO_ROOT/examples/libs/zstd/bin/zstd.wasm" ]; }
+has_zip()       { [ -f "$REPO_ROOT/examples/libs/zip/bin/zip.wasm" ]; }
+has_unzip()     { [ -f "$REPO_ROOT/examples/libs/unzip/bin/unzip.wasm" ]; }
+has_nano()      { [ -f "$REPO_ROOT/examples/libs/nano/bin/nano.wasm" ]; }
+has_ncurses()   { [ -f "$REPO_ROOT/sysroot/lib/libncursesw.a" ]; }
+has_vim()       { [ -f "$REPO_ROOT/examples/libs/vim/bin/vim.wasm" ]; }
+has_git()       { [ -f "$REPO_ROOT/examples/libs/git/bin/git.wasm" ]; }
+has_perl()      { [ -f "$REPO_ROOT/examples/libs/perl/bin/perl.wasm" ]; }
+has_ruby()      { [ -f "$REPO_ROOT/examples/libs/ruby/bin/ruby.wasm" ]; }
 has_dlopen()    { [ -f "$REPO_ROOT/examples/dlopen/hello-lib.so" ] && \
                   [ -f "$REPO_ROOT/examples/dlopen/main.wasm" ]; }
 
@@ -224,6 +245,11 @@ build_dash() {
     else
         info "dash"
     fi
+    # host/wasm/sh.wasm is dash — needed by vitest and run-example.ts
+    if [ -f "$REPO_ROOT/examples/libs/dash/bin/dash.wasm" ] && [ ! -f "$REPO_ROOT/host/wasm/sh.wasm" ]; then
+        mkdir -p "$REPO_ROOT/host/wasm"
+        cp "$REPO_ROOT/examples/libs/dash/bin/dash.wasm" "$REPO_ROOT/host/wasm/sh.wasm"
+    fi
 }
 
 build_coreutils() {
@@ -331,9 +357,272 @@ build_erlang() {
     if ! has_erlang; then
         step "Building Erlang/OTP 28 BEAM"
         bash "$REPO_ROOT/examples/libs/erlang/build-erlang.sh"
+        # Build script puts beam.wasm at erlang/ root; browser+serve expect bin/
+        local erlang_dir="$REPO_ROOT/examples/libs/erlang"
+        if [ -f "$erlang_dir/beam.wasm" ] && [ ! -f "$erlang_dir/bin/beam.wasm" ]; then
+            mkdir -p "$erlang_dir/bin"
+            cp "$erlang_dir/beam.wasm" "$erlang_dir/bin/beam.wasm"
+        fi
         info "Erlang built"
     else
         info "Erlang"
+    fi
+}
+
+build_erlang_bundle() {
+    build_erlang
+    if ! has_erlang_bundle; then
+        step "Building Erlang browser bundle"
+        bash "$REPO_ROOT/examples/browser/scripts/build-erlang-bundle.sh"
+        info "Erlang bundle built"
+    else
+        info "Erlang bundle"
+    fi
+}
+
+build_bc() {
+    need_kernel
+    need_sdk
+    if ! has_bc; then
+        step "Building bc"
+        bash "$REPO_ROOT/examples/libs/bc/build-bc.sh"
+        info "bc built"
+    else
+        info "bc"
+    fi
+}
+
+build_file() {
+    need_kernel
+    need_sdk
+    if ! has_file; then
+        step "Building file"
+        bash "$REPO_ROOT/examples/libs/file/build-file.sh"
+        info "file built"
+    else
+        info "file"
+    fi
+}
+
+build_less() {
+    need_kernel
+    need_sdk
+    if ! has_less; then
+        step "Building less"
+        bash "$REPO_ROOT/examples/libs/less/build-less.sh"
+        info "less built"
+    else
+        info "less"
+    fi
+}
+
+build_m4() {
+    need_kernel
+    need_sdk
+    if ! has_m4; then
+        step "Building m4"
+        bash "$REPO_ROOT/examples/libs/m4/build-m4.sh"
+        info "m4 built"
+    else
+        info "m4"
+    fi
+}
+
+build_make() {
+    need_kernel
+    need_sdk
+    if ! has_make; then
+        step "Building make"
+        bash "$REPO_ROOT/examples/libs/make/build-make.sh"
+        info "make built"
+    else
+        info "make"
+    fi
+}
+
+build_tar() {
+    need_kernel
+    need_sdk
+    if ! has_tar; then
+        step "Building tar"
+        bash "$REPO_ROOT/examples/libs/tar/build-tar.sh"
+        info "tar built"
+    else
+        info "tar"
+    fi
+}
+
+build_curl_cli() {
+    need_kernel
+    need_sdk
+    if ! has_curl; then
+        step "Building curl"
+        bash "$REPO_ROOT/examples/libs/curl/build-curl.sh"
+        info "curl built"
+    else
+        info "curl"
+    fi
+}
+
+build_wget() {
+    need_kernel
+    need_sdk
+    if ! has_wget; then
+        step "Building wget"
+        bash "$REPO_ROOT/examples/libs/wget/build-wget.sh"
+        info "wget built"
+    else
+        info "wget"
+    fi
+}
+
+build_gzip() {
+    need_kernel
+    need_sdk
+    if ! has_gzip; then
+        step "Building gzip"
+        bash "$REPO_ROOT/examples/libs/gzip/build-gzip.sh"
+        info "gzip built"
+    else
+        info "gzip"
+    fi
+}
+
+build_bzip2() {
+    need_kernel
+    need_sdk
+    if ! has_bzip2; then
+        step "Building bzip2"
+        bash "$REPO_ROOT/examples/libs/bzip2/build-bzip2.sh"
+        info "bzip2 built"
+    else
+        info "bzip2"
+    fi
+}
+
+build_xz() {
+    need_kernel
+    need_sdk
+    if ! has_xz; then
+        step "Building xz"
+        bash "$REPO_ROOT/examples/libs/xz/build-xz.sh"
+        info "xz built"
+    else
+        info "xz"
+    fi
+}
+
+build_zstd() {
+    need_kernel
+    need_sdk
+    if ! has_zstd; then
+        step "Building zstd"
+        bash "$REPO_ROOT/examples/libs/zstd/build-zstd.sh"
+        info "zstd built"
+    else
+        info "zstd"
+    fi
+}
+
+build_zip() {
+    need_kernel
+    need_sdk
+    if ! has_zip; then
+        step "Building zip"
+        bash "$REPO_ROOT/examples/libs/zip/build-zip.sh"
+        info "zip built"
+    else
+        info "zip"
+    fi
+}
+
+build_unzip() {
+    need_kernel
+    need_sdk
+    if ! has_unzip; then
+        step "Building unzip"
+        bash "$REPO_ROOT/examples/libs/unzip/build-unzip.sh"
+        info "unzip built"
+    else
+        info "unzip"
+    fi
+}
+
+build_nano() {
+    need_kernel
+    need_sdk
+    if ! has_nano; then
+        step "Building nano"
+        bash "$REPO_ROOT/examples/libs/nano/build-nano.sh"
+        info "nano built"
+    else
+        info "nano"
+    fi
+}
+
+build_ncurses() {
+    need_kernel
+    need_sdk
+    if ! has_ncurses; then
+        step "Building ncurses"
+        bash "$REPO_ROOT/examples/libs/ncurses/build-ncurses.sh"
+        info "ncurses built"
+    else
+        info "ncurses"
+    fi
+}
+
+build_vim() {
+    build_ncurses
+    need_kernel
+    need_sdk
+    if ! has_vim; then
+        step "Building Vim"
+        bash "$REPO_ROOT/examples/libs/vim/build-vim.sh"
+        info "Vim built"
+    else
+        info "Vim"
+    fi
+}
+
+build_git() {
+    need_kernel
+    need_sdk
+    if ! has_git; then
+        step "Building git"
+        bash "$REPO_ROOT/examples/libs/git/build-git.sh"
+        info "git built"
+    else
+        info "git"
+    fi
+    # Stub git-remote-http.wasm for browser demo if libcurl wasn't available
+    if [ ! -f "$REPO_ROOT/examples/libs/git/bin/git-remote-http.wasm" ]; then
+        mkdir -p "$REPO_ROOT/examples/libs/git/bin"
+        printf '\x00asm\x01\x00\x00\x00' > "$REPO_ROOT/examples/libs/git/bin/git-remote-http.wasm"
+    fi
+}
+
+build_perl() {
+    need_kernel
+    need_sdk
+    if ! has_perl; then
+        step "Building Perl"
+        bash "$REPO_ROOT/examples/libs/perl/build-perl.sh"
+        info "Perl built"
+    else
+        info "Perl"
+    fi
+}
+
+build_ruby() {
+    need_kernel
+    need_sdk
+    if ! has_ruby; then
+        step "Building Ruby"
+        bash "$REPO_ROOT/examples/libs/ruby/build-ruby.sh"
+        info "Ruby built"
+    else
+        info "Ruby"
     fi
 }
 
@@ -372,6 +661,27 @@ build_target() {
         wordpress)  build_wordpress ;;
         wp-bundle)  build_wp_bundle ;;
         erlang)     build_erlang ;;
+        erlang-bundle) build_erlang_bundle ;;
+        bc)         build_bc ;;
+        file)       build_file ;;
+        less)       build_less ;;
+        m4)         build_m4 ;;
+        make)       build_make ;;
+        tar)        build_tar ;;
+        curl-cli)   build_curl_cli ;;
+        wget)       build_wget ;;
+        gzip)       build_gzip ;;
+        bzip2)      build_bzip2 ;;
+        xz)         build_xz ;;
+        zstd)       build_zstd ;;
+        zip)        build_zip ;;
+        unzip)      build_unzip ;;
+        nano)       build_nano ;;
+        ncurses)    build_ncurses ;;
+        vim)        build_vim ;;
+        git)        build_git ;;
+        perl)       build_perl ;;
+        ruby)       build_ruby ;;
         dlopen)     build_dlopen ;;
         browser)    build_browser ;;
         all)        build_all ;;
@@ -380,7 +690,7 @@ build_target() {
 }
 
 # All targets needed for browser demos
-BROWSER_DEPS=(kernel sysroot programs dash coreutils grep sed nginx php php-fpm mariadb redis cpython python-bundle perl-bundle vim-runtime-bundle wordpress wp-bundle)
+BROWSER_DEPS=(kernel sysroot programs dash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano vim git nginx php php-fpm mariadb redis cpython python-bundle perl perl-bundle ruby vim-runtime-bundle wordpress wp-bundle erlang erlang-bundle)
 
 build_browser() {
     for t in "${BROWSER_DEPS[@]}"; do
@@ -398,6 +708,23 @@ build_all() {
     build_coreutils
     build_grep
     build_sed
+    build_bc
+    build_file
+    build_less
+    build_m4
+    build_make
+    build_tar
+    build_curl_cli
+    build_wget
+    build_gzip
+    build_bzip2
+    build_xz
+    build_zstd
+    build_zip
+    build_unzip
+    build_nano
+    build_vim
+    build_git
     build_nginx
     build_php
     build_php_fpm
@@ -405,9 +732,14 @@ build_all() {
     build_redis
     build_cpython
     build_python_bundle
+    build_perl
+    build_perl_bundle
+    build_ruby
+    build_vim_runtime_bundle
     build_wordpress
     build_wp_bundle
     build_erlang
+    build_erlang_bundle
     build_dlopen
 }
 
@@ -431,7 +763,7 @@ clean_target() {
             rm -rf "$REPO_ROOT/host/dist"
             warn "Cleaned host" ;;
         programs)
-            rm -f "$REPO_ROOT/host/wasm/sh.wasm"
+            rm -f "$REPO_ROOT/host/wasm/fork-exec.wasm"
             rm -f "$REPO_ROOT/host/wasm/"*.wasm 2>/dev/null || true
             # Keep kernel wasm files
             if [ -f "$REPO_ROOT/target/wasm64-unknown-unknown/release/wasm_posix_kernel.wasm" ]; then
@@ -504,6 +836,93 @@ clean_target() {
                    "$REPO_ROOT/examples/libs/erlang/erlang-install" \
                    "$REPO_ROOT/examples/libs/erlang/bin"
             warn "Cleaned Erlang" ;;
+        erlang-bundle)
+            rm -f "$REPO_ROOT/examples/browser/public/erlang-bundle.json"
+            warn "Cleaned Erlang bundle" ;;
+        bc)
+            rm -rf "$REPO_ROOT/examples/libs/bc/bc-src" \
+                   "$REPO_ROOT/examples/libs/bc/bin"
+            warn "Cleaned bc" ;;
+        file)
+            rm -rf "$REPO_ROOT/examples/libs/file/file-src" \
+                   "$REPO_ROOT/examples/libs/file/bin"
+            warn "Cleaned file" ;;
+        less)
+            rm -rf "$REPO_ROOT/examples/libs/less/less-src" \
+                   "$REPO_ROOT/examples/libs/less/bin"
+            warn "Cleaned less" ;;
+        m4)
+            rm -rf "$REPO_ROOT/examples/libs/m4/m4-src" \
+                   "$REPO_ROOT/examples/libs/m4/bin"
+            warn "Cleaned m4" ;;
+        make)
+            rm -rf "$REPO_ROOT/examples/libs/make/make-src" \
+                   "$REPO_ROOT/examples/libs/make/bin"
+            warn "Cleaned make" ;;
+        tar)
+            rm -rf "$REPO_ROOT/examples/libs/tar/tar-src" \
+                   "$REPO_ROOT/examples/libs/tar/bin"
+            warn "Cleaned tar" ;;
+        curl-cli)
+            rm -rf "$REPO_ROOT/examples/libs/curl/curl-src" \
+                   "$REPO_ROOT/examples/libs/curl/bin"
+            warn "Cleaned curl" ;;
+        wget)
+            rm -rf "$REPO_ROOT/examples/libs/wget/wget-src" \
+                   "$REPO_ROOT/examples/libs/wget/bin"
+            warn "Cleaned wget" ;;
+        gzip)
+            rm -rf "$REPO_ROOT/examples/libs/gzip/gzip-src" \
+                   "$REPO_ROOT/examples/libs/gzip/bin"
+            warn "Cleaned gzip" ;;
+        bzip2)
+            rm -rf "$REPO_ROOT/examples/libs/bzip2/bzip2-src" \
+                   "$REPO_ROOT/examples/libs/bzip2/bin"
+            warn "Cleaned bzip2" ;;
+        xz)
+            rm -rf "$REPO_ROOT/examples/libs/xz/xz-src" \
+                   "$REPO_ROOT/examples/libs/xz/bin"
+            warn "Cleaned xz" ;;
+        zstd)
+            rm -rf "$REPO_ROOT/examples/libs/zstd/zstd-src" \
+                   "$REPO_ROOT/examples/libs/zstd/bin"
+            warn "Cleaned zstd" ;;
+        zip)
+            rm -rf "$REPO_ROOT/examples/libs/zip/zip-src" \
+                   "$REPO_ROOT/examples/libs/zip/bin"
+            warn "Cleaned zip" ;;
+        unzip)
+            rm -rf "$REPO_ROOT/examples/libs/unzip/unzip-src" \
+                   "$REPO_ROOT/examples/libs/unzip/bin"
+            warn "Cleaned unzip" ;;
+        nano)
+            rm -rf "$REPO_ROOT/examples/libs/nano/nano-src" \
+                   "$REPO_ROOT/examples/libs/nano/bin"
+            warn "Cleaned nano" ;;
+        ncurses)
+            rm -rf "$REPO_ROOT/examples/libs/ncurses/ncurses-src"
+            # ncurses installs into sysroot, cleaned with sysroot
+            warn "Cleaned ncurses (rebuild sysroot to fully clean)" ;;
+        vim)
+            rm -rf "$REPO_ROOT/examples/libs/vim/vim-src" \
+                   "$REPO_ROOT/examples/libs/vim/bin" \
+                   "$REPO_ROOT/examples/libs/vim/runtime"
+            warn "Cleaned Vim" ;;
+        git)
+            rm -rf "$REPO_ROOT/examples/libs/git/git-src" \
+                   "$REPO_ROOT/examples/libs/git/bin"
+            warn "Cleaned git" ;;
+        perl)
+            rm -rf "$REPO_ROOT/examples/libs/perl/perl-src" \
+                   "$REPO_ROOT/examples/libs/perl/bin"
+            warn "Cleaned Perl" ;;
+        ruby)
+            rm -rf "$REPO_ROOT/examples/libs/ruby/ruby-src" \
+                   "$REPO_ROOT/examples/libs/ruby/ruby-host-build" \
+                   "$REPO_ROOT/examples/libs/ruby/ruby-cross-build" \
+                   "$REPO_ROOT/examples/libs/ruby/ruby-install" \
+                   "$REPO_ROOT/examples/libs/ruby/bin"
+            warn "Cleaned Ruby" ;;
         dlopen)
             rm -f "$REPO_ROOT/examples/dlopen/hello-lib.so" \
                   "$REPO_ROOT/examples/dlopen/main.wasm"
@@ -513,7 +932,7 @@ clean_target() {
                 clean_target "$t"
             done ;;
         all)
-            for t in kernel sysroot host programs dash coreutils grep sed nginx php php-fpm mariadb redis cpython python-bundle perl-bundle vim-runtime-bundle wordpress wp-bundle erlang dlopen; do
+            for t in kernel sysroot host programs dash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano ncurses vim git nginx php php-fpm mariadb redis cpython python-bundle perl perl-bundle ruby vim-runtime-bundle wordpress wp-bundle erlang erlang-bundle dlopen; do
                 clean_target "$t"
             done ;;
         *)  err "Unknown clean target: $target"; exit 1 ;;
@@ -775,6 +1194,24 @@ cmd_list() {
     echo "  coreutils   GNU coreutils 9.6                      $(has_coreutils && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  grep        GNU grep 3.11                          $(has_grep && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  sed         GNU sed 4.9                            $(has_sed && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  bc          bc calculator                          $(has_bc && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  file        file type identifier                   $(has_file && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  less        less pager                             $(has_less && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  m4          GNU m4 macro processor                 $(has_m4 && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  make        GNU make                               $(has_make && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  tar         GNU tar                                $(has_tar && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  curl-cli    curl CLI                               $(has_curl && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  wget        GNU wget                               $(has_wget && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  gzip        gzip compression                       $(has_gzip && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  bzip2       bzip2 compression                      $(has_bzip2 && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  xz          xz/lzma compression                    $(has_xz && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  zstd        Zstandard compression                  $(has_zstd && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  zip         zip archiver                           $(has_zip && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  unzip       unzip extractor                        $(has_unzip && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  nano        nano text editor                       $(has_nano && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  ncurses     ncurses library                        $(has_ncurses && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  vim         Vim 9.1 text editor                    $(has_vim && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  git         Git 2.47.1                             $(has_git && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  nginx       nginx 1.24 Wasm binary                $(has_nginx && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  php         PHP 8.3 CLI binary                    $(has_php && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  php-fpm     PHP-FPM Wasm binary                   $(has_php_fpm && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
@@ -786,7 +1223,10 @@ cmd_list() {
     echo "  vim-runtime-bundle Vim runtime browser bundle     $(has_vim_runtime_bundle && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  wordpress   WordPress + SQLite plugin             $(has_wordpress && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  wp-bundle   WordPress browser bundle              $(has_wp_bundle && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  perl        Perl 5.40                              $(has_perl && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  ruby        Ruby                                   $(has_ruby && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  erlang      Erlang/OTP 28 BEAM VM                   $(has_erlang && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  erlang-bundle  Erlang browser bundle               $(has_erlang_bundle && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  dlopen      dlopen shared library example          $(has_dlopen && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  browser     All browser demo dependencies"
     echo "  all         Build everything"
