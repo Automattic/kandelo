@@ -459,15 +459,25 @@ export class SystemInit {
 
   /**
    * Read a binary file from the VFS, following symlinks.
-   * Materializes lazy files (fetching content from URL) before reading.
+   * For lazy files, fetches directly from URL without writing to VFS
+   * (avoids filling the limited-capacity SharedArrayBuffer).
    */
   private async readBinaryFromVfs(path: string): Promise<ArrayBuffer> {
     const fs = this.kernel.fs;
 
-    // Materialize lazy files (empty stubs with URL metadata) before reading
-    await fs.ensureMaterialized(path);
+    // For lazy files, fetch directly from URL without materializing into VFS.
+    // This avoids writing large binaries (e.g., php-fpm 11.5MB) into the
+    // SharedArrayBuffer, leaving VFS space for exec'd shell utilities.
+    const lazyUrl = fs.getLazyUrl(path);
+    if (lazyUrl) {
+      const resp = await fetch(lazyUrl);
+      if (!resp.ok) {
+        throw new Error(`Failed to fetch ${path}: HTTP ${resp.status}`);
+      }
+      return resp.arrayBuffer();
+    }
 
-    // Try to follow symlinks
+    // Non-lazy file — read from VFS
     let resolvedPath = path;
     try {
       resolvedPath = fs.readlink(path);
