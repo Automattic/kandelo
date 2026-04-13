@@ -1,5 +1,5 @@
-#![cfg_attr(target_arch = "wasm32", no_std)]
-#![cfg_attr(target_arch = "wasm32", no_main)]
+#![cfg_attr(any(target_arch = "wasm32", target_arch = "wasm64"), no_std)]
+#![cfg_attr(any(target_arch = "wasm32", target_arch = "wasm64"), no_main)]
 
 extern crate alloc;
 extern crate wasm_posix_shared;
