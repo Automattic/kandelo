@@ -386,11 +386,24 @@ async function handleExec(
   argv: string[],
   envp: string[],
 ): Promise<number> {
-  // Materialize lazy file if needed (async fetch avoids sync XHR + SW deadlock)
-  await memfs.ensureMaterialized(path);
+  // Try direct fetch for lazy files — avoids writing large binaries into the
+  // VFS SharedArrayBuffer, which has limited capacity (default 16MB).
+  let bytes: ArrayBuffer | null = null;
+  const lazyUrl = memfs.getLazyUrl(path);
+  if (lazyUrl) {
+    try {
+      const resp = await fetch(lazyUrl);
+      if (resp.ok) {
+        bytes = await resp.arrayBuffer();
+      }
+    } catch { /* fall through to VFS read */ }
+  }
 
-  // Read binary from the shared filesystem
-  const bytes = readFileFromFs(path);
+  if (!bytes) {
+    // Non-lazy file or lazy fetch failed — materialize and read from VFS
+    await memfs.ensureMaterialized(path);
+    bytes = readFileFromFs(path);
+  }
   if (!bytes) return -2; // ENOENT
 
   // Program found — run kernel exec setup

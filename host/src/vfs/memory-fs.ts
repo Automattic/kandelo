@@ -72,6 +72,22 @@ export class MemoryFileSystem implements FileSystemBackend {
   }
 
   /**
+   * Get the lazy file URL for a path, following symlinks.
+   * Returns the URL if the path resolves to an unmaterialized lazy file,
+   * or null if the path is not a lazy file (already materialized or non-lazy).
+   */
+  getLazyUrl(path: string): string | null {
+    if (this.lazyFiles.size === 0) return null;
+    try {
+      const st = this.fs.stat(path); // follows symlinks
+      const entry = this.lazyFiles.get(st.ino);
+      return entry?.url ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Async-materialize a lazy file if the given path resolves to one.
    * Call this before any synchronous read (e.g., in handleExec) to avoid
    * sync XHR which deadlocks with the COOP/COEP service worker.
