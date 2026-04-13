@@ -5572,6 +5572,30 @@ pub extern "C" fn kernel_getsockopt(fd: i32, level: u32, optname: u32, optval_pt
     use wasm_posix_shared::socket::*;
     let (_gkl, proc) = unsafe { get_process() };
 
+    // Handle struct tcp_info (TCP_INFO)
+    if level == IPPROTO_TCP && optname == TCP_INFO {
+        let result = match syscalls::sys_getsockopt_tcp_info(proc, fd) {
+            Ok(info_buf) => {
+                let avail = if !optlen_ptr.is_null() {
+                    unsafe { *optlen_ptr as usize }
+                } else {
+                    syscalls::TCP_INFO_SIZE
+                };
+                let write_len = if avail < syscalls::TCP_INFO_SIZE { avail } else { syscalls::TCP_INFO_SIZE };
+                let out = unsafe { slice::from_raw_parts_mut(optval_ptr, write_len) };
+                out.copy_from_slice(&info_buf[..write_len]);
+                if !optlen_ptr.is_null() {
+                    unsafe { *optlen_ptr = write_len as u32; }
+                }
+                0
+            }
+            Err(e) => -(e as i32),
+        };
+        let mut host = WasmHostIO;
+        deliver_pending_signals(proc, &mut host);
+        return result;
+    }
+
     // Handle struct timeval options (SO_RCVTIMEO, SO_SNDTIMEO)
     if level == SOL_SOCKET && (optname == SO_RCVTIMEO || optname == SO_SNDTIMEO) {
         let result = match syscalls::sys_getsockopt_timeout(proc, fd, optname) {

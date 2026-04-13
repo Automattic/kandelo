@@ -4159,11 +4159,79 @@ pub fn sys_getsockopt(
             _ => Err(Errno::ENOPROTOOPT),
         },
         IPPROTO_TCP => match optname {
-            TCP_NODELAY => Ok(sock.get_option(level, optname).unwrap_or(0)),
+            TCP_NODELAY | TCP_CORK | TCP_KEEPIDLE | TCP_KEEPINTVL |
+            TCP_KEEPCNT | TCP_DEFER_ACCEPT | TCP_QUICKACK | TCP_USER_TIMEOUT => {
+                Ok(sock.get_option(level, optname).unwrap_or(0))
+            }
+            // TCP_INFO handled separately by sys_getsockopt_tcp_info
             _ => Err(Errno::ENOPROTOOPT),
         },
         _ => Err(Errno::ENOPROTOOPT),
     }
+}
+
+/// Size of `struct tcp_info` (musl/linux, wasm32).
+pub const TCP_INFO_SIZE: usize = 232;
+
+/// Build a virtual `struct tcp_info` for a socket.
+/// Returns a byte buffer matching the musl `struct tcp_info` layout with
+/// plausible values for a healthy virtual TCP connection.
+pub fn sys_getsockopt_tcp_info(
+    proc: &Process,
+    fd: i32,
+) -> Result<[u8; TCP_INFO_SIZE], Errno> {
+    use crate::socket::SocketState;
+
+    let entry = proc.fd_table.get(fd)?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    if ofd.file_type != FileType::Socket {
+        return Err(Errno::ENOTSOCK);
+    }
+    let sock_idx = (-(ofd.host_handle + 1)) as usize;
+    let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+
+    let mut buf = [0u8; TCP_INFO_SIZE];
+
+    // tcpi_state (offset 0, u8)
+    buf[0] = match sock.state {
+        SocketState::Listening => 10, // TCP_LISTEN
+        SocketState::Connected => 1,  // TCP_ESTABLISHED
+        _ => 7,                       // TCP_CLOSE
+    };
+    // tcpi_options (offset 5, u8): TIMESTAMPS | SACK | WSCALE
+    buf[5] = 7;
+    // tcpi_snd_wscale:4 | tcpi_rcv_wscale:4 (offset 6, u8)
+    buf[6] = (7 << 4) | 7;
+    // tcpi_rto (offset 8, u32) — 200ms retransmit timeout
+    buf[8..12].copy_from_slice(&200_000u32.to_le_bytes());
+    // tcpi_ato (offset 12, u32) — 40ms delayed ack timeout
+    buf[12..16].copy_from_slice(&40_000u32.to_le_bytes());
+    // tcpi_snd_mss (offset 16, u32)
+    buf[16..20].copy_from_slice(&1460u32.to_le_bytes());
+    // tcpi_rcv_mss (offset 20, u32)
+    buf[20..24].copy_from_slice(&1460u32.to_le_bytes());
+    // tcpi_pmtu (offset 60, u32)
+    buf[60..64].copy_from_slice(&1500u32.to_le_bytes());
+    // tcpi_rcv_ssthresh (offset 64, u32)
+    buf[64..68].copy_from_slice(&65535u32.to_le_bytes());
+    // tcpi_rtt (offset 68, u32) — 1ms in microseconds
+    buf[68..72].copy_from_slice(&1000u32.to_le_bytes());
+    // tcpi_rttvar (offset 72, u32) — 0.5ms variance
+    buf[72..76].copy_from_slice(&500u32.to_le_bytes());
+    // tcpi_snd_ssthresh (offset 76, u32)
+    buf[76..80].copy_from_slice(&0xFFFFu32.to_le_bytes());
+    // tcpi_snd_cwnd (offset 80, u32) — 10 segments
+    buf[80..84].copy_from_slice(&10u32.to_le_bytes());
+    // tcpi_advmss (offset 84, u32)
+    buf[84..88].copy_from_slice(&1460u32.to_le_bytes());
+    // tcpi_reordering (offset 88, u32)
+    buf[88..92].copy_from_slice(&3u32.to_le_bytes());
+    // tcpi_rcv_space (offset 96, u32)
+    buf[96..100].copy_from_slice(&65535u32.to_le_bytes());
+    // tcpi_snd_wnd (offset 228, u32)
+    buf[228..232].copy_from_slice(&65535u32.to_le_bytes());
+
+    Ok(buf)
 }
 
 /// Get socket timeout value in microseconds (SO_RCVTIMEO / SO_SNDTIMEO).
@@ -4214,7 +4282,8 @@ pub fn sys_setsockopt(
             _ => Err(Errno::ENOPROTOOPT),
         },
         IPPROTO_TCP => match optname {
-            TCP_NODELAY => {
+            TCP_NODELAY | TCP_CORK | TCP_KEEPIDLE | TCP_KEEPINTVL |
+            TCP_KEEPCNT | TCP_DEFER_ACCEPT | TCP_QUICKACK | TCP_USER_TIMEOUT => {
                 sock.set_option(level, optname, value);
                 Ok(())
             }
@@ -9298,6 +9367,66 @@ mod tests {
         let fd = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
         let val = sys_getsockopt(&mut proc, fd, IPPROTO_TCP, TCP_NODELAY).unwrap();
         assert_eq!(val, 0); // default
+    }
+
+    #[test]
+    fn test_getsockopt_tcp_info_established() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        // Bind + listen + mark connected
+        let mut addr = [0u8; 16];
+        addr[0] = 2; // AF_INET
+        sys_bind(&mut proc, fd, &addr).unwrap();
+        // tcp_info should work on bound socket
+        let buf = sys_getsockopt_tcp_info(&proc, fd).unwrap();
+        assert_eq!(buf[0], 7); // TCP_CLOSE (not connected/listening yet)
+        assert_eq!(buf.len(), TCP_INFO_SIZE);
+        // Check plausible MSS at offset 16 (u32 LE)
+        let snd_mss = u32::from_le_bytes([buf[16], buf[17], buf[18], buf[19]]);
+        assert_eq!(snd_mss, 1460);
+    }
+
+    #[test]
+    fn test_getsockopt_tcp_info_listening() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        let mut addr = [0u8; 16];
+        addr[0] = 2;
+        sys_bind(&mut proc, fd, &addr).unwrap();
+        sys_listen(&mut proc, &mut host, fd, 5).unwrap();
+        let buf = sys_getsockopt_tcp_info(&proc, fd).unwrap();
+        assert_eq!(buf[0], 10); // TCP_LISTEN
+    }
+
+    #[test]
+    fn test_getsockopt_tcp_info_not_socket() {
+        let proc = Process::new(1);
+        let result = sys_getsockopt_tcp_info(&proc, 0);
+        assert_eq!(result, Err(Errno::ENOTSOCK));
+    }
+
+    #[test]
+    fn test_setsockopt_tcp_keepalive_options() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        // Set and get TCP_KEEPIDLE
+        sys_setsockopt(&mut proc, fd, IPPROTO_TCP, TCP_KEEPIDLE, 60).unwrap();
+        let val = sys_getsockopt(&mut proc, fd, IPPROTO_TCP, TCP_KEEPIDLE).unwrap();
+        assert_eq!(val, 60);
+        // Set and get TCP_KEEPINTVL
+        sys_setsockopt(&mut proc, fd, IPPROTO_TCP, TCP_KEEPINTVL, 10).unwrap();
+        let val = sys_getsockopt(&mut proc, fd, IPPROTO_TCP, TCP_KEEPINTVL).unwrap();
+        assert_eq!(val, 10);
+        // Set and get TCP_KEEPCNT
+        sys_setsockopt(&mut proc, fd, IPPROTO_TCP, TCP_KEEPCNT, 5).unwrap();
+        let val = sys_getsockopt(&mut proc, fd, IPPROTO_TCP, TCP_KEEPCNT).unwrap();
+        assert_eq!(val, 5);
     }
 
     #[test]

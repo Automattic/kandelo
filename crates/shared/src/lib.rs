@@ -552,6 +552,14 @@ pub mod socket {
     pub const SO_SNDTIMEO: u32 = 67;
     pub const IPPROTO_TCP: u32 = 6;
     pub const TCP_NODELAY: u32 = 1;
+    pub const TCP_CORK: u32 = 3;
+    pub const TCP_KEEPIDLE: u32 = 4;
+    pub const TCP_KEEPINTVL: u32 = 5;
+    pub const TCP_KEEPCNT: u32 = 6;
+    pub const TCP_DEFER_ACCEPT: u32 = 9;
+    pub const TCP_INFO: u32 = 11;
+    pub const TCP_QUICKACK: u32 = 12;
+    pub const TCP_USER_TIMEOUT: u32 = 18;
     pub const MSG_OOB: u32 = 1;
     pub const MSG_PEEK: u32 = 2;
     pub const MSG_DONTWAIT: u32 = 64;
