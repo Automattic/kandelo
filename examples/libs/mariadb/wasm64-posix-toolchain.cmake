@@ -105,7 +105,7 @@ string(REPLACE ";" " " WASM64_LINK_FLAGS_STR "${WASM64_LINK_FLAGS}")
 
 # --- Startup objects and runtime libraries ---
 get_filename_component(_TOOLCHAIN_DIR2 "${CMAKE_CURRENT_LIST_FILE}" DIRECTORY)
-set(_GLUE_OBJ_DIR "${_TOOLCHAIN_DIR2}/mariadb-glue-objs")
+set(_GLUE_OBJ_DIR "${_TOOLCHAIN_DIR2}/mariadb-glue-objs-64")
 
 set(CMAKE_EXE_LINKER_FLAGS_INIT
   "${WASM64_LINK_FLAGS_STR} ${WASM_POSIX_SYSROOT}/lib/crt1.o ${_GLUE_OBJ_DIR}/channel_syscall.o ${_GLUE_OBJ_DIR}/compiler_rt.o -lc++ -lc++abi -lc"

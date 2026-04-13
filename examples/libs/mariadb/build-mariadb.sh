@@ -35,6 +35,9 @@ if [ "$WASM_ARCH" = "wasm64" ]; then
     TOOLCHAIN_FILE="$SCRIPT_DIR/wasm64-posix-toolchain.cmake"
     SYSROOT="$REPO_ROOT/sysroot64"
     WASM_TARGET="wasm64-unknown-unknown"
+    # LLVM 21 wasm64 backend has -O2 miscompilation bugs (sign-extension of i32 to i64
+    # in table lookups). Use -O1 until the LLVM wasm64 backend matures.
+    : "${MARIADB_OPT_LEVEL:=-O1}"
 else
     CROSS_BUILD_DIR="$SCRIPT_DIR/mariadb-cross-build"
     INSTALL_DIR="$SCRIPT_DIR/mariadb-install"
@@ -270,7 +273,11 @@ fi
 # --- Pre-compile glue objects ---
 WASM_COMPILE_FLAGS="--target=$WASM_TARGET -matomics -mbulk-memory -mexception-handling -mllvm -wasm-enable-sjlj -fno-exceptions -fno-trapping-math --sysroot=$SYSROOT"
 
-GLUE_OBJ_DIR="$SCRIPT_DIR/mariadb-glue-objs"
+if [ "$WASM_ARCH" = "wasm64" ]; then
+    GLUE_OBJ_DIR="$SCRIPT_DIR/mariadb-glue-objs-64"
+else
+    GLUE_OBJ_DIR="$SCRIPT_DIR/mariadb-glue-objs"
+fi
 mkdir -p "$GLUE_OBJ_DIR"
 
 if [ ! -f "$GLUE_OBJ_DIR/channel_syscall.o" ]; then
@@ -294,8 +301,8 @@ cmake "$SRC_DIR" \
     -DIMPORT_EXECUTABLES="$HOST_BUILD_DIR/import_executables.cmake" \
     \
     -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_C_FLAGS_RELEASE="-O2 -DNDEBUG" \
-    -DCMAKE_CXX_FLAGS_RELEASE="-O2 -DNDEBUG" \
+    -DCMAKE_C_FLAGS_RELEASE="${MARIADB_OPT_LEVEL:--O2} -DNDEBUG" \
+    -DCMAKE_CXX_FLAGS_RELEASE="${MARIADB_OPT_LEVEL:--O2} -DNDEBUG" \
     \
     -DWITH_UNIT_TESTS=OFF \
     -DWITH_MARIABACKUP=OFF \

@@ -4493,7 +4493,6 @@ export class CentralizedKernelWorker {
     const processView = new DataView(channel.memory.buffer, channel.channelOffset);
     const fnPtr = processView.getUint32(CH_DATA, true);
     const argPtr = processView.getUint32(CH_DATA + 4, true);
-    console.error(`[handleClone] fnPtr=${fnPtr} argPtr=${argPtr} CH_DATA=${CH_DATA} channelOffset=${channel.channelOffset} origArgs=[${origArgs}]  ptrWidth=${this.getPtrWidth(channel.pid)}`);
     const stackPtr = origArgs[1];
     const tlsPtr = origArgs[3];
     const ctidPtr = origArgs[4];

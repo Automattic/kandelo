@@ -1958,9 +1958,14 @@ pub fn sys_fcntl_lock(
     let host_handle = ofd.host_handle;
 
     // OFD locks use the OFD index as lock owner (not PID).
-    // Map OFD commands to their POSIX equivalents for the lock table.
+    // Map OFD and POSIX (5/6/7) commands to the internal lock constants (12/13/14).
+    // On LP64 targets (wasm64posix), musl defines F_GETLK=5, F_SETLK=6, F_SETLKW=7.
+    // On ILP32 targets (wasm32posix), musl defines F_GETLK=12, F_SETLK=13, F_SETLKW=14.
     let is_ofd = matches!(cmd, F_OFD_GETLK | F_OFD_SETLK | F_OFD_SETLKW);
     let base_cmd = match cmd {
+        5 => F_GETLK,
+        6 => F_SETLK,
+        7 => F_SETLKW,
         F_OFD_GETLK => F_GETLK,
         F_OFD_SETLK => F_SETLK,
         F_OFD_SETLKW => F_SETLKW,

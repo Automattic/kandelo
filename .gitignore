@@ -54,6 +54,7 @@ examples/libs/mariadb/mariadb-host-build/
 examples/libs/mariadb/mariadb-cross-build/
 examples/libs/mariadb/mariadb-install/
 examples/libs/mariadb/mariadb-glue-objs/
+examples/libs/mariadb/mariadb-glue-objs-64/
 examples/libs/mariadb/mariadb-cross-build-64/
 examples/libs/mariadb/mariadb-install-64/
 examples/libs/mariadb/pcre2-*/
