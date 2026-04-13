@@ -235,7 +235,9 @@ async function startInteractiveShell() {
 
     setStatus("Starting shell...", "running");
 
-    const kernel = new BrowserKernel({});
+    const kernel = new BrowserKernel({
+      fsSize: 64 * 1024 * 1024, // 64MB — vim runtime (8MB) + many lazy binaries
+    });
 
     await kernel.init(kernelBytes!);
     await populateExecBinaries(kernel);
@@ -485,6 +487,7 @@ async function runBatch() {
     setStatus("Running shell...", "running");
 
     const kernel = new BrowserKernel({
+      fsSize: 64 * 1024 * 1024, // 64MB — vim runtime (8MB) + many lazy binaries
       onStdout: (data) => appendBatchOutput(decoder.decode(data)),
       onStderr: (data) => appendBatchOutput(decoder.decode(data), "stderr"),
     });

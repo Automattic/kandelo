@@ -180,6 +180,7 @@ async function start() {
 
     // Create kernel
     kernel = new BrowserKernel({
+      fsSize: 32 * 1024 * 1024, // 32MB — php-fpm (11.5MB) + nginx (1.9MB) + shell utils
       onStdout: (data) => appendLog(decoder.decode(data)),
       onStderr: (data) => appendLog(decoder.decode(data), "stderr"),
     });
