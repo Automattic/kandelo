@@ -84,6 +84,14 @@ const CLD_KILLED = 2;
 const SIGCHLD = 17;
 const SIGALRM = 14;
 
+/** Network ioctl request codes */
+const SIOCGIFCONF = 0x8912;
+const SIOCGIFHWADDR = 0x8927;
+const SIOCGIFADDR = 0x8915;
+
+/** Ioctl syscall number */
+const SYS_IOCTL = 72;
+
 /** Syscall numbers for memory management */
 const SYS_MMAP = 46;
 const SYS_MUNMAP = 47;
@@ -749,6 +757,9 @@ export class CentralizedKernelWorker {
   /** PTY output callbacks: ptyIdx → callback */
   private ptyOutputCallbacks = new Map<number, (data: Uint8Array) => void>();
 
+  /** Virtual MAC address for this kernel instance (locally administered, unicast) */
+  private virtualMacAddress: Uint8Array;
+
   constructor(
     private config: KernelConfig,
     private io: PlatformIO,
@@ -857,6 +868,19 @@ export class CentralizedKernelWorker {
         return 0;
       },
     });
+
+    // Generate a random virtual MAC address (locally administered, unicast)
+    this.virtualMacAddress = new Uint8Array(6);
+    if (typeof globalThis.crypto !== 'undefined' && globalThis.crypto.getRandomValues) {
+      globalThis.crypto.getRandomValues(this.virtualMacAddress);
+    } else {
+      // Fallback for environments without Web Crypto API
+      for (let i = 0; i < 6; i++) {
+        this.virtualMacAddress[i] = Math.floor(Math.random() * 256);
+      }
+    }
+    // Set locally administered bit, clear multicast bit
+    this.virtualMacAddress[0] = (this.virtualMacAddress[0] & 0xFE) | 0x02;
   }
 
   /**
@@ -1631,6 +1655,26 @@ export class CentralizedKernelWorker {
     if (syscallNr === 138 /* SYS_RECVMSG */) {
       this.handleRecvmsg(channel, origArgs);
       return;
+    }
+
+    // --- ioctl: intercept network interface ioctls (SIOCGIFCONF, SIOCGIFHWADDR) ---
+    // These require host-side handling because:
+    //   SIOCGIFCONF: struct ifconf contains a pointer to a process-memory buffer
+    //   SIOCGIFHWADDR: returns the virtual MAC address for this kernel instance
+    if (syscallNr === SYS_IOCTL) {
+      const request = origArgs[1] >>> 0;
+      if (request === SIOCGIFCONF) {
+        this.handleIoctlIfconf(channel, origArgs);
+        return;
+      }
+      if (request === SIOCGIFHWADDR) {
+        this.handleIoctlIfhwaddr(channel, origArgs);
+        return;
+      }
+      if (request === SIOCGIFADDR) {
+        this.handleIoctlIfaddr(channel, origArgs);
+        return;
+      }
     }
 
     // --- fcntl with struct flock pointer ---
@@ -3430,6 +3474,96 @@ export class CentralizedKernelWorker {
     };
     const timer = setTimeout(retryFn, 10);
     this.pendingPollRetries.set(channel.pid, { timer, channel, pipeIndices });
+  }
+
+  // ---- Network interface ioctl host-side handlers ----
+  // The kernel has a single virtual network interface ("eth0") with a random
+  // MAC address generated per kernel instance.
+
+  /**
+   * Handle SIOCGIFCONF: enumerate network interfaces.
+   * struct ifconf { int ifc_len; union { char *ifc_buf; struct ifreq *ifc_req; }; }
+   * The ifc_buf pointer is in process memory, so the kernel can't write to it
+   * directly — we handle the entire ioctl on the host side.
+   */
+  private handleIoctlIfconf(channel: ChannelInfo, origArgs: number[]): void {
+    const processView = new DataView(channel.memory.buffer);
+    const processMem = new Uint8Array(channel.memory.buffer);
+
+    // Read struct ifconf from process memory at arg[2]
+    const ifconfPtr = origArgs[2];
+    const ifcLen = processView.getInt32(ifconfPtr, true);     // ifc_len (buffer size)
+    const ifcBuf = processView.getUint32(ifconfPtr + 4, true); // ifc_buf (process address)
+
+    // sizeof(struct ifreq) = 32 on wasm32 (16 name + 16 sockaddr union)
+    const SIZEOF_IFREQ = 32;
+
+    if (ifcLen >= SIZEOF_IFREQ && ifcBuf !== 0) {
+      // Write one ifreq entry for "eth0" into process memory at ifc_buf
+      const nameBytes = new TextEncoder().encode("eth0");
+      processMem.set(nameBytes, ifcBuf);
+      processMem.fill(0, ifcBuf + nameBytes.length, ifcBuf + 16); // pad ifr_name
+
+      // ifr_addr: AF_INET (2) with 127.0.0.1 — just needs to be a valid sockaddr
+      processMem.fill(0, ifcBuf + 16, ifcBuf + SIZEOF_IFREQ);
+      processView.setUint16(ifcBuf + 16, 2, true); // AF_INET
+      processMem[ifcBuf + 20] = 127; // sin_addr = 127.0.0.1
+      processMem[ifcBuf + 21] = 0;
+      processMem[ifcBuf + 22] = 0;
+      processMem[ifcBuf + 23] = 1;
+
+      // Update ifc_len to actual bytes written
+      processView.setInt32(ifconfPtr, SIZEOF_IFREQ, true);
+    } else {
+      // No space or null buffer
+      processView.setInt32(ifconfPtr, 0, true);
+    }
+
+    this.completeChannelRaw(channel, 0, 0);
+    this.relistenChannel(channel);
+  }
+
+  /**
+   * Handle SIOCGIFHWADDR: get hardware (MAC) address for an interface.
+   * struct ifreq at arg[2]: ifr_name[16] + ifr_hwaddr (struct sockaddr, 16 bytes)
+   * Returns the virtual MAC in ifr_hwaddr.sa_data[0..5].
+   */
+  private handleIoctlIfhwaddr(channel: ChannelInfo, origArgs: number[]): void {
+    const processView = new DataView(channel.memory.buffer);
+    const processMem = new Uint8Array(channel.memory.buffer);
+    const ifreqPtr = origArgs[2];
+
+    // Write ifr_hwaddr at offset 16 from ifreq start:
+    //   sa_family = ARPHRD_ETHER (1)
+    //   sa_data[0..5] = MAC address
+    processMem.fill(0, ifreqPtr + 16, ifreqPtr + 32);          // clear sockaddr
+    processView.setUint16(ifreqPtr + 16, 1, true);             // ARPHRD_ETHER
+    processMem.set(this.virtualMacAddress, ifreqPtr + 18);      // MAC address
+
+    this.completeChannelRaw(channel, 0, 0);
+    this.relistenChannel(channel);
+  }
+
+  /**
+   * Handle SIOCGIFADDR: get interface address.
+   * struct ifreq at arg[2]: ifr_name[16] + ifr_addr (struct sockaddr, 16 bytes)
+   * Returns 127.0.0.1 for the virtual interface.
+   */
+  private handleIoctlIfaddr(channel: ChannelInfo, origArgs: number[]): void {
+    const processView = new DataView(channel.memory.buffer);
+    const processMem = new Uint8Array(channel.memory.buffer);
+    const ifreqPtr = origArgs[2];
+
+    // Write ifr_addr at offset 16: AF_INET + 127.0.0.1
+    processMem.fill(0, ifreqPtr + 16, ifreqPtr + 32);
+    processView.setUint16(ifreqPtr + 16, 2, true);  // AF_INET
+    processMem[ifreqPtr + 20] = 127;                 // sin_addr = 127.0.0.1
+    processMem[ifreqPtr + 21] = 0;
+    processMem[ifreqPtr + 22] = 0;
+    processMem[ifreqPtr + 23] = 1;
+
+    this.completeChannelRaw(channel, 0, 0);
+    this.relistenChannel(channel);
   }
 
   private handleWritev(channel: ChannelInfo, syscallNr: number, origArgs: number[]): void {
