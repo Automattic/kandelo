@@ -1,12 +1,13 @@
 #!/usr/bin/env -S node --experimental-strip-types
 import { join } from 'node:path';
 import { resolveToolchain, type Toolchain } from '../lib/toolchain.ts';
-import { COMPILE_FLAGS, LINK_FLAGS, SHARED_LINK_FLAGS, filterArgs, parseArgs, needsLinking } from '../lib/flags.ts';
+import { compileFlags, linkFlags, SHARED_LINK_FLAGS, filterArgs, parseArgs, needsLinking } from '../lib/flags.ts';
 import { runPassthrough } from '../lib/exec.ts';
 import { isMain } from '../lib/is-main.ts';
+import { type WasmArch, detectArch, targetTriple } from '../lib/arch.ts';
 
-export function buildClangArgs(userArgs: string[], toolchain: Toolchain): string[] {
-  const { filtered, warnings } = filterArgs(userArgs);
+export function buildClangArgs(userArgs: string[], toolchain: Toolchain, arch: WasmArch = 'wasm32'): string[] {
+  const { filtered, warnings } = filterArgs(userArgs, arch);
   for (const w of warnings) console.error(w);
 
   const parsed = parseArgs(filtered);
@@ -14,15 +15,16 @@ export function buildClangArgs(userArgs: string[], toolchain: Toolchain): string
   const hasSourceFiles = parsed.sourceFiles.length > 0;
 
   const args: string[] = [];
+  const target = `--target=${targetTriple(arch)}`;
 
   // Inject compile flags when there are source files, compile-only modes,
   // or when linking (since the glue .c file needs them).
   if (hasSourceFiles || parsed.compileOnly || parsed.preprocessOnly || parsed.assemblyOnly || linking) {
-    args.push(...COMPILE_FLAGS);
+    args.push(...compileFlags(arch));
   }
   // Target is always needed (even for link-only, clang needs to know the target)
-  if (!args.includes('--target=wasm32-unknown-unknown')) {
-    args.push('--target=wasm32-unknown-unknown');
+  if (!args.includes(target)) {
+    args.push(target);
   }
   args.push(`--sysroot=${toolchain.sysroot}`);
 
@@ -53,7 +55,7 @@ export function buildClangArgs(userArgs: string[], toolchain: Toolchain): string
       args.push(
         join(toolchain.sysroot, 'lib', 'crt1.o'),
         join(toolchain.sysroot, 'lib', 'libc.a'),
-        ...LINK_FLAGS,
+        ...linkFlags(arch),
       );
     }
   }
@@ -62,8 +64,9 @@ export function buildClangArgs(userArgs: string[], toolchain: Toolchain): string
 }
 
 async function main(): Promise<void> {
-  const toolchain = await resolveToolchain();
-  const args = buildClangArgs(process.argv.slice(2), toolchain);
+  const arch = detectArch();
+  const toolchain = await resolveToolchain(arch);
+  const args = buildClangArgs(process.argv.slice(2), toolchain, arch);
   const exitCode = await runPassthrough(toolchain.cc, args);
   process.exit(exitCode);
 }

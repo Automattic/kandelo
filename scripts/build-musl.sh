@@ -67,13 +67,24 @@ rm -rf "$MUSL_DIR/arch/$ARCH"
 cp -r "$OVERLAY_DIR/arch/$ARCH" "$MUSL_DIR/arch/"
 
 # Copy source file overlays (e.g., Wasm-specific __libc_start_main.c)
-# First, clean wasm32posix dirs in musl tree to remove stale overlay files
+# First, clean arch-specific dirs in musl tree to remove stale overlay files
 if [ -d "$OVERLAY_DIR/src" ]; then
     find "$OVERLAY_DIR/src" -type d -name wasm32posix | while read dir; do
         rel="${dir#$OVERLAY_DIR/src/}"
         rm -rf "$MUSL_DIR/src/$rel"
     done
     cp -r "$OVERLAY_DIR/src/"* "$MUSL_DIR/src/"
+
+    # For wasm64posix: copy wasm32posix source overrides as wasm64posix
+    # (same source code, just different arch dir name for musl's build system)
+    if [ "$ARCH" = "wasm64posix" ]; then
+        find "$OVERLAY_DIR/src" -type d -name wasm32posix | while read dir; do
+            rel="${dir#$OVERLAY_DIR/src/}"
+            parent="$(dirname "$rel")"
+            rm -rf "$MUSL_DIR/src/$parent/wasm64posix"
+            cp -r "$dir" "$MUSL_DIR/src/$parent/wasm64posix"
+        done
+    fi
 fi
 
 # Copy CRT overlay (e.g., Wasm-specific crt1.c with proper main signature)

@@ -11,7 +11,15 @@
     "wasm32posix-nm": "./src/bin/nm.ts",
     "wasm32posix-strip": "./src/bin/strip.ts",
     "wasm32posix-pkg-config": "./src/bin/pkg-config.ts",
-    "wasm32posix-configure": "./src/bin/configure.ts"
+    "wasm32posix-configure": "./src/bin/configure.ts",
+    "wasm64posix-cc": "./src/bin/cc.ts",
+    "wasm64posix-c++": "./src/bin/c++.ts",
+    "wasm64posix-ar": "./src/bin/ar.ts",
+    "wasm64posix-ranlib": "./src/bin/ranlib.ts",
+    "wasm64posix-nm": "./src/bin/nm.ts",
+    "wasm64posix-strip": "./src/bin/strip.ts",
+    "wasm64posix-pkg-config": "./src/bin/pkg-config.ts",
+    "wasm64posix-configure": "./src/bin/configure.ts"
   },
   "scripts": {
     "test": "vitest run"
