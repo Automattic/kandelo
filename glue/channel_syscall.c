@@ -74,10 +74,14 @@ int *__errno_location(void);
  * Unlike _Thread_local (which stores in shared linear memory at __tls_base +
  * offset), wasm globals are instance-local and cannot be corrupted by other
  * threads' pointer arithmetic into the same memory region. */
+#if __SIZEOF_POINTER__ == 8
+__asm__(".globaltype __channel_base, i64\n");
+#else
 __asm__(".globaltype __channel_base, i32\n");
+#endif
 
-static inline uint32_t get_channel_base(void) {
-    uint32_t val;
+static inline uintptr_t get_channel_base(void) {
+    uintptr_t val;
     __asm__ volatile("global.get __channel_base\n"
                      "local.set %0" : "=r"(val));
     return val;
@@ -87,7 +91,7 @@ static inline uint32_t get_channel_base(void) {
  * not a TLS memory address. The host checks: if this returns 0,
  * skip TLS-based channel setup (the global is set at instantiation). */
 __attribute__((export_name("__get_channel_base_addr")))
-uint32_t __get_channel_base_addr(void) {
+uintptr_t __get_channel_base_addr(void) {
     return 0;
 }
 
@@ -150,7 +154,7 @@ int vfork(void)
 static long __do_syscall(long n, long long a1, long long a2, long long a3,
                          long long a4, long long a5, long long a6);
 
-static void __deliver_pending_signal(uint32_t base)
+static void __deliver_pending_signal(uintptr_t base)
 {
     uint32_t *sig_signum_ptr  = (uint32_t *)(uintptr_t)(base + CH_SIG_SIGNUM);
     uint32_t *sig_handler_ptr = (uint32_t *)(uintptr_t)(base + CH_SIG_HANDLER);
@@ -257,7 +261,7 @@ static long __do_syscall(long n, long long a1, long long a2, long long a3,
      * in a local variable that might be spilled to the shadow stack.
      * The wasm global is per-instance and immune to cross-thread corruption. */
 
-    uint32_t base = get_channel_base();
+    uintptr_t base = get_channel_base();
 
     /* Write syscall number and arguments directly using base offsets.
      * These are one-shot writes — if the shadow stack value of 'base' is
@@ -277,7 +281,7 @@ static long __do_syscall(long n, long long a1, long long a2, long long a3,
      * Use inline asm to read __channel_base directly from the wasm global,
      * bypassing any shadow stack spills that might be corrupted. */
     {
-        uint32_t addr;
+        uintptr_t addr;
         __asm__ volatile(
             "global.get __channel_base\n"
             "local.set %0"
@@ -297,7 +301,7 @@ static long __do_syscall(long n, long long a1, long long a2, long long a3,
     {
         int wait_ret;
         do {
-            uint32_t addr;
+            uintptr_t addr;
             __asm__ volatile(
                 "global.get __channel_base\n"
                 "local.set %0"
