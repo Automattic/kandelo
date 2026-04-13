@@ -481,6 +481,9 @@ rb_cv_negative_time_t=yes
 rb_cv_stack_grow_direction=-1
 ac_cv_func_getpgrp_void=yes
 ac_cv_func_setpgrp_void=yes
+
+# ─── Compiler features (can't link-test in cross-compilation) ─────
+rb_cv_function_name_string=__func__
 SITE_EOF
 
     echo "==> Created config.site: $CONFIG_SITE"
