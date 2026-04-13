@@ -598,6 +598,8 @@ interface ProcessRegistration {
   pid: number;
   memory: WebAssembly.Memory;
   channels: ChannelInfo[];
+  /** Pointer width: 4 for wasm32, 8 for wasm64. */
+  ptrWidth: 4 | 8;
 }
 
 /** Callbacks for fork/exec/exit handling in centralized mode. */
@@ -941,7 +943,7 @@ export class CentralizedKernelWorker {
     pid: number,
     memory: WebAssembly.Memory,
     channelOffsets: number[],
-    options?: { skipKernelCreate?: boolean; argv?: string[] },
+    options?: { skipKernelCreate?: boolean; argv?: string[]; ptrWidth?: 4 | 8 },
   ): void {
     if (!this.initialized) throw new Error("Kernel not initialized");
 
@@ -987,7 +989,7 @@ export class CentralizedKernelWorker {
       consecutiveSyscalls: 0,
     }));
 
-    const registration: ProcessRegistration = { pid, memory, channels };
+    const registration: ProcessRegistration = { pid, memory, channels, ptrWidth: options?.ptrWidth ?? 4 };
     this.processes.set(pid, registration);
     this.activeChannels.push(...channels);
 
@@ -1442,6 +1444,11 @@ export class CentralizedKernelWorker {
       this.cachedKernelBuffer = buf;
     }
     return this.cachedKernelMem!;
+  }
+
+  /** Get pointer width for a process (4=wasm32, 8=wasm64). */
+  private getPtrWidth(pid: number): 4 | 8 {
+    return this.processes.get(pid)?.ptrWidth ?? 4;
   }
 
   /** Debug: last N syscalls per pid for crash diagnosis */
@@ -3081,10 +3088,15 @@ export class CentralizedKernelWorker {
     }
 
     // Decode sigmask: pselect6 arg6 → pointer to {sigset_t *mask, size_t size}
+    // On wasm32: {u32 mask_ptr, u32 size} = 8 bytes
+    // On wasm64: {u64 mask_ptr, u64 size} = 16 bytes
     const maskOffset = dataStart + 3 * FD_SET_SIZE;
     if (maskDataPtr !== 0) {
+      const pw = this.getPtrWidth(channel.pid);
       const mdv = new DataView(channel.memory.buffer, maskDataPtr);
-      const maskPtr = mdv.getUint32(0, true);
+      const maskPtr = pw === 8
+        ? Number(mdv.getBigUint64(0, true))
+        : mdv.getUint32(0, true);
       if (maskPtr !== 0) {
         kernelMem.set(processMem.subarray(maskPtr, maskPtr + 8), maskOffset);
       } else {
@@ -3585,15 +3597,26 @@ export class CentralizedKernelWorker {
     const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
     const dataStart = this.scratchOffset + CH_DATA;
 
+    // iovec struct: { void* iov_base, size_t iov_len }
+    // wasm32: 8 bytes per entry (4+4), wasm64: 16 bytes per entry (8+8)
+    const pw = this.getPtrWidth(channel.pid);
+    const iovEntrySize = pw === 8 ? 16 : 8;
+
     // Layout in scratch data area:
-    //   [0..iovcnt*8]     new iov array with kernel-space base pointers
+    //   [0..iovcnt*8]     new iov array with kernel-space base pointers (always 8B per entry for kernel)
     //   [iovcnt*8..]      concatenated data buffers
-    const iovSize = iovcnt * 8;
+    const iovSize = iovcnt * 8; // kernel iov entries are always 8B (kernel is wasm64 but uses u32 for iov in scratch)
     let dataOff = iovSize;
 
     for (let i = 0; i < iovcnt; i++) {
-      const base = processView.getUint32(iovPtr + i * 8, true);
-      const len = processView.getUint32(iovPtr + i * 8 + 4, true);
+      let base: number, len: number;
+      if (pw === 8) {
+        base = Number(processView.getBigUint64(iovPtr + i * iovEntrySize, true));
+        len = Number(processView.getBigUint64(iovPtr + i * iovEntrySize + 8, true));
+      } else {
+        base = processView.getUint32(iovPtr + i * iovEntrySize, true);
+        len = processView.getUint32(iovPtr + i * iovEntrySize + 4, true);
+      }
 
       const kernelBase = dataStart + dataOff;
 
@@ -3656,13 +3679,23 @@ export class CentralizedKernelWorker {
     const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
     const dataStart = this.scratchOffset + CH_DATA;
 
+    // iovec struct: wasm32 = 8B per entry, wasm64 = 16B per entry
+    const pw = this.getPtrWidth(channel.pid);
+    const iovEntrySize = pw === 8 ? 16 : 8;
+
     // Read iov entries from process memory
     interface IovEntry { base: number; len: number }
     const entries: IovEntry[] = [];
     let totalData = 0;
     for (let i = 0; i < iovcnt; i++) {
-      const base = processView.getUint32(iovPtr + i * 8, true);
-      const len = processView.getUint32(iovPtr + i * 8 + 4, true);
+      let base: number, len: number;
+      if (pw === 8) {
+        base = Number(processView.getBigUint64(iovPtr + i * iovEntrySize, true));
+        len = Number(processView.getBigUint64(iovPtr + i * iovEntrySize + 8, true));
+      } else {
+        base = processView.getUint32(iovPtr + i * iovEntrySize, true);
+        len = processView.getUint32(iovPtr + i * iovEntrySize + 4, true);
+      }
       entries.push({ base, len });
       totalData += len;
     }
@@ -3836,58 +3869,88 @@ export class CentralizedKernelWorker {
     const kernelMem = this.getKernelMem();
     const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
     const dataStart = this.scratchOffset + CH_DATA;
+    const pw = this.getPtrWidth(channel.pid);
 
-    // Parse msghdr from process memory (wasm32: 28 bytes)
-    // struct msghdr { msg_name(4), msg_namelen(4), msg_iov(4), msg_iovlen(4), ... }
-    const namePtr = processView.getUint32(msgPtr, true);
-    const nameLen = processView.getUint32(msgPtr + 4, true);
-    const iovPtr = processView.getUint32(msgPtr + 8, true);
-    const iovCnt = processView.getUint32(msgPtr + 12, true);
+    // Parse msghdr from process memory (ptrWidth-aware).
+    // wasm32 layout (28B): name(4), namelen(4), iov(4), iovlen(4), control(4), controllen(4), flags(4)
+    // wasm64 layout (48B): name(8), namelen(4), pad(4), iov(8), iovlen(4), pad(4), control(8), controllen(4), flags(4)
+    let namePtr: number, nameLen: number, iovPtr: number, iovCnt: number;
+    let controlPtr: number, controlLen: number;
+    if (pw === 8) {
+      namePtr = Number(processView.getBigUint64(msgPtr, true));
+      nameLen = processView.getUint32(msgPtr + 8, true);
+      iovPtr = Number(processView.getBigUint64(msgPtr + 16, true));
+      iovCnt = processView.getUint32(msgPtr + 24, true);
+      controlPtr = Number(processView.getBigUint64(msgPtr + 32, true));
+      controlLen = processView.getUint32(msgPtr + 40, true);
+    } else {
+      namePtr = processView.getUint32(msgPtr, true);
+      nameLen = processView.getUint32(msgPtr + 4, true);
+      iovPtr = processView.getUint32(msgPtr + 8, true);
+      iovCnt = processView.getUint32(msgPtr + 12, true);
+      controlPtr = processView.getUint32(msgPtr + 16, true);
+      controlLen = processView.getUint32(msgPtr + 20, true);
+    }
 
-    // Copy msghdr to kernel scratch at offset 0
+    // Build kernel-side msghdr in wasm32 (28B) format (kernel uses explicit u32 parsing)
     const kMsgPtr = dataStart;
-    kernelMem.set(processMem.subarray(msgPtr, msgPtr + 28), kMsgPtr);
+    const kv = new DataView(kernelMem.buffer);
+    kv.setUint32(kMsgPtr, namePtr, true);
+    kv.setUint32(kMsgPtr + 4, nameLen, true);
+    kv.setUint32(kMsgPtr + 8, iovPtr, true);  // will be updated below
+    kv.setUint32(kMsgPtr + 12, iovCnt, true);
+    kv.setUint32(kMsgPtr + 16, controlPtr, true);  // will be updated below
+    kv.setUint32(kMsgPtr + 20, controlLen, true);
+    kv.setUint32(kMsgPtr + 24, 0, true);  // msg_flags
 
-    let dataOff = 28; // after msghdr
+    let dataOff = 28; // after kernel-format msghdr
 
     // Copy msg_name to kernel scratch
     if (namePtr !== 0 && nameLen > 0 && dataOff + nameLen <= CH_DATA_SIZE) {
       const kNamePtr = dataStart + dataOff;
       kernelMem.set(processMem.subarray(namePtr, namePtr + nameLen), kNamePtr);
-      new DataView(kernelMem.buffer).setUint32(kMsgPtr, kNamePtr, true); // update msg_name ptr
+      kv.setUint32(kMsgPtr, kNamePtr, true); // update msg_name ptr
       dataOff += nameLen;
       dataOff = (dataOff + 3) & ~3;
     }
 
     // Copy msg_control (ancillary data, e.g. SCM_RIGHTS) to kernel scratch
-    const controlPtr = processView.getUint32(msgPtr + 16, true);
-    const controlLen = processView.getUint32(msgPtr + 20, true);
     if (controlPtr !== 0 && controlLen > 0 && dataOff + controlLen <= CH_DATA_SIZE) {
       const kCtrlPtr = dataStart + dataOff;
       kernelMem.set(processMem.subarray(controlPtr, controlPtr + controlLen), kCtrlPtr);
-      new DataView(kernelMem.buffer).setUint32(kMsgPtr + 16, kCtrlPtr, true); // update msg_control ptr
+      kv.setUint32(kMsgPtr + 16, kCtrlPtr, true); // update msg_control ptr
       dataOff += controlLen;
       dataOff = (dataOff + 3) & ~3;
     }
 
-    // Copy iov array and iov[0] data to kernel scratch
+    // Copy iov array and iov data to kernel scratch
+    const iovEntrySize = pw === 8 ? 16 : 8;
     if (iovCnt > 0 && iovPtr !== 0) {
-      const iovSize = iovCnt * 8;
+      const kIovSize = iovCnt * 8; // kernel-side iov is always 8 bytes per entry (u32 base + u32 len)
       const kIovPtr = dataStart + dataOff;
-      kernelMem.set(processMem.subarray(iovPtr, iovPtr + iovSize), kIovPtr);
-      new DataView(kernelMem.buffer).setUint32(kMsgPtr + 8, kIovPtr, true); // update msg_iov ptr
-      dataOff += iovSize;
+      dataOff += kIovSize;
       dataOff = (dataOff + 3) & ~3;
+
+      kv.setUint32(kMsgPtr + 8, kIovPtr, true); // update msg_iov ptr
 
       // Copy each iov buffer data
       for (let i = 0; i < iovCnt; i++) {
-        const base = processView.getUint32(iovPtr + i * 8, true);
-        const len = processView.getUint32(iovPtr + i * 8 + 4, true);
+        let base: number, len: number;
+        if (pw === 8) {
+          base = Number(processView.getBigUint64(iovPtr + i * iovEntrySize, true));
+          len = Number(processView.getBigUint64(iovPtr + i * iovEntrySize + 8, true));
+        } else {
+          base = processView.getUint32(iovPtr + i * 8, true);
+          len = processView.getUint32(iovPtr + i * 8 + 4, true);
+        }
+        // Write kernel-format iov entry (always u32 base + u32 len)
+        kv.setUint32(kIovPtr + i * 8, 0, true); // will be updated if data copied
+        kv.setUint32(kIovPtr + i * 8 + 4, len, true);
+
         if (len > 0 && dataOff + len <= CH_DATA_SIZE) {
           const kBufPtr = dataStart + dataOff;
           kernelMem.set(processMem.subarray(base, base + len), kBufPtr);
-          // Update iov_base in kernel-side iov entry
-          new DataView(kernelMem.buffer).setUint32(kIovPtr + i * 8, kBufPtr, true);
+          kv.setUint32(kIovPtr + i * 8, kBufPtr, true);
           dataOff += len;
           dataOff = (dataOff + 3) & ~3;
         }
@@ -3934,16 +3997,37 @@ export class CentralizedKernelWorker {
     const kernelMem = this.getKernelMem();
     const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
     const dataStart = this.scratchOffset + CH_DATA;
+    const pw = this.getPtrWidth(channel.pid);
 
-    // Parse msghdr from process memory
-    const namePtr = processView.getUint32(msgPtr, true);
-    const nameLen = processView.getUint32(msgPtr + 4, true);
-    const iovPtr = processView.getUint32(msgPtr + 8, true);
-    const iovCnt = processView.getUint32(msgPtr + 12, true);
+    // Parse msghdr from process memory (ptrWidth-aware)
+    let namePtr: number, nameLen: number, iovPtr: number, iovCnt: number;
+    let controlPtr: number, controlLen: number;
+    if (pw === 8) {
+      namePtr = Number(processView.getBigUint64(msgPtr, true));
+      nameLen = processView.getUint32(msgPtr + 8, true);
+      iovPtr = Number(processView.getBigUint64(msgPtr + 16, true));
+      iovCnt = processView.getUint32(msgPtr + 24, true);
+      controlPtr = Number(processView.getBigUint64(msgPtr + 32, true));
+      controlLen = processView.getUint32(msgPtr + 40, true);
+    } else {
+      namePtr = processView.getUint32(msgPtr, true);
+      nameLen = processView.getUint32(msgPtr + 4, true);
+      iovPtr = processView.getUint32(msgPtr + 8, true);
+      iovCnt = processView.getUint32(msgPtr + 12, true);
+      controlPtr = processView.getUint32(msgPtr + 16, true);
+      controlLen = processView.getUint32(msgPtr + 20, true);
+    }
 
-    // Copy msghdr to kernel scratch
+    // Build kernel-side msghdr in wasm32 (28B) format
     const kMsgPtr = dataStart;
-    kernelMem.set(processMem.subarray(msgPtr, msgPtr + 28), kMsgPtr);
+    const kv = new DataView(kernelMem.buffer);
+    kv.setUint32(kMsgPtr, namePtr, true);
+    kv.setUint32(kMsgPtr + 4, nameLen, true);
+    kv.setUint32(kMsgPtr + 8, iovPtr, true);
+    kv.setUint32(kMsgPtr + 12, iovCnt, true);
+    kv.setUint32(kMsgPtr + 16, controlPtr, true);
+    kv.setUint32(kMsgPtr + 20, controlLen, true);
+    kv.setUint32(kMsgPtr + 24, 0, true);
 
     let dataOff = 28;
 
@@ -3952,19 +4036,17 @@ export class CentralizedKernelWorker {
     if (namePtr !== 0 && nameLen > 0 && dataOff + nameLen <= CH_DATA_SIZE) {
       kNamePtr = dataStart + dataOff;
       kernelMem.fill(0, kNamePtr, kNamePtr + nameLen);
-      new DataView(kernelMem.buffer).setUint32(kMsgPtr, kNamePtr, true);
+      kv.setUint32(kMsgPtr, kNamePtr, true);
       dataOff += nameLen;
       dataOff = (dataOff + 3) & ~3;
     }
 
     // Set up msg_control output buffer for ancillary data (SCM_RIGHTS)
-    const controlPtr = processView.getUint32(msgPtr + 16, true);
-    const controlLen = processView.getUint32(msgPtr + 20, true);
     let kCtrlPtr = 0;
     if (controlPtr !== 0 && controlLen > 0 && dataOff + controlLen <= CH_DATA_SIZE) {
       kCtrlPtr = dataStart + dataOff;
       kernelMem.fill(0, kCtrlPtr, kCtrlPtr + controlLen);
-      new DataView(kernelMem.buffer).setUint32(kMsgPtr + 16, kCtrlPtr, true);
+      kv.setUint32(kMsgPtr + 16, kCtrlPtr, true);
       dataOff += controlLen;
       dataOff = (dataOff + 3) & ~3;
     }
@@ -3972,25 +4054,36 @@ export class CentralizedKernelWorker {
     // Set up iov array and output buffers
     interface IovEntry { base: number; len: number; kernelBase: number }
     const entries: IovEntry[] = [];
+    const iovEntrySize = pw === 8 ? 16 : 8;
 
     if (iovCnt > 0 && iovPtr !== 0) {
-      const iovSize = iovCnt * 8;
+      const kIovSize = iovCnt * 8; // kernel-side iov always 8B per entry
       const kIovPtr = dataStart + dataOff;
-      kernelMem.set(processMem.subarray(iovPtr, iovPtr + iovSize), kIovPtr);
-      new DataView(kernelMem.buffer).setUint32(kMsgPtr + 8, kIovPtr, true);
-      dataOff += iovSize;
+      dataOff += kIovSize;
       dataOff = (dataOff + 3) & ~3;
 
+      kv.setUint32(kMsgPtr + 8, kIovPtr, true);
+
       for (let i = 0; i < iovCnt; i++) {
-        const base = processView.getUint32(iovPtr + i * 8, true);
-        const len = processView.getUint32(iovPtr + i * 8 + 4, true);
+        let base: number, len: number;
+        if (pw === 8) {
+          base = Number(processView.getBigUint64(iovPtr + i * iovEntrySize, true));
+          len = Number(processView.getBigUint64(iovPtr + i * iovEntrySize + 8, true));
+        } else {
+          base = processView.getUint32(iovPtr + i * 8, true);
+          len = processView.getUint32(iovPtr + i * 8 + 4, true);
+        }
         if (len > 0 && dataOff + len <= CH_DATA_SIZE) {
           const kBufPtr = dataStart + dataOff;
           kernelMem.fill(0, kBufPtr, kBufPtr + len);
-          new DataView(kernelMem.buffer).setUint32(kIovPtr + i * 8, kBufPtr, true);
+          kv.setUint32(kIovPtr + i * 8, kBufPtr, true);
+          kv.setUint32(kIovPtr + i * 8 + 4, len, true);
           entries.push({ base, len, kernelBase: kBufPtr });
           dataOff += len;
           dataOff = (dataOff + 3) & ~3;
+        } else {
+          kv.setUint32(kIovPtr + i * 8, 0, true);
+          kv.setUint32(kIovPtr + i * 8 + 4, len, true);
         }
       }
     }
@@ -4039,7 +4132,7 @@ export class CentralizedKernelWorker {
 
     // Copy msg_control (ancillary data) back to process memory
     if (kCtrlPtr !== 0 && controlPtr !== 0) {
-      const actualControlLen = new DataView(kernelMem.buffer).getUint32(kMsgPtr + 20, true);
+      const actualControlLen = kv.getUint32(kMsgPtr + 20, true);
       if (actualControlLen > 0 && actualControlLen <= controlLen) {
         processMem.set(
           kernelMem.subarray(kCtrlPtr, kCtrlPtr + actualControlLen),
@@ -4048,11 +4141,19 @@ export class CentralizedKernelWorker {
       }
     }
 
-    // Copy updated msghdr fields back (msg_namelen, msg_controllen, msg_flags)
-    const kMsg = kernelMem.subarray(kMsgPtr, kMsgPtr + 28);
-    processMem.set(kMsg.subarray(4, 8), msgPtr + 4);   // msg_namelen
-    processMem.set(kMsg.subarray(20, 24), msgPtr + 20); // msg_controllen
-    processMem.set(kMsg.subarray(24, 28), msgPtr + 24); // msg_flags
+    // Copy updated msghdr fields back to process memory (ptrWidth-aware)
+    const kNamelenVal = kv.getUint32(kMsgPtr + 4, true);
+    const kControllenVal = kv.getUint32(kMsgPtr + 20, true);
+    const kMsgflags = kv.getUint32(kMsgPtr + 24, true);
+    if (pw === 8) {
+      processView.setUint32(msgPtr + 8, kNamelenVal, true);   // msg_namelen
+      processView.setUint32(msgPtr + 40, kControllenVal, true); // msg_controllen
+      processView.setUint32(msgPtr + 44, kMsgflags, true);     // msg_flags
+    } else {
+      processView.setUint32(msgPtr + 4, kNamelenVal, true);   // msg_namelen
+      processView.setUint32(msgPtr + 20, kControllenVal, true); // msg_controllen
+      processView.setUint32(msgPtr + 24, kMsgflags, true);     // msg_flags
+    }
 
     this.completeChannel(channel, 138, origArgs, undefined, retVal, errVal);
   }
@@ -4166,12 +4267,17 @@ export class CentralizedKernelWorker {
    * Read a null-terminated array of string pointers from process memory.
    * Each element is a 32-bit pointer to a null-terminated string.
    */
-  private readStringArrayFromProcess(mem: Uint8Array, arrayPtr: number): string[] {
+  private readStringArrayFromProcess(mem: Uint8Array, arrayPtr: number, ptrWidth: 4 | 8 = 4): string[] {
     if (arrayPtr === 0) return [];
     const result: string[] = [];
     const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
     for (let i = 0; i < 1024; i++) {
-      const strPtr = view.getUint32(arrayPtr + i * 4, true);
+      let strPtr: number;
+      if (ptrWidth === 8) {
+        strPtr = Number(view.getBigUint64(arrayPtr + i * 8, true));
+      } else {
+        strPtr = view.getUint32(arrayPtr + i * 4, true);
+      }
       if (strPtr === 0) break;
       result.push(this.readCStringFromProcess(mem, strPtr));
     }
@@ -4186,9 +4292,10 @@ export class CentralizedKernelWorker {
     const processMem = new Uint8Array(channel.memory.buffer);
 
     // Read path (arg 0), argv (arg 1), envp (arg 2) from process memory
+    const pw = this.getPtrWidth(channel.pid);
     let path = this.readCStringFromProcess(processMem, origArgs[0]);
-    const argv = this.readStringArrayFromProcess(processMem, origArgs[1]);
-    const envp = this.readStringArrayFromProcess(processMem, origArgs[2]);
+    const argv = this.readStringArrayFromProcess(processMem, origArgs[1], pw);
+    const envp = this.readStringArrayFromProcess(processMem, origArgs[2], pw);
 
     // Resolve relative exec paths against process CWD (not initial KERNEL_CWD).
     // Critical for posix_spawn with chdir file actions where child CWD != parent CWD.
@@ -4258,9 +4365,10 @@ export class CentralizedKernelWorker {
     const processMem = new Uint8Array(channel.memory.buffer);
 
     // Read path from process memory
+    const pw = this.getPtrWidth(channel.pid);
     const pathStr = this.readCStringFromProcess(processMem, origArgs[1]);
-    const argv = this.readStringArrayFromProcess(processMem, origArgs[2]);
-    const envp = this.readStringArrayFromProcess(processMem, origArgs[3]);
+    const argv = this.readStringArrayFromProcess(processMem, origArgs[2], pw);
+    const envp = this.readStringArrayFromProcess(processMem, origArgs[3], pw);
 
     let execPath: string;
 
@@ -4381,10 +4489,11 @@ export class CentralizedKernelWorker {
     }
 
     // Read fnPtr and argPtr from the channel's CH_DATA area (written by kernel_clone stub)
+    // These are always written as u32 by the glue (even on wasm64, table indices are i32)
     const processView = new DataView(channel.memory.buffer, channel.channelOffset);
     const fnPtr = processView.getUint32(CH_DATA, true);
     const argPtr = processView.getUint32(CH_DATA + 4, true);
-    console.error(`[handleClone] fnPtr=${fnPtr} argPtr=${argPtr} CH_DATA=${CH_DATA} channelOffset=${channel.channelOffset} origArgs=[${origArgs}]`);
+    console.error(`[handleClone] fnPtr=${fnPtr} argPtr=${argPtr} CH_DATA=${CH_DATA} channelOffset=${channel.channelOffset} origArgs=[${origArgs}]  ptrWidth=${this.getPtrWidth(channel.pid)}`);
     const stackPtr = origArgs[1];
     const tlsPtr = origArgs[3];
     const ctidPtr = origArgs[4];
@@ -5140,23 +5249,25 @@ export class CentralizedKernelWorker {
     let mmapAddr = 0;
     let mmapLen = 0;
 
+    // MAP_FAILED is -1 (all bits set). For wasm64 processes retVal could be
+    // a large positive number when interpreted as unsigned, but the kernel
+    // returns -1 (sign-extended) which JS sees as -1.  Use a simple < 0
+    // check instead of comparing to a fixed 32-bit constant.
     if (syscallNr === SYS_BRK) {
       // retVal is the new program break address
-      endAddr = retVal >>> 0;
+      if (retVal >= 0) endAddr = retVal;
     } else if (syscallNr === SYS_MMAP) {
       // retVal is the mapped address, origArgs[1] is the length
-      const MAP_FAILED = 0xffffffff;
-      if ((retVal >>> 0) !== MAP_FAILED) {
-        mmapAddr = retVal >>> 0;
-        mmapLen = origArgs[1] >>> 0;
+      if (retVal >= 0) {
+        mmapAddr = retVal;
+        mmapLen = origArgs[1];
         endAddr = mmapAddr + mmapLen;
       }
     } else if (syscallNr === SYS_MREMAP) {
       // retVal is the new address, origArgs[2] is the new length
-      const MAP_FAILED = 0xffffffff;
-      if ((retVal >>> 0) !== MAP_FAILED) {
-        mmapAddr = retVal >>> 0;
-        mmapLen = origArgs[2] >>> 0;
+      if (retVal >= 0) {
+        mmapAddr = retVal;
+        mmapLen = origArgs[2];
         endAddr = mmapAddr + mmapLen;
       }
     }
@@ -5196,9 +5307,9 @@ export class CentralizedKernelWorker {
     origArgs: number[],
   ): void {
     const fd = origArgs[4];
-    const mapLen = origArgs[1] >>> 0;
+    const mapLen = origArgs[1];
     // musl sends page offset (off / 4096) as arg[5]
-    const pageOffset = origArgs[5] >>> 0;
+    const pageOffset = origArgs[5];
     let fileOffset = pageOffset * 4096;
 
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as

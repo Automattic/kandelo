@@ -39,6 +39,8 @@ export interface CentralizedWorkerInitMessage {
   isForkChild?: boolean;
   /** Address of asyncify data buffer in memory (used for fork child rewind) */
   asyncifyBufAddr?: number;
+  /** Pointer width: 4 for wasm32, 8 for wasm64. Defaults to 4. */
+  ptrWidth?: 4 | 8;
 }
 
 /**
@@ -60,6 +62,8 @@ export interface CentralizedThreadInitMessage {
   ctidPtr: number;
   /** Pre-allocated address in shared memory for Wasm TLS initialization */
   tlsAllocAddr: number;
+  /** Pointer width: 4 for wasm32, 8 for wasm64. Defaults to 4. */
+  ptrWidth?: 4 | 8;
 }
 
 export interface WorkerTerminateMessage {

@@ -38,6 +38,9 @@ export interface MessagePort {
  * Build kernel.* import stubs for channel-mode Wasm modules.
  * Both process and thread workers need these because the musl overlay CRT
  * imports kernel.* functions for argc/argv, environ, fork state, and clone.
+ *
+ * On wasm64, pointer params arrive as BigInt (i64). The helper `n()` converts
+ * BigInt|number → number for memory access (all addresses < 4GB).
  */
 function buildKernelImports(
   memory: WebAssembly.Memory,
@@ -48,39 +51,41 @@ function buildKernelImports(
   const _argv = argv || [];
   const _envVars = envVars || [];
   const encoder = new TextEncoder();
+  /** Convert wasm64 BigInt pointer to number (safe since addresses < 4GB) */
+  const n = (v: number | bigint): number => typeof v === "bigint" ? Number(v) : v;
 
   return {
     // CRT argv support
     kernel_get_argc: (): number => _argv.length,
-    kernel_argv_read: (index: number, bufPtr: number, bufMax: number): number => {
+    kernel_argv_read: (index: number, bufPtr: number | bigint, bufMax: number): number => {
       if (index >= _argv.length) return 0;
       const encoded = encoder.encode(_argv[index]);
       const len = Math.min(encoded.length, bufMax);
-      new Uint8Array(memory.buffer, bufPtr, len).set(encoded.subarray(0, len));
+      new Uint8Array(memory.buffer, n(bufPtr), len).set(encoded.subarray(0, len));
       return len;
     },
 
     // CRT environ support
     kernel_environ_count: (): number => _envVars.length,
-    kernel_environ_get: (index: number, bufPtr: number, bufMax: number): number => {
+    kernel_environ_get: (index: number, bufPtr: number | bigint, bufMax: number): number => {
       if (index >= _envVars.length) return -1;
       const encoded = encoder.encode(_envVars[index]);
       const len = Math.min(encoded.length, bufMax);
-      new Uint8Array(memory.buffer, bufPtr, len).set(encoded.subarray(0, len));
+      new Uint8Array(memory.buffer, n(bufPtr), len).set(encoded.subarray(0, len));
       return len;
     },
 
     // Fork/exec state — not a fork child in centralized mode
     kernel_is_fork_child: (): number => 0,
     kernel_apply_fork_fd_actions: (): number => 0,
-    kernel_get_fork_exec_path: (_buf: number, _max: number): number => 0,
+    kernel_get_fork_exec_path: (_buf: number | bigint, _max: number): number => 0,
     kernel_get_fork_exec_argc: (): number => 0,
-    kernel_get_fork_exec_argv: (_index: number, _buf: number, _max: number): number => 0,
-    kernel_push_argv: (_ptr: number, _len: number): number => 0,
+    kernel_get_fork_exec_argv: (_index: number, _buf: number | bigint, _max: number): number => 0,
+    kernel_push_argv: (_ptr: number | bigint, _len: number): void => {},
     kernel_clear_fork_exec: (): number => 0,
 
     // Exec dispatches through channel
-    kernel_execve: (_pathPtr: number): number => -38, // ENOSYS
+    kernel_execve: (_pathPtr: number | bigint): number => -38, // ENOSYS
 
     // Exit dispatches through channel (SYS_EXIT)
     kernel_exit: (status: number): void => {
@@ -97,9 +102,8 @@ function buildKernelImports(
     },
 
     // Clone dispatches through channel (SYS_CLONE)
-    kernel_clone: (fnPtr: number, stackPtr: number, flags: number,
-      arg: number, ptidPtr: number, tlsPtr: number, ctidPtr: number): number => {
-      // Debug logging removed (require('fs') not available in ESM worker context)
+    kernel_clone: (fnPtr: number | bigint, stackPtr: number | bigint, flags: number,
+      arg: number | bigint, ptidPtr: number | bigint, tlsPtr: number | bigint, ctidPtr: number | bigint): number => {
       const SYS_CLONE_NR = 201;
       const CH_ARG_SIZE = 8;
       const CH_RETURN = 56;
@@ -115,8 +119,8 @@ function buildKernelImports(
       view.setBigInt64(base + 8 + 4 * CH_ARG_SIZE, BigInt(ctidPtr), true);
       view.setBigInt64(base + 8 + 5 * CH_ARG_SIZE, 0n, true);
       // Write fn_ptr and arg_ptr to CH_DATA area for handleClone
-      view.setUint32(base + CH_DATA, fnPtr, true);
-      view.setUint32(base + CH_DATA + 4, arg, true);
+      view.setUint32(base + CH_DATA, n(fnPtr), true);
+      view.setUint32(base + CH_DATA + 4, n(arg), true);
 
       const i32 = new Int32Array(memory.buffer);
       Atomics.store(i32, base / 4, 1); // CH_PENDING
@@ -251,15 +255,20 @@ function buildImportObject(
   channelOffset: number,
   dlopenImports?: Record<string, WebAssembly.ExportValue>,
   getInstance?: () => WebAssembly.Instance | undefined,
+  ptrWidth: 4 | 8 = 4,
 ): WebAssembly.Imports {
   const envImports: Record<string, WebAssembly.ExportValue> = { memory };
 
   // Provide __channel_base as a mutable wasm global if the module imports it.
   // Each instance gets its own global, immune to cross-thread shared memory corruption.
-  // wasm-ld promotes undefined globals to mutable when creating imports.
+  // On wasm64, __channel_base is i64 (BigInt); on wasm32 it's i32 (number).
   const moduleImports = WebAssembly.Module.imports(module);
   if (moduleImports.some(i => i.module === "env" && i.name === "__channel_base" && i.kind === "global")) {
-    envImports.__channel_base = new WebAssembly.Global({ value: "i32", mutable: true }, channelOffset);
+    if (ptrWidth === 8) {
+      envImports.__channel_base = new WebAssembly.Global({ value: "i64", mutable: true }, BigInt(channelOffset));
+    } else {
+      envImports.__channel_base = new WebAssembly.Global({ value: "i32", mutable: true }, channelOffset);
+    }
   }
 
   // Add dlopen imports if provided
@@ -468,6 +477,7 @@ export async function centralizedWorkerMain(
 ): Promise<void> {
   try {
     const { memory, programBytes, channelOffset, pid } = initData;
+    const ptrWidth = initData.ptrWidth ?? 4;
     // Use pre-compiled module if provided (avoids recompilation in web workers)
     const module = initData.programModule
       ? initData.programModule
@@ -577,7 +587,7 @@ export async function centralizedWorkerMain(
         () => processInstance ?? undefined,
       );
       const importObject = buildImportObject(module, memory, kernelImports, channelOffset, dlopenImports,
-        () => processInstance ?? undefined);
+        () => processInstance ?? undefined, ptrWidth);
       const instance = await WebAssembly.instantiate(module, importObject);
       processInstance = instance;
 
@@ -592,9 +602,12 @@ export async function centralizedWorkerMain(
         // leaving __tls_base at 0 instead of the correct TLS segment address.
         const tlsBaseGlobal = instance.exports.__tls_base as WebAssembly.Global | undefined;
         if (tlsBaseGlobal) {
-          const savedBase = view.getUint32(initData.asyncifyBufAddr - 4, true);
-          if (savedBase > 0) {
-            tlsBaseGlobal.value = savedBase;
+          if (ptrWidth === 8) {
+            const savedBase = Number(view.getBigUint64(initData.asyncifyBufAddr - 8, true));
+            if (savedBase > 0) tlsBaseGlobal.value = BigInt(savedBase);
+          } else {
+            const savedBase = view.getUint32(initData.asyncifyBufAddr - 4, true);
+            if (savedBase > 0) tlsBaseGlobal.value = savedBase;
           }
         }
 
@@ -606,15 +619,18 @@ export async function centralizedWorkerMain(
         // locals (corrupting arrays, structs on the shadow stack).
         const stackPtrGlobal = instance.exports.__stack_pointer as WebAssembly.Global | undefined;
         if (stackPtrGlobal) {
-          const savedSp = view.getUint32(initData.asyncifyBufAddr - 8, true);
-          if (savedSp > 0) {
-            stackPtrGlobal.value = savedSp;
+          if (ptrWidth === 8) {
+            const savedSp = Number(view.getBigUint64(initData.asyncifyBufAddr - 16, true));
+            if (savedSp > 0) stackPtrGlobal.value = BigInt(savedSp);
+          } else {
+            const savedSp = view.getUint32(initData.asyncifyBufAddr - 8, true);
+            if (savedSp > 0) stackPtrGlobal.value = savedSp;
           }
         }
       }
 
       // Set __channel_base in TLS
-      setupChannelBase(instance, module, memory, channelOffset, programBytes as ArrayBuffer);
+      setupChannelBase(instance, module, memory, channelOffset, programBytes as ArrayBuffer, ptrWidth);
 
       // Signal ready
       port.postMessage({ type: "ready", pid } satisfies WorkerToHostMessage);
@@ -661,7 +677,7 @@ export async function centralizedWorkerMain(
             // The child's WebAssembly.instantiate() will run __wasm_init_memory
             // which calls __wasm_init_tls, overwriting the TLS area with template
             // values and resetting __wasm_thread_pointer to 0.
-            saveParentTls(instance, memory, asyncifyBufAddr);
+            saveParentTls(instance, memory, asyncifyBufAddr, ptrWidth);
 
             // Send SYS_FORK through the channel now that memory has asyncify data
             const childPid = sendForkSyscall(memory, channelOffset);
@@ -706,11 +722,11 @@ export async function centralizedWorkerMain(
         () => processInstance ?? undefined,
       );
       const importObject = buildImportObject(module, memory, kernelImports, channelOffset, dlopenImports,
-        () => processInstance ?? undefined);
+        () => processInstance ?? undefined, ptrWidth);
       const instance = await WebAssembly.instantiate(module, importObject);
       processInstance = instance;
 
-      setupChannelBase(instance, module, memory, channelOffset, programBytes as ArrayBuffer);
+      setupChannelBase(instance, module, memory, channelOffset, programBytes as ArrayBuffer, ptrWidth);
 
       port.postMessage({ type: "ready", pid } satisfies WorkerToHostMessage);
 
@@ -845,18 +861,22 @@ function detectChannelBaseTlsOffset(programBytes: ArrayBuffer): number {
     const [localCount, lcBytes] = readLEB128(src, pos); pos += lcBytes;
     for (let i = 0; i < localCount; i++) { const [, n] = readLEB128(src, pos); pos += n; pos++; }
 
-    // Pattern 1: direct export — starts with i32.const <offset>
-    if (src[pos] === 0x41) {
+    // i32.const = 0x41, i64.const = 0x42 (wasm64 uses i64 for addresses)
+    const I32_CONST = 0x41;
+    const I64_CONST = 0x42;
+
+    // Pattern 1: direct export — starts with i32.const/i64.const <offset>
+    if (src[pos] === I32_CONST || src[pos] === I64_CONST) {
       pos++;
       const [tlsOffset] = readLEB128(src, pos);
       return tlsOffset;
     }
 
-    // Pattern 3: post-asyncify — global.get <tls_base>; i32.const <offset>; i32.add
+    // Pattern 3: post-asyncify — global.get <tls_base>; i32/i64.const <offset>; i32/i64.add
     if (src[pos] === 0x23) {
       let p3 = pos + 1;
       const [, globalIdxBytes] = readLEB128(src, p3); p3 += globalIdxBytes;
-      if (src[p3] === 0x41) {
+      if (src[p3] === I32_CONST || src[p3] === I64_CONST) {
         p3++;
         const [tlsOffset] = readLEB128(src, p3);
         return tlsOffset;
@@ -884,7 +904,7 @@ function detectChannelBaseTlsOffset(programBytes: ArrayBuffer): number {
     const [lc2, lcb2] = readLEB128(src, pos2); pos2 += lcb2;
     for (let i = 0; i < lc2; i++) { const [, n] = readLEB128(src, pos2); pos2 += n; pos2++; }
 
-    if (src[pos2] !== 0x41) return -1;
+    if (src[pos2] !== I32_CONST && src[pos2] !== I64_CONST) return -1;
     pos2++;
     const [tlsOffset] = readLEB128(src, pos2);
     return tlsOffset;
@@ -899,6 +919,7 @@ function setupChannelBase(
   memory: WebAssembly.Memory,
   channelOffset: number,
   programBytes?: ArrayBuffer,
+  ptrWidth: 4 | 8 = 4,
 ): void {
   // If the module imports env.__channel_base as a global, the channel offset was
   // already set at instantiation via WebAssembly.Global in buildImportObject.
@@ -908,22 +929,21 @@ function setupChannelBase(
   }
 
   // Legacy TLS-based approach: write channelOffset into the TLS slot.
-  // IMPORTANT: Do NOT call __get_channel_base_addr() here. On older binaries
-  // compiled with shared memory (threads), the export calls __wasm_call_ctors
-  // which runs C++ static constructors. Those may call malloc→sbrk→syscall,
-  // but __channel_base is still 0 at this point so the syscall writes to the
-  // wrong memory offset. The kernel never sees it and the process deadlocks.
-  // Instead, use __tls_base + detected TLS offset (or offset 0 as fallback).
   const tlsBase = instance.exports.__tls_base as WebAssembly.Global | undefined;
   const view = new DataView(memory.buffer);
-  const tlsAddr = tlsBase ? (tlsBase.value as number) : 0;
+  const tlsAddr = tlsBase ? Number(tlsBase.value) : 0;
 
   if (tlsAddr > 0) {
     let detectedOffset = -1;
     if (programBytes) {
       detectedOffset = detectChannelBaseTlsOffset(programBytes);
     }
-    view.setUint32(tlsAddr + (detectedOffset >= 0 ? detectedOffset : 0), channelOffset, true);
+    const addr = tlsAddr + (detectedOffset >= 0 ? detectedOffset : 0);
+    if (ptrWidth === 8) {
+      view.setBigUint64(addr, BigInt(channelOffset), true);
+    } else {
+      view.setUint32(addr, channelOffset, true);
+    }
   }
 }
 
@@ -947,22 +967,31 @@ function saveParentTls(
   instance: WebAssembly.Instance,
   memory: WebAssembly.Memory,
   asyncifyBufAddr: number,
+  ptrWidth: 4 | 8 = 4,
 ): void {
   const view = new DataView(memory.buffer);
 
   const tlsBaseGlobal = instance.exports.__tls_base as WebAssembly.Global | undefined;
   if (tlsBaseGlobal) {
-    const tlsBase = tlsBaseGlobal.value as number;
+    const tlsBase = Number(tlsBaseGlobal.value);
     if (tlsBase > 0) {
-      view.setUint32(asyncifyBufAddr - 4, tlsBase, true);
+      if (ptrWidth === 8) {
+        view.setBigUint64(asyncifyBufAddr - 8, BigInt(tlsBase), true);
+      } else {
+        view.setUint32(asyncifyBufAddr - 4, tlsBase, true);
+      }
     }
   }
 
   const stackPtrGlobal = instance.exports.__stack_pointer as WebAssembly.Global | undefined;
   if (stackPtrGlobal) {
-    const stackPtr = stackPtrGlobal.value as number;
+    const stackPtr = Number(stackPtrGlobal.value);
     if (stackPtr > 0) {
-      view.setUint32(asyncifyBufAddr - 8, stackPtr, true);
+      if (ptrWidth === 8) {
+        view.setBigUint64(asyncifyBufAddr - 16, BigInt(stackPtr), true);
+      } else {
+        view.setUint32(asyncifyBufAddr - 8, stackPtr, true);
+      }
     }
   }
 }
@@ -1233,6 +1262,7 @@ export async function centralizedThreadWorkerMain(
   initData: CentralizedThreadInitMessage,
 ): Promise<void> {
   const { memory, channelOffset, pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, tlsAllocAddr } = initData;
+  const ptrWidth = initData.ptrWidth ?? 4;
 
   // Declare outside try so catch block can access for diagnostics
   let threadInstance: WebAssembly.Instance | undefined;
@@ -1260,7 +1290,7 @@ export async function centralizedThreadWorkerMain(
 
     const kernelImports = buildKernelImports(memory, channelOffset);
     const importObject = buildImportObject(module, memory, kernelImports, channelOffset, undefined,
-      () => threadInstance);
+      () => threadInstance, ptrWidth);
     // Capture the __channel_base WebAssembly.Global ref for crash diagnostics
     // (imported globals are NOT accessible via instance.exports)
     const envImp = importObject.env as Record<string, unknown> | undefined;
@@ -1275,8 +1305,8 @@ export async function centralizedThreadWorkerMain(
     // __wasm_init_tls will corrupt the channel memory!
     const tlsSizeGlobal = instance.exports.__tls_size as WebAssembly.Global | undefined;
     const tlsAlignGlobal = instance.exports.__tls_align as WebAssembly.Global | undefined;
-    const tlsSize = tlsSizeGlobal ? (tlsSizeGlobal.value as number) : 0;
-    const tlsAlign = tlsAlignGlobal ? (tlsAlignGlobal.value as number) : 0;
+    const tlsSize = tlsSizeGlobal ? Number(tlsSizeGlobal.value) : 0;
+    const tlsAlign = tlsAlignGlobal ? Number(tlsAlignGlobal.value) : 0;
     const distToChannel = channelOffset - tlsAllocAddr;
     tlog(`[thread-worker] tid=${tid} __tls_size=${tlsSize} __tls_align=${tlsAlign} tlsBlock=${tlsAllocAddr} channelOffset=${channelOffset} distToChannel=${distToChannel}`);
     if (tlsSize > distToChannel) {
@@ -1294,13 +1324,13 @@ export async function centralizedThreadWorkerMain(
     // This avoids a corruption issue where unidentified wasm code writes to
     // page-aligned addresses in the thread region, overwriting __channel_base.
     // The channel spill page has 65464 bytes free after the header; we only need 8.
-    const wasmInitTls = instance.exports.__wasm_init_tls as ((addr: number) => void) | undefined;
+    const wasmInitTls = instance.exports.__wasm_init_tls as ((addr: number | bigint) => void) | undefined;
     const CH_TOTAL = 65608; // CH_HEADER_SIZE (72) + CH_DATA_SIZE (65536)
     const safeTlsAddr = channelOffset + CH_TOTAL; // inside channel spill page, 4-byte aligned
     const tlsBlock = safeTlsAddr;
 
     if (wasmInitTls && tlsBlock > 0) {
-      wasmInitTls(tlsBlock);
+      wasmInitTls(ptrWidth === 8 ? BigInt(tlsBlock) : tlsBlock);
       tlog(`[thread-worker] tid=${tid} __wasm_init_tls(${tlsBlock}) done`);
     }
 
@@ -1315,23 +1345,23 @@ export async function centralizedThreadWorkerMain(
     // Set __stack_pointer
     const stackPointer = instance.exports.__stack_pointer as WebAssembly.Global | undefined;
     if (stackPointer) {
-      stackPointer.value = stackPtr;
+      stackPointer.value = ptrWidth === 8 ? BigInt(stackPtr) : stackPtr;
       tlog(`[thread-worker] tid=${tid} __stack_pointer set to ${stackPtr}`);
     }
 
     // Initialize musl thread pointer if available
-    const wasmThreadInit = instance.exports.__wasm_thread_init as ((tp: number) => void) | undefined;
+    const wasmThreadInit = instance.exports.__wasm_thread_init as ((tp: number | bigint) => void) | undefined;
     if (wasmThreadInit && tlsPtr > 0) {
-      const tlsBaseBeforeInit = (instance.exports.__tls_base as WebAssembly.Global)?.value as number;
-      wasmThreadInit(tlsPtr);
-      const tlsBaseAfterInit = (instance.exports.__tls_base as WebAssembly.Global)?.value as number;
+      const tlsBaseBeforeInit = Number((instance.exports.__tls_base as WebAssembly.Global)?.value ?? 0);
+      wasmThreadInit(ptrWidth === 8 ? BigInt(tlsPtr) : tlsPtr);
+      const tlsBaseAfterInit = Number((instance.exports.__tls_base as WebAssembly.Global)?.value ?? 0);
       tlog(`[thread-worker] tid=${tid} __wasm_thread_init(${tlsPtr}) done, __tls_base: ${tlsBaseBeforeInit} → ${tlsBaseAfterInit}${tlsBaseBeforeInit !== tlsBaseAfterInit ? ' CHANGED!' : ''}`);
     }
 
     // Set __channel_base — either via wasm global (new) or TLS memory (legacy).
-    const getChannelBaseAddr = instance.exports.__get_channel_base_addr as (() => number) | undefined;
+    const getChannelBaseAddr = instance.exports.__get_channel_base_addr as (() => number | bigint) | undefined;
     if (getChannelBaseAddr) {
-      const addr = getChannelBaseAddr();
+      const addr = Number(getChannelBaseAddr());
       if (addr === 0) {
         // Global-based approach — __channel_base was set at instantiation via
         // WebAssembly.Global in buildImportObject. Nothing to do.
@@ -1339,13 +1369,21 @@ export async function centralizedThreadWorkerMain(
       } else {
         // Legacy TLS-based approach
         const view = new DataView(memory.buffer);
-        view.setUint32(addr, channelOffset, true);
+        if (ptrWidth === 8) {
+          view.setBigUint64(addr, BigInt(channelOffset), true);
+        } else {
+          view.setUint32(addr, channelOffset, true);
+        }
         tlog(`[thread-worker] tid=${tid} __channel_base at addr=${addr} set to ${channelOffset}`);
       }
     } else if (tlsBlock > 0) {
       // Fallback: assume offset 0 (only for programs without the helper)
       const view = new DataView(memory.buffer);
-      view.setUint32(tlsBlock, channelOffset, true);
+      if (ptrWidth === 8) {
+        view.setBigUint64(tlsBlock, BigInt(channelOffset), true);
+      } else {
+        view.setUint32(tlsBlock, channelOffset, true);
+      }
       tlog(`[thread-worker] tid=${tid} fallback: channel base at tlsBlock=${tlsBlock} set to ${channelOffset}`);
     }
 
@@ -1355,7 +1393,7 @@ export async function centralizedThreadWorkerMain(
       throw new Error("No __indirect_function_table export — cannot call thread function");
     }
 
-    const threadFn = table.get(fnPtr) as ((arg: number) => number) | null;
+    const threadFn = table.get(fnPtr) as ((arg: number | bigint) => number | bigint) | null;
     if (!threadFn) {
       throw new Error(`Thread function at table index ${fnPtr} is null`);
     }
@@ -1367,7 +1405,8 @@ export async function centralizedThreadWorkerMain(
     let result: number;
     tlog(`[thread-worker] tid=${tid} calling threadFn(${argPtr})...`);
     try {
-      result = threadFn(argPtr);
+      const raw = threadFn(ptrWidth === 8 ? BigInt(argPtr) : argPtr);
+      result = Number(raw);
       tlog(`[thread-worker] tid=${tid} threadFn returned ${result}`);
     } catch (e) {
       tlog(`[thread-worker] tid=${tid} threadFn threw: ${e}`);
