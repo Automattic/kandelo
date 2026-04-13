@@ -95,6 +95,7 @@ if [ ! -f Makefile ]; then
     export ac_cv_func_sendmsg=yes
     export ac_cv_func_recvmsg=yes
     export ac_cv_func_getpass_r=no
+    export ac_cv_func_arc4random=no
 
     # Wasm32 type sizes
     export ac_cv_sizeof_long=4
