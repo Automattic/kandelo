@@ -114,6 +114,14 @@ if grep -q 'IF(NOT CONC_WITH_SSL)' "$CONC_CMAKE" 2>/dev/null; then
     sed -i '' 's/IF(NOT CONC_WITH_SSL)/IF(NOT CONC_WITH_SSL AND NOT CONC_WITH_SSL STREQUAL "OFF")/' "$CONC_CMAKE"
 fi
 
+# 3. my_gethwaddr: Enable Linux code path for wasm (SIOCGIFCONF + SIOCGIFHWADDR)
+HWADDR_FILE="$SRC_DIR/mysys/my_gethwaddr.c"
+if ! grep -q '__wasm' "$HWADDR_FILE" 2>/dev/null; then
+    echo "  Patching mysys/my_gethwaddr.c (enable MAC address retrieval for wasm)..."
+    sed -i '' 's/defined(__linux__) || defined(__sun) || defined(_WIN32)/defined(__linux__) || defined(__sun) || defined(_WIN32) || defined(__wasm32__) || defined(__wasm64__)/' "$HWADDR_FILE"
+    sed -i '' 's/#elif defined(_AIX) || defined(__linux__) || defined(__sun)/#elif defined(_AIX) || defined(__linux__) || defined(__sun) || defined(__wasm32__) || defined(__wasm64__)/' "$HWADDR_FILE"
+fi
+
 # Apply any .patch files from patches/ directory
 PATCH_DIR="$SCRIPT_DIR/patches"
 if [ -d "$PATCH_DIR" ]; then
