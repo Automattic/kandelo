@@ -105,6 +105,7 @@ async function main() {
             },
 
             onClone: async (pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory) => {
+                console.error(`[onClone] pid=${pid} tid=${tid} fnPtr=${fnPtr} argPtr=${argPtr}`);
                 const alloc = threadAllocator.allocate(memory);
 
                 // TLS is now stored inside the channel spill page, not the separate TLS page.
@@ -132,7 +133,11 @@ async function main() {
                 const threadWorker = workerAdapter.createWorker(threadInitData);
                 threadWorkers.set(tid, threadWorker);
                 threadWorker.on("message", (msg: unknown) => {
-                    const m = msg as WorkerToHostMessage;
+                    const m = msg as any;
+                    if (m.type === "debug") {
+                        console.error(`[thread ${tid}] ${m.message}`);
+                        return;
+                    }
                     if (m.type === "thread_exit") {
                         kernelWorker.notifyThreadExit(pid, tid);
                         kernelWorker.removeChannel(pid, alloc.channelOffset);
@@ -235,7 +240,7 @@ async function main() {
         // Emulator flags (use - prefix when calling beam directly, not +)
         "-S", "1:1",        // 1 normal scheduler, 1 online
         "-A", "0",           // no async threads
-        "-SDio", "1",        // 1 dirty IO scheduler (minimum)
+        "-SDio", "1",        // 1 dirty IO scheduler (minimum required)
         "-SDcpu", "1:1",     // 1 dirty CPU scheduler
         "-P", "262144",      // max Erlang processes
         "--",

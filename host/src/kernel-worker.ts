@@ -60,7 +60,7 @@ const SYS_FORK = 212;
 const SYS_VFORK = 213;
 const SYS_CLONE = 201;
 const SYS_EXIT = 34;
-const SYS_EXIT_GROUP = 34;  // same as SYS_EXIT on wasm32posix (__NR_exit_group = __NR_exit)
+const SYS_EXIT_GROUP = 387;
 const SYS_SETPGID = 90;
 const SYS_SETSID = 92;
 const SYS_WAIT4 = 139;
@@ -560,7 +560,7 @@ const SYSCALL_NAMES: Record<number, string> = {
   340: "msgctl", 341: "semget", 342: "semop", 343: "semctl",
   344: "shmget", 345: "shmat", 346: "shmdt", 347: "shmctl",
   378: "epoll_create", 379: "epoll_wait", 382: "faccessat2",
-  383: "fchmodat2", 384: "accept4", 386: "execveat",
+  383: "fchmodat2", 384: "accept4", 386: "execveat", 387: "exit_group",
 };
 
 /** Errno number → name mapping for logging */
@@ -630,6 +630,13 @@ export interface CentralizedKernelCallbacks {
    * Called when a process exits.
    */
   onExit?: (pid: number, exitStatus: number) => void;
+
+  /**
+   * Called when a process calls exit_group (terminate all threads).
+   * The callback should forcefully terminate all thread workers for the process.
+   * Called BEFORE the process exit is processed.
+   */
+  onExitGroup?: (pid: number) => void;
 }
 
 export class CentralizedKernelWorker {
@@ -693,7 +700,7 @@ export class CentralizedKernelWorker {
   /** Cached kernel memory typed array view (invalidated on memory.grow) */
   private cachedKernelMem: Uint8Array | null = null;
   private cachedKernelBuffer: ArrayBuffer | null = null;
-  /** Pending poll/ppoll retries — used for event-driven wakeup when pipe data arrives */
+  /** Pending poll/ppoll retries — keyed by channelOffset for per-thread tracking */
   private pendingPollRetries = new Map<number, {
     timer: any;  // setImmediate or setTimeout handle
     channel: ChannelInfo;
@@ -1173,9 +1180,7 @@ export class CentralizedKernelWorker {
     this.cleanupTcpListeners(pid);
 
     // Clean up pending poll retries
-    const pollEntry = this.pendingPollRetries.get(pid);
-    if (pollEntry?.timer) clearTimeout(pollEntry.timer);
-    this.pendingPollRetries.delete(pid);
+    this.cleanupPendingPollRetries(pid);
     // Clean up pending select retries
     const selectEntry = this.pendingSelectRetries.get(pid);
     if (selectEntry?.timer) clearImmediate(selectEntry.timer);
@@ -1259,9 +1264,7 @@ export class CentralizedKernelWorker {
       this.pendingSleeps.delete(pid);
     }
     // Clean up pending poll retries
-    const pollEntry = this.pendingPollRetries.get(pid);
-    if (pollEntry?.timer) clearTimeout(pollEntry.timer);
-    this.pendingPollRetries.delete(pid);
+    this.cleanupPendingPollRetries(pid);
     // Clean up pending select retries
     const selectEntry = this.pendingSelectRetries.get(pid);
     if (selectEntry?.timer) clearImmediate(selectEntry.timer);
@@ -1290,9 +1293,7 @@ export class CentralizedKernelWorker {
     this.activeChannels = this.activeChannels.filter((ch) => ch.pid !== pid);
 
     // Clean up pending blocking retries (the old program's syscalls are dead)
-    const pollEntry = this.pendingPollRetries.get(pid);
-    if (pollEntry?.timer) clearTimeout(pollEntry.timer);
-    this.pendingPollRetries.delete(pid);
+    this.cleanupPendingPollRetries(pid);
     const selectEntry = this.pendingSelectRetries.get(pid);
     if (selectEntry?.timer) clearImmediate(selectEntry.timer);
     this.pendingSelectRetries.delete(pid);
@@ -1470,62 +1471,64 @@ export class CentralizedKernelWorker {
   private formatSyscallEntry(channel: ChannelInfo, syscallNr: number, args: number[]): string {
     const name = SYSCALL_NAMES[syscallNr] ?? `syscall_${syscallNr}`;
     const pid = channel.pid;
+    const tid = this.channelTids.get(`${pid}:${channel.channelOffset}`);
+    const tidSuffix = tid !== undefined ? `:t${tid}` : ``;
 
     // Decode args based on syscall type
     switch (syscallNr) {
       case 1: // open(path, flags, mode)
-        return `[${pid}] open("${this.readCString(channel.memory, args[0])}", 0x${(args[1] >>> 0).toString(16)}, 0o${(args[2] >>> 0).toString(8)})`;
+        return `[${pid}${tidSuffix}] open("${this.readCString(channel.memory, args[0])}", 0x${(args[1] >>> 0).toString(16)}, 0o${(args[2] >>> 0).toString(8)})`;
       case 69: // openat(dirfd, path, flags, mode)
-        return `[${pid}] openat(${args[0]}, "${this.readCString(channel.memory, args[1])}", 0x${(args[2] >>> 0).toString(16)}, 0o${(args[3] >>> 0).toString(8)})`;
+        return `[${pid}${tidSuffix}] openat(${args[0]}, "${this.readCString(channel.memory, args[1])}", 0x${(args[2] >>> 0).toString(16)}, 0o${(args[3] >>> 0).toString(8)})`;
       case 11: // stat(path, buf)
-        return `[${pid}] stat("${this.readCString(channel.memory, args[0])}")`;
+        return `[${pid}${tidSuffix}] stat("${this.readCString(channel.memory, args[0])}")`;
       case 12: // lstat(path, buf)
-        return `[${pid}] lstat("${this.readCString(channel.memory, args[0])}")`;
+        return `[${pid}${tidSuffix}] lstat("${this.readCString(channel.memory, args[0])}")`;
       case 93: // fstatat(dirfd, path, buf, flags)
-        return `[${pid}] fstatat(${args[0]}, "${this.readCString(channel.memory, args[1])}", 0x${(args[3] >>> 0).toString(16)})`;
+        return `[${pid}${tidSuffix}] fstatat(${args[0]}, "${this.readCString(channel.memory, args[1])}", 0x${(args[3] >>> 0).toString(16)})`;
       case 22: // access(path, mode)
-        return `[${pid}] access("${this.readCString(channel.memory, args[0])}", ${args[1]})`;
+        return `[${pid}${tidSuffix}] access("${this.readCString(channel.memory, args[0])}", ${args[1]})`;
       case 97: // faccessat(dirfd, path, mode, flags)
-        return `[${pid}] faccessat(${args[0]}, "${this.readCString(channel.memory, args[1])}", ${args[2]})`;
+        return `[${pid}${tidSuffix}] faccessat(${args[0]}, "${this.readCString(channel.memory, args[1])}", ${args[2]})`;
       case 24: // chdir(path)
-        return `[${pid}] chdir("${this.readCString(channel.memory, args[0])}")`;
+        return `[${pid}${tidSuffix}] chdir("${this.readCString(channel.memory, args[0])}")`;
       case 25: // opendir(path)
-        return `[${pid}] opendir("${this.readCString(channel.memory, args[0])}")`;
+        return `[${pid}${tidSuffix}] opendir("${this.readCString(channel.memory, args[0])}")`;
       case 19: // readlink(path, buf, bufsiz)
-        return `[${pid}] readlink("${this.readCString(channel.memory, args[0])}", ${args[2]})`;
+        return `[${pid}${tidSuffix}] readlink("${this.readCString(channel.memory, args[0])}", ${args[2]})`;
       case 102: // readlinkat(dirfd, path, buf, bufsiz)
-        return `[${pid}] readlinkat(${args[0]}, "${this.readCString(channel.memory, args[1])}", ${args[3]})`;
+        return `[${pid}${tidSuffix}] readlinkat(${args[0]}, "${this.readCString(channel.memory, args[1])}", ${args[3]})`;
       case 109: // realpath(path, buf, bufsiz)
-        return `[${pid}] realpath("${this.readCString(channel.memory, args[0])}")`;
+        return `[${pid}${tidSuffix}] realpath("${this.readCString(channel.memory, args[0])}")`;
       case 3: // read(fd, buf, count)
-        return `[${pid}] read(${args[0]}, ${args[2]})`;
+        return `[${pid}${tidSuffix}] read(${args[0]}, ${args[2]})`;
       case 4: // write(fd, buf, count)
-        return `[${pid}] write(${args[0]}, ${args[2]})`;
+        return `[${pid}${tidSuffix}] write(${args[0]}, ${args[2]})`;
       case 2: // close(fd)
-        return `[${pid}] close(${args[0]})`;
+        return `[${pid}${tidSuffix}] close(${args[0]})`;
       case 6: // fstat(fd, buf)
-        return `[${pid}] fstat(${args[0]})`;
+        return `[${pid}${tidSuffix}] fstat(${args[0]})`;
       case 10: // fcntl(fd, cmd, arg)
-        return `[${pid}] fcntl(${args[0]}, ${args[1]}, ${args[2]})`;
+        return `[${pid}${tidSuffix}] fcntl(${args[0]}, ${args[1]}, ${args[2]})`;
       case 46: // mmap(addr, len, prot, flags, fd, offset)
-        return `[${pid}] mmap(0x${(args[0] >>> 0).toString(16)}, ${args[1] >>> 0}, ${args[2]}, 0x${(args[3] >>> 0).toString(16)}, ${args[4]}, ${args[5] >>> 0})`;
+        return `[${pid}${tidSuffix}] mmap(0x${(args[0] >>> 0).toString(16)}, ${args[1] >>> 0}, ${args[2]}, 0x${(args[3] >>> 0).toString(16)}, ${args[4]}, ${args[5] >>> 0})`;
       case 47: // munmap(addr, len)
-        return `[${pid}] munmap(0x${(args[0] >>> 0).toString(16)}, ${args[1] >>> 0})`;
+        return `[${pid}${tidSuffix}] munmap(0x${(args[0] >>> 0).toString(16)}, ${args[1] >>> 0})`;
       case 48: // brk(addr)
-        return `[${pid}] brk(0x${(args[0] >>> 0).toString(16)})`;
+        return `[${pid}${tidSuffix}] brk(0x${(args[0] >>> 0).toString(16)})`;
       case 211: // execve(path, argv, envp)
-        return `[${pid}] execve("${this.readCString(channel.memory, args[0])}")`;
-      case 212: return `[${pid}] fork()`;
-      case 213: return `[${pid}] vfork()`;
+        return `[${pid}${tidSuffix}] execve("${this.readCString(channel.memory, args[0])}")`;
+      case 212: return `[${pid}${tidSuffix}] fork()`;
+      case 213: return `[${pid}${tidSuffix}] vfork()`;
       case 201: // clone(flags, stack, ptid, tls, ctid)
-        return `[${pid}] clone(0x${(args[0] >>> 0).toString(16)})`;
-      case 34: return `[${pid}] exit(${args[0]})`;
+        return `[${pid}${tidSuffix}] clone(0x${(args[0] >>> 0).toString(16)})`;
+      case 34: return `[${pid}${tidSuffix}] exit(${args[0]})`;
       case 60: // poll(fds, nfds, timeout)
-        return `[${pid}] poll(${args[1]}, ${args[2]})`;
+        return `[${pid}${tidSuffix}] poll(${args[1]}, ${args[2]})`;
       case 72: // ioctl(fd, cmd, arg)
-        return `[${pid}] ioctl(${args[0]}, 0x${(args[1] >>> 0).toString(16)})`;
+        return `[${pid}${tidSuffix}] ioctl(${args[0]}, 0x${(args[1] >>> 0).toString(16)})`;
       default:
-        return `[${pid}] ${name}(${args.filter((_, i) => i < 3).join(", ")})`;
+        return `[${pid}${tidSuffix}] ${name}(${args.filter((_, i) => i < 3).join(", ")})`;
     }
   }
 
@@ -2286,8 +2289,12 @@ export class CentralizedKernelWorker {
    * The process stays blocked while we retry asynchronously.
    */
   private resolvePollPipeIndices(pid: number, origArgs: number[], syscallNr: number): number[] {
-    const getRecvPipe = this.kernelInstance!.exports.kernel_get_socket_recv_pipe as
+    // Prefer kernel_get_fd_pipe_idx which handles both pipes AND sockets.
+    // Fall back to kernel_get_socket_recv_pipe for older kernels.
+    const getFdPipeIdx = this.kernelInstance!.exports.kernel_get_fd_pipe_idx as
       ((pid: number, fd: number) => number) | undefined;
+    const getRecvPipe = getFdPipeIdx ?? (this.kernelInstance!.exports.kernel_get_socket_recv_pipe as
+      ((pid: number, fd: number) => number) | undefined);
     if (!getRecvPipe) return [];
 
     const fdsPtr = origArgs[0];
@@ -2332,17 +2339,28 @@ export class CentralizedKernelWorker {
   }
 
   private wakeBlockedPoll(pid: number, pipeIdx: number): void {
-    const entry = this.pendingPollRetries.get(pid);
-    if (!entry) return;
-    if (!entry.pipeIndices.includes(pipeIdx)) return;
+    for (const [key, entry] of this.pendingPollRetries) {
+      if (entry.channel.pid !== pid) continue;
+      if (!entry.pipeIndices.includes(pipeIdx)) continue;
 
-    // Cancel the scheduled retry and fire immediately
-    if (entry.timer !== null) {
-      clearTimeout(entry.timer);
+      // Cancel the scheduled retry and fire immediately
+      if (entry.timer !== null) {
+        clearTimeout(entry.timer);
+      }
+      this.pendingPollRetries.delete(key);
+      if (this.processes.has(pid)) {
+        this.retrySyscall(entry.channel);
+      }
     }
-    this.pendingPollRetries.delete(pid);
-    if (this.processes.has(pid)) {
-      this.retrySyscall(entry.channel);
+  }
+
+  /** Cancel all pending poll retries for a given pid (used during cleanup) */
+  private cleanupPendingPollRetries(pid: number): void {
+    for (const [key, entry] of this.pendingPollRetries) {
+      if (entry.channel.pid === pid) {
+        if (entry.timer) clearTimeout(entry.timer);
+        this.pendingPollRetries.delete(key);
+      }
     }
   }
 
@@ -2443,8 +2461,8 @@ export class CentralizedKernelWorker {
     this.pendingPollRetries.clear();
     this.pendingSelectRetries.clear();
 
-    for (const [pid, entry] of pollEntries) {
-      if (!this.processes.has(pid)) continue;
+    for (const [_key, entry] of pollEntries) {
+      if (!this.processes.has(entry.channel.pid)) continue;
       if (entry.timer !== null) {
         clearTimeout(entry.timer);
       }
@@ -2675,18 +2693,18 @@ export class CentralizedKernelWorker {
       if (timeoutMs > 0 && nfds === 0) {
         // Pure sleep: no fds to poll, just wait for timeout
         const timer = setTimeout(() => {
-          this.pendingPollRetries.delete(channel.pid);
+          this.pendingPollRetries.delete(channel.channelOffset);
           if (this.processes.has(channel.pid)) {
             this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], 0, 0);
           }
         }, timeoutMs);
-        this.pendingPollRetries.set(channel.pid, { timer, channel, pipeIndices });
+        this.pendingPollRetries.set(channel.channelOffset, { timer, channel, pipeIndices });
         return;
       }
 
       const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : -1;
       const retryFn = () => {
-        this.pendingPollRetries.delete(channel.pid);
+        this.pendingPollRetries.delete(channel.channelOffset);
         if (!this.processes.has(channel.pid)) return;
         // Check deadline for finite timeout
         if (deadline > 0 && Date.now() >= deadline) {
@@ -2695,8 +2713,13 @@ export class CentralizedKernelWorker {
         }
         this.retrySyscall(channel);
       };
-      const timer = setTimeout(retryFn, 0);
-      this.pendingPollRetries.set(channel.pid, { timer, channel, pipeIndices });
+      // With pipe indices, rely on wakeBlockedPoll for instant wakeup;
+      // use long fallback to avoid busy-loop. Without indices, use short retry.
+      const retryMs = pipeIndices.length > 0
+        ? (deadline > 0 ? Math.min(deadline - Date.now(), 5000) : 5000)
+        : (deadline > 0 ? Math.min(deadline - Date.now(), 50) : 50);
+      const timer = setTimeout(retryFn, Math.max(retryMs, 1));
+      this.pendingPollRetries.set(channel.channelOffset, { timer, channel, pipeIndices });
       return;
     }
 
@@ -2872,13 +2895,13 @@ export class CentralizedKernelWorker {
     // Register in pendingPollRetries so wakeAllBlockedRetries can cancel
     // the timer and retry immediately when state changes.
     const retryFn = () => {
-      this.pendingPollRetries.delete(channel.pid);
+      this.pendingPollRetries.delete(channel.channelOffset);
       if (this.processes.has(channel.pid)) {
         this.retrySyscall(channel);
       }
     };
     const timer = setTimeout(retryFn, 10);
-    this.pendingPollRetries.set(channel.pid, { timer, channel, pipeIndices: [] });
+    this.pendingPollRetries.set(channel.channelOffset, { timer, channel, pipeIndices: [] });
   }
 
   /**
@@ -3362,13 +3385,13 @@ export class CentralizedKernelWorker {
       }
       // For non-zero timeout with no interests, retry with delay to avoid starvation
       const retryFn = () => {
-        this.pendingPollRetries.delete(channel.pid);
+        this.pendingPollRetries.delete(channel.channelOffset);
         if (this.processes.has(channel.pid)) {
           this.handleEpollPwait(channel, syscallNr, origArgs);
         }
       };
       const timer = setTimeout(retryFn, 10);
-      this.pendingPollRetries.set(channel.pid, { timer, channel, pipeIndices: [] });
+      this.pendingPollRetries.set(channel.channelOffset, { timer, channel, pipeIndices: [] });
       return;
     }
 
@@ -3487,13 +3510,13 @@ export class CentralizedKernelWorker {
     const pipeIndices = this.resolveEpollPipeIndices(channel.pid);
 
     const retryFn = () => {
-      this.pendingPollRetries.delete(channel.pid);
+      this.pendingPollRetries.delete(channel.channelOffset);
       if (this.processes.has(channel.pid)) {
         this.handleEpollPwait(channel, syscallNr, origArgs);
       }
     };
     const timer = setTimeout(retryFn, 10);
-    this.pendingPollRetries.set(channel.pid, { timer, channel, pipeIndices });
+    this.pendingPollRetries.set(channel.channelOffset, { timer, channel, pipeIndices });
   }
 
   // ---- Network interface ioctl host-side handlers ----
@@ -5207,11 +5230,11 @@ export class CentralizedKernelWorker {
       );
     }
 
-    // 2. Pending ppoll/poll retry
-    const pollEntry = this.pendingPollRetries.get(targetPid);
-    if (pollEntry) {
+    // 2. Pending ppoll/poll retry — wake ALL threads for this pid
+    for (const [key, pollEntry] of this.pendingPollRetries) {
+      if (pollEntry.channel.pid !== targetPid) continue;
       if (pollEntry.timer) clearTimeout(pollEntry.timer);
-      this.pendingPollRetries.delete(targetPid);
+      this.pendingPollRetries.delete(key);
       if (this.processes.has(targetPid)) {
         this.retrySyscall(pollEntry.channel);
       }
