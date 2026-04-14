@@ -469,6 +469,14 @@ if ! grep -q 'estack_make_default_' "$GLOBAL_H" 2>/dev/null; then
     echo "==> Patched global.h ESTACK/WSTACK for wasm32"
 fi
 
+# Patch erl_db_util.c: Add wasm memory bounds checking to db_is_fully_bound.
+# Prevents OOB wasm traps when traversing corrupt Eterm values in ETS tables.
+DB_UTIL_C="$SRC_DIR/erts/emulator/beam/erl_db_util.c"
+if [ -f "$DB_UTIL_C" ] && ! grep -q 'wasm_db_ptr_valid' "$DB_UTIL_C"; then
+    python3 "$SCRIPT_DIR/patches/patch-db-bounds-check.py" "$DB_UTIL_C"
+    echo "==> Patched erl_db_util.c with wasm bounds checking"
+fi
+
 # Patch inet_drv.c and ram_file_drv.c: driver start function signatures.
 # erts_open_driver() calls driver->start via call_indirect with 3 args
 # (port, command, opts), but these drivers define start with only 2 args.
@@ -520,17 +528,30 @@ if grep -q 'rfile_start(ErlDrvPort, char\*);' "$RAM_FILE_DRV" 2>/dev/null; then
     echo "==> Patched ram_file_drv.c driver start signature (3-arg for wasm call_indirect)"
 fi
 
-# Patch Makefile: compile erl_unicode.c at -O1.
-# LLVM miscompiles iodata traversal in this file at -O2 on wasm32.
+# Patch Makefile: compile certain files at -O1.
+# LLVM's wasm32 backend miscompiles several BEAM files at -O2, causing
+# shadow-stack pointer corruption and incorrect aggregate initialization.
 EMU_MAKEFILE="$SRC_DIR/erts/emulator/wasm32-unknown-wasi/Makefile"
 if [ -f "$EMU_MAKEFILE" ] && ! grep -q 'erl_unicode.o:' "$EMU_MAKEFILE"; then
     sed -i '' '/\$(OBJDIR)\/beam_emu\.o: beam\/emu\/beam_emu\.c/i\
 # wasm32: erl_unicode.c miscompiles at -O2 (iodata traversal returns garbage).\
 $(OBJDIR)/erl_unicode.o: beam/erl_unicode.c\
 	$(V_CC) $(subst -O2,-O1,$(CFLAGS)) $(INCLUDES) -c $< -o $@\
+\
+# wasm32: erl_db_util.c miscompiles at -O2 (db_is_fully_bound OOB crash).\
+$(OBJDIR)/erl_db_util.o: beam/erl_db_util.c\
+	$(V_CC) $(subst -O2,-O1,$(CFLAGS)) $(INCLUDES) -c $< -o $@\
+\
+# wasm32: erl_db_hash.c miscompiles at -O2 (match_traverse corruption).\
+$(OBJDIR)/erl_db_hash.o: beam/erl_db_hash.c\
+	$(V_CC) $(subst -O2,-O1,$(CFLAGS)) $(INCLUDES) -c $< -o $@\
+\
+# wasm32: erl_db.c at -O1 for consistent ETS optimization level.\
+$(OBJDIR)/erl_db.o: beam/erl_db.c\
+	$(V_CC) $(subst -O2,-O1,$(CFLAGS)) $(INCLUDES) -c $< -o $@\
 
 ' "$EMU_MAKEFILE"
-    echo "==> Patched Makefile: erl_unicode.c at -O1"
+    echo "==> Patched Makefile: erl_unicode.c, erl_db_util.c, erl_db_hash.c at -O1"
 fi
 
 echo "==> Starting build..."

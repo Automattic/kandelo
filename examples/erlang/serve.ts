@@ -253,7 +253,7 @@ async function main() {
         "-boot", resolve(installDir, "releases/28/start_clean"),
         "-noshell",
         // "-init_debug",            // verbose init logging (enable for debugging)
-        "-pa", ".",
+        "-pa", ".", scriptDir,
         resolve(installDir, "lib/kernel-10.4.2/ebin"),
         resolve(installDir, "lib/stdlib-7.1/ebin"),
         ...userArgs,
