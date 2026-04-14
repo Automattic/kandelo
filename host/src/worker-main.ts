@@ -1372,6 +1372,19 @@ export async function centralizedThreadWorkerMain(
       }
       dbg(`thread descriptor at ${argPtr}: ${words.join(' ')}`);
     }
+    // Verify __channel_base global value before calling thread function
+    const channelBaseGlobal = instance.exports.__channel_base as WebAssembly.Global | undefined;
+    if (channelBaseGlobal) {
+      dbg(`__channel_base global = ${channelBaseGlobal.value} (expected ${channelOffset})`);
+    } else {
+      dbg(`WARNING: no __channel_base export`);
+    }
+    // Verify channel status word is IDLE (0) before starting
+    {
+      const chStatus = new Int32Array(memory.buffer, channelOffset)[0];
+      dbg(`channel status at offset ${channelOffset} = ${chStatus} (expect 0=IDLE)`);
+    }
+
     dbg(`calling thread fn at table[${fnPtr}] with arg ${argPtr}`);
     let result: number;
     try {
