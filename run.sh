@@ -69,6 +69,9 @@ has_zip()       { [ -f "$REPO_ROOT/examples/libs/zip/bin/zip.wasm" ]; }
 has_unzip()     { [ -f "$REPO_ROOT/examples/libs/unzip/bin/unzip.wasm" ]; }
 has_nano()      { [ -f "$REPO_ROOT/examples/libs/nano/bin/nano.wasm" ]; }
 has_ncurses()   { [ -f "$REPO_ROOT/sysroot/lib/libncursesw.a" ]; }
+has_zlib()      { [ -f "$REPO_ROOT/sysroot/lib/libz.a" ]; }
+has_openssl()   { [ -f "$REPO_ROOT/sysroot/lib/libssl.a" ] && [ -f "$REPO_ROOT/sysroot/lib/libcrypto.a" ]; }
+has_libcurl()   { [ -f "$REPO_ROOT/sysroot/lib/libcurl.a" ] && [ -f "$REPO_ROOT/sysroot/include/curl/curl.h" ]; }
 has_vim()       { [ -f "$REPO_ROOT/examples/libs/vim/bin/vim.wasm" ]; }
 has_git()       { [ -f "$REPO_ROOT/examples/libs/git/bin/git.wasm" ]; }
 has_perl()      { [ -f "$REPO_ROOT/examples/libs/perl/bin/perl.wasm" ]; }
@@ -339,9 +342,15 @@ build_perl_bundle() {
 
 build_vim_runtime_bundle() {
     if ! has_vim_runtime_bundle; then
+        # Ensure the minimal runtime directory exists (built from vim source)
         if [ ! -d "$REPO_ROOT/examples/libs/vim/runtime" ]; then
-            warn "Vim runtime not found, skipping vim-runtime-bundle"
-            return
+            if [ -d "$REPO_ROOT/examples/libs/vim/vim-src/runtime" ]; then
+                step "Bundling Vim runtime"
+                bash "$REPO_ROOT/examples/libs/vim/bundle-runtime.sh"
+            else
+                warn "Vim source not found, skipping vim-runtime-bundle"
+                return
+            fi
         fi
         step "Building Vim runtime browser bundle"
         bash "$REPO_ROOT/examples/browser/scripts/build-vim-runtime-bundle.sh"
@@ -453,15 +462,9 @@ build_tar() {
 }
 
 build_curl_cli() {
-    need_kernel
-    need_sdk
-    if ! has_curl; then
-        step "Building curl"
-        bash "$REPO_ROOT/examples/libs/curl/build-curl.sh"
-        info "curl built"
-    else
-        info "curl"
-    fi
+    # build_libcurl builds both the library and the CLI binary
+    build_libcurl
+    info "curl"
 }
 
 build_wget() {
@@ -549,6 +552,7 @@ build_unzip() {
 }
 
 build_nano() {
+    build_ncurses
     need_kernel
     need_sdk
     if ! has_nano; then
@@ -557,6 +561,82 @@ build_nano() {
         info "nano built"
     else
         info "nano"
+    fi
+}
+
+build_zlib() {
+    need_kernel
+    need_sdk
+    if ! has_zlib; then
+        step "Building zlib"
+        bash "$REPO_ROOT/examples/libs/zlib/build-zlib.sh"
+        # Install into sysroot
+        local ZLIB_DIR="$REPO_ROOT/examples/libs/zlib/zlib-install"
+        local SYSROOT="$REPO_ROOT/sysroot"
+        cp "$ZLIB_DIR/include/zlib.h" "$ZLIB_DIR/include/zconf.h" "$SYSROOT/include/"
+        cp "$ZLIB_DIR/lib/libz.a" "$SYSROOT/lib/"
+        mkdir -p "$SYSROOT/lib/pkgconfig"
+        sed "s|^prefix=.*|prefix=$SYSROOT|" "$ZLIB_DIR/lib/pkgconfig/zlib.pc" \
+            > "$SYSROOT/lib/pkgconfig/zlib.pc"
+        info "zlib built"
+    else
+        info "zlib"
+    fi
+}
+
+build_openssl() {
+    need_kernel
+    need_sdk
+    if ! has_openssl; then
+        step "Building OpenSSL"
+        bash "$REPO_ROOT/examples/libs/openssl/build-openssl.sh"
+        # Install into sysroot
+        local OPENSSL_DIR="$REPO_ROOT/examples/libs/openssl/openssl-install"
+        local SYSROOT="$REPO_ROOT/sysroot"
+        # OpenSSL installs to lib/ or lib64/ depending on platform
+        local LIBDIR="$OPENSSL_DIR/lib"
+        [ -f "$LIBDIR/libssl.a" ] || LIBDIR="$OPENSSL_DIR/lib64"
+        cp "$LIBDIR/libssl.a" "$LIBDIR/libcrypto.a" "$SYSROOT/lib/"
+        cp -r "$OPENSSL_DIR/include/openssl" "$SYSROOT/include/"
+        mkdir -p "$SYSROOT/lib/pkgconfig"
+        for pc in libssl.pc libcrypto.pc openssl.pc; do
+            if [ -f "$LIBDIR/pkgconfig/$pc" ]; then
+                sed "s|^prefix=.*|prefix=$SYSROOT|" "$LIBDIR/pkgconfig/$pc" \
+                    > "$SYSROOT/lib/pkgconfig/$pc"
+            fi
+        done
+        info "OpenSSL built"
+    else
+        info "OpenSSL"
+    fi
+}
+
+build_libcurl() {
+    build_zlib
+    build_openssl
+    need_kernel
+    need_sdk
+    if ! has_libcurl; then
+        step "Building libcurl"
+        # Force reconfigure if curl was previously built without SSL
+        local CURL_SRC="$REPO_ROOT/examples/libs/curl/curl-src"
+        if [ -f "$CURL_SRC/Makefile" ]; then
+            rm -f "$CURL_SRC/Makefile"
+        fi
+        bash "$REPO_ROOT/examples/libs/curl/build-curl.sh"
+        # Install libcurl + headers into sysroot
+        local SYSROOT="$REPO_ROOT/sysroot"
+        cp "$CURL_SRC/lib/.libs/libcurl.a" "$SYSROOT/lib/"
+        mkdir -p "$SYSROOT/include/curl"
+        cp "$CURL_SRC/include/curl"/*.h "$SYSROOT/include/curl/"
+        mkdir -p "$SYSROOT/lib/pkgconfig"
+        if [ -f "$CURL_SRC/libcurl.pc" ]; then
+            sed "s|^prefix=.*|prefix=$SYSROOT|" "$CURL_SRC/libcurl.pc" \
+                > "$SYSROOT/lib/pkgconfig/libcurl.pc"
+        fi
+        info "libcurl built"
+    else
+        info "libcurl"
     fi
 }
 
@@ -586,6 +666,7 @@ build_vim() {
 }
 
 build_git() {
+    build_libcurl
     need_kernel
     need_sdk
     if ! has_git; then
@@ -678,6 +759,9 @@ build_target() {
         unzip)      build_unzip ;;
         nano)       build_nano ;;
         ncurses)    build_ncurses ;;
+        zlib)       build_zlib ;;
+        openssl)    build_openssl ;;
+        libcurl)    build_libcurl ;;
         vim)        build_vim ;;
         git)        build_git ;;
         perl)       build_perl ;;
@@ -903,6 +987,18 @@ clean_target() {
             rm -rf "$REPO_ROOT/examples/libs/ncurses/ncurses-src"
             # ncurses installs into sysroot, cleaned with sysroot
             warn "Cleaned ncurses (rebuild sysroot to fully clean)" ;;
+        zlib)
+            rm -rf "$REPO_ROOT/examples/libs/zlib/zlib-src" \
+                   "$REPO_ROOT/examples/libs/zlib/zlib-install"
+            # zlib installs into sysroot, cleaned with sysroot
+            warn "Cleaned zlib (rebuild sysroot to fully clean)" ;;
+        openssl)
+            rm -rf "$REPO_ROOT/examples/libs/openssl/openssl-src" \
+                   "$REPO_ROOT/examples/libs/openssl/openssl-install"
+            warn "Cleaned OpenSSL (rebuild sysroot to fully clean)" ;;
+        libcurl)
+            rm -rf "$REPO_ROOT/examples/libs/curl/curl-src"
+            warn "Cleaned libcurl (rebuild sysroot to fully clean)" ;;
         vim)
             rm -rf "$REPO_ROOT/examples/libs/vim/vim-src" \
                    "$REPO_ROOT/examples/libs/vim/bin" \
@@ -932,7 +1028,7 @@ clean_target() {
                 clean_target "$t"
             done ;;
         all)
-            for t in kernel sysroot host programs dash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano ncurses vim git nginx php php-fpm mariadb redis cpython python-bundle perl perl-bundle ruby vim-runtime-bundle wordpress wp-bundle erlang erlang-bundle dlopen; do
+            for t in kernel sysroot host programs dash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano ncurses zlib openssl libcurl vim git nginx php php-fpm mariadb redis cpython python-bundle perl perl-bundle ruby vim-runtime-bundle wordpress wp-bundle erlang erlang-bundle dlopen; do
                 clean_target "$t"
             done ;;
         *)  err "Unknown clean target: $target"; exit 1 ;;
