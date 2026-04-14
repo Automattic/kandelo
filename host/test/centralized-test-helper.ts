@@ -11,13 +11,43 @@ import { CentralizedKernelWorker } from "../src/kernel-worker";
 import { NodePlatformIO } from "../src/platform/node";
 import { NodeWorkerAdapter } from "../src/worker-adapter";
 import { ThreadPageAllocator } from "../src/thread-allocator";
+import { detectPtrWidth } from "../src/constants";
 import type { CentralizedWorkerInitMessage, CentralizedThreadInitMessage, WorkerToHostMessage } from "../src/worker-protocol";
 import type { PlatformIO } from "../src/types";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const MAX_PAGES = 16384;
-const CH_TOTAL_SIZE = 40 + 65536;
+const CH_TOTAL_SIZE = 72 + 65536;
+
+/** Create a WebAssembly.Memory of the right type (memory32 or memory64) */
+function createProcessMemory(ptrWidth: 4 | 8, initialPages: number = 17): WebAssembly.Memory {
+  if (ptrWidth === 8) {
+    return new WebAssembly.Memory({
+      initial: BigInt(initialPages) as any,
+      maximum: BigInt(MAX_PAGES) as any,
+      shared: true,
+      address: "i64",
+    } as any);
+  }
+  return new WebAssembly.Memory({
+    initial: initialPages,
+    maximum: MAX_PAGES,
+    shared: true,
+  });
+}
+
+/** Grow process memory to max pages */
+function growToMax(memory: WebAssembly.Memory, ptrWidth: 4 | 8, currentPages: number): void {
+  const pagesToGrow = MAX_PAGES - currentPages;
+  if (pagesToGrow > 0) {
+    if (ptrWidth === 8) {
+      memory.grow(BigInt(pagesToGrow) as any);
+    } else {
+      memory.grow(pagesToGrow);
+    }
+  }
+}
 
 function loadKernelWasm(): ArrayBuffer {
   const buf = readFileSync(join(__dirname, "../wasm/wasm_posix_kernel.wasm"));
@@ -79,6 +109,7 @@ export async function runCentralizedProgram(
   const kernelWasmBytes = loadKernelWasm();
   const programBytes = loadProgramWasm(options.programPath);
   const timeout = options.timeout ?? 30_000;
+  const ptrWidth = detectPtrWidth(programBytes);
 
   let stdout = "";
   let stderr = "";
@@ -109,20 +140,14 @@ export async function runCentralizedProgram(
       onFork: async (parentPid, childPid, parentMemory) => {
         const parentBuf = new Uint8Array(parentMemory.buffer);
         const parentPages = Math.ceil(parentBuf.byteLength / 65536);
-        const childMemory = new WebAssembly.Memory({
-          initial: parentPages,
-          maximum: MAX_PAGES,
-          shared: true,
-        });
-        if (parentPages < MAX_PAGES) {
-          childMemory.grow(MAX_PAGES - parentPages);
-        }
+        const childMemory = createProcessMemory(ptrWidth, parentPages);
+        growToMax(childMemory, ptrWidth, parentPages);
         new Uint8Array(childMemory.buffer).set(parentBuf);
 
         const childChannelOffset = (MAX_PAGES - 2) * 65536;
         new Uint8Array(childMemory.buffer, childChannelOffset, CH_TOTAL_SIZE).fill(0);
 
-        kernelWorker.registerProcess(childPid, childMemory, [childChannelOffset], { skipKernelCreate: true });
+        kernelWorker.registerProcess(childPid, childMemory, [childChannelOffset], { skipKernelCreate: true, ptrWidth });
 
         // The asyncify fork data buffer lives at channelOffset - 16384 in the
         // parent's memory.  Since we copied parentMemory into childMemory and both
@@ -143,6 +168,7 @@ export async function runCentralizedProgram(
           channelOffset: childChannelOffset,
           isForkChild: true,
           asyncifyBufAddr,
+          ptrWidth,
         };
 
         const childWorker = workerAdapter.createWorker(childInitData);
@@ -160,6 +186,7 @@ export async function runCentralizedProgram(
         if (!wasmPath) return -2; // ENOENT
 
         const newProgramBytes = loadProgramWasm(wasmPath);
+        const newPtrWidth = detectPtrWidth(newProgramBytes);
 
         // Run kernel exec setup (close CLOEXEC fds, reset signals, set has_exec)
         const setupResult = kernelWorker.kernelExecSetup(pid);
@@ -176,17 +203,13 @@ export async function runCentralizedProgram(
         }
 
         // Create fresh memory for the new program
-        const newMemory = new WebAssembly.Memory({
-          initial: 17,
-          maximum: MAX_PAGES,
-          shared: true,
-        });
+        const newMemory = createProcessMemory(newPtrWidth);
         const newChannelOffset = (MAX_PAGES - 2) * 65536;
-        newMemory.grow(MAX_PAGES - 17);
+        growToMax(newMemory, newPtrWidth, 17);
         new Uint8Array(newMemory.buffer, newChannelOffset, CH_TOTAL_SIZE).fill(0);
 
         // Register new process with same pid
-        kernelWorker.registerProcess(pid, newMemory, [newChannelOffset], { skipKernelCreate: true });
+        kernelWorker.registerProcess(pid, newMemory, [newChannelOffset], { skipKernelCreate: true, ptrWidth: newPtrWidth });
 
         // Track new program bytes for this pid (for fork-after-exec)
         processProgramBytes.set(pid, newProgramBytes);
@@ -201,6 +224,7 @@ export async function runCentralizedProgram(
           channelOffset: newChannelOffset,
           argv,
           env: envp,
+          ptrWidth: newPtrWidth,
         };
 
         const newWorker = workerAdapter.createWorker(initData);
@@ -232,6 +256,7 @@ export async function runCentralizedProgram(
           tlsPtr,
           ctidPtr,
           tlsAllocAddr: alloc.tlsAllocAddr,
+          ptrWidth,
         };
 
         const threadWorker = workerAdapter.createWorker(threadInitData);
@@ -289,18 +314,14 @@ export async function runCentralizedProgram(
 
   await kernelWorker.init(kernelWasmBytes);
 
-  // Create shared memory for the process
-  const memory = new WebAssembly.Memory({
-    initial: 17,
-    maximum: MAX_PAGES,
-    shared: true,
-  });
+  // Create shared memory for the process (memory64 for wasm64 programs)
+  const memory = createProcessMemory(ptrWidth);
   const channelOffset = (MAX_PAGES - 2) * 65536;
-  memory.grow(MAX_PAGES - 17);
+  growToMax(memory, ptrWidth, 17);
   new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
   const pid = 100;
-  kernelWorker.registerProcess(pid, memory, [channelOffset]);
+  kernelWorker.registerProcess(pid, memory, [channelOffset], { ptrWidth });
 
   // Provide stdin data if specified
   if (options.stdinBytes != null) {
@@ -318,6 +339,7 @@ export async function runCentralizedProgram(
     channelOffset,
     env: options.env,
     argv: options.argv ?? [options.programPath],
+    ptrWidth,
   };
 
   const mainWorker = workerAdapter.createWorker(initData);

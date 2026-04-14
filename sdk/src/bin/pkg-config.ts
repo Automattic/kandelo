@@ -2,9 +2,11 @@
 import { findSysroot } from '../lib/toolchain.ts';
 import { runPassthrough } from '../lib/exec.ts';
 import { isMain } from '../lib/is-main.ts';
+import { detectArch } from '../lib/arch.ts';
 
 async function main(): Promise<void> {
-  const sysroot = findSysroot();
+  const arch = detectArch();
+  const sysroot = findSysroot(arch);
   const env = {
     ...process.env,
     PKG_CONFIG_SYSROOT_DIR: sysroot,

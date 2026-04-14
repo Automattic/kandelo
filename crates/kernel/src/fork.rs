@@ -392,14 +392,14 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
     w.write_i32(proc.terminal.session_id)?;
 
     // ── Program break ──
-    w.write_u32(proc.memory.get_brk())?;
+    w.write_u32(proc.memory.get_brk() as u32)?;
 
     // ── mmap mappings (v5) ──
     let mappings = proc.memory.mappings();
     w.write_u32(mappings.len() as u32)?;
     for m in mappings {
-        w.write_u32(m.addr)?;
-        w.write_u32(m.len)?;
+        w.write_u32(m.addr as u32)?;
+        w.write_u32(m.len as u32)?;
         w.write_u32(m.prot)?;
         w.write_u32(m.flags)?;
     }
@@ -710,7 +710,7 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
     // ── Program break ──
     let program_break = r.read_u32()?;
     let mut memory = MemoryManager::new();
-    memory.set_brk(program_break);
+    memory.set_brk(program_break as usize);
 
     // ── mmap mappings (v5) ──
     if r.remaining() >= 4 {
@@ -720,8 +720,8 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
         }
         let mut mappings = Vec::with_capacity(mapping_count);
         for _ in 0..mapping_count {
-            let addr = r.read_u32()?;
-            let len = r.read_u32()?;
+            let addr = r.read_u32()? as usize;
+            let len = r.read_u32()? as usize;
             let prot = r.read_u32()?;
             let flags = r.read_u32()?;
             mappings.push(MappedRegion { addr, len, prot, flags });
@@ -1033,7 +1033,7 @@ pub fn serialize_exec_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
     w.write_i32(proc.terminal.session_id)?;
 
     // ── Program break ──
-    w.write_u32(proc.memory.get_brk())?;
+    w.write_u32(proc.memory.get_brk() as u32)?;
 
     // ── Patch total_size ──
     let total = w.pos as u32;
@@ -1224,7 +1224,7 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
     // ── Program break ──
     let program_break = r.read_u32()?;
     let mut memory = MemoryManager::new();
-    memory.set_brk(program_break);
+    memory.set_brk(program_break as usize);
 
     Ok(Process {
         pid,

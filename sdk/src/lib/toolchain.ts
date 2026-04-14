@@ -2,6 +2,7 @@ import { existsSync, readdirSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { run } from './exec.ts';
+import { type WasmArch, sysrootDir } from './arch.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -65,10 +66,10 @@ export async function findLlvmDir(): Promise<string> {
   );
 }
 
-export function findSysroot(): string {
+export function findSysroot(arch: WasmArch = 'wasm32'): string {
   const envSysroot = process.env.WASM_POSIX_SYSROOT;
   if (envSysroot) return envSysroot;
-  return resolve(REPO_ROOT, 'sysroot');
+  return resolve(REPO_ROOT, sysrootDir(arch));
 }
 
 export function validateSysroot(sysroot: string): void {
@@ -86,9 +87,9 @@ export function findGlueDir(): string {
   return resolve(REPO_ROOT, 'glue');
 }
 
-export async function resolveToolchain(): Promise<Toolchain> {
+export async function resolveToolchain(arch: WasmArch = 'wasm32'): Promise<Toolchain> {
   const llvmDir = await findLlvmDir();
-  const sysroot = findSysroot();
+  const sysroot = findSysroot(arch);
   const glueDir = findGlueDir();
 
   validateSysroot(sysroot);

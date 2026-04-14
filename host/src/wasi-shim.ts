@@ -12,9 +12,10 @@
 const CH_STATUS = 0;
 const CH_SYSCALL = 4;
 const CH_ARGS = 8;
-const CH_RETURN = 32;
-const CH_ERRNO = 36;
-const CH_DATA = 40;
+const CH_ARG_SIZE = 8;  // each arg is i64 (8 bytes)
+const CH_RETURN = 56;
+const CH_ERRNO = 64;
+const CH_DATA = 72;
 const CH_DATA_SIZE = 65536;
 
 // Channel status values
@@ -445,12 +446,12 @@ export class WasiShim {
     const view = new DataView(this.memory.buffer);
 
     view.setInt32(base + CH_SYSCALL, syscallNum, true);
-    view.setInt32(base + CH_ARGS + 0, a0, true);
-    view.setInt32(base + CH_ARGS + 4, a1, true);
-    view.setInt32(base + CH_ARGS + 8, a2, true);
-    view.setInt32(base + CH_ARGS + 12, a3, true);
-    view.setInt32(base + CH_ARGS + 16, a4, true);
-    view.setInt32(base + CH_ARGS + 20, a5, true);
+    view.setBigInt64(base + CH_ARGS + 0 * CH_ARG_SIZE, BigInt(a0), true);
+    view.setBigInt64(base + CH_ARGS + 1 * CH_ARG_SIZE, BigInt(a1), true);
+    view.setBigInt64(base + CH_ARGS + 2 * CH_ARG_SIZE, BigInt(a2), true);
+    view.setBigInt64(base + CH_ARGS + 3 * CH_ARG_SIZE, BigInt(a3), true);
+    view.setBigInt64(base + CH_ARGS + 4 * CH_ARG_SIZE, BigInt(a4), true);
+    view.setBigInt64(base + CH_ARGS + 5 * CH_ARG_SIZE, BigInt(a5), true);
 
     const i32 = new Int32Array(this.memory.buffer);
     const statusIdx = base / 4;
@@ -461,7 +462,7 @@ export class WasiShim {
     // Block until kernel signals completion
     while (Atomics.wait(i32, statusIdx, CH_PENDING) === "ok") { /* */ }
 
-    const result = view.getInt32(base + CH_RETURN, true);
+    const result = Number(view.getBigInt64(base + CH_RETURN, true));
     const errno = view.getUint32(base + CH_ERRNO, true);
 
     // Reset to idle

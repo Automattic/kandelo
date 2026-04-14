@@ -1958,9 +1958,14 @@ pub fn sys_fcntl_lock(
     let host_handle = ofd.host_handle;
 
     // OFD locks use the OFD index as lock owner (not PID).
-    // Map OFD commands to their POSIX equivalents for the lock table.
+    // Map OFD and POSIX (5/6/7) commands to the internal lock constants (12/13/14).
+    // On LP64 targets (wasm64posix), musl defines F_GETLK=5, F_SETLK=6, F_SETLKW=7.
+    // On ILP32 targets (wasm32posix), musl defines F_GETLK=12, F_SETLK=13, F_SETLKW=14.
     let is_ofd = matches!(cmd, F_OFD_GETLK | F_OFD_SETLK | F_OFD_SETLKW);
     let base_cmd = match cmd {
+        5 => F_GETLK,
+        6 => F_SETLK,
+        7 => F_SETLKW,
         F_OFD_GETLK => F_GETLK,
         F_OFD_SETLK => F_SETLK,
         F_OFD_SETLKW => F_SETLKW,
@@ -2592,16 +2597,16 @@ pub fn sys_getdents64(
         let entry_offset = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?.dir_entry_offset;
 
         // Get all PIDs for /proc root listing; includes self + other processes
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
         let mut pids = crate::wasm_api::procfs_all_pids();
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
         let mut pids = alloc::vec::Vec::<u32>::new();
         if pids.is_empty() {
             pids.push(proc.pid); // fallback: at least self
         }
 
         // Check if this is a cross-process directory (e.g. /proc/<other_pid>/fd)
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
         if let Some(entry) = crate::procfs::match_procfs(&path, proc.pid) {
             let target_pid = crate::procfs::entry_pid(&entry);
             if target_pid != 0 && target_pid != proc.pid {
@@ -3484,11 +3489,11 @@ pub fn sys_madvise(
 /// and MREMAP_MAYMOVE (allocate new mapping, old mapping is freed).
 pub fn sys_mremap(
     proc: &mut Process,
-    old_addr: u32,
-    old_len: u32,
-    new_len: u32,
+    old_addr: usize,
+    old_len: usize,
+    new_len: usize,
     flags: u32,
-) -> Result<u32, Errno> {
+) -> Result<usize, Errno> {
     const MREMAP_MAYMOVE: u32 = 1;
 
     if old_len == 0 || new_len == 0 {
@@ -3615,13 +3620,13 @@ pub fn sys_unsetenv(proc: &mut Process, name: &[u8]) -> Result<(), Errno> {
 /// them from the file and (for MAP_SHARED) writes back on msync/munmap.
 pub fn sys_mmap(
     proc: &mut Process,
-    addr: u32,
-    len: u32,
+    addr: usize,
+    len: usize,
     prot: u32,
     flags: u32,
     fd: i32,
     _offset: i64,
-) -> Result<u32, Errno> {
+) -> Result<usize, Errno> {
     if flags & MAP_ANONYMOUS == 0 {
         // File-backed mapping: validate the fd is open.
         if fd < 0 {
@@ -3643,7 +3648,7 @@ pub fn sys_mmap(
 }
 
 /// munmap -- unmap a previously mapped region.
-pub fn sys_munmap(proc: &mut Process, addr: u32, len: u32) -> Result<(), Errno> {
+pub fn sys_munmap(proc: &mut Process, addr: usize, len: usize) -> Result<(), Errno> {
     if len == 0 {
         return Err(Errno::EINVAL);
     }
@@ -3665,7 +3670,7 @@ pub fn sys_munmap(proc: &mut Process, addr: u32, len: u32) -> Result<(), Errno> 
 /// brk -- set/get the program break.
 /// If addr is 0, returns the current break.
 /// Otherwise, sets the break to addr and returns the new break.
-pub fn sys_brk(proc: &mut Process, addr: u32) -> u32 {
+pub fn sys_brk(proc: &mut Process, addr: usize) -> usize {
     if addr == 0 {
         proc.memory.get_brk()
     } else {
@@ -3675,7 +3680,7 @@ pub fn sys_brk(proc: &mut Process, addr: u32) -> u32 {
 
 /// mprotect -- Wasm linear memory has no page-level protection.
 /// Returns success (no-op) so callers like Zend's allocator don't fail.
-pub fn sys_mprotect(_proc: &Process, _addr: u32, _len: u32, _prot: u32) -> Result<(), Errno> {
+pub fn sys_mprotect(_proc: &Process, _addr: usize, _len: usize, _prot: u32) -> Result<(), Errno> {
     Ok(())
 }
 
@@ -5861,11 +5866,11 @@ pub fn sys_set_robust_list() -> Result<(), Errno> {
 /// futex — real implementation using host Atomics.wait/notify.
 pub fn sys_futex(
     host: &mut dyn HostIO,
-    uaddr: u32,
+    uaddr: usize,
     op: u32,
     val: u32,
     timeout: u32,
-    uaddr2: u32,
+    uaddr2: usize,
     val3: u32,
 ) -> Result<i32, Errno> {
     const FUTEX_WAIT: u32 = 0;
@@ -5952,13 +5957,13 @@ pub fn sys_futex(
 pub fn sys_clone(
     proc: &mut Process,
     host: &mut dyn HostIO,
-    fn_ptr: u32,
-    stack_ptr: u32,
+    fn_ptr: usize,
+    stack_ptr: usize,
     flags: u32,
-    arg: u32,
-    ptid_ptr: u32,
-    tls_ptr: u32,
-    ctid_ptr: u32,
+    arg: usize,
+    ptid_ptr: usize,
+    tls_ptr: usize,
+    ctid_ptr: usize,
 ) -> Result<i32, Errno> {
     use crate::process::ThreadInfo;
 
@@ -5993,7 +5998,7 @@ pub fn sys_clone(
     // In centralized mode, ptid_ptr is in process memory (not kernel memory),
     // so the host must handle this write instead.
     if !crate::is_centralized_mode() && flags & CLONE_PARENT_SETTID != 0 && ptid_ptr != 0 {
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
         unsafe {
             let ptr = ptid_ptr as *mut i32;
             *ptr = tid;
@@ -7884,13 +7889,13 @@ mod tests {
         fn host_fork(&self) -> i32 {
             -(Errno::ENOSYS as i32)
         }
-        fn host_futex_wait(&mut self, _addr: u32, _expected: u32, _timeout_ns: i64) -> Result<i32, Errno> {
+        fn host_futex_wait(&mut self, _addr: usize, _expected: u32, _timeout_ns: i64) -> Result<i32, Errno> {
             Err(Errno::EAGAIN)
         }
-        fn host_futex_wake(&mut self, _addr: u32, _count: u32) -> Result<i32, Errno> {
+        fn host_futex_wake(&mut self, _addr: usize, _count: u32) -> Result<i32, Errno> {
             Ok(0)
         }
-        fn host_clone(&mut self, _fn_ptr: u32, _arg: u32, _stack_ptr: u32, _tls_ptr: u32, _ctid_ptr: u32) -> Result<i32, Errno> {
+        fn host_clone(&mut self, _fn_ptr: usize, _arg: usize, _stack_ptr: usize, _tls_ptr: usize, _ctid_ptr: usize) -> Result<i32, Errno> {
             Err(Errno::ENOSYS)
         }
     }
@@ -8966,9 +8971,10 @@ mod tests {
 
     #[test]
     fn test_munmap_address_overflow() {
-        // Page-aligned address where addr+len overflows u32
+        // Page-aligned address where addr+len overflows usize
         let mut proc = Process::new(1);
-        assert_eq!(sys_munmap(&mut proc, 0xFFFF0000, 0x20000), Err(Errno::EINVAL));
+        let addr = usize::MAX & !0xFFFF; // page-aligned near max
+        assert_eq!(sys_munmap(&mut proc, addr, 0x20000), Err(Errno::EINVAL));
     }
 
     #[test]
@@ -11409,13 +11415,13 @@ mod tests {
         fn host_fork(&self) -> i32 {
             -(Errno::ENOSYS as i32)
         }
-        fn host_futex_wait(&mut self, _addr: u32, _expected: u32, _timeout_ns: i64) -> Result<i32, Errno> {
+        fn host_futex_wait(&mut self, _addr: usize, _expected: u32, _timeout_ns: i64) -> Result<i32, Errno> {
             Err(Errno::EAGAIN)
         }
-        fn host_futex_wake(&mut self, _addr: u32, _count: u32) -> Result<i32, Errno> {
+        fn host_futex_wake(&mut self, _addr: usize, _count: u32) -> Result<i32, Errno> {
             Ok(0)
         }
-        fn host_clone(&mut self, _fn_ptr: u32, _arg: u32, _stack_ptr: u32, _tls_ptr: u32, _ctid_ptr: u32) -> Result<i32, Errno> {
+        fn host_clone(&mut self, _fn_ptr: usize, _arg: usize, _stack_ptr: usize, _tls_ptr: usize, _ctid_ptr: usize) -> Result<i32, Errno> {
             Err(Errno::ENOSYS)
         }
     }
@@ -11722,9 +11728,9 @@ mod tests {
             fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> { Err(Errno::ENOENT) }
             fn host_fcntl_lock(&mut self, _p: &[u8], _pid: u32, _cmd: u32, _lt: u32, _s: i64, _l: i64, _r: &mut [u8]) -> Result<(), Errno> { Ok(()) }
             fn host_fork(&self) -> i32 { -(Errno::ENOSYS as i32) }
-            fn host_futex_wait(&mut self, _a: u32, _e: u32, _t: i64) -> Result<i32, Errno> { Err(Errno::EAGAIN) }
-            fn host_futex_wake(&mut self, _a: u32, _c: u32) -> Result<i32, Errno> { Ok(0) }
-            fn host_clone(&mut self, _f: u32, _a: u32, _s: u32, _t: u32, _c: u32) -> Result<i32, Errno> { Err(Errno::ENOSYS) }
+            fn host_futex_wait(&mut self, _a: usize, _e: u32, _t: i64) -> Result<i32, Errno> { Err(Errno::EAGAIN) }
+            fn host_futex_wake(&mut self, _a: usize, _c: u32) -> Result<i32, Errno> { Ok(0) }
+            fn host_clone(&mut self, _f: usize, _a: usize, _s: usize, _t: usize, _c: usize) -> Result<i32, Errno> { Err(Errno::ENOSYS) }
         }
 
         let mut proc = Process::new(1);
@@ -13365,9 +13371,9 @@ mod tests {
             fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> { Ok(0) }
             fn host_fcntl_lock(&mut self, _p: &[u8], _pid: u32, _c: u32, _t: u32, _s: i64, _l: i64, _r: &mut [u8]) -> Result<(), Errno> { Ok(()) }
             fn host_fork(&self) -> i32 { -1 }
-            fn host_futex_wait(&mut self, _a: u32, _e: u32, _t: i64) -> Result<i32, Errno> { Ok(0) }
-            fn host_futex_wake(&mut self, _a: u32, _c: u32) -> Result<i32, Errno> { Ok(0) }
-            fn host_clone(&mut self, _f: u32, _a: u32, _s: u32, _t: u32, _c: u32) -> Result<i32, Errno> { Err(Errno::ENOSYS) }
+            fn host_futex_wait(&mut self, _a: usize, _e: u32, _t: i64) -> Result<i32, Errno> { Ok(0) }
+            fn host_futex_wake(&mut self, _a: usize, _c: u32) -> Result<i32, Errno> { Ok(0) }
+            fn host_clone(&mut self, _f: usize, _a: usize, _s: usize, _t: usize, _c: usize) -> Result<i32, Errno> { Err(Errno::ENOSYS) }
         }
 
         let mut proc = Process::new(1);
@@ -13448,9 +13454,9 @@ mod tests {
             fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> { Ok(0) }
             fn host_fcntl_lock(&mut self, _p: &[u8], _pid: u32, _c: u32, _t: u32, _s: i64, _l: i64, _r: &mut [u8]) -> Result<(), Errno> { Ok(()) }
             fn host_fork(&self) -> i32 { -1 }
-            fn host_futex_wait(&mut self, _a: u32, _e: u32, _t: i64) -> Result<i32, Errno> { Ok(0) }
-            fn host_futex_wake(&mut self, _a: u32, _c: u32) -> Result<i32, Errno> { Ok(0) }
-            fn host_clone(&mut self, _f: u32, _a: u32, _s: u32, _t: u32, _c: u32) -> Result<i32, Errno> { Err(Errno::ENOSYS) }
+            fn host_futex_wait(&mut self, _a: usize, _e: u32, _t: i64) -> Result<i32, Errno> { Ok(0) }
+            fn host_futex_wake(&mut self, _a: usize, _c: u32) -> Result<i32, Errno> { Ok(0) }
+            fn host_clone(&mut self, _f: usize, _a: usize, _s: usize, _t: usize, _c: usize) -> Result<i32, Errno> { Err(Errno::ENOSYS) }
         }
 
         let mut proc = Process::new(1);
@@ -13540,9 +13546,9 @@ mod tests {
             fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> { Ok(0) }
             fn host_fcntl_lock(&mut self, _p: &[u8], _pid: u32, _c: u32, _t: u32, _s: i64, _l: i64, _r: &mut [u8]) -> Result<(), Errno> { Ok(()) }
             fn host_fork(&self) -> i32 { -1 }
-            fn host_futex_wait(&mut self, _a: u32, _e: u32, _t: i64) -> Result<i32, Errno> { Ok(0) }
-            fn host_futex_wake(&mut self, _a: u32, _c: u32) -> Result<i32, Errno> { Ok(0) }
-            fn host_clone(&mut self, _f: u32, _a: u32, _s: u32, _t: u32, _c: u32) -> Result<i32, Errno> { Err(Errno::ENOSYS) }
+            fn host_futex_wait(&mut self, _a: usize, _e: u32, _t: i64) -> Result<i32, Errno> { Ok(0) }
+            fn host_futex_wake(&mut self, _a: usize, _c: u32) -> Result<i32, Errno> { Ok(0) }
+            fn host_clone(&mut self, _f: usize, _a: usize, _s: usize, _t: usize, _c: usize) -> Result<i32, Errno> { Err(Errno::ENOSYS) }
         }
 
         let mut proc = Process::new(1);

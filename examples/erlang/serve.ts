@@ -22,7 +22,7 @@ import type {
 } from "../../host/src/worker-protocol";
 import { ThreadPageAllocator } from "../../host/src/thread-allocator";
 
-const CH_TOTAL_SIZE = 40 + 65536;
+const CH_TOTAL_SIZE = 72 + 65536;
 const MAX_PAGES = 16384;
 
 const scriptDir = dirname(new URL(import.meta.url).pathname);
@@ -108,7 +108,7 @@ async function main() {
                 const alloc = threadAllocator.allocate(memory);
 
                 // TLS is now stored inside the channel spill page, not the separate TLS page.
-                const CH_TOTAL = 65576;
+                const CH_TOTAL = 65608; // CH_HEADER_SIZE (72) + CH_DATA_SIZE (65536)
                 const safeTlsAddr = alloc.channelOffset + CH_TOTAL;
 
                 kernelWorker.addChannel(pid, alloc.channelOffset, tid);

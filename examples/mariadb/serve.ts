@@ -24,15 +24,16 @@ import type {
 } from "../../host/src/worker-protocol";
 import { ThreadPageAllocator } from "../../host/src/thread-allocator";
 
-const CH_TOTAL_SIZE = 40 + 65536;
+const CH_TOTAL_SIZE = 72 + 65536;
 const MAX_PAGES = 16384;
 
 const scriptDir = dirname(new URL(import.meta.url).pathname);
 const repoRoot = resolve(scriptDir, "../..");
 const workerAdapter = new NodeWorkerAdapter();
 
+const useWasm64 = process.argv.includes("--wasm64");
 const mariadbLibDir = resolve(repoRoot, "examples/libs/mariadb");
-const installDir = resolve(mariadbLibDir, "mariadb-install");
+const installDir = resolve(mariadbLibDir, useWasm64 ? "mariadb-install-64" : "mariadb-install");
 
 // Create data directory on host
 const dataDir = resolve(scriptDir, "data");
@@ -74,20 +75,34 @@ async function main() {
                 console.log(`[kernel] fork: pid ${parentPid} → ${childPid}`);
                 const parentBuf = new Uint8Array(parentMemory.buffer);
                 const parentPages = Math.ceil(parentBuf.byteLength / 65536);
-                const childMemory = new WebAssembly.Memory({
-                    initial: parentPages,
-                    maximum: MAX_PAGES,
-                    shared: true,
-                });
+                const childMemory = useWasm64
+                    ? new WebAssembly.Memory({
+                          initial: BigInt(parentPages) as unknown as number,
+                          maximum: BigInt(MAX_PAGES) as unknown as number,
+                          shared: true,
+                          address: "i64",
+                      } as WebAssembly.MemoryDescriptor)
+                    : new WebAssembly.Memory({
+                          initial: parentPages,
+                          maximum: MAX_PAGES,
+                          shared: true,
+                      });
                 if (parentPages < MAX_PAGES) {
-                    childMemory.grow(MAX_PAGES - parentPages);
+                    if (useWasm64) {
+                        childMemory.grow(BigInt(MAX_PAGES - parentPages) as unknown as number);
+                    } else {
+                        childMemory.grow(MAX_PAGES - parentPages);
+                    }
                 }
                 new Uint8Array(childMemory.buffer).set(parentBuf);
 
                 const childChannelOffset = (MAX_PAGES - 2) * 65536;
                 new Uint8Array(childMemory.buffer, childChannelOffset, CH_TOTAL_SIZE).fill(0);
 
-                kernelWorker.registerProcess(childPid, childMemory, [childChannelOffset], { skipKernelCreate: true });
+                kernelWorker.registerProcess(childPid, childMemory, [childChannelOffset], {
+                    skipKernelCreate: true,
+                    ...(useWasm64 ? { ptrWidth: 8 as const } : {}),
+                });
 
                 const ASYNCIFY_BUF_SIZE = 16384;
                 const asyncifyBufAddr = childChannelOffset - ASYNCIFY_BUF_SIZE;
@@ -100,6 +115,7 @@ async function main() {
                     channelOffset: childChannelOffset,
                     isForkChild: true,
                     asyncifyBufAddr,
+                    ...(useWasm64 ? { ptrWidth: 8 as const } : {}),
                 };
 
                 const childWorker = workerAdapter.createWorker(childInitData);
@@ -133,11 +149,16 @@ async function main() {
                     tlsPtr,
                     ctidPtr,
                     tlsAllocAddr: alloc.tlsAllocAddr,
+                    ...(useWasm64 ? { ptrWidth: 8 as const } : {}),
                 };
 
                 const threadWorker = workerAdapter.createWorker(threadInitData);
                 threadWorker.on("message", (msg: unknown) => {
-                    const m = msg as WorkerToHostMessage;
+                    const m = msg as WorkerToHostMessage & { message?: string };
+                    if ((m as any).type === "debug") {
+                        console.error(`[thread ${tid} dbg] ${m.message}`);
+                        return;
+                    }
                     if (m.type === "thread_exit") {
                         console.error(`[kernel] thread ${tid} exited`);
                         kernelWorker.notifyThreadExit(pid, tid);
@@ -181,17 +202,30 @@ async function main() {
         onStderr: (data) => process.stderr.write(decoder.decode(data)),
     });
 
-    const memory = new WebAssembly.Memory({
-        initial: 17,
-        maximum: MAX_PAGES,
-        shared: true,
-    });
+    const memory = useWasm64
+        ? new WebAssembly.Memory({
+              initial: 17n as unknown as number,
+              maximum: BigInt(MAX_PAGES) as unknown as number,
+              shared: true,
+              address: "i64",
+          } as WebAssembly.MemoryDescriptor)
+        : new WebAssembly.Memory({
+              initial: 17,
+              maximum: MAX_PAGES,
+              shared: true,
+          });
     const channelOffset = (MAX_PAGES - 2) * 65536;
-    memory.grow(MAX_PAGES - 17);
+    if (useWasm64) {
+        (memory as WebAssembly.Memory).grow(BigInt(MAX_PAGES - 17) as unknown as number);
+    } else {
+        memory.grow(MAX_PAGES - 17);
+    }
     new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
     const pid = 1;
-    kernelWorker.registerProcess(pid, memory, [channelOffset]);
+    kernelWorker.registerProcess(pid, memory, [channelOffset], {
+        ...(useWasm64 ? { ptrWidth: 8 as const } : {}),
+    });
     kernelWorker.setCwd(pid, dataDir);
     kernelWorker.setNextChildPid(2);
 
@@ -260,6 +294,7 @@ async function main() {
             "TMPDIR=/tmp",
         ],
         argv: serverArgs,
+        ...(useWasm64 ? { ptrWidth: 8 as const } : {}),
     };
 
     const masterWorker = workerAdapter.createWorker(initData);
@@ -302,7 +337,7 @@ async function main() {
             setTimeout(() => {
                 console.log("\nBootstrap appears complete (timeout). Forcing shutdown.");
                 resolveP(0);
-            }, 30000);
+            }, 60000);
         });
         status = await Promise.race([exitPromise, timeoutPromise]);
     } else {

@@ -22,7 +22,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "../..");
 
 const MAX_PAGES = 16384;
-const CH_TOTAL_SIZE = 40 + 65536;
+const CH_TOTAL_SIZE = 72 + 65536;
 const ASYNCIFY_BUF_SIZE = 16384;
 
 const nginxWasmPath = join(repoRoot, "examples/nginx/nginx.wasm");

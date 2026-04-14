@@ -96,6 +96,8 @@ for src in "$REPO_ROOT/programs/"*.c; do
     # The minimal sh.c was a placeholder; building it overwrites dash with a
     # shell that lacks eval and other builtins needed by wordexp/popen.
     [ "$(basename "$src")" = "sh.c" ] && continue
+    # Skip hello64.c — built separately with wasm64 toolchain below
+    [ "$(basename "$src")" = "hello64.c" ] && continue
     build_program "$src" "$OUT_DIR"
 done
 
@@ -104,4 +106,51 @@ for src in "$REPO_ROOT/examples/"*.c; do
     [ -f "$src" ] || continue
     build_program "$src" "$REPO_ROOT/examples"
 done
+
+# Build wasm64 programs if sysroot64 exists
+SYSROOT64="$REPO_ROOT/sysroot64"
+if [ -f "$SYSROOT64/lib/libc.a" ]; then
+    echo "Building wasm64 programs..."
+
+    CFLAGS64=(
+        --target=wasm64-unknown-unknown
+        --sysroot="$SYSROOT64"
+        -nostdlib
+        -O2
+        -matomics -mbulk-memory
+        -fno-trapping-math
+        -mllvm -wasm-enable-sjlj
+        -mllvm -wasm-use-legacy-eh=true
+    )
+
+    LINK_FLAGS64=(
+        "$GLUE_DIR/channel_syscall.c"
+        "$GLUE_DIR/compiler_rt.c"
+        "$SYSROOT64/lib/crt1.o"
+        "$SYSROOT64/lib/libc.a"
+        -Wl,--entry=_start
+        -Wl,--export=_start
+        -Wl,--import-memory
+        -Wl,--shared-memory
+        -Wl,--max-memory=1073741824
+        -Wl,--allow-undefined
+        -Wl,--table-base=3
+        -Wl,--export-table
+        -Wl,--growable-table
+        -Wl,--export=__wasm_init_tls
+        -Wl,--export=__tls_base
+        -Wl,--export=__tls_size
+        -Wl,--export=__tls_align
+        -Wl,--export=__stack_pointer
+        -Wl,--export=__wasm_thread_init
+    )
+
+    for src in "$REPO_ROOT/programs/"hello64.c; do
+        [ -f "$src" ] || continue
+        local_name=$(basename "$src" .c)
+        echo "  Compiling $local_name (wasm64)..."
+        "$CC" "${CFLAGS64[@]}" "$src" "${LINK_FLAGS64[@]}" -o "$OUT_DIR/${local_name}.wasm"
+    done
+fi
+
 echo "Programs built."

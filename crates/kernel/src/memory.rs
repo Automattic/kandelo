@@ -4,8 +4,8 @@ use alloc::vec::Vec;
 /// Tracks a single mmap'd region.
 #[derive(Debug, Clone)]
 pub struct MappedRegion {
-    pub addr: u32,    // start address in linear memory
-    pub len: u32,     // length in bytes
+    pub addr: usize,    // start address in linear memory
+    pub len: usize,     // length in bytes
     pub prot: u32,    // protection flags (tracked but not enforced)
     pub flags: u32,   // map flags
 }
@@ -15,13 +15,13 @@ pub struct MemoryManager {
     /// List of active mappings, kept sorted by address.
     mappings: Vec<MappedRegion>,
     /// Current program break (for brk).
-    program_break: u32,
+    program_break: usize,
     /// Upper bound for mmap allocation (default 1GB = Wasm max-memory).
-    max_addr: u32,
+    max_addr: usize,
     /// RLIMIT_DATA soft limit (updated by setrlimit). u64::MAX = unlimited.
     data_limit: u64,
     /// Program break at process start, used to compute data segment growth.
-    initial_brk: u32,
+    initial_brk: usize,
 }
 
 impl MemoryManager {
@@ -29,13 +29,13 @@ impl MemoryManager {
     /// This leaves room for stack and heap below (brk starts at 16MB).
     /// Programs like CPython need large contiguous mmap regions, so we
     /// keep MMAP_BASE low to maximize available space.
-    const MMAP_BASE: u32 = 0x04000000;
+    const MMAP_BASE: usize = 0x04000000;
 
     /// Default initial program break at 16MB.
-    const INITIAL_BRK: u32 = 0x01000000;
+    const INITIAL_BRK: usize = 0x01000000;
 
     /// Default address space limit (1GB, matching --max-memory).
-    const DEFAULT_MAX_ADDR: u32 = 0x40000000;
+    const DEFAULT_MAX_ADDR: usize = 0x40000000;
 
     pub fn new() -> Self {
         MemoryManager {
@@ -60,7 +60,7 @@ impl MemoryManager {
     /// Allocate an anonymous mapping. Returns the base address.
     /// If `hint` is non-zero and MAP_FIXED is set, maps at exactly that address
     /// (unmapping any overlapping regions first).
-    pub fn mmap_anonymous(&mut self, hint: u32, len: u32, prot: u32, flags: u32) -> u32 {
+    pub fn mmap_anonymous(&mut self, hint: usize, len: usize, prot: u32, flags: u32) -> usize {
         use wasm_posix_shared::mmap::MAP_FIXED;
 
         if len == 0 {
@@ -109,7 +109,7 @@ impl MemoryManager {
     }
 
     /// Find the first gap in [MMAP_BASE, max_addr) that can fit `needed` bytes.
-    fn find_gap(&self, needed: u32) -> Option<u32> {
+    fn find_gap(&self, needed: usize) -> Option<usize> {
         let mut cursor = Self::MMAP_BASE;
         for m in &self.mappings {
             if m.addr < Self::MMAP_BASE {
@@ -140,7 +140,7 @@ impl MemoryManager {
     /// - Back trim: unmapping the end of a mapping shrinks it
     /// - Split: unmapping the middle of a mapping splits it into two
     /// Returns true if any overlap was found and handled.
-    pub fn munmap(&mut self, addr: u32, len: u32) -> bool {
+    pub fn munmap(&mut self, addr: usize, len: usize) -> bool {
         if len == 0 {
             return false;
         }
@@ -185,13 +185,13 @@ impl MemoryManager {
     }
 
     /// Get the current program break.
-    pub fn get_brk(&self) -> u32 {
+    pub fn get_brk(&self) -> usize {
         self.program_break
     }
 
     /// Set the program break. Returns the new break on success, or the
     /// current break unchanged on failure (limit exceeded).
-    pub fn set_brk(&mut self, new_brk: u32) -> u32 {
+    pub fn set_brk(&mut self, new_brk: usize) -> usize {
         if new_brk == 0 {
             // Query current break
             return self.program_break;
@@ -217,13 +217,13 @@ impl MemoryManager {
     }
 
     /// Check if an address is in a mapped region.
-    pub fn is_mapped(&self, addr: u32) -> bool {
+    pub fn is_mapped(&self, addr: usize) -> bool {
         self.mappings.iter().any(|m| addr >= m.addr && addr < m.addr + m.len)
     }
 
     /// Check if `len` bytes starting at `addr` are free (no overlap with existing mappings
     /// and within address space bounds).
-    pub fn can_grow_at(&self, addr: u32, len: u32) -> bool {
+    pub fn can_grow_at(&self, addr: usize, len: usize) -> bool {
         let end = match addr.checked_add(len) {
             Some(e) => e,
             None => return false,
@@ -245,7 +245,7 @@ impl MemoryManager {
     /// Used by the host to cap allocations below the channel/TLS region.
     /// Only lowers the ceiling — never raises it — so that pre-computed safe
     /// values (accounting for all future thread allocations) are preserved.
-    pub fn set_max_addr(&mut self, addr: u32) {
+    pub fn set_max_addr(&mut self, addr: usize) {
         if addr < self.max_addr {
             self.max_addr = addr;
         }
@@ -253,7 +253,7 @@ impl MemoryManager {
 
     /// Extend an existing mapping at `addr` from `old_len` to `new_len`.
     /// The caller must ensure the space is free (via `can_grow_at`).
-    pub fn extend_mapping(&mut self, addr: u32, old_len: u32, new_len: u32) {
+    pub fn extend_mapping(&mut self, addr: usize, old_len: usize, new_len: usize) {
         for m in &mut self.mappings {
             if m.addr == addr && m.len == old_len {
                 m.len = new_len;

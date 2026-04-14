@@ -12,23 +12,6 @@ import type {
 } from "./worker-protocol";
 import { DynamicLinker } from "./dylink";
 import { WasiShim, WasiExit, isWasiModule, wasiModuleDefinesMemory } from "./wasi-shim";
-// Debug file logging — Node.js only; silent no-op in browser workers.
-// Resolved lazily on first use to avoid static "fs" imports (break Vite builds)
-// and top-level await (unsupported in esbuild's es2020 target for workers).
-let _nodeFs: typeof import("fs") | null | undefined;
-function _debugWrite(fn: "writeFileSync" | "appendFileSync", path: string, data: string) {
-  if (_nodeFs === undefined) {
-    _nodeFs = null;
-    if (typeof process !== "undefined" && process.versions?.node) {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      try { _nodeFs = require("fs"); } catch {}
-    }
-  }
-  if (_nodeFs) try { (_nodeFs as any)[fn](path, data); } catch {}
-}
-function writeFileSync(path: string, data: string) { _debugWrite("writeFileSync", path, data); }
-function appendFileSync(path: string, data: string) { _debugWrite("appendFileSync", path, data); }
-
 export interface MessagePort {
   postMessage(msg: unknown, transferList?: unknown[]): void;
   on(event: string, handler: (...args: unknown[]) => void): void;
@@ -38,6 +21,9 @@ export interface MessagePort {
  * Build kernel.* import stubs for channel-mode Wasm modules.
  * Both process and thread workers need these because the musl overlay CRT
  * imports kernel.* functions for argc/argv, environ, fork state, and clone.
+ *
+ * On wasm64, pointer params arrive as BigInt (i64). The helper `n()` converts
+ * BigInt|number → number for memory access (all addresses < 4GB).
  */
 function buildKernelImports(
   memory: WebAssembly.Memory,
@@ -48,46 +34,48 @@ function buildKernelImports(
   const _argv = argv || [];
   const _envVars = envVars || [];
   const encoder = new TextEncoder();
+  /** Convert wasm64 BigInt pointer to number (safe since addresses < 4GB) */
+  const n = (v: number | bigint): number => typeof v === "bigint" ? Number(v) : v;
 
   return {
     // CRT argv support
     kernel_get_argc: (): number => _argv.length,
-    kernel_argv_read: (index: number, bufPtr: number, bufMax: number): number => {
+    kernel_argv_read: (index: number, bufPtr: number | bigint, bufMax: number): number => {
       if (index >= _argv.length) return 0;
       const encoded = encoder.encode(_argv[index]);
       const len = Math.min(encoded.length, bufMax);
-      new Uint8Array(memory.buffer, bufPtr, len).set(encoded.subarray(0, len));
+      new Uint8Array(memory.buffer, n(bufPtr), len).set(encoded.subarray(0, len));
       return len;
     },
 
     // CRT environ support
     kernel_environ_count: (): number => _envVars.length,
-    kernel_environ_get: (index: number, bufPtr: number, bufMax: number): number => {
+    kernel_environ_get: (index: number, bufPtr: number | bigint, bufMax: number): number => {
       if (index >= _envVars.length) return -1;
       const encoded = encoder.encode(_envVars[index]);
       const len = Math.min(encoded.length, bufMax);
-      new Uint8Array(memory.buffer, bufPtr, len).set(encoded.subarray(0, len));
+      new Uint8Array(memory.buffer, n(bufPtr), len).set(encoded.subarray(0, len));
       return len;
     },
 
     // Fork/exec state — not a fork child in centralized mode
     kernel_is_fork_child: (): number => 0,
     kernel_apply_fork_fd_actions: (): number => 0,
-    kernel_get_fork_exec_path: (_buf: number, _max: number): number => 0,
+    kernel_get_fork_exec_path: (_buf: number | bigint, _max: number): number => 0,
     kernel_get_fork_exec_argc: (): number => 0,
-    kernel_get_fork_exec_argv: (_index: number, _buf: number, _max: number): number => 0,
-    kernel_push_argv: (_ptr: number, _len: number): number => 0,
+    kernel_get_fork_exec_argv: (_index: number, _buf: number | bigint, _max: number): number => 0,
+    kernel_push_argv: (_ptr: number | bigint, _len: number): void => {},
     kernel_clear_fork_exec: (): number => 0,
 
     // Exec dispatches through channel
-    kernel_execve: (_pathPtr: number): number => -38, // ENOSYS
+    kernel_execve: (_pathPtr: number | bigint): number => -38, // ENOSYS
 
     // Exit dispatches through channel (SYS_EXIT)
     kernel_exit: (status: number): void => {
       const view = new DataView(memory.buffer);
       const base = channelOffset;
       view.setInt32(base + 4, 34, true); // SYS_EXIT = 34
-      view.setInt32(base + 8, status, true);
+      view.setBigInt64(base + 8, BigInt(status), true); // arg0 as i64
       const i32 = new Int32Array(memory.buffer);
       Atomics.store(i32, base / 4, 1); // CH_PENDING
       Atomics.notify(i32, base / 4, 1);
@@ -97,29 +85,33 @@ function buildKernelImports(
     },
 
     // Clone dispatches through channel (SYS_CLONE)
-    kernel_clone: (fnPtr: number, stackPtr: number, flags: number,
-      arg: number, ptidPtr: number, tlsPtr: number, ctidPtr: number): number => {
+    kernel_clone: (fnPtr: number | bigint, stackPtr: number | bigint, flags: number,
+      arg: number | bigint, ptidPtr: number | bigint, tlsPtr: number | bigint, ctidPtr: number | bigint): number => {
       const SYS_CLONE_NR = 201;
+      const CH_ARG_SIZE = 8;
+      const CH_RETURN = 56;
+      const CH_ERRNO = 64;
+      const CH_DATA = 72;
       const view = new DataView(memory.buffer);
       const base = channelOffset;
       view.setInt32(base + 4, SYS_CLONE_NR, true);
-      view.setInt32(base + 8, flags, true);
-      view.setInt32(base + 12, stackPtr, true);
-      view.setInt32(base + 16, ptidPtr, true);
-      view.setInt32(base + 20, tlsPtr, true);
-      view.setInt32(base + 24, ctidPtr, true);
-      view.setInt32(base + 28, 0, true);
+      view.setBigInt64(base + 8 + 0 * CH_ARG_SIZE, BigInt(flags), true);
+      view.setBigInt64(base + 8 + 1 * CH_ARG_SIZE, BigInt(stackPtr), true);
+      view.setBigInt64(base + 8 + 2 * CH_ARG_SIZE, BigInt(ptidPtr), true);
+      view.setBigInt64(base + 8 + 3 * CH_ARG_SIZE, BigInt(tlsPtr), true);
+      view.setBigInt64(base + 8 + 4 * CH_ARG_SIZE, BigInt(ctidPtr), true);
+      view.setBigInt64(base + 8 + 5 * CH_ARG_SIZE, 0n, true);
       // Write fn_ptr and arg_ptr to CH_DATA area for handleClone
-      view.setUint32(base + 40, fnPtr, true);
-      view.setUint32(base + 44, arg, true);
+      view.setUint32(base + CH_DATA, n(fnPtr), true);
+      view.setUint32(base + CH_DATA + 4, n(arg), true);
 
       const i32 = new Int32Array(memory.buffer);
       Atomics.store(i32, base / 4, 1); // CH_PENDING
       Atomics.notify(i32, base / 4, 1);
       while (Atomics.wait(i32, base / 4, 1) === "ok") { /* */ }
 
-      const result = view.getInt32(base + 32, true);
-      const err = view.getUint32(base + 36, true);
+      const result = Number(view.getBigInt64(base + CH_RETURN, true));
+      const err = view.getUint32(base + CH_ERRNO, true);
       Atomics.store(i32, base / 4, 0);
 
       if (err) return -err;
@@ -129,18 +121,21 @@ function buildKernelImports(
     // Fork dispatches through channel (SYS_FORK)
     kernel_fork: (): number => {
       const SYS_FORK_NR = 212;
+      const CH_ARG_SIZE = 8;
+      const CH_RETURN = 56;
+      const CH_ERRNO = 64;
       const view = new DataView(memory.buffer);
       const base = channelOffset;
       view.setInt32(base + 4, SYS_FORK_NR, true);
-      for (let i = 0; i < 6; i++) view.setInt32(base + 8 + i * 4, 0, true);
+      for (let i = 0; i < 6; i++) view.setBigInt64(base + 8 + i * CH_ARG_SIZE, 0n, true);
 
       const i32 = new Int32Array(memory.buffer);
       Atomics.store(i32, base / 4, 1); // CH_PENDING
       Atomics.notify(i32, base / 4, 1);
       while (Atomics.wait(i32, base / 4, 1) === "ok") { /* */ }
 
-      const result = view.getInt32(base + 32, true);
-      const err = view.getUint32(base + 36, true);
+      const result = Number(view.getBigInt64(base + CH_RETURN, true));
+      const err = view.getUint32(base + CH_ERRNO, true);
       Atomics.store(i32, base / 4, 0);
 
       if (err) return -err;
@@ -243,15 +238,24 @@ function buildImportObject(
   channelOffset: number,
   dlopenImports?: Record<string, WebAssembly.ExportValue>,
   getInstance?: () => WebAssembly.Instance | undefined,
+  ptrWidth: 4 | 8 = 4,
 ): WebAssembly.Imports {
   const envImports: Record<string, WebAssembly.ExportValue> = { memory };
+  /** Convert wasm64 BigInt pointer to number (safe since addresses < 4GB) */
+  const n = (v: number | bigint): number => typeof v === "bigint" ? Number(v) : v;
+  /** Wrap a number as the correct return type for pointer-returning imports */
+  const retPtr = (v: number): number | bigint => ptrWidth === 8 ? BigInt(v) : v;
 
   // Provide __channel_base as a mutable wasm global if the module imports it.
   // Each instance gets its own global, immune to cross-thread shared memory corruption.
-  // wasm-ld promotes undefined globals to mutable when creating imports.
+  // On wasm64, __channel_base is i64 (BigInt); on wasm32 it's i32 (number).
   const moduleImports = WebAssembly.Module.imports(module);
   if (moduleImports.some(i => i.module === "env" && i.name === "__channel_base" && i.kind === "global")) {
-    envImports.__channel_base = new WebAssembly.Global({ value: "i32", mutable: true }, channelOffset);
+    if (ptrWidth === 8) {
+      envImports.__channel_base = new WebAssembly.Global({ value: "i64", mutable: true }, BigInt(channelOffset));
+    } else {
+      envImports.__channel_base = new WebAssembly.Global({ value: "i32", mutable: true }, channelOffset);
+    }
   }
 
   // Add dlopen imports if provided
@@ -262,15 +266,15 @@ function buildImportObject(
   // C++ operator new/delete fallbacks — delegate to the wasm instance's malloc/free.
   // Normally resolved by MariaDB's my_new.cc (USE_MYSYS_NEW), but kept as safety net.
   if (getInstance) {
-    const cppMalloc = (size: number): number => {
+    const cppMalloc = (size: number | bigint): number | bigint => {
       const inst = getInstance();
-      const malloc = inst?.exports.malloc as ((n: number) => number) | undefined;
-      if (!malloc) return 0;
-      return malloc(size || 1);
+      const malloc = inst?.exports.malloc as ((n: number | bigint) => number | bigint) | undefined;
+      if (!malloc) return ptrWidth === 8 ? 0n : 0;
+      return malloc(size || (ptrWidth === 8 ? 1n : 1));
     };
-    const cppFree = (ptr: number): void => {
+    const cppFree = (ptr: number | bigint): void => {
       const inst = getInstance();
-      const free = inst?.exports.free as ((p: number) => void) | undefined;
+      const free = inst?.exports.free as ((p: number | bigint) => void) | undefined;
       if (free) free(ptr);
     };
     envImports._Znwm = cppMalloc;            // operator new(size_t)
@@ -287,65 +291,78 @@ function buildImportObject(
   // the wasm binary links against empty stub archives.
   // __cxa_guard_acquire/release: thread-safe static initialization.
   // Wasm is single-threaded per instance so no real locking needed.
-  envImports.__cxa_guard_acquire = (guardPtr: number): number => {
+  envImports.__cxa_guard_acquire = (guardPtr: number | bigint): number => {
     const view = new Uint8Array(memory.buffer);
-    if (view[guardPtr]) return 0; // already initialized
+    if (view[n(guardPtr)]) return 0; // already initialized
     return 1; // needs initialization
   };
-  envImports.__cxa_guard_release = (guardPtr: number): void => {
+  envImports.__cxa_guard_release = (guardPtr: number | bigint): void => {
     const view = new Uint8Array(memory.buffer);
-    view[guardPtr] = 1; // mark initialized
+    view[n(guardPtr)] = 1; // mark initialized
   };
-  envImports.__cxa_guard_abort = (_guardPtr: number): void => { /* no-op */ };
+  envImports.__cxa_guard_abort = (_guardPtr: number | bigint): void => { /* no-op */ };
   envImports.__cxa_pure_virtual = (): void => {
     throw new Error("pure virtual method called");
   };
   envImports.__cxa_atexit = (): number => 0; // no-op, return success
+
+  // libc++ verbose abort — called on internal library errors
+  envImports._ZNSt3__122__libcpp_verbose_abortEPKcz = (_fmt: number | bigint, _args: number | bigint): void => {
+    throw new Error("libc++ verbose abort");
+  };
+
+  // libc++ sort — MariaDB doesn't actually call this at runtime
+  // (linked from empty stub libc++.a). Signature: sort<less<ull>, ull*>(first, last, comp)
+  envImports["_ZNSt3__16__sortIRNS_6__lessIyyEEPyEEvT0_S5_T_"] = (_first: number | bigint, _last: number | bigint, _comp: number | bigint): void => {
+    throw new Error("libc++ sort called unexpectedly");
+  };
   const dcTiClassCache = new Map<number, number>(); // typeinfo addr → metaclass (0=leaf, 1=SI, 2=VMI)
   // __dynamic_cast: Itanium C++ ABI dynamic_cast implementation.
   // Reads RTTI from the object's vtable and walks the type hierarchy to
   // check if dst_type is reachable from the object's runtime type.
   // Args: (src_ptr, src_typeinfo*, dst_typeinfo*, src2dst_hint)
-  envImports.__dynamic_cast = (srcPtr: number, _srcType: number, dstType: number, _src2dst: number): number => {
-    if (srcPtr === 0) return 0;
+  envImports.__dynamic_cast = (srcPtr_: number | bigint, _srcType: number | bigint, dstType_: number | bigint, _src2dst: number | bigint): number | bigint => {
+    const srcPtr = n(srcPtr_);
+    const dstType = n(dstType_);
+    if (srcPtr === 0) return retPtr(0);
     const view = new DataView(memory.buffer);
     const memSize = memory.buffer.byteLength;
+    const PS = ptrWidth; // pointer size in bytes
+    const readPtr = (addr: number): number =>
+      PS === 8 ? Number(view.getBigUint64(addr, true)) : view.getUint32(addr, true);
+    const readSPtr = (addr: number): number =>
+      PS === 8 ? Number(view.getBigInt64(addr, true)) : view.getInt32(addr, true);
 
     // Read vtable pointer from object (Itanium ABI: first word is vtable ptr)
-    const vtablePtr = view.getUint32(srcPtr, true);
-    if (vtablePtr === 0 || vtablePtr >= memSize) return 0;
+    const vtablePtr = readPtr(srcPtr);
+    if (vtablePtr === 0 || vtablePtr >= memSize) return retPtr(0);
 
-    // Itanium ABI vtable layout (32-bit):
-    //   vtable[-8] = offset_to_top (ptrdiff_t)
-    //   vtable[-4] = RTTI pointer (typeinfo*)
-    //   vtable[0]  = first virtual function
-    if (vtablePtr < 8) return 0;
-    const rttiPtr = view.getUint32(vtablePtr - 4, true);
-    if (rttiPtr === 0 || rttiPtr >= memSize) return 0;
-    const offsetToTop = view.getInt32(vtablePtr - 8, true);
+    // Itanium ABI vtable layout:
+    //   vtable[-PS*2] = offset_to_top (ptrdiff_t)
+    //   vtable[-PS]   = RTTI pointer (typeinfo*)
+    //   vtable[0]     = first virtual function
+    if (vtablePtr < 2 * PS) return retPtr(0);
+    const rttiPtr = readPtr(vtablePtr - PS);
+    if (rttiPtr === 0 || rttiPtr >= memSize) return retPtr(0);
+    const offsetToTop = readSPtr(vtablePtr - 2 * PS);
 
     // Direct match: runtime type IS the destination type
-    if (rttiPtr === dstType) return srcPtr + offsetToTop;
+    if (rttiPtr === dstType) return retPtr(srcPtr + offsetToTop);
 
     // Walk the type hierarchy from the runtime type, checking if dstType
-    // is a base class. Without libc++abi linked in, we can't determine the
-    // typeinfo metaclass by vtable pointer. Instead, we try both SI and VMI
-    // interpretations: for each typeinfo, first try field[8] as a base type
-    // pointer (SI), then try field[8] as flags with field[12] as base_count (VMI).
-    //
-    // typeinfo layout:
-    //   [0] vtable ptr (for the typeinfo meta-class)
-    //   [4] name ptr (mangled type name)
+    // is a base class. typeinfo layout (pointer-sized fields):
+    //   [0]      vtable ptr (for the typeinfo meta-class)
+    //   [PS]     name ptr (mangled type name)
     //   -- __si_class_type_info adds:
-    //   [8] base typeinfo ptr
+    //   [2*PS]   base typeinfo ptr
     //   -- __vmi_class_type_info adds:
-    //   [8] flags (uint32, 0-3)
-    //   [12] base_count (uint32)
-    //   [16 + i*8] base_info[i].base_type (typeinfo ptr)
-    //   [20 + i*8] base_info[i].offset_flags (long)
+    //   [2*PS]   flags (uint32)
+    //   [2*PS+4] base_count (uint32)
+    //   [2*PS+8 + i*(PS+4)] base_info[i].base_type (ptr)
+    //   [2*PS+8 + i*(PS+4) + PS] base_info[i].offset_flags (long)
+    const TI_FIELD2 = 2 * PS; // offset of first field after (vtablePtr, namePtr)
+    const BASE_INFO_STRIDE = PS + PS; // base_type(ptr) + offset_flags(long/ptr)
 
-    // Cache: map typeinfo address → metaclass (0=leaf, 1=SI, 2=VMI)
-    // to avoid re-classifying on repeated calls.
     const tiClassCache = dcTiClassCache;
 
     const isTypeAncestor = (ti: number, target: number, visited: Set<number>): boolean => {
@@ -353,70 +370,67 @@ function buildImportObject(
       if (ti === 0 || ti >= memSize || visited.has(ti)) return false;
       visited.add(ti);
 
-      if (ti + 12 > memSize) return false;
-      const field8 = view.getUint32(ti + 8, true);
+      if (ti + TI_FIELD2 + PS > memSize) return false;
 
-      // Check cache first
       const cached = tiClassCache.get(ti);
       if (cached === 0) return false; // leaf
-      if (cached === 1) return isTypeAncestor(field8, target, visited); // SI
+      if (cached === 1) {
+        // SI: field at TI_FIELD2 is base typeinfo ptr
+        const basePtr = readPtr(ti + TI_FIELD2);
+        return isTypeAncestor(basePtr, target, visited);
+      }
       if (cached === 2) {
-        // VMI
-        const baseCount = view.getUint32(ti + 12, true);
+        // VMI: flags(u32) + base_count(u32) then base_info array
+        const baseCount = view.getUint32(ti + TI_FIELD2 + 4, true);
         for (let i = 0; i < baseCount; i++) {
-          const baseType = view.getUint32(ti + 16 + i * 8, true);
+          const baseType = readPtr(ti + TI_FIELD2 + 8 + i * BASE_INFO_STRIDE);
           if (baseType > 0 && isTypeAncestor(baseType, target, visited)) return true;
         }
         return false;
       }
 
       // Not cached — classify by trying SI first, then VMI
+      const field2 = readPtr(ti + TI_FIELD2);
 
-      // Try SI: field8 is a pointer to another typeinfo
-      if (field8 > 0x100 && field8 + 8 <= memSize) {
-        // Validate: dereferencing field8 should give something that looks
-        // like a typeinfo. The vtable pointer may be 0 if libc++abi is not
-        // linked, so we only check the name pointer is plausible.
-        const possibleTiName = view.getUint32(field8 + 4, true);
+      // Try SI: field2 is a pointer to another typeinfo
+      if (field2 > 0x100 && field2 + PS <= memSize) {
+        const possibleTiName = readPtr(field2 + PS);
         if (possibleTiName > 0 && possibleTiName < memSize) {
           tiClassCache.set(ti, 1);
-          if (isTypeAncestor(field8, target, visited)) return true;
-          // SI path didn't find target — might still be VMI (ambiguous case)
+          if (isTypeAncestor(field2, target, visited)) return true;
           tiClassCache.delete(ti);
         }
       }
 
-      // Try VMI: field8 is flags (0-3), [12] is base_count
-      if (field8 <= 3 && ti + 16 <= memSize) {
-        const baseCount = view.getUint32(ti + 12, true);
-        if (baseCount > 0 && baseCount < 100 && ti + 16 + baseCount * 8 <= memSize) {
+      // Try VMI: field at TI_FIELD2 is flags (u32, 0-3), [TI_FIELD2+4] is base_count
+      const flags32 = view.getUint32(ti + TI_FIELD2, true);
+      if (flags32 <= 3 && ti + TI_FIELD2 + 8 <= memSize) {
+        const baseCount = view.getUint32(ti + TI_FIELD2 + 4, true);
+        if (baseCount > 0 && baseCount < 100 && ti + TI_FIELD2 + 8 + baseCount * BASE_INFO_STRIDE <= memSize) {
           tiClassCache.set(ti, 2);
           for (let i = 0; i < baseCount; i++) {
-            const baseType = view.getUint32(ti + 16 + i * 8, true);
+            const baseType = readPtr(ti + TI_FIELD2 + 8 + i * BASE_INFO_STRIDE);
             if (baseType > 0 && isTypeAncestor(baseType, target, visited)) return true;
           }
           return false;
         }
       }
 
-      // No bases found — leaf type
       tiClassCache.set(ti, 0);
       return false;
     };
 
     if (isTypeAncestor(rttiPtr, dstType, new Set())) {
-      return srcPtr + offsetToTop;
+      return retPtr(srcPtr + offsetToTop);
     }
-    return 0;
+    return retPtr(0);
   };
-  // libc++ verbose abort
-  envImports._ZNSt3__122__libcpp_verbose_abortEPKcz = (): void => {
-    throw new Error("libc++: abort");
-  };
-  // std::sort specialization — sort uint64 array in-place
+
+  // libc++ sort specialization — sort uint64 array in-place
   envImports['_ZNSt3__16__sortIRNS_6__lessIyyEEPyEEvT0_S5_T_'] = (
-    begin: number, end: number,
+    begin_: number | bigint, end_: number | bigint,
   ): void => {
+    const begin = n(begin_), end = n(end_);
     const view = new DataView(memory.buffer);
     const count = (end - begin) / 8;
     const arr: bigint[] = [];
@@ -460,6 +474,7 @@ export async function centralizedWorkerMain(
 ): Promise<void> {
   try {
     const { memory, programBytes, channelOffset, pid } = initData;
+    const ptrWidth = initData.ptrWidth ?? 4;
     // Use pre-compiled module if provided (avoids recompilation in web workers)
     const module = initData.programModule
       ? initData.programModule
@@ -569,7 +584,7 @@ export async function centralizedWorkerMain(
         () => processInstance ?? undefined,
       );
       const importObject = buildImportObject(module, memory, kernelImports, channelOffset, dlopenImports,
-        () => processInstance ?? undefined);
+        () => processInstance ?? undefined, ptrWidth);
       const instance = await WebAssembly.instantiate(module, importObject);
       processInstance = instance;
 
@@ -584,9 +599,12 @@ export async function centralizedWorkerMain(
         // leaving __tls_base at 0 instead of the correct TLS segment address.
         const tlsBaseGlobal = instance.exports.__tls_base as WebAssembly.Global | undefined;
         if (tlsBaseGlobal) {
-          const savedBase = view.getUint32(initData.asyncifyBufAddr - 4, true);
-          if (savedBase > 0) {
-            tlsBaseGlobal.value = savedBase;
+          if (ptrWidth === 8) {
+            const savedBase = Number(view.getBigUint64(initData.asyncifyBufAddr - 8, true));
+            if (savedBase > 0) tlsBaseGlobal.value = BigInt(savedBase);
+          } else {
+            const savedBase = view.getUint32(initData.asyncifyBufAddr - 4, true);
+            if (savedBase > 0) tlsBaseGlobal.value = savedBase;
           }
         }
 
@@ -598,15 +616,18 @@ export async function centralizedWorkerMain(
         // locals (corrupting arrays, structs on the shadow stack).
         const stackPtrGlobal = instance.exports.__stack_pointer as WebAssembly.Global | undefined;
         if (stackPtrGlobal) {
-          const savedSp = view.getUint32(initData.asyncifyBufAddr - 8, true);
-          if (savedSp > 0) {
-            stackPtrGlobal.value = savedSp;
+          if (ptrWidth === 8) {
+            const savedSp = Number(view.getBigUint64(initData.asyncifyBufAddr - 16, true));
+            if (savedSp > 0) stackPtrGlobal.value = BigInt(savedSp);
+          } else {
+            const savedSp = view.getUint32(initData.asyncifyBufAddr - 8, true);
+            if (savedSp > 0) stackPtrGlobal.value = savedSp;
           }
         }
       }
 
       // Set __channel_base in TLS
-      setupChannelBase(instance, module, memory, channelOffset, programBytes as ArrayBuffer);
+      setupChannelBase(instance, module, memory, channelOffset, programBytes as ArrayBuffer, ptrWidth);
 
       // Signal ready
       port.postMessage({ type: "ready", pid } satisfies WorkerToHostMessage);
@@ -653,7 +674,7 @@ export async function centralizedWorkerMain(
             // The child's WebAssembly.instantiate() will run __wasm_init_memory
             // which calls __wasm_init_tls, overwriting the TLS area with template
             // values and resetting __wasm_thread_pointer to 0.
-            saveParentTls(instance, memory, asyncifyBufAddr);
+            saveParentTls(instance, memory, asyncifyBufAddr, ptrWidth);
 
             // Send SYS_FORK through the channel now that memory has asyncify data
             const childPid = sendForkSyscall(memory, channelOffset);
@@ -698,11 +719,11 @@ export async function centralizedWorkerMain(
         () => processInstance ?? undefined,
       );
       const importObject = buildImportObject(module, memory, kernelImports, channelOffset, dlopenImports,
-        () => processInstance ?? undefined);
+        () => processInstance ?? undefined, ptrWidth);
       const instance = await WebAssembly.instantiate(module, importObject);
       processInstance = instance;
 
-      setupChannelBase(instance, module, memory, channelOffset, programBytes as ArrayBuffer);
+      setupChannelBase(instance, module, memory, channelOffset, programBytes as ArrayBuffer, ptrWidth);
 
       port.postMessage({ type: "ready", pid } satisfies WorkerToHostMessage);
 
@@ -712,12 +733,14 @@ export async function centralizedWorkerMain(
         if (start) start();
       } catch (e) {
         if (e instanceof Error && e.message.includes("unreachable")) {
+          console.error(`[worker] pid=${pid} _start() hit unreachable trap: ${e.message}`);
           exitCode = 0;
         } else {
           throw e;
         }
       }
 
+      console.error(`[worker] pid=${pid} _start() returned, exitCode=${exitCode}`);
       port.postMessage({ type: "exit", pid, status: exitCode } satisfies WorkerToHostMessage);
     }
   } catch (err) {
@@ -835,18 +858,22 @@ function detectChannelBaseTlsOffset(programBytes: ArrayBuffer): number {
     const [localCount, lcBytes] = readLEB128(src, pos); pos += lcBytes;
     for (let i = 0; i < localCount; i++) { const [, n] = readLEB128(src, pos); pos += n; pos++; }
 
-    // Pattern 1: direct export — starts with i32.const <offset>
-    if (src[pos] === 0x41) {
+    // i32.const = 0x41, i64.const = 0x42 (wasm64 uses i64 for addresses)
+    const I32_CONST = 0x41;
+    const I64_CONST = 0x42;
+
+    // Pattern 1: direct export — starts with i32.const/i64.const <offset>
+    if (src[pos] === I32_CONST || src[pos] === I64_CONST) {
       pos++;
       const [tlsOffset] = readLEB128(src, pos);
       return tlsOffset;
     }
 
-    // Pattern 3: post-asyncify — global.get <tls_base>; i32.const <offset>; i32.add
+    // Pattern 3: post-asyncify — global.get <tls_base>; i32/i64.const <offset>; i32/i64.add
     if (src[pos] === 0x23) {
       let p3 = pos + 1;
       const [, globalIdxBytes] = readLEB128(src, p3); p3 += globalIdxBytes;
-      if (src[p3] === 0x41) {
+      if (src[p3] === I32_CONST || src[p3] === I64_CONST) {
         p3++;
         const [tlsOffset] = readLEB128(src, p3);
         return tlsOffset;
@@ -874,7 +901,7 @@ function detectChannelBaseTlsOffset(programBytes: ArrayBuffer): number {
     const [lc2, lcb2] = readLEB128(src, pos2); pos2 += lcb2;
     for (let i = 0; i < lc2; i++) { const [, n] = readLEB128(src, pos2); pos2 += n; pos2++; }
 
-    if (src[pos2] !== 0x41) return -1;
+    if (src[pos2] !== I32_CONST && src[pos2] !== I64_CONST) return -1;
     pos2++;
     const [tlsOffset] = readLEB128(src, pos2);
     return tlsOffset;
@@ -889,6 +916,7 @@ function setupChannelBase(
   memory: WebAssembly.Memory,
   channelOffset: number,
   programBytes?: ArrayBuffer,
+  ptrWidth: 4 | 8 = 4,
 ): void {
   // If the module imports env.__channel_base as a global, the channel offset was
   // already set at instantiation via WebAssembly.Global in buildImportObject.
@@ -898,22 +926,21 @@ function setupChannelBase(
   }
 
   // Legacy TLS-based approach: write channelOffset into the TLS slot.
-  // IMPORTANT: Do NOT call __get_channel_base_addr() here. On older binaries
-  // compiled with shared memory (threads), the export calls __wasm_call_ctors
-  // which runs C++ static constructors. Those may call malloc→sbrk→syscall,
-  // but __channel_base is still 0 at this point so the syscall writes to the
-  // wrong memory offset. The kernel never sees it and the process deadlocks.
-  // Instead, use __tls_base + detected TLS offset (or offset 0 as fallback).
   const tlsBase = instance.exports.__tls_base as WebAssembly.Global | undefined;
   const view = new DataView(memory.buffer);
-  const tlsAddr = tlsBase ? (tlsBase.value as number) : 0;
+  const tlsAddr = tlsBase ? Number(tlsBase.value) : 0;
 
   if (tlsAddr > 0) {
     let detectedOffset = -1;
     if (programBytes) {
       detectedOffset = detectChannelBaseTlsOffset(programBytes);
     }
-    view.setUint32(tlsAddr + (detectedOffset >= 0 ? detectedOffset : 0), channelOffset, true);
+    const addr = tlsAddr + (detectedOffset >= 0 ? detectedOffset : 0);
+    if (ptrWidth === 8) {
+      view.setBigUint64(addr, BigInt(channelOffset), true);
+    } else {
+      view.setUint32(addr, channelOffset, true);
+    }
   }
 }
 
@@ -937,22 +964,31 @@ function saveParentTls(
   instance: WebAssembly.Instance,
   memory: WebAssembly.Memory,
   asyncifyBufAddr: number,
+  ptrWidth: 4 | 8 = 4,
 ): void {
   const view = new DataView(memory.buffer);
 
   const tlsBaseGlobal = instance.exports.__tls_base as WebAssembly.Global | undefined;
   if (tlsBaseGlobal) {
-    const tlsBase = tlsBaseGlobal.value as number;
+    const tlsBase = Number(tlsBaseGlobal.value);
     if (tlsBase > 0) {
-      view.setUint32(asyncifyBufAddr - 4, tlsBase, true);
+      if (ptrWidth === 8) {
+        view.setBigUint64(asyncifyBufAddr - 8, BigInt(tlsBase), true);
+      } else {
+        view.setUint32(asyncifyBufAddr - 4, tlsBase, true);
+      }
     }
   }
 
   const stackPtrGlobal = instance.exports.__stack_pointer as WebAssembly.Global | undefined;
   if (stackPtrGlobal) {
-    const stackPtr = stackPtrGlobal.value as number;
+    const stackPtr = Number(stackPtrGlobal.value);
     if (stackPtr > 0) {
-      view.setUint32(asyncifyBufAddr - 8, stackPtr, true);
+      if (ptrWidth === 8) {
+        view.setBigUint64(asyncifyBufAddr - 16, BigInt(stackPtr), true);
+      } else {
+        view.setUint32(asyncifyBufAddr - 8, stackPtr, true);
+      }
     }
   }
 }
@@ -965,13 +1001,14 @@ function sendForkSyscall(memory: WebAssembly.Memory, channelOffset: number): num
   const SYS_FORK_NR = 212;
   const CH_SYSCALL = 4;
   const CH_ARGS = 8;
-  const CH_RETURN = 32;
-  const CH_ERRNO = 36;
+  const CH_ARG_SIZE = 8; // each arg is i64 (8 bytes)
+  const CH_RETURN = 56;
+  const CH_ERRNO = 64;
 
   const view = new DataView(memory.buffer);
   view.setInt32(channelOffset + CH_SYSCALL, SYS_FORK_NR, true);
   for (let i = 0; i < 6; i++) {
-    view.setInt32(channelOffset + CH_ARGS + i * 4, 0, true);
+    view.setBigInt64(channelOffset + CH_ARGS + i * CH_ARG_SIZE, 0n, true);
   }
 
   const i32 = new Int32Array(memory.buffer);
@@ -979,7 +1016,7 @@ function sendForkSyscall(memory: WebAssembly.Memory, channelOffset: number): num
   Atomics.notify(i32, channelOffset / 4, 1);
   while (Atomics.wait(i32, channelOffset / 4, 1) === "ok") { /* */ }
 
-  const result = view.getInt32(channelOffset + CH_RETURN, true);
+  const result = Number(view.getBigInt64(channelOffset + CH_RETURN, true));
   const err = view.getUint32(channelOffset + CH_ERRNO, true);
   Atomics.store(i32, channelOffset / 4, 0);
 
@@ -1222,120 +1259,95 @@ export async function centralizedThreadWorkerMain(
   initData: CentralizedThreadInitMessage,
 ): Promise<void> {
   const { memory, channelOffset, pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, tlsAllocAddr } = initData;
+  const ptrWidth = initData.ptrWidth ?? 4;
 
-  // Declare outside try so catch block can access for diagnostics
   let threadInstance: WebAssembly.Instance | undefined;
-  let channelBaseGlobal: WebAssembly.Global | undefined; // imported global ref for crash diag
-  const logFile = `/tmp/thread-${tid}.log`;
-  const tlog = (msg: string) => { try { appendFileSync(logFile, msg + '\n'); } catch {} };
-  try { writeFileSync(logFile, ''); } catch {} // truncate
 
   try {
+    // Worker console.error is async — use port.postMessage for reliable debugging
+    const dbg = (msg: string) => port.postMessage({ type: "debug" as any, message: msg });
+    dbg(`ENTER ptrWidth=${ptrWidth} fnPtr=${fnPtr} hasModule=${!!initData.programModule}`);
     // Strip the start section AND neuter the constructor function body to prevent
     // constructors from re-running. Thread instances share memory with the main
     // thread; re-running constructors would clobber global state.
-    const programBytes = initData.programModule
-      ? null
-      : patchWasmForThread(initData.programBytes);
+    let programBytes: ArrayBuffer | null = null;
+    if (!initData.programModule) {
+      dbg("patching wasm for thread...");
+      programBytes = patchWasmForThread(initData.programBytes);
+      dbg("patch done");
+    }
     const module = initData.programModule
       ? initData.programModule
       : new WebAssembly.Module(programBytes!);
-
-    const currentMemoryPages = memory.buffer.byteLength / 65536;
-    const tlsPage = Math.floor(tlsAllocAddr / 65536);
-    const channelPage = Math.floor(channelOffset / 65536);
-    tlog(`[thread-worker] tid=${tid} tlsBlock=${tlsAllocAddr} stackPtr=${stackPtr} tlsPtr=${tlsPtr} channelOffset=${channelOffset}`);
-    tlog(`[thread-worker] tid=${tid} memory: ${currentMemoryPages} pages (${memory.buffer.byteLength} bytes), TLS at page ${tlsPage}, channel at page ${channelPage}`);
+    dbg(`module ready, type=${typeof module}`);
 
     const kernelImports = buildKernelImports(memory, channelOffset);
+    dbg("building import object...");
     const importObject = buildImportObject(module, memory, kernelImports, channelOffset, undefined,
-      () => threadInstance);
-    // Capture the __channel_base WebAssembly.Global ref for crash diagnostics
-    // (imported globals are NOT accessible via instance.exports)
-    const envImp = importObject.env as Record<string, unknown> | undefined;
-    channelBaseGlobal = envImp?.__channel_base as WebAssembly.Global | undefined;
-    tlog(`[thread-worker] tid=${tid} channelBaseGlobal captured: ${channelBaseGlobal ? 'yes, val=' + channelBaseGlobal.value : 'no'}`);
-    tlog(`[thread-worker] tid=${tid} step 3: instantiating wasm module...`);
+      () => threadInstance, ptrWidth);
+    dbg("instantiating...");
     const instance = new WebAssembly.Instance(module, importObject);
-    tlog(`[thread-worker] tid=${tid} step 4: wasm instance created`);
     threadInstance = instance;
-
-    // Check TLS size — if __tls_size > distance between TLS block and channel,
-    // __wasm_init_tls will corrupt the channel memory!
-    const tlsSizeGlobal = instance.exports.__tls_size as WebAssembly.Global | undefined;
-    const tlsAlignGlobal = instance.exports.__tls_align as WebAssembly.Global | undefined;
-    const tlsSize = tlsSizeGlobal ? (tlsSizeGlobal.value as number) : 0;
-    const tlsAlign = tlsAlignGlobal ? (tlsAlignGlobal.value as number) : 0;
-    const distToChannel = channelOffset - tlsAllocAddr;
-    tlog(`[thread-worker] tid=${tid} __tls_size=${tlsSize} __tls_align=${tlsAlign} tlsBlock=${tlsAllocAddr} channelOffset=${channelOffset} distToChannel=${distToChannel}`);
-    if (tlsSize > distToChannel) {
-      tlog(`[thread-worker] tid=${tid} CRITICAL: TLS size ${tlsSize} > distance to channel ${distToChannel} — TLS WILL OVERWRITE CHANNEL!`);
-    }
-
-    // Save channel bytes before TLS init
-    const channelBefore = new Uint8Array(8);
-    channelBefore.set(new Uint8Array(memory.buffer, channelOffset, 8));
-    tlog(`[thread-worker] tid=${tid} channel before TLS init: status=${new DataView(memory.buffer).getInt32(channelOffset, true)} syscallNr=${new DataView(memory.buffer).getInt32(channelOffset + 4, true)}`);
+    dbg("instance created");
 
     // Initialize Wasm TLS for this thread.
     // IMPORTANT: We place TLS data inside the channel's spill page (after the
-    // 40-byte channel header spill) rather than on the separate TLS page.
+    // 72-byte channel header spill) rather than on the separate TLS page.
     // This avoids a corruption issue where unidentified wasm code writes to
     // page-aligned addresses in the thread region, overwriting __channel_base.
-    // The channel spill page has 65496 bytes free after the header; we only need 8.
-    const wasmInitTls = instance.exports.__wasm_init_tls as ((addr: number) => void) | undefined;
-    const CH_TOTAL = 65576; // CH_HEADER_SIZE + CH_DATA_SIZE
+    // The channel spill page has 65464 bytes free after the header; we only need 8.
+    const wasmInitTls = instance.exports.__wasm_init_tls as ((addr: number | bigint) => void) | undefined;
+    const CH_TOTAL = 65608; // CH_HEADER_SIZE (72) + CH_DATA_SIZE (65536)
     const safeTlsAddr = channelOffset + CH_TOTAL; // inside channel spill page, 4-byte aligned
     const tlsBlock = safeTlsAddr;
 
     if (wasmInitTls && tlsBlock > 0) {
-      wasmInitTls(tlsBlock);
-      tlog(`[thread-worker] tid=${tid} __wasm_init_tls(${tlsBlock}) done`);
-    }
-
-    // Check channel after TLS init
-    const statusAfterTls = new DataView(memory.buffer).getInt32(channelOffset, true);
-    const syscallAfterTls = new DataView(memory.buffer).getInt32(channelOffset + 4, true);
-    tlog(`[thread-worker] tid=${tid} channel after TLS init: status=${statusAfterTls} syscallNr=${syscallAfterTls}`);
-    if (statusAfterTls !== 0 || syscallAfterTls !== 0) {
-      tlog(`[thread-worker] tid=${tid} CHANNEL CORRUPTED BY TLS INIT!`);
+      dbg(`init TLS at ${tlsBlock}`);
+      wasmInitTls(ptrWidth === 8 ? BigInt(tlsBlock) : tlsBlock);
     }
 
     // Set __stack_pointer
     const stackPointer = instance.exports.__stack_pointer as WebAssembly.Global | undefined;
     if (stackPointer) {
-      stackPointer.value = stackPtr;
-      tlog(`[thread-worker] tid=${tid} __stack_pointer set to ${stackPtr}`);
+      stackPointer.value = ptrWidth === 8 ? BigInt(stackPtr) : stackPtr;
+      dbg(`stack_pointer set to ${stackPtr}`);
     }
 
     // Initialize musl thread pointer if available
-    const wasmThreadInit = instance.exports.__wasm_thread_init as ((tp: number) => void) | undefined;
+    const wasmThreadInit = instance.exports.__wasm_thread_init as ((tp: number | bigint) => void) | undefined;
     if (wasmThreadInit && tlsPtr > 0) {
-      const tlsBaseBeforeInit = (instance.exports.__tls_base as WebAssembly.Global)?.value as number;
-      wasmThreadInit(tlsPtr);
-      const tlsBaseAfterInit = (instance.exports.__tls_base as WebAssembly.Global)?.value as number;
-      tlog(`[thread-worker] tid=${tid} __wasm_thread_init(${tlsPtr}) done, __tls_base: ${tlsBaseBeforeInit} → ${tlsBaseAfterInit}${tlsBaseBeforeInit !== tlsBaseAfterInit ? ' CHANGED!' : ''}`);
+      dbg(`thread_init(${tlsPtr})`);
+      wasmThreadInit(ptrWidth === 8 ? BigInt(tlsPtr) : tlsPtr);
     }
 
     // Set __channel_base — either via wasm global (new) or TLS memory (legacy).
-    const getChannelBaseAddr = instance.exports.__get_channel_base_addr as (() => number) | undefined;
+    const getChannelBaseAddr = instance.exports.__get_channel_base_addr as (() => number | bigint) | undefined;
     if (getChannelBaseAddr) {
-      const addr = getChannelBaseAddr();
+      const addr = Number(getChannelBaseAddr());
+      dbg(`__get_channel_base_addr() = ${addr}`);
       if (addr === 0) {
         // Global-based approach — __channel_base was set at instantiation via
         // WebAssembly.Global in buildImportObject. Nothing to do.
-        tlog(`[thread-worker] tid=${tid} __channel_base via wasm global (set at instantiation)`);
+        dbg("using global-based __channel_base");
       } else {
         // Legacy TLS-based approach
+        dbg(`writing channel offset ${channelOffset} to addr ${addr}`);
         const view = new DataView(memory.buffer);
-        view.setUint32(addr, channelOffset, true);
-        tlog(`[thread-worker] tid=${tid} __channel_base at addr=${addr} set to ${channelOffset}`);
+        if (ptrWidth === 8) {
+          view.setBigUint64(addr, BigInt(channelOffset), true);
+        } else {
+          view.setUint32(addr, channelOffset, true);
+        }
       }
     } else if (tlsBlock > 0) {
       // Fallback: assume offset 0 (only for programs without the helper)
+      dbg(`no __get_channel_base_addr, writing channel to tlsBlock ${tlsBlock}`);
       const view = new DataView(memory.buffer);
-      view.setUint32(tlsBlock, channelOffset, true);
-      tlog(`[thread-worker] tid=${tid} fallback: channel base at tlsBlock=${tlsBlock} set to ${channelOffset}`);
+      if (ptrWidth === 8) {
+        view.setBigUint64(tlsBlock, BigInt(channelOffset), true);
+      } else {
+        view.setUint32(tlsBlock, channelOffset, true);
+      }
     }
 
     // Call the thread function via indirect function table
@@ -1344,32 +1356,47 @@ export async function centralizedThreadWorkerMain(
       throw new Error("No __indirect_function_table export — cannot call thread function");
     }
 
-    const threadFn = table.get(fnPtr) as ((arg: number) => number) | null;
+    // On wasm64, table indices may require BigInt (table64 extension)
+    const tableIdx = ptrWidth === 8 ? BigInt(fnPtr) : fnPtr;
+    const threadFn = table.get(tableIdx as number) as ((...args: (number | bigint)[]) => number | bigint) | null;
     if (!threadFn) {
       throw new Error(`Thread function at table index ${fnPtr} is null`);
     }
 
-    // Check channel one more time before calling threadFn
-    const statusBeforeFn = new DataView(memory.buffer).getInt32(channelOffset, true);
-    tlog(`[thread-worker] tid=${tid} channel status before threadFn: ${statusBeforeFn}`);
-
+    // Dump thread descriptor memory for diagnosis
+    {
+      const dv = new DataView(memory.buffer);
+      const words: string[] = [];
+      for (let off = 0; off < 64; off += 4) {
+        words.push(`0x${dv.getUint32(argPtr + off, true).toString(16).padStart(8, '0')}`);
+      }
+      dbg(`thread descriptor at ${argPtr}: ${words.join(' ')}`);
+    }
+    dbg(`calling thread fn at table[${fnPtr}] with arg ${argPtr}`);
     let result: number;
-    tlog(`[thread-worker] tid=${tid} calling threadFn(${argPtr})...`);
     try {
-      result = threadFn(argPtr);
-      tlog(`[thread-worker] tid=${tid} threadFn returned ${result}`);
+      const raw = threadFn(ptrWidth === 8 ? BigInt(argPtr) : argPtr);
+      result = Number(raw);
+      dbg(`thread fn returned ${result}`);
     } catch (e) {
-      tlog(`[thread-worker] tid=${tid} threadFn threw: ${e}`);
+      dbg(`[thread-worker] tid=${tid} threadFn threw: ${e}`);
       if (e instanceof Error && e.stack) {
-        tlog(`[thread-worker] tid=${tid} stack: ${e.stack}`);
+        dbg(`[thread-worker] tid=${tid} stack: ${e.stack}`);
       }
       if (e instanceof Error && e.message.includes("unreachable")) {
         // Thread exited via kernel_exit → unreachable trap
+        dbg("thread exited via unreachable");
         result = 0;
       } else if (e instanceof Error && e.message.includes("null function or function signature mismatch")) {
-        // call_indirect type mismatch — log and treat as thread crash
+        // call_indirect type mismatch — treat as thread crash but don't abort
+        dbg(`thread fn threw: ${e}`);
+        if (e.stack) dbg(`stack: ${e.stack}`);
         result = 0;
       } else {
+        dbg(`thread fn threw: ${e}`);
+        if (e instanceof Error && e.stack) {
+          dbg(`stack: ${e.stack}`);
+        }
         throw e;
       }
     }
@@ -1402,45 +1429,6 @@ export async function centralizedThreadWorkerMain(
       tid,
     } satisfies WorkerToHostMessage);
   } catch (err) {
-    // Diagnostic: read wasm global and memory state at crash time
-    try {
-      // channelBaseGlobal is the imported WebAssembly.Global captured above (not in instance.exports)
-      const channelBaseVal = channelBaseGlobal ? (channelBaseGlobal.value as number) : -1;
-      const tlsBaseGlobal = threadInstance?.exports?.__tls_base as WebAssembly.Global | undefined;
-      const tlsBaseVal = tlsBaseGlobal ? (tlsBaseGlobal.value as number) : -1;
-      const stackPtrGlobal = threadInstance?.exports?.__stack_pointer as WebAssembly.Global | undefined;
-      const stackPtrVal = stackPtrGlobal ? (stackPtrGlobal.value as number) : -1;
-      // Dump shadow stack frame near __do_syscall. The compiler spills
-      // __channel_base to [fp + 40/44] on the shadow stack (shared memory).
-      // If corrupted, memory.atomic.wait32 gets an unaligned address.
-      let stackDump = '';
-      if (stackPtrVal > 0 && stackPtrVal < memory.buffer.byteLength - 256) {
-        const view = new DataView(memory.buffer);
-        // __do_syscall's frame: fp = stackPtrVal (which is __stack_pointer - 80 set by the function)
-        // But __stack_pointer at crash time IS the frame pointer already
-        const fp = stackPtrVal;
-        stackDump = `[CRASH DIAG] shadow stack dump at fp=0x${fp.toString(16)}:\n`;
-        for (let off = 0; off <= 80; off += 4) {
-          const val = view.getUint32(fp + off, true);
-          const label = off === 40 ? ' ← status ptr (channel base for wait32)' :
-                        off === 44 ? ' ← base (get_channel_base result)' :
-                        off === 28 ? ' ← ret_ptr (base+32)' :
-                        off === 24 ? ' ← err_ptr (base+36)' :
-                        '';
-          stackDump += `  [fp+${off}] = 0x${val.toString(16).padStart(8, '0')}${label}\n`;
-        }
-      }
-      appendFileSync(`/tmp/thread-${tid}.log`,
-        `[CRASH DIAG] __channel_base global=${channelBaseVal} (0x${(channelBaseVal >>> 0).toString(16)}) expected=${channelOffset} (0x${channelOffset.toString(16)})\n` +
-        `[CRASH DIAG] __tls_base global=${tlsBaseVal} (0x${(tlsBaseVal >>> 0).toString(16)})\n` +
-        `[CRASH DIAG] __stack_pointer global=${stackPtrVal} (0x${(stackPtrVal >>> 0).toString(16)})\n` +
-        stackDump
-      );
-    } catch (diagErr) {
-      tlog(`[CRASH DIAG] failed: ${diagErr}`);
-    }
-    try { appendFileSync(`/tmp/thread-${tid}.log`, `[thread-worker] tid=${tid} CAUGHT ERROR: ${err}\n${err instanceof Error ? err.stack : ''}\n`); } catch {}
-    console.error(`[thread-worker] tid=${tid} CAUGHT ERROR:`, err);
     port.postMessage({
       type: "thread_exit",
       pid,

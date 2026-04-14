@@ -8,10 +8,11 @@ import { readFileSync } from "fs";
 
 const CH_SYSCALL = 4;
 const CH_ARGS = 8;
-const CH_RETURN = 32;
-const CH_ERRNO = 36;
-const CH_DATA = 40;
-const CH_TOTAL_SIZE = 40 + 65536;
+const CH_ARG_SIZE = 8;  // each arg is i64 (8 bytes)
+const CH_RETURN = 56;
+const CH_ERRNO = 64;
+const CH_DATA = 72;
+const CH_TOTAL_SIZE = 72 + 65536;
 const MAX_PAGES = 16384;
 const PAGE_SIZE = 65536;
 
@@ -51,23 +52,23 @@ async function main() {
 
   // Directly call kernel_handle_channel to set up epoll
   const kernelView = new DataView(km.buffer, scratchOffset);
-  const handleChannel = ki.exports.kernel_handle_channel as (off: number, pid: number) => number;
+  const handleChannel = ki.exports.kernel_handle_channel as (off: bigint, pid: number) => number;
 
   // 1. epoll_create1(0)
   kernelView.setUint32(CH_SYSCALL, 239, true);
-  kernelView.setInt32(CH_ARGS, 0, true);
-  for (let i = 1; i < 6; i++) kernelView.setInt32(CH_ARGS + i * 4, 0, true);
-  handleChannel(scratchOffset, 1);
-  const epfd = kernelView.getInt32(CH_RETURN, true);
+  kernelView.setBigInt64(CH_ARGS, 0n, true);
+  for (let i = 1; i < 6; i++) kernelView.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, 0n, true);
+  handleChannel(BigInt(scratchOffset), 1);
+  const epfd = Number(kernelView.getBigInt64(CH_RETURN, true));
   console.log(`epoll_create1(0) = ${epfd}, SP=${getSP()}`);
 
   // 2. pipe2()
   kernelView.setUint32(CH_SYSCALL, 165, true);
-  kernelView.setInt32(CH_ARGS, scratchOffset + CH_DATA, true);
-  kernelView.setInt32(CH_ARGS + 4, 0, true);
-  for (let i = 2; i < 6; i++) kernelView.setInt32(CH_ARGS + i * 4, 0, true);
-  handleChannel(scratchOffset, 1);
-  const pipeRet = kernelView.getInt32(CH_RETURN, true);
+  kernelView.setBigInt64(CH_ARGS, BigInt(scratchOffset + CH_DATA), true);
+  kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, 0n, true);
+  for (let i = 2; i < 6; i++) kernelView.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, 0n, true);
+  handleChannel(BigInt(scratchOffset), 1);
+  const pipeRet = Number(kernelView.getBigInt64(CH_RETURN, true));
   const pipeR = new DataView(km.buffer).getInt32(scratchOffset + CH_DATA, true);
   const pipeW = new DataView(km.buffer).getInt32(scratchOffset + CH_DATA + 4, true);
   console.log(`pipe2() = ${pipeRet}, fds=[${pipeR}, ${pipeW}], SP=${getSP()}`);
@@ -77,28 +78,28 @@ async function main() {
   new DataView(km.buffer).setUint32(evtOff, 1, true); // EPOLLIN
   new DataView(km.buffer).setBigUint64(evtOff + 4, BigInt(pipeR), true);
   kernelView.setUint32(CH_SYSCALL, 240, true);
-  kernelView.setInt32(CH_ARGS, epfd, true);
-  kernelView.setInt32(CH_ARGS + 4, 1, true);
-  kernelView.setInt32(CH_ARGS + 8, pipeR, true);
-  kernelView.setInt32(CH_ARGS + 12, evtOff, true);
-  for (let i = 4; i < 6; i++) kernelView.setInt32(CH_ARGS + i * 4, 0, true);
-  handleChannel(scratchOffset, 1);
-  console.log(`epoll_ctl = ${kernelView.getInt32(CH_RETURN, true)}, SP=${getSP()}`);
+  kernelView.setBigInt64(CH_ARGS + 0 * CH_ARG_SIZE, BigInt(epfd), true);
+  kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, 1n, true);
+  kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(pipeR), true);
+  kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, BigInt(evtOff), true);
+  for (let i = 4; i < 6; i++) kernelView.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, 0n, true);
+  handleChannel(BigInt(scratchOffset), 1);
+  console.log(`epoll_ctl = ${Number(kernelView.getBigInt64(CH_RETURN, true))}, SP=${getSP()}`);
 
   // 4. epoll_pwait(epfd, events, 1, 0, NULL, 8) — timeout=0 for immediate
   const eventsOff = scratchOffset + CH_DATA;
   kernelView.setUint32(CH_SYSCALL, 241, true);
-  kernelView.setInt32(CH_ARGS, epfd, true);
-  kernelView.setInt32(CH_ARGS + 4, eventsOff, true);
-  kernelView.setInt32(CH_ARGS + 8, 1, true);
-  kernelView.setInt32(CH_ARGS + 12, 0, true); // timeout=0
-  kernelView.setInt32(CH_ARGS + 16, 0, true); // sigmask=NULL
-  kernelView.setInt32(CH_ARGS + 20, 8, true);
+  kernelView.setBigInt64(CH_ARGS + 0 * CH_ARG_SIZE, BigInt(epfd), true);
+  kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(eventsOff), true);
+  kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, 1n, true);
+  kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, 0n, true); // timeout=0
+  kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, 0n, true); // sigmask=NULL
+  kernelView.setBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, 8n, true);
 
   console.log(`\nCalling epoll_pwait... SP before=${getSP()}`);
   try {
-    handleChannel(scratchOffset, 1);
-    const ret = kernelView.getInt32(CH_RETURN, true);
+    handleChannel(BigInt(scratchOffset), 1);
+    const ret = Number(kernelView.getBigInt64(CH_RETURN, true));
     const err = kernelView.getUint32(CH_ERRNO, true);
     console.log(`epoll_pwait = ${ret}, errno=${err}, SP=${getSP()}`);
   } catch (e) {
@@ -108,17 +109,17 @@ async function main() {
 
   // Try with timeout=1000 (what PHP-FPM uses)
   kernelView.setUint32(CH_SYSCALL, 241, true);
-  kernelView.setInt32(CH_ARGS, epfd, true);
-  kernelView.setInt32(CH_ARGS + 4, eventsOff, true);
-  kernelView.setInt32(CH_ARGS + 8, 1, true);
-  kernelView.setInt32(CH_ARGS + 12, 1000, true);
-  kernelView.setInt32(CH_ARGS + 16, 0, true);
-  kernelView.setInt32(CH_ARGS + 20, 8, true);
+  kernelView.setBigInt64(CH_ARGS + 0 * CH_ARG_SIZE, BigInt(epfd), true);
+  kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(eventsOff), true);
+  kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, 1n, true);
+  kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, 1000n, true);
+  kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, 0n, true);
+  kernelView.setBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, 8n, true);
 
   console.log(`\nCalling epoll_pwait(timeout=1000)... SP before=${getSP()}`);
   try {
-    handleChannel(scratchOffset, 1);
-    const ret = kernelView.getInt32(CH_RETURN, true);
+    handleChannel(BigInt(scratchOffset), 1);
+    const ret = Number(kernelView.getBigInt64(CH_RETURN, true));
     const err = kernelView.getUint32(CH_ERRNO, true);
     console.log(`epoll_pwait(1000) = ${ret}, errno=${err}, SP=${getSP()}`);
   } catch (e) {

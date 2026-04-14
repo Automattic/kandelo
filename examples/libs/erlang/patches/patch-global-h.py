@@ -74,8 +74,8 @@ static inline ErtsWStack wstack_make_default_(UWord *arr, ErtsAlcType_t at) {
     content = content.replace(old, new, 1)
 
     # Close #endif after original WSTACK_DEFAULT_VALUE body (uses DEF_ESTACK_SIZE, OTP bug?)
-    old_wstack_end = '        alloc_type /* alloc_type */\n    }\n\n#define WSTACK_DECLARE'
-    new_wstack_end = '        alloc_type /* alloc_type */\n    }\n#endif\n\n#define WSTACK_DECLARE'
+    old_wstack_end = '        alloc_type /* alloc_type */                                     \\\n    }\n\n#define WSTACK_DECLARE'
+    new_wstack_end = '        alloc_type /* alloc_type */                                     \\\n    }\n#endif\n\n#define WSTACK_DECLARE'
     content = content.replace(old_wstack_end, new_wstack_end, 1)
 
     # 4. Add wasm32 WSTACK_DECLARE before original
@@ -94,8 +94,8 @@ static inline ErtsWStack wstack_make_default_(UWord *arr, ErtsAlcType_t at) {
     content = content.replace(old, new, 1)
 
     # Close #endif after original WSTACK_DECLARE body
-    old = '        ERTS_ALC_T_ESTACK /* alloc_type */\t\t\\\n    }\n\n#define WSTACK_CHANGE_ALLOCATOR'
-    new = '        ERTS_ALC_T_ESTACK /* alloc_type */\t\t\\\n    }\n#endif\n\n#define WSTACK_CHANGE_ALLOCATOR'
+    old = '        ERTS_ALC_T_ESTACK /* alloc_type */\t\t\\\n    }\n#define DECLARE_WSTACK'
+    new = '        ERTS_ALC_T_ESTACK /* alloc_type */\t\t\\\n    }\n#endif\n#define DECLARE_WSTACK'
     content = content.replace(old, new, 1)
 
     with open(path, 'w') as f:

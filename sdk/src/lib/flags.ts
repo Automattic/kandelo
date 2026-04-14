@@ -1,34 +1,46 @@
-export const COMPILE_FLAGS: string[] = [
-  '--target=wasm32-unknown-unknown',
-  '-matomics',
-  '-mbulk-memory',
-  '-mexception-handling',
-  '-mllvm', '-wasm-enable-sjlj',
-  '-mllvm', '-wasm-use-legacy-eh=true',
-  '-fno-exceptions',
-  '-fno-trapping-math',
-];
+import type { WasmArch } from './arch.ts';
+import { targetTriple, toolPrefix } from './arch.ts';
 
-export const LINK_FLAGS: string[] = [
-  '-nostdlib',
-  '-Wl,--entry=_start',
-  '-Wl,--export=_start',
-  '-Wl,--export=__heap_base',
-  '-Wl,--import-memory',
-  '-Wl,--shared-memory',
-  '-Wl,--max-memory=1073741824',
-  '-Wl,--allow-undefined',
-  '-Wl,--global-base=1114112',
-  '-Wl,--table-base=3',
-  '-Wl,--export-table',
-  '-Wl,--growable-table',
-  '-Wl,--export=__wasm_init_tls',
-  '-Wl,--export=__tls_base',
-  '-Wl,--export=__tls_size',
-  '-Wl,--export=__tls_align',
-  '-Wl,--export=__stack_pointer',
-  '-Wl,--export=__wasm_thread_init',
-];
+export function compileFlags(arch: WasmArch): string[] {
+  return [
+    `--target=${targetTriple(arch)}`,
+    '-matomics',
+    '-mbulk-memory',
+    '-mexception-handling',
+    '-mllvm', '-wasm-enable-sjlj',
+    '-mllvm', '-wasm-use-legacy-eh=true',
+    '-fno-exceptions',
+    '-fno-trapping-math',
+  ];
+}
+
+export function linkFlags(arch: WasmArch): string[] {
+  return [
+    '-nostdlib',
+    '-Wl,--entry=_start',
+    '-Wl,--export=_start',
+    '-Wl,--export=__heap_base',
+    '-Wl,--import-memory',
+    '-Wl,--shared-memory',
+    '-Wl,--max-memory=1073741824',
+    '-Wl,--allow-undefined',
+    '-Wl,--global-base=1114112',
+    '-Wl,--table-base=3',
+    '-Wl,--export-table',
+    '-Wl,--growable-table',
+    '-Wl,--export=__wasm_init_tls',
+    '-Wl,--export=__tls_base',
+    '-Wl,--export=__tls_size',
+    '-Wl,--export=__tls_align',
+    '-Wl,--export=__stack_pointer',
+    '-Wl,--export=__wasm_thread_init',
+  ];
+}
+
+/** @deprecated Use compileFlags('wasm32') */
+export const COMPILE_FLAGS: string[] = compileFlags('wasm32');
+/** @deprecated Use linkFlags('wasm32') */
+export const LINK_FLAGS: string[] = linkFlags('wasm32');
 
 /** Link flags for building shared Wasm libraries (.so side modules). */
 export const SHARED_LINK_FLAGS: string[] = [
@@ -62,15 +74,16 @@ export interface FilterResult {
   warnings: string[];
 }
 
-export function filterArgs(args: string[]): FilterResult {
+export function filterArgs(args: string[], arch: WasmArch = 'wasm32'): FilterResult {
   const filtered: string[] = [];
   const warnings: string[] = [];
+  const prefix = toolPrefix(arch);
 
   for (const arg of args) {
     if (IGNORED_EXACT.has(arg)) continue;
     if (IGNORED_PREFIXES.some(p => arg.startsWith(p))) continue;
     if (WARN_FLAGS.has(arg)) {
-      warnings.push(`wasm32posix-cc: warning: ${arg} is not supported for Wasm targets (ignored)`);
+      warnings.push(`${prefix}-cc: warning: ${arg} is not supported for Wasm targets (ignored)`);
       continue;
     }
     filtered.push(arg);

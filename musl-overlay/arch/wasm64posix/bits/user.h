@@ -1,0 +1,1 @@
+/* No hardware debug registers on Wasm. Provide an empty placeholder. */

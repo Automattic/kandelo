@@ -12,7 +12,7 @@ import { NodePlatformIO } from "../src/platform/node";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const MAX_PAGES = 256; // small for tests
-const CH_TOTAL_SIZE = 40 + 65536;
+const CH_TOTAL_SIZE = 72 + 65536;
 
 function loadKernelWasm(): ArrayBuffer {
   const buf = readFileSync(join(__dirname, "../wasm/wasm_posix_kernel.wasm"));

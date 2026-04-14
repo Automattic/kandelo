@@ -37,6 +37,7 @@ if [ ! -f "$SYSROOT/lib/libc.a" ]; then
 fi
 
 export WASM_POSIX_SYSROOT="$SYSROOT"
+export WASM_POSIX_GLUE_DIR="$REPO_ROOT/glue"
 
 # Check for zlib (required)
 if [ ! -f "$SYSROOT/lib/libz.a" ]; then
@@ -112,6 +113,7 @@ NO_INSTALL_HARDLINKS = YesPlease
 
 # Disable features that require runtime infrastructure we don't have
 NO_UNIX_SOCKETS = YesPlease
+NO_OPENSSL = YesPlease
 
 # Use zlib from sysroot
 ZLIB_PATH = $SYSROOT

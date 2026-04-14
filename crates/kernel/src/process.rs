@@ -89,11 +89,11 @@ pub trait HostIO {
     /// Futex wait: block if `*addr == expected`, with optional timeout in nanoseconds.
     /// timeout_ns < 0 means infinite wait.
     /// Returns 0 on wake, negative errno on error.
-    fn host_futex_wait(&mut self, addr: u32, expected: u32, timeout_ns: i64) -> Result<i32, Errno>;
+    fn host_futex_wait(&mut self, addr: usize, expected: u32, timeout_ns: i64) -> Result<i32, Errno>;
     /// Futex wake: wake up to `count` waiters on addr. Returns number woken.
-    fn host_futex_wake(&mut self, addr: u32, count: u32) -> Result<i32, Errno>;
+    fn host_futex_wake(&mut self, addr: usize, count: u32) -> Result<i32, Errno>;
     /// Clone: spawn a new thread worker. Returns child TID on success.
-    fn host_clone(&mut self, fn_ptr: u32, arg: u32, stack_ptr: u32, tls_ptr: u32, ctid_ptr: u32) -> Result<i32, Errno>;
+    fn host_clone(&mut self, fn_ptr: usize, arg: usize, stack_ptr: usize, tls_ptr: usize, ctid_ptr: usize) -> Result<i32, Errno>;
 }
 
 /// Process lifecycle state.
@@ -107,14 +107,14 @@ pub enum ProcessState {
 #[derive(Debug, Clone)]
 pub struct ThreadInfo {
     pub tid: u32,
-    pub ctid_ptr: u32,    // CLONE_CHILD_CLEARTID address (futex wake on exit)
-    pub stack_ptr: u32,
-    pub tls_ptr: u32,
-    pub tidptr: u32,       // set_tid_address pointer
+    pub ctid_ptr: usize,    // CLONE_CHILD_CLEARTID address (futex wake on exit)
+    pub stack_ptr: usize,
+    pub tls_ptr: usize,
+    pub tidptr: usize,       // set_tid_address pointer
 }
 
 impl ThreadInfo {
-    pub fn new(tid: u32, ctid_ptr: u32, stack_ptr: u32, tls_ptr: u32) -> Self {
+    pub fn new(tid: u32, ctid_ptr: usize, stack_ptr: usize, tls_ptr: usize) -> Self {
         ThreadInfo { tid, ctid_ptr, stack_ptr, tls_ptr, tidptr: 0 }
     }
 }
@@ -251,9 +251,9 @@ pub struct Process {
     /// POSIX timers (timer_create / timer_settime).
     pub posix_timers: Vec<Option<PosixTimerState>>,
     /// Alternate signal stack (sigaltstack): ss_sp, ss_flags, ss_size.
-    pub alt_stack_sp: u32,
+    pub alt_stack_sp: usize,
     pub alt_stack_flags: u32,
-    pub alt_stack_size: u32,
+    pub alt_stack_size: usize,
     /// Number of nested signal handlers running with SA_ONSTACK on alt stack.
     /// When > 0, SS_ONSTACK is set in alt_stack_flags.
     pub alt_stack_depth: u32,

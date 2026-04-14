@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build MariaDB 10.5 LTS for wasm32-posix-kernel.
+# Build MariaDB 10.5 LTS for wasm-posix-kernel.
+#
+# Usage:
+#   bash build-mariadb.sh           # build for wasm32 (ILP32)
+#   bash build-mariadb.sh --wasm64  # build for wasm64 (LP64)
 #
 # Two-step cross-compilation:
 #   1. Host build: generates import_executables.cmake (native helper programs)
-#   2. Cross build: uses CMake toolchain file for wasm32
-#
-# Output: mariadb-install/bin/mysqld (wasm32 binary)
+#   2. Cross build: uses CMake toolchain file for wasm32 or wasm64
 
 MARIADB_VERSION="${MARIADB_VERSION:-10.5.28}"
 MARIADB_MAJOR="10.5"
@@ -16,11 +18,33 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 SRC_DIR="$SCRIPT_DIR/mariadb-src"
 HOST_BUILD_DIR="$SCRIPT_DIR/mariadb-host-build"
-CROSS_BUILD_DIR="$SCRIPT_DIR/mariadb-cross-build"
-INSTALL_DIR="$SCRIPT_DIR/mariadb-install"
-TOOLCHAIN_FILE="$SCRIPT_DIR/wasm32-posix-toolchain.cmake"
-SYSROOT="$REPO_ROOT/sysroot"
 GLUE_DIR="$REPO_ROOT/glue"
+
+# Parse --wasm64 flag
+WASM_ARCH="wasm32"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --wasm64) WASM_ARCH="wasm64"; shift ;;
+        *) echo "Unknown argument: $1" >&2; exit 1 ;;
+    esac
+done
+
+if [ "$WASM_ARCH" = "wasm64" ]; then
+    CROSS_BUILD_DIR="$SCRIPT_DIR/mariadb-cross-build-64"
+    INSTALL_DIR="$SCRIPT_DIR/mariadb-install-64"
+    TOOLCHAIN_FILE="$SCRIPT_DIR/wasm64-posix-toolchain.cmake"
+    SYSROOT="$REPO_ROOT/sysroot64"
+    WASM_TARGET="wasm64-unknown-unknown"
+    # LLVM 21 wasm64 backend has -O2 miscompilation bugs (sign-extension of i32 to i64
+    # in table lookups). Use -O1 until the LLVM wasm64 backend matures.
+    : "${MARIADB_OPT_LEVEL:=-O1}"
+else
+    CROSS_BUILD_DIR="$SCRIPT_DIR/mariadb-cross-build"
+    INSTALL_DIR="$SCRIPT_DIR/mariadb-install"
+    TOOLCHAIN_FILE="$SCRIPT_DIR/wasm32-posix-toolchain.cmake"
+    SYSROOT="$REPO_ROOT/sysroot"
+    WASM_TARGET="wasm32-unknown-unknown"
+fi
 
 NPROC="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
 
@@ -197,9 +221,9 @@ if [ ! -f "$SYSROOT/include/c++/v1/__config" ]; then
     echo "==> libc++ headers installed"
 fi
 
-# --- Build PCRE2 for wasm32 if not present ---
+# --- Build PCRE2 if not present ---
 if [ ! -f "$SYSROOT/lib/libpcre2-8.a" ]; then
-    echo "==> Building PCRE2 for wasm32..."
+    echo "==> Building PCRE2 for $WASM_ARCH..."
     PCRE2_VERSION="10.44"
     PCRE2_DIR="$SCRIPT_DIR/pcre2-${PCRE2_VERSION}"
     PCRE2_BUILD="$SCRIPT_DIR/pcre2-wasm-build"
@@ -211,20 +235,23 @@ if [ ! -f "$SYSROOT/lib/libpcre2-8.a" ]; then
         rm "$SCRIPT_DIR/pcre2.tar.gz"
     fi
 
+    PCRE2_SIZEOF_VOID_P=4
+    [ "$WASM_ARCH" = "wasm64" ] && PCRE2_SIZEOF_VOID_P=8
+
     rm -rf "$PCRE2_BUILD"
     mkdir -p "$PCRE2_BUILD"
     cd "$PCRE2_BUILD"
 
     cmake "$PCRE2_DIR" \
         -DCMAKE_C_COMPILER="$LLVM_CLANG" \
-        -DCMAKE_C_FLAGS="--target=wasm32-unknown-unknown -matomics -mbulk-memory -mexception-handling -fno-exceptions -fno-trapping-math --sysroot=$SYSROOT -O2 -DNDEBUG" \
+        -DCMAKE_C_FLAGS="--target=$WASM_TARGET -matomics -mbulk-memory -mexception-handling -fno-exceptions -fno-trapping-math --sysroot=$SYSROOT -O2 -DNDEBUG" \
         -DCMAKE_AR="$LLVM_PREFIX/bin/llvm-ar" \
         -DCMAKE_RANLIB="$LLVM_PREFIX/bin/llvm-ranlib" \
         -DCMAKE_SYSTEM_NAME=Linux \
-        -DCMAKE_SYSTEM_PROCESSOR=wasm32 \
+        -DCMAKE_SYSTEM_PROCESSOR="$WASM_ARCH" \
         -DCMAKE_CROSSCOMPILING=TRUE \
         -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
-        -DCMAKE_SIZEOF_VOID_P=4 \
+        -DCMAKE_SIZEOF_VOID_P=$PCRE2_SIZEOF_VOID_P \
         -DPCRE2_BUILD_TESTS=OFF \
         -DPCRE2_BUILD_PCRE2GREP=OFF \
         -DBUILD_SHARED_LIBS=OFF \
@@ -244,20 +271,24 @@ if [ ! -f "$SYSROOT/lib/libpcre2-8.a" ]; then
 fi
 
 # --- Pre-compile glue objects ---
-WASM32_COMPILE_FLAGS="--target=wasm32-unknown-unknown -matomics -mbulk-memory -mexception-handling -mllvm -wasm-enable-sjlj -fno-exceptions -fno-trapping-math --sysroot=$SYSROOT"
+WASM_COMPILE_FLAGS="--target=$WASM_TARGET -matomics -mbulk-memory -mexception-handling -mllvm -wasm-enable-sjlj -fno-exceptions -fno-trapping-math --sysroot=$SYSROOT"
 
-GLUE_OBJ_DIR="$SCRIPT_DIR/mariadb-glue-objs"
+if [ "$WASM_ARCH" = "wasm64" ]; then
+    GLUE_OBJ_DIR="$SCRIPT_DIR/mariadb-glue-objs-64"
+else
+    GLUE_OBJ_DIR="$SCRIPT_DIR/mariadb-glue-objs"
+fi
 mkdir -p "$GLUE_OBJ_DIR"
 
 if [ ! -f "$GLUE_OBJ_DIR/channel_syscall.o" ]; then
     echo "==> Compiling glue objects..."
-    $LLVM_CLANG $WASM32_COMPILE_FLAGS -O2 -c "$GLUE_DIR/channel_syscall.c" -o "$GLUE_OBJ_DIR/channel_syscall.o"
-    $LLVM_CLANG $WASM32_COMPILE_FLAGS -O2 -c "$GLUE_DIR/compiler_rt.c" -o "$GLUE_OBJ_DIR/compiler_rt.o"
+    $LLVM_CLANG $WASM_COMPILE_FLAGS -O2 -c "$GLUE_DIR/channel_syscall.c" -o "$GLUE_OBJ_DIR/channel_syscall.o"
+    $LLVM_CLANG $WASM_COMPILE_FLAGS -O2 -c "$GLUE_DIR/compiler_rt.c" -o "$GLUE_OBJ_DIR/compiler_rt.o"
     echo "==> Glue objects compiled."
 fi
 
-# --- Step 2: Cross build for wasm32 ---
-echo "==> Step 2: Cross build for wasm32..."
+# --- Step 2: Cross build ---
+echo "==> Step 2: Cross build for $WASM_ARCH..."
 mkdir -p "$CROSS_BUILD_DIR"
 cd "$CROSS_BUILD_DIR"
 
@@ -270,8 +301,8 @@ cmake "$SRC_DIR" \
     -DIMPORT_EXECUTABLES="$HOST_BUILD_DIR/import_executables.cmake" \
     \
     -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_C_FLAGS_RELEASE="-O2 -DNDEBUG" \
-    -DCMAKE_CXX_FLAGS_RELEASE="-O2 -DNDEBUG" \
+    -DCMAKE_C_FLAGS_RELEASE="${MARIADB_OPT_LEVEL:--O2} -DNDEBUG" \
+    -DCMAKE_CXX_FLAGS_RELEASE="${MARIADB_OPT_LEVEL:--O2} -DNDEBUG" \
     \
     -DWITH_UNIT_TESTS=OFF \
     -DWITH_MARIABACKUP=OFF \

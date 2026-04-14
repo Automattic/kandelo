@@ -4,6 +4,7 @@
 # Build artifacts
 /target
 /sysroot/
+/sysroot64/
 host/dist/
 host/docs/
 
@@ -18,6 +19,7 @@ node_modules/
 /musl/obj/
 /musl/lib/
 /musl/arch/wasm32posix/
+/musl/arch/wasm64posix/
 
 # Wasm binaries (except committed kernel/userspace in host/wasm/)
 *.wasm
@@ -52,6 +54,9 @@ examples/libs/mariadb/mariadb-host-build/
 examples/libs/mariadb/mariadb-cross-build/
 examples/libs/mariadb/mariadb-install/
 examples/libs/mariadb/mariadb-glue-objs/
+examples/libs/mariadb/mariadb-glue-objs-64/
+examples/libs/mariadb/mariadb-cross-build-64/
+examples/libs/mariadb/mariadb-install-64/
 examples/libs/mariadb/pcre2-*/
 examples/libs/mariadb/pcre2-wasm-build/
 

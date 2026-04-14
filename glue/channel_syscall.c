@@ -9,10 +9,11 @@
  *   Offset  Size  Field
  *   0       4B    status (IDLE=0, PENDING=1, COMPLETE=2, ERROR=3)
  *   4       4B    syscall number
- *   8       24B   arguments (6 x i32)
- *   32      4B    return value
- *   36      4B    errno
- *   40      64KB  data transfer buffer
+ *   8       48B   arguments (6 x i64)
+ *   56      8B    return value (i64)
+ *   64      4B    errno (i32)
+ *   68      4B    reserved/pad
+ *   72      64KB  data transfer buffer
  *
  * Each thread has its own channel region within the process's shared
  * WebAssembly.Memory. The base address is stored in __channel_base,
@@ -40,12 +41,13 @@ int *__errno_location(void);
 #define CH_STATUS   0
 #define CH_SYSCALL  4
 #define CH_ARGS     8
-#define CH_RETURN   32
-#define CH_ERRNO    36
-#define CH_DATA     40
+#define CH_ARG_SIZE 8
+#define CH_RETURN   56
+#define CH_ERRNO    64
+#define CH_DATA     72
 #define CH_DATA_SIZE 65536
 
-/* Signal delivery area — last 32 bytes of data buffer */
+/* Signal delivery area — last 48 bytes of data buffer */
 #define CH_SIG_BASE     (CH_DATA + CH_DATA_SIZE - 48)
 #define CH_SIG_SIGNUM   (CH_SIG_BASE)
 #define CH_SIG_HANDLER  (CH_SIG_BASE + 4)
@@ -72,10 +74,14 @@ int *__errno_location(void);
  * Unlike _Thread_local (which stores in shared linear memory at __tls_base +
  * offset), wasm globals are instance-local and cannot be corrupted by other
  * threads' pointer arithmetic into the same memory region. */
+#if __SIZEOF_POINTER__ == 8
+__asm__(".globaltype __channel_base, i64\n");
+#else
 __asm__(".globaltype __channel_base, i32\n");
+#endif
 
-static inline uint32_t get_channel_base(void) {
-    uint32_t val;
+static inline uintptr_t get_channel_base(void) {
+    uintptr_t val;
     __asm__ volatile("global.get __channel_base\n"
                      "local.set %0" : "=r"(val));
     return val;
@@ -85,7 +91,7 @@ static inline uint32_t get_channel_base(void) {
  * not a TLS memory address. The host checks: if this returns 0,
  * skip TLS-based channel setup (the global is set at instantiation). */
 __attribute__((export_name("__get_channel_base_addr")))
-uint32_t __get_channel_base_addr(void) {
+uintptr_t __get_channel_base_addr(void) {
     return 0;
 }
 
@@ -145,10 +151,10 @@ int vfork(void)
 /* ------------------------------------------------------------------ */
 
 /* Forward declaration */
-static long __do_syscall(long n, long a1, long a2, long a3,
-                         long a4, long a5, long a6);
+static long __do_syscall(long n, long long a1, long long a2, long long a3,
+                         long long a4, long long a5, long long a6);
 
-static void __deliver_pending_signal(uint32_t base)
+static void __deliver_pending_signal(uintptr_t base)
 {
     uint32_t *sig_signum_ptr  = (uint32_t *)(uintptr_t)(base + CH_SIG_SIGNUM);
     uint32_t *sig_handler_ptr = (uint32_t *)(uintptr_t)(base + CH_SIG_HANDLER);
@@ -234,8 +240,8 @@ static void __deliver_pending_signal(uint32_t base)
 /* Central dispatch — writes to channel and blocks for result          */
 /* ------------------------------------------------------------------ */
 
-static long __do_syscall(long n, long a1, long a2, long a3,
-                         long a4, long a5, long a6)
+static long __do_syscall(long n, long long a1, long long a2, long long a3,
+                         long long a4, long long a5, long long a6)
 {
     /* Fork/vfork are handled by fork()/_Fork()/vfork() overrides above,
      * which call kernel_fork() directly.  If we somehow get here (e.g. a
@@ -255,25 +261,27 @@ static long __do_syscall(long n, long a1, long a2, long a3,
      * in a local variable that might be spilled to the shadow stack.
      * The wasm global is per-instance and immune to cross-thread corruption. */
 
-    uint32_t base = get_channel_base();
+    uintptr_t base = get_channel_base();
 
     /* Write syscall number and arguments directly using base offsets.
      * These are one-shot writes — if the shadow stack value of 'base' is
      * corrupted after these writes, it doesn't matter because we re-read
-     * the global for the atomic operations below. */
+     * the global for the atomic operations below.
+     * Args are written as i64 — on wasm32, long long values are sign-extended
+     * from 32-bit long; on wasm64, they are native 64-bit. */
     *(int32_t *)(uintptr_t)(base + CH_SYSCALL) = (int32_t)n;
-    *(int32_t *)(uintptr_t)(base + CH_ARGS + 0)  = (int32_t)a1;
-    *(int32_t *)(uintptr_t)(base + CH_ARGS + 4)  = (int32_t)a2;
-    *(int32_t *)(uintptr_t)(base + CH_ARGS + 8)  = (int32_t)a3;
-    *(int32_t *)(uintptr_t)(base + CH_ARGS + 12) = (int32_t)a4;
-    *(int32_t *)(uintptr_t)(base + CH_ARGS + 16) = (int32_t)a5;
-    *(int32_t *)(uintptr_t)(base + CH_ARGS + 20) = (int32_t)a6;
+    *(int64_t *)(uintptr_t)(base + CH_ARGS + 0 * CH_ARG_SIZE) = (int64_t)a1;
+    *(int64_t *)(uintptr_t)(base + CH_ARGS + 1 * CH_ARG_SIZE) = (int64_t)a2;
+    *(int64_t *)(uintptr_t)(base + CH_ARGS + 2 * CH_ARG_SIZE) = (int64_t)a3;
+    *(int64_t *)(uintptr_t)(base + CH_ARGS + 3 * CH_ARG_SIZE) = (int64_t)a4;
+    *(int64_t *)(uintptr_t)(base + CH_ARGS + 4 * CH_ARG_SIZE) = (int64_t)a5;
+    *(int64_t *)(uintptr_t)(base + CH_ARGS + 5 * CH_ARG_SIZE) = (int64_t)a6;
 
     /* Set status to PENDING and wake the kernel worker.
      * Use inline asm to read __channel_base directly from the wasm global,
      * bypassing any shadow stack spills that might be corrupted. */
     {
-        uint32_t addr;
+        uintptr_t addr;
         __asm__ volatile(
             "global.get __channel_base\n"
             "local.set %0"
@@ -293,7 +301,7 @@ static long __do_syscall(long n, long a1, long a2, long a3,
     {
         int wait_ret;
         do {
-            uint32_t addr;
+            uintptr_t addr;
             __asm__ volatile(
                 "global.get __channel_base\n"
                 "local.set %0"
@@ -306,7 +314,7 @@ static long __do_syscall(long n, long a1, long a2, long a3,
 
     /* Read result — re-read base from global for safety */
     base = get_channel_base();
-    long result = (long)*(int32_t *)(uintptr_t)(base + CH_RETURN);
+    long result = (long)*(int64_t *)(uintptr_t)(base + CH_RETURN);
     int32_t err = *(int32_t *)(uintptr_t)(base + CH_ERRNO);
 
     /* Reset status to IDLE for next syscall */
@@ -337,42 +345,46 @@ long __syscall0(long n)
     return __do_syscall(n, 0, 0, 0, 0, 0, 0);
 }
 
-long __syscall1(long n, long a1)
+long __syscall1(long n, long long a1)
 {
     return __do_syscall(n, a1, 0, 0, 0, 0, 0);
 }
 
-long __syscall2(long n, long a1, long a2)
+long __syscall2(long n, long long a1, long long a2)
 {
     return __do_syscall(n, a1, a2, 0, 0, 0, 0);
 }
 
-long __syscall3(long n, long a1, long a2, long a3)
+long __syscall3(long n, long long a1, long long a2, long long a3)
 {
     return __do_syscall(n, a1, a2, a3, 0, 0, 0);
 }
 
-long __syscall4(long n, long a1, long a2, long a3, long a4)
+long __syscall4(long n, long long a1, long long a2, long long a3, long long a4)
 {
     return __do_syscall(n, a1, a2, a3, a4, 0, 0);
 }
 
-long __syscall5(long n, long a1, long a2, long a3, long a4, long a5)
+long __syscall5(long n, long long a1, long long a2, long long a3, long long a4, long long a5)
 {
     return __do_syscall(n, a1, a2, a3, a4, a5, 0);
 }
 
-long __syscall6(long n, long a1, long a2, long a3, long a4, long a5,
-                long a6)
+long __syscall6(long n, long long a1, long long a2, long long a3, long long a4, long long a5,
+                long long a6)
 {
     return __do_syscall(n, a1, a2, a3, a4, a5, a6);
 }
 
 /* syscall_cp (cancellation-point version) — same as regular syscall
- * since Wasm has no thread cancellation. */
+ * since Wasm has no thread cancellation.
+ * Params are syscall_arg_t (long = i32 on wasm32) to match musl's declaration.
+ * Widen to long long for the i64 channel. */
 long __syscall_cp(long n, long a1, long a2, long a3, long a4, long a5,
                   long a6)
 {
-    return __do_syscall(n, a1, a2, a3, a4, a5, a6);
+    return __do_syscall((long long)n, (long long)a1, (long long)a2,
+                        (long long)a3, (long long)a4, (long long)a5,
+                        (long long)a6);
 }
 

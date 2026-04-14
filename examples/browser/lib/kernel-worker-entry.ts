@@ -81,7 +81,7 @@ import type {
 
 const DEFAULT_MAX_PAGES = 16384;
 const PAGE_SIZE = 65536;
-const CH_TOTAL_SIZE = 40 + PAGE_SIZE;
+const CH_TOTAL_SIZE = 72 + PAGE_SIZE;
 const ASYNCIFY_BUF_SIZE = 16384;
 
 // State
@@ -579,13 +579,13 @@ async function handleTerminateProcess(msg: Extract<MainToKernelMessage, { type: 
 function handlePipeRead(msg: Extract<MainToKernelMessage, { type: "pipe_read" }>) {
   if (!kernelInstance) { respond(msg.requestId, null); return; }
   const pipeRead = kernelInstance.exports.kernel_pipe_read as (
-    pid: number, pipeIdx: number, bufPtr: number, bufLen: number,
+    pid: number, pipeIdx: number, bufPtr: bigint, bufLen: number,
   ) => number;
   const scratchOffset = (kernelWorker as any).tcpScratchOffset || (kernelWorker as any).scratchOffset;
   const mem = new Uint8Array(kernelMemory!.buffer);
   const chunks: Uint8Array[] = [];
   for (;;) {
-    const n = pipeRead(msg.pid, msg.pipeIdx, scratchOffset, PAGE_SIZE);
+    const n = pipeRead(msg.pid, msg.pipeIdx, BigInt(scratchOffset), PAGE_SIZE);
     if (n <= 0) break;
     chunks.push(mem.slice(scratchOffset, scratchOffset + n));
   }
@@ -603,7 +603,7 @@ function handlePipeRead(msg: Extract<MainToKernelMessage, { type: "pipe_read" }>
 function handlePipeWrite(msg: Extract<MainToKernelMessage, { type: "pipe_write" }>) {
   if (!kernelInstance) { respond(msg.requestId, -1); return; }
   const pipeWrite = kernelInstance.exports.kernel_pipe_write as (
-    pid: number, pipeIdx: number, bufPtr: number, bufLen: number,
+    pid: number, pipeIdx: number, bufPtr: bigint, bufLen: number,
   ) => number;
   const scratchOffset = (kernelWorker as any).tcpScratchOffset || (kernelWorker as any).scratchOffset;
   const mem = new Uint8Array(kernelMemory!.buffer);
@@ -612,7 +612,7 @@ function handlePipeWrite(msg: Extract<MainToKernelMessage, { type: "pipe_write" 
   while (written < data.length) {
     const chunk = Math.min(data.length - written, PAGE_SIZE);
     mem.set(data.subarray(written, written + chunk), scratchOffset);
-    const n = pipeWrite(msg.pid, msg.pipeIdx, scratchOffset, chunk);
+    const n = pipeWrite(msg.pid, msg.pipeIdx, BigInt(scratchOffset), chunk);
     if (n <= 0) break;
     written += n;
   }
@@ -808,7 +808,7 @@ function handleHttpRequest(requestId: number, request: any) {
 
 function pipeWriteDirect(pid: number, pipeIdx: number, data: Uint8Array): number {
   const pipeWrite = kernelInstance!.exports.kernel_pipe_write as (
-    pid: number, pipeIdx: number, bufPtr: number, bufLen: number,
+    pid: number, pipeIdx: number, bufPtr: bigint, bufLen: number,
   ) => number;
   const scratchOffset = (kernelWorker as any).tcpScratchOffset || (kernelWorker as any).scratchOffset;
   const mem = new Uint8Array(kernelMemory!.buffer);
@@ -816,7 +816,7 @@ function pipeWriteDirect(pid: number, pipeIdx: number, data: Uint8Array): number
   while (written < data.length) {
     const chunk = Math.min(data.length - written, PAGE_SIZE);
     mem.set(data.subarray(written, written + chunk), scratchOffset);
-    const n = pipeWrite(pid, pipeIdx, scratchOffset, chunk);
+    const n = pipeWrite(pid, pipeIdx, BigInt(scratchOffset), chunk);
     if (n <= 0) break;
     written += n;
   }
@@ -825,13 +825,13 @@ function pipeWriteDirect(pid: number, pipeIdx: number, data: Uint8Array): number
 
 function pipeReadDirect(pid: number, pipeIdx: number): Uint8Array | null {
   const pipeRead = kernelInstance!.exports.kernel_pipe_read as (
-    pid: number, pipeIdx: number, bufPtr: number, bufLen: number,
+    pid: number, pipeIdx: number, bufPtr: bigint, bufLen: number,
   ) => number;
   const scratchOffset = (kernelWorker as any).tcpScratchOffset || (kernelWorker as any).scratchOffset;
   const mem = new Uint8Array(kernelMemory!.buffer);
   const chunks: Uint8Array[] = [];
   for (;;) {
-    const n = pipeRead(pid, pipeIdx, scratchOffset, PAGE_SIZE);
+    const n = pipeRead(pid, pipeIdx, BigInt(scratchOffset), PAGE_SIZE);
     if (n <= 0) break;
     chunks.push(mem.slice(scratchOffset, scratchOffset + n));
   }

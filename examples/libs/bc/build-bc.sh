@@ -102,10 +102,16 @@ if [ ! -f Makefile ]; then
     echo "==> Configure complete."
 fi
 
-# Place libmath.h and touch it so it's newer than all dependencies.
-# This prevents make from trying to regenerate it via fbc.
+# Place libmath.h from host build.
 cp "$SCRIPT_DIR/libmath.h" "$SRC_DIR/bc/libmath.h"
-touch "$SRC_DIR/bc/libmath.h"
+
+# Patch the Makefile to skip fbc/libmath.h regeneration.
+# The Makefile rule rebuilds libmath.h via fbc (a host-native binary) from
+# libmath.b. Since fbc is cross-compiled to wasm and can't run on the host,
+# we replace the rule with a no-op that uses our pre-generated libmath.h.
+sed -i.bak '/^libmath\.h:/,/rm -f \.\/fbc/c\
+libmath.h: libmath.b\
+	@echo "Using pre-generated libmath.h (cross-compilation)"' "$SRC_DIR/bc/Makefile"
 
 # --- Build ---
 echo "==> Building bc..."
