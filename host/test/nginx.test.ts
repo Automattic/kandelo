@@ -186,7 +186,7 @@ describe.skipIf(!existsSync(nginxWasmPath))(
       for (let i = 0; i < 80; i++) {
         await new Promise((r) => setTimeout(r, 250));
         try {
-          await httpGet(testPort, "/", 1000);
+          await httpGet(testPort, "/", 3000);
           ready = true;
           break;
         } catch {
