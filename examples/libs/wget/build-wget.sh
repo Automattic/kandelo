@@ -41,6 +41,9 @@ if [ -f "$OPENSSL_DIR/lib/libssl.a" ] && [ -f "$OPENSSL_DIR/lib/libcrypto.a" ]; 
     SSL_FLAGS+=("--with-ssl=openssl")
     EXTRA_CFLAGS="-I$OPENSSL_DIR/include"
     EXTRA_LDFLAGS="-L$OPENSSL_DIR/lib"
+    # Set pkg-config bypass variables so configure doesn't need .pc files
+    export OPENSSL_CFLAGS="-I$OPENSSL_DIR/include"
+    export OPENSSL_LIBS="-L$OPENSSL_DIR/lib -lssl -lcrypto"
 else
     echo "==> OpenSSL not found, building without SSL support"
     SSL_FLAGS+=("--without-ssl")
