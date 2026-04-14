@@ -24,8 +24,8 @@ describe("wasm64 process support", () => {
   });
 
   test("detectPtrWidth identifies wasm32 binary", () => {
-    // Use the kernel userspace test binary (known wasm32)
-    const bytes = loadWasm("wasm_posix_userspace.wasm");
+    // Use a known wasm32 program binary
+    const bytes = loadWasm("fork-exec.wasm");
     expect(detectPtrWidth(bytes)).toBe(4);
   });
 

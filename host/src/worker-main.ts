@@ -1282,10 +1282,13 @@ export async function centralizedThreadWorkerMain(
     dbg(`module ready, type=${typeof module}`);
 
     const kernelImports = buildKernelImports(memory, channelOffset);
+    dbg("building import object...");
     const importObject = buildImportObject(module, memory, kernelImports, channelOffset, undefined,
       () => threadInstance, ptrWidth);
+    dbg("instantiating...");
     const instance = new WebAssembly.Instance(module, importObject);
     threadInstance = instance;
+    dbg("instance created");
 
     // Initialize Wasm TLS for this thread.
     // IMPORTANT: We place TLS data inside the channel's spill page (after the
@@ -1299,6 +1302,7 @@ export async function centralizedThreadWorkerMain(
     const tlsBlock = safeTlsAddr;
 
     if (wasmInitTls && tlsBlock > 0) {
+      dbg(`init TLS at ${tlsBlock}`);
       wasmInitTls(ptrWidth === 8 ? BigInt(tlsBlock) : tlsBlock);
     }
 
@@ -1306,11 +1310,13 @@ export async function centralizedThreadWorkerMain(
     const stackPointer = instance.exports.__stack_pointer as WebAssembly.Global | undefined;
     if (stackPointer) {
       stackPointer.value = ptrWidth === 8 ? BigInt(stackPtr) : stackPtr;
+      dbg(`stack_pointer set to ${stackPtr}`);
     }
 
     // Initialize musl thread pointer if available
     const wasmThreadInit = instance.exports.__wasm_thread_init as ((tp: number | bigint) => void) | undefined;
     if (wasmThreadInit && tlsPtr > 0) {
+      dbg(`thread_init(${tlsPtr})`);
       wasmThreadInit(ptrWidth === 8 ? BigInt(tlsPtr) : tlsPtr);
     }
 
@@ -1318,11 +1324,14 @@ export async function centralizedThreadWorkerMain(
     const getChannelBaseAddr = instance.exports.__get_channel_base_addr as (() => number | bigint) | undefined;
     if (getChannelBaseAddr) {
       const addr = Number(getChannelBaseAddr());
+      dbg(`__get_channel_base_addr() = ${addr}`);
       if (addr === 0) {
         // Global-based approach — __channel_base was set at instantiation via
         // WebAssembly.Global in buildImportObject. Nothing to do.
+        dbg("using global-based __channel_base");
       } else {
         // Legacy TLS-based approach
+        dbg(`writing channel offset ${channelOffset} to addr ${addr}`);
         const view = new DataView(memory.buffer);
         if (ptrWidth === 8) {
           view.setBigUint64(addr, BigInt(channelOffset), true);
@@ -1332,6 +1341,7 @@ export async function centralizedThreadWorkerMain(
       }
     } else if (tlsBlock > 0) {
       // Fallback: assume offset 0 (only for programs without the helper)
+      dbg(`no __get_channel_base_addr, writing channel to tlsBlock ${tlsBlock}`);
       const view = new DataView(memory.buffer);
       if (ptrWidth === 8) {
         view.setBigUint64(tlsBlock, BigInt(channelOffset), true);
@@ -1353,22 +1363,40 @@ export async function centralizedThreadWorkerMain(
       throw new Error(`Thread function at table index ${fnPtr} is null`);
     }
 
+    // Dump thread descriptor memory for diagnosis
+    {
+      const dv = new DataView(memory.buffer);
+      const words: string[] = [];
+      for (let off = 0; off < 64; off += 4) {
+        words.push(`0x${dv.getUint32(argPtr + off, true).toString(16).padStart(8, '0')}`);
+      }
+      dbg(`thread descriptor at ${argPtr}: ${words.join(' ')}`);
+    }
+    dbg(`calling thread fn at table[${fnPtr}] with arg ${argPtr}`);
     let result: number;
     try {
       const raw = threadFn(ptrWidth === 8 ? BigInt(argPtr) : argPtr);
       result = Number(raw);
+      dbg(`thread fn returned ${result}`);
     } catch (e) {
-      tlog(`[thread-worker] tid=${tid} threadFn threw: ${e}`);
+      dbg(`[thread-worker] tid=${tid} threadFn threw: ${e}`);
       if (e instanceof Error && e.stack) {
-        tlog(`[thread-worker] tid=${tid} stack: ${e.stack}`);
+        dbg(`[thread-worker] tid=${tid} stack: ${e.stack}`);
       }
       if (e instanceof Error && e.message.includes("unreachable")) {
         // Thread exited via kernel_exit → unreachable trap
+        dbg("thread exited via unreachable");
         result = 0;
       } else if (e instanceof Error && e.message.includes("null function or function signature mismatch")) {
-        // call_indirect type mismatch — log and treat as thread crash
+        // call_indirect type mismatch — treat as thread crash but don't abort
+        dbg(`thread fn threw: ${e}`);
+        if (e.stack) dbg(`stack: ${e.stack}`);
         result = 0;
       } else {
+        dbg(`thread fn threw: ${e}`);
+        if (e instanceof Error && e.stack) {
+          dbg(`stack: ${e.stack}`);
+        }
         throw e;
       }
     }
