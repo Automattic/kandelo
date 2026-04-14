@@ -469,6 +469,57 @@ if ! grep -q 'estack_make_default_' "$GLOBAL_H" 2>/dev/null; then
     echo "==> Patched global.h ESTACK/WSTACK for wasm32"
 fi
 
+# Patch inet_drv.c and ram_file_drv.c: driver start function signatures.
+# erts_open_driver() calls driver->start via call_indirect with 3 args
+# (port, command, opts), but these drivers define start with only 2 args.
+# On native platforms the extra arg is harmlessly ignored, but wasm's
+# call_indirect validates the function type and traps on mismatch.
+# Fix: add a third void* parameter and cast in struct initializers.
+INET_DRV="$SRC_DIR/erts/emulator/drivers/common/inet_drv.c"
+if grep -q 'tcp_inet_start(ErlDrvPort, char\* command);' "$INET_DRV" 2>/dev/null; then
+    # Fix forward declarations (add 3rd param)
+    sed -i '' \
+        's/static ErlDrvData tcp_inet_start(ErlDrvPort, char\* command);/static ErlDrvData tcp_inet_start(ErlDrvPort, char* command, void*);/' \
+        "$INET_DRV"
+    sed -i '' \
+        's/static ErlDrvData udp_inet_start(ErlDrvPort, char\* command);/static ErlDrvData udp_inet_start(ErlDrvPort, char* command, void*);/' \
+        "$INET_DRV"
+    # Fix definitions (add 3rd param)
+    sed -i '' \
+        's/static ErlDrvData tcp_inet_start(ErlDrvPort port, char\* args)$/static ErlDrvData tcp_inet_start(ErlDrvPort port, char* args, void* _opts)/' \
+        "$INET_DRV"
+    sed -i '' \
+        's/static ErlDrvData udp_inet_start(ErlDrvPort port, char \*args)$/static ErlDrvData udp_inet_start(ErlDrvPort port, char *args, void* _opts)/' \
+        "$INET_DRV"
+    # Cast function pointers in struct initializers to match 2-arg typedef
+    sed -i '' \
+        's/    tcp_inet_start,/    (ErlDrvData (*)(ErlDrvPort, char*)) tcp_inet_start,/' \
+        "$INET_DRV"
+    sed -i '' \
+        's/    udp_inet_start,/    (ErlDrvData (*)(ErlDrvPort, char*)) udp_inet_start,/' \
+        "$INET_DRV"
+    echo "==> Patched inet_drv.c driver start signatures (3-arg for wasm call_indirect)"
+fi
+
+RAM_FILE_DRV="$SRC_DIR/erts/emulator/drivers/common/ram_file_drv.c"
+if grep -q 'rfile_start(ErlDrvPort, char\*);' "$RAM_FILE_DRV" 2>/dev/null; then
+    # Fix declaration and definition (add 3rd param)
+    sed -i '' \
+        's/static ErlDrvData rfile_start(ErlDrvPort, char\*);/static ErlDrvData rfile_start(ErlDrvPort, char*, void*);/' \
+        "$RAM_FILE_DRV"
+    sed -i '' \
+        's/static ErlDrvData rfile_start(ErlDrvPort port, char\* buf)$/static ErlDrvData rfile_start(ErlDrvPort port, char* buf, void* _opts)/' \
+        "$RAM_FILE_DRV"
+    # Cast function pointers in struct initializer and dynamic assignment
+    sed -i '' \
+        's/    rfile_start,$/    (ErlDrvData (*)(ErlDrvPort, char*)) rfile_start,/' \
+        "$RAM_FILE_DRV"
+    sed -i '' \
+        's/\.start = rfile_start;/.start = (ErlDrvData (*)(ErlDrvPort, char*)) rfile_start;/' \
+        "$RAM_FILE_DRV"
+    echo "==> Patched ram_file_drv.c driver start signature (3-arg for wasm call_indirect)"
+fi
+
 # Patch Makefile: compile erl_unicode.c at -O1.
 # LLVM miscompiles iodata traversal in this file at -O2 on wasm32.
 EMU_MAKEFILE="$SRC_DIR/erts/emulator/wasm32-unknown-wasi/Makefile"
