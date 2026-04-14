@@ -1360,8 +1360,14 @@ export async function centralizedThreadWorkerMain(
       tlog(`[thread-worker] tid=${tid} threadFn returned ${result}`);
     } catch (e) {
       tlog(`[thread-worker] tid=${tid} threadFn threw: ${e}`);
+      if (e instanceof Error && e.stack) {
+        tlog(`[thread-worker] tid=${tid} stack: ${e.stack}`);
+      }
       if (e instanceof Error && e.message.includes("unreachable")) {
         // Thread exited via kernel_exit → unreachable trap
+        result = 0;
+      } else if (e instanceof Error && e.message.includes("null function or function signature mismatch")) {
+        // call_indirect type mismatch — log and treat as thread crash
         result = 0;
       } else {
         throw e;
