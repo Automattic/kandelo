@@ -3532,13 +3532,22 @@ export class CentralizedKernelWorker {
   private handleIoctlIfconf(channel: ChannelInfo, origArgs: number[]): void {
     const processView = new DataView(channel.memory.buffer);
     const processMem = new Uint8Array(channel.memory.buffer);
+    const pw = this.getPtrWidth(channel.pid);
 
     // Read struct ifconf from process memory at arg[2]
+    // struct ifconf { int ifc_len; union { char *ifc_buf; struct ifreq *ifc_req; }; }
+    // wasm32: ifc_len at +0 (4B), ifc_buf at +4 (4B) — total 8 bytes
+    // wasm64: ifc_len at +0 (4B), [4B padding], ifc_buf at +8 (8B) — total 16 bytes
     const ifconfPtr = origArgs[2];
-    const ifcLen = processView.getInt32(ifconfPtr, true);     // ifc_len (buffer size)
-    const ifcBuf = processView.getUint32(ifconfPtr + 4, true); // ifc_buf (process address)
+    const ifcLen = processView.getInt32(ifconfPtr, true);
+    let ifcBuf: number;
+    if (pw === 8) {
+      ifcBuf = Number(processView.getBigUint64(ifconfPtr + 8, true));
+    } else {
+      ifcBuf = processView.getUint32(ifconfPtr + 4, true);
+    }
 
-    // sizeof(struct ifreq) = 32 on wasm32 (16 name + 16 sockaddr union)
+    // sizeof(struct ifreq) = 32 (16 name + 16 sockaddr union, no pointers — same on both)
     const SIZEOF_IFREQ = 32;
 
     if (ifcLen >= SIZEOF_IFREQ && ifcBuf !== 0) {
