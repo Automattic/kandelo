@@ -38,6 +38,7 @@ examples/browser/dist/
 examples/browser/public/wp-bundle.json
 examples/browser/public/python-bundle.json
 examples/browser/public/mariadb-test-bundle.json
+examples/browser/public/texlive-bundle.json
 
 # nginx source (downloaded by build.sh)
 examples/nginx/nginx-src/
@@ -106,6 +107,21 @@ examples/mul_*.c
 examples/mul_*.wasm
 examples/snprintf_debug.wasm
 examples/mariadb-test/test-data/
+
+# libpng build artifacts
+examples/libs/libpng/libpng-src/
+examples/libs/libpng/libpng-build/
+examples/libs/libpng/libpng-install/
+
+# TeX Live build artifacts
+examples/libs/texlive/texlive-src/
+examples/libs/texlive/texlive-host-build/
+examples/libs/texlive/texlive-cross-build/
+examples/libs/texlive/texlive-dist/
+examples/libs/texlive/texlive-fmt/
+examples/libs/texlive/install-tl/
+examples/libs/texlive/texlive.profile
+examples/libs/texlive/bin/
 
 # Benchmark results and built wasm
 benchmarks/results/
