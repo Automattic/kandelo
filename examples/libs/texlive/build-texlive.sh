@@ -50,6 +50,10 @@ if [ ! -x "$HOST_BUILD_DIR/texk/web2c/pdftex" ]; then
     mkdir -p "$HOST_BUILD_DIR"
     cd "$HOST_BUILD_DIR"
 
+    # LIBS=-lm: TeX Live always runs luajit's configure even when luajit
+    # is disabled; its configure checks for pow() via -lm which doesn't
+    # exist on macOS (pow is in libSystem). Providing -lm satisfies the
+    # check harmlessly since luajit won't actually be built.
     "$SRC_DIR/configure" \
         --disable-all-pkgs \
         --enable-pdftex \
@@ -62,7 +66,8 @@ if [ ! -x "$HOST_BUILD_DIR/texk/web2c/pdftex" ]; then
         --disable-synctex \
         --without-x \
         --disable-shared \
-        --enable-static
+        --enable-static \
+        LIBS=-lm
 
     make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
     cd "$REPO_ROOT"
