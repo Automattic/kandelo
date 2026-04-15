@@ -101,6 +101,7 @@ SITE
     "$SRC_DIR/configure" \
         --host=wasm32-unknown-none \
         --build="$(cc -dumpmachine)" \
+        --disable-native-texlive-build \
         --enable-pdftex \
         --disable-luatex \
         --disable-luajittex \
