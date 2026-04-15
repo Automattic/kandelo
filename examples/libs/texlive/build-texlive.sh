@@ -127,7 +127,9 @@ SITE
         LIBPNG_LIBS="-L$SYSROOT/lib -lpng -lz" \
         LIBS=-lm
 
-    make -C texk/web2c pdftex -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
+    # TeX Live uses recursive make to run sub-configures (creating
+    # texk/web2c/ etc.), so we must let the full make run.
+    make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
     cd "$REPO_ROOT"
 fi
 
