@@ -36,7 +36,7 @@ done
 # Download TeX Live source
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading TeX Live $TEXLIVE_VERSION source..."
-    TARBALL="texlive-${TEXLIVE_VERSION}0324-source.tar.xz"
+    TARBALL="texlive-${TEXLIVE_VERSION}0308-source.tar.xz"
     curl -fsSL "https://ftp.math.utah.edu/pub/tex/historic/systems/texlive/${TEXLIVE_VERSION}/${TARBALL}" \
         -o "/tmp/${TARBALL}"
     mkdir -p "$SRC_DIR"
@@ -82,6 +82,7 @@ SITE
     CONFIG_SITE="$CROSS_BUILD_DIR/config.site" \
     "$SRC_DIR/configure" \
         --host=wasm32-unknown-none \
+        --build="$(cc -dumpmachine)" \
         --disable-all-pkgs \
         --enable-pdftex \
         --disable-synctex \

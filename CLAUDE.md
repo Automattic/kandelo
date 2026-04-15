@@ -65,6 +65,22 @@ bash build.sh          # Build kernel wasm + musl sysroot
 scripts/build-programs.sh  # Build test/example C programs
 ```
 
+## Cross-Compilation and Configure Scripts
+
+We cross-compile C libraries for wasm32 using `wasm32posix-cc`. Autoconf `configure` scripts often run feature-detection checks (e.g., `AC_CHECK_FUNCS`) that test against the **host** system's libraries rather than the wasm sysroot. This produces incorrect results — functions like `feenableexcept` may exist on macOS/Linux but not in our musl-based wasm sysroot.
+
+When writing build scripts that call `configure`, explicitly override any checks for functions not available in the wasm sysroot using autoconf cache variables:
+
+```bash
+ac_cv_func_feenableexcept=no \
+"$SRC_DIR/configure" \
+    --host=wasm32-unknown-none \
+    CC=wasm32posix-cc \
+    ...
+```
+
+Do not rely on configure's auto-detection when cross-compiling. If a build fails due to missing functions, check whether configure incorrectly detected a host-only feature and add the appropriate `ac_cv_*=no` override.
+
 ## Key Directories
 
 - `crates/kernel/` — Rust kernel (no_std on wasm32)

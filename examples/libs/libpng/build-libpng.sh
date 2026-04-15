@@ -37,6 +37,7 @@ mkdir -p "$BUILD_DIR"
 cd "$BUILD_DIR"
 
 CFLAGS="-O2" \
+ac_cv_func_feenableexcept=no \
 "$SRC_DIR/configure" \
     --host=wasm32-unknown-none \
     --prefix="$INSTALL_DIR" \
