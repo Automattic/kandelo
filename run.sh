@@ -78,6 +78,8 @@ has_perl()      { [ -f "$REPO_ROOT/examples/libs/perl/bin/perl.wasm" ]; }
 has_ruby()      { [ -f "$REPO_ROOT/examples/libs/ruby/bin/ruby.wasm" ]; }
 has_dlopen()    { [ -f "$REPO_ROOT/examples/dlopen/hello-lib.so" ] && \
                   [ -f "$REPO_ROOT/examples/dlopen/main.wasm" ]; }
+has_texlive()        { [ -f "$REPO_ROOT/examples/libs/texlive/bin/pdftex.wasm" ]; }
+has_texlive_bundle() { [ -f "$REPO_ROOT/examples/browser/public/texlive-bundle.json" ]; }
 
 # ─── Need functions (ensure dependency is built) ─────────────────────────────
 
@@ -386,6 +388,29 @@ build_erlang_bundle() {
         info "Erlang bundle built"
     else
         info "Erlang bundle"
+    fi
+}
+
+build_texlive() {
+    need_kernel
+    need_sdk
+    if ! has_texlive; then
+        step "Building pdftex (TeX Live)"
+        bash "$REPO_ROOT/examples/libs/texlive/build-texlive.sh"
+        info "pdftex built"
+    else
+        info "pdftex (TeX Live)"
+    fi
+}
+
+build_texlive_bundle() {
+    build_texlive
+    if ! has_texlive_bundle; then
+        step "Building TeX Live browser bundle"
+        bash "$REPO_ROOT/examples/browser/scripts/build-texlive-bundle.sh"
+        info "TeX Live bundle built"
+    else
+        info "TeX Live bundle"
     fi
 }
 
@@ -743,6 +768,8 @@ build_target() {
         wp-bundle)  build_wp_bundle ;;
         erlang)     build_erlang ;;
         erlang-bundle) build_erlang_bundle ;;
+        texlive)    build_texlive ;;
+        texlive-bundle) build_texlive_bundle ;;
         bc)         build_bc ;;
         file)       build_file ;;
         less)       build_less ;;
@@ -774,7 +801,7 @@ build_target() {
 }
 
 # All targets needed for browser demos
-BROWSER_DEPS=(kernel sysroot programs dash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano vim git nginx php php-fpm mariadb redis cpython python-bundle perl perl-bundle ruby vim-runtime-bundle wordpress wp-bundle erlang erlang-bundle)
+BROWSER_DEPS=(kernel sysroot programs dash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano vim git nginx php php-fpm mariadb redis cpython python-bundle perl perl-bundle ruby vim-runtime-bundle wordpress wp-bundle erlang erlang-bundle texlive texlive-bundle)
 
 build_browser() {
     for t in "${BROWSER_DEPS[@]}"; do
@@ -824,6 +851,8 @@ build_all() {
     build_wp_bundle
     build_erlang
     build_erlang_bundle
+    build_texlive
+    build_texlive_bundle
     build_dlopen
 }
 
@@ -923,6 +952,19 @@ clean_target() {
         erlang-bundle)
             rm -f "$REPO_ROOT/examples/browser/public/erlang-bundle.json"
             warn "Cleaned Erlang bundle" ;;
+        texlive)
+            rm -rf "$REPO_ROOT/examples/libs/texlive/texlive-src" \
+                   "$REPO_ROOT/examples/libs/texlive/texlive-host-build" \
+                   "$REPO_ROOT/examples/libs/texlive/texlive-cross-build" \
+                   "$REPO_ROOT/examples/libs/texlive/texlive-dist" \
+                   "$REPO_ROOT/examples/libs/texlive/texlive-fmt" \
+                   "$REPO_ROOT/examples/libs/texlive/install-tl" \
+                   "$REPO_ROOT/examples/libs/texlive/bin"
+            rm -f "$REPO_ROOT/examples/libs/texlive/texlive.profile"
+            warn "Cleaned TeX Live" ;;
+        texlive-bundle)
+            rm -f "$REPO_ROOT/examples/browser/public/texlive-bundle.json"
+            warn "Cleaned TeX Live bundle" ;;
         bc)
             rm -rf "$REPO_ROOT/examples/libs/bc/bc-src" \
                    "$REPO_ROOT/examples/libs/bc/bin"
@@ -1323,6 +1365,8 @@ cmd_list() {
     echo "  ruby        Ruby                                   $(has_ruby && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  erlang      Erlang/OTP 28 BEAM VM                   $(has_erlang && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  erlang-bundle  Erlang browser bundle               $(has_erlang_bundle && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  texlive     pdftex (TeX Live) Wasm binary           $(has_texlive && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  texlive-bundle TeX Live browser bundle             $(has_texlive_bundle && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  dlopen      dlopen shared library example          $(has_dlopen && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  browser     All browser demo dependencies"
     echo "  all         Build everything"
