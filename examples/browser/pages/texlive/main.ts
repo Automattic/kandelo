@@ -385,6 +385,8 @@ async function compile() {
 
     // Initialize kernel
     const kernel = new BrowserKernel({
+      fsSize: 512 * 1024 * 1024,
+      maxFsSize: 512 * 1024 * 1024,
       onStdout: (data) => appendLog(decoder.decode(data)),
       onStderr: (data) => appendLog(decoder.decode(data), "stderr"),
     });
