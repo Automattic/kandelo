@@ -53,6 +53,12 @@ if [ ! -x "$HOST_BUILD_DIR/texk/web2c/pdftex" ]; then
     "$SRC_DIR/configure" \
         --disable-all-pkgs \
         --enable-pdftex \
+        --disable-luatex \
+        --disable-luajittex \
+        --disable-luahbtex \
+        --disable-luajithbtex \
+        --disable-mflua \
+        --disable-mfluajit \
         --disable-synctex \
         --without-x \
         --disable-shared \
@@ -79,12 +85,23 @@ kpse_cv_have_decl_putenv=yes
 kpse_cv_have_decl_getcwd=yes
 SITE
 
+    HOST_WEB2C="$HOST_BUILD_DIR/texk/web2c"
+
     CONFIG_SITE="$CROSS_BUILD_DIR/config.site" \
+    TANGLEBOOT="$HOST_WEB2C/tangleboot" \
+    CTANGLEBOOT="$HOST_WEB2C/ctangleboot" \
+    TIEBOOT="$HOST_WEB2C/tieboot" \
     "$SRC_DIR/configure" \
         --host=wasm32-unknown-none \
         --build="$(cc -dumpmachine)" \
         --disable-all-pkgs \
         --enable-pdftex \
+        --disable-luatex \
+        --disable-luajittex \
+        --disable-luahbtex \
+        --disable-luajithbtex \
+        --disable-mflua \
+        --disable-mfluajit \
         --disable-synctex \
         --without-x \
         --disable-shared \
