@@ -464,7 +464,7 @@ async function compile() {
         const pdfFd = fs.open("/tmp/input.pdf", 0 /* O_RDONLY */, 0);
         const stat = fs.fstat(pdfFd);
         const pdfData = new Uint8Array(stat.size);
-        fs.read(pdfFd, pdfData, 0, stat.size, 0);
+        fs.read(pdfFd, pdfData, null, stat.size);
         fs.close(pdfFd);
 
         // Create blob URL and display
