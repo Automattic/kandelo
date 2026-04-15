@@ -44,34 +44,33 @@ if [ ! -d "$SRC_DIR" ]; then
     rm "/tmp/${TARBALL}"
 fi
 
+# TeX Live always runs luajit's sub-configure even when all Lua engines are
+# disabled. On macOS/ARM the luajit configure fails (can't find pow(), pointer
+# size mismatch). Since we never build luajit, just remove the configure script
+# so TeX Live's recursive make skips it entirely.
+if [ -x "$SRC_DIR/libs/luajit/configure" ]; then
+    chmod -x "$SRC_DIR/libs/luajit/configure"
+fi
+
 # ─── Phase 1: Host-native pdftex ──────────────────────────────────
 if [ ! -x "$HOST_BUILD_DIR/texk/web2c/pdftex" ]; then
     echo "==> Building host-native pdftex..."
     mkdir -p "$HOST_BUILD_DIR"
     cd "$HOST_BUILD_DIR"
 
-    # LIBS=-lm: TeX Live always runs luajit's configure even when luajit
-    # is disabled; its configure checks for pow() via -lm which doesn't
-    # exist on macOS (pow is in libSystem). Providing -lm satisfies the
-    # check harmlessly since luajit won't actually be built.
     "$SRC_DIR/configure" \
         --disable-all-pkgs \
         --enable-pdftex \
-        --disable-luatex \
-        --disable-luajittex \
-        --disable-luahbtex \
-        --disable-luajithbtex \
-        --disable-mflua \
-        --disable-mfluajit \
         --disable-synctex \
         --without-x \
         --disable-shared \
-        --enable-static \
-        LIBS=-lm
+        --enable-static
 
     # --disable-all-pkgs prevents top-level make from recursing into
-    # texk/web2c, so build pdftex explicitly in that subdir.
-    make -C texk/web2c pdftex -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
+    # texk/web2c, so build targets explicitly in that subdir.
+    # otangle is needed by cross-compile configure even though we don't
+    # build Omega engines — web2c/configure unconditionally requires it.
+    make -C texk/web2c pdftex otangle -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
     cd "$REPO_ROOT"
 fi
 
@@ -84,31 +83,34 @@ if [ ! -f "$CROSS_BUILD_DIR/texk/web2c/pdftex" ]; then
     mkdir -p "$CROSS_BUILD_DIR"
     cd "$CROSS_BUILD_DIR"
 
-    # Create config.site for cross-compilation
+    HOST_WEB2C="$HOST_BUILD_DIR/texk/web2c"
+
+    # config.site for cross-compilation cache overrides.
     cat > config.site << 'SITE'
 ac_cv_func_strerror_r=no
 ac_cv_func_working_strerror_r=no
 kpse_cv_have_decl_putenv=yes
 kpse_cv_have_decl_getcwd=yes
+enable_aleph=no
+enable_xetex=no
+enable_omfonts=no
 SITE
 
-    HOST_WEB2C="$HOST_BUILD_DIR/texk/web2c"
+    # Put host-built tangle/ctangle on PATH so sub-configures find them.
 
-    CONFIG_SITE="$CROSS_BUILD_DIR/config.site" \
-    TANGLEBOOT="$HOST_WEB2C/tangleboot" \
-    CTANGLEBOOT="$HOST_WEB2C/ctangleboot" \
-    TIEBOOT="$HOST_WEB2C/tieboot" \
+    # Export CONFIG_SITE so recursive sub-configures pick it up.
+    export PATH="$HOST_WEB2C:$PATH"
+    export CONFIG_SITE="$CROSS_BUILD_DIR/config.site"
+
     "$SRC_DIR/configure" \
         --host=wasm32-unknown-none \
         --build="$(cc -dumpmachine)" \
-        --disable-native-texlive-build \
+        --disable-all-pkgs \
         --enable-pdftex \
-        --disable-luatex \
-        --disable-luajittex \
-        --disable-luahbtex \
-        --disable-luajithbtex \
-        --disable-mflua \
-        --disable-mfluajit \
+        --disable-native-texlive-build \
+        --disable-aleph \
+        --disable-xetex \
+        --disable-omfonts \
         --disable-synctex \
         --without-x \
         --disable-shared \
@@ -124,12 +126,22 @@ SITE
         ZLIB_CFLAGS="-I$SYSROOT/include" \
         ZLIB_LIBS="-L$SYSROOT/lib -lz" \
         LIBPNG_CFLAGS="-I$SYSROOT/include" \
-        LIBPNG_LIBS="-L$SYSROOT/lib -lpng -lz" \
-        LIBS=-lm
+        LIBPNG_LIBS="-L$SYSROOT/lib -lpng -lz"
 
-    # TeX Live uses recursive make to run sub-configures (creating
-    # texk/web2c/ etc.), so we must let the full make run.
-    make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
+    # --disable-all-pkgs leaves MAKE_SUBDIRS empty everywhere, but
+    # CONF_SUBDIRS still lists all subdirectories. Running top-level
+    # make triggers deferred configures for:
+    #   - texk/kpathsea, texk/ptexenc (top-level CONF_SUBDIRS)
+    #   - libs/xpdf, libs/zlib, etc. (libs/ CONF_SUBDIRS)
+    #   - texk/web2c, etc. (texk/ CONF_SUBDIRS)
+    # Without this, kpathsea and xpdf directories don't exist.
+    NPROC="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
+    make -j"$NPROC"
+
+    # Build pdftex's bundled dependencies before pdftex itself.
+    make -C texk/kpathsea -j"$NPROC"
+    make -C libs/xpdf -j"$NPROC"
+    make -C texk/web2c pdftex -j"$NPROC"
     cd "$REPO_ROOT"
 fi
 
