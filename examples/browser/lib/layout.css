@@ -496,6 +496,72 @@ table.result-table tr:nth-child(even) { background: #f0f0f0; }
   font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
 }
 
+/* ── TeX Live demo ─────────────────────────── */
+
+.tex-panels {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.tex-editor-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  border-right: 1px solid #e5e5e5;
+}
+
+.tex-editor-panel #editor {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.tex-editor-panel .cm-editor {
+  height: 100%;
+}
+
+.tex-preview-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.tex-preview-panel iframe {
+  flex: 1;
+  width: 100%;
+  border: none;
+  min-height: 0;
+}
+
+.tex-log-panel {
+  border-top: 1px solid #e5e5e5;
+  max-height: 200px;
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+
+.tex-log-panel pre {
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  background: #1e1e1e;
+  color: #d4d4d4;
+  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: 0.75rem;
+  line-height: 1.3;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.log-toggle {
+  margin-left: auto;
+}
+
 /* ── Responsive ─────────────────────────────── */
 
 @media (max-width: 768px) {
@@ -528,6 +594,8 @@ table.result-table tr:nth-child(even) { background: #f0f0f0; }
   .split-panels { grid-template-columns: 1fr; }
   .code-panels  { grid-template-columns: 1fr; }
   .batch-panel  { grid-template-columns: 1fr; }
+  .tex-panels   { grid-template-columns: 1fr; }
+  .tex-editor-panel { border-right: none; border-bottom: 1px solid #e5e5e5; max-height: 50vh; }
 
   .log-panel { border-right: none; border-bottom: 1px solid #e5e5e5; }
   .code-panels > *:first-child { border-right: none; border-bottom: 1px solid #e5e5e5; }
