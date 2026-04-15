@@ -48,6 +48,7 @@ export function buildClangArgs(userArgs: string[], toolchain: Toolchain, arch: W
       args.push(
         join(toolchain.glueDir, 'channel_syscall.c'),
         join(toolchain.glueDir, 'compiler_rt.c'),
+        join(toolchain.glueDir, 'cxxrt.c'),
       );
       if (parsed.linkDl) {
         args.push(join(toolchain.glueDir, 'dlopen.c'));

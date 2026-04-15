@@ -169,6 +169,10 @@ function scanDir(dir: string, vfsPrefix: string) {
 // Scan texmf-dist
 scanDir(texmfDist, "/usr/share/texmf-dist");
 
+// Scan texmf-var for generated files (e.g. pdftex.map from updmap)
+const texmfVar = join(installDir, "texmf-var");
+scanDir(texmfVar, "/usr/share/texmf-dist");
+
 // Add format file
 const fmtData = readFileSync(join(fmtDir, "latex.fmt"));
 totalSize += fmtData.length;

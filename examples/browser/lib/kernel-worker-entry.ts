@@ -298,6 +298,14 @@ function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>) {
 
     worker.on("error", (err: Error) => {
       console.error(`[kernel-worker] Worker error pid=${pid}:`, err.message);
+      handleExit(pid, 127);
+    });
+    worker.on("message", (msg: unknown) => {
+      const m = msg as { type?: string; message?: string; pid?: number };
+      if (m.type === "error") {
+        console.error(`[kernel-worker] Process error pid=${pid}:`, m.message);
+        handleExit(pid, 127);
+      }
     });
 
     respond(msg.requestId, pid);

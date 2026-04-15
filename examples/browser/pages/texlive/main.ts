@@ -428,6 +428,15 @@ async function compile() {
     fs.write(fd, sourceBytes, 0, sourceBytes.length);
     fs.close(fd);
 
+    // kpathsea needs argv[0] to resolve to an existing file so it
+    // can determine its installation directory. Using "pdflatex" as
+    // the program name triggers PDF output mode (vs DVI).
+    try {
+      fs.mkdir("/usr/bin", 0o755);
+    } catch { /* already exists */ }
+    const marker = fs.open("/usr/bin/pdflatex", O_WRONLY | O_CREAT | O_TRUNC, 0o755);
+    fs.close(marker);
+
     // Set up environment
     const env = [
       "HOME=/home",
@@ -449,7 +458,8 @@ async function compile() {
     const exitCode = await kernel.spawn(
       pdftexBytes!,
       [
-        "pdftex",
+        "/usr/bin/pdflatex",
+        "--output-format=pdf",
         "-interaction=nonstopmode",
         "-output-directory=/tmp",
         "-fmt=latex",

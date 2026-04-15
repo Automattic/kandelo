@@ -136,12 +136,19 @@ SITE
     #   - texk/web2c, etc. (texk/ CONF_SUBDIRS)
     # Without this, kpathsea and xpdf directories don't exist.
     NPROC="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
-    make -j"$NPROC"
+
+    # Pass AR/RANLIB on the command line so they override Makefile
+    # assignments. xpdf's sub-configure ignores the top-level AR
+    # setting and hardcodes native `ar`, which produces empty
+    # archives for wasm object files.
+    WASM_AR="AR=wasm32posix-ar RANLIB=wasm32posix-ranlib"
+
+    make -j"$NPROC" $WASM_AR
 
     # Build pdftex's bundled dependencies before pdftex itself.
-    make -C texk/kpathsea -j"$NPROC"
-    make -C libs/xpdf -j"$NPROC"
-    make -C texk/web2c pdftex -j"$NPROC"
+    make -C texk/kpathsea -j"$NPROC" $WASM_AR
+    make -C libs/xpdf -j"$NPROC" $WASM_AR
+    make -C texk/web2c pdftex -j"$NPROC" $WASM_AR
     cd "$REPO_ROOT"
 fi
 
