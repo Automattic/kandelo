@@ -455,7 +455,7 @@ async function compile() {
         "-fmt=latex",
         "/tmp/input.tex",
       ],
-      { env },
+      { env, stdin: new Uint8Array(0) },
     );
 
     appendLog(`\npdftex exited with code ${exitCode}\n`, "info");
