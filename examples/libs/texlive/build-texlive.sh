@@ -69,7 +69,9 @@ if [ ! -x "$HOST_BUILD_DIR/texk/web2c/pdftex" ]; then
         --enable-static \
         LIBS=-lm
 
-    make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
+    # --disable-all-pkgs prevents top-level make from recursing into
+    # texk/web2c, so build pdftex explicitly in that subdir.
+    make -C texk/web2c pdftex -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
     cd "$REPO_ROOT"
 fi
 
