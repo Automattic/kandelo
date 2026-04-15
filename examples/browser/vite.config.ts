@@ -182,6 +182,7 @@ export default defineConfig({
         "test-runner": path.resolve(__dirname, "pages/test-runner/index.html"),
         "mariadb-test": path.resolve(__dirname, "pages/mariadb-test/index.html"),
         erlang: path.resolve(__dirname, "pages/erlang/index.html"),
+        texlive: path.resolve(__dirname, "pages/texlive/index.html"),
       },
     },
   },
