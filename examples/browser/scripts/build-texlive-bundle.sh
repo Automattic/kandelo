@@ -49,7 +49,10 @@ tlpdbopt_install_srcfiles 0
 EOF
 
     cd "$INSTALLER_DIR"
-    perl install-tl --profile="$TEXLIVE_DIR/texlive.profile" --no-interaction
+    perl install-tl \
+        --profile="$TEXLIVE_DIR/texlive.profile" \
+        --no-interaction \
+        --repository=https://mirror.ctan.org/systems/texlive/tlnet
     cd "$REPO_ROOT"
 fi
 
@@ -62,6 +65,22 @@ if [ ! -f "$FMT_DIR/latex.fmt" ]; then
     # Set up TEXMF paths for host pdftex
     export TEXMFDIST="$INSTALL_DIR/texmf-dist"
     export TEXMFCNF="$INSTALL_DIR/texmf-dist/web2c"
+
+    # Create minimal language.dat with English only — the full
+    # hyphen.cfg tries to load patterns for many languages (German,
+    # French, etc.) that aren't installed with our minimal profile.
+    cat > "$INSTALL_DIR/texmf-dist/tex/generic/config/language.dat" << 'LANGDAT'
+english hyphen.tex
+=usenglish
+=USenglish
+=american
+dumylang dumyhyph.tex
+nohyphenation zerohyph.tex
+ukenglish loadhyph-en-gb.tex
+=british
+=UKenglish
+usenglishmax loadhyph-en-us.tex
+LANGDAT
 
     cd "$FMT_DIR"
     "$HOST_PDFTEX" -ini -jobname=latex \
