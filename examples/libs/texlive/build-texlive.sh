@@ -124,9 +124,10 @@ SITE
         ZLIB_CFLAGS="-I$SYSROOT/include" \
         ZLIB_LIBS="-L$SYSROOT/lib -lz" \
         LIBPNG_CFLAGS="-I$SYSROOT/include" \
-        LIBPNG_LIBS="-L$SYSROOT/lib -lpng -lz"
+        LIBPNG_LIBS="-L$SYSROOT/lib -lpng -lz" \
+        LIBS=-lm
 
-    make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
+    make -C texk/web2c pdftex -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
     cd "$REPO_ROOT"
 fi
 
