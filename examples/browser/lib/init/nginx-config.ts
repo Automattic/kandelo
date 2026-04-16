@@ -46,9 +46,18 @@ http {
         text/html  html htm;
         text/css   css;
         text/javascript js;
-        application/json json;
+        application/json json map;
+        application/xml xml;
+        text/plain txt;
         image/png png;
+        image/jpeg jpg jpeg;
+        image/gif gif;
         image/svg+xml svg;
+        image/x-icon ico;
+        font/woff woff;
+        font/woff2 woff2;
+        font/ttf ttf;
+        application/vnd.ms-fontobject eot;
     }
     default_type application/octet-stream;
 

@@ -201,9 +201,11 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // In a dedicated worker, use Atomics.waitAsync directly — no V8 microtask
   // chain freeze bug (that's main-thread-only).
   kernelWorker.usePolling = false;
-  // Yield after every syscall so onmessage handlers (pipe ops, bridge port,
-  // spawn) can interleave with syscall processing.
-  (kernelWorker as any).relistenBatchSize = 1;
+  // Process a small batch of syscalls via microtask before yielding to the
+  // event loop via setImmediate. Batch size 8 is a good balance: it gives
+  // ~8x throughput vs batch-1 while still yielding frequently enough for
+  // pump timers, message handlers, and rendering to interleave.
+  (kernelWorker as any).relistenBatchSize = 8;
 
   // Inject stdout/stderr/listen callbacks
   const kw = kernelWorker as any;
@@ -582,11 +584,11 @@ function handlePipeRead(msg: Extract<MainToKernelMessage, { type: "pipe_read" }>
     pid: number, pipeIdx: number, bufPtr: bigint, bufLen: number,
   ) => number;
   const scratchOffset = (kernelWorker as any).tcpScratchOffset || (kernelWorker as any).scratchOffset;
-  const mem = new Uint8Array(kernelMemory!.buffer);
   const chunks: Uint8Array[] = [];
   for (;;) {
     const n = pipeRead(msg.pid, msg.pipeIdx, BigInt(scratchOffset), PAGE_SIZE);
     if (n <= 0) break;
+    const mem = new Uint8Array(kernelMemory!.buffer);
     chunks.push(mem.slice(scratchOffset, scratchOffset + n));
   }
   if (chunks.length === 0) { respond(msg.requestId, null); return; }
@@ -606,11 +608,11 @@ function handlePipeWrite(msg: Extract<MainToKernelMessage, { type: "pipe_write" 
     pid: number, pipeIdx: number, bufPtr: bigint, bufLen: number,
   ) => number;
   const scratchOffset = (kernelWorker as any).tcpScratchOffset || (kernelWorker as any).scratchOffset;
-  const mem = new Uint8Array(kernelMemory!.buffer);
   let written = 0;
   const data = msg.data;
   while (written < data.length) {
     const chunk = Math.min(data.length - written, PAGE_SIZE);
+    let mem = new Uint8Array(kernelMemory!.buffer);
     mem.set(data.subarray(written, written + chunk), scratchOffset);
     const n = pipeWrite(msg.pid, msg.pipeIdx, BigInt(scratchOffset), chunk);
     if (n <= 0) break;
@@ -745,6 +747,8 @@ const decoder = new TextDecoder();
 function handleHttpRequest(requestId: number, request: any) {
   if (!kernelInstance || !bridgePort) return;
 
+  const url = request.url || "?";
+
   // Find a listener target for the bridge's target HTTP port.
   const kw = kernelWorker as any;
   let target: { pid: number; fd: number } | null = null;
@@ -759,6 +763,7 @@ function handleHttpRequest(requestId: number, request: any) {
     }
   }
   if (!target) {
+    console.warn(`[bridge] no listener target for req#${requestId} ${url}`);
     bridgePort.postMessage({
       type: "http-error",
       requestId,
@@ -776,6 +781,7 @@ function handleHttpRequest(requestId: number, request: any) {
     Math.floor(Math.random() * 60000) + 1024,
   );
   if (recvPipeIdx < 0) {
+    console.warn(`[bridge] inject failed for req#${requestId} ${url} → pid=${target.pid} err=${recvPipeIdx}`);
     bridgePort.postMessage({
       type: "http-error",
       requestId,
@@ -787,10 +793,15 @@ function handleHttpRequest(requestId: number, request: any) {
   const sendPipeIdx = recvPipeIdx + 1;
   const rawRequest = buildRawHttpRequest(request);
 
-  // Write request directly to pipe (synchronous)
-  pipeWriteDirect(target.pid, recvPipeIdx, rawRequest);
+  console.log(`[bridge] req#${requestId} ${request.method} ${url} → pid=${target.pid}`);
 
-  // Wake blocked readers
+  // Write request directly to pipe (synchronous)
+  const written = pipeWriteDirect(target.pid, recvPipeIdx, rawRequest);
+  if (written < rawRequest.length) {
+    console.warn(`[bridge] req#${requestId} partial write: ${written}/${rawRequest.length}`);
+  }
+
+  // Wake blocked readers on the recv pipe
   const readers = kw.pendingPipeReaders?.get(recvPipeIdx);
   if (readers && readers.length > 0) {
     kw.pendingPipeReaders.delete(recvPipeIdx);
@@ -800,10 +811,26 @@ function handleHttpRequest(requestId: number, request: any) {
       }
     }
   }
+
+  // Directly wake the target process's pending poll — scheduleWakeBlockedRetries
+  // uses setImmediate which may be delayed by busy pump loops, causing the poll
+  // to wait for its full 5000ms fallback timer. Synchronous wake guarantees the
+  // nginx worker accepts injected connections immediately.
+  for (const [key, entry] of kw.pendingPollRetries) {
+    if (entry.channel.pid === target.pid) {
+      if (entry.timer !== null) clearTimeout(entry.timer);
+      kw.pendingPollRetries.delete(key);
+      if (kw.processes.has(target.pid)) {
+        kw.retrySyscall(entry.channel);
+      }
+      break;
+    }
+  }
+  // Also schedule broad wake for other processes that might care
   kw.scheduleWakeBlockedRetries();
 
   // Pump response
-  pumpResponse(requestId, target.pid, sendPipeIdx, recvPipeIdx);
+  pumpResponse(requestId, target.pid, sendPipeIdx, recvPipeIdx, url);
 }
 
 function pipeWriteDirect(pid: number, pipeIdx: number, data: Uint8Array): number {
@@ -811,10 +838,11 @@ function pipeWriteDirect(pid: number, pipeIdx: number, data: Uint8Array): number
     pid: number, pipeIdx: number, bufPtr: bigint, bufLen: number,
   ) => number;
   const scratchOffset = (kernelWorker as any).tcpScratchOffset || (kernelWorker as any).scratchOffset;
-  const mem = new Uint8Array(kernelMemory!.buffer);
   let written = 0;
   while (written < data.length) {
     const chunk = Math.min(data.length - written, PAGE_SIZE);
+    // Re-create view before each Wasm call — memory.grow detaches the ArrayBuffer.
+    let mem = new Uint8Array(kernelMemory!.buffer);
     mem.set(data.subarray(written, written + chunk), scratchOffset);
     const n = pipeWrite(pid, pipeIdx, BigInt(scratchOffset), chunk);
     if (n <= 0) break;
@@ -828,11 +856,13 @@ function pipeReadDirect(pid: number, pipeIdx: number): Uint8Array | null {
     pid: number, pipeIdx: number, bufPtr: bigint, bufLen: number,
   ) => number;
   const scratchOffset = (kernelWorker as any).tcpScratchOffset || (kernelWorker as any).scratchOffset;
-  const mem = new Uint8Array(kernelMemory!.buffer);
   const chunks: Uint8Array[] = [];
   for (;;) {
     const n = pipeRead(pid, pipeIdx, BigInt(scratchOffset), PAGE_SIZE);
     if (n <= 0) break;
+    // Re-create view after each Wasm call — memory.grow during pipe read
+    // (e.g. wakeup Vec realloc) detaches the previous ArrayBuffer.
+    const mem = new Uint8Array(kernelMemory!.buffer);
     chunks.push(mem.slice(scratchOffset, scratchOffset + n));
   }
   if (chunks.length === 0) return null;
@@ -884,21 +914,27 @@ function buildRawHttpRequest(request: any): Uint8Array {
   return result;
 }
 
-const HTTP_PUMP_TIMEOUT_MS = 30_000;
+const HTTP_PUMP_TIMEOUT_MS = 60_000;
 
 function pumpResponse(
   requestId: number,
   pid: number,
   sendPipeIdx: number,
   recvPipeIdx: number,
+  debugUrl?: string,
 ) {
   const chunks: Uint8Array[] = [];
   let sawWriteOpen = false;
   const startTime = Date.now();
+  let totalBytes = 0;
 
+  let pumpIter = 0;
   const pump = () => {
+    pumpIter++;
     if (Date.now() - startTime > HTTP_PUMP_TIMEOUT_MS) {
       // Timeout — clean up and send error response
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      console.warn(`[bridge] TIMEOUT req#${requestId} after ${elapsed}s, ${totalBytes} bytes received, sawWriteOpen=${sawWriteOpen}, url=${debugUrl}`);
       pipeCloseReadDirect(pid, sendPipeIdx);
       pipeCloseWriteDirect(pid, recvPipeIdx);
       bridgePort!.postMessage({
@@ -914,6 +950,7 @@ function pumpResponse(
     const data = pipeReadDirect(pid, sendPipeIdx);
     if (data) {
       chunks.push(data);
+      totalBytes += data.length;
       // Wake blocked writers
       const kw = kernelWorker as any;
       const writers = kw.pendingPipeWriters?.get(sendPipeIdx);
@@ -928,11 +965,13 @@ function pumpResponse(
       kw.scheduleWakeBlockedRetries();
     }
 
-    const writeOpen = pipeIsWriteOpenDirect(pid, sendPipeIdx);
+    const writeOpen = (kernelInstance!.exports.kernel_pipe_is_write_open as (pid: number, pipeIdx: number) => number)(pid, sendPipeIdx) === 1;
     if (writeOpen && !sawWriteOpen) sawWriteOpen = true;
 
     if (sawWriteOpen && !writeOpen && !data) {
       // Response complete
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      console.log(`[bridge] DONE req#${requestId} ${elapsed}s ${totalBytes}B ${debugUrl}`);
       pipeCloseReadDirect(pid, sendPipeIdx);
       pipeCloseWriteDirect(pid, recvPipeIdx);
       const rawResponse = concatChunks(chunks);

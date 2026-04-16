@@ -149,7 +149,7 @@ const PROFILING = typeof process !== 'undefined' && !!process.env?.WASM_POSIX_PR
 /** Read-like syscalls that may block on pipe/socket data */
 const READ_LIKE_SYSCALLS = new Set([3, 56, 63, 64, 82, 138]); // READ, RECV, RECVFROM, PREAD, READV, RECVMSG
 /** Write-like syscalls that may produce pipe/socket data */
-const WRITE_LIKE_SYSCALLS = new Set([4, 55, 62, 65, 81, 137]); // WRITE, SEND, SENDTO, PWRITE, WRITEV, SENDMSG
+const WRITE_LIKE_SYSCALLS = new Set([4, 55, 62, 65, 81, 137, 294]); // WRITE, SEND, SENDTO, PWRITE, WRITEV, SENDMSG, SENDFILE
 /** Channel layout offsets */
 const CH_STATUS = 0;
 const CH_SYSCALL = 4;
@@ -2714,9 +2714,11 @@ export class CentralizedKernelWorker {
         this.retrySyscall(channel);
       };
       // With pipe indices, rely on wakeBlockedPoll for instant wakeup;
-      // use long fallback to avoid busy-loop. Without indices, use short retry.
+      // use moderate fallback for cases where the targeted wake misses
+      // (e.g., listener socket backlogs which lack pipe indices for
+      // wakeBlockedPoll). Without pipe indices, use short retry.
       const retryMs = pipeIndices.length > 0
-        ? (deadline > 0 ? Math.min(deadline - Date.now(), 5000) : 5000)
+        ? (deadline > 0 ? Math.min(deadline - Date.now(), 200) : 200)
         : (deadline > 0 ? Math.min(deadline - Date.now(), 50) : 50);
       const timer = setTimeout(retryFn, Math.max(retryMs, 1));
       this.pendingPollRetries.set(channel.channelOffset, { timer, channel, pipeIndices });
@@ -3634,12 +3636,10 @@ export class CentralizedKernelWorker {
     const pw = this.getPtrWidth(channel.pid);
     const iovEntrySize = pw === 8 ? 16 : 8;
 
-    // Layout in scratch data area:
-    //   [0..iovcnt*8]     new iov array with kernel-space base pointers (always 8B per entry for kernel)
-    //   [iovcnt*8..]      concatenated data buffers
-    const iovSize = iovcnt * 8; // kernel iov entries are always 8B (kernel is wasm64 but uses u32 for iov in scratch)
-    let dataOff = iovSize;
-
+    // Read iov entries from process memory
+    interface IovEntry { base: number; len: number }
+    const entries: IovEntry[] = [];
+    let totalData = 0;
     for (let i = 0; i < iovcnt; i++) {
       let base: number, len: number;
       if (pw === 8) {
@@ -3649,51 +3649,140 @@ export class CentralizedKernelWorker {
         base = processView.getUint32(iovPtr + i * iovEntrySize, true);
         len = processView.getUint32(iovPtr + i * iovEntrySize + 4, true);
       }
+      entries.push({ base, len });
+      totalData += len;
+    }
 
-      const kernelBase = dataStart + dataOff;
+    // Max data that fits in scratch: CH_DATA_SIZE minus space for iov entries
+    const iovSize = iovcnt * 8;
+    const maxDataPerCall = CH_DATA_SIZE - iovSize;
 
-      // Copy data buffer from process to kernel
-      if (len > 0 && dataOff + len <= CH_DATA_SIZE) {
-        kernelMem.set(processMem.subarray(base, base + len), kernelBase);
+    if (totalData <= maxDataPerCall) {
+      // Fast path: all data fits in one kernel call
+      let dataOff = iovSize;
+
+      for (let i = 0; i < iovcnt; i++) {
+        const kernelBase = dataStart + dataOff;
+
+        if (entries[i].len > 0) {
+          kernelMem.set(processMem.subarray(entries[i].base, entries[i].base + entries[i].len), kernelBase);
+        }
+
+        const iovAddr = dataStart + i * 8;
+        new DataView(kernelMem.buffer).setUint32(iovAddr, kernelBase, true);
+        new DataView(kernelMem.buffer).setUint32(iovAddr + 4, entries[i].len, true);
+
+        dataOff += entries[i].len;
+        dataOff = (dataOff + 3) & ~3; // align
       }
 
-      // Write adjusted iov entry
-      const iovAddr = dataStart + i * 8;
-      new DataView(kernelMem.buffer).setUint32(iovAddr, kernelBase, true);
-      new DataView(kernelMem.buffer).setUint32(iovAddr + 4, len, true);
+      kernelView.setUint32(CH_SYSCALL, syscallNr, true);
+      kernelView.setBigInt64(CH_ARGS, BigInt(fd), true);
+      kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(dataStart), true);
+      kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(iovcnt), true);
+      if (syscallNr === SYS_PWRITEV) {
+        kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, BigInt(origArgs[3]), true);
+        kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, BigInt(origArgs[4]), true);
+      }
 
-      dataOff += len;
-      dataOff = (dataOff + 3) & ~3; // align
+      const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
+        (offset: bigint, pid: number) => number;
+      this.currentHandlePid = channel.pid;
+      try {
+        handleChannel(BigInt(this.scratchOffset), channel.pid);
+      } finally {
+        this.currentHandlePid = 0;
+      }
+
+      const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
+      const errVal = kernelView.getUint32(CH_ERRNO, true);
+
+      if (retVal === -1 && errVal === EAGAIN) {
+        this.handleBlockingRetry(channel, syscallNr, origArgs);
+        return;
+      }
+
+      this.completeChannel(channel, syscallNr, origArgs, undefined, retVal, errVal);
+    } else {
+      // Slow path: total data exceeds scratch buffer. Issue individual SYS_WRITEV
+      // calls with one iov entry each, chunked to fit in CH_DATA_SIZE.
+      const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
+        (offset: bigint, pid: number) => number;
+      const isPwritev = syscallNr === SYS_PWRITEV;
+      let fileOffset = isPwritev
+        ? (origArgs[3] | 0) + (origArgs[4] | 0) * 0x100000000
+        : 0;
+      let totalWritten = 0;
+      let gotEagain = false;
+      const maxChunk = CH_DATA_SIZE - 8; // space for 1 iov entry (8B) + data
+
+      for (const entry of entries) {
+        if (entry.len === 0) continue;
+        let entryWritten = 0;
+
+        while (entryWritten < entry.len) {
+          const chunkLen = Math.min(entry.len - entryWritten, maxChunk);
+          const kernelBuf = dataStart + 8; // single iov entry at dataStart, data after
+
+          // Copy data from process to kernel scratch
+          kernelMem.set(
+            processMem.subarray(entry.base + entryWritten, entry.base + entryWritten + chunkLen),
+            kernelBuf,
+          );
+
+          // Set up single iov entry
+          new DataView(kernelMem.buffer).setUint32(dataStart, kernelBuf, true);
+          new DataView(kernelMem.buffer).setUint32(dataStart + 4, chunkLen, true);
+
+          if (isPwritev) {
+            kernelView.setUint32(CH_SYSCALL, SYS_PWRITEV, true);
+            kernelView.setBigInt64(CH_ARGS, BigInt(fd), true);
+            kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(dataStart), true);
+            kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(1), true);
+            kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, BigInt(fileOffset & 0xFFFFFFFF), true);
+            kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, BigInt(Math.floor(fileOffset / 0x100000000)), true);
+          } else {
+            kernelView.setUint32(CH_SYSCALL, SYS_WRITEV, true);
+            kernelView.setBigInt64(CH_ARGS, BigInt(fd), true);
+            kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(dataStart), true);
+            kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(1), true);
+          }
+
+          this.currentHandlePid = channel.pid;
+          try {
+            handleChannel(BigInt(this.scratchOffset), channel.pid);
+          } finally {
+            this.currentHandlePid = 0;
+          }
+
+          const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
+          const errVal = kernelView.getUint32(CH_ERRNO, true);
+
+          if (retVal === -1) {
+            if (errVal === EAGAIN && totalWritten === 0) {
+              gotEagain = true;
+            }
+            break;
+          }
+
+          entryWritten += retVal;
+          totalWritten += retVal;
+          if (isPwritev) fileOffset += retVal;
+
+          if (retVal < chunkLen) break; // short write (e.g. pipe full)
+        }
+
+        if (gotEagain || entryWritten < entry.len) break;
+      }
+
+      if (gotEagain) {
+        this.handleBlockingRetry(channel, syscallNr, origArgs);
+        return;
+      }
+
+      this.completeChannelRaw(channel, totalWritten, 0);
+      this.relistenChannel(channel);
     }
-
-    // Write args to kernel scratch
-    kernelView.setUint32(CH_SYSCALL, syscallNr, true);
-    kernelView.setBigInt64(CH_ARGS, BigInt(fd), true);
-    kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(dataStart), true); // adjusted iov ptr
-    kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(iovcnt), true);
-    if (syscallNr === SYS_PWRITEV) {
-      kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, BigInt(origArgs[3]), true); // off_lo
-      kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, BigInt(origArgs[4]), true); // off_hi
-    }
-
-    const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
-      (offset: bigint, pid: number) => number;
-    this.currentHandlePid = channel.pid;
-    try {
-      handleChannel(BigInt(this.scratchOffset), channel.pid);
-    } finally {
-      this.currentHandlePid = 0;
-    }
-
-    const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
-    const errVal = kernelView.getUint32(CH_ERRNO, true);
-
-    if (retVal === -1 && errVal === EAGAIN) {
-      this.handleBlockingRetry(channel, syscallNr, origArgs);
-      return;
-    }
-
-    this.completeChannel(channel, syscallNr, origArgs, undefined, retVal, errVal);
   }
 
   /**

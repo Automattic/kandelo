@@ -1478,21 +1478,41 @@ pub fn sys_sendfile(
     while total < count {
         let to_read = (count - total).min(buf.len());
         let n = if offset >= 0 {
-            let n = sys_pread(proc, host, in_fd, &mut buf[..to_read], cur_offset)?;
-            cur_offset += n as i64;
-            n
+            match sys_pread(proc, host, in_fd, &mut buf[..to_read], cur_offset) {
+                Ok(n) => {
+                    cur_offset += n as i64;
+                    n
+                }
+                Err(e) => {
+                    if total > 0 { return Ok(total); }
+                    return Err(e);
+                }
+            }
         } else {
-            sys_read(proc, host, in_fd, &mut buf[..to_read])?
+            match sys_read(proc, host, in_fd, &mut buf[..to_read]) {
+                Ok(n) => n,
+                Err(e) => {
+                    if total > 0 { return Ok(total); }
+                    return Err(e);
+                }
+            }
         };
 
         if n == 0 {
             break; // EOF
         }
 
-        let written = sys_write(proc, host, out_fd, &buf[..n])?;
-        total += written;
-        if written < n {
-            break; // Short write
+        match sys_write(proc, host, out_fd, &buf[..n]) {
+            Ok(written) => {
+                total += written;
+                if written < n {
+                    break; // Short write
+                }
+            }
+            Err(e) => {
+                if total > 0 { return Ok(total); }
+                return Err(e);
+            }
         }
     }
     Ok(total)
@@ -1519,21 +1539,47 @@ pub fn sys_copy_file_range(
     while total < len {
         let to_read = (len - total).min(buf.len());
         let n = if off_in.is_some() {
-            let n = sys_pread(proc, host, fd_in, &mut buf[..to_read], cur_off_in)?;
-            cur_off_in += n as i64;
-            n
+            match sys_pread(proc, host, fd_in, &mut buf[..to_read], cur_off_in) {
+                Ok(n) => {
+                    cur_off_in += n as i64;
+                    n
+                }
+                Err(e) => {
+                    if total > 0 { return Ok(total); }
+                    return Err(e);
+                }
+            }
         } else {
-            sys_read(proc, host, fd_in, &mut buf[..to_read])?
+            match sys_read(proc, host, fd_in, &mut buf[..to_read]) {
+                Ok(n) => n,
+                Err(e) => {
+                    if total > 0 { return Ok(total); }
+                    return Err(e);
+                }
+            }
         };
         if n == 0 {
             break; // EOF
         }
         let written = if off_out.is_some() {
-            let w = sys_pwrite(proc, host, fd_out, &buf[..n], cur_off_out)?;
-            cur_off_out += w as i64;
-            w
+            match sys_pwrite(proc, host, fd_out, &buf[..n], cur_off_out) {
+                Ok(w) => {
+                    cur_off_out += w as i64;
+                    w
+                }
+                Err(e) => {
+                    if total > 0 { return Ok(total); }
+                    return Err(e);
+                }
+            }
         } else {
-            sys_write(proc, host, fd_out, &buf[..n])?
+            match sys_write(proc, host, fd_out, &buf[..n]) {
+                Ok(w) => w,
+                Err(e) => {
+                    if total > 0 { return Ok(total); }
+                    return Err(e);
+                }
+            }
         };
         total += written;
         if written < n {
@@ -6933,10 +6979,17 @@ pub fn sys_writev(
         if buf.is_empty() {
             continue;
         }
-        let n = sys_write(proc, host, fd, buf)?;
-        total += n;
-        if n < buf.len() {
-            break; // Short write, stop
+        match sys_write(proc, host, fd, buf) {
+            Ok(n) => {
+                total += n;
+                if n < buf.len() {
+                    break; // Short write, stop
+                }
+            }
+            Err(e) => {
+                if total > 0 { return Ok(total); }
+                return Err(e);
+            }
         }
     }
     Ok(total)
@@ -6956,10 +7009,17 @@ pub fn sys_readv(
         if buf.is_empty() {
             continue;
         }
-        let n = sys_read(proc, host, fd, *buf)?;
-        total += n;
-        if n < buf.len() || n == 0 {
-            break; // Short read or EOF, stop
+        match sys_read(proc, host, fd, *buf) {
+            Ok(n) => {
+                total += n;
+                if n < buf.len() || n == 0 {
+                    break; // Short read or EOF, stop
+                }
+            }
+            Err(e) => {
+                if total > 0 { return Ok(total); }
+                return Err(e);
+            }
         }
     }
     Ok(total)
