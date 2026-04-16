@@ -52,6 +52,19 @@ body {
   padding-left: calc(1rem - 3px);
 }
 
+.sidebar-revision {
+  margin-top: auto;
+  padding: 0.75rem 1rem;
+  font-size: 0.75rem;
+  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+  color: #666;
+  text-decoration: none;
+}
+
+.sidebar-revision:hover {
+  color: #aaa;
+}
+
 /* ── Main area ──────────────────────────────── */
 
 .main {
