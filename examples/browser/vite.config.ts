@@ -1,6 +1,7 @@
 import { fileURLToPath } from "url";
 import path from "path";
 import fs from "fs";
+import { execSync } from "child_process";
 import { defineConfig, type Plugin } from "vite";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -26,6 +27,51 @@ function rewriteNavLinks(): Plugin {
       const escaped = baseRest.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       const re = new RegExp(`href="\\/(?!${escaped})(?!\\/)`, "g");
       return html.replace(re, `href="${base}`);
+    },
+  };
+}
+
+/**
+ * Vite plugin: inject a git revision tag into the sidebar of every HTML page.
+ * The revision is read at build/serve time and rendered as a link to the
+ * GitHub commit.
+ */
+function injectGitRevision(): Plugin {
+  let shortRev = "";
+  let commitUrl = "";
+  return {
+    name: "inject-git-revision",
+    configResolved() {
+      try {
+        shortRev = execSync("git rev-parse --short HEAD", {
+          cwd: repoRoot,
+          encoding: "utf-8",
+        }).trim();
+        const remoteUrl = execSync("git remote get-url origin", {
+          cwd: repoRoot,
+          encoding: "utf-8",
+        }).trim();
+        // Convert git@github.com:user/repo.git or https://github.com/user/repo.git
+        const match = remoteUrl.match(
+          /github\.com[:/](.+?)(?:\.git)?$/
+        );
+        const repoPath = match ? match[1] : "brandonpayton/wasm-posix-kernel";
+        const fullRev = execSync("git rev-parse HEAD", {
+          cwd: repoRoot,
+          encoding: "utf-8",
+        }).trim();
+        commitUrl = `https://github.com/${repoPath}/commit/${fullRev}`;
+      } catch {
+        shortRev = "unknown";
+        commitUrl = "";
+      }
+    },
+    transformIndexHtml(html) {
+      if (!shortRev) return html;
+      const tag = commitUrl
+        ? `<a class="sidebar-revision" href="${commitUrl}" target="_blank" rel="noopener">rev: ${shortRev}</a>`
+        : `<span class="sidebar-revision">rev: ${shortRev}</span>`;
+      return html.replace("</nav>", `  ${tag}\n  </nav>`);
     },
   };
 }
@@ -144,6 +190,7 @@ export default defineConfig({
   base: process.env.VITE_BASE || "/",
   plugins: [
     rewriteNavLinks(),
+    injectGitRevision(),
     injectCoiServiceWorker(),
     corsProxyPlugin(),
     injectCorsProxyUrl(),
