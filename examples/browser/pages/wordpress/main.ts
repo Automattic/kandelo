@@ -67,10 +67,48 @@ function setStatus(text: string, type: "loading" | "running" | "error") {
   statusDiv.className = `status ${type}`;
 }
 
-/** FastCGI location block — routes ALL requests through the FPM router.
- * WordPress needs every URL to go through its routing, so the FPM router
- * handles static files, directory index resolution, and front controller. */
-const FASTCGI_LOCATION = `        location / {
+/** Nginx location config for WordPress.
+ *
+ * Static asset directories are served directly by nginx (no PHP-FPM
+ * overhead). Everything else goes through the FPM router which handles
+ * directory index resolution, PHP execution, and the front controller
+ * fallback for pretty URLs.
+ *
+ * This avoids the bottleneck of routing CSS/JS/image requests through
+ * the single PHP-FPM worker. Without PCRE we can't match by extension,
+ * but prefix locations for known static-only directories work fine.
+ */
+const FASTCGI_LOCATION = `        # Static asset directories — served directly by nginx
+        location /wp-includes/css/ { }
+        location /wp-includes/js/ { }
+        location /wp-includes/fonts/ { }
+        location /wp-includes/images/ { }
+        location /wp-admin/css/ { }
+        location /wp-admin/js/ { }
+        location /wp-admin/images/ { }
+        location /wp-content/ {
+            try_files $uri @fpm;
+        }
+
+        # Everything else through PHP-FPM (PHP pages, front controller)
+        location @fpm {
+            fastcgi_pass 127.0.0.1:9000;
+            fastcgi_param SCRIPT_FILENAME /var/www/fpm-router.php;
+            fastcgi_param DOCUMENT_ROOT $document_root;
+            fastcgi_param DOCUMENT_URI $document_uri;
+            fastcgi_param QUERY_STRING $query_string;
+            fastcgi_param REQUEST_METHOD $request_method;
+            fastcgi_param CONTENT_TYPE $content_type;
+            fastcgi_param CONTENT_LENGTH $content_length;
+            fastcgi_param REQUEST_URI $request_uri;
+            fastcgi_param SERVER_PROTOCOL $server_protocol;
+            fastcgi_param SERVER_PORT $server_port;
+            fastcgi_param SERVER_NAME $server_name;
+            fastcgi_param HTTP_HOST $http_host;
+            fastcgi_param REDIRECT_STATUS 200;
+        }
+
+        location / {
             fastcgi_pass 127.0.0.1:9000;
             fastcgi_param SCRIPT_FILENAME /var/www/fpm-router.php;
             fastcgi_param DOCUMENT_ROOT $document_root;

@@ -5961,9 +5961,18 @@ pub extern "C" fn kernel_ioctl(fd: i32, request: u32, buf_ptr: *mut u8, buf_len:
 /// prctl — process control. Returns 0 on success, or negative errno.
 /// buf_ptr is used for PR_SET_NAME (read name from buf) and PR_GET_NAME (write name to buf).
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_prctl(option: u32, arg2: u32, buf_ptr: *mut u8, buf_len: u32) -> i32 {
+pub extern "C" fn kernel_prctl(option: u32, arg2: u32, _arg3: *mut u8, _arg4: u32) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
-    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
+    // For PR_SET_NAME (15) and PR_GET_NAME (16), arg2 is the pointer to
+    // a 16-byte name buffer.  The other prctl args are option-specific and
+    // may be garbage for options that don't use them.
+    const PR_SET_NAME: u32 = 15;
+    const PR_GET_NAME: u32 = 16;
+    let buf = if (option == PR_SET_NAME || option == PR_GET_NAME) && arg2 != 0 {
+        unsafe { core::slice::from_raw_parts_mut(arg2 as *mut u8, 16) }
+    } else {
+        &mut []
+    };
     let result = match syscalls::sys_prctl(proc, option, arg2, buf) {
         Ok(()) => 0,
         Err(e) => -(e as i32),

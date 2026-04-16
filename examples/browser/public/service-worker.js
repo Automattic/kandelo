@@ -10,6 +10,7 @@
  *    - Handles HTTP bridge for nginx/wordpress/lamp demos (MessagePort from page)
  *    - Includes cookie jar for WordPress sessions
  *    - Revalidates navigation requests to ensure fresh HTML (cache busting)
+ *    - Auto-restores bridge after browser terminates and restarts the SW
  */
 
 // ============================================================
@@ -65,6 +66,31 @@ if (typeof window !== "undefined") {
   var pendingRequests = new Map();
   var nextRequestId = 0;
   var appPrefix = "/app/";
+  // Set to true once a bridge has been configured (via init-bridge or cache restore).
+  // Used to distinguish "never configured" from "configured but SW restarted".
+  var bridgeConfigured = false;
+
+  // --- Bridge restoration state ---
+  // Single in-flight restoration promise, shared by concurrent fetch events
+  var bridgeRestorePromise = null;
+
+  // Eagerly restore cached appPrefix on SW startup so we can detect
+  // bridge-destined requests even after the browser terminates and
+  // restarts this service worker (which resets all module-level state).
+  var BRIDGE_CACHE = "sw-bridge-config";
+  var appPrefixReady = caches.open(BRIDGE_CACHE).then(function (cache) {
+    return cache.match("app-prefix");
+  }).then(function (resp) {
+    if (resp) return resp.text();
+    return null;
+  }).then(function (prefix) {
+    if (prefix) {
+      appPrefix = prefix;
+      bridgeConfigured = true;
+    }
+  }).catch(function () {
+    // Cache read failed — not critical, bridge restore will be skipped
+  });
 
   // --- Cookie jar ---
   // (Set-Cookie on synthetic SW responses is ignored by the browser,
@@ -173,6 +199,51 @@ if (typeof window !== "undefined") {
     });
   }
 
+  // --- Bridge restoration ---
+  // When the browser terminates and restarts this SW, bridgePort is lost.
+  // These functions ask a client page to re-establish the bridge.
+
+  function ensureBridge() {
+    if (bridgePort) return Promise.resolve(true);
+    if (bridgeRestorePromise) return bridgeRestorePromise;
+
+    bridgeRestorePromise = requestBridgeFromClient().then(function (result) {
+      bridgeRestorePromise = null;
+      return result;
+    }).catch(function () {
+      bridgeRestorePromise = null;
+      return false;
+    });
+    return bridgeRestorePromise;
+  }
+
+  function requestBridgeFromClient() {
+    return self.clients.matchAll({ type: "window" }).then(function (allClients) {
+      if (allClients.length === 0) return false;
+
+      return new Promise(function (resolve) {
+        var timeout = setTimeout(function () { resolve(false); }, 5000);
+        var done = false;
+
+        allClients.forEach(function (client) {
+          var ch = new MessageChannel();
+          ch.port1.onmessage = function (event) {
+            if (done) return;
+            var data = event.data;
+            if (data && data.type === "bridge-restored" && event.ports[0]) {
+              done = true;
+              clearTimeout(timeout);
+              initBridgePort(event.ports[0]);
+              if (data.appPrefix) appPrefix = data.appPrefix;
+              resolve(true);
+            }
+          };
+          client.postMessage({ type: "need-bridge" }, [ch.port2]);
+        });
+      });
+    });
+  }
+
   // --- Lifecycle ---
   self.addEventListener("install", function () {
     self.skipWaiting();
@@ -180,10 +251,13 @@ if (typeof window !== "undefined") {
 
   self.addEventListener("activate", function (event) {
     event.waitUntil(
-      // Clear any Cache Storage entries from previous SW versions, then claim
+      // Clear Cache Storage entries from previous SW versions, but preserve
+      // bridge config so we can restore the bridge after SW restart.
       caches.keys().then(function (names) {
         return Promise.all(
-          names.map(function (name) {
+          names.filter(function (name) {
+            return name !== BRIDGE_CACHE;
+          }).map(function (name) {
             return caches.delete(name);
           }),
         );
@@ -201,8 +275,14 @@ if (typeof window !== "undefined") {
       if (port) {
         initBridgePort(port);
         appPrefix = msg.appPrefix || "/app/";
+        bridgeConfigured = true;
         // Reset cookie jar when bridge reinitializes (new demo session)
         cookieJar.clear();
+        // Persist appPrefix so we can detect bridge-destined requests
+        // after the browser terminates and restarts this SW
+        caches.open(BRIDGE_CACHE).then(function (cache) {
+          cache.put("app-prefix", new Response(appPrefix));
+        }).catch(function () {});
       }
       var replyPort = event.ports[1];
       if (replyPort) {
@@ -264,12 +344,62 @@ if (typeof window !== "undefined") {
     });
   }
 
+  /**
+   * Fetch a same-origin request and add COI headers.
+   */
+  function fetchWithCoiHeaders(request) {
+    // Navigation requests (HTML pages): revalidate with the server so
+    // deploys take effect immediately. Vite's content-hashed asset
+    // filenames handle JS/CSS/wasm cache busting, but only if the
+    // HTML referencing them is fresh.
+    var fetchOptions =
+      request.mode === "navigate"
+        ? new Request(request, { cache: "no-cache" })
+        : request;
+
+    return fetch(fetchOptions).then(function (response) {
+      // Can't modify opaque or redirect responses
+      if (
+        response.type === "opaque" ||
+        response.type === "opaqueredirect"
+      ) {
+        return response;
+      }
+      var headers = new Headers(response.headers);
+      if (!headers.has("Cross-Origin-Opener-Policy")) {
+        headers.set("Cross-Origin-Opener-Policy", "same-origin");
+      }
+      if (!headers.has("Cross-Origin-Embedder-Policy")) {
+        headers.set("Cross-Origin-Embedder-Policy", "require-corp");
+      }
+      if (!headers.has("Cross-Origin-Resource-Policy")) {
+        headers.set("Cross-Origin-Resource-Policy", "same-origin");
+      }
+      // fetch() auto-decompresses the body, so the stream is already decoded.
+      // When the original response had Content-Encoding, remove it along with
+      // Content-Length (which reflects the compressed size, not the decoded body).
+      // Firefox throws NS_ERROR_CORRUPTED_CONTENT if Content-Encoding is kept
+      // on an already-decoded body.  Only strip when Content-Encoding was present
+      // so that uncompressed responses preserve their Content-Length (needed by
+      // HEAD requests that check file sizes).
+      if (headers.has("Content-Encoding")) {
+        headers.delete("Content-Encoding");
+        headers.delete("Content-Length");
+      }
+      return new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: headers,
+      });
+    });
+  }
+
   // --- Fetch interception ---
   self.addEventListener("fetch", function (event) {
     var url = new URL(event.request.url);
 
-    // Bridge requests — forward to kernel via MessageChannel
-    if (url.pathname.startsWith(appPrefix) && bridgePort) {
+    // Fast path: bridge is active and URL matches app prefix
+    if (bridgePort && url.pathname.startsWith(appPrefix)) {
       event.respondWith(handleAppRequest(event.request, url));
       return;
     }
@@ -280,44 +410,38 @@ if (typeof window !== "undefined") {
       return;
     }
 
-    // Same-origin requests — pass through but add COI headers
-    event.respondWith(
-      (function () {
-        // Navigation requests (HTML pages): revalidate with the server so
-        // deploys take effect immediately. Vite's content-hashed asset
-        // filenames handle JS/CSS/wasm cache busting, but only if the
-        // HTML referencing them is fresh.
-        var fetchOptions =
-          event.request.mode === "navigate"
-            ? new Request(event.request, { cache: "no-cache" })
-            : event.request;
+    // Bridge may need restoration (SW was terminated and restarted by browser).
+    // Wait for cached appPrefix to load, then check if this URL should go
+    // through the bridge.
+    if (!bridgePort) {
+      event.respondWith(
+        appPrefixReady.then(function () {
+          if (bridgeConfigured && url.pathname.startsWith(appPrefix)) {
+            return ensureBridge().then(function (restored) {
+              if (restored) {
+                return handleAppRequest(event.request, url);
+              }
+              return new Response(
+                "Service worker bridge unavailable — please reload the page",
+                {
+                  status: 503,
+                  headers: {
+                    "Content-Type": "text/plain",
+                    "Cross-Origin-Embedder-Policy": "require-corp",
+                    "Cross-Origin-Resource-Policy": "same-origin",
+                  },
+                },
+              );
+            });
+          }
+          return fetchWithCoiHeaders(event.request);
+        })
+      );
+      return;
+    }
 
-        return fetch(fetchOptions).then(function (response) {
-          // Can't modify opaque or redirect responses
-          if (
-            response.type === "opaque" ||
-            response.type === "opaqueredirect"
-          ) {
-            return response;
-          }
-          var headers = new Headers(response.headers);
-          if (!headers.has("Cross-Origin-Opener-Policy")) {
-            headers.set("Cross-Origin-Opener-Policy", "same-origin");
-          }
-          if (!headers.has("Cross-Origin-Embedder-Policy")) {
-            headers.set("Cross-Origin-Embedder-Policy", "require-corp");
-          }
-          if (!headers.has("Cross-Origin-Resource-Policy")) {
-            headers.set("Cross-Origin-Resource-Policy", "same-origin");
-          }
-          return new Response(response.body, {
-            status: response.status,
-            statusText: response.statusText,
-            headers: headers,
-          });
-        });
-      })(),
-    );
+    // Same-origin requests — pass through but add COI headers
+    event.respondWith(fetchWithCoiHeaders(event.request));
   });
 
   function handleAppRequest(request, url) {
@@ -355,6 +479,7 @@ if (typeof window !== "undefined") {
           headers: headers,
           body: body,
         });
+
 
         // Store cookies from bridge response
         var rawSetCookie =

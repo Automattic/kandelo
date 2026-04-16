@@ -7,6 +7,7 @@
  * and interactive (PTY) service types.
  */
 import type { BrowserKernel } from "../browser-kernel";
+import { HttpBridgeHost } from "../http-bridge";
 import { PtyTerminal, type PtyTerminalOptions } from "../pty-terminal";
 import { TerminalPanel } from "../terminal-panel";
 import {
@@ -43,6 +44,8 @@ export class SystemInit {
   private readyServices = new Set<string>();
   private terminalPanel: TerminalPanel | null = null;
   private ptyTerminal: PtyTerminal | null = null;
+  private bridgeHttpPort: number | null = null;
+  private bridgeRestoreCleanup: (() => void) | null = null;
 
   constructor(kernel: BrowserKernel, options?: SystemInitOptions) {
     this.kernel = kernel;
@@ -74,7 +77,9 @@ export class SystemInit {
       const bridge = await initServiceWorkerBridge(swUrl, appPrefix);
       if (bridge) {
         this.kernel.sendBridgePort(bridge.detachHostPort(), bridgePort);
+        this.bridgeHttpPort = bridgePort ?? null;
         this.log(`HTTP bridge ready on port ${bridgePort}`, "info");
+        this.setupBridgeRestoreListener();
       } else {
         this.log(
           "Service workers unavailable — HTTP bridge not initialized",
@@ -105,6 +110,11 @@ export class SystemInit {
     this.services.clear();
     this.readyServices.clear();
 
+    if (this.bridgeRestoreCleanup) {
+      this.bridgeRestoreCleanup();
+      this.bridgeRestoreCleanup = null;
+    }
+
     if (this.ptyTerminal) {
       this.ptyTerminal.dispose();
       this.ptyTerminal = null;
@@ -113,6 +123,46 @@ export class SystemInit {
       this.terminalPanel.dispose();
       this.terminalPanel = null;
     }
+  }
+
+  /**
+   * Listen for "need-bridge" messages from a restarted service worker.
+   * When the browser terminates and restarts the SW, it loses its bridge
+   * MessagePort. The SW detects this and asks a client page to create a
+   * new bridge. We respond by creating a new HttpBridgeHost and sending
+   * one port to the SW and the other to the kernel worker.
+   */
+  private setupBridgeRestoreListener(): void {
+    if (!("serviceWorker" in navigator)) return;
+
+    const appPrefix = this.options.appPrefix ?? "/demo/app/";
+
+    const handler = (event: MessageEvent) => {
+      if (event.data?.type !== "need-bridge") return;
+      const replyPort = event.ports[0];
+      if (!replyPort) return;
+
+      const bridge = new HttpBridgeHost();
+
+      // Send SW port back to the service worker via reply channel
+      replyPort.postMessage(
+        { type: "bridge-restored", appPrefix },
+        [bridge.getSwPort()],
+      );
+
+      // Send host port to the kernel worker
+      this.kernel.sendBridgePort(
+        bridge.detachHostPort(),
+        this.bridgeHttpPort ?? undefined,
+      );
+
+      this.log("Bridge restored after service worker restart", "info");
+    };
+
+    navigator.serviceWorker.addEventListener("message", handler);
+    this.bridgeRestoreCleanup = () => {
+      navigator.serviceWorker.removeEventListener("message", handler);
+    };
   }
 
   /** Get the PtyTerminal instance (if an interactive service was started). */
