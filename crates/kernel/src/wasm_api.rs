@@ -5385,14 +5385,24 @@ pub extern "C" fn kernel_connect(fd: i32, addr_ptr: *const u8, addr_len: u32) ->
     let addr = unsafe { slice::from_raw_parts(addr_ptr, addr_len as usize) };
     let result = match syscalls::sys_connect(proc, &mut host, fd, addr) {
         Ok(()) => 0,
-        Err(Errno::ECONNREFUSED) if crate::is_centralized_mode() && addr_len >= 8 => {
-            // Check if this is a loopback address
-            let ip = [addr[4], addr[5], addr[6], addr[7]];
-            if ip == [127, 0, 0, 1] {
-                // Try cross-process loopback connect
-                match cross_process_loopback_connect(proc, fd, addr) {
+        Err(Errno::ECONNREFUSED) if crate::is_centralized_mode() && addr_len >= 3 => {
+            let family = u16::from_le_bytes([addr[0], addr[1]]);
+            if family == 1 {
+                // AF_UNIX — try cross-process connect
+                match cross_process_unix_connect(proc, fd, addr) {
                     Ok(()) => 0,
                     Err(e) => -(e as i32),
+                }
+            } else if family == 2 && addr_len >= 8 {
+                // AF_INET loopback
+                let ip = [addr[4], addr[5], addr[6], addr[7]];
+                if ip == [127, 0, 0, 1] {
+                    match cross_process_loopback_connect(proc, fd, addr) {
+                        Ok(()) => 0,
+                        Err(e) => -(e as i32),
+                    }
+                } else {
+                    -(Errno::ECONNREFUSED as i32)
                 }
             } else {
                 -(Errno::ECONNREFUSED as i32)
@@ -5527,6 +5537,80 @@ fn cross_process_loopback_connect(
     // Push to listener's backlog
     let listener = listener_proc.sockets.get_mut(listener_sock_idx).ok_or(Errno::EBADF)?;
     listener.listen_backlog.push(accepted_idx);
+
+    Ok(())
+}
+
+/// Cross-process AF_UNIX connect (centralized mode only).
+///
+/// Looks up the target path in the global UnixSocketRegistry, then creates
+/// global pipe pairs to connect the client (current process) to the listener
+/// (possibly in a different process).
+fn cross_process_unix_connect(
+    proc: &mut Process,
+    fd: i32,
+    addr: &[u8],
+) -> Result<(), Errno> {
+    use crate::socket::{SocketDomain, SocketInfo, SocketState, SocketType};
+    use crate::pipe::PipeBuffer;
+
+    // Parse path from sockaddr_un
+    if addr.len() < 3 {
+        return Err(Errno::EINVAL);
+    }
+    let path_bytes = &addr[2..];
+    let path_end = path_bytes.iter().position(|&b| b == 0).unwrap_or(path_bytes.len());
+    if path_end == 0 {
+        return Err(Errno::ECONNREFUSED);
+    }
+    let resolved = crate::path::resolve_path(&path_bytes[..path_end], &proc.cwd);
+
+    // Look up in global registry
+    let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
+    let entry = registry.lookup(&resolved).ok_or(Errno::ECONNREFUSED)?;
+    let listener_pid = entry.pid;
+    let listener_sock_idx = entry.sock_idx;
+
+    // Get client socket info
+    let entry = proc.fd_table.get(fd)?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    let sock_idx = (-(ofd.host_handle + 1)) as usize;
+
+    // Allocate global pipe pair
+    let pipe_table = unsafe { crate::pipe::global_pipe_table() };
+    let pipe_a_idx = pipe_table.alloc(PipeBuffer::new(65536));
+    let pipe_b_idx = pipe_table.alloc(PipeBuffer::new(65536));
+
+    // Access process table for cross-process operation
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let my_pid = proc.pid;
+
+    // Verify listener exists and is listening
+    let listener_proc = table.get_mut(listener_pid).ok_or(Errno::ECONNREFUSED)?;
+    let listener = listener_proc.sockets.get(listener_sock_idx).ok_or(Errno::ECONNREFUSED)?;
+    if listener.state != SocketState::Listening {
+        return Err(Errno::ECONNREFUSED);
+    }
+
+    // Create accepted socket in the listener's process
+    let mut accepted_sock = SocketInfo::new(SocketDomain::Unix, SocketType::Stream, 0);
+    accepted_sock.state = SocketState::Connected;
+    accepted_sock.recv_buf_idx = Some(pipe_a_idx);
+    accepted_sock.send_buf_idx = Some(pipe_b_idx);
+    accepted_sock.global_pipes = true;
+    let accepted_idx = listener_proc.sockets.alloc(accepted_sock);
+
+    // Push to listener's backlog
+    let listener = listener_proc.sockets.get_mut(listener_sock_idx).ok_or(Errno::EBADF)?;
+    listener.listen_backlog.push(accepted_idx);
+
+    // Set up client socket (in current process)
+    let client_proc = table.get_mut(my_pid).ok_or(Errno::ESRCH)?;
+    let client = client_proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+    client.send_buf_idx = Some(pipe_a_idx);
+    client.recv_buf_idx = Some(pipe_b_idx);
+    client.state = SocketState::Connected;
+    client.global_pipes = true;
 
     Ok(())
 }

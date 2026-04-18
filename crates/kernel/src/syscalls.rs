@@ -4472,7 +4472,9 @@ pub fn sys_accept(proc: &mut Process, _host: &mut dyn HostIO, fd: i32) -> Result
 /// finds the listening socket on the target port, creates pipe pairs, and
 /// pushes a pending connection to the listener's backlog.
 /// For non-loopback AF_INET/AF_INET6, delegates to the host via `host_net_connect`.
-/// For AF_UNIX sockets, returns ECONNREFUSED.
+/// For AF_UNIX SOCK_STREAM, performs same-process connect via the global
+/// UnixSocketRegistry (cross-process connect is handled in wasm_api.rs).
+/// For AF_UNIX SOCK_DGRAM, connect succeeds as a bit-bucket.
 pub fn sys_connect(proc: &mut Process, host: &mut dyn HostIO, fd: i32, addr: &[u8]) -> Result<(), Errno> {
     use crate::socket::{SocketDomain, SocketInfo, SocketState, SocketType};
     use crate::pipe::PipeBuffer;
@@ -4603,14 +4605,74 @@ pub fn sys_connect(proc: &mut Process, host: &mut dyn HostIO, fd: i32, addr: &[u
             }
         }
         SocketDomain::Unix => {
-            let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+            let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
             if sock.sock_type == SocketType::Dgram {
                 // SOCK_DGRAM connect on AF_UNIX succeeds as a bit-bucket (syslog pattern)
+                let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
                 sock.state = SocketState::Connected;
-                Ok(())
-            } else {
-                Err(Errno::ECONNREFUSED)
+                return Ok(());
             }
+            if sock.state == SocketState::Connected {
+                return Err(Errno::EISCONN);
+            }
+
+            // Parse sockaddr_un to get the path
+            if addr.len() < 3 {
+                return Err(Errno::EINVAL);
+            }
+            let path_bytes = &addr[2..];
+            let path_end = path_bytes.iter().position(|&b| b == 0).unwrap_or(path_bytes.len());
+            if path_end == 0 {
+                return Err(Errno::EINVAL);
+            }
+            let resolved = crate::path::resolve_path(&path_bytes[..path_end], &proc.cwd);
+
+            // Look up the path in the global Unix socket registry
+            let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
+            let entry = registry.lookup(&resolved).ok_or(Errno::ECONNREFUSED)?;
+
+            // Only same-process connect is handled here; cross-process is in wasm_api.rs
+            if entry.pid != proc.pid {
+                return Err(Errno::ECONNREFUSED);
+            }
+            let listener_sock_idx = entry.sock_idx;
+
+            // Verify listener is actually listening
+            let listener = proc.sockets.get(listener_sock_idx).ok_or(Errno::ECONNREFUSED)?;
+            if listener.state != SocketState::Listening {
+                return Err(Errno::ECONNREFUSED);
+            }
+
+            // Create pipe pair for bidirectional communication (in global table for fork safety)
+            let pipe_table = unsafe { crate::pipe::global_pipe_table() };
+            let pipe_a_idx = pipe_table.alloc(PipeBuffer::new(65536));
+            let pipe_b_idx = pipe_table.alloc(PipeBuffer::new(65536));
+
+            // Create accepted socket (server side)
+            let mut accepted_sock = SocketInfo::new(SocketDomain::Unix, SocketType::Stream, 0);
+            accepted_sock.state = SocketState::Connected;
+            accepted_sock.recv_buf_idx = Some(pipe_a_idx); // reads client's writes
+            accepted_sock.send_buf_idx = Some(pipe_b_idx); // writes to client's reads
+            accepted_sock.global_pipes = true;
+            let accepted_idx = proc.sockets.alloc(accepted_sock);
+
+            // Push to listener's backlog
+            let listener = proc.sockets.get_mut(listener_sock_idx).ok_or(Errno::EBADF)?;
+            listener.listen_backlog.push(accepted_idx);
+
+            // Set up client socket
+            let client = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+            client.send_buf_idx = Some(pipe_a_idx); // writes to pipe_a (server's reads)
+            client.recv_buf_idx = Some(pipe_b_idx); // reads from pipe_b (server's writes)
+            client.state = SocketState::Connected;
+            client.peer_idx = Some(accepted_idx);
+            client.global_pipes = true;
+
+            // Set peer_idx on accepted socket
+            let accepted = proc.sockets.get_mut(accepted_idx).ok_or(Errno::EBADF)?;
+            accepted.peer_idx = Some(sock_idx);
+
+            Ok(())
         }
     }
 }
@@ -7674,6 +7736,11 @@ mod tests {
     use wasm_posix_shared::mode::{S_IFDIR, S_IFMT, S_IFREG, S_IFLNK};
     use wasm_posix_shared::poll::{POLLIN, POLLOUT};
 
+    /// Mutex to serialize tests that access the global Unix socket registry.
+    /// The registry uses UnsafeCell internally and is not thread-safe, so tests
+    /// that call sys_bind/sys_connect for AF_UNIX must hold this lock.
+    static UNIX_REGISTRY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// Mock host I/O for testing.
     struct MockHostIO {
         next_handle: i64,
@@ -9492,14 +9559,19 @@ mod tests {
 
     #[test]
     fn test_bind_unix_stream() {
-        let mut proc = Process::new(1);
+        let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
+        let mut proc = Process::new(9010);
         let mut host = MockHostIO::new();
+        let path = b"/tmp/test_9010.sock";
+        // Clean up any stale registration
+        let resolved = crate::path::resolve_path(path, &proc.cwd);
+        unsafe { crate::unix_socket::global_unix_socket_registry() }.unregister(&resolved);
+
         let fd = sys_socket(&mut proc, &mut host, 1, 1, 0).unwrap(); // AF_UNIX, SOCK_STREAM
         // sockaddr_un: family(2) + path
         let mut addr = [0u8; 110];
         addr[0] = 1; // AF_UNIX
         addr[1] = 0;
-        let path = b"/tmp/test.sock";
         addr[2..2 + path.len()].copy_from_slice(path);
         sys_bind(&mut proc, fd, &addr[..2 + path.len() + 1]).unwrap();
         // Socket should be in Bound state
@@ -9509,22 +9581,33 @@ mod tests {
         let sock = proc.sockets.get(sock_idx).unwrap();
         assert_eq!(sock.state, crate::socket::SocketState::Bound);
         assert!(sock.bind_path.is_some());
+
+        // Clean up
+        unsafe { crate::unix_socket::global_unix_socket_registry() }.unregister(&resolved);
     }
 
     #[test]
     fn test_bind_unix_duplicate_fails() {
-        let mut proc = Process::new(1);
+        let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
+        let mut proc = Process::new(9011);
         let mut host = MockHostIO::new();
+        let path = b"/tmp/dup_9011.sock";
+        // Clean up any stale registration
+        let resolved = crate::path::resolve_path(path, &proc.cwd);
+        unsafe { crate::unix_socket::global_unix_socket_registry() }.unregister(&resolved);
+
         let fd1 = sys_socket(&mut proc, &mut host, 1, 1, 0).unwrap();
         let fd2 = sys_socket(&mut proc, &mut host, 1, 1, 0).unwrap();
         let mut addr = [0u8; 110];
         addr[0] = 1; // AF_UNIX
-        let path = b"/tmp/dup.sock";
         addr[2..2 + path.len()].copy_from_slice(path);
         let addrlen = 2 + path.len() + 1;
         sys_bind(&mut proc, fd1, &addr[..addrlen]).unwrap();
         let err = sys_bind(&mut proc, fd2, &addr[..addrlen]).unwrap_err();
         assert_eq!(err, Errno::EADDRINUSE);
+
+        // Clean up
+        unsafe { crate::unix_socket::global_unix_socket_registry() }.unregister(&resolved);
     }
 
     #[test]
@@ -11698,13 +11781,17 @@ mod tests {
 
     #[test]
     fn test_unix_socket_connect_still_returns_econnrefused() {
-        // Regression: AF_UNIX SOCK_STREAM connect should still fail
+        // AF_UNIX SOCK_STREAM connect to nonexistent path should fail with ECONNREFUSED
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         use wasm_posix_shared::socket::*;
         let fd = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
-        let addr = [1, 0]; // AF_UNIX family
-        let err = sys_connect(&mut proc, &mut host, fd, &addr).unwrap_err();
+        let mut addr = [0u8; 110];
+        addr[0] = 1; // AF_UNIX
+        let path = b"/tmp/noexist.sock";
+        addr[2..2 + path.len()].copy_from_slice(path);
+        let addrlen = 2 + path.len() + 1;
+        let err = sys_connect(&mut proc, &mut host, fd, &addr[..addrlen]).unwrap_err();
         assert_eq!(err, Errno::ECONNREFUSED);
     }
 
@@ -11719,6 +11806,102 @@ mod tests {
         // Write should succeed and discard data
         let n = sys_write(&mut proc, &mut host, fd, b"hello syslog").unwrap();
         assert_eq!(n, 12);
+    }
+
+    #[test]
+    fn test_unix_stream_connect_same_process() {
+        let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
+        let mut proc = Process::new(9001);
+        let mut host = MockHostIO::new();
+        let path = b"/tmp/connect_9001.sock";
+        // Clean up any stale registration from a prior test run
+        let resolved = crate::path::resolve_path(path, &proc.cwd);
+        unsafe { crate::unix_socket::global_unix_socket_registry() }.unregister(&resolved);
+
+        // Create and bind a listener
+        let server_fd = sys_socket(&mut proc, &mut host, 1, 1, 0).unwrap(); // AF_UNIX, SOCK_STREAM
+        let mut addr = [0u8; 110];
+        addr[0] = 1; // AF_UNIX
+        addr[2..2 + path.len()].copy_from_slice(path);
+        let addrlen = 2 + path.len() + 1;
+        sys_bind(&mut proc, server_fd, &addr[..addrlen]).unwrap();
+        sys_listen(&mut proc, &mut host, server_fd, 5).unwrap();
+
+        // Connect a client
+        let client_fd = sys_socket(&mut proc, &mut host, 1, 1, 0).unwrap();
+        sys_connect(&mut proc, &mut host, client_fd, &addr[..addrlen]).unwrap();
+
+        // Client should be connected
+        let entry = proc.fd_table.get(client_fd).unwrap();
+        let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
+        let sock_idx = (-(ofd.host_handle + 1)) as usize;
+        let sock = proc.sockets.get(sock_idx).unwrap();
+        assert_eq!(sock.state, crate::socket::SocketState::Connected);
+
+        // Server should have a pending connection
+        let accepted_fd = sys_accept(&mut proc, &mut host, server_fd).unwrap();
+        assert!(accepted_fd >= 0);
+
+        // Clean up
+        unsafe { crate::unix_socket::global_unix_socket_registry() }.unregister(&resolved);
+    }
+
+    #[test]
+    fn test_unix_stream_connect_no_listener() {
+        let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
+        let mut proc = Process::new(9002);
+        let mut host = MockHostIO::new();
+        let client_fd = sys_socket(&mut proc, &mut host, 1, 1, 0).unwrap();
+        let mut addr = [0u8; 110];
+        addr[0] = 1; // AF_UNIX
+        let path = b"/tmp/noexist_9002.sock";
+        addr[2..2 + path.len()].copy_from_slice(path);
+        let addrlen = 2 + path.len() + 1;
+        let err = sys_connect(&mut proc, &mut host, client_fd, &addr[..addrlen]).unwrap_err();
+        assert_eq!(err, Errno::ECONNREFUSED);
+    }
+
+    #[test]
+    fn test_unix_stream_bidirectional_data() {
+        let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
+        let mut proc = Process::new(9003);
+        let mut host = MockHostIO::new();
+        let path = b"/tmp/bidir_9003.sock";
+        // Clean up any stale registration from a prior test run
+        let resolved = crate::path::resolve_path(path, &proc.cwd);
+        unsafe { crate::unix_socket::global_unix_socket_registry() }.unregister(&resolved);
+
+        // Set up listener
+        let server_fd = sys_socket(&mut proc, &mut host, 1, 1, 0).unwrap();
+        let mut addr = [0u8; 110];
+        addr[0] = 1;
+        addr[2..2 + path.len()].copy_from_slice(path);
+        let addrlen = 2 + path.len() + 1;
+        sys_bind(&mut proc, server_fd, &addr[..addrlen]).unwrap();
+        sys_listen(&mut proc, &mut host, server_fd, 5).unwrap();
+
+        // Connect client
+        let client_fd = sys_socket(&mut proc, &mut host, 1, 1, 0).unwrap();
+        sys_connect(&mut proc, &mut host, client_fd, &addr[..addrlen]).unwrap();
+        let accepted_fd = sys_accept(&mut proc, &mut host, server_fd).unwrap();
+
+        // Client sends, server receives
+        let msg = b"hello from client";
+        let sent = sys_send(&mut proc, &mut host, client_fd, msg, 0).unwrap();
+        assert_eq!(sent, msg.len());
+        let mut buf = [0u8; 64];
+        let recvd = sys_recv(&mut proc, &mut host, accepted_fd, &mut buf, 0).unwrap();
+        assert_eq!(&buf[..recvd], msg);
+
+        // Server sends, client receives
+        let reply = b"hello from server";
+        let sent = sys_send(&mut proc, &mut host, accepted_fd, reply, 0).unwrap();
+        assert_eq!(sent, reply.len());
+        let recvd = sys_recv(&mut proc, &mut host, client_fd, &mut buf, 0).unwrap();
+        assert_eq!(&buf[..recvd], reply);
+
+        // Clean up
+        unsafe { crate::unix_socket::global_unix_socket_registry() }.unregister(&resolved);
     }
 
     #[test]
