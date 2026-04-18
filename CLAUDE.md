@@ -34,25 +34,37 @@
 
 ## Performance Benchmarks
 
-Run benchmarks to measure kernel performance across Node.js and browser hosts:
+**When doing performance work, run ALL 5 suites on BOTH hosts (Node.js and browser).** Do not run only `syscall-io` or only one host — application-level suites exercise different syscall patterns, threading models, and I/O workloads that micro-benchmarks miss. If a suite skips because its binary is missing, build it before drawing conclusions.
+
+### The 5 benchmark suites
+
+| Suite | What it measures | Binary prerequisites |
+|-------|-----------------|---------------------|
+| `syscall-io` | Pipe/file throughput, syscall latency | `scripts/build-programs.sh` |
+| `process-lifecycle` | fork, exec, clone, cold start | `scripts/build-programs.sh` |
+| `erlang-ring` | BEAM VM message passing (1000 processes) | `bash examples/libs/erlang/build-erlang.sh` |
+| `wordpress` | PHP CLI + WordPress HTTP first response | `bash examples/libs/php/build-php.sh` + WordPress checkout |
+| `mariadb` | SQL bootstrap + query performance | `bash examples/libs/mariadb/build-mariadb.sh` |
+
+Application suites require the SDK: `cd sdk && npm link`
+
+### Running benchmarks
 
 ```bash
-# Run all Node.js benchmarks (3 rounds each)
-npx tsx benchmarks/run.ts
+# All suites, Node.js host (3 rounds each, reports median)
+npx tsx benchmarks/run.ts --rounds=3
 
-# Run specific suite
-npx tsx benchmarks/run.ts --suite syscall-io
+# All suites, browser host (via Playwright)
+npx tsx benchmarks/run.ts --host=browser --rounds=3
 
-# Run browser benchmarks via Playwright
-npx tsx benchmarks/run.ts --host browser
+# Single suite (only when specifically asked)
+npx tsx benchmarks/run.ts --suite=syscall-io
 
-# Compare two results
+# Compare before/after
 npx tsx benchmarks/compare.ts benchmarks/results/before.json benchmarks/results/after.json
 ```
 
-Results are saved as JSON in `benchmarks/results/`. Available suites: `syscall-io`, `process-lifecycle`, `erlang-ring`, `wordpress`, `mariadb`.
-
-Some suites require pre-built binaries (Erlang, PHP/WordPress, MariaDB) and will skip gracefully if not found. The `syscall-io` and `process-lifecycle` suites only need the base sysroot and benchmark programs (`scripts/build-programs.sh`).
+Results are saved as JSON in `benchmarks/results/`. See [docs/profiling.md](docs/profiling.md) for detailed suite descriptions, metrics, and build prerequisites.
 
 ## Architecture
 

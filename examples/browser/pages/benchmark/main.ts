@@ -34,17 +34,26 @@ import forkWasmUrl from "../../../../benchmarks/wasm/fork-bench.wasm?url";
 import cloneWasmUrl from "../../../../benchmarks/wasm/clone-bench.wasm?url";
 import helloWasmUrl from "../../../../benchmarks/wasm/hello.wasm?url";
 
-// Erlang
-import beamWasmUrl from "../../../../examples/libs/erlang/bin/beam.wasm?url";
+// Optional suite binaries — resolved at runtime via fetch to avoid Vite build
+// failures when binaries are not yet built. Each path is relative to this file.
+const OPTIONAL_PATHS = {
+  beam: "../../../../examples/libs/erlang/bin/beam.wasm",
+  nginx: "../../../../examples/nginx/nginx.wasm",
+  phpFpm: "../../../../examples/nginx/php-fpm.wasm",
+  mariadbd: "../../../../examples/libs/mariadb/mariadb-install/bin/mariadbd.wasm",
+  systemTables: "../../../../examples/libs/mariadb/mariadb-install/share/mysql/mysql_system_tables.sql",
+  systemData: "../../../../examples/libs/mariadb/mariadb-install/share/mysql/mysql_system_tables_data.sql",
+} as const;
 
-// WordPress / nginx / PHP-FPM
-import nginxWasmUrl from "../../../../examples/nginx/nginx.wasm?url";
-import phpFpmWasmUrl from "../../../../examples/nginx/php-fpm.wasm?url";
-
-// MariaDB
-import mariadbWasmUrl from "../../../../examples/libs/mariadb/mariadb-install/bin/mariadbd.wasm?url";
-import systemTablesUrl from "../../../../examples/libs/mariadb/mariadb-install/share/mysql/mysql_system_tables.sql?url";
-import systemDataUrl from "../../../../examples/libs/mariadb/mariadb-install/share/mysql/mysql_system_tables_data.sql?url";
+// Resolve a relative path to a fetchable URL, verifying the file exists and is non-empty.
+async function resolveOptionalUrl(relativePath: string): Promise<string> {
+  const url = new URL(relativePath, import.meta.url).href;
+  const resp = await fetch(url, { headers: { Range: "bytes=0-3" } });
+  if (!resp.ok && resp.status !== 206) throw new Error(`Binary not found: ${url}`);
+  const body = await resp.arrayBuffer();
+  if (body.byteLength === 0) throw new Error(`Binary is empty (0 bytes): ${url}`);
+  return url;
+}
 
 const logEl = document.getElementById("log")!;
 function log(msg: string) {
@@ -190,7 +199,8 @@ halt(0, [{flush, false}]).`;
 
 async function runErlangRing(): Promise<Record<string, number>> {
   log("  Loading BEAM + OTP runtime...");
-  const beamBytes = await fetchWasm(beamWasmUrl);
+  const beamUrl = await resolveOptionalUrl(OPTIONAL_PATHS.beam);
+  const beamBytes = await fetchWasm(beamUrl);
 
   let stdout = "";
   let lastOutputTime = 0;
@@ -331,9 +341,11 @@ async function runWordPress(): Promise<Record<string, number>> {
   const results: Record<string, number> = {};
 
   log("  Fetching binaries...");
+  const nginxUrl = await resolveOptionalUrl(OPTIONAL_PATHS.nginx);
+  const phpFpmUrl = await resolveOptionalUrl(OPTIONAL_PATHS.phpFpm);
   const [nginxSize, phpFpmSize] = await Promise.all([
-    fetchSize(nginxWasmUrl),
-    fetchSize(phpFpmWasmUrl),
+    fetchSize(nginxUrl),
+    fetchSize(phpFpmUrl),
   ]);
   if (nginxSize === 0 || phpFpmSize === 0) {
     throw new Error("nginx.wasm or php-fpm.wasm not found");
@@ -357,8 +369,8 @@ async function runWordPress(): Promise<Record<string, number>> {
   ensureDir(kernel.fs, "/etc");
   ensureDir(kernel.fs, "/tmp");
   kernel.registerLazyFiles([
-    { path: "/usr/sbin/nginx", url: nginxWasmUrl, size: nginxSize, mode: 0o755 },
-    { path: "/usr/sbin/php-fpm", url: phpFpmWasmUrl, size: phpFpmSize, mode: 0o755 },
+    { path: "/usr/sbin/nginx", url: nginxUrl, size: nginxSize, mode: 0o755 },
+    { path: "/usr/sbin/php-fpm", url: phpFpmUrl, size: phpFpmSize, mode: 0o755 },
   ]);
 
   // nginx and PHP-FPM configs
@@ -458,10 +470,13 @@ async function runMariaDb(): Promise<Record<string, number>> {
   const results: Record<string, number> = {};
 
   log("  Fetching MariaDB + bootstrap SQL...");
+  const mariadbUrl = await resolveOptionalUrl(OPTIONAL_PATHS.mariadbd);
+  const tablesUrl = await resolveOptionalUrl(OPTIONAL_PATHS.systemTables);
+  const dataUrl = await resolveOptionalUrl(OPTIONAL_PATHS.systemData);
   const [mariadbBytes, systemTablesSql, systemDataSql] = await Promise.all([
-    fetchWasm(mariadbWasmUrl),
-    fetch(systemTablesUrl).then((r) => r.text()),
-    fetch(systemDataUrl).then((r) => r.text()),
+    fetchWasm(mariadbUrl),
+    fetch(tablesUrl).then((r) => r.text()),
+    fetch(dataUrl).then((r) => r.text()),
   ]);
 
   // ── Bootstrap ──
