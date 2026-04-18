@@ -1743,11 +1743,16 @@ pub fn sys_fstat(
 
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
 
-    if matches!(ofd.file_type, FileType::Pipe | FileType::EventFd | FileType::Epoll | FileType::TimerFd | FileType::SignalFd) {
+    if matches!(ofd.file_type, FileType::Pipe | FileType::Socket | FileType::EventFd | FileType::Epoll | FileType::TimerFd | FileType::SignalFd) {
+        let mode = if ofd.file_type == FileType::Socket {
+            wasm_posix_shared::mode::S_IFSOCK | 0o755
+        } else {
+            S_IFIFO | 0o600
+        };
         Ok(WasmStat {
             st_dev: 0,
             st_ino: 0,
-            st_mode: S_IFIFO | 0o600,
+            st_mode: mode,
             st_nlink: 0,
             st_uid: 0,
             st_gid: 0,
@@ -2178,6 +2183,19 @@ pub fn sys_stat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resul
     if let Some(st) = crate::devfs::match_devfs_stat(&resolved, proc.euid, proc.egid) {
         return Ok(st);
     }
+    // Check Unix socket registry
+    {
+        let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
+        if registry.contains(&resolved) {
+            return Ok(WasmStat {
+                st_dev: 0, st_ino: 0x554E5800, // "UNX\0"
+                st_mode: wasm_posix_shared::mode::S_IFSOCK | 0o755, st_nlink: 1,
+                st_uid: proc.euid, st_gid: proc.egid, st_size: 0,
+                st_atime_sec: 0, st_atime_nsec: 0, st_mtime_sec: 0, st_mtime_nsec: 0,
+                st_ctime_sec: 0, st_ctime_nsec: 0, _pad: 0,
+            });
+        }
+    }
     let mut st = host.host_stat(&resolved)?;
     st.st_uid = proc.euid;
     st.st_gid = proc.egid;
@@ -2216,6 +2234,19 @@ pub fn sys_lstat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resu
     if let Some(st) = crate::devfs::match_devfs_stat(&resolved, proc.euid, proc.egid) {
         return Ok(st);
     }
+    // Check Unix socket registry
+    {
+        let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
+        if registry.contains(&resolved) {
+            return Ok(WasmStat {
+                st_dev: 0, st_ino: 0x554E5800, // "UNX\0"
+                st_mode: wasm_posix_shared::mode::S_IFSOCK | 0o755, st_nlink: 1,
+                st_uid: proc.euid, st_gid: proc.egid, st_size: 0,
+                st_atime_sec: 0, st_atime_nsec: 0, st_mtime_sec: 0, st_mtime_nsec: 0,
+                st_ctime_sec: 0, st_ctime_nsec: 0, _pad: 0,
+            });
+        }
+    }
     let mut st = host.host_lstat(&resolved)?;
     st.st_uid = proc.euid;
     st.st_gid = proc.egid;
@@ -2235,6 +2266,13 @@ pub fn sys_rmdir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resu
 
 pub fn sys_unlink(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
     let resolved = resolve_path(path, &proc.cwd);
+    // Check if this is a Unix socket path
+    {
+        let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
+        if registry.unregister(&resolved) {
+            return Ok(());
+        }
+    }
     match host.host_unlink(&resolved) {
         Err(Errno::EPERM) => {
             // Linux returns EISDIR when unlinking a directory; macOS returns EPERM.
@@ -3841,11 +3879,29 @@ pub fn sys_getsockname(proc: &Process, fd: i32, buf: &mut [u8]) -> Result<usize,
             Ok(2)
         }
         SocketDomain::Unix => {
-            if buf.len() >= 2 {
-                buf[0] = 1; // AF_UNIX
-                buf[1] = 0;
+            if let Some(ref path) = sock.bind_path {
+                // sockaddr_un: family(2) + path (null-terminated)
+                let total_len = 2 + path.len() + 1; // +1 for null terminator
+                let n = buf.len().min(total_len);
+                if n >= 1 { buf[0] = 1; } // AF_UNIX low byte
+                if n >= 2 { buf[1] = 0; } // AF_UNIX high byte
+                let path_copy = n.saturating_sub(2).min(path.len());
+                if path_copy > 0 {
+                    buf[2..2 + path_copy].copy_from_slice(&path[..path_copy]);
+                }
+                // Null terminate if room
+                if n > 2 + path_copy {
+                    buf[2 + path_copy] = 0;
+                }
+                Ok(total_len)
+            } else {
+                // Unbound AF_UNIX socket — return just the family
+                if buf.len() >= 2 {
+                    buf[0] = 1; // AF_UNIX
+                    buf[1] = 0;
+                }
+                Ok(2)
             }
-            Ok(2)
         }
     }
 }
@@ -5361,6 +5417,19 @@ pub fn sys_fstatat(
     if let Some(st) = crate::devfs::match_devfs_stat(&resolved, proc.euid, proc.egid) {
         return Ok(st);
     }
+    // Check Unix socket registry
+    {
+        let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
+        if registry.contains(&resolved) {
+            return Ok(WasmStat {
+                st_dev: 0, st_ino: 0x554E5800, // "UNX\0"
+                st_mode: wasm_posix_shared::mode::S_IFSOCK | 0o755, st_nlink: 1,
+                st_uid: proc.euid, st_gid: proc.egid, st_size: 0,
+                st_atime_sec: 0, st_atime_nsec: 0, st_mtime_sec: 0, st_mtime_nsec: 0,
+                st_ctime_sec: 0, st_ctime_nsec: 0, _pad: 0,
+            });
+        }
+    }
     let mut st = if flags & AT_SYMLINK_NOFOLLOW != 0 {
         host.host_lstat(&resolved)?
     } else {
@@ -5387,6 +5456,13 @@ pub fn sys_unlinkat(
     if flags & AT_REMOVEDIR != 0 {
         host.host_rmdir(&resolved)
     } else {
+        // Check if this is a Unix socket path
+        {
+            let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
+            if registry.unregister(&resolved) {
+                return Ok(());
+            }
+        }
         match host.host_unlink(&resolved) {
             Err(Errno::EPERM) => {
                 // Linux returns EISDIR when unlinking a directory; macOS returns EPERM.
@@ -11902,6 +11978,88 @@ mod tests {
 
         // Clean up
         unsafe { crate::unix_socket::global_unix_socket_registry() }.unregister(&resolved);
+    }
+
+    #[test]
+    fn test_stat_unix_socket_path() {
+        let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        proc.pid = 9020;
+        let fd = sys_socket(&mut proc, &mut host, 1, 1, 0).unwrap();
+        let mut addr = [0u8; 110];
+        addr[0] = 1;
+        let path = b"/tmp/stat.sock";
+        addr[2..2 + path.len()].copy_from_slice(path);
+        sys_bind(&mut proc, fd, &addr[..2 + path.len() + 1]).unwrap();
+
+        let st = sys_stat(&mut proc, &mut host, b"/tmp/stat.sock").unwrap();
+        assert_eq!(st.st_mode & wasm_posix_shared::mode::S_IFMT, wasm_posix_shared::mode::S_IFSOCK);
+
+        // Cleanup
+        let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
+        registry.cleanup_process(9020);
+    }
+
+    #[test]
+    fn test_unlink_unix_socket_path() {
+        let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        proc.pid = 9021;
+        let fd = sys_socket(&mut proc, &mut host, 1, 1, 0).unwrap();
+        let mut addr = [0u8; 110];
+        addr[0] = 1;
+        let path = b"/tmp/unlink.sock";
+        addr[2..2 + path.len()].copy_from_slice(path);
+        sys_bind(&mut proc, fd, &addr[..2 + path.len() + 1]).unwrap();
+
+        // Socket path should exist
+        assert!(sys_stat(&mut proc, &mut host, b"/tmp/unlink.sock").is_ok());
+
+        // Unlink removes the path from registry
+        sys_unlink(&mut proc, &mut host, b"/tmp/unlink.sock").unwrap();
+
+        // Another socket can now bind to the same path
+        let fd2 = sys_socket(&mut proc, &mut host, 1, 1, 0).unwrap();
+        sys_bind(&mut proc, fd2, &addr[..2 + path.len() + 1]).unwrap();
+
+        // Cleanup
+        let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
+        registry.cleanup_process(9021);
+    }
+
+    #[test]
+    fn test_fstat_socket_fd() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_socket(&mut proc, &mut host, 1, 1, 0).unwrap();
+        let st = sys_fstat(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(st.st_mode & wasm_posix_shared::mode::S_IFMT, wasm_posix_shared::mode::S_IFSOCK);
+    }
+
+    #[test]
+    fn test_getsockname_unix_with_path() {
+        let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        proc.pid = 9022;
+        let fd = sys_socket(&mut proc, &mut host, 1, 1, 0).unwrap();
+        let mut addr = [0u8; 110];
+        addr[0] = 1;
+        let path = b"/tmp/getsockname.sock";
+        addr[2..2 + path.len()].copy_from_slice(path);
+        sys_bind(&mut proc, fd, &addr[..2 + path.len() + 1]).unwrap();
+
+        let mut buf = [0u8; 128];
+        let n = sys_getsockname(&proc, fd, &mut buf).unwrap();
+        assert_eq!(buf[0], 1); // AF_UNIX
+        assert!(n >= 2 + path.len());
+        assert_eq!(&buf[2..2 + path.len()], path);
+
+        // Cleanup
+        let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
+        registry.cleanup_process(9022);
     }
 
     #[test]
