@@ -1,8 +1,4 @@
 node_modules/
 test-results/
 playwright-report/
-public/wp-bundle*.json
-public/python-bundle.json
-public/perl-bundle.json
-public/vim-runtime-bundle.json
-public/erlang-bundle.json
+public/*.vfs

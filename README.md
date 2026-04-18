@@ -145,12 +145,18 @@ npx tsx examples/run-example.ts hello
 ### 4. Try the browser demos
 
 ```bash
+# Build VFS images + start dev server (run.sh handles dependencies)
+./run.sh browser
+
+# Or manually:
 cd examples/browser
 npm install
 npx vite --port 5198
 ```
 
 Open `http://localhost:5198` to try 12 interactive demos — C programs, interactive shell, Python/Perl/Ruby REPLs, nginx, MariaDB, Redis, full WordPress, and a LAMP stack — all running in the browser.
+
+Browser demos use pre-built **VFS images** — binary filesystem snapshots that load instantly at runtime. See [docs/browser-support.md](docs/browser-support.md#vfs-images) for details.
 
 ## Porting Software
 

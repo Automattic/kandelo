@@ -6,7 +6,7 @@ set -euo pipefail
 # Prerequisites:
 #   bash examples/libs/mariadb/build-mariadb.sh   # builds mariadbd + mysqltest
 #   bash build.sh                                  # builds kernel wasm
-#   bash scripts/build-mariadb-test-bundle.sh      # builds test bundle
+#   bash examples/browser/scripts/build-mariadb-test-vfs-image.sh  # builds test VFS image
 #
 # Usage:
 #   scripts/run-browser-mariadb-tests.sh              # run curated tests
@@ -15,7 +15,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 INSTALL_DIR="$REPO_ROOT/examples/libs/mariadb/mariadb-install"
 KERNEL_WASM="$REPO_ROOT/host/wasm/wasm_posix_kernel.wasm"
-BUNDLE_FILE="$REPO_ROOT/examples/browser/public/mariadb-test-bundle.json"
+VFS_IMAGE="$REPO_ROOT/examples/browser/public/mariadb-test.vfs"
 RUNNER="$REPO_ROOT/scripts/browser-mariadb-test-runner.ts"
 
 # ── Curated tests (from full browser triage of all 1184 tests) ──
@@ -154,10 +154,10 @@ done
 
 check_prereqs
 
-# Build test bundle if missing
-if [ ! -f "$BUNDLE_FILE" ]; then
-    echo "Building test bundle..."
-    bash "$REPO_ROOT/scripts/build-mariadb-test-bundle.sh"
+# Build test VFS image if missing
+if [ ! -f "$VFS_IMAGE" ]; then
+    echo "Building test VFS image..."
+    bash "$REPO_ROOT/examples/browser/scripts/build-mariadb-test-vfs-image.sh"
 fi
 
 # Use curated tests if none specified

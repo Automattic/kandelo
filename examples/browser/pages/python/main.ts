@@ -6,10 +6,12 @@
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
 import { PtyTerminal } from "../../lib/pty-terminal";
-import { loadPythonBundle } from "../../lib/python-bundle";
+import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
 import kernelWasmUrl from "../../../../host/wasm/wasm_posix_kernel.wasm?url";
 import pythonWasmUrl from "../../../../examples/libs/cpython/bin/python.wasm?url";
 import "@xterm/xterm/css/xterm.css";
+
+const VFS_IMAGE_URL = import.meta.env.BASE_URL + "python.vfs";
 
 // --- DOM elements ---
 const terminalContainer = document.getElementById("terminal") as HTMLDivElement;
@@ -62,46 +64,41 @@ function hideStatus() {
 // --- Binary loading ---
 let kernelBytes: ArrayBuffer | null = null;
 let pythonBytes: ArrayBuffer | null = null;
+let vfsImageBuf: ArrayBuffer | null = null;
 
 async function loadBinaries(): Promise<string> {
-  if (kernelBytes && pythonBytes) return "";
+  if (kernelBytes && pythonBytes && vfsImageBuf) return "";
 
-  setStatus("Loading kernel + CPython (~25MB)...", "loading");
+  setStatus("Loading kernel + CPython + stdlib (~25MB)...", "loading");
   const results = await Promise.all([
     fetch(kernelWasmUrl).then((r) => r.arrayBuffer()),
     fetch(pythonWasmUrl).then((r) => r.arrayBuffer()),
+    fetch(VFS_IMAGE_URL).then((r) => r.arrayBuffer()),
   ]);
   kernelBytes = results[0];
   pythonBytes = results[1];
+  vfsImageBuf = results[2];
 
   return [
     `Kernel: ${(kernelBytes.byteLength / 1024).toFixed(0)}KB`,
     `CPython: ${(pythonBytes.byteLength / (1024 * 1024)).toFixed(1)}MB`,
+    `Stdlib VFS: ${(vfsImageBuf.byteLength / (1024 * 1024)).toFixed(1)}MB`,
   ].join(", ") + "\n";
 }
 
-/** Initialize a kernel and load the Python stdlib bundle into its VFS. */
+/** Initialize a kernel with the Python stdlib VFS image. */
 async function initKernelWithStdlib(
   options?: { onStdout?: (data: Uint8Array) => void; onStderr?: (data: Uint8Array) => void },
 ): Promise<BrowserKernel> {
+  const memfs = MemoryFileSystem.fromImage(new Uint8Array(vfsImageBuf!), {
+    maxByteLength: 256 * 1024 * 1024,
+  });
   const kernel = new BrowserKernel({
+    memfs,
     onStdout: options?.onStdout,
     onStderr: options?.onStderr,
   });
   await kernel.init(kernelBytes!);
-
-  // Create directories Python expects
-  const fs = kernel.fs;
-  for (const d of ["/usr", "/usr/lib", "/usr/lib/python3.13", "/tmp", "/home"]) {
-    try { fs.mkdir(d, 0o755); } catch { /* exists */ }
-  }
-
-  // Load stdlib bundle
-  setStatus("Loading Python stdlib...", "loading");
-  const loaded = await loadPythonBundle(fs, import.meta.env.BASE_URL + "python-bundle.json", (current, total) => {
-    setStatus(`Loading Python stdlib... ${current}/${total} files`, "loading");
-  });
-  setStatus(`Stdlib loaded (${loaded} files). Starting Python...`, "loading");
 
   return kernel;
 }

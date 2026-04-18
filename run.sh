@@ -41,18 +41,19 @@ has_php()       { [ -f "$REPO_ROOT/examples/libs/php/php-src/sapi/cli/php" ]; }
 has_php_fpm()   { [ -f "$REPO_ROOT/examples/nginx/php-fpm.wasm" ]; }
 has_mariadb()   { [ -f "$REPO_ROOT/examples/libs/mariadb/mariadb-install/bin/mariadbd" ]; }
 has_wordpress() { [ -f "$REPO_ROOT/examples/wordpress/wordpress/wp-settings.php" ]; }
-has_wp_bundle() { [ -f "$REPO_ROOT/examples/browser/public/wp-bundle.json" ]; }
+has_wp_vfs()    { [ -f "$REPO_ROOT/examples/browser/public/wordpress.vfs" ]; }
 has_dash()      { [ -f "$REPO_ROOT/examples/libs/dash/bin/dash.wasm" ]; }
 has_coreutils() { [ -f "$REPO_ROOT/examples/libs/coreutils/bin/coreutils.wasm" ]; }
 has_grep()      { [ -f "$REPO_ROOT/examples/libs/grep/bin/grep.wasm" ]; }
 has_sed()       { [ -f "$REPO_ROOT/examples/libs/sed/bin/sed.wasm" ]; }
 has_redis()     { [ -f "$REPO_ROOT/examples/libs/redis/bin/redis-server.wasm" ]; }
 has_cpython()   { [ -f "$REPO_ROOT/examples/libs/cpython/bin/python.wasm" ]; }
-has_python_bundle() { [ -f "$REPO_ROOT/examples/browser/public/python-bundle.json" ]; }
-has_perl_bundle() { [ -f "$REPO_ROOT/examples/browser/public/perl-bundle.json" ]; }
-has_vim_runtime_bundle() { [ -f "$REPO_ROOT/examples/browser/public/vim-runtime-bundle.json" ]; }
+has_python_vfs() { [ -f "$REPO_ROOT/examples/browser/public/python.vfs" ]; }
+has_perl_vfs()   { [ -f "$REPO_ROOT/examples/browser/public/perl.vfs" ]; }
+has_shell_vfs()  { [ -f "$REPO_ROOT/examples/browser/public/shell.vfs" ]; }
 has_erlang()    { [ -f "$REPO_ROOT/examples/libs/erlang/bin/beam.wasm" ]; }
-has_erlang_bundle() { [ -f "$REPO_ROOT/examples/browser/public/erlang-bundle.json" ]; }
+has_erlang_vfs() { [ -f "$REPO_ROOT/examples/browser/public/erlang.vfs" ]; }
+has_lamp_vfs()   { [ -f "$REPO_ROOT/examples/browser/public/lamp.vfs" ]; }
 has_bc()        { [ -f "$REPO_ROOT/examples/libs/bc/bin/bc.wasm" ]; }
 has_file()      { [ -f "$REPO_ROOT/examples/libs/file/bin/file.wasm" ]; }
 has_less()      { [ -f "$REPO_ROOT/examples/libs/less/bin/less.wasm" ]; }
@@ -229,14 +230,14 @@ build_wordpress() {
     fi
 }
 
-build_wp_bundle() {
+build_wp_vfs() {
     build_wordpress
-    if ! has_wp_bundle; then
-        step "Building WordPress browser bundle"
-        bash "$REPO_ROOT/examples/browser/scripts/build-wp-bundle.sh"
-        info "WP bundle built"
+    if ! has_wp_vfs; then
+        step "Building WordPress VFS image"
+        bash "$REPO_ROOT/examples/browser/scripts/build-wp-vfs-image.sh"
+        info "WP VFS image built"
     else
-        info "WP bundle"
+        info "WP VFS image"
     fi
 }
 
@@ -317,48 +318,48 @@ build_cpython() {
     fi
 }
 
-build_python_bundle() {
+build_python_vfs() {
     build_cpython
-    if ! has_python_bundle; then
-        step "Building Python stdlib browser bundle"
-        bash "$REPO_ROOT/examples/browser/scripts/build-python-bundle.sh"
-        info "Python bundle built"
+    if ! has_python_vfs; then
+        step "Building Python VFS image"
+        bash "$REPO_ROOT/examples/browser/scripts/build-python-vfs-image.sh"
+        info "Python VFS image built"
     else
-        info "Python bundle"
+        info "Python VFS image"
     fi
 }
 
-build_perl_bundle() {
-    if ! has_perl_bundle; then
+build_perl_vfs() {
+    if ! has_perl_vfs; then
         if [ ! -f "$REPO_ROOT/examples/libs/perl/perl-src/lib/strict.pm" ]; then
-            warn "Perl source not found, skipping perl-bundle"
+            warn "Perl source not found, skipping perl VFS image"
             return
         fi
-        step "Building Perl stdlib browser bundle"
-        bash "$REPO_ROOT/examples/browser/scripts/build-perl-bundle.sh"
-        info "Perl bundle built"
+        step "Building Perl VFS image"
+        bash "$REPO_ROOT/examples/browser/scripts/build-perl-vfs-image.sh"
+        info "Perl VFS image built"
     else
-        info "Perl bundle"
+        info "Perl VFS image"
     fi
 }
 
-build_vim_runtime_bundle() {
-    if ! has_vim_runtime_bundle; then
+build_shell_vfs() {
+    if ! has_shell_vfs; then
         # Ensure the minimal runtime directory exists (built from vim source)
         if [ ! -d "$REPO_ROOT/examples/libs/vim/runtime" ]; then
             if [ -d "$REPO_ROOT/examples/libs/vim/vim-src/runtime" ]; then
                 step "Bundling Vim runtime"
                 bash "$REPO_ROOT/examples/libs/vim/bundle-runtime.sh"
             else
-                warn "Vim source not found, skipping vim-runtime-bundle"
+                warn "Vim source not found, skipping shell VFS image"
                 return
             fi
         fi
-        step "Building Vim runtime browser bundle"
-        bash "$REPO_ROOT/examples/browser/scripts/build-vim-runtime-bundle.sh"
-        info "Vim runtime bundle built"
+        step "Building Shell VFS image"
+        bash "$REPO_ROOT/examples/browser/scripts/build-shell-vfs-image.sh"
+        info "Shell VFS image built"
     else
-        info "Vim runtime bundle"
+        info "Shell VFS image"
     fi
 }
 
@@ -380,14 +381,25 @@ build_erlang() {
     fi
 }
 
-build_erlang_bundle() {
+build_erlang_vfs() {
     build_erlang
-    if ! has_erlang_bundle; then
-        step "Building Erlang browser bundle"
-        bash "$REPO_ROOT/examples/browser/scripts/build-erlang-bundle.sh"
-        info "Erlang bundle built"
+    if ! has_erlang_vfs; then
+        step "Building Erlang VFS image"
+        bash "$REPO_ROOT/examples/browser/scripts/build-erlang-vfs-image.sh"
+        info "Erlang VFS image built"
     else
-        info "Erlang bundle"
+        info "Erlang VFS image"
+    fi
+}
+
+build_lamp_vfs() {
+    build_wordpress
+    if ! has_lamp_vfs; then
+        step "Building LAMP VFS image"
+        bash "$REPO_ROOT/examples/browser/scripts/build-lamp-vfs-image.sh"
+        info "LAMP VFS image built"
+    else
+        info "LAMP VFS image"
     fi
 }
 
@@ -761,15 +773,14 @@ build_target() {
         mariadb)    build_mariadb ;;
         redis)      build_redis ;;
         cpython)    build_cpython ;;
-        python-bundle) build_python_bundle ;;
-        perl-bundle) build_perl_bundle ;;
-        vim-runtime-bundle) build_vim_runtime_bundle ;;
+        python-vfs) build_python_vfs ;;
+        perl-vfs)   build_perl_vfs ;;
+        shell-vfs)  build_shell_vfs ;;
         wordpress)  build_wordpress ;;
-        wp-bundle)  build_wp_bundle ;;
+        wp-vfs)     build_wp_vfs ;;
         erlang)     build_erlang ;;
-        erlang-bundle) build_erlang_bundle ;;
-        texlive)    build_texlive ;;
-        texlive-bundle) build_texlive_bundle ;;
+        erlang-vfs) build_erlang_vfs ;;
+        lamp-vfs)   build_lamp_vfs ;;
         bc)         build_bc ;;
         file)       build_file ;;
         less)       build_less ;;
@@ -801,7 +812,7 @@ build_target() {
 }
 
 # All targets needed for browser demos
-BROWSER_DEPS=(kernel sysroot programs dash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano vim git nginx php php-fpm mariadb redis cpython python-bundle perl perl-bundle ruby vim-runtime-bundle wordpress wp-bundle erlang erlang-bundle texlive texlive-bundle)
+BROWSER_DEPS=(kernel sysroot programs dash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano vim git nginx php php-fpm mariadb redis cpython python-vfs perl perl-vfs ruby shell-vfs wordpress wp-vfs lamp-vfs erlang erlang-vfs)
 
 build_browser() {
     for t in "${BROWSER_DEPS[@]}"; do
@@ -842,17 +853,16 @@ build_all() {
     build_mariadb
     build_redis
     build_cpython
-    build_python_bundle
+    build_python_vfs
     build_perl
-    build_perl_bundle
+    build_perl_vfs
     build_ruby
-    build_vim_runtime_bundle
+    build_shell_vfs
     build_wordpress
-    build_wp_bundle
+    build_wp_vfs
+    build_lamp_vfs
     build_erlang
-    build_erlang_bundle
-    build_texlive
-    build_texlive_bundle
+    build_erlang_vfs
     build_dlopen
 }
 
@@ -929,42 +939,32 @@ clean_target() {
                    "$REPO_ROOT/examples/libs/cpython/cpython-install" \
                    "$REPO_ROOT/examples/libs/cpython/bin"
             warn "Cleaned CPython" ;;
-        python-bundle)
-            rm -f "$REPO_ROOT/examples/browser/public/python-bundle.json"
-            warn "Cleaned Python bundle" ;;
-        perl-bundle)
-            rm -f "$REPO_ROOT/examples/browser/public/perl-bundle.json"
-            warn "Cleaned Perl bundle" ;;
-        vim-runtime-bundle)
-            rm -f "$REPO_ROOT/examples/browser/public/vim-runtime-bundle.json"
-            warn "Cleaned Vim runtime bundle" ;;
+        python-vfs)
+            rm -f "$REPO_ROOT/examples/browser/public/python.vfs"
+            warn "Cleaned Python VFS image" ;;
+        perl-vfs)
+            rm -f "$REPO_ROOT/examples/browser/public/perl.vfs"
+            warn "Cleaned Perl VFS image" ;;
+        shell-vfs)
+            rm -f "$REPO_ROOT/examples/browser/public/shell.vfs"
+            warn "Cleaned Shell VFS image" ;;
         wordpress)
             rm -rf "$REPO_ROOT/examples/wordpress/wordpress"
             warn "Cleaned WordPress" ;;
-        wp-bundle)
-            rm -f "$REPO_ROOT/examples/browser/public/wp-bundle.json"
-            warn "Cleaned WP bundle" ;;
+        wp-vfs)
+            rm -f "$REPO_ROOT/examples/browser/public/wordpress.vfs"
+            warn "Cleaned WP VFS image" ;;
+        lamp-vfs)
+            rm -f "$REPO_ROOT/examples/browser/public/lamp.vfs"
+            warn "Cleaned LAMP VFS image" ;;
         erlang)
             rm -rf "$REPO_ROOT/examples/libs/erlang/erlang-src" \
                    "$REPO_ROOT/examples/libs/erlang/erlang-install" \
                    "$REPO_ROOT/examples/libs/erlang/bin"
             warn "Cleaned Erlang" ;;
-        erlang-bundle)
-            rm -f "$REPO_ROOT/examples/browser/public/erlang-bundle.json"
-            warn "Cleaned Erlang bundle" ;;
-        texlive)
-            rm -rf "$REPO_ROOT/examples/libs/texlive/texlive-src" \
-                   "$REPO_ROOT/examples/libs/texlive/texlive-host-build" \
-                   "$REPO_ROOT/examples/libs/texlive/texlive-cross-build" \
-                   "$REPO_ROOT/examples/libs/texlive/texlive-dist" \
-                   "$REPO_ROOT/examples/libs/texlive/texlive-fmt" \
-                   "$REPO_ROOT/examples/libs/texlive/install-tl" \
-                   "$REPO_ROOT/examples/libs/texlive/bin"
-            rm -f "$REPO_ROOT/examples/libs/texlive/texlive.profile"
-            warn "Cleaned TeX Live" ;;
-        texlive-bundle)
-            rm -f "$REPO_ROOT/examples/browser/public/texlive-bundle.json"
-            warn "Cleaned TeX Live bundle" ;;
+        erlang-vfs)
+            rm -f "$REPO_ROOT/examples/browser/public/erlang.vfs"
+            warn "Cleaned Erlang VFS image" ;;
         bc)
             rm -rf "$REPO_ROOT/examples/libs/bc/bc-src" \
                    "$REPO_ROOT/examples/libs/bc/bin"
@@ -1070,7 +1070,7 @@ clean_target() {
                 clean_target "$t"
             done ;;
         all)
-            for t in kernel sysroot host programs dash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano ncurses zlib openssl libcurl vim git nginx php php-fpm mariadb redis cpython python-bundle perl perl-bundle ruby vim-runtime-bundle wordpress wp-bundle erlang erlang-bundle dlopen; do
+            for t in kernel sysroot host programs dash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano ncurses zlib openssl libcurl vim git nginx php php-fpm mariadb redis cpython python-vfs perl perl-vfs ruby shell-vfs wordpress wp-vfs lamp-vfs erlang erlang-vfs dlopen; do
                 clean_target "$t"
             done ;;
         *)  err "Unknown clean target: $target"; exit 1 ;;
@@ -1356,17 +1356,16 @@ cmd_list() {
     echo "  mariadb     MariaDB 10.5 Wasm binary              $(has_mariadb && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  redis       Redis 7.2 Wasm binary                 $(has_redis && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  cpython     CPython 3.13 Wasm binary              $(has_cpython && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
-    echo "  python-bundle  Python stdlib browser bundle       $(has_python_bundle && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
-    echo "  perl-bundle    Perl stdlib browser bundle         $(has_perl_bundle && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
-    echo "  vim-runtime-bundle Vim runtime browser bundle     $(has_vim_runtime_bundle && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  python-vfs  Python stdlib VFS image               $(has_python_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  perl-vfs    Perl stdlib VFS image                 $(has_perl_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  shell-vfs   Shell environment VFS image           $(has_shell_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  wordpress   WordPress + SQLite plugin             $(has_wordpress && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
-    echo "  wp-bundle   WordPress browser bundle              $(has_wp_bundle && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  wp-vfs      WordPress VFS image                   $(has_wp_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  lamp-vfs    WordPress LAMP VFS image              $(has_lamp_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  perl        Perl 5.40                              $(has_perl && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  ruby        Ruby                                   $(has_ruby && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  erlang      Erlang/OTP 28 BEAM VM                   $(has_erlang && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
-    echo "  erlang-bundle  Erlang browser bundle               $(has_erlang_bundle && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
-    echo "  texlive     pdftex (TeX Live) Wasm binary           $(has_texlive && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
-    echo "  texlive-bundle TeX Live browser bundle             $(has_texlive_bundle && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  erlang-vfs  Erlang OTP VFS image                  $(has_erlang_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  dlopen      dlopen shared library example          $(has_dlopen && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  browser     All browser demo dependencies"
     echo "  all         Build everything"

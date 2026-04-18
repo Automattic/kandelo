@@ -295,7 +295,31 @@ await kernel.destroy()
 
 ### Filesystem pre-population
 
-The kernel reads files from the shared `MemoryFileSystem`. Load files before spawning:
+The kernel reads files from the shared `MemoryFileSystem`. For demos with many files, use a **VFS image** — a pre-built binary snapshot of the filesystem:
+
+```typescript
+import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
+import { BrowserKernel } from "../../lib/browser-kernel";
+
+// Fetch kernel wasm and VFS image in parallel
+const [kernelBuf, vfsImageBuf] = await Promise.all([
+  fetch(kernelUrl).then(r => r.arrayBuffer()),
+  fetch(vfsImageUrl).then(r => r.arrayBuffer()),
+]);
+
+// Restore filesystem from image (single buffer copy — fast)
+const memfs = MemoryFileSystem.fromImage(
+  new Uint8Array(vfsImageBuf),
+  { maxByteLength: 512 * 1024 * 1024 },  // allow growth
+);
+
+// Create kernel with pre-populated filesystem
+const kernel = await BrowserKernel.create({ kernelWasm: kernelBuf, memfs });
+```
+
+See [docs/browser-support.md](browser-support.md#vfs-images) for how to create VFS image build scripts.
+
+For simple demos with few files, you can also write files directly:
 
 ```typescript
 const kernel = new BrowserKernel({ fsSize: 32 * 1024 * 1024 }); // 32MB

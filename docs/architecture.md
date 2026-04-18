@@ -266,7 +266,89 @@ The browser uses a layered VFS (`VirtualPlatformIO`):
 /persistent → OpfsFileSystem (Origin Private File System, browser persistence)
 ```
 
-`MemoryFileSystem` is critical: it's how the main thread loads files (configs, wasm binaries, WordPress bundles) that the kernel worker can then read. Both threads share the same `SharedArrayBuffer`, with the filesystem's internal btree structure built directly in the buffer.
+`MemoryFileSystem` is critical: it's how the main thread pre-populates files (configs, wasm binaries, runtime libraries) that the kernel worker can then read. Both threads share the same `SharedArrayBuffer`, with the filesystem's internal btree structure built directly in the buffer.
+
+### Lazy Files
+
+`MemoryFileSystem` supports **lazy files** — files registered with a URL and declared size that are only fetched on first access. This enables loading large binaries (e.g., nginx, PHP-FPM, coreutils) without fetching everything upfront — they are only fetched when a process exec's them.
+
+```typescript
+// Register a lazy file (creates empty stub, fetches on demand)
+const ino = mfs.registerLazyFile("/usr/bin/php", "https://cdn.example.com/php.wasm", 8_500_000);
+
+// Later, materialize before sync access (avoids sync XHR deadlock with service workers)
+await mfs.ensureMaterialized("/usr/bin/php");
+```
+
+Lazy file metadata (`path`, `url`, `size`, `ino`) can be transferred between instances via `exportLazyEntries()` / `importLazyEntries()` — used when forking workers that share the same SharedArrayBuffer.
+
+### VFS Images
+
+A `MemoryFileSystem` can be serialized to a portable binary image and restored later to boot a new kernel with a pre-populated filesystem. This enables snapshotting an initialized VFS (with all files, directories, symlinks, and permissions) and restoring it without repeating the setup work.
+
+**Save an image:**
+
+```typescript
+// Preserve lazy files as URL references (smaller image, requires URLs at restore time)
+const image: Uint8Array = await mfs.saveImage();
+
+// Or materialize all lazy files first (self-contained image, no URL dependencies)
+const fullImage: Uint8Array = await mfs.saveImage({ materializeAll: true });
+```
+
+**Restore from an image:**
+
+```typescript
+// Creates a new independent MemoryFileSystem with its own SharedArrayBuffer
+const restored = MemoryFileSystem.fromImage(image);
+```
+
+The restored filesystem is fully independent — modifications to the original or restored instance don't affect each other. Multiple independent instances can be created from the same image.
+
+When restoring for use in a browser, pass `maxByteLength` to create a growable `SharedArrayBuffer` so the filesystem can expand beyond the image's original size:
+
+```typescript
+const restored = MemoryFileSystem.fromImage(image, { maxByteLength: 1024 * 1024 * 1024 });
+```
+
+All browser demos use this approach. Each demo has a build script that pre-populates a VFS with runtime files, directory structure, configs, and symlinks, then saves it as a `.vfs` file. At runtime, restoring the image replaces thousands of individual file writes with a single buffer copy.
+
+| Demo | VFS Image | Build Script | Contents |
+|------|-----------|-------------|----------|
+| Python | `python.vfs` | `build-python-vfs-image.sh` | CPython 3.13 stdlib (`/usr/lib/python3.13/`) |
+| Erlang | `erlang.vfs` | `build-erlang-vfs-image.sh` | OTP 28 runtime (kernel, stdlib, erts, compiler ebin dirs) |
+| Perl | `perl.vfs` | `build-perl-vfs-image.sh` | Perl 5.40 stdlib (`/usr/lib/perl5/5.40.3/`) |
+| Shell | `shell.vfs` | `build-shell-vfs-image.sh` | dash, coreutils/grep/sed symlinks, vim runtime, magic db |
+| WordPress | `wordpress.vfs` | `build-wp-vfs-image.sh` | nginx + PHP-FPM configs, WordPress files, shell symlinks |
+| LAMP | `lamp.vfs` | `build-lamp-vfs-image.sh` | MariaDB binary + data, nginx/PHP-FPM configs, WordPress files |
+| MariaDB test | `mariadb-test.vfs` | `build-mariadb-test-vfs-image.sh` | MariaDB binary + data, mysql-test suite files |
+
+Build scripts are in `examples/browser/scripts/` and share common helpers from `vfs-image-helpers.ts`. To build all VFS images:
+
+```bash
+bash examples/browser/scripts/build-python-vfs-image.sh
+bash examples/browser/scripts/build-erlang-vfs-image.sh
+bash examples/browser/scripts/build-perl-vfs-image.sh
+bash examples/browser/scripts/build-shell-vfs-image.sh
+bash examples/browser/scripts/build-wp-vfs-image.sh
+bash examples/browser/scripts/build-lamp-vfs-image.sh
+bash examples/browser/scripts/build-mariadb-test-vfs-image.sh
+```
+
+Or use the convenience targets in `run.sh` (e.g., `./run.sh build python-vfs`).
+
+**Binary format:**
+
+```
+Offset   Size   Field
+0        4      Magic: 0x56465349 ("VFSI")
+4        4      Version: 1
+8        4      Flags: bit 0 = lazy entries included
+12       4      SharedArrayBuffer data length (N)
+16       N      Raw SharedArrayBuffer bytes (block filesystem)
+16+N     4      Lazy entries JSON length (M)
+20+N     M      Lazy entries as JSON (UTF-8): [{ino, path, url, size}, ...]
+```
 
 ## Networking
 

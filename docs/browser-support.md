@@ -48,7 +48,7 @@ Service Worker ──MessagePort──> Kernel Worker       │
 ### Key Design Decisions
 
 - **Kernel in dedicated worker**: Enables `Atomics.waitAsync` without V8 microtask chain freeze bug (main-thread-only). No need for MessageChannel-based polling. Zero UI jank regardless of syscall load.
-- **Shared MemoryFileSystem**: Main thread and kernel worker share the same `SharedArrayBuffer`-backed filesystem via `MemoryFileSystem.fromExisting()`. The main thread writes files (configs, bundles), the kernel worker reads them (exec binaries).
+- **Shared MemoryFileSystem**: Main thread and kernel worker share the same `SharedArrayBuffer`-backed filesystem via `MemoryFileSystem.fromExisting()`. The main thread pre-populates files (via VFS images or direct writes), the kernel worker reads them (exec binaries, configs, data files).
 - **Exec reads from filesystem**: Like a real OS, `exec()` reads binaries from the shared filesystem. Programs are loaded into the FS by the page before spawning. Symlinks are used for multicall binaries (e.g., coreutils).
 - **Connection pump in kernel worker**: HTTP↔TCP bridge runs inside the kernel worker with synchronous pipe I/O (direct Wasm export calls). Service worker transfers a MessagePort to the kernel worker for HTTP request delivery.
 - **App clients on main thread**: MySQL and Redis wire protocol clients stay on the main thread and use async pipe operations via the message protocol.
@@ -116,6 +116,68 @@ Located in `examples/browser/pages/`:
 | lamp | MariaDB + nginx + PHP-FPM + WP | Full LAMP stack |
 
 Run demos: `cd examples/browser && npx vite --port 5198`
+
+## VFS Images
+
+Browser demos use pre-built **VFS images** — binary snapshots of a `MemoryFileSystem` containing all runtime files, directory structure, configs, and symlinks needed by a demo. At runtime, restoring a VFS image is a single buffer copy, replacing what would otherwise be hundreds or thousands of individual file creation operations.
+
+### How it works
+
+1. **Build time**: A TypeScript build script creates a `MemoryFileSystem`, writes files/dirs/symlinks into it, and calls `saveImage()` to produce a `.vfs` binary file.
+2. **Runtime**: The demo page fetches the `.vfs` file, calls `MemoryFileSystem.fromImage(imageBytes, { maxByteLength })` to restore it, and passes the resulting filesystem to `BrowserKernel({ memfs })`.
+
+```typescript
+// Typical demo pattern
+const [kernelBuf, vfsImageBuf] = await Promise.all([
+  fetch(kernelUrl).then(r => r.arrayBuffer()),
+  fetch(vfsImageUrl).then(r => r.arrayBuffer()),
+]);
+
+const memfs = MemoryFileSystem.fromImage(
+  new Uint8Array(vfsImageBuf),
+  { maxByteLength: 512 * 1024 * 1024 },
+);
+
+const kernel = await BrowserKernel.create({ kernelWasm: kernelBuf, memfs });
+```
+
+### VFS images per demo
+
+| Demo | Image | Build command | What's inside |
+|------|-------|--------------|---------------|
+| Python | `python.vfs` | `bash examples/browser/scripts/build-python-vfs-image.sh` | CPython stdlib |
+| Erlang | `erlang.vfs` | `bash examples/browser/scripts/build-erlang-vfs-image.sh` | OTP runtime |
+| Perl | `perl.vfs` | `bash examples/browser/scripts/build-perl-vfs-image.sh` | Perl stdlib |
+| Shell | `shell.vfs` | `bash examples/browser/scripts/build-shell-vfs-image.sh` | dash, symlinks, vim runtime |
+| WordPress | `wordpress.vfs` | `bash examples/browser/scripts/build-wp-vfs-image.sh` | WP files, nginx/PHP configs |
+| LAMP | `lamp.vfs` | `bash examples/browser/scripts/build-lamp-vfs-image.sh` | MariaDB + WP + configs |
+| MariaDB test | `mariadb-test.vfs` | `bash examples/browser/scripts/build-mariadb-test-vfs-image.sh` | MariaDB + test suite |
+
+VFS images are `.gitignore`d and must be built locally. The `run.sh` script handles this automatically (e.g., `./run.sh browser` builds any missing VFS images before starting the dev server).
+
+### Building VFS images
+
+Each build script requires the corresponding software to be compiled first (e.g., `build-cpython.sh` before `build-python-vfs-image.sh`). The `run.sh` script orchestrates this:
+
+```bash
+./run.sh build python-vfs    # Build Python VFS image
+./run.sh build shell-vfs     # Build Shell VFS image
+./run.sh build all            # Build everything including all VFS images
+```
+
+### Adding a new VFS image
+
+1. Create `examples/browser/scripts/build-<name>-vfs-image.ts` — import helpers from `vfs-image-helpers.ts`
+2. Create `examples/browser/scripts/build-<name>-vfs-image.sh` — shell wrapper that runs the TypeScript script
+3. Update the demo's `main.ts` to fetch the `.vfs` file and use `MemoryFileSystem.fromImage()`
+4. Add a build target in `run.sh`
+
+The shared helpers in `vfs-image-helpers.ts` provide:
+- `writeVfsFile(fs, path, content)` / `writeVfsBinary(fs, path, data)` — write files
+- `ensureDirRecursive(fs, path)` — create directory trees
+- `symlink(fs, target, path)` — create symlinks
+- `walkAndWrite(fs, hostDir, mountPrefix, opts?)` — recursively walk a host directory into the VFS
+- `saveImage(fs, outFile)` — save and write the image to disk
 
 ## Vite Configuration
 

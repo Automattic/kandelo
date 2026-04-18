@@ -41,6 +41,10 @@ export interface BrowserKernelOptions {
   onListenTcp?: (pid: number, fd: number, port: number) => void;
   /** Pre-compiled thread module for clone(). Avoids recompiling large wasm for each thread. */
   threadModule?: WebAssembly.Module;
+  /** Pre-built MemoryFileSystem (e.g. from a VFS image). When provided, skips
+   *  SAB creation, mkfs, and standard directory/services setup — uses the
+   *  provided filesystem as-is. */
+  memfs?: MemoryFileSystem;
 }
 
 export class BrowserKernel {
@@ -78,47 +82,54 @@ export class BrowserKernel {
       ...options,
     };
 
-    const fsSize = this.options.fsSize;
-    const maxFsSize = this.options.maxFsSize ?? fsSize * 4;
-    this.fsSab = new SharedArrayBuffer(fsSize, { maxByteLength: maxFsSize });
     this.shmSab = new SharedArrayBuffer(1024 * 1024);
-    this.memfs = MemoryFileSystem.create(this.fsSab, maxFsSize);
     MemoryFileSystem.create(this.shmSab); // format shm SAB for kernel worker
 
-    // Create standard directories
-    this.memfs.mkdir("/tmp", 0o777);
-    this.memfs.mkdir("/home", 0o755);
-    this.memfs.mkdir("/dev", 0o755);
-    this.memfs.mkdir("/etc", 0o755);
+    if (options.memfs) {
+      // Use pre-built filesystem — skip SAB creation, mkfs, and directory setup
+      this.memfs = options.memfs;
+      this.fsSab = options.memfs.sharedBuffer;
+    } else {
+      const fsSize = this.options.fsSize;
+      const maxFsSize = this.options.maxFsSize ?? fsSize * 4;
+      this.fsSab = new SharedArrayBuffer(fsSize, { maxByteLength: maxFsSize });
+      this.memfs = MemoryFileSystem.create(this.fsSab, maxFsSize);
 
-    // Populate /etc/services for getservbyname/getservbyport
-    const services = [
-      "tcpmux\t\t1/tcp",
-      "echo\t\t7/tcp",
-      "echo\t\t7/udp",
-      "discard\t\t9/tcp\t\tsink null",
-      "discard\t\t9/udp\t\tsink null",
-      "ftp-data\t20/tcp",
-      "ftp\t\t21/tcp",
-      "ssh\t\t22/tcp",
-      "telnet\t\t23/tcp",
-      "smtp\t\t25/tcp\t\tmail",
-      "domain\t\t53/tcp",
-      "domain\t\t53/udp",
-      "http\t\t80/tcp\t\twww",
-      "pop3\t\t110/tcp\t\tpop-3",
-      "nntp\t\t119/tcp\t\treadnews untp",
-      "ntp\t\t123/udp",
-      "imap\t\t143/tcp\t\timap2",
-      "snmp\t\t161/udp",
-      "https\t\t443/tcp",
-      "imaps\t\t993/tcp",
-      "pop3s\t\t995/tcp",
-    ].join("\n") + "\n";
-    const fd = this.memfs.open("/etc/services", 0x241, 0o644);
-    const enc = new TextEncoder().encode(services);
-    this.memfs.write(fd, enc, enc.length, -1);
-    this.memfs.close(fd);
+      // Create standard directories
+      this.memfs.mkdir("/tmp", 0o777);
+      this.memfs.mkdir("/home", 0o755);
+      this.memfs.mkdir("/dev", 0o755);
+      this.memfs.mkdir("/etc", 0o755);
+
+      // Populate /etc/services for getservbyname/getservbyport
+      const services = [
+        "tcpmux\t\t1/tcp",
+        "echo\t\t7/tcp",
+        "echo\t\t7/udp",
+        "discard\t\t9/tcp\t\tsink null",
+        "discard\t\t9/udp\t\tsink null",
+        "ftp-data\t20/tcp",
+        "ftp\t\t21/tcp",
+        "ssh\t\t22/tcp",
+        "telnet\t\t23/tcp",
+        "smtp\t\t25/tcp\t\tmail",
+        "domain\t\t53/tcp",
+        "domain\t\t53/udp",
+        "http\t\t80/tcp\t\twww",
+        "pop3\t\t110/tcp\t\tpop-3",
+        "nntp\t\t119/tcp\t\treadnews untp",
+        "ntp\t\t123/udp",
+        "imap\t\t143/tcp\t\timap2",
+        "snmp\t\t161/udp",
+        "https\t\t443/tcp",
+        "imaps\t\t993/tcp",
+        "pop3s\t\t995/tcp",
+      ].join("\n") + "\n";
+      const fd = this.memfs.open("/etc/services", 0x241, 0o644);
+      const enc = new TextEncoder().encode(services);
+      this.memfs.write(fd, enc, enc.length, -1);
+      this.memfs.close(fd);
+    }
   }
 
   /** Access the underlying MemoryFileSystem for pre-populating files */

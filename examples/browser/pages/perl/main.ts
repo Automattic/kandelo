@@ -6,10 +6,12 @@
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
 import { PtyTerminal } from "../../lib/pty-terminal";
-import { loadPerlBundle } from "../../lib/perl-bundle";
+import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
 import kernelWasmUrl from "../../../../host/wasm/wasm_posix_kernel.wasm?url";
 import perlWasmUrl from "../../../../examples/libs/perl/bin/perl.wasm?url";
 import "@xterm/xterm/css/xterm.css";
+
+const VFS_IMAGE_URL = import.meta.env.BASE_URL + "perl.vfs";
 
 // --- DOM elements ---
 const terminalContainer = document.getElementById("terminal") as HTMLDivElement;
@@ -62,21 +64,25 @@ function hideStatus() {
 // --- Binary loading ---
 let kernelBytes: ArrayBuffer | null = null;
 let perlBytes: ArrayBuffer | null = null;
+let vfsImageBuf: ArrayBuffer | null = null;
 
 async function loadBinaries(): Promise<string> {
-  if (kernelBytes && perlBytes) return "";
+  if (kernelBytes && perlBytes && vfsImageBuf) return "";
 
-  setStatus("Loading kernel + Perl (~3.5MB)...", "loading");
+  setStatus("Loading kernel + Perl + VFS image...", "loading");
   const results = await Promise.all([
     fetch(kernelWasmUrl).then((r) => r.arrayBuffer()),
     fetch(perlWasmUrl).then((r) => r.arrayBuffer()),
+    fetch(VFS_IMAGE_URL).then((r) => r.arrayBuffer()),
   ]);
   kernelBytes = results[0];
   perlBytes = results[1];
+  vfsImageBuf = results[2];
 
   return [
     `Kernel: ${(kernelBytes.byteLength / 1024).toFixed(0)}KB`,
     `Perl: ${(perlBytes.byteLength / (1024 * 1024)).toFixed(1)}MB`,
+    `VFS: ${(vfsImageBuf.byteLength / (1024 * 1024)).toFixed(1)}MB`,
   ].join(", ") + "\n";
 }
 
@@ -88,28 +94,20 @@ const PERL_ENV = [
   "PATH=/usr/local/bin:/usr/bin:/bin",
 ];
 
-/** Initialize a kernel and load the Perl stdlib bundle into its VFS. */
+/** Initialize a kernel from the pre-built VFS image. */
 async function initKernelWithStdlib(
   options?: { onStdout?: (data: Uint8Array) => void; onStderr?: (data: Uint8Array) => void },
 ): Promise<BrowserKernel> {
+  const memfs = MemoryFileSystem.fromImage(new Uint8Array(vfsImageBuf!), {
+    maxByteLength: 256 * 1024 * 1024,
+  });
+
   const kernel = new BrowserKernel({
+    memfs,
     onStdout: options?.onStdout,
     onStderr: options?.onStderr,
   });
   await kernel.init(kernelBytes!);
-
-  // Create directories Perl expects
-  const fs = kernel.fs;
-  for (const d of ["/usr", "/usr/lib", "/usr/lib/perl5", "/usr/lib/perl5/5.40.3", "/tmp", "/home"]) {
-    try { fs.mkdir(d, 0o755); } catch { /* exists */ }
-  }
-
-  // Load stdlib bundle
-  setStatus("Loading Perl stdlib...", "loading");
-  const loaded = await loadPerlBundle(fs, import.meta.env.BASE_URL + "perl-bundle.json", (current, total) => {
-    setStatus(`Loading Perl stdlib... ${current}/${total} files`, "loading");
-  });
-  setStatus(`Stdlib loaded (${loaded} files). Starting Perl...`, "loading");
 
   return kernel;
 }

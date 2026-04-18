@@ -35,10 +35,6 @@ node_modules/
 
 # Browser example build output
 examples/browser/dist/
-examples/browser/public/wp-bundle.json
-examples/browser/public/python-bundle.json
-examples/browser/public/mariadb-test-bundle.json
-examples/browser/public/texlive-bundle.json
 
 # nginx source (downloaded by build.sh)
 examples/nginx/nginx-src/
