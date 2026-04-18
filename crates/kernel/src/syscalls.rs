@@ -4367,7 +4367,32 @@ pub fn sys_bind(proc: &mut Process, fd: i32, addr: &[u8]) -> Result<(), Errno> {
             sock.state = SocketState::Bound;
             Ok(())
         }
-        _ => Err(Errno::EADDRNOTAVAIL),
+        SocketDomain::Unix => {
+            // sockaddr_un: family(2) + sun_path (null-terminated, up to 108 bytes)
+            if addr.len() < 3 {
+                return Err(Errno::EINVAL);
+            }
+            // Extract path: starts at offset 2, null-terminated
+            let path_bytes = &addr[2..];
+            let path_end = path_bytes.iter().position(|&b| b == 0).unwrap_or(path_bytes.len());
+            if path_end == 0 {
+                return Err(Errno::EINVAL);
+            }
+            let sun_path = &path_bytes[..path_end];
+            let resolved = crate::path::resolve_path(sun_path, &proc.cwd);
+
+            // Register in global Unix socket registry
+            let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
+            if !registry.register(resolved.clone(), proc.pid, sock_idx) {
+                return Err(Errno::EADDRINUSE);
+            }
+
+            let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+            sock.bind_path = Some(resolved);
+            sock.state = SocketState::Bound;
+            Ok(())
+        }
+        SocketDomain::Inet6 => Err(Errno::EADDRNOTAVAIL),
     }
 }
 
@@ -9463,6 +9488,43 @@ mod tests {
         let mut proc = Process::new(1);
         let result = sys_bind(&mut proc, 0, &[0u8; 16]);
         assert_eq!(result, Err(Errno::ENOTSOCK));
+    }
+
+    #[test]
+    fn test_bind_unix_stream() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_socket(&mut proc, &mut host, 1, 1, 0).unwrap(); // AF_UNIX, SOCK_STREAM
+        // sockaddr_un: family(2) + path
+        let mut addr = [0u8; 110];
+        addr[0] = 1; // AF_UNIX
+        addr[1] = 0;
+        let path = b"/tmp/test.sock";
+        addr[2..2 + path.len()].copy_from_slice(path);
+        sys_bind(&mut proc, fd, &addr[..2 + path.len() + 1]).unwrap();
+        // Socket should be in Bound state
+        let entry = proc.fd_table.get(fd).unwrap();
+        let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
+        let sock_idx = (-(ofd.host_handle + 1)) as usize;
+        let sock = proc.sockets.get(sock_idx).unwrap();
+        assert_eq!(sock.state, crate::socket::SocketState::Bound);
+        assert!(sock.bind_path.is_some());
+    }
+
+    #[test]
+    fn test_bind_unix_duplicate_fails() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd1 = sys_socket(&mut proc, &mut host, 1, 1, 0).unwrap();
+        let fd2 = sys_socket(&mut proc, &mut host, 1, 1, 0).unwrap();
+        let mut addr = [0u8; 110];
+        addr[0] = 1; // AF_UNIX
+        let path = b"/tmp/dup.sock";
+        addr[2..2 + path.len()].copy_from_slice(path);
+        let addrlen = 2 + path.len() + 1;
+        sys_bind(&mut proc, fd1, &addr[..addrlen]).unwrap();
+        let err = sys_bind(&mut proc, fd2, &addr[..addrlen]).unwrap_err();
+        assert_eq!(err, Errno::EADDRINUSE);
     }
 
     #[test]
