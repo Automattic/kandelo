@@ -106,3 +106,7 @@ examples/mul_*.c
 examples/mul_*.wasm
 examples/snprintf_debug.wasm
 examples/mariadb-test/test-data/
+
+# Benchmark results and built wasm
+benchmarks/results/
+benchmarks/wasm/

@@ -107,6 +107,14 @@ for src in "$REPO_ROOT/examples/"*.c; do
     build_program "$src" "$REPO_ROOT/examples"
 done
 
+echo "Building benchmark programs..."
+BENCH_OUT_DIR="$REPO_ROOT/benchmarks/wasm"
+mkdir -p "$BENCH_OUT_DIR"
+for src in "$REPO_ROOT/benchmarks/programs/"*.c; do
+    [ -f "$src" ] || continue
+    build_program "$src" "$BENCH_OUT_DIR"
+done
+
 # Build wasm64 programs if sysroot64 exists
 SYSROOT64="$REPO_ROOT/sysroot64"
 if [ -f "$SYSROOT64/lib/libc.a" ]; then

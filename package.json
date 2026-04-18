@@ -4,7 +4,10 @@
   "scripts": {
     "wordpress:build": "bash examples/wordpress/build.sh",
     "wordpress:serve": "npx tsx examples/wordpress/serve.ts",
-    "wordpress:benchmark": "npx tsx examples/wordpress/perf/benchmark.ts"
+    "wordpress:benchmark": "npx tsx examples/wordpress/perf/benchmark.ts",
+    "bench": "npx tsx benchmarks/run.ts",
+    "bench:browser": "npx tsx benchmarks/run.ts --host browser",
+    "bench:compare": "npx tsx benchmarks/compare.ts"
   },
   "devDependencies": {
     "playwright": "^1.59.1",

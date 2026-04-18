@@ -32,6 +32,28 @@
 
 5. **Browser demo verification**: When fixing browser demo bugs, run `./run.sh browser` and manually verify the fix in a browser before claiming it works. Code reasoning alone is not sufficient — browser timing, service workers, and Wasm behavior must be observed.
 
+## Performance Benchmarks
+
+Run benchmarks to measure kernel performance across Node.js and browser hosts:
+
+```bash
+# Run all Node.js benchmarks (3 rounds each)
+npx tsx benchmarks/run.ts
+
+# Run specific suite
+npx tsx benchmarks/run.ts --suite syscall-io
+
+# Run browser benchmarks via Playwright
+npx tsx benchmarks/run.ts --host browser
+
+# Compare two results
+npx tsx benchmarks/compare.ts benchmarks/results/before.json benchmarks/results/after.json
+```
+
+Results are saved as JSON in `benchmarks/results/`. Available suites: `syscall-io`, `process-lifecycle`, `erlang-ring`, `wordpress`, `mariadb`.
+
+Some suites require pre-built binaries (Erlang, PHP/WordPress, MariaDB) and will skip gracefully if not found. The `syscall-io` and `process-lifecycle` suites only need the base sysroot and benchmark programs (`scripts/build-programs.sh`).
+
 ## Architecture
 
 Centralized kernel mode only. One kernel Wasm instance serves all process workers via channel IPC (SharedArrayBuffer + Atomics). Programs are compiled with `channel_syscall.c`.
