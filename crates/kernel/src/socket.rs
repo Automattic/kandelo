@@ -76,6 +76,8 @@ pub struct SocketInfo {
     pub recv_timeout_us: u64,
     /// Send timeout in microseconds (0 = no timeout).
     pub send_timeout_us: u64,
+    /// Bound filesystem path for AF_UNIX sockets.
+    pub bind_path: Option<Vec<u8>>,
 }
 
 impl SocketInfo {
@@ -102,6 +104,7 @@ impl SocketInfo {
             oob_byte: None,
             recv_timeout_us: 0,
             send_timeout_us: 0,
+            bind_path: None,
         }
     }
 
