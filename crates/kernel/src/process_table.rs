@@ -147,6 +147,10 @@ impl ProcessTable {
         let mq_table = unsafe { crate::mqueue::global_mqueue_table() };
         mq_table.cleanup_process(pid);
 
+        // Clean up Unix socket registry entries for this process
+        let unix_reg = unsafe { crate::unix_socket::global_unix_socket_registry() };
+        unix_reg.cleanup_process(pid);
+
         Some(proc)
     }
 

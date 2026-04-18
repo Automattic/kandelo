@@ -5345,19 +5345,35 @@ pub extern "C" fn kernel_accept4(fd: i32, addr_ptr: *mut u8, addrlen_ptr: *mut u
                     if let Some(ofd) = ofd {
                         let sock_idx = (-(ofd.host_handle + 1)) as usize;
                         if let Some(sock) = proc.sockets.get(sock_idx) {
-                            let mut sa = [0u8; 16];
-                            sa[0] = 2; // AF_INET
-                            let port_be = sock.peer_port.to_be_bytes();
-                            sa[2] = port_be[0];
-                            sa[3] = port_be[1];
-                            sa[4] = sock.peer_addr[0];
-                            sa[5] = sock.peer_addr[1];
-                            sa[6] = sock.peer_addr[2];
-                            sa[7] = sock.peer_addr[3];
-                            let n = max_len.min(16);
-                            let addr_buf = unsafe { slice::from_raw_parts_mut(addr_ptr, n) };
-                            addr_buf.copy_from_slice(&sa[..n]);
-                            addrlen_buf.copy_from_slice(&16u32.to_le_bytes());
+                            match sock.domain {
+                                crate::socket::SocketDomain::Unix => {
+                                    // Write AF_UNIX sockaddr
+                                    let n = max_len.min(2);
+                                    if n >= 2 {
+                                        let addr_buf = unsafe { slice::from_raw_parts_mut(addr_ptr, max_len) };
+                                        addr_buf[0] = 1; // AF_UNIX
+                                        addr_buf[1] = 0;
+                                        for i in 2..max_len { addr_buf[i] = 0; }
+                                        addrlen_buf.copy_from_slice(&2u32.to_le_bytes());
+                                    }
+                                }
+                                _ => {
+                                    // Existing AF_INET logic
+                                    let mut sa = [0u8; 16];
+                                    sa[0] = 2; // AF_INET
+                                    let port_be = sock.peer_port.to_be_bytes();
+                                    sa[2] = port_be[0];
+                                    sa[3] = port_be[1];
+                                    sa[4] = sock.peer_addr[0];
+                                    sa[5] = sock.peer_addr[1];
+                                    sa[6] = sock.peer_addr[2];
+                                    sa[7] = sock.peer_addr[3];
+                                    let n = max_len.min(16);
+                                    let addr_buf = unsafe { slice::from_raw_parts_mut(addr_ptr, n) };
+                                    addr_buf.copy_from_slice(&sa[..n]);
+                                    addrlen_buf.copy_from_slice(&16u32.to_le_bytes());
+                                }
+                            }
                         }
                     }
                 }
