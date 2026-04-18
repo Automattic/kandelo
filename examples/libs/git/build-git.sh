@@ -112,7 +112,6 @@ NO_NSEC = YesPlease
 NO_INSTALL_HARDLINKS = YesPlease
 
 # Disable features that require runtime infrastructure we don't have
-NO_UNIX_SOCKETS = YesPlease
 NO_OPENSSL = YesPlease
 
 # Use zlib from sysroot
