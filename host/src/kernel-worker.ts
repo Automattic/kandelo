@@ -2243,17 +2243,17 @@ export class CentralizedKernelWorker {
     // response data to the browser without waiting for the next pump cycle
     this.flushTcpSendPipes(channel.pid);
 
-    // Drain kernel wakeup events BEFORE notifying the process, so woken
-    // channels are ready when the process issues its next syscall.
-    // Only I/O syscalls can produce wakeup events.
-    if (IO_SYSCALLS.has(syscallNr)) {
-      this.drainAndProcessWakeupEvents();
-    }
-
     // Set status to COMPLETE and notify process
     const i32View = this.getProcessI32View(channel);
     Atomics.store(i32View, CH_STATUS / 4, CH_COMPLETE);
     Atomics.notify(i32View, CH_STATUS / 4, 1);
+
+    // Drain kernel wakeup events after notifying the process, so the current
+    // process can proceed immediately while woken readers/writers are retried.
+    // Only I/O syscalls can produce wakeup events.
+    if (IO_SYSCALLS.has(syscallNr)) {
+      this.drainAndProcessWakeupEvents();
+    }
 
     // Re-listen for next syscall
     this.relistenChannel(channel);
