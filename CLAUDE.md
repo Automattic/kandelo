@@ -81,6 +81,19 @@ ac_cv_func_feenableexcept=no \
 
 Do not rely on configure's auto-detection when cross-compiling. If a build fails due to missing functions, check whether configure incorrectly detected a host-only feature and add the appropriate `ac_cv_*=no` override.
 
+## Documentation
+
+Every PR that adds or changes user-facing features, APIs, or behavior must include corresponding documentation updates. Check these locations:
+
+- **`docs/architecture.md`** — Update when changing kernel design, host runtime, VFS, networking, or process model
+- **`docs/posix-status.md`** — Update when adding, completing, or changing syscall implementations
+- **`docs/sdk-guide.md`** — Update when changing SDK tools or compilation workflow
+- **`docs/porting-guide.md`** — Update when changing how software is ported or run
+- **`docs/browser-support.md`** — Update when changing browser capabilities or limitations
+- **`README.md`** — Update when adding major features, new ported software, or changing project structure
+
+Do not skip documentation. If a feature is worth implementing, it is worth documenting.
+
 ## Key Directories
 
 - `crates/kernel/` — Rust kernel (no_std on wasm32)
