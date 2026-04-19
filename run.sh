@@ -1202,8 +1202,8 @@ cmd_browser() {
 
     build_browser
 
-    # Install browser deps if needed
-    if [ ! -d "$BROWSER_DIR/node_modules" ]; then
+    # Install browser deps if needed (re-run if package.json is newer than node_modules)
+    if [ ! -d "$BROWSER_DIR/node_modules" ] || [ "$BROWSER_DIR/package.json" -nt "$BROWSER_DIR/node_modules" ]; then
         warn "Installing browser example dependencies"
         cd "$BROWSER_DIR" && npm install && cd "$REPO_ROOT"
     fi
