@@ -72,5 +72,8 @@
     "typedoc": "^0.28.18",
     "typescript": "^5.4.0",
     "vitest": "^3.0.0"
+  },
+  "dependencies": {
+    "fflate": "^0.8.2"
   }
 }

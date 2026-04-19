@@ -37,7 +37,6 @@ import zstdWasmUrl from "../../../../examples/libs/zstd/bin/zstd.wasm?url";
 import zipWasmUrl from "../../../../examples/libs/zip/bin/zip.wasm?url";
 import unzipWasmUrl from "../../../../examples/libs/unzip/bin/unzip.wasm?url";
 import nanoWasmUrl from "../../../../examples/libs/nano/bin/nano.wasm?url";
-import vimWasmUrl from "../../../../examples/libs/vim/bin/vim.wasm?url";
 import lsofWasmUrl from "../../../../examples/lsof.wasm?url";
 import "@xterm/xterm/css/xterm.css";
 
@@ -153,7 +152,8 @@ async function loadBinaries(): Promise<string> {
     { url: unzipWasmUrl, path: "/usr/bin/unzip", symlinks: ["/bin/unzip", "/usr/bin/zipinfo", "/bin/zipinfo", "/usr/bin/funzip", "/bin/funzip"] },
     { url: lsofWasmUrl, path: "/usr/bin/lsof", symlinks: ["/bin/lsof"] },
     { url: nanoWasmUrl, path: "/usr/bin/nano", symlinks: ["/bin/nano"] },
-    { url: vimWasmUrl, path: "/usr/bin/vim", symlinks: ["/bin/vim", "/usr/bin/vi", "/bin/vi"] },
+    // vim is delivered as a lazy archive (binary + runtime) baked into shell.vfs;
+    // no separate lazy-file registration is needed here.
   ];
 
   const sizes = await Promise.all(lazyDefs.map(d => fetchSize(d.url)));
@@ -198,6 +198,9 @@ async function startInteractiveShell() {
     const memfs = MemoryFileSystem.fromImage(new Uint8Array(vfsImageBuf!), {
       maxByteLength: 256 * 1024 * 1024,
     });
+    // Archive URLs were stored as bare filenames at build time; prepend the
+    // deployed base URL so fetch() resolves correctly regardless of routing.
+    memfs.rewriteLazyArchiveUrls((url) => import.meta.env.BASE_URL + url);
 
     const kernel = new BrowserKernel({ memfs });
 
