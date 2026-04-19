@@ -40,6 +40,11 @@ has_nginx()     { [ -f "$REPO_ROOT/examples/nginx/nginx.wasm" ]; }
 has_php()       { [ -f "$REPO_ROOT/examples/libs/php/php-src/sapi/cli/php" ]; }
 has_php_fpm()   { [ -f "$REPO_ROOT/examples/nginx/php-fpm.wasm" ]; }
 has_mariadb()   { [ -f "$REPO_ROOT/examples/libs/mariadb/mariadb-install/bin/mariadbd" ]; }
+has_mariadb_vfs() {
+    local vfs="$REPO_ROOT/examples/browser/public/mariadb.vfs"
+    local mariadbd="$REPO_ROOT/examples/libs/mariadb/mariadb-install/bin/mariadbd.wasm"
+    [ -f "$vfs" ] && [ -f "$mariadbd" ] && [ "$vfs" -nt "$mariadbd" ]
+}
 has_wordpress() { [ -f "$REPO_ROOT/examples/wordpress/wordpress/wp-settings.php" ]; }
 has_wp_vfs()    { [ -f "$REPO_ROOT/examples/browser/public/wordpress.vfs" ]; }
 has_dash()      { [ -f "$REPO_ROOT/examples/libs/dash/bin/dash.wasm" ]; }
@@ -80,7 +85,7 @@ has_ruby()      { [ -f "$REPO_ROOT/examples/libs/ruby/bin/ruby.wasm" ]; }
 has_dlopen()    { [ -f "$REPO_ROOT/examples/dlopen/hello-lib.so" ] && \
                   [ -f "$REPO_ROOT/examples/dlopen/main.wasm" ]; }
 has_texlive()        { [ -f "$REPO_ROOT/examples/libs/texlive/bin/pdftex.wasm" ]; }
-has_texlive_bundle() { [ -f "$REPO_ROOT/examples/browser/public/texlive-bundle.json" ]; }
+has_texlive_vfs() { [ -f "$REPO_ROOT/examples/browser/public/texlive-bundle.json" ]; }
 
 # ─── Need functions (ensure dependency is built) ─────────────────────────────
 
@@ -217,6 +222,18 @@ build_mariadb() {
         info "MariaDB built"
     else
         info "MariaDB"
+    fi
+}
+
+build_mariadb_vfs() {
+    build_mariadb
+    build_dash
+    if ! has_mariadb_vfs; then
+        step "Building MariaDB VFS image"
+        bash "$REPO_ROOT/examples/browser/scripts/build-mariadb-vfs-image.sh"
+        info "MariaDB VFS image built"
+    else
+        info "MariaDB VFS image"
     fi
 }
 
@@ -415,9 +432,9 @@ build_texlive() {
     fi
 }
 
-build_texlive_bundle() {
+build_texlive_vfs() {
     build_texlive
-    if ! has_texlive_bundle; then
+    if ! has_texlive_vfs; then
         step "Building TeX Live browser bundle"
         bash "$REPO_ROOT/examples/browser/scripts/build-texlive-bundle.sh"
         info "TeX Live bundle built"
@@ -771,6 +788,7 @@ build_target() {
         grep)       build_grep ;;
         sed)        build_sed ;;
         mariadb)    build_mariadb ;;
+        mariadb-vfs) build_mariadb_vfs ;;
         redis)      build_redis ;;
         cpython)    build_cpython ;;
         python-vfs) build_python_vfs ;;
@@ -805,6 +823,8 @@ build_target() {
         perl)       build_perl ;;
         ruby)       build_ruby ;;
         dlopen)     build_dlopen ;;
+        texlive)    build_texlive ;;
+        texlive-vfs) build_texlive_vfs ;;
         browser)    build_browser ;;
         all)        build_all ;;
         *)          err "Unknown build target: $target"; cmd_list; exit 1 ;;
@@ -812,7 +832,7 @@ build_target() {
 }
 
 # All targets needed for browser demos
-BROWSER_DEPS=(kernel sysroot programs dash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano vim git nginx php php-fpm mariadb redis cpython python-vfs perl perl-vfs ruby shell-vfs wordpress wp-vfs lamp-vfs erlang erlang-vfs)
+BROWSER_DEPS=(kernel sysroot programs dash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano vim git nginx php php-fpm mariadb mariadb-vfs redis cpython python-vfs perl perl-vfs ruby shell-vfs wordpress wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs)
 
 build_browser() {
     for t in "${BROWSER_DEPS[@]}"; do
@@ -851,6 +871,7 @@ build_all() {
     build_php
     build_php_fpm
     build_mariadb
+    build_mariadb_vfs
     build_redis
     build_cpython
     build_python_vfs
@@ -863,6 +884,8 @@ build_all() {
     build_lamp_vfs
     build_erlang
     build_erlang_vfs
+    build_texlive
+    build_texlive_vfs
     build_dlopen
 }
 
@@ -928,6 +951,9 @@ clean_target() {
                    "$REPO_ROOT/examples/libs/mariadb/pcre2-"* \
                    "$REPO_ROOT/examples/libs/mariadb/pcre2-wasm-build"
             warn "Cleaned MariaDB" ;;
+        mariadb-vfs)
+            rm -f "$REPO_ROOT/examples/browser/public/mariadb.vfs"
+            warn "Cleaned MariaDB VFS image" ;;
         redis)
             rm -rf "$REPO_ROOT/examples/libs/redis/redis-src" \
                    "$REPO_ROOT/examples/libs/redis/bin"
@@ -1061,6 +1087,19 @@ clean_target() {
                    "$REPO_ROOT/examples/libs/ruby/ruby-install" \
                    "$REPO_ROOT/examples/libs/ruby/bin"
             warn "Cleaned Ruby" ;;
+        texlive)
+            rm -rf "$REPO_ROOT/examples/libs/texlive/texlive-src" \
+                   "$REPO_ROOT/examples/libs/texlive/texlive-host-build" \
+                   "$REPO_ROOT/examples/libs/texlive/texlive-cross-build" \
+                   "$REPO_ROOT/examples/libs/texlive/bin"
+            warn "Cleaned TeX Live" ;;
+        texlive-vfs)
+            rm -rf "$REPO_ROOT/examples/libs/texlive/texlive-dist" \
+                   "$REPO_ROOT/examples/libs/texlive/texlive-fmt" \
+                   "$REPO_ROOT/examples/libs/texlive/install-tl" \
+                   "$REPO_ROOT/examples/libs/texlive/texlive.profile"
+            rm -f "$REPO_ROOT/examples/browser/public/texlive-bundle.json"
+            warn "Cleaned TeX Live VFS" ;;
         dlopen)
             rm -f "$REPO_ROOT/examples/dlopen/hello-lib.so" \
                   "$REPO_ROOT/examples/dlopen/main.wasm"
@@ -1070,7 +1109,7 @@ clean_target() {
                 clean_target "$t"
             done ;;
         all)
-            for t in kernel sysroot host programs dash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano ncurses zlib openssl libcurl vim git nginx php php-fpm mariadb redis cpython python-vfs perl perl-vfs ruby shell-vfs wordpress wp-vfs lamp-vfs erlang erlang-vfs dlopen; do
+            for t in kernel sysroot host programs dash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano ncurses zlib openssl libcurl vim git nginx php php-fpm mariadb mariadb-vfs redis cpython python-vfs perl perl-vfs ruby shell-vfs wordpress wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs dlopen; do
                 clean_target "$t"
             done ;;
         *)  err "Unknown clean target: $target"; exit 1 ;;
