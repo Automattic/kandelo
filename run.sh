@@ -343,18 +343,28 @@ build_perl_vfs() {
     fi
 }
 
-build_shell_vfs() {
-    if ! has_shell_vfs; then
-        # Ensure the minimal runtime directory exists (built from vim source)
+build_vim_zip() {
+    if [ ! -f "$REPO_ROOT/examples/browser/public/vim.zip" ]; then
         if [ ! -d "$REPO_ROOT/examples/libs/vim/runtime" ]; then
             if [ -d "$REPO_ROOT/examples/libs/vim/vim-src/runtime" ]; then
                 step "Bundling Vim runtime"
                 bash "$REPO_ROOT/examples/libs/vim/bundle-runtime.sh"
             else
-                warn "Vim source not found, skipping shell VFS image"
+                warn "Vim source not found, skipping vim.zip"
                 return
             fi
         fi
+        step "Building vim.zip (binary + runtime)"
+        bash "$REPO_ROOT/examples/browser/scripts/build-vim-zip.sh"
+        info "vim.zip built"
+    else
+        info "vim.zip"
+    fi
+}
+
+build_shell_vfs() {
+    if ! has_shell_vfs; then
+        build_vim_zip
         step "Building Shell VFS image"
         bash "$REPO_ROOT/examples/browser/scripts/build-shell-vfs-image.sh"
         info "Shell VFS image built"

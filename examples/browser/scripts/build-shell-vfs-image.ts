@@ -1,29 +1,27 @@
 /**
  * Build a pre-built VFS image containing the full shell environment:
  * dash, coreutils symlinks, grep/sed symlinks, extended tool symlinks,
- * magic database, vim runtime, and system configs.
+ * magic database, system configs, and a lazy archive reference for vim.
  *
  * Produces: examples/browser/public/shell.vfs
  *
  * Usage: npx tsx examples/browser/scripts/build-shell-vfs-image.ts
  */
 import { readFileSync, lstatSync } from "fs";
-import { join } from "path";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import { parseZipCentralDirectory } from "../../../host/src/vfs/zip";
 import { COREUTILS_NAMES } from "../lib/init/shell-binaries";
 import {
   writeVfsFile,
   writeVfsBinary,
-  ensureDir,
   ensureDirRecursive,
   symlink,
-  walkAndWrite,
   saveImage,
 } from "./vfs-image-helpers";
 
 const DASH_PATH = "examples/libs/dash/bin/dash.wasm";
 const MAGIC_PATH = "examples/libs/file/bin/magic.lite";
-const VIM_RUNTIME_DIR = "examples/libs/vim/runtime";
+const VIM_ZIP_PATH = "examples/browser/public/vim.zip";
 const OUT_FILE = "examples/browser/public/shell.vfs";
 
 // --- System setup ---
@@ -169,10 +167,23 @@ function populateMagic(fs: MemoryFileSystem): void {
   writeVfsBinary(fs, "/usr/share/misc/magic", new Uint8Array(magicBytes), 0o644);
 }
 
-// --- Vim runtime ---
+// --- Vim (lazy archive) ---
 
-function populateVimRuntime(fs: MemoryFileSystem): number {
-  return walkAndWrite(fs, VIM_RUNTIME_DIR, "/usr/share/vim/vim91");
+/**
+ * Register vim.zip as a lazy archive group. Stubs are created for the
+ * binary (/usr/bin/vim) and every runtime file under /usr/share/vim/vim91/,
+ * but content is deferred until the first exec of vim.
+ *
+ * The URL stored here is a plain filename; the browser runtime prepends
+ * its base URL before fetching via `fs.rewriteLazyArchiveUrls()`.
+ */
+function populateVimArchive(fs: MemoryFileSystem): number {
+  const zipBytes = readFileSync(VIM_ZIP_PATH);
+  const entries = parseZipCentralDirectory(new Uint8Array(zipBytes));
+  const group = fs.registerLazyArchiveFromEntries("vim.zip", entries, "/usr/");
+  // /usr/bin/vim now exists as a stub; populateExtendedSymlinks will create
+  // the /bin/vim, /usr/bin/vi, /bin/vi aliases pointing at it.
+  return group.entries.size;
 }
 
 // --- Main ---
@@ -193,7 +204,15 @@ async function main() {
     process.exit(1);
   }
 
-  // 16MB is sufficient for dash + symlinks + magic + vim runtime
+  try {
+    lstatSync(VIM_ZIP_PATH);
+  } catch {
+    console.error(`vim.zip not found at ${VIM_ZIP_PATH}. Run: bash examples/browser/scripts/build-vim-zip.sh`);
+    process.exit(1);
+  }
+
+  // 16MB is sufficient for dash + symlinks + magic + vim stubs (archive
+  // is fetched on demand so the image stays small)
   const sab = new SharedArrayBuffer(16 * 1024 * 1024);
   const fs = MemoryFileSystem.create(sab);
 
@@ -209,15 +228,15 @@ async function main() {
   console.log("Creating grep/sed symlinks...");
   populateGrepSedSymlinks(fs);
 
+  console.log("Registering vim lazy archive (binary + runtime stubs)...");
+  const vimCount = populateVimArchive(fs);
+  console.log(`  Vim archive: ${vimCount} entries (content deferred)`);
+
   console.log("Creating extended tool symlinks...");
   populateExtendedSymlinks(fs);
 
   console.log("Writing magic database...");
   populateMagic(fs);
-
-  console.log("Writing Vim runtime files...");
-  const vimCount = populateVimRuntime(fs);
-  console.log(`  Vim runtime: ${vimCount} files`);
 
   await saveImage(fs, OUT_FILE);
 }

@@ -188,6 +188,13 @@ export class BrowserKernel {
       initMsg.kernelWasmBytes = transferBuf;
       this.kernelWorkerHandle.postMessage(initMsg, [transferBuf]);
     });
+
+    // Forward any lazy archive metadata from a pre-loaded VFS image so the
+    // worker can materialize archive-backed files on first exec.
+    const archiveEntries = this.memfs.exportLazyArchiveEntries();
+    if (archiveEntries.length > 0) {
+      this.sendToKernel({ type: "register_lazy_archives", entries: archiveEntries });
+    }
   }
 
   /**
