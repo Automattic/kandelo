@@ -72,6 +72,19 @@ export async function runBrowserBenchmarks(
     const context = await browser.newContext();
     const page: Page = await context.newPage();
 
+    // Surface page-side log() calls and errors so suite-skip reasons (e.g.
+    // "missing binary, run …") and assertion failures are visible in the
+    // harness output rather than silently hidden in the page DOM.
+    page.on("console", (msg) => {
+      const t = msg.type();
+      if (t === "log" || t === "info" || t === "warning" || t === "error") {
+        console.log(`  [page] ${msg.text()}`);
+      }
+    });
+    page.on("pageerror", (err) => {
+      console.error(`  [page error] ${err.message}`);
+    });
+
     // Navigate to benchmark page
     await page.goto(`http://localhost:${port}/pages/benchmark/`, {
       waitUntil: "networkidle",
