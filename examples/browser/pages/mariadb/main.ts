@@ -5,36 +5,29 @@
  *
  * Uses SystemInit to orchestrate boot from /etc/init.d/ service descriptors.
  *
+ * The VFS image (mariadb.vfs) is built at build time and contains the
+ * mariadbd binary, dash, bootstrap SQL, data directories, shell symlinks,
+ * and init descriptors. At runtime we restore the image and register
+ * lazy binaries.
+ *
  * Process layout:
  *   pid 1: mariadbd --bootstrap (oneshot, terminated after stdin consumed)
  *   pid 2: mariadbd server (daemon, spawns 5 background threads)
  *   pid N: dash -i (interactive shell with PTY)
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
+import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
 import { SystemInit } from "../../lib/init/system-init";
-import { populateMariadbDirs } from "../../lib/init/mariadb-config";
-import {
-  populateShellBinaries,
-  type BinaryDef,
-  COREUTILS_NAMES,
-} from "../../lib/init/shell-binaries";
-import {
-  writeVfsBinary,
-  writeVfsFile,
-  writeInitDescriptor,
-  ensureDir,
-} from "../../lib/init/vfs-utils";
 import { MySqlBrowserClient } from "../../lib/mysql-client";
+import { writeInitDescriptor } from "../../lib/init/vfs-utils";
 import kernelWasmUrl from "../../../../host/wasm/wasm_posix_kernel.wasm?url";
-import mariadbWasmUrl from "../../../../examples/libs/mariadb/mariadb-install/bin/mariadbd.wasm?url";
-import systemTablesUrl from "../../../../examples/libs/mariadb/mariadb-install/share/mysql/mysql_system_tables.sql?url";
-import systemDataUrl from "../../../../examples/libs/mariadb/mariadb-install/share/mysql/mysql_system_tables_data.sql?url";
-import dashWasmUrl from "../../../../examples/libs/dash/bin/dash.wasm?url";
 import coreutilsWasmUrl from "../../../../examples/libs/coreutils/bin/coreutils.wasm?url";
 import grepWasmUrl from "../../../../examples/libs/grep/bin/grep.wasm?url";
 import sedWasmUrl from "../../../../examples/libs/sed/bin/sed.wasm?url";
 import "@xterm/xterm/css/xterm.css";
 import "../../lib/terminal-panel.css";
+
+const VFS_IMAGE_URL = import.meta.env.BASE_URL + "mariadb.vfs";
 
 const log = document.getElementById("log") as HTMLPreElement;
 const startBtn = document.getElementById("start") as HTMLButtonElement;
@@ -62,27 +55,26 @@ function setStatus(text: string, type: "loading" | "running" | "error") {
   statusDiv.className = `status ${type}`;
 }
 
-// Example queries — engine placeholder is filled on start()
-function buildExamples(engine: string): Record<string, string> {
+// Example queries — engine is filled dynamically at selection time
+function getExamples(): Record<string, string> {
+  const eng = engineSelect.value || "Aria";
   return {
-    version: "SELECT VERSION(), @@version_comment;",
-    create: `CREATE TABLE IF NOT EXISTS test.users (
+  version: "SELECT VERSION(), @@version_comment;",
+  create: `CREATE TABLE IF NOT EXISTS test.users (
   id INT AUTO_INCREMENT PRIMARY KEY,
   name VARCHAR(100) NOT NULL,
   email VARCHAR(200),
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-) ENGINE=${engine};`,
-    insert: `INSERT INTO test.users (name, email) VALUES
+) ENGINE=${eng};`,
+  insert: `INSERT INTO test.users (name, email) VALUES
   ('Alice', 'alice@example.com'),
   ('Bob', 'bob@example.com'),
   ('Charlie', 'charlie@example.com');`,
-    select: "SELECT * FROM test.users;",
-    show: "SHOW TABLES FROM test;",
-    databases: "SHOW DATABASES;",
+  select: "SELECT * FROM test.users;",
+  show: "SHOW TABLES FROM test;",
+  databases: "SHOW DATABASES;",
   };
 }
-
-let EXAMPLES = buildExamples("Aria");
 
 let kernel: BrowserKernel | null = null;
 let init: SystemInit | null = null;
@@ -103,103 +95,109 @@ async function start() {
   const engine = engineSelect.value;
   startBtn.disabled = true;
   engineSelect.disabled = true;
-  EXAMPLES = buildExamples(engine);
   log.textContent = "";
   setStatus("Loading MariaDB...", "loading");
 
   try {
-    // Fetch all resources in parallel — MariaDB eagerly (written to VFS)
-    appendLog("Fetching resources...\n", "info");
-    const [kernelBytes, mariadbBytes, systemTablesSql, systemDataSql, dashBytes] =
+    // Fetch kernel wasm, VFS image, and lazy binary sizes in parallel
+    appendLog("Fetching kernel wasm and VFS image...\n", "info");
+    const [kernelBytes, vfsImageBuf, coreutilsSize, grepSize, sedSize] =
       await Promise.all([
         fetch(kernelWasmUrl).then((r) => r.arrayBuffer()),
-        fetch(mariadbWasmUrl).then((r) => r.arrayBuffer()),
-        fetch(systemTablesUrl).then((r) => r.text()),
-        fetch(systemDataUrl).then((r) => r.text()),
-        fetch(dashWasmUrl).then((r) => r.arrayBuffer()),
+        fetch(VFS_IMAGE_URL).then((r) => {
+          if (!r.ok) {
+            throw new Error(
+              `Failed to load VFS image from ${VFS_IMAGE_URL} (${r.status}). ` +
+              `Run: bash examples/browser/scripts/build-mariadb-vfs-image.sh`
+            );
+          }
+          return r.arrayBuffer();
+        }),
+        fetchSize(coreutilsWasmUrl),
+        fetchSize(grepWasmUrl),
+        fetchSize(sedWasmUrl),
       ]);
 
     appendLog(
       `Kernel: ${(kernelBytes.byteLength / 1024).toFixed(0)}KB, ` +
-        `MariaDB: ${(mariadbBytes.byteLength / (1024 * 1024)).toFixed(1)}MB, ` +
-        `dash: ${(dashBytes.byteLength / 1024).toFixed(0)}KB\n`,
+        `VFS image: ${(vfsImageBuf.byteLength / (1024 * 1024)).toFixed(1)}MB\n`,
       "info",
     );
 
-    // Fetch sizes for shell utility binaries
-    const lazyDefs = [
-      { url: coreutilsWasmUrl, path: "/bin/coreutils", symlinks: [...COREUTILS_NAMES, "["].flatMap(n => [`/bin/${n}`, `/usr/bin/${n}`]) },
-      { url: grepWasmUrl, path: "/usr/bin/grep", symlinks: ["/bin/grep", "/usr/bin/egrep", "/bin/egrep", "/usr/bin/fgrep", "/bin/fgrep"] },
-      { url: sedWasmUrl, path: "/usr/bin/sed", symlinks: ["/bin/sed"] },
-    ];
-    const sizes = await Promise.all(lazyDefs.map((d) => fetchSize(d.url)));
-    const lazyBinaries: BinaryDef[] = [];
-    for (let i = 0; i < lazyDefs.length; i++) {
-      if (sizes[i] > 0) {
-        lazyBinaries.push({ ...lazyDefs[i], size: sizes[i] });
-      }
-    }
+    // Restore MemoryFileSystem from the pre-built VFS image
+    appendLog("Restoring VFS from image...\n", "info");
+    const maxFsSize = 1024 * 1024 * 1024; // 1GB max growth
+    const memfs = MemoryFileSystem.fromImage(new Uint8Array(vfsImageBuf), {
+      maxByteLength: maxFsSize,
+    });
 
-    // Create kernel — thread module is auto-compiled on first clone()
+    // Create kernel with pre-built filesystem
     kernel = new BrowserKernel({
+      memfs,
       maxWorkers: 12,
-      fsSize: 64 * 1024 * 1024, // 64MB for bootstrap system tables + data
       onStdout: (data) => appendLog(decoder.decode(data)),
       onStderr: (data) => appendLog(decoder.decode(data), "stderr"),
     });
 
     await kernel.init(kernelBytes);
 
-    // Populate VFS
-    appendLog("Populating filesystem...\n", "info");
-    const fs = kernel.fs;
+    // Register lazy binaries — the image already has all symlinks
+    const lazyFiles: Array<{ path: string; url: string; size: number; mode?: number }> = [];
+    if (coreutilsSize > 0) {
+      lazyFiles.push({ path: "/bin/coreutils", url: coreutilsWasmUrl, size: coreutilsSize, mode: 0o755 });
+    }
+    if (grepSize > 0) {
+      lazyFiles.push({ path: "/usr/bin/grep", url: grepWasmUrl, size: grepSize, mode: 0o755 });
+    }
+    if (sedSize > 0) {
+      lazyFiles.push({ path: "/usr/bin/sed", url: sedWasmUrl, size: sedSize, mode: 0o755 });
+    }
+    if (lazyFiles.length > 0) {
+      kernel.registerLazyFiles(lazyFiles);
+    }
 
-    // Shell binaries (dash eager, utilities lazy)
-    populateShellBinaries(kernel, dashBytes, lazyBinaries);
+    // Override init descriptors based on engine selection
+    const commonMariadbArgs = [
+      "/usr/sbin/mariadbd", "--no-defaults",
+      "--datadir=/data", "--tmpdir=/data/tmp",
+      `--default-storage-engine=${engine}`,
+      "--skip-grant-tables",
+      "--key-buffer-size=1048576", "--table-open-cache=10",
+      "--sort-buffer-size=262144",
+    ];
+    const innodbArgs = engine === "InnoDB" ? [
+      "--innodb-buffer-pool-size=8M",
+      "--innodb-log-file-size=4M",
+      "--innodb-log-buffer-size=1M",
+      "--innodb-flush-log-at-trx-commit=2",
+      "--innodb-buffer-pool-load-at-startup=OFF",
+      "--innodb-buffer-pool-dump-at-shutdown=OFF",
+    ] : [];
 
-    // MariaDB binary — write eagerly since we already fetched it
-    ensureDir(fs, "/usr/sbin");
-    writeVfsBinary(fs, "/usr/sbin/mariadbd", new Uint8Array(mariadbBytes));
-
-    // MariaDB data directories
-    populateMariadbDirs(fs);
-
-    // Write the bootstrap SQL to VFS
-    const bootstrapSql = `use mysql;\n${systemTablesSql}\n${systemDataSql}\nCREATE DATABASE IF NOT EXISTS test;\n`;
-    ensureDir(fs, "/etc/mariadb");
-    writeVfsFile(fs, "/etc/mariadb/bootstrap.sql", bootstrapSql);
-
-    // InnoDB tuning args (only appended when InnoDB is selected)
-    const innodbArgs = engine === "InnoDB"
-      ? " --innodb-buffer-pool-size=8M --innodb-log-file-size=4M --innodb-log-buffer-size=1M --innodb-flush-log-at-trx-commit=2 --innodb-buffer-pool-load-at-startup=OFF --innodb-buffer-pool-dump-at-shutdown=OFF"
-      : "";
-
-    // Write init service descriptors
-    writeInitDescriptor(fs, "05-mariadb-bootstrap", {
+    writeInitDescriptor(memfs, "05-mariadb-bootstrap", {
       type: "oneshot",
-      command: `/usr/sbin/mariadbd --no-defaults --bootstrap --datadir=/data --tmpdir=/data/tmp --default-storage-engine=${engine} --skip-grant-tables --key-buffer-size=1048576 --table-open-cache=10 --sort-buffer-size=262144 --skip-networking --log-warnings=0 --log-error=/data/bootstrap.log${innodbArgs}`,
+      command: [...commonMariadbArgs, ...innodbArgs,
+        "--bootstrap", "--skip-networking", "--log-warnings=0",
+        "--log-error=/data/bootstrap.log",
+      ].join(" "),
       stdin: "/etc/mariadb/bootstrap.sql",
       ready: "stdin-consumed",
       terminate: "true",
     });
-
-    writeInitDescriptor(fs, "10-mariadb", {
+    writeInitDescriptor(memfs, "10-mariadb", {
       type: "daemon",
-      command: `/usr/sbin/mariadbd --no-defaults --datadir=/data --tmpdir=/data/tmp --default-storage-engine=${engine} --skip-grant-tables --key-buffer-size=1048576 --table-open-cache=10 --sort-buffer-size=262144 --skip-networking=0 --port=3306 --bind-address=0.0.0.0 --socket= --max-connections=10 --thread-handling=no-threads --log-error=/data/error.log${innodbArgs}`,
+      command: [...commonMariadbArgs, ...innodbArgs,
+        "--skip-networking=0", "--port=3306",
+        "--bind-address=0.0.0.0", "--socket=",
+        "--max-connections=10", "--thread-handling=no-threads",
+        "--log-error=/data/error.log",
+      ].join(" "),
       depends: "mariadb-bootstrap",
       ready: "port:3306",
     });
 
-    writeInitDescriptor(fs, "99-shell", {
-      type: "interactive",
-      command: "/bin/dash -i",
-      env: "TERM=xterm-256color PS1=\\w\\$\\  HOME=/root PATH=/usr/local/bin:/usr/bin:/bin",
-      pty: "true",
-      cwd: "/root",
-    });
-
     // Create SystemInit and boot
-    setStatus("Booting system...", "loading");
+    setStatus(`Booting system (${engine})...`, "loading");
     init = new SystemInit(kernel, {
       onLog: (msg, level) => appendLog(msg + "\n", level === "info" ? "info" : "stderr"),
       terminalContainer: terminalPanel,
@@ -300,8 +298,9 @@ executeBtn.addEventListener("click", executeQuery);
 
 examplesSelect.addEventListener("change", () => {
   const key = examplesSelect.value;
-  if (key && EXAMPLES[key]) {
-    sqlInput.value = EXAMPLES[key];
+  const examples = getExamples();
+  if (key && examples[key]) {
+    sqlInput.value = examples[key];
   }
   examplesSelect.value = "";
 });

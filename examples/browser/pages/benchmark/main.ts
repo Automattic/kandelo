@@ -9,7 +9,8 @@
  *   - "process-lifecycle": hello start, fork, clone
  *   - "erlang-ring": BEAM VM ring benchmark (1000 processes, 100 rounds)
  *   - "wordpress": nginx + PHP-FPM boot with WordPress page load
- *   - "mariadb": MariaDB bootstrap, server start, and SQL queries
+ *   - "mariadb-aria": MariaDB with Aria engine
+ *   - "mariadb-innodb": MariaDB with InnoDB engine
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
 import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
@@ -427,10 +428,22 @@ async function runWordPress(): Promise<Record<string, number>> {
 
 // ─── mariadb ────────────────────────────────────────────────────────────────
 
-async function runMariaDb(): Promise<Record<string, number>> {
+async function runMariaDbWithEngine(engine: string): Promise<Record<string, number>> {
   const results: Record<string, number> = {};
 
-  log("  Fetching MariaDB + bootstrap SQL...");
+  const engineArgs = [`--default-storage-engine=${engine}`];
+  if (engine === "InnoDB") {
+    engineArgs.push(
+      "--innodb-buffer-pool-size=8M",
+      "--innodb-log-file-size=4M",
+      "--innodb-log-buffer-size=1M",
+      "--innodb-flush-log-at-trx-commit=2",
+      "--innodb-buffer-pool-load-at-startup=OFF",
+      "--innodb-buffer-pool-dump-at-shutdown=OFF",
+    );
+  }
+
+  log(`  Fetching MariaDB + bootstrap SQL (${engine})...`);
   const [mariadbBytes, systemTablesSql, systemDataSql] = await Promise.all([
     fetchWasm(mariadbWasmUrl),
     fetch(systemTablesUrl).then((r) => r.text()),
@@ -464,7 +477,8 @@ async function runMariaDb(): Promise<Record<string, number>> {
   const bootstrapExit = bootstrapKernel.spawn(mariadbBytes, [
     "mariadbd", "--no-defaults", "--bootstrap",
     "--datadir=/data", "--tmpdir=/data/tmp",
-    "--default-storage-engine=Aria", "--skip-grant-tables",
+    ...engineArgs,
+    "--skip-grant-tables",
     "--key-buffer-size=1048576", "--table-open-cache=10",
     "--sort-buffer-size=262144", "--skip-networking", "--log-warnings=0",
   ], { stdin: bootstrapStdin });
@@ -487,17 +501,12 @@ async function runMariaDb(): Promise<Record<string, number>> {
   log(`  Bootstrap: ${results.bootstrap_ms.toFixed(0)}ms`);
 
   // ── Server ──
-  // We need to reuse the same VFS (with bootstrapped data) for the server.
-  // BrowserKernel shares VFS via SharedArrayBuffer, so we create a new
-  // kernel with the same underlying FS.
-  // Actually, BrowserKernel creates a new FS each time. We need to keep
-  // the same kernel instance and spawn a new process.
-  // Let's just spawn the server on the bootstrap kernel's VFS.
   log("  Starting server...");
   const serverExit = bootstrapKernel.spawn(mariadbBytes, [
     "mariadbd", "--no-defaults",
     "--datadir=/data", "--tmpdir=/data/tmp",
-    "--default-storage-engine=Aria", "--skip-grant-tables",
+    ...engineArgs,
+    "--skip-grant-tables",
     "--key-buffer-size=1048576", "--table-open-cache=10",
     "--sort-buffer-size=262144", "--skip-networking=0",
     "--port=3306", "--bind-address=0.0.0.0", "--socket=",
@@ -529,8 +538,8 @@ async function runMariaDb(): Promise<Record<string, number>> {
   // ── Queries ──
   log("  Running CREATE TABLE...");
   const t1 = performance.now();
-  await client.query("CREATE TABLE bench.t1 (id INT PRIMARY KEY AUTO_INCREMENT, name VARCHAR(100), value INT)");
-  await client.query("CREATE TABLE bench.t2 (id INT PRIMARY KEY AUTO_INCREMENT, t1_id INT, data VARCHAR(200))");
+  await client.query(`CREATE TABLE bench.t1 (id INT PRIMARY KEY AUTO_INCREMENT, name VARCHAR(100), value INT) ENGINE=${engine}`);
+  await client.query(`CREATE TABLE bench.t2 (id INT PRIMARY KEY AUTO_INCREMENT, t1_id INT, data VARCHAR(200)) ENGINE=${engine}`);
   results.query_create_ms = performance.now() - t1;
 
   log("  Running INSERT (100 rows)...");
@@ -559,6 +568,14 @@ async function runMariaDb(): Promise<Record<string, number>> {
   return results;
 }
 
+async function runMariaDbAria(): Promise<Record<string, number>> {
+  return runMariaDbWithEngine("Aria");
+}
+
+async function runMariaDbInnoDB(): Promise<Record<string, number>> {
+  return runMariaDbWithEngine("InnoDB");
+}
+
 // ─── Suite registry ─────────────────────────────────────────────────────────
 
 const SUITES: Record<string, () => Promise<Record<string, number>>> = {
@@ -566,7 +583,8 @@ const SUITES: Record<string, () => Promise<Record<string, number>>> = {
   "process-lifecycle": runProcessLifecycle,
   "erlang-ring": runErlangRing,
   "wordpress": runWordPress,
-  "mariadb": runMariaDb,
+  "mariadb-aria": runMariaDbAria,
+  "mariadb-innodb": runMariaDbInnoDB,
 };
 
 declare global {

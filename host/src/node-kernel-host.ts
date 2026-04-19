@@ -31,6 +31,9 @@ export interface NodeKernelHostOptions {
   maxWorkers?: number;
   /** Maximum wasm memory pages per process (default: 16384 = 1GB) */
   maxPages?: number;
+  /** Size of the data buffer for syscall data transfer (default: 65536).
+   *  Increase for programs that do large pwrite() calls (e.g. InnoDB). */
+  dataBufferSize?: number;
   /** Virtual path → host filesystem path for exec resolution inside the worker */
   execPrograms?: Record<string, string>;
   /** Called when a process writes to stdout */
@@ -101,7 +104,7 @@ export class NodeKernelHost {
         config: {
           maxWorkers: this.options.maxWorkers ?? 4,
           maxPages: this.options.maxPages,
-          dataBufferSize: 65536,
+          dataBufferSize: this.options.dataBufferSize ?? 65536,
           useSharedMemory: true,
         },
         execPrograms: this.options.execPrograms,

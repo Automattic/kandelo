@@ -83,7 +83,8 @@ const SUITE_MODULES: Record<string, string> = {
   "process-lifecycle": "./suites/process-lifecycle.js",
   "erlang-ring": "./suites/erlang-ring.js",
   "wordpress": "./suites/wordpress.js",
-  "mariadb": "./suites/mariadb.js",
+  "mariadb-aria": "./suites/mariadb-aria.js",
+  "mariadb-innodb": "./suites/mariadb-innodb.js",
 };
 
 async function loadNodeSuites(filter?: string): Promise<BenchmarkSuite[]> {

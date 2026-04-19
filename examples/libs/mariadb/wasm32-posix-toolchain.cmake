@@ -73,7 +73,6 @@ set(WASM32_FLAGS
   "-mbulk-memory"
   "-mexception-handling"
   "-mllvm" "-wasm-enable-sjlj"
-  "-fno-exceptions"
   "-fno-trapping-math"
   "--sysroot=${WASM_POSIX_SYSROOT}"
 )

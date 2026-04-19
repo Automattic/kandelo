@@ -40,7 +40,7 @@ describe('buildClangArgs', () => {
     expect(args.join(' ')).toContain('libc.a');
     expect(args).toContain('--target=wasm32-unknown-unknown');
     // Compile flags are present because glue .c files are compiled during linking
-    expect(args).toContain('-fno-exceptions');
+    expect(args).toContain('-fno-trapping-math');
     expect(args.join(' ')).toContain('channel_syscall.c');
   });
 

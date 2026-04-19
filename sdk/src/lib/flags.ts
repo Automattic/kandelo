@@ -9,7 +9,6 @@ export function compileFlags(arch: WasmArch): string[] {
     '-mexception-handling',
     '-mllvm', '-wasm-enable-sjlj',
     '-mllvm', '-wasm-use-legacy-eh=true',
-    '-fno-exceptions',
     '-fno-trapping-math',
   ];
 }

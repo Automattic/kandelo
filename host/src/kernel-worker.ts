@@ -98,6 +98,7 @@ const SYS_MUNMAP = 47;
 const SYS_BRK = 48;
 const SYS_MREMAP = 126;
 const SYS_MSYNC = 278;
+const SYS_WRITE = 4;
 const SYS_PREAD = 64;
 const SYS_PWRITE = 65;
 
@@ -1662,6 +1663,19 @@ export class CentralizedKernelWorker {
 
     if (syscallNr === SYS_READV || syscallNr === SYS_PREADV) {
       this.handleReadv(channel, syscallNr, origArgs);
+      return;
+    }
+
+    // --- Large write/pwrite/read/pread: chunk through scratch buffer ---
+    // When the data exceeds CH_DATA_SIZE, the ArgDesc path returns a short
+    // read/write. Programs like InnoDB that write 1MB+ chunks may exhaust
+    // their retry budget. Handle large I/O by looping on the host side.
+    if ((syscallNr === SYS_WRITE || syscallNr === SYS_PWRITE) && origArgs[2] > CH_DATA_SIZE) {
+      this.handleLargeWrite(channel, syscallNr, origArgs);
+      return;
+    }
+    if ((syscallNr === 3 /* SYS_READ */ || syscallNr === SYS_PREAD) && origArgs[2] > CH_DATA_SIZE) {
+      this.handleLargeRead(channel, syscallNr, origArgs);
       return;
     }
 
@@ -3783,6 +3797,188 @@ export class CentralizedKernelWorker {
       this.completeChannelRaw(channel, totalWritten, 0);
       this.relistenChannel(channel);
     }
+  }
+
+  /**
+   * Handle large write/pwrite where the data exceeds CH_DATA_SIZE.
+   * Loops through CH_DATA_SIZE chunks, issuing individual kernel calls.
+   */
+  private handleLargeWrite(channel: ChannelInfo, syscallNr: number, origArgs: number[]): void {
+    const fd = origArgs[0];
+    const bufPtr = origArgs[1];
+    const totalLen = origArgs[2];
+    const isPwrite = syscallNr === SYS_PWRITE;
+    // pwrite offset is a single i64 arg (arg index 3)
+    let fileOffset = isPwrite ? origArgs[3] : 0;
+
+    const processMem = new Uint8Array(channel.memory.buffer);
+    const kernelMem = this.getKernelMem();
+    const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
+    const dataStart = this.scratchOffset + CH_DATA;
+    const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
+      (offset: bigint, pid: number) => number;
+
+    let totalWritten = 0;
+
+    while (totalWritten < totalLen) {
+      const chunkLen = Math.min(totalLen - totalWritten, CH_DATA_SIZE);
+
+      // Copy chunk from process memory to kernel scratch
+      kernelMem.set(
+        processMem.subarray(bufPtr + totalWritten, bufPtr + totalWritten + chunkLen),
+        dataStart,
+      );
+
+      // Set up syscall in kernel scratch
+      kernelView.setUint32(CH_SYSCALL, syscallNr, true);
+      kernelView.setBigInt64(CH_ARGS, BigInt(fd), true);
+      kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(dataStart), true);
+      kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(chunkLen), true);
+      if (isPwrite) {
+        kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, BigInt(fileOffset), true);
+      }
+
+      this.currentHandlePid = channel.pid;
+      try {
+        handleChannel(BigInt(this.scratchOffset), channel.pid);
+      } catch (err) {
+        console.error(`[handleLargeWrite] kernel threw for pid=${channel.pid}:`, err);
+        if (totalWritten > 0) {
+          this.completeChannelRaw(channel, totalWritten, 0);
+        } else {
+          this.completeChannelRaw(channel, -5, 5); // -EIO
+        }
+        this.relistenChannel(channel);
+        return;
+      } finally {
+        this.currentHandlePid = 0;
+      }
+
+      const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
+      const errVal = kernelView.getUint32(CH_ERRNO, true);
+
+      if (retVal === -1 && errVal === EAGAIN) {
+        if (totalWritten > 0) {
+          this.completeChannelRaw(channel, totalWritten, 0);
+          this.relistenChannel(channel);
+          return;
+        }
+        this.handleBlockingRetry(channel, syscallNr, origArgs);
+        return;
+      }
+
+      if (errVal !== 0 || retVal <= 0) {
+        if (totalWritten > 0) {
+          this.completeChannelRaw(channel, totalWritten, 0);
+        } else {
+          this.completeChannelRaw(channel, retVal, errVal);
+        }
+        this.relistenChannel(channel);
+        return;
+      }
+
+      totalWritten += retVal;
+      if (isPwrite) fileOffset += retVal;
+
+      // Short write from kernel — return what we have
+      if (retVal < chunkLen) break;
+    }
+
+    this.dequeueSignalForDelivery(channel);
+    this.completeChannelRaw(channel, totalWritten, 0);
+    this.relistenChannel(channel);
+  }
+
+  /**
+   * Handle large read/pread where the buffer exceeds CH_DATA_SIZE.
+   * Loops through CH_DATA_SIZE chunks, copying data back to process memory.
+   */
+  private handleLargeRead(channel: ChannelInfo, syscallNr: number, origArgs: number[]): void {
+    const fd = origArgs[0];
+    const bufPtr = origArgs[1];
+    const totalLen = origArgs[2];
+    const isPread = syscallNr === SYS_PREAD;
+    let fileOffset = isPread ? origArgs[3] : 0;
+
+    const processMem = new Uint8Array(channel.memory.buffer);
+    const kernelMem = this.getKernelMem();
+    const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
+    const dataStart = this.scratchOffset + CH_DATA;
+    const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
+      (offset: bigint, pid: number) => number;
+
+    let totalRead = 0;
+
+    while (totalRead < totalLen) {
+      const chunkLen = Math.min(totalLen - totalRead, CH_DATA_SIZE);
+
+      // Zero the scratch data area for the read output
+      kernelMem.fill(0, dataStart, dataStart + chunkLen);
+
+      // Set up syscall in kernel scratch
+      kernelView.setUint32(CH_SYSCALL, syscallNr, true);
+      kernelView.setBigInt64(CH_ARGS, BigInt(fd), true);
+      kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(dataStart), true);
+      kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(chunkLen), true);
+      if (isPread) {
+        kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, BigInt(fileOffset), true);
+      }
+
+      this.currentHandlePid = channel.pid;
+      try {
+        handleChannel(BigInt(this.scratchOffset), channel.pid);
+      } catch (err) {
+        console.error(`[handleLargeRead] kernel threw for pid=${channel.pid}:`, err);
+        if (totalRead > 0) {
+          this.completeChannelRaw(channel, totalRead, 0);
+        } else {
+          this.completeChannelRaw(channel, -5, 5); // -EIO
+        }
+        this.relistenChannel(channel);
+        return;
+      } finally {
+        this.currentHandlePid = 0;
+      }
+
+      const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
+      const errVal = kernelView.getUint32(CH_ERRNO, true);
+
+      if (retVal === -1 && errVal === EAGAIN) {
+        if (totalRead > 0) {
+          this.completeChannelRaw(channel, totalRead, 0);
+          this.relistenChannel(channel);
+          return;
+        }
+        this.handleBlockingRetry(channel, syscallNr, origArgs);
+        return;
+      }
+
+      if (errVal !== 0 || retVal <= 0) {
+        if (totalRead > 0) {
+          this.completeChannelRaw(channel, totalRead, 0);
+        } else {
+          this.completeChannelRaw(channel, retVal, errVal);
+        }
+        this.relistenChannel(channel);
+        return;
+      }
+
+      // Copy read data from kernel scratch to process memory
+      processMem.set(
+        kernelMem.subarray(dataStart, dataStart + retVal),
+        bufPtr + totalRead,
+      );
+
+      totalRead += retVal;
+      if (isPread) fileOffset += retVal;
+
+      // Short read (EOF or partial) — return what we have
+      if (retVal < chunkLen) break;
+    }
+
+    this.dequeueSignalForDelivery(channel);
+    this.completeChannelRaw(channel, totalRead, 0);
+    this.relistenChannel(channel);
   }
 
   /**

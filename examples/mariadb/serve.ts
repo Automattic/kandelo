@@ -1,12 +1,13 @@
 /**
  * serve.ts — Run MariaDB 10.5 (mysqld) on the wasm-posix-kernel.
  *
- * Starts mysqld in single-thread mode with Aria storage engine.
+ * Starts mysqld in single-thread mode with Aria (default) or InnoDB engine.
  * The kernel's PlatformIO layer provides access to the host filesystem
  * for data directory and temp files.
  *
  * Usage:
  *   npx tsx examples/mariadb/serve.ts
+ *   npx tsx examples/mariadb/serve.ts --innodb
  *
  * Then: mysql -h 127.0.0.1 -P 3306 -u root
  */
@@ -19,6 +20,7 @@ const scriptDir = dirname(new URL(import.meta.url).pathname);
 const repoRoot = resolve(scriptDir, "../..");
 
 const useWasm64 = process.argv.includes("--wasm64");
+const useInnoDB = process.argv.includes("--innodb");
 const mariadbLibDir = resolve(repoRoot, "examples/libs/mariadb");
 const installDir = resolve(mariadbLibDir, useWasm64 ? "mariadb-install-64" : "mariadb-install");
 
@@ -48,16 +50,25 @@ async function main() {
     const debugMode = process.argv.includes("--debug-help");
     const bootstrapMode = needsBootstrap || process.argv.includes("--bootstrap");
 
+    const engine = useInnoDB ? "InnoDB" : "Aria";
     const commonArgs = [
         "mariadbd",
         "--no-defaults",
         `--datadir=${dataDir}`,
         `--tmpdir=${resolve(dataDir, "tmp")}`,
-        "--default-storage-engine=Aria",
+        `--default-storage-engine=${engine}`,
         "--skip-grant-tables",
         "--key-buffer-size=1048576",
         "--table-open-cache=10",
         "--sort-buffer-size=262144",
+        ...(useInnoDB ? [
+            "--innodb-buffer-pool-size=8M",
+            "--innodb-log-file-size=4M",
+            "--innodb-log-buffer-size=1M",
+            "--innodb-flush-log-at-trx-commit=2",
+            "--innodb-buffer-pool-load-at-startup=OFF",
+            "--innodb-buffer-pool-dump-at-shutdown=OFF",
+        ] : []),
     ];
 
     const serverArgs = debugMode ? [
@@ -80,6 +91,8 @@ async function main() {
 
     const host = new NodeKernelHost({
         maxWorkers: 8,
+        // InnoDB writes log files in 1MB chunks; increase data buffer from 64KB default
+        dataBufferSize: useInnoDB ? 2 * 1024 * 1024 : undefined,
         onStdout: (_pid, data) => process.stdout.write(new TextDecoder().decode(data)),
         onStderr: (_pid, data) => process.stderr.write(new TextDecoder().decode(data)),
     });

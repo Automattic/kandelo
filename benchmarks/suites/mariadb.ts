@@ -1,21 +1,14 @@
 /**
- * Suite 5: MariaDB
+ * Shared MariaDB benchmark logic.
  *
- * Bootstrap and query execution performance.
- *
- * Metrics:
- *   bootstrap_ms    — System table initialization
- *   query_create_ms — CREATE TABLE
- *   query_insert_ms — Batch INSERT (100 rows)
- *   query_select_ms — SELECT with WHERE clause
- *   query_join_ms   — JOIN across two tables
+ * Extracted so mariadb-aria and mariadb-innodb suites can reuse it
+ * with different engine configurations.
  */
 import { existsSync, readFileSync, mkdirSync, rmSync } from "fs";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { createConnection, createServer, type Socket } from "net";
 import { NodeKernelHost } from "../../host/src/node-kernel-host.js";
-import type { BenchmarkSuite } from "../types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "../..");
@@ -60,12 +53,14 @@ interface MariaDBInstance {
   cleanup: () => Promise<void>;
 }
 
-async function startMariaDB(dataDir: string, bootstrap: boolean): Promise<MariaDBInstance> {
+async function startMariaDB(dataDir: string, bootstrap: boolean, engineArgs: string[]): Promise<MariaDBInstance> {
   const port = await getFreePort();
   const mysqldBytes = loadBytes(mysqldPath);
 
   const host = new NodeKernelHost({
     maxWorkers: 8,
+    // InnoDB writes log files in 1MB+ chunks; increase from 64KB default
+    dataBufferSize: engineArgs.some(a => a.includes("InnoDB")) ? 2 * 1024 * 1024 : undefined,
     onStdout: () => {},
     onStderr: () => {},
   });
@@ -76,11 +71,11 @@ async function startMariaDB(dataDir: string, bootstrap: boolean): Promise<MariaD
     "mariadbd", "--no-defaults",
     `--datadir=${dataDir}`,
     `--tmpdir=${resolve(dataDir, "tmp")}`,
-    "--default-storage-engine=Aria",
     "--skip-grant-tables",
     "--key-buffer-size=1048576",
     "--table-open-cache=10",
     "--sort-buffer-size=262144",
+    ...engineArgs,
   ];
 
   const serverArgs = bootstrap
@@ -134,86 +129,96 @@ async function runMysqlTest(
   return { stdout: result.stdout, exitCode: result.exitCode };
 }
 
-const suite: BenchmarkSuite = {
-  name: "mariadb",
+export function isMariaDBAvailable(): boolean {
+  return existsSync(mysqldPath);
+}
 
-  async run(): Promise<Record<string, number>> {
-    if (!existsSync(mysqldPath)) {
-      console.warn("  MariaDB not found, skipping. Run: bash examples/libs/mariadb/build-mariadb.sh");
-      return {};
+export async function runMariaDBBenchmark(engine: string): Promise<Record<string, number>> {
+  if (!isMariaDBAvailable()) {
+    console.warn("  MariaDB not found, skipping. Run: bash examples/libs/mariadb/build-mariadb.sh");
+    return {};
+  }
+
+  const engineArgs = [`--default-storage-engine=${engine}`];
+  if (engine === "InnoDB") {
+    engineArgs.push(
+      "--innodb-buffer-pool-size=8M",
+      "--innodb-log-file-size=2M",
+      "--innodb-log-buffer-size=1M",
+      "--innodb-flush-log-at-trx-commit=2",
+      "--innodb-buffer-pool-load-at-startup=OFF",
+      "--innodb-buffer-pool-dump-at-shutdown=OFF",
+    );
+  }
+
+  const results: Record<string, number> = {};
+
+  // Use a fresh data directory for each run
+  const dataDir = resolve(repoRoot, `benchmarks/results/.mariadb-bench-data-${engine.toLowerCase()}`);
+  rmSync(dataDir, { recursive: true, force: true });
+  mkdirSync(resolve(dataDir, "mysql"), { recursive: true });
+  mkdirSync(resolve(dataDir, "tmp"), { recursive: true });
+
+  // 1. Bootstrap
+  const t0 = performance.now();
+  const bootstrapInstance = await startMariaDB(dataDir, true, engineArgs);
+  await bootstrapInstance.cleanup();
+  results.bootstrap_ms = performance.now() - t0;
+
+  // 2. Start server
+  const instance = await startMariaDB(dataDir, false, engineArgs);
+
+  // Wait for TCP readiness
+  const deadline = Date.now() + 120_000;
+  while (Date.now() < deadline) {
+    if (await tryConnect(instance.port)) break;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+
+  try {
+    // 3. CREATE TABLE
+    const t1 = performance.now();
+    await runMysqlTest(instance, `
+      CREATE DATABASE IF NOT EXISTS bench;
+      USE bench;
+      CREATE TABLE t1 (id INT PRIMARY KEY AUTO_INCREMENT, name VARCHAR(100), value INT) ENGINE=${engine};
+      CREATE TABLE t2 (id INT PRIMARY KEY AUTO_INCREMENT, t1_id INT, data VARCHAR(200)) ENGINE=${engine};
+    `);
+    results.query_create_ms = performance.now() - t1;
+
+    // 4. INSERT 100 rows
+    let insertSql = "USE bench;\n";
+    for (let i = 0; i < 100; i++) {
+      insertSql += `INSERT INTO t1 (name, value) VALUES ('item_${i}', ${i * 10});\n`;
     }
-
-    const results: Record<string, number> = {};
-
-    // Use a fresh data directory for each run
-    const dataDir = resolve(repoRoot, "benchmarks/results/.mariadb-bench-data");
-    rmSync(dataDir, { recursive: true, force: true });
-    mkdirSync(resolve(dataDir, "mysql"), { recursive: true });
-    mkdirSync(resolve(dataDir, "tmp"), { recursive: true });
-
-    // 1. Bootstrap
-    const t0 = performance.now();
-    const bootstrapInstance = await startMariaDB(dataDir, true);
-    await bootstrapInstance.cleanup();
-    results.bootstrap_ms = performance.now() - t0;
-
-    // 2. Start server
-    const instance = await startMariaDB(dataDir, false);
-
-    // Wait for TCP readiness
-    const deadline = Date.now() + 120_000;
-    while (Date.now() < deadline) {
-      if (await tryConnect(instance.port)) break;
-      await new Promise((r) => setTimeout(r, 500));
+    for (let i = 0; i < 100; i++) {
+      insertSql += `INSERT INTO t2 (t1_id, data) VALUES (${i + 1}, 'data_for_item_${i}');\n`;
     }
+    const t2 = performance.now();
+    await runMysqlTest(instance, insertSql);
+    results.query_insert_ms = performance.now() - t2;
 
-    try {
-      // 3. CREATE TABLE
-      const t1 = performance.now();
-      await runMysqlTest(instance, `
-        CREATE DATABASE IF NOT EXISTS bench;
-        USE bench;
-        CREATE TABLE t1 (id INT PRIMARY KEY AUTO_INCREMENT, name VARCHAR(100), value INT);
-        CREATE TABLE t2 (id INT PRIMARY KEY AUTO_INCREMENT, t1_id INT, data VARCHAR(200));
-      `);
-      results.query_create_ms = performance.now() - t1;
+    // 5. SELECT with WHERE
+    const t3 = performance.now();
+    await runMysqlTest(instance, `
+      USE bench;
+      SELECT * FROM t1 WHERE value > 500 AND value < 800;
+    `);
+    results.query_select_ms = performance.now() - t3;
 
-      // 4. INSERT 100 rows
-      let insertSql = "USE bench;\n";
-      for (let i = 0; i < 100; i++) {
-        insertSql += `INSERT INTO t1 (name, value) VALUES ('item_${i}', ${i * 10});\n`;
-      }
-      for (let i = 0; i < 100; i++) {
-        insertSql += `INSERT INTO t2 (t1_id, data) VALUES (${i + 1}, 'data_for_item_${i}');\n`;
-      }
-      const t2 = performance.now();
-      await runMysqlTest(instance, insertSql);
-      results.query_insert_ms = performance.now() - t2;
+    // 6. JOIN
+    const t4 = performance.now();
+    await runMysqlTest(instance, `
+      USE bench;
+      SELECT t1.name, t2.data FROM t1 JOIN t2 ON t1.id = t2.t1_id WHERE t1.value > 500;
+    `);
+    results.query_join_ms = performance.now() - t4;
+  } finally {
+    await instance.cleanup();
+  }
 
-      // 5. SELECT with WHERE
-      const t3 = performance.now();
-      await runMysqlTest(instance, `
-        USE bench;
-        SELECT * FROM t1 WHERE value > 500 AND value < 800;
-      `);
-      results.query_select_ms = performance.now() - t3;
+  // Cleanup data directory
+  rmSync(dataDir, { recursive: true, force: true });
 
-      // 6. JOIN
-      const t4 = performance.now();
-      await runMysqlTest(instance, `
-        USE bench;
-        SELECT t1.name, t2.data FROM t1 JOIN t2 ON t1.id = t2.t1_id WHERE t1.value > 500;
-      `);
-      results.query_join_ms = performance.now() - t4;
-    } finally {
-      await instance.cleanup();
-    }
-
-    // Cleanup data directory
-    rmSync(dataDir, { recursive: true, force: true });
-
-    return results;
-  },
-};
-
-export default suite;
+  return results;
+}

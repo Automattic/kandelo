@@ -85,60 +85,14 @@ fi
 # --- Apply wasm32 source patches ---
 echo "==> Applying wasm32 source patches..."
 
-# 1. tpool: Remove try/catch (no C++ exceptions on wasm32)
-TPOOL_FILE="$SRC_DIR/tpool/tpool_generic.cc"
-if grep -q "^  try$" "$TPOOL_FILE" 2>/dev/null; then
-    echo "  Patching tpool/tpool_generic.cc (remove try/catch)..."
-    python3 << 'PYEOF'
-import sys
-path = sys.argv[1] if len(sys.argv) > 1 else ""
-PYEOF
-    python3 -c "
-path='$TPOOL_FILE'
-with open(path) as f:
-    lines = f.readlines()
-out = []
-i = 0
-while i < len(lines):
-    line = lines[i]
-    # Replace 'try' line with comment
-    if line.strip() == 'try':
-        out.append(line.replace('try', '// wasm32: try removed'))
-        i += 1
-        continue
-    # Replace catch line + body with if(0) block
-    if 'catch (std::system_error& e)' in line:
-        out.append('  if (0) // wasm32: catch disabled\n')
-        # next line is '{' — keep it
-        i += 1
-        if i < len(lines):
-            out.append(lines[i])  # opening brace
-            i += 1
-        # replace e.what() refs in the body
-        while i < len(lines):
-            bodyline = lines[i]
-            bodyline = bodyline.replace('e.what()', '\"\"')
-            out.append(bodyline)
-            i += 1
-            if bodyline.strip() == '}':
-                break
-        continue
-    out.append(line)
-    i += 1
-with open(path, 'w') as f:
-    f.writelines(out)
-print('Patched', path)
-"
-fi
-
-# 2. Patch mariadb_connector_c.cmake: disable SSL for cross-builds
+# 1. Patch mariadb_connector_c.cmake: disable SSL for cross-builds
 CONC_CMAKE="$SRC_DIR/cmake/mariadb_connector_c.cmake"
 if grep -q 'IF(NOT CONC_WITH_SSL)' "$CONC_CMAKE" 2>/dev/null; then
     echo "  Patching cmake/mariadb_connector_c.cmake (disable SSL for cross-build)..."
     sed -i '' 's/IF(NOT CONC_WITH_SSL)/IF(NOT CONC_WITH_SSL AND NOT CONC_WITH_SSL STREQUAL "OFF")/' "$CONC_CMAKE"
 fi
 
-# 3. my_gethwaddr: Enable Linux code path for wasm (SIOCGIFCONF + SIOCGIFHWADDR)
+# 2. my_gethwaddr: Enable Linux code path for wasm (SIOCGIFCONF + SIOCGIFHWADDR)
 HWADDR_FILE="$SRC_DIR/mysys/my_gethwaddr.c"
 if ! grep -q '__wasm' "$HWADDR_FILE" 2>/dev/null; then
     echo "  Patching mysys/my_gethwaddr.c (enable MAC address retrieval for wasm)..."
@@ -215,10 +169,13 @@ if [ ! -f "$SYSROOT/include/c++/v1/__config" ]; then
         sed -i '' 's/^#define _LIBCPP_PSTL_BACKEND_LIBDISPATCH/\/* #undef _LIBCPP_PSTL_BACKEND_LIBDISPATCH *\/\n#define _LIBCPP_PSTL_BACKEND_SERIAL/' "$CONFIG_SITE"
     fi
 
-    # Create stub libc++ libraries (MariaDB doesn't actually call C++ stdlib at runtime)
-    /opt/homebrew/opt/llvm/bin/llvm-ar rcs "$SYSROOT/lib/libc++.a"
-    /opt/homebrew/opt/llvm/bin/llvm-ar rcs "$SYSROOT/lib/libc++abi.a"
     echo "==> libc++ headers installed"
+fi
+
+# --- Build libc++ if not already built ---
+if [ ! -f "$SYSROOT/lib/libc++.a" ] || [ "$(wc -c < "$SYSROOT/lib/libc++.a" | tr -d ' ')" -lt 1000 ]; then
+    echo "==> Building libc++ (required for C++ exception support)..."
+    bash "$REPO_ROOT/scripts/build-libcxx.sh"
 fi
 
 # --- Build PCRE2 if not present ---
@@ -271,7 +228,7 @@ if [ ! -f "$SYSROOT/lib/libpcre2-8.a" ]; then
 fi
 
 # --- Pre-compile glue objects ---
-WASM_COMPILE_FLAGS="--target=$WASM_TARGET -matomics -mbulk-memory -mexception-handling -mllvm -wasm-enable-sjlj -fno-exceptions -fno-trapping-math --sysroot=$SYSROOT"
+WASM_COMPILE_FLAGS="--target=$WASM_TARGET -matomics -mbulk-memory -mexception-handling -mllvm -wasm-enable-sjlj -fno-trapping-math --sysroot=$SYSROOT"
 
 if [ "$WASM_ARCH" = "wasm64" ]; then
     GLUE_OBJ_DIR="$SCRIPT_DIR/mariadb-glue-objs-64"
@@ -280,7 +237,14 @@ else
 fi
 mkdir -p "$GLUE_OBJ_DIR"
 
+NEED_GLUE_REBUILD=0
 if [ ! -f "$GLUE_OBJ_DIR/channel_syscall.o" ]; then
+    NEED_GLUE_REBUILD=1
+elif [ "$GLUE_DIR/channel_syscall.c" -nt "$GLUE_OBJ_DIR/channel_syscall.o" ] || \
+     [ "$GLUE_DIR/compiler_rt.c" -nt "$GLUE_OBJ_DIR/compiler_rt.o" ]; then
+    NEED_GLUE_REBUILD=1
+fi
+if [ "$NEED_GLUE_REBUILD" = "1" ]; then
     echo "==> Compiling glue objects..."
     $LLVM_CLANG $WASM_COMPILE_FLAGS -O2 -c "$GLUE_DIR/channel_syscall.c" -o "$GLUE_OBJ_DIR/channel_syscall.o"
     $LLVM_CLANG $WASM_COMPILE_FLAGS -O2 -c "$GLUE_DIR/compiler_rt.c" -o "$GLUE_OBJ_DIR/compiler_rt.o"
@@ -322,8 +286,8 @@ cmake "$SRC_DIR" \
     -DWITH_WSREP=OFF \
     -DDISABLE_THREADPOOL=ON \
     \
-    -DPLUGIN_INNODB=NO \
-    -DPLUGIN_INNOBASE=NO \
+    -DPLUGIN_INNODB=STATIC \
+    -DPLUGIN_INNOBASE=STATIC \
     -DPLUGIN_XTRADB=NO \
     -DPLUGIN_CONNECT=NO \
     -DPLUGIN_ROCKSDB=NO \
