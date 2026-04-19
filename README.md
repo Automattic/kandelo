@@ -241,6 +241,7 @@ docs/
 | [SDK Guide](docs/sdk-guide.md) | Compiling programs, toolchain setup, autoconf/CMake integration |
 | [Porting Guide](docs/porting-guide.md) | How to port software, create Node.js and browser demos |
 | [Browser Support](docs/browser-support.md) | Browser architecture, capabilities, demo list, limitations |
+| [Profiling & Benchmarking](docs/profiling.md) | Syscall profiler, benchmark suite, cross-host comparison |
 | [POSIX Status](docs/posix-status.md) | Syscall-by-syscall implementation status |
 | [Wasm Limitations](docs/wasm-limitations.md) | Fundamental platform constraints |
 

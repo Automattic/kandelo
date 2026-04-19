@@ -1,10 +1,11 @@
 /**
  * Test helper for running Wasm programs via CentralizedKernelWorker.
  *
- * Replaces the WasmPosixKernel + ProgramRunner pattern for tests that need
- * to run programs in centralized mode.
+ * By default, runs the kernel in a dedicated worker_thread via NodeKernelHost
+ * for optimal performance. Falls back to main-thread mode when a custom
+ * PlatformIO is provided (PlatformIO can't be serialized across threads).
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CentralizedKernelWorker } from "../src/kernel-worker";
@@ -12,6 +13,7 @@ import { NodePlatformIO } from "../src/platform/node";
 import { NodeWorkerAdapter } from "../src/worker-adapter";
 import { ThreadPageAllocator } from "../src/thread-allocator";
 import { detectPtrWidth } from "../src/constants";
+import { NodeKernelHost } from "../src/node-kernel-host";
 import type { CentralizedWorkerInitMessage, CentralizedThreadInitMessage, WorkerToHostMessage } from "../src/worker-protocol";
 import type { PlatformIO } from "../src/types";
 
@@ -59,6 +61,11 @@ function loadProgramWasm(path: string): ArrayBuffer {
   return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 }
 
+/** Proxy for sending stdin data to the kernel when it runs in a worker_thread */
+export interface KernelStdinProxy {
+  appendStdinData(pid: number, data: Uint8Array): void;
+}
+
 export interface RunProgramOptions {
   /** Path to the .wasm program file */
   programPath: string;
@@ -68,7 +75,8 @@ export interface RunProgramOptions {
   argv?: string[];
   /** Timeout in ms (default: 30000) */
   timeout?: number;
-  /** Custom PlatformIO (defaults to NodePlatformIO) */
+  /** Custom PlatformIO (defaults to NodePlatformIO).
+   *  When provided, forces main-thread mode (PlatformIO can't be serialized). */
   io?: PlatformIO;
   /** Map of virtual path → .wasm file path for exec targets */
   execPrograms?: Map<string, string>;
@@ -76,9 +84,9 @@ export interface RunProgramOptions {
   stdin?: string;
   /** Binary data to provide on stdin (alternative to stdin string) */
   stdinBytes?: Uint8Array;
-  /** Callback invoked with the kernel worker after the process starts.
+  /** Callback invoked after the process starts.
    *  Use this to call appendStdinData() for interactive stdin testing. */
-  onStarted?: (kernelWorker: CentralizedKernelWorker, pid: number) => void | Promise<void>;
+  onStarted?: (kernelProxy: KernelStdinProxy, pid: number) => void | Promise<void>;
 }
 
 export interface RunProgramResult {
@@ -91,21 +99,106 @@ export interface RunProgramResult {
 
 /**
  * Run a Wasm program using the centralized kernel architecture.
- * Creates a CentralizedKernelWorker, spawns a Worker thread for the program,
- * and captures stdout/stderr output.
  *
- * Exit detection: uses the onExit kernel callback, NOT Worker "exit" messages.
- * When musl calls _exit(), it loops on SYS_EXIT via channel IPC, so the Worker
- * never naturally reaches its postMessage("exit") call. The kernel detects
- * SYS_EXIT and fires onExit, then we terminate the Worker.
- *
- * Stdout capture: WasmPosixKernel handles fd 1/2 via onStdout/onStderr
- * callbacks, not through PlatformIO.write(). We pass these callbacks through
- * the CentralizedKernelWorker's internal kernel instance.
+ * By default, spawns the kernel in a dedicated worker_thread for optimal
+ * syscall throughput. Falls back to main-thread mode when `options.io` is
+ * provided (custom PlatformIO instances can't be serialized across threads).
  */
 export async function runCentralizedProgram(
   options: RunProgramOptions,
 ): Promise<RunProgramResult> {
+  if (options.io) {
+    return runOnMainThread(options);
+  }
+  return runInWorkerThread(options);
+}
+
+// ---------------------------------------------------------------------------
+// Worker-thread mode (default, fast path) — uses NodeKernelHost
+// ---------------------------------------------------------------------------
+
+async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgramResult> {
+  const programBytes = loadProgramWasm(options.programPath);
+  const timeout = options.timeout ?? 30_000;
+
+  let stdout = "";
+  let stderr = "";
+  const stdoutChunks: Uint8Array[] = [];
+
+  // Convert execPrograms Map to plain object for the worker
+  let execPrograms: Record<string, string> | undefined;
+  if (options.execPrograms) {
+    execPrograms = {};
+    for (const [k, v] of options.execPrograms) {
+      execPrograms[k] = v;
+    }
+  }
+
+  // Prepare stdin
+  let stdinData: Uint8Array | undefined;
+  if (options.stdinBytes != null) {
+    stdinData = options.stdinBytes;
+  } else if (options.stdin != null) {
+    stdinData = new TextEncoder().encode(options.stdin);
+  }
+
+  const host = new NodeKernelHost({
+    maxWorkers: 4,
+    execPrograms,
+    onStdout: (_pid: number, data: Uint8Array) => {
+      stdout += new TextDecoder().decode(data);
+      stdoutChunks.push(new Uint8Array(data));
+    },
+    onStderr: (_pid: number, data: Uint8Array) => {
+      stderr += new TextDecoder().decode(data);
+    },
+  });
+
+  await host.init();
+
+  const exitPromise = host.spawn(programBytes, options.argv ?? [options.programPath], {
+    env: options.env,
+    stdin: stdinData,
+    onStarted: options.onStarted
+      ? async (pid: number) => {
+          const proxy: KernelStdinProxy = {
+            appendStdinData(stdinPid: number, data: Uint8Array) {
+              host.appendStdinData(stdinPid, data);
+            },
+          };
+          await options.onStarted!(proxy, pid);
+        }
+      : undefined,
+  });
+
+  // Race spawn exit against timeout
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    setTimeout(() => reject(new Error(`Program timed out after ${timeout}ms`)), timeout);
+  });
+
+  let exitCode: number;
+  try {
+    exitCode = await Promise.race([exitPromise, timeoutPromise]);
+  } finally {
+    await host.destroy().catch(() => {});
+  }
+
+  const totalLen = stdoutChunks.reduce((sum, c) => sum + c.length, 0);
+  const stdoutBytes = new Uint8Array(totalLen);
+  let offset = 0;
+  for (const chunk of stdoutChunks) {
+    stdoutBytes.set(chunk, offset);
+    offset += chunk.length;
+  }
+
+  return { exitCode, stdout, stderr, stdoutBytes };
+}
+
+// ---------------------------------------------------------------------------
+// Main-thread mode (fallback for custom PlatformIO)
+// ---------------------------------------------------------------------------
+
+async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramResult> {
   const kernelWasmBytes = loadKernelWasm();
   const programBytes = loadProgramWasm(options.programPath);
   const timeout = options.timeout ?? 30_000;
@@ -119,7 +212,6 @@ export async function runCentralizedProgram(
   const io = options.io ?? new NodePlatformIO();
   const workerAdapter = new NodeWorkerAdapter();
 
-  // Promise that resolves when the main process exits (via onExit callback)
   let resolveExit: (status: number) => void;
   let rejectExit: (err: Error) => void;
   const exitPromise = new Promise<number>((resolve, reject) => {
@@ -127,11 +219,10 @@ export async function runCentralizedProgram(
     rejectExit = reject;
   });
 
-  // Thread channel allocator: count down from main channel
   const threadAllocator = new ThreadPageAllocator(MAX_PAGES);
-
-  // Track program bytes per pid for fork-after-exec support
   const processProgramBytes = new Map<number, ArrayBuffer>();
+
+  const pid = 100;
 
   const kernelWorker = new CentralizedKernelWorker(
     { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true, enableSyscallLog: !!process.env.KERNEL_SYSCALL_LOG },
@@ -149,14 +240,9 @@ export async function runCentralizedProgram(
 
         kernelWorker.registerProcess(childPid, childMemory, [childChannelOffset], { skipKernelCreate: true, ptrWidth });
 
-        // The asyncify fork data buffer lives at channelOffset - 16384 in the
-        // parent's memory.  Since we copied parentMemory into childMemory and both
-        // use the same channelOffset, the asyncify data is ready for the child to
-        // rewind from the fork point.
         const ASYNCIFY_BUF_SIZE = 16384;
         const asyncifyBufAddr = childChannelOffset - ASYNCIFY_BUF_SIZE;
 
-        // Use per-pid program bytes if available (fork-after-exec), else initial program
         const parentProgram = processProgramBytes.get(parentPid) ?? programBytes;
 
         const childInitData: CentralizedWorkerInitMessage = {
@@ -181,43 +267,35 @@ export async function runCentralizedProgram(
 
         return [childChannelOffset];
       },
-      onExec: async (pid, path, argv, envp) => {
+      onExec: async (execPid, path, argv, envp) => {
         const wasmPath = options.execPrograms?.get(path);
-        if (!wasmPath) return -2; // ENOENT
+        if (!wasmPath) return -2;
 
         const newProgramBytes = loadProgramWasm(wasmPath);
         const newPtrWidth = detectPtrWidth(newProgramBytes);
 
-        // Run kernel exec setup (close CLOEXEC fds, reset signals, set has_exec)
-        const setupResult = kernelWorker.kernelExecSetup(pid);
+        const setupResult = kernelWorker.kernelExecSetup(execPid);
         if (setupResult < 0) return setupResult;
 
-        // Prepare process for replacement (remove old channels, clean up pending retries)
-        kernelWorker.prepareProcessForExec(pid);
+        kernelWorker.prepareProcessForExec(execPid);
 
-        // Terminate old worker
-        const oldWorker = workers.get(pid);
+        const oldWorker = workers.get(execPid);
         if (oldWorker) {
           await oldWorker.terminate().catch(() => {});
-          workers.delete(pid);
+          workers.delete(execPid);
         }
 
-        // Create fresh memory for the new program
         const newMemory = createProcessMemory(newPtrWidth);
         const newChannelOffset = (MAX_PAGES - 2) * 65536;
         growToMax(newMemory, newPtrWidth, 17);
         new Uint8Array(newMemory.buffer, newChannelOffset, CH_TOTAL_SIZE).fill(0);
 
-        // Register new process with same pid
-        kernelWorker.registerProcess(pid, newMemory, [newChannelOffset], { skipKernelCreate: true, ptrWidth: newPtrWidth });
+        kernelWorker.registerProcess(execPid, newMemory, [newChannelOffset], { skipKernelCreate: true, ptrWidth: newPtrWidth });
+        processProgramBytes.set(execPid, newProgramBytes);
 
-        // Track new program bytes for this pid (for fork-after-exec)
-        processProgramBytes.set(pid, newProgramBytes);
-
-        // Create new worker
         const initData: CentralizedWorkerInitMessage = {
           type: "centralized_init",
-          pid,
+          pid: execPid,
           ppid: 0,
           programBytes: newProgramBytes,
           memory: newMemory,
@@ -228,23 +306,20 @@ export async function runCentralizedProgram(
         };
 
         const newWorker = workerAdapter.createWorker(initData);
-        workers.set(pid, newWorker);
-        newWorker.on("error", () => {
+        workers.set(execPid, newWorker);
+        newWorker.on("error", (err: Error) => {
+          console.error(`[exec] worker error for pid ${execPid}:`, err);
         });
 
         return 0;
       },
-      onClone: async (pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory) => {
-        // Allocate channel + TLS from pre-allocated memory (counting down from main channel)
+      onClone: async (clonePid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory) => {
         const alloc = threadAllocator.allocate(memory);
+        kernelWorker.addChannel(clonePid, alloc.channelOffset, tid);
 
-        // Register thread channel with kernel worker
-        kernelWorker.addChannel(pid, alloc.channelOffset, tid);
-
-        // Spawn thread worker
         const threadInitData: CentralizedThreadInitMessage = {
           type: "centralized_thread_init",
-          pid,
+          pid: clonePid,
           tid,
           programBytes,
           memory,
@@ -267,8 +342,8 @@ export async function runCentralizedProgram(
           }
         });
         threadWorker.on("error", () => {
-          kernelWorker.notifyThreadExit(pid, tid);
-          kernelWorker.removeChannel(pid, alloc.channelOffset);
+          kernelWorker.notifyThreadExit(clonePid, tid);
+          kernelWorker.removeChannel(clonePid, alloc.channelOffset);
           threadAllocator.free(alloc.basePage);
         });
 
@@ -276,7 +351,6 @@ export async function runCentralizedProgram(
       },
       onExit: (exitPid, exitStatus) => {
         if (exitPid === pid) {
-          // Main process exited — full cleanup
           kernelWorker.unregisterProcess(exitPid);
           processProgramBytes.delete(exitPid);
           const w = workers.get(exitPid);
@@ -286,8 +360,6 @@ export async function runCentralizedProgram(
           }
           resolveExit(exitStatus);
         } else {
-          // Child process exited — deactivate channels but keep in kernel
-          // process table as zombie until reaped by wait/waitpid
           kernelWorker.deactivateProcess(exitPid);
           processProgramBytes.delete(exitPid);
           const w = workers.get(exitPid);
@@ -300,7 +372,6 @@ export async function runCentralizedProgram(
     },
   );
 
-  // Capture stdout/stderr via the public API (merges with existing callbacks).
   kernelWorker.setOutputCallbacks({
     onStdout: (data: Uint8Array) => {
       stdout += new TextDecoder().decode(data);
@@ -313,16 +384,13 @@ export async function runCentralizedProgram(
 
   await kernelWorker.init(kernelWasmBytes);
 
-  // Create shared memory for the process (memory64 for wasm64 programs)
   const memory = createProcessMemory(ptrWidth);
   const channelOffset = (MAX_PAGES - 2) * 65536;
   growToMax(memory, ptrWidth, 17);
   new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
-  const pid = 100;
   kernelWorker.registerProcess(pid, memory, [channelOffset], { ptrWidth });
 
-  // Provide stdin data if specified
   if (options.stdinBytes != null) {
     kernelWorker.setStdinData(pid, options.stdinBytes);
   } else if (options.stdin != null) {
@@ -344,18 +412,15 @@ export async function runCentralizedProgram(
   const mainWorker = workerAdapter.createWorker(initData);
   workers.set(pid, mainWorker);
 
-  // Fire onStarted callback (for interactive stdin tests)
   if (options.onStarted) {
     await options.onStarted(kernelWorker, pid);
   }
 
-  // Set up timeout
   const timer = setTimeout(() => {
     for (const [, w] of workers) w.terminate().catch(() => {});
     rejectExit(new Error(`Program timed out after ${timeout}ms`));
   }, timeout);
 
-  // Worker error handler
   mainWorker.on("error", (err: Error) => {
     clearTimeout(timer);
     rejectExit(err);
@@ -364,7 +429,6 @@ export async function runCentralizedProgram(
   const exitCode = await exitPromise;
   clearTimeout(timer);
 
-  // Concatenate stdout chunks into a single Uint8Array
   const totalLen = stdoutChunks.reduce((sum, c) => sum + c.length, 0);
   const stdoutBytes = new Uint8Array(totalLen);
   let offset = 0;

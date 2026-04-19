@@ -13,23 +13,10 @@
 
 import { readFileSync, existsSync, mkdirSync, readdirSync } from "fs";
 import { resolve, dirname } from "path";
-import { CentralizedKernelWorker } from "../../host/src/kernel-worker";
-import { NodePlatformIO } from "../../host/src/platform/node";
-import { NodeWorkerAdapter } from "../../host/src/worker-adapter";
-import { patchWasmForThread } from "../../host/src/worker-main";
-import type {
-    CentralizedWorkerInitMessage,
-    CentralizedThreadInitMessage,
-    WorkerToHostMessage,
-} from "../../host/src/worker-protocol";
-import { ThreadPageAllocator } from "../../host/src/thread-allocator";
-
-const CH_TOTAL_SIZE = 72 + 65536;
-const MAX_PAGES = 16384;
+import { NodeKernelHost } from "../../host/src/node-kernel-host";
 
 const scriptDir = dirname(new URL(import.meta.url).pathname);
 const repoRoot = resolve(scriptDir, "../..");
-const workerAdapter = new NodeWorkerAdapter();
 
 const useWasm64 = process.argv.includes("--wasm64");
 const mariadbLibDir = resolve(repoRoot, "examples/libs/mariadb");
@@ -52,182 +39,7 @@ async function main() {
         process.exit(1);
     }
 
-    const kernelBytes = loadBytes(resolve(repoRoot, "host/wasm/wasm_posix_kernel.wasm"));
     const mysqldBytes = loadBytes(mysqldWasm);
-
-    // Pre-compile thread module (strip start + neuter ctors) so threads start instantly.
-    // Without this, each thread compiles 13MB wasm, causing the main thread to spin-wait.
-    console.log("Pre-compiling thread module...");
-    const threadPatchedBytes = patchWasmForThread(mysqldBytes);
-    const threadModule = new WebAssembly.Module(threadPatchedBytes);
-    console.log("Thread module ready.");
-
-    const io = new NodePlatformIO();
-    const workers = new Map<number, ReturnType<NodeWorkerAdapter["createWorker"]>>();
-
-    const threadAllocator = new ThreadPageAllocator(MAX_PAGES);
-
-    const kernelWorker = new CentralizedKernelWorker(
-        { maxWorkers: 8, dataBufferSize: 65536, useSharedMemory: true },
-        io,
-        {
-            onFork: async (parentPid, childPid, parentMemory) => {
-                console.log(`[kernel] fork: pid ${parentPid} → ${childPid}`);
-                const parentBuf = new Uint8Array(parentMemory.buffer);
-                const parentPages = Math.ceil(parentBuf.byteLength / 65536);
-                const childMemory = useWasm64
-                    ? new WebAssembly.Memory({
-                          initial: BigInt(parentPages) as unknown as number,
-                          maximum: BigInt(MAX_PAGES) as unknown as number,
-                          shared: true,
-                          address: "i64",
-                      } as WebAssembly.MemoryDescriptor)
-                    : new WebAssembly.Memory({
-                          initial: parentPages,
-                          maximum: MAX_PAGES,
-                          shared: true,
-                      });
-                if (parentPages < MAX_PAGES) {
-                    if (useWasm64) {
-                        childMemory.grow(BigInt(MAX_PAGES - parentPages) as unknown as number);
-                    } else {
-                        childMemory.grow(MAX_PAGES - parentPages);
-                    }
-                }
-                new Uint8Array(childMemory.buffer).set(parentBuf);
-
-                const childChannelOffset = (MAX_PAGES - 2) * 65536;
-                new Uint8Array(childMemory.buffer, childChannelOffset, CH_TOTAL_SIZE).fill(0);
-
-                kernelWorker.registerProcess(childPid, childMemory, [childChannelOffset], {
-                    skipKernelCreate: true,
-                    ...(useWasm64 ? { ptrWidth: 8 as const } : {}),
-                });
-
-                const ASYNCIFY_BUF_SIZE = 16384;
-                const asyncifyBufAddr = childChannelOffset - ASYNCIFY_BUF_SIZE;
-                const childInitData: CentralizedWorkerInitMessage = {
-                    type: "centralized_init",
-                    pid: childPid,
-                    ppid: parentPid,
-                    programBytes: mysqldBytes,
-                    memory: childMemory,
-                    channelOffset: childChannelOffset,
-                    isForkChild: true,
-                    asyncifyBufAddr,
-                    ...(useWasm64 ? { ptrWidth: 8 as const } : {}),
-                };
-
-                const childWorker = workerAdapter.createWorker(childInitData);
-                workers.set(childPid, childWorker);
-                childWorker.on("error", () => {
-                    kernelWorker.unregisterProcess(childPid);
-                    workers.delete(childPid);
-                });
-
-                return [childChannelOffset];
-            },
-
-            onClone: async (pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory) => {
-                const alloc = threadAllocator.allocate(memory);
-
-                console.log(`[kernel] clone: pid=${pid} tid=${tid} fn=${fnPtr} channelOff=${alloc.channelOffset} tlsAddr=${alloc.tlsAllocAddr}`);
-
-                kernelWorker.addChannel(pid, alloc.channelOffset, tid);
-
-                const threadInitData: CentralizedThreadInitMessage = {
-                    type: "centralized_thread_init",
-                    pid,
-                    tid,
-                    programBytes: mysqldBytes,
-                    programModule: threadModule,
-                    memory,
-                    channelOffset: alloc.channelOffset,
-                    fnPtr,
-                    argPtr,
-                    stackPtr,
-                    tlsPtr,
-                    ctidPtr,
-                    tlsAllocAddr: alloc.tlsAllocAddr,
-                    ...(useWasm64 ? { ptrWidth: 8 as const } : {}),
-                };
-
-                const threadWorker = workerAdapter.createWorker(threadInitData);
-                threadWorker.on("message", (msg: unknown) => {
-                    const m = msg as WorkerToHostMessage & { message?: string };
-                    if ((m as any).type === "debug") {
-                        console.error(`[thread ${tid} dbg] ${m.message}`);
-                        return;
-                    }
-                    if (m.type === "thread_exit") {
-                        console.error(`[kernel] thread ${tid} exited`);
-                        kernelWorker.notifyThreadExit(pid, tid);
-                        kernelWorker.removeChannel(pid, alloc.channelOffset);
-                        threadAllocator.free(alloc.basePage);
-                        threadWorker.terminate().catch(() => {});
-                    }
-                });
-                threadWorker.on("error", (err: Error) => {
-                    console.error(`[kernel] thread ${tid} error: ${err.message}`);
-                    kernelWorker.notifyThreadExit(pid, tid);
-                    kernelWorker.removeChannel(pid, alloc.channelOffset);
-                    threadAllocator.free(alloc.basePage);
-                });
-                threadWorker.on("exit", (code: number) => {
-                    console.error(`[kernel] thread ${tid} worker EXIT code=${code}`);
-                });
-
-                return tid;
-            },
-
-            onExec: async () => -38, // ENOSYS
-
-            onExit: (pid, exitStatus) => {
-                console.log(`[kernel] process ${pid} exited with status ${exitStatus}`);
-                if (pid === 1) {
-                    kernelWorker.unregisterProcess(pid);
-                } else {
-                    kernelWorker.deactivateProcess(pid);
-                }
-                workers.delete(pid);
-            },
-        },
-    );
-
-    await kernelWorker.init(kernelBytes);
-
-    const decoder = new TextDecoder();
-    kernelWorker.setOutputCallbacks({
-        onStdout: (data) => process.stdout.write(decoder.decode(data)),
-        onStderr: (data) => process.stderr.write(decoder.decode(data)),
-    });
-
-    const memory = useWasm64
-        ? new WebAssembly.Memory({
-              initial: 17n as unknown as number,
-              maximum: BigInt(MAX_PAGES) as unknown as number,
-              shared: true,
-              address: "i64",
-          } as WebAssembly.MemoryDescriptor)
-        : new WebAssembly.Memory({
-              initial: 17,
-              maximum: MAX_PAGES,
-              shared: true,
-          });
-    const channelOffset = (MAX_PAGES - 2) * 65536;
-    if (useWasm64) {
-        (memory as WebAssembly.Memory).grow(BigInt(MAX_PAGES - 17) as unknown as number);
-    } else {
-        memory.grow(MAX_PAGES - 17);
-    }
-    new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
-
-    const pid = 1;
-    kernelWorker.registerProcess(pid, memory, [channelOffset], {
-        ...(useWasm64 ? { ptrWidth: 8 as const } : {}),
-    });
-    kernelWorker.setCwd(pid, dataDir);
-    kernelWorker.setNextChildPid(2);
 
     // Check if data directory needs bootstrapping
     const mysqlDir = resolve(dataDir, "mysql");
@@ -266,14 +78,23 @@ async function main() {
         "--max-connections=10",
     ];
 
+    const host = new NodeKernelHost({
+        maxWorkers: 8,
+        onStdout: (_pid, data) => process.stdout.write(new TextDecoder().decode(data)),
+        onStderr: (_pid, data) => process.stderr.write(new TextDecoder().decode(data)),
+    });
+
+    await host.init();
+
     // For bootstrap mode, prepare SQL data for stdin
+    let stdinData: Uint8Array | undefined;
     if (bootstrapMode) {
         console.log("Bootstrapping MariaDB system tables...");
         const shareDir = resolve(installDir, "share/mysql");
         const systemTables = readFileSync(resolve(shareDir, "mysql_system_tables.sql"), "utf-8");
         const systemData = readFileSync(resolve(shareDir, "mysql_system_tables_data.sql"), "utf-8");
         const bootstrapSql = `use mysql;\n${systemTables}\n${systemData}\n`;
-        kernelWorker.setStdinData(pid, new TextEncoder().encode(bootstrapSql));
+        stdinData = new TextEncoder().encode(bootstrapSql);
     } else {
         console.log("Starting MariaDB 10.5 on wasm-posix-kernel...");
         console.log(`Data directory: ${dataDir}`);
@@ -281,51 +102,19 @@ async function main() {
     }
     console.log("");
 
-    const initData: CentralizedWorkerInitMessage = {
-        type: "centralized_init",
-        pid,
-        ppid: 0,
-        programBytes: mysqldBytes,
-        memory,
-        channelOffset,
+    const exitPromise = host.spawn(mysqldBytes, serverArgs, {
         env: [
             "HOME=/tmp",
             "PATH=/usr/local/bin:/usr/bin:/bin",
             "TMPDIR=/tmp",
         ],
-        argv: serverArgs,
-        ...(useWasm64 ? { ptrWidth: 8 as const } : {}),
-    };
-
-    const masterWorker = workerAdapter.createWorker(initData);
-    workers.set(pid, masterWorker);
-
-
-
-    const exitPromise = new Promise<number>((resolveP, reject) => {
-        masterWorker.on("message", (msg: unknown) => {
-            const m = msg as WorkerToHostMessage;
-            if (m.type === "exit") {
-                kernelWorker.unregisterProcess(pid);
-                resolveP(m.status);
-            } else if (m.type === "error") {
-                console.error("Last syscalls before crash:\n" + kernelWorker.dumpLastSyscalls(pid));
-                console.error("Full error message:\n" + m.message);
-                kernelWorker.unregisterProcess(pid);
-                reject(new Error(m.message));
-            }
-        });
-
-        masterWorker.on("error", (err: Error) => {
-            reject(err);
-        });
+        cwd: dataDir,
+        stdin: stdinData,
     });
 
     process.on("SIGINT", async () => {
         console.log("\nShutting down...");
-        for (const [, w] of workers) {
-            await w.terminate().catch(() => {});
-        }
+        await host.destroy().catch(() => {});
         process.exit(0);
     });
 
@@ -343,9 +132,8 @@ async function main() {
     } else {
         status = await exitPromise;
     }
-    for (const [, w] of workers) {
-        await w.terminate().catch(() => {});
-    }
+
+    await host.destroy().catch(() => {});
 
     if (bootstrapMode && status === 0 && !process.argv.includes("--bootstrap")) {
         console.log("\nBootstrap complete! Restart to run the server.\n");

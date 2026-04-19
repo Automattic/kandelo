@@ -34,29 +34,58 @@
 
 ## Performance Benchmarks
 
-Run benchmarks to measure kernel performance across Node.js and browser hosts:
+**When doing performance work, run ALL 5 suites on BOTH hosts (Node.js and browser).** Do not run only `syscall-io` or only one host — application-level suites exercise different syscall patterns, threading models, and I/O workloads that micro-benchmarks miss. If a suite skips because its binary is missing, build it before drawing conclusions.
+
+### The 5 benchmark suites
+
+| Suite | What it measures | Binary prerequisites |
+|-------|-----------------|---------------------|
+| `syscall-io` | Pipe/file throughput, syscall latency | `scripts/build-programs.sh` |
+| `process-lifecycle` | fork, exec, clone, cold start | `scripts/build-programs.sh` |
+| `erlang-ring` | BEAM VM message passing (1000 processes) | `bash examples/libs/erlang/build-erlang.sh` |
+| `wordpress` | PHP CLI + WordPress HTTP first response | `bash examples/libs/php/build-php.sh` + WordPress checkout |
+| `mariadb` | SQL bootstrap + query performance | `bash examples/libs/mariadb/build-mariadb.sh` |
+
+Application suites require the SDK: `cd sdk && npm link`
+
+### Running benchmarks
 
 ```bash
-# Run all Node.js benchmarks (3 rounds each)
-npx tsx benchmarks/run.ts
+# All suites, Node.js host (3 rounds each, reports median)
+npx tsx benchmarks/run.ts --rounds=3
 
-# Run specific suite
-npx tsx benchmarks/run.ts --suite syscall-io
+# All suites, browser host (via Playwright)
+npx tsx benchmarks/run.ts --host=browser --rounds=3
 
-# Run browser benchmarks via Playwright
-npx tsx benchmarks/run.ts --host browser
+# Single suite (only when specifically asked)
+npx tsx benchmarks/run.ts --suite=syscall-io
 
-# Compare two results
+# Compare before/after
 npx tsx benchmarks/compare.ts benchmarks/results/before.json benchmarks/results/after.json
 ```
 
-Results are saved as JSON in `benchmarks/results/`. Available suites: `syscall-io`, `process-lifecycle`, `erlang-ring`, `wordpress`, `mariadb`.
-
-Some suites require pre-built binaries (Erlang, PHP/WordPress, MariaDB) and will skip gracefully if not found. The `syscall-io` and `process-lifecycle` suites only need the base sysroot and benchmark programs (`scripts/build-programs.sh`).
+Results are saved as JSON in `benchmarks/results/`. See [docs/profiling.md](docs/profiling.md) for detailed suite descriptions, metrics, and build prerequisites.
 
 ## Architecture
 
 Centralized kernel mode only. One kernel Wasm instance serves all process workers via channel IPC (SharedArrayBuffer + Atomics). Programs are compiled with `channel_syscall.c`.
+
+**The kernel MUST run in a dedicated worker thread on ALL platforms** — `worker_thread` on Node.js, Web Worker in browsers. Never instantiate `CentralizedKernelWorker` on the main thread. The main thread should only be a thin proxy for setup and I/O routing. Running the kernel on the main thread degrades syscall throughput by 3-4x due to event loop overhead.
+
+See [docs/architecture.md](docs/architecture.md) for full architecture details.
+
+## Performance: Do NOT Micro-Optimize the Syscall Hot Path
+
+**Do not add "optimization" tables or shortcut logic to `kernel-worker.ts`.** Specifically, do not:
+
+- Add syscall argument count tables to skip reading unused args (e.g., `SYSCALL_ARG_COUNTS`)
+- Add syscall classification sets to conditionally skip post-syscall work (e.g., `IO_SYSCALLS` to skip `drainAndProcessWakeupEvents`)
+- Cache `DataView` or `Int32Array` objects on channel structs to avoid re-creation
+- Skip debug ring logging for "trivial" syscalls
+
+These optimizations were benchmarked and **made performance worse across all application workloads** (WordPress, Erlang, MariaDB). The per-syscall overhead of `new DataView()`, reading 6 BigInt args, and unconditionally draining wakeup events is negligible compared to the actual Wasm kernel execution. The "optimizations" add branch misprediction overhead, risk correctness bugs (wrong syscall numbers → zeroed args → broken networking), and make the code harder to maintain.
+
+The real performance lever is the **dedicated worker thread architecture** (`NodeKernelHost` / `BrowserKernel`), which provides 2x pipe throughput and 2.5x clone speed. Keep `kernel-worker.ts` simple and correct.
 
 ## Build
 

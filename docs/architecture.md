@@ -4,7 +4,9 @@ This document describes the internal architecture of wasm-posix-kernel. It is wr
 
 ## Overview
 
-wasm-posix-kernel is a centralized, multi-process POSIX kernel that runs as WebAssembly. A single kernel Wasm instance manages all processes. Each process runs in its own Web Worker (or Node.js worker thread) and communicates with the kernel via a SharedArrayBuffer-based channel.
+wasm-posix-kernel is a centralized, multi-process POSIX kernel that runs as WebAssembly. A single kernel Wasm instance manages all processes. The kernel **must** run in a dedicated worker thread (Web Worker in browsers, `worker_thread` in Node.js) — never on the main thread. Each process also runs in its own worker and communicates with the kernel via a SharedArrayBuffer-based channel.
+
+> **Architecture requirement**: All platform hosts MUST run the kernel in a dedicated worker thread. The main thread should only act as a thin proxy for setup, I/O routing, and UI. Running the kernel on the main thread degrades syscall throughput by 3-4x due to event loop overhead from libuv (Node.js) or rendering (browsers).
 
 ```
                     ┌──────────────────┐
@@ -95,7 +97,7 @@ host_getaddrinfo(host, port, buf, len) → count
 
 The host runtime loads and manages the kernel and process workers. It has two main classes:
 
-**`CentralizedKernelWorker`** (`kernel-worker.ts`): The primary runtime. Creates the kernel Wasm instance, manages process registration, listens for syscall channel activity via `Atomics.waitAsync`, and dispatches to the kernel's `kernel_handle_channel` export.
+**`CentralizedKernelWorker`** (`kernel-worker.ts`): The primary runtime. Creates the kernel Wasm instance, manages process registration, listens for syscall channel activity via `Atomics.waitAsync`, and dispatches to the kernel's `kernel_handle_channel` export. **Must be instantiated in a dedicated worker thread**, not on the main thread.
 
 **`WasmPosixKernel`** (`kernel.ts`): Lower-level kernel wrapper that instantiates the Wasm module and provides the host import functions.
 
@@ -391,9 +393,42 @@ Main Thread                              Kernel Worker
 
 **`BrowserKernel`** (`examples/browser/lib/browser-kernel.ts`): Main-thread proxy that communicates with the kernel worker via `postMessage`. Provides `spawn()`, `pipeRead()`/`pipeWrite()`, `injectConnection()`, stdin/PTY methods.
 
-**Kernel Worker** (`examples/browser/lib/kernel-worker-entry.ts`): Dedicated web worker that hosts `CentralizedKernelWorker`. Process workers are sub-workers created by the kernel worker. This avoids V8's `Atomics.waitAsync` microtask freeze bug that occurs on the main thread.
+**Kernel Worker** (`examples/browser/lib/kernel-worker-entry.ts`): Dedicated web worker that hosts `CentralizedKernelWorker`, following the standard architecture requirement. Process workers are sub-workers created by the kernel worker. The dedicated worker provides a clean event loop for fast `Atomics.waitAsync` notification delivery and avoids V8's microtask freeze bug that occurs on the main thread.
 
 **Service Worker** (`examples/browser/public/service-worker.js`): Dual-mode file that acts as both a page bootstrap script (registers itself, enables cross-origin isolation) and a service worker (adds COOP/COEP headers, handles HTTP bridge routing).
+
+## Performance Architecture
+
+### The dedicated worker thread is the optimization
+
+The single most impactful performance decision is running the kernel in a dedicated worker thread (`NodeKernelHost` on Node.js, `BrowserKernel` on browsers). Benchmarked gains from the worker thread architecture vs. running the kernel on the main thread:
+
+| Metric | Main thread | Worker thread | Change |
+|--------|------------|---------------|--------|
+| pipe_mbps | 10.9 | 24.1 | **+121%** |
+| clone_ms | 94.1 | 36.7 | **-61%** |
+| fork_ms | 243.8 | 176.9 | **-27%** |
+| exec_ms | 186.9 | 171.5 | -8% |
+| hello_start_ms | 88.2 | 139.6 | +58% (kernel thread startup cost) |
+| file_read_mbps | 236.0 | 188.4 | -20% |
+
+The `hello_start` regression is a fixed one-time cost: spinning up the kernel worker thread (~50ms). For any workload that runs more than a trivial number of syscalls, the dedicated thread wins.
+
+### Do not micro-optimize the syscall hot path
+
+The following "optimizations" in `kernel-worker.ts` were benchmarked and **all made performance worse**:
+
+1. **Syscall argument count tables** (`SYSCALL_ARG_COUNTS`): Reading fewer BigInt args per syscall based on a lookup table. Saved ~nanoseconds per syscall but added branch overhead and a critical correctness risk — if the table uses wrong syscall numbers, args are silently zeroed, breaking networking and other subsystems.
+
+2. **I/O syscall classification** (`IO_SYSCALLS`): Skipping `drainAndProcessWakeupEvents()` for non-I/O syscalls. The drain is cheap when there are no events, and skipping it risks missing wakeups in edge cases.
+
+3. **Cached TypedArray views**: Caching `DataView` and `Int32Array` on channel structs to avoid re-creation. V8 already optimizes `new DataView()` to near-zero cost; the cache adds memory overhead and invalidation complexity for no measurable gain.
+
+4. **Conditional debug ring logging**: Skipping syscall ring buffer entries for 0-arg syscalls. The ring buffer is a fixed-size array push — negligible cost, but valuable for crash diagnostics.
+
+**Why they fail**: The Wasm kernel execution (calling `kernel_handle_channel` which dispatches into Rust-compiled syscall logic) dominates each syscall's wall time. The TypeScript overhead around it — reading 6 args, creating views, draining events, logging — is noise. Micro-optimizing noise adds complexity and risk for no throughput gain.
+
+**What to optimize instead**: If syscall throughput needs improvement, focus on the kernel Wasm code (`crates/kernel/`), the channel protocol, or the worker thread scheduling. The TypeScript host path is not the bottleneck.
 
 ## Build System
 
