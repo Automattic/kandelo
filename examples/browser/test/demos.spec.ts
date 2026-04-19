@@ -9,6 +9,13 @@
  */
 
 import { test, expect, type Page } from "@playwright/test";
+import { join, dirname } from "node:path";
+import { existsSync, rmSync, readFileSync, statSync } from "node:fs";
+import { execSync } from "node:child_process";
+import { createServer, type Server } from "node:http";
+import { fileURLToPath } from "node:url";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // Helper: navigate and skip if Vite can't resolve imports (binary not built)
 async function gotoOrSkip(page: Page, path: string) {
@@ -490,4 +497,124 @@ test("@slow lamp: full stack serves WordPress", async ({ page }) => {
   await expect(
     frame.locator("form#setup, form#language-chooser, .wp-core-ui").first(),
   ).toBeVisible({ timeout: 120_000 });
+});
+
+// ─── Git HTTP Clone ──────────────────────────────────────────────────
+
+const repoRoot = join(__dirname, "../../..");
+const hasGitWasm = existsSync(join(repoRoot, "examples/libs/git/bin/git.wasm"));
+const hasGitRemoteHttpWasm = existsSync(join(repoRoot, "examples/libs/git/bin/git-remote-http.wasm"));
+
+test.describe("Git HTTP clone (browser)", () => {
+  test.skip(!hasGitWasm || !hasGitRemoteHttpWasm, "Git wasm binaries not built");
+
+  let httpServer: Server;
+  let httpPort: number;
+  let tmpBase: string;
+
+  test.beforeAll(async () => {
+    tmpBase = `/tmp/git-browser-http-test-${Date.now()}`;
+    const workDir = `${tmpBase}/work`;
+    const bareRepoDir = `${tmpBase}/repo.git`;
+
+    const gitOpts = {
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: "Test",
+        GIT_COMMITTER_NAME: "Test",
+        GIT_AUTHOR_EMAIL: "test@test.com",
+        GIT_COMMITTER_EMAIL: "test@test.com",
+      },
+    };
+
+    execSync(`git init "${workDir}"`, gitOpts);
+    execSync(`echo "hello from wasm-posix-kernel" > "${workDir}/test.txt"`, gitOpts);
+    execSync(`git -C "${workDir}" add test.txt`, gitOpts);
+    execSync(`git -C "${workDir}" commit -m "initial commit"`, gitOpts);
+    execSync(`git clone --bare "${workDir}" "${bareRepoDir}"`, gitOpts);
+    execSync(`git -C "${bareRepoDir}" repack -ad`, gitOpts);
+    execSync(`git -C "${bareRepoDir}" update-server-info`, gitOpts);
+
+    // Serve the bare repo as static files (dumb HTTP protocol).
+    // CORS + CORP headers are required because the browser runs with
+    // Cross-Origin-Embedder-Policy: require-corp, which blocks cross-origin
+    // fetches unless the server opts in.
+    const corsHeaders = {
+      "Access-Control-Allow-Origin": "*",
+      "Cross-Origin-Resource-Policy": "cross-origin",
+    };
+
+    httpServer = createServer((req, res) => {
+      // Handle CORS preflight
+      if (req.method === "OPTIONS") {
+        res.writeHead(204, {
+          ...corsHeaders,
+          "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+          "Access-Control-Allow-Headers": "*",
+        });
+        res.end();
+        return;
+      }
+
+      const urlPath = (req.url || "/").split("?")[0];
+      const filePath = join(bareRepoDir, urlPath);
+      try {
+        if (!existsSync(filePath)) {
+          res.writeHead(404, corsHeaders);
+          res.end("Not found\n");
+          return;
+        }
+        const stat = statSync(filePath);
+        if (stat.isDirectory()) {
+          res.writeHead(404, corsHeaders);
+          res.end("Not found\n");
+          return;
+        }
+        const data = readFileSync(filePath);
+        res.writeHead(200, corsHeaders);
+        res.end(data);
+      } catch {
+        res.writeHead(404, corsHeaders);
+        res.end("Not found\n");
+      }
+    });
+
+    await new Promise<void>((resolve) => httpServer.listen(0, () => resolve()));
+    httpPort = (httpServer.address() as any).port;
+
+    // Verify the bare repo was set up correctly
+    const infoRefsPath = join(bareRepoDir, "info/refs");
+    if (!existsSync(infoRefsPath)) {
+      throw new Error(`info/refs not found at ${infoRefsPath}`);
+    }
+  });
+
+  test.afterAll(() => {
+    httpServer?.close();
+    try { rmSync(tmpBase, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  test("@slow clones a repository via HTTP (dumb protocol)", async ({ page }) => {
+    test.setTimeout(180_000);
+
+    await gotoOrSkip(page, "/pages/git-test/");
+
+    // Wait for git binaries to load
+    await page.waitForFunction(() => (window as any).__gitTestReady === true, {
+      timeout: 60_000,
+    });
+
+    // Run git clone via the wasm kernel
+    const result = await page.evaluate(async (url: string) => {
+      return (window as any).__runGitClone(url);
+    }, `http://localhost:${httpPort}/`);
+
+    if (result.exitCode !== 0) {
+      console.log("Git clone stderr:", result.stderr);
+    }
+
+    expect(result.exitCode).toBe(0);
+    const output = result.stdout + result.stderr;
+    expect(output).toContain("Cloning into");
+  });
 });

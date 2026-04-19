@@ -4,9 +4,11 @@
  * BEAM uses -noshell -eval, so no interactive REPL.
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
-import { loadErlangBundle } from "../../lib/erlang-bundle";
+import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
 import kernelWasmUrl from "../../../../host/wasm/wasm_posix_kernel.wasm?url";
 import beamWasmUrl from "../../../../examples/libs/erlang/bin/beam.wasm?url";
+
+const VFS_IMAGE_URL = import.meta.env.BASE_URL + "erlang.vfs";
 
 // --- DOM elements ---
 const codeEl = document.getElementById("code") as HTMLTextAreaElement;
@@ -32,21 +34,25 @@ function hideStatus() {
 // --- Binary loading ---
 let kernelBytes: ArrayBuffer | null = null;
 let beamBytes: ArrayBuffer | null = null;
+let vfsImageBuf: ArrayBuffer | null = null;
 
 async function loadBinaries(): Promise<string> {
-  if (kernelBytes && beamBytes) return "";
+  if (kernelBytes && beamBytes && vfsImageBuf) return "";
 
-  setStatus("Loading kernel + BEAM VM (~4.5MB)...", "loading");
+  setStatus("Loading kernel + BEAM VM + OTP (~4.5MB)...", "loading");
   const results = await Promise.all([
     fetch(kernelWasmUrl).then((r) => r.arrayBuffer()),
     fetch(beamWasmUrl).then((r) => r.arrayBuffer()),
+    fetch(VFS_IMAGE_URL).then((r) => r.arrayBuffer()),
   ]);
   kernelBytes = results[0];
   beamBytes = results[1];
+  vfsImageBuf = results[2];
 
   return [
     `Kernel: ${(kernelBytes.byteLength / 1024).toFixed(0)}KB`,
     `BEAM: ${(beamBytes.byteLength / (1024 * 1024)).toFixed(1)}MB`,
+    `OTP VFS: ${(vfsImageBuf.byteLength / (1024 * 1024)).toFixed(1)}MB`,
   ].join(", ") + "\n";
 }
 
@@ -277,15 +283,19 @@ async function runBatch() {
       code += ",\nhalt(0, [{flush, false}]).";
     }
 
-    setStatus("Loading OTP runtime...", "loading");
-
     // Halt detection: BEAM's halt() hangs on pthread_join because
     // dirty scheduler threads are blocked on futex. Track output timing
     // and force exit after 3s of idle.
     let lastOutputTime = 0;
     let outputSeen = false;
 
+    const memfs = MemoryFileSystem.fromImage(
+      new Uint8Array(vfsImageBuf!),
+      { maxByteLength: 256 * 1024 * 1024 },
+    );
+
     const kernel = new BrowserKernel({
+      memfs,
       onStdout: (data) => {
         appendOutput(decoder.decode(data));
         lastOutputTime = Date.now();
@@ -296,21 +306,7 @@ async function runBatch() {
     activeKernel = kernel;
     await kernel.init(kernelBytes!);
 
-    // Create OTP directory tree
-    const fs = kernel.fs;
-    for (const d of OTP_DIRS) {
-      try { fs.mkdir(d, 0o755); } catch { /* exists */ }
-    }
-
-    // Load OTP runtime bundle
-    const loaded = await loadErlangBundle(
-      fs,
-      import.meta.env.BASE_URL + "erlang-bundle.json",
-      (current, total) => {
-        setStatus(`Loading OTP runtime... ${current}/${total} files`, "loading");
-      },
-    );
-    setStatus(`OTP loaded (${loaded} files). Starting BEAM...`, "loading");
+    setStatus("Starting BEAM...", "loading");
 
     const args = makeBeamArgs(code);
     setStatus("Running BEAM...", "running");

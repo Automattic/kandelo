@@ -112,7 +112,6 @@ NO_NSEC = YesPlease
 NO_INSTALL_HARDLINKS = YesPlease
 
 # Disable features that require runtime infrastructure we don't have
-NO_UNIX_SOCKETS = YesPlease
 NO_OPENSSL = YesPlease
 
 # Use zlib from sysroot
@@ -160,9 +159,10 @@ if [ "$USE_CURL" = "yes" ]; then
 
 # HTTP/HTTPS transport via libcurl
 # Note: NO_CURL is NOT set — this enables git-remote-http/https
+# All library flags go in CURL_LDFLAGS (not CURL_LIBCURL) because git's
+# Makefile resets CURL_LIBCURL when CURLDIR is unset, then appends CURL_LDFLAGS.
 CURL_CFLAGS = -I$SYSROOT/include
-CURL_LDFLAGS = -L$SYSROOT/lib
-CURL_LIBCURL = -lcurl -lssl -lcrypto -ldl -lz
+CURL_LDFLAGS = -L$SYSROOT/lib -lcurl -lssl -lcrypto -ldl -lz
 ENDCURL
 else
     echo "NO_CURL = YesPlease" >> config.mak
@@ -199,23 +199,38 @@ fi
 SIZE_BEFORE=$(wc -c < "$BIN_DIR/git.wasm" | tr -d ' ')
 echo "==> Pre-asyncify size: $(echo "$SIZE_BEFORE" | numfmt --to=iec 2>/dev/null || echo "${SIZE_BEFORE} bytes")"
 
-# --- Asyncify transform with onlylist ---
-echo "==> Applying asyncify with onlylist..."
-
-# Build comma-separated function list from onlylist file (skip comments and blanks)
-ONLY_FUNCS=$(grep -v '^#' "$ONLYLIST" | grep -v '^\s*$' | tr -d ' ' | tr '\n' ',' | sed 's/,$//')
+# --- Asyncify transform ---
+# Full asyncify (no onlylist) is required because asyncify's onlylist mode
+# corrupts call_indirect instructions in transport_get_remote_refs, causing
+# "null function or function signature mismatch" at runtime. This is a
+# binaryen bug where asyncify changes function signatures for indirect call
+# targets when using --asyncify-onlylist. Full asyncify avoids this by
+# instrumenting all functions uniformly.
+echo "==> Applying asyncify (full)..."
 
 # -g tells wasm-opt to read the name section from the binary
 "$WASM_OPT" -g --asyncify \
     --pass-arg="asyncify-imports@kernel.kernel_fork" \
-    --pass-arg="asyncify-onlylist@${ONLY_FUNCS}" \
     "$BIN_DIR/git.wasm" -o "$BIN_DIR/git.wasm"
 
-# Optimize after asyncify to clean up
-"$WASM_OPT" -O2 "$BIN_DIR/git.wasm" -o "$BIN_DIR/git.wasm"
+# Optimize after asyncify to reduce binary size
+"$WASM_OPT" -g -O2 "$BIN_DIR/git.wasm" -o "$BIN_DIR/git.wasm"
 
 SIZE_AFTER=$(wc -c < "$BIN_DIR/git.wasm" | tr -d ' ')
 echo "==> Post-asyncify size: $(echo "$SIZE_AFTER" | numfmt --to=iec 2>/dev/null || echo "${SIZE_AFTER} bytes")"
+
+# Apply asyncify to git-remote-http too — libcurl may call fork() internally
+# (e.g., for DNS resolution when pthreads are unavailable).
+if [ "$USE_CURL" = "yes" ] && [ -f "$BIN_DIR/git-remote-http.wasm" ]; then
+    echo "==> Applying asyncify to git-remote-http.wasm..."
+    RH_SIZE_BEFORE=$(wc -c < "$BIN_DIR/git-remote-http.wasm" | tr -d ' ')
+    "$WASM_OPT" -g --asyncify \
+        --pass-arg="asyncify-imports@kernel.kernel_fork" \
+        "$BIN_DIR/git-remote-http.wasm" -o "$BIN_DIR/git-remote-http.wasm"
+    "$WASM_OPT" -g -O2 "$BIN_DIR/git-remote-http.wasm" -o "$BIN_DIR/git-remote-http.wasm"
+    RH_SIZE_AFTER=$(wc -c < "$BIN_DIR/git-remote-http.wasm" | tr -d ' ')
+    echo "==> git-remote-http: $(echo "$RH_SIZE_BEFORE" | numfmt --to=iec 2>/dev/null || echo "${RH_SIZE_BEFORE}") -> $(echo "$RH_SIZE_AFTER" | numfmt --to=iec 2>/dev/null || echo "${RH_SIZE_AFTER}")"
+fi
 
 echo ""
 echo "==> git built successfully with asyncify fork support!"

@@ -23,6 +23,7 @@ pub mod signal;
 pub mod socket;
 pub mod syscalls;
 pub mod terminal;
+pub mod unix_socket;
 pub mod wakeup;
 
 #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]

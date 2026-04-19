@@ -110,12 +110,27 @@ git_connect
 git_connect_git
 transport_push
 transport_fetch_refs
+transport_get_remote_refs
+transport_get_remote_bundle_uri
 bidirectional_transfer_loop
 tloop_spawnwait_tasks
 
+# Transport vtable implementations (transport.c) — ALL targets of call_indirect
+# through struct transport_vtable must be in the onlylist for asyncify to handle
+# indirect calls correctly (otherwise signature mismatch at rewind).
+get_refs_via_connect
+get_refs_from_bundle
+fetch_refs_via_pack
+fetch_refs_from_bundle
+git_transport_push
+connect_git
+disconnect_git
+close_bundle
+
 # Transport helper (transport-helper.c) — HTTP/HTTPS remote helper spawning.
-# These functions are on the call stack between transport_fetch_refs and
-# start_command when git forks to exec git-remote-http/https.
+# These functions are on the call stack between transport_fetch_refs /
+# transport_get_remote_refs and start_command when git forks to exec
+# git-remote-http/https.
 get_helper
 release_helper
 disconnect_helper
@@ -125,8 +140,13 @@ process_connect_service
 connect_helper
 set_helper_option
 fetch
+fetch_refs
 fetch_with_fetch
 fetch_with_import
+get_refs_list
+get_refs_list_using_list
+get_bundle_uri
+push_refs
 push_refs_with_push
 push_refs_with_export
 

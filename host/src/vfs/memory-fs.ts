@@ -13,6 +13,22 @@ export interface LazyFileEntry {
   size: number;
 }
 
+/** Options for saving a VFS image. */
+export interface VfsImageOptions {
+  /**
+   * If true, fetch and write all lazy file contents before saving.
+   * The resulting image is self-contained with no external URL dependencies.
+   * If false (default), lazy file metadata is preserved as-is.
+   */
+  materializeAll?: boolean;
+}
+
+// VFS image binary format constants
+const VFS_IMAGE_MAGIC = 0x56465349; // "VFSI"
+const VFS_IMAGE_VERSION = 1;
+const VFS_IMAGE_FLAG_HAS_LAZY = 1 << 0;
+const VFS_IMAGE_HEADER_SIZE = 16; // magic(4) + version(4) + flags(4) + sabLen(4)
+
 export class MemoryFileSystem implements FileSystemBackend {
   private fs: SharedFS;
   /** Lazy files: inode → { path, url, size }. Cleared per-inode after materialization. */
@@ -20,6 +36,11 @@ export class MemoryFileSystem implements FileSystemBackend {
 
   private constructor(fs: SharedFS) {
     this.fs = fs;
+  }
+
+  /** Return the underlying SharedArrayBuffer (for sharing with workers). */
+  get sharedBuffer(): SharedArrayBuffer {
+    return this.fs.buffer as SharedArrayBuffer;
   }
 
   static create(sab: SharedArrayBuffer, maxSizeBytes?: number): MemoryFileSystem {
@@ -96,6 +117,117 @@ export class MemoryFileSystem implements FileSystemBackend {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Save the current filesystem state as a portable binary image.
+   *
+   * With `materializeAll: true`, all lazy files are fetched and written
+   * into the filesystem before saving, producing a self-contained image.
+   * Otherwise, lazy file metadata (path/URL/size) is preserved in the
+   * image and restored on load.
+   */
+  async saveImage(options?: VfsImageOptions): Promise<Uint8Array> {
+    if (options?.materializeAll) {
+      const paths = Array.from(this.lazyFiles.values()).map((e) => e.path);
+      for (const p of paths) {
+        await this.ensureMaterialized(p);
+      }
+    }
+
+    const sabBytes = new Uint8Array(this.fs.buffer);
+    const lazyEntries = this.exportLazyEntries();
+    const hasLazy = lazyEntries.length > 0;
+    const lazyJson = hasLazy
+      ? new TextEncoder().encode(JSON.stringify(lazyEntries))
+      : new Uint8Array(0);
+
+    const totalSize =
+      VFS_IMAGE_HEADER_SIZE + sabBytes.byteLength + 4 + lazyJson.byteLength;
+    const image = new Uint8Array(totalSize);
+    const view = new DataView(image.buffer);
+
+    // Header
+    view.setUint32(0, VFS_IMAGE_MAGIC, true);
+    view.setUint32(4, VFS_IMAGE_VERSION, true);
+    view.setUint32(8, hasLazy ? VFS_IMAGE_FLAG_HAS_LAZY : 0, true);
+    view.setUint32(12, sabBytes.byteLength, true);
+
+    // SAB data — copy from SharedArrayBuffer (can't use set() directly on SAB-backed views in all environments)
+    const sabCopy = new Uint8Array(sabBytes.byteLength);
+    sabCopy.set(sabBytes);
+    image.set(sabCopy, VFS_IMAGE_HEADER_SIZE);
+
+    // Lazy entries
+    const lazyOffset = VFS_IMAGE_HEADER_SIZE + sabBytes.byteLength;
+    view.setUint32(lazyOffset, lazyJson.byteLength, true);
+    if (lazyJson.byteLength > 0) {
+      image.set(lazyJson, lazyOffset + 4);
+    }
+
+    return image;
+  }
+
+  /**
+   * Restore a MemoryFileSystem from a previously saved VFS image.
+   * Allocates a new SharedArrayBuffer and populates it from the image.
+   *
+   * When `maxByteLength` is specified, creates a growable SharedArrayBuffer
+   * so the filesystem can expand beyond the image's original size.
+   */
+  static fromImage(image: Uint8Array, options?: { maxByteLength?: number }): MemoryFileSystem {
+    if (image.byteLength < VFS_IMAGE_HEADER_SIZE) {
+      throw new Error("VFS image too small");
+    }
+
+    const view = new DataView(
+      image.buffer,
+      image.byteOffset,
+      image.byteLength,
+    );
+    const magic = view.getUint32(0, true);
+    if (magic !== VFS_IMAGE_MAGIC) {
+      throw new Error(
+        `Bad VFS image magic: 0x${magic.toString(16)} (expected 0x${VFS_IMAGE_MAGIC.toString(16)})`,
+      );
+    }
+    const version = view.getUint32(4, true);
+    if (version !== VFS_IMAGE_VERSION) {
+      throw new Error(
+        `Unsupported VFS image version: ${version} (expected ${VFS_IMAGE_VERSION})`,
+      );
+    }
+    const flags = view.getUint32(8, true);
+    const sabLen = view.getUint32(12, true);
+
+    if (image.byteLength < VFS_IMAGE_HEADER_SIZE + sabLen + 4) {
+      throw new Error("VFS image truncated");
+    }
+
+    // Restore SharedArrayBuffer (optionally growable)
+    const sabOptions = options?.maxByteLength
+      ? { maxByteLength: options.maxByteLength }
+      : undefined;
+    const sab = new SharedArrayBuffer(sabLen, sabOptions);
+    const sabView = new Uint8Array(sab);
+    sabView.set(image.subarray(VFS_IMAGE_HEADER_SIZE, VFS_IMAGE_HEADER_SIZE + sabLen));
+
+    const mfs = MemoryFileSystem.fromExisting(sab);
+
+    // Restore lazy entries
+    if (flags & VFS_IMAGE_FLAG_HAS_LAZY) {
+      const lazyOffset = VFS_IMAGE_HEADER_SIZE + sabLen;
+      const lazyLen = view.getUint32(lazyOffset, true);
+      if (lazyLen > 0) {
+        const lazyBytes = image.subarray(lazyOffset + 4, lazyOffset + 4 + lazyLen);
+        const entries: LazyFileEntry[] = JSON.parse(
+          new TextDecoder().decode(lazyBytes),
+        );
+        mfs.importLazyEntries(entries);
+      }
+    }
+
+    return mfs;
   }
 
   private adaptStat(s: SfsStatResult): StatResult {

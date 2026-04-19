@@ -3,11 +3,15 @@
  * Two modes:
  *   - Interactive: xterm.js terminal with PTY-backed I/O (real terminal)
  *   - Batch (Script): textarea for entering a full script, click Run
+ *
+ * The shell environment is pre-built into a VFS image (shell.vfs) containing
+ * dash, symlinks, magic database, vim runtime, and system configs. At runtime
+ * we restore the image, register lazy binaries, and spawn dash.
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
+import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
 import { PtyTerminal } from "../../lib/pty-terminal";
 import {
-  populateShellBinaries,
   COREUTILS_NAMES,
   type BinaryDef,
 } from "../../lib/init/shell-binaries";
@@ -18,7 +22,6 @@ import grepWasmUrl from "../../../../examples/libs/grep/bin/grep.wasm?url";
 import sedWasmUrl from "../../../../examples/libs/sed/bin/sed.wasm?url";
 import bcWasmUrl from "../../../../examples/libs/bc/bin/bc.wasm?url";
 import fileWasmUrl from "../../../../examples/libs/file/bin/file.wasm?url";
-import fileMagicUrl from "../../../../examples/libs/file/bin/magic.lite?url";
 import lessWasmUrl from "../../../../examples/libs/less/bin/less.wasm?url";
 import m4WasmUrl from "../../../../examples/libs/m4/bin/m4.wasm?url";
 import makeWasmUrl from "../../../../examples/libs/make/bin/make.wasm?url";
@@ -35,9 +38,7 @@ import zipWasmUrl from "../../../../examples/libs/zip/bin/zip.wasm?url";
 import unzipWasmUrl from "../../../../examples/libs/unzip/bin/unzip.wasm?url";
 import nanoWasmUrl from "../../../../examples/libs/nano/bin/nano.wasm?url";
 import vimWasmUrl from "../../../../examples/libs/vim/bin/vim.wasm?url";
-import vimRuntimeBundleUrl from "../../public/vim-runtime-bundle.json?url";
 import lsofWasmUrl from "../../../../examples/lsof.wasm?url";
-import { loadVimRuntime } from "../../lib/vim-runtime";
 import "@xterm/xterm/css/xterm.css";
 
 // --- DOM elements ---
@@ -56,6 +57,9 @@ const interactiveView = document.getElementById("interactive-view") as HTMLDivEl
 const batchView = document.getElementById("batch-view") as HTMLDivElement;
 
 const encoder = new TextEncoder();
+
+const VFS_IMAGE_URL = import.meta.env.BASE_URL + "shell.vfs";
+let vfsImageBuf: ArrayBuffer | null = null;
 
 // --- Mode switching ---
 let currentMode: "interactive" | "batch" = "interactive";
@@ -92,14 +96,6 @@ let kernelBytes: ArrayBuffer | null = null;
 let dashBytes: ArrayBuffer | null = null;
 let lazyBinaries: BinaryDef[] = [];
 
-/** Data files to load eagerly (small, needed at runtime by utilities). */
-interface DataFile {
-  url: string;
-  path: string;
-  data?: ArrayBuffer;
-}
-let dataFiles: DataFile[] = [];
-
 /** Fetch file size via HEAD request. Returns 0 on failure. */
 async function fetchSize(url: string): Promise<number> {
   try {
@@ -112,17 +108,27 @@ async function fetchSize(url: string): Promise<number> {
 }
 
 async function loadBinaries(): Promise<string> {
-  if (kernelBytes && dashBytes) return "";
+  if (kernelBytes && dashBytes && vfsImageBuf) return "";
 
-  setStatus("Loading kernel and dash...", "loading");
+  setStatus("Loading kernel, dash, and VFS image...", "loading");
 
-  // Eagerly fetch only the kernel and dash (required for startup)
-  const [kernelResult, dashResult] = await Promise.all([
+  // Eagerly fetch the kernel, dash (needed for spawning), and VFS image
+  const [kernelResult, dashResult, vfsResult] = await Promise.all([
     fetch(kernelWasmUrl).then((r) => r.arrayBuffer()),
     fetch(dashWasmUrl).then((r) => r.arrayBuffer()),
+    fetch(VFS_IMAGE_URL).then((r) => {
+      if (!r.ok) {
+        throw new Error(
+          `Failed to load VFS image from ${VFS_IMAGE_URL} (${r.status}). ` +
+          `Run: bash examples/browser/scripts/build-shell-vfs-image.sh`
+        );
+      }
+      return r.arrayBuffer();
+    }),
   ]);
   kernelBytes = kernelResult;
   dashBytes = dashResult;
+  vfsImageBuf = vfsResult;
 
   // Fetch sizes for lazy-loaded utilities (HEAD requests, ~200 bytes each)
   const lazyDefs = [
@@ -150,70 +156,24 @@ async function loadBinaries(): Promise<string> {
     { url: vimWasmUrl, path: "/usr/bin/vim", symlinks: ["/bin/vim", "/usr/bin/vi", "/bin/vi"] },
   ];
 
-  // Fetch sizes for lazy binaries and data files in parallel
-  const dataFileDefs: DataFile[] = [
-    { url: fileMagicUrl, path: "/usr/share/misc/magic" },
-  ];
-  const [sizes, ...dataResults] = await Promise.all([
-    Promise.all(lazyDefs.map(d => fetchSize(d.url))),
-    ...dataFileDefs.map(async d => {
-      try {
-        const resp = await fetch(d.url);
-        return resp.ok ? await resp.arrayBuffer() : null;
-      } catch { return null; }
-    }),
-  ]);
+  const sizes = await Promise.all(lazyDefs.map(d => fetchSize(d.url)));
   lazyBinaries = [];
   for (let i = 0; i < lazyDefs.length; i++) {
     if (sizes[i] > 0) {
       lazyBinaries.push({ ...lazyDefs[i], size: sizes[i] });
     }
   }
-  dataFiles = [];
-  for (let i = 0; i < dataFileDefs.length; i++) {
-    if (dataResults[i]) {
-      dataFiles.push({ ...dataFileDefs[i], data: dataResults[i]! });
-    }
-  }
 
   const parts = [
     `Kernel: ${(kernelBytes.byteLength / 1024).toFixed(0)}KB`,
     `dash: ${(dashBytes.byteLength / 1024).toFixed(0)}KB`,
+    `VFS image: ${(vfsImageBuf.byteLength / (1024 * 1024)).toFixed(1)}MB`,
   ];
   for (const lb of lazyBinaries) {
     const name = lb.path.split("/").pop()!;
     parts.push(`${name}: ${(lb.size / (1024 * 1024)).toFixed(1)}MB (lazy)`);
   }
   return parts.join(", ") + "\n";
-}
-
-/**
- * Populate the virtual filesystem with executable binaries.
- * Delegates to the shared populateShellBinaries() helper.
- */
-async function populateExecBinaries(kernel: BrowserKernel): Promise<void> {
-  const fs = kernel.fs;
-
-  // Use shared helper for dirs, gitconfig, dash, lazy binaries, data files
-  populateShellBinaries(
-    kernel,
-    dashBytes!,
-    lazyBinaries,
-    dataFiles
-      .filter((df) => df.data)
-      .map((df) => ({ path: df.path, data: new Uint8Array(df.data!) })),
-  );
-
-  // Write shell profile: color aliases for interactive sessions.
-  // dash reads the file pointed to by $ENV on interactive startup.
-  const profile = "alias ls='ls --color=auto'\nalias grep='grep --color=auto'\n";
-  const profileBytes = new TextEncoder().encode(profile);
-  const pfd = fs.open("/etc/profile", 0x241, 0o644);
-  fs.write(pfd, profileBytes, null, profileBytes.length);
-  fs.close(pfd);
-
-  // Load Vim runtime files (syntax highlighting, filetype detection, etc.)
-  await loadVimRuntime(fs, vimRuntimeBundleUrl);
 }
 
 // ============================================================
@@ -235,10 +195,16 @@ async function startInteractiveShell() {
 
     setStatus("Starting shell...", "running");
 
-    const kernel = new BrowserKernel({});
+    const memfs = MemoryFileSystem.fromImage(new Uint8Array(vfsImageBuf!), {
+      maxByteLength: 256 * 1024 * 1024,
+    });
+
+    const kernel = new BrowserKernel({ memfs });
 
     await kernel.init(kernelBytes!);
-    await populateExecBinaries(kernel);
+    kernel.registerLazyFiles(
+      lazyBinaries.map(lb => ({ path: lb.path, url: lb.url, size: lb.size, mode: 0o755 })),
+    );
     activeKernel = kernel;
 
     // Create PTY terminal
@@ -484,13 +450,20 @@ async function runBatch() {
     const commands = codeEl.value;
     setStatus("Running shell...", "running");
 
+    const memfs = MemoryFileSystem.fromImage(new Uint8Array(vfsImageBuf!), {
+      maxByteLength: 256 * 1024 * 1024,
+    });
+
     const kernel = new BrowserKernel({
+      memfs,
       onStdout: (data) => appendBatchOutput(decoder.decode(data)),
       onStderr: (data) => appendBatchOutput(decoder.decode(data), "stderr"),
     });
 
     await kernel.init(kernelBytes!);
-    await populateExecBinaries(kernel);
+    kernel.registerLazyFiles(
+      lazyBinaries.map(lb => ({ path: lb.path, url: lb.url, size: lb.size, mode: 0o755 })),
+    );
 
     const exitCode = await kernel.spawn(dashBytes!, ["dash"], {
       env: [

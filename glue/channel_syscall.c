@@ -25,6 +25,10 @@
 
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* musl's errno is a macro expanding to (*__errno_location()). We only
  * need to set it on error, so we reference the function directly to
  * avoid pulling in the full errno.h header during cross-compilation. */
@@ -387,4 +391,8 @@ long __syscall_cp(long n, long a1, long a2, long a3, long a4, long a5,
                         (long long)a3, (long long)a4, (long long)a5,
                         (long long)a6);
 }
+
+#ifdef __cplusplus
+}
+#endif
 

@@ -1,7 +1,7 @@
 /**
  * WordPress browser demo — runs nginx + PHP-FPM inside the POSIX kernel,
- * with WordPress + SQLite Database Integration plugin pre-loaded into
- * the in-memory filesystem.
+ * with WordPress + SQLite Database Integration plugin pre-loaded from a
+ * VFS image for instant boot.
  *
  * Uses SystemInit to orchestrate boot from /etc/init.d/ service descriptors.
  *
@@ -9,28 +9,24 @@
  *   pid 1: php-fpm master -> forks pid 2 (worker)
  *   pid 3: nginx master   -> forks pid 4, 5 (workers)
  *
- * WordPress bundle is loaded AFTER daemons start (via onBeforeService for
- * the shell service) but BEFORE the interactive shell. The VFS uses
- * SharedArrayBuffer, so files loaded after fork are visible to all workers.
+ * The VFS image (wordpress.vfs) is built at build time and contains all
+ * WordPress files, system configs, directory structure, dash binary, and
+ * symlinks. At runtime we only need to:
+ *   1. Restore the image into a MemoryFileSystem
+ *   2. Register lazy binaries (nginx, php-fpm, coreutils, grep, sed)
+ *   3. Write the dynamic wp-config.php (depends on runtime URL/protocol)
  *
  * Service worker intercepts ${BASE_URL}app/* requests and routes them through
  * the kernel's TCP stack to nginx.
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
+import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
 import { SystemInit } from "../../lib/init/system-init";
-import { populateNginxConfig } from "../../lib/init/nginx-config";
-import { populatePhpFpmConfig } from "../../lib/init/php-fpm-config";
-import {
-  populateShellBinaries,
-  type BinaryDef,
-  COREUTILS_NAMES,
-} from "../../lib/init/shell-binaries";
-import { writeVfsFile, writeInitDescriptor, ensureDirRecursive } from "../../lib/init/vfs-utils";
-import { loadWordPressBundle } from "../../lib/wp-bundle";
+import { COREUTILS_NAMES } from "../../lib/init/shell-binaries";
+import { writeVfsFile } from "../../lib/init/vfs-utils";
 import kernelWasmUrl from "../../../../host/wasm/wasm_posix_kernel.wasm?url";
 import nginxWasmUrl from "../../../../examples/nginx/nginx.wasm?url";
 import phpFpmWasmUrl from "../../../../examples/nginx/php-fpm.wasm?url";
-import dashWasmUrl from "../../../../examples/libs/dash/bin/dash.wasm?url";
 import coreutilsWasmUrl from "../../../../examples/libs/coreutils/bin/coreutils.wasm?url";
 import grepWasmUrl from "../../../../examples/libs/grep/bin/grep.wasm?url";
 import sedWasmUrl from "../../../../examples/libs/sed/bin/sed.wasm?url";
@@ -43,6 +39,7 @@ const APP_PATH = import.meta.env.BASE_URL + "app";
 // Capture the real page protocol so wp-config.php generates correct URLs
 const PROTO = window.location.protocol === "https:" ? "https" : "http";
 const SW_URL = import.meta.env.BASE_URL + "service-worker.js";
+const VFS_IMAGE_URL = import.meta.env.BASE_URL + "wordpress.vfs";
 
 const log = document.getElementById("log") as HTMLPreElement;
 const startBtn = document.getElementById("start") as HTMLButtonElement;
@@ -67,66 +64,9 @@ function setStatus(text: string, type: "loading" | "running" | "error") {
   statusDiv.className = `status ${type}`;
 }
 
-/** Nginx location config for WordPress.
- *
- * Static asset directories are served directly by nginx (no PHP-FPM
- * overhead). Everything else goes through the FPM router which handles
- * directory index resolution, PHP execution, and the front controller
- * fallback for pretty URLs.
- *
- * This avoids the bottleneck of routing CSS/JS/image requests through
- * the single PHP-FPM worker. Without PCRE we can't match by extension,
- * but prefix locations for known static-only directories work fine.
- */
-const FASTCGI_LOCATION = `        # Static asset directories — served directly by nginx
-        location /wp-includes/css/ { }
-        location /wp-includes/js/ { }
-        location /wp-includes/fonts/ { }
-        location /wp-includes/images/ { }
-        location /wp-admin/css/ { }
-        location /wp-admin/js/ { }
-        location /wp-admin/images/ { }
-        location /wp-content/ {
-            try_files $uri @fpm;
-        }
-
-        # Everything else through PHP-FPM (PHP pages, front controller)
-        location @fpm {
-            fastcgi_pass 127.0.0.1:9000;
-            fastcgi_param SCRIPT_FILENAME /var/www/fpm-router.php;
-            fastcgi_param DOCUMENT_ROOT $document_root;
-            fastcgi_param DOCUMENT_URI $document_uri;
-            fastcgi_param QUERY_STRING $query_string;
-            fastcgi_param REQUEST_METHOD $request_method;
-            fastcgi_param CONTENT_TYPE $content_type;
-            fastcgi_param CONTENT_LENGTH $content_length;
-            fastcgi_param REQUEST_URI $request_uri;
-            fastcgi_param SERVER_PROTOCOL $server_protocol;
-            fastcgi_param SERVER_PORT $server_port;
-            fastcgi_param SERVER_NAME $server_name;
-            fastcgi_param HTTP_HOST $http_host;
-            fastcgi_param REDIRECT_STATUS 200;
-        }
-
-        location / {
-            fastcgi_pass 127.0.0.1:9000;
-            fastcgi_param SCRIPT_FILENAME /var/www/fpm-router.php;
-            fastcgi_param DOCUMENT_ROOT $document_root;
-            fastcgi_param DOCUMENT_URI $document_uri;
-            fastcgi_param QUERY_STRING $query_string;
-            fastcgi_param REQUEST_METHOD $request_method;
-            fastcgi_param CONTENT_TYPE $content_type;
-            fastcgi_param CONTENT_LENGTH $content_length;
-            fastcgi_param REQUEST_URI $request_uri;
-            fastcgi_param SERVER_PROTOCOL $server_protocol;
-            fastcgi_param SERVER_PORT $server_port;
-            fastcgi_param SERVER_NAME $server_name;
-            fastcgi_param HTTP_HOST $http_host;
-            fastcgi_param REDIRECT_STATUS 200;
-        }`;
-
 // Custom wp-config.php — sets WP_HOME/WP_SITEURL with app prefix so
-// WordPress generates URLs the service worker can intercept
+// WordPress generates URLs the service worker can intercept.
+// This depends on runtime APP_PREFIX and PROTO, so it can't be in the image.
 const WP_CONFIG_PHP = `<?php
 define('DB_NAME', 'wordpress');
 define('DB_USER', '');
@@ -172,15 +112,6 @@ if ( ! defined( 'ABSPATH' ) ) {
 require_once ABSPATH . 'wp-settings.php';
 `;
 
-// mu-plugin to disable operations that hang or are unnecessary in Wasm
-const MU_PLUGIN_PHP = `<?php
-add_filter('pre_wp_mail', '__return_false');
-add_filter('pre_http_request', function($pre, $args, $url) {
-    return new WP_Error('http_disabled', 'HTTP requests disabled in Wasm');
-}, 10, 3);
-if (!defined('DISALLOW_FILE_MODS')) define('DISALLOW_FILE_MODS', true);
-`;
-
 /** Fetch file size via HEAD request. Returns 0 on failure. */
 async function fetchSize(url: string): Promise<number> {
   try {
@@ -201,42 +132,46 @@ async function start() {
   setStatus("Loading WordPress...", "loading");
 
   try {
-    // Fetch kernel and dash eagerly; get nginx/php-fpm sizes for lazy registration
-    appendLog("Fetching kernel and dash wasm...\n", "info");
-    const [kernelBytes, dashBytes, nginxSize, phpFpmSize] = await Promise.all([
-      fetch(kernelWasmUrl).then((r) => r.arrayBuffer()),
-      fetch(dashWasmUrl).then((r) => r.arrayBuffer()),
-      fetchSize(nginxWasmUrl),
-      fetchSize(phpFpmWasmUrl),
-    ]);
+    // Fetch kernel wasm, VFS image, and lazy binary sizes in parallel
+    appendLog("Fetching kernel wasm and VFS image...\n", "info");
+    const [kernelBytes, vfsImageBuf, nginxSize, phpFpmSize, coreutilsSize, grepSize, sedSize] =
+      await Promise.all([
+        fetch(kernelWasmUrl).then((r) => r.arrayBuffer()),
+        fetch(VFS_IMAGE_URL).then((r) => {
+          if (!r.ok) {
+            throw new Error(
+              `Failed to load VFS image from ${VFS_IMAGE_URL} (${r.status}). ` +
+              `Run: bash examples/browser/scripts/build-wp-vfs-image.sh`
+            );
+          }
+          return r.arrayBuffer();
+        }),
+        fetchSize(nginxWasmUrl),
+        fetchSize(phpFpmWasmUrl),
+        fetchSize(coreutilsWasmUrl),
+        fetchSize(grepWasmUrl),
+        fetchSize(sedWasmUrl),
+      ]);
+
     appendLog(
       `Kernel: ${(kernelBytes.byteLength / 1024).toFixed(0)}KB, ` +
-      `dash: ${(dashBytes.byteLength / 1024).toFixed(0)}KB, ` +
-      `nginx: ${(nginxSize / (1024 * 1024)).toFixed(1)}MB (lazy), ` +
-      `PHP-FPM: ${(phpFpmSize / (1024 * 1024)).toFixed(1)}MB (lazy)\n`,
+      `VFS image: ${(vfsImageBuf.byteLength / (1024 * 1024)).toFixed(1)}MB\n`,
       "info",
     );
 
-    // Fetch sizes for shell utility binaries
-    const lazyDefs = [
-      { url: coreutilsWasmUrl, path: "/bin/coreutils", symlinks: [...COREUTILS_NAMES, "["].flatMap(n => [`/bin/${n}`, `/usr/bin/${n}`]) },
-      { url: grepWasmUrl, path: "/usr/bin/grep", symlinks: ["/bin/grep", "/usr/bin/egrep", "/bin/egrep", "/usr/bin/fgrep", "/bin/fgrep"] },
-      { url: sedWasmUrl, path: "/usr/bin/sed", symlinks: ["/bin/sed"] },
-    ];
-    const sizes = await Promise.all(lazyDefs.map((d) => fetchSize(d.url)));
-    const lazyBinaries: BinaryDef[] = [];
-    for (let i = 0; i < lazyDefs.length; i++) {
-      if (sizes[i] > 0) {
-        lazyBinaries.push({ ...lazyDefs[i], size: sizes[i] });
-      }
-    }
+    // Restore MemoryFileSystem from the pre-built VFS image
+    appendLog("Restoring VFS from image...\n", "info");
+    const maxFsSize = 1024 * 1024 * 1024; // 1GB max growth
+    const memfs = MemoryFileSystem.fromImage(new Uint8Array(vfsImageBuf), {
+      maxByteLength: maxFsSize,
+    });
 
-    // Create kernel with larger FS for WordPress
+    // Create kernel with pre-built filesystem
     // Use 4096 pages (256MB) per process instead of default 16384 (1GB)
     // to avoid exhausting browser memory with 5+ concurrent processes
     kernel = new BrowserKernel({
+      memfs,
       maxWorkers: 8,
-      fsSize: 256 * 1024 * 1024,
       maxMemoryPages: 4096,
       onStdout: (data) => appendLog(decoder.decode(data)),
       onStderr: (data) => appendLog(decoder.decode(data), "stderr"),
@@ -244,61 +179,33 @@ async function start() {
 
     await kernel.init(kernelBytes);
 
-    // Populate VFS
-    appendLog("Populating filesystem...\n", "info");
-    const fs = kernel.fs;
-
-    // Shell binaries (dash eager, utilities lazy)
-    populateShellBinaries(kernel, dashBytes, lazyBinaries);
-
-    // nginx and php-fpm binaries as lazy files
-    const lazyFiles: Array<{ path: string; url: string; size: number; mode: number }> = [];
+    // Register lazy binaries — the image already has all symlinks,
+    // we just need to create the stub files and register URLs
+    const lazyFiles: Array<{ path: string; url: string; size: number; mode?: number }> = [];
     if (nginxSize > 0) {
       lazyFiles.push({ path: "/usr/sbin/nginx", url: nginxWasmUrl, size: nginxSize, mode: 0o755 });
     }
     if (phpFpmSize > 0) {
       lazyFiles.push({ path: "/usr/sbin/php-fpm", url: phpFpmWasmUrl, size: phpFpmSize, mode: 0o755 });
     }
+    if (coreutilsSize > 0) {
+      lazyFiles.push({ path: "/bin/coreutils", url: coreutilsWasmUrl, size: coreutilsSize, mode: 0o755 });
+    }
+    if (grepSize > 0) {
+      lazyFiles.push({ path: "/usr/bin/grep", url: grepWasmUrl, size: grepSize, mode: 0o755 });
+    }
+    if (sedSize > 0) {
+      lazyFiles.push({ path: "/usr/bin/sed", url: sedWasmUrl, size: sedSize, mode: 0o755 });
+    }
     if (lazyFiles.length > 0) {
       kernel.registerLazyFiles(lazyFiles);
     }
-    // Create /usr/sbin if populateShellBinaries didn't
-    try { fs.mkdir("/usr/sbin", 0o755); } catch { /* exists */ }
 
-    // nginx config and directories — WordPress routes all requests through FPM router
-    populateNginxConfig(fs, {
-      extraLocations: FASTCGI_LOCATION,
-    });
+    // Write dynamic wp-config.php (depends on runtime APP_PREFIX and PROTO)
+    writeVfsFile(kernel.fs, "/var/www/html/wp-config.php", WP_CONFIG_PHP);
 
-    // php-fpm config and directories
-    populatePhpFpmConfig(fs);
-
-    // WordPress-specific directories
-    ensureDirRecursive(fs, "/var/www/html/wp-content/database");
-    ensureDirRecursive(fs, "/var/www/html/wp-content/mu-plugins");
-
-    // Write init service descriptors
-    writeInitDescriptor(fs, "10-php-fpm", {
-      type: "daemon",
-      command: "/usr/sbin/php-fpm -y /etc/php-fpm.conf -c /dev/null --nodaemonize",
-      ready: "delay:5000",
-    });
-
-    writeInitDescriptor(fs, "20-nginx", {
-      type: "daemon",
-      command: "/usr/sbin/nginx -p /etc/nginx -c nginx.conf",
-      depends: "php-fpm",
-      ready: "delay:3000",
-      bridge: "8080",
-    });
-
-    writeInitDescriptor(fs, "99-shell", {
-      type: "interactive",
-      command: "/bin/dash -i",
-      env: "TERM=xterm-256color PS1=\\w\\$\\  HOME=/root PATH=/usr/local/bin:/usr/bin:/bin",
-      pty: "true",
-      cwd: "/root",
-    });
+    // Remove any pre-existing database so WordPress starts with a fresh install
+    try { kernel.fs.unlink("/var/www/html/wp-content/database/wordpress.db"); } catch { /* not present */ }
 
     // Create SystemInit and boot
     setStatus("Booting system...", "loading");
@@ -309,28 +216,7 @@ async function start() {
       appPrefix: APP_PREFIX,
       onBeforeService: async (name) => {
         if (name === "shell") {
-          // Load WordPress bundle after daemons are running but before the shell
-          setStatus("Loading WordPress files...", "loading");
-          const loaded = await loadWordPressBundle(
-            kernel!.fs,
-            import.meta.env.BASE_URL + "wp-bundle.json",
-            (current, total) => {
-              if (current % 500 === 0 || current === total) {
-                appendLog(`  ${current}/${total} files\n`, "info");
-              }
-            },
-          );
-          appendLog(`WordPress loaded: ${loaded} files\n`, "info");
-
-          // Remove any pre-existing database so WordPress starts with a fresh install
-          try { kernel!.fs.unlink("/var/www/html/wp-content/database/wordpress.db"); } catch { /* not present */ }
-
-          // Overwrite wp-config.php so WordPress generates URLs with the app
-          // prefix that the service worker intercepts
-          writeVfsFile(kernel!.fs, "/var/www/html/wp-config.php", WP_CONFIG_PHP);
-          writeVfsFile(kernel!.fs, "/var/www/html/wp-content/mu-plugins/wasm-optimizations.php", MU_PLUGIN_PHP);
-
-          // Load the frame now that WordPress files are in the VFS
+          // WordPress files are already in the VFS from the image — just show the frame
           setStatus("WordPress running!", "running");
           reloadBtn.disabled = false;
           loadFrame();

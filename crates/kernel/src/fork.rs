@@ -505,6 +505,16 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
                 }
                 // Global pipes flag (cross-process loopback)
                 w.write_u32(if sock.global_pipes { 1 } else { 0 })?;
+                // bind_path for AF_UNIX
+                match &sock.bind_path {
+                    Some(p) => {
+                        w.write_u32(p.len() as u32)?;
+                        w.write_bytes(p)?;
+                    }
+                    None => {
+                        w.write_u32(0xFFFFFFFF)?;
+                    }
+                }
                 // Skip dgram_queue for fork (child starts with empty queue)
             }
         }
@@ -850,6 +860,14 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
             sock.peer_port = peer_port;
             sock.listen_backlog = listen_backlog;
             sock.global_pipes = r.read_u32()? != 0;
+            // bind_path for AF_UNIX
+            if r.remaining() >= 4 {
+                let bp_len = r.read_u32()?;
+                if bp_len != 0xFFFFFFFF {
+                    let bp = r.read_bytes(bp_len as usize)?;
+                    sock.bind_path = Some(bp.to_vec());
+                }
+            }
             sockets.insert_at(idx, sock);
         }
     }

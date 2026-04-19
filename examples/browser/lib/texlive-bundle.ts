@@ -1,8 +1,7 @@
 /**
- * Python stdlib filesystem bundle loader.
- *
- * Loads a pre-built Python stdlib bundle (JSON manifest + file data) into
- * the kernel's MemoryFileSystem. Same format as wp-bundle.
+ * TeX Live distribution bundle loader.
+ * Loads a pre-built bundle (JSON manifest + file data) into
+ * the kernel's MemoryFileSystem.
  *
  * Bundle format: { files: Array<{ path: string, data: string }> }
  * where data is base64-encoded file contents.
@@ -30,7 +29,6 @@ function base64Decode(str: string): Uint8Array {
     const b = b64Chars.indexOf(str[i + 1]);
     const c = b64Chars.indexOf(str[i + 2]);
     const d = b64Chars.indexOf(str[i + 3]);
-    // Padding characters ('=') return -1 from indexOf; treat as 0
     const n = (a << 18) | (b << 12) | (Math.max(0, c) << 6) | Math.max(0, d);
     bytes[pos++] = (n >> 16) & 0xff;
     if (pos < bytes.length) bytes[pos++] = (n >> 8) & 0xff;
@@ -40,9 +38,9 @@ function base64Decode(str: string): Uint8Array {
 }
 
 /**
- * Load a Python stdlib bundle into the given MemoryFileSystem.
+ * Load a TeX Live distribution bundle into the given MemoryFileSystem.
  */
-export async function loadPythonBundle(
+export async function loadTexliveBundle(
   fs: MemoryFileSystem,
   bundleUrl: string,
   onProgress?: (current: number, total: number) => void,
@@ -50,8 +48,8 @@ export async function loadPythonBundle(
   const response = await fetch(bundleUrl);
   if (!response.ok) {
     throw new Error(
-      `Failed to load Python stdlib bundle from ${bundleUrl} (${response.status}). ` +
-      `Run: bash examples/browser/scripts/build-python-bundle.sh`
+      `Failed to load TeX Live bundle from ${bundleUrl} (${response.status}). ` +
+      `Run: bash examples/browser/scripts/build-texlive-bundle.sh`
     );
   }
   const bundle: Bundle = await response.json();
@@ -83,7 +81,7 @@ export async function loadPythonBundle(
     fs.close(fd);
 
     loaded++;
-    if (onProgress && loaded % 50 === 0) {
+    if (onProgress && loaded % 100 === 0) {
       onProgress(loaded, bundle.files.length);
     }
   }

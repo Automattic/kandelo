@@ -222,14 +222,14 @@ async function start() {
     writeInitDescriptor(fs, "10-php-fpm", {
       type: "daemon",
       command: "/usr/sbin/php-fpm -y /etc/php-fpm.conf -c /dev/null --nodaemonize",
-      ready: "delay:3000",
+      ready: "port:9000",
     });
 
     writeInitDescriptor(fs, "20-nginx", {
       type: "daemon",
       command: "/usr/sbin/nginx -p /etc/nginx -c nginx.conf",
       depends: "php-fpm",
-      ready: "delay:2000",
+      ready: "port:8080",
       bridge: "8080",
     });
 

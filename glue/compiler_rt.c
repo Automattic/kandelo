@@ -24,6 +24,10 @@
 #include <stdint.h>
 #include <string.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef long double fp128;
 
 /* Raw bit representation of fp128 as two 64-bit words (little-endian). */
@@ -1251,3 +1255,7 @@ __int128 __multi3(__int128 a, __int128 b) {
     result.parts.hi = hi;
     return result.i;
 }
+
+#ifdef __cplusplus
+}
+#endif

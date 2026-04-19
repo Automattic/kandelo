@@ -225,7 +225,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
   const pid = 100;
 
   const kernelWorker = new CentralizedKernelWorker(
-    { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true },
+    { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true, enableSyscallLog: !!process.env.KERNEL_SYSCALL_LOG },
     io,
     {
       onFork: async (parentPid, childPid, parentMemory) => {
@@ -260,7 +260,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         const childWorker = workerAdapter.createWorker(childInitData);
         workers.set(childPid, childWorker);
         processProgramBytes.set(childPid, parentProgram);
-        childWorker.on("error", () => {
+        childWorker.on("error", (err: Error) => {
           kernelWorker.unregisterProcess(childPid);
           workers.delete(childPid);
         });
