@@ -21,7 +21,7 @@ import {
 } from "../../lib/init/vfs-utils";
 import { MySqlBrowserClient } from "../../lib/mysql-client";
 
-// Import benchmark wasm URLs via Vite
+// Micro-benchmark wasm URLs (always built by scripts/build-programs.sh)
 import pipeWasmUrl from "../../../../benchmarks/wasm/pipe-throughput.wasm?url";
 import fileWasmUrl from "../../../../benchmarks/wasm/file-throughput.wasm?url";
 import syscallWasmUrl from "../../../../benchmarks/wasm/syscall-latency.wasm?url";
@@ -32,28 +32,69 @@ import helloWasmUrl from "../../../../benchmarks/wasm/hello.wasm?url";
 // Kernel
 import kernelWasmUrl from "../../../../host/wasm/wasm_posix_kernel.wasm?url";
 
-// Erlang
-import beamWasmUrl from "../../../../examples/libs/erlang/bin/beam.wasm?url";
-
-// WordPress / nginx / PHP-FPM
-import nginxWasmUrl from "../../../../examples/nginx/nginx.wasm?url";
-import phpFpmWasmUrl from "../../../../examples/nginx/php-fpm.wasm?url";
-import coreutilsWasmUrl from "../../../../examples/libs/coreutils/bin/coreutils.wasm?url";
-import grepWasmUrl from "../../../../examples/libs/grep/bin/grep.wasm?url";
-import sedWasmUrl from "../../../../examples/libs/sed/bin/sed.wasm?url";
-
-// VFS images
+// VFS images (fetched lazily; 404 handled per-suite)
 const ERLANG_VFS_URL = import.meta.env.BASE_URL + "erlang.vfs";
 const WP_VFS_URL = import.meta.env.BASE_URL + "wordpress.vfs";
 
-// MariaDB
-import mariadbWasmUrl from "../../../../examples/libs/mariadb/mariadb-install/bin/mariadbd.wasm?url";
-import systemTablesUrl from "../../../../examples/libs/mariadb/mariadb-install/share/mysql/mysql_system_tables.sql?url";
-import systemDataUrl from "../../../../examples/libs/mariadb/mariadb-install/share/mysql/mysql_system_tables_data.sql?url";
+/**
+ * Optional application-binary URL imports are resolved via `import.meta.glob`.
+ * Static top-level `?url` imports fail the whole page load if any file is
+ * missing, which hangs every suite on the Playwright harness — even
+ * micro-benchmarks that don't need the missing binary. `import.meta.glob`
+ * returns an empty map for missing files, so missing binaries surface as a
+ * per-suite skip with a helpful build hint instead of blocking page load.
+ */
+// Paths are relative to this file (examples/browser/pages/benchmark/main.ts).
+// Vite normalizes glob result keys, so we match against the canonical form
+// (three `..` up to reach examples/, not four via the repo root).
+const OPTIONAL_URLS = {
+  ...import.meta.glob("../../../libs/erlang/bin/beam.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../nginx/nginx.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../nginx/php-fpm.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../libs/coreutils/bin/coreutils.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../libs/grep/bin/grep.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../libs/sed/bin/sed.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../libs/mariadb/mariadb-install/bin/mariadbd.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../libs/mariadb/mariadb-install/share/mysql/mysql_system_tables.sql", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../libs/mariadb/mariadb-install/share/mysql/mysql_system_tables_data.sql", {
+    query: "?url", import: "default",
+  }),
+} as Record<string, () => Promise<string>>;
+
+async function loadOptionalUrl(
+  relPath: string,
+  label: string,
+  buildHint: string,
+): Promise<string> {
+  const loader = OPTIONAL_URLS[relPath];
+  if (!loader) {
+    throw new Error(`${label} is not built. Run: ${buildHint}`);
+  }
+  return loader();
+}
 
 const logEl = document.getElementById("log")!;
 function log(msg: string) {
   logEl.textContent += msg + "\n";
+  // Also forward to console so the Playwright harness can surface progress
+  // and suite-skip reasons (e.g. "missing binary, run …").
+  console.log(msg);
 }
 
 async function fetchWasm(url: string): Promise<ArrayBuffer> {
@@ -185,11 +226,28 @@ io:format("total_messages=~p~n", [TotalMessages]),
 halt(0, [{flush, false}]).`;
 
 async function runErlangRing(): Promise<Record<string, number>> {
+  let beamWasmUrl: string;
+  try {
+    beamWasmUrl = await loadOptionalUrl(
+      "../../../libs/erlang/bin/beam.wasm",
+      "BEAM binary",
+      "bash examples/libs/erlang/build-erlang.sh",
+    );
+  } catch (err) {
+    log(`  Skipping erlang-ring: ${(err as Error).message}`);
+    return {};
+  }
+
   log("  Loading BEAM + OTP runtime...");
+  const vfsResp = await fetch(ERLANG_VFS_URL);
+  if (!vfsResp.ok) {
+    log(`  Skipping erlang-ring: ${ERLANG_VFS_URL} not found (HTTP ${vfsResp.status}). Build: bash examples/browser/scripts/build-erlang-vfs-image.sh`);
+    return {};
+  }
   const [kernelBytes, beamBytes, vfsImageBuf] = await Promise.all([
     fetchWasm(kernelWasmUrl),
     fetchWasm(beamWasmUrl),
-    fetch(ERLANG_VFS_URL).then((r) => r.arrayBuffer()),
+    vfsResp.arrayBuffer(),
   ]);
 
   let stdout = "";
@@ -304,18 +362,59 @@ async function fetchSize(url: string): Promise<number> {
 async function runWordPress(): Promise<Record<string, number>> {
   const results: Record<string, number> = {};
 
+  let nginxWasmUrl: string;
+  let phpFpmWasmUrl: string;
+  try {
+    nginxWasmUrl = await loadOptionalUrl(
+      "../../../nginx/nginx.wasm",
+      "nginx binary",
+      "bash examples/nginx/build.sh",
+    );
+    phpFpmWasmUrl = await loadOptionalUrl(
+      "../../../nginx/php-fpm.wasm",
+      "PHP-FPM binary",
+      "bash examples/nginx/build.sh",
+    );
+  } catch (err) {
+    log(`  Skipping wordpress: ${(err as Error).message}`);
+    return {};
+  }
+
+  // Optional shell helpers — absent ones are simply not registered as lazy.
+  const coreutilsWasmUrl = await loadOptionalUrl(
+    "../../../libs/coreutils/bin/coreutils.wasm",
+    "coreutils",
+    "bash examples/libs/coreutils/build.sh",
+  ).catch(() => null);
+  const grepWasmUrl = await loadOptionalUrl(
+    "../../../libs/grep/bin/grep.wasm",
+    "grep",
+    "bash examples/libs/grep/build.sh",
+  ).catch(() => null);
+  const sedWasmUrl = await loadOptionalUrl(
+    "../../../libs/sed/bin/sed.wasm",
+    "sed",
+    "bash examples/libs/sed/build.sh",
+  ).catch(() => null);
+
   log("  Fetching binaries and VFS image...");
+  const vfsResp = await fetch(WP_VFS_URL);
+  if (!vfsResp.ok) {
+    log(`  Skipping wordpress: ${WP_VFS_URL} not found (HTTP ${vfsResp.status}). Build: bash examples/browser/scripts/build-wp-vfs-image.sh`);
+    return {};
+  }
   const [kernelBytes, vfsImageBuf, nginxSize, phpFpmSize, coreutilsSize, grepSize, sedSize] = await Promise.all([
     fetchWasm(kernelWasmUrl),
-    fetch(WP_VFS_URL).then((r) => r.arrayBuffer()),
+    vfsResp.arrayBuffer(),
     fetchSize(nginxWasmUrl),
     fetchSize(phpFpmWasmUrl),
-    fetchSize(coreutilsWasmUrl),
-    fetchSize(grepWasmUrl),
-    fetchSize(sedWasmUrl),
+    coreutilsWasmUrl ? fetchSize(coreutilsWasmUrl) : Promise.resolve(0),
+    grepWasmUrl ? fetchSize(grepWasmUrl) : Promise.resolve(0),
+    sedWasmUrl ? fetchSize(sedWasmUrl) : Promise.resolve(0),
   ]);
   if (nginxSize === 0 || phpFpmSize === 0) {
-    throw new Error("nginx.wasm or php-fpm.wasm not found");
+    log("  Skipping wordpress: nginx.wasm or php-fpm.wasm could not be fetched");
+    return {};
   }
 
   // Restore MemoryFileSystem from the pre-built VFS image
@@ -338,9 +437,9 @@ async function runWordPress(): Promise<Record<string, number>> {
   const lazyFiles: Array<{ path: string; url: string; size: number; mode?: number }> = [];
   if (nginxSize > 0) lazyFiles.push({ path: "/usr/sbin/nginx", url: nginxWasmUrl, size: nginxSize, mode: 0o755 });
   if (phpFpmSize > 0) lazyFiles.push({ path: "/usr/sbin/php-fpm", url: phpFpmWasmUrl, size: phpFpmSize, mode: 0o755 });
-  if (coreutilsSize > 0) lazyFiles.push({ path: "/bin/coreutils", url: coreutilsWasmUrl, size: coreutilsSize, mode: 0o755 });
-  if (grepSize > 0) lazyFiles.push({ path: "/usr/bin/grep", url: grepWasmUrl, size: grepSize, mode: 0o755 });
-  if (sedSize > 0) lazyFiles.push({ path: "/usr/bin/sed", url: sedWasmUrl, size: sedSize, mode: 0o755 });
+  if (coreutilsWasmUrl && coreutilsSize > 0) lazyFiles.push({ path: "/bin/coreutils", url: coreutilsWasmUrl, size: coreutilsSize, mode: 0o755 });
+  if (grepWasmUrl && grepSize > 0) lazyFiles.push({ path: "/usr/bin/grep", url: grepWasmUrl, size: grepSize, mode: 0o755 });
+  if (sedWasmUrl && sedSize > 0) lazyFiles.push({ path: "/usr/bin/sed", url: sedWasmUrl, size: sedSize, mode: 0o755 });
   if (lazyFiles.length > 0) kernel.registerLazyFiles(lazyFiles);
 
   // Write dynamic wp-config.php
@@ -429,6 +528,30 @@ async function runWordPress(): Promise<Record<string, number>> {
 
 async function runMariaDb(): Promise<Record<string, number>> {
   const results: Record<string, number> = {};
+
+  let mariadbWasmUrl: string;
+  let systemTablesUrl: string;
+  let systemDataUrl: string;
+  try {
+    mariadbWasmUrl = await loadOptionalUrl(
+      "../../../libs/mariadb/mariadb-install/bin/mariadbd.wasm",
+      "MariaDB binary",
+      "bash examples/libs/mariadb/build-mariadb.sh",
+    );
+    systemTablesUrl = await loadOptionalUrl(
+      "../../../libs/mariadb/mariadb-install/share/mysql/mysql_system_tables.sql",
+      "MariaDB system tables SQL",
+      "bash examples/libs/mariadb/build-mariadb.sh",
+    );
+    systemDataUrl = await loadOptionalUrl(
+      "../../../libs/mariadb/mariadb-install/share/mysql/mysql_system_tables_data.sql",
+      "MariaDB system data SQL",
+      "bash examples/libs/mariadb/build-mariadb.sh",
+    );
+  } catch (err) {
+    log(`  Skipping mariadb: ${(err as Error).message}`);
+    return {};
+  }
 
   log("  Fetching MariaDB + bootstrap SQL...");
   const [mariadbBytes, systemTablesSql, systemDataSql] = await Promise.all([
