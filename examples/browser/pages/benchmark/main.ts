@@ -12,17 +12,12 @@
  *   - "mariadb": MariaDB bootstrap, server start, and SQL queries
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
-import { loadErlangBundle } from "../../lib/erlang-bundle";
-import { loadWordPressBundle } from "../../lib/wp-bundle";
-import { populateNginxConfig } from "../../lib/init/nginx-config";
-import { populatePhpFpmConfig } from "../../lib/init/php-fpm-config";
+import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
 import { populateMariadbDirs } from "../../lib/init/mariadb-config";
 import {
   writeVfsBinary,
   writeVfsFile,
-  writeInitDescriptor,
   ensureDir,
-  ensureDirRecursive,
 } from "../../lib/init/vfs-utils";
 import { MySqlBrowserClient } from "../../lib/mysql-client";
 
@@ -34,12 +29,22 @@ import forkWasmUrl from "../../../../benchmarks/wasm/fork-bench.wasm?url";
 import cloneWasmUrl from "../../../../benchmarks/wasm/clone-bench.wasm?url";
 import helloWasmUrl from "../../../../benchmarks/wasm/hello.wasm?url";
 
+// Kernel
+import kernelWasmUrl from "../../../../host/wasm/wasm_posix_kernel.wasm?url";
+
 // Erlang
 import beamWasmUrl from "../../../../examples/libs/erlang/bin/beam.wasm?url";
 
 // WordPress / nginx / PHP-FPM
 import nginxWasmUrl from "../../../../examples/nginx/nginx.wasm?url";
 import phpFpmWasmUrl from "../../../../examples/nginx/php-fpm.wasm?url";
+import coreutilsWasmUrl from "../../../../examples/libs/coreutils/bin/coreutils.wasm?url";
+import grepWasmUrl from "../../../../examples/libs/grep/bin/grep.wasm?url";
+import sedWasmUrl from "../../../../examples/libs/sed/bin/sed.wasm?url";
+
+// VFS images
+const ERLANG_VFS_URL = import.meta.env.BASE_URL + "erlang.vfs";
+const WP_VFS_URL = import.meta.env.BASE_URL + "wordpress.vfs";
 
 // MariaDB
 import mariadbWasmUrl from "../../../../examples/libs/mariadb/mariadb-install/bin/mariadbd.wasm?url";
@@ -142,15 +147,6 @@ async function runProcessLifecycle(): Promise<Record<string, number>> {
 // ─── erlang-ring ────────────────────────────────────────────────────────────
 
 const OTP_ROOT = "/usr/local/lib/erlang";
-const OTP_DIRS = [
-  "/usr", "/usr/local", "/usr/local/lib", "/usr/local/lib/erlang",
-  "/usr/local/lib/erlang/lib", "/usr/local/lib/erlang/releases",
-  "/usr/local/lib/erlang/releases/28",
-  "/usr/local/lib/erlang/erts-16.1.2",
-  "/usr/local/lib/erlang/erts-16.1.2/bin",
-  "/tmp", "/home",
-];
-
 const BEAM_ENV = [
   "HOME=/tmp", "TMPDIR=/tmp", "LANG=en_US.UTF-8",
   "PATH=/usr/local/bin:/usr/bin:/bin",
@@ -190,15 +186,22 @@ halt(0, [{flush, false}]).`;
 
 async function runErlangRing(): Promise<Record<string, number>> {
   log("  Loading BEAM + OTP runtime...");
-  const beamBytes = await fetchWasm(beamWasmUrl);
+  const [kernelBytes, beamBytes, vfsImageBuf] = await Promise.all([
+    fetchWasm(kernelWasmUrl),
+    fetchWasm(beamWasmUrl),
+    fetch(ERLANG_VFS_URL).then((r) => r.arrayBuffer()),
+  ]);
 
   let stdout = "";
   let lastOutputTime = 0;
   let outputSeen = false;
 
+  const memfs = MemoryFileSystem.fromImage(new Uint8Array(vfsImageBuf), {
+    maxByteLength: 256 * 1024 * 1024,
+  });
+
   const kernel = new BrowserKernel({
-    maxWorkers: 4,
-    fsSize: 16 * 1024 * 1024,
+    memfs,
     onStdout: (data) => {
       stdout += new TextDecoder().decode(data);
       lastOutputTime = Date.now();
@@ -206,19 +209,7 @@ async function runErlangRing(): Promise<Record<string, number>> {
     },
     onStderr: () => {},
   });
-  await kernel.init();
-
-  // Create OTP directory tree
-  for (const d of OTP_DIRS) {
-    try { kernel.fs.mkdir(d, 0o755); } catch { /* exists */ }
-  }
-
-  // Load OTP runtime bundle
-  log("  Loading OTP bundle...");
-  await loadErlangBundle(
-    kernel.fs,
-    import.meta.env.BASE_URL + "erlang-bundle.json",
-  );
+  await kernel.init(kernelBytes);
 
   // Spawn BEAM with ring benchmark
   log("  Running ring benchmark (100 rounds x 1000 processes)...");
@@ -271,23 +262,6 @@ async function runErlangRing(): Promise<Record<string, number>> {
 
 // ─── wordpress ──────────────────────────────────────────────────────────────
 
-const FASTCGI_LOCATION = `        location / {
-            fastcgi_pass 127.0.0.1:9000;
-            fastcgi_param SCRIPT_FILENAME /var/www/fpm-router.php;
-            fastcgi_param DOCUMENT_ROOT $document_root;
-            fastcgi_param DOCUMENT_URI $document_uri;
-            fastcgi_param QUERY_STRING $query_string;
-            fastcgi_param REQUEST_METHOD $request_method;
-            fastcgi_param CONTENT_TYPE $content_type;
-            fastcgi_param CONTENT_LENGTH $content_length;
-            fastcgi_param REQUEST_URI $request_uri;
-            fastcgi_param SERVER_PROTOCOL $server_protocol;
-            fastcgi_param SERVER_PORT $server_port;
-            fastcgi_param SERVER_NAME $server_name;
-            fastcgi_param HTTP_HOST $http_host;
-            fastcgi_param REDIRECT_STATUS 200;
-        }`;
-
 const WP_CONFIG_PHP = `<?php
 define('DB_NAME', 'wordpress');
 define('DB_USER', '');
@@ -330,44 +304,51 @@ async function fetchSize(url: string): Promise<number> {
 async function runWordPress(): Promise<Record<string, number>> {
   const results: Record<string, number> = {};
 
-  log("  Fetching binaries...");
-  const [nginxSize, phpFpmSize] = await Promise.all([
+  log("  Fetching binaries and VFS image...");
+  const [kernelBytes, vfsImageBuf, nginxSize, phpFpmSize, coreutilsSize, grepSize, sedSize] = await Promise.all([
+    fetchWasm(kernelWasmUrl),
+    fetch(WP_VFS_URL).then((r) => r.arrayBuffer()),
     fetchSize(nginxWasmUrl),
     fetchSize(phpFpmWasmUrl),
+    fetchSize(coreutilsWasmUrl),
+    fetchSize(grepWasmUrl),
+    fetchSize(sedWasmUrl),
   ]);
   if (nginxSize === 0 || phpFpmSize === 0) {
     throw new Error("nginx.wasm or php-fpm.wasm not found");
   }
 
+  // Restore MemoryFileSystem from the pre-built VFS image
+  const memfs = MemoryFileSystem.fromImage(new Uint8Array(vfsImageBuf), {
+    maxByteLength: 1024 * 1024 * 1024,
+  });
+
   const kernel = new BrowserKernel({
+    memfs,
     maxWorkers: 8,
-    fsSize: 256 * 1024 * 1024,
     maxMemoryPages: 4096,
     onStdout: () => {},
     onStderr: () => {},
   });
 
   const tBoot = performance.now();
-  await kernel.init();
+  await kernel.init(kernelBytes);
 
-  // Register nginx + PHP-FPM as lazy files
-  ensureDir(kernel.fs, "/usr");
-  ensureDir(kernel.fs, "/usr/sbin");
-  ensureDir(kernel.fs, "/bin");
-  ensureDir(kernel.fs, "/etc");
-  ensureDir(kernel.fs, "/tmp");
-  kernel.registerLazyFiles([
-    { path: "/usr/sbin/nginx", url: nginxWasmUrl, size: nginxSize, mode: 0o755 },
-    { path: "/usr/sbin/php-fpm", url: phpFpmWasmUrl, size: phpFpmSize, mode: 0o755 },
-  ]);
+  // Register lazy binaries
+  const lazyFiles: Array<{ path: string; url: string; size: number; mode?: number }> = [];
+  if (nginxSize > 0) lazyFiles.push({ path: "/usr/sbin/nginx", url: nginxWasmUrl, size: nginxSize, mode: 0o755 });
+  if (phpFpmSize > 0) lazyFiles.push({ path: "/usr/sbin/php-fpm", url: phpFpmWasmUrl, size: phpFpmSize, mode: 0o755 });
+  if (coreutilsSize > 0) lazyFiles.push({ path: "/bin/coreutils", url: coreutilsWasmUrl, size: coreutilsSize, mode: 0o755 });
+  if (grepSize > 0) lazyFiles.push({ path: "/usr/bin/grep", url: grepWasmUrl, size: grepSize, mode: 0o755 });
+  if (sedSize > 0) lazyFiles.push({ path: "/usr/bin/sed", url: sedWasmUrl, size: sedSize, mode: 0o755 });
+  if (lazyFiles.length > 0) kernel.registerLazyFiles(lazyFiles);
 
-  // nginx and PHP-FPM configs
-  populateNginxConfig(kernel.fs, { extraLocations: FASTCGI_LOCATION });
-  populatePhpFpmConfig(kernel.fs);
+  // Write dynamic wp-config.php
+  writeVfsFile(kernel.fs, "/var/www/html/wp-config.php", WP_CONFIG_PHP);
+  writeVfsFile(kernel.fs, "/var/www/html/wp-content/mu-plugins/wasm-optimizations.php", MU_PLUGIN_PHP);
 
-  // WordPress directories
-  ensureDirRecursive(kernel.fs, "/var/www/html/wp-content/database");
-  ensureDirRecursive(kernel.fs, "/var/www/html/wp-content/mu-plugins");
+  // Remove any pre-existing database so WordPress starts fresh
+  try { kernel.fs.unlink("/var/www/html/wp-content/database/wordpress.db"); } catch { /* not present */ }
 
   // Spawn PHP-FPM
   log("  Starting PHP-FPM...");
@@ -382,7 +363,7 @@ async function runWordPress(): Promise<Record<string, number>> {
   kernel.spawn(phpFpmBytes, [
     "/usr/sbin/php-fpm", "-y", "/etc/php-fpm.conf", "-c", "/dev/null", "--nodaemonize",
   ]);
-  // Wait for PHP-FPM to be ready (5s delay like the demo)
+  // Wait for PHP-FPM to be ready
   await new Promise((r) => setTimeout(r, 5000));
 
   // Spawn nginx
@@ -398,16 +379,8 @@ async function runWordPress(): Promise<Record<string, number>> {
   kernel.spawn(nginxBytes, [
     "/usr/sbin/nginx", "-p", "/etc/nginx", "-c", "nginx.conf",
   ]);
-  // Wait for nginx to be ready (3s delay like the demo)
+  // Wait for nginx to be ready
   await new Promise((r) => setTimeout(r, 3000));
-
-  // Load WordPress bundle
-  log("  Loading WordPress bundle...");
-  await loadWordPressBundle(kernel.fs, import.meta.env.BASE_URL + "wp-bundle.json");
-
-  // Write WordPress config
-  writeVfsFile(kernel.fs, "/var/www/html/wp-config.php", WP_CONFIG_PHP);
-  writeVfsFile(kernel.fs, "/var/www/html/wp-content/mu-plugins/wasm-optimizations.php", MU_PLUGIN_PHP);
 
   results.boot_ms = performance.now() - tBoot;
   log(`  Boot complete: ${results.boot_ms.toFixed(0)}ms`);
