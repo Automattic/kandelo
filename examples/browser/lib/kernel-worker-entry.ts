@@ -68,6 +68,7 @@ import { DeviceFileSystem } from "../../../host/src/vfs/device-fs";
 import { BrowserTimeProvider } from "../../../host/src/vfs/time";
 import { TlsNetworkBackend } from "./tls-network-backend";
 import { patchWasmForThread } from "../../../host/src/worker-main";
+import { detectPtrWidth } from "../../../host/src/constants";
 import type {
   CentralizedWorkerInitMessage,
   CentralizedThreadInitMessage,
@@ -100,8 +101,30 @@ interface ProcessInfo {
   programModule?: WebAssembly.Module;
   worker: ReturnType<BrowserWorkerAdapter["createWorker"]>;
   channelOffset: number;
+  ptrWidth: 4 | 8;
 }
 const processes = new Map<number, ProcessInfo>();
+
+/**
+ * Create shared memory sized for a wasm32 or wasm64 process. wasm64 modules
+ * import memory with `address: 'i64'`; instantiation fails with a LinkError
+ * if the shared memory was allocated as i32.
+ */
+function createProcessMemory(ptrWidth: 4 | 8, pages: number): WebAssembly.Memory {
+  if (ptrWidth === 8) {
+    return new WebAssembly.Memory({
+      initial: BigInt(pages),
+      maximum: BigInt(pages),
+      shared: true,
+      address: "i64",
+    } as unknown as WebAssembly.MemoryDescriptor);
+  }
+  return new WebAssembly.Memory({
+    initial: pages,
+    maximum: pages,
+    shared: true,
+  });
+}
 
 // Per-PID thread module cache: lazily compiled on first clone(), shared across
 // all threads of the same process. Keyed by PID of the process that spawned threads.
@@ -259,15 +282,15 @@ function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>) {
 
     const pid = msg.pid;
     const pages = msg.maxPages ?? maxPages;
-    const memory = new WebAssembly.Memory({
-      initial: pages,
-      maximum: pages,
-      shared: true,
-    });
+    const ptrWidth = detectPtrWidth(programBytes);
+    const memory = createProcessMemory(ptrWidth, pages);
     const channelOffset = (pages - 2) * PAGE_SIZE;
     new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
-    kernelWorker.registerProcess(pid, memory, [channelOffset]);
+    kernelWorker.registerProcess(pid, memory, [channelOffset], {
+      ptrWidth,
+      argv: msg.argv,
+    });
 
     if (msg.cwd) {
       kernelWorker.setCwd(pid, msg.cwd);
@@ -291,10 +314,11 @@ function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>) {
       env: msg.env ?? defaultEnv,
       argv: msg.argv,
       cwd: msg.cwd,
+      ptrWidth,
     };
 
     const worker = workerAdapter.createWorker(initData);
-    processes.set(pid, { memory, programBytes, worker, channelOffset });
+    processes.set(pid, { memory, programBytes, worker, channelOffset, ptrWidth });
 
     worker.on("error", (err: Error) => {
       console.error(`[kernel-worker] Worker error pid=${pid}:`, err.message);
@@ -331,13 +355,27 @@ async function handleFork(
 
   const parentBuf = new Uint8Array(parentMemory.buffer);
   const parentPages = Math.ceil(parentBuf.byteLength / PAGE_SIZE);
-  const childMemory = new WebAssembly.Memory({
-    initial: parentPages,
-    maximum: maxPages,
-    shared: true,
-  });
+  const ptrWidth = parentInfo.ptrWidth;
+  // Fork inherits the parent's memory arch. wasm64 children need i64 memory
+  // to match the parent's module imports.
+  const childMemory = ptrWidth === 8
+    ? new WebAssembly.Memory({
+        initial: BigInt(parentPages),
+        maximum: BigInt(maxPages),
+        shared: true,
+        address: "i64",
+      } as unknown as WebAssembly.MemoryDescriptor)
+    : new WebAssembly.Memory({
+        initial: parentPages,
+        maximum: maxPages,
+        shared: true,
+      });
   if (parentPages < maxPages) {
-    childMemory.grow(maxPages - parentPages);
+    if (ptrWidth === 8) {
+      childMemory.grow(BigInt(maxPages - parentPages) as unknown as number);
+    } else {
+      childMemory.grow(maxPages - parentPages);
+    }
   }
   new Uint8Array(childMemory.buffer).set(parentBuf);
 
@@ -346,6 +384,7 @@ async function handleFork(
 
   kernelWorker.registerProcess(childPid, childMemory, [childChannelOffset], {
     skipKernelCreate: true,
+    ptrWidth,
   });
 
   const asyncifyBufAddr = childChannelOffset - ASYNCIFY_BUF_SIZE;
@@ -359,6 +398,7 @@ async function handleFork(
     channelOffset: childChannelOffset,
     isForkChild: true,
     asyncifyBufAddr,
+    ptrWidth,
   };
 
   const childWorker = workerAdapter.createWorker(childInitData);
@@ -385,6 +425,7 @@ async function handleFork(
     programModule: parentInfo.programModule,
     worker: childWorker,
     channelOffset: childChannelOffset,
+    ptrWidth,
   });
 
   return [childChannelOffset];
@@ -415,17 +456,16 @@ async function handleExec(
     await oldInfo.worker.terminate().catch(() => {});
   }
 
-  // Create fresh memory
-  const newMemory = new WebAssembly.Memory({
-    initial: maxPages,
-    maximum: maxPages,
-    shared: true,
-  });
+  // Create fresh memory sized for the new binary's arch (exec across
+  // wasm32↔wasm64 replaces the process image — memory type must match).
+  const ptrWidth = detectPtrWidth(bytes);
+  const newMemory = createProcessMemory(ptrWidth, maxPages);
   const newChannelOffset = (maxPages - 2) * PAGE_SIZE;
   new Uint8Array(newMemory.buffer, newChannelOffset, CH_TOTAL_SIZE).fill(0);
 
   kernelWorker.registerProcess(pid, newMemory, [newChannelOffset], {
     skipKernelCreate: true,
+    ptrWidth,
   });
 
   const execInitData: CentralizedWorkerInitMessage = {
@@ -437,6 +477,7 @@ async function handleExec(
     channelOffset: newChannelOffset,
     argv,
     env: envp,
+    ptrWidth,
   };
 
   const newWorker = workerAdapter.createWorker(execInitData);
@@ -452,6 +493,7 @@ async function handleExec(
     programBytes: bytes,
     worker: newWorker,
     channelOffset: newChannelOffset,
+    ptrWidth,
   });
 
   return 0;
@@ -500,6 +542,7 @@ async function handleClone(
     tlsPtr,
     ctidPtr,
     tlsAllocAddr: alloc.tlsAllocAddr,
+    ptrWidth: processInfo.ptrWidth,
   };
 
   const threadWorker = workerAdapter.createWorker(threadInitData);

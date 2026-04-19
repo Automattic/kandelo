@@ -174,8 +174,12 @@ fi
 
 # --- Build libc++ if not already built ---
 if [ ! -f "$SYSROOT/lib/libc++.a" ] || [ "$(wc -c < "$SYSROOT/lib/libc++.a" | tr -d ' ')" -lt 1000 ]; then
-    echo "==> Building libc++ (required for C++ exception support)..."
-    bash "$REPO_ROOT/scripts/build-libcxx.sh"
+    echo "==> Building libc++ for $WASM_ARCH (required for C++ exception support)..."
+    if [ "$WASM_ARCH" = "wasm64" ]; then
+        bash "$REPO_ROOT/scripts/build-libcxx.sh" --arch wasm64
+    else
+        bash "$REPO_ROOT/scripts/build-libcxx.sh"
+    fi
 fi
 
 # --- Build PCRE2 if not present ---

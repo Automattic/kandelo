@@ -14,9 +14,12 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "../..");
 
 const mariadbLibDir = resolve(repoRoot, "examples/libs/mariadb");
-const installDir = resolve(mariadbLibDir, "mariadb-install");
-const mysqldPath = resolve(installDir, "bin/mariadbd");
-const mysqlTestPath = resolve(installDir, "bin/mysqltest.wasm");
+
+export type WasmArch = "wasm32" | "wasm64";
+
+function installDirFor(arch: WasmArch): string {
+  return resolve(mariadbLibDir, arch === "wasm64" ? "mariadb-install-64" : "mariadb-install");
+}
 
 function loadBytes(path: string): ArrayBuffer {
   const buf = readFileSync(path);
@@ -53,16 +56,18 @@ interface MariaDBInstance {
   cleanup: () => Promise<void>;
 }
 
-async function startMariaDB(dataDir: string, bootstrap: boolean, engineArgs: string[]): Promise<MariaDBInstance> {
+async function startMariaDB(arch: WasmArch, dataDir: string, bootstrap: boolean, engineArgs: string[]): Promise<MariaDBInstance> {
   const port = await getFreePort();
-  const mysqldBytes = loadBytes(mysqldPath);
+  const installDir = installDirFor(arch);
+  const mysqldBytes = loadBytes(resolve(installDir, "bin/mariadbd"));
 
+  const verbose = process.env.MARIADB_BENCH_VERBOSE === "1";
   const host = new NodeKernelHost({
     maxWorkers: 8,
     // InnoDB writes log files in 1MB+ chunks; increase from 64KB default
     dataBufferSize: engineArgs.some(a => a.includes("InnoDB")) ? 2 * 1024 * 1024 : undefined,
-    onStdout: () => {},
-    onStderr: () => {},
+    onStdout: verbose ? (_pid, data) => process.stdout.write(new TextDecoder().decode(data)) : () => {},
+    onStderr: verbose ? (_pid, data) => process.stderr.write(new TextDecoder().decode(data)) : () => {},
   });
 
   await host.init();
@@ -84,7 +89,7 @@ async function startMariaDB(dataDir: string, bootstrap: boolean, engineArgs: str
 
   let stdinData: Uint8Array | undefined;
   if (bootstrap) {
-    const shareDir = resolve(installDir, "share/mysql");
+    const shareDir = resolve(installDirFor(arch), "share/mysql");
     const systemTables = readFileSync(resolve(shareDir, "mysql_system_tables.sql"), "utf-8");
     const systemData = readFileSync(resolve(shareDir, "mysql_system_tables_data.sql"), "utf-8");
     const bootstrapSql = `use mysql;\n${systemTables}\n${systemData}\n`;
@@ -110,12 +115,13 @@ async function startMariaDB(dataDir: string, bootstrap: boolean, engineArgs: str
 }
 
 async function runMysqlTest(
+  arch: WasmArch,
   instance: MariaDBInstance,
   sql: string,
 ): Promise<{ stdout: string; exitCode: number }> {
   const { runCentralizedProgram } = await import("../../host/test/centralized-test-helper.js");
   const result = await runCentralizedProgram({
-    programPath: mysqlTestPath,
+    programPath: resolve(installDirFor(arch), "bin/mysqltest.wasm"),
     argv: [
       "mysqltest",
       "--host=127.0.0.1",
@@ -129,13 +135,14 @@ async function runMysqlTest(
   return { stdout: result.stdout, exitCode: result.exitCode };
 }
 
-export function isMariaDBAvailable(): boolean {
-  return existsSync(mysqldPath);
+export function isMariaDBAvailable(arch: WasmArch = "wasm32"): boolean {
+  return existsSync(resolve(installDirFor(arch), "bin/mariadbd"));
 }
 
-export async function runMariaDBBenchmark(engine: string): Promise<Record<string, number>> {
-  if (!isMariaDBAvailable()) {
-    console.warn("  MariaDB not found, skipping. Run: bash examples/libs/mariadb/build-mariadb.sh");
+export async function runMariaDBBenchmark(engine: string, arch: WasmArch = "wasm32"): Promise<Record<string, number>> {
+  if (!isMariaDBAvailable(arch)) {
+    const flag = arch === "wasm64" ? " --wasm64" : "";
+    console.warn(`  MariaDB ${arch} not found, skipping. Run: bash examples/libs/mariadb/build-mariadb.sh${flag}`);
     return {};
   }
 
@@ -153,20 +160,20 @@ export async function runMariaDBBenchmark(engine: string): Promise<Record<string
 
   const results: Record<string, number> = {};
 
-  // Use a fresh data directory for each run
-  const dataDir = resolve(repoRoot, `benchmarks/results/.mariadb-bench-data-${engine.toLowerCase()}`);
+  // Use a fresh data directory for each run (separate per arch so concurrent suites don't collide)
+  const dataDir = resolve(repoRoot, `benchmarks/results/.mariadb-bench-data-${engine.toLowerCase()}-${arch}`);
   rmSync(dataDir, { recursive: true, force: true });
   mkdirSync(resolve(dataDir, "mysql"), { recursive: true });
   mkdirSync(resolve(dataDir, "tmp"), { recursive: true });
 
   // 1. Bootstrap
   const t0 = performance.now();
-  const bootstrapInstance = await startMariaDB(dataDir, true, engineArgs);
+  const bootstrapInstance = await startMariaDB(arch, dataDir, true, engineArgs);
   await bootstrapInstance.cleanup();
   results.bootstrap_ms = performance.now() - t0;
 
   // 2. Start server
-  const instance = await startMariaDB(dataDir, false, engineArgs);
+  const instance = await startMariaDB(arch, dataDir, false, engineArgs);
 
   // Wait for TCP readiness
   const deadline = Date.now() + 120_000;
@@ -178,7 +185,7 @@ export async function runMariaDBBenchmark(engine: string): Promise<Record<string
   try {
     // 3. CREATE TABLE
     const t1 = performance.now();
-    await runMysqlTest(instance, `
+    await runMysqlTest(arch, instance,`
       CREATE DATABASE IF NOT EXISTS bench;
       USE bench;
       CREATE TABLE t1 (id INT PRIMARY KEY AUTO_INCREMENT, name VARCHAR(100), value INT) ENGINE=${engine};
@@ -195,12 +202,12 @@ export async function runMariaDBBenchmark(engine: string): Promise<Record<string
       insertSql += `INSERT INTO t2 (t1_id, data) VALUES (${i + 1}, 'data_for_item_${i}');\n`;
     }
     const t2 = performance.now();
-    await runMysqlTest(instance, insertSql);
+    await runMysqlTest(arch, instance,insertSql);
     results.query_insert_ms = performance.now() - t2;
 
     // 5. SELECT with WHERE
     const t3 = performance.now();
-    await runMysqlTest(instance, `
+    await runMysqlTest(arch, instance,`
       USE bench;
       SELECT * FROM t1 WHERE value > 500 AND value < 800;
     `);
@@ -208,7 +215,7 @@ export async function runMariaDBBenchmark(engine: string): Promise<Record<string
 
     // 6. JOIN
     const t4 = performance.now();
-    await runMysqlTest(instance, `
+    await runMysqlTest(arch, instance,`
       USE bench;
       SELECT t1.name, t2.data FROM t1 JOIN t2 ON t1.id = t2.t1_id WHERE t1.value > 500;
     `);

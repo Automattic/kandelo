@@ -180,7 +180,16 @@ Build requirements: `wasm32posix-cc` SDK. The PHP build script automatically bui
 
 #### mariadb
 
-Runs MariaDB 10.5 with the Aria storage engine. Measures bootstrap (system table creation) and a sequence of SQL operations.
+Runs MariaDB 10.5 with the Aria or InnoDB storage engine. Measures bootstrap (system table creation) and a sequence of SQL operations.
+
+Four suite variants are registered so wasm32 and wasm64 builds can be compared side-by-side in one `run.ts` invocation:
+
+| Suite | Engine | Wasm ABI | Install dir |
+|-------|--------|----------|-------------|
+| `mariadb-aria`     | Aria   | wasm32 (ILP32) | `mariadb-install/` |
+| `mariadb-aria-64`  | Aria   | wasm64 (LP64)  | `mariadb-install-64/` |
+| `mariadb-innodb`   | InnoDB | wasm32 (ILP32) | `mariadb-install/` |
+| `mariadb-innodb-64`| InnoDB | wasm64 (LP64)  | `mariadb-install-64/` |
 
 | Metric | Unit | What it measures |
 |--------|------|------------------|
@@ -190,15 +199,18 @@ Runs MariaDB 10.5 with the Aria storage engine. Measures bootstrap (system table
 | `query_select_ms` | ms | SELECT with WHERE clause |
 | `query_join_ms` | ms | JOIN across two tables |
 
+Set `MARIADB_BENCH_VERBOSE=1` to forward mariadbd stdout/stderr to the shell (useful for debugging hangs or slow bootstraps).
+
 **Prerequisites:**
 
 | Component | Path | Build command |
 |-----------|------|---------------|
-| MariaDB server | `examples/libs/mariadb/mariadb-install/bin/mariadbd` | `bash examples/libs/mariadb/build-mariadb.sh` |
-| mysqltest client | `examples/libs/mariadb/mariadb-install/bin/mysqltest.wasm` | (built by same script) |
-| System table SQL | `examples/libs/mariadb/mariadb-install/share/mysql/mysql_system_tables*.sql` | (built by same script) |
+| MariaDB server (wasm32) | `examples/libs/mariadb/mariadb-install/bin/mariadbd`    | `bash examples/libs/mariadb/build-mariadb.sh` |
+| MariaDB server (wasm64) | `examples/libs/mariadb/mariadb-install-64/bin/mariadbd` | `bash examples/libs/mariadb/build-mariadb.sh --wasm64` |
+| mysqltest client        | `<install-dir>/bin/mysqltest.wasm` | (built by same script) |
+| System table SQL        | `<install-dir>/share/mysql/mysql_system_tables*.sql` | (built by same script) |
 
-Build requirements: `cmake` (`brew install cmake`), `wasm32posix-cc` SDK. The build is a two-phase cross-compilation (host build for code generators, then wasm32 cross-compile).
+Build requirements: `cmake` (`brew install cmake`), `wasm32posix-cc` / `wasm64posix-cc` SDK. The build is a two-phase cross-compilation (host build for code generators, then wasm cross-compile). The wasm64 build uses `-O1` instead of `-O2` to avoid an LLVM 21 wasm64 backend miscompilation in table-lookup sign-extension.
 
 ### Building All Suite Prerequisites
 
@@ -219,7 +231,8 @@ bash examples/libs/php/build-php.sh
 # Download WordPress into examples/wordpress/wordpress/
 
 # 5. MariaDB (requires: brew install cmake)
-bash examples/libs/mariadb/build-mariadb.sh
+bash examples/libs/mariadb/build-mariadb.sh          # wasm32
+bash examples/libs/mariadb/build-mariadb.sh --wasm64 # wasm64 (optional, for dual-arch comparison)
 ```
 
 ### Running the Complete Suite for Performance Work
