@@ -1634,11 +1634,13 @@ export class CentralizedKernelWorker {
     }
 
     if (syscallNr === SYS_WAIT4) {
+      if (logging) console.error(logEntry);
       this.handleWaitpid(channel, origArgs);
       return;
     }
 
     if (syscallNr === SYS_WAITID) {
+      if (logging) console.error(logEntry);
       this.handleWaitid(channel, origArgs);
       return;
     }
@@ -1656,11 +1658,13 @@ export class CentralizedKernelWorker {
     // These have nested pointers (iov array → base buffers) that can't be
     // handled by the simple ArgDesc system.
     if (syscallNr === SYS_WRITEV || syscallNr === SYS_PWRITEV) {
+      if (logging) console.error(logEntry);
       this.handleWritev(channel, syscallNr, origArgs);
       return;
     }
 
     if (syscallNr === SYS_READV || syscallNr === SYS_PREADV) {
+      if (logging) console.error(logEntry);
       this.handleReadv(channel, syscallNr, origArgs);
       return;
     }

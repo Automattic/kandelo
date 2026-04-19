@@ -1,0 +1,76 @@
+# Functions that must be asyncify-instrumented for bash fork() support.
+# Only these functions get asyncify overhead — all others remain lightweight.
+#
+# Bash forks for: pipelines, command substitution $(cmd), process substitution
+# <(cmd), subshells (cmd), background &, coproc, and external command exec.
+# All paths converge at make_child() in jobs.c.
+
+# CRT startup path
+_start
+__libc_start_main
+libc_start_main_stage2
+libc_start_init
+
+# Bash entry and main loop
+main
+run_one_command
+run_startup_files
+reader_loop
+read_command
+parse_command
+
+# Fork convergence point — every make_child() call reaches fork()
+make_child
+
+# Command dispatch
+execute_command
+execute_command_internal
+execute_simple_command
+execute_disk_command
+execute_builtin_or_function
+execute_connection
+execute_pipeline
+execute_coproc
+execute_in_subshell
+execute_for_command
+execute_while_command
+execute_select_command
+execute_case_command
+execute_if_command
+execute_arith_command
+execute_cond_command
+
+# Command substitution: $(...) and `...`
+command_substitute
+command_substitute_stdout
+
+# Process substitution: <(...) and >(...)
+process_substitute
+
+# Background / async execution
+execute_null_command
+
+# Builtin commands that may fork
+exec_builtin
+eval_builtin
+source_builtin
+dot_builtin
+
+# Shell expansion that can invoke command substitution
+expand_word
+expand_words
+expand_word_internal
+param_expand
+expand_string_assignment
+expand_string
+expand_string_if_necessary
+expand_string_unsplit
+expand_string_leave_quoted
+
+# Glob / wildcard expansion
+shell_glob_filename
+
+# Fork overrides in channel_syscall.c
+fork
+_Fork
+vfork
