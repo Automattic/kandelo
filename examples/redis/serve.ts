@@ -13,23 +13,10 @@
 
 import { readFileSync, existsSync, mkdirSync } from "fs";
 import { resolve, dirname } from "path";
-import { CentralizedKernelWorker } from "../../host/src/kernel-worker";
-import { NodePlatformIO } from "../../host/src/platform/node";
-import { NodeWorkerAdapter } from "../../host/src/worker-adapter";
-import { patchWasmForThread } from "../../host/src/worker-main";
-import type {
-    CentralizedWorkerInitMessage,
-    CentralizedThreadInitMessage,
-    WorkerToHostMessage,
-} from "../../host/src/worker-protocol";
-import { ThreadPageAllocator } from "../../host/src/thread-allocator";
-
-const CH_TOTAL_SIZE = 72 + 65536;
-const MAX_PAGES = 16384;
+import { NodeKernelHost } from "../../host/src/node-kernel-host";
 
 const scriptDir = dirname(new URL(import.meta.url).pathname);
 const repoRoot = resolve(scriptDir, "../..");
-const workerAdapter = new NodeWorkerAdapter();
 
 function loadBytes(path: string): ArrayBuffer {
     const buf = readFileSync(path);
@@ -45,131 +32,19 @@ async function main() {
         process.exit(1);
     }
 
-    const kernelBytes = loadBytes(resolve(repoRoot, "host/wasm/wasm_posix_kernel.wasm"));
     const redisBytes = loadBytes(redisWasm);
-
-    // Pre-compile thread module (strip start + neuter ctors) so threads start instantly.
-    console.log("Pre-compiling thread module...");
-    const threadPatchedBytes = patchWasmForThread(redisBytes);
-    const threadModule = new WebAssembly.Module(threadPatchedBytes);
-    console.log("Thread module ready.");
 
     // Create data directory for Redis persistence
     const dataDir = resolve(scriptDir, "data");
     mkdirSync(dataDir, { recursive: true });
 
-    const io = new NodePlatformIO();
-    const workers = new Map<number, ReturnType<NodeWorkerAdapter["createWorker"]>>();
-
-    const threadAllocator = new ThreadPageAllocator(MAX_PAGES);
-
-    const kernelWorker = new CentralizedKernelWorker(
-        { maxWorkers: 8, dataBufferSize: 65536, useSharedMemory: true },
-        io,
-        {
-            onFork: async () => {
-                console.error("[kernel] unexpected fork");
-                return [];
-            },
-
-            onClone: async (pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory) => {
-                const alloc = threadAllocator.allocate(memory);
-
-                console.log(`[kernel] clone: pid=${pid} tid=${tid} fn=${fnPtr} channelOff=${alloc.channelOffset}`);
-
-                kernelWorker.addChannel(pid, alloc.channelOffset, tid);
-
-                const threadInitData: CentralizedThreadInitMessage = {
-                    type: "centralized_thread_init",
-                    pid,
-                    tid,
-                    programBytes: redisBytes,
-                    programModule: threadModule,
-                    memory,
-                    channelOffset: alloc.channelOffset,
-                    fnPtr,
-                    argPtr,
-                    stackPtr,
-                    tlsPtr,
-                    ctidPtr,
-                    tlsAllocAddr: alloc.tlsAllocAddr,
-                };
-
-                const threadWorker = workerAdapter.createWorker(threadInitData);
-                threadWorker.on("message", (msg: unknown) => {
-                    const m = msg as WorkerToHostMessage;
-                    if (m.type === "thread_exit") {
-                        console.log(`[kernel] thread ${tid} exited`);
-                        kernelWorker.notifyThreadExit(pid, tid);
-                        kernelWorker.removeChannel(pid, alloc.channelOffset);
-                        threadAllocator.free(alloc.basePage);
-                        threadWorker.terminate().catch(() => {});
-                    }
-                });
-                threadWorker.on("error", (err: Error) => {
-                    console.error(`[kernel] thread ${tid} error: ${err.message}`);
-                    kernelWorker.notifyThreadExit(pid, tid);
-                    kernelWorker.removeChannel(pid, alloc.channelOffset);
-                    threadAllocator.free(alloc.basePage);
-                });
-
-                return tid;
-            },
-
-            onExec: async () => -38, // ENOSYS
-
-            onExit: (pid, exitStatus) => {
-                console.log(`[kernel] process ${pid} exited with status ${exitStatus}`);
-                kernelWorker.unregisterProcess(pid);
-                workers.delete(pid);
-            },
-        },
-    );
-
-    // Initialize kernel
-    await kernelWorker.init(kernelBytes);
-
-    // Create shared memory for the redis process
-    const memory = new WebAssembly.Memory({
-        initial: 17,
-        maximum: MAX_PAGES,
-        shared: true,
+    const host = new NodeKernelHost({
+        maxWorkers: 8,
+        onStdout: (_pid, data) => process.stdout.write(data),
+        onStderr: (_pid, data) => process.stderr.write(data),
     });
-    const channelOffset = (MAX_PAGES - 2) * 65536;
-    memory.grow(MAX_PAGES - 17);
-    new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
-    // Register process with kernel
-    const pid = 1;
-    kernelWorker.registerProcess(pid, memory, [channelOffset]);
-    kernelWorker.setCwd(pid, dataDir);
-    kernelWorker.setNextChildPid(2);
-
-    // Start redis-server
-    const initData: CentralizedWorkerInitMessage = {
-        type: "centralized_init",
-        pid,
-        ppid: 0,
-        programBytes: redisBytes,
-        memory,
-        channelOffset,
-        env: [
-            `HOME=/tmp`,
-            `PATH=/usr/local/bin:/usr/bin:/bin`,
-        ],
-        argv: [
-            "redis-server",
-            "--port", port,
-            "--bind", "0.0.0.0",
-            "--dir", dataDir,
-            "--save", "",         // Disable RDB snapshots
-            "--appendonly", "no", // Disable AOF
-            "--loglevel", "notice",
-            "--daemonize", "no",
-            "--databases", "16",
-            "--io-threads", "1",  // Single I/O thread
-        ],
-    };
+    await host.init();
 
     console.log(`Starting Redis 7.2 on port ${port}...`);
     console.log(`Data directory: ${dataDir}`);
@@ -177,40 +52,34 @@ async function main() {
     console.log(`  redis-cli -p ${port} GET hello`);
     console.log("Press Ctrl+C to stop.\n");
 
-    const worker = workerAdapter.createWorker(initData);
-    workers.set(pid, worker);
-
-    const exitPromise = new Promise<number>((resolveP, reject) => {
-        worker.on("message", (msg: unknown) => {
-            const m = msg as WorkerToHostMessage;
-            if (m.type === "exit") {
-                kernelWorker.unregisterProcess(pid);
-                resolveP(m.status);
-            } else if (m.type === "error") {
-                console.error("Last syscalls:\n" + kernelWorker.dumpLastSyscalls(pid));
-                kernelWorker.unregisterProcess(pid);
-                reject(new Error(m.message));
-            }
-        });
-
-        worker.on("error", (err: Error) => {
-            reject(err);
-        });
+    const exitPromise = host.spawn(redisBytes, [
+        "redis-server",
+        "--port", port,
+        "--bind", "0.0.0.0",
+        "--dir", dataDir,
+        "--save", "",         // Disable RDB snapshots
+        "--appendonly", "no", // Disable AOF
+        "--loglevel", "notice",
+        "--daemonize", "no",
+        "--databases", "16",
+        "--io-threads", "1",  // Single I/O thread
+    ], {
+        env: [
+            "HOME=/tmp",
+            "PATH=/usr/local/bin:/usr/bin:/bin",
+        ],
+        cwd: dataDir,
     });
 
     // Handle Ctrl+C gracefully
     process.on("SIGINT", async () => {
         console.log("\nShutting down Redis...");
-        for (const [, w] of workers) {
-            await w.terminate().catch(() => {});
-        }
+        await host.destroy().catch(() => {});
         process.exit(0);
     });
 
     const status = await exitPromise;
-    for (const [, w] of workers) {
-        await w.terminate().catch(() => {});
-    }
+    await host.destroy().catch(() => {});
     process.exit(status);
 }
 

@@ -9,21 +9,14 @@ import { existsSync, readFileSync } from "fs";
 import { resolve, dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { runCentralizedProgram } from "../../host/test/centralized-test-helper.js";
-import { CentralizedKernelWorker } from "../../host/src/kernel-worker.js";
-import { NodePlatformIO } from "../../host/src/platform/node.js";
-import { NodeWorkerAdapter } from "../../host/src/worker-adapter.js";
-import type { CentralizedWorkerInitMessage } from "../../host/src/worker-protocol.js";
+import { NodeKernelHost } from "../../host/src/node-kernel-host.js";
 import type { BenchmarkSuite } from "../types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "../..");
 
-const CH_TOTAL_SIZE = 72 + 65536;
-const MAX_PAGES = 16384;
-
 const phpBinaryPath = resolve(repoRoot, "examples/libs/php/php-src/sapi/cli/php");
 const wpDir = resolve(repoRoot, "examples/wordpress/wordpress");
-const kernelWasmPath = resolve(repoRoot, "host/wasm/wasm_posix_kernel.wasm");
 const routerScript = resolve(repoRoot, "examples/wordpress/router.php");
 
 function loadBytes(path: string): ArrayBuffer {
@@ -52,94 +45,30 @@ async function measureCliRequire(): Promise<number> {
 
 async function measureHttpFirstResponse(): Promise<number> {
   const port = 19400 + Math.floor(Math.random() * 100);
-  const kernelBytes = loadBytes(kernelWasmPath);
   const programBytes = loadBytes(phpBinaryPath);
-
-  const io = new NodePlatformIO();
-  const workerAdapter = new NodeWorkerAdapter();
-  const workers = new Map<number, ReturnType<NodeWorkerAdapter["createWorker"]>>();
 
   let serverStarted = false;
   let stderr = "";
 
-  const kernelWorker = new CentralizedKernelWorker(
-    { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true },
-    io,
-    {
-      onFork: async (parentPid, childPid, parentMemory) => {
-        const parentBuf = new Uint8Array(parentMemory.buffer);
-        const parentPages = Math.ceil(parentBuf.byteLength / 65536);
-        const childMemory = new WebAssembly.Memory({
-          initial: parentPages, maximum: MAX_PAGES, shared: true,
-        });
-        if (parentPages < MAX_PAGES) childMemory.grow(MAX_PAGES - parentPages);
-        new Uint8Array(childMemory.buffer).set(parentBuf);
-
-        const childChannelOffset = (MAX_PAGES - 2) * 65536;
-        new Uint8Array(childMemory.buffer, childChannelOffset, CH_TOTAL_SIZE).fill(0);
-        kernelWorker.registerProcess(childPid, childMemory, [childChannelOffset], { skipKernelCreate: true });
-
-        const ASYNCIFY_BUF_SIZE = 16384;
-        const childWorker = workerAdapter.createWorker({
-          type: "centralized_init",
-          pid: childPid, ppid: parentPid,
-          programBytes,
-          memory: childMemory,
-          channelOffset: childChannelOffset,
-          isForkChild: true,
-          asyncifyBufAddr: childChannelOffset - ASYNCIFY_BUF_SIZE,
-        } as CentralizedWorkerInitMessage);
-        workers.set(childPid, childWorker);
-        childWorker.on("error", () => {
-          kernelWorker.unregisterProcess(childPid);
-          workers.delete(childPid);
-        });
-        return [childChannelOffset];
-      },
-      onExec: async () => -38,
-      onExit: (pid, exitStatus) => {
-        if (pid === 1) {
-          kernelWorker.unregisterProcess(pid);
-        } else {
-          kernelWorker.deactivateProcess(pid);
-        }
-        workers.delete(pid);
-      },
-    },
-  );
-
-  await kernelWorker.init(kernelBytes);
-
-  const decoder = new TextDecoder();
-  kernelWorker.setOutputCallbacks({
+  const host = new NodeKernelHost({
+    maxWorkers: 4,
     onStdout: () => {},
-    onStderr: (data) => {
-      stderr += decoder.decode(data);
+    onStderr: (_pid, data) => {
+      stderr += new TextDecoder().decode(data);
       if (stderr.includes("Development Server")) serverStarted = true;
     },
   });
 
-  const memory = new WebAssembly.Memory({ initial: 17, maximum: MAX_PAGES, shared: true });
-  const channelOffset = (MAX_PAGES - 2) * 65536;
-  memory.grow(MAX_PAGES - 17);
-  new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
-
-  kernelWorker.registerProcess(1, memory, [channelOffset]);
-  kernelWorker.setCwd(1, wpDir);
-  kernelWorker.setNextChildPid(2);
+  await host.init();
 
   const t0 = performance.now();
 
-  const mainWorker = workerAdapter.createWorker({
-    type: "centralized_init",
-    pid: 1, ppid: 0,
-    programBytes,
-    memory,
-    channelOffset,
+  const exitPromise = host.spawn(programBytes, [
+    "php", "-S", `0.0.0.0:${port}`, "-t", wpDir, routerScript,
+  ], {
     env: ["HOME=/tmp", "TMPDIR=/tmp"],
-    argv: ["php", "-S", `0.0.0.0:${port}`, "-t", wpDir, routerScript],
-  } as CentralizedWorkerInitMessage);
-  workers.set(1, mainWorker);
+    cwd: wpDir,
+  });
 
   // Wait for server startup (PHP prints "Development Server started" to stderr)
   const startDeadline = Date.now() + 60_000;
@@ -147,7 +76,7 @@ async function measureHttpFirstResponse(): Promise<number> {
     await new Promise((r) => setTimeout(r, 200));
   }
   if (!serverStarted) {
-    for (const [, w] of workers) await w.terminate().catch(() => {});
+    await host.destroy().catch(() => {});
     throw new Error("PHP server did not start within 60s");
   }
 
@@ -171,7 +100,7 @@ async function measureHttpFirstResponse(): Promise<number> {
   }
 
   // Cleanup
-  for (const [, w] of workers) await w.terminate().catch(() => {});
+  await host.destroy().catch(() => {});
 
   if (firstResponseMs < 0) {
     throw new Error("Timed out waiting for WordPress HTTP response");

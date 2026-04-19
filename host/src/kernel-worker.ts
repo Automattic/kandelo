@@ -143,66 +143,8 @@ const F_OFD_SETLKW = 38;
 /** Retry interval for EAGAIN polling (ms) */
 const EAGAIN_RETRY_MS = 1;
 
-/**
- * Syscalls that can produce kernel wakeup events (pipe/socket/fd operations).
- * drainAndProcessWakeupEvents() is only called after these syscalls.
- * Non-I/O syscalls (getpid, clock_gettime, etc.) skip the drain entirely.
- */
-const IO_SYSCALLS = new Set([
-  2, 3, 4, 6, 8, 10,        // close, read, write, close2, lseek, fcntl
-  23, 24, 25,                // dup, dup2, dup3
-  42, 43, 44, 49, 53,       // socket, connect, accept, bind, listen
-  55, 56, 62, 63, 64, 65,   // send, recv, sendto, recvfrom, pread, pwrite
-  81, 82,                     // writev, readv
-  137, 138,                   // sendmsg, recvmsg
-  294,                        // sendfile
-  295, 296,                   // preadv, pwritev
-  384,                        // accept4
-  SYS_CLOSE,                  // close
-  SYS_POLL, SYS_PPOLL, SYS_PSELECT6, // poll/select
-  SYS_EPOLL_PWAIT, SYS_EPOLL_CTL, SYS_EPOLL_CREATE1, SYS_EPOLL_CREATE, SYS_EPOLL_WAIT,
-]);
-
 /** Profiling: enabled via WASM_POSIX_PROFILE env var. Zero-cost when disabled. */
 const PROFILING = typeof process !== 'undefined' && !!process.env?.WASM_POSIX_PROFILE;
-
-/**
- * Number of arguments each syscall actually uses.
- * Syscalls not listed default to 6 (read all args).
- * This avoids unnecessary BigInt conversions for 0-arg and low-arg syscalls.
- */
-const SYSCALL_ARG_COUNTS: Record<number, number> = {
-  // 0 args
-  20: 0,  // getpid
-  88: 0,  // getppid
-  91: 0,  // getpgrp
-  92: 0,  // setsid
-  50: 0,  // geteuid
-  51: 0,  // getegid
-  87: 0,  // getuid
-  89: 0,  // getgid
-  // 1 arg
-  2: 1,   // close
-  34: 1,  // exit
-  387: 1, // exit_group
-  71: 1,  // umask
-  48: 1,  // brk
-  // 2 args
-  47: 2,  // munmap
-  90: 2,  // setpgid
-  35: 2,  // kill
-  23: 2,  // dup2
-  // 3 args
-  3: 3,   // read
-  4: 3,   // write
-  24: 3,  // dup3
-  25: 3,  // pipe2 (actually takes 2 but arg layout uses 3)
-  // 4 args
-  62: 4,  // sendto (often 4-6)
-  63: 4,  // recvfrom (often 4-6)
-  64: 4,  // pread
-  65: 4,  // pwrite
-};
 
 /** Read-like syscalls that may block on pipe/socket data */
 const READ_LIKE_SYSCALLS = new Set([3, 56, 63, 64, 82, 138]); // READ, RECV, RECVFROM, PREAD, READV, RECVMSG
@@ -649,12 +591,6 @@ interface ChannelInfo {
    *  retry/sleep/fork/exec path. Prevents the poller from re-entering a
    *  channel that is already in flight. Only used when usePolling=true. */
   handling?: boolean;
-  /** Cached DataView for process channel — invalidated on memory.grow() */
-  cachedDataView?: DataView;
-  /** Cached Int32Array for Atomics — invalidated on memory.grow() */
-  cachedI32View?: Int32Array;
-  /** Buffer reference for detecting memory.grow() invalidation */
-  cachedBuffer?: ArrayBuffer;
 }
 
 /** Info about a registered process. */
@@ -1511,41 +1447,6 @@ export class CentralizedKernelWorker {
     return this.cachedKernelMem!;
   }
 
-  /** Cached DataView over the kernel scratch area. Invalidated on memory.grow(). */
-  private cachedKernelDataView?: DataView;
-  private cachedKernelViewBuffer?: ArrayBuffer;
-
-  private getKernelView(): DataView {
-    const buf = this.kernelMemory!.buffer;
-    if (buf !== this.cachedKernelViewBuffer) {
-      this.cachedKernelDataView = new DataView(buf, this.scratchOffset);
-      this.cachedKernelViewBuffer = buf;
-    }
-    return this.cachedKernelDataView!;
-  }
-
-  /** Get cached DataView for a process channel. Invalidated on memory.grow(). */
-  private getProcessView(channel: ChannelInfo): DataView {
-    const buf = channel.memory.buffer;
-    if (buf !== channel.cachedBuffer) {
-      channel.cachedDataView = new DataView(buf, channel.channelOffset);
-      channel.cachedI32View = new Int32Array(buf, channel.channelOffset);
-      channel.cachedBuffer = buf;
-    }
-    return channel.cachedDataView!;
-  }
-
-  /** Get cached Int32Array for a process channel (for Atomics operations). */
-  private getProcessI32View(channel: ChannelInfo): Int32Array {
-    const buf = channel.memory.buffer;
-    if (buf !== channel.cachedBuffer) {
-      channel.cachedDataView = new DataView(buf, channel.channelOffset);
-      channel.cachedI32View = new Int32Array(buf, channel.channelOffset);
-      channel.cachedBuffer = buf;
-    }
-    return channel.cachedI32View!;
-  }
-
   /** Get pointer width for a process (4=wasm32, 8=wasm64). */
   private getPtrWidth(pid: number): 4 | 8 {
     return this.processes.get(pid)?.ptrWidth ?? 4;
@@ -1651,7 +1552,7 @@ export class CentralizedKernelWorker {
   private handleSyscall(channel: ChannelInfo): void {
     try {
       if (PROFILING) {
-        const pv = this.getProcessView(channel);
+        const pv = new DataView(channel.memory.buffer, channel.channelOffset);
         const nr = pv.getUint32(CH_SYSCALL, true);
         const start = performance.now();
         this._handleSyscallInner(channel);
@@ -1675,26 +1576,21 @@ export class CentralizedKernelWorker {
   }
 
   private _handleSyscallInner(channel: ChannelInfo): void {
-    const processView = this.getProcessView(channel);
+    const processView = new DataView(channel.memory.buffer, channel.channelOffset);
 
     // Read syscall number and args from process channel
     const syscallNr = processView.getUint32(CH_SYSCALL, true);
-    const argCount = SYSCALL_ARG_COUNTS[syscallNr] ?? CH_ARGS_COUNT;
     const origArgs: number[] = [];
-    for (let i = 0; i < argCount; i++) {
+    for (let i = 0; i < CH_ARGS_COUNT; i++) {
       origArgs.push(Number(processView.getBigInt64(CH_ARGS + i * CH_ARG_SIZE, true)));
     }
-    // Pad to 6 elements for syscalls that access args by index
-    while (origArgs.length < CH_ARGS_COUNT) origArgs.push(0);
 
-    // Track last 30 syscalls per channel for crash diagnostics (skip for trivial syscalls)
-    if (argCount > 0) {
-      const ringKey = channel.channelOffset;
-      let ring = this.syscallRing.get(ringKey);
-      if (!ring) { ring = []; this.syscallRing.set(ringKey, ring); }
-      ring.push(`  syscall=${syscallNr} args=[${origArgs.join(',')}]`);
-      if (ring.length > 30) ring.shift();
-    }
+    // Track last 30 syscalls per channel for crash diagnostics
+    const ringKey = channel.channelOffset;
+    let ring = this.syscallRing.get(ringKey);
+    if (!ring) { ring = []; this.syscallRing.set(ringKey, ring); }
+    ring.push(`  syscall=${syscallNr} args=[${origArgs.join(',')}]`);
+    if (ring.length > 30) ring.shift();
 
     // Syscall logging
     const logging = this.config.enableSyscallLog;
@@ -1853,7 +1749,7 @@ export class CentralizedKernelWorker {
     }
 
     // --- Normal syscall path ---
-    const kernelView = this.getKernelView();
+    const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
 
     // Copy raw args to kernel scratch header (will be adjusted below)
     const adjustedArgs = [...origArgs];
@@ -1957,10 +1853,9 @@ export class CentralizedKernelWorker {
       }
     }
 
-    // Write adjusted args to kernel scratch (only the args actually used)
+    // Write adjusted args to kernel scratch
     kernelView.setUint32(CH_SYSCALL, syscallNr, true);
-    const writeCount = argDescs ? CH_ARGS_COUNT : argCount; // need all 6 when argDescs adjusted them
-    for (let i = 0; i < writeCount; i++) {
+    for (let i = 0; i < CH_ARGS_COUNT; i++) {
       kernelView.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, BigInt(adjustedArgs[i]), true);
     }
 
@@ -2147,7 +2042,7 @@ export class CentralizedKernelWorker {
     retVal: number,
     errVal: number,
   ): void {
-    const processView = this.getProcessView(channel);
+    const processView = new DataView(channel.memory.buffer, channel.channelOffset);
 
     // Copy output data from kernel scratch back to process memory
     if (argDescs) {
@@ -2244,16 +2139,13 @@ export class CentralizedKernelWorker {
     this.flushTcpSendPipes(channel.pid);
 
     // Set status to COMPLETE and notify process
-    const i32View = this.getProcessI32View(channel);
+    const i32View = new Int32Array(channel.memory.buffer, channel.channelOffset);
     Atomics.store(i32View, CH_STATUS / 4, CH_COMPLETE);
     Atomics.notify(i32View, CH_STATUS / 4, 1);
 
-    // Drain kernel wakeup events after notifying the process, so the current
-    // process can proceed immediately while woken readers/writers are retried.
-    // Only I/O syscalls can produce wakeup events.
-    if (IO_SYSCALLS.has(syscallNr)) {
-      this.drainAndProcessWakeupEvents();
-    }
+
+    // Drain kernel wakeup events and process targeted wakeups.
+    this.drainAndProcessWakeupEvents();
 
     // Re-listen for next syscall
     this.relistenChannel(channel);
@@ -2275,8 +2167,8 @@ export class CentralizedKernelWorker {
    */
   private relistenCount = 0;
   /** How many syscalls to process via microtask before yielding to the event
-   *  loop via setImmediate. Default 64 for Node.js. Browser uses 8 with
-   *  a MessageChannel-based setImmediate polyfill for rendering yields. */
+   *  loop via setImmediate. Default 64 is optimal for Node.js. Set to 1 in
+   *  browser environments where the kernel runs on the main thread. */
   relistenBatchSize = 64;
 
   /**
@@ -2380,14 +2272,14 @@ export class CentralizedKernelWorker {
     // Clear handling flag (channel is done — poller can pick it up for next syscall)
     channel.handling = false;
 
-    const processView = this.getProcessView(channel);
+    const processView = new DataView(channel.memory.buffer, channel.channelOffset);
     processView.setBigInt64(CH_RETURN, BigInt(retVal), true);
     processView.setUint32(CH_ERRNO, errVal, true);
 
     // Cancel any pending socket timeout timer for this channel
     this.clearSocketTimeout(channel);
 
-    const i32View = this.getProcessI32View(channel);
+    const i32View = new Int32Array(channel.memory.buffer, channel.channelOffset);
     Atomics.store(i32View, CH_STATUS / 4, CH_COMPLETE);
     Atomics.notify(i32View, CH_STATUS / 4, 1);
   }

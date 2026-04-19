@@ -70,6 +70,23 @@ Results are saved as JSON in `benchmarks/results/`. See [docs/profiling.md](docs
 
 Centralized kernel mode only. One kernel Wasm instance serves all process workers via channel IPC (SharedArrayBuffer + Atomics). Programs are compiled with `channel_syscall.c`.
 
+**The kernel MUST run in a dedicated worker thread on ALL platforms** — `worker_thread` on Node.js, Web Worker in browsers. Never instantiate `CentralizedKernelWorker` on the main thread. The main thread should only be a thin proxy for setup and I/O routing. Running the kernel on the main thread degrades syscall throughput by 3-4x due to event loop overhead.
+
+See [docs/architecture.md](docs/architecture.md) for full architecture details.
+
+## Performance: Do NOT Micro-Optimize the Syscall Hot Path
+
+**Do not add "optimization" tables or shortcut logic to `kernel-worker.ts`.** Specifically, do not:
+
+- Add syscall argument count tables to skip reading unused args (e.g., `SYSCALL_ARG_COUNTS`)
+- Add syscall classification sets to conditionally skip post-syscall work (e.g., `IO_SYSCALLS` to skip `drainAndProcessWakeupEvents`)
+- Cache `DataView` or `Int32Array` objects on channel structs to avoid re-creation
+- Skip debug ring logging for "trivial" syscalls
+
+These optimizations were benchmarked and **made performance worse across all application workloads** (WordPress, Erlang, MariaDB). The per-syscall overhead of `new DataView()`, reading 6 BigInt args, and unconditionally draining wakeup events is negligible compared to the actual Wasm kernel execution. The "optimizations" add branch misprediction overhead, risk correctness bugs (wrong syscall numbers → zeroed args → broken networking), and make the code harder to maintain.
+
+The real performance lever is the **dedicated worker thread architecture** (`NodeKernelHost` / `BrowserKernel`), which provides 2x pipe throughput and 2.5x clone speed. Keep `kernel-worker.ts` simple and correct.
+
 ## Build
 
 ```bash
