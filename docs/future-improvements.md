@@ -19,6 +19,11 @@ When `host_call_signal_handler` fails (invalid function table index, handler thr
 
 **Files:** `crates/kernel/src/wasm_api.rs` — `deliver_pending_signals`
 
+### Git binary uses full asyncify (~6MB overhead)
+`git.wasm` requires full `wasm-opt --asyncify` instrumentation (7MB → 13MB) because git's HTTP transport dispatches through `call_indirect` via a vtable (`transport->vtable->get_refs_list()`). Asyncify's `--asyncify-onlylist` mode, which instruments only listed functions, fails for `call_indirect` paths — the fork import is never reached even though all functions in the chain are listed and correctly instrumented. Direct call paths (e.g., `cmd_commit` → `start_command` → `fork`) work fine with onlylist. Possible approaches: upstream binaryen fix for onlylist + call_indirect, `--asyncify-removelist` to selectively exclude large safe functions, or restructuring the fork mechanism to avoid asyncify entirely.
+
+**Files:** `examples/libs/git/build-git.sh`, `examples/libs/git/asyncify-onlylist.txt`
+
 ## Browser
 
 ### PTY terminal integration with xterm.js
