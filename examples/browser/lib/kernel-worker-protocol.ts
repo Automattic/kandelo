@@ -147,6 +147,22 @@ export interface RegisterLazyFilesMessage {
   entries: Array<{ ino: number; path: string; url: string; size: number }>;
 }
 
+export interface RegisterLazyArchivesMessage {
+  type: "register_lazy_archives";
+  entries: Array<{
+    url: string;
+    mountPrefix: string;
+    materialized: boolean;
+    entries: Array<{
+      vfsPath: string;
+      ino: number;
+      size: number;
+      isSymlink: boolean;
+      deleted: boolean;
+    }>;
+  }>;
+}
+
 export type MainToKernelMessage =
   | InitMessage
   | SpawnMessage
@@ -167,7 +183,8 @@ export type MainToKernelMessage =
   | PickListenerTargetMessage
   | DestroyMessage
   | RegisterPtyOutputMessage
-  | RegisterLazyFilesMessage;
+  | RegisterLazyFilesMessage
+  | RegisterLazyArchivesMessage;
 
 // ── Kernel Worker → Main Thread ──
 

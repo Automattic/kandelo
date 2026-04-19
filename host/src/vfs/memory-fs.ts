@@ -4,6 +4,7 @@ import {
   SharedFS,
   type StatResult as SfsStatResult,
 } from "./sharedfs-vendor";
+import type { ZipEntry } from "./zip";
 
 /** Serializable lazy file entry for transfer between instances. */
 export interface LazyFileEntry {
@@ -11,6 +12,39 @@ export interface LazyFileEntry {
   path: string;
   url: string;
   size: number;
+}
+
+/** Per-file metadata for a file inside a lazy archive. */
+export interface LazyArchiveFileEntry {
+  ino: number;
+  size: number;
+  isSymlink: boolean;
+  deleted: boolean;
+}
+
+/**
+ * A group of files whose content comes from a single zip archive.
+ * Accessing any member materializes the entire archive in one fetch.
+ */
+export interface LazyArchiveGroup {
+  url: string;
+  mountPrefix: string;
+  materialized: boolean;
+  entries: Map<string, LazyArchiveFileEntry>; // keyed by VFS absolute path
+}
+
+/** JSON-serializable form of LazyArchiveGroup for cross-worker transfer. */
+export interface SerializedLazyArchiveEntry {
+  url: string;
+  mountPrefix: string;
+  materialized: boolean;
+  entries: Array<{
+    vfsPath: string;
+    ino: number;
+    size: number;
+    isSymlink: boolean;
+    deleted: boolean;
+  }>;
 }
 
 /** Options for saving a VFS image. */
@@ -27,12 +61,17 @@ export interface VfsImageOptions {
 const VFS_IMAGE_MAGIC = 0x56465349; // "VFSI"
 const VFS_IMAGE_VERSION = 1;
 const VFS_IMAGE_FLAG_HAS_LAZY = 1 << 0;
+const VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES = 1 << 1;
 const VFS_IMAGE_HEADER_SIZE = 16; // magic(4) + version(4) + flags(4) + sabLen(4)
 
 export class MemoryFileSystem implements FileSystemBackend {
   private fs: SharedFS;
   /** Lazy files: inode → { path, url, size }. Cleared per-inode after materialization. */
   private lazyFiles = new Map<number, { path: string; url: string; size: number }>();
+  /** Lazy archive groups (bundle of files backed by one zip URL). */
+  private lazyArchiveGroups: LazyArchiveGroup[] = [];
+  /** Fast lookup: inode → group it belongs to. Cleared per-group after materialization. */
+  private lazyArchiveInodes = new Map<number, LazyArchiveGroup>();
 
   private constructor(fs: SharedFS) {
     this.fs = fs;
@@ -93,29 +132,188 @@ export class MemoryFileSystem implements FileSystemBackend {
   }
 
   /**
-   * Async-materialize a lazy file if the given path resolves to one.
-   * Call this before any synchronous read (e.g., in handleExec) to avoid
-   * sync XHR which deadlocks with the COOP/COEP service worker.
-   * Returns true if the file was materialized, false if it was already concrete.
+   * Register a lazy archive group: creates stubs in SharedFS for every file
+   * entry and records metadata so that accessing any one of them triggers a
+   * single archive fetch that materializes all files in the group.
+   *
+   * Parse the zip's central directory (via host/src/vfs/zip.ts) and pass the
+   * resulting ZipEntry[] in `zipEntries`. `mountPrefix` maps the zip's
+   * internal paths into the VFS (e.g. prefix "/usr/" turns "bin/vim" into
+   * "/usr/bin/vim").
+   */
+  registerLazyArchiveFromEntries(
+    url: string,
+    zipEntries: ZipEntry[],
+    mountPrefix: string,
+    symlinkTargets?: Map<string, string>,
+  ): LazyArchiveGroup {
+    const group: LazyArchiveGroup = {
+      url,
+      mountPrefix,
+      materialized: false,
+      entries: new Map(),
+    };
+
+    const normalized = mountPrefix.replace(/\/+$/, "");
+    for (const ze of zipEntries) {
+      if (ze.isDirectory) continue;
+
+      const vfsPath = normalized + "/" + ze.fileName;
+      const parts = vfsPath.split("/").filter(Boolean);
+      let current = "";
+      for (let i = 0; i < parts.length - 1; i++) {
+        current += "/" + parts[i];
+        try { this.fs.mkdir(current, 0o755); } catch { /* exists */ }
+      }
+
+      if (ze.isSymlink && symlinkTargets?.has(ze.fileName)) {
+        const target = symlinkTargets.get(ze.fileName)!;
+        this.fs.symlink(target, vfsPath);
+      } else {
+        const fd = this.fs.open(vfsPath, 0o1101, ze.mode); // O_WRONLY | O_CREAT | O_TRUNC
+        this.fs.close(fd);
+      }
+
+      const st = this.fs.lstat(vfsPath);
+      const entry: LazyArchiveFileEntry = {
+        ino: st.ino,
+        size: ze.uncompressedSize,
+        isSymlink: ze.isSymlink,
+        deleted: false,
+      };
+      group.entries.set(vfsPath, entry);
+      this.lazyArchiveInodes.set(st.ino, group);
+    }
+
+    this.lazyArchiveGroups.push(group);
+    return group;
+  }
+
+  /** Import lazy archive groups from another instance. Assumes stubs already exist. */
+  importLazyArchiveEntries(serialized: SerializedLazyArchiveEntry[]): void {
+    for (const s of serialized) {
+      const entries = new Map<string, LazyArchiveFileEntry>();
+      for (const e of s.entries) {
+        entries.set(e.vfsPath, {
+          ino: e.ino,
+          size: e.size,
+          isSymlink: e.isSymlink,
+          deleted: e.deleted,
+        });
+      }
+      const group: LazyArchiveGroup = {
+        url: s.url,
+        mountPrefix: s.mountPrefix,
+        materialized: s.materialized,
+        entries,
+      };
+      this.lazyArchiveGroups.push(group);
+      if (!group.materialized) {
+        for (const [, entry] of entries) {
+          if (!entry.deleted) {
+            this.lazyArchiveInodes.set(entry.ino, group);
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * Rewrite the URL of every registered lazy archive group. Useful when the
+   * VFS image was built with relative URLs (e.g. "vim.zip") and the runtime
+   * needs to resolve them against a deployment base URL.
+   */
+  rewriteLazyArchiveUrls(transform: (url: string) => string): void {
+    for (const group of this.lazyArchiveGroups) {
+      group.url = transform(group.url);
+    }
+  }
+
+  /** Export all lazy archive groups for transfer to another instance. */
+  exportLazyArchiveEntries(): SerializedLazyArchiveEntry[] {
+    return this.lazyArchiveGroups.map((group) => ({
+      url: group.url,
+      mountPrefix: group.mountPrefix,
+      materialized: group.materialized,
+      entries: Array.from(group.entries, ([vfsPath, entry]) => ({
+        vfsPath,
+        ino: entry.ino,
+        size: entry.size,
+        isSymlink: entry.isSymlink,
+        deleted: entry.deleted,
+      })),
+    }));
+  }
+
+  /**
+   * Async-materialize a lazy file or archive-backed file if the given path
+   * resolves to one. Call this before any synchronous read (e.g. in
+   * handleExec) to avoid sync XHR which deadlocks with COOP/COEP.
+   * Returns true if something was materialized, false if already concrete.
    */
   async ensureMaterialized(path: string): Promise<boolean> {
-    if (this.lazyFiles.size === 0) return false;
+    if (this.lazyFiles.size === 0 && this.lazyArchiveInodes.size === 0) return false;
     try {
       const st = this.fs.stat(path); // follows symlinks
       const entry = this.lazyFiles.get(st.ino);
-      if (!entry) return false;
-      const resp = await fetch(entry.url);
-      if (!resp.ok) {
-        throw new Error(`Failed to fetch lazy file ${entry.path}: HTTP ${resp.status}`);
+      if (entry) {
+        const resp = await fetch(entry.url);
+        if (!resp.ok) {
+          throw new Error(`Failed to fetch lazy file ${entry.path}: HTTP ${resp.status}`);
+        }
+        const data = new Uint8Array(await resp.arrayBuffer());
+        const fd = this.fs.open(entry.path, 0o1101, 0o755); // O_WRONLY | O_CREAT | O_TRUNC
+        this.fs.write(fd, data);
+        this.fs.close(fd);
+        this.lazyFiles.delete(st.ino);
+        return true;
       }
-      const data = new Uint8Array(await resp.arrayBuffer());
-      const fd = this.fs.open(entry.path, 0o1101, 0o755); // O_WRONLY | O_CREAT | O_TRUNC
-      this.fs.write(fd, data);
-      this.fs.close(fd);
-      this.lazyFiles.delete(st.ino);
-      return true;
+      const group = this.lazyArchiveInodes.get(st.ino);
+      if (group) {
+        await this.ensureArchiveMaterialized(group);
+        return true;
+      }
+      return false;
     } catch {
       return false;
+    }
+  }
+
+  /**
+   * Materialize a full lazy archive group: fetch the zip once, parse its
+   * central directory, and write every non-deleted entry into its stub.
+   * Subsequent calls are no-ops.
+   */
+  async ensureArchiveMaterialized(group: LazyArchiveGroup): Promise<void> {
+    if (group.materialized) return;
+
+    const resp = await fetch(group.url);
+    if (!resp.ok) {
+      throw new Error(`Failed to fetch archive ${group.url}: HTTP ${resp.status}`);
+    }
+    const zipData = new Uint8Array(await resp.arrayBuffer());
+
+    const { parseZipCentralDirectory, extractZipEntry } = await import("./zip");
+    const zipEntries = parseZipCentralDirectory(zipData);
+    const zipLookup = new Map<string, ZipEntry>();
+    for (const ze of zipEntries) zipLookup.set(ze.fileName, ze);
+
+    const normalizedPrefix = group.mountPrefix.replace(/\/+$/, "");
+    for (const [vfsPath, archiveEntry] of group.entries) {
+      if (archiveEntry.deleted) continue;
+      if (archiveEntry.isSymlink) continue; // symlinks already created at registration
+      const zipFileName = vfsPath.slice(normalizedPrefix.length + 1);
+      const ze = zipLookup.get(zipFileName);
+      if (!ze) continue;
+      const content = extractZipEntry(zipData, ze);
+      const fd = this.fs.open(vfsPath, 0o1101, 0o755); // O_WRONLY | O_CREAT | O_TRUNC
+      if (content.length > 0) this.fs.write(fd, content);
+      this.fs.close(fd);
+    }
+
+    group.materialized = true;
+    for (const [, archiveEntry] of group.entries) {
+      this.lazyArchiveInodes.delete(archiveEntry.ino);
     }
   }
 
@@ -142,15 +340,29 @@ export class MemoryFileSystem implements FileSystemBackend {
       ? new TextEncoder().encode(JSON.stringify(lazyEntries))
       : new Uint8Array(0);
 
+    const archiveEntries = this.exportLazyArchiveEntries();
+    const hasArchives = archiveEntries.length > 0;
+    const archiveJson = hasArchives
+      ? new TextEncoder().encode(JSON.stringify(archiveEntries))
+      : new Uint8Array(0);
+
+    // Layout: header | sab | u32 lazyLen | lazyJson | u32 archiveLen | archiveJson
+    // archive section is only appended when HAS_LAZY_ARCHIVES flag is set.
+    const archiveSectionSize = hasArchives ? 4 + archiveJson.byteLength : 0;
     const totalSize =
-      VFS_IMAGE_HEADER_SIZE + sabBytes.byteLength + 4 + lazyJson.byteLength;
+      VFS_IMAGE_HEADER_SIZE + sabBytes.byteLength + 4 + lazyJson.byteLength + archiveSectionSize;
     const image = new Uint8Array(totalSize);
     const view = new DataView(image.buffer);
 
     // Header
     view.setUint32(0, VFS_IMAGE_MAGIC, true);
     view.setUint32(4, VFS_IMAGE_VERSION, true);
-    view.setUint32(8, hasLazy ? VFS_IMAGE_FLAG_HAS_LAZY : 0, true);
+    view.setUint32(
+      8,
+      (hasLazy ? VFS_IMAGE_FLAG_HAS_LAZY : 0) |
+        (hasArchives ? VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES : 0),
+      true,
+    );
     view.setUint32(12, sabBytes.byteLength, true);
 
     // SAB data — copy from SharedArrayBuffer (can't use set() directly on SAB-backed views in all environments)
@@ -163,6 +375,13 @@ export class MemoryFileSystem implements FileSystemBackend {
     view.setUint32(lazyOffset, lazyJson.byteLength, true);
     if (lazyJson.byteLength > 0) {
       image.set(lazyJson, lazyOffset + 4);
+    }
+
+    // Archive entries
+    if (hasArchives) {
+      const archiveOffset = lazyOffset + 4 + lazyJson.byteLength;
+      view.setUint32(archiveOffset, archiveJson.byteLength, true);
+      image.set(archiveJson, archiveOffset + 4);
     }
 
     return image;
@@ -215,15 +434,34 @@ export class MemoryFileSystem implements FileSystemBackend {
     const mfs = MemoryFileSystem.fromExisting(sab);
 
     // Restore lazy entries
+    const lazyOffset = VFS_IMAGE_HEADER_SIZE + sabLen;
+    const lazyLen = view.getUint32(lazyOffset, true);
     if (flags & VFS_IMAGE_FLAG_HAS_LAZY) {
-      const lazyOffset = VFS_IMAGE_HEADER_SIZE + sabLen;
-      const lazyLen = view.getUint32(lazyOffset, true);
       if (lazyLen > 0) {
         const lazyBytes = image.subarray(lazyOffset + 4, lazyOffset + 4 + lazyLen);
         const entries: LazyFileEntry[] = JSON.parse(
           new TextDecoder().decode(lazyBytes),
         );
         mfs.importLazyEntries(entries);
+      }
+    }
+
+    // Restore lazy archive groups
+    if (flags & VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES) {
+      const archiveOffset = lazyOffset + 4 + lazyLen;
+      if (image.byteLength < archiveOffset + 4) {
+        throw new Error("VFS image truncated (lazy archive section)");
+      }
+      const archiveLen = view.getUint32(archiveOffset, true);
+      if (archiveLen > 0) {
+        const archiveBytes = image.subarray(
+          archiveOffset + 4,
+          archiveOffset + 4 + archiveLen,
+        );
+        const entries: SerializedLazyArchiveEntry[] = JSON.parse(
+          new TextDecoder().decode(archiveBytes),
+        );
+        mfs.importLazyArchiveEntries(entries);
       }
     }
 
@@ -294,10 +532,20 @@ export class MemoryFileSystem implements FileSystemBackend {
 
   fstat(handle: number): StatResult {
     const result = this.adaptStat(this.fs.fstat(handle));
-    // Override size for unmaterialized lazy files
+    // Override size for unmaterialized lazy files / archive entries
     const entry = this.lazyFiles.get(result.ino);
     if (entry) {
       result.size = entry.size;
+    } else {
+      const group = this.lazyArchiveInodes.get(result.ino);
+      if (group) {
+        for (const archiveEntry of group.entries.values()) {
+          if (archiveEntry.ino === result.ino) {
+            result.size = archiveEntry.size;
+            break;
+          }
+        }
+      }
     }
     return result;
   }
@@ -316,20 +564,40 @@ export class MemoryFileSystem implements FileSystemBackend {
 
   stat(path: string): StatResult {
     const result = this.adaptStat(this.fs.stat(path));
-    // Override size for unmaterialized lazy files
+    // Override size for unmaterialized lazy files / archive entries
     const entry = this.lazyFiles.get(result.ino);
     if (entry) {
       result.size = entry.size;
+    } else {
+      const group = this.lazyArchiveInodes.get(result.ino);
+      if (group) {
+        for (const archiveEntry of group.entries.values()) {
+          if (archiveEntry.ino === result.ino) {
+            result.size = archiveEntry.size;
+            break;
+          }
+        }
+      }
     }
     return result;
   }
 
   lstat(path: string): StatResult {
     const result = this.adaptStat(this.fs.lstat(path));
-    // Override size for unmaterialized lazy files
+    // Override size for unmaterialized lazy files / archive entries
     const entry = this.lazyFiles.get(result.ino);
     if (entry) {
       result.size = entry.size;
+    } else {
+      const group = this.lazyArchiveInodes.get(result.ino);
+      if (group) {
+        for (const archiveEntry of group.entries.values()) {
+          if (archiveEntry.ino === result.ino) {
+            result.size = archiveEntry.size;
+            break;
+          }
+        }
+      }
     }
     return result;
   }
@@ -343,6 +611,19 @@ export class MemoryFileSystem implements FileSystemBackend {
   }
 
   unlink(path: string): void {
+    // If the path belongs to an unmaterialized archive group, mark the entry
+    // as deleted so materialization skips it.
+    if (this.lazyArchiveInodes.size > 0) {
+      try {
+        const st = this.fs.lstat(path);
+        const group = this.lazyArchiveInodes.get(st.ino);
+        if (group) {
+          const entry = group.entries.get(path);
+          if (entry) entry.deleted = true;
+          this.lazyArchiveInodes.delete(st.ino);
+        }
+      } catch { /* not present — unlink will raise the real error */ }
+    }
     this.fs.unlink(path);
   }
 

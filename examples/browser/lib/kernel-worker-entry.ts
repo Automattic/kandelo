@@ -1130,6 +1130,7 @@ sw.onmessage = (e: MessageEvent) => {
     case "pick_listener_target": handlePickListenerTarget(msg); break;
     case "destroy": handleDestroy(msg); break;
     case "register_lazy_files": memfs.importLazyEntries(msg.entries); break;
+    case "register_lazy_archives": memfs.importLazyArchiveEntries(msg.entries); break;
     default: {
       // Handle non-protocol messages (e.g., bridge port transfer)
       const raw = e.data as any;
