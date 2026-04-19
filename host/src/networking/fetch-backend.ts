@@ -75,10 +75,13 @@ export class FetchNetworkBackend implements NetworkIO {
     // Don't block with Atomics.wait — that deadlocks in web workers where the
     // event loop must yield for fetch() promises to resolve.
     const { method, path, headers, body } = parseHttpRequest(conn.sendBuf, headerEnd);
-    const host = headers.get("host") || conn.hostname;
+    const hostHeader = headers.get("host");
     const scheme = conn.port === 443 ? "https" : "http";
     const portSuffix = (conn.port === 80 || conn.port === 443) ? "" : `:${conn.port}`;
-    const url = `${scheme}://${host}${portSuffix}${path}`;
+    // Use Host header as-is (it already includes :port when non-default),
+    // otherwise fall back to conn.hostname + port suffix.
+    const host = hostHeader ? hostHeader : `${conn.hostname}${portSuffix}`;
+    const url = `${scheme}://${host}${path}`;
 
     // Convert headers map to Headers object (skip Host and Connection)
     const fetchHeaders = new Headers();
@@ -127,6 +130,13 @@ export class FetchNetworkBackend implements NetworkIO {
         conn.fetchDone = true;
       }
     };
+
+    // Reset connection state before dispatching — allows HTTP keep-alive
+    // connections to handle multiple request/response cycles on the same handle.
+    conn.fetchDone = false;
+    conn.responseBuf = null;
+    conn.responseOffset = 0;
+    conn.fetchError = null;
 
     doFetch();
     // Clear the send buffer now that the request is dispatched
@@ -212,13 +222,21 @@ function parseHttpRequest(buf: Uint8Array, headerEnd: number): {
   for (let i = 1; i < lines.length; i++) {
     const colon = lines[i].indexOf(":");
     if (colon > 0) {
-      headers.set(lines[i].substring(0, colon).trim(), lines[i].substring(colon + 1).trim());
+      headers.set(lines[i].substring(0, colon).trim().toLowerCase(), lines[i].substring(colon + 1).trim());
     }
   }
   const bodyStart = headerEnd + 4;
   const body = bodyStart < buf.length ? buf.subarray(bodyStart) : null;
   return { method, path, headers, body };
 }
+
+/** Headers that must not be forwarded — fetch() already decoded them. */
+const HOP_BY_HOP_HEADERS = new Set([
+  "transfer-encoding",
+  "content-encoding",
+  "connection",
+  "keep-alive",
+]);
 
 /** Format an HTTP response as raw bytes. */
 function formatHttpResponse(
@@ -230,12 +248,12 @@ function formatHttpResponse(
   const bodyBytes = new Uint8Array(body);
   let headerStr = `HTTP/1.1 ${status} ${statusText}\r\n`;
   headers.forEach((value, key) => {
-    headerStr += `${key}: ${value}\r\n`;
+    if (!HOP_BY_HOP_HEADERS.has(key.toLowerCase())) {
+      headerStr += `${key}: ${value}\r\n`;
+    }
   });
-  // Ensure Content-Length is set
-  if (!headers.has("content-length")) {
-    headerStr += `Content-Length: ${bodyBytes.length}\r\n`;
-  }
+  // Set Content-Length to actual body size (fetch already decoded chunked/gzip)
+  headerStr += `Content-Length: ${bodyBytes.length}\r\n`;
   headerStr += "\r\n";
 
   const headerBytes = new TextEncoder().encode(headerStr);

@@ -134,7 +134,7 @@ export async function runCentralizedProgram(
   const processProgramBytes = new Map<number, ArrayBuffer>();
 
   const kernelWorker = new CentralizedKernelWorker(
-    { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true },
+    { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true, enableSyscallLog: !!process.env.KERNEL_SYSCALL_LOG },
     io,
     {
       onFork: async (parentPid, childPid, parentMemory) => {
@@ -174,7 +174,7 @@ export async function runCentralizedProgram(
         const childWorker = workerAdapter.createWorker(childInitData);
         workers.set(childPid, childWorker);
         processProgramBytes.set(childPid, parentProgram);
-        childWorker.on("error", () => {
+        childWorker.on("error", (err: Error) => {
           kernelWorker.unregisterProcess(childPid);
           workers.delete(childPid);
         });
@@ -229,8 +229,7 @@ export async function runCentralizedProgram(
 
         const newWorker = workerAdapter.createWorker(initData);
         workers.set(pid, newWorker);
-        newWorker.on("error", (err: Error) => {
-          console.error(`[exec] worker error for pid ${pid}:`, err);
+        newWorker.on("error", () => {
         });
 
         return 0;

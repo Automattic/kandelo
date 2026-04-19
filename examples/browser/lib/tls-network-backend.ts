@@ -98,7 +98,7 @@ function parseHttpRequest(buf: Uint8Array, headerEnd: number): {
   for (let i = 1; i < lines.length; i++) {
     const colon = lines[i].indexOf(":");
     if (colon > 0) {
-      headers.set(lines[i].substring(0, colon).trim(), lines[i].substring(colon + 1).trim());
+      headers.set(lines[i].substring(0, colon).trim().toLowerCase(), lines[i].substring(colon + 1).trim());
     }
   }
   const bodyStart = headerEnd + 4;
@@ -407,7 +407,7 @@ export class TlsNetworkBackend implements NetworkIO {
     const totalRequestLen = headerEnd + 4 + Math.max(contentLength, 0);
     conn.plaintextBuf = conn.plaintextBuf.subarray(totalRequestLen);
 
-    const host = headers.get("Host") || headers.get("host") || conn.hostname;
+    const host = headers.get("host") || conn.hostname;
     const url = `https://${host}${path}`;
 
     const fetchHeaders = new Headers();
@@ -492,10 +492,13 @@ export class TlsNetworkBackend implements NetworkIO {
 
     // Complete request — parse and issue fetch
     const { method, path, headers, body } = parseHttpRequest(conn.sendBuf, headerEnd);
-    const host = headers.get("host") || conn.hostname;
+    const hostHeader = headers.get("host");
     const scheme = conn.port === 443 ? "https" : "http";
     const portSuffix = (conn.port === 80 || conn.port === 443) ? "" : `:${conn.port}`;
-    const url = `${scheme}://${host}${portSuffix}${path}`;
+    // Use Host header as-is (it already includes :port when non-default),
+    // otherwise fall back to conn.hostname + port suffix.
+    const host = hostHeader ? hostHeader : `${conn.hostname}${portSuffix}`;
+    const url = `${scheme}://${host}${path}`;
 
     const fetchHeaders = new Headers();
     for (const [key, value] of headers) {
