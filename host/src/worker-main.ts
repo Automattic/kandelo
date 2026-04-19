@@ -305,6 +305,7 @@ function buildImportObject(
     throw new Error("pure virtual method called");
   };
   envImports.__cxa_atexit = (): number => 0; // no-op, return success
+  envImports.__cxa_thread_atexit = (): number => 0; // no-op, return success
 
   // libc++ verbose abort — called on internal library errors
   envImports._ZNSt3__122__libcpp_verbose_abortEPKcz = (_fmt: number | bigint, _args: number | bigint): void => {
