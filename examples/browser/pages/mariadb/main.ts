@@ -43,6 +43,7 @@ const sqlInput = document.getElementById("sql") as HTMLTextAreaElement;
 const statusDiv = document.getElementById("status") as HTMLDivElement;
 const resultDiv = document.getElementById("result") as HTMLDivElement;
 const examplesSelect = document.getElementById("examples") as HTMLSelectElement;
+const engineSelect = document.getElementById("engine") as HTMLSelectElement;
 const terminalPanel = document.getElementById("terminal-panel") as HTMLDivElement;
 
 const decoder = new TextDecoder();
@@ -61,23 +62,27 @@ function setStatus(text: string, type: "loading" | "running" | "error") {
   statusDiv.className = `status ${type}`;
 }
 
-// Example queries
-const EXAMPLES: Record<string, string> = {
-  version: "SELECT VERSION(), @@version_comment;",
-  create: `CREATE TABLE IF NOT EXISTS test.users (
+// Example queries — engine placeholder is filled on start()
+function buildExamples(engine: string): Record<string, string> {
+  return {
+    version: "SELECT VERSION(), @@version_comment;",
+    create: `CREATE TABLE IF NOT EXISTS test.users (
   id INT AUTO_INCREMENT PRIMARY KEY,
   name VARCHAR(100) NOT NULL,
   email VARCHAR(200),
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-) ENGINE=Aria;`,
-  insert: `INSERT INTO test.users (name, email) VALUES
+) ENGINE=${engine};`,
+    insert: `INSERT INTO test.users (name, email) VALUES
   ('Alice', 'alice@example.com'),
   ('Bob', 'bob@example.com'),
   ('Charlie', 'charlie@example.com');`,
-  select: "SELECT * FROM test.users;",
-  show: "SHOW TABLES FROM test;",
-  databases: "SHOW DATABASES;",
-};
+    select: "SELECT * FROM test.users;",
+    show: "SHOW TABLES FROM test;",
+    databases: "SHOW DATABASES;",
+  };
+}
+
+let EXAMPLES = buildExamples("Aria");
 
 let kernel: BrowserKernel | null = null;
 let init: SystemInit | null = null;
@@ -95,7 +100,10 @@ async function fetchSize(url: string): Promise<number> {
 }
 
 async function start() {
+  const engine = engineSelect.value;
   startBtn.disabled = true;
+  engineSelect.disabled = true;
+  EXAMPLES = buildExamples(engine);
   log.textContent = "";
   setStatus("Loading MariaDB...", "loading");
 
@@ -161,10 +169,15 @@ async function start() {
     ensureDir(fs, "/etc/mariadb");
     writeVfsFile(fs, "/etc/mariadb/bootstrap.sql", bootstrapSql);
 
+    // InnoDB tuning args (only appended when InnoDB is selected)
+    const innodbArgs = engine === "InnoDB"
+      ? " --innodb-buffer-pool-size=8M --innodb-log-file-size=4M --innodb-log-buffer-size=1M --innodb-flush-log-at-trx-commit=2 --innodb-buffer-pool-load-at-startup=OFF --innodb-buffer-pool-dump-at-shutdown=OFF"
+      : "";
+
     // Write init service descriptors
     writeInitDescriptor(fs, "05-mariadb-bootstrap", {
       type: "oneshot",
-      command: "/usr/sbin/mariadbd --no-defaults --bootstrap --datadir=/data --tmpdir=/data/tmp --default-storage-engine=Aria --skip-grant-tables --key-buffer-size=1048576 --table-open-cache=10 --sort-buffer-size=262144 --skip-networking --log-warnings=0 --log-error=/data/bootstrap.log",
+      command: `/usr/sbin/mariadbd --no-defaults --bootstrap --datadir=/data --tmpdir=/data/tmp --default-storage-engine=${engine} --skip-grant-tables --key-buffer-size=1048576 --table-open-cache=10 --sort-buffer-size=262144 --skip-networking --log-warnings=0 --log-error=/data/bootstrap.log${innodbArgs}`,
       stdin: "/etc/mariadb/bootstrap.sql",
       ready: "stdin-consumed",
       terminate: "true",
@@ -172,7 +185,7 @@ async function start() {
 
     writeInitDescriptor(fs, "10-mariadb", {
       type: "daemon",
-      command: "/usr/sbin/mariadbd --no-defaults --datadir=/data --tmpdir=/data/tmp --default-storage-engine=Aria --skip-grant-tables --key-buffer-size=1048576 --table-open-cache=10 --sort-buffer-size=262144 --skip-networking=0 --port=3306 --bind-address=0.0.0.0 --socket= --max-connections=10 --thread-handling=no-threads --log-error=/data/error.log",
+      command: `/usr/sbin/mariadbd --no-defaults --datadir=/data --tmpdir=/data/tmp --default-storage-engine=${engine} --skip-grant-tables --key-buffer-size=1048576 --table-open-cache=10 --sort-buffer-size=262144 --skip-networking=0 --port=3306 --bind-address=0.0.0.0 --socket= --max-connections=10 --thread-handling=no-threads --log-error=/data/error.log${innodbArgs}`,
       depends: "mariadb-bootstrap",
       ready: "port:3306",
     });

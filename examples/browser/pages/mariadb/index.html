@@ -30,6 +30,10 @@
         <h1>MariaDB on wasm-posix-kernel</h1>
         <p class="subtitle">MariaDB 10.5 running inside a POSIX kernel compiled to WebAssembly</p>
         <div class="controls">
+          <select id="engine">
+            <option value="Aria">Aria (default)</option>
+            <option value="InnoDB">InnoDB</option>
+          </select>
           <button id="start">Start MariaDB</button>
           <select id="examples">
             <option value="">-- Example Queries --</option>
