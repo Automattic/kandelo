@@ -21,13 +21,31 @@ import { SystemInit } from "../../lib/init/system-init";
 import { MySqlBrowserClient } from "../../lib/mysql-client";
 import { writeInitDescriptor } from "../../lib/init/vfs-utils";
 import kernelWasmUrl from "../../../../host/wasm/wasm_posix_kernel.wasm?url";
-import coreutilsWasmUrl from "../../../../examples/libs/coreutils/bin/coreutils.wasm?url";
-import grepWasmUrl from "../../../../examples/libs/grep/bin/grep.wasm?url";
-import sedWasmUrl from "../../../../examples/libs/sed/bin/sed.wasm?url";
 import "@xterm/xterm/css/xterm.css";
 import "../../lib/terminal-panel.css";
 
-const VFS_IMAGE_URL = import.meta.env.BASE_URL + "mariadb.vfs";
+// Optional shell helpers — missing ones simply aren't registered as lazy files.
+// Using import.meta.glob (rather than static `?url` imports) lets the page load
+// even when coreutils/grep/sed haven't been built yet.
+const OPTIONAL_URLS = {
+  ...import.meta.glob("../../../../examples/libs/coreutils/bin/coreutils.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../examples/libs/grep/bin/grep.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../examples/libs/sed/bin/sed.wasm", {
+    query: "?url", import: "default",
+  }),
+} as Record<string, () => Promise<string>>;
+
+async function loadOptionalUrl(relPath: string): Promise<string | null> {
+  const loader = OPTIONAL_URLS[relPath];
+  return loader ? await loader() : null;
+}
+
+const VFS_IMAGE_URL_32 = import.meta.env.BASE_URL + "mariadb.vfs";
+const VFS_IMAGE_URL_64 = import.meta.env.BASE_URL + "mariadb-64.vfs";
 
 const log = document.getElementById("log") as HTMLPreElement;
 const startBtn = document.getElementById("start") as HTMLButtonElement;
@@ -37,6 +55,7 @@ const statusDiv = document.getElementById("status") as HTMLDivElement;
 const resultDiv = document.getElementById("result") as HTMLDivElement;
 const examplesSelect = document.getElementById("examples") as HTMLSelectElement;
 const engineSelect = document.getElementById("engine") as HTMLSelectElement;
+const archSelect = document.getElementById("arch") as HTMLSelectElement;
 const terminalPanel = document.getElementById("terminal-panel") as HTMLDivElement;
 
 const decoder = new TextDecoder();
@@ -93,34 +112,46 @@ async function fetchSize(url: string): Promise<number> {
 
 async function start() {
   const engine = engineSelect.value;
+  const arch = archSelect.value as "wasm32" | "wasm64";
+  const vfsUrl = arch === "wasm64" ? VFS_IMAGE_URL_64 : VFS_IMAGE_URL_32;
+  const archLabel = arch === "wasm64" ? "64-bit" : "32-bit";
+  const buildHint = arch === "wasm64"
+    ? "bash examples/browser/scripts/build-mariadb-vfs-image.sh --wasm64"
+    : "bash examples/browser/scripts/build-mariadb-vfs-image.sh";
   startBtn.disabled = true;
   engineSelect.disabled = true;
+  archSelect.disabled = true;
   log.textContent = "";
-  setStatus("Loading MariaDB...", "loading");
+  setStatus(`Loading MariaDB (${archLabel})...`, "loading");
 
   try {
+    // Resolve optional shell helper URLs (may be null if not built)
+    const coreutilsWasmUrl = await loadOptionalUrl("../../../../examples/libs/coreutils/bin/coreutils.wasm");
+    const grepWasmUrl = await loadOptionalUrl("../../../../examples/libs/grep/bin/grep.wasm");
+    const sedWasmUrl = await loadOptionalUrl("../../../../examples/libs/sed/bin/sed.wasm");
+
     // Fetch kernel wasm, VFS image, and lazy binary sizes in parallel
-    appendLog("Fetching kernel wasm and VFS image...\n", "info");
+    appendLog(`Fetching kernel wasm and ${archLabel} VFS image...\n`, "info");
     const [kernelBytes, vfsImageBuf, coreutilsSize, grepSize, sedSize] =
       await Promise.all([
         fetch(kernelWasmUrl).then((r) => r.arrayBuffer()),
-        fetch(VFS_IMAGE_URL).then((r) => {
+        fetch(vfsUrl).then((r) => {
           if (!r.ok) {
             throw new Error(
-              `Failed to load VFS image from ${VFS_IMAGE_URL} (${r.status}). ` +
-              `Run: bash examples/browser/scripts/build-mariadb-vfs-image.sh`
+              `Failed to load VFS image from ${vfsUrl} (${r.status}). ` +
+              `Run: ${buildHint}`
             );
           }
           return r.arrayBuffer();
         }),
-        fetchSize(coreutilsWasmUrl),
-        fetchSize(grepWasmUrl),
-        fetchSize(sedWasmUrl),
+        coreutilsWasmUrl ? fetchSize(coreutilsWasmUrl) : Promise.resolve(0),
+        grepWasmUrl ? fetchSize(grepWasmUrl) : Promise.resolve(0),
+        sedWasmUrl ? fetchSize(sedWasmUrl) : Promise.resolve(0),
       ]);
 
     appendLog(
       `Kernel: ${(kernelBytes.byteLength / 1024).toFixed(0)}KB, ` +
-        `VFS image: ${(vfsImageBuf.byteLength / (1024 * 1024)).toFixed(1)}MB\n`,
+        `VFS image (${archLabel}): ${(vfsImageBuf.byteLength / (1024 * 1024)).toFixed(1)}MB\n`,
       "info",
     );
 
@@ -143,13 +174,13 @@ async function start() {
 
     // Register lazy binaries — the image already has all symlinks
     const lazyFiles: Array<{ path: string; url: string; size: number; mode?: number }> = [];
-    if (coreutilsSize > 0) {
+    if (coreutilsWasmUrl && coreutilsSize > 0) {
       lazyFiles.push({ path: "/bin/coreutils", url: coreutilsWasmUrl, size: coreutilsSize, mode: 0o755 });
     }
-    if (grepSize > 0) {
+    if (grepWasmUrl && grepSize > 0) {
       lazyFiles.push({ path: "/usr/bin/grep", url: grepWasmUrl, size: grepSize, mode: 0o755 });
     }
-    if (sedSize > 0) {
+    if (sedWasmUrl && sedSize > 0) {
       lazyFiles.push({ path: "/usr/bin/sed", url: sedWasmUrl, size: sedSize, mode: 0o755 });
     }
     if (lazyFiles.length > 0) {
@@ -197,7 +228,7 @@ async function start() {
     });
 
     // Create SystemInit and boot
-    setStatus(`Booting system (${engine})...`, "loading");
+    setStatus(`Booting system (${engine}, ${archLabel})...`, "loading");
     init = new SystemInit(kernel, {
       onLog: (msg, level) => appendLog(msg + "\n", level === "info" ? "info" : "stderr"),
       terminalContainer: terminalPanel,
@@ -223,7 +254,7 @@ async function start() {
             }
           }
 
-          setStatus("MariaDB running! Execute SQL queries.", "running");
+          setStatus(`MariaDB running (${engine}, ${archLabel})! Execute SQL queries.`, "running");
           executeBtn.disabled = false;
 
           // Auto-run the default query
@@ -239,6 +270,8 @@ async function start() {
     setStatus(`Error: ${msg}`, "error");
     console.error(e);
     startBtn.disabled = false;
+    engineSelect.disabled = false;
+    archSelect.disabled = false;
   }
 }
 

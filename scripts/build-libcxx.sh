@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build libc++ and libc++abi for wasm32 from LLVM source.
+# Build libc++ and libc++abi for wasm32 or wasm64 from LLVM source.
 #
 # Produces real libc++.a and libc++abi.a archives with C++ exception support,
 # replacing the empty stubs created by the MariaDB build script.
@@ -12,11 +12,37 @@ set -euo pipefail
 #   - wasm-posix-kernel sysroot built (bash build.sh)
 #
 # Usage:
-#   bash scripts/build-libcxx.sh
+#   bash scripts/build-libcxx.sh              # default: wasm32 → sysroot/
+#   bash scripts/build-libcxx.sh --arch wasm64  # wasm64 → sysroot64/
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-SYSROOT="$REPO_ROOT/sysroot"
+
+# Parse arch arg
+ARCH="wasm32"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --arch) ARCH="$2"; shift 2 ;;
+        *) echo "Unknown argument: $1" >&2; exit 1 ;;
+    esac
+done
+
+case "$ARCH" in
+    wasm32)
+        SYSROOT="$REPO_ROOT/sysroot"
+        WASM_TARGET="wasm32-unknown-unknown"
+        SIZEOF_VOID_P=4
+        ;;
+    wasm64)
+        SYSROOT="$REPO_ROOT/sysroot64"
+        WASM_TARGET="wasm64-unknown-unknown"
+        SIZEOF_VOID_P=8
+        ;;
+    *)
+        echo "Error: unsupported arch '$ARCH'. Use wasm32 or wasm64." >&2
+        exit 1
+        ;;
+esac
 
 LLVM_PREFIX="$(brew --prefix llvm 2>/dev/null || echo /opt/homebrew/opt/llvm)"
 LLVM_CLANG="$LLVM_PREFIX/bin/clang"
@@ -29,9 +55,7 @@ LLVM_VERSION="$("$LLVM_CLANG" --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | he
 LLVM_MAJOR="${LLVM_VERSION%%.*}"
 
 LLVM_SRC_DIR="$REPO_ROOT/.build-cache/llvm-project-${LLVM_MAJOR}"
-BUILD_DIR="$REPO_ROOT/.build-cache/libcxx-wasm32-build"
-
-WASM_TARGET="wasm32-unknown-unknown"
+BUILD_DIR="$REPO_ROOT/.build-cache/libcxx-${ARCH}-build"
 
 # --- Check if already built ---
 if [ -f "$SYSROOT/lib/libc++.a" ]; then
@@ -71,7 +95,7 @@ if [ ! -d "$LLVM_SRC_DIR/runtimes/CMakeLists.txt" ] 2>/dev/null; then
 fi
 
 # --- Build ---
-echo "==> Building libc++ and libc++abi for wasm32..."
+echo "==> Building libc++ and libc++abi for ${ARCH}..."
 
 # Base wasm compile flags — no C++ header paths here; CMake manages its own
 # generated headers for the runtimes build.
@@ -84,7 +108,7 @@ cd "$BUILD_DIR"
 cmake -G "Unix Makefiles" -S "$LLVM_SRC_DIR/runtimes" \
     -DLLVM_ENABLE_RUNTIMES="libcxx;libcxxabi" \
     -DCMAKE_SYSTEM_NAME=Generic \
-    -DCMAKE_SYSTEM_PROCESSOR=wasm32 \
+    -DCMAKE_SYSTEM_PROCESSOR="${ARCH}" \
     -DCMAKE_C_COMPILER="$LLVM_CLANG" \
     -DCMAKE_CXX_COMPILER="$LLVM_CLANG" \
     -DCMAKE_AR="$LLVM_AR" \
@@ -121,7 +145,7 @@ cmake -G "Unix Makefiles" -S "$LLVM_SRC_DIR/runtimes" \
     -DLIBCXXABI_HAS_PTHREAD_API=ON \
     -DLIBCXXABI_INCLUDE_TESTS=OFF \
     \
-    -DCMAKE_SIZEOF_VOID_P=4 \
+    -DCMAKE_SIZEOF_VOID_P="${SIZEOF_VOID_P}" \
     2>&1 | tail -20
 
 echo "==> Compiling (this may take a few minutes)..."

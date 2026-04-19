@@ -40,9 +40,15 @@ has_nginx()     { [ -f "$REPO_ROOT/examples/nginx/nginx.wasm" ]; }
 has_php()       { [ -f "$REPO_ROOT/examples/libs/php/php-src/sapi/cli/php" ]; }
 has_php_fpm()   { [ -f "$REPO_ROOT/examples/nginx/php-fpm.wasm" ]; }
 has_mariadb()   { [ -f "$REPO_ROOT/examples/libs/mariadb/mariadb-install/bin/mariadbd" ]; }
+has_mariadb64() { [ -f "$REPO_ROOT/examples/libs/mariadb/mariadb-install-64/bin/mariadbd" ]; }
 has_mariadb_vfs() {
     local vfs="$REPO_ROOT/examples/browser/public/mariadb.vfs"
     local mariadbd="$REPO_ROOT/examples/libs/mariadb/mariadb-install/bin/mariadbd.wasm"
+    [ -f "$vfs" ] && [ -f "$mariadbd" ] && [ "$vfs" -nt "$mariadbd" ]
+}
+has_mariadb64_vfs() {
+    local vfs="$REPO_ROOT/examples/browser/public/mariadb-64.vfs"
+    local mariadbd="$REPO_ROOT/examples/libs/mariadb/mariadb-install-64/bin/mariadbd.wasm"
     [ -f "$vfs" ] && [ -f "$mariadbd" ] && [ "$vfs" -nt "$mariadbd" ]
 }
 has_wordpress() { [ -f "$REPO_ROOT/examples/wordpress/wordpress/wp-settings.php" ]; }
@@ -217,11 +223,23 @@ build_mariadb() {
     need_kernel
     need_sdk
     if ! has_mariadb; then
-        step "Building MariaDB"
+        step "Building MariaDB (wasm32)"
         bash "$REPO_ROOT/examples/libs/mariadb/build-mariadb.sh"
-        info "MariaDB built"
+        info "MariaDB (wasm32) built"
     else
-        info "MariaDB"
+        info "MariaDB (wasm32)"
+    fi
+}
+
+build_mariadb64() {
+    need_kernel
+    need_sdk
+    if ! has_mariadb64; then
+        step "Building MariaDB (wasm64)"
+        bash "$REPO_ROOT/examples/libs/mariadb/build-mariadb.sh" --wasm64
+        info "MariaDB (wasm64) built"
+    else
+        info "MariaDB (wasm64)"
     fi
 }
 
@@ -229,11 +247,23 @@ build_mariadb_vfs() {
     build_mariadb
     build_dash
     if ! has_mariadb_vfs; then
-        step "Building MariaDB VFS image"
+        step "Building MariaDB VFS image (wasm32)"
         bash "$REPO_ROOT/examples/browser/scripts/build-mariadb-vfs-image.sh"
-        info "MariaDB VFS image built"
+        info "MariaDB VFS image (wasm32) built"
     else
-        info "MariaDB VFS image"
+        info "MariaDB VFS image (wasm32)"
+    fi
+}
+
+build_mariadb64_vfs() {
+    build_mariadb64
+    build_dash
+    if ! has_mariadb64_vfs; then
+        step "Building MariaDB VFS image (wasm64)"
+        bash "$REPO_ROOT/examples/browser/scripts/build-mariadb-vfs-image.sh" --wasm64
+        info "MariaDB VFS image (wasm64) built"
+    else
+        info "MariaDB VFS image (wasm64)"
     fi
 }
 
@@ -798,7 +828,9 @@ build_target() {
         grep)       build_grep ;;
         sed)        build_sed ;;
         mariadb)    build_mariadb ;;
+        mariadb64)  build_mariadb64 ;;
         mariadb-vfs) build_mariadb_vfs ;;
+        mariadb64-vfs) build_mariadb64_vfs ;;
         redis)      build_redis ;;
         cpython)    build_cpython ;;
         python-vfs) build_python_vfs ;;
@@ -842,7 +874,7 @@ build_target() {
 }
 
 # All targets needed for browser demos
-BROWSER_DEPS=(kernel sysroot programs dash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano vim git nginx php php-fpm mariadb mariadb-vfs redis cpython python-vfs perl perl-vfs ruby shell-vfs wordpress wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs)
+BROWSER_DEPS=(kernel sysroot programs dash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano vim git nginx php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis cpython python-vfs perl perl-vfs ruby shell-vfs wordpress wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs)
 
 build_browser() {
     for t in "${BROWSER_DEPS[@]}"; do
@@ -958,12 +990,23 @@ clean_target() {
         mariadb)
             rm -rf "$REPO_ROOT/examples/libs/mariadb/mariadb-src" \
                    "$REPO_ROOT/examples/libs/mariadb/mariadb-install" \
+                   "$REPO_ROOT/examples/libs/mariadb/mariadb-cross-build" \
+                   "$REPO_ROOT/examples/libs/mariadb/mariadb-glue-objs" \
+                   "$REPO_ROOT/examples/libs/mariadb/mariadb-host-build" \
                    "$REPO_ROOT/examples/libs/mariadb/pcre2-"* \
                    "$REPO_ROOT/examples/libs/mariadb/pcre2-wasm-build"
+            ;;
+        mariadb64)
+            rm -rf "$REPO_ROOT/examples/libs/mariadb/mariadb-install-64" \
+                   "$REPO_ROOT/examples/libs/mariadb/mariadb-cross-build-64" \
+                   "$REPO_ROOT/examples/libs/mariadb/mariadb-glue-objs-64"
             warn "Cleaned MariaDB" ;;
         mariadb-vfs)
             rm -f "$REPO_ROOT/examples/browser/public/mariadb.vfs"
-            warn "Cleaned MariaDB VFS image" ;;
+            warn "Cleaned MariaDB VFS image (wasm32)" ;;
+        mariadb64-vfs)
+            rm -f "$REPO_ROOT/examples/browser/public/mariadb-64.vfs"
+            warn "Cleaned MariaDB VFS image (wasm64)" ;;
         redis)
             rm -rf "$REPO_ROOT/examples/libs/redis/redis-src" \
                    "$REPO_ROOT/examples/libs/redis/bin"
@@ -1119,7 +1162,7 @@ clean_target() {
                 clean_target "$t"
             done ;;
         all)
-            for t in kernel sysroot host programs dash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano ncurses zlib openssl libcurl vim git nginx php php-fpm mariadb mariadb-vfs redis cpython python-vfs perl perl-vfs ruby shell-vfs wordpress wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs dlopen; do
+            for t in kernel sysroot host programs dash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano ncurses zlib openssl libcurl vim git nginx php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis cpython python-vfs perl perl-vfs ruby shell-vfs wordpress wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs dlopen; do
                 clean_target "$t"
             done ;;
         *)  err "Unknown clean target: $target"; exit 1 ;;
@@ -1402,7 +1445,8 @@ cmd_list() {
     echo "  nginx       nginx 1.24 Wasm binary                $(has_nginx && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  php         PHP 8.3 CLI binary                    $(has_php && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  php-fpm     PHP-FPM Wasm binary                   $(has_php_fpm && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
-    echo "  mariadb     MariaDB 10.5 Wasm binary              $(has_mariadb && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  mariadb     MariaDB 10.5 Wasm binary (wasm32)     $(has_mariadb && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  mariadb64   MariaDB 10.5 Wasm binary (wasm64)     $(has_mariadb64 && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  redis       Redis 7.2 Wasm binary                 $(has_redis && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  cpython     CPython 3.13 Wasm binary              $(has_cpython && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  python-vfs  Python stdlib VFS image               $(has_python_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"

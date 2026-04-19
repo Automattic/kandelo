@@ -1,5 +1,5 @@
 /**
- * Suite: MariaDB (InnoDB engine)
+ * Suite: MariaDB (InnoDB engine) — wasm32 build.
  *
  * Bootstrap and query execution performance with the InnoDB storage engine.
  */
@@ -9,7 +9,7 @@ import { runMariaDBBenchmark } from "./mariadb.js";
 const suite: BenchmarkSuite = {
   name: "mariadb-innodb",
   async run(): Promise<Record<string, number>> {
-    return runMariaDBBenchmark("InnoDB");
+    return runMariaDBBenchmark("InnoDB", "wasm32");
   },
 };
 

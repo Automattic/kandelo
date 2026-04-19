@@ -15,7 +15,11 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const browserDir = resolve(__dirname, "../../examples/browser");
 
 /** Suites available in the browser benchmark page. */
-const BROWSER_SUITES = ["syscall-io", "process-lifecycle", "erlang-ring", "wordpress", "mariadb-aria", "mariadb-innodb"];
+const BROWSER_SUITES = [
+  "syscall-io", "process-lifecycle", "erlang-ring", "wordpress",
+  "mariadb-aria", "mariadb-aria-64",
+  "mariadb-innodb", "mariadb-innodb-64",
+];
 
 /** Per-suite timeout for page.evaluate (ms). Heavy suites like mariadb need longer. */
 const SUITE_TIMEOUTS: Record<string, number> = {
@@ -24,7 +28,9 @@ const SUITE_TIMEOUTS: Record<string, number> = {
   "erlang-ring": 120_000,
   "wordpress": 300_000,
   "mariadb-aria": 600_000,
+  "mariadb-aria-64": 600_000,
   "mariadb-innodb": 600_000,
+  "mariadb-innodb-64": 600_000,
 };
 
 export interface BrowserBenchmarkOptions {

@@ -24,8 +24,10 @@ const useInnoDB = process.argv.includes("--innodb");
 const mariadbLibDir = resolve(repoRoot, "examples/libs/mariadb");
 const installDir = resolve(mariadbLibDir, useWasm64 ? "mariadb-install-64" : "mariadb-install");
 
-// Create data directory on host
-const dataDir = resolve(scriptDir, "data");
+// Create data directory on host (arch-specific so wasm32 and wasm64 don't
+// share bootstrap state — the two builds may initialise system tables with
+// slightly different layouts)
+const dataDir = resolve(scriptDir, useWasm64 ? "data-64" : "data");
 mkdirSync(resolve(dataDir, "mysql"), { recursive: true });
 mkdirSync(resolve(dataDir, "tmp"), { recursive: true });
 

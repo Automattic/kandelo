@@ -76,6 +76,15 @@ const OPTIONAL_URLS = {
   ...import.meta.glob("../../../libs/mariadb/mariadb-install/share/mysql/mysql_system_tables_data.sql", {
     query: "?url", import: "default",
   }),
+  ...import.meta.glob("../../../libs/mariadb/mariadb-install-64/bin/mariadbd.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../libs/mariadb/mariadb-install-64/share/mysql/mysql_system_tables.sql", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../libs/mariadb/mariadb-install-64/share/mysql/mysql_system_tables_data.sql", {
+    query: "?url", import: "default",
+  }),
 } as Record<string, () => Promise<string>>;
 
 async function loadOptionalUrl(
@@ -527,8 +536,15 @@ async function runWordPress(): Promise<Record<string, number>> {
 
 // ─── mariadb ────────────────────────────────────────────────────────────────
 
-async function runMariaDbWithEngine(engine: string): Promise<Record<string, number>> {
+type MariaDbArch = "wasm32" | "wasm64";
+
+async function runMariaDbWithEngine(engine: string, arch: MariaDbArch = "wasm32"): Promise<Record<string, number>> {
   const results: Record<string, number> = {};
+  const installDir = arch === "wasm64" ? "mariadb-install-64" : "mariadb-install";
+  const suiteSuffix = arch === "wasm64" ? "-64" : "";
+  const buildHint = arch === "wasm64"
+    ? "bash examples/libs/mariadb/build-mariadb.sh --wasm64"
+    : "bash examples/libs/mariadb/build-mariadb.sh";
 
   const engineArgs = [`--default-storage-engine=${engine}`];
   if (engine === "InnoDB") {
@@ -547,22 +563,22 @@ async function runMariaDbWithEngine(engine: string): Promise<Record<string, numb
   let systemDataUrl: string;
   try {
     mariadbWasmUrl = await loadOptionalUrl(
-      "../../../libs/mariadb/mariadb-install/bin/mariadbd.wasm",
-      "MariaDB binary",
-      "bash examples/libs/mariadb/build-mariadb.sh",
+      `../../../libs/mariadb/${installDir}/bin/mariadbd.wasm`,
+      `MariaDB binary (${arch})`,
+      buildHint,
     );
     systemTablesUrl = await loadOptionalUrl(
-      "../../../libs/mariadb/mariadb-install/share/mysql/mysql_system_tables.sql",
-      "MariaDB system tables SQL",
-      "bash examples/libs/mariadb/build-mariadb.sh",
+      `../../../libs/mariadb/${installDir}/share/mysql/mysql_system_tables.sql`,
+      `MariaDB system tables SQL (${arch})`,
+      buildHint,
     );
     systemDataUrl = await loadOptionalUrl(
-      "../../../libs/mariadb/mariadb-install/share/mysql/mysql_system_tables_data.sql",
-      "MariaDB system data SQL",
-      "bash examples/libs/mariadb/build-mariadb.sh",
+      `../../../libs/mariadb/${installDir}/share/mysql/mysql_system_tables_data.sql`,
+      `MariaDB system data SQL (${arch})`,
+      buildHint,
     );
   } catch (err) {
-    log(`  Skipping mariadb-${engine.toLowerCase()}: ${(err as Error).message}`);
+    log(`  Skipping mariadb-${engine.toLowerCase()}${suiteSuffix}: ${(err as Error).message}`);
     return {};
   }
 
@@ -691,14 +707,6 @@ async function runMariaDbWithEngine(engine: string): Promise<Record<string, numb
   return results;
 }
 
-async function runMariaDbAria(): Promise<Record<string, number>> {
-  return runMariaDbWithEngine("Aria");
-}
-
-async function runMariaDbInnoDB(): Promise<Record<string, number>> {
-  return runMariaDbWithEngine("InnoDB");
-}
-
 // ─── Suite registry ─────────────────────────────────────────────────────────
 
 const SUITES: Record<string, () => Promise<Record<string, number>>> = {
@@ -706,8 +714,10 @@ const SUITES: Record<string, () => Promise<Record<string, number>>> = {
   "process-lifecycle": runProcessLifecycle,
   "erlang-ring": runErlangRing,
   "wordpress": runWordPress,
-  "mariadb-aria": runMariaDbAria,
-  "mariadb-innodb": runMariaDbInnoDB,
+  "mariadb-aria": () => runMariaDbWithEngine("Aria", "wasm32"),
+  "mariadb-aria-64": () => runMariaDbWithEngine("Aria", "wasm64"),
+  "mariadb-innodb": () => runMariaDbWithEngine("InnoDB", "wasm32"),
+  "mariadb-innodb-64": () => runMariaDbWithEngine("InnoDB", "wasm64"),
 };
 
 declare global {
