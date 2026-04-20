@@ -1,16 +1,15 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync, existsSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
 import { centralizedWorkerMain } from "../src/worker-main";
+import { tryResolveBinary } from "../src/binary-resolver";
 import type { CentralizedWorkerInitMessage } from "../src/worker-protocol";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const helloWasm = join(__dirname, "../../examples/hello.wasm");
-const hasBinary = existsSync(helloWasm);
+const helloWasm = tryResolveBinary("programs/hello.wasm") ??
+  tryResolveBinary("programs/hello64.wasm");
+const hasBinary = !!helloWasm;
 
 function loadProgramBytes(): ArrayBuffer {
-  const buf = readFileSync(helloWasm);
+  const buf = readFileSync(helloWasm!);
   return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 }
 

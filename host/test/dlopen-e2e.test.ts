@@ -20,7 +20,8 @@ const CLANG = "/opt/homebrew/opt/llvm@21/bin/clang";
 const WASM_LD = "/opt/homebrew/bin/wasm-ld";
 
 const hasSysroot = existsSync(join(SYSROOT, "lib", "libc.a"));
-const hasKernel = existsSync(join(__dirname, "../wasm/wasm_posix_kernel.wasm"));
+const hasKernel = existsSync(join(REPO_ROOT, "binaries", "kernel.wasm")) ||
+  existsSync(join(REPO_ROOT, "local-binaries", "kernel.wasm"));
 
 const BUILD_DIR = join(tmpdir(), "wasm-dlopen-e2e");
 

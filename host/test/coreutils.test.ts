@@ -5,23 +5,17 @@
  * We pass the utility name as argv[0] (e.g., ["echo", "hello"]).
  */
 import { describe, it, expect } from "vitest";
-import { join, dirname } from "node:path";
-import { existsSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { runCentralizedProgram } from "./centralized-test-helper";
+import { tryResolveBinary } from "../src/binary-resolver";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const coreutilsBinary = join(
-  __dirname,
-  "../../examples/libs/coreutils/bin/coreutils.wasm",
-);
+const coreutilsBinary = tryResolveBinary("programs/coreutils.wasm");
 
-const hasCoreutils = existsSync(coreutilsBinary);
+const hasCoreutils = !!coreutilsBinary;
 
 describe.skipIf(!hasCoreutils)("GNU coreutils", () => {
   it("echo prints text", async () => {
     const result = await runCentralizedProgram({
-      programPath: coreutilsBinary,
+      programPath: coreutilsBinary!,
       argv: ["echo", "hello", "world"],
       timeout: 10_000,
     });
@@ -31,7 +25,7 @@ describe.skipIf(!hasCoreutils)("GNU coreutils", () => {
 
   it("true returns 0", async () => {
     const result = await runCentralizedProgram({
-      programPath: coreutilsBinary,
+      programPath: coreutilsBinary!,
       argv: ["true"],
       timeout: 10_000,
     });
@@ -40,7 +34,7 @@ describe.skipIf(!hasCoreutils)("GNU coreutils", () => {
 
   it("false returns 1", async () => {
     const result = await runCentralizedProgram({
-      programPath: coreutilsBinary,
+      programPath: coreutilsBinary!,
       argv: ["false"],
       timeout: 10_000,
     });
@@ -49,7 +43,7 @@ describe.skipIf(!hasCoreutils)("GNU coreutils", () => {
 
   it("printf formats output", async () => {
     const result = await runCentralizedProgram({
-      programPath: coreutilsBinary,
+      programPath: coreutilsBinary!,
       argv: ["printf", "%s %d\\n", "count", "42"],
       timeout: 10_000,
     });
@@ -59,7 +53,7 @@ describe.skipIf(!hasCoreutils)("GNU coreutils", () => {
 
   it("basename extracts filename", async () => {
     const result = await runCentralizedProgram({
-      programPath: coreutilsBinary,
+      programPath: coreutilsBinary!,
       argv: ["basename", "/usr/local/bin/test"],
       timeout: 10_000,
     });
@@ -69,7 +63,7 @@ describe.skipIf(!hasCoreutils)("GNU coreutils", () => {
 
   it("dirname extracts directory", async () => {
     const result = await runCentralizedProgram({
-      programPath: coreutilsBinary,
+      programPath: coreutilsBinary!,
       argv: ["dirname", "/usr/local/bin/test"],
       timeout: 10_000,
     });
@@ -79,7 +73,7 @@ describe.skipIf(!hasCoreutils)("GNU coreutils", () => {
 
   it("wc counts bytes from stdin", async () => {
     const result = await runCentralizedProgram({
-      programPath: coreutilsBinary,
+      programPath: coreutilsBinary!,
       argv: ["wc", "-c"],
       stdin: "hello",
       timeout: 10_000,
@@ -90,7 +84,7 @@ describe.skipIf(!hasCoreutils)("GNU coreutils", () => {
 
   it("cat echoes stdin", async () => {
     const result = await runCentralizedProgram({
-      programPath: coreutilsBinary,
+      programPath: coreutilsBinary!,
       argv: ["cat"],
       stdin: "hello from cat",
       timeout: 10_000,
@@ -101,7 +95,7 @@ describe.skipIf(!hasCoreutils)("GNU coreutils", () => {
 
   it("tr translates characters", async () => {
     const result = await runCentralizedProgram({
-      programPath: coreutilsBinary,
+      programPath: coreutilsBinary!,
       argv: ["tr", "a-z", "A-Z"],
       stdin: "hello world",
       timeout: 10_000,
@@ -112,7 +106,7 @@ describe.skipIf(!hasCoreutils)("GNU coreutils", () => {
 
   it("sort sorts lines", async () => {
     const result = await runCentralizedProgram({
-      programPath: coreutilsBinary,
+      programPath: coreutilsBinary!,
       argv: ["sort"],
       stdin: "cherry\napple\nbanana\n",
       timeout: 10_000,
@@ -123,7 +117,7 @@ describe.skipIf(!hasCoreutils)("GNU coreutils", () => {
 
   it("uniq removes duplicates", async () => {
     const result = await runCentralizedProgram({
-      programPath: coreutilsBinary,
+      programPath: coreutilsBinary!,
       argv: ["uniq"],
       stdin: "aaa\naaa\nbbb\nccc\nccc\n",
       timeout: 10_000,
@@ -134,7 +128,7 @@ describe.skipIf(!hasCoreutils)("GNU coreutils", () => {
 
   it("head shows first lines", async () => {
     const result = await runCentralizedProgram({
-      programPath: coreutilsBinary,
+      programPath: coreutilsBinary!,
       argv: ["head", "-n", "2"],
       stdin: "line1\nline2\nline3\nline4\n",
       timeout: 10_000,
@@ -145,7 +139,7 @@ describe.skipIf(!hasCoreutils)("GNU coreutils", () => {
 
   it("tail shows last lines", async () => {
     const result = await runCentralizedProgram({
-      programPath: coreutilsBinary,
+      programPath: coreutilsBinary!,
       argv: ["tail", "-n", "2"],
       stdin: "line1\nline2\nline3\nline4\n",
       timeout: 10_000,
@@ -156,7 +150,7 @@ describe.skipIf(!hasCoreutils)("GNU coreutils", () => {
 
   it("seq generates sequence", async () => {
     const result = await runCentralizedProgram({
-      programPath: coreutilsBinary,
+      programPath: coreutilsBinary!,
       argv: ["seq", "1", "5"],
       timeout: 15_000,
     });
@@ -166,7 +160,7 @@ describe.skipIf(!hasCoreutils)("GNU coreutils", () => {
 
   it("env prints environment", async () => {
     const result = await runCentralizedProgram({
-      programPath: coreutilsBinary,
+      programPath: coreutilsBinary!,
       argv: ["env"],
       env: ["FOO=bar", "BAZ=qux"],
       timeout: 10_000,
@@ -178,7 +172,7 @@ describe.skipIf(!hasCoreutils)("GNU coreutils", () => {
 
   it("test evaluates expressions", async () => {
     const result = await runCentralizedProgram({
-      programPath: coreutilsBinary,
+      programPath: coreutilsBinary!,
       argv: ["test", "5", "-gt", "3"],
       timeout: 10_000,
     });
@@ -187,7 +181,7 @@ describe.skipIf(!hasCoreutils)("GNU coreutils", () => {
 
   it("expr evaluates arithmetic", async () => {
     const result = await runCentralizedProgram({
-      programPath: coreutilsBinary,
+      programPath: coreutilsBinary!,
       argv: ["expr", "3", "+", "4"],
       timeout: 10_000,
     });
@@ -197,7 +191,7 @@ describe.skipIf(!hasCoreutils)("GNU coreutils", () => {
 
   it("cut extracts fields", async () => {
     const result = await runCentralizedProgram({
-      programPath: coreutilsBinary,
+      programPath: coreutilsBinary!,
       argv: ["cut", "-d:", "-f1"],
       stdin: "root:x:0:0\nnobody:x:65534:65534\n",
       timeout: 10_000,
@@ -209,7 +203,7 @@ describe.skipIf(!hasCoreutils)("GNU coreutils", () => {
   it("yes outputs repeated string (limited)", async () => {
     try {
       const result = await runCentralizedProgram({
-        programPath: coreutilsBinary,
+        programPath: coreutilsBinary!,
         argv: ["yes", "ok"],
         // yes writes infinitely — it'll timeout since there's no pipe reader
         timeout: 1_000,

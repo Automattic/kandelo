@@ -2,23 +2,17 @@
  * Tests for dash shell running on the wasm-posix-kernel.
  */
 import { describe, it, expect } from "vitest";
-import { join, dirname } from "node:path";
-import { existsSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { runCentralizedProgram } from "./centralized-test-helper";
+import { tryResolveBinary } from "../src/binary-resolver";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const dashBinary = join(
-  __dirname,
-  "../../examples/libs/dash/dash-src/src/dash",
-);
+const dashBinary = tryResolveBinary("programs/dash.wasm");
 
-const hasDash = existsSync(dashBinary);
+const hasDash = !!dashBinary;
 
 describe.skipIf(!hasDash)("dash shell", () => {
   it("runs echo via -c", async () => {
     const result = await runCentralizedProgram({
-      programPath: dashBinary,
+      programPath: dashBinary!,
       argv: ["dash", "-c", "echo hello world"],
       timeout: 15_000,
     });
@@ -28,7 +22,7 @@ describe.skipIf(!hasDash)("dash shell", () => {
 
   it("runs variable assignment and expansion", async () => {
     const result = await runCentralizedProgram({
-      programPath: dashBinary,
+      programPath: dashBinary!,
       argv: ["dash", "-c", "X=42; echo $X"],
       timeout: 15_000,
     });
@@ -38,7 +32,7 @@ describe.skipIf(!hasDash)("dash shell", () => {
 
   it("runs command substitution", async () => {
     const result = await runCentralizedProgram({
-      programPath: dashBinary,
+      programPath: dashBinary!,
       argv: ["dash", "-c", "echo $(echo nested)"],
       timeout: 15_000,
     });
@@ -48,7 +42,7 @@ describe.skipIf(!hasDash)("dash shell", () => {
 
   it("runs conditionals", async () => {
     const result = await runCentralizedProgram({
-      programPath: dashBinary,
+      programPath: dashBinary!,
       argv: ["dash", "-c", 'if true; then echo yes; else echo no; fi'],
       timeout: 15_000,
     });
@@ -58,7 +52,7 @@ describe.skipIf(!hasDash)("dash shell", () => {
 
   it("runs a for loop", async () => {
     const result = await runCentralizedProgram({
-      programPath: dashBinary,
+      programPath: dashBinary!,
       argv: ["dash", "-c", "for i in a b c; do echo $i; done"],
       timeout: 15_000,
     });
@@ -68,7 +62,7 @@ describe.skipIf(!hasDash)("dash shell", () => {
 
   it("exits with the correct status", async () => {
     const result = await runCentralizedProgram({
-      programPath: dashBinary,
+      programPath: dashBinary!,
       argv: ["dash", "-c", "exit 7"],
       timeout: 15_000,
     });
@@ -77,7 +71,7 @@ describe.skipIf(!hasDash)("dash shell", () => {
 
   it("reads environment variables", async () => {
     const result = await runCentralizedProgram({
-      programPath: dashBinary,
+      programPath: dashBinary!,
       argv: ["dash", "-c", "echo $MY_VAR"],
       env: ["MY_VAR=kernel_test"],
       timeout: 15_000,
@@ -88,7 +82,7 @@ describe.skipIf(!hasDash)("dash shell", () => {
 
   it("supports arithmetic expansion", async () => {
     const result = await runCentralizedProgram({
-      programPath: dashBinary,
+      programPath: dashBinary!,
       argv: ["dash", "-c", "echo $((2 + 3 * 4))"],
       timeout: 15_000,
     });
@@ -98,7 +92,7 @@ describe.skipIf(!hasDash)("dash shell", () => {
 
   it("supports while loop", async () => {
     const result = await runCentralizedProgram({
-      programPath: dashBinary,
+      programPath: dashBinary!,
       argv: ["dash", "-c", "i=0; while [ $i -lt 3 ]; do echo $i; i=$((i+1)); done"],
       timeout: 15_000,
     });
@@ -108,7 +102,7 @@ describe.skipIf(!hasDash)("dash shell", () => {
 
   it("supports functions", async () => {
     const result = await runCentralizedProgram({
-      programPath: dashBinary,
+      programPath: dashBinary!,
       argv: ["dash", "-c", "greet() { echo \"hello $1\"; }; greet world"],
       timeout: 15_000,
     });
@@ -117,16 +111,13 @@ describe.skipIf(!hasDash)("dash shell", () => {
   });
 });
 
-const coreutilsBinary = join(
-  __dirname,
-  "../../examples/libs/coreutils/bin/coreutils.wasm",
-);
-const hasCoreutils = existsSync(coreutilsBinary);
+const coreutilsBinary = tryResolveBinary("programs/coreutils.wasm");
+const hasCoreutils = !!coreutilsBinary;
 
 describe.skipIf(!hasDash || !hasCoreutils)("dash + coreutils exec", () => {
   function dashExec(cmd: string, timeout = 15_000) {
     // Build exec program map: register coreutils under /bin/*
-    const coreutilsPath = coreutilsBinary;
+    const coreutilsPath = coreutilsBinary!;
     const execPrograms = new Map<string, string>();
     const names = [
       "cat", "echo", "env", "true", "false", "basename", "dirname",
@@ -140,7 +131,7 @@ describe.skipIf(!hasDash || !hasCoreutils)("dash + coreutils exec", () => {
     }
     execPrograms.set("/bin/[", coreutilsPath);
     return runCentralizedProgram({
-      programPath: dashBinary,
+      programPath: dashBinary!,
       argv: ["dash", "-c", cmd],
       env: ["PATH=/bin:/usr/bin", "HOME=/tmp"],
       execPrograms,

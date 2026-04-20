@@ -7,16 +7,16 @@
  */
 import { describe, it, expect } from "vitest";
 import { join, dirname } from "node:path";
-import { existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { tryResolveBinary, findRepoRoot } from "../src/binary-resolver";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const repoRoot = join(__dirname, "../..");
-const beamBinary = join(repoRoot, "examples/libs/erlang/bin/beam.wasm");
+const repoRoot = findRepoRoot();
+const beamBinary = tryResolveBinary("programs/erlang.wasm");
 const serveScript = join(repoRoot, "examples/erlang/serve.ts");
 
-const hasErlang = existsSync(beamBinary);
+const hasErlang = !!beamBinary;
 
 function runErlang(evalExpr: string, timeoutMs = 30_000): string {
   const result = execFileSync("npx", ["tsx", serveScript, "-eval", evalExpr], {

@@ -1,16 +1,12 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 import { CentralizedKernelWorker } from "../src/kernel-worker";
+import { resolveBinary } from "../src/binary-resolver";
 import { NodePlatformIO } from "../src/platform/node";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
 
 describe("CentralizedKernelWorker", () => {
   it("should initialize the kernel from wasm bytes", async () => {
-    const wasmPath = join(__dirname, "../wasm/wasm_posix_kernel.wasm");
-    const wasmBytes = readFileSync(wasmPath);
+    const wasmBytes = readFileSync(resolveBinary("kernel.wasm"));
 
     const kernelWorker = new CentralizedKernelWorker(
       { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true },

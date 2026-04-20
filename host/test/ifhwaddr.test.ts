@@ -1,14 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 import { runCentralizedProgram } from "./centralized-test-helper";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
+import { resolveBinary } from "../src/binary-resolver";
 
 describe("SIOCGIFCONF / SIOCGIFHWADDR", () => {
   it("returns a virtual MAC address via ioctl", async () => {
     const result = await runCentralizedProgram({
-      programPath: join(__dirname, "../wasm/ifhwaddr.wasm"),
+      programPath: resolveBinary("programs/ifhwaddr.wasm"),
       timeout: 10_000,
     });
 

@@ -11,7 +11,7 @@ import { VirtualPlatformIO } from "../../../../../host/src/vfs/vfs";
 import { MemoryFileSystem } from "../../../../../host/src/vfs/memory-fs";
 import { DeviceFileSystem } from "../../../../../host/src/vfs/device-fs";
 import { BrowserTimeProvider } from "../../../../../host/src/vfs/time";
-import kernelWasmUrl from "../../../../../host/wasm/wasm_posix_kernel.wasm?url";
+import kernelWasmUrl from "../../../../../binaries/kernel.wasm?url";
 
 const stdoutEl = document.getElementById("stdout")!;
 const stderrEl = document.getElementById("stderr")!;

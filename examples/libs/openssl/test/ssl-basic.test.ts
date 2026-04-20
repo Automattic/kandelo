@@ -29,7 +29,10 @@ describe.skipIf(!SSL_AVAILABLE)("OpenSSL basic verification", () => {
             join(root, "host/src/platform/node.ts")
         );
 
-        const kernelWasm = readFileSync(join(root, "host/wasm/wasm_posix_kernel.wasm"));
+        const { resolveBinary } = await import(
+            join(root, "host/src/binary-resolver.ts")
+        );
+        const kernelWasm = readFileSync(resolveBinary("kernel.wasm"));
         const programWasm = readFileSync(wasmPath);
 
         let stdout = "";

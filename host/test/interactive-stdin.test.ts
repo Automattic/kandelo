@@ -6,27 +6,21 @@
  * CentralizedKernelWorker.appendStdinData() API.
  */
 import { describe, it, expect } from "vitest";
-import { join, dirname } from "node:path";
-import { existsSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { runCentralizedProgram } from "./centralized-test-helper";
+import { tryResolveBinary } from "../src/binary-resolver";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const dashBinary = join(
-  __dirname,
-  "../../examples/libs/dash/dash-src/src/dash",
-);
-const grepBinary = join(__dirname, "../../examples/libs/grep/bin/grep.wasm");
+const dashBinary = tryResolveBinary("programs/dash.wasm");
+const grepBinary = tryResolveBinary("programs/grep.wasm");
 
-const hasDash = existsSync(dashBinary);
-const hasGrep = existsSync(grepBinary);
+const hasDash = !!dashBinary;
+const hasGrep = !!grepBinary;
 
 describe.skipIf(!hasDash)("appendStdinData with dash", () => {
   it("delivers a single line to a blocked reader", async () => {
     // appendStdinData does NOT mark stdin as a pipe, so terminal echo is
     // enabled — input characters appear in stdout alongside program output.
     const result = await runCentralizedProgram({
-      programPath: dashBinary,
+      programPath: dashBinary!,
       argv: ["dash", "-c", 'read line; echo "got:$line"'],
       timeout: 15_000,
       onStarted: async (kernelWorker, pid) => {
@@ -45,7 +39,7 @@ describe.skipIf(!hasDash)("appendStdinData with dash", () => {
 
   it("delivers multiple lines incrementally", async () => {
     const result = await runCentralizedProgram({
-      programPath: dashBinary,
+      programPath: dashBinary!,
       argv: ["dash", "-c", 'read a; echo "1:$a"; read b; echo "2:$b"'],
       timeout: 15_000,
       onStarted: async (kernelWorker, pid) => {
@@ -71,7 +65,7 @@ describe.skipIf(!hasDash)("appendStdinData with dash", () => {
   it("delivers data pre-buffered in a single chunk", async () => {
     // Both lines sent together — dash should read them sequentially
     const result = await runCentralizedProgram({
-      programPath: dashBinary,
+      programPath: dashBinary!,
       argv: ["dash", "-c", 'read a; echo "1:$a"; read b; echo "2:$b"'],
       timeout: 15_000,
       onStarted: async (kernelWorker, pid) => {
@@ -90,7 +84,7 @@ describe.skipIf(!hasDash)("appendStdinData with dash", () => {
   it("terminal echo is present for interactive stdin", async () => {
     // Verify that input characters are echoed to stdout (terminal behavior)
     const result = await runCentralizedProgram({
-      programPath: dashBinary,
+      programPath: dashBinary!,
       argv: ["dash", "-c", 'read line; echo "done"'],
       timeout: 15_000,
       onStarted: async (kernelWorker, pid) => {
@@ -114,7 +108,7 @@ describe.skipIf(!hasDash)("appendStdinData with dash", () => {
   it("no echo when using setStdinData (pipe mode)", async () => {
     // setStdinData marks stdin as a pipe — no terminal echo
     const result = await runCentralizedProgram({
-      programPath: dashBinary,
+      programPath: dashBinary!,
       argv: ["dash", "-c", 'read line; echo "got:$line"'],
       stdin: "hello\n",
       timeout: 15_000,
@@ -131,7 +125,7 @@ describe.skipIf(!hasGrep)("appendStdinData with grep", () => {
     // for the base, then verify appendStdinData adds more data before
     // grep sees EOF.
     const result = await runCentralizedProgram({
-      programPath: grepBinary,
+      programPath: grepBinary!,
       argv: ["grep", "match"],
       // Use setStdinData for initial + EOF semantics, since grep needs EOF
       stdin: "no hit\nmatch one\nskip\nmatch two\n",

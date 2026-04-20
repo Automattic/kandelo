@@ -16,10 +16,10 @@ import { resolve } from "path";
 import { WasmPosixKernel } from "../host/src/kernel";
 import { ProgramRunner } from "../host/src/program-runner";
 import { NodePlatformIO } from "../host/src/platform/node";
+import { resolveBinary } from "../host/src/binary-resolver";
 
 async function main() {
-    // Resolve paths relative to the repo root (cwd).
-    const kernelPath = resolve("host/wasm/wasm_posix_kernel.wasm");
+    const kernelPath = resolveBinary("kernel.wasm");
     const programPath = resolve("examples/hello.wasm");
 
     console.log("Loading kernel from:", kernelPath);

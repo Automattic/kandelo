@@ -24,11 +24,12 @@
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from "fs";
 import { resolve, dirname, join } from "path";
 import { NodeKernelHost } from "../../host/src/node-kernel-host";
+import { resolveBinary } from "../../host/src/binary-resolver";
 
 const scriptDir = dirname(new URL(import.meta.url).pathname);
 const repoRoot = resolve(scriptDir, "../..");
 
-const nginxWasmPath = resolve(repoRoot, "examples/nginx/nginx.wasm");
+const nginxWasmPath = resolveBinary("programs/nginx.wasm");
 const phpFpmWasmPath = resolve(repoRoot, "examples/nginx/php-fpm.wasm");
 const wpDir = resolve(scriptDir, "wordpress");
 const confTemplate = resolve(scriptDir, "nginx.conf");

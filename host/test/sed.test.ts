@@ -2,20 +2,17 @@
  * Tests for GNU sed running on the wasm-posix-kernel.
  */
 import { describe, it, expect } from "vitest";
-import { join, dirname } from "node:path";
-import { existsSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { runCentralizedProgram } from "./centralized-test-helper";
+import { tryResolveBinary } from "../src/binary-resolver";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const sedBinary = join(__dirname, "../../examples/libs/sed/bin/sed.wasm");
+const sedBinary = tryResolveBinary("programs/sed.wasm");
 
-const hasSed = existsSync(sedBinary);
+const hasSed = !!sedBinary;
 
 describe.skipIf(!hasSed)("GNU sed", () => {
   it("substitutes first match per line", async () => {
     const result = await runCentralizedProgram({
-      programPath: sedBinary,
+      programPath: sedBinary!,
       argv: ["sed", "s/old/new/"],
       stdin: "old text old\nanother old line\n",
       timeout: 10_000,
@@ -26,7 +23,7 @@ describe.skipIf(!hasSed)("GNU sed", () => {
 
   it("substitutes all matches with g flag", async () => {
     const result = await runCentralizedProgram({
-      programPath: sedBinary,
+      programPath: sedBinary!,
       argv: ["sed", "s/a/X/g"],
       stdin: "banana\napple\n",
       timeout: 10_000,
@@ -37,7 +34,7 @@ describe.skipIf(!hasSed)("GNU sed", () => {
 
   it("deletes matching lines", async () => {
     const result = await runCentralizedProgram({
-      programPath: sedBinary,
+      programPath: sedBinary!,
       argv: ["sed", "/bad/d"],
       stdin: "good\nbad\ngreat\nbad line\n",
       timeout: 10_000,
@@ -48,7 +45,7 @@ describe.skipIf(!hasSed)("GNU sed", () => {
 
   it("prints only matching lines with -n and p", async () => {
     const result = await runCentralizedProgram({
-      programPath: sedBinary,
+      programPath: sedBinary!,
       argv: ["sed", "-n", "/match/p"],
       stdin: "no\nmatch here\nno\nmatch again\n",
       timeout: 10_000,
@@ -59,7 +56,7 @@ describe.skipIf(!hasSed)("GNU sed", () => {
 
   it("supports line address ranges", async () => {
     const result = await runCentralizedProgram({
-      programPath: sedBinary,
+      programPath: sedBinary!,
       argv: ["sed", "2,3d"],
       stdin: "line1\nline2\nline3\nline4\n",
       timeout: 10_000,
@@ -70,7 +67,7 @@ describe.skipIf(!hasSed)("GNU sed", () => {
 
   it("supports multiple expressions with -e", async () => {
     const result = await runCentralizedProgram({
-      programPath: sedBinary,
+      programPath: sedBinary!,
       argv: ["sed", "-e", "s/a/A/g", "-e", "s/e/E/g"],
       stdin: "apple\nbanana\n",
       timeout: 10_000,
@@ -81,7 +78,7 @@ describe.skipIf(!hasSed)("GNU sed", () => {
 
   it("appends text after matching line", async () => {
     const result = await runCentralizedProgram({
-      programPath: sedBinary,
+      programPath: sedBinary!,
       argv: ["sed", "/target/a\\inserted line"],
       stdin: "before\ntarget\nafter\n",
       timeout: 10_000,
@@ -92,7 +89,7 @@ describe.skipIf(!hasSed)("GNU sed", () => {
 
   it("transliterates characters with y", async () => {
     const result = await runCentralizedProgram({
-      programPath: sedBinary,
+      programPath: sedBinary!,
       argv: ["sed", "y/abc/XYZ/"],
       stdin: "aabbcc\n",
       timeout: 10_000,

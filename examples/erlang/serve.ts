@@ -12,13 +12,13 @@
 import { readFileSync, existsSync, writeFileSync, appendFileSync } from "fs";
 import { resolve, dirname } from "path";
 import { NodeKernelHost } from "../../host/src/node-kernel-host";
+import { findRepoRoot, tryResolveBinary } from "../../host/src/binary-resolver";
 
 const scriptDir = dirname(new URL(import.meta.url).pathname);
-const repoRoot = resolve(scriptDir, "../..");
+const repoRoot = findRepoRoot();
 
 const erlangLibDir = resolve(repoRoot, "examples/libs/erlang");
 const installDir = resolve(erlangLibDir, "erlang-install");
-const beamWasm = resolve(erlangLibDir, "bin/beam.wasm");
 
 function loadBytes(path: string): ArrayBuffer {
     const buf = readFileSync(path);
@@ -26,8 +26,12 @@ function loadBytes(path: string): ArrayBuffer {
 }
 
 async function main() {
-    if (!existsSync(beamWasm)) {
-        console.error("beam.wasm not found. Run: bash examples/libs/erlang/build-erlang.sh");
+    const beamWasm = tryResolveBinary("programs/erlang.wasm");
+    if (!beamWasm) {
+        console.error(
+            "erlang.wasm not found. Run: scripts/fetch-binaries.sh " +
+            "(or bash examples/libs/erlang/build-erlang.sh to build locally).",
+        );
         process.exit(1);
     }
 

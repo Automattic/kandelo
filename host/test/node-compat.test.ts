@@ -7,19 +7,15 @@
 
 import { describe, it, expect } from "vitest";
 import { runCentralizedProgram } from "./centralized-test-helper";
-import { existsSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { tryResolveBinary } from "../src/binary-resolver";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const repoRoot = join(__dirname, "../..");
-const nodeWasm = join(repoRoot, "examples/libs/quickjs/bin/node.wasm");
-const hasNode = existsSync(nodeWasm);
+const nodeWasm = tryResolveBinary("programs/quickjs/node.wasm");
+const hasNode = !!nodeWasm;
 
 describe.skipIf(!hasNode)("Node.js compat (node.wasm)", () => {
   it("evaluates a simple expression", async () => {
     const result = await runCentralizedProgram({
-      programPath: nodeWasm,
+      programPath: nodeWasm!,
       argv: ["node", "-e", 'console.log("hello node")'],
     });
     expect(result.stdout).toContain("hello node");
@@ -28,7 +24,7 @@ describe.skipIf(!hasNode)("Node.js compat (node.wasm)", () => {
 
   it("has process global", async () => {
     const result = await runCentralizedProgram({
-      programPath: nodeWasm,
+      programPath: nodeWasm!,
       argv: [
         "node", "-e",
         'console.log("arch:", process.arch); console.log("platform:", process.platform); console.log("version:", process.version)',
@@ -42,7 +38,7 @@ describe.skipIf(!hasNode)("Node.js compat (node.wasm)", () => {
 
   it("has Buffer global", async () => {
     const result = await runCentralizedProgram({
-      programPath: nodeWasm,
+      programPath: nodeWasm!,
       argv: [
         "node", "-e",
         [
@@ -63,7 +59,7 @@ describe.skipIf(!hasNode)("Node.js compat (node.wasm)", () => {
 
   it("require('path') works", async () => {
     const result = await runCentralizedProgram({
-      programPath: nodeWasm,
+      programPath: nodeWasm!,
       argv: [
         "node", "-e",
         [
@@ -86,7 +82,7 @@ describe.skipIf(!hasNode)("Node.js compat (node.wasm)", () => {
 
   it("require('fs') works", async () => {
     const result = await runCentralizedProgram({
-      programPath: nodeWasm,
+      programPath: nodeWasm!,
       argv: [
         "node", "-e",
         [
@@ -108,7 +104,7 @@ describe.skipIf(!hasNode)("Node.js compat (node.wasm)", () => {
 
   it("require('events') works", async () => {
     const result = await runCentralizedProgram({
-      programPath: nodeWasm,
+      programPath: nodeWasm!,
       argv: [
         "node", "-e",
         [
@@ -127,7 +123,7 @@ describe.skipIf(!hasNode)("Node.js compat (node.wasm)", () => {
 
   it("require('os') works", async () => {
     const result = await runCentralizedProgram({
-      programPath: nodeWasm,
+      programPath: nodeWasm!,
       argv: [
         "node", "-e",
         [
@@ -148,7 +144,7 @@ describe.skipIf(!hasNode)("Node.js compat (node.wasm)", () => {
 
   it("require('util') works", async () => {
     const result = await runCentralizedProgram({
-      programPath: nodeWasm,
+      programPath: nodeWasm!,
       argv: [
         "node", "-e",
         [
@@ -165,7 +161,7 @@ describe.skipIf(!hasNode)("Node.js compat (node.wasm)", () => {
 
   it("require with node: prefix works", async () => {
     const result = await runCentralizedProgram({
-      programPath: nodeWasm,
+      programPath: nodeWasm!,
       argv: [
         "node", "-e",
         [
@@ -183,7 +179,7 @@ describe.skipIf(!hasNode)("Node.js compat (node.wasm)", () => {
 
   it("process.argv works", async () => {
     const result = await runCentralizedProgram({
-      programPath: nodeWasm,
+      programPath: nodeWasm!,
       argv: ["node", "-e", 'console.log("argv:", JSON.stringify(process.argv))'],
     });
     expect(result.stdout).toContain("argv:");
@@ -197,7 +193,7 @@ describe.skipIf(!hasNode)("Node.js compat (node.wasm)", () => {
 
   it("prints version with --version", async () => {
     const result = await runCentralizedProgram({
-      programPath: nodeWasm,
+      programPath: nodeWasm!,
       argv: ["node", "--version"],
     });
     expect(result.stdout).toContain("v22.0.0");
@@ -206,7 +202,7 @@ describe.skipIf(!hasNode)("Node.js compat (node.wasm)", () => {
 
   it("require('assert') works", async () => {
     const result = await runCentralizedProgram({
-      programPath: nodeWasm,
+      programPath: nodeWasm!,
       argv: [
         "node", "-e",
         [

@@ -23,6 +23,7 @@
 import { readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync } from "fs";
 import { resolve, dirname, join } from "path";
 import { NodeKernelHost } from "../../host/src/node-kernel-host";
+import { resolveBinary } from "../../host/src/binary-resolver";
 
 const scriptDir = dirname(new URL(import.meta.url).pathname);
 const repoRoot = resolve(scriptDir, "../..");
@@ -31,7 +32,7 @@ const repoRoot = resolve(scriptDir, "../..");
 const mariadbInstall = resolve(repoRoot, "examples/libs/mariadb/mariadb-install");
 const mysqldPath = resolve(mariadbInstall, "bin/mariadbd");
 const phpFpmWasmPath = resolve(repoRoot, "examples/nginx/php-fpm.wasm");
-const nginxWasmPath = resolve(repoRoot, "examples/nginx/nginx.wasm");
+const nginxWasmPath = resolveBinary("programs/nginx.wasm");
 
 // WordPress and config paths
 const wpDir = resolve(scriptDir, "wordpress");

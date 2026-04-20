@@ -2,20 +2,17 @@
  * Tests for GNU grep running on the wasm-posix-kernel.
  */
 import { describe, it, expect } from "vitest";
-import { join, dirname } from "node:path";
-import { existsSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { runCentralizedProgram } from "./centralized-test-helper";
+import { tryResolveBinary } from "../src/binary-resolver";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const grepBinary = join(__dirname, "../../examples/libs/grep/bin/grep.wasm");
+const grepBinary = tryResolveBinary("programs/grep.wasm");
 
-const hasGrep = existsSync(grepBinary);
+const hasGrep = !!grepBinary;
 
 describe.skipIf(!hasGrep)("GNU grep", () => {
   it("matches a simple pattern", async () => {
     const result = await runCentralizedProgram({
-      programPath: grepBinary,
+      programPath: grepBinary!,
       argv: ["grep", "hello"],
       stdin: "hello world\ngoodbye world\nhello again\n",
       timeout: 10_000,
@@ -26,7 +23,7 @@ describe.skipIf(!hasGrep)("GNU grep", () => {
 
   it("returns 1 when no match", async () => {
     const result = await runCentralizedProgram({
-      programPath: grepBinary,
+      programPath: grepBinary!,
       argv: ["grep", "xyz"],
       stdin: "hello world\n",
       timeout: 10_000,
@@ -37,7 +34,7 @@ describe.skipIf(!hasGrep)("GNU grep", () => {
 
   it("supports -i for case insensitive", async () => {
     const result = await runCentralizedProgram({
-      programPath: grepBinary,
+      programPath: grepBinary!,
       argv: ["grep", "-i", "hello"],
       stdin: "HELLO world\nhello again\nGoodbye\n",
       timeout: 10_000,
@@ -48,7 +45,7 @@ describe.skipIf(!hasGrep)("GNU grep", () => {
 
   it("supports -c for count", async () => {
     const result = await runCentralizedProgram({
-      programPath: grepBinary,
+      programPath: grepBinary!,
       argv: ["grep", "-c", "a"],
       stdin: "apple\nbanana\ncherry\navocado\n",
       timeout: 10_000,
@@ -59,7 +56,7 @@ describe.skipIf(!hasGrep)("GNU grep", () => {
 
   it("supports -v for inverted match", async () => {
     const result = await runCentralizedProgram({
-      programPath: grepBinary,
+      programPath: grepBinary!,
       argv: ["grep", "-v", "bad"],
       stdin: "good\nbad\ngreat\nbad news\n",
       timeout: 10_000,
@@ -70,7 +67,7 @@ describe.skipIf(!hasGrep)("GNU grep", () => {
 
   it("supports -n for line numbers", async () => {
     const result = await runCentralizedProgram({
-      programPath: grepBinary,
+      programPath: grepBinary!,
       argv: ["grep", "-n", "match"],
       stdin: "no\nmatch here\nno\nmatch again\n",
       timeout: 10_000,
@@ -81,7 +78,7 @@ describe.skipIf(!hasGrep)("GNU grep", () => {
 
   it("supports basic regex", async () => {
     const result = await runCentralizedProgram({
-      programPath: grepBinary,
+      programPath: grepBinary!,
       argv: ["grep", "^[0-9]"],
       stdin: "123 numbers\nabc letters\n456 more\n",
       timeout: 10_000,
@@ -92,7 +89,7 @@ describe.skipIf(!hasGrep)("GNU grep", () => {
 
   it("supports -E for extended regex", async () => {
     const result = await runCentralizedProgram({
-      programPath: grepBinary,
+      programPath: grepBinary!,
       argv: ["grep", "-E", "(cat|dog)"],
       stdin: "I have a cat\nI have a bird\nI have a dog\n",
       timeout: 10_000,
@@ -103,7 +100,7 @@ describe.skipIf(!hasGrep)("GNU grep", () => {
 
   it("supports -w for word match", async () => {
     const result = await runCentralizedProgram({
-      programPath: grepBinary,
+      programPath: grepBinary!,
       argv: ["grep", "-w", "in"],
       stdin: "in the beginning\nfind it\nit is in here\n",
       timeout: 10_000,
