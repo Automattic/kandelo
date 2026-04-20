@@ -142,6 +142,7 @@ The wasm-posix-kernel uses a **centralized architecture**: a single kernel Wasm 
 | `init_module()` / `delete_module()` | Stub | Returns EPERM. No kernel module support. |
 | `ioperm()` / `iopl()` | Stub | Returns EPERM. No I/O port access. |
 | `remap_file_pages()` | Stub | Returns ENOSYS. |
+| `getcontext()` / `setcontext()` / `makecontext()` / `swapcontext()` | Unsupported | Userspace stack-switching primitives, deprecated in POSIX.1-2008, not planned. See the "ucontext API unsupported" row under [Wasm-Inherent gaps](#wasm-inherent--gaps-that-cannot-be-fully-resolved-in-wasm) for rationale. |
 
 ## Signals
 
@@ -402,6 +403,7 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 | **Setuid/setgid enforcement** | process | Single-user Wasm environment; privilege checks simulated only. |
 | **Permission checks** | filesystem | Delegated to host. Kernel does not independently verify file permissions. |
 | **getrusage() zeroed** | sysinfo | No actual resource tracking available in Wasm. Returns zero-filled struct. |
+| **ucontext API unsupported** | process | `makecontext()`, `swapcontext()`, `getcontext()`, `setcontext()` are userspace stack-switching primitives. Supporting them would require Asyncify-style compile-time instrumentation for any program that uses them — we already do this narrowly for `fork()` (see `docs/plans/2026-04-20-fork-instrumentation-design.md`), and extending it to general stack-switching would multiply the instrumentation surface for a feature that is **deprecated in POSIX.1-2008** and effectively unused in modern code. Programs needing coroutines implement their own at the runtime level (Erlang/BEAM, Ruby fibers, Python `greenlet`). |
 
 ### Future Work — Remaining items
 
