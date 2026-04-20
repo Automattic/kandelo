@@ -14,7 +14,9 @@
 //! - Phase 6: catch-handler region support
 //! - Phase 7: production rollout
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
+
+pub mod call_graph;
 
 /// Options controlling instrumentation. Fields will grow as phases
 /// land; a `Default` implementation keeps call sites stable.
@@ -35,6 +37,36 @@ impl Default for Options {
     }
 }
 
+/// Result of analyzing an input module without rewriting it.
+#[derive(Debug)]
+pub struct Analysis {
+    /// Function entries that must be instrumented for fork support.
+    /// Sorted by display name; stable across runs.
+    pub fork_path: Vec<call_graph::FuncEntry>,
+}
+
+/// Analyze `input` to compute the set of functions that need
+/// instrumentation, without mutating or re-emitting the module.
+///
+/// Phase 2 scope: direct-call closure only. Phase 3 extends to
+/// indirect calls.
+pub fn analyze(input: &[u8], opts: &Options) -> Result<Analysis> {
+    let module = walrus::Module::from_buffer(input)
+        .context("failed to parse input wasm module")?;
+
+    let Some(entry) = call_graph::find_import_func(&module, &opts.entry_import) else {
+        bail!(
+            "entry import `{}` not found (or not a function) in the module. \
+             If this module does not use fork, there is nothing to instrument.",
+            opts.entry_import
+        );
+    };
+
+    let reaching = call_graph::direct_reaching_closure(&module, entry);
+    let fork_path = call_graph::summarize(&module, &reaching);
+    Ok(Analysis { fork_path })
+}
+
 /// Instruments `input` (a complete wasm binary) according to `opts`
 /// and returns the transformed binary.
 ///
@@ -45,8 +77,7 @@ pub fn instrument(input: &[u8], _opts: &Options) -> Result<Vec<u8>> {
         .context("failed to parse input wasm module")?;
 
     // --- Future phases will mutate `module` here. ---
-    // Phase 2: compute direct-call graph from _opts.entry_import.
-    // Phase 3: extend with indirect-call closure.
+    // Phase 3: extend call-graph closure with indirect calls.
     // Phase 4: inject state-machine globals, exports, and per-function
     //          state-machine wrappers for every function in the set.
     // Phase 5: inject auxiliary tables for reference-typed spilling.
