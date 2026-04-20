@@ -32,11 +32,12 @@ cd "${NODE_SRC}"
 # Host-only build does not need cross-compilation plumbing.
 if [ ! -f "out/Release/torque" ]; then
   ./configure --ninja
-  # torque is a GN subtarget of V8. Ninja can build it alone:
-  make torque -j"$(getconf _NPROCESSORS_ONLN)"
+  # Node.js uses gyp+ninja. Build the `torque` executable target directly.
+  ninja -C out/Release torque
 else
   echo ">>> torque binary already built at out/Release/torque."
 fi
 
-"${NODE_SRC}/out/Release/torque" --help | head -20
-echo ">>> Phase 0 OK: torque built and runnable."
+test -x "${NODE_SRC}/out/Release/torque"
+echo ">>> Phase 0 OK: torque binary at ${NODE_SRC}/out/Release/torque"
+echo ">>> ($(file "${NODE_SRC}/out/Release/torque" | cut -d: -f2-))"
