@@ -66,11 +66,20 @@ if [ ! -x "$HOST_BUILD_DIR/texk/web2c/pdftex" ]; then
         --disable-shared \
         --enable-static
 
-    # --disable-all-pkgs prevents top-level make from recursing into
-    # texk/web2c, so build targets explicitly in that subdir.
-    # otangle is needed by cross-compile configure even though we don't
-    # build Omega engines — web2c/configure unconditionally requires it.
-    make -C texk/web2c pdftex otangle -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
+    NPROC="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
+
+    # --disable-all-pkgs leaves MAKE_SUBDIRS empty, so configure alone
+    # doesn't create the texk/web2c, texk/kpathsea, etc. directories —
+    # those are created lazily by the top-level make's `recurse` target,
+    # which walks CONF_SUBDIRS and runs each sub-configure. Without this
+    # initial top-level make, `make -C texk/web2c` below fails with
+    # "No such file or directory".
+    make -j"$NPROC"
+
+    # otangle is needed by the cross-compile sub-configure even though
+    # we don't build Omega engines — web2c/configure unconditionally
+    # requires it.
+    make -C texk/web2c pdftex otangle -j"$NPROC"
     cd "$REPO_ROOT"
 fi
 
