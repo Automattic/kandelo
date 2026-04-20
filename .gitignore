@@ -8,6 +8,12 @@
 host/dist/
 host/docs/
 
+# Fetched / locally-built binaries. `binaries/` is populated by
+# scripts/fetch-binaries.sh; `local-binaries/` is a user-managed
+# override tree that takes priority. Neither is tracked.
+/binaries/
+/local-binaries/
+
 # Dependencies
 node_modules/
 
