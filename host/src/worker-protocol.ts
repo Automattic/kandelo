@@ -41,6 +41,12 @@ export interface CentralizedWorkerInitMessage {
   asyncifyBufAddr?: number;
   /** Pointer width: 4 for wasm32, 8 for wasm64. Defaults to 4. */
   ptrWidth?: 4 | 8;
+  /**
+   * Kernel's advertised ABI version (read from its `__abi_version`
+   * export at kernel startup). Worker compares against the program's
+   * own `__abi_version` export and refuses mismatches.
+   */
+  kernelAbiVersion?: number;
 }
 
 /**
@@ -64,6 +70,8 @@ export interface CentralizedThreadInitMessage {
   tlsAllocAddr: number;
   /** Pointer width: 4 for wasm32, 8 for wasm64. Defaults to 4. */
   ptrWidth?: 4 | 8;
+  /** See [`CentralizedWorkerInitMessage#kernelAbiVersion`]. */
+  kernelAbiVersion?: number;
 }
 
 export interface WorkerTerminateMessage {

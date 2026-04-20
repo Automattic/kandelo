@@ -864,6 +864,14 @@ fn deliver_pending_signals(proc: &mut Process, host: &mut WasmHostIO) {
 // 4. Exported kernel functions
 // ---------------------------------------------------------------------------
 
+/// Kernel's ABI version. The host reads this at instantiation and
+/// compares against each user program's `__abi_version` export;
+/// mismatches are refused. Mirrors [`wasm_posix_shared::ABI_VERSION`].
+#[unsafe(no_mangle)]
+pub extern "C" fn __abi_version() -> u32 {
+    wasm_posix_shared::ABI_VERSION
+}
+
 /// Set kernel operating mode. 0 = traditional, 1 = centralized.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_set_mode(mode: u32) {
