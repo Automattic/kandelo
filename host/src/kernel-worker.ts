@@ -644,6 +644,8 @@ export class CentralizedKernelWorker {
   private kernel: WasmPosixKernel;
   private kernelInstance: WebAssembly.Instance | null = null;
   private kernelMemory: WebAssembly.Memory | null = null;
+  /** ABI version read from the kernel wasm at startup. */
+  private kernelAbiVersion: number = 0;
   private processes = new Map<number, ProcessRegistration>();
   private activeChannels: ChannelInfo[] = [];
   private scratchOffset = 0;
@@ -903,7 +905,21 @@ export class CentralizedKernelWorker {
     this.kernelInstance = this.kernel.getInstance()!;
     this.kernelMemory = this.kernel.getMemory()!;
 
-    // Set centralized mode
+    // Read the kernel's advertised ABI version once at startup. Every
+    // user program spawned against this kernel will have its own
+    // `__abi_version` export compared against this value; mismatches
+    // are refused before any syscall runs.
+    const abiVersionFn =
+      this.kernelInstance.exports.__abi_version as (() => number) | undefined;
+    if (typeof abiVersionFn !== "function") {
+      throw new Error(
+        "kernel wasm is missing the __abi_version export — refusing to run. " +
+          "Rebuild the kernel (bash build.sh) against the current ABI.",
+      );
+    }
+    this.kernelAbiVersion = abiVersionFn();
+
+    // Set centralized mode (existing call below)
     const setMode = this.kernelInstance.exports.kernel_set_mode as (mode: number) => void;
     setMode(1);
 
@@ -5810,6 +5826,15 @@ export class CentralizedKernelWorker {
   /** Get the kernel Wasm instance. */
   getKernelInstance(): WebAssembly.Instance | null {
     return this.kernelInstance;
+  }
+
+  /**
+   * ABI version the kernel advertised at startup via its
+   * `__abi_version` export. Worker processes compare against this
+   * and refuse to run programs built against an incompatible ABI.
+   */
+  getKernelAbiVersion(): number {
+    return this.kernelAbiVersion;
   }
 
   // ---------------------------------------------------------------------------

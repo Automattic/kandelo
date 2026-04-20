@@ -467,6 +467,61 @@ function buildImportObject(
 const ASYNCIFY_BUF_SIZE = 16384;
 
 /**
+ * Verify that a freshly-instantiated user program was built against an
+ * ABI compatible with the running kernel.
+ *
+ * Three outcomes:
+ *   - Program exports `__abi_version` matching the kernel: silent pass.
+ *   - Program exports `__abi_version` with a different value: hard error.
+ *     A known mismatch is always worse than silent misbehavior — we would
+ *     rather refuse to run.
+ *   - Program doesn't export `__abi_version` at all: warn and continue.
+ *     This is for rolling out the marker: legacy binaries built before
+ *     channel_syscall.c gained the export don't have it. Once all
+ *     published binaries carry the marker, this path can be flipped to
+ *     a hard error — see docs/abi-versioning.md.
+ *
+ * Called after instantiation but before any syscall runs, so known
+ * mismatches are refused before memory corruption can happen.
+ */
+function verifyProgramAbi(
+  instance: WebAssembly.Instance,
+  expected: number | undefined,
+  pid: number,
+): void {
+  if (expected === undefined) {
+    // Older host driver didn't populate the field — skip silently.
+    // Will be removed once all callers are updated.
+    return;
+  }
+  const fn = instance.exports.__abi_version as (() => number) | undefined;
+  if (typeof fn !== "function") {
+    if (!abiMissingWarned) {
+      abiMissingWarned = true;
+      console.warn(
+        `[worker] pid=${pid}: user program lacks __abi_version export — ` +
+          "legacy binary predates ABI marker rollout. Rebuild against the " +
+          "current glue (channel_syscall.c) to pick up the check. " +
+          "See docs/abi-versioning.md.",
+      );
+    }
+    return;
+  }
+  const actual = fn();
+  if (actual !== expected) {
+    throw new Error(
+      `pid=${pid}: ABI version mismatch — kernel advertises ${expected}, ` +
+        `user program built against ${actual}. Rebuild the program against the ` +
+        "current kernel, or roll back the kernel to the matching version. " +
+        "See docs/abi-versioning.md.",
+    );
+  }
+}
+
+/** Warn once per worker process, not once per program load. */
+let abiMissingWarned = false;
+
+/**
  * Main process worker entry point.
  */
 export async function centralizedWorkerMain(
@@ -588,6 +643,7 @@ export async function centralizedWorkerMain(
         () => processInstance ?? undefined, ptrWidth);
       const instance = await WebAssembly.instantiate(module, importObject);
       processInstance = instance;
+      verifyProgramAbi(instance, initData.kernelAbiVersion, pid);
 
       // For fork children: fix __tls_base and __stack_pointer after instantiation.
       // Both globals are reset to defaults by WebAssembly.instantiate() but need
@@ -724,6 +780,7 @@ export async function centralizedWorkerMain(
         () => processInstance ?? undefined, ptrWidth);
       const instance = await WebAssembly.instantiate(module, importObject);
       processInstance = instance;
+      verifyProgramAbi(instance, initData.kernelAbiVersion, pid);
 
       setupChannelBase(instance, module, memory, channelOffset, programBytes as ArrayBuffer, ptrWidth);
 

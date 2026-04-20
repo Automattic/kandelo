@@ -231,6 +231,7 @@ function handleSpawn(msg: SpawnMessage) {
       env: msg.env,
       argv: msg.argv,
       ptrWidth,
+      kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
     };
 
     const worker = workerAdapter.createWorker(initData);
@@ -291,6 +292,7 @@ async function handleFork(
     isForkChild: true,
     asyncifyBufAddr,
     ptrWidth,
+    kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
   };
 
   const childWorker = workerAdapter.createWorker(childInitData);
@@ -353,6 +355,7 @@ async function handleExec(
     argv,
     env: envp,
     ptrWidth: newPtrWidth,
+    kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
   };
 
   const newWorker = workerAdapter.createWorker(initData);
@@ -410,6 +413,7 @@ async function handleClone(
     ctidPtr,
     tlsAllocAddr: alloc.tlsAllocAddr,
     ptrWidth: processInfo.ptrWidth,
+    kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
   };
 
   const threadWorker = workerAdapter.createWorker(threadInitData);

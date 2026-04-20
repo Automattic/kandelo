@@ -1,5 +1,5 @@
 {
-  "abi_version": 1,
+  "abi_version": 2,
   "asyncify_save_slots": [
     {
       "meaning": "parent TLS base (__tls_base) saved for child rewind",
@@ -129,6 +129,11 @@
     ]
   },
   "kernel_exports": [
+    {
+      "kind": "func",
+      "name": "__abi_version",
+      "signature": "() -> (i32)"
+    },
     {
       "kind": "global",
       "mutable": false,

@@ -24,10 +24,26 @@
  */
 
 #include <stdint.h>
+#include "abi_constants.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/*
+ * Exported ABI marker.
+ *
+ * Every user program built against this glue exports `__abi_version`,
+ * which the host calls at instantiation time to verify the program
+ * was built against a compatible kernel. The value comes from the
+ * generated `abi_constants.h` header, which mirrors
+ * wasm_posix_shared::ABI_VERSION — bump ABI_VERSION and regenerate
+ * the header (`bash scripts/check-abi-version.sh update`) together.
+ */
+__attribute__((export_name("__abi_version")))
+unsigned int __wasm_posix_user_abi_version(void) {
+    return WASM_POSIX_ABI_VERSION;
+}
 
 /* musl's errno is a macro expanding to (*__errno_location()). We only
  * need to set it on error, so we reference the function directly to
