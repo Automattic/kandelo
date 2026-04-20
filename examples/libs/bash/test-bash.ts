@@ -50,6 +50,8 @@ const cases: [string, string, string][] = [
   ["declare -A h=([a]=1 [b]=2); echo ${h[b]}", "2\n", "associative array (bashism)"],
   ["echo {1..5}", "1 2 3 4 5\n", "brace expansion"],
   ["s=hello; echo ${s^^}", "HELLO\n", "case-mod expansion (bashism)"],
+  ["type history >/dev/null && echo y", "y\n", "history builtin available"],
+  ["type bind >/dev/null && echo y", "y\n", "readline bind builtin available"],
 ];
 
 async function main() {
