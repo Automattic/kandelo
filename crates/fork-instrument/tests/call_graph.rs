@@ -164,9 +164,11 @@ fn cycle_terminates() {
 }
 
 #[test]
-fn indirect_call_not_in_closure_yet() {
-    // Phase 2 does not follow call_indirect. This test documents that
-    // behavior — Phase 3 will make it a "reached" result.
+fn indirect_call_to_fork_path_target_is_followed() {
+    // $forks_via_indirect is in a table and reaches fork directly.
+    // $calls_indirect does call_indirect of the same signature.
+    // Phase 3: $calls_indirect must be added because the table
+    // target it might dispatch to is on the fork path.
     let wat = r#"
         (module
           (import "kernel" "kernel_fork" (func $fork (result i32)))
@@ -180,12 +182,101 @@ fn indirect_call_not_in_closure_yet() {
             call_indirect (type $ft)))
     "#;
     let found = discover(wat);
-    // $forks_via_indirect reaches fork directly; included.
-    // $calls_indirect goes through call_indirect; Phase 2 does not
-    // follow that edge, so it should NOT be in the set.
     assert!(found.iter().any(|n| n == "forks_via_indirect"));
     assert!(
+        found.iter().any(|n| n == "calls_indirect"),
+        "Phase 3: call_indirect caller must be added when its possible \
+         target is on the fork path; got {found:?}"
+    );
+}
+
+#[test]
+fn indirect_call_with_mismatched_signature_not_followed() {
+    // $forks_via_indirect reaches fork and is in the table with type
+    // (result i32). $calls_indirect_wrong_sig does call_indirect with
+    // a different signature (param i32). Different signature, so its
+    // call_indirect cannot actually target $forks_via_indirect;
+    // instrumenting it would be overly conservative.
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (type $ft_a (func (result i32)))
+          (type $ft_b (func (param i32)))
+          (table 1 funcref)
+          (elem (i32.const 0) $forks_via_indirect)
+          (func $forks_via_indirect (export "forks_via_indirect") (result i32)
+            call $fork)
+          (func $calls_indirect_wrong_sig (export "calls_indirect_wrong_sig")
+            i32.const 0
+            i32.const 0
+            call_indirect (type $ft_b)))
+    "#;
+    let found = discover(wat);
+    assert!(found.iter().any(|n| n == "forks_via_indirect"));
+    assert!(
+        !found.iter().any(|n| n == "calls_indirect_wrong_sig"),
+        "signature mismatch must not force instrumentation; got {found:?}"
+    );
+}
+
+#[test]
+fn indirect_to_direct_to_fork_chain() {
+    //   main → calls_indirect ⇝(type $ft)⇝ target → fork
+    //
+    // The chain requires: main (direct), calls_indirect (direct to
+    // main's pov), target (via table + matching signature), fork.
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (type $ft (func (result i32)))
+          (table 1 funcref)
+          (elem (i32.const 0) $target)
+          (func $target (export "target") (result i32)
+            call $fork)
+          (func $calls_indirect (export "calls_indirect") (result i32)
+            i32.const 0
+            call_indirect (type $ft))
+          (func $main (export "main") (result i32)
+            call $calls_indirect))
+    "#;
+    let found = discover(wat);
+    for name in ["target", "calls_indirect", "main"] {
+        assert!(found.iter().any(|n| n == name), "missing {name}: {found:?}");
+    }
+}
+
+#[test]
+fn function_not_in_any_table_is_not_an_indirect_target() {
+    // $fn_with_matching_sig has the same signature as $calls_indirect's
+    // call_indirect, BUT it's not in any table. So it's not a possible
+    // target and should not be dragged in via indirect closure.
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (type $ft (func (result i32)))
+          (table 1 funcref)
+          (elem (i32.const 0) $some_other_target)
+          (func $some_other_target (export "some_other_target") (result i32)
+            i32.const 0)
+          (func $fn_with_matching_sig (export "fn_with_matching_sig") (result i32)
+            call $fork)
+          (func $calls_indirect (export "calls_indirect") (result i32)
+            i32.const 0
+            call_indirect (type $ft)))
+    "#;
+    let found = discover(wat);
+    // $fn_with_matching_sig reaches fork directly (calls it).
+    assert!(found.iter().any(|n| n == "fn_with_matching_sig"));
+    // $some_other_target is in the table and has matching signature,
+    // but it doesn't reach fork — so the indirect closure has nothing
+    // to pull in through $calls_indirect.
+    assert!(
         !found.iter().any(|n| n == "calls_indirect"),
-        "Phase 2 must not yet follow call_indirect — that is Phase 3's job"
+        "call_indirect target is in the table but doesn't reach fork; \
+         caller should not be pulled in: {found:?}"
+    );
+    assert!(
+        !found.iter().any(|n| n == "some_other_target"),
+        "irrelevant table function should not appear: {found:?}"
     );
 }

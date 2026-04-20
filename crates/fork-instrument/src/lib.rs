@@ -62,7 +62,7 @@ pub fn analyze(input: &[u8], opts: &Options) -> Result<Analysis> {
         );
     };
 
-    let reaching = call_graph::direct_reaching_closure(&module, entry);
+    let reaching = call_graph::reaching_closure(&module, entry);
     let fork_path = call_graph::summarize(&module, &reaching);
     Ok(Analysis { fork_path })
 }
