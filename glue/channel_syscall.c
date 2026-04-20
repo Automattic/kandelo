@@ -141,7 +141,18 @@ int32_t kernel_fork(void);
 
 void __fork_handler(int);
 
-/* _Fork: raw fork without atfork handlers (POSIX async-signal-safe) */
+/* _Fork/fork/vfork MUST NOT be inlined. wasm-opt's asyncify pass matches
+ * functions by name to instrument the call chain around kernel_fork (an
+ * asyncify import). At -O2, LLVM inlines these wrappers into every caller
+ * and can then eliminate the kernel_fork call on paths where it decides
+ * the return value is unused in a specific way — a silent miscompile that
+ * makes bash's make_child appear to "fork" but never actually invoke
+ * kernel_fork, so pipeline child-side redirection runs in the parent
+ * process and subsequent writes to the pipe fail with EPIPE. Keeping these
+ * as distinct non-inlined functions preserves both the asyncify call graph
+ * and the observable side effect of the kernel_fork import. */
+
+__attribute__((noinline))
 int _Fork(void)
 {
     long ret = (long)kernel_fork();
@@ -152,7 +163,7 @@ int _Fork(void)
     return (int)ret;
 }
 
-/* fork: wraps _Fork with pthread_atfork handlers */
+__attribute__((noinline))
 int fork(void)
 {
     __fork_handler(-1);
@@ -161,6 +172,7 @@ int fork(void)
     return ret;
 }
 
+__attribute__((noinline))
 int vfork(void)
 {
     return fork();

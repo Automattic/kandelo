@@ -19,14 +19,20 @@ function loadBytes(path: string): ArrayBuffer {
 
 async function runCase(script: string): Promise<{ code: number; out: string; err: string }> {
   const bashBin = resolve(repoRoot, "examples/libs/bash/bin/bash.wasm");
+  const coreutilsBin = resolve(repoRoot, "examples/libs/coreutils/bin/coreutils.wasm");
   let out = "";
   let err = "";
+  const execPrograms: Record<string, string> = {
+    "/bin/bash": bashBin,
+    "/bin/sh": bashBin,
+  };
+  for (const n of ["cat", "wc", "sort", "echo", "ls", "printf", "head", "tail"]) {
+    execPrograms[`/bin/${n}`] = coreutilsBin;
+    execPrograms[`/usr/bin/${n}`] = coreutilsBin;
+  }
   const host = new NodeKernelHost({
     maxWorkers: 8,
-    execPrograms: {
-      "/bin/bash": bashBin,
-      "/bin/sh": bashBin,
-    },
+    execPrograms,
     onStdout: (_pid, data) => { out += Buffer.from(data).toString("utf8"); },
     onStderr: (_pid, data) => { err += Buffer.from(data).toString("utf8"); },
   });
@@ -52,6 +58,9 @@ const cases: [string, string, string][] = [
   ["s=hello; echo ${s^^}", "HELLO\n", "case-mod expansion (bashism)"],
   ["type history >/dev/null && echo y", "y\n", "history builtin available"],
   ["type bind >/dev/null && echo y", "y\n", "readline bind builtin available"],
+  ["echo hello | cat", "hello\n", "simple pipe (cat)"],
+  ["echo hello world | wc -c", "12\n", "pipe to wc -c"],
+  ["printf 'b\\na\\n' | sort", "a\nb\n", "pipe to sort"],
 ];
 
 async function main() {

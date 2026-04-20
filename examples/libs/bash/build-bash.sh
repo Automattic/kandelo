@@ -105,7 +105,9 @@ if [ ! -f Makefile ]; then
     export ac_cv_func_putc_unlocked=no
     export ac_cv_func_putchar_unlocked=no
 
-    # -gline-tables-only preserves function names for asyncify-onlylist.
+    # -gline-tables-only keeps DWARF line tables for wasm-opt's asyncify pass
+    # to read function names from (the wasm `name` section is stripped by
+    # clang's driver's default post-link wasm-opt, but DWARF is preserved).
     export CFLAGS="-O2 -gline-tables-only -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-pointer-types"
     export LDFLAGS="-Wl,-z,stack-size=1048576"
 
@@ -377,9 +379,21 @@ if [ -f "$ONLYLIST" ]; then
     echo "==> Applying asyncify with onlylist..."
     ONLY_FUNCS=$(grep -v '^#' "$ONLYLIST" | grep -v '^\s*$' | tr -d ' ' | tr '\n' ',' | sed 's/,$//')
 
+    # Full asyncify (no onlylist) instruments every function for fork support.
+    # An onlylist approach was attempted first to keep the binary smaller, but
+    # bash has many static fork-path functions (execute_pipeline,
+    # execute_coproc, command_substitute_stdout, etc.) that LLVM at -O2
+    # inlines into single-caller sites — they disappear as distinct named
+    # functions and asyncify's onlylist silently fails to cover them. When
+    # the asyncify call chain has gaps, kernel_fork's import wrapper is
+    # generated but never reached from the uninstrumented callers, so bash
+    # thinks `fork()` succeeded when it actually didn't: pipeline child-side
+    # redirection runs in the parent process and writes to a closed pipe
+    # fail with EPIPE. Full asyncify instruments everything uniformly and
+    # the call chain from main → reader_loop → ... → make_child → fork →
+    # kernel_fork works end-to-end. Size cost: 1.5MB → 2.7MB.
     "$WASM_OPT" -g --asyncify \
         --pass-arg="asyncify-imports@kernel.kernel_fork" \
-        --pass-arg="asyncify-onlylist@${ONLY_FUNCS}" \
         "$BIN_DIR/bash.wasm" -o "$BIN_DIR/bash.wasm"
 
     "$WASM_OPT" -O2 "$BIN_DIR/bash.wasm" -o "$BIN_DIR/bash.wasm"
