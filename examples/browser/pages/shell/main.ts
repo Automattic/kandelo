@@ -229,8 +229,11 @@ async function startInteractiveShell() {
     hideStatus();
     ptyTerminal.terminal.focus();
 
-    // Spawn bash in interactive mode with PTY
-    const exitCode = await ptyTerminal.spawn(bashBytes!, ["bash", "-i"], {
+    // Spawn bash as an interactive login shell. Terminal emulators
+    // (xterm, gnome-terminal, ssh, etc.) typically spawn bash as a login
+    // shell too, so this matches what users expect: /etc/profile is
+    // sourced, aliases and environment set up there are applied.
+    const exitCode = await ptyTerminal.spawn(bashBytes!, ["bash", "-l", "-i"], {
       env: [
         "HOME=/home",
         "TMPDIR=/tmp",
