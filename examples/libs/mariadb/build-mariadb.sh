@@ -404,3 +404,9 @@ if [ -d "$MYSQL_TEST_SRC" ]; then
 else
     echo "WARNING: mysql-test directory not found in source tree" >&2
 fi
+
+# Install into local-binaries/ so the resolver picks the freshly-built
+# binary over the fetched release.
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary mariadb "$SCRIPT_DIR/mariadb-install/bin/mariadbd.wasm" mariadbd.wasm
+[ -f "$SCRIPT_DIR/mariadb-install/bin/mysqltest.wasm" ] && install_local_binary mariadb "$SCRIPT_DIR/mariadb-install/bin/mysqltest.wasm" mysqltest.wasm || true

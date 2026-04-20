@@ -174,3 +174,8 @@ mkdir -p "$SCRIPT_DIR/bin"
 cp sapi/cli/php "$SCRIPT_DIR/bin/php.wasm"
 
 ls -la "$SCRIPT_DIR/bin/php.wasm"
+
+# Install into local-binaries/ so the resolver picks the freshly-built
+# binary over the fetched release.
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary php "$SCRIPT_DIR/bin/php.wasm" php.wasm

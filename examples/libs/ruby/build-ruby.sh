@@ -700,3 +700,8 @@ make install MINIRUBY="$HOST_MINIRUBY -I$SRC_DIR/lib" DESTDIR="" 2>/dev/null || 
 echo ""
 echo "==> Ruby built successfully!"
 ls -lh "$BIN_DIR/ruby.wasm"
+
+# Install into local-binaries/ so the resolver picks the freshly-built
+# binary over the fetched release.
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary ruby "$SCRIPT_DIR/bin/ruby.wasm"

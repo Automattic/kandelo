@@ -202,3 +202,9 @@ fi
 echo ""
 echo "==> findutils built successfully!"
 echo "Binaries: $BIN_DIR/find.wasm $BIN_DIR/xargs.wasm"
+
+# Install into local-binaries/ so the resolver picks the freshly-built
+# binary over the fetched release.
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary findutils "$SCRIPT_DIR/bin/find.wasm" find.wasm
+install_local_binary findutils "$SCRIPT_DIR/bin/xargs.wasm" xargs.wasm

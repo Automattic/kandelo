@@ -571,3 +571,8 @@ fi
 
 echo "==> CPython built successfully!"
 ls -la "$SCRIPT_DIR/bin/python.wasm"
+
+# Install into local-binaries/ so the resolver picks the freshly-built
+# binary over the fetched release.
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary cpython "$SCRIPT_DIR/bin/python.wasm"

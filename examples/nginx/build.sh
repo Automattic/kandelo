@@ -409,3 +409,8 @@ fi
 
 echo "==> nginx.wasm built successfully!"
 ls -la "$SCRIPT_DIR/nginx.wasm"
+
+# Install into local-binaries/ so the resolver picks the freshly-built
+# binary over the fetched release.
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary nginx "$SCRIPT_DIR/nginx.wasm"

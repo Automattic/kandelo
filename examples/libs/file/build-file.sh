@@ -247,3 +247,8 @@ echo "Magic DB:  $BIN_DIR/magic.lite (wasm-safe subset)"
 echo "           $BIN_DIR/magic (full — may exceed wasm stack on some entries)"
 echo ""
 echo "Usage: file.wasm -m /path/to/magic.lite /path/to/file"
+
+# Install into local-binaries/ so the resolver picks the freshly-built
+# binary over the fetched release.
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary file "$SCRIPT_DIR/bin/file.wasm"

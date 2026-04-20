@@ -238,3 +238,10 @@ echo "Binary: $BIN_DIR/git.wasm"
 if [ "$USE_CURL" = "yes" ] && [ -f "$BIN_DIR/git-remote-http.wasm" ]; then
     echo "HTTP transport: $BIN_DIR/git-remote-http.wasm"
 fi
+
+# Install into local-binaries/ (multi-binary program).
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary git "$BIN_DIR/git.wasm" git.wasm
+if [ -f "$BIN_DIR/git-remote-http.wasm" ]; then
+    install_local_binary git "$BIN_DIR/git-remote-http.wasm" git-remote-http.wasm
+fi

@@ -186,3 +186,8 @@ fi
 
 echo "==> PHP-FPM built successfully!"
 ls -la "$SCRIPT_DIR/php-fpm.wasm"
+
+# Install into local-binaries/ so the resolver picks the freshly-built
+# binary over the fetched release.
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary php "$SCRIPT_DIR/php-fpm.wasm" php-fpm.wasm

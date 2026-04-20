@@ -191,3 +191,8 @@ else
     echo "ERROR: Build failed — libtcl8.6.a not found" >&2
     exit 1
 fi
+
+# Install into local-binaries/ so the resolver picks the freshly-built
+# binary over the fetched release.
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary tcl "$SCRIPT_DIR/bin/tclsh.wasm"

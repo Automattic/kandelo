@@ -580,3 +580,8 @@ fi
 
 echo "==> Erlang/OTP ${OTP_VERSION} build complete!"
 echo "==> Install directory: $INSTALL_DIR"
+
+# Install into local-binaries/ so the resolver picks the freshly-built
+# binary over the fetched release.
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary erlang "$SCRIPT_DIR/beam.wasm"

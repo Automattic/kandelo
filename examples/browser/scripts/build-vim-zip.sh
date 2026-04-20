@@ -49,3 +49,10 @@ rsync -a "$RUNTIME_DIR/" "$STAGING/share/vim/vim91/"
 
 echo "    $(find "$STAGING" -type f | wc -l | tr -d ' ') files"
 ls -lh "$OUTPUT_FILE"
+
+# Install into local-binaries/ so the resolver picks the locally-built
+# vim.zip over the fetched release. In the release layout vim is a
+# single-asset program (the zip IS the bundle), so no dest-name
+# argument — the helper drops it at local-binaries/programs/vim.zip.
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary vim "$OUTPUT_FILE"

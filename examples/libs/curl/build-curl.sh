@@ -200,3 +200,8 @@ fi
 echo ""
 echo "==> curl built successfully!"
 echo "Binary: $BIN_DIR/curl.wasm"
+
+# Install into local-binaries/ so the resolver picks the freshly-built
+# binary over the fetched release.
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary curl "$SCRIPT_DIR/bin/curl.wasm"

@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+#
+# install-local-binary.sh — copy a freshly-built wasm into
+# local-binaries/ so the resolver picks it up as an override over
+# anything `scripts/fetch-binaries.sh` downloaded.
+#
+# Sourced or called from each ported program's build script after
+# producing its output binary. The resolver (host/src/binary-resolver.ts
+# + scripts/resolve-binary.sh) prefers local-binaries/ over binaries/,
+# so running any program's local build automatically shadows the
+# released version.
+#
+# Usage (each argument is one install target):
+#     source scripts/install-local-binary.sh   # adds install_local_binary()
+#
+#     install_local_binary <program> <src> [<dest-filename>]
+#
+# Where:
+#   <program>          logical program name matching manifest entries
+#                      (e.g., "dash", "git", "php").
+#   <src>              path to the freshly-built .wasm (or .zip).
+#   <dest-filename>    optional: filename under local-binaries/programs/<program>/
+#                      for multi-binary programs. When omitted, the file
+#                      lands at local-binaries/programs/<program>.<ext>
+#                      (single-binary convention).
+#
+# Multi-binary examples:
+#   install_local_binary git examples/libs/git/bin/git.wasm git.wasm
+#   install_local_binary git examples/libs/git/bin/git-remote-http.wasm \
+#       git-remote-http.wasm
+#
+# Single-binary examples:
+#   install_local_binary dash examples/libs/dash/bin/dash.wasm
+#   install_local_binary nginx examples/nginx/nginx.wasm
+
+install_local_binary() {
+    local program="$1"
+    local src="$2"
+    local dest_name="${3:-}"
+
+    if [ -z "$program" ] || [ -z "$src" ]; then
+        echo "install_local_binary: usage: install_local_binary <program> <src> [<dest-filename>]" >&2
+        return 2
+    fi
+    if [ ! -f "$src" ]; then
+        echo "install_local_binary: source file not found: $src" >&2
+        return 1
+    fi
+
+    # Repo root from wherever the caller is.
+    local repo_root
+    repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+    if [ -z "$repo_root" ]; then
+        repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    fi
+
+    local dest
+    if [ -n "$dest_name" ]; then
+        # Multi-binary program — dest goes under programs/<program>/
+        dest="$repo_root/local-binaries/programs/$program/$dest_name"
+    else
+        # Single-binary — programs/<program>.<ext>
+        local ext="${src##*.}"
+        dest="$repo_root/local-binaries/programs/$program.$ext"
+    fi
+
+    mkdir -p "$(dirname "$dest")"
+    cp "$src" "$dest"
+    echo "  installed $dest"
+}

@@ -240,3 +240,8 @@ fi
 echo ""
 echo "==> wget built successfully!"
 echo "Binary: $BIN_DIR/wget.wasm"
+
+# Install into local-binaries/ so the resolver picks the freshly-built
+# binary over the fetched release.
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+[ -f "$SCRIPT_DIR/bin/wget.wasm" ] && install_local_binary wget "$SCRIPT_DIR/bin/wget.wasm" || true
