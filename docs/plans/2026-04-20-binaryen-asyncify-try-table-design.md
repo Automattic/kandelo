@@ -1,5 +1,21 @@
 # Binaryen Asyncify: try_table support
 
+> **Status (2026-04-20):** Superseded as our primary approach by
+> [2026-04-20-fork-instrumentation-design.md](2026-04-20-fork-instrumentation-design.md).
+> We discovered that while this patch is sufficient for minimal cases
+> (try_table with parameterless catches), LLVM's `-wasm-enable-sjlj`
+> lowering produces catch clauses that pass values to result-typed
+> blocks, which Flatten (an Asyncify prerequisite) cannot transform
+> within its "no control-flow return values" invariant. Rather than
+> patching Flatten (deep surgery in a pass designed around a
+> conflicting invariant), we are building a purpose-built
+> fork-instrumentation tool that bypasses Flatten entirely.
+>
+> The Binaryen patch described here (~60 lines to `Asyncify.cpp` +
+> `Flatten.cpp`) still fixes a real crash and remains worth upstreaming
+> as a standalone improvement. Preserved on the fork branch
+> [`asyncify-try-table` at brandonpayton/binaryen](https://github.com/brandonpayton/binaryen/tree/asyncify-try-table).
+
 ## Problem
 
 V8 emits a runtime deprecation warning whenever it decodes a legacy Wasm
