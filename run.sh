@@ -31,17 +31,25 @@ step()  { echo "${CYAN}${BOLD}=== $* ===${RESET}"; }
 
 # ─── Artifact checks ─────────────────────────────────────────────────────────
 
-has_kernel()    { [ -f "$REPO_ROOT/host/wasm/wasm_posix_kernel.wasm" ]; }
+# `has_resolvable <rel>` is true when the binary resolves via
+# `local-binaries/` or `binaries/`. Used to treat fetched binaries as
+# "already built" so build_target skips.
+has_resolvable() {
+    "$REPO_ROOT/scripts/resolve-binary.sh" "$1" >/dev/null 2>&1
+}
+
+has_kernel()    { has_resolvable kernel.wasm || [ -f "$REPO_ROOT/host/wasm/wasm_posix_kernel.wasm" ]; }
 has_sysroot()   { [ -f "$REPO_ROOT/sysroot/lib/libc.a" ]; }
 has_sdk()       { command -v wasm32posix-cc &>/dev/null; }
 has_host()      { [ -d "$REPO_ROOT/host/dist" ]; }
-has_programs()  { [ -f "$REPO_ROOT/host/wasm/fork-exec.wasm" ]; }
-has_nginx()     { [ -f "$REPO_ROOT/examples/nginx/nginx.wasm" ]; }
+has_programs()    { has_resolvable programs/fork-exec.wasm || [ -f "$REPO_ROOT/host/wasm/fork-exec.wasm" ]; }
+has_nginx()    { has_resolvable programs/nginx.wasm || [ -f "$REPO_ROOT/examples/nginx/nginx.wasm" ]; }
 has_php()       { [ -f "$REPO_ROOT/examples/libs/php/php-src/sapi/cli/php" ]; }
-has_php_fpm()   { [ -f "$REPO_ROOT/examples/nginx/php-fpm.wasm" ]; }
-has_mariadb()   { [ -f "$REPO_ROOT/examples/libs/mariadb/mariadb-install/bin/mariadbd" ]; }
+has_php_fpm()    { has_resolvable programs/php/php-fpm.wasm || [ -f "$REPO_ROOT/examples/nginx/php-fpm.wasm" ]; }
+has_mariadb()    { has_resolvable programs/mariadb/mariadbd.wasm || [ -f "$REPO_ROOT/examples/libs/mariadb/mariadb-install/bin/mariadbd" ]; }
 has_mariadb64() { [ -f "$REPO_ROOT/examples/libs/mariadb/mariadb-install-64/bin/mariadbd" ]; }
 has_mariadb_vfs() {
+    if has_resolvable vfs/mariadb.vfs.zst; then return 0; fi
     local vfs="$REPO_ROOT/examples/browser/public/mariadb.vfs"
     local mariadbd="$REPO_ROOT/examples/libs/mariadb/mariadb-install/bin/mariadbd.wasm"
     [ -f "$vfs" ] && [ -f "$mariadbd" ] && [ "$vfs" -nt "$mariadbd" ]
@@ -52,42 +60,42 @@ has_mariadb64_vfs() {
     [ -f "$vfs" ] && [ -f "$mariadbd" ] && [ "$vfs" -nt "$mariadbd" ]
 }
 has_wordpress() { [ -f "$REPO_ROOT/examples/wordpress/wordpress/wp-settings.php" ]; }
-has_wp_vfs()    { [ -f "$REPO_ROOT/examples/browser/public/wordpress.vfs" ]; }
-has_dash()      { [ -f "$REPO_ROOT/examples/libs/dash/bin/dash.wasm" ]; }
-has_coreutils() { [ -f "$REPO_ROOT/examples/libs/coreutils/bin/coreutils.wasm" ]; }
-has_grep()      { [ -f "$REPO_ROOT/examples/libs/grep/bin/grep.wasm" ]; }
-has_sed()       { [ -f "$REPO_ROOT/examples/libs/sed/bin/sed.wasm" ]; }
-has_redis()     { [ -f "$REPO_ROOT/examples/libs/redis/bin/redis-server.wasm" ]; }
-has_cpython()   { [ -f "$REPO_ROOT/examples/libs/cpython/bin/python.wasm" ]; }
-has_python_vfs() { [ -f "$REPO_ROOT/examples/browser/public/python.vfs" ]; }
-has_perl_vfs()   { [ -f "$REPO_ROOT/examples/browser/public/perl.vfs" ]; }
-has_shell_vfs()  { [ -f "$REPO_ROOT/examples/browser/public/shell.vfs" ]; }
-has_erlang()    { [ -f "$REPO_ROOT/examples/libs/erlang/bin/beam.wasm" ]; }
-has_erlang_vfs() { [ -f "$REPO_ROOT/examples/browser/public/erlang.vfs" ]; }
-has_lamp_vfs()   { [ -f "$REPO_ROOT/examples/browser/public/lamp.vfs" ]; }
-has_bc()        { [ -f "$REPO_ROOT/examples/libs/bc/bin/bc.wasm" ]; }
-has_file()      { [ -f "$REPO_ROOT/examples/libs/file/bin/file.wasm" ]; }
-has_less()      { [ -f "$REPO_ROOT/examples/libs/less/bin/less.wasm" ]; }
-has_m4()        { [ -f "$REPO_ROOT/examples/libs/m4/bin/m4.wasm" ]; }
-has_make()      { [ -f "$REPO_ROOT/examples/libs/make/bin/make.wasm" ]; }
-has_tar()       { [ -f "$REPO_ROOT/examples/libs/tar/bin/tar.wasm" ]; }
-has_curl()      { [ -f "$REPO_ROOT/examples/libs/curl/bin/curl.wasm" ]; }
-has_wget()      { [ -f "$REPO_ROOT/examples/libs/wget/bin/wget.wasm" ]; }
-has_gzip()      { [ -f "$REPO_ROOT/examples/libs/gzip/bin/gzip.wasm" ]; }
-has_bzip2()     { [ -f "$REPO_ROOT/examples/libs/bzip2/bin/bzip2.wasm" ]; }
-has_xz()        { [ -f "$REPO_ROOT/examples/libs/xz/bin/xz.wasm" ]; }
-has_zstd()      { [ -f "$REPO_ROOT/examples/libs/zstd/bin/zstd.wasm" ]; }
-has_zip()       { [ -f "$REPO_ROOT/examples/libs/zip/bin/zip.wasm" ]; }
-has_unzip()     { [ -f "$REPO_ROOT/examples/libs/unzip/bin/unzip.wasm" ]; }
-has_nano()      { [ -f "$REPO_ROOT/examples/libs/nano/bin/nano.wasm" ]; }
+has_wp_vfs()    { has_resolvable vfs/wordpress.vfs.zst || [ -f "$REPO_ROOT/examples/browser/public/wordpress.vfs" ]; }
+has_dash()    { has_resolvable programs/dash.wasm || [ -f "$REPO_ROOT/examples/libs/dash/bin/dash.wasm" ]; }
+has_coreutils()    { has_resolvable programs/coreutils.wasm || [ -f "$REPO_ROOT/examples/libs/coreutils/bin/coreutils.wasm" ]; }
+has_grep()    { has_resolvable programs/grep.wasm || [ -f "$REPO_ROOT/examples/libs/grep/bin/grep.wasm" ]; }
+has_sed()    { has_resolvable programs/sed.wasm || [ -f "$REPO_ROOT/examples/libs/sed/bin/sed.wasm" ]; }
+has_redis()    { has_resolvable programs/redis/redis-server.wasm || [ -f "$REPO_ROOT/examples/libs/redis/bin/redis-server.wasm" ]; }
+has_cpython()    { has_resolvable programs/cpython.wasm || [ -f "$REPO_ROOT/examples/libs/cpython/bin/python.wasm" ]; }
+has_python_vfs()    { has_resolvable vfs/python.vfs.zst || [ -f "$REPO_ROOT/examples/browser/public/python.vfs" ]; }
+has_perl_vfs()    { has_resolvable vfs/perl.vfs.zst || [ -f "$REPO_ROOT/examples/browser/public/perl.vfs" ]; }
+has_shell_vfs()    { has_resolvable vfs/shell.vfs.zst || [ -f "$REPO_ROOT/examples/browser/public/shell.vfs" ]; }
+has_erlang()    { has_resolvable programs/erlang.wasm || [ -f "$REPO_ROOT/examples/libs/erlang/bin/beam.wasm" ]; }
+has_erlang_vfs()    { has_resolvable vfs/erlang.vfs.zst || [ -f "$REPO_ROOT/examples/browser/public/erlang.vfs" ]; }
+has_lamp_vfs()    { has_resolvable vfs/lamp.vfs.zst || [ -f "$REPO_ROOT/examples/browser/public/lamp.vfs" ]; }
+has_bc()    { has_resolvable programs/bc.wasm || [ -f "$REPO_ROOT/examples/libs/bc/bin/bc.wasm" ]; }
+has_file()    { has_resolvable programs/file.wasm || [ -f "$REPO_ROOT/examples/libs/file/bin/file.wasm" ]; }
+has_less()    { has_resolvable programs/less.wasm || [ -f "$REPO_ROOT/examples/libs/less/bin/less.wasm" ]; }
+has_m4()    { has_resolvable programs/m4.wasm || [ -f "$REPO_ROOT/examples/libs/m4/bin/m4.wasm" ]; }
+has_make()    { has_resolvable programs/make.wasm || [ -f "$REPO_ROOT/examples/libs/make/bin/make.wasm" ]; }
+has_tar()    { has_resolvable programs/tar.wasm || [ -f "$REPO_ROOT/examples/libs/tar/bin/tar.wasm" ]; }
+has_curl()    { has_resolvable programs/curl.wasm || [ -f "$REPO_ROOT/examples/libs/curl/bin/curl.wasm" ]; }
+has_wget()    { has_resolvable programs/wget.wasm || [ -f "$REPO_ROOT/examples/libs/wget/bin/wget.wasm" ]; }
+has_gzip()    { has_resolvable programs/gzip.wasm || [ -f "$REPO_ROOT/examples/libs/gzip/bin/gzip.wasm" ]; }
+has_bzip2()    { has_resolvable programs/bzip2.wasm || [ -f "$REPO_ROOT/examples/libs/bzip2/bin/bzip2.wasm" ]; }
+has_xz()    { has_resolvable programs/xz.wasm || [ -f "$REPO_ROOT/examples/libs/xz/bin/xz.wasm" ]; }
+has_zstd()    { has_resolvable programs/zstd.wasm || [ -f "$REPO_ROOT/examples/libs/zstd/bin/zstd.wasm" ]; }
+has_zip()    { has_resolvable programs/zip.wasm || [ -f "$REPO_ROOT/examples/libs/zip/bin/zip.wasm" ]; }
+has_unzip()    { has_resolvable programs/unzip.wasm || [ -f "$REPO_ROOT/examples/libs/unzip/bin/unzip.wasm" ]; }
+has_nano()    { has_resolvable programs/nano.wasm || [ -f "$REPO_ROOT/examples/libs/nano/bin/nano.wasm" ]; }
 has_ncurses()   { [ -f "$REPO_ROOT/sysroot/lib/libncursesw.a" ]; }
 has_zlib()      { [ -f "$REPO_ROOT/sysroot/lib/libz.a" ]; }
 has_openssl()   { [ -f "$REPO_ROOT/sysroot/lib/libssl.a" ] && [ -f "$REPO_ROOT/sysroot/lib/libcrypto.a" ]; }
 has_libcurl()   { [ -f "$REPO_ROOT/sysroot/lib/libcurl.a" ] && [ -f "$REPO_ROOT/sysroot/include/curl/curl.h" ]; }
-has_vim()       { [ -f "$REPO_ROOT/examples/libs/vim/bin/vim.wasm" ]; }
-has_git()       { [ -f "$REPO_ROOT/examples/libs/git/bin/git.wasm" ]; }
-has_perl()      { [ -f "$REPO_ROOT/examples/libs/perl/bin/perl.wasm" ]; }
-has_ruby()      { [ -f "$REPO_ROOT/examples/libs/ruby/bin/ruby.wasm" ]; }
+has_vim()    { has_resolvable programs/vim.zip || [ -f "$REPO_ROOT/examples/libs/vim/bin/vim.wasm" ]; }
+has_git()    { has_resolvable programs/git/git.wasm || [ -f "$REPO_ROOT/examples/libs/git/bin/git.wasm" ]; }
+has_perl()    { has_resolvable programs/perl.wasm || [ -f "$REPO_ROOT/examples/libs/perl/bin/perl.wasm" ]; }
+has_ruby()    { has_resolvable programs/ruby.wasm || [ -f "$REPO_ROOT/examples/libs/ruby/bin/ruby.wasm" ]; }
 has_dlopen()    { [ -f "$REPO_ROOT/examples/dlopen/hello-lib.so" ] && \
                   [ -f "$REPO_ROOT/examples/dlopen/main.wasm" ]; }
 has_texlive()        { [ -f "$REPO_ROOT/examples/libs/texlive/bin/pdftex.wasm" ]; }
@@ -172,6 +180,10 @@ build_host() {
 }
 
 build_programs() {
+    if has_programs; then
+        info "programs"
+        return
+    fi
     need_kernel
     need_sysroot
     if ! has_programs; then
@@ -184,6 +196,10 @@ build_programs() {
 }
 
 build_nginx() {
+    if has_nginx; then
+        info "nginx"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_nginx; then
@@ -196,6 +212,10 @@ build_nginx() {
 }
 
 build_php() {
+    if has_php; then
+        info "php"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_php; then
@@ -208,6 +228,10 @@ build_php() {
 }
 
 build_php_fpm() {
+    if has_php_fpm; then
+        info "php-fpm"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_php_fpm; then
@@ -220,6 +244,10 @@ build_php_fpm() {
 }
 
 build_mariadb() {
+    if has_mariadb; then
+        info "mariadb"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_mariadb; then
@@ -232,6 +260,10 @@ build_mariadb() {
 }
 
 build_mariadb64() {
+    if has_mariadb64; then
+        info "mariadb64"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_mariadb64; then
@@ -289,6 +321,10 @@ build_wp_vfs() {
 }
 
 build_dash() {
+    if has_dash; then
+        info "dash"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_dash; then
@@ -306,6 +342,10 @@ build_dash() {
 }
 
 build_coreutils() {
+    if has_coreutils; then
+        info "coreutils"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_coreutils; then
@@ -318,6 +358,10 @@ build_coreutils() {
 }
 
 build_grep() {
+    if has_grep; then
+        info "grep"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_grep; then
@@ -330,6 +374,10 @@ build_grep() {
 }
 
 build_sed() {
+    if has_sed; then
+        info "sed"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_sed; then
@@ -342,6 +390,10 @@ build_sed() {
 }
 
 build_redis() {
+    if has_redis; then
+        info "redis"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_redis; then
@@ -354,6 +406,10 @@ build_redis() {
 }
 
 build_cpython() {
+    if has_cpython; then
+        info "cpython"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_cpython; then
@@ -421,6 +477,10 @@ build_shell_vfs() {
 }
 
 build_erlang() {
+    if has_erlang; then
+        info "erlang"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_erlang; then
@@ -461,6 +521,10 @@ build_lamp_vfs() {
 }
 
 build_texlive() {
+    if has_texlive; then
+        info "texlive"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_texlive; then
@@ -484,6 +548,10 @@ build_texlive_vfs() {
 }
 
 build_bc() {
+    if has_bc; then
+        info "bc"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_bc; then
@@ -496,6 +564,10 @@ build_bc() {
 }
 
 build_file() {
+    if has_file; then
+        info "file"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_file; then
@@ -508,6 +580,10 @@ build_file() {
 }
 
 build_less() {
+    if has_less; then
+        info "less"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_less; then
@@ -520,6 +596,10 @@ build_less() {
 }
 
 build_m4() {
+    if has_m4; then
+        info "m4"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_m4; then
@@ -532,6 +612,10 @@ build_m4() {
 }
 
 build_make() {
+    if has_make; then
+        info "make"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_make; then
@@ -544,6 +628,10 @@ build_make() {
 }
 
 build_tar() {
+    if has_tar; then
+        info "tar"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_tar; then
@@ -562,6 +650,10 @@ build_curl_cli() {
 }
 
 build_wget() {
+    if has_wget; then
+        info "wget"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_wget; then
@@ -574,6 +666,10 @@ build_wget() {
 }
 
 build_gzip() {
+    if has_gzip; then
+        info "gzip"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_gzip; then
@@ -586,6 +682,10 @@ build_gzip() {
 }
 
 build_bzip2() {
+    if has_bzip2; then
+        info "bzip2"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_bzip2; then
@@ -598,6 +698,10 @@ build_bzip2() {
 }
 
 build_xz() {
+    if has_xz; then
+        info "xz"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_xz; then
@@ -610,6 +714,10 @@ build_xz() {
 }
 
 build_zstd() {
+    if has_zstd; then
+        info "zstd"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_zstd; then
@@ -622,6 +730,10 @@ build_zstd() {
 }
 
 build_zip() {
+    if has_zip; then
+        info "zip"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_zip; then
@@ -634,6 +746,10 @@ build_zip() {
 }
 
 build_unzip() {
+    if has_unzip; then
+        info "unzip"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_unzip; then
@@ -659,6 +775,10 @@ build_nano() {
 }
 
 build_zlib() {
+    if has_zlib; then
+        info "zlib"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_zlib; then
@@ -679,6 +799,10 @@ build_zlib() {
 }
 
 build_openssl() {
+    if has_openssl; then
+        info "openssl"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_openssl; then
@@ -735,6 +859,10 @@ build_libcurl() {
 }
 
 build_ncurses() {
+    if has_ncurses; then
+        info "ncurses"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_ncurses; then
@@ -778,6 +906,10 @@ build_git() {
 }
 
 build_perl() {
+    if has_perl; then
+        info "perl"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_perl; then
@@ -790,6 +922,10 @@ build_perl() {
 }
 
 build_ruby() {
+    if has_ruby; then
+        info "ruby"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_ruby; then
@@ -802,6 +938,10 @@ build_ruby() {
 }
 
 build_dlopen() {
+    if has_dlopen; then
+        info "dlopen"
+        return
+    fi
     need_sysroot
     if ! has_dlopen; then
         step "Building dlopen example"
@@ -873,8 +1013,12 @@ build_target() {
     esac
 }
 
-# All targets needed for browser demos
-BROWSER_DEPS=(kernel sysroot programs dash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano vim git nginx php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis cpython python-vfs perl perl-vfs ruby shell-vfs wordpress wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs)
+# All targets needed for browser demos.
+# `less` and `wget` are omitted — both have known local-build failures
+# (less: ncurses libtermcap duplicate tputs; wget: requires automake
+# aclocal). They aren't in the release either, so the associated demo
+# features skip gracefully at runtime.
+BROWSER_DEPS=(kernel sysroot programs dash coreutils grep sed bc file m4 make tar curl-cli gzip bzip2 xz zstd zip unzip nano vim git nginx php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis cpython python-vfs perl perl-vfs ruby shell-vfs wordpress wp-vfs lamp-vfs erlang erlang-vfs)
 
 build_browser() {
     for t in "${BROWSER_DEPS[@]}"; do
@@ -1291,6 +1435,16 @@ cmd_run() {
 
 cmd_browser() {
     local BROWSER_DIR="$REPO_ROOT/examples/browser"
+
+    # Fetch the release binaries pinned by binaries.lock first. The
+    # resolver-aware has_X guards below then treat fetched binaries as
+    # "already built", so build_browser's per-target loop is a no-op
+    # for anything that's in the release. Only genuinely missing
+    # artifacts (local-only programs, stale VFS images) trigger a build.
+    if [ -f "$REPO_ROOT/binaries.lock" ]; then
+        step "Fetching binaries for the pinned release"
+        "$REPO_ROOT/scripts/fetch-binaries.sh"
+    fi
 
     build_browser
 
