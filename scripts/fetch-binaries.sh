@@ -279,6 +279,28 @@ if [ "$PRUNE" = "1" ]; then
     echo "  removed $removed unreferenced objects"
 fi
 
+# --- Step 4: populate examples/browser/public/ for Vite -------------------
+#
+# Browser demos import binaries via Vite `?url` imports (from
+# `binaries/...`) — those are bundled. Vite's dev server also serves
+# anything under `examples/browser/public/` at the site root, which
+# is what VFS images need (`fetch("/vfs/shell.vfs.zst")`).
+#
+# Rather than duplicate the bytes, we mirror the relevant subset into
+# public/ as symlinks pointing back at `binaries/`. Kept intentionally
+# narrow — only files the browser actually fetches at runtime.
+PUB_DIR="$REPO_ROOT/examples/browser/public"
+if [ -d "$PUB_DIR" ]; then
+    mkdir -p "$PUB_DIR/vfs"
+    for vfs in "$BIN_DIR"/vfs/*.vfs.zst; do
+        [ -e "$vfs" ] || continue
+        name=$(basename "$vfs")
+        target="$PUB_DIR/vfs/$name"
+        rm -f "$target"
+        ln -s "$vfs" "$target"
+    done
+fi
+
 echo
 echo "fetch-binaries: done. Binaries at $BIN_DIR"
 echo "  $(find "$BIN_DIR" -maxdepth 3 -type l -o -type f 2>/dev/null | wc -l | tr -d ' ') entries"

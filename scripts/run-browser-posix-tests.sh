@@ -16,7 +16,7 @@ GLUE_DIR="$REPO_ROOT/glue"
 POSIX_TEST="$REPO_ROOT/open-posix-testsuite"
 IFACE_DIR="$POSIX_TEST/conformance/interfaces"
 BUILD_DIR="$POSIX_TEST/build"
-KERNEL_WASM="$REPO_ROOT/host/wasm/wasm_posix_kernel.wasm"
+KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"
 
 # ── Expected failures (same as Node.js version) ──────────────────
 

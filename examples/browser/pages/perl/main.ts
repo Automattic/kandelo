@@ -6,12 +6,12 @@
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
 import { PtyTerminal } from "../../lib/pty-terminal";
-import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
-import kernelWasmUrl from "../../../../host/wasm/wasm_posix_kernel.wasm?url";
-import perlWasmUrl from "../../../../examples/libs/perl/bin/perl.wasm?url";
+import { MemoryFileSystem , decompressVfsImage} from "../../../../host/src/vfs/memory-fs";
+import kernelWasmUrl from "../../../../binaries/kernel.wasm?url";
+import perlWasmUrl from "../../../../binaries/programs/perl.wasm?url";
 import "@xterm/xterm/css/xterm.css";
 
-const VFS_IMAGE_URL = import.meta.env.BASE_URL + "perl.vfs";
+const VFS_IMAGE_URL = import.meta.env.BASE_URL + "vfs/perl.vfs.zst";
 
 // --- DOM elements ---
 const terminalContainer = document.getElementById("terminal") as HTMLDivElement;
@@ -98,7 +98,7 @@ const PERL_ENV = [
 async function initKernelWithStdlib(
   options?: { onStdout?: (data: Uint8Array) => void; onStderr?: (data: Uint8Array) => void },
 ): Promise<BrowserKernel> {
-  const memfs = MemoryFileSystem.fromImage(new Uint8Array(vfsImageBuf!), {
+  const memfs = MemoryFileSystem.fromImage(decompressVfsImage(new Uint8Array(vfsImageBuf!)), {
     maxByteLength: 256 * 1024 * 1024,
   });
 

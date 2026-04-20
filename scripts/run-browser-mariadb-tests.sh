@@ -14,7 +14,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 INSTALL_DIR="$REPO_ROOT/examples/libs/mariadb/mariadb-install"
-KERNEL_WASM="$REPO_ROOT/host/wasm/wasm_posix_kernel.wasm"
+KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"
 VFS_IMAGE="$REPO_ROOT/examples/browser/public/mariadb-test.vfs"
 RUNNER="$REPO_ROOT/scripts/browser-mariadb-test-runner.ts"
 

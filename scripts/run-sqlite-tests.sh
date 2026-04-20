@@ -9,7 +9,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SQLITE3="$REPO_ROOT/examples/libs/sqlite/sqlite-install/bin/sqlite3.wasm"
+SQLITE3="$("$REPO_ROOT/scripts/resolve-binary.sh" programs/sqlite.wasm 2>/dev/null || true)"
 TESTS_DIR="$REPO_ROOT/examples/sqlite-test/tests"
 
 # Per-test timeout
@@ -27,12 +27,12 @@ while [ $# -gt 0 ]; do
 done
 
 # --- Prerequisites ---
-if [ ! -f "$SQLITE3" ]; then
-  echo "FAIL: sqlite3.wasm not found. Run: bash examples/libs/sqlite/build-sqlite.sh"
+if [ -z "$SQLITE3" ] || [ ! -f "$SQLITE3" ]; then
+  echo "FAIL: sqlite.wasm not found. Run: scripts/fetch-binaries.sh (or bash examples/libs/sqlite/build-sqlite.sh)"
   exit 1
 fi
-if [ ! -f "$REPO_ROOT/host/wasm/wasm_posix_kernel.wasm" ]; then
-  echo "FAIL: kernel wasm not found. Run: bash build.sh"
+if ! "$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm >/dev/null 2>&1; then
+  echo "FAIL: kernel wasm not found. Run: scripts/fetch-binaries.sh (or bash build.sh)"
   exit 1
 fi
 

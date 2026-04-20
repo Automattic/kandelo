@@ -121,12 +121,12 @@ if [ ! -x "$NGINX_WRAPPER" ]; then
   echo "FAIL: nginx-wrapper.sh not found or not executable: $NGINX_WRAPPER"
   exit 1
 fi
-if [ ! -f "$REPO_ROOT/examples/nginx/nginx.wasm" ]; then
-  echo "FAIL: nginx.wasm not found. Run: bash examples/nginx/build.sh"
+if ! "$REPO_ROOT/scripts/resolve-binary.sh" programs/nginx.wasm >/dev/null 2>&1; then
+  echo "FAIL: nginx.wasm not available. Run: scripts/fetch-binaries.sh (or bash examples/nginx/build.sh)"
   exit 1
 fi
-if [ ! -f "$REPO_ROOT/host/wasm/wasm_posix_kernel.wasm" ]; then
-  echo "FAIL: kernel wasm not found. Run: bash build.sh"
+if ! "$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm >/dev/null 2>&1; then
+  echo "FAIL: kernel wasm not available. Run: scripts/fetch-binaries.sh (or bash build.sh)"
   exit 1
 fi
 if [ ! -d "$TESTS_DIR" ]; then

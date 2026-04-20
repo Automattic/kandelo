@@ -18,7 +18,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MARIADB_LIB="$REPO_ROOT/examples/libs/mariadb"
 INSTALL_DIR="$MARIADB_LIB/mariadb-install"
 MYSQL_TEST_DIR="$INSTALL_DIR/mysql-test"
-KERNEL_WASM="$REPO_ROOT/host/wasm/wasm_posix_kernel.wasm"
+KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"
 HARNESS="$REPO_ROOT/examples/mariadb-test/run-tests.ts"
 
 # ── Curated test list ─────────────────────────────────────
