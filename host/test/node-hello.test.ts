@@ -63,6 +63,45 @@ describe.skipIf(!hasNode)("Node.js wasm32", () => {
     expect(result.exitCode).toBe(0);
   }, 70_000);
 
+  it("console.log with number argument", async () => {
+    const result = await runNode("console.log(2 + 3)");
+    expect(result.stdout).toContain("5");
+    expect(result.exitCode).toBe(0);
+  }, 70_000);
+
+  it("console.log with boolean", async () => {
+    const result = await runNode("console.log(true)");
+    expect(result.stdout).toContain("true");
+    expect(result.exitCode).toBe(0);
+  }, 70_000);
+
+  it("console.log with null", async () => {
+    const result = await runNode("console.log(null)");
+    expect(result.stdout).toContain("null");
+    expect(result.exitCode).toBe(0);
+  }, 70_000);
+
+  it("process.argv.length", async () => {
+    const result = await runNode("console.log(process.argv.length)");
+    expect(result.stdout.trim()).toMatch(/^\d+$/);
+    expect(result.exitCode).toBe(0);
+  }, 70_000);
+
+  it("process.exit(0)", async () => {
+    const result = await runNode("process.exit(0)");
+    expect(result.exitCode).toBe(0);
+  }, 70_000);
+
+  it("process.exit(1)", async () => {
+    const result = await runNode("process.exit(1)");
+    expect(result.exitCode).toBe(1);
+  }, 70_000);
+
+  it("process.exit(42)", async () => {
+    const result = await runNode("process.exit(42)");
+    expect(result.exitCode).toBe(42);
+  }, 70_000);
+
   it("stderr is clean (no trace output)", async () => {
     const result = await runNode("console.log('test')");
     expect(result.stderr).toBe("");
