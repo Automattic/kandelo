@@ -30,7 +30,7 @@ const scriptDir = dirname(new URL(import.meta.url).pathname);
 const repoRoot = resolve(scriptDir, "../..");
 
 const nginxWasmPath = resolveBinary("programs/nginx.wasm");
-const phpFpmWasmPath = resolve(repoRoot, "examples/nginx/php-fpm.wasm");
+const phpFpmWasmPath = resolveBinary("programs/php/php-fpm.wasm");
 const wpDir = resolve(scriptDir, "wordpress");
 const confTemplate = resolve(scriptDir, "nginx.conf");
 const phpFpmConf = resolve(scriptDir, "php-fpm.conf");

@@ -55,7 +55,7 @@ const OPTIONAL_URLS = {
   ...import.meta.glob("../../../nginx/nginx.wasm", {
     query: "?url", import: "default",
   }),
-  ...import.meta.glob("../../../nginx/php-fpm.wasm", {
+  ...import.meta.glob("../../../../binaries/programs/php/php-fpm.wasm", {
     query: "?url", import: "default",
   }),
   ...import.meta.glob("../../../libs/coreutils/bin/coreutils.wasm", {
@@ -381,7 +381,7 @@ async function runWordPress(): Promise<Record<string, number>> {
       "bash examples/nginx/build.sh",
     );
     phpFpmWasmUrl = await loadOptionalUrl(
-      "../../../nginx/php-fpm.wasm",
+      "../../../../binaries/programs/php/php-fpm.wasm",
       "PHP-FPM binary",
       "bash examples/nginx/build.sh",
     );

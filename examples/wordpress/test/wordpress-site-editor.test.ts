@@ -25,7 +25,7 @@ import { tryResolveBinary } from "../../../host/src/binary-resolver";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "../../..");
-const phpBinaryPath = tryResolveBinary("programs/php.wasm");
+const phpBinaryPath = tryResolveBinary("programs/php/php.wasm");
 const kernelWasmPath = tryResolveBinary("kernel.wasm");
 const wpDir = join(dirname(__dirname), "wordpress");
 const dbPath = join(wpDir, "wp-content/database/wordpress.db");

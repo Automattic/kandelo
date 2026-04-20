@@ -63,12 +63,12 @@ stage_example() {
         --out-dir "$STAGING"
 }
 
-stage_example exec-caller       host/wasm/exec-caller.wasm
-stage_example exec-child        host/wasm/exec-child.wasm
-stage_example fork-exec         host/wasm/fork-exec.wasm
-stage_example ifhwaddr          host/wasm/ifhwaddr.wasm
-stage_example mmap_shared_test  host/wasm/mmap_shared_test.wasm
-stage_example hello64           host/wasm/hello64.wasm
+stage_example exec-caller       local-binaries/programs/exec-caller.wasm
+stage_example exec-child        local-binaries/programs/exec-child.wasm
+stage_example fork-exec         local-binaries/programs/fork-exec.wasm
+stage_example ifhwaddr          local-binaries/programs/ifhwaddr.wasm
+stage_example mmap_shared_test  local-binaries/programs/mmap_shared_test.wasm
+stage_example hello64           local-binaries/programs/hello64.wasm
 
 # ---------------------------------------------------------------------------
 # Ported programs with real upstream versions.
@@ -85,11 +85,14 @@ run_xtask bundle-program --plain-wasm \
     --out-dir "$STAGING"
 
 # sh is a copy of dash, separate asset under the sh program name.
+# Treat it as a publish-time alias so stage-release doesn't require a
+# separately-built sh.wasm file — we just republish dash under the
+# sh name.
 run_xtask bundle-program --plain-wasm \
     --program sh \
     --upstream-version 0.5.12 \
     --revision 1 \
-    --binary host/wasm/sh.wasm \
+    --binary examples/libs/dash/bin/dash.wasm \
     --out-dir "$STAGING"
 
 # git: the git binary + its git-remote-http transport helper in one
@@ -145,7 +148,6 @@ simple make      4.4.1   examples/libs/make/bin/make.wasm
 simple nano      8.0     examples/libs/nano/bin/nano.wasm
 simple nginx     1.24.0  examples/nginx/nginx.wasm
 simple perl      5.40.3  examples/libs/perl/bin/perl.wasm
-simple php       8.3.2   examples/libs/php/bin/php.wasm
 simple ruby      3.3.5   examples/libs/ruby/bin/ruby.wasm
 simple sed       4.9     examples/libs/sed/bin/sed.wasm
 simple sqlite    3.45.0  examples/libs/sqlite/sqlite-install/bin/sqlite3.wasm
@@ -184,6 +186,26 @@ run_xtask bundle-program \
     --binary examples/libs/mariadb/mariadb-install/bin/mariadbd.wasm \
     --extra-file "examples/libs/mariadb/mariadb-install/bin/mysqltest.wasm=mysqltest.wasm" \
     --out-dir "$STAGING"
+
+# PHP ships two binaries: the CLI (`php.wasm`) and the FastCGI Process
+# Manager (`php-fpm.wasm`) used by nginx for serving PHP apps. The CLI
+# is built by `examples/libs/php/build-php.sh`; php-fpm is built by
+# `examples/nginx/build-php-fpm.sh`. Both are required for the full
+# LAMP demo.
+if [ -f "examples/nginx/php-fpm.wasm" ]; then
+    run_xtask bundle-program \
+        --program php --upstream-version 8.3.2 --revision 1 \
+        --binary examples/libs/php/bin/php.wasm \
+        --extra-file "examples/nginx/php-fpm.wasm=php-fpm.wasm" \
+        --out-dir "$STAGING"
+else
+    # Fall back to CLI-only when php-fpm hasn't been built. The LAMP
+    # demos will warn at runtime when php-fpm.wasm is missing.
+    run_xtask bundle-program --plain-wasm \
+        --program php --upstream-version 8.3.2 --revision 1 \
+        --binary examples/libs/php/bin/php.wasm \
+        --out-dir "$STAGING"
+fi
 
 # ---------------------------------------------------------------------------
 # Generate manifest.

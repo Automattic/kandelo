@@ -31,7 +31,7 @@ import { SystemInit } from "../../lib/init/system-init";
 import { writeVfsFile } from "../../lib/init/vfs-utils";
 import kernelWasmUrl from "../../../../binaries/kernel.wasm?url";
 import nginxWasmUrl from "../../../../binaries/programs/nginx.wasm?url";
-import phpFpmWasmUrl from "../../../../examples/nginx/php-fpm.wasm?url";
+import phpFpmWasmUrl from "../../../../binaries/programs/php/php-fpm.wasm?url";
 import coreutilsWasmUrl from "../../../../binaries/programs/coreutils.wasm?url";
 import grepWasmUrl from "../../../../binaries/programs/grep.wasm?url";
 import sedWasmUrl from "../../../../binaries/programs/sed.wasm?url";

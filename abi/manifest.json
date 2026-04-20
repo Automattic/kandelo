@@ -629,11 +629,11 @@
         "spdx": "PHP-3.01",
         "url": "https://github.com/php/php-src/blob/master/LICENSE"
       },
-      "name": "php-8.3.2-rev1-86281638.wasm",
+      "name": "php-8.3.2-rev1-78d588b5.zip",
       "program": "php",
       "revision": 1,
-      "sha256": "86281638379e92834d718d274f40f966c24b1a81a5ac121ea12296f852e8dc84",
-      "size": 18063498,
+      "sha256": "78d588b5d4608f16b42dc41dbf6ad83651df37f151d37d2fc075f875068e120a",
+      "size": 8291953,
       "source": {
         "ref": "8.3.2",
         "url": "https://www.php.net/distributions/php-8.3.2.tar.xz"
@@ -960,7 +960,7 @@
       "upstream_version": "1.5.6"
     }
   ],
-  "generated_at": "2026-04-20T01:45:00Z",
+  "generated_at": "2026-04-20T13:55:00Z",
   "generator": "cargo xtask build-manifest 0.1.0",
   "release_tag": "binaries-abi-v1"
 }

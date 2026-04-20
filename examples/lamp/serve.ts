@@ -31,7 +31,7 @@ const repoRoot = resolve(scriptDir, "../..");
 // Binary paths
 const mariadbInstall = resolve(repoRoot, "examples/libs/mariadb/mariadb-install");
 const mysqldPath = resolve(mariadbInstall, "bin/mariadbd");
-const phpFpmWasmPath = resolve(repoRoot, "examples/nginx/php-fpm.wasm");
+const phpFpmWasmPath = resolveBinary("programs/php/php-fpm.wasm");
 const nginxWasmPath = resolveBinary("programs/nginx.wasm");
 
 // WordPress and config paths
