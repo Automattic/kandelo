@@ -27,7 +27,7 @@
   <div class="main">
     <div class="main-header">
       <h1>Shell on wasm-posix-kernel</h1>
-      <p class="subtitle">dash shell + GNU coreutils running inside a POSIX kernel compiled to WebAssembly</p>
+      <p class="subtitle">bash 5.2 (with readline + history) + GNU coreutils running inside a POSIX kernel compiled to WebAssembly</p>
       <div class="mode-toggle">
         <button id="mode-interactive" class="active">Interactive</button>
         <button id="mode-batch">Script</button>
@@ -71,11 +71,15 @@
         <div class="batch-panel">
           <div>
             <h3>Shell Commands</h3>
-            <textarea id="code">echo "Hello from dash on WebAssembly!"
+            <textarea id="code">echo "Hello from bash on WebAssembly!"
+echo "Bash version: $BASH_VERSION"
 uname -a
 echo "---"
-echo "Available coreutils:"
-echo cat cut head tail sort uniq wc tr printf basename dirname env expr test
+# Bashisms: arrays, brace expansion, [[ ]]
+arr=(one two three)
+echo "arr[1] = ${arr[1]}"
+echo "Range: {1..5} = "{1..5}
+if [[ -d /tmp ]]; then echo "/tmp exists"; fi
 </textarea>
           </div>
           <div>

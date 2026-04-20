@@ -17,6 +17,7 @@ import {
 } from "../../lib/init/shell-binaries";
 import kernelWasmUrl from "../../../../host/wasm/wasm_posix_kernel.wasm?url";
 import dashWasmUrl from "../../../../examples/libs/dash/bin/dash.wasm?url";
+import bashWasmUrl from "../../../../examples/libs/bash/bin/bash.wasm?url";
 import coreutilsWasmUrl from "../../../../examples/libs/coreutils/bin/coreutils.wasm?url";
 import grepWasmUrl from "../../../../examples/libs/grep/bin/grep.wasm?url";
 import sedWasmUrl from "../../../../examples/libs/sed/bin/sed.wasm?url";
@@ -93,6 +94,7 @@ function hideStatus() {
 // --- Binary loading ---
 let kernelBytes: ArrayBuffer | null = null;
 let dashBytes: ArrayBuffer | null = null;
+let bashBytes: ArrayBuffer | null = null;
 let lazyBinaries: BinaryDef[] = [];
 
 /** Fetch file size via HEAD request. Returns 0 on failure. */
@@ -107,14 +109,16 @@ async function fetchSize(url: string): Promise<number> {
 }
 
 async function loadBinaries(): Promise<string> {
-  if (kernelBytes && dashBytes && vfsImageBuf) return "";
+  if (kernelBytes && dashBytes && bashBytes && vfsImageBuf) return "";
 
-  setStatus("Loading kernel, dash, and VFS image...", "loading");
+  setStatus("Loading kernel, shells, and VFS image...", "loading");
 
-  // Eagerly fetch the kernel, dash (needed for spawning), and VFS image
-  const [kernelResult, dashResult, vfsResult] = await Promise.all([
+  // Eagerly fetch the kernel, dash + bash (needed for spawning), and VFS image.
+  // bash is the default interactive shell; dash is kept for /bin/sh and scripts.
+  const [kernelResult, dashResult, bashResult, vfsResult] = await Promise.all([
     fetch(kernelWasmUrl).then((r) => r.arrayBuffer()),
     fetch(dashWasmUrl).then((r) => r.arrayBuffer()),
+    fetch(bashWasmUrl).then((r) => r.arrayBuffer()),
     fetch(VFS_IMAGE_URL).then((r) => {
       if (!r.ok) {
         throw new Error(
@@ -127,9 +131,12 @@ async function loadBinaries(): Promise<string> {
   ]);
   kernelBytes = kernelResult;
   dashBytes = dashResult;
+  bashBytes = bashResult;
   vfsImageBuf = vfsResult;
 
-  // Fetch sizes for lazy-loaded utilities (HEAD requests, ~200 bytes each)
+  // Fetch sizes for lazy-loaded utilities (HEAD requests, ~200 bytes each).
+  // All these are required dependencies of the shell demo; their binaries
+  // are built by `./run.sh build shell-vfs` (or `./run.sh build browser`).
   const lazyDefs = [
     { url: coreutilsWasmUrl, path: "/bin/coreutils", symlinks: [...COREUTILS_NAMES, "["].flatMap(n => [`/bin/${n}`, `/usr/bin/${n}`]) },
     { url: grepWasmUrl, path: "/usr/bin/grep", symlinks: ["/bin/grep", "/usr/bin/egrep", "/bin/egrep", "/usr/bin/fgrep", "/bin/fgrep"] },
@@ -166,6 +173,7 @@ async function loadBinaries(): Promise<string> {
 
   const parts = [
     `Kernel: ${(kernelBytes.byteLength / 1024).toFixed(0)}KB`,
+    `bash: ${(bashBytes.byteLength / 1024).toFixed(0)}KB`,
     `dash: ${(dashBytes.byteLength / 1024).toFixed(0)}KB`,
     `VFS image: ${(vfsImageBuf.byteLength / (1024 * 1024)).toFixed(1)}MB`,
   ];
@@ -221,16 +229,16 @@ async function startInteractiveShell() {
     hideStatus();
     ptyTerminal.terminal.focus();
 
-    // Spawn dash in interactive mode with PTY
-    const exitCode = await ptyTerminal.spawn(dashBytes!, ["dash", "-i"], {
+    // Spawn bash in interactive mode with PTY
+    const exitCode = await ptyTerminal.spawn(bashBytes!, ["bash", "-i"], {
       env: [
         "HOME=/home",
         "TMPDIR=/tmp",
         "TERM=xterm-256color",
         "LANG=en_US.UTF-8",
         "PATH=/usr/local/bin:/usr/bin:/bin",
-        "PS1=$ ",
-        "ENV=/etc/profile",
+        "PS1=bash$ ",
+        "HISTFILE=/home/.bash_history",
       ],
     });
 
@@ -468,7 +476,7 @@ async function runBatch() {
       lazyBinaries.map(lb => ({ path: lb.path, url: lb.url, size: lb.size, mode: 0o755 })),
     );
 
-    const exitCode = await kernel.spawn(dashBytes!, ["dash"], {
+    const exitCode = await kernel.spawn(bashBytes!, ["bash"], {
       env: [
         "HOME=/home",
         "TMPDIR=/tmp",
