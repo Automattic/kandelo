@@ -274,6 +274,21 @@ source.ref = "v0.12.1"
 license.spdx = "MIT"
 license.url  = "https://github.com/quickjs-ng/quickjs/blob/master/LICENSE"
 
+[nano]
+source.url = "https://ftp.gnu.org/gnu/nano/nano-8.0.tar.xz"
+source.ref = "8.0"
+license.spdx = "GPL-3.0-or-later"
+license.url  = "https://git.savannah.gnu.org/cgit/nano.git/tree/COPYING"
+
+[tcl]
+source.url = "https://core.tcl-lang.org/tcl"
+source.ref = "core-9-0-1"
+license.spdx = "TCL"
+license.url  = "https://www.tcl.tk/software/tcltk/license.html"
+
+[tclsh]
+alias = "tcl"
+
 # "node" here is QuickJS-NG with a Node.js-compat bootstrap layer we
 # ship from this repo. The runtime is MIT (QuickJS); the bootstrap is
 # ours.

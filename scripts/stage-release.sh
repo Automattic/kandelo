@@ -118,6 +118,73 @@ run_xtask bundle-program \
     --out-dir "$STAGING"
 
 # ---------------------------------------------------------------------------
+# Single-binary ported programs. For each: invoke bundle-program with the
+# binary and a version taken from `abi/program-metadata.toml`'s source.ref.
+# ---------------------------------------------------------------------------
+simple() {
+    local program="$1"; local version="$2"; local binary="$3"
+    [ -f "$binary" ] || { echo "skip $program: $binary missing"; return; }
+    run_xtask bundle-program \
+        --program "$program" --upstream-version "$version" --revision 1 \
+        --binary "$binary" --out-dir "$STAGING"
+}
+
+simple bc        1.07.1  examples/libs/bc/bin/bc.wasm
+simple bzip2     1.0.8   examples/libs/bzip2/bin/bzip2.wasm
+simple coreutils 9.6     examples/libs/coreutils/bin/coreutils.wasm
+simple cpython   3.13.3  examples/libs/cpython/bin/python.wasm
+simple curl      8.10.1  examples/libs/curl/bin/curl.wasm
+simple erlang    28.2    examples/libs/erlang/beam.wasm
+simple file      5.45    examples/libs/file/bin/file.wasm
+simple gawk      5.3.0   examples/libs/gawk/bin/gawk.wasm
+simple grep      3.11    examples/libs/grep/bin/grep.wasm
+simple gzip      1.13    examples/libs/gzip/bin/gzip.wasm
+simple m4        1.4.19  examples/libs/m4/bin/m4.wasm
+simple make      4.4.1   examples/libs/make/bin/make.wasm
+simple nano      8.0     examples/libs/nano/bin/nano.wasm
+simple nginx     1.24.0  examples/nginx/nginx.wasm
+simple perl      5.40.3  examples/libs/perl/bin/perl.wasm
+simple php       8.3.2   examples/libs/php/bin/php.wasm
+simple ruby      3.3.5   examples/libs/ruby/bin/ruby.wasm
+simple sed       4.9     examples/libs/sed/bin/sed.wasm
+simple sqlite    3.45.0  examples/libs/sqlite/sqlite-install/bin/sqlite3.wasm
+simple tar       1.35    examples/libs/tar/bin/tar.wasm
+simple tcl       9.0.1   examples/libs/tcl/bin/tclsh.wasm
+simple unzip     6.0     examples/libs/unzip/bin/unzip.wasm
+simple xz        5.6.2   examples/libs/xz/bin/xz.wasm
+simple zip       3.0     examples/libs/zip/bin/zip.wasm
+simple zstd      1.5.6   examples/libs/zstd/bin/zstd.wasm
+
+# ---------------------------------------------------------------------------
+# Multi-binary programs — bundle all binaries under a single program name.
+# ---------------------------------------------------------------------------
+run_xtask bundle-program \
+    --program diffutils --upstream-version 3.10 --revision 1 \
+    --binary examples/libs/diffutils/bin/diff.wasm \
+    --extra-file "examples/libs/diffutils/bin/cmp.wasm=cmp.wasm" \
+    --extra-file "examples/libs/diffutils/bin/diff3.wasm=diff3.wasm" \
+    --extra-file "examples/libs/diffutils/bin/sdiff.wasm=sdiff.wasm" \
+    --out-dir "$STAGING"
+
+run_xtask bundle-program \
+    --program findutils --upstream-version 4.10.0 --revision 1 \
+    --binary examples/libs/findutils/bin/find.wasm \
+    --extra-file "examples/libs/findutils/bin/xargs.wasm=xargs.wasm" \
+    --out-dir "$STAGING"
+
+run_xtask bundle-program \
+    --program redis --upstream-version 7.2.5 --revision 1 \
+    --binary examples/libs/redis/bin/redis-server.wasm \
+    --extra-file "examples/libs/redis/bin/redis-cli.wasm=redis-cli.wasm" \
+    --out-dir "$STAGING"
+
+run_xtask bundle-program \
+    --program mariadb --upstream-version 10.5.28 --revision 1 \
+    --binary examples/libs/mariadb/mariadb-install/bin/mariadbd.wasm \
+    --extra-file "examples/libs/mariadb/mariadb-install/bin/mysqltest.wasm=mysqltest.wasm" \
+    --out-dir "$STAGING"
+
+# ---------------------------------------------------------------------------
 # Generate manifest.
 # ---------------------------------------------------------------------------
 run_xtask build-manifest \
