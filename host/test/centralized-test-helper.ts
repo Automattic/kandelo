@@ -76,6 +76,8 @@ export interface RunProgramOptions {
   stdin?: string;
   /** Binary data to provide on stdin (alternative to stdin string) */
   stdinBytes?: Uint8Array;
+  /** Enable kernel syscall logging to stderr */
+  enableSyscallLog?: boolean;
   /** Callback invoked with the kernel worker after the process starts.
    *  Use this to call appendStdinData() for interactive stdin testing. */
   onStarted?: (kernelWorker: CentralizedKernelWorker, pid: number) => void | Promise<void>;
@@ -134,7 +136,7 @@ export async function runCentralizedProgram(
   const processProgramBytes = new Map<number, ArrayBuffer>();
 
   const kernelWorker = new CentralizedKernelWorker(
-    { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true },
+    { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true, enableSyscallLog: options.enableSyscallLog },
     io,
     {
       onFork: async (parentPid, childPid, parentMemory) => {
@@ -261,13 +263,17 @@ export async function runCentralizedProgram(
 
         const threadWorker = workerAdapter.createWorker(threadInitData);
         threadWorker.on("message", (msg: unknown) => {
-          const m = msg as WorkerToHostMessage;
+          const m = msg as Record<string, unknown>;
+          if (m.type === "debug") {
+            console.error(`[thread:${tid}] ${m.message}`);
+          }
           if (m.type === "thread_exit") {
             threadAllocator.free(alloc.basePage);
             threadWorker.terminate().catch(() => {});
           }
         });
-        threadWorker.on("error", () => {
+        threadWorker.on("error", (err: Error) => {
+          console.error(`[thread:${tid}] ERROR: ${err.message}`);
           kernelWorker.notifyThreadExit(pid, tid);
           kernelWorker.removeChannel(pid, alloc.channelOffset);
           threadAllocator.free(alloc.basePage);
@@ -308,7 +314,14 @@ export async function runCentralizedProgram(
       stdoutChunks.push(new Uint8Array(data));
     },
     onStderr: (data: Uint8Array) => {
-      stderr += new TextDecoder().decode(data);
+      const chunk = new TextDecoder().decode(data);
+      stderr += chunk;
+      // Write to file for full capture (vitest truncates console output)
+      try {
+        const { appendFileSync } = require("node:fs");
+        appendFileSync("/tmp/node-wasm-stderr.txt", chunk);
+      } catch {}
+      console.error(`[wasm-stderr] ${chunk.trimEnd()}`);
     },
   });
 
@@ -344,6 +357,16 @@ export async function runCentralizedProgram(
 
   const mainWorker = workerAdapter.createWorker(initData);
   workers.set(pid, mainWorker);
+
+  // Capture worker debug messages
+  mainWorker.on("message", (msg: unknown) => {
+    const m = msg as Record<string, unknown>;
+    if (m.type === "debug") {
+      console.error(`[main:${pid}] ${m.message}`);
+    } else if (m.type === "error") {
+      console.error(`[worker-error:${pid}] ${m.message}`);
+    }
+  });
 
   // Fire onStarted callback (for interactive stdin tests)
   if (options.onStarted) {

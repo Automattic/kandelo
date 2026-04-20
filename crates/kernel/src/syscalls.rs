@@ -6737,6 +6737,8 @@ pub fn sys_sysconf(name: i32) -> Result<i64, Errno> {
         8 => Ok(1),      // _SC_NPROCESSORS_CONF
         11 => Ok(65536), // _SC_PAGESIZE (Wasm page = 64KB)
         30 => Ok(65536), // _SC_PAGE_SIZE (alias)
+        85 => Ok(8192),  // _SC_PHYS_PAGES (512MB / 64KB = 8192 pages)
+        86 => Ok(8192),  // _SC_AVPHYS_PAGES
         _ => Err(Errno::EINVAL),
     }
 }

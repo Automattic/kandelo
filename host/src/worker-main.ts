@@ -733,8 +733,22 @@ export async function centralizedWorkerMain(
         if (start) start();
       } catch (e) {
         if (e instanceof Error && e.message.includes("unreachable")) {
-          console.error(`[worker] pid=${pid} _start() hit unreachable trap: ${e.message}`);
+          console.error(`[worker] pid=${pid} _start() hit unreachable trap: ${e.message}\n${e.stack}`);
           exitCode = 0;
+        } else if (e instanceof Error && (e.message.includes("null function") || e.message.includes("signature mismatch"))) {
+          // Debug: dump table and memory state for call_indirect crashes
+          const table = instance.exports.__indirect_function_table as WebAssembly.Table | undefined;
+          const mem = new DataView(memory.buffer);
+          console.error(`[vtable-debug] Table size: ${table?.length ?? 'N/A'}`);
+          // Check first few table entries for nulls
+          if (table) {
+            const nullEntries: number[] = [];
+            for (let i = 0; i < Math.min(table.length, 20); i++) {
+              try { if (!table.get(i)) nullEntries.push(i); } catch { nullEntries.push(i); }
+            }
+            console.error(`[vtable-debug] Null table entries in 0..19: [${nullEntries.join(',')}]`);
+          }
+          throw e;
         } else {
           throw e;
         }
