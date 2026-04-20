@@ -8,10 +8,11 @@
  *   total_ms         — Wall-clock time for full ring completion
  *   messages_per_sec — Total messages / elapsed seconds
  */
-import { existsSync, readFileSync } from "fs";
+import { readFileSync } from "fs";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { NodeKernelHost } from "../../host/src/node-kernel-host.js";
+import { tryResolveBinary } from "../../host/src/binary-resolver.js";
 import type { BenchmarkSuite } from "../types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -21,7 +22,7 @@ const MAX_PAGES = 16384;
 
 const erlangLibDir = resolve(repoRoot, "examples/libs/erlang");
 const installDir = resolve(erlangLibDir, "erlang-install");
-const beamWasm = resolve(erlangLibDir, "bin/beam.wasm");
+const beamWasm = tryResolveBinary("programs/erlang.wasm");
 const ringDir = resolve(repoRoot, "examples/erlang");
 
 function loadBytes(path: string): ArrayBuffer {
@@ -30,7 +31,7 @@ function loadBytes(path: string): ArrayBuffer {
 }
 
 async function runErlangRing(): Promise<Record<string, number>> {
-  const beamBytes = loadBytes(beamWasm);
+  const beamBytes = loadBytes(beamWasm!);
 
   let stdout = "";
   let lastOutputTime = 0;
@@ -133,10 +134,11 @@ const suite: BenchmarkSuite = {
   name: "erlang-ring",
 
   async run(): Promise<Record<string, number>> {
-    if (!existsSync(beamWasm)) {
-      console.warn("  BEAM binary not found, skipping. Run: bash examples/libs/erlang/build-erlang.sh");
+    if (!beamWasm) {
+      console.warn("  erlang.wasm not found, skipping. Run: scripts/fetch-binaries.sh (or build locally).");
       return {};
     }
+    const { existsSync } = await import("fs");
     if (!existsSync(resolve(installDir, "releases/28/start_clean.boot"))) {
       console.warn("  Erlang OTP not installed, skipping.");
       return {};
