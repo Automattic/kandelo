@@ -65,6 +65,7 @@ LINK_FLAGS=(
     -Wl,--export=__tls_align
     -Wl,--export=__stack_pointer
     -Wl,--export=__wasm_thread_init
+    -Wl,--export=__abi_version
 )
 
 ASYNCIFY_IMPORTS="kernel.kernel_fork"

@@ -17,6 +17,12 @@ BIN_DIR="$SCRIPT_DIR/bin"
 SYSROOT="$REPO_ROOT/sysroot"
 ONLYLIST="$SCRIPT_DIR/asyncify-onlylist.txt"
 
+# Pin the glue to this repo's copy — otherwise the globally-linked SDK
+# resolves glue from its own (potentially stale) checkout, which can
+# quietly produce binaries missing the __abi_version marker. Matches
+# examples/libs/dash/build-dash.sh and examples/libs/git/build-git.sh.
+export WASM_POSIX_GLUE_DIR="$REPO_ROOT/glue"
+
 # --- Prerequisites ---
 if ! command -v wasm32posix-cc &>/dev/null; then
     echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
@@ -105,7 +111,11 @@ if [ ! -f src/auto/config.mk ]; then
     # -gline-tables-only for asyncify-onlylist function name matching
     # --no-wasm-opt to preserve name section
     export CFLAGS="-O2 -gline-tables-only"
-    export LDFLAGS="--no-wasm-opt -Wl,-z,stack-size=1048576"
+    # --export=__abi_version pins the ABI marker through wasm-ld DCE;
+    # without it, LLVM's gc-sections drops the function because no
+    # other object in the link graph calls it (the host does, after
+    # instantiation).
+    export LDFLAGS="--no-wasm-opt -Wl,-z,stack-size=1048576 -Wl,--export=__abi_version"
     export LIBS="-lncursesw -ltinfow"
 
     wasm32posix-configure \
@@ -181,8 +191,11 @@ if [ -f "$ONLYLIST" ]; then
         --pass-arg="asyncify-onlylist@${ONLY_FUNCS}" \
         "$BIN_DIR/vim.wasm" -o "$BIN_DIR/vim.wasm"
 
-    # Optimize after asyncify to clean up
-    "$WASM_OPT" -O2 "$BIN_DIR/vim.wasm" -o "$BIN_DIR/vim.wasm"
+    # Optimize after asyncify to clean up.
+    # -g preserves the name section AND export entries; without it
+    # wasm-opt drops unused-looking exports like __abi_version that
+    # have no internal callers. (Matches git/build-git.sh.)
+    "$WASM_OPT" -g -O2 "$BIN_DIR/vim.wasm" -o "$BIN_DIR/vim.wasm"
 else
     echo "==> No asyncify-onlylist.txt found, skipping asyncify."
 fi
