@@ -2,8 +2,9 @@
 //!
 //! Walks the given directory (non-recursively — the release namespace
 //! is intentionally flat, see `docs/binary-releases.md`), computes
-//! SHA-256 of every file, extracts `__abi_version` from wasm files
-//! that export it, and writes a deterministic JSON manifest.
+//! SHA-256 of every file, extracts metadata from filenames and
+//! `abi/program-metadata.toml`, and writes a deterministic JSON
+//! manifest that conforms to `abi/manifest.schema.json`.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -12,6 +13,8 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use wasm_posix_shared as shared;
 
+use crate::program_metadata::{load_program_metadata, ProgramMetadata};
+use crate::wasm_abi::extract_abi_version;
 use crate::JsonMap;
 
 const GENERATOR: &str = concat!("cargo xtask build-manifest ", env!("CARGO_PKG_VERSION"));
@@ -29,8 +32,6 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             "--out" => out_path = Some(it.next().ok_or("--out requires a path")?.into()),
             "--tag" => tag = Some(it.next().ok_or("--tag requires a value")?),
             "--generated-at" => {
-                // Escape hatch so reproducible builds / tests can pin the
-                // timestamp rather than capturing wall-clock time.
                 generated_at = Some(it.next().ok_or("--generated-at requires an ISO-8601 value")?)
             }
             other => return Err(format!("unknown arg {other:?}")),
@@ -45,12 +46,20 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
 
     let generated_at = generated_at.unwrap_or_else(current_utc_iso);
 
+    let program_meta = load_program_metadata()?;
+
     let mut entries = Vec::new();
     let mut read_dir: Vec<_> = std::fs::read_dir(&in_dir)
         .map_err(|e| format!("read dir {}: {e}", in_dir.display()))?
         .collect::<Result<_, _>>()
         .map_err(|e| format!("read dir entry: {e}"))?;
     read_dir.sort_by_key(|e| e.file_name());
+
+    // Program names sorted by length descending — we match longest first
+    // so `exec-caller` wins over `exec` for a filename like
+    // `exec-caller-0.1.0-rev1-abc12345.zip`.
+    let mut program_names: Vec<&str> = program_meta.keys().map(|s| s.as_str()).collect();
+    program_names.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
 
     for dirent in read_dir {
         let path = dirent.path();
@@ -62,12 +71,10 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             .and_then(|s| s.to_str())
             .ok_or_else(|| format!("non-utf8 filename: {}", path.display()))?
             .to_string();
-        // Skip the manifest itself if it happens to be in the staging
-        // dir already — we don't want the manifest to contain itself.
         if name == "manifest.json" {
             continue;
         }
-        entries.push(build_entry(&path, &name)?);
+        entries.push(build_entry(&path, &name, &program_meta, &program_names)?);
     }
 
     let mut root: JsonMap = BTreeMap::new();
@@ -88,17 +95,52 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     Ok(())
 }
 
-fn build_entry(path: &Path, name: &str) -> Result<Value, String> {
+fn build_entry(
+    path: &Path,
+    name: &str,
+    program_meta: &BTreeMap<String, ProgramMetadata>,
+    program_names: &[&str],
+) -> Result<Value, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
     let mut hasher = Sha256::new();
     hasher.update(&bytes);
     let hash = hex_lower(&hasher.finalize());
 
-    let (kind, abi_version) = classify(name, &bytes);
+    let parsed = ParsedName::parse(name, program_names)?;
+    let kind = classify_kind(&parsed, &bytes);
+    let arch = detect_arch(&parsed, &bytes, kind);
+
+    // Abi version: only wasm assets carry the `__abi_version` export.
+    // For zip bundles, we'd need to decompress to check; skip and trust
+    // the bundle-program step that verified it at build time.
+    let abi_version = match kind {
+        "kernel" | "userspace" => extract_abi_version(&bytes),
+        _ => None,
+    };
+
+    let meta = program_meta.get(&parsed.program).ok_or_else(|| {
+        format!(
+            "no entry for program {:?} in abi/program-metadata.toml — \
+             every shipped asset must declare source + license",
+            parsed.program
+        )
+    })?;
 
     let mut m: JsonMap = BTreeMap::new();
     m.insert("name".into(), json!(name));
+    m.insert("program".into(), json!(parsed.program));
     m.insert("kind".into(), json!(kind));
+    if let Some(a) = arch {
+        m.insert("arch".into(), json!(a));
+    }
+    if let Some(v) = parsed.upstream_version.as_deref() {
+        m.insert("upstream_version".into(), json!(v));
+    } else {
+        m.insert("upstream_version".into(), Value::Null);
+    }
+    if let Some(r) = parsed.revision {
+        m.insert("revision".into(), json!(r));
+    }
     m.insert("size".into(), json!(bytes.len()));
     m.insert("sha256".into(), json!(hash));
     m.insert(
@@ -108,120 +150,235 @@ fn build_entry(path: &Path, name: &str) -> Result<Value, String> {
             None => Value::Null,
         },
     );
+    m.insert("source".into(), meta.source_value());
+    m.insert("license".into(), meta.license_value());
+    m.insert("advisories".into(), Value::Array(Vec::new()));
+
     Ok(Value::Object(m.into_iter().collect()))
 }
 
-/// Produce a `(kind, abi_version)` tuple for an asset.
+/// Pulled-apart filename.
 ///
-/// `kind` is auto-detected from filename + (for wasm) module exports.
-/// `abi_version` is extracted from the `__abi_version` function export
-/// if the function body is a single `i32.const N` / `i64.const N`
-/// instruction — which is how `channel_syscall.c` compiles it.
-fn classify(name: &str, bytes: &[u8]) -> (&'static str, Option<i64>) {
-    if name.ends_with(".tar.zst")
-        || name.ends_with(".tar.gz")
-        || name.ends_with(".tar")
-        || name.ends_with(".zip")
-    {
-        return ("vfs-image", None);
-    }
-    if !name.ends_with(".wasm") {
-        return ("asset", None);
-    }
-    // wasm: inspect for marker kind hints
-    let abi_version = extract_abi_version(bytes);
-    let kind = if name.contains("kernel") {
-        "kernel"
-    } else if name.contains("userspace") {
-        "userspace"
-    } else {
-        "program"
-    };
-    (kind, abi_version)
+/// Accepts two conventions, in order of preference:
+///   1. `<program>-<version>-rev<N>-<short-sha>.<ext>` — every ported
+///      program. Example: `vim-9.1.0900-rev1-a1b2c3d4.zip`.
+///   2. `<program>-<short-sha>.<ext>` — kernel/userspace, where
+///      upstream version isn't meaningful.
+struct ParsedName {
+    program: String,
+    upstream_version: Option<String>,
+    revision: Option<u32>,
+    extension: String,
 }
 
-fn extract_abi_version(bytes: &[u8]) -> Option<i64> {
-    use wasmparser::{ExternalKind, FunctionBody, Operator, Parser, Payload, TypeRef};
+impl ParsedName {
+    /// `program_names` must be sorted by length descending so we match
+    /// the longest known program name first (e.g. `exec-caller` wins
+    /// over `exec` for `exec-caller-0.1.0-...`).
+    fn parse(name: &str, program_names: &[&str]) -> Result<Self, String> {
+        let (stem, ext) = split_ext(name);
+        let parts: Vec<&str> = stem.split('-').collect();
+        if parts.is_empty() {
+            return Err(format!("empty filename stem: {name:?}"));
+        }
+        let last = parts.last().unwrap();
+        if !is_short_hash(last) {
+            return Err(format!(
+                "filename {name:?} does not end in an 8-char hex hash suffix"
+            ));
+        }
+        let pre = &parts[..parts.len() - 1];
 
-    // Find the local-function index for `__abi_version` and then
-    // inspect its body. Signature-level info isn't enough — we need
-    // the constant return value.
-    let mut imported_funcs: u32 = 0;
-    let mut export_func_idx: Option<u32> = None;
-    let mut code_bodies: Vec<FunctionBody> = Vec::new();
+        // Try to recognise the program as a known prefix. Longest match
+        // wins because program_names is sorted longest-first.
+        let pre_joined = pre.join("-");
+        let program = program_names
+            .iter()
+            .find(|&&p| pre_joined == p || pre_joined.starts_with(&format!("{p}-")))
+            .copied()
+            .ok_or_else(|| {
+                format!(
+                    "filename {name:?} doesn't start with a known program name \
+                     from abi/program-metadata.toml. Add the program or rename \
+                     the asset."
+                )
+            })?
+            .to_string();
 
-    for payload in Parser::new(0).parse_all(bytes) {
-        let payload = payload.ok()?;
-        match payload {
-            Payload::ImportSection(r) => {
-                for group in r {
-                    let group = group.ok()?;
-                    let tick = |ty: TypeRef, imp: &mut u32| match ty {
-                        TypeRef::Func(_) | TypeRef::FuncExact(_) => *imp += 1,
-                        _ => {}
-                    };
-                    match group {
-                        wasmparser::Imports::Single(_, i) => tick(i.ty, &mut imported_funcs),
-                        wasmparser::Imports::Compact1 { items, .. } => {
-                            for item in items {
-                                let item = item.ok()?;
-                                tick(item.ty, &mut imported_funcs);
-                            }
-                        }
-                        wasmparser::Imports::Compact2 { ty, names, .. } => {
-                            for n in names {
-                                let _ = n.ok()?;
-                                tick(ty, &mut imported_funcs);
-                            }
-                        }
-                    }
-                }
-            }
-            Payload::ExportSection(r) => {
-                for exp in r {
-                    let exp = exp.ok()?;
-                    if exp.name == "__abi_version"
-                        && matches!(exp.kind, ExternalKind::Func | ExternalKind::FuncExact)
-                    {
-                        export_func_idx = Some(exp.index);
-                    }
-                }
-            }
-            Payload::CodeSectionEntry(body) => {
-                code_bodies.push(body);
-            }
-            _ => {}
+        // What's left after the program prefix?
+        let remainder = if pre_joined == program {
+            ""
+        } else {
+            &pre_joined[program.len() + 1..] // +1 for the '-'
+        };
+
+        if remainder.is_empty() {
+            // <program>-<short-sha>.<ext>
+            return Ok(Self {
+                program,
+                upstream_version: None,
+                revision: None,
+                extension: ext,
+            });
+        }
+
+        // Expect "<version>-rev<N>"
+        let rem_parts: Vec<&str> = remainder.split('-').collect();
+        if rem_parts.len() < 2 {
+            return Err(format!(
+                "filename {name:?}: segment after program {program:?} must be \
+                 <version>-rev<N>, got {remainder:?}"
+            ));
+        }
+        let rev_segment = *rem_parts.last().unwrap();
+        let rev = rev_segment
+            .strip_prefix("rev")
+            .and_then(|s| s.parse::<u32>().ok())
+            .ok_or_else(|| {
+                format!(
+                    "filename {name:?}: last segment before the hash must be \
+                     `revN`, got {rev_segment:?}"
+                )
+            })?;
+        let version = rem_parts[..rem_parts.len() - 1].join("-");
+
+        Ok(Self {
+            program,
+            upstream_version: Some(version),
+            revision: Some(rev),
+            extension: ext,
+        })
+    }
+}
+
+fn is_short_hash(s: &str) -> bool {
+    s.len() == 8 && s.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+}
+
+fn split_ext(name: &str) -> (&str, String) {
+    // Multi-extension: .vfs.zst is one logical extension.
+    for multi in [".vfs.zst", ".vfs.gz", ".tar.zst", ".tar.gz"] {
+        if let Some(stem) = name.strip_suffix(multi) {
+            return (stem, multi[1..].to_string());
         }
     }
-
-    let exp_idx = export_func_idx?;
-    // Export index is absolute (imports + locals). Code section
-    // entries are 0..N over local functions only.
-    if exp_idx < imported_funcs {
-        return None; // __abi_version was imported, not local — unusual
+    match name.rfind('.') {
+        Some(i) => (&name[..i], name[i + 1..].to_string()),
+        None => (name, String::new()),
     }
-    let local_idx = (exp_idx - imported_funcs) as usize;
-    let body = code_bodies.get(local_idx)?;
+}
 
-    let mut reader = body.get_operators_reader().ok()?;
-    let first = reader.read().ok()?;
-    match first {
-        Operator::I32Const { value } => Some(value as i64),
-        Operator::I64Const { value } => Some(value),
-        _ => None,
+fn classify_kind(parsed: &ParsedName, bytes: &[u8]) -> &'static str {
+    // By filename convention first; fallback to content sniffing for
+    // the kernel + userspace cases where the name is fixed.
+    if parsed.program == "kernel" || parsed.program == "wasm_posix_kernel" {
+        return "kernel";
     }
+    if parsed.program == "userspace" || parsed.program == "wasm_posix_userspace" {
+        return "userspace";
+    }
+    if parsed.extension.starts_with("vfs") {
+        return "vfs-image";
+    }
+    if parsed.extension == "zip" {
+        return "program";
+    }
+    // Lone .wasm (rare in our convention but possible for kernel)
+    if parsed.extension == "wasm" && is_wasm_magic(bytes) {
+        if parsed.program.contains("kernel") {
+            return "kernel";
+        }
+        if parsed.program.contains("userspace") {
+            return "userspace";
+        }
+        return "program";
+    }
+    "program"
+}
+
+fn detect_arch(parsed: &ParsedName, bytes: &[u8], kind: &str) -> Option<&'static str> {
+    match kind {
+        "vfs-image" => Some("any"),
+        _ => {
+            if is_wasm_magic(bytes) {
+                // All our kernels are wasm64; all user programs are
+                // currently wasm32. For bundles (zip), we don't peek
+                // inside — trust filename convention and bundle-program
+                // to set the right metadata at publish time.
+                if parsed.program.contains("kernel") {
+                    Some("wasm64")
+                } else if parsed.program == "hello64" {
+                    Some("wasm64")
+                } else {
+                    Some("wasm32")
+                }
+            } else if parsed.extension == "zip" {
+                // Program bundle — arch depends on the .wasm inside.
+                // We peek into zip entries to make this honest.
+                match detect_zip_arch(bytes) {
+                    Some(a) => Some(a),
+                    None => Some("wasm32"),
+                }
+            } else {
+                None
+            }
+        }
+    }
+}
+
+fn is_wasm_magic(bytes: &[u8]) -> bool {
+    bytes.len() >= 4 && &bytes[..4] == b"\0asm"
+}
+
+/// Peek at the first wasm file inside a zip to determine its arch.
+/// Returns None if we can't parse the zip or find a wasm entry.
+fn detect_zip_arch(bytes: &[u8]) -> Option<&'static str> {
+    use std::io::Read;
+    let cursor = std::io::Cursor::new(bytes);
+    let mut archive = zip::ZipArchive::new(cursor).ok()?;
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).ok()?;
+        if entry.name().ends_with(".wasm") {
+            let mut buf = Vec::with_capacity(entry.size() as usize);
+            entry.read_to_end(&mut buf).ok()?;
+            if is_wasm_magic(&buf) {
+                // wasm32 vs wasm64 via import section — wasm32 imports
+                // `env.memory` as 32-bit; wasm64 as 64-bit. Tell by the
+                // memory limit encoding (flags byte). Simpler: parse
+                // with wasmparser.
+                use wasmparser::{Parser, Payload};
+                for payload in Parser::new(0).parse_all(&buf) {
+                    if let Ok(Payload::ImportSection(r)) = payload {
+                        for group in r.into_iter() {
+                            if let Ok(group) = group {
+                                let memory = match group {
+                                    wasmparser::Imports::Single(_, i) => match i.ty {
+                                        wasmparser::TypeRef::Memory(m) => Some(m),
+                                        _ => None,
+                                    },
+                                    _ => None,
+                                };
+                                if let Some(m) = memory {
+                                    return Some(if m.memory64 { "wasm64" } else { "wasm32" });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return Some("wasm32");
+        }
+    }
+    None
 }
 
 fn verify_tag_matches_abi(tag: &str, abi_version: u32) -> Result<(), String> {
-    // Accept either `binaries-abi-v<N>` prefix (dated tag) or
-    // `binaries-abi-v<N>-anything`. The first component determines
-    // the claimed ABI.
-    let prefix = format!("binaries-abi-v{abi_version}");
-    if tag == prefix || tag.starts_with(&format!("{prefix}-")) {
+    let expected = format!("binaries-abi-v{abi_version}");
+    if tag == expected {
         Ok(())
     } else {
         Err(format!(
-            "tag {tag:?} does not begin with {prefix:?} — refusing to \
+            "tag {tag:?} does not equal {expected:?} — refusing to \
              generate a manifest that would claim a different ABI than \
              `wasm_posix_shared::ABI_VERSION` ({abi_version}). \
              See docs/binary-releases.md."
@@ -238,9 +395,6 @@ fn hex_lower(bytes: &[u8]) -> String {
     s
 }
 
-/// Minimalist ISO-8601 UTC printer. We don't pull in chrono for a
-/// single field that the manifest uses as provenance only. Format:
-/// `YYYY-MM-DDTHH:MM:SSZ`.
 fn current_utc_iso() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()
@@ -265,7 +419,7 @@ fn current_utc_iso() -> String {
         day -= days_in_month(month, year);
         month += 1;
     }
-    let day = day + 1; // 1-indexed
+    let day = day + 1;
     format!("{year:04}-{month:02}-{day:02}T{hh:02}:{mm:02}:{ss:02}Z")
 }
 

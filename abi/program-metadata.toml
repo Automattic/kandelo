@@ -1,0 +1,284 @@
+# Source + license metadata per logical program.
+#
+# Consumed by `cargo xtask bundle-program` to decorate each release
+# bundle with `source` and `license` fields in abi/manifest.json.
+#
+# Adding a new ported program → add a section here. Missing metadata
+# is a hard error from `bundle-program`; every asset we ship declares
+# who made it and how.
+
+# --- This project ---
+
+[kernel]
+source.url = "https://github.com/brandonpayton/wasm-posix-kernel"
+source.ref = "main"
+license.spdx = "GPL-2.0-or-later"
+license.url  = "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
+
+[userspace]
+source.url = "https://github.com/brandonpayton/wasm-posix-kernel"
+source.ref = "main"
+license.spdx = "GPL-2.0-or-later"
+license.url  = "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
+
+# Test/example programs built from this repo's `programs/` and `examples/`
+# directories all share the repo's license. The `examples` entry holds
+# the canonical metadata; each program below is an `alias` so the
+# manifest still records its specific program name while reusing the
+# same source + license facts.
+[examples]
+source.url = "https://github.com/brandonpayton/wasm-posix-kernel"
+source.ref = "main"
+license.spdx = "GPL-2.0-or-later"
+license.url  = "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
+
+[exec-caller]
+alias = "examples"
+
+[exec-child]
+alias = "examples"
+
+[fork-exec]
+alias = "examples"
+
+[ifhwaddr]
+alias = "examples"
+
+[mmap_shared_test]
+alias = "examples"
+
+[hello]
+alias = "examples"
+
+[hello64]
+alias = "examples"
+
+[sh]
+alias = "dash"
+
+# --- Ported software (upstream sources) ---
+
+[dash]
+source.url = "http://gondor.apana.org.au/~herbert/dash/files/dash-0.5.12.tar.gz"
+source.ref = "0.5.12"
+license.spdx = "BSD-3-Clause AND GPL-2.0-or-later"
+license.url  = "https://git.kernel.org/pub/scm/utils/dash/dash.git/tree/COPYING"
+
+[git]
+source.url = "https://github.com/git/git"
+source.ref = "v2.47.1"
+license.spdx = "GPL-2.0-only"
+license.url  = "https://github.com/git/git/blob/v2.47.1/COPYING"
+
+[vim]
+source.url = "https://github.com/vim/vim"
+source.ref = "v9.1.0900"
+license.spdx = "Vim"
+license.url  = "https://github.com/vim/vim/blob/v9.1.0900/LICENSE"
+
+[coreutils]
+source.url = "https://ftp.gnu.org/gnu/coreutils/coreutils-9.6.tar.xz"
+source.ref = "9.6"
+license.spdx = "GPL-3.0-or-later"
+license.url  = "https://git.savannah.gnu.org/cgit/coreutils.git/tree/COPYING?h=v9.6"
+
+[grep]
+source.url = "https://ftp.gnu.org/gnu/grep/grep-3.11.tar.xz"
+source.ref = "3.11"
+license.spdx = "GPL-3.0-or-later"
+license.url  = "https://git.savannah.gnu.org/cgit/grep.git/tree/COPYING?h=v3.11"
+
+[sed]
+source.url = "https://ftp.gnu.org/gnu/sed/sed-4.9.tar.xz"
+source.ref = "4.9"
+license.spdx = "GPL-3.0-or-later"
+license.url  = "https://git.savannah.gnu.org/cgit/sed.git/tree/COPYING?h=v4.9"
+
+[gawk]
+source.url = "https://ftp.gnu.org/gnu/gawk/gawk-5.3.0.tar.xz"
+source.ref = "5.3.0"
+license.spdx = "GPL-3.0-or-later"
+license.url  = "https://git.savannah.gnu.org/cgit/gawk.git/tree/COPYING"
+
+[findutils]
+source.url = "https://ftp.gnu.org/gnu/findutils/findutils-4.10.0.tar.xz"
+source.ref = "4.10.0"
+license.spdx = "GPL-3.0-or-later"
+license.url  = "https://git.savannah.gnu.org/cgit/findutils.git/tree/COPYING"
+
+[diffutils]
+source.url = "https://ftp.gnu.org/gnu/diffutils/diffutils-3.10.tar.xz"
+source.ref = "3.10"
+license.spdx = "GPL-3.0-or-later"
+license.url  = "https://git.savannah.gnu.org/cgit/diffutils.git/tree/COPYING"
+
+[gzip]
+source.url = "https://ftp.gnu.org/gnu/gzip/gzip-1.13.tar.xz"
+source.ref = "1.13"
+license.spdx = "GPL-3.0-or-later"
+license.url  = "https://git.savannah.gnu.org/cgit/gzip.git/tree/COPYING"
+
+[bzip2]
+source.url = "https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz"
+source.ref = "1.0.8"
+license.spdx = "bzip2-1.0.6"
+license.url  = "https://gitlab.com/bzip2/bzip2/-/blob/master/LICENSE"
+
+[xz]
+source.url = "https://tukaani.org/xz/xz-5.6.2.tar.xz"
+source.ref = "5.6.2"
+license.spdx = "GPL-2.0-or-later AND LGPL-2.1-or-later AND 0BSD"
+license.url  = "https://github.com/tukaani-project/xz/blob/main/COPYING"
+
+[zstd]
+source.url = "https://github.com/facebook/zstd"
+source.ref = "v1.5.6"
+license.spdx = "BSD-3-Clause OR GPL-2.0-only"
+license.url  = "https://github.com/facebook/zstd/blob/dev/LICENSE"
+
+[zip]
+source.url = "https://infozip.sourceforge.net/Zip.html"
+source.ref = "3.0"
+license.spdx = "Info-ZIP"
+license.url  = "https://infozip.sourceforge.net/license.html"
+
+[unzip]
+source.url = "https://infozip.sourceforge.net/UnZip.html"
+source.ref = "6.0"
+license.spdx = "Info-ZIP"
+license.url  = "https://infozip.sourceforge.net/license.html"
+
+[tar]
+source.url = "https://ftp.gnu.org/gnu/tar/tar-1.35.tar.xz"
+source.ref = "1.35"
+license.spdx = "GPL-3.0-or-later"
+license.url  = "https://git.savannah.gnu.org/cgit/tar.git/tree/COPYING"
+
+[curl]
+source.url = "https://github.com/curl/curl"
+source.ref = "curl-8_10_1"
+license.spdx = "curl"
+license.url  = "https://github.com/curl/curl/blob/master/COPYING"
+
+[wget]
+source.url = "https://ftp.gnu.org/gnu/wget/wget-1.25.0.tar.gz"
+source.ref = "1.25.0"
+license.spdx = "GPL-3.0-or-later"
+license.url  = "https://git.savannah.gnu.org/cgit/wget.git/tree/COPYING"
+
+[make]
+source.url = "https://ftp.gnu.org/gnu/make/make-4.4.1.tar.gz"
+source.ref = "4.4.1"
+license.spdx = "GPL-3.0-or-later"
+license.url  = "https://git.savannah.gnu.org/cgit/make.git/tree/COPYING"
+
+[bc]
+source.url = "https://ftp.gnu.org/gnu/bc/bc-1.07.1.tar.gz"
+source.ref = "1.07.1"
+license.spdx = "GPL-3.0-or-later"
+license.url  = "https://git.savannah.gnu.org/cgit/bc.git/tree/COPYING"
+
+[less]
+source.url = "https://www.greenwoodsoftware.com/less/less-668.tar.gz"
+source.ref = "668"
+license.spdx = "GPL-3.0-or-later"
+license.url  = "https://www.greenwoodsoftware.com/less/LICENSE"
+
+[file]
+source.url = "https://astron.com/pub/file/file-5.45.tar.gz"
+source.ref = "5.45"
+license.spdx = "BSD-2-Clause"
+license.url  = "https://github.com/file/file/blob/master/COPYING"
+
+[lsof]
+source.url = "https://github.com/lsof-org/lsof"
+source.ref = "4.99.3"
+license.spdx = "Spencer-86"
+license.url  = "https://github.com/lsof-org/lsof/blob/master/COPYING"
+
+[m4]
+source.url = "https://ftp.gnu.org/gnu/m4/m4-1.4.19.tar.xz"
+source.ref = "1.4.19"
+license.spdx = "GPL-3.0-or-later"
+license.url  = "https://git.savannah.gnu.org/cgit/m4.git/tree/COPYING"
+
+[ncurses]
+source.url = "https://ftp.gnu.org/gnu/ncurses/ncurses-6.5.tar.gz"
+source.ref = "6.5"
+license.spdx = "MIT"
+license.url  = "https://invisible-island.net/ncurses/ncurses-license.html"
+
+[nginx]
+source.url = "https://nginx.org/download/nginx-1.27.0.tar.gz"
+source.ref = "1.27.0"
+license.spdx = "BSD-2-Clause"
+license.url  = "https://nginx.org/LICENSE"
+
+[php]
+source.url = "https://www.php.net/distributions/php-8.3.2.tar.xz"
+source.ref = "8.3.2"
+license.spdx = "PHP-3.01"
+license.url  = "https://github.com/php/php-src/blob/master/LICENSE"
+
+[mariadb]
+source.url = "https://archive.mariadb.org/mariadb-10.5.28/source/mariadb-10.5.28.tar.gz"
+source.ref = "10.5.28"
+license.spdx = "GPL-2.0-only"
+license.url  = "https://github.com/MariaDB/server/blob/10.5/COPYING"
+
+[sqlite]
+source.url = "https://www.sqlite.org/src"
+source.ref = "3.45.0"
+license.spdx = "blessing"
+license.url  = "https://www.sqlite.org/copyright.html"
+
+[wordpress]
+source.url = "https://wordpress.org/wordpress-6.8.tar.gz"
+source.ref = "6.8"
+license.spdx = "GPL-2.0-or-later"
+license.url  = "https://wordpress.org/about/gpl/"
+
+[redis]
+source.url = "https://github.com/redis/redis"
+source.ref = "7.2.5"
+license.spdx = "BSD-3-Clause"
+license.url  = "https://github.com/redis/redis/blob/7.2/COPYING"
+
+[cpython]
+source.url = "https://www.python.org/ftp/python/3.13.3/Python-3.13.3.tar.xz"
+source.ref = "3.13.3"
+license.spdx = "Python-2.0"
+license.url  = "https://docs.python.org/3/license.html"
+
+[perl]
+source.url = "https://www.cpan.org/src/5.0/perl-5.40.3.tar.gz"
+source.ref = "5.40.3"
+license.spdx = "Artistic-1.0-Perl OR GPL-1.0-or-later"
+license.url  = "https://dev.perl.org/licenses/"
+
+[ruby]
+source.url = "https://cache.ruby-lang.org/pub/ruby/3.3/ruby-3.3.5.tar.gz"
+source.ref = "3.3.5"
+license.spdx = "Ruby OR BSD-2-Clause"
+license.url  = "https://github.com/ruby/ruby/blob/master/COPYING"
+
+[erlang]
+source.url = "https://github.com/erlang/otp"
+source.ref = "OTP-28.2"
+license.spdx = "Apache-2.0"
+license.url  = "https://github.com/erlang/otp/blob/maint/LICENSE.txt"
+
+[quickjs]
+source.url = "https://github.com/quickjs-ng/quickjs"
+source.ref = "v0.12.1"
+license.spdx = "MIT"
+license.url  = "https://github.com/quickjs-ng/quickjs/blob/master/LICENSE"
+
+# "node" here is QuickJS-NG with a Node.js-compat bootstrap layer we
+# ship from this repo. The runtime is MIT (QuickJS); the bootstrap is
+# ours.
+[node]
+source.url = "https://github.com/brandonpayton/wasm-posix-kernel"
+source.ref = "main"
+license.spdx = "MIT AND GPL-2.0-or-later"
+license.url  = "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"

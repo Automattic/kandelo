@@ -3,13 +3,17 @@
 //! Subcommands:
 //!   dump-abi        Regenerate `abi/snapshot.json` from authoritative sources.
 //!   build-manifest  Generate a binary-release `manifest.json` from a staging dir.
+//!   bundle-program  Zip-bundle one program's binary + runtime + LICENSE.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 mod build_manifest;
+mod bundle_program;
 mod dump_abi;
+mod program_metadata;
+mod wasm_abi;
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
@@ -17,7 +21,7 @@ fn main() -> ExitCode {
         Some(s) => s,
         None => {
             eprintln!("usage: xtask <subcommand> [args...]");
-            eprintln!("subcommands: dump-abi, build-manifest");
+            eprintln!("subcommands: dump-abi, build-manifest, bundle-program");
             return ExitCode::from(2);
         }
     };
@@ -25,6 +29,7 @@ fn main() -> ExitCode {
     let result = match sub.as_str() {
         "dump-abi" => dump_abi::run(rest),
         "build-manifest" => build_manifest::run(rest),
+        "bundle-program" => bundle_program::run(rest),
         other => {
             eprintln!("xtask: unknown subcommand {other:?}");
             return ExitCode::from(2);
