@@ -110,11 +110,12 @@ fn build_entry(
     let kind = classify_kind(&parsed, &bytes);
     let arch = detect_arch(&parsed, &bytes, kind);
 
-    // Abi version: only wasm assets carry the `__abi_version` export.
-    // For zip bundles, we'd need to decompress to check; skip and trust
-    // the bundle-program step that verified it at build time.
+    // Abi version: extract from wasm for plain .wasm assets, and for
+    // zip bundles by peeking at the first wasm entry inside.
     let abi_version = match kind {
         "kernel" | "userspace" => extract_abi_version(&bytes),
+        "program" if parsed.extension == "zip" => extract_abi_version_from_zip(&bytes),
+        "program" if parsed.extension == "wasm" => extract_abi_version(&bytes),
         _ => None,
     };
 
@@ -328,6 +329,26 @@ fn detect_arch(parsed: &ParsedName, bytes: &[u8], kind: &str) -> Option<&'static
 
 fn is_wasm_magic(bytes: &[u8]) -> bool {
     bytes.len() >= 4 && &bytes[..4] == b"\0asm"
+}
+
+/// Peek at the first wasm file inside a zip to extract its
+/// `__abi_version` export value (if present).
+fn extract_abi_version_from_zip(bytes: &[u8]) -> Option<i64> {
+    use std::io::Read;
+    let cursor = std::io::Cursor::new(bytes);
+    let mut archive = zip::ZipArchive::new(cursor).ok()?;
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).ok()?;
+        let name = entry.name().to_string();
+        if name.ends_with(".wasm") || name.ends_with("/bin/vim") || name.ends_with("/bin/sh") {
+            let mut buf = Vec::with_capacity(entry.size() as usize);
+            entry.read_to_end(&mut buf).ok()?;
+            if is_wasm_magic(&buf) {
+                return extract_abi_version(&buf);
+            }
+        }
+    }
+    None
 }
 
 /// Peek at the first wasm file inside a zip to determine its arch.

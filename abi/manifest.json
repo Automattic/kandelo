@@ -1,0 +1,246 @@
+{
+  "abi_version": 1,
+  "entries": [
+    {
+      "abi_version": 1,
+      "advisories": [],
+      "arch": "wasm32",
+      "kind": "program",
+      "license": {
+        "spdx": "BSD-3-Clause AND GPL-2.0-or-later",
+        "url": "https://git.kernel.org/pub/scm/utils/dash/dash.git/tree/COPYING"
+      },
+      "name": "dash-0.5.12-rev1-d261d12f.zip",
+      "program": "dash",
+      "revision": 1,
+      "sha256": "d261d12fdcb7057f4099bf6a962f44d7da8461e66d21402789bb388ca523e48d",
+      "size": 295250,
+      "source": {
+        "ref": "0.5.12",
+        "url": "http://gondor.apana.org.au/~herbert/dash/files/dash-0.5.12.tar.gz"
+      },
+      "upstream_version": "0.5.12"
+    },
+    {
+      "abi_version": 1,
+      "advisories": [],
+      "arch": "wasm32",
+      "kind": "program",
+      "license": {
+        "spdx": "GPL-2.0-or-later",
+        "url": "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
+      },
+      "name": "exec-caller-0.1.0-rev1-a691375b.zip",
+      "program": "exec-caller",
+      "revision": 1,
+      "sha256": "a691375b187e7af473189b36e01645c2ab639eb507e2ce006fa0b58ede90356d",
+      "size": 12904,
+      "source": {
+        "ref": "main",
+        "url": "https://github.com/brandonpayton/wasm-posix-kernel"
+      },
+      "upstream_version": "0.1.0"
+    },
+    {
+      "abi_version": 1,
+      "advisories": [],
+      "arch": "wasm32",
+      "kind": "program",
+      "license": {
+        "spdx": "GPL-2.0-or-later",
+        "url": "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
+      },
+      "name": "exec-child-0.1.0-rev1-28d43113.zip",
+      "program": "exec-child",
+      "revision": 1,
+      "sha256": "28d43113396633c2b93952f194801afc218c16bb0cd619f7a5cfedef1e3be589",
+      "size": 36750,
+      "source": {
+        "ref": "main",
+        "url": "https://github.com/brandonpayton/wasm-posix-kernel"
+      },
+      "upstream_version": "0.1.0"
+    },
+    {
+      "abi_version": 1,
+      "advisories": [],
+      "arch": "wasm32",
+      "kind": "program",
+      "license": {
+        "spdx": "GPL-2.0-or-later",
+        "url": "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
+      },
+      "name": "fork-exec-0.1.0-rev1-ea8d2a1c.zip",
+      "program": "fork-exec",
+      "revision": 1,
+      "sha256": "ea8d2a1cbae9d8f72220b5c0a11ce91637a64010dfde371d95a11615611307ab",
+      "size": 40162,
+      "source": {
+        "ref": "main",
+        "url": "https://github.com/brandonpayton/wasm-posix-kernel"
+      },
+      "upstream_version": "0.1.0"
+    },
+    {
+      "abi_version": 1,
+      "advisories": [],
+      "arch": "wasm32",
+      "kind": "program",
+      "license": {
+        "spdx": "GPL-2.0-only",
+        "url": "https://github.com/git/git/blob/v2.47.1/COPYING"
+      },
+      "name": "git-2.47.1-rev1-0fb98b38.zip",
+      "program": "git",
+      "revision": 1,
+      "sha256": "0fb98b38897896e36729ede64d30fa48861f5e0f73e7067d797cac94b30ca52a",
+      "size": 9256810,
+      "source": {
+        "ref": "v2.47.1",
+        "url": "https://github.com/git/git"
+      },
+      "upstream_version": "2.47.1"
+    },
+    {
+      "abi_version": 1,
+      "advisories": [],
+      "arch": "wasm64",
+      "kind": "program",
+      "license": {
+        "spdx": "GPL-2.0-or-later",
+        "url": "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
+      },
+      "name": "hello64-0.1.0-rev1-0c94658d.zip",
+      "program": "hello64",
+      "revision": 1,
+      "sha256": "0c94658db7d8e5f9c11490efec6cea630c10d2b9264eb695825a0dbaa75acea8",
+      "size": 11339,
+      "source": {
+        "ref": "main",
+        "url": "https://github.com/brandonpayton/wasm-posix-kernel"
+      },
+      "upstream_version": "0.1.0"
+    },
+    {
+      "abi_version": 1,
+      "advisories": [],
+      "arch": "wasm32",
+      "kind": "program",
+      "license": {
+        "spdx": "GPL-2.0-or-later",
+        "url": "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
+      },
+      "name": "ifhwaddr-0.1.0-rev1-ad228e24.zip",
+      "program": "ifhwaddr",
+      "revision": 1,
+      "sha256": "ad228e24f1b7e73373baeaae0928779259b7948f3e9efd095addebffe48cb30d",
+      "size": 39874,
+      "source": {
+        "ref": "main",
+        "url": "https://github.com/brandonpayton/wasm-posix-kernel"
+      },
+      "upstream_version": "0.1.0"
+    },
+    {
+      "abi_version": 1,
+      "advisories": [],
+      "arch": "wasm64",
+      "kind": "kernel",
+      "license": {
+        "spdx": "GPL-2.0-or-later",
+        "url": "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
+      },
+      "name": "kernel-39cc20d1.wasm",
+      "program": "kernel",
+      "sha256": "39cc20d1139fe9fcd0caff79a8201b96b8e5e8acf03078fd38d0d7f4b89abf92",
+      "size": 407264,
+      "source": {
+        "ref": "main",
+        "url": "https://github.com/brandonpayton/wasm-posix-kernel"
+      },
+      "upstream_version": null
+    },
+    {
+      "abi_version": 1,
+      "advisories": [],
+      "arch": "wasm32",
+      "kind": "program",
+      "license": {
+        "spdx": "GPL-2.0-or-later",
+        "url": "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
+      },
+      "name": "mmap_shared_test-0.1.0-rev1-9ff4b444.zip",
+      "program": "mmap_shared_test",
+      "revision": 1,
+      "sha256": "9ff4b444678a2902520ef298793d101daa3ba36824cd0a5ebcc876f0a498667b",
+      "size": 41897,
+      "source": {
+        "ref": "main",
+        "url": "https://github.com/brandonpayton/wasm-posix-kernel"
+      },
+      "upstream_version": "0.1.0"
+    },
+    {
+      "abi_version": 1,
+      "advisories": [],
+      "arch": "wasm32",
+      "kind": "program",
+      "license": {
+        "spdx": "BSD-3-Clause AND GPL-2.0-or-later",
+        "url": "https://git.kernel.org/pub/scm/utils/dash/dash.git/tree/COPYING"
+      },
+      "name": "sh-0.5.12-rev1-f86e080a.zip",
+      "program": "sh",
+      "revision": 1,
+      "sha256": "f86e080a60fab589467883212cea72ea88cc1ab961f7a5864032ffffac8bfbdf",
+      "size": 295246,
+      "source": {
+        "ref": "0.5.12",
+        "url": "http://gondor.apana.org.au/~herbert/dash/files/dash-0.5.12.tar.gz"
+      },
+      "upstream_version": "0.5.12"
+    },
+    {
+      "abi_version": null,
+      "advisories": [],
+      "arch": "wasm32",
+      "kind": "userspace",
+      "license": {
+        "spdx": "GPL-2.0-or-later",
+        "url": "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
+      },
+      "name": "userspace-62ff5aeb.wasm",
+      "program": "userspace",
+      "sha256": "62ff5aeb8bf18c4372551cb55f4b61a4d11fdc476d5a6d0080744876a9a70b64",
+      "size": 191,
+      "source": {
+        "ref": "main",
+        "url": "https://github.com/brandonpayton/wasm-posix-kernel"
+      },
+      "upstream_version": null
+    },
+    {
+      "abi_version": 1,
+      "advisories": [],
+      "arch": "wasm32",
+      "kind": "program",
+      "license": {
+        "spdx": "Vim",
+        "url": "https://github.com/vim/vim/blob/v9.1.0900/LICENSE"
+      },
+      "name": "vim-9.1.0900-rev1-cfd53bba.zip",
+      "program": "vim",
+      "revision": 1,
+      "sha256": "cfd53bba8d67f4e927646fda2bc3506b27af3bb9bf580541b53c02aa781a5c67",
+      "size": 3085459,
+      "source": {
+        "ref": "v9.1.0900",
+        "url": "https://github.com/vim/vim"
+      },
+      "upstream_version": "9.1.0900"
+    }
+  ],
+  "generated_at": "2026-04-20T00:45:00Z",
+  "generator": "cargo xtask build-manifest 0.1.0",
+  "release_tag": "binaries-abi-v1"
+}
