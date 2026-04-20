@@ -1165,7 +1165,9 @@ clean_target() {
             rm -rf "$REPO_ROOT/examples/libs/vim/vim-src" \
                    "$REPO_ROOT/examples/libs/vim/bin" \
                    "$REPO_ROOT/examples/libs/vim/runtime"
-            warn "Cleaned Vim" ;;
+            rm -f "$REPO_ROOT/examples/browser/public/vim.zip" \
+                  "$REPO_ROOT/examples/browser/public/shell.vfs"
+            warn "Cleaned Vim (also invalidated vim.zip and shell.vfs; run '$0 build shell-vfs' to regenerate for browser demo)" ;;
         git)
             rm -rf "$REPO_ROOT/examples/libs/git/git-src" \
                    "$REPO_ROOT/examples/libs/git/bin"
