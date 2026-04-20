@@ -4,7 +4,11 @@ members = [
     "crates/shared",
     "crates/kernel",
     "crates/userspace",
+    "xtask",
 ]
+
+# Exclude xtask from build-std defaults used by the kernel crate.
+# xtask is a host-side tool — it uses the normal std toolchain.
 
 [workspace.package]
 version = "0.1.0"

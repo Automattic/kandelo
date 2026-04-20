@@ -30,7 +30,34 @@
 
 **Do not skip suites 3 and 4.** They catch regressions that unit tests miss — syscall behavior changes, ABI issues, and POSIX compliance problems only surface when running real C programs against the kernel.
 
-5. **Browser demo verification**: When fixing browser demo bugs, run `./run.sh browser` and manually verify the fix in a browser before claiming it works. Code reasoning alone is not sufficient — browser timing, service workers, and Wasm behavior must be observed.
+5. **ABI snapshot check**:
+   ```bash
+   bash scripts/check-abi-version.sh
+   ```
+   Expected: exit 0. Fails if `abi/snapshot.json` drifts from source, or if the snapshot changed vs `origin/main` without a matching `ABI_VERSION` bump in `crates/shared/src/lib.rs`. See [docs/abi-versioning.md](docs/abi-versioning.md).
+
+6. **Browser demo verification**: When fixing browser demo bugs, run `./run.sh browser` and manually verify the fix in a browser before claiming it works. Code reasoning alone is not sufficient — browser timing, service workers, and Wasm behavior must be observed.
+
+## Kernel ABI stability — DO NOT change without bumping `ABI_VERSION`
+
+The kernel's binary interface to user programs is load-bearing: any silent change can corrupt memory in any binary compiled against an older kernel. **Every change to the following requires bumping `ABI_VERSION` in `crates/shared/src/lib.rs` and regenerating `abi/snapshot.json` in the same commit:**
+
+- Channel header layout (`shared::channel::*`), channel data buffer, signal-delivery area.
+- Syscall numbers (additions, removals, renames).
+- Marshalled `repr(C)` structs (`WasmStat`, `WasmDirent`, `WasmFlock`, `WasmTimespec`, `WasmPollFd`, `WasmStatfs`).
+- Asyncify save slots (`shared::abi::ASYNCIFY_SAVE_SLOTS`).
+- `shared::abi::*` constants (custom section name, process-expected globals).
+
+**Workflow when you've changed something that might be ABI-affecting:**
+
+```bash
+bash scripts/check-abi-version.sh update   # regenerate abi/snapshot.json
+git diff abi/snapshot.json                 # inspect — is this actually an ABI change?
+# If yes: bump ABI_VERSION in crates/shared/src/lib.rs and commit both files together.
+bash scripts/check-abi-version.sh          # verify
+```
+
+The script is also run as step 5 of the test suite above. CI refuses to merge a change where the snapshot drifts without a version bump. See [docs/abi-versioning.md](docs/abi-versioning.md) for full policy, including what the structural check does *not* catch (e.g., semantic changes that don't shift offsets — reviewers must flag those).
 
 ## Performance Benchmarks
 

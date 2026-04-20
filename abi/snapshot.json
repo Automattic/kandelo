@@ -1,0 +1,902 @@
+{
+  "abi_version": 2,
+  "asyncify_save_slots": [
+    {
+      "meaning": "parent TLS base (__tls_base) saved for child rewind",
+      "name": "__tls_base",
+      "offset_wasm32": -4,
+      "offset_wasm64": -8,
+      "width_wasm32": 4,
+      "width_wasm64": 8
+    },
+    {
+      "meaning": "parent shadow-stack pointer (__stack_pointer) saved for child rewind",
+      "name": "__stack_pointer",
+      "offset_wasm32": -8,
+      "offset_wasm64": -16,
+      "width_wasm32": 4,
+      "width_wasm64": 8
+    }
+  ],
+  "channel_buffers": {
+    "data_offset": 72,
+    "data_size": 65536,
+    "min_channel_size": 65608
+  },
+  "channel_header": {
+    "fields": [
+      {
+        "name": "status",
+        "offset": 0,
+        "size": 4,
+        "type": "i32"
+      },
+      {
+        "name": "syscall",
+        "offset": 4,
+        "size": 4,
+        "type": "i32"
+      },
+      {
+        "name": "args",
+        "offset": 8,
+        "size": 48,
+        "type": "[i64; 6]"
+      },
+      {
+        "name": "ret",
+        "offset": 56,
+        "size": 8,
+        "type": "i64"
+      },
+      {
+        "name": "errno",
+        "offset": 64,
+        "size": 4,
+        "type": "i32"
+      }
+    ],
+    "size": 72
+  },
+  "channel_signal_area": {
+    "base": 65560,
+    "slots": [
+      {
+        "meaning": "u32, signal number (0=none)",
+        "name": "SIG_SIGNUM",
+        "offset": 65560,
+        "size": 4
+      },
+      {
+        "meaning": "u32, handler table index",
+        "name": "SIG_HANDLER",
+        "offset": 65564,
+        "size": 4
+      },
+      {
+        "meaning": "u32, sa_flags",
+        "name": "SIG_FLAGS",
+        "offset": 65568,
+        "size": 4
+      },
+      {
+        "meaning": "u64 (LE), saved blocked mask",
+        "name": "SIG_OLD_MASK",
+        "offset": 65576,
+        "size": 8
+      }
+    ]
+  },
+  "channel_status_codes": [
+    {
+      "name": "Idle",
+      "number": 0
+    },
+    {
+      "name": "Pending",
+      "number": 1
+    },
+    {
+      "name": "Complete",
+      "number": 2
+    },
+    {
+      "name": "Error",
+      "number": 3
+    }
+  ],
+  "custom_sections": [
+    "wasm-posix-abi"
+  ],
+  "marshalled_structs": {
+    "WasmDirent": {
+      "fields": [
+        {
+          "name": "d_ino",
+          "offset": 0,
+          "span": 8
+        },
+        {
+          "name": "d_type",
+          "offset": 8,
+          "span": 4
+        },
+        {
+          "name": "d_namlen",
+          "offset": 12,
+          "span": 4
+        }
+      ],
+      "size": 16
+    },
+    "WasmFlock": {
+      "fields": [
+        {
+          "name": "l_type",
+          "offset": 0,
+          "span": 2
+        },
+        {
+          "name": "l_whence",
+          "offset": 2,
+          "span": 2
+        },
+        {
+          "name": "_pad1",
+          "offset": 4,
+          "span": 4
+        },
+        {
+          "name": "l_start",
+          "offset": 8,
+          "span": 8
+        },
+        {
+          "name": "l_len",
+          "offset": 16,
+          "span": 8
+        },
+        {
+          "name": "l_pid",
+          "offset": 24,
+          "span": 4
+        },
+        {
+          "name": "_pad2",
+          "offset": 28,
+          "span": 4
+        }
+      ],
+      "size": 32
+    },
+    "WasmPollFd": {
+      "fields": [
+        {
+          "name": "fd",
+          "offset": 0,
+          "span": 4
+        },
+        {
+          "name": "events",
+          "offset": 4,
+          "span": 2
+        },
+        {
+          "name": "revents",
+          "offset": 6,
+          "span": 2
+        }
+      ],
+      "size": 8
+    },
+    "WasmStat": {
+      "fields": [
+        {
+          "name": "st_dev",
+          "offset": 0,
+          "span": 8
+        },
+        {
+          "name": "st_ino",
+          "offset": 8,
+          "span": 8
+        },
+        {
+          "name": "st_mode",
+          "offset": 16,
+          "span": 4
+        },
+        {
+          "name": "st_nlink",
+          "offset": 20,
+          "span": 4
+        },
+        {
+          "name": "st_uid",
+          "offset": 24,
+          "span": 4
+        },
+        {
+          "name": "st_gid",
+          "offset": 28,
+          "span": 4
+        },
+        {
+          "name": "st_size",
+          "offset": 32,
+          "span": 8
+        },
+        {
+          "name": "st_atime_sec",
+          "offset": 40,
+          "span": 8
+        },
+        {
+          "name": "st_atime_nsec",
+          "offset": 48,
+          "span": 8
+        },
+        {
+          "name": "st_mtime_sec",
+          "offset": 56,
+          "span": 8
+        },
+        {
+          "name": "st_mtime_nsec",
+          "offset": 64,
+          "span": 8
+        },
+        {
+          "name": "st_ctime_sec",
+          "offset": 72,
+          "span": 8
+        },
+        {
+          "name": "st_ctime_nsec",
+          "offset": 80,
+          "span": 4
+        },
+        {
+          "name": "_pad",
+          "offset": 84,
+          "span": 4
+        }
+      ],
+      "size": 88
+    },
+    "WasmStatfs": {
+      "fields": [
+        {
+          "name": "f_type",
+          "offset": 0,
+          "span": 4
+        },
+        {
+          "name": "f_bsize",
+          "offset": 4,
+          "span": 4
+        },
+        {
+          "name": "f_blocks",
+          "offset": 8,
+          "span": 8
+        },
+        {
+          "name": "f_bfree",
+          "offset": 16,
+          "span": 8
+        },
+        {
+          "name": "f_bavail",
+          "offset": 24,
+          "span": 8
+        },
+        {
+          "name": "f_files",
+          "offset": 32,
+          "span": 8
+        },
+        {
+          "name": "f_ffree",
+          "offset": 40,
+          "span": 8
+        },
+        {
+          "name": "f_fsid",
+          "offset": 48,
+          "span": 8
+        },
+        {
+          "name": "f_namelen",
+          "offset": 56,
+          "span": 4
+        },
+        {
+          "name": "f_frsize",
+          "offset": 60,
+          "span": 4
+        },
+        {
+          "name": "f_flags",
+          "offset": 64,
+          "span": 4
+        },
+        {
+          "name": "_pad",
+          "offset": 68,
+          "span": 4
+        }
+      ],
+      "size": 72
+    },
+    "WasmTimespec": {
+      "fields": [
+        {
+          "name": "tv_sec",
+          "offset": 0,
+          "span": 8
+        },
+        {
+          "name": "tv_nsec",
+          "offset": 8,
+          "span": 8
+        }
+      ],
+      "size": 16
+    }
+  },
+  "process_expected_globals": [
+    "__channel_base",
+    "__tls_base"
+  ],
+  "syscalls": [
+    {
+      "name": "Open",
+      "number": 1
+    },
+    {
+      "name": "Close",
+      "number": 2
+    },
+    {
+      "name": "Read",
+      "number": 3
+    },
+    {
+      "name": "Write",
+      "number": 4
+    },
+    {
+      "name": "Seek",
+      "number": 5
+    },
+    {
+      "name": "Fstat",
+      "number": 6
+    },
+    {
+      "name": "Dup",
+      "number": 7
+    },
+    {
+      "name": "Dup2",
+      "number": 8
+    },
+    {
+      "name": "Pipe",
+      "number": 9
+    },
+    {
+      "name": "Fcntl",
+      "number": 10
+    },
+    {
+      "name": "Stat",
+      "number": 11
+    },
+    {
+      "name": "Lstat",
+      "number": 12
+    },
+    {
+      "name": "Mkdir",
+      "number": 13
+    },
+    {
+      "name": "Rmdir",
+      "number": 14
+    },
+    {
+      "name": "Unlink",
+      "number": 15
+    },
+    {
+      "name": "Rename",
+      "number": 16
+    },
+    {
+      "name": "Link",
+      "number": 17
+    },
+    {
+      "name": "Symlink",
+      "number": 18
+    },
+    {
+      "name": "Readlink",
+      "number": 19
+    },
+    {
+      "name": "Chmod",
+      "number": 20
+    },
+    {
+      "name": "Chown",
+      "number": 21
+    },
+    {
+      "name": "Access",
+      "number": 22
+    },
+    {
+      "name": "Getcwd",
+      "number": 23
+    },
+    {
+      "name": "Chdir",
+      "number": 24
+    },
+    {
+      "name": "Opendir",
+      "number": 25
+    },
+    {
+      "name": "Readdir",
+      "number": 26
+    },
+    {
+      "name": "Closedir",
+      "number": 27
+    },
+    {
+      "name": "Getpid",
+      "number": 28
+    },
+    {
+      "name": "Getppid",
+      "number": 29
+    },
+    {
+      "name": "Getuid",
+      "number": 30
+    },
+    {
+      "name": "Geteuid",
+      "number": 31
+    },
+    {
+      "name": "Getgid",
+      "number": 32
+    },
+    {
+      "name": "Getegid",
+      "number": 33
+    },
+    {
+      "name": "Exit",
+      "number": 34
+    },
+    {
+      "name": "Kill",
+      "number": 35
+    },
+    {
+      "name": "Sigaction",
+      "number": 36
+    },
+    {
+      "name": "Sigprocmask",
+      "number": 37
+    },
+    {
+      "name": "Raise",
+      "number": 38
+    },
+    {
+      "name": "Alarm",
+      "number": 39
+    },
+    {
+      "name": "ClockGettime",
+      "number": 40
+    },
+    {
+      "name": "Nanosleep",
+      "number": 41
+    },
+    {
+      "name": "Isatty",
+      "number": 42
+    },
+    {
+      "name": "GetEnv",
+      "number": 43
+    },
+    {
+      "name": "SetEnv",
+      "number": 44
+    },
+    {
+      "name": "UnsetEnv",
+      "number": 45
+    },
+    {
+      "name": "Mmap",
+      "number": 46
+    },
+    {
+      "name": "Munmap",
+      "number": 47
+    },
+    {
+      "name": "Brk",
+      "number": 48
+    },
+    {
+      "name": "Mprotect",
+      "number": 49
+    },
+    {
+      "name": "Socket",
+      "number": 50
+    },
+    {
+      "name": "Bind",
+      "number": 51
+    },
+    {
+      "name": "Listen",
+      "number": 52
+    },
+    {
+      "name": "Accept",
+      "number": 53
+    },
+    {
+      "name": "Connect",
+      "number": 54
+    },
+    {
+      "name": "Send",
+      "number": 55
+    },
+    {
+      "name": "Recv",
+      "number": 56
+    },
+    {
+      "name": "Shutdown",
+      "number": 57
+    },
+    {
+      "name": "Getsockopt",
+      "number": 58
+    },
+    {
+      "name": "Setsockopt",
+      "number": 59
+    },
+    {
+      "name": "Poll",
+      "number": 60
+    },
+    {
+      "name": "Socketpair",
+      "number": 61
+    },
+    {
+      "name": "Sendto",
+      "number": 62
+    },
+    {
+      "name": "Recvfrom",
+      "number": 63
+    },
+    {
+      "name": "Pread",
+      "number": 64
+    },
+    {
+      "name": "Pwrite",
+      "number": 65
+    },
+    {
+      "name": "Time",
+      "number": 66
+    },
+    {
+      "name": "Gettimeofday",
+      "number": 67
+    },
+    {
+      "name": "Usleep",
+      "number": 68
+    },
+    {
+      "name": "Openat",
+      "number": 69
+    },
+    {
+      "name": "Tcgetattr",
+      "number": 70
+    },
+    {
+      "name": "Tcsetattr",
+      "number": 71
+    },
+    {
+      "name": "Ioctl",
+      "number": 72
+    },
+    {
+      "name": "Signal",
+      "number": 73
+    },
+    {
+      "name": "Umask",
+      "number": 74
+    },
+    {
+      "name": "Uname",
+      "number": 75
+    },
+    {
+      "name": "Sysconf",
+      "number": 76
+    },
+    {
+      "name": "Dup3",
+      "number": 77
+    },
+    {
+      "name": "Pipe2",
+      "number": 78
+    },
+    {
+      "name": "Ftruncate",
+      "number": 79
+    },
+    {
+      "name": "Fsync",
+      "number": 80
+    },
+    {
+      "name": "Writev",
+      "number": 81
+    },
+    {
+      "name": "Readv",
+      "number": 82
+    },
+    {
+      "name": "Getrlimit",
+      "number": 83
+    },
+    {
+      "name": "Setrlimit",
+      "number": 84
+    },
+    {
+      "name": "Truncate",
+      "number": 85
+    },
+    {
+      "name": "Fdatasync",
+      "number": 86
+    },
+    {
+      "name": "Fchmod",
+      "number": 87
+    },
+    {
+      "name": "Fchown",
+      "number": 88
+    },
+    {
+      "name": "Getpgrp",
+      "number": 89
+    },
+    {
+      "name": "Setpgid",
+      "number": 90
+    },
+    {
+      "name": "Getsid",
+      "number": 91
+    },
+    {
+      "name": "Setsid",
+      "number": 92
+    },
+    {
+      "name": "Fstatat",
+      "number": 93
+    },
+    {
+      "name": "Unlinkat",
+      "number": 94
+    },
+    {
+      "name": "Mkdirat",
+      "number": 95
+    },
+    {
+      "name": "Renameat",
+      "number": 96
+    },
+    {
+      "name": "Faccessat",
+      "number": 97
+    },
+    {
+      "name": "Fchmodat",
+      "number": 98
+    },
+    {
+      "name": "Fchownat",
+      "number": 99
+    },
+    {
+      "name": "Linkat",
+      "number": 100
+    },
+    {
+      "name": "Symlinkat",
+      "number": 101
+    },
+    {
+      "name": "Readlinkat",
+      "number": 102
+    },
+    {
+      "name": "Select",
+      "number": 103
+    },
+    {
+      "name": "Setuid",
+      "number": 104
+    },
+    {
+      "name": "Setgid",
+      "number": 105
+    },
+    {
+      "name": "Seteuid",
+      "number": 106
+    },
+    {
+      "name": "Setegid",
+      "number": 107
+    },
+    {
+      "name": "Getrusage",
+      "number": 108
+    },
+    {
+      "name": "Realpath",
+      "number": 109
+    },
+    {
+      "name": "Sigsuspend",
+      "number": 110
+    },
+    {
+      "name": "Pause",
+      "number": 111
+    },
+    {
+      "name": "Pathconf",
+      "number": 112
+    },
+    {
+      "name": "Fpathconf",
+      "number": 113
+    },
+    {
+      "name": "Getsockname",
+      "number": 114
+    },
+    {
+      "name": "Getpeername",
+      "number": 115
+    },
+    {
+      "name": "Rewinddir",
+      "number": 116
+    },
+    {
+      "name": "Telldir",
+      "number": 117
+    },
+    {
+      "name": "Seekdir",
+      "number": 118
+    },
+    {
+      "name": "Getdents64",
+      "number": 122
+    },
+    {
+      "name": "ClockGetres",
+      "number": 123
+    },
+    {
+      "name": "ClockNanosleep",
+      "number": 124
+    },
+    {
+      "name": "Utimensat",
+      "number": 125
+    },
+    {
+      "name": "Mremap",
+      "number": 126
+    },
+    {
+      "name": "Fchdir",
+      "number": 127
+    },
+    {
+      "name": "Madvise",
+      "number": 128
+    },
+    {
+      "name": "Statfs",
+      "number": 129
+    },
+    {
+      "name": "Fstatfs",
+      "number": 130
+    },
+    {
+      "name": "Setresuid",
+      "number": 131
+    },
+    {
+      "name": "Getresuid",
+      "number": 132
+    },
+    {
+      "name": "Setresgid",
+      "number": 133
+    },
+    {
+      "name": "Getresgid",
+      "number": 134
+    },
+    {
+      "name": "Getgroups",
+      "number": 135
+    },
+    {
+      "name": "Setgroups",
+      "number": 136
+    },
+    {
+      "name": "Sendmsg",
+      "number": 137
+    },
+    {
+      "name": "Recvmsg",
+      "number": 138
+    },
+    {
+      "name": "Wait4",
+      "number": 139
+    },
+    {
+      "name": "Getaddrinfo",
+      "number": 140
+    }
+  ]
+}
