@@ -33,6 +33,7 @@ step()  { echo "${CYAN}${BOLD}=== $* ===${RESET}"; }
 
 has_kernel()    { [ -f "$REPO_ROOT/host/wasm/wasm_posix_kernel.wasm" ]; }
 has_sysroot()   { [ -f "$REPO_ROOT/sysroot/lib/libc.a" ]; }
+has_sysroot64() { [ -f "$REPO_ROOT/sysroot64/lib/libc.a" ]; }
 has_sdk()       { command -v wasm32posix-cc &>/dev/null; }
 has_host()      { [ -d "$REPO_ROOT/host/dist" ]; }
 has_programs()  { [ -f "$REPO_ROOT/host/wasm/fork-exec.wasm" ]; }
@@ -120,6 +121,16 @@ need_sysroot() {
     fi
 }
 
+need_sysroot64() {
+    if ! has_sysroot64; then
+        step "Building sysroot64 (musl, wasm64)"
+        bash "$REPO_ROOT/scripts/build-musl.sh" --arch wasm64posix
+        info "Sysroot64 built"
+    else
+        info "Sysroot64"
+    fi
+}
+
 need_sdk() {
     need_sysroot
     if ! has_sdk; then
@@ -161,6 +172,10 @@ build_kernel() {
 
 build_sysroot() {
     need_sysroot
+}
+
+build_sysroot64() {
+    need_sysroot64
 }
 
 build_sdk() {
@@ -234,6 +249,7 @@ build_mariadb() {
 build_mariadb64() {
     need_kernel
     need_sdk
+    need_sysroot64
     if ! has_mariadb64; then
         step "Building MariaDB (wasm64)"
         bash "$REPO_ROOT/examples/libs/mariadb/build-mariadb.sh" --wasm64
@@ -817,6 +833,7 @@ build_target() {
     case "$target" in
         kernel)     build_kernel ;;
         sysroot)    build_sysroot ;;
+        sysroot64)  build_sysroot64 ;;
         sdk)        build_sdk ;;
         host)       build_host ;;
         programs)   build_programs ;;
@@ -874,7 +891,7 @@ build_target() {
 }
 
 # All targets needed for browser demos
-BROWSER_DEPS=(kernel sysroot programs dash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano vim git nginx php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis cpython python-vfs perl perl-vfs ruby shell-vfs wordpress wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs)
+BROWSER_DEPS=(kernel sysroot sysroot64 programs dash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano vim git nginx php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis cpython python-vfs perl perl-vfs ruby shell-vfs wordpress wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs)
 
 build_browser() {
     for t in "${BROWSER_DEPS[@]}"; do
@@ -944,6 +961,9 @@ clean_target() {
         sysroot)
             rm -rf "$REPO_ROOT/sysroot"
             warn "Cleaned sysroot" ;;
+        sysroot64)
+            rm -rf "$REPO_ROOT/sysroot64"
+            warn "Cleaned sysroot64" ;;
         sdk)
             warn "SDK is installed globally via npm link — run 'npm unlink -g wasm32posix' to remove"
             ;;
@@ -1162,7 +1182,7 @@ clean_target() {
                 clean_target "$t"
             done ;;
         all)
-            for t in kernel sysroot host programs dash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano ncurses zlib openssl libcurl vim git nginx php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis cpython python-vfs perl perl-vfs ruby shell-vfs wordpress wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs dlopen; do
+            for t in kernel sysroot sysroot64 host programs dash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano ncurses zlib openssl libcurl vim git nginx php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis cpython python-vfs perl perl-vfs ruby shell-vfs wordpress wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs dlopen; do
                 clean_target "$t"
             done ;;
         *)  err "Unknown clean target: $target"; exit 1 ;;
@@ -1416,7 +1436,8 @@ cmd_test() {
 cmd_list() {
     echo "${BOLD}Build targets:${RESET}"
     echo "  kernel      Rust kernel + userspace Wasm         $(has_kernel && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
-    echo "  sysroot     musl libc sysroot                    $(has_sysroot && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  sysroot     musl libc sysroot (wasm32)           $(has_sysroot && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  sysroot64   musl libc sysroot (wasm64)           $(has_sysroot64 && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  sdk         SDK cross-compilation tools           $(has_sdk && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  host        TypeScript host (tsup)                $(has_host && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  programs    Simple C programs (sh, cat, ls, ...)  $(has_programs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"

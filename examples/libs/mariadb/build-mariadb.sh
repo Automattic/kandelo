@@ -55,7 +55,11 @@ fi
 
 # --- Verify prerequisites ---
 if [ ! -f "$SYSROOT/lib/libc.a" ]; then
-    echo "ERROR: sysroot not found. Run: bash build.sh" >&2
+    if [ "$WASM_ARCH" = "wasm64" ]; then
+        echo "ERROR: sysroot64 not found at $SYSROOT. Run: bash scripts/build-musl.sh --arch wasm64posix" >&2
+    else
+        echo "ERROR: sysroot not found at $SYSROOT. Run: bash scripts/build-musl.sh" >&2
+    fi
     exit 1
 fi
 
