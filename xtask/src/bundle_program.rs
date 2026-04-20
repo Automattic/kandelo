@@ -95,7 +95,13 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         .map_err(|e| format!("mkdir {}: {e}", out_dir.display()))?;
 
     if plain_wasm {
-        return bundle_plain_wasm(&program, &binary, &out_dir);
+        return bundle_plain_wasm(
+            &program,
+            upstream_version.as_deref(),
+            revision,
+            &binary,
+            &out_dir,
+        );
     }
 
     // Zip bundle path.
@@ -181,7 +187,13 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     Ok(())
 }
 
-fn bundle_plain_wasm(program: &str, binary: &Path, out_dir: &Path) -> Result<(), String> {
+fn bundle_plain_wasm(
+    program: &str,
+    upstream_version: Option<&str>,
+    revision: Option<u32>,
+    binary: &Path,
+    out_dir: &Path,
+) -> Result<(), String> {
     let bytes = std::fs::read(binary)
         .map_err(|e| format!("read {}: {e}", binary.display()))?;
     let mut hasher = Sha256::new();
@@ -191,7 +203,11 @@ fn bundle_plain_wasm(program: &str, binary: &Path, out_dir: &Path) -> Result<(),
         .extension()
         .and_then(|s| s.to_str())
         .unwrap_or("wasm");
-    let out_name = format!("{program}-{short}.{ext}");
+    let out_name = match (upstream_version, revision) {
+        (Some(v), Some(r)) => format!("{program}-{v}-rev{r}-{short}.{ext}"),
+        (Some(v), None)    => format!("{program}-{v}-rev1-{short}.{ext}"),
+        _                  => format!("{program}-{short}.{ext}"),
+    };
     let out_path = out_dir.join(&out_name);
     std::fs::copy(binary, &out_path)
         .map_err(|e| format!("copy {} -> {}: {e}", binary.display(), out_path.display()))?;

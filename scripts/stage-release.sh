@@ -55,6 +55,7 @@ run_xtask bundle-program --plain-wasm \
 stage_example() {
     local name="$1"; local src="$2"
     run_xtask bundle-program \
+        --plain-wasm \
         --program "$name" \
         --upstream-version 0.1.0 \
         --revision 1 \
@@ -76,15 +77,15 @@ stage_example hello64           host/wasm/hello64.wasm
 # a byte-identical copy currently; we ship it under the `sh` program so
 # consumers using sh.wasm keep working, but it aliases to dash in
 # program-metadata.toml.
-run_xtask bundle-program \
+run_xtask bundle-program --plain-wasm \
     --program dash \
     --upstream-version 0.5.12 \
     --revision 1 \
     --binary examples/libs/dash/bin/dash.wasm \
     --out-dir "$STAGING"
 
-# sh is a copy of dash wrapped under the sh program name (separate zip).
-run_xtask bundle-program \
+# sh is a copy of dash, separate asset under the sh program name.
+run_xtask bundle-program --plain-wasm \
     --program sh \
     --upstream-version 0.5.12 \
     --revision 1 \
@@ -124,7 +125,7 @@ run_xtask bundle-program \
 simple() {
     local program="$1"; local version="$2"; local binary="$3"
     [ -f "$binary" ] || { echo "skip $program: $binary missing"; return; }
-    run_xtask bundle-program \
+    run_xtask bundle-program --plain-wasm \
         --program "$program" --upstream-version "$version" --revision 1 \
         --binary "$binary" --out-dir "$STAGING"
 }
