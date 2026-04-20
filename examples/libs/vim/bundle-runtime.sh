@@ -78,6 +78,21 @@ for f in dist/ft.vim; do
     fi
 done
 
+# netrw — built-in file/directory browser (:Explore, :Vex, opening a dir)
+# Local browsing uses vim's readdir/glob/stat only; no shell required.
+# Remote features (scp/ftp/http) are not supported in this environment.
+NETRW_PLUGIN_FILES=(netrwPlugin.vim)
+for f in "${NETRW_PLUGIN_FILES[@]}"; do
+    [ -f "$RUNTIME_SRC/plugin/$f" ] && cp "$RUNTIME_SRC/plugin/$f" "$RUNTIME_OUT/plugin/$f"
+done
+
+NETRW_AUTOLOAD_FILES=(netrw.vim netrwSettings.vim netrw_gitignore.vim)
+for f in "${NETRW_AUTOLOAD_FILES[@]}"; do
+    [ -f "$RUNTIME_SRC/autoload/$f" ] && cp "$RUNTIME_SRC/autoload/$f" "$RUNTIME_OUT/autoload/$f"
+done
+
+[ -f "$RUNTIME_SRC/syntax/netrw.vim" ] && cp "$RUNTIME_SRC/syntax/netrw.vim" "$RUNTIME_OUT/syntax/netrw.vim"
+
 # A basic color scheme
 [ -f "$RUNTIME_SRC/colors/default.vim" ] && cp "$RUNTIME_SRC/colors/default.vim" "$RUNTIME_OUT/colors/default.vim"
 
