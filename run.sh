@@ -55,6 +55,7 @@ has_mariadb64_vfs() {
 has_wordpress() { [ -f "$REPO_ROOT/examples/wordpress/wordpress/wp-settings.php" ]; }
 has_wp_vfs()    { [ -f "$REPO_ROOT/examples/browser/public/wordpress.vfs" ]; }
 has_dash()      { [ -f "$REPO_ROOT/examples/libs/dash/bin/dash.wasm" ]; }
+has_bash()      { [ -f "$REPO_ROOT/examples/libs/bash/bin/bash.wasm" ]; }
 has_coreutils() { [ -f "$REPO_ROOT/examples/libs/coreutils/bin/coreutils.wasm" ]; }
 has_grep()      { [ -f "$REPO_ROOT/examples/libs/grep/bin/grep.wasm" ]; }
 has_sed()       { [ -f "$REPO_ROOT/examples/libs/sed/bin/sed.wasm" ]; }
@@ -318,6 +319,20 @@ build_dash() {
     if [ -f "$REPO_ROOT/examples/libs/dash/bin/dash.wasm" ] && [ ! -f "$REPO_ROOT/host/wasm/sh.wasm" ]; then
         mkdir -p "$REPO_ROOT/host/wasm"
         cp "$REPO_ROOT/examples/libs/dash/bin/dash.wasm" "$REPO_ROOT/host/wasm/sh.wasm"
+    fi
+}
+
+build_bash() {
+    # bash bundles readline which needs termcap.h from ncurses/tinfo
+    build_ncurses
+    need_kernel
+    need_sdk
+    if ! has_bash; then
+        step "Building bash shell"
+        bash "$REPO_ROOT/examples/libs/bash/build-bash.sh"
+        info "bash built"
+    else
+        info "bash"
     fi
 }
 
@@ -841,6 +856,7 @@ build_target() {
         php)        build_php ;;
         php-fpm)    build_php_fpm ;;
         dash)       build_dash ;;
+        bash)       build_bash ;;
         coreutils)  build_coreutils ;;
         grep)       build_grep ;;
         sed)        build_sed ;;
@@ -891,7 +907,7 @@ build_target() {
 }
 
 # All targets needed for browser demos
-BROWSER_DEPS=(kernel sysroot sysroot64 programs dash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano vim git nginx php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis cpython python-vfs perl perl-vfs ruby shell-vfs wordpress wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs)
+BROWSER_DEPS=(kernel sysroot sysroot64 programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano vim git nginx php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis cpython python-vfs perl perl-vfs ruby shell-vfs wordpress wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs)
 
 build_browser() {
     for t in "${BROWSER_DEPS[@]}"; do
@@ -906,6 +922,7 @@ build_all() {
     build_host
     build_programs
     build_dash
+    build_bash
     build_coreutils
     build_grep
     build_sed
@@ -983,6 +1000,10 @@ clean_target() {
             rm -rf "$REPO_ROOT/examples/libs/dash/dash-src" \
                    "$REPO_ROOT/examples/libs/dash/bin"
             warn "Cleaned dash" ;;
+        bash)
+            rm -rf "$REPO_ROOT/examples/libs/bash/bash-src" \
+                   "$REPO_ROOT/examples/libs/bash/bin"
+            warn "Cleaned bash" ;;
         coreutils)
             rm -rf "$REPO_ROOT/examples/libs/coreutils/coreutils-src" \
                    "$REPO_ROOT/examples/libs/coreutils/bin"
@@ -1182,7 +1203,7 @@ clean_target() {
                 clean_target "$t"
             done ;;
         all)
-            for t in kernel sysroot sysroot64 host programs dash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano ncurses zlib openssl libcurl vim git nginx php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis cpython python-vfs perl perl-vfs ruby shell-vfs wordpress wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs dlopen; do
+            for t in kernel sysroot sysroot64 host programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano ncurses zlib openssl libcurl vim git nginx php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis cpython python-vfs perl perl-vfs ruby shell-vfs wordpress wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs dlopen; do
                 clean_target "$t"
             done ;;
         *)  err "Unknown clean target: $target"; exit 1 ;;
@@ -1442,6 +1463,7 @@ cmd_list() {
     echo "  host        TypeScript host (tsup)                $(has_host && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  programs    Simple C programs (sh, cat, ls, ...)  $(has_programs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  dash        dash 0.5.12 shell                      $(has_dash && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  bash        bash 5.2 shell                         $(has_bash && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  coreutils   GNU coreutils 9.6                      $(has_coreutils && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  grep        GNU grep 3.11                          $(has_grep && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  sed         GNU sed 4.9                            $(has_sed && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
