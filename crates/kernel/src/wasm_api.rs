@@ -1975,7 +1975,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                         } else if target.sid != proc.sid {
                             // POSIX: both processes must be in the same session
                             -(Errno::EPERM as i32)
-                        } else if target.sid == target.pid {
+                        } else if target.is_session_leader {
                             // POSIX: cannot change pgid of a session leader
                             -(Errno::EPERM as i32)
                         } else {
@@ -8056,8 +8056,12 @@ pub extern "C" fn kernel_pty_create(pid: u32) -> i32 {
     let _ = proc.fd_table.set_at(1, OpenFileDescRef(ofd_idx), 0);
     let _ = proc.fd_table.set_at(2, OpenFileDescRef(ofd_idx), 0);
 
-    // Set the session ID on the process itself
+    // Set the session ID on the process itself. kernel_pty_create implicitly
+    // claims a new session (equivalent to setsid() + TIOCSCTTY in POSIX), so
+    // mark the process as a session leader — this is what gates the setpgid
+    // EPERM check and what forked children correctly DON'T inherit.
     proc.sid = pid;
+    proc.is_session_leader = true;
 
     pty_idx as i32
 }

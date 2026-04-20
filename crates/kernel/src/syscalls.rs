@@ -2946,8 +2946,11 @@ pub fn sys_setpgid(proc: &mut Process, pid: u32, pgid: u32) -> Result<(), Errno>
     if pid != 0 && pid != proc.pid {
         return Err(Errno::ESRCH);
     }
-    // POSIX: a session leader cannot change its process group
-    if proc.sid == proc.pid {
+    // POSIX: a session leader cannot change its process group. Check the
+    // explicit flag — `sid == pid` alone is wrong because a forked child
+    // inherits the parent's sid and if that ever equals the child's pid
+    // (e.g. PID reuse) we'd wrongly classify the child as a session leader.
+    if proc.is_session_leader {
         return Err(Errno::EPERM);
     }
     let new_pgid = if pgid == 0 { proc.pid } else { pgid };
@@ -2965,12 +2968,19 @@ pub fn sys_getsid(proc: &Process, pid: u32) -> Result<u32, Errno> {
 
 /// setsid -- create session and set process group ID.
 pub fn sys_setsid(proc: &mut Process) -> Result<u32, Errno> {
-    // POSIX: fail with EPERM if the calling process is already a session leader
-    if proc.sid == proc.pid {
+    // POSIX: fail with EPERM if the calling process is already a session
+    // leader. POSIX also requires EPERM if the caller is a process group
+    // leader without being a session leader (reachable only via an explicit
+    // `setpgid(0, 0)` with no prior `setsid` — a state we don't currently
+    // distinguish from the Process::new default pgid == pid. Tightening
+    // this would require changing Process::new to default pgid to 0 and
+    // updating tests; worth doing but independent of the flag refactor.
+    if proc.is_session_leader {
         return Err(Errno::EPERM);
     }
     proc.sid = proc.pid;
     proc.pgid = proc.pid;
+    proc.is_session_leader = true;
     Ok(proc.sid)
 }
 

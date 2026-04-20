@@ -202,6 +202,13 @@ pub struct Process {
     pub egid: u32,
     pub pgid: u32,
     pub sid: u32,
+    /// True iff this process is the session leader of its session (i.e. the
+    /// process that called `setsid()` or was implicitly made a session
+    /// leader by a PTY-creation path). Linux tracks this as an explicit flag
+    /// (`task->signal->leader`) rather than `sid == pid`, because a forked
+    /// child inherits its parent's sid but is NOT itself a session leader.
+    /// POSIX uses this flag (not `sid == pid`) to gate setpgid EPERM checks.
+    pub is_session_leader: bool,
     pub state: ProcessState,
     pub exit_status: i32,
     pub fd_table: FdTable,
@@ -301,6 +308,7 @@ impl Process {
             egid: 1000,
             pgid: pid,
             sid: 0,
+            is_session_leader: false,
             state: ProcessState::Running,
             exit_status: 0,
             fd_table,

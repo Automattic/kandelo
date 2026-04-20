@@ -30,7 +30,7 @@ use crate::terminal::{TerminalState, WinSize, NCCS};
 
 const FORK_MAGIC: u32 = 0x464F524B; // "FORK"
 const EXEC_MAGIC: u32 = 0x45584543; // "EXEC"
-const FORK_VERSION: u32 = 5;
+const FORK_VERSION: u32 = 6;
 
 // Bounds for deserialization to prevent OOM from malformed buffers.
 const MAX_FDS: u32 = 65536;
@@ -306,6 +306,7 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
     w.write_u32(proc.sid)?;
     w.write_u32(proc.umask)?;
     w.write_u32(proc.nice as u32)?;
+    w.write_u32(proc.is_session_leader as u32)?;
 
     // ── Signal state ──
     w.write_u64(proc.signals.blocked)?;
@@ -562,6 +563,7 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
     let sid = r.read_u32()?;
     let umask = r.read_u32()?;
     let nice = r.read_u32()? as i32;
+    let _parent_is_session_leader = r.read_u32()? != 0; // inherited as false for fork children
 
     // ── Signal state ──
     let blocked = r.read_u64()?;
@@ -881,6 +883,11 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
         egid,
         pgid,
         sid,
+        // POSIX: fork children inherit sid but are NEVER session leaders.
+        // The leader flag is explicit (not derived from sid==pid) so that a
+        // child whose new pid happens to equal the inherited sid is still
+        // correctly treated as a non-leader.
+        is_session_leader: false,
         state: ProcessState::Running,
         exit_status: 0,
         fd_table,
@@ -954,6 +961,7 @@ pub fn serialize_exec_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
     w.write_u32(proc.egid)?;
     w.write_u32(proc.pgid)?;
     w.write_u32(proc.sid)?;
+    w.write_u32(proc.is_session_leader as u32)?;
     w.write_u32(proc.umask)?;
     w.write_u32(proc.nice as u32)?;
 
@@ -1090,6 +1098,7 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
     let egid = r.read_u32()?;
     let pgid = r.read_u32()?;
     let sid = r.read_u32()?;
+    let is_session_leader = r.read_u32()? != 0; // preserved across exec
     let umask = r.read_u32()?;
     let nice = r.read_u32()? as i32;
 
@@ -1253,6 +1262,7 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
         egid,
         pgid,
         sid,
+        is_session_leader,
         state: ProcessState::Running,
         exit_status: 0,
         fd_table,
