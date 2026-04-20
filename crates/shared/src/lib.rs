@@ -948,4 +948,66 @@ pub mod abi {
         "__channel_base",
         "__tls_base",
     ];
+
+    /// Patterns (applied as prefix match) for kernel-wasm exports that
+    /// are implementation details of the toolchain, not part of the
+    /// host/kernel ABI. The snapshot excludes any export whose name
+    /// starts with one of these.
+    ///
+    /// Adding or removing a pattern is itself an ABI-relevant change —
+    /// it affects what the snapshot tracks. The check will flag it.
+    pub const EXPORT_DENY_PREFIXES: &[&str] = &[
+        "__wasm_call_",
+        "__wasm_init_",
+        "__wasm_apply_",
+        "__llvm_",
+    ];
+
+    /// Exact-name variant of [`EXPORT_DENY_PREFIXES`] — exports we
+    /// never track regardless of toolchain tweaks.
+    pub const EXPORT_DENY_EXACT: &[&str] = &[
+        "__dso_handle",
+        "__data_end",
+        "__heap_base",
+        "__heap_end",
+        "__memory_base",
+        "__table_base",
+        "__global_base",
+    ];
+
+    /// Prefix patterns for exports whose *value* is part of the ABI,
+    /// not just their type. The snapshot captures the initial value of
+    /// matching immutable globals.
+    ///
+    /// Today this is just `__abi_*`. The convention: anything that
+    /// declares "this value is the contract" gets an `__abi_` prefix
+    /// and is tracked for value-identity. Everything else is tracked
+    /// for existence + type, because its value is linker- or
+    /// runtime-determined and would churn without encoding real ABI
+    /// changes.
+    pub const ABI_VALUE_CAPTURE_PREFIXES: &[&str] = &[
+        "__abi_",
+    ];
+
+    /// Decide whether a kernel-wasm export name should appear in the
+    /// snapshot. Implementation-detail symbols (per
+    /// [`EXPORT_DENY_PREFIXES`] / [`EXPORT_DENY_EXACT`]) are filtered
+    /// out; everything else is kept.
+    pub fn export_is_tracked(name: &str) -> bool {
+        if EXPORT_DENY_EXACT.iter().any(|&n| n == name) {
+            return false;
+        }
+        if EXPORT_DENY_PREFIXES.iter().any(|&p| name.starts_with(p)) {
+            return false;
+        }
+        true
+    }
+
+    /// Decide whether the initial value of a matching immutable global
+    /// should be captured in the snapshot.
+    pub fn export_value_is_tracked(name: &str) -> bool {
+        ABI_VALUE_CAPTURE_PREFIXES
+            .iter()
+            .any(|&p| name.starts_with(p))
+    }
 }

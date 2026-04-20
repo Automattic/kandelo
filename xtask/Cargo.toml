@@ -11,3 +11,7 @@ path = "src/main.rs"
 [dependencies]
 wasm-posix-shared = { path = "../crates/shared" }
 serde_json = "1"
+# Pinned to a single minor. wasmparser has churned across minors
+# (CompositeType vs CompositeInnerType, SubType shape, etc). A passive
+# `cargo update` should not silently break the snapshot generator.
+wasmparser = "0.247"
