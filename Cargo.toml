@@ -4,6 +4,7 @@ members = [
     "crates/shared",
     "crates/kernel",
     "crates/userspace",
+    "crates/fork-instrument",
     "xtask",
 ]
 
