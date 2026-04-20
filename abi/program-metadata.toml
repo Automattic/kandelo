@@ -289,6 +289,25 @@ license.url  = "https://www.tcl.tk/software/tcltk/license.html"
 [tclsh]
 alias = "tcl"
 
+[python]
+alias = "cpython"
+
+# Composite VFS images (pre-built filesystem payloads) for browser demos.
+# These aren't individual ported programs; each is a curated tree of files
+# from one or more upstream sources. Attribution is via the constituent
+# programs' own metadata in this file.
+[shell]
+source.url = "https://github.com/brandonpayton/wasm-posix-kernel"
+source.ref = "main"
+license.spdx = "GPL-2.0-or-later AND various"
+license.url  = "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
+
+[lamp]
+source.url = "https://github.com/brandonpayton/wasm-posix-kernel"
+source.ref = "main"
+license.spdx = "GPL-2.0-or-later AND various"
+license.url  = "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
+
 # "node" here is QuickJS-NG with a Node.js-compat bootstrap layer we
 # ship from this repo. The runtime is MIT (QuickJS); the bootstrap is
 # ours.

@@ -142,6 +142,26 @@
       "upstream_version": "3.10"
     },
     {
+      "abi_version": null,
+      "advisories": [],
+      "arch": "any",
+      "kind": "vfs-image",
+      "license": {
+        "spdx": "Apache-2.0",
+        "url": "https://github.com/erlang/otp/blob/maint/LICENSE.txt"
+      },
+      "name": "erlang-28.2-rev1-7153768b.vfs.zst",
+      "program": "erlang",
+      "revision": 1,
+      "sha256": "7153768bc87bc270888366c923390d8a02fce091f11f23daf07327de73eba67d",
+      "size": 10156918,
+      "source": {
+        "ref": "OTP-28.2",
+        "url": "https://github.com/erlang/otp"
+      },
+      "upstream_version": "28.2"
+    },
+    {
       "abi_version": 1,
       "advisories": [],
       "arch": "wasm32",
@@ -401,6 +421,26 @@
       "upstream_version": null
     },
     {
+      "abi_version": null,
+      "advisories": [],
+      "arch": "any",
+      "kind": "vfs-image",
+      "license": {
+        "spdx": "GPL-2.0-or-later AND various",
+        "url": "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
+      },
+      "name": "lamp-2026.04.20-rev1-1b948a2a.vfs.zst",
+      "program": "lamp",
+      "revision": 1,
+      "sha256": "1b948a2a495377e197106c00b75d955ccd9faadf12c76493773712f841fa4f55",
+      "size": 26268675,
+      "source": {
+        "ref": "main",
+        "url": "https://github.com/brandonpayton/wasm-posix-kernel"
+      },
+      "upstream_version": "2026.04.20"
+    },
+    {
       "abi_version": 1,
       "advisories": [],
       "arch": "wasm32",
@@ -454,6 +494,26 @@
       "revision": 1,
       "sha256": "e95e8a19512ad6493618691ef6b485bf347c7d37f935159d448bedbd0c6ed31d",
       "size": 5835824,
+      "source": {
+        "ref": "10.5.28",
+        "url": "https://archive.mariadb.org/mariadb-10.5.28/source/mariadb-10.5.28.tar.gz"
+      },
+      "upstream_version": "10.5.28"
+    },
+    {
+      "abi_version": null,
+      "advisories": [],
+      "arch": "any",
+      "kind": "vfs-image",
+      "license": {
+        "spdx": "GPL-2.0-only",
+        "url": "https://github.com/MariaDB/server/blob/10.5/COPYING"
+      },
+      "name": "mariadb-10.5.28-rev1-f9e2d21f.vfs.zst",
+      "program": "mariadb",
+      "revision": 1,
+      "sha256": "f9e2d21f9f66404fe028ee96eadc5c1b5ec8112d299e07880d4089021278818e",
+      "size": 4005641,
       "source": {
         "ref": "10.5.28",
         "url": "https://archive.mariadb.org/mariadb-10.5.28/source/mariadb-10.5.28.tar.gz"
@@ -521,6 +581,26 @@
       "upstream_version": "1.24.0"
     },
     {
+      "abi_version": null,
+      "advisories": [],
+      "arch": "any",
+      "kind": "vfs-image",
+      "license": {
+        "spdx": "Artistic-1.0-Perl OR GPL-1.0-or-later",
+        "url": "https://dev.perl.org/licenses/"
+      },
+      "name": "perl-5.40.3-rev1-623e3510.vfs.zst",
+      "program": "perl",
+      "revision": 1,
+      "sha256": "623e3510899405327bde7a7e06b814682e16441f8f92c0ef5b629c497b7327c3",
+      "size": 2256157,
+      "source": {
+        "ref": "5.40.3",
+        "url": "https://www.cpan.org/src/5.0/perl-5.40.3.tar.gz"
+      },
+      "upstream_version": "5.40.3"
+    },
+    {
       "abi_version": 1,
       "advisories": [],
       "arch": "wasm32",
@@ -559,6 +639,26 @@
         "url": "https://www.php.net/distributions/php-8.3.2.tar.xz"
       },
       "upstream_version": "8.3.2"
+    },
+    {
+      "abi_version": null,
+      "advisories": [],
+      "arch": "any",
+      "kind": "vfs-image",
+      "license": {
+        "spdx": "Python-2.0",
+        "url": "https://docs.python.org/3/license.html"
+      },
+      "name": "python-3.13.3-rev1-2223dbb0.vfs.zst",
+      "program": "python",
+      "revision": 1,
+      "sha256": "2223dbb085f7d918b4e116583531f09ebd4182782c7b0964bcd0d70ec5432a8e",
+      "size": 1400592,
+      "source": {
+        "ref": "3.13.3",
+        "url": "https://www.python.org/ftp/python/3.13.3/Python-3.13.3.tar.xz"
+      },
+      "upstream_version": "3.13.3"
     },
     {
       "abi_version": 1,
@@ -639,6 +739,26 @@
         "url": "http://gondor.apana.org.au/~herbert/dash/files/dash-0.5.12.tar.gz"
       },
       "upstream_version": "0.5.12"
+    },
+    {
+      "abi_version": null,
+      "advisories": [],
+      "arch": "any",
+      "kind": "vfs-image",
+      "license": {
+        "spdx": "GPL-2.0-or-later AND various",
+        "url": "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
+      },
+      "name": "shell-2026.04.20-rev1-51bc07ec.vfs.zst",
+      "program": "shell",
+      "revision": 1,
+      "sha256": "51bc07ec743e60651e080543a7637e70a4457b038536f72003c4c18b5da6b8bf",
+      "size": 370577,
+      "source": {
+        "ref": "main",
+        "url": "https://github.com/brandonpayton/wasm-posix-kernel"
+      },
+      "upstream_version": "2026.04.20"
     },
     {
       "abi_version": 1,
@@ -760,6 +880,26 @@
       "upstream_version": "9.1.0900"
     },
     {
+      "abi_version": null,
+      "advisories": [],
+      "arch": "any",
+      "kind": "vfs-image",
+      "license": {
+        "spdx": "GPL-2.0-or-later",
+        "url": "https://wordpress.org/about/gpl/"
+      },
+      "name": "wordpress-6.7.2-rev1-853e080b.vfs.zst",
+      "program": "wordpress",
+      "revision": 1,
+      "sha256": "853e080b1cbdd253810332f650976a00f64b9136e5b2432a53075ec64af48b07",
+      "size": 22558273,
+      "source": {
+        "ref": "6.8",
+        "url": "https://wordpress.org/wordpress-6.8.tar.gz"
+      },
+      "upstream_version": "6.7.2"
+    },
+    {
       "abi_version": 1,
       "advisories": [],
       "arch": "wasm32",
@@ -820,7 +960,7 @@
       "upstream_version": "1.5.6"
     }
   ],
-  "generated_at": "2026-04-20T01:15:00Z",
+  "generated_at": "2026-04-20T01:30:00Z",
   "generator": "cargo xtask build-manifest 0.1.0",
   "release_tag": "binaries-abi-v1"
 }
