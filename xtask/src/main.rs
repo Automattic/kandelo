@@ -1,12 +1,14 @@
 //! xtask — repo-local utilities.
 //!
 //! Subcommands:
-//!   dump-abi   Regenerate `abi/snapshot.json` from authoritative sources.
+//!   dump-abi        Regenerate `abi/snapshot.json` from authoritative sources.
+//!   build-manifest  Generate a binary-release `manifest.json` from a staging dir.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+mod build_manifest;
 mod dump_abi;
 
 fn main() -> ExitCode {
@@ -15,21 +17,24 @@ fn main() -> ExitCode {
         Some(s) => s,
         None => {
             eprintln!("usage: xtask <subcommand> [args...]");
-            eprintln!("subcommands: dump-abi");
+            eprintln!("subcommands: dump-abi, build-manifest");
             return ExitCode::from(2);
         }
     };
-    match sub.as_str() {
-        "dump-abi" => match dump_abi::run(args.collect()) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(e) => {
-                eprintln!("xtask dump-abi: {e}");
-                ExitCode::from(1)
-            }
-        },
+    let rest: Vec<String> = args.collect();
+    let result = match sub.as_str() {
+        "dump-abi" => dump_abi::run(rest),
+        "build-manifest" => build_manifest::run(rest),
         other => {
             eprintln!("xtask: unknown subcommand {other:?}");
-            ExitCode::from(2)
+            return ExitCode::from(2);
+        }
+    };
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("xtask {sub}: {e}");
+            ExitCode::from(1)
         }
     }
 }

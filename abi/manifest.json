@@ -1,0 +1,57 @@
+{
+  "abi_version": 2,
+  "entries": [
+    {
+      "abi_version": 2,
+      "kind": "program",
+      "name": "exec-caller.wasm",
+      "sha256": "cf5e729e9fa7715a66bfae41be0303f5126e41ab440a86050d3c0076551f9701",
+      "size": 25075
+    },
+    {
+      "abi_version": 2,
+      "kind": "program",
+      "name": "exec-child.wasm",
+      "sha256": "61eeb007b40bcaaae3980fdf26056ca93276071981b0f2fa9858664fe32339c1",
+      "size": 67215
+    },
+    {
+      "abi_version": 2,
+      "kind": "program",
+      "name": "fork-exec.wasm",
+      "sha256": "8121610621615eb442da2665a2c9001813e4381f43e76fb1e2a6f337465de9a8",
+      "size": 74546
+    },
+    {
+      "abi_version": 2,
+      "kind": "program",
+      "name": "ifhwaddr.wasm",
+      "sha256": "ff651a9c07b1528288daf9b404280367cee1691947e812a5b26ee8f8d1e5b46f",
+      "size": 74660
+    },
+    {
+      "abi_version": 2,
+      "kind": "program",
+      "name": "mmap_shared_test.wasm",
+      "sha256": "7712750ce215f69296617072b4a870a86e055cab0a86d7c0d3dfc1ce3883de6f",
+      "size": 78780
+    },
+    {
+      "abi_version": 2,
+      "kind": "kernel",
+      "name": "wasm_posix_kernel.wasm",
+      "sha256": "e6ca170d6bd95d3d061b77eb08d6e3a9edda831974452385bd32a2f7386b79d5",
+      "size": 407264
+    },
+    {
+      "abi_version": null,
+      "kind": "userspace",
+      "name": "wasm_posix_userspace.wasm",
+      "sha256": "62ff5aeb8bf18c4372551cb55f4b61a4d11fdc476d5a6d0080744876a9a70b64",
+      "size": 191
+    }
+  ],
+  "generated_at": "2026-04-19T21:52:00Z",
+  "generator": "cargo xtask build-manifest 0.1.0",
+  "release_tag": "binaries-abi-v2-2026-04-19"
+}
