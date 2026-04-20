@@ -17,6 +17,7 @@
 use anyhow::{Context, Result, bail};
 
 pub mod call_graph;
+pub mod runtime;
 
 /// Options controlling instrumentation. Fields will grow as phases
 /// land; a `Default` implementation keeps call sites stable.
@@ -70,18 +71,22 @@ pub fn analyze(input: &[u8], opts: &Options) -> Result<Analysis> {
 /// Instruments `input` (a complete wasm binary) according to `opts`
 /// and returns the transformed binary.
 ///
-/// In Phase 1, this is a validating round-trip: parse, (eventually)
-/// transform, emit. The transform step is currently a no-op.
+/// Currently implements Phase 4a: inject the state-machine runtime
+/// (globals + exported control functions). Future phases add the
+/// actual per-function body rewriting.
 pub fn instrument(input: &[u8], _opts: &Options) -> Result<Vec<u8>> {
     let mut module = walrus::Module::from_buffer(input)
         .context("failed to parse input wasm module")?;
 
-    // --- Future phases will mutate `module` here. ---
-    // Phase 3: extend call-graph closure with indirect calls.
-    // Phase 4: inject state-machine globals, exports, and per-function
-    //          state-machine wrappers for every function in the set.
-    // Phase 5: inject auxiliary tables for reference-typed spilling.
-    // Phase 6: instrument try_table catch regions for resume-in-catch.
+    // Phase 4a: runtime scaffolding. Safe to run on any module; does
+    // not depend on call-graph discovery.
+    let _runtime = runtime::inject_runtime(&mut module);
+
+    // --- Future phases will mutate `module` further here. ---
+    // Phase 4b+: per-function state-machine wrappers for every
+    //   function in call_graph::reaching_closure().
+    // Phase 5:   inject auxiliary tables for reference-typed spilling.
+    // Phase 6:   instrument try_table catch regions for resume-in-catch.
 
     let output = module.emit_wasm();
     Ok(output)
