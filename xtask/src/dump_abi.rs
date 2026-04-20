@@ -9,9 +9,18 @@
 //!   * [`wasm_posix_shared::abi`] — asyncify save slots, global names,
 //!     custom-section name
 //!
-//! Kernel export signatures (parsed from the built wasm) are not yet
-//! included in this snapshot; that is planned as a follow-up change
-//! once the structural foundation in this PR is in place.
+//! When `--kernel-wasm <path>` is provided, the snapshot also covers
+//! every export in the built kernel `.wasm` (after filtering through
+//! `shared::abi::export_is_tracked` to drop toolchain implementation
+//! details). Function signatures are recorded, as are the types and
+//! mutability of globals; for globals matching
+//! `shared::abi::ABI_VALUE_CAPTURE_PREFIXES` the initial value is
+//! captured too.
+//!
+//! CI is expected to build the kernel first and pass `--kernel-wasm`.
+//! If the flag is omitted, `dump-abi` fails loudly rather than writing
+//! a partial snapshot — a quietly-thinner snapshot would silently
+//! defeat the check.
 
 use std::collections::BTreeMap;
 use std::mem::{offset_of, size_of};
@@ -24,18 +33,30 @@ use crate::{repo_root, JsonMap};
 
 pub fn run(args: Vec<String>) -> Result<(), String> {
     let mut out_path: Option<PathBuf> = None;
+    let mut kernel_wasm: Option<PathBuf> = None;
     let mut check = false;
 
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--out" => out_path = Some(it.next().ok_or("--out requires a path")?.into()),
+            "--kernel-wasm" => {
+                kernel_wasm = Some(it.next().ok_or("--kernel-wasm requires a path")?.into())
+            }
             "--check" => check = true,
             other => return Err(format!("unknown arg {other:?}")),
         }
     }
 
-    let snapshot = build_snapshot()?;
+    let kernel_wasm = kernel_wasm.ok_or_else(|| {
+        "missing --kernel-wasm <path>. Build the kernel first \
+         (e.g. via scripts/check-abi-version.sh) and pass the path to \
+         target/wasm64-unknown-unknown/release/wasm_posix_kernel.wasm. \
+         Refusing to write a partial snapshot."
+            .to_string()
+    })?;
+
+    let snapshot = build_snapshot(&kernel_wasm)?;
     let rendered = render_deterministic(&snapshot);
 
     let out = out_path.unwrap_or_else(|| repo_root().join("abi/snapshot.json"));
@@ -106,7 +127,7 @@ fn build_struct_layout(total_size: usize, fields: Vec<(&'static str, usize)>) ->
     Value::Object(m.into_iter().collect())
 }
 
-fn build_snapshot() -> Result<JsonMap, String> {
+fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
     let mut root: JsonMap = BTreeMap::new();
 
     root.insert("abi_version".into(), json!(shared::ABI_VERSION));
@@ -121,6 +142,12 @@ fn build_snapshot() -> Result<JsonMap, String> {
     root.insert("asyncify_save_slots".into(), asyncify_save_slots());
     root.insert("custom_sections".into(), custom_sections());
     root.insert("process_expected_globals".into(), process_expected_globals());
+
+    root.insert("export_deny".into(), export_deny());
+
+    let wasm = std::fs::read(kernel_wasm)
+        .map_err(|e| format!("read {}: {e}", kernel_wasm.display()))?;
+    root.insert("kernel_exports".into(), kernel_exports(&wasm)?);
 
     Ok(root)
 }
@@ -298,6 +325,206 @@ fn process_expected_globals() -> Value {
     let mut list: Vec<&str> = shared::abi::PROCESS_EXPECTED_GLOBALS.to_vec();
     list.sort();
     Value::Array(list.into_iter().map(Value::from).collect())
+}
+
+fn export_deny() -> Value {
+    let mut prefixes: Vec<&str> = shared::abi::EXPORT_DENY_PREFIXES.to_vec();
+    let mut exact: Vec<&str> = shared::abi::EXPORT_DENY_EXACT.to_vec();
+    let mut value_prefixes: Vec<&str> = shared::abi::ABI_VALUE_CAPTURE_PREFIXES.to_vec();
+    prefixes.sort();
+    exact.sort();
+    value_prefixes.sort();
+    let mut m: JsonMap = BTreeMap::new();
+    m.insert(
+        "deny_prefixes".into(),
+        Value::Array(prefixes.into_iter().map(Value::from).collect()),
+    );
+    m.insert(
+        "deny_exact".into(),
+        Value::Array(exact.into_iter().map(Value::from).collect()),
+    );
+    m.insert(
+        "value_capture_prefixes".into(),
+        Value::Array(value_prefixes.into_iter().map(Value::from).collect()),
+    );
+    Value::Object(m.into_iter().collect())
+}
+
+fn kernel_exports(bytes: &[u8]) -> Result<Value, String> {
+    use wasmparser::{
+        CompositeInnerType, ExternalKind, FuncType, GlobalType, Imports, Operator, Parser,
+        Payload, TypeRef,
+    };
+
+    // Accumulate what we need to resolve exports. Wasm section ordering
+    // puts types, imports, functions, globals before exports, so a
+    // single forward pass is sufficient.
+    let mut func_type_for_local_idx: Vec<u32> = Vec::new();
+    let mut func_types: Vec<FuncType> = Vec::new();
+    let mut imported_funcs: u32 = 0;
+    let mut imported_globals: u32 = 0;
+    let mut global_types: Vec<GlobalType> = Vec::new();
+    let mut global_init_i64: Vec<Option<i64>> = Vec::new();
+    let mut exports: Vec<(String, ExternalKind, u32)> = Vec::new();
+
+    for payload in Parser::new(0).parse_all(bytes) {
+        let p = payload.map_err(|e| format!("parse wasm: {e}"))?;
+        match p {
+            Payload::TypeSection(r) => {
+                for rec in r {
+                    let rec = rec.map_err(|e| format!("type section: {e}"))?;
+                    for st in rec.types() {
+                        match &st.composite_type.inner {
+                            CompositeInnerType::Func(f) => func_types.push(f.clone()),
+                            // Non-func composite types (arrays/structs from
+                            // the GC proposal) are not in scope here; push
+                            // a zero-arity placeholder so index arithmetic
+                            // stays correct.
+                            _ => func_types.push(FuncType::new([], [])),
+                        }
+                    }
+                }
+            }
+            Payload::ImportSection(r) => {
+                for group in r {
+                    let group = group.map_err(|e| format!("import section: {e}"))?;
+                    // Three import-group encodings in wasmparser 0.247.
+                    // Only `Single` appears in stock LLVM output; others
+                    // come from the compact-imports proposal and are
+                    // handled here for completeness.
+                    let tick = |ty: TypeRef,
+                                imported_funcs: &mut u32,
+                                imported_globals: &mut u32| match ty {
+                        TypeRef::Func(_) | TypeRef::FuncExact(_) => *imported_funcs += 1,
+                        TypeRef::Global(_) => *imported_globals += 1,
+                        _ => {}
+                    };
+                    match group {
+                        Imports::Single(_, imp) => {
+                            tick(imp.ty, &mut imported_funcs, &mut imported_globals);
+                        }
+                        Imports::Compact1 { items, .. } => {
+                            for item in items {
+                                let item =
+                                    item.map_err(|e| format!("import section: {e}"))?;
+                                tick(item.ty, &mut imported_funcs, &mut imported_globals);
+                            }
+                        }
+                        Imports::Compact2 { ty, names, .. } => {
+                            for name in names {
+                                let _ = name.map_err(|e| format!("import section: {e}"))?;
+                                tick(ty, &mut imported_funcs, &mut imported_globals);
+                            }
+                        }
+                    }
+                }
+            }
+            Payload::FunctionSection(r) => {
+                for ti in r {
+                    func_type_for_local_idx
+                        .push(ti.map_err(|e| format!("function section: {e}"))?);
+                }
+            }
+            Payload::GlobalSection(r) => {
+                for g in r {
+                    let g = g.map_err(|e| format!("global section: {e}"))?;
+                    global_types.push(g.ty);
+                    let mut ops = g.init_expr.get_operators_reader();
+                    let val = match ops.read() {
+                        Ok(Operator::I32Const { value }) => Some(value as i64),
+                        Ok(Operator::I64Const { value }) => Some(value),
+                        _ => None,
+                    };
+                    global_init_i64.push(val);
+                }
+            }
+            Payload::ExportSection(r) => {
+                for exp in r {
+                    let exp = exp.map_err(|e| format!("export section: {e}"))?;
+                    exports.push((exp.name.to_string(), exp.kind, exp.index));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Sort exports by name for deterministic output. BTreeMap doesn't
+    // help here because we construct a Vec<Value> at the top level.
+    exports.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut list = Vec::new();
+    for (name, kind, index) in exports {
+        if !shared::abi::export_is_tracked(&name) {
+            continue;
+        }
+        let mut m: JsonMap = BTreeMap::new();
+        m.insert("name".into(), json!(name));
+
+        match kind {
+            ExternalKind::Func | ExternalKind::FuncExact => {
+                m.insert("kind".into(), json!("func"));
+                let sig = if index < imported_funcs {
+                    "<imported>".to_string()
+                } else {
+                    let local = (index - imported_funcs) as usize;
+                    func_type_for_local_idx
+                        .get(local)
+                        .and_then(|ti| func_types.get(*ti as usize))
+                        .map(format_func_type)
+                        .unwrap_or_else(|| "<unknown>".into())
+                };
+                m.insert("signature".into(), json!(sig));
+            }
+            ExternalKind::Global => {
+                m.insert("kind".into(), json!("global"));
+                if index < imported_globals {
+                    m.insert("type".into(), json!("<imported>"));
+                } else {
+                    let local = (index - imported_globals) as usize;
+                    if let Some(gt) = global_types.get(local) {
+                        m.insert("type".into(), json!(val_type_name(&gt.content_type)));
+                        m.insert("mutable".into(), json!(gt.mutable));
+                        if shared::abi::export_value_is_tracked(&name) && !gt.mutable {
+                            if let Some(Some(v)) = global_init_i64.get(local) {
+                                m.insert("value".into(), json!(v));
+                            }
+                        }
+                    } else {
+                        m.insert("type".into(), json!("<unknown>"));
+                    }
+                }
+            }
+            ExternalKind::Memory => {
+                m.insert("kind".into(), json!("memory"));
+            }
+            ExternalKind::Table => {
+                m.insert("kind".into(), json!("table"));
+            }
+            ExternalKind::Tag => {
+                m.insert("kind".into(), json!("tag"));
+            }
+        }
+        list.push(Value::Object(m.into_iter().collect()));
+    }
+    Ok(Value::Array(list))
+}
+
+fn format_func_type(f: &wasmparser::FuncType) -> String {
+    let params: Vec<String> = f.params().iter().map(val_type_name).collect();
+    let results: Vec<String> = f.results().iter().map(val_type_name).collect();
+    format!("({}) -> ({})", params.join(","), results.join(","))
+}
+
+fn val_type_name(vt: &wasmparser::ValType) -> String {
+    match vt {
+        wasmparser::ValType::I32 => "i32",
+        wasmparser::ValType::I64 => "i64",
+        wasmparser::ValType::F32 => "f32",
+        wasmparser::ValType::F64 => "f64",
+        wasmparser::ValType::V128 => "v128",
+        wasmparser::ValType::Ref(_) => "ref",
+    }
+    .to_string()
 }
 
 fn render_deterministic(root: &JsonMap) -> String {

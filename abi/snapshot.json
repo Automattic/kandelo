@@ -1,5 +1,5 @@
 {
-  "abi_version": 2,
+  "abi_version": 1,
   "asyncify_save_slots": [
     {
       "meaning": "parent TLS base (__tls_base) saved for child rewind",
@@ -107,6 +107,1290 @@
   ],
   "custom_sections": [
     "wasm-posix-abi"
+  ],
+  "export_deny": {
+    "deny_exact": [
+      "__data_end",
+      "__dso_handle",
+      "__global_base",
+      "__heap_base",
+      "__heap_end",
+      "__memory_base",
+      "__table_base"
+    ],
+    "deny_prefixes": [
+      "__llvm_",
+      "__wasm_apply_",
+      "__wasm_call_",
+      "__wasm_init_"
+    ],
+    "value_capture_prefixes": [
+      "__abi_"
+    ]
+  },
+  "kernel_exports": [
+    {
+      "kind": "global",
+      "mutable": false,
+      "name": "__tls_align",
+      "type": "i64"
+    },
+    {
+      "kind": "global",
+      "mutable": true,
+      "name": "__tls_base",
+      "type": "i64"
+    },
+    {
+      "kind": "global",
+      "mutable": false,
+      "name": "__tls_size",
+      "type": "i64"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_accept4",
+      "signature": "(i32,i64,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_access",
+      "signature": "(i64,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_alarm",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_alloc_scratch",
+      "signature": "(i32) -> (i64)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_apply_fork_fd_actions",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_argv_read",
+      "signature": "(i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_bind",
+      "signature": "(i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_brk",
+      "signature": "(i64) -> (i64)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_chdir",
+      "signature": "(i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_chmod",
+      "signature": "(i64,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_chown",
+      "signature": "(i64,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_clear_argv",
+      "signature": "() -> ()"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_clear_fork_child",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_clear_fork_exec",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_clock_getres",
+      "signature": "(i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_clock_gettime",
+      "signature": "(i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_clock_nanosleep",
+      "signature": "(i32,i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_clone",
+      "signature": "(i64,i64,i32,i64,i64,i64,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_close",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_closedir",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_connect",
+      "signature": "(i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_convert_pipe_to_host",
+      "signature": "(i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_create_process",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_deliver_signal",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_dequeue_signal",
+      "signature": "(i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_drain_wakeup_events",
+      "signature": "(i64,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_dup",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_dup2",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_dup3",
+      "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_environ_count",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_environ_get",
+      "signature": "(i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_epoll_create1",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_epoll_ctl",
+      "signature": "(i32,i32,i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_epoll_pwait",
+      "signature": "(i32,i64,i32,i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_eventfd2",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_exec_setup",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_execve",
+      "signature": "(i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_execveat",
+      "signature": "(i32,i64,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_exit",
+      "signature": "(i32) -> ()"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_faccessat",
+      "signature": "(i32,i64,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_fchdir",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_fchmod",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_fchmodat",
+      "signature": "(i32,i64,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_fchown",
+      "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_fchownat",
+      "signature": "(i32,i64,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_fcntl",
+      "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_fcntl_lock",
+      "signature": "(i32,i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_fdatasync",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_flock",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_fork",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_fork_process",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_fpathconf",
+      "signature": "(i32,i32) -> (i64)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_fstat",
+      "signature": "(i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_fstatat",
+      "signature": "(i32,i64,i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_fstatfs",
+      "signature": "(i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_fsync",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_ftruncate",
+      "signature": "(i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_futex",
+      "signature": "(i64,i32,i32,i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_get_argc",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_get_cwd",
+      "signature": "(i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_get_exec_state",
+      "signature": "(i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_get_exit_status",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_get_fd_path",
+      "signature": "(i32,i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_get_fd_pipe_idx",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_get_fd_send_pipe_idx",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_get_fork_exec_argc",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_get_fork_exec_argv",
+      "signature": "(i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_get_fork_exec_path",
+      "signature": "(i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_get_fork_exec_path_pid",
+      "signature": "(i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_get_fork_state",
+      "signature": "(i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_get_memory_pages",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_get_pipe_ofds",
+      "signature": "(i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_get_process_exit_status",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_get_robust_list",
+      "signature": "(i32,i64,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_get_socket_recv_pipe",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_get_socket_timeout_ms",
+      "signature": "(i32,i32,i32) -> (i64)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_get_stack_pointer",
+      "signature": "() -> (i64)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_getaddrinfo",
+      "signature": "(i64,i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_getcwd",
+      "signature": "(i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_getdents64",
+      "signature": "(i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_getegid",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_getenv",
+      "signature": "(i64,i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_geteuid",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_getgid",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_getgroups",
+      "signature": "(i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_getitimer",
+      "signature": "(i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_getpeername",
+      "signature": "(i32,i64,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_getpgid_direct",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_getpgrp",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_getpid",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_getppid",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_getrandom",
+      "signature": "(i64,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_getresgid",
+      "signature": "(i64,i64,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_getresuid",
+      "signature": "(i64,i64,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_getrlimit",
+      "signature": "(i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_getrusage",
+      "signature": "(i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_getsid",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_getsockname",
+      "signature": "(i32,i64,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_getsockopt",
+      "signature": "(i32,i32,i32,i64,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_gettid",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_gettimeofday",
+      "signature": "(i64,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_getuid",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_handle_channel",
+      "signature": "(i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_has_sa_nocldwait",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_init",
+      "signature": "(i32) -> ()"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_init_from_exec",
+      "signature": "(i64,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_init_from_fork",
+      "signature": "(i64,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_inject_connection",
+      "signature": "(i32,i32,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_ioctl",
+      "signature": "(i32,i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_ipc_shm_read_chunk",
+      "signature": "(i32,i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_ipc_shm_write_chunk",
+      "signature": "(i32,i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_ipc_shmat",
+      "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_ipc_shmdt",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_is_fd_nonblock",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_is_fork_child",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_is_fork_child_pid",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_is_signal_blocked",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_isatty",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_kill",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_link",
+      "signature": "(i64,i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_linkat",
+      "signature": "(i32,i64,i32,i32,i64,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_listen",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_lseek",
+      "signature": "(i32,i32,i32,i32) -> (i64)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_lstat",
+      "signature": "(i64,i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_madvise",
+      "signature": "(i64,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_mkdir",
+      "signature": "(i64,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_mkdirat",
+      "signature": "(i32,i64,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_mmap",
+      "signature": "(i64,i64,i32,i32,i32,i32,i32) -> (i64)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_mprotect",
+      "signature": "(i64,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_mq_drain_notification",
+      "signature": "(i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_mq_is_mqd",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_mremap",
+      "signature": "(i64,i64,i64,i32) -> (i64)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_munmap",
+      "signature": "(i64,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_nanosleep",
+      "signature": "(i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_open",
+      "signature": "(i64,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_openat",
+      "signature": "(i32,i64,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_opendir",
+      "signature": "(i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_pathconf",
+      "signature": "(i64,i32,i32) -> (i64)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_pause",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_pipe",
+      "signature": "(i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_pipe2",
+      "signature": "(i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_pipe_close_read",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_pipe_close_write",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_pipe_is_read_open",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_pipe_is_write_open",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_pipe_read",
+      "signature": "(i32,i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_pipe_write",
+      "signature": "(i32,i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_poll",
+      "signature": "(i64,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_posix_timer_interval_fire",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_ppoll",
+      "signature": "(i64,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_prctl",
+      "signature": "(i32,i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_pread",
+      "signature": "(i32,i64,i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_preadv",
+      "signature": "(i32,i64,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_pselect6",
+      "signature": "(i32,i64,i64,i64,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_pty_create",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_pty_master_read",
+      "signature": "(i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_pty_master_write",
+      "signature": "(i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_pty_set_winsize",
+      "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_push_argv",
+      "signature": "(i64,i32) -> ()"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_pwrite",
+      "signature": "(i32,i64,i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_pwritev",
+      "signature": "(i32,i64,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_raise",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_read",
+      "signature": "(i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_readdir",
+      "signature": "(i32,i64,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_readlink",
+      "signature": "(i64,i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_readlinkat",
+      "signature": "(i32,i64,i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_readv",
+      "signature": "(i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_realpath",
+      "signature": "(i64,i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_recv",
+      "signature": "(i32,i64,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_recvfrom",
+      "signature": "(i32,i64,i32,i32,i64,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_recvmsg",
+      "signature": "(i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_remove_process",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rename",
+      "signature": "(i64,i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_renameat",
+      "signature": "(i32,i64,i32,i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_reset_signal_mask",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rewinddir",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rmdir",
+      "signature": "(i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rt_sigtimedwait",
+      "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_sched_getparam",
+      "signature": "(i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_seekdir",
+      "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_select",
+      "signature": "(i32,i64,i64,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_send",
+      "signature": "(i32,i64,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_sendfile",
+      "signature": "(i32,i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_sendmsg",
+      "signature": "(i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_sendto",
+      "signature": "(i32,i64,i32,i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_set_child_pid",
+      "signature": "(i32) -> ()"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_set_current_pid",
+      "signature": "(i32) -> ()"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_set_cwd",
+      "signature": "(i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_set_fork_exec",
+      "signature": "(i64,i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_set_fork_fd_action",
+      "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_set_max_addr",
+      "signature": "(i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_set_mode",
+      "signature": "(i32) -> ()"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_set_process_argv",
+      "signature": "(i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_set_robust_list",
+      "signature": "(i64,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_set_stdin_pipe",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_set_tid_address",
+      "signature": "(i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_setegid",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_setenv",
+      "signature": "(i64,i32,i64,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_seteuid",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_setgid",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_setgroups",
+      "signature": "(i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_setitimer",
+      "signature": "(i32,i64,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_setpgid",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_setresgid",
+      "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_setresuid",
+      "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_setrlimit",
+      "signature": "(i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_setsid",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_setsockopt",
+      "signature": "(i32,i32,i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_setuid",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_shutdown",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_sigaction",
+      "signature": "(i32,i64,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_sigaltstack",
+      "signature": "(i64,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_signal",
+      "signature": "(i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_signalfd4",
+      "signature": "(i32,i64,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_sigprocmask",
+      "signature": "(i32,i32,i32) -> (i64)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_sigsuspend",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_socket",
+      "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_socketpair",
+      "signature": "(i32,i32,i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_stat",
+      "signature": "(i64,i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_statfs",
+      "signature": "(i64,i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_statx",
+      "signature": "(i32,i64,i32,i32,i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_symlink",
+      "signature": "(i64,i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_symlinkat",
+      "signature": "(i64,i32,i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_sysconf",
+      "signature": "(i32) -> (i64)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_tcgetattr",
+      "signature": "(i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_tcsetattr",
+      "signature": "(i32,i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_telldir",
+      "signature": "(i32) -> (i64)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_thread_exit",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_time",
+      "signature": "() -> (i64)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_timer_create",
+      "signature": "(i32,i64,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_timer_delete",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_timer_getoverrun",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_timer_gettime",
+      "signature": "(i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_timer_settime",
+      "signature": "(i32,i32,i64,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_timerfd_create",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_timerfd_gettime",
+      "signature": "(i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_timerfd_settime",
+      "signature": "(i32,i32,i64,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_truncate",
+      "signature": "(i64,i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_umask",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_uname",
+      "signature": "(i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_unlink",
+      "signature": "(i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_unlinkat",
+      "signature": "(i32,i64,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_unsetenv",
+      "signature": "(i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_usleep",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_utimensat",
+      "signature": "(i32,i64,i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_wait4",
+      "signature": "(i32,i64,i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_write",
+      "signature": "(i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_writev",
+      "signature": "(i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "memory",
+      "name": "memory"
+    }
   ],
   "marshalled_structs": {
     "WasmDirent": {

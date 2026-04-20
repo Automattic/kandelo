@@ -23,12 +23,31 @@ cd "$REPO_ROOT"
 
 HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
 
+# The snapshot includes exports parsed from the built kernel wasm. We
+# build the kernel first so stale binaries can't defeat the check. If
+# the build fails we bail before running dump-abi, rather than let the
+# generator fail later with a confusing "read wasm" error.
+KERNEL_WASM="target/wasm64-unknown-unknown/release/wasm_posix_kernel.wasm"
+
+build_kernel() {
+    echo "abi: building kernel wasm for export-signature snapshot..."
+    cargo build --release -p wasm-posix-kernel \
+        -Z build-std=core,alloc \
+        -Z build-std-features=panic_immediate_abort >&2
+    if [ ! -f "$KERNEL_WASM" ]; then
+        echo "abi: expected $KERNEL_WASM after build, not found." >&2
+        exit 1
+    fi
+}
+
 run_xtask() {
     cargo run -p xtask --target "$HOST_TARGET" --quiet -- "$@"
 }
 
+build_kernel
+
 if [ "$MODE" = "update" ]; then
-    run_xtask dump-abi
+    run_xtask dump-abi --kernel-wasm "$KERNEL_WASM"
     echo
     echo "abi/snapshot.json regenerated."
     echo "If the ABI contract actually changed, bump ABI_VERSION in"
@@ -40,7 +59,7 @@ fi
 
 # Detect whether the snapshot drifted from the source of truth.
 drift=0
-if ! run_xtask dump-abi --check ; then
+if ! run_xtask dump-abi --check --kernel-wasm "$KERNEL_WASM" ; then
     drift=1
 fi
 
