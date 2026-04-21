@@ -1,7 +1,7 @@
 From 7b7c6b02d97d01608de95309a32514ed87453c24 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Mon, 20 Apr 2026 23:32:43 -0400
-Subject: [PATCH 01/10] torque: add OutputType::kCCBuiltins (Phase 1
+Subject: [PATCH 01/21] torque: add OutputType::kCCBuiltins (Phase 1
  scaffolding)
 
 ---
@@ -27,7 +27,7 @@ index dc10233a..aabca60b 100644
 From d46700124dea3a09293c6041f7f4c3691c90ffd2 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Mon, 20 Apr 2026 23:33:04 -0400
-Subject: [PATCH 02/10] torque: add cc_builtins file streams to PerFileStreams
+Subject: [PATCH 02/21] torque: add cc_builtins file streams to PerFileStreams
 
 ---
  deps/v8/src/torque/global-context.h | 3 +++
@@ -54,7 +54,7 @@ index db27b49d..37443bee 100644
 From 29d20ab22b50f652f8355408654b96cac09b6a42 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Mon, 20 Apr 2026 23:33:29 -0400
-Subject: [PATCH 03/10] torque: route kCCBuiltins output to cc_builtins streams
+Subject: [PATCH 03/21] torque: route kCCBuiltins output to cc_builtins streams
 
 ---
  deps/v8/src/torque/implementation-visitor.h | 4 ++++
@@ -89,7 +89,7 @@ index f8444225..e29d91c7 100644
 From a169621decd09c5fa78dbaff267c3887c94b757b Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Mon, 20 Apr 2026 23:34:03 -0400
-Subject: [PATCH 04/10] torque: Builtin::ShouldBeInlined returns false for
+Subject: [PATCH 04/21] torque: Builtin::ShouldBeInlined returns false for
  kCCBuiltins
 
 ---
@@ -128,7 +128,7 @@ index aabca60b..c6a3639c 100644
 From 6a8654713dc9114a02ddeeca664447ccd282edec Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Mon, 20 Apr 2026 23:36:54 -0400
-Subject: [PATCH 05/10] torque: route kCCBuiltins through extern-macro
+Subject: [PATCH 05/21] torque: route kCCBuiltins through extern-macro
  constexpr call path
 
 ---
@@ -159,7 +159,7 @@ index fc4dbbcc..78c6eee5 100644
 From 6c3dc9a1d3e28f01fd2f9a156143d3c63226712d Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Mon, 20 Apr 2026 23:41:18 -0400
-Subject: [PATCH 06/10] torque: add kCCBuiltins fourth pass in
+Subject: [PATCH 06/21] torque: add kCCBuiltins fourth pass in
  VisitAllDeclarables
 
 ---
@@ -194,7 +194,7 @@ index 78c6eee5..4be1c8e7 100644
 From 93560a5b6c1a83702e2f79907e5b6a2d04c77b64 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Mon, 20 Apr 2026 23:52:17 -0400
-Subject: [PATCH 07/10] torque: Visit(Builtin*) emits Phase 1 stub under
+Subject: [PATCH 07/21] torque: Visit(Builtin*) emits Phase 1 stub under
  kCCBuiltins
 
 ---
@@ -229,7 +229,7 @@ index 4be1c8e7..54551d20 100644
 From 78e36e8965749dbd4101599d2f18b0ce560ac0c2 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Mon, 20 Apr 2026 23:53:34 -0400
-Subject: [PATCH 08/10] torque: filter fourth pass to Builtin declarables only
+Subject: [PATCH 08/21] torque: filter fourth pass to Builtin declarables only
 
 Task 1.6 landed the fourth pass as the plan specified, iterating every
 declarable. Smoke-testing on the 245-file stock fileset under kCCBuiltins
@@ -279,7 +279,7 @@ index 54551d20..ae96de1b 100644
 From 7cf1abb5c751a99b24656968b12c8570d613afed Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Mon, 20 Apr 2026 23:57:17 -0400
-Subject: [PATCH 09/10] torque: write -tq-ccbuiltins.cc per source file
+Subject: [PATCH 09/21] torque: write -tq-ccbuiltins.cc per source file
 
 ---
  deps/v8/src/torque/implementation-visitor.cc | 21 ++++++++++++++++++++
@@ -324,7 +324,7 @@ index ae96de1b..f0dd3e1b 100644
 From 2440f125fbaa1d474a3213be74c09ed5858b6306 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Tue, 21 Apr 2026 00:01:17 -0400
-Subject: [PATCH 10/10] v8 build: declare -tq-ccbuiltins.cc in run_torque
+Subject: [PATCH 10/21] v8 build: declare -tq-ccbuiltins.cc in run_torque
  outputs
 
 ---
@@ -343,6 +343,893 @@ index fee8aedf..1f34d46b 100644
          "$destination_folder/$filetq.inc",
        ]
      }
+-- 
+2.50.1 (Apple Git-155)
+
+
+From a776e214d136ea766c3c60d9ffb05fee67ffeefa Mon Sep 17 00:00:00 2001
+From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
+Date: Tue, 21 Apr 2026 09:37:53 -0400
+Subject: [PATCH 11/21] torque: add --cc-builtins-whitelist CLI flag
+
+---
+ deps/v8/src/torque/global-context.h   |  7 ++++++
+ deps/v8/src/torque/torque-compiler.cc |  2 ++
+ deps/v8/src/torque/torque-compiler.h  |  8 +++++++
+ deps/v8/src/torque/torque.cc          | 34 +++++++++++++++++++++++++++
+ 4 files changed, 51 insertions(+)
+
+diff --git a/deps/v8/src/torque/global-context.h b/deps/v8/src/torque/global-context.h
+index 37443bee..0ae3f57d 100644
+--- a/deps/v8/src/torque/global-context.h
++++ b/deps/v8/src/torque/global-context.h
+@@ -59,6 +59,12 @@ class GlobalContext : public base::ContextualClass<GlobalContext> {
+   }
+   static void SetAnnotateIR() { Get().annotate_ir_ = true; }
+   static bool annotate_ir() { return Get().annotate_ir_; }
++  static const std::set<std::string>& cc_builtins_whitelist() {
++    return Get().cc_builtins_whitelist_;
++  }
++  static void SetCcBuiltinsWhitelist(std::set<std::string> whitelist) {
++    Get().cc_builtins_whitelist_ = std::move(whitelist);
++  }
+   static Ast* ast() { return &Get().ast_; }
+   static std::string MakeUniqueName(const std::string& base) {
+     return base + "_" + std::to_string(Get().fresh_ids_[base]++);
+@@ -138,6 +144,7 @@ class GlobalContext : public base::ContextualClass<GlobalContext> {
+   bool collect_kythe_data_;
+   bool force_assert_statements_;
+   bool annotate_ir_;
++  std::set<std::string> cc_builtins_whitelist_;
+   Namespace* default_namespace_;
+   Ast ast_;
+   std::vector<std::unique_ptr<Declarable>> declarables_;
+diff --git a/deps/v8/src/torque/torque-compiler.cc b/deps/v8/src/torque/torque-compiler.cc
+index eadc7c92..8a46d7b2 100644
+--- a/deps/v8/src/torque/torque-compiler.cc
++++ b/deps/v8/src/torque/torque-compiler.cc
+@@ -59,6 +59,8 @@ void CompileCurrentAst(TorqueCompilerOptions options) {
+   if (options.annotate_ir) {
+     GlobalContext::SetAnnotateIR();
+   }
++  GlobalContext::SetCcBuiltinsWhitelist(
++      std::move(options.cc_builtins_whitelist));
+   TypeOracle::Scope type_oracle;
+   CurrentScope::Scope current_namespace(GlobalContext::GetDefaultNamespace());
+ 
+diff --git a/deps/v8/src/torque/torque-compiler.h b/deps/v8/src/torque/torque-compiler.h
+index 8431e98a..0c1595c7 100644
+--- a/deps/v8/src/torque/torque-compiler.h
++++ b/deps/v8/src/torque/torque-compiler.h
+@@ -6,6 +6,8 @@
+ #define V8_TORQUE_TORQUE_COMPILER_H_
+ 
+ #include <optional>
++#include <set>
++#include <string>
+ 
+ #include "src/base/contextual.h"
+ #include "src/torque/ast.h"
+@@ -38,6 +40,12 @@ struct TorqueCompilerOptions {
+ 
+   // Strips the v8-root in case the source path contains it as a prefix.
+   bool strip_v8_root = false;
++
++  // Set of builtin external names (e.g. "TorqueCcTest_Return") for which the
++  // Torque CC backend should emit real C++ bodies instead of the Phase 1
++  // comment stub. Builtins not in this set fall through to the stub path.
++  // Populated from the `--cc-builtins-whitelist=<csv>` CLI flag.
++  std::set<std::string> cc_builtins_whitelist;
+ };
+ 
+ struct TorqueCompilerResult {
+diff --git a/deps/v8/src/torque/torque.cc b/deps/v8/src/torque/torque.cc
+index 7ccc5bf9..e37f14e4 100644
+--- a/deps/v8/src/torque/torque.cc
++++ b/deps/v8/src/torque/torque.cc
+@@ -2,6 +2,8 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
++#include <cctype>
++
+ #include "src/torque/source-positions.h"
+ #include "src/torque/torque-compiler.h"
+ 
+@@ -43,6 +45,38 @@ int WrappedMain(int argc, const char** argv) {
+       options.annotate_ir = true;
+     } else if (argument == "-strip-v8-root") {
+       options.strip_v8_root = true;
++    } else if (argument.rfind("--cc-builtins-whitelist=", 0) == 0 ||
++               argument.rfind("-cc-builtins-whitelist=", 0) == 0) {
++      // CSV of builtin external names that the CC backend should emit real
++      // C++ bodies for. Builtins not on the list fall through to the Phase 1
++      // comment stub. Both `--` and `-` prefixes accepted: `--` matches
++      // GN/ninja convention for build-integration call sites (Task 2.14),
++      // `-` matches the single-dash convention torque uses for its other
++      // flags. Tokens are whitespace-trimmed so hand-typed flags like
++      // `--cc-builtins-whitelist=Foo, Bar` still match "Bar" (without a
++      // leading space that would never match a real external name).
++      std::string csv = argument.substr(argument.find('=') + 1);
++      std::set<std::string> whitelist;
++      size_t start = 0;
++      while (start <= csv.size()) {
++        size_t comma = csv.find(',', start);
++        if (comma == std::string::npos) comma = csv.size();
++        size_t tok_begin = start;
++        size_t tok_end = comma;
++        while (tok_begin < tok_end &&
++               std::isspace(static_cast<unsigned char>(csv[tok_begin]))) {
++          ++tok_begin;
++        }
++        while (tok_end > tok_begin &&
++               std::isspace(static_cast<unsigned char>(csv[tok_end - 1]))) {
++          --tok_end;
++        }
++        if (tok_end > tok_begin) {
++          whitelist.insert(csv.substr(tok_begin, tok_end - tok_begin));
++        }
++        start = comma + 1;
++      }
++      options.cc_builtins_whitelist = std::move(whitelist);
+     } else {
+       // Strip the v8-root in case it is a prefix of the file path itself.
+       // This is used when building in Google3.
+-- 
+2.50.1 (Apple Git-155)
+
+
+From 5dc40081044515429f06d80c0136d331c0dba88f Mon Sep 17 00:00:00 2001
+From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
+Date: Tue, 21 Apr 2026 09:53:05 -0400
+Subject: [PATCH 12/21] =?UTF-8?q?torque:=20Visit(Builtin*)=20kCCBuiltins?=
+ =?UTF-8?q?=20=E2=80=94=20real=20emission=20under=20whitelist?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ deps/v8/src/torque/implementation-visitor.cc | 97 ++++++++++++++++++--
+ 1 file changed, 90 insertions(+), 7 deletions(-)
+
+diff --git a/deps/v8/src/torque/implementation-visitor.cc b/deps/v8/src/torque/implementation-visitor.cc
+index f0dd3e1b..41e12a39 100644
+--- a/deps/v8/src/torque/implementation-visitor.cc
++++ b/deps/v8/src/torque/implementation-visitor.cc
+@@ -586,14 +586,97 @@ std::string AddParameter(size_t i, Builtin* builtin,
+ 
+ void ImplementationVisitor::Visit(Builtin* builtin) {
+   if (builtin->IsExternal()) return;
++  // kCCBuiltins output: emit plain C++ functions for a whitelisted subset
++  // of builtins. Three cases:
++  //   1. Not in whitelist         -> Phase-1 comment stub (baseline-fidelity
++  //                                  required for the regression gate).
++  //   2. Whitelisted + JS-linkage -> marker comment; JS linkage deferred to
++  //                                  Phase 3.
++  //   3. Whitelisted + stub-kind  -> real C++ function via CCGenerator,
++  //                                  mirroring the scope + CFG pipeline of
++  //                                  the kCSA path below.
+   if (output_type_ == OutputType::kCCBuiltins) {
+-    // Phase 1 scaffolding: emit a commented-out function stub per builtin so
+-    // the emitted .cc file is non-empty and we can confirm the pass wiring
+-    // works. Real emission (calling through CCGenerator) arrives in Phase 2.
+-    csa_ccfile() << "// Builtin: " << builtin->ExternalName() << "\n"
+-                 << "// (Phase 1 stub — body intentionally empty)\n"
+-                 << "// void Builtin_" << builtin->ExternalName()
+-                 << "(Isolate* isolate /* + args */);\n\n";
++    const auto& whitelist = GlobalContext::cc_builtins_whitelist();
++    if (whitelist.find(builtin->ExternalName()) == whitelist.end()) {
++      // Phase 1 stub path — byte-identical to Phase 1 for non-whitelisted
++      // builtins. The regression gate requires this text to not change.
++      csa_ccfile() << "// Builtin: " << builtin->ExternalName() << "\n"
++                   << "// (Phase 1 stub — body intentionally empty)\n"
++                   << "// void Builtin_" << builtin->ExternalName()
++                   << "(Isolate* isolate /* + args */);\n\n";
++      return;
++    }
++    if (builtin->IsJavaScript()) {
++      // JS-linkage builtins (receiver/newTarget/dispatchHandle parameter
++      // unpacking + Descriptor machinery) are deferred to Phase 3. Emit a
++      // marker comment so inspectors can see the builtin was whitelisted but
++      // intentionally skipped at this phase.
++      csa_ccfile() << "// Builtin: " << builtin->ExternalName()
++                   << " (JS linkage deferred to Phase 3)\n\n";
++      return;
++    }
++
++    // Real emission: non-JS-linkage builtin (`Builtin::Kind::kStub`) driven
++    // through CCGenerator. Mirrors the CSA pattern below (scopes, parameter
++    // binding, Visit(body), EmitGraph) but emits a plain C++ free function
++    // signature instead of TF_BUILTIN, and uses CCGenerator in place of
++    // CSAGenerator.
++    CurrentScope::Scope current_scope(builtin);
++    CurrentCallable::Scope current_callable(builtin);
++    CurrentReturnValue::Scope current_return_value;
++
++    const std::string& name = builtin->ExternalName();
++    const Signature& signature = builtin->signature();
++
++    // Emit C++ function signature: <ReturnType> Builtin_<Name>(Isolate*, ...).
++    csa_ccfile() << signature.return_type->GetRuntimeType() << " Builtin_"
++                 << name << "(Isolate* isolate";
++    for (size_t i = 0; i < signature.parameter_names.size(); ++i) {
++      const Type* param_type = signature.types()[i];
++      const std::string& param_name = signature.parameter_names[i]->value;
++      csa_ccfile() << ", " << param_type->GetRuntimeType() << " " << param_name;
++    }
++    csa_ccfile() << ") {\n"
++                 << "  USE(isolate);\n";
++
++    Stack<const Type*> parameter_types;
++    Stack<std::string> parameters;
++
++    BindingsManagersScope bindings_managers_scope;
++    BlockBindings<LocalValue> parameter_bindings(&ValueBindingsManager::Get());
++
++    // Populate parameter bindings using the shared AddParameter helper. This
++    // pushes "parameterN" names into the `parameters` stack and registers
++    // LocalValue bindings so Visit(body) can look them up by Torque name.
++    //
++    // TODO(phase-later): the bridge line below (`<Type> parameterN =
++    // <torque_name>;`) exists because AddParameter hard-codes the
++    // "parameterN" stack convention that CCGenerator's EmitGraph expects.
++    // A cleaner design would teach AddParameter an override-name mode so
++    // we can use the Torque names directly in the generated C++. Deferred
++    // to a future phase since it would touch the kCSA path too.
++    for (size_t i = 0; i < signature.parameter_names.size(); ++i) {
++      const bool mark_as_used = signature.implicit_count > i;
++      std::string var =
++          AddParameter(i, builtin, &parameters, &parameter_types,
++                       &parameter_bindings, mark_as_used);
++      const Type* type = signature.types()[i];
++      // Bridge from the C++ signature name (Torque parameter_names[i]->value)
++      // to the internal `parameterN` name that CCGenerator's EmitGraph uses.
++      csa_ccfile() << "  " << type->GetRuntimeType() << " " << var << " = "
++                   << signature.parameter_names[i]->value << ";\n";
++      csa_ccfile() << "  USE(" << var << ");\n";
++    }
++
++    assembler_ = CfgAssembler(parameter_types);
++    const Type* body_result = Visit(*builtin->body());
++    if (body_result != TypeOracle::GetNeverType()) {
++      ReportError("control reaches end of builtin, expected return of a value");
++    }
++    CCGenerator cc_generator{assembler().Result(), csa_ccfile()};
++    cc_generator.EmitGraph(parameters);
++    assembler_ = std::nullopt;
++    csa_ccfile() << "}\n\n";
+     return;
+   }
+   CurrentScope::Scope current_scope(builtin);
+-- 
+2.50.1 (Apple Git-155)
+
+
+From a4127f86c8745744782d92686f9eda5f162b3eb1 Mon Sep 17 00:00:00 2001
+From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
+Date: Tue, 21 Apr 2026 10:42:10 -0400
+Subject: [PATCH 13/21] torque: implement CCGenerator::Emit(ReturnInstruction)
+
+---
+ deps/v8/src/torque/cc-generator.cc | 15 ++++++++++++++-
+ 1 file changed, 14 insertions(+), 1 deletion(-)
+
+diff --git a/deps/v8/src/torque/cc-generator.cc b/deps/v8/src/torque/cc-generator.cc
+index aaa3ee74..2d10bada 100644
+--- a/deps/v8/src/torque/cc-generator.cc
++++ b/deps/v8/src/torque/cc-generator.cc
+@@ -325,7 +325,20 @@ void CCGenerator::EmitInstruction(const GotoExternalInstruction& instruction,
+ 
+ void CCGenerator::EmitInstruction(const ReturnInstruction& instruction,
+                                   Stack<std::string>* stack) {
+-  ReportError("Not supported in C++ output: Return");
++  out() << "  return ";
++  std::vector<std::string> values = stack->PopMany(instruction.count);
++  if (values.size() == 1) {
++    out() << values[0];
++  } else {
++    // Multi-value returns use std::tuple. Single-value returns are the
++    // common case; multi-value appears only for builtins with PairT-like
++    // return shapes, which are explicitly rejected in Task 2.12's
++    // CallBuiltin emission for Phase 2.
++    out() << "std::make_tuple(";
++    PrintCommaSeparatedList(out(), values);
++    out() << ")";
++  }
++  out() << ";\n";
+ }
+ 
+ void CCGenerator::EmitInstruction(const PrintErrorInstruction& instruction,
+-- 
+2.50.1 (Apple Git-155)
+
+
+From f9b1fcdd2aa7b4cb0dc0eb4dfeb69b0340331359 Mon Sep 17 00:00:00 2001
+From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
+Date: Tue, 21 Apr 2026 10:56:38 -0400
+Subject: [PATCH 14/21] torque: implement
+ CCGenerator::Emit(PushUninitializedInstruction)
+
+---
+ deps/v8/src/torque/cc-generator.cc | 15 ++++++++++++++-
+ 1 file changed, 14 insertions(+), 1 deletion(-)
+
+diff --git a/deps/v8/src/torque/cc-generator.cc b/deps/v8/src/torque/cc-generator.cc
+index 2d10bada..da87b569 100644
+--- a/deps/v8/src/torque/cc-generator.cc
++++ b/deps/v8/src/torque/cc-generator.cc
+@@ -84,7 +84,20 @@ void CCGenerator::EmitSourcePosition(SourcePosition pos, bool always_emit) {
+ void CCGenerator::EmitInstruction(
+     const PushUninitializedInstruction& instruction,
+     Stack<std::string>* stack) {
+-  ReportError("Not supported in C++ output: PushUninitialized");
++  // `instruction.type` is a TopType wrapping the original user type. TopType
++  // has no runtime type of its own (GetGeneratedTypeNameImpl is UNREACHABLE),
++  // so we emit the declaration using the underlying source type's runtime
++  // type. The resulting local is value-initialized (`{}`) and marked USE()
++  // to match the LoadReference/LoadBitField emission style.
++  const Type* decl_type = instruction.type;
++  if (const TopType* top_type = TopType::DynamicCast(instruction.type)) {
++    decl_type = top_type->source_type();
++  }
++  std::string name = DefinitionToVariable(instruction.GetValueDefinition());
++  stack->Push(name);
++  decls() << "  " << decl_type->GetRuntimeType() << " " << name << "{}; USE("
++          << name << ");\n";
++  SetDefinitionVariable(instruction.GetValueDefinition(), name);
+ }
+ 
+ void CCGenerator::EmitInstruction(
+-- 
+2.50.1 (Apple Git-155)
+
+
+From e403058316527bd14b921699c5f40776cb564901 Mon Sep 17 00:00:00 2001
+From: Brandon Payton <brandon@happycode.net>
+Date: Tue, 21 Apr 2026 11:01:24 -0400
+Subject: [PATCH 15/21] torque: implement
+ CCGenerator::Emit(NamespaceConstantInstruction)
+
+---
+ deps/v8/src/torque/cc-generator.cc | 30 +++++++++++++++++++++++++++++-
+ 1 file changed, 29 insertions(+), 1 deletion(-)
+
+diff --git a/deps/v8/src/torque/cc-generator.cc b/deps/v8/src/torque/cc-generator.cc
+index da87b569..c8d30d0c 100644
+--- a/deps/v8/src/torque/cc-generator.cc
++++ b/deps/v8/src/torque/cc-generator.cc
+@@ -109,7 +109,35 @@ void CCGenerator::EmitInstruction(
+ void CCGenerator::EmitInstruction(
+     const NamespaceConstantInstruction& instruction,
+     Stack<std::string>* stack) {
+-  ReportError("Not supported in C++ output: NamespaceConstantInstruction");
++  // Mirrors CSAGenerator's NamespaceConstantInstruction emission (see
++  // csa-generator.cc:124-152) but uses runtime C++ types via
++  // GetRuntimeType() (instead of TNode<...>) and passes `isolate` to the
++  // generated accessor (instead of the kCSA-only `state_`).
++  const Type* type = instruction.constant->type();
++  std::vector<std::string> results;
++
++  const auto lowered = LowerType(type);
++  for (std::size_t i = 0; i < lowered.size(); ++i) {
++    results.push_back(DefinitionToVariable(instruction.GetValueDefinition(i)));
++    stack->Push(results.back());
++    decls() << "  " << lowered[i]->GetRuntimeType() << " " << stack->Top()
++            << "{}; USE(" << stack->Top() << ");\n";
++  }
++
++  out() << "  ";
++  if (type->StructSupertype()) {
++    out() << "std::tie(";
++    PrintCommaSeparatedList(out(), results);
++    out() << ") = ";
++  } else if (results.size() == 1) {
++    out() << results[0] << " = ";
++  }
++  out() << instruction.constant->external_name() << "(isolate)";
++  if (type->StructSupertype()) {
++    out() << ".Flatten();\n";
++  } else {
++    out() << ";\n";
++  }
+ }
+ 
+ std::vector<std::string> CCGenerator::ProcessArgumentsCommon(
+-- 
+2.50.1 (Apple Git-155)
+
+
+From 6c8e8c93347987e62c4292f618f9579ed132e647 Mon Sep 17 00:00:00 2001
+From: Brandon Payton <brandon@happycode.net>
+Date: Tue, 21 Apr 2026 11:14:09 -0400
+Subject: [PATCH 16/21] torque: implement
+ CCGenerator::Emit(PushBuiltinPointerInstruction)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Phase 2 of the CC-builtins backend replaces the ReportError stub with a
+real emission that mirrors CSAGenerator's PushBuiltinPointer pattern.
+
+CSA emits:
+  ca_.UncheckedCast<BuiltinPtr>(ca_.SmiConstant(Builtin::k<name>))
+as a single rvalue pushed onto the string stack. The plain-C++ kCCBuiltins
+path has no CodeAssembler, so the Phase-2 placeholder materializes the
+Builtin id directly via Smi::FromInt. BuiltinPointerType extends Smi, so
+GetRuntimeType() (via Type::GetRuntimeType) resolves to Tagged<Smi> —
+matching CSA's SmiConstant and requiring no cast.
+
+Phase 4 will swap this for a real dispatch-table lookup once that
+scaffold exists; for now the emission parses as valid C++ and preserves
+the Builtin identity through the generated code.
+---
+ deps/v8/src/torque/cc-generator.cc | 19 ++++++++++++++++++-
+ 1 file changed, 18 insertions(+), 1 deletion(-)
+
+diff --git a/deps/v8/src/torque/cc-generator.cc b/deps/v8/src/torque/cc-generator.cc
+index c8d30d0c..da7fb816 100644
+--- a/deps/v8/src/torque/cc-generator.cc
++++ b/deps/v8/src/torque/cc-generator.cc
+@@ -103,7 +103,24 @@ void CCGenerator::EmitInstruction(
+ void CCGenerator::EmitInstruction(
+     const PushBuiltinPointerInstruction& instruction,
+     Stack<std::string>* stack) {
+-  ReportError("Not supported in C++ output: PushBuiltinPointer");
++  // Mirrors CSAGenerator's PushBuiltinPointerInstruction emission (see
++  // csa-generator.cc:114-122). CSA emits
++  //   ca_.UncheckedCast<BuiltinPtr>(ca_.SmiConstant(Builtin::k<name>))
++  // packaged as an rvalue pushed onto the string stack. For the plain-C++
++  // (kCCBuiltins) path we have no CodeAssembler; the Phase-2 placeholder
++  // is a Smi carrying the Builtin id, matching CSA's SmiConstant.
++  // BuiltinPtr extends Smi so `instruction.type->GetRuntimeType()` yields
++  // `Tagged<Smi>` (see types.cc: Type::GetRuntimeType). Phase 4 will
++  // replace this with a real dispatch-table lookup once that scaffold
++  // exists; for now the emission just needs to parse as valid C++ and
++  // preserve the Builtin identity.
++  std::string name = DefinitionToVariable(instruction.GetValueDefinition());
++  stack->Push(name);
++  decls() << "  " << instruction.type->GetRuntimeType() << " " << name
++          << "{}; USE(" << name << ");\n";
++  out() << "  " << name << " = Smi::FromInt(static_cast<int>(Builtin::k"
++        << instruction.external_name << "));\n";
++  SetDefinitionVariable(instruction.GetValueDefinition(), name);
+ }
+ 
+ void CCGenerator::EmitInstruction(
+-- 
+2.50.1 (Apple Git-155)
+
+
+From 5ac4c5c9844a06831e258d0b41312691308158f8 Mon Sep 17 00:00:00 2001
+From: Brandon Payton <brandon@happycode.net>
+Date: Tue, 21 Apr 2026 11:24:41 -0400
+Subject: [PATCH 17/21] torque: implement
+ CCGenerator::Emit(StoreReferenceInstruction)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Replace the ReportError stub for StoreReferenceInstruction in the kCC
+output path with real emission, mirroring LoadReferenceInstruction.
+
+* Tagged/smi path: emits
+  `TaggedField<T>::store(UncheckedCast<HeapObject>(obj),
+                         static_cast<int>(offset), value);`
+  matching the corresponding TaggedField<T>::load call used by the
+  existing Load path.
+* Untagged path: emits `obj->WriteField<T>(offset, value);`
+  matching the ReadField<T> call used by the existing Load path.
+
+StoreReferenceInstruction, unlike LoadReferenceInstruction, does not
+carry a FieldSynchronization field (Torque has no `@cppRelaxedStore` /
+`@cppReleaseStore` decorators), so we only emit the plain
+(release-barrier-free) store variants — the untagged path uses
+WriteField rather than Relaxed_WriteField / Release_WriteField.
+
+The debug (`is_cc_debug_`) path is rejected with ReportError: the
+kCCDebug pipeline already uses READ_TAGGED_FIELD_OR_FAIL for loads,
+but there is no pre-existing WRITE_* analogue, and no consumer in
+Phase 2 needs it. Builtin-pointer types are still rejected via CHECK,
+matching the CSA generator's protection.
+
+This unblocks any Phase 2 fixture / real builtin whose body performs a
+field write, provided the object + offset arrive on the stack as
+runtime values. Classic extern-class field writes (`obj.field = v`)
+would additionally require kCC support for the `%FromConstexpr` lowering
+Torque emits for the field offset, which is an existing limitation
+outside this task's scope.
+---
+ deps/v8/src/torque/cc-generator.cc | 38 +++++++++++++++++++++++++++++-
+ 1 file changed, 37 insertions(+), 1 deletion(-)
+
+diff --git a/deps/v8/src/torque/cc-generator.cc b/deps/v8/src/torque/cc-generator.cc
+index da7fb816..d459a3b7 100644
+--- a/deps/v8/src/torque/cc-generator.cc
++++ b/deps/v8/src/torque/cc-generator.cc
+@@ -511,7 +511,43 @@ void CCGenerator::EmitInstruction(const LoadReferenceInstruction& instruction,
+ 
+ void CCGenerator::EmitInstruction(const StoreReferenceInstruction& instruction,
+                                   Stack<std::string>* stack) {
+-  ReportError("Not supported in C++ output: StoreReference");
++  // We should never load or store builtin pointers because the heap may be
++  // corrupted (mirrors CSAGenerator::EmitInstruction for this instruction).
++  CHECK(!instruction.type->IsBuiltinPointerType());
++
++  std::string value = stack->Pop();
++  std::string offset = stack->Pop();
++  std::string object = stack->Pop();
++
++  if (is_cc_debug_) {
++    ReportError("Not supported in C++ output: StoreReference in debug");
++  }
++
++  // Note: unlike LoadReferenceInstruction, StoreReferenceInstruction does not
++  // carry a FieldSynchronization — @cppRelaxedStore / @cppReleaseStore do not
++  // exist in Torque. We therefore only emit the plain (release-barrier-free)
++  // store variants.
++  std::string result_type = instruction.type->GetRuntimeType();
++  if (instruction.type->IsSubtypeOf(TypeOracle::GetTaggedType())) {
++    // Symmetric with LoadReference: only smi tagged values are handled today;
++    // plumb PtrComprCageBase through generated code once we need to store
++    // HeapObject-typed fields.
++    if (!instruction.type->IsSubtypeOf(TypeOracle::GetSmiType())) {
++      Error(
++          "Not supported in C++ output: StoreReference on non-smi tagged "
++          "value");
++    }
++    // References and slices can cause some values to have the Torque type
++    // HeapObject|TaggedZeroPattern, which is output as "Object". TaggedField
++    // requires HeapObject, so we need a cast.
++    out() << "  TaggedField<" << result_type
++          << ">::store(UncheckedCast<HeapObject>(" << object
++          << "), static_cast<int>(" << offset << "), " << value << ");\n";
++  } else {
++    // Mirror the untagged LoadReference path which uses ReadField.
++    out() << "  (" << object << ")->WriteField<" << result_type << ">("
++          << offset << ", " << value << ");\n";
++  }
+ }
+ 
+ namespace {
+-- 
+2.50.1 (Apple Git-155)
+
+
+From 4e2daca40ba23b35a65d4692eb351da57e87d872 Mon Sep 17 00:00:00 2001
+From: Brandon Payton <brandon@happycode.net>
+Date: Tue, 21 Apr 2026 11:28:58 -0400
+Subject: [PATCH 18/21] torque: implement
+ CCGenerator::Emit(StoreBitFieldInstruction)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Replace the ReportError stub with real C++ emission, mirroring CSA's
+StoreBitFieldInstruction but using base::BitField<FieldType, offset,
+bits, ContainerType>::{update,encode} directly (no CodeStubAssembler).
+
+Uses the file-local GetBitFieldSpecialization helper already used by
+LoadBitField. When starts_as_zero is set, emits encode(value); otherwise
+emits update(container, value) — matching CSA's
+UpdateWord*(..., starts_as_zero=true) codepath.
+---
+ deps/v8/src/torque/cc-generator.cc | 44 +++++++++++++++++++++++++++++-
+ 1 file changed, 43 insertions(+), 1 deletion(-)
+
+diff --git a/deps/v8/src/torque/cc-generator.cc b/deps/v8/src/torque/cc-generator.cc
+index d459a3b7..fe28ca8b 100644
+--- a/deps/v8/src/torque/cc-generator.cc
++++ b/deps/v8/src/torque/cc-generator.cc
+@@ -594,7 +594,49 @@ void CCGenerator::EmitInstruction(const LoadBitFieldInstruction& instruction,
+ 
+ void CCGenerator::EmitInstruction(const StoreBitFieldInstruction& instruction,
+                                   Stack<std::string>* stack) {
+-  ReportError("Not supported in C++ output: StoreBitField");
++  // Mirrors CSAGenerator's StoreBitFieldInstruction emission (see
++  // csa-generator.cc:1008+), but lowered to plain C++ using the
++  // `base::BitField<...>` template directly (no CodeStubAssembler). We
++  // reuse the file-local `GetBitFieldSpecialization` helper that
++  // LoadBitField (cc-generator.cc:565+) already uses.
++  //
++  // Stack layout on entry (top→bottom): value, bit_field_struct. We pop
++  // both, compute the updated container, and push the result name.
++  //
++  // `starts_as_zero` is an optimization hint from the IR: when set, the
++  // container is statically known to be zero at this point, so `encode`
++  // alone suffices (it would otherwise be `encode(value) | (container &
++  // ~kMask)`, which is what `update` computes). Matches CSA's
++  // UpdateWord*(..., /*starts_as_zero=*/true) codepath.
++  //
++  // Unlike CSA we do not need the smi-tagged / pointer-size type
++  // splits: the C++ emission uses the container's runtime type directly
++  // and relies on `base::BitField<T, offset, bits, ContainerType>` to
++  // pick the right mask width. Smi-container bitfields aren't reached
++  // in the Phase-2 fixture set; if/when they are, we'll need a bit-cast
++  // step symmetric to LoadBitField's `.value()` unwrap.
++  std::string result_name =
++      DefinitionToVariable(instruction.GetValueDefinition());
++
++  std::string value = stack->Pop();
++  std::string bit_field_struct = stack->Pop();
++  stack->Push(result_name);
++
++  const Type* struct_type = instruction.bit_field_struct_type;
++
++  decls() << "  " << struct_type->GetRuntimeType() << " " << result_name
++          << "{}; USE(" << result_name << ");\n";
++
++  std::string spec =
++      GetBitFieldSpecialization(struct_type, instruction.bit_field);
++  out() << "  " << result_name << " = static_cast<"
++        << struct_type->GetRuntimeType() << ">(" << spec << "::";
++  if (instruction.starts_as_zero) {
++    out() << "encode(" << value << ")";
++  } else {
++    out() << "update(" << bit_field_struct << ", " << value << ")";
++  }
++  out() << ");\n";
+ }
+ 
+ namespace {
+-- 
+2.50.1 (Apple Git-155)
+
+
+From d894d3359a3bfe5b7c91bc390cc774dc1dec5573 Mon Sep 17 00:00:00 2001
+From: Brandon Payton <brandon@happycode.net>
+Date: Tue, 21 Apr 2026 11:38:57 -0400
+Subject: [PATCH 19/21] torque: implement
+ CCGenerator::Emit(CallRuntimeInstruction)
+
+Replaces the Phase 1 ReportError stub with real kCCBuiltins emission:
+
+- CC form:   Runtime::Call<Runtime::k<FnName>>(isolate, args...)
+- CSA form:  CodeStubAssembler(state_).CallRuntime(Runtime::k<FnName>, ...)
+
+Mirrors the CSA reference (csa-generator.cc:713-767) except:
+- no CodeStubAssembler wrapper; direct Runtime::Call<> template call
+- catch_block deferred to Phase 3 (ReportError if set)
+- UNREACHABLE() instead of ca_.Unreachable() for Never-return runtimes
+
+Also fixes a Phase 1 scaffolding bug in Callable::ShouldBeInlined:
+RuntimeFunction previously fell through to the base Callable override
+which returns true for kCCBuiltins, causing arguments to be skipped from
+the Torque stack and triggering 'wrong argument types' at type-instruction
+time. RuntimeFunction now overrides ShouldBeInlined to return false for
+kCCBuiltins, matching Builtin.
+
+Phase 2 bar: generated C++ parses. Link-level correctness (Runtime::Call<>
+template may need to be provided, or spelling adjusted) is Phase 4.
+---
+ deps/v8/src/torque/cc-generator.cc | 51 +++++++++++++++++++++++++++++-
+ deps/v8/src/torque/declarable.h    | 10 ++++++
+ 2 files changed, 60 insertions(+), 1 deletion(-)
+
+diff --git a/deps/v8/src/torque/cc-generator.cc b/deps/v8/src/torque/cc-generator.cc
+index fe28ca8b..650ee4f6 100644
+--- a/deps/v8/src/torque/cc-generator.cc
++++ b/deps/v8/src/torque/cc-generator.cc
+@@ -336,7 +336,56 @@ void CCGenerator::EmitInstruction(
+ 
+ void CCGenerator::EmitInstruction(const CallRuntimeInstruction& instruction,
+                                   Stack<std::string>* stack) {
+-  ReportError("Not supported in C++ output: CallRuntime");
++  if (instruction.catch_block) {
++    ReportError(
++        "Phase 2: CallRuntime with a catch block (exception handling) is "
++        "deferred to Phase 3.");
++  }
++  std::vector<std::string> arguments = stack->PopMany(instruction.argc);
++  const Type* return_type =
++      instruction.runtime_function->signature().return_type;
++  std::vector<const Type*> result_types;
++  if (return_type != TypeOracle::GetNeverType()) {
++    result_types = LowerType(return_type);
++  }
++  if (result_types.size() > 1) {
++    ReportError("runtime function must have at most one result");
++  }
++
++  // TODO(phase-4): verify Runtime::Call<Runtime::k...> signature for kCC
++  // emission path. V8 does not currently expose a static Runtime::Call<>
++  // template; Phase 2's correctness bar is "generated C++ at least parses",
++  // and link-level correctness is out of scope until Phase 4.
++  if (instruction.is_tailcall) {
++    out() << "  return Runtime::Call<Runtime::k"
++          << instruction.runtime_function->ExternalName() << ">(isolate";
++    for (const auto& arg : arguments) out() << ", " << arg;
++    out() << ");\n";
++    return;
++  }
++
++  if (result_types.size() == 1) {
++    std::string result_name =
++        DefinitionToVariable(instruction.GetValueDefinition(0));
++    decls() << "  " << result_types[0]->GetRuntimeType() << " " << result_name
++            << "{};  USE(" << result_name << ");\n";
++    stack->Push(result_name);
++    out() << "  " << result_name << " = Runtime::Call<Runtime::k"
++          << instruction.runtime_function->ExternalName() << ">(isolate";
++    for (const auto& arg : arguments) out() << ", " << arg;
++    out() << ");\n";
++  } else {
++    DCHECK_EQ(0, result_types.size());
++    out() << "  Runtime::Call<Runtime::k"
++          << instruction.runtime_function->ExternalName() << ">(isolate";
++    for (const auto& arg : arguments) out() << ", " << arg;
++    out() << ");\n";
++    if (return_type == TypeOracle::GetNeverType()) {
++      out() << "  UNREACHABLE();\n";
++    } else {
++      DCHECK(return_type == TypeOracle::GetVoidType());
++    }
++  }
+ }
+ 
+ void CCGenerator::EmitInstruction(const BranchInstruction& instruction,
+diff --git a/deps/v8/src/torque/declarable.h b/deps/v8/src/torque/declarable.h
+index c6a3639c..202bdcb6 100644
+--- a/deps/v8/src/torque/declarable.h
++++ b/deps/v8/src/torque/declarable.h
+@@ -543,6 +543,16 @@ class Builtin : public Callable {
+ class RuntimeFunction : public Callable {
+  public:
+   DECLARE_DECLARABLE_BOILERPLATE(RuntimeFunction, runtime)
++  // Runtime functions must NOT be inlined in the kCCBuiltins pass. The
++  // default Callable::ShouldBeInlined returns true for kCCBuiltins (so that
++  // non-Builtin callables are suppressed), but runtime calls are emitted
++  // via CallRuntimeInstruction from inside a Builtin body and need their
++  // arguments pushed onto the Torque stack. Inlining here would skip stack
++  // population and trigger "wrong argument types" at type-instruction time.
++  bool ShouldBeInlined(OutputType output_type) const override {
++    if (output_type == OutputType::kCCBuiltins) return false;
++    return Callable::ShouldBeInlined(output_type);
++  }
+ 
+  private:
+   friend class Declarations;
+-- 
+2.50.1 (Apple Git-155)
+
+
+From f301bdabda1f8a4bd9f34ffe2c5f5a659e2c021b Mon Sep 17 00:00:00 2001
+From: Brandon Payton <brandon@happycode.net>
+Date: Tue, 21 Apr 2026 11:44:10 -0400
+Subject: [PATCH 20/21] torque: implement
+ CCGenerator::Emit(CallBuiltinInstruction)
+
+---
+ deps/v8/src/torque/cc-generator.cc | 32 +++++++++++++++++++++++++++++-
+ 1 file changed, 31 insertions(+), 1 deletion(-)
+
+diff --git a/deps/v8/src/torque/cc-generator.cc b/deps/v8/src/torque/cc-generator.cc
+index 650ee4f6..406e09b3 100644
+--- a/deps/v8/src/torque/cc-generator.cc
++++ b/deps/v8/src/torque/cc-generator.cc
+@@ -325,7 +325,37 @@ void CCGenerator::EmitInstruction(const MakeLazyNodeInstruction& instruction,
+ 
+ void CCGenerator::EmitInstruction(const CallBuiltinInstruction& instruction,
+                                   Stack<std::string>* stack) {
+-  ReportError("Not supported in C++ output: CallBuiltin");
++  if (instruction.is_tailcall) {
++    ReportError("Phase 2: CallBuiltin tail-call is deferred.");
++  }
++  if (instruction.builtin->IsJavaScript()) {
++    ReportError("Phase 2: JS-linkage CallBuiltin is deferred to Phase 3.");
++  }
++  if (instruction.catch_block) {
++    ReportError("Phase 2: CallBuiltin with catch block is deferred.");
++  }
++
++  std::vector<std::string> arguments = stack->PopMany(instruction.argc);
++  std::vector<const Type*> result_types =
++      LowerType(instruction.builtin->signature().return_type);
++
++  std::string result_name;
++  if (result_types.size() == 1) {
++    result_name = DefinitionToVariable(instruction.GetValueDefinition(0));
++    decls() << "  " << result_types[0]->GetRuntimeType() << " " << result_name
++            << "{};  USE(" << result_name << ");\n";
++    stack->Push(result_name);
++    out() << "  " << result_name << " = ";
++  } else if (result_types.empty()) {
++    out() << "  ";
++  } else {
++    ReportError(
++        "Phase 2: CallBuiltin multi-result (PairT) return is deferred.");
++  }
++
++  out() << "Builtin_" << instruction.builtin->ExternalName() << "(isolate";
++  for (const auto& arg : arguments) out() << ", " << arg;
++  out() << ");\n";
+ }
+ 
+ void CCGenerator::EmitInstruction(
+-- 
+2.50.1 (Apple Git-155)
+
+
+From b7b4d0c9411cce88fd6bdb5e5835f50b27f4fa99 Mon Sep 17 00:00:00 2001
+From: Brandon Payton <brandon@happycode.net>
+Date: Tue, 21 Apr 2026 11:49:57 -0400
+Subject: [PATCH 21/21] torque: implement
+ CCGenerator::Emit(CallBuiltinPointerInstruction)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Replace the ReportError stub with a Phase-2 placeholder emission for
+CallBuiltinPointerInstruction. Mirrors CSAGenerator's shape but lowers
+to a typed C++ function-pointer invoked through Builtins::CppEntryOf.
+
+The BuiltinPtr value is a Tagged<Smi> carrying the Builtin enum id
+(see PushBuiltinPointerInstruction), so we extract it with Smi::ToInt,
+resolve via a static_cast<Builtin> to Builtins::CppEntryOf, reinterpret
+the result as a FnPtr matching the BuiltinPointerType signature, and
+call it with (isolate, args...).
+
+Builtins::CppEntryOf does not exist yet — Phase 4 will generate a
+builtins-cc-table.inc that provides it. Phase 2's correctness bar is
+that the emission is syntactically valid C++ with the right signature
+shape, which this patch satisfies.
+
+Tail-calls to a BuiltinPtr are deferred (matches CSA's behaviour).
+Multi-result return types remain unsupported (PairT deferral).
+---
+ deps/v8/src/torque/cc-generator.cc | 40 +++++++++++++++++++++++++++++-
+ 1 file changed, 39 insertions(+), 1 deletion(-)
+
+diff --git a/deps/v8/src/torque/cc-generator.cc b/deps/v8/src/torque/cc-generator.cc
+index 406e09b3..ac2e28a6 100644
+--- a/deps/v8/src/torque/cc-generator.cc
++++ b/deps/v8/src/torque/cc-generator.cc
+@@ -361,7 +361,45 @@ void CCGenerator::EmitInstruction(const CallBuiltinInstruction& instruction,
+ void CCGenerator::EmitInstruction(
+     const CallBuiltinPointerInstruction& instruction,
+     Stack<std::string>* stack) {
+-  ReportError("Not supported in C++ output: CallBuiltinPointer");
++  if (instruction.is_tailcall) {
++    ReportError("Phase 2: CallBuiltinPointer tail-call is deferred.");
++  }
++  std::vector<std::string> arguments = stack->PopMany(instruction.argc);
++  std::string function = stack->Pop();
++  std::vector<const Type*> result_types =
++      LowerType(instruction.type->return_type());
++  if (result_types.size() != 1) {
++    ReportError("builtin pointers must have exactly one result");
++  }
++  std::string result_name =
++      DefinitionToVariable(instruction.GetValueDefinition(0));
++  decls() << "  " << result_types[0]->GetRuntimeType() << " " << result_name
++          << "{};  USE(" << result_name << ");\n";
++  stack->Push(result_name);
++
++  // Phase 2 placeholder: resolve the BuiltinPtr (Tagged<Smi> carrying the
++  // Builtin enum id — see PushBuiltinPointerInstruction emission above) to
++  // a raw function pointer via Builtins::CppEntryOf(...) and invoke it
++  // directly. `Builtins::CppEntryOf` does not yet exist — Phase 4 will
++  // introduce it alongside a generated `builtins-cc-table.inc` that maps
++  // Builtin enum ids to Builtin_* entry addresses. For Phase 2 we only
++  // need the emission to be syntactically valid C++ and to capture the
++  // correct signature shape for the call.
++  out() << "  {\n"
++        << "    using FnPtr = " << result_types[0]->GetRuntimeType()
++        << " (*)(Isolate*";
++  const TypeVector& params = instruction.type->parameter_types();
++  for (const Type* param : params) {
++    out() << ", " << param->GetRuntimeType();
++  }
++  out() << ");\n"
++        << "    FnPtr fn = reinterpret_cast<FnPtr>(\n"
++        << "        Builtins::CppEntryOf(static_cast<Builtin>(\n"
++        << "            Smi::ToInt(" << function << "))));\n"
++        << "    " << result_name << " = fn(isolate";
++  for (const auto& arg : arguments) out() << ", " << arg;
++  out() << ");\n"
++        << "  }\n";
+ }
+ 
+ void CCGenerator::EmitInstruction(const CallRuntimeInstruction& instruction,
 -- 
 2.50.1 (Apple Git-155)
 
