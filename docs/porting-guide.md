@@ -57,6 +57,68 @@ For large programs, use `--asyncify-onlylist` to limit instrumentation to functi
 npx tsx examples/run-example.ts /path/to/program.wasm [args]
 ```
 
+## Shipping runtime files: the lazy-archive pattern
+
+Many ported programs depend on a tree of read-only runtime files at execution time — vim's syntax and indent scripts, NetHack's `nhdat`, Python's stdlib, ncurses terminfo, and so on. **Use the lazy-archive pattern to deliver them.** It is the canonical approach for the browser shell demo and any other browser page that needs on-demand runtime files.
+
+Two alternatives exist and should be avoided unless you have a specific reason:
+
+- **Baking files directly into the VFS image** inflates the demo's initial download even when the program is never launched.
+- **Per-file lazy registration** (`registerLazyFile`) works for a binary or two but scales badly to thousands of small files because each file issues its own HTTP request on first access.
+
+### When to use it
+
+Any time a ported program needs more than a handful of runtime files that together exceed a few hundred KB. The binary itself can (and usually should) go into the same archive — vim's `vim.zip` contains both the wasm binary and the runtime tree.
+
+### How it works
+
+`MemoryFileSystem.registerLazyArchiveFromEntries(url, zipEntries, mountPrefix)` walks the central directory of a zip, creates inode stubs for every file under `mountPrefix`, and remembers the archive URL. On first access to any stub in the group, the worker fetches the full zip, materializes every entry into memory, and future reads are served from memory. Materialization happens once per VFS instance.
+
+At runtime the URL stored in the group is bare — a plain filename like `vim.zip`. The browser runtime calls `memfs.rewriteLazyArchiveUrls(url => BASE_URL + url)` once, right after `MemoryFileSystem.fromImage`, so the archive resolves against the deployment's base URL instead of the build-time one.
+
+### Build-side contract
+
+A porter producing a lazy-archive-backed program creates three things:
+
+1. **`examples/libs/<program>/build-<program>.sh`** — cross-compiles the wasm binary into `examples/libs/<program>/bin/<program>.wasm`.
+2. **`examples/libs/<program>/bundle-runtime.sh`** (only if the source tree already has runtime files that need trimming) — copies the minimal runtime tree into `examples/libs/<program>/runtime/`.
+3. **`examples/browser/scripts/build-<program>-zip.sh`** — stages `bin/<program>` and `share/<program>/…` into `examples/browser/public/<program>.zip`. Paths inside the archive are relative (e.g. `bin/vim`, `share/vim/vim91/syntax/c.vim`), and the mount prefix chosen at registration time (usually `/usr/`) turns them into absolute VFS paths.
+
+Programs whose runtime files are small enough to version in-tree (NetHack's `nhdat` after DLB packing, for instance) can skip step 2 and have the zip script pull directly from the build's `out/` directory.
+
+### Registration
+
+`examples/browser/scripts/build-shell-vfs-image.ts` is the reference example:
+
+```typescript
+import { parseZipCentralDirectory } from "../../../host/src/vfs/zip";
+
+function populateVimArchive(fs: MemoryFileSystem): number {
+  const zipBytes = readFileSync("examples/browser/public/vim.zip");
+  const entries = parseZipCentralDirectory(new Uint8Array(zipBytes));
+  const group = fs.registerLazyArchiveFromEntries("vim.zip", entries, "/usr/");
+  return group.entries.size;
+}
+```
+
+The call creates `/usr/bin/vim` and `/usr/share/vim/vim91/...` as stubs inside the shell VFS. The demo's `main.ts` does **not** need a matching `registerLazyFiles` entry for the binary — the stub from the archive is enough.
+
+### When you also want `/bin/<program>` symlinks
+
+Create them in the VFS image builder (see `populateExtendedSymlinks` in `build-shell-vfs-image.ts`) — not inside the archive. Symlinks are a VFS concern, not a packaging concern.
+
+### Reference implementation
+
+Vim:
+
+- `examples/libs/vim/build-vim.sh` — cross build.
+- `examples/libs/vim/bundle-runtime.sh` — minimal runtime tree.
+- `examples/browser/scripts/build-vim-zip.sh` — stage + zip.
+- `examples/browser/scripts/build-shell-vfs-image.ts` — `populateVimArchive()`.
+- `examples/browser/pages/shell/main.ts` — `memfs.rewriteLazyArchiveUrls(url => BASE_URL + url)`.
+
+Follow the same layout for new ports; reviewers will expect it.
+
 ## Creating a Node.js Runner
 
 The simplest way to run a Wasm program is with `examples/run-example.ts`. For custom runners, use `CentralizedKernelWorker` directly.
