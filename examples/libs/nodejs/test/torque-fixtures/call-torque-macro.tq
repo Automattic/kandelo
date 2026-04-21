@@ -1,0 +1,21 @@
+// Phase 4 test fixture: calling a non-inline Torque macro from a builtin.
+// Before Phase 4, the generated ccbuiltins callsite references a
+// TqRuntime<name>_<N> symbol no translation unit defines. Phase 4 adds
+// the body via a curated fifth-pass iteration and widens
+// Macro::ShouldBeInlined so plain TorqueMacros emit standalone bodies.
+namespace test_cc {
+  macro TorqueCcTest_CallMeFromBuiltin(x: Smi): Smi labels Fail {
+    if (x == 0) goto Fail;
+    return x;
+  }
+
+  builtin TorqueCcTest_CallTorqueMacro(
+      implicit context: Context)(arg: Smi): Smi {
+    try {
+      const r: Smi = TorqueCcTest_CallMeFromBuiltin(arg) otherwise Bailout;
+      return r;
+    } label Bailout {
+      return -1;
+    }
+  }
+}

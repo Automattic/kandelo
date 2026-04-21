@@ -22,9 +22,23 @@ Tagged<Smi> Builtin_TorqueCcTest_StoreReference(Isolate* isolate, Tagged<Context
   goto block0;
 
   block0:
-  std::tie(tmp0, tmp1) = (std::make_tuple(parameter1, parameter2));
+  std::tie(tmp0, tmp1) = TqRuntimeNewReference_Smi_0(parameter1, parameter2);
   TaggedField<Tagged<Smi>>::store(UncheckedCast<HeapObject>(tmp0), static_cast<int>(tmp1), parameter3);
   return parameter3;
+}
+
+// https://source.chromium.org/chromium/chromium/src/+/main:v8/test/phase2-fixtures/store-reference.tq?l=20&c=22
+inline std::tuple<Tagged<Union<HeapObject, TaggedIndex>>, intptr_t> TqRuntimeNewReference_Smi_0(Tagged<Union<HeapObject, TaggedIndex>> p_object, intptr_t p_offset) {
+  Tagged<Union<HeapObject, TaggedIndex>> tmp0{}; USE(tmp0);
+  intptr_t tmp1{}; USE(tmp1);
+  goto block0;
+
+  block0:
+  std::tie(tmp0, tmp1) = (std::make_tuple(p_object, p_offset));
+  goto block2;
+
+  block2:
+  return std::make_tuple(tmp0, tmp1);
 }
 
 
