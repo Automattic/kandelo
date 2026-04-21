@@ -1,7 +1,7 @@
 From 7b7c6b02d97d01608de95309a32514ed87453c24 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Mon, 20 Apr 2026 23:32:43 -0400
-Subject: [PATCH 01/27] torque: add OutputType::kCCBuiltins (Phase 1
+Subject: [PATCH 01/42] torque: add OutputType::kCCBuiltins (Phase 1
  scaffolding)
 
 ---
@@ -27,7 +27,7 @@ index dc10233a..aabca60b 100644
 From d46700124dea3a09293c6041f7f4c3691c90ffd2 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Mon, 20 Apr 2026 23:33:04 -0400
-Subject: [PATCH 02/27] torque: add cc_builtins file streams to PerFileStreams
+Subject: [PATCH 02/42] torque: add cc_builtins file streams to PerFileStreams
 
 ---
  deps/v8/src/torque/global-context.h | 3 +++
@@ -54,7 +54,7 @@ index db27b49d..37443bee 100644
 From 29d20ab22b50f652f8355408654b96cac09b6a42 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Mon, 20 Apr 2026 23:33:29 -0400
-Subject: [PATCH 03/27] torque: route kCCBuiltins output to cc_builtins streams
+Subject: [PATCH 03/42] torque: route kCCBuiltins output to cc_builtins streams
 
 ---
  deps/v8/src/torque/implementation-visitor.h | 4 ++++
@@ -89,7 +89,7 @@ index f8444225..e29d91c7 100644
 From a169621decd09c5fa78dbaff267c3887c94b757b Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Mon, 20 Apr 2026 23:34:03 -0400
-Subject: [PATCH 04/27] torque: Builtin::ShouldBeInlined returns false for
+Subject: [PATCH 04/42] torque: Builtin::ShouldBeInlined returns false for
  kCCBuiltins
 
 ---
@@ -128,7 +128,7 @@ index aabca60b..c6a3639c 100644
 From 6a8654713dc9114a02ddeeca664447ccd282edec Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Mon, 20 Apr 2026 23:36:54 -0400
-Subject: [PATCH 05/27] torque: route kCCBuiltins through extern-macro
+Subject: [PATCH 05/42] torque: route kCCBuiltins through extern-macro
  constexpr call path
 
 ---
@@ -159,7 +159,7 @@ index fc4dbbcc..78c6eee5 100644
 From 6c3dc9a1d3e28f01fd2f9a156143d3c63226712d Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Mon, 20 Apr 2026 23:41:18 -0400
-Subject: [PATCH 06/27] torque: add kCCBuiltins fourth pass in
+Subject: [PATCH 06/42] torque: add kCCBuiltins fourth pass in
  VisitAllDeclarables
 
 ---
@@ -194,7 +194,7 @@ index 78c6eee5..4be1c8e7 100644
 From 93560a5b6c1a83702e2f79907e5b6a2d04c77b64 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Mon, 20 Apr 2026 23:52:17 -0400
-Subject: [PATCH 07/27] torque: Visit(Builtin*) emits Phase 1 stub under
+Subject: [PATCH 07/42] torque: Visit(Builtin*) emits Phase 1 stub under
  kCCBuiltins
 
 ---
@@ -229,7 +229,7 @@ index 4be1c8e7..54551d20 100644
 From 78e36e8965749dbd4101599d2f18b0ce560ac0c2 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Mon, 20 Apr 2026 23:53:34 -0400
-Subject: [PATCH 08/27] torque: filter fourth pass to Builtin declarables only
+Subject: [PATCH 08/42] torque: filter fourth pass to Builtin declarables only
 
 Task 1.6 landed the fourth pass as the plan specified, iterating every
 declarable. Smoke-testing on the 245-file stock fileset under kCCBuiltins
@@ -279,7 +279,7 @@ index 54551d20..ae96de1b 100644
 From 7cf1abb5c751a99b24656968b12c8570d613afed Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Mon, 20 Apr 2026 23:57:17 -0400
-Subject: [PATCH 09/27] torque: write -tq-ccbuiltins.cc per source file
+Subject: [PATCH 09/42] torque: write -tq-ccbuiltins.cc per source file
 
 ---
  deps/v8/src/torque/implementation-visitor.cc | 21 ++++++++++++++++++++
@@ -324,7 +324,7 @@ index ae96de1b..f0dd3e1b 100644
 From 2440f125fbaa1d474a3213be74c09ed5858b6306 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Tue, 21 Apr 2026 00:01:17 -0400
-Subject: [PATCH 10/27] v8 build: declare -tq-ccbuiltins.cc in run_torque
+Subject: [PATCH 10/42] v8 build: declare -tq-ccbuiltins.cc in run_torque
  outputs
 
 ---
@@ -350,7 +350,7 @@ index fee8aedf..1f34d46b 100644
 From a776e214d136ea766c3c60d9ffb05fee67ffeefa Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 09:37:53 -0400
-Subject: [PATCH 11/27] torque: add --cc-builtins-whitelist CLI flag
+Subject: [PATCH 11/42] torque: add --cc-builtins-whitelist CLI flag
 
 ---
  deps/v8/src/torque/global-context.h   |  7 ++++++
@@ -482,7 +482,7 @@ index 7ccc5bf9..e37f14e4 100644
 From 5dc40081044515429f06d80c0136d331c0dba88f Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 09:53:05 -0400
-Subject: [PATCH 12/27] =?UTF-8?q?torque:=20Visit(Builtin*)=20kCCBuiltins?=
+Subject: [PATCH 12/42] =?UTF-8?q?torque:=20Visit(Builtin*)=20kCCBuiltins?=
  =?UTF-8?q?=20=E2=80=94=20real=20emission=20under=20whitelist?=
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -608,7 +608,7 @@ index f0dd3e1b..41e12a39 100644
 From a4127f86c8745744782d92686f9eda5f162b3eb1 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 10:42:10 -0400
-Subject: [PATCH 13/27] torque: implement CCGenerator::Emit(ReturnInstruction)
+Subject: [PATCH 13/42] torque: implement CCGenerator::Emit(ReturnInstruction)
 
 ---
  deps/v8/src/torque/cc-generator.cc | 15 ++++++++++++++-
@@ -647,7 +647,7 @@ index aaa3ee74..2d10bada 100644
 From f9b1fcdd2aa7b4cb0dc0eb4dfeb69b0340331359 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 10:56:38 -0400
-Subject: [PATCH 14/27] torque: implement
+Subject: [PATCH 14/42] torque: implement
  CCGenerator::Emit(PushUninitializedInstruction)
 
 ---
@@ -687,7 +687,7 @@ index 2d10bada..da87b569 100644
 From e403058316527bd14b921699c5f40776cb564901 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Tue, 21 Apr 2026 11:01:24 -0400
-Subject: [PATCH 15/27] torque: implement
+Subject: [PATCH 15/42] torque: implement
  CCGenerator::Emit(NamespaceConstantInstruction)
 
 ---
@@ -742,7 +742,7 @@ index da87b569..c8d30d0c 100644
 From 6c8e8c93347987e62c4292f618f9579ed132e647 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Tue, 21 Apr 2026 11:14:09 -0400
-Subject: [PATCH 16/27] torque: implement
+Subject: [PATCH 16/42] torque: implement
  CCGenerator::Emit(PushBuiltinPointerInstruction)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -803,7 +803,7 @@ index c8d30d0c..da7fb816 100644
 From 5ac4c5c9844a06831e258d0b41312691308158f8 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Tue, 21 Apr 2026 11:24:41 -0400
-Subject: [PATCH 17/27] torque: implement
+Subject: [PATCH 17/42] torque: implement
  CCGenerator::Emit(StoreReferenceInstruction)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -898,7 +898,7 @@ index da7fb816..d459a3b7 100644
 From 4e2daca40ba23b35a65d4692eb351da57e87d872 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Tue, 21 Apr 2026 11:28:58 -0400
-Subject: [PATCH 18/27] torque: implement
+Subject: [PATCH 18/42] torque: implement
  CCGenerator::Emit(StoreBitFieldInstruction)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -978,7 +978,7 @@ index d459a3b7..fe28ca8b 100644
 From d894d3359a3bfe5b7c91bc390cc774dc1dec5573 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Tue, 21 Apr 2026 11:38:57 -0400
-Subject: [PATCH 19/27] torque: implement
+Subject: [PATCH 19/42] torque: implement
  CCGenerator::Emit(CallRuntimeInstruction)
 
 Replaces the Phase 1 ReportError stub with real kCCBuiltins emission:
@@ -1095,7 +1095,7 @@ index c6a3639c..202bdcb6 100644
 From f301bdabda1f8a4bd9f34ffe2c5f5a659e2c021b Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Tue, 21 Apr 2026 11:44:10 -0400
-Subject: [PATCH 20/27] torque: implement
+Subject: [PATCH 20/42] torque: implement
  CCGenerator::Emit(CallBuiltinInstruction)
 
 ---
@@ -1152,7 +1152,7 @@ index 650ee4f6..406e09b3 100644
 From b7b4d0c9411cce88fd6bdb5e5835f50b27f4fa99 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Tue, 21 Apr 2026 11:49:57 -0400
-Subject: [PATCH 21/27] torque: implement
+Subject: [PATCH 21/42] torque: implement
  CCGenerator::Emit(CallBuiltinPointerInstruction)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -1237,7 +1237,7 @@ index 406e09b3..ac2e28a6 100644
 From 55af7d6d5d37c23c987ad4fc89a9608c8da369a3 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 13:50:27 -0400
-Subject: [PATCH 22/27] torque: add CurrentSourcePosition::Scope to
+Subject: [PATCH 22/42] torque: add CurrentSourcePosition::Scope to
  Visit(Builtin*) kCCBuiltins branch
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -1302,7 +1302,7 @@ index 41e12a39..7ca86dff 100644
 From 9b794e1fa4b383e86fdc0d46f818c44f8fe78857 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 14:08:09 -0400
-Subject: [PATCH 23/27] torque: ExternMacro + Intrinsic ShouldBeInlined return
+Subject: [PATCH 23/42] torque: ExternMacro + Intrinsic ShouldBeInlined return
  false for kCCBuiltins
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -1386,7 +1386,7 @@ index 202bdcb6..4c40c0d8 100644
 From 6cc0119554fdfdae724c40314c8c1abf8281ccb9 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 14:08:22 -0400
-Subject: [PATCH 24/27] torque: implement
+Subject: [PATCH 24/42] torque: implement
  CCGenerator::Emit(MakeLazyNodeInstruction)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -1463,7 +1463,7 @@ index ac2e28a6..f6f17c04 100644
 From e0464526b0147c23cc8a35e0380b7b3cf923fda0 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 14:16:41 -0400
-Subject: [PATCH 25/27] torque: Macro::ShouldBeInlined returns false for
+Subject: [PATCH 25/42] torque: Macro::ShouldBeInlined returns false for
  labeled macros under kCCBuiltins
 
 Under kCCBuiltins, a labeled macro call site must go through
@@ -1514,7 +1514,7 @@ index 4c40c0d8..02df3b0f 100644
 From f279deb8968a7c7d0a0c085287b20a2a93f117b2 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 14:19:47 -0400
-Subject: [PATCH 26/27] torque: implement
+Subject: [PATCH 26/42] torque: implement
  CCGenerator::Emit(CallCsaMacroAndBranchInstruction)
 
 Emits the out-param rewrite pattern for labeled macro calls under
@@ -1669,7 +1669,7 @@ index f6f17c04..9b452f95 100644
 From 3305160824b005f1828b4492a9175dd58d986e19 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 14:26:23 -0400
-Subject: [PATCH 27/27] torque: implement
+Subject: [PATCH 27/42] torque: implement
  CCGenerator::Emit(GotoExternalInstruction)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -1731,6 +1731,1113 @@ index 9b452f95..b9e216db 100644
  }
  
  void CCGenerator::EmitInstruction(const ReturnInstruction& instruction,
+-- 
+2.50.1 (Apple Git-155)
+
+
+From 57a1465fce8424b855d384a400cab041bb23ef03 Mon Sep 17 00:00:00 2001
+From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
+Date: Tue, 21 Apr 2026 15:25:12 -0400
+Subject: [PATCH 28/42] torque: add AllMacrosForCCBuiltinsOutput list +
+ accessor
+
+---
+ deps/v8/src/torque/global-context.h | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/deps/v8/src/torque/global-context.h b/deps/v8/src/torque/global-context.h
+index 0ae3f57d..d6677fd4 100644
+--- a/deps/v8/src/torque/global-context.h
++++ b/deps/v8/src/torque/global-context.h
+@@ -138,6 +138,18 @@ class GlobalContext : public base::ContextualClass<GlobalContext> {
+   AllMacrosForCCDebugOutput() {
+     return Get().macros_for_cc_debug_output_;
+   }
++  static void EnsureInCCBuiltinsOutputList(TorqueMacro* macro,
++                                           SourceId source) {
++    GlobalContext& c = Get();
++    auto item = std::make_pair(macro, source);
++    if (c.macros_for_ccbuiltins_output_set_.insert(item).second) {
++      c.macros_for_ccbuiltins_output_.push_back(item);
++    }
++  }
++  static const std::vector<std::pair<TorqueMacro*, SourceId>>&
++  AllMacrosForCCBuiltinsOutput() {
++    return Get().macros_for_ccbuiltins_output_;
++  }
+ 
+  private:
+   bool collect_language_server_data_;
+@@ -155,6 +167,8 @@ class GlobalContext : public base::ContextualClass<GlobalContext> {
+   std::set<std::pair<TorqueMacro*, SourceId>> macros_for_cc_output_set_;
+   std::vector<std::pair<TorqueMacro*, SourceId>> macros_for_cc_debug_output_;
+   std::set<std::pair<TorqueMacro*, SourceId>> macros_for_cc_debug_output_set_;
++  std::vector<std::pair<TorqueMacro*, SourceId>> macros_for_ccbuiltins_output_;
++  std::set<std::pair<TorqueMacro*, SourceId>> macros_for_ccbuiltins_output_set_;
+   bool instance_types_initialized_ = false;
+ 
+   friend class LanguageServerData;
+-- 
+2.50.1 (Apple Git-155)
+
+
+From 1afcd23d4e0eefa15ce9b1595a580fcc7b9d3253 Mon Sep 17 00:00:00 2001
+From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
+Date: Tue, 21 Apr 2026 15:25:25 -0400
+Subject: [PATCH 29/42] torque: record TorqueMacros referenced from kCCBuiltins
+ builtins
+
+---
+ deps/v8/src/torque/implementation-visitor.cc | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/deps/v8/src/torque/implementation-visitor.cc b/deps/v8/src/torque/implementation-visitor.cc
+index 7ca86dff..5ce1bee1 100644
+--- a/deps/v8/src/torque/implementation-visitor.cc
++++ b/deps/v8/src/torque/implementation-visitor.cc
+@@ -3050,6 +3050,19 @@ VisitResult ImplementationVisitor::GenerateCall(
+         GlobalContext::EnsureInCCOutputList(torque_macro, file);
+       }
+     }
++    // Under kCCBuiltins, the body of a TorqueMacro called from a
++    // whitelisted builtin must be emitted in the same translation unit
++    // as the callsite so that `TqRuntime<name>_<N>(...)` resolves at
++    // link time. Mirror the kCC/kCCDebug trigger above by registering
++    // the target on a curated list that the fifth pass in
++    // VisitAllDeclarables iterates.
++    if (output_type_ == OutputType::kCCBuiltins && !inline_macro) {
++      if (auto* torque_macro = TorqueMacro::DynamicCast(macro)) {
++        auto* streams = CurrentFileStreams::Get();
++        SourceId file = streams ? streams->file : SourceId::Invalid();
++        GlobalContext::EnsureInCCBuiltinsOutputList(torque_macro, file);
++      }
++    }
+ 
+     // TODO(torque-builder): Consider a function builder here.
+     if (return_type->IsConstexpr()) {
+-- 
+2.50.1 (Apple Git-155)
+
+
+From 181803dda59d7d47e46c1da7704893d8e132a9c0 Mon Sep 17 00:00:00 2001
+From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
+Date: Tue, 21 Apr 2026 15:26:07 -0400
+Subject: [PATCH 30/42] torque: record TorqueMacros referenced by MakeLazyNode
+ under kCCBuiltins
+
+---
+ deps/v8/src/torque/cc-generator.cc | 17 ++++++++++++++---
+ 1 file changed, 14 insertions(+), 3 deletions(-)
+
+diff --git a/deps/v8/src/torque/cc-generator.cc b/deps/v8/src/torque/cc-generator.cc
+index b9e216db..bb0c44db 100644
+--- a/deps/v8/src/torque/cc-generator.cc
++++ b/deps/v8/src/torque/cc-generator.cc
+@@ -8,6 +8,7 @@
+ 
+ #include "src/common/globals.h"
+ #include "src/torque/global-context.h"
++#include "src/torque/implementation-visitor.h"
+ #include "src/torque/type-oracle.h"
+ #include "src/torque/types.h"
+ #include "src/torque/utils.h"
+@@ -438,9 +439,19 @@ void CCGenerator::EmitInstruction(const MakeLazyNodeInstruction& instruction,
+   // state. The lambda body invokes the getter macro via the same
+   // CCName()/CallCsaMacroInstruction convention used elsewhere in cc-output
+   // (no leading `state_` or `isolate` argument — those are CSA / builtin-
+-  // linkage specific). For Phase 3 this only needs to parse; the referenced
+-  // `TqRuntime_<getter>` function is emitted by the kCC pass and will be
+-  // linked together with the kCCBuiltins output in a later phase.
++  // linkage specific).
++  //
++  // Under kCCBuiltins, MakeLazyNode emits a direct call to
++  // TqRuntime<name>_<N>(...) bypassing GenerateCall's trigger at
++  // implementation-visitor.cc. Record the target on the
++  // kCCBuiltins-output macro list so the fifth pass in
++  // VisitAllDeclarables emits its body in the same translation unit
++  // as this callsite.
++  if (auto* torque_macro = TorqueMacro::DynamicCast(instruction.macro)) {
++    auto* streams = ImplementationVisitor::CurrentFileStreams::Get();
++    SourceId file = streams ? streams->file : SourceId::Invalid();
++    GlobalContext::EnsureInCCBuiltinsOutputList(torque_macro, file);
++  }
+   TypeVector parameter_types =
+       instruction.macro->signature().parameter_types.types;
+   std::vector<std::string> args = ProcessArgumentsCommon(
+-- 
+2.50.1 (Apple Git-155)
+
+
+From c1b9e4e2a164d1c3451b47d3c80662ecf1b6e1a3 Mon Sep 17 00:00:00 2001
+From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
+Date: Tue, 21 Apr 2026 15:26:25 -0400
+Subject: [PATCH 31/42] torque: add fifth pass emitting kCCBuiltins-referenced
+ macro bodies
+
+---
+ deps/v8/src/torque/implementation-visitor.cc | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/deps/v8/src/torque/implementation-visitor.cc b/deps/v8/src/torque/implementation-visitor.cc
+index 5ce1bee1..1cbd2682 100644
+--- a/deps/v8/src/torque/implementation-visitor.cc
++++ b/deps/v8/src/torque/implementation-visitor.cc
+@@ -3725,6 +3725,23 @@ void ImplementationVisitor::VisitAllDeclarables() {
+     }
+   }
+ 
++  // Fifth pass: emit bodies for TorqueMacros referenced from kCCBuiltins
++  // builtins (populated during the fourth pass by GenerateCall's trigger
++  // and MakeLazyNode's emission). Iterates a curated list exactly like
++  // the kCC and kCCDebug passes — matches existing V8 discipline so the
++  // TqRuntime<name>_<N> symbol emitted at each callsite resolves to a
++  // body in the same -tq-ccbuiltins.cc translation unit.
++  const std::vector<std::pair<TorqueMacro*, SourceId>>& ccb_macros =
++      GlobalContext::AllMacrosForCCBuiltinsOutput();
++  for (size_t i = 0; i < ccb_macros.size(); ++i) {
++    try {
++      Visit(static_cast<Declarable*>(ccb_macros[i].first),
++            ccb_macros[i].second);
++    } catch (TorqueAbortCompilation&) {
++      // Recover from compile errors here. The error is recorded already.
++    }
++  }
++
+   output_type_ = OutputType::kCSA;
+ }
+ 
+-- 
+2.50.1 (Apple Git-155)
+
+
+From 56d0b70cecc9718fdb73a722e50b997a5b5fef9e Mon Sep 17 00:00:00 2001
+From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
+Date: Tue, 21 Apr 2026 15:27:35 -0400
+Subject: [PATCH 32/42] torque: route kCCBuiltins through VisitMacroCommon +
+ GenerateMacroFunctionDeclaration
+
+---
+ deps/v8/src/torque/implementation-visitor.cc | 45 +++++++++++++++-----
+ 1 file changed, 35 insertions(+), 10 deletions(-)
+
+diff --git a/deps/v8/src/torque/implementation-visitor.cc b/deps/v8/src/torque/implementation-visitor.cc
+index 1cbd2682..d3db6b8d 100644
+--- a/deps/v8/src/torque/implementation-visitor.cc
++++ b/deps/v8/src/torque/implementation-visitor.cc
+@@ -424,6 +424,12 @@ void ImplementationVisitor::VisitMacroCommon(Macro* macro) {
+     include_guard.emplace(&csa_cc,
+                           "V8_INTERNAL_DEFINED_"s + macro->CCDebugName());
+   }
++  // kCCBuiltins macro bodies live in the per-file -tq-ccbuiltins.cc
++  // (written by WriteFile in VisitAllDeclarables). No include-guard is
++  // needed because each macro body is emitted once per translation unit
++  // by the fifth-pass list iteration; the TqRuntime<name>_<N> symbol is
++  // generated via CCName() (same mangling as kCC) but lands in a
++  // different .cc file so no multi-def collision occurs.
+ 
+   f.PrintBeginDefinition(csa_ccfile());
+ 
+@@ -436,6 +442,11 @@ void ImplementationVisitor::VisitMacroCommon(Macro* macro) {
+     csa_ccfile()
+         << "  compiler::CodeAssembler::SourcePositionScope pos_scope(&ca_);\n";
+   }
++  // kCCBuiltins: no DisallowGarbageCollection scope (the kCC / kCCDebug
++  // contract assumed field-offset-only work; kCCBuiltins aspires to
++  // emit real builtin bodies that may need to interact with the heap,
++  // and enforcement lives in the larger rewrite). No CSA assembler
++  // state either — we're plain C++.
+ 
+   Stack<std::string> lowered_parameters;
+   Stack<const Type*> lowered_parameter_types;
+@@ -525,6 +536,12 @@ void ImplementationVisitor::VisitMacroCommon(Macro* macro) {
+   } else if (output_type_ == OutputType::kCCDebug) {
+     CCGenerator cc_generator{assembler().Result(), csa_ccfile(), true};
+     values = cc_generator.EmitGraph(lowered_parameters);
++  } else if (output_type_ == OutputType::kCCBuiltins) {
++    // kCCBuiltins macro bodies go through CCGenerator (same as kCC) —
++    // plain C++ emission, not CSA assembler. is_cc_debug_=false means
++    // runtime types / no MemoryAccessor wrapping.
++    CCGenerator cc_generator{assembler().Result(), csa_ccfile()};
++    values = cc_generator.EmitGraph(lowered_parameters);
+   } else {
+     CSAGenerator csa_generator{assembler().Result(), csa_ccfile()};
+     values = csa_generator.EmitGraph(lowered_parameters);
+@@ -538,7 +555,8 @@ void ImplementationVisitor::VisitMacroCommon(Macro* macro) {
+       csa_ccfile() << "{d::MemoryAccessResult::kOk, ";
+       CCGenerator::EmitCCValue(return_value, *values, csa_ccfile());
+       csa_ccfile() << "}";
+-    } else if (output_type_ == OutputType::kCC) {
++    } else if (output_type_ == OutputType::kCC ||
++               output_type_ == OutputType::kCCBuiltins) {
+       CCGenerator::EmitCCValue(return_value, *values, csa_ccfile());
+     } else {
+       CSAGenerator::EmitCSAValue(return_value, *values, csa_ccfile());
+@@ -1987,13 +2005,18 @@ void ImplementationVisitor::GenerateImplementation(const std::string& dir) {
+ 
+ cpp::Function ImplementationVisitor::GenerateMacroFunctionDeclaration(
+     Macro* macro) {
+-  return GenerateFunction(nullptr,
+-                          output_type_ == OutputType::kCC
+-                              ? macro->CCName()
+-                              : output_type_ == OutputType::kCCDebug
+-                                    ? macro->CCDebugName()
+-                                    : macro->ExternalName(),
+-                          macro->signature(), macro->parameter_names());
++  // Under kCCBuiltins, the emitted symbol must match the
++  // TqRuntime<name>_<N> name used at each call site (GenerateCall's
++  // kCCBuiltins arm and CCGenerator::EmitInstruction's CCName() usage)
++  // so the fifth-pass body and the callsite link together. CCName()
++  // returns PrefixNameForCCOutput(ExternalName()).
++  return GenerateFunction(
++      nullptr,
++      output_type_ == OutputType::kCC || output_type_ == OutputType::kCCBuiltins
++          ? macro->CCName()
++          : output_type_ == OutputType::kCCDebug ? macro->CCDebugName()
++                                                 : macro->ExternalName(),
++      macro->signature(), macro->parameter_names());
+ }
+ 
+ cpp::Function ImplementationVisitor::GenerateFunction(
+@@ -2011,7 +2034,8 @@ cpp::Function ImplementationVisitor::GenerateFunction(
+   } else if (output_type_ == OutputType::kCCDebug) {
+     f.SetReturnType(std::string("Value<") +
+                     signature.return_type->GetDebugType() + ">");
+-  } else if (output_type_ == OutputType::kCC) {
++  } else if (output_type_ == OutputType::kCC ||
++             output_type_ == OutputType::kCCBuiltins) {
+     f.SetReturnType(signature.return_type->GetRuntimeType());
+   } else {
+     DCHECK_EQ(output_type_, OutputType::kCSA);
+@@ -2035,7 +2059,8 @@ cpp::Function ImplementationVisitor::GenerateFunction(
+   for (std::size_t i = 0; i < signature.types().size(); ++i) {
+     const Type* parameter_type = signature.types()[i];
+     std::string type;
+-    if (output_type_ == OutputType::kCC) {
++    if (output_type_ == OutputType::kCC ||
++        output_type_ == OutputType::kCCBuiltins) {
+       type = parameter_type->GetRuntimeType();
+     } else if (output_type_ == OutputType::kCCDebug) {
+       type = parameter_type->GetDebugType();
+-- 
+2.50.1 (Apple Git-155)
+
+
+From 7fdbade559f62b8f64bb91387a46d249ce440697 Mon Sep 17 00:00:00 2001
+From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
+Date: Tue, 21 Apr 2026 15:28:18 -0400
+Subject: [PATCH 33/42] torque: Macro::ShouldBeInlined returns false for all
+ TorqueMacros under kCCBuiltins
+
+---
+ deps/v8/src/torque/declarable.h | 21 ++++++++++++---------
+ 1 file changed, 12 insertions(+), 9 deletions(-)
+
+diff --git a/deps/v8/src/torque/declarable.h b/deps/v8/src/torque/declarable.h
+index 02df3b0f..ddb69f64 100644
+--- a/deps/v8/src/torque/declarable.h
++++ b/deps/v8/src/torque/declarable.h
+@@ -386,15 +386,18 @@ class Macro : public Callable {
+     // Intrinsics that are used internally in Torque and implemented as torque
+     // code should be inlined and not generate C++ definitions.
+     if (ReadableName()[0] == '%') return true;
+-    // Under kCCBuiltins, labeled macros must go through
+-    // CallCsaMacroAndBranchInstruction (and its out-param call-site
+-    // emission) rather than being inlined. Non-labeled macros continue
+-    // to inline under the base default, which keeps Phase 2 fixtures
+-    // working unchanged. ExternMacro's own override at line ~419
+-    // fires first for extern cases; this branch only affects
+-    // TorqueMacro and Method (non-extern macros with labels).
+-    if (output_type == OutputType::kCCBuiltins &&
+-        !signature().labels.empty()) {
++    // Under kCCBuiltins, ALL TorqueMacros (labeled and unlabeled)
++    // emit as standalone C++ functions — matches kCC's treatment.
++    // Inlining under kCCBuiltins would drop the callsite into
++    // InlineMacro's CSA-centric path and bypass the
++    // CallCsaMacro{,AndBranch} / MakeLazyNode emissions that Phase
++    // 3/4 rely on to produce the TqRuntime<name>_<N> symbol
++    // convention. The fifth pass in VisitAllDeclarables then emits
++    // a body for each referenced macro, so the emitted symbol
++    // resolves at link time. ExternMacro's own override fires first
++    // for extern cases; this branch only affects non-extern
++    // TorqueMacros (and Methods via inheritance).
++    if (output_type == OutputType::kCCBuiltins) {
+       return false;
+     }
+     return Callable::ShouldBeInlined(output_type);
+-- 
+2.50.1 (Apple Git-155)
+
+
+From bd86dadb2c93ddf502e472b4e64de471829fc4fa Mon Sep 17 00:00:00 2001
+From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
+Date: Tue, 21 Apr 2026 15:28:41 -0400
+Subject: [PATCH 34/42] torque: emit out-param signature for labeled macros
+ under kCCBuiltins
+
+---
+ deps/v8/src/torque/implementation-visitor.cc | 23 ++++++++++++++++++++
+ 1 file changed, 23 insertions(+)
+
+diff --git a/deps/v8/src/torque/implementation-visitor.cc b/deps/v8/src/torque/implementation-visitor.cc
+index d3db6b8d..1f042a96 100644
+--- a/deps/v8/src/torque/implementation-visitor.cc
++++ b/deps/v8/src/torque/implementation-visitor.cc
+@@ -2083,6 +2083,29 @@ cpp::Function ImplementationVisitor::GenerateFunction(
+         output_type_ == OutputType::kCCDebug) {
+       ReportError("Macros that generate runtime code can't have label exits");
+     }
++    if (output_type_ == OutputType::kCCBuiltins) {
++      // kCCBuiltins out-param convention (paired with
++      // CCGenerator::EmitInstruction(CallCsaMacroAndBranchInstruction)
++      // and CCGenerator::EmitInstruction(GotoExternalInstruction)):
++      // each label becomes a `bool*` indicator + per-label-value
++      // `T*` pointer. Caller declares the locals; callee writes
++      // them and returns. Struct-typed label values are deferred —
++      // they'd require a multi-out convention (tuple or lowering
++      // into multiple bools).
++      f.AddParameter("bool*", ExternalLabelName(label_info.name->value));
++      size_t i = 0;
++      for (const Type* type : label_info.types) {
++        if (type->StructSupertype()) {
++          ReportError(
++              "Phase 4: label values of struct types are not yet "
++              "supported under kCCBuiltins");
++        }
++        f.AddParameter(type->GetRuntimeType() + "*",
++                       ExternalLabelParameterName(label_info.name->value, i));
++        ++i;
++      }
++      continue;
++    }
+     f.AddParameter("compiler::CodeAssemblerLabel*",
+                    ExternalLabelName(label_info.name->value));
+     size_t i = 0;
+-- 
+2.50.1 (Apple Git-155)
+
+
+From fd0a721adbebf1806cfc528287533b8236b40141 Mon Sep 17 00:00:00 2001
+From: Brandon Payton <brandon@happycode.net>
+Date: Tue, 21 Apr 2026 15:48:03 -0400
+Subject: [PATCH 35/42] torque: mark kCCBuiltins macro bodies inline via
+ InlineDefinition flag
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The same TorqueMacro may end up emitted as both a kCC body (into
+-tq-inl.inc, where the preceding declaration carries `inline`) and a
+kCCBuiltins body (into -tq-ccbuiltins.cc, a direct compilation unit
+with no preceding declaration). Without `inline` on the kCCBuiltins
+definition, the two TUs produce a multi-def link error when both end
+up in the same binary.
+
+Prior attempt (commit 905aae7f) fixed this by making
+PrintBeginDefinition emit `inline` whenever IsInline() was true, and
+SetInline(true) was extended to kCCBuiltins. That worked for the
+multi-def case but had a scope bug: IsInline() is ALSO set by the
+pre-existing DefaultGetter/DefaultSetter helpers (cpp-builder.h:83-100),
+which route class accessors through PrintBeginDefinition. The change
+silently prefixed `inline ` to every generated class accessor
+definition in -tq-inl.inc — 70 files in the stock 245-file .tq
+fileset — shifting the regression-floor sha of stock kCC output from
+a5195c02... to 7ca28f71... .
+
+Fix: introduce a separate InlineDefinition flag on cpp::Function,
+gated distinctly from Inline. PrintBeginDefinition now emits `inline`
+only when IsInlineDefinition() is true. SetInline(true) is reverted
+to output_type == kCC (its original meaning). GenerateFunction calls
+SetInlineDefinition(true) additionally under kCCBuiltins, which is
+the only path that needs the multi-TU ODR protection.
+
+Result:
+- Stock kCC output (DefaultGetter/DefaultSetter, all kCC macro
+  definitions) is byte-identical to pre-905aae7f output. Stock sha
+  a5195c0258fd9af9415e9d41f0c2e38237989c1b over 245-file fileset
+  reproduced.
+- kCCBuiltins -tq-ccbuiltins.cc bodies still carry `inline` on
+  TqRuntime_<macro>_<N> definitions, so multi-TU linkage with kCC
+  -tq-inl.inc duplicates is ODR-legal.
+- 12/12 Phase 2–4 fixture goldens pass unchanged.
+---
+ deps/v8/src/torque/cpp-builder.cc            | 21 ++++++++++++++--
+ deps/v8/src/torque/cpp-builder.h             |  3 ++-
+ deps/v8/src/torque/implementation-visitor.cc | 25 +++++++++++++++-----
+ 3 files changed, 40 insertions(+), 9 deletions(-)
+
+diff --git a/deps/v8/src/torque/cpp-builder.cc b/deps/v8/src/torque/cpp-builder.cc
+index 46d7d792..6b112e90 100644
+--- a/deps/v8/src/torque/cpp-builder.cc
++++ b/deps/v8/src/torque/cpp-builder.cc
+@@ -96,8 +96,25 @@ void Function::PrintBeginDefinition(std::ostream& stream,
+     }
+     scope += "::";
+   }
+-  stream << std::string(indentation, ' ') << return_type_ << " " << scope
+-         << name_ << "(";
++  stream << std::string(indentation, ' ');
++  // Historically PrintBeginDefinition never emitted `inline` — kCC
++  // relied on the preceding `inline` declaration (emitted via
++  // PrintDeclarationHeader into the same -tq-inl.inc file) so the
++  // definition inherited linkage. That contract must be preserved:
++  // DefaultGetter/DefaultSetter and other pre-existing SetInline
++  // callers still route through PrintBeginDefinition here, and their
++  // stock V8 output must stay byte-identical.
++  //
++  // kCCBuiltins is different — its macro bodies are emitted directly
++  // into -tq-ccbuiltins.cc with no preceding include-guarded
++  // declaration, and the same macro body may also appear in a kCC
++  // -tq-inl.inc in another TU. That multi-def must be ODR-legal, so
++  // the kCCBuiltins definition itself must carry `inline`. We gate
++  // on a separate InlineDefinition flag so only the kCCBuiltins
++  // emission path opts in; IsInline() (used by PrintDeclarationHeader
++  // and by DefaultGetter/DefaultSetter) retains its original meaning.
++  if (IsInlineDefinition()) stream << "inline ";
++  stream << return_type_ << " " << scope << name_ << "(";
+   bool first = true;
+   for (const auto& p : parameters_) {
+     if (!first) stream << ", ";
+diff --git a/deps/v8/src/torque/cpp-builder.h b/deps/v8/src/torque/cpp-builder.h
+index 428862c4..ef3a10ea 100644
+--- a/deps/v8/src/torque/cpp-builder.h
++++ b/deps/v8/src/torque/cpp-builder.h
+@@ -48,7 +48,8 @@ class Class {
+   V(Constexpr, 0x08)          \
+   V(Export, 0x10)             \
+   V(Static, 0x20)             \
+-  V(Override, 0x40)
++  V(Override, 0x40)           \
++  V(InlineDefinition, 0x80)
+ 
+ class Function {
+  public:
+diff --git a/deps/v8/src/torque/implementation-visitor.cc b/deps/v8/src/torque/implementation-visitor.cc
+index 1f042a96..4822e07f 100644
+--- a/deps/v8/src/torque/implementation-visitor.cc
++++ b/deps/v8/src/torque/implementation-visitor.cc
+@@ -424,12 +424,10 @@ void ImplementationVisitor::VisitMacroCommon(Macro* macro) {
+     include_guard.emplace(&csa_cc,
+                           "V8_INTERNAL_DEFINED_"s + macro->CCDebugName());
+   }
+-  // kCCBuiltins macro bodies live in the per-file -tq-ccbuiltins.cc
+-  // (written by WriteFile in VisitAllDeclarables). No include-guard is
+-  // needed because each macro body is emitted once per translation unit
+-  // by the fifth-pass list iteration; the TqRuntime<name>_<N> symbol is
+-  // generated via CCName() (same mangling as kCC) but lands in a
+-  // different .cc file so no multi-def collision occurs.
++  // kCCBuiltins: no include-guard. The body is emitted as `inline`
++  // (see GenerateFunction's SetInlineDefinition call); cross-TU
++  // duplicates with the kCC -tq-inl.inc emission are ODR-legal
++  // because both are `inline` and token-identical.
+ 
+   f.PrintBeginDefinition(csa_ccfile());
+ 
+@@ -2024,7 +2022,22 @@ cpp::Function ImplementationVisitor::GenerateFunction(
+     const NameVector& parameter_names, bool pass_code_assembler_state,
+     std::vector<std::string>* generated_parameter_names) {
+   cpp::Function f(owner, name);
++  // kCC emits `inline` on the declaration in -tq-inl.inc and inherits
++  // that linkage for the matching definition in the same file
++  // (PrintBeginDefinition deliberately does NOT re-emit `inline`, so
++  // stock kCC output stays byte-identical to pre-kCCBuiltins behavior).
+   f.SetInline(output_type_ == OutputType::kCC);
++  // kCCBuiltins emits macro bodies directly into -tq-ccbuiltins.cc
++  // with no preceding include-guarded declaration. If the same macro
++  // body also lands in -tq-inl.inc (kCC pass, another TU), multi-def
++  // at link time must be ODR-legal, so the kCCBuiltins definition
++  // itself must carry `inline`. We use a separate InlineDefinition
++  // flag so this is scoped to kCCBuiltins only — stock kCC output
++  // (including DefaultGetter/DefaultSetter class accessors) is
++  // unaffected.
++  if (output_type_ == OutputType::kCCBuiltins) {
++    f.SetInlineDefinition(true);
++  }
+ 
+   // Set return type.
+   // TODO(torque-builder): Consider an overload of SetReturnType that handles
+-- 
+2.50.1 (Apple Git-155)
+
+
+From ca5aeb8d01dd84209b9f0806d43e6cf93a7695f2 Mon Sep 17 00:00:00 2001
+From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
+Date: Tue, 21 Apr 2026 16:01:38 -0400
+Subject: [PATCH 36/42] torque: emit builtins-cc-table.inc for kCCBuiltins
+ dispatch
+
+---
+ deps/v8/src/torque/implementation-visitor.cc | 47 ++++++++++++++++++++
+ deps/v8/src/torque/implementation-visitor.h  | 16 +++++++
+ deps/v8/src/torque/torque-compiler.cc        |  4 ++
+ 3 files changed, 67 insertions(+)
+
+diff --git a/deps/v8/src/torque/implementation-visitor.cc b/deps/v8/src/torque/implementation-visitor.cc
+index 4822e07f..2d147a1d 100644
+--- a/deps/v8/src/torque/implementation-visitor.cc
++++ b/deps/v8/src/torque/implementation-visitor.cc
+@@ -694,6 +694,21 @@ void ImplementationVisitor::Visit(Builtin* builtin) {
+     cc_generator.EmitGraph(parameters);
+     assembler_ = std::nullopt;
+     csa_ccfile() << "}\n\n";
++
++    // Record this builtin for emission into
++    // torque-generated/builtins-cc-table.inc so
++    // Builtins::TorqueCcEntryOf(Builtin::k<Name>) can resolve to
++    // &Builtin_<Name> at runtime. The X-macro's V(Name, Ret, Params) uses
++    // `Name` to generate both the forward declaration (Builtin_##Name) and
++    // the enum key (Builtin::k##Name), so strip any prefix and store the
++    // bare external name here.
++    CCBuiltinEntry entry;
++    entry.name = name;
++    entry.return_type = signature.return_type->GetRuntimeType();
++    for (size_t i = 0; i < signature.parameter_names.size(); ++i) {
++      entry.param_types.push_back(signature.types()[i]->GetRuntimeType());
++    }
++    cc_builtin_entries_.push_back(std::move(entry));
+     return;
+   }
+   CurrentScope::Scope current_scope(builtin);
+@@ -4241,6 +4256,38 @@ void ImplementationVisitor::GenerateBitFields(
+   WriteFile(output_header_path, header.str());
+ }
+ 
++void ImplementationVisitor::GenerateCCBuiltinsTable(
++    const std::string& output_directory) {
++  // Emit a shared X-macro file listing every whitelisted kCCBuiltins builtin
++  // that was emitted during this torque invocation. Consumers (builtins.cc
++  // via Builtins::TorqueCcEntryOf) expand TORQUE_CC_BUILTINS(V) to generate
++  // forward declarations and a Builtin→function-pointer dispatch switch.
++  //
++  // Linkage note: the forward declarations expanded from this macro match
++  // the C++-linkage function signatures emitted in -tq-ccbuiltins.cc —
++  // callers (TorqueCcEntryOf) do not use `extern "C"`. kCCBuiltins builtins
++  // are invoked only by function pointer through TorqueCcEntryOf, so name
++  // mangling is irrelevant at the call site.
++  std::string file_name = "builtins-cc-table.inc";
++  std::stringstream out;
++  out << "// Copyright 2024 the V8 project authors. All rights reserved.\n"
++      << "// Use of this source code is governed by a BSD-style license "
++         "that can be found in the LICENSE file.\n\n"
++      << "// AUTO-GENERATED by torque CC-Builtins backend. DO NOT EDIT.\n\n"
++      << "#ifndef TORQUE_CC_BUILTINS\n"
++      << "#define TORQUE_CC_BUILTINS(V) \\\n";
++  for (const auto& e : cc_builtin_entries_) {
++    out << "  V(" << e.name << ", " << e.return_type << ", (Isolate*";
++    for (const auto& p : e.param_types) {
++      out << ", " << p;
++    }
++    out << ")) \\\n";
++  }
++  out << "\n#endif  // TORQUE_CC_BUILTINS\n";
++
++  WriteFile(output_directory + "/" + file_name, out.str());
++}
++
+ namespace {
+ 
+ class ClassFieldOffsetGenerator : public FieldOffsetsGenerator {
+diff --git a/deps/v8/src/torque/implementation-visitor.h b/deps/v8/src/torque/implementation-visitor.h
+index e29d91c7..4a8b250e 100644
+--- a/deps/v8/src/torque/implementation-visitor.h
++++ b/deps/v8/src/torque/implementation-visitor.h
+@@ -461,6 +461,12 @@ class ImplementationVisitor {
+   void GenerateClassDebugReaders(const std::string& output_directory);
+   void GenerateExportedMacrosAssembler(const std::string& output_directory);
+   void GenerateCSATypes(const std::string& output_directory);
++  // Emit a shared `torque-generated/builtins-cc-table.inc` X-macro file
++  // listing every whitelisted kCCBuiltins-emitted builtin. Used by
++  // Builtins::TorqueCcEntryOf to dispatch Builtin enum ids to
++  // `Builtin_<Name>` function pointers. See cc-generator.cc emission of
++  // CallBuiltinPointerInstruction.
++  void GenerateCCBuiltinsTable(const std::string& output_directory);
+ 
+   VisitResult Visit(Expression* expr);
+   const Type* Visit(Statement* stmt);
+@@ -887,6 +893,16 @@ class ImplementationVisitor {
+   std::stringstream debug_macros_cc_;
+   std::stringstream debug_macros_h_;
+ 
++  // One entry per whitelisted kCCBuiltins-emitted builtin. Populated from
++  // Visit(Builtin*)'s kCCBuiltins real-emission branch; consumed by
++  // GenerateCCBuiltinsTable to write builtins-cc-table.inc.
++  struct CCBuiltinEntry {
++    std::string name;
++    std::string return_type;
++    std::vector<std::string> param_types;
++  };
++  std::vector<CCBuiltinEntry> cc_builtin_entries_;
++
+   OutputType output_type_ = OutputType::kCSA;
+ };
+ 
+diff --git a/deps/v8/src/torque/torque-compiler.cc b/deps/v8/src/torque/torque-compiler.cc
+index 8a46d7b2..a7bb3be2 100644
+--- a/deps/v8/src/torque/torque-compiler.cc
++++ b/deps/v8/src/torque/torque-compiler.cc
+@@ -93,6 +93,10 @@ void CompileCurrentAst(TorqueCompilerOptions options) {
+       output_directory);
+   implementation_visitor.GenerateVisitorLists(output_directory);
+   implementation_visitor.GenerateBitFields(output_directory);
++  // Emits torque-generated/builtins-cc-table.inc (shared across all .tq
++  // inputs). Must run after VisitAllDeclarables so cc_builtin_entries_ is
++  // fully populated. See Builtins::TorqueCcEntryOf in src/builtins/builtins.cc.
++  implementation_visitor.GenerateCCBuiltinsTable(output_directory);
+   implementation_visitor.GeneratePrintDefinitions(output_directory);
+   implementation_visitor.GenerateClassDefinitions(output_directory);
+   implementation_visitor.GenerateClassVerifiers(output_directory);
+-- 
+2.50.1 (Apple Git-155)
+
+
+From a7784154c2054c6c3918e13c19c0065d7418349b Mon Sep 17 00:00:00 2001
+From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
+Date: Tue, 21 Apr 2026 16:02:03 -0400
+Subject: [PATCH 37/42] v8 builtins: add Builtins::TorqueCcEntryOf sibling to
+ CppEntryOf
+
+---
+ deps/v8/src/builtins/builtins.cc | 36 ++++++++++++++++++++++++++++++++
+ deps/v8/src/builtins/builtins.h  |  7 +++++++
+ 2 files changed, 43 insertions(+)
+
+diff --git a/deps/v8/src/builtins/builtins.cc b/deps/v8/src/builtins/builtins.cc
+index 585f4d67..211126f7 100644
+--- a/deps/v8/src/builtins/builtins.cc
++++ b/deps/v8/src/builtins/builtins.cc
+@@ -352,6 +352,42 @@ Address Builtins::CppEntryOf(Builtin builtin) {
+   return builtin_metadata[ToInt(builtin)].data.cpp_entry;
+ }
+ 
++// Forward declarations for every Torque-translated TFJ builtin emitted by
++// the kCCBuiltins backend. The table is (re)generated by torque into
++// torque-generated/builtins-cc-table.inc on every torque run. If no builtin
++// is whitelisted the macro is left undefined and the #ifdef guards below
++// make TorqueCcEntryOf a pure Address{} fallback.
++//
++// Linkage note: these declarations use default C++ linkage (no `extern "C"`)
++// to match the signatures emitted in *-tq-ccbuiltins.cc. Name mangling
++// does not matter at the call site because kCCBuiltins builtins are invoked
++// exclusively by function pointer through TorqueCcEntryOf.
++#include "torque-generated/builtins-cc-table.inc"
++#ifdef TORQUE_CC_BUILTINS
++#define DECLARE_TQCC_FORWARD(Name, RetType, ParamTypes) \
++  RetType Builtin_##Name ParamTypes;
++TORQUE_CC_BUILTINS(DECLARE_TQCC_FORWARD)
++#undef DECLARE_TQCC_FORWARD
++#endif
++
++// static
++Address Builtins::TorqueCcEntryOf(Builtin builtin) {
++#ifdef TORQUE_CC_BUILTINS
++  switch (builtin) {
++#define CASE(Name, RetType, ParamTypes) \
++  case Builtin::k##Name:                \
++    return reinterpret_cast<Address>(&Builtin_##Name);
++    TORQUE_CC_BUILTINS(CASE)
++#undef CASE
++    default:
++      break;
++  }
++#else
++  USE(builtin);
++#endif
++  return Address{};
++}
++
+ // static
+ bool Builtins::IsBuiltin(const Tagged<Code> code) {
+   return Builtins::IsBuiltinId(code->builtin_id());
+diff --git a/deps/v8/src/builtins/builtins.h b/deps/v8/src/builtins/builtins.h
+index f460f270..baddbdfe 100644
+--- a/deps/v8/src/builtins/builtins.h
++++ b/deps/v8/src/builtins/builtins.h
+@@ -236,6 +236,13 @@ class Builtins {
+   // Address otherwise.
+   static Address CppEntryOf(Builtin builtin);
+ 
++  // Returns the entry address for a Torque-translated TFJ builtin that was
++  // emitted by the kCCBuiltins backend (kind: kStub, non-JS-linkage,
++  // whitelisted via --cc-builtins-whitelist). Returns Address{} for any
++  // other builtin. The set of dispatched builtins is generated by torque
++  // into torque-generated/builtins-cc-table.inc.
++  static Address TorqueCcEntryOf(Builtin builtin);
++
+   // Loads the builtin's entry (start of instruction stream) from the isolate's
+   // builtin_entry_table, initialized earlier via {InitializeIsolateDataTables}.
+   static inline Address EntryOf(Builtin builtin, Isolate* isolate);
+-- 
+2.50.1 (Apple Git-155)
+
+
+From 8957403efe4c37b7b64ed69a6f0dc2f75cf198bf Mon Sep 17 00:00:00 2001
+From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
+Date: Tue, 21 Apr 2026 16:02:23 -0400
+Subject: [PATCH 38/42] torque: CallBuiltinPointer uses
+ Builtins::TorqueCcEntryOf
+
+---
+ deps/v8/src/torque/cc-generator.cc | 19 ++++++++++---------
+ 1 file changed, 10 insertions(+), 9 deletions(-)
+
+diff --git a/deps/v8/src/torque/cc-generator.cc b/deps/v8/src/torque/cc-generator.cc
+index bb0c44db..e11789de 100644
+--- a/deps/v8/src/torque/cc-generator.cc
++++ b/deps/v8/src/torque/cc-generator.cc
+@@ -532,14 +532,15 @@ void CCGenerator::EmitInstruction(
+           << "{};  USE(" << result_name << ");\n";
+   stack->Push(result_name);
+ 
+-  // Phase 2 placeholder: resolve the BuiltinPtr (Tagged<Smi> carrying the
+-  // Builtin enum id — see PushBuiltinPointerInstruction emission above) to
+-  // a raw function pointer via Builtins::CppEntryOf(...) and invoke it
+-  // directly. `Builtins::CppEntryOf` does not yet exist — Phase 4 will
+-  // introduce it alongside a generated `builtins-cc-table.inc` that maps
+-  // Builtin enum ids to Builtin_* entry addresses. For Phase 2 we only
+-  // need the emission to be syntactically valid C++ and to capture the
+-  // correct signature shape for the call.
++  // Resolve the BuiltinPtr (Tagged<Smi> carrying the Builtin enum id — see
++  // PushBuiltinPointerInstruction emission above) to a raw function pointer
++  // via Builtins::TorqueCcEntryOf(...) and invoke it directly. The
++  // TorqueCcEntryOf dispatch table is generated by torque into
++  // torque-generated/builtins-cc-table.inc and consumed by
++  // src/builtins/builtins.cc. Builtins not emitted by the kCCBuiltins
++  // backend return Address{}, which will crash at call time — callers of
++  // CallBuiltinPointer are responsible for only passing kCCBuiltins
++  // builtins in as function pointers.
+   out() << "  {\n"
+         << "    using FnPtr = " << result_types[0]->GetRuntimeType()
+         << " (*)(Isolate*";
+@@ -549,7 +550,7 @@ void CCGenerator::EmitInstruction(
+   }
+   out() << ");\n"
+         << "    FnPtr fn = reinterpret_cast<FnPtr>(\n"
+-        << "        Builtins::CppEntryOf(static_cast<Builtin>(\n"
++        << "        Builtins::TorqueCcEntryOf(static_cast<Builtin>(\n"
+         << "            Smi::ToInt(" << function << "))));\n"
+         << "    " << result_name << " = fn(isolate";
+   for (const auto& arg : arguments) out() << ", " << arg;
+-- 
+2.50.1 (Apple Git-155)
+
+
+From fae77eb7df7959567a05efaf7ee126d3a003780b Mon Sep 17 00:00:00 2001
+From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
+Date: Tue, 21 Apr 2026 16:14:28 -0400
+Subject: [PATCH 39/42] v8 builtins: clarify TorqueCcEntryOf comment re empty
+ whitelist
+
+---
+ deps/v8/src/builtins/builtins.cc | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/deps/v8/src/builtins/builtins.cc b/deps/v8/src/builtins/builtins.cc
+index 211126f7..70734d4b 100644
+--- a/deps/v8/src/builtins/builtins.cc
++++ b/deps/v8/src/builtins/builtins.cc
+@@ -354,9 +354,12 @@ Address Builtins::CppEntryOf(Builtin builtin) {
+ 
+ // Forward declarations for every Torque-translated TFJ builtin emitted by
+ // the kCCBuiltins backend. The table is (re)generated by torque into
+-// torque-generated/builtins-cc-table.inc on every torque run. If no builtin
+-// is whitelisted the macro is left undefined and the #ifdef guards below
+-// make TorqueCcEntryOf a pure Address{} fallback.
++// torque-generated/builtins-cc-table.inc on every torque run. With an empty
++// whitelist the generated macro expands to an empty list — no forward
++// declarations, no switch cases — and TorqueCcEntryOf falls through to
++// Address{}. The #ifdef branch still fires because the macro is always
++// defined (just empty); the #else only covers the rare case of a build
++// where the .inc file is absent entirely.
+ //
+ // Linkage note: these declarations use default C++ linkage (no `extern "C"`)
+ // to match the signatures emitted in *-tq-ccbuiltins.cc. Name mangling
+-- 
+2.50.1 (Apple Git-155)
+
+
+From a175456729ed3ab6a50958851b4a9dbe62678b23 Mon Sep 17 00:00:00 2001
+From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
+Date: Tue, 21 Apr 2026 16:16:47 -0400
+Subject: [PATCH 40/42] v8 gyp: compile -tq-ccbuiltins.cc + wire
+ --cc-builtins-whitelist
+
+---
+ tools/v8_gypfiles/v8.gyp | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/tools/v8_gypfiles/v8.gyp b/tools/v8_gypfiles/v8.gyp
+index 3b749ba7..1fab83c0 100644
+--- a/tools/v8_gypfiles/v8.gyp
++++ b/tools/v8_gypfiles/v8.gyp
+@@ -8,6 +8,7 @@
+     'v8_random_seed%': 314159265,
+     'v8_vector_stores%': 0,
+     'v8_embed_script%': "",
++    'v8_torque_cc_builtins_whitelist%': '',
+     'mksnapshot_exec': '<(PRODUCT_DIR)/<(EXECUTABLE_PREFIX)mksnapshot<(EXECUTABLE_SUFFIX)',
+     'v8_os_page_size%': 0,
+     'generate_bytecode_output_root': '<(SHARED_INTERMEDIATE_DIR)/generate-bytecode-output-root',
+@@ -21,6 +22,7 @@
+     'torque_outputs_inl_inc': ['<!@pymod_do_main(ForEachFormat "<(SHARED_INTERMEDIATE_DIR)/torque-generated/%s-inl.inc" <@(torque_files_replaced))'],
+     'torque_outputs_cc': ['<!@pymod_do_main(ForEachFormat "<(SHARED_INTERMEDIATE_DIR)/torque-generated/%s.cc" <@(torque_files_replaced))'],
+     'torque_outputs_inc': ['<!@pymod_do_main(ForEachFormat "<(SHARED_INTERMEDIATE_DIR)/torque-generated/%s.inc" <@(torque_files_replaced))'],
++    'torque_outputs_ccbuiltins_cc': ['<!@pymod_do_main(ForEachFormat "<(SHARED_INTERMEDIATE_DIR)/torque-generated/%s-ccbuiltins.cc" <@(torque_files_replaced))'],
+     'conditions': [
+       ['v8_enable_i18n_support==1', {
+         'torque_files': [
+@@ -142,11 +144,14 @@
+             '<@(torque_outputs_inl_inc)',
+             '<@(torque_outputs_cc)',
+             '<@(torque_outputs_inc)',
++            '<@(torque_outputs_ccbuiltins_cc)',
++            '<(SHARED_INTERMEDIATE_DIR)/torque-generated/builtins-cc-table.inc',
+           ],
+           'action': [
+             '<(PRODUCT_DIR)/<(EXECUTABLE_PREFIX)torque<(EXECUTABLE_SUFFIX)',
+             '-o', '<(SHARED_INTERMEDIATE_DIR)/torque-generated',
+             '-v8-root', '<(V8_ROOT)',
++            '--cc-builtins-whitelist=<(v8_torque_cc_builtins_whitelist)',
+             '<@(torque_files_without_v8_root)',
+           ],
+         },
+@@ -225,6 +230,7 @@
+           '<@(torque_outputs_inl_inc)',
+           '<@(torque_outputs_cc)',
+           '<@(torque_outputs_inc)',
++          '<@(torque_outputs_ccbuiltins_cc)',
+         ],
+         'include_dirs': [
+           '<(SHARED_INTERMEDIATE_DIR)',
+-- 
+2.50.1 (Apple Git-155)
+
+
+From 8c5e91c0506d880c3e37ec8486859aa5236c316f Mon Sep 17 00:00:00 2001
+From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
+Date: Tue, 21 Apr 2026 16:58:54 -0400
+Subject: [PATCH 41/42] v8: stage TorqueCcTest_Return fixture permanently under
+ test/torque-cc-fixtures/
+
+---
+ deps/v8/BUILD.gn                          | 1 +
+ deps/v8/test/torque-cc-fixtures/return.tq | 6 ++++++
+ 2 files changed, 7 insertions(+)
+ create mode 100644 deps/v8/test/torque-cc-fixtures/return.tq
+
+diff --git a/deps/v8/BUILD.gn b/deps/v8/BUILD.gn
+index 1f34d46b..d5b6281f 100644
+--- a/deps/v8/BUILD.gn
++++ b/deps/v8/BUILD.gn
+@@ -2134,6 +2134,7 @@ torque_files = [
+   "src/objects/torque-defined-classes.tq",
+   "src/objects/turbofan-types.tq",
+   "src/objects/turboshaft-types.tq",
++  "test/torque-cc-fixtures/return.tq",
+   "test/torque/test-torque.tq",
+   "third_party/v8/builtins/array-sort.tq",
+ ]
+diff --git a/deps/v8/test/torque-cc-fixtures/return.tq b/deps/v8/test/torque-cc-fixtures/return.tq
+new file mode 100644
+index 00000000..7d5e66bb
+--- /dev/null
++++ b/deps/v8/test/torque-cc-fixtures/return.tq
+@@ -0,0 +1,6 @@
++// Phase 2 test fixture: ReturnInstruction.
++namespace test_cc {
++  builtin TorqueCcTest_Return(implicit context: Context)(arg: Smi): Smi {
++    return arg;
++  }
++}
+-- 
+2.50.1 (Apple Git-155)
+
+
+From 2b408bfb0ddbad82a4f47a7bf502e6ca3a1188a6 Mon Sep 17 00:00:00 2001
+From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
+Date: Tue, 21 Apr 2026 18:22:15 -0400
+Subject: [PATCH 42/42] =?UTF-8?q?v8=20torque+node:=20Phase=204=20smoke=20t?=
+ =?UTF-8?q?est=20=E2=80=94=20invoke=20Torque-CC-translated=20builtin=20dir?=
+ =?UTF-8?q?ectly?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Adds the first end-to-end Task 4.9 proof point: a gtest that calls a
+builtin emitted by the kCCBuiltins backend and verifies it was linked
+into V8 and wired into Builtins::TorqueCcEntryOf correctly.
+
+Changes:
+
+* implementation-visitor.cc: emit #includes for the minimal header set
+  (macros.h, isolate.h, contexts.h, smi.h, tagged.h) at the top of each
+  -tq-ccbuiltins.cc file. Without these the file only compiled when
+  the whitelist was empty and no builtin body was actually emitted.
+
+* test/cctest/test_torque_cc_builtin.cc: gtest body. DirectInvocation
+  calls Builtin_TorqueCcTest_Return(isolate, Tagged<Context>{}, Smi::FromInt(42))
+  and expects 42 back. DispatchTableLookup verifies
+  Builtins::TorqueCcEntryOf(Builtin::kTorqueCcTest_Return) equals
+  &Builtin_TorqueCcTest_Return.
+
+* node.gyp: cctest gains deps/v8 and SHARED_INTERMEDIATE_DIR on its
+  include path (needed to pull in src/builtins/builtins.h, which in
+  turn pulls in gen/generate-bytecode-output-root/builtins-generated/
+  bytecodes-builtins-list.h). Also propagates the V8 feature defines
+  (V8_LITE_MODE, V8_ENABLE_LEAPTIERING, V8_ENABLE_SPARKPLUG,
+  V8_ENABLE_MAGLEV, V8_ENABLE_TURBOFAN, V8_INTL_SUPPORT) — these change
+  the conditional blocks in builtins-definitions.h and therefore the
+  Builtin enum ordering; if cctest's view disagrees with
+  v8_base_without_compiler's, TorqueCcEntryOf's switch compares against
+  a stale integer and DispatchTableLookup returns Address{}.
+
+Builds green and both tests pass.
+---
+ deps/v8/src/torque/implementation-visitor.cc | 12 +++-
+ node.gyp                                     | 17 +++++
+ test/cctest/test_torque_cc_builtin.cc        | 70 ++++++++++++++++++++
+ 3 files changed, 98 insertions(+), 1 deletion(-)
+ create mode 100644 test/cctest/test_torque_cc_builtin.cc
+
+diff --git a/deps/v8/src/torque/implementation-visitor.cc b/deps/v8/src/torque/implementation-visitor.cc
+index 2d147a1d..946c31a9 100644
+--- a/deps/v8/src/torque/implementation-visitor.cc
++++ b/deps/v8/src/torque/implementation-visitor.cc
+@@ -1991,7 +1991,11 @@ void ImplementationVisitor::GenerateImplementation(const std::string& dir) {
+     WriteFile(base_filename + "-tq.cc", streams.class_definition_ccfile.str());
+ 
+     // Phase 1: CC-Builtins output. Banner always present; per-builtin stubs
+-    // are appended by Visit(Builtin*) during the kCCBuiltins pass.
++    // are appended by Visit(Builtin*) during the kCCBuiltins pass. Phase 4
++    // adds the minimal include set needed by bodies that reference
++    // Isolate*, Tagged<T>, Smi::FromInt, and CSA-free builtin intrinsics.
++    // Keep the set small — these files are compiled as part of
++    // v8_base_without_compiler and bloat build time if overlinked.
+     std::string cc_builtins_body = streams.cc_builtins_ccfile.str();
+     std::string cc_builtins_preamble =
+         "// Copyright 2024 the V8 project authors. All rights reserved.\n"
+@@ -2005,6 +2009,12 @@ void ImplementationVisitor::GenerateImplementation(const std::string& dir) {
+         ".tq\n"
+         "// DO NOT EDIT.\n"
+         "\n"
++        "#include \"src/base/macros.h\"\n"
++        "#include \"src/execution/isolate.h\"\n"
++        "#include \"src/objects/contexts.h\"\n"
++        "#include \"src/objects/smi.h\"\n"
++        "#include \"src/objects/tagged.h\"\n"
++        "\n"
+         "namespace v8::internal {\n"
+         "\n";
+     std::string cc_builtins_postamble = "\n}  // namespace v8::internal\n";
+diff --git a/node.gyp b/node.gyp
+index 0620850e..48c944fb 100644
+--- a/node.gyp
++++ b/node.gyp
+@@ -1271,6 +1271,9 @@
+         'src',
+         'tools/msvs/genfiles',
+         'deps/v8/include',
++        'deps/v8',
++        '<(SHARED_INTERMEDIATE_DIR)',
++        '<(SHARED_INTERMEDIATE_DIR)/generate-bytecode-output-root',
+         'deps/cares/include',
+         'deps/uv/include',
+         'test/cctest',
+@@ -1280,6 +1283,20 @@
+         'NODE_ARCH="<(target_arch)"',
+         'NODE_PLATFORM="<(OS)"',
+         'NODE_WANT_INTERNALS=1',
++        # cctest compiles test_torque_cc_builtin.cc which forward-
++        # declares and references a V8 internal builtin. The Builtin
++        # enum layout is conditional on these flags (see
++        # deps/v8/src/builtins/builtins-definitions.h), and must match
++        # what v8_base_without_compiler was compiled with or the enum
++        # value drifts and TorqueCcEntryOf's switch compares against
++        # the wrong integer. Keep this list in sync with v8.gyp's
++        # v8_config defines for features that affect BUILTIN_LIST.
++        'V8_LITE_MODE',
++        'V8_ENABLE_LEAPTIERING',
++        'V8_ENABLE_SPARKPLUG',
++        'V8_ENABLE_MAGLEV',
++        'V8_ENABLE_TURBOFAN',
++        'V8_INTL_SUPPORT',
+       ],
+ 
+       'sources': [ '<@(node_cctest_sources)' ],
+diff --git a/test/cctest/test_torque_cc_builtin.cc b/test/cctest/test_torque_cc_builtin.cc
+new file mode 100644
+index 00000000..b2518fec
+--- /dev/null
++++ b/test/cctest/test_torque_cc_builtin.cc
+@@ -0,0 +1,70 @@
++// Copyright 2026 Node.js contributors. All rights reserved.
++// Phase 4 smoke test for the Torque CC backend.
++//
++// Proves that a Torque builtin whose source lives at
++// deps/v8/test/torque-cc-fixtures/return.tq can be translated
++// via the --cc-builtins-whitelist=TorqueCcTest_Return flag, compiled
++// into libv8, linked into Node's cctest binary, and invoked by C++.
++// The Phase 4 host build configures the whitelist via GYP_DEFINES
++// (see examples/libs/nodejs/build-v8-host-phase4.sh).
++
++#include "gtest/gtest.h"
++#include "node_test_fixture.h"
++
++// V8 internal headers required to describe the builtin signature and
++// to look it up via the kCCBuiltins dispatch table. We keep the set
++// minimal and avoid *-inl.h files because Node.js's build config
++// (V8_LITE_MODE + disabled features) conflicts with some inline
++// headers, but plain declarations are fine.
++#include "src/builtins/builtins.h"
++#include "src/objects/contexts.h"
++#include "src/objects/smi.h"
++#include "src/objects/tagged.h"
++
++namespace v8 {
++namespace internal {
++
++// Forward declaration matches the kCCBuiltins emission at
++// out/<Cfg>/gen/torque-generated/test/torque-cc-fixtures/return-tq-ccbuiltins.cc.
++// Default (C++) linkage — the generator emits a free function in
++// v8::internal without extern "C".
++Tagged<Smi> Builtin_TorqueCcTest_Return(Isolate* isolate,
++                                        Tagged<Context> context,
++                                        Tagged<Smi> arg);
++
++}  // namespace internal
++}  // namespace v8
++
++using TorqueCcBuiltinTest = NodeTestFixture;
++
++TEST_F(TorqueCcBuiltinTest, DirectInvocation) {
++  // The TorqueCcTest_Return builtin just passes its Smi argument
++  // through unchanged; it does not touch `isolate` or `context`. Pass
++  // a default-constructed Tagged<Context> (null tagged pointer) — this
++  // is only safe because the builtin's generated body ignores it.
++  v8::internal::Isolate* i_isolate =
++      reinterpret_cast<v8::internal::Isolate*>(isolate_);
++  v8::internal::Tagged<v8::internal::Context> null_context;
++
++  v8::internal::Tagged<v8::internal::Smi> input =
++      v8::internal::Smi::FromInt(42);
++  v8::internal::Tagged<v8::internal::Smi> result =
++      v8::internal::Builtin_TorqueCcTest_Return(
++          i_isolate, null_context, input);
++  EXPECT_EQ(v8::internal::Smi::ToInt(result), 42);
++}
++
++TEST_F(TorqueCcBuiltinTest, DispatchTableLookup) {
++  // The generated dispatch table should resolve Builtin::k<Name>
++  // to the same address as &Builtin_<Name>. Note: this test requires
++  // the cctest target's defines (V8_LITE_MODE, V8_ENABLE_LEAPTIERING,
++  // ...) to match v8_base_without_compiler's; otherwise the Builtin
++  // enum ordering differs across translation units and the switch
++  // lookup compares against a stale integer. See node.gyp's cctest
++  // target for the synchronised define set.
++  v8::internal::Address direct = reinterpret_cast<v8::internal::Address>(
++      &v8::internal::Builtin_TorqueCcTest_Return);
++  v8::internal::Address via_table = v8::internal::Builtins::TorqueCcEntryOf(
++      v8::internal::Builtin::kTorqueCcTest_Return);
++  EXPECT_EQ(direct, via_table);
++}
 -- 
 2.50.1 (Apple Git-155)
 
