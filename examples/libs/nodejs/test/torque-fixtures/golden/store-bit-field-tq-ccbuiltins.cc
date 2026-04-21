@@ -5,6 +5,12 @@
 // Source: test/phase2-fixtures/store-bit-field.tq
 // DO NOT EDIT.
 
+#include "src/base/macros.h"
+#include "src/execution/isolate.h"
+#include "src/objects/contexts.h"
+#include "src/objects/smi.h"
+#include "src/objects/tagged.h"
+
 namespace v8::internal {
 
 uint32_t Builtin_TorqueCcTest_StoreBitField(Isolate* isolate, Tagged<Context> context, uint32_t bf, int32_t v) {

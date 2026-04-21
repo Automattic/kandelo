@@ -5,6 +5,12 @@
 // Source: test/phase2-fixtures/call-torque-macro.tq
 // DO NOT EDIT.
 
+#include "src/base/macros.h"
+#include "src/execution/isolate.h"
+#include "src/objects/contexts.h"
+#include "src/objects/smi.h"
+#include "src/objects/tagged.h"
+
 namespace v8::internal {
 
 Tagged<Smi> Builtin_TorqueCcTest_CallTorqueMacro(Isolate* isolate, Tagged<Context> context, Tagged<Smi> arg) {

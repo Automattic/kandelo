@@ -5,6 +5,12 @@
 // Source: test/phase2-fixtures/call-runtime.tq
 // DO NOT EDIT.
 
+#include "src/base/macros.h"
+#include "src/execution/isolate.h"
+#include "src/objects/contexts.h"
+#include "src/objects/smi.h"
+#include "src/objects/tagged.h"
+
 namespace v8::internal {
 
 Tagged<JSAny> Builtin_TorqueCcTest_CallRuntime(Isolate* isolate, Tagged<Context> context, Tagged<JSAny> arg) {

@@ -10,8 +10,10 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NODE_SRC="${HERE}/build/node"
-# Default: empty whitelist = stock-equivalent build. Task 4.9 overrides.
-WHITELIST="${V8_CC_BUILTINS_WHITELIST:-}"
+# Default whitelist: Task 4.9's smoke-test builtin. Callers may pass
+# V8_CC_BUILTINS_WHITELIST='' explicitly to verify the patch is neutral
+# under an empty whitelist (Task 4.8 invariant).
+WHITELIST="${V8_CC_BUILTINS_WHITELIST-TorqueCcTest_Return}"
 
 [ -d "${NODE_SRC}/deps/v8" ] || {
   echo "Missing ${NODE_SRC}/deps/v8 — run build-nodejs.sh first" >&2
@@ -37,7 +39,18 @@ ninja -C out/Release mksnapshot
 echo ">>> ninja -C out/Release v8_snapshot"
 ninja -C out/Release v8_snapshot
 
+# Task 4.9: cctest is Node's gtest-based unit test binary. When the
+# whitelist is non-empty, this binary links the emitted kCCBuiltins
+# functions and exposes them to the TorqueCcBuiltinTest suite at
+# test/cctest/test_torque_cc_builtin.cc. Skipped when WHITELIST is empty
+# (nothing to link, no test to run).
+if [ -n "${WHITELIST}" ]; then
+  echo ">>> ninja -C out/Release cctest (whitelist non-empty)"
+  ninja -C out/Release cctest
+fi
+
 echo ">>> Phase 4 host build OK."
 echo ">>>   mksnapshot:  $(ls -la out/Release/mksnapshot 2>/dev/null | awk '{print $5}') bytes"
 echo ">>>   libv8_snapshot.a: $(ls -la out/Release/libv8_snapshot.a 2>/dev/null | awk '{print $5}') bytes"
+echo ">>>   cctest: $(ls -la out/Release/cctest 2>/dev/null | awk '{print $5}') bytes"
 echo ">>>   Torque-CC whitelist: '${WHITELIST}'"
