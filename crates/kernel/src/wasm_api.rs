@@ -1372,6 +1372,48 @@ pub extern "C" fn kernel_exec_setup(pid: u32) -> i32 {
 ///
 /// `pid` identifies which process to service.
 ///
+/// Given an EAGAIN result from mq_timedsend/mq_timedreceive, decide the errno
+/// to surface based on the optional absolute-timeout pointer and the
+/// descriptor's non-blocking flag. POSIX rules:
+///   * NULL timeout → EAGAIN (host retries forever for blocking mode, returns
+///     immediately for non-blocking mode via host_is_mq_nonblock check).
+///   * Invalid tv_nsec (negative or >= 1e9) AND the call would have blocked
+///     → EINVAL (checked only when queue is full/empty).
+///   * Non-blocking descriptor → EAGAIN.
+///   * Blocking descriptor + abs_timeout <= now (CLOCK_REALTIME) → ETIMEDOUT.
+///   * Otherwise EAGAIN (host retries; subsequent calls re-check the deadline).
+fn mq_timed_blocking_errno(timeout_ptr: usize, nonblock: bool) -> i32 {
+    let eagain = -(Errno::EAGAIN as i32);
+    if timeout_ptr == 0 {
+        return eagain;
+    }
+    let tp = timeout_ptr as *const i64;
+    let sec = unsafe { core::ptr::read_unaligned(tp) };
+    let nsec = unsafe { core::ptr::read_unaligned(tp.offset(1)) };
+    if nsec < 0 || nsec >= 1_000_000_000 {
+        return -(Errno::EINVAL as i32);
+    }
+    if nonblock {
+        return eagain;
+    }
+    let mut now_sec: i64 = 0;
+    let mut now_nsec: i64 = 0;
+    let rc = unsafe {
+        host_clock_gettime(0 /* CLOCK_REALTIME */, &mut now_sec as *mut i64, &mut now_nsec as *mut i64)
+    };
+    if rc == 0 && (sec < now_sec || (sec == now_sec && nsec <= now_nsec)) {
+        return -(Errno::ETIMEDOUT as i32);
+    }
+    eagain
+}
+
+/// Helper wrapping [`mq_timed_blocking_errno`] that resolves the non-blocking
+/// flag from the mqueue table for a given descriptor.
+fn mq_would_block_result(timeout_ptr: usize, table: &crate::mqueue::MqueueTable, mqd: u32) -> i32 {
+    let nonblock = table.is_nonblock(mqd).unwrap_or(false);
+    mq_timed_blocking_errno(timeout_ptr, nonblock)
+}
+
 /// Dispatches to the appropriate kernel function, then writes:
 ///   - return value at offset+32
 ///   - return value (i64) at offset+56
@@ -2693,6 +2735,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                     }
                     0
                 }
+                Err(Errno::EAGAIN) => mq_would_block_result(a5 as usize, table, a1 as u32),
                 Err(e) => -(e as i32),
             }
         }
@@ -2716,6 +2759,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                     }
                     result.data.len() as i32
                 }
+                Err(Errno::EAGAIN) => mq_would_block_result(a5 as usize, table, a1 as u32),
                 Err(e) => -(e as i32),
             }
         }
@@ -7900,8 +7944,20 @@ pub extern "C" fn kernel_get_fd_pipe_idx(pid: u32, fd: i32) -> i32 {
 
 /// Check if a file descriptor has O_NONBLOCK set.
 /// Returns 1 if non-blocking, 0 if blocking, -1 if fd not found.
+///
+/// Recognizes regular fds from the process fd/ofd tables AND mqueue
+/// descriptors (from the global MqueueTable; descriptor numbers are in the
+/// 0x40000000+ range and not in any `proc.fd_table`). This lets the host's
+/// handleBlockingRetry use a single nonblock check for both real fds and
+/// mq_timedsend/mq_timedreceive.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_is_fd_nonblock(pid: u32, fd: i32) -> i32 {
+    // mqueue descriptors live in a separate global table.
+    let mq_table = unsafe { crate::mqueue::global_mqueue_table() };
+    if let Some(nb) = mq_table.is_nonblock(fd as u32) {
+        return if nb { 1 } else { 0 };
+    }
+
     let table = unsafe { &*PROCESS_TABLE.0.get() };
     let proc = match table.get(pid) {
         Some(p) => p,

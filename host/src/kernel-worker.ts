@@ -125,6 +125,7 @@ const SYS_SHMDT = 346;
 
 /** POSIX message queue syscall numbers */
 const SYS_MQ_TIMEDSEND = 333;
+const SYS_MQ_TIMEDRECEIVE = 334;
 
 const SYS_CLOSE = 2;
 
@@ -2027,6 +2028,20 @@ export class CentralizedKernelWorker {
       this.recheckDeferredWaitpids();
     }
 
+    // --- Cross-process signal delivery: wake blocked peers ---
+    // When a guest calls kill() on another process (or a process group),
+    // kernel_kill may invoke deliver_pending_signals on each target. If the
+    // default action is Terminate (e.g., SIGUSR1 with no handler), the target
+    // is marked Exited in its Process struct, but the target's worker is still
+    // blocked on a syscall (commonly a pipe read). Nothing else wakes that
+    // blocked syscall, so retrySyscall is never called and the process stays
+    // stuck. Poke the generic wake path so pending pipe readers / pollers /
+    // selecters retry and pick up the exit status via retrySyscall's
+    // kernel_get_process_exit_status check.
+    if (errVal === 0 && syscallNr === SYS_KILL) {
+      this.scheduleWakeBlockedRetries();
+    }
+
 
     // --- Normal completion ---
     if (logging) {
@@ -2814,6 +2829,23 @@ export class CentralizedKernelWorker {
           this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], -1, EAGAIN);
           return;
         }
+      }
+    }
+
+    // Non-blocking mqueue check: mq_timedsend/mq_timedreceive return EAGAIN
+    // from the kernel in both blocking and non-blocking modes (the kernel
+    // has no way to actually block). For non-blocking descriptors we must
+    // return EAGAIN to the caller; otherwise the default retry loop spins
+    // forever waiting for state that will never change (e.g., the final
+    // mq_receive in os-test/basic/mqueue/mq_receive.c after mq_setattr sets
+    // O_NONBLOCK on an empty queue).
+    if (syscallNr === SYS_MQ_TIMEDSEND || syscallNr === SYS_MQ_TIMEDRECEIVE) {
+      const mqd = origArgs[0];
+      const isFdNonblock = this.kernelInstance!.exports.kernel_is_fd_nonblock as
+        ((pid: number, fd: number) => number) | undefined;
+      if (isFdNonblock && isFdNonblock(channel.pid, mqd) === 1) {
+        this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], -1, EAGAIN);
+        return;
       }
     }
 

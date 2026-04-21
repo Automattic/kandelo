@@ -117,6 +117,12 @@ impl MqueueTable {
         self.descriptors.contains_key(&fd)
     }
 
+    /// Returns `Some(true)` if the descriptor has O_NONBLOCK set,
+    /// `Some(false)` if blocking, or `None` if the descriptor is unknown.
+    pub fn is_nonblock(&self, mqd: u32) -> Option<bool> {
+        self.descriptors.get(&mqd).map(|d| d.nonblock)
+    }
+
     /// Open or create a named message queue.
     pub fn mq_open(
         &mut self,
