@@ -93,16 +93,13 @@ LINK_FLAGS=(
     -Wl,--export=__wasm_thread_init
 )
 
-# Asyncify for fork()
-WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
-ASYNCIFY_IMPORTS="kernel.kernel_fork"
+# Fork-instrumentation for fork()
+FORK_INSTRUMENT="$REPO_ROOT/tools/bin/wasm-fork-instrument"
 
 asyncify_wasm() {
     local wasm="$1"
-    if [ -n "$WASM_OPT" ]; then
-        "$WASM_OPT" --asyncify \
-            --pass-arg="asyncify-imports@${ASYNCIFY_IMPORTS}" \
-            "$wasm" -o "$wasm" 2>/dev/null || true
+    if [ -x "$FORK_INSTRUMENT" ]; then
+        "$FORK_INSTRUMENT" "$wasm" -o "$wasm" 2>/dev/null || true
     fi
 }
 

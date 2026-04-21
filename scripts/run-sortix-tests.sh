@@ -159,15 +159,12 @@ SO_LINK_FLAGS=(
     -Wl,--allow-undefined
 )
 
-WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
-ASYNCIFY_IMPORTS="kernel.kernel_fork"
+FORK_INSTRUMENT="$REPO_ROOT/tools/bin/wasm-fork-instrument"
 
 asyncify_wasm() {
     local wasm="$1"
-    if [ -n "$WASM_OPT" ]; then
-        "$WASM_OPT" --asyncify \
-            --pass-arg="asyncify-imports@${ASYNCIFY_IMPORTS}" \
-            "$wasm" -o "$wasm" 2>/dev/null || true
+    if [ -x "$FORK_INSTRUMENT" ]; then
+        "$FORK_INSTRUMENT" "$wasm" -o "$wasm" 2>/dev/null || true
     fi
 }
 
@@ -768,7 +765,7 @@ run_suite() {
         echo "  Building $count tests ($PARALLEL parallel)..."
         # Build in parallel using a wrapper that reconstructs arrays
         export REPO_ROOT BUILD_DIR OS_TEST SYSROOT GLUE_DIR
-        export CC WASM_OPT ASYNCIFY_IMPORTS
+        export CC FORK_INSTRUMENT
         export CFLAGS_BASE_STR="${CFLAGS_BASE[*]}"
         export LINK_FLAGS_STR="${LINK_FLAGS[*]}"
         export SO_CFLAGS_STR="${SO_CFLAGS[*]}"
@@ -784,10 +781,8 @@ run_suite() {
             "$CC" $CFLAGS_BASE_STR -D_GNU_SOURCE -I"$OS_TEST" \
                 "$src" $LINK_FLAGS_STR \
                 -o "$wasm" 2>/dev/null || return 1
-            if [ -n "$WASM_OPT" ]; then
-                "$WASM_OPT" --asyncify \
-                    --pass-arg="asyncify-imports@${ASYNCIFY_IMPORTS}" \
-                    "$wasm" -o "$wasm" 2>/dev/null || true
+            if [ -x "$FORK_INSTRUMENT" ]; then
+                "$FORK_INSTRUMENT" "$wasm" -o "$wasm" 2>/dev/null || true
             fi
             # Build shared library (.so) if source has #ifdef SHARED
             if grep -q '#ifdef SHARED' "$src" 2>/dev/null; then
