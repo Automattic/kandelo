@@ -26,10 +26,9 @@ wasm-fork-instrument <input.wasm> -o <output.wasm> [--entry kernel.kernel_fork]
 
 ## Status
 
-**Phase 1 (skeleton).** The tool currently round-trips its input
-through walrus's validator and emits it unchanged. Subsequent phases
-(2–7) add call-graph discovery, instrumentation, reference-type
-spilling, catch-handler resume, and production rollout.
+**Phases 1–6 MVP landed** on branch `fierce-wire` (PR #307). The tool instruments direct + indirect fork-path callers, spills scalar and ref-typed locals, survives `try_table` catch-handler rewind, and preserves module validity. Phase 6 fuzzing (design §5.4) runs 10 000 iterations with zero validator failures.
+
+Phase 7 (production rollout: replacing `wasm-opt --asyncify` in build scripts, removing the `binaryen` submodule) is still pending — see `docs/plans/2026-04-20-fork-instrumentation-design.md`.
 
 ## Build
 
@@ -46,3 +45,31 @@ Binary: `target/release/wasm-fork-instrument`.
 ```sh
 cargo test -p fork-instrument
 ```
+
+## Fuzzing (Phase 6 gate)
+
+Phase 6 catch-handler resume is validated against a random-WAT fuzzer with a dual walrus + wasmparser oracle. Per design §5.4, ≥10 000 iterations must complete with zero validator failures before Phase 6 is declared shippable.
+
+Prerequisites: `cargo install cargo-fuzz` (one-time; requires nightly, which `rust-toolchain.toml` already pins).
+
+Short invocation (from the repo root):
+
+```sh
+scripts/run-fork-instrument-fuzz.sh
+```
+
+Override iteration count or input size:
+
+```sh
+FUZZ_RUNS=50000 FUZZ_MAX_LEN=256 scripts/run-fork-instrument-fuzz.sh
+```
+
+Direct invocation from this crate:
+
+```sh
+cargo fuzz run --sanitizer=none fuzz_try_table -- -runs=10000 -max_len=128
+```
+
+`--sanitizer=none` is required: on macOS arm64, cargo-fuzz's default AddressSanitizer deadlocks during init. libFuzzer's coverage instrumentation is orthogonal, so mutation is still coverage-guided. Semantic/validator divergence is what we're fuzzing for here, not memory-safety bugs — ASAN is not load-bearing.
+
+Findings land in `fuzz/artifacts/fuzz_try_table/`. Decode with `cargo fuzz fmt fuzz_try_table <artifact>` to see the `WatProgram` struct that triggered the finding. Any finding MUST be converted into a unit-level fixture in `tests/instrument.rs` before being closed.
