@@ -1,0 +1,25 @@
+// Phase 2 test fixture: CallBuiltinInstruction.
+//
+// Torque emits CallBuiltinInstruction when one builtin invokes another
+// builtin directly (non-tail, non-JS-linkage, single result in Phase 2).
+// CSA form:  ca_.CallBuiltin<T>(Builtin::kFoo, context, args...)
+// CC form:   result = Builtin_Foo(isolate, context, args...)
+//
+// Both the caller and the callee must be whitelisted. The harness
+// auto-includes any identifier matching `TorqueCcTest_[A-Za-z0-9_]+`
+// found in the fixture source, so defining `TorqueCcTest_CallBuiltin`
+// and `TorqueCcTest_CallBuiltin_Helper` in the same file is sufficient.
+//
+// `Builtin::ShouldBeInlined` returns false for the kCCBuiltins backend,
+// so the helper should survive as a real call rather than being inlined
+// into the caller.
+namespace test_cc {
+  builtin TorqueCcTest_CallBuiltin_Helper(implicit context: Context)(
+      x: Smi): Smi {
+    return x;
+  }
+  builtin TorqueCcTest_CallBuiltin(implicit context: Context)(
+      arg: Smi): Smi {
+    return TorqueCcTest_CallBuiltin_Helper(arg);
+  }
+}
