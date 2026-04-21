@@ -260,9 +260,11 @@ run_test() {
         return
     fi
 
-    # Run with timeout
+    # Run with timeout.
+    # stdin redirected to /dev/null: run-example.ts reads process.stdin
+    # when not a TTY, which would drain any pipe the caller supplies.
     set +e
-    output=$(cd "$REPO_ROOT" && timeout "$TEST_TIMEOUT" node --experimental-wasm-exnref --import tsx/esm examples/run-example.ts "${wasm}" 2>&1)
+    output=$(cd "$REPO_ROOT" && timeout "$TEST_TIMEOUT" node --experimental-wasm-exnref --import tsx/esm examples/run-example.ts "${wasm}" </dev/null 2>&1)
     rc=$?
     set -e
 

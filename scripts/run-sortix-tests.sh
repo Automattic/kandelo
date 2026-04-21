@@ -554,8 +554,10 @@ _run_runtime_test_worker() {
     # Run with timeout. KERNEL_CWD is the data directory containing symlinks
     # to test binaries at their expected relative paths (e.g., fcntl/open).
     local output rc
+    # stdin redirected to /dev/null: run-example.ts reads process.stdin
+    # when not a TTY, which would drain any pipe the caller supplies.
     set +e
-    output=$(cd "$REPO_ROOT" && KERNEL_CWD="${SORTIX_DATA_DIR:-$REPO_ROOT}" timeout "$this_timeout" node --experimental-wasm-exnref --import tsx/esm examples/run-example.ts "${wasm}" 2>&1)
+    output=$(cd "$REPO_ROOT" && KERNEL_CWD="${SORTIX_DATA_DIR:-$REPO_ROOT}" timeout "$this_timeout" node --experimental-wasm-exnref --import tsx/esm examples/run-example.ts "${wasm}" </dev/null 2>&1)
     rc=$?
     set -e
 
