@@ -21,7 +21,7 @@ use fork_instrument::runtime::names as runtime_names;
 use fork_instrument::{Options, instrument};
 use walrus::{
     ExportItem, FunctionId, FunctionKind, LocalFunction, Module,
-    ir::{Instr, InstrSeqId},
+    ir::{Instr, InstrSeqId, TryTable},
 };
 
 fn instrument_wat(wat_src: &str) -> Vec<u8> {
@@ -1717,6 +1717,416 @@ fn module_without_try_tables_skips_exnref_stash() {
             .iter()
             .any(|t| t.name.as_deref() == Some("_wpk_fork_exnref_stash")),
         "module with no try_tables should not inject the exnref stash",
+    );
+}
+
+/// A try_table whose sole `catch_ref` clause is rewritten by Phase 6d
+/// so the original target is reached via an injected capture block.
+/// After instrumentation:
+///   - The `try_table` Instr at its original position is *replaced* by
+///     a `Block` Instr (the injected `$outer`).
+///   - Inside `$outer`, a nested `Block` (`$capture`) holds the
+///     try_table (with `catch_ref` redirected to `$capture` itself).
+///   - Following the capture block in `$outer`: a `local.tee` of the
+///     captured exnref, `i32.const 1 / local.set` for `in_catch_K`,
+///     an `i32.const <slot> / local.get / table.set` to stash into
+///     `_wpk_fork_exnref_stash`, and a final `br` to the original
+///     handler label.
+#[test]
+fn catch_ref_clause_is_rewritten_with_capture_block() {
+    let bytes = instrument_wat(FIXTURE_FORK_IN_TRY_BODY);
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+
+    let caller = func_by_name(&module, "caller");
+    let f = local(&module, caller);
+
+    // Recursively look for a TryTable whose `catch_ref` clause now
+    // targets a block whose id equals the try_table's own enclosing
+    // block — our `$capture` (Phase 6d guarantees this).
+    fn find_try_table<'a>(
+        f: &'a LocalFunction,
+        seq: InstrSeqId,
+    ) -> Option<(InstrSeqId, TryTable)> {
+        for (instr, _) in &f.block(seq).instrs {
+            if let Instr::TryTable(tt) = instr {
+                return Some((seq, tt.clone()));
+            }
+            for child in match instr {
+                Instr::Block(b) => vec![b.seq],
+                Instr::Loop(l) => vec![l.seq],
+                Instr::IfElse(ie) => vec![ie.consequent, ie.alternative],
+                _ => vec![],
+            } {
+                if let Some(v) = find_try_table(f, child) {
+                    return Some(v);
+                }
+            }
+        }
+        None
+    }
+
+    let (enclosing_seq, try_table) = find_try_table(f, f.entry_block())
+        .expect("Phase 6d should keep the (redirected) try_table in place");
+
+    // The catch_ref clause should now target `enclosing_seq` — the
+    // block that contains the try_table (our $capture).
+    let retargeted_to_enclosing = try_table.catches.iter().any(|c| match c {
+        &walrus::ir::TryTableCatch::CatchRef { label, .. } => label == enclosing_seq,
+        _ => false,
+    });
+    assert!(
+        retargeted_to_enclosing,
+        "catch_ref should be redirected to the enclosing $capture block"
+    );
+
+    // Walk the entry block. Somewhere we should find a Block that is
+    // our $outer, which contains another Block (our $capture) that
+    // contains the TryTable. After $capture, the outer block should
+    // have: LocalTee, Const(1), LocalSet, Const(slot), LocalGet,
+    // TableSet, Br.
+    fn find_outer<'a>(
+        f: &'a LocalFunction,
+        seq: InstrSeqId,
+        target: InstrSeqId, // the $capture seq
+    ) -> Option<InstrSeqId> {
+        for (instr, _) in &f.block(seq).instrs {
+            if let Instr::Block(b) = instr {
+                // Is this $outer? It contains Block($capture).
+                for (inner, _) in &f.block(b.seq).instrs {
+                    if let Instr::Block(bb) = inner {
+                        if bb.seq == target {
+                            return Some(b.seq);
+                        }
+                    }
+                }
+            }
+            for child in match instr {
+                Instr::Block(b) => vec![b.seq],
+                Instr::Loop(l) => vec![l.seq],
+                Instr::IfElse(ie) => vec![ie.consequent, ie.alternative],
+                _ => vec![],
+            } {
+                if let Some(v) = find_outer(f, child, target) {
+                    return Some(v);
+                }
+            }
+        }
+        None
+    }
+
+    let outer_seq = find_outer(f, f.entry_block(), enclosing_seq)
+        .expect("Phase 6d should wrap $capture in $outer");
+
+    let outer_kinds = seq_kinds(&module, caller, outer_seq);
+    // outer_seq body: [Block($capture), LocalTee, Const(1), LocalSet,
+    //                   Const(slot), LocalGet, TableSet, Br]
+    assert_eq!(
+        outer_kinds,
+        vec![
+            InstrKind::Block,      // $capture
+            InstrKind::Other,      // local.tee captured_exnref (LocalTee — not in our enum)
+            InstrKind::Const,      // 1
+            InstrKind::LocalSet,   // in_catch_local
+            InstrKind::Const,      // slot
+            InstrKind::LocalGet,   // captured_exnref
+            InstrKind::Other,      // table.set (TableSet — not in our enum)
+            InstrKind::Other,      // br $L (Br — not in our enum)
+        ],
+        "$outer must contain Block($capture) + capture code + br to original label: {outer_kinds:?}",
+    );
+}
+
+/// Verifies Phase 6e: a wrapped call inside a fork-path function that
+/// owns a catch_ref-bearing try_table writes the active in_catch flag's
+/// (catch_region_id, exnref_slot) into the per-function frame locals
+/// before checking `state == UNWINDING`.
+#[test]
+fn call_site_then_branch_includes_phase_6e_region_id_writes() {
+    let bytes = instrument_wat(FIXTURE_FORK_IN_TRY_BODY);
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+
+    let caller = func_by_name(&module, "caller");
+    let f = local(&module, caller);
+
+    // Locate the wrapped `call $fork` inside the try_table body.
+    let mut bodies = Vec::new();
+    collect_try_table_bodies(f, f.entry_block(), &mut bodies);
+    assert_eq!(bodies.len(), 1);
+
+    // The try_table body after 6c/6d/6e has structure:
+    //   <6c stub: GlobalGet, Const, Binop, LocalGet, Const, Binop, Binop, IfElse>
+    //   <4c/4g-wrapped `call $fork`: ... the wrap's if-else ...>
+    //   <original `drop, ref.null exn` — possibly 4g-gated>
+    // We want to find the IfElse that represents the call wrap, then
+    // look at its then-branch.
+    let if_ids: Vec<(InstrSeqId, InstrSeqId)> = f
+        .block(bodies[0])
+        .instrs
+        .iter()
+        .filter_map(|(i, _)| match i {
+            Instr::IfElse(ie) => Some((ie.consequent, ie.alternative)),
+            _ => None,
+        })
+        .collect();
+    // Expect at least two: 6c stub's IfElse + call-wrap IfElse.
+    assert!(
+        if_ids.len() >= 2,
+        "expected ≥ 2 IfElses in try_table body (stub + call wrap): {if_ids:?}",
+    );
+    // The call-wrap IfElse is the one whose then-branch starts with a
+    // `Call`. (The stub's then-branch starts with Const/TableGet.)
+    let call_wrap_then = if_ids
+        .iter()
+        .find(|(t, _)| matches!(f.block(*t).instrs.first().map(|(i, _)| i), Some(Instr::Call(_))))
+        .expect("call-wrap IfElse not found")
+        .0;
+
+    // Then-branch shape should be:
+    //   Call, Const(call_idx), LocalSet(call_idx_local),
+    //   Const(0), LocalSet(catch_region_id_local),         ;; Phase 6e reset
+    //   Const(0), LocalSet(exnref_slot_local),
+    //   LocalGet(in_catch_K), IfElse(...),                  ;; per-handler check
+    //   GlobalGet, Const, Binop, BrIf.
+    let kinds = seq_kinds(&module, caller, call_wrap_then);
+    assert_eq!(
+        kinds,
+        vec![
+            InstrKind::Call,
+            InstrKind::Const,    // call_idx
+            InstrKind::LocalSet, // call_idx_local
+            InstrKind::Const,    // 0
+            InstrKind::LocalSet, // catch_region_id_local := 0
+            InstrKind::Const,    // 0
+            InstrKind::LocalSet, // exnref_slot_local := 0
+            InstrKind::LocalGet, // in_catch_K
+            InstrKind::IfElse,   // per-handler if
+            InstrKind::GlobalGet,
+            InstrKind::Const,    // UNWINDING
+            InstrKind::Binop,
+            InstrKind::BrIf,
+        ],
+        "Phase 6e call-site writes not in expected shape: {kinds:?}",
+    );
+}
+
+/// End-to-end fixture: a caller that catches an exception via
+/// catch_ref and then calls fork from inside the handler. The fork
+/// path reaches through the handler code, so the wrapped call must
+/// cooperate with Phase 6d's handler-entry capture (in_catch goes
+/// high) to record catch_region_id in the serialized frame.
+const FIXTURE_FORK_FROM_CATCH_HANDLER: &str = r#"
+    (module
+      (import "kernel" "kernel_fork" (func $fork (result i32)))
+      (tag $exn)
+      (func $caller (export "caller") (result i32)
+        (block $handler (result (ref null exn))
+          (try_table (result (ref null exn)) (catch_ref $exn $handler)
+            ;; Normal path: pretend nothing threw, supply a null
+            ;; exnref that the handler block's result expects.
+            ref.null exn))
+        ;; Handler (reached post-$handler). Stack: (ref null exn).
+        drop
+        call $fork)
+      (memory 1))
+"#;
+
+#[test]
+fn fork_from_inside_catch_handler_full_roundtrip() {
+    let bytes = instrument_wat(FIXTURE_FORK_FROM_CATCH_HANDLER);
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+
+    // Basic structural checks the module should satisfy:
+    //   - exnref stash is injected with one slot.
+    let stash = module
+        .tables
+        .iter()
+        .find(|t| t.name.as_deref() == Some("_wpk_fork_exnref_stash"))
+        .expect("exnref stash should be injected");
+    assert_eq!(stash.initial, 1);
+
+    //   - caller has a rewind-throw stub on the try_table (6c).
+    let caller = func_by_name(&module, "caller");
+    let f = local(&module, caller);
+    let mut bodies = Vec::new();
+    collect_try_table_bodies(f, f.entry_block(), &mut bodies);
+    assert_eq!(bodies.len(), 1);
+    let body_kinds = seq_kinds(&module, caller, bodies[0]);
+    assert_eq!(
+        &body_kinds[..8],
+        &[
+            InstrKind::GlobalGet,
+            InstrKind::Const,
+            InstrKind::Binop,
+            InstrKind::LocalGet,
+            InstrKind::Const,
+            InstrKind::Binop,
+            InstrKind::Binop,
+            InstrKind::IfElse,
+        ],
+    );
+
+    //   - The try_table's catch_ref clause has been retargeted (6d).
+    //     It should point at the enclosing $capture, which is a
+    //     fresh block distinct from the original $handler.
+    let try_table: TryTable = {
+        fn find<'a>(
+            f: &'a LocalFunction,
+            seq: InstrSeqId,
+        ) -> Option<TryTable> {
+            for (instr, _) in &f.block(seq).instrs {
+                if let Instr::TryTable(tt) = instr {
+                    return Some(tt.clone());
+                }
+                for child in match instr {
+                    Instr::Block(b) => vec![b.seq],
+                    Instr::Loop(l) => vec![l.seq],
+                    Instr::IfElse(ie) => vec![ie.consequent, ie.alternative],
+                    _ => vec![],
+                } {
+                    if let Some(v) = find(f, child) {
+                        return Some(v);
+                    }
+                }
+            }
+            None
+        }
+        find(f, f.entry_block()).expect("try_table should still exist after 6d")
+    };
+    // The only catch is catch_ref; its label must be the injected
+    // $capture block (not the original $handler).
+    let (catch_label, _) = try_table
+        .catches
+        .iter()
+        .find_map(|c| match c {
+            walrus::ir::TryTableCatch::CatchRef { label, tag } => Some((*label, *tag)),
+            _ => None,
+        })
+        .expect("catch_ref clause should still be present");
+    // $capture is the immediate parent of the TryTable Instr; also
+    // the label the catch_ref now targets. Confirm it's a dangling
+    // block (not an original one) by observing it contains the
+    // try_table plus a Br.
+    let capture_kinds = seq_kinds(&module, caller, catch_label);
+    assert!(
+        capture_kinds.iter().any(|k| *k == InstrKind::Other), // Br
+        "$capture must end with a Br to $outer: {capture_kinds:?}",
+    );
+
+    //   - At least one call site (the call to $fork from inside the
+    //     handler) should include the Phase 6e region-id writes.
+    //     We find any wrapped `call $fork` and verify its then-branch
+    //     has the expected shape.
+    fn find_call_wrap_then<'a>(
+        f: &'a LocalFunction,
+        seq: InstrSeqId,
+    ) -> Option<InstrSeqId> {
+        for (instr, _) in &f.block(seq).instrs {
+            if let Instr::IfElse(ie) = instr {
+                if let Some((first, _)) = f.block(ie.consequent).instrs.first() {
+                    if matches!(first, Instr::Call(_)) {
+                        return Some(ie.consequent);
+                    }
+                }
+                if let Some(v) = find_call_wrap_then(f, ie.consequent) {
+                    return Some(v);
+                }
+                if let Some(v) = find_call_wrap_then(f, ie.alternative) {
+                    return Some(v);
+                }
+            }
+            for child in match instr {
+                Instr::Block(b) => vec![b.seq],
+                Instr::Loop(l) => vec![l.seq],
+                Instr::TryTable(tt) => vec![tt.seq],
+                _ => vec![],
+            } {
+                if let Some(v) = find_call_wrap_then(f, child) {
+                    return Some(v);
+                }
+            }
+        }
+        None
+    }
+    let call_then = find_call_wrap_then(f, f.entry_block())
+        .expect("at least one wrapped Call should exist");
+    let kinds = seq_kinds(&module, caller, call_then);
+    // Must include LocalSet(catch_region_id) + LocalSet(exnref_slot)
+    // between the Call and the BrIf.
+    let localset_count = kinds.iter().filter(|k| **k == InstrKind::LocalSet).count();
+    assert!(
+        localset_count >= 3,
+        "call then-branch should contain ≥ 3 LocalSets (call_idx + catch_region_id + exnref_slot): {kinds:?}",
+    );
+    let ifelse_count = kinds.iter().filter(|k| **k == InstrKind::IfElse).count();
+    assert_eq!(
+        ifelse_count, 1,
+        "one per-handler IfElse expected in Phase 6e writes: {kinds:?}",
+    );
+}
+
+/// A try_table with only plain `catch` clauses (no exnref) cannot be
+/// Phase-6d-rewritten, so it retains the 6c stub (harmless dead code)
+/// but is not wrapped in $outer/$capture. The module must still
+/// validate and not fail at instrumentation time.
+#[test]
+fn plain_catch_only_try_table_is_not_6d_rewritten() {
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (tag $exn)
+          (func $caller (export "caller") (result i32)
+            (block $h
+              (try_table (catch $exn $h)
+                call $fork
+                drop))
+            i32.const 0)
+          (memory 1))
+    "#;
+    let bytes = instrument_wat(wat);
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+
+    let caller = func_by_name(&module, "caller");
+    let f = local(&module, caller);
+
+    // TryTable Instr should still be present at its original nesting
+    // depth (not wrapped in an $outer block by 6d).
+    let mut bodies = Vec::new();
+    collect_try_table_bodies(f, f.entry_block(), &mut bodies);
+    assert_eq!(bodies.len(), 1);
+
+    // The try_table's sole catch clause must still be the plain
+    // Catch — 6d only rewrites `*_ref` variants.
+    fn find_tt<'a>(
+        f: &'a LocalFunction,
+        seq: InstrSeqId,
+    ) -> Option<TryTable> {
+        for (instr, _) in &f.block(seq).instrs {
+            if let Instr::TryTable(tt) = instr {
+                return Some(tt.clone());
+            }
+            for child in match instr {
+                Instr::Block(b) => vec![b.seq],
+                Instr::Loop(l) => vec![l.seq],
+                Instr::IfElse(ie) => vec![ie.consequent, ie.alternative],
+                _ => vec![],
+            } {
+                if let Some(v) = find_tt(f, child) {
+                    return Some(v);
+                }
+            }
+        }
+        None
+    }
+    let tt = find_tt(f, f.entry_block()).unwrap();
+    assert!(
+        tt.catches
+            .iter()
+            .all(|c| matches!(c, walrus::ir::TryTableCatch::Catch { .. })),
+        "plain-catch-only try_tables should not be retargeted by 6d",
     );
 }
 

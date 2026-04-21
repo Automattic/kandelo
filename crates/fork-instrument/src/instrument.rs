@@ -51,10 +51,10 @@ use walrus::{
     AbstractHeapType, FunctionId, FunctionKind, GlobalId, HeapType, LocalFunction, LocalId,
     MemoryId, Module, RefType, TableId, TypeId, ValType,
     ir::{
-        BinaryOp, Binop, Block, BrIf, Call, CallIndirect, Const, Drop, GlobalGet, IfElse,
+        BinaryOp, Binop, Block, Br, BrIf, Call, CallIndirect, Const, Drop, GlobalGet, IfElse,
         Instr, InstrLocId, InstrSeqId, InstrSeqType, LegacyCatch, LoadKind, LocalGet, LocalSet,
-        Loop, MemArg, RefAsNonNull, RefNull, Return, StoreKind, TableGet, TableSet, ThrowRef,
-        TryTable, Unreachable, Value, dfs_in_order,
+        LocalTee, Loop, MemArg, RefAsNonNull, RefNull, Return, StoreKind, TableGet, TableSet,
+        ThrowRef, TryTable, TryTableCatch, Unreachable, Value, dfs_in_order,
     },
 };
 
@@ -167,11 +167,11 @@ fn instrument_one_function(
     let exnref_slot_local = module.locals.add(ValType::I32);
 
     // Step 6c — inject the rewind-throw stub at the start of each
-    // try_table body on the fork path, *before* call-site rewriting so
-    // its ops (global.get / if-else) are seen by 4g's side-effect gater
-    // only where appropriate. The stub itself performs side-effect-free
-    // ops (the GlobalGet / LocalGet / Binop / If-guard); the IfElse
-    // gates on state and, when matched, performs throw_ref.
+    // try_table body on the fork path. The stub's ops are all
+    // pure-by-4g's-classification (GlobalGet / LocalGet / Binop /
+    // IfElse-guard / — the throw_ref inside the guard is a terminator,
+    // not a "side effect" in 4g's sense), so running before 4c/4g is
+    // safe and keeps the stub lexically first in the body.
     if aux_tables.exnref.is_some() {
         inject_rewind_throw_stubs(
             module,
@@ -183,17 +183,38 @@ fn instrument_one_function(
         );
     }
 
-    // Step 4c — rewrite calls with the full 4d-ready condition so
-    // that REWINDING at the matching call_idx also enters the then-
-    // branch and the else-branch supplies default result values.
+    // Step 6d (plan) — *before* 4c/4g, figure out which try_tables
+    // we'll rewrite at the end and allocate their per-try_table
+    // locals (in_catch_K, captured_exnref_K). Only the locals are
+    // created here; the IR rewrite is deferred so 4g doesn't NORMAL-
+    // gate our capture-side instructions.
+    let catch_handlers = plan_catch_ref_handlers(module, func_id, catch_plan, aux_tables);
+
+    // Step 4c (+ 6e) — rewrite calls with the full 4d-ready condition
+    // so that REWINDING at the matching call_idx also enters the
+    // then-branch. Phase 6e is emitted *inside* the then-branch so
+    // the frame-serialized catch_region_id / exnref_slot carry the
+    // values of the currently-active handler (if any) before the
+    // br_if $unwind_save.
     let mut call_ctx = CallWrapCtx {
         fork_path,
         state_global: runtime.state_global,
         unwind_save_id: wrapper_id,
         call_idx_local,
+        catch_region_id_local,
+        exnref_slot_local,
+        catch_handlers: &catch_handlers,
         next_call_idx: 0,
     };
     rewrite_calls_in_seq(module, func_id, wrapper_id, &mut call_ctx);
+
+    // Step 6d (apply) — now that 4c/4g has finished walking the
+    // wrapper, perform the actual try_table rewrite: wrap each
+    // (planned) try_table in an injected $outer / $capture block pair
+    // so exnrefs caught at runtime are stashed into the aux table and
+    // the in_catch_K flag goes high. 4g never sees these newly-added
+    // ops.
+    apply_catch_ref_handlers(module, func_id, &catch_handlers, aux_tables);
 
     // Step 4d+4f+6b — preamble (REWINDING frame-load + ref reloads +
     // catch_region_id / exnref_slot reloads) + postamble (frame-save
@@ -270,6 +291,15 @@ struct CallWrapCtx<'a> {
     state_global: GlobalId,
     unwind_save_id: InstrSeqId,
     call_idx_local: LocalId,
+    /// Phase 6b — locals the postamble serializes as the frame's
+    /// catch_region_id / exnref_slot. Phase 6e writes them at each
+    /// call site based on the currently-active in_catch flags.
+    catch_region_id_local: LocalId,
+    exnref_slot_local: LocalId,
+    /// Phase 6e — per-try_table handler metadata. At each call site,
+    /// iterate outer-first; the innermost active handler wins (its
+    /// catch_region_id and slot are the last write into the locals).
+    catch_handlers: &'a [CatchHandlerInfo],
     next_call_idx: u32,
 }
 
@@ -464,6 +494,98 @@ fn emit_wrapped_call(
                 local: call_idx_local,
             }),
         );
+
+        // Phase 6e — compute this call site's catch_region_id and
+        // exnref_slot by inspecting the `in_catch_K` flags. Reset
+        // both to 0 first; then for each handler K (outer-first),
+        // overwrite if `in_catch_K == 1`. Innermost wins.
+        //
+        // Skipped when this function has no fork-path handlers: both
+        // locals default to 0 and no other code writes to them, so
+        // the reset would be dead. This preserves the pre-Phase-6
+        // shape of call-site wraps in fork-only / try_table-only-in-
+        // non-fork-path modules, letting existing shape tests pass
+        // unchanged.
+        //
+        // Note: 4g never walks this then-branch's sequence (it's a
+        // freshly-built dangling seq, not a nested_seqs target of any
+        // instruction in the original body), so these LocalSet /
+        // LocalGet / If ops are NOT NORMAL-gated. That is what we
+        // want: during UNWINDING propagation they must run so the
+        // frame carries the correct catch_region_id.
+        if !ctx.catch_handlers.is_empty() {
+            push_instr(
+                &mut then_seq.instrs,
+                Instr::Const(Const { value: Value::I32(0) }),
+            );
+            push_instr(
+                &mut then_seq.instrs,
+                Instr::LocalSet(LocalSet {
+                    local: ctx.catch_region_id_local,
+                }),
+            );
+            push_instr(
+                &mut then_seq.instrs,
+                Instr::Const(Const { value: Value::I32(0) }),
+            );
+            push_instr(
+                &mut then_seq.instrs,
+                Instr::LocalSet(LocalSet {
+                    local: ctx.exnref_slot_local,
+                }),
+            );
+        }
+        for info in ctx.catch_handlers {
+            // Branch conditions for each handler. Each is a simple
+            //   if local.get $in_catch_K: set locals to K / slot.
+            // We let the InstrSeqType be () -> () on the branch.
+            let if_ty = InstrSeqType::Simple(None);
+            let ih_then = local.builder_mut().dangling_instr_seq(if_ty).id();
+            let ih_else = local.builder_mut().dangling_instr_seq(if_ty).id();
+            {
+                let s = &mut local.block_mut(ih_then).instrs;
+                push_instr(
+                    s,
+                    Instr::Const(Const {
+                        value: Value::I32(info.catch_region_id as i32),
+                    }),
+                );
+                push_instr(
+                    s,
+                    Instr::LocalSet(LocalSet {
+                        local: ctx.catch_region_id_local,
+                    }),
+                );
+                push_instr(
+                    s,
+                    Instr::Const(Const {
+                        value: Value::I32(info.exnref_slot as i32),
+                    }),
+                );
+                push_instr(
+                    s,
+                    Instr::LocalSet(LocalSet {
+                        local: ctx.exnref_slot_local,
+                    }),
+                );
+            }
+            // Condition: local.get $in_catch_K
+            push_instr(
+                &mut local.block_mut(then_id).instrs,
+                Instr::LocalGet(LocalGet {
+                    local: info.in_catch_local,
+                }),
+            );
+            push_instr(
+                &mut local.block_mut(then_id).instrs,
+                Instr::IfElse(IfElse {
+                    consequent: ih_then,
+                    alternative: ih_else,
+                }),
+            );
+        }
+
+        let then_seq = local.block_mut(then_id);
 
         // state == UNWINDING ? → br $unwind_save. The results on the
         // stack are discarded because $unwind_save is () -> ().
@@ -1460,6 +1582,287 @@ fn inject_rewind_throw_stubs(
         // Restore the original body after the stub.
         body.extend(original);
     }
+}
+
+// ----------------------------------------------------------------------
+// Phase 6d — catch-handler entry capture
+// ----------------------------------------------------------------------
+//
+// Each fork-path try_table whose catch clauses include `catch_ref` or
+// `catch_all_ref` gets wrapped so we can intercept the caught exnref
+// at the moment the wasm runtime delivers it. The transform for each
+// such try_table is:
+//
+//   BEFORE:
+//     <parent>:
+//       ... try_table (catch_ref $tag $L) body ...
+//       ... (handler code reached via $L) ...
+//
+//   AFTER:
+//     <parent>:
+//       ... Block $outer (result <try_sig>) {
+//             Block $capture (result <catch_sig>) {
+//               try_table (catch_ref $tag $capture) body    ;; redirected
+//               br $outer                                    ;; normal exit
+//             }
+//             ;; catch landed here. Stack: tag_params..., exnref.
+//             local.tee $captured_exnref_K    ;; stash to local
+//             i32.const 1
+//             local.set $_in_catch_K          ;; mark handler active
+//             i32.const <slot>
+//             local.get $captured_exnref_K
+//             table.set $_wpk_fork_exnref_stash
+//             br $L                           ;; resume original handler
+//           }
+//       ...
+//
+// Key invariants:
+//   - `body_seq` is untouched (retains the Phase 6c rewind-throw stub
+//     at its start and the Phase 4b/c/d/g-wrapped user code after).
+//   - Plain `catch` / `catch_all` clauses are *not* redirected — we
+//     can't capture an exnref for them, so their handlers remain
+//     outside Phase-6 coverage (fork from inside them stays UB for
+//     now, same as pre-Phase-6).
+//   - For the MVP we only rewrite when every `*_ref` clause shares a
+//     single target label; multi-target try_tables are left as-is.
+//
+// The `CatchHandlerInfo` returned here feeds Phase 6e, which at each
+// call site checks `in_catch_K` locals and populates
+// `catch_region_id_local` / `exnref_slot_local` before the frame is
+// serialized.
+#[derive(Debug, Clone, Copy)]
+struct CatchHandlerInfo {
+    catch_region_id: u32,
+    exnref_slot: u32,
+    /// Body seq of the try_table this handler is attached to — the
+    /// same `body_seq` the 6c stub was prepended to, preserved across
+    /// the 6d rewrite.
+    body_seq: InstrSeqId,
+    /// Original catch target label (the block the handler code runs
+    /// inside, in the original module). After 6d rewrite, the capture
+    /// block ends with `br target_label` to resume that handler.
+    target_label: InstrSeqId,
+    in_catch_local: LocalId,
+    captured_exnref_local: LocalId,
+}
+
+/// Phase 6d in two halves. The planning half allocates locals and
+/// decides which try_tables get the full capture rewrite; the applying
+/// half performs the actual IR rewrite. Splitting lets the planner run
+/// *before* Phase 4c/4g so the call-site wrapping (Phase 6e) can
+/// reference the newly-allocated `in_catch_K` / `captured_exnref_K`
+/// locals, while the rewrite runs *after* 4c/4g so the side-effect
+/// gater doesn't see — and thus doesn't NORMAL-gate — our capture-side
+/// instructions.
+fn plan_catch_ref_handlers(
+    module: &mut Module,
+    func_id: FunctionId,
+    catch_plan: &[CatchRegionPlan],
+    aux_tables: &AuxTables,
+) -> Vec<CatchHandlerInfo> {
+    let mut infos = Vec::new();
+
+    if aux_tables.exnref.is_none() {
+        return infos;
+    }
+    let exnref_ty = RefType {
+        nullable: true,
+        heap_type: HeapType::Abstract(AbstractHeapType::Exn),
+    };
+
+    for plan in catch_plan {
+        // Inspect the try_table in a short read-only borrow of the
+        // function. We don't mutate walrus IR here — just allocate
+        // locals and remember which try_tables we'll later rewrite.
+        let (target_label_opt, _try_sig, _catch_sig) = {
+            let local = match &module.funcs.get(func_id).kind {
+                FunctionKind::Local(l) => l,
+                _ => continue,
+            };
+            let (_, tt) = match find_try_table_parent_seq(local, local.entry_block(), plan.body_seq) {
+                Some(v) => v,
+                None => continue,
+            };
+
+            let mut ref_targets: HashSet<InstrSeqId> = HashSet::new();
+            for c in &tt.catches {
+                match c {
+                    TryTableCatch::CatchRef { label, .. }
+                    | TryTableCatch::CatchAllRef { label } => {
+                        ref_targets.insert(*label);
+                    }
+                    _ => {}
+                }
+            }
+            if ref_targets.len() != 1 {
+                (None, local.block(plan.body_seq).ty, local.block(plan.body_seq).ty)
+            } else {
+                let target = *ref_targets.iter().next().unwrap();
+                let try_sig = local.block(plan.body_seq).ty;
+                let catch_sig = local.block(target).ty;
+                (Some(target), try_sig, catch_sig)
+            }
+        };
+        let target_label = match target_label_opt {
+            Some(t) => t,
+            None => continue, // zero or mixed `*_ref` targets → skip
+        };
+
+        let in_catch_local = module.locals.add(ValType::I32);
+        let captured_exnref_local = module.locals.add(ValType::Ref(exnref_ty));
+
+        infos.push(CatchHandlerInfo {
+            catch_region_id: plan.catch_region_id,
+            exnref_slot: plan.exnref_slot,
+            body_seq: plan.body_seq,
+            target_label,
+            in_catch_local,
+            captured_exnref_local,
+        });
+    }
+
+    infos
+}
+
+fn apply_catch_ref_handlers(
+    module: &mut Module,
+    func_id: FunctionId,
+    handlers: &[CatchHandlerInfo],
+    aux_tables: &AuxTables,
+) {
+    let exnref_table = match aux_tables.exnref {
+        Some(t) => t,
+        None => return,
+    };
+
+    for info in handlers {
+        // Re-snapshot try_table state at rewrite time (4c may have
+        // walked it, but the TryTable Instr itself is unchanged and
+        // its catches list still points to the original targets).
+        let (parent_seq, original_catches, try_table_type, catch_sig_type) = {
+            let local = match &module.funcs.get(func_id).kind {
+                FunctionKind::Local(l) => l,
+                _ => continue,
+            };
+            let (parent, tt) = match find_try_table_parent_seq(local, local.entry_block(), info.body_seq) {
+                Some(v) => v,
+                None => continue,
+            };
+            let catches = tt.catches.clone();
+            let try_sig = local.block(info.body_seq).ty;
+            let catch_sig = local.block(info.target_label).ty;
+            (parent, catches, try_sig, catch_sig)
+        };
+
+        let (outer_seq_id, capture_seq_id) = {
+            let local = local_mut(module, func_id);
+            let cap = local.builder_mut().dangling_instr_seq(catch_sig_type).id();
+            let out = local.builder_mut().dangling_instr_seq(try_table_type).id();
+            (out, cap)
+        };
+
+        let new_catches: Vec<TryTableCatch> = original_catches
+            .iter()
+            .map(|c| match c {
+                TryTableCatch::CatchRef { tag, .. } => TryTableCatch::CatchRef {
+                    tag: *tag,
+                    label: capture_seq_id,
+                },
+                TryTableCatch::CatchAllRef { .. } => TryTableCatch::CatchAllRef {
+                    label: capture_seq_id,
+                },
+                TryTableCatch::Catch { tag, label } => TryTableCatch::Catch {
+                    tag: *tag,
+                    label: *label,
+                },
+                TryTableCatch::CatchAll { label } => TryTableCatch::CatchAll { label: *label },
+            })
+            .collect();
+
+        {
+            let local = local_mut(module, func_id);
+            let s = &mut local.block_mut(capture_seq_id).instrs;
+            push_instr(
+                s,
+                Instr::TryTable(TryTable {
+                    seq: info.body_seq,
+                    catches: new_catches,
+                }),
+            );
+            push_instr(s, Instr::Br(Br { block: outer_seq_id }));
+        }
+
+        {
+            let local = local_mut(module, func_id);
+            let s = &mut local.block_mut(outer_seq_id).instrs;
+            push_instr(s, Instr::Block(Block { seq: capture_seq_id }));
+            push_instr(
+                s,
+                Instr::LocalTee(LocalTee {
+                    local: info.captured_exnref_local,
+                }),
+            );
+            push_instr(s, Instr::Const(Const { value: Value::I32(1) }));
+            push_instr(
+                s,
+                Instr::LocalSet(LocalSet {
+                    local: info.in_catch_local,
+                }),
+            );
+            push_instr(
+                s,
+                Instr::Const(Const {
+                    value: Value::I32(info.exnref_slot as i32),
+                }),
+            );
+            push_instr(
+                s,
+                Instr::LocalGet(LocalGet {
+                    local: info.captured_exnref_local,
+                }),
+            );
+            push_instr(s, Instr::TableSet(TableSet { table: exnref_table }));
+            push_instr(
+                s,
+                Instr::Br(Br {
+                    block: info.target_label,
+                }),
+            );
+        }
+
+        {
+            let local = local_mut(module, func_id);
+            let parent_instrs = &mut local.block_mut(parent_seq).instrs;
+            let tt_idx = parent_instrs
+                .iter()
+                .position(|(i, _)| matches!(i, Instr::TryTable(tt) if tt.seq == info.body_seq))
+                .expect("try_table not found in its parent");
+            parent_instrs[tt_idx].0 = Instr::Block(Block { seq: outer_seq_id });
+        }
+    }
+}
+
+/// Walk `seq` and its nested sequences to find the parent sequence
+/// (and the `TryTable` instr) whose `seq` matches `body_seq`. Returns
+/// the enclosing `InstrSeqId` and a reference to the try_table.
+fn find_try_table_parent_seq<'a>(
+    f: &'a LocalFunction,
+    seq: InstrSeqId,
+    body_seq: InstrSeqId,
+) -> Option<(InstrSeqId, &'a TryTable)> {
+    for (instr, _) in &f.block(seq).instrs {
+        if let Instr::TryTable(tt) = instr {
+            if tt.seq == body_seq {
+                return Some((seq, tt));
+            }
+        }
+        for child in nested_seqs(instr) {
+            if let Some(v) = find_try_table_parent_seq(f, child, body_seq) {
+                return Some(v);
+            }
+        }
+    }
+    None
 }
 
 // ----------------------------------------------------------------------
