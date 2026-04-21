@@ -397,14 +397,16 @@ fi
 echo "  Linking nginx.wasm..."
 wasm32posix-cc "${OBJS[@]}" -o "$SCRIPT_DIR/nginx.wasm" -lcrypt
 
-# Asyncify for fork support (master_process on requires fork children to
-# resume from the fork point rather than re-executing _start)
-WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
-if [ -n "$WASM_OPT" ]; then
-    echo "  Applying asyncify transform..."
-    "$WASM_OPT" --asyncify \
-        --pass-arg="asyncify-imports@kernel.kernel_fork" \
-        "$SCRIPT_DIR/nginx.wasm" -o "$SCRIPT_DIR/nginx.wasm"
+# Fork instrumentation (master_process on requires fork children to
+# resume from the fork point rather than re-executing _start).
+# wasm-fork-instrument auto-discovers fork paths via call-graph analysis —
+# no onlylist needed. Must run last — it hardcodes mutable-global offsets
+# and any later pass reordering globals would corrupt the fork buffer.
+FORK_INSTRUMENT="$REPO_ROOT/tools/bin/wasm-fork-instrument"
+if [ -x "$FORK_INSTRUMENT" ]; then
+    echo "  Applying fork instrumentation..."
+    "$FORK_INSTRUMENT" "$SCRIPT_DIR/nginx.wasm" -o "$SCRIPT_DIR/nginx.wasm.instr"
+    mv "$SCRIPT_DIR/nginx.wasm.instr" "$SCRIPT_DIR/nginx.wasm"
 fi
 
 echo "==> nginx.wasm built successfully!"

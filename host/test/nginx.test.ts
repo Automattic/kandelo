@@ -23,7 +23,7 @@ const repoRoot = join(__dirname, "../..");
 
 const MAX_PAGES = 16384;
 const CH_TOTAL_SIZE = 72 + 65536;
-const ASYNCIFY_BUF_SIZE = 16384;
+const FORK_BUF_SIZE = 16384;
 
 const nginxWasmPath = join(repoRoot, "examples/nginx/nginx.wasm");
 const nginxPrefix = join(repoRoot, "examples/nginx");
@@ -116,7 +116,7 @@ describe.skipIf(!existsSync(nginxWasmPath))(
 
             kw.registerProcess(childPid, childMemory, [childChannelOffset], { skipKernelCreate: true });
 
-            const asyncifyBufAddr = childChannelOffset - ASYNCIFY_BUF_SIZE;
+            const forkBufAddr = childChannelOffset - FORK_BUF_SIZE;
             const childInitData: CentralizedWorkerInitMessage = {
               type: "centralized_init",
               pid: childPid,
@@ -125,7 +125,7 @@ describe.skipIf(!existsSync(nginxWasmPath))(
               memory: childMemory,
               channelOffset: childChannelOffset,
               isForkChild: true,
-              asyncifyBufAddr,
+              forkBufAddr,
             };
 
             const childWorker = workerAdapter.createWorker(childInitData);

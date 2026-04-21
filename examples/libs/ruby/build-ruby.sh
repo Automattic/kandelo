@@ -493,6 +493,17 @@ SITE_EOF
     # We use --host=wasm32-unknown-wasi to trigger this.
     # WASI_SDK_PATH must be set (Ruby errors if missing) but we override
     # CC/AR/RANLIB/NM so it's only used for the existence check.
+    #
+    # TODO(phase-7-rollout): Ruby's WASI build invokes `wasm-opt --asyncify`
+    # implicitly via its generated Makefile's POSTLINK step (not visible in
+    # this script). Phase 7 replaces `wasm-opt --asyncify` globally with
+    # `tools/bin/wasm-fork-instrument`, but the POSTLINK invocation is
+    # embedded in Ruby's configure/Makefile output. Verify that the shipped
+    # ruby.wasm actually needs fork instrumentation (Kernel#fork,
+    # IO.popen, Process.spawn without _Fork fast-path, subprocesses
+    # for test harnesses); if yes, either patch the generated Makefile
+    # or invoke wasm-fork-instrument on the final ruby.wasm explicitly
+    # after `make`. Defer until after initial rollout; track separately.
     CONFIG_SITE="$CONFIG_SITE" \
     WASI_SDK_PATH="$SYSROOT" \
     CC=wasm32posix-cc \

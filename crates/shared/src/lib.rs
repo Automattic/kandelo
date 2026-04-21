@@ -11,13 +11,12 @@
 ///
 /// The structural snapshot at `abi/snapshot.json` is the source of truth for
 /// what that contract covers — field offsets of marshalled structs, channel
-/// header layout, syscall numbers, kernel export signatures, and asyncify
-/// save-slot conventions. CI regenerates the snapshot and compares it to
-/// the committed copy; any diff requires bumping `ABI_VERSION` in the same
-/// commit.
+/// header layout, syscall numbers, and kernel export signatures. CI
+/// regenerates the snapshot and compares it to the committed copy; any diff
+/// requires bumping `ABI_VERSION` in the same commit.
 ///
 /// See `docs/abi-versioning.md` for the full policy.
-pub const ABI_VERSION: u32 = 2;
+pub const ABI_VERSION: u32 = 3;
 
 /// Syscall numbers for the POSIX kernel interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -895,44 +894,6 @@ pub struct WasmStatfs {
 /// Any addition, removal, or value change in this module is, by definition,
 /// an ABI change and requires bumping [`ABI_VERSION`].
 pub mod abi {
-    /// A slot, relative to the asyncify buffer base, where the parent
-    /// process serializes register-like state before an asyncify-driven
-    /// fork so the child can restore it on rewind.
-    ///
-    /// Offsets are negative (saved before the buffer). Widths are in bytes.
-    pub struct AsyncifySaveSlot {
-        pub name: &'static str,
-        pub offset_wasm32: i32,
-        pub offset_wasm64: i32,
-        pub width_wasm32: u32,
-        pub width_wasm64: u32,
-        pub meaning: &'static str,
-    }
-
-    /// Save slots used by the asyncify fork path.
-    ///
-    /// These values must agree with the ones read by
-    /// `host/src/worker-main.ts` (`saveParentTls`, the rewind path) and
-    /// anything else that reinstates parent state in a fork child.
-    pub const ASYNCIFY_SAVE_SLOTS: &[AsyncifySaveSlot] = &[
-        AsyncifySaveSlot {
-            name: "__tls_base",
-            offset_wasm32: -4,
-            offset_wasm64: -8,
-            width_wasm32: 4,
-            width_wasm64: 8,
-            meaning: "parent TLS base (__tls_base) saved for child rewind",
-        },
-        AsyncifySaveSlot {
-            name: "__stack_pointer",
-            offset_wasm32: -8,
-            offset_wasm64: -16,
-            width_wasm32: 4,
-            width_wasm64: 8,
-            meaning: "parent shadow-stack pointer (__stack_pointer) saved for child rewind",
-        },
-    ];
-
     /// Name of the wasm custom section in which user programs embed their
     /// ABI version (single little-endian u32). The kernel host rejects
     /// binaries whose value does not match [`crate::ABI_VERSION`].

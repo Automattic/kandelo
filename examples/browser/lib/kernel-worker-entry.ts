@@ -83,7 +83,7 @@ import type {
 const DEFAULT_MAX_PAGES = 16384;
 const PAGE_SIZE = 65536;
 const CH_TOTAL_SIZE = 72 + PAGE_SIZE;
-const ASYNCIFY_BUF_SIZE = 16384;
+const FORK_BUF_SIZE = 16384;
 
 // State
 let kernelWorker: CentralizedKernelWorker;
@@ -387,7 +387,7 @@ async function handleFork(
     ptrWidth,
   });
 
-  const asyncifyBufAddr = childChannelOffset - ASYNCIFY_BUF_SIZE;
+  const forkBufAddr = childChannelOffset - FORK_BUF_SIZE;
   const childInitData: CentralizedWorkerInitMessage = {
     type: "centralized_init",
     pid: childPid,
@@ -397,7 +397,7 @@ async function handleFork(
     memory: childMemory,
     channelOffset: childChannelOffset,
     isForkChild: true,
-    asyncifyBufAddr,
+    forkBufAddr,
     ptrWidth,
   };
 

@@ -134,17 +134,20 @@ if [ ! -f "$DASH_BIN" ]; then
     exit 1
 fi
 
-# --- Asyncify for fork support ---
+# --- Fork instrumentation ---
 # Command substitution ($(...)), pipes, and subshells all use fork().
-# Asyncify lets the fork child resume from the fork point.
-WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
-if [ -n "$WASM_OPT" ]; then
-    echo "==> Applying asyncify transform..."
-    "$WASM_OPT" --asyncify \
-        --pass-arg="asyncify-imports@kernel.kernel_fork" \
-        "$DASH_BIN" -o "$DASH_BIN"
+# wasm-fork-instrument makes the fork child resume from the fork point.
+# Auto-discovers fork paths via call-graph analysis — no onlylist needed.
+# Must run last — it hardcodes mutable-global offsets and any later pass
+# reordering globals would corrupt the fork buffer.
+FORK_INSTRUMENT="$REPO_ROOT/tools/bin/wasm-fork-instrument"
+if [ -x "$FORK_INSTRUMENT" ]; then
+    echo "==> Applying fork instrumentation..."
+    "$FORK_INSTRUMENT" "$DASH_BIN" -o "$DASH_BIN.instr"
+    mv "$DASH_BIN.instr" "$DASH_BIN"
 else
-    echo "WARNING: wasm-opt not found. Fork (command substitution, pipes) will not work." >&2
+    echo "WARNING: wasm-fork-instrument not found. Fork (command substitution, pipes) will not work." >&2
+    echo "  Run 'bash build.sh' to build it." >&2
 fi
 
 echo "==> dash built successfully!"

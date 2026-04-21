@@ -577,9 +577,12 @@ EOF
 
 ---
 
-## Execution notes (populated during Task 4)
+## Execution notes (populated during Tasks 4–5 and as issues surface)
 
-(Append findings here as you execute Tasks 4–5 — Ruby's status, any bonus onlylist files found, etc.)
+- **Task 1 complete** at commit `b88691ea9` — 74/74 tests passing. `emit_unwind_begin` now writes `frames_start_offset` to `*(buf + 0)`.
+- **Task 2 complete** at commit `36454b838` — `build.sh` now installs `tools/bin/wasm-fork-instrument` using host-triple detection via `rustc -vV`.
+- **Pre-existing TS DTS build error surfaced during Task 2 verification** (NOT caused by Phase 7 work): `host/src/vfs/memory-fs.ts:430` calls `new SharedArrayBuffer(sabLen, sabOptions)` — the 2-arg growable-SAB constructor. On fresh `npm install` against the current host package.json, TypeScript rejects with `TS2554: Expected 0-1 arguments, but got 2`. The same line exists verbatim on `fierce-wire`; that branch's `host/dist/` predates whatever tsc/lib update caused this. Implication: the `npm run build` tail of `build.sh` fails on a cold worktree. Vitest likely still passes (esbuild transpile, not DTS-gated), but this must be resolved before Task 14 regression matrix can declare success. Likely fix: widen `lib` in `host/tsconfig.json` or add a narrow `as any` / typed wrapper at the call site. Track as a pre-Task-14 blocker.
+- Tasks 4-5 inventory (read-only): filled below as they complete.
 
 ---
 

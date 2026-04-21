@@ -252,16 +252,19 @@ if [ ! -f testfixture ]; then
     exit 1
 fi
 
-# --- Asyncify for fork support ---
+# --- Fork instrumentation ---
 # TCL's exec command uses fork(). Many SQLite tests use exec.
-WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
-if [ -n "$WASM_OPT" ]; then
-    echo "==> Applying asyncify transform..."
-    "$WASM_OPT" --asyncify \
-        --pass-arg="asyncify-imports@kernel.kernel_fork" \
-        testfixture -o testfixture
+# wasm-fork-instrument auto-discovers fork paths via call-graph analysis —
+# no onlylist needed. Must run last — it hardcodes mutable-global offsets
+# and any later pass reordering globals would corrupt the fork buffer.
+FORK_INSTRUMENT="$REPO_ROOT/tools/bin/wasm-fork-instrument"
+if [ -x "$FORK_INSTRUMENT" ]; then
+    echo "==> Applying fork instrumentation..."
+    "$FORK_INSTRUMENT" testfixture -o testfixture.instr
+    mv testfixture.instr testfixture
 else
-    echo "WARNING: wasm-opt not found. Fork (exec command) will not work." >&2
+    echo "WARNING: wasm-fork-instrument not found. Fork (exec command) will not work." >&2
+    echo "  Run 'bash build.sh' to build it." >&2
 fi
 
 # --- Install ---

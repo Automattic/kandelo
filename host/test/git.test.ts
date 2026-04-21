@@ -1,7 +1,7 @@
 /**
  * Tests for Git 2.47.1 running on the wasm-posix-kernel.
  *
- * Git is built with full asyncify for fork() support so that
+ * Git is built with wpk_fork_* instrumentation for fork() support so that
  * subprocesses (git gc --auto, git-remote-http, index-pack) work correctly.
  *
  * Each runCentralizedProgram call creates a fresh kernel instance,
@@ -64,9 +64,10 @@ describe.skipIf(!hasGit)("Git", () => {
     expect(result.stdout + result.stderr).toContain("nitialized");
   });
 
-  it("creates a commit without spurious help output (asyncify fork)", { timeout: 30_000 }, async () => {
-    // git commit triggers fork+exec for `git gc --auto`. Without asyncify,
-    // the fork child restarts from _start() with empty argv and prints help.
+  it("creates a commit without spurious help output (wpk_fork instrumentation)", { timeout: 30_000 }, async () => {
+    // git commit triggers fork+exec for `git gc --auto`. Without fork
+    // instrumentation, the fork child restarts from _start() with empty argv
+    // and prints help.
     const dir = `/tmp/git-commit-test-${Date.now()}`;
     // Init repo on host filesystem first
     const initResult = await runCentralizedProgram({

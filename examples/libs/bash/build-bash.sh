@@ -4,7 +4,7 @@ set -euo pipefail
 # Build bash 5.2 for wasm32-posix-kernel.
 #
 # Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
-# Applies asyncify with an onlylist so fork works (pipes, $(cmd), subshells).
+# Applies fork instrumentation so fork works (pipes, $(cmd), subshells).
 #
 # Output: examples/libs/bash/bin/bash.wasm
 
@@ -14,7 +14,6 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 SRC_DIR="$SCRIPT_DIR/bash-src"
 BIN_DIR="$SCRIPT_DIR/bin"
 SYSROOT="$REPO_ROOT/sysroot"
-ONLYLIST="$SCRIPT_DIR/asyncify-onlylist.txt"
 
 # --- Prerequisites ---
 if ! command -v wasm32posix-cc &>/dev/null; then
@@ -105,9 +104,10 @@ if [ ! -f Makefile ]; then
     export ac_cv_func_putc_unlocked=no
     export ac_cv_func_putchar_unlocked=no
 
-    # -gline-tables-only keeps DWARF line tables for wasm-opt's asyncify pass
-    # to read function names from (the wasm `name` section is stripped by
-    # clang's driver's default post-link wasm-opt, but DWARF is preserved).
+    # -gline-tables-only keeps DWARF line tables for symbolication and
+    # debug stack traces. The asyncify-onlylist requirement for function
+    # names is obsolete (replaced by wasm-fork-instrument, which uses
+    # call-graph analysis); the flag is kept for general debuggability.
     export CFLAGS="-O2 -gline-tables-only -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-pointer-types"
     export LDFLAGS="-Wl,-z,stack-size=1048576"
 
@@ -374,30 +374,17 @@ cp "$BASH_BIN" "$BIN_DIR/bash.wasm"
 SIZE_BEFORE=$(wc -c < "$BIN_DIR/bash.wasm" | tr -d ' ')
 echo "==> Pre-asyncify size: $(echo "$SIZE_BEFORE" | numfmt --to=iec 2>/dev/null || echo "${SIZE_BEFORE} bytes")"
 
-# --- Asyncify transform with onlylist ---
-if [ -f "$ONLYLIST" ]; then
-    echo "==> Applying asyncify with onlylist..."
-    ONLY_FUNCS=$(grep -v '^#' "$ONLYLIST" | grep -v '^\s*$' | tr -d ' ' | tr '\n' ',' | sed 's/,$//')
+# --- Size optimization + fork instrumentation ---
+# wasm-opt -O2 runs first to shrink the binary. wasm-fork-instrument must
+# run LAST because it hardcodes mutable-global offsets at instrument time —
+# any later pass that reorders globals would corrupt the fork buffer.
+echo "==> Optimizing bash with wasm-opt -O2..."
+"$WASM_OPT" -O2 "$BIN_DIR/bash.wasm" -o "$BIN_DIR/bash.wasm"
 
-    # Full asyncify (no onlylist) instruments every function for fork support.
-    # An onlylist approach was attempted first to keep the binary smaller, but
-    # bash has many static fork-path functions (execute_pipeline,
-    # execute_coproc, command_substitute_stdout, etc.) that LLVM at -O2
-    # inlines into single-caller sites — they disappear as distinct named
-    # functions and asyncify's onlylist silently fails to cover them. When
-    # the asyncify call chain has gaps, kernel_fork's import wrapper is
-    # generated but never reached from the uninstrumented callers, so bash
-    # thinks `fork()` succeeded when it actually didn't: pipeline child-side
-    # redirection runs in the parent process and writes to a closed pipe
-    # fail with EPIPE. Full asyncify instruments everything uniformly and
-    # the call chain from main → reader_loop → ... → make_child → fork →
-    # kernel_fork works end-to-end. Size cost: 1.5MB → 2.7MB.
-    "$WASM_OPT" -g --asyncify \
-        --pass-arg="asyncify-imports@kernel.kernel_fork" \
-        "$BIN_DIR/bash.wasm" -o "$BIN_DIR/bash.wasm"
-
-    "$WASM_OPT" -O2 "$BIN_DIR/bash.wasm" -o "$BIN_DIR/bash.wasm"
-fi
+echo "==> Applying fork instrumentation..."
+FORK_INSTRUMENT="$REPO_ROOT/tools/bin/wasm-fork-instrument"
+"$FORK_INSTRUMENT" "$BIN_DIR/bash.wasm" -o "$BIN_DIR/bash.wasm.instr"
+mv "$BIN_DIR/bash.wasm.instr" "$BIN_DIR/bash.wasm"
 
 SIZE_AFTER=$(wc -c < "$BIN_DIR/bash.wasm" | tr -d ' ')
 echo "==> Final size: $(echo "$SIZE_AFTER" | numfmt --to=iec 2>/dev/null || echo "${SIZE_AFTER} bytes")"

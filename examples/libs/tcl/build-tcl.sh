@@ -158,18 +158,21 @@ if [ -f "$BUILD_DIR/tclsh" ]; then
     cp "$BUILD_DIR/tclsh" "$INSTALL_DIR/bin/tclsh8.6"
 fi
 
-# --- Asyncify for fork support ---
-# TCL's exec command uses fork(). Apply asyncify to tclsh.
+# --- Fork instrumentation ---
+# TCL's exec command uses fork(). Apply fork instrumentation to tclsh.
+# wasm-fork-instrument auto-discovers fork paths via call-graph analysis —
+# no onlylist needed. Must run last — it hardcodes mutable-global offsets
+# and any later pass reordering globals would corrupt the fork buffer.
 TCLSH="$INSTALL_DIR/bin/tclsh8.6"
 if [ -f "$TCLSH" ]; then
-    WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
-    if [ -n "$WASM_OPT" ]; then
-        echo "==> Applying asyncify to tclsh..."
-        "$WASM_OPT" --asyncify \
-            --pass-arg="asyncify-imports@kernel.kernel_fork" \
-            "$TCLSH" -o "$TCLSH"
+    FORK_INSTRUMENT="$REPO_ROOT/tools/bin/wasm-fork-instrument"
+    if [ -x "$FORK_INSTRUMENT" ]; then
+        echo "==> Applying fork instrumentation to tclsh..."
+        "$FORK_INSTRUMENT" "$TCLSH" -o "$TCLSH.instr"
+        mv "$TCLSH.instr" "$TCLSH"
     else
-        echo "WARNING: wasm-opt not found. Fork (exec command) will not work in tclsh." >&2
+        echo "WARNING: wasm-fork-instrument not found. Fork (exec command) will not work in tclsh." >&2
+        echo "  Run 'bash build.sh' to build it." >&2
     fi
 
     # Copy to bin/ with .wasm extension
