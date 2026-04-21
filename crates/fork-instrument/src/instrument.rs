@@ -45,7 +45,7 @@
 //!
 //! Phase 4e will extend the buffer header with saved mutable globals.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use walrus::{
     AbstractHeapType, FunctionId, FunctionKind, GlobalId, HeapType, LocalFunction, LocalId,
@@ -53,8 +53,8 @@ use walrus::{
     ir::{
         BinaryOp, Binop, Block, BrIf, Call, CallIndirect, Const, Drop, GlobalGet, IfElse,
         Instr, InstrLocId, InstrSeqId, InstrSeqType, LegacyCatch, LoadKind, LocalGet, LocalSet,
-        Loop, MemArg, RefNull, Return, StoreKind, TableGet, TableSet, TryTable, Unreachable,
-        Value, dfs_in_order,
+        Loop, MemArg, RefAsNonNull, RefNull, Return, StoreKind, TableGet, TableSet, ThrowRef,
+        TryTable, Unreachable, Value, dfs_in_order,
     },
 };
 
@@ -95,12 +95,19 @@ pub fn instrument_functions(
     // user local across the fork-path closure, then inject the tables
     // sized to exactly fit. Functions with no ref locals contribute
     // zero slots and receive an empty plan.
-    let (aux_tables, ref_plan) = plan_and_inject_aux_tables(module, &targets);
+    //
+    // Phase 6a — discover every `try_table` on the fork path and
+    // assign it a per-function `catch_region_id` plus a slot in the
+    // shared exnref stash (sized to `count(exnref locals) +
+    // count(fork-path try_tables)`).
+    let (aux_tables, ref_plan, catch_plans) = plan_and_inject_aux_tables(module, &targets);
 
     let mut instrumented = HashSet::new();
     for (ordinal, id) in targets.iter().enumerate() {
         let empty_plan: Vec<RefLocalSlot> = Vec::new();
         let this_plan = ref_plan.get(id).unwrap_or(&empty_plan);
+        let empty_catch_plan: Vec<CatchRegionPlan> = Vec::new();
+        let this_catch_plan = catch_plans.get(id).unwrap_or(&empty_catch_plan);
         instrument_one_function(
             module,
             *id,
@@ -109,6 +116,7 @@ pub fn instrument_functions(
             ordinal as u32,
             &aux_tables,
             this_plan,
+            this_catch_plan,
         );
         instrumented.insert(*id);
     }
@@ -118,7 +126,9 @@ pub fn instrument_functions(
 /// Full per-function instrumentation pipeline: structural wrap (4b),
 /// then call-site state-machine gating (4c), then frame-I/O preamble
 /// + postamble (4d), with ref-typed locals spilled through aux tables
-/// (4f).
+/// (4f), and — Phase 6 — per-try_table rewind-throw stubs driven by
+/// a frame-serialized `catch_region_id`.
+#[allow(clippy::too_many_arguments)]
 fn instrument_one_function(
     module: &mut Module,
     func_id: FunctionId,
@@ -127,6 +137,7 @@ fn instrument_one_function(
     func_ordinal: u32,
     aux_tables: &AuxTables,
     ref_plan: &[RefLocalSlot],
+    catch_plan: &[CatchRegionPlan],
 ) {
     // Step 0: capture user locals (args + anything already referenced
     // in the body) *before* any mutation so we don't conflate them
@@ -146,9 +157,31 @@ fn instrument_one_function(
     // if-gate condition, set by each wrapped call, serialized by the
     // postamble, and reloaded by the preamble. `frame_ptr_local`
     // holds the current frame's base address while preamble/postamble
-    // run.
+    // run. The Phase 6 locals `catch_region_id_local` and
+    // `exnref_slot_local` are always added (even if the function has
+    // no try_tables) so the frame layout — and preamble/postamble
+    // shape — stays uniform across instrumented functions.
     let call_idx_local = module.locals.add(ValType::I32);
     let frame_ptr_local = module.locals.add(runtime.buf_type);
+    let catch_region_id_local = module.locals.add(ValType::I32);
+    let exnref_slot_local = module.locals.add(ValType::I32);
+
+    // Step 6c — inject the rewind-throw stub at the start of each
+    // try_table body on the fork path, *before* call-site rewriting so
+    // its ops (global.get / if-else) are seen by 4g's side-effect gater
+    // only where appropriate. The stub itself performs side-effect-free
+    // ops (the GlobalGet / LocalGet / Binop / If-guard); the IfElse
+    // gates on state and, when matched, performs throw_ref.
+    if aux_tables.exnref.is_some() {
+        inject_rewind_throw_stubs(
+            module,
+            func_id,
+            runtime,
+            catch_region_id_local,
+            aux_tables,
+            catch_plan,
+        );
+    }
 
     // Step 4c — rewrite calls with the full 4d-ready condition so
     // that REWINDING at the matching call_idx also enters the then-
@@ -162,8 +195,10 @@ fn instrument_one_function(
     };
     rewrite_calls_in_seq(module, func_id, wrapper_id, &mut call_ctx);
 
-    // Step 4d+4f — preamble (REWINDING frame-load + ref reloads)
-    // + postamble (unwind frame-save + ref spills + default returns).
+    // Step 4d+4f+6b — preamble (REWINDING frame-load + ref reloads +
+    // catch_region_id / exnref_slot reloads) + postamble (frame-save
+    // + ref spills + catch_region_id / exnref_slot writes + default
+    // returns).
     let frame_size = HEADER_SIZE + user_locals_size(&user_scalar_locals);
     inject_frame_io(
         module,
@@ -172,6 +207,8 @@ fn instrument_one_function(
         wrapper_id,
         call_idx_local,
         frame_ptr_local,
+        catch_region_id_local,
+        exnref_slot_local,
         &user_scalar_locals,
         ref_plan,
         aux_tables,
@@ -554,7 +591,11 @@ const LOCALS_START_OFFSET: u32 = HEADER_SIZE;
 /// the wrapper block) and replace the Phase-4b `unreachable`
 /// placeholder with a real unwind-save postamble. Scalar user locals
 /// are saved to / loaded from `_wpk_fork_buf`; ref-typed user locals
-/// are spilled through `aux_tables` to their pre-assigned slots.
+/// are spilled through `aux_tables` to their pre-assigned slots. The
+/// frame's `catch_region_id` and `exnref_slot` fields round-trip
+/// through `catch_region_id_local` / `exnref_slot_local` (Phase 6b).
+/// They are written by the call-site wrapping (Phase 6e) at fork-time
+/// and read by the rewind-throw stubs (Phase 6c) during replay.
 #[allow(clippy::too_many_arguments)]
 fn inject_frame_io(
     module: &mut Module,
@@ -563,6 +604,8 @@ fn inject_frame_io(
     wrapper_id: InstrSeqId,
     call_idx_local: LocalId,
     frame_ptr_local: LocalId,
+    catch_region_id_local: LocalId,
+    exnref_slot_local: LocalId,
     user_scalar_locals: &[(LocalId, ValType)],
     ref_plan: &[RefLocalSlot],
     aux_tables: &AuxTables,
@@ -624,6 +667,16 @@ fn inject_frame_io(
         push_instr(seq, Instr::LocalGet(LocalGet { local: frame_ptr_local }));
         push_instr(seq, load_i32(memory, CALL_INDEX_OFFSET));
         push_instr(seq, Instr::LocalSet(LocalSet { local: call_idx_local }));
+
+        // Phase 6b — catch_region_id = *(frame_ptr + CATCH_REGION_OFFSET)
+        push_instr(seq, Instr::LocalGet(LocalGet { local: frame_ptr_local }));
+        push_instr(seq, load_i32(memory, CATCH_REGION_OFFSET));
+        push_instr(seq, Instr::LocalSet(LocalSet { local: catch_region_id_local }));
+
+        // Phase 6b — exnref_slot = *(frame_ptr + EXNREF_SLOT_OFFSET)
+        push_instr(seq, Instr::LocalGet(LocalGet { local: frame_ptr_local }));
+        push_instr(seq, load_i32(memory, EXNREF_SLOT_OFFSET));
+        push_instr(seq, Instr::LocalSet(LocalSet { local: exnref_slot_local }));
 
         // Restore scalar user locals
         for &(lid, ty, off) in &locals_with_offsets {
@@ -690,13 +743,18 @@ fn inject_frame_io(
         );
         push_instr(&mut postamble, store_i32(memory, CALL_INDEX_OFFSET));
 
+        // Phase 6b — serialize catch_region_id_local + exnref_slot_local
+        // instead of writing hardcoded zeros. Both locals default to 0
+        // and are only set by Phase 6e call-site wrapping when a
+        // handler is currently active, so the "not-in-handler" case
+        // still stores 0 (equivalent to the prior behavior).
         push_instr(
             &mut postamble,
             Instr::LocalGet(LocalGet { local: frame_ptr_local }),
         );
         push_instr(
             &mut postamble,
-            Instr::Const(Const { value: Value::I32(0) }),
+            Instr::LocalGet(LocalGet { local: catch_region_id_local }),
         );
         push_instr(&mut postamble, store_i32(memory, CATCH_REGION_OFFSET));
 
@@ -706,7 +764,7 @@ fn inject_frame_io(
         );
         push_instr(
             &mut postamble,
-            Instr::Const(Const { value: Value::I32(0) }),
+            Instr::LocalGet(LocalGet { local: exnref_slot_local }),
         );
         push_instr(&mut postamble, store_i32(memory, EXNREF_SLOT_OFFSET));
 
@@ -1099,15 +1157,20 @@ fn classify_ref(rt: RefType) -> Option<RefClass> {
 /// indices within per-class aux tables. Then inject the tables with
 /// the exact required initial size. Panics if any function on the
 /// fork-path contains a ref-typed local we cannot currently handle.
+///
+/// Phase 6a extension: also discover every `try_table` on the fork
+/// path, assign each a per-function `catch_region_id` (1-based), and
+/// reserve a slot in `_wpk_fork_exnref_stash` for its runtime-caught
+/// exnref. The exnref table is then sized to fit both exnref user
+/// locals (4f) and try_table slots (6a).
 fn plan_and_inject_aux_tables(
     module: &mut Module,
     targets: &[FunctionId],
 ) -> (
     AuxTables,
-    std::collections::HashMap<FunctionId, Vec<RefLocalSlot>>,
+    HashMap<FunctionId, Vec<RefLocalSlot>>,
+    HashMap<FunctionId, Vec<CatchRegionPlan>>,
 ) {
-    use std::collections::HashMap;
-
     // Running slot counters per class; become the tables' initial sizes.
     let mut funcref_cursor: u32 = 0;
     let mut externref_cursor: u32 = 0;
@@ -1156,6 +1219,28 @@ fn plan_and_inject_aux_tables(
         }
         if !per_func.is_empty() {
             plan.insert(id, per_func);
+        }
+    }
+
+    // Phase 6a — enumerate fork-path try_tables and allocate one
+    // exnref-stash slot per try_table. Ids are per-function, 1-based;
+    // 0 is reserved in the frame's `catch_region_id` field to mean
+    // "not inside any catch handler".
+    let mut catch_plans: HashMap<FunctionId, Vec<CatchRegionPlan>> = HashMap::new();
+    for &id in targets {
+        let bodies = discover_try_table_bodies(module, id);
+        let mut per_func: Vec<CatchRegionPlan> = Vec::with_capacity(bodies.len());
+        for (lex_idx, body_seq) in bodies.into_iter().enumerate() {
+            let slot = exnref_cursor;
+            exnref_cursor += 1;
+            per_func.push(CatchRegionPlan {
+                body_seq,
+                catch_region_id: (lex_idx as u32) + 1,
+                exnref_slot: slot,
+            });
+        }
+        if !per_func.is_empty() {
+            catch_plans.insert(id, per_func);
         }
     }
 
@@ -1208,7 +1293,173 @@ fn plan_and_inject_aux_tables(
             exnref,
         },
         plan,
+        catch_plans,
     )
+}
+
+/// Per-try_table metadata used by Phase 6c/6d/6e.
+#[derive(Debug, Clone, Copy)]
+pub struct CatchRegionPlan {
+    /// `InstrSeqId` of the try_table's body (not the enclosing try_table
+    /// instruction itself). The rewind-throw stub is prepended here.
+    pub body_seq: InstrSeqId,
+    /// 1-based id unique within the owning function. 0 is reserved
+    /// for "not inside any catch handler".
+    pub catch_region_id: u32,
+    /// Slot in the module-wide `_wpk_fork_exnref_stash` table used to
+    /// hold the runtime-caught exnref across fork (stashed by the call
+    /// site inside the handler, reloaded by the preamble's `throw_ref`).
+    pub exnref_slot: u32,
+}
+
+/// Discover the `InstrSeqId` of every `try_table` body within a
+/// function, in lexical DFS order (outer-first). Non-local functions
+/// return an empty vector.
+fn discover_try_table_bodies(module: &Module, func_id: FunctionId) -> Vec<InstrSeqId> {
+    let local = match &module.funcs.get(func_id).kind {
+        FunctionKind::Local(l) => l,
+        _ => return Vec::new(),
+    };
+    let mut bodies = Vec::new();
+    visit_try_tables(local, local.entry_block(), &mut bodies);
+    bodies
+}
+
+fn visit_try_tables(
+    f: &LocalFunction,
+    seq: InstrSeqId,
+    out: &mut Vec<InstrSeqId>,
+) {
+    for (instr, _) in &f.block(seq).instrs {
+        // Record a try_table body before recursing, so ordering is
+        // pre-order DFS (outer try_tables come before nested ones).
+        if let Instr::TryTable(tt) = instr {
+            out.push(tt.seq);
+        }
+        for child in nested_seqs(instr) {
+            visit_try_tables(f, child, out);
+        }
+    }
+}
+
+// ----------------------------------------------------------------------
+// Phase 6c — rewind-throw stub injection
+// ----------------------------------------------------------------------
+//
+// When a fork was triggered from inside a catch handler, the child
+// must re-enter the handler to resume at the original fork call site.
+// Normal rewind (call-idx matching) can't reach handler code because
+// handlers are only entered via thrown-exception control flow, not
+// normal fall-through.
+//
+// Phase 6's answer: prepend each fork-path try_table's body with a
+// guard that, when the frame carries this try_table's
+// `catch_region_id`, loads the stashed exnref and `throw_ref`s it.
+// The enclosing try_table catches the thrown reference (matching the
+// original tag, since we kept the original exnref) and dispatches to
+// its own catch clause — landing us inside the handler again, now in
+// REWINDING state, where the existing 4c/4d machinery picks up.
+//
+// If catch_region_id doesn't match this try_table (or state isn't
+// REWINDING at all), the stub is a no-op and control flows into the
+// original body.
+
+#[allow(clippy::too_many_arguments)]
+fn inject_rewind_throw_stubs(
+    module: &mut Module,
+    func_id: FunctionId,
+    runtime: &Runtime,
+    catch_region_id_local: LocalId,
+    aux_tables: &AuxTables,
+    catch_plan: &[CatchRegionPlan],
+) {
+    let exnref_table = match aux_tables.exnref {
+        Some(t) => t,
+        None => {
+            // If no exnref table exists, there can be no stash to
+            // reload from, so the stub would never meaningfully fire.
+            // This case should also mean `catch_plan` is empty (we
+            // would have allocated slots for it otherwise).
+            debug_assert!(catch_plan.is_empty());
+            return;
+        }
+    };
+
+    for plan in catch_plan {
+        let body_seq_id = plan.body_seq;
+        let region_id = plan.catch_region_id;
+        let slot = plan.exnref_slot;
+
+        // Build the stub's two dangling branches:
+        //   then: load exnref from slot, ref.as_non_null, throw_ref.
+        //   else: empty (fall through to original body).
+        let local = local_mut(module, func_id);
+        let then_id = local
+            .builder_mut()
+            .dangling_instr_seq(InstrSeqType::Simple(None))
+            .id();
+        let else_id = local
+            .builder_mut()
+            .dangling_instr_seq(InstrSeqType::Simple(None))
+            .id();
+        {
+            let s = &mut local.block_mut(then_id).instrs;
+            push_instr(
+                s,
+                Instr::Const(Const {
+                    value: Value::I32(slot as i32),
+                }),
+            );
+            push_instr(s, Instr::TableGet(TableGet { table: exnref_table }));
+            push_instr(s, Instr::RefAsNonNull(RefAsNonNull {}));
+            push_instr(s, Instr::ThrowRef(ThrowRef {}));
+        }
+
+        // Move the original body aside, then build the stub followed
+        // by the original body in the same sequence.
+        let original: Vec<(Instr, InstrLocId)> =
+            std::mem::take(&mut local.block_mut(body_seq_id).instrs);
+        let body = &mut local.block_mut(body_seq_id).instrs;
+
+        // Guard: (state == REWINDING) && (catch_region_id == region_id)
+        push_instr(
+            body,
+            Instr::GlobalGet(GlobalGet {
+                global: runtime.state_global,
+            }),
+        );
+        push_instr(
+            body,
+            Instr::Const(Const {
+                value: Value::I32(runtime::STATE_REWINDING),
+            }),
+        );
+        push_instr(body, Instr::Binop(Binop { op: BinaryOp::I32Eq }));
+        push_instr(
+            body,
+            Instr::LocalGet(LocalGet {
+                local: catch_region_id_local,
+            }),
+        );
+        push_instr(
+            body,
+            Instr::Const(Const {
+                value: Value::I32(region_id as i32),
+            }),
+        );
+        push_instr(body, Instr::Binop(Binop { op: BinaryOp::I32Eq }));
+        push_instr(body, Instr::Binop(Binop { op: BinaryOp::I32And }));
+        push_instr(
+            body,
+            Instr::IfElse(IfElse {
+                consequent: then_id,
+                alternative: else_id,
+            }),
+        );
+
+        // Restore the original body after the stub.
+        body.extend(original);
+    }
 }
 
 // ----------------------------------------------------------------------

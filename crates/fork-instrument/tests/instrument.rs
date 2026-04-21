@@ -841,6 +841,10 @@ fn preamble_then_loads_frame_header_and_call_idx() {
     //   - global.get buf, local.get $frame_ptr, store offset=0
     //   - local.get $frame_ptr, load offset=4 (call_idx from frame)
     //   - local.set $call_idx_local
+    //   - local.get $frame_ptr, load offset=8 (catch_region_id) [Phase 6b]
+    //   - local.set $catch_region_id_local                      [Phase 6b]
+    //   - local.get $frame_ptr, load offset=12 (exnref_slot)    [Phase 6b]
+    //   - local.set $exnref_slot_local                          [Phase 6b]
     // For a function with no user locals, this is the full preamble.
     let bytes = instrument_wat(FIXTURE_DIRECT_CALLER);
     let module = Module::from_buffer(&bytes).unwrap();
@@ -862,6 +866,12 @@ fn preamble_then_loads_frame_header_and_call_idx() {
             InstrKind::LocalGet,  // frame_ptr
             InstrKind::Other,     // Load call_idx from frame+4
             InstrKind::LocalSet,  // set $call_idx
+            InstrKind::LocalGet,  // frame_ptr
+            InstrKind::Other,     // Load catch_region_id from frame+8
+            InstrKind::LocalSet,  // set $catch_region_id
+            InstrKind::LocalGet,  // frame_ptr
+            InstrKind::Other,     // Load exnref_slot from frame+12
+            InstrKind::LocalSet,  // set $exnref_slot
         ],
     );
 }
@@ -872,8 +882,8 @@ fn postamble_writes_frame_header_and_bumps_current_pos() {
     //   global.get buf, load offset=0, local.set $frame_ptr
     //   local.get $frame_ptr, i32.const func_ordinal, store offset=0
     //   local.get $frame_ptr, local.get $call_idx, store offset=4
-    //   local.get $frame_ptr, i32.const 0, store offset=8
-    //   local.get $frame_ptr, i32.const 0, store offset=12
+    //   local.get $frame_ptr, local.get $catch_region_id, store offset=8   [Phase 6b]
+    //   local.get $frame_ptr, local.get $exnref_slot, store offset=12      [Phase 6b]
     //   global.get buf, local.get $frame_ptr, i32.const frame_size, i32.add, store
     //   <defaults for result types: i32.const 0>
     let bytes = instrument_wat(FIXTURE_DIRECT_CALLER);
@@ -898,13 +908,13 @@ fn postamble_writes_frame_header_and_bumps_current_pos() {
         InstrKind::LocalGet,
         InstrKind::LocalGet,
         InstrKind::Other, // Store
-        // Write catch_region_id = 0 at offset 8
+        // Write catch_region_id at offset 8 (Phase 6b: from $catch_region_id local)
         InstrKind::LocalGet,
-        InstrKind::Const,
+        InstrKind::LocalGet,
         InstrKind::Other,
-        // Write exnref_slot = 0 at offset 12
+        // Write exnref_slot at offset 12 (Phase 6b: from $exnref_slot local)
         InstrKind::LocalGet,
-        InstrKind::Const,
+        InstrKind::LocalGet,
         InstrKind::Other,
         // Bump current_pos: buf, frame_ptr, frame_size, add, store
         InstrKind::GlobalGet,
@@ -1466,3 +1476,295 @@ fn calls_inside_nested_blocks_are_wrapped() {
     );
 }
 
+
+// ======================================================================
+// Phase 6 tests — catch-handler region tracking + exnref spill + rewind-throw
+// ======================================================================
+//
+// Invariants the tests below pin down:
+//
+//  - Every try_table on a fork-path function gets a unique per-function
+//    `catch_region_id`, starting at 1. The id = 0 reserved for
+//    "not-in-handler".
+//  - At each try_table body start, a rewind-throw stub is prepended:
+//
+//        global.get $_wpk_fork_state
+//        i32.const REWINDING
+//        i32.eq
+//        local.get $_wpk_catch_region_id
+//        i32.const <K>
+//        i32.eq
+//        i32.and
+//        if
+//          i32.const <slot>                    (Phase 6d: runtime local instead)
+//          table.get $_wpk_fork_exnref_stash
+//          ref.as_non_null
+//          throw_ref
+//        end
+//
+//    where `<K>` is the try_table's id and `<slot>` is its stash slot.
+//
+//  - Each `catch_ref` / `catch_all_ref` clause in a fork-path try_table
+//    has its destination rewritten to a new block we inject that
+//    captures the exnref into a per-try_table `captured_exnref_K` local,
+//    sets `$_in_catch_K = 1`, and `br`s to the original label.
+//
+//  - The postamble writes to frame+8 / frame+12 use runtime values
+//    derived from the in-catch flags rather than hardcoded 0.
+
+/// A fork-path function with one try_table on the fork path. The
+/// try_table has a `catch_ref` clause so Phase 6 considers it
+/// catch-handler-reachable and allocates a rewind-throw stub + an
+/// exnref stash slot for it.
+const FIXTURE_FORK_IN_TRY_BODY: &str = r#"
+    (module
+      (import "kernel" "kernel_fork" (func $fork (result i32)))
+      (tag $exn)
+      (func $caller (export "caller") (result i32)
+        (block $handler (result (ref null exn))
+          (try_table (result (ref null exn)) (catch_ref $exn $handler)
+            call $fork
+            drop
+            ref.null exn))
+        drop
+        i32.const 0)
+      (memory 1))
+"#;
+
+/// Collect the `InstrSeqId` of every `TryTable` nested anywhere within
+/// `seq`. Recurses into all nested sequences.
+fn collect_try_table_bodies(
+    f: &LocalFunction,
+    seq: InstrSeqId,
+    out: &mut Vec<InstrSeqId>,
+) {
+    for (instr, _) in &f.block(seq).instrs {
+        match instr {
+            Instr::TryTable(tt) => {
+                out.push(tt.seq);
+                collect_try_table_bodies(f, tt.seq, out);
+            }
+            Instr::Block(b) => collect_try_table_bodies(f, b.seq, out),
+            Instr::Loop(l) => collect_try_table_bodies(f, l.seq, out),
+            Instr::IfElse(ie) => {
+                collect_try_table_bodies(f, ie.consequent, out);
+                collect_try_table_bodies(f, ie.alternative, out);
+            }
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn fork_path_try_table_gets_rewind_throw_stub() {
+    let bytes = instrument_wat(FIXTURE_FORK_IN_TRY_BODY);
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+
+    let caller = func_by_name(&module, "caller");
+    let f = local(&module, caller);
+
+    let mut bodies = Vec::new();
+    collect_try_table_bodies(f, f.entry_block(), &mut bodies);
+    assert_eq!(bodies.len(), 1, "fixture has exactly one try_table");
+
+    // The try_table body should START with the rewind-throw stub.
+    // Opcode shape of the stub's prefix:
+    //   GlobalGet, Const, Binop,      ;; state == REWINDING
+    //   LocalGet,  Const, Binop,      ;; catch_region_id == K
+    //   Binop,                         ;; i32.and
+    //   IfElse                         ;; stub then-branch does the throw
+    let body_kinds = seq_kinds(&module, caller, bodies[0]);
+    assert!(
+        body_kinds.len() >= 8,
+        "try_table body too short to hold Phase 6 stub: {body_kinds:?}",
+    );
+    assert_eq!(
+        &body_kinds[..8],
+        &[
+            InstrKind::GlobalGet, // state
+            InstrKind::Const,     // REWINDING
+            InstrKind::Binop,     // ==
+            InstrKind::LocalGet,  // catch_region_id_local
+            InstrKind::Const,     // K
+            InstrKind::Binop,     // ==
+            InstrKind::Binop,     // i32.and
+            InstrKind::IfElse,    // rewind-throw guard
+        ],
+        "try_table body must start with Phase 6 rewind-throw guard: {body_kinds:?}",
+    );
+
+    // The stub's then-branch should contain the throw_ref sequence:
+    //   i32.const <slot>, table.get, ref.as_non_null, throw_ref
+    // We only assert opcode *kinds* here to keep the test robust; the
+    // specific slot and table are verified end-to-end in other tests.
+    let (then_id, _) = {
+        let seq = f.block(bodies[0]);
+        let ifs: Vec<(InstrSeqId, InstrSeqId)> = seq
+            .instrs
+            .iter()
+            .filter_map(|(i, _)| match i {
+                Instr::IfElse(ie) => Some((ie.consequent, ie.alternative)),
+                _ => None,
+            })
+            .collect();
+        ifs[0]
+    };
+    let then_kinds = seq_kinds(&module, caller, then_id);
+    assert_eq!(
+        then_kinds,
+        vec![
+            InstrKind::Const,  // exnref_slot
+            InstrKind::Other,  // table.get
+            InstrKind::Other,  // ref.as_non_null
+            InstrKind::Other,  // throw_ref
+        ],
+        "rewind-throw then-branch shape: {then_kinds:?}",
+    );
+
+    // An exnref stash table must have been injected with initial size
+    // >= 1 to hold this try_table's captured exnref.
+    let stash = module
+        .tables
+        .iter()
+        .find(|t| t.name.as_deref() == Some("_wpk_fork_exnref_stash"))
+        .expect("Phase 6 must inject exnref stash when a fork-path try_table exists");
+    assert!(
+        stash.initial >= 1,
+        "exnref stash initial size must cover at least the one try_table slot",
+    );
+}
+
+/// Two sibling try_tables in the same fork-path function get distinct
+/// catch_region_ids (1, 2) and distinct exnref-stash slots.
+const FIXTURE_TWO_TRY_TABLES: &str = r#"
+    (module
+      (import "kernel" "kernel_fork" (func $fork (result i32)))
+      (tag $exn)
+      (func $caller (export "caller") (result i32)
+        (block $h1 (result (ref null exn))
+          (try_table (result (ref null exn)) (catch_ref $exn $h1)
+            call $fork
+            drop
+            ref.null exn))
+        drop
+        (block $h2 (result (ref null exn))
+          (try_table (result (ref null exn)) (catch_ref $exn $h2)
+            call $fork
+            drop
+            ref.null exn))
+        drop
+        i32.const 0)
+      (memory 1))
+"#;
+
+#[test]
+fn distinct_try_tables_get_sequential_region_ids() {
+    let bytes = instrument_wat(FIXTURE_TWO_TRY_TABLES);
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+
+    let caller = func_by_name(&module, "caller");
+    let f = local(&module, caller);
+
+    let mut bodies = Vec::new();
+    collect_try_table_bodies(f, f.entry_block(), &mut bodies);
+    assert_eq!(bodies.len(), 2, "fixture has two try_tables");
+
+    // The `i32.const K` in each stub's condition (5th instr of each
+    // body) should carry the assigned catch_region_id.
+    let mut region_ids = Vec::new();
+    for body in &bodies {
+        let seq = f.block(*body);
+        let const_instr = &seq.instrs[4].0;
+        let v = match const_instr {
+            Instr::Const(c) => match c.value {
+                walrus::ir::Value::I32(v) => v,
+                _ => panic!("expected i32 const, got {:?}", c.value),
+            },
+            other => panic!("expected Const, got {other:?}"),
+        };
+        region_ids.push(v);
+    }
+    assert_eq!(
+        region_ids,
+        vec![1, 2],
+        "sibling try_tables must get region_ids 1, 2 in lexical order",
+    );
+
+    // The exnref stash table must be sized for two entries.
+    let stash = module
+        .tables
+        .iter()
+        .find(|t| t.name.as_deref() == Some("_wpk_fork_exnref_stash"))
+        .expect("stash must be injected");
+    assert_eq!(
+        stash.initial, 2,
+        "two try_tables → exnref stash initial size = 2",
+    );
+}
+
+#[test]
+fn module_without_try_tables_skips_exnref_stash() {
+    // FIXTURE_DIRECT_CALLER has no try_tables. No exnref stash should
+    // be injected — a no-try_table module pays zero Phase-6 cost.
+    let bytes = instrument_wat(FIXTURE_DIRECT_CALLER);
+    let module = Module::from_buffer(&bytes).unwrap();
+
+    assert!(
+        !module
+            .tables
+            .iter()
+            .any(|t| t.name.as_deref() == Some("_wpk_fork_exnref_stash")),
+        "module with no try_tables should not inject the exnref stash",
+    );
+}
+
+#[test]
+fn try_table_on_non_fork_path_is_not_instrumented() {
+    // `helper` contains a try_table but doesn't reach fork. The
+    // fork-path function `caller` does not contain a try_table.
+    // Neither should get a rewind-throw stub.
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (tag $exn)
+          (func $helper (export "helper") (result i32)
+            (block $h (result (ref null exn))
+              (try_table (result (ref null exn)) (catch_ref $exn $h)
+                ref.null exn))
+            drop
+            i32.const 0)
+          (func $caller (export "caller") (result i32)
+            call $fork)
+          (memory 1))
+    "#;
+    let bytes = instrument_wat(wat);
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+
+    // `helper` is not on the fork path, so it should be byte-for-byte
+    // unchanged — including no rewind-throw stub in its try_table.
+    let helper = func_by_name(&module, "helper");
+    let f = local(&module, helper);
+    let mut bodies = Vec::new();
+    collect_try_table_bodies(f, f.entry_block(), &mut bodies);
+    assert_eq!(bodies.len(), 1, "helper still has its try_table");
+    let body_kinds = seq_kinds(&module, helper, bodies[0]);
+    // Untouched body: just `ref.null exn` (an `Other` in our InstrKind).
+    assert_eq!(
+        body_kinds,
+        vec![InstrKind::Other],
+        "non-fork-path try_table body must not be instrumented: {body_kinds:?}",
+    );
+
+    // No exnref stash should be injected because no fork-path function
+    // needs a slot.
+    assert!(
+        !module
+            .tables
+            .iter()
+            .any(|t| t.name.as_deref() == Some("_wpk_fork_exnref_stash")),
+        "non-fork-path try_tables should not force exnref stash injection",
+    );
+}
