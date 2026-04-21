@@ -20,6 +20,7 @@ Real, unmodified software compiled to WebAssembly:
 | CPython | 3.13 | REPL, script execution, stdlib |
 | Git | 2.47 | Core version control operations |
 | Vim | 9.1 | Full editor with ncurses terminal UI |
+| NetHack | 3.6.7 | Classic roguelike with curses UI |
 | Perl | 5.40 | Interpreter with core modules |
 | Ruby | 3.3 | Interpreter with core stdlib |
 | QuickJS-NG | 0.12 | ES2023 JavaScript engine + Node.js compat layer |

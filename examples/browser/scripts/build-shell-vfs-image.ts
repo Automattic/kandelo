@@ -22,6 +22,7 @@ import {
 const DASH_PATH = "examples/libs/dash/bin/dash.wasm";
 const MAGIC_PATH = "examples/libs/file/bin/magic.lite";
 const VIM_ZIP_PATH = "examples/browser/public/vim.zip";
+const NETHACK_ZIP_PATH = "examples/browser/public/nethack.zip";
 const OUT_FILE = "examples/browser/public/shell.vfs";
 
 // --- System setup ---
@@ -52,8 +53,17 @@ function populateSystem(fs: MemoryFileSystem): void {
   ].join("\n");
   writeVfsFile(fs, "/etc/gitconfig", gitconfig);
 
-  // Shell profile — color aliases for interactive sessions
-  const profile = "alias ls='ls --color=auto'\nalias grep='grep --color=auto'\n";
+  // Shell profile — color aliases + NetHack defaults. NetHack needs a
+  // writable state directory (saves, bones, scores); its VAR_PLAYGROUND
+  // is compiled as /home/.nethack, so create it up-front.
+  const profile = [
+    "alias ls='ls --color=auto'",
+    "alias grep='grep --color=auto'",
+    "export USER=player",
+    "export NETHACKOPTIONS='windowtype:curses,color,lit_corridor,hilite_pet'",
+    "[ -d /home/.nethack ] || mkdir -p /home/.nethack",
+    "",
+  ].join("\n");
   writeVfsFile(fs, "/etc/profile", profile);
 }
 
@@ -156,6 +166,9 @@ function populateExtendedSymlinks(fs: MemoryFileSystem): void {
   symlink(fs, "/usr/bin/vim", "/usr/bin/vi");
   symlink(fs, "/usr/bin/vim", "/bin/vi");
 
+  // nethack
+  symlink(fs, "/usr/bin/nethack", "/bin/nethack");
+
   // lsof
   symlink(fs, "/usr/bin/lsof", "/bin/lsof");
 }
@@ -186,6 +199,21 @@ function populateVimArchive(fs: MemoryFileSystem): number {
   return group.entries.size;
 }
 
+// --- NetHack (lazy archive) ---
+
+/**
+ * Register nethack.zip as a lazy archive group. Same pattern as vim:
+ * /usr/bin/nethack (the wasm binary) and the runtime tree at
+ * /usr/share/nethack/ (nhdat, symbols, license) are stubs in the VFS
+ * image; the archive is fetched in full on first exec.
+ */
+function populateNetHackArchive(fs: MemoryFileSystem): number {
+  const zipBytes = readFileSync(NETHACK_ZIP_PATH);
+  const entries = parseZipCentralDirectory(new Uint8Array(zipBytes));
+  const group = fs.registerLazyArchiveFromEntries("nethack.zip", entries, "/usr/");
+  return group.entries.size;
+}
+
 // --- Main ---
 
 async function main() {
@@ -211,6 +239,13 @@ async function main() {
     process.exit(1);
   }
 
+  try {
+    lstatSync(NETHACK_ZIP_PATH);
+  } catch {
+    console.error(`nethack.zip not found at ${NETHACK_ZIP_PATH}. Run: bash examples/browser/scripts/build-nethack-zip.sh`);
+    process.exit(1);
+  }
+
   // 16MB is sufficient for dash + symlinks + magic + vim stubs (archive
   // is fetched on demand so the image stays small)
   const sab = new SharedArrayBuffer(16 * 1024 * 1024);
@@ -231,6 +266,10 @@ async function main() {
   console.log("Registering vim lazy archive (binary + runtime stubs)...");
   const vimCount = populateVimArchive(fs);
   console.log(`  Vim archive: ${vimCount} entries (content deferred)`);
+
+  console.log("Registering nethack lazy archive (binary + runtime stubs)...");
+  const nhCount = populateNetHackArchive(fs);
+  console.log(`  NetHack archive: ${nhCount} entries (content deferred)`);
 
   console.log("Creating extended tool symlinks...");
   populateExtendedSymlinks(fs);
