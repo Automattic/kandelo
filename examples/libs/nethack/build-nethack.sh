@@ -130,6 +130,37 @@ EOF
     rm -f "$UNIXCONF_H.bak"
 fi
 
+# --- Patch include/global.h ---
+#
+# `struct version_info` is written to data files by host-built dgn_comp
+# / lev_comp / dlb and read back by the cross-built game binary. It uses
+# `unsigned long` which is 8 bytes on macOS/Linux hosts but 4 bytes on
+# wasm32. The 40-byte file header gets read as a 20-byte struct and
+# check_version() reports "Dungeon description not valid" even though
+# the values are correct — the serialization is just off. Pin the
+# fields to `uint32_t` so the layout is identical on host and target.
+#
+# `struct savefile_info` has the same hazard for save files; patch it
+# the same way for consistency.
+GLOBAL_H="include/global.h"
+if [ -f "$GLOBAL_H" ] && ! grep -q "wasm32posix patch" "$GLOBAL_H"; then
+    echo "==> Patching include/global.h (portable version_info)..."
+    awk '
+        /^struct version_info \{/ || /^struct savefile_info \{/ { in_struct=1 }
+        in_struct && /unsigned long/ { gsub("unsigned long", "uint32_t      ") }
+        /^\};/ && in_struct { in_struct=0 }
+        { print }
+    ' "$GLOBAL_H" > "$GLOBAL_H.new"
+    # Ensure stdint.h is visible; global.h already pulls in config.h which
+    # eventually reaches stdint. Add an explicit include to be safe.
+    if ! grep -q '^#include <stdint.h>' "$GLOBAL_H.new"; then
+        awk 'NR==1 && /^\/\* NetHack/ { print; print "#include <stdint.h>"; next } { print }' "$GLOBAL_H.new" > "$GLOBAL_H.new2"
+        mv "$GLOBAL_H.new2" "$GLOBAL_H.new"
+    fi
+    mv "$GLOBAL_H.new" "$GLOBAL_H"
+    echo "/* wasm32posix patch */" >> "$GLOBAL_H"
+fi
+
 # --- Patch include/tradstdc.h ---
 #
 # NetHack defines `warn_unused_result` to empty on non-Linux hosts to
