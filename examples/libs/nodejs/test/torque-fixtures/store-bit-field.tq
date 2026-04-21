@@ -1,0 +1,30 @@
+// Phase 2 test fixture: StoreBitFieldInstruction.
+//
+// Torque emits StoreBitFieldInstruction whenever a generated assignment
+// writes a single field of a `bitfield struct` container back into its
+// integral representation. Our kCC emission lowers this to
+//   `result = static_cast<Container>(
+//       base::BitField<FieldType, offset, bits, Container>::update(
+//           container, value));`
+// — or `encode(value)` in place of `update(...)` when the IR's
+// `starts_as_zero` hint is set (i.e., the container is statically
+// known to be zero at the write site).
+//
+// We want to exercise the non-zero branch (`update`), so the builtin
+// takes an existing bitfield struct as a parameter and mutates one of
+// its fields. Using a runtime parameter for `v` avoids the implicit
+// `%FromConstexpr<...>` intrinsic lowering that the kCC backend
+// doesn't yet support.
+namespace test_cc {
+  bitfield struct TorqueCcTestBitField extends uint32 {
+    a: int32: 8 bit;
+    b: int32: 24 bit;
+  }
+
+  builtin TorqueCcTest_StoreBitField(implicit context: Context)(
+      bf: TorqueCcTestBitField, v: int32): TorqueCcTestBitField {
+    let out: TorqueCcTestBitField = bf;
+    out.a = v;
+    return out;
+  }
+}
