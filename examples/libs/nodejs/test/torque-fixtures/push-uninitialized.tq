@@ -1,0 +1,17 @@
+// Phase 2 test fixture: PushUninitializedInstruction.
+//
+// Torque emits PushUninitializedInstruction for any `let` declaration
+// that has no initializer (see implementation-visitor.cc:900). There is
+// no `uninitialized` keyword in the Torque grammar — the plan doc
+// speculated one, but the real trigger is an uninitialized `let`.
+//
+// The resulting stack slot holds a TopType placeholder that cannot be
+// legally read before reassignment, so we immediately overwrite it by
+// assigning from the parameter and then return.
+namespace test_cc {
+  builtin TorqueCcTest_PushUninitialized(implicit context: Context)(arg: Smi): Smi {
+    let x: Smi;
+    x = arg;
+    return x;
+  }
+}
