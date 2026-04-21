@@ -10,6 +10,9 @@
 //!   * `WASM_POSIX_DEP_OUT_DIR` — temp dir the script must install into.
 //!   * `WASM_POSIX_DEP_NAME`, `WASM_POSIX_DEP_VERSION`,
 //!     `WASM_POSIX_DEP_REVISION` — identity of the lib being built.
+//!   * `WASM_POSIX_DEP_SOURCE_URL`, `WASM_POSIX_DEP_SOURCE_SHA256` —
+//!     upstream tarball URL + expected sha (the script downloads and
+//!     verifies; the resolver doesn't fetch anything itself).
 //!   * `WASM_POSIX_DEP_<UPPER>_DIR` — for each *direct* declared dep
 //!     (where `UPPER` is the dep name upper-cased with `-` → `_`),
 //!     the resolved cache path of that dep's `{lib,include,…}`.
@@ -343,6 +346,8 @@ fn build_into_cache(
         cmd.env("WASM_POSIX_DEP_NAME", &target.name);
         cmd.env("WASM_POSIX_DEP_VERSION", &target.version);
         cmd.env("WASM_POSIX_DEP_REVISION", target.revision.to_string());
+        cmd.env("WASM_POSIX_DEP_SOURCE_URL", &target.source.url);
+        cmd.env("WASM_POSIX_DEP_SOURCE_SHA256", &target.source.sha256);
         for (name, path) in dep_dirs {
             cmd.env(format!("WASM_POSIX_DEP_{}_DIR", env_key(name)), path);
         }
@@ -769,6 +774,8 @@ spdx = "TestLicense"
             &[],
             // The body uses the contract env vars — verifies they are set.
             r#"
+test -n "$WASM_POSIX_DEP_SOURCE_URL"    || { echo "SOURCE_URL unset"    >&2; exit 1; }
+test -n "$WASM_POSIX_DEP_SOURCE_SHA256" || { echo "SOURCE_SHA256 unset" >&2; exit 1; }
 mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib"
 touch "$WASM_POSIX_DEP_OUT_DIR/lib/libA.a"
 echo "$WASM_POSIX_DEP_NAME $WASM_POSIX_DEP_VERSION rev$WASM_POSIX_DEP_REVISION" > "$WASM_POSIX_DEP_OUT_DIR/stamp"

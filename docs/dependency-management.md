@@ -131,6 +131,8 @@ that doesn't respect them cannot be cached safely.
 | `WASM_POSIX_DEP_NAME` | `name` from deps.toml. |
 | `WASM_POSIX_DEP_VERSION` | `version` from deps.toml. |
 | `WASM_POSIX_DEP_REVISION` | `revision` from deps.toml. |
+| `WASM_POSIX_DEP_SOURCE_URL` | Upstream tarball URL (`source.url` from deps.toml). |
+| `WASM_POSIX_DEP_SOURCE_SHA256` | Expected sha256 of the downloaded tarball. Scripts **must** verify after download — the resolver does not fetch. |
 | `WASM_POSIX_DEP_<UPPER>_DIR` | For each *direct* dep, the resolved path to that dep's build output. `<UPPER>` is the dep name upper-cased, with `-` → `_` (e.g. `zlib-ng` → `ZLIB_NG`). Transitive deps are not surfaced — scripts that need them should declare them in `depends_on`. |
 
 After the script exits 0, the resolver verifies every path in
