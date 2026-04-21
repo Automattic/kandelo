@@ -43,12 +43,28 @@ impl ProcessTable {
     }
 
     /// Create a new process with the given pid and add it to the table.
+    ///
+    /// Also lazily registers a virtual init process (pid 1) if absent. Init has
+    /// no worker — it exists so that `kill(1, ...)` and `sched_*(1, ...)` from
+    /// user processes resolve to a real target owned by root, enabling EPERM
+    /// checks to fire instead of ESRCH.
     pub fn create_process(&mut self, pid: u32) -> Result<(), ()> {
+        self.ensure_init();
         if self.processes.contains_key(&pid) {
             return Err(());
         }
         self.processes.insert(pid, Process::new(pid));
         Ok(())
+    }
+
+    /// Ensure the virtual init process (pid 1) is present. Idempotent.
+    pub fn ensure_init(&mut self) {
+        if !self.processes.contains_key(&1) {
+            let mut init = Process::new(1);
+            init.ppid = 0;
+            init.argv.push(alloc::vec::Vec::from(b"init".as_slice()));
+            self.processes.insert(1, init);
+        }
     }
 
     /// Remove a process from the table.

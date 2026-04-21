@@ -2645,9 +2645,15 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         360 => -(Errno::ENODATA as i32), // SYS_REMOVEXATTR
         361 => 0,                         // SYS_SETXATTR: silently accept
 
-        // --- setfsuid/setfsgid: return previous uid/gid ---
-        370 => 1000, // SYS_SETFSUID: return current fsuid (1000)
-        371 => 1000, // SYS_SETFSGID: return current fsgid (1000)
+        // --- setfsuid/setfsgid: return previous fsuid/fsgid (we mirror euid/egid) ---
+        370 => {
+            let (_gkl, proc) = unsafe { get_process() };
+            proc.euid as i32
+        }
+        371 => {
+            let (_gkl, proc) = unsafe { get_process() };
+            proc.egid as i32
+        }
 
         // --- faccessat2/fchmodat2: delegate to existing implementations ---
         382 => { // SYS_FACCESSAT2: (dirfd, path, mode, flags)
@@ -4198,14 +4204,20 @@ fn kernel_kill_with_value(pid: i32, sig: u32, si_value: i32) -> i32 {
             deliver_pending_signals(proc, &mut host);
             return -(Errno::EINVAL as i32);
         }
+        let (sender_uid, sender_euid) = (proc.uid, proc.euid);
         let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+        table.ensure_init();
         let result = match table.get_mut(pid as u32) {
             Some(target) => {
-                if sig > 0 {
-                    target.signals.raise_with_value(sig, si_value);
-                    deliver_pending_signals(target, &mut host);
+                if !syscalls::can_signal(sender_uid, sender_euid, target.uid, target.euid) {
+                    -(Errno::EPERM as i32)
+                } else {
+                    if sig > 0 {
+                        target.signals.raise_with_value(sig, si_value);
+                        deliver_pending_signals(target, &mut host);
+                    }
+                    0
                 }
-                0
             }
             None => -(Errno::ESRCH as i32),
         };
@@ -4220,15 +4232,25 @@ fn kernel_kill_with_value(pid: i32, sig: u32, si_value: i32) -> i32 {
         }
         let target_pgid = (-pid) as u32;
         let caller_pid = proc.pid;
+        let (sender_uid, sender_euid) = (proc.uid, proc.euid);
         let table = unsafe { &*PROCESS_TABLE.0.get() };
         let pids = table.pids_in_group(target_pgid);
         if pids.is_empty() {
             deliver_pending_signals(proc, &mut host);
             return -(Errno::ESRCH as i32);
         }
+        // POSIX: kill(-pgid) returns success if at least one target received
+        // the signal, EPERM only if *none* could be signalled due to permission.
         let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+        let mut delivered = false;
+        let mut any_perm_denied = false;
         for &target_pid in &pids {
             if let Some(target) = table.get_mut(target_pid) {
+                if !syscalls::can_signal(sender_uid, sender_euid, target.uid, target.euid) {
+                    any_perm_denied = true;
+                    continue;
+                }
+                delivered = true;
                 if sig > 0 {
                     target.signals.raise_with_value(sig, si_value);
                     deliver_pending_signals(target, &mut host);
@@ -4238,7 +4260,13 @@ fn kernel_kill_with_value(pid: i32, sig: u32, si_value: i32) -> i32 {
         if let Some(caller) = table.get_mut(caller_pid) {
             deliver_pending_signals(caller, &mut host);
         }
-        return 0;
+        if delivered {
+            return 0;
+        } else if any_perm_denied {
+            return -(Errno::EPERM as i32);
+        } else {
+            return -(Errno::ESRCH as i32);
+        }
     }
 
     // Local or traditional mode: use sys_kill (which uses raise, not raise_with_value)
@@ -4297,19 +4325,33 @@ pub extern "C" fn kernel_sigaltstack(ss_ptr: *const u8, oss_ptr: *mut u8) -> i32
     0
 }
 
-/// Validate a PID exists for sched_* operations (centralized mode).
-/// Returns 0 if PID is valid (pid==0 means current process), -ESRCH if not found.
+/// Validate a PID and caller's permission to query/modify its scheduling
+/// parameters (centralized mode).
+///
+/// Returns 0 if PID is valid and the caller has permission (pid==0 means
+/// current process, always allowed). Returns -ESRCH if the target doesn't
+/// exist, -EPERM if the caller's uid doesn't match per `can_signal()`.
 fn kernel_sched_validate_pid(pid: i32) -> i32 {
     if pid == 0 {
         return 0; // pid 0 means current process
     }
-    if crate::is_centralized_mode() {
-        let table = unsafe { &*PROCESS_TABLE.0.get() };
-        if table.get(pid as u32).is_none() {
-            return -(Errno::ESRCH as i32);
+    if !crate::is_centralized_mode() {
+        return 0;
+    }
+    let (_gkl, caller) = unsafe { get_process() };
+    let sender_euid = caller.euid;
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    table.ensure_init();
+    match table.get(pid as u32) {
+        None => -(Errno::ESRCH as i32),
+        Some(target) => {
+            if syscalls::can_query_sched(sender_euid, target.uid, target.euid) {
+                0
+            } else {
+                -(Errno::EPERM as i32)
+            }
         }
     }
-    0
 }
 
 /// sched_getparam — write scheduling parameters (sched_priority = 0) to param_ptr.

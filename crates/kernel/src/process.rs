@@ -302,10 +302,13 @@ impl Process {
         Process {
             pid,
             ppid: 0,
-            uid: 1000,
-            gid: 1000,
-            euid: 1000,
-            egid: 1000,
+            // Default to root (uid=0). The kernel is single-user; privilege
+            // drops happen explicitly via setuid/setgid and gate cross-user
+            // operations (kill, sched_*).
+            uid: 0,
+            gid: 0,
+            euid: 0,
+            egid: 0,
             pgid: pid,
             sid: 0,
             is_session_leader: false,

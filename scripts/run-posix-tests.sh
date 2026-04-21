@@ -28,12 +28,6 @@ EXPECTED_FAIL=(
     munmap/1-1                  # wasm can't revoke page access — see docs/wasm-limitations.md §6
     munmap/1-2                  # wasm can't revoke page access — see docs/wasm-limitations.md §6
     mlock/12-1                  # needs pwd.h (getpwnam)
-    kill/2-2                    # EPERM: no multi-user permission model
-    kill/3-1                    # EPERM: no multi-user permission model
-    sched_getparam/6-1          # EPERM: no multi-user permission model
-    sched_getscheduler/7-1      # EPERM: no multi-user permission model
-    sigqueue/3-1                # needs pwd.h (getpwnam)
-    sigqueue/12-1               # needs pwd.h (getpwnam)
 )
 
 # ── Auto-detect LLVM ──────────────────────────────────────

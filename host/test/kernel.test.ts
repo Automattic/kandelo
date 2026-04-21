@@ -34,9 +34,10 @@ describe("CentralizedKernelWorker", () => {
     const channelOffset = (256 - 2) * 65536;
     memory.grow(256 - 17);
 
-    kernelWorker.registerProcess(1, memory, [channelOffset]);
+    // PID 1 is reserved for the virtual init process; use PIDs >= 100.
+    kernelWorker.registerProcess(100, memory, [channelOffset]);
 
     // Unregister to clean up
-    kernelWorker.unregisterProcess(1);
+    kernelWorker.unregisterProcess(100);
   });
 });
