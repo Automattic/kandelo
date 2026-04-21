@@ -1,0 +1,24 @@
+// Phase 2 test fixture: StoreReferenceInstruction.
+//
+// Torque emits StoreReferenceInstruction whenever a generated assignment
+// expression `*<reference> = <value>` lowers to a write of a heap-object
+// field. The instruction carries the field type; we only support tagged
+// Smi stores in the kCC path today (symmetric with LoadReference's
+// current tagged-Smi-only coverage), which emits
+// `TaggedField<Smi>::store(UncheckedCast<HeapObject>(...),
+// static_cast<int>(...), ...)`.
+//
+// We construct a `&Smi` reference directly via
+// `torque_internal::unsafe::NewReference` so the offset and object both
+// arrive on the stack as runtime values — this avoids the preceding
+// `%FromConstexpr<intptr, constexpr int31>` intrinsic lowering that
+// Torque would otherwise insert for an extern-class field offset, which
+// the kCC backend does not yet support (existing limitation).
+namespace test_cc {
+  builtin TorqueCcTest_StoreReference(implicit context: Context)(
+      obj: HeapObject, offset: intptr, v: Smi): Smi {
+    const ref:&Smi = torque_internal::unsafe::NewReference<Smi>(obj, offset);
+    *ref = v;
+    return v;
+  }
+}
