@@ -1,0 +1,21 @@
+// Phase 3 test fixture: MakeLazyNodeInstruction.
+//
+// Torque's `%MakeLazy<T>('<getter_macro>', args...)` intrinsic compiles to
+// a MakeLazyNodeInstruction. CSA emits a std::function<TNode<T>()>; the
+// CC-Builtins backend (Phase 3) emits a std::function<Tagged<T>()> that
+// invokes the getter macro via its default CCName() — `TqRuntime<name>`.
+//
+// The fixture avoids `RunLazy` (an extern macro) to isolate emission of
+// MakeLazyNode from the orthogonal ExternMacro/Intrinsic ShouldBeInlined
+// fix. The lazy value is bound, then the builtin returns its captured
+// argument directly — sufficient for Torque to emit the instruction.
+namespace test_cc {
+  macro TorqueCcTest_LazyBody(x: Smi): Smi {
+    return x;
+  }
+  builtin TorqueCcTest_MakeLazyNode(implicit context: Context)(
+      arg: Smi): Smi {
+    const _lazy: Lazy<Smi> = %MakeLazy<Smi>('TorqueCcTest_LazyBody', arg);
+    return arg;
+  }
+}
