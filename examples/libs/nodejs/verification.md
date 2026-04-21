@@ -67,6 +67,29 @@ backend-dependent instructions. Of those:
 
 Exactly matches the design's "10 real + 12 stubs" claim. ✅
 
+## Fourth-pass extension seam (Task 0.7)
+
+Design specifies: add `OutputType::kCCBuiltins` and a fourth pass in
+`GenerateImplementation`; override per-declarable filter on `Builtin`.
+All three seams exist and are close to the line numbers the design cites.
+
+| Seam | File | Line | Notes |
+|------|------|------|-------|
+| OutputType enum | `deps/v8/src/torque/declarable.h` | **295** | Three values: `kCSA`, `kCC`, `kCCDebug`. Phase 1 adds `kCCBuiltins`. |
+| Pass driver (`kCC`) | `deps/v8/src/torque/implementation-visitor.cc` | **3549** | Iterates `GlobalContext::AllMacrosForCCOutput()`. |
+| Pass driver (`kCCDebug`) | `deps/v8/src/torque/implementation-visitor.cc` | **3562** | Iterates `GlobalContext::AllMacrosForCCDebugOutput()`. |
+| Pass reset (`kCSA`) | `deps/v8/src/torque/implementation-visitor.cc` | **3574** | Reverts `output_type_` after the two C++ passes. |
+| Per-declarable filter | `deps/v8/src/torque/implementation-visitor.cc` | **3585** | `if (!callable->ShouldGenerateExternalCode(output_type_)) CurrentFileStreams::Get() = nullptr;` |
+| `ShouldGenerateExternalCode` | `deps/v8/src/torque/declarable.h` | **323** | **Non-virtual**; delegates to `ShouldBeInlined(output_type)` at line 318 which IS virtual. |
+
+Design line ranges (3540–3575 for passes, 3583–3586 for filter) match
+current V8 13.6.233.17 to within 2 lines.
+
+**Phase 1 note:** the design says "override `ShouldGenerateExternalCode`
+on `Builtin`." Because the non-virtual wrapper calls `virtual
+ShouldBeInlined`, the actual Phase 1 override target is `ShouldBeInlined`
+on `Builtin`, or we convert the wrapper to virtual. Both are mechanical.
+
 ## Torque host build (Tasks 0.2–0.4)
 
 - Node.js uses gyp+ninja (not `make torque` as the skeleton assumed).
