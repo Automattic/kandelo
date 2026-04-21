@@ -73,6 +73,26 @@ impl ScalarLocalTy {
     }
 }
 
+/// Reference type used for a generated local declaration. Exercises
+/// Phase 4f aux-table spill handling (for funcref/externref) and Phase
+/// 6's `captured_exnref_K` non-spill invariant (for exnref).
+#[derive(Debug, Clone, Copy, arbitrary::Arbitrary)]
+enum RefLocalTy {
+    FuncRef,
+    ExternRef,
+    ExnRef,
+}
+
+impl RefLocalTy {
+    fn as_wat(&self) -> &'static str {
+        match self {
+            RefLocalTy::FuncRef => "(ref null func)",
+            RefLocalTy::ExternRef => "(ref null extern)",
+            RefLocalTy::ExnRef => "(ref null exn)",
+        }
+    }
+}
+
 /// One generated program. Keep fields private so future generator
 /// extensions don't require downstream changes.
 #[derive(Debug)]
@@ -92,6 +112,13 @@ pub struct WatProgram {
     /// variant ensures the block result types line up trivially —
     /// mixed families are not generated here.
     wrap_in_outer: bool,
+    /// 0..=2 ref-typed locals. Exercises Phase 4f aux-table spill and
+    /// Phase 6's captured_exnref_K non-spill invariant.
+    ref_locals: Vec<RefLocalTy>,
+    /// When true, adds a second function `$inner_fork` called via
+    /// call_indirect through a funcref table, instead of calling
+    /// `$fork` directly. Exercises indirect-call closure (Phase 3a/3b).
+    has_indirect_call: bool,
 }
 
 impl<'a> Arbitrary<'a> for WatProgram {
@@ -101,11 +128,18 @@ impl<'a> Arbitrary<'a> for WatProgram {
         for _ in 0..count {
             scalar_locals.push(ScalarLocalTy::arbitrary(u)?);
         }
+        let ref_count = (u8::arbitrary(u)? & 0b11).min(2); // 0..=2
+        let mut ref_locals = Vec::with_capacity(ref_count as usize);
+        for _ in 0..ref_count {
+            ref_locals.push(RefLocalTy::arbitrary(u)?);
+        }
         Ok(Self {
             scalar_locals,
             has_memory_grow: bool::arbitrary(u)?,
             clause_variant: ClauseVariant::arbitrary(u)?,
             wrap_in_outer: bool::arbitrary(u)?,
+            ref_locals,
+            has_indirect_call: bool::arbitrary(u)?,
         })
     }
 }
@@ -121,6 +155,12 @@ impl WatProgram {
             .map(|ty| format!("(local {}) ", ty.as_wat()))
             .collect();
 
+        let ref_locals_wat: String = self
+            .ref_locals
+            .iter()
+            .map(|ty| format!("(local {}) ", ty.as_wat()))
+            .collect();
+
         let mem_grow = if self.has_memory_grow {
             "i32.const 0 memory.grow drop"
         } else {
@@ -130,11 +170,23 @@ impl WatProgram {
         let (clause_wat_inner, block_ty, body_yield, after_block) =
             self.clause_variant.render_parts("$exn", "$handler");
 
+        let (extra_decls, fork_instr) = if self.has_indirect_call {
+            (
+                r#"(func $inner_fork (result i32) call $fork)
+  (type $ft (func (result i32)))
+  (table 1 1 funcref)
+  (elem (i32.const 0) $inner_fork)"#,
+                "(call_indirect (type $ft) (i32.const 0))",
+            )
+        } else {
+            ("", "call $fork")
+        };
+
         let inner = format!(
             r#"(block $handler {block_ty}
       (try_table {block_ty} {clause_wat_inner}
         {mem_grow}
-        call $fork
+        {fork_instr}
         drop
         {body_yield}))"#,
         );
@@ -158,8 +210,9 @@ impl WatProgram {
             r#"(module
   (import "kernel" "kernel_fork" (func $fork (result i32)))
   (tag $exn)
+  {extra_decls}
   (func $caller (export "caller") (result i32)
-    {locals_wat}
+    {locals_wat}{ref_locals_wat}
     {body}
     i32.const 0)
   (memory 1))
