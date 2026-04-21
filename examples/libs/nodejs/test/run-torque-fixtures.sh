@@ -34,40 +34,76 @@ while IFS= read -r tq; do
 done < <(grep -oE '"(src|test|third_party)/[^"]*\.tq"' deps/v8/BUILD.gn \
            | tr -d '"' | sort -u)
 
-# Fixture file list — each relative to ${HERE}.
+# Fixture staging — torque embeds its source-position path (as a file://
+# URI for non-v8-root inputs) into the generated `// Source:` comment.
+# To keep goldens portable across machines/CI, we stage each fixture as
+# a symlink under $NODE_SRC/deps/v8/test/phase2-fixtures/ and pass the
+# v8-root-relative path (test/phase2-fixtures/<name>.tq). Torque then
+# sees the fixture as if it lived in the V8 tree; the -v8-root=deps/v8
+# prefix resolves reads, and output lands at
+# $OUT_DIR/test/phase2-fixtures/<name>-tq-ccbuiltins.cc with a stable,
+# host-independent `// Source:` comment.
+STAGE_REL="test/phase2-fixtures"
+STAGE_ABS="${NODE_SRC}/deps/v8/${STAGE_REL}"
+# Clean up any stale symlinks from a prior run; recreate empty.
+rm -rf "${STAGE_ABS}"
+mkdir -p "${STAGE_ABS}"
+trap 'rm -rf "${OUT_DIR}" "${STAGE_ABS}"' EXIT
+
+# Fixture file list — each fixture is symlinked into STAGE_DIR and the
+# v8-root-relative path is what we pass to torque.
 FILTER="${1:-}"
-FIXTURES=()
+FIXTURES=()        # absolute source paths (worktree)
+FIXTURE_RELS=()    # v8-root-relative paths (for torque CLI + output path)
 for tq in "${FIX_DIR}"/*.tq; do
   [ -f "${tq}" ] || continue
   name="$(basename "${tq}" .tq)"
   if [ -n "${FILTER}" ] && [ "${name}" != "${FILTER}" ]; then continue; fi
   FIXTURES+=("${tq}")
+  rel="${STAGE_REL}/${name}.tq"
+  FIXTURE_RELS+=("${rel}")
+  ln -sf "${tq}" "${STAGE_ABS}/${name}.tq"
 done
 [ ${#FIXTURES[@]} -gt 0 ] || { echo "No fixtures matching '${FILTER}'"; exit 1; }
 
 # Pre-create output parent dirs (torque doesn't mkdir -p).
-for f in "${STOCK_TQ[@]}" "${FIXTURES[@]}"; do
-  case "${f}" in
-    /*) rel="${f#${NODE_SRC}/}" ;;
-    *)  rel="${f}" ;;
-  esac
-  mkdir -p "${OUT_DIR}/$(dirname "${rel}")"
+for f in "${STOCK_TQ[@]}" "${FIXTURE_RELS[@]}"; do
+  mkdir -p "${OUT_DIR}/$(dirname "${f}")"
 done
 
-# Run torque over stock + fixtures.
+# Build whitelist CSV by scanning fixtures for any TorqueCcTest_<Name>
+# token. This is intentionally liberal: multi-line declarations like
+# `builtin\n    TorqueCcTest_Foo(...)` would be missed by a stricter
+# `builtin TorqueCcTest_...` match. Over-including a name that isn't
+# actually a builtin is harmless — torque ignores unmatched whitelist
+# entries. Fixtures MAY define helper builtins (e.g. a CallBuiltin test
+# needs both the caller and the callee on the whitelist); all
+# TorqueCcTest_* identifiers in a fixture get included automatically.
+WHITELIST=()
+for tq in "${FIXTURES[@]}"; do
+  while IFS= read -r entry; do
+    WHITELIST+=("${entry}")
+  done < <(grep -oE 'TorqueCcTest_[A-Za-z0-9_]+' "${tq}" | sort -u)
+done
+OLD_IFS="${IFS}"
+IFS=,
+WHITELIST_CSV="${WHITELIST[*]}"
+IFS="${OLD_IFS}"
+
+# Run torque over stock + staged fixtures.
 "${TORQUE}" \
+  --cc-builtins-whitelist="${WHITELIST_CSV}" \
   -o "${OUT_DIR}" \
   -v8-root deps/v8 \
-  "${STOCK_TQ[@]}" "${FIXTURES[@]}"
+  "${STOCK_TQ[@]}" "${FIXTURE_RELS[@]}"
 
 # Diff each fixture's -tq-ccbuiltins.cc against its golden.
 RC=0
-for tq in "${FIXTURES[@]}"; do
+for i in "${!FIXTURES[@]}"; do
+  tq="${FIXTURES[$i]}"
+  rel="${FIXTURE_RELS[$i]}"
   name="$(basename "${tq}" .tq)"
-  # The fixture path under OUT_DIR mirrors its path under NODE_SRC. Since
-  # fixtures live outside NODE_SRC, torque's -v8-root=deps/v8 will produce
-  # output under OUT_DIR using the absolute path of the fixture.
-  actual="${OUT_DIR}${tq%.tq}-tq-ccbuiltins.cc"
+  actual="${OUT_DIR}/${rel%.tq}-tq-ccbuiltins.cc"
   golden="${GOLD_DIR}/${name}-tq-ccbuiltins.cc"
   if [ ! -f "${actual}" ]; then
     echo "MISSING: ${actual}"

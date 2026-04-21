@@ -1,0 +1,6 @@
+// Phase 2 test fixture: ReturnInstruction.
+namespace test_cc {
+  builtin TorqueCcTest_Return(implicit context: Context)(arg: Smi): Smi {
+    return arg;
+  }
+}
