@@ -164,3 +164,151 @@ fn all_five_control_exports_present() {
         );
     }
 }
+
+// ======================================================================
+// Phase 4e — saved-globals area in unwind_begin / rewind_begin
+// ======================================================================
+
+use fork_instrument::runtime::inject_runtime;
+use walrus::ir::Instr;
+
+/// Helper: count `Store` / `Load` instructions in the body of the
+/// named export by re-parsing the instrumented module.
+fn export_body_instr_counts(
+    module: &Module,
+    export: &str,
+) -> (usize, usize) {
+    let id = match module
+        .exports
+        .iter()
+        .find(|e| e.name == export)
+        .expect("export present")
+        .item
+    {
+        walrus::ExportItem::Function(id) => id,
+        _ => panic!("export `{export}` is not a function"),
+    };
+    let local = match &module.funcs.get(id).kind {
+        walrus::FunctionKind::Local(l) => l,
+        _ => panic!("`{export}` is not a local function"),
+    };
+    let mut stores = 0;
+    let mut loads = 0;
+    for (instr, _) in &local.block(local.entry_block()).instrs {
+        match instr {
+            Instr::Store(_) => stores += 1,
+            Instr::Load(_) => loads += 1,
+            _ => {}
+        }
+    }
+    (stores, loads)
+}
+
+const MODULE_WITH_EXTRA_GLOBAL: &str = r#"
+    (module
+      (import "kernel" "kernel_fork" (func $fork (result i32)))
+      (global $user_stack (mut i32) (i32.const 0))
+      (global $user_tls (mut i32) (i32.const 0))
+      (global $user_const i32 (i32.const 42))  ;; immutable — skipped
+      (memory 1))
+"#;
+
+#[test]
+fn unwind_begin_stores_one_per_saved_global() {
+    let bytes = instrument_wat(MODULE_WITH_EXTRA_GLOBAL);
+    let module = Module::from_buffer(&bytes).unwrap();
+
+    // Two mutable scalar globals pre-exist (`$user_stack`, `$user_tls`).
+    // The immutable `$user_const` is excluded. The runtime's own
+    // state+buf globals are added *after* the scan so they are also
+    // excluded. Expected: exactly 2 saved-global stores.
+    let (stores, loads) =
+        export_body_instr_counts(&module, names::EXPORT_UNWIND_BEGIN);
+    assert_eq!(
+        stores, 2,
+        "unwind_begin should store exactly the saved globals",
+    );
+    assert_eq!(loads, 0, "unwind_begin never reads the save buffer");
+}
+
+#[test]
+fn rewind_begin_loads_one_per_saved_global() {
+    let bytes = instrument_wat(MODULE_WITH_EXTRA_GLOBAL);
+    let module = Module::from_buffer(&bytes).unwrap();
+
+    let (stores, loads) =
+        export_body_instr_counts(&module, names::EXPORT_REWIND_BEGIN);
+    assert_eq!(loads, 2, "rewind_begin should load each saved global");
+    assert_eq!(stores, 0, "rewind_begin never writes the save buffer");
+}
+
+#[test]
+fn saved_globals_metadata_reports_declared_order() {
+    // Directly invoke inject_runtime so we can inspect the resulting
+    // metadata — the high-level `instrument` fn hides it.
+    let bytes = wat::parse_str(MODULE_WITH_EXTRA_GLOBAL).unwrap();
+    let mut module = Module::from_buffer(&bytes).unwrap();
+    let runtime = inject_runtime(&mut module);
+
+    // Exactly two saved globals, in declaration order: user_stack, then user_tls.
+    assert_eq!(runtime.saved_globals.len(), 2);
+
+    // Offsets: wasm32 → header 8 bytes, then 4 bytes each.
+    assert_eq!(runtime.saved_globals[0].offset, 8);
+    assert_eq!(runtime.saved_globals[1].offset, 12);
+    // frames_start_offset = end of saved_globals area.
+    assert_eq!(runtime.frames_start_offset, 16);
+}
+
+#[test]
+fn module_with_no_extra_globals_has_empty_saved_globals() {
+    let bytes = wat::parse_str(EMPTY_MODULE_WITH_FORK).unwrap();
+    let mut module = Module::from_buffer(&bytes).unwrap();
+    let runtime = inject_runtime(&mut module);
+
+    assert!(
+        runtime.saved_globals.is_empty(),
+        "no pre-existing mutable globals → saved_globals empty",
+    );
+    // frames_start_offset should equal the header size alone.
+    // For wasm32 that's 2 * 4 = 8 bytes.
+    assert_eq!(runtime.frames_start_offset, 8);
+}
+
+#[test]
+fn wasm64_saved_globals_use_16_byte_header() {
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (global $g (mut i64) (i64.const 0))
+          (memory i64 1))
+    "#;
+    let bytes = wat::parse_str(wat).unwrap();
+    let mut module = Module::from_buffer(&bytes).unwrap();
+    let runtime = inject_runtime(&mut module);
+
+    // wasm64 → header 2 * 8 = 16 bytes.
+    assert_eq!(runtime.saved_globals.len(), 1);
+    assert_eq!(runtime.saved_globals[0].offset, 16);
+    // The i64 global consumes 8 bytes.
+    assert_eq!(runtime.frames_start_offset, 16 + 8);
+}
+
+#[test]
+fn ref_typed_mutable_globals_are_skipped_in_4e() {
+    // Phase 4e handles scalar globals only; ref-typed ones await 4f.
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (global $scalar (mut i32) (i32.const 0))
+          (global $refg   (mut funcref) (ref.null func))
+          (memory 1))
+    "#;
+    let bytes = wat::parse_str(wat).unwrap();
+    let mut module = Module::from_buffer(&bytes).unwrap();
+    let runtime = inject_runtime(&mut module);
+
+    // Only the i32 scalar should have been picked up.
+    assert_eq!(runtime.saved_globals.len(), 1);
+    assert_eq!(runtime.saved_globals[0].ty, walrus::ValType::I32);
+}

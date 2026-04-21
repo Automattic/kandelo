@@ -9,7 +9,8 @@ const TRIVIAL_WAT: &str = r#"
 (module
   (import "kernel" "kernel_fork" (func $fork (result i32)))
   (func $main (export "_start") (result i32)
-    call $fork))
+    call $fork)
+  (memory 1))
 "#;
 
 fn compile(wat_src: &str) -> Vec<u8> {

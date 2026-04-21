@@ -17,6 +17,7 @@
 use anyhow::{Context, Result, bail};
 
 pub mod call_graph;
+pub mod instrument;
 pub mod runtime;
 
 /// Options controlling instrumentation. Fields will grow as phases
@@ -71,22 +72,46 @@ pub fn analyze(input: &[u8], opts: &Options) -> Result<Analysis> {
 /// Instruments `input` (a complete wasm binary) according to `opts`
 /// and returns the transformed binary.
 ///
-/// Currently implements Phase 4a: inject the state-machine runtime
-/// (globals + exported control functions). Future phases add the
-/// actual per-function body rewriting.
-pub fn instrument(input: &[u8], _opts: &Options) -> Result<Vec<u8>> {
+/// Current scope: Phase 4a (runtime scaffolding) + Phase 4b
+/// (per-function structural wrap). Future phases 4c–6 extend the
+/// per-function transform with call-site state-machine wrapping,
+/// frame save/restore, mutable-global save/restore, ref-typed local
+/// spilling, and catch-handler resume.
+///
+/// Modules that do not import the configured entry (default
+/// `kernel.kernel_fork`) are returned unchanged — there is nothing
+/// to instrument. We do **not** treat this as an error because the
+/// tool is invoked by build scripts across programs that may or may
+/// not use `fork()`.
+pub fn instrument(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
     let mut module = walrus::Module::from_buffer(input)
         .context("failed to parse input wasm module")?;
 
-    // Phase 4a: runtime scaffolding. Safe to run on any module; does
-    // not depend on call-graph discovery.
-    let _runtime = runtime::inject_runtime(&mut module);
+    // Discover the fork-path closure *before* we mutate the module so
+    // the runtime's own injected functions are not mistaken for
+    // fork-path callers. (They can't reach the seed anyway, but the
+    // earlier-is-simpler ordering keeps the invariant trivially.)
+    let fork_path = match call_graph::find_import_func(&module, &opts.entry_import) {
+        Some(seed) => call_graph::reaching_closure(&module, seed),
+        None => Default::default(),
+    };
+
+    // Phase 4a: runtime scaffolding. Always injected so the module's
+    // exported ABI is stable regardless of whether any caller was
+    // actually rewritten.
+    let runtime = runtime::inject_runtime(&mut module);
+
+    // Phase 4b: structural wrap of each fork-path function's body.
+    // No-op when `fork_path` is empty (module doesn't use fork).
+    instrument::instrument_functions(&mut module, &runtime, &fork_path);
 
     // --- Future phases will mutate `module` further here. ---
-    // Phase 4b+: per-function state-machine wrappers for every
-    //   function in call_graph::reaching_closure().
-    // Phase 5:   inject auxiliary tables for reference-typed spilling.
-    // Phase 6:   instrument try_table catch regions for resume-in-catch.
+    // Phase 4c: wrap call sites with state-machine gating + br $unwind_save.
+    // Phase 4d: wrap non-call ops with `if state == NORMAL`, spill scalar locals.
+    // Phase 4e: save/restore mutable globals at unwind/rewind begin.
+    // Phase 4f: spill ref-typed locals via auxiliary tables.
+    // Phase 5:  inject auxiliary tables.
+    // Phase 6:  instrument try_table catch regions for resume-in-catch.
 
     let output = module.emit_wasm();
     Ok(output)
