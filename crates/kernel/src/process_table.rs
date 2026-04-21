@@ -151,6 +151,11 @@ impl ProcessTable {
         let unix_reg = unsafe { crate::unix_socket::global_unix_socket_registry() };
         unix_reg.cleanup_process(pid);
 
+        // Release any PTHREAD_PROCESS_SHARED primitives owned by this pid
+        // so peers aren't wedged on mutexes or waiter queues.
+        let pshared = unsafe { crate::pshared::global_pshared_table() };
+        pshared.cleanup_process(pid);
+
         Some(proc)
     }
 

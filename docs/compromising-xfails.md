@@ -53,19 +53,19 @@ This entry is retained below as **optional future hardening work**, not as an XF
 
 ---
 
-### 3. `PTHREAD_PROCESS_SHARED`
+### 3. `PTHREAD_PROCESS_SHARED` — pthread primitives only (DONE). Shared data memory still a gap.
 
-**Gap:** pthread sync primitives (mutex, cond, rwlock, barrier) with `PTHREAD_PROCESS_SHARED` attribute aren't supported. `pthread_mutexattr_setpshared(attr, PTHREAD_PROCESS_SHARED)` returns `ENOTSUP` or silently succeeds but the primitive doesn't actually synchronize across processes.
+**Status:** Pthread sync primitives (mutex, cond, barrier) with `PTHREAD_PROCESS_SHARED` are now implemented in `crates/kernel/src/pshared.rs`. `pthread_mutexattr_setpshared` and `pthread_barrierattr_setpshared` tests pass. `pthread_condattr_setpshared` remains XFAIL because the test uses `MAP_SHARED|MAP_ANONYMOUS` to share a `state` variable across fork and our wasm model gives each process its own linear memory — a separate architectural gap, not a pthread issue.
 
-**Affected tests:**
-- sortix basic: `pthread/pthread_barrierattr_setpshared`, `pthread/pthread_condattr_setpshared`, `pthread/pthread_mutexattr_setpshared`
+**Affected tests still XFAIL:**
+- sortix basic: `pthread/pthread_condattr_setpshared`
 
-**Fix approach:** Kernel-side shared sync structures, addressable by shm key or mapped filename. Similar pattern to SysV semaphores (see `crates/kernel/src/ipc.rs`). The mutex itself lives in kernel state, not in shared wasm memory; syscalls serialize lock/unlock. Less urgent — multi-process coordination today uses SysV IPC, pipes, or file locks.
+**To fully close this test:** implement cross-process shared memory for `MAP_SHARED|MAP_ANONYMOUS` after fork. Not trivial: each wasm process has its own `WebAssembly.Memory`; direct loads/stores can't be intercepted without wasm instrumentation. One viable angle is to sync specific shared-region ranges on every syscall (lazy coherence), but that's architecturally significant and out of scope for the pthread-primitives target.
 
-**Starting files:**
-- `crates/kernel/src/ipc.rs` — SysV sem_* precedent
-- `musl-overlay/src/thread/wasm32posix/pthread_mutex_init.c`
-- `musl-overlay/src/thread/wasm32posix/pthread_mutexattr_setprotocol.c` (similar ENOTSUP gate pattern)
+**Starting files (for the remaining gap):**
+- `crates/kernel/src/syscalls.rs` — `sys_mmap` (where `MAP_SHARED|MAP_ANONYMOUS` currently falls through to private)
+- `host/src/memory-manager.ts` — per-process mmap tracking
+- `crates/kernel/src/fork.rs` — fork memory snapshot
 
 ---
 
