@@ -370,6 +370,16 @@ fn build_into_cache(
         return Err(e);
     }
 
+    // autoconf / libtool bake `--prefix` (= $WASM_POSIX_DEP_OUT_DIR,
+    // i.e. the temp dir) into generated `.pc` and `.la` files at
+    // configure time. Rewrite those paths to the canonical location
+    // *before* the rename so parallel readers never observe a
+    // canonical cache entry with dead `prefix=<temp>` strings.
+    if let Err(e) = rewrite_install_prefix_paths(&tmp, canonical) {
+        let _ = std::fs::remove_dir_all(&tmp);
+        return Err(e);
+    }
+
     // Atomic install. If someone else finished first, keep theirs,
     // discard ours — identical inputs produce identical outputs, and
     // trying to overwrite a non-empty directory isn't portable.
@@ -384,6 +394,66 @@ fn build_into_cache(
             canonical.display()
         )
     })?;
+    Ok(())
+}
+
+/// Replace every occurrence of `tmp` with `canonical` inside
+/// installed `.pc` and `.la` files under `tmp/lib/…`. Runs while
+/// the tree still lives at `tmp` so the observable canonical cache
+/// entry never contains a stale temp path.
+///
+/// Only regular files are rewritten: symlinks (e.g. libpng's
+/// `libpng.pc → libpng16.pc`) point at the real file and resolve
+/// correctly without needing their own rewrite; following them
+/// would double-rewrite the target.
+fn rewrite_install_prefix_paths(tmp: &Path, canonical: &Path) -> Result<(), String> {
+    let tmp_s = tmp.to_string_lossy();
+    let canonical_s = canonical.to_string_lossy();
+    if tmp_s == canonical_s {
+        return Ok(());
+    }
+    let lib_dir = tmp.join("lib");
+    rewrite_dir(&lib_dir, &tmp_s, &canonical_s)?;
+    let pc_dir = lib_dir.join("pkgconfig");
+    rewrite_dir(&pc_dir, &tmp_s, &canonical_s)?;
+    Ok(())
+}
+
+fn rewrite_dir(dir: &Path, needle: &str, replacement: &str) -> Result<(), String> {
+    let rd = match std::fs::read_dir(dir) {
+        Ok(r) => r,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("read_dir {}: {e}", dir.display())),
+    };
+    for entry in rd {
+        let entry = entry.map_err(|e| format!("read_dir {}: {e}", dir.display()))?;
+        let path = entry.path();
+        let ext = match path.extension().and_then(|e| e.to_str()) {
+            Some(e) => e,
+            None => continue,
+        };
+        if ext != "pc" && ext != "la" {
+            continue;
+        }
+        // `symlink_metadata` so we see the symlink itself, not its
+        // target. Skip symlinks — they resolve to the rewritten real
+        // file, and rewriting through them would double-rewrite the
+        // target (causing the replacement to match itself) or, worse,
+        // replace the symlink with a regular file via `write`.
+        let meta = std::fs::symlink_metadata(&path)
+            .map_err(|e| format!("symlink_metadata {}: {e}", path.display()))?;
+        if !meta.file_type().is_file() {
+            continue;
+        }
+        let content = std::fs::read_to_string(&path)
+            .map_err(|e| format!("read {}: {e}", path.display()))?;
+        if !content.contains(needle) {
+            continue;
+        }
+        let rewritten = content.replace(needle, replacement);
+        std::fs::write(&path, rewritten)
+            .map_err(|e| format!("write {}: {e}", path.display()))?;
+    }
     Ok(())
 }
 
@@ -972,6 +1042,165 @@ libs = ["lib/libBar.a"]
         assert_eq!(env_key("libcurl"), "LIBCURL");
         assert_eq!(env_key("zlib-ng"), "ZLIB_NG");
         assert_eq!(env_key("Foo-Bar-Baz"), "FOO_BAR_BAZ");
+    }
+
+    // --- pkgconfig / libtool archive path rewriting ---
+    //
+    // autoconf bakes `--prefix` into generated `.pc` / `.la` files at
+    // configure time. Our build scripts configure with
+    // `--prefix=$WASM_POSIX_DEP_OUT_DIR` — the temp dir. After the
+    // atomic rename into the canonical cache path, those baked-in
+    // strings point at a temp directory that no longer exists. The
+    // resolver must rewrite them before (or as part of) the install
+    // so downstream `pkg-config` / `libtool` consumers see a valid
+    // path. These tests pin that behaviour.
+
+    #[test]
+    fn pkgconfig_prefix_is_rewritten_to_canonical_path() {
+        let root = tempdir("pc-rewrite-reg");
+        let cache = tempdir("pc-rewrite-cache");
+        write_lib(
+            &root,
+            "libPc",
+            "1.0.0",
+            &[],
+            // Bakes `prefix=$WASM_POSIX_DEP_OUT_DIR` into the .pc
+            // file — the same mistake autoconf makes.
+            r#"
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib/pkgconfig"
+touch "$WASM_POSIX_DEP_OUT_DIR/lib/libPc.a"
+cat > "$WASM_POSIX_DEP_OUT_DIR/lib/pkgconfig/libPc.pc" <<PCEOF
+prefix=$WASM_POSIX_DEP_OUT_DIR
+libdir=\${prefix}/lib
+Name: libPc
+Version: 1.0.0
+Libs: -L\${libdir} -lPc
+PCEOF
+"#,
+            r#"[outputs]
+libs = ["lib/libPc.a"]
+pkgconfig = ["lib/pkgconfig/libPc.pc"]
+"#,
+        );
+        let reg = Registry { roots: vec![root] };
+        let m = reg.load("libPc").unwrap();
+
+        let canonical =
+            ensure_built(&m, &reg, &resolve_opts(&cache, None)).unwrap();
+
+        let pc = std::fs::read_to_string(canonical.join("lib/pkgconfig/libPc.pc"))
+            .unwrap();
+        assert!(
+            pc.contains(&format!("prefix={}", canonical.display())),
+            "pkgconfig prefix must point at the canonical cache path; got:\n{pc}"
+        );
+        assert!(
+            !pc.contains(".tmp-"),
+            "pkgconfig must not contain any `.tmp-<pid>` substring; got:\n{pc}"
+        );
+    }
+
+    #[test]
+    fn libtool_archive_libdir_is_rewritten_to_canonical_path() {
+        let root = tempdir("la-rewrite-reg");
+        let cache = tempdir("la-rewrite-cache");
+        write_lib(
+            &root,
+            "libLa",
+            "1.0.0",
+            &[],
+            // libtool writes `libdir='<prefix>/lib'` — same problem.
+            r#"
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib"
+touch "$WASM_POSIX_DEP_OUT_DIR/lib/libLa.a"
+cat > "$WASM_POSIX_DEP_OUT_DIR/lib/libLa.la" <<LAEOF
+# Generated by libtool
+libdir='$WASM_POSIX_DEP_OUT_DIR/lib'
+old_library='libLa.a'
+LAEOF
+"#,
+            r#"[outputs]
+libs = ["lib/libLa.a"]
+"#,
+        );
+        let reg = Registry { roots: vec![root] };
+        let m = reg.load("libLa").unwrap();
+
+        let canonical =
+            ensure_built(&m, &reg, &resolve_opts(&cache, None)).unwrap();
+
+        let la = std::fs::read_to_string(canonical.join("lib/libLa.la")).unwrap();
+        assert!(
+            la.contains(&format!("libdir='{}/lib'", canonical.display())),
+            "libtool archive libdir must point at the canonical cache path; got:\n{la}"
+        );
+        assert!(
+            !la.contains(".tmp-"),
+            "libtool archive must not contain any `.tmp-<pid>` substring; got:\n{la}"
+        );
+    }
+
+    #[test]
+    fn pkgconfig_symlinks_survive_the_rewrite() {
+        // libpng and ncurses install `lib{png,png16}.pc` plus a
+        // `libpng.pc → libpng16.pc` symlink. The rewrite must not
+        // follow the symlink (that would rewrite the real file
+        // twice) and must not turn the symlink into a regular file.
+        let root = tempdir("pc-symlink-reg");
+        let cache = tempdir("pc-symlink-cache");
+        write_lib(
+            &root,
+            "libSym",
+            "1.0.0",
+            &[],
+            r#"
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib/pkgconfig"
+touch "$WASM_POSIX_DEP_OUT_DIR/lib/libSym.a"
+cat > "$WASM_POSIX_DEP_OUT_DIR/lib/pkgconfig/libSym1.pc" <<PCEOF
+prefix=$WASM_POSIX_DEP_OUT_DIR
+libdir=\${prefix}/lib
+Name: libSym
+Version: 1.0.0
+Libs: -L\${libdir} -lSym
+PCEOF
+ln -s libSym1.pc "$WASM_POSIX_DEP_OUT_DIR/lib/pkgconfig/libSym.pc"
+"#,
+            r#"[outputs]
+libs = ["lib/libSym.a"]
+pkgconfig = ["lib/pkgconfig/libSym1.pc"]
+"#,
+        );
+        let reg = Registry { roots: vec![root] };
+        let m = reg.load("libSym").unwrap();
+
+        let canonical =
+            ensure_built(&m, &reg, &resolve_opts(&cache, None)).unwrap();
+
+        let real =
+            std::fs::read_to_string(canonical.join("lib/pkgconfig/libSym1.pc"))
+                .unwrap();
+        assert!(
+            real.contains(&format!("prefix={}", canonical.display())),
+            "real .pc file must have canonical prefix; got:\n{real}"
+        );
+        assert!(!real.contains(".tmp-"));
+
+        // Reading via the symlink produces the same (rewritten) text.
+        let via_link =
+            std::fs::read_to_string(canonical.join("lib/pkgconfig/libSym.pc"))
+                .unwrap();
+        assert_eq!(real, via_link);
+
+        // The symlink is still a symlink — we didn't overwrite it
+        // with a regular file during the rewrite.
+        let meta = std::fs::symlink_metadata(
+            canonical.join("lib/pkgconfig/libSym.pc"),
+        )
+        .unwrap();
+        assert!(
+            meta.file_type().is_symlink(),
+            "pkgconfig symlink must survive as a symlink after rewrite"
+        );
     }
 
     #[test]
