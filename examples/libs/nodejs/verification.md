@@ -90,6 +90,69 @@ on `Builtin`." Because the non-virtual wrapper calls `virtual
 ShouldBeInlined`, the actual Phase 1 override target is `ShouldBeInlined`
 on `Builtin`, or we convert the wrapper to virtual. Both are mechanical.
 
+## CSS + jitless compatibility (Task 0.8) — **GATE PASSED**
+
+**Decision:** Option A (Conservative Stack Scanning) is viable.
+No pivot to Option B (Handle discipline) required.
+
+### Configuration
+
+- GN flag `v8_enable_conservative_stack_scanning` declared at
+  `deps/v8/gni/v8.gni:127` (default `false`).
+- Gyp plumbing already exists:
+  `common.gypi:81`, `tools/v8_gypfiles/features.gypi:216/479` —
+  `v8_enable_conservative_stack_scanning=1` emits
+  `-DV8_ENABLE_CONSERVATIVE_STACK_SCANNING`.
+- Node.js configure has no direct flag for it, but `GYP_DEFINES` from
+  the environment propagates through gyp into CXXFLAGS.
+- `--v8-lite-mode` sets `v8_enable_lite_mode=1`, defining `V8_LITE_MODE`
+  (the "jitless" umbrella; see `gni/v8.gni:442–446`).
+
+### Static analysis
+
+- No incompatibility guards between CSS and jitless/LITE_MODE anywhere
+  in `deps/v8/` (searched `jitless.*conservative_stack` and
+  `CONSERVATIVE_STACK_SCANNING.*LITE_MODE` — no matches).
+- `deps/v8/BUILD.gn:639` asserts jitless excludes Sparkplug/Maglev/
+  Turbofan/Wasm, but not CSS.
+- `deps/v8/src/handles/handles.h:397`:
+  `static_assert(V8_ENABLE_CONSERVATIVE_STACK_SCANNING_BOOL);` under
+  `#ifdef V8_ENABLE_DIRECT_HANDLE`. CSS + direct-handles is the
+  intended production pairing.
+- CSS gates live code in
+  `src/heap/heap.cc:131`, `src/heap/heap.cc:4867`,
+  `src/common/ptr-compr-inl.h:227`,
+  `src/runtime/runtime-strings.cc:390`,
+  `src/handles/handles.h`, and
+  `src/flags/flag-definitions.h:463–473` (read-only flag with
+  implications `scavenger_conservative_object_pinning` and
+  negated `compact_with_stack`).
+
+### Build proof
+
+Ran a full V8 snapshot build with both flags on:
+
+```bash
+mv out/Release out/Release.baseline
+GYP_DEFINES="v8_enable_conservative_stack_scanning=1" \
+  ./configure --ninja --v8-lite-mode
+ninja -C out/Release v8_snapshot
+```
+
+Result: **2541/2541 steps, exit 0**, no warnings or errors in
+2013 lines of build log. Artifacts produced:
+- `out/Release/libv8_snapshot.a` (2.5 MB)
+- `out/Release/mksnapshot` (linked successfully)
+
+The CXXFLAGS for `v8_base_without_compiler` contained both defines:
+```
+-DV8_ENABLE_CONSERVATIVE_STACK_SCANNING ... -DV8_LITE_MODE
+```
+
+This compiled cleanly across every `torque-generated/*-tq.o` target,
+`heap.o`, `handles.o`, runtime-strings.o, and the full mksnapshot
+executable. Phase 1 may proceed on Option A.
+
 ## Torque smoke test on stock .tq files (Task 0.9)
 
 Invoked the host torque binary on the full set of 245 stock `.tq` files
