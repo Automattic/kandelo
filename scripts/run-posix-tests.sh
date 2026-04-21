@@ -25,8 +25,8 @@ KERNEL_WASM="$REPO_ROOT/host/wasm/wasm_posix_kernel.wasm"
 # Tests that fail due to Wasm limitations or unimplemented features.
 
 EXPECTED_FAIL=(
-    munmap/1-1                  # requires real page unmapping
-    munmap/1-2                  # requires real page unmapping
+    munmap/1-1                  # wasm can't revoke page access — see docs/wasm-limitations.md §6
+    munmap/1-2                  # wasm can't revoke page access — see docs/wasm-limitations.md §6
     mlock/12-1                  # needs pwd.h (getpwnam)
     kill/2-2                    # EPERM: no multi-user permission model
     kill/3-1                    # EPERM: no multi-user permission model

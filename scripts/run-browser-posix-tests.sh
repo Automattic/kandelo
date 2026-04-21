@@ -28,7 +28,7 @@ EXPECTED_FAIL=(
     sigaltstack/6-1
     sigaltstack/7-1
     sigaltstack/8-1
-    # munmap: requires real page unmapping
+    # munmap: wasm can't revoke page access — see docs/wasm-limitations.md §6
     munmap/1-1
     munmap/1-2
     # Not implemented / stubs

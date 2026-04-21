@@ -30,23 +30,26 @@ Related: `pthread_cancel` additionally needs `__syscall_cp_asm` (see wasm-limita
 
 ### 2. `munmap` real page unmapping
 
-**Gap:** `munmap` is effectively a no-op. Wasm linear memory can't have holes punched in it at the VM level. Programs that unmap a region and expect dereferencing it to fault (stack guard pages, JIT scratch regions, memory sanitizers) don't see the expected SIGSEGV.
+**Status (2026-04-21):** Reclassified as a fundamental wasm limitation — see [wasm-limitations.md §6](wasm-limitations.md). The two XFAIL tests (`munmap/1-1`, `munmap/1-2`) dereference a pointer directly (`*ch = 'a'`) after `munmap` and expect SIGSEGV. Wasm linear memory cannot revoke page access once a page has been in-bounds, and no syscall is involved in the failing step, so kernel-side validation cannot flip these to PASS.
 
-**Affected tests:**
-- POSIX: `munmap/1-1`, `munmap/1-2`
-- libc-test: covered by the fork-mmap serialization logic, but no direct test
+This entry is retained below as **optional future hardening work**, not as an XFAIL-closing target. No currently ported software depends on SIGSEGV-on-deref after `munmap`.
 
-**Fix approach:** Simulate at the kernel/glue layer. Kernel tracks "unmapped" address ranges; a validator runs on guest accesses to raise SIGSEGV synthetically. Detection options:
-- Instrument loads/stores at wasm-opt time to check against a range table (expensive).
-- Use `mprotect`-style flag bits in a shadow page table and validate in memcpy/memset/read/write glue (only catches syscall-path accesses).
-- Accept partial support: guarantee fault-on-access only through syscalls, document that direct pointer deref won't fault.
+**Affected tests (still XFAIL, will remain so):**
+- POSIX: `munmap/1-1`, `munmap/1-2` — direct-access tests; unfixable in stock wasm
+- libc-test: none directly
 
-Likely partial at best, but even syscall-path validation would unblock some test suites.
+**Option A — syscall-path EFAULT validation (optional hardening).** Track unmapped ranges in `Process.memory` after `sys_munmap`. In syscalls that take user pointers (`read`, `write`, `readv`, `writev`, `pread`, `pwrite`, `send*`/`recv*`, `getrandom`, …), validate each pointer+length against the poisoned range table and return `EFAULT` if it lands in an unmapped range — matching Linux's `-EFAULT` behavior for invalid userspace pointers.
 
-**Starting files:**
-- `crates/kernel/src/syscalls.rs` — `sys_mmap`, `sys_munmap`
-- `host/src/memory-manager.ts` — MemoryManager (mmap range tracking)
-- `glue/channel_syscall.c` — memcpy/read/write paths that could validate
+- **Benefit:** catches use-after-munmap bugs that reach a syscall (e.g., a library calls `read(fd, freed_buf, n)` into a just-freed arena). Lays infrastructure for future sanitizer-style tooling.
+- **Cost:** ~300–500 LoC across `crates/kernel/src/memory.rs` and `syscalls.rs`, plus O(log N) per-syscall lookup on pointer arguments. Does **not** flip `munmap/1-*` to PASS — they dereference directly, not via syscall.
+- **When to do it:** Only if a real workload hits use-after-munmap via a syscall, or if defensive hardening becomes a priority. Not currently justified.
+
+**Starting files (if Option A is pursued):**
+- `crates/kernel/src/memory.rs` — add a "poisoned ranges" structure separate from the live-mmap range list
+- `crates/kernel/src/syscalls.rs` — add `validate_user_ptr(proc, addr, len)` helper; call from each pointer-taking syscall
+- `glue/channel_syscall.c` — no changes expected; validation stays kernel-side
+
+**Future wasm-platform path to real fix.** If a wasm proposal ships that permits page-level protection (current candidates: Memory Control `memory.protect`, or Multi-memory combined with compiler fat-pointer support), `munmap/1-*` can be revisited as a real target. See [wasm-limitations.md §6](wasm-limitations.md) for the platform-side analysis.
 
 ---
 
@@ -138,7 +141,7 @@ Paste one of the following into a fresh Claude Code session in this repo:
 **For each target specifically:**
 
 - **Target 1** (pthread_create): "Wire musl pthread_create through sys_clone. PR #88 already did the kernel side."
-- **Target 2** (munmap unmapping): "Prototype partial munmap-fault simulation — syscall-path validation only is acceptable."
+- **Target 2** (munmap unmapping): Reclassified to [wasm-limitations.md §6](wasm-limitations.md) — the `munmap/1-*` XFAILs are unfixable in stock wasm. Only pursue Option A (syscall-path EFAULT validation) if defensive hardening against use-after-munmap via syscalls becomes a priority; it will not close the XFAILs.
 - **Target 3** (PROCESS_SHARED): "Implement kernel-side shared pthread primitives. Model after `crates/kernel/src/ipc.rs`."
 - **Target 4** (EPERM / multi-user): "Add uid/gid to Process struct. Enforce on kill/sched_*. Provide setuid/setgid."
 - **Target 5** (pwd database): "Seed /etc/passwd + /etc/group in the default VFS image. Not kernel work."
