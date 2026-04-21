@@ -82,6 +82,7 @@ has_zstd()      { [ -f "$REPO_ROOT/examples/libs/zstd/bin/zstd.wasm" ]; }
 has_zip()       { [ -f "$REPO_ROOT/examples/libs/zip/bin/zip.wasm" ]; }
 has_unzip()     { [ -f "$REPO_ROOT/examples/libs/unzip/bin/unzip.wasm" ]; }
 has_nano()      { [ -f "$REPO_ROOT/examples/libs/nano/bin/nano.wasm" ]; }
+has_nethack()   { [ -f "$REPO_ROOT/examples/libs/nethack/bin/nethack.wasm" ]; }
 has_ncurses()   { [ -f "$REPO_ROOT/sysroot/lib/libncursesw.a" ]; }
 has_zlib()      { [ -f "$REPO_ROOT/sysroot/lib/libz.a" ]; }
 has_openssl()   { [ -f "$REPO_ROOT/sysroot/lib/libssl.a" ] && [ -f "$REPO_ROOT/sysroot/lib/libcrypto.a" ]; }
@@ -440,9 +441,24 @@ build_vim_zip() {
     fi
 }
 
+build_nethack_zip() {
+    if [ ! -f "$REPO_ROOT/examples/browser/public/nethack.zip" ]; then
+        if [ ! -d "$REPO_ROOT/examples/libs/nethack/runtime/share/nethack" ]; then
+            warn "NetHack runtime not found, skipping nethack.zip"
+            return
+        fi
+        step "Building nethack.zip (binary + runtime)"
+        bash "$REPO_ROOT/examples/browser/scripts/build-nethack-zip.sh"
+        info "nethack.zip built"
+    else
+        info "nethack.zip"
+    fi
+}
+
 build_shell_vfs() {
     if ! has_shell_vfs; then
         build_vim_zip
+        build_nethack_zip
         step "Building Shell VFS image"
         bash "$REPO_ROOT/examples/browser/scripts/build-shell-vfs-image.sh"
         info "Shell VFS image built"
@@ -777,6 +793,19 @@ build_ncurses() {
     fi
 }
 
+build_nethack() {
+    build_ncurses
+    need_kernel
+    need_sdk
+    if ! has_nethack; then
+        step "Building NetHack"
+        bash "$REPO_ROOT/examples/libs/nethack/build-nethack.sh"
+        info "NetHack built"
+    else
+        info "NetHack"
+    fi
+}
+
 build_vim() {
     build_ncurses
     need_kernel
@@ -889,6 +918,7 @@ build_target() {
         zip)        build_zip ;;
         unzip)      build_unzip ;;
         nano)       build_nano ;;
+        nethack)    build_nethack ;;
         ncurses)    build_ncurses ;;
         zlib)       build_zlib ;;
         openssl)    build_openssl ;;
@@ -907,7 +937,7 @@ build_target() {
 }
 
 # All targets needed for browser demos
-BROWSER_DEPS=(kernel sysroot sysroot64 programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano vim git nginx php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis cpython python-vfs perl perl-vfs ruby shell-vfs wordpress wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs)
+BROWSER_DEPS=(kernel sysroot sysroot64 programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano vim nethack git nginx php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis cpython python-vfs perl perl-vfs ruby shell-vfs wordpress wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs)
 
 build_browser() {
     for t in "${BROWSER_DEPS[@]}"; do
@@ -942,6 +972,7 @@ build_all() {
     build_unzip
     build_nano
     build_vim
+    build_nethack
     build_git
     build_nginx
     build_php
@@ -1145,6 +1176,13 @@ clean_target() {
             rm -rf "$REPO_ROOT/examples/libs/nano/nano-src" \
                    "$REPO_ROOT/examples/libs/nano/bin"
             warn "Cleaned nano" ;;
+        nethack)
+            rm -rf "$REPO_ROOT/examples/libs/nethack/nethack-src" \
+                   "$REPO_ROOT/examples/libs/nethack/bin" \
+                   "$REPO_ROOT/examples/libs/nethack/runtime"
+            rm -f "$REPO_ROOT/examples/browser/public/nethack.zip" \
+                  "$REPO_ROOT/examples/browser/public/shell.vfs"
+            warn "Cleaned NetHack (also invalidated nethack.zip and shell.vfs; run '$0 build shell-vfs' to regenerate for browser demo)" ;;
         ncurses)
             rm -rf "$REPO_ROOT/examples/libs/ncurses/ncurses-src"
             # ncurses installs into sysroot, cleaned with sysroot
@@ -1486,6 +1524,7 @@ cmd_list() {
     echo "  nano        nano text editor                       $(has_nano && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  ncurses     ncurses library                        $(has_ncurses && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  vim         Vim 9.1 text editor                    $(has_vim && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  nethack     NetHack 3.6.7 roguelike (curses)       $(has_nethack && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  git         Git 2.47.1                             $(has_git && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  nginx       nginx 1.24 Wasm binary                $(has_nginx && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  php         PHP 8.3 CLI binary                    $(has_php && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"

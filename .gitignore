@@ -92,6 +92,11 @@ examples/libs/ncurses/terminfo/
 examples/libs/vim/vim-src/
 examples/libs/vim/bin/
 
+# NetHack build artifacts
+examples/libs/nethack/nethack-src/
+examples/libs/nethack/bin/
+examples/libs/nethack/runtime/
+
 # Debug/trace artifacts
 examples/fp128*.c
 examples/fp128*.wasm
