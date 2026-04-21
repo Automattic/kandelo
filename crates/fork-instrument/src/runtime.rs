@@ -159,6 +159,15 @@ pub fn inject_runtime(module: &mut Module) -> Runtime {
             // Ref-typed globals need auxiliary tables (Phase 4f).
             continue;
         }
+        if matches!(g.kind, walrus::GlobalKind::Import(_)) {
+            // Imported globals are host-managed and per-instance. The host
+            // creates a fresh `WebAssembly.Global` for each process (e.g.
+            // `env.__channel_base` gets the child's channel offset, not the
+            // parent's). Overwriting them from the parent's fork buffer
+            // would corrupt cross-process isolation — the child would end
+            // up making syscalls against the parent's channel region.
+            continue;
+        }
         saved_globals.push(SavedGlobal {
             id: g.id(),
             ty: g.ty,
