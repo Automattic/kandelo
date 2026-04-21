@@ -40,6 +40,11 @@ function populateSystem(fs: MemoryFileSystem): void {
   fs.chmod("/tmp", 0o777);
   fs.chmod("/home/.nethack", 0o777);
 
+  // NetHack's getlock() calls link(filename, lockname) on an empty
+  // marker file named `perm` in VAR_PLAYGROUND. The file must exist or
+  // link() returns ENOENT and nethack exits. Drop an empty `perm` here.
+  writeVfsFile(fs, "/home/.nethack/perm", "");
+
   // Git config
   const gitconfig = [
     "[maintenance]",
