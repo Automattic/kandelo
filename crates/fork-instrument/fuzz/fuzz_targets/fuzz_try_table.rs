@@ -4,6 +4,12 @@ use libfuzzer_sys::fuzz_target;
 #[path = "oracle.rs"]
 mod oracle;
 
-fuzz_target!(|data: &[u8]| {
-    oracle::run_oracle(data);
+#[path = "generator.rs"]
+mod generator;
+
+use generator::WatProgram;
+
+fuzz_target!(|prog: WatProgram| {
+    let Some(bytes) = prog.to_bytes() else { return };
+    oracle::run_oracle(&bytes);
 });
