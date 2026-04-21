@@ -78,6 +78,11 @@ fi
 # TTY_GRAPHICS on is harmless — NetHack picks the windowing system at
 # runtime via `windowtype`, and leaving both compiled in gives the user
 # a choice.
+#
+# SYSCF must be disabled in the header too: Makefile hints leave it off,
+# but config.h `#ifndef SYSCF` then re-enables it and hard-codes an
+# SYSCF_FILE path the binary must open at startup. Our shell-demo build
+# is single-user with no sysconf.
 CONFIG_H="include/config.h"
 if [ -f "$CONFIG_H" ] && ! grep -q "wasm32posix patch" "$CONFIG_H"; then
     echo "==> Patching include/config.h..."
@@ -90,6 +95,13 @@ if [ -f "$CONFIG_H" ] && ! grep -q "wasm32posix patch" "$CONFIG_H"; then
     sed -i.bak -E \
         -e 's|^#define COMPRESS .*|/* COMPRESS disabled for wasm32 */|' \
         -e 's|^#define COMPRESS_EXTENSION .*|/* COMPRESS_EXTENSION disabled */|' \
+        "$CONFIG_H"
+
+    # Disable SYSCF global-configuration machinery.
+    sed -i.bak -E \
+        -e 's|^#define SYSCF *$|/* SYSCF disabled for wasm32 */|' \
+        -e 's|^#define SYSCF *(/\*.*\*/)?$|/* SYSCF disabled for wasm32 */|' \
+        -e 's|^#define SYSCF_FILE .*|/* SYSCF_FILE disabled for wasm32 */|' \
         "$CONFIG_H"
 
     echo "/* wasm32posix patch */" >> "$CONFIG_H"
@@ -156,6 +168,15 @@ if [ -f "$SRC_MAKEFILE" ] && ! grep -q "wasm32posix patch" "$SRC_MAKEFILE"; then
     sed -i.bak -E \
         -e 's|^WINTTYLIB *=.*|WINTTYLIB=-lncursesw -ltinfow|' \
         -e 's|^WINCURSESLIB *=.*|WINCURSESLIB=-lncursesw -ltinfow|' \
+        "$SRC_MAKEFILE"
+
+    # Drop -DSYSCF and -DSECURE. Those enable the multi-user / setuid-games
+    # mode that expects a sysconf file under HACKDIR; we ship a single-user
+    # shell-demo build where /usr/share/nethack is read-only and there is
+    # no sysconf file to consult.
+    sed -i.bak -E \
+        -e 's|^CFLAGS\+=-DSYSCF -DSYSCF_FILE=.*|# -DSYSCF disabled for wasm32 single-user build|' \
+        -e 's|^CFLAGS\+=-DCONFIG_ERROR_SECURE=.*|# -DCONFIG_ERROR_SECURE disabled for wasm32|' \
         "$SRC_MAKEFILE"
 
     # Append an additional CFLAGS line after the hints-supplied block so

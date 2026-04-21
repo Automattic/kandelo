@@ -31,10 +31,14 @@ function populateSystem(fs: MemoryFileSystem): void {
   for (const dir of [
     "/bin", "/usr/bin", "/usr/local/bin", "/usr/share", "/usr/share/misc",
     "/usr/share/file", "/etc", "/root", "/tmp", "/home", "/dev", "/usr/sbin",
+    // NetHack VAR_PLAYGROUND — writable saves, scores, bones. Pre-create
+    // because /etc/profile can't `mkdir -p` without coreutils installed.
+    "/home/.nethack",
   ]) {
     ensureDirRecursive(fs, dir);
   }
   fs.chmod("/tmp", 0o777);
+  fs.chmod("/home/.nethack", 0o777);
 
   // Git config
   const gitconfig = [
@@ -53,15 +57,14 @@ function populateSystem(fs: MemoryFileSystem): void {
   ].join("\n");
   writeVfsFile(fs, "/etc/gitconfig", gitconfig);
 
-  // Shell profile — color aliases + NetHack defaults. NetHack needs a
-  // writable state directory (saves, bones, scores); its VAR_PLAYGROUND
-  // is compiled as /home/.nethack, so create it up-front.
+  // Shell profile — color aliases + NetHack defaults. NetHack's
+  // VAR_PLAYGROUND (/home/.nethack) is pre-created in the VFS image
+  // above, so the profile only sets env vars.
   const profile = [
     "alias ls='ls --color=auto'",
     "alias grep='grep --color=auto'",
     "export USER=player",
     "export NETHACKOPTIONS='windowtype:curses,color,lit_corridor,hilite_pet'",
-    "[ -d /home/.nethack ] || mkdir -p /home/.nethack",
     "",
   ].join("\n");
   writeVfsFile(fs, "/etc/profile", profile);
