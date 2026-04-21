@@ -502,3 +502,73 @@ Tagged<Smi> Builtin_TorqueCcTest_CallCsaMacroAndBranch(Isolate* isolate, Tagged<
 - **`builtins-cc-table.inc` dispatch table generation** — the `Builtins::CppEntryOf(Builtin)` reference in `CallBuiltinPointer` emission and the `TqRuntime_<macro>` references in MakeLazyNode / CallCsaMacroAndBranch both need real C++ entries at link time. **Phase 4.**
 
 **Next:** Phase 4. Write `docs/plans/2026-04-20-torque-cc-backend-phase4.md` covering dispatch-table generation, macro-body emission under kCCBuiltins, JS-linkage builtin ABI, and the first host-native end-to-end smoke test (linking a translated builtin into `d8`) per the handoff doc's Phase 4 outline.
+
+## Phase 4 Summary
+
+| Item | Result |
+|---|---|
+| Phase 4 spike decision committed (strategy: new fifth-pass + curated `AllMacrosForCCBuiltinsOutput` list) | ✅ |
+| Macro-body emission under kCCBuiltins (fifth pass in `VisitAllDeclarables`) | ✅ |
+| `GenerateFunction` emits out-param signature (`bool*` + `T*`) for labels under kCCBuiltins | ✅ |
+| `goto-external` fixture + golden (now exercisable with macro-body emission) | ✅ |
+| `call-torque-macro` fixture + golden (exercises labeled TorqueMacro via out-param convention) | ✅ |
+| `builtins-cc-table.inc` generation + `Builtins::TorqueCcEntryOf` sibling of `CppEntryOf` | ✅ |
+| `CallBuiltinPointer` emission uses `TorqueCcEntryOf` (Phase 2's `CppEntryOf` placeholder retired) | ✅ |
+| gyp integration: `torque_outputs_ccbuiltins_cc` + `--cc-builtins-whitelist` plumbing via GYP_DEFINES | ✅ |
+| Host CSS+jitless V8 build with patch + whitelist (`build-v8-host-phase4.sh`) | ✅ |
+| C++ unit test invokes `Builtin_TorqueCcTest_Return` directly (`TorqueCcBuiltinTest.DirectInvocation` — 3 ms) | ✅ |
+| C++ unit test verifies dispatch table (`TorqueCcBuiltinTest.DispatchTableLookup` — 4 ms) | ✅ |
+| Full 13-fixture harness passes (11 Phase 2/3 + 2 Phase 4) | ✅ |
+| Non-whitelisted torque output sha unchanged vs Phase 3 (`a5195c0258fd9af9415e9d41f0c2e38237989c1b`) | ✅ |
+| Consolidated patch exports + re-applies cleanly on upstream `9fe7634c` (42 commits, 2843 lines) | ✅ |
+
+**CCGenerator stubs after Phase 4: 0.** Every backend-dependent instruction emits real C++. Remaining `ReportError` gates are intentional scope gates (catch-block, tailcall, JS-linkage, multi-result PairT, struct-typed label values) that Phase 5+ addresses as fixtures force them.
+
+**End-to-end proof.** `TorqueCcTest_Return(isolate, context, Smi::FromInt(42)) == Smi::FromInt(42)` runs at native speed in a host-linked V8 unit test. `Builtins::TorqueCcEntryOf(Builtin::kTorqueCcTest_Return) == &Builtin_TorqueCcTest_Return` confirms the dispatch table resolves correctly. This is the first phase producing running code rather than source-level fidelity.
+
+**Phase 4 commit chain on the Node.js clone** (15 commits on top of Phase 3 tip `33051608`):
+1. `57a1465f` — `torque: add AllMacrosForCCBuiltinsOutput list + accessor`
+2. `1afcd23d` — `torque: record TorqueMacros referenced from kCCBuiltins builtins`
+3. `181803dd` — `torque: record TorqueMacros referenced by MakeLazyNode under kCCBuiltins`
+4. `c1b9e4e2` — `torque: add fifth pass emitting kCCBuiltins-referenced macro bodies`
+5. `56d0b70c` — `torque: route kCCBuiltins through VisitMacroCommon + GenerateMacroFunctionDeclaration`
+6. `7fdbade5` — `torque: Macro::ShouldBeInlined returns false for all TorqueMacros under kCCBuiltins`
+7. `bd86dadb` — `torque: emit out-param signature for labeled macros under kCCBuiltins`
+8. `fd0a721a` — `torque: mark kCCBuiltins macro bodies inline via InlineDefinition flag` (reworked from bad commit `905aae7f` that leaked `inline` into stock kCC output)
+9. `ca5aeb8d` — `torque: emit builtins-cc-table.inc for kCCBuiltins dispatch`
+10. `a7784154` — `v8 builtins: add Builtins::TorqueCcEntryOf sibling to CppEntryOf`
+11. `8957403e` — `torque: CallBuiltinPointer uses Builtins::TorqueCcEntryOf`
+12. `fae77eb7` — `v8 builtins: clarify TorqueCcEntryOf comment re empty whitelist`
+13. `a1754567` — `v8 gyp: compile -tq-ccbuiltins.cc + wire --cc-builtins-whitelist`
+14. `8c5e91c0` — `v8: stage TorqueCcTest_Return fixture permanently under test/torque-cc-fixtures/`
+15. `2b408bfb` — `v8 torque+node: Phase 4 smoke test — invoke Torque-CC-translated builtin directly`
+
+Total commits on top of upstream `9fe7634c` after Phase 4: **42** (10 Phase 1 + 11 Phase 2 + 6 Phase 3 + 15 Phase 4). Consolidated patch: 2843 lines.
+
+### Plan deviations surfaced during Phase 4 implementation
+
+- **Spike finding 5 required duplicate-emission prevention** (plan Task 4.3). Transitive macros like `FromConstexpr_Smi_constexpr_IntegerLiteral` are emitted in BOTH kCC's `-tq-inl.inc` AND kCCBuiltins' `-tq-ccbuiltins.cc`. Without ODR-legal duplicate definitions, linking multiple TUs containing the same symbol fails. Solution: mark kCCBuiltins bodies `inline`. Initial attempt (commit `905aae7f`) widened `PrintBeginDefinition`'s `inline` emission globally, which leaked into stock `-tq-inl.inc` class-accessor bodies (70 files), shifting the non-ccbuiltins sha. Fix (`fd0a721a`): introduced a separate `InlineDefinition` flag (0x80 in `FUNCTION_FLAG_LIST`) distinct from `SetInline()`. The new flag is set only under kCCBuiltins by `GenerateFunction`; `SetInline()` keeps its original "declaration-header inline" semantics. Cleaner separation of concerns.
+- **Widened `Macro::ShouldBeInlined`** from Phase 3's labeled-only carve-out to ALL TorqueMacros under kCCBuiltins. Without this, `ShouldGenerateExternalCode` nulls the stream for the fifth pass and no body emits. Side effect: every macro call in a whitelisted builtin goes through `CallCsaMacroInstruction`/`CallCsaMacroAndBranchInstruction` dispatch rather than inlining — matches kCC discipline.
+- **MakeLazyNode needs its own trigger.** It bypasses `GenerateCall` (directly emits the `TqRuntime<name>_<N>(...)` call from the instruction emitter). Without a separate `EnsureInCCBuiltinsOutputList` call in `cc-generator.cc:434`, MakeLazyNode references land without bodies. `CallCsaMacro` and `CallCsaMacroAndBranch` both go through `GenerateCall` — one trigger covers them.
+- **Three Phase-3 latent issues surfaced**:
+  - `Lazy<T>::GetRuntimeType()` null-derefs (Phase 3 already fixed via `MatchUnaryGeneric`).
+  - `VisitMacroCommon` + `GenerateMacroFunctionDeclaration` needed kCCBuiltins arms (plan noted ambiguous line numbers; implementer added proper arms based on actual structure).
+  - Struct-typed label values would need emission; guarded as `ReportError("Phase 4: ... not yet supported")` — no fixture forces it yet.
+- **Task 4.9 uncovered 2 bugs** that only became reachable once the smoke test linked a real body:
+  - **Missing `#include`s in `-tq-ccbuiltins.cc`**. Before Task 4.9 the empty default whitelist hid this. With `TorqueCcTest_Return` whitelisted, the file fails to compile (`'Smi' undeclared`). Fix: `ImplementationVisitor::GenerateImplementation` now emits an include preamble at the top of every `-tq-ccbuiltins.cc` (`src/base/macros.h`, `src/execution/isolate.h`, `src/objects/contexts.h`, `src/objects/smi.h`, `src/objects/tagged.h`). All 13 fixture goldens were refreshed to match.
+  - **Builtin enum offset divergence** between `cctest` and `v8_base_without_compiler`. The `V8_ENABLE_LEAPTIERING` conditional in `builtins-definitions.h:72` adds 6 TFC entries. Without the LITE_MODE/LEAPTIERING defines propagated to cctest's gyp target, cctest sees `Builtin::kTorqueCcTest_Return = 1515` while builtins.cc sees it as `1521`. Fix: propagate `V8_LITE_MODE`, `V8_ENABLE_LEAPTIERING`, `V8_ENABLE_SPARKPLUG`, `V8_ENABLE_MAGLEV`, `V8_ENABLE_TURBOFAN`, `V8_INTL_SUPPORT` + V8 include paths to cctest's gyp target.
+- **Used Node.js `cctest` target, not V8's `v8_unittests`.** V8's `v8_unittests` is GN-build-only and not wired through Node.js's gyp. Node's `cctest` is gtest-based and autodiscovers files under `test/cctest/` via `configure.py`'s `SearchFiles('test/cctest', 'cc')` — so `test/cctest/test_torque_cc_builtin.cc` is picked up by file placement alone; no explicit gyp registration needed.
+- **Default-constructed `Tagged<Context>`** used in `TorqueCcBuiltinTest.DirectInvocation` (null tagged pointer) rather than a real native context — the `TorqueCcTest_Return` builtin body doesn't touch context, and obtaining a real one requires pulling in `isolate-inl.h` which conflicts with `V8_LITE_MODE`'s `feedback-vector.h` expectations. Safe for this fixture; future fixtures that dereference context will need a real `native_context` setup.
+
+### Phase 4 follow-ups for later phases
+
+- **Runtime exception handling** (`catch_block` on CallCsaMacroAndBranch / CallRuntime / CallBuiltin) — still `ReportError`. Needs a dedicated plan. **Phase 5+.**
+- **Tail-calls from `CallBuiltin` / `CallBuiltinPointer`** — still `ReportError`. **Phase 5+.**
+- **JS-linkage builtin emission** (receiver / newTarget / dispatchHandle ABI + Descriptor machinery) — still the `(JS linkage deferred)` comment path in `Visit(Builtin*)`. **Phase 5+.**
+- **`Builtins::code(Builtin)` integration** — the smoke test calls the function directly (not through V8's entry table / interpreter). Wiring translated builtins through `Builtins::code` requires additional kind metadata + embedded builtin bootstrapping. **Phase 5/6.**
+- **mksnapshot integration** — current smoke test links in a context where no snapshot serialization crosses a translated builtin. Integration when the snapshot needs to capture Torque-CC builtin pointers. **Phase 5+.**
+- **Struct-typed label values.** Phase 4 Task 4.4 reports error on struct label values; single-value shape is sufficient for current fixtures. Real V8 builtins use struct label values (e.g., `Cast<HeapObject>(x) otherwise Slow(Object)` in some paths). **Phase 5 when first fixture forces it.**
+- **Latent ninja dep-tracking**: `deps/v8/src/builtins/builtins.cc` textually `#include`s `torque-generated/builtins-cc-table.inc`, but ninja's auto-generated `.d` files don't capture that dependency. Regenerating the .inc via a torque re-run does NOT trigger a rebuild of `builtins.o`. Worked around with `touch builtins.cc` during Phase 4 development. Future fix: declare the dependency in gyp or use `gn refs`. **Phase 5 or infrastructure cleanup.**
+- **Feature-flag drift**: the LITE_MODE/LEAPTIERING defines propagated to cctest must stay in sync with V8's `v8_config`. Future V8 uplifts that add new feature flags affecting `BUILTIN_LIST` will require updating this list, or the gtest's dispatch lookup silently returns wrong addresses. **Document in any V8 uplift checklist.**
+- **Default-constructed `Tagged<Context>`** in the smoke test — works for `TorqueCcTest_Return`, won't work for context-touching builtins. **Phase 5 when first fixture forces real context.**
+- **Phase 5:** wire translated builtins through `Builtins::code(Builtin)` for interpreter dispatch, start the first real d8 `-e "print(1+2)"` smoke test, and build out the hand-written CSA replacement ledger.
