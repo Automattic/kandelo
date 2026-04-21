@@ -1,0 +1,16 @@
+// Phase 2 test fixture: NamespaceConstantInstruction.
+//
+// Torque emits NamespaceConstantInstruction when a builtin references a
+// namespace-scope `const` whose type is NON-constexpr (constexpr consts
+// are folded in-place by GetLocationReference and never reach the
+// instruction). A plain `const kFoo: Smi = 0` is non-constexpr (Smi is a
+// runtime type) and goes through the instruction path, producing an
+// accessor call `kTorqueCcTestSmiZeroConstant(isolate)` in kCC output
+// (and `...(state_)` in kCSA).
+namespace test_cc {
+  const kTorqueCcTestSmiZeroConstant: Smi = 0;
+
+  builtin TorqueCcTest_NamespaceConstant(implicit context: Context)(): Smi {
+    return kTorqueCcTestSmiZeroConstant;
+  }
+}
