@@ -1,7 +1,7 @@
 From 7b7c6b02d97d01608de95309a32514ed87453c24 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Mon, 20 Apr 2026 23:32:43 -0400
-Subject: [PATCH 01/21] torque: add OutputType::kCCBuiltins (Phase 1
+Subject: [PATCH 01/27] torque: add OutputType::kCCBuiltins (Phase 1
  scaffolding)
 
 ---
@@ -27,7 +27,7 @@ index dc10233a..aabca60b 100644
 From d46700124dea3a09293c6041f7f4c3691c90ffd2 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Mon, 20 Apr 2026 23:33:04 -0400
-Subject: [PATCH 02/21] torque: add cc_builtins file streams to PerFileStreams
+Subject: [PATCH 02/27] torque: add cc_builtins file streams to PerFileStreams
 
 ---
  deps/v8/src/torque/global-context.h | 3 +++
@@ -54,7 +54,7 @@ index db27b49d..37443bee 100644
 From 29d20ab22b50f652f8355408654b96cac09b6a42 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Mon, 20 Apr 2026 23:33:29 -0400
-Subject: [PATCH 03/21] torque: route kCCBuiltins output to cc_builtins streams
+Subject: [PATCH 03/27] torque: route kCCBuiltins output to cc_builtins streams
 
 ---
  deps/v8/src/torque/implementation-visitor.h | 4 ++++
@@ -89,7 +89,7 @@ index f8444225..e29d91c7 100644
 From a169621decd09c5fa78dbaff267c3887c94b757b Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Mon, 20 Apr 2026 23:34:03 -0400
-Subject: [PATCH 04/21] torque: Builtin::ShouldBeInlined returns false for
+Subject: [PATCH 04/27] torque: Builtin::ShouldBeInlined returns false for
  kCCBuiltins
 
 ---
@@ -128,7 +128,7 @@ index aabca60b..c6a3639c 100644
 From 6a8654713dc9114a02ddeeca664447ccd282edec Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Mon, 20 Apr 2026 23:36:54 -0400
-Subject: [PATCH 05/21] torque: route kCCBuiltins through extern-macro
+Subject: [PATCH 05/27] torque: route kCCBuiltins through extern-macro
  constexpr call path
 
 ---
@@ -159,7 +159,7 @@ index fc4dbbcc..78c6eee5 100644
 From 6c3dc9a1d3e28f01fd2f9a156143d3c63226712d Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Mon, 20 Apr 2026 23:41:18 -0400
-Subject: [PATCH 06/21] torque: add kCCBuiltins fourth pass in
+Subject: [PATCH 06/27] torque: add kCCBuiltins fourth pass in
  VisitAllDeclarables
 
 ---
@@ -194,7 +194,7 @@ index 78c6eee5..4be1c8e7 100644
 From 93560a5b6c1a83702e2f79907e5b6a2d04c77b64 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Mon, 20 Apr 2026 23:52:17 -0400
-Subject: [PATCH 07/21] torque: Visit(Builtin*) emits Phase 1 stub under
+Subject: [PATCH 07/27] torque: Visit(Builtin*) emits Phase 1 stub under
  kCCBuiltins
 
 ---
@@ -229,7 +229,7 @@ index 4be1c8e7..54551d20 100644
 From 78e36e8965749dbd4101599d2f18b0ce560ac0c2 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Mon, 20 Apr 2026 23:53:34 -0400
-Subject: [PATCH 08/21] torque: filter fourth pass to Builtin declarables only
+Subject: [PATCH 08/27] torque: filter fourth pass to Builtin declarables only
 
 Task 1.6 landed the fourth pass as the plan specified, iterating every
 declarable. Smoke-testing on the 245-file stock fileset under kCCBuiltins
@@ -279,7 +279,7 @@ index 54551d20..ae96de1b 100644
 From 7cf1abb5c751a99b24656968b12c8570d613afed Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Mon, 20 Apr 2026 23:57:17 -0400
-Subject: [PATCH 09/21] torque: write -tq-ccbuiltins.cc per source file
+Subject: [PATCH 09/27] torque: write -tq-ccbuiltins.cc per source file
 
 ---
  deps/v8/src/torque/implementation-visitor.cc | 21 ++++++++++++++++++++
@@ -324,7 +324,7 @@ index ae96de1b..f0dd3e1b 100644
 From 2440f125fbaa1d474a3213be74c09ed5858b6306 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Tue, 21 Apr 2026 00:01:17 -0400
-Subject: [PATCH 10/21] v8 build: declare -tq-ccbuiltins.cc in run_torque
+Subject: [PATCH 10/27] v8 build: declare -tq-ccbuiltins.cc in run_torque
  outputs
 
 ---
@@ -350,7 +350,7 @@ index fee8aedf..1f34d46b 100644
 From a776e214d136ea766c3c60d9ffb05fee67ffeefa Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 09:37:53 -0400
-Subject: [PATCH 11/21] torque: add --cc-builtins-whitelist CLI flag
+Subject: [PATCH 11/27] torque: add --cc-builtins-whitelist CLI flag
 
 ---
  deps/v8/src/torque/global-context.h   |  7 ++++++
@@ -482,7 +482,7 @@ index 7ccc5bf9..e37f14e4 100644
 From 5dc40081044515429f06d80c0136d331c0dba88f Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 09:53:05 -0400
-Subject: [PATCH 12/21] =?UTF-8?q?torque:=20Visit(Builtin*)=20kCCBuiltins?=
+Subject: [PATCH 12/27] =?UTF-8?q?torque:=20Visit(Builtin*)=20kCCBuiltins?=
  =?UTF-8?q?=20=E2=80=94=20real=20emission=20under=20whitelist?=
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -608,7 +608,7 @@ index f0dd3e1b..41e12a39 100644
 From a4127f86c8745744782d92686f9eda5f162b3eb1 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 10:42:10 -0400
-Subject: [PATCH 13/21] torque: implement CCGenerator::Emit(ReturnInstruction)
+Subject: [PATCH 13/27] torque: implement CCGenerator::Emit(ReturnInstruction)
 
 ---
  deps/v8/src/torque/cc-generator.cc | 15 ++++++++++++++-
@@ -647,7 +647,7 @@ index aaa3ee74..2d10bada 100644
 From f9b1fcdd2aa7b4cb0dc0eb4dfeb69b0340331359 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 10:56:38 -0400
-Subject: [PATCH 14/21] torque: implement
+Subject: [PATCH 14/27] torque: implement
  CCGenerator::Emit(PushUninitializedInstruction)
 
 ---
@@ -687,7 +687,7 @@ index 2d10bada..da87b569 100644
 From e403058316527bd14b921699c5f40776cb564901 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Tue, 21 Apr 2026 11:01:24 -0400
-Subject: [PATCH 15/21] torque: implement
+Subject: [PATCH 15/27] torque: implement
  CCGenerator::Emit(NamespaceConstantInstruction)
 
 ---
@@ -742,7 +742,7 @@ index da87b569..c8d30d0c 100644
 From 6c8e8c93347987e62c4292f618f9579ed132e647 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Tue, 21 Apr 2026 11:14:09 -0400
-Subject: [PATCH 16/21] torque: implement
+Subject: [PATCH 16/27] torque: implement
  CCGenerator::Emit(PushBuiltinPointerInstruction)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -803,7 +803,7 @@ index c8d30d0c..da7fb816 100644
 From 5ac4c5c9844a06831e258d0b41312691308158f8 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Tue, 21 Apr 2026 11:24:41 -0400
-Subject: [PATCH 17/21] torque: implement
+Subject: [PATCH 17/27] torque: implement
  CCGenerator::Emit(StoreReferenceInstruction)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -898,7 +898,7 @@ index da7fb816..d459a3b7 100644
 From 4e2daca40ba23b35a65d4692eb351da57e87d872 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Tue, 21 Apr 2026 11:28:58 -0400
-Subject: [PATCH 18/21] torque: implement
+Subject: [PATCH 18/27] torque: implement
  CCGenerator::Emit(StoreBitFieldInstruction)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -978,7 +978,7 @@ index d459a3b7..fe28ca8b 100644
 From d894d3359a3bfe5b7c91bc390cc774dc1dec5573 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Tue, 21 Apr 2026 11:38:57 -0400
-Subject: [PATCH 19/21] torque: implement
+Subject: [PATCH 19/27] torque: implement
  CCGenerator::Emit(CallRuntimeInstruction)
 
 Replaces the Phase 1 ReportError stub with real kCCBuiltins emission:
@@ -1095,7 +1095,7 @@ index c6a3639c..202bdcb6 100644
 From f301bdabda1f8a4bd9f34ffe2c5f5a659e2c021b Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Tue, 21 Apr 2026 11:44:10 -0400
-Subject: [PATCH 20/21] torque: implement
+Subject: [PATCH 20/27] torque: implement
  CCGenerator::Emit(CallBuiltinInstruction)
 
 ---
@@ -1152,7 +1152,7 @@ index 650ee4f6..406e09b3 100644
 From b7b4d0c9411cce88fd6bdb5e5835f50b27f4fa99 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Tue, 21 Apr 2026 11:49:57 -0400
-Subject: [PATCH 21/21] torque: implement
+Subject: [PATCH 21/27] torque: implement
  CCGenerator::Emit(CallBuiltinPointerInstruction)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -1230,6 +1230,507 @@ index 406e09b3..ac2e28a6 100644
  }
  
  void CCGenerator::EmitInstruction(const CallRuntimeInstruction& instruction,
+-- 
+2.50.1 (Apple Git-155)
+
+
+From 55af7d6d5d37c23c987ad4fc89a9608c8da369a3 Mon Sep 17 00:00:00 2001
+From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
+Date: Tue, 21 Apr 2026 13:50:27 -0400
+Subject: [PATCH 22/27] torque: add CurrentSourcePosition::Scope to
+ Visit(Builtin*) kCCBuiltins branch
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Phase 2's kCCBuiltins real-emission branch established CurrentScope,
+CurrentCallable, and CurrentReturnValue scopes but omitted
+CurrentSourcePosition. The canonical Visit(Declarable*) path
+(implementation-visitor.cc:3719-3720) sets up BOTH CurrentScope and
+CurrentSourcePosition — the Phase-2 kCCBuiltins branch only did the
+former. Any downstream diagnostic path that goes through
+MessageBuilder::MessageBuilder (utils.cc:127-130) consults
+CurrentSourcePosition::HasScope()/Get() to attach a source position
+to the reported message; without this scope established, errors emitted
+from CCGenerator (e.g. the three Phase-3 "Not supported in C++ output"
+stubs) would produce position-less diagnostics.
+
+This change is a precondition for Phase 3 instruction-emission work
+(Tasks 3.4-3.6) where CCGenerator::Emit() for CallCsaMacroAndBranch,
+MakeLazyNode, and GotoExternal calls ReportError from within the
+builtin visit — position-attached error messages are part of Torque's
+established error-reporting contract and future Phase-3 fixtures are
+expected to assert the positional error text.
+
+NOTE: this alone does NOT convert the Task 3.2 spike SIGSEGV into a
+clean ReportError. The spike's crash on a labeled extern-macro call
+(GotoIfForceSlowPath() otherwise Slow) originates upstream of
+CCGenerator — in InlineMacro (implementation-visitor.cc:369) where
+Visit(*macro->body()) dereferences a nullopt body because
+Callable::ShouldBeInlined returns true for kCCBuiltins on ALL
+callables (declarable.h:319-326), including extern macros which carry
+no body. Fixing that path (so labeled extern macros fall through to
+CallCsaMacroAndBranchInstruction emission) is Task 3.5's scope; the
+CurrentSourcePosition::Scope added here is what makes the subsequent
+ReportError emit with proper position info once that upstream path is
+fixed.
+
+Regression: non-ccbuiltins torque output sha unchanged
+(a5195c0258fd9af9415e9d41f0c2e38237989c1b) — no effect on kCSA/kCC/
+kCCDebug emission, and no effect on the 9 existing Phase-2 fixtures
+(none invoke labeled extern macros).
+---
+ deps/v8/src/torque/implementation-visitor.cc | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/deps/v8/src/torque/implementation-visitor.cc b/deps/v8/src/torque/implementation-visitor.cc
+index 41e12a39..7ca86dff 100644
+--- a/deps/v8/src/torque/implementation-visitor.cc
++++ b/deps/v8/src/torque/implementation-visitor.cc
+@@ -622,6 +622,7 @@ void ImplementationVisitor::Visit(Builtin* builtin) {
+     // signature instead of TF_BUILTIN, and uses CCGenerator in place of
+     // CSAGenerator.
+     CurrentScope::Scope current_scope(builtin);
++    CurrentSourcePosition::Scope source_position(builtin->Position());
+     CurrentCallable::Scope current_callable(builtin);
+     CurrentReturnValue::Scope current_return_value;
+ 
+-- 
+2.50.1 (Apple Git-155)
+
+
+From 9b794e1fa4b383e86fdc0d46f818c44f8fe78857 Mon Sep 17 00:00:00 2001
+From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
+Date: Tue, 21 Apr 2026 14:08:09 -0400
+Subject: [PATCH 23/27] torque: ExternMacro + Intrinsic ShouldBeInlined return
+ false for kCCBuiltins
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Phase 2 holes surfaced by Phase 3 Task 3.4 probing.
+
+(1) ExternMacro: the base Callable::ShouldBeInlined returns true for
+kCCBuiltins, which routes every extern-macro call through InlineMacro.
+InlineMacro dereferences macro->body() (std::nullopt for ExternMacro),
+causing a null-pointer SIGSEGV in Visit(Statement*) at
+implementation-visitor.cc:58. The override mirrors Phase 2's same fix
+for RuntimeFunction (both have no body; inline-lowering is meaningless).
+The call now takes the non-inline path and emits CallCsaMacroInstruction
+or CallCsaMacroAndBranchInstruction, which CCGenerator handles.
+
+(2) Intrinsic: the same default-true path under kCCBuiltins leaves
+GenerateCall's `inline_macro` local true for intrinsic callees. When
+`inline_macro` is true, AddCallParameter does NOT push the converted
+value's constexpr_value() into `constexpr_arguments`. That vector stays
+empty. Intrinsic handlers (e.g. %MakeLazy, %SizeOf, %RawConstexprCast,
+%IndexedFieldLength, %FieldSlice) then index into constexpr_arguments[0]
+— out-of-bounds read → SIGSEGV in StringLiteralUnquote at
+implementation-visitor.cc:3272. Force the non-inline path so intrinsic
+handlers see the arguments they require.
+
+Both overrides only affect kCCBuiltins; CSA / kCC / kCCDebug behavior
+is unchanged.
+---
+ deps/v8/src/torque/declarable.h | 26 ++++++++++++++++++++++++++
+ 1 file changed, 26 insertions(+)
+
+diff --git a/deps/v8/src/torque/declarable.h b/deps/v8/src/torque/declarable.h
+index 202bdcb6..4c40c0d8 100644
+--- a/deps/v8/src/torque/declarable.h
++++ b/deps/v8/src/torque/declarable.h
+@@ -416,6 +416,17 @@ class ExternMacro : public Macro {
+     return external_assembler_name_;
+   }
+ 
++  bool ShouldBeInlined(OutputType output_type) const override {
++    // Extern macros have no Torque body (body() == std::nullopt), so the
++    // base Callable::ShouldBeInlined default of `true` under kCCBuiltins
++    // would route the call through InlineMacro, which null-derefs
++    // macro->body() in Visit(Statement*). Force the non-inline path so
++    // CallCsaMacroInstruction / CallCsaMacroAndBranchInstruction handle
++    // it — mirrors RuntimeFunction::ShouldBeInlined.
++    if (output_type == OutputType::kCCBuiltins) return false;
++    return Callable::ShouldBeInlined(output_type);
++  }
++
+   std::string CCName() const override {
+     return "TorqueRuntimeMacroShims::" + external_assembler_name() +
+            "::" + ExternalName();
+@@ -565,6 +576,21 @@ class Intrinsic : public Callable {
+  public:
+   DECLARE_DECLARABLE_BOILERPLATE(Intrinsic, intrinsic)
+ 
++  bool ShouldBeInlined(OutputType output_type) const override {
++    // Intrinsics have no Torque body (body() == std::nullopt); they are
++    // handled specially in GenerateCall's intrinsic switch, which reads
++    // `constexpr_arguments` populated only when `inline_macro == false`.
++    // The base Callable default of `true` under kCCBuiltins leaves
++    // `constexpr_arguments` empty and causes intrinsic handlers that
++    // index into it (e.g. `%MakeLazy`, `%SizeOf`, `%RawConstexprCast`)
++    // to read past the end — SIGSEGV in StringLiteralUnquote. Force the
++    // non-inline path so AddCallParameter populates constexpr_arguments
++    // before the intrinsic handler runs. Mirrors RuntimeFunction /
++    // ExternMacro ShouldBeInlined overrides.
++    if (output_type == OutputType::kCCBuiltins) return false;
++    return Callable::ShouldBeInlined(output_type);
++  }
++
+  private:
+   friend class Declarations;
+   Intrinsic(std::string name, const Signature& signature)
+-- 
+2.50.1 (Apple Git-155)
+
+
+From 6cc0119554fdfdae724c40314c8c1abf8281ccb9 Mon Sep 17 00:00:00 2001
+From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
+Date: Tue, 21 Apr 2026 14:08:22 -0400
+Subject: [PATCH 24/27] torque: implement
+ CCGenerator::Emit(MakeLazyNodeInstruction)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Mirrors CSAGenerator's emission (csa-generator.cc:490-523). Torque's
+`%MakeLazy<T>('<getter>', args...)` intrinsic lowers to a
+MakeLazyNodeInstruction; the kCCBuiltins backend now emits
+`std::function<Tagged<T>()>` bound by value-capture of the visible
+stack state. The lambda body invokes the getter macro via its
+CCName() (for Torque macros, the default `TqRuntime<name>` — no
+leading `state_` / `isolate`, matching kCC convention).
+
+Lazy<T> has no constexpr version, so `GetRuntimeType()` null-derefs
+(hits `ConstexprVersion()->GetGeneratedTypeName()`). Use
+`Type::MatchUnaryGeneric(result_type, GetLazyGeneric())` to pull the
+wrapped T and build `std::function<<T-runtime-type>()>` directly.
+
+For Phase 3's "parses" acceptance bar this is sufficient; the
+`TqRuntime_<getter>` function signature will be emitted by the kCC
+pass in a later phase to make the output also linkable.
+---
+ deps/v8/src/torque/cc-generator.cc | 33 +++++++++++++++++++++++++++++-
+ 1 file changed, 32 insertions(+), 1 deletion(-)
+
+diff --git a/deps/v8/src/torque/cc-generator.cc b/deps/v8/src/torque/cc-generator.cc
+index ac2e28a6..f6f17c04 100644
+--- a/deps/v8/src/torque/cc-generator.cc
++++ b/deps/v8/src/torque/cc-generator.cc
+@@ -320,7 +320,38 @@ void CCGenerator::EmitInstruction(
+ 
+ void CCGenerator::EmitInstruction(const MakeLazyNodeInstruction& instruction,
+                                   Stack<std::string>* stack) {
+-  ReportError("Not supported in C++ output: MakeLazyNode");
++  // Mirrors CSAGenerator's emission (csa-generator.cc:490-523), producing a
++  // std::function<Tagged<T>()> bound by value-capture of the visible stack
++  // state. The lambda body invokes the getter macro via the same
++  // CCName()/CallCsaMacroInstruction convention used elsewhere in cc-output
++  // (no leading `state_` or `isolate` argument — those are CSA / builtin-
++  // linkage specific). For Phase 3 this only needs to parse; the referenced
++  // `TqRuntime_<getter>` function is emitted by the kCC pass and will be
++  // linked together with the kCCBuiltins output in a later phase.
++  TypeVector parameter_types =
++      instruction.macro->signature().parameter_types.types;
++  std::vector<std::string> args = ProcessArgumentsCommon(
++      parameter_types, instruction.constexpr_arguments, stack);
++
++  std::string result_name =
++      DefinitionToVariable(instruction.GetValueDefinition());
++  stack->Push(result_name);
++
++  // `Type::GetRuntimeType()` would null-deref on `Lazy<T>` (no constexpr
++  // version). `AbstractType::GetGeneratedTypeName()` special-cases the Lazy
++  // generic, but returns `std::function<TNode<T>()>` (CSA form). For CC
++  // output we need `std::function<<T-runtime-type>()>` to match the lambda
++  // body, so construct it directly from the wrapped type's runtime form.
++  std::optional<const Type*> lazy_wrapped = Type::MatchUnaryGeneric(
++      instruction.result_type, TypeOracle::GetLazyGeneric());
++  CHECK(lazy_wrapped.has_value());
++  decls() << "  std::function<" << (*lazy_wrapped)->GetRuntimeType()
++          << "()> " << result_name << ";  USE(" << result_name << ");\n";
++
++  out() << "  " << result_name << " = [=]() { return "
++        << instruction.macro->CCName() << "(";
++  PrintCommaSeparatedList(out(), args);
++  out() << "); };\n";
+ }
+ 
+ void CCGenerator::EmitInstruction(const CallBuiltinInstruction& instruction,
+-- 
+2.50.1 (Apple Git-155)
+
+
+From e0464526b0147c23cc8a35e0380b7b3cf923fda0 Mon Sep 17 00:00:00 2001
+From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
+Date: Tue, 21 Apr 2026 14:16:41 -0400
+Subject: [PATCH 25/27] torque: Macro::ShouldBeInlined returns false for
+ labeled macros under kCCBuiltins
+
+Under kCCBuiltins, a labeled macro call site must go through
+CallCsaMacroAndBranchInstruction so that the out-param rewrite
+emission (Phase 3) can be produced: the call site declares local
+'bool' flags and 'T' slots, passes them as trailing pointer args,
+and dispatches on the post-call flag values.
+
+The base Callable::ShouldBeInlined returns true for kCCBuiltins
+unconditionally, which would route the labeled macro through
+InlineMacro instead. Non-labeled macros continue to inline under
+the base default - existing Phase 2 fixtures are unaffected.
+
+ExternMacro already has its own ShouldBeInlined override (Phase 3
+Task 3.4 commit 9b794e1f) which returns false for all kCCBuiltins
+regardless of labels, so this Macro-level override only changes
+behavior for TorqueMacro subclasses.
+---
+ deps/v8/src/torque/declarable.h | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/deps/v8/src/torque/declarable.h b/deps/v8/src/torque/declarable.h
+index 4c40c0d8..02df3b0f 100644
+--- a/deps/v8/src/torque/declarable.h
++++ b/deps/v8/src/torque/declarable.h
+@@ -386,6 +386,17 @@ class Macro : public Callable {
+     // Intrinsics that are used internally in Torque and implemented as torque
+     // code should be inlined and not generate C++ definitions.
+     if (ReadableName()[0] == '%') return true;
++    // Under kCCBuiltins, labeled macros must go through
++    // CallCsaMacroAndBranchInstruction (and its out-param call-site
++    // emission) rather than being inlined. Non-labeled macros continue
++    // to inline under the base default, which keeps Phase 2 fixtures
++    // working unchanged. ExternMacro's own override at line ~419
++    // fires first for extern cases; this branch only affects
++    // TorqueMacro and Method (non-extern macros with labels).
++    if (output_type == OutputType::kCCBuiltins &&
++        !signature().labels.empty()) {
++      return false;
++    }
+     return Callable::ShouldBeInlined(output_type);
+   }
+ 
+-- 
+2.50.1 (Apple Git-155)
+
+
+From f279deb8968a7c7d0a0c085287b20a2a93f117b2 Mon Sep 17 00:00:00 2001
+From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
+Date: Tue, 21 Apr 2026 14:19:47 -0400
+Subject: [PATCH 26/27] torque: implement
+ CCGenerator::Emit(CallCsaMacroAndBranchInstruction)
+
+Emits the out-param rewrite pattern for labeled macro calls under
+kCCBuiltins (per Phase 3 Task 3.3 decision note). The call site:
+
+- Declares local 'bool' flags (one per label) and 'T' slots (one per
+  label-value parameter), zero-initialized.
+- Calls the macro via CCName(), appending &flag and &slot pointers
+  after the value args (one group per label).
+- After the call, dispatches with 'if (flag_<label>) goto <block>;'
+  for each label, then falls through via EmitGoto to the return
+  continuation.
+
+catch_block handling (runtime exceptions) is deferred - Phase 4+.
+Mirrors the structural pattern of csa-generator.cc:368-488 but
+replaces CodeAssemblerLabel / TypedCodeAssemblerVariable with plain
+bool/T locals and ca_.Goto with structured 'goto'.
+---
+ deps/v8/src/torque/cc-generator.cc | 115 ++++++++++++++++++++++++++++-
+ 1 file changed, 114 insertions(+), 1 deletion(-)
+
+diff --git a/deps/v8/src/torque/cc-generator.cc b/deps/v8/src/torque/cc-generator.cc
+index f6f17c04..9b452f95 100644
+--- a/deps/v8/src/torque/cc-generator.cc
++++ b/deps/v8/src/torque/cc-generator.cc
+@@ -315,7 +315,120 @@ void CCGenerator::EmitInstruction(const CallCsaMacroInstruction& instruction,
+ void CCGenerator::EmitInstruction(
+     const CallCsaMacroAndBranchInstruction& instruction,
+     Stack<std::string>* stack) {
+-  ReportError("Not supported in C++ output: CallCsaMacroAndBranch");
++  // Mirrors CSAGenerator::EmitInstruction(CallCsaMacroAndBranchInstruction)
++  // at csa-generator.cc:368-488 but lowered to plain C++ (kCCBuiltins). The
++  // out-param rewrite:
++  //   - For each label L_i: declare `bool flag_i = false;` and per
++  //     label-value parameter `T slot_i_j{};`.
++  //   - Invoke the macro via CCName() passing the usual value args followed
++  //     by trailing `&flag_i, &slot_i_j` pointer groups (one group per
++  //     label).
++  //   - After the call, dispatch on `if (flag_i) goto <label_block>;` for
++  //     each label, then fall through via EmitGoto to the return
++  //     continuation.
++  //
++  // `catch_block` (runtime exception propagation) is deferred — matches the
++  // Phase 2 treatment of CallRuntime / CallBuiltin.
++  if (instruction.catch_block) {
++    ReportError(
++        "Phase 3: CallCsaMacroAndBranch with catch block (exception "
++        "handling) is deferred.");
++  }
++
++  TypeVector parameter_types =
++      instruction.macro->signature().parameter_types.types;
++  std::vector<std::string> args = ProcessArgumentsCommon(
++      parameter_types, instruction.constexpr_arguments, stack);
++
++  Stack<std::string> pre_call_stack = *stack;
++
++  // Declare return-value locals if the macro returns something.
++  std::vector<std::string> results;
++  const Type* return_type = instruction.macro->signature().return_type;
++  if (return_type != TypeOracle::GetNeverType()) {
++    const auto lowered = LowerType(return_type);
++    for (std::size_t i = 0; i < lowered.size(); ++i) {
++      results.push_back(
++          DefinitionToVariable(instruction.GetValueDefinition(i)));
++      decls() << "  " << lowered[i]->GetRuntimeType() << " "
++              << results.back() << "{};  USE(" << results.back() << ");\n";
++    }
++  }
++
++  // Declare branch flags + per-label-value slots, and bind each label-value
++  // DefinitionLocation to its slot name so EmitGoto sees the right values
++  // when it emits phi-assignments into the label block.
++  std::vector<std::string> label_flag_names;
++  std::vector<std::vector<std::string>> label_value_names;
++  const LabelDeclarationVector& labels =
++      instruction.macro->signature().labels;
++  DCHECK_EQ(labels.size(), instruction.label_blocks.size());
++  for (size_t i = 0; i < labels.size(); ++i) {
++    std::string flag = FreshLabelName();
++    label_flag_names.push_back(flag);
++    decls() << "  bool " << flag << " = false;\n";
++    label_value_names.push_back({});
++    for (size_t j = 0; j < labels[i].types.size(); ++j) {
++      std::string val = FreshNodeName();
++      label_value_names[i].push_back(val);
++      const auto def = instruction.GetLabelValueDefinition(i, j);
++      SetDefinitionVariable(def, val);
++      decls() << "  " << labels[i].types[j]->GetRuntimeType() << " "
++              << val << "{};  USE(" << val << ");\n";
++    }
++  }
++
++  // Assemble the full argument list: value args followed by trailing
++  // pointer pairs, one group (&flag, &slot0, &slot1, ...) per label.
++  std::vector<std::string> all_args = args;
++  for (size_t i = 0; i < labels.size(); ++i) {
++    all_args.push_back("&" + label_flag_names[i]);
++    for (const auto& v : label_value_names[i]) {
++      all_args.push_back("&" + v);
++    }
++  }
++
++  // Emit the call.
++  out() << "  ";
++  if (return_type->StructSupertype().has_value()) {
++    out() << "std::tie(";
++    PrintCommaSeparatedList(out(), results);
++    out() << ") = ";
++  } else if (results.size() == 1) {
++    out() << results[0] << " = ";
++  }
++  // CCName() handles both ExternMacro (TorqueRuntimeMacroShims::...::Foo)
++  // and TorqueMacro (TqRuntime_<ExternalName>) via virtual dispatch —
++  // consistent with Phase 2's CallCsaMacroInstruction emission.
++  out() << instruction.macro->CCName() << "(";
++  PrintCommaSeparatedList(out(), all_args);
++  if (return_type->StructSupertype().has_value()) {
++    out() << ").Flatten();\n";
++  } else {
++    out() << ");\n";
++  }
++
++  // Dispatch: for each label, if the callee set its flag, goto the label
++  // block. The label-value slots are already bound to their
++  // DefinitionLocations via SetDefinitionVariable above, so EmitGoto's
++  // phi-rewrite sees them when we push their names onto the stack.
++  for (size_t i = 0; i < labels.size(); ++i) {
++    out() << "  if (" << label_flag_names[i] << ") {\n";
++    Stack<std::string> label_stack = pre_call_stack;
++    for (const auto& v : label_value_names[i]) {
++      label_stack.Push(v);
++    }
++    EmitGoto(instruction.label_blocks[i], &label_stack, "    ");
++    out() << "  }\n";
++  }
++
++  // Fallthrough: emit the return continuation. The `results` values are
++  // pushed onto the stack alongside any pre-existing entries so phi
++  // assignments in the continuation block see them.
++  if (instruction.return_continuation) {
++    for (const auto& r : results) stack->Push(r);
++    EmitGoto(*instruction.return_continuation, stack, "  ");
++  }
+ }
+ 
+ void CCGenerator::EmitInstruction(const MakeLazyNodeInstruction& instruction,
+-- 
+2.50.1 (Apple Git-155)
+
+
+From 3305160824b005f1828b4492a9175dd58d986e19 Mon Sep 17 00:00:00 2001
+From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
+Date: Tue, 21 Apr 2026 14:26:23 -0400
+Subject: [PATCH 27/27] torque: implement
+ CCGenerator::Emit(GotoExternalInstruction)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Callee-side complement to CallCsaMacroAndBranchInstruction's caller-side
+out-param rewrite (Task 3.5): when a labeled macro's body-CFG emits
+'goto ExternalLabel(args...)', write each popped value into its T*
+out-param, set the bool* label flag to true, and return from the macro
+function.
+
+Mirrors csa-generator.cc:846-853 structurally (reverse-iterate the
+variable_names, pop and assign each), replacing ca_.Goto(<destination>)
+with bool*-assignment + return. The <destination> string matches the
+ExternalLabelName() form emitted when GenerateFunction eventually
+produces standalone labeled-macro signatures under kCCBuiltins
+(deferred — Phase 4 scope).
+
+Phase 3 note: this emission is NOT exercised by any Phase 3 fixture.
+kCCBuiltins does not yet emit standalone labeled-macro bodies (no
+macro iteration pass for kCCBuiltins; GenerateFunction's label-exit
+ReportError gate at implementation-visitor.cc:2056-2058 stays in
+place for kCC/kCCDebug and has no kCCBuiltins arm). When a later
+phase adds the macro-emission path, this code runs as-is without
+modification.
+---
+ deps/v8/src/torque/cc-generator.cc | 21 ++++++++++++++++++++-
+ 1 file changed, 20 insertions(+), 1 deletion(-)
+
+diff --git a/deps/v8/src/torque/cc-generator.cc b/deps/v8/src/torque/cc-generator.cc
+index 9b452f95..b9e216db 100644
+--- a/deps/v8/src/torque/cc-generator.cc
++++ b/deps/v8/src/torque/cc-generator.cc
+@@ -639,7 +639,26 @@ void CCGenerator::EmitInstruction(const GotoInstruction& instruction,
+ 
+ void CCGenerator::EmitInstruction(const GotoExternalInstruction& instruction,
+                                   Stack<std::string>* stack) {
+-  ReportError("Not supported in C++ output: GotoExternal");
++  // Callee-side complement to CallCsaMacroAndBranchInstruction's caller-side
++  // out-param rewrite (cc-generator.cc above, Phase 3 Task 3.5): the macro
++  // body's signature replaces each CodeAssemblerLabel* param with a
++  // `bool* <destination>` + `T* <variable_names[i]>` group. This instruction
++  // fires when Torque's body-CFG encounters `goto <ExternalLabel>(...)`:
++  // we write each out-param slot in reverse stack order, set the label
++  // flag to true, and return.
++  //
++  // Phase 3 note: this emission is not exercised by the Phase 3 fixture
++  // set because kCCBuiltins does not yet emit standalone labeled-macro
++  // bodies (no kCCBuiltins-macro iteration pass; no relaxation of the
++  // existing GenerateFunction `ReportError` gate at
++  // implementation-visitor.cc:2056-2058 for non-CC paths). When a later
++  // phase adds that emission path, this code runs as-is.
++  for (auto it = instruction.variable_names.rbegin();
++       it != instruction.variable_names.rend(); ++it) {
++    out() << "  *" << *it << " = " << stack->Pop() << ";\n";
++  }
++  out() << "  *" << instruction.destination << " = true;\n";
++  out() << "  return;\n";
+ }
+ 
+ void CCGenerator::EmitInstruction(const ReturnInstruction& instruction,
 -- 
 2.50.1 (Apple Git-155)
 
