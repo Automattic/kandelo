@@ -1,0 +1,17 @@
+// Phase 3 test fixture: CallCsaMacroAndBranchInstruction.
+// Invokes an extern macro with a label via `otherwise`, forcing emission
+// of CallCsaMacroAndBranch in the builtin's CFG (ExternMacro cannot be
+// inlined under kCCBuiltins — see declarable.h ExternMacro override).
+namespace test_cc {
+  builtin TorqueCcTest_CallCsaMacroAndBranch(
+      implicit context: Context)(): Smi {
+    // GotoIfForceSlowPath is an extern macro with one label, no args,
+    // no return, no label-value params — simplest shape.
+    try {
+      GotoIfForceSlowPath() otherwise Slow;
+      return 1;
+    } label Slow {
+      return 0;
+    }
+  }
+}
