@@ -24,6 +24,22 @@ fi
 echo ">>> Node.js HEAD: $(cd "${NODE_SRC}" && git rev-parse --short HEAD) on ${NODE_BRANCH}"
 echo ">>> V8 version: $(grep -E 'V8_(MAJOR|MINOR|BUILD|PATCH)' "${NODE_SRC}/deps/v8/include/v8-version.h" | awk '{print $3}' | paste -sd. -)"
 
+PATCH_DIR="${HERE}/patches"
+PATCH_MARKER_DIR="${NODE_SRC}/.wasm-posix-kernel-patches"
+mkdir -p "${PATCH_MARKER_DIR}"
+
+for patch in "${PATCH_DIR}"/*.patch; do
+  [ -f "${patch}" ] || continue
+  marker="${PATCH_MARKER_DIR}/$(basename "${patch}").applied"
+  if [ -f "${marker}" ]; then
+    echo ">>> Already applied: $(basename "${patch}")"
+    continue
+  fi
+  echo ">>> Applying patch: $(basename "${patch}")"
+  (cd "${NODE_SRC}" && git apply --3way "${patch}")
+  touch "${marker}"
+done
+
 echo ">>> Phase 0: torque host build only."
 cd "${NODE_SRC}"
 
