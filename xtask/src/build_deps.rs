@@ -1,27 +1,35 @@
 //! `xtask build-deps` — dep-graph resolver for Wasm libraries.
 //!
-//! V1 scope (this revision):
-//!   * Walk the registry search path (`WASM_POSIX_DEPS_REGISTRY`
-//!     colon-separated list; default: `<repo>/examples/libs`) and
-//!     locate `<name>/deps.toml`.
-//!   * Compute a deterministic cache-key sha over
-//!     `(name, version, revision, source.url, source.sha256,
-//!     sorted transitive dep shas)`.
-//!   * Print the canonical cache path that identical inputs map to.
+//! Resolution order per library:
+//!   1. `<repo>/local-libs/<name>/build/` — hand-patched source, in-progress.
+//!   2. `<cache_root>/libs/<name>-<ver>-rev<N>-<shortsha>/` — canonical cache.
+//!   3. Build from source: run the declared `build.script`, validate
+//!      declared outputs, atomically install into the canonical cache.
 //!
-//! Not yet: running build scripts, atomic cache install,
-//! `local-libs/` override, release `libs/*.tar.zst` fetch. Those land
-//! in follow-up tasks on top of this skeleton.
+//! The build script runs with:
+//!   * `WASM_POSIX_DEP_OUT_DIR` — temp dir the script must install into.
+//!   * `WASM_POSIX_DEP_NAME`, `WASM_POSIX_DEP_VERSION`,
+//!     `WASM_POSIX_DEP_REVISION` — identity of the lib being built.
+//!   * `WASM_POSIX_DEP_<UPPER>_DIR` — for each *direct* declared dep
+//!     (where `UPPER` is the dep name upper-cased with `-` → `_`),
+//!     the resolved cache path of that dep's `{lib,include,…}`.
+//!
+//! Atomic install: build in `<canonical>.tmp-<pid>/`, then `rename(2)`
+//! into the canonical path. Readers either see the full previous
+//! version of the cache entry or the full new one, never a partial
+//! write. Races are handled: if two builds finish simultaneously, the
+//! first wins and the second's temp dir is discarded.
 //!
 //! Subcommands:
-//!   parse   <name|path>   Load + validate a deps.toml, print it back
-//!                         normalised.
-//!   sha     <name>        Print the cache-key sha of <name> (pulls
-//!                         transitive deps from the registry).
-//!   path    <name>        Print the canonical cache path for <name>.
+//!   parse    <name|path>   Load + validate a deps.toml, print it back
+//!                          normalised.
+//!   sha      <name>        Print the cache-key sha (transitive).
+//!   path     <name>        Print the canonical cache path.
+//!   resolve  <name>        Ensure the lib is built, print its path.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use sha2::{Digest, Sha256};
 
@@ -200,13 +208,223 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 // ---------------------------------------------------------------------
+// Build + cache-install
+// ---------------------------------------------------------------------
+
+/// Options controlling where the resolver reads from and writes to.
+/// Kept as a struct so tests can pass tempdirs without reaching into
+/// `$HOME` / `$XDG_CACHE_HOME`.
+pub struct ResolveOpts<'a> {
+    pub cache_root: &'a Path,
+    /// Optional `local-libs/` directory. When a `<name>/build/`
+    /// subdirectory exists under this root, it wins over the cache
+    /// and the build script is not run.
+    pub local_libs: Option<&'a Path>,
+}
+
+/// Resolve a library to a concrete on-disk path with the artifacts
+/// declared in its `deps.toml`. Ensures dependencies are resolved
+/// first (depth-first), then runs the build script if neither a
+/// `local-libs/` override nor a cache hit is available.
+///
+/// Returns the path the consumer should point `CPPFLAGS=-I<p>/include
+/// LDFLAGS=-L<p>/lib` at.
+pub fn ensure_built(
+    target: &DepsManifest,
+    registry: &Registry,
+    opts: &ResolveOpts<'_>,
+) -> Result<PathBuf, String> {
+    let mut memo: BTreeMap<String, [u8; 32]> = BTreeMap::new();
+    let mut building: Vec<String> = Vec::new();
+    ensure_built_inner(target, registry, opts, &mut memo, &mut building)
+}
+
+fn ensure_built_inner(
+    target: &DepsManifest,
+    registry: &Registry,
+    opts: &ResolveOpts<'_>,
+    memo: &mut BTreeMap<String, [u8; 32]>,
+    building: &mut Vec<String>,
+) -> Result<PathBuf, String> {
+    if building.iter().any(|s| s == &target.name) {
+        return Err(format!(
+            "cycle while building: {} -> {}",
+            building.join(" -> "),
+            target.name
+        ));
+    }
+    building.push(target.name.clone());
+
+    // Recursively resolve direct deps first; remember their paths so
+    // we can surface them to the build script via env vars.
+    let mut dep_dirs: BTreeMap<String, PathBuf> = BTreeMap::new();
+    for dref in &target.depends_on {
+        let dep_m = registry.load(&dref.name)?;
+        if dep_m.version != dref.version {
+            return Err(format!(
+                "{} depends on {}@{}, but registry has {}",
+                target.spec(),
+                dref.name,
+                dref.version,
+                dep_m.spec()
+            ));
+        }
+        let dep_path = ensure_built_inner(&dep_m, registry, opts, memo, building)?;
+        dep_dirs.insert(dep_m.name.clone(), dep_path);
+    }
+
+    building.pop();
+
+    // Local-libs override: hand-patched source wins.
+    if let Some(lr) = opts.local_libs {
+        let override_dir = lr.join(&target.name).join("build");
+        if override_dir.is_dir() {
+            return Ok(override_dir);
+        }
+    }
+
+    // Compute canonical cache path.
+    let mut chain: Vec<String> = Vec::new();
+    let sha = compute_sha(target, registry, memo, &mut chain)?;
+    let canonical = canonical_path(opts.cache_root, target, &sha);
+
+    // Cache hit: trust it. Users invalidate by deleting the directory.
+    if canonical.is_dir() {
+        return Ok(canonical);
+    }
+
+    build_into_cache(target, &canonical, &dep_dirs)?;
+    Ok(canonical)
+}
+
+/// Run the build script with `WASM_POSIX_DEP_*` env vars set, validate
+/// outputs under the temp directory, then `rename(2)` into place.
+fn build_into_cache(
+    target: &DepsManifest,
+    canonical: &Path,
+    dep_dirs: &BTreeMap<String, PathBuf>,
+) -> Result<(), String> {
+    let parent = canonical
+        .parent()
+        .ok_or_else(|| format!("canonical path has no parent: {}", canonical.display()))?;
+    std::fs::create_dir_all(parent)
+        .map_err(|e| format!("create cache parent {}: {e}", parent.display()))?;
+
+    let tmp = parent.join(format!(
+        "{}.tmp-{}",
+        canonical
+            .file_name()
+            .expect("canonical path has a filename")
+            .to_string_lossy(),
+        std::process::id()
+    ));
+    // Fresh temp dir. If a leftover from a crashed build exists, wipe it.
+    if tmp.exists() {
+        std::fs::remove_dir_all(&tmp)
+            .map_err(|e| format!("clean stale {}: {e}", tmp.display()))?;
+    }
+    std::fs::create_dir_all(&tmp)
+        .map_err(|e| format!("create temp {}: {e}", tmp.display()))?;
+
+    let script = target.build_script_path();
+    if !script.is_file() {
+        let _ = std::fs::remove_dir_all(&tmp);
+        return Err(format!(
+            "{}: build script {} not found",
+            target.spec(),
+            script.display()
+        ));
+    }
+
+    let status = {
+        let mut cmd = Command::new("bash");
+        cmd.arg(&script);
+        cmd.env("WASM_POSIX_DEP_OUT_DIR", &tmp);
+        cmd.env("WASM_POSIX_DEP_NAME", &target.name);
+        cmd.env("WASM_POSIX_DEP_VERSION", &target.version);
+        cmd.env("WASM_POSIX_DEP_REVISION", target.revision.to_string());
+        for (name, path) in dep_dirs {
+            cmd.env(format!("WASM_POSIX_DEP_{}_DIR", env_key(name)), path);
+        }
+        cmd.status()
+            .map_err(|e| format!("spawn bash {}: {e}", script.display()))?
+    };
+
+    if !status.success() {
+        let _ = std::fs::remove_dir_all(&tmp);
+        return Err(format!(
+            "{}: build script {} exited with {}",
+            target.spec(),
+            script.display(),
+            status
+        ));
+    }
+
+    if let Err(e) = validate_outputs(target, &tmp) {
+        let _ = std::fs::remove_dir_all(&tmp);
+        return Err(e);
+    }
+
+    // Atomic install. If someone else finished first, keep theirs,
+    // discard ours — identical inputs produce identical outputs, and
+    // trying to overwrite a non-empty directory isn't portable.
+    if canonical.exists() {
+        let _ = std::fs::remove_dir_all(&tmp);
+        return Ok(());
+    }
+    std::fs::rename(&tmp, canonical).map_err(|e| {
+        format!(
+            "rename {} -> {}: {e}",
+            tmp.display(),
+            canonical.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn validate_outputs(target: &DepsManifest, out_dir: &Path) -> Result<(), String> {
+    let check = |rel: &str, label: &str| -> Result<(), String> {
+        let p = out_dir.join(rel);
+        if !p.exists() {
+            return Err(format!(
+                "{}: declared {} output {:?} not produced by build script",
+                target.spec(),
+                label,
+                rel
+            ));
+        }
+        Ok(())
+    };
+    for rel in &target.outputs.libs {
+        check(rel, "libs")?;
+    }
+    for rel in &target.outputs.headers {
+        check(rel, "headers")?;
+    }
+    for rel in &target.outputs.pkgconfig {
+        check(rel, "pkgconfig")?;
+    }
+    Ok(())
+}
+
+/// `libcurl` → `LIBCURL`, `zlib-ng` → `ZLIB_NG`.
+fn env_key(name: &str) -> String {
+    name.chars()
+        .map(|c| match c {
+            '-' => '_',
+            c => c.to_ascii_uppercase(),
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------
 // Subcommand dispatch
 // ---------------------------------------------------------------------
 
 pub fn run(args: Vec<String>) -> Result<(), String> {
     let mut it = args.into_iter();
     let sub = it.next().ok_or(
-        "usage: xtask build-deps <parse|sha|path> <name|path>",
+        "usage: xtask build-deps <parse|sha|path|resolve> <name|path>",
     )?;
     let target = it.next().ok_or_else(|| {
         format!("build-deps {sub}: missing <name|path>")
@@ -226,6 +444,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         "parse" => cmd_parse(&manifest),
         "sha" => cmd_sha(&manifest, &registry),
         "path" => cmd_path(&manifest, &registry),
+        "resolve" => cmd_resolve(&manifest, &registry, &repo),
         other => Err(format!("build-deps: unknown subcommand {other:?}")),
     }
 }
@@ -286,6 +505,18 @@ fn cmd_path(m: &DepsManifest, registry: &Registry) -> Result<(), String> {
     let mut chain = Vec::new();
     let sha = compute_sha(m, registry, &mut memo, &mut chain)?;
     let path = canonical_path(&default_cache_root(), m, &sha);
+    println!("{}", path.display());
+    Ok(())
+}
+
+fn cmd_resolve(m: &DepsManifest, registry: &Registry, repo: &Path) -> Result<(), String> {
+    let cache_root = default_cache_root();
+    let local_libs = repo.join("local-libs");
+    let opts = ResolveOpts {
+        cache_root: &cache_root,
+        local_libs: Some(&local_libs),
+    };
+    let path = ensure_built(m, registry, &opts)?;
     println!("{}", path.display());
     Ok(())
 }
@@ -465,6 +696,275 @@ libs = ["lib/lib{name}.a"]
         let err = compute_sha(&a, &reg, &mut BTreeMap::new(), &mut Vec::new())
             .unwrap_err();
         assert!(err.contains("cycle"), "got: {err}");
+    }
+
+    // --- ensure_built / build_into_cache tests ---
+
+    /// Create a deps.toml + build-<name>.sh pair. The build script uses
+    /// `WASM_POSIX_DEP_OUT_DIR` to lay out declared outputs.
+    fn write_lib(
+        root: &Path,
+        name: &str,
+        version: &str,
+        depends_on: &[&str],
+        build_body: &str,
+        outputs_section: &str,
+    ) {
+        let lib_dir = root.join(name);
+        std::fs::create_dir_all(&lib_dir).unwrap();
+
+        let depends = depends_on
+            .iter()
+            .map(|s| format!("{:?}", s))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let deps_toml = format!(
+            r#"
+name = "{name}"
+version = "{version}"
+revision = 1
+depends_on = [{depends}]
+
+[source]
+url = "https://example.test/{name}-{version}.tar.gz"
+sha256 = "{:0>64}"
+
+[license]
+spdx = "TestLicense"
+
+{outputs_section}
+"#,
+            ""
+        );
+        std::fs::write(lib_dir.join("deps.toml"), deps_toml).unwrap();
+
+        let script = format!("#!/bin/bash\nset -euo pipefail\n{build_body}\n");
+        let script_path = lib_dir.join(format!("build-{name}.sh"));
+        std::fs::write(&script_path, script).unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut p = std::fs::metadata(&script_path).unwrap().permissions();
+            p.set_mode(0o755);
+            std::fs::set_permissions(&script_path, p).unwrap();
+        }
+    }
+
+    fn resolve_opts<'a>(cache: &'a Path, local: Option<&'a Path>) -> ResolveOpts<'a> {
+        ResolveOpts {
+            cache_root: cache,
+            local_libs: local,
+        }
+    }
+
+    #[test]
+    fn ensure_built_runs_script_on_cache_miss() {
+        let root = tempdir("built-miss-reg");
+        let cache = tempdir("built-miss-cache");
+        write_lib(
+            &root,
+            "libA",
+            "1.0.0",
+            &[],
+            // The body uses the contract env vars — verifies they are set.
+            r#"
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib"
+touch "$WASM_POSIX_DEP_OUT_DIR/lib/libA.a"
+echo "$WASM_POSIX_DEP_NAME $WASM_POSIX_DEP_VERSION rev$WASM_POSIX_DEP_REVISION" > "$WASM_POSIX_DEP_OUT_DIR/stamp"
+"#,
+            r#"[outputs]
+libs = ["lib/libA.a"]
+"#,
+        );
+        let reg = Registry { roots: vec![root] };
+        let m = reg.load("libA").unwrap();
+
+        let path = ensure_built(&m, &reg, &resolve_opts(&cache, None)).unwrap();
+        assert!(path.starts_with(cache.join("libs")));
+        assert!(path.join("lib/libA.a").exists());
+        let stamp = std::fs::read_to_string(path.join("stamp")).unwrap();
+        assert_eq!(stamp.trim(), "libA 1.0.0 rev1");
+    }
+
+    #[test]
+    fn ensure_built_is_idempotent_on_cache_hit() {
+        let root = tempdir("built-hit-reg");
+        let cache = tempdir("built-hit-cache");
+        write_lib(
+            &root,
+            "libB",
+            "1.0.0",
+            &[],
+            // Counter file in the registry dir records each invocation.
+            &format!(
+                r#"
+echo ran >> "{}/counter"
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib"
+touch "$WASM_POSIX_DEP_OUT_DIR/lib/libB.a"
+"#,
+                root.display()
+            ),
+            r#"[outputs]
+libs = ["lib/libB.a"]
+"#,
+        );
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+        let m = reg.load("libB").unwrap();
+
+        let p1 = ensure_built(&m, &reg, &resolve_opts(&cache, None)).unwrap();
+        let p2 = ensure_built(&m, &reg, &resolve_opts(&cache, None)).unwrap();
+        assert_eq!(p1, p2);
+        let runs = std::fs::read_to_string(root.join("counter")).unwrap();
+        assert_eq!(
+            runs.lines().count(),
+            1,
+            "cache hit must skip the build script"
+        );
+    }
+
+    #[test]
+    fn ensure_built_fails_when_declared_output_missing() {
+        let root = tempdir("built-missing-out");
+        let cache = tempdir("built-missing-cache");
+        write_lib(
+            &root,
+            "libC",
+            "1.0.0",
+            &[],
+            // Script succeeds but does NOT create the declared lib.
+            r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR""#,
+            r#"[outputs]
+libs = ["lib/libC.a"]
+"#,
+        );
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+        let m = reg.load("libC").unwrap();
+
+        let err = ensure_built(&m, &reg, &resolve_opts(&cache, None)).unwrap_err();
+        assert!(err.contains("not produced"), "got: {err}");
+        // Temp dir was cleaned up; canonical path does not exist.
+        let sha = compute_sha(&m, &reg, &mut BTreeMap::new(), &mut Vec::new()).unwrap();
+        let canonical = canonical_path(&cache, &m, &sha);
+        assert!(!canonical.exists(), "canonical cache dir must not exist on failure");
+
+        // No leftover temp dirs in the libs/ directory.
+        if let Ok(rd) = std::fs::read_dir(cache.join("libs")) {
+            let leftovers: Vec<_> = rd.collect();
+            for l in &leftovers {
+                let e = l.as_ref().unwrap();
+                assert!(
+                    !e.file_name().to_string_lossy().contains(".tmp-"),
+                    "found leftover: {:?}",
+                    e.file_name()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ensure_built_fails_when_script_exits_nonzero() {
+        let root = tempdir("built-badexit");
+        let cache = tempdir("built-badexit-cache");
+        write_lib(
+            &root,
+            "libD",
+            "1.0.0",
+            &[],
+            "echo boom >&2\nexit 37",
+            r#"[outputs]
+libs = ["lib/libD.a"]
+"#,
+        );
+        let reg = Registry { roots: vec![root] };
+        let m = reg.load("libD").unwrap();
+
+        let err = ensure_built(&m, &reg, &resolve_opts(&cache, None)).unwrap_err();
+        assert!(err.contains("exited"), "got: {err}");
+        let sha = compute_sha(&m, &reg, &mut BTreeMap::new(), &mut Vec::new()).unwrap();
+        assert!(!canonical_path(&cache, &m, &sha).exists());
+    }
+
+    #[test]
+    fn local_libs_override_wins() {
+        let root = tempdir("override-reg");
+        let cache = tempdir("override-cache");
+        let local = tempdir("override-local");
+        write_lib(
+            &root,
+            "libE",
+            "1.0.0",
+            &[],
+            // If this ran we'd fail the test: override must prevent it.
+            "exit 99",
+            r#"[outputs]
+libs = ["lib/libE.a"]
+"#,
+        );
+        let override_build = local.join("libE").join("build");
+        std::fs::create_dir_all(override_build.join("lib")).unwrap();
+        std::fs::write(override_build.join("lib/libE.a"), b"").unwrap();
+
+        let reg = Registry { roots: vec![root] };
+        let m = reg.load("libE").unwrap();
+
+        let path =
+            ensure_built(&m, &reg, &resolve_opts(&cache, Some(&local))).unwrap();
+        assert_eq!(path, override_build);
+    }
+
+    #[test]
+    fn transitive_deps_are_built_and_exposed_via_env() {
+        let root = tempdir("transitive-reg");
+        let cache = tempdir("transitive-cache");
+
+        // libFoo produces a stamp header; libBar consumes it via env var.
+        write_lib(
+            &root,
+            "libFoo",
+            "1.0.0",
+            &[],
+            r#"
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/include"
+echo "foo header body" > "$WASM_POSIX_DEP_OUT_DIR/include/foo.h"
+"#,
+            r#"[outputs]
+headers = ["include/foo.h"]
+"#,
+        );
+        write_lib(
+            &root,
+            "libBar",
+            "1.0.0",
+            &["libFoo@1.0.0"],
+            r#"
+test -n "${WASM_POSIX_DEP_LIBFOO_DIR:-}" || { echo "LIBFOO_DIR not set" >&2; exit 1; }
+test -f "$WASM_POSIX_DEP_LIBFOO_DIR/include/foo.h" || { echo "foo.h missing" >&2; exit 1; }
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib"
+cp "$WASM_POSIX_DEP_LIBFOO_DIR/include/foo.h" "$WASM_POSIX_DEP_OUT_DIR/lib/libBar.a"
+"#,
+            r#"[outputs]
+libs = ["lib/libBar.a"]
+"#,
+        );
+        let reg = Registry { roots: vec![root] };
+        let bar = reg.load("libBar").unwrap();
+        let bar_path =
+            ensure_built(&bar, &reg, &resolve_opts(&cache, None)).unwrap();
+
+        let pseudo = std::fs::read_to_string(bar_path.join("lib/libBar.a")).unwrap();
+        assert_eq!(pseudo.trim(), "foo header body");
+    }
+
+    #[test]
+    fn env_key_canonicalises_hyphens_and_case() {
+        assert_eq!(env_key("libcurl"), "LIBCURL");
+        assert_eq!(env_key("zlib-ng"), "ZLIB_NG");
+        assert_eq!(env_key("Foo-Bar-Baz"), "FOO_BAR_BAZ");
     }
 
     #[test]
