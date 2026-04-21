@@ -1,25 +1,37 @@
 #!/usr/bin/env bash
-set -euo pipefail
+#
+# Build OpenSSL static libs (libssl.a, libcrypto.a) for
+# wasm32-posix-kernel.
+#
+# Honors the dep-resolver build-script contract (see
+# docs/dependency-management.md). Falls back to the in-tree
+# openssl-install/ layout when invoked without resolver env vars.
 
-# OpenSSL version to build
-OPENSSL_VERSION="${OPENSSL_VERSION:-3.3.2}"
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SRC_DIR="$SCRIPT_DIR/openssl-src"
-INSTALL_DIR="$SCRIPT_DIR/openssl-install"
 
-# Verify SDK tools are available
+# --- Resolver contract (with legacy fallbacks) ---
+OPENSSL_VERSION="${WASM_POSIX_DEP_VERSION:-${OPENSSL_VERSION:-3.3.2}}"
+INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/openssl-install}"
+SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VERSION}/openssl-${OPENSSL_VERSION}.tar.gz}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
+
 if ! command -v wasm32posix-cc &>/dev/null; then
     echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
     exit 1
 fi
 
-# Download OpenSSL if not present
+# --- Fetch + verify source ---
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading OpenSSL $OPENSSL_VERSION..."
     TARBALL="openssl-${OPENSSL_VERSION}.tar.gz"
-    curl -fsSL "https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VERSION}/${TARBALL}" \
-        -o "/tmp/${TARBALL}"
+    curl -fsSL "$SOURCE_URL" -o "/tmp/${TARBALL}"
+    if [ -n "$SOURCE_SHA256" ]; then
+        echo "==> Verifying source sha256..."
+        echo "$SOURCE_SHA256  /tmp/${TARBALL}" | shasum -a 256 -c -
+    fi
     mkdir -p "$SRC_DIR"
     tar xzf "/tmp/${TARBALL}" -C "$SRC_DIR" --strip-components=1
     rm "/tmp/${TARBALL}"
@@ -27,12 +39,13 @@ fi
 
 cd "$SRC_DIR"
 
-# Clean previous build
+# Clean previous build so a cache-miss rebuild starts from scratch.
 if [ -f Makefile ]; then
     make clean 2>/dev/null || true
 fi
+rm -rf "$INSTALL_DIR"
 
-# Configure for Wasm using linux-generic32 target
+# Configure for Wasm using linux-generic32 target.
 echo "==> Configuring OpenSSL for Wasm..."
 CC=wasm32posix-cc \
 AR=wasm32posix-ar \
@@ -57,40 +70,39 @@ perl Configure linux-generic32 \
     --prefix="$INSTALL_DIR" \
     --openssldir=/etc/ssl
 
-# Patch Makefile: remove cross-compile settings that conflict
+# Patch Makefile: remove cross-compile prefix + the -m32 that
+# linux-generic32 assumes.
 echo "==> Patching Makefile..."
 sed -i.bak 's/^CROSS_COMPILE=.*/CROSS_COMPILE=/' Makefile
-# Remove -m32 flag if present (linux-generic32 adds it)
 sed -i.bak 's/ -m32 / /g' Makefile
 sed -i.bak 's/ -m32$//' Makefile
 rm -f Makefile.bak
 
-# Build only the static libraries
 echo "==> Building OpenSSL..."
-make -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu)" build_generated libssl.a libcrypto.a 2>&1
+make -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu)" build_generated libssl.a libcrypto.a
 
-# Install headers and libraries
 echo "==> Installing..."
-rm -rf "$INSTALL_DIR"
 make install_sw 2>/dev/null || true
 
-# Verify output — check both possible lib paths
-LIBDIR=""
-if [ -f "$INSTALL_DIR/lib/libssl.a" ]; then
-    LIBDIR="$INSTALL_DIR/lib"
-elif [ -f "$INSTALL_DIR/lib64/libssl.a" ]; then
-    LIBDIR="$INSTALL_DIR/lib64"
+# OpenSSL installs into lib/ on 32-bit targets and lib64/ on some
+# 64-bit Linux hosts. The resolver contract pins outputs under lib/,
+# so if install landed in lib64/ we merge it across.
+if [ -d "$INSTALL_DIR/lib64" ] && [ ! -d "$INSTALL_DIR/lib" ]; then
+    mv "$INSTALL_DIR/lib64" "$INSTALL_DIR/lib"
+elif [ -d "$INSTALL_DIR/lib64" ]; then
+    # Both exist — splice lib64's contents into lib/.
+    cp -a "$INSTALL_DIR/lib64/." "$INSTALL_DIR/lib/"
+    rm -rf "$INSTALL_DIR/lib64"
 fi
 
-if [ -n "$LIBDIR" ] && [ -f "$LIBDIR/libssl.a" ] && [ -f "$LIBDIR/libcrypto.a" ]; then
+if [ -f "$INSTALL_DIR/lib/libssl.a" ] && [ -f "$INSTALL_DIR/lib/libcrypto.a" ]; then
     echo "==> OpenSSL build complete!"
     echo "    Headers:   $INSTALL_DIR/include/openssl/"
-    echo "    libssl:    $LIBDIR/libssl.a"
-    echo "    libcrypto: $LIBDIR/libcrypto.a"
-    ls -lh "$LIBDIR/libssl.a" "$LIBDIR/libcrypto.a"
+    echo "    libssl:    $INSTALL_DIR/lib/libssl.a"
+    echo "    libcrypto: $INSTALL_DIR/lib/libcrypto.a"
+    ls -lh "$INSTALL_DIR/lib/libssl.a" "$INSTALL_DIR/lib/libcrypto.a"
 else
-    echo "ERROR: Build failed — libraries not found" >&2
-    echo "Checked: $INSTALL_DIR/lib/ and $INSTALL_DIR/lib64/" >&2
+    echo "ERROR: Build failed — libraries not found at expected paths" >&2
     find "$INSTALL_DIR" -name "*.a" 2>/dev/null || true
     exit 1
 fi
