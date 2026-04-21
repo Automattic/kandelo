@@ -4,13 +4,16 @@
 //!   dump-abi        Regenerate `abi/snapshot.json` from authoritative sources.
 //!   build-manifest  Generate a binary-release `manifest.json` from a staging dir.
 //!   bundle-program  Zip-bundle one program's binary + runtime + LICENSE.
+//!   build-deps      Wasm library dep-graph resolver (see docs/dependency-management.md).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+mod build_deps;
 mod build_manifest;
 mod bundle_program;
+mod deps_manifest;
 mod dump_abi;
 mod program_metadata;
 mod wasm_abi;
@@ -21,7 +24,7 @@ fn main() -> ExitCode {
         Some(s) => s,
         None => {
             eprintln!("usage: xtask <subcommand> [args...]");
-            eprintln!("subcommands: dump-abi, build-manifest, bundle-program");
+            eprintln!("subcommands: dump-abi, build-manifest, bundle-program, build-deps");
             return ExitCode::from(2);
         }
     };
@@ -30,6 +33,7 @@ fn main() -> ExitCode {
         "dump-abi" => dump_abi::run(rest),
         "build-manifest" => build_manifest::run(rest),
         "bundle-program" => bundle_program::run(rest),
+        "build-deps" => build_deps::run(rest),
         other => {
             eprintln!("xtask: unknown subcommand {other:?}");
             return ExitCode::from(2);
