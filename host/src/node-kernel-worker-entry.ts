@@ -59,8 +59,11 @@ interface ProcessInfo {
 }
 const processes = new Map<number, ProcessInfo>();
 
-// Spawn PID counter — allocated by the kernel worker, not the main thread
-let nextSpawnPid = 1;
+// Spawn PID counter. Starts at 100 so user programs never occupy pid 1 —
+// POSIX tests (e.g. libc-test regression/daemon-failure) treat `getppid() == 1`
+// as the signal that a daemon has reparented to init, so a test binary running
+// at pid 1 would make its forked children misdiagnose themselves as orphaned.
+let nextSpawnPid = 100;
 
 // Per-PID thread module cache: lazily compiled on first clone()
 const threadModuleCache = new Map<number, WebAssembly.Module>();

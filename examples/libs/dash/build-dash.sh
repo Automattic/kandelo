@@ -79,6 +79,21 @@ fi
 # --- Fix signal name table ---
 # mksignames runs on the build host and generates signames.c using macOS
 # signal numbers (e.g., SIGUSR1=30). Replace with Linux/wasm32 numbers.
+#
+# We must write signames.c AFTER make would regenerate it. The Makefile rule
+#   signames.c: mksignames
+#       ./mksignames
+# causes a pre-patched signames.c to be overwritten during make because
+# mksignames is built during the same make run (via BUILT_SOURCES) and ends
+# up with a newer mtime than the patched file. Two-pass build: run make
+# once to generate mksignames and the (wrong) signames.c, then patch
+# signames.c, bump its mtime so it beats mksignames, then rebuild.
+#
+# Dropping signames.o and the dash binary forces the linker to re-run with
+# our patched signames.c.
+echo "==> First build (generates mksignames + macOS-numbered signames.c)..."
+make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" 2>&1 | tail -5
+
 echo "==> Patching signames.c for Linux/wasm32 signal numbers..."
 cat > src/signames.c << 'SIGEOF'
 /* Linux/wasm32 signal names — generated from musl bits/signal.h.
@@ -124,8 +139,12 @@ const char *const signal_names[NSIG + 1] = {
 };
 SIGEOF
 
-# --- Build ---
-echo "==> Building dash..."
+# Ensure signames.c is newer than mksignames so `make` won't regenerate it.
+touch src/signames.c
+
+# --- Rebuild with patched signames.c ---
+echo "==> Rebuilding with patched signames.c..."
+rm -f src/signames.o src/dash
 make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" 2>&1 | tail -10
 
 DASH_BIN="$SRC_DIR/src/dash"
