@@ -1,0 +1,26 @@
+// Phase 2 test fixture: PushBuiltinPointerInstruction.
+//
+// Torque emits PushBuiltinPointerInstruction when a builtin name is used
+// as a value expression (see implementation-visitor.cc:2596-2603,
+// GetBuiltinCode at :1119). Returning a builtin directly from a builtin
+// whose declared return type is `BuiltinPtr` produces exactly this
+// instruction followed by ReturnInstruction.
+//
+// The helper needs to be an *internal* stub builtin for Torque to accept
+// a pointer to it (implementation-visitor.cc:1120 rejects
+// IsExternal()/non-kStub targets). To avoid the helper itself needing a
+// body that touches not-yet-implemented instructions (e.g. the
+// CallCsaMacroInstruction + %FromConstexpr emitted by `return 0;`), the
+// helper is a passthrough — it returns its Smi argument unchanged, which
+// lowers to a parameter-slot ReturnInstruction (already implemented).
+namespace test_cc {
+  builtin TorqueCcTest_PushBuiltinPointer_Helper(
+      implicit context: Context)(x: Smi): Smi {
+    return x;
+  }
+
+  builtin TorqueCcTest_PushBuiltinPointer(implicit context: Context)():
+      BuiltinPtr {
+    return TorqueCcTest_PushBuiltinPointer_Helper;
+  }
+}
