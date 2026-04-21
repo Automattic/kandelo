@@ -43,9 +43,7 @@ BASIC_EXPECTED_FAIL=(
     "pthread/pthread_condattr_setpshared"                 # cross-process MAP_SHARED|MAP_ANONYMOUS memory
                                                           # not supported on wasm (pthread primitives ARE
                                                           # supported — see crates/kernel/src/pshared.rs)
-    "pthread/pthread_create"                              # no guest-initiated pthread_create
-    "signal/pthread_kill"
-    "threads/thrd_create"                                 # C11 threads (requires pthread_create)
+    "signal/pthread_kill"                                 # per-thread signal routing
     "pthread/pthread_attr_setinheritsched"                # priority scheduling not supported
     "pthread/pthread_setcancelstate"                      # cancellation not supported
     "strings/ffsll"                                       # wasm32 test bug (long vs long long)

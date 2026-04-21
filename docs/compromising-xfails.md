@@ -6,25 +6,26 @@ This file is the counterpart to [wasm-limitations.md](wasm-limitations.md), whic
 
 ## Targets
 
-### 1. Guest-initiated `pthread_create`
+### 1. Guest-initiated `pthread_create` — *basic path landed*
 
-**Gap:** musl's `pthread_create` entry point isn't wired to `sys_clone`. Only kernel-initiated threads (via the host `onClone` callback invoked from inside `sys_clone`) work today — MariaDB's 5 threads, for example. Programs that call `pthread_create` directly from guest code fail.
+**Status:** basic `pthread_create` + `thrd_create` now pass. The remaining tests listed here fail for other reasons (cancel-point asm, per-thread signal routing, AIO). Separate targets below cover those.
 
-**Affected tests:**
-- libc-test: `pthread_cancel`, `pthread_cond_wait-cancel_ignored`, `pthread_create-oom`, `raise-race`
-- sortix basic: `pthread/pthread_create`, `pthread/pthread_cancel`, `pthread/pthread_cleanup_pop`, `pthread/pthread_cleanup_push`, `pthread/pthread_setcancelstate`, `signal/pthread_kill`, `threads/thrd_create`
-- sortix basic AIO: `aio/aio_error`, `aio/aio_fsync`, `aio/aio_read` (musl AIO internally creates pthreads)
+**Closed tests:** sortix `pthread/pthread_create`, `threads/thrd_create`.
 
-**Fix approach:** Wire musl's `pthread_create` to issue `sys_clone(CLONE_VM|CLONE_THREAD|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID)` with a pthread-style stack and entry. The kernel's `sys_clone` + host `onClone` already spin up a worker with its own channel + TLS; what's missing is the glue from the pthread API to that syscall. See PR #88 for the existing clone-based threading path.
+**Still blocked (other gaps):**
+- `pthread_cancel`, `pthread_cleanup_pop/push`, `pthread_setcancelstate`, `pthread_cond_wait-cancel_ignored`: need `__syscall_cp_asm` cancel points (see [wasm-limitations.md](wasm-limitations.md) §2).
+- `signal/pthread_kill`, `raise-race` (flakey): need per-thread signal routing. Today `pthread_kill` delivers to the process, not the target thread.
+- `aio/aio_error`, `aio/aio_fsync`, `aio/aio_read`: musl's AIO internally spawns pthreads, but also needs a real AIO implementation.
+- `pthread_create-oom`: wasm linear memory can grow on demand, so `t_memfill` can't reliably exhaust address space.
 
-**Starting files:**
-- `musl-overlay/src/thread/wasm32posix/clone.c` — existing clone glue
-- `glue/channel_syscall.c` — syscall dispatcher
-- `crates/kernel/src/syscalls.rs` — `sys_clone` and fork handling
-- `host/src/kernel-worker.ts` — `onClone` host callback
-- `musl/src/thread/pthread_create.c` — reference implementation (what we need to override or adapt)
+**Root cause (fixed):** `__NR_exit_group` was aliased to `__NR_exit` (both = 34) in the wasm syscall headers. When a non-main thread called `exit()` / `_Exit()` → `SYS_exit_group`, it emitted syscall 34. The host's channel dispatcher saw syscall 34 from a non-main channel and ran the *thread-exit* path (remove channel only), leaving the main process worker to spin forever. Tests that called `exit(0)` from a spawned thread therefore hung.
 
-Related: `pthread_cancel` additionally needs `__syscall_cp_asm` (see wasm-limitations.md §2) — partial support is possible without cancel points.
+**Fix:**
+- `musl-overlay/arch/wasm{32,64}posix/bits/syscall.h.in`: give `__NR_exit_group` its own number (387, matching what `host/src/kernel-worker.ts` already expected).
+- `crates/kernel/src/wasm_api.rs`: dispatch 387 → `kernel_exit` alongside 34.
+- `host/src/node-kernel-worker-entry.ts`: on process exit, terminate surviving thread workers so they don't linger after their parent is gone.
+
+Backward compatible — old user binaries still emit syscall 34 for exit_group and get the existing (main-only) behavior; no `ABI_VERSION` bump required.
 
 ---
 
@@ -140,7 +141,7 @@ Paste one of the following into a fresh Claude Code session in this repo:
 
 **For each target specifically:**
 
-- **Target 1** (pthread_create): "Wire musl pthread_create through sys_clone. PR #88 already did the kernel side."
+- **Target 1** (pthread_create): Basic path landed — see the status block in section 1. Remaining sub-gaps (cancel-point asm, per-thread signal routing, AIO, OOM) are separate follow-ups.
 - **Target 2** (munmap unmapping): Reclassified to [wasm-limitations.md §6](wasm-limitations.md) — the `munmap/1-*` XFAILs are unfixable in stock wasm. Only pursue Option A (syscall-path EFAULT validation) if defensive hardening against use-after-munmap via syscalls becomes a priority; it will not close the XFAILs.
 - **Target 3** (PROCESS_SHARED): "Implement kernel-side shared pthread primitives. Model after `crates/kernel/src/ipc.rs`."
 - **Target 4** (EPERM / multi-user): "Add uid/gid to Process struct. Enforce on kill/sched_*. Provide setuid/setgid."

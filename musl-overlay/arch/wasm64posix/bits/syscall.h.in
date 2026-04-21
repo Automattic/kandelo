@@ -309,12 +309,12 @@
 #define __NR_fchmodat2      383
 #define __NR_accept4        384
 #define __NR_execveat       386
+#define __NR_exit_group     387
 
 /* Aliases that musl expects.
  * On wasm64 (LP64), we don't need time64 aliases because sizeof(time_t)
  * == sizeof(long) == 8 and musl uses the non-time64 code paths.
  * But we still need the 64-bit stat/mmap/fcntl aliases. */
-#define __NR_exit_group       __NR_exit
 #define __NR_mmap2            __NR_mmap
 #define __NR_fstat64          __NR_fstat
 #define __NR_stat64           __NR_stat
