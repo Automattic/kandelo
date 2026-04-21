@@ -1,0 +1,22 @@
+// Phase 2 test fixture: CallRuntimeInstruction.
+//
+// Torque emits CallRuntimeInstruction for any `runtime::Foo(...)` call.
+// CSA form:  CodeStubAssembler(state_).CallRuntime(Runtime::kFoo, args...)
+// CC form:   Runtime::Call<Runtime::kFoo>(isolate, args...)
+//
+// We reuse the `runtime::ArrayIsArray` declaration already provided by
+// src/builtins/array-isarray.tq (visible here because torque compiles
+// the full fileset, and re-declaring it would raise "cannot redeclare").
+// ArrayIsArray is no-fail, so the caller has no catch_block — keeping us
+// inside Phase 2's supported emission path (exception handling is deferred
+// to Phase 3).
+//
+// The argument is passed directly as a runtime value (no integer literal)
+// to avoid the ProcessArgumentsCommon / %FromConstexpr crash surfaced in
+// Task 2.9.
+namespace test_cc {
+  transitioning builtin TorqueCcTest_CallRuntime(
+      implicit context: Context)(arg: JSAny): JSAny {
+    return runtime::ArrayIsArray(arg);
+  }
+}
