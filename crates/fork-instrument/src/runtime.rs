@@ -190,6 +190,7 @@ pub fn inject_runtime(module: &mut Module) -> Runtime {
         buf_global,
         memory,
         &saved_globals,
+        frames_start_offset,
     );
     let unwind_end = emit_end_fn(module, state_global);
     let rewind_begin = emit_rewind_begin(
@@ -239,7 +240,9 @@ pub fn inject_runtime(module: &mut Module) -> Runtime {
 /// Emit `wpk_fork_unwind_begin(buf: ptr) -> ()`:
 /// 1. `_wpk_fork_state := UNWINDING`
 /// 2. `_wpk_fork_buf := buf`
-/// 3. For each saved global `g` at offset `off`:
+/// 3. `*(buf + 0) := frames_start_offset` — seed `current_pos` so the
+///    host is buffer-geometry-agnostic and just allocates a buffer.
+/// 4. For each saved global `g` at offset `off`:
 ///        `*(buf + off) = g`
 ///
 /// The global snapshot must happen *after* buf is written, since the
@@ -253,6 +256,7 @@ fn emit_unwind_begin(
     buf_global: GlobalId,
     memory: Option<MemoryId>,
     saved_globals: &[SavedGlobal],
+    frames_start_offset: u32,
 ) -> FunctionId {
     let mut builder = FunctionBuilder::new(&mut module.types, &[ptr_ty], &[]);
     let buf_param = module.locals.add(ptr_ty);
@@ -265,6 +269,30 @@ fn emit_unwind_begin(
             .global_set(buf_global);
 
         if let Some(mem) = memory {
+            // Step 3: seed current_pos at buf + 0 with frames_start_offset.
+            // The value must be pushed as the pointer-width integer type
+            // matching the memory (i32 on wasm32, i64 on wasm64) so the
+            // store kind agrees with the stack type.
+            body.local_get(buf_param);
+            match ptr_ty {
+                ValType::I32 => {
+                    body.i32_const(frames_start_offset as i32);
+                }
+                ValType::I64 => {
+                    body.i64_const(frames_start_offset as i64);
+                }
+                other => unreachable!("unsupported ptr_ty: {other:?}"),
+            }
+            body.store(
+                mem,
+                store_kind_for(ptr_ty),
+                MemArg {
+                    align: ptr_align(ptr_ty),
+                    offset: 0,
+                },
+            );
+
+            // Step 4: snapshot mutable scalar globals into the buffer.
             emit_save_globals(&mut body, mem, buf_global, ptr_ty, saved_globals);
         }
     }

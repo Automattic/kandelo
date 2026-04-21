@@ -221,12 +221,13 @@ fn unwind_begin_stores_one_per_saved_global() {
     // Two mutable scalar globals pre-exist (`$user_stack`, `$user_tls`).
     // The immutable `$user_const` is excluded. The runtime's own
     // state+buf globals are added *after* the scan so they are also
-    // excluded. Expected: exactly 2 saved-global stores.
+    // excluded. Plus Phase 7 Task 1 adds one store for `current_pos` at
+    // buf+0. Expected: 1 (current_pos) + 2 (saved globals) = 3 stores.
     let (stores, loads) =
         export_body_instr_counts(&module, names::EXPORT_UNWIND_BEGIN);
     assert_eq!(
-        stores, 2,
-        "unwind_begin should store exactly the saved globals",
+        stores, 3,
+        "unwind_begin should store current_pos + one per saved global",
     );
     assert_eq!(loads, 0, "unwind_begin never reads the save buffer");
 }
@@ -311,4 +312,124 @@ fn ref_typed_mutable_globals_are_skipped_in_4e() {
     // Only the i32 scalar should have been picked up.
     assert_eq!(runtime.saved_globals.len(), 1);
     assert_eq!(runtime.saved_globals[0].ty, walrus::ValType::I32);
+}
+
+// ======================================================================
+// Phase 7 Task 1 — wpk_fork_unwind_begin self-initializes current_pos
+// ======================================================================
+
+/// Helper: return the entry-block instructions of the named export
+/// as a cloned Vec<Instr>, so tests can pattern-match over them.
+fn export_entry_instrs(module: &Module, export: &str) -> Vec<Instr> {
+    let id = match module
+        .exports
+        .iter()
+        .find(|e| e.name == export)
+        .expect("export present")
+        .item
+    {
+        walrus::ExportItem::Function(id) => id,
+        _ => panic!("export `{export}` is not a function"),
+    };
+    let local = match &module.funcs.get(id).kind {
+        walrus::FunctionKind::Local(l) => l,
+        _ => panic!("`{export}` is not a local function"),
+    };
+    local
+        .block(local.entry_block())
+        .instrs
+        .iter()
+        .map(|(instr, _)| instr.clone())
+        .collect()
+}
+
+#[test]
+fn unwind_begin_writes_frames_start_offset_wasm32() {
+    // After Phase 7 Task 1, wpk_fork_unwind_begin must write
+    // `frames_start_offset` to `*(buf + 0)` as its first memory store.
+    // For EMPTY_MODULE_WITH_FORK (no pre-existing mutable scalar
+    // globals), frames_start_offset == 2 * sizeof(ptr) == 8 for wasm32.
+    let bytes = instrument_wat(EMPTY_MODULE_WITH_FORK);
+    let module = Module::from_buffer(&bytes).unwrap();
+
+    let instrs = export_entry_instrs(&module, names::EXPORT_UNWIND_BEGIN);
+
+    // Find the first Store instruction. The i32 const immediately
+    // before it should equal frames_start_offset (8).
+    let store_idx = instrs
+        .iter()
+        .position(|i| matches!(i, Instr::Store(_)))
+        .expect("unwind_begin must contain at least one store");
+
+    let store = match &instrs[store_idx] {
+        Instr::Store(s) => s,
+        _ => unreachable!(),
+    };
+
+    assert!(
+        matches!(store.kind, walrus::ir::StoreKind::I32 { atomic: false }),
+        "wasm32 current_pos store must be i32 non-atomic, got {:?}",
+        store.kind,
+    );
+    assert_eq!(store.arg.offset, 0, "store to buf + 0");
+    assert_eq!(store.arg.align, 4, "natural alignment for i32 pointer");
+
+    // The const pushed immediately before the store is the value being
+    // stored; the local.get for `buf` is pushed before that.
+    let value_instr = &instrs[store_idx - 1];
+    match value_instr {
+        Instr::Const(c) => match c.value {
+            walrus::ir::Value::I32(v) => assert_eq!(
+                v, 8,
+                "wasm32 empty-globals frames_start_offset is 2*4 = 8",
+            ),
+            other => panic!("expected I32 const, got {other:?}"),
+        },
+        other => panic!("expected Const immediately before store, got {other:?}"),
+    }
+}
+
+#[test]
+fn unwind_begin_writes_frames_start_offset_wasm64() {
+    // Same as above but for a memory64 module. Store kind must be I64,
+    // align 8, value 16 (2 * 8 with no saved globals).
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (memory i64 1))
+    "#;
+    let bytes = instrument_wat(wat);
+    let module = Module::from_buffer(&bytes).unwrap();
+
+    let instrs = export_entry_instrs(&module, names::EXPORT_UNWIND_BEGIN);
+
+    let store_idx = instrs
+        .iter()
+        .position(|i| matches!(i, Instr::Store(_)))
+        .expect("unwind_begin must contain at least one store");
+
+    let store = match &instrs[store_idx] {
+        Instr::Store(s) => s,
+        _ => unreachable!(),
+    };
+
+    assert!(
+        matches!(store.kind, walrus::ir::StoreKind::I64 { atomic: false }),
+        "wasm64 current_pos store must be i64 non-atomic, got {:?}",
+        store.kind,
+    );
+    assert_eq!(store.arg.offset, 0, "store to buf + 0");
+    assert_eq!(store.arg.align, 8, "natural alignment for i64 pointer");
+
+    let value_instr = &instrs[store_idx - 1];
+    match value_instr {
+        Instr::Const(c) => match c.value {
+            walrus::ir::Value::I64(v) => assert_eq!(
+                v, 16,
+                "wasm64 empty-globals frames_start_offset is 2*8 = 16",
+            ),
+            other => panic!("expected I64 const, got {other:?}"),
+        },
+        other => panic!("expected Const immediately before store, got {other:?}"),
+    }
 }
