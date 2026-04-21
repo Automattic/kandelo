@@ -34,7 +34,7 @@ Tagged<Smi> Builtin_TorqueCcTest_CallBuiltinPointer(Isolate* isolate, Tagged<Con
   {
     using FnPtr = Tagged<Smi> (*)(Isolate*, Tagged<Context>, Tagged<Smi>);
     FnPtr fn = reinterpret_cast<FnPtr>(
-        Builtins::CppEntryOf(static_cast<Builtin>(
+        Builtins::TorqueCcEntryOf(static_cast<Builtin>(
             Smi::ToInt(tmp0))));
     tmp1 = fn(isolate, parameter0, parameter1);
   }
