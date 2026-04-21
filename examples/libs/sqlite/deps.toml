@@ -1,0 +1,24 @@
+# Per-library manifest for SQLite. See docs/dependency-management.md.
+#
+# Uses the single-source-file amalgamation distribution. Upstream
+# version string is human-readable (e.g. "3.49.1"); the zip URL uses
+# a packed form (3490100 = 3_49_01_00), which lives entirely inside
+# source.url — consumers don't need to know about the encoding.
+
+name = "sqlite"
+version = "3.49.1"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://www.sqlite.org/2025/sqlite-amalgamation-3490100.zip"
+sha256 = "6cebd1d8403fc58c30e93939b246f3e6e58d0765a5cd50546f16c00fd805d2c3"
+
+[license]
+spdx = "blessing"
+url = "https://www.sqlite.org/copyright.html"
+
+[outputs]
+libs = ["lib/libsqlite3.a"]
+headers = ["include/sqlite3.h", "include/sqlite3ext.h"]
+pkgconfig = ["lib/pkgconfig/sqlite3.pc"]
