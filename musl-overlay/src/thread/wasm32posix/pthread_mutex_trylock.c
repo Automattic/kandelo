@@ -78,7 +78,7 @@ int __pthread_mutex_trylock(pthread_mutex_t *m)
 
 int pthread_mutex_trylock(pthread_mutex_t *m)
 {
-	if (m->_m_type & 128) {
+	if ((m->_m_type & 128) && !(m->_m_type & 4)) {
 		long r = __syscall(SYS_PSHARED_MUTEX_TRYLOCK, m->__u.__i[1]);
 		return r < 0 ? -r : 0;
 	}
