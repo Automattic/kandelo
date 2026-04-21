@@ -414,3 +414,91 @@ Tagged<Smi> Builtin_TorqueCcTest_Return(Isolate* isolate, Tagged<Context> contex
 - Tail-calls from `CallBuiltin` / `CallBuiltinPointer` — Phase 4+.
 - JS-linkage builtin emission (receiver/newTarget/dispatchHandle ABI, Descriptor machinery) — Phase 3+.
 - `builtins-cc-table.inc` dispatch table — Phase 4.
+
+## Phase 3 Summary
+
+| Item | Result |
+|---|---|
+| Spike findings + strategy decision committed (Task 3.3) | ✅ |
+| Phase 2 latent crashes fixed (3 holes surfaced by Phase 3 probing) | ✅ |
+| `MakeLazyNodeInstruction` emission (`std::function<T()>` lambda) | ✅ |
+| `CallCsaMacroAndBranchInstruction` emission (full A: out-param rewrite) | ✅ |
+| `GotoExternalInstruction` emission (defensive — Phase 4 exercises it) | ✅ |
+| `Macro::ShouldBeInlined` override for labeled non-extern macros under kCCBuiltins | ✅ |
+| `ExternMacro` + `Intrinsic` `ShouldBeInlined` overrides for kCCBuiltins | ✅ |
+| `CurrentSourcePosition::Scope` added to Phase 2's `Visit(Builtin*)` whitelist branch | ✅ |
+| 2 new fixtures + goldens (`make-lazy-node`, `call-csa-macro-and-branch`) | ✅ |
+| Full 11-fixture harness passes (9 Phase 2 + 2 Phase 3) | ✅ |
+| `clang++ -fsyntax-only` parse-check passes for both Phase 3 goldens | ✅ |
+| Non-whitelisted output byte-identical to Phase 1/2 baseline (sha `a5195c0258fd9af9415e9d41f0c2e38237989c1b`) | ✅ |
+| Consolidated patch (`v8-torque-cc-builtins.patch`, 1736 lines, 75 KB) re-applies cleanly on upstream `9fe7634c` | ✅ |
+
+**CCGenerator stubs remaining after Phase 3: 0.** Every backend-dependent instruction (22 of 22) now has a real emission. Remaining `ReportError` calls in `cc-generator.cc` are intentional scope gates WITHIN instruction implementations (catch-block, tailcall, JS-linkage, multi-result PairT) that Phase 4+ addresses as fixtures force them.
+
+**Phase 3 commit chain on the Node.js clone** (6 commits on top of Phase 2 tip `b7b4d0c9`):
+1. `55af7d6d` — `torque: add CurrentSourcePosition::Scope to Visit(Builtin*) kCCBuiltins branch`
+2. `9b794e1f` — `torque: ExternMacro + Intrinsic ShouldBeInlined return false for kCCBuiltins`
+3. `6cc01195` — `torque: implement CCGenerator::Emit(MakeLazyNodeInstruction)`
+4. `e0464526` — `torque: Macro::ShouldBeInlined returns false for labeled macros under kCCBuiltins`
+5. `f279deb8` — `torque: implement CCGenerator::Emit(CallCsaMacroAndBranchInstruction)`
+6. `33051608` — `torque: implement CCGenerator::Emit(GotoExternalInstruction)`
+
+Total commits on top of upstream `9fe7634c` after Phase 3: **27** (10 Phase 1 + 11 Phase 2 + 6 Phase 3).
+
+### Sample outputs
+
+**`test/torque-fixtures/golden/make-lazy-node-tq-ccbuiltins.cc`** (lambda emission):
+
+```cpp
+Tagged<Smi> Builtin_TorqueCcTest_MakeLazyNode(Isolate* isolate, Tagged<Context> context, Tagged<Smi> arg) {
+  std::function<Tagged<Smi>()> tmp0;  USE(tmp0);
+  // ...
+  tmp0 = [=]() { return TqRuntimeTorqueCcTest_LazyBody_0(parameter1); };
+  // ...
+}
+```
+
+**`test/torque-fixtures/golden/call-csa-macro-and-branch-tq-ccbuiltins.cc`** (out-param dispatch):
+
+```cpp
+Tagged<Smi> Builtin_TorqueCcTest_CallCsaMacroAndBranch(Isolate* isolate, Tagged<Context> context) {
+  bool label0 = false;
+  Tagged<Smi> tmp1{}; USE(tmp1);
+  // ...
+  TorqueRuntimeMacroShims::CodeStubAssembler::GotoIfForceSlowPath(&label0);
+  if (label0) { goto block4; }
+  goto block3;
+  // ...
+}
+```
+
+### Plan deviations surfaced during Phase 3 implementation
+
+- **Phase 2 had 3 latent crashes** that only manifested when a whitelisted builtin hit real call-lowering paths:
+  1. **`ExternMacro::ShouldBeInlined` inherited base `true` for kCCBuiltins** — `GenerateCall` routed extern-macro calls through `InlineMacro`, which null-dereffed `*macro->body()` (extern macros have `body() == std::nullopt`). Fix: override to return `false` for kCCBuiltins, mirroring Phase 2's `RuntimeFunction` fix.
+  2. **`Intrinsic::ShouldBeInlined` inherited base `true`** — `GenerateCall`'s `inline_macro=true` path skipped `AddCallParameter`'s `constexpr_arguments` population, leaving the vector empty. Intrinsic handlers (`%MakeLazy`, `%SizeOf`, `%RawConstexprCast`, etc.) then read `constexpr_arguments[0]` out-of-bounds → SIGSEGV in `StringLiteralUnquote` at `implementation-visitor.cc:3272`. Fix: override to return `false` for kCCBuiltins.
+  3. **`Visit(Builtin*)` omitted `CurrentSourcePosition::Scope`** — the Phase 2 whitelist branch established `CurrentScope` / `CurrentCallable` / `CurrentReturnValue` but not source-position scope. Without it, any `ReportError` or downstream `CurrentSourcePosition::Scope::Scope` push dereferenced a dangling reference (`contextual.h:40`). Fix: add the missing scope at the top of the whitelist branch.
+
+  All 3 were pre-existing Phase 2 gaps; Phase 3's probing made them reachable and Phase 3's fixes make them disappear. `Builtin::ShouldBeInlined`, `RuntimeFunction::ShouldBeInlined`, `Macro::ShouldBeInlined` now all have kCCBuiltins-aware implementations.
+
+- **Task 3.6 outcome: no fixture for `GotoExternalInstruction`.** The Task 3.3 decision note anticipated that `Macro::ShouldBeInlined = false` for labeled Torque macros would make standalone labeled-macro bodies emittable, surfacing `GotoExternal` inside those bodies. In reality, making the macro "non-inline" only affects the CALLER side (routes to `CallCsaMacroAndBranchInstruction`); it does NOT cause the macro's body to be emitted as a standalone C++ function anywhere — there is no macro-iteration pass under kCCBuiltins, and the kCC pass's `EnsureInCCOutputList` call fires only under kCC/kCCDebug output types. Phase 3's `GotoExternal` emission ships defensively (correct code that will fire when Phase 4 adds the macro-body emission path) but is not exercised by any Phase 3 fixture. Documented in the commit message at `33051608`.
+
+- **Task 3.5 did NOT relax `GenerateFunction`'s label-exit `ReportError`** at `implementation-visitor.cc:2056-2058`. The original plan suggested adding a kCCBuiltins arm emitting `bool*` + `T*` out-params. In practice, `GenerateFunction` under kCCBuiltins is only called for `Builtin` declarables (the fourth-pass filter skips Macros), and Phase 3's CallCsaMacroAndBranch emission constructs the call site directly without going through `GenerateFunction`. The gate relaxation is deferred to Phase 4 when macro-body emission lands.
+
+- **`Lazy<T>::GetRuntimeType()` null-derefs** — Torque's `AbstractType::GetGeneratedTypeName` special-cases `Lazy<T>` but has no `ConstexprVersion`, causing `GetRuntimeType` to deref a null pointer. MakeLazyNode emission uses `Type::MatchUnaryGeneric(result_type, TypeOracle::GetLazyGeneric())` to extract the wrapped `T` and builds `std::function<<T-runtime-type>()>` directly.
+
+- **`ExternMacro::CCName()` resolves to `TorqueRuntimeMacroShims::<asm>::<name>`**, not the default `TqRuntime_<name>`. Virtual dispatch through `CCName()` handles the difference in all Phase 3 emissions (`MakeLazyNode`, `CallCsaMacroAndBranch`) without needing explicit `ExternMacro::DynamicCast` checks in the emission code — simpler than the original plan's explicit branching.
+
+- **Torque fixture syntax: `label Slow { }` clauses must be attached to a `try { }` block**, not placed at the top level of a builtin body. This is Torque grammar, not a bug in our work. Corrected during the CallCsaMacroAndBranch fixture iteration (pattern cribbed from `deps/v8/src/builtins/array-to-spliced.tq:232-240`).
+
+- **`EmitGoto` label-value binding** — CC's `EmitGoto` (`cc-generator.cc:477-489`) iterates `stack->AboveTop()` against `destination->InputDefinitions()` and emits phi assignments. For label-block gotos inside CallCsaMacroAndBranch, we push the label-value slot names onto a local copy of the pre-call stack before calling `EmitGoto`, so the phi mechanism sees the bound values. The current fixture (`GotoIfForceSlowPath`, zero label-value params) doesn't exercise this, but the logic is in place for Phase 4+ multi-value labels.
+
+### Phase 3 follow-ups for later phases
+
+- **Macro-body emission under kCCBuiltins** — required to exercise `GotoExternalInstruction` and to LINK the `TqRuntime_<macro>` calls emitted by `CallCsaMacroAndBranch`. Needs either (a) extending the fourth pass to also iterate labeled macros referenced from whitelisted builtins, or (b) extending the kCC `EnsureInCCOutputList` trigger to fire under kCCBuiltins, or (c) a new sixth pass specifically for kCCBuiltins-callable macros. Paired with a relaxation of `GenerateFunction`'s `implementation-visitor.cc:2056-2058` gate for the kCCBuiltins arm. **Phase 4 scope.**
+- **Runtime exception handling** (`catch_block` on CallCsaMacroAndBranch / CallRuntime / CallBuiltin) — still `ReportError`. Needs its own design decision: C++ exceptions, `expected<T,E>`-style returns, or a Torque-specific error channel. **Phase 4+.**
+- **Tail-calls from `CallBuiltin` / `CallBuiltinPointer`** — still `ReportError`. **Phase 4+.**
+- **JS-linkage builtin emission** (receiver / newTarget / dispatchHandle ABI, Descriptor machinery) — still the `(JS linkage deferred to Phase 3)` comment path in `Visit(Builtin*)`. **Phase 4+.** Despite the comment's "Phase 3" label, the realistic pairing is with the dispatch table work in Phase 4.
+- **`builtins-cc-table.inc` dispatch table generation** — the `Builtins::CppEntryOf(Builtin)` reference in `CallBuiltinPointer` emission and the `TqRuntime_<macro>` references in MakeLazyNode / CallCsaMacroAndBranch both need real C++ entries at link time. **Phase 4.**
+
+**Next:** Phase 4. Write `docs/plans/2026-04-20-torque-cc-backend-phase4.md` covering dispatch-table generation, macro-body emission under kCCBuiltins, JS-linkage builtin ABI, and the first host-native end-to-end smoke test (linking a translated builtin into `d8`) per the handoff doc's Phase 4 outline.
