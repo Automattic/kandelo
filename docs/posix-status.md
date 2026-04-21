@@ -105,10 +105,10 @@ The wasm-posix-kernel uses a **centralized architecture**: a single kernel Wasm 
 | `exit()` / `_exit()` | Full | Closes all fds and dir streams, releases all fcntl locks, sets ProcessState::Exited. SIGCHLD delivered to parent. Zombie state maintained until reaped by waitpid. |
 | `getpid()` | Full | Returns pid from Process struct. |
 | `getppid()` | Full | Returns ppid (0 for init process). |
-| `getuid()` / `geteuid()` | Full | Simulated; defaults to uid=1000. Configurable at init. |
-| `getgid()` / `getegid()` | Full | Simulated; defaults to gid=1000. Configurable at init. |
-| `setuid()` / `seteuid()` | Full | Simulated. setuid sets both uid and euid. seteuid sets only euid. No privilege checks. |
-| `setgid()` / `setegid()` | Full | Simulated. setgid sets both gid and egid. setegid sets only egid. No privilege checks. |
+| `getuid()` / `geteuid()` | Full | Simulated; defaults to uid=0 (root). Configurable via setuid/seteuid. |
+| `getgid()` / `getegid()` | Full | Simulated; defaults to gid=0 (root). Configurable via setgid/setegid. |
+| `setuid()` / `seteuid()` | Full | POSIX semantics (no saved-set-uid tracked). As root: setuid sets both uid and euid; seteuid sets any euid. Non-root: setuid only to own uid; seteuid only to own ruid. Returns EPERM otherwise. |
+| `setgid()` / `setegid()` | Full | POSIX semantics mirroring setuid — gated on euid==0 for privileged changes. Returns EPERM for non-root trying to change to a foreign gid. |
 | `getpgrp()` | Full | Returns process group ID (simulated, defaults to pid). |
 | `setpgid()` | Partial | Sets process group ID. pid=0 means self. pgid=0 means use target pid. Only supports setting own pgid; other processes return ESRCH. |
 | `getsid()` | Full | Returns session ID (simulated, defaults to pid). pid=0 means self. |
@@ -147,7 +147,7 @@ The wasm-posix-kernel uses a **centralized architecture**: a single kernel Wasm 
 
 | Function | Status | Notes |
 |----------|--------|-------|
-| `kill()` | Partial | Marks signal as pending. sig=0 validity check. Cross-process delivery via host_kill import and ProcessManager.deliverSignal(). Pending signals delivered at syscall boundaries. |
+| `kill()` | Partial | Marks signal as pending. sig=0 validity check. Cross-process delivery via host_kill import and ProcessManager.deliverSignal(). Pending signals delivered at syscall boundaries. POSIX EPERM enforced: unprivileged processes cannot signal a target whose real/effective uid does not match their own. A virtual init (pid 1, uid 0) is auto-registered so `kill(1, ...)` resolves; target 4 in compromising-xfails.md. |
 | `signal()` | Full | Legacy API. Returns previous handler. Wraps sigaction() semantics. SIGKILL/SIGSTOP immutable. |
 | `sigaction()` | Full | Sets handler disposition (SIG_DFL, SIG_IGN, or function pointer) plus sa_flags and sa_mask. SIGKILL/SIGSTOP immutable. SA_RESTART supported: blocking read/write/recv/poll auto-restart instead of returning EINTR. SA_SIGINFO: flags passed to host so handler is called as `handler(signum, siginfo_ptr, ucontext_ptr)`. SA_NOCLDWAIT auto-reaps children and suppresses SIGCHLD. SA_NOCLDSTOP stored but not yet acted upon (no job control). SIG_IGN discards pending signals; SIG_DFL discards pending signals for signals whose default action is "ignore" (e.g., SIGCHLD). **Note:** Programs must be linked with `--table-base=3 --export-table` so the host can dispatch handlers from the user program's function table (indices 0/1 reserved for SIG_DFL/SIG_IGN, index 2 reserved for `__main_void`). |
 | `sigprocmask()` | Full | Block/unblock/setmask operations on 64-bit signal mask. SIGKILL and SIGSTOP cannot be blocked per POSIX. |
@@ -250,10 +250,10 @@ The wasm-posix-kernel uses a **centralized architecture**: a single kernel Wasm 
 
 | Function | Status | Notes |
 |----------|--------|-------|
-| `sched_getparam()` | Stub | Writes sched_priority=0. Single-threaded Wasm has no scheduling policy. |
-| `sched_setparam()` | Stub | Returns 0 (no-op). |
-| `sched_getscheduler()` | Stub | Returns 0 (SCHED_OTHER). |
-| `sched_setscheduler()` | Stub | Returns 0 (no-op). |
+| `sched_getparam()` | Stub | Writes sched_priority=0. Single-threaded Wasm has no scheduling policy. Returns EPERM when the caller's effective uid doesn't match the target's. |
+| `sched_setparam()` | Stub | Returns 0 (no-op). Returns EPERM for cross-user targets. |
+| `sched_getscheduler()` | Stub | Returns 0 (SCHED_OTHER). Returns EPERM for cross-user targets. |
+| `sched_setscheduler()` | Stub | Returns 0 (no-op). Returns EPERM for cross-user targets. |
 | `sched_get_priority_max()` | Stub | Returns 0. |
 | `sched_get_priority_min()` | Stub | Returns 0. |
 | `sched_rr_get_interval()` | Stub | Writes 10ms timespec. |

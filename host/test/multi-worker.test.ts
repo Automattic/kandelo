@@ -43,12 +43,13 @@ describe("CentralizedKernelWorker Process Management", () => {
     const { memory: mem2, channelOffset: ch2 } = createProcessMemory();
 
     // Register two processes
-    kw.registerProcess(1, mem1, [ch1]);
-    kw.registerProcess(2, mem2, [ch2]);
+    // PID 1 is reserved for the virtual init process; use PIDs >= 100.
+    kw.registerProcess(100, mem1, [ch1]);
+    kw.registerProcess(101, mem2, [ch2]);
 
     // Unregister both without error
-    kw.unregisterProcess(1);
-    kw.unregisterProcess(2);
+    kw.unregisterProcess(100);
+    kw.unregisterProcess(101);
 
     // Unregistering non-existent pid should not throw
     kw.unregisterProcess(999);
@@ -64,8 +65,8 @@ describe("CentralizedKernelWorker Process Management", () => {
     kw.setNextChildPid(42);
 
     const { memory, channelOffset } = createProcessMemory();
-    kw.registerProcess(1, memory, [channelOffset]);
-    kw.unregisterProcess(1);
+    kw.registerProcess(100, memory, [channelOffset]);
+    kw.unregisterProcess(100);
   });
 
   it("should throw when registering duplicate PID", async () => {
@@ -78,10 +79,10 @@ describe("CentralizedKernelWorker Process Management", () => {
     const { memory: mem1, channelOffset: ch1 } = createProcessMemory();
     const { memory: mem2, channelOffset: ch2 } = createProcessMemory();
 
-    kw.registerProcess(1, mem1, [ch1]);
-    expect(() => kw.registerProcess(1, mem2, [ch2])).toThrow();
+    kw.registerProcess(100, mem1, [ch1]);
+    expect(() => kw.registerProcess(100, mem2, [ch2])).toThrow();
 
-    kw.unregisterProcess(1);
+    kw.unregisterProcess(100);
   });
 
   it("should throw when registering before init", () => {
@@ -91,7 +92,7 @@ describe("CentralizedKernelWorker Process Management", () => {
     );
 
     const { memory, channelOffset } = createProcessMemory();
-    expect(() => kw.registerProcess(1, memory, [channelOffset])).toThrow(
+    expect(() => kw.registerProcess(100, memory, [channelOffset])).toThrow(
       "Kernel not initialized",
     );
   });

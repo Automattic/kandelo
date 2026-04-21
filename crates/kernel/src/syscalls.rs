@@ -7504,30 +7504,90 @@ pub fn sys_select(
     }
 }
 
-/// setuid -- set real and effective user ID (simulated).
+/// setuid -- set real and effective user ID.
+///
+/// POSIX semantics (no saved-set-user-ID tracked):
+/// - If caller's euid is 0 (root), set both `uid` and `euid` to `uid`.
+/// - Else if the target `uid` equals the caller's real `uid`, set `euid` only.
+/// - Otherwise return EPERM.
 pub fn sys_setuid(proc: &mut Process, uid: u32) -> Result<(), Errno> {
-    proc.uid = uid;
-    proc.euid = uid;
-    Ok(())
+    if proc.euid == 0 {
+        proc.uid = uid;
+        proc.euid = uid;
+        Ok(())
+    } else if uid == proc.uid {
+        proc.euid = uid;
+        Ok(())
+    } else {
+        Err(Errno::EPERM)
+    }
 }
 
-/// setgid -- set real and effective group ID (simulated).
+/// setgid -- set real and effective group ID.
+///
+/// Mirrors setuid's privilege rules, gated on euid (the kernel doesn't track a
+/// separate "appropriate privileges" capability).
 pub fn sys_setgid(proc: &mut Process, gid: u32) -> Result<(), Errno> {
-    proc.gid = gid;
-    proc.egid = gid;
-    Ok(())
+    if proc.euid == 0 {
+        proc.gid = gid;
+        proc.egid = gid;
+        Ok(())
+    } else if gid == proc.gid {
+        proc.egid = gid;
+        Ok(())
+    } else {
+        Err(Errno::EPERM)
+    }
 }
 
-/// seteuid -- set effective user ID (simulated).
+/// seteuid -- set effective user ID.
+///
+/// Root may set euid to any value. Others may only reset euid to their real uid.
 pub fn sys_seteuid(proc: &mut Process, euid: u32) -> Result<(), Errno> {
-    proc.euid = euid;
-    Ok(())
+    if proc.euid == 0 || euid == proc.uid {
+        proc.euid = euid;
+        Ok(())
+    } else {
+        Err(Errno::EPERM)
+    }
 }
 
-/// setegid -- set effective group ID (simulated).
+/// setegid -- set effective group ID.
 pub fn sys_setegid(proc: &mut Process, egid: u32) -> Result<(), Errno> {
-    proc.egid = egid;
-    Ok(())
+    if proc.euid == 0 || egid == proc.gid {
+        proc.egid = egid;
+        Ok(())
+    } else {
+        Err(Errno::EPERM)
+    }
+}
+
+/// POSIX permission test for `kill(pid, sig)`.
+///
+/// Returns true if a process with (sender_uid, sender_euid) may signal a
+/// process with (target_uid, target_euid). Per POSIX: sender's real or
+/// effective uid must match target's real or saved-set-uid. Since we don't
+/// track saved-set-user-ID separately, the real uid stands in for it.
+pub fn can_signal(sender_uid: u32, sender_euid: u32, target_uid: u32, target_euid: u32) -> bool {
+    if sender_euid == 0 {
+        return true;
+    }
+    sender_uid == target_uid
+        || sender_uid == target_euid
+        || sender_euid == target_uid
+        || sender_euid == target_euid
+}
+
+/// POSIX permission test for `sched_getparam`/`sched_getscheduler` and their
+/// setter variants.
+///
+/// POSIX (sched.h): the caller may query/modify a target's scheduling
+/// parameters only when the caller's *effective* uid equals the target's
+/// effective uid or the target's real uid — or when the caller is root.
+/// Note this is stricter than `can_signal`: `seteuid(non_root)` drops
+/// sched permission even if the real uid is still root.
+pub fn can_query_sched(sender_euid: u32, target_uid: u32, target_euid: u32) -> bool {
+    sender_euid == 0 || sender_euid == target_uid || sender_euid == target_euid
 }
 
 /// getrusage -- get resource usage (simulated).
@@ -8669,25 +8729,25 @@ mod tests {
     #[test]
     fn test_getuid_returns_default() {
         let proc = Process::new(1);
-        assert_eq!(sys_getuid(&proc), 1000);
+        assert_eq!(sys_getuid(&proc), 0);
     }
 
     #[test]
     fn test_geteuid_returns_default() {
         let proc = Process::new(1);
-        assert_eq!(sys_geteuid(&proc), 1000);
+        assert_eq!(sys_geteuid(&proc), 0);
     }
 
     #[test]
     fn test_getgid_returns_default() {
         let proc = Process::new(1);
-        assert_eq!(sys_getgid(&proc), 1000);
+        assert_eq!(sys_getgid(&proc), 0);
     }
 
     #[test]
     fn test_getegid_returns_default() {
         let proc = Process::new(1);
-        assert_eq!(sys_getegid(&proc), 1000);
+        assert_eq!(sys_getegid(&proc), 0);
     }
 
     #[test]
@@ -11274,37 +11334,122 @@ mod tests {
     // ---- Phase 12: setuid/setgid/seteuid/setegid ----
 
     #[test]
-    fn test_setuid() {
+    fn test_setuid_as_root_sets_both() {
         let mut proc = Process::new(1);
-        assert_eq!(proc.uid, 1000);
-        sys_setuid(&mut proc, 0).unwrap();
         assert_eq!(proc.uid, 0);
-        assert_eq!(proc.euid, 0);
+        sys_setuid(&mut proc, 42).unwrap();
+        assert_eq!(proc.uid, 42);
+        assert_eq!(proc.euid, 42);
     }
 
     #[test]
-    fn test_setgid() {
+    fn test_setuid_nonroot_to_own_uid_sets_euid_only() {
         let mut proc = Process::new(1);
-        assert_eq!(proc.gid, 1000);
-        sys_setgid(&mut proc, 0).unwrap();
-        assert_eq!(proc.gid, 0);
-        assert_eq!(proc.egid, 0);
+        sys_setuid(&mut proc, 7).unwrap(); // drop to uid=euid=7
+        // Simulate regaining privilege partly: impossible without saved-set,
+        // but setting euid back to real uid is always allowed.
+        sys_seteuid(&mut proc, 7).unwrap();
+        assert_eq!(proc.euid, 7);
     }
 
     #[test]
-    fn test_seteuid() {
+    fn test_setuid_nonroot_to_other_uid_fails() {
+        let mut proc = Process::new(1);
+        sys_setuid(&mut proc, 7).unwrap();
+        assert_eq!(sys_setuid(&mut proc, 99), Err(Errno::EPERM));
+        assert_eq!(proc.uid, 7);
+        assert_eq!(proc.euid, 7);
+    }
+
+    #[test]
+    fn test_setgid_as_root_sets_both() {
+        let mut proc = Process::new(1);
+        sys_setgid(&mut proc, 42).unwrap();
+        assert_eq!(proc.gid, 42);
+        assert_eq!(proc.egid, 42);
+    }
+
+    #[test]
+    fn test_setgid_nonroot_to_other_gid_fails() {
+        let mut proc = Process::new(1);
+        sys_setuid(&mut proc, 7).unwrap(); // drop privilege
+        assert_eq!(sys_setgid(&mut proc, 99), Err(Errno::EPERM));
+    }
+
+    #[test]
+    fn test_seteuid_as_root_allows_any() {
         let mut proc = Process::new(1);
         sys_seteuid(&mut proc, 500).unwrap();
-        assert_eq!(proc.uid, 1000); // Real uid unchanged
+        assert_eq!(proc.uid, 0); // real uid unchanged
         assert_eq!(proc.euid, 500);
     }
 
     #[test]
-    fn test_setegid() {
+    fn test_seteuid_nonroot_back_to_ruid() {
+        let mut proc = Process::new(1);
+        sys_setuid(&mut proc, 7).unwrap();
+        sys_seteuid(&mut proc, 7).unwrap();
+        assert_eq!(proc.euid, 7);
+    }
+
+    #[test]
+    fn test_seteuid_nonroot_to_other_fails() {
+        let mut proc = Process::new(1);
+        sys_setuid(&mut proc, 7).unwrap();
+        assert_eq!(sys_seteuid(&mut proc, 99), Err(Errno::EPERM));
+    }
+
+    #[test]
+    fn test_setegid_as_root_allows_any() {
         let mut proc = Process::new(1);
         sys_setegid(&mut proc, 500).unwrap();
-        assert_eq!(proc.gid, 1000); // Real gid unchanged
+        assert_eq!(proc.gid, 0);
         assert_eq!(proc.egid, 500);
+    }
+
+    #[test]
+    fn test_can_signal_root_to_anyone() {
+        assert!(can_signal(0, 0, 1, 1));
+        assert!(can_signal(0, 0, 42, 99));
+    }
+
+    #[test]
+    fn test_can_signal_same_user() {
+        assert!(can_signal(7, 7, 7, 7));
+    }
+
+    #[test]
+    fn test_can_signal_matches_real_or_effective() {
+        // sender.euid matches target.ruid
+        assert!(can_signal(99, 7, 7, 0));
+        // sender.ruid matches target.euid
+        assert!(can_signal(7, 99, 0, 7));
+    }
+
+    #[test]
+    fn test_can_signal_denies_cross_user() {
+        assert!(!can_signal(7, 7, 0, 0));
+        assert!(!can_signal(1, 1, 2, 2));
+    }
+
+    #[test]
+    fn test_can_query_sched_root_allowed() {
+        assert!(can_query_sched(0, 1, 1));
+    }
+
+    #[test]
+    fn test_can_query_sched_euid_match() {
+        assert!(can_query_sched(7, 7, 7));
+        assert!(can_query_sched(7, 7, 99));
+        assert!(can_query_sched(7, 99, 7));
+    }
+
+    #[test]
+    fn test_can_query_sched_denies_when_only_ruid_matches() {
+        // seteuid-only drop: sender ruid still matches target but euid does
+        // not — POSIX sched_* still denies.
+        assert!(!can_query_sched(1000, 0, 0));
+        assert!(!can_query_sched(99, 7, 7));
     }
 
     // ---- Phase 12: getrusage ----
@@ -14510,11 +14655,13 @@ mod tests {
     fn test_fork_skips_clofork_fds() {
         use crate::process_table::ProcessTable;
         let mut table = ProcessTable::new();
-        table.create_process(1).unwrap();
+        // PID 1 is reserved for the virtual init process; use 100 for the test
+        // parent so create_process doesn't collide with the auto-registered init.
+        table.create_process(100).unwrap();
 
         // Create a pipe in the parent
         {
-            let parent = table.get_mut(1).unwrap();
+            let parent = table.get_mut(100).unwrap();
             let (_r, _w) = sys_pipe(parent).unwrap();
             // r=fd 0, w=fd 1 (Process::new starts with empty fd table in tests)
             // Mark fd 0 as FD_CLOFORK
@@ -14524,10 +14671,10 @@ mod tests {
         }
 
         // Fork
-        table.fork_process(1, 2).unwrap();
+        table.fork_process(100, 101).unwrap();
 
         // Child should NOT have fd 0 (CLOFORK), but SHOULD have fd 1
-        let child = table.get(2).unwrap();
+        let child = table.get(101).unwrap();
         assert!(child.fd_table.get(0).is_err(), "fd 0 with FD_CLOFORK should not be inherited");
         assert!(child.fd_table.get(1).is_ok(), "fd 1 without FD_CLOFORK should be inherited");
     }
