@@ -1,0 +1,31 @@
+// Phase 4 test fixture: GotoExternalInstruction inside a labeled macro.
+//
+// The macro body contains `goto Fail` which Torque lowers to
+// GotoExternalInstruction. Under kCCBuiltins, that emits
+//   *<out_fail_bool> = true; return;
+// writing through the caller-supplied pointer (see Phase 4 Task 4.4
+// label-exit out-param convention in
+// implementation-visitor.cc:2056-2077). The builtin caller invokes
+// the macro via `otherwise Bailout`, which routes through
+// CallCsaMacroAndBranchInstruction emission (Phase 3) and dispatches
+// to the Bailout block when the label fires.
+//
+// Compared to call-torque-macro.tq, this fixture keeps the macro
+// body minimal (a single comparison + goto) to make the generated
+// GotoExternal emission textually obvious.
+namespace test_cc {
+  macro TorqueCcTest_GotoExternalBody(x: Smi): Smi labels Fail {
+    if (x == 0) goto Fail;
+    return x;
+  }
+
+  builtin TorqueCcTest_GotoExternal(
+      implicit context: Context)(arg: Smi): Smi {
+    try {
+      const r: Smi = TorqueCcTest_GotoExternalBody(arg) otherwise Bailout;
+      return r;
+    } label Bailout {
+      return -1;
+    }
+  }
+}
