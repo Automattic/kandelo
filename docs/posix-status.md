@@ -143,6 +143,7 @@ The wasm-posix-kernel uses a **centralized architecture**: a single kernel Wasm 
 | `ioperm()` / `iopl()` | Stub | Returns EPERM. No I/O port access. |
 | `remap_file_pages()` | Stub | Returns ENOSYS. |
 | `getcontext()` / `setcontext()` / `makecontext()` / `swapcontext()` | Unsupported | Userspace stack-switching primitives, deprecated in POSIX.1-2008, not planned. See the "ucontext API unsupported" row under [Wasm-Inherent gaps](#wasm-inherent--gaps-that-cannot-be-fully-resolved-in-wasm) for rationale. |
+| `fork()` called from a C++/Ruby exception catch handler | Unsupported pattern | Fork-from-catch: a child that rewinds into a caught-region's handler-body needs the original exnref re-synthesized, which today is not. Child traps with an empty exnref stash. None of the currently ported programs trigger this (they use `setjmp`/`longjmp` on fork paths, not EH). See [fork-instrumentation.md](fork-instrumentation.md) §Guarantees. A staged follow-up PR (B1) will add the serialize/synthesize machinery to close this. |
 
 ## Signals
 

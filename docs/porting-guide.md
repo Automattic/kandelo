@@ -37,15 +37,12 @@ make CC=wasm32posix-cc AR=wasm32posix-ar RANLIB=wasm32posix-ranlib [flags]
 
 **Missing features**: Check [wasm-limitations.md](wasm-limitations.md) for what cannot be implemented (mprotect, raw server sockets in browser, guest-initiated pthread_create). Most software has graceful fallbacks for these.
 
-**fork() support**: If the program uses `fork()`, `posix_spawn()`, or `system()`, apply Asyncify post-processing:
+**fork() support**: If the program uses `fork()`, `posix_spawn()`, or `system()`, run `wasm-fork-instrument` as the final step of the wasm pipeline (after any `wasm-opt -O2`):
 ```bash
-wasm-opt --asyncify \
-  --asyncify-imports "env.channel_syscall" \
-  --pass-arg=asyncify-ignore-indirect \
-  -O2 program.wasm -o program.wasm
+"$REPO_ROOT/tools/bin/wasm-fork-instrument" program.wasm -o program.wasm
 ```
 
-For large programs, use `--asyncify-onlylist` to limit instrumentation to functions reachable from `fork()`. See `examples/libs/php/build-php.sh` for an example.
+The tool auto-discovers the fork-call closure via call-graph analysis (direct + indirect calls). No onlylist file is needed, and no manual tracing of fork paths. It must run last — it hardcodes mutable-global offsets at instrument time, and any later pass that reorders globals will corrupt the fork save buffer. See [fork-instrumentation.md](fork-instrumentation.md) for the full transform and ABI.
 
 **Thread support**: Programs that create threads (MariaDB, Redis) work via the kernel's `clone()` syscall. No special compilation flags needed, but the host runner must implement the `onClone` callback.
 
@@ -462,9 +459,9 @@ All build scripts are in `examples/libs/`. They serve as reference implementatio
 
 **"wasm_posix_kernel.wasm not found"**: Run `bash build.sh` first.
 
-**Fork fails silently**: Apply Asyncify post-processing to the program binary.
+**Fork fails silently**: Run the binary through `tools/bin/wasm-fork-instrument` — the host detects the five `wpk_fork_*` exports at launch and falls back to non-forking mode when they are absent. See [fork-instrumentation.md](fork-instrumentation.md).
 
-**"Maximum call stack size exceeded" in browser**: The program has too many Asyncify-instrumented functions. Use `--asyncify-onlylist` to restrict to only the fork path.
+**"Maximum call stack size exceeded" in browser**: The program's fork-path closure (as discovered by `wasm-fork-instrument`) is large. This is rare — the tool instruments only fork-reachable functions, not the whole module. If it happens, check whether `call_indirect` is pulling in a much broader closure than expected (the indirect-call closure is conservative; signatures alone determine reach).
 
 **Process hangs on read**: The fd might be in blocking mode waiting for data. Check that writers are properly closing their end of the pipe.
 
