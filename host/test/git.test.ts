@@ -23,8 +23,22 @@ const repoRoot = join(__dirname, "../..");
 const gitBinary = join(repoRoot, "examples/libs/git/bin/git.wasm");
 const gitRemoteHttpBinary = join(repoRoot, "examples/libs/git/bin/git-remote-http.wasm");
 
-const hasGit = existsSync(gitBinary);
-const hasGitRemoteHttp = existsSync(gitRemoteHttpBinary);
+// Phase 7: skip git tests when the checked-in binaries predate the
+// wasm-fork-instrument flip (i.e. they still export asyncify_* instead
+// of wpk_fork_*). Detect by reading the wasm module and looking for the
+// new export name; a stale binary causes kernel ABI mismatch at launch
+// and the test hangs on startup rather than producing a clean skip.
+function hasWpkForkExports(path: string): boolean {
+  try {
+    const bytes = readFileSync(path);
+    return bytes.includes(Buffer.from("wpk_fork_state"));
+  } catch {
+    return false;
+  }
+}
+
+const hasGit = existsSync(gitBinary) && hasWpkForkExports(gitBinary);
+const hasGitRemoteHttp = existsSync(gitRemoteHttpBinary) && hasWpkForkExports(gitRemoteHttpBinary);
 
 // Git config via environment
 const gitEnv = [

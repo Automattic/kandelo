@@ -583,6 +583,25 @@ EOF
 - **Task 2 complete** at commit `36454b838` — `build.sh` now installs `tools/bin/wasm-fork-instrument` using host-triple detection via `rustc -vV`.
 - **Pre-existing TS DTS build error surfaced during Task 2 verification** (NOT caused by Phase 7 work): `host/src/vfs/memory-fs.ts:430` calls `new SharedArrayBuffer(sabLen, sabOptions)` — the 2-arg growable-SAB constructor. On fresh `npm install` against the current host package.json, TypeScript rejects with `TS2554: Expected 0-1 arguments, but got 2`. The same line exists verbatim on `fierce-wire`; that branch's `host/dist/` predates whatever tsc/lib update caused this. Implication: the `npm run build` tail of `build.sh` fails on a cold worktree. Vitest likely still passes (esbuild transpile, not DTS-gated), but this must be resolved before Task 14 regression matrix can declare success. Likely fix: widen `lib` in `host/tsconfig.json` or add a narrow `as any` / typed wrapper at the call site. Track as a pre-Task-14 blocker.
 - Tasks 4-5 inventory (read-only): filled below as they complete.
+- **Regression-matrix findings (in-flight, 2026-04-21):**
+  - ✅ Suite 1 cargo: 722/0 clean.
+  - ✅ Suite 2 vitest: 246/0/112 clean (2 git tests auto-skip after the stale pre-Phase-7 `git.wasm` was moved aside; follow-up to rebuild git with zlib in cached deps).
+  - ✅ Suite 3 libc-test: 296 PASS / 4 FAIL — all 4 (`ipc_msg`, `popen`, `spawn`, `daemon-failure`) are pre-existing per `docs/libc-test-failures.md` baseline; not Phase 7 regressions.
+  - ✅ Suite 4 POSIX: 42 PASS / 0 FAIL / 1 XFAIL.
+  - ⚠️ Suite 5 sortix: initially 9 FAIL vs fierce-wire baseline 0 FAIL. Fix at commit `f56c648d2` (skip imported globals in `saved_globals[]`) closed 1/9 (`signal/ppoll-block-sleep-write-raise`). **8 remain as known regressions, to be fixed in a follow-up PR before this merges or immediately after:**
+    - `basic/signal/killpg`
+    - `basic/spawn/posix_spawnattr_setpgroup`
+    - `basic/sys_wait/waitpid`
+    - `io/dup3-clofork-fork`
+    - `io/open-clofork-fork`
+    - `process/fork-exec-setpgid-in-parent`
+    - `process/fork-setsid-setpgid-in-parent-move`
+    - `process/fork-setsid-setpgid-in-parent`
+    All 8 involve a specific combination of fork + pgid/setsid + process-group signal/wait semantics. Initial diagnostics showed child's syscalls reach the kernel and return real data, so channel routing is correct post-`__channel_base` fix. Root cause likely in an as-yet-unexplained timing/memory-state difference between wasm-opt --asyncify's unwind/rewind and wasm-fork-instrument's. One hypothesis: the instrumented rewind leaves some mutable state (beyond the two globals we save) in a state that diverges from what LLVM-emitted code expects at the fork() call site, specifically in paths that later touch kernel-side pgid/sid/fd state via syscalls.
+  - ✅ Suite 6 check-abi-version.sh: clean (snapshot + ABI_VERSION bump consistent).
+- **Latent build-sequence bug discovered (fixed):** `bash build.sh` runs `scripts/build-programs.sh` before `abi_constants.h` gets regenerated, so in a single-session ABI bump + rebuild, programs get the OLD `WASM_POSIX_ABI_VERSION` baked into their `wasm-posix-abi` custom section. The Phase 7 atomic commit `a30254a38` tripped on this; commit `1f5d65f5e` rebuilt the user programs with ABI=3. Follow-up: reorder `build.sh` so `scripts/check-abi-version.sh update` (or at least its header regen step) runs before `build-programs.sh`.
+- **Plan inventory gap:** 3 test-runner scripts (`scripts/run-libc-tests.sh`, `run-posix-tests.sh`, `run-sortix-tests.sh`) contain their own `asyncify_wasm()` function that compiles test programs and applies the fork-instrumentation pass. These were not on the Task 4 inventory of 10 fork-using build scripts; they needed identical treatment. Commit `553334e54` flipped them to use `tools/bin/wasm-fork-instrument`.
+- **Root-level `npm install` required for fresh worktrees:** `bash build.sh` only installs `host/node_modules/`. The repo's top-level `package.json` (used by `examples/run-example.ts` for `tsx/esm` during test runs) also needs `npm install` at the repo root. Fresh worktrees hit ERR_MODULE_NOT_FOUND until this is done. Follow-up: `bash build.sh` should also install the root-level packages.
 
 ---
 
