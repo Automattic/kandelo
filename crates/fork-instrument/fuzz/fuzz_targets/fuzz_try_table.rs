@@ -1,6 +1,9 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
 
-fuzz_target!(|_data: &[u8]| {
-    // Stub: implemented in Task 4.
+#[path = "oracle.rs"]
+mod oracle;
+
+fuzz_target!(|data: &[u8]| {
+    oracle::run_oracle(data);
 });
