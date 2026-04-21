@@ -4,9 +4,10 @@
 //! Every generator output is a syntactically well-formed module that
 //! imports `kernel.kernel_fork` so the instrumenter has work to do.
 //!
-//! This file starts narrow: one try_table shape with a catch_ref
-//! clause on the fork path. Subsequent tasks extend the input space
-//! (nested try_tables, ref-typed locals, multi-function fork paths).
+//! Covers: single or nested try_tables, all four catch-clause shapes,
+//! and 0..=4 scalar locals of varying numeric type. Nested shape wraps
+//! an inner try_table in an outer try_table of the *same* clause
+//! variant to keep block result types trivially lined up.
 
 use arbitrary::{Arbitrary, Unstructured};
 
@@ -26,26 +27,85 @@ enum ClauseVariant {
     CatchAll,
 }
 
+impl ClauseVariant {
+    /// Returns (clause WAT, block result type, body-yield instr, after-block cleanup).
+    fn render_parts(
+        &self,
+        tag: &str,
+        label: &str,
+    ) -> (String, &'static str, &'static str, &'static str) {
+        match self {
+            ClauseVariant::CatchRef => (
+                format!("(catch_ref {tag} {label})"),
+                "(result (ref null exn))",
+                "ref.null exn",
+                "drop",
+            ),
+            ClauseVariant::CatchAllRef => (
+                format!("(catch_all_ref {label})"),
+                "(result (ref null exn))",
+                "ref.null exn",
+                "drop",
+            ),
+            ClauseVariant::Catch => (format!("(catch {tag} {label})"), "", "", ""),
+            ClauseVariant::CatchAll => (format!("(catch_all {label})"), "", "", ""),
+        }
+    }
+}
+
+/// Scalar numeric type used for a generated local declaration.
+#[derive(Debug, Clone, Copy, arbitrary::Arbitrary)]
+enum ScalarLocalTy {
+    I32,
+    I64,
+    F32,
+    F64,
+}
+
+impl ScalarLocalTy {
+    fn as_wat(&self) -> &'static str {
+        match self {
+            ScalarLocalTy::I32 => "i32",
+            ScalarLocalTy::I64 => "i64",
+            ScalarLocalTy::F32 => "f32",
+            ScalarLocalTy::F64 => "f64",
+        }
+    }
+}
+
 /// One generated program. Keep fields private so future generator
 /// extensions don't require downstream changes.
 #[derive(Debug)]
 pub struct WatProgram {
-    /// 0..=3 extra i32 locals in the fork-path function. Ensures we
-    /// exercise frame-save/restore for varying scalar-local counts.
-    extra_i32_locals: u8,
-    /// When true, prepend a `(memory.grow)` noop in the fork-path body
-    /// to exercise Phase 4g's gating of memory-mutation ops.
+    /// 0..=4 scalar locals on the fork-path function. Exercises
+    /// Phase 4d frame save/restore across varying local counts and
+    /// types.
+    scalar_locals: Vec<ScalarLocalTy>,
+    /// Prepend a memory.grow to the fork-path body. Exercises Phase
+    /// 4g's gating of memory-mutation ops.
     has_memory_grow: bool,
-    /// Which try_table catch-clause shape to emit.
+    /// Catch clause used on the (inner) try_table.
     clause_variant: ClauseVariant,
+    /// When true, wrap the inner try_table in an outer try_table of
+    /// the *same* ClauseVariant family. Exercises Phase 6a-e region-id
+    /// assignment and handler dispatch across multiple regions. Same
+    /// variant ensures the block result types line up trivially —
+    /// mixed families are not generated here.
+    wrap_in_outer: bool,
 }
 
 impl<'a> Arbitrary<'a> for WatProgram {
     fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
+        let count = (u8::arbitrary(u)? & 0b111).min(4); // 0..=4
+        let mut scalar_locals = Vec::with_capacity(count as usize);
+        for _ in 0..count {
+            scalar_locals.push(ScalarLocalTy::arbitrary(u)?);
+        }
         Ok(Self {
-            extra_i32_locals: u8::arbitrary(u)? & 0b11, // 0..=3
+            scalar_locals,
             has_memory_grow: bool::arbitrary(u)?,
             clause_variant: ClauseVariant::arbitrary(u)?,
+            wrap_in_outer: bool::arbitrary(u)?,
         })
     }
 }
@@ -55,10 +115,11 @@ impl WatProgram {
     /// valid; type-validity is confirmed by the preflight step in the
     /// oracle.
     pub fn to_wat(&self) -> String {
-        let mut locals = String::new();
-        for _ in 0..self.extra_i32_locals {
-            locals.push_str("(local i32) ");
-        }
+        let locals_wat: String = self
+            .scalar_locals
+            .iter()
+            .map(|ty| format!("(local {}) ", ty.as_wat()))
+            .collect();
 
         let mem_grow = if self.has_memory_grow {
             "i32.const 0 memory.grow drop"
@@ -66,24 +127,31 @@ impl WatProgram {
             ""
         };
 
-        // For ref-returning clauses the block/try_table yield an exnref
-        // that the caller must drop. For the non-ref clauses the block
-        // is empty-typed and no cleanup is needed.
-        let (clause_wat, block_ty, body_yield, after_block) = match self.clause_variant {
-            ClauseVariant::CatchRef => (
-                "(catch_ref $exn $handler)",
-                "(result (ref null exn))",
-                "ref.null exn",
-                "drop",
-            ),
-            ClauseVariant::CatchAllRef => (
-                "(catch_all_ref $handler)",
-                "(result (ref null exn))",
-                "ref.null exn",
-                "drop",
-            ),
-            ClauseVariant::Catch => ("(catch $exn $handler)", "", "", ""),
-            ClauseVariant::CatchAll => ("(catch_all $handler)", "", "", ""),
+        let (clause_wat_inner, block_ty, body_yield, after_block) =
+            self.clause_variant.render_parts("$exn", "$handler");
+
+        let inner = format!(
+            r#"(block $handler {block_ty}
+      (try_table {block_ty} {clause_wat_inner}
+        {mem_grow}
+        call $fork
+        drop
+        {body_yield}))"#,
+        );
+
+        let body = if self.wrap_in_outer {
+            let (clause_wat_outer, _, _, _) =
+                self.clause_variant.render_parts("$exn", "$outer_handler");
+            format!(
+                r#"(block $outer_handler {block_ty}
+      (try_table {block_ty} {clause_wat_outer}
+        {inner}
+        {after_block}
+        {body_yield}))
+    {after_block}"#,
+            )
+        } else {
+            format!("{inner}\n    {after_block}")
         };
 
         format!(
@@ -91,23 +159,11 @@ impl WatProgram {
   (import "kernel" "kernel_fork" (func $fork (result i32)))
   (tag $exn)
   (func $caller (export "caller") (result i32)
-    {locals}
-    (block $handler {block_ty}
-      (try_table {block_ty} {clause_wat}
-        {mem_grow}
-        call $fork
-        drop
-        {body_yield}))
-    {after_block}
+    {locals_wat}
+    {body}
     i32.const 0)
   (memory 1))
 "#,
-            locals = locals,
-            block_ty = block_ty,
-            clause_wat = clause_wat,
-            mem_grow = mem_grow,
-            body_yield = body_yield,
-            after_block = after_block,
         )
     }
 
