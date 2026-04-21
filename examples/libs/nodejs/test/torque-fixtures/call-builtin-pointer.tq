@@ -1,0 +1,42 @@
+// Phase 2 test fixture: CallBuiltinPointerInstruction.
+//
+// Torque emits CallBuiltinPointerInstruction when the callee of a call
+// expression is a local value of BuiltinPointerType (see
+// implementation-visitor.cc:2795 GeneratePointerCall, dispatched from
+// :3399-3401 when the name resolves to a local rather than a global
+// callable). The Torque surface syntax is the ordinary call form
+// `fp(args)` where `fp` is a `builtin(...) => Ret`-typed local.
+//
+// The helper is an internal stub builtin (the only kind Torque will let
+// you take a BuiltinPtr to — see implementation-visitor.cc:1120). The
+// caller stores its address in a local `const fp: builtin(Smi) => Smi`,
+// then invokes it indirectly. The Torque lowering for that call is
+//   PushBuiltinPointer (fp = Smi(Builtin::k..._Helper))
+//   ... push argument ...
+//   CallBuiltinPointer type=builtin(Smi) => Smi, argc=1
+//   Return
+//
+// In the Phase 2 CC backend, CallBuiltinPointer emits a placeholder
+// dispatch: a typed function-pointer alias, a lookup through
+// `Builtins::CppEntryOf(static_cast<Builtin>(Smi::ToInt(fp)))`, and a
+// direct invocation through that pointer. `Builtins::CppEntryOf` does
+// not exist yet — Phase 4 will generate the dispatch table that
+// provides it. For Phase 2 the emission only needs to parse as valid
+// C++ with the right signature shape.
+//
+// Both the caller and the callee must be on the whitelist; the harness
+// auto-includes every `TorqueCcTest_[A-Za-z0-9_]+` identifier found in
+// the fixture source, so declaring both here is sufficient.
+namespace test_cc {
+  builtin TorqueCcTest_CallBuiltinPointer_Helper(implicit context: Context)(
+      x: Smi): Smi {
+    return x;
+  }
+
+  builtin TorqueCcTest_CallBuiltinPointer(implicit context: Context)(
+      arg: Smi): Smi {
+    const fp: builtin(Context, Smi) => Smi =
+        TorqueCcTest_CallBuiltinPointer_Helper;
+    return fp(context, arg);
+  }
+}
