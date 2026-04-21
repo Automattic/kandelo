@@ -38,14 +38,15 @@ INCLUDE_EXPECTED_FAIL=(
 BASIC_EXPECTED_FAIL=(
     "devctl/posix_devctl"                                 # device control (Sortix/2024, not in musl)
     "aio/aio_error" "aio/aio_fsync" "aio/aio_read"         # AIO requires threads (musl uses pthread)
-    "pthread/pthread_barrierattr_setpshared" "pthread/pthread_cancel"
+    "pthread/pthread_cancel"
     "pthread/pthread_cleanup_pop" "pthread/pthread_cleanup_push"
-    "pthread/pthread_condattr_setpshared"
+    "pthread/pthread_condattr_setpshared"                 # cross-process MAP_SHARED|MAP_ANONYMOUS memory
+                                                          # not supported on wasm (pthread primitives ARE
+                                                          # supported — see crates/kernel/src/pshared.rs)
     "pthread/pthread_create"                              # no guest-initiated pthread_create
     "signal/pthread_kill"
     "threads/thrd_create"                                 # C11 threads (requires pthread_create)
     "pthread/pthread_attr_setinheritsched"                # priority scheduling not supported
-    "pthread/pthread_mutexattr_setpshared"                # PSHARED not supported
     "pthread/pthread_setcancelstate"                      # cancellation not supported
     "strings/ffsll"                                       # wasm32 test bug (long vs long long)
 )

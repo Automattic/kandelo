@@ -17,6 +17,7 @@ pub mod path;
 pub mod pipe;
 pub mod procfs;
 pub mod process;
+pub mod pshared;
 pub mod process_table;
 pub mod pty;
 pub mod signal;

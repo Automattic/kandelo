@@ -2815,6 +2815,114 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
             }
         }
 
+        // ───── PTHREAD_PROCESS_SHARED primitives ─────
+        // See crates/kernel/src/pshared.rs. Blocking ops return EAGAIN so
+        // the centralized-mode host retry loop re-invokes them.
+        400 => { // SYS_PSHARED_MUTEX_INIT: (mtype)
+            let t = unsafe { crate::pshared::global_pshared_table() };
+            t.mutex_init(a1 as u32) as i32
+        }
+        401 => { // SYS_PSHARED_MUTEX_LOCK: (id)
+            let t = unsafe { crate::pshared::global_pshared_table() };
+            let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
+            match t.mutex_lock(a1 as u32, pid) {
+                Ok(()) => 0,
+                Err(e) => -(e as i32),
+            }
+        }
+        402 => { // SYS_PSHARED_MUTEX_TRYLOCK: (id)
+            let t = unsafe { crate::pshared::global_pshared_table() };
+            let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
+            match t.mutex_trylock(a1 as u32, pid) {
+                Ok(()) => 0,
+                Err(e) => -(e as i32),
+            }
+        }
+        403 => { // SYS_PSHARED_MUTEX_UNLOCK: (id)
+            let t = unsafe { crate::pshared::global_pshared_table() };
+            let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
+            match t.mutex_unlock(a1 as u32, pid) {
+                Ok(()) => 0,
+                Err(e) => -(e as i32),
+            }
+        }
+        404 => { // SYS_PSHARED_MUTEX_DESTROY: (id)
+            let t = unsafe { crate::pshared::global_pshared_table() };
+            match t.mutex_destroy(a1 as u32) {
+                Ok(()) => 0,
+                Err(e) => -(e as i32),
+            }
+        }
+        405 => { // SYS_PSHARED_COND_INIT: ()
+            let t = unsafe { crate::pshared::global_pshared_table() };
+            t.cond_init() as i32
+        }
+        406 => { // SYS_PSHARED_COND_WAIT_BEGIN: (cond_id, mutex_id)
+            let t = unsafe { crate::pshared::global_pshared_table() };
+            let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
+            match t.cond_wait_begin(a1 as u32, a2 as u32, pid) {
+                Ok(()) => 0,
+                Err(e) => -(e as i32),
+            }
+        }
+        407 => { // SYS_PSHARED_COND_WAIT_CHECK: (cond_id, mutex_id)
+            let t = unsafe { crate::pshared::global_pshared_table() };
+            let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
+            match t.cond_wait_check(a1 as u32, a2 as u32, pid) {
+                Ok(()) => 0,
+                Err(e) => -(e as i32),
+            }
+        }
+        408 => { // SYS_PSHARED_COND_SIGNAL: (cond_id)
+            let t = unsafe { crate::pshared::global_pshared_table() };
+            match t.cond_signal(a1 as u32) {
+                Ok(_pid) => 0,
+                Err(e) => -(e as i32),
+            }
+        }
+        409 => { // SYS_PSHARED_COND_BROADCAST: (cond_id)
+            let t = unsafe { crate::pshared::global_pshared_table() };
+            match t.cond_broadcast(a1 as u32) {
+                Ok(_n) => 0,
+                Err(e) => -(e as i32),
+            }
+        }
+        410 => { // SYS_PSHARED_COND_DESTROY: (cond_id)
+            let t = unsafe { crate::pshared::global_pshared_table() };
+            match t.cond_destroy(a1 as u32) {
+                Ok(()) => 0,
+                Err(e) => -(e as i32),
+            }
+        }
+        411 => { // SYS_PSHARED_BARRIER_INIT: (count)
+            let t = unsafe { crate::pshared::global_pshared_table() };
+            match t.barrier_init(a1 as u32) {
+                Ok(id) => id as i32,
+                Err(e) => -(e as i32),
+            }
+        }
+        412 => { // SYS_PSHARED_BARRIER_WAIT: (id)
+            let t = unsafe { crate::pshared::global_pshared_table() };
+            let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
+            match t.barrier_wait(a1 as u32, pid) {
+                Ok(v) => v,
+                Err(e) => -(e as i32),
+            }
+        }
+        413 => { // SYS_PSHARED_BARRIER_DESTROY: (id)
+            let t = unsafe { crate::pshared::global_pshared_table() };
+            match t.barrier_destroy(a1 as u32) {
+                Ok(()) => 0,
+                Err(e) => -(e as i32),
+            }
+        }
+        414 => { // SYS_PSHARED_COND_WAIT_ABORT: (cond_id)
+            let t = unsafe { crate::pshared::global_pshared_table() };
+            let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
+            t.cond_wait_abort(a1 as u32, pid);
+            0
+        }
+
         253..=254 | 262 | 265..=268 | 289 | 292 | 301..=303 | 305 | 309..=322 | 324 | 348..=349 | 362..=369 | 373..=376 | 386 => {
             // Remaining stubs: return ENOSYS
             -(Errno::ENOSYS as i32)
