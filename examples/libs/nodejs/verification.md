@@ -1,5 +1,23 @@
 # Phase 0 Verification
 
+## Phase 0 Summary
+
+| Item | Result |
+|---|---|
+| Node.js v24.x cloned (HEAD `9fe7634c`) | ✅ |
+| V8 version matches design (13.6.233.17) | ✅ |
+| Torque binary builds on host | ✅ |
+| CCGenerator shape matches design (CCGenerator + CSAGenerator extend TorqueCodeGenerator) | ✅ |
+| 22 backend-dependent + 3 agnostic instructions confirmed | ✅ |
+| 12 stub instructions confirmed (exact set matches design) | ✅ |
+| Fourth-pass seam confirmed (OutputType enum, pass driver, per-declarable filter) | ✅ |
+| CSS + jitless compatible (full `v8_snapshot` build, 2541/2541 steps, 0 errors) | ✅ |
+| Torque round-trips stock .tq files on host | ✅ |
+
+**Decision: proceed to Phase 1 on Option A (Conservative Stack Scanning).**
+No design pivot required.
+
+
 Verified against Node.js v24.x (V8 13.6.233.17) cloned at
 `examples/libs/nodejs/build/node/`.
 
