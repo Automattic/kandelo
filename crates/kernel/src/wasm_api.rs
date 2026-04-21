@@ -1680,7 +1680,8 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         122 => kernel_getdents64(a1, a2 as *mut u8, a3 as u32), // SYS_GETDENTS64
 
         // Process control
-        34 => { kernel_exit(a1); }                 // SYS_EXIT
+        34 => { kernel_exit(a1); }                 // SYS_EXIT (thread exit)
+        387 => { kernel_exit(a1); }                // SYS_EXIT_GROUP (process exit)
         35 => kernel_kill(a1, a2 as u32),          // SYS_KILL
         38 => kernel_raise(a1 as u32),             // SYS_RAISE
 

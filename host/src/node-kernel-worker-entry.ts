@@ -458,6 +458,17 @@ function handleExit(pid: number, exitStatus: number): void {
   if (info?.worker) {
     info.worker.terminate().catch(() => {});
   }
+
+  // Terminate any surviving thread workers for this process; the main
+  // process worker exiting means their shared state is gone.
+  const threads = threadWorkers.get(pid);
+  if (threads) {
+    for (const t of threads) {
+      t.worker.terminate().catch(() => {});
+    }
+    threadWorkers.delete(pid);
+  }
+
   processes.delete(pid);
   threadModuleCache.delete(pid);
   ptyByPid.delete(pid);

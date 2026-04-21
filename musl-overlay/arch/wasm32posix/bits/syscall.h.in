@@ -315,11 +315,11 @@
 #define __NR_accept4        384
 #define __NR__llseek        119
 #define __NR_execveat       386
+#define __NR_exit_group     387
 #define __NR_recvmsg        138
 #define __NR_sendmsg        137
 
 /* Aliases that musl expects (64-bit variants and rt_sig*) */
-#define __NR_exit_group       __NR_exit
 #define __NR_mmap2            __NR_mmap
 #define __NR_fstat64          __NR_fstat
 #define __NR_stat64           __NR_stat
