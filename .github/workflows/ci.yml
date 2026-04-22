@@ -107,6 +107,15 @@ jobs:
       - name: Build kernel wasm + host + user programs
         run: bash build.sh
 
+      # DIAGNOSTIC: PTY allocation behavior on Linux vs macOS.
+      # Sortix termios tests fail on Linux CI with /dev/pts/1: ENOENT.
+      # Runs before any test suite so we always get the output.
+      - name: diag — pty allocation
+        run: |
+          set -x
+          ls -la host/wasm/diag-pty.wasm
+          node --experimental-wasm-exnref --import tsx/esm examples/run-example.ts host/wasm/diag-pty.wasm 2>&1 || true
+
       # 1. Cargo unit tests — native host target on Linux.
       - name: cargo test (kernel unit tests)
         run: cargo test -p wasm-posix-kernel --target x86_64-unknown-linux-gnu --lib
@@ -123,17 +132,6 @@ jobs:
       # 4. Open POSIX Test Suite (POSIX API conformance).
       - name: POSIX test suite
         run: bash scripts/run-posix-tests.sh
-
-      # DIAGNOSTIC: PTY allocation behavior on Linux vs macOS.
-      # Sortix termios tests fail on Linux CI with /dev/pts/1: ENOENT.
-      # This runs a targeted diagnostic so we can compare output across
-      # platforms. Always runs even if later steps fail.
-      - name: diag — pty allocation
-        if: always()
-        run: |
-          set -x
-          ls -la host/wasm/diag-pty.wasm || true
-          node --experimental-wasm-exnref --import tsx/esm examples/run-example.ts host/wasm/diag-pty.wasm 2>&1 || true
 
       # 5. Sortix os-test (header/syscall conformance).
       - name: sortix os-test
