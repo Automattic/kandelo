@@ -1350,6 +1350,9 @@ pub fn sys_pread(
     buf: &mut [u8],
     offset: i64,
 ) -> Result<usize, Errno> {
+    if offset < 0 {
+        return Err(Errno::EINVAL);
+    }
     let entry = proc.fd_table.get(fd)?;
     let ofd_idx = entry.ofd_ref.0;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
@@ -1384,6 +1387,9 @@ pub fn sys_pwrite(
     buf: &[u8],
     offset: i64,
 ) -> Result<usize, Errno> {
+    if offset < 0 {
+        return Err(Errno::EINVAL);
+    }
     let entry = proc.fd_table.get(fd)?;
     let ofd_idx = entry.ofd_ref.0;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
@@ -10060,6 +10066,25 @@ mod tests {
         let (_read_fd, write_fd) = sys_pipe(&mut proc).unwrap();
         let result = sys_pwrite(&mut proc, &mut host, write_fd, b"test", 0);
         assert_eq!(result, Err(Errno::ESPIPE));
+    }
+
+    #[test]
+    fn test_pread_einval_on_negative_offset() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/tmp/f", O_RDWR | O_CREAT, 0o644).unwrap();
+        let mut buf = [0u8; 4];
+        assert_eq!(sys_pread(&mut proc, &mut host, fd, &mut buf, -1), Err(Errno::EINVAL));
+        assert_eq!(sys_pread(&mut proc, &mut host, fd, &mut buf, i64::MIN), Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn test_pwrite_einval_on_negative_offset() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/tmp/f", O_RDWR | O_CREAT, 0o644).unwrap();
+        assert_eq!(sys_pwrite(&mut proc, &mut host, fd, b"x", -1), Err(Errno::EINVAL));
+        assert_eq!(sys_pwrite(&mut proc, &mut host, fd, b"x", i64::MIN), Err(Errno::EINVAL));
     }
 
     #[test]

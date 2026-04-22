@@ -25,9 +25,8 @@ This file is the counterpart to [wasm-limitations.md](wasm-limitations.md), whic
 **Async cancellation (`PTHREAD_CANCEL_ASYNCHRONOUS`) is out of scope.** Wasm cannot preempt a running thread mid-computation, so a target that never enters a cancellation-point syscall cannot be cancelled. The libc-test `pthread_cancel` functional test (which starts with an async-cancel + busy-loop subcase) therefore remains XFAIL — its deferred-cancel subcases would pass, but there is no harness-level partial PASS.
 
 **Still blocked (other gaps):**
-- `aio/aio_error`: `aio/aio_fsync` and `aio/aio_read` pass after per-thread signal routing landed; `aio_error` still exercises more of the AIO surface than we implement.
-- `pthread/pthread_setcanceltype` (sortix): the test uses `PTHREAD_CANCEL_ASYNCHRONOUS` — explicitly out of scope.
 - libc-test functional `pthread_cancel`: first subcase uses `PTHREAD_CANCEL_ASYNCHRONOUS` + busy loop (see the async-cancel note above). Subsequent deferred-cancel subcases would pass, but the harness reports a whole-test failure.
+- Sortix `pthread/pthread_setcanceltype` was previously listed here as out-of-scope (it does try `PTHREAD_CANCEL_ASYNCHRONOUS`), but in practice the compiler dead-code-eliminates its busy loop and the worker returns quickly enough that deferred cancellation still produces `PTHREAD_CANCELED` from `pthread_join`. Unxfail'd 2026-04-22.
 - `pthread_create-oom`: **not a kernel gap** — see "Not compromising" table below. The kernel correctly caps address space and `pthread_create` returns `EAGAIN` when `mmap` fails; the test's `t_memfill` setup sequence (specifically the `while (malloc(1));` drain) doesn't terminate within the 30 s timeout in our 1 GiB wasm arena.
 
 **Closed:**
@@ -126,7 +125,7 @@ And a matching `/etc/group`. Low-risk change — pure userspace + VFS.
 
 **Status (landed in this PR):** Per-thread `blocked` / `pending` / `rt_queue` now live on `ThreadInfo`. `kernel_set_current_tid` lets `sigprocmask`, `sigsuspend`, `ppoll`, `pselect6`, `sigtimedwait` operate on the calling thread's state. `tkill`/`tgkill` write into the target thread's directed pending queue rather than the shared process queue. `ABI_VERSION` bumped to 4 (new kernel exports — see `abi/snapshot.json`).
 
-**Closed tests:** libc-test `regression/raise-race` (previously flakey XFAIL; now passes — timing-slow so it can appear as `TIME` on heavily-loaded runs, still acceptable per `CLAUDE.md`), sortix `signal/pthread_kill`, sortix `basic/aio/aio_fsync`, sortix `basic/aio/aio_read`. `aio/aio_error` still depends on `pthread_cancel` (see target 1).
+**Closed tests:** libc-test `regression/raise-race` (previously flakey XFAIL; now passes — timing-slow so it can appear as `TIME` on heavily-loaded runs, still acceptable per `CLAUDE.md`), sortix `signal/pthread_kill`, sortix `basic/aio/aio_fsync`, sortix `basic/aio/aio_read`, sortix `basic/aio/aio_error` (after `sys_pread` / `sys_pwrite` reject negative offsets with `EINVAL`, 2026-04-22 — the test's `aio_write(offset=-9000)` used to surface the host's seek error as `EIO`).
 
 The original gap analysis (preserved below for the historical record) matches what was landed.
 
