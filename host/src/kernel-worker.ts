@@ -709,6 +709,13 @@ export class CentralizedKernelWorker {
     timer: any;  // setImmediate or setTimeout handle
     channel: ChannelInfo;
     pipeIndices: number[];
+    /** True if this retry was entered via ppoll with an atomic sigmask swap.
+     *  Broad wakes triggered by cross-process pipe events must be deferred
+     *  a few ms for these retries so follow-up cross-process signals have
+     *  time to land before ppoll observes "pipe ready, no signal" and
+     *  restores its mask. See scheduleWakeBlockedRetriesDeferred and
+     *  os-test/signal/ppoll-block-sleep-write-raise. */
+    needsSignalSafeWake?: boolean;
   }>();
   /** Pending pselect6 retries — used for signal-driven wakeup and timeout tracking */
   private pendingSelectRetries = new Map<number, {
@@ -716,6 +723,8 @@ export class CentralizedKernelWorker {
     channel: ChannelInfo;
     origArgs: number[];
     deadline: number;  // Date.now() deadline, -1 for infinite
+    /** True if this pselect6 retry has an atomic sigmask swap. */
+    needsSignalSafeWake?: boolean;
   }>();
   /** Flag to coalesce cross-process wakeup microtasks */
   private wakeScheduled = false;
@@ -2471,10 +2480,59 @@ export class CentralizedKernelWorker {
       needBroadWake = true;
     }
 
-    // If any pipe state changed, also wake poll/select retries
+    // If any pipe state changed, also wake poll/select retries.
+    //
+    // If any of those retries is a signal-mask-swapping ppoll/pselect6,
+    // defer the wake a few ms. A pipe write from process X is often
+    // immediately followed by a cross-process signal (kill) from X —
+    // e.g. "write to pipe, then kill parent" — where the writer expects
+    // a blocked ppoll in the reader to observe BOTH events atomically.
+    // On a real kernel that works because X's two syscalls execute
+    // before the scheduler runs the reader. In our retry-based
+    // centralized kernel, the pipe wakeup can fire a ppoll retry BEFORE
+    // X's follow-up kill is even sent by X's worker (Atomics.notify →
+    // uv_async round-trip takes 1–5ms). If the retry fires first, ppoll
+    // returns POLLIN and restores its sigmask; the late signal is then
+    // blocked and the handler never fires. See
+    // os-test/signal/ppoll-block-sleep-write-raise.
+    //
+    // Deferring the broad wake a few ms gives X's follow-up syscalls
+    // time to land. Kill-triggered wakes (line ~2050) always use the
+    // immediate setImmediate path — by the time kill has been processed
+    // the signal is already queued, so there's no race. Pipe
+    // reader/writer wakes above run synchronously (not via this
+    // deferred path), so plain read/write throughput is unaffected. We
+    // only pay the delay when a pipe event happens to wake a ppoll or
+    // pselect6 caller.
     if (needBroadWake) {
-      this.scheduleWakeBlockedRetries();
+      if (this.anyPendingRetryNeedsSignalSafeWake()) {
+        this.scheduleWakeBlockedRetriesDeferred();
+      } else {
+        this.scheduleWakeBlockedRetries();
+      }
     }
+  }
+
+  private anyPendingRetryNeedsSignalSafeWake(): boolean {
+    for (const entry of this.pendingPollRetries.values()) {
+      if (entry.needsSignalSafeWake) return true;
+    }
+    for (const entry of this.pendingSelectRetries.values()) {
+      if (entry.needsSignalSafeWake) return true;
+    }
+    return false;
+  }
+
+  /** Same as scheduleWakeBlockedRetries but delays by a few ms to allow
+   *  follow-up cross-process syscalls from the event source to land. */
+  private scheduleWakeBlockedRetriesDeferred(): void {
+    if (this.wakeScheduled) return;
+    if (this.pendingPollRetries.size === 0 && this.pendingSelectRetries.size === 0 && this.pendingPipeReaders.size === 0 && this.pendingPipeWriters.size === 0) return;
+    this.wakeScheduled = true;
+    setTimeout(() => {
+      this.wakeScheduled = false;
+      this.wakeAllBlockedRetries();
+    }, 10);
   }
 
   /**
@@ -2716,6 +2774,11 @@ export class CentralizedKernelWorker {
     // we should return 0 immediately instead of retrying.
     if (syscallNr === SYS_POLL || syscallNr === SYS_PPOLL) {
       let timeoutMs = -1;
+      // PPOLL with a non-null sigmask pointer swaps the signal mask for the
+      // duration of the wait. Broad wakes from cross-process pipe writes
+      // need a short grace period for such callers so follow-up signals
+      // from the writer land before ppoll returns with fds ready.
+      const needsSignalSafeWake = syscallNr === SYS_PPOLL && origArgs[3] !== 0;
       if (syscallNr === SYS_POLL) {
         timeoutMs = origArgs[2]; // timeout in ms
       } else {
@@ -2747,7 +2810,7 @@ export class CentralizedKernelWorker {
             this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], 0, 0);
           }
         }, timeoutMs);
-        this.pendingPollRetries.set(channel.channelOffset, { timer, channel, pipeIndices });
+        this.pendingPollRetries.set(channel.channelOffset, { timer, channel, pipeIndices, needsSignalSafeWake });
         return;
       }
 
@@ -2770,7 +2833,7 @@ export class CentralizedKernelWorker {
         ? (deadline > 0 ? Math.min(deadline - Date.now(), 200) : 200)
         : (deadline > 0 ? Math.min(deadline - Date.now(), 50) : 50);
       const timer = setTimeout(retryFn, Math.max(retryMs, 1));
-      this.pendingPollRetries.set(channel.channelOffset, { timer, channel, pipeIndices });
+      this.pendingPollRetries.set(channel.channelOffset, { timer, channel, pipeIndices, needsSignalSafeWake });
       return;
     }
 
@@ -3252,6 +3315,9 @@ export class CentralizedKernelWorker {
       }
 
       const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : -1;
+      // pselect6 with a non-null sigmask pointer has the same late-signal
+      // race as ppoll. See scheduleWakeBlockedRetriesDeferred.
+      const needsSignalSafeWake = maskDataPtr !== 0;
 
       // nfds=0: pure sleep/sigsuspend-like behavior.
       // With finite timeout: sleep for that duration.
@@ -3264,11 +3330,11 @@ export class CentralizedKernelWorker {
               this.completeChannel(channel, SYS_PSELECT6, origArgs, undefined, 0, 0);
             }
           }, timeoutMs);
-          this.pendingSelectRetries.set(channel.pid, { timer, channel, origArgs, deadline });
+          this.pendingSelectRetries.set(channel.pid, { timer, channel, origArgs, deadline, needsSignalSafeWake });
         } else {
           // Infinite timeout with nfds=0: wait for signal delivery.
           // No timer — wakeAllBlockedRetries will trigger the retry.
-          this.pendingSelectRetries.set(channel.pid, { timer: null as any, channel, origArgs, deadline: -1 });
+          this.pendingSelectRetries.set(channel.pid, { timer: null as any, channel, origArgs, deadline: -1, needsSignalSafeWake });
         }
         return;
       }
@@ -3284,7 +3350,7 @@ export class CentralizedKernelWorker {
         this.handlePselect6(channel, origArgs);
       };
       const timer = setImmediate(retryFn);
-      this.pendingSelectRetries.set(channel.pid, { timer, channel, origArgs, deadline });
+      this.pendingSelectRetries.set(channel.pid, { timer, channel, origArgs, deadline, needsSignalSafeWake });
       return;
     }
 
