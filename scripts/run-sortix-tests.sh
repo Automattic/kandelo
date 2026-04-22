@@ -53,7 +53,13 @@ STDIO_EXPECTED_FAIL=()
 IO_EXPECTED_FAIL=(
 )
 
-SIGNAL_EXPECTED_FAIL=()
+SIGNAL_EXPECTED_FAIL=(
+    # Inherent race documented in the test source ("Race condition since we
+    # can't observe if ppoll is truly waiting" + 100ms usleep). Passes on
+    # local dev but fails intermittently on CI depending on scheduler
+    # timing — ppoll returns POLLIN before the SIGUSR1 handler fires.
+    "ppoll-block-sleep-write-raise"
+)
 PROCESS_EXPECTED_FAIL=()
 PATHS_EXPECTED_FAIL=()
 
