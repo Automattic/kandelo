@@ -6,7 +6,10 @@
 // DO NOT EDIT.
 
 #include "src/base/macros.h"
+#include "src/builtins/builtins-utils-inl.h"
+#include "src/execution/arguments-inl.h"
 #include "src/execution/isolate.h"
+#include "src/handles/handles-inl.h"
 #include "src/objects/contexts.h"
 #include "src/objects/smi.h"
 #include "src/objects/tagged.h"
