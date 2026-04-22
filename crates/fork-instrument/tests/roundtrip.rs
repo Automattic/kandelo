@@ -41,3 +41,20 @@ fn entry_import_option_is_honored_in_defaults() {
     let default_opts = Options::default();
     assert_eq!(default_opts.entry_import, "kernel.kernel_fork");
 }
+
+/// Spike for the switch-dispatch redesign
+/// (`docs/plans/2026-04-22-fork-instrument-switch-dispatch-redesign.md`,
+/// Task 1).
+///
+/// Hand-authored fixture exercises the nested `block $unwind_save /
+/// block $POST_0 / block $dispatch_normal` structure with a
+/// REWINDING-guarded `br_table`. Passes if both walrus and wasmparser
+/// accept the module — i.e., the post-redesign shape is expressible in
+/// valid wasm.
+#[test]
+fn spike_switch_dispatch_validates() {
+    let wat = include_str!("fixtures/spike_switch_dispatch.wat");
+    let bytes = wat::parse_str(wat).expect("wat parse");
+    walrus::Module::from_buffer(&bytes).expect("walrus validates");
+    validate(&bytes).expect("wasmparser validates");
+}
