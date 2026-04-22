@@ -1,0 +1,12 @@
+// Phase 5 (revised) test fixture: simplest JS-linkage builtin.
+// Ignores context/receiver; returns its single JSAny arg unchanged.
+// Exercises CPP-ABI emission (BuiltinArguments unpacking, .ptr()
+// return) without runtime calls, typeswitches, or non-trivial IR.
+namespace test_cc {
+
+javascript builtin TorqueCcTest_JsReturn(
+    js-implicit context: NativeContext)(arg: JSAny): JSAny {
+  return arg;
+}
+
+}  // namespace test_cc
