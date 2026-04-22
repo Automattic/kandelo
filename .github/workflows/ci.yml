@@ -54,7 +54,9 @@ jobs:
         with:
           node-version: '24'
           cache: 'npm'
-          cache-dependency-path: host/package-lock.json
+          cache-dependency-path: |
+            package-lock.json
+            host/package-lock.json
 
       - name: Cache cargo registry and git
         uses: actions/cache@v4
@@ -82,6 +84,12 @@ jobs:
 
       - name: Install host dependencies
         working-directory: host
+        run: npm ci
+
+      # The POSIX/sortix test runners invoke `node --import tsx/esm
+      # examples/run-example.ts …`. That resolves `tsx` from the repo-root
+      # node_modules, which is separate from host/.
+      - name: Install repo-root dependencies
         run: npm ci
 
       # musl sysroot must exist before build.sh runs, because build.sh calls
