@@ -1,3 +1,7 @@
 [toolchain]
-channel = "nightly"
+# Pinned to the nightly used for local dev. Bump intentionally — later
+# nightlies may change unstable flags (e.g. `panic_immediate_abort`) and
+# break `build.sh` / CI.
+channel = "nightly-2025-08-16"
 targets = ["wasm32-unknown-unknown"]
+components = ["rust-src"]

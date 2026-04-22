@@ -41,12 +41,13 @@ jobs:
           sudo ./llvm.sh 21 all
           "$LLVM_BIN/clang" --version
 
-      - name: Install Rust nightly (with rust-src)
+      - name: Install Rust toolchain (from rust-toolchain.toml)
         run: |
           set -euo pipefail
-          rustup toolchain install nightly --component rust-src --profile minimal
-          rustup default nightly
-          rustup target add wasm32-unknown-unknown
+          # `rustup show active-toolchain` triggers auto-install of the
+          # pinned toolchain, rust-src component, and wasm32 target
+          # declared in rust-toolchain.toml.
+          rustup show active-toolchain
           rustc -vV
 
       - uses: actions/setup-node@v4
