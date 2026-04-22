@@ -94,6 +94,115 @@ pub struct RtSigEntry {
     pub si_code: i32,
 }
 
+/// Per-thread signal state: pending signals + blocked mask + RT queue.
+///
+/// POSIX distinguishes "directed" signals (sent via `pthread_kill` / `tkill` /
+/// `tgkill`) from "shared" signals (sent via `kill` / `sigqueue`). Directed
+/// signals target one specific thread and must be delivered to that thread
+/// even if other threads have the signal unblocked. Shared signals can be
+/// delivered to any thread that does not block them.
+///
+/// Handlers are process-wide (POSIX) so they live on [`SignalState`], not here.
+/// Each thread has its own `blocked` mask (manipulated by `pthread_sigmask`),
+/// and its own `pending` / `rt_queue` for directed deliveries.
+#[derive(Debug, Clone)]
+pub struct PerThreadSignalState {
+    /// Bitmask of signals currently blocked by this thread.
+    pub blocked: u64,
+    /// Bitmask of signals directed to this thread but not yet delivered.
+    /// Standard signals (1-31) coalesce; RT signals (32-63) set the bit and
+    /// queue one entry per raise in [`rt_queue`].
+    pub pending: u64,
+    /// Queue of RT-signal (and sigqueue-style standard-signal) entries
+    /// directed at this thread. Parallel bookkeeping to [`SignalState::rt_queue`].
+    pub rt_queue: VecDeque<RtSigEntry>,
+    /// Saved blocked mask during sigsuspend / ppoll / pselect (per-thread).
+    /// Set on first entry into a blocking signal syscall that temporarily swaps
+    /// the mask, restored once a signal is dequeued or the call completes.
+    pub sigsuspend_saved_mask: Option<u64>,
+}
+
+impl PerThreadSignalState {
+    pub fn new() -> Self {
+        PerThreadSignalState {
+            blocked: 0,
+            pending: 0,
+            rt_queue: VecDeque::new(),
+            sigsuspend_saved_mask: None,
+        }
+    }
+
+    /// Mark a signal as pending on this thread (via tkill/tgkill/pthread_kill).
+    /// Returns true on success, false for invalid signal numbers.
+    pub fn raise(&mut self, signum: u32) -> bool {
+        self.raise_internal(signum, 0, 0) // SI_USER
+    }
+
+    /// Mark a signal as pending with an si_value (sigqueue-style).
+    pub fn raise_with_value(&mut self, signum: u32, si_value: i32) -> bool {
+        self.raise_internal(signum, si_value, -1) // SI_QUEUE
+    }
+
+    fn raise_internal(&mut self, signum: u32, si_value: i32, si_code: i32) -> bool {
+        if signum == 0 || signum >= NSIG {
+            return false;
+        }
+        self.pending |= sig_bit(signum);
+        if signum >= SIGRTMIN {
+            // RT signals: always queue (multiple instances allowed)
+            self.rt_queue.push_back(RtSigEntry { signum, si_value, si_code });
+        } else if si_code != 0 {
+            // Standard signal from sigqueue: store metadata (coalesced).
+            if let Some(entry) = self.rt_queue.iter_mut().find(|e| e.signum == signum) {
+                entry.si_value = si_value;
+                entry.si_code = si_code;
+            } else {
+                self.rt_queue.push_back(RtSigEntry { signum, si_value, si_code });
+            }
+        }
+        true
+    }
+
+    /// Clear all pending instances of a signal from this thread's pending set.
+    pub fn clear_pending(&mut self, signum: u32) {
+        if signum > 0 && signum < NSIG {
+            self.pending &= !sig_bit(signum);
+            self.rt_queue.retain(|e| e.signum != signum);
+        }
+    }
+
+    /// Check whether a signal is blocked by this thread.
+    pub fn is_blocked(&self, signum: u32) -> bool {
+        if signum >= NSIG { return false; }
+        (self.blocked & sig_bit(signum)) != 0
+    }
+
+    /// Dequeue the lowest-numbered deliverable signal on this thread.
+    /// Returns (signum, si_value, si_code) or None.
+    pub fn dequeue(&mut self) -> Option<(u32, i32, i32)> {
+        let deliverable = self.pending & !self.blocked;
+        if deliverable == 0 {
+            return None;
+        }
+        let signum = deliverable.trailing_zeros() + 1;
+        if signum >= NSIG { return None; }
+        let (mut si_value, mut si_code) = (0i32, 0i32);
+        if let Some(pos) = self.rt_queue.iter().position(|e| e.signum == signum) {
+            si_value = self.rt_queue[pos].si_value;
+            si_code = self.rt_queue[pos].si_code;
+            self.rt_queue.remove(pos);
+        }
+        if signum >= SIGRTMIN {
+            if !self.rt_queue.iter().any(|e| e.signum == signum) {
+                self.pending &= !sig_bit(signum);
+            }
+        } else {
+            self.pending &= !sig_bit(signum);
+        }
+        Some((signum, si_value, si_code))
+    }
+}
+
 /// Per-process signal state.
 pub struct SignalState {
     /// Full action for each signal (indexed by signal number, 0 unused).

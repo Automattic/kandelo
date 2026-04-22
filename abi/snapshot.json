@@ -1,5 +1,5 @@
 {
-  "abi_version": 3,
+  "abi_version": 4,
   "asyncify_save_slots": [
     {
       "meaning": "parent TLS base (__tls_base) saved for child rewind",
@@ -849,6 +849,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_pick_signal_target_tid",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_pipe",
       "signature": "(i64) -> (i32)"
     },
@@ -1089,6 +1094,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_set_current_tid",
+      "signature": "(i32) -> ()"
+    },
+    {
+      "kind": "func",
       "name": "kernel_set_cwd",
       "signature": "(i32,i64,i32) -> (i32)"
     },
@@ -1289,7 +1299,17 @@
     },
     {
       "kind": "func",
+      "name": "kernel_tgkill",
+      "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_thread_exit",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_thread_has_deliverable",
       "signature": "(i32,i32) -> (i32)"
     },
     {
@@ -1336,6 +1356,11 @@
       "kind": "func",
       "name": "kernel_timerfd_settime",
       "signature": "(i32,i32,i64,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_tkill",
+      "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",

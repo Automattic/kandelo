@@ -35,7 +35,6 @@ REGRESSION_EXPECTED_FAIL=(
     malloc-oom                  # OOM behavior differs in Wasm linear memory
     pthread_cond_wait-cancel_ignored  # requires pthread_cancel
     pthread_create-oom          # not a kernel gap — see docs/compromising-xfails.md "Not compromising"
-    raise-race                  # requires pthread_create + signal race
     setenv-oom                  # OOM behavior differs in Wasm linear memory
     tls_get_new-dtv             # requires dlopen TLS (dynamic TLS not supported)
 )

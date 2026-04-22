@@ -32,6 +32,11 @@ use crate::process::Process;
 pub struct ProcessTable {
     pub(crate) processes: BTreeMap<u32, Process>,
     current_pid: u32,
+    /// TID of the thread currently servicing a syscall. 0 means "main thread"
+    /// (or unknown — callers that don't set this get main-thread semantics).
+    /// The host sets this before each `kernel_handle_channel` when a thread
+    /// worker is the caller.
+    current_tid: u32,
 }
 
 impl ProcessTable {
@@ -39,6 +44,7 @@ impl ProcessTable {
         ProcessTable {
             processes: BTreeMap::new(),
             current_pid: 0,
+            current_tid: 0,
         }
     }
 
@@ -183,6 +189,19 @@ impl ProcessTable {
     /// Get the current pid.
     pub fn current_pid(&self) -> u32 {
         self.current_pid
+    }
+
+    /// Set the current thread id. 0 means "main thread" and is the default.
+    /// The host must call this before `kernel_handle_channel` for any syscall
+    /// originating from a non-main thread so that per-thread signal state is
+    /// consulted correctly.
+    pub fn set_current_tid(&mut self, tid: u32) {
+        self.current_tid = tid;
+    }
+
+    /// Get the current thread id (0 for main thread).
+    pub fn current_tid(&self) -> u32 {
+        self.current_tid
     }
 
     /// Get a mutable reference to the current process.
@@ -338,3 +357,22 @@ pub struct GlobalProcessTable(pub UnsafeCell<ProcessTable>);
 /// SAFETY: Access is serialized — the centralized kernel services one syscall
 /// at a time from the JS event loop (no concurrent Wasm execution).
 unsafe impl Sync for GlobalProcessTable {}
+
+/// Single global `ProcessTable` instance used by the centralized kernel.
+/// Lives here (rather than inside `wasm_api.rs`) so other modules can read
+/// the currently-serviced `pid`/`tid` without a back-reference through the
+/// export layer.
+pub static GLOBAL_PROCESS_TABLE: GlobalProcessTable =
+    GlobalProcessTable(UnsafeCell::new(ProcessTable::new()));
+
+/// Read the currently-serviced thread id (0 = main thread).
+#[inline]
+pub fn current_tid() -> u32 {
+    unsafe { (*GLOBAL_PROCESS_TABLE.0.get()).current_tid() }
+}
+
+/// Read the currently-serviced process id.
+#[inline]
+pub fn current_pid() -> u32 {
+    unsafe { (*GLOBAL_PROCESS_TABLE.0.get()).current_pid() }
+}
