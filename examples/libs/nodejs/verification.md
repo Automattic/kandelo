@@ -627,3 +627,68 @@ Two realistic paths forward:
 **Recommended:** take **Path 2** for Phase 5 — defer end-to-end interpreter dispatch to Phase 6+, preserve Phase 5's cctest target but change its shape from "Array.isArray via Script::Run" to "Array.isArray via direct C++ invocation against a real NativeContext." This keeps Phase 5 shippable; Path 1 (re-emission under CPP ABI) becomes a Phase 6 plan item with clear scope.
 
 **Escalation:** Phase 5 plan's Tasks 5.8 (interpreter dispatch implementation), 5.11 (Script::Run smoke), and Task 5.13's d8 smoke-test list all depend on dispatch integration. Those tasks need re-scoping or deferral. Surfacing to user.
+
+## Phase 5 Spike — Path 1 Plumbing (Task 5.1-revised, 2026-04-22)
+
+Per the Phase 5 (revised) plan at `docs/plans/2026-04-22-torque-cc-backend-phase5-revised.md`, this spike re-tests Path 1 (re-emit with CPP ABI + piggyback V8's `AdaptorWithBuiltinExitFrameN`) before layering on real Torque emission. Path 1 was previously dismissed as "requires a new `Builtins::Kind::kTorqueCc`" — that claim was wrong; a hand-written `CPP(<Name>, JSParameterCount(<N>))` entry reuses the existing `Kind::CPP` with zero Kind-switch edits.
+
+### Spike scope
+
+Hand-wrote a minimal CPP-linkage builtin at `deps/v8/src/builtins/builtins-torquecc-spike.cc`:
+
+```cpp
+Address Builtin_TorqueCcSpike(int args_length, Address* args_object,
+                              Isolate* isolate) {
+  DCHECK(isolate->context().is_null() || IsContext(isolate->context()));
+  BuiltinArguments args(args_length, args_object);
+  HandleScope scope(isolate);
+  return (*args.receiver()).ptr();
+}
+```
+
+Registered via `CPP(TorqueCcSpike, JSParameterCount(0))` in `builtins-definitions.h` (inserted next to `CPP(ArrayConcat, ...)` at line 464), and added `"src/builtins/builtins-torquecc-spike.cc"` to `v8_base_without_compiler`'s sources list in `BUILD.gn` (picked up by `tools/v8_gypfiles/v8.gyp` via its GN-scraper).
+
+### What the spike validates
+
+| Check | Result |
+|---|---|
+| Source compiles (`builtins-utils-inl.h` + `BuiltinArguments` + `HandleScope` available) | ✅ |
+| `CPP(TorqueCcSpike, ...)` static-init accepts the entry | ✅ |
+| `FUNCTION_ADDR(Builtin_TorqueCcSpike)` resolves at link time | ✅ |
+| `BUILD_CPP_WITHOUT_JOB` → `BuildAdaptor` runs for `Builtin::kTorqueCcSpike` at mksnapshot time | ✅ (mksnapshot exits 0) |
+| `AdaptorWithBuiltinExitFrame0` Code object bakes into `libv8_snapshot.a` | ✅ (d8 links, runs `print(1+2)` under the new snapshot) |
+| `Builtins::code(Builtin::kTorqueCcSpike)` resolves post-isolate-init | ✅ (implied — d8 starts cleanly; explicit cctest check omitted due to Isolate-incomplete-type issue under the cctest's minimal include set) |
+| cctest `TorqueCcBuiltinTest.TorqueCcSpikePlumbing` passes | ✅ (4/4 tests green: DirectInvocation, DispatchTableLookup, Phase5ScriptRunSmoke, TorqueCcSpikePlumbing) |
+
+### What the spike intentionally defers
+
+**End-to-end adaptor → C dispatch at runtime** is not directly verified by the spike's cctest case. Getting the full Factory-builder + global-property-install + Script::Run path to compile under cctest's minimal include set hit a transitive include collision (V8's `src/tracing/trace-event.h` pulled in through `heap/factory.h` → `heap/heap.h` → `gc-tracer.h` conflicts with Node's `tracing/trace_event_common.h` TRACE_EVENT0 macro, because node_test_fixture.h already pulls in `env-inl.h` which defines the macro). Working around this would require gating the spike test with `#undef TRACE_EVENT0` before the V8 includes, which risks masking real issues.
+
+Instead, end-to-end dispatch will be validated by Task 5.8's d8 `print(Array.isArray([1,2,3]))` probe: that exercises the full interpreter → `builtin_table[kArrayIsArray]` → adaptor → `Builtin_ArrayIsArray` → `BuiltinArguments` unpack → Torque-lowered body → `.ptr()` return chain. If Task 5.8 fails, we'd return here and investigate the dispatch piece in isolation.
+
+### Install mechanism notes for future cctest cases (Task 5.6+)
+
+The plan's Task 5.6 (`JsReturnAdaptorDispatch`) needs a JSFunction bound to a CPP builtin for full-dispatch testing. The Phase-4 cctest file deliberately avoids `-inl.h` headers. A Task-5.6 option: **install TorqueCcTest_JsReturn via bootstrapper-style code in node.cc startup (e.g., a `--expose-torque-cc-fixtures` flag)** so cctest doesn't need the Factory incantation. Or: put the cctest case in a separate translation unit that tolerates the heavier headers. Decided: punt on this decision until Task 5.6; the spike proved Path 1 at the plumbing level, which is what the spike was for.
+
+### Build-system quirks observed (so Task 5.2-5.8 don't re-hit them)
+
+- **Source-file registration:** Adding `"src/builtins/builtins-torquecc-spike.cc"` to `v8_base_without_compiler` in `BUILD.gn` was sufficient — `tools/v8_gypfiles/v8.gyp:1098` scrapes that list via `GN-scraper`, so no separate gyp edit is needed. Good news for Task 5.2/5.5 — torque-emitted `-tq-ccbuiltins.cc` files are already captured via `torque_outputs_ccbuiltins_cc` (Phase 4 addition).
+- **cctest requires all whitelisted stub-linkage builtins to be linked:** the empty-whitelist build succeeded for mksnapshot + d8 + libv8, but the cctest build failed with "undefined reference to `Builtin_TorqueCcTest_Return`" until the whitelist was expanded to `TorqueCcTest_Return,TorqueCcSpike`. Phase 4's `TorqueCcTest_Return` is referenced unconditionally by the pre-existing `TorqueCcBuiltinTest.DirectInvocation` case. Task 5.5's empty-whitelist build validation stands, but non-empty whitelists for cctest runs must always include `TorqueCcTest_Return`.
+- **Shell gotcha:** the Bash tool runs zsh, not bash, so the plan's `$TQ_FILES` word-splitting idioms need `bash -c '...'` wrapping. Already noted in `/tmp/phase5r-baseline-metadata.txt` for the rest of Phase 5.
+
+### LoC estimate for Tasks 5.2–5.5 real emission
+
+- Task 5.2 (torque TFJ→CPP swap): ~15 LoC in `implementation-visitor.cc:3954` emitter.
+- Task 5.3 Step 3a (CCGenerator::kPtrReturn): ~10 LoC in `cc-generator.{h,cc}`.
+- Task 5.3 Step 3 (real JS-linkage emission): ~80 LoC in `Visit(Builtin*)` replacing the 8-line deferred comment.
+- Task 5.4 (preamble): ~3 LoC (3 include lines).
+- Task 5.7 (preamble extension for js-array/js-proxy/runtime): ~6 LoC.
+
+Total V8 emitter-side: ~115 LoC + ~5 LoC for the test fixture `.tq` file. Matches the spike's "the hard work is getting the shape right, not the volume" shape.
+
+### Decision
+
+**Path 1 is viable end-to-end at the plumbing level.** Proceed to Task 5.2 (torque TFJ→CPP swap) without re-scoping. The spike's deferred dispatch verification rolls forward into Task 5.8's d8 probe + Task 5.9's in-process ScriptRun cctest.
+
+**Spike artifacts reverted cleanly.** Clone tip stays at `305050d4` (Task-5.3 post-tip, 43 commits on `9fe7634c`); no clone-side commits from Task 5.1. Worktree gets only this verification.md append.
+
