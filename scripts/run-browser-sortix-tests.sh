@@ -34,14 +34,12 @@ BASIC_EXPECTED_FAIL=(
     "devctl/posix_devctl"
     # (exec/spawn/popen/system/wordexp now pass — browser exec support with tool binaries)
     "aio/aio_fsync"
-    "pthread/pthread_barrierattr_setpshared" "pthread/pthread_cancel"
-    "pthread/pthread_cleanup_pop" "pthread/pthread_cleanup_push"
+    "pthread/pthread_barrierattr_setpshared"
     "pthread/pthread_condattr_setpshared"
     "pthread/pthread_create"
     "threads/thrd_create"
     "pthread/pthread_attr_setinheritsched"
     "pthread/pthread_mutexattr_setpshared"
-    "pthread/pthread_setcancelstate"
     "strings/ffsll"
     # (spawn addchdir/addfchdir now pass — exec path normalization fix)
 )

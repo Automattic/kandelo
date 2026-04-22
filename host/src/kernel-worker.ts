@@ -34,6 +34,7 @@ const CH_COMPLETE = 2;
 /** Errno values */
 const EAGAIN = 11;
 const ETIMEDOUT = 110;
+const EINTR_ERRNO = 4;
 
 /** Syscall numbers for sleep/delay */
 const SYS_NANOSLEEP = 41;
@@ -65,6 +66,9 @@ const SYS_SETPGID = 90;
 const SYS_SETSID = 92;
 const SYS_WAIT4 = 139;
 const SYS_WAITID = 288;
+/** SYS_THREAD_CANCEL: host-side wake-up for deferred pthread cancellation.
+ * See musl-overlay/src/thread/wasm32posix/pthread_cancel.c for the design. */
+const SYS_THREAD_CANCEL = 415;
 
 /** waitpid options */
 const WNOHANG = 1;
@@ -757,6 +761,18 @@ export class CentralizedKernelWorker {
    * to complete the syscall with ETIMEDOUT. Cleared when the operation
    * completes before the timeout. */
   private socketTimeoutTimers = new Map<ChannelInfo, ReturnType<typeof setTimeout>>();
+  /** Pending futex waits: channelOffset → { futexAddr, futexIndex }.
+   * Tracked so SYS_THREAD_CANCEL can force-wake a futex-blocked thread
+   * by firing Atomics.notify on the address it is waiting on. The waitAsync
+   * Promise in handleFutex then resolves and writes the channel result. */
+  private pendingFutexWaits = new Map<number, { channel: ChannelInfo; futexIndex: number }>();
+  /** Channel offsets with a cancellation request pending. Set by
+   * SYS_THREAD_CANCEL.  Checked at the entry of every blocking syscall
+   * path (futex wait, pipe retry, poll retry) so a cancel that arrives
+   * before the target actually blocks still terminates the in-flight
+   * syscall instead of silently racing past it. Cleared when the cancel
+   * has been serviced (target's channel completed with -EINTR / woken). */
+  private pendingCancels = new Set<number>();
   /** Profiling data: syscallNr → {count, totalTimeMs, retries} */
   private profileData: Map<number, {count: number; totalTimeMs: number; retries: number}> | null =
     PROFILING ? new Map() : null;
@@ -1696,6 +1712,15 @@ export class CentralizedKernelWorker {
       return;
     }
 
+    // --- pthread_cancel wake-up: handled entirely on host side because
+    // the state we must perturb (futex waitAsync, pipe reader registration,
+    // poll/select retry timers) lives in TS, not in the kernel wasm. ---
+    if (syscallNr === SYS_THREAD_CANCEL) {
+      if (logging) console.error(logEntry);
+      this.handleThreadCancel(channel, origArgs);
+      return;
+    }
+
     // --- Scatter/gather I/O (writev/readv/pwritev/preadv) ---
     // These have nested pointers (iov array → base buffers) that can't be
     // handled by the simple ArgDesc system.
@@ -2353,6 +2378,11 @@ export class CentralizedKernelWorker {
     // Cancel any pending socket timeout timer for this channel
     this.clearSocketTimeout(channel);
 
+    // Clear any one-shot pthread cancel flag: it was meant for the
+    // syscall we're completing now. Leaving it armed would let the next
+    // blocking entry spuriously EINTR even if no further cancel arrived.
+    this.pendingCancels.delete(channel.channelOffset);
+
     const i32View = new Int32Array(channel.memory.buffer, channel.channelOffset);
     Atomics.store(i32View, CH_STATUS / 4, CH_COMPLETE);
     Atomics.notify(i32View, CH_STATUS / 4, 1);
@@ -2679,6 +2709,148 @@ export class CentralizedKernelWorker {
         this.pendingPipeReaders.set(pipeIdx, filtered);
       }
     }
+  }
+
+  /**
+   * Remove a channel from pending pipe writers (all pipes).
+   */
+  private removePendingPipeWriter(channel: ChannelInfo): void {
+    for (const [pipeIdx, writers] of this.pendingPipeWriters) {
+      const filtered = writers.filter(w => w.channel !== channel);
+      if (filtered.length === 0) {
+        this.pendingPipeWriters.delete(pipeIdx);
+      } else if (filtered.length !== writers.length) {
+        this.pendingPipeWriters.set(pipeIdx, filtered);
+      }
+    }
+  }
+
+  /**
+   * SYS_THREAD_CANCEL — wake a thread that is blocked in a cancellation-point
+   * syscall so its glue (__syscall_cp) can observe the pending cancel flag
+   * and run pthread_exit(PTHREAD_CANCELED).
+   *
+   * The guest pthread_cancel() overlay has already atomically set
+   * target->cancel = 1 in shared memory before calling this syscall — see
+   * musl-overlay/src/thread/wasm32posix/pthread_cancel.c for the full flow.
+   *
+   * This handler's sole job is to force the target out of its Atomics.wait32
+   * on CH_STATUS (if blocked). Strategy depends on what the target is
+   * waiting on:
+   *
+   *   - futex wait: fire Atomics.notify on the futex address. handleFutex's
+   *     waitAsync Promise resolves, writes (0, 0) to the channel, target
+   *     wakes. Return-value 0 is benign — the post-syscall __testcancel()
+   *     in glue picks up self->cancel and exits before the caller re-checks
+   *     its predicate.
+   *   - pipe read/write blocked on pendingPipeReaders/Writers: remove the
+   *     registration and complete the channel with -EINTR.
+   *   - poll/select scheduled with a retry timer: clear the timer and
+   *     complete with -EINTR.
+   *   - otherwise (not blocked, or already completed): no-op. The target
+   *     will observe self->cancel on its next cancel-point entry.
+   *
+   * The caller's own syscall always succeeds with 0.
+   */
+  private handleThreadCancel(channel: ChannelInfo, origArgs: number[]): void {
+    const targetTid = origArgs[0];
+    const registration = this.processes.get(channel.pid);
+
+    // Always complete the caller's syscall first so pthread_cancel returns.
+    this.completeChannelRaw(channel, 0, 0);
+    this.relistenChannel(channel);
+
+    if (!registration) return;
+
+    // Resolve target channel: main thread has tid == pid; other threads are
+    // tracked in channelTids by their clone-assigned tid.
+    let target: ChannelInfo | undefined;
+    for (const ch of registration.channels) {
+      const mappedTid = this.channelTids.get(`${channel.pid}:${ch.channelOffset}`);
+      const effectiveTid = mappedTid !== undefined ? mappedTid : channel.pid;
+      if (effectiveTid === targetTid) {
+        target = ch;
+        break;
+      }
+    }
+    if (!target) return;
+
+    // Arm the cancel flag: blocking syscall entry points check this and
+    // short-circuit with -EINTR. Also consulted by the generic syscall
+    // dispatcher in _handleSyscallInner for cases where the target had
+    // already pushed a syscall onto the channel but the host hadn't yet
+    // started the blocking wait when the cancel arrived.
+    this.pendingCancels.add(target.channelOffset);
+
+    // If the target has already parked in a tracked blocking wait, wake
+    // it so its natural completion path runs and the guest sees the
+    // cancel in __syscall_cp_check. Doing the wake via the same mechanism
+    // the wait uses (Atomics.notify on the futex addr, cancelling the
+    // retry timer, etc.) avoids racing against the handler's own
+    // completion path — we never write the channel directly here.
+
+    // 1) Futex wait — Atomics.notify wakes the in-flight waitAsync, which
+    //    calls complete() and completeChannelRaw naturally.
+    const futexEntry = this.pendingFutexWaits.get(target.channelOffset);
+    if (futexEntry) {
+      const tgtMemView = new Int32Array(target.memory.buffer);
+      Atomics.notify(tgtMemView, futexEntry.futexIndex, 1);
+      return;
+    }
+
+    // 2) Poll/ppoll retry timer — cancelling the timer and kicking a
+    //    retry lets handleBlockingRetry see pendingCancels and complete
+    //    with -EINTR the same way an unblocked syscall entry would.
+    const pollEntry = this.pendingPollRetries.get(target.channelOffset);
+    if (pollEntry) {
+      if (pollEntry.timer !== null) clearTimeout(pollEntry.timer);
+      this.pendingPollRetries.delete(target.channelOffset);
+      this.completeChannelRaw(target, -EINTR_ERRNO, EINTR_ERRNO);
+      this.relistenChannel(target);
+      return;
+    }
+
+    // 3) Pselect6 retry timer (keyed by pid).
+    const selEntry = this.pendingSelectRetries.get(target.pid);
+    if (selEntry && selEntry.channel === target) {
+      clearTimeout(selEntry.timer);
+      clearImmediate(selEntry.timer);
+      this.pendingSelectRetries.delete(target.pid);
+      this.completeChannelRaw(target, -EINTR_ERRNO, EINTR_ERRNO);
+      this.relistenChannel(target);
+      return;
+    }
+
+    // 4) Pipe/socket reader/writer registration — unregister and wake.
+    let wokePipe = false;
+    for (const [pipeIdx, readers] of this.pendingPipeReaders) {
+      const filtered = readers.filter(r => r.channel !== target);
+      if (filtered.length !== readers.length) {
+        if (filtered.length === 0) this.pendingPipeReaders.delete(pipeIdx);
+        else this.pendingPipeReaders.set(pipeIdx, filtered);
+        wokePipe = true;
+      }
+    }
+    for (const [pipeIdx, writers] of this.pendingPipeWriters) {
+      const filtered = writers.filter(w => w.channel !== target);
+      if (filtered.length !== writers.length) {
+        if (filtered.length === 0) this.pendingPipeWriters.delete(pipeIdx);
+        else this.pendingPipeWriters.set(pipeIdx, filtered);
+        wokePipe = true;
+      }
+    }
+    if (wokePipe) {
+      this.clearSocketTimeout(target);
+      this.completeChannelRaw(target, -EINTR_ERRNO, EINTR_ERRNO);
+      this.relistenChannel(target);
+      return;
+    }
+
+    // 5) No tracked blocking state — the target either hasn't reached the
+    //    blocking entry yet, or its handler is synchronous and will pick
+    //    up pendingCancels the next time it enters a blocking operation.
+    //    Do NOT write the channel here: the in-flight handleSyscall owns
+    //    it and would race with our completeChannelRaw.
   }
 
   /**
@@ -5508,6 +5680,18 @@ export class CentralizedKernelWorker {
     const index = addr >>> 2;
 
     if (baseOp === FUTEX_WAIT || baseOp === FUTEX_WAIT_BITSET) {
+      // Pre-empt cancel: if SYS_THREAD_CANCEL arrived before we got here
+      // the channel status was PENDING but no futex wait had been set up
+      // yet, so handleThreadCancel had nothing to notify.  Completing the
+      // syscall with EINTR lets the guest's post-__testcancel() pick up
+      // the flag and exit. The deferred-cancel guest overlay treats this
+      // return value like any other EINTR and checks self->cancel.
+      if (this.pendingCancels.has(channel.channelOffset)) {
+        this.pendingCancels.delete(channel.channelOffset);
+        this.completeChannelRaw(channel, -EINTR_ERRNO, EINTR_ERRNO);
+        this.relistenChannel(channel);
+        return;
+      }
       // Compare value at addr with expected
       const currentVal = Atomics.load(i32View, index);
       if (currentVal !== val) {
@@ -5549,11 +5733,17 @@ export class CentralizedKernelWorker {
           if (settled) return;
           settled = true;
           if (timer !== undefined) clearTimeout(timer);
+          this.pendingFutexWaits.delete(channel.channelOffset);
           if (!this.processes.has(channel.pid)) return;
           this.completeChannelRaw(channel, retVal, errVal);
           channel.consecutiveSyscalls = 0; // genuinely blocked — reset
           this.relistenChannel(channel);
         };
+
+        // Track the wait so SYS_THREAD_CANCEL can force-wake this channel
+        // by firing Atomics.notify on the futex address. The waitAsync
+        // Promise resolves naturally and complete() runs above.
+        this.pendingFutexWaits.set(channel.channelOffset, { channel, futexIndex: index });
 
         waitResult.value.then(() => {
           complete(0, 0);

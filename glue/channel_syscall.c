@@ -408,16 +408,43 @@ long __syscall6(long n, long long a1, long long a2, long long a3, long long a4, 
     return __do_syscall(n, a1, a2, a3, a4, a5, a6);
 }
 
-/* syscall_cp (cancellation-point version) — same as regular syscall
- * since Wasm has no thread cancellation.
- * Params are syscall_arg_t (long = i32 on wasm32) to match musl's declaration.
- * Widen to long long for the i64 channel. */
+/* Deferred cancellation.
+ *
+ * Stock musl dispatches cancellation-point syscalls through
+ * __syscall_cp_asm, an arch-specific trampoline that the SIGCANCEL
+ * handler can interrupt and re-direct to __cp_cancel.  Wasm has no
+ * equivalent, so we implement deferred cancellation on the guest side:
+ * musl-overlay/src/thread/wasm32posix/pthread_cancel.c provides
+ * __testcancel (pthread_exit path) and __syscall_cp_check (the
+ * one-function moral equivalent of stock __syscall_cp_asm +
+ * __syscall_cp_c).  We invoke them here around the blocking dispatch.
+ *
+ * - Pre-dispatch:  __testcancel() — if cancellation is pending and
+ *   enabled, pthread_exit(PTHREAD_CANCELED) before we block.
+ * - Post-dispatch: __syscall_cp_check(r) — if cancellation arrived
+ *   while we were blocked (host woke us with -EINTR on cancel), this
+ *   either calls pthread_exit (ENABLE state) or synthesizes
+ *   -ECANCELED (MASKED state, used inside pthread_cond_wait so it can
+ *   reacquire the mutex and then trigger the actual exit).
+ *
+ * Non-cancel-point syscalls (the __syscall_N entries) deliberately
+ * skip this — POSIX reserves cancellation for the specific
+ * cancellation-point functions.  Only __syscall_cp threads it.
+ *
+ * Async cancellation of a pure-CPU loop is not supported: there is no
+ * wasm facility to preempt a running thread mid-computation.
+ */
+extern void __testcancel(void);
+extern long __syscall_cp_check(long r);
+
 long __syscall_cp(long n, long a1, long a2, long a3, long a4, long a5,
                   long a6)
 {
-    return __do_syscall((long long)n, (long long)a1, (long long)a2,
-                        (long long)a3, (long long)a4, (long long)a5,
-                        (long long)a6);
+    __testcancel();
+    long r = __do_syscall((long long)n, (long long)a1, (long long)a2,
+                          (long long)a3, (long long)a4, (long long)a5,
+                          (long long)a6);
+    return __syscall_cp_check(r);
 }
 
 #ifdef __cplusplus

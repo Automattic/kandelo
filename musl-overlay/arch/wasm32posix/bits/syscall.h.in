@@ -319,6 +319,12 @@
 #define __NR_recvmsg        138
 #define __NR_sendmsg        137
 
+/* Thread cancellation wake-up (host-handled).  Sets a per-thread cancel
+ * flag in the kernel's view and completes any in-flight cancel-point
+ * syscall on the target with -ECANCELED so it drops out of Atomics.wait.
+ * See musl-overlay/src/thread/wasm32posix/pthread_cancel.c. */
+#define __NR_thread_cancel  415
+
 /* Aliases that musl expects (64-bit variants and rt_sig*) */
 #define __NR_mmap2            __NR_mmap
 #define __NR_fstat64          __NR_fstat

@@ -35,7 +35,6 @@ FUNCTIONAL_EXPECTED_FAIL=(
 REGRESSION_EXPECTED_FAIL=(
     malloc-brk-fail
     malloc-oom
-    pthread_cond_wait-cancel_ignored
     pthread_create-oom
     raise-race
     setenv-oom

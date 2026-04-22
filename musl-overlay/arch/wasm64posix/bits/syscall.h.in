@@ -311,6 +311,10 @@
 #define __NR_execveat       386
 #define __NR_exit_group     387
 
+/* Thread cancellation wake-up (host-handled).  See
+ * musl-overlay/src/thread/wasm32posix/pthread_cancel.c. */
+#define __NR_thread_cancel  415
+
 /* Aliases that musl expects.
  * On wasm64 (LP64), we don't need time64 aliases because sizeof(time_t)
  * == sizeof(long) == 8 and musl uses the non-time64 code paths.

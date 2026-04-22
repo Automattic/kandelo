@@ -6,19 +6,32 @@ This file is the counterpart to [wasm-limitations.md](wasm-limitations.md), whic
 
 ## Targets
 
-### 1. Guest-initiated `pthread_create` — *basic path landed*
+### 1. Guest-initiated `pthread_create` — *basic path + deferred cancellation landed*
 
-**Status:** basic `pthread_create` + `thrd_create` now pass. The remaining tests listed here fail for other reasons (cancel-point asm, per-thread signal routing, AIO). Separate targets below cover those.
+**Status:** basic `pthread_create` + `thrd_create` pass. Deferred cancellation (pthread_cancel, cleanup handlers, setcancelstate, cond_wait-cancel) is now implemented — see below. The remaining tests listed here fail for other reasons (per-thread signal routing, AIO, async-only cancel).
 
-**Closed tests:** sortix `pthread/pthread_create`, `threads/thrd_create`.
+**Closed tests (2026-04-21, deferred cancellation):**
+- sortix `pthread/pthread_cancel`, `pthread/pthread_cleanup_pop`, `pthread/pthread_cleanup_push`, `pthread/pthread_setcancelstate`
+- libc-test `pthread_cond_wait-cancel_ignored`
+
+**How deferred cancellation works:** Stock musl dispatches cancellation-point syscalls through `__syscall_cp_asm` + SIGCANCEL (interrupt the syscall, rewrite the PC to `__cp_cancel`). Wasm has neither signal-based preemption nor PC rewrite, so we implement deferred cancellation on the guest side and a one-shot wake syscall on the host side:
+
+- `musl-overlay/src/thread/wasm32posix/pthread_cancel.c` provides `pthread_cancel`, `__cancel`, `__testcancel`, and `__syscall_cp_check` (the moral equivalent of `__syscall_cp_asm` + `__syscall_cp_c` in one function). The overlay reuses musl's existing per-thread `pthread_t->cancel` atomic field as the pending-cancel flag — no new channel slot or TLS global needed.
+- `musl-overlay/src/thread/wasm32posix/pthread_testcancel.c` strips the weak `dummy __testcancel` alias so wasm-ld can't accidentally pull the weak over our strong definition.
+- `glue/channel_syscall.c::__syscall_cp` calls `__testcancel()` before each cancellation-point syscall and `__syscall_cp_check(r)` after, handling the three cancel states (ENABLE → pthread_exit, MASKED → synthesize -ECANCELED, DISABLE → pass-through) the way stock musl's asm does.
+- `pthread_cancel(t)` atomically sets `t->cancel = 1` and issues a new `SYS_THREAD_CANCEL` syscall so the host can wake a blocked target. The host (`kernel-worker.ts::handleThreadCancel`) notifies any in-flight futex wait (via `Atomics.notify` on the futex address), clears pipe/poll/select retry registrations, and arms a `pendingCancels` flag so a wait that hasn't entered its blocking state yet still short-circuits with -EINTR on entry.
+- `SYS_THREAD_CANCEL = 415` is a new host-handled syscall number; this PR bumps `ABI_VERSION` to 4 because the kernel/guest contract now depends on it.
+
+**Async cancellation (`PTHREAD_CANCEL_ASYNCHRONOUS`) is out of scope.** Wasm cannot preempt a running thread mid-computation, so a target that never enters a cancellation-point syscall cannot be cancelled. The libc-test `pthread_cancel` functional test (which starts with an async-cancel + busy-loop subcase) therefore remains XFAIL — its deferred-cancel subcases would pass, but there is no harness-level partial PASS.
 
 **Still blocked (other gaps):**
-- `pthread_cancel`, `pthread_cleanup_pop/push`, `pthread_setcancelstate`, `pthread_cond_wait-cancel_ignored`: need `__syscall_cp_asm` cancel points (see [wasm-limitations.md](wasm-limitations.md) §2).
-- `aio/aio_error`: still depends on `pthread_cancel`. `aio/aio_fsync` and `aio/aio_read` now pass — per-thread signal routing unblocked musl's pthread-driven AIO (see "Closed" below).
+- `aio/aio_error`: `aio/aio_fsync` and `aio/aio_read` pass after per-thread signal routing landed; `aio_error` still exercises more of the AIO surface than we implement.
+- `pthread/pthread_setcanceltype` (sortix): the test uses `PTHREAD_CANCEL_ASYNCHRONOUS` — explicitly out of scope.
+- libc-test functional `pthread_cancel`: first subcase uses `PTHREAD_CANCEL_ASYNCHRONOUS` + busy loop (see the async-cancel note above). Subsequent deferred-cancel subcases would pass, but the harness reports a whole-test failure.
 - `pthread_create-oom`: **not a kernel gap** — see "Not compromising" table below. The kernel correctly caps address space and `pthread_create` returns `EAGAIN` when `mmap` fails; the test's `t_memfill` setup sequence (specifically the `while (malloc(1));` drain) doesn't terminate within the 30 s timeout in our 1 GiB wasm arena.
 
 **Closed:**
-- `signal/pthread_kill`, `raise-race`: **per-thread signal routing landed.** `ThreadInfo` now carries its own pending/blocked/rt_queue; `tkill`/`tgkill` deliver to the target thread's directed queue; `pthread_sigmask` / `sigsuspend` / `ppoll` / `pselect` / `sigtimedwait` all operate on the calling thread's state via `kernel_set_current_tid`. Bumped `ABI_VERSION` to 4.
+- `signal/pthread_kill`, `raise-race`: **per-thread signal routing landed.** `ThreadInfo` now carries its own pending/blocked/rt_queue; `tkill`/`tgkill` deliver to the target thread's directed queue; `pthread_sigmask` / `sigsuspend` / `ppoll` / `pselect` / `sigtimedwait` all operate on the calling thread's state via `kernel_set_current_tid`.
 
 **Root cause (fixed):** `__NR_exit_group` was aliased to `__NR_exit` (both = 34) in the wasm syscall headers. When a non-main thread called `exit()` / `_Exit()` → `SYS_exit_group`, it emitted syscall 34. The host's channel dispatcher saw syscall 34 from a non-main channel and ran the *thread-exit* path (remove channel only), leaving the main process worker to spin forever. Tests that called `exit(0)` from a spawned thread therefore hung.
 
