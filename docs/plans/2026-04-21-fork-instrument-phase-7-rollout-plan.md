@@ -605,6 +605,60 @@ EOF
 
 ---
 
+## Next-session debugging playbook (for the 8 remaining sortix regressions)
+
+**Worktree:** `/Users/brandon/.superset/worktrees/wasm-posix-kernel/phase-7-rollout` on branch `phase-7-rollout`. 11 commits stacked on `fierce-wire`. DO NOT open the PR until these are fixed — per user instructions.
+
+**The 8 failures (all sortix, all fork-semantic):**
+
+- `basic/signal/killpg`
+- `basic/spawn/posix_spawnattr_setpgroup`
+- `basic/sys_wait/waitpid`
+- `io/dup3-clofork-fork`, `io/open-clofork-fork`
+- `process/fork-exec-setpgid-in-parent`
+- `process/fork-setsid-setpgid-in-parent`, `process/fork-setsid-setpgid-in-parent-move`
+
+**Pattern:** parent makes a syscall involving the child's process-group, fd, or pgid AFTER fork, BEFORE child has done anything specific. Basic fork + basic setpgid + in-child self-setpgid + fork-setpgid (non-parent-side) all PASS.
+
+**Fixed already (closed 1/9):** wasm-fork-instrument was saving imported mutable globals (notably `env.__channel_base`) in `saved_globals[]`. Parent's fork buffer had parent's channelOffset; child's rewind overwrote the fresh per-instance `__channel_base`, causing child syscalls to land on parent's channel. Fix at `crates/fork-instrument/src/runtime.rs` ~line 162, commit `f56c648d2`.
+
+**What is NOT the cause (eliminated):**
+
+- Kernel code: unchanged by Phase 7 (only a comment in `kernel_set_child_pid`). CLOFORK logic in `crates/kernel/src/fork.rs:601` and `sys_dup3` in `syscalls.rs:1677` are correct.
+- Channel routing: after `__channel_base` fix, child's syscalls correctly target child's channel.
+- pgid inheritance: kernel `fork.rs:877-884` correctly inherits parent's pgid.
+- Tool's unit tests: 74/74 clean; call-graph discovery + instrumentation unit-tested.
+
+**Most likely remaining hypotheses (in priority order):**
+
+1. **Local-var save/restore corruption.** The parent's `i` loop variable (or similar per-iteration state) might round-trip through the fork buffer with a stale value in the child, making child 3 think `i <= 2` and call `setpgid(0, 0)` — moving itself out of parent's pgid, causing waitpid(0) to return ECHILD. Verify by running waitpid.wasm with added debug prints in the child for the actual `i` value after fork returns.
+
+2. **__stack_pointer semantic delta.** `wasm-opt --asyncify` effectively restores __stack_pointer via the child's prologue-re-execution during rewind. `wasm-fork-instrument` saves __stack_pointer at unwind-begin time (DEEP value, mid-call-chain) and restores that value at rewind-begin; prologues are gated out during rewind. The TOOL's DEEP value should be right for the rewound state, but could diverge if LLVM emits prologues that deviate (e.g., setjmp/sigjmp-related shadow-stack tricks). Check with a diff of the instrumented vs asyncified `main` function in a failing test.
+
+3. **Side-effect gating completeness.** Phase 4g gates LocalSet, LocalTee, GlobalSet, stores, memory.*, etc. Check whether anything NOT gated (atomics, ref-type ops, throw/throw_ref outside instrumented regions) is firing during unwind and mutating state the child sees wrong. Unlikely for these specific tests (no atomics/EH involved).
+
+4. **Parent rewind re-triggering earlier syscalls.** During parent's rewind, any syscall in earlier loop iterations whose side effect is gated — but where the *syscall itself* still executes — would hit the kernel twice. Verify by instrumenting the kernel to log all syscalls per pid during one waitpid.wasm run.
+
+**Debugging entry points:**
+
+- Kernel-side logging: `crates/kernel/src/wasm_api.rs` has an imported `fn host_debug_log(ptr, len)` on line 39 — currently unused. Wire up calls from `kernel_fork_process`, `sys_setpgid`, `sys_waitpid` to dump PIDs / pgids / results.
+- Host-side: `host/src/worker-main.ts` has many `// DEBUG` comments scattered throughout. The currentHandlePid tracking wraps all 7 handleChannel call sites — instrument those to log pid + syscall number.
+- Single-test repro:
+
+  ```bash
+  cd /Users/brandon/.superset/worktrees/wasm-posix-kernel/phase-7-rollout
+  timeout 20 node --experimental-wasm-exnref --import tsx/esm \
+    examples/run-example.ts os-test/build/basic/sys_wait/waitpid.wasm
+  # expected: exit 0; actual: "child 3 waitpid: ECHILD" + exit 1
+  ```
+
+- Differential: build a minimal C fork test, instrument once with `wasm-opt --asyncify` and once with `tools/bin/wasm-fork-instrument`; use `wasm-objdump -d` to compare the generated code for the main function's fork call site. Shape of the wrapped call site + which ops are gated vs. not should reveal the delta.
+
+**Environmental prerequisites for the next session's worktree:**
+
+1. `cd <worktree> && npm install` at repo root (not just in `host/`). Without this, the test runner scripts fail with `Cannot find package 'tsx'`.
+2. After any `ABI_VERSION` change, run `bash scripts/check-abi-version.sh update` **before** `bash scripts/build-programs.sh`, so `glue/abi_constants.h` is fresh when programs are compiled. A cleaner follow-up would reorder this inside `build.sh` itself.
+
 ## Out of scope / explicit deferrals
 
 - **Fork-from-catch (B1)** — deferred. Tracked in `memory/fork-instrument-b1-followup.md`.
