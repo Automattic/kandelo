@@ -1,5 +1,5 @@
 {
-  "abi_version": 4,
+  "abi_version": 5,
   "asyncify_save_slots": [
     {
       "meaning": "parent TLS base (__tls_base) saved for child rewind",

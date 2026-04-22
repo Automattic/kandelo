@@ -3019,6 +3019,15 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
             t.cond_wait_abort(a1 as u32, pid);
             0
         }
+        415 => { // SYS_THREAD_CANCEL: (target_tid) — host-intercepted; defensive no-op.
+            // The host's kernel-worker.ts routes this syscall entirely on the TS
+            // side because the target's wait state (futex waitAsync, pipe retry
+            // registrations, poll/select timers) lives outside the kernel wasm.
+            // If we reach here it means the intercept was bypassed; return 0 so
+            // pthread_cancel still appears to have succeeded rather than failing
+            // the whole thread with ENOSYS.
+            0
+        }
 
         253..=254 | 262 | 265..=268 | 289 | 292 | 301..=303 | 305 | 309..=322 | 324 | 348..=349 | 362..=369 | 373..=376 | 386 => {
             // Remaining stubs: return ENOSYS
