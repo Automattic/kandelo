@@ -130,8 +130,13 @@ asyncify_wasm() {
     fi
 }
 
-# Timeout per test (seconds)
+# Timeout per test (seconds). XFAIL tests get a shorter window because
+# known-failing tests can spin hard (e.g. raise-race keeps forking worker
+# processes until it hits internal deadline). On a 16GB CI runner that
+# burst exhausts memory long before the 30s deadline and SIGTERMs the
+# outer script.
 TEST_TIMEOUT=30
+XFAIL_TIMEOUT=5
 
 # ── Test discovery ──────────────────────────────────────────
 
@@ -258,11 +263,17 @@ run_test() {
         return
     fi
 
-    # Run with timeout.
+    # Run with timeout. XFAILs get a shorter deadline so runaway tests
+    # (e.g. raise-race) can't exhaust CI memory before the normal 30s
+    # window fires.
+    local this_timeout="$TEST_TIMEOUT"
+    if $is_xfail; then
+        this_timeout="$XFAIL_TIMEOUT"
+    fi
     # stdin redirected to /dev/null: run-example.ts reads process.stdin
     # when not a TTY, which would drain any pipe the caller supplies.
     set +e
-    output=$(cd "$REPO_ROOT" && timeout "$TEST_TIMEOUT" node --experimental-wasm-exnref --import tsx/esm examples/run-example.ts "${wasm}" </dev/null 2>&1)
+    output=$(cd "$REPO_ROOT" && timeout "$this_timeout" node --experimental-wasm-exnref --import tsx/esm examples/run-example.ts "${wasm}" </dev/null 2>&1)
     rc=$?
     set -e
 
