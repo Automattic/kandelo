@@ -124,6 +124,17 @@ jobs:
       - name: POSIX test suite
         run: bash scripts/run-posix-tests.sh
 
+      # DIAGNOSTIC: PTY allocation behavior on Linux vs macOS.
+      # Sortix termios tests fail on Linux CI with /dev/pts/1: ENOENT.
+      # This runs a targeted diagnostic so we can compare output across
+      # platforms. Always runs even if later steps fail.
+      - name: diag — pty allocation
+        if: always()
+        run: |
+          set -x
+          ls -la host/wasm/diag-pty.wasm || true
+          node --experimental-wasm-exnref --import tsx/esm examples/run-example.ts host/wasm/diag-pty.wasm 2>&1 || true
+
       # 5. Sortix os-test (header/syscall conformance).
       - name: sortix os-test
         run: bash scripts/run-sortix-tests.sh --all
