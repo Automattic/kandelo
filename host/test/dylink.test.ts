@@ -5,12 +5,26 @@
 import { describe, it, expect } from "vitest";
 import { parseDylinkSection, loadSharedLibrary, loadSharedLibrarySync, DynamicLinker, type LoadSharedLibraryOptions } from "../src/dylink.ts";
 import { execSync } from "node:child_process";
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-const CLANG = "/opt/homebrew/opt/llvm@21/bin/clang";
-const WASM_LD = "/opt/homebrew/bin/wasm-ld";
+function findTool(name: string): string {
+  const candidates = [
+    process.env.LLVM_BIN ? join(process.env.LLVM_BIN, name) : null,
+    `/opt/homebrew/opt/llvm@21/bin/${name}`,
+    `/opt/homebrew/opt/llvm/bin/${name}`,
+    `/opt/homebrew/bin/${name}`,
+    `/usr/lib/llvm-21/bin/${name}`,
+  ].filter((p): p is string => p !== null);
+  for (const p of candidates) {
+    if (existsSync(p)) return p;
+  }
+  throw new Error(`Could not find ${name}. Tried: ${candidates.join(", ")}`);
+}
+
+const CLANG = findTool("clang");
+const WASM_LD = findTool("wasm-ld");
 
 /** Build a shared Wasm library from C source. */
 function buildSharedLib(source: string, name: string, opts?: { allowUndefined?: boolean }): Uint8Array {

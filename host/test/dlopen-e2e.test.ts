@@ -16,8 +16,22 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "../..");
 const SYSROOT = join(REPO_ROOT, "sysroot");
 const GLUE_DIR = join(REPO_ROOT, "glue");
-const CLANG = "/opt/homebrew/opt/llvm@21/bin/clang";
-const WASM_LD = "/opt/homebrew/bin/wasm-ld";
+function findTool(name: string): string {
+  const candidates = [
+    process.env.LLVM_BIN ? join(process.env.LLVM_BIN, name) : null,
+    `/opt/homebrew/opt/llvm@21/bin/${name}`,
+    `/opt/homebrew/opt/llvm/bin/${name}`,
+    `/opt/homebrew/bin/${name}`,
+    `/usr/lib/llvm-21/bin/${name}`,
+  ].filter((p): p is string => p !== null);
+  for (const p of candidates) {
+    if (existsSync(p)) return p;
+  }
+  throw new Error(`Could not find ${name}. Tried: ${candidates.join(", ")}`);
+}
+
+const CLANG = findTool("clang");
+const WASM_LD = findTool("wasm-ld");
 
 const hasSysroot = existsSync(join(SYSROOT, "lib", "libc.a"));
 const hasKernel = existsSync(join(__dirname, "../wasm/wasm_posix_kernel.wasm"));
