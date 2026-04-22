@@ -84,9 +84,9 @@ jobs:
         working-directory: host
         run: npm ci
 
-      - name: Build kernel wasm + host
-        run: bash build.sh
-
+      # musl sysroot must exist before build.sh runs, because build.sh calls
+      # scripts/build-programs.sh inline when programs/*.c is present, and
+      # build-programs.sh requires sysroot/lib/libc.a.
       - name: Build musl sysroot (wasm32) if not cached
         run: |
           set -euo pipefail
@@ -96,8 +96,8 @@ jobs:
             echo "sysroot already built (cache hit)"
           fi
 
-      - name: Build user programs
-        run: bash scripts/build-programs.sh
+      - name: Build kernel wasm + host + user programs
+        run: bash build.sh
 
       # 1. Cargo unit tests — native host target on Linux.
       - name: cargo test (kernel unit tests)
