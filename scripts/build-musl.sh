@@ -45,8 +45,15 @@ case "$ARCH" in
         ;;
 esac
 
-# Use Homebrew LLVM 21 toolchain
-LLVM_BIN="/opt/homebrew/opt/llvm/bin"
+# Resolve LLVM 21 toolchain. Honor $LLVM_BIN first (used by CI), then fall back
+# to the Homebrew path on macOS and the apt.llvm.org path on Linux.
+if [ -z "${LLVM_BIN:-}" ]; then
+    if [ -d "/opt/homebrew/opt/llvm/bin" ]; then
+        LLVM_BIN="/opt/homebrew/opt/llvm/bin"
+    elif [ -d "/usr/lib/llvm-21/bin" ]; then
+        LLVM_BIN="/usr/lib/llvm-21/bin"
+    fi
+fi
 CC="$LLVM_BIN/clang"
 AR="$LLVM_BIN/llvm-ar"
 RANLIB="$LLVM_BIN/llvm-ranlib"
@@ -54,7 +61,9 @@ RANLIB="$LLVM_BIN/llvm-ranlib"
 # Verify toolchain exists
 for tool in "$CC" "$AR" "$RANLIB"; do
     if [ ! -x "$tool" ]; then
-        echo "Error: $tool not found. Install LLVM via: brew install llvm" >&2
+        echo "Error: $tool not found. Install LLVM 21 via 'brew install llvm' (macOS)" >&2
+        echo "       or 'https://apt.llvm.org/llvm.sh 21 all' (Linux)." >&2
+        echo "       Or set LLVM_BIN to your LLVM bin directory." >&2
         exit 1
     fi
 done

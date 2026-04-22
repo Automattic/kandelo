@@ -1,0 +1,124 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Cancel in-progress runs for the same PR/branch when a new commit lands.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  full-ci:
+    name: full-ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      LLVM_BIN: /usr/lib/llvm-21/bin
+      CARGO_TERM_COLOR: always
+
+    steps:
+      - name: Prefer HTTPS for github.com submodules
+        run: git config --global url."https://github.com/".insteadOf "git@github.com:"
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          # Fetch full history so check-abi-version.sh can diff against origin/main.
+          fetch-depth: 0
+
+      - name: Install LLVM 21
+        run: |
+          set -euo pipefail
+          wget -qO llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 21 all
+          "$LLVM_BIN/clang" --version
+
+      - name: Install Rust nightly (with rust-src)
+        run: |
+          set -euo pipefail
+          rustup toolchain install nightly --component rust-src --profile minimal
+          rustup default nightly
+          rustup target add wasm32-unknown-unknown
+          rustc -vV
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: host/package-lock.json
+
+      - name: Cache cargo registry and git
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
+      - name: Cache cargo target
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: target-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            target-${{ runner.os }}-
+
+      - name: Cache musl sysroot (wasm32)
+        uses: actions/cache@v4
+        with:
+          path: sysroot
+          key: sysroot-${{ runner.os }}-${{ hashFiles('scripts/build-musl.sh', 'musl-overlay/**', 'musl/VERSION') }}
+
+      - name: Install host dependencies
+        working-directory: host
+        run: npm ci
+
+      - name: Build kernel wasm + host
+        run: bash build.sh
+
+      - name: Build musl sysroot (wasm32) if not cached
+        run: |
+          set -euo pipefail
+          if [ ! -f sysroot/lib/libc.a ]; then
+            bash scripts/build-musl.sh
+          else
+            echo "sysroot already built (cache hit)"
+          fi
+
+      - name: Build user programs
+        run: bash scripts/build-programs.sh
+
+      # 1. Cargo unit tests — native host target on Linux.
+      - name: cargo test (kernel unit tests)
+        run: cargo test -p wasm-posix-kernel --target x86_64-unknown-linux-gnu --lib
+
+      # 2. Vitest (host integration tests).
+      - name: vitest (host integration tests)
+        working-directory: host
+        run: npx vitest run
+
+      # 3. musl libc-test (C standard library conformance).
+      - name: libc-test
+        run: bash scripts/run-libc-tests.sh
+
+      # 4. Open POSIX Test Suite (POSIX API conformance).
+      - name: POSIX test suite
+        run: bash scripts/run-posix-tests.sh
+
+      # 5. Sortix os-test (header/syscall conformance).
+      - name: sortix os-test
+        run: bash scripts/run-sortix-tests.sh --all
+
+      # 6. ABI snapshot drift check.
+      - name: ABI snapshot check
+        run: bash scripts/check-abi-version.sh

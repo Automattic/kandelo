@@ -38,6 +38,26 @@
 
 6. **Browser demo verification**: When fixing browser demo bugs, run `./run.sh browser` and manually verify the fix in a browser before claiming it works. Code reasoning alone is not sufficient — browser timing, service workers, and Wasm behavior must be observed.
 
+## PR Merge Policy
+
+**Default: wait for CI green before merging.** The CI workflow
+(`.github/workflows/ci.yml`) runs all 6 test suites on every PR and on pushes
+to `main`, and branch protection on `main` blocks merge until the `full-ci`
+status check passes.
+
+Admin bypass (`gh pr merge --admin`) is allowed when the agent is genuinely
+confident the change cannot break anything — e.g., docs-only edits, comment
+changes, or isolated tweaks with no kernel/host runtime impact. The bar is
+"I can articulate why each suite is irrelevant to this change," not "this
+feels small." When in doubt, wait for CI.
+
+Suites 3–5 (libc-test, POSIX test suite, sortix os-test) exist precisely
+because syscall/ABI regressions don't surface in unit tests — if a change
+touches syscall dispatch, struct marshalling, glue code, or kernel ABI,
+those suites are not optional regardless of CI status.
+
+Never push directly to `main`; always merge via PR.
+
 ## Kernel ABI stability — DO NOT change without bumping `ABI_VERSION`
 
 The kernel's binary interface to user programs is load-bearing: any silent change can corrupt memory in any binary compiled against an older kernel. **Every change to the following requires bumping `ABI_VERSION` in `crates/shared/src/lib.rs` and regenerating `abi/snapshot.json` in the same commit:**
