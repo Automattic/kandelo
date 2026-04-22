@@ -1,0 +1,9 @@
+{
+  "setup": [
+    "npm install\ngit submodule init\ngit submodule update --recursive\nexit"
+  ],
+  "teardown": [],
+  "run": [
+    "./run.sh browser"
+  ]
+}

@@ -41,6 +41,20 @@ jobs:
           sudo ./llvm.sh 21 all
           "$LLVM_BIN/clang" --version
 
+      # wasm-opt is required for asyncify transformation in build-programs.sh
+      # and run-{libc,posix,sortix}-tests.sh. Without it, fork() breaks
+      # because the child can't rewind the call stack and instead
+      # re-executes main() from the top. The scripts silently no-op
+      # asyncify when wasm-opt is absent, so the failure is diffuse: any
+      # test relying on state inherited across fork (PTY fds, process
+      # group setpgid, fd inheritance) fails in mysterious ways.
+      - name: Install binaryen (wasm-opt)
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y binaryen
+          wasm-opt --version
+
       - name: Install Rust toolchain (from rust-toolchain.toml)
         run: |
           set -euo pipefail
@@ -106,15 +120,6 @@ jobs:
 
       - name: Build kernel wasm + host + user programs
         run: bash build.sh
-
-      # DIAGNOSTIC: PTY allocation behavior on Linux vs macOS.
-      # Sortix termios tests fail on Linux CI with /dev/pts/1: ENOENT.
-      # Runs before any test suite so we always get the output.
-      - name: diag — pty allocation
-        run: |
-          set -x
-          ls -la host/wasm/diag-pty.wasm
-          node --experimental-wasm-exnref --import tsx/esm examples/run-example.ts host/wasm/diag-pty.wasm 2>&1 || true
 
       # 1. Cargo unit tests — native host target on Linux.
       - name: cargo test (kernel unit tests)
