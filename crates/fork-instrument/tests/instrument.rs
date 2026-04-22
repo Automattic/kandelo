@@ -1,19 +1,15 @@
-//! Tests for Phase 4b: per-function structural wrap.
+//! Tests for the switch-dispatch instrumentation transform.
 //!
-//! The transform under test is a shell — it does not yet emit
-//! state-machine logic. These tests verify three things:
+//! The transform rewrites each fork-path function's body into an
+//! asyncify-style dispatch: REWIND jumps directly to the
+//! post-active-call-site label via a top-level `br_table`. These
+//! tests verify the structural invariants of the emitted shape and
+//! the stable runtime contract (preamble/postamble frame layout).
 //!
-//! 1. **Structural**: fork-path functions have their bodies moved
-//!    into a nested `block`, with `return` at the tail and an
-//!    `unreachable` postamble. Non-fork-path functions are untouched.
-//!
-//! 2. **Validity**: the instrumented module parses under walrus and
-//!    validates under an independent wasmparser validator. Mismatched
-//!    block types or stack heights would be caught here.
-//!
-//! 3. **Scope**: the runtime's own control functions (injected by
-//!    Phase 4a) are never wrapped; modules that do not import the
-//!    fork entry are skipped entirely.
+//! Per the MVP scope, a fork-path call nested inside a block, loop,
+//! if, or try_table body causes the tool to panic at instrument time.
+//! All fixtures in this file therefore place fork-path calls at the
+//! function body's top level.
 
 use std::collections::HashSet;
 
@@ -21,8 +17,10 @@ use fork_instrument::runtime::names as runtime_names;
 use fork_instrument::{Options, instrument};
 use walrus::{
     ExportItem, FunctionId, FunctionKind, LocalFunction, Module,
-    ir::{Instr, InstrSeqId, TryTable},
+    ir::{self, Instr, InstrSeqId},
 };
+
+// --- Helpers ----------------------------------------------------------
 
 fn instrument_wat(wat_src: &str) -> Vec<u8> {
     let bytes = wat::parse_str(wat_src).expect("wat parse");
@@ -35,9 +33,6 @@ fn validate(bytes: &[u8]) {
     validator.validate_all(bytes).expect("valid wasm");
 }
 
-/// Find a function by its (wat-source) name on the module — searches
-/// funcs' own `name` field. Both imports and local functions are
-/// visible here; pick a name unique within the fixture.
 fn func_by_name(module: &Module, name: &str) -> FunctionId {
     module
         .funcs
@@ -47,17 +42,15 @@ fn func_by_name(module: &Module, name: &str) -> FunctionId {
         .id()
 }
 
-fn local(module: &Module, id: FunctionId) -> &LocalFunction {
+fn local_func(module: &Module, id: FunctionId) -> &LocalFunction {
     match &module.funcs.get(id).kind {
         FunctionKind::Local(l) => l,
         _ => panic!("function is not local"),
     }
 }
 
-/// Entry-block instruction opcodes (no payloads) as a flat `Vec`,
-/// useful for quick shape assertions.
 fn entry_instr_kinds(module: &Module, id: FunctionId) -> Vec<InstrKind> {
-    let f = local(module, id);
+    let f = local_func(module, id);
     f.block(f.entry_block())
         .instrs
         .iter()
@@ -65,9 +58,8 @@ fn entry_instr_kinds(module: &Module, id: FunctionId) -> Vec<InstrKind> {
         .collect()
 }
 
-/// Opcodes in an arbitrary `InstrSeqId` owned by `func_id`.
 fn seq_kinds(module: &Module, func_id: FunctionId, seq_id: InstrSeqId) -> Vec<InstrKind> {
-    local(module, func_id)
+    local_func(module, func_id)
         .block(seq_id)
         .instrs
         .iter()
@@ -75,12 +67,13 @@ fn seq_kinds(module: &Module, func_id: FunctionId, seq_id: InstrSeqId) -> Vec<In
         .collect()
 }
 
-/// Find the single `Block(seq)` instruction in the entry block and
-/// return the wrapped `InstrSeqId`.
+/// Return the single `Block(seq)` at the top level of the entry
+/// block. Instrumented fork-path functions have exactly one top-level
+/// block (`$unwind_save`).
 fn entry_wrapper_seq(module: &Module, id: FunctionId) -> InstrSeqId {
-    let f = local(module, id);
-    let entry = f.block(f.entry_block());
-    let blocks: Vec<InstrSeqId> = entry
+    let f = local_func(module, id);
+    let blocks: Vec<InstrSeqId> = f
+        .block(f.entry_block())
         .instrs
         .iter()
         .filter_map(|(i, _)| match i {
@@ -96,9 +89,6 @@ fn entry_wrapper_seq(module: &Module, id: FunctionId) -> InstrSeqId {
     blocks[0]
 }
 
-/// Discriminator-only classification of an instruction. Covers the
-/// opcodes we assert on in shape-verification tests; everything else
-/// collapses into `Other`.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 enum InstrKind {
     Block,
@@ -114,6 +104,7 @@ enum InstrKind {
     Binop,
     IfElse,
     BrIf,
+    BrTable,
     Other,
 }
 
@@ -133,644 +124,54 @@ impl InstrKind {
             Instr::Binop(_) => InstrKind::Binop,
             Instr::IfElse(_) => InstrKind::IfElse,
             Instr::BrIf(_) => InstrKind::BrIf,
+            Instr::BrTable(_) => InstrKind::BrTable,
             _ => InstrKind::Other,
         }
     }
 }
 
-// ----- Fixtures -----
-
-/// A module with a direct fork caller plus an unrelated helper.
-const FIXTURE_DIRECT_CALLER: &str = r#"
-    (module
-      (import "kernel" "kernel_fork" (func $fork (result i32)))
-      (func $caller (export "caller") (result i32)
-        call $fork)
-      (func $non_caller (export "non_caller") (result i32)
-        i32.const 42)
-      (memory 1))
-"#;
-
-#[test]
-fn instrumented_module_with_direct_caller_validates() {
-    let bytes = instrument_wat(FIXTURE_DIRECT_CALLER);
-    validate(&bytes);
-}
-
-#[test]
-fn direct_caller_entry_has_preamble_block_and_postamble() {
-    let bytes = instrument_wat(FIXTURE_DIRECT_CALLER);
-    let module = Module::from_buffer(&bytes).unwrap();
-
-    let caller = func_by_name(&module, "caller");
-    let kinds = entry_instr_kinds(&module, caller);
-
-    // Entry should open with the REWINDING preamble check, contain
-    // exactly one wrapper Block, and not end with the 4b-era
-    // `Unreachable` placeholder (4d replaces that with real
-    // frame-save + defaults).
-    assert!(
-        matches!(
-            kinds.first(),
-            Some(InstrKind::GlobalGet)
-        ),
-        "entry should start with GlobalGet (state) for REWINDING check: {kinds:?}",
-    );
-    assert_eq!(
-        kinds.iter().filter(|k| **k == InstrKind::Block).count(),
-        1,
-        "entry should contain exactly one wrapper Block: {kinds:?}",
-    );
-    assert!(
-        !matches!(kinds.last(), Some(InstrKind::Unreachable)),
-        "entry must no longer end in the 4b Unreachable placeholder: {kinds:?}",
-    );
-}
-
-#[test]
-fn wrapper_replaces_call_with_state_gated_if() {
-    // Original body was a single `call $fork`. After 4c+4d, that
-    // call is replaced by a state-machine if-gate whose condition
-    // is `(state == NORMAL) || (state == REWINDING && call_idx == N)`:
-    //
-    //   global.get state, const NORMAL, i32.eq,
-    //   global.get state, const REWINDING, i32.eq,
-    //   local.get call_idx, const N, i32.eq,
-    //   i32.and, i32.or,
-    //   if-else,
-    //   return (appended by 4b)
-    let bytes = instrument_wat(FIXTURE_DIRECT_CALLER);
-    let module = Module::from_buffer(&bytes).unwrap();
-
-    let caller = func_by_name(&module, "caller");
-    let wrapper_id = entry_wrapper_seq(&module, caller);
-    let wrapper_kinds = seq_kinds(&module, caller, wrapper_id);
-
-    assert_eq!(
-        wrapper_kinds,
-        vec![
-            InstrKind::GlobalGet,
-            InstrKind::Const,
-            InstrKind::Binop,
-            InstrKind::GlobalGet,
-            InstrKind::Const,
-            InstrKind::Binop,
-            InstrKind::LocalGet,
-            InstrKind::Const,
-            InstrKind::Binop,
-            InstrKind::Binop, // i32.and
-            InstrKind::Binop, // i32.or
-            InstrKind::IfElse,
-            InstrKind::Return,
-        ],
-    );
-}
-
-#[test]
-fn non_fork_path_function_is_not_wrapped() {
-    let bytes = instrument_wat(FIXTURE_DIRECT_CALLER);
-    let module = Module::from_buffer(&bytes).unwrap();
-
-    let non_caller = func_by_name(&module, "non_caller");
-    // Original body was a single `i32.const 42`. The instrumenter
-    // must not touch it, so the entry block still contains a single
-    // `Const` and nothing else.
-    assert_eq!(
-        entry_instr_kinds(&module, non_caller),
-        vec![InstrKind::Const],
-        "non-fork-path function should be byte-for-byte unchanged",
-    );
-}
-
-#[test]
-fn runtime_control_functions_are_not_wrapped() {
-    // The runtime's five exported control functions are injected by
-    // Phase 4a. They operate on state/buf globals only, so they
-    // naturally fall outside the fork-path closure; we additionally
-    // exclude them explicitly. Verify neither case leaked through.
-    let bytes = instrument_wat(FIXTURE_DIRECT_CALLER);
-    let module = Module::from_buffer(&bytes).unwrap();
-
-    for export in [
-        runtime_names::EXPORT_UNWIND_BEGIN,
-        runtime_names::EXPORT_UNWIND_END,
-        runtime_names::EXPORT_REWIND_BEGIN,
-        runtime_names::EXPORT_REWIND_END,
-        runtime_names::EXPORT_STATE,
-    ] {
-        let id = module
-            .exports
-            .iter()
-            .find(|e| e.name == export)
-            .map(|e| match e.item {
-                ExportItem::Function(f) => f,
-                _ => panic!("`{export}` is not a function export"),
-            })
-            .unwrap_or_else(|| panic!("`{export}` export missing"));
-
-        // Instrumented functions' entry block starts with a `Block`
-        // instruction. A plain, un-instrumented function's first
-        // instruction is something else (global.get, i32.const, etc.).
-        let kinds = entry_instr_kinds(&module, id);
-        assert!(
-            !matches!(kinds.first(), Some(InstrKind::Block)),
-            "runtime control function `{export}` was wrapped, shouldn't have been \
-             (entry kinds: {kinds:?})",
-        );
+fn nested_of(instr: &Instr) -> Vec<InstrSeqId> {
+    match instr {
+        Instr::Block(ir::Block { seq }) => vec![*seq],
+        Instr::Loop(ir::Loop { seq }) => vec![*seq],
+        Instr::IfElse(ir::IfElse {
+            consequent,
+            alternative,
+        }) => vec![*consequent, *alternative],
+        Instr::TryTable(ir::TryTable { seq, .. }) => vec![*seq],
+        _ => Vec::new(),
     }
 }
 
-// --- Transitive closure fixture ---
-//
-// Verifies that indirect callers are also instrumented: `caller_mid`
-// calls `caller_leaf`, which calls `fork`. Both should be wrapped.
-const FIXTURE_TRANSITIVE: &str = r#"
-    (module
-      (import "kernel" "kernel_fork" (func $fork (result i32)))
-      (func $caller_leaf (export "caller_leaf") (result i32)
-        call $fork)
-      (func $caller_mid (export "caller_mid") (result i32)
-        call $caller_leaf)
-      (func $bystander (export "bystander") (result i32)
-        i32.const 7)
-      (memory 1))
-"#;
-
-#[test]
-fn transitive_callers_are_all_wrapped() {
-    let bytes = instrument_wat(FIXTURE_TRANSITIVE);
-    validate(&bytes);
-    let module = Module::from_buffer(&bytes).unwrap();
-
-    for name in ["caller_leaf", "caller_mid"] {
-        let id = func_by_name(&module, name);
-        let kinds = entry_instr_kinds(&module, id);
-        assert_eq!(
-            kinds.iter().filter(|k| **k == InstrKind::Block).count(),
-            1,
-            "transitive caller `{name}` should have exactly one wrapper Block: {kinds:?}",
-        );
+/// Invoke `visit` for every instruction reachable from `seq`.
+fn walk_all<F: FnMut(InstrSeqId, &Instr)>(
+    f: &LocalFunction,
+    seq: InstrSeqId,
+    visit: &mut F,
+) {
+    for (instr, _) in &f.block(seq).instrs {
+        visit(seq, instr);
+        for child in nested_of(instr) {
+            walk_all(f, child, visit);
+        }
     }
-
-    let bystander = func_by_name(&module, "bystander");
-    assert_eq!(
-        entry_instr_kinds(&module, bystander),
-        vec![InstrKind::Const],
-        "bystander should not be wrapped",
-    );
 }
 
-// --- No-fork-import fixture ---
-//
-// A module that doesn't use fork at all. Instrumentation still runs
-// — the runtime scaffolding is injected — but no user function is
-// wrapped.
-const FIXTURE_NO_FORK: &str = r#"
-    (module
-      (func $only (export "only") (result i32)
-        i32.const 1)
-      (memory 1))
-"#;
-
-#[test]
-fn module_without_fork_import_leaves_user_function_untouched() {
-    let bytes = instrument_wat(FIXTURE_NO_FORK);
-    validate(&bytes);
-    let module = Module::from_buffer(&bytes).unwrap();
-
-    let only = func_by_name(&module, "only");
-    assert_eq!(
-        entry_instr_kinds(&module, only),
-        vec![InstrKind::Const],
-        "user function in a no-fork module should be untouched",
-    );
+fn count_br_tables(f: &LocalFunction) -> usize {
+    let mut n = 0usize;
+    walk_all(f, f.entry_block(), &mut |_, instr| {
+        if matches!(instr, Instr::BrTable(_)) {
+            n += 1;
+        }
+    });
+    n
 }
 
-// --- Br-to-function-level fixture ---
-//
-// Tests that an existing `br` that originally targeted the function
-// level continues to target the function level after our wrap. Walrus
-// tracks branch targets by `InstrSeqId`, not by numeric depth, so
-// moving the instructions into a nested scope should update the
-// encoded depth at emit time.
-//
-// We construct this via walrus directly (wat parsers vary in how
-// `br 0` at top-level is represented). A helper module with an
-// explicit block and a br that breaks out of it to the function end.
-#[test]
-fn non_call_ops_in_wrapper_are_preserved_verbatim() {
-    // Verifies that 4c's rewrite doesn't disturb non-call
-    // instructions in the wrapper, and that the module still
-    // validates under 4d's preamble/postamble.
-    let wat = r#"
-        (module
-          (import "kernel" "kernel_fork" (func $fork (result i32)))
-          (func $caller (export "caller") (result i32)
-            call $fork
-            drop
-            i32.const 99)
-          (memory 1))
-    "#;
-    let bytes = instrument_wat(wat);
-    validate(&bytes);
-
-    let module = Module::from_buffer(&bytes).unwrap();
-    let caller = func_by_name(&module, "caller");
-
-    let wrapper_id = entry_wrapper_seq(&module, caller);
-    let wrapper_kinds = seq_kinds(&module, caller, wrapper_id);
-
-    // The wrapper should contain the full condition + if-else, plus
-    // the surviving drop + const, plus the trailing return.
-    let tail: Vec<_> = wrapper_kinds
-        .iter()
-        .copied()
-        .rev()
-        .take(3)
-        .collect();
-    assert_eq!(
-        tail,
-        vec![InstrKind::Return, InstrKind::Const, InstrKind::Drop],
-        "drop+const from original body should survive between the \
-         wrapped call and the 4b return: {wrapper_kinds:?}",
-    );
-}
-
-// --- Multi-value return fixture ---
-//
-// A function whose declared result is multi-value. The wrap must
-// still validate because the trailing `unreachable` makes the stack
-// polymorphic at entry-block end. If we had used `return <defaults>`
-// instead, we'd have needed to synthesize defaults for each value
-// type — but we chose `unreachable` specifically so we don't have to.
-const FIXTURE_MULTIVALUE: &str = r#"
-    (module
-      (import "kernel" "kernel_fork" (func $fork (result i32)))
-      (func $mv (export "mv") (result i32 i64 f32 f64)
-        call $fork
-        i64.const 0
-        f32.const 0
-        f64.const 0)
-      (memory 1))
-"#;
-
-#[test]
-fn multivalue_return_wraps_and_validates() {
-    let bytes = instrument_wat(FIXTURE_MULTIVALUE);
-    validate(&bytes);
-    let module = Module::from_buffer(&bytes).unwrap();
-    let mv = func_by_name(&module, "mv");
-    let kinds = entry_instr_kinds(&module, mv);
-    // Verify preamble + wrapper Block exist. Postamble defaults are
-    // tested separately.
-    assert!(
-        kinds.iter().any(|k| *k == InstrKind::Block),
-        "mv entry missing wrapper Block: {kinds:?}",
-    );
-    assert!(
-        kinds.iter().any(|k| *k == InstrKind::IfElse),
-        "mv entry missing preamble IfElse: {kinds:?}",
-    );
-}
-
-// --- Sanity: instrumented IDs set matches what we'd expect ---
-//
-// This test reaches through the lib API to confirm that
-// `instrument_functions` reports the right set back. We re-implement
-// a tiny version of the pipeline to get at the intermediate.
-#[test]
-fn instrument_functions_returns_rewritten_set() {
-    use fork_instrument::call_graph;
-    use fork_instrument::instrument::instrument_functions;
-    use fork_instrument::runtime::inject_runtime;
-
-    let bytes = wat::parse_str(FIXTURE_TRANSITIVE).unwrap();
-    let mut module = Module::from_buffer(&bytes).unwrap();
-
-    let seed = call_graph::find_import_func(&module, "kernel.kernel_fork")
-        .expect("seed import present");
-    let fork_path = call_graph::reaching_closure(&module, seed);
-    let runtime = inject_runtime(&mut module);
-    let rewritten = instrument_functions(&mut module, &runtime, &fork_path);
-
-    // Expect the two callers to be rewritten, and the import itself
-    // to be excluded (it's not a local function).
-    let names: HashSet<String> = rewritten
-        .iter()
-        .map(|id| module.funcs.get(*id).name.clone().unwrap_or_default())
-        .collect();
-
-    assert!(names.contains("caller_leaf"), "got: {names:?}");
-    assert!(names.contains("caller_mid"), "got: {names:?}");
-    assert!(
-        !names.contains("fork"),
-        "import must never be instrumented: {names:?}",
-    );
-    assert!(
-        !names.contains("bystander"),
-        "non-fork-path must never be instrumented: {names:?}",
-    );
-    assert_eq!(rewritten.len(), 2, "unexpected rewritten set: {names:?}");
-}
-
-// ======================================================================
-// Phase 4c tests — call-site state-machine wrap
-// ======================================================================
-
-/// Drill into a wrapped call's if-gate and return `(then_id, else_id)`.
-/// Panics if the sequence doesn't contain exactly one if-else.
-fn wrapped_if_branches(
-    module: &Module,
-    func_id: FunctionId,
-    seq_id: InstrSeqId,
-) -> (InstrSeqId, InstrSeqId) {
-    let seq = local(module, func_id).block(seq_id);
-    let ifs: Vec<(InstrSeqId, InstrSeqId)> = seq
-        .instrs
-        .iter()
-        .filter_map(|(i, _)| match i {
-            Instr::IfElse(ie) => Some((ie.consequent, ie.alternative)),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(ifs.len(), 1, "expected exactly one IfElse in seq {seq_id:?}");
-    ifs[0]
-}
-
-#[test]
-fn wrapped_then_contains_call_and_bridge_to_unwind_save() {
-    // For a no-arg fork call, the then-branch is:
-    //   call $fork          ;; the original target
-    //   i32.const <idx>     ;; call_idx tag
-    //   local.set $call_idx
-    //   global.get $state
-    //   i32.const UNWINDING
-    //   i32.eq
-    //   br_if $unwind_save
-    let bytes = instrument_wat(FIXTURE_DIRECT_CALLER);
-    let module = Module::from_buffer(&bytes).unwrap();
-    let caller = func_by_name(&module, "caller");
-    let wrapper_id = entry_wrapper_seq(&module, caller);
-    let (then_id, _else_id) = wrapped_if_branches(&module, caller, wrapper_id);
-
-    assert_eq!(
-        seq_kinds(&module, caller, then_id),
-        vec![
-            InstrKind::Call,
-            InstrKind::Const,
-            InstrKind::LocalSet,
-            InstrKind::GlobalGet,
-            InstrKind::Const,
-            InstrKind::Binop,
-            InstrKind::BrIf,
-        ],
-    );
-}
-
-#[test]
-fn wrapped_else_supplies_default_call_results() {
-    // Phase 4d: the else branch is taken during REWINDING at a
-    // non-matching call_idx. It must supply default values matching
-    // the call's result types so subsequent code (guarded by the
-    // state checks that 4g will add) sees type-consistent stacks.
-    // For a fork call returning `i32`, that's a single `i32.const 0`.
-    let bytes = instrument_wat(FIXTURE_DIRECT_CALLER);
-    let module = Module::from_buffer(&bytes).unwrap();
-    let caller = func_by_name(&module, "caller");
-    let wrapper_id = entry_wrapper_seq(&module, caller);
-    let (_then_id, else_id) = wrapped_if_branches(&module, caller, wrapper_id);
-
-    assert_eq!(
-        seq_kinds(&module, caller, else_id),
-        vec![InstrKind::Const],
-        "else branch must push a default i32 for fork's result",
-    );
-}
-
-/// A fork caller that also calls a non-fork helper. Only the fork
-/// call should be wrapped; the helper call must survive untouched.
-const FIXTURE_MIXED_CALLEES: &str = r#"
-    (module
-      (import "kernel" "kernel_fork" (func $fork (result i32)))
-      (func $helper (result i32) i32.const 5)
-      (func $caller (export "caller") (result i32)
-        call $helper
-        drop
-        call $fork)
-      (memory 1))
-"#;
-
-#[test]
-fn non_fork_call_is_not_wrapped() {
-    let bytes = instrument_wat(FIXTURE_MIXED_CALLEES);
-    validate(&bytes);
-    let module = Module::from_buffer(&bytes).unwrap();
-
-    let caller = func_by_name(&module, "caller");
-    let wrapper_id = entry_wrapper_seq(&module, caller);
-    let wrapper_kinds = seq_kinds(&module, caller, wrapper_id);
-
-    // Helper call survives as a raw `Call`; the fork call is wrapped
-    // into an if-gate structure (identified by the IfElse kind here).
-    assert!(
-        wrapper_kinds.iter().filter(|k| **k == InstrKind::Call).count() == 1,
-        "helper call should remain as a bare Call: {wrapper_kinds:?}",
-    );
-    assert!(
-        wrapper_kinds
-            .iter()
-            .any(|k| *k == InstrKind::IfElse),
-        "fork call should be wrapped in an if-gate: {wrapper_kinds:?}",
-    );
-}
-
-/// A function that spills args via a wrapped call: `caller_with_args`
-/// takes `(i32, f64)` and passes them to a fork-path helper.
-const FIXTURE_CALL_WITH_ARGS: &str = r#"
-    (module
-      (import "kernel" "kernel_fork" (func $fork (result i32)))
-      (func $leaf (param i32 f64) (result i32)
-        call $fork)
-      (func $caller_with_args (export "caller_with_args") (result i32)
-        i32.const 7
-        f64.const 2.5
-        call $leaf)
-      (memory 1))
-"#;
-
-#[test]
-fn call_with_args_spills_args_to_locals_before_gate() {
-    let bytes = instrument_wat(FIXTURE_CALL_WITH_ARGS);
-    validate(&bytes);
-    let module = Module::from_buffer(&bytes).unwrap();
-
-    let caller = func_by_name(&module, "caller_with_args");
-    let wrapper_id = entry_wrapper_seq(&module, caller);
-    let kinds = seq_kinds(&module, caller, wrapper_id);
-
-    // Prefix shape: original pushes, then two LocalSets (spill args
-    // top-of-stack first), then the 4d condition, then the IfElse
-    // and the trailing 4b Return.
-    assert_eq!(
-        &kinds[..4],
-        &[
-            InstrKind::Const,   // i32.const 7 (original)
-            InstrKind::Const,   // f64.const 2.5 (original)
-            InstrKind::LocalSet, // spill f64 arg (top of stack first)
-            InstrKind::LocalSet, // spill i32 arg
-        ],
-    );
-    assert_eq!(kinds[kinds.len() - 2], InstrKind::IfElse);
-    assert_eq!(kinds[kinds.len() - 1], InstrKind::Return);
-
-    let (then_id, _) = wrapped_if_branches(&module, caller, wrapper_id);
-    assert_eq!(
-        seq_kinds(&module, caller, then_id),
-        vec![
-            InstrKind::LocalGet,  // reload i32 arg
-            InstrKind::LocalGet,  // reload f64 arg
-            InstrKind::Call,
-            InstrKind::Const,     // call_idx tag
-            InstrKind::LocalSet,  // local.set $call_idx
-            InstrKind::GlobalGet, // state
-            InstrKind::Const,     // UNWINDING
-            InstrKind::Binop,
-            InstrKind::BrIf,
-        ],
-    );
-}
-
-/// Two calls in one function should receive sequential call_idx
-/// values. We verify by inspecting the i32.const immediately before
-/// the `local.set $call_idx` in each then-branch.
-const FIXTURE_TWO_CALLS: &str = r#"
-    (module
-      (import "kernel" "kernel_fork" (func $fork (result i32)))
-      (func $caller (export "caller") (result i32)
-        call $fork
-        drop
-        call $fork)
-      (memory 1))
-"#;
-
-#[test]
-fn call_idx_is_sequential_within_function() {
-    let bytes = instrument_wat(FIXTURE_TWO_CALLS);
-    validate(&bytes);
-    let module = Module::from_buffer(&bytes).unwrap();
-
-    let caller = func_by_name(&module, "caller");
-    let wrapper_id = entry_wrapper_seq(&module, caller);
-    let wrapper_seq = local(&module, caller).block(wrapper_id);
-
-    // Gather every IfElse in the wrapper (expected: 2).
-    let if_ids: Vec<InstrSeqId> = wrapper_seq
-        .instrs
-        .iter()
-        .filter_map(|(i, _)| match i {
-            Instr::IfElse(ie) => Some(ie.consequent),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(if_ids.len(), 2, "expected two wrapped calls");
-
-    // In each then-branch, the i32.const right before the LocalSet
-    // that tags call_idx. The then-branch shape is:
-    //   Call, Const(call_idx), LocalSet($call_idx), GlobalGet, Const, Binop, BrIf
-    let mut idxs = Vec::new();
-    for then_id in &if_ids {
-        let instrs = &local(&module, caller).block(*then_id).instrs;
-        // Expect Const at index 1.
-        let call_idx_val = match &instrs[1].0 {
-            Instr::Const(c) => match c.value {
-                walrus::ir::Value::I32(v) => v,
-                _ => panic!("call_idx const should be i32"),
-            },
-            other => panic!("expected Const at index 1, got {other:?}"),
-        };
-        idxs.push(call_idx_val);
-    }
-
-    assert_eq!(idxs, vec![0, 1], "call_idx should count up from 0");
-}
-
-/// call_indirect within a fork-path function is wrapped the same way
-/// as a direct call, with one extra i32 arg (the table index) on top.
-const FIXTURE_INDIRECT: &str = r#"
-    (module
-      (import "kernel" "kernel_fork" (func $fork (result i32)))
-      (type $sig (func (result i32)))
-      (func $cb (type $sig) call $fork)
-      (table 1 1 funcref)
-      (elem (i32.const 0) $cb)
-      (func $caller (export "caller") (result i32)
-        i32.const 0
-        call_indirect (type $sig))
-      (memory 1))
-"#;
-
-#[test]
-fn call_indirect_is_wrapped_with_index_as_top_arg() {
-    let bytes = instrument_wat(FIXTURE_INDIRECT);
-    validate(&bytes);
-    let module = Module::from_buffer(&bytes).unwrap();
-
-    let caller = func_by_name(&module, "caller");
-    let wrapper_id = entry_wrapper_seq(&module, caller);
-    let kinds = seq_kinds(&module, caller, wrapper_id);
-
-    // Prefix: original i32.const (table index), then LocalSet to
-    // spill it. Suffix: IfElse then Return. The middle is 4d's
-    // condition, which we test in detail elsewhere.
-    assert_eq!(&kinds[..2], &[InstrKind::Const, InstrKind::LocalSet]);
-    assert_eq!(kinds[kinds.len() - 2], InstrKind::IfElse);
-    assert_eq!(kinds[kinds.len() - 1], InstrKind::Return);
-
-    let (then_id, _) = wrapped_if_branches(&module, caller, wrapper_id);
-    // then reloads the index, does call_indirect, tags idx, checks.
-    assert_eq!(
-        seq_kinds(&module, caller, then_id),
-        vec![
-            InstrKind::LocalGet,
-            InstrKind::CallIndirect,
-            InstrKind::Const,
-            InstrKind::LocalSet,
-            InstrKind::GlobalGet,
-            InstrKind::Const,
-            InstrKind::Binop,
-            InstrKind::BrIf,
-        ],
-    );
-}
-
-/// A call that's nested inside a block should still be wrapped.
-/// Walrus's instruction-visitor traversal is responsible for
-/// recursing into nested sequences; if we missed `Block` in
-/// `nested_seqs`, this test would fail.
-const FIXTURE_CALL_IN_BLOCK: &str = r#"
-    (module
-      (import "kernel" "kernel_fork" (func $fork (result i32)))
-      (func $caller (export "caller") (result i32)
-        (block (result i32)
-          call $fork))
-      (memory 1))
-"#;
-
-// ======================================================================
-// Phase 4d tests — frame I/O: preamble + postamble
-// ======================================================================
-
-/// Structure of a wrapped function's entry block at 4d:
-///   [preamble_cond..., IfElse(preamble_then, preamble_else),
-///    Block(wrapper),
-///    postamble...]
-///
-/// Returns (preamble_then_id, wrapper_id, postamble_start_idx).
 fn entry_preamble_and_postamble(
     module: &Module,
     func_id: FunctionId,
 ) -> (InstrSeqId, InstrSeqId, usize) {
-    let f = local(module, func_id);
+    let f = local_func(module, func_id);
     let entry = f.block(f.entry_block());
 
     let mut preamble_then: Option<InstrSeqId> = None;
@@ -797,139 +198,94 @@ fn entry_preamble_and_postamble(
     )
 }
 
-#[test]
-fn preamble_starts_with_rewinding_state_check() {
-    // Expected preamble prefix in the entry block:
-    //   global.get state
-    //   i32.const REWINDING (= 2)
-    //   i32.eq
-    //   if ... else ... end
-    let bytes = instrument_wat(FIXTURE_DIRECT_CALLER);
-    let module = Module::from_buffer(&bytes).unwrap();
-    let caller = func_by_name(&module, "caller");
-    let kinds = entry_instr_kinds(&module, caller);
+// --- Fixtures ---------------------------------------------------------
 
-    assert_eq!(
-        &kinds[..4],
-        &[
-            InstrKind::GlobalGet,
-            InstrKind::Const,
-            InstrKind::Binop,
-            InstrKind::IfElse,
-        ],
-    );
+const FIXTURE_DIRECT_CALLER: &str = r#"
+    (module
+      (import "kernel" "kernel_fork" (func $fork (result i32)))
+      (func $caller (export "caller") (result i32)
+        call $fork)
+      (func $non_caller (export "non_caller") (result i32)
+        i32.const 42)
+      (memory 1))
+"#;
 
-    // Verify the constant in the preamble check is REWINDING (= 2).
-    let f = local(&module, caller);
-    let entry = f.block(f.entry_block());
-    let rewinding_const = match &entry.instrs[1].0 {
-        Instr::Const(c) => c.value,
-        other => panic!("expected Const at entry[1], got {other:?}"),
-    };
-    match rewinding_const {
-        walrus::ir::Value::I32(2) => {}
-        other => panic!("preamble must check REWINDING (i32 2): {other:?}"),
-    }
-}
+const FIXTURE_TRANSITIVE: &str = r#"
+    (module
+      (import "kernel" "kernel_fork" (func $fork (result i32)))
+      (func $caller_leaf (export "caller_leaf") (result i32)
+        call $fork)
+      (func $caller_mid (export "caller_mid") (result i32)
+        call $caller_leaf)
+      (func $bystander (export "bystander") (result i32)
+        i32.const 7)
+      (memory 1))
+"#;
 
-#[test]
-fn preamble_then_loads_frame_header_and_call_idx() {
-    // The preamble-then must:
-    //   - global.get buf, load offset=0   (get current_pos)
-    //   - i32.const frame_size, i32.sub   (= new frame_ptr)
-    //   - local.set $frame_ptr
-    //   - global.get buf, local.get $frame_ptr, store offset=0
-    //   - local.get $frame_ptr, load offset=4 (call_idx from frame)
-    //   - local.set $call_idx_local
-    //   - local.get $frame_ptr, load offset=8 (catch_region_id) [Phase 6b]
-    //   - local.set $catch_region_id_local                      [Phase 6b]
-    //   - local.get $frame_ptr, load offset=12 (exnref_slot)    [Phase 6b]
-    //   - local.set $exnref_slot_local                          [Phase 6b]
-    // For a function with no user locals, this is the full preamble.
-    let bytes = instrument_wat(FIXTURE_DIRECT_CALLER);
-    let module = Module::from_buffer(&bytes).unwrap();
-    let caller = func_by_name(&module, "caller");
-    let (preamble_then, _, _) = entry_preamble_and_postamble(&module, caller);
+const FIXTURE_NO_FORK: &str = r#"
+    (module
+      (func $only (export "only") (result i32)
+        i32.const 1)
+      (memory 1))
+"#;
 
-    let kinds = seq_kinds(&module, caller, preamble_then);
-    assert_eq!(
-        kinds,
-        vec![
-            InstrKind::GlobalGet, // buf
-            InstrKind::Other,     // Load current_pos
-            InstrKind::Const,     // frame_size
-            InstrKind::Binop,     // sub
-            InstrKind::LocalSet,  // set $frame_ptr
-            InstrKind::GlobalGet, // buf
-            InstrKind::LocalGet,  // frame_ptr
-            InstrKind::Other,     // Store new current_pos
-            InstrKind::LocalGet,  // frame_ptr
-            InstrKind::Other,     // Load call_idx from frame+4
-            InstrKind::LocalSet,  // set $call_idx
-            InstrKind::LocalGet,  // frame_ptr
-            InstrKind::Other,     // Load catch_region_id from frame+8
-            InstrKind::LocalSet,  // set $catch_region_id
-            InstrKind::LocalGet,  // frame_ptr
-            InstrKind::Other,     // Load exnref_slot from frame+12
-            InstrKind::LocalSet,  // set $exnref_slot
-        ],
-    );
-}
+const FIXTURE_MULTIVALUE: &str = r#"
+    (module
+      (import "kernel" "kernel_fork" (func $fork (result i32)))
+      (func $mv (export "mv") (result i32 i64 f32 f64)
+        call $fork
+        i64.const 0
+        f32.const 0
+        f64.const 0)
+      (memory 1))
+"#;
 
-#[test]
-fn postamble_writes_frame_header_and_bumps_current_pos() {
-    // For a function with no user locals, the postamble body is:
-    //   global.get buf, load offset=0, local.set $frame_ptr
-    //   local.get $frame_ptr, i32.const func_ordinal, store offset=0
-    //   local.get $frame_ptr, local.get $call_idx, store offset=4
-    //   local.get $frame_ptr, local.get $catch_region_id, store offset=8   [Phase 6b]
-    //   local.get $frame_ptr, local.get $exnref_slot, store offset=12      [Phase 6b]
-    //   global.get buf, local.get $frame_ptr, i32.const frame_size, i32.add, store
-    //   <defaults for result types: i32.const 0>
-    let bytes = instrument_wat(FIXTURE_DIRECT_CALLER);
-    let module = Module::from_buffer(&bytes).unwrap();
-    let caller = func_by_name(&module, "caller");
-    let (_, _, postamble_start) = entry_preamble_and_postamble(&module, caller);
+const FIXTURE_MIXED_CALLEES: &str = r#"
+    (module
+      (import "kernel" "kernel_fork" (func $fork (result i32)))
+      (func $helper (result i32) i32.const 5)
+      (func $caller (export "caller") (result i32)
+        call $helper
+        drop
+        call $fork)
+      (memory 1))
+"#;
 
-    let kinds = entry_instr_kinds(&module, caller);
-    let postamble: Vec<InstrKind> = kinds[postamble_start..].to_vec();
+const FIXTURE_CALL_WITH_ARGS: &str = r#"
+    (module
+      (import "kernel" "kernel_fork" (func $fork (result i32)))
+      (func $leaf (param i32 f64) (result i32)
+        call $fork)
+      (func $caller_with_args (export "caller_with_args") (result i32)
+        i32.const 7
+        f64.const 2.5
+        call $leaf)
+      (memory 1))
+"#;
 
-    // Expected postamble (see above):
-    let expected = vec![
-        // Load current_pos into $frame_ptr
-        InstrKind::GlobalGet, // buf
-        InstrKind::Other,     // Load
-        InstrKind::LocalSet,  // set $frame_ptr
-        // Write func_index at offset 0
-        InstrKind::LocalGet,
-        InstrKind::Const,
-        InstrKind::Other, // Store
-        // Write call_index at offset 4
-        InstrKind::LocalGet,
-        InstrKind::LocalGet,
-        InstrKind::Other, // Store
-        // Write catch_region_id at offset 8 (Phase 6b: from $catch_region_id local)
-        InstrKind::LocalGet,
-        InstrKind::LocalGet,
-        InstrKind::Other,
-        // Write exnref_slot at offset 12 (Phase 6b: from $exnref_slot local)
-        InstrKind::LocalGet,
-        InstrKind::LocalGet,
-        InstrKind::Other,
-        // Bump current_pos: buf, frame_ptr, frame_size, add, store
-        InstrKind::GlobalGet,
-        InstrKind::LocalGet,
-        InstrKind::Const,
-        InstrKind::Binop,
-        InstrKind::Other,
-        // Default return value: i32.const 0
-        InstrKind::Const,
-    ];
-    assert_eq!(postamble, expected);
-}
+const FIXTURE_TWO_CALLS: &str = r#"
+    (module
+      (import "kernel" "kernel_fork" (func $fork (result i32)))
+      (func $caller (export "caller") (result i32)
+        call $fork
+        drop
+        call $fork)
+      (memory 1))
+"#;
 
-/// A fork-path function with an i32 local. The 4d frame should
-/// grow by 4 bytes to hold that local.
+const FIXTURE_INDIRECT: &str = r#"
+    (module
+      (import "kernel" "kernel_fork" (func $fork (result i32)))
+      (type $sig (func (result i32)))
+      (func $cb (type $sig) call $fork)
+      (table 1 1 funcref)
+      (elem (i32.const 0) $cb)
+      (func $caller (export "caller") (result i32)
+        i32.const 0
+        call_indirect (type $sig))
+      (memory 1))
+"#;
+
 const FIXTURE_WITH_I32_LOCAL: &str = r#"
     (module
       (import "kernel" "kernel_fork" (func $fork (result i32)))
@@ -943,60 +299,6 @@ const FIXTURE_WITH_I32_LOCAL: &str = r#"
       (memory 1))
 "#;
 
-#[test]
-fn user_scalar_locals_are_saved_and_restored_in_frame() {
-    let bytes = instrument_wat(FIXTURE_WITH_I32_LOCAL);
-    validate(&bytes);
-    let module = Module::from_buffer(&bytes).unwrap();
-
-    let caller = func_by_name(&module, "caller");
-    let (preamble_then, _, _) = entry_preamble_and_postamble(&module, caller);
-
-    // With one i32 user local, preamble-then should include an extra
-    // local.get $frame_ptr / Load / local.set sequence at the tail
-    // (after call_idx restore).
-    let kinds = seq_kinds(&module, caller, preamble_then);
-    // Last three: LocalGet(frame_ptr), Load(i32), LocalSet(user local x)
-    let tail: Vec<_> = kinds.iter().copied().rev().take(3).collect();
-    assert_eq!(
-        tail,
-        vec![InstrKind::LocalSet, InstrKind::Other, InstrKind::LocalGet],
-        "preamble-then must restore the i32 user local: {kinds:?}",
-    );
-}
-
-#[test]
-fn postamble_serializes_user_scalar_locals() {
-    let bytes = instrument_wat(FIXTURE_WITH_I32_LOCAL);
-    validate(&bytes);
-    let module = Module::from_buffer(&bytes).unwrap();
-
-    let caller = func_by_name(&module, "caller");
-    let (_, _, postamble_start) = entry_preamble_and_postamble(&module, caller);
-
-    // Postamble with one user local should include an extra
-    // LocalGet(frame_ptr), LocalGet(user), Store sequence between
-    // the exnref_slot store and the current_pos bump.
-    let kinds = entry_instr_kinds(&module, caller);
-    let postamble = &kinds[postamble_start..];
-
-    // Count stores: header has 4 (func_index, call_index, catch_region_id, exnref_slot),
-    // user locals add 1 (our i32 x), and current_pos bump adds 1. Total 6.
-    let store_count = postamble
-        .iter()
-        .filter(|k| matches!(k, InstrKind::Other))
-        .count();
-    // "Other" includes Load and Store; there's one Load (for current_pos)
-    // and six Stores = 7 Others expected.
-    assert_eq!(
-        store_count, 7,
-        "postamble should have 1 Load + 6 Stores (header 4 + user 1 + bump 1): {postamble:?}",
-    );
-}
-
-/// Function with a non-trivial signature — multi-param, multi-result.
-/// Tests the default-value fallbacks in both the else branch of
-/// wrapped calls and the postamble's default-return push.
 const FIXTURE_COMPLEX_RETURN: &str = r#"
     (module
       (import "kernel" "kernel_fork" (func $fork (result i32)))
@@ -1008,73 +310,6 @@ const FIXTURE_COMPLEX_RETURN: &str = r#"
       (memory 1))
 "#;
 
-#[test]
-fn postamble_emits_defaults_for_each_result_type() {
-    let bytes = instrument_wat(FIXTURE_COMPLEX_RETURN);
-    validate(&bytes);
-    let module = Module::from_buffer(&bytes).unwrap();
-
-    let caller = func_by_name(&module, "caller");
-    let kinds = entry_instr_kinds(&module, caller);
-
-    // The last two Const instructions in the entry block are the
-    // default return values: i32.const 0 and f64.const 0.0.
-    let trailing_consts = kinds.iter().rev().take_while(|k| **k == InstrKind::Const).count();
-    assert_eq!(
-        trailing_consts, 2,
-        "postamble should emit one Const per result type: {kinds:?}",
-    );
-}
-
-#[test]
-fn call_idx_local_exists_per_function() {
-    // Cross-check: the $call_idx local set in the wrapped call's
-    // then-branch and read in the preamble's restore should be the
-    // same LocalId (i.e., the function has exactly one call_idx
-    // local, not one per call site).
-    let bytes = instrument_wat(FIXTURE_TWO_CALLS);
-    validate(&bytes);
-    let module = Module::from_buffer(&bytes).unwrap();
-
-    let caller = func_by_name(&module, "caller");
-    let wrapper_id = entry_wrapper_seq(&module, caller);
-
-    // Both wrapped calls' then-branches should set the same local.
-    let wrapper_seq = local(&module, caller).block(wrapper_id);
-    let then_ids: Vec<InstrSeqId> = wrapper_seq
-        .instrs
-        .iter()
-        .filter_map(|(i, _)| match i {
-            Instr::IfElse(ie) => Some(ie.consequent),
-            _ => None,
-        })
-        .collect();
-
-    let mut set_locals = Vec::new();
-    for tid in &then_ids {
-        let tseq = local(&module, caller).block(*tid);
-        // Expected pattern: [..., Const(call_idx_N), LocalSet(call_idx_local), ...]
-        for (instr, _) in &tseq.instrs {
-            if let Instr::LocalSet(ls) = instr {
-                set_locals.push(ls.local);
-                break; // first LocalSet is the call_idx tag
-            }
-        }
-    }
-    assert_eq!(set_locals.len(), 2, "each then-branch should have a LocalSet");
-    assert_eq!(
-        set_locals[0], set_locals[1],
-        "both call sites should tag the same $call_idx local",
-    );
-}
-
-// ======================================================================
-// Phase 4f tests — ref-typed locals via aux tables
-// ======================================================================
-
-/// A fork-path function with one funcref local. After 4f, an aux
-/// funcref table should be injected and the local saved/restored
-/// through it.
 const FIXTURE_FUNCREF_LOCAL: &str = r#"
     (module
       (import "kernel" "kernel_fork" (func $fork (result i32)))
@@ -1088,95 +323,6 @@ const FIXTURE_FUNCREF_LOCAL: &str = r#"
       (memory 1))
 "#;
 
-#[test]
-fn funcref_local_triggers_aux_table_injection() {
-    let bytes = instrument_wat(FIXTURE_FUNCREF_LOCAL);
-    validate(&bytes);
-    let module = Module::from_buffer(&bytes).unwrap();
-
-    // Find a table whose name is the funcref stash. The module
-    // already had no tables, so this is injected by 4f.
-    let stash_count = module
-        .tables
-        .iter()
-        .filter(|t| {
-            t.name
-                .as_deref()
-                .map_or(false, |n| n == "_wpk_fork_funcref_stash")
-        })
-        .count();
-    assert_eq!(stash_count, 1, "expected exactly one funcref stash table");
-
-    // Table's initial size should match the slot count (1 funcref local).
-    let stash = module
-        .tables
-        .iter()
-        .find(|t| t.name.as_deref() == Some("_wpk_fork_funcref_stash"))
-        .unwrap();
-    assert_eq!(stash.initial, 1);
-}
-
-#[test]
-fn funcref_local_is_spilled_to_table_in_postamble() {
-    let bytes = instrument_wat(FIXTURE_FUNCREF_LOCAL);
-    let module = Module::from_buffer(&bytes).unwrap();
-    let caller = func_by_name(&module, "caller");
-
-    // The postamble should contain at least one TableSet (spilling
-    // the funcref user local) and the preamble-then should contain
-    // at least one TableGet (reloading it).
-    let f = local(&module, caller);
-    let mut table_sets = 0usize;
-    let mut table_gets = 0usize;
-    for (instr, _) in &f.block(f.entry_block()).instrs {
-        match instr {
-            Instr::TableSet(_) => table_sets += 1,
-            Instr::TableGet(_) => table_gets += 1,
-            _ => {}
-        }
-    }
-    // Recurse into the preamble's then branch: it's an InstrSeq
-    // inside an IfElse in the entry block.
-    let entry = f.block(f.entry_block());
-    for (instr, _) in &entry.instrs {
-        if let Instr::IfElse(ie) = instr {
-            let then_seq = f.block(ie.consequent);
-            for (i, _) in &then_seq.instrs {
-                match i {
-                    Instr::TableSet(_) => table_sets += 1,
-                    Instr::TableGet(_) => table_gets += 1,
-                    _ => {}
-                }
-            }
-            break;
-        }
-    }
-
-    assert_eq!(table_sets, 1, "postamble must spill the one funcref local");
-    assert_eq!(
-        table_gets, 1,
-        "preamble-then must reload the one funcref local",
-    );
-}
-
-#[test]
-fn functions_without_ref_locals_inject_no_aux_tables() {
-    // FIXTURE_DIRECT_CALLER has only scalar (or no) locals. No aux
-    // tables should be injected.
-    let bytes = instrument_wat(FIXTURE_DIRECT_CALLER);
-    let module = Module::from_buffer(&bytes).unwrap();
-
-    let stash_names = ["_wpk_fork_funcref_stash", "_wpk_fork_externref_stash", "_wpk_fork_exnref_stash"];
-    for name in stash_names {
-        assert!(
-            !module.tables.iter().any(|t| t.name.as_deref() == Some(name)),
-            "module without ref locals should not have `{name}`",
-        );
-    }
-}
-
-/// Ref locals from multiple functions should share a single aux
-/// table of each class, with disjoint slot assignments.
 const FIXTURE_TWO_FUNCREF_CALLERS: &str = r#"
     (module
       (import "kernel" "kernel_fork" (func $fork (result i32)))
@@ -1197,6 +343,699 @@ const FIXTURE_TWO_FUNCREF_CALLERS: &str = r#"
       (memory 1))
 "#;
 
+// --- Structural / validation tests -----------------------------------
+
+#[test]
+fn instrumented_module_with_direct_caller_validates() {
+    let bytes = instrument_wat(FIXTURE_DIRECT_CALLER);
+    validate(&bytes);
+}
+
+#[test]
+fn direct_caller_entry_shape_is_preamble_wrapper_postamble() {
+    let bytes = instrument_wat(FIXTURE_DIRECT_CALLER);
+    let module = Module::from_buffer(&bytes).unwrap();
+    let caller = func_by_name(&module, "caller");
+    let kinds = entry_instr_kinds(&module, caller);
+
+    // Entry opens with the preamble's `if state == REWINDING` check.
+    assert!(
+        matches!(kinds.first(), Some(InstrKind::GlobalGet)),
+        "entry should start with GlobalGet (state) for REWINDING check: {kinds:?}",
+    );
+    // Exactly one wrapper Block ($unwind_save).
+    assert_eq!(
+        kinds.iter().filter(|k| **k == InstrKind::Block).count(),
+        1,
+        "entry should contain exactly one wrapper Block: {kinds:?}",
+    );
+    // Must not terminate with Unreachable (postamble pushes real
+    // default return values).
+    assert!(
+        !matches!(kinds.last(), Some(InstrKind::Unreachable)),
+        "entry must not end in an Unreachable placeholder: {kinds:?}",
+    );
+}
+
+#[test]
+fn fork_path_function_has_one_top_level_br_table() {
+    let bytes = instrument_wat(FIXTURE_DIRECT_CALLER);
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+    let caller = func_by_name(&module, "caller");
+    let f = local_func(&module, caller);
+    assert_eq!(
+        count_br_tables(f),
+        1,
+        "each fork-path function should emit exactly one dispatch br_table",
+    );
+}
+
+#[test]
+fn non_fork_path_function_is_not_wrapped() {
+    let bytes = instrument_wat(FIXTURE_DIRECT_CALLER);
+    let module = Module::from_buffer(&bytes).unwrap();
+    let non_caller = func_by_name(&module, "non_caller");
+    assert_eq!(
+        entry_instr_kinds(&module, non_caller),
+        vec![InstrKind::Const],
+        "non-fork-path function should be byte-for-byte unchanged",
+    );
+}
+
+#[test]
+fn runtime_control_functions_are_not_wrapped() {
+    let bytes = instrument_wat(FIXTURE_DIRECT_CALLER);
+    let module = Module::from_buffer(&bytes).unwrap();
+
+    for export in [
+        runtime_names::EXPORT_UNWIND_BEGIN,
+        runtime_names::EXPORT_UNWIND_END,
+        runtime_names::EXPORT_REWIND_BEGIN,
+        runtime_names::EXPORT_REWIND_END,
+        runtime_names::EXPORT_STATE,
+    ] {
+        let id = module
+            .exports
+            .iter()
+            .find(|e| e.name == export)
+            .map(|e| match e.item {
+                ExportItem::Function(f) => f,
+                _ => panic!("`{export}` is not a function export"),
+            })
+            .unwrap_or_else(|| panic!("`{export}` export missing"));
+
+        let f = local_func(&module, id);
+        assert_eq!(
+            count_br_tables(f),
+            0,
+            "runtime control function `{export}` should not contain a dispatch br_table",
+        );
+    }
+}
+
+#[test]
+fn transitive_callers_are_all_wrapped() {
+    let bytes = instrument_wat(FIXTURE_TRANSITIVE);
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+
+    for name in ["caller_leaf", "caller_mid"] {
+        let id = func_by_name(&module, name);
+        assert_eq!(
+            count_br_tables(local_func(&module, id)),
+            1,
+            "transitive caller `{name}` should have a dispatch br_table",
+        );
+    }
+
+    let bystander = func_by_name(&module, "bystander");
+    assert_eq!(
+        entry_instr_kinds(&module, bystander),
+        vec![InstrKind::Const],
+        "bystander should not be wrapped",
+    );
+}
+
+#[test]
+fn module_without_fork_import_leaves_user_function_untouched() {
+    let bytes = instrument_wat(FIXTURE_NO_FORK);
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+    let only = func_by_name(&module, "only");
+    assert_eq!(
+        entry_instr_kinds(&module, only),
+        vec![InstrKind::Const],
+        "user function in a no-fork module should be untouched",
+    );
+}
+
+#[test]
+fn multivalue_return_wraps_and_validates() {
+    let bytes = instrument_wat(FIXTURE_MULTIVALUE);
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+    let mv = func_by_name(&module, "mv");
+    let kinds = entry_instr_kinds(&module, mv);
+    assert!(
+        kinds.iter().any(|k| *k == InstrKind::Block),
+        "mv entry missing wrapper Block: {kinds:?}",
+    );
+    assert!(
+        kinds.iter().any(|k| *k == InstrKind::IfElse),
+        "mv entry missing preamble IfElse: {kinds:?}",
+    );
+}
+
+#[test]
+fn instrument_functions_returns_rewritten_set() {
+    use fork_instrument::call_graph;
+    use fork_instrument::instrument::instrument_functions;
+    use fork_instrument::runtime::inject_runtime;
+
+    let bytes = wat::parse_str(FIXTURE_TRANSITIVE).unwrap();
+    let mut module = Module::from_buffer(&bytes).unwrap();
+
+    let seed = call_graph::find_import_func(&module, "kernel.kernel_fork")
+        .expect("seed import present");
+    let fork_path = call_graph::reaching_closure(&module, seed);
+    let runtime = inject_runtime(&mut module);
+    let rewritten = instrument_functions(&mut module, &runtime, &fork_path);
+
+    let names: HashSet<String> = rewritten
+        .iter()
+        .map(|id| module.funcs.get(*id).name.clone().unwrap_or_default())
+        .collect();
+
+    assert!(names.contains("caller_leaf"), "got: {names:?}");
+    assert!(names.contains("caller_mid"), "got: {names:?}");
+    assert!(
+        !names.contains("fork"),
+        "import must never be instrumented: {names:?}",
+    );
+    assert!(
+        !names.contains("bystander"),
+        "non-fork-path must never be instrumented: {names:?}",
+    );
+    assert_eq!(rewritten.len(), 2, "unexpected rewritten set: {names:?}");
+}
+
+// --- Dispatch-shape tests --------------------------------------------
+
+/// Locate the `$dispatch_normal` block within the function. That's
+/// the block whose body contains `global.get state; const REWINDING;
+/// eq; if (then ... br_table ... end)` — no other block matches.
+fn find_dispatch_normal(module: &Module, func_id: FunctionId) -> Option<InstrSeqId> {
+    let f = local_func(module, func_id);
+    let mut dispatch: Option<InstrSeqId> = None;
+    walk_all(f, f.entry_block(), &mut |seq, instr| {
+        if dispatch.is_some() {
+            return;
+        }
+        if let Instr::IfElse(ie) = instr {
+            // Check whether the if-then contains a BrTable.
+            let then_seq = f.block(ie.consequent);
+            if then_seq
+                .instrs
+                .iter()
+                .any(|(i, _)| matches!(i, Instr::BrTable(_)))
+            {
+                dispatch = Some(seq);
+            }
+        }
+    });
+    dispatch
+}
+
+#[test]
+fn dispatch_block_contains_rewind_guarded_br_table() {
+    let bytes = instrument_wat(FIXTURE_DIRECT_CALLER);
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+    let caller = func_by_name(&module, "caller");
+    let dispatch = find_dispatch_normal(&module, caller).expect("dispatch block missing");
+    // Shape: GlobalGet, Const, Binop, IfElse.
+    assert_eq!(
+        seq_kinds(&module, caller, dispatch),
+        vec![
+            InstrKind::GlobalGet,
+            InstrKind::Const,
+            InstrKind::Binop,
+            InstrKind::IfElse,
+        ],
+    );
+}
+
+#[test]
+fn br_table_default_points_to_unwind_save() {
+    // For a function with N fork-path calls, the br_table has N
+    // target entries + default. For FIXTURE_DIRECT_CALLER (one call),
+    // br_table has one target (POST_0) and a default ($unwind_save).
+    let bytes = instrument_wat(FIXTURE_DIRECT_CALLER);
+    let module = Module::from_buffer(&bytes).unwrap();
+    let caller = func_by_name(&module, "caller");
+    let f = local_func(&module, caller);
+
+    let mut br_table_info: Option<(Vec<InstrSeqId>, InstrSeqId)> = None;
+    walk_all(f, f.entry_block(), &mut |_, instr| {
+        if let Instr::BrTable(bt) = instr {
+            br_table_info = Some((bt.blocks.to_vec(), bt.default));
+        }
+    });
+    let (blocks, _default) = br_table_info.expect("br_table missing");
+    assert_eq!(blocks.len(), 1, "one call → one br_table target");
+}
+
+#[test]
+fn non_fork_call_remains_bare_in_chunk_0() {
+    let bytes = instrument_wat(FIXTURE_MIXED_CALLEES);
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+
+    let caller = func_by_name(&module, "caller");
+    let unwind_save = entry_wrapper_seq(&module, caller);
+
+    // Walk the whole $unwind_save body and count direct `Call`s to
+    // `$helper`. There should be exactly one (chunk 0's helper call
+    // is preserved verbatim).
+    let helper = func_by_name(&module, "helper");
+    let mut helper_calls = 0usize;
+    walk_all(
+        local_func(&module, caller),
+        unwind_save,
+        &mut |_, instr| {
+            if let Instr::Call(c) = instr {
+                if c.func == helper {
+                    helper_calls += 1;
+                }
+            }
+        },
+    );
+    assert_eq!(
+        helper_calls, 1,
+        "non-fork-path helper call should survive verbatim (once)",
+    );
+}
+
+#[test]
+fn call_site_post_sequence_sets_call_idx_and_checks_unwinding() {
+    // For each fork-path call site, the post-call sequence is:
+    //   <call>, Const(K), LocalSet($call_idx),
+    //   GlobalGet(state), Const(UNWINDING), Binop(eq), BrIf($unwind_save).
+    let bytes = instrument_wat(FIXTURE_DIRECT_CALLER);
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+    let caller = func_by_name(&module, "caller");
+    let unwind_save = entry_wrapper_seq(&module, caller);
+
+    // $unwind_save body (one call case):
+    //   Block($POST_0),
+    //   Call($fork), Const(0), LocalSet, GlobalGet, Const, Binop, BrIf,
+    //   Return
+    let kinds = seq_kinds(&module, caller, unwind_save);
+    assert_eq!(
+        kinds,
+        vec![
+            InstrKind::Block,     // $POST_0
+            InstrKind::Call,      // the fork call
+            InstrKind::Const,     // call_idx = 0
+            InstrKind::LocalSet,  // $call_idx_local
+            InstrKind::GlobalGet, // state
+            InstrKind::Const,     // UNWINDING
+            InstrKind::Binop,     // i32.eq
+            InstrKind::BrIf,      // $unwind_save
+            InstrKind::Return,    // normal-path exit
+        ],
+    );
+}
+
+#[test]
+fn call_with_args_spills_and_reloads_through_locals() {
+    let bytes = instrument_wat(FIXTURE_CALL_WITH_ARGS);
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+
+    let caller = func_by_name(&module, "caller_with_args");
+    let unwind_save = entry_wrapper_seq(&module, caller);
+
+    // Structure after rewrite:
+    //   $unwind_save:
+    //     Block($POST_0),
+    //     <reload i32 arg>, <reload f64 arg>, Call,
+    //     Const(0), LocalSet($call_idx), GlobalGet, Const, Binop, BrIf,
+    //     Return
+    //   $POST_0:
+    //     Block($dispatch_normal),
+    //     <chunk 0: i32.const 7, f64.const 2.5>,
+    //     <spill f64 arg>, <spill i32 arg>   ;; top-of-stack first
+    //
+    // Whether the chunk's spill count is >= 2 and the unwind_save
+    // reloads are >= 2 LocalGets before the call is the shape check.
+    let unwind_kinds = seq_kinds(&module, caller, unwind_save);
+    assert_eq!(unwind_kinds[0], InstrKind::Block);
+    assert_eq!(unwind_kinds[1], InstrKind::LocalGet, "reload arg 0");
+    assert_eq!(unwind_kinds[2], InstrKind::LocalGet, "reload arg 1");
+    assert_eq!(unwind_kinds[3], InstrKind::Call);
+
+    // Find $POST_0 — it's the inner Block of $unwind_save.
+    let f = local_func(&module, caller);
+    let post_0 = match f.block(unwind_save).instrs[0].0 {
+        Instr::Block(ir::Block { seq }) => seq,
+        _ => panic!("expected Block"),
+    };
+    let post_0_kinds = seq_kinds(&module, caller, post_0);
+    // Should end with 2 LocalSets (spills).
+    let last_two: Vec<_> = post_0_kinds.iter().rev().take(2).copied().collect();
+    assert_eq!(
+        last_two,
+        vec![InstrKind::LocalSet, InstrKind::LocalSet],
+        "chunk 0 tail must spill two args: {post_0_kinds:?}",
+    );
+}
+
+#[test]
+fn two_calls_assign_sequential_call_idx() {
+    let bytes = instrument_wat(FIXTURE_TWO_CALLS);
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+    let caller = func_by_name(&module, "caller");
+    let unwind_save = entry_wrapper_seq(&module, caller);
+    let f = local_func(&module, caller);
+
+    // Extract every `i32.const N` immediately before a `local.set`
+    // that targets the call_idx local. The call_idx local is the
+    // same one referenced by every site.
+    //
+    // Start by finding the br_table — its input LocalGet names the
+    // call_idx local.
+    let mut call_idx_local: Option<walrus::LocalId> = None;
+    walk_all(f, f.entry_block(), &mut |seq, instr| {
+        if call_idx_local.is_some() {
+            return;
+        }
+        if matches!(instr, Instr::BrTable(_)) {
+            // Previous instr in same seq is LocalGet(call_idx).
+            let seq_instrs = &f.block(seq).instrs;
+            for i in 0..seq_instrs.len() {
+                if matches!(seq_instrs[i].0, Instr::BrTable(_)) && i > 0 {
+                    if let Instr::LocalGet(lg) = &seq_instrs[i - 1].0 {
+                        call_idx_local = Some(lg.local);
+                    }
+                }
+            }
+        }
+    });
+    let call_idx_local = call_idx_local.expect("call_idx local discoverable from br_table");
+
+    // Now count Const values immediately preceding LocalSet(call_idx).
+    fn walk_seqs<F: FnMut(InstrSeqId)>(
+        f: &LocalFunction,
+        seq: InstrSeqId,
+        visit: &mut F,
+    ) {
+        visit(seq);
+        for (instr, _) in &f.block(seq).instrs {
+            for child in nested_of(instr) {
+                walk_seqs(f, child, visit);
+            }
+        }
+    }
+
+    let mut idxs: Vec<i32> = Vec::new();
+    walk_seqs(f, f.entry_block(), &mut |seq| {
+        let instrs = &f.block(seq).instrs;
+        for i in 1..instrs.len() {
+            if let Instr::LocalSet(ls) = &instrs[i].0 {
+                if ls.local == call_idx_local {
+                    if let Instr::Const(c) = &instrs[i - 1].0 {
+                        if let ir::Value::I32(v) = c.value {
+                            idxs.push(v);
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    // The structure yields the sites in reverse-nesting order: the
+    // outermost $unwind_save body has call 1's post-sequence, the
+    // inner $POST_1 body has call 0's post-sequence. Sort before
+    // asserting the set of assigned indices.
+    idxs.sort();
+    assert_eq!(idxs, vec![0, 1], "call_idx should count up from 0 per site");
+}
+
+#[test]
+fn call_indirect_spills_table_index_as_top_arg() {
+    let bytes = instrument_wat(FIXTURE_INDIRECT);
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+
+    let caller = func_by_name(&module, "caller");
+    let unwind_save = entry_wrapper_seq(&module, caller);
+    let f = local_func(&module, caller);
+
+    // $unwind_save:
+    //   Block($POST_0),
+    //   <reload table index>, CallIndirect,
+    //   Const(0), LocalSet, GlobalGet, Const, Binop, BrIf,
+    //   Return
+    let kinds = seq_kinds(&module, caller, unwind_save);
+    assert_eq!(
+        kinds,
+        vec![
+            InstrKind::Block,
+            InstrKind::LocalGet,     // reload i32 table index
+            InstrKind::CallIndirect, // indirect call
+            InstrKind::Const,        // call_idx = 0
+            InstrKind::LocalSet,     // $call_idx_local
+            InstrKind::GlobalGet,
+            InstrKind::Const,
+            InstrKind::Binop,
+            InstrKind::BrIf,
+            InstrKind::Return,
+        ],
+    );
+
+    // $POST_0 ends with a single LocalSet (spill the i32 index).
+    let post_0 = match f.block(unwind_save).instrs[0].0 {
+        Instr::Block(ir::Block { seq }) => seq,
+        _ => panic!("expected Block"),
+    };
+    let post_0_kinds = seq_kinds(&module, caller, post_0);
+    assert_eq!(
+        *post_0_kinds.last().unwrap(),
+        InstrKind::LocalSet,
+        "chunk 0 tail must spill the i32 table index: {post_0_kinds:?}",
+    );
+}
+
+// --- Preamble / postamble tests --------------------------------------
+
+#[test]
+fn preamble_starts_with_rewinding_state_check() {
+    let bytes = instrument_wat(FIXTURE_DIRECT_CALLER);
+    let module = Module::from_buffer(&bytes).unwrap();
+    let caller = func_by_name(&module, "caller");
+    let kinds = entry_instr_kinds(&module, caller);
+
+    assert_eq!(
+        &kinds[..4],
+        &[
+            InstrKind::GlobalGet,
+            InstrKind::Const,
+            InstrKind::Binop,
+            InstrKind::IfElse,
+        ],
+    );
+
+    let f = local_func(&module, caller);
+    let entry = f.block(f.entry_block());
+    let rewinding_const = match &entry.instrs[1].0 {
+        Instr::Const(c) => c.value,
+        other => panic!("expected Const at entry[1], got {other:?}"),
+    };
+    match rewinding_const {
+        ir::Value::I32(2) => {}
+        other => panic!("preamble must check REWINDING (i32 2): {other:?}"),
+    }
+}
+
+#[test]
+fn preamble_then_loads_frame_header_and_call_idx() {
+    let bytes = instrument_wat(FIXTURE_DIRECT_CALLER);
+    let module = Module::from_buffer(&bytes).unwrap();
+    let caller = func_by_name(&module, "caller");
+    let (preamble_then, _, _) = entry_preamble_and_postamble(&module, caller);
+
+    let kinds = seq_kinds(&module, caller, preamble_then);
+    assert_eq!(
+        kinds,
+        vec![
+            InstrKind::GlobalGet, // buf
+            InstrKind::Other,     // Load current_pos
+            InstrKind::Const,     // frame_size
+            InstrKind::Binop,     // sub
+            InstrKind::LocalSet,  // $frame_ptr
+            InstrKind::GlobalGet, // buf
+            InstrKind::LocalGet,  // frame_ptr
+            InstrKind::Other,     // Store new current_pos
+            InstrKind::LocalGet,  // frame_ptr
+            InstrKind::Other,     // Load call_idx from frame+4
+            InstrKind::LocalSet,  // $call_idx_local
+            InstrKind::LocalGet,  // frame_ptr
+            InstrKind::Other,     // Load catch_region_id from frame+8
+            InstrKind::LocalSet,  // $catch_region_id_local
+            InstrKind::LocalGet,  // frame_ptr
+            InstrKind::Other,     // Load exnref_slot from frame+12
+            InstrKind::LocalSet,  // $exnref_slot_local
+        ],
+    );
+}
+
+#[test]
+fn postamble_writes_frame_header_and_bumps_current_pos() {
+    let bytes = instrument_wat(FIXTURE_DIRECT_CALLER);
+    let module = Module::from_buffer(&bytes).unwrap();
+    let caller = func_by_name(&module, "caller");
+    let (_, _, postamble_start) = entry_preamble_and_postamble(&module, caller);
+
+    let kinds = entry_instr_kinds(&module, caller);
+    let postamble: Vec<InstrKind> = kinds[postamble_start..].to_vec();
+
+    let expected = vec![
+        InstrKind::GlobalGet, // buf
+        InstrKind::Other,     // Load current_pos
+        InstrKind::LocalSet,  // $frame_ptr
+        InstrKind::LocalGet,
+        InstrKind::Const,
+        InstrKind::Other, // Store func_index
+        InstrKind::LocalGet,
+        InstrKind::LocalGet,
+        InstrKind::Other, // Store call_index
+        InstrKind::LocalGet,
+        InstrKind::LocalGet,
+        InstrKind::Other, // Store catch_region_id
+        InstrKind::LocalGet,
+        InstrKind::LocalGet,
+        InstrKind::Other, // Store exnref_slot
+        InstrKind::GlobalGet,
+        InstrKind::LocalGet,
+        InstrKind::Const,
+        InstrKind::Binop,
+        InstrKind::Other, // Store new current_pos
+        InstrKind::Const, // default return value
+    ];
+    assert_eq!(postamble, expected);
+}
+
+#[test]
+fn user_scalar_locals_are_saved_and_restored_in_frame() {
+    let bytes = instrument_wat(FIXTURE_WITH_I32_LOCAL);
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+
+    let caller = func_by_name(&module, "caller");
+    let (preamble_then, _, _) = entry_preamble_and_postamble(&module, caller);
+
+    // With one i32 user local, preamble-then should end with a
+    // LocalGet(frame_ptr) / Load / LocalSet(user local) trio.
+    let kinds = seq_kinds(&module, caller, preamble_then);
+    let tail: Vec<_> = kinds.iter().copied().rev().take(3).collect();
+    assert_eq!(
+        tail,
+        vec![InstrKind::LocalSet, InstrKind::Other, InstrKind::LocalGet],
+        "preamble-then must restore the i32 user local: {kinds:?}",
+    );
+}
+
+#[test]
+fn postamble_serializes_user_scalar_locals() {
+    let bytes = instrument_wat(FIXTURE_WITH_I32_LOCAL);
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+
+    let caller = func_by_name(&module, "caller");
+    let (_, _, postamble_start) = entry_preamble_and_postamble(&module, caller);
+
+    let kinds = entry_instr_kinds(&module, caller);
+    let postamble = &kinds[postamble_start..];
+
+    // Postamble with one user local:
+    //   1 Load (current_pos) + 6 Stores (func_index, call_index,
+    //   catch_region_id, exnref_slot, user_x, new current_pos) = 7 Others.
+    let other_count = postamble
+        .iter()
+        .filter(|k| matches!(k, InstrKind::Other))
+        .count();
+    assert_eq!(
+        other_count, 7,
+        "postamble should have 1 Load + 6 Stores (header 4 + user 1 + bump 1): {postamble:?}",
+    );
+}
+
+#[test]
+fn postamble_emits_defaults_for_each_result_type() {
+    let bytes = instrument_wat(FIXTURE_COMPLEX_RETURN);
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+
+    let caller = func_by_name(&module, "caller");
+    let kinds = entry_instr_kinds(&module, caller);
+    let trailing_consts = kinds.iter().rev().take_while(|k| **k == InstrKind::Const).count();
+    assert_eq!(
+        trailing_consts, 2,
+        "postamble should emit one Const per result type: {kinds:?}",
+    );
+}
+
+// --- Aux-table (Phase 4f) tests --------------------------------------
+
+#[test]
+fn funcref_local_triggers_aux_table_injection() {
+    let bytes = instrument_wat(FIXTURE_FUNCREF_LOCAL);
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+
+    let stash_count = module
+        .tables
+        .iter()
+        .filter(|t| t.name.as_deref() == Some("_wpk_fork_funcref_stash"))
+        .count();
+    assert_eq!(stash_count, 1, "expected exactly one funcref stash table");
+
+    let stash = module
+        .tables
+        .iter()
+        .find(|t| t.name.as_deref() == Some("_wpk_fork_funcref_stash"))
+        .unwrap();
+    assert_eq!(stash.initial, 1);
+}
+
+#[test]
+fn funcref_local_is_spilled_to_table_and_reloaded() {
+    let bytes = instrument_wat(FIXTURE_FUNCREF_LOCAL);
+    let module = Module::from_buffer(&bytes).unwrap();
+    let caller = func_by_name(&module, "caller");
+    let f = local_func(&module, caller);
+
+    // Count TableSet and TableGet anywhere in the function.
+    let mut table_sets = 0usize;
+    let mut table_gets = 0usize;
+    walk_all(f, f.entry_block(), &mut |_, instr| match instr {
+        Instr::TableSet(_) => table_sets += 1,
+        Instr::TableGet(_) => table_gets += 1,
+        _ => {}
+    });
+
+    assert_eq!(table_sets, 1, "postamble must spill the one funcref local");
+    assert_eq!(
+        table_gets, 1,
+        "preamble-then must reload the one funcref local",
+    );
+}
+
+#[test]
+fn functions_without_ref_locals_inject_no_aux_tables() {
+    let bytes = instrument_wat(FIXTURE_DIRECT_CALLER);
+    let module = Module::from_buffer(&bytes).unwrap();
+
+    let stash_names = [
+        "_wpk_fork_funcref_stash",
+        "_wpk_fork_externref_stash",
+        "_wpk_fork_exnref_stash",
+    ];
+    for name in stash_names {
+        assert!(
+            !module
+                .tables
+                .iter()
+                .any(|t| t.name.as_deref() == Some(name)),
+            "module without ref locals should not have `{name}`",
+        );
+    }
+}
+
 #[test]
 fn slot_counts_aggregate_across_functions() {
     let bytes = instrument_wat(FIXTURE_TWO_FUNCREF_CALLERS);
@@ -1208,7 +1047,6 @@ fn slot_counts_aggregate_across_functions() {
         .iter()
         .find(|t| t.name.as_deref() == Some("_wpk_fork_funcref_stash"))
         .expect("funcref stash should be injected");
-    // Two functions, one funcref each → initial size 2.
     assert_eq!(stash.initial, 2);
 }
 
@@ -1249,13 +1087,6 @@ fn externref_local_routes_through_externref_stash() {
 #[test]
 #[should_panic(expected = "fork-instrument 4f")]
 fn unsupported_ref_type_panics_with_diagnostic() {
-    // A non-nullable concrete ref type isn't supported by 4f; we
-    // expect a loud panic rather than silent mis-instrumentation.
-    //
-    // Use `(ref null any)` — wasm-GC abstract type. Our
-    // `classify_ref` deliberately rejects GC abstract types. The
-    // local must be *used* in the body so that walrus's parser
-    // records it (walrus drops declared-but-unused locals).
     let wat = r#"
         (module
           (import "kernel" "kernel_fork" (func $fork (result i32)))
@@ -1272,274 +1103,9 @@ fn unsupported_ref_type_panics_with_diagnostic() {
 }
 
 #[test]
-fn calls_inside_nested_blocks_are_wrapped() {
-    let bytes = instrument_wat(FIXTURE_CALL_IN_BLOCK);
-    validate(&bytes);
-    let module = Module::from_buffer(&bytes).unwrap();
-
-    let caller = func_by_name(&module, "caller");
-    let wrapper_id = entry_wrapper_seq(&module, caller);
-
-    // Locate the nested block inside the wrapper.
-    let wrapper_seq = local(&module, caller).block(wrapper_id);
-    let inner_block_id = wrapper_seq
-        .instrs
-        .iter()
-        .find_map(|(i, _)| match i {
-            Instr::Block(b) => Some(b.seq),
-            _ => None,
-        })
-        .expect("nested block expected inside wrapper");
-
-    // Within the nested block, the call to $fork should have been
-    // rewritten into an if-gate. We detect this by the absence of a
-    // bare Call and the presence of an IfElse.
-    let kinds = seq_kinds(&module, caller, inner_block_id);
-    assert!(
-        kinds.iter().any(|k| *k == InstrKind::IfElse),
-        "nested call should be wrapped in an if-gate: {kinds:?}",
-    );
-    assert!(
-        !kinds.iter().any(|k| *k == InstrKind::Call),
-        "nested call should no longer appear as a bare Call: {kinds:?}",
-    );
-}
-
-
-// ======================================================================
-// Phase 6 tests — catch-handler region tracking + exnref spill + rewind-throw
-// ======================================================================
-//
-// Invariants the tests below pin down:
-//
-//  - Every try_table on a fork-path function gets a unique per-function
-//    `catch_region_id`, starting at 1. The id = 0 reserved for
-//    "not-in-handler".
-//  - At each try_table body start, a rewind-throw stub is prepended:
-//
-//        global.get $_wpk_fork_state
-//        i32.const REWINDING
-//        i32.eq
-//        local.get $_wpk_catch_region_id
-//        i32.const <K>
-//        i32.eq
-//        i32.and
-//        if
-//          i32.const <slot>                    (Phase 6d: runtime local instead)
-//          table.get $_wpk_fork_exnref_stash
-//          ref.as_non_null
-//          throw_ref
-//        end
-//
-//    where `<K>` is the try_table's id and `<slot>` is its stash slot.
-//
-//  - Each `catch_ref` / `catch_all_ref` clause in a fork-path try_table
-//    has its destination rewritten to a new block we inject that
-//    captures the exnref into a per-try_table `captured_exnref_K` local,
-//    sets `$_in_catch_K = 1`, and `br`s to the original label.
-//
-//  - The postamble writes to frame+8 / frame+12 use runtime values
-//    derived from the in-catch flags rather than hardcoded 0.
-
-/// A fork-path function with one try_table on the fork path. The
-/// try_table has a `catch_ref` clause so Phase 6 considers it
-/// catch-handler-reachable and allocates a rewind-throw stub + an
-/// exnref stash slot for it.
-const FIXTURE_FORK_IN_TRY_BODY: &str = r#"
-    (module
-      (import "kernel" "kernel_fork" (func $fork (result i32)))
-      (tag $exn)
-      (func $caller (export "caller") (result i32)
-        (block $handler (result (ref null exn))
-          (try_table (result (ref null exn)) (catch_ref $exn $handler)
-            call $fork
-            drop
-            ref.null exn))
-        drop
-        i32.const 0)
-      (memory 1))
-"#;
-
-/// Collect the `InstrSeqId` of every `TryTable` nested anywhere within
-/// `seq`. Recurses into all nested sequences.
-fn collect_try_table_bodies(
-    f: &LocalFunction,
-    seq: InstrSeqId,
-    out: &mut Vec<InstrSeqId>,
-) {
-    for (instr, _) in &f.block(seq).instrs {
-        match instr {
-            Instr::TryTable(tt) => {
-                out.push(tt.seq);
-                collect_try_table_bodies(f, tt.seq, out);
-            }
-            Instr::Block(b) => collect_try_table_bodies(f, b.seq, out),
-            Instr::Loop(l) => collect_try_table_bodies(f, l.seq, out),
-            Instr::IfElse(ie) => {
-                collect_try_table_bodies(f, ie.consequent, out);
-                collect_try_table_bodies(f, ie.alternative, out);
-            }
-            _ => {}
-        }
-    }
-}
-
-#[test]
-fn fork_path_try_table_gets_rewind_throw_stub() {
-    let bytes = instrument_wat(FIXTURE_FORK_IN_TRY_BODY);
-    validate(&bytes);
-    let module = Module::from_buffer(&bytes).unwrap();
-
-    let caller = func_by_name(&module, "caller");
-    let f = local(&module, caller);
-
-    let mut bodies = Vec::new();
-    collect_try_table_bodies(f, f.entry_block(), &mut bodies);
-    assert_eq!(bodies.len(), 1, "fixture has exactly one try_table");
-
-    // The try_table body should START with the rewind-throw stub.
-    // Opcode shape of the stub's prefix:
-    //   GlobalGet, Const, Binop,      ;; state == REWINDING
-    //   LocalGet,  Const, Binop,      ;; catch_region_id == K
-    //   Binop,                         ;; i32.and
-    //   IfElse                         ;; stub then-branch does the throw
-    let body_kinds = seq_kinds(&module, caller, bodies[0]);
-    assert!(
-        body_kinds.len() >= 8,
-        "try_table body too short to hold Phase 6 stub: {body_kinds:?}",
-    );
-    assert_eq!(
-        &body_kinds[..8],
-        &[
-            InstrKind::GlobalGet, // state
-            InstrKind::Const,     // REWINDING
-            InstrKind::Binop,     // ==
-            InstrKind::LocalGet,  // catch_region_id_local
-            InstrKind::Const,     // K
-            InstrKind::Binop,     // ==
-            InstrKind::Binop,     // i32.and
-            InstrKind::IfElse,    // rewind-throw guard
-        ],
-        "try_table body must start with Phase 6 rewind-throw guard: {body_kinds:?}",
-    );
-
-    // The stub's then-branch should contain the throw_ref sequence:
-    //   i32.const <slot>, table.get, ref.as_non_null, throw_ref
-    // We only assert opcode *kinds* here to keep the test robust; the
-    // specific slot and table are verified end-to-end in other tests.
-    let (then_id, _) = {
-        let seq = f.block(bodies[0]);
-        let ifs: Vec<(InstrSeqId, InstrSeqId)> = seq
-            .instrs
-            .iter()
-            .filter_map(|(i, _)| match i {
-                Instr::IfElse(ie) => Some((ie.consequent, ie.alternative)),
-                _ => None,
-            })
-            .collect();
-        ifs[0]
-    };
-    let then_kinds = seq_kinds(&module, caller, then_id);
-    assert_eq!(
-        then_kinds,
-        vec![
-            InstrKind::Const,  // exnref_slot
-            InstrKind::Other,  // table.get
-            InstrKind::Other,  // ref.as_non_null
-            InstrKind::Other,  // throw_ref
-        ],
-        "rewind-throw then-branch shape: {then_kinds:?}",
-    );
-
-    // An exnref stash table must have been injected with initial size
-    // >= 1 to hold this try_table's captured exnref.
-    let stash = module
-        .tables
-        .iter()
-        .find(|t| t.name.as_deref() == Some("_wpk_fork_exnref_stash"))
-        .expect("Phase 6 must inject exnref stash when a fork-path try_table exists");
-    assert!(
-        stash.initial >= 1,
-        "exnref stash initial size must cover at least the one try_table slot",
-    );
-}
-
-/// Two sibling try_tables in the same fork-path function get distinct
-/// catch_region_ids (1, 2) and distinct exnref-stash slots.
-const FIXTURE_TWO_TRY_TABLES: &str = r#"
-    (module
-      (import "kernel" "kernel_fork" (func $fork (result i32)))
-      (tag $exn)
-      (func $caller (export "caller") (result i32)
-        (block $h1 (result (ref null exn))
-          (try_table (result (ref null exn)) (catch_ref $exn $h1)
-            call $fork
-            drop
-            ref.null exn))
-        drop
-        (block $h2 (result (ref null exn))
-          (try_table (result (ref null exn)) (catch_ref $exn $h2)
-            call $fork
-            drop
-            ref.null exn))
-        drop
-        i32.const 0)
-      (memory 1))
-"#;
-
-#[test]
-fn distinct_try_tables_get_sequential_region_ids() {
-    let bytes = instrument_wat(FIXTURE_TWO_TRY_TABLES);
-    validate(&bytes);
-    let module = Module::from_buffer(&bytes).unwrap();
-
-    let caller = func_by_name(&module, "caller");
-    let f = local(&module, caller);
-
-    let mut bodies = Vec::new();
-    collect_try_table_bodies(f, f.entry_block(), &mut bodies);
-    assert_eq!(bodies.len(), 2, "fixture has two try_tables");
-
-    // The `i32.const K` in each stub's condition (5th instr of each
-    // body) should carry the assigned catch_region_id.
-    let mut region_ids = Vec::new();
-    for body in &bodies {
-        let seq = f.block(*body);
-        let const_instr = &seq.instrs[4].0;
-        let v = match const_instr {
-            Instr::Const(c) => match c.value {
-                walrus::ir::Value::I32(v) => v,
-                _ => panic!("expected i32 const, got {:?}", c.value),
-            },
-            other => panic!("expected Const, got {other:?}"),
-        };
-        region_ids.push(v);
-    }
-    assert_eq!(
-        region_ids,
-        vec![1, 2],
-        "sibling try_tables must get region_ids 1, 2 in lexical order",
-    );
-
-    // The exnref stash table must be sized for two entries.
-    let stash = module
-        .tables
-        .iter()
-        .find(|t| t.name.as_deref() == Some("_wpk_fork_exnref_stash"))
-        .expect("stash must be injected");
-    assert_eq!(
-        stash.initial, 2,
-        "two try_tables → exnref stash initial size = 2",
-    );
-}
-
-#[test]
 fn module_without_try_tables_skips_exnref_stash() {
-    // FIXTURE_DIRECT_CALLER has no try_tables. No exnref stash should
-    // be injected — a no-try_table module pays zero Phase-6 cost.
     let bytes = instrument_wat(FIXTURE_DIRECT_CALLER);
     let module = Module::from_buffer(&bytes).unwrap();
-
     assert!(
         !module
             .tables
@@ -1549,415 +1115,7 @@ fn module_without_try_tables_skips_exnref_stash() {
     );
 }
 
-/// A try_table whose sole `catch_ref` clause is rewritten by Phase 6d
-/// so the original target is reached via an injected capture block.
-/// After instrumentation:
-///   - The `try_table` Instr at its original position is *replaced* by
-///     a `Block` Instr (the injected `$outer`).
-///   - Inside `$outer`, a nested `Block` (`$capture`) holds the
-///     try_table (with `catch_ref` redirected to `$capture` itself).
-///   - Following the capture block in `$outer`: a `local.tee` of the
-///     captured exnref, `i32.const 1 / local.set` for `in_catch_K`,
-///     an `i32.const <slot> / local.get / table.set` to stash into
-///     `_wpk_fork_exnref_stash`, and a final `br` to the original
-///     handler label.
-#[test]
-fn catch_ref_clause_is_rewritten_with_capture_block() {
-    let bytes = instrument_wat(FIXTURE_FORK_IN_TRY_BODY);
-    validate(&bytes);
-    let module = Module::from_buffer(&bytes).unwrap();
-
-    let caller = func_by_name(&module, "caller");
-    let f = local(&module, caller);
-
-    // Recursively look for a TryTable whose `catch_ref` clause now
-    // targets a block whose id equals the try_table's own enclosing
-    // block — our `$capture` (Phase 6d guarantees this).
-    fn find_try_table<'a>(
-        f: &'a LocalFunction,
-        seq: InstrSeqId,
-    ) -> Option<(InstrSeqId, TryTable)> {
-        for (instr, _) in &f.block(seq).instrs {
-            if let Instr::TryTable(tt) = instr {
-                return Some((seq, tt.clone()));
-            }
-            for child in match instr {
-                Instr::Block(b) => vec![b.seq],
-                Instr::Loop(l) => vec![l.seq],
-                Instr::IfElse(ie) => vec![ie.consequent, ie.alternative],
-                _ => vec![],
-            } {
-                if let Some(v) = find_try_table(f, child) {
-                    return Some(v);
-                }
-            }
-        }
-        None
-    }
-
-    let (enclosing_seq, try_table) = find_try_table(f, f.entry_block())
-        .expect("Phase 6d should keep the (redirected) try_table in place");
-
-    // The catch_ref clause should now target `enclosing_seq` — the
-    // block that contains the try_table (our $capture).
-    let retargeted_to_enclosing = try_table.catches.iter().any(|c| match c {
-        &walrus::ir::TryTableCatch::CatchRef { label, .. } => label == enclosing_seq,
-        _ => false,
-    });
-    assert!(
-        retargeted_to_enclosing,
-        "catch_ref should be redirected to the enclosing $capture block"
-    );
-
-    // Walk the entry block. Somewhere we should find a Block that is
-    // our $outer, which contains another Block (our $capture) that
-    // contains the TryTable. After $capture, the outer block should
-    // have: LocalTee, Const(1), LocalSet, Const(slot), LocalGet,
-    // TableSet, Br.
-    fn find_outer<'a>(
-        f: &'a LocalFunction,
-        seq: InstrSeqId,
-        target: InstrSeqId, // the $capture seq
-    ) -> Option<InstrSeqId> {
-        for (instr, _) in &f.block(seq).instrs {
-            if let Instr::Block(b) = instr {
-                // Is this $outer? It contains Block($capture).
-                for (inner, _) in &f.block(b.seq).instrs {
-                    if let Instr::Block(bb) = inner {
-                        if bb.seq == target {
-                            return Some(b.seq);
-                        }
-                    }
-                }
-            }
-            for child in match instr {
-                Instr::Block(b) => vec![b.seq],
-                Instr::Loop(l) => vec![l.seq],
-                Instr::IfElse(ie) => vec![ie.consequent, ie.alternative],
-                _ => vec![],
-            } {
-                if let Some(v) = find_outer(f, child, target) {
-                    return Some(v);
-                }
-            }
-        }
-        None
-    }
-
-    let outer_seq = find_outer(f, f.entry_block(), enclosing_seq)
-        .expect("Phase 6d should wrap $capture in $outer");
-
-    let outer_kinds = seq_kinds(&module, caller, outer_seq);
-    // outer_seq body: [Block($capture), LocalTee, Const(1), LocalSet,
-    //                   Const(slot), LocalGet, TableSet, Br]
-    assert_eq!(
-        outer_kinds,
-        vec![
-            InstrKind::Block,      // $capture
-            InstrKind::Other,      // local.tee captured_exnref (LocalTee — not in our enum)
-            InstrKind::Const,      // 1
-            InstrKind::LocalSet,   // in_catch_local
-            InstrKind::Const,      // slot
-            InstrKind::LocalGet,   // captured_exnref
-            InstrKind::Other,      // table.set (TableSet — not in our enum)
-            InstrKind::Other,      // br $L (Br — not in our enum)
-        ],
-        "$outer must contain Block($capture) + capture code + br to original label: {outer_kinds:?}",
-    );
-}
-
-/// Verifies Phase 6e: a wrapped call inside a fork-path function that
-/// owns a catch_ref-bearing try_table writes the active in_catch flag's
-/// (catch_region_id, exnref_slot) into the per-function frame locals
-/// before checking `state == UNWINDING`.
-#[test]
-fn call_site_then_branch_includes_phase_6e_region_id_writes() {
-    let bytes = instrument_wat(FIXTURE_FORK_IN_TRY_BODY);
-    validate(&bytes);
-    let module = Module::from_buffer(&bytes).unwrap();
-
-    let caller = func_by_name(&module, "caller");
-    let f = local(&module, caller);
-
-    // Locate the wrapped `call $fork` inside the try_table body.
-    let mut bodies = Vec::new();
-    collect_try_table_bodies(f, f.entry_block(), &mut bodies);
-    assert_eq!(bodies.len(), 1);
-
-    // The try_table body after 6c/6d/6e has structure:
-    //   <6c stub: GlobalGet, Const, Binop, LocalGet, Const, Binop, Binop, IfElse>
-    //   <4c/4g-wrapped `call $fork`: ... the wrap's if-else ...>
-    //   <original `drop, ref.null exn` — possibly 4g-gated>
-    // We want to find the IfElse that represents the call wrap, then
-    // look at its then-branch.
-    let if_ids: Vec<(InstrSeqId, InstrSeqId)> = f
-        .block(bodies[0])
-        .instrs
-        .iter()
-        .filter_map(|(i, _)| match i {
-            Instr::IfElse(ie) => Some((ie.consequent, ie.alternative)),
-            _ => None,
-        })
-        .collect();
-    // Expect at least two: 6c stub's IfElse + call-wrap IfElse.
-    assert!(
-        if_ids.len() >= 2,
-        "expected ≥ 2 IfElses in try_table body (stub + call wrap): {if_ids:?}",
-    );
-    // The call-wrap IfElse is the one whose then-branch starts with a
-    // `Call`. (The stub's then-branch starts with Const/TableGet.)
-    let call_wrap_then = if_ids
-        .iter()
-        .find(|(t, _)| matches!(f.block(*t).instrs.first().map(|(i, _)| i), Some(Instr::Call(_))))
-        .expect("call-wrap IfElse not found")
-        .0;
-
-    // Then-branch shape should be:
-    //   Call, Const(call_idx), LocalSet(call_idx_local),
-    //   Const(0), LocalSet(catch_region_id_local),         ;; Phase 6e reset
-    //   Const(0), LocalSet(exnref_slot_local),
-    //   LocalGet(in_catch_K), IfElse(...),                  ;; per-handler check
-    //   GlobalGet, Const, Binop, BrIf.
-    let kinds = seq_kinds(&module, caller, call_wrap_then);
-    assert_eq!(
-        kinds,
-        vec![
-            InstrKind::Call,
-            InstrKind::Const,    // call_idx
-            InstrKind::LocalSet, // call_idx_local
-            InstrKind::Const,    // 0
-            InstrKind::LocalSet, // catch_region_id_local := 0
-            InstrKind::Const,    // 0
-            InstrKind::LocalSet, // exnref_slot_local := 0
-            InstrKind::LocalGet, // in_catch_K
-            InstrKind::IfElse,   // per-handler if
-            InstrKind::GlobalGet,
-            InstrKind::Const,    // UNWINDING
-            InstrKind::Binop,
-            InstrKind::BrIf,
-        ],
-        "Phase 6e call-site writes not in expected shape: {kinds:?}",
-    );
-}
-
-/// End-to-end fixture: a caller that catches an exception via
-/// catch_ref and then calls fork from inside the handler. The fork
-/// path reaches through the handler code, so the wrapped call must
-/// cooperate with Phase 6d's handler-entry capture (in_catch goes
-/// high) to record catch_region_id in the serialized frame.
-const FIXTURE_FORK_FROM_CATCH_HANDLER: &str = r#"
-    (module
-      (import "kernel" "kernel_fork" (func $fork (result i32)))
-      (tag $exn)
-      (func $caller (export "caller") (result i32)
-        (block $handler (result (ref null exn))
-          (try_table (result (ref null exn)) (catch_ref $exn $handler)
-            ;; Normal path: pretend nothing threw, supply a null
-            ;; exnref that the handler block's result expects.
-            ref.null exn))
-        ;; Handler (reached post-$handler). Stack: (ref null exn).
-        drop
-        call $fork)
-      (memory 1))
-"#;
-
-#[test]
-fn fork_from_inside_catch_handler_full_roundtrip() {
-    let bytes = instrument_wat(FIXTURE_FORK_FROM_CATCH_HANDLER);
-    validate(&bytes);
-    let module = Module::from_buffer(&bytes).unwrap();
-
-    // Basic structural checks the module should satisfy:
-    //   - exnref stash is injected with one slot.
-    let stash = module
-        .tables
-        .iter()
-        .find(|t| t.name.as_deref() == Some("_wpk_fork_exnref_stash"))
-        .expect("exnref stash should be injected");
-    assert_eq!(stash.initial, 1);
-
-    //   - caller has a rewind-throw stub on the try_table (6c).
-    let caller = func_by_name(&module, "caller");
-    let f = local(&module, caller);
-    let mut bodies = Vec::new();
-    collect_try_table_bodies(f, f.entry_block(), &mut bodies);
-    assert_eq!(bodies.len(), 1);
-    let body_kinds = seq_kinds(&module, caller, bodies[0]);
-    assert_eq!(
-        &body_kinds[..8],
-        &[
-            InstrKind::GlobalGet,
-            InstrKind::Const,
-            InstrKind::Binop,
-            InstrKind::LocalGet,
-            InstrKind::Const,
-            InstrKind::Binop,
-            InstrKind::Binop,
-            InstrKind::IfElse,
-        ],
-    );
-
-    //   - The try_table's catch_ref clause has been retargeted (6d).
-    //     It should point at the enclosing $capture, which is a
-    //     fresh block distinct from the original $handler.
-    let try_table: TryTable = {
-        fn find<'a>(
-            f: &'a LocalFunction,
-            seq: InstrSeqId,
-        ) -> Option<TryTable> {
-            for (instr, _) in &f.block(seq).instrs {
-                if let Instr::TryTable(tt) = instr {
-                    return Some(tt.clone());
-                }
-                for child in match instr {
-                    Instr::Block(b) => vec![b.seq],
-                    Instr::Loop(l) => vec![l.seq],
-                    Instr::IfElse(ie) => vec![ie.consequent, ie.alternative],
-                    _ => vec![],
-                } {
-                    if let Some(v) = find(f, child) {
-                        return Some(v);
-                    }
-                }
-            }
-            None
-        }
-        find(f, f.entry_block()).expect("try_table should still exist after 6d")
-    };
-    // The only catch is catch_ref; its label must be the injected
-    // $capture block (not the original $handler).
-    let (catch_label, _) = try_table
-        .catches
-        .iter()
-        .find_map(|c| match c {
-            walrus::ir::TryTableCatch::CatchRef { label, tag } => Some((*label, *tag)),
-            _ => None,
-        })
-        .expect("catch_ref clause should still be present");
-    // $capture is the immediate parent of the TryTable Instr; also
-    // the label the catch_ref now targets. Confirm it's a dangling
-    // block (not an original one) by observing it contains the
-    // try_table plus a Br.
-    let capture_kinds = seq_kinds(&module, caller, catch_label);
-    assert!(
-        capture_kinds.iter().any(|k| *k == InstrKind::Other), // Br
-        "$capture must end with a Br to $outer: {capture_kinds:?}",
-    );
-
-    //   - At least one call site (the call to $fork from inside the
-    //     handler) should include the Phase 6e region-id writes.
-    //     We find any wrapped `call $fork` and verify its then-branch
-    //     has the expected shape.
-    fn find_call_wrap_then<'a>(
-        f: &'a LocalFunction,
-        seq: InstrSeqId,
-    ) -> Option<InstrSeqId> {
-        for (instr, _) in &f.block(seq).instrs {
-            if let Instr::IfElse(ie) = instr {
-                if let Some((first, _)) = f.block(ie.consequent).instrs.first() {
-                    if matches!(first, Instr::Call(_)) {
-                        return Some(ie.consequent);
-                    }
-                }
-                if let Some(v) = find_call_wrap_then(f, ie.consequent) {
-                    return Some(v);
-                }
-                if let Some(v) = find_call_wrap_then(f, ie.alternative) {
-                    return Some(v);
-                }
-            }
-            for child in match instr {
-                Instr::Block(b) => vec![b.seq],
-                Instr::Loop(l) => vec![l.seq],
-                Instr::TryTable(tt) => vec![tt.seq],
-                _ => vec![],
-            } {
-                if let Some(v) = find_call_wrap_then(f, child) {
-                    return Some(v);
-                }
-            }
-        }
-        None
-    }
-    let call_then = find_call_wrap_then(f, f.entry_block())
-        .expect("at least one wrapped Call should exist");
-    let kinds = seq_kinds(&module, caller, call_then);
-    // Must include LocalSet(catch_region_id) + LocalSet(exnref_slot)
-    // between the Call and the BrIf.
-    let localset_count = kinds.iter().filter(|k| **k == InstrKind::LocalSet).count();
-    assert!(
-        localset_count >= 3,
-        "call then-branch should contain ≥ 3 LocalSets (call_idx + catch_region_id + exnref_slot): {kinds:?}",
-    );
-    let ifelse_count = kinds.iter().filter(|k| **k == InstrKind::IfElse).count();
-    assert_eq!(
-        ifelse_count, 1,
-        "one per-handler IfElse expected in Phase 6e writes: {kinds:?}",
-    );
-}
-
-/// A try_table with only plain `catch` clauses (no exnref) cannot be
-/// Phase-6d-rewritten, so it retains the 6c stub (harmless dead code)
-/// but is not wrapped in $outer/$capture. The module must still
-/// validate and not fail at instrumentation time.
-#[test]
-fn plain_catch_only_try_table_is_not_6d_rewritten() {
-    let wat = r#"
-        (module
-          (import "kernel" "kernel_fork" (func $fork (result i32)))
-          (tag $exn)
-          (func $caller (export "caller") (result i32)
-            (block $h
-              (try_table (catch $exn $h)
-                call $fork
-                drop))
-            i32.const 0)
-          (memory 1))
-    "#;
-    let bytes = instrument_wat(wat);
-    validate(&bytes);
-    let module = Module::from_buffer(&bytes).unwrap();
-
-    let caller = func_by_name(&module, "caller");
-    let f = local(&module, caller);
-
-    // TryTable Instr should still be present at its original nesting
-    // depth (not wrapped in an $outer block by 6d).
-    let mut bodies = Vec::new();
-    collect_try_table_bodies(f, f.entry_block(), &mut bodies);
-    assert_eq!(bodies.len(), 1);
-
-    // The try_table's sole catch clause must still be the plain
-    // Catch — 6d only rewrites `*_ref` variants.
-    fn find_tt<'a>(
-        f: &'a LocalFunction,
-        seq: InstrSeqId,
-    ) -> Option<TryTable> {
-        for (instr, _) in &f.block(seq).instrs {
-            if let Instr::TryTable(tt) = instr {
-                return Some(tt.clone());
-            }
-            for child in match instr {
-                Instr::Block(b) => vec![b.seq],
-                Instr::Loop(l) => vec![l.seq],
-                Instr::IfElse(ie) => vec![ie.consequent, ie.alternative],
-                _ => vec![],
-            } {
-                if let Some(v) = find_tt(f, child) {
-                    return Some(v);
-                }
-            }
-        }
-        None
-    }
-    let tt = find_tt(f, f.entry_block()).unwrap();
-    assert!(
-        tt.catches
-            .iter()
-            .all(|c| matches!(c, walrus::ir::TryTableCatch::Catch { .. })),
-        "plain-catch-only try_tables should not be retargeted by 6d",
-    );
-}
+// --- Non-fork-path try_tables ----------------------------------------
 
 #[test]
 fn try_table_on_non_fork_path_is_not_instrumented() {
@@ -1983,22 +1141,19 @@ fn try_table_on_non_fork_path_is_not_instrumented() {
     let module = Module::from_buffer(&bytes).unwrap();
 
     // `helper` is not on the fork path, so it should be byte-for-byte
-    // unchanged — including no rewind-throw stub in its try_table.
+    // unchanged — including no rewind-throw stub.
     let helper = func_by_name(&module, "helper");
-    let f = local(&module, helper);
+    let f = local_func(&module, helper);
     let mut bodies = Vec::new();
     collect_try_table_bodies(f, f.entry_block(), &mut bodies);
     assert_eq!(bodies.len(), 1, "helper still has its try_table");
     let body_kinds = seq_kinds(&module, helper, bodies[0]);
-    // Untouched body: just `ref.null exn` (an `Other` in our InstrKind).
     assert_eq!(
         body_kinds,
         vec![InstrKind::Other],
         "non-fork-path try_table body must not be instrumented: {body_kinds:?}",
     );
 
-    // No exnref stash should be injected because no fork-path function
-    // needs a slot.
     assert!(
         !module
             .tables
@@ -2006,4 +1161,58 @@ fn try_table_on_non_fork_path_is_not_instrumented() {
             .any(|t| t.name.as_deref() == Some("_wpk_fork_exnref_stash")),
         "non-fork-path try_tables should not force exnref stash injection",
     );
+}
+
+fn collect_try_table_bodies(f: &LocalFunction, seq: InstrSeqId, out: &mut Vec<InstrSeqId>) {
+    for (instr, _) in &f.block(seq).instrs {
+        if let Instr::TryTable(tt) = instr {
+            out.push(tt.seq);
+            collect_try_table_bodies(f, tt.seq, out);
+        }
+        for child in nested_of(instr) {
+            if !matches!(instr, Instr::TryTable(_)) {
+                collect_try_table_bodies(f, child, out);
+            }
+        }
+    }
+}
+
+// --- MVP-limitation diagnostics --------------------------------------
+
+#[test]
+#[should_panic(expected = "nested at depth")]
+fn nested_fork_call_panics() {
+    // A fork-path call inside a block is not supported by the MVP
+    // switch-dispatch transform — it would require the top-level
+    // br_table to land inside the nested block, which wasm semantics
+    // forbid.
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (func $caller (export "caller") (result i32)
+            (block (result i32)
+              call $fork))
+          (memory 1))
+    "#;
+    let _ = instrument_wat(wat);
+}
+
+#[test]
+#[should_panic(expected = "nested at depth")]
+fn fork_inside_try_body_panics() {
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (tag $exn)
+          (func $caller (export "caller") (result i32)
+            (block $h (result (ref null exn))
+              (try_table (result (ref null exn)) (catch_ref $exn $h)
+                call $fork
+                drop
+                ref.null exn))
+            drop
+            i32.const 0)
+          (memory 1))
+    "#;
+    let _ = instrument_wat(wat);
 }
