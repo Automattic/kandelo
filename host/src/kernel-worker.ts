@@ -656,6 +656,21 @@ export class CentralizedKernelWorker {
   private channelTids = new Map<string, number>();
   /** Tracks the pid currently being serviced by kernel_handle_channel */
   private currentHandlePid = 0;
+  /**
+   * Bind the kernel's view of "which thread is executing this syscall" to
+   * the calling channel. Must be called immediately before every
+   * `kernel_handle_channel` invocation that originates from user code — the
+   * kernel consults this to route per-thread signal state (pthread_sigmask,
+   * pthread_kill pending, sigsuspend per-thread mask swap). `tid = 0` means
+   * "main thread" and is the default for channels without a tracked TID
+   * (e.g. the main process worker).
+   */
+  private bindKernelTidForChannel(channel: ChannelInfo): void {
+    const tid = this.channelTids.get(`${channel.pid}:${channel.channelOffset}`) ?? 0;
+    const setTid = this.kernelInstance?.exports.kernel_set_current_tid as
+      ((tid: number) => void) | undefined;
+    if (setTid) setTid(tid);
+  }
   /** Alarm timers per process: pid → NodeJS.Timeout */
   private alarmTimers = new Map<number, ReturnType<typeof setTimeout>>();
   /** POSIX timers: "pid:timerId" → {timeout, interval?, signo} */
@@ -1906,6 +1921,7 @@ export class CentralizedKernelWorker {
     // Call kernel_handle_channel
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as (offset: bigint, pid: number) => number;
     this.currentHandlePid = channel.pid;
+    this.bindKernelTidForChannel(channel);
     try {
       handleChannel(BigInt(this.scratchOffset), channel.pid);
     } catch (err) {
@@ -3173,6 +3189,7 @@ export class CentralizedKernelWorker {
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
       (offset: bigint, pid: number) => number;
     this.currentHandlePid = channel.pid;
+    this.bindKernelTidForChannel(channel);
     try {
       handleChannel(BigInt(this.scratchOffset), channel.pid);
     } finally {
@@ -3273,6 +3290,7 @@ export class CentralizedKernelWorker {
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
       (offset: bigint, pid: number) => number;
     this.currentHandlePid = channel.pid;
+    this.bindKernelTidForChannel(channel);
     try {
       handleChannel(BigInt(this.scratchOffset), channel.pid);
     } finally {
@@ -3384,6 +3402,7 @@ export class CentralizedKernelWorker {
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
       (offset: bigint, pid: number) => number;
     this.currentHandlePid = channel.pid;
+    this.bindKernelTidForChannel(channel);
     try {
       handleChannel(BigInt(this.scratchOffset), channel.pid);
     } finally {
@@ -3443,6 +3462,7 @@ export class CentralizedKernelWorker {
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
       (offset: bigint, pid: number) => number;
     this.currentHandlePid = channel.pid;
+    this.bindKernelTidForChannel(channel);
     try {
       handleChannel(BigInt(this.scratchOffset), channel.pid);
     } finally {
@@ -3580,6 +3600,7 @@ export class CentralizedKernelWorker {
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
       (offset: bigint, pid: number) => number;
     this.currentHandlePid = channel.pid;
+    this.bindKernelTidForChannel(channel);
     try {
       handleChannel(BigInt(this.scratchOffset), channel.pid);
     } finally {
@@ -3820,6 +3841,7 @@ export class CentralizedKernelWorker {
       const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
         (offset: bigint, pid: number) => number;
       this.currentHandlePid = channel.pid;
+      this.bindKernelTidForChannel(channel);
       try {
         handleChannel(BigInt(this.scratchOffset), channel.pid);
       } finally {
@@ -3881,6 +3903,7 @@ export class CentralizedKernelWorker {
           }
 
           this.currentHandlePid = channel.pid;
+          this.bindKernelTidForChannel(channel);
           try {
             handleChannel(BigInt(this.scratchOffset), channel.pid);
           } finally {
@@ -3957,6 +3980,7 @@ export class CentralizedKernelWorker {
       }
 
       this.currentHandlePid = channel.pid;
+      this.bindKernelTidForChannel(channel);
       try {
         handleChannel(BigInt(this.scratchOffset), channel.pid);
       } catch (err) {
@@ -4043,6 +4067,7 @@ export class CentralizedKernelWorker {
       }
 
       this.currentHandlePid = channel.pid;
+      this.bindKernelTidForChannel(channel);
       try {
         handleChannel(BigInt(this.scratchOffset), channel.pid);
       } catch (err) {
@@ -4172,6 +4197,7 @@ export class CentralizedKernelWorker {
       const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
         (offset: bigint, pid: number) => number;
       this.currentHandlePid = channel.pid;
+      this.bindKernelTidForChannel(channel);
       try {
         handleChannel(BigInt(this.scratchOffset), channel.pid);
       } finally {
@@ -4243,6 +4269,7 @@ export class CentralizedKernelWorker {
           }
 
           this.currentHandlePid = channel.pid;
+          this.bindKernelTidForChannel(channel);
           try {
             handleChannel(BigInt(this.scratchOffset), channel.pid);
           } finally {
@@ -4401,6 +4428,7 @@ export class CentralizedKernelWorker {
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
       (offset: bigint, pid: number) => number;
     this.currentHandlePid = channel.pid;
+    this.bindKernelTidForChannel(channel);
     try {
       handleChannel(BigInt(this.scratchOffset), channel.pid);
     } finally {
@@ -4532,6 +4560,7 @@ export class CentralizedKernelWorker {
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
       (offset: bigint, pid: number) => number;
     this.currentHandlePid = channel.pid;
+    this.bindKernelTidForChannel(channel);
     try {
       handleChannel(BigInt(this.scratchOffset), channel.pid);
     } finally {
@@ -4896,6 +4925,7 @@ export class CentralizedKernelWorker {
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
       (offset: bigint, pid: number) => number;
     this.currentHandlePid = channel.pid;
+    this.bindKernelTidForChannel(channel);
     try {
       handleChannel(BigInt(this.scratchOffset), channel.pid);
     } finally {
@@ -5004,6 +5034,7 @@ export class CentralizedKernelWorker {
       const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
         (offset: bigint, pid: number) => number;
       this.currentHandlePid = channel.pid;
+      this.bindKernelTidForChannel(channel);
       try {
         handleChannel(BigInt(this.scratchOffset), channel.pid);
       } catch {
@@ -5615,6 +5646,13 @@ export class CentralizedKernelWorker {
     const handleChannel = this.kernelInstance.exports.kernel_handle_channel as
       (offset: bigint, pid: number) => number;
     this.currentHandlePid = targetPid;
+    // Host-originated signal (SIGCHLD, SIGALRM, timer, etc.) is always a
+    // "shared" delivery — it lands on the process's pending queue, not a
+    // specific thread's. Force tid=0 so the kernel doesn't consult any
+    // per-thread state left over from a prior dispatch.
+    const setTid = this.kernelInstance.exports.kernel_set_current_tid as
+      ((tid: number) => void) | undefined;
+    if (setTid) setTid(0);
     try {
       handleChannel(BigInt(this.scratchOffset), targetPid);
     } catch (err) {
@@ -5767,6 +5805,7 @@ export class CentralizedKernelWorker {
       kernelView.setBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, BigInt(0), true);
 
       this.currentHandlePid = channel.pid;
+      this.bindKernelTidForChannel(channel);
       try {
         handleChannel(BigInt(this.scratchOffset), channel.pid);
       } catch {
@@ -5866,6 +5905,7 @@ export class CentralizedKernelWorker {
       kernelView.setBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, BigInt(0), true);
 
       this.currentHandlePid = channel.pid;
+      this.bindKernelTidForChannel(channel);
       try {
         handleChannel(BigInt(this.scratchOffset), channel.pid);
       } catch {
@@ -6305,6 +6345,7 @@ export class CentralizedKernelWorker {
       kernelMem.fill(0, dataStart, dataStart + 72);
 
       this.currentHandlePid = channel.pid;
+      this.bindKernelTidForChannel(channel);
       try { handleChannel(BigInt(this.scratchOffset), channel.pid); } finally { this.currentHandlePid = 0; }
 
       const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
@@ -6331,6 +6372,7 @@ export class CentralizedKernelWorker {
       kernelMem.fill(0, dataStart, dataStart + maxBytes);
 
       this.currentHandlePid = channel.pid;
+      this.bindKernelTidForChannel(channel);
       try { handleChannel(BigInt(this.scratchOffset), channel.pid); } finally { this.currentHandlePid = 0; }
 
       const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
@@ -6359,6 +6401,7 @@ export class CentralizedKernelWorker {
       kernelView.setBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, BigInt(0), true);
 
       this.currentHandlePid = channel.pid;
+      this.bindKernelTidForChannel(channel);
       try { handleChannel(BigInt(this.scratchOffset), channel.pid); } finally { this.currentHandlePid = 0; }
 
       const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
@@ -6378,6 +6421,7 @@ export class CentralizedKernelWorker {
     kernelView.setBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, BigInt(0), true);
 
     this.currentHandlePid = channel.pid;
+    this.bindKernelTidForChannel(channel);
     try { handleChannel(BigInt(this.scratchOffset), channel.pid); } finally { this.currentHandlePid = 0; }
 
     const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
@@ -6414,6 +6458,7 @@ export class CentralizedKernelWorker {
 
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as (offset: bigint, pid: number) => number;
     this.currentHandlePid = channel.pid;
+    this.bindKernelTidForChannel(channel);
     try {
       handleChannel(BigInt(this.scratchOffset), channel.pid);
     } catch (err) {

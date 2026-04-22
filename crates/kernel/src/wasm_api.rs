@@ -592,8 +592,9 @@ unsafe impl Sync for GlobalProcess {}
 
 static PROCESS: GlobalProcess = GlobalProcess(UnsafeCell::new(None));
 
-use crate::process_table::{GlobalProcessTable, ProcessTable};
-static PROCESS_TABLE: GlobalProcessTable = GlobalProcessTable(UnsafeCell::new(ProcessTable::new()));
+// The centralized kernel's process table lives in `process_table.rs` so that
+// non-export modules can reach it. Aliased here for brevity.
+use crate::process_table::GLOBAL_PROCESS_TABLE as PROCESS_TABLE;
 
 // ---------------------------------------------------------------------------
 // 3b. Cross-process procfs helpers
@@ -795,19 +796,20 @@ fn ensure_memory_covers(_end_addr: usize) {
 fn deliver_pending_signals(proc: &mut Process, host: &mut WasmHostIO) {
     use crate::signal::{DefaultAction, default_action, SignalHandler};
     let centralized = crate::is_centralized_mode();
+    let tid = crate::process_table::current_tid();
     loop {
         // In centralized mode, peek first so we can skip Handler signals
         // (they'll be delivered by the glue code via kernel_dequeue_signal).
         if centralized {
-            let signum = match proc.signals.peek_deliverable() {
-                Some(s) if s < wasm_posix_shared::signal::NSIG => s,
-                _ => break,
-            };
+            let deliverable = proc.deliverable_for(tid);
+            if deliverable == 0 { break; }
+            let signum = deliverable.trailing_zeros() + 1;
+            if signum >= wasm_posix_shared::signal::NSIG { break; }
             let action = proc.signals.get_action(signum);
             match action.handler {
                 SignalHandler::Handler(_) => break, // Leave for glue-side delivery
                 SignalHandler::Default => {
-                    let _ = proc.signals.dequeue();
+                    let _ = dequeue_signal_for(proc, tid, signum);
                     match default_action(signum) {
                         DefaultAction::Terminate | DefaultAction::CoreDump => {
                             proc.state = crate::process::ProcessState::Exited;
@@ -817,7 +819,7 @@ fn deliver_pending_signals(proc: &mut Process, host: &mut WasmHostIO) {
                     }
                 }
                 SignalHandler::Ignore => {
-                    let _ = proc.signals.dequeue();
+                    let _ = dequeue_signal_for(proc, tid, signum);
                 }
             }
         } else {
@@ -1094,14 +1096,53 @@ pub extern "C" fn kernel_reset_signal_mask(pid: u32) -> i32 {
 }
 
 /// Check if a signal is blocked for a process (centralized mode).
-/// Returns 1 if blocked, 0 if not blocked, -ESRCH if process not found.
+/// Returns 1 if blocked by *every* thread of `pid` (i.e. no thread can
+/// currently receive it), 0 if at least one thread has it unblocked,
+/// -ESRCH if the process does not exist.
+///
+/// The host consults this to decide whether to wake a process's channels
+/// after queuing a shared signal. If all threads block it, the signal
+/// stays queued in the shared-pending set until some thread unblocks it.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_is_signal_blocked(pid: u32, signum: u32) -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     match table.get(pid) {
         Some(proc) => {
             if signum == 0 || signum >= 65 { return 0; }
-            if proc.signals.blocked & (1u64 << (signum - 1)) != 0 { 1 } else { 0 }
+            if proc.pick_thread_for_shared_signal(signum).is_some() { 0 } else { 1 }
+        }
+        None => -(Errno::ESRCH as i32),
+    }
+}
+
+/// Find a thread of `pid` that currently has `signum` unblocked. Returns
+/// a positive TID (the process PID for the main thread, allocated TIDs for
+/// worker threads), 0 if no thread accepts it, or -ESRCH if the process
+/// does not exist. The host uses this to choose which thread's channel to
+/// wake when delivering a shared signal.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_pick_signal_target_tid(pid: u32, signum: u32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match table.get(pid) {
+        Some(proc) => {
+            if signum == 0 || signum >= 65 { return 0; }
+            proc.pick_thread_for_shared_signal(signum).map(|t| t as i32).unwrap_or(0)
+        }
+        None => -(Errno::ESRCH as i32),
+    }
+}
+
+/// Returns 1 iff thread `tid` of process `pid` has at least one deliverable
+/// signal right now (i.e. pending-for-tid with the thread's own blocked
+/// mask applied). Returns 0 otherwise, -ESRCH if the process does not
+/// exist. The host uses this after queuing a signal to decide whether a
+/// specific thread's channel should be woken from a blocking syscall.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_thread_has_deliverable(pid: u32, tid: u32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match table.get(pid) {
+        Some(proc) => {
+            if proc.deliverable_for(tid) != 0 { 1 } else { 0 }
         }
         None => -(Errno::ESRCH as i32),
     }
@@ -1182,29 +1223,35 @@ pub extern "C" fn kernel_get_fd_path(pid: u32, fd: i32, buf_ptr: *mut u8, buf_le
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_dequeue_signal(pid: u32, out_ptr: *mut u8) -> i32 {
     use crate::signal::{SignalHandler, sig_bit};
+    let tid = crate::process_table::current_tid();
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     let proc = match table.get_mut(pid) {
         Some(p) => p,
         None => return 0,
     };
     loop {
-        let signum = match proc.signals.peek_deliverable() {
-            Some(s) if s < wasm_posix_shared::signal::NSIG => s,
-            _ => return 0,
-        };
+        // Peek at the lowest-numbered deliverable signal for this thread:
+        // directed-pending bits (ThreadInfo.signals.pending) have priority over
+        // shared-pending bits (Process.signals.pending), but we collapse to a
+        // single bitmask here — the actual dequeue routine below picks the
+        // right queue.
+        let deliverable = proc.deliverable_for(tid);
+        if deliverable == 0 { return 0; }
+        let signum = deliverable.trailing_zeros() + 1;
+        if signum >= wasm_posix_shared::signal::NSIG { return 0; }
         let action = proc.signals.get_action(signum);
         match action.handler {
             SignalHandler::Handler(idx) => {
-                let (_dequeued_sig, si_value, si_code) = proc.signals.dequeue().unwrap();
-                // If returning from sigsuspend, restore original mask before saving
-                // old_mask for the handler. This ensures the handler's saved mask
-                // is the pre-sigsuspend mask (POSIX: sigsuspend restores mask on return).
-                if let Some(saved) = proc.sigsuspend_saved_mask.take() {
-                    proc.signals.blocked = saved;
+                let (_sig, si_value, si_code) = dequeue_signal_for(proc, tid, signum);
+                // If returning from sigsuspend/ppoll/pselect, restore original
+                // mask *before* saving old_mask for the handler, so the
+                // handler's saved mask is the pre-sigsuspend mask.
+                if let Some(saved) = proc.take_sigsuspend_saved_mask_for(tid) {
+                    proc.set_blocked_for(tid, saved);
                 }
                 // Save old mask, apply new (POSIX: block sa_mask + the signal itself)
-                let old_mask = proc.signals.blocked;
-                proc.signals.blocked |= action.mask | sig_bit(signum);
+                let old_mask = proc.blocked_for(tid);
+                proc.set_blocked_for(tid, old_mask | action.mask | sig_bit(signum));
                 // If SA_ONSTACK and alt stack is configured (not SS_DISABLE),
                 // mark that we're executing on the alt stack.
                 const SA_ONSTACK: u32 = 0x08000000;
@@ -1248,11 +1295,14 @@ pub extern "C" fn kernel_dequeue_signal(pid: u32, out_ptr: *mut u8) -> i32 {
             }
             SignalHandler::Default => {
                 use crate::signal::{DefaultAction, default_action};
-                let _ = proc.signals.dequeue();
+                let _ = dequeue_signal_for(proc, tid, signum);
                 match default_action(signum) {
                     DefaultAction::Terminate | DefaultAction::CoreDump => {
                         // Process is dying; clear sigsuspend state
                         proc.sigsuspend_saved_mask = None;
+                        for t in proc.threads.iter_mut() {
+                            t.signals.sigsuspend_saved_mask = None;
+                        }
                         proc.state = crate::process::ProcessState::Exited;
                         proc.exit_status = 128 + signum as i32;
                         return 0;
@@ -1261,11 +1311,50 @@ pub extern "C" fn kernel_dequeue_signal(pid: u32, out_ptr: *mut u8) -> i32 {
                 }
             }
             SignalHandler::Ignore => {
-                let _ = proc.signals.dequeue();
+                let _ = dequeue_signal_for(proc, tid, signum);
                 continue;
             }
         }
     }
+}
+
+/// Dequeue one pending instance of `signum` for the given thread. Prefers the
+/// thread's directed pending queue over the shared process-level queue —
+/// POSIX requires that signals sent via `pthread_kill` / `tkill` / `tgkill`
+/// be delivered to that thread specifically, even when the shared queue also
+/// carries an instance of the same signal.
+///
+/// Returns `(signum, si_value, si_code)`; `si_value`/`si_code` default to 0
+/// for coalesced standard signals without `sigqueue` metadata.
+fn dequeue_signal_for(proc: &mut crate::process::Process, tid: u32, signum: u32) -> (u32, i32, i32) {
+    use crate::signal::sig_bit;
+    // Prefer per-thread directed delivery for non-main threads.
+    if !proc.is_main_thread(tid) {
+        if let Some(t) = proc.get_thread_mut(tid) {
+            if (t.signals.pending & sig_bit(signum)) != 0 {
+                // Pull the entry from the thread's rt_queue if present,
+                // then clear the pending bit exactly as `SignalState::dequeue`
+                // does (coalesced for standard signals; queued for RT).
+                let (mut si_value, mut si_code) = (0i32, 0i32);
+                if let Some(pos) = t.signals.rt_queue.iter().position(|e| e.signum == signum) {
+                    si_value = t.signals.rt_queue[pos].si_value;
+                    si_code = t.signals.rt_queue[pos].si_code;
+                    t.signals.rt_queue.remove(pos);
+                }
+                if signum >= crate::signal::SIGRTMIN {
+                    if !t.signals.rt_queue.iter().any(|e| e.signum == signum) {
+                        t.signals.pending &= !sig_bit(signum);
+                    }
+                } else {
+                    t.signals.pending &= !sig_bit(signum);
+                }
+                return (signum, si_value, si_code);
+            }
+        }
+    }
+    // Fall back to the shared process-level queue.
+    let (si_value, si_code) = proc.signals.consume_one(signum);
+    (signum, si_value, si_code)
 }
 
 /// Handle exec semantics on a process in the process table (centralized mode).
@@ -2325,8 +2414,9 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         246 => kernel_signalfd4(a1, a2 as *const u8, a3 as u32, a4 as u32), // SYS_SIGNALFD4: (fd, mask_ptr, sigsetsize, flags)
         377 => kernel_signalfd4(a1, a2 as *const u8, a3 as u32, 0),          // SYS_SIGNALFD: (fd, mask_ptr, sigsetsize)
 
-        // Stubs that return 0 or -ENOSYS
-        204 => kernel_raise(a2 as u32),            // SYS_TKILL
+        // tkill — directed (per-thread) signal delivery. (wasm32 musl
+        // uses __NR_tkill for pthread_kill too; __NR_tgkill isn't wired up.)
+        204 => kernel_tkill(a1 as u32, a2 as u32),                    // SYS_TKILL (tid, sig)
 
         // SYS_RT_SIGQUEUEINFO: send signal with si_value (sigqueue)
         // a1=pid, a2=sig, a3=siginfo_ptr (copied to CH_DATA by host)
@@ -2949,6 +3039,19 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
 pub extern "C" fn kernel_set_current_pid(pid: u32) {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     table.set_current_pid(pid);
+}
+
+/// Set the current thread id for the next `kernel_handle_channel` call (and
+/// for any subsequent signal syscalls that need to know which thread is
+/// executing — `sigprocmask`, `sigsuspend`, `ppoll`/`pselect`, …).
+///
+/// The host tracks `(pid, channelOffset) → tid` in its own map (`channelTids`)
+/// and must call this *before* dispatching a thread-originated syscall. The
+/// main thread uses `tid = 0`, which is also the default.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_set_current_tid(tid: u32) {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    table.set_current_tid(tid);
 }
 
 /// Attach to shared memory segment. Returns segment size, or negative errno.
@@ -4395,6 +4498,100 @@ pub extern "C" fn kernel_raise(sig: u32) -> i32 {
     };
     deliver_pending_signals(proc, &mut host);
     result
+}
+
+/// `tkill(tid, sig)` — deliver `sig` to a specific thread of the current
+/// process. POSIX requires that directed signals go to that thread's pending
+/// queue, not the process-wide shared queue.
+///
+/// - `tid == 0` or `tid == pid` targets the main thread (process-level
+///   pending, same as `raise`).
+/// - Other `tid` values look up the thread in `Process::threads` and raise
+///   on its own per-thread pending queue.
+/// - Unknown `tid` → `-ESRCH`.
+///
+/// Cross-process `tkill` is not supported (returns `-ESRCH`); use `kill` or
+/// `tgkill` with the current process's `tgid` for process-local delivery.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_tkill(tid: u32, sig: u32) -> i32 {
+    kernel_tkill_with_value(tid, sig, 0, 0)
+}
+
+/// `tgkill(tgid, tid, sig)` — like `tkill` but verifies that `tid` belongs
+/// to the thread group identified by `tgid`. In our single-process-group
+/// threading model this reduces to the same check plus an outer PID match.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_tgkill(tgid: u32, tid: u32, sig: u32) -> i32 {
+    let (_gkl, proc) = unsafe { get_process() };
+    if tgid != proc.pid {
+        // We don't support cross-process per-thread signalling.
+        let mut host = WasmHostIO;
+        deliver_pending_signals(proc, &mut host);
+        return -(Errno::ESRCH as i32);
+    }
+    kernel_tkill_with_value(tid, sig, 0, 0)
+}
+
+/// Shared implementation of tkill/tgkill/rt_tgsigqueueinfo.
+/// When `si_value != 0` or `si_code != 0` the signal is queued with
+/// `sigqueue`-style metadata.
+fn kernel_tkill_with_value(tid: u32, sig: u32, si_value: i32, si_code: i32) -> i32 {
+    use wasm_posix_shared::signal::NSIG;
+    let (_gkl, proc) = unsafe { get_process() };
+    let mut host = WasmHostIO;
+
+    if sig >= NSIG {
+        deliver_pending_signals(proc, &mut host);
+        return -(Errno::EINVAL as i32);
+    }
+
+    // Main thread: route to process-level (shared) pending. This preserves
+    // existing behaviour for raise() on a single-threaded process.
+    if proc.is_main_thread(tid) {
+        if sig > 0 {
+            if si_code != 0 || si_value != 0 {
+                proc.signals.raise_with_value(sig, si_value);
+            } else {
+                proc.signals.raise(sig);
+            }
+        }
+        deliver_pending_signals(proc, &mut host);
+        return 0;
+    }
+
+    // Worker thread: direct deliver to that thread's own pending queue.
+    // If the TID doesn't match any known worker, fall back to shared-pending
+    // delivery. This is a safety net for callers that pass a stale TID —
+    // notably `raise()` in a forked child whose pthread_self()->tid hasn't
+    // been refreshed via `set_tid_address` yet. Strict POSIX would return
+    // ESRCH, but returning an error here silently breaks `abort()` and any
+    // in-process signalling that uses `tkill(self_tid, sig)`; aligning with
+    // the previous "tkill is raise" behaviour keeps those paths alive while
+    // per-thread routing is still correct for genuinely-known TIDs.
+    match proc.get_thread_mut(tid) {
+        Some(t) => {
+            if sig > 0 {
+                if si_code != 0 || si_value != 0 {
+                    t.signals.raise_with_value(sig, si_value);
+                } else {
+                    t.signals.raise(sig);
+                }
+            }
+            deliver_pending_signals(proc, &mut host);
+            0
+        }
+        None => {
+            if sig > 0 {
+                if si_code != 0 || si_value != 0 {
+                    proc.signals.raise_with_value(sig, si_value);
+                } else {
+                    proc.signals.raise(sig);
+                }
+            }
+            deliver_pending_signals(proc, &mut host);
+            0
+        }
+    }
 }
 
 /// Set signal action. act_ptr/oldact_ptr point to structs:

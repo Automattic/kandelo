@@ -14,9 +14,11 @@ This file is the counterpart to [wasm-limitations.md](wasm-limitations.md), whic
 
 **Still blocked (other gaps):**
 - `pthread_cancel`, `pthread_cleanup_pop/push`, `pthread_setcancelstate`, `pthread_cond_wait-cancel_ignored`: need `__syscall_cp_asm` cancel points (see [wasm-limitations.md](wasm-limitations.md) §2).
-- `signal/pthread_kill`, `raise-race` (flakey): need per-thread signal routing. Today `pthread_kill` delivers to the process, not the target thread.
-- `aio/aio_error`, `aio/aio_fsync`, `aio/aio_read`: musl's AIO actually uses stock pthreads and the pread/pwrite/fsync path already works (verified 2026-04-21). The remaining blocker is per-thread signal masks — see target 6 below.
+- `aio/aio_error`: still depends on `pthread_cancel`. `aio/aio_fsync` and `aio/aio_read` now pass — per-thread signal routing unblocked musl's pthread-driven AIO (see "Closed" below).
 - `pthread_create-oom`: **not a kernel gap** — see "Not compromising" table below. The kernel correctly caps address space and `pthread_create` returns `EAGAIN` when `mmap` fails; the test's `t_memfill` setup sequence (specifically the `while (malloc(1));` drain) doesn't terminate within the 30 s timeout in our 1 GiB wasm arena.
+
+**Closed:**
+- `signal/pthread_kill`, `raise-race`: **per-thread signal routing landed.** `ThreadInfo` now carries its own pending/blocked/rt_queue; `tkill`/`tgkill` deliver to the target thread's directed queue; `pthread_sigmask` / `sigsuspend` / `ppoll` / `pselect` / `sigtimedwait` all operate on the calling thread's state via `kernel_set_current_tid`. Bumped `ABI_VERSION` to 4.
 
 **Root cause (fixed):** `__NR_exit_group` was aliased to `__NR_exit` (both = 34) in the wasm syscall headers. When a non-main thread called `exit()` / `_Exit()` → `SYS_exit_group`, it emitted syscall 34. The host's channel dispatcher saw syscall 34 from a non-main channel and ran the *thread-exit* path (remove channel only), leaving the main process worker to spin forever. Tests that called `exit(0)` from a spawned thread therefore hung.
 
@@ -107,7 +109,13 @@ And a matching `/etc/group`. Low-risk change — pure userspace + VFS.
 
 ---
 
-### 6. Per-thread signal masks (blocks AIO and `pthread_kill`)
+### 6. Per-thread signal masks (blocks AIO and `pthread_kill`) — *CLOSED*
+
+**Status (landed in this PR):** Per-thread `blocked` / `pending` / `rt_queue` now live on `ThreadInfo`. `kernel_set_current_tid` lets `sigprocmask`, `sigsuspend`, `ppoll`, `pselect6`, `sigtimedwait` operate on the calling thread's state. `tkill`/`tgkill` write into the target thread's directed pending queue rather than the shared process queue. `ABI_VERSION` bumped to 4 (new kernel exports — see `abi/snapshot.json`).
+
+**Closed tests:** libc-test `regression/raise-race` (previously flakey XFAIL; now passes — timing-slow so it can appear as `TIME` on heavily-loaded runs, still acceptable per `CLAUDE.md`), sortix `signal/pthread_kill`, sortix `basic/aio/aio_fsync`, sortix `basic/aio/aio_read`. `aio/aio_error` still depends on `pthread_cancel` (see target 1).
+
+The original gap analysis (preserved below for the historical record) matches what was landed.
 
 **Gap:** `SignalState` in `crates/kernel/src/signal.rs` is per-process — `blocked` and `pending` are shared across all threads in a process. POSIX requires each thread to have its own signal mask. This single-mask model is load-bearing for signal-heavy code like musl's AIO and `pthread_kill`.
 

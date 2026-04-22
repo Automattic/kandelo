@@ -38,7 +38,6 @@ BASIC_EXPECTED_FAIL=(
     "pthread/pthread_cleanup_pop" "pthread/pthread_cleanup_push"
     "pthread/pthread_condattr_setpshared"
     "pthread/pthread_create"
-    "signal/pthread_kill"
     "threads/thrd_create"
     "pthread/pthread_attr_setinheritsched"
     "pthread/pthread_mutexattr_setpshared"

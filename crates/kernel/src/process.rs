@@ -8,7 +8,7 @@ use crate::lock::LockTable;
 use crate::memory::MemoryManager;
 use crate::ofd::OfdTable;
 use crate::pipe::PipeBuffer;
-use crate::signal::SignalState;
+use crate::signal::{PerThreadSignalState, SignalState};
 use crate::socket::SocketTable;
 use crate::terminal::TerminalState;
 
@@ -111,11 +111,21 @@ pub struct ThreadInfo {
     pub stack_ptr: usize,
     pub tls_ptr: usize,
     pub tidptr: usize,       // set_tid_address pointer
+    /// Per-thread signal state: directed-pending set + blocked mask + RT queue.
+    /// Handlers remain process-wide and live on [`Process::signals`].
+    pub signals: PerThreadSignalState,
 }
 
 impl ThreadInfo {
     pub fn new(tid: u32, ctid_ptr: usize, stack_ptr: usize, tls_ptr: usize) -> Self {
-        ThreadInfo { tid, ctid_ptr, stack_ptr, tls_ptr, tidptr: 0 }
+        ThreadInfo {
+            tid,
+            ctid_ptr,
+            stack_ptr,
+            tls_ptr,
+            tidptr: 0,
+            signals: PerThreadSignalState::new(),
+        }
     }
 }
 
@@ -419,6 +429,155 @@ impl Process {
     /// Find a thread by TID (mutable).
     pub fn get_thread_mut(&mut self, tid: u32) -> Option<&mut ThreadInfo> {
         self.threads.iter_mut().find(|t| t.tid == tid)
+    }
+
+    /// True if `tid` names the process's main thread. The main thread's TID
+    /// equals the process PID (Linux convention) and is not tracked in
+    /// [`Process::threads`]; per-thread signal state for the main thread lives
+    /// in [`Process::signals`] instead.
+    ///
+    /// `tid == 0` is also treated as "main thread" because the host uses 0
+    /// for syscalls from the main channel (no thread worker is involved).
+    pub fn is_main_thread(&self, tid: u32) -> bool {
+        tid == 0 || tid == self.pid
+    }
+
+    /// Effective blocked mask for the given TID.
+    pub fn blocked_for(&self, tid: u32) -> u64 {
+        if self.is_main_thread(tid) {
+            self.signals.blocked
+        } else {
+            self.get_thread(tid)
+                .map(|t| t.signals.blocked)
+                .unwrap_or(self.signals.blocked)
+        }
+    }
+
+    /// Replace the blocked mask for the given TID. Returns the old value.
+    pub fn set_blocked_for(&mut self, tid: u32, new_blocked: u64) -> u64 {
+        if self.is_main_thread(tid) {
+            let old = self.signals.blocked;
+            self.signals.blocked = new_blocked;
+            old
+        } else if let Some(t) = self.get_thread_mut(tid) {
+            let old = t.signals.blocked;
+            t.signals.blocked = new_blocked;
+            old
+        } else {
+            // Unknown thread — fall back to process-level.
+            let old = self.signals.blocked;
+            self.signals.blocked = new_blocked;
+            old
+        }
+    }
+
+    /// Union of the process's shared pending bits and TID's directed pending
+    /// bits — the full set of signals that *could* be delivered to TID once
+    /// unblocked.
+    pub fn pending_for(&self, tid: u32) -> u64 {
+        if self.is_main_thread(tid) {
+            self.signals.pending
+        } else {
+            let thread_pending = self.get_thread(tid)
+                .map(|t| t.signals.pending)
+                .unwrap_or(0);
+            self.signals.pending | thread_pending
+        }
+    }
+
+    /// True iff `sig` is pending somewhere visible to TID (directed at TID
+    /// or sitting in the shared process-level pending set).
+    pub fn signal_pending_for(&self, tid: u32, sig: u32) -> bool {
+        if sig == 0 || sig >= wasm_posix_shared::signal::NSIG {
+            return false;
+        }
+        let bit = crate::signal::sig_bit(sig);
+        let shared = (self.signals.pending & bit) != 0;
+        if self.is_main_thread(tid) {
+            shared
+        } else {
+            let thread_bit = self.get_thread(tid)
+                .map(|t| (t.signals.pending & bit) != 0)
+                .unwrap_or(false);
+            shared || thread_bit
+        }
+    }
+
+    /// Pick a thread TID that does not block `sig`. Preference order:
+    ///   1. Main thread, if it does not block `sig`.
+    ///   2. Any worker thread (in allocation order) with `sig` unblocked.
+    /// Returns `None` if every thread blocks `sig`; the signal stays queued
+    /// in the shared pending set until some thread unblocks it.
+    pub fn pick_thread_for_shared_signal(&self, sig: u32) -> Option<u32> {
+        if sig == 0 || sig >= wasm_posix_shared::signal::NSIG {
+            return None;
+        }
+        let bit = crate::signal::sig_bit(sig);
+        if (self.signals.blocked & bit) == 0 {
+            return Some(self.pid); // main thread
+        }
+        for t in &self.threads {
+            if (t.signals.blocked & bit) == 0 {
+                return Some(t.tid);
+            }
+        }
+        None
+    }
+
+    /// Bitmask of signals currently deliverable to TID:
+    /// `(shared_pending | thread_pending) & !thread_blocked`.
+    pub fn deliverable_for(&self, tid: u32) -> u64 {
+        let pending = self.pending_for(tid);
+        let blocked = self.blocked_for(tid);
+        pending & !blocked
+    }
+
+    /// Read the saved sigsuspend/ppoll/pselect mask for TID.
+    pub fn sigsuspend_saved_mask_for(&self, tid: u32) -> Option<u64> {
+        if self.is_main_thread(tid) {
+            self.sigsuspend_saved_mask
+        } else {
+            self.get_thread(tid).and_then(|t| t.signals.sigsuspend_saved_mask)
+        }
+    }
+
+    /// Set the saved sigsuspend/ppoll/pselect mask for TID.
+    pub fn set_sigsuspend_saved_mask_for(&mut self, tid: u32, val: Option<u64>) {
+        if self.is_main_thread(tid) {
+            self.sigsuspend_saved_mask = val;
+        } else if let Some(t) = self.get_thread_mut(tid) {
+            t.signals.sigsuspend_saved_mask = val;
+        }
+    }
+
+    /// Take (clear) the saved sigsuspend mask for TID, returning the old value.
+    pub fn take_sigsuspend_saved_mask_for(&mut self, tid: u32) -> Option<u64> {
+        if self.is_main_thread(tid) {
+            self.sigsuspend_saved_mask.take()
+        } else {
+            self.get_thread_mut(tid)
+                .and_then(|t| t.signals.sigsuspend_saved_mask.take())
+        }
+    }
+
+    /// Collect every TID that has `sig` unblocked (main + worker threads).
+    /// Used by the host to decide which thread channels to wake when a new
+    /// shared signal arrives.
+    pub fn tids_accepting(&self, sig: u32) -> Vec<u32> {
+        let mut out = Vec::new();
+        if sig == 0 || sig >= wasm_posix_shared::signal::NSIG {
+            return out;
+        }
+        let bit = crate::signal::sig_bit(sig);
+        if (self.signals.blocked & bit) == 0 {
+            out.push(self.pid);
+        }
+        for t in &self.threads {
+            if (t.signals.blocked & bit) == 0 {
+                out.push(t.tid);
+            }
+        }
+        out
     }
 }
 

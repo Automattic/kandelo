@@ -3222,12 +3222,36 @@ pub fn sys_sigtimedwait(
 ) -> Result<(u32, i32, i32), Errno> {
     use wasm_posix_shared::signal::NSIG;
 
-    // Check if any signal in mask is already pending
-    let pending_in_mask = proc.signals.pending & mask;
+    let tid = crate::process_table::current_tid();
+
+    // Scan the calling thread's pending set (shared + directed) for a match.
+    let pending_in_mask = proc.pending_for(tid) & mask;
     if pending_in_mask != 0 {
-        // Consume the lowest numbered matching signal
         let signum = pending_in_mask.trailing_zeros() + 1;
         if signum < NSIG {
+            // Prefer directed delivery for non-main threads, same rule as
+            // `kernel_dequeue_signal`.
+            let bit = crate::signal::sig_bit(signum);
+            if !proc.is_main_thread(tid) {
+                if let Some(t) = proc.get_thread_mut(tid) {
+                    if (t.signals.pending & bit) != 0 {
+                        let (mut si_value, mut si_code) = (0i32, 0i32);
+                        if let Some(pos) = t.signals.rt_queue.iter().position(|e| e.signum == signum) {
+                            si_value = t.signals.rt_queue[pos].si_value;
+                            si_code = t.signals.rt_queue[pos].si_code;
+                            t.signals.rt_queue.remove(pos);
+                        }
+                        if signum >= crate::signal::SIGRTMIN {
+                            if !t.signals.rt_queue.iter().any(|e| e.signum == signum) {
+                                t.signals.pending &= !bit;
+                            }
+                        } else {
+                            t.signals.pending &= !bit;
+                        }
+                        return Ok((signum, si_value, si_code));
+                    }
+                }
+            }
             let (si_value, si_code) = proc.signals.consume_one(signum);
             return Ok((signum, si_value, si_code));
         }
@@ -3242,7 +3266,7 @@ pub fn sys_sigtimedwait(
     for _ in 0..iterations {
         host.host_nanosleep(0, 1_000_000)?; // 1ms
 
-        let pending_in_mask = proc.signals.pending & mask;
+        let pending_in_mask = proc.pending_for(tid) & mask;
         if pending_in_mask != 0 {
             let signum = pending_in_mask.trailing_zeros() + 1;
             if signum < NSIG {
@@ -3263,16 +3287,21 @@ pub fn sys_sigtimedwait(
 pub fn sys_sigsuspend(proc: &mut Process, host: &mut dyn HostIO, mask: u64) -> Result<(), Errno> {
     use wasm_posix_shared::signal::{NSIG, SIGKILL, SIGSTOP};
 
+    let tid = crate::process_table::current_tid();
+    let sig_guard = crate::signal::sig_bit(SIGKILL) | crate::signal::sig_bit(SIGSTOP);
+    let new_mask = mask & !sig_guard;
+
     // Centralized mode: keep sigsuspend mask active between EAGAIN retries.
     // On first call, save old mask. On retries, the temp mask is already set.
     if crate::is_centralized_mode() {
-        if proc.sigsuspend_saved_mask.is_none() {
+        if proc.sigsuspend_saved_mask_for(tid).is_none() {
             // First call: save old mask and install temporary mask
-            proc.sigsuspend_saved_mask = Some(proc.signals.blocked);
-            proc.signals.blocked = mask & !(crate::signal::sig_bit(SIGKILL) | crate::signal::sig_bit(SIGSTOP));
+            let old = proc.blocked_for(tid);
+            proc.set_sigsuspend_saved_mask_for(tid, Some(old));
+            proc.set_blocked_for(tid, new_mask);
         }
         // Check if any signals are deliverable with the sigsuspend mask
-        if proc.signals.deliverable() != 0 {
+        if proc.deliverable_for(tid) != 0 {
             // Signal arrived — return EINTR but keep temp mask active so that
             // dequeueSignalForDelivery picks the signal that woke sigsuspend
             // (deliverable under the temp mask). The mask will be restored in
@@ -3283,13 +3312,12 @@ pub fn sys_sigsuspend(proc: &mut Process, host: &mut dyn HostIO, mask: u64) -> R
         return Err(Errno::EAGAIN);
     }
 
-    let old_mask = proc.signals.blocked;
-    // Cannot block SIGKILL or SIGSTOP
-    proc.signals.blocked = mask & !(crate::signal::sig_bit(SIGKILL) | crate::signal::sig_bit(SIGSTOP));
+    let old_mask = proc.blocked_for(tid);
+    proc.set_blocked_for(tid, new_mask);
 
     // Check if any signals are already deliverable with new mask
-    if proc.signals.deliverable() != 0 {
-        proc.signals.blocked = old_mask;
+    if proc.deliverable_for(tid) != 0 {
+        proc.set_blocked_for(tid, old_mask);
         return Err(Errno::EINTR);
     }
 
@@ -3299,19 +3327,22 @@ pub fn sys_sigsuspend(proc: &mut Process, host: &mut dyn HostIO, mask: u64) -> R
             Ok(s) => s,
             Err(_) => {
                 // Restore mask even on host error
-                proc.signals.blocked = old_mask;
+                proc.set_blocked_for(tid, old_mask);
                 return Err(Errno::EINTR);
             }
         };
         if sig > 0 && sig < NSIG {
+            // Host reports a signal arrived — record it at the process level
+            // (shared-pending). Thread-targeted signals would already be in
+            // the thread's own pending queue.
             proc.signals.raise(sig);
         }
-        if proc.signals.deliverable() != 0 {
+        if proc.deliverable_for(tid) != 0 {
             break;
         }
     }
 
-    proc.signals.blocked = old_mask;
+    proc.set_blocked_for(tid, old_mask);
     Err(Errno::EINTR)
 }
 
@@ -3385,29 +3416,31 @@ pub fn sys_signal(proc: &mut Process, signum: u32, handler_val: u32) -> Result<i
     Ok(old_val)
 }
 
-/// Manipulate the signal mask.
+/// Manipulate the signal mask of the *currently-servicing* thread.
 /// how: SIG_BLOCK, SIG_UNBLOCK, or SIG_SETMASK
 /// set: bitmask of signals to modify
-/// Returns the old signal mask.
+/// Returns the thread's old signal mask.
+///
+/// POSIX: `sigprocmask` in a multi-threaded program has the same effect as
+/// `pthread_sigmask` — each thread has its own blocked mask. The current
+/// thread id is read from the process table (set by the host before each
+/// `kernel_handle_channel`). `tid == 0` or `tid == pid` selects the main
+/// thread (process-level mask).
 pub fn sys_sigprocmask(proc: &mut Process, how: u32, set: u64) -> Result<u64, Errno> {
-    let old_mask = proc.signals.blocked;
+    let tid = crate::process_table::current_tid();
+    let old_mask = proc.blocked_for(tid);
 
-    match how {
-        SIG_BLOCK => {
-            proc.signals.blocked |= set;
-        }
-        SIG_UNBLOCK => {
-            proc.signals.blocked &= !set;
-        }
-        SIG_SETMASK => {
-            proc.signals.blocked = set;
-        }
+    let mut new_mask = match how {
+        SIG_BLOCK => old_mask | set,
+        SIG_UNBLOCK => old_mask & !set,
+        SIG_SETMASK => set,
         _ => return Err(Errno::EINVAL),
-    }
+    };
 
     // SIGKILL and SIGSTOP cannot be blocked (POSIX)
-    proc.signals.blocked &= !(crate::signal::sig_bit(SIGKILL) | crate::signal::sig_bit(SIGSTOP));
+    new_mask &= !(crate::signal::sig_bit(SIGKILL) | crate::signal::sig_bit(SIGSTOP));
 
+    proc.set_blocked_for(tid, new_mask);
     Ok(old_mask)
 }
 
@@ -6205,7 +6238,11 @@ pub fn sys_clone(
         let tid = proc.alloc_tid();
         let effective_tls = if flags & CLONE_SETTLS != 0 { tls_ptr } else { 0 };
         let effective_ctid = if flags & CLONE_CHILD_CLEARTID != 0 { ctid_ptr } else { 0 };
-        let thread_info = ThreadInfo::new(tid, effective_ctid, stack_ptr, effective_tls);
+        // POSIX: new threads inherit the creator's signal mask.
+        let caller_tid = crate::process_table::current_tid();
+        let inherited_blocked = proc.blocked_for(caller_tid);
+        let mut thread_info = ThreadInfo::new(tid, effective_ctid, stack_ptr, effective_tls);
+        thread_info.signals.blocked = inherited_blocked;
         proc.add_thread(thread_info);
         tid as i32
     } else {
@@ -6244,16 +6281,18 @@ pub fn sys_ppoll(
     // The mask stays swapped across EAGAIN retries so cross-process signals
     // arriving between retries are caught on the next poll.
     if crate::is_centralized_mode() {
+        let tid = crate::process_table::current_tid();
         if let Some(new_mask) = mask {
             use wasm_posix_shared::signal::{SIGKILL, SIGSTOP};
-            if proc.sigsuspend_saved_mask.is_none() {
+            if proc.sigsuspend_saved_mask_for(tid).is_none() {
                 // First call: save original mask and install ppoll mask
-                proc.sigsuspend_saved_mask = Some(proc.signals.blocked);
-                proc.signals.blocked = new_mask
+                proc.set_sigsuspend_saved_mask_for(tid, Some(proc.blocked_for(tid)));
+                let m = new_mask
                     & !(crate::signal::sig_bit(SIGKILL) | crate::signal::sig_bit(SIGSTOP));
+                proc.set_blocked_for(tid, m);
             }
             // Check if any signals are deliverable with the ppoll mask
-            if proc.signals.deliverable() != 0 {
+            if proc.deliverable_for(tid) != 0 {
                 // Signal arrived — return EINTR. Keep temp mask active so
                 // kernel_dequeue_signal can deliver the signal and restore
                 // the original mask (via sigsuspend_saved_mask).
@@ -6274,9 +6313,9 @@ pub fn sys_ppoll(
                 // keep sigsuspend_saved_mask so kernel_dequeue_signal can
                 // deliver them with the ppoll mask active, then restore
                 // the original mask.  Otherwise restore immediately.
-                if proc.signals.deliverable() == 0 {
-                    if let Some(saved) = proc.sigsuspend_saved_mask.take() {
-                        proc.signals.blocked = saved;
+                if proc.deliverable_for(tid) == 0 {
+                    if let Some(saved) = proc.take_sigsuspend_saved_mask_for(tid) {
+                        proc.set_blocked_for(tid, saved);
                     }
                 }
                 return result;
@@ -6317,16 +6356,18 @@ pub fn sys_pselect6(
     // The mask stays swapped across EAGAIN retries so cross-process signals
     // arriving between retries are caught on the next select.
     if crate::is_centralized_mode() {
+        let tid = crate::process_table::current_tid();
         if let Some(new_mask) = mask {
             use wasm_posix_shared::signal::{SIGKILL, SIGSTOP};
-            if proc.sigsuspend_saved_mask.is_none() {
+            if proc.sigsuspend_saved_mask_for(tid).is_none() {
                 // First call: save original mask and install pselect mask
-                proc.sigsuspend_saved_mask = Some(proc.signals.blocked);
-                proc.signals.blocked = new_mask
+                proc.set_sigsuspend_saved_mask_for(tid, Some(proc.blocked_for(tid)));
+                let m = new_mask
                     & !(crate::signal::sig_bit(SIGKILL) | crate::signal::sig_bit(SIGSTOP));
+                proc.set_blocked_for(tid, m);
             }
             // Check if any signals are deliverable with the pselect mask
-            if proc.signals.deliverable() != 0 {
+            if proc.deliverable_for(tid) != 0 {
                 return Err(Errno::EINTR);
             }
         }
@@ -6341,9 +6382,9 @@ pub fn sys_pselect6(
                 // Select completed — if signals became deliverable during
                 // the pselect window, keep sigsuspend_saved_mask so
                 // kernel_dequeue_signal can deliver them first.
-                if proc.signals.deliverable() == 0 {
-                    if let Some(saved) = proc.sigsuspend_saved_mask.take() {
-                        proc.signals.blocked = saved;
+                if proc.deliverable_for(tid) == 0 {
+                    if let Some(saved) = proc.take_sigsuspend_saved_mask_for(tid) {
+                        proc.set_blocked_for(tid, saved);
                     }
                 }
                 return result;
