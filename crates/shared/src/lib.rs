@@ -16,7 +16,9 @@
 /// requires bumping `ABI_VERSION` in the same commit.
 ///
 /// See `docs/abi-versioning.md` for the full policy.
-pub const ABI_VERSION: u32 = 3;
+///
+/// 5: fork-instrument switch-dispatch redesign (2026-04-22)
+pub const ABI_VERSION: u32 = 5;
 
 /// Syscall numbers for the POSIX kernel interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

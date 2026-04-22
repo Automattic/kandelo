@@ -1,5 +1,5 @@
 {
-  "abi_version": 3,
+  "abi_version": 5,
   "channel_buffers": {
     "data_offset": 72,
     "data_size": 65536,
