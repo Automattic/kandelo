@@ -13,7 +13,26 @@
 
 namespace v8::internal {
 
-// Builtin: TorqueCcTest_JsReturn (JS linkage deferred to Phase 3)
+// Builtin: TorqueCcTest_JsReturn
+inline Address Builtin_TorqueCcTest_JsReturn(int args_length, Address* args_object,
+                         Isolate* isolate) {
+  DCHECK(isolate->context().is_null() || IsContext(isolate->context()));
+  BuiltinArguments args(args_length, args_object);
+  HandleScope scope(isolate);
+  USE(isolate);
+  Tagged<NativeContext> parameter0 = Cast<NativeContext>(isolate->context());
+  USE(parameter0);
+  Tagged<NativeContext> context = parameter0;
+  USE(context);
+  Tagged<JSAny> parameter1 = Cast<JSAny>(args[0]);
+  USE(parameter1);
+  Tagged<JSAny> arg = parameter1;
+  USE(arg);
+  goto block0;
+
+  block0:
+  return parameter1.ptr();
+}
 
 
 }  // namespace v8::internal
