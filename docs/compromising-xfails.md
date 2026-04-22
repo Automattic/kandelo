@@ -15,7 +15,7 @@ This file is the counterpart to [wasm-limitations.md](wasm-limitations.md), whic
 **Still blocked (other gaps):**
 - `pthread_cancel`, `pthread_cleanup_pop/push`, `pthread_setcancelstate`, `pthread_cond_wait-cancel_ignored`: need `__syscall_cp_asm` cancel points (see [wasm-limitations.md](wasm-limitations.md) §2).
 - `signal/pthread_kill`, `raise-race` (flakey): need per-thread signal routing. Today `pthread_kill` delivers to the process, not the target thread.
-- `aio/aio_error`, `aio/aio_fsync`, `aio/aio_read`: musl's AIO internally spawns pthreads, but also needs a real AIO implementation.
+- `aio/aio_error`, `aio/aio_fsync`, `aio/aio_read`: musl's AIO actually uses stock pthreads and the pread/pwrite/fsync path already works (verified 2026-04-21). The remaining blocker is per-thread signal masks — see target 6 below.
 - `pthread_create-oom`: wasm linear memory can grow on demand, so `t_memfill` can't reliably exhaust address space.
 
 **Root cause (fixed):** `__NR_exit_group` was aliased to `__NR_exit` (both = 34) in the wasm syscall headers. When a non-main thread called `exit()` / `_Exit()` → `SYS_exit_group`, it emitted syscall 34. The host's channel dispatcher saw syscall 34 from a non-main channel and ran the *thread-exit* path (remove channel only), leaving the main process worker to spin forever. Tests that called `exit(0)` from a spawned thread therefore hung.
@@ -104,6 +104,59 @@ And a matching `/etc/group`. Low-risk change — pure userspace + VFS.
 - `host/src/filesystem/` — VFS population
 - `scripts/build-programs.sh` or `build.sh` — where default VFS entries get seeded
 - `musl/src/passwd/` — reference for what `getpwnam` expects
+
+---
+
+### 6. Per-thread signal masks (blocks AIO and `pthread_kill`)
+
+**Gap:** `SignalState` in `crates/kernel/src/signal.rs` is per-process — `blocked` and `pending` are shared across all threads in a process. POSIX requires each thread to have its own signal mask. This single-mask model is load-bearing for signal-heavy code like musl's AIO and `pthread_kill`.
+
+**Affected tests:**
+- sortix basic: `aio/aio_error`, `aio/aio_fsync`, `aio/aio_read`, `signal/pthread_kill`, `signal/raise-race` (flakey).
+
+**Spike results (2026-04-21, branch `aio-spike`):**
+
+The previous XFAIL comment said AIO was blocked on guest `pthread_create`. That blocker is gone (PR #325 / target 1 above): AIO worker threads spawn and run their `pread`/`pwrite`/`fsync` calls correctly, and `rt_sigqueueinfo` from the worker does set the pending bit for SIGUSR1 on the shared process signal state.
+
+What breaks is delivery. Traced flow on `aio_read` test:
+
+1. Main blocks SIGUSR1, calls `aio_read`, enters `sigsuspend(&oldset)` → EAGAIN retry loop.
+2. AIO worker thread runs. Before and after `pread`, musl calls `sigprocmask` to block/restore *all* signals ("All aio worker threads run with all signals blocked permanently" — `src/aio/aio.c`).
+3. Because the kernel's mask is process-wide, these `sigprocmask` calls overwrite the main thread's temp sigsuspend mask.
+4. Worker calls `rt_sigqueueinfo(getpid(), SIGUSR1, ...)` → kernel raises SIGUSR1 → `pending |= 0x200`, `action = Handler(3)`, state stays `Running` (good).
+5. On the worker's **next** syscall completion, the host runs `dequeueSignalForDelivery(worker_channel)`. `kernel_dequeue_signal` sees SIGUSR1 is pending and (from the worker's perspective) deliverable under the now-unblocked process mask, so it dequeues it and writes delivery info into the *worker's* channel `CH_DATA`. The worker's glue then runs the `SIGUSR1` handler inside the worker thread.
+6. Main's sigsuspend keeps retrying with `pending=0x0` forever; alarm(1) fires; test exits with 128+SIGALRM=142.
+
+Verified by adding `debug_log` calls in `kernel_kill_with_value`, `sys_sigsuspend`, and `sys_sigprocmask`:
+
+```
+[k] kill_wv after: pending=0x200 result=0 action=Handler(3)
+[k] kill_wv post-deliver: pending=0x200 state=Running
+[ks] syscallNr=208 off=<worker>  -- rt_sigreturn on worker
+[k] sigprocmask how=2 ... pending_before=0x0   ← pending cleared between the two lines
+[k] sigsuspend: mask=0x0 blocked=0x0 pending=0x0 deliverable=0x0  ← main never sees it
+```
+
+If the caller inserts even a short `nanosleep` between `aio_read` and `sigsuspend`, SIGUSR1 gets delivered correctly to main because main is running at the moment delivery picks a thread. Sortix's test has no such delay, so it's the realistic failure mode.
+
+**Fix approach:**
+
+1. Move `blocked` and `sigsuspend_saved_mask` off `SignalState` / `Process` and onto `ThreadInfo` (or a new per-thread slot keyed by `(pid, tid)`). Keep `pending` and `rt_queue` process-wide — signals are generated at the process, not the thread.
+2. `get_process()` plus the current channel must surface the *current thread*, so that `sys_sigprocmask` / `sys_sigsuspend` / `sys_rt_sigpending` read-and-write the caller's own `blocked` mask. Centralized mode already threads `channel.pid` through `kernel_set_current_pid`; add a similar `set_current_tid` and read it in those syscalls.
+3. Signal delivery logic (`kernel_dequeue_signal`, `deliver_pending_signals`) must pick a thread whose `blocked` mask does *not* block the signal, with a preference for a thread currently parked in `sigsuspend`/`sigtimedwait`/`pselect6`/`ppoll` on that signal. Today we just dequeue into whichever channel next completes a syscall — that's what sends the AIO signal to the worker.
+4. `sys_pthread_kill(tid, sig)` should target a specific thread's pending queue rather than the process-wide queue.
+5. Fork: a single thread survives fork; only that thread's mask is inherited. Existing code resets the process mask on fork (`kernel_reset_signal_mask`) — needs to become per-thread.
+
+Non-trivial refactor. Estimated ~600–900 LoC across `signal.rs`, `process.rs`, `wasm_api.rs`, `syscalls.rs`, plus matching host-side `currentHandleTid` plumbing in `kernel-worker.ts`. All existing tests that exercise the single-threaded path must continue to pass — the main thread's mask semantics are load-bearing for nginx, PHP-FPM, MariaDB signal handling, etc.
+
+**Starting files:**
+- `crates/kernel/src/signal.rs` — `SignalState` split: per-thread (`blocked`, saved masks) vs per-process (`pending`, `rt_queue`, `actions`).
+- `crates/kernel/src/process.rs` — `ThreadInfo` struct: add `blocked`, `sigsuspend_saved_mask`, per-thread alt-stack depth (already multi-thread capable?).
+- `crates/kernel/src/wasm_api.rs` — sigprocmask/sigsuspend/rt_sigpending must look up the current thread; `kernel_dequeue_signal` must choose a thread whose mask permits the signal.
+- `host/src/kernel-worker.ts` — add `currentHandleTid` alongside `currentHandlePid`; plumb it into `set_current_tid` before every `kernel_handle_channel` call.
+- Reference: `host/src/kernel-worker.ts` line ~4869 (`callbacks.onClone(..., channel.memory)`) — thread channels are already per-tid; the channel→tid mapping is the hook to add.
+
+**Why AIO does not need its own target.** Once per-thread masks work, stock musl AIO passes the three sortix tests unmodified. No AIO-specific code is required in our kernel. Any attempt to "implement AIO natively" (kernel io_uring shim, etc.) would be wasted effort — the bug is strictly in the signal subsystem.
 
 ---
 
