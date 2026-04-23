@@ -21,11 +21,37 @@
 #include "src/objects/smi.h"
 #include "src/objects/tagged-field-inl.h"
 #include "src/objects/tagged.h"
+#include "src/roots/roots-inl.h"
 #include "src/runtime/runtime.h"
 #include "src/torque/runtime-macro-shims.h"
 #include "src/torque/runtime-support.h"
 
 namespace v8::internal {
+
+// kCCBuiltins Phase 5 (revised) Task 5.8 — inline accessors for
+// NamespaceConstants reachable from whitelisted builtins.
+// Proper NamespaceConstant emission under kCCBuiltins is Phase 6
+// groundwork; these hand-written inlines cover `const True` /
+// `const False` from base.tq (torque-suffixed `_0`) so the
+// ArrayIsArray fixture links.
+inline Tagged<True> True_0(Isolate* isolate) {
+  return Cast<True>(ReadOnlyRoots(isolate).true_value());
+}
+inline Tagged<False> False_0(Isolate* isolate) {
+  return Cast<False>(ReadOnlyRoots(isolate).false_value());
+}
+
+// https://source.chromium.org/chromium/chromium/src/+/main:v8/test/phase2-fixtures/call-torque-macro.tq?l=7&c=3
+Tagged<Smi> TqRuntimeTorqueCcTest_CallMeFromBuiltin_0(Tagged<Smi> p_x, bool* label_Fail);
+
+// https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/convert.tq?l=56&c=1
+Tagged<Smi> TqRuntimeFromConstexpr_Smi_constexpr_IntegerLiteral_0(IntegerLiteral p_i);
+
+// https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/convert.tq?l=57&c=10
+Tagged<Smi> TqRuntimeConvert_Smi_constexpr_int31_0(int31_t p_i);
+
+// https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/convert.tq?l=85&c=1
+Tagged<Smi> TqRuntimeFromConstexpr_Smi_constexpr_int31_0(int31_t p_i);
 
 Tagged<Smi> Builtin_TorqueCcTest_CallTorqueMacro(Isolate* isolate, Tagged<Context> context, Tagged<Smi> arg) {
   USE(isolate);
@@ -53,6 +79,9 @@ Tagged<Smi> Builtin_TorqueCcTest_CallTorqueMacro(Isolate* isolate, Tagged<Contex
   return tmp0;
 }
 
+#ifndef V8_INTERNAL_DEFINED_TqRuntimeTorqueCcTest_CallMeFromBuiltin_0
+#define V8_INTERNAL_DEFINED_TqRuntimeTorqueCcTest_CallMeFromBuiltin_0
+
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/test/phase2-fixtures/call-torque-macro.tq?l=7&c=3
 inline Tagged<Smi> TqRuntimeTorqueCcTest_CallMeFromBuiltin_0(Tagged<Smi> p_x, bool* label_Fail) {
   Tagged<Smi> tmp0{}; USE(tmp0);
@@ -70,7 +99,7 @@ inline Tagged<Smi> TqRuntimeTorqueCcTest_CallMeFromBuiltin_0(Tagged<Smi> p_x, bo
 
   block3:
   *label_Fail = true;
-  return;
+  return {};
 
   block4:
   goto block5;
@@ -78,6 +107,10 @@ inline Tagged<Smi> TqRuntimeTorqueCcTest_CallMeFromBuiltin_0(Tagged<Smi> p_x, bo
   block5:
   return p_x;
 }
+
+#endif // V8_INTERNAL_DEFINED_TqRuntimeTorqueCcTest_CallMeFromBuiltin_0
+#ifndef V8_INTERNAL_DEFINED_TqRuntimeFromConstexpr_Smi_constexpr_IntegerLiteral_0
+#define V8_INTERNAL_DEFINED_TqRuntimeFromConstexpr_Smi_constexpr_IntegerLiteral_0
 
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/convert.tq?l=56&c=1
 inline Tagged<Smi> TqRuntimeFromConstexpr_Smi_constexpr_IntegerLiteral_0(IntegerLiteral p_i) {
@@ -92,6 +125,10 @@ inline Tagged<Smi> TqRuntimeFromConstexpr_Smi_constexpr_IntegerLiteral_0(Integer
   return tmp0;
 }
 
+#endif // V8_INTERNAL_DEFINED_TqRuntimeFromConstexpr_Smi_constexpr_IntegerLiteral_0
+#ifndef V8_INTERNAL_DEFINED_TqRuntimeConvert_Smi_constexpr_int31_0
+#define V8_INTERNAL_DEFINED_TqRuntimeConvert_Smi_constexpr_int31_0
+
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/convert.tq?l=57&c=10
 inline Tagged<Smi> TqRuntimeConvert_Smi_constexpr_int31_0(int31_t p_i) {
   Tagged<Smi> tmp0{}; USE(tmp0);
@@ -104,6 +141,10 @@ inline Tagged<Smi> TqRuntimeConvert_Smi_constexpr_int31_0(int31_t p_i) {
   block2:
   return tmp0;
 }
+
+#endif // V8_INTERNAL_DEFINED_TqRuntimeConvert_Smi_constexpr_int31_0
+#ifndef V8_INTERNAL_DEFINED_TqRuntimeFromConstexpr_Smi_constexpr_int31_0
+#define V8_INTERNAL_DEFINED_TqRuntimeFromConstexpr_Smi_constexpr_int31_0
 
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/convert.tq?l=85&c=1
 inline Tagged<Smi> TqRuntimeFromConstexpr_Smi_constexpr_int31_0(int31_t p_i) {
@@ -118,5 +159,6 @@ inline Tagged<Smi> TqRuntimeFromConstexpr_Smi_constexpr_int31_0(int31_t p_i) {
   return tmp0;
 }
 
+#endif // V8_INTERNAL_DEFINED_TqRuntimeFromConstexpr_Smi_constexpr_int31_0
 
 }  // namespace v8::internal

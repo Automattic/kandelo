@@ -21,11 +21,28 @@
 #include "src/objects/smi.h"
 #include "src/objects/tagged-field-inl.h"
 #include "src/objects/tagged.h"
+#include "src/roots/roots-inl.h"
 #include "src/runtime/runtime.h"
 #include "src/torque/runtime-macro-shims.h"
 #include "src/torque/runtime-support.h"
 
 namespace v8::internal {
+
+// kCCBuiltins Phase 5 (revised) Task 5.8 — inline accessors for
+// NamespaceConstants reachable from whitelisted builtins.
+// Proper NamespaceConstant emission under kCCBuiltins is Phase 6
+// groundwork; these hand-written inlines cover `const True` /
+// `const False` from base.tq (torque-suffixed `_0`) so the
+// ArrayIsArray fixture links.
+inline Tagged<True> True_0(Isolate* isolate) {
+  return Cast<True>(ReadOnlyRoots(isolate).true_value());
+}
+inline Tagged<False> False_0(Isolate* isolate) {
+  return Cast<False>(ReadOnlyRoots(isolate).false_value());
+}
+
+// https://source.chromium.org/chromium/chromium/src/+/main:v8/test/phase2-fixtures/make-lazy-node.tq?l=13&c=3
+Tagged<Smi> TqRuntimeTorqueCcTest_LazyBody_0(Tagged<Smi> p_x);
 
 Tagged<Smi> Builtin_TorqueCcTest_MakeLazyNode(Isolate* isolate, Tagged<Context> context, Tagged<Smi> arg) {
   USE(isolate);
@@ -41,6 +58,9 @@ Tagged<Smi> Builtin_TorqueCcTest_MakeLazyNode(Isolate* isolate, Tagged<Context> 
   return parameter1;
 }
 
+#ifndef V8_INTERNAL_DEFINED_TqRuntimeTorqueCcTest_LazyBody_0
+#define V8_INTERNAL_DEFINED_TqRuntimeTorqueCcTest_LazyBody_0
+
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/test/phase2-fixtures/make-lazy-node.tq?l=13&c=3
 inline Tagged<Smi> TqRuntimeTorqueCcTest_LazyBody_0(Tagged<Smi> p_x) {
   goto block0;
@@ -52,5 +72,6 @@ inline Tagged<Smi> TqRuntimeTorqueCcTest_LazyBody_0(Tagged<Smi> p_x) {
   return p_x;
 }
 
+#endif // V8_INTERNAL_DEFINED_TqRuntimeTorqueCcTest_LazyBody_0
 
 }  // namespace v8::internal

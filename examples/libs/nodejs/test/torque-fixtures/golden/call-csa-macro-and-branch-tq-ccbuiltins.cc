@@ -21,11 +21,34 @@
 #include "src/objects/smi.h"
 #include "src/objects/tagged-field-inl.h"
 #include "src/objects/tagged.h"
+#include "src/roots/roots-inl.h"
 #include "src/runtime/runtime.h"
 #include "src/torque/runtime-macro-shims.h"
 #include "src/torque/runtime-support.h"
 
 namespace v8::internal {
+
+// kCCBuiltins Phase 5 (revised) Task 5.8 — inline accessors for
+// NamespaceConstants reachable from whitelisted builtins.
+// Proper NamespaceConstant emission under kCCBuiltins is Phase 6
+// groundwork; these hand-written inlines cover `const True` /
+// `const False` from base.tq (torque-suffixed `_0`) so the
+// ArrayIsArray fixture links.
+inline Tagged<True> True_0(Isolate* isolate) {
+  return Cast<True>(ReadOnlyRoots(isolate).true_value());
+}
+inline Tagged<False> False_0(Isolate* isolate) {
+  return Cast<False>(ReadOnlyRoots(isolate).false_value());
+}
+
+// https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/convert.tq?l=56&c=1
+Tagged<Smi> TqRuntimeFromConstexpr_Smi_constexpr_IntegerLiteral_0(IntegerLiteral p_i);
+
+// https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/convert.tq?l=57&c=10
+Tagged<Smi> TqRuntimeConvert_Smi_constexpr_int31_0(int31_t p_i);
+
+// https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/convert.tq?l=85&c=1
+Tagged<Smi> TqRuntimeFromConstexpr_Smi_constexpr_int31_0(int31_t p_i);
 
 Tagged<Smi> Builtin_TorqueCcTest_CallCsaMacroAndBranch(Isolate* isolate, Tagged<Context> context) {
   USE(isolate);
@@ -52,6 +75,9 @@ Tagged<Smi> Builtin_TorqueCcTest_CallCsaMacroAndBranch(Isolate* isolate, Tagged<
   return tmp2;
 }
 
+#ifndef V8_INTERNAL_DEFINED_TqRuntimeFromConstexpr_Smi_constexpr_IntegerLiteral_0
+#define V8_INTERNAL_DEFINED_TqRuntimeFromConstexpr_Smi_constexpr_IntegerLiteral_0
+
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/convert.tq?l=56&c=1
 inline Tagged<Smi> TqRuntimeFromConstexpr_Smi_constexpr_IntegerLiteral_0(IntegerLiteral p_i) {
   Tagged<Smi> tmp0{}; USE(tmp0);
@@ -64,6 +90,10 @@ inline Tagged<Smi> TqRuntimeFromConstexpr_Smi_constexpr_IntegerLiteral_0(Integer
   block2:
   return tmp0;
 }
+
+#endif // V8_INTERNAL_DEFINED_TqRuntimeFromConstexpr_Smi_constexpr_IntegerLiteral_0
+#ifndef V8_INTERNAL_DEFINED_TqRuntimeConvert_Smi_constexpr_int31_0
+#define V8_INTERNAL_DEFINED_TqRuntimeConvert_Smi_constexpr_int31_0
 
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/convert.tq?l=57&c=10
 inline Tagged<Smi> TqRuntimeConvert_Smi_constexpr_int31_0(int31_t p_i) {
@@ -78,6 +108,10 @@ inline Tagged<Smi> TqRuntimeConvert_Smi_constexpr_int31_0(int31_t p_i) {
   return tmp0;
 }
 
+#endif // V8_INTERNAL_DEFINED_TqRuntimeConvert_Smi_constexpr_int31_0
+#ifndef V8_INTERNAL_DEFINED_TqRuntimeFromConstexpr_Smi_constexpr_int31_0
+#define V8_INTERNAL_DEFINED_TqRuntimeFromConstexpr_Smi_constexpr_int31_0
+
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/convert.tq?l=85&c=1
 inline Tagged<Smi> TqRuntimeFromConstexpr_Smi_constexpr_int31_0(int31_t p_i) {
   Tagged<Smi> tmp0{}; USE(tmp0);
@@ -91,5 +125,6 @@ inline Tagged<Smi> TqRuntimeFromConstexpr_Smi_constexpr_int31_0(int31_t p_i) {
   return tmp0;
 }
 
+#endif // V8_INTERNAL_DEFINED_TqRuntimeFromConstexpr_Smi_constexpr_int31_0
 
 }  // namespace v8::internal

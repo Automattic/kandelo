@@ -21,11 +21,25 @@
 #include "src/objects/smi.h"
 #include "src/objects/tagged-field-inl.h"
 #include "src/objects/tagged.h"
+#include "src/roots/roots-inl.h"
 #include "src/runtime/runtime.h"
 #include "src/torque/runtime-macro-shims.h"
 #include "src/torque/runtime-support.h"
 
 namespace v8::internal {
+
+// kCCBuiltins Phase 5 (revised) Task 5.8 — inline accessors for
+// NamespaceConstants reachable from whitelisted builtins.
+// Proper NamespaceConstant emission under kCCBuiltins is Phase 6
+// groundwork; these hand-written inlines cover `const True` /
+// `const False` from base.tq (torque-suffixed `_0`) so the
+// ArrayIsArray fixture links.
+inline Tagged<True> True_0(Isolate* isolate) {
+  return Cast<True>(ReadOnlyRoots(isolate).true_value());
+}
+inline Tagged<False> False_0(Isolate* isolate) {
+  return Cast<False>(ReadOnlyRoots(isolate).false_value());
+}
 
 Tagged<Smi> Builtin_TorqueCcTest_NamespaceConstant(Isolate* isolate, Tagged<Context> context) {
   USE(isolate);

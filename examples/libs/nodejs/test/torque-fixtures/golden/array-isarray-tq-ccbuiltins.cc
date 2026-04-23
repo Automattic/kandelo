@@ -21,11 +21,64 @@
 #include "src/objects/smi.h"
 #include "src/objects/tagged-field-inl.h"
 #include "src/objects/tagged.h"
+#include "src/roots/roots-inl.h"
 #include "src/runtime/runtime.h"
 #include "src/torque/runtime-macro-shims.h"
 #include "src/torque/runtime-support.h"
 
 namespace v8::internal {
+
+// kCCBuiltins Phase 5 (revised) Task 5.8 — inline accessors for
+// NamespaceConstants reachable from whitelisted builtins.
+// Proper NamespaceConstant emission under kCCBuiltins is Phase 6
+// groundwork; these hand-written inlines cover `const True` /
+// `const False` from base.tq (torque-suffixed `_0`) so the
+// ArrayIsArray fixture links.
+inline Tagged<True> True_0(Isolate* isolate) {
+  return Cast<True>(ReadOnlyRoots(isolate).true_value());
+}
+inline Tagged<False> False_0(Isolate* isolate) {
+  return Cast<False>(ReadOnlyRoots(isolate).false_value());
+}
+
+// https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/array-flat.tq?l=65&c=13
+Tagged<JSArray> TqRuntimeCast_JSArray_1(Tagged<Context> p_context, Tagged<Object> p_o, bool* label_CastError);
+
+// https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/promise-abstract-operations.tq?l=56&c=7
+Tagged<JSProxy> TqRuntimeCast_JSProxy_1(Tagged<Context> p_context, Tagged<Object> p_o, bool* label_CastError);
+
+// https://source.chromium.org/chromium/chromium/src/+/main:v8/src/objects/js-array.tq?l=61&c=1
+Tagged<JSArray> TqRuntimeCast_JSArray_0(Tagged<HeapObject> p_obj, bool* label_CastError);
+
+// https://source.chromium.org/chromium/chromium/src/+/main:v8/src/objects/js-proxy.tq?l=5&c=1
+Tagged<JSProxy> TqRuntimeCast_JSProxy_0(Tagged<HeapObject> p_obj, bool* label_CastError);
+
+// https://source.chromium.org/chromium/chromium/src/+/main:v8/src/objects/js-array.tq?l=61&c=1
+Tagged<JSArray> TqRuntimeDownCastForTorqueClass_JSArray_0(Tagged<HeapObject> p_o, bool* label_CastError);
+
+// https://source.chromium.org/chromium/chromium/src/+/main:v8/src/objects/js-proxy.tq?l=5&c=1
+Tagged<JSProxy> TqRuntimeDownCastForTorqueClass_JSProxy_0(Tagged<HeapObject> p_o, bool* label_CastError);
+
+// https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/convert.tq?l=73&c=1
+intptr_t TqRuntimeFromConstexpr_intptr_constexpr_int31_0(int31_t p_i);
+
+// https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/convert.tq?l=127&c=1
+uint32_t TqRuntimeFromConstexpr_WasmCodePointer_constexpr_WasmCodePointer_0(uint32_t p_i);
+
+// https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/convert.tq?l=70&c=1
+int32_t TqRuntimeFromConstexpr_int32_constexpr_int32_0(int32_t p_i);
+
+// https://source.chromium.org/chromium/chromium/src/+/main:v8/src/objects/string.tq?l=13&c=9
+uint16_t TqRuntimeConvert_uint16_InstanceType_0(InstanceType p_i);
+
+// https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/convert.tq?l=249&c=1
+int32_t TqRuntimeConvert_int32_uint16_0(uint16_t p_i);
+
+// https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/convert.tq?l=172&c=1
+InstanceType TqRuntimeFromConstexpr_InstanceType_constexpr_InstanceType_0(InstanceType p_c);
+
+// https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/convert.tq?l=250&c=17
+uint32_t TqRuntimeConvert_WasmCodePointer_uint16_0(uint16_t p_i);
 
 // Builtin: ArrayIsArray
 Address Builtin_ArrayIsArray(int args_length, Address* args_object,
@@ -74,9 +127,15 @@ Address Builtin_ArrayIsArray(int args_length, Address* args_object,
   return tmp5.ptr();
 
   block7:
-  tmp6 = Runtime::Call<Runtime::kArrayIsArray>(isolate, parameter0, parameter1);
+  {
+    Address __rt_args[] = { parameter1.ptr() };
+    tmp6 = UncheckedCast<JSAny>(Tagged<Object>(Runtime_ArrayIsArray(1, __rt_args, isolate)));
+  }
   return tmp6.ptr();
 }
+
+#ifndef V8_INTERNAL_DEFINED_TqRuntimeCast_JSArray_1
+#define V8_INTERNAL_DEFINED_TqRuntimeCast_JSArray_1
 
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/array-flat.tq?l=65&c=13
 inline Tagged<JSArray> TqRuntimeCast_JSArray_1(Tagged<Context> p_context, Tagged<Object> p_o, bool* label_CastError) {
@@ -111,11 +170,15 @@ inline Tagged<JSArray> TqRuntimeCast_JSArray_1(Tagged<Context> p_context, Tagged
 
   block1:
   *label_CastError = true;
-  return;
+  return {};
 
   block7:
   return tmp2;
 }
+
+#endif // V8_INTERNAL_DEFINED_TqRuntimeCast_JSArray_1
+#ifndef V8_INTERNAL_DEFINED_TqRuntimeCast_JSProxy_1
+#define V8_INTERNAL_DEFINED_TqRuntimeCast_JSProxy_1
 
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/promise-abstract-operations.tq?l=56&c=7
 inline Tagged<JSProxy> TqRuntimeCast_JSProxy_1(Tagged<Context> p_context, Tagged<Object> p_o, bool* label_CastError) {
@@ -150,11 +213,15 @@ inline Tagged<JSProxy> TqRuntimeCast_JSProxy_1(Tagged<Context> p_context, Tagged
 
   block1:
   *label_CastError = true;
-  return;
+  return {};
 
   block7:
   return tmp2;
 }
+
+#endif // V8_INTERNAL_DEFINED_TqRuntimeCast_JSProxy_1
+#ifndef V8_INTERNAL_DEFINED_TqRuntimeCast_JSArray_0
+#define V8_INTERNAL_DEFINED_TqRuntimeCast_JSArray_0
 
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/src/objects/js-array.tq?l=61&c=1
 inline Tagged<JSArray> TqRuntimeCast_JSArray_0(Tagged<HeapObject> p_obj, bool* label_CastError) {
@@ -171,7 +238,7 @@ inline Tagged<JSArray> TqRuntimeCast_JSArray_0(Tagged<HeapObject> p_obj, bool* l
 
   block4:
   *label_CastError = true;
-  return;
+  return {};
 
   block3:
   goto block5;
@@ -179,6 +246,10 @@ inline Tagged<JSArray> TqRuntimeCast_JSArray_0(Tagged<HeapObject> p_obj, bool* l
   block5:
   return tmp0;
 }
+
+#endif // V8_INTERNAL_DEFINED_TqRuntimeCast_JSArray_0
+#ifndef V8_INTERNAL_DEFINED_TqRuntimeCast_JSProxy_0
+#define V8_INTERNAL_DEFINED_TqRuntimeCast_JSProxy_0
 
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/src/objects/js-proxy.tq?l=5&c=1
 inline Tagged<JSProxy> TqRuntimeCast_JSProxy_0(Tagged<HeapObject> p_obj, bool* label_CastError) {
@@ -195,7 +266,7 @@ inline Tagged<JSProxy> TqRuntimeCast_JSProxy_0(Tagged<HeapObject> p_obj, bool* l
 
   block4:
   *label_CastError = true;
-  return;
+  return {};
 
   block3:
   goto block5;
@@ -203,6 +274,10 @@ inline Tagged<JSProxy> TqRuntimeCast_JSProxy_0(Tagged<HeapObject> p_obj, bool* l
   block5:
   return tmp0;
 }
+
+#endif // V8_INTERNAL_DEFINED_TqRuntimeCast_JSProxy_0
+#ifndef V8_INTERNAL_DEFINED_TqRuntimeDownCastForTorqueClass_JSArray_0
+#define V8_INTERNAL_DEFINED_TqRuntimeDownCastForTorqueClass_JSArray_0
 
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/src/objects/js-array.tq?l=61&c=1
 inline Tagged<JSArray> TqRuntimeDownCastForTorqueClass_JSArray_0(Tagged<HeapObject> p_o, bool* label_CastError) {
@@ -239,7 +314,7 @@ inline Tagged<JSArray> TqRuntimeDownCastForTorqueClass_JSArray_0(Tagged<HeapObje
   }
 
   block3:
-  if ((CodeStubAssembler(state_).ClassHasMapConstant<JSArray>())) {
+  if ((false)) {
     goto block6;
   } else {
     goto block7;
@@ -306,16 +381,20 @@ inline Tagged<JSArray> TqRuntimeDownCastForTorqueClass_JSArray_0(Tagged<HeapObje
   goto block5;
 
   block5:
-  tmp20 = static_cast<Tagged<JSArray>>(p_o);
+  tmp20 = UncheckedCast<JSArray>(p_o);
   goto block15;
 
   block1:
   *label_CastError = true;
-  return;
+  return {};
 
   block15:
   return tmp20;
 }
+
+#endif // V8_INTERNAL_DEFINED_TqRuntimeDownCastForTorqueClass_JSArray_0
+#ifndef V8_INTERNAL_DEFINED_TqRuntimeDownCastForTorqueClass_JSProxy_0
+#define V8_INTERNAL_DEFINED_TqRuntimeDownCastForTorqueClass_JSProxy_0
 
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/src/objects/js-proxy.tq?l=5&c=1
 inline Tagged<JSProxy> TqRuntimeDownCastForTorqueClass_JSProxy_0(Tagged<HeapObject> p_o, bool* label_CastError) {
@@ -352,7 +431,7 @@ inline Tagged<JSProxy> TqRuntimeDownCastForTorqueClass_JSProxy_0(Tagged<HeapObje
   }
 
   block3:
-  if ((CodeStubAssembler(state_).ClassHasMapConstant<JSProxy>())) {
+  if ((false)) {
     goto block6;
   } else {
     goto block7;
@@ -419,16 +498,20 @@ inline Tagged<JSProxy> TqRuntimeDownCastForTorqueClass_JSProxy_0(Tagged<HeapObje
   goto block5;
 
   block5:
-  tmp20 = static_cast<Tagged<JSProxy>>(p_o);
+  tmp20 = UncheckedCast<JSProxy>(p_o);
   goto block15;
 
   block1:
   *label_CastError = true;
-  return;
+  return {};
 
   block15:
   return tmp20;
 }
+
+#endif // V8_INTERNAL_DEFINED_TqRuntimeDownCastForTorqueClass_JSProxy_0
+#ifndef V8_INTERNAL_DEFINED_TqRuntimeFromConstexpr_intptr_constexpr_int31_0
+#define V8_INTERNAL_DEFINED_TqRuntimeFromConstexpr_intptr_constexpr_int31_0
 
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/convert.tq?l=73&c=1
 inline intptr_t TqRuntimeFromConstexpr_intptr_constexpr_int31_0(int31_t p_i) {
@@ -442,6 +525,10 @@ inline intptr_t TqRuntimeFromConstexpr_intptr_constexpr_int31_0(int31_t p_i) {
   block2:
   return tmp0;
 }
+
+#endif // V8_INTERNAL_DEFINED_TqRuntimeFromConstexpr_intptr_constexpr_int31_0
+#ifndef V8_INTERNAL_DEFINED_TqRuntimeFromConstexpr_WasmCodePointer_constexpr_WasmCodePointer_0
+#define V8_INTERNAL_DEFINED_TqRuntimeFromConstexpr_WasmCodePointer_constexpr_WasmCodePointer_0
 
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/convert.tq?l=127&c=1
 inline uint32_t TqRuntimeFromConstexpr_WasmCodePointer_constexpr_WasmCodePointer_0(uint32_t p_i) {
@@ -458,6 +545,10 @@ inline uint32_t TqRuntimeFromConstexpr_WasmCodePointer_constexpr_WasmCodePointer
   return tmp1;
 }
 
+#endif // V8_INTERNAL_DEFINED_TqRuntimeFromConstexpr_WasmCodePointer_constexpr_WasmCodePointer_0
+#ifndef V8_INTERNAL_DEFINED_TqRuntimeFromConstexpr_int32_constexpr_int32_0
+#define V8_INTERNAL_DEFINED_TqRuntimeFromConstexpr_int32_constexpr_int32_0
+
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/convert.tq?l=70&c=1
 inline int32_t TqRuntimeFromConstexpr_int32_constexpr_int32_0(int32_t p_i) {
   int32_t tmp0{}; USE(tmp0);
@@ -471,6 +562,10 @@ inline int32_t TqRuntimeFromConstexpr_int32_constexpr_int32_0(int32_t p_i) {
   return tmp0;
 }
 
+#endif // V8_INTERNAL_DEFINED_TqRuntimeFromConstexpr_int32_constexpr_int32_0
+#ifndef V8_INTERNAL_DEFINED_TqRuntimeConvert_uint16_InstanceType_0
+#define V8_INTERNAL_DEFINED_TqRuntimeConvert_uint16_InstanceType_0
+
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/src/objects/string.tq?l=13&c=9
 inline uint16_t TqRuntimeConvert_uint16_InstanceType_0(InstanceType p_i) {
   goto block0;
@@ -481,6 +576,10 @@ inline uint16_t TqRuntimeConvert_uint16_InstanceType_0(InstanceType p_i) {
   block2:
   return p_i;
 }
+
+#endif // V8_INTERNAL_DEFINED_TqRuntimeConvert_uint16_InstanceType_0
+#ifndef V8_INTERNAL_DEFINED_TqRuntimeConvert_int32_uint16_0
+#define V8_INTERNAL_DEFINED_TqRuntimeConvert_int32_uint16_0
 
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/convert.tq?l=249&c=1
 inline int32_t TqRuntimeConvert_int32_uint16_0(uint16_t p_i) {
@@ -497,6 +596,10 @@ inline int32_t TqRuntimeConvert_int32_uint16_0(uint16_t p_i) {
   return tmp1;
 }
 
+#endif // V8_INTERNAL_DEFINED_TqRuntimeConvert_int32_uint16_0
+#ifndef V8_INTERNAL_DEFINED_TqRuntimeFromConstexpr_InstanceType_constexpr_InstanceType_0
+#define V8_INTERNAL_DEFINED_TqRuntimeFromConstexpr_InstanceType_constexpr_InstanceType_0
+
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/convert.tq?l=172&c=1
 inline InstanceType TqRuntimeFromConstexpr_InstanceType_constexpr_InstanceType_0(InstanceType p_c) {
   uint16_t tmp0{}; USE(tmp0);
@@ -512,6 +615,10 @@ inline InstanceType TqRuntimeFromConstexpr_InstanceType_constexpr_InstanceType_0
   return tmp1;
 }
 
+#endif // V8_INTERNAL_DEFINED_TqRuntimeFromConstexpr_InstanceType_constexpr_InstanceType_0
+#ifndef V8_INTERNAL_DEFINED_TqRuntimeConvert_WasmCodePointer_uint16_0
+#define V8_INTERNAL_DEFINED_TqRuntimeConvert_WasmCodePointer_uint16_0
+
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/convert.tq?l=250&c=17
 inline uint32_t TqRuntimeConvert_WasmCodePointer_uint16_0(uint16_t p_i) {
   goto block0;
@@ -523,5 +630,6 @@ inline uint32_t TqRuntimeConvert_WasmCodePointer_uint16_0(uint16_t p_i) {
   return p_i;
 }
 
+#endif // V8_INTERNAL_DEFINED_TqRuntimeConvert_WasmCodePointer_uint16_0
 
 }  // namespace v8::internal

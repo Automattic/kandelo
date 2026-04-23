@@ -21,11 +21,28 @@
 #include "src/objects/smi.h"
 #include "src/objects/tagged-field-inl.h"
 #include "src/objects/tagged.h"
+#include "src/roots/roots-inl.h"
 #include "src/runtime/runtime.h"
 #include "src/torque/runtime-macro-shims.h"
 #include "src/torque/runtime-support.h"
 
 namespace v8::internal {
+
+// kCCBuiltins Phase 5 (revised) Task 5.8 — inline accessors for
+// NamespaceConstants reachable from whitelisted builtins.
+// Proper NamespaceConstant emission under kCCBuiltins is Phase 6
+// groundwork; these hand-written inlines cover `const True` /
+// `const False` from base.tq (torque-suffixed `_0`) so the
+// ArrayIsArray fixture links.
+inline Tagged<True> True_0(Isolate* isolate) {
+  return Cast<True>(ReadOnlyRoots(isolate).true_value());
+}
+inline Tagged<False> False_0(Isolate* isolate) {
+  return Cast<False>(ReadOnlyRoots(isolate).false_value());
+}
+
+// https://source.chromium.org/chromium/chromium/src/+/main:v8/test/phase2-fixtures/store-reference.tq?l=20&c=22
+std::tuple<Tagged<Union<HeapObject, TaggedIndex>>, intptr_t> TqRuntimeNewReference_Smi_0(Tagged<Union<HeapObject, TaggedIndex>> p_object, intptr_t p_offset);
 
 Tagged<Smi> Builtin_TorqueCcTest_StoreReference(Isolate* isolate, Tagged<Context> context, Tagged<HeapObject> obj, intptr_t offset, Tagged<Smi> v) {
   USE(isolate);
@@ -47,6 +64,9 @@ Tagged<Smi> Builtin_TorqueCcTest_StoreReference(Isolate* isolate, Tagged<Context
   return parameter3;
 }
 
+#ifndef V8_INTERNAL_DEFINED_TqRuntimeNewReference_Smi_0
+#define V8_INTERNAL_DEFINED_TqRuntimeNewReference_Smi_0
+
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/test/phase2-fixtures/store-reference.tq?l=20&c=22
 inline std::tuple<Tagged<Union<HeapObject, TaggedIndex>>, intptr_t> TqRuntimeNewReference_Smi_0(Tagged<Union<HeapObject, TaggedIndex>> p_object, intptr_t p_offset) {
   Tagged<Union<HeapObject, TaggedIndex>> tmp0{}; USE(tmp0);
@@ -61,5 +81,6 @@ inline std::tuple<Tagged<Union<HeapObject, TaggedIndex>>, intptr_t> TqRuntimeNew
   return std::make_tuple(tmp0, tmp1);
 }
 
+#endif // V8_INTERNAL_DEFINED_TqRuntimeNewReference_Smi_0
 
 }  // namespace v8::internal

@@ -21,11 +21,25 @@
 #include "src/objects/smi.h"
 #include "src/objects/tagged-field-inl.h"
 #include "src/objects/tagged.h"
+#include "src/roots/roots-inl.h"
 #include "src/runtime/runtime.h"
 #include "src/torque/runtime-macro-shims.h"
 #include "src/torque/runtime-support.h"
 
 namespace v8::internal {
+
+// kCCBuiltins Phase 5 (revised) Task 5.8 — inline accessors for
+// NamespaceConstants reachable from whitelisted builtins.
+// Proper NamespaceConstant emission under kCCBuiltins is Phase 6
+// groundwork; these hand-written inlines cover `const True` /
+// `const False` from base.tq (torque-suffixed `_0`) so the
+// ArrayIsArray fixture links.
+inline Tagged<True> True_0(Isolate* isolate) {
+  return Cast<True>(ReadOnlyRoots(isolate).true_value());
+}
+inline Tagged<False> False_0(Isolate* isolate) {
+  return Cast<False>(ReadOnlyRoots(isolate).false_value());
+}
 
 Tagged<JSAny> Builtin_TorqueCcTest_CallRuntime(Isolate* isolate, Tagged<Context> context, Tagged<JSAny> arg) {
   USE(isolate);
@@ -37,7 +51,10 @@ Tagged<JSAny> Builtin_TorqueCcTest_CallRuntime(Isolate* isolate, Tagged<Context>
   goto block0;
 
   block0:
-  tmp0 = Runtime::Call<Runtime::kArrayIsArray>(isolate, parameter0, parameter1);
+  {
+    Address __rt_args[] = { parameter1.ptr() };
+    tmp0 = UncheckedCast<JSAny>(Tagged<Object>(Runtime_ArrayIsArray(1, __rt_args, isolate)));
+  }
   return tmp0;
 }
 
