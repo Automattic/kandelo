@@ -116,10 +116,10 @@ use walrus::{
     AbstractHeapType, FunctionId, FunctionKind, GlobalId, HeapType, LocalFunction, LocalId,
     MemoryId, Module, RefType, TableId, TypeId, ValType,
     ir::{
-        BinaryOp, Binop, Block, Br, BrIf, BrTable, Call, CallIndirect, Const, GlobalGet, IfElse,
-        Instr, InstrLocId, InstrSeqId, InstrSeqType, LegacyCatch, LoadKind, LocalGet, LocalSet,
-        LocalTee, Loop, MemArg, RefAsNonNull, RefNull, Return, StoreKind, TableGet, TableSet,
-        ThrowRef, TryTable, TryTableCatch, Value,
+        BinaryOp, Binop, Block, Br, BrIf, BrTable, Call, CallIndirect, Const, Drop, GlobalGet,
+        IfElse, Instr, InstrLocId, InstrSeqId, InstrSeqType, LegacyCatch, LoadKind, LocalGet,
+        LocalSet, LocalTee, Loop, MemArg, RefAsNonNull, RefNull, Return, StoreKind, TableGet,
+        TableSet, ThrowRef, TryTable, TryTableCatch, Unreachable, Value,
     },
 };
 
@@ -214,6 +214,66 @@ fn instrument_one_function(
     ref_plan: &[RefLocalSlot],
     catch_plan: &[CatchRegionPlan],
 ) {
+    // Choose scheme based on call-site topology. Both schemes
+    // implement the same fork-resume contract and share the frame
+    // layout; they differ only in how REWIND reaches the resumed call:
+    //
+    //   switch-dispatch: body is restructured so a top-level `br_table`
+    //   jumps directly to the resumed call site, skipping all code in
+    //   between. Works only when every fork-path call lives at the
+    //   function's top level -- wasm forbids `br_table` from branching
+    //   into a nested block from outside.
+    //
+    //   guard-dispatch: each fork-path call site is gated in place by
+    //   an if-else whose condition is `(NORMAL) || (REWIND && call_idx
+    //   == N)`. The body re-executes linearly on REWIND; Phase 4g
+    //   gates state-mutating ops so they don't re-fire. Handles
+    //   arbitrary nesting.
+    //
+    // Catch-handler bodies live inside a nested try_table, so
+    // fork-from-catch is routed to guard-dispatch by the nested-call
+    // check. No separate detector needed.
+    if has_nested_fork_calls(module, func_id, fork_path) {
+        instrument_one_function_guard_dispatch(
+            module,
+            func_id,
+            runtime,
+            fork_path,
+            func_ordinal,
+            aux_tables,
+            ref_plan,
+            catch_plan,
+        );
+        return;
+    }
+
+    instrument_one_function_switch(
+        module,
+        func_id,
+        runtime,
+        fork_path,
+        func_ordinal,
+        aux_tables,
+        ref_plan,
+        catch_plan,
+    );
+}
+
+/// Switch-dispatch transform: fork-path calls are hoisted out of the
+/// function body and reached during REWIND via a top-level `br_table`
+/// that lands directly at the post-active-call-site label. Chunks
+/// between calls run only on the NORMAL fall-through path.
+#[allow(clippy::too_many_arguments)]
+fn instrument_one_function_switch(
+    module: &mut Module,
+    func_id: FunctionId,
+    runtime: &Runtime,
+    fork_path: &HashSet<FunctionId>,
+    func_ordinal: u32,
+    aux_tables: &AuxTables,
+    ref_plan: &[RefLocalSlot],
+    catch_plan: &[CatchRegionPlan],
+) {
     // Pre-existing user locals (args + referenced in body). Scalars
     // live in the frame; ref-typed locals go through aux tables.
     let all_user_locals = collect_user_locals(module, func_id);
@@ -222,12 +282,6 @@ fn instrument_one_function(
         .copied()
         .filter(|(_, ty)| is_scalar(*ty))
         .collect();
-
-    // MVP constraint: any fork-path call nested inside a
-    // block/loop/if/try_table causes `br_table` dispatch to be unable
-    // to land at that call site. Detect and panic with a clear
-    // diagnostic pointing at the offending function.
-    validate_no_nested_fork_calls(module, func_id, fork_path);
 
     // Take the original entry body; we rebuild it wholesale.
     let entry_id = local_mut(module, func_id).entry_block();
@@ -288,12 +342,6 @@ fn instrument_one_function(
     // and captured_exnref locals now; the IR rewrite is applied later,
     // after the body has been rebuilt.
     let catch_handlers = plan_catch_ref_handlers(module, func_id, catch_plan, aux_tables);
-
-    // Reject fork-path calls inside catch-handler bodies. Phase 6d
-    // plumbing captures the caught exnref; a fork-path call inside a
-    // handler would need the new dispatch to land there during REWIND,
-    // which is the B1 follow-up. See `memory/fork-instrument-b1-followup.md`.
-    validate_no_fork_call_in_catch_handler(module, func_id, fork_path, &catch_handlers);
 
     // Build the new body: preamble-if + Block($unwind_save) + postamble.
     let memory = first_memory(module);
@@ -462,14 +510,18 @@ fn instrument_one_function(
 // Body analysis: nested-call validation + partitioning
 // ----------------------------------------------------------------------
 
-fn validate_no_nested_fork_calls(
+/// Returns true iff the function has at least one fork-path call
+/// (direct or indirect) nested inside a `block`/`loop`/`if`/`try_table`.
+/// Such a function cannot use the switch-dispatch top-level br_table
+/// scheme; guard-dispatch handles it instead.
+fn has_nested_fork_calls(
     module: &Module,
     func_id: FunctionId,
     fork_path: &HashSet<FunctionId>,
-) {
+) -> bool {
     let local = match &module.funcs.get(func_id).kind {
         FunctionKind::Local(l) => l,
-        _ => return,
+        _ => return false,
     };
 
     fn walk(
@@ -477,104 +529,39 @@ fn validate_no_nested_fork_calls(
         seq: InstrSeqId,
         fork_path: &HashSet<FunctionId>,
         depth: u32,
-        func_name_str: &str,
+        found: &mut bool,
     ) {
+        if *found {
+            return;
+        }
         for (instr, _) in &f.block(seq).instrs {
             match instr {
                 Instr::Call(c) if fork_path.contains(&c.func) => {
                     if depth > 0 {
-                        panic!(
-                            "fork-instrument: function `{func_name_str}` has a fork-path direct \
-                             call nested at depth {depth}. The switch-dispatch transform \
-                             supports only top-level fork-path calls; restructure the source \
-                             or extend the tool.",
-                        );
+                        *found = true;
+                        return;
                     }
                 }
                 Instr::CallIndirect(_) => {
                     if depth > 0 {
-                        panic!(
-                            "fork-instrument: function `{func_name_str}` has a `call_indirect` \
-                             nested at depth {depth}. Every `call_indirect` in a fork-path \
-                             function is treated as potentially fork-path and must live at the \
-                             top level under the MVP switch-dispatch transform.",
-                        );
+                        *found = true;
+                        return;
                     }
                 }
                 _ => {}
             }
             for child in nested_seqs(instr) {
-                walk(f, child, fork_path, depth + 1, func_name_str);
+                walk(f, child, fork_path, depth + 1, found);
+                if *found {
+                    return;
+                }
             }
         }
     }
 
-    let name = func_name(module, func_id);
-    walk(local, local.entry_block(), fork_path, 0, &name);
-}
-
-fn validate_no_fork_call_in_catch_handler(
-    module: &Module,
-    func_id: FunctionId,
-    fork_path: &HashSet<FunctionId>,
-    catch_handlers: &[CatchHandlerInfo],
-) {
-    // Any fork-path call reachable from a catch-handler target label
-    // is a fork-from-catch pattern (B1 follow-up). The pre-transform
-    // walk already rejected calls inside nested sequences (including
-    // catch-handler blocks), so this is belt-and-braces — but surface
-    // it explicitly to make the failure mode clear.
-    if catch_handlers.is_empty() {
-        return;
-    }
-    let local = match &module.funcs.get(func_id).kind {
-        FunctionKind::Local(l) => l,
-        _ => return,
-    };
-    for info in catch_handlers {
-        let mut found = false;
-        check_seq_for_fork_call(local, info.target_label, fork_path, &mut found);
-        if found {
-            let name = func_name(module, func_id);
-            panic!(
-                "fork-instrument: function `{name}` reaches a fork-path call from inside a \
-                 `catch_ref` handler (region {}). Fork-from-catch is the B1 follow-up and \
-                 unsupported in the MVP switch-dispatch transform. See \
-                 `memory/fork-instrument-b1-followup.md`.",
-                info.catch_region_id,
-            );
-        }
-    }
-}
-
-fn check_seq_for_fork_call(
-    f: &LocalFunction,
-    seq: InstrSeqId,
-    fork_path: &HashSet<FunctionId>,
-    found: &mut bool,
-) {
-    if *found {
-        return;
-    }
-    for (instr, _) in &f.block(seq).instrs {
-        match instr {
-            Instr::Call(c) if fork_path.contains(&c.func) => {
-                *found = true;
-                return;
-            }
-            Instr::CallIndirect(_) => {
-                *found = true;
-                return;
-            }
-            _ => {}
-        }
-        for child in nested_seqs(instr) {
-            check_seq_for_fork_call(f, child, fork_path, found);
-            if *found {
-                return;
-            }
-        }
-    }
+    let mut found = false;
+    walk(local, local.entry_block(), fork_path, 0, &mut found);
+    found
 }
 
 /// Split the original entry body at top-level fork-path calls.
@@ -1965,4 +1952,671 @@ fn find_try_table_parent_seq<'a>(
         }
     }
     None
+}
+
+// ======================================================================
+// Guard-dispatch scheme (Phase 4b/4c/4d/4g + Phase 6)
+// ======================================================================
+//
+// Counterpart to switch-dispatch. Used for fork-path functions that
+// have one or more fork-path calls nested inside a block/loop/if/
+// try_table -- these cannot use the top-level `br_table` dispatch
+// because wasm forbids branching into a nested block from outside.
+//
+// Each fork-path call site is wrapped in an in-place guard: an
+// if-else whose condition is `(state == NORMAL) || (state == REWINDING
+// && call_idx == N)`. On NORMAL, the call fires. On REWIND at a
+// matching idx, the call also fires (so the child re-enters the
+// kernel for the fork). On REWIND at a non-matching idx, defaults are
+// pushed and the body continues past the call. Every observable
+// side-effect op (local.set / store / memory.grow / ...) is wrapped
+// in `if state == NORMAL` (Phase 4g) so it doesn't re-fire during
+// REWIND's linear replay of the body.
+//
+// The entry block still ends up as [preamble-ifelse, Block($unwind_save),
+// postamble] so the frame layout is stable across schemes.
+
+#[allow(clippy::too_many_arguments)]
+fn instrument_one_function_guard_dispatch(
+    module: &mut Module,
+    func_id: FunctionId,
+    runtime: &Runtime,
+    fork_path: &HashSet<FunctionId>,
+    func_ordinal: u32,
+    aux_tables: &AuxTables,
+    ref_plan: &[RefLocalSlot],
+    catch_plan: &[CatchRegionPlan],
+) {
+    let all_user_locals = collect_user_locals(module, func_id);
+    let user_scalar_locals: Vec<(LocalId, ValType)> = all_user_locals
+        .iter()
+        .copied()
+        .filter(|(_, ty)| is_scalar(*ty))
+        .collect();
+
+    let wrapper_id = wrap_body_guard_dispatch(module, func_id);
+
+    let call_idx_local = module.locals.add(ValType::I32);
+    let frame_ptr_local = module.locals.add(runtime.buf_type);
+    let catch_region_id_local = module.locals.add(ValType::I32);
+    let exnref_slot_local = module.locals.add(ValType::I32);
+
+    if aux_tables.exnref.is_some() {
+        inject_rewind_throw_stubs(
+            module,
+            func_id,
+            runtime,
+            catch_region_id_local,
+            aux_tables,
+            catch_plan,
+        );
+    }
+
+    let catch_handlers = plan_catch_ref_handlers(module, func_id, catch_plan, aux_tables);
+
+    let mut call_ctx = CallWrapCtxGuardDispatch {
+        fork_path,
+        state_global: runtime.state_global,
+        unwind_save_id: wrapper_id,
+        call_idx_local,
+        catch_region_id_local,
+        exnref_slot_local,
+        catch_handlers: &catch_handlers,
+        next_call_idx: 0,
+    };
+    rewrite_calls_in_seq_guard_dispatch(module, func_id, wrapper_id, &mut call_ctx);
+
+    apply_catch_ref_handlers(module, func_id, &catch_handlers, aux_tables);
+
+    let frame_size = HEADER_SIZE + user_locals_size(&user_scalar_locals);
+    inject_frame_io_guard_dispatch(
+        module,
+        func_id,
+        runtime,
+        wrapper_id,
+        call_idx_local,
+        frame_ptr_local,
+        catch_region_id_local,
+        exnref_slot_local,
+        &user_scalar_locals,
+        ref_plan,
+        aux_tables,
+        frame_size,
+        func_ordinal,
+    );
+}
+
+/// Move the entry block's original instructions into a fresh nested
+/// block, append an in-block `return` so normal-path execution exits
+/// the function cleanly, and install an `unreachable` in the entry
+/// block as a placeholder postamble. `inject_frame_io_guard_dispatch` replaces
+/// the `unreachable` with the real frame-save postamble.
+fn wrap_body_guard_dispatch(module: &mut Module, func_id: FunctionId) -> InstrSeqId {
+    let local = local_mut(module, func_id);
+    let entry_id = local.entry_block();
+
+    let original_instrs: Vec<(Instr, InstrLocId)> =
+        std::mem::take(&mut local.block_mut(entry_id).instrs);
+
+    let wrapper_id = local
+        .builder_mut()
+        .dangling_instr_seq(InstrSeqType::Simple(None))
+        .id();
+
+    {
+        let wrapper_seq = local.block_mut(wrapper_id);
+        wrapper_seq.instrs = original_instrs;
+        wrapper_seq
+            .instrs
+            .push((Instr::Return(Return {}), InstrLocId::default()));
+    }
+    {
+        let entry_seq = local.block_mut(entry_id);
+        entry_seq.instrs.push((
+            Instr::Block(Block { seq: wrapper_id }),
+            InstrLocId::default(),
+        ));
+        entry_seq.instrs.push((
+            Instr::Unreachable(Unreachable {}),
+            InstrLocId::default(),
+        ));
+    }
+
+    wrapper_id
+}
+
+struct CallWrapCtxGuardDispatch<'a> {
+    fork_path: &'a HashSet<FunctionId>,
+    state_global: GlobalId,
+    unwind_save_id: InstrSeqId,
+    call_idx_local: LocalId,
+    catch_region_id_local: LocalId,
+    exnref_slot_local: LocalId,
+    catch_handlers: &'a [CatchHandlerInfo],
+    next_call_idx: u32,
+}
+
+fn rewrite_calls_in_seq_guard_dispatch(
+    module: &mut Module,
+    func_id: FunctionId,
+    seq_id: InstrSeqId,
+    ctx: &mut CallWrapCtxGuardDispatch,
+) {
+    let original: Vec<(Instr, InstrLocId)> =
+        std::mem::take(&mut local_mut(module, func_id).block_mut(seq_id).instrs);
+
+    let mut new_instrs: Vec<(Instr, InstrLocId)> = Vec::with_capacity(original.len());
+
+    for (instr, loc) in original {
+        for nested_id in nested_seqs(&instr) {
+            rewrite_calls_in_seq_guard_dispatch(module, func_id, nested_id, ctx);
+        }
+
+        match &instr {
+            Instr::Call(c) if ctx.fork_path.contains(&c.func) => {
+                let callee_ty = module.funcs.get(c.func).ty();
+                let callee_func = c.func;
+                emit_wrapped_call_guard_dispatch(
+                    module,
+                    func_id,
+                    &mut new_instrs,
+                    ctx,
+                    callee_ty,
+                    CallTarget::Direct(callee_func),
+                    loc,
+                );
+            }
+            Instr::CallIndirect(ci) => {
+                let ty = ci.ty;
+                let table = ci.table;
+                emit_wrapped_call_guard_dispatch(
+                    module,
+                    func_id,
+                    &mut new_instrs,
+                    ctx,
+                    ty,
+                    CallTarget::Indirect { table },
+                    loc,
+                );
+            }
+            _ => match side_effect_shape(&instr, module) {
+                Some(shape) => emit_gated_side_effect(
+                    module,
+                    func_id,
+                    &mut new_instrs,
+                    ctx.state_global,
+                    instr,
+                    loc,
+                    shape,
+                ),
+                None => new_instrs.push((instr, loc)),
+            },
+        }
+    }
+
+    local_mut(module, func_id).block_mut(seq_id).instrs = new_instrs;
+}
+
+fn emit_wrapped_call_guard_dispatch(
+    module: &mut Module,
+    func_id: FunctionId,
+    out: &mut Vec<(Instr, InstrLocId)>,
+    ctx: &mut CallWrapCtxGuardDispatch,
+    sig_ty: TypeId,
+    target: CallTarget,
+    loc: InstrLocId,
+) {
+    let (params, results): (Vec<ValType>, Vec<ValType>) = {
+        let ty = module.types.get(sig_ty);
+        (ty.params().to_vec(), ty.results().to_vec())
+    };
+
+    let mut arg_types: Vec<ValType> = params.clone();
+    if matches!(target, CallTarget::Indirect { .. }) {
+        arg_types.push(ValType::I32);
+    }
+
+    let arg_locals: Vec<LocalId> = arg_types.iter().map(|&ty| module.locals.add(ty)).collect();
+
+    let branch_ty = InstrSeqType::new(&mut module.types, &[], &results);
+
+    let call_idx = ctx.next_call_idx;
+    ctx.next_call_idx += 1;
+
+    let state_global = ctx.state_global;
+    let unwind_save_id = ctx.unwind_save_id;
+    let call_idx_local = ctx.call_idx_local;
+
+    let call_instr = match target {
+        CallTarget::Direct(func) => Instr::Call(Call { func }),
+        CallTarget::Indirect { table } => Instr::CallIndirect(CallIndirect {
+            ty: sig_ty,
+            table,
+        }),
+    };
+
+    let local = local_mut(module, func_id);
+    let then_id = local.builder_mut().dangling_instr_seq(branch_ty).id();
+    let else_id = local.builder_mut().dangling_instr_seq(branch_ty).id();
+
+    {
+        let then_seq = local.block_mut(then_id);
+        for &arg in &arg_locals {
+            push_instr(&mut then_seq.instrs, Instr::LocalGet(LocalGet { local: arg }));
+        }
+        then_seq.instrs.push((call_instr, loc));
+
+        push_instr(
+            &mut then_seq.instrs,
+            Instr::Const(Const {
+                value: Value::I32(call_idx as i32),
+            }),
+        );
+        push_instr(
+            &mut then_seq.instrs,
+            Instr::LocalSet(LocalSet {
+                local: call_idx_local,
+            }),
+        );
+
+        if !ctx.catch_handlers.is_empty() {
+            push_instr(
+                &mut then_seq.instrs,
+                Instr::Const(Const { value: Value::I32(0) }),
+            );
+            push_instr(
+                &mut then_seq.instrs,
+                Instr::LocalSet(LocalSet {
+                    local: ctx.catch_region_id_local,
+                }),
+            );
+            push_instr(
+                &mut then_seq.instrs,
+                Instr::Const(Const { value: Value::I32(0) }),
+            );
+            push_instr(
+                &mut then_seq.instrs,
+                Instr::LocalSet(LocalSet {
+                    local: ctx.exnref_slot_local,
+                }),
+            );
+        }
+        for info in ctx.catch_handlers {
+            let if_ty = InstrSeqType::Simple(None);
+            let ih_then = local.builder_mut().dangling_instr_seq(if_ty).id();
+            let ih_else = local.builder_mut().dangling_instr_seq(if_ty).id();
+            {
+                let s = &mut local.block_mut(ih_then).instrs;
+                push_instr(
+                    s,
+                    Instr::Const(Const {
+                        value: Value::I32(info.catch_region_id as i32),
+                    }),
+                );
+                push_instr(
+                    s,
+                    Instr::LocalSet(LocalSet {
+                        local: ctx.catch_region_id_local,
+                    }),
+                );
+                push_instr(
+                    s,
+                    Instr::Const(Const {
+                        value: Value::I32(info.exnref_slot as i32),
+                    }),
+                );
+                push_instr(
+                    s,
+                    Instr::LocalSet(LocalSet {
+                        local: ctx.exnref_slot_local,
+                    }),
+                );
+            }
+            push_instr(
+                &mut local.block_mut(then_id).instrs,
+                Instr::LocalGet(LocalGet {
+                    local: info.in_catch_local,
+                }),
+            );
+            push_instr(
+                &mut local.block_mut(then_id).instrs,
+                Instr::IfElse(IfElse {
+                    consequent: ih_then,
+                    alternative: ih_else,
+                }),
+            );
+        }
+
+        let then_seq = local.block_mut(then_id);
+        push_instr(
+            &mut then_seq.instrs,
+            Instr::GlobalGet(GlobalGet { global: state_global }),
+        );
+        push_instr(
+            &mut then_seq.instrs,
+            Instr::Const(Const {
+                value: Value::I32(runtime::STATE_UNWINDING),
+            }),
+        );
+        push_instr(
+            &mut then_seq.instrs,
+            Instr::Binop(Binop { op: BinaryOp::I32Eq }),
+        );
+        push_instr(
+            &mut then_seq.instrs,
+            Instr::BrIf(BrIf {
+                block: unwind_save_id,
+            }),
+        );
+    }
+
+    {
+        let else_seq = local.block_mut(else_id);
+        let mut needs_unreachable = false;
+        for &ty in &results {
+            match default_for_type(ty) {
+                Some(instr) => push_instr(&mut else_seq.instrs, instr),
+                None => {
+                    needs_unreachable = true;
+                    break;
+                }
+            }
+        }
+        if needs_unreachable {
+            else_seq.instrs.clear();
+            push_instr(&mut else_seq.instrs, Instr::Unreachable(Unreachable {}));
+        }
+    }
+
+    for &arg in arg_locals.iter().rev() {
+        push_instr(out, Instr::LocalSet(LocalSet { local: arg }));
+    }
+
+    // (state == NORMAL) || ((state == REWINDING) && (call_idx == N))
+    push_instr(out, Instr::GlobalGet(GlobalGet { global: state_global }));
+    push_instr(
+        out,
+        Instr::Const(Const {
+            value: Value::I32(runtime::STATE_NORMAL),
+        }),
+    );
+    push_instr(out, Instr::Binop(Binop { op: BinaryOp::I32Eq }));
+
+    push_instr(out, Instr::GlobalGet(GlobalGet { global: state_global }));
+    push_instr(
+        out,
+        Instr::Const(Const {
+            value: Value::I32(runtime::STATE_REWINDING),
+        }),
+    );
+    push_instr(out, Instr::Binop(Binop { op: BinaryOp::I32Eq }));
+
+    push_instr(
+        out,
+        Instr::LocalGet(LocalGet {
+            local: call_idx_local,
+        }),
+    );
+    push_instr(
+        out,
+        Instr::Const(Const {
+            value: Value::I32(call_idx as i32),
+        }),
+    );
+    push_instr(out, Instr::Binop(Binop { op: BinaryOp::I32Eq }));
+
+    push_instr(out, Instr::Binop(Binop { op: BinaryOp::I32And }));
+    push_instr(out, Instr::Binop(Binop { op: BinaryOp::I32Or }));
+
+    push_instr(
+        out,
+        Instr::IfElse(IfElse {
+            consequent: then_id,
+            alternative: else_id,
+        }),
+    );
+}
+
+// ---- Phase 4g: non-call side-effect gating --------------------------
+
+struct SideEffectShape {
+    params: Vec<ValType>,
+    results: Vec<ValType>,
+}
+
+fn side_effect_shape(instr: &Instr, module: &Module) -> Option<SideEffectShape> {
+    let ptr_ty = |mem: MemoryId| -> ValType {
+        if module.memories.get(mem).memory64 {
+            ValType::I64
+        } else {
+            ValType::I32
+        }
+    };
+
+    match instr {
+        Instr::LocalSet(ls) => Some(SideEffectShape {
+            params: vec![module.locals.get(ls.local).ty()],
+            results: vec![],
+        }),
+        Instr::LocalTee(lt) => {
+            let ty = module.locals.get(lt.local).ty();
+            Some(SideEffectShape {
+                params: vec![ty],
+                results: vec![ty],
+            })
+        }
+        Instr::GlobalSet(gs) => Some(SideEffectShape {
+            params: vec![module.globals.get(gs.global).ty],
+            results: vec![],
+        }),
+        Instr::Store(s) => {
+            let val_ty = match s.kind {
+                StoreKind::I32 { .. } | StoreKind::I32_8 { .. } | StoreKind::I32_16 { .. } => {
+                    ValType::I32
+                }
+                StoreKind::I64 { .. }
+                | StoreKind::I64_8 { .. }
+                | StoreKind::I64_16 { .. }
+                | StoreKind::I64_32 { .. } => ValType::I64,
+                StoreKind::F32 => ValType::F32,
+                StoreKind::F64 => ValType::F64,
+                StoreKind::V128 => ValType::V128,
+            };
+            Some(SideEffectShape {
+                params: vec![ptr_ty(s.memory), val_ty],
+                results: vec![],
+            })
+        }
+        Instr::MemoryGrow(mg) => {
+            let pt = ptr_ty(mg.memory);
+            Some(SideEffectShape {
+                params: vec![pt],
+                results: vec![pt],
+            })
+        }
+        Instr::MemoryFill(mf) => Some(SideEffectShape {
+            params: vec![ptr_ty(mf.memory), ValType::I32, ptr_ty(mf.memory)],
+            results: vec![],
+        }),
+        Instr::MemoryCopy(mc) => Some(SideEffectShape {
+            params: vec![ptr_ty(mc.dst), ptr_ty(mc.src), ptr_ty(mc.dst)],
+            results: vec![],
+        }),
+        Instr::MemoryInit(mi) => Some(SideEffectShape {
+            params: vec![ptr_ty(mi.memory), ValType::I32, ValType::I32],
+            results: vec![],
+        }),
+        Instr::DataDrop(_) | Instr::ElemDrop(_) => Some(SideEffectShape {
+            params: vec![],
+            results: vec![],
+        }),
+        Instr::TableSet(ts) => {
+            let table = module.tables.get(ts.table);
+            let idx_ty = if table.table64 {
+                ValType::I64
+            } else {
+                ValType::I32
+            };
+            Some(SideEffectShape {
+                params: vec![idx_ty, ValType::Ref(table.element_ty)],
+                results: vec![],
+            })
+        }
+        _ => None,
+    }
+}
+
+fn emit_gated_side_effect(
+    module: &mut Module,
+    func_id: FunctionId,
+    out: &mut Vec<(Instr, InstrLocId)>,
+    state_global: GlobalId,
+    instr: Instr,
+    loc: InstrLocId,
+    shape: SideEffectShape,
+) {
+    let branch_ty = InstrSeqType::new(&mut module.types, &shape.params, &shape.results);
+
+    let local = local_mut(module, func_id);
+    let then_id = local.builder_mut().dangling_instr_seq(branch_ty).id();
+    let else_id = local.builder_mut().dangling_instr_seq(branch_ty).id();
+
+    local.block_mut(then_id).instrs.push((instr, loc));
+
+    {
+        let else_seq = &mut local.block_mut(else_id).instrs;
+        for _ in 0..shape.params.len() {
+            push_instr(else_seq, Instr::Drop(Drop {}));
+        }
+        let mut fallback = false;
+        for &ty in &shape.results {
+            match default_for_type(ty) {
+                Some(d) => push_instr(else_seq, d),
+                None => {
+                    fallback = true;
+                    break;
+                }
+            }
+        }
+        if fallback {
+            else_seq.clear();
+            push_instr(else_seq, Instr::Unreachable(Unreachable {}));
+        }
+    }
+
+    push_instr(out, Instr::GlobalGet(GlobalGet { global: state_global }));
+    push_instr(
+        out,
+        Instr::Const(Const {
+            value: Value::I32(runtime::STATE_NORMAL),
+        }),
+    );
+    push_instr(out, Instr::Binop(Binop { op: BinaryOp::I32Eq }));
+    push_instr(
+        out,
+        Instr::IfElse(IfElse {
+            consequent: then_id,
+            alternative: else_id,
+        }),
+    );
+}
+
+// ---- Guard-dispatch preamble + postamble (shares frame layout) -----
+
+#[allow(clippy::too_many_arguments)]
+fn inject_frame_io_guard_dispatch(
+    module: &mut Module,
+    func_id: FunctionId,
+    runtime: &Runtime,
+    wrapper_id: InstrSeqId,
+    call_idx_local: LocalId,
+    frame_ptr_local: LocalId,
+    catch_region_id_local: LocalId,
+    exnref_slot_local: LocalId,
+    user_scalar_locals: &[(LocalId, ValType)],
+    ref_plan: &[RefLocalSlot],
+    aux_tables: &AuxTables,
+    frame_size: u32,
+    func_ordinal: u32,
+) {
+    let memory = first_memory(module);
+    let ptr_ty = runtime.buf_type;
+    let locals_with_offsets = assign_local_offsets(user_scalar_locals, LOCALS_START_OFFSET);
+
+    let result_types: Vec<ValType> = {
+        let ty_id = module.funcs.get(func_id).ty();
+        module.types.get(ty_id).results().to_vec()
+    };
+
+    let local = local_mut(module, func_id);
+
+    let preamble_then = local
+        .builder_mut()
+        .dangling_instr_seq(InstrSeqType::Simple(None))
+        .id();
+    let preamble_else = local
+        .builder_mut()
+        .dangling_instr_seq(InstrSeqType::Simple(None))
+        .id();
+
+    populate_preamble_then(
+        local,
+        preamble_then,
+        runtime,
+        memory,
+        ptr_ty,
+        frame_ptr_local,
+        call_idx_local,
+        catch_region_id_local,
+        exnref_slot_local,
+        &locals_with_offsets,
+        ref_plan,
+        aux_tables,
+        frame_size,
+    );
+
+    let mut postamble: Vec<(Instr, InstrLocId)> = Vec::new();
+    populate_postamble(
+        &mut postamble,
+        runtime,
+        memory,
+        ptr_ty,
+        frame_ptr_local,
+        call_idx_local,
+        catch_region_id_local,
+        exnref_slot_local,
+        &locals_with_offsets,
+        ref_plan,
+        aux_tables,
+        frame_size,
+        func_ordinal,
+        &result_types,
+    );
+
+    let entry_id = local.entry_block();
+    local.block_mut(entry_id).instrs.clear();
+
+    let entry_seq = &mut local.block_mut(entry_id).instrs;
+    push_instr(
+        entry_seq,
+        Instr::GlobalGet(GlobalGet {
+            global: runtime.state_global,
+        }),
+    );
+    push_instr(
+        entry_seq,
+        Instr::Const(Const {
+            value: Value::I32(runtime::STATE_REWINDING),
+        }),
+    );
+    push_instr(entry_seq, Instr::Binop(Binop { op: BinaryOp::I32Eq }));
+    push_instr(
+        entry_seq,
+        Instr::IfElse(IfElse {
+            consequent: preamble_then,
+            alternative: preamble_else,
+        }),
+    );
+    push_instr(entry_seq, Instr::Block(Block { seq: wrapper_id }));
+    entry_seq.extend(postamble);
 }

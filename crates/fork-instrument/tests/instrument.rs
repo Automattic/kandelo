@@ -1,15 +1,19 @@
-//! Tests for the switch-dispatch instrumentation transform.
+//! Tests for the fork-instrument transforms (switch-dispatch + guard-dispatch).
 //!
-//! The transform rewrites each fork-path function's body into an
-//! asyncify-style dispatch: REWIND jumps directly to the
-//! post-active-call-site label via a top-level `br_table`. These
-//! tests verify the structural invariants of the emitted shape and
-//! the stable runtime contract (preamble/postamble frame layout).
+//! Two transforms share the same fork-resume contract; the instrumenter
+//! picks one per function based on call-site topology:
 //!
-//! Per the MVP scope, a fork-path call nested inside a block, loop,
-//! if, or try_table body causes the tool to panic at instrument time.
-//! All fixtures in this file therefore place fork-path calls at the
-//! function body's top level.
+//! - **switch-dispatch**: used when every fork-path call lives at the
+//!   function body's top level. REWIND jumps directly to the resumed
+//!   call site via a top-level `br_table` (asyncify-style). Chunks
+//!   between calls run only on the NORMAL fall-through.
+//! - **guard-dispatch**: used when any fork-path call is nested inside
+//!   a block/loop/if/try_table. Each call site carries an in-place
+//!   if-else guard that fires on `(NORMAL) || (REWIND && call_idx ==
+//!   N)`; Phase 4g gates state-mutating ops during REWIND replay.
+//!
+//! Both schemes share the same frame layout and the entry-block shape
+//! `[preamble-ifelse, Block($unwind_save), postamble]`.
 
 use std::collections::HashSet;
 
@@ -1177,15 +1181,18 @@ fn collect_try_table_bodies(f: &LocalFunction, seq: InstrSeqId, out: &mut Vec<In
     }
 }
 
-// --- MVP-limitation diagnostics --------------------------------------
+// --- Guard-dispatch scheme (used for nested fork-path calls) ---------
+//
+// Switch-dispatch requires fork-path calls to live at the function's
+// top level (wasm `br_table` can't land inside a nested block from
+// outside). When the tool detects a nested fork-path call it emits
+// guard-dispatch instead: each call site carries an in-place if-else
+// guard + Phase 4g state-op gates. These tests pin down that the
+// guard-dispatch path produces valid wasm for the patterns real
+// programs (bash/dash/nginx/PHP/Erlang/Ruby) rely on.
 
 #[test]
-#[should_panic(expected = "nested at depth")]
-fn nested_fork_call_panics() {
-    // A fork-path call inside a block is not supported by the MVP
-    // switch-dispatch transform — it would require the top-level
-    // br_table to land inside the nested block, which wasm semantics
-    // forbid.
+fn call_in_nested_block_uses_guard_dispatch() {
     let wat = r#"
         (module
           (import "kernel" "kernel_fork" (func $fork (result i32)))
@@ -1194,12 +1201,34 @@ fn nested_fork_call_panics() {
               call $fork))
           (memory 1))
     "#;
-    let _ = instrument_wat(wat);
+    let bytes = instrument_wat(wat);
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+    let caller = func_by_name(&module, "caller");
+    let f = local_func(&module, caller);
+
+    // Guard-dispatch: no top-level br_table (switch-dispatch would
+    // have emitted one).
+    assert_eq!(
+        count_br_tables(f),
+        0,
+        "nested-call functions should use guard-dispatch (no br_table)",
+    );
+    // Guard-dispatch wraps each fork-path call in an in-place if-else guard.
+    let mut ifelse_count = 0usize;
+    walk_all(f, f.entry_block(), &mut |_, instr| {
+        if matches!(instr, Instr::IfElse(_)) {
+            ifelse_count += 1;
+        }
+    });
+    assert!(
+        ifelse_count >= 2,
+        "guard-dispatch emits preamble if-else + per-call if-else guards (>=2): {ifelse_count}",
+    );
 }
 
 #[test]
-#[should_panic(expected = "nested at depth")]
-fn fork_inside_try_body_panics() {
+fn fork_inside_try_body_uses_guard_dispatch() {
     let wat = r#"
         (module
           (import "kernel" "kernel_fork" (func $fork (result i32)))
@@ -1214,5 +1243,275 @@ fn fork_inside_try_body_panics() {
             i32.const 0)
           (memory 1))
     "#;
-    let _ = instrument_wat(wat);
+    let bytes = instrument_wat(wat);
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+    let caller = func_by_name(&module, "caller");
+    let f = local_func(&module, caller);
+
+    // Under guard-dispatch, Phase 6c rewind-throw stub is prepended to the
+    // try_table body and Phase 6d wraps the try_table in
+    // $outer/$capture.
+    let mut bodies = Vec::new();
+    collect_try_table_bodies(f, f.entry_block(), &mut bodies);
+    assert_eq!(bodies.len(), 1, "fixture has exactly one try_table");
+    let body_kinds = seq_kinds(&module, caller, bodies[0]);
+    // Rewind-throw stub prefix: GlobalGet, Const, Binop, LocalGet,
+    // Const, Binop, Binop, IfElse.
+    assert!(
+        body_kinds.len() >= 8,
+        "try_table body too short for Phase 6c stub: {body_kinds:?}",
+    );
+    assert_eq!(
+        &body_kinds[..8],
+        &[
+            InstrKind::GlobalGet,
+            InstrKind::Const,
+            InstrKind::Binop,
+            InstrKind::LocalGet,
+            InstrKind::Const,
+            InstrKind::Binop,
+            InstrKind::Binop,
+            InstrKind::IfElse,
+        ],
+        "Phase 6c rewind-throw stub expected at try_table body head: {body_kinds:?}",
+    );
+
+    // No top-level br_table — guard-dispatch.
+    assert_eq!(
+        count_br_tables(f),
+        0,
+        "fork-in-try-body should use guard-dispatch (no br_table)",
+    );
+
+    // The exnref stash is injected (Phase 6a).
+    assert!(
+        module
+            .tables
+            .iter()
+            .any(|t| t.name.as_deref() == Some("_wpk_fork_exnref_stash")),
+        "Phase 6a must inject exnref stash for a fork-path try_table",
+    );
+}
+
+#[test]
+fn fork_inside_loop_uses_guard_dispatch() {
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (func $caller (export "caller") (result i32)
+            (local $i i32)
+            (loop $l
+              (local.set $i (i32.add (local.get $i) (i32.const 1)))
+              (br_if $l (i32.eqz (call $fork))))
+            (local.get $i))
+          (memory 1))
+    "#;
+    let bytes = instrument_wat(wat);
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+    let caller = func_by_name(&module, "caller");
+    let f = local_func(&module, caller);
+
+    assert_eq!(
+        count_br_tables(f),
+        0,
+        "fork-in-loop should use guard-dispatch",
+    );
+}
+
+#[test]
+fn fork_in_both_top_level_and_nested_uses_guard_dispatch() {
+    // If any call is nested, the whole function uses guard-dispatch — the top
+    // level call doesn't get its own switch-dispatch treatment.
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (func $caller (export "caller") (result i32)
+            call $fork
+            drop
+            (block (result i32)
+              call $fork))
+          (memory 1))
+    "#;
+    let bytes = instrument_wat(wat);
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+    let caller = func_by_name(&module, "caller");
+    let f = local_func(&module, caller);
+
+    assert_eq!(
+        count_br_tables(f),
+        0,
+        "mixed top+nested fork calls should use guard-dispatch (no br_table)",
+    );
+    let mut ifelse_count = 0usize;
+    walk_all(f, f.entry_block(), &mut |_, instr| {
+        if matches!(instr, Instr::IfElse(_)) {
+            ifelse_count += 1;
+        }
+    });
+    // preamble + 2 per-call gates = at least 3 IfElse instructions.
+    assert!(
+        ifelse_count >= 3,
+        "guard-dispatch emits one IfElse per call + preamble (>=3): {ifelse_count}",
+    );
+}
+
+// --- Phase 6 (guard-dispatch only) tests -------------------------------------
+//
+// These pin down the Phase 6 plumbing that guard-dispatch uses for
+// `try_table` catch-handler reconstruction. The fixtures all have
+// nested fork-path calls and therefore exercise guard-dispatch.
+
+const FIXTURE_FORK_IN_TRY_BODY: &str = r#"
+    (module
+      (import "kernel" "kernel_fork" (func $fork (result i32)))
+      (tag $exn)
+      (func $caller (export "caller") (result i32)
+        (block $handler (result (ref null exn))
+          (try_table (result (ref null exn)) (catch_ref $exn $handler)
+            call $fork
+            drop
+            ref.null exn))
+        drop
+        i32.const 0)
+      (memory 1))
+"#;
+
+const FIXTURE_TWO_TRY_TABLES: &str = r#"
+    (module
+      (import "kernel" "kernel_fork" (func $fork (result i32)))
+      (tag $exn)
+      (func $caller (export "caller") (result i32)
+        (block $h1 (result (ref null exn))
+          (try_table (result (ref null exn)) (catch_ref $exn $h1)
+            call $fork
+            drop
+            ref.null exn))
+        drop
+        (block $h2 (result (ref null exn))
+          (try_table (result (ref null exn)) (catch_ref $exn $h2)
+            call $fork
+            drop
+            ref.null exn))
+        drop
+        i32.const 0)
+      (memory 1))
+"#;
+
+#[test]
+fn distinct_try_tables_get_sequential_region_ids() {
+    let bytes = instrument_wat(FIXTURE_TWO_TRY_TABLES);
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+
+    let caller = func_by_name(&module, "caller");
+    let f = local_func(&module, caller);
+
+    let mut bodies = Vec::new();
+    collect_try_table_bodies(f, f.entry_block(), &mut bodies);
+    assert_eq!(bodies.len(), 2, "fixture has two try_tables");
+
+    // The Phase 6c stub's `i32.const K` (region id) is at index 4 of
+    // each body's instructions (after GlobalGet, Const, Binop,
+    // LocalGet). Different region ids identify different try_tables.
+    let mut region_ids = Vec::new();
+    for body in &bodies {
+        let seq = f.block(*body);
+        let const_instr = &seq.instrs[4].0;
+        let v = match const_instr {
+            Instr::Const(c) => match c.value {
+                ir::Value::I32(v) => v,
+                _ => panic!("expected i32 const, got {:?}", c.value),
+            },
+            other => panic!("expected Const, got {other:?}"),
+        };
+        region_ids.push(v);
+    }
+    assert_eq!(
+        region_ids,
+        vec![1, 2],
+        "sibling try_tables should get region_ids 1, 2 in lexical order",
+    );
+
+    let stash = module
+        .tables
+        .iter()
+        .find(|t| t.name.as_deref() == Some("_wpk_fork_exnref_stash"))
+        .expect("stash must be injected");
+    assert_eq!(stash.initial, 2);
+}
+
+#[test]
+fn catch_ref_clause_is_rewritten_with_capture_block() {
+    let bytes = instrument_wat(FIXTURE_FORK_IN_TRY_BODY);
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+
+    let caller = func_by_name(&module, "caller");
+    let f = local_func(&module, caller);
+
+    // The try_table's catch_ref clause should now target the injected
+    // $capture block (not the original $handler).
+    let mut try_table: Option<ir::TryTable> = None;
+    walk_all(f, f.entry_block(), &mut |_, instr| {
+        if try_table.is_none() {
+            if let Instr::TryTable(tt) = instr {
+                try_table = Some(tt.clone());
+            }
+        }
+    });
+    let try_table = try_table.expect("try_table should still exist after 6d");
+
+    let retargeted = try_table.catches.iter().any(|c| matches!(
+        c,
+        ir::TryTableCatch::CatchRef { .. }
+    ));
+    assert!(
+        retargeted,
+        "try_table should still have a CatchRef clause: {:?}",
+        try_table.catches,
+    );
+}
+
+#[test]
+fn plain_catch_only_try_table_is_not_6d_rewritten() {
+    // Plain `catch` clauses (no exnref) are not redirected by Phase
+    // 6d — fork-from-catch-without-exnref is unsupported. The
+    // try_table still receives a 6c rewind-throw stub at its body,
+    // but its catch clause remains pointing at the original handler.
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (tag $exn)
+          (func $caller (export "caller") (result i32)
+            (block $h
+              (try_table (catch $exn $h)
+                call $fork
+                drop))
+            i32.const 0)
+          (memory 1))
+    "#;
+    let bytes = instrument_wat(wat);
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+
+    let caller = func_by_name(&module, "caller");
+    let f = local_func(&module, caller);
+
+    let mut try_table: Option<ir::TryTable> = None;
+    walk_all(f, f.entry_block(), &mut |_, instr| {
+        if try_table.is_none() {
+            if let Instr::TryTable(tt) = instr {
+                try_table = Some(tt.clone());
+            }
+        }
+    });
+    let try_table = try_table.expect("try_table should still exist");
+
+    assert!(
+        try_table.catches.iter().all(|c| matches!(c, ir::TryTableCatch::Catch { .. })),
+        "plain-catch-only try_tables should not be retargeted by Phase 6d",
+    );
 }
