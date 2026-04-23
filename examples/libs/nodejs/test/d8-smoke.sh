@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# examples/libs/nodejs/test/d8-smoke.sh — Phase 5 (revised) d8 smoke.
+set -euo pipefail
+D8="${D8:-$(pwd)/examples/libs/nodejs/build/node/out/Release/d8}"
+if [ ! -x "$D8" ]; then
+  echo "error: d8 not found or not executable at $D8"
+  echo "Run 'bash examples/libs/nodejs/build-v8-host-phase5.sh' first."
+  exit 1
+fi
+
+pass=0; fail=0
+check() {
+  local source="$1" expected="$2"
+  local actual
+  # d8 writes the "experimental features" banner to stderr; drop it so
+  # the probe only compares real program output.
+  actual="$("$D8" -e "$source" 2>/dev/null | tr -d '\r')"
+  if [ "$actual" = "$expected" ]; then
+    echo "[pass] $source -> $actual"
+    pass=$((pass+1))
+  else
+    echo "[FAIL] $source"
+    echo "       expected: $expected"
+    echo "       actual:   $actual"
+    fail=$((fail+1))
+  fi
+}
+
+# Basic interpreter (sanity).
+check 'print(1+2)'                       '3'
+check 'print("hi")'                      'hi'
+check 'print([1,2,3].length)'            '3'
+
+# ArrayIsArray — the Phase 5 success gate.
+check 'print(Array.isArray([1,2,3]))'    'true'
+check 'print(Array.isArray([]))'         'true'
+check 'print(Array.isArray(42))'         'false'
+check 'print(Array.isArray("str"))'      'false'
+check 'print(Array.isArray({}))'         'false'
+check 'print(Array.isArray(null))'       'false'
+check 'print(Array.isArray(undefined))'  'false'
+
+echo
+echo "d8 smoke: $pass passed, $fail failed"
+[ "$fail" = 0 ]
