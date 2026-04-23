@@ -38,6 +38,26 @@ REGRESSION_EXPECTED_FAIL=(
     tls_get_new-dtv             # requires dlopen TLS (dynamic TLS not supported)
 )
 
+# Tests skipped entirely (not built, not run). Use for tests whose outcome
+# is non-deterministic between runs or that exhaust CI runner memory.
+# Format: "category/name" (e.g. "regression/raise-race").
+SKIP_TESTS=(
+    # Forks 100+ Node worker processes via signal handlers. On a 16GB
+    # ubuntu-latest runner this OOMs and SIGTERMs the outer bash script
+    # before the per-test timeout fires, aborting the whole suite. The
+    # underlying kernel behavior is correct (PR #332 closed the XFAIL on
+    # dev hardware); only CI runner memory is the issue.
+    "regression/raise-race"
+)
+
+is_skipped() {
+    local full="$1"  # "category/name"
+    for s in ${SKIP_TESTS[@]+"${SKIP_TESTS[@]}"}; do
+        [ "$s" = "$full" ] && return 0
+    done
+    return 1
+}
+
 # ── Helper: check if a test is in an expected-failure list ──
 
 is_expected_fail() {
@@ -377,6 +397,12 @@ for category in "${CATEGORIES[@]}"; do
 
     for test_name in "${tests[@]}"; do
         TOTAL=$((TOTAL + 1))
+        if is_skipped "${category}/${test_name}"; then
+            echo "SKIP  ${category}/${test_name} (in SKIP_TESTS)"
+            RESULTS+=("SKIP  ${category}/${test_name}")
+            SKIP=$((SKIP + 1))
+            continue
+        fi
         run_test "$category" "$test_name"
     done
 done
