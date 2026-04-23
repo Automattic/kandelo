@@ -39,6 +39,32 @@ fn waitpid_class_non_fork_path_call_skipped_on_rewind() {
 }
 
 #[test]
+fn top_level_carryover_routes_to_guard_dispatch() {
+    // Regression for a real-world shape in dash's `cmdputs`: LLVM
+    // emits a top-level fork-path call whose address operand was
+    // pushed *before* the call's args and is consumed *after* the
+    // call returns. Switch-dispatch can't handle the operand-stack
+    // carryover (its POST_K blocks are 0 → 0), so the function
+    // must route to guard-dispatch instead.
+    let wat = include_str!("fixtures/switch_dispatch/top_level_carryover.wat");
+    let input = wat::parse_str(wat).expect("wat parse");
+    let output = instrument(&input, &Options::default()).expect("instrument");
+    // The critical invariant: output must validate. Switch-dispatch
+    // would produce invalid wasm ("type mismatch at end of block").
+    validate(&output);
+    let module = Module::from_buffer(&output).expect("walrus parse");
+
+    // A second, more specific invariant: `main` must not carry a
+    // top-level `br_table` dispatch — its presence would indicate
+    // switch-dispatch was attempted despite the carryover.
+    assert!(
+        !has_top_level_br_table_dispatch(&module, "main"),
+        "`main` must use guard-dispatch (not switch-dispatch) when a \
+         top-level fork-path call has an operand-stack carryover"
+    );
+}
+
+#[test]
 fn posix_spawn_class_shadow_stack_not_duplicated() {
     let wat = include_str!("fixtures/switch_dispatch/posix_spawn_class.wat");
     let input = wat::parse_str(wat).expect("wat parse");

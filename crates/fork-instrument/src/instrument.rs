@@ -233,7 +233,19 @@ fn instrument_one_function(
     // Catch-handler bodies live inside a nested try_table, so
     // fork-from-catch is routed to guard-dispatch by the nested-call
     // check. No separate detector needed.
-    if has_nested_fork_calls(module, func_id, fork_path) {
+    //
+    // Switch-dispatch additionally requires that each top-level
+    // fork-path call site leave the operand stack with *only* that
+    // call's arguments — any value pushed before the args and consumed
+    // after the call (a "carryover") cannot be expressed in switch-
+    // dispatch's `$POST_K` block shape, which is 0 → 0. LLVM emits
+    // carryovers routinely for expressions like `*(sp + K) = call(...)`
+    // where `sp` is pushed, then the call's args, then i32.store. When
+    // we detect a carryover, fall back to guard-dispatch, whose per-
+    // call `if-else` shim preserves the enclosing stack.
+    if has_nested_fork_calls(module, func_id, fork_path)
+        || has_top_level_stack_carryovers(module, func_id, fork_path)
+    {
         instrument_one_function_guard_dispatch(
             module,
             func_id,
@@ -562,6 +574,264 @@ fn has_nested_fork_calls(
     let mut found = false;
     walk(local, local.entry_block(), fork_path, 0, &mut found);
     found
+}
+
+/// Returns true iff any top-level fork-path call site in `func_id`
+/// has operand-stack values "carried over" across the call — values
+/// pushed before the call's args that remain on the stack at the call
+/// point. LLVM emits this shape routinely for expressions like
+/// `*(sp + K) = call(args...)`: `sp` is pushed first, then the call's
+/// args, then the call runs, then i32.store consumes [sp, ret_val].
+///
+/// Switch-dispatch cannot express carryovers: its `$POST_K` block is
+/// typed Simple(None) (0 params, 0 results), so a non-empty stack at
+/// the block's close fails validation. Functions with carryovers are
+/// routed to guard-dispatch, whose per-call if-else shim preserves the
+/// enclosing operand stack intact.
+///
+/// The walk is conservative: if we encounter an instruction whose
+/// stack effect we can't statically determine (wasm-GC ops, legacy
+/// exception `try`, …), we report `true` to force guard-dispatch.
+/// Likewise for stack underflows — which shouldn't happen in valid
+/// wasm, but we defensively route to guard-dispatch if the input is
+/// malformed in a way we can't analyze.
+fn has_top_level_stack_carryovers(
+    module: &Module,
+    func_id: FunctionId,
+    fork_path: &HashSet<FunctionId>,
+) -> bool {
+    let local = match &module.funcs.get(func_id).kind {
+        FunctionKind::Local(l) => l,
+        _ => return false,
+    };
+    let entry = local.entry_block();
+
+    let mut depth: usize = 0;
+
+    for (instr, _) in &local.block(entry).instrs {
+        // Check for a fork-path call first — partitioning will split
+        // here, so we need `depth` to equal the call's expected arity.
+        let expected_args: Option<usize> = match instr {
+            Instr::Call(c) if fork_path.contains(&c.func) => {
+                Some(module.types.get(module.funcs.get(c.func).ty()).params().len())
+            }
+            Instr::CallIndirect(ci) => {
+                // +1 for the table index on top of the signature's params.
+                Some(module.types.get(ci.ty).params().len() + 1)
+            }
+            _ => None,
+        };
+        if let Some(expected) = expected_args {
+            if depth > expected {
+                return true;
+            }
+        }
+
+        match top_level_stack_effect(module, local, instr) {
+            StackEffect::Delta { pops, pushes } => {
+                if depth < pops {
+                    // Underflow — input wasm is ill-formed from our
+                    // perspective, or we mis-analyzed an instruction.
+                    // Either way, fall back to guard-dispatch.
+                    return true;
+                }
+                depth = depth - pops + pushes;
+            }
+            StackEffect::Terminator => {
+                // Remaining instructions in this seq are unreachable;
+                // any fork-path call there is dead code.
+                return false;
+            }
+            StackEffect::Unknown => {
+                // Can't analyze — play safe.
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+enum StackEffect {
+    Delta { pops: usize, pushes: usize },
+    Terminator,
+    Unknown,
+}
+
+/// Compute the stack effect of a single instruction assuming it is
+/// reachable (i.e., not sitting in a polymorphic post-terminator
+/// region). Only used by `has_top_level_stack_carryovers`.
+fn top_level_stack_effect(
+    module: &Module,
+    local: &LocalFunction,
+    instr: &Instr,
+) -> StackEffect {
+    use StackEffect::{Delta, Terminator, Unknown};
+
+    let block_params_results = |seq_id: InstrSeqId| -> (usize, usize) {
+        let seq = local.block(seq_id);
+        match seq.ty {
+            InstrSeqType::Simple(None) => (0, 0),
+            InstrSeqType::Simple(Some(_)) => (0, 1),
+            InstrSeqType::MultiValue(ty_id) => {
+                let t = module.types.get(ty_id);
+                (t.params().len(), t.results().len())
+            }
+        }
+    };
+
+    match instr {
+        // --- Pure producers (0 → 1) ---
+        Instr::Const(_)
+        | Instr::LocalGet(_)
+        | Instr::GlobalGet(_)
+        | Instr::MemorySize(_)
+        | Instr::TableSize(_)
+        | Instr::RefNull(_)
+        | Instr::RefFunc(_) => Delta { pops: 0, pushes: 1 },
+
+        // --- Pure consumers (1 → 0) ---
+        Instr::LocalSet(_) | Instr::GlobalSet(_) | Instr::Drop(_) => {
+            Delta { pops: 1, pushes: 0 }
+        }
+
+        // --- 1 → 1 ---
+        Instr::LocalTee(_)
+        | Instr::Unop(_)
+        | Instr::Load(_)
+        | Instr::LoadSimd(_)
+        | Instr::MemoryGrow(_)
+        | Instr::TableGet(_)
+        | Instr::RefIsNull(_)
+        | Instr::RefAsNonNull(_)
+        | Instr::RefI31(_)
+        | Instr::I31GetS(_)
+        | Instr::I31GetU(_)
+        | Instr::RefTest(_)
+        | Instr::RefCast(_)
+        | Instr::AnyConvertExtern(_)
+        | Instr::ExternConvertAny(_) => Delta { pops: 1, pushes: 1 },
+
+        // --- 2 → 0 ---
+        Instr::Store(_) | Instr::TableSet(_) => Delta { pops: 2, pushes: 0 },
+
+        // --- 2 → 1 ---
+        Instr::Binop(_)
+        | Instr::RefEq(_)
+        | Instr::TableGrow(_)
+        | Instr::AtomicRmw(_)
+        | Instr::AtomicNotify(_)
+        | Instr::I8x16Swizzle { .. }
+        | Instr::I8x16Shuffle { .. } => Delta { pops: 2, pushes: 1 },
+
+        // --- 3 → 0 ---
+        Instr::MemoryFill(_)
+        | Instr::MemoryCopy(_)
+        | Instr::MemoryInit(_)
+        | Instr::TableFill(_)
+        | Instr::TableInit(_)
+        | Instr::TableCopy(_) => Delta { pops: 3, pushes: 0 },
+
+        // --- 3 → 1 ---
+        Instr::TernOp(_)
+        | Instr::Select(_)
+        | Instr::Cmpxchg(_)
+        | Instr::AtomicWait(_)
+        | Instr::V128Bitselect { .. } => Delta { pops: 3, pushes: 1 },
+
+        // --- 0 → 0 ---
+        Instr::DataDrop(_) | Instr::ElemDrop(_) | Instr::AtomicFence(_) => {
+            Delta { pops: 0, pushes: 0 }
+        }
+
+        // --- 4 → 2 ---
+        Instr::I64Add128 { .. }
+        | Instr::I64Sub128 { .. }
+        | Instr::I64MulWideS { .. }
+        | Instr::I64MulWideU { .. } => Delta { pops: 4, pushes: 2 },
+
+        // --- Partial terminators / branch-with-value-passthrough ---
+        // br_if pops its condition; the target's expected args remain
+        // on the stack on fall-through, so static delta is just pop 1.
+        Instr::BrIf(_) => Delta { pops: 1, pushes: 0 },
+        // br_on_null / br_on_non_null / br_on_cast / br_on_cast_fail:
+        // all pop 1 ref and push back on the non-branching path.
+        Instr::BrOnNull(_)
+        | Instr::BrOnNonNull(_)
+        | Instr::BrOnCast(_)
+        | Instr::BrOnCastFail(_) => Delta { pops: 1, pushes: 1 },
+
+        // --- Nested blocks ---
+        Instr::Block(b) => {
+            let (p, r) = block_params_results(b.seq);
+            Delta { pops: p, pushes: r }
+        }
+        Instr::Loop(l) => {
+            let (p, r) = block_params_results(l.seq);
+            Delta { pops: p, pushes: r }
+        }
+        Instr::IfElse(ie) => {
+            let (p, r) = block_params_results(ie.consequent);
+            // +1 for the branch condition consumed by `if`.
+            Delta { pops: p + 1, pushes: r }
+        }
+        Instr::TryTable(t) => {
+            let (p, r) = block_params_results(t.seq);
+            Delta { pops: p, pushes: r }
+        }
+
+        // --- Function calls ---
+        Instr::Call(c) => {
+            let t = module.types.get(module.funcs.get(c.func).ty());
+            Delta { pops: t.params().len(), pushes: t.results().len() }
+        }
+        Instr::CallIndirect(ci) => {
+            let t = module.types.get(ci.ty);
+            Delta { pops: t.params().len() + 1, pushes: t.results().len() }
+        }
+        Instr::CallRef(cr) => {
+            let t = module.types.get(cr.ty);
+            Delta { pops: t.params().len() + 1, pushes: t.results().len() }
+        }
+
+        // --- Terminators: stack becomes polymorphic. Remaining instrs
+        //     in the same seq are unreachable; stop walking. ---
+        Instr::Return(_)
+        | Instr::Unreachable(_)
+        | Instr::Br(_)
+        | Instr::BrTable(_)
+        | Instr::ReturnCall(_)
+        | Instr::ReturnCallIndirect(_)
+        | Instr::ReturnCallRef(_)
+        | Instr::Throw(_)
+        | Instr::ThrowRef(_)
+        | Instr::Rethrow(_) => Terminator,
+
+        // --- Wasm-GC and legacy EH: not produced by our LLVM toolchain
+        //     today. Report Unknown so we conservatively route to
+        //     guard-dispatch if any ever appears. ---
+        Instr::StructNew(_)
+        | Instr::StructNewDefault(_)
+        | Instr::StructGet(_)
+        | Instr::StructGetS(_)
+        | Instr::StructGetU(_)
+        | Instr::StructSet(_)
+        | Instr::ArrayNew(_)
+        | Instr::ArrayNewDefault(_)
+        | Instr::ArrayNewFixed(_)
+        | Instr::ArrayNewData(_)
+        | Instr::ArrayNewElem(_)
+        | Instr::ArrayGet(_)
+        | Instr::ArrayGetS(_)
+        | Instr::ArrayGetU(_)
+        | Instr::ArraySet(_)
+        | Instr::ArrayLen(_)
+        | Instr::ArrayFill(_)
+        | Instr::ArrayCopy(_)
+        | Instr::ArrayInitData(_)
+        | Instr::ArrayInitElem(_)
+        | Instr::Try { .. } => Unknown,
+    }
 }
 
 /// Split the original entry body at top-level fork-path calls.
