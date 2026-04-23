@@ -55,6 +55,15 @@ trap 'rm -rf "${OUT_DIR}" "${STAGE_ABS}"' EXIT
 FILTER="${1:-}"
 FIXTURES=()        # absolute source paths (worktree)
 FIXTURE_RELS=()    # v8-root-relative paths (for torque CLI + output path)
+# Track v8-root-relative paths to drop from STOCK_TQ: a fixture whose
+# real path is already under deps/v8/ (V8-tree fixture, e.g. array-isarray.tq
+# symlinked from src/builtins/) must REPLACE — not duplicate — its stock
+# counterpart in the torque input set, otherwise torque errors with
+# "cannot redeclare" for the builtin/namespace.
+STOCK_DROP=()
+# Canonicalize deps/v8 so string-prefix matching against symlink-resolved
+# fixture paths (which are canonical) works reliably.
+V8_ROOT_ABS="$(cd "${NODE_SRC}/deps/v8" && pwd -P)"
 for tq in "${FIX_DIR}"/*.tq; do
   [ -f "${tq}" ] || continue
   name="$(basename "${tq}" .tq)"
@@ -63,31 +72,73 @@ for tq in "${FIX_DIR}"/*.tq; do
   rel="${STAGE_REL}/${name}.tq"
   FIXTURE_RELS+=("${rel}")
   ln -sf "${tq}" "${STAGE_ABS}/${name}.tq"
+  # If the fixture's real path is inside deps/v8/, record its v8-relative
+  # path so we can drop the stock entry below.
+  real="$(cd "$(dirname "${tq}")" && pwd -P)/$(basename "${tq}")"
+  # Resolve any symlink-in-the-name one level; we only expect one hop.
+  if [ -L "${tq}" ]; then
+    link_target="$(readlink "${tq}")"
+    case "${link_target}" in
+      /*) real="${link_target}" ;;
+      *)  real="$(cd "$(dirname "${tq}")/$(dirname "${link_target}")" && pwd -P)/$(basename "${link_target}")" ;;
+    esac
+  fi
+  case "${real}" in
+    "${V8_ROOT_ABS}/"*)
+      STOCK_DROP+=("${real#${V8_ROOT_ABS}/}")
+      ;;
+  esac
 done
 [ ${#FIXTURES[@]} -gt 0 ] || { echo "No fixtures matching '${FILTER}'"; exit 1; }
+
+# Drop stock entries that collide with V8-tree fixtures.
+if [ ${#STOCK_DROP[@]} -gt 0 ]; then
+  NEW_STOCK=()
+  for s in "${STOCK_TQ[@]}"; do
+    skip=0
+    for d in "${STOCK_DROP[@]}"; do
+      if [ "${s}" = "${d}" ]; then skip=1; break; fi
+    done
+    [ "${skip}" -eq 0 ] && NEW_STOCK+=("${s}")
+  done
+  STOCK_TQ=("${NEW_STOCK[@]}")
+fi
 
 # Pre-create output parent dirs (torque doesn't mkdir -p).
 for f in "${STOCK_TQ[@]}" "${FIXTURE_RELS[@]}"; do
   mkdir -p "${OUT_DIR}/$(dirname "${f}")"
 done
 
-# Build whitelist CSV by scanning fixtures for any TorqueCcTest_<Name>
-# token. This is intentionally liberal: multi-line declarations like
+# Build whitelist CSV by scanning fixtures for builtin names. Two
+# patterns:
+#   1. Any TorqueCcTest_<Name> token — covers the synthetic Phase-2/3/4
+#      fixtures and any helper builtins they reference.
+#   2. `builtin <CapitalName>` declarations — covers V8-tree fixtures
+#      (e.g. array-isarray.tq declares `javascript builtin ArrayIsArray`).
+#      Restricted to capitalized identifiers to avoid matching prose
+#      like "the builtin caller" in comments.
+# This is intentionally liberal: multi-line declarations like
 # `builtin\n    TorqueCcTest_Foo(...)` would be missed by a stricter
 # `builtin TorqueCcTest_...` match. Over-including a name that isn't
 # actually a builtin is harmless — torque ignores unmatched whitelist
 # entries. Fixtures MAY define helper builtins (e.g. a CallBuiltin test
-# needs both the caller and the callee on the whitelist); all
-# TorqueCcTest_* identifiers in a fixture get included automatically.
+# needs both the caller and the callee on the whitelist); all such
+# identifiers in a fixture get included automatically.
 WHITELIST=()
 for tq in "${FIXTURES[@]}"; do
   while IFS= read -r entry; do
     WHITELIST+=("${entry}")
-  done < <(grep -oE 'TorqueCcTest_[A-Za-z0-9_]+' "${tq}" | sort -u)
+  done < <(
+    # `grep … || true` lets each pattern match zero lines without
+    # triggering set -e / pipefail — a fixture may contain only
+    # TorqueCcTest_* names, only a `builtin Foo` declaration, or both.
+    { grep -oE 'TorqueCcTest_[A-Za-z0-9_]+' "${tq}" || true;
+      { grep -oE 'builtin[[:space:]]+[A-Z][A-Za-z0-9_]+' "${tq}" || true; } \
+        | awk '{print $2}'; } | sort -u)
 done
 OLD_IFS="${IFS}"
 IFS=,
-WHITELIST_CSV="${WHITELIST[*]}"
+WHITELIST_CSV="${WHITELIST[*]:-}"
 IFS="${OLD_IFS}"
 
 # Run torque over stock + staged fixtures.
