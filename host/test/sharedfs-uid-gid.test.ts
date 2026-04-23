@@ -11,4 +11,26 @@ describe("SharedFS uid/gid", () => {
     expect(st.uid).toBe(0);
     expect(st.gid).toBe(0);
   });
+
+  it("chown changes uid/gid", () => {
+    const sab = new SharedArrayBuffer(1024 * 1024);
+    const fs = MemoryFileSystem.create(sab);
+    const fd = fs.open("/hello", 0o1101, 0o644);
+    fs.close(fd);
+    fs.chown("/hello", 1000, 1000);
+    const st = fs.stat("/hello");
+    expect(st.uid).toBe(1000);
+    expect(st.gid).toBe(1000);
+  });
+
+  it("fchown changes uid/gid via fd", () => {
+    const sab = new SharedArrayBuffer(1024 * 1024);
+    const fs = MemoryFileSystem.create(sab);
+    const fd = fs.open("/hello", 0o1101, 0o644);
+    fs.fchown(fd, 500, 600);
+    fs.close(fd);
+    const st = fs.stat("/hello");
+    expect(st.uid).toBe(500);
+    expect(st.gid).toBe(600);
+  });
 });

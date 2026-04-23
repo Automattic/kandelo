@@ -560,7 +560,9 @@ export class MemoryFileSystem implements FileSystemBackend {
   fchmod(handle: number, mode: number): void {
     this.fs.fchmod(handle, mode);
   }
-  fchown(_handle: number, _uid: number, _gid: number): void {}
+  fchown(handle: number, uid: number, gid: number): void {
+    this.fs.fchown(handle, uid, gid);
+  }
 
   stat(path: string): StatResult {
     const result = this.adaptStat(this.fs.stat(path));
@@ -646,7 +648,9 @@ export class MemoryFileSystem implements FileSystemBackend {
   chmod(path: string, mode: number): void {
     this.fs.chmod(path, mode);
   }
-  chown(_path: string, _uid: number, _gid: number): void {}
+  chown(path: string, uid: number, gid: number): void {
+    this.fs.chown(path, uid, gid);
+  }
 
   // access: check if path exists by stat'ing it (stat throws on error)
   access(path: string, _mode: number): void {
