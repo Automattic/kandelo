@@ -60,17 +60,17 @@ SIGNAL_EXPECTED_FAIL=()
 # runner flags XPASS as "you fixed it, remove from list" and fails CI.
 # Format: "suite/name" (e.g. "signal/ppoll-block-sleep-write-raise").
 SKIP_TESTS=(
-    # Inherent race documented in the test's own source ("Race condition
-    # since we can't observe if ppoll is truly waiting" + 100ms usleep).
-    # Randomly PASSes or FAILs depending on scheduler timing — ppoll may
-    # return POLLIN before the SIGUSR1 handler fires. The underlying ppoll
-    # behavior is correct; only the test's own race changes outcome.
+    # Reliable-PASS on macOS (20/20 local runs), 50/50 flaky on Linux CI.
+    # Linux-specific race; the test has a documented 100ms-usleep barrier
+    # to let ppoll enter the wait state before SIGUSR1 is raised, and
+    # Linux's scheduler closes the window differently. Tracked for
+    # follow-up PR — see TASKS/follow-up or the PR description.
     "signal/ppoll-block-sleep-write-raise"
 )
 
 is_skipped() {
     local full="$1"  # "suite/name"
-    for s in "${SKIP_TESTS[@]}"; do
+    for s in ${SKIP_TESTS[@]+"${SKIP_TESTS[@]}"}; do
         [ "$s" = "$full" ] && return 0
     done
     return 1
@@ -782,7 +782,9 @@ run_suite() {
             filtered_tests+=("$test_name")
         fi
     done
-    tests=("${filtered_tests[@]}")
+    # Use the +alternate-value expansion so set -u doesn't fire when the
+    # array is empty (happens when the only matching test is in SKIP_TESTS).
+    tests=(${filtered_tests[@]+"${filtered_tests[@]}"})
 
     local count=${#tests[@]}
     echo "  Discovered $count tests"
