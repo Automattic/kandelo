@@ -180,6 +180,64 @@ Non-trivial refactor. Estimated ~600–900 LoC across `signal.rs`, `process.rs`,
 
 ---
 
+## CI-skipped tests (fixable; SKIP_TESTS in runners)
+
+Tests the local dev toolchain runs and passes, but the shared-runner CI
+pipeline cannot run reliably. Each is listed in `SKIP_TESTS` in the
+corresponding runner script (`scripts/run-libc-tests.sh`,
+`scripts/run-sortix-tests.sh`). Remove the entry once the underlying
+issue is resolved — XFAIL is the wrong tool because (a) they PASS on
+dev hardware and would XPASS-fail CI, and (b) some fail in a way that
+crashes the outer bash script before per-test timeouts fire.
+
+### libc-test — `regression/raise-race`
+
+- **Symptom on CI:** SIGTERM (exit 143) on the outer `run-libc-tests.sh`
+  script during this test. Kills the whole suite; everything after is
+  skipped.
+- **Why it happens:** the test installs SIGUSR1 handler → blocks
+  SIGUSR1 → pthread_kills itself 100 times, each handler invocation
+  calls `fork()`. On our centralized-kernel model every fork spawns a
+  Node.js worker (~80–150 MB each). 100 workers live simultaneously →
+  ~8–15 GB RSS → ubuntu-latest (16 GB) OOM-killer terminates processes.
+- **Why it passes elsewhere:** local dev Macs have 32+ GB, so 100
+  concurrent workers fit. Upstream PR #332 (per-thread signal routing)
+  removed this from REGRESSION_EXPECTED_FAIL because the kernel
+  *behavior* is now correct; the remaining gap is runner-memory.
+- **Paths to fix (pick one):**
+  1. Reduce Node worker memory (lazy host imports, smaller V8 heap cap).
+  2. Serialize fork-in-signal-handler to cap concurrent workers.
+  3. Bump CI to a `ubuntu-latest-16-cores` larger runner (not free on
+     public repos; avoid).
+  4. Move CI to self-hosted.
+
+### sortix — `signal/ppoll-block-sleep-write-raise`
+
+- **Symptom on CI:** non-deterministic — ~50% of runs PASS, ~50% FAIL
+  with `got POLLIN without SIGUSR1`. Marking it XFAIL doesn't work
+  because XPASS is treated as a failure by `run-sortix-tests.sh`, so
+  the runs where it happens to pass would still break CI.
+- **Why it happens:** The test's own source documents a race — it
+  sleeps 100 ms before raising SIGUSR1 to give the parent time to
+  enter `ppoll()`, but the parent may return from ppoll with POLLIN
+  already set before the SIGUSR1 handler fires. On Linux scheduler
+  the window closes differently; local Mac runs 20/20 PASS.
+- **Root cause (likely):** ppoll's implementation may return POLLIN
+  without checking for pending signals atomically. When both are
+  available, ppoll should return EINTR first so the handler runs,
+  then the caller retries and sees POLLIN. Similar to the pattern
+  fixed in PR #331 (`fix(host): defer pipe-triggered ppoll wake to
+  dodge late-signal race`) but for the Linux-host-runtime timing.
+- **Starting points for a fix:**
+  - Kernel: `crates/kernel/src/syscalls.rs::sys_ppoll` — check the
+    ordering between "events available" and "pending signal check".
+  - Host: any place in `host/src/kernel-worker.ts` that resumes a
+    blocked ppoll before consulting the signal mask.
+- **Full prompt:** see the "How to prompt a new session" section at
+  the end of this doc — use a variant pointing at this entry.
+
+---
+
 ## Not compromising (documented for completeness)
 
 These XFAILs are **not** kernel-functionality gaps — don't put effort into them:
