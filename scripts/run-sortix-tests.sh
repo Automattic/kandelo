@@ -53,13 +53,28 @@ STDIO_EXPECTED_FAIL=()
 IO_EXPECTED_FAIL=(
 )
 
-SIGNAL_EXPECTED_FAIL=(
-    # Inherent race documented in the test source ("Race condition since we
-    # can't observe if ppoll is truly waiting" + 100ms usleep). Passes on
-    # local dev but fails intermittently on CI depending on scheduler
-    # timing — ppoll returns POLLIN before the SIGUSR1 handler fires.
-    "ppoll-block-sleep-write-raise"
+SIGNAL_EXPECTED_FAIL=()
+
+# Tests skipped entirely (not built, not run). Use for tests whose outcome
+# is non-deterministic between runs — XFAIL can't express this because the
+# runner flags XPASS as "you fixed it, remove from list" and fails CI.
+# Format: "suite/name" (e.g. "signal/ppoll-block-sleep-write-raise").
+SKIP_TESTS=(
+    # Inherent race documented in the test's own source ("Race condition
+    # since we can't observe if ppoll is truly waiting" + 100ms usleep).
+    # Randomly PASSes or FAILs depending on scheduler timing — ppoll may
+    # return POLLIN before the SIGUSR1 handler fires. The underlying ppoll
+    # behavior is correct; only the test's own race changes outcome.
+    "signal/ppoll-block-sleep-write-raise"
 )
+
+is_skipped() {
+    local full="$1"  # "suite/name"
+    for s in "${SKIP_TESTS[@]}"; do
+        [ "$s" = "$full" ] && return 0
+    done
+    return 1
+}
 PROCESS_EXPECTED_FAIL=()
 PATHS_EXPECTED_FAIL=()
 
@@ -752,6 +767,22 @@ run_suite() {
             [ -n "$t" ] && tests+=("$t")
         done < <("discover_${suite}")
     fi
+
+    # Filter out tests in SKIP_TESTS (inherently non-deterministic —
+    # neither FAIL nor XFAIL can express their behavior without
+    # destabilizing CI).
+    local filtered_tests=()
+    for test_name in "${tests[@]}"; do
+        if is_skipped "${suite}/${test_name}"; then
+            echo "SKIP  ${suite}/${test_name} (in SKIP_TESTS)"
+            RESULTS+=("SKIP  ${suite}/${test_name}")
+            SKIP=$((SKIP + 1))
+            TOTAL=$((TOTAL + 1))
+        else
+            filtered_tests+=("$test_name")
+        fi
+    done
+    tests=("${filtered_tests[@]}")
 
     local count=${#tests[@]}
     echo "  Discovered $count tests"
