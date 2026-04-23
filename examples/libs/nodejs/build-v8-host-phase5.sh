@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Phase 5 — build host-native V8 with CSS + jitless + the kCCBuiltins
-# patch applied, and add d8 to the build targets. Default whitelist is
-# empty so a from-scratch run verifies the patch is d8-entrypoint-neutral
-# before Phase 5 tasks layer on real builtins.
+# patch applied, and add d8 to the build targets. Default whitelist layers
+# on every builtin verified green by the harness so a from-scratch run
+# exercises the full Phase-5 tested set.
 #
 # Diffs vs Phase 4:
-#   - Default WHITELIST is empty (Phase 4 defaulted to TorqueCcTest_Return).
+#   - Default WHITELIST is the Phase-5 tested set (Phase 4 defaulted to
+#     TorqueCcTest_Return only).
 #   - ./configure passes --enable-d8, wiring tools/v8_gypfiles/d8.gyp:d8
 #     into node.gypi's dependency list (node.gypi:87-89).
 #   - `ninja -C out/Release d8` is invoked after v8_snapshot.
@@ -17,10 +18,12 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NODE_SRC="${HERE}/build/node"
-# Default whitelist: empty. Phase 5's invariant is "d8 entrypoint stays
-# neutral under an empty whitelist". Callers set V8_CC_BUILTINS_WHITELIST
-# to layer on translated builtins (e.g., Task 5.7 candidate + ArrayIsArray).
-WHITELIST="${V8_CC_BUILTINS_WHITELIST-}"
+# Default whitelist: every builtin green in
+# test/torque-fixtures/*-tq-ccbuiltins.cc that takes a real V8-compatible
+# ABI (stub-linkage TorqueCcTest_Return, JS-linkage TorqueCcTest_JsReturn,
+# and Task 5.7's ArrayIsArray). `-` (no colon) lets callers override with
+# an explicit empty string to validate d8-entrypoint neutrality.
+WHITELIST="${V8_CC_BUILTINS_WHITELIST-TorqueCcTest_Return,TorqueCcTest_JsReturn,ArrayIsArray}"
 
 [ -d "${NODE_SRC}/deps/v8" ] || {
   echo "Missing ${NODE_SRC}/deps/v8 — run build-nodejs.sh first" >&2
