@@ -692,3 +692,115 @@ Total V8 emitter-side: ~115 LoC + ~5 LoC for the test fixture `.tq` file. Matche
 
 **Spike artifacts reverted cleanly.** Clone tip stays at `305050d4` (Task-5.3 post-tip, 43 commits on `9fe7634c`); no clone-side commits from Task 5.1. Worktree gets only this verification.md append.
 
+## Phase 5 (Revised) Summary
+
+| Item | Result |
+|---|---|
+| Task 5.1 spike: Path 1 hand-written proof-of-life | ✅ |
+| Torque-side TFJ → CPP swap in BUILTIN_LIST_FROM_TORQUE (Task 5.2) | ✅ |
+| CCGenerator::kPtrReturn mode for CPP-ABI return (Task 5.3) | ✅ |
+| JS-linkage CPP-ABI emission in Visit(Builtin*) kCCBuiltins (Task 5.3) | ✅ |
+| Include preamble extended (builtins-utils-inl, arguments-inl, handles-inl) (Task 5.4) | ✅ |
+| Host build with ArrayIsArray whitelisted (Task 5.8) — mksnapshot + d8 + cctest all green | ✅ |
+| TorqueCcBuiltinTest.JsReturnAdaptorDispatch cctest (Task 5.6) | ✅ |
+| TorqueCcBuiltinTest.ScriptRunArrayIsArray cctest (Task 5.9) | ✅ |
+| d8 smoke — `Array.isArray([1,2,3])` prints "true" (Task 5.10) | ✅ |
+| d8 smoke — `Array.isArray(42)` + `Array.isArray({})` print "false" (Task 5.10) | ✅ |
+| CSA-replacement ledger scaffold + Path-1-aware README (Task 5.11) | ✅ |
+| 15-fixture harness: 13 stub-linkage + 2 JS-linkage, all byte-exact | ✅ |
+| Non-whitelisted torque output sha stable post-5.8/5.9: d5c6d835… | ✅ |
+| Consolidated patch exports + re-applies cleanly on upstream 9fe7634c | ✅ |
+| 5 cctest cases green (DirectInvocation + DispatchTableLookup + Phase5ScriptRunSmoke + JsReturnAdaptorDispatch + ScriptRunArrayIsArray) | ✅ |
+| d8 smoke: 10/10 checks green | ✅ |
+
+**End-to-end proof.** `./out/Release/d8 -e 'print(Array.isArray([1,2,3]))'`
+prints "true"; `print(Array.isArray(42))` prints "false";
+`print(Array.isArray({}))` prints "false". V8's interpreter, running
+from the embedded lite-mode snapshot, dispatches through the baked
+`AdaptorWithBuiltinExitFrame1` for `Builtin::kArrayIsArray`; the
+adaptor marshals the JS calling convention into
+`BuiltinArguments(1+4, argp, isolate)`; the adaptor calls our
+torque-emitted `Builtin_ArrayIsArray(int, Address*, Isolate*)`; our
+function unpacks context + receiver + arg via BuiltinArguments +
+`isolate->context()`, runs the Torque typeswitch lowered by CCGenerator,
+and returns `True.ptr()` / `False.ptr()` / `runtime::ArrayIsArray().ptr()`.
+**This is the first phase where V8's own machinery dispatches to our
+generated code through its normal interpreter → builtin_table → Code →
+adaptor → C++ path, with zero hand-written V8 bootstrap edits.**
+
+**Phase 5 (revised) commit chain on the Node.js clone** (60 commits total
+on top of `9fe7634c`; the planned ≈7 new on top of Phase 4 + Task 5.1-5.3
+tip `305050d4` expanded to 17 as Task-5.8 defect fixes and Task-5.9 cctest
+landed):
+1. `torque: emit CPP(...) for whitelisted JS-linkage builtins` (Task 5.2)
+2. `torque: CCGenerator gets kPtrReturn mode for CPP-ABI return path` (Task 5.3)
+3. `torque: implement JS-linkage CPP-ABI emission under kCCBuiltins` (Task 5.3)
+4. `torque: extend kCCBuiltins include preamble for JS-linkage` (Task 5.4)
+5. `v8 torque+node: Phase 5 (revised) — JsReturnAdaptorDispatch cctest` (Task 5.6)
+6. `torque: extend kCCBuiltins preamble for js-array/js-proxy/runtime` (Task 5.7)
+7. Task 5.8 defect fixes (7 commits):
+   - `runtime-macro-shims: add 7 helpers (TaggedToHeapObject/TaggedNotEqual/…)`
+   - `torque: %ClassHasMapConstant backend-aware (kCCBuiltins → literal false)`
+   - `torque: CCGenerator %RawDownCast emits UncheckedCast<T> for Tagged types`
+   - `torque: CCGenerator CallRuntime emits direct Runtime_<name>(argc,args,isolate)`
+   - `torque: CCGenerator GotoExternal emits return {} on non-void paths`
+   - `torque: kCCBuiltins wraps macro bodies in V8_INTERNAL_DEFINED_<CCName>`
+   - `torque: kCCBuiltins preamble gains forward-decls + True_0/False_0 shims`
+8. `v8 torque+node: Phase 5 (revised) — ScriptRunArrayIsArray cctest` (Task 5.9)
+
+Consolidated patch: 4577 lines (exceeded the ≈3200-line prediction by
+~43%; growth is entirely Task-5.7 preamble extension + Task-5.8 defect
+repair, which the original plan scoped as "minor" but which in practice
+required real engineering once the first V8 rebuild surfaced the
+linkage and codegen gaps).
+
+### Plan deviations surfaced during Phase 5 (revised) implementation
+
+- **d8 banner pollution.** `d8 -e '<source>'` writes the
+  "V8 is running with experimental features enabled. Stability and
+  security will suffer." banner to **stderr**. `test/d8-smoke.sh` was
+  initially written per the plan as `2>&1`, which caused all 10
+  probes to FAIL with `actual` containing the banner prefixed to the
+  real output. Fix: redirect stderr to `/dev/null` during the probe —
+  only real program output is checked against expectations.
+- **Non-ccbuiltins anchor drifted from 65b1efc5 (Task 5.7) to d5c6d835
+  (post-Task 5.8).** Expected drift — Task 5.8's include-guard wrapping
+  (`V8_INTERNAL_DEFINED_<CCName>`) and forward-decl / True_0 / False_0
+  preamble additions are all under `kCCBuiltins`, but the total file-
+  set byte layout shifted enough to move the sha. Task 5.9 added only
+  cctest C++ and did NOT further shift the anchor; `d5c6d835…` is
+  stable from Task 5.8 onward.
+- **Patch size prediction.** Plan predicted ≈3200 lines; final patch
+  is 4577 lines. Delta driven by Task 5.7 preamble extension and the
+  7-commit Task-5.8 repair chain (one defect per commit, atomic style
+  as requested). No planning failure — the plan explicitly noted "exact
+  value TBD after final export."
+
+### Phase 5 (revised) follow-ups for later phases
+
+- **Runtime exception handling** (`catch_block`). Still `ReportError`.
+  Phase 6+ when a target forces it.
+- **Tail-calls from CallBuiltin / CallBuiltinPointer.** Still
+  `ReportError`. Phase 6+.
+- **Struct-typed label values.** Still `ReportError`. Phase 6+.
+- **mjsunit.** Phase 6.
+- **CSA replacement ledger — first real shim.** When d8 / mjsunit
+  forces one. Phase 6. Scaffold landed in this phase (Task 5.11) under
+  `examples/libs/nodejs/csa-builtins/`.
+- **Varargs JS builtins** (`IsVarArgsJavaScript`). Still `ReportError`
+  under kCCBuiltins. Phase 6 when a forcing fixture lands.
+- **Leaptiering-on dispatchHandle.** Currently emits
+  `InvalidDispatchHandleConstant()`. Phase 6+ for
+  `V8_ENABLE_LEAPTIERING=true` builds.
+- **JSProxy branch of ArrayIsArray exercised via real JS.** Not covered
+  by Task 5.9's fixed-receiver cases; needs a `new Proxy(…)` case in
+  Phase 6 mjsunit.
+- **Proper NamespaceConstant CC emission.** Task 5.8 landed True_0 and
+  False_0 as hand-written inline accessors in the kCCBuiltins preamble;
+  the proper generator-emitted per-const helpers are deferred to Phase 6+
+  when base.tq surfaces more consts reachable from whitelisted builtins.
+- **%GetClassMapConstant fast-path.** Task 5.8 reduced %ClassHasMapConstant
+  under kCCBuiltins to literal `"false"` (semantic no-op for non-
+  UNIQUE_INSTANCE_TYPE classes); a free-function `TorqueClassHasMapConstant<T>()`
+  driven by `CLASS_MAP_CONSTANT_ADAPTER` would restore the fast path.
+- **Wasm32 cross-compile.** Phase 7+.
