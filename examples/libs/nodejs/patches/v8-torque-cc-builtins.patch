@@ -1,7 +1,7 @@
 From 7b7c6b02d97d01608de95309a32514ed87453c24 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Mon, 20 Apr 2026 23:32:43 -0400
-Subject: [PATCH 01/49] torque: add OutputType::kCCBuiltins (Phase 1
+Subject: [PATCH 01/50] torque: add OutputType::kCCBuiltins (Phase 1
  scaffolding)
 
 ---
@@ -27,7 +27,7 @@ index dc10233a..aabca60b 100644
 From d46700124dea3a09293c6041f7f4c3691c90ffd2 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Mon, 20 Apr 2026 23:33:04 -0400
-Subject: [PATCH 02/49] torque: add cc_builtins file streams to PerFileStreams
+Subject: [PATCH 02/50] torque: add cc_builtins file streams to PerFileStreams
 
 ---
  deps/v8/src/torque/global-context.h | 3 +++
@@ -54,7 +54,7 @@ index db27b49d..37443bee 100644
 From 29d20ab22b50f652f8355408654b96cac09b6a42 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Mon, 20 Apr 2026 23:33:29 -0400
-Subject: [PATCH 03/49] torque: route kCCBuiltins output to cc_builtins streams
+Subject: [PATCH 03/50] torque: route kCCBuiltins output to cc_builtins streams
 
 ---
  deps/v8/src/torque/implementation-visitor.h | 4 ++++
@@ -89,7 +89,7 @@ index f8444225..e29d91c7 100644
 From a169621decd09c5fa78dbaff267c3887c94b757b Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Mon, 20 Apr 2026 23:34:03 -0400
-Subject: [PATCH 04/49] torque: Builtin::ShouldBeInlined returns false for
+Subject: [PATCH 04/50] torque: Builtin::ShouldBeInlined returns false for
  kCCBuiltins
 
 ---
@@ -128,7 +128,7 @@ index aabca60b..c6a3639c 100644
 From 6a8654713dc9114a02ddeeca664447ccd282edec Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Mon, 20 Apr 2026 23:36:54 -0400
-Subject: [PATCH 05/49] torque: route kCCBuiltins through extern-macro
+Subject: [PATCH 05/50] torque: route kCCBuiltins through extern-macro
  constexpr call path
 
 ---
@@ -159,7 +159,7 @@ index fc4dbbcc..78c6eee5 100644
 From 6c3dc9a1d3e28f01fd2f9a156143d3c63226712d Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Mon, 20 Apr 2026 23:41:18 -0400
-Subject: [PATCH 06/49] torque: add kCCBuiltins fourth pass in
+Subject: [PATCH 06/50] torque: add kCCBuiltins fourth pass in
  VisitAllDeclarables
 
 ---
@@ -194,7 +194,7 @@ index 78c6eee5..4be1c8e7 100644
 From 93560a5b6c1a83702e2f79907e5b6a2d04c77b64 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Mon, 20 Apr 2026 23:52:17 -0400
-Subject: [PATCH 07/49] torque: Visit(Builtin*) emits Phase 1 stub under
+Subject: [PATCH 07/50] torque: Visit(Builtin*) emits Phase 1 stub under
  kCCBuiltins
 
 ---
@@ -229,7 +229,7 @@ index 4be1c8e7..54551d20 100644
 From 78e36e8965749dbd4101599d2f18b0ce560ac0c2 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Mon, 20 Apr 2026 23:53:34 -0400
-Subject: [PATCH 08/49] torque: filter fourth pass to Builtin declarables only
+Subject: [PATCH 08/50] torque: filter fourth pass to Builtin declarables only
 
 Task 1.6 landed the fourth pass as the plan specified, iterating every
 declarable. Smoke-testing on the 245-file stock fileset under kCCBuiltins
@@ -279,7 +279,7 @@ index 54551d20..ae96de1b 100644
 From 7cf1abb5c751a99b24656968b12c8570d613afed Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Mon, 20 Apr 2026 23:57:17 -0400
-Subject: [PATCH 09/49] torque: write -tq-ccbuiltins.cc per source file
+Subject: [PATCH 09/50] torque: write -tq-ccbuiltins.cc per source file
 
 ---
  deps/v8/src/torque/implementation-visitor.cc | 21 ++++++++++++++++++++
@@ -324,7 +324,7 @@ index ae96de1b..f0dd3e1b 100644
 From 2440f125fbaa1d474a3213be74c09ed5858b6306 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Tue, 21 Apr 2026 00:01:17 -0400
-Subject: [PATCH 10/49] v8 build: declare -tq-ccbuiltins.cc in run_torque
+Subject: [PATCH 10/50] v8 build: declare -tq-ccbuiltins.cc in run_torque
  outputs
 
 ---
@@ -350,7 +350,7 @@ index fee8aedf..1f34d46b 100644
 From a776e214d136ea766c3c60d9ffb05fee67ffeefa Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 09:37:53 -0400
-Subject: [PATCH 11/49] torque: add --cc-builtins-whitelist CLI flag
+Subject: [PATCH 11/50] torque: add --cc-builtins-whitelist CLI flag
 
 ---
  deps/v8/src/torque/global-context.h   |  7 ++++++
@@ -482,7 +482,7 @@ index 7ccc5bf9..e37f14e4 100644
 From 5dc40081044515429f06d80c0136d331c0dba88f Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 09:53:05 -0400
-Subject: [PATCH 12/49] =?UTF-8?q?torque:=20Visit(Builtin*)=20kCCBuiltins?=
+Subject: [PATCH 12/50] =?UTF-8?q?torque:=20Visit(Builtin*)=20kCCBuiltins?=
  =?UTF-8?q?=20=E2=80=94=20real=20emission=20under=20whitelist?=
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -608,7 +608,7 @@ index f0dd3e1b..41e12a39 100644
 From a4127f86c8745744782d92686f9eda5f162b3eb1 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 10:42:10 -0400
-Subject: [PATCH 13/49] torque: implement CCGenerator::Emit(ReturnInstruction)
+Subject: [PATCH 13/50] torque: implement CCGenerator::Emit(ReturnInstruction)
 
 ---
  deps/v8/src/torque/cc-generator.cc | 15 ++++++++++++++-
@@ -647,7 +647,7 @@ index aaa3ee74..2d10bada 100644
 From f9b1fcdd2aa7b4cb0dc0eb4dfeb69b0340331359 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 10:56:38 -0400
-Subject: [PATCH 14/49] torque: implement
+Subject: [PATCH 14/50] torque: implement
  CCGenerator::Emit(PushUninitializedInstruction)
 
 ---
@@ -687,7 +687,7 @@ index 2d10bada..da87b569 100644
 From e403058316527bd14b921699c5f40776cb564901 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Tue, 21 Apr 2026 11:01:24 -0400
-Subject: [PATCH 15/49] torque: implement
+Subject: [PATCH 15/50] torque: implement
  CCGenerator::Emit(NamespaceConstantInstruction)
 
 ---
@@ -742,7 +742,7 @@ index da87b569..c8d30d0c 100644
 From 6c8e8c93347987e62c4292f618f9579ed132e647 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Tue, 21 Apr 2026 11:14:09 -0400
-Subject: [PATCH 16/49] torque: implement
+Subject: [PATCH 16/50] torque: implement
  CCGenerator::Emit(PushBuiltinPointerInstruction)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -803,7 +803,7 @@ index c8d30d0c..da7fb816 100644
 From 5ac4c5c9844a06831e258d0b41312691308158f8 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Tue, 21 Apr 2026 11:24:41 -0400
-Subject: [PATCH 17/49] torque: implement
+Subject: [PATCH 17/50] torque: implement
  CCGenerator::Emit(StoreReferenceInstruction)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -898,7 +898,7 @@ index da7fb816..d459a3b7 100644
 From 4e2daca40ba23b35a65d4692eb351da57e87d872 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Tue, 21 Apr 2026 11:28:58 -0400
-Subject: [PATCH 18/49] torque: implement
+Subject: [PATCH 18/50] torque: implement
  CCGenerator::Emit(StoreBitFieldInstruction)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -978,7 +978,7 @@ index d459a3b7..fe28ca8b 100644
 From d894d3359a3bfe5b7c91bc390cc774dc1dec5573 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Tue, 21 Apr 2026 11:38:57 -0400
-Subject: [PATCH 19/49] torque: implement
+Subject: [PATCH 19/50] torque: implement
  CCGenerator::Emit(CallRuntimeInstruction)
 
 Replaces the Phase 1 ReportError stub with real kCCBuiltins emission:
@@ -1095,7 +1095,7 @@ index c6a3639c..202bdcb6 100644
 From f301bdabda1f8a4bd9f34ffe2c5f5a659e2c021b Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Tue, 21 Apr 2026 11:44:10 -0400
-Subject: [PATCH 20/49] torque: implement
+Subject: [PATCH 20/50] torque: implement
  CCGenerator::Emit(CallBuiltinInstruction)
 
 ---
@@ -1152,7 +1152,7 @@ index 650ee4f6..406e09b3 100644
 From b7b4d0c9411cce88fd6bdb5e5835f50b27f4fa99 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Tue, 21 Apr 2026 11:49:57 -0400
-Subject: [PATCH 21/49] torque: implement
+Subject: [PATCH 21/50] torque: implement
  CCGenerator::Emit(CallBuiltinPointerInstruction)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -1237,7 +1237,7 @@ index 406e09b3..ac2e28a6 100644
 From 55af7d6d5d37c23c987ad4fc89a9608c8da369a3 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 13:50:27 -0400
-Subject: [PATCH 22/49] torque: add CurrentSourcePosition::Scope to
+Subject: [PATCH 22/50] torque: add CurrentSourcePosition::Scope to
  Visit(Builtin*) kCCBuiltins branch
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -1302,7 +1302,7 @@ index 41e12a39..7ca86dff 100644
 From 9b794e1fa4b383e86fdc0d46f818c44f8fe78857 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 14:08:09 -0400
-Subject: [PATCH 23/49] torque: ExternMacro + Intrinsic ShouldBeInlined return
+Subject: [PATCH 23/50] torque: ExternMacro + Intrinsic ShouldBeInlined return
  false for kCCBuiltins
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -1386,7 +1386,7 @@ index 202bdcb6..4c40c0d8 100644
 From 6cc0119554fdfdae724c40314c8c1abf8281ccb9 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 14:08:22 -0400
-Subject: [PATCH 24/49] torque: implement
+Subject: [PATCH 24/50] torque: implement
  CCGenerator::Emit(MakeLazyNodeInstruction)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -1463,7 +1463,7 @@ index ac2e28a6..f6f17c04 100644
 From e0464526b0147c23cc8a35e0380b7b3cf923fda0 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 14:16:41 -0400
-Subject: [PATCH 25/49] torque: Macro::ShouldBeInlined returns false for
+Subject: [PATCH 25/50] torque: Macro::ShouldBeInlined returns false for
  labeled macros under kCCBuiltins
 
 Under kCCBuiltins, a labeled macro call site must go through
@@ -1514,7 +1514,7 @@ index 4c40c0d8..02df3b0f 100644
 From f279deb8968a7c7d0a0c085287b20a2a93f117b2 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 14:19:47 -0400
-Subject: [PATCH 26/49] torque: implement
+Subject: [PATCH 26/50] torque: implement
  CCGenerator::Emit(CallCsaMacroAndBranchInstruction)
 
 Emits the out-param rewrite pattern for labeled macro calls under
@@ -1669,7 +1669,7 @@ index f6f17c04..9b452f95 100644
 From 3305160824b005f1828b4492a9175dd58d986e19 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 14:26:23 -0400
-Subject: [PATCH 27/49] torque: implement
+Subject: [PATCH 27/50] torque: implement
  CCGenerator::Emit(GotoExternalInstruction)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -1738,7 +1738,7 @@ index 9b452f95..b9e216db 100644
 From 57a1465fce8424b855d384a400cab041bb23ef03 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 15:25:12 -0400
-Subject: [PATCH 28/49] torque: add AllMacrosForCCBuiltinsOutput list +
+Subject: [PATCH 28/50] torque: add AllMacrosForCCBuiltinsOutput list +
  accessor
 
 ---
@@ -1784,7 +1784,7 @@ index 0ae3f57d..d6677fd4 100644
 From 1afcd23d4e0eefa15ce9b1595a580fcc7b9d3253 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 15:25:25 -0400
-Subject: [PATCH 29/49] torque: record TorqueMacros referenced from kCCBuiltins
+Subject: [PATCH 29/50] torque: record TorqueMacros referenced from kCCBuiltins
  builtins
 
 ---
@@ -1822,7 +1822,7 @@ index 7ca86dff..5ce1bee1 100644
 From 181803dda59d7d47e46c1da7704893d8e132a9c0 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 15:26:07 -0400
-Subject: [PATCH 30/49] torque: record TorqueMacros referenced by MakeLazyNode
+Subject: [PATCH 30/50] torque: record TorqueMacros referenced by MakeLazyNode
  under kCCBuiltins
 
 ---
@@ -1871,7 +1871,7 @@ index b9e216db..bb0c44db 100644
 From c1b9e4e2a164d1c3451b47d3c80662ecf1b6e1a3 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 15:26:25 -0400
-Subject: [PATCH 31/49] torque: add fifth pass emitting kCCBuiltins-referenced
+Subject: [PATCH 31/50] torque: add fifth pass emitting kCCBuiltins-referenced
  macro bodies
 
 ---
@@ -1913,7 +1913,7 @@ index 5ce1bee1..1cbd2682 100644
 From 56d0b70cecc9718fdb73a722e50b997a5b5fef9e Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 15:27:35 -0400
-Subject: [PATCH 32/49] torque: route kCCBuiltins through VisitMacroCommon +
+Subject: [PATCH 32/50] torque: route kCCBuiltins through VisitMacroCommon +
  GenerateMacroFunctionDeclaration
 
 ---
@@ -2025,7 +2025,7 @@ index 1cbd2682..d3db6b8d 100644
 From 7fdbade559f62b8f64bb91387a46d249ce440697 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 15:28:18 -0400
-Subject: [PATCH 33/49] torque: Macro::ShouldBeInlined returns false for all
+Subject: [PATCH 33/50] torque: Macro::ShouldBeInlined returns false for all
  TorqueMacros under kCCBuiltins
 
 ---
@@ -2071,7 +2071,7 @@ index 02df3b0f..ddb69f64 100644
 From bd86dadb2c93ddf502e472b4e64de471829fc4fa Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 15:28:41 -0400
-Subject: [PATCH 34/49] torque: emit out-param signature for labeled macros
+Subject: [PATCH 34/50] torque: emit out-param signature for labeled macros
  under kCCBuiltins
 
 ---
@@ -2119,7 +2119,7 @@ index d3db6b8d..1f042a96 100644
 From fd0a721adbebf1806cfc528287533b8236b40141 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Tue, 21 Apr 2026 15:48:03 -0400
-Subject: [PATCH 35/49] torque: mark kCCBuiltins macro bodies inline via
+Subject: [PATCH 35/50] torque: mark kCCBuiltins macro bodies inline via
  InlineDefinition flag
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -2262,7 +2262,7 @@ index 1f042a96..4822e07f 100644
 From ca5aeb8d01dd84209b9f0806d43e6cf93a7695f2 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 16:01:38 -0400
-Subject: [PATCH 36/49] torque: emit builtins-cc-table.inc for kCCBuiltins
+Subject: [PATCH 36/50] torque: emit builtins-cc-table.inc for kCCBuiltins
  dispatch
 
 ---
@@ -2392,7 +2392,7 @@ index 8a46d7b2..a7bb3be2 100644
 From a7784154c2054c6c3918e13c19c0065d7418349b Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 16:02:03 -0400
-Subject: [PATCH 37/49] v8 builtins: add Builtins::TorqueCcEntryOf sibling to
+Subject: [PATCH 37/50] v8 builtins: add Builtins::TorqueCcEntryOf sibling to
  CppEntryOf
 
 ---
@@ -2472,7 +2472,7 @@ index f460f270..baddbdfe 100644
 From 8957403efe4c37b7b64ed69a6f0dc2f75cf198bf Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 16:02:23 -0400
-Subject: [PATCH 38/49] torque: CallBuiltinPointer uses
+Subject: [PATCH 38/50] torque: CallBuiltinPointer uses
  Builtins::TorqueCcEntryOf
 
 ---
@@ -2523,7 +2523,7 @@ index bb0c44db..e11789de 100644
 From fae77eb7df7959567a05efaf7ee126d3a003780b Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 16:14:28 -0400
-Subject: [PATCH 39/49] v8 builtins: clarify TorqueCcEntryOf comment re empty
+Subject: [PATCH 39/50] v8 builtins: clarify TorqueCcEntryOf comment re empty
  whitelist
 
 ---
@@ -2557,7 +2557,7 @@ index 211126f7..70734d4b 100644
 From a175456729ed3ab6a50958851b4a9dbe62678b23 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 16:16:47 -0400
-Subject: [PATCH 40/49] v8 gyp: compile -tq-ccbuiltins.cc + wire
+Subject: [PATCH 40/50] v8 gyp: compile -tq-ccbuiltins.cc + wire
  --cc-builtins-whitelist
 
 ---
@@ -2614,7 +2614,7 @@ index 3b749ba7..1fab83c0 100644
 From 8c5e91c0506d880c3e37ec8486859aa5236c316f Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 16:58:54 -0400
-Subject: [PATCH 41/49] v8: stage TorqueCcTest_Return fixture permanently under
+Subject: [PATCH 41/50] v8: stage TorqueCcTest_Return fixture permanently under
  test/torque-cc-fixtures/
 
 ---
@@ -2654,7 +2654,7 @@ index 00000000..7d5e66bb
 From 2b408bfb0ddbad82a4f47a7bf502e6ca3a1188a6 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 18:22:15 -0400
-Subject: [PATCH 42/49] =?UTF-8?q?v8=20torque+node:=20Phase=204=20smoke=20t?=
+Subject: [PATCH 42/50] =?UTF-8?q?v8=20torque+node:=20Phase=204=20smoke=20t?=
  =?UTF-8?q?est=20=E2=80=94=20invoke=20Torque-CC-translated=20builtin=20dir?=
  =?UTF-8?q?ectly?=
 MIME-Version: 1.0
@@ -2845,7 +2845,7 @@ index 00000000..b2518fec
 From 305050d49d719aa34f794b8a9265d0190c8e7222 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Wed, 22 Apr 2026 00:20:36 -0400
-Subject: [PATCH 43/49] =?UTF-8?q?v8=20torque+node:=20Phase=205=20scaffold?=
+Subject: [PATCH 43/50] =?UTF-8?q?v8=20torque+node:=20Phase=205=20scaffold?=
  =?UTF-8?q?=20=E2=80=94=20Script::Compile=20smoke=20in=20cctest?=
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -2900,7 +2900,7 @@ index b2518fec..818c2e01 100644
 From be53be33402c5de37a3ebff0929bd2a287e583a0 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Wed, 22 Apr 2026 17:32:44 -0400
-Subject: [PATCH 44/49] torque: emit CPP(...) for whitelisted JS-linkage
+Subject: [PATCH 44/50] torque: emit CPP(...) for whitelisted JS-linkage
  builtins
 
 BUILTIN_LIST_FROM_TORQUE's TFJ-emission branch gains a whitelist
@@ -2981,7 +2981,7 @@ index 946c31a9..85fecd4f 100644
 From a3f588e9d8fc970000e1233f1e49f02b7a5a82f8 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Wed, 22 Apr 2026 17:36:42 -0400
-Subject: [PATCH 45/49] torque: CCGenerator gets kPtrReturn mode for CPP-ABI
+Subject: [PATCH 45/50] torque: CCGenerator gets kPtrReturn mode for CPP-ABI
  return path
 
 Adds ReturnMode::{kDirect,kPtrReturn} to CCGenerator. kPtrReturn
@@ -3058,7 +3058,7 @@ index c8425263..bfaf3bcf 100644
 From 49d733bf489a393594a0c0e85d72dcf282b89bb5 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Wed, 22 Apr 2026 17:36:53 -0400
-Subject: [PATCH 46/49] torque: implement JS-linkage CPP-ABI emission under
+Subject: [PATCH 46/50] torque: implement JS-linkage CPP-ABI emission under
  kCCBuiltins
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -3241,7 +3241,7 @@ index 85fecd4f..8c3193d3 100644
 From ab877138ec943ab7b04c6b51effbaea85ad69146 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Wed, 22 Apr 2026 17:38:16 -0400
-Subject: [PATCH 47/49] torque: extend kCCBuiltins include preamble for
+Subject: [PATCH 47/50] torque: extend kCCBuiltins include preamble for
  JS-linkage
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -3281,7 +3281,7 @@ index 8c3193d3..0e94d80c 100644
 From 446917043b683ba2b429f381e565f3cc505fc737 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Wed, 22 Apr 2026 19:32:29 -0400
-Subject: [PATCH 48/49] torque: suppress CSA pass and drop inline for
+Subject: [PATCH 48/50] torque: suppress CSA pass and drop inline for
  whitelisted JS-linkage builtins
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -3372,7 +3372,7 @@ index 0e94d80c..61299998 100644
 From 60cf16dc33a450ce2f4737bd0cbba1461878a3b6 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Wed, 22 Apr 2026 19:32:40 -0400
-Subject: [PATCH 49/49] v8 test: stage js-return.tq in-tree and wire into
+Subject: [PATCH 49/50] v8 test: stage js-return.tq in-tree and wire into
  torque_files
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -3434,6 +3434,242 @@ index 00000000..ffd24718
 +}
 +
 +}  // namespace test_cc
+-- 
+2.50.1 (Apple Git-155)
+
+
+From 20f82d79eba20a8e4429685ce4b0a63b76fa731f Mon Sep 17 00:00:00 2001
+From: Brandon Payton <brandon@happycode.net>
+Date: Wed, 22 Apr 2026 20:51:58 -0400
+Subject: [PATCH 50/50] =?UTF-8?q?v8=20torque+node:=20Phase=205=20(revised)?=
+ =?UTF-8?q?=20=E2=80=94=20JsReturnAdaptorDispatch=20cctest=20+=20args[]=20?=
+ =?UTF-8?q?off-by-one=20fix?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Adds TorqueCcBuiltinTest.JsReturnAdaptorDispatch, the first cctest
+case that binds Builtin::kTorqueCcTest_JsReturn as a JSFunction on
+the global object and invokes it through V8's full
+JS-call → AdaptorWithBuiltinExitFrame1 → CPP-linkage dispatch
+pipeline.
+
+To split the V8-internal binding code (heap/factory.h, api-inl.h)
+from Node's node_test_fixture.h, the actual bind helper lives in
+test_torque_cc_builtin_helpers.{h,cc}. The two headers each define
+TRACE_EVENT0 and enum CategoryGroupEnabledFlags at global scope
+(V8 via src/tracing/trace-event.h transitively included by
+heap/factory.h → heap.h → gc-tracer.h; Node via src/tracing/
+trace_event_common.h included by node_internals.h) and cannot
+coexist in a single TU. Keeping the bridge in its own .cc whose
+include set excludes node_test_fixture.h sidesteps the collision
+without touching upstream V8 or Node.
+
+While writing this test the first green run exposed an emission
+bug in Task 5.3's JS-linkage CPP-ABI path: explicit JS args were
+unpacked as Cast<Inner>(args[explicit_index]) with explicit_index
+starting at 0. V8's BuiltinArguments::operator[] treats index 0
+as the RECEIVER (kReceiverIndex = kArgsIndex, see
+src/builtins/builtins-utils.h:30,64) — args[1] is the first real
+arg, matching the BUILTIN(Name) convention's args.at<T>(1).
+Previously every whitelisted JS-linkage builtin would silently
+read its first parameter as the receiver; with this fix,
+`TorqueCcTest_JsReturn.call(undefined, 'test-marker')` correctly
+returns 'test-marker' instead of `undefined`. Change is a one-
+character edit (explicit_index → explicit_index + 1), with the
+surrounding comment rewritten to match actual BuiltinArguments
+indexing.
+
+cctest run (all four cases PASS):
+  DirectInvocation, DispatchTableLookup, Phase5ScriptRunSmoke,
+  JsReturnAdaptorDispatch.
+d8 smoke (print(1+2), print("hello")) and the harness (14
+torque fixtures OK) both unaffected — harness still uses
+out/Release.baseline/torque (pre-fix) as planned.
+
+Part of Phase 5 (revised) Task 5.6.
+---
+ deps/v8/src/torque/implementation-visitor.cc  | 14 +++--
+ test/cctest/test_torque_cc_builtin.cc         | 32 +++++++++++
+ test/cctest/test_torque_cc_builtin_helpers.cc | 53 +++++++++++++++++++
+ test/cctest/test_torque_cc_builtin_helpers.h  | 29 ++++++++++
+ 4 files changed, 124 insertions(+), 4 deletions(-)
+ create mode 100644 test/cctest/test_torque_cc_builtin_helpers.cc
+ create mode 100644 test/cctest/test_torque_cc_builtin_helpers.h
+
+diff --git a/deps/v8/src/torque/implementation-visitor.cc b/deps/v8/src/torque/implementation-visitor.cc
+index 61299998..7ae064cb 100644
+--- a/deps/v8/src/torque/implementation-visitor.cc
++++ b/deps/v8/src/torque/implementation-visitor.cc
+@@ -712,8 +712,14 @@ void ImplementationVisitor::Visit(Builtin* builtin) {
+         csa_ccfile() << "  USE(" << param_name << ");\n";
+       }
+ 
+-      // Unpack explicit parameters from args[i]. Zero-indexed past
+-      // receiver — `args[0]` is the first explicit arg, NOT the receiver.
++      // Unpack explicit parameters from BuiltinArguments. V8's
++      // operator[] indexes the receiver at 0 — `args[0]` is the
++      // receiver, `args[1]` is the first explicit JS argument. Torque's
++      // `explicit_index` counts from 0 on the first explicit arg, so
++      // the BuiltinArguments index is `explicit_index + 1`. (This
++      // matches the BUILTIN(Name) macro convention in
++      // src/builtins/builtins-utils.h, which reads explicit args via
++      // `args.at<T>(1)`, `args.at<T>(2)`, …)
+       for (size_t i = signature.implicit_count;
+            i < signature.parameter_names.size(); ++i) {
+         const std::string& param_name = signature.parameter_names[i]->value;
+@@ -732,8 +738,8 @@ void ImplementationVisitor::Visit(Builtin* builtin) {
+         std::string inner_type =
+             runtime_type.substr(7, runtime_type.size() - 8);
+         csa_ccfile() << "  " << runtime_type << " " << generated_name
+-                     << " = Cast<" << inner_type << ">(args[" << explicit_index
+-                     << "]);\n"
++                     << " = Cast<" << inner_type << ">(args["
++                     << (explicit_index + 1) << "]);\n"
+                      << "  USE(" << generated_name << ");\n";
+ 
+         // Bridge line — same pattern as the implicit case.
+diff --git a/test/cctest/test_torque_cc_builtin.cc b/test/cctest/test_torque_cc_builtin.cc
+index 818c2e01..1f7984af 100644
+--- a/test/cctest/test_torque_cc_builtin.cc
++++ b/test/cctest/test_torque_cc_builtin.cc
+@@ -21,6 +21,14 @@
+ #include "src/objects/smi.h"
+ #include "src/objects/tagged.h"
+ 
++// Phase 5 (Task 5.6): binds Builtin::kTorqueCcTest_JsReturn as a global
++// JSFunction. Implementation lives in a separate .cc that does NOT
++// include node_test_fixture.h — V8's heap/factory/api-inl chain and
++// Node's src/tracing/trace_event_common.h both define
++// TRACE_EVENT0/CategoryGroupEnabledFlags at global scope, so they
++// cannot coexist in a single translation unit.
++#include "test_torque_cc_builtin_helpers.h"
++
+ namespace v8 {
+ namespace internal {
+ 
+@@ -88,3 +96,27 @@ TEST_F(TorqueCcBuiltinTest, Phase5ScriptRunSmoke) {
+   ASSERT_TRUE(result->IsInt32());
+   EXPECT_EQ(result->Int32Value(ctx).FromJust(), 3);
+ }
++
++// Phase 5 Task 5.6: binds Builtin::kTorqueCcTest_JsReturn into a JSFunction,
++// installs it as a global property, and invokes it through the V8
++// interpreter's JS call pipeline. Proves AdaptorWithBuiltinExitFrame1
++// correctly marshals JS-calling-convention register args into
++// BuiltinArguments for our torque-emitted Builtin_TorqueCcTest_JsReturn
++// and returns the Tagged<JSAny> value back through BUILTIN_CONVERT_RESULT.
++TEST_F(TorqueCcBuiltinTest, JsReturnAdaptorDispatch) {
++  v8::HandleScope scope(isolate_);
++  v8::Local<v8::Context> ctx = v8::Context::New(isolate_);
++  v8::Context::Scope cscope(ctx);
++
++  torque_cc_test::BindJsReturnBuiltinOnGlobal(isolate_);
++
++  v8::Local<v8::String> src = v8::String::NewFromUtf8Literal(
++      isolate_, "TorqueCcTest_JsReturn.call(undefined, 'test-marker')");
++  v8::Local<v8::Script> script =
++      v8::Script::Compile(ctx, src).ToLocalChecked();
++  v8::Local<v8::Value> result = script->Run(ctx).ToLocalChecked();
++
++  ASSERT_TRUE(result->IsString());
++  v8::String::Utf8Value utf8(isolate_, result);
++  EXPECT_STREQ(*utf8, "test-marker");
++}
+diff --git a/test/cctest/test_torque_cc_builtin_helpers.cc b/test/cctest/test_torque_cc_builtin_helpers.cc
+new file mode 100644
+index 00000000..0ca4f668
+--- /dev/null
++++ b/test/cctest/test_torque_cc_builtin_helpers.cc
+@@ -0,0 +1,53 @@
++// Copyright 2026 Node.js contributors. All rights reserved.
++// Phase 5 (Task 5.6) — helper implementation for
++// test_torque_cc_builtin.cc. See test_torque_cc_builtin_helpers.h for
++// the rationale on why this lives in a separate translation unit.
++//
++// IMPORTANT: do NOT include node_test_fixture.h, node_internals.h, or
++// anything from Node's src/tracing/ here. The V8 internal includes
++// below transitively pull in src/heap/heap.h → src/heap/gc-tracer.h
++// → src/tracing/trace-event.h, whose TRACE_EVENT0 macro and
++// CategoryGroupEnabledFlags enum collide with Node's same-named
++// definitions from src/tracing/trace_event_common.h.
++
++#include "test_torque_cc_builtin_helpers.h"
++
++#include "src/api/api-inl.h"
++#include "src/execution/isolate-inl.h"
++#include "src/heap/factory.h"
++#include "src/objects/js-objects.h"
++#include "src/objects/property-details.h"
++
++namespace torque_cc_test {
++
++void BindJsReturnBuiltinOnGlobal(v8::Isolate* isolate) {
++  v8::internal::Isolate* i_isolate =
++      reinterpret_cast<v8::internal::Isolate*>(isolate);
++  v8::internal::HandleScope scope(i_isolate);
++
++  v8::internal::DirectHandle<v8::internal::NativeContext> native_ctx =
++      i_isolate->native_context();
++
++  v8::internal::DirectHandle<v8::internal::String> name =
++      i_isolate->factory()->NewStringFromAsciiChecked("TorqueCcTest_JsReturn");
++
++  // len=1 matches the CPP listing's JSParameterCount(1) on the
++  // TorqueCcTest_JsReturn builtin. kAdapt (AdaptArguments::kYes) routes
++  // the call through AdaptorWithBuiltinExitFrame1, which is what the
++  // test is exercising.
++  v8::internal::DirectHandle<v8::internal::SharedFunctionInfo> sfi =
++      i_isolate->factory()->NewSharedFunctionInfoForBuiltin(
++          name, v8::internal::Builtin::kTorqueCcTest_JsReturn,
++          /*len=*/1, v8::internal::kAdapt);
++
++  v8::internal::DirectHandle<v8::internal::JSFunction> fn =
++      v8::internal::Factory::JSFunctionBuilder{i_isolate, sfi, native_ctx}
++          .Build();
++
++  v8::internal::DirectHandle<v8::internal::JSObject> global(
++      i_isolate->global_object());
++  v8::internal::JSObject::AddProperty(i_isolate, global, name, fn,
++                                      v8::internal::NONE);
++}
++
++}  // namespace torque_cc_test
+diff --git a/test/cctest/test_torque_cc_builtin_helpers.h b/test/cctest/test_torque_cc_builtin_helpers.h
+new file mode 100644
+index 00000000..0e6ff8fc
+--- /dev/null
++++ b/test/cctest/test_torque_cc_builtin_helpers.h
+@@ -0,0 +1,29 @@
++// Copyright 2026 Node.js contributors. All rights reserved.
++// Phase 5 (Task 5.6) — helpers for test_torque_cc_builtin.cc.
++//
++// Split from the main test file because binding a V8 builtin to a
++// JSFunction requires src/heap/factory.h and src/api/api-inl.h, which
++// transitively pull in V8's src/tracing/trace-event.h. Node's
++// src/tracing/trace_event_common.h (included via node_test_fixture.h
++// → node_internals.h) defines the same TRACE_EVENT0 /
++// CategoryGroupEnabledFlags at global scope, and the two cannot
++// coexist in one translation unit. Keeping the bridge in a separate
++// .cc whose include set excludes node_test_fixture.h sidesteps the
++// collision without touching upstream V8 or Node.
++
++#ifndef TEST_CCTEST_TEST_TORQUE_CC_BUILTIN_HELPERS_H_
++#define TEST_CCTEST_TEST_TORQUE_CC_BUILTIN_HELPERS_H_
++
++#include "v8.h"
++
++namespace torque_cc_test {
++
++// Installs Builtin::kTorqueCcTest_JsReturn as a JSFunction named
++// "TorqueCcTest_JsReturn" on the global object of the currently
++// entered v8::Context. Caller must have a live v8::HandleScope and
++// an entered v8::Context::Scope when invoking.
++void BindJsReturnBuiltinOnGlobal(v8::Isolate* isolate);
++
++}  // namespace torque_cc_test
++
++#endif  // TEST_CCTEST_TEST_TORQUE_CC_BUILTIN_HELPERS_H_
 -- 
 2.50.1 (Apple Git-155)
 
