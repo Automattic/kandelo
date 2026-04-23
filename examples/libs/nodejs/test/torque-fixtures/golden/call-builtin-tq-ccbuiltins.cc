@@ -10,9 +10,20 @@
 #include "src/execution/arguments-inl.h"
 #include "src/execution/isolate.h"
 #include "src/handles/handles-inl.h"
+#include "src/objects/casting-inl.h"
 #include "src/objects/contexts.h"
+#include "src/objects/heap-object-inl.h"
+#include "src/objects/instance-type.h"
+#include "src/objects/js-array-inl.h"
+#include "src/objects/js-proxy-inl.h"
+#include "src/objects/map-inl.h"
+#include "src/objects/oddball.h"
 #include "src/objects/smi.h"
+#include "src/objects/tagged-field-inl.h"
 #include "src/objects/tagged.h"
+#include "src/runtime/runtime.h"
+#include "src/torque/runtime-macro-shims.h"
+#include "src/torque/runtime-support.h"
 
 namespace v8::internal {
 

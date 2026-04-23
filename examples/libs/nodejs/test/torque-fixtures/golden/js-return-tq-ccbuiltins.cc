@@ -10,14 +10,25 @@
 #include "src/execution/arguments-inl.h"
 #include "src/execution/isolate.h"
 #include "src/handles/handles-inl.h"
+#include "src/objects/casting-inl.h"
 #include "src/objects/contexts.h"
+#include "src/objects/heap-object-inl.h"
+#include "src/objects/instance-type.h"
+#include "src/objects/js-array-inl.h"
+#include "src/objects/js-proxy-inl.h"
+#include "src/objects/map-inl.h"
+#include "src/objects/oddball.h"
 #include "src/objects/smi.h"
+#include "src/objects/tagged-field-inl.h"
 #include "src/objects/tagged.h"
+#include "src/runtime/runtime.h"
+#include "src/torque/runtime-macro-shims.h"
+#include "src/torque/runtime-support.h"
 
 namespace v8::internal {
 
 // Builtin: TorqueCcTest_JsReturn
-inline Address Builtin_TorqueCcTest_JsReturn(int args_length, Address* args_object,
+Address Builtin_TorqueCcTest_JsReturn(int args_length, Address* args_object,
                          Isolate* isolate) {
   DCHECK(isolate->context().is_null() || IsContext(isolate->context()));
   BuiltinArguments args(args_length, args_object);
@@ -27,7 +38,7 @@ inline Address Builtin_TorqueCcTest_JsReturn(int args_length, Address* args_obje
   USE(parameter0);
   Tagged<NativeContext> context = parameter0;
   USE(context);
-  Tagged<JSAny> parameter1 = Cast<JSAny>(args[0]);
+  Tagged<JSAny> parameter1 = Cast<JSAny>(args[1]);
   USE(parameter1);
   Tagged<JSAny> arg = parameter1;
   USE(arg);
