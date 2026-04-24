@@ -891,7 +891,8 @@ build_vim() {
 }
 
 build_git() {
-    build_libcurl
+    # git's build script resolves zlib/openssl/curl through the dep
+    # cache itself; no sysroot prep here.
     need_kernel
     need_sdk
     if ! has_git; then
@@ -901,7 +902,8 @@ build_git() {
     else
         info "git"
     fi
-    # Stub git-remote-http.wasm for browser demo if libcurl wasn't available
+    # Stub git-remote-http.wasm for browser demo if build somehow
+    # didn't produce one (e.g. user skipped curl resolution manually).
     if [ ! -f "$REPO_ROOT/examples/libs/git/bin/git-remote-http.wasm" ]; then
         mkdir -p "$REPO_ROOT/examples/libs/git/bin"
         printf '\x00asm\x01\x00\x00\x00' > "$REPO_ROOT/examples/libs/git/bin/git-remote-http.wasm"
