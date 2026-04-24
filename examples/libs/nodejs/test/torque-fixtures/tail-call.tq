@@ -1,0 +1,21 @@
+// Phase 7 test fixture: CallBuiltinInstruction with is_tailcall=true.
+//
+// CSA form: ca_.TailCallBuiltin(Builtin::kFoo, context, args...)
+// CC form:  return Builtin_Foo(isolate, context, args...);
+//
+// Both caller and callee must be whitelisted. The harness auto-includes
+// any `TorqueCcTest_[A-Za-z0-9_]+` identifier in the fixture source.
+//
+// The tail-call must be the terminal instruction in the caller (Torque
+// type-checks this). Return-type of callee must match return-type of
+// caller.
+namespace test_cc_tail {
+  builtin TorqueCcTest_TailCall_Helper(implicit context: Context)(
+      x: Smi): Smi {
+    return x;
+  }
+  builtin TorqueCcTest_TailCall(implicit context: Context)(
+      arg: Smi): Smi {
+    tail TorqueCcTest_TailCall_Helper(arg);
+  }
+}
