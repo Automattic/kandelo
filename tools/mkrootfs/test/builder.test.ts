@@ -76,6 +76,34 @@ describe("image builder", () => {
     ).rejects.toThrow(/orphan\.conf.*not in manifest/);
   });
 
+  it("rejects two archives shipping the same path", async () => {
+    const fixture = join(here, "fixtures", "archive-collision-dual");
+    await expect(
+      buildImage({
+        sourceTree: join(fixture, "rootfs"),
+        manifest: join(fixture, "MANIFEST"),
+        repoRoot: fixture,
+      }),
+    ).rejects.toThrow(/usr\/bin\/foo.*two archives/i);
+  });
+
+  it("lets explicit src= override a path shipped in an archive", async () => {
+    const fixture = join(here, "fixtures", "archive-collision-override");
+    const image = await buildImage({
+      sourceTree: join(fixture, "rootfs"),
+      manifest: join(fixture, "MANIFEST"),
+      repoRoot: fixture,
+    });
+    const mfs = MemoryFileSystem.fromImage(image);
+    // The archive shipped /etc/hosts, but an explicit src= wins.
+    const fd = mfs.open("/etc/hosts", 0, 0);
+    const buf = new Uint8Array(128);
+    const n = mfs.read(fd, buf, null, buf.byteLength);
+    mfs.close(fd);
+    const text = new TextDecoder().decode(buf.subarray(0, n));
+    expect(text).toBe("override-version\n");
+  });
+
   it("registers archive entries at base= prefix with per-archive mode/owner", async () => {
     const fixture = join(here, "fixtures", "archive");
     const image = await buildImage({

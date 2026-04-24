@@ -1,0 +1,5 @@
+/         d  0755  0  0
+/etc      d  0755  0  0
+/etc/hosts  f  0644  0  0  src=overrides/hosts
+
+archive  url=opt/etc.zip  base=/etc
