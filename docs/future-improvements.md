@@ -33,3 +33,16 @@ The kernel has full PTY support (PR #181) but browser demos still use plain `<di
 `host/src/browser.ts` doesn't export `CentralizedKernelWorker`, `CentralizedKernelCallbacks`, `patchWasmForThread`, or `centralizedThreadWorkerMain`. External consumers can't build their own `BrowserKernel`-like wrapper from the published package.
 
 **Files:** `host/src/browser.ts`
+
+## Tooling
+
+### Migrate `host/src` imports to explicit `.ts` suffixes
+`host/src` uses extensionless imports (`import './sharedfs-vendor'`). Node's `--experimental-strip-types` (stable in Node 22+) requires explicit `.ts` or `.js` suffixes, so `tools/mkrootfs` runs under `tsx` to avoid the resolver incompatibility. As native Node ESM TS support matures, the repo should migrate to the principled convention:
+
+1. Add `.ts` suffix to every import across `host/src` (mechanical, ~100+ edits).
+2. Set `allowImportingTsExtensions: true` in `host/tsconfig.json` — note this is gated on `noEmit` or `emitDeclarationOnly`, so the tsup pipeline needs verification that it still emits both the JS bundles (tsup v8 rewrites `.ts` suffixes on output) and the DTS bundle (currently has a pre-existing error at `memory-fs.ts:430` that masks this risk).
+3. Drop the `tsx` shim from `tools/mkrootfs/bin/mkrootfs.mjs` in favor of `node --experimental-strip-types`.
+
+Blast radius is unrelated to any feature work — should land as a standalone cleanup PR.
+
+**Files:** all of `host/src/**/*.ts`, `host/tsconfig.json`, `tools/mkrootfs/bin/mkrootfs.mjs`
