@@ -1,0 +1,59 @@
+# wasm-posix-kernel rootfs manifest.
+#
+# Grammar: <path>  <type>  <mode>  <uid>  <gid>  [key=value ...]
+# Types:   d dir, f file, l symlink, c char-device, b block-device
+# Archive: archive  url=<path>  base=<prefix>  [fmode=] [dmode=] [uid=] [gid=]
+#
+# Files with type f and no src= pull content from rootfs/<path>.
+# The mkrootfs builder refuses to silently drop on-disk files that
+# aren't declared here, so every rootfs/* addition needs a line below.
+#
+# Ownership defaults are 0:0 (root). uid/gid are honest once the
+# kernel's synthetic interception is removed in Phase 3 — user
+# programs will see these exact values via stat().
+
+# ── Root and top-level directories ──────────────────────────────────
+/                d  0755  0  0
+/bin             d  0755  0  0
+/dev             d  0755  0  0
+/etc             d  0755  0  0
+/home            d  0755  0  0
+/lib             d  0755  0  0
+/proc            d  0755  0  0
+/root            d  0700  0  0
+/run             d  0755  0  0
+/sbin            d  0755  0  0
+/srv             d  0755  0  0
+/sys             d  0755  0  0
+/tmp             d  1777  0  0
+/usr             d  0755  0  0
+/usr/bin         d  0755  0  0
+/usr/lib         d  0755  0  0
+/usr/local       d  0755  0  0
+/usr/local/bin   d  0755  0  0
+/usr/local/lib   d  0755  0  0
+/usr/local/sbin  d  0755  0  0
+/usr/sbin        d  0755  0  0
+/usr/share       d  0755  0  0
+/var             d  0755  0  0
+/var/cache       d  0755  0  0
+/var/lib         d  0755  0  0
+/var/log         d  0755  0  0
+/var/run         d  0755  0  0
+/var/spool       d  0755  0  0
+/var/tmp         d  1777  0  0
+
+# ── User home ───────────────────────────────────────────────────────
+/home/user       d  0755  1000  1000
+
+# ── /etc content (source: rootfs/etc/*) ─────────────────────────────
+/etc/passwd        f  0644  0  0
+/etc/group         f  0644  0  0
+/etc/hosts         f  0644  0  0
+/etc/shadow        f  0640  0  0
+/etc/hostname      f  0644  0  0
+/etc/resolv.conf   f  0644  0  0
+/etc/nsswitch.conf f  0644  0  0
+/etc/os-release    f  0644  0  0
+/etc/profile       f  0644  0  0
+/etc/motd          f  0644  0  0
