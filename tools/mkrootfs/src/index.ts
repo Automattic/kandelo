@@ -9,7 +9,7 @@
 //   mkrootfs add <image> <path> <src> [--mode=0644] [--uid=0] [--gid=0]
 
 const USAGE = `Usage: mkrootfs {build|inspect|extract|add} ...
-  build   <sourceTree> <manifest> -o <image>
+  build   <sourceTree> <manifest> -o <image> [--repoRoot=<dir>]
   inspect <image>
   extract <image> <outDir>
   add     <image> <path> <src> [--mode=0644] [--uid=0] [--gid=0]
@@ -54,9 +54,41 @@ async function main(argv: string[]): Promise<number> {
       }
       return 0;
     }
-    case "build":
-      process.stderr.write(`mkrootfs: "${cmd}" not yet implemented\n`);
-      return 2;
+    case "build": {
+      const positional: string[] = [];
+      let out: string | undefined;
+      let repoRoot: string | undefined;
+      for (let i = 3; i < argv.length; i++) {
+        const a = argv[i];
+        if (a === "-o") {
+          out = argv[++i];
+        } else if (a.startsWith("--repoRoot=")) {
+          repoRoot = a.slice("--repoRoot=".length);
+        } else if (a.startsWith("-")) {
+          process.stderr.write(`mkrootfs build: unknown flag "${a}"\n`);
+          return 2;
+        } else {
+          positional.push(a);
+        }
+      }
+      if (positional.length !== 2 || !out) {
+        process.stderr.write(
+          `mkrootfs build: usage: build <sourceTree> <manifest> -o <image> [--repoRoot=<dir>]\n`,
+        );
+        return 2;
+      }
+      const [sourceTree, manifest] = positional;
+      const { buildImage } = await import("./builder.ts");
+      const { writeFileSync } = await import("node:fs");
+      const image = await buildImage({
+        sourceTree,
+        manifest,
+        repoRoot: repoRoot ?? process.cwd(),
+      });
+      writeFileSync(out, image);
+      process.stdout.write(`Built: ${out} (${image.byteLength} bytes)\n`);
+      return 0;
+    }
     default:
       process.stderr.write(`mkrootfs: unknown command "${cmd}"\n`);
       process.stderr.write(USAGE);
