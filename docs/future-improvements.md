@@ -40,9 +40,16 @@ The kernel has full PTY support (PR #181) but browser demos still use plain `<di
 `host/src` uses extensionless imports (`import './sharedfs-vendor'`). Node's `--experimental-strip-types` (stable in Node 22+) requires explicit `.ts` or `.js` suffixes, so `tools/mkrootfs` runs under `tsx` to avoid the resolver incompatibility. As native Node ESM TS support matures, the repo should migrate to the principled convention:
 
 1. Add `.ts` suffix to every import across `host/src` (mechanical, ~100+ edits).
-2. Set `allowImportingTsExtensions: true` in `host/tsconfig.json` — note this is gated on `noEmit` or `emitDeclarationOnly`, so the tsup pipeline needs verification that it still emits both the JS bundles (tsup v8 rewrites `.ts` suffixes on output) and the DTS bundle (currently has a pre-existing error at `memory-fs.ts:430` that masks this risk).
+2. Set `allowImportingTsExtensions: true` in `host/tsconfig.json` — note this is gated on `noEmit` or `emitDeclarationOnly`, so the tsup pipeline needs verification that it still emits both the JS bundles (tsup v8 rewrites `.ts` suffixes on output) and the DTS bundle.
 3. Drop the `tsx` shim from `tools/mkrootfs/bin/mkrootfs.mjs` in favor of `node --experimental-strip-types`.
 
 Blast radius is unrelated to any feature work — should land as a standalone cleanup PR.
 
 **Files:** all of `host/src/**/*.ts`, `host/tsconfig.json`, `tools/mkrootfs/bin/mkrootfs.mjs`
+
+### `saveImage` serializes the entire SharedArrayBuffer
+`MemoryFileSystem.saveImage()` copies the full SAB (default 16 MiB) into the output image regardless of how much of it is actually used. A populated rootfs with ~50 small files in `/etc` produces a ~16 MB `rootfs.vfs` where the actual content is under 10 KB. The waste doesn't matter today — the image is a build artifact, not shipped — but once browser demos start fetching it over the network, or we ship larger rootfs variants with lazy archives, the bloat becomes visible.
+
+Optimization path: consult `SharedFS`'s block bitmap at save time and emit only occupied blocks + a block map, or run-length-encode the trailing zeros. Either would drop a fresh rootfs image from ~16 MB to under 100 KB. The loader (`fromImage`) would need the corresponding sparse-restore path.
+
+**Files:** `host/src/vfs/memory-fs.ts` — `saveImage`, `fromImage`
