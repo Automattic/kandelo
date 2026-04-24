@@ -453,7 +453,7 @@ The SDK (`sdk/`) provides `wasm32posix-cc` which wraps clang with:
 - Links: `channel_syscall.c` + `compiler_rt.c` + `crt1.o` + `libc.a`
 - Linker flags: `--import-memory --shared-memory --max-memory=1073741824`
 
-For programs that use `fork()`, Binaryen's `wasm-opt --asyncify` post-processing is required to enable call stack save/restore.
+For programs that use `fork()`, the in-tree `wasm-fork-instrument` tool (see [fork-instrumentation.md](fork-instrumentation.md)) must be the **last** post-link pass — after any `wasm-opt -O2`. The tool auto-discovers fork-path functions via call-graph analysis from the `kernel.kernel_fork` import; no `asyncify-onlylist.txt` is needed. Binaryen Asyncify is no longer used.
 
 ## Test Suites
 

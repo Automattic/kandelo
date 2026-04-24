@@ -9,7 +9,13 @@ there is no longer a `wasm-opt --asyncify` pass in the pipeline, and the
 `third_party/binaryen` submodule has been removed. This document is the
 living reference for the tool's behavior, exported ABI, and save-buffer format.
 For motivation, tradeoffs, and the rollout plan that led here, read
-[`plans/2026-04-20-fork-instrumentation-design.md`](plans/2026-04-20-fork-instrumentation-design.md).
+[`plans/2026-04-20-fork-instrumentation-design.md`](plans/2026-04-20-fork-instrumentation-design.md);
+for the post-rollout switch-dispatch redesign and non-fork-path-call gating
+that fix the kernel-side-effect re-fire bug, read
+[`plans/2026-04-22-fork-instrument-switch-dispatch-redesign.md`](plans/2026-04-22-fork-instrument-switch-dispatch-redesign.md).
+ABI version: `5` (bumped from 4 in
+[`crates/shared/src/lib.rs`](../crates/shared/src/lib.rs) — see
+[abi-versioning.md](abi-versioning.md) for the policy).
 
 ## State machine
 
@@ -32,15 +38,19 @@ address of the active save buffer otherwise.
                                        └─────────────┘
 ```
 
-- `NORMAL` — ordinary execution. Side-effect-gated ops run normally.
+- `NORMAL` — ordinary execution. Gated ops and gated calls run normally.
 - `UNWINDING` — the stack is being torn down. Each instrumented function runs
   its postamble, writes a frame into the save buffer, and returns a default
   value; the runtime-exported `wpk_fork_unwind_end` is called once the top of
   the stack is reached.
 - `REWINDING` — the stack is being rebuilt from saved frames. Each
   instrumented function loads its frame and jumps straight to the matching
-  call site; non-call side effects are suppressed until state returns to
-  `NORMAL`.
+  call site (switch-dispatch) or replays the body with per-call guards
+  (guard-dispatch). Non-call side effects (Phase 4g) are suppressed until
+  the resumed call returns and rewind_end flips state back to `NORMAL`.
+  Non-fork-path direct calls to side-effecting callees (`setpgid`, `dup3`,
+  `open`, `kill`, ...) are also suppressed — see [Non-fork-path call
+  gating](#non-fork-path-call-gating).
 
 The host drives the state machine externally. User code never writes to
 `_wpk_fork_state` directly.
@@ -147,13 +157,105 @@ table slot that holds the caught exnref. The rewind preamble uses both fields
 to route control back through the original catch clause — see [Catch-handler
 resume](#catch-handler-resume).
 
+## Dispatch schemes
+
+Every fork-path function uses **one of two dispatch shapes**, chosen by the
+tool per-function based on call-site topology:
+
+| Scheme            | When picked                                                                                                                                                                                                       | How REWIND reaches the resumed call                                                                                                              |
+|-------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------|
+| switch-dispatch   | Every fork-path call lives at the function's top level AND no top-level fork-path call has an operand-stack carryover (a value pushed before the call's args and consumed after the call returns).                | A top-level `br_table`, gated by `state == REWINDING`, jumps directly to the matching `$POST_K` label. The chunks between calls run only on the NORMAL fall-through path.       |
+| guard-dispatch    | Any fork-path call is nested inside a `block`/`loop`/`if`/`try_table`, OR a top-level fork-path call has an operand-stack carryover. The body re-executes top-to-bottom on REWIND with per-call if-else guards.   | Each fork-path call site is wrapped in `(state == NORMAL) || (state == REWINDING && call_idx == N)`. Phase 4g gates side-effect ops in the body so they don't re-fire on REWIND. |
+
+Both schemes share:
+
+- The state machine, exported ABI, and save-buffer header.
+- The per-function frame layout (header + scalar locals).
+- Aux-table spill for ref-typed user locals (Phase 4f).
+- Catch-handler resume via `throw_ref` (Phase 6).
+- **Non-fork-path direct call gating** in guard-dispatch — see below.
+
+Switch-dispatch is the preferred path because no body code runs during REWIND
+except the chosen call site's post-call handling. Guard-dispatch has to run
+the prefix of the body to reach the matching call, but Phase 4g + non-fork-
+path call gating make that replay side-effect-free.
+
+The tool's `instrument_one_function` (in `crates/fork-instrument/src/instrument.rs`)
+inspects the original body, classifies each fork-path call as top-level or
+nested, runs a stack-effect tracker over the entry block to detect carryovers,
+and routes to either `instrument_one_function_switch` or
+`instrument_one_function_guard_dispatch`.
+
+### Non-fork-path call gating
+
+In guard-dispatch the body re-executes top-to-bottom during REWIND, so any
+non-fork-path direct call (e.g. a libc wrapper for `setpgid`/`dup3`/`open`/
+`kill`/`pipe`) would re-fire and re-trigger its kernel side effect — moving
+the just-forked child out of its parent's pgid, closing fds twice, etc. This
+was the root cause of the 8 sortix fork-semantic regressions tracked in
+`memory/fork-instrument-phase7-debug-evidence.md` (in the project's external
+memory, not the repo).
+
+The fix wraps each non-fork-path direct `Call` in a `state == NORMAL` if-else
+and round-trips its return value through a fresh user scalar local that lives
+in the function's frame:
+
+```wat
+;; Original:
+;;   call $non_fork_path_callee   ;; consumes [args], pushes [results]
+
+global.get $_wpk_fork_state
+i32.const 0      ;; STATE_NORMAL
+i32.eq
+
+if (param ...args...) (result)            ;; consumes [args, cond]
+  (then
+    call $non_fork_path_callee            ;; consumes [args], pushes [results]
+    ;; local.set in reverse so the topmost result lands in the last save_local
+    local.set $result_save_N-1
+    ...
+    local.set $result_save_0)
+  (else
+    drop                                   ;; one drop per arg
+    ...))
+
+local.get $result_save_0                   ;; restore results onto outer stack
+...
+local.get $result_save_N-1
+```
+
+The `$result_save_K` locals are **user scalar locals** — appended to the
+function's frame, so on UNWIND the parent's actual return values are
+serialized; on REWIND the preamble restores them and the post-gate
+`local.get`s read the restored values. Consumers therefore see the parent's
+actual return value during REWIND (rather than a default 0, which would
+diverge control flow when the result is consumed inline without a 4g-gated
+`local.set $user_local`).
+
+Calls with a non-scalar result (a non-nullable `Ref`) are left unwrapped —
+LLVM-emitted C in our toolchain doesn't produce them. Switch-dispatch does
+not need this gating: chunks before `$POST_K` are skipped on REWIND, so
+non-fork-path calls in those chunks never re-execute.
+
+Indirect calls (`call_indirect`) are conservatively wrapped with the
+fork-path machinery in both schemes (we cannot statically prove the target
+isn't on the fork path).
+
 ## Per-function transform — before/after WAT
 
-The tool applies a uniform transform to every function on the fork-path. The
-following pairs show representative fixtures from
-`crates/fork-instrument/tests/instrument.rs`. The transformed WAT is simplified
-for readability; the actual output includes `current_pos` bumping, default
-values for result types, and preserved source locations.
+The tool applies a per-function transform that depends on the dispatch
+scheme described above. The following pairs show representative fixtures
+from `crates/fork-instrument/tests/instrument.rs` and
+`crates/fork-instrument/tests/switch_dispatch.rs`. The transformed WAT is
+simplified for readability; the actual output includes `current_pos`
+bumping, default values for result types, and preserved source locations.
+
+The before/after example below shows **guard-dispatch**, which is what most
+real LLVM-emitted C ends up using because of its mixed nesting and
+operand-stack carryover patterns. For switch-dispatch (top-level-only,
+no carryover), see the fixture
+`tests/fixtures/switch_dispatch/waitpid_class.wat` and the assertions in
+`tests/switch_dispatch.rs::waitpid_class_non_fork_path_call_skipped_on_rewind`.
 
 ### (a) Direct call to `fork` with no locals
 
@@ -465,6 +567,14 @@ closure is still a strict subset of full-module instrumentation.
 - **try_table context.** Frames captured inside a fork-path catch handler
   carry the active `catch_region_id` and exnref stash slot, and rewind
   re-enters the handler via `throw_ref` (Phase 6).
+- **Kernel-side-effect calls don't re-fire during REWIND.** In guard-dispatch
+  the body re-executes top-to-bottom to reach the matching call, but every
+  non-fork-path direct `Call` is gated by `state == NORMAL` and its return
+  value round-trips through a frame-saved local — so callees that hit the
+  kernel ABI (`setpgid`, `dup3`, `kill`, `open`, `pipe`, ...) only run on
+  the parent's NORMAL pass, never during the parent's or child's REWIND
+  replay. Switch-dispatch sidesteps the issue by skipping the prefix body
+  entirely.
 
 ### Not guaranteed (unsupported patterns)
 
@@ -488,14 +598,21 @@ closure is still a strict subset of full-module instrumentation.
 ### Not-yet-gated side effects
 
 Phase 4g gates the common side-effect instructions on the fork path so they
-are skipped during rewind. Instructions currently gated:
+are skipped during rewind in guard-dispatch. Instructions currently gated:
 `local.set`, `local.tee`, `global.set`, `store` (all widths),
 `memory.grow`, `memory.fill`, `memory.copy`, `memory.init`, `data.drop`,
 `elem.drop`, `table.set`.
 
+In addition, **direct `Call` instructions to non-fork-path callees are
+gated** in guard-dispatch with frame-saved result locals (see [Non-fork-path
+call gating](#non-fork-path-call-gating)). Switch-dispatch does not need
+either gate — the body chunks before `$POST_K` never re-execute on REWIND.
+
 Not currently gated (open work; a program that relies on them during rewind
 may misbehave): atomic RMW, `atomic.notify`, `throw` / `throw_ref` outside
-instrumented regions, `table.grow`, `table.fill`, `table.init`, `table.copy`.
+instrumented regions, `table.grow`, `table.fill`, `table.init`, `table.copy`,
+direct `Call` whose result type is a non-nullable `Ref` (no scalar frame
+slot to round-trip the result through).
 
 ## Performance envelope
 
@@ -511,6 +628,24 @@ prior full-asyncify carve-out (most notably git), since the tool instruments
 a tighter reachable set.
 
 ## Maintainer notes
+
+### Reasoning about which scheme a function uses
+
+When a real-world program misbehaves during fork, the first triage step is
+to figure out whether the offending function is using switch- or
+guard-dispatch:
+
+```bash
+wasm-tools print "$BIN" | awk '/^\s+\(func [^;]*main/{found=1} found{print}' | head -200
+```
+
+A leading `block ... block ... if (state == REWINDING) ... br_table ...`
+shape means switch-dispatch. A `block $unwind_save` followed by per-call
+`(state == NORMAL || (REWINDING && call_idx == K))` if-elses means
+guard-dispatch. The cargo test
+`tests/switch_dispatch.rs::guard_dispatch_gates_non_fork_path_direct_call`
+asserts the gated-call shape on a minimal fixture; copy that pattern when
+adding new regression cases.
 
 ### Running tests
 
