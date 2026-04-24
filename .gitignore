@@ -26,6 +26,9 @@ node_modules/
 !host/wasm/*.wasm
 !host/test/fixtures/*.wasm
 
+# VFS image (built on demand by scripts/build-rootfs.sh)
+host/wasm/rootfs.vfs
+
 # OS noise
 .DS_Store
 
