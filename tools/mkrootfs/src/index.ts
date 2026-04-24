@@ -43,8 +43,18 @@ async function main(argv: string[]): Promise<number> {
       extractImage(image, outDir);
       return 0;
     }
+    case "add": {
+      const { addFile, parseAddArgs } = await import("./add.ts");
+      try {
+        const opts = parseAddArgs(argv.slice(3));
+        await addFile(opts);
+      } catch (e) {
+        process.stderr.write(`mkrootfs add: ${(e as Error).message}\n`);
+        return 2;
+      }
+      return 0;
+    }
     case "build":
-    case "add":
       process.stderr.write(`mkrootfs: "${cmd}" not yet implemented\n`);
       return 2;
     default:
