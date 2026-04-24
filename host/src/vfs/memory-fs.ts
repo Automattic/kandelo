@@ -423,11 +423,17 @@ export class MemoryFileSystem implements FileSystemBackend {
       throw new Error("VFS image truncated");
     }
 
-    // Restore SharedArrayBuffer (optionally growable)
+    // Restore SharedArrayBuffer (optionally growable). The 2-arg SAB
+    // constructor is a newer addition and isn't in every TS stdlib version,
+    // so cast through any to avoid DTS-build failures on older typings.
+    const SAB = SharedArrayBuffer as unknown as new (
+      len: number,
+      opts?: { maxByteLength?: number },
+    ) => SharedArrayBuffer;
     const sabOptions = options?.maxByteLength
       ? { maxByteLength: options.maxByteLength }
       : undefined;
-    const sab = new SharedArrayBuffer(sabLen, sabOptions);
+    const sab = new SAB(sabLen, sabOptions);
     const sabView = new Uint8Array(sab);
     sabView.set(image.subarray(VFS_IMAGE_HEADER_SIZE, VFS_IMAGE_HEADER_SIZE + sabLen));
 
