@@ -652,6 +652,49 @@ export class MemoryFileSystem implements FileSystemBackend {
     this.fs.chown(path, uid, gid);
   }
 
+  // ── Build-time helpers (used by mkrootfs) ──────────────────────────
+  // Convenience wrappers that create a node and set its owner in one
+  // call. Not part of FileSystemBackend; these exist so an image builder
+  // can produce a VFS with specific uid/gid/mode without chaining four
+  // calls per entry.
+
+  createFileWithOwner(
+    path: string,
+    mode: number,
+    uid: number,
+    gid: number,
+    content: Uint8Array,
+  ): void {
+    // O_WRONLY | O_CREAT | O_TRUNC
+    const fd = this.fs.open(path, 0x0001 | 0x0040 | 0x0200, mode & 0o7777);
+    try {
+      if (content.byteLength > 0) {
+        let written = 0;
+        while (written < content.byteLength) {
+          const n = this.fs.write(fd, content.subarray(written));
+          if (n <= 0) throw new Error(`short write to ${path}`);
+          written += n;
+        }
+      }
+      this.fs.fchmod(fd, mode & 0o7777);
+      this.fs.fchown(fd, uid, gid);
+    } finally {
+      this.fs.close(fd);
+    }
+  }
+
+  mkdirWithOwner(path: string, mode: number, uid: number, gid: number): void {
+    this.fs.mkdir(path, mode & 0o7777);
+    this.fs.chmod(path, mode & 0o7777);
+    this.fs.chown(path, uid, gid);
+  }
+
+  symlinkWithOwner(target: string, path: string, uid: number, gid: number): void {
+    this.fs.symlink(target, path);
+    // lchown: set owner on the symlink itself, not its (possibly missing) target.
+    this.fs.lchown(path, uid, gid);
+  }
+
   // access: check if path exists by stat'ing it (stat throws on error)
   access(path: string, _mode: number): void {
     this.fs.stat(path);
