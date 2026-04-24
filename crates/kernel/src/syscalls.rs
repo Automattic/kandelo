@@ -7993,11 +7993,15 @@ mod tests {
         sigsuspend_signal: u32,
         sigsuspend_error: bool,
         clock_time: (i64, i64),
+        /// Last (path, uid, gid) passed to host_chown; None if not called.
+        last_chown: Option<(alloc::vec::Vec<u8>, u32, u32)>,
+        /// Last (handle, uid, gid) passed to host_fchown; None if not called.
+        last_fchown: Option<(i64, u32, u32)>,
     }
 
     impl MockHostIO {
         fn new() -> Self {
-            MockHostIO { next_handle: 100, dir_entry_returned: false, dir_entry_index: 0, dir_entry_count: 1, sigsuspend_signal: 0, sigsuspend_error: false, clock_time: (1234567890, 123456789) }
+            MockHostIO { next_handle: 100, dir_entry_returned: false, dir_entry_index: 0, dir_entry_count: 1, sigsuspend_signal: 0, sigsuspend_error: false, clock_time: (1234567890, 123456789), last_chown: None, last_fchown: None }
         }
     }
 
@@ -8105,7 +8109,10 @@ mod tests {
         }
 
         fn host_chmod(&mut self, _path: &[u8], _mode: u32) -> Result<(), Errno> { Ok(()) }
-        fn host_chown(&mut self, _path: &[u8], _uid: u32, _gid: u32) -> Result<(), Errno> { Ok(()) }
+        fn host_chown(&mut self, path: &[u8], uid: u32, gid: u32) -> Result<(), Errno> {
+            self.last_chown = Some((path.to_vec(), uid, gid));
+            Ok(())
+        }
         fn host_access(&mut self, _path: &[u8], _amode: u32) -> Result<(), Errno> { Ok(()) }
 
         fn host_opendir(&mut self, _path: &[u8]) -> Result<i64, Errno> {
@@ -8152,7 +8159,8 @@ mod tests {
             Ok(())
         }
 
-        fn host_fchown(&mut self, _handle: i64, _uid: u32, _gid: u32) -> Result<(), Errno> {
+        fn host_fchown(&mut self, handle: i64, uid: u32, gid: u32) -> Result<(), Errno> {
+            self.last_fchown = Some((handle, uid, gid));
             Ok(())
         }
 
@@ -8483,6 +8491,17 @@ mod tests {
         let mut host = MockHostIO::new();
         let stat = sys_lstat(&mut proc, &mut host, b"/tmp/link").unwrap();
         assert_eq!(stat.st_mode & S_IFLNK, S_IFLNK);
+    }
+
+    #[test]
+    fn test_chown_forwards_args_to_host() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        sys_chown(&mut proc, &mut host, b"/etc/passwd", 1000, 1001).unwrap();
+        let last = host.last_chown.as_ref().expect("host_chown should have been called");
+        assert_eq!(&last.0[..], b"/etc/passwd");
+        assert_eq!(last.1, 1000);
+        assert_eq!(last.2, 1001);
     }
 
     #[test]
