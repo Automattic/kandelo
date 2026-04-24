@@ -46,6 +46,11 @@ check 'print(Array.isArray(undefined))'  'false'
 check 'print(Number.isFinite(0))'        'true'
 check 'print(Number.isFinite(Infinity))' 'false'
 
+# NumberIsNaN — Phase 6 Task 6.4 whitelist. Smi fast-path (0 -> false)
+# and HeapNumber NaN case (NaN -> true).
+check 'print(Number.isNaN(0))'           'false'
+check 'print(Number.isNaN(NaN))'         'true'
+
 echo
 echo "d8 smoke: $pass passed, $fail failed"
 [ "$fail" = 0 ]
