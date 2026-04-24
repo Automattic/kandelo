@@ -78,7 +78,12 @@ export async function buildImage(opts: BuildOptions): Promise<Uint8Array> {
   const archives: ManifestArchive[] = entries.filter(
     (e): e is ManifestArchive => e.kind === "archive",
   );
-  for (const a of archives) {
+
+  // Pre-scan: reject (a) two archives shipping the same path, and (b)
+  // implicit f-entries (no src=) overlapping with archive paths. Explicit
+  // src= overrides are allowed — the manifest wins, and we tag those
+  // archive entries as deleted before registration so they're ignored.
+  const archiveEntries = archives.map((a) => {
     const archivePath = resolve(opts.repoRoot, a.url);
     const zipBytes = new Uint8Array(readFileSync(archivePath));
     const zipEntries = parseZipCentralDirectory(zipBytes).map((ze) => ({
@@ -86,13 +91,56 @@ export async function buildImage(opts: BuildOptions): Promise<Uint8Array> {
       // Tolerate leading-/ paths in archives (strict output, forgiving input).
       fileName: ze.fileName.replace(/^\/+/, ""),
     }));
+    return { archive: a, zipEntries };
+  });
 
-    const group = mfs.registerLazyArchiveFromEntries(a.url, zipEntries, a.base);
+  const explicitFilePaths = new Set<string>();
+  const explicitOverridePaths = new Set<string>();
+  for (const e of entries) {
+    if (e.kind !== "node" || e.type !== "f") continue;
+    explicitFilePaths.add(e.path);
+    if (e.src) explicitOverridePaths.add(e.path);
+  }
+
+  const archiveOwner = new Map<string, string>(); // vfsPath → archive url
+  for (const { archive, zipEntries } of archiveEntries) {
+    const base = archive.base === "/" ? "" : archive.base.replace(/\/+$/, "");
+    for (const ze of zipEntries) {
+      if (ze.isDirectory) continue;
+      const vfsPath = base + "/" + ze.fileName;
+      const prior = archiveOwner.get(vfsPath);
+      if (prior && prior !== archive.url) {
+        throw new Error(
+          `${vfsPath}: shipped by two archives (${prior} and ${archive.url})`,
+        );
+      }
+      if (explicitFilePaths.has(vfsPath) && !explicitOverridePaths.has(vfsPath)) {
+        throw new Error(
+          `${vfsPath}: declared as implicit file and also shipped by archive ${archive.url}; add src= to the manifest entry if the override is intentional`,
+        );
+      }
+      archiveOwner.set(vfsPath, archive.url);
+    }
+  }
+
+  for (const { archive: a, zipEntries } of archiveEntries) {
+    // Drop archive entries that an explicit src= manifest line overrides.
+    // registerLazyArchiveFromEntries calls fs.open(..., O_TRUNC) on every
+    // entry it processes, so passing the overridden entries through would
+    // clobber the explicit content Pass 2 wrote.
+    const base = a.base === "/" ? "" : a.base.replace(/\/+$/, "");
+    const filteredEntries = zipEntries.filter((ze) => {
+      if (ze.isDirectory) return true;
+      const vfsPath = base + "/" + ze.fileName;
+      return !explicitOverridePaths.has(vfsPath);
+    });
+    const group = mfs.registerLazyArchiveFromEntries(a.url, filteredEntries, a.base);
 
     // registerLazyArchiveFromEntries seeds each stub with the zip's embedded
     // mode; override with manifest defaults so image builds are deterministic
     // regardless of who packaged the zip.
     for (const [vfsPath, entry] of group.entries) {
+      if (entry.deleted) continue;
       if (entry.isSymlink) {
         // Symlinks: lchown only; mode on symlinks is cosmetic on POSIX.
         mfs.lchown(vfsPath, a.uid, a.gid);
