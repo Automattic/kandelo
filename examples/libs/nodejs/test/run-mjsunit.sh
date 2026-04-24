@@ -25,6 +25,7 @@ fi
 # whitelisted and green through cctest + d8-smoke first.
 PASS_LIST=(
   "array-isarray.js"
+  "number-is.js"
 )
 
 cd "${MJSUNIT_DIR}"
