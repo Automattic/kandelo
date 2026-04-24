@@ -1659,6 +1659,20 @@ export class SharedFS {
     }
   }
 
+  lchown(path: string, uid: number, gid: number): void {
+    const ino = this.pathResolve(path, false);
+    if (ino < 0) throw new SFSError(ino);
+    this.inodeWriteLock(ino);
+    try {
+      const off = this.inodeOffset(ino);
+      this.w32(off + INO_UID, uid);
+      this.w32(off + INO_GID, gid);
+      this.w64(off + INO_CTIME, Date.now());
+    } finally {
+      this.inodeWriteUnlock(ino);
+    }
+  }
+
   fchown(fd: number, uid: number, gid: number): void {
     const entry = this.fdGet(fd);
     if (!entry) throw new SFSError(EBADF);
