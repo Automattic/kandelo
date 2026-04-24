@@ -75,4 +75,23 @@ describe("image builder", () => {
       }),
     ).rejects.toThrow(/orphan\.conf.*not in manifest/);
   });
+
+  it("registers archive entries at base= prefix with per-archive mode/owner", async () => {
+    const fixture = join(here, "fixtures", "archive");
+    const image = await buildImage({
+      sourceTree: join(fixture, "rootfs"),
+      manifest: join(fixture, "MANIFEST"),
+      repoRoot: fixture,
+    });
+    const mfs = MemoryFileSystem.fromImage(image);
+
+    // Archive members land at base=/usr plus their zip-internal path.
+    const vim = mfs.stat("/usr/bin/vim");
+    expect(vim.mode & 0o777).toBe(0o644); // from fmode=
+    expect(vim.uid).toBe(0);
+    expect(vim.gid).toBe(0);
+
+    const vimrc = mfs.stat("/usr/share/vim/vim91/vimrc");
+    expect(vimrc.mode & 0o777).toBe(0o644);
+  });
 });

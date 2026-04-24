@@ -652,6 +652,11 @@ export class MemoryFileSystem implements FileSystemBackend {
     this.fs.chown(path, uid, gid);
   }
 
+  /** lchown: operate on the symlink itself, not its target. */
+  lchown(path: string, uid: number, gid: number): void {
+    this.fs.lchown(path, uid, gid);
+  }
+
   // ── Build-time helpers (used by mkrootfs) ──────────────────────────
   // Convenience wrappers that create a node and set its owner in one
   // call. Not part of FileSystemBackend; these exist so an image builder
