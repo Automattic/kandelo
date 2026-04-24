@@ -51,6 +51,11 @@ check 'print(Number.isFinite(Infinity))' 'false'
 check 'print(Number.isNaN(0))'           'false'
 check 'print(Number.isNaN(NaN))'         'true'
 
+# NumberIsInteger — Phase 6 Task 6.5 whitelist. Smi fast-path
+# (1 -> true) and HeapNumber non-integer case (1.5 -> false).
+check 'print(Number.isInteger(1))'       'true'
+check 'print(Number.isInteger(1.5))'     'false'
+
 echo
 echo "d8 smoke: $pass passed, $fail failed"
 [ "$fail" = 0 ]
