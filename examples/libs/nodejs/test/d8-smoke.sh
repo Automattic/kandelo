@@ -56,6 +56,11 @@ check 'print(Number.isNaN(NaN))'         'true'
 check 'print(Number.isInteger(1))'       'true'
 check 'print(Number.isInteger(1.5))'     'false'
 
+# NumberIsSafeInteger — Phase 6 Task 6.6 whitelist. The 2^53 boundary
+# is the cheapest discriminator vs. NumberIsInteger.
+check 'print(Number.isSafeInteger(Number.MAX_SAFE_INTEGER))' 'true'
+check 'print(Number.isSafeInteger(2**53))'                   'false'
+
 echo
 echo "d8 smoke: $pass passed, $fail failed"
 [ "$fail" = 0 ]
