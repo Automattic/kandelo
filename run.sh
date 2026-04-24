@@ -875,7 +875,9 @@ build_ncurses() {
 }
 
 build_vim() {
-    build_ncurses
+    # Vim's build script now resolves ncurses through the dep cache
+    # (`cargo xtask build-deps resolve ncurses`), so we don't prep it
+    # into the sysroot here.
     need_kernel
     need_sdk
     if ! has_vim; then
