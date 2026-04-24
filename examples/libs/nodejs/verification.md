@@ -950,3 +950,147 @@ hard-stop per the plan's Appendix B.
   kernel gates match main-branch state (including the 2 pre-existing
   vitest environmental failures and the 2 pre-existing libc-test
   FAILs unrelated to Phase 6).
+
+## Phase 7 Summary
+
+Plan: docs/plans/2026-04-24-torque-cc-backend-phase7-tailcalls.md.
+Scope: tail-call emission for `CallBuiltinInstruction` (CSA's `TailCallBuiltin` equivalent under kCCBuiltins).
+
+### Emitter change (one branch, 19 lines)
+
+`CCGenerator::EmitInstruction(const CallBuiltinInstruction&, ...)` at
+`deps/v8/src/torque/cc-generator.cc:525` gained a tail-call branch that
+replaces the prior `ReportError("Phase 2: CallBuiltin tail-call is
+deferred.")`. Emission shape:
+
+```cpp
+if (instruction.is_tailcall) {
+  if (instruction.builtin->IsJavaScript()) ReportError(...Phase 8...);
+  if (instruction.catch_block) ReportError(...deferred...);
+  std::vector<std::string> arguments = stack->PopMany(instruction.argc);
+  out() << "  return Builtin_" << instruction.builtin->ExternalName()
+        << "(isolate";
+  for (const auto& arg : arguments) out() << ", " << arg;
+  out() << ");\n";
+  return;
+}
+```
+
+The two other guards (JS-linkage, catch_block) **remain** as
+`ReportError`s below the tail-call branch for the non-tail path, and
+are re-emitted inside the tail branch as deferred-to-Phase-8 guards.
+The early `return` ensures no result-var decl or non-tail emission
+runs when `is_tailcall=true`. Clone commit `6178a949`.
+
+### Synthetic forcing target
+
+`test/torque-cc-fixtures/tail-call.tq` (staged into both the clone's v8
+tree and the worktree harness) defines:
+
+```torque
+namespace test_cc_tail {
+  builtin TorqueCcTest_TailCall_Helper(implicit context: Context)(x: Smi): Smi {
+    return x;
+  }
+  builtin TorqueCcTest_TailCall(implicit context: Context)(arg: Smi): Smi {
+    tail TorqueCcTest_TailCall_Helper(arg);
+  }
+}
+```
+
+Golden (`test/torque-fixtures/golden/tail-call-tq-ccbuiltins.cc`) shows
+the caller emitting a single terminal `return Builtin_...Helper(isolate,
+parameter0, parameter1);` after the standard `goto block0` preamble,
+with no `Tagged<Smi> tmp{}` result-var decl — exactly the CSA tail shape
+we wanted.
+
+### Real forcing target — DEFERRED to Phase 7A
+
+`Increment` (number.tq:776-785) was the candidate. Triage:
+
+- **Emitter** handles Increment cleanly. A standalone `torque
+  --cc-builtins-whitelist=Increment` run produces
+  `number-tq-ccbuiltins.cc::Builtin_Increment` with the new tail-call
+  at `block5: return Builtin_Add(isolate, parameter0, tmp1, tmp4);` as
+  expected. No emitter error; no ReportError hit.
+- **Linker surface** is the blocker. Increment's emission calls into 5
+  not-yet-shimmed helpers: `TqRuntimeUnaryOp1_0` (port of the
+  multi-arm typeswitch macro that dispatches JSAny → Number/BigInt
+  via `NonNumberToNumeric`), plus `TqRuntimeFromConstexpr_Number...`,
+  `TqRuntimeFromConstexpr_Operation...`, `TqRuntimeSmiTag_Operation_0`,
+  and the transitive `Builtin_Add`. Porting `UnaryOp1` alone is
+  non-trivial (full typeswitch + `NonNumberToNumeric`), and each
+  additional shim compounds the surface.
+
+Per plan's Task 7.4 triage: `Increment`'s callee `Add` is
+`transitioning` (number.tq:397) AND `Increment` itself uses `try/label`
+dispatch. Both match the plan's "STOP here, mark this task BLOCKED,
+skip to Task 7.6. Ship Phase 7 on synthetic fixture + emitter + cctest
+only." Phase 7A will resume with either (a) enough CSA-replacement
+shims to link Increment, or (b) a simpler forcing target discovered
+later (Decrement shares Increment's shape; other candidates in
+number.tq tail into runtime/namespace functions not CallBuiltin).
+
+### Verification
+
+| Gate | Phase 6.1 | Phase 7 | Delta |
+|------|-----------|---------|-------|
+| Torque fixtures | 15/15 byte-exact | **16/16 byte-exact** | +1 new golden (`tail-call`) + 15 refreshed for Phase-6.1 True_0/False_0 drift that hadn't been captured in the baseline |
+| cctest `TorqueCcBuiltinTest.*` | 9 PASS | **10 PASS** | +1 `DirectInvocationTorqueCcTest_TailCall` |
+| d8-smoke | 18 PASS | **18 PASS** | 0 (no real target shipped) |
+| mjsunit | 2 PASS | **2 PASS** | 0 (no real target shipped) |
+| Excluding-anchor (`number-tq-csa.cc` excluded) | `8169724e` | `09b34bf8` | **Matching source change**: added `tail-call.tq` to BUILD.gn for cctest linkage, generating a new `tail-call-tq-csa.cc`. With *both* `number-tq-csa.cc` and `tail-call-tq-csa.cc` excluded, anchor stays `8169724e` — confirming no other CSA-emitter drift. |
+| Patch delta | 5591 lines (73 commits) | **5753 lines (75 commits)** | +162 lines; under the ≤500-line cap for synthetic-only |
+| cargo unit tests | 722 passed | **722 passed** | 0 |
+| vitest | 250 passed / 108 skipped | **250 passed / 108 skipped** | 0 |
+| libc-test | 0 unexpected FAIL | **0 unexpected FAIL** | 0 (XFAIL set unchanged) |
+| POSIX | 0 FAIL, 1 XFAIL | **0 FAIL, 1 XFAIL (munmap/1-1)** | 0 |
+| ABI snapshot | In sync | **In sync** | 0 (no ABI surface touched) |
+
+### Harness dedup fix (`run-torque-fixtures.sh`)
+
+Adding `tail-call.tq` to `BUILD.gn` (required for cctest linkage — the
+Release build only emits `-tq-ccbuiltins.cc` for files in the
+`torque_files` list) introduced a duplicate: the harness passed the
+stock copy (`test/torque-cc-fixtures/tail-call.tq`) *and* the staged
+worktree copy (`test/phase2-fixtures/tail-call.tq`) to torque, and
+`tail TorqueCcTest_TailCall_Helper(arg)` saw two candidates → overload
+ambiguity error. `return.tq` and `js-return.tq` avoided this
+historically by not self-referencing. Harness now drops stock entries
+whose basename matches any fixture, regardless of symlink state —
+this is the same drop the pre-existing "symlinked V8-tree fixture"
+branch already performs for `array-isarray.tq`.
+
+### Clone commits (75 total on `9fe7634c`)
+
+- `5c894bb8` — v8: stage tail-call.tq fixture in deps/v8/test/torque-cc-fixtures/ + BUILD.gn
+- `483afad8` — cctest: add DirectInvocationTorqueCcTest_TailCall
+- `6178a949` — torque: CCGenerator emits tail-call for non-JS, non-catch CallBuiltin
+
+### Deferred items still open after Phase 7
+
+| Item | Why deferred |
+|------|--------------|
+| `catch_block` runtime exception handling (cc-generator.cc:531 + :1121) | Blocks many transitioning builtins (Increment's blocker). Phase 8 candidate. |
+| Varargs JS builtins (`IsVarArgsJavaScript`) | Blocks `FastConsoleAssert`, `ArrayOf`, `ArrayFrom`, `Boolean*`, `NumberParse*`, `NumberPrototypeToString`. Phase 8+ candidate. |
+| `CallBuiltinPointer` tail-call | Matches CSA's own rejection (`csa-generator.cc:634`). Unlikely to ever become non-deferred. |
+| JS-linkage `CallBuiltin` tail-call | Would need `TailCallJSBuiltin`-equivalent CPP-to-JS-linkage trampoline. Phase 8+; no target forces it yet. |
+| Multi-result `PairT` return from `CallBuiltin` (cc-generator.cc:548) | No target forces it in Phase 7. |
+| Struct-typed label values | ReportError from Phase 4. |
+| Generator-emitted per-const `NamespaceConstant` helpers | Phase 6.1 I-1 leaves the hand-written `True_0`/`False_0` pattern. |
+| `%GetClassMapConstant` fast-path | Phase 5 compromise; no UNIQUE_INSTANCE_TYPE target forced it. |
+| CSA-replacement ledger first real shim | Scaffold at `examples/libs/nodejs/csa-builtins/`. Pending first real need (likely Phase 7A Increment shim: UnaryOp1). |
+| Wasm32 cross-compile of the Torque-CC toolchain | Phase 8+. |
+| **NEW:** Phase 7A — ship `Increment` (or simpler tail-call target) | Needs `UnaryOp1` shim port + 3-4 supporting `FromConstexpr/SmiTag/Cast` shims. Emitter is ready. |
+
+### What Phase 7 proves
+
+- The emitter handles `CallBuiltinInstruction::is_tailcall=true` correctly
+  for non-JS-linkage, non-catch_block builtins: terminal `return` of a
+  direct `Builtin_<Callee>(isolate, args...)` call, no intermediate
+  result variable. Semantically equivalent to CSA's `TailCallBuiltin`.
+- Real-world emission is unblocked: Increment emits cleanly end-to-end;
+  the only thing blocking shipping it is the shim layer (pre-existing
+  work queue, not an emitter gap).
+- Zero regressions across all 5 wasm-posix-kernel gates + the 5 v8
+  gates (cctest, d8-smoke, mjsunit, fixture harness, excluding-anchor).

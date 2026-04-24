@@ -88,6 +88,20 @@ for tq in "${FIX_DIR}"/*.tq; do
       STOCK_DROP+=("${real#${V8_ROOT_ABS}/}")
       ;;
   esac
+  # Drop any stock entry whose basename matches this fixture. Phase 7
+  # added `tail-call.tq` to BUILD.gn (so the Release build emits
+  # Builtin_TorqueCcTest_TailCall for cctest linkage), meaning the
+  # stock torque file list already contains test/torque-cc-fixtures/
+  # <name>.tq. Without this dedup, the harness passes two copies of
+  # the fixture to torque and self-referential fixtures (caller → helper
+  # in the same file) hit an overload-ambiguity error at the call site.
+  # Non-self-referential fixtures (return.tq, js-return.tq) happened to
+  # work without this dedup because no name resolution fired.
+  for s in "${STOCK_TQ[@]}"; do
+    if [ "$(basename "${s}")" = "$(basename "${tq}")" ]; then
+      STOCK_DROP+=("${s}")
+    fi
+  done
 done
 [ ${#FIXTURES[@]} -gt 0 ] || { echo "No fixtures matching '${FILTER}'"; exit 1; }
 
