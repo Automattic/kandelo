@@ -15,6 +15,9 @@ if [ -d programs ] && ls programs/*.c >/dev/null 2>&1; then
     bash scripts/build-programs.sh
 fi
 
+echo "Building rootfs VFS image..."
+bash scripts/build-rootfs.sh
+
 echo "Building TypeScript host..."
 cd host
 npm install --prefer-offline
