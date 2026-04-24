@@ -64,4 +64,15 @@ describe("image builder", () => {
     mfs.close(fd);
     expect(new TextDecoder().decode(buf.subarray(0, n))).toBe("some config\n");
   });
+
+  it("errors when source tree contains files not declared in manifest", async () => {
+    const fixture = join(here, "fixtures", "stray-file");
+    await expect(
+      buildImage({
+        sourceTree: join(fixture, "rootfs"),
+        manifest: join(fixture, "MANIFEST"),
+        repoRoot: fixture,
+      }),
+    ).rejects.toThrow(/orphan\.conf.*not in manifest/);
+  });
 });

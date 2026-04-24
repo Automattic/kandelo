@@ -3,8 +3,8 @@
 // Passes are ordered so parents exist before children, and file content is
 // written before per-file mode/owner is applied (the helpers handle that).
 
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
+import { resolve, join, relative } from "node:path";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
   parseManifest,
@@ -26,6 +26,12 @@ export interface BuildOptions {
 export async function buildImage(opts: BuildOptions): Promise<Uint8Array> {
   const manifestText = readFileSync(resolve(opts.manifest), "utf8");
   const entries: ManifestEntry[] = parseManifest(manifestText);
+
+  // Stray-file guard: every regular file inside sourceTree must be declared
+  // in the manifest as an f-entry without src= (or with a src= the builder
+  // will fetch anyway). Files on disk with no declaration are silently
+  // dropped today; refuse the build instead so manifest drift stays visible.
+  checkSourceTreeCoverage(opts.sourceTree, entries);
 
   const sab = new SharedArrayBuffer(opts.sabSize ?? 16 * 1024 * 1024);
   const mfs = MemoryFileSystem.create(sab);
@@ -72,4 +78,47 @@ export async function buildImage(opts: BuildOptions): Promise<Uint8Array> {
 
 function depth(p: string): number {
   return p.split("/").filter(Boolean).length;
+}
+
+function checkSourceTreeCoverage(
+  sourceTree: string,
+  entries: ManifestEntry[],
+): void {
+  const root = resolve(sourceTree);
+  if (!existsSync(root)) return;
+
+  // Paths declared as files with implicit source (no src=) are expected to
+  // live at sourceTree/<path>. src= overrides, dirs, symlinks, and archives
+  // don't require an on-disk file inside sourceTree.
+  const expected = new Set<string>();
+  for (const e of entries) {
+    if (e.kind !== "node" || e.type !== "f" || e.src) continue;
+    expected.add(e.path.replace(/^\//, ""));
+  }
+
+  const missing: string[] = [];
+  walkFiles(root, "", (rel) => {
+    if (!expected.has(rel)) missing.push(rel);
+  });
+  if (missing.length > 0) {
+    const list = missing.map((m) => `/${m}`).sort().join(", ");
+    throw new Error(`${list} not in manifest`);
+  }
+}
+
+function walkFiles(
+  abs: string,
+  rel: string,
+  visit: (relPath: string) => void,
+): void {
+  for (const name of readdirSync(abs)) {
+    const childAbs = join(abs, name);
+    const childRel = rel ? `${rel}/${name}` : name;
+    const st = statSync(childAbs);
+    if (st.isDirectory()) {
+      walkFiles(childAbs, childRel, visit);
+    } else if (st.isFile()) {
+      visit(childRel);
+    }
+  }
 }
