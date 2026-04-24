@@ -9,6 +9,7 @@
 #include "src/builtins/builtins-utils-inl.h"
 #include "src/execution/arguments-inl.h"
 #include "src/execution/isolate.h"
+#include "src/execution/isolate-inl.h"
 #include "src/handles/handles-inl.h"
 #include "src/objects/casting-inl.h"
 #include "src/objects/contexts.h"
@@ -33,12 +34,18 @@ namespace v8::internal {
 // Proper NamespaceConstant emission under kCCBuiltins is Phase 6
 // groundwork; these hand-written inlines cover `const True` /
 // `const False` from base.tq (torque-suffixed `_0`) so the
-// ArrayIsArray fixture links.
-inline Tagged<True> True_0(Isolate* isolate) {
-  return Cast<True>(ReadOnlyRoots(isolate).true_value());
+// ArrayIsArray fixture links. Phase 6.1 (I-1 follow-up) moved
+// the `Isolate::Current()` lookup into the helper body — the
+// emitter now emits `True_0()` / `False_0()` with no argument,
+// so the same helper works from the outer builtin body and from
+// nested TqRuntime* helper bodies without an `isolate` token
+// needing to be in scope at the call site.
+inline Tagged<True> True_0() {
+  return Cast<True>(ReadOnlyRoots(Isolate::Current()).true_value());
 }
-inline Tagged<False> False_0(Isolate* isolate) {
-  return Cast<False>(ReadOnlyRoots(isolate).false_value());
+inline Tagged<False> False_0() {
+  return Cast<False>(
+      ReadOnlyRoots(Isolate::Current()).false_value());
 }
 
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/array-flat.tq?l=65&c=13
@@ -112,18 +119,18 @@ Address Builtin_ArrayIsArray(int args_length, Address* args_object,
   goto block3;
 
   block4:
-  tmp2 = TqRuntimeCast_JSProxy_1(parameter0, static_cast<Tagged<JSAny>>(parameter1), &label3);
+  tmp2 = TqRuntimeCast_JSProxy_1(parameter0, UncheckedCast<JSAny>(parameter1), &label3);
   if (label3) {
     goto block8;
   }
   goto block7;
 
   block3:
-  tmp4 = True_0(isolate);
+  tmp4 = True_0();
   return tmp4.ptr();
 
   block8:
-  tmp5 = False_0(isolate);
+  tmp5 = False_0();
   return tmp5.ptr();
 
   block7:
@@ -337,7 +344,7 @@ inline Tagged<JSArray> TqRuntimeDownCastForTorqueClass_JSArray_0(Tagged<HeapObje
 
   block7:
   tmp4 = TqRuntimeFromConstexpr_intptr_constexpr_int31_0(12);
-  tmp5 = (tmp1)->ReadField<InstanceType>(tmp4);
+  tmp5 = UncheckedCast<HeapObject>(tmp1)->ReadField<InstanceType>(tmp4);
   tmp6 = TqRuntimeFromConstexpr_WasmCodePointer_constexpr_WasmCodePointer_0(static_cast<InstanceType>(2119));
   tmp7 = TorqueRuntimeMacroShims::CodeStubAssembler::Word32NotEqual(tmp5, tmp6);
   if (tmp7) {
@@ -358,7 +365,7 @@ inline Tagged<JSArray> TqRuntimeDownCastForTorqueClass_JSArray_0(Tagged<HeapObje
   block4:
   tmp8 = TqRuntimeFromConstexpr_int32_constexpr_int32_0((TorqueRuntimeMacroShims::CodeStubAssembler::ConstexprUint32Sub(static_cast<InstanceType>(2119), static_cast<InstanceType>(2119))));
   tmp9 = TqRuntimeFromConstexpr_intptr_constexpr_int31_0(12);
-  tmp10 = (tmp1)->ReadField<InstanceType>(tmp9);
+  tmp10 = UncheckedCast<HeapObject>(tmp1)->ReadField<InstanceType>(tmp9);
   tmp11 = TqRuntimeConvert_uint16_InstanceType_0(tmp10);
   tmp12 = TqRuntimeConvert_int32_uint16_0(tmp11);
   tmp13 = TqRuntimeFromConstexpr_InstanceType_constexpr_InstanceType_0(static_cast<InstanceType>(2119));
@@ -454,7 +461,7 @@ inline Tagged<JSProxy> TqRuntimeDownCastForTorqueClass_JSProxy_0(Tagged<HeapObje
 
   block7:
   tmp4 = TqRuntimeFromConstexpr_intptr_constexpr_int31_0(12);
-  tmp5 = (tmp1)->ReadField<InstanceType>(tmp4);
+  tmp5 = UncheckedCast<HeapObject>(tmp1)->ReadField<InstanceType>(tmp4);
   tmp6 = TqRuntimeFromConstexpr_WasmCodePointer_constexpr_WasmCodePointer_0(static_cast<InstanceType>(299));
   tmp7 = TorqueRuntimeMacroShims::CodeStubAssembler::Word32NotEqual(tmp5, tmp6);
   if (tmp7) {
@@ -475,7 +482,7 @@ inline Tagged<JSProxy> TqRuntimeDownCastForTorqueClass_JSProxy_0(Tagged<HeapObje
   block4:
   tmp8 = TqRuntimeFromConstexpr_int32_constexpr_int32_0((TorqueRuntimeMacroShims::CodeStubAssembler::ConstexprUint32Sub(static_cast<InstanceType>(299), static_cast<InstanceType>(299))));
   tmp9 = TqRuntimeFromConstexpr_intptr_constexpr_int31_0(12);
-  tmp10 = (tmp1)->ReadField<InstanceType>(tmp9);
+  tmp10 = UncheckedCast<HeapObject>(tmp1)->ReadField<InstanceType>(tmp9);
   tmp11 = TqRuntimeConvert_uint16_InstanceType_0(tmp10);
   tmp12 = TqRuntimeConvert_int32_uint16_0(tmp11);
   tmp13 = TqRuntimeFromConstexpr_InstanceType_constexpr_InstanceType_0(static_cast<InstanceType>(299));

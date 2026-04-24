@@ -9,6 +9,7 @@
 #include "src/builtins/builtins-utils-inl.h"
 #include "src/execution/arguments-inl.h"
 #include "src/execution/isolate.h"
+#include "src/execution/isolate-inl.h"
 #include "src/handles/handles-inl.h"
 #include "src/objects/casting-inl.h"
 #include "src/objects/contexts.h"
@@ -33,12 +34,18 @@ namespace v8::internal {
 // Proper NamespaceConstant emission under kCCBuiltins is Phase 6
 // groundwork; these hand-written inlines cover `const True` /
 // `const False` from base.tq (torque-suffixed `_0`) so the
-// ArrayIsArray fixture links.
-inline Tagged<True> True_0(Isolate* isolate) {
-  return Cast<True>(ReadOnlyRoots(isolate).true_value());
+// ArrayIsArray fixture links. Phase 6.1 (I-1 follow-up) moved
+// the `Isolate::Current()` lookup into the helper body — the
+// emitter now emits `True_0()` / `False_0()` with no argument,
+// so the same helper works from the outer builtin body and from
+// nested TqRuntime* helper bodies without an `isolate` token
+// needing to be in scope at the call site.
+inline Tagged<True> True_0() {
+  return Cast<True>(ReadOnlyRoots(Isolate::Current()).true_value());
 }
-inline Tagged<False> False_0(Isolate* isolate) {
-  return Cast<False>(ReadOnlyRoots(isolate).false_value());
+inline Tagged<False> False_0() {
+  return Cast<False>(
+      ReadOnlyRoots(Isolate::Current()).false_value());
 }
 
 Tagged<Smi> Builtin_TorqueCcTest_PushBuiltinPointer_Helper(Isolate* isolate, Tagged<Context> context, Tagged<Smi> x) {
