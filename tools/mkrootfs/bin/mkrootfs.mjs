@@ -5,8 +5,10 @@ import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const entry = join(here, "..", "src", "index.ts");
-const child = spawn(process.execPath, ["--experimental-strip-types", entry, ...process.argv.slice(2)], {
+const repoRoot = join(here, "..", "..", "..");
+const child = spawn("npx", ["tsx", entry, ...process.argv.slice(2)], {
   stdio: "inherit",
+  cwd: repoRoot,
   env: process.env,
 });
 child.on("exit", (code) => process.exit(code ?? 1));
