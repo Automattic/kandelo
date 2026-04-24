@@ -46,4 +46,78 @@ describe("manifest parser", () => {
   it("reports line numbers on errors", () => {
     expect(() => parseManifest("\n\n/x  q  0644\n")).toThrow(/line 3/);
   });
+
+  it("parses symlink with target=", () => {
+    expect(parseManifest("/etc/localtime  l  0777  0  0  target=/usr/share/zoneinfo/UTC\n")).toEqual([
+      {
+        kind: "node",
+        path: "/etc/localtime",
+        type: "l",
+        mode: 0o777,
+        uid: 0,
+        gid: 0,
+        target: "/usr/share/zoneinfo/UTC",
+      },
+    ]);
+  });
+
+  it("parses char device with major= minor=", () => {
+    expect(parseManifest("/dev/null  c  0666  0  0  major=1  minor=3\n")).toEqual([
+      {
+        kind: "node",
+        path: "/dev/null",
+        type: "c",
+        mode: 0o666,
+        uid: 0,
+        gid: 0,
+        major: 1,
+        minor: 3,
+      },
+    ]);
+  });
+
+  it("parses block device", () => {
+    const entries = parseManifest("/dev/loop0  b  0660  0  0  major=7  minor=0\n");
+    expect(entries[0]).toMatchObject({ type: "b", major: 7, minor: 0 });
+  });
+
+  it("parses archive directive with base= and per-archive mode/owner", () => {
+    expect(parseManifest("archive  url=./vim.zip  base=/usr  fmode=0644  dmode=0755\n")).toEqual([
+      {
+        kind: "archive",
+        url: "./vim.zip",
+        base: "/usr",
+        fmode: 0o644,
+        dmode: 0o755,
+        uid: 0,
+        gid: 0,
+      },
+    ]);
+  });
+
+  it("defaults archive base to / and modes when omitted", () => {
+    expect(parseManifest("archive  url=./system.zip\n")).toEqual([
+      {
+        kind: "archive",
+        url: "./system.zip",
+        base: "/",
+        fmode: 0o644,
+        dmode: 0o755,
+        uid: 0,
+        gid: 0,
+      },
+    ]);
+  });
+
+  it("rejects archive without url=", () => {
+    expect(() => parseManifest("archive  base=/usr\n")).toThrow(/archive requires url/);
+  });
+
+  it("rejects unknown archive fields", () => {
+    expect(() => parseManifest("archive  url=./x.zip  foo=bar\n")).toThrow(/unknown archive field "foo"/);
+  });
+
+  it("archive-urls may contain = characters in the value", () => {
+    expect(parseManifest("archive  url=./x.zip?v=1\n")[0]).toMatchObject({ url: "./x.zip?v=1" });
+  });
 });
