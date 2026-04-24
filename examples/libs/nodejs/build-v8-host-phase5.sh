@@ -21,9 +21,10 @@ NODE_SRC="${HERE}/build/node"
 # Default whitelist: every builtin green in
 # test/torque-fixtures/*-tq-ccbuiltins.cc that takes a real V8-compatible
 # ABI (stub-linkage TorqueCcTest_Return, JS-linkage TorqueCcTest_JsReturn,
-# and Task 5.7's ArrayIsArray). `-` (no colon) lets callers override with
-# an explicit empty string to validate d8-entrypoint neutrality.
-WHITELIST="${V8_CC_BUILTINS_WHITELIST-TorqueCcTest_Return,TorqueCcTest_JsReturn,ArrayIsArray}"
+# Task 5.7's ArrayIsArray, Task 6.2's NumberIsFinite). `-` (no colon) lets
+# callers override with an explicit empty string to validate d8-entrypoint
+# neutrality.
+WHITELIST="${V8_CC_BUILTINS_WHITELIST-TorqueCcTest_Return,TorqueCcTest_JsReturn,ArrayIsArray,NumberIsFinite}"
 
 [ -d "${NODE_SRC}/deps/v8" ] || {
   echo "Missing ${NODE_SRC}/deps/v8 — run build-nodejs.sh first" >&2

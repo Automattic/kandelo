@@ -40,6 +40,12 @@ check 'print(Array.isArray({}))'         'false'
 check 'print(Array.isArray(null))'       'false'
 check 'print(Array.isArray(undefined))'  'false'
 
+# NumberIsFinite — Phase 6 Task 6.2 whitelist. Covers the Smi
+# fast-path (0 -> true) and the HeapNumber NaN-probe arm
+# (Infinity -> false).
+check 'print(Number.isFinite(0))'        'true'
+check 'print(Number.isFinite(Infinity))' 'false'
+
 echo
 echo "d8 smoke: $pass passed, $fail failed"
 [ "$fail" = 0 ]
