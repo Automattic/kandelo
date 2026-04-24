@@ -32,8 +32,18 @@ async function main(argv: string[]): Promise<number> {
       inspectImage(image);
       return 0;
     }
+    case "extract": {
+      const image = argv[3];
+      const outDir = argv[4];
+      if (!image || !outDir) {
+        process.stderr.write(`mkrootfs extract: usage: extract <image> <outDir>\n`);
+        return 2;
+      }
+      const { extractImage } = await import("./extract.ts");
+      extractImage(image, outDir);
+      return 0;
+    }
     case "build":
-    case "extract":
     case "add":
       process.stderr.write(`mkrootfs: "${cmd}" not yet implemented\n`);
       return 2;
