@@ -762,7 +762,8 @@ build_unzip() {
 }
 
 build_nano() {
-    build_ncurses
+    # nano's build script resolves ncurses through the dep cache itself
+    # (`cargo xtask build-deps resolve ncurses`); no sysroot prep here.
     need_kernel
     need_sdk
     if ! has_nano; then
