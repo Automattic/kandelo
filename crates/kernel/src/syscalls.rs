@@ -1839,9 +1839,7 @@ pub fn sys_fstat(
             });
         }
         // Other char devices — delegate to host
-        let mut st = host.host_fstat(ofd.host_handle)?;
-        st.st_uid = proc.euid;
-        st.st_gid = proc.egid;
+        let st = host.host_fstat(ofd.host_handle)?;
         Ok(st)
     } else if matches!(ofd.file_type, FileType::PtyMaster | FileType::PtySlave) {
         let pty_idx = ofd.host_handle as usize;
@@ -1917,9 +1915,7 @@ pub fn sys_fstat(
                 st_ctime_sec: 0, st_ctime_nsec: 0, _pad: 0,
             }))
     } else {
-        let mut st = host.host_fstat(ofd.host_handle)?;
-        st.st_uid = proc.euid;
-        st.st_gid = proc.egid;
+        let st = host.host_fstat(ofd.host_handle)?;
         Ok(st)
     }
 }
@@ -2248,9 +2244,7 @@ pub fn sys_stat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resul
             });
         }
     }
-    let mut st = host.host_stat(&resolved)?;
-    st.st_uid = proc.euid;
-    st.st_gid = proc.egid;
+    let st = host.host_stat(&resolved)?;
     Ok(st)
 }
 
@@ -2299,9 +2293,7 @@ pub fn sys_lstat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resu
             });
         }
     }
-    let mut st = host.host_lstat(&resolved)?;
-    st.st_uid = proc.euid;
-    st.st_gid = proc.egid;
+    let st = host.host_lstat(&resolved)?;
     Ok(st)
 }
 
@@ -5525,13 +5517,11 @@ pub fn sys_fstatat(
             });
         }
     }
-    let mut st = if flags & AT_SYMLINK_NOFOLLOW != 0 {
+    let st = if flags & AT_SYMLINK_NOFOLLOW != 0 {
         host.host_lstat(&resolved)?
     } else {
         host.host_stat(&resolved)?
     };
-    st.st_uid = proc.euid;
-    st.st_gid = proc.egid;
     Ok(st)
 }
 
@@ -8462,6 +8452,29 @@ mod tests {
         let stat = sys_stat(&mut proc, &mut host, b"/tmp/file").unwrap();
         assert_eq!(stat.st_mode & S_IFREG, S_IFREG);
         assert_eq!(stat.st_size, 1024);
+    }
+
+    #[test]
+    fn test_stat_propagates_host_uid_gid() {
+        // sys_stat must return the uid/gid host_stat reported, not the
+        // process's euid/egid. This is foundational for the rootfs-as-
+        // source-of-truth model — files in the VFS image carry honest
+        // ownership and user programs need to see it.
+        //
+        // MockHostIO's host_stat returns uid=0/gid=0. If the kernel
+        // overrides with proc.euid/egid (as it did historically),
+        // sys_stat would return 500/600. After the fix, it passes the
+        // host's honest 0/0 through.
+        let mut proc = Process::new(1);
+        proc.euid = 500;
+        proc.egid = 600;
+        let mut host = MockHostIO::new();
+        let stat = sys_stat(&mut proc, &mut host, b"/tmp/file").unwrap();
+        assert_eq!(stat.st_uid, 0, "sys_stat must propagate host uid, not proc.euid");
+        assert_eq!(stat.st_gid, 0, "sys_stat must propagate host gid, not proc.egid");
+        let lstat = sys_lstat(&mut proc, &mut host, b"/tmp/file").unwrap();
+        assert_eq!(lstat.st_uid, 0, "sys_lstat must propagate host uid, not proc.euid");
+        assert_eq!(lstat.st_gid, 0, "sys_lstat must propagate host gid, not proc.egid");
     }
 
     #[test]
