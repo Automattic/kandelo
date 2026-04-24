@@ -6,8 +6,10 @@
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import { resolve, join, relative } from "node:path";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import { parseZipCentralDirectory } from "../../../host/src/vfs/zip";
 import {
   parseManifest,
+  type ManifestArchive,
   type ManifestEntry,
   type ManifestNode,
 } from "./manifest.ts";
@@ -70,7 +72,37 @@ export async function buildImage(opts: BuildOptions): Promise<Uint8Array> {
     mfs.symlinkWithOwner(l.target, l.path, l.uid, l.gid);
   }
 
-  // Pass 4: archives (handled in Task 1.7)
+  // Pass 4: archives. Each archive registers lazy stubs at base=<prefix>
+  // and overlays per-archive fmode/uid/gid on top of the zip's embedded
+  // mode so manifest-declared defaults win deterministically.
+  const archives: ManifestArchive[] = entries.filter(
+    (e): e is ManifestArchive => e.kind === "archive",
+  );
+  for (const a of archives) {
+    const archivePath = resolve(opts.repoRoot, a.url);
+    const zipBytes = new Uint8Array(readFileSync(archivePath));
+    const zipEntries = parseZipCentralDirectory(zipBytes).map((ze) => ({
+      ...ze,
+      // Tolerate leading-/ paths in archives (strict output, forgiving input).
+      fileName: ze.fileName.replace(/^\/+/, ""),
+    }));
+
+    const group = mfs.registerLazyArchiveFromEntries(a.url, zipEntries, a.base);
+
+    // registerLazyArchiveFromEntries seeds each stub with the zip's embedded
+    // mode; override with manifest defaults so image builds are deterministic
+    // regardless of who packaged the zip.
+    for (const [vfsPath, entry] of group.entries) {
+      if (entry.isSymlink) {
+        // Symlinks: lchown only; mode on symlinks is cosmetic on POSIX.
+        mfs.lchown(vfsPath, a.uid, a.gid);
+      } else {
+        mfs.chmod(vfsPath, a.fmode);
+        mfs.chown(vfsPath, a.uid, a.gid);
+      }
+    }
+  }
+
   // Pass 5: device nodes (kernel synthesizes /dev/* today; skip for v1)
 
   return await mfs.saveImage();
