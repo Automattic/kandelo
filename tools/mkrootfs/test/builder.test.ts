@@ -45,4 +45,23 @@ describe("image builder", () => {
     expect(text).toContain("daemon:x:1:1");
     expect(text).toContain("nobody:x:65534:65534");
   });
+
+  it("resolves explicit src= relative to repoRoot, bypassing sourceTree", async () => {
+    const fixture = join(here, "fixtures", "explicit-src");
+    const image = await buildImage({
+      sourceTree: join(fixture, "rootfs"),
+      manifest: join(fixture, "MANIFEST"),
+      repoRoot: fixture,
+    });
+    const mfs = MemoryFileSystem.fromImage(image);
+
+    const st = mfs.stat("/etc/mytool.conf");
+    expect(st.mode & 0o777).toBe(0o644);
+
+    const fd = mfs.open("/etc/mytool.conf", 0, 0);
+    const buf = new Uint8Array(64);
+    const n = mfs.read(fd, buf, null, buf.byteLength);
+    mfs.close(fd);
+    expect(new TextDecoder().decode(buf.subarray(0, n))).toBe("some config\n");
+  });
 });
