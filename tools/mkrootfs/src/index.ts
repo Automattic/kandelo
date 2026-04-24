@@ -22,8 +22,17 @@ async function main(argv: string[]): Promise<number> {
     return cmd ? 0 : 1;
   }
   switch (cmd) {
+    case "inspect": {
+      const image = argv[3];
+      if (!image) {
+        process.stderr.write(`mkrootfs inspect: missing <image>\n`);
+        return 2;
+      }
+      const { inspectImage } = await import("./inspect.ts");
+      inspectImage(image);
+      return 0;
+    }
     case "build":
-    case "inspect":
     case "extract":
     case "add":
       process.stderr.write(`mkrootfs: "${cmd}" not yet implemented\n`);
