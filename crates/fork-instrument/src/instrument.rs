@@ -2293,12 +2293,21 @@ fn instrument_one_function_guard_dispatch(
         exnref_slot_local,
         catch_handlers: &catch_handlers,
         next_call_idx: 0,
+        result_save_locals: Vec::new(),
     };
     rewrite_calls_in_seq_guard_dispatch(module, func_id, wrapper_id, &mut call_ctx);
 
     apply_catch_ref_handlers(module, func_id, &catch_handlers, aux_tables);
 
-    let frame_size = HEADER_SIZE + user_locals_size(&user_scalar_locals);
+    // Result-save locals from gated non-fork-path direct calls must
+    // participate in the frame so REWIND restores the parent's return
+    // value into them. Append after the rewrite has finished allocating
+    // them; assign_local_offsets / inject_frame_io_guard_dispatch see
+    // them via the extended list.
+    let mut framed_scalar_locals = user_scalar_locals;
+    framed_scalar_locals.extend(call_ctx.result_save_locals.drain(..));
+
+    let frame_size = HEADER_SIZE + user_locals_size(&framed_scalar_locals);
     inject_frame_io_guard_dispatch(
         module,
         func_id,
@@ -2308,7 +2317,7 @@ fn instrument_one_function_guard_dispatch(
         frame_ptr_local,
         catch_region_id_local,
         exnref_slot_local,
-        &user_scalar_locals,
+        &framed_scalar_locals,
         ref_plan,
         aux_tables,
         frame_size,
@@ -2364,6 +2373,12 @@ struct CallWrapCtxGuardDispatch<'a> {
     exnref_slot_local: LocalId,
     catch_handlers: &'a [CatchHandlerInfo],
     next_call_idx: u32,
+    /// Result-save locals allocated for non-fork-path direct calls.
+    /// These participate in the function's frame so that on REWIND the
+    /// parent's actual return value is restored (rather than re-firing
+    /// the call's kernel side effects). Appended to user_scalar_locals
+    /// after rewrite, before frame I/O is emitted.
+    result_save_locals: Vec<(LocalId, ValType)>,
 }
 
 fn rewrite_calls_in_seq_guard_dispatch(
@@ -2406,6 +2421,26 @@ fn rewrite_calls_in_seq_guard_dispatch(
                     ctx,
                     ty,
                     CallTarget::Indirect { table },
+                    loc,
+                );
+            }
+            Instr::Call(c) => {
+                // Non-fork-path direct call. Gate it so kernel side
+                // effects (setpgid, dup3, open, kill, ...) inside the
+                // callee don't re-fire when the body re-executes during
+                // REWIND. Result is saved in a frame-resident user
+                // scalar local so consumers see the parent's actual
+                // return value (rather than 0, which would diverge
+                // control flow when the result is consumed inline).
+                let callee_ty = module.funcs.get(c.func).ty();
+                let callee_func = c.func;
+                emit_gated_non_fork_call(
+                    module,
+                    func_id,
+                    &mut new_instrs,
+                    ctx,
+                    callee_ty,
+                    callee_func,
                     loc,
                 );
             }
@@ -2645,6 +2680,131 @@ fn emit_wrapped_call_guard_dispatch(
             alternative: else_id,
         }),
     );
+}
+
+/// Gate a non-fork-path direct call so its kernel side effects don't
+/// re-fire during REWIND replay of a guard-dispatch fork-path body.
+///
+/// Shape (`call $foo` with two i32 args returning i32):
+///
+/// ```wat
+/// ;; [arg0 arg1] on stack
+/// global.get $_wpk_fork_state
+/// i32.const 0       ;; STATE_NORMAL
+/// i32.eq            ;; [arg0 arg1 cond]
+/// if (param i32 i32) (result)
+///   then
+///     call $foo                 ;; consumes [arg0 arg1], pushes [r]
+///     local.set $result_save_0  ;; consumes [r]
+///   else
+///     drop                       ;; consumes arg1
+///     drop                       ;; consumes arg0
+/// end
+/// local.get $result_save_0       ;; [r] back on outer stack
+/// ```
+///
+/// `$result_save_0` is a fresh user-scalar local (one per scalar
+/// result type) that participates in the function's frame. On
+/// UNWIND its parent value is serialized; on REWIND it is restored.
+/// Consumers of the original call's result therefore see the
+/// parent's actual return value during REWIND, not a default 0
+/// (which would diverge control flow when the result is consumed
+/// inline without `local.set`).
+///
+/// Calls with non-scalar results (a non-nullable `Ref`) are left
+/// unwrapped: there is no scalar-frame slot we can store them in.
+/// In practice, LLVM-emitted C does not produce such call sites
+/// inside fork-path bodies (no Wasm-GC), so this is a deliberate
+/// MVP gap rather than a known regression.
+fn emit_gated_non_fork_call(
+    module: &mut Module,
+    func_id: FunctionId,
+    out: &mut Vec<(Instr, InstrLocId)>,
+    ctx: &mut CallWrapCtxGuardDispatch,
+    sig_ty: TypeId,
+    callee: FunctionId,
+    loc: InstrLocId,
+) {
+    let (params, results): (Vec<ValType>, Vec<ValType>) = {
+        let ty = module.types.get(sig_ty);
+        (ty.params().to_vec(), ty.results().to_vec())
+    };
+
+    // If any result is a non-scalar (non-nullable ref), we can't
+    // round-trip through the scalar frame. Leave the call unwrapped;
+    // its side effects will still re-fire on REWIND, but this case
+    // doesn't arise in practice for our toolchain.
+    let all_results_framable = results.iter().all(|&ty| match ty {
+        ValType::I32 | ValType::I64 | ValType::F32 | ValType::F64 | ValType::V128 => true,
+        ValType::Ref(_) => false,
+    });
+    if !all_results_framable {
+        push_instr(out, Instr::Call(Call { func: callee }));
+        let _ = loc;
+        return;
+    }
+
+    // Allocate one result-save local per result type. Track in ctx so
+    // they get appended to user_scalar_locals after the rewrite (which
+    // is what gives them frame slots).
+    let save_locals: Vec<LocalId> = results
+        .iter()
+        .map(|&ty| {
+            let l = module.locals.add(ty);
+            ctx.result_save_locals.push((l, ty));
+            l
+        })
+        .collect();
+
+    let branch_ty = InstrSeqType::new(&mut module.types, &params, &[]);
+    let local = local_mut(module, func_id);
+    let then_id = local.builder_mut().dangling_instr_seq(branch_ty).id();
+    let else_id = local.builder_mut().dangling_instr_seq(branch_ty).id();
+
+    // then: call $callee, then local.set in reverse so the topmost
+    //   result is captured into the last save_local.
+    {
+        let then_seq = local.block_mut(then_id);
+        then_seq.instrs.push((Instr::Call(Call { func: callee }), loc));
+        for &l in save_locals.iter().rev() {
+            push_instr(&mut then_seq.instrs, Instr::LocalSet(LocalSet { local: l }));
+        }
+    }
+
+    // else: drop one item per arg.
+    {
+        let else_seq = local.block_mut(else_id);
+        for _ in 0..params.len() {
+            push_instr(&mut else_seq.instrs, Instr::Drop(Drop {}));
+        }
+    }
+
+    // Outer: state == NORMAL guard, then if-else, then load saved
+    // results back onto the operand stack in forward order so
+    // consumers see the same shape they would for an unwrapped call.
+    push_instr(
+        out,
+        Instr::GlobalGet(GlobalGet {
+            global: ctx.state_global,
+        }),
+    );
+    push_instr(
+        out,
+        Instr::Const(Const {
+            value: Value::I32(runtime::STATE_NORMAL),
+        }),
+    );
+    push_instr(out, Instr::Binop(Binop { op: BinaryOp::I32Eq }));
+    push_instr(
+        out,
+        Instr::IfElse(IfElse {
+            consequent: then_id,
+            alternative: else_id,
+        }),
+    );
+    for &l in &save_locals {
+        push_instr(out, Instr::LocalGet(LocalGet { local: l }));
+    }
 }
 
 // ---- Phase 4g: non-call side-effect gating --------------------------

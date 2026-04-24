@@ -65,6 +65,66 @@ fn top_level_carryover_routes_to_guard_dispatch() {
 }
 
 #[test]
+fn guard_dispatch_gates_non_fork_path_direct_call() {
+    // Regression for the 8 sortix fork-semantic FAILs (waitpid,
+    // dup3-clofork-fork, ...). When guard-dispatch is selected
+    // (because the fork-path call is nested), non-fork-path direct
+    // calls — like `setpgid` — must be wrapped in a state==NORMAL
+    // gate so their kernel side effects don't re-fire during REWIND.
+    // The call's result must round-trip through a result-save user
+    // local that lives in the frame, otherwise consumers consuming
+    // the result inline (without `local.set $user_local`) would
+    // diverge control flow on REWIND. See
+    // memory/fork-instrument-phase7-debug-evidence.md.
+    let wat = include_str!("fixtures/switch_dispatch/guard_dispatch_non_fork_call.wat");
+    let input = wat::parse_str(wat).expect("wat parse");
+    let output = instrument(&input, &Options::default()).expect("instrument");
+    validate(&output);
+    let module = Module::from_buffer(&output).expect("walrus parse");
+
+    // Confirm the function uses guard-dispatch (no top-level br_table).
+    assert!(
+        !has_top_level_br_table_dispatch(&module, "main"),
+        "guard-dispatch path should not emit a top-level br_table"
+    );
+
+    // The call to `kernel.setpgid` must still appear (we gate it; we
+    // don't remove it). It must appear inside an if-then sequence
+    // whose preceding instruction is the state==NORMAL test.
+    let setpgid = find_import_func(&module, "kernel.setpgid");
+    let main_id = find_func(&module, "main");
+    let f = local_func(&module, main_id);
+
+    let mut found_gated_setpgid = false;
+    walk_all(f, f.entry_block(), 0, &mut |_seq, _depth, instr| {
+        if let Instr::IfElse(IfElse {
+            consequent,
+            alternative: _,
+        }) = instr
+        {
+            // Look at the consequent: if its first instruction is
+            // `Call(setpgid)` and its (only or first) `LocalSet` is
+            // immediately after, this is our gate.
+            let then_seq = f.block(*consequent);
+            let mut iter = then_seq.instrs.iter();
+            if let Some((Instr::Call(c), _)) = iter.next() {
+                if c.func == setpgid {
+                    if let Some((Instr::LocalSet(_), _)) = iter.next() {
+                        found_gated_setpgid = true;
+                    }
+                }
+            }
+        }
+    });
+
+    assert!(
+        found_gated_setpgid,
+        "expected to find `setpgid` wrapped in a state==NORMAL gate \
+         with a result-save `local.set` immediately after the call"
+    );
+}
+
+#[test]
 fn posix_spawn_class_shadow_stack_not_duplicated() {
     let wat = include_str!("fixtures/switch_dispatch/posix_spawn_class.wat");
     let input = wat::parse_str(wat).expect("wat parse");
