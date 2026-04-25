@@ -72,6 +72,14 @@ check 'var b=41; print(++b)'                            '42'
 check 'var c=Number.MAX_SAFE_INTEGER; print(++c)'       '9007199254740992'
 check 'var d=1n; print(++d)'                            '2'
 
+# Decrement — Phase 8.1 whitelist. Same shape as Increment, hits the
+# Number arm via Builtin_Subtract (tail-call). The MIN_SAFE_INTEGER
+# probe exercises Subtract's Smi-underflow → HeapNumber path.
+check 'var e=42; print(--e)'                            '41'
+check 'var f=0; print(--f)'                             '-1'
+check 'var g=-Number.MAX_SAFE_INTEGER; print(--g)'      '-9007199254740992'
+check 'var h=2n; print(--h)'                            '1'
+
 echo
 echo "d8 smoke: $pass passed, $fail failed"
 [ "$fail" = 0 ]

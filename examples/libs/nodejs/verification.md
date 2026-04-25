@@ -1400,3 +1400,55 @@ typeswitch and exits via the Number arm.
   gates. Excluding-anchor `8169724e` is **byte-stable** vs Phase
   6.1, Phase 7, and Phase 7A — confirming the emitter changes are
   cleanly gated on `is_cc_builtins_` and the kCSA path is untouched.
+
+## Phase 8.1 Summary — Decrement (Builtin_Subtract bridge)
+
+Confirmation that Phase 8's inline-bridge pattern repeats cheaply.
+Decrement's torque body (`tail Subtract(n, 1)` on the Number arm) is
+structurally identical to Increment's, just calls `Subtract` instead
+of `Add`.
+
+### Clone-side commits (2, on top of `86e916eb`)
+
+- `330f5186` — torque: emit `Builtin_Subtract` C bridge alongside
+  `Builtin_Add`. Same Smi/HeapNumber arithmetic, just `l - r`. ~30
+  LoC of preamble.
+- `df8df358` — cctest: add `ScriptRunDecrement` (Smi / HeapNumber-
+  underflow / JSAnyNotNumeric arms) + `ScriptRunDecrementBigInt`.
+
+### Worktree changes (1 commit)
+
+- `build-v8-host-phase5.sh`: extend WHITELIST with `Decrement`.
+- `test/d8-smoke.sh`: +4 probes (`--42`, `--0`, `--(-MAX_SAFE_INTEGER)`,
+  `--2n`).
+- `patches/v8-torque-cc-builtins.patch`: refreshed (6323 → 6486 lines,
+  82 → 84 commits).
+
+### Verification (Phase 8.1 vs Phase 8 baseline)
+
+| Gate | Phase 8 | **Phase 8.1** | Delta |
+|------|---------|---------------|-------|
+| Torque fixtures | 16/16 | **16/16 byte-exact** | 0 |
+| cctest `TorqueCcBuiltinTest.*` | 12 | **14 PASS** | **+2** (`ScriptRunDecrement` + `ScriptRunDecrementBigInt`) |
+| d8-smoke | 22 | **26 PASS** | **+4** (`--42`, `--0`, `--(-MAX_SAFE_INTEGER)`, `--2n`) |
+| mjsunit | 2 | **2 PASS** | 0 |
+| Excluding-anchor | `8169724e` | **`8169724e`** | 0 (stable since Phase 6.1) |
+| Patch | 6323 lines (82 commits) | **6486 lines (84 commits)** | **+163, +2** |
+| cargo / vitest / libc-test / POSIX / ABI | 722 / 250 / baseline / 0 FAIL / in sync | **inherited from Phase 8** | 0 (no kernel-side changes) |
+
+(Kernel suites not re-run for Phase 8.1 — clone-side scope only.
+Phase 8's pre-push sweep stands.)
+
+### What Phase 8.1 proves
+
+- The "hand-written inline bridge in .cc preamble" pattern is
+  copy-paste-modify cheap. Decrement landed in 2 clone commits +
+  1 worktree commit; combined diff <100 LoC; under 90 minutes
+  including the build.
+- Same emitter pipeline; no new emitter changes needed (the
+  `Isolate::Current()` substitution from Phase 8 already covers
+  Decrement's tail-call to `Builtin_Subtract`).
+- Both `Increment` and `Decrement` now ship as production-gated
+  forcing targets for tail-call emission, doubling the real-world
+  surface area exercised by the TorqueCcBuiltinTest cctest suite
+  (10 → 14 PASS over Phase 7 → Phase 8.1).
