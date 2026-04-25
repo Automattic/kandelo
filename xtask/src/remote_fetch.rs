@@ -46,11 +46,33 @@
 //! own `deps.toml`. We do not sanitise.
 
 use std::fs;
+use std::io::Read;
 use std::path::Path;
+use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
 use crate::deps_manifest::{Binary, DepsManifest, TargetArch};
+use crate::util::hex;
+
+/// Maximum response size we will accept from `fetch_url`. A registry
+/// answering with a runaway body would otherwise OOM the resolver.
+/// 256 MB comfortably exceeds anything we expect to publish (even a
+/// kitchen-sink LAMP bundle is well under this) but bounds memory.
+///
+/// Truncated responses are caught downstream by the SHA-256 check —
+/// `read_to_end(take(LIMIT))` returns OK on hit, and the digest will
+/// not match the publisher's expected `archive_sha256`.
+const MAX_RESPONSE_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Maximum number of decompressed bytes we will pipe out of the zstd
+/// decoder into `tar`. A malicious archive ("zip bomb") could otherwise
+/// extract many GB to disk. 1 GB is well above any real published
+/// artifact and bounds disk use.
+///
+/// On overflow, `tar::Archive::unpack` sees a truncated stream and
+/// surfaces it as `FetchError::ExtractFailed`.
+const MAX_DECOMPRESSED_BYTES: u64 = 1024 * 1024 * 1024;
 
 /// Reasons a remote fetch can fail. Caller logs and falls through to
 /// source build — none of these is fatal to the resolver.
@@ -239,7 +261,15 @@ pub fn fetch_and_install(
         return Ok(());
     }
     if let Err(e) = fs::rename(&tmp, canonical) {
+        // The rename may have failed because a peer process beat us
+        // between the `exists()` check above and our `rename(2)` —
+        // in which case the install has *already succeeded* (via the
+        // peer) and we should report success. Re-check post-failure
+        // before surfacing an error.
         let _ = fs::remove_dir_all(&tmp);
+        if canonical.exists() {
+            return Ok(());
+        }
         return Err(FetchError::IoError(format!(
             "atomic rename {} -> {}: {e}",
             tmp.display(),
@@ -253,17 +283,45 @@ pub fn fetch_and_install(
 /// caches) and `http(s)://` (real downloads). Errors are wrapped in
 /// `FetchError::Http` regardless of underlying cause — the caller's
 /// only response is to fall through to source build.
+///
+/// # URL-scheme policy
+///
+/// Plain `http://` is allowed: integrity is ensured by the SHA-256
+/// check on the bytes after fetch (`verify_sha`). Confidentiality is
+/// not a goal — `archive_sha256` is already public information, sat
+/// next to `archive_url` in the consumer's `deps.toml`. A MITM cannot
+/// substitute bytes that hash to the published digest.
+///
+/// `file://` is allowed for tests and offline development. The risk
+/// is bounded by the user controlling their own `deps.toml` registry
+/// list — a malicious manifest could read arbitrary local files, but
+/// the user already had to add the manifest.
 fn fetch_url(url: &str) -> Result<Vec<u8>, FetchError> {
     if let Some(rest) = url.strip_prefix("file://") {
         return fs::read(rest)
             .map_err(|e| FetchError::Http(format!("file://{rest}: {e}")));
     }
     if url.starts_with("http://") || url.starts_with("https://") {
-        let resp = ureq::get(url)
+        // Always set timeouts and a UA so a misbehaving registry
+        // can't hang the resolver indefinitely and so server logs can
+        // attribute the request.
+        let agent = ureq::AgentBuilder::new()
+            .timeout_connect(Duration::from_secs(30))
+            .timeout_read(Duration::from_secs(60))
+            .user_agent(concat!(
+                "wasm-posix-kernel-xtask/",
+                env!("CARGO_PKG_VERSION")
+            ))
+            .build();
+        let resp = agent
+            .get(url)
             .call()
             .map_err(|e| FetchError::Http(format!("{url}: {e}")))?;
+        // Cap response at MAX_RESPONSE_BYTES. A truncated body just
+        // produces a SHA mismatch downstream, so no explicit oversize
+        // error is needed here.
         let mut bytes: Vec<u8> = Vec::new();
-        resp.into_reader()
+        std::io::Read::take(resp.into_reader(), MAX_RESPONSE_BYTES)
             .read_to_end(&mut bytes)
             .map_err(|e| FetchError::Http(format!("read {url}: {e}")))?;
         return Ok(bytes);
@@ -289,10 +347,16 @@ fn verify_sha(bytes: &[u8], expected_hex: &str) -> Result<(), FetchError> {
 }
 
 /// Decompress `bytes` (`.tar.zst`) into `dest`.
+///
+/// Decompressed output is capped at `MAX_DECOMPRESSED_BYTES` to
+/// defend against zip-bomb-style archives that decompress to many
+/// times the on-wire size. On overflow the stream truncates mid-tar
+/// and the unpack call returns `FetchError::ExtractFailed`.
 fn extract_tar_zst(bytes: &[u8], dest: &Path) -> Result<(), FetchError> {
     let decoder = zstd::stream::read::Decoder::new(bytes)
         .map_err(|e| FetchError::DecompressFailed(format!("{e}")))?;
-    let mut tar = tar::Archive::new(decoder);
+    let bounded = std::io::Read::take(decoder, MAX_DECOMPRESSED_BYTES);
+    let mut tar = tar::Archive::new(bounded);
     tar.unpack(dest)
         .map_err(|e| FetchError::ExtractFailed(format!("{e}")))?;
     Ok(())
@@ -332,14 +396,6 @@ fn flatten_archive_layout(tmp: &Path) -> Result<(), FetchError> {
         let _ = fs::remove_file(&manifest);
     }
     Ok(())
-}
-
-fn hex(bytes: &[u8]) -> String {
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        s.push_str(&format!("{:02x}", b));
-    }
-    s
 }
 
 // ---------------------------------------------------------------------
