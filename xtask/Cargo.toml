@@ -19,3 +19,9 @@ wasmparser = "0.247"
 sha2 = "0.10"
 toml = "0.8"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+# Remote-fetch path (Task A.9). `ureq` is used because the resolver only
+# needs sync, blocking HTTP and ureq pulls a much smaller transitive
+# tree than reqwest. `zstd` + `tar` decode the binary-cache archive.
+ureq = { version = "2", default-features = false, features = ["tls"] }
+zstd = "0.13"
+tar = "0.4"

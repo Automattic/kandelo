@@ -16,6 +16,7 @@ mod bundle_program;
 mod deps_manifest;
 mod dump_abi;
 mod program_metadata;
+mod remote_fetch;
 mod wasm_abi;
 
 fn main() -> ExitCode {

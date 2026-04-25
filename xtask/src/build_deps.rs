@@ -45,6 +45,7 @@ use std::process::Command;
 use sha2::{Digest, Sha256};
 
 use crate::deps_manifest::{DepRef, DepsManifest, TargetArch};
+use crate::remote_fetch;
 use crate::repo_root;
 
 /// Root directory of the per-user lib cache. Honors `XDG_CACHE_HOME`,
@@ -372,6 +373,34 @@ fn ensure_built_inner(
     // Cache hit: trust it. Users invalidate by deleting the directory.
     if canonical.is_dir() {
         return Ok((canonical, transitive));
+    }
+
+    // Resolution priority 3: remote fetch from `[binary].archive_url`.
+    // The 4-step verification (archive sha, target_arch, abi_versions,
+    // cache_key_sha) lives in `remote_fetch::fetch_and_install`. Any
+    // failure logs and falls through to the source build below; a
+    // remote-fetch error should never cause the resolver to refuse to
+    // produce an artifact.
+    if let Some(binary) = &target.binary {
+        let cache_key_sha_hex = hex(&sha);
+        match remote_fetch::fetch_and_install(
+            binary,
+            &canonical,
+            target,
+            arch,
+            abi_version,
+            &cache_key_sha_hex,
+        ) {
+            Ok(()) => return Ok((canonical, transitive)),
+            Err(e) => {
+                eprintln!(
+                    "warning: remote fetch for {} from {} failed ({}); falling back to source build",
+                    target.spec(),
+                    binary.archive_url,
+                    e,
+                );
+            }
+        }
     }
 
     let pkgconfig_path = compose_pkgconfig_path(&transitive);
@@ -1930,5 +1959,378 @@ libs = ["lib/libConsumer.a"]
             &resolve_opts(&cache, None),
         )
         .unwrap();
+    }
+
+    // --- Remote-fetch integration tests (Task A.9) -------------------
+    //
+    // These exercise the full `[binary]` resolution path with a
+    // hand-crafted .tar.zst archive served over a `file://` URL —
+    // the same code path as production HTTP fetches, but without a
+    // real network or HTTP server. Each test verifies one outcome:
+    //
+    //   * happy path — archive is sha-, arch-, abi-, cache_key-valid →
+    //     resolver installs without invoking the build script;
+    //   * sha mismatch / arch mismatch / abi mismatch / cache_key
+    //     mismatch — resolver logs and falls through to source build.
+    //
+    // The build script writes a sentinel `via-build` file. Its presence
+    // in the canonical cache means the source build ran; its absence
+    // (with the artifacts otherwise installed) means the remote fetch
+    // succeeded.
+
+    fn sha256_hex(bytes: &[u8]) -> String {
+        let mut h = Sha256::new();
+        h.update(bytes);
+        let out: [u8; 32] = h.finalize().into();
+        hex(&out)
+    }
+
+    /// Build a deps.toml / build script pair for remote-fetch tests.
+    /// Declared output is `lib/out.a` (kept simple — the prefix-less
+    /// name avoids the double-`lib` confusion, and is the same string
+    /// the test archive uses). The build script also drops a sentinel
+    /// `via-build` file, used by fall-through tests to detect that the
+    /// source build ran rather than the remote fetch.
+    fn write_lib_with_binary(
+        root: &Path,
+        name: &str,
+        archive_path: &Path,
+        archive_sha: &str,
+    ) {
+        let lib_dir = root.join(name);
+        std::fs::create_dir_all(&lib_dir).unwrap();
+
+        let archive_url = format!("file://{}", archive_path.display());
+        let deps_toml = format!(
+            r#"
+kind = "library"
+name = "{name}"
+version = "1.0.0"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://example.test/{name}-1.0.0.tar.gz"
+sha256 = "{:0>64}"
+
+[license]
+spdx = "TestLicense"
+
+[outputs]
+libs = ["lib/out.a"]
+
+[binary]
+archive_url = "{archive_url}"
+archive_sha256 = "{archive_sha}"
+"#,
+            ""
+        );
+        std::fs::write(lib_dir.join("deps.toml"), deps_toml).unwrap();
+
+        let script = "#!/bin/bash\nset -euo pipefail\n\
+mkdir -p \"$WASM_POSIX_DEP_OUT_DIR/lib\"\n\
+echo BUILD > \"$WASM_POSIX_DEP_OUT_DIR/lib/out.a\"\n\
+touch \"$WASM_POSIX_DEP_OUT_DIR/via-build\"\n";
+        let script_path = lib_dir.join(format!("build-{name}.sh"));
+        std::fs::write(&script_path, script).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut p = std::fs::metadata(&script_path).unwrap().permissions();
+            p.set_mode(0o755);
+            std::fs::set_permissions(&script_path, p).unwrap();
+        }
+    }
+
+    /// Build the archived `manifest.toml` text for a library named
+    /// `name`. `arch` and `abi_versions` and `cache_key_sha` populate
+    /// the `[compatibility]` block. Output declaration is `lib/out.a`
+    /// to match `write_lib_with_binary`.
+    fn archived_manifest_text(
+        name: &str,
+        arch: &str,
+        abi_versions: &[u32],
+        cache_key_sha: &str,
+    ) -> String {
+        let abi_csv = abi_versions
+            .iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            r#"
+kind = "library"
+name = "{name}"
+version = "1.0.0"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://example.test/{name}-1.0.0.tar.gz"
+sha256 = "{:0>64}"
+
+[license]
+spdx = "TestLicense"
+
+[outputs]
+libs = ["lib/out.a"]
+
+[compatibility]
+target_arch = "{arch}"
+abi_versions = [{abi_csv}]
+cache_key_sha = "{cache_key_sha}"
+"#,
+            ""
+        )
+    }
+
+    #[test]
+    fn remote_fetch_installs_archive_when_sha_arch_abi_cachekey_all_match() {
+        let root = tempdir("rf-happy-reg");
+        let cache = tempdir("rf-happy-cache");
+        let archive_dir = tempdir("rf-happy-archive");
+
+        // Compute the cache_key_sha the resolver would produce for our
+        // (fixed-shape) deps.toml. We don't have the deps.toml on disk
+        // yet; build a throwaway and parse it through the registry.
+        // Note: adding a [binary] block does NOT change cache_key_sha
+        // (only name/version/revision/source/arch/abi/dep-shas are
+        // hashed) — so the value computed here matches the value
+        // computed for the real lib below.
+        let throwaway_root = tempdir("rf-happy-pre");
+        write_lib(
+            &throwaway_root,
+            "libRf",
+            "1.0.0",
+            &[],
+            "true",
+            "[outputs]\nlibs = [\"lib/out.a\"]\n",
+        );
+        let pre_reg = Registry { roots: vec![throwaway_root.clone()] };
+        let pre_m = pre_reg.load("libRf").unwrap();
+        let pre_sha = compute_sha(
+            &pre_m,
+            &pre_reg,
+            TEST_ARCH,
+            TEST_ABI,
+            &mut BTreeMap::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        let cache_key_hex = hex(&pre_sha);
+        let _ = std::fs::remove_dir_all(&throwaway_root);
+
+        // Build the archive with matching arch / abi / cache_key.
+        let manifest_text = archived_manifest_text(
+            "libRf",
+            "wasm32",
+            &[TEST_ABI],
+            &cache_key_hex,
+        );
+        let archive_bytes = crate::remote_fetch::build_test_archive(
+            &manifest_text,
+            &[("lib/out.a", b"\x00\x01\x02FAKE")],
+        );
+        let archive_sha_hex = sha256_hex(&archive_bytes);
+        let archive_path = archive_dir.join("libRf-1.0.0.tar.zst");
+        std::fs::write(&archive_path, &archive_bytes).unwrap();
+
+        // Real consumer manifest with [binary] pointing at file://.
+        write_lib_with_binary(&root, "libRf", &archive_path, &archive_sha_hex);
+
+        let reg = Registry { roots: vec![root] };
+        let m = reg.load("libRf").unwrap();
+
+        let path = ensure_built(
+            &m,
+            &reg,
+            TEST_ARCH,
+            TEST_ABI,
+            &resolve_opts(&cache, None),
+        )
+        .unwrap();
+
+        // Artifact installed at the canonical cache path with the
+        // archive's contents.
+        assert!(path.starts_with(cache.join("libs")));
+        let lib_bytes = std::fs::read(path.join("lib/out.a")).unwrap();
+        assert_eq!(lib_bytes, b"\x00\x01\x02FAKE");
+        // Build script did NOT run (no `via-build` sentinel).
+        assert!(
+            !path.join("via-build").exists(),
+            "remote fetch should bypass the source build"
+        );
+        // Manifest + artifacts dir were stripped during reshape.
+        assert!(!path.join("manifest.toml").exists());
+        assert!(!path.join("artifacts").exists());
+    }
+
+    #[test]
+    fn remote_fetch_falls_through_on_archive_sha_mismatch() {
+        let root = tempdir("rf-shafail-reg");
+        let cache = tempdir("rf-shafail-cache");
+        let archive_dir = tempdir("rf-shafail-archive");
+
+        // Build a real archive but advertise the WRONG sha in deps.toml.
+        let manifest_text = archived_manifest_text(
+            "libRfSha",
+            "wasm32",
+            &[TEST_ABI],
+            // cache_key_sha is irrelevant: we never get past the sha
+            // check. Fill with a valid-shaped dummy so parse_archived
+            // wouldn't complain (defence in depth).
+            &"a".repeat(64),
+        );
+        let archive_bytes = crate::remote_fetch::build_test_archive(
+            &manifest_text,
+            &[("lib/out.a", b"REMOTE")],
+        );
+        let archive_path = archive_dir.join("libRfSha-1.0.0.tar.zst");
+        std::fs::write(&archive_path, &archive_bytes).unwrap();
+        let bogus_sha = "0".repeat(64);
+
+        write_lib_with_binary(&root, "libRfSha", &archive_path, &bogus_sha);
+
+        let reg = Registry { roots: vec![root] };
+        let m = reg.load("libRfSha").unwrap();
+        let path = ensure_built(
+            &m,
+            &reg,
+            TEST_ARCH,
+            TEST_ABI,
+            &resolve_opts(&cache, None),
+        )
+        .unwrap();
+
+        // Source build ran (sentinel exists; lib content matches the
+        // build script's output, not the archive's).
+        assert!(
+            path.join("via-build").exists(),
+            "sha mismatch must fall through to source build"
+        );
+        let lib = std::fs::read(path.join("lib/out.a")).unwrap();
+        assert_ne!(lib, b"REMOTE", "remote bytes must not have been installed");
+    }
+
+    #[test]
+    fn remote_fetch_falls_through_on_target_arch_mismatch() {
+        let root = tempdir("rf-archfail-reg");
+        let cache = tempdir("rf-archfail-cache");
+        let archive_dir = tempdir("rf-archfail-archive");
+
+        // Archive declares wasm64 — resolver passes wasm32 (TEST_ARCH).
+        let manifest_text = archived_manifest_text(
+            "libRfArch",
+            "wasm64",
+            &[TEST_ABI],
+            &"a".repeat(64),
+        );
+        let archive_bytes = crate::remote_fetch::build_test_archive(
+            &manifest_text,
+            &[("lib/out.a", b"REMOTE")],
+        );
+        let archive_sha = sha256_hex(&archive_bytes);
+        let archive_path = archive_dir.join("libRfArch-1.0.0.tar.zst");
+        std::fs::write(&archive_path, &archive_bytes).unwrap();
+
+        write_lib_with_binary(&root, "libRfArch", &archive_path, &archive_sha);
+
+        let reg = Registry { roots: vec![root] };
+        let m = reg.load("libRfArch").unwrap();
+        let path = ensure_built(
+            &m,
+            &reg,
+            TEST_ARCH, // wasm32
+            TEST_ABI,
+            &resolve_opts(&cache, None),
+        )
+        .unwrap();
+
+        assert!(
+            path.join("via-build").exists(),
+            "arch mismatch must fall through to source build"
+        );
+    }
+
+    #[test]
+    fn remote_fetch_falls_through_on_abi_mismatch() {
+        let root = tempdir("rf-abifail-reg");
+        let cache = tempdir("rf-abifail-cache");
+        let archive_dir = tempdir("rf-abifail-archive");
+
+        // Archive supports only ABI 999 — resolver passes TEST_ABI (=4).
+        let manifest_text = archived_manifest_text(
+            "libRfAbi",
+            "wasm32",
+            &[999],
+            &"a".repeat(64),
+        );
+        let archive_bytes = crate::remote_fetch::build_test_archive(
+            &manifest_text,
+            &[("lib/out.a", b"REMOTE")],
+        );
+        let archive_sha = sha256_hex(&archive_bytes);
+        let archive_path = archive_dir.join("libRfAbi-1.0.0.tar.zst");
+        std::fs::write(&archive_path, &archive_bytes).unwrap();
+
+        write_lib_with_binary(&root, "libRfAbi", &archive_path, &archive_sha);
+
+        let reg = Registry { roots: vec![root] };
+        let m = reg.load("libRfAbi").unwrap();
+        let path = ensure_built(
+            &m,
+            &reg,
+            TEST_ARCH,
+            TEST_ABI, // 4, not in [999]
+            &resolve_opts(&cache, None),
+        )
+        .unwrap();
+
+        assert!(
+            path.join("via-build").exists(),
+            "abi mismatch must fall through to source build"
+        );
+    }
+
+    #[test]
+    fn remote_fetch_falls_through_on_cache_key_mismatch() {
+        let root = tempdir("rf-ckfail-reg");
+        let cache = tempdir("rf-ckfail-cache");
+        let archive_dir = tempdir("rf-ckfail-archive");
+
+        // Archive declares a wrong cache_key_sha (well-formed but
+        // never produced by compute_sha for this manifest).
+        let wrong_ck = "f".repeat(64);
+        let manifest_text = archived_manifest_text(
+            "libRfCk",
+            "wasm32",
+            &[TEST_ABI],
+            &wrong_ck,
+        );
+        let archive_bytes = crate::remote_fetch::build_test_archive(
+            &manifest_text,
+            &[("lib/out.a", b"REMOTE")],
+        );
+        let archive_sha = sha256_hex(&archive_bytes);
+        let archive_path = archive_dir.join("libRfCk-1.0.0.tar.zst");
+        std::fs::write(&archive_path, &archive_bytes).unwrap();
+
+        write_lib_with_binary(&root, "libRfCk", &archive_path, &archive_sha);
+
+        let reg = Registry { roots: vec![root] };
+        let m = reg.load("libRfCk").unwrap();
+        let path = ensure_built(
+            &m,
+            &reg,
+            TEST_ARCH,
+            TEST_ABI,
+            &resolve_opts(&cache, None),
+        )
+        .unwrap();
+
+        assert!(
+            path.join("via-build").exists(),
+            "cache_key_sha mismatch must fall through to source build"
+        );
     }
 }
