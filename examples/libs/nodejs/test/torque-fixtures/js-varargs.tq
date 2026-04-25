@@ -1,0 +1,12 @@
+// Phase 9B test fixture: JS-linkage builtin with `(...arguments)`.
+// IsVarArgsJavaScript() is true; emission must use BuiltinArguments
+// (args.length(), args[i]) instead of fixed positional args.
+// Returns arguments.length boxed as a Smi — exercises the
+// arguments.length accessor in the emitted body.
+namespace test_cc_jsvarargs {
+  javascript builtin TorqueCcTest_JsVarargs(
+      js-implicit context: NativeContext, receiver: JSAny)(
+      ...arguments): JSAny {
+    return Convert<Smi>(arguments.length);
+  }
+}
