@@ -87,6 +87,14 @@ export interface RunProgramOptions {
   /** Callback invoked after the process starts.
    *  Use this to call appendStdinData() for interactive stdin testing. */
   onStarted?: (kernelProxy: KernelStdinProxy, pid: number) => void | Promise<void>;
+  /**
+   * Extra host-backed mount points to bind specific VFS paths to specific
+   * host directories. Used by tests that stage files on the host before
+   * the kernel starts (dlopen) or need state to persist across multiple
+   * kernel sessions (git). Takes precedence over the default mount spec
+   * at the same VFS path.
+   */
+  extraMounts?: { vfsPath: string; hostPath: string }[];
 }
 
 export interface RunProgramResult {
@@ -145,6 +153,7 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
   const host = new NodeKernelHost({
     maxWorkers: 4,
     execPrograms,
+    extraMounts: options.extraMounts,
     onStdout: (_pid: number, data: Uint8Array) => {
       stdout += new TextDecoder().decode(data);
       stdoutChunks.push(new Uint8Array(data));

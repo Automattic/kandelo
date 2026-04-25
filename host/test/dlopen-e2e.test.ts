@@ -24,6 +24,25 @@ const hasKernel = existsSync(join(__dirname, "../wasm/wasm_posix_kernel.wasm"));
 
 const BUILD_DIR = join(tmpdir(), "wasm-dlopen-e2e");
 
+/**
+ * VFS path where the test's build directory appears inside the kernel.
+ * We mount BUILD_DIR at this path so test programs can dlopen the .so
+ * files we just compiled on the host. The kernel only ever sees the
+ * VFS path; the test knows the host path for staging files.
+ */
+const VFS_BUILD_PATH = "/opt/dlopen-build";
+
+/** Map a host path under BUILD_DIR to its VFS equivalent. */
+function toVfs(hostPath: string): string {
+  if (!hostPath.startsWith(BUILD_DIR)) {
+    throw new Error(`toVfs: not under BUILD_DIR: ${hostPath}`);
+  }
+  return VFS_BUILD_PATH + hostPath.slice(BUILD_DIR.length);
+}
+
+/** extraMounts entry that all tests in this file pass to runCentralizedProgram. */
+const DLOPEN_MOUNT = [{ vfsPath: VFS_BUILD_PATH, hostPath: BUILD_DIR }];
+
 /** Build a shared Wasm library (.so side module) from C source. */
 function buildSharedLib(source: string, name: string): string {
   const srcPath = join(BUILD_DIR, `${name}.c`);
@@ -146,8 +165,9 @@ describe.skipIf(!hasSysroot || !hasKernel)("dlopen end-to-end", () => {
 
     const result = await runCentralizedProgram({
       programPath: wasmPath,
-      argv: ["test-dlopen", soPath],
+      argv: ["test-dlopen", toVfs(soPath)],
       timeout: 10_000,
+      extraMounts: DLOPEN_MOUNT,
     });
 
     expect(result.exitCode).toBe(0);
@@ -178,6 +198,7 @@ describe.skipIf(!hasSysroot || !hasKernel)("dlopen end-to-end", () => {
       programPath: wasmPath,
       argv: ["test-dlopen-error"],
       timeout: 10_000,
+      extraMounts: DLOPEN_MOUNT,
     });
 
     expect(result.exitCode).toBe(0);
@@ -218,8 +239,9 @@ describe.skipIf(!hasSysroot || !hasKernel)("dlopen end-to-end", () => {
 
     const result = await runCentralizedProgram({
       programPath: wasmPath,
-      argv: ["test-dlsym-missing", soPath],
+      argv: ["test-dlsym-missing", toVfs(soPath)],
       timeout: 10_000,
+      extraMounts: DLOPEN_MOUNT,
     });
 
     expect(result.exitCode).toBe(0);
