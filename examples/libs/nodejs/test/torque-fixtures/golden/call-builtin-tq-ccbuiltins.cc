@@ -69,8 +69,45 @@ inline Tagged<Number> NumberConstant(double v) {
   Isolate* isolate = Isolate::Current();
   return Cast<Number>(*isolate->factory()->NewHeapNumber(v));
 }
+// Phase 9A — shims for the catch-flow lowering. Live here, not
+// in runtime-macro-shims.h, because they need factory.h /
+// isolate-inl.h which would re-enter the descriptor-array-tq-inl
+// include chain (see NumberConstant rationale above).
+// `StringConstant(const char*)` interns a C-string literal as a
+// V8 String. `GetPendingMessage` / `SetPendingMessage` access
+// the isolate's pending-message slot used by the catch-flow
+// machinery in TqRuntimeGetAndResetPendingMessage_0.
+inline Tagged<String> StringConstant(const char* s) {
+  Isolate* isolate = Isolate::Current();
+  return *isolate->factory()->InternalizeUtf8String(s);
+}
+inline Tagged<Union<Hole, JSMessageObject>> GetPendingMessage() {
+  return UncheckedCast<Union<Hole, JSMessageObject>>(
+      Isolate::Current()->pending_message());
+}
+inline void SetPendingMessage(Tagged<Hole> v) {
+  Isolate::Current()->set_pending_message(v);
+}
 }  // namespace CodeStubAssembler
 }  // namespace TorqueRuntimeMacroShims
+
+// Phase 9A — `TheHole_0()` mirrors True_0/False_0: emitter spells
+// the bare name with no `isolate` arg under kCCBuiltins, so we
+// internally fetch via Isolate::Current(). Used by the catch-flow
+// machinery to clear the pending-message slot.
+inline Tagged<Hole> TheHole_0() {
+  return Cast<Hole>(
+      ReadOnlyRoots(Isolate::Current()).the_hole_value());
+}
+// Phase 9A — `Undefined_0()` mirrors True_0/False_0/TheHole_0:
+// torque emits the bare `Undefined` namespace-constant as
+// `Undefined_0()` under kCCBuiltins. Used by callers that
+// pass `Undefined` as a JSAny argument (e.g. the catch-block
+// fixture's `ThrowCalledNonCallable(Undefined)` site).
+inline Tagged<Undefined> Undefined_0() {
+  return Cast<Undefined>(
+      ReadOnlyRoots(Isolate::Current()).undefined_value());
+}
 
 // Phase 8 — TFC builtin C bridges. `Add` and `NonNumberToNumeric`
 // are TFC (Torque, Function, Custom-call-descriptor) builtins —

@@ -69,8 +69,45 @@ inline Tagged<Number> NumberConstant(double v) {
   Isolate* isolate = Isolate::Current();
   return Cast<Number>(*isolate->factory()->NewHeapNumber(v));
 }
+// Phase 9A — shims for the catch-flow lowering. Live here, not
+// in runtime-macro-shims.h, because they need factory.h /
+// isolate-inl.h which would re-enter the descriptor-array-tq-inl
+// include chain (see NumberConstant rationale above).
+// `StringConstant(const char*)` interns a C-string literal as a
+// V8 String. `GetPendingMessage` / `SetPendingMessage` access
+// the isolate's pending-message slot used by the catch-flow
+// machinery in TqRuntimeGetAndResetPendingMessage_0.
+inline Tagged<String> StringConstant(const char* s) {
+  Isolate* isolate = Isolate::Current();
+  return *isolate->factory()->InternalizeUtf8String(s);
+}
+inline Tagged<Union<Hole, JSMessageObject>> GetPendingMessage() {
+  return UncheckedCast<Union<Hole, JSMessageObject>>(
+      Isolate::Current()->pending_message());
+}
+inline void SetPendingMessage(Tagged<Hole> v) {
+  Isolate::Current()->set_pending_message(v);
+}
 }  // namespace CodeStubAssembler
 }  // namespace TorqueRuntimeMacroShims
+
+// Phase 9A — `TheHole_0()` mirrors True_0/False_0: emitter spells
+// the bare name with no `isolate` arg under kCCBuiltins, so we
+// internally fetch via Isolate::Current(). Used by the catch-flow
+// machinery to clear the pending-message slot.
+inline Tagged<Hole> TheHole_0() {
+  return Cast<Hole>(
+      ReadOnlyRoots(Isolate::Current()).the_hole_value());
+}
+// Phase 9A — `Undefined_0()` mirrors True_0/False_0/TheHole_0:
+// torque emits the bare `Undefined` namespace-constant as
+// `Undefined_0()` under kCCBuiltins. Used by callers that
+// pass `Undefined` as a JSAny argument (e.g. the catch-block
+// fixture's `ThrowCalledNonCallable(Undefined)` site).
+inline Tagged<Undefined> Undefined_0() {
+  return Cast<Undefined>(
+      ReadOnlyRoots(Isolate::Current()).undefined_value());
+}
 
 // Phase 8 — TFC builtin C bridges. `Add` and `NonNumberToNumeric`
 // are TFC (Torque, Function, Custom-call-descriptor) builtins —
@@ -193,16 +230,16 @@ Tagged<Smi> Builtin_TorqueCcTest_CatchBlock(Isolate* isolate, Tagged<Context> co
   Tagged<Smi> parameter1 = shouldThrow;
   USE(parameter1);
   Tagged<Smi> tmp0{}; USE(tmp0);
-  Tagged<Object> tmp1{}; USE(tmp1);
+  Tagged<JSAny> tmp1{}; USE(tmp1);
   bool tmp2{}; USE(tmp2);
-  Tagged<Object> tmp3{}; USE(tmp3);
+  Tagged<JSAny> tmp3{}; USE(tmp3);
   Tagged<Union<Hole, JSMessageObject>> tmp4{}; USE(tmp4);
   Tagged<Union<Hole, JSMessageObject>> tmp5{}; USE(tmp5);
   Tagged<Undefined> tmp6{}; USE(tmp6);
-  Tagged<Object> tmp7{}; USE(tmp7);
+  Tagged<JSAny> tmp7{}; USE(tmp7);
   Tagged<Union<Hole, JSMessageObject>> tmp8{}; USE(tmp8);
   Tagged<Smi> tmp9{}; USE(tmp9);
-  Tagged<Object> tmp10{}; USE(tmp10);
+  Tagged<JSAny> tmp10{}; USE(tmp10);
   Tagged<Union<Hole, JSMessageObject>> tmp11{}; USE(tmp11);
   Tagged<JSAny> phi_bb2_2{}; USE(phi_bb2_2);
   Tagged<Union<Hole, JSMessageObject>> phi_bb2_3{}; USE(phi_bb2_3);
@@ -212,13 +249,13 @@ Tagged<Smi> Builtin_TorqueCcTest_CatchBlock(Isolate* isolate, Tagged<Context> co
   block0:
   tmp0 = TqRuntimeFromConstexpr_Smi_constexpr_IntegerLiteral_0(IntegerLiteral(false, 0x0ull));
   if (V8_UNLIKELY(Isolate::Current()->has_exception())) {
-    tmp1 = Isolate::Current()->exception();
+    tmp1 = UncheckedCast<JSAny>(Isolate::Current()->exception());
     Isolate::Current()->clear_internal_exception();
     goto block5;
   }
   tmp2 = TorqueRuntimeMacroShims::CodeStubAssembler::SmiNotEqual(parameter1, tmp0);
   if (V8_UNLIKELY(Isolate::Current()->has_exception())) {
-    tmp3 = Isolate::Current()->exception();
+    tmp3 = UncheckedCast<JSAny>(Isolate::Current()->exception());
     Isolate::Current()->clear_internal_exception();
     goto block6;
   }
@@ -247,7 +284,7 @@ Tagged<Smi> Builtin_TorqueCcTest_CatchBlock(Isolate* isolate, Tagged<Context> co
     Runtime_ThrowCalledNonCallable(1, __rt_args, isolate);
   }
   if (V8_UNLIKELY(Isolate::Current()->has_exception())) {
-    tmp7 = Isolate::Current()->exception();
+    tmp7 = UncheckedCast<JSAny>(Isolate::Current()->exception());
     Isolate::Current()->clear_internal_exception();
     goto block7;
   }
@@ -262,7 +299,7 @@ Tagged<Smi> Builtin_TorqueCcTest_CatchBlock(Isolate* isolate, Tagged<Context> co
   block4:
   tmp9 = TqRuntimeFromConstexpr_Smi_constexpr_IntegerLiteral_0(IntegerLiteral(false, 0x2aull));
   if (V8_UNLIKELY(Isolate::Current()->has_exception())) {
-    tmp10 = Isolate::Current()->exception();
+    tmp10 = UncheckedCast<JSAny>(Isolate::Current()->exception());
     Isolate::Current()->clear_internal_exception();
     goto block8;
   }
