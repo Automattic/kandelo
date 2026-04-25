@@ -97,6 +97,27 @@ pub struct Compatibility {
     pub build_host: Option<String>,
 }
 
+/// Optional remote-fetch pointer for a prebuilt archive of this
+/// library. When present, the resolver consults it as the 4th
+/// priority — after `local-libs/` override and the local cache,
+/// before falling back to a source build (Task A.9).
+///
+/// Allowed in BOTH source `deps.toml` (the canonical place — the URL
+/// describes where the archive lives) and archived `manifest.toml`
+/// (carried through unchanged; redundant but harmless).
+///
+/// `archive_url` is stored verbatim — not URL-validated at parse
+/// time. `archive_sha256` is enforced as 64-char lowercase hex so
+/// any download can be content-addressed without re-checking format
+/// at fetch time.
+// Read by tests now; wired into the resolver in Task A.9.
+#[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
+pub struct Binary {
+    pub archive_url: String,
+    pub archive_sha256: String,
+}
+
 /// One fully-parsed `deps.toml` file.
 #[derive(Debug, Clone)]
 pub struct DepsManifest {
@@ -117,6 +138,13 @@ pub struct DepsManifest {
     /// Read by tests now; wired into the resolver in Tasks A.5 / A.9.
     #[allow(dead_code)]
     pub compatibility: Option<Compatibility>,
+
+    /// Optional remote-fetch pointer (see [`Binary`]). When `Some`,
+    /// the resolver may download a prebuilt archive instead of
+    /// running the source build. Read by tests now; wired into the
+    /// resolver in Task A.9.
+    #[allow(dead_code)]
+    pub binary: Option<Binary>,
 
     /// Directory containing this `deps.toml`. The build script path and
     /// any per-dep build state live underneath it.
@@ -214,6 +242,8 @@ struct Raw {
     outputs: Outputs,
     #[serde(default)]
     compatibility: Option<Compatibility>,
+    #[serde(default)]
+    binary: Option<Binary>,
 }
 
 impl DepsManifest {
@@ -296,6 +326,21 @@ impl DepsManifest {
         Ok(())
     }
 
+    fn validate_binary(b: &Binary) -> Result<(), String> {
+        if b.archive_sha256.len() != 64
+            || !b
+                .archive_sha256
+                .chars()
+                .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase())
+        {
+            return Err(format!(
+                "binary.archive_sha256 must be 64-char lowercase hex, got {:?}",
+                b.archive_sha256
+            ));
+        }
+        Ok(())
+    }
+
     fn validate_common(raw: Raw, dir: PathBuf) -> Result<Self, String> {
         if raw.name.is_empty() {
             return Err("name must not be empty".into());
@@ -325,6 +370,10 @@ impl DepsManifest {
         }
         if raw.license.spdx.is_empty() {
             return Err("license.spdx must not be empty".into());
+        }
+
+        if let Some(b) = raw.binary.as_ref() {
+            Self::validate_binary(b)?;
         }
 
         let depends_on: Vec<DepRef> = raw
@@ -360,6 +409,7 @@ impl DepsManifest {
             build: raw.build,
             outputs: raw.outputs,
             compatibility: raw.compatibility,
+            binary: raw.binary,
             dir,
         })
     }
@@ -580,5 +630,67 @@ spdx = "MIT"
         );
         let err = DepsManifest::parse_archived(&text, PathBuf::from("/x")).unwrap_err();
         assert!(err.contains("cache_key_sha"), "got: {err}");
+    }
+
+    #[test]
+    fn parses_binary_block_optional() {
+        let text = format!(
+            "{}\n[binary]\narchive_url = \"https://x/foo.tar.zst\"\narchive_sha256 = \"{:0>64}\"\n",
+            EXAMPLE, ""
+        );
+        let m = DepsManifest::parse(&text, PathBuf::from("/x")).unwrap();
+        let b = m.binary.as_ref().unwrap();
+        assert_eq!(b.archive_url, "https://x/foo.tar.zst");
+        assert_eq!(b.archive_sha256, "0".repeat(64));
+    }
+
+    #[test]
+    fn parse_accepts_no_binary_block() {
+        // EXAMPLE has no [binary] block. Confirm parse succeeds and
+        // binary is None.
+        let m = DepsManifest::parse(EXAMPLE, PathBuf::from("/x")).unwrap();
+        assert!(m.binary.is_none());
+    }
+
+    #[test]
+    fn rejects_invalid_binary_archive_sha() {
+        let text = format!(
+            "{}\n[binary]\narchive_url = \"https://x\"\narchive_sha256 = \"BAD\"\n",
+            EXAMPLE
+        );
+        let err = DepsManifest::parse(&text, PathBuf::from("/x")).unwrap_err();
+        assert!(err.contains("archive_sha256"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_uppercase_binary_archive_sha() {
+        let text = format!(
+            "{}\n[binary]\narchive_url = \"https://x\"\narchive_sha256 = \"{}\"\n",
+            EXAMPLE,
+            "A".repeat(64),
+        );
+        let err = DepsManifest::parse(&text, PathBuf::from("/x")).unwrap_err();
+        assert!(err.contains("archive_sha256"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_short_binary_archive_sha() {
+        let text = format!(
+            "{}\n[binary]\narchive_url = \"https://x\"\narchive_sha256 = \"abcdef01\"\n",
+            EXAMPLE
+        );
+        let err = DepsManifest::parse(&text, PathBuf::from("/x")).unwrap_err();
+        assert!(err.contains("archive_sha256"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_long_binary_archive_sha() {
+        let text = format!(
+            "{}\n[binary]\narchive_url = \"https://x\"\narchive_sha256 = \"{}\"\n",
+            EXAMPLE,
+            "a".repeat(65),
+        );
+        let err = DepsManifest::parse(&text, PathBuf::from("/x")).unwrap_err();
+        assert!(err.contains("archive_sha256"), "got: {err}");
     }
 }
