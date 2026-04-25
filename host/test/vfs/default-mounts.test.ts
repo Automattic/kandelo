@@ -36,17 +36,17 @@ function buildTinyImage(): ArrayBuffer {
 describe("DEFAULT_MOUNT_SPEC + resolvers", () => {
   it("covers the canonical Unix mount points", () => {
     const paths = DEFAULT_MOUNT_SPEC.map((s) => s.path);
-    expect(paths).toContain("/etc");
+    expect(paths).toContain("/");          // image-backed root
     expect(paths).toContain("/tmp");
     expect(paths).toContain("/home/user");
     expect(paths).toContain("/var/tmp");
     expect(paths).toContain("/root");
   });
 
-  it("marks /etc as image-backed and read-only", () => {
-    const etc = DEFAULT_MOUNT_SPEC.find((s) => s.path === "/etc")!;
-    expect(etc.source).toBe("image");
-    expect(etc.readonly).toBe(true);
+  it("marks / as image-backed and read-only (rootfs image)", () => {
+    const root = DEFAULT_MOUNT_SPEC.find((s) => s.path === "/")!;
+    expect(root.source).toBe("image");
+    expect(root.readonly).toBe(true);
   });
 
   it("marks /tmp and /var/run as ephemeral scratch", () => {
@@ -70,7 +70,7 @@ describe("DEFAULT_MOUNT_SPEC + resolvers", () => {
       }
     });
 
-    it("builds image-backed mounts from the rootfs MemoryFileSystem", async () => {
+    it("builds image-backed root mount from the rootfs MemoryFileSystem", async () => {
       const sab = new SharedArrayBuffer(256 * 1024);
       const mfs = MemoryFileSystem.create(sab);
       mfs.mkdirWithOwner("/etc", 0o755, 0, 0);
@@ -80,8 +80,12 @@ describe("DEFAULT_MOUNT_SPEC + resolvers", () => {
       session = createNodeSession(img.buffer.slice(img.byteOffset, img.byteOffset + img.byteLength));
       const table = buildMountTable(DEFAULT_MOUNT_SPEC, (s) => resolveForNode(s, session!));
 
+      // /etc/passwd lands on the "/" image mount (no more specific mount
+      // covers /etc). Backend's prefix is "" (empty for root mount) so
+      // the sub-path reaches the MFS at its natural /etc/passwd position.
       const r = table.resolve("/etc/passwd")!;
-      expect(r.entry.mount).toBe("/etc");
+      expect(r.entry.mount).toBe("/");
+      expect(r.subPath).toBe("/etc/passwd");
       const st = r.entry.backend.stat(r.subPath);
       expect(st.mode & 0o777).toBe(0o644);
       expect(st.uid).toBe(0);

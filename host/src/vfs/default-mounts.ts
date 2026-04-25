@@ -33,8 +33,13 @@ export interface MountSpec {
 }
 
 export const DEFAULT_MOUNT_SPEC: ReadonlyArray<MountSpec> = [
-  // Image-backed
-  { path: "/etc",       source: "image",   readonly: true  },
+  // Image-backed root. Everything in the rootfs image (declared in
+  // MANIFEST, source under rootfs/) is served through this mount at its
+  // natural path — /bin/sh, /etc/passwd, /sbin, /usr/bin, etc. The
+  // scratch mounts below override more-specific prefixes by longest-
+  // prefix match: e.g., /tmp/foo lands on the scratch HostDirBackend
+  // even though the image declares an empty /tmp dir.
+  { path: "/",          source: "image",   readonly: true  },
 
   // Scratch mounts. Each provides a place for programs to write without
   // touching either the image or the unrelated host filesystem.
