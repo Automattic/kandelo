@@ -61,6 +61,42 @@ pub enum ManifestKind {
     Source,
 }
 
+/// Target wasm architecture a built artifact is compatible with.
+///
+/// Closed enum — unknown values are rejected at parse time. Only
+/// present in archived `manifest.toml` (under `[compatibility]`),
+/// never in source `deps.toml`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TargetArch {
+    Wasm32,
+    Wasm64,
+}
+
+/// Build-time provenance + ABI compatibility data injected into an
+/// archived `manifest.toml` at archive creation. Source `deps.toml`
+/// files MUST NOT contain this block; archived manifests MUST.
+///
+/// Used by the resolver's remote-fetch path (Task A.9) to reject
+/// archives whose `target_arch` or `abi_versions` no longer match
+/// the consumer's environment.
+// Fields are read by tests + future A.5 (cache-key inputs) / A.9
+// (remote-fetch verification). Mark allow(dead_code) at the struct
+// level so the binary crate's dead-code analysis doesn't grumble
+// about unread schema fields between landing the schema and wiring
+// it up in subsequent commits.
+#[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
+pub struct Compatibility {
+    pub target_arch: TargetArch,
+    pub abi_versions: Vec<u32>,
+    pub cache_key_sha: String,
+    #[serde(default)]
+    pub build_timestamp: Option<String>,
+    #[serde(default)]
+    pub build_host: Option<String>,
+}
+
 /// One fully-parsed `deps.toml` file.
 #[derive(Debug, Clone)]
 pub struct DepsManifest {
@@ -73,6 +109,14 @@ pub struct DepsManifest {
     pub depends_on: Vec<DepRef>,
     pub build: Build,
     pub outputs: Outputs,
+
+    /// Build-time provenance + ABI compatibility. Always `None` for
+    /// manifests parsed via [`DepsManifest::parse`] (source `deps.toml`)
+    /// and always `Some` for those parsed via
+    /// [`DepsManifest::parse_archived`] (archived `manifest.toml`).
+    /// Read by tests now; wired into the resolver in Tasks A.5 / A.9.
+    #[allow(dead_code)]
+    pub compatibility: Option<Compatibility>,
 
     /// Directory containing this `deps.toml`. The build script path and
     /// any per-dep build state live underneath it.
@@ -168,6 +212,8 @@ struct Raw {
     build: Build,
     #[serde(default)]
     outputs: Outputs,
+    #[serde(default)]
+    compatibility: Option<Compatibility>,
 }
 
 impl DepsManifest {
@@ -185,13 +231,72 @@ impl DepsManifest {
             .map_err(|e| format!("{}: {e}", path.display()))
     }
 
+    /// Parse a source `deps.toml`. Rejects manifests that contain a
+    /// `[compatibility]` block — that block is reserved for archived
+    /// `manifest.toml` files (see [`parse_archived`]).
     pub fn parse(text: &str, dir: PathBuf) -> Result<Self, String> {
         let raw: Raw =
             toml::from_str(text).map_err(|e| format!("parse deps.toml: {e}"))?;
-        Self::validate(raw, dir)
+        Self::validate_source(raw, dir)
     }
 
-    fn validate(raw: Raw, dir: PathBuf) -> Result<Self, String> {
+    /// Parse an archived `manifest.toml` (the one written into the
+    /// cached artifact). Requires a `[compatibility]` block; rejects
+    /// manifests without one. Used by Task A.9 remote-fetch path.
+    #[allow(dead_code)]
+    pub fn parse_archived(text: &str, dir: PathBuf) -> Result<Self, String> {
+        let raw: Raw = toml::from_str(text)
+            .map_err(|e| format!("parse manifest.toml: {e}"))?;
+        Self::validate_archived(raw, dir)
+    }
+
+    fn validate_source(raw: Raw, dir: PathBuf) -> Result<Self, String> {
+        if raw.compatibility.is_some() {
+            return Err(
+                "source deps.toml must not contain a [compatibility] block \
+                 (it is injected into archived manifest.toml at build time)"
+                    .into(),
+            );
+        }
+        Self::validate_common(raw, dir)
+    }
+
+    fn validate_archived(raw: Raw, dir: PathBuf) -> Result<Self, String> {
+        if raw.compatibility.is_none() {
+            return Err(
+                "archived manifest.toml must contain a [compatibility] block \
+                 (target_arch + abi_versions + cache_key_sha)"
+                    .into(),
+            );
+        }
+        if let Some(c) = raw.compatibility.as_ref() {
+            Self::validate_compatibility(c)?;
+        }
+        Self::validate_common(raw, dir)
+    }
+
+    fn validate_compatibility(c: &Compatibility) -> Result<(), String> {
+        if c.abi_versions.is_empty() {
+            return Err(
+                "compatibility.abi_versions must list at least one ABI version"
+                    .into(),
+            );
+        }
+        if c.cache_key_sha.len() != 64
+            || !c
+                .cache_key_sha
+                .chars()
+                .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase())
+        {
+            return Err(format!(
+                "compatibility.cache_key_sha must be 64-char lowercase hex, got {:?}",
+                c.cache_key_sha
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_common(raw: Raw, dir: PathBuf) -> Result<Self, String> {
         if raw.name.is_empty() {
             return Err("name must not be empty".into());
         }
@@ -254,6 +359,7 @@ impl DepsManifest {
             depends_on,
             build: raw.build,
             outputs: raw.outputs,
+            compatibility: raw.compatibility,
             dir,
         })
     }
@@ -410,5 +516,34 @@ spdx = "MIT"
     fn parses_manifest_with_kind_library() {
         let m = DepsManifest::parse(EXAMPLE, PathBuf::from("/x")).unwrap();
         assert!(matches!(m.kind, ManifestKind::Library));
+    }
+
+    #[test]
+    fn rejects_compatibility_in_source_mode() {
+        let text = format!(
+            "{}\n[compatibility]\ntarget_arch = \"wasm32\"\nabi_versions = [4]\ncache_key_sha = \"{:0>64}\"\n",
+            EXAMPLE, ""
+        );
+        let err = DepsManifest::parse(&text, PathBuf::from("/x")).unwrap_err();
+        assert!(err.contains("compatibility"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_archived_requires_compatibility_block() {
+        // No [compatibility] block — archived manifests must have one.
+        let err = DepsManifest::parse_archived(EXAMPLE, PathBuf::from("/x")).unwrap_err();
+        assert!(err.contains("compatibility"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_archived_accepts_full_compatibility_block() {
+        let text = format!(
+            "{}\n[compatibility]\ntarget_arch = \"wasm32\"\nabi_versions = [4]\ncache_key_sha = \"{:0>64}\"\n",
+            EXAMPLE, ""
+        );
+        let m = DepsManifest::parse_archived(&text, PathBuf::from("/x")).unwrap();
+        let c = m.compatibility.as_ref().unwrap();
+        assert_eq!(c.target_arch, TargetArch::Wasm32);
+        assert_eq!(c.abi_versions, vec![4]);
     }
 }
