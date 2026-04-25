@@ -1081,7 +1081,7 @@ branch already performs for `array-isarray.tq`.
 | `%GetClassMapConstant` fast-path | Phase 5 compromise; no UNIQUE_INSTANCE_TYPE target forced it. |
 | CSA-replacement ledger first real shim | Scaffold at `examples/libs/nodejs/csa-builtins/`. Pending first real need (likely Phase 7A Increment shim: UnaryOp1). |
 | Wasm32 cross-compile of the Torque-CC toolchain | Phase 8+. |
-| **NEW:** Phase 7A — ship `Increment` (or simpler tail-call target) | Needs `UnaryOp1` shim port + 3-4 supporting `FromConstexpr/SmiTag/Cast` shims. Emitter is ready. |
+| **NEW:** Phase 7A — ship `Increment` (or simpler tail-call target) | **2026-04-25 retriage:** torque auto-emits the four Tq* helpers inline (no shim port). Real blocker is TFC builtin C-symbol absence — `Builtin_Add` / `Builtin_NonNumberToNumeric` are TFC, not CPP, so the linker can't resolve them. Survey of all 11 stub-linkage tail-call sites: every callee is TFC/TFS or JS-linkage. Needs Phase-8 dispatch-via-`Code`-object emitter change (sketch in §"Phase 7A Triage") before any real target lands. |
 
 ### What Phase 7 proves
 
@@ -1094,3 +1094,174 @@ branch already performs for `array-isarray.tq`.
   work queue, not an emitter gap).
 - Zero regressions across all 5 wasm-posix-kernel gates + the 5 v8
   gates (cctest, d8-smoke, mjsunit, fixture harness, excluding-anchor).
+
+## Phase 7A Triage (2026-04-25) — BLOCKED on Phase-8 TFC dispatch
+
+Attempt to ship `Increment` as the first real-world tail-call forcing
+target. Outcome: **deferred**, retriaged as Phase 8 prerequisite. Phase 7
+itself remains complete (synthetic fixture + emitter shipped). No
+patch / clone-side commits landed in 7A — the build state was restored
+to the Phase 7 baseline after diagnostic.
+
+### Method
+
+1. Added `Increment` to `build-v8-host-phase5.sh`'s default `WHITELIST`.
+2. Ran the host build to compile `number-tq-ccbuiltins.cc` with the
+   real Increment body. Build failed at the C++ compilation of
+   `gen/torque-generated/src/builtins/number-tq-ccbuiltins.cc`
+   (compiled into `libv8_base_without_compiler.a`, not at link).
+3. Reverted the whitelist edit and rebuilt — clean state restored
+   (16/16 fixtures, 10/10 cctests, 18/18 d8-smoke, 2/2 mjsunit, no
+   patch / commit churn).
+
+### What torque emits for `Increment` (verified inline-readable)
+
+```cpp
+Tagged<Numeric> Builtin_Increment(Isolate* isolate, Tagged<Context> context, Tagged<JSAny> value) {
+  // ... goto block0; ...
+  block0:
+  TqRuntimeUnaryOp1_0(parameter0, parameter1, &label0, &tmp1, &label2, &tmp3);
+  if (label0) goto block5;
+  if (label2) goto block6;
+
+  block5:
+  tmp4 = TqRuntimeFromConstexpr_Number_constexpr_IntegerLiteral_0(IntegerLiteral(false, 0x1ull));
+  return Builtin_Add(isolate, parameter0, tmp1, tmp4);   // <- Phase-7 tail-call branch
+
+  block6:
+  tmp5 = TqRuntimeFromConstexpr_Operation_constexpr_kIncrement_0(Operation::kIncrement);
+  tmp6 = TqRuntimeSmiTag_Operation_0(tmp5);
+  // ... runtime::BigIntUnaryOp(...) ...
+}
+```
+
+Phase 6.1's `EnsureInCCBuiltinsOutputList` pipeline correctly emits all
+four `TqRuntime*` helper bodies inline in the same TU — `UnaryOp1_0`,
+`FromConstexpr_Number_constexpr_IntegerLiteral_0`,
+`FromConstexpr_Operation_constexpr_kIncrement_0`, `SmiTag_Operation_0`.
+**No shim port needed for these four** — they are auto-generated.
+This is a strict improvement over the Phase 7 brief, which assumed the
+`UnaryOp1` macro had to be hand-ported (~200 LoC). The actual hand
+work was zero on those.
+
+### The actual blocker: TFC builtin C-symbol absence
+
+C++ compile errors fall into two classes (6 total observed):
+
+| Error | Class | Fix scope |
+|---|---|---|
+| `Builtin_Add` undeclared (line 365, in `Builtin_Increment` body, terminal tail-call) | **TFC dispatch — blocker** | Phase 8 |
+| `isolate` undeclared (line 642, in `TqRuntimeUnaryOp1_0` body, calling `Builtin_NonNumberToNumeric`) | **TFC dispatch — blocker** (`Builtin_NonNumberToNumeric` is also TFC; the `isolate` literal is a secondary issue — helpers don't take an `Isolate*`) | Phase 8 |
+| `IsBigInt` shim missing (line 920, `TqRuntimeCast_BigInt_0`) | Trivial 1-line shim | Phase 7A — landable |
+| `NumberConstant` shim missing (line 665) | Trivial shim | Phase 7A — landable |
+| `ConstexprIntegerLiteralToFloat64` shim missing (line 665) | Trivial shim | Phase 7A — landable |
+| `SmiFromUint32` shim missing (line 702) | Trivial shim | Phase 7A — landable |
+
+**Add and NonNumberToNumeric are both TFC builtins** — registered as
+`TFC(Add, Add)` / `TFC(NonNumberToNumeric, NonNumberToNumeric)` in
+`out/Release/gen/torque-generated/builtin-definitions.h`. TFC builtins
+are CSA-emitted to native code at snapshot time; their `Code` objects
+live in `Isolate::builtins()->code(Builtin::kAdd)` and are normally
+invoked via the standard V8 dispatch (`Builtins::CallableFor`,
+`GeneratedCode<...>::FromAddress(...)`). They have **no `Builtin_<Name>`
+C++ entry point** that the linker can resolve — `nm
+out/Release/libv8_initializers.a` and `libv8_base_without_compiler.a`
+confirm only `AddAssembler::GenerateAddImpl` exists, no
+`Builtin_Add(Isolate*, Context, ...)`.
+
+The kCCBuiltins -> CPP dispatch we have today (`Builtin_NumberIsFinite`
+etc., emitted as plain C functions via the patch's `OutputType::kCC
+Builtins` path) is **not** wired to call into TFC entry points — the
+emitter just spells `Builtin_<Callee>(isolate, args...)` and trusts
+the linker, which fails for non-CPP callees.
+
+### Why every "real" tail-call candidate hits the same wall
+
+Surveyed the 11 stub-linkage `tail [A-Z][A-Za-z_]+(` sites in
+`deps/v8/src/builtins/*.tq` (excluding `wasm` and namespace tails):
+
+| Caller | Callee | Callee linkage | Status |
+|---|---|---|---|
+| `Increment` (number.tq:780) | `Add` | TFC | blocked — Phase 8 |
+| `Decrement` (number.tq:769) | `Subtract` | TFC | blocked — Phase 8 |
+| `FastNewClosureBaseline` (constructor.tq:53) | `FastNewClosure` | TFS | blocked — Phase 8 |
+| `ProxyHasProperty` (proxy-has-property.tq:50) | `HasProperty` | TFS | blocked — Phase 8 (also `try`/`label` w/ `ThrowTypeError` triggers `catch_block`) |
+| `FastConsoleAssert` (console.tq:18) | `ConsoleAssert` | JS-linkage + varargs | blocked — Phase 8 (JS-linkage tail) |
+| `Add` internal labels (number.tq:487-491) | `StringAddConvertLeft`, `StringAddConvertRight`, `bigint::BigIntAdd` | TFC | blocked — Phase 8 |
+| `array-shift.tq:107`, `array-unshift.tq:93`, `array-concat.tq:45`, `function.tq:113` | `ArrayShift`, `ArrayUnshift`, `ArrayConcat`, `FunctionPrototypeBind` | All JS-linkage transitioning | blocked — Phase 8 (JS-linkage tail) |
+
+Cascading whitelist (e.g., adding `Add` itself to `--cc-builtins-whitelist`
+to force `Builtin_Add` as kCCBuiltins) **transitively pulls in**
+`StringAddConvertLeft`, `StringAddConvertRight`, `BigIntAdd`,
+`NonNumberToNumeric`, `ToNumericOrPrimitive`, `ToPrimitiveDefault`, ...
+each of which is itself transitioning, has its own try/label shape,
+and would surface every Phase-8 deferral (catch_block, multi-result
+PairT, struct labels) before reaching a fixed point. Per the user's
+STOP rule ("if porting exceeds ~200 lines or pulls in more than 2
+helper ports, pivot to a simpler target"), the cascade terminates well
+past that bound — and there is no simpler target.
+
+### What Phase 8 needs (proposed shape, not Phase 7A's job)
+
+A single emitter change in `cc-generator.cc` for both the non-tail
+`CallBuiltin` branch (line 570) and the new tail-call branch (line
+539-540):
+
+```cpp
+if (callee_has_C_symbol) {
+  out() << "Builtin_<Callee>(isolate, args...)";       // current path
+} else {
+  // Dispatch via Code object (jitless-safe). Mirrors
+  // CallBuiltinPointerInstruction's existing emission at
+  // cc-generator.cc:603-617, which already does this for builtin
+  // pointers via Builtins::TorqueCcEntryOf.
+  out() << "DispatchByBuiltinEnum<RetT, ParamT...>(isolate, "
+        << "Builtin::k<Callee>, args...)";
+}
+```
+
+`DispatchByBuiltinEnum` would be a ~20-line inline helper in
+`runtime-macro-shims.h` (or a new `cc-builtins-dispatch.h`) that
+fetches `isolate->builtins()->code(builtin)->instruction_start()` and
+casts to the TFC ABI's canonical `Address(Address ctx, Address arg0,
+..., Address isolate)` signature. The "callee_has_C_symbol" predicate
+is just `instruction.builtin->IsCpp() ||
+GlobalContext::IsInCCBuiltinsWhitelist(instruction.builtin)`. Once
+that lands, the four trivial shims listed above become the actual
+Phase 7A surface, and Increment ships.
+
+A secondary issue surfaces in tandem: helper bodies (emitted via
+`EnsureInCCBuiltinsOutputList`) reference `isolate` literally inside
+`CallBuiltin` emissions but have no `Isolate*` in their signature.
+Two fixes are equally cheap:
+- Inject `Isolate* isolate = Isolate::Current();` at the top of
+  helper bodies that contain a CallBuiltin (parallel to Phase 6.1's
+  I-1 NamespaceConstant pattern).
+- Or substitute `isolate` -> `Isolate::Current()` at the call site
+  under `is_cc_builtins_` when emitting from a non-builtin context.
+
+### Decision
+
+**Phase 7A is closed without a real-world target.** Phase 7's emitter
+work (synthetic fixture + cctest) stands. The next forward step is
+either (a) Phase 8 catch_block + TFC-dispatch combined sub-phase, or
+(b) PR #306 push of the current Phase 6.1 + Phase 7 stack as-is —
+both pending user go/no-go.
+
+### Verification (Phase 7A triage end state)
+
+| Gate | Phase 7 baseline | Phase 7A end | Delta |
+|------|-----------------|---------------|-------|
+| Torque fixtures | 16/16 byte-exact | 16/16 | 0 |
+| cctest `TorqueCcBuiltinTest.*` | 10 PASS | 10 PASS | 0 |
+| d8-smoke | 18 PASS | 18 PASS | 0 |
+| mjsunit | 2 PASS | 2 PASS | 0 |
+| Excluding-anchor | `09b34bf8` | `09b34bf8` (unchanged) | 0 |
+| Patch delta | 5753 lines (75 commits) | 5753 lines (75 commits) | 0 |
+| Clone-side commits | 75 | 75 | 0 (no new commits — diagnostic only) |
+| Worktree-side commits | 4 ahead | 5 ahead (this verification.md update) | +1 |
+
+(wasm-posix-kernel suites cargo / vitest / libc-test / POSIX / ABI not
+re-run for Phase 7A — there were no source changes outside
+`examples/libs/nodejs/verification.md`, so kernel-side state is
+inherited from Phase 7's last full sweep.)
