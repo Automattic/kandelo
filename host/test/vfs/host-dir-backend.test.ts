@@ -78,11 +78,67 @@ describe("HostDirBackend", () => {
     expect(existsSync(join(scratch, "sub/g"))).toBe(false);
   });
 
-  it("chown is a no-op (hiding host identity)", () => {
+  it("chown updates the VFS's view; subsequent stat returns the new uid/gid", () => {
     writeFileSync(join(scratch, "file"), "x");
-    backend.chown("/file", 500, 500); // no-op; wouldn't be permitted on macOS anyway
+    backend.chown("/file", 500, 600);
     const st = backend.stat("/file");
-    expect(st.uid).toBe(1000); // still reports 1000
+    expect(st.uid).toBe(500);
+    expect(st.gid).toBe(600);
+  });
+
+  it("chmod updates the VFS's perm bits without touching the host", () => {
+    writeFileSync(join(scratch, "file"), "x", { mode: 0o644 });
+    backend.chmod("/file", 0o600);
+    const st = backend.stat("/file");
+    expect(st.mode & 0o777).toBe(0o600);
+    // Host file's mode is unchanged — VFS owns the view
+    const hostMode = (require("node:fs").statSync(join(scratch, "file")).mode) & 0o777;
+    expect(hostMode).toBe(0o644);
+  });
+
+  it("fchmod / fchown via fd update the same shadow entry as the path-based ops", () => {
+    writeFileSync(join(scratch, "file"), "x", { mode: 0o644 });
+    const fd = backend.open("/file", 0, 0);
+    backend.fchown(fd, 42, 43);
+    backend.fchmod(fd, 0o700);
+    const st = backend.fstat(fd);
+    backend.close(fd);
+    expect(st.uid).toBe(42);
+    expect(st.gid).toBe(43);
+    expect(st.mode & 0o777).toBe(0o700);
+
+    // Path-based stat sees the same thing
+    const pst = backend.stat("/file");
+    expect(pst.uid).toBe(42);
+    expect(pst.mode & 0o777).toBe(0o700);
+  });
+
+  it("rename moves the shadow metadata along with the file", () => {
+    writeFileSync(join(scratch, "a"), "x");
+    backend.chown("/a", 500, 600);
+    backend.rename("/a", "/b");
+    const st = backend.stat("/b");
+    expect(st.uid).toBe(500);
+    expect(st.gid).toBe(600);
+  });
+
+  it("unlink removes the shadow entry", () => {
+    writeFileSync(join(scratch, "file"), "x");
+    backend.chown("/file", 500, 600);
+    backend.unlink("/file");
+    // Re-create the file; it should default back to 1000/1000
+    writeFileSync(join(scratch, "file"), "y");
+    const st = backend.stat("/file");
+    expect(st.uid).toBe(1000);
+    expect(st.gid).toBe(1000);
+  });
+
+  it("files staged on the host default to uid/gid=1000, host's mode", () => {
+    writeFileSync(join(scratch, "staged"), "x", { mode: 0o640 });
+    const st = backend.stat("/staged");
+    expect(st.uid).toBe(HOST_DIR_DEFAULT_UID);
+    expect(st.gid).toBe(HOST_DIR_DEFAULT_GID);
+    expect(st.mode & 0o777).toBe(0o640);
   });
 
   it("createIfMissing creates the hostRoot", () => {
