@@ -47,9 +47,24 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+/// Discriminator for the kind of artifact a manifest produces.
+///
+/// Required at the top level of every `deps.toml` (`kind = "library"`,
+/// `kind = "program"`, or `kind = "source"`). Tagged-enum dispatch on
+/// this value lands in subsequent commits; for now it's parsed and
+/// stored unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ManifestKind {
+    Library,
+    Program,
+    Source,
+}
+
 /// One fully-parsed `deps.toml` file.
 #[derive(Debug, Clone)]
 pub struct DepsManifest {
+    pub kind: ManifestKind,
     pub name: String,
     pub version: String,
     pub revision: u32,
@@ -141,6 +156,7 @@ impl std::fmt::Display for DepRef {
 /// parsed DepRefs, etc.) lives in one place.
 #[derive(Debug, Deserialize)]
 struct Raw {
+    kind: ManifestKind,
     name: String,
     version: String,
     revision: u32,
@@ -229,6 +245,7 @@ impl DepsManifest {
         }
 
         Ok(DepsManifest {
+            kind: raw.kind,
             name: raw.name,
             version: raw.version,
             revision: raw.revision,
@@ -263,6 +280,7 @@ mod tests {
     use super::*;
 
     const EXAMPLE: &str = r#"
+kind = "library"
 name = "zlib"
 version = "1.3.1"
 revision = 1
@@ -370,5 +388,27 @@ headers = ["include/zlib.h"]
         );
         let err = DepsManifest::parse(&text, PathBuf::from("/x")).unwrap_err();
         assert!(err.contains("depends_on"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_manifest_without_kind() {
+        let text = r#"
+name = "x"
+version = "1.0"
+revision = 1
+[source]
+url = "https://example.test/x.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+[license]
+spdx = "MIT"
+"#;
+        let err = DepsManifest::parse(text, PathBuf::from("/x")).unwrap_err();
+        assert!(err.contains("kind"), "got: {err}");
+    }
+
+    #[test]
+    fn parses_manifest_with_kind_library() {
+        let m = DepsManifest::parse(EXAMPLE, PathBuf::from("/x")).unwrap();
+        assert!(matches!(m.kind, ManifestKind::Library));
     }
 }

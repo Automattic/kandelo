@@ -615,6 +615,7 @@ mod tests {
             .join(", ");
         let text = format!(
             r#"
+kind = "library"
 name = "{name}"
 version = "{version}"
 revision = 1
@@ -795,6 +796,7 @@ libs = ["lib/lib{name}.a"]
             .join(", ");
         let deps_toml = format!(
             r#"
+kind = "library"
 name = "{name}"
 version = "{version}"
 revision = 1
