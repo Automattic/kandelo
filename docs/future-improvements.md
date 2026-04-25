@@ -53,3 +53,23 @@ Blast radius is unrelated to any feature work — should land as a standalone cl
 Optimization path: consult `SharedFS`'s block bitmap at save time and emit only occupied blocks + a block map, or run-length-encode the trailing zeros. Either would drop a fresh rootfs image from ~16 MB to under 100 KB. The loader (`fromImage`) would need the corresponding sparse-restore path.
 
 **Files:** `host/src/vfs/memory-fs.ts` — `saveImage`, `fromImage`
+
+### Load `rootfs.vfs` in the browser kernel
+`NodeKernelHost` loads `host/wasm/rootfs.vfs` into a MemFsBackend mounted at `/etc` via the mount table, so in-kernel programs see the same `/etc/passwd`/`/etc/group`/`/etc/hosts` content as on Node. `BrowserKernel` still hand-populates its MemoryFileSystem at startup (ad-hoc `/etc/services`) rather than loading the image. Adding a `rootfsImage?: ArrayBuffer` option to `BrowserKernelOptions` and wiring it through the existing `options.memfs` path would close the parity gap.
+
+Blockers: browser's current setup populates `/etc/services` inline; that entry needs to move into the rootfs manifest (or the browser needs a post-image fixup) so nothing goes missing. Also TLS cert bundle paths (`/etc/ssl/certs/*`) that show up in the default env should probably migrate to the image.
+
+**Files:** `examples/browser/lib/browser-kernel.ts`, `rootfs/etc/` (add `services` and TLS cert bundle)
+
+### Migrate legacy `new NodePlatformIO()` callers to `NodeKernelHost`
+Several demos and tests still instantiate `NodePlatformIO` directly as their PlatformIO rather than going through the mount-router-backed `NodeKernelHost`:
+- `examples/run-hello.ts`
+- `examples/nginx-test/nginx-wrapper.ts`
+- `examples/mariadb-test/run-tests.ts`
+- `examples/wordpress/test/wordpress-server.test.ts`
+- `examples/libs/openssl/test/ssl-basic.test.ts`
+- `examples/cpython/debug-test.ts`
+
+These paths still fall through to the real host FS (NodePlatformIO's own implementation). They work today, but they bypass the VFS abstraction the rest of the system now enforces. Migrating each to `NodeKernelHost.init` + extraMounts for any host staging is straightforward per-demo but adds up; worth doing as a follow-up cleanup.
+
+**Files:** the 6 files above, plus potentially `host/src/platform/node.ts` to narrow NodePlatformIO into a HostServices-only class once all FS callers are migrated.
