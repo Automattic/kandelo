@@ -390,7 +390,16 @@ async function main() {
 
     await host.init();
 
-    const processArgv = [programPath, ...process.argv.slice(3)];
+    // argv[0] is the program's path as seen by the program. If the
+    // program tries to re-exec or open argv[0] (posix_spawn file
+    // actions, /proc/self lookups), the kernel sees a VFS path. Pass
+    // the VFS-form path when we auto-mounted /work, so the program
+    // sees /work/<rel> rather than the host absolute path.
+    let argv0 = programPath;
+    if (activeWorkMount && programPath.startsWith(activeWorkMount.hostPath + "/")) {
+        argv0 = activeWorkMount.vfsPath + programPath.slice(activeWorkMount.hostPath.length);
+    }
+    const processArgv = [argv0, ...process.argv.slice(3)];
 
     const timeoutMs = parseInt(process.env.TIMEOUT || "30000", 10);
     // The kernel runs on a virtualized filesystem — host paths leaking
