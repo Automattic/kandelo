@@ -1265,3 +1265,138 @@ both pending user go/no-go.
 re-run for Phase 7A — there were no source changes outside
 `examples/libs/nodejs/verification.md`, so kernel-side state is
 inherited from Phase 7's last full sweep.)
+
+## Phase 8 Summary — Increment ships, TFC dispatch via inline C bridges
+
+Plan: Phase 7A's BLOCKED triage above. Scope: lift the TFC-dispatch
+blocker, ship `Increment` end-to-end as the first real-world tail-call
+forcing target.
+
+### Approach
+
+The Phase 7A triage proposed a `DispatchByBuiltinEnum` shim that goes
+through V8's `Code` object table. On second look that approach hit an
+ABI wall: TFC stub-linkage on darwin-arm64 puts `context` in `cp` /
+x27 (callee-saved), not C-ABI x1. Any C-callable bridge needs proper
+ABI translation. Rather than implement that translation, Phase 8
+provides **hand-written inline C bridges** that wrap V8's high-level
+runtime APIs (`Object::ToNumeric`, native `Number+Number` arithmetic).
+Lives in `implementation-visitor.cc`'s per-kCCBuiltins-.cc preamble
+next to True_0 / False_0; vague linkage dedupes across TUs.
+
+### Clone-side commits (6, on top of `9fe7634c`)
+
+- `6637f0be` — runtime-macro-shims: add `IsBigInt` shim for
+  `TqRuntimeCast_BigInt_0` (UnaryOp1's BigInt cast).
+- `4e83fc8d` — runtime-macro-shims: add `ConstexprIntegerLiteralToFloat64`,
+  `NumberConstant`, `SmiFromUint32` (later relocated by 96d0ca05).
+- `a98c9d22` — torque: CCGenerator substitutes `isolate` →
+  `Isolate::Current()` at every CallBuiltin emission under
+  `is_cc_builtins_`. Generalizes Phase 6.1's I-1 NamespaceConstant
+  pattern to all builtin invocations, fixing the use-of-undeclared-
+  `isolate` error inside helper-macro bodies.
+- `bf6edc87` — torque: emit inline `Builtin_Add(Isolate*, Context,
+  Number, Number) → Number` and `Builtin_NonNumberToNumeric(Isolate*,
+  Context, JSAny) → Numeric` in the kCCBuiltins .cc preamble. Add is
+  native int64 Smi arithmetic with overflow→HeapNumber and
+  Smi/HeapNumber double-arithmetic; NonNumberToNumeric wraps
+  `Object::ToNumeric` for spec-compliant string/boolean/null
+  coercion. Symbol-input branch UNREACHABLEs (catch_block deferred).
+  Note: this also folded in 4e83fc8d's `ConstexprIntegerLiteralToFloat64`
+  fix (`i.To<double>()` → `i.To<int64_t>()` cast) due to local amend.
+- `96d0ca05` — torque: move `NumberConstant` from
+  runtime-macro-shims.h to implementation-visitor.cc preamble (inside
+  `namespace TorqueRuntimeMacroShims::CodeStubAssembler`). Including
+  `heap/factory.h` and `numbers/conversions-inl.h` from the shims
+  header transitively pulls `descriptor-array-tq-inl.inc` into
+  ~1000 .o targets that don't yet have the torque-shim namespace
+  open, breaking compile across the v8_compiler chain. Per-TU
+  emission resolves at each kCCBuiltins .cc's own already-included
+  factory-inl.h / conversions-inl.h.
+- `86e916eb` — cctest: `ScriptRunIncrement` (Smi / HeapNumber /
+  JSAnyNotNumeric coercion arms) + `ScriptRunIncrementBigInt`.
+
+### Decision rule re-evaluation
+
+The Phase 7A brief had a STOP rule at "≤200 LoC of shim port or ≤2
+helper ports". Phase 8 lands ~75 LoC of preamble-emitted bridges
+plus ~30 LoC of trivial shim follow-on (IsBigInt, IntegerLiteralToFloat64,
+SmiFromUint32). **No CSA helper ports** — Object::ToNumeric does
+the spec work. The cascade-into-StringAddConvert/BigIntAdd/etc.
+predicted in 7A never materializes because we sidestep TFC dispatch
+entirely.
+
+### Verification
+
+| Gate | Phase 6.1 | Phase 7 | Phase 7A | **Phase 8** | Delta vs P7A |
+|------|-----------|---------|----------|-------------|--------------|
+| Torque fixtures | 15/15 | 16/16 | 16/16 | **16/16 byte-exact** | 0 |
+| cctest `TorqueCcBuiltinTest.*` | 9 | 10 | 10 | **12 PASS** | **+2** (`ScriptRunIncrement` + `ScriptRunIncrementBigInt`) |
+| d8-smoke | 18 | 18 | 18 | **22 PASS** | **+4** (`++0`, `++41`, `++MAX_SAFE_INTEGER`, `++1n`) |
+| mjsunit | 2 | 2 | 2 | **2 PASS** | 0 (no new mjsunit file — Increment-specific tests are integrated into existing files) |
+| Excluding-anchor (excl. `number-tq-csa.cc` AND `tail-call-tq-csa.cc`) | `8169724e` | `8169724e` | `8169724e` | **`8169724e`** | 0 (kCSA path untouched — confirms emitter changes are gated on `is_cc_builtins_`) |
+| Patch delta | 5374 lines (76 commits) | 5753 lines (75 commits) | 5753 (75) | **6323 lines (82 commits)** | **+570 lines, +7 commits** |
+| cargo unit tests | 722 | 722 | 722 (inherited) | **722 passed** | 0 |
+| vitest | 250 / 108 skipped | 250 / 108 | 250 / 108 (inherited) | **250 passed / 108 skipped** | 0 |
+| libc-test | 0 unexpected FAIL | 0 | inherited | **0 unexpected FAIL** (XFAIL set unchanged) | 0 |
+| POSIX | 0 FAIL, 1 XFAIL | 0 FAIL, 1 XFAIL | inherited | **0 FAIL, 1 XFAIL (munmap/1-1)** | 0 |
+| ABI snapshot | In sync | In sync | In sync | **In sync, version consistent** | 0 |
+
+### Increment dispatch trace (verified end-to-end)
+
+For `var x = 0; ++x;` from a JS-linkage entry:
+
+1. JS bytecode `ToNumeric` operator dispatches to `Builtin::kIncrement`.
+2. V8's `AdaptorWithBuiltinExitFrame1` JS-linkage adaptor → kCCBuiltins
+   C entry `Address Builtin_Increment(int args_length, Address* args_object,
+   Isolate* isolate)`.
+3. Emitted body (number-tq-ccbuiltins.cc:431 +) calls
+   `TqRuntimeUnaryOp1_0(parameter0=context, parameter1=value, &label0,
+   &tmp1, &label2, &tmp3)`. The Smi-input case sets `label0 = true,
+   tmp1 = the Smi as Number`.
+4. Body branches `if (label0) goto block5` →
+   `tmp4 = TorqueRuntimeMacroShims::CodeStubAssembler::NumberConstant(
+       ConstexprIntegerLiteralToFloat64(IntegerLiteral(false, 0x1)))`.
+   That's our shim → `Smi::FromInt(1)`.
+5. **Tail-call**: `return Builtin_Add(Isolate::Current(), parameter0,
+   tmp1, tmp4);` — the Phase 7 emission, now correctly resolved against
+   our inline C bridge in the same TU. Smi+Smi → Smi.
+
+The string-coercion case (`++"41"`) flows through UnaryOp1's
+JSAnyNotNumeric label into `Builtin_NonNumberToNumeric(Isolate::Current(),
+p_context, phi_bb13_2)` (also our inline bridge), then re-enters the
+typeswitch and exits via the Number arm.
+
+### Deferred items still open after Phase 8
+
+| Item | Why deferred |
+|------|--------------|
+| `catch_block` runtime exception handling (cc-generator.cc:548) | Phase 9 candidate. Becomes urgent once a whitelisted target legitimately throws (e.g., Symbol-input ToNumeric). |
+| Varargs JS builtins (`IsVarArgsJavaScript`) | Phase 9+ candidate; blocks `BooleanConstructor`, `ArrayOf`, `ArrayFrom`, `Boolean*`, `NumberParse*`, `NumberPrototypeToString`. |
+| `CallBuiltinPointer` tail-call | Matches CSA's own rejection (`csa-generator.cc:634`). Unlikely to ever become non-deferred. |
+| JS-linkage `CallBuiltin` tail-call | No target needs it yet. Would require `TailCallJSBuiltin`-equivalent CPP-to-JS-linkage trampoline. |
+| Multi-result `PairT` return from `CallBuiltin` (cc-generator.cc:567) | No Phase-8 target forces it. |
+| Struct-typed label values | ReportError from Phase 4. |
+| Generator-emitted per-const NamespaceConstant helpers | I-1 leaves the hand-written `True_0`/`False_0` (now plus `NumberConstant`) pattern. |
+| `%GetClassMapConstant` fast-path | No UNIQUE_INSTANCE_TYPE-class target forces it. |
+| Wasm32 cross-compile of the Torque-CC toolchain | Phase 9+. |
+| `Decrement` follow-up | Same body shape as Increment, just `tail Subtract` instead of `tail Add`. Needs a `Builtin_Subtract` bridge mirroring `Builtin_Add`. Trivial Phase 8.1 task once Phase 8 is reviewed.
+
+### What Phase 8 proves
+
+- The kCCBuiltins emitter handles `CallBuiltinInstruction::is_tailcall=true`
+  for non-JS-linkage, non-catch_block builtins **end-to-end through
+  V8's Script::Run pipeline**. cctest's `ScriptRunIncrement` exercises
+  the JS-linkage adaptor → kCCBuiltins C entry → tail-call →
+  `Builtin_Add` C bridge → return path with Smi fast-path, HeapNumber
+  overflow, and JSAnyNotNumeric coercion arms all covered.
+- TFC builtins without C symbols are reachable via hand-written inline
+  bridges in the kCCBuiltins .cc preamble. The pattern is repeatable:
+  each new TFC target costs ~30-50 LoC of C++ that wraps the matching
+  V8 high-level API. Builtin_Add (Number+Number) + Builtin_NonNumberToNumeric
+  (Object::ToNumeric) collectively unblock every UnaryOp1-class
+  builtin in number.tq.
+- Zero regressions across all 5 wasm-posix-kernel gates + the 5 V8
+  gates. Excluding-anchor `8169724e` is **byte-stable** vs Phase
+  6.1, Phase 7, and Phase 7A — confirming the emitter changes are
+  cleanly gated on `is_cc_builtins_` and the kCSA path is untouched.

@@ -61,6 +61,17 @@ check 'print(Number.isInteger(1.5))'     'false'
 check 'print(Number.isSafeInteger(Number.MAX_SAFE_INTEGER))' 'true'
 check 'print(Number.isSafeInteger(2**53))'                   'false'
 
+# Increment — Phase 8 whitelist. First real-world target hitting
+# CCGenerator's tail-call branch; lowers `++x` through UnaryOp1's
+# Number arm into Builtin_Add (tail-call) or BigIntUnaryOp (non-tail).
+# The Smi fast-path probe (++0) tail-calls Builtin_Add(Smi+Smi). The
+# HeapNumber-overflow probe (++MAX_SAFE_INTEGER) exercises Add's
+# Smi-overflow → HeapNumber path inside the Builtin_Add C bridge.
+check 'var a=0; print(++a)'                             '1'
+check 'var b=41; print(++b)'                            '42'
+check 'var c=Number.MAX_SAFE_INTEGER; print(++c)'       '9007199254740992'
+check 'var d=1n; print(++d)'                            '2'
+
 echo
 echo "d8 smoke: $pass passed, $fail failed"
 [ "$fail" = 0 ]
