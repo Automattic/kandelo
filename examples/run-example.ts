@@ -330,9 +330,19 @@ async function main() {
     const processArgv = [programPath, ...process.argv.slice(3)];
 
     const timeoutMs = parseInt(process.env.TIMEOUT || "30000", 10);
+    // The kernel runs on a virtualized filesystem — host paths leaking
+    // through env vars (e.g. macOS TMPDIR=/var/folders/...) point at
+    // nothing inside the VFS. Override a handful of path-bearing env
+    // vars with their VFS equivalents before forwarding.
+    const hostEnv = { ...process.env };
+    hostEnv.TMPDIR = "/tmp";
+    hostEnv.TMP = "/tmp";
+    hostEnv.TEMP = "/tmp";
+    hostEnv.HOME = hostEnv.HOME && hostEnv.HOME.startsWith("/home/") ? hostEnv.HOME : "/home/user";
+
     const exitPromise = host.spawn(loadBytes(programPath), processArgv, {
         env: [
-            ...Object.entries(process.env)
+            ...Object.entries(hostEnv)
                 .filter(([, v]) => v !== undefined)
                 .map(([k, v]) => `${k}=${v}`),
             ...gitEnv,
