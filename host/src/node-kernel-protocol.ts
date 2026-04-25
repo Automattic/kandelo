@@ -12,6 +12,12 @@
 export interface InitMessage {
   type: "init";
   kernelWasmBytes: ArrayBuffer;
+  /**
+   * Optional rootfs VFS image bytes. When present, the worker loads it
+   * into a MemoryFileSystem and uses it to back the image-sourced mount
+   * points declared in DEFAULT_MOUNT_SPEC (e.g. /etc).
+   */
+  rootfsImage?: ArrayBuffer;
   config: {
     maxWorkers: number;
     maxPages?: number;
@@ -20,6 +26,16 @@ export interface InitMessage {
   };
   /** Virtual path → host filesystem path for exec resolution */
   execPrograms?: Record<string, string>;
+  /**
+   * Additional mount points that bind specific VFS paths to specific host
+   * directories. Used by tests that stage files on the host *before* the
+   * kernel starts, or that need state to persist across multiple kernel
+   * sessions. Each entry mounts a HostDirBackend at vfsPath with
+   * hostPath as its storage root.
+   *
+   * These take precedence over DEFAULT_MOUNT_SPEC at the same path.
+   */
+  extraMounts?: { vfsPath: string; hostPath: string }[];
 }
 
 export interface SpawnMessage {

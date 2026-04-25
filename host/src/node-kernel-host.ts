@@ -47,6 +47,21 @@ export interface NodeKernelHostOptions {
    * Return the program bytes or null if not found.
    */
   onResolveExec?: (path: string) => ArrayBuffer | null | Promise<ArrayBuffer | null>;
+  /**
+   * Optional rootfs VFS image bytes. When omitted, defaults to reading
+   * `host/wasm/rootfs.vfs` if it exists. Pass `new ArrayBuffer(0)` (or
+   * a stub) explicitly if you want to skip loading — the worker then
+   * falls back to scratch mounts only and image-backed paths like
+   * /etc/passwd will return ENOENT.
+   */
+  rootfsImage?: ArrayBuffer;
+  /**
+   * Additional host-backed mount points. Binds a VFS path to a specific
+   * host directory, letting tests stage files visible to the kernel or
+   * share state across multiple kernel sessions. Takes precedence over
+   * the default spec at the same VFS path.
+   */
+  extraMounts?: { vfsPath: string; hostPath: string }[];
 }
 
 export interface SpawnOptions {
@@ -74,6 +89,7 @@ export class NodeKernelHost {
   /** Initialize the kernel by spawning a dedicated worker_thread */
   async init(kernelWasmBytes?: ArrayBuffer): Promise<void> {
     const wasmBytes = kernelWasmBytes ?? loadKernelWasm();
+    const rootfsImage = this.options.rootfsImage ?? loadRootfsImage();
 
     this.worker = spawnKernelWorkerThread();
 
@@ -101,6 +117,7 @@ export class NodeKernelHost {
       const initMsg: MainToKernelMessage = {
         type: "init",
         kernelWasmBytes: wasmBytes,
+        rootfsImage,
         config: {
           maxWorkers: this.options.maxWorkers ?? 4,
           maxPages: this.options.maxPages,
@@ -108,6 +125,7 @@ export class NodeKernelHost {
           useSharedMemory: true,
         },
         execPrograms: this.options.execPrograms,
+        extraMounts: this.options.extraMounts,
       };
       this.worker.postMessage(initMsg);
     });
@@ -261,6 +279,25 @@ export class NodeKernelHost {
 
 function loadKernelWasm(): ArrayBuffer {
   const buf = readFileSync(join(__dirname, "../wasm/wasm_posix_kernel.wasm"));
+  return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+}
+
+/**
+ * Default rootfs loader: returns the bytes of host/wasm/rootfs.vfs if
+ * the image was built, or undefined if missing. Callers who've already
+ * loaded the image pass it through NodeKernelHostOptions.rootfsImage
+ * and we never consult the disk.
+ */
+function loadRootfsImage(): ArrayBuffer | undefined {
+  const path = join(__dirname, "../wasm/rootfs.vfs");
+  if (!existsSync(path)) {
+    console.warn(
+      `[wasm-posix-host] rootfs.vfs not found at ${path}; image-backed mounts (e.g. /etc) will be disabled. ` +
+        `Run 'bash scripts/build-rootfs.sh' to build the image.`,
+    );
+    return undefined;
+  }
+  const buf = readFileSync(path);
   return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 }
 

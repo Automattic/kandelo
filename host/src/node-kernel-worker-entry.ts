@@ -18,6 +18,16 @@ import { readFileSync, existsSync } from "node:fs";
 import { CentralizedKernelWorker } from "./kernel-worker";
 import { NodePlatformIO } from "./platform/node";
 import { NodeWorkerAdapter } from "./worker-adapter";
+import { MountRouter } from "./vfs/mount-router";
+import { DEFAULT_MOUNT_SPEC, buildMountTable, type MountSpec } from "./vfs/default-mounts";
+import {
+  createNodeSession,
+  destroyNodeSession,
+  resolveForNode,
+  type NodeSession,
+} from "./platform/node-mount-resolver";
+import { HostDirBackend } from "./vfs/backends/host-dir-backend";
+import type { Backend } from "./vfs/backends/backend-interface";
 import { ThreadPageAllocator } from "./thread-allocator";
 import { patchWasmForThread } from "./worker-main";
 import { detectPtrWidth } from "./constants";
@@ -48,6 +58,7 @@ let workerAdapter: NodeWorkerAdapter;
 let threadAllocator: ThreadPageAllocator;
 let maxPages = DEFAULT_MAX_PAGES;
 let execPrograms: Record<string, string> = {};
+let mountSession: NodeSession | null = null;
 
 // Process tracking
 interface ProcessInfo {
@@ -153,7 +164,36 @@ async function handleInit(msg: InitMessage) {
   threadAllocator = new ThreadPageAllocator(maxPages);
   workerAdapter = new NodeWorkerAdapter();
 
-  const io = new NodePlatformIO();
+  // Build the mount table. Filter the default spec down to what the
+  // supplied image can satisfy — if no rootfs image was sent, drop
+  // image-sourced mounts so the resolver doesn't throw. Callers that
+  // rely on /etc/passwd etc. must ship a rootfs image.
+  //
+  // extraMounts take precedence at the same VFS path: we drop any
+  // default entry that matches an extraMounts vfsPath, then append the
+  // extras. This lets tests stage files at a specific VFS path against
+  // a known host dir without fighting the default scratch.
+  const rootfsBytes = msg.rootfsImage ?? null;
+  mountSession = createNodeSession(rootfsBytes);
+  const extraPaths = new Set((msg.extraMounts ?? []).map((m) => m.vfsPath));
+  let activeSpec: ReadonlyArray<MountSpec> = rootfsBytes
+    ? DEFAULT_MOUNT_SPEC
+    : DEFAULT_MOUNT_SPEC.filter((s) => s.source !== "image");
+  activeSpec = activeSpec.filter((s) => !extraPaths.has(s.path));
+
+  const mountTable = buildMountTable(activeSpec, (s) => resolveForNode(s, mountSession!));
+  // Append extra mounts directly as HostDirBackends at their declared
+  // VFS paths.
+  for (const extra of msg.extraMounts ?? []) {
+    const backend: Backend = new HostDirBackend(extra.hostPath, { createIfMissing: true });
+    mountTable.register(extra.vfsPath, backend);
+  }
+
+  // NodePlatformIO provides the non-FS services (time, waitpid, network).
+  // Its FS methods are no longer reachable — MountRouter handles every FS
+  // op via the table's backends.
+  const hostServices = new NodePlatformIO();
+  const io = new MountRouter(mountTable, hostServices);
 
   kernelWorker = new CentralizedKernelWorker(
     {
@@ -522,6 +562,12 @@ function handleDestroy(msg: { requestId: number }) {
   threadModuleCache.clear();
   threadWorkers.clear();
   ptyByPid.clear();
+  // Clean up the session scratch dir — host-backed scratch mounts live
+  // under it and we don't want stale files across kernel runs.
+  if (mountSession) {
+    try { destroyNodeSession(mountSession); } catch {}
+    mountSession = null;
+  }
   respond(msg.requestId, true);
 }
 
