@@ -359,10 +359,25 @@ async function main() {
     const isVfsPath =
         rawCwd === "/" ||
         VFS_MOUNTS.some((m) => rawCwd === m || rawCwd.startsWith(m + "/"));
-    const extraMounts = !isVfsPath && rawCwd.startsWith("/")
-        ? [{ vfsPath: "/work", hostPath: rawCwd }]
-        : undefined;
-    const kernelCwd = isVfsPath ? rawCwd : "/work";
+    // When auto-mounting, bind the PARENT of rawCwd to /work instead of
+    // rawCwd itself. This lets tests that open(".." + path) see the
+    // sibling directories — sortix stages all suites under a common
+    // parent, and its fstatat/faccessat tests do open("..") then
+    // lookup "${suite}/${test}.c" relative to that fd.
+    let extraMounts: { vfsPath: string; hostPath: string }[] | undefined;
+    let kernelCwd: string;
+    if (isVfsPath || !rawCwd.startsWith("/")) {
+        extraMounts = undefined;
+        kernelCwd = isVfsPath ? rawCwd : "/work";
+    } else {
+        // rawCwd is an absolute host path. Split off the parent so
+        // cwd-relative ".." works.
+        const lastSlash = rawCwd.lastIndexOf("/");
+        const parent = lastSlash > 0 ? rawCwd.slice(0, lastSlash) : "/";
+        const base = rawCwd.slice(lastSlash + 1);
+        extraMounts = [{ vfsPath: "/work", hostPath: parent }];
+        kernelCwd = base ? `/work/${base}` : "/work";
+    }
     activeWorkMount = extraMounts ? extraMounts[0] : null;
 
     const host = new NodeKernelHost({
