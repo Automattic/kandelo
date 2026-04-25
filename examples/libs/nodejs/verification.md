@@ -1610,3 +1610,172 @@ were unforeseen but cheap once isolated.
   (~50 LoC across 7 shims). Future catch-bearing targets won't
   need additional shims unless they introduce new namespace
   constants or untyped runtime declarations.
+
+## Phase 9B Summary — varargs JS-linkage emission + synthetic forcing target
+
+Lifts the `IsVarArgsJavaScript` ReportError at
+`implementation-visitor.cc:646` and adds a 4-stack-slot Arguments-struct
+prelude to the JS-linkage emission branch, mirroring CSAGenerator's
+`TorqueStructArguments` push but lowering to plain C++ over
+`BuiltinArguments` instead of `CodeStubArguments`.
+
+### Emitter change shape
+
+```cpp
+// Before:
+//   if (builtin->IsVarArgsJavaScript()) {
+//     ReportError("Phase 5: varargs JS linkage not yet supported "
+//                 "for kCCBuiltins emission");
+//   }
+//   DCHECK(builtin->IsFixedArgsJavaScript());
+//
+// After:
+const bool is_varargs = builtin->IsVarArgsJavaScript();
+if (!is_varargs) DCHECK(builtin->IsFixedArgsJavaScript());
+
+if (is_varargs) {
+  // Arguments struct: frame, base, length, actual_count.
+  //   frame, base — placeholder Address{} (synthetic fixture only
+  //     reads .length; future arguments[i] / .frame targets need
+  //     these wired to BuiltinArguments::address_of_first_argument
+  //     or similar).
+  //   length — args.length() - kJSArgcReceiverSlots (receiver-excl).
+  //   actual_count — args.length() (receiver-incl).
+  csa_ccfile() << "  Address torque_arguments_frame{};\n";
+  csa_ccfile() << "  Address torque_arguments_base{};\n";
+  csa_ccfile() << "  intptr_t torque_arguments_length =\n"
+               << "      args.length() - kJSArgcReceiverSlots;\n";
+  csa_ccfile() << "  intptr_t torque_arguments_actual_count = args.length();\n";
+  parameters.Push("torque_arguments_frame");
+  parameters.Push("torque_arguments_base");
+  parameters.Push("torque_arguments_length");
+  parameters.Push("torque_arguments_actual_count");
+  parameter_types.PushMany(LowerType(TypeOracle::GetArgumentsType()));
+  parameter_bindings.Add(*signature.arguments_variable, /* … */);
+}
+```
+
+The 4-slot push order matches CSA at
+`implementation-visitor.cc:932-942` byte-for-byte, so
+`LowerType(GetArgumentsType())` lowers identically across both
+backends.
+
+### Synthetic forcing target
+
+`test/torque-fixtures/js-varargs.tq`:
+
+```torque
+namespace test_cc_jsvarargs {
+  javascript builtin TorqueCcTest_JsVarargs(
+      js-implicit context: NativeContext, receiver: JSAny)(
+      ...arguments): JSAny {
+    return Convert<Smi>(arguments.length);
+  }
+}
+```
+
+Emission shape (excerpt from
+`test/torque-fixtures/golden/js-varargs-tq-ccbuiltins.cc`):
+
+```cpp
+Address Builtin_TorqueCcTest_JsVarargs(int args_length, Address* args_object,
+                         Isolate* isolate) {
+  DCHECK(isolate->context().is_null() || IsContext(isolate->context()));
+  BuiltinArguments args(args_length, args_object);
+  HandleScope scope(isolate);
+  USE(isolate);
+  // Arguments struct: frame, base, length, actual_count.
+  Address torque_arguments_frame{}; USE(torque_arguments_frame);
+  Address torque_arguments_base{}; USE(torque_arguments_base);
+  intptr_t torque_arguments_length = args.length() - kJSArgcReceiverSlots;
+  intptr_t torque_arguments_actual_count = args.length();
+  // [implicit-param unpack: context, receiver]
+  // [body]
+  block0:
+  tmp0 = TqRuntimeConvert_Smi_intptr_0(torque_arguments_length);
+  return tmp0.ptr();
+}
+```
+
+`Convert<Smi>(arguments.length)` correctly resolves to the `length`
+slot (slot index 2), matching the receiver-excluding semantics in
+`frame-arguments.tq:8-9`.
+
+### Required shim follow-on
+
+One trivial shim added: `SmiTag(intptr_t)` — `TqRuntimeConvert_Smi_intptr_0`
+lowers to `SmiTag(p_i)`. The existing `SmiFromUint32` (Phase 8)
+covered uint32 only; this completes the int / uint32 / intptr Smi
+construction surface.
+
+### Clone-side commits (4, on top of `9cf32472`)
+
+- `9bb23d70` — v8: stage js-varargs.tq fixture for Phase 9B (initially
+  failing on the IsVarArgsJavaScript ReportError).
+- `cfa62dd9` — torque: kCCBuiltins emission for varargs JS-linkage
+  builtins. Lifts the ReportError, adds the 4-slot Arguments-struct
+  scaffold gated on `is_varargs`.
+- `eb6774c4` — runtime-macro-shims: add SmiTag(intptr_t) for
+  Convert<Smi>(intptr) lowering.
+- `1720b903` — cctest: JsVarargsAdaptorDispatch + BindJsVarargsBuiltinOnGlobal
+  helper.
+
+### cctest dispatch path
+
+`JsVarargsAdaptorDispatch` runs JS scripts like `TorqueCcTest_JsVarargs(1, 2, 3)`
+through V8's full pipeline: parser → bytecode → interpreter →
+`AdaptorWithBuiltinExitFrame` (CPP-ABI, with `kDontAdaptArgumentsSentinel`
+preserving the full argument vector) → kCCBuiltins-emitted
+`Builtin_TorqueCcTest_JsVarargs` → `BuiltinArguments` → torque-body
+`arguments.length` access → returns Smi(N). Validates the entire
+varargs adapter chain end-to-end.
+
+### Verification (Phase 9B vs Phase 9A baseline)
+
+| Gate | Phase 9A | **Phase 9B** | Delta |
+|------|----------|---------------|-------|
+| Torque fixtures | 17/17 byte-exact | **18/18 byte-exact** | **+1** (new js-varargs) |
+| cctest `TorqueCcBuiltinTest.*` | 15 PASS | **16 PASS** | **+1** (`JsVarargsAdaptorDispatch`) |
+| d8-smoke | 26 PASS | **26 PASS** | 0 (synthetic; not JS-smoke-reachable) |
+| mjsunit | 2 PASS | **2 PASS** | 0 |
+| Excluding-anchor (now also excludes `js-varargs-tq-csa.cc`) | `8169724e` | **`8169724e`** | 0 (kCSA path untouched) |
+| Patch | 7196 lines (88 commits) | **7550 lines (92 commits)** | **+354, +4** |
+| Kernel suites (cargo / vitest / libc-test / POSIX / ABI) | inherited | **deferred to 9.6 close** | n/a |
+
+### Decision rule re-evaluation
+
+Phase 9 plan budgeted ≤1500 lines for synthetic-only varargs. Actual:
++354 lines / +4 commits. The Arguments-struct scaffold turned out
+shorter than catch_block's (no per-call intercept blocks; just 4
+push lines + 1 type binding).
+
+### Open follow-ons (Phase 9.5 and beyond)
+
+- `arguments[i]` access — would need a `GetArgumentValue(Arguments, intptr_t)`
+  shim that reads from BuiltinArguments via `args.at<JSAny>(i + 1)`.
+  Synthetic fixture doesn't exercise; real targets like ArrayOf,
+  ArrayFrom would.
+- `arguments.frame` / `.base` access — currently placeholder Address{}.
+  Real targets that walk the call frame (probably none of our Phase-9.5
+  candidates) would need these wired to `args.address_of_first_argument()`
+  or similar.
+- Combined catch_block + varargs target (PromiseTry) — Phase 9.5
+  stretch.
+
+### What Phase 9B proves
+
+- `javascript builtin Foo(js-implicit ctx, recv)(...arguments): JSAny`
+  torque sources compile end-to-end through kCCBuiltins. The
+  Arguments-struct lowering uses BuiltinArguments under the hood,
+  with the 4 stack slots matching CSA's TorqueStructArguments push
+  order so torque's type system handles them identically.
+- The most common varargs accessor (`arguments.length`) is fully
+  wired. Less-common accessors (`arguments[i]`, `.frame`, `.base`)
+  have placeholders that compile but aren't yet runtime-correct;
+  flagged as Phase-9.5+ follow-ons.
+- JS-linkage adaptor dispatch (`AdaptorWithBuiltinExitFrame`)
+  correctly forwards the full argument vector to BuiltinArguments
+  when the SharedFunctionInfo uses `kDontAdaptArgumentsSentinel`
+  (per V8's CPP() varargs convention). cctest's
+  JsVarargsAdaptorDispatch validates 0/1/2/5 args round-trip
+  cleanly through this path.
