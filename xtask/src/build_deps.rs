@@ -206,16 +206,30 @@ pub fn compute_sha(
 
 /// Canonical cache directory for a resolved manifest.
 ///
-/// Layout: `<cache_root>/libs/<name>-<version>-rev<revision>-<shortsha>/`
+/// Layout:
+///   `<cache_root>/libs/<name>-<version>-rev<revision>-<arch>-<shortsha>/`
+///
 /// where shortsha is the first 8 hex chars of the cache-key sha —
 /// matches the binaries-release convention. 32 bits of collision
 /// resistance is enough for a per-user lib cache.
-pub fn canonical_path(cache_root: &Path, m: &DepsManifest, sha: &[u8; 32]) -> PathBuf {
+///
+/// `arch` is part of the path so a single user can host wasm32 and
+/// wasm64 builds of the same library side-by-side. The cache-key sha
+/// already incorporates `arch` as of Task A.5, so the shortsha alone
+/// disambiguates — but a visible arch segment makes the cache layout
+/// self-explanatory at a glance.
+pub fn canonical_path(
+    cache_root: &Path,
+    m: &DepsManifest,
+    arch: TargetArch,
+    sha: &[u8; 32],
+) -> PathBuf {
     cache_root.join("libs").join(format!(
-        "{}-{}-rev{}-{}",
+        "{}-{}-rev{}-{}-{}",
         m.name,
         m.version,
         m.revision,
+        arch.as_str(),
         &hex(sha)[..8]
     ))
 }
@@ -320,7 +334,7 @@ fn ensure_built_inner(
     // Compute canonical cache path.
     let mut chain: Vec<String> = Vec::new();
     let sha = compute_sha(target, registry, arch, abi_version, memo, &mut chain)?;
-    let canonical = canonical_path(opts.cache_root, target, &sha);
+    let canonical = canonical_path(opts.cache_root, target, arch, &sha);
 
     // Cache hit: trust it. Users invalidate by deleting the directory.
     if canonical.is_dir() {
@@ -527,10 +541,14 @@ fn env_key(name: &str) -> String {
 // Subcommand dispatch
 // ---------------------------------------------------------------------
 
-/// Default target architecture for CLI commands.
+/// Fallback default target architecture when neither `--arch` nor
+/// `WASM_POSIX_DEFAULT_ARCH` is set. Wasm32 is the dominant target
+/// today; wasm64 is opt-in via flag/env.
 ///
-/// Task A.6 will introduce a `--arch` flag to override this; for now
-/// the CLI hardcodes wasm32 (the dominant target).
+/// Kept as a constant (rather than inlined) so tests and callers have
+/// a single source of truth, and so future changes — e.g. flipping the
+/// default once wasm64 is the dominant target — only have to touch
+/// one site.
 const DEFAULT_ARCH: TargetArch = TargetArch::Wasm32;
 
 /// Read the current kernel ABI version from `crates/shared`. Resolver
@@ -540,10 +558,79 @@ fn current_abi_version() -> u32 {
     wasm_posix_shared::ABI_VERSION
 }
 
-pub fn run(args: Vec<String>) -> Result<(), String> {
+/// Parse a CLI/env value into `TargetArch`. Accepts `wasm32` and
+/// `wasm64`; everything else is rejected with an error message that
+/// names the unknown value and lists the valid options.
+fn parse_target_arch(s: &str) -> Result<TargetArch, String> {
+    match s {
+        "wasm32" => Ok(TargetArch::Wasm32),
+        "wasm64" => Ok(TargetArch::Wasm64),
+        other => Err(format!(
+            "unknown --arch value {other:?}; expected wasm32 or wasm64"
+        )),
+    }
+}
+
+/// Default target arch for the CLI when no `--arch` is given:
+///   1. `WASM_POSIX_DEFAULT_ARCH` env var, if set and parseable.
+///   2. Fallback to [`DEFAULT_ARCH`].
+///
+/// Unparseable env-var values are rejected loudly so a typo doesn't
+/// silently fall through to wasm32 (which would be a confusing way to
+/// debug "why did my wasm64 build land in the wrong cache slot?").
+fn default_target_arch() -> Result<TargetArch, String> {
+    match std::env::var("WASM_POSIX_DEFAULT_ARCH") {
+        Ok(s) => parse_target_arch(&s).map_err(|e| {
+            format!("WASM_POSIX_DEFAULT_ARCH: {e}")
+        }),
+        Err(_) => Ok(DEFAULT_ARCH),
+    }
+}
+
+/// Extract `--arch <value>` / `--arch=<value>` from `args`, leaving
+/// non-flag arguments in place. Returns the parsed arch (if any) and
+/// the remaining arguments.
+///
+/// Hand-rolled rather than pulling in clap; the CLI surface is small
+/// and stable. Both forms are accepted and may appear anywhere after
+/// the subcommand, so `build-deps path zlib --arch=wasm64`,
+/// `build-deps path --arch wasm64 zlib`, and
+/// `build-deps --arch=wasm64 path zlib` all work identically.
+fn extract_arch_flag(args: Vec<String>) -> Result<(Option<TargetArch>, Vec<String>), String> {
+    let mut arch: Option<TargetArch> = None;
+    let mut rest: Vec<String> = Vec::with_capacity(args.len());
     let mut it = args.into_iter();
+    while let Some(a) = it.next() {
+        if let Some(value) = a.strip_prefix("--arch=") {
+            if arch.is_some() {
+                return Err("--arch given more than once".to_string());
+            }
+            arch = Some(parse_target_arch(value)?);
+        } else if a == "--arch" {
+            if arch.is_some() {
+                return Err("--arch given more than once".to_string());
+            }
+            let value = it.next().ok_or_else(|| {
+                "--arch requires a value (wasm32 or wasm64)".to_string()
+            })?;
+            arch = Some(parse_target_arch(&value)?);
+        } else {
+            rest.push(a);
+        }
+    }
+    Ok((arch, rest))
+}
+
+pub fn run(args: Vec<String>) -> Result<(), String> {
+    let (arch_flag, rest) = extract_arch_flag(args)?;
+    let arch = match arch_flag {
+        Some(a) => a,
+        None => default_target_arch()?,
+    };
+
+    let mut it = rest.into_iter();
     let sub = it.next().ok_or(
-        "usage: xtask build-deps <parse|sha|path|resolve> <name|path>",
+        "usage: xtask build-deps [--arch=wasm32|wasm64] <parse|sha|path|resolve> <name|path>",
     )?;
     let target = it.next().ok_or_else(|| {
         format!("build-deps {sub}: missing <name|path>")
@@ -561,9 +648,9 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
 
     match sub.as_str() {
         "parse" => cmd_parse(&manifest),
-        "sha" => cmd_sha(&manifest, &registry),
-        "path" => cmd_path(&manifest, &registry),
-        "resolve" => cmd_resolve(&manifest, &registry, &repo),
+        "sha" => cmd_sha(&manifest, &registry, arch),
+        "path" => cmd_path(&manifest, &registry, arch),
+        "resolve" => cmd_resolve(&manifest, &registry, &repo, arch),
         other => Err(format!("build-deps: unknown subcommand {other:?}")),
     }
 }
@@ -611,13 +698,13 @@ fn cmd_parse(m: &DepsManifest) -> Result<(), String> {
     Ok(())
 }
 
-fn cmd_sha(m: &DepsManifest, registry: &Registry) -> Result<(), String> {
+fn cmd_sha(m: &DepsManifest, registry: &Registry, arch: TargetArch) -> Result<(), String> {
     let mut memo = BTreeMap::new();
     let mut chain = Vec::new();
     let sha = compute_sha(
         m,
         registry,
-        DEFAULT_ARCH,
+        arch,
         current_abi_version(),
         &mut memo,
         &mut chain,
@@ -626,30 +713,35 @@ fn cmd_sha(m: &DepsManifest, registry: &Registry) -> Result<(), String> {
     Ok(())
 }
 
-fn cmd_path(m: &DepsManifest, registry: &Registry) -> Result<(), String> {
+fn cmd_path(m: &DepsManifest, registry: &Registry, arch: TargetArch) -> Result<(), String> {
     let mut memo = BTreeMap::new();
     let mut chain = Vec::new();
     let sha = compute_sha(
         m,
         registry,
-        DEFAULT_ARCH,
+        arch,
         current_abi_version(),
         &mut memo,
         &mut chain,
     )?;
-    let path = canonical_path(&default_cache_root(), m, &sha);
+    let path = canonical_path(&default_cache_root(), m, arch, &sha);
     println!("{}", path.display());
     Ok(())
 }
 
-fn cmd_resolve(m: &DepsManifest, registry: &Registry, repo: &Path) -> Result<(), String> {
+fn cmd_resolve(
+    m: &DepsManifest,
+    registry: &Registry,
+    repo: &Path,
+    arch: TargetArch,
+) -> Result<(), String> {
     let cache_root = default_cache_root();
     let local_libs = repo.join("local-libs");
     let opts = ResolveOpts {
         cache_root: &cache_root,
         local_libs: Some(&local_libs),
     };
-    let path = ensure_built(m, registry, DEFAULT_ARCH, current_abi_version(), &opts)?;
+    let path = ensure_built(m, registry, arch, current_abi_version(), &opts)?;
     println!("{}", path.display());
     Ok(())
 }
@@ -1151,7 +1243,7 @@ libs = ["lib/libC.a"]
             &mut Vec::new(),
         )
         .unwrap();
-        let canonical = canonical_path(&cache, &m, &sha);
+        let canonical = canonical_path(&cache, &m, TEST_ARCH, &sha);
         assert!(!canonical.exists(), "canonical cache dir must not exist on failure");
 
         // No leftover temp dirs in the libs/ directory.
@@ -1203,7 +1295,7 @@ libs = ["lib/libD.a"]
             &mut Vec::new(),
         )
         .unwrap();
-        assert!(!canonical_path(&cache, &m, &sha).exists());
+        assert!(!canonical_path(&cache, &m, TEST_ARCH, &sha).exists());
     }
 
     #[test]
@@ -1491,15 +1583,90 @@ pkgconfig = ["lib/pkgconfig/libSym1.pc"]
         )
         .unwrap();
         let cache = PathBuf::from("/tmp/testcache");
-        let path = canonical_path(&cache, &m, &sha);
+        let path = canonical_path(&cache, &m, TEST_ARCH, &sha);
 
         let parent = path.parent().unwrap();
         assert_eq!(parent, cache.join("libs"));
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
-        assert!(name.starts_with("zlib-1.3.1-rev1-"), "got {name}");
+        // After A.6 the path includes the arch segment between revN and shortsha.
+        assert!(
+            name.starts_with("zlib-1.3.1-rev1-wasm32-"),
+            "got {name}"
+        );
         // 8-char short sha appended after the last dash.
         let short = name.rsplit('-').next().unwrap();
         assert_eq!(short.len(), 8);
         assert!(short.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn resolve_with_arch_wasm64_uses_different_cache_path() {
+        let root = tempdir("arch-flag");
+        let cache = tempdir("arch-cache");
+        write_lib(
+            &root,
+            "libA",
+            "1.0.0",
+            &[],
+            r#"
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib"
+touch "$WASM_POSIX_DEP_OUT_DIR/lib/libA.a"
+"#,
+            r#"[outputs]
+libs = ["lib/libA.a"]
+"#,
+        );
+        let reg = Registry { roots: vec![root] };
+        let m = reg.load("libA").unwrap();
+
+        let p32 = ensure_built(
+            &m,
+            &reg,
+            TargetArch::Wasm32,
+            TEST_ABI,
+            &resolve_opts(&cache, None),
+        )
+        .unwrap();
+        let p64 = ensure_built(
+            &m,
+            &reg,
+            TargetArch::Wasm64,
+            TEST_ABI,
+            &resolve_opts(&cache, None),
+        )
+        .unwrap();
+        assert_ne!(p32, p64);
+        assert!(
+            p32.to_string_lossy().contains("wasm32"),
+            "wasm32 path missing arch segment: {}",
+            p32.display()
+        );
+        assert!(
+            p64.to_string_lossy().contains("wasm64"),
+            "wasm64 path missing arch segment: {}",
+            p64.display()
+        );
+    }
+
+    #[test]
+    fn parse_target_arch_accepts_known_values() {
+        assert_eq!(
+            parse_target_arch("wasm32").unwrap(),
+            TargetArch::Wasm32
+        );
+        assert_eq!(
+            parse_target_arch("wasm64").unwrap(),
+            TargetArch::Wasm64
+        );
+    }
+
+    #[test]
+    fn parse_target_arch_rejects_unknown_values() {
+        let err = parse_target_arch("x86_64").unwrap_err();
+        assert!(err.contains("x86_64"), "got: {err}");
+        assert!(
+            err.contains("wasm32") && err.contains("wasm64"),
+            "error should list valid options; got: {err}"
+        );
     }
 }
