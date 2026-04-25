@@ -18,6 +18,12 @@
 //!   * `WASM_POSIX_DEP_<UPPER>_DIR` — for each *direct* declared dep
 //!     (where `UPPER` is the dep name upper-cased with `-` → `_`),
 //!     the resolved cache path of that dep's `{lib,include,…}`.
+//!   * `WASM_POSIX_DEP_PKG_CONFIG_PATH` — colon-joined list of every
+//!     *transitively*-resolved lib's `lib/pkgconfig/` directory (only
+//!     paths that actually contain such a directory are included; libs
+//!     without pkgconfig — e.g. ncurses — are skipped). Consumers
+//!     prepend it to `PKG_CONFIG_PATH` so pkg-config can chase
+//!     `Requires.private` chains across the whole dep graph.
 //!
 //! Atomic install: build in `<canonical>.tmp-<pid>/`, then `rename(2)`
 //! into the canonical path. Readers either see the full previous
@@ -32,7 +38,7 @@
 //!   path     <name>        Print the canonical cache path.
 //!   resolve  <name>        Ensure the lib is built, print its path.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -275,7 +281,7 @@ pub fn ensure_built(
 ) -> Result<PathBuf, String> {
     let mut memo: BTreeMap<String, [u8; 32]> = BTreeMap::new();
     let mut building: Vec<String> = Vec::new();
-    ensure_built_inner(
+    let (path, _transitive) = ensure_built_inner(
         target,
         registry,
         arch,
@@ -283,9 +289,21 @@ pub fn ensure_built(
         opts,
         &mut memo,
         &mut building,
-    )
+    )?;
+    Ok(path)
 }
 
+/// Resolve `target`, returning its on-disk path *and* the set of
+/// transitively-resolved lib paths underneath it (its direct deps, their
+/// deps, and so on — but NOT `target`'s own path; the caller adds that).
+///
+/// The transitive set lets the caller compose
+/// `WASM_POSIX_DEP_PKG_CONFIG_PATH` for the build script: every node
+/// gets every descendant's `lib/pkgconfig/` dir, which mirrors how
+/// pkg-config follows `Requires.private` chains.
+///
+/// Deduped via `BTreeSet` so a diamond dep (`libZ -> {libA, libB} ->
+/// libCommon`) only contributes `libCommon`'s path once.
 fn ensure_built_inner(
     target: &DepsManifest,
     registry: &Registry,
@@ -294,7 +312,7 @@ fn ensure_built_inner(
     opts: &ResolveOpts<'_>,
     memo: &mut BTreeMap<String, [u8; 32]>,
     building: &mut Vec<String>,
-) -> Result<PathBuf, String> {
+) -> Result<(PathBuf, BTreeSet<PathBuf>), String> {
     if building.iter().any(|s| s == &target.name) {
         return Err(format!(
             "cycle while building: {} -> {}",
@@ -305,8 +323,11 @@ fn ensure_built_inner(
     building.push(target.name.clone());
 
     // Recursively resolve direct deps first; remember their paths so
-    // we can surface them to the build script via env vars.
+    // we can surface them to the build script via env vars. The
+    // transitive set accumulates every dep path in the subgraph,
+    // deduped — diamond deps must only contribute once.
     let mut dep_dirs: BTreeMap<String, PathBuf> = BTreeMap::new();
+    let mut transitive: BTreeSet<PathBuf> = BTreeSet::new();
     for dref in &target.depends_on {
         let dep_m = registry.load(&dref.name)?;
         if dep_m.version != dref.version {
@@ -318,18 +339,28 @@ fn ensure_built_inner(
                 dep_m.spec()
             ));
         }
-        let dep_path =
-            ensure_built_inner(&dep_m, registry, arch, abi_version, opts, memo, building)?;
-        dep_dirs.insert(dep_m.name.clone(), dep_path);
+        let (dep_path, dep_transitive) = ensure_built_inner(
+            &dep_m,
+            registry,
+            arch,
+            abi_version,
+            opts,
+            memo,
+            building,
+        )?;
+        dep_dirs.insert(dep_m.name.clone(), dep_path.clone());
+        transitive.insert(dep_path);
+        transitive.extend(dep_transitive);
     }
 
     building.pop();
 
-    // Local-libs override: hand-patched source wins.
+    // Local-libs override: hand-patched source wins. The override dir
+    // still contributes to `transitive` for any consumer above us.
     if let Some(lr) = opts.local_libs {
         let override_dir = lr.join(&target.name).join("build");
         if override_dir.is_dir() {
-            return Ok(override_dir);
+            return Ok((override_dir, transitive));
         }
     }
 
@@ -340,20 +371,54 @@ fn ensure_built_inner(
 
     // Cache hit: trust it. Users invalidate by deleting the directory.
     if canonical.is_dir() {
-        return Ok(canonical);
+        return Ok((canonical, transitive));
     }
 
-    build_into_cache(target, arch, &canonical, &dep_dirs)?;
-    Ok(canonical)
+    let pkgconfig_path = compose_pkgconfig_path(&transitive);
+    build_into_cache(target, arch, &canonical, &dep_dirs, &pkgconfig_path)?;
+    Ok((canonical, transitive))
+}
+
+/// Build the `WASM_POSIX_DEP_PKG_CONFIG_PATH` value for a build script.
+///
+/// Joins every transitive lib path's `lib/pkgconfig/` subdirectory with
+/// `:` — POSIX's standard search-path separator, and what pkg-config
+/// itself uses for `PKG_CONFIG_PATH`. Paths whose `lib/pkgconfig/`
+/// directory doesn't exist (e.g. ncurses, libs that ship no .pc file)
+/// are skipped: handing pkg-config a list of nonexistent search paths
+/// clutters diagnostics with no benefit.
+///
+/// Returns an empty string when no transitive lib ships pkgconfig. The
+/// caller still sets the env var to that empty string, keeping the
+/// contract uniform: the var is *always* defined for build scripts.
+fn compose_pkgconfig_path(paths: &BTreeSet<PathBuf>) -> String {
+    paths
+        .iter()
+        .filter_map(|p| {
+            let pc = p.join("lib").join("pkgconfig");
+            if pc.is_dir() {
+                Some(pc.to_string_lossy().into_owned())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(":")
 }
 
 /// Run the build script with `WASM_POSIX_DEP_*` env vars set, validate
 /// outputs under the temp directory, then `rename(2)` into place.
+///
+/// `pkgconfig_path` is the pre-composed value for
+/// `WASM_POSIX_DEP_PKG_CONFIG_PATH` — a colon-joined list of every
+/// transitive lib's `lib/pkgconfig/` dir. Always set, even when empty,
+/// so the contract for build scripts stays uniform.
 fn build_into_cache(
     target: &DepsManifest,
     arch: TargetArch,
     canonical: &Path,
     dep_dirs: &BTreeMap<String, PathBuf>,
+    pkgconfig_path: &str,
 ) -> Result<(), String> {
     let parent = canonical
         .parent()
@@ -397,6 +462,7 @@ fn build_into_cache(
         cmd.env("WASM_POSIX_DEP_SOURCE_URL", &target.source.url);
         cmd.env("WASM_POSIX_DEP_SOURCE_SHA256", &target.source.sha256);
         cmd.env("WASM_POSIX_DEP_TARGET_ARCH", arch.as_str());
+        cmd.env("WASM_POSIX_DEP_PKG_CONFIG_PATH", pkgconfig_path);
         for (name, path) in dep_dirs {
             cmd.env(format!("WASM_POSIX_DEP_{}_DIR", env_key(name)), path);
         }
@@ -1697,5 +1763,172 @@ libs = ["lib/libA.a"]
             err.contains("wasm32") && err.contains("wasm64"),
             "error should list valid options; got: {err}"
         );
+    }
+
+    /// `WASM_POSIX_DEP_PKG_CONFIG_PATH` is a colon-joined list of every
+    /// transitively-resolved lib's `lib/pkgconfig/` directory. Consumers
+    /// (e.g., wget, git) prepend it to `PKG_CONFIG_PATH` so pkg-config
+    /// can chase `Requires.private` chains across the whole dep graph
+    /// without each consumer hand-rolling per-dep search paths.
+    ///
+    /// The test sets up a 3-level chain:
+    ///     libFoo (no deps, ships pkgconfig)
+    ///       <- libBar (deps libFoo, ships pkgconfig)
+    ///         <- libBaz (deps libBar — libFoo is transitive only)
+    ///
+    /// libBaz's build script asserts that `WASM_POSIX_DEP_PKG_CONFIG_PATH`
+    /// contains BOTH libFoo's and libBar's pkgconfig dirs. Order is not
+    /// fixed — we match either ordering via case patterns.
+    #[test]
+    fn pkg_config_path_includes_transitive_lib_pkgconfig() {
+        let root = tempdir("pcpath-reg");
+        let cache = tempdir("pcpath-cache");
+
+        // libFoo: produces a .pc file. No deps.
+        write_lib(
+            &root,
+            "libFoo",
+            "1.0.0",
+            &[],
+            r#"
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib/pkgconfig"
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/include"
+touch "$WASM_POSIX_DEP_OUT_DIR/include/foo.h"
+cat > "$WASM_POSIX_DEP_OUT_DIR/lib/pkgconfig/libFoo.pc" <<'PCEOF'
+Name: libFoo
+Version: 1.0.0
+PCEOF
+"#,
+            r#"[outputs]
+headers = ["include/foo.h"]
+pkgconfig = ["lib/pkgconfig/libFoo.pc"]
+"#,
+        );
+
+        // libBar: depends on libFoo, also produces a .pc file.
+        write_lib(
+            &root,
+            "libBar",
+            "1.0.0",
+            &["libFoo@1.0.0"],
+            r#"
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib/pkgconfig"
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/include"
+touch "$WASM_POSIX_DEP_OUT_DIR/include/bar.h"
+cat > "$WASM_POSIX_DEP_OUT_DIR/lib/pkgconfig/libBar.pc" <<'PCEOF'
+Name: libBar
+Version: 1.0.0
+Requires: libFoo
+PCEOF
+"#,
+            r#"[outputs]
+headers = ["include/bar.h"]
+pkgconfig = ["lib/pkgconfig/libBar.pc"]
+"#,
+        );
+
+        // libBaz: depends on libBar (libFoo is transitive). Build script
+        // asserts WASM_POSIX_DEP_PKG_CONFIG_PATH contains both libFoo
+        // and libBar pkgconfig dirs (order-insensitive).
+        write_lib(
+            &root,
+            "libBaz",
+            "1.0.0",
+            &["libBar@1.0.0"],
+            r#"
+test -n "${WASM_POSIX_DEP_PKG_CONFIG_PATH:-}" || {
+    echo "WASM_POSIX_DEP_PKG_CONFIG_PATH unset" >&2
+    exit 1
+}
+case "$WASM_POSIX_DEP_PKG_CONFIG_PATH" in
+    *libFoo*lib/pkgconfig*libBar*lib/pkgconfig*) : ;;
+    *libBar*lib/pkgconfig*libFoo*lib/pkgconfig*) : ;;
+    *)
+        echo "WASM_POSIX_DEP_PKG_CONFIG_PATH does not contain both libFoo and libBar pkgconfig dirs:" >&2
+        echo "  $WASM_POSIX_DEP_PKG_CONFIG_PATH" >&2
+        exit 1
+        ;;
+esac
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib"
+touch "$WASM_POSIX_DEP_OUT_DIR/lib/libBaz.a"
+"#,
+            r#"[outputs]
+libs = ["lib/libBaz.a"]
+"#,
+        );
+
+        let reg = Registry { roots: vec![root] };
+        let m = reg.load("libBaz").unwrap();
+        ensure_built(
+            &m,
+            &reg,
+            TEST_ARCH,
+            TEST_ABI,
+            &resolve_opts(&cache, None),
+        )
+        .unwrap();
+    }
+
+    /// Libs without a `lib/pkgconfig/` directory (e.g., ncurses ships a
+    /// `.pc` file optionally; some libs ship none at all) must be SKIPPED
+    /// when composing `WASM_POSIX_DEP_PKG_CONFIG_PATH`. Otherwise we'd
+    /// hand pkg-config a list of nonexistent search paths, which clutters
+    /// diagnostics and (for some pkg-config versions) errors out.
+    #[test]
+    fn pkg_config_path_skips_libs_without_pkgconfig_dir() {
+        let root = tempdir("pcpath-skip-reg");
+        let cache = tempdir("pcpath-skip-cache");
+
+        // libNoPc: ships only a header — no pkgconfig.
+        write_lib(
+            &root,
+            "libNoPc",
+            "1.0.0",
+            &[],
+            r#"
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/include"
+touch "$WASM_POSIX_DEP_OUT_DIR/include/nopc.h"
+"#,
+            r#"[outputs]
+headers = ["include/nopc.h"]
+"#,
+        );
+
+        // libConsumer: depends on libNoPc. Asserts that
+        // WASM_POSIX_DEP_PKG_CONFIG_PATH does NOT contain libNoPc's path,
+        // even as an empty entry. Empty string is acceptable.
+        write_lib(
+            &root,
+            "libConsumer",
+            "1.0.0",
+            &["libNoPc@1.0.0"],
+            r#"
+# Set defaults so set -u doesn't trip.
+: "${WASM_POSIX_DEP_PKG_CONFIG_PATH:=}"
+case "$WASM_POSIX_DEP_PKG_CONFIG_PATH" in
+    *libNoPc*)
+        echo "WASM_POSIX_DEP_PKG_CONFIG_PATH must skip libs without pkgconfig dirs:" >&2
+        echo "  $WASM_POSIX_DEP_PKG_CONFIG_PATH" >&2
+        exit 1
+        ;;
+esac
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib"
+touch "$WASM_POSIX_DEP_OUT_DIR/lib/libConsumer.a"
+"#,
+            r#"[outputs]
+libs = ["lib/libConsumer.a"]
+"#,
+        );
+
+        let reg = Registry { roots: vec![root] };
+        let m = reg.load("libConsumer").unwrap();
+        ensure_built(
+            &m,
+            &reg,
+            TEST_ARCH,
+            TEST_ABI,
+            &resolve_opts(&cache, None),
+        )
+        .unwrap();
     }
 }
