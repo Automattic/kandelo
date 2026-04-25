@@ -1452,3 +1452,161 @@ Phase 8's pre-push sweep stands.)
   forcing targets for tail-call emission, doubling the real-world
   surface area exercised by the TorqueCcBuiltinTest cctest suite
   (10 → 14 PASS over Phase 7 → Phase 8.1).
+
+## Phase 9A Summary — catch_block emission + synthetic forcing target
+
+Lifts 1 CHECK + 3 ReportError sites in `cc-generator.cc` to real
+exception-state propagation, mirroring CSAGenerator's
+PreCallableExceptionPreparation/PostCallableExceptionPreparation but
+emitting plain C++. The fourth catch-block ReportError (CallBuiltin
+tail-call + catch) stays as a sharpened ReportError because tail+catch
+is structurally contradictory — CSA also rejects.
+
+### Emitter change shape
+
+```cpp
+// New private helper EmitCatchBlockDispatch in cc-generator.cc, called
+// from each of the 4 catch_block-bearing instruction emissions:
+
+void CCGenerator::EmitCatchBlockDispatch(const Block* catch_block,
+                                          const Stack<std::string>& pre_call_stack,
+                                          const std::optional<DefinitionLocation>& exception_object_definition) {
+  const std::string exc_var = DefinitionToVariable(*exception_object_definition);
+  decls() << "  Tagged<JSAny> " << exc_var << "{}; USE(" << exc_var << ");\n";
+  const char* isolate_token = is_cc_builtins_ ? "Isolate::Current()" : "isolate";
+  out() << "  if (V8_UNLIKELY(" << isolate_token << "->has_exception())) {\n";
+  out() << "    " << exc_var << " = UncheckedCast<JSAny>("
+        << isolate_token << "->exception());\n";
+  out() << "    " << isolate_token << "->clear_internal_exception();\n";
+  Stack<std::string> catch_stack = pre_call_stack;
+  catch_stack.Push(exc_var);
+  EmitGoto(catch_block, &catch_stack, "    ");
+  out() << "  }\n";
+}
+```
+
+Sites:
+- `cc-generator.cc:329` (`CallCsaMacroInstruction`) — the upstream-CSA
+  CHECK assumption ("always inlined") doesn't hold under kCCBuiltins
+  because torque doesn't inline some CSA macro calls inside try
+  blocks (e.g. `SmiConstant(0)` lowers to a CallCsaMacroInstruction
+  with catch_block set). Lifted to handler.
+- `cc-generator.cc:374` (`CallCsaMacroAndBranchInstruction`) — handler.
+- `cc-generator.cc:556` (`CallBuiltinInstruction` non-tail) — handler.
+- `cc-generator.cc:632` (`CallRuntimeInstruction` non-tail) — handler.
+- `cc-generator.cc:534` (`CallBuiltinInstruction` tail-call + catch)
+  + parallel CallRuntime tail-call site — sharpened ReportError text.
+  Tail+catch is structurally invalid (CSA rejects too).
+
+### Synthetic forcing target
+
+`test/torque-fixtures/catch-block.tq`:
+
+```torque
+namespace test_cc_catch {
+  transitioning builtin TorqueCcTest_CatchBlock(implicit context: Context)(
+      shouldThrow: Smi): Smi {
+    try {
+      if (shouldThrow != 0) {
+        ThrowCalledNonCallable(Undefined);
+      }
+      return 42;
+    } catch (_e, _message) {
+      return -1;
+    }
+  }
+}
+```
+
+Emission shape (excerpt from
+`test/torque-fixtures/golden/catch-block-tq-ccbuiltins.cc`):
+
+```cpp
+block3:                                          // shouldThrow != 0 path
+  tmp6 = TqRuntimeUndefined_0();
+  if (V8_UNLIKELY(...)) { ... goto block7; }
+  Runtime_ThrowCalledNonCallable(1, &tmp6.ptr(), isolate);
+  if (V8_UNLIKELY(Isolate::Current()->has_exception())) {
+    tmp10 = UncheckedCast<JSAny>(Isolate::Current()->exception());
+    Isolate::Current()->clear_internal_exception();
+    goto block9;
+  }
+  UNREACHABLE();
+
+block9:                                          // catch intercept
+  tmp13 = TqRuntimeGetAndResetPendingMessage_0();
+  phi_bb2_2 = tmp10;
+  phi_bb2_3 = tmp13;
+  goto block2;
+
+block2:                                          // user catch arm
+  tmp17 = TqRuntimeFromConstexpr_Smi_constexpr_IntegerLiteral_0(IntegerLiteral(true, 0x1ull));
+  return tmp17;
+}
+```
+
+### Required shim follow-ons (surfaced when fixture compiled)
+
+7 shims added because torque's catch-flow lowering pulls in helpers
+that weren't previously needed by any kCCBuiltins-emitted target:
+
+| Shim | Location | Reason |
+|---|---|---|
+| `SmiNotEqual` | `runtime-macro-shims.h` | `if (smi != smi)` inside try block |
+| `SmiConstant(int)` | `runtime-macro-shims.h` | integer-literal Smi construction |
+| `StringConstant(const char*)` | preamble (needs Factory) | string-literal interning |
+| `GetPendingMessage` | preamble | catch-flow message-slot read |
+| `SetPendingMessage` | preamble | catch-flow message-slot clear |
+| `TheHole_0()` | preamble (NamespaceConstant) | clear pending-message slot |
+| `Undefined_0()` | preamble (NamespaceConstant) | torque emits bare `Undefined` as `Undefined_0()` |
+
+### Clone-side commits (5, on top of `df8df358`)
+
+- `762a3dfc` — v8: stage catch-block.tq fixture for Phase 9A (initially
+  failing on the line-329 CHECK + line-632 ReportError).
+- `e399ee68` — torque: CCGenerator emits catch_block exception
+  propagation. Adds EmitCatchBlockDispatch helper, lifts 4 sites,
+  sharpens 2 tail+catch ReportError messages.
+- `0d035dbe` — torque: catch_block follow-on — JSAny exc var + 7
+  shims + fixture switch from custom ThrowTypeError to
+  ThrowCalledNonCallable (avoids MessageTemplate-arity mismatch).
+- `9cf32472` — cctest: DirectInvocationTorqueCcTest_CatchBlock via
+  helper TU (test_torque_cc_builtin_helpers.cc, where
+  `src/execution/isolate.h` can be included without the
+  trace-event header collision that affects the main test TU).
+
+### Verification (Phase 9A vs Phase 8.1 baseline)
+
+| Gate | Phase 8.1 | **Phase 9A** | Delta |
+|------|-----------|---------------|-------|
+| Torque fixtures | 16/16 byte-exact | **17/17 byte-exact** | **+1** (new catch-block) |
+| cctest `TorqueCcBuiltinTest.*` | 14 PASS | **15 PASS** | **+1** (`DirectInvocationTorqueCcTest_CatchBlock`) |
+| d8-smoke | 26 PASS | **26 PASS** | 0 (no JS-reachable target shipped) |
+| mjsunit | 2 PASS | **2 PASS** | 0 |
+| Excluding-anchor (excludes `number`, `tail-call`, **NEW: `catch-block`**) | `8169724e` | **`8169724e`** | 0 (kCSA path untouched — emitter changes correctly gated on `is_cc_builtins_`) |
+| Patch | 6486 lines (84 commits) | **7196 lines (88 commits)** | **+710, +4** |
+| Kernel suites (cargo / vitest / libc-test / POSIX / ABI) | inherited | **deferred to 9A.4 close** | n/a |
+
+### Decision rule re-evaluation
+
+Phase 9 plan budgeted ≤1500 lines for synthetic-only catch_block.
+Actual: +710 lines / +4 commits, well under budget. The fixture-
+exposed shim cluster (7 shims) and the JSAny exception-var fix
+were unforeseen but cheap once isolated.
+
+### What Phase 9A proves
+
+- `try { ... } catch (e, message) { ... }` torque sources compile
+  end-to-end through the kCCBuiltins emitter to plain C++ that
+  correctly checks `isolate->has_exception()` after every callable
+  inside the try, captures the exception as Tagged<JSAny>, clears
+  the slot, and dispatches to the catch arm with (exception,
+  message) as phi inputs.
+- Real-world catch_block targets are unblocked end-to-end (e.g.,
+  ProxyHasProperty's try/label/catch shape, ObjectFromEntries's
+  try/catch with iterator-cleanup). Phase 9.5 stretch target
+  (PromiseTry) requires both 9A and 9B (varargs-JS).
+- The shim cluster needed for the catch flow is small and trivial
+  (~50 LoC across 7 shims). Future catch-bearing targets won't
+  need additional shims unless they introduce new namespace
+  constants or untyped runtime declarations.
