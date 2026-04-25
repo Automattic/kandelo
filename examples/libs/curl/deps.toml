@@ -7,6 +7,8 @@
 # artifact, not a library — and is still built in legacy mode (see
 # `build-curl.sh`).
 
+kind = "library"
+
 name = "curl"
 version = "8.11.1"
 revision = 1

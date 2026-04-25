@@ -5,6 +5,8 @@
 # dep in V1; libxml2's other optional deps (lzma, icu, python, etc.)
 # are all disabled via `--without-*` in build-libxml2.sh.
 
+kind = "library"
+
 name = "libxml2"
 version = "2.13.8"
 revision = 1

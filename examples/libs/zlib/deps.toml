@@ -1,6 +1,8 @@
 # Per-library manifest consumed by `cargo xtask build-deps`.
 # Schema: see docs/dependency-management.md.
 
+kind = "library"
+
 name = "zlib"
 version = "1.3.1"
 revision = 1

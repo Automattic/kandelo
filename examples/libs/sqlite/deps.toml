@@ -5,6 +5,8 @@
 # a packed form (3490100 = 3_49_01_00), which lives entirely inside
 # source.url — consumers don't need to know about the encoding.
 
+kind = "library"
+
 name = "sqlite"
 version = "3.49.1"
 revision = 1

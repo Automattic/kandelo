@@ -4,6 +4,8 @@
 # name "libpng" matches the directory; consumers reference it as
 # `libpng@1.6.43` in their own `depends_on`.
 
+kind = "library"
+
 name = "libpng"
 version = "1.6.43"
 revision = 1

@@ -1,5 +1,7 @@
 # Per-library manifest for OpenSSL. See docs/dependency-management.md.
 
+kind = "library"
+
 name = "openssl"
 version = "3.3.2"
 revision = 1
