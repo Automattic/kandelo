@@ -250,15 +250,32 @@ function loadBytes(path: string): ArrayBuffer {
     return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 }
 
+/**
+ * Active /work → host-dir mapping when KERNEL_CWD was auto-mounted. Set by
+ * main() before the kernel starts so resolveProgram can translate VFS
+ * paths like /work/unistd/execv back to the real host file.
+ */
+let activeWorkMount: { vfsPath: string; hostPath: string } | null = null;
+
 function resolveProgram(path: string): ArrayBuffer | null {
     const mapped = builtinPrograms[path];
     if (mapped && existsSync(mapped)) {
         return loadBytes(mapped);
     }
+    // Translate /work/* (the auto-mount) to its host path so loadBytes
+    // can read the real file. Without this, exec of a VFS path like
+    // /work/unistd/execv sees the literal host path /work/... which
+    // doesn't exist.
+    let translated = path;
+    if (activeWorkMount && path.startsWith(activeWorkMount.vfsPath + "/")) {
+        translated = activeWorkMount.hostPath + path.slice(activeWorkMount.vfsPath.length);
+    } else if (activeWorkMount && path === activeWorkMount.vfsPath) {
+        translated = activeWorkMount.hostPath;
+    }
     const kernelCwd = process.env.KERNEL_CWD || process.cwd();
     const candidates = [
-        path,
-        path.endsWith(".wasm") ? path : `${path}.wasm`,
+        translated,
+        translated.endsWith(".wasm") ? translated : `${translated}.wasm`,
         resolve(repoRoot, `examples/${path}.wasm`),
         // Resolve relative to kernel CWD (sortix tests exec themselves by relative path)
         resolve(kernelCwd, path),
@@ -346,6 +363,7 @@ async function main() {
         ? [{ vfsPath: "/work", hostPath: rawCwd }]
         : undefined;
     const kernelCwd = isVfsPath ? rawCwd : "/work";
+    activeWorkMount = extraMounts ? extraMounts[0] : null;
 
     const host = new NodeKernelHost({
         maxWorkers: 4,
