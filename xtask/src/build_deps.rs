@@ -13,6 +13,8 @@
 //!   * `WASM_POSIX_DEP_SOURCE_URL`, `WASM_POSIX_DEP_SOURCE_SHA256` —
 //!     upstream tarball URL + expected sha (the script downloads and
 //!     verifies; the resolver doesn't fetch anything itself).
+//!   * `WASM_POSIX_DEP_TARGET_ARCH` — `wasm32` or `wasm64`; the arch
+//!     the build script must produce objects for.
 //!   * `WASM_POSIX_DEP_<UPPER>_DIR` — for each *direct* declared dep
 //!     (where `UPPER` is the dep name upper-cased with `-` → `_`),
 //!     the resolved cache path of that dep's `{lib,include,…}`.
@@ -341,7 +343,7 @@ fn ensure_built_inner(
         return Ok(canonical);
     }
 
-    build_into_cache(target, &canonical, &dep_dirs)?;
+    build_into_cache(target, arch, &canonical, &dep_dirs)?;
     Ok(canonical)
 }
 
@@ -349,6 +351,7 @@ fn ensure_built_inner(
 /// outputs under the temp directory, then `rename(2)` into place.
 fn build_into_cache(
     target: &DepsManifest,
+    arch: TargetArch,
     canonical: &Path,
     dep_dirs: &BTreeMap<String, PathBuf>,
 ) -> Result<(), String> {
@@ -393,6 +396,7 @@ fn build_into_cache(
         cmd.env("WASM_POSIX_DEP_REVISION", target.revision.to_string());
         cmd.env("WASM_POSIX_DEP_SOURCE_URL", &target.source.url);
         cmd.env("WASM_POSIX_DEP_SOURCE_SHA256", &target.source.sha256);
+        cmd.env("WASM_POSIX_DEP_TARGET_ARCH", arch.as_str());
         for (name, path) in dep_dirs {
             cmd.env(format!("WASM_POSIX_DEP_{}_DIR", env_key(name)), path);
         }
@@ -1202,6 +1206,31 @@ libs = ["lib/libB.a"]
             1,
             "cache hit must skip the build script"
         );
+    }
+
+    #[test]
+    fn build_script_sees_target_arch_env() {
+        let root = tempdir("ta-env");
+        let cache = tempdir("ta-env-cache");
+        write_lib(
+            &root,
+            "libT",
+            "1.0.0",
+            &[],
+            r#"test "$WASM_POSIX_DEP_TARGET_ARCH" = "wasm32" || { echo "TARGET_ARCH=$WASM_POSIX_DEP_TARGET_ARCH" >&2; exit 1; }
+mkdir -p $WASM_POSIX_DEP_OUT_DIR/lib && touch $WASM_POSIX_DEP_OUT_DIR/lib/libT.a"#,
+            "[outputs]\nlibs = [\"lib/libT.a\"]\n",
+        );
+        let reg = Registry { roots: vec![root] };
+        let m = reg.load("libT").unwrap();
+        ensure_built(
+            &m,
+            &reg,
+            TargetArch::Wasm32,
+            TEST_ABI,
+            &resolve_opts(&cache, None),
+        )
+        .unwrap();
     }
 
     #[test]
