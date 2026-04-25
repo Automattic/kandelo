@@ -37,7 +37,8 @@ export function resolveForBrowser(
           `mount ${spec.path} requires the rootfs image but no image was loaded`,
         );
       }
-      return new MemFsBackend(session.rootfsImage, spec.path);
+      const prefix = spec.path === "/" ? "" : spec.path;
+      return new MemFsBackend(session.rootfsImage, prefix);
     }
     case "scratch": {
       const sab = new SharedArrayBuffer(session.scratchSize ?? 1 * 1024 * 1024);

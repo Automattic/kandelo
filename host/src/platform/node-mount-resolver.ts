@@ -49,11 +49,13 @@ export function resolveForNode(
           `mount ${spec.path} requires the rootfs image but no image was loaded`,
         );
       }
-      // Image paths (/etc/passwd, /etc/hosts, ...) live at their natural
-      // VFS position inside the image. MemFsBackend strips sub-paths
-      // against the mount point, so prefix = spec.path makes the round
-      // trip correct.
-      return new MemFsBackend(session.rootfsImage, spec.path);
+      // Image paths live at their natural VFS position inside the image.
+      // For a root mount (/), prefix = "" (the MFS is accessed with
+      // absolute paths verbatim). For a sub-tree mount like /etc,
+      // prefix = /etc so sub-path /passwd resolves to /etc/passwd in
+      // the MFS.
+      const prefix = spec.path === "/" ? "" : spec.path;
+      return new MemFsBackend(session.rootfsImage, prefix);
     }
     case "scratch": {
       const hostRoot = join(session.scratchDir, spec.path);
