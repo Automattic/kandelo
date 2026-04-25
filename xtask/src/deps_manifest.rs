@@ -707,4 +707,12 @@ spdx = "MIT"
         let err = DepsManifest::parse(&text, PathBuf::from("/x")).unwrap_err();
         assert!(err.contains("archive_sha256"), "got: {err}");
     }
+
+    #[test]
+    fn target_arch_as_str_is_stable() {
+        // The cache-key sha hashes arch.as_str(); changing this format
+        // would silently invalidate every cache. Lock the contract here.
+        assert_eq!(TargetArch::Wasm32.as_str(), "wasm32");
+        assert_eq!(TargetArch::Wasm64.as_str(), "wasm64");
+    }
 }
