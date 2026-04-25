@@ -67,26 +67,41 @@ describe.skipIf(!hasGit)("Git", () => {
   it("creates a commit without spurious help output (asyncify fork)", { timeout: 30_000 }, async () => {
     // git commit triggers fork+exec for `git gc --auto`. Without asyncify,
     // the fork child restarts from _start() with empty argv and prints help.
-    const dir = `/tmp/git-commit-test-${Date.now()}`;
-    // Init repo on host filesystem first
-    const initResult = await runCentralizedProgram({
-      programPath: gitBinary,
-      argv: ["git", "init", dir],
-      env: gitEnv,
-      timeout: 15_000,
-    });
-    expect(initResult.exitCode).toBe(0);
-    // Commit with fork
-    const result = await runCentralizedProgram({
-      programPath: gitBinary,
-      argv: ["git", "-C", dir, "commit", "--allow-empty", "-m", "test commit"],
-      env: gitEnv,
-      timeout: 20_000,
-    });
-    expect(result.exitCode).toBe(0);
-    const output = result.stdout + result.stderr;
-    expect(output).toContain("test commit");
-    expect(output).not.toContain("usage: git");
+    //
+    // The two kernel runs below (init + commit) are distinct sessions —
+    // each gets its own session scratch dir. To share state across them,
+    // stage a host directory and bind it to a fixed VFS path via
+    // extraMounts. Each run's kernel sees /repo pointing at the same
+    // host dir, so the commit sees the init's output.
+    const { mkdtempSync, rmSync } = await import("node:fs");
+    const { tmpdir: osTmpdir } = await import("node:os");
+    const { join: pjoin } = await import("node:path");
+    const repoHost = mkdtempSync(pjoin(osTmpdir(), "git-asyncify-fork-"));
+    try {
+      const mounts = [{ vfsPath: "/repo", hostPath: repoHost }];
+      const initResult = await runCentralizedProgram({
+        programPath: gitBinary,
+        argv: ["git", "init", "/repo"],
+        env: gitEnv,
+        timeout: 15_000,
+        extraMounts: mounts,
+      });
+      expect(initResult.exitCode).toBe(0);
+      // Commit with fork — same mount, different kernel session.
+      const result = await runCentralizedProgram({
+        programPath: gitBinary,
+        argv: ["git", "-C", "/repo", "commit", "--allow-empty", "-m", "test commit"],
+        env: gitEnv,
+        timeout: 20_000,
+        extraMounts: mounts,
+      });
+      expect(result.exitCode).toBe(0);
+      const output = result.stdout + result.stderr;
+      expect(output).toContain("test commit");
+      expect(output).not.toContain("usage: git");
+    } finally {
+      rmSync(repoHost, { recursive: true, force: true });
+    }
   });
 });
 

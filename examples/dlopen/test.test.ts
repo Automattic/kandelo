@@ -30,10 +30,15 @@ describe.skipIf(!hasSysroot || !hasKernel)("dlopen example", () => {
   });
 
   it("loads shared library and calls functions via dlopen/dlsym", async () => {
+    // The .so file lives on the host (examples/dlopen/hello-lib.so).
+    // Mount the example dir at /opt/dlopen-example so the kernel can
+    // dlopen the library via a VFS path.
+    const mountPath = "/opt/dlopen-example";
     const result = await runCentralizedProgram({
       programPath: resolve(__dirname, "main.wasm"),
-      argv: ["main", resolve(__dirname, "hello-lib.so")],
+      argv: ["main", `${mountPath}/hello-lib.so`],
       timeout: 10_000,
+      extraMounts: [{ vfsPath: mountPath, hostPath: __dirname }],
     });
 
     expect(result.exitCode).toBe(0);

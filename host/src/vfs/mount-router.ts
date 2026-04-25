@@ -242,5 +242,8 @@ function tagHandle(backendIndex: number, local: number): number {
       `backend handle ${local} exceeds ${HANDLE_LOCAL_MASK} bit capacity`,
     );
   }
-  return (backendIndex << HANDLE_SHIFT) | local;
+  // Unsigned arithmetic — backendIndex=8 would produce 0x80000000, a
+  // negative int32 in JS, which the kernel would interpret as an error
+  // when returned from host_open. `>>> 0` converts to uint32.
+  return ((backendIndex << HANDLE_SHIFT) | local) >>> 0;
 }
