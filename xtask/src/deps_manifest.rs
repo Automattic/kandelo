@@ -73,6 +73,20 @@ pub enum TargetArch {
     Wasm64,
 }
 
+impl TargetArch {
+    /// Stable, kebab-case string form. Matches the serde `rename_all`
+    /// representation: `Wasm32 → "wasm32"`, `Wasm64 → "wasm64"`.
+    ///
+    /// Used both as a hash input for cache-key derivation (A.5) and
+    /// for CLI-flag parsing (A.6).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TargetArch::Wasm32 => "wasm32",
+            TargetArch::Wasm64 => "wasm64",
+        }
+    }
+}
+
 /// Build-time provenance + ABI compatibility data injected into an
 /// archived `manifest.toml` at archive creation. Source `deps.toml`
 /// files MUST NOT contain this block; archived manifests MUST.
