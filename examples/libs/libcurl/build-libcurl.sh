@@ -4,13 +4,13 @@
 #
 # Two modes:
 #
-#   Resolver mode (`cargo xtask build-deps resolve curl`):
+#   Resolver mode (`cargo xtask build-deps resolve libcurl`):
 #     Env vars WASM_POSIX_DEP_OUT_DIR / _ZLIB_DIR / _OPENSSL_DIR are
 #     set. Builds libcurl + headers + pkgconfig, `make install` into
 #     $WASM_POSIX_DEP_OUT_DIR, then drops bin/ and share/ — the CLI
 #     is a consumer artifact, not a library output.
 #
-#   Legacy mode (`bash build-curl.sh`):
+#   Legacy mode (`bash build-libcurl.sh`):
 #     No resolver env. Builds the curl CLI in the source tree and
 #     registers curl.wasm via install-local-binary. Relies on zlib
 #     and openssl artifacts existing in $REPO_ROOT/sysroot/, the way

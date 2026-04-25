@@ -26,7 +26,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 SRC_DIR="$SCRIPT_DIR/git-src"
 BIN_DIR="$SCRIPT_DIR/bin"
-# Explicit env wins; else the in-tree sysroot. Matches build-curl.sh:49.
+# Explicit env wins; else the in-tree sysroot. Matches build-libcurl.sh:49.
 SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 ONLYLIST="$SCRIPT_DIR/asyncify-onlylist.txt"
 
@@ -78,16 +78,16 @@ if [ ! -f "$OPENSSL_PREFIX/lib/libssl.a" ] || [ ! -f "$OPENSSL_PREFIX/lib/libcry
 fi
 echo "==> openssl at $OPENSSL_PREFIX"
 
-CURL_PREFIX="${WASM_POSIX_DEP_CURL_DIR:-}"
+CURL_PREFIX="${WASM_POSIX_DEP_LIBCURL_DIR:-}"
 if [ -z "$CURL_PREFIX" ]; then
-    echo "==> Resolving curl via cargo xtask build-deps..."
-    CURL_PREFIX="$(resolve_dep curl)"
+    echo "==> Resolving libcurl via cargo xtask build-deps..."
+    CURL_PREFIX="$(resolve_dep libcurl)"
 fi
 if [ ! -f "$CURL_PREFIX/lib/libcurl.a" ] || [ ! -f "$CURL_PREFIX/include/curl/curl.h" ]; then
-    echo "ERROR: curl resolve returned '$CURL_PREFIX' but libcurl.a/curl.h missing" >&2
+    echo "ERROR: libcurl resolve returned '$CURL_PREFIX' but libcurl.a/curl.h missing" >&2
     exit 1
 fi
-echo "==> curl at $CURL_PREFIX"
+echo "==> libcurl at $CURL_PREFIX"
 
 # Check for wasm-opt (required for asyncify)
 WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"

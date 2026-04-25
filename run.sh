@@ -838,11 +838,11 @@ build_libcurl() {
     if ! has_libcurl; then
         step "Building libcurl"
         # Force reconfigure if curl was previously built without SSL
-        local CURL_SRC="$REPO_ROOT/examples/libs/curl/curl-src"
+        local CURL_SRC="$REPO_ROOT/examples/libs/libcurl/curl-src"
         if [ -f "$CURL_SRC/Makefile" ]; then
             rm -f "$CURL_SRC/Makefile"
         fi
-        bash "$REPO_ROOT/examples/libs/curl/build-curl.sh"
+        bash "$REPO_ROOT/examples/libs/libcurl/build-libcurl.sh"
         # Install libcurl + headers into sysroot
         local SYSROOT="$REPO_ROOT/sysroot"
         cp "$CURL_SRC/lib/.libs/libcurl.a" "$SYSROOT/lib/"
@@ -1267,7 +1267,7 @@ clean_target() {
                    "$REPO_ROOT/examples/libs/openssl/openssl-install"
             warn "Cleaned OpenSSL (rebuild sysroot to fully clean)" ;;
         libcurl)
-            rm -rf "$REPO_ROOT/examples/libs/curl/curl-src"
+            rm -rf "$REPO_ROOT/examples/libs/libcurl/curl-src"
             warn "Cleaned libcurl (rebuild sysroot to fully clean)" ;;
         vim)
             rm -rf "$REPO_ROOT/examples/libs/vim/vim-src" \
