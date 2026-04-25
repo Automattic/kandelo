@@ -1,25 +1,26 @@
 // Phase 9A test fixture: CallRuntimeInstruction with catch_block.
-// `runtime::ThrowTypeError` always throws — exercises the
+// `runtime::ThrowCalledNonCallable` always throws (TypeError "% is not
+// a function" with the JSAny arg interpolated) — exercises the
 // exception-propagation emission. The catch arm captures (e, message)
 // and returns a sentinel Smi so the cctest can verify dispatch.
 //
-// `runtime::ThrowTypeError` is not declared in the V8 main fileset
-// (only `extern macro ThrowTypeError`, which is the CSA helper, and
-// `extern transitioning runtime ThrowTypeErrorIfStrict`). We declare
-// it here in `namespace runtime { extern transitioning runtime ... }`
-// — matching the array-isarray.tq pattern. Runtime::kThrowTypeError
-// takes a MessageTemplate Smi plus varargs and never returns.
-namespace runtime {
-extern transitioning runtime ThrowTypeError(
-    implicit context: Context)(Smi, Object): never;
-}  // namespace runtime
+// We use ThrowCalledNonCallable rather than ThrowTypeError because:
+//   1. It's already declared in base.tq (no need to add a runtime decl
+//      to the fixture, which simplifies the surface area).
+//   2. Its arity is fixed at 1 JSAny (no MessageTemplate-id mismatch
+//      risk like the kNoMessage(0)+args=2 issue we'd hit otherwise).
+//   3. The thrown value is a real JS TypeError, exactly the kind of
+//      exception torque-emitted catch_block dispatch needs to handle.
 
 namespace test_cc_catch {
   transitioning builtin TorqueCcTest_CatchBlock(implicit context: Context)(
       shouldThrow: Smi): Smi {
     try {
       if (shouldThrow != 0) {
-        runtime::ThrowTypeError(SmiConstant(0), 'forced');
+        // Pass Undefined as the "callable" — produces "undefined is
+        // not a function" TypeError. Any JSAny works; this just gives
+        // a deterministic, harmless error message in the catch arm.
+        ThrowCalledNonCallable(Undefined);
         // unreachable
       }
       return 42;

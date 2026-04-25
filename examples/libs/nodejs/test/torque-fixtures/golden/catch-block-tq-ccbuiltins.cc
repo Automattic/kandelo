@@ -180,12 +180,6 @@ Tagged<Smi> TqRuntimeFromConstexpr_Smi_constexpr_IntegerLiteral_0(IntegerLiteral
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/torque-internal.tq?l=423&c=1
 Tagged<Union<Hole, JSMessageObject>> TqRuntimeGetAndResetPendingMessage_0();
 
-// https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/base.tq?l=1398&c=1
-Tagged<Smi> TqRuntimeSmiConstant_0(IntegerLiteral p_il);
-
-// https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/convert.tq?l=154&c=1
-Tagged<Object> TqRuntimeFromConstexpr_Object_constexpr_string_0(const char* p_s);
-
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/convert.tq?l=57&c=10
 Tagged<Smi> TqRuntimeConvert_Smi_constexpr_int31_0(int31_t p_i);
 
@@ -204,20 +198,15 @@ Tagged<Smi> Builtin_TorqueCcTest_CatchBlock(Isolate* isolate, Tagged<Context> co
   Tagged<Object> tmp3{}; USE(tmp3);
   Tagged<Union<Hole, JSMessageObject>> tmp4{}; USE(tmp4);
   Tagged<Union<Hole, JSMessageObject>> tmp5{}; USE(tmp5);
-  Tagged<Smi> tmp6{}; USE(tmp6);
+  Tagged<Undefined> tmp6{}; USE(tmp6);
   Tagged<Object> tmp7{}; USE(tmp7);
-  Tagged<Object> tmp8{}; USE(tmp8);
-  Tagged<Object> tmp9{}; USE(tmp9);
+  Tagged<Union<Hole, JSMessageObject>> tmp8{}; USE(tmp8);
+  Tagged<Smi> tmp9{}; USE(tmp9);
   Tagged<Object> tmp10{}; USE(tmp10);
   Tagged<Union<Hole, JSMessageObject>> tmp11{}; USE(tmp11);
-  Tagged<Union<Hole, JSMessageObject>> tmp12{}; USE(tmp12);
-  Tagged<Union<Hole, JSMessageObject>> tmp13{}; USE(tmp13);
-  Tagged<Smi> tmp14{}; USE(tmp14);
-  Tagged<Object> tmp15{}; USE(tmp15);
-  Tagged<Union<Hole, JSMessageObject>> tmp16{}; USE(tmp16);
   Tagged<JSAny> phi_bb2_2{}; USE(phi_bb2_2);
   Tagged<Union<Hole, JSMessageObject>> phi_bb2_3{}; USE(phi_bb2_3);
-  Tagged<Smi> tmp17{}; USE(tmp17);
+  Tagged<Smi> tmp12{}; USE(tmp12);
   goto block0;
 
   block0:
@@ -252,65 +241,42 @@ Tagged<Smi> Builtin_TorqueCcTest_CatchBlock(Isolate* isolate, Tagged<Context> co
   goto block2;
 
   block3:
-  tmp6 = TqRuntimeSmiConstant_0(IntegerLiteral(false, 0x0ull));
+  tmp6 = Undefined_0();
+  {
+    Address __rt_args[] = { tmp6.ptr() };
+    Runtime_ThrowCalledNonCallable(1, __rt_args, isolate);
+  }
   if (V8_UNLIKELY(Isolate::Current()->has_exception())) {
     tmp7 = Isolate::Current()->exception();
     Isolate::Current()->clear_internal_exception();
     goto block7;
   }
-  tmp8 = TqRuntimeFromConstexpr_Object_constexpr_string_0("forced");
-  if (V8_UNLIKELY(Isolate::Current()->has_exception())) {
-    tmp9 = Isolate::Current()->exception();
-    Isolate::Current()->clear_internal_exception();
-    goto block8;
-  }
-  {
-    Address __rt_args[] = { tmp6.ptr(), tmp8.ptr() };
-    Runtime_ThrowTypeError(2, __rt_args, isolate);
-  }
-  if (V8_UNLIKELY(Isolate::Current()->has_exception())) {
-    tmp10 = Isolate::Current()->exception();
-    Isolate::Current()->clear_internal_exception();
-    goto block9;
-  }
   UNREACHABLE();
 
   block7:
-  tmp11 = TqRuntimeGetAndResetPendingMessage_0();
+  tmp8 = TqRuntimeGetAndResetPendingMessage_0();
   phi_bb2_2 = tmp7;
-  phi_bb2_3 = tmp11;
-  goto block2;
-
-  block8:
-  tmp12 = TqRuntimeGetAndResetPendingMessage_0();
-  phi_bb2_2 = tmp9;
-  phi_bb2_3 = tmp12;
-  goto block2;
-
-  block9:
-  tmp13 = TqRuntimeGetAndResetPendingMessage_0();
-  phi_bb2_2 = tmp10;
-  phi_bb2_3 = tmp13;
+  phi_bb2_3 = tmp8;
   goto block2;
 
   block4:
-  tmp14 = TqRuntimeFromConstexpr_Smi_constexpr_IntegerLiteral_0(IntegerLiteral(false, 0x2aull));
+  tmp9 = TqRuntimeFromConstexpr_Smi_constexpr_IntegerLiteral_0(IntegerLiteral(false, 0x2aull));
   if (V8_UNLIKELY(Isolate::Current()->has_exception())) {
-    tmp15 = Isolate::Current()->exception();
+    tmp10 = Isolate::Current()->exception();
     Isolate::Current()->clear_internal_exception();
-    goto block10;
+    goto block8;
   }
-  return tmp14;
+  return tmp9;
 
-  block10:
-  tmp16 = TqRuntimeGetAndResetPendingMessage_0();
-  phi_bb2_2 = tmp15;
-  phi_bb2_3 = tmp16;
+  block8:
+  tmp11 = TqRuntimeGetAndResetPendingMessage_0();
+  phi_bb2_2 = tmp10;
+  phi_bb2_3 = tmp11;
   goto block2;
 
   block2:
-  tmp17 = TqRuntimeFromConstexpr_Smi_constexpr_IntegerLiteral_0(IntegerLiteral(true, 0x1ull));
-  return tmp17;
+  tmp12 = TqRuntimeFromConstexpr_Smi_constexpr_IntegerLiteral_0(IntegerLiteral(true, 0x1ull));
+  return tmp12;
 }
 
 #ifndef V8_INTERNAL_DEFINED_TqRuntimeFromConstexpr_Smi_constexpr_IntegerLiteral_0
@@ -350,40 +316,6 @@ inline Tagged<Union<Hole, JSMessageObject>> TqRuntimeGetAndResetPendingMessage_0
 }
 
 #endif // V8_INTERNAL_DEFINED_TqRuntimeGetAndResetPendingMessage_0
-#ifndef V8_INTERNAL_DEFINED_TqRuntimeSmiConstant_0
-#define V8_INTERNAL_DEFINED_TqRuntimeSmiConstant_0
-
-// https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/base.tq?l=1398&c=1
-inline Tagged<Smi> TqRuntimeSmiConstant_0(IntegerLiteral p_il) {
-  Tagged<Smi> tmp0{}; USE(tmp0);
-  goto block0;
-
-  block0:
-  tmp0 = TorqueRuntimeMacroShims::CodeStubAssembler::SmiConstant((TorqueRuntimeMacroShims::CodeStubAssembler::ConstexprIntegerLiteralToInt31(p_il)));
-  goto block2;
-
-  block2:
-  return tmp0;
-}
-
-#endif // V8_INTERNAL_DEFINED_TqRuntimeSmiConstant_0
-#ifndef V8_INTERNAL_DEFINED_TqRuntimeFromConstexpr_Object_constexpr_string_0
-#define V8_INTERNAL_DEFINED_TqRuntimeFromConstexpr_Object_constexpr_string_0
-
-// https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/convert.tq?l=154&c=1
-inline Tagged<Object> TqRuntimeFromConstexpr_Object_constexpr_string_0(const char* p_s) {
-  Tagged<String> tmp0{}; USE(tmp0);
-  goto block0;
-
-  block0:
-  tmp0 = TorqueRuntimeMacroShims::CodeStubAssembler::StringConstant(p_s);
-  goto block2;
-
-  block2:
-  return tmp0;
-}
-
-#endif // V8_INTERNAL_DEFINED_TqRuntimeFromConstexpr_Object_constexpr_string_0
 #ifndef V8_INTERNAL_DEFINED_TqRuntimeConvert_Smi_constexpr_int31_0
 #define V8_INTERNAL_DEFINED_TqRuntimeConvert_Smi_constexpr_int31_0
 
