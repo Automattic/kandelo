@@ -88,7 +88,7 @@ impl VirtualDevice {
 /// Check if a resolved path is a virtual device node.
 fn match_virtual_device(path: &[u8]) -> Option<VirtualDevice> {
     match path {
-        b"/dev/null" => Some(VirtualDevice::Null),
+        b"/dev/null" | b"/dev/console" => Some(VirtualDevice::Null),
         b"/dev/zero" => Some(VirtualDevice::Zero),
         b"/dev/urandom" | b"/dev/random" => Some(VirtualDevice::Urandom),
         b"/dev/full" => Some(VirtualDevice::Full),

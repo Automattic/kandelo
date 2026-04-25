@@ -57,3 +57,10 @@
 /etc/os-release    f  0644  0  0
 /etc/profile       f  0644  0  0
 /etc/motd          f  0644  0  0
+/etc/services      f  0644  0  0
+
+# ── /bin content ────────────────────────────────────────────────────
+# /bin/sh is a zero-byte stub. The exec resolver intercepts this path
+# and loads dash.wasm at exec time; the stub only exists so access(),
+# stat(), and similar existence checks return success.
+/bin/sh            f  0755  0  0
