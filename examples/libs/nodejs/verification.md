@@ -1779,3 +1779,43 @@ push lines + 1 type binding).
   (per V8's CPP() varargs convention). cctest's
   JsVarargsAdaptorDispatch validates 0/1/2/5 args round-trip
   cleanly through this path.
+
+## Phase 9.5 — DEFERRED (PromiseTry surfaces multiple Phase-10+ blockers)
+
+The plan's stretch goal was to ship `PromiseTry` (`promise-try.tq`) as a combined catch_block + varargs real-world target. Triage:
+
+- **`arguments[0]`** — needs `GetArgumentValue(Arguments, intptr_t): JSAny` shim that reads from `BuiltinArguments::at<JSAny>(i + 1)`. Phase 9B explicitly deferred. Trivial (~10 LoC) but currently absent.
+- **`Cast<JSReceiver>(receiver) otherwise ThrowTypeError(MessageTemplate::kCalledOnNonObject, 'Promise.try')`** — needs a MessageTemplate-arg ThrowTypeError shim. Phase 9A's catch-block fixture used `ThrowCalledNonCallable` (no MessageTemplate arg) precisely to sidestep this surface. Trivial in isolation (~15 LoC) but cumulative.
+- **`NewPromiseCapability(receiver, False)`** — TFC builtin (`TFC(NewPromiseCapability, ...)` in builtin-definitions.h). Same C-symbol-absence as Phase 8's `Builtin_Add` / `Builtin_NonNumberToNumeric`. Needs a hand-written inline bridge wrapping V8's high-level API (likely `Factory::NewPromiseCapability` or `PromiseCapability::Create`). ~50-100 LoC.
+- **`Call(context, callbackfn, Undefined)`** and **`Call(context, GetReflectApply(), Undefined, callbackfn, Undefined, rest)`** — variadic JS-Call builtin. TFC. Needs a hand-written bridge wrapping `Execution::Call(...)`. Non-trivial: variadic argument forwarding through the V8 Execution API.
+- **`GetReflectApply()`** — TFC stub. Needs a bridge that fetches `isolate->native_context()->reflect_apply()` (or similar accessor).
+- **`NewRestArgumentsFromArguments(arguments, 1)`** — macro. Probably another TFC or a runtime helper. Needs investigation.
+- **`capability.promise` / `capability.reject` / `capability.resolve`** — struct field access on `PromiseCapability`. Should work via existing struct emission (Phase 5 ArrayIsArray's UnsafeCast precedent), but uncertain without trying.
+
+Per the Phase 9 plan's STOP rule ("if it surfaces another Phase-10+ deferral, skip and ship Phase 9 on synthetic-only"), Phase 9.5 is **deferred**. The cumulative shim/bridge work to ship PromiseTry exceeds the budget for a stretch task.
+
+The cleanest path forward is a Phase 10 sub-phase that lifts the Phase-9B-deferred `arguments[i]` accessor + a small TFC bridge cluster (Call, NewPromiseCapability, GetReflectApply) — at which point PromiseTry, Promise.all-style targets, and most of the array-iteration family unblock simultaneously.
+
+## Phase 9 close — kernel suite sweep
+
+All wasm-posix-kernel suites pass at Phase 9B's tip (`9023fad73`),
+0 delta vs Phase 8.1 baseline:
+
+| Gate | Phase 8.1 | **Phase 9B** | Delta |
+|------|-----------|---------------|-------|
+| cargo (`cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib`) | 722 passed | **722 passed** | 0 |
+| vitest (`cd host && npx vitest run`) | 250 passed / 108 skipped | **250 passed / 108 skipped** | 0 |
+| libc-test (`scripts/run-libc-tests.sh`) | 300 PASS / 2 FAIL (baseline) / 22 XFAIL / 0 XPASS | **300 PASS / 2 FAIL / 22 XFAIL / 0 XPASS** | 0 |
+| POSIX (`scripts/run-posix-tests.sh`) | 0 FAIL / 1 XFAIL (`munmap/1-1`) | **0 FAIL / 1 XFAIL** | 0 |
+| ABI snapshot (`scripts/check-abi-version.sh`) | in sync | **in sync, version consistent** | 0 |
+
+V8 gates summary (cumulative from Phase 6.1 through Phase 9B):
+
+| Gate | Phase 6.1 | Phase 7 | Phase 8 | Phase 8.1 | Phase 9A | **Phase 9B** |
+|------|-----------|---------|---------|-----------|----------|---------------|
+| Torque fixtures | 15/15 | 16/16 | 16/16 | 16/16 | 17/17 | **18/18 byte-exact** |
+| cctest `TorqueCcBuiltinTest.*` | 9 | 10 | 12 | 14 | 15 | **16 PASS** |
+| d8-smoke | 18 | 18 | 22 | 26 | 26 | **26 PASS** |
+| mjsunit | 2 | 2 | 2 | 2 | 2 | **2 PASS** |
+| Excluding-anchor | `8169724e` | `8169724e` | `8169724e` | `8169724e` | `8169724e` | **`8169724e`** (stable) |
+| Patch | 5374 lines (76 commits) | 5753 (75) | 6323 (82) | 6486 (84) | 7196 (88) | **7550 (92 commits)** |
