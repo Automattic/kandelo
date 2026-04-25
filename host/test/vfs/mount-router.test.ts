@@ -150,8 +150,10 @@ describe("MountRouter", () => {
     // Looks like stdin/stdout/stderr, not a router handle.
     expect(() => r.close(0)).toThrow(/EBADF/);
     expect(() => r.close(3)).toThrow(/EBADF/);
-    // Marker present but bad backend index (tag 15, no backend registered there)
-    const bogus = MOUNT_MARKER | (15 << TAG_SHIFT) | 42;
+    // Marker present but bad backend index (tag 5, no backend registered there;
+    // tag 15 is reserved for virtual-dir handles and close() silently succeeds
+    // on those).
+    const bogus = MOUNT_MARKER | (5 << TAG_SHIFT) | 42;
     expect(() => r.close(bogus)).toThrow(/EBADF/);
   });
 
@@ -176,8 +178,9 @@ describe("MountRouter", () => {
   it("handles from high backend indices stay positive int32", () => {
     // The old encoding put the tag in bits 28..31; backendIndex=8 produced
     // 0x80000000 which is negative int32 (bit 31 set). Now bits 26..29
-    // hold the tag and bit 30 is a marker, so even index 15 stays at
-    // 0x7fc00000 — positive.
+    // hold the tag and bit 30 is a marker, so even index 14 stays at
+    // 0x7c000000 — positive. (Index 15 is reserved for virtual-dir
+    // handles so user backends can occupy 0..14.)
     const backends: RecordingBackend[] = [];
     const t = new MountTable();
     for (let i = 0; i < 15; i++) {
@@ -186,11 +189,43 @@ describe("MountRouter", () => {
       backends.push(b);
     }
     const r = new MountRouter(t, stubServices());
-    for (let i = 0; i < 15; i++) {
+    for (let i = 0; i < 14; i++) {
       const fd = r.open(`/m${i}/file`, 0, 0);
       expect(fd).toBeGreaterThan(0);
       expect(backendIndexOf(fd)).toBe(i);
     }
+  });
+
+  it("synthesizes stat/access/readdir for virtual intermediate directories", () => {
+    const t = new MountTable();
+    const etc = new RecordingBackend("etc");
+    const varTmp = new RecordingBackend("varTmp");
+    t.register("/etc", etc);
+    t.register("/var/tmp", varTmp);
+    const r = new MountRouter(t, stubServices());
+
+    // "/" is always a virtual dir (POSIX-required)
+    const rootSt = r.stat("/");
+    expect(rootSt.mode & 0o170000).toBe(0o040000); // S_IFDIR
+    r.access("/", 0); // F_OK
+
+    // "/var" exists because /var/tmp is mounted below it
+    const varSt = r.stat("/var");
+    expect(varSt.mode & 0o170000).toBe(0o040000);
+
+    // readdir("/") lists immediate children from the mount table
+    const dh = r.opendir("/");
+    const names: string[] = [];
+    while (true) {
+      const e = r.readdir(dh);
+      if (!e) break;
+      names.push(e.name);
+    }
+    r.closedir(dh);
+    expect(names.sort()).toEqual(["etc", "var"]);
+
+    // Virtual dirs are read-only
+    expect(() => r.access("/var", 0o2)).toThrow(/EROFS/); // W_OK
   });
 
   it("exact mount-point path gets subPath=/", () => {

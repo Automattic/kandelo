@@ -50,6 +50,14 @@ export type HostServices = Pick<
 
 export class MountRouter implements PlatformIO {
   private readonly backends: Backend[];
+  /**
+   * Set of paths that exist only as virtual intermediate directories
+   * because a mount lives at or below them. E.g., mounts at `/etc` and
+   * `/var/tmp` populate {"/", "/var"}. These paths don't belong to any
+   * backend; MountRouter synthesizes a read-only-directory response for
+   * stat/access/readdir on them.
+   */
+  private readonly virtualDirs: Set<string>;
 
   constructor(
     private readonly mounts: MountTable,
@@ -62,6 +70,75 @@ export class MountRouter implements PlatformIO {
       );
     }
     this.backends = snapshot.map((m) => m.backend);
+
+    // Walk every mount's prefix to seed the virtual-dir set. Mount "/etc"
+    // seeds "/". Mount "/usr/local/bin" seeds "/", "/usr", "/usr/local".
+    // "/" is always a virtual dir so access("/") succeeds as POSIX requires.
+    this.virtualDirs = new Set();
+    this.virtualDirs.add("/");
+    for (const m of snapshot) {
+      const parts = m.mount.split("/").filter(Boolean);
+      let acc = "";
+      for (let i = 0; i < parts.length - 1; i++) {
+        acc += "/" + parts[i];
+        this.virtualDirs.add(acc);
+      }
+    }
+  }
+
+  /** Synthesized dir stat for virtual intermediate dirs. */
+  private virtualDirStat(): StatResult {
+    return {
+      dev: 0,
+      ino: 0,
+      mode: 0o040755, // S_IFDIR | 0755
+      nlink: 2,
+      uid: 0,
+      gid: 0,
+      size: 0,
+      atimeMs: 0,
+      mtimeMs: 0,
+      ctimeMs: 0,
+    };
+  }
+
+  /** Is `path` a synthetic virtual intermediate dir (no backend owns it)? */
+  private isVirtualDir(path: string): boolean {
+    return this.virtualDirs.has(path);
+  }
+
+  // Virtual-dir open handles are stored in a sidecar map. The tag uses
+  // backend index 15 as a reserved "virtual" slot — no real backend can
+  // occupy index 15 because MAX_BACKEND_INDEX is 15 and the constructor
+  // throws on overflow (so at most 15 real backends can register, 0-14).
+  private virtualDirHandles = new Map<number, { path: string; children: string[]; cursor: number }>();
+  private nextVirtualDirHandle = 1;
+  private readonly VIRTUAL_TAG = MAX_BACKEND_INDEX; // 15
+
+  private openVirtualDir(path: string): number {
+    const h = this.nextVirtualDirHandle++;
+    if ((h & ~HANDLE_LOCAL_MASK) !== 0) {
+      throw new Error(`too many virtual dir handles`);
+    }
+    this.virtualDirHandles.set(h, {
+      path,
+      children: this.virtualDirChildren(path),
+      cursor: 0,
+    });
+    return MOUNT_HANDLE_MARKER | (this.VIRTUAL_TAG << HANDLE_SHIFT) | h;
+  }
+
+  /** Immediate children of a virtual dir — top-level mount name segments. */
+  private virtualDirChildren(path: string): string[] {
+    const prefix = path === "/" ? "/" : path + "/";
+    const children = new Set<string>();
+    for (const m of this.mounts.snapshot()) {
+      if (!m.mount.startsWith(prefix)) continue;
+      const rest = m.mount.slice(prefix.length);
+      const firstSegment = rest.split("/")[0];
+      if (firstSegment) children.add(firstSegment);
+    }
+    return [...children].sort();
   }
 
   // ── Path-based FS ops ──────────────────────────────────────────────
@@ -77,16 +154,24 @@ export class MountRouter implements PlatformIO {
   }
 
   open(path: string, flags: number, mode: number): number {
+    if (this.isVirtualDir(path)) {
+      // Virtual dirs support opendir via the Directory fd flag, but plain
+      // open() is only meaningful read-only. We encode a virtual-dir fd
+      // using a reserved tag (15) so routing still works downstream.
+      return this.openVirtualDir(path);
+    }
     const { backend, backendIndex, subPath } = this.route(path);
     return tagHandle(backendIndex, backend.open(subPath, flags, mode));
   }
 
   stat(path: string): StatResult {
+    if (this.isVirtualDir(path)) return this.virtualDirStat();
     const { backend, subPath } = this.route(path);
     return backend.stat(subPath);
   }
 
   lstat(path: string): StatResult {
+    if (this.isVirtualDir(path)) return this.virtualDirStat();
     const { backend, subPath } = this.route(path);
     return backend.lstat(subPath);
   }
@@ -153,6 +238,15 @@ export class MountRouter implements PlatformIO {
   }
 
   access(path: string, mode: number): void {
+    if (this.isVirtualDir(path)) {
+      // Virtual dirs are read-only: allow R_OK, F_OK, X_OK; deny W_OK.
+      if (mode & 0o2) { // W_OK
+        const err: NodeJS.ErrnoException = new Error("EROFS: virtual dir");
+        err.code = "EROFS";
+        throw err;
+      }
+      return;
+    }
     const { backend, subPath } = this.route(path);
     backend.access(subPath, mode);
   }
@@ -169,11 +263,18 @@ export class MountRouter implements PlatformIO {
   }
 
   opendir(path: string): number {
+    if (this.isVirtualDir(path)) return this.openVirtualDir(path);
     const { backend, backendIndex, subPath } = this.route(path);
     return tagHandle(backendIndex, backend.opendir(subPath));
   }
 
   // ── Handle-based FS ops ────────────────────────────────────────────
+
+  private isVirtualDirHandle(handle: number): boolean {
+    if ((handle & MOUNT_HANDLE_MARKER) === 0) return false;
+    const idx = (handle & HANDLE_TAG_MASK) >>> HANDLE_SHIFT;
+    return idx === this.VIRTUAL_TAG;
+  }
 
   private fromHandle(handle: number): { backend: Backend; local: number } {
     if ((handle & MOUNT_HANDLE_MARKER) === 0) {
@@ -192,6 +293,10 @@ export class MountRouter implements PlatformIO {
   }
 
   close(handle: number): number {
+    if (this.isVirtualDirHandle(handle)) {
+      this.virtualDirHandles.delete(handle & HANDLE_LOCAL_MASK);
+      return 0;
+    }
     const { backend, local } = this.fromHandle(handle);
     return backend.close(local);
   }
@@ -212,6 +317,7 @@ export class MountRouter implements PlatformIO {
   }
 
   fstat(handle: number): StatResult {
+    if (this.isVirtualDirHandle(handle)) return this.virtualDirStat();
     const { backend, local } = this.fromHandle(handle);
     return backend.fstat(local);
   }
@@ -237,11 +343,23 @@ export class MountRouter implements PlatformIO {
   }
 
   readdir(handle: number): { name: string; type: number; ino: number } | null {
+    if (this.isVirtualDirHandle(handle)) {
+      const local = handle & HANDLE_LOCAL_MASK;
+      const entry = this.virtualDirHandles.get(local);
+      if (!entry) return null;
+      if (entry.cursor >= entry.children.length) return null;
+      const name = entry.children[entry.cursor++];
+      return { name, type: 4, ino: 0 }; // DT_DIR=4
+    }
     const { backend, local } = this.fromHandle(handle);
     return backend.readdir(local);
   }
 
   closedir(handle: number): void {
+    if (this.isVirtualDirHandle(handle)) {
+      this.virtualDirHandles.delete(handle & HANDLE_LOCAL_MASK);
+      return;
+    }
     const { backend, local } = this.fromHandle(handle);
     backend.closedir(local);
   }
