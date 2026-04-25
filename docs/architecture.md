@@ -254,21 +254,58 @@ The channel occupies the last 2 pages (128KB). Thread channels are allocated cou
 
 ## Filesystem
 
-### Node.js
+The VFS is the **only lens** through which the kernel and user programs interact with any filesystem. No path falls through to the host's real FS implicitly. Unmounted paths return `ENOENT`. The mount table is the single source of routing truth.
 
-`NodePlatformIO` passes filesystem operations directly to Node.js `fs` APIs. The kernel tracks its own fd table and path resolution, but actual file content comes from the host filesystem.
+### Mount table (host/src/vfs/mount-router.ts)
 
-### Browser
+A mount table maps VFS path prefixes to typed backends. `MountRouter` implements `PlatformIO` by looking up each FS syscall's path in the table (longest-prefix wins) and dispatching to the matching backend. Non-FS ops (time, network, waitpid) delegate to a separate `HostServices` reference.
 
-The browser uses a layered VFS (`VirtualPlatformIO`):
+Backend flavors:
+
+| Backend | Role | Node | Browser |
+|---|---|---|---|
+| `MemFsBackend` | Wraps a `MemoryFileSystem` (the rootfs image, or in-memory scratch) | ✓ | ✓ |
+| `HostDirBackend` | Wraps a real host directory with prefix rewriting + shadow metadata | ✓ | — |
+
+`HostDirBackend` owns its own view of `uid`/`gid`/`mode` via a sidecar shadow store. The host FS contributes file content, size, atime/mtime/ctime. The VFS owns permissions. This separation keeps chown/chmod from leaking host identity, and lets the kernel report `uid=1000` (matching `Process::new`'s default euid) for host-backed files regardless of the real macOS user running node.
+
+Kernel-synthetic paths (`/proc`, `/dev/null`, PTY master/slave) are intercepted in the kernel *before* reaching the mount table — they never hit a backend.
+
+**Virtual intermediate directories.** Mounts at `/etc` and `/var/tmp` imply that `/`, `/var` exist as directories even though no backend covers them. `MountRouter` walks each mount's prefix at construction and synthesizes read-only `S_IFDIR|0755` responses for those paths. `readdir` on a virtual dir returns the list of immediate mount name segments below it.
+
+**Handle namespace.** Each backend returns its own integer handles; the router tags them with a 4-bit backend index plus a `MOUNT_HANDLE_MARKER` bit (bit 30, always set). This keeps routed handles non-zero (so they don't collide with stdin's sentinel) and positive as int32 (so signed-shift hazards can't produce negative fds the kernel would treat as errors). Max 15 real backends; the 16th slot is reserved for virtual-directory handles.
+
+### Default mount spec (host/src/vfs/default-mounts.ts)
+
+`DEFAULT_MOUNT_SPEC` is declarative and shared across environments:
 
 ```
-/           → MemoryFileSystem (SharedArrayBuffer-backed, shared between main thread and kernel worker)
-/dev/       → DeviceFileSystem (null, zero, urandom, ptmx, pts/N)
-/persistent → OpfsFileSystem (Origin Private File System, browser persistence)
+/etc       — source=image, read-only
+/tmp       — source=scratch, ephemeral
+/var/tmp   — source=scratch
+/home/user — source=scratch
+/var/log   — source=scratch
+/var/run   — source=scratch, ephemeral
+/root      — source=scratch
+/srv       — source=scratch
 ```
 
-`MemoryFileSystem` is critical: it's how the main thread pre-populates files (configs, wasm binaries, runtime libraries) that the kernel worker can then read. Both threads share the same `SharedArrayBuffer`, with the filesystem's internal btree structure built directly in the buffer.
+Per-environment resolvers (`resolveForNode`, `resolveForBrowser`) turn each spec entry into a concrete `Backend`:
+
+- Node: `image` → `MemFsBackend` over `host/wasm/rootfs.vfs`; `scratch` → `HostDirBackend` on a session tempdir.
+- Browser: `image` → `MemFsBackend` over a fetched image; `scratch` → fresh empty `MemoryFileSystem`.
+
+Callers (`NodeKernelHost`, tests) can also pass `extraMounts` to bind specific VFS paths to specific host dirs — used by dlopen/git tests that need to stage files on the host before the kernel starts.
+
+### rootfs VFS image (host/wasm/rootfs.vfs)
+
+The kernel's `/etc/*` content comes from a declarative rootfs image built at compile time. A top-level `MANIFEST` declares every file, dir, symlink, and permission; source content lives in `rootfs/etc/*`. `tools/mkrootfs` (TypeScript CLI) ingests both and emits a `.vfs` image in `MemoryFileSystem`'s versioned binary format. `scripts/build-rootfs.sh` runs as part of `build.sh` and produces the image.
+
+Previously `crates/kernel/src/syscalls.rs` had a `synthetic_file_content()` function that returned baked-in bytes for `/etc/passwd` / `/etc/group` / `/etc/hosts`. That interception has been deleted; user programs now get the same content via the ordinary mount-table path.
+
+### MemoryFileSystem
+
+`MemoryFileSystem` is a SharedArrayBuffer-backed filesystem. It's used both as an in-memory scratch space and to back the rootfs image. The main thread can pre-populate files (configs, binaries, runtime libraries) that the kernel worker then reads through the mount table. Both threads share the same `SharedArrayBuffer`, with the filesystem's internal inode table built directly in the buffer.
 
 ### Lazy Files
 
