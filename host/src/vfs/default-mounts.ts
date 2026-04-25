@@ -50,6 +50,11 @@ export const DEFAULT_MOUNT_SPEC: ReadonlyArray<MountSpec> = [
   { path: "/var/run",   source: "scratch", ephemeral: true },
   { path: "/root",      source: "scratch" },
   { path: "/srv",       source: "scratch" },
+  // /dev/shm: musl's shm_open / sem_open create files here. The kernel's
+  // devfs handles the bare /dev/shm dir for stat/getdents, but per-name
+  // entries below it route through this mount. Ephemeral by POSIX
+  // semantics — shared memory segments don't survive process exit.
+  { path: "/dev/shm",   source: "scratch", ephemeral: true },
 ];
 
 /**
