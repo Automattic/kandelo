@@ -525,25 +525,60 @@ spdx = "MIT"
             EXAMPLE, ""
         );
         let err = DepsManifest::parse(&text, PathBuf::from("/x")).unwrap_err();
-        assert!(err.contains("compatibility"), "got: {err}");
+        assert!(err.contains("[compatibility]"), "got: {err}");
     }
 
     #[test]
     fn parse_archived_requires_compatibility_block() {
         // No [compatibility] block — archived manifests must have one.
         let err = DepsManifest::parse_archived(EXAMPLE, PathBuf::from("/x")).unwrap_err();
-        assert!(err.contains("compatibility"), "got: {err}");
+        assert!(err.contains("[compatibility]"), "got: {err}");
     }
 
     #[test]
     fn parse_archived_accepts_full_compatibility_block() {
+        let sha = "0".repeat(64);
         let text = format!(
-            "{}\n[compatibility]\ntarget_arch = \"wasm32\"\nabi_versions = [4]\ncache_key_sha = \"{:0>64}\"\n",
-            EXAMPLE, ""
+            "{}\n[compatibility]\ntarget_arch = \"wasm32\"\nabi_versions = [4]\ncache_key_sha = \"{}\"\n",
+            EXAMPLE, sha
         );
         let m = DepsManifest::parse_archived(&text, PathBuf::from("/x")).unwrap();
         let c = m.compatibility.as_ref().unwrap();
         assert_eq!(c.target_arch, TargetArch::Wasm32);
         assert_eq!(c.abi_versions, vec![4]);
+        assert_eq!(c.cache_key_sha, sha);
+        assert!(c.build_timestamp.is_none());
+        assert!(c.build_host.is_none());
+    }
+
+    #[test]
+    fn parse_archived_rejects_empty_abi_versions() {
+        let text = format!(
+            "{}\n[compatibility]\ntarget_arch = \"wasm32\"\nabi_versions = []\ncache_key_sha = \"{:0>64}\"\n",
+            EXAMPLE, ""
+        );
+        let err = DepsManifest::parse_archived(&text, PathBuf::from("/x")).unwrap_err();
+        assert!(err.contains("abi_versions"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_archived_rejects_uppercase_cache_key_sha() {
+        let text = format!(
+            "{}\n[compatibility]\ntarget_arch = \"wasm32\"\nabi_versions = [4]\ncache_key_sha = \"{}\"\n",
+            EXAMPLE,
+            "A".repeat(64),
+        );
+        let err = DepsManifest::parse_archived(&text, PathBuf::from("/x")).unwrap_err();
+        assert!(err.contains("cache_key_sha"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_archived_rejects_short_cache_key_sha() {
+        let text = format!(
+            "{}\n[compatibility]\ntarget_arch = \"wasm32\"\nabi_versions = [4]\ncache_key_sha = \"abc\"\n",
+            EXAMPLE
+        );
+        let err = DepsManifest::parse_archived(&text, PathBuf::from("/x")).unwrap_err();
+        assert!(err.contains("cache_key_sha"), "got: {err}");
     }
 }
