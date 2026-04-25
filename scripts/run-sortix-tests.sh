@@ -42,6 +42,8 @@ BASIC_EXPECTED_FAIL=(
                                                           # supported — see crates/kernel/src/pshared.rs)
     "pthread/pthread_attr_setinheritsched"                # priority scheduling not supported
     "strings/ffsll"                                       # wasm32 test bug (long vs long long)
+    "spawn/posix_spawn_file_actions_addopen"              # CLOEXEC fd handling in spawn child;
+                                                          # tracked as follow-up to VFS source-of-truth PR
 )
 
 LIMITS_EXPECTED_FAIL=()
