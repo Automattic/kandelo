@@ -48,6 +48,132 @@ inline Tagged<False> False_0() {
       ReadOnlyRoots(Isolate::Current()).false_value());
 }
 
+// Phase 8 — NumberConstant lives here (not in runtime-macro-shims.h)
+// because its body needs factory.h and conversions-inl.h, which
+// pull descriptor-array-tq-inl.inc transitively when included from
+// the shims header — that .inc forward-references
+// TorqueRuntimeMacroShims::CodeStubAssembler before the namespace
+// is opened, breaking compilation. Emitting in the per-TU
+// preamble means each kCCBuiltins .cc resolves NumberConstant
+// against its own already-included factory-inl.h /
+// conversions-inl.h. Inside the proper torque-shim namespace so
+// the emitter's qualified emission `TorqueRuntimeMacroShims::
+// CodeStubAssembler::NumberConstant(...)` resolves cleanly.
+namespace TorqueRuntimeMacroShims {
+namespace CodeStubAssembler {
+inline Tagged<Number> NumberConstant(double v) {
+  int smi_value;
+  if (DoubleToSmiInteger(v, &smi_value)) {
+    return Cast<Number>(Smi::FromInt(smi_value));
+  }
+  Isolate* isolate = Isolate::Current();
+  return Cast<Number>(*isolate->factory()->NewHeapNumber(v));
+}
+}  // namespace CodeStubAssembler
+}  // namespace TorqueRuntimeMacroShims
+
+// Phase 8 — TFC builtin C bridges. `Add` and `NonNumberToNumeric`
+// are TFC (Torque, Function, Custom-call-descriptor) builtins —
+// CSA-emitted to native code at snapshot time, NO `Builtin_<Name>`
+// C symbol exists in any v8 lib. The kCCBuiltins emitter spells
+// `Builtin_<Callee>(Isolate::Current(), args...)` at call sites,
+// so we provide inline C functions here that wrap V8's high-level
+// APIs (Object::ToNumeric, direct Number+Number arithmetic). The
+// inline'd definition lives in every kCCBuiltins .cc TU; the
+// linker dedupes via vague linkage. catch_block is deferred (Phase
+// 9+), so the rare Symbol-input branch of NonNumberToNumeric
+// UNREACHABLEs instead of throwing TypeError.
+//
+// `Builtin_Add` covers only the Number(Number, Number) overload
+// declared at number.tq:371 — the path Increment's `tail Add(n, 1)`
+// hits, where both operands are Smi|HeapNumber. Full ECMA Add
+// (string concat / BigInt / ToPrimitive) lives in the
+// CSA-emitted Add Code object and is unaffected by this shim.
+inline Tagged<Number> Builtin_Add(Isolate* isolate,
+                                  Tagged<Context> context,
+                                  Tagged<Number> left,
+                                  Tagged<Number> right) {
+  USE(context);
+  if (IsSmi(left) && IsSmi(right)) {
+    int64_t l = static_cast<int64_t>(Cast<Smi>(left).value());
+    int64_t r = static_cast<int64_t>(Cast<Smi>(right).value());
+    int64_t sum = l + r;
+    if (Smi::IsValid(sum)) {
+      return Cast<Number>(Smi::FromInt(static_cast<int>(sum)));
+    }
+    return Cast<Number>(
+        *isolate->factory()->NewHeapNumber(static_cast<double>(sum)));
+  }
+  double l = IsSmi(left)
+      ? static_cast<double>(Cast<Smi>(left).value())
+      : Cast<HeapNumber>(left)->value();
+  double r = IsSmi(right)
+      ? static_cast<double>(Cast<Smi>(right).value())
+      : Cast<HeapNumber>(right)->value();
+  double sum = l + r;
+  int smi_value;
+  if (DoubleToSmiInteger(sum, &smi_value)) {
+    return Cast<Number>(Smi::FromInt(smi_value));
+  }
+  return Cast<Number>(*isolate->factory()->NewHeapNumber(sum));
+}
+
+// `Builtin_Subtract` mirrors `Builtin_Add` for the Number(Number,
+// Number) → Number overload at number.tq:373 — the path Decrement's
+// `tail Subtract(n, 1)` hits. Same Smi/HeapNumber logic as Add,
+// just with `l - r` instead of `l + r`.
+inline Tagged<Number> Builtin_Subtract(Isolate* isolate,
+                                       Tagged<Context> context,
+                                       Tagged<Number> left,
+                                       Tagged<Number> right) {
+  USE(context);
+  if (IsSmi(left) && IsSmi(right)) {
+    int64_t l = static_cast<int64_t>(Cast<Smi>(left).value());
+    int64_t r = static_cast<int64_t>(Cast<Smi>(right).value());
+    int64_t diff = l - r;
+    if (Smi::IsValid(diff)) {
+      return Cast<Number>(Smi::FromInt(static_cast<int>(diff)));
+    }
+    return Cast<Number>(
+        *isolate->factory()->NewHeapNumber(static_cast<double>(diff)));
+  }
+  double l = IsSmi(left)
+      ? static_cast<double>(Cast<Smi>(left).value())
+      : Cast<HeapNumber>(left)->value();
+  double r = IsSmi(right)
+      ? static_cast<double>(Cast<Smi>(right).value())
+      : Cast<HeapNumber>(right)->value();
+  double diff = l - r;
+  int smi_value;
+  if (DoubleToSmiInteger(diff, &smi_value)) {
+    return Cast<Number>(Smi::FromInt(smi_value));
+  }
+  return Cast<Number>(*isolate->factory()->NewHeapNumber(diff));
+}
+
+// `Builtin_NonNumberToNumeric` wraps Object::ToNumeric, which
+// implements ECMAScript ToNumeric (string parse, boolean→Smi,
+// null/undefined coercion, ToPrimitive recurse). Symbol inputs
+// throw TypeError under spec — we UNREACHABLE because the
+// kCCBuiltins emitter has no exception path yet (Phase 9+).
+// Call sites in kCCBuiltins emission (UnaryOp1's JSAnyNotNumeric
+// arm) only feed JSAnyNotNumeric inputs here, so Number/BigInt
+// short-circuit before reaching this shim.
+inline Tagged<Numeric> Builtin_NonNumberToNumeric(
+    Isolate* isolate, Tagged<Context> context,
+    Tagged<JSAny> input) {
+  USE(context);
+  // No inner HandleScope — the outer JS-linkage adaptor frame
+  // already provides one. An inner scope would invalidate the
+  // returned Tagged on close.
+  Handle<JSAny> input_handle(input, isolate);
+  DirectHandle<Object> result;
+  if (!Object::ToNumeric(isolate, input_handle).ToHandle(&result)) {
+    UNREACHABLE();  // Symbol input → TypeError; catch_block deferred.
+  }
+  return Cast<Numeric>(*result);
+}
+
 Tagged<Smi> Builtin_TorqueCcTest_PushBuiltinPointer_Helper(Isolate* isolate, Tagged<Context> context, Tagged<Smi> x) {
   USE(isolate);
   Tagged<Context> parameter0 = context;
