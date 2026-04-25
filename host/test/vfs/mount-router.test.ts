@@ -138,6 +138,28 @@ describe("MountRouter", () => {
     expect(() => r.close(bogus)).toThrow(/EBADF/);
   });
 
+  it("produces non-negative handles even when backendIndex=8 (signed-shift hazard)", () => {
+    // (8 << 28) = 0x80000000 which is negative as int32. If tagHandle
+    // didn't coerce to uint32, handles from backend 8+ would flow back
+    // through the kernel as negative i64 fds and be interpreted as
+    // errors by user code. This test fills 9 backends so backend 8 is
+    // exercised and then opens a file through it.
+    const backends: RecordingBackend[] = [];
+    const t = new MountTable();
+    for (let i = 0; i < 9; i++) {
+      const b = new RecordingBackend(`b${i}`);
+      t.register(`/m${i}`, b);
+      backends.push(b);
+    }
+    const r = new MountRouter(t, stubServices());
+    const fd = r.open("/m8/file", 0, 0);
+    expect(fd).toBeGreaterThan(0); // NOT negative
+    expect(fd >>> 28).toBe(8);
+    // Read through routes correctly despite the high bit.
+    r.read(fd, new Uint8Array(1), null, 1);
+    expect(backends[8].log).toContain("b8.read(1)");
+  });
+
   it("exact mount-point path gets subPath=/", () => {
     const { etc, r } = setup();
     r.stat("/etc");
