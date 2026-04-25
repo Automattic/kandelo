@@ -1,8 +1,16 @@
 import { describe, it, expect } from "vitest";
 import { MountTable } from "../../src/vfs/mount-table";
-import { MountRouter, type HostServices } from "../../src/vfs/mount-router";
+import { MountRouter, type HostServices, isMountRouterHandle } from "../../src/vfs/mount-router";
 import type { Backend } from "../../src/vfs/backends/backend-interface";
 import type { StatResult } from "../../src/types";
+
+// Must match the encoding in host/src/vfs/mount-router.ts.
+const MOUNT_MARKER = 0x40000000;
+const TAG_SHIFT = 26;
+const TAG_MASK = 0xf << TAG_SHIFT;
+const LOCAL_MASK = (1 << TAG_SHIFT) - 1;
+const backendIndexOf = (fd: number) => (fd & TAG_MASK) >>> TAG_SHIFT;
+const localOf = (fd: number) => fd & LOCAL_MASK;
 
 // Recording backend — every method pushes its arguments onto a log so
 // tests can assert routing behavior.
@@ -96,10 +104,15 @@ describe("MountRouter", () => {
     const fdEtc = r.open("/etc/passwd", 0, 0);
     const fdTmp = r.open("/tmp/foo", 0, 0);
 
-    // Different backend tags mean different high bits
+    // Different backend tags mean different tag bits
     expect(fdEtc).not.toBe(fdTmp);
-    expect(fdEtc >>> 28).toBe(0); // etc was registered first
-    expect(fdTmp >>> 28).toBe(1);
+    expect(isMountRouterHandle(fdEtc)).toBe(true);
+    expect(isMountRouterHandle(fdTmp)).toBe(true);
+    expect(backendIndexOf(fdEtc)).toBe(0); // etc was registered first
+    expect(backendIndexOf(fdTmp)).toBe(1);
+    // Neither handle collides with stdin's 0.
+    expect(fdEtc).not.toBe(0);
+    expect(fdTmp).not.toBe(0);
 
     r.read(fdEtc, new Uint8Array(1), null, 1);
     r.read(fdTmp, new Uint8Array(1), null, 1);
@@ -128,36 +141,56 @@ describe("MountRouter", () => {
     const { tmp, r } = setup();
     const fd = r.open("/tmp/foo", 0, 0);
     const st = r.fstat(fd);
-    expect(st.ino).toBe(fd & 0x0fffffff); // recording backend returns the local handle
+    expect(st.ino).toBe(localOf(fd)); // recording backend returns the local handle
     expect(tmp.log).toContain("tmp.fstat(1)");
   });
 
-  it("EBADF for an unknown backend tag", () => {
+  it("EBADF for a handle missing the mount-router marker bit", () => {
     const { r } = setup();
-    const bogus = (5 << 28) | 42;
+    // Looks like stdin/stdout/stderr, not a router handle.
+    expect(() => r.close(0)).toThrow(/EBADF/);
+    expect(() => r.close(3)).toThrow(/EBADF/);
+    // Marker present but bad backend index (tag 15, no backend registered there)
+    const bogus = MOUNT_MARKER | (15 << TAG_SHIFT) | 42;
     expect(() => r.close(bogus)).toThrow(/EBADF/);
   });
 
-  it("produces non-negative handles even when backendIndex=8 (signed-shift hazard)", () => {
-    // (8 << 28) = 0x80000000 which is negative as int32. If tagHandle
-    // didn't coerce to uint32, handles from backend 8+ would flow back
-    // through the kernel as negative i64 fds and be interpreted as
-    // errors by user code. This test fills 9 backends so backend 8 is
-    // exercised and then opens a file through it.
+  it("local handle 0 does not collide with stdin", () => {
+    // MemFsBackend and other backends allocate local handles starting at 0.
+    // Without the MOUNT_HANDLE_MARKER bit, tagHandle(0, 0) would be 0 — the
+    // same sentinel the kernel uses for stdin. This test exercises exactly
+    // that path and asserts the marker keeps the handle non-zero.
+    class ZeroBackend extends RecordingBackend {
+      override open(_: string, __: number, ___: number) { return 0; }
+    }
+    const b = new ZeroBackend("zero");
+    const t = new MountTable();
+    t.register("/zero", b);
+    const r = new MountRouter(t, stubServices());
+    const fd = r.open("/zero/file", 0, 0);
+    expect(fd).not.toBe(0);
+    expect(isMountRouterHandle(fd)).toBe(true);
+    expect(localOf(fd)).toBe(0);
+  });
+
+  it("handles from high backend indices stay positive int32", () => {
+    // The old encoding put the tag in bits 28..31; backendIndex=8 produced
+    // 0x80000000 which is negative int32 (bit 31 set). Now bits 26..29
+    // hold the tag and bit 30 is a marker, so even index 15 stays at
+    // 0x7fc00000 — positive.
     const backends: RecordingBackend[] = [];
     const t = new MountTable();
-    for (let i = 0; i < 9; i++) {
+    for (let i = 0; i < 15; i++) {
       const b = new RecordingBackend(`b${i}`);
       t.register(`/m${i}`, b);
       backends.push(b);
     }
     const r = new MountRouter(t, stubServices());
-    const fd = r.open("/m8/file", 0, 0);
-    expect(fd).toBeGreaterThan(0); // NOT negative
-    expect(fd >>> 28).toBe(8);
-    // Read through routes correctly despite the high bit.
-    r.read(fd, new Uint8Array(1), null, 1);
-    expect(backends[8].log).toContain("b8.read(1)");
+    for (let i = 0; i < 15; i++) {
+      const fd = r.open(`/m${i}/file`, 0, 0);
+      expect(fd).toBeGreaterThan(0);
+      expect(backendIndexOf(fd)).toBe(i);
+    }
   });
 
   it("exact mount-point path gets subPath=/", () => {

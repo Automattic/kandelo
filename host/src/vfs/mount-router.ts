@@ -12,11 +12,33 @@ import type { PlatformIO, StatResult, NetworkIO } from "../types";
 import type { Backend } from "./backends/backend-interface.ts";
 import type { MountTable } from "./mount-table.ts";
 
-/** Bits used to encode the backend index in each handle. 4 bits → 16 backends. */
+/**
+ * Handle encoding:
+ *   bit 30       — MOUNT_HANDLE_MARKER, always set. Ensures routed handles
+ *                  are never 0 (which the kernel reserves for stdin) and
+ *                  always positive as int32 (avoids signed-shift hazards).
+ *   bits 26..29  — backend index (0-15)
+ *   bits 0..25   — backend-local handle (up to 2^26 = ~67M)
+ *
+ * The MARKER bit at 30 (not 31) keeps the whole value in the positive-int32
+ * range (max 0x7fffffff). Going unsigned would work too, but keeping handles
+ * positive matches how the kernel stores them as i64 without any signed/
+ * unsigned reinterpretation concerns.
+ *
+ * A backend that returns local handle 0 is common (first fd). Without the
+ * marker, tagHandle(0, 0) would collide with stdin's sentinel 0.
+ */
+const MOUNT_HANDLE_MARKER = 0x40000000;
 const HANDLE_TAG_BITS = 4;
-const HANDLE_SHIFT = 28; // 32 - HANDLE_TAG_BITS
-const HANDLE_LOCAL_MASK = (1 << HANDLE_SHIFT) - 1; // 0x0fffffff
+const HANDLE_SHIFT = 26; // bits reserved for local handle
+const HANDLE_LOCAL_MASK = (1 << HANDLE_SHIFT) - 1; // 0x03ffffff
+const HANDLE_TAG_MASK = ((1 << HANDLE_TAG_BITS) - 1) << HANDLE_SHIFT;
 const MAX_BACKEND_INDEX = (1 << HANDLE_TAG_BITS) - 1;
+
+/** Check whether `h` looks like a router-tagged handle. */
+export function isMountRouterHandle(h: number): boolean {
+  return (h & MOUNT_HANDLE_MARKER) !== 0;
+}
 
 export type HostServices = Pick<
   PlatformIO,
@@ -154,7 +176,12 @@ export class MountRouter implements PlatformIO {
   // ── Handle-based FS ops ────────────────────────────────────────────
 
   private fromHandle(handle: number): { backend: Backend; local: number } {
-    const idx = (handle >>> HANDLE_SHIFT) & MAX_BACKEND_INDEX;
+    if ((handle & MOUNT_HANDLE_MARKER) === 0) {
+      const err: NodeJS.ErrnoException = new Error(`EBADF: handle ${handle} is not mount-router-owned`);
+      err.code = "EBADF";
+      throw err;
+    }
+    const idx = (handle & HANDLE_TAG_MASK) >>> HANDLE_SHIFT;
     const backend = this.backends[idx];
     if (!backend) {
       const err: NodeJS.ErrnoException = new Error(`EBADF: unknown backend index ${idx}`);
@@ -242,8 +269,14 @@ function tagHandle(backendIndex: number, local: number): number {
       `backend handle ${local} exceeds ${HANDLE_LOCAL_MASK} bit capacity`,
     );
   }
-  // Unsigned arithmetic — backendIndex=8 would produce 0x80000000, a
-  // negative int32 in JS, which the kernel would interpret as an error
-  // when returned from host_open. `>>> 0` converts to uint32.
-  return ((backendIndex << HANDLE_SHIFT) | local) >>> 0;
+  if (backendIndex < 0 || backendIndex > MAX_BACKEND_INDEX) {
+    throw new Error(
+      `backend index ${backendIndex} out of range (max ${MAX_BACKEND_INDEX})`,
+    );
+  }
+  // MARKER bit at 30 is always set — keeps every tagged handle non-zero
+  // (stdin is 0) and positive as int32 (avoids signed-shift hazards in
+  // any callsite that reinterprets the handle). Backends can safely
+  // return local handle 0 without collision.
+  return MOUNT_HANDLE_MARKER | (backendIndex << HANDLE_SHIFT) | local;
 }
