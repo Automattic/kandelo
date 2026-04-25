@@ -318,11 +318,25 @@ async function main() {
         stdinData = new Uint8Array(Buffer.concat(chunks));
     }
 
+    // If KERNEL_CWD is an absolute host path that isn't already a VFS
+    // path (e.g., the sortix runner sets KERNEL_CWD to a per-suite
+    // scratch dir under os.tmpdir() containing symlinked test binaries),
+    // auto-mount it at /work and translate cwd. The kernel still sees a
+    // VFS path; the host files are reachable through the HostDirBackend.
+    const rawCwd = process.env.KERNEL_CWD || process.cwd();
+    const VFS_ROOTS = ["/etc", "/tmp", "/var", "/home", "/root", "/srv"];
+    const isVfsPath = rawCwd === "/" || VFS_ROOTS.some((r) => rawCwd === r || rawCwd.startsWith(r + "/"));
+    const extraMounts = !isVfsPath && rawCwd.startsWith("/")
+        ? [{ vfsPath: "/work", hostPath: rawCwd }]
+        : undefined;
+    const kernelCwd = isVfsPath ? rawCwd : "/work";
+
     const host = new NodeKernelHost({
         maxWorkers: 4,
         onStdout: (_pid, data) => process.stdout.write(data),
         onStderr: (_pid, data) => process.stderr.write(data),
         onResolveExec: (path) => resolveProgram(path),
+        extraMounts,
     });
 
     await host.init();
@@ -339,6 +353,8 @@ async function main() {
     hostEnv.TMP = "/tmp";
     hostEnv.TEMP = "/tmp";
     hostEnv.HOME = hostEnv.HOME && hostEnv.HOME.startsWith("/home/") ? hostEnv.HOME : "/home/user";
+    // If we auto-mounted KERNEL_CWD at /work, reflect that via PWD too.
+    hostEnv.PWD = kernelCwd;
 
     const exitPromise = host.spawn(loadBytes(programPath), processArgv, {
         env: [
@@ -347,7 +363,7 @@ async function main() {
                 .map(([k, v]) => `${k}=${v}`),
             ...gitEnv,
         ],
-        cwd: process.env.KERNEL_CWD || process.cwd(),
+        cwd: kernelCwd,
         stdin: stdinData,
     });
 
