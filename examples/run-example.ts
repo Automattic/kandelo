@@ -323,9 +323,25 @@ async function main() {
     // scratch dir under os.tmpdir() containing symlinked test binaries),
     // auto-mount it at /work and translate cwd. The kernel still sees a
     // VFS path; the host files are reachable through the HostDirBackend.
+    //
+    // The list below must match DEFAULT_MOUNT_SPEC's mount points
+    // exactly. A path like /var/folders/.../T (macOS tmpdir) must NOT
+    // match the /var prefix since /var itself isn't mounted — only
+    // /var/tmp, /var/log, /var/run are.
     const rawCwd = process.env.KERNEL_CWD || process.cwd();
-    const VFS_ROOTS = ["/etc", "/tmp", "/var", "/home", "/root", "/srv"];
-    const isVfsPath = rawCwd === "/" || VFS_ROOTS.some((r) => rawCwd === r || rawCwd.startsWith(r + "/"));
+    const VFS_MOUNTS = [
+        "/etc",
+        "/tmp",
+        "/var/tmp",
+        "/var/log",
+        "/var/run",
+        "/home/user",
+        "/root",
+        "/srv",
+    ];
+    const isVfsPath =
+        rawCwd === "/" ||
+        VFS_MOUNTS.some((m) => rawCwd === m || rawCwd.startsWith(m + "/"));
     const extraMounts = !isVfsPath && rawCwd.startsWith("/")
         ? [{ vfsPath: "/work", hostPath: rawCwd }]
         : undefined;
