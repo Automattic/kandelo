@@ -1,0 +1,30 @@
+// Phase 9A test fixture: CallRuntimeInstruction with catch_block.
+// `runtime::ThrowTypeError` always throws — exercises the
+// exception-propagation emission. The catch arm captures (e, message)
+// and returns a sentinel Smi so the cctest can verify dispatch.
+//
+// `runtime::ThrowTypeError` is not declared in the V8 main fileset
+// (only `extern macro ThrowTypeError`, which is the CSA helper, and
+// `extern transitioning runtime ThrowTypeErrorIfStrict`). We declare
+// it here in `namespace runtime { extern transitioning runtime ... }`
+// — matching the array-isarray.tq pattern. Runtime::kThrowTypeError
+// takes a MessageTemplate Smi plus varargs and never returns.
+namespace runtime {
+extern transitioning runtime ThrowTypeError(
+    implicit context: Context)(Smi, Object): never;
+}  // namespace runtime
+
+namespace test_cc_catch {
+  transitioning builtin TorqueCcTest_CatchBlock(implicit context: Context)(
+      shouldThrow: Smi): Smi {
+    try {
+      if (shouldThrow != 0) {
+        runtime::ThrowTypeError(SmiConstant(0), 'forced');
+        // unreachable
+      }
+      return 42;
+    } catch (_e, _message) {
+      return -1;
+    }
+  }
+}
