@@ -9,7 +9,8 @@ CROSS_BUILD_DIR="$SCRIPT_DIR/texlive-cross-build"
 BIN_DIR="$SCRIPT_DIR/bin"
 
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SYSROOT="$REPO_ROOT/sysroot"
+# Explicit env wins; else the in-tree sysroot. Matches build-git.sh.
+SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
 if ! command -v wasm32posix-cc &>/dev/null; then
@@ -17,21 +18,33 @@ if ! command -v wasm32posix-cc &>/dev/null; then
     exit 1
 fi
 
-# Build libpng if needed
-LIBPNG_DIR="$REPO_ROOT/examples/libs/libpng/libpng-install"
-if [ ! -f "$LIBPNG_DIR/lib/libpng.a" ] && [ ! -f "$LIBPNG_DIR/lib/libpng16.a" ]; then
-    echo "==> Building libpng..."
-    bash "$REPO_ROOT/examples/libs/libpng/build-libpng.sh"
-fi
+# --- Resolve zlib + libpng via the dep cache ---
+HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
+resolve_dep() {
+    local name="$1"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TARGET" --quiet -- build-deps resolve "$name")
+}
 
-# Install libpng into sysroot
-echo "==> Installing libpng into sysroot..."
-for f in png.h pngconf.h pnglibconf.h; do
-    [ -f "$LIBPNG_DIR/include/$f" ] && cp "$LIBPNG_DIR/include/$f" "$SYSROOT/include/"
-done
-for f in libpng.a libpng16.a; do
-    [ -f "$LIBPNG_DIR/lib/$f" ] && cp "$LIBPNG_DIR/lib/$f" "$SYSROOT/lib/"
-done
+ZLIB_PREFIX="${WASM_POSIX_DEP_ZLIB_DIR:-}"
+if [ -z "$ZLIB_PREFIX" ]; then
+    echo "==> Resolving zlib via cargo xtask build-deps..."
+    ZLIB_PREFIX="$(resolve_dep zlib)"
+fi
+LIBPNG_PREFIX="${WASM_POSIX_DEP_LIBPNG_DIR:-}"
+if [ -z "$LIBPNG_PREFIX" ]; then
+    echo "==> Resolving libpng via cargo xtask build-deps..."
+    LIBPNG_PREFIX="$(resolve_dep libpng)"
+fi
+if [ ! -f "$ZLIB_PREFIX/lib/libz.a" ]; then
+    echo "ERROR: zlib resolve returned '$ZLIB_PREFIX' but libz.a missing" >&2
+    exit 1
+fi
+if [ ! -f "$LIBPNG_PREFIX/lib/libpng.a" ] && [ ! -f "$LIBPNG_PREFIX/lib/libpng16.a" ]; then
+    echo "ERROR: libpng resolve returned '$LIBPNG_PREFIX' but libpng[16].a missing" >&2
+    exit 1
+fi
+echo "==> zlib at $ZLIB_PREFIX"
+echo "==> libpng at $LIBPNG_PREFIX"
 
 # Download TeX Live source
 if [ ! -d "$SRC_DIR" ]; then
@@ -121,12 +134,12 @@ SITE
         CXX=wasm32posix-c++ \
         AR=wasm32posix-ar \
         RANLIB=wasm32posix-ranlib \
-        CFLAGS="-O2 -I$SYSROOT/include" \
-        LDFLAGS="-L$SYSROOT/lib" \
-        ZLIB_CFLAGS="-I$SYSROOT/include" \
-        ZLIB_LIBS="-L$SYSROOT/lib -lz" \
-        LIBPNG_CFLAGS="-I$SYSROOT/include" \
-        LIBPNG_LIBS="-L$SYSROOT/lib -lpng -lz"
+        CFLAGS="-O2 -I$ZLIB_PREFIX/include -I$LIBPNG_PREFIX/include" \
+        LDFLAGS="-L$ZLIB_PREFIX/lib -L$LIBPNG_PREFIX/lib" \
+        ZLIB_CFLAGS="-I$ZLIB_PREFIX/include" \
+        ZLIB_LIBS="-L$ZLIB_PREFIX/lib -lz" \
+        LIBPNG_CFLAGS="-I$LIBPNG_PREFIX/include" \
+        LIBPNG_LIBS="-L$LIBPNG_PREFIX/lib -lpng -lz"
 
     # --disable-all-pkgs leaves MAKE_SUBDIRS empty everywhere, but
     # CONF_SUBDIRS still lists all subdirectories. Running top-level
