@@ -5939,6 +5939,11 @@ export class CentralizedKernelWorker {
     if (endAddr > 0 && endAddr > currentBytes) {
       const neededPages = Math.ceil((endAddr - currentBytes) / 65536);
       processMemory.grow(neededPages);
+      // Memory.grow detaches any TypedArray bound to the previous SAB.
+      // Any cached framebuffer view on this pid is now invalid; the
+      // renderer must rebuild it on the next frame from the new
+      // Memory.buffer. Idempotent for pids without a binding.
+      this.kernel.framebuffers.rebindMemory(this.currentHandlePid);
     }
 
     // Zero the mmap'd region. Anonymous mmap must return zeroed pages (like
@@ -6153,6 +6158,25 @@ export class CentralizedKernelWorker {
   /** Get the underlying kernel instance for direct access. */
   getKernel(): WasmPosixKernel {
     return this.kernel;
+  }
+
+  /**
+   * Live `/dev/fb0` mappings reported by the kernel, indexed by pid.
+   * Renderers (canvas in browser, no-op in Node) read from this on
+   * each frame; the kernel populates it via the `host_bind_framebuffer`
+   * import.
+   */
+  get framebuffers() {
+    return this.kernel.framebuffers;
+  }
+
+  /**
+   * Return the wasm `Memory` for `pid` (or `undefined` if no such
+   * process is registered). Renderers use this to build typed-array
+   * views over the bound framebuffer region.
+   */
+  getProcessMemory(pid: number): WebAssembly.Memory | undefined {
+    return this.processes.get(pid)?.memory;
   }
 
   /** Get the kernel Wasm instance. */
