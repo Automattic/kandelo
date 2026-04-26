@@ -296,7 +296,7 @@ pub fn fetch_and_install(
 /// is bounded by the user controlling their own `deps.toml` registry
 /// list — a malicious manifest could read arbitrary local files, but
 /// the user already had to add the manifest.
-fn fetch_url(url: &str) -> Result<Vec<u8>, FetchError> {
+pub(crate) fn fetch_url(url: &str) -> Result<Vec<u8>, FetchError> {
     if let Some(rest) = url.strip_prefix("file://") {
         return fs::read(rest)
             .map_err(|e| FetchError::Http(format!("file://{rest}: {e}")));
@@ -332,7 +332,7 @@ fn fetch_url(url: &str) -> Result<Vec<u8>, FetchError> {
 }
 
 /// Sha256(bytes) ≟ `expected_hex` (64-char lowercase hex).
-fn verify_sha(bytes: &[u8], expected_hex: &str) -> Result<(), FetchError> {
+pub(crate) fn verify_sha(bytes: &[u8], expected_hex: &str) -> Result<(), FetchError> {
     let mut h = Sha256::new();
     h.update(bytes);
     let actual: [u8; 32] = h.finalize().into();
