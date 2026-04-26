@@ -3,6 +3,13 @@
  * with a textarea for entering code and output display.
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
+import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
+import {
+  ensureDir,
+  ensureDirRecursive,
+  writeVfsFile,
+  writeVfsBinary,
+} from "../../../../host/src/vfs/image-helpers";
 import kernelWasmUrl from "@kernel-wasm?url";
 import phpWasmUrl from "../../../../binaries/programs/wasm32/php/php.wasm?url";
 
@@ -13,7 +20,6 @@ const examplesEl = document.getElementById("examples") as HTMLSelectElement;
 const statusDiv = document.getElementById("status") as HTMLDivElement;
 
 const decoder = new TextDecoder();
-const encoder = new TextEncoder();
 
 function appendOutput(text: string, cls?: string) {
   const span = document.createElement("span");
@@ -166,6 +172,20 @@ async function loadBinaries() {
   );
 }
 
+/** Build a fresh VFS image: just /usr/local/bin/php + the user script. */
+async function buildPhpImage(scriptPath: string, scriptContent: string): Promise<Uint8Array> {
+  const fs = MemoryFileSystem.create(
+    new SharedArrayBuffer(16 * 1024 * 1024, { maxByteLength: 64 * 1024 * 1024 }),
+    64 * 1024 * 1024,
+  );
+  for (const d of ["/tmp", "/home", "/dev"]) ensureDir(fs, d);
+  fs.chmod("/tmp", 0o777);
+  ensureDirRecursive(fs, "/usr/local/bin");
+  writeVfsBinary(fs, "/usr/local/bin/php", new Uint8Array(phpBytes!));
+  writeVfsFile(fs, scriptPath, scriptContent);
+  return fs.saveImage();
+}
+
 async function runPhp() {
   runBtn.disabled = true;
   output.textContent = "";
@@ -174,27 +194,23 @@ async function runPhp() {
     await loadBinaries();
 
     const code = codeEl.value;
+    const scriptPath = "/tmp/script.php";
+
+    setStatus("Building VFS image...", "loading");
+    const vfsImage = await buildPhpImage(scriptPath, code);
+
     setStatus("Running PHP...", "running");
 
     const kernel = new BrowserKernel({
+      kernelOwnedFs: true,
       onStdout: (data) => appendOutput(decoder.decode(data)),
       onStderr: (data) => appendOutput(decoder.decode(data), "stderr"),
     });
 
-    await kernel.init(kernelBytes!);
-
-    // Write PHP code to a file in the virtual filesystem
-    const fs = kernel.fs;
-    const scriptBytes = encoder.encode(code);
-    const scriptPath = "/tmp/script.php";
-    const O_WRONLY = 1;
-    const O_CREAT = 0x40;
-    const O_TRUNC = 0x200;
-    const fd = fs.open(scriptPath, O_WRONLY | O_CREAT | O_TRUNC, 0o644);
-    fs.write(fd, scriptBytes, null, scriptBytes.length);
-    fs.close(fd);
-
-    const exitCode = await kernel.spawn(phpBytes!, ["php", scriptPath], {
+    const { exit } = await kernel.boot({
+      kernelWasm: kernelBytes!,
+      vfsImage,
+      argv: ["/usr/local/bin/php", scriptPath],
       env: [
         "HOME=/home",
         "TMPDIR=/tmp",
@@ -202,6 +218,7 @@ async function runPhp() {
         "PATH=/usr/local/bin:/usr/bin:/bin",
       ],
     });
+    const exitCode = await exit;
 
     appendOutput(`\nExited with code ${exitCode}\n`, "info");
     hideStatus();

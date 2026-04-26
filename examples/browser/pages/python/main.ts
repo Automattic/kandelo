@@ -8,6 +8,11 @@ import { BrowserKernel } from "../../lib/browser-kernel";
 import { PtyTerminal } from "../../lib/pty-terminal";
 import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
 import { decompressVfsImage } from "../../../../host/src/vfs/load-image";
+import {
+  ensureDirRecursive,
+  writeVfsFile,
+  writeVfsBinary,
+} from "../../../../host/src/vfs/image-helpers";
 import kernelWasmUrl from "@kernel-wasm?url";
 import pythonWasmUrl from "../../../../binaries/programs/wasm32/cpython.wasm?url";
 import VFS_IMAGE_URL from "@binaries/programs/wasm32/python-vfs.vfs?url";
@@ -29,7 +34,6 @@ const interactiveView = document.getElementById("interactive-view") as HTMLDivEl
 const batchView = document.getElementById("batch-view") as HTMLDivElement;
 
 const decoder = new TextDecoder();
-const encoder = new TextEncoder();
 
 // --- Mode switching ---
 let currentMode: "interactive" | "batch" = "interactive";
@@ -86,21 +90,27 @@ async function loadBinaries(): Promise<string> {
   ].join(", ") + "\n";
 }
 
-/** Initialize a kernel with the Python stdlib VFS image. */
-async function initKernelWithStdlib(
-  options?: { onStdout?: (data: Uint8Array) => void; onStderr?: (data: Uint8Array) => void },
-): Promise<BrowserKernel> {
-  const memfs = MemoryFileSystem.fromImage(decompressVfsImage(new Uint8Array(vfsImageBuf!)), {
+/**
+ * Build a VFS image: load the Python stdlib from the prebuilt python-vfs.vfs
+ * (decompressing the published archive), splice the python binary in at
+ * /usr/local/bin/python3, optionally write a user script, and serialize
+ * back to bytes for the kernel to own.
+ */
+async function buildPythonImage(
+  scriptPath?: string,
+  scriptContent?: string,
+): Promise<Uint8Array> {
+  const fs = MemoryFileSystem.fromImage(decompressVfsImage(new Uint8Array(vfsImageBuf!)), {
     maxByteLength: 256 * 1024 * 1024,
   });
-  const kernel = new BrowserKernel({
-    memfs,
-    onStdout: options?.onStdout,
-    onStderr: options?.onStderr,
-  });
-  await kernel.init(kernelBytes!);
-
-  return kernel;
+  ensureDirRecursive(fs, "/usr/local/bin");
+  ensureDirRecursive(fs, "/tmp");
+  fs.chmod("/tmp", 0o777);
+  writeVfsBinary(fs, "/usr/local/bin/python3", new Uint8Array(pythonBytes!));
+  if (scriptPath && scriptContent !== undefined) {
+    writeVfsFile(fs, scriptPath, scriptContent);
+  }
+  return fs.saveImage();
 }
 
 const PYTHON_ENV = [
@@ -130,10 +140,12 @@ async function startInteractiveRepl() {
   try {
     const info = await loadBinaries();
 
-    const kernel = await initKernelWithStdlib();
+    setStatus("Building VFS image...", "loading");
+    const vfsImage = await buildPythonImage();
+
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
     activeKernel = kernel;
 
-    // Create PTY terminal
     const ptyTerminal = new PtyTerminal(terminalContainer, kernel);
     activePtyTerminal = ptyTerminal;
 
@@ -145,8 +157,10 @@ async function startInteractiveRepl() {
     hideStatus();
     ptyTerminal.terminal.focus();
 
-    // Spawn python3 in interactive mode with PTY
-    const exitCode = await ptyTerminal.spawn(pythonBytes!, ["python3", "-i"], {
+    const exitCode = await ptyTerminal.boot({
+      kernelWasm: kernelBytes!,
+      vfsImage,
+      argv: ["/usr/local/bin/python3", "-i"],
       env: PYTHON_ENV,
     });
 
@@ -344,27 +358,26 @@ async function runBatch() {
     if (info) appendBatchOutput(info, "info");
 
     const code = codeEl.value;
+    const scriptPath = "/tmp/script.py";
 
-    const kernel = await initKernelWithStdlib({
+    setStatus("Building VFS image...", "loading");
+    const vfsImage = await buildPythonImage(scriptPath, code);
+
+    const kernel = new BrowserKernel({
+      kernelOwnedFs: true,
       onStdout: (data) => appendBatchOutput(decoder.decode(data)),
       onStderr: (data) => appendBatchOutput(decoder.decode(data), "stderr"),
     });
 
-    // Write script to a file in the VFS
-    const scriptPath = "/tmp/script.py";
-    const scriptBytes = encoder.encode(code);
-    const O_WRONLY = 1;
-    const O_CREAT = 0x40;
-    const O_TRUNC = 0x200;
-    const fd = kernel.fs.open(scriptPath, O_WRONLY | O_CREAT | O_TRUNC, 0o644);
-    kernel.fs.write(fd, scriptBytes, null, scriptBytes.length);
-    kernel.fs.close(fd);
-
     setStatus("Running Python...", "running");
 
-    const exitCode = await kernel.spawn(pythonBytes!, ["python3", scriptPath], {
+    const { exit } = await kernel.boot({
+      kernelWasm: kernelBytes!,
+      vfsImage,
+      argv: ["/usr/local/bin/python3", scriptPath],
       env: PYTHON_ENV,
     });
+    const exitCode = await exit;
 
     appendBatchOutput(`\nExited with code ${exitCode}\n`, "info");
     hideStatus();
