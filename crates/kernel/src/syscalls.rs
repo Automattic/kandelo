@@ -106,10 +106,33 @@ const SYNTHETIC_FILE_HANDLE: i64 = -100;
 
 /// Return static content for synthetic /etc files.
 /// These provide a minimal POSIX environment (user/group database, DNS).
+///
+/// Daemons (nginx, redis, postgres, ...) routinely call getpwnam("nobody")
+/// or similar at startup; the system-account entries below cover the
+/// common ones so daemons don't [emerg] before the rootfs.vfs mount-table
+/// path lands (PR #342-#345). When that PR merges this whole function
+/// goes away.
 fn synthetic_file_content(path: &[u8]) -> Option<&'static [u8]> {
     match path {
-        b"/etc/passwd" => Some(b"root:x:0:0:root:/root:/bin/sh\nuser:x:1000:1000:user:/home/user:/bin/sh\n"),
-        b"/etc/group" => Some(b"root:x:0:\nuser:x:1000:\n"),
+        b"/etc/passwd" => Some(b"\
+root:x:0:0:root:/root:/bin/sh\n\
+daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin\n\
+nobody:x:65534:65534:nobody:/nonexistent:/usr/sbin/nologin\n\
+www-data:x:33:33:www-data:/var/www:/usr/sbin/nologin\n\
+redis:x:100:100:redis:/var/lib/redis:/usr/sbin/nologin\n\
+mysql:x:101:101:mysql:/var/lib/mysql:/usr/sbin/nologin\n\
+user:x:1000:1000:user:/home/user:/bin/sh\n\
+"),
+        b"/etc/group" => Some(b"\
+root:x:0:\n\
+daemon:x:1:\n\
+nogroup:x:65534:\n\
+nobody:x:65534:\n\
+www-data:x:33:\n\
+redis:x:100:\n\
+mysql:x:101:\n\
+user:x:1000:\n\
+"),
         b"/etc/hosts" => Some(b"127.0.0.1\tlocalhost\n::1\tlocalhost\n"),
         _ => None,
     }
@@ -7472,11 +7495,16 @@ pub fn sys_fchmod(
     let ofd_idx = entry.ofd_ref.0;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
 
-    if ofd.file_type != FileType::Regular && ofd.file_type != FileType::Directory {
-        return Err(Errno::EINVAL);
+    match ofd.file_type {
+        FileType::Regular | FileType::Directory => host.host_fchmod(ofd.host_handle, mode),
+        // CharDevice / Pipe / Socket / PtyMaster / PtySlave / etc.: Linux
+        // allows fchmod on these (e.g. on /dev/stderr or a unix-domain
+        // socket fd — daemons like dinit do this routinely and abort on
+        // EINVAL). The mode change has no observable effect for kernel-
+        // synthesized devices, but accepting the call is what user-space
+        // expects.
+        _ => Ok(()),
     }
-
-    host.host_fchmod(ofd.host_handle, mode)
 }
 
 /// fchown -- change file owner and group via file descriptor.
@@ -7491,11 +7519,12 @@ pub fn sys_fchown(
     let ofd_idx = entry.ofd_ref.0;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
 
-    if ofd.file_type != FileType::Regular && ofd.file_type != FileType::Directory {
-        return Err(Errno::EINVAL);
+    match ofd.file_type {
+        FileType::Regular | FileType::Directory => host.host_fchown(ofd.host_handle, uid, gid),
+        // Match sys_fchmod above — accept the call on all fd types so
+        // daemons that touch ownership during startup don't fail.
+        _ => Ok(()),
     }
-
-    host.host_fchown(ofd.host_handle, uid, gid)
 }
 
 /// writev -- write data from multiple buffers (scatter-gather I/O).

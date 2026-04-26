@@ -52,9 +52,9 @@ const INDEX_HTML = `<!DOCTYPE html>
 </html>
 `;
 
-// nginx.conf shipped in the image — the existing conf at examples/nginx/
-// already references paths we honor (/tmp for pid + temp paths, html/
-// for static content under the prefix). Read it at build time.
+// nginx.conf shipped in the image — uses the project's existing conf.
+// nginx's master process calls getpwnam("nobody") at startup; the
+// kernel's synthetic /etc/passwd has the entry, so no override needed.
 function loadNginxConf(): string {
   try {
     return readFileSync(NGINX_CONF_HOST, "utf8");

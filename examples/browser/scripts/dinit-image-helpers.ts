@@ -74,30 +74,61 @@ function renderService(svc: DinitService): string {
   }
   if (svc.logfile !== undefined) {
     lines.push(`logfile = ${svc.logfile}`);
-  } else if (svc.type !== "internal") {
-    // Default to /dev/stderr so service output flows through dinit's
-    // stderr → kernel stderr → demo's onStderr callback. Without this,
-    // dinit's NONE log type sends service output to /dev/null and we
-    // lose error messages. Demos that want isolation can opt in by
-    // setting `logfile` explicitly.
-    lines.push("logfile = /dev/stderr");
   }
+  // No default logfile: dinit's NONE log type sends service output to
+  // /dev/null, which is the documented default. Demos that need to see
+  // service output set `logfile` explicitly (typically to a path under
+  // /var/log) and read it back via dinitctl or the VFS.
   for (const line of svc.extra ?? []) lines.push(line);
   lines.push(""); // trailing newline
   return lines.join("\n");
 }
 
 /**
- * Add the dinit binary, the implicit `boot` service that pulls in the
- * supplied services, and per-service config files into the image.
+ * Standard /etc/passwd entries. Daemons (nginx, redis, etc.) routinely
+ * call getpwnam("nobody") or similar at startup; without these entries
+ * they fail with [emerg] before doing anything useful.
+ */
+const ETC_PASSWD = [
+  "root:x:0:0:root:/root:/bin/sh",
+  "daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin",
+  "nobody:x:65534:65534:nobody:/nonexistent:/usr/sbin/nologin",
+  "www-data:x:33:33:www-data:/var/www:/usr/sbin/nologin",
+  "redis:x:100:100:redis:/var/lib/redis:/usr/sbin/nologin",
+  "mysql:x:101:101:mysql:/var/lib/mysql:/usr/sbin/nologin",
+  "user:x:1000:1000:user:/home/user:/bin/sh",
+  "",
+].join("\n");
+
+const ETC_GROUP = [
+  "root:x:0:",
+  "daemon:x:1:",
+  "nogroup:x:65534:",
+  "www-data:x:33:",
+  "redis:x:100:",
+  "mysql:x:101:",
+  "user:x:1000:",
+  "",
+].join("\n");
+
+const ETC_HOSTS = [
+  "127.0.0.1\tlocalhost",
+  "::1\tlocalhost",
+  "",
+].join("\n");
+
+/**
+ * Add the dinit binary, basic rootfs files, the implicit `boot` service
+ * that pulls in the supplied services, and per-service config files.
  *
  * Image gets:
  *   /sbin/dinit              - the init binary
- *   /sbin/dinitctl           - the control client (small, ~700KB)
+ *   /sbin/dinitctl           - the control client
+ *   /etc/passwd, /etc/group  - user/group database (daemons getpwnam at start)
+ *   /etc/hosts               - localhost resolution
  *   /etc/dinit.d/boot        - internal service depending on each service
  *   /etc/dinit.d/<name>      - per-service config file
- *   /var/log                 - log directory
- *   /run                     - runtime state
+ *   /var/log, /run           - standard runtime dirs
  *
  * The browser demo boots with argv = ["/sbin/dinit", "--container"].
  */
@@ -109,6 +140,14 @@ export function addDinitInit(
   ensureDirRecursive(fs, "/sbin");
   writeVfsBinary(fs, "/sbin/dinit", new Uint8Array(readFileSync(DINIT_WASM)));
   writeVfsBinary(fs, "/sbin/dinitctl", new Uint8Array(readFileSync(DINITCTL_WASM)));
+
+  // Basic rootfs files. Most Unix daemons expect these to exist at
+  // startup; missing them is the usual cause of "started but exits 1
+  // silently" failures.
+  ensureDirRecursive(fs, "/etc");
+  writeVfsFile(fs, "/etc/passwd", ETC_PASSWD);
+  writeVfsFile(fs, "/etc/group", ETC_GROUP);
+  writeVfsFile(fs, "/etc/hosts", ETC_HOSTS);
 
   // Standard runtime/log dirs
   ensureDirRecursive(fs, "/var/log");
