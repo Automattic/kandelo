@@ -44,7 +44,8 @@ use std::process::Command;
 
 use sha2::{Digest, Sha256};
 
-use crate::deps_manifest::{DepRef, DepsManifest, ManifestKind, TargetArch};
+use crate::deps_manifest::{DepRef, DepsManifest, HostTool, ManifestKind, TargetArch};
+use crate::host_tool_probe::{self, ProbeFailure};
 use crate::remote_fetch;
 use crate::repo_root;
 use crate::source_extract;
@@ -386,6 +387,52 @@ struct DirectDep {
     kind: ManifestKind,
 }
 
+/// Render a multi-tool probe-failure message for `ensure_built_inner`.
+///
+/// Aggregates every `ProbeFailure` for `target` into one `Err(String)`
+/// payload so a user fixes their toolchain in a single round-trip
+/// rather than `cargo run`-ing once per missing tool. For each failure
+/// we look up the matching `[[host_tools]]` declaration and append the
+/// platform-keyed install hint chosen by `cfg!(target_os)`. If the
+/// declaration ships hints but none for the current OS, we list which
+/// platforms ARE covered so the user knows whether to translate one
+/// or to file an issue.
+fn render_probe_failures(target: &DepsManifest, failures: &[ProbeFailure]) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "{}: {} host-tool requirement{} unsatisfied:\n",
+        target.spec(),
+        failures.len(),
+        if failures.len() == 1 { "" } else { "s" }
+    ));
+    for f in failures {
+        out.push_str(&format!("  - {f}\n"));
+        let tool_name = match f {
+            ProbeFailure::Missing { tool, .. }
+            | ProbeFailure::BadOutput { tool, .. }
+            | ProbeFailure::BadVersion { tool, .. }
+            | ProbeFailure::TooOld { tool, .. } => tool,
+        };
+        if let Some(decl) = target
+            .host_tools
+            .iter()
+            .find(|d: &&HostTool| &d.name == tool_name)
+        {
+            let os = std::env::consts::OS;
+            if let Some(hint) = decl.install_hints.get(os) {
+                out.push_str(&format!("      install hint ({os}): {hint}\n"));
+            } else if !decl.install_hints.is_empty() {
+                let keys: Vec<&str> = decl.install_hints.keys().map(String::as_str).collect();
+                out.push_str(&format!(
+                    "      no {os} install hint; available platforms: [{}]\n",
+                    keys.join(", ")
+                ));
+            }
+        }
+    }
+    out
+}
+
 /// Resolve `target`, returning its on-disk path *and* the set of
 /// transitively-resolved lib paths underneath it (its direct deps, their
 /// deps, and so on — but NOT `target`'s own path; the caller adds that).
@@ -478,6 +525,23 @@ fn ensure_built_inner(
     // Cache hit: trust it. Users invalidate by deleting the directory.
     if canonical.is_dir() {
         return Ok((canonical, transitive));
+    }
+
+    // Run host-tool probes before any work that might invoke a build
+    // script (or fetch+extract a source-kind tarball). Cache hits skip
+    // this — probes are only needed when we might actually invoke
+    // `bash build-<x>.sh` or similar work. Aggregate ALL probe
+    // failures so users fix everything in one round-trip.
+    if !target.host_tools.is_empty() {
+        let mut failures: Vec<ProbeFailure> = Vec::new();
+        for tool in &target.host_tools {
+            if let Err(e) = host_tool_probe::probe(tool) {
+                failures.push(e);
+            }
+        }
+        if !failures.is_empty() {
+            return Err(render_probe_failures(target, &failures));
+        }
     }
 
     // Cache-miss dispatch. Three flavors of recipe:
@@ -3139,5 +3203,119 @@ libs = ["lib/libconsumer.a"]
             "expected libconsumer.a at {}",
             consumer_path.display()
         );
+    }
+
+    /// C.10: a cache hit must short-circuit BEFORE host-tool probes
+    /// run. We declare a tool that definitely doesn't exist on PATH;
+    /// if `ensure_built` returned the cached path without erroring,
+    /// the probe was correctly skipped. (If probes ran on cache hits,
+    /// every consumer that builds once would refuse to resolve until
+    /// every host-tool listed in its manifest stayed installed
+    /// forever — clearly wrong.)
+    #[test]
+    fn ensure_built_cache_hit_skips_host_tool_probes() {
+        let manifest_dir = tempdir("c10-cachehit-manifest");
+        let cache = tempdir("c10-cachehit-cache");
+
+        let manifest_text = r#"
+kind = "library"
+name = "fake"
+version = "0.1"
+revision = 1
+
+[source]
+url = "https://example.test/fake.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "MIT"
+
+[outputs]
+libs = ["lib/libfake.a"]
+
+[[host_tools]]
+name = "this-host-tool-does-not-exist"
+version_constraint = ">=99.99"
+"#;
+        let m = DepsManifest::parse(manifest_text, manifest_dir.clone()).unwrap();
+
+        let registry = Registry { roots: vec![] };
+        // Pre-populate the canonical cache dir so ensure_built sees a hit.
+        let sha = compute_sha(
+            &m,
+            &registry,
+            TEST_ARCH,
+            TEST_ABI,
+            &mut BTreeMap::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        let canonical = canonical_path(&cache, &m, TEST_ARCH, &sha);
+        std::fs::create_dir_all(canonical.join("lib")).unwrap();
+        std::fs::write(canonical.join("lib/libfake.a"), b"").unwrap();
+
+        let path = ensure_built(&m, &registry, TEST_ARCH, TEST_ABI, &resolve_opts(&cache, None))
+            .expect("cache hit should skip host-tool probes");
+        assert_eq!(path, canonical);
+    }
+
+    /// C.10: on a cache miss, a missing host-tool must abort BEFORE
+    /// any source-extract or build-script work, with an error that
+    /// names the tool and (on platforms with hints) cites the matching
+    /// install_hint.
+    #[test]
+    fn ensure_built_cache_miss_aborts_when_host_tool_missing() {
+        let manifest_dir = tempdir("c10-cachemiss-manifest");
+        let cache = tempdir("c10-cachemiss-cache");
+
+        // No build script needed: the probe must abort before we'd
+        // ever invoke one. We still pass a sane manifest shape.
+        let manifest_text = r#"
+kind = "library"
+name = "fake"
+version = "0.1"
+revision = 1
+
+[source]
+url = "https://example.test/fake.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "MIT"
+
+[outputs]
+libs = []
+
+[[host_tools]]
+name = "this-host-tool-does-not-exist"
+version_constraint = ">=99.99"
+install_hints = { darwin = "brew install nope", linux = "apt install nope" }
+"#;
+        let m = DepsManifest::parse(manifest_text, manifest_dir).unwrap();
+
+        let registry = Registry { roots: vec![] };
+        let err = ensure_built(&m, &registry, TEST_ARCH, TEST_ABI, &resolve_opts(&cache, None))
+            .unwrap_err();
+        assert!(err.contains("host-tool"), "got: {err}");
+        assert!(
+            err.contains("this-host-tool-does-not-exist"),
+            "got: {err}"
+        );
+        // Should mention the matching install hint OR list available platforms.
+        let os = std::env::consts::OS;
+        if matches!(os, "macos" | "linux") {
+            // The fixture provides hints under the keys "darwin" and
+            // "linux"; std::env::consts::OS is "macos" on Apple. Only
+            // assert the install-hint render on the OS that matches a
+            // declared key — otherwise we'd see the "available
+            // platforms" branch instead.
+            if os == "linux" {
+                assert!(err.contains("install hint"), "got: {err}");
+            } else {
+                // macOS: no "darwin" => "macos" mapping in the fixture,
+                // so we get the available-platforms branch.
+                assert!(err.contains("available platforms"), "got: {err}");
+            }
+        }
     }
 }
