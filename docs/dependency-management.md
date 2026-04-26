@@ -159,6 +159,283 @@ discouraged for multi-worktree development because the global
 symlink it creates routes every shell to a single worktree's
 source.
 
+## Migrating a consumer to the cache
+
+Lessons from the V2 D.1–D.5 consumer migrations (PRs #352, #353,
+#354, #355, #357, #358). When converting a `build-<prog>.sh` from
+"call the prerequisite `build-<lib>.sh` directly and install into
+the sysroot" to "resolve via the dep cache," follow the patterns
+below.
+
+### 1. Standard resolve pattern
+
+Every cache-using build script repeats the same shape near the
+top. Minimal example for a single-dep consumer (zlib only):
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+
+# Worktree-local SDK on PATH (see "Toolchain on PATH" above).
+source "$REPO_ROOT/sdk/activate.sh"
+
+SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
+export WASM_POSIX_SYSROOT="$SYSROOT"
+
+HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
+resolve_dep() {
+    local name="$1"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TARGET" --quiet -- build-deps resolve "$name")
+}
+
+ZLIB_PREFIX="${WASM_POSIX_DEP_ZLIB_DIR:-}"
+if [ -z "$ZLIB_PREFIX" ]; then
+    echo "==> Resolving zlib via cargo xtask build-deps..."
+    ZLIB_PREFIX="$(resolve_dep zlib)"
+fi
+[ -f "$ZLIB_PREFIX/lib/libz.a" ] || {
+    echo "ERROR: zlib resolve missing libz.a at $ZLIB_PREFIX" >&2
+    exit 1
+}
+```
+
+The pieces:
+
+- **`source "$REPO_ROOT/sdk/activate.sh"`** — prepends
+  `<worktree>/sdk/bin/` to `PATH`, so `wasm32posix-cc` and
+  friends route through this worktree's SDK source. Replaces
+  the old `cd sdk && npm link` step (PR #358).
+- **`resolve_dep` helper** — pinned to the host target so cargo
+  picks up the host toolchain even when a `.cargo/config.toml`
+  in the tree sets a wasm default. Stdout is the resolved path;
+  stderr carries log output (PR #355 redirected child build
+  scripts to stderr — see caveat 1 below).
+- **`WASM_POSIX_DEP_<NAME>_DIR` short-circuit** — when the outer
+  caller (an aggregator script, or the parent resolver running a
+  consumer that itself appears in the dep graph) already knows
+  the dep's path, it sets the env var and the script skips the
+  cargo invocation. Cuts redundant resolves when many consumers
+  pull the same dep in series.
+- **Presence-check after resolve** — verifies the expected file
+  actually exists. Catches "build script returned 0 but produced
+  the wrong artifacts" before the consumer's `configure` step
+  emits a confusing diagnostic.
+
+For each additional dep, repeat the `<NAME>_PREFIX` stanza
+(uppercase the dep name, `-` → `_`). Multi-dep consumers do this
+4–5 times in a row (see PHP: `ZLIB_PREFIX`, `SQLITE_PREFIX`,
+`OPENSSL_PREFIX`, `LIBXML2_PREFIX`).
+
+### 2. The CPPFLAGS/LDFLAGS contract
+
+**This is the load-bearing rule for autoconf consumers.** Every
+cache-using build script that runs an autoconf-style `configure`
+must set both `PKG_CONFIG_PATH` *and* `CPPFLAGS=-I` / `LDFLAGS=-L`.
+Setting only one silently drops the dep.
+
+Why: autoconf probes for a library along two independent paths
+during `configure`, and which path runs depends on how the
+project's `configure.ac` was written.
+
+| Probe path | What configure runs | What env it reads |
+|---|---|---|
+| pkg-config | `pkg-config --cflags <name>` / `--libs <name>` | `PKG_CONFIG_PATH`, `PKG_CONFIG` |
+| Raw autoconf | `AC_CHECK_HEADER([zlib.h])`, `AC_CHECK_LIB([z], [...])`, `AC_TRY_LINK` | `CPPFLAGS`, `LDFLAGS`, `CFLAGS`, `LIBS` |
+
+A consumer typically tries pkg-config first; if pkg-config
+returns success, the resulting `-I` / `-L` flags are used. If
+pkg-config fails (no `.pc` file, or the project never invoked
+`PKG_CHECK_MODULES` for that lib), configure falls back to
+`AC_CHECK_HEADER`/`AC_CHECK_LIB`. The raw probe finds headers
+and libraries **only** in directories listed in `CPPFLAGS=-I…`
+and `LDFLAGS=-L…`. There is no implicit fallback to
+`PKG_CONFIG_PATH`.
+
+Practical rule for every cache-using build script that runs
+autoconf-style configure:
+
+```bash
+PKG_CONFIG_PATH="$ZLIB_PREFIX/lib/pkgconfig" \
+CPPFLAGS="-I$ZLIB_PREFIX/include" \
+LDFLAGS="-L$ZLIB_PREFIX/lib" \
+wasm32posix-configure …
+```
+
+Concrete bug from PR #352 (D.1 cpython): an early draft set only
+`PKG_CONFIG_PATH`, which let the pkg-config-based probe for zlib
+succeed but caused CPython's *separate* `py_cv_module_zlib`
+detection (raw `AC_CHECK_HEADER`) to report `missing` because no
+`-I$ZLIB_PREFIX/include` was on `CPPFLAGS`. The build then
+silently produced a Python without `import zlib`.
+
+For multi-lib consumers, compose by colon-joining
+`PKG_CONFIG_PATH` and space-joining the `-I` / `-L` flags:
+
+```bash
+DEP_PKG_CONFIG_PATH="$ZLIB_PREFIX/lib/pkgconfig:$SQLITE_PREFIX/lib/pkgconfig:$OPENSSL_PREFIX/lib/pkgconfig:$LIBXML2_PREFIX/lib/pkgconfig"
+DEP_CPPFLAGS="-I$ZLIB_PREFIX/include -I$SQLITE_PREFIX/include -I$OPENSSL_PREFIX/include -I$LIBXML2_PREFIX/include"
+DEP_LDFLAGS="-L$ZLIB_PREFIX/lib -L$SQLITE_PREFIX/lib -L$OPENSSL_PREFIX/lib -L$LIBXML2_PREFIX/lib"
+
+PKG_CONFIG_PATH="$DEP_PKG_CONFIG_PATH" \
+CPPFLAGS="$DEP_CPPFLAGS" \
+LDFLAGS="$DEP_LDFLAGS" \
+wasm32posix-configure …
+```
+
+This pattern is used verbatim in `build-php.sh` (PR #354 / D.3).
+
+### 3. Source-kind workflow (worked example: pcre2 in MariaDB)
+
+`kind = "source"` is the right choice when a consumer needs the
+unbuilt source tree of a dep, not a pre-built static-library
+prefix. The canonical case is **PCRE2 inside MariaDB** (PR #357 /
+D.5): MariaDB's CMake expects to compile PCRE2 against its own
+internal headers and link the result statically into `mariadbd`,
+so a generic `libpcre2.a` would not satisfy it.
+
+The pcre2-source manifest (`examples/libs/pcre2-source/deps.toml`):
+
+```toml
+kind = "source"
+name = "pcre2-source"
+version = "10.44"
+revision = 1
+
+[source]
+url = "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.44/pcre2-10.44.tar.gz"
+sha256 = "86b9cb0aa3bcb7994faa88018292bc704cdbb708e785f7c74352ff6ea7d3175b"
+
+[license]
+spdx = "BSD-3-Clause"
+```
+
+No `[outputs]`, no `[build].script` — the resolver fetches and
+extracts in-place into
+`<cache_root>/sources/pcre2-source-10.44-rev1-<sha>/`. No
+`<arch>` segment because source trees are arch-agnostic.
+
+The MariaDB manifest (`examples/libs/mariadb/deps.toml`):
+
+```toml
+depends_on = ["pcre2-source@10.44"]
+```
+
+The MariaDB build script (`examples/libs/mariadb/build-mariadb.sh`,
+abridged):
+
+```bash
+# Source-kind direct deps export under _SRC_DIR (note the suffix).
+PCRE2_SOURCE_DIR="${WASM_POSIX_DEP_PCRE2_SOURCE_SRC_DIR:-}"
+if [ -z "$PCRE2_SOURCE_DIR" ]; then
+    PCRE2_SOURCE_DIR="$(resolve_dep pcre2-source)"
+fi
+[ -f "$PCRE2_SOURCE_DIR/CMakeLists.txt" ] || {
+    echo "ERROR: pcre2-source missing CMakeLists.txt" >&2; exit 1; }
+
+# Build PCRE2 statically into a script-local tree (NOT cached as
+# a library — the build is mariadb-specific by configuration).
+PCRE2_BUILD="$SCRIPT_DIR/pcre2-wasm-build"
+if [ ! -f "$PCRE2_BUILD/libpcre2-8.a" ]; then
+    cmake "$PCRE2_SOURCE_DIR" \
+        -DCMAKE_C_COMPILER="$LLVM_CLANG" \
+        -DCMAKE_C_FLAGS="--target=$WASM_TARGET … --sysroot=$SYSROOT -O2 -DNDEBUG" \
+        -DCMAKE_SIZEOF_VOID_P=$PCRE2_SIZEOF_VOID_P \
+        -DPCRE2_BUILD_TESTS=OFF -DBUILD_SHARED_LIBS=OFF …
+    make -j"$NPROC" pcre2-8-static pcre2-posix-static
+fi
+
+# Install into sysroot for mariadb's main cmake to link against.
+cp "$PCRE2_BUILD/libpcre2-8.a"     "$SYSROOT/lib/"
+cp "$PCRE2_BUILD/libpcre2-posix.a" "$SYSROOT/lib/"
+cp "$PCRE2_BUILD/pcre2.h"          "$SYSROOT/include/"
+cp "$PCRE2_SOURCE_DIR/src/pcre2posix.h" "$SYSROOT/include/"
+```
+
+Key contracts illustrated:
+
+- **`_SRC_DIR` suffix, not `_DIR`.** A source-kind dep exports
+  `WASM_POSIX_DEP_<NAME>_SRC_DIR` so the consumer immediately
+  knows it received an unpacked source tree, not a built-artifact
+  prefix. See decision 12 in
+  `docs/plans/2026-04-22-deps-management-v2-design.md`.
+- **The cache holds source; the build is consumer-local.** The
+  arch-agnostic source lives once in the shared cache; the
+  arch-specific build output (`pcre2-wasm-build/` + sysroot
+  copies) stays inside the consumer's worktree. Avoids forcing
+  every consumer that vendors PCRE2 into the same flag matrix.
+- **Light presence-check on the unpacked tree.** `[ -f
+  CMakeLists.txt ]` catches a partial extract or the wrong tarball
+  layout before cmake emits a more confusing error.
+
+### 4. Caveats / known footguns
+
+Real issues encountered during D.1–D.5 and how to avoid them.
+
+1. **Build-script stdout flooding the captured path.** Pre-PR
+   #355, on a cache miss, the inner build-script's stdout
+   reached `resolve_dep`'s shell capture and corrupted the
+   resolved path with build-log noise. Fixed in PR #355 (D.4):
+   `cmd_resolve` now redirects child stdout to stderr, leaving
+   only the canonical path on stdout. Until that fix is in your
+   base branch, work around by warming the cache first
+   (`cargo xtask build-deps resolve <name>` once, ignore stdout)
+   so subsequent `resolve_dep` calls hit the cache and return
+   the path cleanly.
+2. **Silently dropped CPPFLAGS / LDFLAGS.** See section 2 above.
+   If a consumer's `configure` reports a dep "missing" even
+   though pkg-config swears it is there, the consumer almost
+   certainly has a separate raw `AC_CHECK_HEADER` probe and you
+   forgot `-I<prefix>/include` on `CPPFLAGS`.
+3. **SDK invocation crossing worktrees.** Pre-D.6, the SDK was
+   installed by `npm link`, which created a single global
+   `wasm32posix-cc` symlink. Two worktrees taking turns to
+   `npm link` would silently swap which source tree handled
+   compilation — a build started in worktree A could be served
+   by worktree B's SDK if the user `npm link`-ed B more
+   recently. Fixed in PR #358 (D.6): `source sdk/activate.sh`
+   prepends the worktree-local `sdk/bin/` to `PATH`. Always
+   source it; do not rely on `npm link`.
+4. **Sysroot `lib/pkgconfig/` directory.** Some sub-builds
+   (libyaml inside ruby was the trigger) implicitly relied on
+   an earlier zlib install creating `$SYSROOT/lib/pkgconfig/`.
+   After migrating zlib out of `build-<prog>.sh`, that mkdir
+   went with it, and the sub-build later failed trying to
+   `cp foo.pc $SYSROOT/lib/pkgconfig/`. If your migrated script
+   still installs anything into the sysroot's pkgconfig dir,
+   add an explicit `mkdir -p "$SYSROOT/lib/pkgconfig"` near the
+   top.
+
+### 5. Optimization-level workarounds
+
+A few cross-compiles trip LLVM 21 wasm32 codegen bugs at higher
+`-O` levels. The migration pattern doesn't change this — these
+are pre-existing issues that surface independent of the cache —
+but consumers must keep the per-file workaround in place when
+porting their build script:
+
+- **Erlang `erl_unicode.c`** — compiled at `-O1` (rest of OTP
+  builds at `-O2`). At `-O2`, LLVM miscompiles aggregate
+  initialization of structs that hold shadow-stack pointers,
+  breaking ESTACK iodata traversal. Adding `fprintf` inside the
+  function changes code layout enough to mask the bug, hence the
+  Heisenbug character. See `examples/libs/erlang/build-erlang.sh`
+  comments.
+- **Redis `tls.c`** — at `-O1` and above, LLVM 21.1.8 crashes
+  inside `llvm::AsmPrinter::emitGlobalVariable`. Currently the
+  file is stubbed out to dodge the issue; re-enabling TLS for
+  the Redis build would require a per-target Makefile rule that
+  compiles just `tls.c` at `-O0`.
+
+The general pattern: identify the offending file, give it a
+per-target rule in the consumer's Makefile (or invoke `clang`
+on it directly with a different `-O` flag from the build
+script), and leave the rest of the project at the original
+optimization level. Document the rule inline so the next person
+to touch the build doesn't quietly raise the level.
+
 ## Atomic cache install
 
 The script builds into `<canonical>.tmp-<pid>/`, not the final path.
