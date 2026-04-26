@@ -67,7 +67,11 @@ LINK_FLAGS=(
     -Wl,--export=__wasm_thread_init
 )
 
-ASYNCIFY_IMPORTS="kernel.kernel_fork"
+# Phase 7: fork support comes from wasm-fork-instrument (replaces
+# wasm-opt --asyncify). The tool auto-discovers fork-path functions via
+# call-graph analysis from `kernel.kernel_fork`; no onlylist is needed.
+# See docs/fork-instrumentation.md.
+FORK_INSTRUMENT="$REPO_ROOT/tools/bin/wasm-fork-instrument"
 
 mkdir -p "$OUT_DIR"
 
@@ -81,11 +85,14 @@ build_program() {
     echo "  Compiling $name..."
     "$CC" "${CFLAGS[@]}" "$src" "${LINK_FLAGS[@]}" -o "$wasm"
 
-    # Asyncify for fork/exec support
-    if [ -n "$WASM_OPT" ]; then
-        "$WASM_OPT" --asyncify \
-            --pass-arg="asyncify-imports@${ASYNCIFY_IMPORTS}" \
-            "$wasm" -o "$wasm" 2>/dev/null || true
+    # Apply fork instrumentation if the program uses fork. The tool is a
+    # no-op for modules without `kernel.kernel_fork`, so it's safe to run
+    # unconditionally on every program. Programs without fork stay
+    # byte-identical except for a small ABI metadata section the tool
+    # always emits (see runtime::inject_runtime).
+    if [ -x "$FORK_INSTRUMENT" ]; then
+        "$FORK_INSTRUMENT" "$wasm" -o "$wasm.instr" 2>/dev/null && \
+            mv "$wasm.instr" "$wasm" || rm -f "$wasm.instr"
     fi
 }
 

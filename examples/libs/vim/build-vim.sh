@@ -5,7 +5,7 @@ set -euo pipefail
 #
 # Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
 # Links against ncurses (must be built first via build-ncurses.sh).
-# Applies asyncify with an onlylist so fork+exec works (:!command, filters).
+# Applies fork instrumentation so fork+exec works (:!command, filters).
 #
 # Output: examples/libs/vim/bin/vim.wasm
 
@@ -15,7 +15,6 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 SRC_DIR="$SCRIPT_DIR/vim-src"
 BIN_DIR="$SCRIPT_DIR/bin"
 SYSROOT="$REPO_ROOT/sysroot"
-ONLYLIST="$SCRIPT_DIR/asyncify-onlylist.txt"
 
 # --- Prerequisites ---
 if ! command -v wasm32posix-cc &>/dev/null; then
@@ -33,10 +32,18 @@ if [ ! -f "$SYSROOT/lib/libncursesw.a" ]; then
     exit 1
 fi
 
-# Check for wasm-opt (required for asyncify)
+# Check for wasm-opt (used for -O2 optimization after build).
 WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
 if [ -z "$WASM_OPT" ]; then
     echo "ERROR: wasm-opt not found. Install binaryen." >&2
+    exit 1
+fi
+
+# Check for fork-instrument tool (required for fork support).
+FORK_INSTRUMENT="$REPO_ROOT/tools/bin/wasm-fork-instrument"
+if [ ! -x "$FORK_INSTRUMENT" ]; then
+    echo "ERROR: wasm-fork-instrument not found at $FORK_INSTRUMENT." >&2
+    echo "  Run 'bash build.sh' to build it." >&2
     exit 1
 fi
 
@@ -102,8 +109,10 @@ if [ ! -f src/auto/config.mk ]; then
     export ac_cv_func_getpwuid=yes
     export ac_cv_func_getpwnam=yes
 
-    # -gline-tables-only for asyncify-onlylist function name matching
-    # --no-wasm-opt to preserve name section
+    # -gline-tables-only retained for symbolication / debug stack traces.
+    # The asyncify-onlylist function-name matching requirement is obsolete
+    # (replaced by wasm-fork-instrument, which uses call-graph analysis).
+    # --no-wasm-opt preserves the name section for later tooling.
     export CFLAGS="-O2 -gline-tables-only"
     export LDFLAGS="--no-wasm-opt -Wl,-z,stack-size=1048576"
     export LIBS="-lncursesw -ltinfow"
@@ -168,24 +177,18 @@ cp "$SRC_DIR/src/vim" "$BIN_DIR/vim.wasm"
 SIZE_BEFORE=$(wc -c < "$BIN_DIR/vim.wasm" | tr -d ' ')
 echo "==> Pre-asyncify size: $(echo "$SIZE_BEFORE" | numfmt --to=iec 2>/dev/null || echo "${SIZE_BEFORE} bytes")"
 
-# --- Asyncify transform with onlylist ---
-if [ -f "$ONLYLIST" ]; then
-    echo "==> Applying asyncify with onlylist..."
+# --- Size optimization + fork instrumentation ---
+# wasm-opt -O2 runs first to shrink the binary. wasm-fork-instrument must
+# run LAST because it hardcodes mutable-global offsets at instrument time —
+# any later pass that reorders globals would corrupt the fork buffer.
+# wasm-fork-instrument auto-discovers fork paths via call-graph analysis,
+# so no onlylist file is needed.
+echo "==> Optimizing vim.wasm with wasm-opt -O2..."
+"$WASM_OPT" -O2 "$BIN_DIR/vim.wasm" -o "$BIN_DIR/vim.wasm"
 
-    # Build comma-separated function list from onlylist file (skip comments and blanks)
-    ONLY_FUNCS=$(grep -v '^#' "$ONLYLIST" | grep -v '^\s*$' | tr -d ' ' | tr '\n' ',' | sed 's/,$//')
-
-    # -g tells wasm-opt to read the name section from the binary
-    "$WASM_OPT" -g --asyncify \
-        --pass-arg="asyncify-imports@kernel.kernel_fork" \
-        --pass-arg="asyncify-onlylist@${ONLY_FUNCS}" \
-        "$BIN_DIR/vim.wasm" -o "$BIN_DIR/vim.wasm"
-
-    # Optimize after asyncify to clean up
-    "$WASM_OPT" -O2 "$BIN_DIR/vim.wasm" -o "$BIN_DIR/vim.wasm"
-else
-    echo "==> No asyncify-onlylist.txt found, skipping asyncify."
-fi
+echo "==> Applying fork instrumentation..."
+"$FORK_INSTRUMENT" "$BIN_DIR/vim.wasm" -o "$BIN_DIR/vim.wasm.instr"
+mv "$BIN_DIR/vim.wasm.instr" "$BIN_DIR/vim.wasm"
 
 SIZE_AFTER=$(wc -c < "$BIN_DIR/vim.wasm" | tr -d ' ')
 echo "==> Final size: $(echo "$SIZE_AFTER" | numfmt --to=iec 2>/dev/null || echo "${SIZE_AFTER} bytes")"

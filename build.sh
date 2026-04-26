@@ -10,6 +10,12 @@ echo "Copying Wasm artifacts..."
 mkdir -p host/wasm
 cp target/wasm64-unknown-unknown/release/wasm_posix_kernel.wasm host/wasm/
 
+echo "Building wasm-fork-instrument CLI (host tool)..."
+HOST_TRIPLE="$(rustc -vV | awk '/^host/ {print $2}')"
+cargo build --release --target "$HOST_TRIPLE" -p fork-instrument --bin wasm-fork-instrument
+mkdir -p tools/bin
+cp "target/$HOST_TRIPLE/release/wasm-fork-instrument" tools/bin/wasm-fork-instrument
+
 if [ -d programs ] && ls programs/*.c >/dev/null 2>&1; then
     echo "Building user programs..."
     bash scripts/build-programs.sh

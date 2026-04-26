@@ -155,33 +155,28 @@ make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" fpm
 # Copy FPM binary
 cp sapi/fpm/php-fpm "$SCRIPT_DIR/php-fpm.wasm"
 
-# Asyncify for fork support (FPM forks worker children).
+# Fork instrumentation for fork support (FPM forks worker children).
 # channel_syscall.c separates the fork path — fork()/vfork()/_Fork() call
-# kernel_fork() directly instead of going through __do_syscall(). This limits
-# asyncify instrumentation to functions on the fork call path rather than every
-# function that makes any syscall.
-#
-# The asyncify-onlylist restricts instrumentation to ~30 named functions on the
-# fork call path. This keeps the binary small (~10MB vs ~21MB for full asyncify)
-# and avoids V8 stack overflow in browser web workers.
-#
-# Requirements for onlylist to work:
-#   - CFLAGS includes -gline-tables-only (puts function names in .o files)
-#   - LDFLAGS includes --no-wasm-opt (prevents clang's wasm-opt from stripping
-#     the name section after linking)
-#   - wasm-opt -g flag (tells wasm-opt to read the name section)
+# kernel_fork() directly instead of going through __do_syscall().
+# wasm-fork-instrument auto-discovers fork paths via call-graph analysis,
+# so no onlylist is needed. Must run LAST: it hardcodes mutable-global
+# offsets at instrument time, so any later pass that reorders globals
+# would corrupt the fork buffer.
 WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
-if [ -n "$WASM_OPT" ]; then
-    ONLYLIST="$SCRIPT_DIR/asyncify-fpm-onlylist.txt"
-    ONLY_FUNCS=$(grep -v '^#' "$ONLYLIST" | grep -v '^$' | tr '\n' ',' | sed 's/,$//')
-    FUNC_COUNT=$(echo "$ONLY_FUNCS" | tr ',' '\n' | wc -l | tr -d ' ')
-    echo "==> Applying asyncify with onlylist ($FUNC_COUNT functions)..."
-    "$WASM_OPT" -g --asyncify \
-        --pass-arg="asyncify-imports@kernel.kernel_fork" \
-        --pass-arg="asyncify-onlylist@${ONLY_FUNCS}" \
-        "$SCRIPT_DIR/php-fpm.wasm" -o "$SCRIPT_DIR/php-fpm.wasm"
-    echo "==> Optimizing asyncified binary..."
-    "$WASM_OPT" -O2 "$SCRIPT_DIR/php-fpm.wasm" -o "$SCRIPT_DIR/php-fpm.wasm"
+FORK_INSTRUMENT="$REPO_ROOT/tools/bin/wasm-fork-instrument"
+if [ -x "$FORK_INSTRUMENT" ]; then
+    if [ -n "$WASM_OPT" ]; then
+        echo "==> Optimizing php-fpm.wasm with wasm-opt -O2..."
+        "$WASM_OPT" -O2 "$SCRIPT_DIR/php-fpm.wasm" -o "$SCRIPT_DIR/php-fpm.wasm"
+    else
+        echo "==> wasm-opt not found; skipping -O2 optimization."
+    fi
+    echo "==> Applying fork instrumentation..."
+    "$FORK_INSTRUMENT" "$SCRIPT_DIR/php-fpm.wasm" -o "$SCRIPT_DIR/php-fpm.wasm.instr"
+    mv "$SCRIPT_DIR/php-fpm.wasm.instr" "$SCRIPT_DIR/php-fpm.wasm"
+else
+    echo "WARNING: wasm-fork-instrument not found. Fork (FPM workers) will not work." >&2
+    echo "  Run 'bash build.sh' to build it." >&2
 fi
 
 echo "==> PHP-FPM built successfully!"

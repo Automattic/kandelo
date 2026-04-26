@@ -1,23 +1,5 @@
 {
   "abi_version": 5,
-  "asyncify_save_slots": [
-    {
-      "meaning": "parent TLS base (__tls_base) saved for child rewind",
-      "name": "__tls_base",
-      "offset_wasm32": -4,
-      "offset_wasm64": -8,
-      "width_wasm32": 4,
-      "width_wasm64": 8
-    },
-    {
-      "meaning": "parent shadow-stack pointer (__stack_pointer) saved for child rewind",
-      "name": "__stack_pointer",
-      "offset_wasm32": -8,
-      "offset_wasm64": -16,
-      "width_wasm32": 4,
-      "width_wasm64": 8
-    }
-  ],
   "channel_buffers": {
     "data_offset": 72,
     "data_size": 65536,

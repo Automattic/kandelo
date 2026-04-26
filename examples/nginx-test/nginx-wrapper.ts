@@ -188,8 +188,8 @@ async function runNginx(opts: ReturnType<typeof parseArgs>) {
 
         kernelWorker.registerProcess(childPid, childMemory, [childChannelOffset], { skipKernelCreate: true });
 
-        const ASYNCIFY_BUF_SIZE = 16384;
-        const asyncifyBufAddr = childChannelOffset - ASYNCIFY_BUF_SIZE;
+        const FORK_BUF_SIZE = 16384;
+        const forkBufAddr = childChannelOffset - FORK_BUF_SIZE;
         const childInitData: CentralizedWorkerInitMessage = {
           type: "centralized_init",
           pid: childPid,
@@ -198,7 +198,7 @@ async function runNginx(opts: ReturnType<typeof parseArgs>) {
           memory: childMemory,
           channelOffset: childChannelOffset,
           isForkChild: true,
-          asyncifyBufAddr,
+          forkBufAddr,
         };
 
         const childWorker = workerAdapter.createWorker(childInitData);

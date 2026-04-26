@@ -45,8 +45,8 @@ The kernel's binary interface to user programs is load-bearing: any silent chang
 - Channel header layout (`shared::channel::*`), channel data buffer, signal-delivery area.
 - Syscall numbers (additions, removals, renames).
 - Marshalled `repr(C)` structs (`WasmStat`, `WasmDirent`, `WasmFlock`, `WasmTimespec`, `WasmPollFd`, `WasmStatfs`).
-- Asyncify save slots (`shared::abi::ASYNCIFY_SAVE_SLOTS`).
 - `shared::abi::*` constants (custom section name, process-expected globals, export filter lists).
+- The five `wpk_fork_*` export names + save buffer / frame layout emitted by `wasm-fork-instrument` (see [docs/fork-instrumentation.md](docs/fork-instrumentation.md)). The tool hardcodes saved-global offsets at instrument time; changing the layout and re-running old user binaries against a new kernel will corrupt the fork save path.
 - Kernel-wasm exports (any `kernel_*` function signature change, global type/mutability change, or new/removed export that isn't on the toolchain denylist).
 
 **Workflow when you've changed something that might be ABI-affecting:**

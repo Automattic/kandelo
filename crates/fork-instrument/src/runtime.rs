@@ -1,0 +1,434 @@
+//! Injects the state-machine runtime into a module.
+//!
+//! This is "the infrastructure" that every fork-instrumented module
+//! needs, independent of *which* functions end up instrumented:
+//!
+//! - Two mutable globals: `_wpk_fork_state` (i32) and `_wpk_fork_buf`
+//!   (i32 for wasm32, i64 for wasm64).
+//! - Five exported control functions: `wpk_fork_unwind_begin`,
+//!   `wpk_fork_unwind_end`, `wpk_fork_rewind_begin`,
+//!   `wpk_fork_rewind_end`, `wpk_fork_state`.
+//!
+//! ## Phase 4e additions: saved-globals area
+//!
+//! To fork correctly, the child process's Wasm instance must see the
+//! same mutable globals as the parent at fork time. `wpk_fork_unwind_begin`
+//! takes a snapshot of every pre-existing mutable *scalar* global
+//! into the save buffer, and `wpk_fork_rewind_begin` reloads it. The
+//! two runtime-owned globals (`_wpk_fork_state`, `_wpk_fork_buf`) are
+//! excluded: they are set explicitly by each begin function to the
+//! known transition values.
+//!
+//! Ref-typed mutable globals (funcref/externref/exnref) require
+//! auxiliary tables (Phase 4f); this phase skips them.
+//!
+//! Buffer layout (all offsets byte-exact; `P` is pointer width —
+//! 4 bytes on wasm32, 8 on wasm64):
+//!
+//! ```text
+//! +0        P     current_pos        Next free byte for frame data
+//! +P        P     end_pos            One past end of buffer
+//! +2P       N     saved_globals[]    Mutable scalar globals, declaration order
+//! +2P+N     -     frame data         Grows upward from here
+//! ```
+//!
+//! `frames_start_offset` in [`Runtime`] exposes `2P + N` so the host
+//! can initialize `current_pos` correctly at unwind time.
+
+use walrus::{
+    ConstExpr, FunctionBuilder, FunctionId, GlobalId, InstrSeqBuilder, MemoryId, Module, ValType,
+    ir::{LoadKind, MemArg, StoreKind, Value},
+};
+
+/// State machine values: must agree with the contract in
+/// `docs/plans/2026-04-20-fork-instrumentation-design.md`.
+pub const STATE_NORMAL: i32 = 0;
+pub const STATE_UNWINDING: i32 = 1;
+pub const STATE_REWINDING: i32 = 2;
+
+/// Names for the runtime globals and exported control functions.
+/// Centralized so the rest of the crate doesn't hardcode spellings.
+pub mod names {
+    pub const GLOBAL_STATE: &str = "_wpk_fork_state";
+    pub const GLOBAL_BUF: &str = "_wpk_fork_buf";
+
+    pub const EXPORT_UNWIND_BEGIN: &str = "wpk_fork_unwind_begin";
+    pub const EXPORT_UNWIND_END: &str = "wpk_fork_unwind_end";
+    pub const EXPORT_REWIND_BEGIN: &str = "wpk_fork_rewind_begin";
+    pub const EXPORT_REWIND_END: &str = "wpk_fork_rewind_end";
+    pub const EXPORT_STATE: &str = "wpk_fork_state";
+}
+
+/// Metadata about a saved mutable global.
+#[derive(Debug, Clone, Copy)]
+pub struct SavedGlobal {
+    pub id: GlobalId,
+    pub ty: ValType,
+    /// Byte offset from the save-buffer base.
+    pub offset: u32,
+}
+
+/// Handles to the runtime primitives we injected. Returned from
+/// [`inject_runtime`] so later instrumentation phases can reference
+/// the globals and exported functions without re-looking-them-up.
+#[derive(Debug, Clone)]
+pub struct Runtime {
+    pub state_global: GlobalId,
+    pub buf_global: GlobalId,
+    pub buf_type: ValType,
+
+    pub unwind_begin: FunctionId,
+    pub unwind_end: FunctionId,
+    pub rewind_begin: FunctionId,
+    pub rewind_end: FunctionId,
+    pub state: FunctionId,
+
+    /// Mutable scalar globals that `wpk_fork_unwind_begin` snapshots
+    /// and `wpk_fork_rewind_begin` restores. Declaration order.
+    pub saved_globals: Vec<SavedGlobal>,
+
+    /// Byte offset in the save buffer at which frame data begins.
+    /// The host must initialize `current_pos` (the i32/i64 at offset
+    /// 0 of the buffer) to this value before driving unwind, and the
+    /// buffer must be sized such that
+    /// `frames_start_offset + sum_of_frame_sizes <= buffer_size`.
+    pub frames_start_offset: u32,
+}
+
+/// Return the pointer type appropriate for the module's primary
+/// memory: `i64` if the memory is declared memory64, `i32` otherwise.
+///
+/// If the module has no memory at all, default to `i32`.
+fn ptr_type(module: &Module) -> ValType {
+    let default_memory = module.memories.iter().next();
+    match default_memory {
+        Some(mem) if mem.memory64 => ValType::I64,
+        _ => ValType::I32,
+    }
+}
+
+fn ptr_align(ptr_ty: ValType) -> u32 {
+    match ptr_ty {
+        ValType::I32 => 4,
+        ValType::I64 => 8,
+        _ => unreachable!(),
+    }
+}
+
+fn scalar_size(ty: ValType) -> u32 {
+    match ty {
+        ValType::I32 | ValType::F32 => 4,
+        ValType::I64 | ValType::F64 => 8,
+        ValType::V128 => 16,
+        ValType::Ref(_) => panic!("scalar_size on ref type"),
+    }
+}
+
+fn zero_const(ptr_ty: ValType) -> ConstExpr {
+    match ptr_ty {
+        ValType::I32 => ConstExpr::Value(Value::I32(0)),
+        ValType::I64 => ConstExpr::Value(Value::I64(0)),
+        other => panic!("unsupported pointer type for fork buf: {other:?}"),
+    }
+}
+
+/// Injects the state-machine globals, control functions, and — when
+/// the module has linear memory — the per-global save/restore
+/// machinery in `wpk_fork_unwind_begin` / `wpk_fork_rewind_begin`.
+pub fn inject_runtime(module: &mut Module) -> Runtime {
+    let ptr_ty = ptr_type(module);
+    let memory = module.memories.iter().next().map(|m| m.id());
+
+    // --- Saveable globals scan ---
+    //
+    // Capture mutable scalar globals *before* adding our two runtime
+    // globals so we don't snapshot them.
+    //
+    // Buffer header (for both wasm32 and wasm64):
+    //   +0     P    current_pos
+    //   +P     P    end_pos
+    //   +2P    ...  saved_globals
+    let header_size = 2 * ptr_align(ptr_ty);
+    let mut saved_globals: Vec<SavedGlobal> = Vec::new();
+    let mut next_off = header_size;
+    for g in module.globals.iter() {
+        if !g.mutable {
+            continue;
+        }
+        if matches!(g.ty, ValType::Ref(_)) {
+            // Ref-typed globals need auxiliary tables (Phase 4f).
+            continue;
+        }
+        if matches!(g.kind, walrus::GlobalKind::Import(_)) {
+            // Imported globals are host-managed and per-instance. The host
+            // creates a fresh `WebAssembly.Global` for each process (e.g.
+            // `env.__channel_base` gets the child's channel offset, not the
+            // parent's). Overwriting them from the parent's fork buffer
+            // would corrupt cross-process isolation — the child would end
+            // up making syscalls against the parent's channel region.
+            continue;
+        }
+        saved_globals.push(SavedGlobal {
+            id: g.id(),
+            ty: g.ty,
+            offset: next_off,
+        });
+        next_off += scalar_size(g.ty);
+    }
+    let frames_start_offset = next_off;
+
+    // --- Runtime globals (state + buf) ---
+    let state_global = module.globals.add_local(
+        ValType::I32,
+        /* mutable */ true,
+        /* shared */ false,
+        ConstExpr::Value(Value::I32(STATE_NORMAL)),
+    );
+    let buf_global = module.globals.add_local(
+        ptr_ty,
+        /* mutable */ true,
+        /* shared */ false,
+        zero_const(ptr_ty),
+    );
+
+    // --- Control functions ---
+    let unwind_begin = emit_unwind_begin(
+        module,
+        ptr_ty,
+        state_global,
+        buf_global,
+        memory,
+        &saved_globals,
+        frames_start_offset,
+    );
+    let unwind_end = emit_end_fn(module, state_global);
+    let rewind_begin = emit_rewind_begin(
+        module,
+        ptr_ty,
+        state_global,
+        buf_global,
+        memory,
+        &saved_globals,
+    );
+    let rewind_end = emit_end_fn(module, state_global);
+    let state = emit_state_fn(module, state_global);
+
+    // --- Exports ---
+    module
+        .exports
+        .add(names::EXPORT_UNWIND_BEGIN, unwind_begin);
+    module.exports.add(names::EXPORT_UNWIND_END, unwind_end);
+    module
+        .exports
+        .add(names::EXPORT_REWIND_BEGIN, rewind_begin);
+    module.exports.add(names::EXPORT_REWIND_END, rewind_end);
+    module.exports.add(names::EXPORT_STATE, state);
+
+    module.globals.get_mut(state_global).name = Some(names::GLOBAL_STATE.into());
+    module.globals.get_mut(buf_global).name = Some(names::GLOBAL_BUF.into());
+    module.funcs.get_mut(unwind_begin).name = Some(names::EXPORT_UNWIND_BEGIN.into());
+    module.funcs.get_mut(unwind_end).name = Some(names::EXPORT_UNWIND_END.into());
+    module.funcs.get_mut(rewind_begin).name = Some(names::EXPORT_REWIND_BEGIN.into());
+    module.funcs.get_mut(rewind_end).name = Some(names::EXPORT_REWIND_END.into());
+    module.funcs.get_mut(state).name = Some(names::EXPORT_STATE.into());
+
+    Runtime {
+        state_global,
+        buf_global,
+        buf_type: ptr_ty,
+        unwind_begin,
+        unwind_end,
+        rewind_begin,
+        rewind_end,
+        state,
+        saved_globals,
+        frames_start_offset,
+    }
+}
+
+/// Emit `wpk_fork_unwind_begin(buf: ptr) -> ()`:
+/// 1. `_wpk_fork_state := UNWINDING`
+/// 2. `_wpk_fork_buf := buf`
+/// 3. `*(buf + 0) := frames_start_offset` — seed `current_pos` so the
+///    host is buffer-geometry-agnostic and just allocates a buffer.
+/// 4. For each saved global `g` at offset `off`:
+///        `*(buf + off) = g`
+///
+/// The global snapshot must happen *after* buf is written, since the
+/// store addresses come from the buf global we just set. Reading
+/// `__stack_pointer` / `__tls_base` inside our tiny body is safe —
+/// we never touch the shadow stack here.
+fn emit_unwind_begin(
+    module: &mut Module,
+    ptr_ty: ValType,
+    state_global: GlobalId,
+    buf_global: GlobalId,
+    memory: Option<MemoryId>,
+    saved_globals: &[SavedGlobal],
+    frames_start_offset: u32,
+) -> FunctionId {
+    let mut builder = FunctionBuilder::new(&mut module.types, &[ptr_ty], &[]);
+    let buf_param = module.locals.add(ptr_ty);
+
+    {
+        let mut body = builder.func_body();
+        body.i32_const(STATE_UNWINDING)
+            .global_set(state_global)
+            .local_get(buf_param)
+            .global_set(buf_global);
+
+        if let Some(mem) = memory {
+            // Step 3: seed current_pos at buf + 0 with frames_start_offset.
+            // The value must be pushed as the pointer-width integer type
+            // matching the memory (i32 on wasm32, i64 on wasm64) so the
+            // store kind agrees with the stack type.
+            body.local_get(buf_param);
+            match ptr_ty {
+                ValType::I32 => {
+                    body.i32_const(frames_start_offset as i32);
+                }
+                ValType::I64 => {
+                    body.i64_const(frames_start_offset as i64);
+                }
+                other => unreachable!("unsupported ptr_ty: {other:?}"),
+            }
+            body.store(
+                mem,
+                store_kind_for(ptr_ty),
+                MemArg {
+                    align: ptr_align(ptr_ty),
+                    offset: 0,
+                },
+            );
+
+            // Step 4: snapshot mutable scalar globals into the buffer.
+            emit_save_globals(&mut body, mem, buf_global, ptr_ty, saved_globals);
+        }
+    }
+    builder.finish(vec![buf_param], &mut module.funcs)
+}
+
+/// Emit `wpk_fork_rewind_begin(buf: ptr) -> ()`:
+/// 1. `_wpk_fork_state := REWINDING`
+/// 2. `_wpk_fork_buf := buf`
+/// 3. For each saved global `g` at offset `off`:
+///        `g := *(buf + off)`
+///
+/// Subtle: restoring `__stack_pointer` mid-function is safe only
+/// because this function uses no shadow-stack storage itself (no
+/// address-taken locals, no aggregates). The restored value takes
+/// effect for callers that return *into* rewind_begin's caller,
+/// which is the host — not user code.
+fn emit_rewind_begin(
+    module: &mut Module,
+    ptr_ty: ValType,
+    state_global: GlobalId,
+    buf_global: GlobalId,
+    memory: Option<MemoryId>,
+    saved_globals: &[SavedGlobal],
+) -> FunctionId {
+    let mut builder = FunctionBuilder::new(&mut module.types, &[ptr_ty], &[]);
+    let buf_param = module.locals.add(ptr_ty);
+
+    {
+        let mut body = builder.func_body();
+        body.i32_const(STATE_REWINDING)
+            .global_set(state_global)
+            .local_get(buf_param)
+            .global_set(buf_global);
+
+        if let Some(mem) = memory {
+            emit_restore_globals(&mut body, mem, buf_global, ptr_ty, saved_globals);
+        }
+    }
+    builder.finish(vec![buf_param], &mut module.funcs)
+}
+
+/// For each global `g` at offset `off`, push:
+///     global.get $buf, global.get $g, i{32,64,...}.store offset=off
+fn emit_save_globals(
+    body: &mut InstrSeqBuilder<'_>,
+    memory: MemoryId,
+    buf_global: GlobalId,
+    _ptr_ty: ValType,
+    saved_globals: &[SavedGlobal],
+) {
+    for sg in saved_globals {
+        body.global_get(buf_global)
+            .global_get(sg.id)
+            .store(
+                memory,
+                store_kind_for(sg.ty),
+                MemArg {
+                    align: natural_align(sg.ty),
+                    offset: sg.offset as u64,
+                },
+            );
+    }
+}
+
+/// For each global `g` at offset `off`, push:
+///     global.get $buf, i{32,64,...}.load offset=off, global.set $g
+fn emit_restore_globals(
+    body: &mut InstrSeqBuilder<'_>,
+    memory: MemoryId,
+    buf_global: GlobalId,
+    _ptr_ty: ValType,
+    saved_globals: &[SavedGlobal],
+) {
+    for sg in saved_globals {
+        body.global_get(buf_global)
+            .load(
+                memory,
+                load_kind_for(sg.ty),
+                MemArg {
+                    align: natural_align(sg.ty),
+                    offset: sg.offset as u64,
+                },
+            )
+            .global_set(sg.id);
+    }
+}
+
+fn load_kind_for(ty: ValType) -> LoadKind {
+    match ty {
+        ValType::I32 => LoadKind::I32 { atomic: false },
+        ValType::I64 => LoadKind::I64 { atomic: false },
+        ValType::F32 => LoadKind::F32,
+        ValType::F64 => LoadKind::F64,
+        ValType::V128 => LoadKind::V128,
+        ValType::Ref(_) => panic!("load_kind_for on ref type"),
+    }
+}
+
+fn store_kind_for(ty: ValType) -> StoreKind {
+    match ty {
+        ValType::I32 => StoreKind::I32 { atomic: false },
+        ValType::I64 => StoreKind::I64 { atomic: false },
+        ValType::F32 => StoreKind::F32,
+        ValType::F64 => StoreKind::F64,
+        ValType::V128 => StoreKind::V128,
+        ValType::Ref(_) => panic!("store_kind_for on ref type"),
+    }
+}
+
+fn natural_align(ty: ValType) -> u32 {
+    scalar_size(ty)
+}
+
+/// Emit a `() -> ()` function that resets state to NORMAL.
+fn emit_end_fn(module: &mut Module, state_global: GlobalId) -> FunctionId {
+    let mut builder = FunctionBuilder::new(&mut module.types, &[], &[]);
+    builder
+        .func_body()
+        .i32_const(STATE_NORMAL)
+        .global_set(state_global);
+    builder.finish(vec![], &mut module.funcs)
+}
+
+/// Emit a `() -> i32` function that returns the current state.
+fn emit_state_fn(module: &mut Module, state_global: GlobalId) -> FunctionId {
+    let mut builder = FunctionBuilder::new(&mut module.types, &[], &[ValType::I32]);
+    builder.func_body().global_get(state_global);
+    builder.finish(vec![], &mut module.funcs)
+}

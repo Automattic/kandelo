@@ -1,0 +1,35 @@
+[package]
+name = "fork-instrument"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Instruments wasm binaries with save/restore machinery for POSIX fork()"
+publish = false
+
+[[bin]]
+name = "wasm-fork-instrument"
+path = "src/main.rs"
+
+[lib]
+name = "fork_instrument"
+path = "src/lib.rs"
+
+[dependencies]
+# walrus — typed wasm IR with validator. The primary workhorse for
+# parsing, manipulating, and emitting instrumented modules.
+walrus = "0.26"
+
+# anyhow — ergonomic error chaining for a CLI / build tool.
+anyhow = "1"
+
+# clap — argument parsing. `derive` feature for #[derive(Parser)].
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+# wasmparser — independent validator used in tests to confirm walrus
+# output round-trips cleanly through a separate implementation.
+wasmparser = "0.247"
+
+# wat — compiles WAT source into wasm bytes in-test. Keeps fixture
+# sources readable as text alongside the assertions that consume them.
+wat = "1"

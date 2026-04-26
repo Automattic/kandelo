@@ -463,8 +463,8 @@ function buildImportObject(
   return importObject;
 }
 
-/** Size of the asyncify data buffer used for fork stack save/restore */
-const ASYNCIFY_BUF_SIZE = 16384;
+/** Size of the fork save buffer used by wpk_fork_* instrumentation */
+const FORK_BUF_SIZE = 16384;
 
 /**
  * Verify that a freshly-instantiated user program was built against an
@@ -600,35 +600,36 @@ export async function centralizedWorkerMain(
       memory, channelOffset, initData.argv || [], initData.env || [],
     );
 
-    // Check if the module has asyncify exports (compiled with wasm-opt --asyncify)
+    // Check if the module has wpk_fork_* instrumentation exports
+    // (produced by our wasm-fork-instrument tool).
     const moduleExports = WebAssembly.Module.exports(module);
-    const hasAsyncify = moduleExports.some(e => e.name === "asyncify_get_state");
-    // Asyncify fork state — captured by kernel_fork closure
+    const hasForkInstrumentation = moduleExports.some(e => e.name === "wpk_fork_state");
+    // Fork state — captured by kernel_fork closure
     let forkResult = 0;
-    const asyncifyBufAddr = channelOffset - ASYNCIFY_BUF_SIZE;
+    const forkBufAddr = channelOffset - FORK_BUF_SIZE;
 
-    if (hasAsyncify) {
-      // Override kernel_fork with asyncify-aware version.
+    if (hasForkInstrumentation) {
+      // Override kernel_fork with fork-instrumentation-aware version.
       // Late-bound: processInstance is set after instantiation.
       let processInstance: WebAssembly.Instance | null = null;
 
       kernelImports.kernel_fork = (): number => {
         if (!processInstance) return -38; // ENOSYS
 
-        const getState = processInstance.exports.asyncify_get_state as () => number;
+        const getState = processInstance.exports.wpk_fork_state as () => number;
         const state = getState();
         if (state === 2) {
-          // Rewinding: stop rewind and return the stored fork result
-          (processInstance.exports.asyncify_stop_rewind as () => void)();
+          // Rewinding: end rewind and return the stored fork result
+          (processInstance.exports.wpk_fork_rewind_end as () => void)();
           return forkResult;
         }
 
-        // Normal call: start asyncify unwind to save the call stack.
+        // Normal call: start unwind to save the call stack.
         // SYS_FORK is sent after _start returns (unwind complete).
-        const view = new DataView(memory.buffer);
-        view.setInt32(asyncifyBufAddr, asyncifyBufAddr + 8, true);     // start ptr
-        view.setInt32(asyncifyBufAddr + 4, asyncifyBufAddr + ASYNCIFY_BUF_SIZE, true); // end ptr
-        (processInstance.exports.asyncify_start_unwind as (addr: number) => void)(asyncifyBufAddr);
+        // wpk_fork_unwind_begin self-initializes current_pos and snapshots
+        // saved_globals (including __tls_base and __stack_pointer) into the
+        // buffer — the host no longer pre-seeds the header.
+        (processInstance.exports.wpk_fork_unwind_begin as (addr: number) => void)(forkBufAddr);
         return 0; // ignored during unwind
       };
 
@@ -645,57 +646,28 @@ export async function centralizedWorkerMain(
       processInstance = instance;
       verifyProgramAbi(instance, initData.kernelAbiVersion, pid);
 
-      // For fork children: fix __tls_base and __stack_pointer after instantiation.
-      // Both globals are reset to defaults by WebAssembly.instantiate() but need
-      // the parent's values for correct operation.
-      if (initData.isForkChild && initData.asyncifyBufAddr != null) {
-        const view = new DataView(memory.buffer);
-
-        // Restore __tls_base: child's __wasm_init_memory skips __wasm_init_tls
-        // because the init flag is already set (copied from parent memory),
-        // leaving __tls_base at 0 instead of the correct TLS segment address.
-        const tlsBaseGlobal = instance.exports.__tls_base as WebAssembly.Global | undefined;
-        if (tlsBaseGlobal) {
-          if (ptrWidth === 8) {
-            const savedBase = Number(view.getBigUint64(initData.asyncifyBufAddr - 8, true));
-            if (savedBase > 0) tlsBaseGlobal.value = BigInt(savedBase);
-          } else {
-            const savedBase = view.getUint32(initData.asyncifyBufAddr - 4, true);
-            if (savedBase > 0) tlsBaseGlobal.value = savedBase;
-          }
-        }
-
-        // Restore __stack_pointer: the child's fresh wasm instance has the
-        // module default __stack_pointer (top of shadow stack). But the parent's
-        // was lower (stack grows down). Asyncify rewind restores wasm locals but
-        // NOT globals. Without this, function calls in the child allocate shadow
-        // stack frames from the wrong base, overlapping the parent function's
-        // locals (corrupting arrays, structs on the shadow stack).
-        const stackPtrGlobal = instance.exports.__stack_pointer as WebAssembly.Global | undefined;
-        if (stackPtrGlobal) {
-          if (ptrWidth === 8) {
-            const savedSp = Number(view.getBigUint64(initData.asyncifyBufAddr - 16, true));
-            if (savedSp > 0) stackPtrGlobal.value = BigInt(savedSp);
-          } else {
-            const savedSp = view.getUint32(initData.asyncifyBufAddr - 8, true);
-            if (savedSp > 0) stackPtrGlobal.value = savedSp;
-          }
-        }
+      // For the fork-parent case (initial launch, not a fork child), install
+      // __channel_base now — the parent's __tls_base is already correctly
+      // populated by instantiation, so setupChannelBase can read it.
+      //
+      // For fork children: defer until AFTER wpk_fork_rewind_begin runs
+      // (inside the loop below), because rewind_begin is what restores
+      // the child's __tls_base from the fork save buffer; setupChannelBase
+      // would otherwise see a zeroed __tls_base.
+      if (!initData.isForkChild) {
+        setupChannelBase(instance, module, memory, channelOffset, programBytes as ArrayBuffer, ptrWidth);
       }
-
-      // Set __channel_base in TLS
-      setupChannelBase(instance, module, memory, channelOffset, programBytes as ArrayBuffer, ptrWidth);
 
       // Signal ready
       port.postMessage({ type: "ready", pid } satisfies WorkerToHostMessage);
 
-      // Run with asyncify fork support
+      // Run with wpk_fork_* instrumentation
       let exitCode = 0;
       try {
         const start = instance.exports._start as () => void;
-        const getState = instance.exports.asyncify_get_state as () => number;
-        const stopUnwind = instance.exports.asyncify_stop_unwind as () => void;
-        const startRewind = instance.exports.asyncify_start_rewind as (addr: number) => void;
+        const getState = instance.exports.wpk_fork_state as () => number;
+        const unwindEnd = instance.exports.wpk_fork_unwind_end as () => void;
+        const rewindBegin = instance.exports.wpk_fork_rewind_begin as (addr: number) => void;
 
         // For fork children: start with rewind to resume from fork point
         let needsRewind = !!initData.isForkChild;
@@ -703,14 +675,21 @@ export async function centralizedWorkerMain(
           forkResult = 0; // fork() returns 0 in child
         }
 
-        // Use parent's asyncify buffer address for child rewind
-        const rewindAddr = initData.isForkChild && initData.asyncifyBufAddr != null
-          ? initData.asyncifyBufAddr
-          : asyncifyBufAddr;
+        // Use parent's fork buffer address for child rewind
+        const rewindAddr = initData.isForkChild && initData.forkBufAddr != null
+          ? initData.forkBufAddr
+          : forkBufAddr;
 
         for (;;) {
           if (needsRewind) {
-            startRewind(rewindAddr);
+            // wpk_fork_rewind_begin restores all saved mutable globals
+            // (including __tls_base and __stack_pointer) from the fork
+            // buffer. Must run before setupChannelBase, which reads
+            // __tls_base to locate the channel-base TLS slot.
+            rewindBegin(rewindAddr);
+            // Now that rewind_begin has restored __tls_base, install
+            // __channel_base for this (child) instance.
+            setupChannelBase(instance, module, memory, channelOffset, programBytes as ArrayBuffer, ptrWidth);
             needsRewind = false;
           }
 
@@ -723,18 +702,13 @@ export async function centralizedWorkerMain(
             throw e;
           }
 
-          const asyncState = getState();
-          if (asyncState === 1) {
-            // Asyncify unwind completed (fork) — finalize and send SYS_FORK
-            stopUnwind();
+          const forkState = getState();
+          if (forkState === 1) {
+            // Unwind completed (fork) — finalize and send SYS_FORK.
+            unwindEnd();
 
-            // Save TLS data for the fork child before the host copies memory.
-            // The child's WebAssembly.instantiate() will run __wasm_init_memory
-            // which calls __wasm_init_tls, overwriting the TLS area with template
-            // values and resetting __wasm_thread_pointer to 0.
-            saveParentTls(instance, memory, asyncifyBufAddr, ptrWidth);
-
-            // Send SYS_FORK through the channel now that memory has asyncify data
+            // Send SYS_FORK through the channel now that memory has the
+            // fork save buffer populated (saved_globals + frames).
             const childPid = sendForkSyscall(memory, channelOffset);
             if (childPid < 0) {
               throw new Error(`Fork failed: errno=${-childPid}`);
@@ -755,7 +729,7 @@ export async function centralizedWorkerMain(
 
       port.postMessage({ type: "exit", pid, status: exitCode } satisfies WorkerToHostMessage);
     } else {
-      // No asyncify — use original channel-based fork (re-execute _start)
+      // No fork instrumentation — use original channel-based fork (re-execute _start)
       // Fork children re-execute _start: first kernel_fork call returns 0
       if (initData.isForkChild) {
         let firstFork = true;
@@ -928,7 +902,7 @@ function detectChannelBaseTlsOffset(programBytes: ArrayBuffer): number {
       return tlsOffset;
     }
 
-    // Pattern 3: post-asyncify — global.get <tls_base>; i32/i64.const <offset>; i32/i64.add
+    // Pattern 3: instrumented/optimized — global.get <tls_base>; i32/i64.const <offset>; i32/i64.add
     if (src[pos] === 0x23) {
       let p3 = pos + 1;
       const [, globalIdxBytes] = readLEB128(src, p3); p3 += globalIdxBytes;
@@ -999,55 +973,6 @@ function setupChannelBase(
       view.setBigUint64(addr, BigInt(channelOffset), true);
     } else {
       view.setUint32(addr, channelOffset, true);
-    }
-  }
-}
-
-/**
- * Save parent's __tls_base and __stack_pointer before fork so the child can
- * restore them.
- *
- * __tls_base: The child's WebAssembly.instantiate() skips __wasm_init_tls
- * (init flag is set from copied parent memory), leaving __tls_base at 0.
- * Stored at [asyncifyBufAddr - 4].
- *
- * __stack_pointer: The child gets a fresh wasm instance whose __stack_pointer
- * is the module default (top of shadow stack). But the parent's __stack_pointer
- * was lower (stack grows down). After asyncify rewind, wasm locals are restored
- * but __stack_pointer (a global) is NOT. Any function call in the child would
- * allocate its shadow stack frame from the wrong base, overlapping and corrupting
- * the parent function's shadow stack locals (arrays, structs).
- * Stored at [asyncifyBufAddr - 8].
- */
-function saveParentTls(
-  instance: WebAssembly.Instance,
-  memory: WebAssembly.Memory,
-  asyncifyBufAddr: number,
-  ptrWidth: 4 | 8 = 4,
-): void {
-  const view = new DataView(memory.buffer);
-
-  const tlsBaseGlobal = instance.exports.__tls_base as WebAssembly.Global | undefined;
-  if (tlsBaseGlobal) {
-    const tlsBase = Number(tlsBaseGlobal.value);
-    if (tlsBase > 0) {
-      if (ptrWidth === 8) {
-        view.setBigUint64(asyncifyBufAddr - 8, BigInt(tlsBase), true);
-      } else {
-        view.setUint32(asyncifyBufAddr - 4, tlsBase, true);
-      }
-    }
-  }
-
-  const stackPtrGlobal = instance.exports.__stack_pointer as WebAssembly.Global | undefined;
-  if (stackPtrGlobal) {
-    const stackPtr = Number(stackPtrGlobal.value);
-    if (stackPtr > 0) {
-      if (ptrWidth === 8) {
-        view.setBigUint64(asyncifyBufAddr - 16, BigInt(stackPtr), true);
-      } else {
-        view.setUint32(asyncifyBufAddr - 8, stackPtr, true);
-      }
     }
   }
 }
