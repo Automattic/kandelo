@@ -26,6 +26,7 @@
 #include "src/runtime/runtime.h"
 #include "src/torque/runtime-macro-shims.h"
 #include "src/torque/runtime-support.h"
+#include "torque-generated/cc-builtins-types.h"
 
 namespace v8::internal {
 

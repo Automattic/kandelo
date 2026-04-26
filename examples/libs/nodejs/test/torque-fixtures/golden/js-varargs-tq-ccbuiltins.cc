@@ -26,6 +26,7 @@
 #include "src/runtime/runtime.h"
 #include "src/torque/runtime-macro-shims.h"
 #include "src/torque/runtime-support.h"
+#include "torque-generated/cc-builtins-types.h"
 
 namespace v8::internal {
 
@@ -194,13 +195,14 @@ Address Builtin_TorqueCcTest_JsVarargs(int args_length, Address* args_object,
   HandleScope scope(isolate);
   USE(isolate);
   // Arguments struct: frame, base, length, actual_count.
-  Address torque_arguments_frame{};
-  USE(torque_arguments_frame);
-  Address torque_arguments_base{};
-  USE(torque_arguments_base);
-  intptr_t torque_arguments_length =
-      args.length() - kJSArgcReceiverSlots;
-  intptr_t torque_arguments_actual_count = args.length();
+  TorqueStructArguments torque_arguments{
+      /*frame=*/nullptr,
+      /*base=*/reinterpret_cast<Address>(
+          args.address_of_first_argument()),
+      /*length=*/args.length() - kJSArgcReceiverSlots,
+      /*actual_count=*/args.length(),
+  };
+  USE(torque_arguments);
   Tagged<NativeContext> parameter0 = Cast<NativeContext>(isolate->context());
   USE(parameter0);
   Tagged<NativeContext> context = parameter0;
@@ -213,7 +215,7 @@ Address Builtin_TorqueCcTest_JsVarargs(int args_length, Address* args_object,
   goto block0;
 
   block0:
-  tmp0 = TqRuntimeConvert_Smi_intptr_0(torque_arguments_length);
+  tmp0 = TqRuntimeConvert_Smi_intptr_0(torque_arguments.length);
   return tmp0.ptr();
 }
 

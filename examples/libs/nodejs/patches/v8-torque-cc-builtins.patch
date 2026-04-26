@@ -1,7 +1,7 @@
 From 7b7c6b02d97d01608de95309a32514ed87453c24 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Mon, 20 Apr 2026 23:32:43 -0400
-Subject: [PATCH 01/94] torque: add OutputType::kCCBuiltins (Phase 1
+Subject: [PATCH 01/95] torque: add OutputType::kCCBuiltins (Phase 1
  scaffolding)
 
 ---
@@ -27,7 +27,7 @@ index dc10233a..aabca60b 100644
 From d46700124dea3a09293c6041f7f4c3691c90ffd2 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Mon, 20 Apr 2026 23:33:04 -0400
-Subject: [PATCH 02/94] torque: add cc_builtins file streams to PerFileStreams
+Subject: [PATCH 02/95] torque: add cc_builtins file streams to PerFileStreams
 
 ---
  deps/v8/src/torque/global-context.h | 3 +++
@@ -54,7 +54,7 @@ index db27b49d..37443bee 100644
 From 29d20ab22b50f652f8355408654b96cac09b6a42 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Mon, 20 Apr 2026 23:33:29 -0400
-Subject: [PATCH 03/94] torque: route kCCBuiltins output to cc_builtins streams
+Subject: [PATCH 03/95] torque: route kCCBuiltins output to cc_builtins streams
 
 ---
  deps/v8/src/torque/implementation-visitor.h | 4 ++++
@@ -89,7 +89,7 @@ index f8444225..e29d91c7 100644
 From a169621decd09c5fa78dbaff267c3887c94b757b Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Mon, 20 Apr 2026 23:34:03 -0400
-Subject: [PATCH 04/94] torque: Builtin::ShouldBeInlined returns false for
+Subject: [PATCH 04/95] torque: Builtin::ShouldBeInlined returns false for
  kCCBuiltins
 
 ---
@@ -128,7 +128,7 @@ index aabca60b..c6a3639c 100644
 From 6a8654713dc9114a02ddeeca664447ccd282edec Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Mon, 20 Apr 2026 23:36:54 -0400
-Subject: [PATCH 05/94] torque: route kCCBuiltins through extern-macro
+Subject: [PATCH 05/95] torque: route kCCBuiltins through extern-macro
  constexpr call path
 
 ---
@@ -159,7 +159,7 @@ index fc4dbbcc..78c6eee5 100644
 From 6c3dc9a1d3e28f01fd2f9a156143d3c63226712d Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Mon, 20 Apr 2026 23:41:18 -0400
-Subject: [PATCH 06/94] torque: add kCCBuiltins fourth pass in
+Subject: [PATCH 06/95] torque: add kCCBuiltins fourth pass in
  VisitAllDeclarables
 
 ---
@@ -194,7 +194,7 @@ index 78c6eee5..4be1c8e7 100644
 From 93560a5b6c1a83702e2f79907e5b6a2d04c77b64 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Mon, 20 Apr 2026 23:52:17 -0400
-Subject: [PATCH 07/94] torque: Visit(Builtin*) emits Phase 1 stub under
+Subject: [PATCH 07/95] torque: Visit(Builtin*) emits Phase 1 stub under
  kCCBuiltins
 
 ---
@@ -229,7 +229,7 @@ index 4be1c8e7..54551d20 100644
 From 78e36e8965749dbd4101599d2f18b0ce560ac0c2 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Mon, 20 Apr 2026 23:53:34 -0400
-Subject: [PATCH 08/94] torque: filter fourth pass to Builtin declarables only
+Subject: [PATCH 08/95] torque: filter fourth pass to Builtin declarables only
 
 Task 1.6 landed the fourth pass as the plan specified, iterating every
 declarable. Smoke-testing on the 245-file stock fileset under kCCBuiltins
@@ -279,7 +279,7 @@ index 54551d20..ae96de1b 100644
 From 7cf1abb5c751a99b24656968b12c8570d613afed Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Mon, 20 Apr 2026 23:57:17 -0400
-Subject: [PATCH 09/94] torque: write -tq-ccbuiltins.cc per source file
+Subject: [PATCH 09/95] torque: write -tq-ccbuiltins.cc per source file
 
 ---
  deps/v8/src/torque/implementation-visitor.cc | 21 ++++++++++++++++++++
@@ -324,7 +324,7 @@ index ae96de1b..f0dd3e1b 100644
 From 2440f125fbaa1d474a3213be74c09ed5858b6306 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Tue, 21 Apr 2026 00:01:17 -0400
-Subject: [PATCH 10/94] v8 build: declare -tq-ccbuiltins.cc in run_torque
+Subject: [PATCH 10/95] v8 build: declare -tq-ccbuiltins.cc in run_torque
  outputs
 
 ---
@@ -350,7 +350,7 @@ index fee8aedf..1f34d46b 100644
 From a776e214d136ea766c3c60d9ffb05fee67ffeefa Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 09:37:53 -0400
-Subject: [PATCH 11/94] torque: add --cc-builtins-whitelist CLI flag
+Subject: [PATCH 11/95] torque: add --cc-builtins-whitelist CLI flag
 
 ---
  deps/v8/src/torque/global-context.h   |  7 ++++++
@@ -482,7 +482,7 @@ index 7ccc5bf9..e37f14e4 100644
 From 5dc40081044515429f06d80c0136d331c0dba88f Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 09:53:05 -0400
-Subject: [PATCH 12/94] =?UTF-8?q?torque:=20Visit(Builtin*)=20kCCBuiltins?=
+Subject: [PATCH 12/95] =?UTF-8?q?torque:=20Visit(Builtin*)=20kCCBuiltins?=
  =?UTF-8?q?=20=E2=80=94=20real=20emission=20under=20whitelist?=
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -608,7 +608,7 @@ index f0dd3e1b..41e12a39 100644
 From a4127f86c8745744782d92686f9eda5f162b3eb1 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 10:42:10 -0400
-Subject: [PATCH 13/94] torque: implement CCGenerator::Emit(ReturnInstruction)
+Subject: [PATCH 13/95] torque: implement CCGenerator::Emit(ReturnInstruction)
 
 ---
  deps/v8/src/torque/cc-generator.cc | 15 ++++++++++++++-
@@ -647,7 +647,7 @@ index aaa3ee74..2d10bada 100644
 From f9b1fcdd2aa7b4cb0dc0eb4dfeb69b0340331359 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 10:56:38 -0400
-Subject: [PATCH 14/94] torque: implement
+Subject: [PATCH 14/95] torque: implement
  CCGenerator::Emit(PushUninitializedInstruction)
 
 ---
@@ -687,7 +687,7 @@ index 2d10bada..da87b569 100644
 From e403058316527bd14b921699c5f40776cb564901 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Tue, 21 Apr 2026 11:01:24 -0400
-Subject: [PATCH 15/94] torque: implement
+Subject: [PATCH 15/95] torque: implement
  CCGenerator::Emit(NamespaceConstantInstruction)
 
 ---
@@ -742,7 +742,7 @@ index da87b569..c8d30d0c 100644
 From 6c8e8c93347987e62c4292f618f9579ed132e647 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Tue, 21 Apr 2026 11:14:09 -0400
-Subject: [PATCH 16/94] torque: implement
+Subject: [PATCH 16/95] torque: implement
  CCGenerator::Emit(PushBuiltinPointerInstruction)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -803,7 +803,7 @@ index c8d30d0c..da7fb816 100644
 From 5ac4c5c9844a06831e258d0b41312691308158f8 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Tue, 21 Apr 2026 11:24:41 -0400
-Subject: [PATCH 17/94] torque: implement
+Subject: [PATCH 17/95] torque: implement
  CCGenerator::Emit(StoreReferenceInstruction)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -898,7 +898,7 @@ index da7fb816..d459a3b7 100644
 From 4e2daca40ba23b35a65d4692eb351da57e87d872 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Tue, 21 Apr 2026 11:28:58 -0400
-Subject: [PATCH 18/94] torque: implement
+Subject: [PATCH 18/95] torque: implement
  CCGenerator::Emit(StoreBitFieldInstruction)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -978,7 +978,7 @@ index d459a3b7..fe28ca8b 100644
 From d894d3359a3bfe5b7c91bc390cc774dc1dec5573 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Tue, 21 Apr 2026 11:38:57 -0400
-Subject: [PATCH 19/94] torque: implement
+Subject: [PATCH 19/95] torque: implement
  CCGenerator::Emit(CallRuntimeInstruction)
 
 Replaces the Phase 1 ReportError stub with real kCCBuiltins emission:
@@ -1095,7 +1095,7 @@ index c6a3639c..202bdcb6 100644
 From f301bdabda1f8a4bd9f34ffe2c5f5a659e2c021b Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Tue, 21 Apr 2026 11:44:10 -0400
-Subject: [PATCH 20/94] torque: implement
+Subject: [PATCH 20/95] torque: implement
  CCGenerator::Emit(CallBuiltinInstruction)
 
 ---
@@ -1152,7 +1152,7 @@ index 650ee4f6..406e09b3 100644
 From b7b4d0c9411cce88fd6bdb5e5835f50b27f4fa99 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Tue, 21 Apr 2026 11:49:57 -0400
-Subject: [PATCH 21/94] torque: implement
+Subject: [PATCH 21/95] torque: implement
  CCGenerator::Emit(CallBuiltinPointerInstruction)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -1237,7 +1237,7 @@ index 406e09b3..ac2e28a6 100644
 From 55af7d6d5d37c23c987ad4fc89a9608c8da369a3 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 13:50:27 -0400
-Subject: [PATCH 22/94] torque: add CurrentSourcePosition::Scope to
+Subject: [PATCH 22/95] torque: add CurrentSourcePosition::Scope to
  Visit(Builtin*) kCCBuiltins branch
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -1302,7 +1302,7 @@ index 41e12a39..7ca86dff 100644
 From 9b794e1fa4b383e86fdc0d46f818c44f8fe78857 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 14:08:09 -0400
-Subject: [PATCH 23/94] torque: ExternMacro + Intrinsic ShouldBeInlined return
+Subject: [PATCH 23/95] torque: ExternMacro + Intrinsic ShouldBeInlined return
  false for kCCBuiltins
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -1386,7 +1386,7 @@ index 202bdcb6..4c40c0d8 100644
 From 6cc0119554fdfdae724c40314c8c1abf8281ccb9 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 14:08:22 -0400
-Subject: [PATCH 24/94] torque: implement
+Subject: [PATCH 24/95] torque: implement
  CCGenerator::Emit(MakeLazyNodeInstruction)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -1463,7 +1463,7 @@ index ac2e28a6..f6f17c04 100644
 From e0464526b0147c23cc8a35e0380b7b3cf923fda0 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 14:16:41 -0400
-Subject: [PATCH 25/94] torque: Macro::ShouldBeInlined returns false for
+Subject: [PATCH 25/95] torque: Macro::ShouldBeInlined returns false for
  labeled macros under kCCBuiltins
 
 Under kCCBuiltins, a labeled macro call site must go through
@@ -1514,7 +1514,7 @@ index 4c40c0d8..02df3b0f 100644
 From f279deb8968a7c7d0a0c085287b20a2a93f117b2 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 14:19:47 -0400
-Subject: [PATCH 26/94] torque: implement
+Subject: [PATCH 26/95] torque: implement
  CCGenerator::Emit(CallCsaMacroAndBranchInstruction)
 
 Emits the out-param rewrite pattern for labeled macro calls under
@@ -1669,7 +1669,7 @@ index f6f17c04..9b452f95 100644
 From 3305160824b005f1828b4492a9175dd58d986e19 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 14:26:23 -0400
-Subject: [PATCH 27/94] torque: implement
+Subject: [PATCH 27/95] torque: implement
  CCGenerator::Emit(GotoExternalInstruction)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -1738,7 +1738,7 @@ index 9b452f95..b9e216db 100644
 From 57a1465fce8424b855d384a400cab041bb23ef03 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 15:25:12 -0400
-Subject: [PATCH 28/94] torque: add AllMacrosForCCBuiltinsOutput list +
+Subject: [PATCH 28/95] torque: add AllMacrosForCCBuiltinsOutput list +
  accessor
 
 ---
@@ -1784,7 +1784,7 @@ index 0ae3f57d..d6677fd4 100644
 From 1afcd23d4e0eefa15ce9b1595a580fcc7b9d3253 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 15:25:25 -0400
-Subject: [PATCH 29/94] torque: record TorqueMacros referenced from kCCBuiltins
+Subject: [PATCH 29/95] torque: record TorqueMacros referenced from kCCBuiltins
  builtins
 
 ---
@@ -1822,7 +1822,7 @@ index 7ca86dff..5ce1bee1 100644
 From 181803dda59d7d47e46c1da7704893d8e132a9c0 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 15:26:07 -0400
-Subject: [PATCH 30/94] torque: record TorqueMacros referenced by MakeLazyNode
+Subject: [PATCH 30/95] torque: record TorqueMacros referenced by MakeLazyNode
  under kCCBuiltins
 
 ---
@@ -1871,7 +1871,7 @@ index b9e216db..bb0c44db 100644
 From c1b9e4e2a164d1c3451b47d3c80662ecf1b6e1a3 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 15:26:25 -0400
-Subject: [PATCH 31/94] torque: add fifth pass emitting kCCBuiltins-referenced
+Subject: [PATCH 31/95] torque: add fifth pass emitting kCCBuiltins-referenced
  macro bodies
 
 ---
@@ -1913,7 +1913,7 @@ index 5ce1bee1..1cbd2682 100644
 From 56d0b70cecc9718fdb73a722e50b997a5b5fef9e Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 15:27:35 -0400
-Subject: [PATCH 32/94] torque: route kCCBuiltins through VisitMacroCommon +
+Subject: [PATCH 32/95] torque: route kCCBuiltins through VisitMacroCommon +
  GenerateMacroFunctionDeclaration
 
 ---
@@ -2025,7 +2025,7 @@ index 1cbd2682..d3db6b8d 100644
 From 7fdbade559f62b8f64bb91387a46d249ce440697 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 15:28:18 -0400
-Subject: [PATCH 33/94] torque: Macro::ShouldBeInlined returns false for all
+Subject: [PATCH 33/95] torque: Macro::ShouldBeInlined returns false for all
  TorqueMacros under kCCBuiltins
 
 ---
@@ -2071,7 +2071,7 @@ index 02df3b0f..ddb69f64 100644
 From bd86dadb2c93ddf502e472b4e64de471829fc4fa Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 15:28:41 -0400
-Subject: [PATCH 34/94] torque: emit out-param signature for labeled macros
+Subject: [PATCH 34/95] torque: emit out-param signature for labeled macros
  under kCCBuiltins
 
 ---
@@ -2119,7 +2119,7 @@ index d3db6b8d..1f042a96 100644
 From fd0a721adbebf1806cfc528287533b8236b40141 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Tue, 21 Apr 2026 15:48:03 -0400
-Subject: [PATCH 35/94] torque: mark kCCBuiltins macro bodies inline via
+Subject: [PATCH 35/95] torque: mark kCCBuiltins macro bodies inline via
  InlineDefinition flag
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -2262,7 +2262,7 @@ index 1f042a96..4822e07f 100644
 From ca5aeb8d01dd84209b9f0806d43e6cf93a7695f2 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 16:01:38 -0400
-Subject: [PATCH 36/94] torque: emit builtins-cc-table.inc for kCCBuiltins
+Subject: [PATCH 36/95] torque: emit builtins-cc-table.inc for kCCBuiltins
  dispatch
 
 ---
@@ -2392,7 +2392,7 @@ index 8a46d7b2..a7bb3be2 100644
 From a7784154c2054c6c3918e13c19c0065d7418349b Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 16:02:03 -0400
-Subject: [PATCH 37/94] v8 builtins: add Builtins::TorqueCcEntryOf sibling to
+Subject: [PATCH 37/95] v8 builtins: add Builtins::TorqueCcEntryOf sibling to
  CppEntryOf
 
 ---
@@ -2472,7 +2472,7 @@ index f460f270..baddbdfe 100644
 From 8957403efe4c37b7b64ed69a6f0dc2f75cf198bf Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 16:02:23 -0400
-Subject: [PATCH 38/94] torque: CallBuiltinPointer uses
+Subject: [PATCH 38/95] torque: CallBuiltinPointer uses
  Builtins::TorqueCcEntryOf
 
 ---
@@ -2523,7 +2523,7 @@ index bb0c44db..e11789de 100644
 From fae77eb7df7959567a05efaf7ee126d3a003780b Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 16:14:28 -0400
-Subject: [PATCH 39/94] v8 builtins: clarify TorqueCcEntryOf comment re empty
+Subject: [PATCH 39/95] v8 builtins: clarify TorqueCcEntryOf comment re empty
  whitelist
 
 ---
@@ -2557,7 +2557,7 @@ index 211126f7..70734d4b 100644
 From a175456729ed3ab6a50958851b4a9dbe62678b23 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 16:16:47 -0400
-Subject: [PATCH 40/94] v8 gyp: compile -tq-ccbuiltins.cc + wire
+Subject: [PATCH 40/95] v8 gyp: compile -tq-ccbuiltins.cc + wire
  --cc-builtins-whitelist
 
 ---
@@ -2614,7 +2614,7 @@ index 3b749ba7..1fab83c0 100644
 From 8c5e91c0506d880c3e37ec8486859aa5236c316f Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 16:58:54 -0400
-Subject: [PATCH 41/94] v8: stage TorqueCcTest_Return fixture permanently under
+Subject: [PATCH 41/95] v8: stage TorqueCcTest_Return fixture permanently under
  test/torque-cc-fixtures/
 
 ---
@@ -2654,7 +2654,7 @@ index 00000000..7d5e66bb
 From 2b408bfb0ddbad82a4f47a7bf502e6ca3a1188a6 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Tue, 21 Apr 2026 18:22:15 -0400
-Subject: [PATCH 42/94] =?UTF-8?q?v8=20torque+node:=20Phase=204=20smoke=20t?=
+Subject: [PATCH 42/95] =?UTF-8?q?v8=20torque+node:=20Phase=204=20smoke=20t?=
  =?UTF-8?q?est=20=E2=80=94=20invoke=20Torque-CC-translated=20builtin=20dir?=
  =?UTF-8?q?ectly?=
 MIME-Version: 1.0
@@ -2845,7 +2845,7 @@ index 00000000..b2518fec
 From 305050d49d719aa34f794b8a9265d0190c8e7222 Mon Sep 17 00:00:00 2001
 From: wasm-posix-kernel build <build@wasm-posix-kernel.local>
 Date: Wed, 22 Apr 2026 00:20:36 -0400
-Subject: [PATCH 43/94] =?UTF-8?q?v8=20torque+node:=20Phase=205=20scaffold?=
+Subject: [PATCH 43/95] =?UTF-8?q?v8=20torque+node:=20Phase=205=20scaffold?=
  =?UTF-8?q?=20=E2=80=94=20Script::Compile=20smoke=20in=20cctest?=
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -2900,7 +2900,7 @@ index b2518fec..818c2e01 100644
 From be53be33402c5de37a3ebff0929bd2a287e583a0 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Wed, 22 Apr 2026 17:32:44 -0400
-Subject: [PATCH 44/94] torque: emit CPP(...) for whitelisted JS-linkage
+Subject: [PATCH 44/95] torque: emit CPP(...) for whitelisted JS-linkage
  builtins
 
 BUILTIN_LIST_FROM_TORQUE's TFJ-emission branch gains a whitelist
@@ -2981,7 +2981,7 @@ index 946c31a9..85fecd4f 100644
 From a3f588e9d8fc970000e1233f1e49f02b7a5a82f8 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Wed, 22 Apr 2026 17:36:42 -0400
-Subject: [PATCH 45/94] torque: CCGenerator gets kPtrReturn mode for CPP-ABI
+Subject: [PATCH 45/95] torque: CCGenerator gets kPtrReturn mode for CPP-ABI
  return path
 
 Adds ReturnMode::{kDirect,kPtrReturn} to CCGenerator. kPtrReturn
@@ -3058,7 +3058,7 @@ index c8425263..bfaf3bcf 100644
 From 49d733bf489a393594a0c0e85d72dcf282b89bb5 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Wed, 22 Apr 2026 17:36:53 -0400
-Subject: [PATCH 46/94] torque: implement JS-linkage CPP-ABI emission under
+Subject: [PATCH 46/95] torque: implement JS-linkage CPP-ABI emission under
  kCCBuiltins
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -3241,7 +3241,7 @@ index 85fecd4f..8c3193d3 100644
 From ab877138ec943ab7b04c6b51effbaea85ad69146 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Wed, 22 Apr 2026 17:38:16 -0400
-Subject: [PATCH 47/94] torque: extend kCCBuiltins include preamble for
+Subject: [PATCH 47/95] torque: extend kCCBuiltins include preamble for
  JS-linkage
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -3281,7 +3281,7 @@ index 8c3193d3..0e94d80c 100644
 From 446917043b683ba2b429f381e565f3cc505fc737 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Wed, 22 Apr 2026 19:32:29 -0400
-Subject: [PATCH 48/94] torque: suppress CSA pass and drop inline for
+Subject: [PATCH 48/95] torque: suppress CSA pass and drop inline for
  whitelisted JS-linkage builtins
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -3372,7 +3372,7 @@ index 0e94d80c..61299998 100644
 From 60cf16dc33a450ce2f4737bd0cbba1461878a3b6 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Wed, 22 Apr 2026 19:32:40 -0400
-Subject: [PATCH 49/94] v8 test: stage js-return.tq in-tree and wire into
+Subject: [PATCH 49/95] v8 test: stage js-return.tq in-tree and wire into
  torque_files
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -3441,7 +3441,7 @@ index 00000000..ffd24718
 From 20f82d79eba20a8e4429685ce4b0a63b76fa731f Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Wed, 22 Apr 2026 20:51:58 -0400
-Subject: [PATCH 50/94] =?UTF-8?q?v8=20torque+node:=20Phase=205=20(revised)?=
+Subject: [PATCH 50/95] =?UTF-8?q?v8=20torque+node:=20Phase=205=20(revised)?=
  =?UTF-8?q?=20=E2=80=94=20JsReturnAdaptorDispatch=20cctest=20+=20args[]=20?=
  =?UTF-8?q?off-by-one=20fix?=
 MIME-Version: 1.0
@@ -3677,7 +3677,7 @@ index 00000000..0e6ff8fc
 From ef7b851ec06db6ba0b6670261dc8eeae4a1b28da Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Thu, 23 Apr 2026 14:25:47 -0400
-Subject: [PATCH 51/94] torque: CCGenerator emits non-smi tagged LoadReference
+Subject: [PATCH 51/95] torque: CCGenerator emits non-smi tagged LoadReference
  + %GetClassMapConstant placeholder
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -3775,7 +3775,7 @@ index a628927a..7c4c2b0a 100644
 From e13a2e4d97e5de840325ceffb22060aea768114c Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Thu, 23 Apr 2026 14:25:59 -0400
-Subject: [PATCH 52/94] torque: extend kCCBuiltins preamble for ArrayIsArray
+Subject: [PATCH 52/95] torque: extend kCCBuiltins preamble for ArrayIsArray
  typeswitch lowering
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -3835,7 +3835,7 @@ index 7ae064cb..0b423708 100644
 From e0da1ae8af246f5b3a1c1f4ee860950d453fb39d Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Thu, 23 Apr 2026 17:53:05 -0400
-Subject: [PATCH 53/94] torque: extend kCCBuiltins runtime-macro-shims with 7
+Subject: [PATCH 53/95] torque: extend kCCBuiltins runtime-macro-shims with 7
  helpers
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -3919,7 +3919,7 @@ index d4b31fd7..ea876ce8 100644
 From 282ba3188ea00e80d8ddda28b117d9fae5fe53f6 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Thu, 23 Apr 2026 17:53:55 -0400
-Subject: [PATCH 54/94] torque: %ClassHasMapConstant backend-aware lowering for
+Subject: [PATCH 54/95] torque: %ClassHasMapConstant backend-aware lowering for
  kCCBuiltins
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -3979,7 +3979,7 @@ index 0b423708..10663923 100644
 From 744f948a7355c4564b6fc7452d28251d6a9d4f34 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Thu, 23 Apr 2026 17:54:27 -0400
-Subject: [PATCH 55/94] torque: CCGenerator emits UncheckedCast for
+Subject: [PATCH 55/95] torque: CCGenerator emits UncheckedCast for
  %RawDownCast on Tagged types
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -4040,7 +4040,7 @@ index 7c4c2b0a..154ab243 100644
 From 7d2330ec63aad31caa70850872d740ef95460dff Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Thu, 23 Apr 2026 17:55:08 -0400
-Subject: [PATCH 56/94] torque: CCGenerator emits direct Runtime_<name> calls
+Subject: [PATCH 56/95] torque: CCGenerator emits direct Runtime_<name> calls
  for CallRuntime
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -4177,7 +4177,7 @@ index 154ab243..48e3f52a 100644
 From c348f41b4aa78eda1eb3327064d0b2aa9769ec4c Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Thu, 23 Apr 2026 17:56:10 -0400
-Subject: [PATCH 57/94] torque: CCGenerator emits return {} on GotoExternal for
+Subject: [PATCH 57/95] torque: CCGenerator emits return {} on GotoExternal for
  non-void funcs
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -4311,7 +4311,7 @@ index 10663923..c19c2d52 100644
 From 4770054d2ab870c3090a4a317739d187530487a7 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Thu, 23 Apr 2026 17:56:39 -0400
-Subject: [PATCH 58/94] torque: kCCBuiltins wraps macro bodies in
+Subject: [PATCH 58/95] torque: kCCBuiltins wraps macro bodies in
  V8_INTERNAL_DEFINED_ guards
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -4384,7 +4384,7 @@ index c19c2d52..69077a94 100644
 From 489d76aa53824a6fdeddd9fc34923448cef6eb8d Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Thu, 23 Apr 2026 17:57:28 -0400
-Subject: [PATCH 59/94] torque: kCCBuiltins preamble gains forward-decls +
+Subject: [PATCH 59/95] torque: kCCBuiltins preamble gains forward-decls +
  True_0/False_0 shims
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -4510,7 +4510,7 @@ index 69077a94..9acb0d82 100644
 From b046aa148eb9f4a1e245c15cee6f48c5fd3958a9 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Thu, 23 Apr 2026 18:59:59 -0400
-Subject: [PATCH 60/94] =?UTF-8?q?v8=20torque+node:=20Phase=205=20(revised)?=
+Subject: [PATCH 60/95] =?UTF-8?q?v8=20torque+node:=20Phase=205=20(revised)?=
  =?UTF-8?q?=20=E2=80=94=20ScriptRunArrayIsArray=20cctest?=
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -4579,7 +4579,7 @@ index 1f7984af..2f4e7fb3 100644
 From d26ac6dae068b9fe77de144e25744d379ddaba8c Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Fri, 24 Apr 2026 12:28:06 -0400
-Subject: [PATCH 61/94] torque: extend kCCBuiltins runtime-macro-shims for
+Subject: [PATCH 61/95] torque: extend kCCBuiltins runtime-macro-shims for
  NumberIsFinite
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -4658,7 +4658,7 @@ index ea876ce8..1a08e200 100644
 From d4ece550e2135c3185837f84b488e598c7c46099 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Fri, 24 Apr 2026 12:31:20 -0400
-Subject: [PATCH 62/94] torque: CCGenerator gains is_cc_builtins_ flag +
+Subject: [PATCH 62/95] torque: CCGenerator gains is_cc_builtins_ flag +
  preamble isolate-inl
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -4762,7 +4762,7 @@ index 9acb0d82..1615d1f9 100644
 From 2bf63c6fbac7eced4ff43303cc535b6e6314c009 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Fri, 24 Apr 2026 12:31:54 -0400
-Subject: [PATCH 63/94] torque: CCGenerator emits UncheckedCast for UnsafeCast
+Subject: [PATCH 63/95] torque: CCGenerator emits UncheckedCast for UnsafeCast
  on Tagged types
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -4828,7 +4828,7 @@ index 9e496eef..9f34f9c1 100644
 From 531d5fd7ea876faaf34af4b851b009388369994d Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Fri, 24 Apr 2026 12:32:10 -0400
-Subject: [PATCH 64/94] torque: CCGenerator emits Isolate::Current() for
+Subject: [PATCH 64/95] torque: CCGenerator emits Isolate::Current() for
  NamespaceConstant
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -4885,7 +4885,7 @@ index 9f34f9c1..d2ae414a 100644
 From 3b06c4f2c6b118f6e72f231c6fd4d31cdefd77f7 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Fri, 24 Apr 2026 12:32:28 -0400
-Subject: [PATCH 65/94] torque: CCGenerator routes non-tagged ReadField via
+Subject: [PATCH 65/95] torque: CCGenerator routes non-tagged ReadField via
  UncheckedCast<HeapObject>
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -4951,7 +4951,7 @@ index d2ae414a..0a8e7511 100644
 From 81c0fb58703cedcd05dafb1bea926002f11a0e67 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Fri, 24 Apr 2026 13:13:08 -0400
-Subject: [PATCH 66/94] cctest: add ScriptRunNumberIsFinite
+Subject: [PATCH 66/95] cctest: add ScriptRunNumberIsFinite
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -5031,7 +5031,7 @@ index 2f4e7fb3..b9222d1d 100644
 From 211cafdffe0a96088047ef965fade5894bd047f4 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Fri, 24 Apr 2026 13:47:21 -0400
-Subject: [PATCH 67/94] cctest: add ScriptRunNumberIsNaN
+Subject: [PATCH 67/95] cctest: add ScriptRunNumberIsNaN
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -5097,7 +5097,7 @@ index b9222d1d..e0d7f9ef 100644
 From 8c31ae386742a4b86301c421e518b21c0f459899 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Fri, 24 Apr 2026 15:15:55 -0400
-Subject: [PATCH 68/94] runtime-macro-shims: add IsInteger +
+Subject: [PATCH 68/95] runtime-macro-shims: add IsInteger +
  SelectBooleanConstant for NumberIsInteger
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -5171,7 +5171,7 @@ index 1a08e200..0243735c 100644
 From c8602fc268692f5100d5480c805e0dc5fb60c77b Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Fri, 24 Apr 2026 15:16:30 -0400
-Subject: [PATCH 69/94] cctest: add ScriptRunNumberIsInteger
+Subject: [PATCH 69/95] cctest: add ScriptRunNumberIsInteger
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -5245,7 +5245,7 @@ index e0d7f9ef..0791b562 100644
 From fcd5e3f1e5bcdf9a9cdf743a49bb538c4e1160e9 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Fri, 24 Apr 2026 15:48:29 -0400
-Subject: [PATCH 70/94] runtime-macro-shims: add IsSafeInteger for
+Subject: [PATCH 70/95] runtime-macro-shims: add IsSafeInteger for
  NumberIsSafeInteger
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -5304,7 +5304,7 @@ index 0243735c..6b54d452 100644
 From 2c27a163da774288e7bf8f1ac623c81f1c64c153 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Fri, 24 Apr 2026 15:49:04 -0400
-Subject: [PATCH 71/94] cctest: add ScriptRunNumberIsSafeInteger
+Subject: [PATCH 71/95] cctest: add ScriptRunNumberIsSafeInteger
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -5376,7 +5376,7 @@ index 0791b562..ad08b68c 100644
 From 50505c8a8b8056e953397a08c6a0b4a955c0cad1 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Fri, 24 Apr 2026 16:47:00 -0400
-Subject: [PATCH 72/94] torque: CCGenerator is_cc_builtins becomes a ctor arg,
+Subject: [PATCH 72/95] torque: CCGenerator is_cc_builtins becomes a ctor arg,
  setter removed
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -5502,7 +5502,7 @@ index 1615d1f9..b0ba15b5 100644
 From 2432c43bbe84d500db854d3af29faef1beef3c1e Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Fri, 24 Apr 2026 16:49:56 -0400
-Subject: [PATCH 73/94] torque: move Isolate::Current() into True_0/False_0
+Subject: [PATCH 73/95] torque: move Isolate::Current() into True_0/False_0
  helpers
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -5593,7 +5593,7 @@ index b0ba15b5..96e0bc1b 100644
 From 6178a949c931d49ae7d3eca482e1b2c922562938 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Fri, 24 Apr 2026 17:50:22 -0400
-Subject: [PATCH 74/94] torque: CCGenerator emits tail-call for non-JS,
+Subject: [PATCH 74/95] torque: CCGenerator emits tail-call for non-JS,
  non-catch CallBuiltin
 
 ---
@@ -5638,7 +5638,7 @@ index 92b2d071..e4e37e83 100644
 From 483afad8a746627f66efada27841df03bb45f4b8 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Fri, 24 Apr 2026 18:07:47 -0400
-Subject: [PATCH 75/94] cctest: add DirectInvocationTorqueCcTest_TailCall
+Subject: [PATCH 75/95] cctest: add DirectInvocationTorqueCcTest_TailCall
 
 ---
  test/cctest/test_torque_cc_builtin.cc | 34 +++++++++++++++++++++++++++
@@ -5700,7 +5700,7 @@ index ad08b68c..25465c12 100644
 From 5c894bb8a34d291246954e76a42821761b680021 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Fri, 24 Apr 2026 18:21:13 -0400
-Subject: [PATCH 76/94] v8: stage tail-call.tq fixture in
+Subject: [PATCH 76/95] v8: stage tail-call.tq fixture in
  deps/v8/test/torque-cc-fixtures/ + BUILD.gn
 
 ---
@@ -5755,7 +5755,7 @@ index 00000000..6cf478d9
 From 6637f0be0e83abc516f72be21817a266efa8478e Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Sat, 25 Apr 2026 11:00:13 -0400
-Subject: [PATCH 77/94] runtime-macro-shims: add IsBigInt for Increment BigInt
+Subject: [PATCH 77/95] runtime-macro-shims: add IsBigInt for Increment BigInt
  arm cast
 
 ---
@@ -5791,7 +5791,7 @@ index 6b54d452..a91bc9b5 100644
 From 4e83fc8ddba834ec60b72ad6e609938dd1ca2516 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Sat, 25 Apr 2026 11:01:30 -0400
-Subject: [PATCH 78/94] runtime-macro-shims: add
+Subject: [PATCH 78/95] runtime-macro-shims: add
  ConstexprIntegerLiteralToFloat64 / NumberConstant / SmiFromUint32
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -5867,7 +5867,7 @@ index a91bc9b5..e772d57f 100644
 From a98c9d22f017dc7877edfc4599193da66a3b7bfc Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Sat, 25 Apr 2026 11:02:17 -0400
-Subject: [PATCH 79/94] torque: CCGenerator emits Isolate::Current() at
+Subject: [PATCH 79/95] torque: CCGenerator emits Isolate::Current() at
  CallBuiltin sites under kCCBuiltins
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -5934,7 +5934,7 @@ index e4e37e83..97013ffb 100644
 From bf6edc87d24acc37c3e622ca4e0383218c7f2248 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Sat, 25 Apr 2026 11:04:34 -0400
-Subject: [PATCH 80/94] torque: emit Builtin_Add and Builtin_NonNumberToNumeric
+Subject: [PATCH 80/95] torque: emit Builtin_Add and Builtin_NonNumberToNumeric
  C bridges
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -6086,7 +6086,7 @@ index e772d57f..aa93569c 100644
 From 96d0ca05838391cce5477810a932829e36139d44 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Sat, 25 Apr 2026 11:08:59 -0400
-Subject: [PATCH 81/94] torque: move NumberConstant to .cc preamble; drop
+Subject: [PATCH 81/95] torque: move NumberConstant to .cc preamble; drop
  heap/factory.h include
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -6209,7 +6209,7 @@ index aa93569c..beb5f023 100644
 From 86e916eb0c66458070560685fe84ca29a0a31644 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Sat, 25 Apr 2026 11:14:53 -0400
-Subject: [PATCH 82/94] cctest: add ScriptRunIncrement and
+Subject: [PATCH 82/95] cctest: add ScriptRunIncrement and
  ScriptRunIncrementBigInt
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -6325,7 +6325,7 @@ index 25465c12..68cdc7a7 100644
 From 330f5186dcffa13c553259f2d5f78dd649c57bc8 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Sat, 25 Apr 2026 13:48:07 -0400
-Subject: [PATCH 83/94] torque: emit Builtin_Subtract C bridge alongside
+Subject: [PATCH 83/95] torque: emit Builtin_Subtract C bridge alongside
  Builtin_Add
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -6397,7 +6397,7 @@ index 521fadb7..924ddeff 100644
 From df8df3589a6ee7b456cd0147e7989219343b135c Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Sat, 25 Apr 2026 13:48:48 -0400
-Subject: [PATCH 84/94] cctest: add ScriptRunDecrement and
+Subject: [PATCH 84/95] cctest: add ScriptRunDecrement and
  ScriptRunDecrementBigInt
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -6488,7 +6488,7 @@ index 68cdc7a7..ec9a3e7f 100644
 From 762a3dfc97bfebe5c67711cb6c2e7284f680e88b Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Sat, 25 Apr 2026 14:08:24 -0400
-Subject: [PATCH 85/94] v8: stage catch-block.tq fixture for Phase 9A
+Subject: [PATCH 85/95] v8: stage catch-block.tq fixture for Phase 9A
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -6562,7 +6562,7 @@ index 00000000..633b1774
 From e399ee68c2692b0df972043a3c605fa31d4c39ff Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Sat, 25 Apr 2026 14:20:44 -0400
-Subject: [PATCH 86/94] torque: CCGenerator emits catch_block exception
+Subject: [PATCH 86/95] torque: CCGenerator emits catch_block exception
  propagation
 
 Phase 9A.2: lifts 1 CHECK + 3 ReportError sites to real exception-state
@@ -6836,7 +6836,7 @@ index b88a6a25..edacf8ee 100644
 From 0d035dbe038307c3e3d9ad6c955a94f1730ff69f Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Sat, 25 Apr 2026 14:52:50 -0400
-Subject: [PATCH 87/94] =?UTF-8?q?torque:=20catch=5Fblock=20follow-on=20?=
+Subject: [PATCH 87/95] =?UTF-8?q?torque:=20catch=5Fblock=20follow-on=20?=
  =?UTF-8?q?=E2=80=94=20JSAny=20exc=20var=20+=207=20shims=20+=20fixture=20s?=
  =?UTF-8?q?witch?=
 MIME-Version: 1.0
@@ -7028,7 +7028,7 @@ index 633b1774..8b22caea 100644
 From 9cf32472678c4ef03c8840dbb1f119a5600587bd Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Sat, 25 Apr 2026 14:53:05 -0400
-Subject: [PATCH 88/94] cctest: DirectInvocationTorqueCcTest_CatchBlock via
+Subject: [PATCH 88/95] cctest: DirectInvocationTorqueCcTest_CatchBlock via
  helper TU
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -7198,7 +7198,7 @@ index 0e6ff8fc..59a80ad9 100644
 From 9bb23d705383f138a949c3bfd22e949c84634a49 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Sat, 25 Apr 2026 14:59:00 -0400
-Subject: [PATCH 89/94] v8: stage js-varargs.tq fixture for Phase 9B
+Subject: [PATCH 89/95] v8: stage js-varargs.tq fixture for Phase 9B
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -7257,7 +7257,7 @@ index 00000000..77532b8b
 From cfa62dd93fa997d70f7737d6412e96da646d9b5d Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Sat, 25 Apr 2026 15:08:35 -0400
-Subject: [PATCH 90/94] torque: kCCBuiltins emission for varargs JS-linkage
+Subject: [PATCH 90/95] torque: kCCBuiltins emission for varargs JS-linkage
  builtins
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -7373,7 +7373,7 @@ index f775119c..c3df74f3 100644
 From eb6774c4be9396e0a33324200c6b2b6040b80c24 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Sat, 25 Apr 2026 15:37:25 -0400
-Subject: [PATCH 91/94] runtime-macro-shims: add SmiTag(intptr_t) for
+Subject: [PATCH 91/95] runtime-macro-shims: add SmiTag(intptr_t) for
  Convert<Smi>(intptr) lowering
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -7418,7 +7418,7 @@ index 262c22a1..d7344112 100644
 From 1720b9037a2ab270404aefb73958b9e8684fb386 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Sat, 25 Apr 2026 15:37:25 -0400
-Subject: [PATCH 92/94] cctest: add JsVarargsAdaptorDispatch +
+Subject: [PATCH 92/95] cctest: add JsVarargsAdaptorDispatch +
  BindJsVarargsBuiltinOnGlobal
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -7552,7 +7552,7 @@ index 59a80ad9..2ae2beb9 100644
 From 7622d81738e10d1a03236677d8239c5bb380ba90 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Sat, 25 Apr 2026 23:48:51 -0400
-Subject: [PATCH 93/94] torque: Builtin_Add and Builtin_Subtract delegate to V8
+Subject: [PATCH 93/95] torque: Builtin_Add and Builtin_Subtract delegate to V8
  NumberValue + NewNumber
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -7695,7 +7695,7 @@ index c3df74f3..2794962c 100644
 From 862bd78e2764ddf17d8bd137199030f0815eb4f6 Mon Sep 17 00:00:00 2001
 From: Brandon Payton <brandon@happycode.net>
 Date: Sun, 26 Apr 2026 02:24:55 -0400
-Subject: [PATCH 94/94] torque: kCCBuiltins lifts StoreReference non-smi-tagged
+Subject: [PATCH 94/95] torque: kCCBuiltins lifts StoreReference non-smi-tagged
  emission gate
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -7754,6 +7754,877 @@ index 6b7c9c05..1024a2c9 100644
        Error(
            "Not supported in C++ output: StoreReference on non-smi tagged "
            "value");
+-- 
+2.50.1 (Apple Git-155)
+
+
+From 5c708bd72b1ca35daf551331895d870d4a629de5 Mon Sep 17 00:00:00 2001
+From: Brandon Payton <brandon@happycode.net>
+Date: Sun, 26 Apr 2026 11:42:27 -0400
+Subject: [PATCH 95/95] =?UTF-8?q?torque:=20kCCBuiltins=20parallel=20struct?=
+ =?UTF-8?q?=20emission=20=E2=80=94=20fix=20Phase=209B=20tuple/struct=20mis?=
+ =?UTF-8?q?match?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Phase 11 Task 11.1. Resolves the structural emitter inconsistency
+discovered during Phase 10 Task 10.0 v2 triage.
+
+Phase 9B's varargs lowering chose std::tuple<...> as the C++ representation
+for torque struct types in kCCBuiltins (matching Type::GetRuntimeType's
+default lowering for structs), but the helper-body access pattern that
+LowerParameter generates (`<param>.<field_name>`) assumes named-field
+structs. The two paths weren't reconciled — a near-miss that surfaced
+when PromiseTry's NewRestArgumentsFromArguments hit it.
+
+Architecture (mirrors CSAGenerator's csa-types.h pattern):
+
+  - Add `Type::GetRuntimeTypeForCCBuiltins()` (types.cc/.h): kCCBuiltins-
+    specific runtime-type rendering. Struct types render as their
+    canonical generated name (TorqueStructArguments etc.); other types
+    delegate to GetRuntimeType for byte-identical behavior. Null-safe
+    on Simd128 (returns "" so callers can detect unrepresentable).
+
+  - New emitter pass `ImplementationVisitor::GenerateCCBuiltinsTypes`
+    (implementation-visitor.cc/.h): walks TypeOracle::GetAggregateTypes()
+    and emits gen/torque-generated/cc-builtins-types.h — a parallel
+    of csa-types.h with C++-native field types (Tagged<X>, Address,
+    intptr_t) instead of TNode<>. Per-field header-safety check skips
+    structs whose fields use V8-internal aliases (BInt → code-assembler.h)
+    or scoped enum classes (ArrayBuiltins::ArrayFromAsyncLabels →
+    builtins-array-gen.h) so the standalone header stays surgical (only
+    src/objects/tagged.h + torque-generated/class-forward-declarations.h
+    in its include set). Skipped structs leave a visible SKIPPED comment.
+
+  - Per-TU `*-tq-ccbuiltins.cc` preamble now includes
+    "torque-generated/cc-builtins-types.h", giving runtime helpers
+    (TqRuntime*) and call sites named-field access on struct-typed
+    values.
+
+  - CCGenerator gains a private `RenderRuntimeType(const Type*)` helper
+    (cc-generator.h/.cc:55-58) that picks GetDebugType / GetRuntimeType /
+    GetRuntimeTypeForCCBuiltins based on output mode. ~14 GetRuntimeType
+    callsites in cc-generator.cc switched to this helper.
+
+  - `CCGenerator::EmitCCValue` gains a `bool is_cc_builtins` parameter:
+    struct values render as `<TorqueStructX>{a, b, c, d}` aggregate-init
+    (instead of `std::make_tuple(a, b, c, d)`) so call sites match the
+    named-struct helper signatures.
+
+  - `ImplementationVisitor::GenerateFunction` splits the kCC/kCCBuiltins
+    output-type arms (return type, parameter type, label-param-type) so
+    kCC keeps the std::tuple<>-flattened shape (byte-identical to stock
+    torque) and kCCBuiltins uses the named-struct shape.
+
+  - JS-linkage builtin signature emission in Visit(Builtin*) for
+    kCCBuiltins also uses the new method (lines 766, 788, 850, 855, 884,
+    914, 916).
+
+  - Phase 9B prelude rewires from 4 plain locals + Address{} placeholder
+    base to a `TorqueStructArguments torque_arguments{...}` literal with
+    `base = reinterpret_cast<Address>(args.address_of_first_argument())`
+    — mirrors CSAGenerator's TorqueStructArguments push at
+    implementation-visitor.cc:969-979 of the kCSA path.
+
+5 structs are SKIPPED in cc-builtins-types.h (Simd128 / BInt / scoped
+enums) — visible in the header for future audits. None are needed for
+PromiseTry's path.
+
+Verification:
+- 18/18 fixture goldens regenerate (preamble +1 line: the new include;
+  js-varargs adds the TorqueStructArguments literal). Second run
+  byte-exact.
+- 16/16 cctests pass.
+- 26/26 d8-smoke probes pass.
+- 2/2 mjsunit files pass.
+- Excluding-anchor 8169724e stable (kCSA path untouched).
+- All 5 wasm-posix-kernel suites: 0 delta vs Phase 10 close.
+---
+ deps/v8/src/torque/cc-generator.cc           |  91 +++++---
+ deps/v8/src/torque/cc-generator.h            |  21 +-
+ deps/v8/src/torque/implementation-visitor.cc | 224 +++++++++++++++----
+ deps/v8/src/torque/implementation-visitor.h  |  11 +
+ deps/v8/src/torque/torque-compiler.cc        |   4 +
+ deps/v8/src/torque/types.cc                  |  55 +++++
+ deps/v8/src/torque/types.h                   |  10 +
+ 7 files changed, 332 insertions(+), 84 deletions(-)
+
+diff --git a/deps/v8/src/torque/cc-generator.cc b/deps/v8/src/torque/cc-generator.cc
+index 1024a2c9..d67a49ef 100644
+--- a/deps/v8/src/torque/cc-generator.cc
++++ b/deps/v8/src/torque/cc-generator.cc
+@@ -49,6 +49,13 @@ std::optional<Stack<std::string>> CCGenerator::EmitGraph(
+   return result;
+ }
+ 
++std::string CCGenerator::RenderRuntimeType(const Type* type) const {
++  // Phase 11 — see header doc-comment.
++  if (is_cc_debug_) return type->GetDebugType();
++  if (is_cc_builtins_) return type->GetRuntimeTypeForCCBuiltins();
++  return type->GetRuntimeType();
++}
++
+ Stack<std::string> CCGenerator::EmitBlock(const Block* block) {
+   out() << "\n";
+   out() << "  " << BlockName(block) << ":\n";
+@@ -59,9 +66,7 @@ Stack<std::string> CCGenerator::EmitBlock(const Block* block) {
+     const auto& def = block->InputDefinitions().Peek(i);
+     stack.Push(DefinitionToVariable(def));
+     if (def.IsPhiFromBlock(block)) {
+-      decls() << "  "
+-              << (is_cc_debug_ ? block->InputTypes().Peek(i)->GetDebugType()
+-                               : block->InputTypes().Peek(i)->GetRuntimeType())
++      decls() << "  " << RenderRuntimeType(block->InputTypes().Peek(i))
+               << " " << stack.Top() << "{}; USE(" << stack.Top() << ");\n";
+     }
+   }
+@@ -96,7 +101,7 @@ void CCGenerator::EmitInstruction(
+   }
+   std::string name = DefinitionToVariable(instruction.GetValueDefinition());
+   stack->Push(name);
+-  decls() << "  " << decl_type->GetRuntimeType() << " " << name << "{}; USE("
++  decls() << "  " << RenderRuntimeType(decl_type) << " " << name << "{}; USE("
+           << name << ");\n";
+   SetDefinitionVariable(instruction.GetValueDefinition(), name);
+ }
+@@ -117,7 +122,7 @@ void CCGenerator::EmitInstruction(
+   // preserve the Builtin identity.
+   std::string name = DefinitionToVariable(instruction.GetValueDefinition());
+   stack->Push(name);
+-  decls() << "  " << instruction.type->GetRuntimeType() << " " << name
++  decls() << "  " << RenderRuntimeType(instruction.type) << " " << name
+           << "{}; USE(" << name << ");\n";
+   out() << "  " << name << " = Smi::FromInt(static_cast<int>(Builtin::k"
+         << instruction.external_name << "));\n";
+@@ -138,7 +143,7 @@ void CCGenerator::EmitInstruction(
+   for (std::size_t i = 0; i < lowered.size(); ++i) {
+     results.push_back(DefinitionToVariable(instruction.GetValueDefinition(i)));
+     stack->Push(results.back());
+-    decls() << "  " << lowered[i]->GetRuntimeType() << " " << stack->Top()
++    decls() << "  " << RenderRuntimeType(lowered[i]) << " " << stack->Top()
+             << "{}; USE(" << stack->Top() << ");\n";
+   }
+ 
+@@ -183,7 +188,7 @@ std::vector<std::string> CCGenerator::ProcessArgumentsCommon(
+       std::stringstream s;
+       size_t slot_count = LoweredSlotCount(type);
+       VisitResult arg = VisitResult(type, stack->TopRange(slot_count));
+-      EmitCCValue(arg, *stack, s);
++      EmitCCValue(arg, *stack, s, is_cc_builtins_);
+       args.push_back(s.str());
+       stack->PopMany(slot_count);
+     }
+@@ -207,10 +212,8 @@ void CCGenerator::EmitInstruction(const CallIntrinsicInstruction& instruction,
+   for (std::size_t i = 0; i < lowered.size(); ++i) {
+     results.push_back(DefinitionToVariable(instruction.GetValueDefinition(i)));
+     stack->Push(results.back());
+-    decls() << "  "
+-            << (is_cc_debug_ ? lowered[i]->GetDebugType()
+-                             : lowered[i]->GetRuntimeType())
+-            << " " << stack->Top() << "{}; USE(" << stack->Top() << ");\n";
++    decls() << "  " << RenderRuntimeType(lowered[i]) << " " << stack->Top()
++            << "{}; USE(" << stack->Top() << ");\n";
+   }
+ 
+   out() << "  ";
+@@ -238,7 +241,7 @@ void CCGenerator::EmitInstruction(const CallIntrinsicInstruction& instruction,
+                   *original_type);
+     }
+     if (!original_type->StructSupertype() &&
+-        return_type->GetRuntimeType() != original_type->GetRuntimeType()) {
++        RenderRuntimeType(return_type) != RenderRuntimeType(original_type)) {
+       // For Tagged<T> return types, use UncheckedCast<T>(...) — the
+       // Tagged<U> → Tagged<T> conversion is explicit-only, and C++
+       // static_cast doesn't see through the Tagged wrapper. This
+@@ -248,7 +251,7 @@ void CCGenerator::EmitInstruction(const CallIntrinsicInstruction& instruction,
+         out() << "UncheckedCast<" << return_type->GetGeneratedTNodeTypeName()
+               << ">";
+       } else {
+-        out() << "static_cast<" << return_type->GetRuntimeType() << ">";
++        out() << "static_cast<" << RenderRuntimeType(return_type) << ">";
+       }
+     }
+   } else if (instruction.intrinsic->ExternalName() == "%GetClassMapConstant") {
+@@ -270,7 +273,7 @@ void CCGenerator::EmitInstruction(const CallIntrinsicInstruction& instruction,
+     // UNIQUE_INSTANCE_TYPE_MAP_LIST_GENERATOR. First fixture that
+     // exercises a live map-constant class will trip UNREACHABLE at
+     // runtime and force a proper ReadOnlyRoots(isolate).X_map() emission.
+-    out() << "[]() -> " << return_type->GetRuntimeType()
++    out() << "[]() -> " << RenderRuntimeType(return_type)
+           << " { UNREACHABLE(); }";
+   } else if (instruction.intrinsic->ExternalName() == "%FromConstexpr") {
+     if (parameter_types.size() != 1 || !parameter_types[0]->IsConstexpr()) {
+@@ -319,10 +322,8 @@ void CCGenerator::EmitInstruction(const CallCsaMacroInstruction& instruction,
+   for (std::size_t i = 0; i < lowered.size(); ++i) {
+     results.push_back(DefinitionToVariable(instruction.GetValueDefinition(i)));
+     stack->Push(results.back());
+-    decls() << "  "
+-            << (is_cc_debug_ ? lowered[i]->GetDebugType()
+-                             : lowered[i]->GetRuntimeType())
+-            << " " << stack->Top() << "{}; USE(" << stack->Top() << ");\n";
++    decls() << "  " << RenderRuntimeType(lowered[i]) << " " << stack->Top()
++            << "{}; USE(" << stack->Top() << ");\n";
+   }
+ 
+   // Phase 9A.2: the upstream-CSA "we should have inlined" assumption
+@@ -407,7 +408,7 @@ void CCGenerator::EmitInstruction(
+     for (std::size_t i = 0; i < lowered.size(); ++i) {
+       results.push_back(
+           DefinitionToVariable(instruction.GetValueDefinition(i)));
+-      decls() << "  " << lowered[i]->GetRuntimeType() << " "
++      decls() << "  " << RenderRuntimeType(lowered[i]) << " "
+               << results.back() << "{};  USE(" << results.back() << ");\n";
+     }
+   }
+@@ -430,7 +431,7 @@ void CCGenerator::EmitInstruction(
+       label_value_names[i].push_back(val);
+       const auto def = instruction.GetLabelValueDefinition(i, j);
+       SetDefinitionVariable(def, val);
+-      decls() << "  " << labels[i].types[j]->GetRuntimeType() << " "
++      decls() << "  " << RenderRuntimeType(labels[i].types[j]) << " "
+               << val << "{};  USE(" << val << ");\n";
+     }
+   }
+@@ -532,7 +533,7 @@ void CCGenerator::EmitInstruction(const MakeLazyNodeInstruction& instruction,
+   std::optional<const Type*> lazy_wrapped = Type::MatchUnaryGeneric(
+       instruction.result_type, TypeOracle::GetLazyGeneric());
+   CHECK(lazy_wrapped.has_value());
+-  decls() << "  std::function<" << (*lazy_wrapped)->GetRuntimeType()
++  decls() << "  std::function<" << RenderRuntimeType(*lazy_wrapped)
+           << "()> " << result_name << ";  USE(" << result_name << ");\n";
+ 
+   out() << "  " << result_name << " = [=]() { return "
+@@ -593,7 +594,7 @@ void CCGenerator::EmitInstruction(const CallBuiltinInstruction& instruction,
+   std::string result_name;
+   if (result_types.size() == 1) {
+     result_name = DefinitionToVariable(instruction.GetValueDefinition(0));
+-    decls() << "  " << result_types[0]->GetRuntimeType() << " " << result_name
++    decls() << "  " << RenderRuntimeType(result_types[0]) << " " << result_name
+             << "{};  USE(" << result_name << ");\n";
+     stack->Push(result_name);
+     out() << "  " << result_name << " = ";
+@@ -631,7 +632,7 @@ void CCGenerator::EmitInstruction(
+   }
+   std::string result_name =
+       DefinitionToVariable(instruction.GetValueDefinition(0));
+-  decls() << "  " << result_types[0]->GetRuntimeType() << " " << result_name
++  decls() << "  " << RenderRuntimeType(result_types[0]) << " " << result_name
+           << "{};  USE(" << result_name << ");\n";
+   stack->Push(result_name);
+ 
+@@ -645,11 +646,11 @@ void CCGenerator::EmitInstruction(
+   // CallBuiltinPointer are responsible for only passing kCCBuiltins
+   // builtins in as function pointers.
+   out() << "  {\n"
+-        << "    using FnPtr = " << result_types[0]->GetRuntimeType()
++        << "    using FnPtr = " << RenderRuntimeType(result_types[0])
+         << " (*)(Isolate*";
+   const TypeVector& params = instruction.type->parameter_types();
+   for (const Type* param : params) {
+-    out() << ", " << param->GetRuntimeType();
++    out() << ", " << RenderRuntimeType(param);
+   }
+   out() << ");\n"
+         << "    FnPtr fn = reinterpret_cast<FnPtr>(\n"
+@@ -730,7 +731,7 @@ void CCGenerator::EmitInstruction(const CallRuntimeInstruction& instruction,
+   if (result_types.size() == 1) {
+     std::string result_name =
+         DefinitionToVariable(instruction.GetValueDefinition(0));
+-    decls() << "  " << result_types[0]->GetRuntimeType() << " " << result_name
++    decls() << "  " << RenderRuntimeType(result_types[0]) << " " << result_name
+             << "{};  USE(" << result_name << ");\n";
+     stack->Push(result_name);
+     out() << "  {\n";
+@@ -948,7 +949,7 @@ void CCGenerator::EmitInstruction(const UnsafeCastInstruction& instruction,
+           instruction.destination_type->GetGeneratedTNodeTypeName() + ">(" +
+           stack->Top() + ")";
+   } else {
+-    str = "static_cast<" + instruction.destination_type->GetRuntimeType() +
++    str = "static_cast<" + RenderRuntimeType(instruction.destination_type) +
+           ">(" + stack->Top() + ")";
+   }
+   stack->Poke(stack->AboveTop() - 1, str);
+@@ -965,7 +966,7 @@ void CCGenerator::EmitInstruction(const LoadReferenceInstruction& instruction,
+   stack->Push(result_name);
+ 
+   if (!is_cc_debug_) {
+-    std::string result_type = instruction.type->GetRuntimeType();
++    std::string result_type = RenderRuntimeType(instruction.type);
+     decls() << "  " << result_type << " " << result_name << "{}; USE("
+             << result_name << ");\n";
+     out() << "  " << result_name << " = ";
+@@ -1049,7 +1050,7 @@ void CCGenerator::EmitInstruction(const StoreReferenceInstruction& instruction,
+   // carry a FieldSynchronization — @cppRelaxedStore / @cppReleaseStore do not
+   // exist in Torque. We therefore only emit the plain (release-barrier-free)
+   // store variants.
+-  std::string result_type = instruction.type->GetRuntimeType();
++  std::string result_type = RenderRuntimeType(instruction.type);
+   if (instruction.type->IsSubtypeOf(TypeOracle::GetTaggedType())) {
+     // Stores on non-smi tagged fields use TaggedField<T>::store(host, offset,
+     // value) — the 3-arg overload that needs no cage_base (stores compress, not
+@@ -1099,7 +1100,8 @@ void CCGenerator::EmitInstruction(const LoadBitFieldInstruction& instruction,
+ 
+   const Type* struct_type = instruction.bit_field_struct_type;
+ 
+-  decls() << "  " << instruction.bit_field.name_and_type.type->GetRuntimeType()
++  decls() << "  "
++          << RenderRuntimeType(instruction.bit_field.name_and_type.type)
+           << " " << result_name << "{}; USE(" << result_name << ");\n";
+ 
+   std::optional<const Type*> smi_tagged_type =
+@@ -1151,13 +1153,13 @@ void CCGenerator::EmitInstruction(const StoreBitFieldInstruction& instruction,
+ 
+   const Type* struct_type = instruction.bit_field_struct_type;
+ 
+-  decls() << "  " << struct_type->GetRuntimeType() << " " << result_name
++  decls() << "  " << RenderRuntimeType(struct_type) << " " << result_name
+           << "{}; USE(" << result_name << ");\n";
+ 
+   std::string spec =
+       GetBitFieldSpecialization(struct_type, instruction.bit_field);
+   out() << "  " << result_name << " = static_cast<"
+-        << struct_type->GetRuntimeType() << ">(" << spec << "::";
++        << RenderRuntimeType(struct_type) << ">(" << spec << "::";
+   if (instruction.starts_as_zero) {
+     out() << "encode(" << value << ")";
+   } else {
+@@ -1189,16 +1191,31 @@ void CollectAllFields(const VisitResult& result,
+ // static
+ void CCGenerator::EmitCCValue(VisitResult result,
+                               const Stack<std::string>& values,
+-                              std::ostream& out) {
++                              std::ostream& out, bool is_cc_builtins) {
+   std::vector<std::string> all_fields;
+   CollectAllFields(result, values, all_fields);
+   if (all_fields.size() == 1) {
+     out << all_fields[0];
+-  } else {
+-    out << "std::make_tuple(";
+-    PrintCommaSeparatedList(out, all_fields);
+-    out << ")";
++    return;
++  }
++  if (is_cc_builtins) {
++    if (auto struct_type = result.type()->StructSupertype()) {
++      // Phase 11 — kCCBuiltins struct values render as aggregate-init on
++      // the named struct from gen/torque-generated/cc-builtins-types.h
++      // (e.g. `TorqueStructArguments{frame, base, length, actual_count}`)
++      // instead of `std::make_tuple(...)`. Helper signatures take the
++      // named struct as a parameter type; the aggregate-init lets the
++      // call site pass the values directly without a tuple→struct
++      // adapter at every call.
++      out << (*struct_type)->GetGeneratedTypeName() << "{";
++      PrintCommaSeparatedList(out, all_fields);
++      out << "}";
++      return;
++    }
+   }
++  out << "std::make_tuple(";
++  PrintCommaSeparatedList(out, all_fields);
++  out << ")";
+ }
+ 
+ }  // namespace v8::internal::torque
+diff --git a/deps/v8/src/torque/cc-generator.h b/deps/v8/src/torque/cc-generator.h
+index edacf8ee..f8b81c69 100644
+--- a/deps/v8/src/torque/cc-generator.h
++++ b/deps/v8/src/torque/cc-generator.h
+@@ -49,8 +49,15 @@ class CCGenerator : public TorqueCodeGenerator {
+     external_goto_returns_value_ = v;
+   }
+ 
++  // Phase 11 — `is_cc_builtins` controls struct-value rendering: when
++  // true, struct values render as `<TorqueStructX>{a, b, c}` aggregate-init
++  // (matches kCCBuiltins helper signatures' use of named structs from
++  // gen/torque-generated/cc-builtins-types.h); when false, struct values
++  // render as `std::make_tuple(a, b, c)` (the kCC/kCCDebug convention,
++  // which uses std::tuple<>-flattened helper signatures). Tagged/scalar
++  // values are unaffected.
+   static void EmitCCValue(VisitResult result, const Stack<std::string>& values,
+-                          std::ostream& out);
++                          std::ostream& out, bool is_cc_builtins = false);
+ 
+  private:
+   bool is_cc_debug_;
+@@ -80,6 +87,18 @@ class CCGenerator : public TorqueCodeGenerator {
+       const Block* catch_block, const Stack<std::string>& pre_call_stack,
+       const std::optional<DefinitionLocation>& exception_object_definition);
+ 
++  // Phase 11 — picks the right runtime-type rendering for the current
++  // output pass. kCCDebug emits `Value<X>` (or X under specific contexts);
++  // kCCBuiltins emits the parallel-struct names from
++  // gen/torque-generated/cc-builtins-types.h via
++  // Type::GetRuntimeTypeForCCBuiltins (so helper signatures, return types,
++  // and stack temporaries use named-field structs and Tagged<X> instead of
++  // std::tuple<...> + TNode<X>); kCC keeps the existing
++  // Type::GetRuntimeType (std::tuple<>-flattened) shape so stock kCC
++  // output stays byte-identical. Centralising the logic here avoids 26
++  // ternaries scattered through cc-generator.cc.
++  std::string RenderRuntimeType(const Type* type) const;
++
+   std::vector<std::string> ProcessArgumentsCommon(
+       const TypeVector& parameter_types,
+       std::vector<std::string> constexpr_arguments, Stack<std::string>* stack);
+diff --git a/deps/v8/src/torque/implementation-visitor.cc b/deps/v8/src/torque/implementation-visitor.cc
+index 2794962c..5e52acda 100644
+--- a/deps/v8/src/torque/implementation-visitor.cc
++++ b/deps/v8/src/torque/implementation-visitor.cc
+@@ -7,6 +7,7 @@
+ #include <algorithm>
+ #include <iomanip>
+ #include <optional>
++#include <set>
+ #include <string>
+ 
+ #include "src/common/globals.h"
+@@ -567,7 +568,9 @@ void ImplementationVisitor::VisitMacroCommon(Macro* macro) {
+       csa_ccfile() << "}";
+     } else if (output_type_ == OutputType::kCC ||
+                output_type_ == OutputType::kCCBuiltins) {
+-      CCGenerator::EmitCCValue(return_value, *values, csa_ccfile());
++      CCGenerator::EmitCCValue(
++          return_value, *values, csa_ccfile(),
++          /*is_cc_builtins=*/output_type_ == OutputType::kCCBuiltins);
+     } else {
+       CSAGenerator::EmitCSAValue(return_value, *values, csa_ccfile());
+     }
+@@ -679,40 +682,42 @@ void ImplementationVisitor::Visit(Builtin* builtin) {
+       BlockBindings<LocalValue> parameter_bindings(&ValueBindingsManager::Get());
+ 
+       if (is_varargs) {
+-        // Phase 9B: kCCBuiltins varargs lowering. Mirror CSAGenerator's
+-        // 4-stack-slot Arguments-struct push (implementation-visitor.cc
+-        // :917-942 above) but emit plain C++ accessors over
+-        // BuiltinArguments instead of TorqueStructArguments via
+-        // CodeStubAssembler. The 4 fields and push order match the
+-        // Arguments struct in src/builtins/frame-arguments.tq:5-15 —
+-        // frame, base, length, actual_count — so that
+-        // LowerType(GetArgumentsType()) lowers consistently across
+-        // both backends.
++        // Phase 11 — kCCBuiltins varargs lowering. Mirrors CSAGenerator's
++        // TorqueStructArguments push (implementation-visitor.cc:969-979 of
++        // the kCSA path) using the parallel C++ struct emitted into
++        // gen/torque-generated/cc-builtins-types.h by GenerateCCBuiltinsTypes.
++        //
++        // The struct's 4 fields match frame-arguments.tq:5-14 — frame, base,
++        // length, actual_count — so LowerType(GetArgumentsType()) lowers
++        // consistently across both backends.
+         //
+-        // We don't have a real FrameWithArguments pointer in plain C++;
+-        // the kCCBuiltins JS-linkage adaptor gives us BuiltinArguments
+-        // and the Isolate. For `arguments.length` (the only Arguments-
+-        // struct field exercised by the synthetic Phase 9B.1 fixture)
+-        // we just need the `length` slot to hold the receiver-excluding
+-        // count. The other 3 slots get placeholder values that compile
+-        // but aren't expected to be dereferenced for the synthetic
+-        // fixture; real targets that index `arguments[i]` or read
+-        // `arguments.frame` would need these wired to
+-        // BuiltinArguments::address_of_first_argument() (or similar)
+-        // in a follow-up sub-phase.
++        // Field bindings:
++        //   frame:        nullptr — kCCBuiltins JS-linkage adaptor doesn't
++        //                  expose a real FrameWithArguments pointer; the
++        //                  builtin runs as a CPP entry, not as a JIT-frame
++        //                  callee. Targets that read `arguments.frame`
++        //                  would need a real value (Phase 12+ task).
++        //   base:         args.address_of_first_argument() — Address* to
++        //                  the first non-receiver JS arg slot. Lets the
++        //                  GetArgumentValue shim read arguments[i] via
++        //                  pointer arithmetic, parallel to how CSA's
++        //                  CodeStubArguments wraps the same pointer.
++        //   length:       receiver-excluding JS arg count.
++        //   actual_count: full args length (including receiver).
+         csa_ccfile()
+             << "  // Arguments struct: frame, base, length, actual_count.\n"
+-            << "  Address torque_arguments_frame{};\n"
+-            << "  USE(torque_arguments_frame);\n"
+-            << "  Address torque_arguments_base{};\n"
+-            << "  USE(torque_arguments_base);\n"
+-            << "  intptr_t torque_arguments_length =\n"
+-            << "      args.length() - kJSArgcReceiverSlots;\n"
+-            << "  intptr_t torque_arguments_actual_count = args.length();\n";
+-        parameters.Push("torque_arguments_frame");
+-        parameters.Push("torque_arguments_base");
+-        parameters.Push("torque_arguments_length");
+-        parameters.Push("torque_arguments_actual_count");
++            << "  TorqueStructArguments torque_arguments{\n"
++            << "      /*frame=*/nullptr,\n"
++            << "      /*base=*/reinterpret_cast<Address>(\n"
++            << "          args.address_of_first_argument()),\n"
++            << "      /*length=*/args.length() - kJSArgcReceiverSlots,\n"
++            << "      /*actual_count=*/args.length(),\n"
++            << "  };\n"
++            << "  USE(torque_arguments);\n";
++        parameters.Push("torque_arguments.frame");
++        parameters.Push("torque_arguments.base");
++        parameters.Push("torque_arguments.length");
++        parameters.Push("torque_arguments.actual_count");
+         const Type* arguments_type = TypeOracle::GetArgumentsType();
+         StackRange range =
+             parameter_types.PushMany(LowerType(arguments_type));
+@@ -763,8 +768,8 @@ void ImplementationVisitor::Visit(Builtin* builtin) {
+         // expects) to the Torque-source parameter name (what the lowered
+         // body references). Same pattern as the stub-linkage branch
+         // above.
+-        csa_ccfile() << "  " << type->GetRuntimeType() << " " << param_name
+-                     << " = " << generated_name << ";\n";
++        csa_ccfile() << "  " << type->GetRuntimeTypeForCCBuiltins() << " "
++                     << param_name << " = " << generated_name << ";\n";
+         csa_ccfile() << "  USE(" << param_name << ");\n";
+       }
+ 
+@@ -785,7 +790,7 @@ void ImplementationVisitor::Visit(Builtin* builtin) {
+             AddParameter(i, builtin, &parameters, &parameter_types,
+                          &parameter_bindings, mark_as_used);
+         size_t explicit_index = i - signature.implicit_count;
+-        const std::string& runtime_type = type->GetRuntimeType();
++        const std::string runtime_type = type->GetRuntimeTypeForCCBuiltins();
+         // Strip `Tagged<` prefix and `>` suffix so we can fit the inner
+         // type into `Cast<Inner>(args[i])`. JS-linkage ABI carries tagged
+         // values, so the explicit-arg runtime type should always be
+@@ -847,12 +852,13 @@ void ImplementationVisitor::Visit(Builtin* builtin) {
+     const Signature& signature = builtin->signature();
+ 
+     // Emit C++ function signature: <ReturnType> Builtin_<Name>(Isolate*, ...).
+-    csa_ccfile() << signature.return_type->GetRuntimeType() << " Builtin_"
+-                 << name << "(Isolate* isolate";
++    csa_ccfile() << signature.return_type->GetRuntimeTypeForCCBuiltins()
++                 << " Builtin_" << name << "(Isolate* isolate";
+     for (size_t i = 0; i < signature.parameter_names.size(); ++i) {
+       const Type* param_type = signature.types()[i];
+       const std::string& param_name = signature.parameter_names[i]->value;
+-      csa_ccfile() << ", " << param_type->GetRuntimeType() << " " << param_name;
++      csa_ccfile() << ", " << param_type->GetRuntimeTypeForCCBuiltins()
++                   << " " << param_name;
+     }
+     csa_ccfile() << ") {\n"
+                  << "  USE(isolate);\n";
+@@ -881,7 +887,8 @@ void ImplementationVisitor::Visit(Builtin* builtin) {
+       const Type* type = signature.types()[i];
+       // Bridge from the C++ signature name (Torque parameter_names[i]->value)
+       // to the internal `parameterN` name that CCGenerator's EmitGraph uses.
+-      csa_ccfile() << "  " << type->GetRuntimeType() << " " << var << " = "
++      csa_ccfile() << "  " << type->GetRuntimeTypeForCCBuiltins() << " "
++                   << var << " = "
+                    << signature.parameter_names[i]->value << ";\n";
+       csa_ccfile() << "  USE(" << var << ");\n";
+     }
+@@ -911,9 +918,10 @@ void ImplementationVisitor::Visit(Builtin* builtin) {
+     // bare external name here.
+     CCBuiltinEntry entry;
+     entry.name = name;
+-    entry.return_type = signature.return_type->GetRuntimeType();
++    entry.return_type = signature.return_type->GetRuntimeTypeForCCBuiltins();
+     for (size_t i = 0; i < signature.parameter_names.size(); ++i) {
+-      entry.param_types.push_back(signature.types()[i]->GetRuntimeType());
++      entry.param_types.push_back(
++          signature.types()[i]->GetRuntimeTypeForCCBuiltins());
+     }
+     cc_builtin_entries_.push_back(std::move(entry));
+     return;
+@@ -2261,6 +2269,7 @@ void ImplementationVisitor::GenerateImplementation(const std::string& dir) {
+         "#include \"src/runtime/runtime.h\"\n"
+         "#include \"src/torque/runtime-macro-shims.h\"\n"
+         "#include \"src/torque/runtime-support.h\"\n"
++        "#include \"torque-generated/cc-builtins-types.h\"\n"
+         "\n"
+         "namespace v8::internal {\n"
+         "\n"
+@@ -2474,9 +2483,15 @@ cpp::Function ImplementationVisitor::GenerateFunction(
+   } else if (output_type_ == OutputType::kCCDebug) {
+     f.SetReturnType(std::string("Value<") +
+                     signature.return_type->GetDebugType() + ">");
+-  } else if (output_type_ == OutputType::kCC ||
+-             output_type_ == OutputType::kCCBuiltins) {
++  } else if (output_type_ == OutputType::kCC) {
+     f.SetReturnType(signature.return_type->GetRuntimeType());
++  } else if (output_type_ == OutputType::kCCBuiltins) {
++    // Phase 11 — kCCBuiltins helper signatures use named structs from
++    // gen/torque-generated/cc-builtins-types.h (e.g. TorqueStructArguments)
++    // for struct-typed return values, so helper bodies can use named-field
++    // access on returned struct values. kCC keeps the std::tuple<>-flattened
++    // shape (above) so stock kCC output stays byte-identical.
++    f.SetReturnType(signature.return_type->GetRuntimeTypeForCCBuiltins());
+   } else {
+     DCHECK_EQ(output_type_, OutputType::kCSA);
+     f.SetReturnType(signature.return_type->IsConstexpr()
+@@ -2499,9 +2514,11 @@ cpp::Function ImplementationVisitor::GenerateFunction(
+   for (std::size_t i = 0; i < signature.types().size(); ++i) {
+     const Type* parameter_type = signature.types()[i];
+     std::string type;
+-    if (output_type_ == OutputType::kCC ||
+-        output_type_ == OutputType::kCCBuiltins) {
++    if (output_type_ == OutputType::kCC) {
+       type = parameter_type->GetRuntimeType();
++    } else if (output_type_ == OutputType::kCCBuiltins) {
++      // Phase 11 — see SetReturnType above for rationale.
++      type = parameter_type->GetRuntimeTypeForCCBuiltins();
+     } else if (output_type_ == OutputType::kCCDebug) {
+       type = parameter_type->GetDebugType();
+     } else {
+@@ -2540,7 +2557,7 @@ cpp::Function ImplementationVisitor::GenerateFunction(
+               "Phase 4: label values of struct types are not yet "
+               "supported under kCCBuiltins");
+         }
+-        f.AddParameter(type->GetRuntimeType() + "*",
++        f.AddParameter(type->GetRuntimeTypeForCCBuiltins() + "*",
+                        ExternalLabelParameterName(label_info.name->value, i));
+         ++i;
+       }
+@@ -6322,6 +6339,121 @@ void ImplementationVisitor::GenerateCSATypes(
+   WriteFile(output_directory + "/" + file_name + ".h", h_contents.str());
+ }
+ 
++void ImplementationVisitor::GenerateCCBuiltinsTypes(
++    const std::string& output_directory) {
++  // Phase 11 — parallel of GenerateCSATypes for kCCBuiltins emission.
++  // Walks TypeOracle::GetAggregateTypes() (same source CSAGenerator uses)
++  // and emits a C++ struct per torque @export struct, with C++-native
++  // field types. Each *-tq-ccbuiltins.cc TU includes this shared header
++  // so runtime helpers (TqRuntime*) and call sites can use named-field
++  // access on struct-typed parameters/values, parallel to how kCSA TUs
++  // use TorqueStructX from csa-types.h.
++  //
++  // Field types come from Type::GetRuntimeTypeForCCBuiltins (defined in
++  // types.cc), which returns the canonical struct name for struct-typed
++  // fields (so nested-struct fields refer to other structs in this same
++  // header) and delegates to GetRuntimeType for everything else.
++  std::string file_name = "cc-builtins-types";
++  std::stringstream h_contents;
++  {
++    IncludeGuardScope include_guard(h_contents, file_name + ".h");
++    // Includes:
++    //   - src/objects/tagged.h: Tagged<T> template + a few core fwd-decls
++    //     (HeapObject, BigInt, Object, Smi, etc.).
++    //   - torque-generated/class-forward-declarations.h: forward decls
++    //     for all 321 torque-generated classes. Required so struct fields
++    //     typed Tagged<JSPromise>, Tagged<JSArray>, etc. compile in this
++    //     standalone header without dragging in *-inl.h definitions.
++    //
++    // Field types outside that envelope (Simd128, V8-internal aliases like
++    // BInt = Smi/IntPtrT, scoped enum classes) are filtered upstream via
++    // Type::GetRuntimeTypeForCCBuiltins() returning "" — those structs are
++    // SKIPPED with a visible comment so the header stays compilable.
++    h_contents << "#include \"src/objects/tagged.h\"\n";
++    h_contents
++        << "#include \"torque-generated/class-forward-declarations.h\"\n\n";
++
++    NamespaceScope h_namespaces(h_contents, {"v8", "internal"});
++
++    // Generate struct decls in TypeOracle resolution order — same
++    // topological-sort property GenerateCSATypes relies on (struct
++    // dependencies are resolved before dependents).
++    for (const auto& type : TypeOracle::GetAggregateTypes()) {
++      const StructType* struct_type = StructType::DynamicCast(type.get());
++      if (!struct_type) continue;
++
++      // Pre-render every field; skip the whole struct if any field has no
++      // *header-safe* C++ representation. Header-safety is stricter than
++      // GetRuntimeTypeForCCBuiltins's general renderability:
++      //
++      //   - Always safe: struct types (reference other structs in this
++      //     same header), Tagged<X> (class-forward-declarations.h covers
++      //     all torque-generated classes), Smi.
++      //   - Constexpr scalars: safe iff the generated C++ type name is in
++      //     a stable-standard-C++ whitelist visible through tagged.h's
++      //     transitive includes (globals.h provides Address / int31_t,
++      //     <stdint.h> provides intptr_t / int32_t / etc.).
++      //   - Unsafe: V8-internal aliases like BInt (needs code-assembler.h),
++      //     scoped enum classes like ArrayBuiltins::ArrayFromAsyncLabels
++      //     (needs builtins-array-gen.h), Simd128/I8X16 (no constexpr).
++      //     We deliberately keep cc-builtins-types.h's #include set
++      //     surgical so the diff against upstream V8 stays small.
++      //
++      // The skip leaves a visible SKIPPED comment; future audits can grep
++      // for it to see exactly which struct types lack kCCBuiltins coverage.
++      auto is_header_safe = [](const Type* type) -> bool {
++        if (type->StructSupertype()) return true;
++        if (type->IsSubtypeOf(TypeOracle::GetSmiType())) return true;
++        if (type->IsSubtypeOf(TypeOracle::GetTaggedType())) return true;
++        if (const Type* cv = type->ConstexprVersion()) {
++          static const std::set<std::string> kSafeNames = {
++              "bool",      "char",     "double",    "float",
++              "int8_t",    "int16_t",  "int32_t",   "int64_t",
++              "uint8_t",   "uint16_t", "uint32_t",  "uint64_t",
++              "intptr_t",  "uintptr_t", "int31_t",  "uint31_t",
++              "Address",   "void*"};
++          return kSafeNames.count(cv->GetGeneratedTypeName()) > 0;
++        }
++        return false;
++      };
++
++      std::vector<std::string> field_renderings;
++      field_renderings.reserve(struct_type->fields().size());
++      bool renderable = true;
++      for (const auto& field : struct_type->fields()) {
++        if (!is_header_safe(field.name_and_type.type)) {
++          renderable = false;
++          break;
++        }
++        field_renderings.push_back(
++            field.name_and_type.type->GetRuntimeTypeForCCBuiltins());
++      }
++
++      if (!renderable) {
++        h_contents << "// SKIPPED: "
++                   << struct_type->GetGeneratedTypeNameImpl()
++                   << " — field type not header-safe under "
++                   << "cc-builtins-types.h's surgical include set "
++                   << "(tagged.h + class-forward-declarations.h). "
++                   << "Likely culprits: Simd128, BInt (needs "
++                   << "code-assembler.h), scoped enum classes "
++                   << "(need their parent header).\n";
++        continue;
++      }
++
++      h_contents << "struct " << struct_type->GetGeneratedTypeNameImpl()
++                 << " {\n";
++      size_t i = 0;
++      for (const auto& field : struct_type->fields()) {
++        h_contents << "  " << field_renderings[i++] << " "
++                   << field.name_and_type.name << ";\n";
++      }
++      h_contents << "};\n";
++    }
++  }
++  WriteFile(output_directory + "/" + file_name + ".h", h_contents.str());
++}
++
+ void ReportAllUnusedMacros() {
+   for (const auto& declarable : GlobalContext::AllDeclarables()) {
+     if (!declarable->IsMacro() || declarable->IsExternMacro()) continue;
+diff --git a/deps/v8/src/torque/implementation-visitor.h b/deps/v8/src/torque/implementation-visitor.h
+index 4a8b250e..f2d3fbc3 100644
+--- a/deps/v8/src/torque/implementation-visitor.h
++++ b/deps/v8/src/torque/implementation-visitor.h
+@@ -461,6 +461,17 @@ class ImplementationVisitor {
+   void GenerateClassDebugReaders(const std::string& output_directory);
+   void GenerateExportedMacrosAssembler(const std::string& output_directory);
+   void GenerateCSATypes(const std::string& output_directory);
++  // Phase 11 — kCCBuiltins parallel of GenerateCSATypes. Emits a single
++  // shared header `gen/torque-generated/cc-builtins-types.h` containing C++
++  // struct definitions for every torque @export struct, with C++-native
++  // field types (Tagged<T>, Address, intptr_t, void*) instead of TNode<>.
++  // Each `*-tq-ccbuiltins.cc` includes this header in its preamble so
++  // runtime helpers (TqRuntime*) and call sites can use named-field
++  // access on struct-typed parameters/values. Mirrors GenerateCSATypes
++  // structure (TopoSort via TypeOracle::GetAggregateTypes, Flatten()
++  // helper, IncludeGuardScope) so V8 upgrades that touch csa-types.h
++  // surface as parallel diffs in cc-builtins-types.h.
++  void GenerateCCBuiltinsTypes(const std::string& output_directory);
+   // Emit a shared `torque-generated/builtins-cc-table.inc` X-macro file
+   // listing every whitelisted kCCBuiltins-emitted builtin. Used by
+   // Builtins::TorqueCcEntryOf to dispatch Builtin enum ids to
+diff --git a/deps/v8/src/torque/torque-compiler.cc b/deps/v8/src/torque/torque-compiler.cc
+index a7bb3be2..43be3093 100644
+--- a/deps/v8/src/torque/torque-compiler.cc
++++ b/deps/v8/src/torque/torque-compiler.cc
+@@ -105,6 +105,10 @@ void CompileCurrentAst(TorqueCompilerOptions options) {
+   implementation_visitor.GenerateBodyDescriptors(output_directory);
+   implementation_visitor.GenerateExportedMacrosAssembler(output_directory);
+   implementation_visitor.GenerateCSATypes(output_directory);
++  // Phase 11 — parallel struct-decl header for kCCBuiltins TUs. Mirrors
++  // GenerateCSATypes but with C++-native field types so runtime helpers
++  // and call sites can use named-field access on struct-typed values.
++  implementation_visitor.GenerateCCBuiltinsTypes(output_directory);
+ 
+   implementation_visitor.EndGeneratedFiles();
+   implementation_visitor.EndDebugMacrosFile();
+diff --git a/deps/v8/src/torque/types.cc b/deps/v8/src/torque/types.cc
+index 18e955f6..0f314806 100644
+--- a/deps/v8/src/torque/types.cc
++++ b/deps/v8/src/torque/types.cc
+@@ -7,6 +7,7 @@
+ #include <cmath>
+ #include <iostream>
+ #include <optional>
++#include <set>
+ 
+ #include "src/base/bits.h"
+ #include "src/torque/ast.h"
+@@ -1461,6 +1462,60 @@ std::string Type::GetRuntimeType() const {
+   return ConstexprVersion()->GetGeneratedTypeName();
+ }
+ 
++std::string Type::GetRuntimeTypeForCCBuiltins() const {
++  // Phase 11 — kCCBuiltins-specific runtime-type rendering.
++  //
++  // Returns:
++  //   - "TorqueStructX" for struct types (matches the parallel struct decl
++  //     emitted into gen/torque-generated/cc-builtins-types.h).
++  //   - "Tagged<Smi>" for Smi subtypes.
++  //   - "Tagged<X>" for tagged-heap subtypes.
++  //   - For non-struct, non-tagged types: the constexpr-version's
++  //     generated C++ type name (intptr_t, int31_t, InstanceType,
++  //     BInt, etc.). This is the same shape `GetRuntimeType` produces
++  //     for the same types, and works at every call site in
++  //     *-tq-ccbuiltins.cc emission because the per-TU preamble pulls
++  //     in src/common/globals.h, src/objects/instance-type.h, and the
++  //     V8-internal aliases via tagged.h's transitive includes.
++  //   - "" for types with no constexpr version at all (Simd128 / I8X16).
++  //
++  // Why null-safe: GetRuntimeType's fallback `ConstexprVersion()->Get…`
++  // null-derefs on Simd128 (no constexpr version, no Tagged wrapper) —
++  // safe in normal kCC/kCSA paths that never feed Simd128 into helper
++  // signatures; unsafe when we walk *every* struct field as the header
++  // emitter does. Returning "" lets GenerateCCBuiltinsTypes detect
++  // unrepresentable fields and SKIP the containing struct.
++  //
++  // Header-safety (a stricter check than null-safety) is enforced
++  // separately in implementation-visitor.cc:IsCCBuiltinsHeaderSafe so
++  // the standalone gen/torque-generated/cc-builtins-types.h compiles
++  // without code-assembler.h / builtins-array-gen.h — those V8-internal
++  // headers ARE in scope inside *-tq-ccbuiltins.cc bodies but
++  // deliberately NOT in cc-builtins-types.h, to keep the diff against
++  // upstream V8 surgical.
++  if (std::optional<const StructType*> struct_type = StructSupertype()) {
++    // The ONLY difference vs GetRuntimeType: struct types render as the
++    // canonical generated name (parallel C++ struct from
++    // gen/torque-generated/cc-builtins-types.h), not as a flattened
++    // std::tuple<...>. Helper signatures and call sites use named-field
++    // access on these structs.
++    return (*struct_type)->GetGeneratedTypeName();
++  }
++  // Non-struct types: delegate to GetRuntimeType for byte-identical
++  // behavior (Tagged<X>, Smi, constexpr-name, etc.). The only divergence
++  // is the Simd128 null-deref guard below: GetRuntimeType's fallback
++  // null-derefs for types with no constexpr version (Simd128 / I8X16),
++  // which is fine in normal kCC/kCSA paths but unsafe when
++  // GenerateCCBuiltinsTypes walks every struct field. Returning ""
++  // signals "unrepresentable" so the containing struct gets SKIPPED.
++  if (IsSubtypeOf(TypeOracle::GetSmiType()) ||
++      IsSubtypeOf(TypeOracle::GetTaggedType()) ||
++      ConstexprVersion() != nullptr) {
++    return GetRuntimeType();
++  }
++  return "";
++}
++
+ std::string Type::GetDebugType() const {
+   if (IsSubtypeOf(TypeOracle::GetSmiType())) return "uintptr_t";
+   if (IsSubtypeOf(TypeOracle::GetTaggedType())) {
+diff --git a/deps/v8/src/torque/types.h b/deps/v8/src/torque/types.h
+index af6969a5..c992d83e 100644
+--- a/deps/v8/src/torque/types.h
++++ b/deps/v8/src/torque/types.h
+@@ -145,6 +145,16 @@ class V8_EXPORT_PRIVATE Type : public TypeBase {
+   std::optional<const AggregateType*> AggregateSupertype() const;
+   virtual std::vector<TypeChecker> GetTypeCheckers() const { return {}; }
+   virtual std::string GetRuntimeType() const;
++  // Phase 11 — kCCBuiltins-specific runtime-type rendering. For struct types
++  // returns the canonical generated struct name (e.g. "TorqueStructArguments")
++  // — a parallel C++ struct definition is auto-emitted by GenerateCCBuiltinsTypes
++  // into gen/torque-generated/cc-builtins-types.h. For non-struct types
++  // delegates to GetRuntimeType(). This mirrors CSAGenerator's csa-types.h
++  // pattern but with C++-native field types (Tagged<T>, Address, intptr_t)
++  // instead of TNode<>. Used by helper signatures, return types, and stack
++  // temporaries on the kCCBuiltins emission path. See implementation-visitor.cc
++  // GenerateCCBuiltinsTypes.
++  std::string GetRuntimeTypeForCCBuiltins() const;
+   virtual std::string GetDebugType() const;
+   static const Type* CommonSupertype(const Type* a, const Type* b);
+   void AddAlias(std::string alias) const { aliases_.insert(std::move(alias)); }
 -- 
 2.50.1 (Apple Git-155)
 

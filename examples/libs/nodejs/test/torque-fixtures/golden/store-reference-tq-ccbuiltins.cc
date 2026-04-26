@@ -26,6 +26,7 @@
 #include "src/runtime/runtime.h"
 #include "src/torque/runtime-macro-shims.h"
 #include "src/torque/runtime-support.h"
+#include "torque-generated/cc-builtins-types.h"
 
 namespace v8::internal {
 
@@ -184,7 +185,7 @@ inline Tagged<Numeric> Builtin_NonNumberToNumeric(
 }
 
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/test/phase2-fixtures/store-reference.tq?l=20&c=22
-std::tuple<Tagged<Union<HeapObject, TaggedIndex>>, intptr_t> TqRuntimeNewReference_Smi_0(Tagged<Union<HeapObject, TaggedIndex>> p_object, intptr_t p_offset);
+TorqueStructReference_Smi_0 TqRuntimeNewReference_Smi_0(Tagged<Union<HeapObject, TaggedIndex>> p_object, intptr_t p_offset);
 
 Tagged<Smi> Builtin_TorqueCcTest_StoreReference(Isolate* isolate, Tagged<Context> context, Tagged<HeapObject> obj, intptr_t offset, Tagged<Smi> v) {
   USE(isolate);
@@ -210,17 +211,17 @@ Tagged<Smi> Builtin_TorqueCcTest_StoreReference(Isolate* isolate, Tagged<Context
 #define V8_INTERNAL_DEFINED_TqRuntimeNewReference_Smi_0
 
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/test/phase2-fixtures/store-reference.tq?l=20&c=22
-inline std::tuple<Tagged<Union<HeapObject, TaggedIndex>>, intptr_t> TqRuntimeNewReference_Smi_0(Tagged<Union<HeapObject, TaggedIndex>> p_object, intptr_t p_offset) {
+inline TorqueStructReference_Smi_0 TqRuntimeNewReference_Smi_0(Tagged<Union<HeapObject, TaggedIndex>> p_object, intptr_t p_offset) {
   Tagged<Union<HeapObject, TaggedIndex>> tmp0{}; USE(tmp0);
   intptr_t tmp1{}; USE(tmp1);
   goto block0;
 
   block0:
-  std::tie(tmp0, tmp1) = (std::make_tuple(p_object, p_offset));
+  std::tie(tmp0, tmp1) = (TorqueStructReference_Smi_0{p_object, p_offset});
   goto block2;
 
   block2:
-  return std::make_tuple(tmp0, tmp1);
+  return TorqueStructReference_Smi_0{tmp0, tmp1};
 }
 
 #endif // V8_INTERNAL_DEFINED_TqRuntimeNewReference_Smi_0
