@@ -656,6 +656,19 @@ export class CentralizedKernelWorker {
   private scratchOffset = 0;
   private initialized = false;
   private nextChildPid = 100;
+
+  /**
+   * Allocate a fresh pid for a top-level spawn from a host. Skips any pids
+   * already in the kernel's process table (forked children, the virtual
+   * init at pid 1, etc.). The host is no longer expected to pick pids;
+   * this is the single source of truth.
+   */
+  allocatePid(): number {
+    while (this.processes.has(this.nextChildPid)) {
+      this.nextChildPid++;
+    }
+    return this.nextChildPid++;
+  }
   /** Maps "pid:channelOffset" to TID for tracking thread channels */
   private channelTids = new Map<string, number>();
   /** Tracks the pid currently being serviced by kernel_handle_channel */

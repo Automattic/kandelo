@@ -85,11 +85,16 @@ export class BrowserKernel {
   private fsSab?: SharedArrayBuffer;
   private shmSab: SharedArrayBuffer;
   private maxPages: number;
-  /** @internal exposed for PtyTerminal pid tracking. Starts at 100: PIDs
-   * 1..99 are reserved by the kernel (1 is the virtual init process; the
-   * range matches the Node host's convention so behavior is consistent).
-   * The next commit replaces this with worker-side allocation and this
-   * counter goes away along with the legacy `spawn(bytes, ...)` path. */
+  /**
+   * @internal Legacy spawn() pre-allocates pids on the main thread. New
+   * code uses kernel.boot() which lets the worker allocate, making this
+   * counter irrelevant. Once all demos migrate to boot(), this goes away.
+   *
+   * Starts at 100 to skip the kernel's reserved range (virtual init at
+   * pid 1, future kernel threads). The architectural fix is in the spawn
+   * message protocol where pid is now optional and the worker is the
+   * authority.
+   */
   nextPid = 100;
   private options: Required<
     Pick<BrowserKernelOptions, "maxWorkers" | "fsSize" | "env">
@@ -106,6 +111,10 @@ export class BrowserKernel {
    */
   readonly framebuffers = new FramebufferRegistry();
   private fbMemoryByPid = new Map<number, WebAssembly.Memory>();
+  /** PTY output that arrived before the main thread registered a callback —
+   * happens when `boot()` is awaited (process is running) before
+   * PtyTerminal calls onPtyOutput. Drained when a callback registers. */
+  private pendingPtyOutput = new Map<number, Uint8Array[]>();
 
   constructor(options: BrowserKernelOptions = {}) {
     this.maxPages = options.maxMemoryPages ?? DEFAULT_MAX_PAGES;
@@ -233,17 +242,12 @@ export class BrowserKernel {
    *
    * Requires `kernelOwnedFs: true` in the constructor options.
    */
-  async boot(options: BrowserKernelBootOptions): Promise<number> {
+  async boot(options: BrowserKernelBootOptions): Promise<{ pid: number; exit: Promise<number> }> {
     if (!this.kernelOwnedFs) {
       throw new Error(
         "kernel.boot() requires kernelOwnedFs: true in BrowserKernel constructor options.",
       );
     }
-    // Reserve the pid synchronously so wrappers (PtyTerminal) that read
-    // `nextPid - 1` immediately after calling boot() see the correct value
-    // even though bootWorker / spawnFirstProcess are async.
-    const pid = this.nextPid++;
-
     const wasmBytes =
       options.kernelWasm ??
       (await fetch(kernelWasmUrl).then((r) => r.arrayBuffer()));
@@ -253,8 +257,9 @@ export class BrowserKernel {
       vfsImage: options.vfsImage,
     });
 
-    // Spawn the first process — argv[0] resolves against the worker's VFS.
-    return this.spawnFirstProcess(pid, options);
+    // Spawn the first process — kernel worker assigns the pid and returns
+    // it in the response. Pid is the single source of truth in the worker.
+    return this.spawnFirstProcess(options);
   }
 
   /**
@@ -310,21 +315,19 @@ export class BrowserKernel {
   }
 
   /**
-   * Internal: send a spawn message for the first ("init") process and
-   * return the exit-code promise. The pid is reserved synchronously by
-   * the caller (boot()) so wrappers like PtyTerminal can grab it before
-   * the spawn message round-trip completes.
+   * Internal: send a spawn message for the first ("init") process. The
+   * worker allocates the pid and returns it in the response. The exit
+   * promise is wired up after the pid is known.
    */
-  private async spawnFirstProcess(pid: number, options: BrowserKernelBootOptions): Promise<number> {
+  private async spawnFirstProcess(
+    options: BrowserKernelBootOptions,
+  ): Promise<{ pid: number; exit: Promise<number> }> {
     const requestId = this.nextRequestId++;
-    const exitPromise = new Promise<number>((resolve) => {
-      this.exitResolvers.set(pid, resolve);
-    });
 
-    await this.request(requestId, {
+    const pid = await this.request(requestId, {
       type: "spawn",
       requestId,
-      pid,
+      // No pid — the kernel worker allocates and returns it.
       programPath: options.argv[0],
       argv: options.argv,
       env: this.mergeEnv(options.env ?? this.options.env),
@@ -332,13 +335,17 @@ export class BrowserKernel {
       pty: options.pty,
       stdin: options.stdin,
       maxPages: this.maxPages,
+    }) as number;
+
+    const exit = new Promise<number>((resolve) => {
+      this.exitResolvers.set(pid, resolve);
     });
 
     if (options.pty) {
       this.sendToKernel({ type: "register_pty_output", pid });
     }
 
-    return exitPromise;
+    return { pid, exit };
   }
 
   /**
@@ -535,9 +542,16 @@ export class BrowserKernel {
     this.sendToKernel({ type: "pty_resize", pid, rows, cols });
   }
 
-  /** Register a callback for PTY output data from a process. */
+  /** Register a callback for PTY output data from a process. Drains any
+   * output that arrived before this call (e.g., when boot() returns the
+   * process is already running). */
   onPtyOutput(pid: number, callback: (data: Uint8Array) => void): void {
     this.ptyOutputCallbacks.set(pid, callback);
+    const pending = this.pendingPtyOutput.get(pid);
+    if (pending) {
+      this.pendingPtyOutput.delete(pid);
+      for (const chunk of pending) callback(chunk);
+    }
   }
 
   /** Terminate a specific process. */
@@ -627,7 +641,19 @@ export class BrowserKernel {
         break;
       case "pty_output": {
         const cb = this.ptyOutputCallbacks.get(msg.pid);
-        if (cb) cb(msg.data);
+        if (cb) {
+          cb(msg.data);
+        } else {
+          // Buffer until onPtyOutput registers a callback (race window
+          // between worker starting the process and main thread wiring
+          // the handler in boot()).
+          let buf = this.pendingPtyOutput.get(msg.pid);
+          if (!buf) {
+            buf = [];
+            this.pendingPtyOutput.set(msg.pid, buf);
+          }
+          buf.push(msg.data);
+        }
         break;
       }
       case "listen_tcp":

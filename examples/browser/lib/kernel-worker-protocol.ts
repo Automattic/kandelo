@@ -36,7 +36,14 @@ export interface InitMessage {
 export interface SpawnMessage {
   type: "spawn";
   requestId: number;
-  pid: number;
+  /**
+   * Optional. When omitted, the worker allocates a fresh pid via the
+   * kernel's allocator (which skips reserved pids like the virtual init).
+   * The assigned pid is returned in the response. The pid field exists for
+   * legacy callers (PtyTerminal.spawn, system-init) that still pre-pick;
+   * new code should leave it undefined.
+   */
+  pid?: number;
   programPath?: string;
   programBytes?: ArrayBuffer;
   argv: string[];
