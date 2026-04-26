@@ -26,7 +26,8 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
-use crate::program_metadata::load_program_metadata;
+use crate::build_deps::{programs_by_name, Registry};
+use crate::repo_root;
 
 pub fn run(args: Vec<String>) -> Result<(), String> {
     let mut program: Option<String> = None;
@@ -81,13 +82,14 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let binary = binary.ok_or("--binary is required")?;
     let out_dir = out_dir.ok_or("--out-dir is required")?;
 
-    // Sanity: metadata.toml must know this program so build-manifest
-    // can decorate it later.
-    let meta = load_program_metadata()?;
-    if !meta.contains_key(&program) {
+    // Sanity: there must be a per-dir manifest with kind = "program"
+    // for this name so build-manifest can decorate it later.
+    let registry = Registry::from_env(&repo_root());
+    let progs = programs_by_name(&registry)?;
+    if !progs.contains_key(&program) {
         return Err(format!(
-            "program {program:?} is not in abi/program-metadata.toml — \
-             add an entry with source + license before bundling"
+            "program {program:?} has no examples/libs/{program}/deps.toml \
+             with kind = \"program\" — add a manifest before bundling"
         ));
     }
 
