@@ -393,6 +393,15 @@ export class WasmPosixKernel {
         host_is_thread_worker: (): number => {
           return this.isThreadWorker ? 1 : 0;
         },
+        // /dev/fb0 hooks: the legacy mode=0 kernel doesn't render
+        // anywhere, so these are no-op stubs. The centralized kernel
+        // worker has the real implementation backed by
+        // FramebufferRegistry.
+        host_bind_framebuffer: (
+          _pid: number, _addr: bigint, _len: bigint,
+          _w: number, _h: number, _stride: number, _fmt: number,
+        ): void => {},
+        host_unbind_framebuffer: (_pid: number): void => {},
       },
     };
   }
