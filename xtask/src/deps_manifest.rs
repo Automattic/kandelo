@@ -179,13 +179,30 @@ pub struct HostTool {
 ///
 /// V2 host-tool versions are pure dotted-integer; prerelease and
 /// build suffixes (`-rc1`, `+build`) are rejected at parse time.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct Version {
     pub major: u32,
     pub minor: u32,
     pub patch: Option<u32>,
 }
+
+// `PartialEq`/`Eq` are hand-written (not derived) so they agree with
+// the hand-written `Ord` below. Rust's contract requires
+// `a.cmp(&b) == Equal` ⟺ `a == b`; the `Ord` impl normalizes
+// `patch = None` to `0` (so `3.20` compares equal to `3.20.0`), so
+// `PartialEq` must apply the same `unwrap_or(0)` normalization. A
+// derived `PartialEq` would compare `Option<u32>` field-wise and
+// disagree with `Ord`, which can silently corrupt `BTreeSet`/`BTreeMap`
+// keys, `slice::sort_unstable`, and `Vec::dedup`.
+impl PartialEq for Version {
+    fn eq(&self, other: &Self) -> bool {
+        self.major == other.major
+            && self.minor == other.minor
+            && self.patch.unwrap_or(0) == other.patch.unwrap_or(0)
+    }
+}
+impl Eq for Version {}
 
 impl Version {
     /// Parse a 2- or 3-component dotted-integer version. Rejects
@@ -1419,6 +1436,20 @@ probe = { args = [], version_regex = "(\\d+\\.\\d+)" }
                 patch: Some(0)
             }
         );
+    }
+
+    #[test]
+    fn version_eq_and_ord_agree_on_patch_none_zero() {
+        let v_no_patch = Version::parse("3.20").unwrap();
+        let v_zero_patch = Version::parse("3.20.0").unwrap();
+        // Ord: equal.
+        assert_eq!(v_no_patch.cmp(&v_zero_patch), std::cmp::Ordering::Equal);
+        // PartialEq: equal (this is what was broken before the fix).
+        assert_eq!(v_no_patch, v_zero_patch);
+        // Round-trip via Display preserves the input form (regression
+        // guard: don't accidentally normalize on parse).
+        assert_eq!(v_no_patch.to_string(), "3.20");
+        assert_eq!(v_zero_patch.to_string(), "3.20.0");
     }
 
     #[test]
