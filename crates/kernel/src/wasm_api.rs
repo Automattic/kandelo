@@ -91,6 +91,11 @@ unsafe extern "C" {
     fn host_futex_wake(addr: usize, count: u32) -> i32;
     fn host_clone(fn_ptr: usize, arg: usize, stack_ptr: usize, tls_ptr: usize, ctid_ptr: usize) -> i32;
     fn host_is_thread_worker() -> i32;
+    fn host_bind_framebuffer(
+        pid: i32, addr: usize, len: usize,
+        w: u32, h: u32, stride: u32, fmt: u32,
+    );
+    fn host_unbind_framebuffer(pid: i32);
 }
 
 // ---------------------------------------------------------------------------
@@ -574,6 +579,17 @@ impl HostIO for WasmHostIO {
         } else {
             Ok(result)
         }
+    }
+
+    fn bind_framebuffer(
+        &mut self, pid: i32, addr: usize, len: usize,
+        w: u32, h: u32, stride: u32, fmt: u32,
+    ) {
+        unsafe { host_bind_framebuffer(pid, addr, len, w, h, stride, fmt) }
+    }
+
+    fn unbind_framebuffer(&mut self, pid: i32) {
+        unsafe { host_unbind_framebuffer(pid) }
     }
 }
 

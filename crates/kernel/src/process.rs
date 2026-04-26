@@ -94,6 +94,19 @@ pub trait HostIO {
     fn host_futex_wake(&mut self, addr: usize, count: u32) -> Result<i32, Errno>;
     /// Clone: spawn a new thread worker. Returns child TID on success.
     fn host_clone(&mut self, fn_ptr: usize, arg: usize, stack_ptr: usize, tls_ptr: usize, ctid_ptr: usize) -> Result<i32, Errno>;
+    /// Notify the host that process `pid` has mapped its `/dev/fb0`
+    /// framebuffer at `[addr, addr+len)` within its wasm `Memory`. The host
+    /// should mirror that byte range to whatever display surface it owns.
+    /// `fmt` is reserved for future format negotiation; currently always
+    /// BGRA32 (0).
+    fn bind_framebuffer(
+        &mut self, pid: i32, addr: usize, len: usize,
+        w: u32, h: u32, stride: u32, fmt: u32,
+    );
+    /// Notify the host that the framebuffer for `pid` is gone (`munmap`,
+    /// process exit, or exec). Idempotent: calling unbind on a pid with no
+    /// binding is a no-op.
+    fn unbind_framebuffer(&mut self, pid: i32);
 }
 
 /// Process lifecycle state.

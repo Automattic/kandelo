@@ -8252,6 +8252,9 @@ mod tests {
         fn host_clone(&mut self, _fn_ptr: usize, _arg: usize, _stack_ptr: usize, _tls_ptr: usize, _ctid_ptr: usize) -> Result<i32, Errno> {
             Err(Errno::ENOSYS)
         }
+        fn bind_framebuffer(&mut self, _pid: i32, _addr: usize, _len: usize,
+                            _w: u32, _h: u32, _stride: u32, _fmt: u32) {}
+        fn unbind_framebuffer(&mut self, _pid: i32) {}
     }
 
     #[test]
@@ -11739,6 +11742,17 @@ mod tests {
     // ---- *at() syscalls with real dirfd ----
 
     /// A mock HostIO that records the resolved paths passed to host calls.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct BindFbCall {
+        pid: i32,
+        addr: usize,
+        len: usize,
+        w: u32,
+        h: u32,
+        stride: u32,
+        fmt: u32,
+    }
+
     struct TrackingHostIO {
         next_handle: i64,
         last_open_path: Vec<u8>,
@@ -11757,6 +11771,8 @@ mod tests {
         last_symlink_target: Vec<u8>,
         last_symlink_linkpath: Vec<u8>,
         last_readlink_path: Vec<u8>,
+        bind_framebuffer_calls: Vec<BindFbCall>,
+        unbind_framebuffer_calls: Vec<i32>,
     }
 
     impl TrackingHostIO {
@@ -11779,6 +11795,8 @@ mod tests {
                 last_symlink_target: Vec::new(),
                 last_symlink_linkpath: Vec::new(),
                 last_readlink_path: Vec::new(),
+                bind_framebuffer_calls: Vec::new(),
+                unbind_framebuffer_calls: Vec::new(),
             }
         }
     }
@@ -11934,6 +11952,13 @@ mod tests {
         }
         fn host_clone(&mut self, _fn_ptr: usize, _arg: usize, _stack_ptr: usize, _tls_ptr: usize, _ctid_ptr: usize) -> Result<i32, Errno> {
             Err(Errno::ENOSYS)
+        }
+        fn bind_framebuffer(&mut self, pid: i32, addr: usize, len: usize,
+                            w: u32, h: u32, stride: u32, fmt: u32) {
+            self.bind_framebuffer_calls.push(BindFbCall { pid, addr, len, w, h, stride, fmt });
+        }
+        fn unbind_framebuffer(&mut self, pid: i32) {
+            self.unbind_framebuffer_calls.push(pid);
         }
     }
 
@@ -12424,6 +12449,8 @@ mod tests {
             fn host_futex_wait(&mut self, _a: usize, _e: u32, _t: i64) -> Result<i32, Errno> { Err(Errno::EAGAIN) }
             fn host_futex_wake(&mut self, _a: usize, _c: u32) -> Result<i32, Errno> { Ok(0) }
             fn host_clone(&mut self, _f: usize, _a: usize, _s: usize, _t: usize, _c: usize) -> Result<i32, Errno> { Err(Errno::ENOSYS) }
+            fn bind_framebuffer(&mut self, _pid: i32, _addr: usize, _len: usize, _w: u32, _h: u32, _stride: u32, _fmt: u32) {}
+            fn unbind_framebuffer(&mut self, _pid: i32) {}
         }
 
         let mut proc = Process::new(1);
@@ -14067,6 +14094,8 @@ mod tests {
             fn host_futex_wait(&mut self, _a: usize, _e: u32, _t: i64) -> Result<i32, Errno> { Ok(0) }
             fn host_futex_wake(&mut self, _a: usize, _c: u32) -> Result<i32, Errno> { Ok(0) }
             fn host_clone(&mut self, _f: usize, _a: usize, _s: usize, _t: usize, _c: usize) -> Result<i32, Errno> { Err(Errno::ENOSYS) }
+            fn bind_framebuffer(&mut self, _pid: i32, _addr: usize, _len: usize, _w: u32, _h: u32, _stride: u32, _fmt: u32) {}
+            fn unbind_framebuffer(&mut self, _pid: i32) {}
         }
 
         let mut proc = Process::new(1);
@@ -14150,6 +14179,8 @@ mod tests {
             fn host_futex_wait(&mut self, _a: usize, _e: u32, _t: i64) -> Result<i32, Errno> { Ok(0) }
             fn host_futex_wake(&mut self, _a: usize, _c: u32) -> Result<i32, Errno> { Ok(0) }
             fn host_clone(&mut self, _f: usize, _a: usize, _s: usize, _t: usize, _c: usize) -> Result<i32, Errno> { Err(Errno::ENOSYS) }
+            fn bind_framebuffer(&mut self, _pid: i32, _addr: usize, _len: usize, _w: u32, _h: u32, _stride: u32, _fmt: u32) {}
+            fn unbind_framebuffer(&mut self, _pid: i32) {}
         }
 
         let mut proc = Process::new(1);
@@ -14242,6 +14273,8 @@ mod tests {
             fn host_futex_wait(&mut self, _a: usize, _e: u32, _t: i64) -> Result<i32, Errno> { Ok(0) }
             fn host_futex_wake(&mut self, _a: usize, _c: u32) -> Result<i32, Errno> { Ok(0) }
             fn host_clone(&mut self, _f: usize, _a: usize, _s: usize, _t: usize, _c: usize) -> Result<i32, Errno> { Err(Errno::ENOSYS) }
+            fn bind_framebuffer(&mut self, _pid: i32, _addr: usize, _len: usize, _w: u32, _h: u32, _stride: u32, _fmt: u32) {}
+            fn unbind_framebuffer(&mut self, _pid: i32) {}
         }
 
         let mut proc = Process::new(1);
