@@ -151,7 +151,7 @@ pub struct ProgramOutput {
 ///
 /// Probe and install_hints are optional in TOML; the parser fills
 /// in defaults so the rest of the resolver always sees a complete
-/// `HostToolDecl`.
+/// `HostTool`.
 ///
 /// `version_constraint` is stored as a raw string in C.7; full
 /// constraint syntax validation (`>=X.Y[.Z]`) lands in C.8 and will
@@ -164,7 +164,7 @@ pub struct ProgramOutput {
 // wiring it up.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
-pub struct HostToolDecl {
+pub struct HostTool {
     pub name: String,
     pub version_constraint: String,
     pub probe: HostToolProbe,
@@ -248,7 +248,7 @@ pub struct DepsManifest {
     /// (library / program / source). Read by tests now; consumed
     /// by C.8 (constraint parser) and C.9 (host-tool runner).
     #[allow(dead_code)]
-    pub host_tools: Vec<HostToolDecl>,
+    pub host_tools: Vec<HostTool>,
 
     /// Directory containing this `deps.toml`. The build script path and
     /// any per-dep build state live underneath it.
@@ -530,7 +530,7 @@ impl DepsManifest {
         // given) is non-empty, and that names are unique within this
         // manifest. Defaults are filled in for omitted probe /
         // install_hints fields.
-        let mut host_tools: Vec<HostToolDecl> = Vec::with_capacity(raw.host_tools.len());
+        let mut host_tools: Vec<HostTool> = Vec::with_capacity(raw.host_tools.len());
         let mut seen_names: BTreeSet<String> = BTreeSet::new();
         for (idx, raw_t) in raw.host_tools.into_iter().enumerate() {
             if raw_t.name.is_empty() {
@@ -576,7 +576,7 @@ impl DepsManifest {
                     ));
                 }
             }
-            host_tools.push(HostToolDecl {
+            host_tools.push(HostTool {
                 name: raw_t.name,
                 version_constraint: raw_t.version_constraint,
                 probe,
