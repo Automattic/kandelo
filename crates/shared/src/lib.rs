@@ -1011,3 +1011,119 @@ pub mod abi {
             .any(|&p| name.starts_with(p))
     }
 }
+
+/// Linux fbdev ABI constants and marshalled structs.
+///
+/// These mirror what musl exposes via `<linux/fb.h>` to programs built with
+/// `wasm32posix-cc`. Field order, sizes, and offsets must match the Linux
+/// ABI exactly: any change here is a binary-level break and requires
+/// bumping [`ABI_VERSION`] (see crate root) and updating
+/// `abi/snapshot.json` in the same commit.
+pub mod fbdev {
+    /// `FBIOGET_VSCREENINFO` — read variable screen info.
+    pub const FBIOGET_VSCREENINFO: u32 = 0x4600;
+    /// `FBIOPUT_VSCREENINFO` — write variable screen info (mode set).
+    pub const FBIOPUT_VSCREENINFO: u32 = 0x4601;
+    /// `FBIOGET_FSCREENINFO` — read fixed screen info.
+    pub const FBIOGET_FSCREENINFO: u32 = 0x4602;
+    /// `FBIOPAN_DISPLAY` — pan / present.
+    pub const FBIOPAN_DISPLAY: u32 = 0x4606;
+
+    /// `FB_TYPE_PACKED_PIXELS`.
+    pub const FB_TYPE_PACKED_PIXELS: u32 = 0;
+    /// `FB_VISUAL_TRUECOLOR`.
+    pub const FB_VISUAL_TRUECOLOR: u32 = 2;
+
+    /// Linux `struct fb_bitfield` — one channel of pixel layout.
+    /// Total: 12 bytes. No padding.
+    #[derive(Debug, Clone, Copy, Default)]
+    #[repr(C)]
+    pub struct FbBitfield {
+        pub offset: u32,
+        pub length: u32,
+        pub msb_right: u32,
+    }
+
+    /// Linux `struct fb_var_screeninfo` — variable screen info.
+    ///
+    /// Total: 160 bytes. Field offsets are part of the ABI.
+    #[derive(Debug, Clone, Copy, Default)]
+    #[repr(C)]
+    pub struct FbVarScreenInfo {
+        pub xres: u32,                // 0
+        pub yres: u32,                // 4
+        pub xres_virtual: u32,        // 8
+        pub yres_virtual: u32,        // 12
+        pub xoffset: u32,             // 16
+        pub yoffset: u32,             // 20
+        pub bits_per_pixel: u32,      // 24
+        pub grayscale: u32,           // 28
+        pub red: FbBitfield,          // 32 (12)
+        pub green: FbBitfield,        // 44 (12)
+        pub blue: FbBitfield,         // 56 (12)
+        pub transp: FbBitfield,       // 68 (12)
+        pub nonstd: u32,              // 80
+        pub activate: u32,            // 84
+        pub height: u32,              // 88
+        pub width: u32,               // 92
+        pub accel_flags: u32,         // 96
+        pub pixclock: u32,            // 100
+        pub left_margin: u32,         // 104
+        pub right_margin: u32,        // 108
+        pub upper_margin: u32,        // 112
+        pub lower_margin: u32,        // 116
+        pub hsync_len: u32,           // 120
+        pub vsync_len: u32,           // 124
+        pub sync: u32,                // 128
+        pub vmode: u32,               // 132
+        pub rotate: u32,              // 136
+        pub colorspace: u32,          // 140
+        pub reserved: [u32; 4],       // 144 (16)
+                                      // total: 160
+    }
+
+    /// Linux `struct fb_fix_screeninfo` — fixed screen info (32-bit user-space
+    /// flavour, total 80 bytes).
+    ///
+    /// On native Linux this struct uses native pointer width for `smem_start`
+    /// and `mmio_start`. fbDOOM only reads `id`, `smem_len`, `line_length`,
+    /// `type`, and `visual` — we report 0 for the address-shaped fields,
+    /// keeping the struct 32-bit-flavoured to match what musl's
+    /// `<linux/fb.h>` exposes to user-space programs built with `wasm32posix-cc`.
+    /// The trailing `_pad_to_80` aligns this to the 80-byte size that musl
+    /// programs (and the kernel ABI snapshot) expect.
+    #[derive(Debug, Clone, Copy, Default)]
+    #[repr(C)]
+    pub struct FbFixScreenInfo {
+        pub id: [u8; 16],             // 0
+        pub smem_start: u32,          // 16  (always 0 in our model)
+        pub smem_len: u32,            // 20
+        pub fb_type: u32,             // 24  (FB_TYPE_PACKED_PIXELS)
+        pub type_aux: u32,            // 28
+        pub visual: u32,              // 32  (FB_VISUAL_TRUECOLOR)
+        pub xpanstep: u16,            // 36
+        pub ypanstep: u16,            // 38
+        pub ywrapstep: u16,           // 40
+        pub _pad: u16,                // 42
+        pub line_length: u32,         // 44
+        pub mmio_start: u32,          // 48  (always 0)
+        pub mmio_len: u32,            // 52
+        pub accel: u32,               // 56
+        pub capabilities: u16,        // 60
+        pub reserved: [u16; 3],       // 62 (6)
+        pub _pad_to_80: [u8; 12],     // 68 (12) → 80
+    }
+}
+
+#[cfg(test)]
+mod fbdev_tests {
+    use super::fbdev::*;
+    use core::mem::size_of;
+
+    #[test]
+    fn struct_sizes_match_linux_abi() {
+        assert_eq!(size_of::<FbBitfield>(), 12);
+        assert_eq!(size_of::<FbVarScreenInfo>(), 160);
+        assert_eq!(size_of::<FbFixScreenInfo>(), 80);
+    }
+}
