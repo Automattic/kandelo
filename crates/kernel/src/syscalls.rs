@@ -3893,8 +3893,14 @@ pub fn sys_unsetenv(proc: &mut Process, name: &[u8]) -> Result<(), Errno> {
 /// mmap -- supports anonymous, file-backed MAP_PRIVATE and MAP_SHARED mappings.
 /// File-backed mappings are allocated as anonymous regions; the host populates
 /// them from the file and (for MAP_SHARED) writes back on msync/munmap.
+///
+/// Special case: when `fd` resolves to `/dev/fb0`, the mapping is recorded
+/// as a framebuffer binding and the host is notified so it can mirror the
+/// pixel range to a display surface. Linux fbdev allows only one mapping
+/// per process; a second mmap on the same fd returns `EINVAL`.
 pub fn sys_mmap(
     proc: &mut Process,
+    host: &mut dyn HostIO,
     addr: usize,
     len: usize,
     prot: u32,
@@ -3909,6 +3915,40 @@ pub fn sys_mmap(
         }
         // Verify the fd is a valid open file descriptor
         let _fd_entry = proc.fd_table.get(fd)?;
+
+        // /dev/fb0: map the pixel buffer in process memory and notify the
+        // host. Geometry is fixed at FB_WIDTH × FB_HEIGHT × 4; the caller
+        // must request exactly that length.
+        let entry = proc.fd_table.get(fd)?;
+        let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+        if ofd.file_type == FileType::CharDevice
+            && VirtualDevice::from_host_handle(ofd.host_handle) == Some(VirtualDevice::Fb0)
+        {
+            if proc.fb_binding.is_some() {
+                return Err(Errno::EINVAL);
+            }
+            if len != FB_SMEM_LEN as usize {
+                return Err(Errno::EINVAL);
+            }
+            let alloc_flags = flags | MAP_ANONYMOUS;
+            let addr_out = proc.memory.mmap_anonymous(addr, len, prot, alloc_flags);
+            if addr_out == MAP_FAILED {
+                return Err(Errno::ENOMEM);
+            }
+            proc.fb_binding = Some(crate::process::FbBinding {
+                addr: addr_out,
+                len,
+                w: FB_WIDTH,
+                h: FB_HEIGHT,
+                stride: FB_LINE_LENGTH,
+                fmt: 0, // BGRA32
+            });
+            host.bind_framebuffer(
+                proc.pid as i32, addr_out, len,
+                FB_WIDTH, FB_HEIGHT, FB_LINE_LENGTH, 0,
+            );
+            return Ok(addr_out);
+        }
     }
 
     // Allocate the region. Both anonymous and file-backed use the same
@@ -9424,7 +9464,8 @@ mod tests {
     #[test]
     fn test_mmap_anonymous() {
         let mut proc = Process::new(1);
-        let addr = sys_mmap(&mut proc, 0, 4096, 3, 0x22, -1, 0).unwrap(); // PROT_READ|WRITE, MAP_PRIVATE|ANON
+        let mut host = MockHostIO::new();
+        let addr = sys_mmap(&mut proc, &mut host, 0, 4096, 3, 0x22, -1, 0).unwrap(); // PROT_READ|WRITE, MAP_PRIVATE|ANON
         assert_ne!(addr, 0xFFFFFFFF);
     }
 
@@ -9435,15 +9476,16 @@ mod tests {
         // Open a file to get a valid fd
         let fd = sys_open(&mut proc, &mut host, b"/tmp/mmaptest", 0x42, 0o644).unwrap(); // O_CREAT|O_RDWR
         // MAP_PRIVATE without MAP_ANONYMOUS should succeed (host populates data)
-        let addr = sys_mmap(&mut proc, 0, 4096, 3, 0x02, fd, 0).unwrap(); // PROT_READ|WRITE, MAP_PRIVATE
+        let addr = sys_mmap(&mut proc, &mut host, 0, 4096, 3, 0x02, fd, 0).unwrap(); // PROT_READ|WRITE, MAP_PRIVATE
         assert_ne!(addr, 0xFFFFFFFF);
     }
 
     #[test]
     fn test_mmap_file_backed_bad_fd() {
         let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
         // MAP_PRIVATE with invalid fd should fail
-        let result = sys_mmap(&mut proc, 0, 4096, 3, 0x02, 99, 0);
+        let result = sys_mmap(&mut proc, &mut host, 0, 4096, 3, 0x02, 99, 0);
         assert_eq!(result, Err(Errno::EBADF));
     }
 
@@ -9454,14 +9496,15 @@ mod tests {
         // Open a file to get a valid fd
         let fd = sys_open(&mut proc, &mut host, b"/tmp/mmaptest_shared", 0x42, 0o644).unwrap(); // O_CREAT|O_RDWR
         // MAP_SHARED should succeed (allocates region, host does population + tracking)
-        let addr = sys_mmap(&mut proc, 0, 4096, 3, 0x01, fd, 0).unwrap(); // PROT_READ|WRITE, MAP_SHARED
+        let addr = sys_mmap(&mut proc, &mut host, 0, 4096, 3, 0x01, fd, 0).unwrap(); // PROT_READ|WRITE, MAP_SHARED
         assert_ne!(addr, 0xFFFFFFFF);
     }
 
     #[test]
     fn test_munmap() {
         let mut proc = Process::new(1);
-        let addr = sys_mmap(&mut proc, 0, 4096, 3, 0x22, -1, 0).unwrap();
+        let mut host = MockHostIO::new();
+        let addr = sys_mmap(&mut proc, &mut host, 0, 4096, 3, 0x22, -1, 0).unwrap();
         sys_munmap(&mut proc, addr, 0x10000).unwrap();
     }
 
@@ -15177,6 +15220,81 @@ mod tests {
         let mut buf = [0u8; 160];  // big enough that ENOTTY is the only failure mode
         let err = sys_ioctl(&mut proc, fd, 0x46FF, &mut buf).unwrap_err();
         assert_eq!(err, Errno::ENOTTY);
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn mmap_fb0_records_binding_and_calls_host() {
+        use core::sync::atomic::Ordering;
+        use wasm_posix_shared::flags::O_RDWR;
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+        let _g = FB0_OWNER_LOCK.lock().unwrap();
+        crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+
+        let mut proc = Process::new(1);
+        let mut host = TrackingHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
+        let len = (640 * 400 * 4) as usize;
+        let addr = sys_mmap(&mut proc, &mut host, 0, len,
+                            PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0).unwrap();
+        assert_ne!(addr, 0);
+        let b = proc.fb_binding.expect("fb_binding should be Some after mmap");
+        assert_eq!(b.addr, addr);
+        assert_eq!(b.len, len);
+        assert_eq!(b.w, 640);
+        assert_eq!(b.h, 400);
+        assert_eq!(b.stride, 640 * 4);
+        assert_eq!(host.bind_framebuffer_calls.len(), 1);
+        let call = &host.bind_framebuffer_calls[0];
+        assert_eq!(call.pid, proc.pid as i32);
+        assert_eq!(call.addr, addr);
+        assert_eq!(call.len, len);
+        assert_eq!(call.w, 640);
+        assert_eq!(call.h, 400);
+        assert_eq!(call.stride, 640 * 4);
+
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn second_mmap_of_fb0_returns_einval() {
+        use core::sync::atomic::Ordering;
+        use wasm_posix_shared::flags::O_RDWR;
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+        let _g = FB0_OWNER_LOCK.lock().unwrap();
+        crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+
+        let mut proc = Process::new(1);
+        let mut host = TrackingHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
+        let len = (640 * 400 * 4) as usize;
+        let _ = sys_mmap(&mut proc, &mut host, 0, len,
+                         PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0).unwrap();
+        let err = sys_mmap(&mut proc, &mut host, 0, len,
+                           PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0).unwrap_err();
+        assert_eq!(err, Errno::EINVAL);
+
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn mmap_fb0_with_wrong_length_returns_einval() {
+        use core::sync::atomic::Ordering;
+        use wasm_posix_shared::flags::O_RDWR;
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+        let _g = FB0_OWNER_LOCK.lock().unwrap();
+        crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+
+        let mut proc = Process::new(1);
+        let mut host = TrackingHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
+        // Wrong size — fbDOOM-style code requests smem_len exactly.
+        let err = sys_mmap(&mut proc, &mut host, 0, 4096,
+                           PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0).unwrap_err();
+        assert_eq!(err, Errno::EINVAL);
+        // No host call when validation fails.
+        assert!(host.bind_framebuffer_calls.is_empty());
+
         sys_close(&mut proc, &mut host, fd).unwrap();
     }
 

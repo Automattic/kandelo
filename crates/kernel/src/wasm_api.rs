@@ -5579,7 +5579,8 @@ pub extern "C" fn kernel_getrandom(buf_ptr: *mut u8, buf_len: u32, _flags: u32) 
 pub extern "C" fn kernel_mmap(addr: usize, len: usize, prot: u32, flags: u32, fd: i32, offset_lo: u32, offset_hi: i32) -> usize {
     let (_gkl, proc) = unsafe { get_process() };
     let offset = ((offset_hi as i64) << 32) | (offset_lo as u64 as i64);
-    let result = match syscalls::sys_mmap(proc, addr, len, prot, flags, fd, offset) {
+    let mut host = WasmHostIO;
+    let result = match syscalls::sys_mmap(proc, &mut host, addr, len, prot, flags, fd, offset) {
         Ok(a) => a,
         Err(_) => wasm_posix_shared::mmap::MAP_FAILED,
     };
@@ -5591,7 +5592,6 @@ pub extern "C" fn kernel_mmap(addr: usize, len: usize, prot: u32, flags: u32, fd
         ensure_memory_covers(end);
     }
 
-    let mut host = WasmHostIO;
     deliver_pending_signals(proc, &mut host);
     result
 }
