@@ -83,6 +83,7 @@ has_erlang()    { has_resolvable programs/erlang.wasm || [ -f "$REPO_ROOT/exampl
 has_erlang_vfs()    { has_resolvable programs/erlang-vfs.vfs || [ -f "$REPO_ROOT/examples/browser/public/erlang.vfs" ]; }
 has_lamp_vfs()    { has_resolvable programs/lamp.vfs || [ -f "$REPO_ROOT/examples/browser/public/lamp.vfs" ]; }
 has_nginx_vfs()  { [ -f "$REPO_ROOT/examples/browser/public/nginx.vfs" ]; }
+has_redis_vfs()  { [ -f "$REPO_ROOT/examples/browser/public/redis.vfs" ]; }
 has_bc()    { has_resolvable programs/bc.wasm || [ -f "$REPO_ROOT/examples/libs/bc/bin/bc.wasm" ]; }
 has_file()    { has_resolvable programs/file.wasm || [ -f "$REPO_ROOT/examples/libs/file/bin/file.wasm" ]; }
 has_less()    { has_resolvable programs/less.wasm || [ -f "$REPO_ROOT/examples/libs/less/bin/less.wasm" ]; }
@@ -631,6 +632,18 @@ build_nginx_vfs() {
     fi
 }
 
+build_redis_vfs() {
+    build_dinit
+    build_redis
+    if ! has_redis_vfs; then
+        step "Building Redis VFS image"
+        bash "$REPO_ROOT/examples/browser/scripts/build-redis-vfs-image.sh"
+        info "Redis VFS image built"
+    else
+        info "Redis VFS image"
+    fi
+}
+
 build_texlive() {
     if has_texlive; then
         info "texlive"
@@ -1147,6 +1160,7 @@ build_target() {
         erlang-vfs) build_erlang_vfs ;;
         lamp-vfs)   build_lamp_vfs ;;
         nginx-vfs)  build_nginx_vfs ;;
+        redis-vfs)  build_redis_vfs ;;
         bc)         build_bc ;;
         file)       build_file ;;
         less)       build_less ;;
@@ -1191,7 +1205,7 @@ build_target() {
 # (less: ncurses libtermcap duplicate tputs; wget: requires automake
 # aclocal). They aren't in the release either, so the associated demo
 # features skip gracefully at runtime.
-BROWSER_DEPS=(kernel programs dash bash coreutils grep sed bc file m4 make tar curl-cli gzip bzip2 xz zstd zip unzip nano vim vim-zip nethack fbdoom git dinit nginx nginx-vfs php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis cpython python-vfs perl perl-vfs ruby shell-vfs wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs)
+BROWSER_DEPS=(kernel programs dash bash coreutils grep sed bc file m4 make tar curl-cli gzip bzip2 xz zstd zip unzip nano vim vim-zip nethack fbdoom git dinit nginx nginx-vfs php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis redis-vfs cpython python-vfs perl perl-vfs ruby shell-vfs wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs)
 
 build_browser() {
     for t in "${BROWSER_DEPS[@]}"; do
@@ -1371,6 +1385,9 @@ clean_target() {
         nginx-vfs)
             rm -f "$REPO_ROOT/examples/browser/public/nginx.vfs"
             warn "Cleaned nginx VFS image" ;;
+        redis-vfs)
+            rm -f "$REPO_ROOT/examples/browser/public/redis.vfs"
+            warn "Cleaned Redis VFS image" ;;
         erlang)
             rm -rf "$REPO_ROOT/examples/libs/erlang/erlang-src" \
                    "$REPO_ROOT/examples/libs/erlang/erlang-install" \
