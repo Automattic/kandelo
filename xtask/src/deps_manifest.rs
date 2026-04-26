@@ -420,6 +420,13 @@ impl DepsManifest {
 
         if let Some(b) = raw.binary.as_ref() {
             Self::validate_binary(b)?;
+            if matches!(raw.kind, ManifestKind::Source) {
+                return Err(
+                    "kind = \"source\" must not declare [binary] \
+                     (sources are not published as remote-fetchable archives)"
+                        .into(),
+                );
+            }
         }
 
         let depends_on: Vec<DepRef> = raw
@@ -960,5 +967,54 @@ wasm = ""
 "#;
         let err = DepsManifest::parse(text, PathBuf::from("/x")).unwrap_err();
         assert!(err.contains("wasm"), "got: {err}");
+    }
+
+    #[test]
+    fn source_kind_rejects_binary_block() {
+        let text = r#"
+kind = "source"
+name = "pcre2-source"
+version = "10.42"
+revision = 1
+
+[source]
+url = "https://example.test/pcre2.tar.bz2"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "BSD-3-Clause"
+
+[binary]
+archive_url = "https://example.test/pcre2.tar.zst"
+archive_sha256 = "1111111111111111111111111111111111111111111111111111111111111111"
+"#;
+        let err = DepsManifest::parse(text, PathBuf::from("/x")).unwrap_err();
+        assert!(
+            err.contains("source") && err.contains("binary"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn source_kind_minimal_manifest_parses() {
+        let text = r#"
+kind = "source"
+name = "pcre2-source"
+version = "10.42"
+revision = 1
+
+[source]
+url = "https://example.test/pcre2.tar.bz2"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "BSD-3-Clause"
+"#;
+        let m = DepsManifest::parse(text, PathBuf::from("/x")).unwrap();
+        assert!(matches!(m.kind, ManifestKind::Source));
+        assert_eq!(m.name, "pcre2-source");
+        assert!(m.outputs.libs.is_empty());
+        assert!(m.program_outputs.is_empty());
+        assert!(m.binary.is_none());
     }
 }
