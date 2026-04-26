@@ -179,6 +179,79 @@ fn proc_has_fb0_fd(proc: &Process) -> bool {
     false
 }
 
+/// Fixed framebuffer geometry. fbDOOM is happy with whatever the device
+/// reports; pinning a single mode keeps the implementation small.
+const FB_WIDTH: u32 = 640;
+const FB_HEIGHT: u32 = 400;
+const FB_BYTES_PER_PIXEL: u32 = 4;
+const FB_LINE_LENGTH: u32 = FB_WIDTH * FB_BYTES_PER_PIXEL;
+const FB_SMEM_LEN: u32 = FB_LINE_LENGTH * FB_HEIGHT;
+
+/// Handle ioctl on `/dev/fb0`.
+///
+/// Implements the four fbdev ioctls fbDOOM (and most fbdev clients)
+/// actually use:
+/// - `FBIOGET_VSCREENINFO` / `FBIOGET_FSCREENINFO` report fixed geometry
+///   in BGRA32 packed-pixel form.
+/// - `FBIOPAN_DISPLAY` is accepted but is a no-op (presentation is driven
+///   by host RAF, not user-space pan calls).
+/// - `FBIOPUT_VSCREENINFO` accepts only the geometry we expose; anything
+///   else is `EINVAL`.
+///
+/// Anything else returns `ENOTTY`.
+fn handle_fb_ioctl(request: u32, buf: &mut [u8]) -> Result<(), Errno> {
+    use wasm_posix_shared::fbdev::*;
+    match request {
+        FBIOGET_VSCREENINFO => {
+            if buf.len() < core::mem::size_of::<FbVarScreenInfo>() {
+                return Err(Errno::EINVAL);
+            }
+            let mut v = FbVarScreenInfo::default();
+            v.xres = FB_WIDTH;
+            v.yres = FB_HEIGHT;
+            v.xres_virtual = FB_WIDTH;
+            v.yres_virtual = FB_HEIGHT;
+            v.bits_per_pixel = FB_BYTES_PER_PIXEL * 8;
+            // BGRA32: byte 0 = blue, 1 = green, 2 = red, 3 = alpha.
+            v.blue   = FbBitfield { offset: 0,  length: 8, msb_right: 0 };
+            v.green  = FbBitfield { offset: 8,  length: 8, msb_right: 0 };
+            v.red    = FbBitfield { offset: 16, length: 8, msb_right: 0 };
+            v.transp = FbBitfield { offset: 24, length: 8, msb_right: 0 };
+            unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut FbVarScreenInfo, v); }
+            Ok(())
+        }
+        FBIOGET_FSCREENINFO => {
+            if buf.len() < core::mem::size_of::<FbFixScreenInfo>() {
+                return Err(Errno::EINVAL);
+            }
+            let mut f = FbFixScreenInfo::default();
+            f.id[..6].copy_from_slice(b"wasmfb");
+            f.smem_len = FB_SMEM_LEN;
+            f.line_length = FB_LINE_LENGTH;
+            f.fb_type = FB_TYPE_PACKED_PIXELS;
+            f.visual = FB_VISUAL_TRUECOLOR;
+            unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut FbFixScreenInfo, f); }
+            Ok(())
+        }
+        FBIOPAN_DISPLAY => Ok(()),
+        FBIOPUT_VSCREENINFO => {
+            if buf.len() < core::mem::size_of::<FbVarScreenInfo>() {
+                return Err(Errno::EINVAL);
+            }
+            let v: FbVarScreenInfo = unsafe {
+                core::ptr::read_unaligned(buf.as_ptr() as *const FbVarScreenInfo)
+            };
+            if v.xres != FB_WIDTH || v.yres != FB_HEIGHT
+                || v.bits_per_pixel != FB_BYTES_PER_PIXEL * 8
+            {
+                return Err(Errno::EINVAL);
+            }
+            Ok(())
+        }
+        _ => Err(Errno::ENOTTY),
+    }
+}
+
 /// Build a synthetic WasmStat for a virtual device.
 fn virtual_device_stat(dev: VirtualDevice, uid: u32, gid: u32) -> WasmStat {
     use wasm_posix_shared::mode::S_IFCHR;
@@ -5900,6 +5973,16 @@ pub fn sys_ioctl(proc: &mut Process, fd: i32, request: u32, buf: &mut [u8]) -> R
                 pty.locked = lock_val != 0;
             }
             return Ok(());
+        }
+    }
+
+    // --- /dev/fb0 ioctls — fbdev surface ---
+    {
+        let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+        if ofd.file_type == FileType::CharDevice
+            && VirtualDevice::from_host_handle(ofd.host_handle) == Some(VirtualDevice::Fb0)
+        {
+            return handle_fb_ioctl(request, buf);
         }
     }
 
@@ -14994,6 +15077,108 @@ mod tests {
 
     /// Mutex serializing tests that touch the global FB0_OWNER atomic.
     static FB0_OWNER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn fbioget_vscreeninfo_returns_640x400_bgra32() {
+        use wasm_posix_shared::fbdev::*;
+        use core::sync::atomic::Ordering;
+        let _g = FB0_OWNER_LOCK.lock().unwrap();
+        crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
+        let mut buf = [0u8; 160];
+        sys_ioctl(&mut proc, fd, FBIOGET_VSCREENINFO, &mut buf).unwrap();
+        let v: FbVarScreenInfo = unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+        assert_eq!(v.xres, 640);
+        assert_eq!(v.yres, 400);
+        assert_eq!(v.bits_per_pixel, 32);
+        assert_eq!(v.blue.offset, 0);   assert_eq!(v.blue.length, 8);
+        assert_eq!(v.green.offset, 8);  assert_eq!(v.green.length, 8);
+        assert_eq!(v.red.offset, 16);   assert_eq!(v.red.length, 8);
+        assert_eq!(v.transp.offset, 24); assert_eq!(v.transp.length, 8);
+
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn fbioget_fscreeninfo_reports_correct_smem_len() {
+        use wasm_posix_shared::fbdev::*;
+        use core::sync::atomic::Ordering;
+        let _g = FB0_OWNER_LOCK.lock().unwrap();
+        crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
+        let mut buf = [0u8; 80];
+        sys_ioctl(&mut proc, fd, FBIOGET_FSCREENINFO, &mut buf).unwrap();
+        let f: FbFixScreenInfo = unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+        assert_eq!(&f.id[..6], b"wasmfb");
+        assert_eq!(f.smem_len, 640 * 400 * 4);
+        assert_eq!(f.line_length, 640 * 4);
+        assert_eq!(f.fb_type, FB_TYPE_PACKED_PIXELS);
+        assert_eq!(f.visual, FB_VISUAL_TRUECOLOR);
+
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn fbiopan_display_succeeds() {
+        use wasm_posix_shared::fbdev::*;
+        use core::sync::atomic::Ordering;
+        let _g = FB0_OWNER_LOCK.lock().unwrap();
+        crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
+        let mut buf = [0u8; 160];
+        sys_ioctl(&mut proc, fd, FBIOPAN_DISPLAY, &mut buf).unwrap();
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn fbioput_vscreeninfo_rejects_mismatched_geometry() {
+        use wasm_posix_shared::fbdev::*;
+        use core::sync::atomic::Ordering;
+        let _g = FB0_OWNER_LOCK.lock().unwrap();
+        crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
+        let mut v = FbVarScreenInfo::default();
+        v.xres = 320; v.yres = 200; v.bits_per_pixel = 32;
+        let mut buf = [0u8; 160];
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, v); }
+        let err = sys_ioctl(&mut proc, fd, FBIOPUT_VSCREENINFO, &mut buf).unwrap_err();
+        assert_eq!(err, Errno::EINVAL);
+
+        // Matching geometry succeeds.
+        let mut v = FbVarScreenInfo::default();
+        v.xres = 640; v.yres = 400; v.bits_per_pixel = 32;
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, v); }
+        sys_ioctl(&mut proc, fd, FBIOPUT_VSCREENINFO, &mut buf).unwrap();
+
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn unknown_fb_ioctl_returns_enotty() {
+        use core::sync::atomic::Ordering;
+        let _g = FB0_OWNER_LOCK.lock().unwrap();
+        crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
+        let mut buf = [0u8; 160];  // big enough that ENOTTY is the only failure mode
+        let err = sys_ioctl(&mut proc, fd, 0x46FF, &mut buf).unwrap_err();
+        assert_eq!(err, Errno::ENOTTY);
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
 
     #[test]
     fn open_dev_fb0_is_single_owner() {
