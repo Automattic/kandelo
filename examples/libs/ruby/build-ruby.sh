@@ -23,7 +23,8 @@ HOST_BUILD_DIR="$SCRIPT_DIR/ruby-host-build"
 CROSS_BUILD_DIR="$SCRIPT_DIR/ruby-cross-build"
 INSTALL_DIR="$SCRIPT_DIR/ruby-install"
 BIN_DIR="$SCRIPT_DIR/bin"
-SYSROOT="$REPO_ROOT/sysroot"
+# Explicit env wins; else the in-tree sysroot.
+SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
@@ -37,20 +38,25 @@ if [ ! -f "$SYSROOT/lib/libc.a" ]; then
     exit 1
 fi
 
-# Build zlib if not already built
-ZLIB_DIR="$SCRIPT_DIR/../zlib/zlib-install"
-if [ ! -f "$ZLIB_DIR/lib/libz.a" ]; then
-    echo "==> Building zlib..."
-    bash "$SCRIPT_DIR/../zlib/build-zlib.sh"
-fi
+# --- Resolve zlib via the dep cache ---
+# Env-var short-circuit lets an outer resolver run pass the prefix
+# through without re-invoking cargo.
+HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
+resolve_dep() {
+    local name="$1"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TARGET" --quiet -- build-deps resolve "$name")
+}
 
-# Install zlib into sysroot
-echo "==> Installing zlib into sysroot..."
-cp "$ZLIB_DIR/include/zlib.h" "$ZLIB_DIR/include/zconf.h" "$SYSROOT/include/"
-cp "$ZLIB_DIR/lib/libz.a" "$SYSROOT/lib/"
-mkdir -p "$SYSROOT/lib/pkgconfig"
-sed "s|^prefix=.*|prefix=$SYSROOT|" "$ZLIB_DIR/lib/pkgconfig/zlib.pc" \
-    > "$SYSROOT/lib/pkgconfig/zlib.pc"
+ZLIB_PREFIX="${WASM_POSIX_DEP_ZLIB_DIR:-}"
+if [ -z "$ZLIB_PREFIX" ]; then
+    echo "==> Resolving zlib via cargo xtask build-deps..."
+    ZLIB_PREFIX="$(resolve_dep zlib)"
+fi
+if [ ! -f "$ZLIB_PREFIX/lib/libz.a" ]; then
+    echo "ERROR: zlib resolve returned '$ZLIB_PREFIX' but libz.a missing" >&2
+    exit 1
+fi
+echo "==> zlib at $ZLIB_PREFIX"
 
 # Build libyaml if not already built (Ruby needs it for psych/YAML)
 LIBYAML_DIR="$SCRIPT_DIR/libyaml-install"
@@ -502,8 +508,10 @@ SITE_EOF
     NM=wasm32posix-nm \
     STRIP=wasm32posix-strip \
     PKG_CONFIG=wasm32posix-pkg-config \
+    PKG_CONFIG_PATH="$ZLIB_PREFIX/lib/pkgconfig" \
     CFLAGS="-O2 -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS" \
-    LDFLAGS="" \
+    CPPFLAGS="-I$ZLIB_PREFIX/include" \
+    LDFLAGS="-L$ZLIB_PREFIX/lib" \
     "$SRC_DIR/configure" \
         --host=wasm32-unknown-wasi \
         --build="$(uname -m)-apple-darwin" \
