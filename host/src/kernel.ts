@@ -16,6 +16,7 @@
 import type { KernelConfig, PlatformIO, StatResult } from "./types";
 import { SharedPipeBuffer } from "./shared-pipe-buffer";
 import { SharedLockTable } from "./shared-lock-table";
+import { FramebufferRegistry } from "./framebuffer/registry";
 
 /**
  * Map filesystem error codes to negative errno values.
@@ -111,6 +112,12 @@ export class WasmPosixKernel {
   isThreadWorker = false;
   /** PID for this kernel instance (set by the worker) */
   pid = 0;
+  /**
+   * Live `/dev/fb0` mappings the kernel has reported via
+   * `host_bind_framebuffer`. Renderers (canvas in browser, no-op in
+   * Node) read this on each frame.
+   */
+  readonly framebuffers = new FramebufferRegistry();
 
   /**
    * Merge additional callbacks into the existing set.
@@ -393,15 +400,29 @@ export class WasmPosixKernel {
         host_is_thread_worker: (): number => {
           return this.isThreadWorker ? 1 : 0;
         },
-        // /dev/fb0 hooks: the legacy mode=0 kernel doesn't render
-        // anywhere, so these are no-op stubs. The centralized kernel
-        // worker has the real implementation backed by
-        // FramebufferRegistry.
+        // /dev/fb0 hooks: the kernel notifies the host when a process
+        // maps or unmaps the framebuffer. The registry is purely
+        // metadata; whether anything renders is the consuming app's
+        // choice (canvas in browser, no-op in Node tests).
         host_bind_framebuffer: (
-          _pid: number, _addr: bigint, _len: bigint,
-          _w: number, _h: number, _stride: number, _fmt: number,
-        ): void => {},
-        host_unbind_framebuffer: (_pid: number): void => {},
+          pid: number, addr: bigint, len: bigint,
+          w: number, h: number, stride: number, fmt: number,
+        ): void => {
+          this.framebuffers.bind({
+            pid,
+            addr: Number(addr),
+            len: Number(len),
+            w,
+            h,
+            stride,
+            // Only BGRA32 is defined today (fmt=0). If we ever add
+            // formats we'll branch on the tag here.
+            fmt: fmt === 0 ? "BGRA32" : "BGRA32",
+          });
+        },
+        host_unbind_framebuffer: (pid: number): void => {
+          this.framebuffers.unbind(pid);
+        },
       },
     };
   }
