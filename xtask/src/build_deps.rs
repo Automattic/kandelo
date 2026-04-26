@@ -39,8 +39,9 @@
 //!   resolve  <name>        Ensure the lib is built, print its path.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use sha2::{Digest, Sha256};
 
@@ -764,6 +765,27 @@ fn build_into_cache(
                 &dep.path,
             );
         }
+        // INVARIANT: build-script stdout MUST NOT leak to xtask's stdout.
+        //
+        // `cmd_resolve` ends with a single `println!("{}", path.display())`
+        // and consumers shell-capture it with
+        // `PREFIX="$(cargo run -- build-deps resolve <name>)"`.
+        // If the bash subprocess's stdout were inherited (the default),
+        // hundreds of lines of build output would land on xtask's stdout
+        // ahead of that final println, and `$(...)` would capture the
+        // entire build log as the "path" — breaking every consumer that
+        // uses the resolve_dep pattern on a cache miss.
+        //
+        // Fix: dup xtask's stderr FD and route the bash subprocess's
+        // stdout to it. The build progress remains visible to the user
+        // (it appears on the terminal's stderr stream just like before
+        // when stdout was a TTY); only the *captured* stdout pipe stays
+        // clean for the path output. stderr inheritance is unchanged.
+        let stderr_dup = std::io::stderr()
+            .as_fd()
+            .try_clone_to_owned()
+            .map_err(|e| format!("dup stderr fd for build-script stdout redirect: {e}"))?;
+        cmd.stdout(Stdio::from(stderr_dup));
         cmd.status()
             .map_err(|e| format!("spawn bash {}: {e}", script.display()))?
     };
@@ -1826,6 +1848,85 @@ libs = ["lib/libD.a"]
         )
         .unwrap();
         assert!(!canonical_path(&cache, &m, TEST_ARCH, &sha).exists());
+    }
+
+    /// Regression: build-script stdout must NOT leak to xtask's stdout.
+    ///
+    /// `cmd_resolve` consumers shell-capture xtask's stdout to read the
+    /// canonical cache path:
+    /// `PREFIX="$(cargo run -- build-deps resolve <name>)"`. If the bash
+    /// subprocess's stdout were inherited (the default), every chatty
+    /// `echo` in the build script would land on xtask's stdout ahead of
+    /// the final `println!(path)`, and consumers would capture the
+    /// build log instead of the path.
+    ///
+    /// The `build_into_cache` fix dups xtask's stderr fd into the bash
+    /// subprocess's stdout. We can't easily intercept `println!` from
+    /// inside a unit test, but we *can* verify the underlying mechanism
+    /// works: spawn a child whose stdout is redirected to an OwnedFd
+    /// (the same `Stdio::from(OwnedFd)` shape `build_into_cache` uses),
+    /// and confirm the output arrives there — proving libstd routes the
+    /// child's fd 1 to that fd and not to the test's own stdout.
+    #[test]
+    fn build_script_stdout_redirect_to_owned_fd_works() {
+        use std::io::Read;
+        use std::os::unix::net::UnixStream;
+
+        // UnixStream::pair gives us two endpoints with full read+write,
+        // both as `OwnedFd` via Into. We hand the bash subprocess one
+        // end as its stdout and read from the other. This mirrors the
+        // production shape: build_into_cache hands bash an OwnedFd
+        // cloned from xtask's stderr; here we hand bash an OwnedFd
+        // cloned from a socketpair endpoint. Both flow through the
+        // same `Stdio::from(OwnedFd)` impl in libstd.
+        let (parent, child) = UnixStream::pair().expect("socketpair");
+        let child_fd: std::os::fd::OwnedFd = child.into();
+        let stdio = Stdio::from(child_fd);
+
+        let mut cmd = Command::new("bash");
+        cmd.arg("-c");
+        cmd.arg("echo BUILD_SCRIPT_STDOUT_LINE_THAT_MUST_NOT_LEAK; echo line2; echo line3");
+        cmd.stdout(stdio);
+        let status = cmd.status().expect("spawn bash");
+        assert!(status.success(), "bash exit: {status}");
+
+        // Read the redirected output. We must drop our local handle on
+        // the child's write side first so the read end sees EOF — which
+        // is automatic here: child_fd was moved into Stdio, so once
+        // the child process exits, the only remaining write reference
+        // is gone.
+        drop(cmd);
+        let mut reader = parent;
+        let mut buf = String::new();
+        reader.read_to_string(&mut buf).expect("read socketpair");
+        assert!(
+            buf.contains("BUILD_SCRIPT_STDOUT_LINE_THAT_MUST_NOT_LEAK"),
+            "redirected stdout missing marker; got: {buf:?}"
+        );
+        assert!(buf.contains("line2"), "got: {buf:?}");
+        assert!(buf.contains("line3"), "got: {buf:?}");
+    }
+
+    /// Regression companion: confirm the exact pattern used inside
+    /// `build_into_cache` — `std::io::stderr().as_fd().try_clone_to_owned()`
+    /// followed by `Stdio::from(OwnedFd)` — does not panic and does
+    /// produce a usable Stdio. We can't observe the redirected output
+    /// here (it would land on the test runner's stderr, which the
+    /// runner captures and drops on success), but we *can* verify the
+    /// dup-fd mechanism succeeds and the bash child runs successfully
+    /// with that Stdio. A regression that broke try_clone_to_owned or
+    /// the From<OwnedFd> for Stdio impl would surface here.
+    #[test]
+    fn build_into_cache_stderr_dup_pattern_does_not_panic() {
+        let stderr_dup = std::io::stderr()
+            .as_fd()
+            .try_clone_to_owned()
+            .expect("dup stderr fd");
+        let mut cmd = Command::new("bash");
+        cmd.arg("-c").arg("echo running >&2; exit 0");
+        cmd.stdout(Stdio::from(stderr_dup));
+        let status = cmd.status().expect("spawn bash");
+        assert!(status.success(), "bash exit: {status}");
     }
 
     #[test]
