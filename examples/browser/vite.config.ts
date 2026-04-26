@@ -232,6 +232,7 @@ export default defineConfig({
         erlang: path.resolve(__dirname, "pages/erlang/index.html"),
         benchmark: path.resolve(__dirname, "pages/benchmark/index.html"),
         texlive: path.resolve(__dirname, "pages/texlive/index.html"),
+        doom: path.resolve(__dirname, "pages/doom/index.html"),
       },
     },
   },

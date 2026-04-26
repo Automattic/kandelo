@@ -252,6 +252,42 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   kernelInstance = kw.kernelInstance;
   kernelMemory = kw.kernelMemory;
 
+  // /dev/fb0 forwarding: the registry lives in this worker, but the
+  // canvas lives on the main thread. Translate bind/unbind events into
+  // postMessage so a main-thread renderer can read pixels directly
+  // from the process's wasm Memory SAB.
+  kernelWorker.framebuffers.onChange((pid, ev) => {
+    if (ev === "bind") {
+      const b = kernelWorker.framebuffers.get(pid);
+      const memory = kernelWorker.getProcessMemory(pid);
+      if (!b || !memory) return;
+      post({
+        type: "fb_bind",
+        pid,
+        addr: b.addr,
+        len: b.len,
+        w: b.w,
+        h: b.h,
+        stride: b.stride,
+        fmt: "BGRA32",
+        memory,
+      });
+    } else {
+      post({ type: "fb_unbind", pid });
+    }
+  });
+  // memory.grow invalidates the previously-shared SAB; forward the new
+  // Memory so the main-thread renderer rebuilds its view.
+  const origRebind = kernelWorker.framebuffers.rebindMemory.bind(
+    kernelWorker.framebuffers,
+  );
+  kernelWorker.framebuffers.rebindMemory = (pid: number) => {
+    origRebind(pid);
+    if (!kernelWorker.framebuffers.get(pid)) return;
+    const memory = kernelWorker.getProcessMemory(pid);
+    if (memory) post({ type: "fb_rebind_memory", pid, memory });
+  };
+
   // Accept bridge port for HTTP request handling
   if (msg.bridgePort) {
     bridgePort = msg.bridgePort;

@@ -8,6 +8,7 @@
  */
 
 import { MemoryFileSystem, type LazyFileEntry } from "../../../host/src/vfs/memory-fs";
+import { FramebufferRegistry } from "../../../host/src/framebuffer/registry";
 import type {
   MainToKernelMessage,
   KernelToMainMessage,
@@ -63,6 +64,13 @@ export class BrowserKernel {
   private pendingRequests = new Map<number, { resolve: (val: any) => void; reject: (err: Error) => void }>();
   private nextRequestId = 1;
   private ptyOutputCallbacks = new Map<number, (data: Uint8Array) => void>();
+  /**
+   * Mirror of the kernel-worker's FramebufferRegistry, populated by
+   * forwarded fb_bind / fb_unbind messages. The renderer
+   * (host/src/framebuffer/canvas-renderer.ts) reads from here.
+   */
+  readonly framebuffers = new FramebufferRegistry();
+  private fbMemoryByPid = new Map<number, WebAssembly.Memory>();
 
   constructor(options: BrowserKernelOptions = {}) {
     this.maxPages = options.maxMemoryPages ?? DEFAULT_MAX_PAGES;
@@ -477,6 +485,35 @@ export class BrowserKernel {
       case "listen_tcp":
         this.options.onListenTcp?.(msg.pid, msg.fd, msg.port);
         break;
+      case "fb_bind":
+        this.fbMemoryByPid.set(msg.pid, msg.memory);
+        this.framebuffers.bind({
+          pid: msg.pid,
+          addr: msg.addr,
+          len: msg.len,
+          w: msg.w,
+          h: msg.h,
+          stride: msg.stride,
+          fmt: msg.fmt,
+        });
+        break;
+      case "fb_unbind":
+        this.fbMemoryByPid.delete(msg.pid);
+        this.framebuffers.unbind(msg.pid);
+        break;
+      case "fb_rebind_memory":
+        this.fbMemoryByPid.set(msg.pid, msg.memory);
+        this.framebuffers.rebindMemory(msg.pid);
+        break;
     }
+  }
+
+  /**
+   * Return the wasm `Memory` for the framebuffer-bound process. Used by
+   * the canvas renderer to build typed-array views over the bound
+   * region.
+   */
+  getProcessMemory(pid: number): WebAssembly.Memory | undefined {
+    return this.fbMemoryByPid.get(pid);
   }
 }
