@@ -1,0 +1,21 @@
+kind = "program"
+name = "php"
+version = "8.3.2"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://www.php.net/distributions/php-8.3.2.tar.xz"
+sha256 = "4ffa3e44afc9c590e28dc0d2d31fc61f0139f8b335f11880a121b9f9b9f0634e"
+
+[license]
+spdx = "PHP-3.01"
+url = "https://github.com/php/php-src/blob/master/LICENSE"
+
+[[outputs]]
+name = "php"
+wasm = "php.wasm"
+
+[[outputs]]
+name = "php-fpm"
+wasm = "php-fpm.wasm"
