@@ -483,12 +483,13 @@ async function runBatch() {
 
     setStatus("Running Ruby...", "running");
 
-    const exitCode = await kernel.boot({
+    const { exit } = await kernel.boot({
       kernelWasm: kernelBytes!,
       vfsImage,
       argv: ["/usr/bin/ruby", "/tmp/script.rb"],
       env: RUBY_ENV,
     });
+    const exitCode = await exit;
 
     appendBatchOutput(`\nExited with code ${exitCode}\n`, "info");
     hideStatus();
