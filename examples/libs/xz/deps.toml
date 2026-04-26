@@ -1,0 +1,17 @@
+kind = "program"
+name = "xz"
+version = "5.6.2"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://tukaani.org/xz/xz-5.6.2.tar.xz"
+sha256 = "a9db3bb3d64e248a0fae963f8fb6ba851a26ba1822e504dc0efd18a80c626caf"
+
+[license]
+spdx = "GPL-2.0-or-later AND LGPL-2.1-or-later AND 0BSD"
+url = "https://github.com/tukaani-project/xz/blob/main/COPYING"
+
+[[outputs]]
+name = "xz"
+wasm = "xz.wasm"

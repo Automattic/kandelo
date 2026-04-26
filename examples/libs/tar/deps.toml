@@ -1,0 +1,17 @@
+kind = "program"
+name = "tar"
+version = "1.35"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://ftp.gnu.org/gnu/tar/tar-1.35.tar.xz"
+sha256 = "4d62ff37342ec7aed748535323930c7cf94acf71c3591882b26a7ea50f3edc16"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://git.savannah.gnu.org/cgit/tar.git/tree/COPYING"
+
+[[outputs]]
+name = "tar"
+wasm = "tar.wasm"
