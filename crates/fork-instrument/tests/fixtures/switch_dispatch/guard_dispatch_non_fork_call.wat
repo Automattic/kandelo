@@ -1,17 +1,17 @@
 ;; Regression fixture for the guard-dispatch path's gating of
-;; non-fork-path direct calls.
+;; non-fork-path direct calls (c01554940).
 ;;
-;; Mimics the compiled shape of os-test/basic/sys_wait/waitpid.c when
-;; `main` falls back to guard-dispatch (because the fork-path call is
-;; nested inside conditional control flow): the non-fork-path direct
-;; call to `kernel.setpgid` sits in the body and would re-fire during
-;; REWIND replay if not gated.
+;; The fork-path call site has an operand-stack carryover: a value
+;; pushed BEFORE the call's args remains across it and is consumed
+;; AFTER the call returns. The nested per-block switch-dispatch
+;; transform's POST_K blocks are 0 → 0 — they can't express
+;; carryovers — so this function falls back to guard-dispatch, which
+;; exercises the c01554940 fix this test verifies.
 ;;
-;; The expectation after the transform:
+;; Expectation after the transform:
 ;;   - `main` uses guard-dispatch (no top-level br_table).
 ;;   - The call to `kernel.setpgid` is wrapped in a state==NORMAL
-;;     if-else with a result-save local.set inside the then-branch and
-;;     a corresponding local.get after the if-else.
+;;     if-else with a result-save local.set inside the then-branch.
 ;;
 ;; This fixture is input to the tool; assertions live in
 ;; tests/switch_dispatch.rs.
@@ -23,7 +23,6 @@
   (memory (export "memory") 1)
 
   (func $main (export "_start") (result i32)
-    (local $pid i32)
     (local $rc  i32)
 
     ;; Non-fork-path direct call. Result captured into $rc. MUST be
@@ -33,13 +32,16 @@
     ;; frame).
     (local.set $rc (call $setpgid (i32.const 0) (i32.const 0)))
 
-    ;; Fork-path call NESTED inside a block — forces guard-dispatch.
-    (block $b
-      (local.set $pid (call $kernel_fork))
-      (br $b)
-    )
+    ;; Operand-stack carryover at fork-path call site:
+    ;;   i32.const 100         ;; address (carryover)
+    ;;   call $kernel_fork     ;; pushes pid (1 i32)
+    ;;   i32.store offset=4    ;; consumes [addr, pid]
+    ;; This shape forces guard-dispatch (per-block switch-dispatch
+    ;; cannot express carryovers).
+    i32.const 100
+    (call $kernel_fork)
+    i32.store offset=4
 
-    ;; Use $rc so the non-fork-path call's result has a consumer.
     (local.get $rc)
   )
 )

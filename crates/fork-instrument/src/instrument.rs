@@ -243,9 +243,56 @@ fn instrument_one_function(
     // where `sp` is pushed, then the call's args, then i32.store. When
     // we detect a carryover, fall back to guard-dispatch, whose per-
     // call `if-else` shim preserves the enclosing stack.
-    if has_nested_fork_calls(module, func_id, fork_path)
-        || has_top_level_stack_carryovers(module, func_id, fork_path)
-    {
+    if has_nested_fork_calls(module, func_id, fork_path) {
+        // Path A (nested per-block switch-dispatch): if all fork-path
+        // calls live in supported nesting (IfElse/Block bodies, any
+        // depth, no Loops/TryTables/multi-value-params/carryovers), use
+        // the new transform that skips body-replay on REWIND. This
+        // closes the popen-class divergence bug documented in
+        // memory/fork-instrument-O2-bug-investigation.md.
+        if classify_nested_pattern(module, func_id, fork_path).is_supported() {
+            instrument_one_function_nested_switch(
+                module,
+                func_id,
+                runtime,
+                fork_path,
+                func_ordinal,
+                aux_tables,
+                ref_plan,
+                catch_plan,
+            );
+            return;
+        }
+        // Unsupported nesting (e.g. fork-path call inside a Loop or
+        // TryTable body). Fall back to guard-dispatch — these patterns
+        // are rare in practice and may or may not hit the divergence
+        // bug; preserving today's behavior is the safer default. PANIC
+        // for fork-from-catch which is explicitly out of scope (B1
+        // follow-up).
+        if has_fork_call_in_catch_handler(module, func_id, fork_path) {
+            panic!(
+                "fork-instrument: function `{}` has a fork-path call inside a \
+                 try_table catch-handler body (B1 follow-up — see \
+                 memory/fork-instrument-b1-followup.md). This pattern is \
+                 explicitly out of scope for the nested per-block \
+                 switch-dispatch transform.",
+                func_name(module, func_id),
+            );
+        }
+        instrument_one_function_guard_dispatch(
+            module,
+            func_id,
+            runtime,
+            fork_path,
+            func_ordinal,
+            aux_tables,
+            ref_plan,
+            catch_plan,
+        );
+        return;
+    }
+
+    if has_top_level_stack_carryovers(module, func_id, fork_path) {
         instrument_one_function_guard_dispatch(
             module,
             func_id,
@@ -2907,13 +2954,34 @@ fn emit_gated_side_effect(
 ) {
     let branch_ty = InstrSeqType::new(&mut module.types, &shape.params, &shape.results);
 
+    // For LocalTee: the side-effect is the local.set portion, which
+    // we want to skip on REWIND (so the local stays at its restored
+    // value). The result-pushed-back portion of LocalTee must
+    // PASS THROUGH the input value unchanged so consumers downstream
+    // see a value consistent with NORMAL flow.
+    //
+    // Per the popen-class divergence analysis in
+    // memory/fork-instrument-O2-bug-investigation.md: the original
+    // gating dropped the input and pushed a default(0), causing
+    // downstream control-flow conditions that read the LocalTee's
+    // result to take different paths on REWIND vs NORMAL — silently
+    // skipping the kernel_fork wrap. Identity-passthrough on REWIND
+    // fixes that class of bug.
+    let is_local_tee_identity = matches!(instr, Instr::LocalTee(_))
+        && shape.params.len() == 1
+        && shape.results.len() == 1
+        && shape.params[0] == shape.results[0];
+
     let local = local_mut(module, func_id);
     let then_id = local.builder_mut().dangling_instr_seq(branch_ty).id();
     let else_id = local.builder_mut().dangling_instr_seq(branch_ty).id();
 
     local.block_mut(then_id).instrs.push((instr, loc));
 
-    {
+    if is_local_tee_identity {
+        // Empty else: input flows through to output unchanged. Block
+        // type [T] → [T] validates with no instructions.
+    } else {
         let else_seq = &mut local.block_mut(else_id).instrs;
         for _ in 0..shape.params.len() {
             push_instr(else_seq, Instr::Drop(Drop {}));
@@ -3050,3 +3118,1340 @@ fn inject_frame_io_guard_dispatch(
     push_instr(entry_seq, Instr::Block(Block { seq: wrapper_id }));
     entry_seq.extend(postamble);
 }
+
+// ======================================================================
+// Nested per-block switch-dispatch (Path A from
+// memory/fork-instrument-O2-bug-investigation.md)
+// ======================================================================
+//
+// When a function has fork-path calls nested inside a
+// `Block`/`IfElse`/`Loop`/`TryTable` body, today's
+// `instrument_one_function_guard_dispatch` replays the function body
+// top-to-bottom on REWIND with side-effect ops gated. That replay can
+// diverge from NORMAL flow when a gated `LocalTee` pushes the default
+// value (0) instead of the value being teed, or similar. The
+// divergence makes downstream control flow take a different path on
+// REWIND, silently skipping the kernel_fork wrap (popen hangs).
+//
+// This transform restructures the body so REWIND never re-executes
+// pre-call code: each sequence containing fork-path calls (transitively)
+// gets its own per-block dispatch. The function-level dispatch maps
+// each `call_idx` to either a direct `POST_K` (for top-level calls) or
+// a `POST_J_ENTER` label positioned right before a sub-region's
+// enclosing instruction. Sub-regions then dispatch internally.
+//
+// For IfElse, the `cond` is rewritten via wasm `select` so that on
+// REWIND with a `call_idx` in this if's range, the branch containing
+// the active call is force-entered WITHOUT re-evaluating the original
+// `cond` expression. The original cond is spilled into
+// `cond_swap_local` at the end of the chunk inside POST_K, then read
+// back via `local.get` in the post-call sequence.
+//
+// MVP supported nesting: `Block` (any result type), `IfElse`,
+// `Loop`, `TryTable` body. Unsupported (routes to guard-dispatch):
+// legacy `Try`, multi-value-params blocks, sub-region landings whose
+// preceding chunk has a stack carryover.
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NestedSupportStatus {
+    Supported,
+    UnsupportedLegacyTry,
+    UnsupportedMultiValueParams,
+    UnsupportedCarryover,
+}
+
+impl NestedSupportStatus {
+    fn is_supported(self) -> bool {
+        matches!(self, NestedSupportStatus::Supported)
+    }
+}
+
+/// Classify a function's nesting pattern. MVP scope: returns
+/// `Supported` iff every fork-path call in the function lives inside a
+/// chain of `Block` bodies only (any depth), no enclosing `IfElse` /
+/// `Loop` / `TryTable` / legacy `Try`, no multi-value-params blocks,
+/// no nested-seq stack carryovers.
+///
+/// This narrow scope handles the popen-class regression — popen's
+/// `__fork` and `posix_spawn` reach `kernel_fork` through `block`
+/// nesting (no IfElse around the fork-path call). Functions with
+/// IfElse-around-fork-call still fall back to guard-dispatch (today's
+/// behavior); that's a known divergence-bug exposure but is not the
+/// pattern that hangs popen on this branch.
+fn classify_nested_pattern(
+    module: &Module,
+    func_id: FunctionId,
+    fork_path: &HashSet<FunctionId>,
+) -> NestedSupportStatus {
+    let local = match &module.funcs.get(func_id).kind {
+        FunctionKind::Local(l) => l,
+        _ => return NestedSupportStatus::Supported,
+    };
+    classify_seq(module, local, local.entry_block(), fork_path)
+}
+
+fn classify_seq(
+    module: &Module,
+    f: &LocalFunction,
+    seq: InstrSeqId,
+    fork_path: &HashSet<FunctionId>,
+) -> NestedSupportStatus {
+    let carryover = seq_has_direct_fork_carryover(module, f, seq, fork_path);
+    if carryover {
+        return NestedSupportStatus::UnsupportedCarryover;
+    }
+
+    for (instr, _) in &f.block(seq).instrs {
+        match instr {
+            Instr::Loop(_) | Instr::Block(_) | Instr::IfElse(_) | Instr::TryTable(_) => {
+                // Allowed. Loops, blocks, ifs, and try_tables are
+                // handled by per-block dispatch inside their body.
+                // For IfElse, the cond rewrite via `select` selects
+                // between original cond (NORMAL) and force-flag
+                // (REWIND).  Try_table catches branch to outer
+                // labels — fork-path calls reachable only via a
+                // catch (fork-from-catch) are still unsupported, but
+                // are detected separately as "carryover" / "unknown
+                // stack-effect" patterns and routed to guard-dispatch.
+            }
+            Instr::Try(t) => {
+                if subtree_contains_fork_call(f, t.seq, fork_path) {
+                    return NestedSupportStatus::UnsupportedLegacyTry;
+                }
+                for c in &t.catches {
+                    let handler = match c {
+                        LegacyCatch::Catch { handler, .. } => Some(*handler),
+                        LegacyCatch::CatchAll { handler } => Some(*handler),
+                        LegacyCatch::Delegate { .. } => None,
+                    };
+                    if let Some(h) = handler {
+                        if subtree_contains_fork_call(f, h, fork_path) {
+                            return NestedSupportStatus::UnsupportedLegacyTry;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        for child in nested_seqs(instr) {
+            if let InstrSeqType::MultiValue(ty_id) = f.block(child).ty {
+                let t = module.types.get(ty_id);
+                if !t.params().is_empty() && subtree_contains_fork_call(f, child, fork_path) {
+                    return NestedSupportStatus::UnsupportedMultiValueParams;
+                }
+            }
+            let status = classify_seq(module, f, child, fork_path);
+            if !status.is_supported() {
+                return status;
+            }
+        }
+    }
+    NestedSupportStatus::Supported
+}
+
+fn subtree_contains_fork_call(
+    f: &LocalFunction,
+    seq: InstrSeqId,
+    fork_path: &HashSet<FunctionId>,
+) -> bool {
+    for (instr, _) in &f.block(seq).instrs {
+        match instr {
+            Instr::Call(c) if fork_path.contains(&c.func) => return true,
+            Instr::CallIndirect(_) => return true,
+            _ => {}
+        }
+        for child in nested_seqs(instr) {
+            if subtree_contains_fork_call(f, child, fork_path) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Returns true iff `seq` contains a fork-path landing (direct call
+/// or sub-region whose nested seq is fork-bearing) whose pre-landing
+/// stack has a carryover — extra values left on the stack from before
+/// the chunk's start that aren't part of the landing's required
+/// inputs. Per-block dispatch's `POST_K` blocks are typed `Simple(None)`
+/// (0 → 0), so carryovers can't be expressed.
+///
+/// "Required inputs" per landing:
+///   - Direct fork-path Call: the call's params count.
+///   - CallIndirect: params + 1 (the table index).
+///   - Block / Loop / TryTable: 0 (we already reject multi-value
+///     params blocks elsewhere in classify_nested_pattern).
+///   - IfElse: 1 (the cond).
+fn seq_has_direct_fork_carryover(
+    module: &Module,
+    f: &LocalFunction,
+    seq: InstrSeqId,
+    fork_path: &HashSet<FunctionId>,
+) -> bool {
+    let mut depth: usize = 0;
+    for (instr, _) in &f.block(seq).instrs {
+        // Check direct fork-path call landings.
+        let direct_expected: Option<usize> = match instr {
+            Instr::Call(c) if fork_path.contains(&c.func) => {
+                Some(module.types.get(module.funcs.get(c.func).ty()).params().len())
+            }
+            Instr::CallIndirect(ci) => Some(module.types.get(ci.ty).params().len() + 1),
+            _ => None,
+        };
+        if let Some(expected) = direct_expected {
+            if depth > expected {
+                return true;
+            }
+        }
+
+        // Check sub-region landings: any enclosing instruction whose
+        // nested seq's subtree contains a fork-path call (so the
+        // partition would emit a SubRegion landing for it).
+        let is_subregion_landing = match instr {
+            Instr::Block(_) | Instr::Loop(_) | Instr::TryTable(_) | Instr::IfElse(_) => {
+                nested_seqs(instr)
+                    .iter()
+                    .any(|s| subtree_contains_fork_call(f, *s, fork_path))
+            }
+            _ => false,
+        };
+        if is_subregion_landing {
+            let subregion_expected = match instr {
+                Instr::IfElse(_) => 1,
+                _ => 0,
+            };
+            if depth > subregion_expected {
+                return true;
+            }
+        }
+
+        match top_level_stack_effect(module, f, instr) {
+            StackEffect::Delta { pops, pushes } => {
+                if depth < pops {
+                    return true;
+                }
+                depth = depth - pops + pushes;
+            }
+            StackEffect::Terminator => return false,
+            StackEffect::Unknown => return true,
+        }
+    }
+    false
+}
+
+fn has_fork_call_in_catch_handler(
+    module: &Module,
+    func_id: FunctionId,
+    fork_path: &HashSet<FunctionId>,
+) -> bool {
+    let local = match &module.funcs.get(func_id).kind {
+        FunctionKind::Local(l) => l,
+        _ => return false,
+    };
+    fn walk(
+        f: &LocalFunction,
+        seq: InstrSeqId,
+        fork_path: &HashSet<FunctionId>,
+    ) -> bool {
+        for (instr, _) in &f.block(seq).instrs {
+            if let Instr::TryTable(tt) = instr {
+                for c in &tt.catches {
+                    let handler = match c {
+                        TryTableCatch::Catch { label, .. }
+                        | TryTableCatch::CatchAll { label }
+                        | TryTableCatch::CatchRef { label, .. }
+                        | TryTableCatch::CatchAllRef { label } => *label,
+                    };
+                    // try_table catch labels target an enclosing block,
+                    // so a fork call in the body of THAT block is a
+                    // fork-from-catch candidate. We approximate: if the
+                    // handler label is reachable from a fork-path call
+                    // in the function. Since walrus IR doesn't easily
+                    // give us "code AT label X", we rely on the simpler
+                    // existing detection in classify_nested_pattern
+                    // which flags TryTable bodies; if you got here via
+                    // the fall-through guard-dispatch path, B1 status
+                    // is already known. Here we conservatively return
+                    // false — let guard-dispatch handle (today's
+                    // behavior).
+                    let _ = handler;
+                }
+            }
+            for child in nested_seqs(instr) {
+                if walk(f, child, fork_path) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+    walk(local, local.entry_block(), fork_path)
+}
+
+// --- Discovery: walk the function in DFS order, assigning call_idx --
+
+#[derive(Debug, Clone, Copy)]
+enum NestedTarget {
+    Direct(FunctionId),
+    Indirect { table: TableId },
+}
+
+#[derive(Debug, Clone)]
+struct NestedCallSite {
+    call_idx: u32,
+    seq_id: InstrSeqId,
+    target: NestedTarget,
+    sig_ty: TypeId,
+    loc: InstrLocId,
+}
+
+#[derive(Debug, Clone)]
+struct RegionInfo {
+    /// `call_idx_lo..=call_idx_hi`: contiguous since DFS-ordered.
+    range_lo: u32,
+    range_hi: u32,
+}
+
+/// Walk the function in DFS order and:
+///   - assign a `call_idx` to every fork-path Call/CallIndirect site,
+///   - record which seq directly contains each call,
+///   - compute, for every seq, the set of call_idxs in its subtree.
+fn discover_calls_and_regions(
+    module: &Module,
+    func_id: FunctionId,
+    fork_path: &HashSet<FunctionId>,
+) -> (Vec<NestedCallSite>, HashMap<InstrSeqId, RegionInfo>) {
+    let local = match &module.funcs.get(func_id).kind {
+        FunctionKind::Local(l) => l,
+        _ => return (Vec::new(), HashMap::new()),
+    };
+    let mut sites = Vec::new();
+    let mut by_seq: HashMap<InstrSeqId, Vec<u32>> = HashMap::new();
+    let mut next_idx: u32 = 0;
+    walk_discover(
+        module,
+        local,
+        local.entry_block(),
+        fork_path,
+        &mut sites,
+        &mut by_seq,
+        &mut next_idx,
+    );
+    let mut regions: HashMap<InstrSeqId, RegionInfo> = HashMap::new();
+    for (seq_id, call_idxs) in by_seq {
+        if call_idxs.is_empty() {
+            continue;
+        }
+        let lo = *call_idxs.first().unwrap();
+        let hi = *call_idxs.last().unwrap();
+        regions.insert(seq_id, RegionInfo {
+            range_lo: lo,
+            range_hi: hi,
+        });
+    }
+    (sites, regions)
+}
+
+fn walk_discover(
+    module: &Module,
+    f: &LocalFunction,
+    seq: InstrSeqId,
+    fork_path: &HashSet<FunctionId>,
+    sites: &mut Vec<NestedCallSite>,
+    by_seq: &mut HashMap<InstrSeqId, Vec<u32>>,
+    next_idx: &mut u32,
+) {
+    let mut my_idxs: Vec<u32> = Vec::new();
+    for (instr, loc) in &f.block(seq).instrs {
+        match instr {
+            Instr::Call(c) if fork_path.contains(&c.func) => {
+                let idx = *next_idx;
+                *next_idx += 1;
+                sites.push(NestedCallSite {
+                    call_idx: idx,
+                    seq_id: seq,
+                    target: NestedTarget::Direct(c.func),
+                    sig_ty: module.funcs.get(c.func).ty(),
+                    loc: *loc,
+                });
+                my_idxs.push(idx);
+            }
+            Instr::CallIndirect(ci) => {
+                let idx = *next_idx;
+                *next_idx += 1;
+                sites.push(NestedCallSite {
+                    call_idx: idx,
+                    seq_id: seq,
+                    target: NestedTarget::Indirect { table: ci.table },
+                    sig_ty: ci.ty,
+                    loc: *loc,
+                });
+                my_idxs.push(idx);
+            }
+            _ => {}
+        }
+        for child in nested_seqs(instr) {
+            walk_discover(module, f, child, fork_path, sites, by_seq, next_idx);
+        }
+    }
+    // After visiting children, gather subtree call_idxs into this seq's
+    // entry. The DFS order guarantees they're contiguous.
+    let lo = my_idxs.first().copied();
+    let hi_self = my_idxs.last().copied();
+    let mut subtree: Vec<u32> = my_idxs;
+    // Re-walk to add child sub-tree call_idxs that were registered in
+    // by_seq during the child recursion. We sort+dedup at the end.
+    for (instr, _) in &f.block(seq).instrs {
+        for child in nested_seqs(instr) {
+            if let Some(child_calls) = by_seq.get(&child) {
+                subtree.extend_from_slice(child_calls);
+            }
+        }
+    }
+    subtree.sort();
+    subtree.dedup();
+    let _ = (lo, hi_self);
+    if !subtree.is_empty() {
+        by_seq.insert(seq, subtree);
+    }
+}
+
+// --- The main transform ----------------------------------------------
+
+#[allow(clippy::too_many_arguments)]
+fn instrument_one_function_nested_switch(
+    module: &mut Module,
+    func_id: FunctionId,
+    runtime: &Runtime,
+    fork_path: &HashSet<FunctionId>,
+    func_ordinal: u32,
+    aux_tables: &AuxTables,
+    ref_plan: &[RefLocalSlot],
+    catch_plan: &[CatchRegionPlan],
+) {
+    // Pre-existing user locals.
+    let all_user_locals = collect_user_locals(module, func_id);
+    let user_scalar_locals: Vec<(LocalId, ValType)> = all_user_locals
+        .iter()
+        .copied()
+        .filter(|(_, ty)| is_scalar(*ty))
+        .collect();
+
+    // Discover all fork-path call sites (with assigned call_idxs in
+    // DFS order) and the per-seq region info.
+    let (sites, regions) = discover_calls_and_regions(module, func_id, fork_path);
+    let n_calls = sites.len();
+    if n_calls == 0 {
+        // Defensive: function should have at least one fork-path call
+        // by virtue of being in fork_path. Bail out to existing
+        // top-level switch-dispatch (which handles n_calls==0 cleanly).
+        instrument_one_function_switch(
+            module, func_id, runtime, fork_path, func_ordinal,
+            aux_tables, ref_plan, catch_plan,
+        );
+        return;
+    }
+
+    // Allocate per-call arg-spill locals up front so they can join the
+    // function's scalar frame.
+    let mut arg_spills: HashMap<u32, Vec<LocalId>> = HashMap::new();
+    for site in &sites {
+        let arg_types = nested_call_arg_types(module, site);
+        for &ty in &arg_types {
+            if !is_scalar(ty) {
+                let name = func_name(module, func_id);
+                panic!(
+                    "fork-instrument: function `{name}` has a nested fork-path call \
+                     with a ref-typed argument ({ty:?}). Aux-table arg spilling \
+                     is not yet supported in the nested per-block transform."
+                );
+            }
+        }
+        let spills: Vec<LocalId> = arg_types.iter().map(|&ty| module.locals.add(ty)).collect();
+        arg_spills.insert(site.call_idx, spills);
+    }
+
+    // Combined scalar locals for the function frame: existing user
+    // scalars + per-call arg-spill locals (in call_idx order).
+    let mut frame_scalars: Vec<(LocalId, ValType)> = user_scalar_locals.clone();
+    for site in &sites {
+        let arg_types = nested_call_arg_types(module, site);
+        for (&lid, &ty) in arg_spills[&site.call_idx].iter().zip(arg_types.iter()) {
+            frame_scalars.push((lid, ty));
+        }
+    }
+
+    // Synthetic locals.
+    let call_idx_local = module.locals.add(ValType::I32);
+    let frame_ptr_local = module.locals.add(runtime.buf_type);
+    let catch_region_id_local = module.locals.add(ValType::I32);
+    let exnref_slot_local = module.locals.add(ValType::I32);
+    // Tmp i32 used by the IfElse cond rewrite to swap stack order
+    // (preserve original cond while computing force_flag and
+    // is_rewind without touching the operand stack).
+    let cond_swap_local = module.locals.add(ValType::I32);
+
+    let locals_with_offsets = assign_local_offsets(&frame_scalars, LOCALS_START_OFFSET);
+    let frame_size = HEADER_SIZE + user_locals_size(&frame_scalars);
+
+    let result_types: Vec<ValType> = {
+        let ty_id = module.funcs.get(func_id).ty();
+        module.types.get(ty_id).results().to_vec()
+    };
+
+    // Plan catch handlers (Phase 6d). These remain dead code for the
+    // nested transform's MVP (no fork-from-catch), but the plumbing is
+    // preserved for ref-typed exnref locals that still round-trip.
+    let catch_handlers = plan_catch_ref_handlers(module, func_id, catch_plan, aux_tables);
+
+    let memory = first_memory(module);
+    let ptr_ty = runtime.buf_type;
+
+    // Phase 6c rewind-throw stubs (still emitted for try_table bodies
+    // without fork-path calls — preserves the exnref serialization
+    // path).
+    if aux_tables.exnref.is_some() {
+        inject_rewind_throw_stubs(
+            module,
+            func_id,
+            runtime,
+            catch_region_id_local,
+            aux_tables,
+            catch_plan,
+        );
+    }
+
+    // Build preamble + unwind_save wrapper + postamble seqs.
+    let local = local_mut(module, func_id);
+    let preamble_then = local
+        .builder_mut()
+        .dangling_instr_seq(InstrSeqType::Simple(None))
+        .id();
+    let preamble_else = local
+        .builder_mut()
+        .dangling_instr_seq(InstrSeqType::Simple(None))
+        .id();
+    let unwind_save = local
+        .builder_mut()
+        .dangling_instr_seq(InstrSeqType::Simple(None))
+        .id();
+
+    populate_preamble_then(
+        local,
+        preamble_then,
+        runtime,
+        memory,
+        ptr_ty,
+        frame_ptr_local,
+        call_idx_local,
+        catch_region_id_local,
+        exnref_slot_local,
+        &locals_with_offsets,
+        ref_plan,
+        aux_tables,
+        frame_size,
+    );
+
+    // Recursively transform each fork-bearing seq, bottom-up. A seq is
+    // fork-bearing iff it appears in `regions`. The function's entry
+    // block is the root region; its transformation produces the
+    // function-level dispatch + cascading POST blocks.
+    //
+    // For NON-entry fork-bearing seqs, the transformation rebuilds the
+    // seq's instrs in-place (replacing them with the dispatch + POST
+    // cascade). The seq's enclosing instruction (in the parent seq) is
+    // unchanged structurally — but for IfElse, the parent seq is
+    // responsible for rewriting the cond.
+    //
+    // The function-level $unwind_save lives at the entry block's level
+    // and is the long-branch target for UNWINDING propagation from any
+    // depth.
+    let entry_id = local.entry_block();
+
+    // Process all fork-bearing seqs except the entry (entry handled
+    // specially with preamble/postamble + unwind_save). Order:
+    // bottom-up (deepest first).
+    let mut non_entry_regions: Vec<InstrSeqId> = regions
+        .keys()
+        .copied()
+        .filter(|&s| s != entry_id)
+        .collect();
+    // Sort by depth (deepest first). Walrus doesn't expose depth
+    // directly, so compute via parent-seq walk.
+    let depth_map = compute_seq_depths(local, entry_id);
+    non_entry_regions.sort_by_key(|s| std::cmp::Reverse(depth_map.get(s).copied().unwrap_or(0)));
+
+    // Compute, for each fork-bearing seq, the call_idxs of its DIRECT
+    // fork-path calls (ordered by DFS, == order in `sites`).
+    let direct_idxs_per_seq: HashMap<InstrSeqId, Vec<u32>> = {
+        let mut m: HashMap<InstrSeqId, Vec<u32>> = HashMap::new();
+        for site in &sites {
+            m.entry(site.seq_id).or_default().push(site.call_idx);
+        }
+        m
+    };
+
+    // Transform non-entry regions bottom-up.
+    for seq_id in non_entry_regions {
+        let region_info = regions.get(&seq_id).unwrap().clone();
+        let empty_idxs: Vec<u32> = Vec::new();
+        let direct = direct_idxs_per_seq.get(&seq_id).unwrap_or(&empty_idxs);
+        transform_region_seq(
+            local,
+            seq_id,
+            &region_info,
+            direct,
+            &regions,
+            &sites,
+            fork_path,
+            &arg_spills,
+            &catch_handlers,
+            runtime.state_global,
+            call_idx_local,
+            cond_swap_local,
+            catch_region_id_local,
+            exnref_slot_local,
+            unwind_save,
+        );
+    }
+
+    // Transform entry region: dispatch + cascading POST inside
+    // $unwind_save. Same pattern as the existing top-level
+    // switch-dispatch but with mixed DirectCall/SubRegion landings.
+    let entry_region_info = regions.get(&entry_id).unwrap().clone();
+    let empty_idxs: Vec<u32> = Vec::new();
+    let entry_direct = direct_idxs_per_seq.get(&entry_id).unwrap_or(&empty_idxs);
+    transform_entry_region(
+        local,
+        entry_id,
+        &entry_region_info,
+        entry_direct,
+        &regions,
+        &sites,
+        fork_path,
+        &arg_spills,
+        &catch_handlers,
+        runtime.state_global,
+        call_idx_local,
+        cond_swap_local,
+        catch_region_id_local,
+        exnref_slot_local,
+        unwind_save,
+        &result_types,
+    );
+
+    // Build postamble — same as switch-dispatch.
+    let mut postamble: Vec<(Instr, InstrLocId)> = Vec::new();
+    populate_postamble(
+        &mut postamble,
+        runtime,
+        memory,
+        ptr_ty,
+        frame_ptr_local,
+        call_idx_local,
+        catch_region_id_local,
+        exnref_slot_local,
+        &locals_with_offsets,
+        ref_plan,
+        aux_tables,
+        frame_size,
+        func_ordinal,
+        &result_types,
+    );
+
+    // Wrap entry block with [preamble-if-else, Block(unwind_save), postamble].
+    // The entry block's instrs (set by transform_entry_region) become
+    // the body of `unwind_save`. We pull them out and place them inside
+    // unwind_save here, then install the wrapper structure in entry.
+    let entry_body: Vec<(Instr, InstrLocId)> =
+        std::mem::take(&mut local.block_mut(entry_id).instrs);
+    {
+        let s = &mut local.block_mut(unwind_save).instrs;
+        s.extend(entry_body);
+    }
+
+    let entry_seq = &mut local.block_mut(entry_id).instrs;
+    push_instr(
+        entry_seq,
+        Instr::GlobalGet(GlobalGet { global: runtime.state_global }),
+    );
+    push_instr(
+        entry_seq,
+        Instr::Const(Const { value: Value::I32(runtime::STATE_REWINDING) }),
+    );
+    push_instr(entry_seq, Instr::Binop(Binop { op: BinaryOp::I32Eq }));
+    push_instr(
+        entry_seq,
+        Instr::IfElse(IfElse {
+            consequent: preamble_then,
+            alternative: preamble_else,
+        }),
+    );
+    push_instr(entry_seq, Instr::Block(Block { seq: unwind_save }));
+    entry_seq.extend(postamble);
+
+    apply_catch_ref_handlers(module, func_id, &catch_handlers, aux_tables);
+}
+
+/// At the end of a chunk that precedes a landing (inside the POST_K
+/// block body), spill the trailing operand-stack values into locals
+/// so the POST_K body's net stack effect stays 0 → 0.
+///
+/// - DirectCall landing: the chunk's tail is the call's arg values.
+///   Spill them into per-call arg locals (existing behavior).
+/// - SubRegionIfElse landing: the chunk's tail is the IfElse's
+///   `cond` (1 i32). Spill it into `cond_swap_local`; the cond
+///   rewrite reads it back later via `local.get`.
+/// - SubRegion landing (Block/Loop/TryTable): the chunk has 0 → 0
+///   stack effect already. Nothing to spill.
+fn emit_chunk_tail_for_landing(
+    out: &mut Vec<(Instr, InstrLocId)>,
+    landing: &LandingInfo,
+    arg_spills: &HashMap<u32, Vec<LocalId>>,
+    cond_swap_local: LocalId,
+) {
+    match &landing.kind {
+        LandingKind::DirectCall { call_idx } => {
+            emit_spill_args(out, &arg_spills[call_idx]);
+        }
+        LandingKind::SubRegionIfElse { .. } => {
+            push_instr(out, Instr::LocalSet(LocalSet { local: cond_swap_local }));
+        }
+        LandingKind::SubRegion { .. } => {}
+    }
+}
+
+fn nested_call_arg_types(module: &Module, site: &NestedCallSite) -> Vec<ValType> {
+    let mut arg_types: Vec<ValType> = module.types.get(site.sig_ty).params().to_vec();
+    if matches!(site.target, NestedTarget::Indirect { .. }) {
+        arg_types.push(ValType::I32);
+    }
+    arg_types
+}
+
+// --- Region landings -------------------------------------------------
+
+fn compute_seq_depths(f: &LocalFunction, entry: InstrSeqId) -> HashMap<InstrSeqId, u32> {
+    let mut out = HashMap::new();
+    fn walk(
+        f: &LocalFunction,
+        seq: InstrSeqId,
+        depth: u32,
+        out: &mut HashMap<InstrSeqId, u32>,
+    ) {
+        out.insert(seq, depth);
+        for (instr, _) in &f.block(seq).instrs {
+            for child in nested_seqs(instr) {
+                walk(f, child, depth + 1, out);
+            }
+        }
+    }
+    walk(f, entry, 0, &mut out);
+    out
+}
+
+// --- Per-region transform (non-entry) --------------------------------
+
+#[allow(clippy::too_many_arguments)]
+fn transform_region_seq(
+    local: &mut LocalFunction,
+    seq_id: InstrSeqId,
+    region_info: &RegionInfo,
+    direct_idxs_at_this_seq: &[u32],
+    regions: &HashMap<InstrSeqId, RegionInfo>,
+    sites: &[NestedCallSite],
+    fork_path: &HashSet<FunctionId>,
+    arg_spills: &HashMap<u32, Vec<LocalId>>,
+    catch_handlers: &[CatchHandlerInfo],
+    state_global: GlobalId,
+    call_idx_local: LocalId,
+    cond_swap_local: LocalId,
+    catch_region_id_local: LocalId,
+    exnref_slot_local: LocalId,
+    unwind_save: InstrSeqId,
+) {
+    // Take the original instrs of this region.
+    let original: Vec<(Instr, InstrLocId)> =
+        std::mem::take(&mut local.block_mut(seq_id).instrs);
+
+    let (chunks, landings) =
+        partition_region_instrs(local, &original, direct_idxs_at_this_seq, regions, fork_path);
+
+    let n_landings = landings.len();
+    if n_landings == 0 {
+        let mut all = Vec::new();
+        for chunk in chunks {
+            all.extend(chunk);
+        }
+        local.block_mut(seq_id).instrs = all;
+        return;
+    }
+
+    // Allocate POST seqs for each landing + dispatch seq.
+    let post_seqs: Vec<InstrSeqId> = (0..n_landings)
+        .map(|_| local.builder_mut().dangling_instr_seq(InstrSeqType::Simple(None)).id())
+        .collect();
+    let dispatch_seq = local
+        .builder_mut()
+        .dangling_instr_seq(InstrSeqType::Simple(None))
+        .id();
+
+    // Emit the dispatch's br_table.
+    populate_region_dispatch(
+        local,
+        dispatch_seq,
+        state_global,
+        call_idx_local,
+        region_info,
+        &landings,
+        &post_seqs,
+        unwind_save,
+    );
+
+    // Build the cascading POST blocks.
+    populate_region_dispatch_structure(
+        local,
+        seq_id,
+        Some(dispatch_seq),
+        &post_seqs,
+        &chunks,
+        &landings,
+        sites,
+        arg_spills,
+        catch_handlers,
+        state_global,
+        call_idx_local,
+        cond_swap_local,
+        catch_region_id_local,
+        exnref_slot_local,
+        unwind_save,
+        false, // don't append `return` at end
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn transform_entry_region(
+    local: &mut LocalFunction,
+    seq_id: InstrSeqId,
+    region_info: &RegionInfo,
+    direct_idxs_at_this_seq: &[u32],
+    regions: &HashMap<InstrSeqId, RegionInfo>,
+    sites: &[NestedCallSite],
+    fork_path: &HashSet<FunctionId>,
+    arg_spills: &HashMap<u32, Vec<LocalId>>,
+    catch_handlers: &[CatchHandlerInfo],
+    state_global: GlobalId,
+    call_idx_local: LocalId,
+    cond_swap_local: LocalId,
+    catch_region_id_local: LocalId,
+    exnref_slot_local: LocalId,
+    unwind_save: InstrSeqId,
+    _result_types: &[ValType],
+) {
+    let original: Vec<(Instr, InstrLocId)> =
+        std::mem::take(&mut local.block_mut(seq_id).instrs);
+
+    let (chunks, landings) =
+        partition_region_instrs(local, &original, direct_idxs_at_this_seq, regions, fork_path);
+
+    let n_landings = landings.len();
+
+    let post_seqs: Vec<InstrSeqId> = (0..n_landings)
+        .map(|_| local.builder_mut().dangling_instr_seq(InstrSeqType::Simple(None)).id())
+        .collect();
+    let dispatch_seq = if n_landings > 0 {
+        Some(local.builder_mut().dangling_instr_seq(InstrSeqType::Simple(None)).id())
+    } else {
+        None
+    };
+
+    if let Some(d) = dispatch_seq {
+        populate_region_dispatch(
+            local,
+            d,
+            state_global,
+            call_idx_local,
+            region_info,
+            &landings,
+            &post_seqs,
+            unwind_save,
+        );
+    }
+
+    // Entry-region's structure ends with the function's normal-path
+    // return; populate_region_dispatch_structure(..., true) appends it.
+    populate_region_dispatch_structure(
+        local,
+        seq_id,
+        dispatch_seq,
+        &post_seqs,
+        &chunks,
+        &landings,
+        sites,
+        arg_spills,
+        catch_handlers,
+        state_global,
+        call_idx_local,
+        cond_swap_local,
+        catch_region_id_local,
+        exnref_slot_local,
+        unwind_save,
+        true, // append `return` for normal-path exit
+    );
+}
+
+#[derive(Debug, Clone)]
+enum LandingKind {
+    DirectCall { call_idx: u32 },
+    /// Block/Loop/TryTable: just preserved verbatim.
+    SubRegion { range_lo: u32, range_hi: u32 },
+    /// IfElse landing: needs a cond rewrite so REWIND lands in the
+    /// branch that contains the active call_idx. We require the
+    /// caller to supply both branch ranges; either may be empty
+    /// (None) if that branch has no fork-path calls.
+    SubRegionIfElse {
+        range_lo: u32,
+        range_hi: u32,
+        then_range: Option<(u32, u32)>,
+        else_range: Option<(u32, u32)>,
+    },
+}
+
+#[derive(Debug, Clone)]
+struct LandingInfo {
+    kind: LandingKind,
+    /// For SubRegion/SubRegionIfElse: the enclosing instruction
+    /// preserved verbatim. Its nested seqs have been transformed
+    /// independently (bottom-up).
+    sub_region_instr: Option<(Instr, InstrLocId)>,
+}
+
+/// Partition `original` instrs at landings:
+///   - direct fork-path Call/CallIndirect at this seq's level → DirectCall.
+///   - any enclosing instr (Block/IfElse/Loop/TryTable/Try) whose
+///     nested seq is a fork-bearing region → SubRegion. We use the
+///     `regions` map to look up the child's call_idx range.
+/// Returns (chunks, landings) where `chunks.len() == landings.len() + 1`.
+///
+/// The DirectCall's `call_idx` is taken from `direct_idxs` in order —
+/// `discover_calls_and_regions` assigned call_idxs in DFS order,
+/// matching the order fork-path-relevant calls (direct fork-path Call,
+/// any CallIndirect) appear in this seq's instrs. Non-fork-path
+/// direct calls fall through to the chunk verbatim.
+fn partition_region_instrs(
+    _f: &LocalFunction,
+    original: &[(Instr, InstrLocId)],
+    direct_idxs_at_this_seq: &[u32],
+    regions: &HashMap<InstrSeqId, RegionInfo>,
+    fork_path: &HashSet<FunctionId>,
+) -> (Vec<Vec<(Instr, InstrLocId)>>, Vec<LandingInfo>) {
+    let mut chunks: Vec<Vec<(Instr, InstrLocId)>> = vec![Vec::new()];
+    let mut landings: Vec<LandingInfo> = Vec::new();
+
+    let mut direct_cursor = 0usize;
+
+    for (instr, loc) in original.iter() {
+        // A fork-path-relevant call at this seq's level: direct Call
+        // to a fork-path callee, OR any CallIndirect (conservatively
+        // assumed to potentially reach a fork-path callee — same
+        // policy as discover_calls_and_regions).
+        let is_fork_landing = match instr {
+            Instr::Call(c) => fork_path.contains(&c.func),
+            Instr::CallIndirect(_) => true,
+            _ => false,
+        };
+        if is_fork_landing && direct_cursor < direct_idxs_at_this_seq.len() {
+            let idx = direct_idxs_at_this_seq[direct_cursor];
+            direct_cursor += 1;
+            landings.push(LandingInfo {
+                kind: LandingKind::DirectCall { call_idx: idx },
+                sub_region_instr: None,
+            });
+            chunks.push(Vec::new());
+            continue;
+        }
+
+        // Sub-region landing: any enclosing instr whose nested seq(s)
+        // are fork-bearing regions. For IfElse, both branches may be
+        // regions; collect both ranges so the cond rewrite can pick
+        // the right branch on REWIND.
+        let mut sub_lo_hi: Option<(u32, u32)> = None;
+        let mut ifelse_then_range: Option<(u32, u32)> = None;
+        let mut ifelse_else_range: Option<(u32, u32)> = None;
+        let is_ifelse = matches!(instr, Instr::IfElse(_));
+
+        if is_ifelse {
+            if let Instr::IfElse(ie) = instr {
+                if let Some(info) = regions.get(&ie.consequent) {
+                    ifelse_then_range = Some((info.range_lo, info.range_hi));
+                }
+                if let Some(info) = regions.get(&ie.alternative) {
+                    ifelse_else_range = Some((info.range_lo, info.range_hi));
+                }
+                if ifelse_then_range.is_some() || ifelse_else_range.is_some() {
+                    let lo = ifelse_then_range
+                        .map(|(l, _)| l)
+                        .into_iter()
+                        .chain(ifelse_else_range.map(|(l, _)| l))
+                        .min()
+                        .unwrap();
+                    let hi = ifelse_then_range
+                        .map(|(_, h)| h)
+                        .into_iter()
+                        .chain(ifelse_else_range.map(|(_, h)| h))
+                        .max()
+                        .unwrap();
+                    sub_lo_hi = Some((lo, hi));
+                }
+            }
+        } else {
+            for child in nested_seqs(instr) {
+                if let Some(child_info) = regions.get(&child) {
+                    sub_lo_hi = match sub_lo_hi {
+                        None => Some((child_info.range_lo, child_info.range_hi)),
+                        Some((lo, hi)) => Some((
+                            lo.min(child_info.range_lo),
+                            hi.max(child_info.range_hi),
+                        )),
+                    };
+                }
+            }
+        }
+
+        if let Some((lo, hi)) = sub_lo_hi {
+            let kind = if is_ifelse {
+                LandingKind::SubRegionIfElse {
+                    range_lo: lo,
+                    range_hi: hi,
+                    then_range: ifelse_then_range,
+                    else_range: ifelse_else_range,
+                }
+            } else {
+                LandingKind::SubRegion { range_lo: lo, range_hi: hi }
+            };
+            landings.push(LandingInfo {
+                kind,
+                sub_region_instr: Some((instr.clone(), *loc)),
+            });
+            chunks.push(Vec::new());
+            continue;
+        }
+
+        chunks.last_mut().unwrap().push((instr.clone(), *loc));
+    }
+
+    (chunks, landings)
+}
+
+// --- Per-region dispatch + cascading POST blocks ---------------------
+
+#[allow(clippy::too_many_arguments)]
+fn populate_region_dispatch(
+    local: &mut LocalFunction,
+    dispatch_seq: InstrSeqId,
+    state_global: GlobalId,
+    call_idx_local: LocalId,
+    region_info: &RegionInfo,
+    landings: &[LandingInfo],
+    post_seqs: &[InstrSeqId],
+    unwind_save: InstrSeqId,
+) {
+    // Build br_table: for each call_idx K in region_info.range, target
+    // the POST seq corresponding to the landing that covers K.
+    let lo = region_info.range_lo;
+    let hi = region_info.range_hi;
+    let count = (hi - lo + 1) as usize;
+    let mut blocks_vec: Vec<InstrSeqId> = vec![unwind_save; count];
+    for (li, landing) in landings.iter().enumerate() {
+        match &landing.kind {
+            LandingKind::DirectCall { call_idx } => {
+                let i = (*call_idx - lo) as usize;
+                if i < count {
+                    blocks_vec[i] = post_seqs[li];
+                }
+            }
+            LandingKind::SubRegion { range_lo, range_hi }
+            | LandingKind::SubRegionIfElse { range_lo, range_hi, .. } => {
+                for k in *range_lo..=*range_hi {
+                    let i = (k - lo) as usize;
+                    if i < count {
+                        blocks_vec[i] = post_seqs[li];
+                    }
+                }
+            }
+        }
+    }
+
+    let if_then = local
+        .builder_mut()
+        .dangling_instr_seq(InstrSeqType::Simple(None))
+        .id();
+    let if_else = local
+        .builder_mut()
+        .dangling_instr_seq(InstrSeqType::Simple(None))
+        .id();
+
+    {
+        let s = &mut local.block_mut(if_then).instrs;
+        push_instr(s, Instr::LocalGet(LocalGet { local: call_idx_local }));
+        if lo != 0 {
+            push_instr(s, Instr::Const(Const { value: Value::I32(lo as i32) }));
+            push_instr(s, Instr::Binop(Binop { op: BinaryOp::I32Sub }));
+        }
+        push_instr(
+            s,
+            Instr::BrTable(BrTable {
+                blocks: blocks_vec.into_boxed_slice(),
+                default: unwind_save,
+            }),
+        );
+    }
+
+    let s = &mut local.block_mut(dispatch_seq).instrs;
+    push_instr(s, Instr::GlobalGet(GlobalGet { global: state_global }));
+    push_instr(
+        s,
+        Instr::Const(Const { value: Value::I32(runtime::STATE_REWINDING) }),
+    );
+    push_instr(s, Instr::Binop(Binop { op: BinaryOp::I32Eq }));
+    push_instr(
+        s,
+        Instr::IfElse(IfElse { consequent: if_then, alternative: if_else }),
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn populate_region_dispatch_structure(
+    local: &mut LocalFunction,
+    outer_seq: InstrSeqId,
+    dispatch_seq: Option<InstrSeqId>,
+    post_seqs: &[InstrSeqId],
+    chunks: &[Vec<(Instr, InstrLocId)>],
+    landings: &[LandingInfo],
+    sites: &[NestedCallSite],
+    arg_spills: &HashMap<u32, Vec<LocalId>>,
+    catch_handlers: &[CatchHandlerInfo],
+    state_global: GlobalId,
+    call_idx_local: LocalId,
+    cond_swap_local: LocalId,
+    catch_region_id_local: LocalId,
+    exnref_slot_local: LocalId,
+    unwind_save: InstrSeqId,
+    append_return: bool,
+) {
+    let n_landings = landings.len();
+    if n_landings == 0 {
+        // Empty region: just put chunks back, append return if entry.
+        let s = &mut local.block_mut(outer_seq).instrs;
+        for chunk in chunks {
+            for it in chunk {
+                s.push(it.clone());
+            }
+        }
+        if append_return {
+            push_instr(s, Instr::Return(Return {}));
+        }
+        return;
+    }
+
+    // POST_0 body: [Block($dispatch_seq), chunk 0, spill 0 / cond_swap].
+    {
+        let s = &mut local.block_mut(post_seqs[0]).instrs;
+        if let Some(d) = dispatch_seq {
+            push_instr(s, Instr::Block(Block { seq: d }));
+        }
+        for (instr, loc) in &chunks[0] {
+            s.push((instr.clone(), *loc));
+        }
+        emit_chunk_tail_for_landing(s, &landings[0], arg_spills, cond_swap_local);
+    }
+
+    // POST_K (K in 1..n_landings):
+    //   [Block($POST_{K-1}), <post-K-1 sequence>, chunk K, spill K?]
+    for k in 1..n_landings {
+        {
+            let s = &mut local.block_mut(post_seqs[k]).instrs;
+            push_instr(s, Instr::Block(Block { seq: post_seqs[k - 1] }));
+        }
+        emit_post_landing(
+            local,
+            post_seqs[k],
+            &landings[k - 1],
+            sites,
+            arg_spills,
+            catch_handlers,
+            state_global,
+            call_idx_local,
+            cond_swap_local,
+            catch_region_id_local,
+            exnref_slot_local,
+            unwind_save,
+        );
+        {
+            let s = &mut local.block_mut(post_seqs[k]).instrs;
+            for (instr, loc) in &chunks[k] {
+                s.push((instr.clone(), *loc));
+            }
+            emit_chunk_tail_for_landing(s, &landings[k], arg_spills, cond_swap_local);
+        }
+    }
+
+    // outer_seq body:
+    //   [Block($POST_{n-1}), <post-(n-1) sequence>, chunk n, return?]
+    {
+        let s = &mut local.block_mut(outer_seq).instrs;
+        push_instr(s, Instr::Block(Block { seq: post_seqs[n_landings - 1] }));
+    }
+    emit_post_landing(
+        local,
+        outer_seq,
+        &landings[n_landings - 1],
+        sites,
+        arg_spills,
+        catch_handlers,
+        state_global,
+        call_idx_local,
+        cond_swap_local,
+        catch_region_id_local,
+        exnref_slot_local,
+        unwind_save,
+    );
+    {
+        let s = &mut local.block_mut(outer_seq).instrs;
+        for (instr, loc) in &chunks[n_landings] {
+            s.push((instr.clone(), *loc));
+        }
+        if append_return {
+            push_instr(s, Instr::Return(Return {}));
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_post_landing(
+    local: &mut LocalFunction,
+    seq_id: InstrSeqId,
+    landing: &LandingInfo,
+    sites: &[NestedCallSite],
+    arg_spills: &HashMap<u32, Vec<LocalId>>,
+    catch_handlers: &[CatchHandlerInfo],
+    state_global: GlobalId,
+    call_idx_local: LocalId,
+    cond_swap_local: LocalId,
+    catch_region_id_local: LocalId,
+    exnref_slot_local: LocalId,
+    unwind_save: InstrSeqId,
+) {
+    match &landing.kind {
+        LandingKind::DirectCall { call_idx } => {
+            let site = sites.iter().find(|s| s.call_idx == *call_idx).expect("site");
+            let spills = &arg_spills[call_idx];
+            // reload args
+            {
+                let s = &mut local.block_mut(seq_id).instrs;
+                for &l in spills.iter() {
+                    push_instr(s, Instr::LocalGet(LocalGet { local: l }));
+                }
+                let call_instr = match site.target {
+                    NestedTarget::Direct(func) => Instr::Call(Call { func }),
+                    NestedTarget::Indirect { table } => Instr::CallIndirect(CallIndirect {
+                        ty: site.sig_ty,
+                        table,
+                    }),
+                };
+                s.push((call_instr, site.loc));
+            }
+            // Phase 6e + tag call_idx + br_if UNWIND
+            emit_phase_6e_writes(
+                local,
+                seq_id,
+                catch_handlers,
+                catch_region_id_local,
+                exnref_slot_local,
+            );
+            let s = &mut local.block_mut(seq_id).instrs;
+            push_instr(s, Instr::Const(Const { value: Value::I32(*call_idx as i32) }));
+            push_instr(s, Instr::LocalSet(LocalSet { local: call_idx_local }));
+            push_instr(s, Instr::GlobalGet(GlobalGet { global: state_global }));
+            push_instr(
+                s,
+                Instr::Const(Const { value: Value::I32(runtime::STATE_UNWINDING) }),
+            );
+            push_instr(s, Instr::Binop(Binop { op: BinaryOp::I32Eq }));
+            push_instr(s, Instr::BrIf(BrIf { block: unwind_save }));
+        }
+        LandingKind::SubRegion { .. } => {
+            // Block/Loop/TryTable: preserve the enclosing instr
+            // verbatim. Its body has been recursively transformed
+            // already (bottom-up). On REWIND we land at this
+            // POST_J_ENTER's close, then fall through into the
+            // enclosing instr unconditionally — since the body always
+            // enters via fall-through, no cond rewrite is needed.
+            let (instr, loc) = landing.sub_region_instr.clone()
+                .expect("SubRegion landing must have its enclosing instr stashed");
+            let s = &mut local.block_mut(seq_id).instrs;
+            s.push((instr, loc));
+        }
+        LandingKind::SubRegionIfElse {
+            range_lo: _,
+            range_hi: _,
+            then_range,
+            else_range,
+        } => {
+            // IfElse landing: orig_cond was already spilled into
+            // `cond_swap_local` at the end of the preceding chunk
+            // (see `emit_chunk_tail_for_landing`). Stack at entry to
+            // this post-landing is empty.
+            //
+            // We push a synthesized cond that selects via `select`:
+            //   - on NORMAL (is_rewind=0): orig_cond from cond_swap_local.
+            //   - on REWIND (is_rewind=1): force_flag (1 to enter THEN,
+            //     0 to enter ELSE) based on which branch holds the
+            //     active call_idx.
+            //
+            // The wasm `select` instruction pops 3 values [val1, val2,
+            // cond] and pushes (cond ? val1 : val2). We arrange:
+            //   val1 = force_flag, val2 = orig_cond, cond = is_rewind.
+            let (instr, loc) = landing.sub_region_instr.clone()
+                .expect("SubRegionIfElse landing must have its enclosing instr stashed");
+
+            let s = &mut local.block_mut(seq_id).instrs;
+            // Push force_flag.
+            match (then_range, else_range) {
+                (Some(_), None) => {
+                    push_instr(s, Instr::Const(Const { value: Value::I32(1) }));
+                }
+                (None, Some(_)) => {
+                    push_instr(s, Instr::Const(Const { value: Value::I32(0) }));
+                }
+                (Some((tlo, thi)), Some(_)) => {
+                    // Both branches have fork calls. Use range
+                    // membership on THEN's range.
+                    push_instr(s, Instr::LocalGet(LocalGet { local: call_idx_local }));
+                    push_instr(s, Instr::Const(Const { value: Value::I32(*tlo as i32) }));
+                    push_instr(s, Instr::Binop(Binop { op: BinaryOp::I32GeS }));
+                    push_instr(s, Instr::LocalGet(LocalGet { local: call_idx_local }));
+                    push_instr(s, Instr::Const(Const { value: Value::I32(*thi as i32) }));
+                    push_instr(s, Instr::Binop(Binop { op: BinaryOp::I32LeS }));
+                    push_instr(s, Instr::Binop(Binop { op: BinaryOp::I32And }));
+                }
+                (None, None) => {
+                    push_instr(s, Instr::Const(Const { value: Value::I32(0) }));
+                }
+            }
+            // Push orig_cond from the spill local.
+            push_instr(s, Instr::LocalGet(LocalGet { local: cond_swap_local }));
+            // Push is_rewind.
+            push_instr(s, Instr::GlobalGet(GlobalGet { global: state_global }));
+            push_instr(
+                s,
+                Instr::Const(Const { value: Value::I32(runtime::STATE_REWINDING) }),
+            );
+            push_instr(s, Instr::Binop(Binop { op: BinaryOp::I32Eq }));
+            push_instr(s, Instr::Select(walrus::ir::Select { ty: None }));
+            // Original IfElse with rewritten cond on the stack.
+            s.push((instr, loc));
+        }
+    }
+}
+

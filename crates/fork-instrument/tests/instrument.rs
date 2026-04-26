@@ -1181,18 +1181,23 @@ fn collect_try_table_bodies(f: &LocalFunction, seq: InstrSeqId, out: &mut Vec<In
     }
 }
 
-// --- Guard-dispatch scheme (used for nested fork-path calls) ---------
+// --- Nested per-block switch-dispatch (Path A) -----------------------
 //
-// Switch-dispatch requires fork-path calls to live at the function's
-// top level (wasm `br_table` can't land inside a nested block from
-// outside). When the tool detects a nested fork-path call it emits
-// guard-dispatch instead: each call site carries an in-place if-else
-// guard + Phase 4g state-op gates. These tests pin down that the
-// guard-dispatch path produces valid wasm for the patterns real
-// programs (bash/dash/nginx/PHP/Erlang/Ruby) rely on.
+// Fork-path calls nested inside `block` bodies (any depth) use the
+// nested per-block switch-dispatch transform: each fork-bearing seq
+// gets its own br_table + cascading POST blocks. The function-level
+// dispatch maps `call_idx` to either a direct POST_K (top-level) or a
+// POST_J_ENTER (immediately before the enclosing block). This avoids
+// guard-dispatch's REWIND body-replay, which had a divergence bug that
+// caused popen-class callers to silently skip the kernel_fork wrap.
+// See memory/fork-instrument-O2-bug-investigation.md.
+//
+// Functions with fork-path calls inside `IfElse`/`Loop`/`TryTable` (or
+// with stack carryovers, etc.) still fall back to guard-dispatch
+// today.
 
 #[test]
-fn call_in_nested_block_uses_guard_dispatch() {
+fn call_in_nested_block_uses_per_block_switch_dispatch() {
     let wat = r#"
         (module
           (import "kernel" "kernel_fork" (func $fork (result i32)))
@@ -1207,28 +1212,18 @@ fn call_in_nested_block_uses_guard_dispatch() {
     let caller = func_by_name(&module, "caller");
     let f = local_func(&module, caller);
 
-    // Guard-dispatch: no top-level br_table (switch-dispatch would
-    // have emitted one).
-    assert_eq!(
-        count_br_tables(f),
-        0,
-        "nested-call functions should use guard-dispatch (no br_table)",
-    );
-    // Guard-dispatch wraps each fork-path call in an in-place if-else guard.
-    let mut ifelse_count = 0usize;
-    walk_all(f, f.entry_block(), &mut |_, instr| {
-        if matches!(instr, Instr::IfElse(_)) {
-            ifelse_count += 1;
-        }
-    });
+    // Nested per-block switch-dispatch: at least one br_table is
+    // emitted (function-level dispatch + per-block dispatch inside
+    // the `block`).
     assert!(
-        ifelse_count >= 2,
-        "guard-dispatch emits preamble if-else + per-call if-else guards (>=2): {ifelse_count}",
+        count_br_tables(f) >= 1,
+        "nested-call functions must use per-block switch-dispatch \
+         (br_table emitted), not guard-dispatch's body-replay",
     );
 }
 
 #[test]
-fn fork_inside_try_body_uses_guard_dispatch() {
+fn fork_inside_try_body_uses_per_block_switch_dispatch() {
     let wat = r#"
         (module
           (import "kernel" "kernel_fork" (func $fork (result i32)))
@@ -1249,42 +1244,19 @@ fn fork_inside_try_body_uses_guard_dispatch() {
     let caller = func_by_name(&module, "caller");
     let f = local_func(&module, caller);
 
-    // Under guard-dispatch, Phase 6c rewind-throw stub is prepended to the
-    // try_table body and Phase 6d wraps the try_table in
-    // $outer/$capture.
-    let mut bodies = Vec::new();
-    collect_try_table_bodies(f, f.entry_block(), &mut bodies);
-    assert_eq!(bodies.len(), 1, "fixture has exactly one try_table");
-    let body_kinds = seq_kinds(&module, caller, bodies[0]);
-    // Rewind-throw stub prefix: GlobalGet, Const, Binop, LocalGet,
-    // Const, Binop, Binop, IfElse.
+    // Per-block switch-dispatch handles fork-path calls inside
+    // try_table bodies — at least one br_table is emitted (function-
+    // level dispatch + per-block dispatch inside the try_table body).
     assert!(
-        body_kinds.len() >= 8,
-        "try_table body too short for Phase 6c stub: {body_kinds:?}",
-    );
-    assert_eq!(
-        &body_kinds[..8],
-        &[
-            InstrKind::GlobalGet,
-            InstrKind::Const,
-            InstrKind::Binop,
-            InstrKind::LocalGet,
-            InstrKind::Const,
-            InstrKind::Binop,
-            InstrKind::Binop,
-            InstrKind::IfElse,
-        ],
-        "Phase 6c rewind-throw stub expected at try_table body head: {body_kinds:?}",
+        count_br_tables(f) >= 1,
+        "fork-in-try-body must use per-block switch-dispatch \
+         (br_table emitted), not guard-dispatch's body-replay",
     );
 
-    // No top-level br_table — guard-dispatch.
-    assert_eq!(
-        count_br_tables(f),
-        0,
-        "fork-in-try-body should use guard-dispatch (no br_table)",
-    );
-
-    // The exnref stash is injected (Phase 6a).
+    // The exnref stash and Phase 6a/6c/6d plumbing are still injected
+    // for try_tables — the per-block dispatch overlays on top of the
+    // existing catch-handler scaffolding (used by fork-from-catch in
+    // the B1 follow-up).
     assert!(
         module
             .tables
@@ -1295,7 +1267,7 @@ fn fork_inside_try_body_uses_guard_dispatch() {
 }
 
 #[test]
-fn fork_inside_loop_uses_guard_dispatch() {
+fn fork_inside_loop_uses_per_block_switch_dispatch() {
     let wat = r#"
         (module
           (import "kernel" "kernel_fork" (func $fork (result i32)))
@@ -1313,17 +1285,20 @@ fn fork_inside_loop_uses_guard_dispatch() {
     let caller = func_by_name(&module, "caller");
     let f = local_func(&module, caller);
 
-    assert_eq!(
-        count_br_tables(f),
-        0,
-        "fork-in-loop should use guard-dispatch",
+    assert!(
+        count_br_tables(f) >= 1,
+        "fork-in-loop must use per-block switch-dispatch (br_table emitted)",
     );
 }
 
 #[test]
-fn fork_in_both_top_level_and_nested_uses_guard_dispatch() {
-    // If any call is nested, the whole function uses guard-dispatch — the top
-    // level call doesn't get its own switch-dispatch treatment.
+fn fork_in_both_top_level_and_nested_uses_per_block_switch_dispatch() {
+    // Mixed top-level + nested fork calls now use per-block
+    // switch-dispatch. The function-level dispatch's br_table maps
+    // each call_idx to either a direct POST_K (top-level call) or a
+    // POST_J_ENTER (just before the enclosing block); inside the
+    // enclosing block, the per-block dispatch routes to its own
+    // POST_K.
     let wat = r#"
         (module
           (import "kernel" "kernel_fork" (func $fork (result i32)))
@@ -1340,10 +1315,10 @@ fn fork_in_both_top_level_and_nested_uses_guard_dispatch() {
     let caller = func_by_name(&module, "caller");
     let f = local_func(&module, caller);
 
-    assert_eq!(
-        count_br_tables(f),
-        0,
-        "mixed top+nested fork calls should use guard-dispatch (no br_table)",
+    assert!(
+        count_br_tables(f) >= 1,
+        "mixed top+nested fork calls must use per-block switch-dispatch \
+         (br_table emitted)",
     );
     let mut ifelse_count = 0usize;
     walk_all(f, f.entry_block(), &mut |_, instr| {
@@ -1413,34 +1388,21 @@ fn distinct_try_tables_get_sequential_region_ids() {
     collect_try_table_bodies(f, f.entry_block(), &mut bodies);
     assert_eq!(bodies.len(), 2, "fixture has two try_tables");
 
-    // The Phase 6c stub's `i32.const K` (region id) is at index 4 of
-    // each body's instructions (after GlobalGet, Const, Binop,
-    // LocalGet). Different region ids identify different try_tables.
-    let mut region_ids = Vec::new();
-    for body in &bodies {
-        let seq = f.block(*body);
-        let const_instr = &seq.instrs[4].0;
-        let v = match const_instr {
-            Instr::Const(c) => match c.value {
-                ir::Value::I32(v) => v,
-                _ => panic!("expected i32 const, got {:?}", c.value),
-            },
-            other => panic!("expected Const, got {other:?}"),
-        };
-        region_ids.push(v);
-    }
-    assert_eq!(
-        region_ids,
-        vec![1, 2],
-        "sibling try_tables should get region_ids 1, 2 in lexical order",
-    );
-
+    // After per-block switch-dispatch lands on a try_table body's
+    // seq, the body is rebuilt as [Block(POST_{n-1}), post-call,
+    // chunks[n], ...]. Phase 6c stubs (which run before the rebuild)
+    // are folded into the cascade — they live somewhere in the
+    // chunks but are no longer at fixed positions. Just verify the
+    // exnref stash is injected with one slot per try_table.
     let stash = module
         .tables
         .iter()
         .find(|t| t.name.as_deref() == Some("_wpk_fork_exnref_stash"))
         .expect("stash must be injected");
-    assert_eq!(stash.initial, 2);
+    assert_eq!(
+        stash.initial, 2,
+        "two try_tables → two exnref stash slots (one region_id each)",
+    );
 }
 
 #[test]

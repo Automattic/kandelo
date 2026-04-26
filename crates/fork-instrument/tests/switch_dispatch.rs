@@ -125,6 +125,33 @@ fn guard_dispatch_gates_non_fork_path_direct_call() {
 }
 
 #[test]
+fn nested_fork_call_uses_per_block_switch_dispatch() {
+    // Path A regression: a fork-path call nested inside an `if-then`
+    // must use switch-dispatch with per-block dispatch — NOT fall back
+    // to guard-dispatch's REWIND body-replay (which has the popen-class
+    // divergence bug documented in
+    // memory/fork-instrument-O2-bug-investigation.md).
+    //
+    // Structural invariant: at least one `br_table` is emitted in `main`.
+    // Today, guard-dispatch emits zero br_tables; Path A emits at least
+    // one (a top-level dispatch and/or a per-block dispatch inside the
+    // `if-then`).
+    let wat = include_str!("fixtures/switch_dispatch/nested_fork_call.wat");
+    let input = wat::parse_str(wat).expect("wat parse");
+    let output = instrument(&input, &Options::default()).expect("instrument");
+    validate(&output);
+    let module = Module::from_buffer(&output).expect("walrus parse");
+
+    assert!(
+        has_top_level_br_table_dispatch(&module, "main"),
+        "nested fork-path call must use switch-dispatch (br_table emitted), \
+         not guard-dispatch's body-replay (no br_table). See \
+         memory/fork-instrument-O2-bug-investigation.md for why body-replay \
+         diverges."
+    );
+}
+
+#[test]
 fn posix_spawn_class_shadow_stack_not_duplicated() {
     let wat = include_str!("fixtures/switch_dispatch/posix_spawn_class.wat");
     let input = wat::parse_str(wat).expect("wat parse");
