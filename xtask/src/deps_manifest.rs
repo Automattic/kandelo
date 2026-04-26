@@ -95,20 +95,23 @@ impl TargetArch {
 /// Used by the resolver's remote-fetch path (Task A.9) to reject
 /// archives whose `target_arch` or `abi_versions` no longer match
 /// the consumer's environment.
-// Fields are read by tests + future A.5 (cache-key inputs) / A.9
-// (remote-fetch verification). Mark allow(dead_code) at the struct
-// level so the binary crate's dead-code analysis doesn't grumble
-// about unread schema fields between landing the schema and wiring
-// it up in subsequent commits.
+//
+// `build_timestamp` and `build_host` are informational provenance
+// fields surfaced into archived manifests but never directly consumed
+// by the resolver — they're meant for human inspection of a cached
+// artifact. Field-level allow(dead_code) here so the rest of the
+// struct's fields (which ARE read by remote_fetch.rs) trigger normal
+// dead-code analysis.
 #[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
 pub struct Compatibility {
     pub target_arch: TargetArch,
     pub abi_versions: Vec<u32>,
     pub cache_key_sha: String,
     #[serde(default)]
+    #[allow(dead_code)]
     pub build_timestamp: Option<String>,
     #[serde(default)]
+    #[allow(dead_code)]
     pub build_host: Option<String>,
 }
 
@@ -125,9 +128,7 @@ pub struct Compatibility {
 /// time. `archive_sha256` is enforced as 64-char lowercase hex so
 /// any download can be content-addressed without re-checking format
 /// at fetch time.
-// Read by tests now; wired into the resolver in Task A.9.
 #[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
 pub struct Binary {
     pub archive_url: String,
     pub archive_sha256: String,
@@ -158,12 +159,8 @@ pub struct ProgramOutput {
 /// are accepted; other operators reject with a future-work error
 /// linking design decision 11. The runner that actually invokes
 /// `probe.args` and matches `version_regex` against the output
-/// lands in C.9.
-// Read by tests now; consumed by C.9 (host-tool runner). Mark
-// allow(dead_code) at the struct level so the binary crate doesn't
-// grumble between landing the schema and wiring it up.
+/// lives in [`crate::host_tool_probe::probe`] (C.9).
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct HostTool {
     pub name: String,
     pub version_constraint: VersionConstraint,
@@ -180,7 +177,6 @@ pub struct HostTool {
 /// V2 host-tool versions are pure dotted-integer; prerelease and
 /// build suffixes (`-rc1`, `+build`) are rejected at parse time.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct Version {
     pub major: u32,
     pub minor: u32,
@@ -207,7 +203,6 @@ impl Eq for Version {}
 impl Version {
     /// Parse a 2- or 3-component dotted-integer version. Rejects
     /// anything with prerelease or build suffixes.
-    #[allow(dead_code)]
     pub fn parse(s: &str) -> Result<Self, String> {
         if s.contains('-') || s.contains('+') {
             return Err(format!(
@@ -276,7 +271,6 @@ impl PartialOrd for Version {
 /// versions, compound `">=X.Y,<P.Q"`) reject at parse time with a
 /// future-work error linking design decision 11.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub struct VersionConstraint {
     pub min: Version,
 }
@@ -286,7 +280,6 @@ impl VersionConstraint {
     /// `>=X.Y.Z` are accepted; everything else rejects with a
     /// future-work error message naming `tool_name` and the bad
     /// input.
-    #[allow(dead_code)]
     pub fn parse(s: &str, tool_name: &str) -> Result<Self, String> {
         let s = s.trim();
         if s.contains(',') {
@@ -313,7 +306,6 @@ impl VersionConstraint {
     /// `actual` satisfies `self` iff `actual >= self.min`. The
     /// comparison treats a missing patch component as 0:
     /// `>=3.20` accepts `3.20.0`, `3.21`, `3.20.5` but rejects `3.19`.
-    #[allow(dead_code)]
     pub fn satisfies(&self, actual: &Version) -> bool {
         actual >= &self.min
     }
@@ -340,7 +332,6 @@ fn future_work_err(tool_name: &str, value: &str, kind: &str) -> String {
 /// Defaults (when omitted in TOML): `args = ["--version"]`,
 /// `version_regex = r"(\d+\.\d+(?:\.\d+)?)"`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub struct HostToolProbe {
     pub args: Vec<String>,
     pub version_regex: String,
@@ -395,22 +386,20 @@ pub struct DepsManifest {
     /// manifests parsed via [`DepsManifest::parse`] (source `deps.toml`)
     /// and always `Some` for those parsed via
     /// [`DepsManifest::parse_archived`] (archived `manifest.toml`).
-    /// Read by tests now; wired into the resolver in Tasks A.5 / A.9.
-    #[allow(dead_code)]
+    /// Consumed by `remote_fetch` to verify a downloaded archive's
+    /// `target_arch`, `abi_versions`, and `cache_key_sha`.
     pub compatibility: Option<Compatibility>,
 
     /// Optional remote-fetch pointer (see [`Binary`]). When `Some`,
     /// the resolver may download a prebuilt archive instead of
-    /// running the source build. Read by tests now; wired into the
-    /// resolver in Task A.9.
-    #[allow(dead_code)]
+    /// running the source build (consumed in `build_deps`'s
+    /// `ensure_built` and `remote_fetch`).
     pub binary: Option<Binary>,
 
     /// Inline host-tool requirements (`[[host_tools]]` in TOML).
     /// Empty when none are declared. Allowed on every manifest kind
-    /// (library / program / source). Read by tests now; consumed
-    /// by C.8 (constraint parser) and C.9 (host-tool runner).
-    #[allow(dead_code)]
+    /// (library / program / source). Consumed by `ensure_built`
+    /// (probe runner) and `cmd_check` (host-tool consistency lint).
     pub host_tools: Vec<HostTool>,
 
     /// Directory containing this `deps.toml`. The build script path and
@@ -555,7 +544,6 @@ impl DepsManifest {
     /// Parse an archived `manifest.toml` (the one written into the
     /// cached artifact). Requires a `[compatibility]` block; rejects
     /// manifests without one. Used by Task A.9 remote-fetch path.
-    #[allow(dead_code)]
     pub fn parse_archived(text: &str, dir: PathBuf) -> Result<Self, String> {
         let raw: Raw = toml::from_str(text)
             .map_err(|e| format!("parse manifest.toml: {e}"))?;

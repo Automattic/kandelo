@@ -26,7 +26,6 @@ use crate::deps_manifest::{HostTool, Version, VersionConstraint};
 /// or the tool is just too old. Display formatting truncates noisy
 /// `output` payloads at 4 KiB so we don't dump megabytes of stderr.
 #[derive(Debug)]
-#[allow(dead_code)] // C.10 will consume these via `ensure_built`.
 pub enum ProbeFailure {
     /// Tool not found in PATH (Command::output failed).
     Missing { tool: String, reason: String },
@@ -106,7 +105,6 @@ impl std::fmt::Display for ProbeFailure {
 /// PATH; the runner does NOT consult `install_hints`, ask the user,
 /// or auto-install. Combined stdout+stderr is matched against the
 /// regex (some tools — autoconf, awk — print `--version` to stderr).
-#[allow(dead_code)] // Wired into `ensure_built` in Task C.10.
 pub fn probe(tool: &HostTool) -> Result<(), ProbeFailure> {
     let output = Command::new(&tool.name)
         .args(&tool.probe.args)
