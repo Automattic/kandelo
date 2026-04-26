@@ -2318,12 +2318,19 @@ pub fn sys_rmdir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resu
 
 pub fn sys_unlink(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
     let resolved = resolve_path(path, &proc.cwd);
-    // Check if this is a Unix socket path
-    {
+    // AF_UNIX bind() creates a real host inode, so unlink must remove both the
+    // registry entry AND the host inode. ENOENT is not an error in the
+    // registry-hit path because some host VFS variants (e.g. our virtual one)
+    // may not actually persist the socket node.
+    let was_unix_socket = {
         let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
-        if registry.unregister(&resolved) {
-            return Ok(());
-        }
+        registry.unregister(&resolved)
+    };
+    if was_unix_socket {
+        return match host.host_unlink(&resolved) {
+            Ok(()) | Err(Errno::ENOENT) => Ok(()),
+            Err(e) => Err(e),
+        };
     }
     match host.host_unlink(&resolved) {
         Err(Errno::EPERM) => {
@@ -4477,7 +4484,7 @@ pub fn sys_setsockopt_timeout(
 ///
 /// For AF_INET sockets, parses sockaddr_in and stores the IP + port.
 /// If port == 0, assigns an ephemeral port.
-pub fn sys_bind(proc: &mut Process, fd: i32, addr: &[u8]) -> Result<(), Errno> {
+pub fn sys_bind(proc: &mut Process, host: &mut dyn HostIO, fd: i32, addr: &[u8]) -> Result<(), Errno> {
     use crate::socket::{SocketDomain, SocketState};
 
     let entry = proc.fd_table.get(fd)?;
@@ -4532,9 +4539,25 @@ pub fn sys_bind(proc: &mut Process, fd: i32, addr: &[u8]) -> Result<(), Errno> {
             let sun_path = &path_bytes[..path_end];
             let resolved = crate::path::resolve_path(sun_path, &proc.cwd);
 
-            // Register in global Unix socket registry
+            // POSIX: bind() must create a filesystem inode at sun_path so
+            // chmod/stat/ls find a node there. Do that first via host O_CREAT|
+            // O_EXCL so a pre-existing path turns into EADDRINUSE, matching the
+            // registry contract below. Other host_open errors (e.g. ENOENT for
+            // missing parent dir) propagate unchanged.
+            use wasm_posix_shared::flags::{O_CREAT, O_EXCL, O_WRONLY};
+            let h = match host.host_open(&resolved, O_CREAT | O_EXCL | O_WRONLY, 0o600) {
+                Ok(h) => h,
+                Err(Errno::EEXIST) => return Err(Errno::EADDRINUSE),
+                Err(e) => return Err(e),
+            };
+            let _ = host.host_close(h);
+
+            // Register in global Unix socket registry. If a stale entry exists
+            // (host had no inode but registry did — shouldn't happen normally)
+            // unwind the host inode so we don't leak.
             let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
             if !registry.register(resolved.clone(), proc.pid, sock_idx) {
+                let _ = host.host_unlink(&resolved);
                 return Err(Errno::EADDRINUSE);
             }
 
@@ -5551,12 +5574,17 @@ pub fn sys_unlinkat(
     if flags & AT_REMOVEDIR != 0 {
         host.host_rmdir(&resolved)
     } else {
-        // Check if this is a Unix socket path
-        {
+        // Mirror sys_unlink: AF_UNIX socket paths have a real host inode now,
+        // so on registry hit we must also drop the inode (ENOENT tolerated).
+        let was_unix_socket = {
             let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
-            if registry.unregister(&resolved) {
-                return Ok(());
-            }
+            registry.unregister(&resolved)
+        };
+        if was_unix_socket {
+            return match host.host_unlink(&resolved) {
+                Ok(()) | Err(Errno::ENOENT) => Ok(()),
+                Err(e) => Err(e),
+            };
         }
         match host.host_unlink(&resolved) {
             Err(Errno::EPERM) => {
@@ -8003,16 +8031,50 @@ mod tests {
         sigsuspend_signal: u32,
         sigsuspend_error: bool,
         clock_time: (i64, i64),
+        /// Opt-in: when true, host_open with O_CREAT|O_EXCL records a fs inode,
+        /// host_unlink removes it, and host_chmod updates its mode (or returns
+        /// ENOENT if missing). Lets bind() tests assert real filesystem effects
+        /// without a host VFS.
+        track_fs: bool,
+        fs_inodes: std::collections::BTreeMap<Vec<u8>, u32>,
+        /// Path-keyed errno injection for host_open (consulted before track_fs
+        /// logic). Lets a test simulate "parent dir missing -> ENOENT".
+        open_failures: std::collections::BTreeMap<Vec<u8>, Errno>,
     }
 
     impl MockHostIO {
         fn new() -> Self {
-            MockHostIO { next_handle: 100, dir_entry_returned: false, dir_entry_index: 0, dir_entry_count: 1, sigsuspend_signal: 0, sigsuspend_error: false, clock_time: (1234567890, 123456789) }
+            MockHostIO {
+                next_handle: 100,
+                dir_entry_returned: false,
+                dir_entry_index: 0,
+                dir_entry_count: 1,
+                sigsuspend_signal: 0,
+                sigsuspend_error: false,
+                clock_time: (1234567890, 123456789),
+                track_fs: false,
+                fs_inodes: std::collections::BTreeMap::new(),
+                open_failures: std::collections::BTreeMap::new(),
+            }
         }
     }
 
     impl HostIO for MockHostIO {
-        fn host_open(&mut self, _path: &[u8], _flags: u32, _mode: u32) -> Result<i64, Errno> {
+        fn host_open(&mut self, path: &[u8], flags: u32, mode: u32) -> Result<i64, Errno> {
+            if let Some(&e) = self.open_failures.get(path) {
+                return Err(e);
+            }
+            if self.track_fs {
+                use wasm_posix_shared::flags::{O_CREAT, O_EXCL};
+                let creating = flags & O_CREAT != 0;
+                let exclusive = flags & O_EXCL != 0;
+                if creating && exclusive && self.fs_inodes.contains_key(path) {
+                    return Err(Errno::EEXIST);
+                }
+                if creating {
+                    self.fs_inodes.entry(path.to_vec()).or_insert(mode);
+                }
+            }
             let handle = self.next_handle;
             self.next_handle += 1;
             Ok(handle)
@@ -8102,7 +8164,14 @@ mod tests {
 
         fn host_mkdir(&mut self, _path: &[u8], _mode: u32) -> Result<(), Errno> { Ok(()) }
         fn host_rmdir(&mut self, _path: &[u8]) -> Result<(), Errno> { Ok(()) }
-        fn host_unlink(&mut self, _path: &[u8]) -> Result<(), Errno> { Ok(()) }
+        fn host_unlink(&mut self, path: &[u8]) -> Result<(), Errno> {
+            if self.track_fs {
+                if self.fs_inodes.remove(path).is_none() {
+                    return Err(Errno::ENOENT);
+                }
+            }
+            Ok(())
+        }
         fn host_rename(&mut self, _oldpath: &[u8], _newpath: &[u8]) -> Result<(), Errno> { Ok(()) }
         fn host_link(&mut self, _oldpath: &[u8], _newpath: &[u8]) -> Result<(), Errno> { Ok(()) }
         fn host_symlink(&mut self, _target: &[u8], _linkpath: &[u8]) -> Result<(), Errno> { Ok(()) }
@@ -8114,7 +8183,16 @@ mod tests {
             Ok(n)
         }
 
-        fn host_chmod(&mut self, _path: &[u8], _mode: u32) -> Result<(), Errno> { Ok(()) }
+        fn host_chmod(&mut self, path: &[u8], mode: u32) -> Result<(), Errno> {
+            if self.track_fs {
+                match self.fs_inodes.get_mut(path) {
+                    Some(slot) => { *slot = mode; Ok(()) }
+                    None => Err(Errno::ENOENT),
+                }
+            } else {
+                Ok(())
+            }
+        }
         fn host_chown(&mut self, _path: &[u8], _uid: u32, _gid: u32) -> Result<(), Errno> { Ok(()) }
         fn host_access(&mut self, _path: &[u8], _amode: u32) -> Result<(), Errno> { Ok(()) }
 
@@ -9729,7 +9807,7 @@ mod tests {
         // Bind + listen + mark connected
         let mut addr = [0u8; 16];
         addr[0] = 2; // AF_INET
-        sys_bind(&mut proc, fd, &addr).unwrap();
+        sys_bind(&mut proc, &mut host, fd, &addr).unwrap();
         // tcp_info should work on bound socket
         let buf = sys_getsockopt_tcp_info(&proc, fd).unwrap();
         assert_eq!(buf[0], 7); // TCP_CLOSE (not connected/listening yet)
@@ -9747,7 +9825,7 @@ mod tests {
         let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
         let mut addr = [0u8; 16];
         addr[0] = 2;
-        sys_bind(&mut proc, fd, &addr).unwrap();
+        sys_bind(&mut proc, &mut host, fd, &addr).unwrap();
         sys_listen(&mut proc, &mut host, fd, 5).unwrap();
         let buf = sys_getsockopt_tcp_info(&proc, fd).unwrap();
         assert_eq!(buf[0], 10); // TCP_LISTEN
@@ -9799,14 +9877,15 @@ mod tests {
         let mut addr = [0u8; 16];
         addr[0] = 2; // AF_INET
         addr[2] = 0x1F; addr[3] = 0x90; // port 8080 big-endian
-        let result = sys_bind(&mut proc, fd, &addr);
+        let result = sys_bind(&mut proc, &mut host, fd, &addr);
         assert_eq!(result, Ok(()));
     }
 
     #[test]
     fn test_bind_enotsock() {
         let mut proc = Process::new(1);
-        let result = sys_bind(&mut proc, 0, &[0u8; 16]);
+        let mut host = MockHostIO::new();
+        let result = sys_bind(&mut proc, &mut host, 0, &[0u8; 16]);
         assert_eq!(result, Err(Errno::ENOTSOCK));
     }
 
@@ -9826,7 +9905,7 @@ mod tests {
         addr[0] = 1; // AF_UNIX
         addr[1] = 0;
         addr[2..2 + path.len()].copy_from_slice(path);
-        sys_bind(&mut proc, fd, &addr[..2 + path.len() + 1]).unwrap();
+        sys_bind(&mut proc, &mut host, fd, &addr[..2 + path.len() + 1]).unwrap();
         // Socket should be in Bound state
         let entry = proc.fd_table.get(fd).unwrap();
         let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
@@ -9855,12 +9934,166 @@ mod tests {
         addr[0] = 1; // AF_UNIX
         addr[2..2 + path.len()].copy_from_slice(path);
         let addrlen = 2 + path.len() + 1;
-        sys_bind(&mut proc, fd1, &addr[..addrlen]).unwrap();
-        let err = sys_bind(&mut proc, fd2, &addr[..addrlen]).unwrap_err();
+        sys_bind(&mut proc, &mut host, fd1, &addr[..addrlen]).unwrap();
+        let err = sys_bind(&mut proc, &mut host, fd2, &addr[..addrlen]).unwrap_err();
         assert_eq!(err, Errno::EADDRINUSE);
 
         // Clean up
         unsafe { crate::unix_socket::global_unix_socket_registry() }.unregister(&resolved);
+    }
+
+    /// AF_UNIX bind() must create a filesystem inode at the bound path so daemons
+    /// (dinit, postgres, redis, ...) can chmod/stat the socket node. The next 5
+    /// tests pin that contract using MockHostIO's opt-in track_fs.
+
+    #[test]
+    fn test_bind_unix_creates_host_inode() {
+        let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
+        let mut proc = Process::new(9020);
+        let mut host = MockHostIO::new();
+        host.track_fs = true;
+        let path = b"/tmp/inode_9020.sock";
+        let resolved = crate::path::resolve_path(path, &proc.cwd);
+        unsafe { crate::unix_socket::global_unix_socket_registry() }.unregister(&resolved);
+
+        let fd = sys_socket(&mut proc, &mut host, 1, 1, 0).unwrap();
+        let mut addr = [0u8; 110];
+        addr[0] = 1;
+        addr[2..2 + path.len()].copy_from_slice(path);
+        sys_bind(&mut proc, &mut host, fd, &addr[..2 + path.len() + 1]).unwrap();
+
+        assert!(host.fs_inodes.contains_key(&resolved),
+            "bind() must create a host filesystem inode at {:?}", resolved);
+
+        unsafe { crate::unix_socket::global_unix_socket_registry() }.unregister(&resolved);
+    }
+
+    #[test]
+    fn test_bind_unix_chmod_after_bind_succeeds() {
+        let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
+        let mut proc = Process::new(9021);
+        let mut host = MockHostIO::new();
+        host.track_fs = true;
+        let path = b"/tmp/chmod_9021.sock";
+        let resolved = crate::path::resolve_path(path, &proc.cwd);
+        unsafe { crate::unix_socket::global_unix_socket_registry() }.unregister(&resolved);
+
+        let fd = sys_socket(&mut proc, &mut host, 1, 1, 0).unwrap();
+        let mut addr = [0u8; 110];
+        addr[0] = 1;
+        addr[2..2 + path.len()].copy_from_slice(path);
+        sys_bind(&mut proc, &mut host, fd, &addr[..2 + path.len() + 1]).unwrap();
+
+        // Daemon-style chmod on the socket node — this is what dinit was
+        // failing with ENOENT before bind() created the inode.
+        sys_chmod(&mut proc, &mut host, path, 0o660).unwrap();
+        assert_eq!(host.fs_inodes.get(&resolved).copied(), Some(0o660));
+
+        unsafe { crate::unix_socket::global_unix_socket_registry() }.unregister(&resolved);
+    }
+
+    #[test]
+    fn test_bind_unix_duplicate_returns_eaddrinuse_via_host() {
+        // Same EADDRINUSE outcome as test_bind_unix_duplicate_fails, but driven
+        // by the host's O_EXCL EEXIST translation (registry would also catch it,
+        // but we want to exercise the host path).
+        let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
+        let mut proc = Process::new(9022);
+        let mut host = MockHostIO::new();
+        host.track_fs = true;
+        let path = b"/tmp/dup_host_9022.sock";
+        let resolved = crate::path::resolve_path(path, &proc.cwd);
+        unsafe { crate::unix_socket::global_unix_socket_registry() }.unregister(&resolved);
+
+        // Pre-populate fs_inodes so the registry is empty but the host claims
+        // the path already exists. EEXIST from host_open must surface as
+        // EADDRINUSE (POSIX bind contract).
+        host.fs_inodes.insert(resolved.clone(), 0o600);
+
+        let fd = sys_socket(&mut proc, &mut host, 1, 1, 0).unwrap();
+        let mut addr = [0u8; 110];
+        addr[0] = 1;
+        addr[2..2 + path.len()].copy_from_slice(path);
+        let err = sys_bind(&mut proc, &mut host, fd, &addr[..2 + path.len() + 1])
+            .unwrap_err();
+        assert_eq!(err, Errno::EADDRINUSE);
+
+        unsafe { crate::unix_socket::global_unix_socket_registry() }.unregister(&resolved);
+    }
+
+    #[test]
+    fn test_bind_unix_unlink_then_rebind_succeeds() {
+        let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
+        let mut proc = Process::new(9023);
+        let mut host = MockHostIO::new();
+        host.track_fs = true;
+        let path = b"/tmp/relink_9023.sock";
+        let resolved = crate::path::resolve_path(path, &proc.cwd);
+        unsafe { crate::unix_socket::global_unix_socket_registry() }.unregister(&resolved);
+
+        let fd1 = sys_socket(&mut proc, &mut host, 1, 1, 0).unwrap();
+        let mut addr = [0u8; 110];
+        addr[0] = 1;
+        addr[2..2 + path.len()].copy_from_slice(path);
+        let addrlen = 2 + path.len() + 1;
+        sys_bind(&mut proc, &mut host, fd1, &addr[..addrlen]).unwrap();
+        assert!(host.fs_inodes.contains_key(&resolved));
+
+        sys_unlink(&mut proc, &mut host, path).unwrap();
+        assert!(!host.fs_inodes.contains_key(&resolved),
+            "unlink must drop the host inode");
+
+        let fd2 = sys_socket(&mut proc, &mut host, 1, 1, 0).unwrap();
+        sys_bind(&mut proc, &mut host, fd2, &addr[..addrlen]).unwrap();
+        assert!(host.fs_inodes.contains_key(&resolved));
+
+        sys_unlink(&mut proc, &mut host, path).unwrap();
+        unsafe { crate::unix_socket::global_unix_socket_registry() }.unregister(&resolved);
+    }
+
+    #[test]
+    fn test_bind_unix_propagates_open_error() {
+        // host_open failures other than EEXIST must surface unchanged — they
+        // are NOT EADDRINUSE. Simulate "parent dir missing" → ENOENT.
+        let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
+        let mut proc = Process::new(9024);
+        let mut host = MockHostIO::new();
+        host.track_fs = true;
+        let path = b"/tmp/missing_parent_9024.sock";
+        let resolved = crate::path::resolve_path(path, &proc.cwd);
+        unsafe { crate::unix_socket::global_unix_socket_registry() }.unregister(&resolved);
+        host.open_failures.insert(resolved.clone(), Errno::ENOENT);
+
+        let fd = sys_socket(&mut proc, &mut host, 1, 1, 0).unwrap();
+        let mut addr = [0u8; 110];
+        addr[0] = 1;
+        addr[2..2 + path.len()].copy_from_slice(path);
+        let err = sys_bind(&mut proc, &mut host, fd, &addr[..2 + path.len() + 1])
+            .unwrap_err();
+        assert_eq!(err, Errno::ENOENT, "non-EEXIST host_open errors must propagate as-is");
+
+        unsafe { crate::unix_socket::global_unix_socket_registry() }.unregister(&resolved);
+    }
+
+    #[test]
+    fn test_bind_inet_does_not_create_host_inode() {
+        // Regression: AF_INET bind must not touch the host filesystem.
+        let mut proc = Process::new(9025);
+        let mut host = MockHostIO::new();
+        host.track_fs = true;
+        use wasm_posix_shared::socket::*;
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        let mut addr = [0u8; 16];
+        addr[0] = 2; // AF_INET
+        addr[2] = 0x1F; addr[3] = 0x90; // 8080
+        sys_bind(&mut proc, &mut host, fd, &addr).unwrap();
+
+        let entry = proc.fd_table.get(fd).unwrap();
+        let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
+        let sock_idx = (-(ofd.host_handle + 1)) as usize;
+        let sock = proc.sockets.get(sock_idx).unwrap();
+        assert_eq!(sock.state, crate::socket::SocketState::Bound);
+        assert!(host.fs_inodes.is_empty(), "AF_INET bind must not create a host inode");
     }
 
     #[test]
@@ -9872,7 +10105,7 @@ mod tests {
         // Must bind before listen
         let mut addr = [0u8; 16];
         addr[0] = 2;
-        sys_bind(&mut proc, fd, &addr).unwrap();
+        sys_bind(&mut proc, &mut host, fd, &addr).unwrap();
         let result = sys_listen(&mut proc, &mut host, fd, 5);
         assert_eq!(result, Ok(()));
     }
@@ -9885,7 +10118,7 @@ mod tests {
         let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
         let mut addr = [0u8; 16];
         addr[0] = 2;
-        sys_bind(&mut proc, fd, &addr).unwrap();
+        sys_bind(&mut proc, &mut host, fd, &addr).unwrap();
         sys_listen(&mut proc, &mut host, fd, 5).unwrap();
         let result = sys_accept(&mut proc, &mut host, fd);
         assert_eq!(result, Err(Errno::EAGAIN));
@@ -12181,7 +12414,7 @@ mod tests {
         addr[0] = 1; // AF_UNIX
         addr[2..2 + path.len()].copy_from_slice(path);
         let addrlen = 2 + path.len() + 1;
-        sys_bind(&mut proc, server_fd, &addr[..addrlen]).unwrap();
+        sys_bind(&mut proc, &mut host, server_fd, &addr[..addrlen]).unwrap();
         sys_listen(&mut proc, &mut host, server_fd, 5).unwrap();
 
         // Connect a client
@@ -12234,7 +12467,7 @@ mod tests {
         addr[0] = 1;
         addr[2..2 + path.len()].copy_from_slice(path);
         let addrlen = 2 + path.len() + 1;
-        sys_bind(&mut proc, server_fd, &addr[..addrlen]).unwrap();
+        sys_bind(&mut proc, &mut host, server_fd, &addr[..addrlen]).unwrap();
         sys_listen(&mut proc, &mut host, server_fd, 5).unwrap();
 
         // Connect client
@@ -12272,7 +12505,7 @@ mod tests {
         addr[0] = 1;
         let path = b"/tmp/stat.sock";
         addr[2..2 + path.len()].copy_from_slice(path);
-        sys_bind(&mut proc, fd, &addr[..2 + path.len() + 1]).unwrap();
+        sys_bind(&mut proc, &mut host, fd, &addr[..2 + path.len() + 1]).unwrap();
 
         let st = sys_stat(&mut proc, &mut host, b"/tmp/stat.sock").unwrap();
         assert_eq!(st.st_mode & wasm_posix_shared::mode::S_IFMT, wasm_posix_shared::mode::S_IFSOCK);
@@ -12293,7 +12526,7 @@ mod tests {
         addr[0] = 1;
         let path = b"/tmp/unlink.sock";
         addr[2..2 + path.len()].copy_from_slice(path);
-        sys_bind(&mut proc, fd, &addr[..2 + path.len() + 1]).unwrap();
+        sys_bind(&mut proc, &mut host, fd, &addr[..2 + path.len() + 1]).unwrap();
 
         // Socket path should exist
         assert!(sys_stat(&mut proc, &mut host, b"/tmp/unlink.sock").is_ok());
@@ -12303,7 +12536,7 @@ mod tests {
 
         // Another socket can now bind to the same path
         let fd2 = sys_socket(&mut proc, &mut host, 1, 1, 0).unwrap();
-        sys_bind(&mut proc, fd2, &addr[..2 + path.len() + 1]).unwrap();
+        sys_bind(&mut proc, &mut host, fd2, &addr[..2 + path.len() + 1]).unwrap();
 
         // Cleanup
         let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
@@ -12330,7 +12563,7 @@ mod tests {
         addr[0] = 1;
         let path = b"/tmp/getsockname.sock";
         addr[2..2 + path.len()].copy_from_slice(path);
-        sys_bind(&mut proc, fd, &addr[..2 + path.len() + 1]).unwrap();
+        sys_bind(&mut proc, &mut host, fd, &addr[..2 + path.len() + 1]).unwrap();
 
         let mut buf = [0u8; 128];
         let n = sys_getsockname(&proc, fd, &mut buf).unwrap();
@@ -12875,7 +13108,7 @@ mod tests {
         let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
         // Bind with port=0 → ephemeral
         let addr = [2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-        sys_bind(&mut proc, fd, &addr).unwrap();
+        sys_bind(&mut proc, &mut host, fd, &addr).unwrap();
         // getsockname should show the assigned ephemeral port
         let mut buf = [0u8; 16];
         let n = sys_getsockname(&proc, fd, &mut buf).unwrap();
@@ -12896,7 +13129,7 @@ mod tests {
         addr[0] = 2;
         addr[2] = 0x1F; addr[3] = 0x90; // 8080 big-endian
         addr[4] = 127; addr[5] = 0; addr[6] = 0; addr[7] = 1;
-        sys_bind(&mut proc, fd, &addr).unwrap();
+        sys_bind(&mut proc, &mut host, fd, &addr).unwrap();
         let mut buf = [0u8; 16];
         sys_getsockname(&proc, fd, &mut buf).unwrap();
         assert_eq!(buf[0], 2); // AF_INET
@@ -12916,7 +13149,7 @@ mod tests {
         let mut addr = [0u8; 16];
         addr[0] = 2; // AF_INET
         addr[2] = 0x1F; addr[3] = 0x90; // port 8080
-        sys_bind(&mut proc, server_fd, &addr).unwrap();
+        sys_bind(&mut proc, &mut host, server_fd, &addr).unwrap();
         sys_listen(&mut proc, &mut host, server_fd, 5).unwrap();
 
         // Client: socket → connect to 127.0.0.1:8080
@@ -12958,7 +13191,7 @@ mod tests {
         let mut addr = [0u8; 16];
         addr[0] = 2;
         // port=0 → ephemeral
-        sys_bind(&mut proc, recv_fd, &addr).unwrap();
+        sys_bind(&mut proc, &mut host, recv_fd, &addr).unwrap();
 
         // Get the assigned port
         let mut gsa_buf = [0u8; 16];
@@ -12969,7 +13202,7 @@ mod tests {
         let send_fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
         let mut sender_addr = [0u8; 16];
         sender_addr[0] = 2;
-        sys_bind(&mut proc, send_fd, &sender_addr).unwrap();
+        sys_bind(&mut proc, &mut host, send_fd, &sender_addr).unwrap();
 
         // Send to the receiver via loopback
         let mut dest_addr = [0u8; 16];

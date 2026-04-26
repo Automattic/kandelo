@@ -5695,11 +5695,11 @@ pub extern "C" fn kernel_socketpair(domain: u32, sock_type: u32, protocol: u32, 
 pub extern "C" fn kernel_bind(fd: i32, addr_ptr: *const u8, addr_len: u32) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
     let addr = unsafe { slice::from_raw_parts(addr_ptr, addr_len as usize) };
-    let result = match syscalls::sys_bind(proc, fd, addr) {
+    let mut host = WasmHostIO;
+    let result = match syscalls::sys_bind(proc, &mut host, fd, addr) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    let mut host = WasmHostIO;
     deliver_pending_signals(proc, &mut host);
     result
 }
