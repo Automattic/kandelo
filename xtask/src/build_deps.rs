@@ -456,91 +456,114 @@ fn ensure_built_inner(
         return Ok((canonical, transitive));
     }
 
-    // Source-kind default fetch+extract path. When a `kind = "source"`
-    // manifest declares no `[build].script`, the resolver treats
-    // `[source]` as the recipe: download the archive, verify its
-    // sha256, extract, atomically rename into the canonical cache
-    // path. Source-kind manifests never carry `[binary]` (Task C.1
-    // enforces), so this branch can short-circuit before the binary
-    // block. If the manifest *does* declare a `[build].script`, we
-    // fall through to `build_into_cache` (Task C.5 covers that path).
-    if matches!(target.kind, ManifestKind::Source) && target.build.script.is_none() {
-        let parent = canonical
-            .parent()
-            .ok_or_else(|| format!("canonical path has no parent: {}", canonical.display()))?;
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("create cache parent {}: {e}", parent.display()))?;
-        let tmp = parent.join(format!(
-            "{}.tmp-{}",
-            canonical
-                .file_name()
-                .expect("canonical path has a filename")
-                .to_string_lossy(),
-            std::process::id()
-        ));
-        if tmp.exists() {
-            std::fs::remove_dir_all(&tmp)
-                .map_err(|e| format!("clean stale {}: {e}", tmp.display()))?;
-        }
-        if let Err(e) = source_extract::fetch_and_extract(
-            &target.source.url,
-            &target.source.sha256,
-            &tmp,
-        ) {
-            let _ = std::fs::remove_dir_all(&tmp);
-            return Err(format!(
-                "{}: source fetch+extract failed: {e}",
-                target.spec()
+    // Cache-miss dispatch. Three flavors of recipe:
+    //
+    //   (Source, None)     — default fetch+extract from `[source]`.
+    //                        Source-kind manifests never carry
+    //                        `[binary]` (Task C.1 enforces), so this
+    //                        branch short-circuits before the binary
+    //                        block.
+    //   (Source, Some(_))  — override path (Task C.5): the manifest
+    //                        ships its own build script (e.g. patch
+    //                        overlay, git clone, multi-tarball
+    //                        assembly). Run it through
+    //                        `build_into_cache` with the standard
+    //                        env-var contract; validation is
+    //                        non-emptiness of OUT_DIR rather than a
+    //                        declared outputs list.
+    //   (Library | Program,_) — try `[binary]` remote fetch first,
+    //                        then fall back to the build script.
+    match (target.kind, target.build.script.is_some()) {
+        (ManifestKind::Source, false) => {
+            let parent = canonical
+                .parent()
+                .ok_or_else(|| {
+                    format!("canonical path has no parent: {}", canonical.display())
+                })?;
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("create cache parent {}: {e}", parent.display()))?;
+            let tmp = parent.join(format!(
+                "{}.tmp-{}",
+                canonical
+                    .file_name()
+                    .expect("canonical path has a filename")
+                    .to_string_lossy(),
+                std::process::id()
             ));
-        }
-        // Race against a peer process that finished its own extract
-        // first: keep theirs, drop ours. Identical inputs produce
-        // identical outputs.
-        if canonical.exists() {
-            let _ = std::fs::remove_dir_all(&tmp);
-            return Ok((canonical, transitive));
-        }
-        std::fs::rename(&tmp, &canonical).map_err(|e| {
-            format!(
-                "rename {} -> {}: {e}",
-                tmp.display(),
-                canonical.display()
-            )
-        })?;
-        return Ok((canonical, transitive));
-    }
-
-    // Resolution priority 3: remote fetch from `[binary].archive_url`.
-    // The 4-step verification (archive sha, target_arch, abi_versions,
-    // cache_key_sha) lives in `remote_fetch::fetch_and_install`. Any
-    // failure logs and falls through to the source build below; a
-    // remote-fetch error should never cause the resolver to refuse to
-    // produce an artifact.
-    if let Some(binary) = &target.binary {
-        let cache_key_sha_hex = hex(&sha);
-        match remote_fetch::fetch_and_install(
-            binary,
-            &canonical,
-            target,
-            arch,
-            abi_version,
-            &cache_key_sha_hex,
-        ) {
-            Ok(()) => return Ok((canonical, transitive)),
-            Err(e) => {
-                eprintln!(
-                    "warning: remote fetch for {} from {} failed ({}); falling back to source build",
-                    target.spec(),
-                    binary.archive_url,
-                    e,
-                );
+            if tmp.exists() {
+                std::fs::remove_dir_all(&tmp)
+                    .map_err(|e| format!("clean stale {}: {e}", tmp.display()))?;
             }
+            if let Err(e) = source_extract::fetch_and_extract(
+                &target.source.url,
+                &target.source.sha256,
+                &tmp,
+            ) {
+                let _ = std::fs::remove_dir_all(&tmp);
+                return Err(format!(
+                    "{}: source fetch+extract failed: {e}",
+                    target.spec()
+                ));
+            }
+            // Race against a peer process that finished its own extract
+            // first: keep theirs, drop ours. Identical inputs produce
+            // identical outputs.
+            if canonical.exists() {
+                let _ = std::fs::remove_dir_all(&tmp);
+                return Ok((canonical, transitive));
+            }
+            std::fs::rename(&tmp, &canonical).map_err(|e| {
+                format!(
+                    "rename {} -> {}: {e}",
+                    tmp.display(),
+                    canonical.display()
+                )
+            })?;
+            Ok((canonical, transitive))
+        }
+        (ManifestKind::Source, true) => {
+            // Override path: run the script. No remote-binary fetch for
+            // sources (`[binary]` is rejected at parse time for source
+            // kind), so we go straight to `build_into_cache`.
+            let pkgconfig_path = compose_pkgconfig_path(&transitive);
+            build_into_cache(target, arch, &canonical, &dep_dirs, &pkgconfig_path)?;
+            Ok((canonical, transitive))
+        }
+        (ManifestKind::Library | ManifestKind::Program, _) => {
+            // Resolution priority 3: remote fetch from
+            // `[binary].archive_url`. The 4-step verification (archive
+            // sha, target_arch, abi_versions, cache_key_sha) lives in
+            // `remote_fetch::fetch_and_install`. Any failure logs and
+            // falls through to the source build below; a remote-fetch
+            // error should never cause the resolver to refuse to
+            // produce an artifact.
+            if let Some(binary) = &target.binary {
+                let cache_key_sha_hex = hex(&sha);
+                match remote_fetch::fetch_and_install(
+                    binary,
+                    &canonical,
+                    target,
+                    arch,
+                    abi_version,
+                    &cache_key_sha_hex,
+                ) {
+                    Ok(()) => return Ok((canonical, transitive)),
+                    Err(e) => {
+                        eprintln!(
+                            "warning: remote fetch for {} from {} failed ({}); falling back to source build",
+                            target.spec(),
+                            binary.archive_url,
+                            e,
+                        );
+                    }
+                }
+            }
+
+            let pkgconfig_path = compose_pkgconfig_path(&transitive);
+            build_into_cache(target, arch, &canonical, &dep_dirs, &pkgconfig_path)?;
+            Ok((canonical, transitive))
         }
     }
-
-    let pkgconfig_path = compose_pkgconfig_path(&transitive);
-    build_into_cache(target, arch, &canonical, &dep_dirs, &pkgconfig_path)?;
-    Ok((canonical, transitive))
 }
 
 /// Build the `WASM_POSIX_DEP_PKG_CONFIG_PATH` value for a build script.
@@ -644,7 +667,17 @@ fn build_into_cache(
         ));
     }
 
-    if let Err(e) = validate_outputs(target, &tmp) {
+    // Kind-aware validation. Library and program manifests carry a
+    // declared outputs list (libs/headers/pkgconfig or program wasms)
+    // that `validate_outputs` checks one-by-one. Source manifests have
+    // no declared outputs — design 11 calls for emptiness as the only
+    // signal — so we just verify the script populated OUT_DIR with at
+    // least one entry; an empty dir indicates a no-op script.
+    let validate_result = match target.kind {
+        ManifestKind::Library | ManifestKind::Program => validate_outputs(target, &tmp),
+        ManifestKind::Source => validate_source_dir_nonempty(&tmp),
+    };
+    if let Err(e) = validate_result {
         let _ = std::fs::remove_dir_all(&tmp);
         return Err(e);
     }
@@ -654,9 +687,18 @@ fn build_into_cache(
     // configure time. Rewrite those paths to the canonical location
     // *before* the rename so parallel readers never observe a
     // canonical cache entry with dead `prefix=<temp>` strings.
-    if let Err(e) = rewrite_install_prefix_paths(&tmp, canonical) {
-        let _ = std::fs::remove_dir_all(&tmp);
-        return Err(e);
+    //
+    // Skip for source kind: source builds produce a tree (e.g. a
+    // patched upstream source dir) that won't have `lib/*.{pc,la}`
+    // and shouldn't — sources aren't installed anywhere. Calling
+    // `rewrite_install_prefix_paths` would be a harmless no-op
+    // (`rewrite_dir` returns Ok on missing `lib/`), but skipping
+    // documents intent and avoids one read_dir.
+    if !matches!(target.kind, ManifestKind::Source) {
+        if let Err(e) = rewrite_install_prefix_paths(&tmp, canonical) {
+            let _ = std::fs::remove_dir_all(&tmp);
+            return Err(e);
+        }
     }
 
     // Atomic install. If someone else finished first, keep theirs,
@@ -775,6 +817,27 @@ fn validate_outputs(target: &DepsManifest, out_dir: &Path) -> Result<(), String>
         }
         // No outputs to validate for source-kind (Chunk C).
         ManifestKind::Source => return Ok(()),
+    }
+    Ok(())
+}
+
+/// Source-kind validation: the override script must have populated
+/// `OUT_DIR` with *something*. Source manifests have no declared
+/// outputs list (Task C.1 rejects `[outputs]` for source kind), so
+/// non-emptiness is the only signal we have that the script did
+/// useful work — an empty dir after a successful `bash` exit almost
+/// always means the script forgot to write to `$WASM_POSIX_DEP_OUT_DIR`
+/// (e.g. wrote to its own working dir, or hard-coded a path).
+fn validate_source_dir_nonempty(out_dir: &Path) -> Result<(), String> {
+    let mut iter = std::fs::read_dir(out_dir)
+        .map_err(|e| format!("read_dir {}: {e}", out_dir.display()))?;
+    if iter.next().is_none() {
+        return Err(format!(
+            "source build script left OUT_DIR empty at {}; \
+             scripts MUST populate $WASM_POSIX_DEP_OUT_DIR with at \
+             least one file before exiting",
+            out_dir.display()
+        ));
     }
     Ok(())
 }
@@ -2840,5 +2903,115 @@ spdx = "BSD-3-Clause"
         // same canonical path.
         let path2 = ensure_built(&m, &registry, TEST_ARCH, TEST_ABI, &opts).unwrap();
         assert_eq!(path, path2);
+    }
+
+    /// C.5: source-kind manifest with `[build].script` runs the script
+    /// through `build_into_cache` and atomically installs the populated
+    /// OUT_DIR under `<cache>/sources/...`. The script gets the same
+    /// env-var contract as lib/program builds (OUT_DIR + NAME +
+    /// VERSION + ...), so a marker file written via
+    /// `$WASM_POSIX_DEP_OUT_DIR/marker` lands in the canonical path.
+    #[test]
+    fn ensure_built_source_kind_with_build_script_runs_it() {
+        let manifest_dir = tempdir("c5-script-manifest");
+        let cache = tempdir("c5-script-cache");
+
+        // Build script: writes a marker file into OUT_DIR.
+        let script = manifest_dir.join("custom.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/bash\nset -e\necho hi > \"$WASM_POSIX_DEP_OUT_DIR/marker\"\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let manifest_text = r#"
+kind = "source"
+name = "pcre2-source"
+version = "10.42"
+revision = 1
+
+[source]
+url = "https://example.test/unused"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "BSD-3-Clause"
+
+[build]
+script = "custom.sh"
+"#;
+        let m = DepsManifest::parse(manifest_text, manifest_dir).unwrap();
+
+        let registry = Registry { roots: vec![] };
+        let path = ensure_built(
+            &m,
+            &registry,
+            TEST_ARCH,
+            TEST_ABI,
+            &resolve_opts(&cache, None),
+        )
+        .unwrap();
+        assert!(
+            path.join("marker").is_file(),
+            "expected marker at {}",
+            path.display()
+        );
+        assert!(path.starts_with(cache.join("sources")));
+    }
+
+    /// C.5: a no-op source-kind script that exits 0 without writing
+    /// anything to OUT_DIR is rejected. Source manifests have no
+    /// declared outputs list, so non-emptiness of OUT_DIR is the only
+    /// signal that the script actually did work.
+    #[test]
+    fn ensure_built_source_kind_script_must_populate_out_dir() {
+        let manifest_dir = tempdir("c5-noop-manifest");
+        let cache = tempdir("c5-noop-cache");
+
+        // No-op script — leaves OUT_DIR empty.
+        let script = manifest_dir.join("noop.sh");
+        std::fs::write(&script, "#!/bin/bash\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let manifest_text = r#"
+kind = "source"
+name = "pcre2-source"
+version = "10.42"
+revision = 1
+
+[source]
+url = "https://example.test/unused"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "BSD-3-Clause"
+
+[build]
+script = "noop.sh"
+"#;
+        let m = DepsManifest::parse(manifest_text, manifest_dir).unwrap();
+
+        let registry = Registry { roots: vec![] };
+        let err = ensure_built(
+            &m,
+            &registry,
+            TEST_ARCH,
+            TEST_ABI,
+            &resolve_opts(&cache, None),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_lowercase().contains("empty") || err.contains("OUT_DIR"),
+            "got: {err}"
+        );
     }
 }
