@@ -732,6 +732,18 @@ impl DepsManifest {
                     HostToolProbe { args, version_regex }
                 }
             };
+            // Compile-test the regex at parse time so a typo in
+            // deps.toml surfaces as a manifest error, not as a probe-
+            // time `BadOutput { output: "invalid regex: ..." }` that
+            // C.10's renderer can't tell apart from a runtime tool-
+            // output mismatch. The runtime probe in `host_tool_probe`
+            // relies on this invariant and unwraps the compiled regex.
+            regex::Regex::new(&probe.version_regex).map_err(|e| {
+                format!(
+                    "[[host_tools]][{idx}] {:?}: probe.version_regex {:?} is invalid: {e}",
+                    raw_t.name, probe.version_regex
+                )
+            })?;
             let install_hints = raw_t.install_hints.unwrap_or_default();
             for (k, v) in &install_hints {
                 if k.is_empty() || v.is_empty() {
@@ -1414,6 +1426,32 @@ probe = { args = [], version_regex = "(\\d+\\.\\d+)" }
 "#;
         let err = DepsManifest::parse(bad, PathBuf::from("/x")).unwrap_err();
         assert!(err.contains("probe.args"), "got: {err}");
+    }
+
+    #[test]
+    fn host_tools_reject_invalid_probe_regex() {
+        let bad = r#"
+kind = "library"
+name = "x"
+version = "1.0"
+revision = 1
+[source]
+url = "https://example.test/x.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+[license]
+spdx = "MIT"
+[outputs]
+libs = []
+[[host_tools]]
+name = "cmake"
+version_constraint = ">=3.0"
+probe = { args = ["--version"], version_regex = "(unclosed" }
+"#;
+        let err = DepsManifest::parse(bad, PathBuf::from("/x")).unwrap_err();
+        assert!(
+            err.contains("version_regex") && err.contains("invalid"),
+            "got: {err}"
+        );
     }
 
     #[test]

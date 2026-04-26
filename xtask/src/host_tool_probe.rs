@@ -124,11 +124,11 @@ pub fn probe(tool: &HostTool) -> Result<(), ProbeFailure> {
     combined.push('\n');
     combined.push_str(&String::from_utf8_lossy(&output.stderr));
 
-    let re = Regex::new(&tool.probe.version_regex).map_err(|e| ProbeFailure::BadOutput {
-        tool: tool.name.clone(),
-        regex: tool.probe.version_regex.clone(),
-        output: format!("invalid regex: {e}"),
-    })?;
+    // SAFETY: `validate_common` in `deps_manifest` compiles every
+    // `[[host_tools]].probe.version_regex` at TOML parse time and
+    // rejects malformed regexes there. By the time we reach the probe
+    // runner the string is guaranteed to compile.
+    let re = Regex::new(&tool.probe.version_regex).unwrap();
     let caps = re
         .captures(&combined)
         .ok_or_else(|| ProbeFailure::BadOutput {
@@ -173,6 +173,42 @@ mod tests {
     // and is excluded.
     static PATH_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    /// RAII helper: prepend `dir` onto PATH, restore the prior value on
+    /// drop. The previous tests saved/restored PATH manually around each
+    /// `probe(...)` call — if any assertion or helper between save and
+    /// restore panicked, PATH stayed polluted (the next test in the same
+    /// process saw the synthetic-tool dir still on PATH). Using Drop
+    /// guarantees restoration even on panic.
+    ///
+    /// Each test still takes `PATH_MUTEX` so PATH-mutating tests
+    /// serialize: the guard makes restoration robust, but it does NOT
+    /// remove the need to serialize parallel mutators.
+    struct PathGuard {
+        old: String,
+    }
+    impl PathGuard {
+        fn install(prepend: &std::path::Path) -> Self {
+            let old = std::env::var("PATH").unwrap_or_default();
+            // SAFETY (edition 2024): `set_var` is unsafe because it
+            // mutates process-global env. The surrounding test holds
+            // PATH_MUTEX so we are the only mutator right now;
+            // restoration on drop happens whether the test panics or
+            // returns normally.
+            unsafe {
+                std::env::set_var("PATH", format!("{}:{}", prepend.display(), old));
+            }
+            Self { old }
+        }
+    }
+    impl Drop for PathGuard {
+        fn drop(&mut self) {
+            // SAFETY: see `PathGuard::install`.
+            unsafe {
+                std::env::set_var("PATH", &self.old);
+            }
+        }
+    }
+
     fn write_synthetic_tool(
         dir: &std::path::Path,
         name: &str,
@@ -205,22 +241,12 @@ mod tests {
             "fakecmake",
             "#!/bin/bash\necho 'cmake version 3.21.4'\n",
         );
-        let old_path = std::env::var("PATH").unwrap_or_default();
-        // SAFETY (edition 2024): `set_var` is unsafe because it mutates
-        // process-global env. The PATH_MUTEX above serializes all
-        // env-mutating tests in this module, and we restore the prior
-        // PATH before releasing the lock.
-        unsafe {
-            std::env::set_var("PATH", format!("{}:{}", dir.path().display(), old_path));
-        }
+        let _path = PathGuard::install(dir.path());
         let result = probe(&decl(
             "fakecmake",
             r"cmake version (\d+\.\d+(?:\.\d+)?)",
             ">=3.20",
         ));
-        unsafe {
-            std::env::set_var("PATH", &old_path);
-        }
         assert!(result.is_ok(), "got: {:?}", result.err());
     }
 
@@ -233,19 +259,13 @@ mod tests {
             "fakecmake2",
             "#!/bin/bash\necho 'cmake version 3.10.0'\n",
         );
-        let old_path = std::env::var("PATH").unwrap_or_default();
-        unsafe {
-            std::env::set_var("PATH", format!("{}:{}", dir.path().display(), old_path));
-        }
+        let _path = PathGuard::install(dir.path());
         let err = probe(&decl(
             "fakecmake2",
             r"cmake version (\d+\.\d+(?:\.\d+)?)",
             ">=3.20",
         ))
         .unwrap_err();
-        unsafe {
-            std::env::set_var("PATH", &old_path);
-        }
         assert!(matches!(err, ProbeFailure::TooOld { .. }), "got: {err}");
     }
 
@@ -272,19 +292,13 @@ mod tests {
             "fakebadout",
             "#!/bin/bash\necho 'no version here'\n",
         );
-        let old_path = std::env::var("PATH").unwrap_or_default();
-        unsafe {
-            std::env::set_var("PATH", format!("{}:{}", dir.path().display(), old_path));
-        }
+        let _path = PathGuard::install(dir.path());
         let err = probe(&decl(
             "fakebadout",
             r"cmake version (\d+\.\d+(?:\.\d+)?)",
             ">=3.20",
         ))
         .unwrap_err();
-        unsafe {
-            std::env::set_var("PATH", &old_path);
-        }
         assert!(matches!(err, ProbeFailure::BadOutput { .. }), "got: {err}");
     }
 
@@ -297,18 +311,12 @@ mod tests {
             "fakelexbeats",
             "#!/bin/bash\necho 'cmake version 3.20.0'\n",
         );
-        let old_path = std::env::var("PATH").unwrap_or_default();
-        unsafe {
-            std::env::set_var("PATH", format!("{}:{}", dir.path().display(), old_path));
-        }
+        let _path = PathGuard::install(dir.path());
         let result = probe(&decl(
             "fakelexbeats",
             r"cmake version (\d+\.\d+(?:\.\d+)?)",
             ">=3.9",
         ));
-        unsafe {
-            std::env::set_var("PATH", &old_path);
-        }
         assert!(
             result.is_ok(),
             "3.20 must satisfy >=3.9 (numeric, not lexicographic)"
