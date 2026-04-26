@@ -3196,7 +3196,7 @@ fn classify_seq(
     seq: InstrSeqId,
     fork_path: &HashSet<FunctionId>,
 ) -> NestedSupportStatus {
-    let carryover = seq_has_direct_fork_carryover(module, f, seq, fork_path);
+    let carryover = seq_has_unsupported_carryover(module, f, seq, fork_path);
     if carryover {
         return NestedSupportStatus::UnsupportedCarryover;
     }
@@ -3282,6 +3282,54 @@ fn subtree_contains_fork_call(
 ///   - Block / Loop / TryTable: 0 (we already reject multi-value
 ///     params blocks elsewhere in classify_nested_pattern).
 ///   - IfElse: 1 (the cond).
+///
+/// ## Known unfixed case: `os-test/basic/spawn/posix_spawnattr_setpgroup` -O2
+///
+/// LLVM-O2 inlines `posix_spawn` into `main` and emits a sub-region
+/// carryover at the `kernel_fork`-bearing block:
+///
+/// ```text
+/// local.get 0           ;; push __errno_location() — carryover
+/// block (result i32)    ;; the block contains kernel_fork
+///   ... kernel_fork wrap ...
+/// end
+/// local.tee 1           ;; save posix_spawn return value
+/// i32.store             ;; *errno_location = posix_spawn_rc — consumes both
+/// ```
+///
+/// We currently route this to **guard-dispatch** (because
+/// switch-dispatch's `POST_K` blocks are 0 → 0 and can't express the
+/// carryover). On `-O0`/`-O1` the function passes; on `-O2` it fails
+/// with `waitpid: ECHILD` because the parent's local `pid` ends up at
+/// 0 instead of the child's pid. The `pid` write happens through the
+/// `&pid` pointer inside the inlined `posix_spawn` body, after the
+/// kernel_fork rewind handshake — but some divergence specific to the
+/// `-O2` shape causes that write not to take effect on the parent's
+/// REWIND path.
+///
+/// We **expected guard-dispatch + the c01554940 non-fork-path-call
+/// gate + the LocalTee identity-passthrough fix to handle this case**,
+/// but multiple sessions of debugging haven't pinned down the exact
+/// divergence; the bug is highly LLVM-codegen-sensitive (adding a
+/// single `fprintf`/`fflush` at the right spot makes it pass). The
+/// current best understanding is that some pre-call op leaves the
+/// stack or shadow-stack in a state that REWIND replay diverges from
+/// NORMAL, despite all the targeted fixes.
+///
+/// **Next step:** the proper fix is to extend per-block switch-dispatch
+/// to handle carryovers at sub-region landings via local-spilling
+/// (allocate spill locals, push values from carryover into them
+/// before the enclosing instruction, reload after) — that takes the
+/// function off the guard-dispatch path entirely and avoids the
+/// divergence. Implementation begins immediately below; see
+/// `partition_region_instrs` and `emit_chunk_tail_for_landing`.
+///
+/// **It remains worth revisiting whether guard-dispatch could be
+/// fixed for this case in the future** — a successful guard-dispatch
+/// solution would cover any other LLVM-codegen-sensitive carryover
+/// shape we discover later, not just the ones that fit the
+/// switch-dispatch carryover-spilling extension.
+#[allow(dead_code)]
 fn seq_has_direct_fork_carryover(
     module: &Module,
     f: &LocalFunction,
@@ -3337,6 +3385,200 @@ fn seq_has_direct_fork_carryover(
         }
     }
     false
+}
+
+/// Like `seq_has_direct_fork_carryover` but only flags carryovers
+/// that the per-block switch-dispatch transform can NOT handle via
+/// local-spilling. Currently: every carryover except a 1-i32 stack
+/// item at a SubRegion (non-IfElse) landing whose enclosing
+/// instruction produces 0 or 1 i32 result.
+///
+/// MVP rationale: in C-emitted wasm at -O2, the most common carryover
+/// pattern is `local.get $ptr; block (result i32) { ... fork ... };
+/// local.tee; i32.store` — a single i32 (typically a pointer) pushed
+/// before a fork-bearing block and consumed after. We spill the i32
+/// via `local.set $carryover_local` at the chunk tail, then reload it
+/// after the block runs (juggling with a `tmp_result_local` if the
+/// block produces an i32 result).
+///
+/// Wider carryover patterns (multi-value, non-i32 types, carryovers
+/// at DirectCall or SubRegionIfElse landings) still fall back to
+/// guard-dispatch; extending support is straightforward but not
+/// needed for the cases we've seen so far.
+fn seq_has_unsupported_carryover(
+    module: &Module,
+    f: &LocalFunction,
+    seq: InstrSeqId,
+    fork_path: &HashSet<FunctionId>,
+) -> bool {
+    let mut depth: usize = 0;
+    for (instr, _) in &f.block(seq).instrs {
+        // Direct fork-path call landings — supportable carryovers
+        // not yet implemented; reject any.
+        let direct_expected: Option<usize> = match instr {
+            Instr::Call(c) if fork_path.contains(&c.func) => {
+                Some(module.types.get(module.funcs.get(c.func).ty()).params().len())
+            }
+            Instr::CallIndirect(ci) => Some(module.types.get(ci.ty).params().len() + 1),
+            _ => None,
+        };
+        if let Some(expected) = direct_expected {
+            if depth > expected {
+                return true;
+            }
+        }
+
+        // Sub-region landings.
+        let is_subregion = match instr {
+            Instr::Block(_) | Instr::Loop(_) | Instr::TryTable(_) | Instr::IfElse(_) => {
+                nested_seqs(instr)
+                    .iter()
+                    .any(|s| subtree_contains_fork_call(f, *s, fork_path))
+            }
+            _ => false,
+        };
+        if is_subregion {
+            let is_ifelse = matches!(instr, Instr::IfElse(_));
+            let expected_input: usize = if is_ifelse { 1 } else { 0 };
+            let carryover_depth = depth.saturating_sub(expected_input);
+            if carryover_depth > 0 {
+                // Reject IfElse carryovers (cond rewrite + carryover
+                // interaction is not yet implemented).
+                if is_ifelse {
+                    return true;
+                }
+                // Reject more than 1 carryover (multi-value spilling
+                // not yet supported).
+                if carryover_depth > 1 {
+                    return true;
+                }
+                // Reject if the enclosing instr's result type isn't
+                // empty or a single i32 (we only know how to juggle
+                // 0 or 1 i32 results via the tmp_result_local).
+                let result_ok = match seq_result_type(f, instr) {
+                    Some(SubRegionResult::None) => true,
+                    Some(SubRegionResult::SingleI32) => true,
+                    _ => false,
+                };
+                if !result_ok {
+                    return true;
+                }
+                // Otherwise: this is a supported single-i32 carryover.
+                // Don't reject.
+            }
+        }
+
+        match top_level_stack_effect(module, f, instr) {
+            StackEffect::Delta { pops, pushes } => {
+                if depth < pops {
+                    return true;
+                }
+                depth = depth - pops + pushes;
+            }
+            StackEffect::Terminator => return false,
+            StackEffect::Unknown => return true,
+        }
+    }
+    false
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SubRegionResult {
+    None,
+    SingleI32,
+    Other,
+}
+
+fn seq_result_type(f: &LocalFunction, instr: &Instr) -> Option<SubRegionResult> {
+    let body_seq = match instr {
+        Instr::Block(b) => Some(b.seq),
+        Instr::Loop(l) => Some(l.seq),
+        Instr::TryTable(t) => Some(t.seq),
+        _ => None,
+    }?;
+    Some(match f.block(body_seq).ty {
+        InstrSeqType::Simple(None) => SubRegionResult::None,
+        InstrSeqType::Simple(Some(ValType::I32)) => SubRegionResult::SingleI32,
+        _ => SubRegionResult::Other,
+    })
+}
+
+/// Track stack depth across a seq's instructions and report the
+/// carryover depth (number of values left on the stack from before
+/// the chunk) at each SubRegion (non-IfElse) landing position. Used
+/// by transform_region_seq to allocate spill locals for carryovers.
+///
+/// Returns a Vec<usize> matching the order of landings produced by
+/// `partition_region_instrs` for this seq. Entries are 0 for landings
+/// without a carryover; 1 for a 1-i32 carryover at a SubRegion
+/// landing. Other shapes are filtered out by classify_nested_pattern's
+/// `seq_has_unsupported_carryover` check, which runs first.
+fn analyze_carryover_depths(
+    module: &Module,
+    f: &LocalFunction,
+    seq: InstrSeqId,
+    fork_path: &HashSet<FunctionId>,
+    direct_idxs_at_this_seq: &[u32],
+    regions: &HashMap<InstrSeqId, RegionInfo>,
+) -> Vec<usize> {
+    let mut depths: Vec<usize> = Vec::new();
+    let mut depth: usize = 0;
+    let mut direct_cursor = 0usize;
+
+    for (instr, _) in &f.block(seq).instrs {
+        // Is this a fork-path landing? (Same logic as
+        // partition_region_instrs.)
+        let is_fork_landing = match instr {
+            Instr::Call(c) => fork_path.contains(&c.func),
+            Instr::CallIndirect(_) => true,
+            _ => false,
+        };
+        if is_fork_landing && direct_cursor < direct_idxs_at_this_seq.len() {
+            // DirectCall landing — partition emits a landing entry.
+            // Carryover at DirectCall isn't supported; depth here is
+            // (call's arg count + carryover). We don't capture
+            // carryover for DirectCall, so just push 0.
+            depths.push(0);
+            direct_cursor += 1;
+        } else {
+            let mut sub_lo_hi: Option<(u32, u32)> = None;
+            let is_ifelse = matches!(instr, Instr::IfElse(_));
+            if is_ifelse {
+                if let Instr::IfElse(ie) = instr {
+                    if regions.contains_key(&ie.consequent) {
+                        sub_lo_hi = Some((0, 0));
+                    }
+                    if regions.contains_key(&ie.alternative) {
+                        sub_lo_hi = Some((0, 0));
+                    }
+                }
+            } else {
+                for child in nested_seqs(instr) {
+                    if regions.contains_key(&child) {
+                        sub_lo_hi = Some((0, 0));
+                        break;
+                    }
+                }
+            }
+            if sub_lo_hi.is_some() {
+                // SubRegion landing.
+                let expected_input: usize = if is_ifelse { 1 } else { 0 };
+                let carryover_depth = depth.saturating_sub(expected_input);
+                depths.push(carryover_depth);
+            }
+        }
+
+        // Advance depth.
+        match top_level_stack_effect(module, f, instr) {
+            StackEffect::Delta { pops, pushes } => {
+                depth = depth.saturating_sub(pops) + pushes;
+            }
+            StackEffect::Terminator => break,
+            StackEffect::Unknown => break,
+        }
+    }
+
+    depths
 }
 
 fn has_fork_call_in_catch_handler(
@@ -3591,6 +3833,97 @@ fn instrument_one_function_nested_switch(
     // is_rewind without touching the operand stack).
     let cond_swap_local = module.locals.add(ValType::I32);
 
+    // Compute, for each fork-bearing seq, the call_idxs of its DIRECT
+    // fork-path calls (ordered by DFS, == order in `sites`). Used by
+    // both the carryover pre-pass and the transform loops below.
+    let direct_idxs_per_seq: HashMap<InstrSeqId, Vec<u32>> = {
+        let mut m: HashMap<InstrSeqId, Vec<u32>> = HashMap::new();
+        for site in &sites {
+            m.entry(site.seq_id).or_default().push(site.call_idx);
+        }
+        m
+    };
+
+    // Pre-pass: walk each fork-bearing seq, identify its
+    // SubRegion-with-1-i32-carryover landings, and pre-allocate spill
+    // locals (+ tmp_result_local for blocks producing 1 i32). The
+    // locals are added to `frame_scalars` so they round-trip through
+    // the fork frame. They are stored by (seq_id, landing_index) and
+    // attached to landings during partition.
+    //
+    // Rationale: we have to allocate locals *before* computing
+    // `frame_size` and `locals_with_offsets` (the postamble's frame
+    // I/O depends on those). Doing the carryover analysis here keeps
+    // the per-region transform loop straightforward.
+    let mut carryover_plans: HashMap<(InstrSeqId, usize), CarryoverPlan> = HashMap::new();
+    {
+        let local_ro = match &module.funcs.get(func_id).kind {
+            FunctionKind::Local(l) => l,
+            _ => panic!("expected local function"),
+        };
+        let empty_idxs: Vec<u32> = Vec::new();
+        // Snapshot needed seq+landing data first (immutable borrow),
+        // then allocate locals (mutable borrow).
+        let mut to_allocate: Vec<(InstrSeqId, usize, bool)> = Vec::new();
+        for &seq_id in regions.keys() {
+            let direct = direct_idxs_per_seq.get(&seq_id).unwrap_or(&empty_idxs);
+            let depths = analyze_carryover_depths(
+                module, local_ro, seq_id, fork_path, direct, &regions,
+            );
+            // Walk seq_id's instructions to find SubRegion landing
+            // positions in order, then pair them with depths entries.
+            let mut landing_idx = 0usize;
+            let mut direct_cursor = 0usize;
+            for (instr, _) in &local_ro.block(seq_id).instrs {
+                let is_fork_landing = match instr {
+                    Instr::Call(c) => fork_path.contains(&c.func),
+                    Instr::CallIndirect(_) => true,
+                    _ => false,
+                };
+                if is_fork_landing && direct_cursor < direct.len() {
+                    direct_cursor += 1;
+                    landing_idx += 1;
+                    continue;
+                }
+                let is_subregion = match instr {
+                    Instr::Block(_) | Instr::Loop(_) | Instr::TryTable(_) | Instr::IfElse(_) => {
+                        nested_seqs(instr)
+                            .iter()
+                            .any(|s| regions.contains_key(s))
+                    }
+                    _ => false,
+                };
+                if is_subregion {
+                    let is_ifelse = matches!(instr, Instr::IfElse(_));
+                    if !is_ifelse && landing_idx < depths.len() && depths[landing_idx] == 1 {
+                        let has_i32_result = matches!(
+                            seq_result_type(local_ro, instr),
+                            Some(SubRegionResult::SingleI32)
+                        );
+                        to_allocate.push((seq_id, landing_idx, has_i32_result));
+                    }
+                    landing_idx += 1;
+                }
+            }
+        }
+        // Now allocate.
+        for (seq_id, landing_idx, has_i32_result) in to_allocate {
+            let spill_local = module.locals.add(ValType::I32);
+            frame_scalars.push((spill_local, ValType::I32));
+            let tmp_result_local = if has_i32_result {
+                let l = module.locals.add(ValType::I32);
+                frame_scalars.push((l, ValType::I32));
+                Some(l)
+            } else {
+                None
+            };
+            carryover_plans.insert(
+                (seq_id, landing_idx),
+                CarryoverPlan { spill_local, tmp_result_local },
+            );
+        }
+    }
+
     let locals_with_offsets = assign_local_offsets(&frame_scalars, LOCALS_START_OFFSET);
     let frame_size = HEADER_SIZE + user_locals_size(&frame_scalars);
 
@@ -3681,16 +4014,6 @@ fn instrument_one_function_nested_switch(
     let depth_map = compute_seq_depths(local, entry_id);
     non_entry_regions.sort_by_key(|s| std::cmp::Reverse(depth_map.get(s).copied().unwrap_or(0)));
 
-    // Compute, for each fork-bearing seq, the call_idxs of its DIRECT
-    // fork-path calls (ordered by DFS, == order in `sites`).
-    let direct_idxs_per_seq: HashMap<InstrSeqId, Vec<u32>> = {
-        let mut m: HashMap<InstrSeqId, Vec<u32>> = HashMap::new();
-        for site in &sites {
-            m.entry(site.seq_id).or_default().push(site.call_idx);
-        }
-        m
-    };
-
     // Transform non-entry regions bottom-up.
     for seq_id in non_entry_regions {
         let region_info = regions.get(&seq_id).unwrap().clone();
@@ -3705,6 +4028,7 @@ fn instrument_one_function_nested_switch(
             &sites,
             fork_path,
             &arg_spills,
+            &carryover_plans,
             &catch_handlers,
             runtime.state_global,
             call_idx_local,
@@ -3730,6 +4054,7 @@ fn instrument_one_function_nested_switch(
         &sites,
         fork_path,
         &arg_spills,
+        &carryover_plans,
         &catch_handlers,
         runtime.state_global,
         call_idx_local,
@@ -3817,7 +4142,17 @@ fn emit_chunk_tail_for_landing(
         LandingKind::SubRegionIfElse { .. } => {
             push_instr(out, Instr::LocalSet(LocalSet { local: cond_swap_local }));
         }
-        LandingKind::SubRegion { .. } => {}
+        LandingKind::SubRegion { .. } => {
+            // For SubRegion landings with a 1-i32 carryover (e.g.
+            // `local.get $ptr; block (result i32) { ... fork ... }`),
+            // spill the carryover into the plan's spill_local. The
+            // operand stack here has the carryover on top (since
+            // SubRegion expects 0 inputs); local.set consumes it.
+            // After this, POST_K body's net stack effect is 0 → 0.
+            if let Some(plan) = landing.carryover {
+                push_instr(out, Instr::LocalSet(LocalSet { local: plan.spill_local }));
+            }
+        }
     }
 }
 
@@ -3862,6 +4197,7 @@ fn transform_region_seq(
     sites: &[NestedCallSite],
     fork_path: &HashSet<FunctionId>,
     arg_spills: &HashMap<u32, Vec<LocalId>>,
+    carryover_plans: &HashMap<(InstrSeqId, usize), CarryoverPlan>,
     catch_handlers: &[CatchHandlerInfo],
     state_global: GlobalId,
     call_idx_local: LocalId,
@@ -3874,8 +4210,14 @@ fn transform_region_seq(
     let original: Vec<(Instr, InstrLocId)> =
         std::mem::take(&mut local.block_mut(seq_id).instrs);
 
-    let (chunks, landings) =
+    let (chunks, mut landings) =
         partition_region_instrs(local, &original, direct_idxs_at_this_seq, regions, fork_path);
+    // Attach carryover plans (if any) to landings.
+    for (li, landing) in landings.iter_mut().enumerate() {
+        if let Some(&plan) = carryover_plans.get(&(seq_id, li)) {
+            landing.carryover = Some(plan);
+        }
+    }
 
     let n_landings = landings.len();
     if n_landings == 0 {
@@ -3939,6 +4281,7 @@ fn transform_entry_region(
     sites: &[NestedCallSite],
     fork_path: &HashSet<FunctionId>,
     arg_spills: &HashMap<u32, Vec<LocalId>>,
+    carryover_plans: &HashMap<(InstrSeqId, usize), CarryoverPlan>,
     catch_handlers: &[CatchHandlerInfo],
     state_global: GlobalId,
     call_idx_local: LocalId,
@@ -3951,8 +4294,13 @@ fn transform_entry_region(
     let original: Vec<(Instr, InstrLocId)> =
         std::mem::take(&mut local.block_mut(seq_id).instrs);
 
-    let (chunks, landings) =
+    let (chunks, mut landings) =
         partition_region_instrs(local, &original, direct_idxs_at_this_seq, regions, fork_path);
+    for (li, landing) in landings.iter_mut().enumerate() {
+        if let Some(&plan) = carryover_plans.get(&(seq_id, li)) {
+            landing.carryover = Some(plan);
+        }
+    }
 
     let n_landings = landings.len();
 
@@ -4017,6 +4365,25 @@ enum LandingKind {
     },
 }
 
+/// Stack-carryover spill plan for a sub-region landing whose
+/// preceding chunk leaves an i32 on the operand stack. POST_K bodies
+/// are typed `Simple(None)` (0 → 0), so the carryover must be spilled
+/// before the enclosing instr runs and reloaded after.
+///
+/// MVP scope: ONE i32 carryover at SubRegion (non-IfElse) landings
+/// whose enclosing instr produces 0 or 1 i32 result. Wider patterns
+/// fall back to guard-dispatch via classify_nested_pattern.
+#[derive(Debug, Clone, Copy)]
+struct CarryoverPlan {
+    /// Fresh frame-resident i32 local that receives the carryover at
+    /// the end of the chunk before the enclosing instr.
+    spill_local: LocalId,
+    /// Fresh frame-resident i32 local that briefly holds the
+    /// enclosing instr's result while we restore the carryover beneath
+    /// it. Only used when the enclosing instr produces 1 i32 result.
+    tmp_result_local: Option<LocalId>,
+}
+
 #[derive(Debug, Clone)]
 struct LandingInfo {
     kind: LandingKind,
@@ -4024,6 +4391,9 @@ struct LandingInfo {
     /// preserved verbatim. Its nested seqs have been transformed
     /// independently (bottom-up).
     sub_region_instr: Option<(Instr, InstrLocId)>,
+    /// Set on a SubRegion landing whose preceding chunk has a 1-i32
+    /// stack carryover. None for landings without carryover.
+    carryover: Option<CarryoverPlan>,
 }
 
 /// Partition `original` instrs at landings:
@@ -4066,6 +4436,7 @@ fn partition_region_instrs(
             landings.push(LandingInfo {
                 kind: LandingKind::DirectCall { call_idx: idx },
                 sub_region_instr: None,
+                carryover: None,
             });
             chunks.push(Vec::new());
             continue;
@@ -4132,6 +4503,7 @@ fn partition_region_instrs(
             landings.push(LandingInfo {
                 kind,
                 sub_region_instr: Some((instr.clone(), *loc)),
+                carryover: None, // populated later if classify allows
             });
             chunks.push(Vec::new());
             continue;
@@ -4391,6 +4763,22 @@ fn emit_post_landing(
                 .expect("SubRegion landing must have its enclosing instr stashed");
             let s = &mut local.block_mut(seq_id).instrs;
             s.push((instr, loc));
+
+            // If this landing has a 1-i32 carryover, restore it
+            // beneath the enclosing instr's result. For a 0-result
+            // block: just push the spilled carryover onto the stack.
+            // For a 1-i32-result block: spill the result to a tmp
+            // local, push the carryover, then push the result back —
+            // restoring the original stack [carryover, result].
+            if let Some(plan) = landing.carryover {
+                if let Some(tmp_result) = plan.tmp_result_local {
+                    push_instr(s, Instr::LocalSet(LocalSet { local: tmp_result }));
+                    push_instr(s, Instr::LocalGet(LocalGet { local: plan.spill_local }));
+                    push_instr(s, Instr::LocalGet(LocalGet { local: tmp_result }));
+                } else {
+                    push_instr(s, Instr::LocalGet(LocalGet { local: plan.spill_local }));
+                }
+            }
         }
         LandingKind::SubRegionIfElse {
             range_lo: _,

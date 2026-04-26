@@ -152,6 +152,27 @@ fn nested_fork_call_uses_per_block_switch_dispatch() {
 }
 
 #[test]
+fn carryover_at_subregion_uses_switch_dispatch() {
+    // Per-block switch-dispatch's carryover-spilling extension: a
+    // sub-region landing whose preceding chunk pushes a 1-i32 carryover
+    // is now handled in switch-dispatch instead of falling back to
+    // guard-dispatch. This is the LLVM-O2 inlined posix_spawn pattern
+    // that previously failed the sortix `posix_spawnattr_setpgroup`
+    // test with `waitpid: ECHILD`.
+    let wat = include_str!("fixtures/switch_dispatch/carryover_at_subregion.wat");
+    let input = wat::parse_str(wat).expect("wat parse");
+    let output = instrument(&input, &Options::default()).expect("instrument");
+    validate(&output);
+    let module = Module::from_buffer(&output).expect("walrus parse");
+
+    assert!(
+        has_top_level_br_table_dispatch(&module, "main"),
+        "carryover-bearing sub-region landing must use switch-dispatch \
+         (br_table emitted), not guard-dispatch's body-replay"
+    );
+}
+
+#[test]
 fn posix_spawn_class_shadow_stack_not_duplicated() {
     let wat = include_str!("fixtures/switch_dispatch/posix_spawn_class.wat");
     let input = wat::parse_str(wat).expect("wat parse");
