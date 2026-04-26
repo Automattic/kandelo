@@ -6061,6 +6061,34 @@ pub fn sys_ioctl(proc: &mut Process, fd: i32, request: u32, buf: &mut [u8]) -> R
         }
     }
 
+    // --- Linux VT keyboard ioctls (KDGKBTYPE / KDGKBMODE / KDSKBMODE) ---
+    //
+    // fbDOOM (and other Linux-VT-targeted software) calls these on a
+    // tty fd to detect the keyboard and switch into raw-scancode mode.
+    // We don't have a real VT — input arrives as a stream of bytes
+    // through stdin from whatever the host is feeding (canvas
+    // keyboard, in the browser demo). The ioctls succeed with sensible
+    // defaults so software detecting "is this a Linux VT" sees yes.
+    // Mode is otherwise a no-op — we don't actually translate stdin
+    // based on the requested mode.
+    match request {
+        // KDGKBTYPE — return KB_101 (0x02) as a single byte.
+        0x4B33 => {
+            if buf.is_empty() { return Err(Errno::EINVAL); }
+            buf[0] = 0x02;
+            return Ok(());
+        }
+        // KDGKBMODE — return K_XLATE (1) as i32.
+        0x4B44 => {
+            if buf.len() < 4 { return Err(Errno::EINVAL); }
+            buf[..4].copy_from_slice(&1i32.to_le_bytes());
+            return Ok(());
+        }
+        // KDSKBMODE — accept any mode, no-op success.
+        0x4B45 => return Ok(()),
+        _ => {}
+    }
+
     // --- Terminal ioctls (work on CharDevice, PtyMaster, PtySlave) ---
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
     let file_type = ofd.file_type;
