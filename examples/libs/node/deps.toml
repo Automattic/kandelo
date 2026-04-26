@@ -1,0 +1,17 @@
+kind = "program"
+name = "node"
+version = "0.1.0"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://github.com/brandonpayton/wasm-posix-kernel"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "MIT AND GPL-2.0-or-later"
+url = "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
+
+[[outputs]]
+name = "node"
+wasm = "node.wasm"
