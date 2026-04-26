@@ -1023,9 +1023,21 @@ pub extern "C" fn kernel_set_stdin_pipe(pid: u32) -> i32 {
 /// Returns 0 on success, -ESRCH if pid not found.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_remove_process(pid: u32) -> i32 {
+    use core::sync::atomic::Ordering;
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     match table.remove_process(pid) {
-        Some(_) => 0,
+        Some(removed) => {
+            // /dev/fb0 cleanup: if the exiting process held a live mmap,
+            // tell the host to drop the canvas binding before the
+            // process Memory disappears. Then release the global owner
+            // claim — best-effort CAS makes this idempotent.
+            if removed.fb_binding.is_some() {
+                unsafe { host_unbind_framebuffer(pid as i32) };
+            }
+            let _ = crate::process_table::FB0_OWNER
+                .compare_exchange(pid as i32, -1, Ordering::SeqCst, Ordering::SeqCst);
+            0
+        }
         None => -(Errno::ESRCH as i32),
     }
 }
@@ -5600,11 +5612,11 @@ pub extern "C" fn kernel_mmap(addr: usize, len: usize, prot: u32, flags: u32, fd
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_munmap(addr: usize, len: usize) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
-    let result = match syscalls::sys_munmap(proc, addr, len) {
+    let mut host = WasmHostIO;
+    let result = match syscalls::sys_munmap(proc, &mut host, addr, len) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    let mut host = WasmHostIO;
     deliver_pending_signals(proc, &mut host);
     result
 }

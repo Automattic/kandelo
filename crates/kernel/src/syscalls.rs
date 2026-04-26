@@ -3183,6 +3183,15 @@ pub fn sys_execve(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Res
     if path.is_empty() {
         return Err(Errno::ENOENT);
     }
+    // /dev/fb0 cleanup: exec wipes the binding. Tell the host before
+    // its memory snapshot of the process is invalidated, then drop the
+    // global ownership claim so the new image can re-acquire if it
+    // needs the device.
+    if proc.fb_binding.is_some() {
+        host.unbind_framebuffer(proc.pid as i32);
+        proc.fb_binding = None;
+        maybe_release_fb0(proc.pid);
+    }
     // Resolve relative paths against process CWD so the host sees absolute paths.
     // This is critical for posix_spawn with chdir file actions — the child's CWD
     // may differ from the initial data directory the host knows about.
@@ -3963,7 +3972,12 @@ pub fn sys_mmap(
 }
 
 /// munmap -- unmap a previously mapped region.
-pub fn sys_munmap(proc: &mut Process, addr: usize, len: usize) -> Result<(), Errno> {
+pub fn sys_munmap(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    addr: usize,
+    len: usize,
+) -> Result<(), Errno> {
     if len == 0 {
         return Err(Errno::EINVAL);
     }
@@ -3976,6 +3990,27 @@ pub fn sys_munmap(proc: &mut Process, addr: usize, len: usize) -> Result<(), Err
     if addr.checked_add(len).is_none() {
         return Err(Errno::EINVAL);
     }
+
+    // /dev/fb0 cleanup: if this munmap fully covers the framebuffer
+    // binding, drop it and tell the host. We check before the actual
+    // munmap so the host stops reading the region before its address
+    // space is freed.
+    let fb_release = if let Some(b) = proc.fb_binding {
+        let end = addr.saturating_add(len);
+        let b_end = b.addr.saturating_add(b.len);
+        addr <= b.addr && end >= b_end
+    } else {
+        false
+    };
+    if fb_release {
+        proc.fb_binding = None;
+        host.unbind_framebuffer(proc.pid as i32);
+        // Release ownership if the process also has no remaining Fb0 fds.
+        if !proc_has_fb0_fd(proc) {
+            maybe_release_fb0(proc.pid);
+        }
+    }
+
     // Linux munmap succeeds (returns 0) even if no mappings overlap the range,
     // as long as the address is valid and page-aligned.
     proc.memory.munmap(addr, len);
@@ -9505,35 +9540,39 @@ mod tests {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         let addr = sys_mmap(&mut proc, &mut host, 0, 4096, 3, 0x22, -1, 0).unwrap();
-        sys_munmap(&mut proc, addr, 0x10000).unwrap();
+        sys_munmap(&mut proc, &mut host, addr, 0x10000).unwrap();
     }
 
     #[test]
     fn test_munmap_invalid_address_minus_one() {
         // munmap((void*)-1, 1) — address 0xFFFFFFFF is not page-aligned, should return EINVAL
         let mut proc = Process::new(1);
-        assert_eq!(sys_munmap(&mut proc, 0xFFFFFFFF, 1), Err(Errno::EINVAL));
+        let mut host = MockHostIO::new();
+        assert_eq!(sys_munmap(&mut proc, &mut host, 0xFFFFFFFF, 1), Err(Errno::EINVAL));
     }
 
     #[test]
     fn test_munmap_address_overflow() {
         // Page-aligned address where addr+len overflows usize
         let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
         let addr = usize::MAX & !0xFFFF; // page-aligned near max
-        assert_eq!(sys_munmap(&mut proc, addr, 0x20000), Err(Errno::EINVAL));
+        assert_eq!(sys_munmap(&mut proc, &mut host, addr, 0x20000), Err(Errno::EINVAL));
     }
 
     #[test]
     fn test_munmap_unaligned_address() {
         // munmap with non-page-aligned address should return EINVAL
         let mut proc = Process::new(1);
-        assert_eq!(sys_munmap(&mut proc, 0x1000, 0x10000), Err(Errno::EINVAL));
+        let mut host = MockHostIO::new();
+        assert_eq!(sys_munmap(&mut proc, &mut host, 0x1000, 0x10000), Err(Errno::EINVAL));
     }
 
     #[test]
     fn test_munmap_zero_length() {
         let mut proc = Process::new(1);
-        assert_eq!(sys_munmap(&mut proc, 0x10000, 0), Err(Errno::EINVAL));
+        let mut host = MockHostIO::new();
+        assert_eq!(sys_munmap(&mut proc, &mut host, 0x10000, 0), Err(Errno::EINVAL));
     }
 
     #[test]
@@ -13083,11 +13122,11 @@ mod tests {
 
     #[test]
     fn test_virtual_device_roundtrip() {
-        for dev in [VirtualDevice::Null, VirtualDevice::Zero, VirtualDevice::Urandom, VirtualDevice::Full] {
+        for dev in [VirtualDevice::Null, VirtualDevice::Zero, VirtualDevice::Urandom, VirtualDevice::Full, VirtualDevice::Fb0] {
             assert_eq!(VirtualDevice::from_host_handle(dev.host_handle()), Some(dev));
         }
         assert_eq!(VirtualDevice::from_host_handle(0), None);
-        assert_eq!(VirtualDevice::from_host_handle(-5), None);
+        assert_eq!(VirtualDevice::from_host_handle(-6), None);
     }
 
     // ===== Loopback socket tests =====
@@ -15296,6 +15335,50 @@ mod tests {
         assert!(host.bind_framebuffer_calls.is_empty());
 
         sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn munmap_of_fb_region_clears_binding_and_unbinds_host() {
+        use core::sync::atomic::Ordering;
+        use wasm_posix_shared::flags::O_RDWR;
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+        let _g = FB0_OWNER_LOCK.lock().unwrap();
+        crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+
+        let mut proc = Process::new(1);
+        let mut host = TrackingHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
+        let len = (640 * 400 * 4) as usize;
+        let addr = sys_mmap(&mut proc, &mut host, 0, len,
+                            PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0).unwrap();
+        sys_munmap(&mut proc, &mut host, addr, len).unwrap();
+        assert!(proc.fb_binding.is_none());
+        assert_eq!(host.unbind_framebuffer_calls, alloc::vec![proc.pid as i32]);
+
+        // Closing the fd then releases ownership (no binding remains).
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(crate::process_table::FB0_OWNER.load(Ordering::SeqCst), -1);
+    }
+
+    #[test]
+    fn execve_releases_fb_binding_and_unbinds() {
+        use core::sync::atomic::Ordering;
+        use wasm_posix_shared::flags::O_RDWR;
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+        let _g = FB0_OWNER_LOCK.lock().unwrap();
+        crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+
+        let mut proc = Process::new(1);
+        let mut host = TrackingHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
+        let len = (640 * 400 * 4) as usize;
+        let _ = sys_mmap(&mut proc, &mut host, 0, len,
+                         PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0).unwrap();
+        // execve invokes host_exec which the tracking host returns Ok(()) for.
+        sys_execve(&mut proc, &mut host, b"/bin/sh").unwrap();
+        assert!(proc.fb_binding.is_none());
+        assert_eq!(host.unbind_framebuffer_calls, alloc::vec![proc.pid as i32]);
+        assert_eq!(crate::process_table::FB0_OWNER.load(Ordering::SeqCst), -1);
     }
 
     #[test]
