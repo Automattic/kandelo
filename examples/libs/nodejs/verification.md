@@ -1921,3 +1921,103 @@ V8 gates summary (cumulative from Phase 6.1 through Phase 9B):
 | mjsunit | 2 | 2 | 2 | 2 | 2 | **2 PASS** |
 | Excluding-anchor | `8169724e` | `8169724e` | `8169724e` | `8169724e` | `8169724e` | **`8169724e`** (stable) |
 | Patch | 5374 lines (76 commits) | 5753 (75) | 6323 (82) | 6486 (84) | 7196 (88) | **7550 (92 commits)** |
+
+## Phase 10 Summary — StoreReference non-smi-tagged emission; PromiseTry deferred to Phase 11
+
+The Phase 10 plan ([docs/plans/2026-04-26-torque-cc-backend-phase10.md](../../docs/plans/2026-04-26-torque-cc-backend-phase10.md)) targeted shipping `PromiseTry` (`promise-try.tq`) as the first real-world combined catch_block + varargs forcing target. Task 10.0 v2 triage (post StoreReference gate) revealed a deeper structural issue in Phase 9B's varargs lowering than the plan budgeted for; per the plan's STOP rule, the broader scope was deferred to Phase 11. Phase 10 closes with the one fix that's well-scoped and architecturally minimal.
+
+### What shipped — Task 10.0.1: StoreReference non-smi-tagged emission gated under `is_cc_builtins_`
+
+```cpp
+// cc-generator.cc — StoreReferenceInstruction emission
+std::string result_type = instruction.type->GetRuntimeType();
+if (instruction.type->IsSubtypeOf(TypeOracle::GetTaggedType())) {
+  // Stores on non-smi tagged fields use TaggedField<T>::store(host, offset,
+  // value) — the 3-arg overload that needs no cage_base (stores compress, not
+  // decompress). Symmetric with LoadReference's `is_cc_builtins_` gate at the
+  // non-smi tagged path: kCSA/kCC stock kept the conservative error to avoid
+  // exercising untested codegen surface; kCCBuiltins needs the path live for
+  // `new T{...}` allocation lowering (NewFixedArray / NewJSArray, reached
+  // transitively from PromiseTry's NewRestArgumentsFromArguments).
+  if (!is_cc_builtins_ &&
+      !instruction.type->IsSubtypeOf(TypeOracle::GetSmiType())) {
+    Error(
+        "Not supported in C++ output: StoreReference on non-smi tagged "
+        "value");
+  }
+  out() << "  TaggedField<" << result_type
+        << ">::store(UncheckedCast<HeapObject>(" << object
+        << "), static_cast<int>(" << offset << "), " << value << ");\n";
+}
+```
+
+The actual emission below the gate (`TaggedField<T>::store(UncheckedCast<HeapObject>(obj), static_cast<int>(offset), value)`) was already correct — V8's `TaggedField<T>::store(Tagged<HeapObject>, int, PtrType)` 3-arg overload (`tagged-field.h:202`) needs no `PtrComprCageBase` (stores compress, they don't decompress). Only the conservative `Error()` guard above the emission needed lifting for kCCBuiltins. kCSA and kCC paths stay byte-identical.
+
+This mirrors the existing `LoadReferenceInstruction` non-smi-tagged gate at `cc-generator.cc:986-988`, which Phase 5 lifted symmetrically for `is_cc_builtins_`.
+
+**Why this matters:** Any kCCBuiltins target that uses torque's `new T{...}` allocation expression — `new FixedArray{map, length, objects: ...iter}`, `new JSArray{map, properties_or_hash, elements, length}`, `new JSBoundFunction{...}`, etc. — lowers to a sequence of `StoreReferenceInstruction`s on tagged object fields. Before this gate, every such allocation rejected at torque-pass time with `Not supported in C++ output: StoreReference on non-smi tagged value`. After: `new T{...}` allocation works for any kCCBuiltins-whitelisted target.
+
+### What deferred — broader emitter rewrite
+
+Task 10.0 v2 triage (after lifting StoreReference) surfaced 8 distinct error symptoms in PromiseTry's `-tq-ccbuiltins.cc` C++ compile, classified into:
+
+| # | Symptom | Bucket | Fix surface | Est. LoC |
+|---|---|---|---|---|
+| 1 | `ThrowTypeError(Context, MessageTemplate, const char*)` undeclared | (a) shim | `runtime-macro-shims.h` | ~5 |
+| 2 | `GetArgumentValue(Arguments, intptr): JSAny` undeclared | (a) shim | `runtime-macro-shims.h` | ~5 |
+| 3 | `Call(Context, callable, ...args)` (variadic, 4 sites: 3,3,4,6 args) | (a) shim | `runtime-macro-shims.h` (variadic template) | ~10 |
+| 4 | `IntPtrSub`, `WordEqual` undeclared | (a) shim | `runtime-macro-shims.h` (1-line each) | ~3 |
+| 5 | `Builtin_NewPromiseCapability` undeclared | (b) bridge | `implementation-visitor.cc` preamble | ~50-80 (budget exception) |
+| 6 | `REFLECT_APPLY_INDEX_0`, `JS_ARRAY_PACKED_ELEMENTS_MAP_INDEX_0`, `kEmptyFixedArray_0` undeclared | (c) NamespaceConstants | `implementation-visitor.cc` preamble | ~12 |
+| 7 | **Phase 9B emitter mismatch** — runtime-helper signatures use `std::tuple<...>` parameter types (per `Type::GetRuntimeType` lowering structs to tuples, types.cc:1449-1459), but helper bodies access fields via `<param>.<field_name>` syntax (per `LowerParameter` recursive naming, implementation-visitor.cc:4080), which is invalid on tuples. CSAGenerator works because it has `TorqueStructArguments` and similar as real C++ structs in `csa-types.h`. | (d) emitter rewrite | parallel struct-emission pass; touches `Type::GetRuntimeType` callsites (~14), `EmitCCValue`, per-TU struct-def emission, Phase 9B prelude rewire | ~85 |
+| 8 | Phase 9B prelude `torque_arguments_base = Address{}` placeholder doesn't point at real argument slots | (d.2) emitter rewire | wire `base = address_of_first_argument()` in same prelude | ~3 |
+
+#1-4 (a-bucket shims) and #6 (c-bucket NamespaceConstants) are trivial. #5 (NewPromiseCapability) is a budget exception — V8 has no public C++ helper for closure-context Promise allocation, so the bridge replicates `InnerNewPromiseCapability`'s fast path inline; this is an honest one-time cost amortized across the entire Promise family (Promise.try, Promise.all, Promise.any, Promise.race, Promise.allSettled, Promise.withResolvers).
+
+#7 is the structural blocker that took Phase 10 past its budget. Phase 9B chose `std::tuple<...>` as the C++ representation for torque struct types in kCCBuiltins (matching `Type::GetRuntimeType`'s default lowering for structs), but the helper-body access pattern that LowerParameter generates assumes named-field structs. The two paths weren't reconciled. Fixing it correctly mirrors CSAGenerator's `csa-types.h` pattern: emit a parallel struct-definition pass per kCCBuiltins TU, with C++-native field types instead of `TNode<RawPtrT>` etc. The patch touches ~14 `GetRuntimeType` callsites + `EmitCCValue` + a new struct-emission loop + Phase 9B prelude rewire (~85 LoC total). It needs careful auditing against existing kCC/kCCDebug paths to avoid regressing fixtures.
+
+### Why STOP-rule activated
+
+The Phase 10 plan defined hard stops including: "A single new bridge requires more than 50 LoC of C++... if a bridge balloons, the underlying API choice is wrong." Phase 10 hit a different version of the same trigger — not a single bridge ballooning, but the PREREQUISITE emitter work (item #7 above) ballooning into its own architecturally-significant phase. The right response was to ship the one well-scoped change (Task 10.0.1) and document the rest as a clean Phase 11 prerequisite.
+
+### Path forward — Phase 11
+
+[docs/plans/2026-04-26-torque-cc-backend-phase11.md](../../docs/plans/2026-04-26-torque-cc-backend-phase11.md) captures the deferred work as a complete plan:
+
+1. **Task 11.1** — emitter struct/tuple reconciliation (the #7 blocker): `Type::GetRuntimeType` output-mode awareness (or new method `GetRuntimeTypeForCCBuiltins`), `EmitCCValue` struct-name aggregate-init, per-TU struct-def emission mirroring `csa-types.h`, Phase 9B prelude rewire to `TorqueStructArguments` literal with `base = address_of_first_argument()`.
+2. **Task 11.2** — 3 NamespaceConstants (#6).
+3. **Task 11.3** — 5 macro shims (#1-4).
+4. **Task 11.4** — `Builtin_NewPromiseCapability` bridge with fast-path-only architecture (#5; spike-first to size honestly).
+5. **Task 11.5** — cctest + d8-smoke for PromiseTry.
+6. **Task 11.6** — verification.md Summary + push.
+
+Phase 11 close criteria match Phase 10's original PromiseTry deliverables: cctest ≥17 PASS, d8-smoke ≥28 PASS, fixtures 18/18 byte-exact post-refresh, anchor `8169724e` stable, all 5 wasm-posix-kernel suites 0 delta.
+
+### Honest framing — patch growth trajectory
+
+Phase 10 close ships ~7 LoC of net source change. The Phase 11 plan estimates ~200-300 LoC across emitter + bridges + tests + struct decls in 18 fixture goldens, which keeps the cumulative diff well under the plan's 2000-line ceiling.
+
+### Verification (Phase 10 close vs Phase 9.7 baseline)
+
+| Gate | Phase 9.7 | **Phase 10 close** | Delta |
+|------|-----------|---------------------|-------|
+| cctest TorqueCcBuiltinTest.* | 16 PASS | **16 PASS** | 0 (gate change is no-op for current whitelist — no fixture exercises non-smi tagged store) |
+| d8-smoke | 26 PASS | **26 PASS** | 0 |
+| Torque fixtures | 18/18 byte-exact | **18/18 byte-exact** | 0 (verified via `bash examples/libs/nodejs/test/run-torque-fixtures.sh`) |
+| mjsunit | 2 PASS | **2 PASS** | 0 |
+| Excluding-anchor (excludes number, tail-call, catch-block, js-varargs) | `8169724e` | **`8169724e`** | 0 — kCSA path untouched |
+| Cumulative source diff vs upstream V8 | 2706 ins / 60 del / 25 files | **2711 ins / 60 del / 25 files** | +5 ins (gate change: +9 ins / -4 del net = +5) |
+| `format-patch`-emitted patch line count | 7693 lines / 93 commits | **7759 lines / 94 commits** | +66 lines / +1 commit (mostly per-commit metadata + diff context — see Phase 9.7 §"Note on patch line count metric") |
+| Kernel suites: cargo (722 passed) | 0 delta vs Phase 8.1 | **722 passed** | 0 |
+| Kernel suites: vitest (250 passed / 108 skipped) | 0 delta | **250 passed / 108 skipped** | 0 |
+| Kernel suites: libc-test (300 PASS / 2 FAIL baseline / 22 XFAIL / 0 XPASS / 0 TIME) | 0 delta | **300 PASS / 2 FAIL / 22 XFAIL / 0 XPASS / 0 TIME** | 0 |
+| Kernel suites: POSIX (0 FAIL / 1 XFAIL `munmap/1-1`) | 0 delta | **0 FAIL / 1 XFAIL** | 0 |
+| Kernel suites: ABI snapshot | in sync | **in sync, ABI_VERSION consistent** | 0 |
+
+### Note on what Phase 10 *learned*
+
+Two findings from Task 10.0 / 10.0.1 work that future phases inherit:
+
+1. **`TaggedField<T>::store` is the canonical V8 store API** for non-smi tagged fields under kCCBuiltins. The 3-arg overload requires no cage_base. Future emitter changes that need to write tagged fields (e.g., struct-field-write on PromiseCapability for capability.resolve assignment) can use the same pattern.
+
+2. **The Phase 9B varargs lowering's struct-tuple choice was a near-miss** — the runtime-type emission and the parameter-naming pass weren't reconciled at the time. Phase 11's parallel struct-emission pass closes that gap and matches the spirit of CSAGenerator's `csa-types.h` mechanism. Future V8 upgrades that touch struct types in `csa-types.h` will surface as visible diffs against our parallel kCCBuiltins struct-emission pass — exactly the upgrade-friendly architecture the prime directive favors.
