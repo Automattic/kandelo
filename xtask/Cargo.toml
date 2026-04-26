@@ -44,6 +44,10 @@ tar = "0.4"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 bzip2 = "0.4"
 xz2 = "0.1"
+# Host-tool probe runner (Task C.9): match the captured version
+# substring out of `<tool> --version` output. `regex` is a default-
+# featured, well-cached crate; no non-default features needed.
+regex = "1"
 
 [dev-dependencies]
 # Used by source_extract + build_deps integration tests for ergonomic

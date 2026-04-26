@@ -15,6 +15,7 @@ mod build_manifest;
 mod bundle_program;
 mod deps_manifest;
 mod dump_abi;
+mod host_tool_probe;
 mod remote_fetch;
 mod source_extract;
 mod util;
