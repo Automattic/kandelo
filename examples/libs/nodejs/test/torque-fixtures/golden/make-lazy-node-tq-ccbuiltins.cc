@@ -185,7 +185,7 @@ inline Tagged<Numeric> Builtin_NonNumberToNumeric(
 }
 
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/test/phase2-fixtures/make-lazy-node.tq?l=13&c=3
-Tagged<Smi> TqRuntimeTorqueCcTest_LazyBody_0(Tagged<Smi> p_x);
+Tagged<Smi> TqRuntimeCCBTorqueCcTest_LazyBody_0(Tagged<Smi> p_x);
 
 Tagged<Smi> Builtin_TorqueCcTest_MakeLazyNode(Isolate* isolate, Tagged<Context> context, Tagged<Smi> arg) {
   USE(isolate);
@@ -197,15 +197,15 @@ Tagged<Smi> Builtin_TorqueCcTest_MakeLazyNode(Isolate* isolate, Tagged<Context> 
   goto block0;
 
   block0:
-  tmp0 = [=]() { return TqRuntimeTorqueCcTest_LazyBody_0(parameter1); };
+  tmp0 = [=]() { return TqRuntimeCCBTorqueCcTest_LazyBody_0(parameter1); };
   return parameter1;
 }
 
-#ifndef V8_INTERNAL_DEFINED_TqRuntimeTorqueCcTest_LazyBody_0
-#define V8_INTERNAL_DEFINED_TqRuntimeTorqueCcTest_LazyBody_0
+#ifndef V8_INTERNAL_DEFINED_TqRuntimeCCBTorqueCcTest_LazyBody_0
+#define V8_INTERNAL_DEFINED_TqRuntimeCCBTorqueCcTest_LazyBody_0
 
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/test/phase2-fixtures/make-lazy-node.tq?l=13&c=3
-inline Tagged<Smi> TqRuntimeTorqueCcTest_LazyBody_0(Tagged<Smi> p_x) {
+inline Tagged<Smi> TqRuntimeCCBTorqueCcTest_LazyBody_0(Tagged<Smi> p_x) {
   goto block0;
 
   block0:
@@ -215,6 +215,6 @@ inline Tagged<Smi> TqRuntimeTorqueCcTest_LazyBody_0(Tagged<Smi> p_x) {
   return p_x;
 }
 
-#endif // V8_INTERNAL_DEFINED_TqRuntimeTorqueCcTest_LazyBody_0
+#endif // V8_INTERNAL_DEFINED_TqRuntimeCCBTorqueCcTest_LazyBody_0
 
 }  // namespace v8::internal

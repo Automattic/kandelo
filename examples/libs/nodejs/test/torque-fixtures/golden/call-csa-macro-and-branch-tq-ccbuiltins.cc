@@ -185,13 +185,13 @@ inline Tagged<Numeric> Builtin_NonNumberToNumeric(
 }
 
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/convert.tq?l=56&c=1
-Tagged<Smi> TqRuntimeFromConstexpr_Smi_constexpr_IntegerLiteral_0(IntegerLiteral p_i);
+Tagged<Smi> TqRuntimeCCBFromConstexpr_Smi_constexpr_IntegerLiteral_0(IntegerLiteral p_i);
 
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/convert.tq?l=57&c=10
-Tagged<Smi> TqRuntimeConvert_Smi_constexpr_int31_0(int31_t p_i);
+Tagged<Smi> TqRuntimeCCBConvert_Smi_constexpr_int31_0(int31_t p_i);
 
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/convert.tq?l=85&c=1
-Tagged<Smi> TqRuntimeFromConstexpr_Smi_constexpr_int31_0(int31_t p_i);
+Tagged<Smi> TqRuntimeCCBFromConstexpr_Smi_constexpr_int31_0(int31_t p_i);
 
 Tagged<Smi> Builtin_TorqueCcTest_CallCsaMacroAndBranch(Isolate* isolate, Tagged<Context> context) {
   USE(isolate);
@@ -210,53 +210,53 @@ Tagged<Smi> Builtin_TorqueCcTest_CallCsaMacroAndBranch(Isolate* isolate, Tagged<
   goto block3;
 
   block4:
-  tmp1 = TqRuntimeFromConstexpr_Smi_constexpr_IntegerLiteral_0(IntegerLiteral(false, 0x0ull));
+  tmp1 = TqRuntimeCCBFromConstexpr_Smi_constexpr_IntegerLiteral_0(IntegerLiteral(false, 0x0ull));
   return tmp1;
 
   block3:
-  tmp2 = TqRuntimeFromConstexpr_Smi_constexpr_IntegerLiteral_0(IntegerLiteral(false, 0x1ull));
+  tmp2 = TqRuntimeCCBFromConstexpr_Smi_constexpr_IntegerLiteral_0(IntegerLiteral(false, 0x1ull));
   return tmp2;
 }
 
-#ifndef V8_INTERNAL_DEFINED_TqRuntimeFromConstexpr_Smi_constexpr_IntegerLiteral_0
-#define V8_INTERNAL_DEFINED_TqRuntimeFromConstexpr_Smi_constexpr_IntegerLiteral_0
+#ifndef V8_INTERNAL_DEFINED_TqRuntimeCCBFromConstexpr_Smi_constexpr_IntegerLiteral_0
+#define V8_INTERNAL_DEFINED_TqRuntimeCCBFromConstexpr_Smi_constexpr_IntegerLiteral_0
 
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/convert.tq?l=56&c=1
-inline Tagged<Smi> TqRuntimeFromConstexpr_Smi_constexpr_IntegerLiteral_0(IntegerLiteral p_i) {
+inline Tagged<Smi> TqRuntimeCCBFromConstexpr_Smi_constexpr_IntegerLiteral_0(IntegerLiteral p_i) {
   Tagged<Smi> tmp0{}; USE(tmp0);
   goto block0;
 
   block0:
-  tmp0 = TqRuntimeConvert_Smi_constexpr_int31_0((TorqueRuntimeMacroShims::CodeStubAssembler::ConstexprIntegerLiteralToInt31(p_i)));
+  tmp0 = TqRuntimeCCBConvert_Smi_constexpr_int31_0((TorqueRuntimeMacroShims::CodeStubAssembler::ConstexprIntegerLiteralToInt31(p_i)));
   goto block2;
 
   block2:
   return tmp0;
 }
 
-#endif // V8_INTERNAL_DEFINED_TqRuntimeFromConstexpr_Smi_constexpr_IntegerLiteral_0
-#ifndef V8_INTERNAL_DEFINED_TqRuntimeConvert_Smi_constexpr_int31_0
-#define V8_INTERNAL_DEFINED_TqRuntimeConvert_Smi_constexpr_int31_0
+#endif // V8_INTERNAL_DEFINED_TqRuntimeCCBFromConstexpr_Smi_constexpr_IntegerLiteral_0
+#ifndef V8_INTERNAL_DEFINED_TqRuntimeCCBConvert_Smi_constexpr_int31_0
+#define V8_INTERNAL_DEFINED_TqRuntimeCCBConvert_Smi_constexpr_int31_0
 
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/convert.tq?l=57&c=10
-inline Tagged<Smi> TqRuntimeConvert_Smi_constexpr_int31_0(int31_t p_i) {
+inline Tagged<Smi> TqRuntimeCCBConvert_Smi_constexpr_int31_0(int31_t p_i) {
   Tagged<Smi> tmp0{}; USE(tmp0);
   goto block0;
 
   block0:
-  tmp0 = TqRuntimeFromConstexpr_Smi_constexpr_int31_0(p_i);
+  tmp0 = TqRuntimeCCBFromConstexpr_Smi_constexpr_int31_0(p_i);
   goto block2;
 
   block2:
   return tmp0;
 }
 
-#endif // V8_INTERNAL_DEFINED_TqRuntimeConvert_Smi_constexpr_int31_0
-#ifndef V8_INTERNAL_DEFINED_TqRuntimeFromConstexpr_Smi_constexpr_int31_0
-#define V8_INTERNAL_DEFINED_TqRuntimeFromConstexpr_Smi_constexpr_int31_0
+#endif // V8_INTERNAL_DEFINED_TqRuntimeCCBConvert_Smi_constexpr_int31_0
+#ifndef V8_INTERNAL_DEFINED_TqRuntimeCCBFromConstexpr_Smi_constexpr_int31_0
+#define V8_INTERNAL_DEFINED_TqRuntimeCCBFromConstexpr_Smi_constexpr_int31_0
 
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/convert.tq?l=85&c=1
-inline Tagged<Smi> TqRuntimeFromConstexpr_Smi_constexpr_int31_0(int31_t p_i) {
+inline Tagged<Smi> TqRuntimeCCBFromConstexpr_Smi_constexpr_int31_0(int31_t p_i) {
   Tagged<Smi> tmp0{}; USE(tmp0);
   goto block0;
 
@@ -268,6 +268,6 @@ inline Tagged<Smi> TqRuntimeFromConstexpr_Smi_constexpr_int31_0(int31_t p_i) {
   return tmp0;
 }
 
-#endif // V8_INTERNAL_DEFINED_TqRuntimeFromConstexpr_Smi_constexpr_int31_0
+#endif // V8_INTERNAL_DEFINED_TqRuntimeCCBFromConstexpr_Smi_constexpr_int31_0
 
 }  // namespace v8::internal

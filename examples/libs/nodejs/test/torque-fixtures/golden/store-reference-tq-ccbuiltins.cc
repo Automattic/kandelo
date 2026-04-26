@@ -185,7 +185,7 @@ inline Tagged<Numeric> Builtin_NonNumberToNumeric(
 }
 
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/test/phase2-fixtures/store-reference.tq?l=20&c=22
-TorqueStructReference_Smi_0 TqRuntimeNewReference_Smi_0(Tagged<Union<HeapObject, TaggedIndex>> p_object, intptr_t p_offset);
+TorqueStructReference_Smi_0 TqRuntimeCCBNewReference_Smi_0(Tagged<Union<HeapObject, TaggedIndex>> p_object, intptr_t p_offset);
 
 Tagged<Smi> Builtin_TorqueCcTest_StoreReference(Isolate* isolate, Tagged<Context> context, Tagged<HeapObject> obj, intptr_t offset, Tagged<Smi> v) {
   USE(isolate);
@@ -202,16 +202,16 @@ Tagged<Smi> Builtin_TorqueCcTest_StoreReference(Isolate* isolate, Tagged<Context
   goto block0;
 
   block0:
-  std::tie(tmp0, tmp1) = TqRuntimeNewReference_Smi_0(parameter1, parameter2);
+  std::tie(tmp0, tmp1) = TqRuntimeCCBNewReference_Smi_0(parameter1, parameter2);
   TaggedField<Tagged<Smi>>::store(UncheckedCast<HeapObject>(tmp0), static_cast<int>(tmp1), parameter3);
   return parameter3;
 }
 
-#ifndef V8_INTERNAL_DEFINED_TqRuntimeNewReference_Smi_0
-#define V8_INTERNAL_DEFINED_TqRuntimeNewReference_Smi_0
+#ifndef V8_INTERNAL_DEFINED_TqRuntimeCCBNewReference_Smi_0
+#define V8_INTERNAL_DEFINED_TqRuntimeCCBNewReference_Smi_0
 
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/test/phase2-fixtures/store-reference.tq?l=20&c=22
-inline TorqueStructReference_Smi_0 TqRuntimeNewReference_Smi_0(Tagged<Union<HeapObject, TaggedIndex>> p_object, intptr_t p_offset) {
+inline TorqueStructReference_Smi_0 TqRuntimeCCBNewReference_Smi_0(Tagged<Union<HeapObject, TaggedIndex>> p_object, intptr_t p_offset) {
   Tagged<Union<HeapObject, TaggedIndex>> tmp0{}; USE(tmp0);
   intptr_t tmp1{}; USE(tmp1);
   goto block0;
@@ -224,6 +224,6 @@ inline TorqueStructReference_Smi_0 TqRuntimeNewReference_Smi_0(Tagged<Union<Heap
   return TorqueStructReference_Smi_0{tmp0, tmp1};
 }
 
-#endif // V8_INTERNAL_DEFINED_TqRuntimeNewReference_Smi_0
+#endif // V8_INTERNAL_DEFINED_TqRuntimeCCBNewReference_Smi_0
 
 }  // namespace v8::internal

@@ -185,7 +185,7 @@ inline Tagged<Numeric> Builtin_NonNumberToNumeric(
 }
 
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/convert.tq?l=284&c=1
-Tagged<Smi> TqRuntimeConvert_Smi_intptr_0(intptr_t p_i);
+Tagged<Smi> TqRuntimeCCBConvert_Smi_intptr_0(intptr_t p_i);
 
 // Builtin: TorqueCcTest_JsVarargs
 Address Builtin_TorqueCcTest_JsVarargs(int args_length, Address* args_object,
@@ -215,15 +215,15 @@ Address Builtin_TorqueCcTest_JsVarargs(int args_length, Address* args_object,
   goto block0;
 
   block0:
-  tmp0 = TqRuntimeConvert_Smi_intptr_0(torque_arguments.length);
+  tmp0 = TqRuntimeCCBConvert_Smi_intptr_0(torque_arguments.length);
   return tmp0.ptr();
 }
 
-#ifndef V8_INTERNAL_DEFINED_TqRuntimeConvert_Smi_intptr_0
-#define V8_INTERNAL_DEFINED_TqRuntimeConvert_Smi_intptr_0
+#ifndef V8_INTERNAL_DEFINED_TqRuntimeCCBConvert_Smi_intptr_0
+#define V8_INTERNAL_DEFINED_TqRuntimeCCBConvert_Smi_intptr_0
 
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/convert.tq?l=284&c=1
-inline Tagged<Smi> TqRuntimeConvert_Smi_intptr_0(intptr_t p_i) {
+inline Tagged<Smi> TqRuntimeCCBConvert_Smi_intptr_0(intptr_t p_i) {
   Tagged<Smi> tmp0{}; USE(tmp0);
   goto block0;
 
@@ -235,6 +235,6 @@ inline Tagged<Smi> TqRuntimeConvert_Smi_intptr_0(intptr_t p_i) {
   return tmp0;
 }
 
-#endif // V8_INTERNAL_DEFINED_TqRuntimeConvert_Smi_intptr_0
+#endif // V8_INTERNAL_DEFINED_TqRuntimeCCBConvert_Smi_intptr_0
 
 }  // namespace v8::internal

@@ -2021,3 +2021,80 @@ Two findings from Task 10.0 / 10.0.1 work that future phases inherit:
 1. **`TaggedField<T>::store` is the canonical V8 store API** for non-smi tagged fields under kCCBuiltins. The 3-arg overload requires no cage_base. Future emitter changes that need to write tagged fields (e.g., struct-field-write on PromiseCapability for capability.resolve assignment) can use the same pattern.
 
 2. **The Phase 9B varargs lowering's struct-tuple choice was a near-miss** — the runtime-type emission and the parameter-naming pass weren't reconciled at the time. Phase 11's parallel struct-emission pass closes that gap and matches the spirit of CSAGenerator's `csa-types.h` mechanism. Future V8 upgrades that touch struct types in `csa-types.h` will surface as visible diffs against our parallel kCCBuiltins struct-emission pass — exactly the upgrade-friendly architecture the prime directive favors.
+
+## Phase 11 Summary — emitter struct/tuple reconciliation; PromiseTry deferred to Phase 12
+
+The Phase 11 plan ([docs/plans/2026-04-26-torque-cc-backend-phase11.md](../../docs/plans/2026-04-26-torque-cc-backend-phase11.md)) targeted shipping `PromiseTry` as a real-world combined catch_block + varargs forcing target. Phase 11 ships the **structural emitter prerequisite** that all Promise-family targets need; the `Builtin_NewPromiseCapability` bridge that PromiseTry specifically needs is deferred to Phase 12 along with the PromiseTry whitelist.
+
+### What shipped — Task 11.1 (and 11.1 follow-up): kCCBuiltins parallel struct emission
+
+The kCCBuiltins emitter now mirrors CSAGenerator's `csa-types.h` pattern faithfully: a parallel struct-definition pass per kCCBuiltins TU, named after the canonical torque struct types (`TorqueStructArguments`, `TorqueStructArgumentsIterator_0`, etc.) but with C++-native field types (`Tagged<X>`, `Address`, `intptr_t`) instead of `TNode<>`.
+
+Files emitted:
+- `gen/torque-generated/cc-builtins-types.h` — single shared header (parallel of `csa-types.h`), included by every `*-tq-ccbuiltins.cc` preamble. 344 structs emit, 5 SKIPPED (Simd128 / BInt / scoped enum classes that need V8-internal headers we deliberately don't pull in).
+
+Emitter changes (Task 11.1, commit `5c708bd7`):
+- `Type::GetRuntimeTypeForCCBuiltins()` (types.h/.cc) — kCCBuiltins-specific runtime-type rendering. Struct types render as canonical generated names; non-struct types delegate to `GetRuntimeType()`.
+- `ImplementationVisitor::GenerateCCBuiltinsTypes()` (implementation-visitor.cc) — walks `TypeOracle::GetAggregateTypes()` and emits the parallel header. Per-field header-safety check (whitelist of standard C++ types + Tagged<> + struct types) skips unrepresentable structs with a visible `// SKIPPED:` comment.
+- `CCGenerator::RenderRuntimeType()` helper (cc-generator.h/.cc) — picks `GetDebugType` / `GetRuntimeTypeForCCBuiltins` / `GetRuntimeType` based on output mode. ~14 callsites in cc-generator.cc switched.
+- `EmitCCValue` gains `bool is_cc_builtins` parameter — struct values render as `<TorqueStructX>{a, b, c}` aggregate-init (instead of `std::make_tuple(a, b, c)`).
+- `GenerateFunction` splits the `kCC` / `kCCBuiltins` arms (return type, parameter type, label-param-type) so kCC keeps `std::tuple<>` shape (byte-identical to stock torque) and kCCBuiltins uses the named-struct shape.
+- Phase 9B prelude rewires from `Address{}` placeholder base to `TorqueStructArguments torque_arguments{nullptr, reinterpret_cast<Address>(args.address_of_first_argument()), …}` literal — mirrors CSAGenerator's `TorqueStructArguments` push at impl-visitor.cc:969-979 of the kCSA path.
+
+Follow-up emitter changes (commit `da4218a4`) needed to fix an ODR collision the first attempt didn't anticipate:
+
+The kCC `-tq-inl.inc` files (e.g., `contexts-tq-inl.inc`) declare `TqRuntimeFieldSliceContextElements` returning `std::tuple<...>`. Those are transitively included in `*-tq-ccbuiltins.cc` TUs via `arguments-inl.h → objects-inl.h → contexts-inl.h → contexts-tq-inl.inc`. The kCCBuiltins emission of the same helper (with the struct-named return type) collides with that declaration: same name, different return type → "functions that differ only in their return type cannot be overloaded." Fix:
+
+- New `Callable::CCBuiltinsName()` returning `"TqRuntimeCCB" + ExternalName()` — distinct prefix from kCC's `"TqRuntime" + ExternalName()`. The two namespaces are now fully separate, so the kCC and kCCBuiltins emissions of the same Torque helper coexist as different functions.
+- `ExternMacro::CCBuiltinsName()` overrides to fall back to `CCName()` — extern shims live in `TorqueRuntimeMacroShims::` and are shared by both passes (they don't have their own bodies, just route to runtime-macro-shims.h definitions).
+- `GenerateCCBuiltinsTypes` adds `Flatten()` to each struct (mirrors `csa-types.h`'s `Flatten()` helper at csa-generator.cc emission) so call sites can write `std::tie(a, b, c) = helper(...).Flatten()` (CCGenerator's existing pattern at cc-generator.cc:466).
+- 3 macro-call emission sites in cc-generator.cc switch to `CCBuiltinsName` when `is_cc_builtins_`.
+- 5 NamespaceConstants reachable from PromiseTry's body added to cc_builtins_preamble: `REFLECT_APPLY_INDEX_0`, `JS_ARRAY_PACKED_ELEMENTS_MAP_INDEX_0`, `kEmptyFixedArray_0`, `kFixedArrayMap_0`, `kNoContext_0`. Mirror Phase 5/6.1's `True_0`/`False_0`/`Undefined_0`/`TheHole_0` pattern.
+- 5 macro shims added: trivial ones (`IntPtrSub`, `WordEqual`, `IntPtrGreaterThan`) in `runtime-macro-shims.h`; heavier ones that need V8-internal types (`Call` variadic wrapping `Execution::Call`, `GetArgumentValue` reading from `TorqueStructArguments`, `ThrowTypeError(Context, MessageTemplate, const char*)`) in the cc_builtins_preamble (same rationale as Phase 8's `NumberConstant` — `runtime-macro-shims.h`'s surgical include set deliberately omits factory/execution/message-template headers to stay includable from the broad swath of V8 .cc files that pull it in).
+- Per-TU preamble adds includes: `src/common/message-template.h`, `src/execution/execution.h`, `src/heap/factory.h`, `src/heap/factory-inl.h`.
+
+### What deferred — `Builtin_NewPromiseCapability` to Phase 12
+
+PromiseTry's `NewPromiseCapability(receiver, False)` lowers to a TFC builtin call — `Builtin_NewPromiseCapability(isolate, context, constructor, debug_event)`. V8's `NewPromiseCapability` is implemented in `promise-abstract-operations.tq:379` and CSA-emitted at snapshot time; no `Builtin_<Name>` C symbol exists. The fast path (`constructor == native_context.promise_function()`) requires:
+
+1. `factory()->NewJSPromise()` — exposed in `src/heap/factory.h:1081`. ✓
+2. `CreatePromiseResolvingFunctions(promise, debugEvent, nativeContext)` — torque macro at `promise-abstract-operations.tq:325`. Allocates a 3-slot closure context (`PromiseResolvingFunctionContext`) plus two `JSFunction` closures bound to `kPromiseCapabilityDefaultResolveSharedFun` / `kPromiseCapabilityDefaultRejectSharedFun` root SFIs. **No equivalent C++ helper exists in `Factory` for the resolving-functions allocation** — we'd need to call `factory->NewBuiltinContext(native_context, kPromiseResolvingFunctionContextLength)`, set the 3 slots, then `factory->NewFunctionFromSharedFunctionInfo(sfi, context)` (or its equivalent) for each closure.
+3. `CreatePromiseCapability(promise, resolve, reject)` — torque-macro alloc of the `PromiseCapability` struct. The C++ analogue is `factory->NewStruct(PROMISE_CAPABILITY_TYPE)` — but `Factory::NewStruct` isn't directly available in `factory.h`'s public surface either.
+
+Each of these is a real V8 API surface that requires investigation; together they're a clean Phase 12 sub-phase. The Phase 11 emitter foundation means Phase 12 can drop in `Builtin_NewPromiseCapability` as a single inline-bridge addition to `cc_builtins_preamble` without re-touching the emitter.
+
+[docs/plans/2026-04-26-torque-cc-backend-phase11.md](../../docs/plans/2026-04-26-torque-cc-backend-phase11.md)'s Task 11.4 description gets carried forward to Phase 12 as a spike-first task: write the bridge cleanly, see the honest LoC, then commit.
+
+### Architectural note for upgrade resilience
+
+The most important property of Phase 11's emitter changes: the parallel struct-emission pass walks the **same data source** as `csa-types.h` (`TypeOracle::GetAggregateTypes()`). When V8 upstream changes torque struct types (adds new ones, renames fields, reorders), our emitted `cc-builtins-types.h` reflects the change automatically. The diff against upstream V8 stays surgical: one new `GenerateCCBuiltinsTypes` method, one new `Type::GetRuntimeTypeForCCBuiltins`, one new `Callable::CCBuiltinsName`, and a handful of branch points in existing emitter loops. Everything else inherits V8's torque mechanics unchanged.
+
+The CCBuiltinsName rename also means upgrade reviewers can grep for `TqRuntimeCCB` to see exactly which symbols are kCCBuiltins-namespace and trace their lineage.
+
+### Verification (Phase 11 close vs Phase 10 close baseline)
+
+| Gate | Phase 10 close | **Phase 11 close** | Delta |
+|------|----------------|---------------------|-------|
+| cctest TorqueCcBuiltinTest.* | 16 PASS | **16 PASS** | 0 |
+| d8-smoke | 26 PASS | **26 PASS** | 0 |
+| mjsunit | 2 PASS | **2 PASS** | 0 |
+| Torque fixtures | 18/18 byte-exact | **18/18 byte-exact** | 0 (8 goldens regen for the TqRuntime → TqRuntimeCCB rename + new include line; second run byte-exact) |
+| Excluding-anchor (excludes number, tail-call, catch-block, js-varargs) | `8169724e` | **`8169724e`** | 0 — kCSA path untouched |
+| Cumulative source diff vs upstream V8 | 2711 ins / 60 del / 25 files | **3199 ins / 80 del / 27 files** | +488 ins / +20 del / +2 files (new `cc-generator.h` callout for `RenderRuntimeType` + helper-method declarations; the +2 files are previously-untouched torque sources) |
+| `format-patch`-emitted patch line count | 7759 lines / 94 commits | **9103 lines / 96 commits** | +1344 lines / +2 commits |
+| Kernel suites: cargo | 722 passed | **722 passed** | 0 |
+| Kernel suites: vitest | 250 passed / 108 skipped | **250 passed / 108 skipped** | 0 |
+| Kernel suites: libc-test | 300 PASS / 2 FAIL / 22 XFAIL / 0 XPASS / 0 TIME | **300 PASS / 2 FAIL / 22 XFAIL / 0 XPASS / 0 TIME** | 0 |
+| Kernel suites: POSIX | 0 FAIL / 1 XFAIL (`munmap/1-1`) | **0 FAIL / 1 XFAIL** | 0 |
+| Kernel suites: ABI snapshot | in sync | **in sync, ABI_VERSION consistent** | 0 |
+
+### Honest framing — what's still missing from PromiseTry
+
+The Phase 11 close is a substantial structural step but does NOT yet ship PromiseTry. To reach a green PromiseTry build, Phase 12 needs:
+
+1. `Builtin_NewPromiseCapability` bridge — the closure-context-dependent TFC bridge (~50-100 LoC; requires V8-internal allocation API investigation as discussed in the §"What deferred" section above).
+2. PromiseTry whitelist re-add to `build-v8-host-phase5.sh`.
+3. cctest `JsPromiseTryDispatch` + d8-smoke probes for `Promise.try(() => 42)`, throw-and-catch, and multi-arg cases.
+4. Optional mjsunit coverage if upstream V8 has a self-contained `promise-try.js`.
+
+Phase 12's bridge work is much smaller than Phase 11's — it's a single inline-bridge addition once the emitter foundation is in place.

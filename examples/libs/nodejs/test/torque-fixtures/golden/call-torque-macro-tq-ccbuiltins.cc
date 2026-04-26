@@ -185,16 +185,16 @@ inline Tagged<Numeric> Builtin_NonNumberToNumeric(
 }
 
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/test/phase2-fixtures/call-torque-macro.tq?l=7&c=3
-Tagged<Smi> TqRuntimeTorqueCcTest_CallMeFromBuiltin_0(Tagged<Smi> p_x, bool* label_Fail);
+Tagged<Smi> TqRuntimeCCBTorqueCcTest_CallMeFromBuiltin_0(Tagged<Smi> p_x, bool* label_Fail);
 
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/convert.tq?l=56&c=1
-Tagged<Smi> TqRuntimeFromConstexpr_Smi_constexpr_IntegerLiteral_0(IntegerLiteral p_i);
+Tagged<Smi> TqRuntimeCCBFromConstexpr_Smi_constexpr_IntegerLiteral_0(IntegerLiteral p_i);
 
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/convert.tq?l=57&c=10
-Tagged<Smi> TqRuntimeConvert_Smi_constexpr_int31_0(int31_t p_i);
+Tagged<Smi> TqRuntimeCCBConvert_Smi_constexpr_int31_0(int31_t p_i);
 
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/convert.tq?l=85&c=1
-Tagged<Smi> TqRuntimeFromConstexpr_Smi_constexpr_int31_0(int31_t p_i);
+Tagged<Smi> TqRuntimeCCBFromConstexpr_Smi_constexpr_int31_0(int31_t p_i);
 
 Tagged<Smi> Builtin_TorqueCcTest_CallTorqueMacro(Isolate* isolate, Tagged<Context> context, Tagged<Smi> arg) {
   USE(isolate);
@@ -208,31 +208,31 @@ Tagged<Smi> Builtin_TorqueCcTest_CallTorqueMacro(Isolate* isolate, Tagged<Contex
   goto block0;
 
   block0:
-  tmp0 = TqRuntimeTorqueCcTest_CallMeFromBuiltin_0(parameter1, &label1);
+  tmp0 = TqRuntimeCCBTorqueCcTest_CallMeFromBuiltin_0(parameter1, &label1);
   if (label1) {
     goto block4;
   }
   goto block3;
 
   block4:
-  tmp2 = TqRuntimeFromConstexpr_Smi_constexpr_IntegerLiteral_0(IntegerLiteral(true, 0x1ull));
+  tmp2 = TqRuntimeCCBFromConstexpr_Smi_constexpr_IntegerLiteral_0(IntegerLiteral(true, 0x1ull));
   return tmp2;
 
   block3:
   return tmp0;
 }
 
-#ifndef V8_INTERNAL_DEFINED_TqRuntimeTorqueCcTest_CallMeFromBuiltin_0
-#define V8_INTERNAL_DEFINED_TqRuntimeTorqueCcTest_CallMeFromBuiltin_0
+#ifndef V8_INTERNAL_DEFINED_TqRuntimeCCBTorqueCcTest_CallMeFromBuiltin_0
+#define V8_INTERNAL_DEFINED_TqRuntimeCCBTorqueCcTest_CallMeFromBuiltin_0
 
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/test/phase2-fixtures/call-torque-macro.tq?l=7&c=3
-inline Tagged<Smi> TqRuntimeTorqueCcTest_CallMeFromBuiltin_0(Tagged<Smi> p_x, bool* label_Fail) {
+inline Tagged<Smi> TqRuntimeCCBTorqueCcTest_CallMeFromBuiltin_0(Tagged<Smi> p_x, bool* label_Fail) {
   Tagged<Smi> tmp0{}; USE(tmp0);
   bool tmp1{}; USE(tmp1);
   goto block0;
 
   block0:
-  tmp0 = TqRuntimeFromConstexpr_Smi_constexpr_IntegerLiteral_0(IntegerLiteral(false, 0x0ull));
+  tmp0 = TqRuntimeCCBFromConstexpr_Smi_constexpr_IntegerLiteral_0(IntegerLiteral(false, 0x0ull));
   tmp1 = TorqueRuntimeMacroShims::CodeStubAssembler::SmiEqual(p_x, tmp0);
   if (tmp1) {
     goto block3;
@@ -251,46 +251,46 @@ inline Tagged<Smi> TqRuntimeTorqueCcTest_CallMeFromBuiltin_0(Tagged<Smi> p_x, bo
   return p_x;
 }
 
-#endif // V8_INTERNAL_DEFINED_TqRuntimeTorqueCcTest_CallMeFromBuiltin_0
-#ifndef V8_INTERNAL_DEFINED_TqRuntimeFromConstexpr_Smi_constexpr_IntegerLiteral_0
-#define V8_INTERNAL_DEFINED_TqRuntimeFromConstexpr_Smi_constexpr_IntegerLiteral_0
+#endif // V8_INTERNAL_DEFINED_TqRuntimeCCBTorqueCcTest_CallMeFromBuiltin_0
+#ifndef V8_INTERNAL_DEFINED_TqRuntimeCCBFromConstexpr_Smi_constexpr_IntegerLiteral_0
+#define V8_INTERNAL_DEFINED_TqRuntimeCCBFromConstexpr_Smi_constexpr_IntegerLiteral_0
 
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/convert.tq?l=56&c=1
-inline Tagged<Smi> TqRuntimeFromConstexpr_Smi_constexpr_IntegerLiteral_0(IntegerLiteral p_i) {
+inline Tagged<Smi> TqRuntimeCCBFromConstexpr_Smi_constexpr_IntegerLiteral_0(IntegerLiteral p_i) {
   Tagged<Smi> tmp0{}; USE(tmp0);
   goto block0;
 
   block0:
-  tmp0 = TqRuntimeConvert_Smi_constexpr_int31_0((TorqueRuntimeMacroShims::CodeStubAssembler::ConstexprIntegerLiteralToInt31(p_i)));
+  tmp0 = TqRuntimeCCBConvert_Smi_constexpr_int31_0((TorqueRuntimeMacroShims::CodeStubAssembler::ConstexprIntegerLiteralToInt31(p_i)));
   goto block2;
 
   block2:
   return tmp0;
 }
 
-#endif // V8_INTERNAL_DEFINED_TqRuntimeFromConstexpr_Smi_constexpr_IntegerLiteral_0
-#ifndef V8_INTERNAL_DEFINED_TqRuntimeConvert_Smi_constexpr_int31_0
-#define V8_INTERNAL_DEFINED_TqRuntimeConvert_Smi_constexpr_int31_0
+#endif // V8_INTERNAL_DEFINED_TqRuntimeCCBFromConstexpr_Smi_constexpr_IntegerLiteral_0
+#ifndef V8_INTERNAL_DEFINED_TqRuntimeCCBConvert_Smi_constexpr_int31_0
+#define V8_INTERNAL_DEFINED_TqRuntimeCCBConvert_Smi_constexpr_int31_0
 
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/convert.tq?l=57&c=10
-inline Tagged<Smi> TqRuntimeConvert_Smi_constexpr_int31_0(int31_t p_i) {
+inline Tagged<Smi> TqRuntimeCCBConvert_Smi_constexpr_int31_0(int31_t p_i) {
   Tagged<Smi> tmp0{}; USE(tmp0);
   goto block0;
 
   block0:
-  tmp0 = TqRuntimeFromConstexpr_Smi_constexpr_int31_0(p_i);
+  tmp0 = TqRuntimeCCBFromConstexpr_Smi_constexpr_int31_0(p_i);
   goto block2;
 
   block2:
   return tmp0;
 }
 
-#endif // V8_INTERNAL_DEFINED_TqRuntimeConvert_Smi_constexpr_int31_0
-#ifndef V8_INTERNAL_DEFINED_TqRuntimeFromConstexpr_Smi_constexpr_int31_0
-#define V8_INTERNAL_DEFINED_TqRuntimeFromConstexpr_Smi_constexpr_int31_0
+#endif // V8_INTERNAL_DEFINED_TqRuntimeCCBConvert_Smi_constexpr_int31_0
+#ifndef V8_INTERNAL_DEFINED_TqRuntimeCCBFromConstexpr_Smi_constexpr_int31_0
+#define V8_INTERNAL_DEFINED_TqRuntimeCCBFromConstexpr_Smi_constexpr_int31_0
 
 // https://source.chromium.org/chromium/chromium/src/+/main:v8/src/builtins/convert.tq?l=85&c=1
-inline Tagged<Smi> TqRuntimeFromConstexpr_Smi_constexpr_int31_0(int31_t p_i) {
+inline Tagged<Smi> TqRuntimeCCBFromConstexpr_Smi_constexpr_int31_0(int31_t p_i) {
   Tagged<Smi> tmp0{}; USE(tmp0);
   goto block0;
 
@@ -302,6 +302,6 @@ inline Tagged<Smi> TqRuntimeFromConstexpr_Smi_constexpr_int31_0(int31_t p_i) {
   return tmp0;
 }
 
-#endif // V8_INTERNAL_DEFINED_TqRuntimeFromConstexpr_Smi_constexpr_int31_0
+#endif // V8_INTERNAL_DEFINED_TqRuntimeCCBFromConstexpr_Smi_constexpr_int31_0
 
 }  // namespace v8::internal
