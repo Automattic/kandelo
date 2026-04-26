@@ -98,6 +98,13 @@ Browser fetch → Service Worker intercepts
 - Interactive stdin via `appendStdinData` for incremental input
 - xterm.js integration via `PtyTerminal`
 
+### Framebuffer (`/dev/fb0`)
+- 640×400 BGRA32 packed-pixel framebuffer; single-process owner.
+- The pixel buffer lives in the process's `WebAssembly.Memory` (a `SharedArrayBuffer`); the kernel notifies the host of `(pid, addr, len, w, h, stride, fmt)` on `mmap`, and the host renders via `requestAnimationFrame` + a 2D-canvas `putImageData` per frame.
+- `host/src/framebuffer/canvas-renderer.ts::attachCanvas(canvas, registry, pid, opts)` is the consumer-side renderer.
+- Keyboard input: the demo page maps browser `KeyboardEvent.code` to AT-set-1 scancodes and feeds them through `appendStdinData(pid, …)`; fbDOOM-style software (which puts the tty into MEDIUMRAW mode) decodes those bytes as scancodes.
+- Limitations: no audio (`/dev/dsp`); no mouse; `fork` does not auto-bind the child; multi-buffering / vsync via `FBIOPAN_DISPLAY` is a no-op.
+
 ## Browser Demos
 
 Located in `examples/browser/pages/`:
@@ -114,6 +121,7 @@ Located in `examples/browser/pages/`:
 | redis | Redis 7.2 | In-memory store with threads |
 | wordpress | nginx + PHP-FPM + WP | Full stack with SQLite |
 | lamp | MariaDB + nginx + PHP-FPM + WP | Full LAMP stack |
+| doom | fbDOOM | `/dev/fb0` framebuffer + canvas renderer + keyboard via stdin |
 
 Run demos: `cd examples/browser && npx vite --port 5198`
 

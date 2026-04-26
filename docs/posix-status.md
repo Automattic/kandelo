@@ -326,6 +326,7 @@ The wasm-posix-kernel uses a **centralized architecture**: a single kernel Wasm 
 | `/dev/tty` | Full | Controlling terminal. Opens the session's controlling PTY slave (ENXIO if none). |
 | `/dev/ptmx` | Full | PTY master multiplexer. `open()` allocates a new PTY pair, returns master fd. |
 | `/dev/pts/*` | Full | PTY slave devices. `posix_openpt()` + `grantpt()` + `unlockpt()` + `ptsname()`. Full line discipline, canonical/raw mode, OPOST/ONLCR, 16 terminal ioctls. |
+| `/dev/fb0` | Full | Linux fbdev framebuffer. Single-open (`EBUSY` for second opener). 640×400 BGRA32 packed-pixel. ioctls: `FBIOGET_VSCREENINFO`, `FBIOGET_FSCREENINFO`, `FBIOPAN_DISPLAY` (no-op success), `FBIOPUT_VSCREENINFO` (validates geometry). `mmap` returns a region in process memory and notifies the host (`bind_framebuffer` callback) so the browser canvas can mirror pixels. `munmap`/`close`/`exit`/`exec` clean up. Linux-VT keyboard ioctls (`KDGKBTYPE`/`KDGKBMODE`/`KDSKBMODE`) accepted with sensible defaults so fbDOOM-style software works unmodified. |
 | `/dev/shm/*` | Not yet | POSIX shared memory — requires cross-process SharedArrayBuffer. |
 
 All virtual devices return synthetic `stat()` with `S_IFCHR | 0666`, deterministic inode numbers, and `st_dev=5`. Path interception in kernel before host delegation — no host filesystem changes needed. `access()` returns OK for all virtual devices.

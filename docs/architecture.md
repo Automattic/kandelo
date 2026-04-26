@@ -366,6 +366,31 @@ Browsers cannot create raw TCP connections. Two strategies:
 
 2. **Service Worker HTTP Bridge**: For server demos (nginx, WordPress), a service worker intercepts browser `fetch()` requests to a configurable URL prefix (e.g., `/app/`) and forwards them to the kernel via a MessagePort connection pump. The kernel injects the request as a TCP connection to nginx's listening socket, and nginx's response flows back through the pipe to the service worker.
 
+## Framebuffer (`/dev/fb0`)
+
+The kernel exposes a Linux fbdev surface so unmodified fbdev software (fbDOOM, mplayer-fbdev, etc.) runs without source-level changes.
+
+```
+   user process                       kernel                            host
+   ─────────────────                  ───────────────                   ────────────
+   open("/dev/fb0")     ─────────►   match_virtual_device              (no host call)
+                                     CAS FB0_OWNER (single-open)
+   ioctl(FBIOGET_*)     ─────────►   fill fb_var_screeninfo /          (no host call)
+                                     fb_fix_screeninfo, 640×400 BGRA32
+   mmap(fd, len)        ─────────►   memory.mmap_anonymous(len)
+                                     record FbBinding(addr,len,w,h)
+                                     host.bind_framebuffer(...)  ───►  registry.bind(pid,...)
+   *(uint32_t*)px = ... (writes pixels into process Memory SAB —
+                         host sees them through the same SAB)
+   ioctl(FBIOPAN_DISPLAY) ───────►   no-op success                     (no-op)
+```
+
+The pixel buffer lives **inside the process's wasm `Memory`** — a `SharedArrayBuffer`. The host (browser canvas, Node test, etc.) is told `(pid, addr, len, w, h, stride, fmt)` via the `bind_framebuffer` HostIO callback; it builds a typed-array view directly over that range. There is no separate framebuffer SAB, no per-frame syscall, no copy. The host drives presentation via `requestAnimationFrame`.
+
+Cleanup paths (`munmap`, last `close` once unmapped, process exit, `exec`) clear the binding and call `unbind_framebuffer(pid)`. `fork` does not auto-bind the child (one mapping per process; documented limitation).
+
+ABI version bumped 5 → 6 to capture the new `repr(C)` structs `FbBitfield`, `FbVarScreenInfo`, `FbFixScreenInfo`. See `crates/shared/src/lib.rs::fbdev` and `abi/snapshot.json`.
+
 ## Signal Subsystem
 
 Signals are delivered at syscall boundaries. When a process has a pending signal:
