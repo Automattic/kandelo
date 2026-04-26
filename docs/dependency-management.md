@@ -140,6 +140,25 @@ After the script exits 0, the resolver verifies every path in
 A missing output fails the build (and the temp dir is cleaned up,
 so a retry starts clean).
 
+### Toolchain on PATH
+
+The SDK CLI tools (`wasm{32,64}posix-{cc,c++,ar,ranlib,nm,strip,
+pkg-config,configure}`) live as wrapper symlinks under `sdk/bin/`,
+all pointing at `sdk/bin/_wasm-posix-dispatch`. Every build script
+sources `sdk/activate.sh` near the top, which prepends
+`<worktree>/sdk/bin/` to `PATH`. This makes the toolchain
+worktree-local: a build in worktree A always uses worktree A's SDK
+source, even if worktree B has run `npm link`.
+
+Older docs reference `cd sdk && npm link` as a prerequisite. It
+still works (the wrappers and the npm-link-installed binaries
+coexist — the dispatcher exports `WASM_POSIX_INVOKED_AS` so
+`detectArch()` can read it, and falls back to `argv[1]` when the
+env var is absent). `npm link` is now optional, and intentionally
+discouraged for multi-worktree development because the global
+symlink it creates routes every shell to a single worktree's
+source.
+
 ## Atomic cache install
 
 The script builds into `<canonical>.tmp-<pid>/`, not the final path.

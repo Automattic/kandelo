@@ -15,6 +15,12 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 
+# Activate the worktree-local SDK toolchain (no global npm link required).
+# Build scripts also source this directly; sourcing here makes the tools
+# available to anything `run.sh` shells out to (e.g. `bash run.sh build_X`).
+# shellcheck source=/dev/null
+source "$REPO_ROOT/sdk/activate.sh"
+
 # ─── Colors ───────────────────────────────────────────────────────────────────
 
 if [ -t 1 ] && command -v tput &>/dev/null && [ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]; then
@@ -130,14 +136,16 @@ need_sysroot() {
 
 need_sdk() {
     need_sysroot
+    # The worktree-local SDK is on PATH via sdk/activate.sh (sourced at
+    # the top of this script). If wasm32posix-cc still isn't found, the
+    # wrappers under sdk/bin are missing or their dispatcher is broken —
+    # not something `npm link` can fix.
     if ! has_sdk; then
-        step "Installing SDK tools"
-        cd "$REPO_ROOT/sdk" && npm link
-        cd "$REPO_ROOT"
-        info "SDK installed"
-    else
-        info "SDK"
+        err "SDK tools not on PATH after sourcing sdk/activate.sh."
+        err "Expected sdk/bin/wasm32posix-cc to be a working symlink."
+        exit 1
     fi
+    info "SDK"
 }
 
 need_host() {
@@ -1094,7 +1102,8 @@ clean_target() {
             rm -rf "$REPO_ROOT/sysroot"
             warn "Cleaned sysroot" ;;
         sdk)
-            warn "SDK is installed globally via npm link — run 'npm unlink -g wasm32posix' to remove"
+            warn "SDK is worktree-local (sdk/bin wrappers + activate.sh)."
+            warn "Nothing to clean. If you previously ran 'npm link', remove it with: (cd sdk && npm unlink)"
             ;;
         host)
             rm -rf "$REPO_ROOT/host/dist"

@@ -9,12 +9,15 @@ CROSS_BUILD_DIR="$SCRIPT_DIR/cpython-cross-build"
 INSTALL_DIR="$SCRIPT_DIR/cpython-install"
 
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+# Worktree-local SDK on PATH (no global npm link required).
+# shellcheck source=/dev/null
+source "$REPO_ROOT/sdk/activate.sh"
 # Explicit env wins; else the in-tree sysroot.
 SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
 if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
+    echo "ERROR: wasm32posix-cc not found after sourcing sdk/activate.sh." >&2
     exit 1
 fi
 

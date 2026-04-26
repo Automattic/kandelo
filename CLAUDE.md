@@ -74,7 +74,12 @@ The script is also run as step 5 of the test suite above. CI refuses to merge a 
 | `wordpress` | PHP CLI + WordPress HTTP first response | `bash examples/libs/php/build-php.sh` + WordPress checkout |
 | `mariadb` | SQL bootstrap + query performance | `bash examples/libs/mariadb/build-mariadb.sh` |
 
-Application suites require the SDK: `cd sdk && npm link`
+Application suites require the SDK. The SDK is worktree-local: every
+build script under `examples/libs/*/build-*.sh` sources
+`sdk/activate.sh` to put `<worktree>/sdk/bin/` on PATH. No `npm link`
+needed (and explicitly avoided — a global symlink can route a build
+in one worktree to a sibling worktree's SDK source). `npm link` still
+works for users who already have it.
 
 ### Running benchmarks
 

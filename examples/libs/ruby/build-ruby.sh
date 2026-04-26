@@ -11,8 +11,8 @@ set -euo pipefail
 #
 # Prerequisites:
 #   - bash build.sh (kernel + sysroot)
-#   - npm link in sdk/
 #   - zlib built (auto-triggered if missing)
+# The SDK toolchain is activated automatically via sdk/activate.sh below.
 
 RUBY_VERSION="${RUBY_VERSION:-3.3.6}"
 RUBY_MAJOR_MINOR="$(echo "$RUBY_VERSION" | cut -d. -f1-2)"
@@ -23,13 +23,16 @@ HOST_BUILD_DIR="$SCRIPT_DIR/ruby-host-build"
 CROSS_BUILD_DIR="$SCRIPT_DIR/ruby-cross-build"
 INSTALL_DIR="$SCRIPT_DIR/ruby-install"
 BIN_DIR="$SCRIPT_DIR/bin"
+# Worktree-local SDK on PATH (no global npm link required).
+# shellcheck source=/dev/null
+source "$REPO_ROOT/sdk/activate.sh"
 # Explicit env wins; else the in-tree sysroot.
 SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
 if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
+    echo "ERROR: wasm32posix-cc not found after sourcing sdk/activate.sh." >&2
     exit 1
 fi
 

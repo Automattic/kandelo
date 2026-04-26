@@ -16,6 +16,9 @@ MARIADB_MAJOR="10.5"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+# Worktree-local SDK on PATH (no global npm link required).
+# shellcheck source=/dev/null
+source "$REPO_ROOT/sdk/activate.sh"
 SRC_DIR="$SCRIPT_DIR/mariadb-src"
 HOST_BUILD_DIR="$SCRIPT_DIR/mariadb-host-build"
 GLUE_DIR="$REPO_ROOT/glue"
