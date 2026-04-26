@@ -458,7 +458,8 @@ if [ ! -f Makefile ]; then
         --with-suffix=".wasm" \
         --prefix="$INSTALL_DIR" \
         CFLAGS="-O2 -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS" \
-        LDFLAGS=""
+        CPPFLAGS="-I$ZLIB_PREFIX/include" \
+        LDFLAGS="-L$ZLIB_PREFIX/lib"
 
     # Belt-and-suspenders: patch any HAVE_* that slipped through config.site
     # (header-based detection, not link-based)
