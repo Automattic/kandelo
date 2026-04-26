@@ -160,9 +160,8 @@ pub struct DepsManifest {
     /// Outputs declared by `kind = "program"` manifests via
     /// `[[outputs]]` array-of-tables. Empty for `kind = "library"`
     /// (which uses [`outputs`](Self::outputs) instead) and for
-    /// `kind = "source"`. Read by tests now; wired into the resolver
-    /// in Chunk B Task B.2.
-    #[allow(dead_code)]
+    /// `kind = "source"`. Read by `canonical_path` and
+    /// `validate_outputs` in the resolver (wired in Chunk B Task B.2).
     pub program_outputs: Vec<ProgramOutput>,
 
     /// Build-time provenance + ABI compatibility. Always `None` for

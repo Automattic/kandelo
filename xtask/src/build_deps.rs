@@ -44,7 +44,7 @@ use std::process::Command;
 
 use sha2::{Digest, Sha256};
 
-use crate::deps_manifest::{DepRef, DepsManifest, TargetArch};
+use crate::deps_manifest::{DepRef, DepsManifest, ManifestKind, TargetArch};
 use crate::remote_fetch;
 use crate::repo_root;
 
@@ -233,7 +233,15 @@ pub fn canonical_path(
     arch: TargetArch,
     sha: &[u8; 32],
 ) -> PathBuf {
-    cache_root.join("libs").join(format!(
+    let kind_subdir = match m.kind {
+        ManifestKind::Library => "libs",
+        ManifestKind::Program => "programs",
+        // Source-kind layout (no arch segment) is Chunk C; falls back
+        // to "sources" here for completeness, but no source-kind
+        // manifests exist yet so this branch is unreachable in B.
+        ManifestKind::Source => "sources",
+    };
+    cache_root.join(kind_subdir).join(format!(
         "{}-{}-rev{}-{}-{}",
         m.name,
         m.version,
@@ -596,26 +604,44 @@ fn rewrite_dir(dir: &Path, needle: &str, replacement: &str) -> Result<(), String
 }
 
 fn validate_outputs(target: &DepsManifest, out_dir: &Path) -> Result<(), String> {
-    let check = |rel: &str, label: &str| -> Result<(), String> {
-        let p = out_dir.join(rel);
-        if !p.exists() {
-            return Err(format!(
-                "{}: declared {} output {:?} not produced by build script",
-                target.spec(),
-                label,
-                rel
-            ));
+    match target.kind {
+        ManifestKind::Library => {
+            let check = |rel: &str, label: &str| -> Result<(), String> {
+                let p = out_dir.join(rel);
+                if !p.exists() {
+                    return Err(format!(
+                        "{}: declared {} output {:?} not produced by build script",
+                        target.spec(),
+                        label,
+                        rel
+                    ));
+                }
+                Ok(())
+            };
+            for rel in &target.outputs.libs {
+                check(rel, "libs")?;
+            }
+            for rel in &target.outputs.headers {
+                check(rel, "headers")?;
+            }
+            for rel in &target.outputs.pkgconfig {
+                check(rel, "pkgconfig")?;
+            }
         }
-        Ok(())
-    };
-    for rel in &target.outputs.libs {
-        check(rel, "libs")?;
-    }
-    for rel in &target.outputs.headers {
-        check(rel, "headers")?;
-    }
-    for rel in &target.outputs.pkgconfig {
-        check(rel, "pkgconfig")?;
+        ManifestKind::Program => {
+            for out in &target.program_outputs {
+                let p = out_dir.join(&out.wasm);
+                if !p.exists() {
+                    return Err(format!(
+                        "{}: declared wasm output {:?} not produced by build script",
+                        target.spec(),
+                        out.wasm
+                    ));
+                }
+            }
+        }
+        // No outputs to validate for source-kind (Chunk C).
+        ManifestKind::Source => return Ok(()),
     }
     Ok(())
 }
@@ -2326,5 +2352,127 @@ cache_key_sha = "{cache_key_sha}"
             path.join("via-build").exists(),
             "cache_key_sha mismatch must fall through to source build"
         );
+    }
+
+    // --- kind = "program" resolver tests (Task B.2) ---
+
+    /// Create a `kind = "program"` deps.toml + build-<name>.sh pair.
+    /// Mirrors `write_lib` but emits `[[outputs]]` array-of-tables.
+    fn write_program(
+        root: &Path,
+        name: &str,
+        version: &str,
+        deps: &[&str],
+        build_script_body: &str,
+        outputs: &[(&str, &str)],
+    ) {
+        let dir = root.join(name);
+        fs::create_dir_all(&dir).unwrap();
+        let depends_on = deps
+            .iter()
+            .map(|d| format!("\"{}\"", d))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut outputs_toml = String::new();
+        for (n, w) in outputs {
+            outputs_toml.push_str(&format!(
+                "[[outputs]]\nname = \"{n}\"\nwasm = \"{w}\"\n\n"
+            ));
+        }
+        fs::write(
+            dir.join("deps.toml"),
+            format!(
+                r#"kind = "program"
+name = "{name}"
+version = "{version}"
+revision = 1
+depends_on = [{depends_on}]
+[source]
+url = "https://example.test/{name}.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+[license]
+spdx = "MIT"
+{outputs_toml}"#,
+            ),
+        )
+        .unwrap();
+        let script_path = dir.join(format!("build-{name}.sh"));
+        fs::write(
+            &script_path,
+            format!("#!/bin/bash\nset -e\n{build_script_body}\n"),
+        )
+        .unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut p = std::fs::metadata(&script_path).unwrap().permissions();
+            p.set_mode(0o755);
+            std::fs::set_permissions(&script_path, p).unwrap();
+        }
+    }
+
+    #[test]
+    fn canonical_path_uses_programs_subdir_for_program_kind() {
+        let m = DepsManifest::parse(
+            r#"kind = "program"
+name = "vim"
+version = "9.1.0900"
+revision = 1
+[source]
+url = "https://x.test/vim.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+[license]
+spdx = "Vim"
+[[outputs]]
+name = "vim"
+wasm = "vim.wasm"
+"#,
+            PathBuf::from("/x"),
+        )
+        .unwrap();
+        let sha = [0u8; 32];
+        let p = canonical_path(Path::new("/cache"), &m, TargetArch::Wasm32, &sha);
+        let s = p.to_string_lossy();
+        assert!(s.contains("/programs/"), "got: {s}");
+        assert!(s.contains("vim-9.1.0900-rev1-wasm32-"), "got: {s}");
+    }
+
+    #[test]
+    fn build_validates_program_wasm_outputs_present() {
+        let root = tempdir("prog-out-pass");
+        let cache = tempdir("prog-out-pass-cache");
+        write_program(
+            &root,
+            "tinyprog",
+            "0.1.0",
+            &[],
+            // Build script writes the declared wasm.
+            r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR" && touch "$WASM_POSIX_DEP_OUT_DIR/tinyprog.wasm""#,
+            &[("tinyprog", "tinyprog.wasm")],
+        );
+        let reg = Registry { roots: vec![root] };
+        let m = reg.load("tinyprog").unwrap();
+        ensure_built(&m, &reg, TargetArch::Wasm32, 4, &resolve_opts(&cache, None)).unwrap();
+    }
+
+    #[test]
+    fn build_fails_when_program_wasm_output_missing() {
+        let root = tempdir("prog-out-miss");
+        let cache = tempdir("prog-out-miss-cache");
+        write_program(
+            &root,
+            "miss",
+            "0.1.0",
+            &[],
+            // Build script does NOT produce miss.wasm.
+            r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR""#,
+            &[("miss", "miss.wasm")],
+        );
+        let reg = Registry { roots: vec![root] };
+        let m = reg.load("miss").unwrap();
+        let err = ensure_built(&m, &reg, TargetArch::Wasm32, 4, &resolve_opts(&cache, None))
+            .unwrap_err();
+        assert!(err.contains("miss.wasm"), "got: {err}");
     }
 }
