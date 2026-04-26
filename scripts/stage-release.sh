@@ -110,7 +110,9 @@ run_xtask bundle-program \
 
 # ---------------------------------------------------------------------------
 # Single-binary ported programs. For each: invoke bundle-program with the
-# binary and a version taken from `abi/program-metadata.toml`'s source.ref.
+# binary and a version. Versions are kept in sync with each program's
+# per-dir manifest at `examples/libs/<name>/deps.toml`. Chunk E will
+# rewire stage-release to read versions from those manifests directly.
 # ---------------------------------------------------------------------------
 simple() {
     local program="$1"; local version="$2"; local binary="$3"
@@ -137,7 +139,7 @@ simple nginx     1.24.0  examples/nginx/nginx.wasm
 simple perl      5.40.3  examples/libs/perl/bin/perl.wasm
 simple ruby      3.3.5   examples/libs/ruby/bin/ruby.wasm
 simple sed       4.9     examples/libs/sed/bin/sed.wasm
-simple sqlite    3.45.0  examples/libs/sqlite/sqlite-install/bin/sqlite3.wasm
+simple sqlite-cli 3.45.0  examples/libs/sqlite/sqlite-install/bin/sqlite3.wasm
 simple tar       1.35    examples/libs/tar/bin/tar.wasm
 simple tcl       9.0.1   examples/libs/tcl/bin/tclsh.wasm
 simple unzip     6.0     examples/libs/unzip/bin/unzip.wasm
