@@ -47,6 +47,7 @@ use sha2::{Digest, Sha256};
 use crate::deps_manifest::{DepRef, DepsManifest, ManifestKind, TargetArch};
 use crate::remote_fetch;
 use crate::repo_root;
+use crate::source_extract;
 
 /// Root directory of the per-user lib cache. Honors `XDG_CACHE_HOME`,
 /// else `$HOME/.cache`. Matches the pattern other tools in the repo use.
@@ -452,6 +453,60 @@ fn ensure_built_inner(
 
     // Cache hit: trust it. Users invalidate by deleting the directory.
     if canonical.is_dir() {
+        return Ok((canonical, transitive));
+    }
+
+    // Source-kind default fetch+extract path. When a `kind = "source"`
+    // manifest declares no `[build].script`, the resolver treats
+    // `[source]` as the recipe: download the archive, verify its
+    // sha256, extract, atomically rename into the canonical cache
+    // path. Source-kind manifests never carry `[binary]` (Task C.1
+    // enforces), so this branch can short-circuit before the binary
+    // block. If the manifest *does* declare a `[build].script`, we
+    // fall through to `build_into_cache` (Task C.5 covers that path).
+    if matches!(target.kind, ManifestKind::Source) && target.build.script.is_none() {
+        let parent = canonical
+            .parent()
+            .ok_or_else(|| format!("canonical path has no parent: {}", canonical.display()))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("create cache parent {}: {e}", parent.display()))?;
+        let tmp = parent.join(format!(
+            "{}.tmp-{}",
+            canonical
+                .file_name()
+                .expect("canonical path has a filename")
+                .to_string_lossy(),
+            std::process::id()
+        ));
+        if tmp.exists() {
+            std::fs::remove_dir_all(&tmp)
+                .map_err(|e| format!("clean stale {}: {e}", tmp.display()))?;
+        }
+        if let Err(e) = source_extract::fetch_and_extract(
+            &target.source.url,
+            &target.source.sha256,
+            &tmp,
+        ) {
+            let _ = std::fs::remove_dir_all(&tmp);
+            return Err(format!(
+                "{}: source fetch+extract failed: {e}",
+                target.spec()
+            ));
+        }
+        // Race against a peer process that finished its own extract
+        // first: keep theirs, drop ours. Identical inputs produce
+        // identical outputs.
+        if canonical.exists() {
+            let _ = std::fs::remove_dir_all(&tmp);
+            return Ok((canonical, transitive));
+        }
+        std::fs::rename(&tmp, &canonical).map_err(|e| {
+            format!(
+                "rename {} -> {}: {e}",
+                tmp.display(),
+                canonical.display()
+            )
+        })?;
         return Ok((canonical, transitive));
     }
 
@@ -2709,5 +2764,81 @@ libs = []
         )
         .unwrap();
         assert_ne!(s_src, s_lib, "source vs library shas must differ on domain");
+    }
+
+    /// End-to-end integration: a `kind = "source"` manifest that
+    /// declares no `[build].script` resolves by fetching its archive
+    /// (file:// URL here), verifying the sha256, extracting +
+    /// flattening, and atomically renaming into the canonical cache
+    /// path. A second resolve hits the cache.
+    #[test]
+    fn ensure_built_source_kind_fetches_and_extracts_via_file_url() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("cache");
+        std::fs::create_dir_all(&cache).unwrap();
+
+        // Build a fixture tarball containing pcre2-10.42/README.
+        let mut tar_bytes: Vec<u8> = Vec::new();
+        {
+            let enc = flate2::write::GzEncoder::new(
+                &mut tar_bytes,
+                flate2::Compression::default(),
+            );
+            let mut builder = tar::Builder::new(enc);
+            let mut header = tar::Header::new_gnu();
+            header.set_path("pcre2-10.42/README").unwrap();
+            header.set_size(6);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder.append(&header, &b"hello\n"[..]).unwrap();
+            builder.into_inner().unwrap().finish().unwrap();
+        }
+        let archive = dir.path().join("p.tar.gz");
+        std::fs::File::create(&archive)
+            .unwrap()
+            .write_all(&tar_bytes)
+            .unwrap();
+        let mut h = Sha256::new();
+        h.update(&tar_bytes);
+        let sha_hex: [u8; 32] = h.finalize().into();
+        let sha_hex = hex(&sha_hex);
+
+        // Manifest with file:// URL pointing at our fixture.
+        let manifest_text = format!(
+            r#"
+kind = "source"
+name = "pcre2-source"
+version = "10.42"
+revision = 1
+
+[source]
+url = "file://{}"
+sha256 = "{sha_hex}"
+
+[license]
+spdx = "BSD-3-Clause"
+"#,
+            archive.display()
+        );
+        let m = DepsManifest::parse(&manifest_text, dir.path().to_path_buf()).unwrap();
+
+        let registry = Registry { roots: vec![] };
+        let opts = ResolveOpts {
+            cache_root: &cache,
+            local_libs: None,
+        };
+        let path = ensure_built(&m, &registry, TEST_ARCH, TEST_ABI, &opts).unwrap();
+        assert!(
+            path.join("README").is_file(),
+            "expected README at {}",
+            path.display()
+        );
+        assert!(path.starts_with(cache.join("sources")));
+
+        // Idempotent: second resolve hits the cache and returns the
+        // same canonical path.
+        let path2 = ensure_built(&m, &registry, TEST_ARCH, TEST_ABI, &opts).unwrap();
+        assert_eq!(path, path2);
     }
 }
