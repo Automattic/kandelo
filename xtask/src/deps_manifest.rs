@@ -132,6 +132,18 @@ pub struct Binary {
     pub archive_sha256: String,
 }
 
+/// One entry in a `kind = "program"` manifest's `[[outputs]]` array.
+///
+/// Each program declares one or more wasm artifacts. `name` is the
+/// logical program name (the bundle key used by consumers like
+/// `bundle-program` and the resolver); `wasm` is the path (relative
+/// to the build's output prefix) of the wasm file that backs it.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProgramOutput {
+    pub name: String,
+    pub wasm: String,
+}
+
 /// One fully-parsed `deps.toml` file.
 #[derive(Debug, Clone)]
 pub struct DepsManifest {
@@ -144,6 +156,14 @@ pub struct DepsManifest {
     pub depends_on: Vec<DepRef>,
     pub build: Build,
     pub outputs: Outputs,
+
+    /// Outputs declared by `kind = "program"` manifests via
+    /// `[[outputs]]` array-of-tables. Empty for `kind = "library"`
+    /// (which uses [`outputs`](Self::outputs) instead) and for
+    /// `kind = "source"`. Read by tests now; wired into the resolver
+    /// in Chunk B Task B.2.
+    #[allow(dead_code)]
+    pub program_outputs: Vec<ProgramOutput>,
 
     /// Build-time provenance + ABI compatibility. Always `None` for
     /// manifests parsed via [`DepsManifest::parse`] (source `deps.toml`)
@@ -252,12 +272,25 @@ struct Raw {
     depends_on: Vec<String>,
     #[serde(default)]
     build: Build,
-    #[serde(default)]
-    outputs: Outputs,
+    // `outputs` may be either a table (`[outputs]`, library shape) or
+    // an array of tables (`[[outputs]]`, program shape). Serde cannot
+    // disambiguate via `#[serde(untagged)]` because both library and
+    // empty-table parses succeed — so we hand-decode in
+    // `validate_common` based on `kind`.
+    #[serde(default = "default_outputs_value")]
+    outputs: toml::Value,
     #[serde(default)]
     compatibility: Option<Compatibility>,
     #[serde(default)]
     binary: Option<Binary>,
+}
+
+/// Default `outputs` value when the key is absent: an empty table.
+/// Equivalent to writing `[outputs]` with no fields — both library
+/// (no declared outputs) and source (no outputs allowed) accept it.
+/// Programs require ≥1 entry and reject this.
+fn default_outputs_value() -> toml::Value {
+    toml::Value::Table(toml::value::Table::new())
 }
 
 impl DepsManifest {
@@ -412,6 +445,94 @@ impl DepsManifest {
             }
         }
 
+        // Dispatch on `kind` to decide whether `outputs` is the
+        // library shape (`[outputs]` table with libs/headers/pkgconfig)
+        // or the program shape (`[[outputs]]` array-of-tables with
+        // name/wasm). A mismatch between the two is rejected at parse
+        // time: each kind enforces its own grammar.
+        let (outputs, program_outputs) = match raw.kind {
+            ManifestKind::Library => {
+                if raw.outputs.is_array() {
+                    return Err(
+                        "kind = \"library\" requires [outputs] (table); \
+                         got [[outputs]] (array of tables)"
+                            .into(),
+                    );
+                }
+                let outputs: Outputs = raw.outputs.try_into().map_err(|e| {
+                    format!("parse [outputs] table: {e}")
+                })?;
+                (outputs, Vec::new())
+            }
+            ManifestKind::Program => {
+                // Distinguish "key absent / empty-default table" from
+                // "explicit [outputs] with library-shaped fields":
+                // the former is a missing-outputs error ("at least
+                // one"); the latter is a wrong-shape error.
+                if let Some(table) = raw.outputs.as_table() {
+                    if table.is_empty() {
+                        return Err(
+                            "kind = \"program\" must declare at least one [[outputs]] entry"
+                                .into(),
+                        );
+                    }
+                    return Err(
+                        "kind = \"program\" requires [[outputs]] (array of tables); \
+                         got [outputs] (table)"
+                            .into(),
+                    );
+                }
+                let program_outputs: Vec<ProgramOutput> = raw
+                    .outputs
+                    .try_into()
+                    .map_err(|e| format!("parse [[outputs]] array: {e}"))?;
+                if program_outputs.is_empty() {
+                    return Err(
+                        "kind = \"program\" must declare at least one [[outputs]] entry"
+                            .into(),
+                    );
+                }
+                for (idx, out) in program_outputs.iter().enumerate() {
+                    if out.name.is_empty() {
+                        return Err(format!(
+                            "[[outputs]][{idx}].name must not be empty"
+                        ));
+                    }
+                    if out.wasm.is_empty() {
+                        return Err(format!(
+                            "[[outputs]][{idx}].wasm must not be empty"
+                        ));
+                    }
+                }
+                (Outputs::default(), program_outputs)
+            }
+            ManifestKind::Source => {
+                if raw.outputs.is_array() {
+                    return Err(
+                        "kind = \"source\" must not declare outputs \
+                         ([outputs] or [[outputs]])"
+                            .into(),
+                    );
+                }
+                // For source kind, accept only an empty table (the
+                // default when the key is absent). Any non-empty
+                // [outputs] is rejected — sources have no artifacts.
+                let table = raw.outputs.as_table().ok_or_else(|| {
+                    "kind = \"source\" must not declare outputs \
+                     ([outputs] or [[outputs]])"
+                        .to_string()
+                })?;
+                if !table.is_empty() {
+                    return Err(
+                        "kind = \"source\" must not declare outputs \
+                         ([outputs] or [[outputs]])"
+                            .into(),
+                    );
+                }
+                (Outputs::default(), Vec::new())
+            }
+        };
+
         Ok(DepsManifest {
             kind: raw.kind,
             name: raw.name,
@@ -421,7 +542,8 @@ impl DepsManifest {
             license: raw.license,
             depends_on,
             build: raw.build,
-            outputs: raw.outputs,
+            outputs,
+            program_outputs,
             compatibility: raw.compatibility,
             binary: raw.binary,
             dir,
@@ -714,5 +836,130 @@ spdx = "MIT"
         // would silently invalidate every cache. Lock the contract here.
         assert_eq!(TargetArch::Wasm32.as_str(), "wasm32");
         assert_eq!(TargetArch::Wasm64.as_str(), "wasm64");
+    }
+
+    const PROGRAM_EXAMPLE: &str = r#"
+kind = "program"
+name = "vim"
+version = "9.1.0900"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://github.com/vim/vim/archive/refs/tags/v9.1.0900.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "Vim"
+
+[[outputs]]
+name = "vim"
+wasm = "vim.wasm"
+"#;
+
+    #[test]
+    fn parses_minimal_program_manifest() {
+        let m = DepsManifest::parse(PROGRAM_EXAMPLE, PathBuf::from("/x")).unwrap();
+        assert!(matches!(m.kind, ManifestKind::Program));
+        assert_eq!(m.program_outputs.len(), 1);
+        assert_eq!(m.program_outputs[0].name, "vim");
+        assert_eq!(m.program_outputs[0].wasm, "vim.wasm");
+        // Library `outputs` should be empty for programs.
+        assert!(m.outputs.libs.is_empty());
+        assert!(m.outputs.headers.is_empty());
+        assert!(m.outputs.pkgconfig.is_empty());
+    }
+
+    #[test]
+    fn parses_multi_output_program_manifest() {
+        let text = r#"
+kind = "program"
+name = "git"
+version = "2.47.1"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://github.com/git/git/archive/refs/tags/v2.47.1.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "GPL-2.0-only"
+
+[[outputs]]
+name = "git"
+wasm = "git.wasm"
+
+[[outputs]]
+name = "git-remote-http"
+wasm = "git-remote-http.wasm"
+"#;
+        let m = DepsManifest::parse(text, PathBuf::from("/x")).unwrap();
+        assert_eq!(m.program_outputs.len(), 2);
+        assert_eq!(m.program_outputs[0].name, "git");
+        assert_eq!(m.program_outputs[1].name, "git-remote-http");
+    }
+
+    #[test]
+    fn rejects_program_with_table_outputs() {
+        let text = PROGRAM_EXAMPLE.replace(
+            "[[outputs]]\nname = \"vim\"\nwasm = \"vim.wasm\"",
+            "[outputs]\nlibs = [\"lib/libvim.a\"]",
+        );
+        let err = DepsManifest::parse(&text, PathBuf::from("/x")).unwrap_err();
+        assert!(
+            err.contains("kind = \"program\"") || err.contains("[[outputs]]"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_library_with_array_outputs() {
+        let text = format!(
+            "{}\n[[outputs]]\nname = \"libz\"\nwasm = \"libz.wasm\"\n",
+            EXAMPLE
+        );
+        let err = DepsManifest::parse(&text, PathBuf::from("/x")).unwrap_err();
+        assert!(
+            err.contains("kind = \"library\"") || err.contains("[outputs]"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_program_with_no_outputs() {
+        let text = r#"
+kind = "program"
+name = "vim"
+version = "9.1.0900"
+revision = 1
+[source]
+url = "https://example.test/vim.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+[license]
+spdx = "Vim"
+"#;
+        let err = DepsManifest::parse(text, PathBuf::from("/x")).unwrap_err();
+        assert!(err.contains("at least one"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_program_output_with_empty_wasm() {
+        let text = r#"
+kind = "program"
+name = "vim"
+version = "9.1.0900"
+revision = 1
+[source]
+url = "https://example.test/vim.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+[license]
+spdx = "Vim"
+[[outputs]]
+name = "vim"
+wasm = ""
+"#;
+        let err = DepsManifest::parse(text, PathBuf::from("/x")).unwrap_err();
+        assert!(err.contains("wasm"), "got: {err}");
     }
 }
