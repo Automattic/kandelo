@@ -84,6 +84,7 @@ fi
 # Install libyaml into sysroot
 cp "$LIBYAML_DIR/include/yaml.h" "$SYSROOT/include/"
 cp "$LIBYAML_DIR/lib/libyaml.a" "$SYSROOT/lib/"
+mkdir -p "$SYSROOT/lib/pkgconfig"
 if [ -f "$LIBYAML_DIR/lib/pkgconfig/yaml-0.1.pc" ]; then
     sed "s|^prefix=.*|prefix=$SYSROOT|" "$LIBYAML_DIR/lib/pkgconfig/yaml-0.1.pc" \
         > "$SYSROOT/lib/pkgconfig/yaml-0.1.pc"
