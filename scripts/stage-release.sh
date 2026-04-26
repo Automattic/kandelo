@@ -73,23 +73,10 @@ stage_example hello64           local-binaries/programs/hello64.wasm
 # ---------------------------------------------------------------------------
 # Ported programs with real upstream versions.
 # ---------------------------------------------------------------------------
-# dash: the canonical source of truth for the shell. host/wasm/sh.wasm is
-# a byte-identical copy currently; we ship it under the `sh` program so
-# consumers using sh.wasm keep working, but it aliases to dash in
-# program-metadata.toml.
+# dash: the canonical shell binary. VFS demos symlink /bin/sh -> /bin/dash
+# at image-build time, so no separate `sh` release entry is needed.
 run_xtask bundle-program --plain-wasm \
     --program dash \
-    --upstream-version 0.5.12 \
-    --revision 1 \
-    --binary examples/libs/dash/bin/dash.wasm \
-    --out-dir "$STAGING"
-
-# sh is a copy of dash, separate asset under the sh program name.
-# Treat it as a publish-time alias so stage-release doesn't require a
-# separately-built sh.wasm file — we just republish dash under the
-# sh name.
-run_xtask bundle-program --plain-wasm \
-    --program sh \
     --upstream-version 0.5.12 \
     --revision 1 \
     --binary examples/libs/dash/bin/dash.wasm \
