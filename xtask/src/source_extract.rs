@@ -34,7 +34,17 @@ impl ArchiveFormat {
     /// no known suffix matches — the resolver surfaces that to
     /// the user verbatim.
     pub fn from_url(url: &str) -> Result<Self, String> {
-        let lc = url.to_ascii_lowercase();
+        // Strip any "?query" or "#fragment" before suffix matching
+        // so URLs with auth tokens / anchors still detect format.
+        let path = url
+            .split_once('?')
+            .map(|(p, _)| p)
+            .unwrap_or(url);
+        let path = path
+            .split_once('#')
+            .map(|(p, _)| p)
+            .unwrap_or(path);
+        let lc = path.to_ascii_lowercase();
         // Order matters: .tar.gz must be checked before .gz, etc.
         if lc.ends_with(".tar.gz") || lc.ends_with(".tgz") {
             Ok(Self::TarGz)
@@ -111,6 +121,12 @@ fn extract(bytes: &[u8], format: ArchiveFormat, dest: &Path) -> Result<(), Strin
                 .map_err(|e| format!("tar.zst unpack {}: {e}", dest.display()))?;
         }
         ArchiveFormat::Tar => {
+            // The cap is redundant for plain `.tar` since the
+            // fetcher already enforces MAX_RESPONSE_BYTES on the
+            // raw download — a tar's uncompressed size equals its
+            // wire size. Kept for symmetry with the compressed
+            // variants so future format additions don't get a
+            // half-applied policy.
             let bounded = std::io::Read::take(bytes, MAX_DECOMPRESSED_BYTES);
             tar::Archive::new(bounded)
                 .unpack(dest)
@@ -124,6 +140,25 @@ fn extract(bytes: &[u8], format: ArchiveFormat, dest: &Path) -> Result<(), Strin
             let cursor = std::io::Cursor::new(bytes);
             let mut zip =
                 zip::ZipArchive::new(cursor).map_err(|e| format!("zip parse: {e}"))?;
+            // ZipArchive::extract trusts each entry's declared
+            // uncompressed_size from the central directory and
+            // applies no aggregate cap. Pre-flight by summing
+            // declared sizes and reject if the total exceeds
+            // MAX_DECOMPRESSED_BYTES — mirrors the Read::take cap
+            // applied to every tar variant above.
+            let mut total: u64 = 0;
+            for i in 0..zip.len() {
+                let f = zip
+                    .by_index(i)
+                    .map_err(|e| format!("zip entry {i}: {e}"))?;
+                total = total.saturating_add(f.size());
+                if total > MAX_DECOMPRESSED_BYTES {
+                    return Err(format!(
+                        "zip extract refused: declared uncompressed size \
+                         exceeds {MAX_DECOMPRESSED_BYTES} bytes (zip-bomb guard)"
+                    ));
+                }
+            }
             zip.extract(dest).map_err(|e| format!("zip extract: {e}"))?;
         }
     }
@@ -295,6 +330,52 @@ mod tests {
     fn from_url_rejects_unknown_extension() {
         let err = ArchiveFormat::from_url("https://x/p.rar").unwrap_err();
         assert!(err.contains("could not detect"), "got: {err}");
+    }
+
+    #[test]
+    fn from_url_handles_query_string_and_fragment() {
+        assert!(matches!(
+            ArchiveFormat::from_url("https://x/p.tar.gz?token=abc").unwrap(),
+            ArchiveFormat::TarGz,
+        ));
+        assert!(matches!(
+            ArchiveFormat::from_url("https://x/p.tar.xz#frag").unwrap(),
+            ArchiveFormat::TarXz,
+        ));
+    }
+
+    #[test]
+    fn extract_tar_zst_round_trips() {
+        // Build a minimal tarball, wrap with a zstd encoder, and
+        // confirm the .tar.zst extract path actually wires the
+        // zstd decoder correctly. Format-detection alone wouldn't
+        // catch a wiring bug like decoder mis-construction.
+        let mut tar_bytes: Vec<u8> = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut tar_bytes);
+            let mut header = tar::Header::new_gnu();
+            header.set_path("hello.txt").unwrap();
+            header.set_size(6);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder.append(&header, &b"world\n"[..]).unwrap();
+            builder.into_inner().unwrap();
+        }
+        let mut zst_bytes: Vec<u8> = Vec::new();
+        {
+            let mut enc = zstd::stream::write::Encoder::new(&mut zst_bytes, 0).unwrap();
+            enc.write_all(&tar_bytes).unwrap();
+            enc.finish().unwrap();
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("out");
+        extract(&zst_bytes, ArchiveFormat::TarZst, &dest).unwrap();
+        flatten_single_top_level(&dest).unwrap();
+        let hello = dest.join("hello.txt");
+        assert!(hello.is_file(), "expected hello.txt at {}", hello.display());
+        let actual = std::fs::read_to_string(hello).unwrap();
+        assert_eq!(actual, "world\n");
     }
 
     #[test]
