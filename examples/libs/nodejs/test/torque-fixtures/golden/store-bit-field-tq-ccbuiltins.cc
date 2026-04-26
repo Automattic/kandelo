@@ -121,71 +121,43 @@ inline Tagged<Undefined> Undefined_0() {
 // 9+), so the rare Symbol-input branch of NonNumberToNumeric
 // UNREACHABLEs instead of throwing TypeError.
 //
-// `Builtin_Add` covers only the Number(Number, Number) overload
-// declared at number.tq:371 — the path Increment's `tail Add(n, 1)`
-// hits, where both operands are Smi|HeapNumber. Full ECMA Add
-// (string concat / BigInt / ToPrimitive) lives in the
-// CSA-emitted Add Code object and is unaffected by this shim.
+// Phase 9.7 — Builtin_Add and Builtin_Subtract delegate to V8's
+// canonical Object::NumberValue + factory->NewNumber(double) APIs
+// rather than re-implementing JS-spec Smi/HeapNumber arithmetic.
+// `factory->NewNumber(double)` (factory-base.h:119) does the
+// Smi/HeapNumber discrimination spec-correctly — same fast path
+// Object::Add takes for Number+Number (objects.cc:Add). For our
+// `tail Add(n, 1)` / `tail Subtract(n, 1)` call sites, torque's
+// type system already excluded String / BigInt / ToPrimitive
+// shapes, so we only need the Number+Number branch.
+//
+// Why not Object::Add directly? It returns MaybeDirectHandle<Object>
+// (handles string concat / ToPrimitive failure) — for our
+// statically-typed Number+Number case the fail branch is
+// unreachable, and the MaybeHandle ceremony (HandleScope, ToHandle
+// dispatch) is more code than the direct delegation below. The
+// `Object::NumberValue + factory->NewNumber` path is what
+// Object::Add itself takes internally for the Number+Number arm.
+//
+// Object::Subtract has no equivalent static helper in V8 (Add gets
+// special treatment because of string concat); the direct path
+// here is the canonical V8-internal pattern for both.
 inline Tagged<Number> Builtin_Add(Isolate* isolate,
                                   Tagged<Context> context,
                                   Tagged<Number> left,
                                   Tagged<Number> right) {
   USE(context);
-  if (IsSmi(left) && IsSmi(right)) {
-    int64_t l = static_cast<int64_t>(Cast<Smi>(left).value());
-    int64_t r = static_cast<int64_t>(Cast<Smi>(right).value());
-    int64_t sum = l + r;
-    if (Smi::IsValid(sum)) {
-      return Cast<Number>(Smi::FromInt(static_cast<int>(sum)));
-    }
-    return Cast<Number>(
-        *isolate->factory()->NewHeapNumber(static_cast<double>(sum)));
-  }
-  double l = IsSmi(left)
-      ? static_cast<double>(Cast<Smi>(left).value())
-      : Cast<HeapNumber>(left)->value();
-  double r = IsSmi(right)
-      ? static_cast<double>(Cast<Smi>(right).value())
-      : Cast<HeapNumber>(right)->value();
-  double sum = l + r;
-  int smi_value;
-  if (DoubleToSmiInteger(sum, &smi_value)) {
-    return Cast<Number>(Smi::FromInt(smi_value));
-  }
-  return Cast<Number>(*isolate->factory()->NewHeapNumber(sum));
+  double sum = Object::NumberValue(left) + Object::NumberValue(right);
+  return *isolate->factory()->NewNumber(sum);
 }
 
-// `Builtin_Subtract` mirrors `Builtin_Add` for the Number(Number,
-// Number) → Number overload at number.tq:373 — the path Decrement's
-// `tail Subtract(n, 1)` hits. Same Smi/HeapNumber logic as Add,
-// just with `l - r` instead of `l + r`.
 inline Tagged<Number> Builtin_Subtract(Isolate* isolate,
                                        Tagged<Context> context,
                                        Tagged<Number> left,
                                        Tagged<Number> right) {
   USE(context);
-  if (IsSmi(left) && IsSmi(right)) {
-    int64_t l = static_cast<int64_t>(Cast<Smi>(left).value());
-    int64_t r = static_cast<int64_t>(Cast<Smi>(right).value());
-    int64_t diff = l - r;
-    if (Smi::IsValid(diff)) {
-      return Cast<Number>(Smi::FromInt(static_cast<int>(diff)));
-    }
-    return Cast<Number>(
-        *isolate->factory()->NewHeapNumber(static_cast<double>(diff)));
-  }
-  double l = IsSmi(left)
-      ? static_cast<double>(Cast<Smi>(left).value())
-      : Cast<HeapNumber>(left)->value();
-  double r = IsSmi(right)
-      ? static_cast<double>(Cast<Smi>(right).value())
-      : Cast<HeapNumber>(right)->value();
-  double diff = l - r;
-  int smi_value;
-  if (DoubleToSmiInteger(diff, &smi_value)) {
-    return Cast<Number>(Smi::FromInt(smi_value));
-  }
-  return Cast<Number>(*isolate->factory()->NewHeapNumber(diff));
+  double diff = Object::NumberValue(left) - Object::NumberValue(right);
+  return *isolate->factory()->NewNumber(diff);
 }
 
 // `Builtin_NonNumberToNumeric` wraps Object::ToNumeric, which

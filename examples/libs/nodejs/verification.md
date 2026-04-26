@@ -1796,6 +1796,108 @@ Per the Phase 9 plan's STOP rule ("if it surfaces another Phase-10+ deferral, sk
 
 The cleanest path forward is a Phase 10 sub-phase that lifts the Phase-9B-deferred `arguments[i]` accessor + a small TFC bridge cluster (Call, NewPromiseCapability, GetReflectApply) — at which point PromiseTry, Promise.all-style targets, and most of the array-iteration family unblock simultaneously.
 
+## Phase 9.7 Summary — TFC bridge refactor: V8-API delegation
+
+Replaces Phase 8's hand-written `Builtin_Add` and Phase 8.1's
+`Builtin_Subtract` (each ~30 LoC of native int64 Smi arithmetic +
+HeapNumber overflow handling) with thin wrappers around V8's
+canonical `Object::NumberValue + factory()->NewNumber(double)` APIs.
+Each bridge shrinks to ~5 LoC of delegation.
+
+### The refactored bridges
+
+```cpp
+// Phase 9.7 — Builtin_Add and Builtin_Subtract delegate to V8's
+// canonical Object::NumberValue + factory->NewNumber(double) APIs.
+inline Tagged<Number> Builtin_Add(Isolate* isolate,
+                                  Tagged<Context> context,
+                                  Tagged<Number> left,
+                                  Tagged<Number> right) {
+  USE(context);
+  double sum = Object::NumberValue(left) + Object::NumberValue(right);
+  return *isolate->factory()->NewNumber(sum);
+}
+
+inline Tagged<Number> Builtin_Subtract(Isolate* isolate,
+                                       Tagged<Context> context,
+                                       Tagged<Number> left,
+                                       Tagged<Number> right) {
+  USE(context);
+  double diff = Object::NumberValue(left) - Object::NumberValue(right);
+  return *isolate->factory()->NewNumber(diff);
+}
+```
+
+### Why this matters
+
+Phase 8 / 8.1 chose to re-implement JS-spec Smi/HeapNumber arithmetic
+manually (~30 LoC per bridge with int64 overflow check + double
+fallback + DoubleToSmiInteger discrimination). That works correctly
+today but creates a maintenance liability: if V8 ever changes its
+Smi/HeapNumber boundary or Number normalization rules, our shims
+silently diverge.
+
+The V8-API delegation pattern eliminates this. `factory->NewNumber(double)`
+(`factory-base.h:119`) does the Smi/HeapNumber discrimination
+spec-correctly — same fast path Object::Add takes internally for the
+Number+Number arm (`objects.cc:Add`). For our `tail Add(n, 1)` /
+`tail Subtract(n, 1)` call sites where torque's type system already
+excluded String / BigInt / ToPrimitive shapes, this is the canonical
+path V8 itself uses.
+
+### Why not Object::Add directly?
+
+`Object::Add(isolate, lhs, rhs)` returns `MaybeDirectHandle<Object>`
+because it handles full ECMA Add (string concat, ToPrimitive failure).
+For our statically-typed Number+Number case the failure branch is
+unreachable, and the MaybeHandle ceremony (HandleScope, ToHandle
+dispatch, UNREACHABLE guard) is more code than the direct
+NumberValue + NewNumber path — which is what Object::Add itself
+takes internally for the Number+Number arm.
+
+`Object::Subtract` doesn't exist as a static helper in V8 (Add gets
+special treatment because of string concat); the direct path is the
+canonical V8-internal pattern for both.
+
+### What about Builtin_NonNumberToNumeric?
+
+Phase 8 already got this one right — it's a thin wrapper around
+`Object::ToNumeric`. No rewrite needed.
+
+### Honest framing — patch growth trajectory
+
+The patch's per-bridge LoC cost just dropped from ~30 to ~5 — but it
+still grows linearly with whitelist size (each new TFC callee a
+whitelisted builtin reaches needs its own bridge). A truly
+emitter-only architecture (zero per-builtin bridge code) would
+require either per-platform inline assembly that sets up TFC's
+`cp`/x27 register convention, or V8 itself growing a generic
+`Execution::CallStubBuiltin(...)` API. Both are out of scope: the
+inline-asm path is fragile per-platform; the V8-API path is upstream
+work, not something we can do in our patch.
+
+Phase 9.7 doesn't change the fundamental linear-growth shape, but it
+shrinks the per-bridge coefficient by ~6x and makes each bridge
+trivially understood (5 lines of V8-API delegation, not 30 lines of
+custom arithmetic).
+
+### Verification (Phase 9.7 vs Phase 9 baseline)
+
+| Gate | Phase 9 | **Phase 9.7** | Delta |
+|------|---------|----------------|-------|
+| cctest TorqueCcBuiltinTest.* | 16 PASS | **16 PASS** | 0 (byte-identical behavior — Number+Number arithmetic produces same outputs via factory->NewNumber) |
+| d8-smoke | 26 PASS | **26 PASS** | 0 (`++MAX_SAFE_INTEGER`, `--(-MAX_SAFE_INTEGER)`, BigInt arms, all unchanged) |
+| Torque fixtures | 18/18 byte-exact | **18/18** | 0 (preamble bytes drift, all 18 goldens refresh; second run byte-exact) |
+| mjsunit | 2 PASS | **2 PASS** | 0 |
+| Excluding-anchor (excludes number, tail-call, catch-block, js-varargs) | `8169724e` | **`8169724e`** | 0 — kCSA path untouched |
+| Cumulative source diff vs upstream V8 | 2734 insertions / 60 deletions across 25 files | **2706 insertions / 60 deletions across 25 files** | -28 source lines (the metric that matters). The 18 fixture goldens are in the worktree, not the v8 patch. |
+| `format-patch`-emitted patch line count | 7550 lines / 92 commits | **7693 lines / 93 commits** | +143 lines / +1 commit (most of the +143 is the new commit's header + message + diff context — the actual source change is -28 lines). |
+| Kernel suites (cargo / vitest / libc-test / POSIX / ABI) | 0 delta vs Phase 8.1 | **0 delta** | 0 |
+
+### Note on patch line count metric
+
+The `wc -l examples/libs/nodejs/patches/v8-torque-cc-builtins.patch` number we've been tracking is the size of the `format-patch --stdout` output — which includes per-commit headers (From:, Date:, Subject:, message body, footer), not just code. Each commit adds ~10-30 lines of metadata regardless of code change size. **The honest "how big is our patch" number is `git diff 9fe7634c..HEAD --stat`'s "X insertions / Y deletions across N files"** — currently 2706/60 across 25 files. Future verification.md updates should track this metric alongside the format-patch size.
+
 ## Phase 9 close — kernel suite sweep
 
 All wasm-posix-kernel suites pass at Phase 9B's tip (`9023fad73`),
