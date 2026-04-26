@@ -43,6 +43,7 @@
 //! flags" — bump when the build script or cross-compile config changes
 //! in a way that affects the output.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -144,6 +145,69 @@ pub struct ProgramOutput {
     pub wasm: String,
 }
 
+/// One entry in a manifest's `[[host_tools]]` array. Inline
+/// declaration on the consumer site — no separate registry entry,
+/// per design 10.
+///
+/// Probe and install_hints are optional in TOML; the parser fills
+/// in defaults so the rest of the resolver always sees a complete
+/// `HostToolDecl`.
+///
+/// `version_constraint` is stored as a raw string in C.7; full
+/// constraint syntax validation (`>=X.Y[.Z]`) lands in C.8 and will
+/// replace this with a parsed `VersionConstraint` newtype. The
+/// runner that actually invokes `probe.args` and matches
+/// `version_regex` against the output lands in C.9.
+// Read by tests now; consumed by C.8 (constraint parser) and C.9
+// (host-tool runner). Mark allow(dead_code) at the struct level so
+// the binary crate doesn't grumble between landing the schema and
+// wiring it up.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct HostToolDecl {
+    pub name: String,
+    pub version_constraint: String,
+    pub probe: HostToolProbe,
+    pub install_hints: BTreeMap<String, String>,
+}
+
+/// Probe definition for a host tool: how to invoke it and how to
+/// extract a version string from its output.
+///
+/// Defaults (when omitted in TOML): `args = ["--version"]`,
+/// `version_regex = r"(\d+\.\d+(?:\.\d+)?)"`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
+pub struct HostToolProbe {
+    pub args: Vec<String>,
+    pub version_regex: String,
+}
+
+impl Default for HostToolProbe {
+    fn default() -> Self {
+        Self {
+            args: vec!["--version".to_string()],
+            version_regex: r"(\d+\.\d+(?:\.\d+)?)".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct RawHostTool {
+    name: String,
+    version_constraint: String,
+    #[serde(default)]
+    probe: Option<RawHostToolProbe>,
+    #[serde(default)]
+    install_hints: Option<BTreeMap<String, String>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawHostToolProbe {
+    args: Option<Vec<String>>,
+    version_regex: Option<String>,
+}
+
 /// One fully-parsed `deps.toml` file.
 #[derive(Debug, Clone)]
 pub struct DepsManifest {
@@ -178,6 +242,13 @@ pub struct DepsManifest {
     /// resolver in Task A.9.
     #[allow(dead_code)]
     pub binary: Option<Binary>,
+
+    /// Inline host-tool requirements (`[[host_tools]]` in TOML).
+    /// Empty when none are declared. Allowed on every manifest kind
+    /// (library / program / source). Read by tests now; consumed
+    /// by C.8 (constraint parser) and C.9 (host-tool runner).
+    #[allow(dead_code)]
+    pub host_tools: Vec<HostToolDecl>,
 
     /// Directory containing this `deps.toml`. The build script path and
     /// any per-dep build state live underneath it.
@@ -282,6 +353,8 @@ struct Raw {
     compatibility: Option<Compatibility>,
     #[serde(default)]
     binary: Option<Binary>,
+    #[serde(default)]
+    host_tools: Vec<RawHostTool>,
 }
 
 /// Default `outputs` value when the key is absent: an empty table.
@@ -451,6 +524,66 @@ impl DepsManifest {
             }
         }
 
+        // `[[host_tools]]` validation — runs on every manifest kind.
+        // Constraint syntax validation lands in C.8; here we only
+        // check that strings are non-empty, that probe.args (when
+        // given) is non-empty, and that names are unique within this
+        // manifest. Defaults are filled in for omitted probe /
+        // install_hints fields.
+        let mut host_tools: Vec<HostToolDecl> = Vec::with_capacity(raw.host_tools.len());
+        let mut seen_names: BTreeSet<String> = BTreeSet::new();
+        for (idx, raw_t) in raw.host_tools.into_iter().enumerate() {
+            if raw_t.name.is_empty() {
+                return Err(format!("[[host_tools]][{idx}].name must not be empty"));
+            }
+            if !seen_names.insert(raw_t.name.clone()) {
+                return Err(format!(
+                    "[[host_tools]] declares {:?} twice in this manifest",
+                    raw_t.name
+                ));
+            }
+            if raw_t.version_constraint.is_empty() {
+                return Err(format!(
+                    "[[host_tools]][{idx}] {:?}: version_constraint must not be empty",
+                    raw_t.name
+                ));
+            }
+            let probe = match raw_t.probe {
+                None => HostToolProbe::default(),
+                Some(p) => {
+                    let args = match p.args {
+                        Some(a) if a.is_empty() => {
+                            return Err(format!(
+                                "[[host_tools]][{idx}] {:?}: probe.args must be non-empty when given",
+                                raw_t.name
+                            ));
+                        }
+                        Some(a) => a,
+                        None => HostToolProbe::default().args,
+                    };
+                    let version_regex = p
+                        .version_regex
+                        .unwrap_or_else(|| HostToolProbe::default().version_regex);
+                    HostToolProbe { args, version_regex }
+                }
+            };
+            let install_hints = raw_t.install_hints.unwrap_or_default();
+            for (k, v) in &install_hints {
+                if k.is_empty() || v.is_empty() {
+                    return Err(format!(
+                        "[[host_tools]][{idx}] {:?}: install_hints entries must have non-empty key and value",
+                        raw_t.name
+                    ));
+                }
+            }
+            host_tools.push(HostToolDecl {
+                name: raw_t.name,
+                version_constraint: raw_t.version_constraint,
+                probe,
+                install_hints,
+            });
+        }
+
         // Dispatch on `kind` to decide whether `outputs` is the
         // library shape (`[outputs]` table with libs/headers/pkgconfig)
         // or the program shape (`[[outputs]]` array-of-tables with
@@ -552,6 +685,7 @@ impl DepsManifest {
             program_outputs,
             compatibility: raw.compatibility,
             binary: raw.binary,
+            host_tools,
             dir,
         })
     }
@@ -1016,5 +1150,104 @@ spdx = "BSD-3-Clause"
         assert!(m.outputs.libs.is_empty());
         assert!(m.program_outputs.is_empty());
         assert!(m.binary.is_none());
+    }
+
+    const LIB_WITH_HOST_TOOLS: &str = r#"
+kind = "library"
+name = "zlib"
+version = "1.3.1"
+revision = 1
+
+[source]
+url = "https://example.test/zlib-1.3.1.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "Zlib"
+
+[outputs]
+libs = ["lib/libz.a"]
+
+[[host_tools]]
+name = "make"
+version_constraint = ">=4.0"
+
+[[host_tools]]
+name = "cmake"
+version_constraint = ">=3.20"
+probe = { args = ["--version"], version_regex = "cmake version (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "brew install cmake", linux = "apt install cmake" }
+"#;
+
+    #[test]
+    fn parses_host_tools_with_defaults() {
+        let m = DepsManifest::parse(LIB_WITH_HOST_TOOLS, PathBuf::from("/x")).unwrap();
+        assert_eq!(m.host_tools.len(), 2);
+        assert_eq!(m.host_tools[0].name, "make");
+        // make has no explicit probe → uses defaults.
+        assert_eq!(m.host_tools[0].probe.args, vec!["--version"]);
+        assert!(m.host_tools[0].install_hints.is_empty());
+
+        // cmake has explicit probe + hints.
+        assert_eq!(m.host_tools[1].name, "cmake");
+        assert!(m.host_tools[1].probe.version_regex.starts_with("cmake version"));
+        assert_eq!(
+            m.host_tools[1].install_hints.get("darwin").map(String::as_str),
+            Some("brew install cmake")
+        );
+    }
+
+    #[test]
+    fn host_tools_reject_duplicate_names_in_same_manifest() {
+        let bad = LIB_WITH_HOST_TOOLS.replace("name = \"cmake\"", "name = \"make\"");
+        let err = DepsManifest::parse(&bad, PathBuf::from("/x")).unwrap_err();
+        assert!(err.contains("twice"), "got: {err}");
+    }
+
+    #[test]
+    fn host_tools_allowed_on_source_kind() {
+        let text = r#"
+kind = "source"
+name = "pcre2-source"
+version = "10.42"
+revision = 1
+
+[source]
+url = "https://example.test/pcre2.tar.bz2"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "BSD-3-Clause"
+
+[[host_tools]]
+name = "patch"
+version_constraint = ">=2.7"
+"#;
+        let m = DepsManifest::parse(text, PathBuf::from("/x")).unwrap();
+        assert_eq!(m.host_tools.len(), 1);
+        assert_eq!(m.host_tools[0].name, "patch");
+    }
+
+    #[test]
+    fn host_tools_reject_empty_probe_args() {
+        let bad = r#"
+kind = "library"
+name = "x"
+version = "1.0"
+revision = 1
+[source]
+url = "https://example.test/x.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+[license]
+spdx = "MIT"
+[outputs]
+libs = []
+[[host_tools]]
+name = "cmake"
+version_constraint = ">=3.0"
+probe = { args = [], version_regex = "(\\d+\\.\\d+)" }
+"#;
+        let err = DepsManifest::parse(bad, PathBuf::from("/x")).unwrap_err();
+        assert!(err.contains("probe.args"), "got: {err}");
     }
 }
