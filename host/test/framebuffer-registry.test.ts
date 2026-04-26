@@ -116,4 +116,66 @@ describe("FramebufferRegistry", () => {
     });
     expect(reg.list().map((b) => b.pid).sort()).toEqual([1, 2]);
   });
+
+  it("write-based binding (addr=0,len=0) allocates a host buffer + fbWrite copies in", () => {
+    const reg = new FramebufferRegistry();
+    reg.bind({
+      pid: 9,
+      addr: 0,
+      len: 0,
+      w: 4,
+      h: 2,
+      stride: 16, // 4 px * 4 bpp
+      fmt: "BGRA32",
+    });
+    const b = reg.get(9)!;
+    expect(b.hostBuffer).not.toBeNull();
+    expect(b.hostBuffer!.length).toBe(2 * 16);
+
+    // Write a row at offset 16 (start of row 1).
+    const row = new Uint8Array([
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+    ]);
+    reg.fbWrite(9, 16, row);
+    expect(b.hostBuffer![16]).toBe(1);
+    expect(b.hostBuffer![31]).toBe(16);
+    // Row 0 untouched.
+    for (let i = 0; i < 16; i++) expect(b.hostBuffer![i]).toBe(0);
+  });
+
+  it("fbWrite fires onWrite listeners with the original pid/offset/bytes", () => {
+    const reg = new FramebufferRegistry();
+    reg.bind({
+      pid: 10,
+      addr: 0,
+      len: 0,
+      w: 1,
+      h: 1,
+      stride: 4,
+      fmt: "BGRA32",
+    });
+    const seen: Array<[number, number, number]> = [];
+    reg.onWrite((pid, offset, bytes) => seen.push([pid, offset, bytes.length]));
+    reg.fbWrite(10, 0, new Uint8Array([0xff, 0, 0, 0xff]));
+    expect(seen).toEqual([[10, 0, 4]]);
+  });
+
+  it("rebindMemory is a no-op for write-based bindings", () => {
+    const reg = new FramebufferRegistry();
+    reg.bind({
+      pid: 11,
+      addr: 0,
+      len: 0,
+      w: 1,
+      h: 1,
+      stride: 4,
+      fmt: "BGRA32",
+    });
+    const b = reg.get(11)!;
+    b.view = b.hostBuffer; // pretend renderer cached the view
+    reg.rebindMemory(11);
+    // Still pointing at the host buffer — host-owned memory doesn't
+    // change on memory.grow.
+    expect(b.view).toBe(b.hostBuffer);
+  });
 });

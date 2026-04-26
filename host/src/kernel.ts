@@ -423,6 +423,18 @@ export class WasmPosixKernel {
         host_unbind_framebuffer: (pid: number): void => {
           this.framebuffers.unbind(pid);
         },
+        host_fb_write: (
+          pid: number,
+          offset: bigint,
+          srcPtr: bigint,
+          len: bigint,
+        ): void => {
+          this.framebuffers.fbWrite(
+            pid,
+            Number(offset),
+            this.readKernelBytes(Number(srcPtr), Number(len)),
+          );
+        },
       },
     };
   }
@@ -455,6 +467,16 @@ export class WasmPosixKernel {
       throw new Error("Kernel not initialized");
     }
     return new DataView(this.memory.buffer);
+  }
+
+  /** Copy `len` bytes from kernel memory at `ptr` into a non-shared
+   *  Uint8Array. Used by host imports that consume kernel-scratch
+   *  payloads (e.g. host_fb_write).
+   */
+  private readKernelBytes(ptr: number, len: number): Uint8Array {
+    const out = new Uint8Array(len);
+    out.set(this.getMemoryBuffer().subarray(ptr, ptr + len));
+    return out;
   }
 
   /**

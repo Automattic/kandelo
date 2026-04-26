@@ -1300,6 +1300,43 @@ pub fn sys_write(
                 if let Some(dev) = VirtualDevice::from_host_handle(host_handle) {
                     return match dev {
                         VirtualDevice::Full => Err(Errno::ENOSPC),
+                        VirtualDevice::Fb0 => {
+                            // Write-based fbdev clients (fbDOOM-style): the
+                            // user fills its own buffer, then `write(fd_fb,
+                            // pixels, len)` to push them to the framebuffer.
+                            // We don't use mmap here — register a sentinel
+                            // FbBinding with addr=0/len=0 on first write so
+                            // the host knows to allocate its own pixel
+                            // buffer for this pid; per-write deltas go
+                            // through `fb_write`.
+                            if proc.fb_binding.is_none() {
+                                proc.fb_binding = Some(crate::process::FbBinding {
+                                    addr: 0,
+                                    len: 0,
+                                    w: FB_WIDTH,
+                                    h: FB_HEIGHT,
+                                    stride: FB_LINE_LENGTH,
+                                    fmt: 0,
+                                });
+                                host.bind_framebuffer(
+                                    proc.pid as i32, 0, 0,
+                                    FB_WIDTH, FB_HEIGHT, FB_LINE_LENGTH, 0,
+                                );
+                            }
+                            let offset = ofd.offset.max(0) as usize;
+                            let max_off = (FB_SMEM_LEN as usize)
+                                .saturating_sub(offset);
+                            let n = buf.len().min(max_off);
+                            if n > 0 {
+                                host.fb_write(proc.pid as i32, offset, &buf[..n]);
+                                if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
+                                    ofd.offset += n as i64;
+                                }
+                            }
+                            // Linux fbdev returns the requested length even
+                            // when capping at smem_len; we mirror that.
+                            Ok(buf.len())
+                        }
                         _ => Ok(buf.len()), // Null, Zero, Urandom: discard
                     };
                 }
@@ -1397,9 +1434,27 @@ pub fn sys_lseek(
         return Ok(ofd.offset);
     }
 
-    // Virtual char devices: seek is a no-op, always returns 0
-    if ofd.file_type == FileType::CharDevice && VirtualDevice::from_host_handle(ofd.host_handle).is_some() {
-        return Ok(0);
+    // Virtual char devices: seek is a no-op for null/zero/etc. /dev/fb0
+    // is the exception — seek positions the cursor for the write-based
+    // pixel-blit path used by fbDOOM-style software.
+    if ofd.file_type == FileType::CharDevice {
+        if let Some(dev) = VirtualDevice::from_host_handle(ofd.host_handle) {
+            if dev == VirtualDevice::Fb0 {
+                let cur = ofd.offset;
+                let new_off = match whence {
+                    SEEK_SET => offset,
+                    SEEK_CUR => cur + offset,
+                    SEEK_END => FB_SMEM_LEN as i64 + offset,
+                    _ => return Err(Errno::EINVAL),
+                };
+                if new_off < 0 {
+                    return Err(Errno::EINVAL);
+                }
+                ofd.offset = new_off;
+                return Ok(new_off);
+            }
+            return Ok(0);
+        }
     }
 
     // Procfs/devfs directory: lseek resets position
@@ -8504,6 +8559,7 @@ mod tests {
         fn bind_framebuffer(&mut self, _pid: i32, _addr: usize, _len: usize,
                             _w: u32, _h: u32, _stride: u32, _fmt: u32) {}
         fn unbind_framebuffer(&mut self, _pid: i32) {}
+        fn fb_write(&mut self, _pid: i32, _offset: usize, _bytes: &[u8]) {}
     }
 
     #[test]
@@ -12009,6 +12065,13 @@ mod tests {
         fmt: u32,
     }
 
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct FbWriteCall {
+        pid: i32,
+        offset: usize,
+        len: usize,
+    }
+
     struct TrackingHostIO {
         next_handle: i64,
         last_open_path: Vec<u8>,
@@ -12029,6 +12092,7 @@ mod tests {
         last_readlink_path: Vec<u8>,
         bind_framebuffer_calls: Vec<BindFbCall>,
         unbind_framebuffer_calls: Vec<i32>,
+        fb_write_calls: Vec<FbWriteCall>,
     }
 
     impl TrackingHostIO {
@@ -12053,6 +12117,7 @@ mod tests {
                 last_readlink_path: Vec::new(),
                 bind_framebuffer_calls: Vec::new(),
                 unbind_framebuffer_calls: Vec::new(),
+                fb_write_calls: Vec::new(),
             }
         }
     }
@@ -12215,6 +12280,13 @@ mod tests {
         }
         fn unbind_framebuffer(&mut self, pid: i32) {
             self.unbind_framebuffer_calls.push(pid);
+        }
+        fn fb_write(&mut self, pid: i32, offset: usize, bytes: &[u8]) {
+            self.fb_write_calls.push(FbWriteCall {
+                pid,
+                offset,
+                len: bytes.len(),
+            });
         }
     }
 
@@ -12707,6 +12779,7 @@ mod tests {
             fn host_clone(&mut self, _f: usize, _a: usize, _s: usize, _t: usize, _c: usize) -> Result<i32, Errno> { Err(Errno::ENOSYS) }
             fn bind_framebuffer(&mut self, _pid: i32, _addr: usize, _len: usize, _w: u32, _h: u32, _stride: u32, _fmt: u32) {}
             fn unbind_framebuffer(&mut self, _pid: i32) {}
+            fn fb_write(&mut self, _pid: i32, _offset: usize, _bytes: &[u8]) {}
         }
 
         let mut proc = Process::new(1);
@@ -14352,6 +14425,7 @@ mod tests {
             fn host_clone(&mut self, _f: usize, _a: usize, _s: usize, _t: usize, _c: usize) -> Result<i32, Errno> { Err(Errno::ENOSYS) }
             fn bind_framebuffer(&mut self, _pid: i32, _addr: usize, _len: usize, _w: u32, _h: u32, _stride: u32, _fmt: u32) {}
             fn unbind_framebuffer(&mut self, _pid: i32) {}
+            fn fb_write(&mut self, _pid: i32, _offset: usize, _bytes: &[u8]) {}
         }
 
         let mut proc = Process::new(1);
@@ -14437,6 +14511,7 @@ mod tests {
             fn host_clone(&mut self, _f: usize, _a: usize, _s: usize, _t: usize, _c: usize) -> Result<i32, Errno> { Err(Errno::ENOSYS) }
             fn bind_framebuffer(&mut self, _pid: i32, _addr: usize, _len: usize, _w: u32, _h: u32, _stride: u32, _fmt: u32) {}
             fn unbind_framebuffer(&mut self, _pid: i32) {}
+            fn fb_write(&mut self, _pid: i32, _offset: usize, _bytes: &[u8]) {}
         }
 
         let mut proc = Process::new(1);
@@ -14531,6 +14606,7 @@ mod tests {
             fn host_clone(&mut self, _f: usize, _a: usize, _s: usize, _t: usize, _c: usize) -> Result<i32, Errno> { Err(Errno::ENOSYS) }
             fn bind_framebuffer(&mut self, _pid: i32, _addr: usize, _len: usize, _w: u32, _h: u32, _stride: u32, _fmt: u32) {}
             fn unbind_framebuffer(&mut self, _pid: i32) {}
+            fn fb_write(&mut self, _pid: i32, _offset: usize, _bytes: &[u8]) {}
         }
 
         let mut proc = Process::new(1);
@@ -15287,6 +15363,51 @@ mod tests {
         let mut buf = [0u8; 160];  // big enough that ENOTTY is the only failure mode
         let err = sys_ioctl(&mut proc, fd, 0x46FF, &mut buf).unwrap_err();
         assert_eq!(err, Errno::ENOTTY);
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn write_fb0_lazy_binds_and_forwards_pixels() {
+        use core::sync::atomic::Ordering;
+        use wasm_posix_shared::flags::O_RDWR;
+        let _g = FB0_OWNER_LOCK.lock().unwrap();
+        crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+
+        let mut proc = Process::new(1);
+        let mut host = TrackingHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
+
+        // Seek to a known offset.
+        let off = 640 * 4 * 10; // start of row 10
+        let new_off = sys_lseek(&mut proc, &mut host, fd, off as i64, 0).unwrap();
+        assert_eq!(new_off, off as i64);
+
+        // First write lazily binds (addr=0/len=0 sentinel) and pushes.
+        let pixels: alloc::vec::Vec<u8> = (0..16).map(|i| i as u8).collect();
+        let n = sys_write(&mut proc, &mut host, fd, &pixels).unwrap();
+        assert_eq!(n, pixels.len());
+
+        // Bind fired exactly once with the sentinel layout.
+        assert_eq!(host.bind_framebuffer_calls.len(), 1);
+        let b = &host.bind_framebuffer_calls[0];
+        assert_eq!((b.pid, b.addr, b.len, b.w, b.h, b.stride),
+                   (proc.pid as i32, 0, 0, 640, 400, 640 * 4));
+
+        // fb_write fired with the right offset and length.
+        assert_eq!(host.fb_write_calls.len(), 1);
+        assert_eq!(host.fb_write_calls[0].pid, proc.pid as i32);
+        assert_eq!(host.fb_write_calls[0].offset, off);
+        assert_eq!(host.fb_write_calls[0].len, pixels.len());
+
+        // Cursor advanced by the write length.
+        let cur = sys_lseek(&mut proc, &mut host, fd, 0, 1 /* SEEK_CUR */).unwrap();
+        assert_eq!(cur, (off + pixels.len()) as i64);
+
+        // Second write pushes another delta but does NOT re-bind.
+        let _ = sys_write(&mut proc, &mut host, fd, &pixels).unwrap();
+        assert_eq!(host.bind_framebuffer_calls.len(), 1);
+        assert_eq!(host.fb_write_calls.len(), 2);
+
         sys_close(&mut proc, &mut host, fd).unwrap();
     }
 

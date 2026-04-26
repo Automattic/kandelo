@@ -519,6 +519,9 @@ export class BrowserKernel {
         this.fbMemoryByPid.set(msg.pid, msg.memory);
         this.framebuffers.rebindMemory(msg.pid);
         break;
+      case "fb_write":
+        this.framebuffers.fbWrite(msg.pid, msg.offset, msg.bytes);
+        break;
     }
   }
 

@@ -287,6 +287,20 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     const memory = kernelWorker.getProcessMemory(pid);
     if (memory) post({ type: "fb_rebind_memory", pid, memory });
   };
+  // Write-based fb deltas (fbDOOM-style): forward each pixel chunk
+  // to the main thread, which mirrors them into its own registry.
+  // The bytes here are non-shared (kernel.ts copies from the kernel
+  // memory before invoking fbWrite), so they transfer cleanly.
+  kernelWorker.framebuffers.onWrite((pid, offset, bytes) => {
+    const buf = bytes.buffer.slice(
+      bytes.byteOffset,
+      bytes.byteOffset + bytes.byteLength,
+    );
+    post(
+      { type: "fb_write", pid, offset, bytes: new Uint8Array(buf) },
+      [buf],
+    );
+  });
 
   // Accept bridge port for HTTP request handling
   if (msg.bridgePort) {

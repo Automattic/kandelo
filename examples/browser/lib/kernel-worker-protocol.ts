@@ -267,6 +267,20 @@ export interface FbRebindMemoryMessage {
   memory: WebAssembly.Memory;
 }
 
+/**
+ * Forwarded write-based pixel push. Used by software (e.g. fbDOOM)
+ * that does `write(fd_fb, …)` rather than mmap. Bytes are copied out
+ * of kernel scratch in the worker — `bytes` here is a transferable
+ * Uint8Array (non-shared); the main thread copies it into the
+ * registry's per-pid hostBuffer.
+ */
+export interface FbWriteMessage {
+  type: "fb_write";
+  pid: number;
+  offset: number;
+  bytes: Uint8Array;
+}
+
 export type KernelToMainMessage =
   | ReadyMessage
   | ResponseMessage
@@ -277,4 +291,5 @@ export type KernelToMainMessage =
   | ListenTcpMessage
   | FbBindMessage
   | FbUnbindMessage
-  | FbRebindMemoryMessage;
+  | FbRebindMemoryMessage
+  | FbWriteMessage;

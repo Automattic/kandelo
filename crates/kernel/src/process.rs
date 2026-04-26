@@ -107,6 +107,13 @@ pub trait HostIO {
     /// process exit, or exec). Idempotent: calling unbind on a pid with no
     /// binding is a no-op.
     fn unbind_framebuffer(&mut self, pid: i32);
+    /// Push pixel bytes to the host's framebuffer surface for `pid` at
+    /// byte `offset`. Used by software (e.g. fbDOOM) that issues
+    /// `write(fd_fb, …)` rather than mmap-and-store. The host owns the
+    /// pixel buffer in this mode; the kernel has no `FbBinding.addr` to
+    /// copy into. Geometry/format come from a prior `bind_framebuffer`
+    /// call with `addr=0, len=0` (the sentinel "write-based binding").
+    fn fb_write(&mut self, pid: i32, offset: usize, bytes: &[u8]);
 }
 
 /// Process lifecycle state.

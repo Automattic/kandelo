@@ -58,23 +58,29 @@ export function attachCanvas(
     if (canvas.height !== binding.h) canvas.height = binding.h;
 
     if (!binding.view) {
-      const memory = opts.getProcessMemory(pid);
-      if (!memory) return;
-      try {
-        binding.view = new Uint8ClampedArray(
-          memory.buffer,
-          binding.addr,
-          binding.len,
-        );
-      } catch {
-        // Buffer was detached between rebindMemory() and the next
-        // tick; try again on the next frame.
-        return;
+      if (binding.hostBuffer) {
+        // Write-based binding: the host owns the pixel buffer.
+        binding.view = binding.hostBuffer;
+      } else {
+        const memory = opts.getProcessMemory(pid);
+        if (!memory) return;
+        try {
+          binding.view = new Uint8ClampedArray(
+            memory.buffer,
+            binding.addr,
+            binding.len,
+          );
+        } catch {
+          // Buffer was detached between rebindMemory() and the next
+          // tick; try again on the next frame.
+          return;
+        }
       }
     }
 
-    if (!scratchRgba || scratchRgba.length !== binding.len) {
-      scratchRgba = new Uint8ClampedArray(new ArrayBuffer(binding.len));
+    const byteLen = binding.view.length;
+    if (!scratchRgba || scratchRgba.length !== byteLen) {
+      scratchRgba = new Uint8ClampedArray(new ArrayBuffer(byteLen));
     }
 
     swizzleBgraToRgba(binding.view, scratchRgba);
@@ -92,10 +98,14 @@ export function attachCanvas(
  * directly.
  */
 function swizzleBgraToRgba(src: Uint8ClampedArray, dst: Uint8ClampedArray): void {
+  // Force alpha=255 in the destination. fbdev pixel formats carry an
+  // alpha channel as documented by FBIOGET_VSCREENINFO, but most
+  // fbdev software (DOOM included) leaves it as 0; copying that
+  // through would render the canvas transparent.
   for (let i = 0; i < src.length; i += 4) {
     dst[i]     = src[i + 2];
     dst[i + 1] = src[i + 1];
     dst[i + 2] = src[i];
-    dst[i + 3] = src[i + 3];
+    dst[i + 3] = 0xff;
   }
 }

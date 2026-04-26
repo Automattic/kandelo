@@ -96,6 +96,7 @@ unsafe extern "C" {
         w: u32, h: u32, stride: u32, fmt: u32,
     );
     fn host_unbind_framebuffer(pid: i32);
+    fn host_fb_write(pid: i32, offset: usize, src: *const u8, len: usize);
 }
 
 // ---------------------------------------------------------------------------
@@ -590,6 +591,10 @@ impl HostIO for WasmHostIO {
 
     fn unbind_framebuffer(&mut self, pid: i32) {
         unsafe { host_unbind_framebuffer(pid) }
+    }
+
+    fn fb_write(&mut self, pid: i32, offset: usize, bytes: &[u8]) {
+        unsafe { host_fb_write(pid, offset, bytes.as_ptr(), bytes.len()) }
     }
 }
 
