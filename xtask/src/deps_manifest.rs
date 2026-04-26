@@ -153,22 +153,168 @@ pub struct ProgramOutput {
 /// in defaults so the rest of the resolver always sees a complete
 /// `HostTool`.
 ///
-/// `version_constraint` is stored as a raw string in C.7; full
-/// constraint syntax validation (`>=X.Y[.Z]`) lands in C.8 and will
-/// replace this with a parsed `VersionConstraint` newtype. The
-/// runner that actually invokes `probe.args` and matches
-/// `version_regex` against the output lands in C.9.
-// Read by tests now; consumed by C.8 (constraint parser) and C.9
-// (host-tool runner). Mark allow(dead_code) at the struct level so
-// the binary crate doesn't grumble between landing the schema and
-// wiring it up.
+/// `version_constraint` is parsed at deps.toml load time into a
+/// [`VersionConstraint`] newtype (C.8). Only `>=X.Y` and `>=X.Y.Z`
+/// are accepted; other operators reject with a future-work error
+/// linking design decision 11. The runner that actually invokes
+/// `probe.args` and matches `version_regex` against the output
+/// lands in C.9.
+// Read by tests now; consumed by C.9 (host-tool runner). Mark
+// allow(dead_code) at the struct level so the binary crate doesn't
+// grumble between landing the schema and wiring it up.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct HostTool {
     pub name: String,
-    pub version_constraint: String,
+    pub version_constraint: VersionConstraint,
     pub probe: HostToolProbe,
     pub install_hints: BTreeMap<String, String>,
+}
+
+/// A 2- or 3-component dotted-integer version. Stored separately
+/// from a raw string so comparisons are numeric rather than
+/// lexicographic (`3.20 > 3.9`, never `"3.20" < "3.9"`). `patch` is
+/// `None` for `"X.Y"` inputs and `Some(n)` for `"X.Y.Z"`. When
+/// comparing across forms a missing patch is treated as `0`.
+///
+/// V2 host-tool versions are pure dotted-integer; prerelease and
+/// build suffixes (`-rc1`, `+build`) are rejected at parse time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
+pub struct Version {
+    pub major: u32,
+    pub minor: u32,
+    pub patch: Option<u32>,
+}
+
+impl Version {
+    /// Parse a 2- or 3-component dotted-integer version. Rejects
+    /// anything with prerelease or build suffixes.
+    #[allow(dead_code)]
+    pub fn parse(s: &str) -> Result<Self, String> {
+        if s.contains('-') || s.contains('+') {
+            return Err(format!(
+                "version {:?}: prerelease/build suffixes are not supported \
+                 (V2 host-tools only accepts dotted-integer versions)",
+                s
+            ));
+        }
+        let parts: Vec<&str> = s.split('.').collect();
+        if parts.len() < 2 || parts.len() > 3 {
+            return Err(format!(
+                "version {:?} must be X.Y or X.Y.Z (got {} components)",
+                s,
+                parts.len()
+            ));
+        }
+        let major: u32 = parts[0]
+            .parse()
+            .map_err(|_| format!("version {:?}: major must be unsigned int", s))?;
+        let minor: u32 = parts[1]
+            .parse()
+            .map_err(|_| format!("version {:?}: minor must be unsigned int", s))?;
+        let patch = match parts.get(2) {
+            Some(p) => Some(
+                p.parse::<u32>()
+                    .map_err(|_| format!("version {:?}: patch must be unsigned int", s))?,
+            ),
+            None => None,
+        };
+        Ok(Self {
+            major,
+            minor,
+            patch,
+        })
+    }
+}
+
+impl std::fmt::Display for Version {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.patch {
+            Some(p) => write!(f, "{}.{}.{}", self.major, self.minor, p),
+            None => write!(f, "{}.{}", self.major, self.minor),
+        }
+    }
+}
+
+// Hand-written ordering so a 2-component `"X.Y"` (patch = None)
+// compares equal to `"X.Y.0"` rather than less-than (which is what
+// `Option<u32>::None < Some(0)` would yield with a derived impl).
+impl Ord for Version {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        let a = (self.major, self.minor, self.patch.unwrap_or(0));
+        let b = (other.major, other.minor, other.patch.unwrap_or(0));
+        a.cmp(&b)
+    }
+}
+
+impl PartialOrd for Version {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// A parsed version constraint. V2 supports exactly one operator
+/// (`>=`); other operators (`>`, `<`, `==`, `^`, `~`, `=`, bare
+/// versions, compound `">=X.Y,<P.Q"`) reject at parse time with a
+/// future-work error linking design decision 11.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
+pub struct VersionConstraint {
+    pub min: Version,
+}
+
+impl VersionConstraint {
+    /// Parse a `version_constraint` string. Only `>=X.Y` and
+    /// `>=X.Y.Z` are accepted; everything else rejects with a
+    /// future-work error message naming `tool_name` and the bad
+    /// input.
+    #[allow(dead_code)]
+    pub fn parse(s: &str, tool_name: &str) -> Result<Self, String> {
+        let s = s.trim();
+        if s.contains(',') {
+            return Err(future_work_err(tool_name, s, "compound constraints"));
+        }
+        let rest = s
+            .strip_prefix(">=")
+            .ok_or_else(|| future_work_err(tool_name, s, "operator other than '>='"))?;
+        // Reject any further operator/whitespace inside the version
+        // portion. Note this rejection has to come BEFORE we try to
+        // parse `rest` as a Version, because `Version::parse` would
+        // accept e.g. `3.20<4.0` if the operator string ever leaked
+        // through.
+        if rest.starts_with(' ')
+            || rest.contains(['<', '>', '=', '^', '~', ',', ' '])
+        {
+            return Err(future_work_err(tool_name, s, "operator after '>='"));
+        }
+        let min = Version::parse(rest)
+            .map_err(|e| format!("[[host_tools]] {}: {}", tool_name, e))?;
+        Ok(Self { min })
+    }
+
+    /// `actual` satisfies `self` iff `actual >= self.min`. The
+    /// comparison treats a missing patch component as 0:
+    /// `>=3.20` accepts `3.20.0`, `3.21`, `3.20.5` but rejects `3.19`.
+    #[allow(dead_code)]
+    pub fn satisfies(&self, actual: &Version) -> bool {
+        actual >= &self.min
+    }
+}
+
+impl std::fmt::Display for VersionConstraint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, ">={}", self.min)
+    }
+}
+
+fn future_work_err(tool_name: &str, value: &str, kind: &str) -> String {
+    format!(
+        "unsupported version_constraint in [[host_tools]] {tool_name:?}: {value:?} \
+         ({kind}; supported: >=X.Y or >=X.Y.Z — semver ranges and other \
+         operators are deferred to future work; see \
+         docs/plans/2026-04-22-deps-management-v2-design.md decision 11)"
+    )
 }
 
 /// Probe definition for a host tool: how to invoke it and how to
@@ -548,6 +694,8 @@ impl DepsManifest {
                     raw_t.name
                 ));
             }
+            let version_constraint =
+                VersionConstraint::parse(&raw_t.version_constraint, &raw_t.name)?;
             let probe = match raw_t.probe {
                 None => HostToolProbe::default(),
                 Some(p) => {
@@ -578,7 +726,7 @@ impl DepsManifest {
             }
             host_tools.push(HostTool {
                 name: raw_t.name,
-                version_constraint: raw_t.version_constraint,
+                version_constraint,
                 probe,
                 install_hints,
             });
@@ -1249,5 +1397,68 @@ probe = { args = [], version_regex = "(\\d+\\.\\d+)" }
 "#;
         let err = DepsManifest::parse(bad, PathBuf::from("/x")).unwrap_err();
         assert!(err.contains("probe.args"), "got: {err}");
+    }
+
+    #[test]
+    fn version_constraint_accepts_two_and_three_component() {
+        let c2 = VersionConstraint::parse(">=3.20", "cmake").unwrap();
+        assert_eq!(
+            c2.min,
+            Version {
+                major: 3,
+                minor: 20,
+                patch: None
+            }
+        );
+        let c3 = VersionConstraint::parse(">=3.20.0", "cmake").unwrap();
+        assert_eq!(
+            c3.min,
+            Version {
+                major: 3,
+                minor: 20,
+                patch: Some(0)
+            }
+        );
+    }
+
+    #[test]
+    fn version_constraint_compares_numerically_not_lexicographically() {
+        let c = VersionConstraint::parse(">=3.9", "cmake").unwrap();
+        assert!(
+            c.satisfies(&Version::parse("3.20").unwrap()),
+            "3.20 > 3.9 numerically"
+        );
+        assert!(c.satisfies(&Version::parse("3.9.0").unwrap()));
+        assert!(!c.satisfies(&Version::parse("3.8").unwrap()));
+        let c310 = VersionConstraint::parse(">=3.10.5", "cmake").unwrap();
+        assert!(c310.satisfies(&Version::parse("3.10.5").unwrap()));
+        assert!(c310.satisfies(&Version::parse("3.11").unwrap()));
+        assert!(!c310.satisfies(&Version::parse("3.10.4").unwrap()));
+    }
+
+    #[test]
+    fn version_constraint_rejects_other_operators() {
+        for bad in [">3.20", "<3.20", "==3.20", "^3.20", "~3.20", "=3.20", "3.20"] {
+            let err = VersionConstraint::parse(bad, "cmake").unwrap_err();
+            assert!(
+                err.contains("unsupported") && err.contains("future work"),
+                "expected future-work error for {bad:?}, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn version_constraint_rejects_compound() {
+        let err = VersionConstraint::parse(">=3.20,<4.0", "cmake").unwrap_err();
+        assert!(err.contains("compound"), "got: {err}");
+    }
+
+    #[test]
+    fn version_constraint_rejects_prerelease_suffix() {
+        let err = VersionConstraint::parse(">=3.20-rc1", "cmake").unwrap_err();
+        assert!(
+            err.contains("prerelease") || err.contains("suffix"),
+            "got: {err}"
+        );
     }
 }
