@@ -1,0 +1,17 @@
+kind = "program"
+name = "lsof"
+version = "4.99.3"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://github.com/lsof-org/lsof/archive/refs/tags/4.99.3.tar.gz"
+sha256 = "b9c56468b927d9691ab168c0b1e9f8f1f835694a35ff898c549d383bd8d09bd4"
+
+[license]
+spdx = "Spencer-86"
+url = "https://github.com/lsof-org/lsof/blob/master/COPYING"
+
+[[outputs]]
+name = "lsof"
+wasm = "lsof.wasm"

@@ -1,0 +1,17 @@
+kind = "program"
+name = "sqlite-cli"
+version = "3.45.0"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://sqlite.org/2024/sqlite-autoconf-3450000.tar.gz"
+sha256 = "72887d57a1d8f89f52be38ef84a6353ce8c3ed55ada7864eb944abd9a495e436"
+
+[license]
+spdx = "blessing"
+url = "https://www.sqlite.org/copyright.html"
+
+[[outputs]]
+name = "sqlite-cli"
+wasm = "sqlite3.wasm"

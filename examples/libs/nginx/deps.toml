@@ -1,0 +1,17 @@
+kind = "program"
+name = "nginx"
+version = "1.27.0"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://nginx.org/download/nginx-1.27.0.tar.gz"
+sha256 = "b7230e3cf87eaa2d4b0bc56aadc920a960c7873b9991a1b66ffcc08fc650129c"
+
+[license]
+spdx = "BSD-2-Clause"
+url = "https://nginx.org/LICENSE"
+
+[[outputs]]
+name = "nginx"
+wasm = "nginx.wasm"

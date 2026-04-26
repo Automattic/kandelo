@@ -1,0 +1,17 @@
+kind = "program"
+name = "erlang"
+version = "28.2"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://github.com/erlang/otp/archive/refs/tags/OTP-28.2.tar.gz"
+sha256 = "b984f9e02bb61637997a35daa9070ae8f41cea1667676416438c467fda3d141f"
+
+[license]
+spdx = "Apache-2.0"
+url = "https://github.com/erlang/otp/blob/maint/LICENSE.txt"
+
+[[outputs]]
+name = "erlang"
+wasm = "beam.wasm"
