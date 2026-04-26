@@ -375,6 +375,17 @@ pub fn ensure_built(
     Ok(path)
 }
 
+/// One direct dependency's resolved cache path plus its manifest kind.
+///
+/// Carried alongside `dep_dirs` so the build-script env-var emission
+/// can switch the suffix per design 12: library/program deps export
+/// under `WASM_POSIX_DEP_<NAME>_DIR` (a built-artifact root), source
+/// deps under `WASM_POSIX_DEP_<NAME>_SRC_DIR` (an unbuilt source tree).
+struct DirectDep {
+    path: PathBuf,
+    kind: ManifestKind,
+}
+
 /// Resolve `target`, returning its on-disk path *and* the set of
 /// transitively-resolved lib paths underneath it (its direct deps, their
 /// deps, and so on — but NOT `target`'s own path; the caller adds that).
@@ -408,7 +419,14 @@ fn ensure_built_inner(
     // we can surface them to the build script via env vars. The
     // transitive set accumulates every dep path in the subgraph,
     // deduped — diamond deps must only contribute once.
-    let mut dep_dirs: BTreeMap<String, PathBuf> = BTreeMap::new();
+    //
+    // We track each direct dep's `kind` alongside its path so that
+    // `build_into_cache` can choose the env-var suffix per design 12:
+    // library/program → `WASM_POSIX_DEP_<NAME>_DIR` (built artifact
+    // root); source → `WASM_POSIX_DEP_<NAME>_SRC_DIR` (unbuilt source
+    // tree). Build scripts then self-document what shape they're
+    // consuming via the suffix.
+    let mut dep_dirs: BTreeMap<String, DirectDep> = BTreeMap::new();
     let mut transitive: BTreeSet<PathBuf> = BTreeSet::new();
     for dref in &target.depends_on {
         let dep_m = registry.load(&dref.name)?;
@@ -430,7 +448,13 @@ fn ensure_built_inner(
             memo,
             building,
         )?;
-        dep_dirs.insert(dep_m.name.clone(), dep_path.clone());
+        dep_dirs.insert(
+            dep_m.name.clone(),
+            DirectDep {
+                path: dep_path.clone(),
+                kind: dep_m.kind,
+            },
+        );
         transitive.insert(dep_path);
         transitive.extend(dep_transitive);
     }
@@ -604,7 +628,7 @@ fn build_into_cache(
     target: &DepsManifest,
     arch: TargetArch,
     canonical: &Path,
-    dep_dirs: &BTreeMap<String, PathBuf>,
+    dep_dirs: &BTreeMap<String, DirectDep>,
     pkgconfig_path: &str,
 ) -> Result<(), String> {
     let parent = canonical
@@ -650,8 +674,19 @@ fn build_into_cache(
         cmd.env("WASM_POSIX_DEP_SOURCE_SHA256", &target.source.sha256);
         cmd.env("WASM_POSIX_DEP_TARGET_ARCH", arch.as_str());
         cmd.env("WASM_POSIX_DEP_PKG_CONFIG_PATH", pkgconfig_path);
-        for (name, path) in dep_dirs {
-            cmd.env(format!("WASM_POSIX_DEP_{}_DIR", env_key(name)), path);
+        for (name, dep) in dep_dirs {
+            // Per design 12: library/program deps export under
+            // `*_DIR` (built-artifact root), source deps under
+            // `*_SRC_DIR` (unbuilt source tree). The suffix tells a
+            // build script unambiguously what shape it's consuming.
+            let suffix = match dep.kind {
+                ManifestKind::Library | ManifestKind::Program => "DIR",
+                ManifestKind::Source => "SRC_DIR",
+            };
+            cmd.env(
+                format!("WASM_POSIX_DEP_{}_{}", env_key(name), suffix),
+                &dep.path,
+            );
         }
         cmd.status()
             .map_err(|e| format!("spawn bash {}: {e}", script.display()))?
@@ -3012,6 +3047,97 @@ script = "noop.sh"
         assert!(
             err.to_lowercase().contains("empty") || err.contains("OUT_DIR"),
             "got: {err}"
+        );
+    }
+
+    /// C.6: a direct `depends_on` of a `kind = "source"` manifest
+    /// surfaces to the consumer's build script under
+    /// `WASM_POSIX_DEP_<NAME>_SRC_DIR` — *not* the `*_DIR` suffix used
+    /// for library/program deps. Per design 12, the suffix is
+    /// self-documenting: `_SRC_DIR` means an unbuilt source tree,
+    /// `_DIR` means a built-artifact root with `lib/`, `include/`, etc.
+    #[test]
+    fn source_kind_direct_dep_exports_src_dir_env_var() {
+        let root = tempdir("c6-srcdir-reg");
+        let cache = tempdir("c6-srcdir-cache");
+
+        // foo-source: a kind = "source" manifest with a build-script
+        // override (Task C.5) so we can populate the cache without
+        // hitting the network. The script writes a marker file so the
+        // consumer below has something concrete to assert against.
+        let foo_dir = root.join("foo-source");
+        std::fs::create_dir_all(&foo_dir).unwrap();
+        let foo_script = foo_dir.join("custom.sh");
+        std::fs::write(
+            &foo_script,
+            "#!/bin/bash\nset -e\necho hi > \"$WASM_POSIX_DEP_OUT_DIR/marker\"\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&foo_script, std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
+        std::fs::write(
+            foo_dir.join("deps.toml"),
+            r#"
+kind = "source"
+name = "foo-source"
+version = "1.0"
+revision = 1
+
+[source]
+url = "https://example.test/unused"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "TestLicense"
+
+[build]
+script = "custom.sh"
+"#,
+        )
+        .unwrap();
+
+        // consumer: a library that depends on foo-source. Its build
+        // script asserts the source-kind suffix contract: _SRC_DIR
+        // must be set and point at a directory; the legacy _DIR suffix
+        // must NOT be set (otherwise consumers couldn't disambiguate
+        // built artifacts from raw source trees just by looking at the
+        // env var name).
+        write_lib(
+            &root,
+            "consumer",
+            "1.0.0",
+            &["foo-source@1.0"],
+            r#"
+set -eu
+test -n "${WASM_POSIX_DEP_FOO_SOURCE_SRC_DIR:-}" || { echo "FOO_SOURCE_SRC_DIR not set" >&2; exit 1; }
+test -d "$WASM_POSIX_DEP_FOO_SOURCE_SRC_DIR" || { echo "FOO_SOURCE_SRC_DIR not a directory" >&2; exit 1; }
+test -z "${WASM_POSIX_DEP_FOO_SOURCE_DIR:-}" || { echo "FOO_SOURCE_DIR should NOT be set for source-kind dep" >&2; exit 1; }
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib"
+echo ok > "$WASM_POSIX_DEP_OUT_DIR/lib/libconsumer.a"
+"#,
+            r#"[outputs]
+libs = ["lib/libconsumer.a"]
+"#,
+        );
+
+        let reg = Registry { roots: vec![root] };
+        let consumer = reg.load("consumer").unwrap();
+        let consumer_path = ensure_built(
+            &consumer,
+            &reg,
+            TEST_ARCH,
+            TEST_ABI,
+            &resolve_opts(&cache, None),
+        )
+        .unwrap();
+        assert!(
+            consumer_path.join("lib/libconsumer.a").is_file(),
+            "expected libconsumer.a at {}",
+            consumer_path.display()
         );
     }
 }
