@@ -1,42 +1,21 @@
 /**
- * Shared helpers for building VFS images.
- *
- * Used by all build-*-vfs-image.ts scripts to write files, create directories,
- * walk host directories, and save images.
+ * Build-script helpers for VFS images. Pure memfs operations are re-exported
+ * from host/src/vfs/image-helpers.ts so demo runtime code can share them.
+ * The Node-only helpers (host-disk walk, save-to-file) live here.
  */
 import { readFileSync, readdirSync, lstatSync, writeFileSync, mkdirSync } from "fs";
 import { join, relative } from "path";
 import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 
-export function writeVfsFile(fs: MemoryFileSystem, path: string, content: string, mode = 0o644): void {
-  const data = new TextEncoder().encode(content);
-  const fd = fs.open(path, 0o1101, mode); // O_WRONLY | O_CREAT | O_TRUNC
-  fs.write(fd, data, 0, data.length);
-  fs.close(fd);
-}
+export {
+  writeVfsFile,
+  writeVfsBinary,
+  ensureDir,
+  ensureDirRecursive,
+  symlink,
+} from "../../../host/src/vfs/image-helpers";
 
-export function writeVfsBinary(fs: MemoryFileSystem, path: string, data: Uint8Array, mode = 0o755): void {
-  const fd = fs.open(path, 0o1101, mode);
-  fs.write(fd, data, 0, data.length);
-  fs.close(fd);
-}
-
-export function ensureDir(fs: MemoryFileSystem, path: string): void {
-  try { fs.mkdir(path, 0o755); } catch { /* exists */ }
-}
-
-export function ensureDirRecursive(fs: MemoryFileSystem, path: string): void {
-  const parts = path.split("/").filter(Boolean);
-  let current = "";
-  for (const part of parts) {
-    current += "/" + part;
-    ensureDir(fs, current);
-  }
-}
-
-export function symlink(fs: MemoryFileSystem, target: string, path: string): void {
-  try { fs.symlink(target, path); } catch { /* exists */ }
-}
+import { writeVfsBinary, ensureDirRecursive } from "../../../host/src/vfs/image-helpers";
 
 export interface WalkOptions {
   exclude?: (relPath: string) => boolean;

@@ -7,7 +7,7 @@
  */
 import { Terminal, type ITerminalOptions } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import type { BrowserKernel } from "./browser-kernel";
+import type { BrowserKernel, BrowserKernelBootOptions } from "./browser-kernel";
 
 const encoder = new TextEncoder();
 
@@ -97,6 +97,40 @@ export class PtyTerminal {
     this.disposables.push(resizeDisposable);
 
     // Set initial window size
+    this.kernel.ptyResize(pid, this.terminal.rows, this.terminal.cols);
+
+    return exitPromise;
+  }
+
+  /**
+   * Boot the kernel from a pre-built VFS image with PTY-backed stdio and
+   * connect xterm.js I/O. Same as {@link BrowserKernel.boot} but with PTY
+   * forced on. Returns a promise that resolves with the exit code.
+   */
+  async boot(options: Omit<BrowserKernelBootOptions, "pty">): Promise<number> {
+    const exitPromise = this.kernel.boot({ ...options, pty: true });
+
+    // Same trick as spawn(): the pid is reserved synchronously inside
+    // boot() before the spawn message is sent to the worker.
+    const pid = (this.kernel as any).nextPid - 1;
+    this.pid = pid;
+
+    this.kernel.onPtyOutput(pid, (data: Uint8Array) => {
+      this.terminal.write(data);
+    });
+
+    const dataDisposable = this.terminal.onData((data: string) => {
+      if (this.pid < 0) return;
+      this.kernel.ptyWrite(this.pid, encoder.encode(data));
+    });
+    this.disposables.push(dataDisposable);
+
+    const resizeDisposable = this.terminal.onResize(({ cols, rows }) => {
+      if (this.pid < 0) return;
+      this.kernel.ptyResize(this.pid, rows, cols);
+    });
+    this.disposables.push(resizeDisposable);
+
     this.kernel.ptyResize(pid, this.terminal.rows, this.terminal.cols);
 
     return exitPromise;
