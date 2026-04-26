@@ -2,9 +2,10 @@
 //!
 //! Walks the given directory (non-recursively — the release namespace
 //! is intentionally flat, see `docs/binary-releases.md`), computes
-//! SHA-256 of every file, extracts metadata from filenames and
-//! `abi/program-metadata.toml`, and writes a deterministic JSON
-//! manifest that conforms to `abi/manifest.schema.json`.
+//! SHA-256 of every file, extracts metadata from filenames and the
+//! per-dir program registry (`examples/libs/<name>/deps.toml` with
+//! `kind = "program"`), and writes a deterministic JSON manifest
+//! that conforms to `abi/manifest.schema.json`.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -13,7 +14,9 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use wasm_posix_shared as shared;
 
-use crate::program_metadata::{load_program_metadata, ProgramMetadata};
+use crate::build_deps::{programs_by_name, Registry};
+use crate::deps_manifest::DepsManifest;
+use crate::repo_root;
 use crate::wasm_abi::extract_abi_version;
 use crate::JsonMap;
 
@@ -46,7 +49,8 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
 
     let generated_at = generated_at.unwrap_or_else(current_utc_iso);
 
-    let program_meta = load_program_metadata()?;
+    let registry = Registry::from_env(&repo_root());
+    let program_meta = programs_by_name(&registry)?;
 
     let mut entries = Vec::new();
     let mut read_dir: Vec<_> = std::fs::read_dir(&in_dir)
@@ -98,7 +102,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
 fn build_entry(
     path: &Path,
     name: &str,
-    program_meta: &BTreeMap<String, ProgramMetadata>,
+    program_meta: &BTreeMap<String, DepsManifest>,
     program_names: &[&str],
 ) -> Result<Value, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
@@ -121,8 +125,9 @@ fn build_entry(
 
     let meta = program_meta.get(&parsed.program).ok_or_else(|| {
         format!(
-            "no entry for program {:?} in abi/program-metadata.toml — \
-             every shipped asset must declare source + license",
+            "no entry for program {:?} in the per-dir registry — \
+             every shipped asset must declare source + license via \
+             examples/libs/<program>/deps.toml with kind = \"program\"",
             parsed.program
         )
     })?;
@@ -151,8 +156,8 @@ fn build_entry(
             None => Value::Null,
         },
     );
-    m.insert("source".into(), meta.source_value());
-    m.insert("license".into(), meta.license_value());
+    m.insert("source".into(), source_value(meta));
+    m.insert("license".into(), license_value(meta));
     m.insert("advisories".into(), Value::Array(Vec::new()));
 
     Ok(Value::Object(m.into_iter().collect()))
@@ -200,7 +205,8 @@ impl ParsedName {
             .ok_or_else(|| {
                 format!(
                     "filename {name:?} doesn't start with a known program name \
-                     from abi/program-metadata.toml. Add the program or rename \
+                     from the per-dir registry (examples/libs/<name>/deps.toml \
+                     with kind = \"program\"). Add the program or rename \
                      the asset."
                 )
             })?
@@ -405,6 +411,28 @@ fn verify_tag_matches_abi(tag: &str, abi_version: u32) -> Result<(), String> {
              See docs/binary-releases.md."
         ))
     }
+}
+
+/// Emit a release-manifest `source` block from a `DepsManifest`.
+///
+/// V2 emits `{url, sha256}` (was `{url, ref}` in V1). The `ref` field
+/// was display-only and unused by any consumer in this repo; the
+/// sha256 is the upstream tarball's content hash, taken verbatim from
+/// `[source].sha256` in the per-dir manifest.
+fn source_value(m: &DepsManifest) -> Value {
+    let mut o: JsonMap = BTreeMap::new();
+    o.insert("url".into(), json!(m.source.url));
+    o.insert("sha256".into(), json!(m.source.sha256));
+    Value::Object(o.into_iter().collect())
+}
+
+fn license_value(m: &DepsManifest) -> Value {
+    let mut o: JsonMap = BTreeMap::new();
+    o.insert("spdx".into(), json!(m.license.spdx));
+    if let Some(u) = m.license.url.as_deref() {
+        o.insert("url".into(), json!(u));
+    }
+    Value::Object(o.into_iter().collect())
 }
 
 fn hex_lower(bytes: &[u8]) -> String {

@@ -120,6 +120,11 @@
         "ref": {
           "type": "string",
           "description": "Upstream reference — git tag/commit, upstream version, release label."
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "SHA-256 of the upstream source tarball at `url`. Lowercase hex; 64 chars. Replaces `ref` for V2-generated manifests; V1-vintage manifests carry `ref` instead."
         }
       }
     },
