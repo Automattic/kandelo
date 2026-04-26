@@ -6,28 +6,45 @@
   <title>DOOM — wasm-posix-kernel</title>
   <link rel="stylesheet" href="../../lib/layout.css">
   <style>
+    /* Stack the page contents in the main column without forcing the
+     * canvas to a fixed size; the canvas itself absorbs the leftover
+     * space below the header / status / controls. */
+    .doom-page {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      min-height: 0;
+      flex: 1 1 auto;
+    }
     .doom-frame {
       background: #000;
-      padding: 16px;
+      padding: 8px;
       border: 1px solid #333;
       border-radius: 4px;
-      display: inline-block;
+      flex: 1 1 auto;
+      min-height: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
     }
     canvas#fb {
       image-rendering: pixelated;
-      width: 1280px;
-      height: 800px;
+      max-width: 100%;
+      max-height: 100%;
+      /* DOOM's framebuffer is 640×400 (8:5). Honor that aspect ratio
+       * while scaling to fit whichever axis is the binding constraint. */
+      aspect-ratio: 8 / 5;
+      width: auto;
+      height: auto;
       display: block;
       outline: none;
       background: #000;
     }
     .doom-status {
-      margin-top: 12px;
       color: #888;
       font-family: monospace;
     }
     .doom-controls {
-      margin-top: 24px;
       color: #ccc;
       font-size: 0.9em;
       max-width: 800px;
@@ -36,6 +53,7 @@
       display: grid;
       grid-template-columns: 120px 1fr;
       gap: 4px 16px;
+      margin: 8px 0 0;
     }
     .doom-controls dt {
       font-family: monospace;
@@ -62,7 +80,7 @@
     <a href="/pages/texlive/">TeX Live</a>
     <a href="/pages/doom/" aria-current="page">DOOM</a>
   </nav>
-  <div class="main">
+  <div class="main doom-page">
     <div class="main-header">
       <h1>DOOM on wasm-posix-kernel</h1>
       <p class="subtitle">
@@ -71,26 +89,28 @@
       </p>
     </div>
 
-    <button id="start" class="primary">Start</button>
-    <div class="doom-status" id="status">Place a Doom IWAD at <code>/assets/doom/doom1.wad</code> (see README) then click Start.</div>
+    <div>
+      <button id="start" class="primary">Start</button>
+      <span class="doom-status" id="status" style="margin-left: 12px;">Click Start to boot fbdoom.</span>
+    </div>
 
-    <div class="doom-frame" style="margin-top: 16px;">
+    <div class="doom-frame">
       <canvas id="fb" tabindex="0" width="640" height="400"></canvas>
     </div>
 
     <div class="doom-controls">
-      <h3>Controls</h3>
+      <strong>Controls</strong>
       <dl>
-        <dt>↑ / ↓ / ← / →</dt><dd>Move forward / back / strafe</dd>
+        <dt>WASD / arrows</dt><dd>Move forward / back / strafe</dd>
         <dt>Space</dt><dd>Use / open door</dd>
         <dt>Ctrl</dt><dd>Fire</dd>
         <dt>Enter</dt><dd>Confirm menu</dd>
         <dt>Esc</dt><dd>Menu</dd>
       </dl>
-      <p>
+      <p style="margin-top: 8px;">
         Click the canvas to give it keyboard focus. The browser sends
-        AT-set-1 scancodes (the Linux MEDIUMRAW protocol) over stdin;
-        fbDOOM decodes them via its own scancode → DOOM-key table.
+        AT-set-1 scancodes (Linux MEDIUMRAW) through stdin; fbDOOM
+        decodes them via its own scancode → DOOM-key table.
       </p>
     </div>
   </div>

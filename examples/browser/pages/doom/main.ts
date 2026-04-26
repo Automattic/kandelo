@@ -23,36 +23,47 @@ const WAD_VFS_PATH = "/usr/local/games/doom/doom1.wad";
 const WAD_URL = "/assets/doom/doom1.wad";
 
 /**
- * Browser KeyboardEvent.code → AT-set-1 scancode (the encoding fbDOOM's
- * MEDIUMRAW reader expects). The high bit (0x80) flags release; we
- * send the same scancode for keydown and keyup with that bit set on
- * keyup.
+ * Browser `KeyboardEvent.code` → Linux *keycode* (the values in
+ * `<linux/input-event-codes.h>`, KEY_*). fbDOOM's `at_to_doom` table
+ * is keyed on those codes — for the printable / Esc / Enter / Space
+ * range they happen to match AT set-1 scancodes (KEY_ESC=1=0x01,
+ * KEY_ENTER=28=0x1c, KEY_SPACE=57=0x39), but arrows differ:
+ *   - AT set-1 keypad up:   0x48   →   at_to_doom[0x48] = 0  (no key)
+ *   - Linux keycode UP:    103     →   at_to_doom[103]   = KEY_UPARROW
+ * So we send Linux keycodes. WASD aliases to the same arrow keycodes
+ * since fbDOOM dispatches movement on KEY_*ARROW only.
  *
- * Coverage is the keys fbDOOM cares about: arrows, Enter, Esc, Space,
- * Ctrl (fire), Shift (run), Alt (strafe modifier), letters and digits.
+ * Press / release encoding is standard Linux MEDIUMRAW: bit 7 clear
+ * for press, bit 7 set for release. fbDOOM's `*pressed = (data &
+ * 0x80) == 0x80` followed by `if (!pressed)` triggering ev_keydown
+ * matches that — the variable is named confusingly but the logic
+ * is correct.
  */
 const SCANCODE: Record<string, number> = {
-  Escape: 0x01,
-  Digit1: 0x02, Digit2: 0x03, Digit3: 0x04, Digit4: 0x05, Digit5: 0x06,
-  Digit6: 0x07, Digit7: 0x08, Digit8: 0x09, Digit9: 0x0A, Digit0: 0x0B,
-  Minus: 0x0C, Equal: 0x0D, Backspace: 0x0E, Tab: 0x0F,
-  KeyQ: 0x10, KeyW: 0x11, KeyE: 0x12, KeyR: 0x13, KeyT: 0x14,
-  KeyY: 0x15, KeyU: 0x16, KeyI: 0x17, KeyO: 0x18, KeyP: 0x19,
-  BracketLeft: 0x1A, BracketRight: 0x1B, Enter: 0x1C, ControlLeft: 0x1D,
-  KeyA: 0x1E, KeyS: 0x1F, KeyD: 0x20, KeyF: 0x21, KeyG: 0x22,
-  KeyH: 0x23, KeyJ: 0x24, KeyK: 0x25, KeyL: 0x26, Semicolon: 0x27,
-  Quote: 0x28, Backquote: 0x29, ShiftLeft: 0x2A, Backslash: 0x2B,
-  KeyZ: 0x2C, KeyX: 0x2D, KeyC: 0x2E, KeyV: 0x2F, KeyB: 0x30,
-  KeyN: 0x31, KeyM: 0x32, Comma: 0x33, Period: 0x34, Slash: 0x35,
-  ShiftRight: 0x36, NumpadMultiply: 0x37, AltLeft: 0x38, Space: 0x39,
-  CapsLock: 0x3A, F1: 0x3B, F2: 0x3C, F3: 0x3D, F4: 0x3E, F5: 0x3F,
-  F6: 0x40, F7: 0x41, F8: 0x42, F9: 0x43, F10: 0x44,
-  // Arrow keys: extended (E0-prefixed) on AT, but fbDOOM's at_to_doom
-  // table maps the non-prefixed equivalents. Use the keypad codes,
-  // which fbDOOM treats as arrows.
-  ArrowUp: 0x48, ArrowLeft: 0x4B, ArrowRight: 0x4D, ArrowDown: 0x50,
-  // Right-Ctrl is also remapped to fire in fbDOOM via its key-table tweaks.
-  ControlRight: 0x1D, AltRight: 0x38,
+  Escape: 1,
+  Digit1: 2, Digit2: 3, Digit3: 4, Digit4: 5, Digit5: 6,
+  Digit6: 7, Digit7: 8, Digit8: 9, Digit9: 10, Digit0: 11,
+  Minus: 12, Equal: 13, Backspace: 14, Tab: 15,
+  KeyQ: 16, KeyE: 18, KeyR: 19, KeyT: 20,
+  KeyY: 21, KeyU: 22, KeyI: 23, KeyO: 24, KeyP: 25,
+  BracketLeft: 26, BracketRight: 27, Enter: 28, ControlLeft: 29,
+  KeyF: 33, KeyG: 34,
+  KeyH: 35, KeyJ: 36, KeyK: 37, KeyL: 38, Semicolon: 39,
+  Quote: 40, Backquote: 41, ShiftLeft: 42, Backslash: 43,
+  KeyZ: 44, KeyX: 45, KeyC: 46, KeyV: 47, KeyB: 48,
+  KeyN: 49, KeyM: 50, Comma: 51, Period: 52, Slash: 53,
+  ShiftRight: 54, NumpadMultiply: 55, AltLeft: 56, Space: 57,
+  CapsLock: 58, F1: 59, F2: 60, F3: 61, F4: 62, F5: 63,
+  F6: 64, F7: 65, F8: 66, F9: 67, F10: 68,
+  // Right modifiers — Linux keycodes for the right-side variants.
+  ControlRight: 97, AltRight: 100,
+  // Arrows + WASD movement aliases — Linux input KEY_UP/DOWN/LEFT/RIGHT
+  // are 103, 108, 105, 106. fbDOOM's at_to_doom maps these to its
+  // KEY_UPARROW/DOWNARROW/LEFTARROW/RIGHTARROW.
+  ArrowUp:    103, KeyW: 103,
+  ArrowDown:  108, KeyS: 108,
+  ArrowLeft:  105, KeyA: 105,
+  ArrowRight: 106, KeyD: 106,
 };
 
 startBtn.addEventListener("click", async () => {
@@ -115,21 +126,43 @@ startBtn.addEventListener("click", async () => {
     getProcessMemory: (p) => kernel.getProcessMemory(p),
   });
 
-  // Keyboard input → AT-set-1 scancode bytes on stdin (MEDIUMRAW format).
+  // Keyboard input → AT-set-1 scancode bytes on stdin. fbDOOM's
+  // `kbd_read` reads the high bit as the *press* flag (inverse of
+  // standard MEDIUMRAW), so we set it on keydown and clear it on
+  // keyup. We also de-dup keydown autorepeat — fbDOOM treats every
+  // press as a fresh edge, which would re-arm the move and freeze
+  // the player on auto-repeat.
   canvas.focus();
-  const sendScancode = (code: number, released: boolean) => {
-    const byte = released ? code | 0x80 : code & 0x7F;
+  const heldKeys = new Set<string>();
+  const sendScancode = (code: number, pressed: boolean) => {
+    // Linux MEDIUMRAW: high bit clear = press, set = release.
+    const byte = pressed ? code & 0x7f : code | 0x80;
     kernel.appendStdinData(pid, new Uint8Array([byte]));
   };
-  const handleKey = (e: KeyboardEvent, released: boolean) => {
+  canvas.addEventListener("keydown", (e) => {
     const code = SCANCODE[e.code];
-    if (code !== undefined) {
-      sendScancode(code, released);
-      e.preventDefault();
+    if (code === undefined) return;
+    e.preventDefault();
+    if (heldKeys.has(e.code)) return; // ignore autorepeat
+    heldKeys.add(e.code);
+    sendScancode(code, true);
+  });
+  canvas.addEventListener("keyup", (e) => {
+    const code = SCANCODE[e.code];
+    if (code === undefined) return;
+    e.preventDefault();
+    heldKeys.delete(e.code);
+    sendScancode(code, false);
+  });
+  // Releasing focus (e.g. Cmd-tab while moving) leaves the held set
+  // out of sync; flush it on blur so the player doesn't keep walking.
+  canvas.addEventListener("blur", () => {
+    for (const k of heldKeys) {
+      const code = SCANCODE[k];
+      if (code !== undefined) sendScancode(code, false);
     }
-  };
-  canvas.addEventListener("keydown", (e) => handleKey(e, false));
-  canvas.addEventListener("keyup", (e) => handleKey(e, true));
+    heldKeys.clear();
+  });
   canvas.addEventListener("click", () => canvas.focus());
 
   statusEl.textContent =
