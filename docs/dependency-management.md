@@ -171,6 +171,178 @@ like `$PATH`. This is how third parties bring their own packages
 without patching the repo: they drop a `<lib>/deps.toml` into their
 own directory tree and prepend it to the registry path.
 
+## Source-kind manifests
+
+V2 introduces `kind = "source"` for declaring source trees that
+consumers vendor or sub-build but that we do **not** publish as
+standalone library or program artifacts. Typical cases:
+
+- **PCRE2 inside MariaDB** — MariaDB's CMake expects to compile
+  PCRE2 against its own internal headers and link statically into
+  `mariadbd`. The PCRE2 sources are unpacked once into a shared
+  cache and reused across MariaDB rebuilds.
+- **PHP extensions** — extensions live in PHP's source tree and
+  link into the PHP build, not as separate libs.
+- **Erlang vendored code** — OTP ships several third-party libs
+  inside its own tarball; they are arch-agnostic at the source
+  level.
+
+Source manifests are arch-agnostic and ABI-agnostic — they describe
+unpacked source trees, not built artifacts.
+
+**Schema fields**
+
+Required:
+- `kind = "source"`
+- `name`, `version`, `revision`
+- `[source].url`, `[source].sha256`
+- `[license].spdx`
+
+Optional:
+- `depends_on` — same syntax as library/program manifests.
+- `[build].script` — see "Override" below.
+- `[[host_tools]]` — see the Host-tool requirements section below.
+
+Rejected at parse time (the parser surfaces a clear error):
+- `[outputs]` and `[[outputs]]` — sources have no built-artifact
+  layout.
+- `[binary]` and `[compatibility]` — those describe published
+  binaries; sources are not published.
+
+**Default fetch+extract behavior**
+
+When `[build].script` is absent, the resolver fetches `source.url`,
+verifies `source.sha256`, and extracts in-place. Format detection
+is by URL extension: `.tar.gz` / `.tgz`, `.tar.xz` / `.txz`,
+`.tar.bz2` / `.tbz2` / `.tbz`, `.tar.zst` / `.tzst`, `.zip`, and
+plain `.tar`. Unrecognized extensions fail loudly rather than
+guessing.
+
+If the archive contains a single top-level directory (the
+`pcre2-10.42/` shape), that wrapper is stripped — the cache
+directory's contents are the contents of that single top-level
+directory. Multi-top-level archives are kept as-is.
+
+**Override `[build].script`**
+
+When the default extract is not enough (patches, code generation,
+in-tree configure), declare a script. The contract is the same as
+library and program builds: the script reads the same
+`WASM_POSIX_DEP_*` environment variables, installs into
+`$WASM_POSIX_DEP_OUT_DIR`, and the resolver fails the build if
+`OUT_DIR` is empty after the script returns.
+
+**Cache layout**
+
+```
+<cache_root>/sources/<name>-<version>-rev<N>-<shortsha>/
+```
+
+No `<arch>` segment — sources are arch-agnostic by definition.
+That is the visible difference from the `libs/` and `programs/`
+cache trees.
+
+**Direct-dep env var: `_SRC_DIR`**
+
+A consumer (lib, program, or another source) listing a source-kind
+manifest in `depends_on` gets `WASM_POSIX_DEP_<NAME>_SRC_DIR`
+exported into its build script. The `_SRC_DIR` suffix (vs `_DIR`
+for library/program deps) is the contract: scripts pointing at a
+source dep know they receive an unpacked source tree, not a
+built-artifact prefix.
+
+See decisions 9 (kind discriminator) and 12 (default fetch+extract)
+in `docs/plans/2026-04-22-deps-management-v2-design.md`.
+
+## Host-tool requirements
+
+V2 lets a manifest declare host-side prerequisites — `cmake`,
+`make`, `patch`, `autoconf`, etc. — inline. The resolver probes
+each one before invoking the build script, so a missing or
+too-old tool fails up front with a platform-keyed install hint
+rather than mid-build with a cryptic shell error.
+
+**Inline declaration**
+
+`[[host_tools]]` is an array-of-tables on the consumer manifest
+(library, program, or source):
+
+```toml
+[[host_tools]]
+name = "cmake"
+version_constraint = ">=3.20"
+
+[host_tools.probe]
+args = ["--version"]
+version_regex = '(\d+\.\d+(?:\.\d+)?)'
+
+[host_tools.install_hints]
+darwin = "brew install cmake"
+linux = "apt install cmake (or your distro's equivalent)"
+```
+
+Per-entry fields:
+
+- **`name`** (required) — executable name resolved against `PATH`.
+- **`version_constraint`** (required) — see syntax below.
+- **`probe`** (optional) — overrides the defaults below.
+- **`install_hints`** (optional) — platform-keyed help strings,
+  printed verbatim when the probe fails.
+
+**Probe defaults**
+
+If `probe` is omitted, the resolver uses:
+
+- `args = ["--version"]`
+- `version_regex = (\d+\.\d+(?:\.\d+)?)`
+
+It runs `<name> <args...>`, captures combined stdout+stderr (some
+tools print their version to stderr), matches against
+`version_regex`, and parses capture group 1 as a numeric version
+(`major.minor` or `major.minor.patch`).
+
+**Version-constraint syntax**
+
+Only `>=X.Y` and `>=X.Y.Z` are accepted. The parser rejects
+anything else at manifest-load time:
+
+- Other operators (`>`, `<`, `==`, `^`, `~`).
+- Compound constraints (`>=3.20,<4.0`).
+- Prerelease or build-metadata suffixes (`>=3.20.0-rc1`,
+  `>=3.20.0+build5`).
+
+Comparison is **numeric**, not lexicographic — `3.20` is greater
+than `3.9`, never less.
+
+**`install_hints` platform keys**
+
+Use unix-style names. `darwin` matches `uname -s` on macOS;
+`linux`, `windows`, and `freebsd` are the other recognised keys.
+The resolver maps Rust's `target_os = "macos"` to the user-facing
+key `darwin` so manifest authors don't have to think about
+Rust-specific naming.
+
+**Cache-key impact: zero**
+
+Host-tool declarations do **not** contribute to the consumer's
+cache-key sha. A `cmake` upgrade on a developer machine does not
+invalidate the MariaDB cache entry. If a tool change actually
+affects build output (a new compiler bug-fix that changes
+generated code, say), bump the consumer's `revision` — that is
+the existing knob. See decision 10.
+
+**`xtask build-deps check`**
+
+The `check` subcommand lints cross-consumer consistency: if two
+manifests declare the same host-tool `name` with different
+`version_constraint` or different `probe` settings, `check`
+reports it. The intent is to keep the project's host-toolchain
+floor coherent — one project-wide minimum per tool — without
+forcing a single shared declaration file.
+
+See decisions 10 (cache-key impact) and 11 (probe + install hint
+contract) in `docs/plans/2026-04-22-deps-management-v2-design.md`.
+
 ## Out of scope for V1
 
 - **Runtime shared `.so` libraries**: evaluated but rejected. Current
