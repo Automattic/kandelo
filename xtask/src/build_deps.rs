@@ -140,9 +140,8 @@ impl Registry {
 }
 
 /// Subset of [`Registry::walk_all`] containing only `kind = "program"`
-/// manifests. Useful for `bundle-program` + `build-manifest` to
-/// compose source+license decoration without depending on the
-/// soon-deleted `program_metadata` module.
+/// manifests. Used by `bundle-program` and `build-manifest` to look
+/// up source + license decoration for release artifacts.
 pub fn programs_by_name(registry: &Registry) -> Result<BTreeMap<String, DepsManifest>, String> {
     Ok(registry
         .walk_all()?
