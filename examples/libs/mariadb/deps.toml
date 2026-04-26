@@ -2,7 +2,7 @@ kind = "program"
 name = "mariadb"
 version = "10.5.28"
 revision = 1
-depends_on = []
+depends_on = ["pcre2-source@10.44"]
 
 [source]
 url = "https://archive.mariadb.org/mariadb-10.5.28/source/mariadb-10.5.28.tar.gz"
