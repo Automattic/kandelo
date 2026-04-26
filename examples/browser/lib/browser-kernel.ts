@@ -54,8 +54,10 @@ export class BrowserKernel {
   private fsSab: SharedArrayBuffer;
   private shmSab: SharedArrayBuffer;
   private maxPages: number;
-  /** @internal exposed for PtyTerminal pid tracking */
-  nextPid = 1;
+  /** @internal exposed for PtyTerminal pid tracking.
+   * pid 1 is reserved for the kernel's virtual init (see
+   * `process_table::ensure_init`); spawn allocations start at 2. */
+  nextPid = 2;
   private options: Required<
     Pick<BrowserKernelOptions, "maxWorkers" | "fsSize" | "env">
   > &
@@ -353,6 +355,18 @@ export class BrowserKernel {
       lazyEntries.push({ ino, path: e.path, url: e.url, size: e.size });
     }
     this.sendToKernel({ type: "register_lazy_files", entries: lazyEntries });
+  }
+
+  /**
+   * Async-materialize a lazy file (or archive-backed file). Useful for
+   * data files (not exec targets) the program will open via the VFS —
+   * exec paths get auto-materialized by the kernel worker, but
+   * arbitrary opens go through the kernel's synchronous read path.
+   * Returns true if a fetch happened, false if already materialized
+   * or not lazy.
+   */
+  async ensureMaterialized(path: string): Promise<boolean> {
+    return this.memfs.ensureMaterialized(path);
   }
 
   /** Append data to a process's stdin buffer. */

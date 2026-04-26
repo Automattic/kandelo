@@ -13,6 +13,7 @@
 import { BrowserKernel } from "../../lib/browser-kernel";
 import { attachCanvas } from "../../../../host/src/framebuffer/canvas-renderer";
 import fbdoomWasmUrl from "../../../../examples/libs/fbdoom/fbdoom.wasm?url";
+import kernelWasmUrl from "../../../../host/wasm/wasm_posix_kernel.wasm?url";
 
 const startBtn = document.getElementById("start") as HTMLButtonElement;
 const canvas = document.getElementById("fb") as HTMLCanvasElement;
@@ -68,6 +69,9 @@ startBtn.addEventListener("click", async () => {
     },
   });
 
+  const kernelBytes = await fetch(kernelWasmUrl).then((r) => r.arrayBuffer());
+  await kernel.init(kernelBytes);
+
   // Lazy-register the WAD: fetched on first read, no upfront cost.
   // doom1.wad is gitignored; users provide it per
   // examples/browser/public/assets/doom/README.md.
@@ -89,6 +93,11 @@ startBtn.addEventListener("click", async () => {
   kernel.registerLazyFiles([
     { path: WAD_VFS_PATH, url: WAD_URL, size: wadSize, mode: 0o444 },
   ]);
+  // The lazy-fetch path materializes on-exec, but the WAD is a *data*
+  // file fbDOOM will open() at runtime. Pull it into the VFS now so
+  // the synchronous read path inside the kernel never has to fetch.
+  statusEl.textContent = `Loading WAD (${(wadSize / (1024 * 1024)).toFixed(1)}MB)…`;
+  await kernel.ensureMaterialized(WAD_VFS_PATH);
 
   statusEl.textContent = "Loading fbdoom.wasm…";
   const fbdoomBytes = await fetch(fbdoomWasmUrl).then((r) => r.arrayBuffer());
