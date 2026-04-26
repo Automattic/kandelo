@@ -50,6 +50,7 @@ pub enum VirtualDevice {
     Zero,     // /dev/zero     host_handle = -2
     Urandom,  // /dev/urandom  host_handle = -3
     Full,     // /dev/full     host_handle = -4
+    Fb0,      // /dev/fb0      host_handle = -5
 }
 
 impl VirtualDevice {
@@ -60,6 +61,7 @@ impl VirtualDevice {
             VirtualDevice::Zero => -2,
             VirtualDevice::Urandom => -3,
             VirtualDevice::Full => -4,
+            VirtualDevice::Fb0 => -5,
         }
     }
 
@@ -70,6 +72,7 @@ impl VirtualDevice {
             -2 => Some(VirtualDevice::Zero),
             -3 => Some(VirtualDevice::Urandom),
             -4 => Some(VirtualDevice::Full),
+            -5 => Some(VirtualDevice::Fb0),
             _ => None,
         }
     }
@@ -81,6 +84,7 @@ impl VirtualDevice {
             VirtualDevice::Zero => 2,
             VirtualDevice::Urandom => 3,
             VirtualDevice::Full => 4,
+            VirtualDevice::Fb0 => 5,
         }
     }
 }
@@ -92,6 +96,7 @@ fn match_virtual_device(path: &[u8]) -> Option<VirtualDevice> {
         b"/dev/zero" => Some(VirtualDevice::Zero),
         b"/dev/urandom" | b"/dev/random" => Some(VirtualDevice::Urandom),
         b"/dev/full" => Some(VirtualDevice::Full),
+        b"/dev/fb0" => Some(VirtualDevice::Fb0),
         _ => None,
     }
 }
@@ -795,7 +800,11 @@ pub fn sys_read(
             if file_type == FileType::CharDevice {
                 if let Some(dev) = VirtualDevice::from_host_handle(host_handle) {
                     let n = match dev {
-                        VirtualDevice::Null => 0,
+                        // /dev/fb0 doesn't support direct read — software is
+                        // expected to mmap. Return 0 (EOF-like) rather than
+                        // making up pixel bytes, matching the existing
+                        // "no-op for unsupported access" pattern.
+                        VirtualDevice::Null | VirtualDevice::Fb0 => 0,
                         VirtualDevice::Zero | VirtualDevice::Full => {
                             for b in buf.iter_mut() { *b = 0; }
                             buf.len()
@@ -14860,5 +14869,30 @@ mod tests {
             sys_open(&mut proc, &mut host, b"/proc/self/stat", O_WRONLY, 0).unwrap_err(),
             Errno::EACCES,
         );
+    }
+
+    #[test]
+    fn match_virtual_device_recognizes_fb0() {
+        assert_eq!(match_virtual_device(b"/dev/fb0"), Some(VirtualDevice::Fb0));
+        // Single-fb only — no /dev/fb1 yet.
+        assert_eq!(match_virtual_device(b"/dev/fb1"), None);
+    }
+
+    #[test]
+    fn fb0_has_unique_host_handle_sentinel() {
+        let h = VirtualDevice::Fb0.host_handle();
+        assert_eq!(VirtualDevice::from_host_handle(h), Some(VirtualDevice::Fb0));
+        assert_ne!(h, VirtualDevice::Null.host_handle());
+        assert_ne!(h, VirtualDevice::Zero.host_handle());
+        assert_ne!(h, VirtualDevice::Urandom.host_handle());
+        assert_ne!(h, VirtualDevice::Full.host_handle());
+    }
+
+    #[test]
+    fn fb0_stat_is_chr() {
+        let st = virtual_device_stat(VirtualDevice::Fb0, 0, 0);
+        assert_eq!(st.st_mode & wasm_posix_shared::mode::S_IFMT,
+                   wasm_posix_shared::mode::S_IFCHR);
+        assert_eq!(st.st_ino, VirtualDevice::Fb0.ino());
     }
 }
