@@ -1,0 +1,13 @@
+diff --git a/fbdoom/i_video_fbdev.c b/fbdoom/i_video_fbdev.c
+index c6e5925..a27b8ce 100644
+--- a/fbdoom/i_video_fbdev.c
++++ b/fbdoom/i_video_fbdev.c
+@@ -202,7 +202,7 @@ void I_InitGraphics (void)
+ 
+ 	screenvisible = true;
+ 
+-    extern int I_InitInput(void);
++    extern void I_InitInput(void);
+     I_InitInput();
+ }
+ 

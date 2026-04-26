@@ -1522,7 +1522,11 @@ export class CentralizedKernelWorker {
     const mem = new Uint8Array(memory.buffer);
     let len = 0;
     while (len < maxLen && ptr + len < mem.length && mem[ptr + len] !== 0) len++;
-    return new TextDecoder().decode(mem.subarray(ptr, ptr + len));
+    // TextDecoder.decode() rejects views over SharedArrayBuffer in Chrome;
+    // copy into a non-shared scratch first.
+    const copy = new Uint8Array(len);
+    copy.set(mem.subarray(ptr, ptr + len));
+    return new TextDecoder().decode(copy);
   }
 
   /** Format a syscall for logging, decoding path/string args from process memory */

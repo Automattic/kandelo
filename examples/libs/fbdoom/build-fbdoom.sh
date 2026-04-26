@@ -16,6 +16,14 @@ SRC="$HERE/fbdoom-src"
 if [ ! -d "$SRC" ]; then
     echo "==> Cloning maximevince/fbDOOM..."
     git clone --depth 1 https://github.com/maximevince/fbDOOM "$SRC"
+
+    echo "==> Applying patches..."
+    # Apply each numbered patch in order. Idempotent: only on fresh clone.
+    for p in "$HERE/patches/"*.patch; do
+        [ -f "$p" ] || continue
+        echo "    $(basename "$p")"
+        (cd "$SRC" && patch -p1 < "$p")
+    done
 fi
 
 cd "$SRC/fbdoom"
