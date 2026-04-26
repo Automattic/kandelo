@@ -1056,11 +1056,9 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
 
     let mut it = rest.into_iter();
     let sub = it.next().ok_or(
-        "usage: xtask build-deps [--arch=wasm32|wasm64] <parse|sha|path|resolve> <name|path>",
+        "usage: xtask build-deps [--arch=wasm32|wasm64] <parse|sha|path|resolve|check> [<name|path>]",
     )?;
-    let target = it.next().ok_or_else(|| {
-        format!("build-deps {sub}: missing <name|path>")
-    })?;
+    let target = it.next();
     if it.next().is_some() {
         return Err(format!("build-deps {sub}: unexpected extra args"));
     }
@@ -1068,16 +1066,29 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let repo = repo_root();
     let registry = Registry::from_env(&repo);
 
-    // `target` is either a path to a deps.toml (contains '/' or ends
-    // with .toml) or a bare name to look up in the registry.
-    let manifest = load_target(&target, &registry)?;
-
     match sub.as_str() {
-        "parse" => cmd_parse(&manifest),
-        "sha" => cmd_sha(&manifest, &registry, arch),
-        "path" => cmd_path(&manifest, &registry, arch),
-        "resolve" => cmd_resolve(&manifest, &registry, &repo, arch),
-        other => Err(format!("build-deps: unknown subcommand {other:?}")),
+        "check" => {
+            if target.is_some() {
+                return Err("build-deps check: takes no arguments".into());
+            }
+            cmd_check(&registry)
+        }
+        _ => {
+            let target = target.ok_or_else(|| {
+                format!("build-deps {sub}: missing <name|path>")
+            })?;
+            // `target` is either a path to a deps.toml (contains '/'
+            // or ends with .toml) or a bare name to look up in the
+            // registry.
+            let manifest = load_target(&target, &registry)?;
+            match sub.as_str() {
+                "parse" => cmd_parse(&manifest),
+                "sha" => cmd_sha(&manifest, &registry, arch),
+                "path" => cmd_path(&manifest, &registry, arch),
+                "resolve" => cmd_resolve(&manifest, &registry, &repo, arch),
+                other => Err(format!("build-deps: unknown subcommand {other:?}")),
+            }
+        }
     }
 }
 
@@ -1169,6 +1180,74 @@ fn cmd_resolve(
     };
     let path = ensure_built(m, registry, arch, current_abi_version(), &opts)?;
     println!("{}", path.display());
+    Ok(())
+}
+
+/// Cross-consumer host-tool consistency lint. Walks the registry,
+/// groups `[[host_tools]]` declarations by `name` across consumers,
+/// and reports an error when consumers disagree on
+/// `version_constraint` or `probe` for the same tool name.
+///
+/// Probe defaults are normalized at parse time
+/// (`HostToolProbe::default()`), so a consumer that omits `[probe]`
+/// compares equal to one that writes the same defaults explicitly.
+///
+/// On success: exit 0 with a one-line summary.
+/// On failure: every offending group is reported in the error.
+fn cmd_check(registry: &Registry) -> Result<(), String> {
+    let manifests = registry.walk_all()?;
+
+    // Group: tool_name -> Vec<(consumer_name, &HostTool)>.
+    let mut by_tool: BTreeMap<String, Vec<(String, &HostTool)>> = BTreeMap::new();
+    for (cname, m) in &manifests {
+        for tool in &m.host_tools {
+            by_tool
+                .entry(tool.name.clone())
+                .or_default()
+                .push((cname.clone(), tool));
+        }
+    }
+
+    let tool_count = by_tool.len();
+    let consumer_count = manifests
+        .iter()
+        .filter(|(_, m)| !m.host_tools.is_empty())
+        .count();
+
+    let mut problems: Vec<String> = Vec::new();
+    for (tool, group) in &by_tool {
+        if group.len() < 2 {
+            continue;
+        }
+        // Compare each entry against the first.
+        let (first_consumer, first_tool) = &group[0];
+        for (other_consumer, other_tool) in &group[1..] {
+            if first_tool.version_constraint != other_tool.version_constraint {
+                problems.push(format!(
+                    "host-tool {tool:?}: inconsistent version_constraint\n  - {first_consumer}: >={}\n  - {other_consumer}: >={}",
+                    first_tool.version_constraint.min,
+                    other_tool.version_constraint.min,
+                ));
+            }
+            if first_tool.probe.args != other_tool.probe.args
+                || first_tool.probe.version_regex != other_tool.probe.version_regex
+            {
+                problems.push(format!(
+                    "host-tool {tool:?}: inconsistent probe between {first_consumer} and {other_consumer}\n  - args:  {:?} vs {:?}\n  - regex: {:?} vs {:?}",
+                    first_tool.probe.args, other_tool.probe.args,
+                    first_tool.probe.version_regex, other_tool.probe.version_regex,
+                ));
+            }
+        }
+    }
+
+    if !problems.is_empty() {
+        let msg = problems.join("\n\n");
+        return Err(format!("host-tool consistency check failed:\n\n{msg}"));
+    }
+    println!(
+        "host-tool consistency: {tool_count} tool(s) across {consumer_count} consumer(s) — OK"
+    );
     Ok(())
 }
 
@@ -3372,5 +3451,103 @@ install_hints = { darwin = "brew install needs-darwin-hint" }
             !rendered.contains("available platforms"),
             "should not fall through to available-platforms branch, got: {rendered}"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // C.11: build-deps check (cross-consumer host-tool consistency lint)
+    // -----------------------------------------------------------------
+
+    /// Helper for C.11 tests: write a minimal library deps.toml that
+    /// declares a single `[[host_tools]]` entry for the named tool.
+    /// `extra` is appended verbatim inside the host_tools table — used
+    /// to override the probe.
+    fn write_with_host_tool(
+        root: &Path,
+        consumer: &str,
+        tool: &str,
+        constraint: &str,
+        extra: &str,
+    ) {
+        let dir = root.join(consumer);
+        fs::create_dir_all(&dir).unwrap();
+        let text = format!(
+            r#"
+kind = "library"
+name = "{consumer}"
+version = "1.0"
+revision = 1
+
+[source]
+url = "https://example.test/{consumer}-1.0.tar.gz"
+sha256 = "{:0>64}"
+
+[license]
+spdx = "TestLicense"
+
+[outputs]
+libs = ["lib/lib{consumer}.a"]
+
+[[host_tools]]
+name = "{tool}"
+version_constraint = "{constraint}"
+{extra}
+"#,
+            ""
+        );
+        fs::write(dir.join("deps.toml"), text).unwrap();
+    }
+
+    /// Two consumers each declaring `make >=4.0` with default probes
+    /// must pass the consistency check.
+    #[test]
+    fn build_deps_check_passes_on_consistent_registry() {
+        let root = tempdir("c11-check-pass");
+        write_with_host_tool(&root, "consumerA", "make", ">=4.0", "");
+        write_with_host_tool(&root, "consumerB", "make", ">=4.0", "");
+
+        let registry = Registry { roots: vec![root] };
+        cmd_check(&registry).expect("consistent host_tools should pass");
+    }
+
+    /// Two consumers declaring `cmake` with different
+    /// version_constraints (>=3.20 vs >=3.10) must error, naming the
+    /// tool and "inconsistent".
+    #[test]
+    fn build_deps_check_flags_inconsistent_constraint() {
+        let root = tempdir("c11-check-constraint");
+        write_with_host_tool(&root, "consumerA", "cmake", ">=3.20", "");
+        write_with_host_tool(&root, "consumerB", "cmake", ">=3.10", "");
+
+        let registry = Registry { roots: vec![root] };
+        let err = cmd_check(&registry)
+            .expect_err("mismatched version_constraints should fail");
+        assert!(err.contains("cmake"), "got: {err}");
+        assert!(err.contains("inconsistent"), "got: {err}");
+    }
+
+    /// Two consumers declaring `make >=4.0` with the same constraint
+    /// but different `probe.args` (`--version` vs `-v`) must error,
+    /// naming "probe".
+    #[test]
+    fn build_deps_check_flags_inconsistent_probe() {
+        let root = tempdir("c11-check-probe");
+        write_with_host_tool(
+            &root,
+            "consumerA",
+            "make",
+            ">=4.0",
+            r#"probe = { args = ["--version"], version_regex = "(\\d+\\.\\d+(?:\\.\\d+)?)" }"#,
+        );
+        write_with_host_tool(
+            &root,
+            "consumerB",
+            "make",
+            ">=4.0",
+            r#"probe = { args = ["-v"], version_regex = "(\\d+\\.\\d+(?:\\.\\d+)?)" }"#,
+        );
+
+        let registry = Registry { roots: vec![root] };
+        let err = cmd_check(&registry).expect_err("mismatched probes should fail");
+        assert!(err.contains("probe"), "got: {err}");
     }
 }
