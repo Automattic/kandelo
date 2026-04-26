@@ -12,72 +12,40 @@ if ! command -v wasm32posix-cc &>/dev/null; then
 fi
 
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SYSROOT="$REPO_ROOT/sysroot"
+SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 export WASM_POSIX_SYSROOT="$SYSROOT"
-SQLITE_DIR="$SCRIPT_DIR/../sqlite/sqlite-install"
 
-# Build SQLite if not already built
-if [ ! -f "$SQLITE_DIR/lib/libsqlite3.a" ]; then
-    echo "==> Building SQLite..."
-    bash "$SCRIPT_DIR/../sqlite/build-sqlite.sh"
-fi
+# --- Resolve cache deps via cargo xtask build-deps ---
+HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
+resolve_dep() {
+    local name="$1"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TARGET" --quiet -- build-deps resolve "$name")
+}
 
-# Install SQLite into sysroot so pkg-config can find it
-echo "==> Installing SQLite into sysroot..."
-cp "$SQLITE_DIR/include/sqlite3.h" "$SQLITE_DIR/include/sqlite3ext.h" "$SYSROOT/include/"
-cp "$SQLITE_DIR/lib/libsqlite3.a" "$SYSROOT/lib/"
-mkdir -p "$SYSROOT/lib/pkgconfig"
-sed "s|^prefix=.*|prefix=$SYSROOT|" "$SQLITE_DIR/lib/pkgconfig/sqlite3.pc" \
-    > "$SYSROOT/lib/pkgconfig/sqlite3.pc"
+ZLIB_PREFIX="${WASM_POSIX_DEP_ZLIB_DIR:-}"
+[ -z "$ZLIB_PREFIX" ] && { echo "==> Resolving zlib..."; ZLIB_PREFIX="$(resolve_dep zlib)"; }
+SQLITE_PREFIX="${WASM_POSIX_DEP_SQLITE_DIR:-}"
+[ -z "$SQLITE_PREFIX" ] && { echo "==> Resolving sqlite..."; SQLITE_PREFIX="$(resolve_dep sqlite)"; }
+OPENSSL_PREFIX="${WASM_POSIX_DEP_OPENSSL_DIR:-}"
+[ -z "$OPENSSL_PREFIX" ] && { echo "==> Resolving openssl..."; OPENSSL_PREFIX="$(resolve_dep openssl)"; }
+LIBXML2_PREFIX="${WASM_POSIX_DEP_LIBXML2_DIR:-}"
+[ -z "$LIBXML2_PREFIX" ] && { echo "==> Resolving libxml2..."; LIBXML2_PREFIX="$(resolve_dep libxml2)"; }
+[ -f "$ZLIB_PREFIX/lib/libz.a" ] || { echo "ERROR: zlib resolve missing libz.a"; exit 1; }
+[ -f "$SQLITE_PREFIX/lib/libsqlite3.a" ] || { echo "ERROR: sqlite resolve missing libsqlite3.a"; exit 1; }
+[ -f "$OPENSSL_PREFIX/lib/libssl.a" ] || { echo "ERROR: openssl resolve missing libssl.a"; exit 1; }
+[ -f "$LIBXML2_PREFIX/lib/libxml2.a" ] || { echo "ERROR: libxml2 resolve missing libxml2.a"; exit 1; }
+echo "==> zlib at $ZLIB_PREFIX"
+echo "==> sqlite at $SQLITE_PREFIX"
+echo "==> openssl at $OPENSSL_PREFIX"
+echo "==> libxml2 at $LIBXML2_PREFIX"
 
-# Build zlib if not already built
-ZLIB_DIR="$SCRIPT_DIR/../zlib/zlib-install"
-if [ ! -f "$ZLIB_DIR/lib/libz.a" ]; then
-    echo "==> Building zlib..."
-    bash "$SCRIPT_DIR/../zlib/build-zlib.sh"
-fi
+# Compose PKG_CONFIG_PATH for all 4 deps so wasm32posix-configure's
+# pkg-config probes can find them in the cache instead of the sysroot.
+DEP_PKG_CONFIG_PATH="$ZLIB_PREFIX/lib/pkgconfig:$SQLITE_PREFIX/lib/pkgconfig:$OPENSSL_PREFIX/lib/pkgconfig:$LIBXML2_PREFIX/lib/pkgconfig"
 
-# Install zlib into sysroot
-echo "==> Installing zlib into sysroot..."
-cp "$ZLIB_DIR/include/zlib.h" "$ZLIB_DIR/include/zconf.h" "$SYSROOT/include/"
-cp "$ZLIB_DIR/lib/libz.a" "$SYSROOT/lib/"
-mkdir -p "$SYSROOT/lib/pkgconfig"
-sed "s|^prefix=.*|prefix=$SYSROOT|" "$ZLIB_DIR/lib/pkgconfig/zlib.pc" \
-    > "$SYSROOT/lib/pkgconfig/zlib.pc"
-
-# Build OpenSSL if not already built
-OPENSSL_DIR="$SCRIPT_DIR/../openssl/openssl-install"
-if [ ! -f "$OPENSSL_DIR/lib/libssl.a" ]; then
-    echo "==> Building OpenSSL..."
-    bash "$SCRIPT_DIR/../openssl/build-openssl.sh"
-fi
-
-# Install OpenSSL into sysroot
-echo "==> Installing OpenSSL into sysroot..."
-cp -r "$OPENSSL_DIR/include/openssl" "$SYSROOT/include/"
-cp "$OPENSSL_DIR/lib/libssl.a" "$OPENSSL_DIR/lib/libcrypto.a" "$SYSROOT/lib/"
-mkdir -p "$SYSROOT/lib/pkgconfig"
-for pc in openssl.pc libssl.pc libcrypto.pc; do
-    if [ -f "$OPENSSL_DIR/lib/pkgconfig/$pc" ]; then
-        sed "s|^prefix=.*|prefix=$SYSROOT|" "$OPENSSL_DIR/lib/pkgconfig/$pc" \
-            > "$SYSROOT/lib/pkgconfig/$pc"
-    fi
-done
-
-# Build libxml2 if not already built
-LIBXML2_DIR="$SCRIPT_DIR/../libxml2/libxml2-install"
-if [ ! -f "$LIBXML2_DIR/lib/libxml2.a" ]; then
-    echo "==> Building libxml2..."
-    bash "$SCRIPT_DIR/../libxml2/build-libxml2.sh"
-fi
-
-# Install libxml2 into sysroot
-echo "==> Installing libxml2 into sysroot..."
-cp -r "$LIBXML2_DIR/include/libxml" "$SYSROOT/include/"
-cp "$LIBXML2_DIR/lib/libxml2.a" "$SYSROOT/lib/"
-mkdir -p "$SYSROOT/lib/pkgconfig"
-sed "s|^prefix=.*|prefix=$SYSROOT|" "$LIBXML2_DIR/lib/pkgconfig/libxml-2.0.pc" \
-    > "$SYSROOT/lib/pkgconfig/libxml-2.0.pc"
+# Compose -I and -L flags for defense-in-depth (autoconf raw probes).
+DEP_CPPFLAGS="-I$ZLIB_PREFIX/include -I$SQLITE_PREFIX/include -I$OPENSSL_PREFIX/include -I$LIBXML2_PREFIX/include"
+DEP_LDFLAGS="-L$ZLIB_PREFIX/lib -L$SQLITE_PREFIX/lib -L$OPENSSL_PREFIX/lib -L$LIBXML2_PREFIX/lib"
 
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading PHP $PHP_VERSION..."
@@ -104,6 +72,9 @@ fi
 
 echo "==> Configuring PHP for Wasm..."
 if [ ! -f Makefile ]; then
+    PKG_CONFIG_PATH="$DEP_PKG_CONFIG_PATH" \
+    CPPFLAGS="$DEP_CPPFLAGS" \
+    LDFLAGS="$DEP_LDFLAGS" \
     wasm32posix-configure \
         --disable-all \
         --disable-cgi \
