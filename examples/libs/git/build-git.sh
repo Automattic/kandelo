@@ -11,8 +11,9 @@ set -euo pipefail
 # docs/dependency-management.md. openssl is pulled in because static
 # libcurl in our build references -lssl -lcrypto.
 #
-# Asyncify is applied (full, not onlylist) so fork+exec works properly
-# (git gc --auto, hooks, pager, credential helpers, etc.).
+# Fork instrumentation is applied so fork+exec works properly (git gc --auto,
+# hooks, pager, credential helpers, etc.). wasm-fork-instrument auto-discovers
+# fork paths via call-graph analysis — no onlylist is needed.
 #
 # HTTP/HTTPS transport is always built (git-remote-http). HTTPS URLs
 # are rewritten to HTTP at runtime via gitconfig; the browser's
@@ -28,7 +29,6 @@ SRC_DIR="$SCRIPT_DIR/git-src"
 BIN_DIR="$SCRIPT_DIR/bin"
 # Explicit env wins; else the in-tree sysroot. Matches build-libcurl.sh:49.
 SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
-ONLYLIST="$SCRIPT_DIR/asyncify-onlylist.txt"
 
 # --- Prerequisites ---
 if ! command -v wasm32posix-cc &>/dev/null; then
@@ -89,10 +89,18 @@ if [ ! -f "$CURL_PREFIX/lib/libcurl.a" ] || [ ! -f "$CURL_PREFIX/include/curl/cu
 fi
 echo "==> libcurl at $CURL_PREFIX"
 
-# Check for wasm-opt (required for asyncify)
+# Check for wasm-opt (required for -O2 optimization after build).
 WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
 if [ -z "$WASM_OPT" ]; then
     echo "ERROR: wasm-opt not found. Install binaryen." >&2
+    exit 1
+fi
+
+# Check for fork-instrument tool (required for fork support).
+FORK_INSTRUMENT="$REPO_ROOT/tools/bin/wasm-fork-instrument"
+if [ ! -x "$FORK_INSTRUMENT" ]; then
+    echo "ERROR: wasm-fork-instrument not found at $FORK_INSTRUMENT." >&2
+    echo "  Run 'bash build.sh' to build it." >&2
     exit 1
 fi
 
@@ -123,15 +131,17 @@ STRIP = wasm32posix-strip
 prefix = /usr
 sysconfdir = /etc
 
-# Optimization + debug info for function names (needed by asyncify-onlylist).
-# -gline-tables-only emits DWARF line tables + function name section without
-# full debug info, so wasm-opt can match function names in the onlylist.
+# Optimization + debug info for symbolication. -gline-tables-only emits
+# DWARF line tables without full debug info. The asyncify-onlylist
+# requirement for function names is obsolete (wasm-fork-instrument uses
+# call-graph analysis); the flag is retained for general debuggability.
 CFLAGS = -O2 -gline-tables-only
 
 # Increase shadow stack from default 64KB to 1MB — git's deeply nested
 # calls (strbuf_realpath, config parsing, snprintf) overflow 64KB.
 # --no-wasm-opt prevents clang's built-in wasm-opt from stripping the
-# name section after linking (required for asyncify-onlylist to work).
+# name section after linking; retained so later tooling (wasm-opt -O2,
+# wasm-fork-instrument) has symbol names available.
 # Must NOT use -Wl, prefix — this is a clang driver flag, not a linker flag.
 LDFLAGS = -Wl,-z,stack-size=1048576 --no-wasm-opt
 
@@ -226,41 +236,40 @@ fi
 cp "$SRC_DIR/git-remote-http" "$BIN_DIR/git-remote-http.wasm"
 echo "==> Collected git-remote-http.wasm"
 SIZE_BEFORE=$(wc -c < "$BIN_DIR/git.wasm" | tr -d ' ')
-echo "==> Pre-asyncify size: $(echo "$SIZE_BEFORE" | numfmt --to=iec 2>/dev/null || echo "${SIZE_BEFORE} bytes")"
+echo "==> Pre-instrument size: $(echo "$SIZE_BEFORE" | numfmt --to=iec 2>/dev/null || echo "${SIZE_BEFORE} bytes")"
 
-# --- Asyncify transform ---
-# Full asyncify (no onlylist) is required because asyncify's onlylist mode
-# corrupts call_indirect instructions in transport_get_remote_refs, causing
-# "null function or function signature mismatch" at runtime. This is a
-# binaryen bug where asyncify changes function signatures for indirect call
-# targets when using --asyncify-onlylist. Full asyncify avoids this by
-# instrumenting all functions uniformly.
-echo "==> Applying asyncify (full)..."
-
-# -g tells wasm-opt to read the name section from the binary
-"$WASM_OPT" -g --asyncify \
-    --pass-arg="asyncify-imports@kernel.kernel_fork" \
-    "$BIN_DIR/git.wasm" -o "$BIN_DIR/git.wasm"
-
-# Optimize after asyncify to reduce binary size
+# --- Size optimization + fork instrumentation ---
+# wasm-opt -O2 runs first to shrink the binary. wasm-fork-instrument must
+# run LAST because it hardcodes mutable-global offsets at instrument time —
+# any later pass that reorders globals would corrupt the fork buffer.
+# wasm-fork-instrument auto-discovers fork paths via call-graph analysis,
+# so no onlylist is needed.
+echo "==> Optimizing git.wasm with wasm-opt -O2..."
 "$WASM_OPT" -g -O2 "$BIN_DIR/git.wasm" -o "$BIN_DIR/git.wasm"
 
-SIZE_AFTER=$(wc -c < "$BIN_DIR/git.wasm" | tr -d ' ')
-echo "==> Post-asyncify size: $(echo "$SIZE_AFTER" | numfmt --to=iec 2>/dev/null || echo "${SIZE_AFTER} bytes")"
+echo "==> Applying fork instrumentation to git.wasm..."
+"$FORK_INSTRUMENT" "$BIN_DIR/git.wasm" -o "$BIN_DIR/git.wasm.instr"
+mv "$BIN_DIR/git.wasm.instr" "$BIN_DIR/git.wasm"
 
-# Apply asyncify to git-remote-http too — libcurl may call fork()
+SIZE_AFTER=$(wc -c < "$BIN_DIR/git.wasm" | tr -d ' ')
+echo "==> Post-instrument size: $(echo "$SIZE_AFTER" | numfmt --to=iec 2>/dev/null || echo "${SIZE_AFTER} bytes")"
+
+# Apply the same pipeline to git-remote-http — libcurl may call fork()
 # internally (e.g., for DNS resolution when pthreads are unavailable).
-echo "==> Applying asyncify to git-remote-http.wasm..."
-RH_SIZE_BEFORE=$(wc -c < "$BIN_DIR/git-remote-http.wasm" | tr -d ' ')
-"$WASM_OPT" -g --asyncify \
-    --pass-arg="asyncify-imports@kernel.kernel_fork" \
-    "$BIN_DIR/git-remote-http.wasm" -o "$BIN_DIR/git-remote-http.wasm"
-"$WASM_OPT" -g -O2 "$BIN_DIR/git-remote-http.wasm" -o "$BIN_DIR/git-remote-http.wasm"
-RH_SIZE_AFTER=$(wc -c < "$BIN_DIR/git-remote-http.wasm" | tr -d ' ')
-echo "==> git-remote-http: $(echo "$RH_SIZE_BEFORE" | numfmt --to=iec 2>/dev/null || echo "${RH_SIZE_BEFORE}") -> $(echo "$RH_SIZE_AFTER" | numfmt --to=iec 2>/dev/null || echo "${RH_SIZE_AFTER}")"
+# git-remote-http is always built post-Phase-7 (HTTP/HTTPS transport
+# is required, not optional).
+if [ -f "$BIN_DIR/git-remote-http.wasm" ]; then
+    echo "==> Optimizing + instrumenting git-remote-http.wasm..."
+    RH_SIZE_BEFORE=$(wc -c < "$BIN_DIR/git-remote-http.wasm" | tr -d ' ')
+    "$WASM_OPT" -g -O2 "$BIN_DIR/git-remote-http.wasm" -o "$BIN_DIR/git-remote-http.wasm"
+    "$FORK_INSTRUMENT" "$BIN_DIR/git-remote-http.wasm" -o "$BIN_DIR/git-remote-http.wasm.instr"
+    mv "$BIN_DIR/git-remote-http.wasm.instr" "$BIN_DIR/git-remote-http.wasm"
+    RH_SIZE_AFTER=$(wc -c < "$BIN_DIR/git-remote-http.wasm" | tr -d ' ')
+    echo "==> git-remote-http: $(echo "$RH_SIZE_BEFORE" | numfmt --to=iec 2>/dev/null || echo "${RH_SIZE_BEFORE}") -> $(echo "$RH_SIZE_AFTER" | numfmt --to=iec 2>/dev/null || echo "${RH_SIZE_AFTER}")"
+fi
 
 echo ""
-echo "==> git built successfully with asyncify fork support!"
+echo "==> git built successfully with fork support!"
 echo "Binary: $BIN_DIR/git.wasm"
 echo "HTTP transport: $BIN_DIR/git-remote-http.wasm"
 

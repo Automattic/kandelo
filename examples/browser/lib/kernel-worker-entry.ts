@@ -89,7 +89,7 @@ import type {
 const DEFAULT_MAX_PAGES = 16384;
 const PAGE_SIZE = 65536;
 const CH_TOTAL_SIZE = 72 + PAGE_SIZE;
-const ASYNCIFY_BUF_SIZE = 16384;
+const FORK_BUF_SIZE = 16384;
 
 // State
 let kernelWorker: CentralizedKernelWorker;
@@ -665,13 +665,9 @@ async function handleFork(
     ptrWidth,
   });
 
-  // For fork-from-non-main-thread: the parent populated its asyncify
-  // buffer at the *thread's* channel offset. Use that for rewind and
-  // route the child to the thread function instead of _start. Mirrors
-  // handleFork in host/src/node-kernel-worker-entry.ts.
-  const asyncifyBufAddr = threadFork
+  const forkBufAddr = threadFork
     ? threadFork.forkBufAddr
-    : childChannelOffset - ASYNCIFY_BUF_SIZE;
+    : childChannelOffset - FORK_BUF_SIZE;
   const childInitData: CentralizedWorkerInitMessage = {
     type: "centralized_init",
     pid: childPid,
@@ -681,7 +677,7 @@ async function handleFork(
     memory: childMemory,
     channelOffset: childChannelOffset,
     isForkChild: true,
-    asyncifyBufAddr,
+    forkBufAddr,
     forkChildThreadFnPtr: threadFork?.fnPtr,
     forkChildThreadArgPtr: threadFork?.argPtr,
     ptrWidth,

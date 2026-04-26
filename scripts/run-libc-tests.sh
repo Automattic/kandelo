@@ -122,16 +122,16 @@ LINK_FLAGS=(
     -Wl,--export=__wasm_thread_init
 )
 
-# Asyncify support: instrument wasm so fork() can save/restore call stack
-WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
-ASYNCIFY_IMPORTS="kernel.kernel_fork"
+# Fork-instrumentation: apply wasm-fork-instrument so fork() can save/restore
+# the call stack across WebAssembly instances. The tool auto-discovers fork
+# paths via call-graph analysis (no onlylist). No-op on programs that don't
+# transitively call kernel.kernel_fork.
+FORK_INSTRUMENT="$REPO_ROOT/tools/bin/wasm-fork-instrument"
 
 asyncify_wasm() {
     local wasm="$1"
-    if [ -n "$WASM_OPT" ]; then
-        "$WASM_OPT" --asyncify \
-            --pass-arg="asyncify-imports@${ASYNCIFY_IMPORTS}" \
-            "$wasm" -o "$wasm" 2>/dev/null || true
+    if [ -x "$FORK_INSTRUMENT" ]; then
+        "$FORK_INSTRUMENT" "$wasm" -o "$wasm" 2>/dev/null || true
     fi
 }
 

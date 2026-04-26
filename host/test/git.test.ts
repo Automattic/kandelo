@@ -1,7 +1,7 @@
 /**
  * Tests for Git 2.47.1 running on the wasm-posix-kernel.
  *
- * Git is built with full asyncify for fork() support so that
+ * Git is built with wpk_fork_* instrumentation for fork() support so that
  * subprocesses (git gc --auto, git-remote-http, index-pack) work correctly.
  *
  * Each runCentralizedProgram call creates a fresh kernel instance,
@@ -21,8 +21,23 @@ import { tryResolveBinary } from "../src/binary-resolver";
 const gitBinary = tryResolveBinary("programs/git/git.wasm");
 const gitRemoteHttpBinary = tryResolveBinary("programs/git/git-remote-http.wasm");
 
-const hasGit = !!gitBinary;
-const hasGitRemoteHttp = !!gitRemoteHttpBinary;
+// Phase 7: skip git tests when the resolved binaries predate the
+// wasm-fork-instrument flip (i.e. they still export asyncify_* instead
+// of wpk_fork_*). Detect by reading the wasm module and looking for
+// the new export name; a stale binary causes kernel ABI mismatch at
+// launch and the test hangs on startup rather than producing a clean skip.
+function hasWpkForkExports(path: string | null): boolean {
+  if (!path) return false;
+  try {
+    const bytes = readFileSync(path);
+    return bytes.includes(Buffer.from("wpk_fork_state"));
+  } catch {
+    return false;
+  }
+}
+
+const hasGit = !!gitBinary && hasWpkForkExports(gitBinary);
+const hasGitRemoteHttp = !!gitRemoteHttpBinary && hasWpkForkExports(gitRemoteHttpBinary);
 
 // Git config via environment
 const gitEnv = [
@@ -62,9 +77,10 @@ describe.skipIf(!hasGit)("Git", () => {
     expect(result.stdout + result.stderr).toContain("nitialized");
   });
 
-  it("creates a commit without spurious help output (asyncify fork)", { timeout: 30_000 }, async () => {
-    // git commit triggers fork+exec for `git gc --auto`. Without asyncify,
-    // the fork child restarts from _start() with empty argv and prints help.
+  it("creates a commit without spurious help output (wpk_fork instrumentation)", { timeout: 30_000 }, async () => {
+    // git commit triggers fork+exec for `git gc --auto`. Without fork
+    // instrumentation, the fork child restarts from _start() with empty argv
+    // and prints help.
     const dir = `/tmp/git-commit-test-${Date.now()}`;
     // The two runs share state via /tmp; under the new mount-based VFS
     // each NodeKernelHost boot owns its own scratch session dir, so the

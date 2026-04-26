@@ -471,15 +471,10 @@ async function handleFork(
     ptrWidth,
   });
 
-  const ASYNCIFY_BUF_SIZE = 16384;
-  // For fork-from-non-main-thread: the parent populated its asyncify
-  // buffer at the *thread's* channel offset, which sits at a different
-  // place in the (copied) child memory than the child's main channel.
-  // Use that buffer for the rewind and route the child to the thread
-  // function instead of _start.
-  const asyncifyBufAddr = threadFork
+  const FORK_BUF_SIZE = 16384;
+  const forkBufAddr = threadFork
     ? threadFork.forkBufAddr
-    : childChannelOffset - ASYNCIFY_BUF_SIZE;
+    : childChannelOffset - FORK_BUF_SIZE;
 
   const childInitData: CentralizedWorkerInitMessage = {
     type: "centralized_init",
@@ -489,7 +484,7 @@ async function handleFork(
     memory: childMemory,
     channelOffset: childChannelOffset,
     isForkChild: true,
-    asyncifyBufAddr,
+    forkBufAddr,
     forkChildThreadFnPtr: threadFork?.fnPtr,
     forkChildThreadArgPtr: threadFork?.argPtr,
     ptrWidth,

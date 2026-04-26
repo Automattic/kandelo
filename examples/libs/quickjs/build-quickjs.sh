@@ -198,13 +198,18 @@ QJS_STACK_FLAGS=(-Wl,-z,stack-size=8388608)
 echo "Linking qjs..."
 $CC "${CLI_OBJS[@]}" "${OBJS[@]}" -lm "${QJS_STACK_FLAGS[@]}" -o "$BIN_DIR/qjs.wasm"
 
-# Asyncify for fork support
-echo "Applying asyncify to qjs..."
+# Size optimization — must run BEFORE fork instrumentation because
+# wasm-fork-instrument hardcodes mutable-global offsets.
 WASM_OPT="${WASM_OPT:-wasm-opt}"
-$WASM_OPT --asyncify \
-    --pass-arg="asyncify-imports@kernel.kernel_fork" \
-    -O2 \
-    "$BIN_DIR/qjs.wasm" -o "$BIN_DIR/qjs.wasm"
+echo "Optimizing qjs with wasm-opt -O2..."
+$WASM_OPT -O2 "$BIN_DIR/qjs.wasm" -o "$BIN_DIR/qjs.wasm"
+
+# Fork instrumentation — must run LAST so later passes don't reorder
+# globals. Auto-discovers fork paths via call-graph analysis; no onlylist.
+FORK_INSTRUMENT="$REPO_ROOT/tools/bin/wasm-fork-instrument"
+echo "Applying fork instrumentation to qjs..."
+"$FORK_INSTRUMENT" "$BIN_DIR/qjs.wasm" -o "$BIN_DIR/qjs.wasm.instr"
+mv "$BIN_DIR/qjs.wasm.instr" "$BIN_DIR/qjs.wasm"
 
 QJS_SIZE=$(wc -c < "$BIN_DIR/qjs.wasm" | tr -d ' ')
 
@@ -283,12 +288,14 @@ if [ "$BUILD_NODE" = "1" ]; then
         -lm \
         "${QJS_STACK_FLAGS[@]}" -o "$BIN_DIR/node.wasm"
 
-    # Asyncify for fork support
-    echo "Applying asyncify to node..."
-    $WASM_OPT --asyncify \
-        --pass-arg="asyncify-imports@kernel.kernel_fork" \
-        -O2 \
-        "$BIN_DIR/node.wasm" -o "$BIN_DIR/node.wasm"
+    # Size optimization — must run BEFORE fork instrumentation.
+    echo "Optimizing node with wasm-opt -O2..."
+    $WASM_OPT -O2 "$BIN_DIR/node.wasm" -o "$BIN_DIR/node.wasm"
+
+    # Fork instrumentation — must run LAST.
+    echo "Applying fork instrumentation to node..."
+    "$FORK_INSTRUMENT" "$BIN_DIR/node.wasm" -o "$BIN_DIR/node.wasm.instr"
+    mv "$BIN_DIR/node.wasm.instr" "$BIN_DIR/node.wasm"
 
     NODE_SIZE=$(wc -c < "$BIN_DIR/node.wasm" | tr -d ' ')
 fi

@@ -5,6 +5,7 @@
 /target
 /sysroot/
 /sysroot64/
+/tools/bin/
 host/dist/
 host/docs/
 host/wasm/
