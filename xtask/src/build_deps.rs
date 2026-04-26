@@ -255,17 +255,22 @@ pub fn compute_sha(
 /// Canonical cache directory for a resolved manifest.
 ///
 /// Layout:
-///   `<cache_root>/libs/<name>-<version>-rev<revision>-<arch>-<shortsha>/`
+///   libs/programs: `<cache_root>/libs/<name>-<version>-rev<revision>-<arch>-<shortsha>/`
+///   sources:       `<cache_root>/sources/<name>-<version>-rev<revision>-<shortsha>/`
 ///
 /// where shortsha is the first 8 hex chars of the cache-key sha —
 /// matches the binaries-release convention. 32 bits of collision
 /// resistance is enough for a per-user lib cache.
 ///
-/// `arch` is part of the path so a single user can host wasm32 and
-/// wasm64 builds of the same library side-by-side. The cache-key sha
-/// already incorporates `arch` as of Task A.5, so the shortsha alone
-/// disambiguates — but a visible arch segment makes the cache layout
-/// self-explanatory at a glance.
+/// For libs and programs, `arch` is part of the path so a single user
+/// can host wasm32 and wasm64 builds of the same artifact side-by-side.
+/// The cache-key sha already incorporates `arch` as of Task A.5, so the
+/// shortsha alone disambiguates — but a visible arch segment makes the
+/// cache layout self-explanatory at a glance.
+///
+/// For source-kind manifests, the layout omits the arch segment per
+/// design decision 6: source artifacts are arch-agnostic, so a single
+/// cache entry serves both wasm32 and wasm64 consumers.
 pub fn canonical_path(
     cache_root: &Path,
     m: &DepsManifest,
@@ -275,19 +280,26 @@ pub fn canonical_path(
     let kind_subdir = match m.kind {
         ManifestKind::Library => "libs",
         ManifestKind::Program => "programs",
-        // Source-kind layout (no arch segment) is Chunk C; falls back
-        // to "sources" here for completeness, but no source-kind
-        // manifests exist yet so this branch is unreachable in B.
         ManifestKind::Source => "sources",
     };
-    cache_root.join(kind_subdir).join(format!(
-        "{}-{}-rev{}-{}-{}",
-        m.name,
-        m.version,
-        m.revision,
-        arch.as_str(),
-        &hex(sha)[..8]
-    ))
+    let basename = match m.kind {
+        ManifestKind::Source => format!(
+            "{}-{}-rev{}-{}",
+            m.name,
+            m.version,
+            m.revision,
+            &hex(sha)[..8]
+        ),
+        ManifestKind::Library | ManifestKind::Program => format!(
+            "{}-{}-rev{}-{}-{}",
+            m.name,
+            m.version,
+            m.revision,
+            arch.as_str(),
+            &hex(sha)[..8]
+        ),
+    };
+    cache_root.join(kind_subdir).join(basename)
 }
 
 use crate::util::hex;
@@ -1780,6 +1792,36 @@ pkgconfig = ["lib/pkgconfig/libSym1.pc"]
         let short = name.rsplit('-').next().unwrap();
         assert_eq!(short.len(), 8);
         assert!(short.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn source_kind_canonical_path_omits_arch() {
+        let dir = tempdir("source-canonical");
+        let m = parse_source_manifest(&dir);
+        let sha = [0u8; 32];
+        let cache = PathBuf::from("/cache");
+        let path = canonical_path(&cache, &m, TargetArch::Wasm32, &sha);
+        assert_eq!(
+            path,
+            PathBuf::from("/cache/sources/pcre2-source-10.42-rev1-00000000")
+        );
+    }
+
+    fn parse_source_manifest(dir: &Path) -> DepsManifest {
+        let text = r#"
+kind = "source"
+name = "pcre2-source"
+version = "10.42"
+revision = 1
+
+[source]
+url = "https://example.test/pcre2.tar.bz2"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "BSD-3-Clause"
+"#;
+        DepsManifest::parse(text, dir.to_path_buf()).unwrap()
     }
 
     #[test]
