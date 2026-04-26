@@ -109,6 +109,46 @@ impl Registry {
         })?;
         DepsManifest::load(&path)
     }
+
+    /// Walk every registry root non-recursively (one level deep —
+    /// `<root>/<name>/deps.toml`); load each manifest. Returns
+    /// `(name, manifest)` pairs in deterministic name order. Errors
+    /// from individual manifests propagate (don't silently skip).
+    pub fn walk_all(&self) -> Result<Vec<(String, DepsManifest)>, String> {
+        let mut out: BTreeMap<String, DepsManifest> = BTreeMap::new();
+        for root in &self.roots {
+            let rd = match std::fs::read_dir(root) {
+                Ok(r) => r,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(format!("read_dir {}: {e}", root.display())),
+            };
+            for entry in rd {
+                let entry = entry.map_err(|e| format!("read_dir entry: {e}"))?;
+                let path = entry.path();
+                let toml = path.join("deps.toml");
+                if !toml.is_file() {
+                    continue;
+                }
+                let m = DepsManifest::load(&toml)
+                    .map_err(|e| format!("{}: {e}", toml.display()))?;
+                // First-root-wins, mirrors `find()`.
+                out.entry(m.name.clone()).or_insert(m);
+            }
+        }
+        Ok(out.into_iter().collect())
+    }
+}
+
+/// Subset of [`Registry::walk_all`] containing only `kind = "program"`
+/// manifests. Useful for `bundle-program` + `build-manifest` to
+/// compose source+license decoration without depending on the
+/// soon-deleted `program_metadata` module.
+pub fn programs_by_name(registry: &Registry) -> Result<BTreeMap<String, DepsManifest>, String> {
+    Ok(registry
+        .walk_all()?
+        .into_iter()
+        .filter(|(_, m)| matches!(m.kind, ManifestKind::Program))
+        .collect())
 }
 
 fn expand_tilde(s: &str) -> PathBuf {
@@ -2474,5 +2514,48 @@ wasm = "vim.wasm"
         let err = ensure_built(&m, &reg, TargetArch::Wasm32, 4, &resolve_opts(&cache, None))
             .unwrap_err();
         assert!(err.contains("miss.wasm"), "got: {err}");
+    }
+
+    #[test]
+    fn walk_all_finds_libraries_and_programs() {
+        let root = tempdir("walk-all");
+        write_lib(&root, "libL", "1.0.0", &[], "true", "[outputs]\nlibs = [\"lib/libL.a\"]\n");
+        write_program(&root, "progP", "0.1.0", &[], "true", &[("progP", "progP.wasm")]);
+        let reg = Registry { roots: vec![root] };
+        let all = reg.walk_all().unwrap();
+        let names: Vec<_> = all.iter().map(|(n, _)| n.clone()).collect();
+        assert_eq!(names, vec!["libL".to_string(), "progP".to_string()]);
+    }
+
+    #[test]
+    fn programs_by_name_filters_to_program_kind() {
+        let root = tempdir("progs-by-name");
+        write_lib(&root, "libL", "1.0.0", &[], "true", "[outputs]\nlibs = [\"lib/libL.a\"]\n");
+        write_program(&root, "progP", "0.1.0", &[], "true", &[("progP", "progP.wasm")]);
+        let reg = Registry { roots: vec![root] };
+        let progs = programs_by_name(&reg).unwrap();
+        assert_eq!(progs.len(), 1);
+        assert!(progs.contains_key("progP"));
+    }
+
+    #[test]
+    fn walk_all_handles_missing_registry_root() {
+        // A registry root that doesn't exist must not error; just contribute nothing.
+        let reg = Registry { roots: vec![PathBuf::from("/this/path/does/not/exist/xtask-walk-all")] };
+        let all = reg.walk_all().unwrap();
+        assert!(all.is_empty());
+    }
+
+    #[test]
+    fn walk_all_first_root_wins_for_duplicate_names() {
+        // Two roots both define "libZ"; first one wins.
+        let root_a = tempdir("walk-first");
+        let root_b = tempdir("walk-second");
+        write_lib(&root_a, "libZ", "1.0.0", &[], "true", "[outputs]\nlibs = [\"lib/libZ.a\"]\n");
+        write_lib(&root_b, "libZ", "9.9.9", &[], "true", "[outputs]\nlibs = [\"lib/libZ.a\"]\n");
+        let reg = Registry { roots: vec![root_a, root_b] };
+        let all = reg.walk_all().unwrap();
+        let (_, m) = all.iter().find(|(n, _)| n == "libZ").unwrap();
+        assert_eq!(m.version, "1.0.0", "first root should win, got version {}", m.version);
     }
 }
