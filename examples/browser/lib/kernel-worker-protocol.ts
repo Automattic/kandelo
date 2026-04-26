@@ -10,7 +10,19 @@
 export interface InitMessage {
   type: "init";
   kernelWasmBytes: ArrayBuffer;
-  fsSab: SharedArrayBuffer;
+  /**
+   * Pre-built VFS image bytes from MemoryFileSystem.saveImage(). The worker
+   * constructs its own memfs via MemoryFileSystem.fromImage(). When this is
+   * present, the kernel owns the FS — no SAB is shared with the main thread,
+   * and `kernel.fs` is unavailable.
+   */
+  vfsImage?: Uint8Array;
+  /**
+   * @deprecated — legacy path. Kept until all demos migrate to vfsImage.
+   * Pre-formatted SharedFS SAB shared with the main thread (so demos can
+   * pre-populate via the now-deprecated `kernel.fs` accessor).
+   */
+  fsSab?: SharedArrayBuffer;
   shmSab: SharedArrayBuffer;
   workerEntryUrl: string;
   bridgePort?: MessagePort;

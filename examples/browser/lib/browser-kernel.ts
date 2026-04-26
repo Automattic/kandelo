@@ -44,20 +44,53 @@ export interface BrowserKernelOptions {
   threadModule?: WebAssembly.Module;
   /** Pre-built MemoryFileSystem (e.g. from a VFS image). When provided, skips
    *  SAB creation, mkfs, and standard directory/services setup — uses the
-   *  provided filesystem as-is. */
+   *  provided filesystem as-is.
+   *  @deprecated — use {@link BrowserKernel.boot} with `vfsImage` instead. */
   memfs?: MemoryFileSystem;
+  /** When true, the kernel worker owns the VFS exclusively. The constructor
+   *  skips fsSab allocation; `kernel.fs` is unavailable; the demo passes a
+   *  pre-built `vfsImage` to {@link BrowserKernel.boot}. This is the target
+   *  architecture — `kernel.fs` and `memfs` will be removed once all demos
+   *  migrate. */
+  kernelOwnedFs?: boolean;
+}
+
+/** Options for {@link BrowserKernel.boot}. */
+export interface BrowserKernelBootOptions {
+  /** Kernel wasm bytes; if omitted, fetched from the bundled URL. */
+  kernelWasm?: ArrayBuffer;
+  /** Pre-built VFS image bytes from {@link MemoryFileSystem.saveImage}. The
+   *  worker takes ownership; the main thread no longer has FS access. */
+  vfsImage: Uint8Array;
+  /** Argv for the first (and currently only "init") process. argv[0] should
+   *  be a path inside the VFS image. */
+  argv: string[];
+  /** Override the kernel's default environment for the first process. */
+  env?: string[];
+  /** Working directory for the first process. */
+  cwd?: string;
+  /** Allocate a PTY for the first process. */
+  pty?: boolean;
+  /** Initial stdin bytes (with implicit EOF). */
+  stdin?: Uint8Array;
 }
 
 export class BrowserKernel {
   private kernelWorkerHandle!: Worker;
-  private memfs: MemoryFileSystem;
-  private fsSab: SharedArrayBuffer;
+  /** Set when `kernelOwnedFs` is true — main thread has no FS access. */
+  private kernelOwnedFs: boolean;
+  /** undefined in `kernelOwnedFs` mode. */
+  private memfs?: MemoryFileSystem;
+  /** undefined in `kernelOwnedFs` mode. */
+  private fsSab?: SharedArrayBuffer;
   private shmSab: SharedArrayBuffer;
   private maxPages: number;
-  /** @internal exposed for PtyTerminal pid tracking.
-   * pid 1 is reserved for the kernel's virtual init (see
-   * `process_table::ensure_init`); spawn allocations start at 2. */
-  nextPid = 2;
+  /** @internal exposed for PtyTerminal pid tracking. Starts at 100: PIDs
+   * 1..99 are reserved by the kernel (1 is the virtual init process; the
+   * range matches the Node host's convention so behavior is consistent).
+   * The next commit replaces this with worker-side allocation and this
+   * counter goes away along with the legacy `spawn(bytes, ...)` path. */
+  nextPid = 100;
   private options: Required<
     Pick<BrowserKernelOptions, "maxWorkers" | "fsSize" | "env">
   > &
@@ -94,8 +127,13 @@ export class BrowserKernel {
 
     this.shmSab = new SharedArrayBuffer(1024 * 1024);
     MemoryFileSystem.create(this.shmSab); // format shm SAB for kernel worker
+    this.kernelOwnedFs = options.kernelOwnedFs ?? false;
 
-    if (options.memfs) {
+    if (this.kernelOwnedFs) {
+      // Kernel-owned FS — main thread doesn't allocate fsSab/memfs at all.
+      // The demo will pass `vfsImage` bytes to boot(), and the worker
+      // builds its own memfs from those bytes.
+    } else if (options.memfs) {
       // Use pre-built filesystem — skip SAB creation, mkfs, and directory setup
       this.memfs = options.memfs;
       this.fsSab = options.memfs.sharedBuffer;
@@ -142,27 +180,100 @@ export class BrowserKernel {
     }
   }
 
-  /** Access the underlying MemoryFileSystem for pre-populating files */
+  /**
+   * Access the underlying MemoryFileSystem for pre-populating files.
+   * @deprecated — only available when `kernelOwnedFs` is false. New demos
+   * should build a `vfsImage` and call {@link BrowserKernel.boot} instead.
+   * Throws when `kernelOwnedFs` is true.
+   */
   get fs(): MemoryFileSystem {
+    if (!this.memfs) {
+      throw new Error(
+        "kernel.fs is unavailable in kernelOwnedFs mode. Build a vfsImage with " +
+        "MemoryFileSystem + saveImage() and pass it to kernel.boot() instead.",
+      );
+    }
     return this.memfs;
   }
 
-  /** Initialize the kernel by spawning the dedicated kernel worker */
+  /**
+   * Initialize the kernel by spawning the dedicated kernel worker.
+   * Legacy path — uses the SAB-shared `kernel.fs` for pre-population.
+   * Throws when `kernelOwnedFs` is true; use {@link BrowserKernel.boot} instead.
+   */
   async init(kernelWasmBytes?: ArrayBuffer): Promise<void> {
+    if (this.kernelOwnedFs) {
+      throw new Error("kernel.init() is not available in kernelOwnedFs mode. Use kernel.boot() with a vfsImage.");
+    }
     const wasmBytes =
       kernelWasmBytes ??
       (await fetch(kernelWasmUrl).then((r) => r.arrayBuffer()));
 
+    await this.bootWorker({
+      kernelWasmBytes: wasmBytes,
+      fsSab: this.fsSab!,
+    });
+
+    // Forward any lazy archive metadata from a pre-loaded VFS image so the
+    // worker can materialize archive-backed files on first exec.
+    const archiveEntries = this.memfs!.exportLazyArchiveEntries();
+    if (archiveEntries.length > 0) {
+      this.sendToKernel({ type: "register_lazy_archives", entries: archiveEntries });
+    }
+  }
+
+  /**
+   * Boot the kernel from a pre-built VFS image and spawn the first process.
+   * The worker takes ownership of the FS; the main thread no longer has FS
+   * access. Returns the first process's exit code.
+   *
+   * Demos build the VFS image on the main thread using MemoryFileSystem +
+   * the helpers in `host/src/vfs/image-helpers`, call `saveImage()` for
+   * bytes, then pass them here.
+   *
+   * Requires `kernelOwnedFs: true` in the constructor options.
+   */
+  async boot(options: BrowserKernelBootOptions): Promise<number> {
+    if (!this.kernelOwnedFs) {
+      throw new Error(
+        "kernel.boot() requires kernelOwnedFs: true in BrowserKernel constructor options.",
+      );
+    }
+    // Reserve the pid synchronously so wrappers (PtyTerminal) that read
+    // `nextPid - 1` immediately after calling boot() see the correct value
+    // even though bootWorker / spawnFirstProcess are async.
+    const pid = this.nextPid++;
+
+    const wasmBytes =
+      options.kernelWasm ??
+      (await fetch(kernelWasmUrl).then((r) => r.arrayBuffer()));
+
+    await this.bootWorker({
+      kernelWasmBytes: wasmBytes,
+      vfsImage: options.vfsImage,
+    });
+
+    // Spawn the first process — argv[0] resolves against the worker's VFS.
+    return this.spawnFirstProcess(pid, options);
+  }
+
+  /**
+   * Internal: set up the worker, attach handlers, send init, await ready.
+   * Both `init()` (legacy fsSab path) and `boot()` (vfsImage path) call here.
+   */
+  private async bootWorker(opts: {
+    kernelWasmBytes: ArrayBuffer;
+    fsSab?: SharedArrayBuffer;
+    vfsImage?: Uint8Array;
+  }): Promise<void> {
     // Create the kernel worker
     this.kernelWorkerHandle = new Worker(kernelWorkerEntryUrl, { type: "module" });
 
-    // Set up message handler
     this.kernelWorkerHandle.onmessage = (e: MessageEvent) => {
       this.handleWorkerMessage(e.data as KernelToMainMessage);
     };
     this.kernelWorkerHandle.onerror = (e: ErrorEvent) => {
       console.error("[BrowserKernel] Kernel worker error:", e.message);
-      // Reject all pending requests so callers don't hang forever
       const err = new Error(`Kernel worker error: ${e.message}`);
       for (const [, { reject }] of this.pendingRequests) {
         reject(err);
@@ -170,7 +281,6 @@ export class BrowserKernel {
       this.pendingRequests.clear();
     };
 
-    // Send init message and wait for ready
     await new Promise<void>((resolve) => {
       const readyHandler = (e: MessageEvent) => {
         if (e.data?.type === "ready") {
@@ -180,10 +290,13 @@ export class BrowserKernel {
       };
       this.kernelWorkerHandle.addEventListener("message", readyHandler);
 
+      // Slice so the caller's ArrayBuffer isn't detached (allows restart)
+      const transferBuf = opts.kernelWasmBytes.slice(0);
       const initMsg: MainToKernelMessage = {
         type: "init",
-        kernelWasmBytes: wasmBytes,
-        fsSab: this.fsSab,
+        kernelWasmBytes: transferBuf,
+        fsSab: opts.fsSab,
+        vfsImage: opts.vfsImage,
         shmSab: this.shmSab,
         workerEntryUrl,
         config: {
@@ -192,19 +305,40 @@ export class BrowserKernel {
           env: this.options.env,
         },
       };
-
-      // Slice so the caller's ArrayBuffer isn't detached (allows restart)
-      const transferBuf = wasmBytes.slice(0);
-      initMsg.kernelWasmBytes = transferBuf;
       this.kernelWorkerHandle.postMessage(initMsg, [transferBuf]);
     });
+  }
 
-    // Forward any lazy archive metadata from a pre-loaded VFS image so the
-    // worker can materialize archive-backed files on first exec.
-    const archiveEntries = this.memfs.exportLazyArchiveEntries();
-    if (archiveEntries.length > 0) {
-      this.sendToKernel({ type: "register_lazy_archives", entries: archiveEntries });
+  /**
+   * Internal: send a spawn message for the first ("init") process and
+   * return the exit-code promise. The pid is reserved synchronously by
+   * the caller (boot()) so wrappers like PtyTerminal can grab it before
+   * the spawn message round-trip completes.
+   */
+  private async spawnFirstProcess(pid: number, options: BrowserKernelBootOptions): Promise<number> {
+    const requestId = this.nextRequestId++;
+    const exitPromise = new Promise<number>((resolve) => {
+      this.exitResolvers.set(pid, resolve);
+    });
+
+    await this.request(requestId, {
+      type: "spawn",
+      requestId,
+      pid,
+      programPath: options.argv[0],
+      argv: options.argv,
+      env: this.mergeEnv(options.env ?? this.options.env),
+      cwd: options.cwd,
+      pty: options.pty,
+      stdin: options.stdin,
+      maxPages: this.maxPages,
+    });
+
+    if (options.pty) {
+      this.sendToKernel({ type: "register_pty_output", pid });
     }
+
+    return exitPromise;
   }
 
   /**
