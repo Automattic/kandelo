@@ -397,6 +397,18 @@ struct DirectDep {
 /// declaration ships hints but none for the current OS, we list which
 /// platforms ARE covered so the user knows whether to translate one
 /// or to file an issue.
+/// Map Rust's `std::env::consts::OS` to the conventional platform key
+/// used in `[[host_tools]].install_hints`. The deps-management V2
+/// schema uses unix-y names (`darwin` for macOS, matching bash and
+/// `uname`); Rust's runtime constant is `"macos"`. Other names match
+/// what users would expect (`linux`, `windows`, `freebsd`, etc.).
+fn install_hints_key_for_current_os() -> &'static str {
+    match std::env::consts::OS {
+        "macos" => "darwin",
+        other => other,
+    }
+}
+
 fn render_probe_failures(target: &DepsManifest, failures: &[ProbeFailure]) -> String {
     let mut out = String::new();
     out.push_str(&format!(
@@ -418,7 +430,7 @@ fn render_probe_failures(target: &DepsManifest, failures: &[ProbeFailure]) -> St
             .iter()
             .find(|d: &&HostTool| &d.name == tool_name)
         {
-            let os = std::env::consts::OS;
+            let os = install_hints_key_for_current_os();
             if let Some(hint) = decl.install_hints.get(os) {
                 out.push_str(&format!("      install hint ({os}): {hint}\n"));
             } else if !decl.install_hints.is_empty() {
@@ -3301,21 +3313,64 @@ install_hints = { darwin = "brew install nope", linux = "apt install nope" }
             err.contains("this-host-tool-does-not-exist"),
             "got: {err}"
         );
-        // Should mention the matching install hint OR list available platforms.
-        let os = std::env::consts::OS;
-        if matches!(os, "macos" | "linux") {
-            // The fixture provides hints under the keys "darwin" and
-            // "linux"; std::env::consts::OS is "macos" on Apple. Only
-            // assert the install-hint render on the OS that matches a
-            // declared key — otherwise we'd see the "available
-            // platforms" branch instead.
-            if os == "linux" {
-                assert!(err.contains("install hint"), "got: {err}");
-            } else {
-                // macOS: no "darwin" => "macos" mapping in the fixture,
-                // so we get the available-platforms branch.
-                assert!(err.contains("available platforms"), "got: {err}");
-            }
-        }
+        // The fixture provides hints under the keys "darwin" and
+        // "linux"; the renderer maps Rust's `std::env::consts::OS`
+        // ("macos") to the conventional key "darwin", so on both
+        // macOS and Linux we should hit the matched-hint branch.
+        // On other OSes (windows, freebsd, ...) the fixture has no
+        // matching key, so we leave the assertion off there.
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        assert!(err.contains("install hint"), "got: {err}");
+    }
+
+    /// C.10: confirm `render_probe_failures` looks up `install_hints`
+    /// under the conventional key `"darwin"` on macOS, not Rust's
+    /// `std::env::consts::OS` value `"macos"`. Without the alias, a
+    /// manifest declaring `darwin = "..."` would fall through to the
+    /// "no install hint" branch on Apple.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn render_probe_failures_uses_darwin_alias_for_macos() {
+        let manifest_dir = tempdir("c10-darwin-alias-manifest");
+        let manifest_text = r#"
+kind = "library"
+name = "fake"
+version = "0.1"
+revision = 1
+
+[source]
+url = "https://example.test/fake.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "MIT"
+
+[outputs]
+libs = []
+
+[[host_tools]]
+name = "needs-darwin-hint"
+version_constraint = ">=1.0"
+install_hints = { darwin = "brew install needs-darwin-hint" }
+"#;
+        let m = DepsManifest::parse(manifest_text, manifest_dir).unwrap();
+
+        let failures = vec![ProbeFailure::Missing {
+            tool: "needs-darwin-hint".to_string(),
+            reason: "not found on PATH".to_string(),
+        }];
+        let rendered = render_probe_failures(&m, &failures);
+        assert!(
+            rendered.contains("install hint (darwin):"),
+            "expected darwin-keyed install hint, got: {rendered}"
+        );
+        assert!(
+            rendered.contains("brew install needs-darwin-hint"),
+            "expected darwin hint string in output, got: {rendered}"
+        );
+        assert!(
+            !rendered.contains("available platforms"),
+            "should not fall through to available-platforms branch, got: {rendered}"
+        );
     }
 }
