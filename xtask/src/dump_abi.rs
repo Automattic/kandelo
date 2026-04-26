@@ -260,6 +260,7 @@ fn channel_signal_area() -> Value {
 
 fn marshalled_structs() -> Value {
     use shared::{WasmDirent, WasmFlock, WasmPollFd, WasmStat, WasmStatfs, WasmTimespec};
+    use shared::fbdev::{FbBitfield, FbFixScreenInfo, FbVarScreenInfo};
 
     let mut structs: JsonMap = BTreeMap::new();
     structs.insert(
@@ -293,6 +294,31 @@ fn marshalled_structs() -> Value {
         struct_layout!(WasmStatfs {
             f_type, f_bsize, f_blocks, f_bfree, f_bavail, f_files, f_ffree,
             f_fsid, f_namelen, f_frsize, f_flags, _pad,
+        }),
+    );
+    structs.insert(
+        "FbBitfield".into(),
+        struct_layout!(FbBitfield { offset, length, msb_right }),
+    );
+    structs.insert(
+        "FbVarScreenInfo".into(),
+        struct_layout!(FbVarScreenInfo {
+            xres, yres, xres_virtual, yres_virtual, xoffset, yoffset,
+            bits_per_pixel, grayscale,
+            red, green, blue, transp,
+            nonstd, activate, height, width, accel_flags, pixclock,
+            left_margin, right_margin, upper_margin, lower_margin,
+            hsync_len, vsync_len, sync, vmode, rotate, colorspace,
+            reserved,
+        }),
+    );
+    structs.insert(
+        "FbFixScreenInfo".into(),
+        struct_layout!(FbFixScreenInfo {
+            id, smem_start, smem_len, fb_type, type_aux, visual,
+            xpanstep, ypanstep, ywrapstep, _pad,
+            line_length, mmio_start, mmio_len, accel,
+            capabilities, reserved, _pad_to_80,
         }),
     );
 

@@ -1,5 +1,5 @@
 {
-  "abi_version": 5,
+  "abi_version": 6,
   "asyncify_save_slots": [
     {
       "meaning": "parent TLS base (__tls_base) saved for child rewind",
@@ -1423,6 +1423,266 @@
     }
   ],
   "marshalled_structs": {
+    "FbBitfield": {
+      "fields": [
+        {
+          "name": "offset",
+          "offset": 0,
+          "span": 4
+        },
+        {
+          "name": "length",
+          "offset": 4,
+          "span": 4
+        },
+        {
+          "name": "msb_right",
+          "offset": 8,
+          "span": 4
+        }
+      ],
+      "size": 12
+    },
+    "FbFixScreenInfo": {
+      "fields": [
+        {
+          "name": "id",
+          "offset": 0,
+          "span": 16
+        },
+        {
+          "name": "smem_start",
+          "offset": 16,
+          "span": 4
+        },
+        {
+          "name": "smem_len",
+          "offset": 20,
+          "span": 4
+        },
+        {
+          "name": "fb_type",
+          "offset": 24,
+          "span": 4
+        },
+        {
+          "name": "type_aux",
+          "offset": 28,
+          "span": 4
+        },
+        {
+          "name": "visual",
+          "offset": 32,
+          "span": 4
+        },
+        {
+          "name": "xpanstep",
+          "offset": 36,
+          "span": 2
+        },
+        {
+          "name": "ypanstep",
+          "offset": 38,
+          "span": 2
+        },
+        {
+          "name": "ywrapstep",
+          "offset": 40,
+          "span": 2
+        },
+        {
+          "name": "_pad",
+          "offset": 42,
+          "span": 2
+        },
+        {
+          "name": "line_length",
+          "offset": 44,
+          "span": 4
+        },
+        {
+          "name": "mmio_start",
+          "offset": 48,
+          "span": 4
+        },
+        {
+          "name": "mmio_len",
+          "offset": 52,
+          "span": 4
+        },
+        {
+          "name": "accel",
+          "offset": 56,
+          "span": 4
+        },
+        {
+          "name": "capabilities",
+          "offset": 60,
+          "span": 2
+        },
+        {
+          "name": "reserved",
+          "offset": 62,
+          "span": 6
+        },
+        {
+          "name": "_pad_to_80",
+          "offset": 68,
+          "span": 12
+        }
+      ],
+      "size": 80
+    },
+    "FbVarScreenInfo": {
+      "fields": [
+        {
+          "name": "xres",
+          "offset": 0,
+          "span": 4
+        },
+        {
+          "name": "yres",
+          "offset": 4,
+          "span": 4
+        },
+        {
+          "name": "xres_virtual",
+          "offset": 8,
+          "span": 4
+        },
+        {
+          "name": "yres_virtual",
+          "offset": 12,
+          "span": 4
+        },
+        {
+          "name": "xoffset",
+          "offset": 16,
+          "span": 4
+        },
+        {
+          "name": "yoffset",
+          "offset": 20,
+          "span": 4
+        },
+        {
+          "name": "bits_per_pixel",
+          "offset": 24,
+          "span": 4
+        },
+        {
+          "name": "grayscale",
+          "offset": 28,
+          "span": 4
+        },
+        {
+          "name": "red",
+          "offset": 32,
+          "span": 12
+        },
+        {
+          "name": "green",
+          "offset": 44,
+          "span": 12
+        },
+        {
+          "name": "blue",
+          "offset": 56,
+          "span": 12
+        },
+        {
+          "name": "transp",
+          "offset": 68,
+          "span": 12
+        },
+        {
+          "name": "nonstd",
+          "offset": 80,
+          "span": 4
+        },
+        {
+          "name": "activate",
+          "offset": 84,
+          "span": 4
+        },
+        {
+          "name": "height",
+          "offset": 88,
+          "span": 4
+        },
+        {
+          "name": "width",
+          "offset": 92,
+          "span": 4
+        },
+        {
+          "name": "accel_flags",
+          "offset": 96,
+          "span": 4
+        },
+        {
+          "name": "pixclock",
+          "offset": 100,
+          "span": 4
+        },
+        {
+          "name": "left_margin",
+          "offset": 104,
+          "span": 4
+        },
+        {
+          "name": "right_margin",
+          "offset": 108,
+          "span": 4
+        },
+        {
+          "name": "upper_margin",
+          "offset": 112,
+          "span": 4
+        },
+        {
+          "name": "lower_margin",
+          "offset": 116,
+          "span": 4
+        },
+        {
+          "name": "hsync_len",
+          "offset": 120,
+          "span": 4
+        },
+        {
+          "name": "vsync_len",
+          "offset": 124,
+          "span": 4
+        },
+        {
+          "name": "sync",
+          "offset": 128,
+          "span": 4
+        },
+        {
+          "name": "vmode",
+          "offset": 132,
+          "span": 4
+        },
+        {
+          "name": "rotate",
+          "offset": 136,
+          "span": 4
+        },
+        {
+          "name": "colorspace",
+          "offset": 140,
+          "span": 4
+        },
+        {
+          "name": "reserved",
+          "offset": 144,
+          "span": 16
+        }
+      ],
+      "size": 160
+    },
     "WasmDirent": {
       "fields": [
         {
