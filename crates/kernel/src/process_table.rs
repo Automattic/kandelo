@@ -16,12 +16,21 @@ extern crate alloc;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
+use core::sync::atomic::AtomicI32;
 
 use wasm_posix_shared::Errno;
 use wasm_posix_shared::flags::O_ACCMODE;
 
 use crate::ofd::FileType;
 use crate::process::Process;
+
+/// Owning pid of `/dev/fb0`, or `-1` if no process holds it.
+///
+/// `/dev/fb0` is single-open; the second `open` while another process
+/// holds the device returns `EBUSY`. The owner is released when the
+/// owning process closes its last `/dev/fb0` fd, calls `munmap` on its
+/// framebuffer region, or exits.
+pub static FB0_OWNER: AtomicI32 = AtomicI32::new(-1);
 
 /// Table of all processes managed by the centralized kernel.
 ///

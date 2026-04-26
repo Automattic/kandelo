@@ -116,6 +116,24 @@ pub enum ProcessState {
     Exited,
 }
 
+/// Per-process binding tracking the live mmap of `/dev/fb0`.
+///
+/// The pixel buffer lives inside the process's wasm `Memory`. The host
+/// reads it directly via a typed-array view over the same SharedArrayBuffer.
+#[derive(Debug, Clone, Copy)]
+pub struct FbBinding {
+    /// Offset within the process's wasm `Memory` where the pixel buffer
+    /// starts. Address-style usize so it survives wasm32 / wasm64.
+    pub addr: usize,
+    /// Length in bytes (`smem_len`).
+    pub len: usize,
+    pub w: u32,
+    pub h: u32,
+    pub stride: u32,
+    /// Pixel format tag (reserved; currently always 0 = BGRA32).
+    pub fmt: u32,
+}
+
 /// Per-thread state within a process.
 #[derive(Debug, Clone)]
 pub struct ThreadInfo {
@@ -298,6 +316,9 @@ pub struct Process {
     pub procfs_bufs: Vec<Option<Vec<u8>>>,
     /// True if this process has called exec (for POSIX setpgid EACCES check).
     pub has_exec: bool,
+    /// Live mmap of `/dev/fb0`, if any. `Some` between successful
+    /// `mmap` and the matching `munmap`/process-exit/exec.
+    pub fb_binding: Option<FbBinding>,
 }
 
 impl Process {
@@ -376,6 +397,7 @@ impl Process {
             memfds: Vec::new(),
             procfs_bufs: Vec::new(),
             has_exec: false,
+            fb_binding: None,
         }
     }
 

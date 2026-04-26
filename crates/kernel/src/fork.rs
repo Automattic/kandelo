@@ -929,6 +929,12 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
         memfds: Vec::new(),
         procfs_bufs: Vec::new(),
         has_exec: false,
+        // Fork children do NOT inherit the framebuffer binding. The
+        // /dev/fb0 device is single-owner (FB0_OWNER); a forked child
+        // gets a private mmap copy in its own Memory but is not
+        // registered as a host display target. fbDOOM doesn't fork
+        // mid-game; documented limitation in the design doc.
+        fb_binding: None,
     })
 }
 
@@ -1304,6 +1310,9 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
         memfds: Vec::new(),
         procfs_bufs: Vec::new(),
         has_exec: false,
+        // exec wipes any prior framebuffer binding — the new program
+        // must open and mmap /dev/fb0 itself.
+        fb_binding: None,
     })
 }
 

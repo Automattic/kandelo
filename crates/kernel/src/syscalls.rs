@@ -134,6 +134,51 @@ fn match_dev_fd(path: &[u8]) -> Option<i32> {
     None
 }
 
+/// Try to claim `/dev/fb0` for the calling process.
+///
+/// `/dev/fb0` is single-owner: at most one process at a time can have an
+/// open fd referencing it. Re-opens by the current owner are allowed
+/// (mirrors Linux fbdev's "exclusive open" semantics). Anyone else gets
+/// `EBUSY`.
+fn acquire_fb0_or_busy(pid: u32) -> Result<(), Errno> {
+    use core::sync::atomic::Ordering;
+    let pid = pid as i32;
+    let owner = crate::process_table::FB0_OWNER.load(Ordering::SeqCst);
+    if owner != -1 && owner != pid {
+        return Err(Errno::EBUSY);
+    }
+    let _ = crate::process_table::FB0_OWNER
+        .compare_exchange(-1, pid, Ordering::SeqCst, Ordering::SeqCst);
+    Ok(())
+}
+
+/// Release `/dev/fb0` ownership held by `pid`, if any. Idempotent: safe
+/// to call from `close`, `munmap`, or process exit even when the process
+/// never owned the device.
+pub(crate) fn maybe_release_fb0(pid: u32) {
+    use core::sync::atomic::Ordering;
+    let _ = crate::process_table::FB0_OWNER
+        .compare_exchange(pid as i32, -1, Ordering::SeqCst, Ordering::SeqCst);
+}
+
+/// True iff `proc` still has an open fd referencing `/dev/fb0`.
+fn proc_has_fb0_fd(proc: &Process) -> bool {
+    use crate::ofd::FileType;
+    for fd_i in 0..1024i32 {
+        if let Ok(entry) = proc.fd_table.get(fd_i) {
+            if let Some(ofd) = proc.ofd_table.get(entry.ofd_ref.0) {
+                if ofd.file_type == FileType::CharDevice
+                    && VirtualDevice::from_host_handle(ofd.host_handle)
+                        == Some(VirtualDevice::Fb0)
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 /// Build a synthetic WasmStat for a virtual device.
 fn virtual_device_stat(dev: VirtualDevice, uid: u32, gid: u32) -> WasmStat {
     use wasm_posix_shared::mode::S_IFCHR;
@@ -182,6 +227,9 @@ pub fn sys_open(
 
     // Virtual device nodes — handle in-kernel, no host call
     if let Some(dev) = match_virtual_device(&resolved) {
+        if dev == VirtualDevice::Fb0 {
+            acquire_fb0_or_busy(proc.pid)?;
+        }
         let status_flags = oflags & !CREATION_FLAGS;
         let ofd_idx = proc.ofd_table.create(
             FileType::CharDevice, status_flags, dev.host_handle(), resolved,
@@ -484,6 +532,18 @@ pub fn sys_close(
                 }
             }
         }
+    }
+
+    // /dev/fb0 ownership: release if this process no longer holds any
+    // Fb0 fd and no live mmap remains. Linux semantics: an mmap
+    // outlives close of its fd, so we only drop ownership when the
+    // mapping is also gone (handled in munmap / process exit).
+    if file_type == FileType::CharDevice
+        && VirtualDevice::from_host_handle(host_handle) == Some(VirtualDevice::Fb0)
+        && proc.fb_binding.is_none()
+        && !proc_has_fb0_fd(proc)
+    {
+        maybe_release_fb0(proc.pid);
     }
 
     Ok(())
@@ -5352,6 +5412,9 @@ pub fn sys_openat(
 
     // Virtual device nodes — handle in-kernel, no host call
     if let Some(dev) = match_virtual_device(&resolved) {
+        if dev == VirtualDevice::Fb0 {
+            acquire_fb0_or_busy(proc.pid)?;
+        }
         let status_flags = oflags & !CREATION_FLAGS;
         let ofd_idx = proc.ofd_table.create(
             FileType::CharDevice, status_flags, dev.host_handle(), resolved,
@@ -14927,5 +14990,43 @@ mod tests {
         assert_eq!(st.st_mode & wasm_posix_shared::mode::S_IFMT,
                    wasm_posix_shared::mode::S_IFCHR);
         assert_eq!(st.st_ino, VirtualDevice::Fb0.ino());
+    }
+
+    /// Mutex serializing tests that touch the global FB0_OWNER atomic.
+    static FB0_OWNER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn open_dev_fb0_is_single_owner() {
+        use core::sync::atomic::Ordering;
+        let _g = FB0_OWNER_LOCK.lock().unwrap();
+        // Reset state in case a prior test (with a poisoned lock) left the
+        // atomic dirty. Tests within this lock own the value.
+        crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+
+        let mut proc1 = Process::new(1);
+        let mut proc2 = Process::new(2);
+        let mut host = MockHostIO::new();
+
+        // First open from pid 1 succeeds.
+        let fd1 = sys_open(&mut proc1, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
+
+        // Second open from a different process is EBUSY.
+        let err = sys_open(&mut proc2, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap_err();
+        assert_eq!(err, Errno::EBUSY);
+
+        // Re-open by the SAME process is allowed.
+        let fd1b = sys_open(&mut proc1, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
+        assert_ne!(fd1, fd1b);
+
+        // After both fds in the owning process close, ownership releases.
+        sys_close(&mut proc1, &mut host, fd1).unwrap();
+        assert_eq!(crate::process_table::FB0_OWNER.load(Ordering::SeqCst), proc1.pid as i32);
+        sys_close(&mut proc1, &mut host, fd1b).unwrap();
+        assert_eq!(crate::process_table::FB0_OWNER.load(Ordering::SeqCst), -1);
+
+        // Now another process can open.
+        let fd2 = sys_open(&mut proc2, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
+        sys_close(&mut proc2, &mut host, fd2).unwrap();
+        assert_eq!(crate::process_table::FB0_OWNER.load(Ordering::SeqCst), -1);
     }
 }
