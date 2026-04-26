@@ -161,23 +161,32 @@ fn expand_tilde(s: &str) -> PathBuf {
 
 /// Cache-key sha for a manifest. Recursively hashes transitive deps
 /// so any change in the tree invalidates every downstream consumer.
+/// The hash domain and inputs differ by manifest kind:
 ///
-/// Inputs hashed (order-sensitive, newline-delimited domain-separated):
+/// Library / program kind (arch- and ABI-specific artifacts):
+///   domain `"wasm-posix-deps.v2\n"`, then
 ///   `name`, `version`, `revision`, `target_arch`, `abi_version`,
-///   `source.url`, `source.sha256`, then for each dep (sorted by name):
-///     `dep.name`, `dep.version`, hex(dep_sha)
+///   `source.url`, `source.sha256`, then for each dep (sorted by
+///   name): `dep.name`, `dep.version`, hex(dep_sha).
 ///
-/// `arch` and `abi_version` are propagated unchanged into recursive
-/// calls — every node in a single resolution shares the same target
-/// arch and ABI. An ABI bump therefore auto-invalidates every cache
-/// entry transitively, since the v2 domain separator + new inputs
-/// shift the leaf shas, which ripple up through their consumers.
+/// Source kind (raw upstream archive, arch- and ABI-agnostic):
+///   domain `"wasm-posix-deps-source.v2\n"`, then
+///   `name`, `version`, `revision`, `source.url`, `source.sha256`,
+///   then the same per-dep tail. `target_arch` and `abi_version` are
+///   intentionally omitted — a source tarball does not change when
+///   the kernel ABI bumps or when we cross-compile for a new arch.
 ///
-/// Note: the single `abi_version` parameter here is the **consumer's**
-/// target ABI. Archives separately advertise a `Vec<u32>` of ABIs they
-/// are compatible with via `[compatibility].abi_versions`; Task A.9
-/// verifies the consumer's value is contained in the archive's set
-/// during remote-fetch.
+/// ABI-bump propagation: a kernel ABI bump shifts every library and
+/// program leaf sha (because `abi_version` is in their input set),
+/// and those shifts ripple up to their consumers via the per-dep
+/// `hex(dep_sha)` tail. Source-kind leaf shas stay stable, but a
+/// library or program that consumes a source-kind dep still
+/// invalidates correctly because its own `abi_version` input changes.
+///
+/// Note: the `abi_version` parameter here is the **consumer's** target
+/// ABI. Archives separately advertise a `Vec<u32>` of compatible ABIs
+/// via `[compatibility].abi_versions`; Task A.9 verifies the
+/// consumer's value is in that set during remote-fetch.
 ///
 /// Cycle detection via `chain`: a manifest may not transitively
 /// depend on itself.
