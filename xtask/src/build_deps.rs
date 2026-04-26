@@ -223,21 +223,39 @@ pub fn compute_sha(
     chain.pop();
 
     let mut h = Sha256::new();
-    h.update(b"wasm-posix-deps.v2\n");
-    h.update(target.name.as_bytes());
-    h.update(b"\n");
-    h.update(target.version.as_bytes());
-    h.update(b"\n");
-    h.update(target.revision.to_le_bytes());
-    h.update(b"\n");
-    h.update(arch.as_str().as_bytes());
-    h.update(b"\n");
-    h.update(abi_version.to_le_bytes());
-    h.update(b"\n");
-    h.update(target.source.url.as_bytes());
-    h.update(b"\n");
-    h.update(target.source.sha256.as_bytes());
-    h.update(b"\n");
+    match target.kind {
+        ManifestKind::Source => {
+            h.update(b"wasm-posix-deps-source.v2\n");
+            h.update(target.name.as_bytes());
+            h.update(b"\n");
+            h.update(target.version.as_bytes());
+            h.update(b"\n");
+            h.update(target.revision.to_le_bytes());
+            h.update(b"\n");
+            // No target_arch, no abi_version — sources are arch/ABI-agnostic.
+            h.update(target.source.url.as_bytes());
+            h.update(b"\n");
+            h.update(target.source.sha256.as_bytes());
+            h.update(b"\n");
+        }
+        ManifestKind::Library | ManifestKind::Program => {
+            h.update(b"wasm-posix-deps.v2\n");
+            h.update(target.name.as_bytes());
+            h.update(b"\n");
+            h.update(target.version.as_bytes());
+            h.update(b"\n");
+            h.update(target.revision.to_le_bytes());
+            h.update(b"\n");
+            h.update(arch.as_str().as_bytes());
+            h.update(b"\n");
+            h.update(abi_version.to_le_bytes());
+            h.update(b"\n");
+            h.update(target.source.url.as_bytes());
+            h.update(b"\n");
+            h.update(target.source.sha256.as_bytes());
+            h.update(b"\n");
+        }
+    }
     for (dref, dsha) in &dep_shas {
         h.update(dref.name.as_bytes());
         h.update(b"@");
@@ -2598,5 +2616,89 @@ wasm = "vim.wasm"
         let all = reg.walk_all().unwrap();
         let (_, m) = all.iter().find(|(n, _)| n == "libZ").unwrap();
         assert_eq!(m.version, "1.0.0", "first root should win, got version {}", m.version);
+    }
+
+    #[test]
+    fn source_kind_sha_omits_arch_and_abi_inputs() {
+        let dir = tempdir("c3a");
+        let m = parse_source_manifest(&dir);
+
+        let registry = Registry { roots: vec![] };
+        let sha32_v1 = compute_sha(
+            &m,
+            &registry,
+            TargetArch::Wasm32,
+            4,
+            &mut Default::default(),
+            &mut Default::default(),
+        )
+        .unwrap();
+        let sha64_v1 = compute_sha(
+            &m,
+            &registry,
+            TargetArch::Wasm64,
+            4,
+            &mut Default::default(),
+            &mut Default::default(),
+        )
+        .unwrap();
+        let sha32_v9 = compute_sha(
+            &m,
+            &registry,
+            TargetArch::Wasm32,
+            9,
+            &mut Default::default(),
+            &mut Default::default(),
+        )
+        .unwrap();
+        assert_eq!(sha32_v1, sha64_v1, "arch must not affect source sha");
+        assert_eq!(sha32_v1, sha32_v9, "abi must not affect source sha");
+    }
+
+    #[test]
+    fn source_kind_sha_uses_distinct_domain() {
+        let dir = tempdir("c3b");
+        let m_src = parse_source_manifest(&dir);
+
+        // Library manifest with same name/version + same source URL+sha:
+        // confirms the domain separator is the only differentiator.
+        let lib_text = r#"
+kind = "library"
+name = "pcre2-source"
+version = "10.42"
+revision = 1
+
+[source]
+url = "https://example.test/pcre2.tar.bz2"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "BSD-3-Clause"
+
+[outputs]
+libs = []
+"#;
+        let m_lib = DepsManifest::parse(lib_text, dir.clone()).unwrap();
+
+        let registry = Registry { roots: vec![] };
+        let s_src = compute_sha(
+            &m_src,
+            &registry,
+            TargetArch::Wasm32,
+            4,
+            &mut Default::default(),
+            &mut Default::default(),
+        )
+        .unwrap();
+        let s_lib = compute_sha(
+            &m_lib,
+            &registry,
+            TargetArch::Wasm32,
+            4,
+            &mut Default::default(),
+            &mut Default::default(),
+        )
+        .unwrap();
+        assert_ne!(s_src, s_lib, "source vs library shas must differ on domain");
     }
 }
