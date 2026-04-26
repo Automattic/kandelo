@@ -9,7 +9,8 @@ CROSS_BUILD_DIR="$SCRIPT_DIR/cpython-cross-build"
 INSTALL_DIR="$SCRIPT_DIR/cpython-install"
 
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SYSROOT="$REPO_ROOT/sysroot"
+# Explicit env wins; else the in-tree sysroot.
+SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
 if ! command -v wasm32posix-cc &>/dev/null; then
@@ -17,20 +18,25 @@ if ! command -v wasm32posix-cc &>/dev/null; then
     exit 1
 fi
 
-# Build zlib if not already built (CPython needs it for zipimport)
-ZLIB_DIR="$SCRIPT_DIR/../zlib/zlib-install"
-if [ ! -f "$ZLIB_DIR/lib/libz.a" ]; then
-    echo "==> Building zlib..."
-    bash "$SCRIPT_DIR/../zlib/build-zlib.sh"
-fi
+# --- Resolve zlib via the dep cache ---
+# Env-var short-circuit lets an outer resolver run pass the prefix
+# through without re-invoking cargo.
+HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
+resolve_dep() {
+    local name="$1"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TARGET" --quiet -- build-deps resolve "$name")
+}
 
-# Install zlib into sysroot
-echo "==> Installing zlib into sysroot..."
-cp "$ZLIB_DIR/include/zlib.h" "$ZLIB_DIR/include/zconf.h" "$SYSROOT/include/"
-cp "$ZLIB_DIR/lib/libz.a" "$SYSROOT/lib/"
-mkdir -p "$SYSROOT/lib/pkgconfig"
-sed "s|^prefix=.*|prefix=$SYSROOT|" "$ZLIB_DIR/lib/pkgconfig/zlib.pc" \
-    > "$SYSROOT/lib/pkgconfig/zlib.pc"
+ZLIB_PREFIX="${WASM_POSIX_DEP_ZLIB_DIR:-}"
+if [ -z "$ZLIB_PREFIX" ]; then
+    echo "==> Resolving zlib via cargo xtask build-deps..."
+    ZLIB_PREFIX="$(resolve_dep zlib)"
+fi
+if [ ! -f "$ZLIB_PREFIX/lib/libz.a" ]; then
+    echo "ERROR: zlib resolve returned '$ZLIB_PREFIX' but libz.a missing" >&2
+    exit 1
+fi
+echo "==> zlib at $ZLIB_PREFIX"
 
 # Ensure WASI stub libraries exist (CPython's wasi detection injects -lwasi-emulated-*)
 for lib in libwasi-emulated-signal.a libwasi-emulated-getpid.a libwasi-emulated-process-clocks.a; do
@@ -431,6 +437,7 @@ cd "$CROSS_BUILD_DIR"
 if [ ! -f Makefile ]; then
     # Run configure directly (not via wasm32posix-configure) because CPython
     # requires --host=wasm32-unknown-wasi, not wasm32-unknown-none.
+    PKG_CONFIG_PATH="$ZLIB_PREFIX/lib/pkgconfig" \
     CONFIG_SITE="$CONFIG_SITE" \
     CC=wasm32posix-cc \
     CXX=wasm32posix-c++ \
