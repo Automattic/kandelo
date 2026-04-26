@@ -158,6 +158,7 @@ fn dir_entries(
             entries.push((b"tty".into(), DT_CHR, devfs_ino(b"/dev/tty")));
             entries.push((b"console".into(), DT_CHR, devfs_ino(b"/dev/console")));
             entries.push((b"ptmx".into(), DT_CHR, devfs_ino(b"/dev/ptmx")));
+            entries.push((b"fb0".into(), DT_CHR, devfs_ino(b"/dev/fb0")));
 
             // Symlinks
             entries.push((b"stdin".into(), DT_LNK, devfs_ino(b"/dev/stdin")));
@@ -244,5 +245,20 @@ mod tests {
         assert_ne!(ino1, ino2);
         assert_ne!(ino2, ino3);
         assert_ne!(ino1, ino3);
+    }
+
+    #[test]
+    fn fb0_is_listed_in_dev_dir() {
+        let proc = crate::process::Process::new(1);
+        let entries = dir_entries(&proc, &DevfsEntry::Root);
+        let names: Vec<&[u8]> = entries.iter().map(|(n, _, _)| n.as_slice()).collect();
+        assert!(names.iter().any(|n| *n == b"fb0"),
+                "fb0 missing from /dev listing: {:?}", names);
+        // Listed as a character device.
+        for (name, dtype, _) in entries.iter() {
+            if name == b"fb0" {
+                assert_eq!(*dtype, DT_CHR);
+            }
+        }
     }
 }
