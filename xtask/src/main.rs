@@ -7,6 +7,9 @@
 //!   build-deps      Wasm library dep-graph resolver (see docs/dependency-management.md).
 //!   stage-release   Orchestrate full V2 producer side: walk registry, build
 //!                   archives, emit manifest.json into a staging directory.
+//!   install-release Consumer side of V2: read manifest.json, fetch + verify
+//!                   library/program archives, mirror program outputs into
+//!                   local-binaries/.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -19,6 +22,7 @@ mod bundle_program;
 mod deps_manifest;
 mod dump_abi;
 mod host_tool_probe;
+mod install_release;
 mod remote_fetch;
 mod source_extract;
 mod stage_release;
@@ -32,7 +36,7 @@ fn main() -> ExitCode {
         None => {
             eprintln!("usage: xtask <subcommand> [args...]");
             eprintln!(
-                "subcommands: dump-abi, build-manifest, bundle-program, build-deps, stage-release"
+                "subcommands: dump-abi, build-manifest, bundle-program, build-deps, stage-release, install-release"
             );
             return ExitCode::from(2);
         }
@@ -44,6 +48,7 @@ fn main() -> ExitCode {
         "bundle-program" => bundle_program::run(rest),
         "build-deps" => build_deps::run(rest),
         "stage-release" => stage_release::run(rest),
+        "install-release" => install_release::run(rest),
         other => {
             eprintln!("xtask: unknown subcommand {other:?}");
             return ExitCode::from(2);
