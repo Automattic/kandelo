@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+mod archive_stage;
 mod build_deps;
 mod build_manifest;
 mod bundle_program;
