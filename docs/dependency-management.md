@@ -436,6 +436,237 @@ script), and leave the rest of the project at the original
 optimization level. Document the rule inline so the next person
 to touch the build doesn't quietly raise the level.
 
+## Release archives
+
+Not every contributor wants — or has the toolchain for — a
+local cross-compile. V2 ships pre-built `.tar.zst` archives
+alongside the existing release manifest so a fresh checkout can
+fetch a binary, verify it against the consumer's source
+`deps.toml`, and install it directly into the resolver's cache.
+A subsequent `cargo xtask build-deps resolve` then hits the
+canonical cache path with no source build.
+
+### Producer / consumer round-trip
+
+Two `xtask` subcommands bracket the pipeline. Both accept
+`--abi <N>` (defaults to the kernel's current `ABI_VERSION`)
+and emit machine-readable progress on stderr.
+
+**Producer — `cargo xtask stage-release`:**
+
+```bash
+cargo xtask stage-release \
+    --staging /tmp/release-staging \
+    --abi 4 \
+    --tag binaries-abi-v4-2026-04-26 \
+    --arch wasm32 --arch wasm64 \
+    --build-timestamp 2026-04-26T10:00:00Z \
+    --build-host darwin-arm64
+```
+
+It walks the registry (`Registry::walk_all`), filters to
+`kind=library` and `kind=program` manifests, fans out across
+the requested arches, calls `ensure_built` to populate the
+resolver cache when needed, then `archive_stage` to pack each
+cache tree into
+
+```
+<staging>/{libs,programs}/<name>-<version>-rev<N>-<arch>-<shortsha>.tar.zst
+```
+
+Finally it delegates to `build-manifest` to emit
+`<staging>/manifest.json` covering both V1 (kernel, userspace,
+test programs) and V2 (libs + programs) entries.
+
+**Consumer — `cargo xtask install-release`:**
+
+```bash
+cargo xtask install-release \
+    --manifest /path/to/manifest.json \
+    --archive-base https://github.com/.../releases/download/<tag>
+```
+
+It iterates manifest entries that carry `archive_name` (V2
+shape) and dispatches each one through `remote_fetch`, which
+handles fetch + verify + install. `--archive-base` accepts both
+`https://…` and `file://…/…` (the round-trip test uses the
+latter); a relative path is rejected. Library entries land in
+`<cache>/libs/<canonical>/`; program entries land in both the
+cache and `local-binaries/programs/<name>/` so subsequent
+program builds short-circuit through the same lookup path
+hand-built programs use.
+
+### The injected `[compatibility]` block
+
+`stage-release` reads each consumer's source `deps.toml`,
+appends a `[compatibility]` block, and writes the result as
+`manifest.toml` at the root of the archive (alongside an
+`artifacts/` subtree carrying the built files). The block
+carries five fields:
+
+```toml
+[compatibility]
+target_arch = "wasm32"        # required: wasm32 | wasm64
+abi_versions = [4]            # required: list of integers ≥ 1
+cache_key_sha = "9acb9405…"   # required: 64-char lowercase hex
+build_timestamp = "2026-04-26T10:00:00Z"   # optional, informational
+build_host = "darwin-arm64"                # optional, informational
+```
+
+`DepsManifest::parse_archived` is the validator. It rejects:
+
+- a missing or empty `[compatibility]` block (a source
+  `deps.toml` doesn't have one; an archived `manifest.toml` must),
+- empty `abi_versions`,
+- `cache_key_sha` that isn't 64 lowercase hex chars,
+- a re-injected block on a manifest that already had one.
+
+The producer round-trips its emitted text through
+`parse_archived` before calling the tar/zstd writer, so
+malformed output rejects at archive-creation time rather than
+on a consumer machine.
+
+### Why `cache_key_sha` is the strict equivalence check
+
+The `target_arch` and `abi_versions` axes are coarse — many
+archives might share `(wasm32, [4])`. The `cache_key_sha`
+axis is the strict-equivalence axis: a consumer recomputes
+the cache-key sha from its current source tree and rejects the
+archive if the recorded value differs.
+
+Concrete example. Suppose a contributor's local `deps.toml`
+for ncurses has bumped `revision` from 1 to 2 (perhaps to pick
+up a new compiler flag). The producer's archive recorded
+`cache_key_sha` is whatever rev1 produced — say
+`9acb9405…`. The consumer's local cache key is now a different
+sha — say `b1773def…`. `remote_fetch` walks its 4-axis chain:
+
+1. Verify archive bytes against `archive_sha256` from the
+   manifest. Pass.
+2. Parse `manifest.toml` from the archive. Pass.
+3. `target_arch` matches the resolver's arch. Pass.
+4. The consumer's ABI is in `abi_versions`. Pass.
+5. `cache_key_sha` matches the locally-computed sha. **Fail.**
+
+`remote_fetch` returns the cache-key-mismatch error, and
+`install-release` errors hard (a manual install is an explicit
+"trust this archive" gesture; falling back to source build
+silently would defeat the point). In the implicit `resolve`
+codepath that `build-deps` hits during a normal build, the same
+rejection causes the resolver to fall through to source build
+— same outcome as if no archive had been published.
+
+That is the strict-equivalence check the V2 design relies on:
+the archive is honored if and only if its source-side inputs
+hash to exactly what this checkout would produce.
+
+### Worked example: zlib
+
+Source manifest at `examples/libs/zlib/deps.toml`:
+
+```toml
+kind = "library"
+name = "zlib"
+version = "1.3.1"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz"
+sha256 = "9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23"
+
+[license]
+spdx = "Zlib"
+
+[outputs]
+libs = ["lib/libz.a"]
+headers = ["include/zlib.h", "include/zconf.h"]
+pkgconfig = ["lib/pkgconfig/zlib.pc"]
+```
+
+After `stage-release --arch wasm32`, one staged archive lands
+as
+
+```
+<staging>/libs/zlib-1.3.1-rev1-wasm32-9acb9405.tar.zst
+```
+
+(short sha `9acb9405` is the first 8 chars of the cache-key sha
+for this manifest, identical to the canonical cache directory
+suffix — `cargo xtask build-deps sha zlib` prints the full
+form). `manifest.json` carries the entry:
+
+```json
+{
+  "name": "zlib-1.3.1-rev1-wasm32-9acb9405.tar.zst",
+  "program": "zlib",
+  "kind": "library",
+  "arch": "wasm32",
+  "upstream_version": "1.3.1",
+  "revision": 1,
+  "size": 12345,
+  "sha256": "<bytes-sha>",
+  "archive_name": "zlib-1.3.1-rev1-wasm32-9acb9405.tar.zst",
+  "archive_sha256": "<bytes-sha>",
+  "compatibility": {
+    "target_arch": "wasm32",
+    "abi_versions": [4],
+    "cache_key_sha": "9acb9405ef818905a193…"
+  },
+  "source": {
+    "url": "https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz",
+    "sha256": "9a93b2b7…"
+  },
+  "license": { "spdx": "Zlib" },
+  "advisories": []
+}
+```
+
+On the consumer side, `install-release` fetches that archive,
+verifies bytes against `archive_sha256`, runs the 4-axis check
+above, then unpacks `artifacts/lib/libz.a`,
+`artifacts/include/{zlib.h,zconf.h}`, and
+`artifacts/lib/pkgconfig/zlib.pc` into
+
+```
+<cache_root>/libs/zlib-1.3.1-rev1-9acb9405/
+```
+
+A subsequent `cargo xtask build-deps resolve zlib` finds the
+canonical path populated and returns it without re-running
+`build-zlib.sh`.
+
+### Shell-script wrappers
+
+`scripts/stage-release.sh` and `scripts/fetch-binaries.sh` wrap
+the xtask subcommands with the rest of the V1 release flow:
+
+- `stage-release.sh` first stages V1 entries (kernel,
+  userspace, hand-bundled test programs) via `xtask
+  bundle-program --plain-wasm`, then delegates to `xtask
+  stage-release` for the V2 lib + program archives. Both halves
+  land in the same flat staging directory with one combined
+  `manifest.json`.
+- `fetch-binaries.sh` reads `binaries.lock`, downloads
+  `manifest.json`, and dispatches V2 entries (those with
+  `archive_name`) to `xtask install-release`. V1 entries
+  continue through the existing bash `place`/`extract_flat_zip`
+  codepaths into `binaries/`. The two halves coexist in one
+  release with no schema-level separation; the `archive_name`
+  field is the per-entry discriminator.
+
+### Round-trip test
+
+`host/test/release-roundtrip.test.ts` exercises the full
+producer/consumer loop end-to-end with synthetic fixtures and
+`file://` URLs. It stages a synthetic library + program,
+installs back via `install-release`, then re-runs `xtask
+build-deps resolve` against the populated cache and asserts
+the consumer's build script does **not** run a second time
+(verified via a sentinel file the script writes per
+invocation). The whole suite skips on machines without `rustc`
+on `PATH`, mirroring the existing host-tool skip pattern.
+
 ## Atomic cache install
 
 The script builds into `<canonical>.tmp-<pid>/`, not the final path.
