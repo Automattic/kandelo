@@ -242,11 +242,18 @@ fn stage_one(
         .map_err(|e| format!("compute_sha: {e}"))?;
     let sha_hex = hex(&sha);
     let short = &sha_hex[..8];
+    // Filename slots: <name>-<v>-rev<N>-abi<N>-<arch>-<short_sha>.tar.zst.
+    // The cache_key_sha already mixes the ABI in as a hash input (so
+    // <short_sha> changes when ABI changes), but encoding it in the
+    // filename too is human-readable redundancy: a glance at the cache
+    // dir or release page tells you which ABI generation each entry
+    // belongs to.
     let archive_name = format!(
-        "{}-{}-rev{}-{}-{}.tar.zst",
+        "{}-{}-rev{}-abi{}-{}-{}.tar.zst",
         m.name,
         m.version,
         m.revision,
+        abi,
         arch.as_str(),
         short,
     );
@@ -448,7 +455,7 @@ script = "build-{name}.sh"
             .collect();
         assert_eq!(archives.len(), 1, "got: {archives:?}");
         assert!(
-            archives[0].starts_with("z-1.0.0-rev1-wasm32-"),
+            archives[0].starts_with("z-1.0.0-rev1-abi4-wasm32-"),
             "got: {:?}",
             archives[0]
         );

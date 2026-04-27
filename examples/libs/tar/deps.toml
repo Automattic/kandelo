@@ -16,5 +16,5 @@ url = "https://git.savannah.gnu.org/cgit/tar.git/tree/COPYING"
 name = "tar"
 wasm = "tar.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/tar-1.35-rev1-wasm32-2632a495.tar.zst"
-archive_sha256 = "a610e0bc6e9f2f57147855b08a29d24079236f13a7767d4271568e0535531664"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/tar-1.35-rev1-abi1-wasm32-2632a495.tar.zst"
+archive_sha256 = "27a7ca608ceffedbe8f1b4370da2ea74f48c0e6fd3381c0234686ece515da4df"

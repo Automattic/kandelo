@@ -135,11 +135,14 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             let sha = compute_sha(&m, &registry, arch, abi, &mut memo, &mut chain)
                 .map_err(|e| format!("compute_sha for {} on {:?}: {e}", m.name, arch))?;
             let short = &crate::util::hex(&sha)[..8];
+            // Filename: <name>-<v>-rev<N>-abi<N>-<arch>-<short_sha>.tar.zst.
+            // Mirrors stage_release's construction.
             let archive_name = format!(
-                "{}-{}-rev{}-{}-{}.tar.zst",
+                "{}-{}-rev{}-abi{}-{}-{}.tar.zst",
                 m.name,
                 m.version,
                 m.revision,
+                abi,
                 arch.as_str(),
                 short,
             );
@@ -681,7 +684,7 @@ mod tests {
 
     fn sample_v2_lib_entry() -> Value {
         serde_json::json!({
-            "name": "zlib-1.3.1-rev1-wasm32-9acb9405.tar.zst",
+            "name": "zlib-1.3.1-rev1-abi4-wasm32-9acb9405.tar.zst",
             "program": "zlib",
             "kind": "library",
             "arch": "wasm32",
@@ -690,7 +693,7 @@ mod tests {
             "size": 12345,
             "sha256": "0".repeat(64),
             "abi_version": null,
-            "archive_name": "zlib-1.3.1-rev1-wasm32-9acb9405.tar.zst",
+            "archive_name": "zlib-1.3.1-rev1-abi4-wasm32-9acb9405.tar.zst",
             "archive_sha256": "0".repeat(64),
             "compatibility": {
                 "target_arch": "wasm32",
@@ -882,10 +885,11 @@ mod tests {
             crate::build_deps::compute_sha(&m, &reg, arch, abi, &mut memo, &mut chain).unwrap();
         let short = &crate::util::hex(&sha)[..8];
         let archive_name = format!(
-            "{}-{}-rev{}-{}-{}.tar.zst",
+            "{}-{}-rev{}-abi{}-{}-{}.tar.zst",
             m.name,
             m.version,
             m.revision,
+            abi,
             arch.as_str(),
             short,
         );

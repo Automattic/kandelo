@@ -16,5 +16,5 @@ url = "https://git.savannah.gnu.org/cgit/sed.git/tree/COPYING?h=v4.9"
 name = "sed"
 wasm = "sed.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/sed-4.9-rev1-wasm32-ceea9e97.tar.zst"
-archive_sha256 = "0ebf46ad602c70a21dcb1dce7c6283508be63b5323aec5c4dea831b922083c04"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/sed-4.9-rev1-abi1-wasm32-ceea9e97.tar.zst"
+archive_sha256 = "f3913ec038f5bc825c30711065eecf10f67642d5557a592c6f63279ed21f9e31"

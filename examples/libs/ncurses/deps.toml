@@ -34,5 +34,5 @@ libs = ["lib/libncursesw.a", "lib/libtinfow.a"]
 headers = ["include/ncursesw"]
 # `--enable-pc-files=no --with-pkg-config=no`: no pkgconfig outputs.
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/ncurses-6.5-rev1-wasm32-eb45ee8b.tar.zst"
-archive_sha256 = "11c7d2b3ce01bc54d397dde1a8812f53e27a601397af8bb3a38ddbe31779a2d9"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/ncurses-6.5-rev1-abi1-wasm32-eb45ee8b.tar.zst"
+archive_sha256 = "3a1eb2e933a391bd00c6fdc2bdd68b113d1248520e12c21ea6894d269a7daa21"

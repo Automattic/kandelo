@@ -27,5 +27,5 @@ wasm = "php.wasm"
 name = "php-fpm"
 wasm = "php-fpm.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/php-8.3.2-rev2-wasm32-1738385f.tar.zst"
-archive_sha256 = "75bc1d8e7a4af0d6f2f56d6d26b40ca281615e583968ee1e3eaa9aa50c5ead37"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/php-8.3.2-rev2-abi1-wasm32-1738385f.tar.zst"
+archive_sha256 = "079aadc69fc7389356605c1c8a68184f6df3393eaa8135f6028636f7df505ecf"

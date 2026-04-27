@@ -30,5 +30,5 @@ libs = ["lib/libxml2.a"]
 headers = ["include/libxml"]
 pkgconfig = ["lib/pkgconfig/libxml-2.0.pc"]
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/libxml2-2.13.8-rev1-wasm32-e1db116f.tar.zst"
-archive_sha256 = "2500c7db46f556bbb6051a2112833564248a3db319a868c64b1b590238482c18"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/libxml2-2.13.8-rev1-abi1-wasm32-e1db116f.tar.zst"
+archive_sha256 = "1dff51d1059e20dedd699104daaadd0bf55f50316672cd7c7781da7024545c71"

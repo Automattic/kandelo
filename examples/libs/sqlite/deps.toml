@@ -25,5 +25,5 @@ libs = ["lib/libsqlite3.a"]
 headers = ["include/sqlite3.h", "include/sqlite3ext.h"]
 pkgconfig = ["lib/pkgconfig/sqlite3.pc"]
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/sqlite-3.49.1-rev1-wasm32-001afa67.tar.zst"
-archive_sha256 = "3f752fc246c631957e3028ad51f84b3bfd6421b36322558a880bac59d64295b6"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/sqlite-3.49.1-rev1-abi1-wasm32-001afa67.tar.zst"
+archive_sha256 = "367b748bac76f4333988c0ebaaccd3c1b1e8a0028fa7f06ad8bf8d8f6ea92e84"

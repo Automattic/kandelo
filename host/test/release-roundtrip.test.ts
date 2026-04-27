@@ -225,7 +225,7 @@ describe.skipIf(hostTriple === null)("release round-trip", () => {
       // Lib archive present.
       const libArchives = readdirSync(path.join(staging, "libs"));
       expect(
-        libArchives.find((f) => f.startsWith("fixlib-1.0.0-rev1-wasm32-")),
+        libArchives.find((f) => f.startsWith(`fixlib-1.0.0-rev1-abi${abiVersion}-wasm32-`)),
         `fixlib archive among ${JSON.stringify(libArchives)}`,
       ).toBeTruthy();
       expect(
@@ -236,7 +236,7 @@ describe.skipIf(hostTriple === null)("release round-trip", () => {
       // Program archive present.
       const progArchives = readdirSync(path.join(staging, "programs"));
       expect(
-        progArchives.find((f) => f.startsWith("fixprog-1.0.0-rev1-wasm32-")),
+        progArchives.find((f) => f.startsWith(`fixprog-1.0.0-rev1-abi${abiVersion}-wasm32-`)),
         `fixprog archive among ${JSON.stringify(progArchives)}`,
       ).toBeTruthy();
 
@@ -297,7 +297,7 @@ describe.skipIf(hostTriple === null)("release round-trip", () => {
       // Library landed in <cache>/libs/<canonical>/.
       const libsDir = path.join(installCache, "libs");
       const libCanonical = readdirSync(libsDir).find((d) =>
-        d.startsWith("fixlib-1.0.0-rev1-wasm32-"),
+        d.startsWith(`fixlib-1.0.0-rev1-abi${abiVersion}-wasm32-`),
       );
       expect(libCanonical, `fixlib canonical among ${readdirSync(libsDir)}`)
         .toBeTruthy();
@@ -311,7 +311,7 @@ describe.skipIf(hostTriple === null)("release round-trip", () => {
       // Program archive landed in <cache>/programs/<canonical>/.
       const progsDir = path.join(installCache, "programs");
       const progCanonical = readdirSync(progsDir).find((d) =>
-        d.startsWith("fixprog-1.0.0-rev1-wasm32-"),
+        d.startsWith(`fixprog-1.0.0-rev1-abi${abiVersion}-wasm32-`),
       );
       expect(progCanonical, `fixprog canonical among ${readdirSync(progsDir)}`)
         .toBeTruthy();

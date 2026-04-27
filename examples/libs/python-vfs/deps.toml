@@ -22,5 +22,5 @@ script = "build-python-vfs.sh"
 name = "python-vfs"
 wasm = "python-vfs.vfs"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/python-vfs-0.1.0-rev1-wasm32-114e0014.tar.zst"
-archive_sha256 = "a8ef97291e06dc34365e9cff8affec0360cf8405a51f3702aaa3d00077598c11"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/python-vfs-0.1.0-rev1-abi1-wasm32-114e0014.tar.zst"
+archive_sha256 = "18c2939261a8d588c2b1a8ad24a218650d5fcd57ae5978c58003ca53066a0bd4"
