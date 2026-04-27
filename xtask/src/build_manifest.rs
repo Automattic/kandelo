@@ -165,6 +165,18 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         }
     }
 
+    // Schema description on `entries` claims "sorted alphabetically by
+    // `name`". V1 staging walk is sorted; V2 registry walk is sorted
+    // per-arch; but the merged vec is two concatenated runs, not a
+    // single sorted sequence. Sort once at the end so the documented
+    // invariant holds and cross-release diffs read cleanly.
+    entries.sort_by(|a, b| {
+        a.get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .cmp(b.get("name").and_then(|v| v.as_str()).unwrap_or(""))
+    });
+
     let mut root: JsonMap = BTreeMap::new();
     root.insert("abi_version".into(), json!(abi));
     root.insert("release_tag".into(), json!(tag));
@@ -1057,6 +1069,84 @@ mod tests {
             "kind=source must NOT produce a V2 entry; got: {:?}",
             entries
         );
+    }
+
+    #[test]
+    fn build_manifest_sorts_entries_by_name() {
+        // Pre-E.3 the manifest concatenated the V1 staging walk
+        // (sorted) with the V2 registry walk (sorted), so the two
+        // groups were each internally ordered but the merged vec was
+        // not. Stage a V1 program archive whose name sorts BETWEEN two
+        // V2 lib archive names; without the post-merge sort the V1
+        // entry would land first.
+        let dir = tempdir("e3-sort");
+        let staging = dir.join("staging");
+        let registry = dir.join("registry");
+        fs::create_dir_all(staging.join("libs")).unwrap();
+        fs::create_dir_all(&registry).unwrap();
+
+        write_lib_manifest(&registry, "alib", "1.0.0");
+        write_lib_manifest(&registry, "zlib", "1.0.0");
+        // Program manifest is required for V1 staging-walk entries —
+        // build_entry looks it up via programs_by_name(registry) for
+        // source + license decoration.
+        write_program_manifest(&registry, "mprog", "1.0.0");
+
+        let (name_a, _) = archive_name_for(
+            &registry,
+            "alib",
+            crate::deps_manifest::TargetArch::Wasm32,
+            4,
+        );
+        let (name_z, _) = archive_name_for(
+            &registry,
+            "zlib",
+            crate::deps_manifest::TargetArch::Wasm32,
+            4,
+        );
+        fs::write(staging.join("libs").join(&name_a), b"a").unwrap();
+        fs::write(staging.join("libs").join(&name_z), b"z").unwrap();
+        // V1 staging-walk file at the staging root. The 8-char hex
+        // suffix is required by ParsedName::parse.
+        let v1_name = "mprog-1.0.0-rev1-deadbeef.zip";
+        fs::write(staging.join(v1_name), b"x").unwrap();
+
+        let manifest_path = dir.join("manifest.json");
+        super::run(vec![
+            "--in".into(),
+            staging.display().to_string(),
+            "--out".into(),
+            manifest_path.display().to_string(),
+            "--tag".into(),
+            "binaries-abi-v4".into(),
+            "--abi".into(),
+            "4".into(),
+            "--registry".into(),
+            registry.display().to_string(),
+            "--arch".into(),
+            "wasm32".into(),
+        ])
+        .unwrap();
+
+        let json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        let names: Vec<String> = json["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["name"].as_str().unwrap().to_string())
+            .collect();
+
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(names, sorted, "entries must be sorted by name");
+        // Sanity: confirm the V1 file actually lands between the V2
+        // archives (proves the test exercises the sort, not just a
+        // happy-path ordering).
+        let pos_a = names.iter().position(|n| n == &name_a).unwrap();
+        let pos_v1 = names.iter().position(|n| n == v1_name).unwrap();
+        let pos_z = names.iter().position(|n| n == &name_z).unwrap();
+        assert!(pos_a < pos_v1 && pos_v1 < pos_z, "got order: {names:?}");
     }
 
     #[test]
