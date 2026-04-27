@@ -1009,7 +1009,7 @@ fn current_abi_version() -> u32 {
 /// Parse a CLI/env value into `TargetArch`. Accepts `wasm32` and
 /// `wasm64`; everything else is rejected with an error message that
 /// names the unknown value and lists the valid options.
-fn parse_target_arch(s: &str) -> Result<TargetArch, String> {
+pub(crate) fn parse_target_arch(s: &str) -> Result<TargetArch, String> {
     match s {
         "wasm32" => Ok(TargetArch::Wasm32),
         "wasm64" => Ok(TargetArch::Wasm64),

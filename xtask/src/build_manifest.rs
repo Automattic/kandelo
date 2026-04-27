@@ -14,8 +14,8 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use wasm_posix_shared as shared;
 
-use crate::build_deps::{programs_by_name, Registry};
-use crate::deps_manifest::DepsManifest;
+use crate::build_deps::{compute_sha, parse_target_arch, programs_by_name, Registry};
+use crate::deps_manifest::{DepsManifest, ManifestKind, TargetArch};
 use crate::repo_root;
 use crate::wasm_abi::extract_abi_version;
 use crate::JsonMap;
@@ -27,6 +27,9 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let mut out_path: Option<PathBuf> = None;
     let mut tag: Option<String> = None;
     let mut generated_at: Option<String> = None;
+    let mut abi_arg: Option<u32> = None;
+    let mut registry_root: Option<PathBuf> = None;
+    let mut arches: Vec<TargetArch> = Vec::new();
 
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
@@ -37,6 +40,22 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             "--generated-at" => {
                 generated_at = Some(it.next().ok_or("--generated-at requires an ISO-8601 value")?)
             }
+            "--abi" => {
+                abi_arg = Some(
+                    it.next()
+                        .ok_or("--abi requires <u32>")?
+                        .parse()
+                        .map_err(|e| format!("--abi: {e}"))?,
+                )
+            }
+            "--registry" => {
+                registry_root =
+                    Some(PathBuf::from(it.next().ok_or("--registry requires path")?))
+            }
+            "--arch" => {
+                let v = it.next().ok_or("--arch requires wasm32|wasm64")?;
+                arches.push(parse_target_arch(&v)?);
+            }
             other => return Err(format!("unknown arg {other:?}")),
         }
     }
@@ -45,11 +64,25 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let out_path = out_path.ok_or("--out <manifest.json path> is required")?;
     let tag = tag.ok_or("--tag <release-tag> is required")?;
 
-    verify_tag_matches_abi(&tag, shared::ABI_VERSION)?;
+    // When --abi is supplied explicitly, the caller is asking us to
+    // stamp V2 entries with that ABI value AND verify the tag against
+    // it. When --abi is omitted, fall back to the kernel's compiled-in
+    // ABI_VERSION (preserves existing V1-only callers' behavior).
+    let abi = abi_arg.unwrap_or(shared::ABI_VERSION);
+    verify_tag_matches_abi(&tag, abi)?;
 
     let generated_at = generated_at.unwrap_or_else(current_utc_iso);
 
-    let registry = Registry::from_env(&repo_root());
+    let registry = if let Some(r) = registry_root {
+        Registry { roots: vec![r] }
+    } else {
+        Registry::from_env(&repo_root())
+    };
+    let arches = if arches.is_empty() {
+        vec![TargetArch::Wasm32, TargetArch::Wasm64]
+    } else {
+        arches
+    };
     let program_meta = programs_by_name(&registry)?;
 
     let mut entries = Vec::new();
@@ -81,8 +114,59 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         entries.push(build_entry(&path, &name, &program_meta, &program_names)?);
     }
 
+    // V2 registry walk: for every kind="library" or kind="program"
+    // manifest in the registry, fan out across the requested arches.
+    // For each (manifest, arch) pair, locate the staged archive at
+    // `<in>/{libs,programs}/<name>-<version>-rev<N>-<arch>-<short>.tar.zst`.
+    // If present, emit a V2 entry; if missing, skip silently —
+    // build-manifest catalogs only what's actually staged.
+    //
+    // The memo is keyed only on `name@version` (see `compute_sha`), so
+    // it isn't safe to reuse across arches — wasm32 and wasm64 hash to
+    // different shas. Allocate a fresh memo per arch, matching the
+    // pattern in `ensure_built`.
+    for (_, m) in registry.walk_all()? {
+        if !matches!(m.kind, ManifestKind::Library | ManifestKind::Program) {
+            continue;
+        }
+        for &arch in &arches {
+            let mut chain: Vec<String> = Vec::new();
+            let mut memo: BTreeMap<String, [u8; 32]> = BTreeMap::new();
+            let sha = compute_sha(&m, &registry, arch, abi, &mut memo, &mut chain)
+                .map_err(|e| format!("compute_sha for {} on {:?}: {e}", m.name, arch))?;
+            let short = &crate::util::hex(&sha)[..8];
+            let archive_name = format!(
+                "{}-{}-rev{}-{}-{}.tar.zst",
+                m.name,
+                m.version,
+                m.revision,
+                arch.as_str(),
+                short,
+            );
+            let subdir = match m.kind {
+                ManifestKind::Library => "libs",
+                ManifestKind::Program => "programs",
+                ManifestKind::Source => unreachable!(),
+            };
+            let archive_path = in_dir.join(subdir).join(&archive_name);
+            if !archive_path.is_file() {
+                continue;
+            }
+            let bytes = std::fs::read(&archive_path)
+                .map_err(|e| format!("read {}: {e}", archive_path.display()))?;
+            entries.push(build_v2_entry(
+                &m,
+                arch,
+                abi,
+                &archive_name,
+                &bytes,
+                &crate::util::hex(&sha),
+            )?);
+        }
+    }
+
     let mut root: JsonMap = BTreeMap::new();
-    root.insert("abi_version".into(), json!(shared::ABI_VERSION));
+    root.insert("abi_version".into(), json!(abi));
     root.insert("release_tag".into(), json!(tag));
     root.insert("generated_at".into(), json!(generated_at));
     root.insert("generator".into(), json!(GENERATOR));
@@ -161,6 +245,58 @@ fn build_entry(
     m.insert("advisories".into(), Value::Array(Vec::new()));
 
     Ok(Value::Object(m.into_iter().collect()))
+}
+
+/// Build a V2-shaped manifest entry for a library/program archive.
+///
+/// V2 entries are emitted from the registry walk (not the staging-dir
+/// walk) and carry the `[compatibility]` block + `archive_name` /
+/// `archive_sha256` symmetry fields. `abi_version` is explicitly null
+/// — V2 archives advertise compatibility via the `compatibility` block
+/// instead of the legacy `__abi_version` wasm export sniff.
+fn build_v2_entry(
+    m: &DepsManifest,
+    arch: TargetArch,
+    abi: u32,
+    archive_name: &str,
+    bytes: &[u8],
+    cache_key_sha_hex: &str,
+) -> Result<Value, String> {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let archive_sha = hex_lower(&hasher.finalize());
+    let kind_str = match m.kind {
+        ManifestKind::Library => "library",
+        ManifestKind::Program => "program",
+        ManifestKind::Source => {
+            return Err("build_v2_entry called on non-library/program kind".into())
+        }
+    };
+
+    let mut o: JsonMap = BTreeMap::new();
+    o.insert("name".into(), json!(archive_name));
+    o.insert("program".into(), json!(m.name));
+    o.insert("kind".into(), json!(kind_str));
+    o.insert("arch".into(), json!(arch.as_str()));
+    o.insert("upstream_version".into(), json!(m.version));
+    o.insert("revision".into(), json!(m.revision));
+    o.insert("size".into(), json!(bytes.len()));
+    o.insert("sha256".into(), json!(archive_sha.clone()));
+    o.insert("abi_version".into(), Value::Null);
+    o.insert("archive_name".into(), json!(archive_name));
+    o.insert("archive_sha256".into(), json!(archive_sha));
+    let mut compat: JsonMap = BTreeMap::new();
+    compat.insert("target_arch".into(), json!(arch.as_str()));
+    compat.insert("abi_versions".into(), json!([abi]));
+    compat.insert("cache_key_sha".into(), json!(cache_key_sha_hex));
+    o.insert(
+        "compatibility".into(),
+        Value::Object(compat.into_iter().collect()),
+    );
+    o.insert("source".into(), source_value(m));
+    o.insert("license".into(), license_value(m));
+    o.insert("advisories".into(), Value::Array(Vec::new()));
+    Ok(Value::Object(o.into_iter().collect()))
 }
 
 /// Pulled-apart filename.
@@ -629,5 +765,352 @@ mod tests {
             validates_against_schema(&entry),
             "V1 zip must keep validating"
         );
+    }
+
+    // ----- E.3: registry-walk emission tests -----------------------
+
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    fn tempdir(label: &str) -> PathBuf {
+        let p = std::env::temp_dir()
+            .join("wpk-xtask-build-manifest")
+            .join(format!("{label}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&p);
+        fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn write_lib_manifest(registry: &Path, name: &str, version: &str) {
+        let dir = registry.join(name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("deps.toml"),
+            format!(
+                "kind = \"library\"\n\
+                 name = \"{name}\"\n\
+                 version = \"{version}\"\n\
+                 revision = 1\n\
+                 [source]\n\
+                 url = \"file:///dev/null\"\n\
+                 sha256 = \"{}\"\n\
+                 [license]\n\
+                 spdx = \"MIT\"\n\
+                 [outputs]\n\
+                 libs = [\"lib/lib{name}.a\"]\n",
+                "0".repeat(64),
+            ),
+        )
+        .unwrap();
+    }
+
+    fn write_program_manifest(registry: &Path, name: &str, version: &str) {
+        let dir = registry.join(name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("deps.toml"),
+            format!(
+                "kind = \"program\"\n\
+                 name = \"{name}\"\n\
+                 version = \"{version}\"\n\
+                 revision = 1\n\
+                 [source]\n\
+                 url = \"file:///dev/null\"\n\
+                 sha256 = \"{}\"\n\
+                 [license]\n\
+                 spdx = \"MIT\"\n\
+                 [[outputs]]\n\
+                 name = \"{name}\"\n\
+                 wasm = \"bin/{name}.wasm\"\n",
+                "0".repeat(64),
+            ),
+        )
+        .unwrap();
+    }
+
+    fn write_source_manifest(registry: &Path, name: &str, version: &str) {
+        let dir = registry.join(name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("deps.toml"),
+            format!(
+                "kind = \"source\"\n\
+                 name = \"{name}\"\n\
+                 version = \"{version}\"\n\
+                 revision = 1\n\
+                 [source]\n\
+                 url = \"file:///dev/null\"\n\
+                 sha256 = \"{}\"\n\
+                 [license]\n\
+                 spdx = \"MIT\"\n",
+                "0".repeat(64),
+            ),
+        )
+        .unwrap();
+    }
+
+    /// Compute the V2 archive name for a manifest at a given arch.
+    /// Mirrors the formula the production code uses.
+    fn archive_name_for(
+        registry_root: &Path,
+        manifest_name: &str,
+        arch: crate::deps_manifest::TargetArch,
+        abi: u32,
+    ) -> (String, [u8; 32]) {
+        let reg = crate::build_deps::Registry {
+            roots: vec![registry_root.to_path_buf()],
+        };
+        let m = reg.load(manifest_name).unwrap();
+        let mut chain = Vec::new();
+        let mut memo = std::collections::BTreeMap::new();
+        let sha =
+            crate::build_deps::compute_sha(&m, &reg, arch, abi, &mut memo, &mut chain).unwrap();
+        let short = &crate::util::hex(&sha)[..8];
+        let archive_name = format!(
+            "{}-{}-rev{}-{}-{}.tar.zst",
+            m.name,
+            m.version,
+            m.revision,
+            arch.as_str(),
+            short,
+        );
+        (archive_name, sha)
+    }
+
+    #[test]
+    fn build_manifest_emits_v2_library_entry_per_arch() {
+        let dir = tempdir("e3-build-manifest");
+        let staging = dir.join("staging");
+        let registry = dir.join("registry");
+        fs::create_dir_all(staging.join("libs")).unwrap();
+        fs::create_dir_all(&registry).unwrap();
+
+        write_lib_manifest(&registry, "zlib", "1.3.1");
+
+        let (archive_name, sha) = archive_name_for(
+            &registry,
+            "zlib",
+            crate::deps_manifest::TargetArch::Wasm32,
+            4,
+        );
+
+        let archive = staging.join("libs").join(&archive_name);
+        fs::write(&archive, b"fake-archive-bytes").unwrap();
+
+        let manifest_path = dir.join("manifest.json");
+        super::run(vec![
+            "--in".into(),
+            staging.display().to_string(),
+            "--out".into(),
+            manifest_path.display().to_string(),
+            "--tag".into(),
+            "binaries-abi-v4".into(),
+            "--abi".into(),
+            "4".into(),
+            "--registry".into(),
+            registry.display().to_string(),
+            "--arch".into(),
+            "wasm32".into(),
+        ])
+        .unwrap();
+
+        let json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        let entries = json["entries"].as_array().unwrap();
+        let zlib = entries
+            .iter()
+            .find(|e| e["program"] == "zlib")
+            .expect("zlib entry should be present");
+        assert_eq!(zlib["kind"], "library");
+        assert_eq!(zlib["arch"], "wasm32");
+        assert_eq!(zlib["archive_name"], archive_name.as_str());
+        assert_eq!(zlib["compatibility"]["target_arch"], "wasm32");
+        assert_eq!(
+            zlib["compatibility"]["abi_versions"],
+            serde_json::json!([4])
+        );
+        let cache_key_sha = zlib["compatibility"]["cache_key_sha"].as_str().unwrap();
+        assert_eq!(cache_key_sha.len(), 64);
+        assert_eq!(cache_key_sha, &crate::util::hex(&sha));
+    }
+
+    #[test]
+    fn build_manifest_skips_lib_entry_when_archive_missing() {
+        let dir = tempdir("e3-skip-missing");
+        let staging = dir.join("staging");
+        let registry = dir.join("registry");
+        fs::create_dir_all(staging.join("libs")).unwrap();
+        fs::create_dir_all(&registry).unwrap();
+
+        write_lib_manifest(&registry, "zlib", "1.3.1");
+        // NO archive pre-staged.
+
+        let manifest_path = dir.join("manifest.json");
+        super::run(vec![
+            "--in".into(),
+            staging.display().to_string(),
+            "--out".into(),
+            manifest_path.display().to_string(),
+            "--tag".into(),
+            "binaries-abi-v4".into(),
+            "--abi".into(),
+            "4".into(),
+            "--registry".into(),
+            registry.display().to_string(),
+            "--arch".into(),
+            "wasm32".into(),
+        ])
+        .unwrap();
+
+        let json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        let entries = json["entries"].as_array().unwrap();
+        assert!(
+            entries.iter().all(|e| e["program"] != "zlib"),
+            "zlib entry should be absent when archive missing; got: {:?}",
+            entries
+        );
+    }
+
+    #[test]
+    fn build_manifest_emits_v2_program_entry_per_arch() {
+        let dir = tempdir("e3-program");
+        let staging = dir.join("staging");
+        let registry = dir.join("registry");
+        fs::create_dir_all(staging.join("programs")).unwrap();
+        fs::create_dir_all(&registry).unwrap();
+
+        write_program_manifest(&registry, "myprog", "0.1.0");
+
+        let (archive_name, _sha) = archive_name_for(
+            &registry,
+            "myprog",
+            crate::deps_manifest::TargetArch::Wasm32,
+            4,
+        );
+
+        let archive = staging.join("programs").join(&archive_name);
+        fs::write(&archive, b"fake-program-archive").unwrap();
+
+        let manifest_path = dir.join("manifest.json");
+        super::run(vec![
+            "--in".into(),
+            staging.display().to_string(),
+            "--out".into(),
+            manifest_path.display().to_string(),
+            "--tag".into(),
+            "binaries-abi-v4".into(),
+            "--abi".into(),
+            "4".into(),
+            "--registry".into(),
+            registry.display().to_string(),
+            "--arch".into(),
+            "wasm32".into(),
+        ])
+        .unwrap();
+
+        let json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        let entries = json["entries"].as_array().unwrap();
+        let entry = entries
+            .iter()
+            .find(|e| e["program"] == "myprog")
+            .expect("myprog entry should be present");
+        assert_eq!(entry["kind"], "program");
+        assert_eq!(entry["arch"], "wasm32");
+        assert_eq!(entry["archive_name"], archive_name.as_str());
+        assert_eq!(entry["compatibility"]["target_arch"], "wasm32");
+    }
+
+    #[test]
+    fn build_manifest_skips_source_kind() {
+        let dir = tempdir("e3-source");
+        let staging = dir.join("staging");
+        let registry = dir.join("registry");
+        fs::create_dir_all(&staging).unwrap();
+        fs::create_dir_all(&registry).unwrap();
+
+        write_source_manifest(&registry, "pcre2-source", "10.42");
+
+        let manifest_path = dir.join("manifest.json");
+        super::run(vec![
+            "--in".into(),
+            staging.display().to_string(),
+            "--out".into(),
+            manifest_path.display().to_string(),
+            "--tag".into(),
+            "binaries-abi-v4".into(),
+            "--abi".into(),
+            "4".into(),
+            "--registry".into(),
+            registry.display().to_string(),
+            "--arch".into(),
+            "wasm32".into(),
+        ])
+        .unwrap();
+
+        let json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        let entries = json["entries"].as_array().unwrap();
+        assert!(
+            entries.iter().all(|e| e["program"] != "pcre2-source"),
+            "kind=source must NOT produce a V2 entry; got: {:?}",
+            entries
+        );
+    }
+
+    #[test]
+    fn build_manifest_default_arches_include_both_wasm32_and_wasm64() {
+        let dir = tempdir("e3-default-arches");
+        let staging = dir.join("staging");
+        let registry = dir.join("registry");
+        fs::create_dir_all(staging.join("libs")).unwrap();
+        fs::create_dir_all(&registry).unwrap();
+
+        write_lib_manifest(&registry, "zlib", "1.3.1");
+
+        // Pre-stage BOTH archives — compute each sha separately because
+        // arch is in compute_sha's input.
+        let (name32, _) = archive_name_for(
+            &registry,
+            "zlib",
+            crate::deps_manifest::TargetArch::Wasm32,
+            4,
+        );
+        let (name64, _) = archive_name_for(
+            &registry,
+            "zlib",
+            crate::deps_manifest::TargetArch::Wasm64,
+            4,
+        );
+        fs::write(staging.join("libs").join(&name32), b"32bit").unwrap();
+        fs::write(staging.join("libs").join(&name64), b"64bit").unwrap();
+
+        let manifest_path = dir.join("manifest.json");
+        super::run(vec![
+            "--in".into(),
+            staging.display().to_string(),
+            "--out".into(),
+            manifest_path.display().to_string(),
+            "--tag".into(),
+            "binaries-abi-v4".into(),
+            "--abi".into(),
+            "4".into(),
+            "--registry".into(),
+            registry.display().to_string(),
+            // NO --arch flags — should default to both.
+        ])
+        .unwrap();
+
+        let json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        let entries = json["entries"].as_array().unwrap();
+        let arches: Vec<&str> = entries
+            .iter()
+            .filter(|e| e["program"] == "zlib")
+            .map(|e| e["arch"].as_str().unwrap())
+            .collect();
+        assert!(arches.contains(&"wasm32"), "wasm32 missing; got {arches:?}");
+        assert!(arches.contains(&"wasm64"), "wasm64 missing; got {arches:?}");
     }
 }
