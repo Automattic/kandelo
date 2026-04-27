@@ -23,3 +23,6 @@ url = "https://github.com/madler/zlib/blob/v1.3.1/LICENSE"
 libs = ["lib/libz.a"]
 headers = ["include/zlib.h", "include/zconf.h"]
 pkgconfig = ["lib/pkgconfig/zlib.pc"]
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/zlib-1.3.1-rev1-wasm32-46f48b87.tar.zst"
+archive_sha256 = "23fc8e7484014a1ea4498d26f78195e1559019e1ae98d5308683d9089852085b"
