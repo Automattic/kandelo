@@ -16,5 +16,5 @@ url = "https://github.com/quickjs-ng/quickjs/blob/master/LICENSE"
 name = "quickjs"
 wasm = "qjs.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/quickjs-0.12.1-rev1-abi1-wasm32-d06e29aa.tar.zst"
-archive_sha256 = "d0923daff669bbaddb5f3bb514ee1d020e75b03b822067a92bd456a2dead4e3f"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/quickjs-0.12.1-rev1-abi6-wasm32-fff9c5f4.tar.zst"
+archive_sha256 = "2b10a609fec22a1cbbe8a4d760e9ba1d5d0a8b66d79b551fbbd9d4b514dc95bd"

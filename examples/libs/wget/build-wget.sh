@@ -74,7 +74,7 @@ export OPENSSL_LIBS="-L$OPENSSL_DIR/lib -lssl -lcrypto"
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading wget $WGET_VERSION..."
     TARBALL="wget-${WGET_VERSION}.tar.gz"
-    # ftpmirror.gnu.org redirects to a working GNU mirror; ftp.gnu.org
+    # ftpmirror.gnu.org redirects to a working GNU mirror; ftpmirror.gnu.org
     # itself sometimes refuses connections during peak hours.
     URL="https://ftpmirror.gnu.org/gnu/wget/${TARBALL}"
     curl -fsSL "$URL" -o "/tmp/$TARBALL"

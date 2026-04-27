@@ -30,7 +30,7 @@ export WASM_POSIX_SYSROOT="$SYSROOT"
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading diffutils $DIFFUTILS_VERSION..."
     TARBALL="diffutils-${DIFFUTILS_VERSION}.tar.xz"
-    URL="https://ftp.gnu.org/gnu/diffutils/${TARBALL}"
+    URL="https://ftpmirror.gnu.org/gnu/diffutils/${TARBALL}"
     curl -fsSL "$URL" -o "/tmp/$TARBALL"
     mkdir -p "$SRC_DIR"
     tar xJf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1

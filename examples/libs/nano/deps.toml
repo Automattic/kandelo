@@ -5,7 +5,7 @@ revision = 1
 depends_on = []
 
 [source]
-url = "https://ftp.gnu.org/gnu/nano/nano-8.0.tar.xz"
+url = "https://ftpmirror.gnu.org/gnu/nano/nano-8.0.tar.xz"
 sha256 = "c17f43fc0e37336b33ee50a209c701d5beb808adc2d9f089ca831b40539c9ac4"
 
 [license]
@@ -16,5 +16,5 @@ url = "https://git.savannah.gnu.org/cgit/nano.git/tree/COPYING"
 name = "nano"
 wasm = "nano.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/nano-8.0-rev1-abi1-wasm32-9eb5e2f8.tar.zst"
-archive_sha256 = "dbb82e658d83e2b59563971238eca1eddfd4940e3e9101d976687eb7901f9cf0"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/nano-8.0-rev1-abi6-wasm32-6796ee6e.tar.zst"
+archive_sha256 = "f7594ef1cfbf1f12f5a4157218f32051ff3c8efa9c6752ef2f49f0f4bc34dac1"

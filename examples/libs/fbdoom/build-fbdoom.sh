@@ -13,6 +13,11 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
 SRC="$HERE/fbdoom-src"
 
+# Use this worktree's SDK and sysroot rather than the global `npm link`
+# (which may point at a sibling worktree without our linux/fb.h overlay).
+source "$REPO_ROOT/sdk/activate.sh"
+export WASM_POSIX_SYSROOT="$REPO_ROOT/sysroot"
+
 if [ ! -d "$SRC" ]; then
     echo "==> Cloning maximevince/fbDOOM..."
     git clone --depth 1 https://github.com/maximevince/fbDOOM "$SRC"
@@ -54,6 +59,11 @@ cp fbdoom "$HERE/fbdoom.wasm"
 
 ls -la "$HERE/fbdoom.wasm"
 echo "==> fbdoom.wasm built."
+
+# Install into local-binaries/ (resolver priority 1) and the resolver
+# scratch dir when invoked by xtask build-deps / stage-release.
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary fbdoom "$HERE/fbdoom.wasm"
 
 # ── DOOM IWAD ─────────────────────────────────────────────────────────────
 # Fetch a freely-redistributable IWAD into the browser-demo asset slot.

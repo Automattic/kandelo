@@ -22,5 +22,5 @@ script = "build-nginx.sh"
 name = "nginx"
 wasm = "nginx.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/nginx-1.24.0-rev1-abi1-wasm32-00bd4461.tar.zst"
-archive_sha256 = "2b5b75b1fd4cdb188dab1130057736f2701a8ba96159df7ae3e7bda6fe2e6a59"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/nginx-1.24.0-rev1-abi6-wasm32-a8bac2a5.tar.zst"
+archive_sha256 = "7a5bb57f59292284b91774fb6a2f1fd7401bda73f21e4bf4c53132593d63ffb5"

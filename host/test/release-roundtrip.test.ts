@@ -294,10 +294,12 @@ describe.skipIf(hostTriple === null)("release round-trip", () => {
         abiVersion,
       ]);
 
-      // Library landed in <cache>/libs/<canonical>/.
+      // Library landed in <cache>/libs/<canonical>/. Cache path uses
+      // `<name>-<v>-rev<N>-<arch>-<shortsha>` (no abi slot — only the
+      // release archive filename carries the abi slot).
       const libsDir = path.join(installCache, "libs");
       const libCanonical = readdirSync(libsDir).find((d) =>
-        d.startsWith(`fixlib-1.0.0-rev1-abi${abiVersion}-wasm32-`),
+        d.startsWith(`fixlib-1.0.0-rev1-wasm32-`),
       );
       expect(libCanonical, `fixlib canonical among ${readdirSync(libsDir)}`)
         .toBeTruthy();
@@ -311,7 +313,7 @@ describe.skipIf(hostTriple === null)("release round-trip", () => {
       // Program archive landed in <cache>/programs/<canonical>/.
       const progsDir = path.join(installCache, "programs");
       const progCanonical = readdirSync(progsDir).find((d) =>
-        d.startsWith(`fixprog-1.0.0-rev1-abi${abiVersion}-wasm32-`),
+        d.startsWith(`fixprog-1.0.0-rev1-wasm32-`),
       );
       expect(progCanonical, `fixprog canonical among ${readdirSync(progsDir)}`)
         .toBeTruthy();

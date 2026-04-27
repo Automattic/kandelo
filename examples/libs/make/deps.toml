@@ -5,7 +5,7 @@ revision = 1
 depends_on = []
 
 [source]
-url = "https://ftp.gnu.org/gnu/make/make-4.4.1.tar.gz"
+url = "https://ftpmirror.gnu.org/gnu/make/make-4.4.1.tar.gz"
 sha256 = "dd16fb1d67bfab79a72f5e8390735c49e3e8e70b4945a15ab1f81ddb78658fb3"
 
 [license]
@@ -16,5 +16,5 @@ url = "https://git.savannah.gnu.org/cgit/make.git/tree/COPYING"
 name = "make"
 wasm = "make.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/make-4.4.1-rev1-abi1-wasm32-0c5e5b99.tar.zst"
-archive_sha256 = "30d186434552c2844968b7172df96384166cfe963526cdf35ba457a6088d5c0d"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/make-4.4.1-rev1-abi6-wasm32-594c9214.tar.zst"
+archive_sha256 = "287dc3b30d419c7d4848cda07778252cc603461680f55e89ace1a661fc7b7da6"

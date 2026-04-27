@@ -66,9 +66,11 @@ for a in "${ARCHES[@]}"; do
 done
 
 kind_args=()
-for k in "${KINDS[@]}"; do
-    kind_args+=(--kind "$k")
-done
+if [ ${#KINDS[@]} -gt 0 ]; then
+    for k in "${KINDS[@]}"; do
+        kind_args+=(--kind "$k")
+    done
+fi
 
 echo "== Staging archive entries (kinds: ${KINDS[*]:-library,program}, arches: ${ARCHES[*]}) =="
 cargo run -p xtask --target "$HOST_TARGET" --quiet -- stage-release \
@@ -76,7 +78,7 @@ cargo run -p xtask --target "$HOST_TARGET" --quiet -- stage-release \
     --abi "$ABI" \
     --tag "$TAG" \
     "${arch_args[@]}" \
-    "${kind_args[@]}" \
+    ${kind_args[@]+"${kind_args[@]}"} \
     --build-timestamp "$timestamp" \
     --build-host "$host" \
     --continue-on-error

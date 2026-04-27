@@ -16,5 +16,5 @@ url = "https://www.greenwoodsoftware.com/less/LICENSE"
 name = "less"
 wasm = "less.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/less-668-rev1-abi1-wasm32-7d81be09.tar.zst"
-archive_sha256 = "7a4ee49b519f66b74aaca2d687b800c1dafa364df6a58e86f2edee914d7791dd"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/less-668-rev1-abi6-wasm32-2426ea29.tar.zst"
+archive_sha256 = "74d7d03e3281fb31eb83ab8a974a71bf9da3d303d993cd5e2ecc6fb86c51666c"

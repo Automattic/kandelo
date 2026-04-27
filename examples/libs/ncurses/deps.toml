@@ -15,7 +15,7 @@ revision = 1
 depends_on = []
 
 [source]
-url = "https://ftp.gnu.org/gnu/ncurses/ncurses-6.5.tar.gz"
+url = "https://ftpmirror.gnu.org/gnu/ncurses/ncurses-6.5.tar.gz"
 sha256 = "136d91bc269a9a5785e5f9e980bc76ab57428f604ce3e5a5a90cebc767971cc6"
 
 [license]
@@ -34,5 +34,5 @@ libs = ["lib/libncursesw.a", "lib/libtinfow.a"]
 headers = ["include/ncursesw"]
 # `--enable-pc-files=no --with-pkg-config=no`: no pkgconfig outputs.
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/ncurses-6.5-rev1-abi1-wasm32-b4647103.tar.zst"
-archive_sha256 = "5f4b23be9f0d3b71deb4e63ac5504bc128359394ca7a7efadcccf40fa7d73080"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/ncurses-6.5-rev1-abi6-wasm32-014a9575.tar.zst"
+archive_sha256 = "7c4055fa3c6aada61877302678dd3b5295b257ff504f6dcfddf53b98bf4764db"

@@ -27,5 +27,5 @@ libs = ["lib/libssl.a", "lib/libcrypto.a"]
 headers = ["include/openssl"]
 pkgconfig = ["lib/pkgconfig/libssl.pc", "lib/pkgconfig/libcrypto.pc"]
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/openssl-3.3.2-rev1-abi1-wasm32-822cc47d.tar.zst"
-archive_sha256 = "724ec2b8bc4c94d89af80ad9d4fc16c8060473eac9c0e70d130aef968046fc9e"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/openssl-3.3.2-rev1-abi6-wasm32-07647f0c.tar.zst"
+archive_sha256 = "58978c92a322b40d256adf84cf4fe07b9213335c58dd5c3792cfd623df38400d"

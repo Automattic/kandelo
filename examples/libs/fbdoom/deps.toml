@@ -18,3 +18,6 @@ url = "https://github.com/maximevince/fbDOOM/blob/master/COPYING"
 [[outputs]]
 name = "fbdoom"
 wasm = "fbdoom.wasm"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/fbdoom-0.1.0-rev1-abi6-wasm32-40651daf.tar.zst"
+archive_sha256 = "2c1f7d17e92188dda20fdf16284e7f2f4d808512ccd31ce06b10d3c5952542be"

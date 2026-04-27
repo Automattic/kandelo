@@ -5,7 +5,7 @@ revision = 1
 depends_on = []
 
 [source]
-url = "https://ftp.gnu.org/gnu/gawk/gawk-5.3.0.tar.xz"
+url = "https://ftpmirror.gnu.org/gnu/gawk/gawk-5.3.0.tar.xz"
 sha256 = "ca9c16d3d11d0ff8c69d79dc0b47267e1329a69b39b799895604ed447d3ca90b"
 
 [license]
@@ -16,5 +16,5 @@ url = "https://git.savannah.gnu.org/cgit/gawk.git/tree/COPYING"
 name = "gawk"
 wasm = "gawk.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/gawk-5.3.0-rev1-abi1-wasm32-372295f0.tar.zst"
-archive_sha256 = "61d2011e5cfa84c8753615dd844c32aa225dabf428bb25f0b8228957254b5c5a"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/gawk-5.3.0-rev1-abi6-wasm32-ead04e4c.tar.zst"
+archive_sha256 = "93270c426f9271f03038b699561baee3cc77b03fc4fcd73157b4dc26dee79694"

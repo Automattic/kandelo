@@ -47,7 +47,7 @@ download_bc() {
     local dest="$1"
     echo "==> Downloading bc $BC_VERSION to $dest..."
     TARBALL="bc-${BC_VERSION}.tar.gz"
-    URL="https://ftp.gnu.org/gnu/bc/${TARBALL}"
+    URL="https://ftpmirror.gnu.org/gnu/bc/${TARBALL}"
     curl -fsSL "$URL" -o "/tmp/$TARBALL"
     mkdir -p "$dest"
     tar xzf "/tmp/$TARBALL" -C "$dest" --strip-components=1

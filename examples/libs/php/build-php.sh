@@ -92,6 +92,11 @@ if ! grep -q 'ZEND_USE_ASM_ARITHMETIC 0' Zend/zend_multiply.h 2>/dev/null; then
 fi
 
 echo "==> Configuring PHP for Wasm (CLI + FPM, single tree)..."
+# Drop a stale config.cache from a previous build whose env (CPPFLAGS,
+# PKG_CONFIG_PATH, etc.) may not match this run. autoconf would
+# otherwise reject the cache with "changes in the environment can
+# compromise the build" — recovering requires a fresh cache anyway.
+rm -f "$SCRIPT_DIR/config.cache"
 if [ ! -f Makefile ]; then
     PKG_CONFIG_PATH="$DEP_PKG_CONFIG_PATH" \
     CPPFLAGS="$DEP_CPPFLAGS" \

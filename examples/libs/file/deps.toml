@@ -16,5 +16,5 @@ url = "https://github.com/file/file/blob/master/COPYING"
 name = "file"
 wasm = "file.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/file-5.45-rev1-abi1-wasm32-f6d97e38.tar.zst"
-archive_sha256 = "55f686caaa19c82d40a2da0d3475820fe045752065b695b9a934e0c6afc20815"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/file-5.45-rev1-abi6-wasm32-10b13f5f.tar.zst"
+archive_sha256 = "dc13e3047f5d3197b85981eb5eed35e20fa63501fb9381ef83b59da4fbae5033"

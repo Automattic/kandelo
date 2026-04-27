@@ -2,7 +2,7 @@ kind = "program"
 name = "bash"
 version = "5.2.37"
 revision = 1
-depends_on = []
+depends_on = ["ncurses@6.5"]
 
 [source]
 url = "https://ftpmirror.gnu.org/gnu/bash/bash-5.2.37.tar.gz"
@@ -15,3 +15,6 @@ url = "https://git.savannah.gnu.org/cgit/bash.git/tree/COPYING"
 [[outputs]]
 name = "bash"
 wasm = "bash.wasm"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/bash-5.2.37-rev1-abi6-wasm32-f5bb9786.tar.zst"
+archive_sha256 = "5a38c2f19d4050f4016a8abeb57562bdc2f479e03ad0c7966a784145403ff339"

@@ -5,7 +5,7 @@ revision = 1
 depends_on = []
 
 [source]
-url = "https://ftp.gnu.org/gnu/findutils/findutils-4.10.0.tar.xz"
+url = "https://ftpmirror.gnu.org/gnu/findutils/findutils-4.10.0.tar.xz"
 sha256 = "1387e0b67ff247d2abde998f90dfbf70c1491391a59ddfecb8ae698789f0a4f5"
 
 [license]
@@ -20,5 +20,5 @@ wasm = "find.wasm"
 name = "xargs"
 wasm = "xargs.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/findutils-4.10.0-rev1-abi1-wasm32-92decaa5.tar.zst"
-archive_sha256 = "90bc2ac9ca314f536fba1045e0185249ba5ca7495a6fb5cc14f526cc4692c874"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/findutils-4.10.0-rev1-abi6-wasm32-66230212.tar.zst"
+archive_sha256 = "35be3413ea4957739edeb41d1f22b183eefbed1bb9e948dbbb4c3374d0f9b8f6"

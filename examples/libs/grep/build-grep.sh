@@ -30,7 +30,7 @@ export WASM_POSIX_SYSROOT="$SYSROOT"
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading grep $GREP_VERSION..."
     TARBALL="grep-${GREP_VERSION}.tar.xz"
-    URL="https://ftp.gnu.org/gnu/grep/${TARBALL}"
+    URL="https://ftpmirror.gnu.org/gnu/grep/${TARBALL}"
     curl -fsSL "$URL" -o "/tmp/$TARBALL"
     mkdir -p "$SRC_DIR"
     tar xJf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1

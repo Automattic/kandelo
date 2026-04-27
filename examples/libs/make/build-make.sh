@@ -30,7 +30,7 @@ export WASM_POSIX_SYSROOT="$SYSROOT"
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading make $MAKE_VERSION..."
     TARBALL="make-${MAKE_VERSION}.tar.gz"
-    URL="https://ftp.gnu.org/gnu/make/${TARBALL}"
+    URL="https://ftpmirror.gnu.org/gnu/make/${TARBALL}"
     curl -fsSL "$URL" -o "/tmp/$TARBALL"
     mkdir -p "$SRC_DIR"
     tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1

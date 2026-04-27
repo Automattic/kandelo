@@ -19,18 +19,15 @@
  */
 import { describe, it, expect } from "vitest";
 import { existsSync, readFileSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 import { CentralizedKernelWorker } from "../src/kernel-worker";
 import { NodePlatformIO } from "../src/platform/node";
 import { NodeWorkerAdapter } from "../src/worker-adapter";
 import { detectPtrWidth } from "../src/constants";
+import { tryResolveBinary } from "../src/binary-resolver";
 import type { CentralizedWorkerInitMessage } from "../src/worker-protocol";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-
-const fbtestBinary = join(__dirname, "../wasm/fbtest.wasm");
-const kernelBinary = join(__dirname, "../wasm/wasm_posix_kernel.wasm");
+const fbtestBinary = tryResolveBinary("programs/fbtest.wasm") ?? "";
+const kernelBinary = tryResolveBinary("kernel.wasm") ?? "";
 
 const MAX_PAGES = 16384;
 const CH_TOTAL_SIZE = 72 + 65536;

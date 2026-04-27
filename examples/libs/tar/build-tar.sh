@@ -34,7 +34,7 @@ export WASM_POSIX_SYSROOT="$SYSROOT"
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading tar $TAR_VERSION..."
     TARBALL="tar-${TAR_VERSION}.tar.xz"
-    URL="https://ftp.gnu.org/gnu/tar/${TARBALL}"
+    URL="https://ftpmirror.gnu.org/gnu/tar/${TARBALL}"
     curl -fsSL "$URL" -o "/tmp/$TARBALL"
     mkdir -p "$SRC_DIR"
     tar xJf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
