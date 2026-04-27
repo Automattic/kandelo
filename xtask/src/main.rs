@@ -5,6 +5,8 @@
 //!   build-manifest  Generate a binary-release `manifest.json` from a staging dir.
 //!   bundle-program  Zip-bundle one program's binary + runtime + LICENSE.
 //!   build-deps      Wasm library dep-graph resolver (see docs/dependency-management.md).
+//!   stage-release   Orchestrate full V2 producer side: walk registry, build
+//!                   archives, emit manifest.json into a staging directory.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -19,6 +21,7 @@ mod dump_abi;
 mod host_tool_probe;
 mod remote_fetch;
 mod source_extract;
+mod stage_release;
 mod util;
 mod wasm_abi;
 
@@ -28,7 +31,9 @@ fn main() -> ExitCode {
         Some(s) => s,
         None => {
             eprintln!("usage: xtask <subcommand> [args...]");
-            eprintln!("subcommands: dump-abi, build-manifest, bundle-program, build-deps");
+            eprintln!(
+                "subcommands: dump-abi, build-manifest, bundle-program, build-deps, stage-release"
+            );
             return ExitCode::from(2);
         }
     };
@@ -38,6 +43,7 @@ fn main() -> ExitCode {
         "build-manifest" => build_manifest::run(rest),
         "bundle-program" => bundle_program::run(rest),
         "build-deps" => build_deps::run(rest),
+        "stage-release" => stage_release::run(rest),
         other => {
             eprintln!("xtask: unknown subcommand {other:?}");
             return ExitCode::from(2);

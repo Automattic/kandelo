@@ -592,7 +592,10 @@ fn hex_lower(bytes: &[u8]) -> String {
     s
 }
 
-fn current_utc_iso() -> String {
+// `pub(crate)` so the `stage_release` subcommand can reuse the same
+// RFC3339 formatter as `build-manifest`'s default `generated_at`. Both
+// emit the same calendar logic; sharing avoids drift.
+pub(crate) fn current_utc_iso() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
