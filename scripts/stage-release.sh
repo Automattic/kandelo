@@ -4,33 +4,39 @@
 # manifest.json. Helper invoked by publish-release.sh.
 #
 # Usage:
-#   scripts/stage-release.sh --out /tmp/release-staging
+#   scripts/stage-release.sh --out /tmp/release-staging \
+#       [--abi <N>] [--arch wasm32|wasm64]...
 #
-# In V2, two staging halves:
-#   1. V1 entries (kernel/userspace/test programs) — no deps.toml,
-#      bundled the legacy way via `xtask bundle-program --plain-wasm`.
-#   2. V2 entries (libs + programs with deps.toml) — staged via
-#      `xtask stage-release`, which produces .tar.zst archives in
-#      $STAGING/{libs,programs}/ and writes manifest.json that includes
-#      both halves' entries.
+# Default --abi: ABI_VERSION from crates/shared/src/lib.rs.
+# Default --arch: wasm32 only.  Pass --arch repeatedly to broaden.
 #
-# Requires built binaries in their canonical locations:
-#   target/wasm64-unknown-unknown/release/wasm_posix_kernel.wasm
-#   target/wasm64-unknown-unknown/release/wasm_posix_userspace.wasm
-#   host/wasm/{exec-caller,exec-child,fork-exec,ifhwaddr,mmap_shared_test,hello64}.wasm
+# Output: $STAGING/{libs,programs}/<archive>.tar.zst plus manifest.json.
 #
-# Plus the cache must be populated for every (kind=library|program, arch)
-# pair the V2 staging covers — `xtask stage-release` runs ensure_built
-# itself, so a clean cache is fine; an out-of-date cache is also fine.
+# `xtask stage-release` walks examples/libs/<name>/deps.toml entries
+# (kind = "library" or "program") and runs the resolver's ensure_built
+# + archive_stage on each.  Composite metadata manifests without a
+# build script (kernel, userspace, examples, shell, lamp, node,
+# wordpress) fail their per-arch ensure_built and become WARN-only
+# under --continue-on-error.  The first cut therefore contains only
+# the libs and the ported programs that have working build scripts.
+#
+# kernel.wasm and userspace.wasm are not in the release; they're built
+# locally by `bash build.sh` and live in local-binaries/.  This is a
+# deliberate v0 limitation — distribution-only consumers (no Rust
+# toolchain) will need a follow-up that bundles them.
 
 set -euo pipefail
 
 STAGING=""
 ABI=""
+ARCHES=()
+KINDS=()
 while [ $# -gt 0 ]; do
     case "$1" in
         --out) STAGING="$2"; shift 2 ;;
         --abi) ABI="$2"; shift 2 ;;
+        --arch) ARCHES+=("$2"); shift 2 ;;
+        --kind) KINDS+=("$2"); shift 2 ;;
         *) echo "unknown arg $1" >&2; exit 2 ;;
     esac
 done
@@ -45,76 +51,35 @@ if [ -z "$ABI" ]; then
 fi
 TAG="binaries-abi-v$ABI"
 
+if [ ${#ARCHES[@]} -eq 0 ]; then
+    ARCHES=(wasm32)
+fi
+
 rm -rf "$STAGING" && mkdir -p "$STAGING"
 
-run_xtask() {
-    cargo run -p xtask --target "$HOST_TARGET" --quiet -- "$@"
-}
+timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+host="$(uname -sm | tr ' ' '-' | tr 'A-Z' 'a-z')"
 
-# ===========================================================================
-# Half 1 — V1 entries: kernel, userspace, test programs.
-# These have no deps.toml registry and are bundled the legacy way.
-# ===========================================================================
-stage_v1_entries() {
-    # Kernel + userspace: plain wasm.
-    run_xtask bundle-program --plain-wasm \
-        --program kernel \
-        --binary target/wasm64-unknown-unknown/release/wasm_posix_kernel.wasm \
-        --out-dir "$STAGING"
-    run_xtask bundle-program --plain-wasm \
-        --program userspace \
-        --binary target/wasm64-unknown-unknown/release/wasm_posix_userspace.wasm \
-        --out-dir "$STAGING"
+arch_args=()
+for a in "${ARCHES[@]}"; do
+    arch_args+=(--arch "$a")
+done
 
-    # Test/example programs.
-    stage_example() {
-        local name="$1"; local src="$2"
-        run_xtask bundle-program \
-            --plain-wasm \
-            --program "$name" \
-            --upstream-version 0.1.0 \
-            --revision 1 \
-            --binary "$src" \
-            --out-dir "$STAGING"
-    }
-    stage_example exec-caller       local-binaries/programs/exec-caller.wasm
-    stage_example exec-child        local-binaries/programs/exec-child.wasm
-    stage_example fork-exec         local-binaries/programs/fork-exec.wasm
-    stage_example ifhwaddr          local-binaries/programs/ifhwaddr.wasm
-    stage_example mmap_shared_test  local-binaries/programs/mmap_shared_test.wasm
-    stage_example hello64           local-binaries/programs/hello64.wasm
-}
+kind_args=()
+for k in "${KINDS[@]}"; do
+    kind_args+=(--kind "$k")
+done
 
-# ===========================================================================
-# Half 2 — V2 entries: every kind=library or kind=program manifest.
-# stage-release walks Registry::walk_all(), filters by kind, fans out
-# across {wasm32, wasm64}, calls ensure_built + archive_stage, then
-# generates manifest.json that includes BOTH halves' entries.
-# ===========================================================================
-stage_v2_entries() {
-    local timestamp
-    timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    local host
-    host="$(uname -sm | tr ' ' '-' | tr 'A-Z' 'a-z')"
-    run_xtask stage-release \
-        --staging "$STAGING" \
-        --abi "$ABI" \
-        --tag "$TAG" \
-        --arch wasm32 \
-        --arch wasm64 \
-        --build-timestamp "$timestamp" \
-        --build-host "$host" \
-        --continue-on-error
-}
-
-# ---------------------------------------------------------------------------
-
-echo "== Staging V1 entries (kernel, userspace, test programs) =="
-stage_v1_entries
-echo
-
-echo "== Staging V2 entries (libs + programs across wasm32 + wasm64) =="
-stage_v2_entries
+echo "== Staging V2 entries (kinds: ${KINDS[*]:-library,program}, arches: ${ARCHES[*]}) =="
+cargo run -p xtask --target "$HOST_TARGET" --quiet -- stage-release \
+    --staging "$STAGING" \
+    --abi "$ABI" \
+    --tag "$TAG" \
+    "${arch_args[@]}" \
+    "${kind_args[@]}" \
+    --build-timestamp "$timestamp" \
+    --build-host "$host" \
+    --continue-on-error
 echo
 
 echo "== Staged assets =="

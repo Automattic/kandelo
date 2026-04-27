@@ -41,6 +41,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let mut build_timestamp: Option<String> = None;
     let mut build_host: Option<String> = None;
     let mut continue_on_error = false;
+    let mut kinds: Vec<ManifestKind> = Vec::new();
 
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
@@ -66,6 +67,18 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                 arches.push(parse_target_arch(
                     &it.next().ok_or("--arch requires wasm32|wasm64")?,
                 )?)
+            }
+            "--kind" => {
+                let v = it.next().ok_or("--kind requires library|program")?;
+                kinds.push(match v.as_str() {
+                    "library" => ManifestKind::Library,
+                    "program" => ManifestKind::Program,
+                    other => {
+                        return Err(format!(
+                            "--kind {other:?}: must be library or program (source-kind has no archive)"
+                        ))
+                    }
+                });
             }
             "--tag" => tag = Some(it.next().ok_or("--tag requires value")?),
             "--build-timestamp" => {
@@ -96,6 +109,13 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let build_timestamp =
         build_timestamp.unwrap_or_else(build_manifest::current_utc_iso);
     let build_host = build_host.unwrap_or_else(default_build_host);
+    // Default kind set: both library and program. Pass --kind library
+    // (or --kind program, repeatable) to narrow.
+    let kinds = if kinds.is_empty() {
+        vec![ManifestKind::Library, ManifestKind::Program]
+    } else {
+        kinds
+    };
 
     fs::create_dir_all(staging.join("libs"))
         .map_err(|e| format!("mkdir staging/libs: {e}"))?;
@@ -107,7 +127,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let mut errors: BTreeMap<String, Vec<(TargetArch, String)>> = BTreeMap::new();
 
     for (_, m) in registry.walk_all()? {
-        if !matches!(m.kind, ManifestKind::Library | ManifestKind::Program) {
+        if !kinds.contains(&m.kind) {
             continue;
         }
         for &arch in &arches {
