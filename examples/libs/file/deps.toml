@@ -15,3 +15,6 @@ url = "https://github.com/file/file/blob/master/COPYING"
 [[outputs]]
 name = "file"
 wasm = "file.wasm"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/file-5.45-rev1-wasm32-da66d712.tar.zst"
+archive_sha256 = "8a22f258d5b68c27ef323615188ce5284d2f55a63400d8ead1823a001b90b049"

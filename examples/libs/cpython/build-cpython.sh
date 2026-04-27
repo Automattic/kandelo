@@ -587,3 +587,12 @@ ls -la "$SCRIPT_DIR/bin/python.wasm"
 # binary over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
 install_local_binary cpython "$SCRIPT_DIR/bin/python.wasm"
+
+# Manifest declares `wasm = "python.wasm"` (not cpython.wasm), so the
+# resolver's $WASM_POSIX_DEP_OUT_DIR scratch needs the file under that
+# exact name. The helper's default-fallback uses <program>.<ext> which
+# doesn't match here.
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    cp "$SCRIPT_DIR/bin/python.wasm" "$WASM_POSIX_DEP_OUT_DIR/python.wasm"
+    echo "  installed $WASM_POSIX_DEP_OUT_DIR/python.wasm (manifest output name)"
+fi

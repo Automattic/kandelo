@@ -15,3 +15,6 @@ url = "https://infozip.sourceforge.net/license.html"
 [[outputs]]
 name = "zip"
 wasm = "zip.wasm"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/zip-3.0-rev1-wasm32-da7836e6.tar.zst"
+archive_sha256 = "4cc34f90e5c165183faddbb2fcc36074f97117bc8ac5bbc3f21447ac093a3eb2"

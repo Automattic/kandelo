@@ -15,3 +15,6 @@ url = "https://git.savannah.gnu.org/cgit/grep.git/tree/COPYING?h=v3.11"
 [[outputs]]
 name = "grep"
 wasm = "grep.wasm"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/grep-3.11-rev1-wasm32-61c60920.tar.zst"
+archive_sha256 = "3a20d1fd590355bca7ea18550ab5f979facc9337f81d1f3c35671eec1c7d48aa"

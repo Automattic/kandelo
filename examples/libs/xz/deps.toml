@@ -15,3 +15,6 @@ url = "https://github.com/tukaani-project/xz/blob/main/COPYING"
 [[outputs]]
 name = "xz"
 wasm = "xz.wasm"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/xz-5.6.2-rev1-wasm32-e61040fb.tar.zst"
+archive_sha256 = "49e2077f2243c33702716251b249fa3742535192a0ac5a22aba5525a05081292"

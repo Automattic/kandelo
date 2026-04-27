@@ -16,6 +16,12 @@ url = "https://github.com/php/php-src/blob/master/LICENSE"
 name = "php"
 wasm = "php.wasm"
 
-[[outputs]]
-name = "php-fpm"
-wasm = "php-fpm.wasm"
+# Note: php-fpm.wasm is built by examples/nginx/build-php-fpm.sh, which
+# is a separate build with its own source tree (php-fpm-src/) and
+# sysroot-copy dance for its deps. Folding it into php's main build is
+# nontrivial. For the first V2 release, php ships CLI-only; php-fpm
+# can be added in a follow-up either as its own kind=program manifest
+# or as a second [[outputs]] entry once the builds are unified.
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/php-8.3.2-rev1-wasm32-9bb54bc3.tar.zst"
+archive_sha256 = "92f579bc402e8f47355613d88203292e738e7987cf18ad99997bc5afa994624f"

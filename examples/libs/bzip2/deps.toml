@@ -15,3 +15,6 @@ url = "https://gitlab.com/bzip2/bzip2/-/blob/master/LICENSE"
 [[outputs]]
 name = "bzip2"
 wasm = "bzip2.wasm"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/bzip2-1.0.8-rev1-wasm32-d6ef41d5.tar.zst"
+archive_sha256 = "e548b40fd9873952aed4b66222538452af4079d8a345902a6750b59c78c802d5"

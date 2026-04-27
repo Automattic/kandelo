@@ -67,4 +67,32 @@ install_local_binary() {
     mkdir -p "$(dirname "$dest")"
     cp "$src" "$dest"
     echo "  installed $dest"
+
+    # When invoked under the V2 resolver (`xtask build-deps resolve`,
+    # `xtask stage-release`), WASM_POSIX_DEP_OUT_DIR points at the
+    # resolver's scratch dir. The build script must install its
+    # declared `[[outputs]].wasm` files there so `validate_outputs`
+    # finds them and `archive_stage` packs them into the release
+    # archive.
+    #
+    # Mapping (matches the build_deps program-output validator):
+    #   single-binary (no dest_name) →
+    #     $WASM_POSIX_DEP_OUT_DIR/<program>.<ext>
+    #   multi-binary (dest_name given) →
+    #     $WASM_POSIX_DEP_OUT_DIR/<dest_name>
+    #
+    # Outside the resolver, WASM_POSIX_DEP_OUT_DIR is unset and this
+    # path is a no-op.
+    if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+        local resolver_dest
+        if [ -n "$dest_name" ]; then
+            resolver_dest="$WASM_POSIX_DEP_OUT_DIR/$dest_name"
+        else
+            local ext_resolver="${src##*.}"
+            resolver_dest="$WASM_POSIX_DEP_OUT_DIR/$program.$ext_resolver"
+        fi
+        mkdir -p "$(dirname "$resolver_dest")"
+        cp "$src" "$resolver_dest"
+        echo "  installed $resolver_dest (resolver scratch)"
+    fi
 }

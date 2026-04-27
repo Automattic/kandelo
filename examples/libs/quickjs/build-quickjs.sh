@@ -204,3 +204,11 @@ echo ""
 echo "This is NOT Node.js. The 'node' command provides API compatibility"
 echo "via QuickJS-NG. Core modules: assert, buffer, child_process, crypto,"
 echo "events, fs, http, net, os, path, querystring, stream, url, util, etc."
+
+# Install into local-binaries/ so the resolver picks the freshly-built
+# binary over the fetched release. The manifest currently declares
+# only qjs.wasm under [[outputs]]; node.wasm is built locally for
+# convenience but isn't in the release archive.
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary quickjs "$BIN_DIR/qjs.wasm" qjs.wasm
+[ -f "$BIN_DIR/node.wasm" ] && install_local_binary quickjs "$BIN_DIR/node.wasm" node.wasm || true

@@ -19,3 +19,6 @@ wasm = "mariadbd.wasm"
 [[outputs]]
 name = "mysqltest"
 wasm = "mysqltest.wasm"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/mariadb-10.5.28-rev1-wasm32-c0529537.tar.zst"
+archive_sha256 = "2aae631241a85f050b8228010c4f601b68af22c6c05b69a0a1e304187534b8b2"

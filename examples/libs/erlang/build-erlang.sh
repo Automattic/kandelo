@@ -585,3 +585,12 @@ echo "==> Install directory: $INSTALL_DIR"
 # binary over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
 install_local_binary erlang "$SCRIPT_DIR/beam.wasm"
+
+# Manifest declares `wasm = "beam.wasm"` (not erlang.wasm), so the
+# resolver's $WASM_POSIX_DEP_OUT_DIR scratch needs the file under that
+# exact name. The helper's default-fallback uses <program>.<ext> which
+# doesn't match here.
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    cp "$SCRIPT_DIR/beam.wasm" "$WASM_POSIX_DEP_OUT_DIR/beam.wasm"
+    echo "  installed $WASM_POSIX_DEP_OUT_DIR/beam.wasm (manifest output name)"
+fi

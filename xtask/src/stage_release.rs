@@ -130,6 +130,29 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         if !kinds.contains(&m.kind) {
             continue;
         }
+        // Skip metadata-only manifests: kind=program entries that lack
+        // a build script (the script file isn't on disk). These were
+        // added in Chunk B as composite-VFS / bundle-program lookup
+        // satisfiers (kernel, userspace, examples, shell, lamp, node,
+        // wordpress, lsof, nginx, sqlite-cli, curl-the-program, etc.)
+        // and aren't real V2 producer-ready packages — they don't
+        // produce a buildable archive. Silently skip rather than
+        // emitting a noisy WARN per arch.
+        if matches!(m.kind, ManifestKind::Program) {
+            let script_name = m
+                .build
+                .script
+                .clone()
+                .unwrap_or_else(|| format!("build-{}.sh", m.name));
+            let script_path = m.dir.join(&script_name);
+            if !script_path.is_file() {
+                eprintln!(
+                    "skip {} (metadata-only manifest, no build script)",
+                    m.name
+                );
+                continue;
+            }
+        }
         for &arch in &arches {
             match stage_one(
                 &m,

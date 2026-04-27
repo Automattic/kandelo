@@ -33,3 +33,6 @@ name = "make"
 version_constraint = ">=3.80"
 probe = { args = ["--version"], version_regex = "GNU Make (\\d+\\.\\d+(?:\\.\\d+)?)" }
 install_hints = { darwin = "ships with macOS Command Line Tools; or: brew install make", linux = "apt install make" }
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/erlang-28.2-rev1-wasm32-47d0bab4.tar.zst"
+archive_sha256 = "5cbff22e9b37fd20d473ded84d18ca6520782c335842c65c9141eaec5b66fe4c"

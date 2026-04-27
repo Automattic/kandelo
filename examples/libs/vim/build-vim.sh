@@ -235,3 +235,13 @@ echo "==> Final size: $(echo "$SIZE_AFTER" | numfmt --to=iec 2>/dev/null || echo
 echo ""
 echo "==> vim built successfully!"
 echo "Binary: $BIN_DIR/vim.wasm"
+
+# Install into local-binaries/ so the resolver picks the freshly-built
+# binary over the fetched release. Note: vim's runtime tree
+# (examples/libs/vim/runtime/) is NOT installed into the V2 archive
+# in this revision — without it vim launches but lacks syntax/ftplugin
+# data. Bundling the runtime is a follow-up (the [[outputs]] schema
+# only carries .wasm files today; runtime trees need a parallel
+# data-tree mechanism — tracked in dependency-management-future-work.md).
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary vim "$BIN_DIR/vim.wasm"
