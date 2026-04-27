@@ -4,15 +4,16 @@
 #
 # Usage:
 #   scripts/publish-release.sh --tag binaries-abi-v<N>-YYYY-MM-DD \
-#       [--staging /path/to/staging-dir] [--generated-at <ISO8601>]
+#       --staging /path/to/staging-dir
 #
 # Prerequisites:
 #   - `gh` CLI authenticated against the upstream repo.
-#   - Staging directory populated with every asset you want in the
-#     release (flat layout, no subdirectories). The script generates
-#     manifest.json inside the staging dir via `cargo xtask build-manifest`.
-#   - The tag must begin with `binaries-abi-v<ABI_VERSION>` — the xtask
-#     refuses mismatches, which this script then inherits.
+#   - Staging directory already populated by `scripts/stage-release.sh`,
+#     including manifest.json and the {libs,programs}/ subdirectories
+#     produced by V2 archive staging.
+#   - The tag must begin with `binaries-abi-v<ABI_VERSION>` — the
+#     manifest produced by stage-release encodes the same prefix, so
+#     drift here would surface at consumer-side validation.
 #
 # The script is deliberately thin: it exists so the PR review sees the
 # exact commands that run, and so the publishing flow is scriptable for
@@ -22,13 +23,11 @@ set -euo pipefail
 
 TAG=""
 STAGING=""
-GENERATED_AT=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --tag)          TAG="$2"; shift 2 ;;
         --staging)      STAGING="$2"; shift 2 ;;
-        --generated-at) GENERATED_AT="$2"; shift 2 ;;
         -h|--help)
             sed -n '3,20p' "$0"
             exit 0
@@ -45,41 +44,37 @@ if [ -z "$TAG" ]; then
     exit 2
 fi
 if [ -z "$STAGING" ]; then
-    echo "--staging <dir> is required (every asset must already be present)" >&2
+    echo "--staging <dir> is required (run scripts/stage-release.sh first)" >&2
     exit 2
 fi
 if [ ! -d "$STAGING" ]; then
     echo "staging dir $STAGING does not exist" >&2
     exit 1
 fi
+if [ ! -f "$STAGING/manifest.json" ]; then
+    echo "staging dir $STAGING is missing manifest.json — run scripts/stage-release.sh first" >&2
+    exit 1
+fi
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
-HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
-
-echo "== Generating manifest for $TAG =="
-build_manifest_args=(
-    build-manifest
-    --in "$STAGING"
-    --out "$STAGING/manifest.json"
-    --tag "$TAG"
-)
-if [ -n "$GENERATED_AT" ]; then
-    build_manifest_args+=(--generated-at "$GENERATED_AT")
-fi
-cargo run -p xtask --target "$HOST_TARGET" --quiet -- "${build_manifest_args[@]}"
-
-echo
 echo "== Manifest =="
 cat "$STAGING/manifest.json"
 echo
 
-# Build the asset list: every regular file under staging.
+# Build the asset list: every regular file under staging, including
+# the V2 {libs,programs}/ subdirectories produced by xtask stage-release.
 assets=()
 while IFS= read -r -d '' f; do
     assets+=("$f")
-done < <(find "$STAGING" -maxdepth 1 -type f -print0 | sort -z)
+done < <(
+    {
+        find "$STAGING" -maxdepth 1 -type f -print0
+        find "$STAGING/libs" -maxdepth 1 -type f -print0 2>/dev/null
+        find "$STAGING/programs" -maxdepth 1 -type f -print0 2>/dev/null
+    } | sort -z
+)
 
 echo "== Would upload ${#assets[@]} assets to release $TAG =="
 for a in "${assets[@]}"; do
