@@ -13,7 +13,7 @@ spdx = "BSD-2-Clause"
 url = "https://nginx.org/LICENSE"
 
 # The actual build lives at examples/nginx/build.sh (it's been there since
-# pre-V2 and does the configure-from-tarball + asyncify dance). Point the
+# pre-package-system and does the configure-from-tarball + asyncify dance). Point the
 # resolver at it via [build].script.
 [build]
 script = "build-nginx.sh"
@@ -22,5 +22,5 @@ script = "build-nginx.sh"
 name = "nginx"
 wasm = "nginx.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/nginx-1.24.0-rev1-abi1-wasm32-15d2b585.tar.zst"
-archive_sha256 = "0266b1aa412324d59c34467a623dffcc8f7752ecdb4eeba805dfed97a9abc9f7"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/nginx-1.24.0-rev1-abi1-wasm32-00bd4461.tar.zst"
+archive_sha256 = "2b5b75b1fd4cdb188dab1130057736f2701a8ba96159df7ae3e7bda6fe2e6a59"

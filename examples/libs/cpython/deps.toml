@@ -16,5 +16,5 @@ url = "https://docs.python.org/3/license.html"
 name = "cpython"
 wasm = "python.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/cpython-3.13.3-rev1-abi1-wasm32-42568d04.tar.zst"
-archive_sha256 = "40862b3ff4687c174f4178866687441efa5d0e3ad241c1ca20c9335d356464a1"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/cpython-3.13.3-rev1-abi1-wasm32-e9128003.tar.zst"
+archive_sha256 = "14486e942aea05fc135ee9f5c606a61e09bc48f01a8d0d85dd387d0364678c7e"

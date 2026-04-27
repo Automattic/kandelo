@@ -1,4 +1,4 @@
-//! Consumer side of the V2 binary release pipeline.
+//! Consumer side of the the binary release pipeline.
 //!
 //! Reads a release `manifest.json` and dispatches entries by kind:
 //!
@@ -7,13 +7,13 @@
 //!   `<cache>/libs/<canonical>/`. The 4-step compatibility chain
 //!   (sha + target_arch + abi_versions + cache_key_sha) verifies on
 //!   the way in.
-//! * V2 `program` entries (identified by `kind == "program"` AND
+//! * package-system `program` entries (identified by `kind == "program"` AND
 //!   `archive_name` field present) flow through the same path into
 //!   `<cache>/programs/<canonical>/`, plus declared `[[outputs]]` are
 //!   mirrored into `local-binaries/programs/` with the layout the
 //!   resolver-override expects (single-output: flat; multi-output:
 //!   nested under the program name).
-//! * V1-vintage `program` entries (zip archive, NO `archive_name`
+//! * legacy `program` entries (zip archive, NO `archive_name`
 //!   field) and other kinds (`kernel`, `userspace`, `vfs-image`) are
 //!   skipped — `scripts/fetch-binaries.sh`'s legacy
 //!   symlink-into-`binaries/` codepath handles those (E.7 will wire
@@ -45,6 +45,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let mut archive_base: Option<String> = None;
     let mut cache_root: Option<PathBuf> = None;
     let mut local_binaries_dir: Option<PathBuf> = None;
+    let mut binaries_dir: Option<PathBuf> = None;
     let mut registry_root: Option<PathBuf> = None;
     let mut abi: Option<u32> = None;
     let mut force_mirror = false;
@@ -65,6 +66,10 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             "--local-binaries-dir" => {
                 local_binaries_dir =
                     Some(it.next().ok_or("--local-binaries-dir requires path")?.into())
+            }
+            "--binaries-dir" => {
+                binaries_dir =
+                    Some(it.next().ok_or("--binaries-dir requires path")?.into())
             }
             "--registry" => {
                 registry_root = Some(it.next().ok_or("--registry requires path")?.into())
@@ -110,7 +115,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             // handles those via its existing symlink codepath.
             continue;
         }
-        // Identify V2 entries by the presence of `archive_name`. V1
+        // Identify archive entries by the presence of `archive_name`. legacy
         // entries (zip-vintage program bundles) are skipped here and
         // remain the responsibility of fetch-binaries.sh.
         let Some(archive_name) =
@@ -118,7 +123,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         else {
             continue;
         };
-        // V2 entries also carry a `compatibility` block. Defensive
+        // archive entries also carry a `compatibility` block. Defensive
         // check: if a future schema change drops this we don't want to
         // silently install the wrong shape.
         if entry.get("compatibility").is_none() {
@@ -216,6 +221,19 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         // without busting the cache.
         if matches!(m.kind, ManifestKind::Program) && (installed_fresh || force_mirror) {
             mirror_program_outputs(&m, &canonical, &local_binaries_dir)?;
+        }
+
+        // Symlink each declared output into <binaries_dir>/programs/
+        // when --binaries-dir is supplied. fetch-binaries.sh passes
+        // this so the legacy `binaries/...?url` import surface (≈100
+        // imports across browser demos and tests) finds the fetched
+        // bytes via the cache canonical path. Symlinks are always
+        // (re)placed — they're cheap, atomic, and make the binaries/
+        // tree mirror the cache's current state.
+        if let Some(bdir) = binaries_dir.as_deref() {
+            if matches!(m.kind, ManifestKind::Program) {
+                place_binaries_symlinks(&m, &canonical, bdir)?;
+            }
         }
     }
 
@@ -322,6 +340,77 @@ fn mirror_program_outputs(
         })?;
         fs::rename(&tmp, &dest).map_err(|e| {
             format!("rename {} -> {}: {e}", tmp.display(), dest.display())
+        })?;
+    }
+    Ok(())
+}
+
+/// Place symlinks under `binaries_dir/programs/` pointing at each
+/// declared `[[outputs]]` wasm in the cache canonical directory.
+///
+/// Layout mirrors `mirror_program_outputs`:
+///
+///   * 1 output: `<binaries_dir>/programs/<output.name>.<ext>`.
+///   * ≥2 outputs: `<binaries_dir>/programs/<program.name>/<output.name>.<ext>`.
+///
+/// Targets are absolute paths into the resolver cache. The cache and
+/// the symlink layer have the same lifetime in practice (both grow
+/// from `fetch-binaries.sh` runs), so a dangling symlink would mean
+/// the cache was wiped — the user wants to re-fetch anyway.
+///
+/// Replace-in-place is safe: we `remove + symlink` rather than try to
+/// detect "already correct". Symlinks are tiny and atomic; correctness
+/// trumps a microsecond saved on a no-op.
+fn place_binaries_symlinks(
+    m: &DepsManifest,
+    canonical: &Path,
+    binaries_dir: &Path,
+) -> Result<(), String> {
+    let outputs = &m.program_outputs;
+    if outputs.is_empty() {
+        return Err(format!("program {:?} has no [[outputs]]", m.name));
+    }
+    let dest_dir = if outputs.len() > 1 {
+        binaries_dir.join("programs").join(&m.name)
+    } else {
+        binaries_dir.join("programs")
+    };
+    fs::create_dir_all(&dest_dir)
+        .map_err(|e| format!("mkdir {}: {e}", dest_dir.display()))?;
+    for out in outputs {
+        let src = canonical.join(&out.wasm);
+        if !src.is_file() {
+            return Err(format!(
+                "declared output {} not found in cache at {}",
+                out.wasm,
+                src.display()
+            ));
+        }
+        // Match mirror_program_outputs's filename convention: keep
+        // every dot-extension chunk (`.vfs.zst`, `.tar.gz`, etc.).
+        let basename = std::path::Path::new(&out.wasm)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(&out.wasm);
+        let ext = match basename.find('.') {
+            Some(i) => &basename[i..],
+            None => "",
+        };
+        let dest_name = format!("{}{}", out.name, ext);
+        let dest = dest_dir.join(&dest_name);
+        // Replace-in-place: remove any existing entry (file or
+        // symlink), then create a fresh symlink. Skipping the remove
+        // step would cause `symlink` to fail with EEXIST if the
+        // destination already exists.
+        if dest.exists() || dest.symlink_metadata().is_ok() {
+            let _ = fs::remove_file(&dest);
+        }
+        std::os::unix::fs::symlink(&src, &dest).map_err(|e| {
+            format!(
+                "symlink {} -> {}: {e}",
+                dest.display(),
+                src.display()
+            )
         })?;
     }
     Ok(())
@@ -524,6 +613,124 @@ spdx = "TestLicense"
     }
 
     #[test]
+    fn install_release_places_binaries_symlinks_when_binaries_dir_set() {
+        let (staging, registry, _stage_cache) = stage("bdir-single", |registry| {
+            write_fixture(
+                registry,
+                "fixprog",
+                "0.1.0",
+                "program",
+                "mkdir -p $WASM_POSIX_DEP_OUT_DIR/bin && \
+                 echo bdata > $WASM_POSIX_DEP_OUT_DIR/bin/fixprog.wasm",
+                "[[outputs]]\nname = \"fixprog\"\nwasm = \"bin/fixprog.wasm\"\n",
+            );
+        });
+
+        let install_cache = tempdir("bdir-single-cache");
+        let local_bin = tempdir("bdir-single-local");
+        let bdir = tempdir("bdir-single-binaries");
+
+        super::run(vec![
+            "--manifest".into(),
+            staging.join("manifest.json").display().to_string(),
+            "--archive-base".into(),
+            format!("file://{}", staging.display()),
+            "--cache-root".into(),
+            install_cache.display().to_string(),
+            "--local-binaries-dir".into(),
+            local_bin.display().to_string(),
+            "--binaries-dir".into(),
+            bdir.display().to_string(),
+            "--registry".into(),
+            registry.display().to_string(),
+            "--abi".into(),
+            "4".into(),
+        ])
+        .expect("install_release must succeed");
+
+        let link = bdir.join("programs/fixprog.wasm");
+        let meta = fs::symlink_metadata(&link).expect("symlink metadata");
+        assert!(
+            meta.file_type().is_symlink(),
+            "{} should be a symlink",
+            link.display()
+        );
+        // Target should resolve into the cache canonical path and be
+        // readable. The contents come from the build script we wrote.
+        assert_eq!(fs::read(&link).unwrap(), b"bdata\n");
+    }
+
+    #[test]
+    fn install_release_places_binaries_symlinks_multi_output_uses_nested_layout() {
+        let (staging, registry, _stage_cache) = stage("bdir-multi", |registry| {
+            write_fixture(
+                registry,
+                "fixmulti",
+                "0.1.0",
+                "program",
+                "mkdir -p $WASM_POSIX_DEP_OUT_DIR/bin && \
+                 echo a > $WASM_POSIX_DEP_OUT_DIR/bin/a.wasm && \
+                 echo b > $WASM_POSIX_DEP_OUT_DIR/bin/b.wasm",
+                "[[outputs]]\nname = \"a\"\nwasm = \"bin/a.wasm\"\n\
+                 [[outputs]]\nname = \"b\"\nwasm = \"bin/b.wasm\"\n",
+            );
+        });
+
+        let install_cache = tempdir("bdir-multi-cache");
+        let local_bin = tempdir("bdir-multi-local");
+        let bdir = tempdir("bdir-multi-binaries");
+
+        super::run(vec![
+            "--manifest".into(),
+            staging.join("manifest.json").display().to_string(),
+            "--archive-base".into(),
+            format!("file://{}", staging.display()),
+            "--cache-root".into(),
+            install_cache.display().to_string(),
+            "--local-binaries-dir".into(),
+            local_bin.display().to_string(),
+            "--binaries-dir".into(),
+            bdir.display().to_string(),
+            "--registry".into(),
+            registry.display().to_string(),
+            "--abi".into(),
+            "4".into(),
+        ])
+        .expect("install_release must succeed");
+
+        // Multi-output programs nest under a per-program subdir.
+        assert!(
+            bdir.join("programs/fixmulti/a.wasm").is_symlink_or_file(),
+            "expected nested a.wasm symlink"
+        );
+        assert!(
+            bdir.join("programs/fixmulti/b.wasm").is_symlink_or_file(),
+            "expected nested b.wasm symlink"
+        );
+        assert!(
+            !bdir.join("programs/a.wasm").exists(),
+            "multi-output program must NOT use flat layout"
+        );
+        // Symlinks are readable through to the cache contents.
+        assert_eq!(fs::read(bdir.join("programs/fixmulti/a.wasm")).unwrap(), b"a\n");
+        assert_eq!(fs::read(bdir.join("programs/fixmulti/b.wasm")).unwrap(), b"b\n");
+    }
+
+    /// Tiny shim to keep the test assertions readable. `fs::Path` doesn't
+    /// have a single "is symlink OR is file" so we wrap.
+    trait IsSymlinkOrFile {
+        fn is_symlink_or_file(&self) -> bool;
+    }
+    impl IsSymlinkOrFile for std::path::PathBuf {
+        fn is_symlink_or_file(&self) -> bool {
+            match fs::symlink_metadata(self) {
+                Ok(meta) => meta.file_type().is_symlink() || meta.is_file(),
+                Err(_) => false,
+            }
+        }
+    }
+
+    #[test]
     fn install_release_mirrors_program_outputs_to_local_binaries_multi_output() {
         let (staging, registry, _stage_cache) = stage("prog-multi", |registry| {
             write_fixture(
@@ -627,7 +834,7 @@ spdx = "TestLicense"
 
     #[test]
     fn install_release_skips_v1_program_zip() {
-        // Hand-craft a manifest with a single V1-vintage entry: kind=program,
+        // Hand-craft a manifest with a single legacy entry: kind=program,
         // NO archive_name. install_release must Ok and leave both the
         // cache and local-binaries untouched.
         let dir = tempdir("v1-skip");
@@ -678,7 +885,7 @@ spdx = "TestLicense"
             "--abi".into(),
             "4".into(),
         ])
-        .expect("install_release must Ok with V1-vintage entry skipped");
+        .expect("install_release must Ok with legacy entry skipped");
 
         // Cache root may or may not have been created (we never touched
         // it). What matters: no canonical entries inside.
@@ -687,14 +894,14 @@ spdx = "TestLicense"
             .unwrap_or_default();
         assert!(
             entries.is_empty(),
-            "install_release must not touch cache for V1 entries: {entries:?}"
+            "install_release must not touch cache for legacy entries: {entries:?}"
         );
         let bin_entries: Vec<_> = fs::read_dir(&local_bin)
             .map(|rd| rd.collect::<Result<Vec<_>, _>>().unwrap_or_default())
             .unwrap_or_default();
         assert!(
             bin_entries.is_empty(),
-            "install_release must not touch local-binaries for V1 entries: {bin_entries:?}"
+            "install_release must not touch local-binaries for legacy entries: {bin_entries:?}"
         );
     }
 

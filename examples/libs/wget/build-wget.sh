@@ -5,7 +5,7 @@ set -euo pipefail
 #
 # Resolves OpenSSL and zlib via `cargo xtask build-deps resolve <name>` —
 # the shared library cache (or builds on miss). See
-# docs/dependency-management.md.
+# docs/package-management.md.
 # Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
 #
 # Output: examples/libs/wget/bin/wget.wasm
@@ -74,7 +74,9 @@ export OPENSSL_LIBS="-L$OPENSSL_DIR/lib -lssl -lcrypto"
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading wget $WGET_VERSION..."
     TARBALL="wget-${WGET_VERSION}.tar.gz"
-    URL="https://ftp.gnu.org/gnu/wget/${TARBALL}"
+    # ftpmirror.gnu.org redirects to a working GNU mirror; ftp.gnu.org
+    # itself sometimes refuses connections during peak hours.
+    URL="https://ftpmirror.gnu.org/gnu/wget/${TARBALL}"
     curl -fsSL "$URL" -o "/tmp/$TARBALL"
     mkdir -p "$SRC_DIR"
     tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1

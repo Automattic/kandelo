@@ -1,8 +1,8 @@
-# Per-library manifest for libxml2. See docs/dependency-management.md.
+# Per-library manifest for libxml2. See docs/package-management.md.
 #
 # libxml2 depends on zlib for optional compressed-input support (the
 # `--with-zlib` configure path). Only zlib is declared as a build-time
-# dep in V1; libxml2's other optional deps (lzma, icu, python, etc.)
+# dep in legacy; libxml2's other optional deps (lzma, icu, python, etc.)
 # are all disabled via `--without-*` in build-libxml2.sh.
 
 kind = "library"
@@ -30,5 +30,5 @@ libs = ["lib/libxml2.a"]
 headers = ["include/libxml"]
 pkgconfig = ["lib/pkgconfig/libxml-2.0.pc"]
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/libxml2-2.13.8-rev1-abi1-wasm32-e1db116f.tar.zst"
-archive_sha256 = "1dff51d1059e20dedd699104daaadd0bf55f50316672cd7c7781da7024545c71"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/libxml2-2.13.8-rev1-abi1-wasm32-d4de6654.tar.zst"
+archive_sha256 = "84c671fda7e60d3ed61da15bee8ad4890b7bdf6b49ddc7c510af3c8d41e5f904"

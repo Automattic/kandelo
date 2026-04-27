@@ -1,8 +1,9 @@
-# Wasm Dependency Management — Future Work
+# Wasm Package Management — Future Work
 
-Items deferred during V2 (chunks A–F).  Each is captured here so the
-design doc and per-chunk plans aren't the only homes; this file is the
-forward-looking single source of truth for what's still on the table.
+Forward-looking list of items deferred from the package management
+system as it stands today. The system is described in
+`docs/package-management.md`; this file is the home for what's still
+on the table.
 
 Some items are blocked on real demand (e.g., semver ranges, multi-arch
 fat archives); some are purely additive polish (`--gc`, `--format=json`).
@@ -10,9 +11,36 @@ None is on a committed schedule — pick up when the use case arrives.
 
 ## Schema / artifact
 
+### Ship kernel.wasm + userspace.wasm in the release
+
+Today's release excludes the kernel + userspace because their
+manifests at `examples/libs/{kernel,userspace}/` lack build scripts —
+`stage_release` skips manifests without a build script as composite
+metadata. The browser demos import `binaries/kernel.wasm` and
+`binaries/userspace.wasm` (≈23 sites) at Vite build time; without
+those files Vite errors out unless the user has run `bash build.sh`
+locally to populate `local-binaries/`.
+
+Fix options:
+1. **Add build wrappers** at `examples/libs/{kernel,userspace}/build-*.sh`
+   that delegate to the `cargo build --release -p wasm-posix-{kernel,userspace}`
+   pipeline already in `build.sh`. Manifest output names already match
+   the cargo artifact paths. Once added, they ship as regular
+   archives. Caveat: kernel.wasm changes with every kernel commit, so
+   the cache_key_sha churns; users who want a stable kernel should
+   pin to a specific commit / release tag. The local-binaries/
+   override path remains the developer's escape hatch.
+2. **Update demo imports** to use `local-binaries/...` paths and add
+   a doc step ("run `bash build.sh` first"). Diverges from the
+   priority-1/priority-2 resolver convention; doesn't help users
+   without a Rust toolchain.
+
+Option 1 is the cleaner long-term fix. Triggers when a fresh-clone
+without-toolchain workflow becomes a real use case.
+
 ### Lazy-archive VFS support for `.tar.zst`
 
-V2 ships archives as `.tar.zst` uniformly.  That works for the
+The system ships archives as `.tar.zst` uniformly.  That works for the
 resolver path (xtask decompresses to disk on install), but it
 **doesn't work for browser-demo lazy archives**.
 
@@ -26,9 +54,9 @@ per-entry seek.
 
 **Today's workaround** (acceptable for now): the browser demo repacks
 a separate `vim.zip` via `examples/browser/scripts/build-vim-zip.sh`
-that includes vim.wasm + the runtime tree. The V2 release ships
+that includes vim.wasm + the runtime tree. The release ships
 `vim-9.1.0900-...tar.zst` containing only `vim.wasm`. Two parallel
-formats coexist; nothing in the V2 release is consumed directly by
+formats coexist; nothing in the release is consumed directly by
 the lazy-mount VFS.
 
 **Future work — two options:**
@@ -54,7 +82,7 @@ Most likely vim or texlive (huge runtime/font trees).
 
 ### Multi-arch `[binary]` blocks
 
-V2's `[binary]` block is single-URL.  A consumer's `deps.toml` can
+The `[binary]` block is single-URL.  A consumer's `deps.toml` can
 declare one `archive_url` + `archive_sha256`; the resolver uses it for
 whatever arch it's currently resolving.  In practice we backfilled the
 wasm32 archive URL because user programs are wasm32-only at the moment.
@@ -72,12 +100,12 @@ When wasm64 user programs become real, extend the schema to either:
   ```
 - or a templated URL with a per-arch sha map.
 
-Either is backwards-compatible with V2's flat `[binary]` if we treat the
-flat form as `[binary.wasm32]`.
+Either is backwards-compatible with today's flat `[binary]` if we treat
+the flat form as `[binary.wasm32]`.
 
 ### WASI artifact caching
 
-V2's `target_arch` is a closed enum: `wasm32 | wasm64`.  WASI binaries
+`target_arch` is a closed enum: `wasm32 | wasm64`.  WASI binaries
 are handled today by the runtime shim, not the artifact cache.  Decide
 between composite enum values (`wasi-preview1-wasm32`) or splitting the
 axis into `target_arch` / `target_abi` when we have a real first WASI
@@ -91,7 +119,7 @@ Cargo's `cargo package` ships the same shape; this would mirror it.
 
 ### Semver range resolution for libraries / programs
 
-V2 keeps exact version pinning for `depends_on` and `[binary]`.  A
+The system keeps exact version pinning for `depends_on` and `[binary]`.  A
 resolver that picks one version per logical lib across the dep graph
 becomes load-bearing once two consumers want different patch versions
 of the same library.  Until then, exact-pinning is a feature, not a bug
@@ -99,7 +127,7 @@ of the same library.  Until then, exact-pinning is a feature, not a bug
 
 ### Compound version constraints for host-tools
 
-V2's `version_constraint = ">=X.Y[.Z]"` is intentionally minimal.
+The `version_constraint = ">=X.Y[.Z]"` syntax is intentionally minimal.
 Compound forms (`>=3.20,<4.0` to exclude known-bad major versions)
 become useful when a real case lands.
 
@@ -107,7 +135,7 @@ become useful when a real case lands.
 
 ### `WASM_POSIX_PREFER_LOCAL` opt-out
 
-After Chunk F's backfill, `xtask build-deps resolve` for libs uses the
+After the [binary] backfill (most consumers carry one today), `xtask build-deps resolve` for libs uses the
 release archive by default.  A developer hand-editing a library's build
 script can set `WASM_POSIX_PREFER_LOCAL=1` to skip the remote-fetch path
 and force a source build.  Currently you achieve the same by populating
@@ -134,7 +162,7 @@ to trim weekly.
 
 Resolver presence-checks host tools (cmake, wasm-opt, etc.) and prints
 install hints on failure.  Auto-running `brew install cmake` was
-explicitly rejected during V2 design — risky, users want control over
+explicitly rejected during system design — risky, users want control over
 their machines.  Reopen if a consumer migration becomes painful enough
 to justify it.
 
@@ -149,7 +177,7 @@ until a real conflict.
 Manual `scripts/stage-release.sh` + `scripts/publish-release.sh` works
 today.  A GitHub Actions workflow would matrix-build across arches and
 ABI versions, and drop the resulting `binaries-abi-v<N>` automatically.
-This becomes attractive when releases are frequent (V2 cut N=1 manually
+This becomes attractive when releases are frequent (we cut binaries-abi-v1 manually
 on 2026-04-27; if v2/v3 land within months of each other, automation
 pays off).
 
@@ -163,7 +191,7 @@ eventually; useful if cache invalidation becomes a debugging chore.
 
 ### Multi-arch fat archives
 
-V2 ships per-arch archives separately (`zlib-1.3.1-rev1-wasm32-...` and
+Per-arch archives separately (`zlib-1.3.1-rev1-wasm32-...` and
 `zlib-1.3.1-rev1-wasm64-...`).  A "fat" archive containing both arches
 would cut download size when consumers want both.  Not a priority while
 download size for a single arch is small (zlib is ~200KB) but worth
@@ -185,7 +213,7 @@ trap.
 
 ### Schema-level conditional requirement of `compatibility`
 
-`abi/manifest.schema.json` currently allows `kind: "library"` or V2-shape
+`abi/manifest.schema.json` currently allows `kind: "library"` or the archive-shape
 `kind: "program"` entries WITHOUT a `compatibility` block.  The
 producer (xtask::archive_stage / build_manifest) injects the block 100%
 of the time so this is unreachable, but the schema doesn't enforce it.

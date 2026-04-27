@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# V2 build wrapper for the WordPress VFS image.
+# package-system build wrapper for the WordPress VFS image.
 # Delegates to examples/browser/scripts/build-wp-vfs-image.sh.
 set -euo pipefail
 

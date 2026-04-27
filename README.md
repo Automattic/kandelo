@@ -120,7 +120,7 @@ on demand by `cargo xtask build-deps resolve <name>`, which prefers
 the per-user cache, then falls back to the published binary release at
 [`binaries-abi-v<ABI_VERSION>`](https://github.com/brandonpayton/wasm-posix-kernel/releases),
 then to a source build via the per-library `build-<name>.sh`. See
-[docs/dependency-management.md](docs/dependency-management.md) for the
+[docs/package-management.md](docs/package-management.md) for the
 full schema, resolution order, and release-archive contract.
 
 If you prefer to skip cargo-driven dep resolution and pull every
@@ -256,9 +256,9 @@ docs/
 | [SDK Guide](docs/sdk-guide.md) | Compiling programs, toolchain setup, autoconf/CMake integration |
 | [Porting Guide](docs/porting-guide.md) | How to port software, create Node.js and browser demos |
 | [Browser Support](docs/browser-support.md) | Browser architecture, capabilities, demo list, limitations |
-| [Dependency Management](docs/dependency-management.md) | `examples/libs/<name>/deps.toml` schema, resolver, release archives |
-| [Dependency Management — Future Work](docs/dependency-management-future-work.md) | Deferred items: WASI caching, semver, multi-arch `[binary]`, etc. |
-| [Binary Releases](docs/binary-releases.md) | `manifest.json` schema, V2 `.tar.zst` archive layout, fetch + verify flow |
+| [Package Management](docs/package-management.md) | `examples/libs/<name>/deps.toml` schema, resolver, release archives |
+| [Package Management — Future Work](docs/package-management-future-work.md) | Deferred items: WASI caching, semver, multi-arch `[binary]`, etc. |
+| [Binary Releases](docs/binary-releases.md) | `manifest.json` schema, package-system `.tar.zst` archive layout, fetch + verify flow |
 | [Profiling & Benchmarking](docs/profiling.md) | Syscall profiler, benchmark suite, cross-host comparison |
 | [POSIX Status](docs/posix-status.md) | Syscall-by-syscall implementation status |
 | [Wasm Limitations](docs/wasm-limitations.md) | Fundamental platform constraints |

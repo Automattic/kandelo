@@ -70,7 +70,7 @@ for k in "${KINDS[@]}"; do
     kind_args+=(--kind "$k")
 done
 
-echo "== Staging V2 entries (kinds: ${KINDS[*]:-library,program}, arches: ${ARCHES[*]}) =="
+echo "== Staging archive entries (kinds: ${KINDS[*]:-library,program}, arches: ${ARCHES[*]}) =="
 cargo run -p xtask --target "$HOST_TARGET" --quiet -- stage-release \
     --staging "$STAGING" \
     --abi "$ABI" \

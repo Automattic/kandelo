@@ -15,7 +15,7 @@
 # Idempotent: any existing `[binary]` block in the deps.toml is
 # replaced. Programs are wasm32-only in the first cut; multi-arch
 # `[binary]` blocks are deferred (see
-# docs/dependency-management-future-work.md).
+# docs/package-management-future-work.md).
 
 set -euo pipefail
 
@@ -35,7 +35,7 @@ done
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BASE="https://github.com/brandonpayton/wasm-posix-kernel/releases/download/$TAG"
 
-# Filter to wasm32 V2 entries only (first-release scope).
+# Filter to wasm32 archive entries only (first-release scope).
 jq -r '.entries[]
        | select(.archive_name != null and .arch == "wasm32")
        | [.program, .archive_name, .archive_sha256] | @tsv' \

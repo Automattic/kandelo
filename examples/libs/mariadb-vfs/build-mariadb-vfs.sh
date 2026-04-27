@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# V2 build wrapper. The browser-side builder writes
+# package-system build wrapper. The browser-side builder writes
 # examples/browser/public/mariadb.vfs (legacy filename); we install
 # it under the manifest's program name (mariadb-vfs.vfs) so the
 # resolver scratch + local-binaries layout match install_release's

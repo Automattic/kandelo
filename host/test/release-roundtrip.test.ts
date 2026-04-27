@@ -1,5 +1,5 @@
 /**
- * End-to-end vitest test for the V2 binary release pipeline.
+ * End-to-end vitest test for the the binary release pipeline.
  *
  * Stages synthetic library + program archives via `cargo xtask
  * stage-release`, then installs them back via `cargo xtask
@@ -240,7 +240,7 @@ describe.skipIf(hostTriple === null)("release round-trip", () => {
         `fixprog archive among ${JSON.stringify(progArchives)}`,
       ).toBeTruthy();
 
-      // Manifest contains both entries with V2 fields.
+      // Manifest contains both entries with package-system fields.
       const manifest = JSON.parse(
         readFileSync(path.join(staging, "manifest.json"), "utf8"),
       );

@@ -16,5 +16,5 @@ url = "https://github.com/ruby/ruby/blob/master/COPYING"
 name = "ruby"
 wasm = "ruby.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/ruby-3.3.5-rev1-abi1-wasm32-13340822.tar.zst"
-archive_sha256 = "163af04f799ad8667283bfa4188b844380004eae9ef637c98bc16a910af7652b"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/ruby-3.3.5-rev1-abi1-wasm32-f2b490f8.tar.zst"
+archive_sha256 = "f1ee84a3acdf4863d335f8fd526028904e0278b662193d5ea381ffc494dae4c4"

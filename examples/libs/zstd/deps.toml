@@ -16,5 +16,5 @@ url = "https://github.com/facebook/zstd/blob/dev/LICENSE"
 name = "zstd"
 wasm = "zstd.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/zstd-1.5.6-rev1-abi1-wasm32-e9c178d8.tar.zst"
-archive_sha256 = "e3198ec93964e203400e93a8945222bf9215b55bbd80263773c39ddde20932e5"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/zstd-1.5.6-rev1-abi1-wasm32-ad83e87d.tar.zst"
+archive_sha256 = "7096edb15171fc9c662afdfa0a93ab2c2bc26f34c43b8450748eba701283c120"

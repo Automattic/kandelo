@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# V2 build wrapper. Browser-side builder writes
+# package-system build wrapper. Browser-side builder writes
 # examples/browser/public/erlang.vfs; staged under the manifest's
 # program name so install_local_binary + install_release's mirror
 # both produce erlang-vfs.vfs.

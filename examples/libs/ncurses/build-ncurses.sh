@@ -3,7 +3,7 @@
 # Build ncurses 6.5 for wasm32-posix-kernel.
 #
 # Honors the dep-resolver build-script contract (see
-# docs/dependency-management.md). When invoked via
+# docs/package-management.md). When invoked via
 # `cargo xtask build-deps resolve ncurses`, these env vars are set by
 # the resolver and the build installs into the shared cache:
 #

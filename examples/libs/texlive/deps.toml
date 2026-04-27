@@ -16,5 +16,5 @@ url = "https://www.tug.org/texlive/copying.html"
 name = "pdftex"
 wasm = "pdftex.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/texlive-2025-rev1-abi1-wasm32-bf8cd446.tar.zst"
-archive_sha256 = "f2777a2ff0c0fb9921a016dcf47c62c9d349542f2efcb8767946e9617de5ab3e"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/texlive-2025-rev1-abi1-wasm32-b9e57eb0.tar.zst"
+archive_sha256 = "8c27db3f6747938d4594dbbb905e0a0d38f6876b1866397d7d6f3652d4633e7e"

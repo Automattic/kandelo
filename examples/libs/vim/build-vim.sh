@@ -6,7 +6,7 @@ set -euo pipefail
 # Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
 # Resolves ncurses via `cargo xtask build-deps resolve ncurses` — the
 # shared library cache (or builds it on miss). See
-# docs/dependency-management.md.
+# docs/package-management.md.
 # Applies asyncify with an onlylist so fork+exec works (:!command, filters).
 #
 # Output: examples/libs/vim/bin/vim.wasm
@@ -238,10 +238,10 @@ echo "Binary: $BIN_DIR/vim.wasm"
 
 # Install into local-binaries/ so the resolver picks the freshly-built
 # binary over the fetched release. Note: vim's runtime tree
-# (examples/libs/vim/runtime/) is NOT installed into the V2 archive
+# (examples/libs/vim/runtime/) is NOT installed into the the archives
 # in this revision — without it vim launches but lacks syntax/ftplugin
 # data. Bundling the runtime is a follow-up (the [[outputs]] schema
 # only carries .wasm files today; runtime trees need a parallel
-# data-tree mechanism — tracked in dependency-management-future-work.md).
+# data-tree mechanism — tracked in package-management-future-work.md).
 source "$REPO_ROOT/scripts/install-local-binary.sh"
 install_local_binary vim "$BIN_DIR/vim.wasm"

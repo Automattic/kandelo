@@ -167,13 +167,13 @@ fn expand_tilde(s: &str) -> PathBuf {
 /// The hash domain and inputs differ by manifest kind:
 ///
 /// Library / program kind (arch- and ABI-specific artifacts):
-///   domain `"wasm-posix-deps.v2\n"`, then
+///   domain `"wasm-posix-pkg\n"`, then
 ///   `name`, `version`, `revision`, `target_arch`, `abi_version`,
 ///   `source.url`, `source.sha256`, then for each dep (sorted by
 ///   name): `dep.name`, `dep.version`, hex(dep_sha).
 ///
 /// Source kind (raw upstream archive, arch- and ABI-agnostic):
-///   domain `"wasm-posix-deps-source.v2\n"`, then
+///   domain `"wasm-posix-pkg-source\n"`, then
 ///   `name`, `version`, `revision`, `source.url`, `source.sha256`,
 ///   then the same per-dep tail. `target_arch` and `abi_version` are
 ///   intentionally omitted — a source tarball does not change when
@@ -237,7 +237,7 @@ pub fn compute_sha(
     let mut h = Sha256::new();
     match target.kind {
         ManifestKind::Source => {
-            h.update(b"wasm-posix-deps-source.v2\n");
+            h.update(b"wasm-posix-pkg-source\n");
             h.update(target.name.as_bytes());
             h.update(b"\n");
             h.update(target.version.as_bytes());
@@ -251,7 +251,7 @@ pub fn compute_sha(
             h.update(b"\n");
         }
         ManifestKind::Library | ManifestKind::Program => {
-            h.update(b"wasm-posix-deps.v2\n");
+            h.update(b"wasm-posix-pkg\n");
             h.update(target.name.as_bytes());
             h.update(b"\n");
             h.update(target.version.as_bytes());
@@ -399,7 +399,7 @@ struct DirectDep {
 /// platforms ARE covered so the user knows whether to translate one
 /// or to file an issue.
 /// Map Rust's `std::env::consts::OS` to the conventional platform key
-/// used in `[[host_tools]].install_hints`. The deps-management V2
+/// used in `[[host_tools]].install_hints`. The deps-management package-system
 /// schema uses unix-y names (`darwin` for macOS, matching bash and
 /// `uname`); Rust's runtime constant is `"macos"`. Other names match
 /// what users would expect (`linux`, `windows`, `freebsd`, etc.).

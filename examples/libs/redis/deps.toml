@@ -20,5 +20,5 @@ wasm = "redis-server.wasm"
 name = "redis-cli"
 wasm = "redis-cli.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/redis-7.2.5-rev1-abi1-wasm32-1bfdc103.tar.zst"
-archive_sha256 = "fd19a3183e870d97bc73f3de250631ffa32f7473f73299a7f49fc900f619cb89"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/redis-7.2.5-rev1-abi1-wasm32-6826657e.tar.zst"
+archive_sha256 = "959fc242b900445d00f90994d3a4d3772375ee8cc595885555a59189fe40c8fb"

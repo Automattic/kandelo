@@ -16,5 +16,5 @@ url = "https://dev.perl.org/licenses/"
 name = "perl"
 wasm = "perl.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/perl-5.40.3-rev1-abi1-wasm32-6a60ff91.tar.zst"
-archive_sha256 = "cee0831c0086ffd8a62791469d9e4c5ad9b7ce724cf1f146cc5eee1f50808ca7"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/perl-5.40.3-rev1-abi1-wasm32-bdcc8124.tar.zst"
+archive_sha256 = "dbb93dd16fa8858c85831a14dce04482500978bb7127677e121750ae1058531a"

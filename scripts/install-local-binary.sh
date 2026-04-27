@@ -68,7 +68,7 @@ install_local_binary() {
     cp "$src" "$dest"
     echo "  installed $dest"
 
-    # When invoked under the V2 resolver (`xtask build-deps resolve`,
+    # When invoked under the package-system resolver (`xtask build-deps resolve`,
     # `xtask stage-release`), WASM_POSIX_DEP_OUT_DIR points at the
     # resolver's scratch dir. The build script must install its
     # declared `[[outputs]].wasm` files there so `validate_outputs`

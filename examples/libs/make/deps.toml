@@ -16,5 +16,5 @@ url = "https://git.savannah.gnu.org/cgit/make.git/tree/COPYING"
 name = "make"
 wasm = "make.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/make-4.4.1-rev1-abi1-wasm32-87e5f1cd.tar.zst"
-archive_sha256 = "008aad75e61cf7a016e3bc33a4f0c53b48da4a5f415c2b8ba5e0fc08b9a7035b"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/make-4.4.1-rev1-abi1-wasm32-0c5e5b99.tar.zst"
+archive_sha256 = "30d186434552c2844968b7172df96384166cfe963526cdf35ba457a6088d5c0d"

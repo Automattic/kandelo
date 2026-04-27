@@ -1,4 +1,4 @@
-# Per-library manifest for ncurses. See docs/dependency-management.md.
+# Per-library manifest for ncurses. See docs/package-management.md.
 #
 # No wasm deps (host `tic`/`infocmp` are built out-of-band inside the
 # lib dir — they're host binaries, not cacheable wasm artifacts, so
@@ -34,5 +34,5 @@ libs = ["lib/libncursesw.a", "lib/libtinfow.a"]
 headers = ["include/ncursesw"]
 # `--enable-pc-files=no --with-pkg-config=no`: no pkgconfig outputs.
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/ncurses-6.5-rev1-abi1-wasm32-eb45ee8b.tar.zst"
-archive_sha256 = "3a1eb2e933a391bd00c6fdc2bdd68b113d1248520e12c21ea6894d269a7daa21"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/ncurses-6.5-rev1-abi1-wasm32-b4647103.tar.zst"
+archive_sha256 = "5f4b23be9f0d3b71deb4e63ac5504bc128359394ca7a7efadcccf40fa7d73080"

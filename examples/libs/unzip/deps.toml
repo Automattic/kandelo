@@ -16,5 +16,5 @@ url = "https://infozip.sourceforge.net/license.html"
 name = "unzip"
 wasm = "unzip.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/unzip-6.0-rev1-abi1-wasm32-e9be2ee2.tar.zst"
-archive_sha256 = "176e98590891803a0047d487ce6e3eabe1857a9d5b8a4885bc59687cc6b0a80d"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/unzip-6.0-rev1-abi1-wasm32-aaee8bcc.tar.zst"
+archive_sha256 = "4fe81fb024578af9ebea05b01898f2904efbf94d2a968617ff7a7b2c668c3496"

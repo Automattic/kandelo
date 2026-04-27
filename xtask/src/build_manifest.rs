@@ -65,9 +65,9 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let tag = tag.ok_or("--tag <release-tag> is required")?;
 
     // When --abi is supplied explicitly, the caller is asking us to
-    // stamp V2 entries with that ABI value AND verify the tag against
+    // stamp archive entries with that ABI value AND verify the tag against
     // it. When --abi is omitted, fall back to the kernel's compiled-in
-    // ABI_VERSION (preserves existing V1-only callers' behavior).
+    // ABI_VERSION (preserves existing legacy-only callers' behavior).
     let abi = abi_arg.unwrap_or(shared::ABI_VERSION);
     verify_tag_matches_abi(&tag, abi)?;
 
@@ -114,11 +114,11 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         entries.push(build_entry(&path, &name, &program_meta, &program_names)?);
     }
 
-    // V2 registry walk: for every kind="library" or kind="program"
+    // package-system registry walk: for every kind="library" or kind="program"
     // manifest in the registry, fan out across the requested arches.
     // For each (manifest, arch) pair, locate the staged archive at
     // `<in>/{libs,programs}/<name>-<version>-rev<N>-<arch>-<short>.tar.zst`.
-    // If present, emit a V2 entry; if missing, skip silently —
+    // If present, emit a archive entry; if missing, skip silently —
     // build-manifest catalogs only what's actually staged.
     //
     // The memo is keyed only on `name@version` (see `compute_sha`), so
@@ -169,7 +169,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     }
 
     // Schema description on `entries` claims "sorted alphabetically by
-    // `name`". V1 staging walk is sorted; V2 registry walk is sorted
+    // `name`". legacy staging walk is sorted; package-system registry walk is sorted
     // per-arch; but the merged vec is two concatenated runs, not a
     // single sorted sequence. Sort once at the end so the documented
     // invariant holds and cross-release diffs read cleanly.
@@ -262,12 +262,12 @@ fn build_entry(
     Ok(Value::Object(m.into_iter().collect()))
 }
 
-/// Build a V2-shaped manifest entry for a library/program archive.
+/// Build a archive-shaped manifest entry for a library/program archive.
 ///
-/// V2 entries are emitted from the registry walk (not the staging-dir
+/// archive entries are emitted from the registry walk (not the staging-dir
 /// walk) and carry the `[compatibility]` block + `archive_name` /
 /// `archive_sha256` symmetry fields. `abi_version` is explicitly null
-/// — V2 archives advertise compatibility via the `compatibility` block
+/// — the archives advertise compatibility via the `compatibility` block
 /// instead of the legacy `__abi_version` wasm export sniff.
 fn build_v2_entry(
     m: &DepsManifest,
@@ -566,7 +566,7 @@ fn verify_tag_matches_abi(tag: &str, abi_version: u32) -> Result<(), String> {
 
 /// Emit a release-manifest `source` block from a `DepsManifest`.
 ///
-/// V2 emits `{url, sha256}` (was `{url, ref}` in V1). The `ref` field
+/// package-system emits `{url, sha256}` (was `{url, ref}` in legacy). The `ref` field
 /// was display-only and unused by any consumer in this repo; the
 /// sha256 is the upstream tarball's content hash, taken verbatim from
 /// `[source].sha256` in the per-dir manifest.
@@ -781,7 +781,7 @@ mod tests {
         });
         assert!(
             validates_against_schema(&entry),
-            "V1 zip must keep validating"
+            "legacy zip must keep validating"
         );
     }
 
@@ -867,7 +867,7 @@ mod tests {
         .unwrap();
     }
 
-    /// Compute the V2 archive name for a manifest at a given arch.
+    /// Compute the the archives name for a manifest at a given arch.
     /// Mirrors the formula the production code uses.
     fn archive_name_for(
         registry_root: &Path,
@@ -1073,18 +1073,18 @@ mod tests {
         let entries = json["entries"].as_array().unwrap();
         assert!(
             entries.iter().all(|e| e["program"] != "pcre2-source"),
-            "kind=source must NOT produce a V2 entry; got: {:?}",
+            "kind=source must NOT produce a archive entry; got: {:?}",
             entries
         );
     }
 
     #[test]
     fn build_manifest_sorts_entries_by_name() {
-        // Pre-E.3 the manifest concatenated the V1 staging walk
-        // (sorted) with the V2 registry walk (sorted), so the two
+        // Pre-E.3 the manifest concatenated the legacy staging walk
+        // (sorted) with the package-system registry walk (sorted), so the two
         // groups were each internally ordered but the merged vec was
-        // not. Stage a V1 program archive whose name sorts BETWEEN two
-        // V2 lib archive names; without the post-merge sort the V1
+        // not. Stage a legacy program archive whose name sorts BETWEEN two
+        // package-system lib archive names; without the post-merge sort the legacy
         // entry would land first.
         let dir = tempdir("e3-sort");
         let staging = dir.join("staging");
@@ -1094,7 +1094,7 @@ mod tests {
 
         write_lib_manifest(&registry, "alib", "1.0.0");
         write_lib_manifest(&registry, "zlib", "1.0.0");
-        // Program manifest is required for V1 staging-walk entries —
+        // Program manifest is required for legacy staging-walk entries —
         // build_entry looks it up via programs_by_name(registry) for
         // source + license decoration.
         write_program_manifest(&registry, "mprog", "1.0.0");
@@ -1113,7 +1113,7 @@ mod tests {
         );
         fs::write(staging.join("libs").join(&name_a), b"a").unwrap();
         fs::write(staging.join("libs").join(&name_z), b"z").unwrap();
-        // V1 staging-walk file at the staging root. The 8-char hex
+        // legacy staging-walk file at the staging root. The 8-char hex
         // suffix is required by ParsedName::parse.
         let v1_name = "mprog-1.0.0-rev1-deadbeef.zip";
         fs::write(staging.join(v1_name), b"x").unwrap();
@@ -1147,7 +1147,7 @@ mod tests {
         let mut sorted = names.clone();
         sorted.sort();
         assert_eq!(names, sorted, "entries must be sorted by name");
-        // Sanity: confirm the V1 file actually lands between the V2
+        // Sanity: confirm the legacy file actually lands between the package-system
         // archives (proves the test exercises the sort, not just a
         // happy-path ordering).
         let pos_a = names.iter().position(|n| n == &name_a).unwrap();

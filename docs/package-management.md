@@ -1,17 +1,27 @@
-# Dependency management (Wasm libraries)
+# Package management (Wasm packages)
 
-How we declare, build, and cache the static libraries our ported
-programs link against (zlib, ncurses, openssl, libcurl, libxml2,
-libpng, sqlite — and third-party additions).
+How we declare, build, cache, and publish the artifacts the project
+produces — static libraries (zlib, ncurses, openssl, libcurl,
+libxml2, libpng, sqlite, …), ported programs (vim, git, php, …),
+source trees that consumer builds reach into (PCRE2 for MariaDB,
+…), and the host-tool requirements that gate them all.
 
-**Status**: V1, stacked on the binaries release/hosting work
-(PR #298). The schema and `cargo xtask build-deps` resolver are in
-place; consumer build-scripts migrate lib-by-lib.
+**Goal**: every artifact is reproducible from a manifest, cached by
+content hash, and optionally fetched from a published release archive
+without rebuilding from source. The same machinery serves three
+audiences:
+- A developer running `bash build.sh` who wants their local edits
+  to override published artifacts.
+- A developer with no Rust toolchain who wants to pull pre-built
+  binaries from a known release.
+- A CI / release engineer staging the full set into a `binaries-abi-v<N>`
+  GitHub release.
 
-**Scope**: static-library artifacts only. Programs continue to
-statically link; this work caches the `.a` files + headers, not the
-linked binaries. Runtime `.so` loading is intentionally future work —
-see "Out of scope" below.
+**Scope**: static-library artifacts (`.a` + headers + pkgconfig),
+ported program binaries (`.wasm`), composite VFS images (`.vfs`),
+and source-tree extracts. Programs continue to statically link;
+this work caches the build outputs, not the linker step. Runtime
+`.so` loading is out of scope (see "Out of scope" below).
 
 ## Why
 
@@ -75,11 +85,11 @@ key placed after `[license]` ends up as `license.depends_on`, which
 silently parses to an empty top-level list. The resolver documents
 this inline but the parser cannot detect the mistake.
 
-## Versions are exact in V1
+## Versions are exact
 
 `depends_on = ["ncurses@6.5"]` — no semver ranges, no resolver.
 If two consumers of the graph ever need different versions of the
-same lib, we revisit. Noted as future work; not a V1 commitment.
+same lib, we revisit. Noted as future work; not a near-term priority.
 
 ## Cache-key hashing
 
@@ -161,11 +171,9 @@ source.
 
 ## Migrating a consumer to the cache
 
-Lessons from the V2 D.1–D.5 consumer migrations (PRs #352, #353,
-#354, #355, #357, #358). When converting a `build-<prog>.sh` from
-"call the prerequisite `build-<lib>.sh` directly and install into
-the sysroot" to "resolve via the dep cache," follow the patterns
-below.
+When converting a `build-<prog>.sh` from "call the prerequisite
+`build-<lib>.sh` directly and install into the sysroot" to "resolve
+via the package cache," follow the patterns below.
 
 ### 1. Standard resolve pattern
 
@@ -439,7 +447,7 @@ to touch the build doesn't quietly raise the level.
 ## Release archives
 
 Not every contributor wants — or has the toolchain for — a
-local cross-compile. V2 ships pre-built `.tar.zst` archives
+local cross-compile. Pre-built `.tar.zst` archives
 alongside the existing release manifest so a fresh checkout can
 fetch a binary, verify it against the consumer's source
 `deps.toml`, and install it directly into the resolver's cache.
@@ -475,8 +483,8 @@ cache tree into
 ```
 
 Finally it delegates to `build-manifest` to emit
-`<staging>/manifest.json` covering both V1 (kernel, userspace,
-test programs) and V2 (libs + programs) entries.
+`<staging>/manifest.json` covering both legacy single-asset (kernel, userspace,
+test programs) and archive (libs + programs) entries.
 
 **Consumer — `cargo xtask install-release`:**
 
@@ -486,7 +494,7 @@ cargo xtask install-release \
     --archive-base https://github.com/.../releases/download/<tag>
 ```
 
-It iterates manifest entries that carry `archive_name` (V2
+It iterates manifest entries that carry `archive_name` (archive
 shape) and dispatches each one through `remote_fetch`, which
 handles fetch + verify + install. `--archive-base` accepts both
 `https://…` and `file://…/…` (the round-trip test uses the
@@ -556,7 +564,7 @@ codepath that `build-deps` hits during a normal build, the same
 rejection causes the resolver to fall through to source build
 — same outcome as if no archive had been published.
 
-That is the strict-equivalence check the V2 design relies on:
+That is the strict-equivalence check the design relies on:
 the archive is honored if and only if its source-side inputs
 hash to exactly what this checkout would produce.
 
@@ -639,17 +647,17 @@ canonical path populated and returns it without re-running
 ### Shell-script wrappers
 
 `scripts/stage-release.sh` and `scripts/fetch-binaries.sh` wrap
-the xtask subcommands with the rest of the V1 release flow:
+the xtask subcommands with the rest of the legacy release flow:
 
-- `stage-release.sh` first stages V1 entries (kernel,
+- `stage-release.sh` first stages legacy entries (kernel,
   userspace, hand-bundled test programs) via `xtask
   bundle-program --plain-wasm`, then delegates to `xtask
-  stage-release` for the V2 lib + program archives. Both halves
+  stage-release` for the lib + program archives. Both halves
   land in the same flat staging directory with one combined
   `manifest.json`.
 - `fetch-binaries.sh` reads `binaries.lock`, downloads
-  `manifest.json`, and dispatches V2 entries (those with
-  `archive_name`) to `xtask install-release`. V1 entries
+  `manifest.json`, and dispatches archive entries (those with
+  `archive_name`) to `xtask install-release`. legacy entries
   continue through the existing bash `place`/`extract_flat_zip`
   codepaths into `binaries/`. The two halves coexist in one
   release with no schema-level separation; the `archive_name`
@@ -700,7 +708,7 @@ own directory tree and prepend it to the registry path.
 
 ## Source-kind manifests
 
-V2 introduces `kind = "source"` for declaring source trees that
+The system supports `kind = "source"` for declaring source trees that
 consumers vendor or sub-build but that we do **not** publish as
 standalone library or program artifacts. Typical cases:
 
@@ -783,7 +791,7 @@ in `docs/plans/2026-04-22-deps-management-v2-design.md`.
 
 ## Host-tool requirements
 
-V2 lets a manifest declare host-side prerequisites — `cmake`,
+A manifest can declare host-side prerequisites — `cmake`,
 `make`, `patch`, `autoconf`, etc. — inline. The resolver probes
 each one before invoking the build script, so a missing or
 too-old tool fails up front with a platform-keyed install hint
@@ -870,7 +878,7 @@ forcing a single shared declaration file.
 See decisions 10 (cache-key impact) and 11 (probe + install hint
 contract) in `docs/plans/2026-04-22-deps-management-v2-design.md`.
 
-## Out of scope for V1
+## Out of scope
 
 - **Runtime shared `.so` libraries**: evaluated but rejected. Current
   programs static-link everything; switching to dynamic loading across
@@ -879,6 +887,6 @@ contract) in `docs/plans/2026-04-22-deps-management-v2-design.md`.
   binary-bloat savings justify the dlopen complexity.
 - **Semver ranges**: exact-pinning only. Adding a resolver that picks
   one version per lib across the overall graph is real work; we punt
-  until two V1 consumers actually conflict.
+  until two consumers actually conflict.
 - **CI-driven dep builds**: deps are built manually and published
   manually via `publish-release.sh`.

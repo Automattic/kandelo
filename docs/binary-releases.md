@@ -34,35 +34,35 @@ against a kernel on ABI 3 — the mismatch check refuses them.
 
 ## Layout of a release
 
-Flat asset namespace. No per-category directories. V1 wasm/zip
+Flat asset namespace. No per-category directories. legacy wasm/zip
 entries (kernel, userspace, vfs-images, legacy programs) and
-V2 `.tar.zst` entries (libraries + V2-shaped programs) sit
+the system `.tar.zst` entries (libraries + the archive-shaped programs) sit
 side-by-side in the same release; the manifest entry's
 `archive_name` field is the per-entry discriminator.
 
 ```
 binaries-abi-v4-2026-04-26 (release)
 ├── manifest.json                                     ← the contract
-├── wasm_posix_kernel.wasm                            ← V1 (kernel)
-├── wasm_posix_userspace.wasm                         ← V1 (userspace)
-├── exec-caller.wasm                                  ← V1 (program)
-├── fork-exec.wasm                                    ← V1 (program)
-├── shell.vfs.zst                                     ← V1 (vfs-image)
-├── zlib-1.3.1-rev1-wasm32-9acb9405.tar.zst           ← V2 (library)
-├── zlib-1.3.1-rev1-wasm64-b1773def.tar.zst           ← V2 (library)
-├── ncurses-6.5-rev1-wasm32-2a55c8e0.tar.zst          ← V2 (library)
-├── vim-9.1-rev1-wasm32-c4e2118a.tar.zst              ← V2 (program)
+├── wasm_posix_kernel.wasm                            ← legacy (kernel)
+├── wasm_posix_userspace.wasm                         ← legacy (userspace)
+├── exec-caller.wasm                                  ← legacy (program)
+├── fork-exec.wasm                                    ← legacy (program)
+├── shell.vfs.zst                                     ← legacy (vfs-image)
+├── zlib-1.3.1-rev1-wasm32-9acb9405.tar.zst           ← the system (library)
+├── zlib-1.3.1-rev1-wasm64-b1773def.tar.zst           ← the system (library)
+├── ncurses-6.5-rev1-wasm32-2a55c8e0.tar.zst          ← the system (library)
+├── vim-9.1-rev1-wasm32-c4e2118a.tar.zst              ← the system (program)
 └── …
 ```
 
-V2 archive filenames follow
+the system archive filenames follow
 `<name>-<version>-rev<N>-<arch>-<short-cache-key-sha>.tar.zst`,
 where the short sha is the first 8 chars of the cache-key sha
 for that manifest. Two archives with the same `(name, version,
 revision, arch)` but different transitive deps get distinct
 shas and thus distinct names.
 
-### V2 archive interior layout
+### the system archive interior layout
 
 Each `.tar.zst` carries exactly two top-level entries:
 
@@ -78,7 +78,7 @@ artifacts/                 ← cache-tree contents
 The consumer (`xtask install-release`, calling
 `remote_fetch::fetch_and_install`) flattens `artifacts/*` to
 the cache root after extraction. See
-`docs/dependency-management.md` "Release archives" for the full
+`docs/package-management.md` "Release archives" for the full
 producer/consumer round-trip and the `[compatibility]` block.
 
 ## `manifest.json` schema
@@ -136,8 +136,8 @@ fields a reader most often needs.
 }
 ```
 
-Entries are sorted alphabetically by `name` across both V1 and
-V2 shapes. Keys within each entry and at the top level are
+Entries are sorted alphabetically by `name` across both legacy and
+the system shapes. Keys within each entry and at the top level are
 sorted too (BTreeMap on the generator side) so `shasum -a 256
 manifest.json` is deterministic.
 
@@ -157,40 +157,40 @@ manifest.json` is deterministic.
 
 ### Per-entry fields
 
-Common to V1 and V2 entries:
+Common to legacy and the system entries:
 
 - **`name`** — the asset filename in the release. Unique.
 - **`kind`** — one of `"kernel"`, `"userspace"`, `"program"`,
-  `"vfs-image"`, `"library"`. The first four are V1 shapes;
-  `"library"` is V2. `"program"` covers both shapes —
+  `"vfs-image"`, `"library"`. The first four are legacy shapes;
+  `"library"` is the system. `"program"` covers both shapes —
   `archive_name` is the discriminator.
 - **`size`** — byte count.
 - **`sha256`** — lowercase hex SHA-256 of the asset bytes. Fetcher
   verifies every download.
 - **`abi_version`** — for wasm binaries that export `__abi_version`,
   the integer value the export returns. Null for assets that don't
-  carry the marker (VFS images, V2 archives, legacy binaries).
+  carry the marker (VFS images, the system archives, legacy binaries).
 
-V2 entries (`kind: library`, plus `kind: program` whose
+the system entries (`kind: library`, plus `kind: program` whose
 filename ends in `.tar.zst`) also carry:
 
 - **`program`** — logical name (`"zlib"`, `"vim"`). Multiple
   archives can share a `program` value across arches.
 - **`arch`** — `"wasm32"`, `"wasm64"`, or `"any"`. Set per
-  archive on V2 entries; absent on V1 wasm/zip assets.
+  archive on the system entries; absent on legacy wasm/zip assets.
 - **`upstream_version`** / **`revision`** — verbatim from the
   source `deps.toml`. `revision` bumps when the build changes
   without an upstream version bump.
 - **`archive_name`** — filename of the `.tar.zst`. Identical to
-  `name` for V2 entries; `null` (or absent) on V1 entries. The
-  consumer-side fetch dispatcher branches on this field — V2
-  flows through `xtask install-release`, V1 flows through the
+  `name` for the system entries; `null` (or absent) on legacy entries. The
+  consumer-side fetch dispatcher branches on this field — the system
+  flows through `xtask install-release`, legacy flows through the
   existing `place`/`extract_flat_zip` shell paths.
 - **`archive_sha256`** — SHA-256 of the archive bytes. Equal to
-  `sha256` for V2 entries; the field is repeated under the
+  `sha256` for the system entries; the field is repeated under the
   `archive_*` prefix for symmetry with the consumer-side
   `[binary]` block in `deps.toml`.
-- **`compatibility`** — required on V2 entries; absent on V1.
+- **`compatibility`** — required on the system entries; absent on legacy.
   Object with three required fields:
   - `target_arch` — `"wasm32"` or `"wasm64"`.
   - `abi_versions` — non-empty list of integers ≥ 1; the
@@ -200,7 +200,7 @@ filename ends in `.tar.zst`) also carry:
     cache-key sha.
 - **`source`** — `{url, sha256}` pair pointing at the upstream
   tarball this archive was built from. `sha256` is the field on
-  V2-generated manifests; V1-vintage manifests carry a `ref`
+  the system-generated manifests; legacy-vintage manifests carry a `ref`
   instead (a git tag or upstream version label).
 - **`license`** — `{spdx, url?}` block, verbatim from
   `deps.toml`.
@@ -211,7 +211,7 @@ See `abi/manifest.schema.json` for the authoritative
 JSON-Schema definitions, including the `[compatibility]` shape
 and value patterns. The compatibility block's verification
 chain is documented in
-[`docs/dependency-management.md`](dependency-management.md)
+[`docs/package-management.md`](package-management.md)
 under "Release archives".
 
 ## How a fetcher validates a release
@@ -223,7 +223,7 @@ under "Release archives".
    SHA-256 matches `binaries.lock.manifest_sha256`.
 3. Cross-checks `manifest.abi_version === binaries.lock.abi` and
    `manifest.release_tag === binaries.lock.release_tag`.
-4. **For V2 entries** (those carrying `archive_name`),
+4. **For the system entries** (those carrying `archive_name`),
    delegates to `cargo xtask install-release --manifest … --archive-base
    <release-url>`. `install-release` walks `remote_fetch` for
    each archive — verifying the archive bytes against
@@ -233,18 +233,18 @@ under "Release archives".
    cache-key sha against the archive's `cache_key_sha` — and
    installs each archive into `<cache>/{libs,programs}/<canonical>/`.
    Program archives also mirror to `local-binaries/programs/<name>/`.
-5. **For V1 entries** (no `archive_name`), checks the
+5. **For legacy entries** (no `archive_name`), checks the
    content-addressed cache at
    `~/.cache/wasm-posix-kernel/abi-v<N>/objects/<sha256>.<ext>`,
    downloads any missing object, then symlinks/extracts into
    `binaries/`. The kernel/userspace/vfs-image flow is
-   unchanged from V1.
+   unchanged from legacy.
 
 Any SHA-256 mismatch, version mismatch, missing compatibility
 field, or `cache_key_sha` mismatch is a hard error — we never
-fall back to "best effort." For V2 archives the full
+fall back to "best effort." For the system archives the full
 verification chain is documented in
-[`docs/dependency-management.md`](dependency-management.md)
+[`docs/package-management.md`](package-management.md)
 under "Release archives".
 
 ## Producing a release
@@ -258,9 +258,9 @@ For now, manual. Eventually a GitHub Actions workflow
    `examples/libs/*/build-*.sh`).
 2. Run `bash scripts/stage-release.sh --out release-staging`. The
    script handles both halves:
-   - V1 entries (kernel, userspace, hand-bundled test programs)
+   - legacy entries (kernel, userspace, hand-bundled test programs)
      are staged via `xtask bundle-program --plain-wasm`.
-   - V2 entries (every `kind=library` and `kind=program`
+   - the system entries (every `kind=library` and `kind=program`
      manifest in `examples/libs/`) are staged via `xtask
      stage-release`, which fans out across {wasm32, wasm64},
      calls `ensure_built` to populate the resolver cache as
@@ -269,7 +269,7 @@ For now, manual. Eventually a GitHub Actions workflow
      combined `manifest.json`.
 3. Run `bash scripts/publish-release.sh <DATE>` (or equivalent) to
    create the GitHub release and upload every staged asset (flat
-   wasm, V1 zip bundles, and V2 `.tar.zst` archives).
+   wasm, legacy zip bundles, and the system `.tar.zst` archives).
 4. Commit the generated manifest into `abi/manifest.json` as the
    repo's reference copy. Follow-up changes to `binaries.lock` pin
    consumers to this release.

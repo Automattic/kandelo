@@ -1,4 +1,4 @@
-# Per-library manifest for SQLite. See docs/dependency-management.md.
+# Per-library manifest for SQLite. See docs/package-management.md.
 #
 # Uses the single-source-file amalgamation distribution. Upstream
 # version string is human-readable (e.g. "3.49.1"); the zip URL uses
@@ -25,5 +25,5 @@ libs = ["lib/libsqlite3.a"]
 headers = ["include/sqlite3.h", "include/sqlite3ext.h"]
 pkgconfig = ["lib/pkgconfig/sqlite3.pc"]
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/sqlite-3.49.1-rev1-abi1-wasm32-001afa67.tar.zst"
-archive_sha256 = "367b748bac76f4333988c0ebaaccd3c1b1e8a0028fa7f06ad8bf8d8f6ea92e84"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/sqlite-3.49.1-rev1-abi1-wasm32-4e140251.tar.zst"
+archive_sha256 = "9bcd6cd456f121694b35ac8829278151d65afd366721da81bf11c43e9dc9b0ab"

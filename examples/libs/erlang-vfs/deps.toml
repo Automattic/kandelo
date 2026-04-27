@@ -22,5 +22,5 @@ script = "build-erlang-vfs.sh"
 name = "erlang-vfs"
 wasm = "erlang-vfs.vfs"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/erlang-vfs-0.1.0-rev1-abi1-wasm32-e3198a0a.tar.zst"
-archive_sha256 = "0b0054f69afe1d4185a8236f46ae52f087f41b632ad4c2dee18c5226724ae63b"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/erlang-vfs-0.1.0-rev1-abi1-wasm32-216a9ffc.tar.zst"
+archive_sha256 = "10e0f9c7f926a084e2f24f06875efd674f704bdd6f634c820f8a03bd71e87c2e"

@@ -19,5 +19,5 @@ script = "build-wordpress.sh"
 name = "wordpress"
 wasm = "wordpress.vfs"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/wordpress-6.8-rev1-abi1-wasm32-21620e7d.tar.zst"
-archive_sha256 = "53b9e82981732dfb486c9d420fc6576effe522d5cc09b43f108e50ad3e0854bb"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/wordpress-6.8-rev1-abi1-wasm32-6d26ca01.tar.zst"
+archive_sha256 = "23cfa9e8e7f50e13118a5adff0660ee16c3fdbe66af3d2dc82c73678f885f4a2"

@@ -189,29 +189,34 @@ fi
 # Cached alias for consumer introspection.
 place "$MANIFEST_OBJ" "manifest.json"
 
-# --- Step 1.5: install V2 library + program archives via xtask ------------
-# Each V2 entry has archive_name + archive_sha256 + compatibility;
-# remote_fetch in xtask handles fetch + verify + install into the
-# resolver's canonical cache path, plus mirroring program outputs
-# into local-binaries/programs/.
+# --- Step 1.5: install package-archive entries via xtask -----------
+# Each archive-style entry has archive_name + archive_sha256 +
+# compatibility; remote_fetch in xtask handles fetch + verify + install
+# into the resolver's canonical cache path, mirrors program outputs
+# into local-binaries/programs/, and (with --binaries-dir) places
+# symlinks under binaries/programs/ pointing at the cache so the
+# legacy `binaries/...?url` import surface (≈100 sites across browser
+# demos and tests) finds the fetched bytes.
 #
-# V1 zip/wasm-vintage entries (no archive_name) are left for Step 2's
-# symlink-into-binaries/ codepath.
+# Legacy zip/wasm-vintage entries (no archive_name) are left for Step
+# 2's symlink-into-binaries/ codepath below — that path handles
+# kernel/userspace/vfs-image entries which aren't archive-shape.
 #
 # NOTE: --offline / --force / --prune are NOT propagated into xtask
-# install-release. Those flags continue to govern the V1 entry path
-# (which is the only path that mutates binaries/ directly). If you
-# need offline-mode for V2 archives, the resolver's cache will
-# already serve them on subsequent runs once they've been installed.
+# install-release. Those flags continue to govern the legacy entry
+# path. If you need offline-mode for archive entries, the resolver's
+# cache will already serve them on subsequent runs once they've been
+# installed.
 if jq -e '.entries[] | select(.archive_name != null)' "$MANIFEST_OBJ" > /dev/null 2>&1; then
     if [ "$OFFLINE" = "1" ]; then
-        echo "fetch-binaries: skipping V2 archive install (offline mode)"
+        echo "fetch-binaries: skipping archive install (offline mode)"
     else
         HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
-        echo "fetch-binaries: installing V2 archives via xtask install-release..."
+        echo "fetch-binaries: installing archives via xtask install-release..."
         cargo run -p xtask --target "$HOST_TARGET" --quiet -- install-release \
             --manifest "$MANIFEST_OBJ" \
-            --archive-base "$REL_BASE"
+            --archive-base "$REL_BASE" \
+            --binaries-dir "$BIN_DIR"
     fi
 fi
 
@@ -240,7 +245,7 @@ for i in $(seq 0 $((entry_count - 1))); do
     entry=$(jq -c ".entries[$i]" "$MANIFEST_OBJ")
     archive_name=$(echo "$entry" | jq -r '.archive_name // empty')
     if [ -n "$archive_name" ]; then
-        # V2 entry; xtask install-release already handled it above.
+        # archive entry; xtask install-release already handled it above.
         continue
     fi
     name=$(echo "$entry" | jq -r .name)

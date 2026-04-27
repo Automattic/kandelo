@@ -23,5 +23,5 @@ script = "build-perl-vfs.sh"
 name = "perl-vfs"
 wasm = "perl-vfs.vfs"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/perl-vfs-0.1.0-rev1-abi1-wasm32-bb99deba.tar.zst"
-archive_sha256 = "010b2c6571ecb93a75544b813304bb3500a63cbae388bd226784fc1ec475f215"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/perl-vfs-0.1.0-rev1-abi1-wasm32-1b1aa45d.tar.zst"
+archive_sha256 = "71e721e0ef1d5e6b2ffc99315ac2e0e26001090cca50949eab29e25128a40e1e"

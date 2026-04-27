@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# V2 build wrapper. Delegates to the existing
+# package-system build wrapper. Delegates to the existing
 # examples/browser/scripts/build-shell-vfs-image.sh which produces
 # examples/browser/public/shell.vfs, then installs that file into
 # local-binaries/programs/ + the resolver scratch dir.

@@ -186,7 +186,7 @@ if [ ! -f "$SYSROOT/lib/libc++.a" ] || [ "$(wc -c < "$SYSROOT/lib/libc++.a" | tr
     fi
 fi
 
-# --- Resolve pcre2-source via the dep cache (V2 kind="source") ---
+# --- Resolve pcre2-source via the dep cache (package-system kind="source") ---
 HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
 resolve_dep() {
     local name="$1"

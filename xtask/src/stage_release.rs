@@ -1,4 +1,4 @@
-//! Stage all V2 library + program archives for a release.
+//! Stage all package-system library + program archives for a release.
 //!
 //! Walks the registry, fans out across requested arches, calls
 //! `build_deps::ensure_built` to populate the cache, then
@@ -135,7 +135,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         // added in Chunk B as composite-VFS / bundle-program lookup
         // satisfiers (kernel, userspace, examples, shell, lamp, node,
         // wordpress, lsof, nginx, sqlite-cli, curl-the-program, etc.)
-        // and aren't real V2 producer-ready packages — they don't
+        // and aren't real the producer-ready packages — they don't
         // produce a buildable archive. Silently skip rather than
         // emitting a noisy WARN per arch.
         if matches!(m.kind, ManifestKind::Program) {
@@ -234,7 +234,7 @@ fn stage_one(
 ) -> Result<PathBuf, String> {
     // Compute the cache-key sha so we know what filename to stage
     // under and what to inject into the [compatibility] block.
-    // Each call gets a fresh memo; the V1 memo bug surfaced in E.3
+    // Each call gets a fresh memo; the legacy memo bug surfaced in E.3
     // showed memos must not cross arch boundaries.
     let mut chain: Vec<String> = Vec::new();
     let mut memo: BTreeMap<String, [u8; 32]> = BTreeMap::new();

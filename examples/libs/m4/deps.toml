@@ -16,5 +16,5 @@ url = "https://git.savannah.gnu.org/cgit/m4.git/tree/COPYING"
 name = "m4"
 wasm = "m4.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/m4-1.4.19-rev1-abi1-wasm32-8c20b3f5.tar.zst"
-archive_sha256 = "3b3c1af4ef0e54cf2377a56741aa71a12d9f52cea50447b47591060a2240be56"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/m4-1.4.19-rev1-abi1-wasm32-e5776b1c.tar.zst"
+archive_sha256 = "05406c88748c1f948a82c140a63d791251156462da6d6fffd969e4c636f6c4d0"

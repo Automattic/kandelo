@@ -8,7 +8,7 @@ depends_on = []
 # coreutils/grep/sed symlinks, /etc system configs, magic database,
 # lazy-archive reference for vim. Built by
 # examples/browser/scripts/build-shell-vfs-image.ts. The .vfs file is
-# wrapped (not double-compressed) inside the V2 .tar.zst archive at
+# wrapped (not double-compressed) inside the package-system .tar.zst archive at
 # stage_release time.
 #
 # Build prerequisites: dash + coreutils + grep + sed + vim must be in
@@ -28,5 +28,5 @@ script = "build-shell.sh"
 name = "shell"
 wasm = "shell.vfs"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/shell-0.1.0-rev1-abi1-wasm32-99f8e166.tar.zst"
-archive_sha256 = "2ec50674edf2ea55096f9e157801958b0db8157ed13660a2e4d76d890fa26488"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/shell-0.1.0-rev1-abi1-wasm32-189a570c.tar.zst"
+archive_sha256 = "3e98a2f55041a1b6f4ab4c48df67b17f70ac41d030a4bba9bd8bb5863cbe42c7"

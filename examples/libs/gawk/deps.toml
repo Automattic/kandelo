@@ -16,5 +16,5 @@ url = "https://git.savannah.gnu.org/cgit/gawk.git/tree/COPYING"
 name = "gawk"
 wasm = "gawk.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/gawk-5.3.0-rev1-abi1-wasm32-4be8c4b8.tar.zst"
-archive_sha256 = "d1c3c882f618e92b98df87ebd361e7a761d42b41bdb08019609157609ae5959e"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/gawk-5.3.0-rev1-abi1-wasm32-372295f0.tar.zst"
+archive_sha256 = "61d2011e5cfa84c8753615dd844c32aa225dabf428bb25f0b8228957254b5c5a"

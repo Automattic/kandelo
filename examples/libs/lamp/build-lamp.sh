@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# V2 build wrapper for the LAMP-stack VFS image (WordPress + MariaDB).
+# package-system build wrapper for the LAMP-stack VFS image (WordPress + MariaDB).
 # Delegates to examples/browser/scripts/build-lamp-vfs-image.sh.
 set -euo pipefail
 
