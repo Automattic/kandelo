@@ -58,4 +58,10 @@ tempfile = "3"
 # (Task E.1). Pinned to 0.18 — tested clean on aarch64-apple-darwin;
 # newer 0.4x versions pull in `aws-lc-rs` via a default feature path
 # that has historically been brittle on macOS hosts.
-jsonschema = "0.18"
+#
+# `default-features = false` to drop `resolve-http` (reqwest + tokio +
+# hyper + wasm-bindgen) and `cli` (clap). The schema only ever resolves
+# local `#/$defs/...` fragment refs, so no network/file resolver is
+# needed. Mirrors the project's "minimize transitive deps" invariant —
+# see the `ureq` rationale just above.
+jsonschema = { version = "0.18", default-features = false }

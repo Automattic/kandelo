@@ -579,6 +579,37 @@ mod tests {
     }
 
     #[test]
+    fn schema_rejects_compat_with_unknown_field() {
+        let mut entry = sample_v2_lib_entry();
+        entry["compatibility"]["spurious"] = serde_json::json!("x");
+        assert!(
+            !validates_against_schema(&entry),
+            "additionalProperties:false must reject unknown field"
+        );
+    }
+
+    #[test]
+    fn schema_rejects_compat_with_uppercase_sha() {
+        let mut entry = sample_v2_lib_entry();
+        entry["compatibility"]["cache_key_sha"] = serde_json::json!("F".repeat(64));
+        assert!(
+            !validates_against_schema(&entry),
+            "hex pattern must reject uppercase"
+        );
+    }
+
+    #[test]
+    fn schema_rejects_compat_with_too_long_sha() {
+        let mut entry = sample_v2_lib_entry();
+        entry["compatibility"]["cache_key_sha"] =
+            serde_json::json!(format!("{}0", "0".repeat(64)));
+        assert!(
+            !validates_against_schema(&entry),
+            "$ anchor must reject 65-char hex"
+        );
+    }
+
+    #[test]
     fn schema_still_accepts_v1_program_zip() {
         let entry = serde_json::json!({
             "name": "vim-9.1.0900-rev1-abc12345.zip",
