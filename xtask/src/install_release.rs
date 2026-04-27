@@ -47,6 +47,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let mut local_binaries_dir: Option<PathBuf> = None;
     let mut registry_root: Option<PathBuf> = None;
     let mut abi: Option<u32> = None;
+    let mut force_mirror = false;
 
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
@@ -76,6 +77,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                         .map_err(|e| format!("--abi: {e}"))?,
                 )
             }
+            "--force-mirror" => force_mirror = true,
             other => return Err(format!("unknown arg {other:?}")),
         }
     }
@@ -182,7 +184,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             ));
         }
 
-        if !canonical.exists() {
+        let installed_fresh = if !canonical.exists() {
             // Fetch + install. Compat mismatches surface as Err here.
             let bin = Binary {
                 archive_url,
@@ -198,11 +200,21 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             )
             .map_err(|e| format!("install {program_name} ({arch_str}): {e}"))?;
             eprintln!("installed {}", canonical.display());
+            true
         } else {
             eprintln!("skip {} (already in cache)", canonical.display());
-        }
+            false
+        };
 
-        if matches!(m.kind, ManifestKind::Program) {
+        // Mirror programs to local-binaries/ ONLY when we actually
+        // performed an install (i.e. not on a cache hit). Mirroring on
+        // every run wastes I/O and — more importantly for multi-output
+        // programs like git — can interleave files from different
+        // builds if a reader observes the dir mid-update. The
+        // --force-mirror escape hatch covers the case where a developer
+        // manually edited local-binaries/ and wants it re-populated
+        // without busting the cache.
+        if matches!(m.kind, ManifestKind::Program) && (installed_fresh || force_mirror) {
             mirror_program_outputs(&m, &canonical, &local_binaries_dir)?;
         }
     }
@@ -281,7 +293,10 @@ fn mirror_program_outputs(
         }
         let dest_name = format!("{}.wasm", out.name);
         let dest = dest_dir.join(&dest_name);
-        let tmp = dest.with_extension("wasm.tmp");
+        // PID suffix matches the convention used in remote_fetch /
+        // archive_stage: lets two install-release runs sharing a
+        // --local-binaries-dir not race on the same .tmp filename.
+        let tmp = dest.with_extension(format!("wasm.tmp-{}", std::process::id()));
         fs::copy(&src, &tmp).map_err(|e| {
             format!("copy {} -> {}: {e}", src.display(), tmp.display())
         })?;
@@ -661,6 +676,113 @@ spdx = "TestLicense"
             bin_entries.is_empty(),
             "install_release must not touch local-binaries for V1 entries: {bin_entries:?}"
         );
+    }
+
+    #[test]
+    fn install_release_skips_mirror_on_cache_hit_without_force() {
+        // Documents the intentional behavior: on a cache hit (canonical
+        // already exists), mirror_program_outputs is NOT re-run. We
+        // prove this by removing the mirrored wasm after the first
+        // install, then running install again — without --force-mirror
+        // the deleted file should NOT be re-created.
+        let (staging, registry, _stage_cache) = stage("mirror-skip-on-hit", |registry| {
+            write_fixture(
+                registry,
+                "myprog",
+                "0.1.0",
+                "program",
+                "mkdir -p $WASM_POSIX_DEP_OUT_DIR/bin && \
+                 echo p1 > $WASM_POSIX_DEP_OUT_DIR/bin/myprog.wasm",
+                "[[outputs]]\nname = \"myprog\"\nwasm = \"bin/myprog.wasm\"\n",
+            );
+        });
+
+        let install_cache = tempdir("mirror-skip-on-hit-cache");
+        let local_bin = tempdir("mirror-skip-on-hit-bin");
+
+        let args = vec![
+            "--manifest".into(),
+            staging.join("manifest.json").display().to_string(),
+            "--archive-base".into(),
+            format!("file://{}", staging.display()),
+            "--cache-root".into(),
+            install_cache.display().to_string(),
+            "--local-binaries-dir".into(),
+            local_bin.display().to_string(),
+            "--registry".into(),
+            registry.display().to_string(),
+            "--abi".into(),
+            "4".into(),
+        ];
+
+        super::run(args.clone()).expect("first install_release must succeed");
+        let mirror = local_bin.join("programs/myprog.wasm");
+        assert!(mirror.is_file(), "first install must create mirror");
+        fs::remove_file(&mirror).unwrap();
+        assert!(!mirror.exists(), "mirror removed for the test setup");
+
+        super::run(args).expect("second install_release must succeed (cache hit)");
+
+        assert!(
+            !mirror.exists(),
+            "without --force-mirror, mirror must NOT be re-created on cache hit \
+             (got {})",
+            mirror.display()
+        );
+    }
+
+    #[test]
+    fn install_release_re_runs_mirror_with_force_mirror() {
+        // Documents the escape hatch: --force-mirror unconditionally
+        // re-runs mirror_program_outputs, even on a cache hit. Same
+        // setup as the skips test, plus --force-mirror on the second
+        // run.
+        let (staging, registry, _stage_cache) = stage("mirror-force", |registry| {
+            write_fixture(
+                registry,
+                "myprog",
+                "0.1.0",
+                "program",
+                "mkdir -p $WASM_POSIX_DEP_OUT_DIR/bin && \
+                 echo p1 > $WASM_POSIX_DEP_OUT_DIR/bin/myprog.wasm",
+                "[[outputs]]\nname = \"myprog\"\nwasm = \"bin/myprog.wasm\"\n",
+            );
+        });
+
+        let install_cache = tempdir("mirror-force-cache");
+        let local_bin = tempdir("mirror-force-bin");
+
+        let mut args = vec![
+            "--manifest".into(),
+            staging.join("manifest.json").display().to_string(),
+            "--archive-base".into(),
+            format!("file://{}", staging.display()),
+            "--cache-root".into(),
+            install_cache.display().to_string(),
+            "--local-binaries-dir".into(),
+            local_bin.display().to_string(),
+            "--registry".into(),
+            registry.display().to_string(),
+            "--abi".into(),
+            "4".into(),
+        ];
+
+        super::run(args.clone()).expect("first install_release must succeed");
+        let mirror = local_bin.join("programs/myprog.wasm");
+        assert!(mirror.is_file(), "first install must create mirror");
+        fs::remove_file(&mirror).unwrap();
+        assert!(!mirror.exists(), "mirror removed for the test setup");
+
+        args.push("--force-mirror".into());
+        super::run(args).expect("second install_release with --force-mirror must succeed");
+
+        assert!(
+            mirror.is_file(),
+            "with --force-mirror, mirror MUST be re-created on cache hit \
+             (expected {})",
+            mirror.display()
+        );
+        assert_eq!(fs::read(&mirror).unwrap(), b"p1\n");
     }
 
     #[test]
