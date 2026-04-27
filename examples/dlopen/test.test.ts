@@ -18,7 +18,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, "../..");
 
 const hasSysroot = existsSync(resolve(REPO_ROOT, "sysroot/lib/libc.a"));
-const hasKernel = existsSync(resolve(REPO_ROOT, "host/wasm/wasm_posix_kernel.wasm"));
+const hasKernel = existsSync(resolve(REPO_ROOT, "binaries/kernel.wasm")) ||
+  existsSync(resolve(REPO_ROOT, "local-binaries/kernel.wasm"));
 
 describe.skipIf(!hasSysroot || !hasKernel)("dlopen example", () => {
   beforeAll(() => {

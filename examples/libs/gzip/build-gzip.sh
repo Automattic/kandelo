@@ -186,3 +186,8 @@ fi
 echo ""
 echo "==> gzip built successfully!"
 echo "Binary: $BIN_DIR/gzip.wasm"
+
+# Install into local-binaries/ so the resolver picks the freshly-built
+# binary over the fetched release.
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary gzip "$SCRIPT_DIR/bin/gzip.wasm"

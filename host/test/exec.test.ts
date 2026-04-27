@@ -2,27 +2,24 @@
  * Tests for execve support — loading a new program binary into an existing process.
  */
 import { describe, it, expect } from "vitest";
-import { join, dirname } from "node:path";
-import { existsSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { runCentralizedProgram } from "./centralized-test-helper";
+import { tryResolveBinary } from "../src/binary-resolver";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const wasmDir = join(__dirname, "../wasm");
-const execCallerBinary = join(wasmDir, "exec-caller.wasm");
-const forkExecBinary = join(wasmDir, "fork-exec.wasm");
+const execCallerBinary = tryResolveBinary("programs/exec-caller.wasm");
+const execChildBinary = tryResolveBinary("programs/exec-child.wasm");
+const forkExecBinary = tryResolveBinary("programs/fork-exec.wasm");
 
-const execPrograms = new Map<string, string>([
-  ["/bin/exec-child", join(wasmDir, "exec-child.wasm")],
-]);
+const execPrograms = new Map<string, string>(
+  execChildBinary ? [["/bin/exec-child", execChildBinary]] : [],
+);
 
-const hasExecCaller = existsSync(execCallerBinary);
-const hasForkExec = existsSync(forkExecBinary);
+const hasExecCaller = !!execCallerBinary;
+const hasForkExec = !!forkExecBinary;
 
 describe("execve", () => {
   it.skipIf(!hasExecCaller)("replaces the current process with a new program", async () => {
     const result = await runCentralizedProgram({
-      programPath: execCallerBinary,
+      programPath: execCallerBinary!,
       argv: ["exec-caller"],
       timeout: 15_000,
       execPrograms,
@@ -44,7 +41,7 @@ describe("execve", () => {
 
   it.skipIf(!hasForkExec)("fork + exec: child execs while parent waits", async () => {
     const result = await runCentralizedProgram({
-      programPath: forkExecBinary,
+      programPath: forkExecBinary!,
       argv: ["fork-exec"],
       timeout: 15_000,
       execPrograms,

@@ -10,23 +10,14 @@
  * is present, so a regression in either dash or bash would be caught.
  */
 import { describe, it, expect } from "vitest";
-import { join, dirname } from "node:path";
-import { existsSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { runCentralizedProgram } from "./centralized-test-helper";
+import { tryResolveBinary } from "../src/binary-resolver";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const dashBinary = join(
-  __dirname,
-  "../../examples/libs/dash/dash-src/src/dash",
-);
-const bashBinary = join(
-  __dirname,
-  "../../examples/libs/bash/bin/bash.wasm",
-);
-const grepBinary = join(__dirname, "../../examples/libs/grep/bin/grep.wasm");
+const dashBinary = tryResolveBinary("programs/dash.wasm");
+const bashBinary = tryResolveBinary("programs/bash.wasm");
+const grepBinary = tryResolveBinary("programs/grep.wasm");
 
-const hasGrep = existsSync(grepBinary);
+const hasGrep = !!grepBinary;
 
 interface ShellFixture {
   name: string;
@@ -36,12 +27,12 @@ interface ShellFixture {
 }
 
 const shells: ShellFixture[] = [
-  {
+  dashBinary && {
     name: "dash",
     binary: dashBinary,
     argv0: "dash",
   },
-  {
+  bashBinary && {
     name: "bash",
     binary: bashBinary,
     argv0: "bash",
@@ -52,7 +43,7 @@ const shells: ShellFixture[] = [
       "TERM=dumb",
     ],
   },
-].filter((s) => existsSync(s.binary));
+].filter(Boolean) as ShellFixture[];
 
 describe.each(shells)(
   "appendStdinData with $name",
@@ -172,7 +163,7 @@ describe.skipIf(!hasGrep)("appendStdinData with grep", () => {
     // for the base, then verify appendStdinData adds more data before
     // grep sees EOF.
     const result = await runCentralizedProgram({
-      programPath: grepBinary,
+      programPath: grepBinary!,
       argv: ["grep", "match"],
       // Use setStdinData for initial + EOF semantics, since grep needs EOF
       stdin: "no hit\nmatch one\nskip\nmatch two\n",

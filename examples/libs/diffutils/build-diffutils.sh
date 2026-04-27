@@ -186,3 +186,11 @@ done
 echo ""
 echo "==> diffutils built successfully!"
 echo "Binaries: $BIN_DIR/{diff,cmp,sdiff,diff3}.wasm"
+
+# Install into local-binaries/ so the resolver picks the freshly-built
+# binary over the fetched release.
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary diffutils "$SCRIPT_DIR/bin/diff.wasm" diff.wasm
+install_local_binary diffutils "$SCRIPT_DIR/bin/cmp.wasm" cmp.wasm
+install_local_binary diffutils "$SCRIPT_DIR/bin/diff3.wasm" diff3.wasm
+install_local_binary diffutils "$SCRIPT_DIR/bin/sdiff.wasm" sdiff.wasm

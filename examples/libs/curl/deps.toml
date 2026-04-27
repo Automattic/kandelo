@@ -1,0 +1,17 @@
+kind = "program"
+name = "curl"
+version = "8.10.1"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://github.com/curl/curl/archive/refs/tags/curl-8_10_1.tar.gz"
+sha256 = "5aaf131294f734756325dd99d849518c9a5060fc702517ab3064c76257dc700c"
+
+[license]
+spdx = "curl"
+url = "https://github.com/curl/curl/blob/master/COPYING"
+
+[[outputs]]
+name = "curl"
+wasm = "curl.wasm"

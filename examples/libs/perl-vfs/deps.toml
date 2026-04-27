@@ -1,0 +1,27 @@
+kind = "program"
+name = "perl-vfs"
+version = "0.1.0"
+revision = 1
+depends_on = []
+
+# Pre-built VFS image containing the Perl 5.40.3 stdlib for the
+# browser demo. Source at
+# examples/browser/scripts/build-perl-vfs-image.ts.
+[source]
+url = "https://github.com/brandonpayton/wasm-posix-kernel"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+# Perl is dual-licensed Artistic 1.0 / GPL-1.0-or-later; SPDX expression:
+spdx = "Artistic-1.0-Perl OR GPL-1.0-or-later"
+url = "https://dev.perl.org/licenses/"
+
+[build]
+script = "build-perl-vfs.sh"
+
+[[outputs]]
+name = "perl-vfs"
+wasm = "perl-vfs.vfs"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/perl-vfs-0.1.0-rev1-abi1-wasm32-1b1aa45d.tar.zst"
+archive_sha256 = "71e721e0ef1d5e6b2ffc99315ac2e0e26001090cca50949eab29e25128a40e1e"

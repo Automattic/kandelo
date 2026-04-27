@@ -1,0 +1,17 @@
+kind = "program"
+name = "nethack"
+version = "3.6.7"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://www.nethack.org/download/3.6.7/nethack-367-src.tgz"
+sha256 = "98cf67df6debf9668a61745aa84c09bcab362e5d33f5b944ec5155d44d2aacb2"
+
+[license]
+spdx = "NGPL"
+url = "https://nethack.org/common/license.html"
+
+[[outputs]]
+name = "nethack"
+wasm = "nethack.wasm"

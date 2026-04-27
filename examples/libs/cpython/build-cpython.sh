@@ -9,28 +9,37 @@ CROSS_BUILD_DIR="$SCRIPT_DIR/cpython-cross-build"
 INSTALL_DIR="$SCRIPT_DIR/cpython-install"
 
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SYSROOT="$REPO_ROOT/sysroot"
+# Worktree-local SDK on PATH (no global npm link required).
+# shellcheck source=/dev/null
+source "$REPO_ROOT/sdk/activate.sh"
+# Explicit env wins; else the in-tree sysroot.
+SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
 if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
+    echo "ERROR: wasm32posix-cc not found after sourcing sdk/activate.sh." >&2
     exit 1
 fi
 
-# Build zlib if not already built (CPython needs it for zipimport)
-ZLIB_DIR="$SCRIPT_DIR/../zlib/zlib-install"
-if [ ! -f "$ZLIB_DIR/lib/libz.a" ]; then
-    echo "==> Building zlib..."
-    bash "$SCRIPT_DIR/../zlib/build-zlib.sh"
-fi
+# --- Resolve zlib via the dep cache ---
+# Env-var short-circuit lets an outer resolver run pass the prefix
+# through without re-invoking cargo.
+HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
+resolve_dep() {
+    local name="$1"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TARGET" --quiet -- build-deps resolve "$name")
+}
 
-# Install zlib into sysroot
-echo "==> Installing zlib into sysroot..."
-cp "$ZLIB_DIR/include/zlib.h" "$ZLIB_DIR/include/zconf.h" "$SYSROOT/include/"
-cp "$ZLIB_DIR/lib/libz.a" "$SYSROOT/lib/"
-mkdir -p "$SYSROOT/lib/pkgconfig"
-sed "s|^prefix=.*|prefix=$SYSROOT|" "$ZLIB_DIR/lib/pkgconfig/zlib.pc" \
-    > "$SYSROOT/lib/pkgconfig/zlib.pc"
+ZLIB_PREFIX="${WASM_POSIX_DEP_ZLIB_DIR:-}"
+if [ -z "$ZLIB_PREFIX" ]; then
+    echo "==> Resolving zlib via cargo xtask build-deps..."
+    ZLIB_PREFIX="$(resolve_dep zlib)"
+fi
+if [ ! -f "$ZLIB_PREFIX/lib/libz.a" ]; then
+    echo "ERROR: zlib resolve returned '$ZLIB_PREFIX' but libz.a missing" >&2
+    exit 1
+fi
+echo "==> zlib at $ZLIB_PREFIX"
 
 # Ensure WASI stub libraries exist (CPython's wasi detection injects -lwasi-emulated-*)
 for lib in libwasi-emulated-signal.a libwasi-emulated-getpid.a libwasi-emulated-process-clocks.a; do
@@ -431,6 +440,7 @@ cd "$CROSS_BUILD_DIR"
 if [ ! -f Makefile ]; then
     # Run configure directly (not via wasm32posix-configure) because CPython
     # requires --host=wasm32-unknown-wasi, not wasm32-unknown-none.
+    PKG_CONFIG_PATH="$ZLIB_PREFIX/lib/pkgconfig" \
     CONFIG_SITE="$CONFIG_SITE" \
     CC=wasm32posix-cc \
     CXX=wasm32posix-c++ \
@@ -451,7 +461,8 @@ if [ ! -f Makefile ]; then
         --with-suffix=".wasm" \
         --prefix="$INSTALL_DIR" \
         CFLAGS="-O2 -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS" \
-        LDFLAGS=""
+        CPPFLAGS="-I$ZLIB_PREFIX/include" \
+        LDFLAGS="-L$ZLIB_PREFIX/lib"
 
     # Belt-and-suspenders: patch any HAVE_* that slipped through config.site
     # (header-based detection, not link-based)
@@ -571,3 +582,17 @@ fi
 
 echo "==> CPython built successfully!"
 ls -la "$SCRIPT_DIR/bin/python.wasm"
+
+# Install into local-binaries/ so the resolver picks the freshly-built
+# binary over the fetched release.
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary cpython "$SCRIPT_DIR/bin/python.wasm"
+
+# Manifest declares `wasm = "python.wasm"` (not cpython.wasm), so the
+# resolver's $WASM_POSIX_DEP_OUT_DIR scratch needs the file under that
+# exact name. The helper's default-fallback uses <program>.<ext> which
+# doesn't match here.
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    cp "$SCRIPT_DIR/bin/python.wasm" "$WASM_POSIX_DEP_OUT_DIR/python.wasm"
+    echo "  installed $WASM_POSIX_DEP_OUT_DIR/python.wasm (manifest output name)"
+fi

@@ -11,6 +11,7 @@
 import { readFileSync, readdirSync, lstatSync, existsSync } from "fs";
 import { join, resolve } from "path";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import { resolveBinary } from "../../../host/src/binary-resolver";
 import {
   writeVfsFile,
   writeVfsBinary,
@@ -21,7 +22,7 @@ import {
 } from "./vfs-image-helpers";
 
 const MYSQL_TEST_DIR = "examples/libs/mariadb/mariadb-install/mysql-test";
-const MARIADB_PATH = "examples/libs/mariadb/mariadb-install/bin/mariadbd.wasm";
+const MARIADB_PATH = resolveBinary("programs/mariadb/mariadbd.wasm");
 const SYSTEM_TABLES_PATH = "examples/libs/mariadb/mariadb-install/share/mysql/mysql_system_tables.sql";
 const SYSTEM_DATA_PATH = "examples/libs/mariadb/mariadb-install/share/mysql/mysql_system_tables_data.sql";
 const OUT_FILE = "examples/browser/public/mariadb-test.vfs";

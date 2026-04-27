@@ -23,16 +23,18 @@ import type {
   WorkerToHostMessage,
 } from "../../../host/src/worker-protocol";
 
+import { tryResolveBinary } from "../../../host/src/binary-resolver";
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "../../..");
-const phpBinaryPath = join(repoRoot, "examples/libs/php/php-src/sapi/cli/php");
-const kernelWasmPath = join(repoRoot, "host/wasm/wasm_posix_kernel.wasm");
+const phpBinaryPath = tryResolveBinary("programs/php/php.wasm");
+const kernelWasmPath = tryResolveBinary("kernel.wasm");
 const wpDir = join(dirname(__dirname), "wordpress");
 const routerScript = join(dirname(__dirname), "router.php");
 
-const PHP_AVAILABLE = existsSync(phpBinaryPath);
+const PHP_AVAILABLE = !!phpBinaryPath;
 const WP_AVAILABLE = existsSync(join(wpDir, "wp-settings.php"));
-const KERNEL_AVAILABLE = existsSync(kernelWasmPath);
+const KERNEL_AVAILABLE = !!kernelWasmPath;
 
 const SKIP_REASON = !PHP_AVAILABLE
   ? "PHP binary not built"
@@ -67,8 +69,8 @@ async function getRandomPort(): Promise<number> {
 describe.skipIf(!!SKIP_REASON)("WordPress HTTP Server", () => {
   it("serves HTTP requests through the TCP bridge", async () => {
     const port = await getRandomPort();
-    const kernelWasmBytes = loadFile(kernelWasmPath);
-    const programBytes = loadFile(phpBinaryPath);
+    const kernelWasmBytes = loadFile(kernelWasmPath!);
+    const programBytes = loadFile(phpBinaryPath!);
     const io = new NodePlatformIO();
     const workerAdapter = new NodeWorkerAdapter();
 

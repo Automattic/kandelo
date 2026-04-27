@@ -43,7 +43,8 @@ const MARIADB_PATH = join(MARIADB_INSTALL, "bin/mariadbd.wasm");
 const SYSTEM_TABLES_PATH = join(MARIADB_INSTALL, "share/mysql/mysql_system_tables.sql");
 const SYSTEM_DATA_PATH = join(MARIADB_INSTALL, "share/mysql/mysql_system_tables_data.sql");
 
-const DASH_PATH = join(REPO_ROOT, "examples/libs/dash/bin/dash.wasm");
+import { resolveBinary } from "../../../host/src/binary-resolver";
+const DASH_PATH = resolveBinary("programs/dash.wasm");
 
 const OUT_FILE = useWasm64
   ? join(BROWSER_DIR, "public", "mariadb-64.vfs")

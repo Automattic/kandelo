@@ -21,6 +21,7 @@ import { createConnection } from "net";
 import { CentralizedKernelWorker } from "../../host/src/kernel-worker";
 import { NodePlatformIO } from "../../host/src/platform/node";
 import { NodeWorkerAdapter } from "../../host/src/worker-adapter";
+import { tryResolveBinary } from "../../host/src/binary-resolver";
 import type { CentralizedWorkerInitMessage, WorkerToHostMessage } from "../../host/src/worker-protocol";
 
 const CH_TOTAL_SIZE = 72 + 65536;
@@ -118,15 +119,21 @@ function handleTest(opts: ReturnType<typeof parseArgs>) {
 }
 
 async function runNginx(opts: ReturnType<typeof parseArgs>) {
-  const nginxWasm = resolve(scriptDir, "../nginx/nginx.wasm");
-  if (!existsSync(nginxWasm)) {
-    process.stderr.write("nginx.wasm not found. Run: bash examples/nginx/build.sh\n");
+  const nginxWasm = tryResolveBinary("programs/nginx.wasm");
+  if (!nginxWasm) {
+    process.stderr.write(
+      "nginx.wasm not found. Run: scripts/fetch-binaries.sh " +
+      "(or bash examples/nginx/build.sh to build locally).\n",
+    );
     process.exit(1);
   }
 
-  const kernelWasm = resolve(repoRoot, "host/wasm/wasm_posix_kernel.wasm");
-  if (!existsSync(kernelWasm)) {
-    process.stderr.write("kernel wasm not found. Run: bash build.sh\n");
+  const kernelWasm = tryResolveBinary("kernel.wasm");
+  if (!kernelWasm) {
+    process.stderr.write(
+      "kernel.wasm not found. Run: scripts/fetch-binaries.sh " +
+      "(or bash build.sh to build locally).\n",
+    );
     process.exit(1);
   }
 

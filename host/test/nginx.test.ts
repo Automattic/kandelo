@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createConnection, createServer } from "node:net";
 import { CentralizedKernelWorker } from "../src/kernel-worker";
+import { resolveBinary, tryResolveBinary } from "../src/binary-resolver";
 import { NodePlatformIO } from "../src/platform/node";
 import { NodeWorkerAdapter } from "../src/worker-adapter";
 import type {
@@ -25,7 +26,7 @@ const MAX_PAGES = 16384;
 const CH_TOTAL_SIZE = 72 + 65536;
 const ASYNCIFY_BUF_SIZE = 16384;
 
-const nginxWasmPath = join(repoRoot, "examples/nginx/nginx.wasm");
+const nginxWasmPath = tryResolveBinary("programs/nginx.wasm");
 const nginxPrefix = join(repoRoot, "examples/nginx");
 
 /** Find a free TCP port by briefly binding to port 0. */
@@ -73,7 +74,7 @@ function httpGet(
   });
 }
 
-describe.skipIf(!existsSync(nginxWasmPath))(
+describe.skipIf(!nginxWasmPath)(
   "nginx static file serving",
   () => {
     it("serves index.html via HTTP", async () => {
@@ -85,8 +86,8 @@ describe.skipIf(!existsSync(nginxWasmPath))(
       const confTemplate = readFileSync(join(nginxPrefix, "nginx.conf"), "utf8");
       writeFileSync(testConf, confTemplate.replace("listen 8080", `listen ${testPort}`));
 
-      const kernelBytes = loadWasm(join(__dirname, "../wasm/wasm_posix_kernel.wasm"));
-      const programBytes = loadWasm(nginxWasmPath);
+      const kernelBytes = loadWasm(resolveBinary("kernel.wasm"));
+      const programBytes = loadWasm(nginxWasmPath!);
       const workerAdapter = new NodeWorkerAdapter();
       const io = new NodePlatformIO();
 

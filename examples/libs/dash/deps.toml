@@ -1,0 +1,20 @@
+kind = "program"
+name = "dash"
+version = "0.5.12"
+revision = 1
+depends_on = []
+
+[source]
+url = "http://gondor.apana.org.au/~herbert/dash/files/dash-0.5.12.tar.gz"
+sha256 = "6a474ac46e8b0b32916c4c60df694c82058d3297d8b385b74508030ca4a8f28a"
+
+[license]
+spdx = "BSD-3-Clause AND GPL-2.0-or-later"
+url = "https://git.kernel.org/pub/scm/utils/dash/dash.git/tree/COPYING"
+
+[[outputs]]
+name = "dash"
+wasm = "dash.wasm"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/dash-0.5.12-rev1-abi1-wasm32-ecd2eac5.tar.zst"
+archive_sha256 = "2e0c0a79723a65b9417d74b023a3b4a4d5c5eed56b26795e9c41a70f9ca0d118"

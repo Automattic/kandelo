@@ -8,23 +8,21 @@
  * but the host filesystem persists, so we use unique temp dirs.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { join, dirname } from "node:path";
+import { join } from "node:path";
 import { existsSync, rmSync, mkdirSync, writeFileSync, statSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { createServer, type Server } from "node:http";
 import { readFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { runCentralizedProgram } from "./centralized-test-helper";
 import { NodePlatformIO } from "../src/platform/node";
 import { FetchNetworkBackend } from "../src/networking/fetch-backend";
+import { tryResolveBinary } from "../src/binary-resolver";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const repoRoot = join(__dirname, "../..");
-const gitBinary = join(repoRoot, "examples/libs/git/bin/git.wasm");
-const gitRemoteHttpBinary = join(repoRoot, "examples/libs/git/bin/git-remote-http.wasm");
+const gitBinary = tryResolveBinary("programs/git/git.wasm");
+const gitRemoteHttpBinary = tryResolveBinary("programs/git/git-remote-http.wasm");
 
-const hasGit = existsSync(gitBinary);
-const hasGitRemoteHttp = existsSync(gitRemoteHttpBinary);
+const hasGit = !!gitBinary;
+const hasGitRemoteHttp = !!gitRemoteHttpBinary;
 
 // Git config via environment
 const gitEnv = [
@@ -43,7 +41,7 @@ const gitEnv = [
 describe.skipIf(!hasGit)("Git", () => {
   it("reports version", async () => {
     const result = await runCentralizedProgram({
-      programPath: gitBinary,
+      programPath: gitBinary!,
       argv: ["git", "--version"],
       env: gitEnv,
       timeout: 15_000,
@@ -55,7 +53,7 @@ describe.skipIf(!hasGit)("Git", () => {
   it("initializes a repository", async () => {
     const dir = `/tmp/git-test-init-${Date.now()}`;
     const result = await runCentralizedProgram({
-      programPath: gitBinary,
+      programPath: gitBinary!,
       argv: ["git", "init", dir],
       env: gitEnv,
       timeout: 15_000,
@@ -70,7 +68,7 @@ describe.skipIf(!hasGit)("Git", () => {
     const dir = `/tmp/git-commit-test-${Date.now()}`;
     // Init repo on host filesystem first
     const initResult = await runCentralizedProgram({
-      programPath: gitBinary,
+      programPath: gitBinary!,
       argv: ["git", "init", dir],
       env: gitEnv,
       timeout: 15_000,
@@ -78,7 +76,7 @@ describe.skipIf(!hasGit)("Git", () => {
     expect(initResult.exitCode).toBe(0);
     // Commit with fork
     const result = await runCentralizedProgram({
-      programPath: gitBinary,
+      programPath: gitBinary!,
       argv: ["git", "-C", dir, "commit", "--allow-empty", "-m", "test commit"],
       env: gitEnv,
       timeout: 20_000,
@@ -183,12 +181,12 @@ describe.skipIf(!hasGit || !hasGitRemoteHttp)("Git HTTP clone", () => {
     writeFileSync(join(gitExecPath, "git"), "placeholder", { mode: 0o755 });
 
     const execPrograms = new Map<string, string>([
-      [`${gitExecPath}/git-remote-http`, gitRemoteHttpBinary],
-      [`${gitExecPath}/git`, gitBinary],
+      [`${gitExecPath}/git-remote-http`, gitRemoteHttpBinary!],
+      [`${gitExecPath}/git`, gitBinary!],
       // Fallback paths git may also try
-      ["/usr/libexec/git-core/git-remote-http", gitRemoteHttpBinary],
-      ["/usr/bin/git-remote-http", gitRemoteHttpBinary],
-      ["/usr/bin/git", gitBinary],
+      ["/usr/libexec/git-core/git-remote-http", gitRemoteHttpBinary!],
+      ["/usr/bin/git-remote-http", gitRemoteHttpBinary!],
+      ["/usr/bin/git", gitBinary!],
     ]);
 
     const cloneEnv = [
@@ -197,7 +195,7 @@ describe.skipIf(!hasGit || !hasGitRemoteHttp)("Git HTTP clone", () => {
     ];
 
     const result = await runCentralizedProgram({
-      programPath: gitBinary,
+      programPath: gitBinary!,
       argv: ["git", "clone", `http://localhost:${httpPort}/`, cloneDir],
       env: cloneEnv,
       io,

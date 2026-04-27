@@ -14,16 +14,20 @@
 import { existsSync } from "fs";
 import { resolve, dirname } from "path";
 import { runCentralizedProgram } from "../../host/test/centralized-test-helper";
+import { tryResolveBinary } from "../../host/src/binary-resolver";
 
 const scriptDir = dirname(new URL(import.meta.url).pathname);
 const repoRoot = resolve(scriptDir, "../..");
 
 async function main() {
-    const pythonWasm = resolve(scriptDir, "../libs/cpython/bin/python.wasm");
+    const pythonWasm = tryResolveBinary("programs/cpython.wasm");
     const pythonHome = resolve(scriptDir, "../libs/cpython/cpython-install");
 
-    if (!existsSync(pythonWasm)) {
-        console.error("python.wasm not found. Run: bash examples/libs/cpython/build-cpython.sh");
+    if (!pythonWasm) {
+        console.error(
+            "cpython.wasm not found. Run: scripts/fetch-binaries.sh " +
+            "(or bash examples/libs/cpython/build-cpython.sh to build locally).",
+        );
         process.exit(1);
     }
 

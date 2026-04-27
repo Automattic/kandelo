@@ -26,7 +26,7 @@ SYSROOT="$REPO_ROOT/sysroot"
 GLUE_DIR="$REPO_ROOT/glue"
 OS_TEST="$REPO_ROOT/os-test"
 BUILD_DIR="$REPO_ROOT/os-test/build"
-KERNEL_WASM="$REPO_ROOT/host/wasm/wasm_posix_kernel.wasm"
+KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"
 
 # ── Expected failures ──────────────────────────────────────
 # Include tests for headers/features our musl sysroot doesn't provide.

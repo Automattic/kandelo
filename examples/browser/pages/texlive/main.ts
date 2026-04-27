@@ -4,7 +4,7 @@
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
 import { loadTexliveBundle } from "../../lib/texlive-bundle";
-import kernelWasmUrl from "../../../../host/wasm/wasm_posix_kernel.wasm?url";
+import kernelWasmUrl from "../../../../binaries/kernel.wasm?url";
 import pdftexWasmUrl from "../../../../examples/libs/texlive/bin/pdftex.wasm?url";
 
 // CodeMirror imports

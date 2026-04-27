@@ -6,23 +6,28 @@ set -euo pipefail
 # Git uses a Makefile-based build system (no autoconf). Cross-compilation
 # is done via config.mak overrides.
 #
-# Asyncify is applied with an onlylist so fork+exec works properly
+# Resolves zlib, openssl, and libcurl via
+# `cargo xtask build-deps resolve <name>` — see
+# docs/dependency-management.md. openssl is pulled in because static
+# libcurl in our build references -lssl -lcrypto.
+#
+# Asyncify is applied (full, not onlylist) so fork+exec works properly
 # (git gc --auto, hooks, pager, credential helpers, etc.).
 #
-# If libcurl is available in the sysroot, HTTP/HTTPS transport support is
-# built (git-remote-http helper). HTTPS URLs are rewritten to HTTP at
-# runtime via gitconfig; the browser's fetch() API + CORS proxy handles
-# the actual TLS.
+# HTTP/HTTPS transport is always built (git-remote-http). HTTPS URLs
+# are rewritten to HTTP at runtime via gitconfig; the browser's
+# fetch() API + CORS proxy handles the actual TLS.
 #
 # Output: examples/libs/git/bin/git.wasm
-#         examples/libs/git/bin/git-remote-http.wasm (if libcurl available)
+#         examples/libs/git/bin/git-remote-http.wasm
 
 GIT_VERSION="${GIT_VERSION:-2.47.1}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 SRC_DIR="$SCRIPT_DIR/git-src"
 BIN_DIR="$SCRIPT_DIR/bin"
-SYSROOT="$REPO_ROOT/sysroot"
+# Explicit env wins; else the in-tree sysroot. Matches build-libcurl.sh:49.
+SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 ONLYLIST="$SCRIPT_DIR/asyncify-onlylist.txt"
 
 # --- Prerequisites ---
@@ -39,20 +44,50 @@ fi
 export WASM_POSIX_SYSROOT="$SYSROOT"
 export WASM_POSIX_GLUE_DIR="$REPO_ROOT/glue"
 
-# Check for zlib (required)
-if [ ! -f "$SYSROOT/lib/libz.a" ]; then
-    echo "ERROR: zlib not found in sysroot. Build it first." >&2
+# --- Resolve zlib, openssl, and libcurl via the dep cache ---
+# openssl is a transitive dep: our cached libcurl.a references
+# -lssl/-lcrypto symbols, and the final link needs their .a files
+# findable on -L. Env-var short-circuits (WASM_POSIX_DEP_<NAME>_DIR)
+# let an outer resolver run pass prefixes through without re-invoking
+# cargo for each dep.
+HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
+resolve_dep() {
+    local name="$1"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TARGET" --quiet -- build-deps resolve "$name")
+}
+
+ZLIB_PREFIX="${WASM_POSIX_DEP_ZLIB_DIR:-}"
+if [ -z "$ZLIB_PREFIX" ]; then
+    echo "==> Resolving zlib via cargo xtask build-deps..."
+    ZLIB_PREFIX="$(resolve_dep zlib)"
+fi
+if [ ! -f "$ZLIB_PREFIX/lib/libz.a" ]; then
+    echo "ERROR: zlib resolve returned '$ZLIB_PREFIX' but libz.a missing" >&2
     exit 1
 fi
+echo "==> zlib at $ZLIB_PREFIX"
 
-# Check for libcurl (optional — enables HTTP/HTTPS transport)
-USE_CURL=no
-if [ -f "$SYSROOT/lib/libcurl.a" ] && [ -f "$SYSROOT/include/curl/curl.h" ]; then
-    USE_CURL=yes
-    echo "==> libcurl found in sysroot, building with HTTP transport support"
-else
-    echo "==> libcurl not found, building without HTTP transport (git clone over HTTP won't work)"
+OPENSSL_PREFIX="${WASM_POSIX_DEP_OPENSSL_DIR:-}"
+if [ -z "$OPENSSL_PREFIX" ]; then
+    echo "==> Resolving openssl via cargo xtask build-deps..."
+    OPENSSL_PREFIX="$(resolve_dep openssl)"
 fi
+if [ ! -f "$OPENSSL_PREFIX/lib/libssl.a" ] || [ ! -f "$OPENSSL_PREFIX/lib/libcrypto.a" ]; then
+    echo "ERROR: openssl resolve returned '$OPENSSL_PREFIX' but libssl.a/libcrypto.a missing" >&2
+    exit 1
+fi
+echo "==> openssl at $OPENSSL_PREFIX"
+
+CURL_PREFIX="${WASM_POSIX_DEP_LIBCURL_DIR:-}"
+if [ -z "$CURL_PREFIX" ]; then
+    echo "==> Resolving libcurl via cargo xtask build-deps..."
+    CURL_PREFIX="$(resolve_dep libcurl)"
+fi
+if [ ! -f "$CURL_PREFIX/lib/libcurl.a" ] || [ ! -f "$CURL_PREFIX/include/curl/curl.h" ]; then
+    echo "ERROR: libcurl resolve returned '$CURL_PREFIX' but libcurl.a/curl.h missing" >&2
+    exit 1
+fi
+echo "==> libcurl at $CURL_PREFIX"
 
 # Check for wasm-opt (required for asyncify)
 WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
@@ -114,8 +149,8 @@ NO_INSTALL_HARDLINKS = YesPlease
 # Disable features that require runtime infrastructure we don't have
 NO_OPENSSL = YesPlease
 
-# Use zlib from sysroot
-ZLIB_PATH = $SYSROOT
+# Use zlib from the dep-cache prefix
+ZLIB_PATH = $ZLIB_PREFIX
 
 # SHA-1 backend: use the bundled block-sha1 (no OpenSSL dependency needed)
 BLK_SHA1 = YesPlease
@@ -153,20 +188,17 @@ PROGRAMS =
 EXTLIBS = -lz
 ENDMAK
 
-# Add curl-specific config if libcurl is available
-if [ "$USE_CURL" = "yes" ]; then
-    cat >> config.mak << ENDCURL
+# HTTP/HTTPS transport via libcurl.
+# Note: NO_CURL is NOT set — this enables git-remote-http/https.
+# Setting CURLDIR triggers git's Makefile to derive CURL_CFLAGS =
+# -I$CURLDIR/include. We can't just set CURL_CFLAGS directly because
+# the Makefile resets it when CURLDIR is unset. CURL_LDFLAGS is
+# consumed as-is (appended after CURL_LIBCURL).
+cat >> config.mak << ENDCURL
 
-# HTTP/HTTPS transport via libcurl
-# Note: NO_CURL is NOT set — this enables git-remote-http/https
-# All library flags go in CURL_LDFLAGS (not CURL_LIBCURL) because git's
-# Makefile resets CURL_LIBCURL when CURLDIR is unset, then appends CURL_LDFLAGS.
-CURL_CFLAGS = -I$SYSROOT/include
-CURL_LDFLAGS = -L$SYSROOT/lib -lcurl -lssl -lcrypto -ldl -lz
+CURLDIR = $CURL_PREFIX
+CURL_LDFLAGS = -L$CURL_PREFIX/lib -L$OPENSSL_PREFIX/lib -L$ZLIB_PREFIX/lib -lcurl -lssl -lcrypto -ldl -lz
 ENDCURL
-else
-    echo "NO_CURL = YesPlease" >> config.mak
-fi
 
 # --- Build ---
 echo "==> Building git..."
@@ -175,11 +207,7 @@ NCPU="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
 # Override uname_S to prevent config.mak.uname from applying Darwin-specific
 # settings (HAVE_BSD_SYSCTL, precompose_utf8, etc.). Must be on the command
 # line so it takes effect before config.mak.uname conditionals.
-BUILD_TARGETS="git"
-if [ "$USE_CURL" = "yes" ]; then
-    BUILD_TARGETS="git git-remote-http"
-fi
-make uname_S=Wasm32 -j"$NCPU" $BUILD_TARGETS 2>&1 | tail -50
+make uname_S=Wasm32 -j"$NCPU" git git-remote-http 2>&1 | tail -50
 
 echo "==> Collecting binaries..."
 mkdir -p "$BIN_DIR"
@@ -191,11 +219,12 @@ fi
 
 cp "$SRC_DIR/git" "$BIN_DIR/git.wasm"
 
-# Collect git-remote-http if built
-if [ "$USE_CURL" = "yes" ] && [ -f "$SRC_DIR/git-remote-http" ]; then
-    cp "$SRC_DIR/git-remote-http" "$BIN_DIR/git-remote-http.wasm"
-    echo "==> Collected git-remote-http.wasm"
+if [ ! -f "$SRC_DIR/git-remote-http" ]; then
+    echo "ERROR: git-remote-http binary not found after build" >&2
+    exit 1
 fi
+cp "$SRC_DIR/git-remote-http" "$BIN_DIR/git-remote-http.wasm"
+echo "==> Collected git-remote-http.wasm"
 SIZE_BEFORE=$(wc -c < "$BIN_DIR/git.wasm" | tr -d ' ')
 echo "==> Pre-asyncify size: $(echo "$SIZE_BEFORE" | numfmt --to=iec 2>/dev/null || echo "${SIZE_BEFORE} bytes")"
 
@@ -219,22 +248,23 @@ echo "==> Applying asyncify (full)..."
 SIZE_AFTER=$(wc -c < "$BIN_DIR/git.wasm" | tr -d ' ')
 echo "==> Post-asyncify size: $(echo "$SIZE_AFTER" | numfmt --to=iec 2>/dev/null || echo "${SIZE_AFTER} bytes")"
 
-# Apply asyncify to git-remote-http too — libcurl may call fork() internally
-# (e.g., for DNS resolution when pthreads are unavailable).
-if [ "$USE_CURL" = "yes" ] && [ -f "$BIN_DIR/git-remote-http.wasm" ]; then
-    echo "==> Applying asyncify to git-remote-http.wasm..."
-    RH_SIZE_BEFORE=$(wc -c < "$BIN_DIR/git-remote-http.wasm" | tr -d ' ')
-    "$WASM_OPT" -g --asyncify \
-        --pass-arg="asyncify-imports@kernel.kernel_fork" \
-        "$BIN_DIR/git-remote-http.wasm" -o "$BIN_DIR/git-remote-http.wasm"
-    "$WASM_OPT" -g -O2 "$BIN_DIR/git-remote-http.wasm" -o "$BIN_DIR/git-remote-http.wasm"
-    RH_SIZE_AFTER=$(wc -c < "$BIN_DIR/git-remote-http.wasm" | tr -d ' ')
-    echo "==> git-remote-http: $(echo "$RH_SIZE_BEFORE" | numfmt --to=iec 2>/dev/null || echo "${RH_SIZE_BEFORE}") -> $(echo "$RH_SIZE_AFTER" | numfmt --to=iec 2>/dev/null || echo "${RH_SIZE_AFTER}")"
-fi
+# Apply asyncify to git-remote-http too — libcurl may call fork()
+# internally (e.g., for DNS resolution when pthreads are unavailable).
+echo "==> Applying asyncify to git-remote-http.wasm..."
+RH_SIZE_BEFORE=$(wc -c < "$BIN_DIR/git-remote-http.wasm" | tr -d ' ')
+"$WASM_OPT" -g --asyncify \
+    --pass-arg="asyncify-imports@kernel.kernel_fork" \
+    "$BIN_DIR/git-remote-http.wasm" -o "$BIN_DIR/git-remote-http.wasm"
+"$WASM_OPT" -g -O2 "$BIN_DIR/git-remote-http.wasm" -o "$BIN_DIR/git-remote-http.wasm"
+RH_SIZE_AFTER=$(wc -c < "$BIN_DIR/git-remote-http.wasm" | tr -d ' ')
+echo "==> git-remote-http: $(echo "$RH_SIZE_BEFORE" | numfmt --to=iec 2>/dev/null || echo "${RH_SIZE_BEFORE}") -> $(echo "$RH_SIZE_AFTER" | numfmt --to=iec 2>/dev/null || echo "${RH_SIZE_AFTER}")"
 
 echo ""
 echo "==> git built successfully with asyncify fork support!"
 echo "Binary: $BIN_DIR/git.wasm"
-if [ "$USE_CURL" = "yes" ] && [ -f "$BIN_DIR/git-remote-http.wasm" ]; then
-    echo "HTTP transport: $BIN_DIR/git-remote-http.wasm"
-fi
+echo "HTTP transport: $BIN_DIR/git-remote-http.wasm"
+
+# Install into local-binaries/ (multi-binary program).
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary git "$BIN_DIR/git.wasm" git.wasm
+install_local_binary git "$BIN_DIR/git-remote-http.wasm" git-remote-http.wasm

@@ -1,0 +1,20 @@
+kind = "program"
+name = "bzip2"
+version = "1.0.8"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz"
+sha256 = "ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269"
+
+[license]
+spdx = "bzip2-1.0.6"
+url = "https://gitlab.com/bzip2/bzip2/-/blob/master/LICENSE"
+
+[[outputs]]
+name = "bzip2"
+wasm = "bzip2.wasm"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/bzip2-1.0.8-rev1-abi1-wasm32-c43960c5.tar.zst"
+archive_sha256 = "dba84b9050be1c8ba9c38faf1e7e7e6012dcd98c45188c88f7f351edd9987874"

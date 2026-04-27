@@ -1,13 +1,17 @@
 #!/bin/bash
 set -euo pipefail
 
-# Build user programs (programs/*.c) into host/wasm/*.wasm
+# Build user programs (programs/*.c) into local-binaries/programs/.
+# The resolver (host/src/binary-resolver.ts) prefers local-binaries/
+# over binaries/, so locally-built binaries automatically override
+# whatever the fetcher placed under `binaries/`.
 # Uses the same toolchain and flags as libc-test builds.
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SYSROOT="$REPO_ROOT/sysroot"
 GLUE_DIR="$REPO_ROOT/glue"
-OUT_DIR="$REPO_ROOT/host/wasm"
+OUT_DIR="$REPO_ROOT/local-binaries/programs"
+mkdir -p "$OUT_DIR"
 
 # Auto-detect LLVM (same logic as SDK / run-libc-tests.sh)
 find_llvm_bin() {
@@ -65,6 +69,7 @@ LINK_FLAGS=(
     -Wl,--export=__tls_align
     -Wl,--export=__stack_pointer
     -Wl,--export=__wasm_thread_init
+    -Wl,--export=__abi_version
 )
 
 ASYNCIFY_IMPORTS="kernel.kernel_fork"

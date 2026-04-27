@@ -4,18 +4,15 @@
 // setNextChildPid, and fork flow.
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 import { CentralizedKernelWorker } from "../src/kernel-worker";
+import { resolveBinary } from "../src/binary-resolver";
 import { NodePlatformIO } from "../src/platform/node";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const MAX_PAGES = 256; // small for tests
 const CH_TOTAL_SIZE = 72 + 65536;
 
 function loadKernelWasm(): ArrayBuffer {
-  const buf = readFileSync(join(__dirname, "../wasm/wasm_posix_kernel.wasm"));
+  const buf = readFileSync(resolveBinary("kernel.wasm"));
   return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 }
 

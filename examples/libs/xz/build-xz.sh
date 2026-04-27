@@ -111,3 +111,8 @@ fi
 echo ""
 echo "==> xz built successfully!"
 echo "Binary: $BIN_DIR/xz.wasm"
+
+# Install into local-binaries/ so the resolver picks the freshly-built
+# binary over the fetched release.
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary xz "$SCRIPT_DIR/bin/xz.wasm"

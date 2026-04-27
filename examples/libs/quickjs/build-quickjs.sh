@@ -86,14 +86,15 @@ if [ ! -f "$QJSC" ]; then
     HOST_CC="${HOST_CC:-cc}"
     HOST_CFLAGS="-O2 -D_GNU_SOURCE -DQUICKJS_NG_BUILD -I$SRC_DIR -funsigned-char"
 
-    # Build qjsc natively
+    # Build qjsc natively. Note: as of quickjs-ng v0.12, cutils.c was
+    # removed and its functions inlined into cutils.h, so it's no
+    # longer in the source list (older v0.11 builds compiled it).
     $HOST_CC $HOST_CFLAGS -c "$SRC_DIR/quickjs.c" -o "$HOST_BUILD_DIR/quickjs.o"
     $HOST_CC $HOST_CFLAGS -c "$SRC_DIR/dtoa.c" -o "$HOST_BUILD_DIR/dtoa.o"
     $HOST_CC $HOST_CFLAGS -c "$SRC_DIR/libregexp.c" -o "$HOST_BUILD_DIR/libregexp.o"
     $HOST_CC $HOST_CFLAGS -c "$SRC_DIR/libunicode.c" -o "$HOST_BUILD_DIR/libunicode.o"
     $HOST_CC $HOST_CFLAGS -c "$SRC_DIR/quickjs-libc.c" -o "$HOST_BUILD_DIR/quickjs-libc.o"
     $HOST_CC $HOST_CFLAGS -c "$SRC_DIR/qjsc.c" -o "$HOST_BUILD_DIR/qjsc.o"
-    $HOST_CC $HOST_CFLAGS -c "$SRC_DIR/cutils.c" -o "$HOST_BUILD_DIR/cutils.o"
     $HOST_CC $HOST_CFLAGS -c "$SRC_DIR/unicode_gen_def.c" -o "$HOST_BUILD_DIR/unicode_gen_def.o" 2>/dev/null || true
     $HOST_CC \
         "$HOST_BUILD_DIR/qjsc.o" \
@@ -102,7 +103,6 @@ if [ ! -f "$QJSC" ]; then
         "$HOST_BUILD_DIR/libregexp.o" \
         "$HOST_BUILD_DIR/libunicode.o" \
         "$HOST_BUILD_DIR/quickjs-libc.o" \
-        "$HOST_BUILD_DIR/cutils.o" \
         -lm -lpthread \
         -o "$QJSC"
     echo "Host qjsc built: $QJSC"
@@ -204,3 +204,11 @@ echo ""
 echo "This is NOT Node.js. The 'node' command provides API compatibility"
 echo "via QuickJS-NG. Core modules: assert, buffer, child_process, crypto,"
 echo "events, fs, http, net, os, path, querystring, stream, url, util, etc."
+
+# Install into local-binaries/ so the resolver picks the freshly-built
+# binary over the fetched release. The manifest currently declares
+# only qjs.wasm under [[outputs]]; node.wasm is built locally for
+# convenience but isn't in the release archive.
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary quickjs "$BIN_DIR/qjs.wasm" qjs.wasm
+[ -f "$BIN_DIR/node.wasm" ] && install_local_binary quickjs "$BIN_DIR/node.wasm" node.wasm || true

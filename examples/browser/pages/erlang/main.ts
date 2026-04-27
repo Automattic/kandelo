@@ -4,11 +4,11 @@
  * BEAM uses -noshell -eval, so no interactive REPL.
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
-import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
-import kernelWasmUrl from "../../../../host/wasm/wasm_posix_kernel.wasm?url";
-import beamWasmUrl from "../../../../examples/libs/erlang/bin/beam.wasm?url";
+import { MemoryFileSystem , decompressVfsImage} from "../../../../host/src/vfs/memory-fs";
+import kernelWasmUrl from "../../../../binaries/kernel.wasm?url";
+import beamWasmUrl from "../../../../binaries/programs/erlang.wasm?url";
 
-const VFS_IMAGE_URL = import.meta.env.BASE_URL + "erlang.vfs";
+const VFS_IMAGE_URL = import.meta.env.BASE_URL + "vfs/erlang.vfs.zst";
 
 // --- DOM elements ---
 const codeEl = document.getElementById("code") as HTMLTextAreaElement;
@@ -289,8 +289,7 @@ async function runBatch() {
     let lastOutputTime = 0;
     let outputSeen = false;
 
-    const memfs = MemoryFileSystem.fromImage(
-      new Uint8Array(vfsImageBuf!),
+    const memfs = MemoryFileSystem.fromImage(decompressVfsImage(new Uint8Array(vfsImageBuf!)),
       { maxByteLength: 256 * 1024 * 1024 },
     );
 

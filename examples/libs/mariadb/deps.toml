@@ -1,0 +1,24 @@
+kind = "program"
+name = "mariadb"
+version = "10.5.28"
+revision = 1
+depends_on = ["pcre2-source@10.44"]
+
+[source]
+url = "https://archive.mariadb.org/mariadb-10.5.28/source/mariadb-10.5.28.tar.gz"
+sha256 = "0b5070208da0116640f20bd085f1136527f998cc23268715bcbf352e7b7f3cc1"
+
+[license]
+spdx = "GPL-2.0-only"
+url = "https://github.com/MariaDB/server/blob/10.5/COPYING"
+
+[[outputs]]
+name = "mariadbd"
+wasm = "mariadbd.wasm"
+
+[[outputs]]
+name = "mysqltest"
+wasm = "mysqltest.wasm"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/mariadb-10.5.28-rev1-abi1-wasm32-80d921e7.tar.zst"
+archive_sha256 = "4c67517b3abe492e2bb89203b0633d526631095ba73a70936bf4da1473b802ef"

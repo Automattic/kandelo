@@ -143,3 +143,9 @@ cp redis-cli "$BIN_DIR/redis-cli.wasm"
 
 echo "==> Redis binaries:"
 ls -lh "$BIN_DIR/"
+
+# Install into local-binaries/ so the resolver picks the freshly-built
+# binary over the fetched release.
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary redis "$SCRIPT_DIR/bin/redis-server.wasm" redis-server.wasm
+install_local_binary redis "$SCRIPT_DIR/bin/redis-cli.wasm" redis-cli.wasm

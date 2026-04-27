@@ -13,7 +13,7 @@
  *   - "mariadb-innodb": MariaDB with InnoDB engine
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
-import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
+import { MemoryFileSystem , decompressVfsImage} from "../../../../host/src/vfs/memory-fs";
 import { populateMariadbDirs } from "../../lib/init/mariadb-config";
 import {
   writeVfsBinary,
@@ -31,11 +31,11 @@ import cloneWasmUrl from "../../../../benchmarks/wasm/clone-bench.wasm?url";
 import helloWasmUrl from "../../../../benchmarks/wasm/hello.wasm?url";
 
 // Kernel
-import kernelWasmUrl from "../../../../host/wasm/wasm_posix_kernel.wasm?url";
+import kernelWasmUrl from "../../../../binaries/kernel.wasm?url";
 
 // VFS images (fetched lazily; 404 handled per-suite)
-const ERLANG_VFS_URL = import.meta.env.BASE_URL + "erlang.vfs";
-const WP_VFS_URL = import.meta.env.BASE_URL + "wordpress.vfs";
+const ERLANG_VFS_URL = import.meta.env.BASE_URL + "vfs/erlang.vfs.zst";
+const WP_VFS_URL = import.meta.env.BASE_URL + "vfs/wordpress.vfs.zst";
 
 /**
  * Optional application-binary URL imports are resolved via `import.meta.glob`.
@@ -55,7 +55,7 @@ const OPTIONAL_URLS = {
   ...import.meta.glob("../../../nginx/nginx.wasm", {
     query: "?url", import: "default",
   }),
-  ...import.meta.glob("../../../nginx/php-fpm.wasm", {
+  ...import.meta.glob("../../../../binaries/programs/php/php-fpm.wasm", {
     query: "?url", import: "default",
   }),
   ...import.meta.glob("../../../libs/coreutils/bin/coreutils.wasm", {
@@ -264,7 +264,7 @@ async function runErlangRing(): Promise<Record<string, number>> {
   let lastOutputTime = 0;
   let outputSeen = false;
 
-  const memfs = MemoryFileSystem.fromImage(new Uint8Array(vfsImageBuf), {
+  const memfs = MemoryFileSystem.fromImage(decompressVfsImage(new Uint8Array(vfsImageBuf)), {
     maxByteLength: 256 * 1024 * 1024,
   });
 
@@ -381,7 +381,7 @@ async function runWordPress(): Promise<Record<string, number>> {
       "bash examples/nginx/build.sh",
     );
     phpFpmWasmUrl = await loadOptionalUrl(
-      "../../../nginx/php-fpm.wasm",
+      "../../../../binaries/programs/php/php-fpm.wasm",
       "PHP-FPM binary",
       "bash examples/nginx/build.sh",
     );
@@ -428,7 +428,7 @@ async function runWordPress(): Promise<Record<string, number>> {
   }
 
   // Restore MemoryFileSystem from the pre-built VFS image
-  const memfs = MemoryFileSystem.fromImage(new Uint8Array(vfsImageBuf), {
+  const memfs = MemoryFileSystem.fromImage(decompressVfsImage(new Uint8Array(vfsImageBuf)), {
     maxByteLength: 1024 * 1024 * 1024,
   });
 

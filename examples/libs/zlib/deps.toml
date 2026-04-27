@@ -1,0 +1,28 @@
+# Per-library manifest consumed by `cargo xtask build-deps`.
+# Schema: see docs/package-management.md.
+
+kind = "library"
+
+name = "zlib"
+version = "1.3.1"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz"
+sha256 = "9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23"
+
+[license]
+spdx = "Zlib"
+url = "https://github.com/madler/zlib/blob/v1.3.1/LICENSE"
+
+# `build.script` defaults to `build-<name>.sh` in this directory,
+# so we don't need a [build] section here.
+
+[outputs]
+libs = ["lib/libz.a"]
+headers = ["include/zlib.h", "include/zconf.h"]
+pkgconfig = ["lib/pkgconfig/zlib.pc"]
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/zlib-1.3.1-rev1-abi1-wasm32-3c6798e4.tar.zst"
+archive_sha256 = "253fd7c5302cb3b2a855612e310850e043386c0ee7c48a5019baea107aa2526b"

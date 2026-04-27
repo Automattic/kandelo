@@ -1,0 +1,40 @@
+kind = "program"
+name = "examples"
+version = "0.1.0"
+revision = 1
+
+[source]
+url = "https://github.com/brandonpayton/wasm-posix-kernel"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
+
+[[outputs]]
+name = "exec-caller"
+wasm = "exec-caller.wasm"
+
+[[outputs]]
+name = "exec-child"
+wasm = "exec-child.wasm"
+
+[[outputs]]
+name = "fork-exec"
+wasm = "fork-exec.wasm"
+
+[[outputs]]
+name = "ifhwaddr"
+wasm = "ifhwaddr.wasm"
+
+[[outputs]]
+name = "mmap_shared_test"
+wasm = "mmap_shared_test.wasm"
+
+[[outputs]]
+name = "hello"
+wasm = "hello.wasm"
+
+[[outputs]]
+name = "hello64"
+wasm = "hello64.wasm"

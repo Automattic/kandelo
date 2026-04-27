@@ -1,0 +1,20 @@
+kind = "program"
+name = "bc"
+version = "1.07.1"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://ftp.gnu.org/gnu/bc/bc-1.07.1.tar.gz"
+sha256 = "62adfca89b0a1c0164c2cdca59ca210c1d44c3ffc46daf9931cf4942664cb02a"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://git.savannah.gnu.org/cgit/bc.git/tree/COPYING"
+
+[[outputs]]
+name = "bc"
+wasm = "bc.wasm"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/bc-1.07.1-rev1-abi1-wasm32-b7d43eee.tar.zst"
+archive_sha256 = "fdb5b2cd2a1a06c03f279f2efacfaf3d4d880cc3ad954a4387bed8ad609e7b7f"

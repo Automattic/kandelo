@@ -15,47 +15,49 @@
 import { readFileSync, existsSync } from "fs";
 import { resolve, dirname } from "path";
 import { NodeKernelHost } from "../host/src/node-kernel-host";
+import { tryResolveBinary } from "../host/src/binary-resolver";
 
 const repoRoot = resolve(dirname(new URL(import.meta.url).pathname), "..");
 
-// Built-in program resolution
-const coreutilsWasm = resolve(repoRoot, "examples/libs/coreutils/bin/coreutils.wasm");
-const dashBuilt = resolve(repoRoot, "examples/libs/dash/bin/dash.wasm");
-const dashWasm = existsSync(dashBuilt) ? dashBuilt : resolve(repoRoot, "host/wasm/sh.wasm");
-const grepWasm = resolve(repoRoot, "examples/libs/grep/bin/grep.wasm");
-const sedWasm = resolve(repoRoot, "examples/libs/sed/bin/sed.wasm");
-const gitWasm = resolve(repoRoot, "examples/libs/git/bin/git.wasm");
-const bcWasm = resolve(repoRoot, "examples/libs/bc/bin/bc.wasm");
-const fileWasm = resolve(repoRoot, "examples/libs/file/bin/file.wasm");
-const lessWasm = resolve(repoRoot, "examples/libs/less/bin/less.wasm");
-const m4Wasm = resolve(repoRoot, "examples/libs/m4/bin/m4.wasm");
-const makeWasm = resolve(repoRoot, "examples/libs/make/bin/make.wasm");
-const tarWasm = resolve(repoRoot, "examples/libs/tar/bin/tar.wasm");
-const curlWasm = resolve(repoRoot, "examples/libs/curl/bin/curl.wasm");
-const wgetWasm = resolve(repoRoot, "examples/libs/wget/bin/wget.wasm");
-const gzipWasm = resolve(repoRoot, "examples/libs/gzip/bin/gzip.wasm");
-const bzip2Wasm = resolve(repoRoot, "examples/libs/bzip2/bin/bzip2.wasm");
-const xzWasm = resolve(repoRoot, "examples/libs/xz/bin/xz.wasm");
-const zstdWasm = resolve(repoRoot, "examples/libs/zstd/bin/zstd.wasm");
-const zipWasm = resolve(repoRoot, "examples/libs/zip/bin/zip.wasm");
-const unzipWasm = resolve(repoRoot, "examples/libs/unzip/bin/unzip.wasm");
-const qjsWasm = resolve(repoRoot, "examples/libs/quickjs/bin/qjs.wasm");
-const nodeWasm = resolve(repoRoot, "examples/libs/quickjs/bin/node.wasm");
+// Built-in program resolution via the binary-resolver. Resolver returns
+// null for programs that aren't fetched or locally built; callers that
+// need the path must handle null explicitly.
+const coreutilsWasm = tryResolveBinary("programs/coreutils.wasm");
+const dashWasm = tryResolveBinary("programs/dash.wasm");
+const grepWasm = tryResolveBinary("programs/grep.wasm");
+const sedWasm = tryResolveBinary("programs/sed.wasm");
+const gitWasm = tryResolveBinary("programs/git/git.wasm");
+const bcWasm = tryResolveBinary("programs/bc.wasm");
+const fileWasm = tryResolveBinary("programs/file.wasm");
+const lessWasm = tryResolveBinary("programs/less.wasm");
+const m4Wasm = tryResolveBinary("programs/m4.wasm");
+const makeWasm = tryResolveBinary("programs/make.wasm");
+const tarWasm = tryResolveBinary("programs/tar.wasm");
+const curlWasm = tryResolveBinary("programs/curl.wasm");
+const wgetWasm = tryResolveBinary("programs/wget.wasm");
+const gzipWasm = tryResolveBinary("programs/gzip.wasm");
+const bzip2Wasm = tryResolveBinary("programs/bzip2.wasm");
+const xzWasm = tryResolveBinary("programs/xz.wasm");
+const zstdWasm = tryResolveBinary("programs/zstd.wasm");
+const zipWasm = tryResolveBinary("programs/zip.wasm");
+const unzipWasm = tryResolveBinary("programs/unzip.wasm");
+const qjsWasm = tryResolveBinary("programs/quickjs/qjs.wasm");
+const nodeWasm = tryResolveBinary("programs/quickjs/node.wasm");
 const lsofWasm = resolve(repoRoot, "examples/lsof.wasm");
-const rubyWasm = resolve(repoRoot, "examples/libs/ruby/bin/ruby.wasm");
-const vimWasm = resolve(repoRoot, "examples/libs/vim/bin/vim.wasm");
-const gawkWasm = resolve(repoRoot, "examples/libs/gawk/bin/gawk.wasm");
-const findWasm = resolve(repoRoot, "examples/libs/findutils/bin/find.wasm");
-const xargsWasm = resolve(repoRoot, "examples/libs/findutils/bin/xargs.wasm");
-const diffWasm = resolve(repoRoot, "examples/libs/diffutils/bin/diff.wasm");
-const cmpWasm = resolve(repoRoot, "examples/libs/diffutils/bin/cmp.wasm");
-const sdiffWasm = resolve(repoRoot, "examples/libs/diffutils/bin/sdiff.wasm");
-const diff3Wasm = resolve(repoRoot, "examples/libs/diffutils/bin/diff3.wasm");
-const perlWasm = resolve(repoRoot, "examples/libs/perl/bin/perl.wasm");
-const nanoWasm = resolve(repoRoot, "examples/libs/nano/bin/nano.wasm");
-const tclshWasm = resolve(repoRoot, "examples/libs/tcl/bin/tclsh.wasm");
-const testfixtureWasm = resolve(repoRoot, "examples/libs/sqlite/bin/testfixture.wasm");
-const mysqltestWasm = resolve(repoRoot, "examples/libs/mariadb/mariadb-install/bin/mysqltest.wasm");
+const rubyWasm = tryResolveBinary("programs/ruby.wasm");
+const vimWasm = tryResolveBinary("programs/vim.zip");
+const gawkWasm = tryResolveBinary("programs/gawk.wasm");
+const findWasm = tryResolveBinary("programs/findutils/find.wasm");
+const xargsWasm = tryResolveBinary("programs/findutils/xargs.wasm");
+const diffWasm = tryResolveBinary("programs/diffutils/diff.wasm");
+const cmpWasm = tryResolveBinary("programs/diffutils/cmp.wasm");
+const sdiffWasm = tryResolveBinary("programs/diffutils/sdiff.wasm");
+const diff3Wasm = tryResolveBinary("programs/diffutils/diff3.wasm");
+const perlWasm = tryResolveBinary("programs/perl.wasm");
+const nanoWasm = tryResolveBinary("programs/nano.wasm");
+const tclshWasm = tryResolveBinary("programs/tcl.wasm");
+const testfixtureWasm = tryResolveBinary("programs/sqlite/testfixture.wasm");
+const mysqltestWasm = tryResolveBinary("programs/mariadb/mysqltest.wasm");
 
 // GNU coreutils multi-call binary supports all of these as argv[0]
 const coreutilsNames = [
@@ -67,7 +69,9 @@ const coreutilsNames = [
     "sha256sum", "base64", "seq", "factor", "nproc", "du", "df",
 ];
 
-const builtinPrograms: Record<string, string> = {
+// Values may be null when a program isn't fetched/built locally.
+// Consumers filter out null entries before use.
+const builtinPrograms: Record<string, string | null> = {
     "echo": resolve(repoRoot, "examples/echo.wasm"),
     "/bin/echo": resolve(repoRoot, "examples/echo.wasm"),
     "/usr/bin/echo": resolve(repoRoot, "examples/echo.wasm"),
@@ -252,7 +256,7 @@ function loadBytes(path: string): ArrayBuffer {
 
 function resolveProgram(path: string): ArrayBuffer | null {
     const mapped = builtinPrograms[path];
-    if (mapped && existsSync(mapped)) {
+    if (mapped) {
         return loadBytes(mapped);
     }
     const kernelCwd = process.env.KERNEL_CWD || process.cwd();
@@ -282,8 +286,8 @@ async function main() {
     let programPath: string;
     if (name.endsWith(".wasm")) {
         programPath = resolve(name);
-    } else if (builtinPrograms[name] && existsSync(builtinPrograms[name])) {
-        programPath = builtinPrograms[name];
+    } else if (builtinPrograms[name]) {
+        programPath = builtinPrograms[name]!;
     } else {
         programPath = resolve(`examples/${name}.wasm`);
     }

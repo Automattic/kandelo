@@ -13,9 +13,10 @@
  * Then: curl http://localhost:8080/
  */
 
-import { readFileSync, existsSync, mkdirSync } from "fs";
+import { readFileSync, mkdirSync } from "fs";
 import { resolve, dirname, join } from "path";
 import { NodeKernelHost } from "../../host/src/node-kernel-host";
+import { tryResolveBinary } from "../../host/src/binary-resolver";
 
 const scriptDir = dirname(new URL(import.meta.url).pathname);
 const repoRoot = resolve(scriptDir, "../..");
@@ -36,9 +37,12 @@ function loadBytes(path: string): ArrayBuffer {
 }
 
 async function main() {
-    const nginxWasm = resolve(scriptDir, "nginx.wasm");
-    if (!existsSync(nginxWasm)) {
-        console.error("nginx.wasm not found. Run: bash examples/nginx/build.sh");
+    const nginxWasm = tryResolveBinary("programs/nginx.wasm");
+    if (!nginxWasm) {
+        console.error(
+            "nginx.wasm not found. Run: scripts/fetch-binaries.sh " +
+            "(or bash examples/nginx/build.sh to build locally).",
+        );
         process.exit(1);
     }
 

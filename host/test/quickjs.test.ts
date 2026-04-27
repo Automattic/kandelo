@@ -7,19 +7,15 @@
 
 import { describe, it, expect } from "vitest";
 import { runCentralizedProgram } from "./centralized-test-helper";
-import { existsSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { tryResolveBinary } from "../src/binary-resolver";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const repoRoot = join(__dirname, "../..");
-const qjsWasm = join(repoRoot, "examples/libs/quickjs/bin/qjs.wasm");
-const hasQjs = existsSync(qjsWasm);
+const qjsWasm = tryResolveBinary("programs/quickjs/qjs.wasm");
+const hasQjs = !!qjsWasm;
 
 describe.skipIf(!hasQjs)("QuickJS-NG", () => {
   it("evaluates a simple expression", async () => {
     const result = await runCentralizedProgram({
-      programPath: qjsWasm,
+      programPath: qjsWasm!,
       argv: ["qjs", "-e", 'console.log("hello qjs")'],
     });
     expect(result.stdout).toContain("hello qjs");
@@ -28,7 +24,7 @@ describe.skipIf(!hasQjs)("QuickJS-NG", () => {
 
   it("supports ES2023 features (BigInt, findLast, groupBy)", async () => {
     const result = await runCentralizedProgram({
-      programPath: qjsWasm,
+      programPath: qjsWasm!,
       argv: [
         "qjs",
         "-e",
@@ -47,7 +43,7 @@ describe.skipIf(!hasQjs)("QuickJS-NG", () => {
 
   it("supports file I/O via std module", async () => {
     const result = await runCentralizedProgram({
-      programPath: qjsWasm,
+      programPath: qjsWasm!,
       argv: [
         "qjs",
         "--std",
@@ -69,7 +65,7 @@ describe.skipIf(!hasQjs)("QuickJS-NG", () => {
 
   it("supports POSIX os module (getcwd, getpid, stat, pipe)", async () => {
     const result = await runCentralizedProgram({
-      programPath: qjsWasm,
+      programPath: qjsWasm!,
       argv: [
         "qjs",
         "--std",

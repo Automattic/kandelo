@@ -1,0 +1,213 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/abi/manifest.schema.json",
+  "title": "wasm-posix-kernel binaries release manifest",
+  "description": "Schema for `manifest.json` files published alongside binaries releases. See docs/binary-releases.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "abi_version",
+    "release_tag",
+    "generated_at",
+    "generator",
+    "entries"
+  ],
+  "properties": {
+    "abi_version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Kernel ABI this release targets. Must match the suffix in `release_tag`."
+    },
+    "release_tag": {
+      "type": "string",
+      "pattern": "^binaries-abi-v[0-9]+$",
+      "description": "GitHub release tag. Immutable; this manifest is tied to this tag."
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 UTC timestamp. Provenance only — not part of any correctness check."
+    },
+    "generator": {
+      "type": "string",
+      "description": "Tool + version that produced this manifest."
+    },
+    "entries": {
+      "type": "array",
+      "description": "Assets in this release, sorted alphabetically by `name`.",
+      "items": { "$ref": "#/$defs/entry" }
+    }
+  },
+  "$defs": {
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "program",
+        "kind",
+        "size",
+        "sha256",
+        "advisories"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Asset filename in the release. Conventional format: `<program>-<upstream_version>-rev<revision>-<short-sha>.<ext>` (or `<program>-<short-sha>.<ext>` when no version is tracked).",
+          "minLength": 1
+        },
+        "program": {
+          "type": "string",
+          "description": "Logical program name this asset belongs to. Multiple assets can share a program (e.g. different builds or runtime bundles)."
+        },
+        "kind": {
+          "enum": ["kernel", "userspace", "program", "vfs-image", "library"],
+          "description": "What kind of asset this is. `kernel`/`userspace` are our own artifacts; `program` is a bundle (zip or .tar.zst) containing a .wasm + any runtime data + LICENSE; `vfs-image` is a pre-built filesystem image, possibly zstd-compressed; `library` is a V2-format wasm32/wasm64 lib bundle (.tar.zst) carrying ABI compatibility metadata."
+        },
+        "arch": {
+          "enum": ["wasm32", "wasm64", "any"],
+          "description": "Target architecture. `any` for assets that aren't arch-specific (VFS images without embedded binaries)."
+        },
+        "upstream_version": {
+          "type": ["string", "null"],
+          "description": "Upstream software version (e.g. `9.1.0900` for Vim). Null for artifacts we author ourselves without a conventional version."
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Per-build revision. Bumped when we rebuild the same upstream version (e.g. patch fixes in our build scripts)."
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "File size in bytes."
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "Lowercase hex SHA-256 of the asset bytes. Fetchers must verify every download."
+        },
+        "abi_version": {
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "description": "Value of the `__abi_version` function export, if the asset is a wasm binary carrying the marker. Null for assets without it (VFS images, legacy binaries)."
+        },
+        "archive_name": {
+          "type": ["string", "null"],
+          "description": "Filename of the archive in the release. Same as `name` for V2 entries; null for V1 zip/wasm-vintage entries.",
+          "minLength": 1
+        },
+        "archive_sha256": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "SHA-256 of the archive bytes. Identical to `sha256` for V2 .tar.zst entries; the field is repeated under `archive_*` for symmetry with the consumer-side [binary] block in deps.toml. Null for V1 entries."
+        },
+        "compatibility": {
+          "$ref": "#/$defs/compatibility",
+          "description": "ABI compatibility metadata. Required on `kind: library`; required on V2-shaped `kind: program` (filename ends in .tar.zst); absent on V1 entries."
+        },
+        "source": {
+          "$ref": "#/$defs/source",
+          "description": "Where the sources for this asset live."
+        },
+        "license": {
+          "$ref": "#/$defs/license",
+          "description": "License of the upstream software or our own code."
+        },
+        "advisories": {
+          "type": "array",
+          "description": "Known security advisories against this asset. Empty array if none.",
+          "items": { "$ref": "#/$defs/advisory" }
+        }
+      }
+    },
+    "compatibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target_arch", "abi_versions", "cache_key_sha"],
+      "properties": {
+        "target_arch": { "enum": ["wasm32", "wasm64"] },
+        "abi_versions": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "integer", "minimum": 1 },
+          "description": "ABI versions the archive is verified against. Length-1 in normal case (per design 2)."
+        },
+        "cache_key_sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "Locally-computable cache-key sha — what the consumer must produce from its source deps.toml in order for this archive to be honored."
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url"],
+      "properties": {
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "description": "HTTP or Git URL pointing at the upstream sources (tarball, Git repo, mirror)."
+        },
+        "ref": {
+          "type": "string",
+          "description": "Upstream reference — git tag/commit, upstream version, release label."
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "SHA-256 of the upstream source tarball at `url`. Lowercase hex; 64 chars. Replaces `ref` for V2-generated manifests; V1-vintage manifests carry `ref` instead."
+        }
+      }
+    },
+    "license": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["spdx"],
+      "properties": {
+        "spdx": {
+          "type": "string",
+          "description": "SPDX license expression (https://spdx.org/licenses/). For non-SPDX licenses, use the license name verbatim."
+        },
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "description": "URL to the upstream LICENSE file or license text."
+        }
+      }
+    },
+    "advisory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["severity", "summary", "resolved"],
+      "properties": {
+        "id": {
+          "type": ["string", "null"],
+          "description": "CVE identifier (e.g. `CVE-2026-1234`) or internal advisory ID (e.g. `advisory-2026-04-19-001`). Null when not yet assigned."
+        },
+        "severity": {
+          "enum": ["critical", "high", "medium", "low", "informational"]
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Short human-readable description of the issue."
+        },
+        "reference": {
+          "type": "string",
+          "format": "uri",
+          "description": "URL to full writeup, CVE record, or vendor advisory."
+        },
+        "resolved": {
+          "type": "boolean",
+          "description": "True if a fixed build supersedes this asset. The fixed build is named in `resolved_by`."
+        },
+        "resolved_by": {
+          "type": ["string", "null"],
+          "description": "Filename of the asset that supersedes this one (fix). Consumers can auto-upgrade."
+        }
+      }
+    }
+  }
+}

@@ -40,6 +40,8 @@ extern "C" {
  * wasm_posix_shared::ABI_VERSION — bump ABI_VERSION and regenerate
  * the header (`bash scripts/check-abi-version.sh update`) together.
  */
+__attribute__((used))
+__attribute__((retain))
 __attribute__((export_name("__abi_version")))
 unsigned int __wasm_posix_user_abi_version(void) {
     return WASM_POSIX_ABI_VERSION;
