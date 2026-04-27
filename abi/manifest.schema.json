@@ -61,8 +61,8 @@
           "description": "Logical program name this asset belongs to. Multiple assets can share a program (e.g. different builds or runtime bundles)."
         },
         "kind": {
-          "enum": ["kernel", "userspace", "program", "vfs-image"],
-          "description": "What kind of asset this is. `kernel`/`userspace` are our own artifacts; `program` is a bundle (zip) containing a .wasm + any runtime data + LICENSE; `vfs-image` is a pre-built filesystem image, possibly zstd-compressed."
+          "enum": ["kernel", "userspace", "program", "vfs-image", "library"],
+          "description": "What kind of asset this is. `kernel`/`userspace` are our own artifacts; `program` is a bundle (zip or .tar.zst) containing a .wasm + any runtime data + LICENSE; `vfs-image` is a pre-built filesystem image, possibly zstd-compressed; `library` is a V2-format wasm32/wasm64 lib bundle (.tar.zst) carrying ABI compatibility metadata."
         },
         "arch": {
           "enum": ["wasm32", "wasm64", "any"],
@@ -92,6 +92,20 @@
           "minimum": 1,
           "description": "Value of the `__abi_version` function export, if the asset is a wasm binary carrying the marker. Null for assets without it (VFS images, legacy binaries)."
         },
+        "archive_name": {
+          "type": ["string", "null"],
+          "description": "Filename of the archive in the release. Same as `name` for V2 entries; null for V1 zip/wasm-vintage entries.",
+          "minLength": 1
+        },
+        "archive_sha256": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "SHA-256 of the archive bytes. Identical to `sha256` for V2 .tar.zst entries; the field is repeated under `archive_*` for symmetry with the consumer-side [binary] block in deps.toml. Null for V1 entries."
+        },
+        "compatibility": {
+          "$ref": "#/$defs/compatibility",
+          "description": "ABI compatibility metadata. Required on `kind: library`; required on V2-shaped `kind: program` (filename ends in .tar.zst); absent on V1 entries."
+        },
         "source": {
           "$ref": "#/$defs/source",
           "description": "Where the sources for this asset live."
@@ -104,6 +118,25 @@
           "type": "array",
           "description": "Known security advisories against this asset. Empty array if none.",
           "items": { "$ref": "#/$defs/advisory" }
+        }
+      }
+    },
+    "compatibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target_arch", "abi_versions", "cache_key_sha"],
+      "properties": {
+        "target_arch": { "enum": ["wasm32", "wasm64"] },
+        "abi_versions": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "integer", "minimum": 1 },
+          "description": "ABI versions the archive is verified against. Length-1 in normal case (per design 2)."
+        },
+        "cache_key_sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "Locally-computable cache-key sha — what the consumer must produce from its source deps.toml in order for this archive to be honored."
         }
       }
     },

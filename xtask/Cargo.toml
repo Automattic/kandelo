@@ -54,3 +54,8 @@ regex = "1"
 # tempdirs. Not promoted to a runtime dep: the source_extract zip path
 # uses std::io::Cursor instead of NamedTempFile.
 tempfile = "3"
+# JSON-Schema conformance test for `abi/manifest.schema.json`
+# (Task E.1). Pinned to 0.18 — tested clean on aarch64-apple-darwin;
+# newer 0.4x versions pull in `aws-lc-rs` via a default feature path
+# that has historically been brittle on macOS hosts.
+jsonschema = "0.18"

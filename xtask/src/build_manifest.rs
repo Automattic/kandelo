@@ -497,3 +497,106 @@ fn render_deterministic(root: &JsonMap) -> String {
     s.push('\n');
     s
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::repo_root;
+    use serde_json::Value;
+
+    /// Wrap a single entry into a complete manifest doc and validate it
+    /// against `abi/manifest.schema.json`. Returns true iff the doc
+    /// passes validation.
+    fn validates_against_schema(entry: &Value) -> bool {
+        let schema_path = repo_root().join("abi/manifest.schema.json");
+        let schema_bytes = std::fs::read(&schema_path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", schema_path.display()));
+        let schema: Value = serde_json::from_slice(&schema_bytes)
+            .unwrap_or_else(|e| panic!("parse schema: {e}"));
+
+        let doc = serde_json::json!({
+            "abi_version": 1,
+            "release_tag": "binaries-abi-v1",
+            "generated_at": "2026-01-01T00:00:00Z",
+            "generator": "test",
+            "entries": [entry],
+        });
+
+        // jsonschema 0.18 uses JSONSchema::compile + is_valid; the
+        // Validator-named API only landed later in the 0.x series.
+        let validator = jsonschema::JSONSchema::compile(&schema)
+            .unwrap_or_else(|e| panic!("compile schema: {e}"));
+        validator.is_valid(&doc)
+    }
+
+    fn sample_v2_lib_entry() -> Value {
+        serde_json::json!({
+            "name": "zlib-1.3.1-rev1-wasm32-9acb9405.tar.zst",
+            "program": "zlib",
+            "kind": "library",
+            "arch": "wasm32",
+            "upstream_version": "1.3.1",
+            "revision": 1,
+            "size": 12345,
+            "sha256": "0".repeat(64),
+            "abi_version": null,
+            "archive_name": "zlib-1.3.1-rev1-wasm32-9acb9405.tar.zst",
+            "archive_sha256": "0".repeat(64),
+            "compatibility": {
+                "target_arch": "wasm32",
+                "abi_versions": [4],
+                "cache_key_sha": "0".repeat(64),
+            },
+            "source": { "url": "https://x", "sha256": "0".repeat(64) },
+            "license": { "spdx": "Zlib" },
+            "advisories": [],
+        })
+    }
+
+    #[test]
+    fn schema_accepts_v2_library_entry() {
+        let entry = sample_v2_lib_entry();
+        assert!(
+            validates_against_schema(&entry),
+            "library entry should validate"
+        );
+    }
+
+    #[test]
+    fn schema_rejects_compat_with_short_sha() {
+        let mut entry = sample_v2_lib_entry();
+        entry["compatibility"]["cache_key_sha"] = serde_json::json!("deadbeef");
+        assert!(
+            !validates_against_schema(&entry),
+            "must reject 8-char sha"
+        );
+    }
+
+    #[test]
+    fn schema_rejects_compat_with_empty_abi_versions() {
+        let mut entry = sample_v2_lib_entry();
+        entry["compatibility"]["abi_versions"] = serde_json::json!([]);
+        assert!(!validates_against_schema(&entry));
+    }
+
+    #[test]
+    fn schema_still_accepts_v1_program_zip() {
+        let entry = serde_json::json!({
+            "name": "vim-9.1.0900-rev1-abc12345.zip",
+            "program": "vim",
+            "kind": "program",
+            "arch": "wasm32",
+            "upstream_version": "9.1.0900",
+            "revision": 1,
+            "size": 1,
+            "sha256": "0".repeat(64),
+            "abi_version": null,
+            "source": { "url": "https://x", "sha256": "0".repeat(64) },
+            "license": { "spdx": "Vim" },
+            "advisories": [],
+        });
+        assert!(
+            validates_against_schema(&entry),
+            "V1 zip must keep validating"
+        );
+    }
+}
