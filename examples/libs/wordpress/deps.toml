@@ -12,6 +12,12 @@ sha256 = "f7dbedc423ddb3f2f3e98e9140f1720bfd6d4a8f4873c85da2e62f6a078de10a"
 spdx = "GPL-2.0-or-later"
 url = "https://wordpress.org/about/gpl/"
 
+[build]
+script = "build-wordpress.sh"
+
 [[outputs]]
 name = "wordpress"
-wasm = "wordpress.vfs.zst"
+wasm = "wordpress.vfs"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/wordpress-6.8-rev1-wasm32-21620e7d.tar.zst"
+archive_sha256 = "8e692216cd9f2162209c61ca49c6bae94210f5d59df5bb85e0cb14e79226ca14"

@@ -31,4 +31,4 @@ headers = ["include/curl"]
 pkgconfig = ["lib/pkgconfig/libcurl.pc"]
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/libcurl-8.11.1-rev1-wasm32-70dfd33f.tar.zst"
-archive_sha256 = "3214760b3260882a90df84754ed59707a4aff33ce43330444ee92162350d0ad5"
+archive_sha256 = "474788a3e58852b984e81a4ec44273282beff92f6b6b2e0bfead49f40541db39"

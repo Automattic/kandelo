@@ -1,6 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Builds two PHP binaries from one source tree:
+#
+#   sapi/cli/php        → php.wasm     (CLI; no asyncify)
+#   sapi/fpm/php-fpm    → php-fpm.wasm (FastCGI Process Manager;
+#                                       asyncified via onlylist for
+#                                       fork support)
+#
+# The two builds were previously separate scripts (this one + the
+# now-removed examples/nginx/build-php-fpm.sh). Unifying them lets a
+# single autoconf invocation produce both sapis from one source tree
+# and one set of patched config.h/Makefile.
+#
+# CFLAGS/LDFLAGS are set to FPM's stricter requirements (line tables
+# preserved, clang's automatic wasm-opt step skipped) because they're
+# needed for FPM's asyncify-onlylist to find function names. CLI just
+# ships the same way without asyncify on top.
+
 PHP_VERSION="${PHP_VERSION:-8.3.15}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SRC_DIR="$SCRIPT_DIR/php-src"
@@ -74,16 +91,17 @@ if ! grep -q 'ZEND_USE_ASM_ARITHMETIC 0' Zend/zend_multiply.h 2>/dev/null; then
     fi
 fi
 
-echo "==> Configuring PHP for Wasm..."
+echo "==> Configuring PHP for Wasm (CLI + FPM, single tree)..."
 if [ ! -f Makefile ]; then
     PKG_CONFIG_PATH="$DEP_PKG_CONFIG_PATH" \
     CPPFLAGS="$DEP_CPPFLAGS" \
-    LDFLAGS="$DEP_LDFLAGS" \
+    LDFLAGS="$DEP_LDFLAGS --no-wasm-opt" \
     wasm32posix-configure \
         --disable-all \
         --disable-cgi \
         --disable-phpdbg \
         --enable-cli \
+        --enable-fpm \
         --enable-mbstring \
         --disable-mbregex \
         --enable-ctype \
@@ -98,6 +116,8 @@ if [ ! -f Makefile ]; then
         --with-sqlite3 \
         --enable-pdo \
         --with-pdo-sqlite \
+        --with-pdo-mysql=mysqlnd \
+        --with-mysqli=mysqlnd \
         --enable-fileinfo \
         --enable-exif \
         --with-zlib \
@@ -110,7 +130,12 @@ if [ ! -f Makefile ]; then
         --enable-xmlwriter \
         --cache-file="$SCRIPT_DIR/config.cache" \
         --prefix="$INSTALL_DIR" \
-        CFLAGS="-O2 -DZEND_USE_ASM_ARITHMETIC=0"
+        CFLAGS="-O2 -gline-tables-only -DZEND_USE_ASM_ARITHMETIC=0"
+    # CFLAGS includes -gline-tables-only and LDFLAGS sets --no-wasm-opt
+    # to keep the wasm name section intact for FPM's asyncify-onlylist
+    # to find function names. CLI doesn't need either but inheriting
+    # the same flags doesn't change CLI's behaviour besides a slightly
+    # larger binary.
 
     # Patch config.h: disable features that pass link-time checks (--allow-undefined)
     # but don't actually exist in our musl sysroot
@@ -126,6 +151,7 @@ if [ ! -f Makefile ]; then
         -e 's/^#define HAVE_FUNOPEN 1/\/* #undef HAVE_FUNOPEN *\//' \
         -e 's/^#define HAVE_STD_SYSLOG 1/\/* #undef HAVE_STD_SYSLOG *\//' \
         -e 's/^#define HAVE_SETPROCTITLE 1/\/* #undef HAVE_SETPROCTITLE *\//' \
+        -e 's/^#define HAVE_SETPROCTITLE_FAST 1/\/* #undef HAVE_SETPROCTITLE_FAST *\//' \
         -e 's/^#define HAVE_PRCTL 1/\/* #undef HAVE_PRCTL *\//' \
         -e 's/^#define HAVE_RAND_EGD 1/\/* #undef HAVE_RAND_EGD *\//' \
         main/php_config.h && rm -f main/php_config.h.bak
@@ -139,18 +165,57 @@ if [ ! -f Makefile ]; then
         Makefile && rm -f Makefile.bak
 fi
 
-echo "==> Building PHP..."
+echo "==> Building PHP CLI..."
 make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" cli
 
-echo "==> PHP CLI built successfully!"
+echo "==> Building PHP FPM..."
+make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" fpm
+
+echo "==> Both PHP binaries built successfully!"
 
 # Copy to bin/ with .wasm extension (needed for Vite browser demos)
 mkdir -p "$SCRIPT_DIR/bin"
 cp sapi/cli/php "$SCRIPT_DIR/bin/php.wasm"
+cp sapi/fpm/php-fpm "$SCRIPT_DIR/bin/php-fpm.wasm"
 
-ls -la "$SCRIPT_DIR/bin/php.wasm"
+# Both CLI and FPM are built with -gline-tables-only + --no-wasm-opt
+# so FPM's asyncify-onlylist can find function names. That leaves CLI
+# with ~18MB of unneeded debug info; wasm-opt -O2 strips it.
+WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
+if [ -n "$WASM_OPT" ]; then
+    echo "==> Optimizing CLI binary (strip debug info)..."
+    "$WASM_OPT" -O2 "$SCRIPT_DIR/bin/php.wasm" -o "$SCRIPT_DIR/bin/php.wasm"
+
+    # Asyncify FPM (it forks worker children). CLI is sequential.
+    # The asyncify-onlylist restricts instrumentation to ~48 named
+    # functions on the fork call path, keeping the binary small (~10MB
+    # vs ~21MB for full asyncify) and avoiding V8 stack overflow in
+    # browser web workers.
+    #
+    # Onlylist requires the wasm name section to be intact:
+    #   - CFLAGS includes -gline-tables-only (set above)
+    #   - LDFLAGS includes --no-wasm-opt (set above)
+    #   - wasm-opt -g flag (below)
+    ONLYLIST="$SCRIPT_DIR/asyncify-fpm-onlylist.txt"
+    if [ -f "$ONLYLIST" ]; then
+        ONLY_FUNCS=$(grep -v '^#' "$ONLYLIST" | grep -v '^$' | tr '\n' ',' | sed 's/,$//')
+        FUNC_COUNT=$(echo "$ONLY_FUNCS" | tr ',' '\n' | wc -l | tr -d ' ')
+        echo "==> Applying asyncify-onlylist to FPM ($FUNC_COUNT functions)..."
+        "$WASM_OPT" -g --asyncify \
+            --pass-arg="asyncify-imports@kernel.kernel_fork" \
+            --pass-arg="asyncify-onlylist@${ONLY_FUNCS}" \
+            "$SCRIPT_DIR/bin/php-fpm.wasm" -o "$SCRIPT_DIR/bin/php-fpm.wasm"
+        echo "==> Optimizing asyncified FPM binary..."
+        "$WASM_OPT" -O2 "$SCRIPT_DIR/bin/php-fpm.wasm" -o "$SCRIPT_DIR/bin/php-fpm.wasm"
+    else
+        echo "==> WARN: $ONLYLIST not found, skipping asyncify (FPM fork will not work)."
+    fi
+fi
+
+ls -la "$SCRIPT_DIR/bin/php.wasm" "$SCRIPT_DIR/bin/php-fpm.wasm"
 
 # Install into local-binaries/ so the resolver picks the freshly-built
-# binary over the fetched release.
+# binaries over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary php "$SCRIPT_DIR/bin/php.wasm" php.wasm
+install_local_binary php "$SCRIPT_DIR/bin/php.wasm"     php.wasm
+install_local_binary php "$SCRIPT_DIR/bin/php-fpm.wasm" php-fpm.wasm

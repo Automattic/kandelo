@@ -1,0 +1,27 @@
+kind = "program"
+name = "mariadb-vfs"
+version = "0.1.0"
+revision = 1
+depends_on = []
+
+# Pre-built VFS image for the MariaDB browser demo: mariadbd binary
+# at /usr/sbin/mariadbd, bootstrap SQL at /etc/mariadb/bootstrap.sql,
+# data tree at /data, shell init descriptors. Source at
+# examples/browser/scripts/build-mariadb-vfs-image.ts.
+[source]
+url = "https://github.com/brandonpayton/wasm-posix-kernel"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
+
+[build]
+script = "build-mariadb-vfs.sh"
+
+[[outputs]]
+name = "mariadb-vfs"
+wasm = "mariadb-vfs.vfs"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/mariadb-vfs-0.1.0-rev1-wasm32-e977bf58.tar.zst"
+archive_sha256 = "9308913f046f08f69b8cc9fb14bc1baa51755e9276d9e31a6aa40d1426cbe284"

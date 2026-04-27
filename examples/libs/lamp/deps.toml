@@ -12,6 +12,12 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 spdx = "GPL-2.0-or-later"
 url = "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
 
+[build]
+script = "build-lamp.sh"
+
 [[outputs]]
 name = "lamp"
-wasm = "lamp.vfs.zst"
+wasm = "lamp.vfs"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/lamp-0.1.0-rev1-wasm32-4ad4dd06.tar.zst"
+archive_sha256 = "9e295e84b4ab314cb14f74c97b3ec7b4c9cbc3576103b1f08fc751df12d0472c"

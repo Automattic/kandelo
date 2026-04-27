@@ -17,4 +17,4 @@ name = "m4"
 wasm = "m4.wasm"
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/m4-1.4.19-rev1-wasm32-8c20b3f5.tar.zst"
-archive_sha256 = "f1a593a7633c6ab8c30f334cf083d72cb41f5ec651fc99da414a7b70bb19e6d1"
+archive_sha256 = "dc8ce4a8af44972e303c6f09ee7c529d9c52e94e2351fe9aa19faf1cb0a5d146"

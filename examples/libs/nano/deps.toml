@@ -17,4 +17,4 @@ name = "nano"
 wasm = "nano.wasm"
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/nano-8.0-rev1-wasm32-b0707e51.tar.zst"
-archive_sha256 = "68e978c698fe7c3a3767788226cc422572b0a5c01b65625570933e4b96eb7fc2"
+archive_sha256 = "768585833c31f1de07994c7c1a4507e84bd5a927ff7e500004ec38d9f1174290"

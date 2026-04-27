@@ -17,4 +17,4 @@ name = "bc"
 wasm = "bc.wasm"
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/bc-1.07.1-rev1-wasm32-903b3734.tar.zst"
-archive_sha256 = "e8b635f0606953603cb2f8c737363d9fad6ba1c22e20d0995fd70cb3e41bfa7b"
+archive_sha256 = "98b598595fc60f2a463609b623d96266e9761278e17c76d8bf7c8ddf34a8ac37"

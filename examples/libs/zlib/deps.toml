@@ -25,4 +25,4 @@ headers = ["include/zlib.h", "include/zconf.h"]
 pkgconfig = ["lib/pkgconfig/zlib.pc"]
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/zlib-1.3.1-rev1-wasm32-46f48b87.tar.zst"
-archive_sha256 = "29e171758cfe873d1604d60f56aebc0d30994770e91517bd2fd35b7cbc98183c"
+archive_sha256 = "ec24a0f676589cb64043be20281ce5efccf073c942802be94ba2ce56348d8c08"

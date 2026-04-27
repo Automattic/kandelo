@@ -1,0 +1,26 @@
+kind = "program"
+name = "python-vfs"
+version = "0.1.0"
+revision = 1
+depends_on = []
+
+# Pre-built VFS image containing the CPython 3.13 stdlib for the
+# browser demo. Source at
+# examples/browser/scripts/build-python-vfs-image.ts.
+[source]
+url = "https://github.com/brandonpayton/wasm-posix-kernel"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "Python-2.0"
+url = "https://docs.python.org/3/license.html"
+
+[build]
+script = "build-python-vfs.sh"
+
+[[outputs]]
+name = "python-vfs"
+wasm = "python-vfs.vfs"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/python-vfs-0.1.0-rev1-wasm32-114e0014.tar.zst"
+archive_sha256 = "a8ef97291e06dc34365e9cff8affec0360cf8405a51f3702aaa3d00077598c11"

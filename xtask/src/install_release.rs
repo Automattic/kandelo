@@ -291,12 +291,32 @@ fn mirror_program_outputs(
                 src.display()
             ));
         }
-        let dest_name = format!("{}.wasm", out.name);
+        // Preserve the source file's extension(s) so `.vfs.zst`,
+        // `.wasm`, `.zip`, etc. all round-trip. Take everything from
+        // the FIRST `.` onward as the extension chunk so double
+        // extensions like `.vfs.zst` survive intact.
+        //
+        //   out.wasm = "python.wasm"     → ext = ".wasm"
+        //                                  dest = "<out.name>.wasm"
+        //   out.wasm = "shell.vfs.zst"   → ext = ".vfs.zst"
+        //                                  dest = "<out.name>.vfs.zst"
+        //   out.wasm = "git.wasm"        → ext = ".wasm"
+        //                                  dest = "<out.name>.wasm"
+        let basename = std::path::Path::new(&out.wasm)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(&out.wasm);
+        let ext = match basename.find('.') {
+            Some(i) => &basename[i..],
+            None => "",
+        };
+        let dest_name = format!("{}{}", out.name, ext);
         let dest = dest_dir.join(&dest_name);
         // PID suffix matches the convention used in remote_fetch /
         // archive_stage: lets two install-release runs sharing a
         // --local-binaries-dir not race on the same .tmp filename.
-        let tmp = dest.with_extension(format!("wasm.tmp-{}", std::process::id()));
+        let tmp_name = format!("{}.tmp-{}", dest_name, std::process::id());
+        let tmp = dest_dir.join(&tmp_name);
         fs::copy(&src, &tmp).map_err(|e| {
             format!("copy {} -> {}: {e}", src.display(), tmp.display())
         })?;

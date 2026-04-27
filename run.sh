@@ -244,7 +244,7 @@ build_php_fpm() {
     need_sdk
     if ! has_php_fpm; then
         step "Building PHP-FPM"
-        bash "$REPO_ROOT/examples/nginx/build-php-fpm.sh"
+        bash "$REPO_ROOT/examples/libs/php/build-php.sh"
         info "PHP-FPM built"
     else
         info "PHP-FPM"

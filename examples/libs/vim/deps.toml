@@ -17,4 +17,4 @@ name = "vim"
 wasm = "vim.wasm"
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/vim-9.1.0900-rev1-wasm32-1bd4548d.tar.zst"
-archive_sha256 = "c6b1309228e97489468398dac8828af450d3d50d7c985a34681b1ab39fe786dc"
+archive_sha256 = "2edf1ce79f3275cf35a31eb4380fbebea9e248376722bfb94ad77d0aca4a33db"

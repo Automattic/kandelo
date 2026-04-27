@@ -17,4 +17,4 @@ name = "tar"
 wasm = "tar.wasm"
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/tar-1.35-rev1-wasm32-2632a495.tar.zst"
-archive_sha256 = "611ca121ed27a4e7b234d6a0249f71f3fbc5c02a3db2ca5c575c5b7bb952a3ce"
+archive_sha256 = "a610e0bc6e9f2f57147855b08a29d24079236f13a7767d4271568e0535531664"

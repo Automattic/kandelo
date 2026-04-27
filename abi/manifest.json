@@ -6,7 +6,7 @@
       "advisories": [],
       "arch": "wasm32",
       "archive_name": "bc-1.07.1-rev1-wasm32-903b3734.tar.zst",
-      "archive_sha256": "e8b635f0606953603cb2f8c737363d9fad6ba1c22e20d0995fd70cb3e41bfa7b",
+      "archive_sha256": "98b598595fc60f2a463609b623d96266e9761278e17c76d8bf7c8ddf34a8ac37",
       "compatibility": {
         "abi_versions": [
           1
@@ -22,8 +22,8 @@
       "name": "bc-1.07.1-rev1-wasm32-903b3734.tar.zst",
       "program": "bc",
       "revision": 1,
-      "sha256": "e8b635f0606953603cb2f8c737363d9fad6ba1c22e20d0995fd70cb3e41bfa7b",
-      "size": 61602,
+      "sha256": "98b598595fc60f2a463609b623d96266e9761278e17c76d8bf7c8ddf34a8ac37",
+      "size": 61796,
       "source": {
         "sha256": "62adfca89b0a1c0164c2cdca59ca210c1d44c3ffc46daf9931cf4942664cb02a",
         "url": "https://ftp.gnu.org/gnu/bc/bc-1.07.1.tar.gz"
@@ -35,7 +35,7 @@
       "advisories": [],
       "arch": "wasm32",
       "archive_name": "bzip2-1.0.8-rev1-wasm32-d6ef41d5.tar.zst",
-      "archive_sha256": "e548b40fd9873952aed4b66222538452af4079d8a345902a6750b59c78c802d5",
+      "archive_sha256": "e93fe9a83614ffd608e8f5e93985a8dd9a7320676853cdc4bc2e089345af86ae",
       "compatibility": {
         "abi_versions": [
           1
@@ -51,8 +51,8 @@
       "name": "bzip2-1.0.8-rev1-wasm32-d6ef41d5.tar.zst",
       "program": "bzip2",
       "revision": 1,
-      "sha256": "e548b40fd9873952aed4b66222538452af4079d8a345902a6750b59c78c802d5",
-      "size": 49960,
+      "sha256": "e93fe9a83614ffd608e8f5e93985a8dd9a7320676853cdc4bc2e089345af86ae",
+      "size": 50139,
       "source": {
         "sha256": "ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269",
         "url": "https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz"
@@ -64,7 +64,7 @@
       "advisories": [],
       "arch": "wasm32",
       "archive_name": "coreutils-9.6-rev1-wasm32-05b14a25.tar.zst",
-      "archive_sha256": "c05850363796a748e8cf443447013945ddb89966208a9abf3ab023abfe6a9d26",
+      "archive_sha256": "7554d46f270d82c3c3a3863f7e79e374c08845c4ca44fffb312670fa384459d3",
       "compatibility": {
         "abi_versions": [
           1
@@ -80,8 +80,8 @@
       "name": "coreutils-9.6-rev1-wasm32-05b14a25.tar.zst",
       "program": "coreutils",
       "revision": 1,
-      "sha256": "c05850363796a748e8cf443447013945ddb89966208a9abf3ab023abfe6a9d26",
-      "size": 767043,
+      "sha256": "7554d46f270d82c3c3a3863f7e79e374c08845c4ca44fffb312670fa384459d3",
+      "size": 767246,
       "source": {
         "sha256": "7a0124327b398fd9eb1a6abde583389821422c744ffa10734b24f557610d3283",
         "url": "https://ftp.gnu.org/gnu/coreutils/coreutils-9.6.tar.xz"
@@ -93,7 +93,7 @@
       "advisories": [],
       "arch": "wasm32",
       "archive_name": "cpython-3.13.3-rev1-wasm32-42568d04.tar.zst",
-      "archive_sha256": "5af363b40b808323f414b197824dcef1272c45e7c7070d9f15324d328601f04b",
+      "archive_sha256": "6f56b6501dd925603fba0de458bb93abd487c4d55626aba12dae432afdb2df2c",
       "compatibility": {
         "abi_versions": [
           1
@@ -109,8 +109,8 @@
       "name": "cpython-3.13.3-rev1-wasm32-42568d04.tar.zst",
       "program": "cpython",
       "revision": 1,
-      "sha256": "5af363b40b808323f414b197824dcef1272c45e7c7070d9f15324d328601f04b",
-      "size": 18710101,
+      "sha256": "6f56b6501dd925603fba0de458bb93abd487c4d55626aba12dae432afdb2df2c",
+      "size": 18710306,
       "source": {
         "sha256": "40f868bcbdeb8149a3149580bb9bfd407b3321cd48f0be631af955ac92c0e041",
         "url": "https://www.python.org/ftp/python/3.13.3/Python-3.13.3.tar.xz"
@@ -122,7 +122,7 @@
       "advisories": [],
       "arch": "wasm32",
       "archive_name": "dash-0.5.12-rev1-wasm32-99361e2d.tar.zst",
-      "archive_sha256": "da34996df9c7ae9072e846467bdc9884da25731383394dfe64704030e38d7c37",
+      "archive_sha256": "88ac5afc15dfc1abf6f7f31cd782c9a7c38b7a5984c22e98ae633b789150f473",
       "compatibility": {
         "abi_versions": [
           1
@@ -138,8 +138,8 @@
       "name": "dash-0.5.12-rev1-wasm32-99361e2d.tar.zst",
       "program": "dash",
       "revision": 1,
-      "sha256": "da34996df9c7ae9072e846467bdc9884da25731383394dfe64704030e38d7c37",
-      "size": 277849,
+      "sha256": "88ac5afc15dfc1abf6f7f31cd782c9a7c38b7a5984c22e98ae633b789150f473",
+      "size": 278046,
       "source": {
         "sha256": "6a474ac46e8b0b32916c4c60df694c82058d3297d8b385b74508030ca4a8f28a",
         "url": "http://gondor.apana.org.au/~herbert/dash/files/dash-0.5.12.tar.gz"
@@ -151,7 +151,7 @@
       "advisories": [],
       "arch": "wasm32",
       "archive_name": "diffutils-3.10-rev1-wasm32-7d1c3df1.tar.zst",
-      "archive_sha256": "f22d05a0028a0ff05302f4873bf76eea7478cd91d930806bd33b1a207dfd4260",
+      "archive_sha256": "d2efb42b4aea60f351583cfa0330ae78f46bc20cffdc2789dd62bcf0101d30d8",
       "compatibility": {
         "abi_versions": [
           1
@@ -167,8 +167,8 @@
       "name": "diffutils-3.10-rev1-wasm32-7d1c3df1.tar.zst",
       "program": "diffutils",
       "revision": 1,
-      "sha256": "f22d05a0028a0ff05302f4873bf76eea7478cd91d930806bd33b1a207dfd4260",
-      "size": 330371,
+      "sha256": "d2efb42b4aea60f351583cfa0330ae78f46bc20cffdc2789dd62bcf0101d30d8",
+      "size": 330546,
       "source": {
         "sha256": "90e5e93cc724e4ebe12ede80df1634063c7a855692685919bfe60b556c9bd09e",
         "url": "https://ftp.gnu.org/gnu/diffutils/diffutils-3.10.tar.xz"
@@ -180,7 +180,7 @@
       "advisories": [],
       "arch": "wasm32",
       "archive_name": "erlang-28.2-rev1-wasm32-47d0bab4.tar.zst",
-      "archive_sha256": "5cbff22e9b37fd20d473ded84d18ca6520782c335842c65c9141eaec5b66fe4c",
+      "archive_sha256": "fea8392271530ae5c6f90fae8e6daa9851801251c6c431b5a503ac82069c08d9",
       "compatibility": {
         "abi_versions": [
           1
@@ -196,8 +196,8 @@
       "name": "erlang-28.2-rev1-wasm32-47d0bab4.tar.zst",
       "program": "erlang",
       "revision": 1,
-      "sha256": "5cbff22e9b37fd20d473ded84d18ca6520782c335842c65c9141eaec5b66fe4c",
-      "size": 2769546,
+      "sha256": "fea8392271530ae5c6f90fae8e6daa9851801251c6c431b5a503ac82069c08d9",
+      "size": 2770440,
       "source": {
         "sha256": "b984f9e02bb61637997a35daa9070ae8f41cea1667676416438c467fda3d141f",
         "url": "https://github.com/erlang/otp/archive/refs/tags/OTP-28.2.tar.gz"
@@ -208,8 +208,37 @@
       "abi_version": null,
       "advisories": [],
       "arch": "wasm32",
+      "archive_name": "erlang-vfs-0.1.0-rev1-wasm32-e3198a0a.tar.zst",
+      "archive_sha256": "b4ef2b80ad22cd4fb03dca4ce02361f32316c6a45786f6a71452ca86d6e015ec",
+      "compatibility": {
+        "abi_versions": [
+          1
+        ],
+        "cache_key_sha": "e3198a0a8bb223303048949a69fe8ed288ccf37174f192a81faf3c8538747162",
+        "target_arch": "wasm32"
+      },
+      "kind": "program",
+      "license": {
+        "spdx": "Apache-2.0",
+        "url": "https://github.com/erlang/otp/blob/maint/LICENSE.txt"
+      },
+      "name": "erlang-vfs-0.1.0-rev1-wasm32-e3198a0a.tar.zst",
+      "program": "erlang-vfs",
+      "revision": 1,
+      "sha256": "b4ef2b80ad22cd4fb03dca4ce02361f32316c6a45786f6a71452ca86d6e015ec",
+      "size": 10964244,
+      "source": {
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "url": "https://github.com/brandonpayton/wasm-posix-kernel"
+      },
+      "upstream_version": "0.1.0"
+    },
+    {
+      "abi_version": null,
+      "advisories": [],
+      "arch": "wasm32",
       "archive_name": "file-5.45-rev1-wasm32-da66d712.tar.zst",
-      "archive_sha256": "8a22f258d5b68c27ef323615188ce5284d2f55a63400d8ead1823a001b90b049",
+      "archive_sha256": "c77489aa14e0b5157bb6ed6b2759c561ed333935cdbbb15627dfadf45f4b85df",
       "compatibility": {
         "abi_versions": [
           1
@@ -225,8 +254,8 @@
       "name": "file-5.45-rev1-wasm32-da66d712.tar.zst",
       "program": "file",
       "revision": 1,
-      "sha256": "8a22f258d5b68c27ef323615188ce5284d2f55a63400d8ead1823a001b90b049",
-      "size": 161277,
+      "sha256": "c77489aa14e0b5157bb6ed6b2759c561ed333935cdbbb15627dfadf45f4b85df",
+      "size": 161469,
       "source": {
         "sha256": "fc97f51029bb0e2c9f4e3bffefdaf678f0e039ee872b9de5c002a6d09c784d82",
         "url": "https://astron.com/pub/file/file-5.45.tar.gz"
@@ -238,7 +267,7 @@
       "advisories": [],
       "arch": "wasm32",
       "archive_name": "findutils-4.10.0-rev1-wasm32-f3a4670d.tar.zst",
-      "archive_sha256": "9ab5a66073bddbd255fc1f6764b88dabed102b6abbc2b3f84a7a9826ff2f9d82",
+      "archive_sha256": "a5d65f01d936c8a8126eeda8f1095ec253b7a9adf88fffa67dc204eef334d076",
       "compatibility": {
         "abi_versions": [
           1
@@ -254,8 +283,8 @@
       "name": "findutils-4.10.0-rev1-wasm32-f3a4670d.tar.zst",
       "program": "findutils",
       "revision": 1,
-      "sha256": "9ab5a66073bddbd255fc1f6764b88dabed102b6abbc2b3f84a7a9826ff2f9d82",
-      "size": 240428,
+      "sha256": "a5d65f01d936c8a8126eeda8f1095ec253b7a9adf88fffa67dc204eef334d076",
+      "size": 240628,
       "source": {
         "sha256": "1387e0b67ff247d2abde998f90dfbf70c1491391a59ddfecb8ae698789f0a4f5",
         "url": "https://ftp.gnu.org/gnu/findutils/findutils-4.10.0.tar.xz"
@@ -267,7 +296,7 @@
       "advisories": [],
       "arch": "wasm32",
       "archive_name": "gawk-5.3.0-rev1-wasm32-4be8c4b8.tar.zst",
-      "archive_sha256": "b4c6c0eb311fd0a620da08f1fe6d96ed1d2241c5ebc085d05545964e9714ea88",
+      "archive_sha256": "e3a252e5ef9e2b4d1e290c226bf8d7fcfe654186771f95cf74ae1f7b2cbe3a39",
       "compatibility": {
         "abi_versions": [
           1
@@ -283,8 +312,8 @@
       "name": "gawk-5.3.0-rev1-wasm32-4be8c4b8.tar.zst",
       "program": "gawk",
       "revision": 1,
-      "sha256": "b4c6c0eb311fd0a620da08f1fe6d96ed1d2241c5ebc085d05545964e9714ea88",
-      "size": 338073,
+      "sha256": "e3a252e5ef9e2b4d1e290c226bf8d7fcfe654186771f95cf74ae1f7b2cbe3a39",
+      "size": 338269,
       "source": {
         "sha256": "ca9c16d3d11d0ff8c69d79dc0b47267e1329a69b39b799895604ed447d3ca90b",
         "url": "https://ftp.gnu.org/gnu/gawk/gawk-5.3.0.tar.xz"
@@ -296,7 +325,7 @@
       "advisories": [],
       "arch": "wasm32",
       "archive_name": "git-2.47.1-rev1-wasm32-f51f40fc.tar.zst",
-      "archive_sha256": "f47090a65a647006b1723a084aeb53734f6ae22719db2f9597e4abfb8f4fd0aa",
+      "archive_sha256": "7b2030c3bfa8a86b9b443d2c5fffbd4f1fbff94106acd287f646af0dad759748",
       "compatibility": {
         "abi_versions": [
           1
@@ -312,8 +341,8 @@
       "name": "git-2.47.1-rev1-wasm32-f51f40fc.tar.zst",
       "program": "git",
       "revision": 1,
-      "sha256": "f47090a65a647006b1723a084aeb53734f6ae22719db2f9597e4abfb8f4fd0aa",
-      "size": 8517496,
+      "sha256": "7b2030c3bfa8a86b9b443d2c5fffbd4f1fbff94106acd287f646af0dad759748",
+      "size": 8517689,
       "source": {
         "sha256": "30654cc6c0142fa68050cc7b0ee6a2a65944288b907821781112efaf24293b23",
         "url": "https://github.com/git/git/archive/refs/tags/v2.47.1.tar.gz"
@@ -325,7 +354,7 @@
       "advisories": [],
       "arch": "wasm32",
       "archive_name": "grep-3.11-rev1-wasm32-61c60920.tar.zst",
-      "archive_sha256": "3a20d1fd590355bca7ea18550ab5f979facc9337f81d1f3c35671eec1c7d48aa",
+      "archive_sha256": "9f2885a5a24168cc306ceb7b41912e1ca11b462b8b37a718a68a2cd16430811f",
       "compatibility": {
         "abi_versions": [
           1
@@ -341,8 +370,8 @@
       "name": "grep-3.11-rev1-wasm32-61c60920.tar.zst",
       "program": "grep",
       "revision": 1,
-      "sha256": "3a20d1fd590355bca7ea18550ab5f979facc9337f81d1f3c35671eec1c7d48aa",
-      "size": 229158,
+      "sha256": "9f2885a5a24168cc306ceb7b41912e1ca11b462b8b37a718a68a2cd16430811f",
+      "size": 229352,
       "source": {
         "sha256": "1db2aedde89d0dea42b16d9528f894c8d15dae4e190b59aecc78f5a951276eab",
         "url": "https://ftp.gnu.org/gnu/grep/grep-3.11.tar.xz"
@@ -354,7 +383,7 @@
       "advisories": [],
       "arch": "wasm32",
       "archive_name": "gzip-1.13-rev1-wasm32-f4afa14a.tar.zst",
-      "archive_sha256": "c652bd8a29955e64147d4e6fc8a4155bf01169b4ab72c843daa08fcadc54b96e",
+      "archive_sha256": "bf77eb8c33f75740e2c44e1af2ae3ef8c757f681247cc5543dbfaedbb5ef400f",
       "compatibility": {
         "abi_versions": [
           1
@@ -370,8 +399,8 @@
       "name": "gzip-1.13-rev1-wasm32-f4afa14a.tar.zst",
       "program": "gzip",
       "revision": 1,
-      "sha256": "c652bd8a29955e64147d4e6fc8a4155bf01169b4ab72c843daa08fcadc54b96e",
-      "size": 86998,
+      "sha256": "bf77eb8c33f75740e2c44e1af2ae3ef8c757f681247cc5543dbfaedbb5ef400f",
+      "size": 87186,
       "source": {
         "sha256": "7454eb6935db17c6655576c2e1b0fabefd38b4d0936e0f87f48cd062ce91a057",
         "url": "https://ftp.gnu.org/gnu/gzip/gzip-1.13.tar.xz"
@@ -382,8 +411,37 @@
       "abi_version": null,
       "advisories": [],
       "arch": "wasm32",
+      "archive_name": "lamp-0.1.0-rev1-wasm32-4ad4dd06.tar.zst",
+      "archive_sha256": "9e295e84b4ab314cb14f74c97b3ec7b4c9cbc3576103b1f08fc751df12d0472c",
+      "compatibility": {
+        "abi_versions": [
+          1
+        ],
+        "cache_key_sha": "4ad4dd0678332aa40361447d4ae71cbc07453aa83b0d9986620bf618885f14ee",
+        "target_arch": "wasm32"
+      },
+      "kind": "program",
+      "license": {
+        "spdx": "GPL-2.0-or-later",
+        "url": "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
+      },
+      "name": "lamp-0.1.0-rev1-wasm32-4ad4dd06.tar.zst",
+      "program": "lamp",
+      "revision": 1,
+      "sha256": "9e295e84b4ab314cb14f74c97b3ec7b4c9cbc3576103b1f08fc751df12d0472c",
+      "size": 29896033,
+      "source": {
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "url": "https://github.com/brandonpayton/wasm-posix-kernel"
+      },
+      "upstream_version": "0.1.0"
+    },
+    {
+      "abi_version": null,
+      "advisories": [],
+      "arch": "wasm32",
       "archive_name": "less-668-rev1-wasm32-bf718386.tar.zst",
-      "archive_sha256": "b7d4c86d6cb937fa84b49737dcb01b734f34ad8d90038e4560199849b086da2c",
+      "archive_sha256": "cb1680995ecc9b61d7df77f30a0b45e0542e1617e91b5b6fbb9eccf353668507",
       "compatibility": {
         "abi_versions": [
           1
@@ -399,8 +457,8 @@
       "name": "less-668-rev1-wasm32-bf718386.tar.zst",
       "program": "less",
       "revision": 1,
-      "sha256": "b7d4c86d6cb937fa84b49737dcb01b734f34ad8d90038e4560199849b086da2c",
-      "size": 151533,
+      "sha256": "cb1680995ecc9b61d7df77f30a0b45e0542e1617e91b5b6fbb9eccf353668507",
+      "size": 151739,
       "source": {
         "sha256": "2819f55564d86d542abbecafd82ff61e819a3eec967faa36cd3e68f1596a44b8",
         "url": "https://www.greenwoodsoftware.com/less/less-668.tar.gz"
@@ -412,7 +470,7 @@
       "advisories": [],
       "arch": "wasm32",
       "archive_name": "libcurl-8.11.1-rev1-wasm32-70dfd33f.tar.zst",
-      "archive_sha256": "3214760b3260882a90df84754ed59707a4aff33ce43330444ee92162350d0ad5",
+      "archive_sha256": "474788a3e58852b984e81a4ec44273282beff92f6b6b2e0bfead49f40541db39",
       "compatibility": {
         "abi_versions": [
           1
@@ -428,8 +486,8 @@
       "name": "libcurl-8.11.1-rev1-wasm32-70dfd33f.tar.zst",
       "program": "libcurl",
       "revision": 1,
-      "sha256": "3214760b3260882a90df84754ed59707a4aff33ce43330444ee92162350d0ad5",
-      "size": 368171,
+      "sha256": "474788a3e58852b984e81a4ec44273282beff92f6b6b2e0bfead49f40541db39",
+      "size": 368172,
       "source": {
         "sha256": "c7ca7db48b0909743eaef34250da02c19bc61d4f1dcedd6603f109409536ab56",
         "url": "https://curl.se/download/curl-8.11.1.tar.xz"
@@ -441,7 +499,7 @@
       "advisories": [],
       "arch": "wasm32",
       "archive_name": "libpng-1.6.43-rev1-wasm32-68d7435e.tar.zst",
-      "archive_sha256": "08f46792758a68bc1d8a45be2c335768fd83768c0578939aa245f6cb95437adf",
+      "archive_sha256": "cd8a5f0026ae4d7760a57b92a1a6c258c91dd97eb66144e8a180a86062ffbec1",
       "compatibility": {
         "abi_versions": [
           1
@@ -457,8 +515,8 @@
       "name": "libpng-1.6.43-rev1-wasm32-68d7435e.tar.zst",
       "program": "libpng",
       "revision": 1,
-      "sha256": "08f46792758a68bc1d8a45be2c335768fd83768c0578939aa245f6cb95437adf",
-      "size": 146206,
+      "sha256": "cd8a5f0026ae4d7760a57b92a1a6c258c91dd97eb66144e8a180a86062ffbec1",
+      "size": 146209,
       "source": {
         "sha256": "6a5ca0652392a2d7c9db2ae5b40210843c0bbc081cbd410825ab00cc59f14a6c",
         "url": "https://download.sourceforge.net/libpng/libpng-1.6.43.tar.xz"
@@ -470,7 +528,7 @@
       "advisories": [],
       "arch": "wasm32",
       "archive_name": "libxml2-2.13.8-rev1-wasm32-e1db116f.tar.zst",
-      "archive_sha256": "58309a5156e2d59db1cfadad510bd3bf2580acd70788974a73424f8132f87a24",
+      "archive_sha256": "2500c7db46f556bbb6051a2112833564248a3db319a868c64b1b590238482c18",
       "compatibility": {
         "abi_versions": [
           1
@@ -486,8 +544,8 @@
       "name": "libxml2-2.13.8-rev1-wasm32-e1db116f.tar.zst",
       "program": "libxml2",
       "revision": 1,
-      "sha256": "58309a5156e2d59db1cfadad510bd3bf2580acd70788974a73424f8132f87a24",
-      "size": 673220,
+      "sha256": "2500c7db46f556bbb6051a2112833564248a3db319a868c64b1b590238482c18",
+      "size": 673219,
       "source": {
         "sha256": "277294cb33119ab71b2bc81f2f445e9bc9435b893ad15bb2cd2b0e859a0ee84a",
         "url": "https://download.gnome.org/sources/libxml2/2.13/libxml2-2.13.8.tar.xz"
@@ -498,8 +556,37 @@
       "abi_version": null,
       "advisories": [],
       "arch": "wasm32",
+      "archive_name": "lsof-0.1.0-rev1-wasm32-ab86f3c0.tar.zst",
+      "archive_sha256": "6b0c7e20125cdc7b10f54bbab336b639af6a27dbf5357fd9ef9fc4cb712cc6dd",
+      "compatibility": {
+        "abi_versions": [
+          1
+        ],
+        "cache_key_sha": "ab86f3c0e85bd4d1826080da2c84a36af2c5e9ee05b8c1c2a6b6fb061845f89c",
+        "target_arch": "wasm32"
+      },
+      "kind": "program",
+      "license": {
+        "spdx": "GPL-2.0-or-later",
+        "url": "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
+      },
+      "name": "lsof-0.1.0-rev1-wasm32-ab86f3c0.tar.zst",
+      "program": "lsof",
+      "revision": 1,
+      "sha256": "6b0c7e20125cdc7b10f54bbab336b639af6a27dbf5357fd9ef9fc4cb712cc6dd",
+      "size": 24545,
+      "source": {
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "url": "https://github.com/brandonpayton/wasm-posix-kernel"
+      },
+      "upstream_version": "0.1.0"
+    },
+    {
+      "abi_version": null,
+      "advisories": [],
+      "arch": "wasm32",
       "archive_name": "m4-1.4.19-rev1-wasm32-8c20b3f5.tar.zst",
-      "archive_sha256": "f1a593a7633c6ab8c30f334cf083d72cb41f5ec651fc99da414a7b70bb19e6d1",
+      "archive_sha256": "dc8ce4a8af44972e303c6f09ee7c529d9c52e94e2351fe9aa19faf1cb0a5d146",
       "compatibility": {
         "abi_versions": [
           1
@@ -515,8 +602,8 @@
       "name": "m4-1.4.19-rev1-wasm32-8c20b3f5.tar.zst",
       "program": "m4",
       "revision": 1,
-      "sha256": "f1a593a7633c6ab8c30f334cf083d72cb41f5ec651fc99da414a7b70bb19e6d1",
-      "size": 315551,
+      "sha256": "dc8ce4a8af44972e303c6f09ee7c529d9c52e94e2351fe9aa19faf1cb0a5d146",
+      "size": 315748,
       "source": {
         "sha256": "63aede5c6d33b6d9b13511cd0be2cac046f2e70fd0a07aa9573a04a82783af96",
         "url": "https://ftp.gnu.org/gnu/m4/m4-1.4.19.tar.xz"
@@ -528,7 +615,7 @@
       "advisories": [],
       "arch": "wasm32",
       "archive_name": "make-4.4.1-rev1-wasm32-87e5f1cd.tar.zst",
-      "archive_sha256": "6dbe9b1ad59245cb923c08a8ba258606187897b19c1934eb6e8af4cd0b4fa79a",
+      "archive_sha256": "13c440449c51c7981e8f33a348ab27f4342480dfcf569e395b461ea65b0f6bd9",
       "compatibility": {
         "abi_versions": [
           1
@@ -544,8 +631,8 @@
       "name": "make-4.4.1-rev1-wasm32-87e5f1cd.tar.zst",
       "program": "make",
       "revision": 1,
-      "sha256": "6dbe9b1ad59245cb923c08a8ba258606187897b19c1934eb6e8af4cd0b4fa79a",
-      "size": 168358,
+      "sha256": "13c440449c51c7981e8f33a348ab27f4342480dfcf569e395b461ea65b0f6bd9",
+      "size": 168553,
       "source": {
         "sha256": "dd16fb1d67bfab79a72f5e8390735c49e3e8e70b4945a15ab1f81ddb78658fb3",
         "url": "https://ftp.gnu.org/gnu/make/make-4.4.1.tar.gz"
@@ -557,7 +644,7 @@
       "advisories": [],
       "arch": "wasm32",
       "archive_name": "mariadb-10.5.28-rev1-wasm32-c0529537.tar.zst",
-      "archive_sha256": "2aae631241a85f050b8228010c4f601b68af22c6c05b69a0a1e304187534b8b2",
+      "archive_sha256": "a305623fd4af9e0eb3220d9c93f374181921a087bc42c0df0279b260a1274644",
       "compatibility": {
         "abi_versions": [
           1
@@ -573,8 +660,8 @@
       "name": "mariadb-10.5.28-rev1-wasm32-c0529537.tar.zst",
       "program": "mariadb",
       "revision": 1,
-      "sha256": "2aae631241a85f050b8228010c4f601b68af22c6c05b69a0a1e304187534b8b2",
-      "size": 4668479,
+      "sha256": "a305623fd4af9e0eb3220d9c93f374181921a087bc42c0df0279b260a1274644",
+      "size": 4668676,
       "source": {
         "sha256": "0b5070208da0116640f20bd085f1136527f998cc23268715bcbf352e7b7f3cc1",
         "url": "https://archive.mariadb.org/mariadb-10.5.28/source/mariadb-10.5.28.tar.gz"
@@ -585,8 +672,37 @@
       "abi_version": null,
       "advisories": [],
       "arch": "wasm32",
+      "archive_name": "mariadb-vfs-0.1.0-rev1-wasm32-e977bf58.tar.zst",
+      "archive_sha256": "9308913f046f08f69b8cc9fb14bc1baa51755e9276d9e31a6aa40d1426cbe284",
+      "compatibility": {
+        "abi_versions": [
+          1
+        ],
+        "cache_key_sha": "e977bf581893bfc01f589c6ef0c793590dc23611d030bced4b13357ce68f7724",
+        "target_arch": "wasm32"
+      },
+      "kind": "program",
+      "license": {
+        "spdx": "GPL-2.0-or-later",
+        "url": "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
+      },
+      "name": "mariadb-vfs-0.1.0-rev1-wasm32-e977bf58.tar.zst",
+      "program": "mariadb-vfs",
+      "revision": 1,
+      "sha256": "9308913f046f08f69b8cc9fb14bc1baa51755e9276d9e31a6aa40d1426cbe284",
+      "size": 4124297,
+      "source": {
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "url": "https://github.com/brandonpayton/wasm-posix-kernel"
+      },
+      "upstream_version": "0.1.0"
+    },
+    {
+      "abi_version": null,
+      "advisories": [],
+      "arch": "wasm32",
       "archive_name": "nano-8.0-rev1-wasm32-b0707e51.tar.zst",
-      "archive_sha256": "68e978c698fe7c3a3767788226cc422572b0a5c01b65625570933e4b96eb7fc2",
+      "archive_sha256": "768585833c31f1de07994c7c1a4507e84bd5a927ff7e500004ec38d9f1174290",
       "compatibility": {
         "abi_versions": [
           1
@@ -602,8 +718,8 @@
       "name": "nano-8.0-rev1-wasm32-b0707e51.tar.zst",
       "program": "nano",
       "revision": 1,
-      "sha256": "68e978c698fe7c3a3767788226cc422572b0a5c01b65625570933e4b96eb7fc2",
-      "size": 274139,
+      "sha256": "768585833c31f1de07994c7c1a4507e84bd5a927ff7e500004ec38d9f1174290",
+      "size": 274341,
       "source": {
         "sha256": "c17f43fc0e37336b33ee50a209c701d5beb808adc2d9f089ca831b40539c9ac4",
         "url": "https://ftp.gnu.org/gnu/nano/nano-8.0.tar.xz"
@@ -615,7 +731,7 @@
       "advisories": [],
       "arch": "wasm32",
       "archive_name": "ncurses-6.5-rev1-wasm32-eb45ee8b.tar.zst",
-      "archive_sha256": "6e63d412e18b9c37e1421f49882ed097e179142c0e36ce27ef7e317b003fe271",
+      "archive_sha256": "11c7d2b3ce01bc54d397dde1a8812f53e27a601397af8bb3a38ddbe31779a2d9",
       "compatibility": {
         "abi_versions": [
           1
@@ -631,8 +747,8 @@
       "name": "ncurses-6.5-rev1-wasm32-eb45ee8b.tar.zst",
       "program": "ncurses",
       "revision": 1,
-      "sha256": "6e63d412e18b9c37e1421f49882ed097e179142c0e36ce27ef7e317b003fe271",
-      "size": 247855,
+      "sha256": "11c7d2b3ce01bc54d397dde1a8812f53e27a601397af8bb3a38ddbe31779a2d9",
+      "size": 247857,
       "source": {
         "sha256": "136d91bc269a9a5785e5f9e980bc76ab57428f604ce3e5a5a90cebc767971cc6",
         "url": "https://ftp.gnu.org/gnu/ncurses/ncurses-6.5.tar.gz"
@@ -643,8 +759,37 @@
       "abi_version": null,
       "advisories": [],
       "arch": "wasm32",
+      "archive_name": "nginx-1.24.0-rev1-wasm32-15d2b585.tar.zst",
+      "archive_sha256": "f83f54f222ffc4c7baa6302d7cfd3064596d0e740ec6fde67aec8d59ce2b58af",
+      "compatibility": {
+        "abi_versions": [
+          1
+        ],
+        "cache_key_sha": "15d2b585a98c4147be16c7349158d2f4a1eb6ee1080025bc86b27f940b37cbc4",
+        "target_arch": "wasm32"
+      },
+      "kind": "program",
+      "license": {
+        "spdx": "BSD-2-Clause",
+        "url": "https://nginx.org/LICENSE"
+      },
+      "name": "nginx-1.24.0-rev1-wasm32-15d2b585.tar.zst",
+      "program": "nginx",
+      "revision": 1,
+      "sha256": "f83f54f222ffc4c7baa6302d7cfd3064596d0e740ec6fde67aec8d59ce2b58af",
+      "size": 813886,
+      "source": {
+        "sha256": "77a2541637b92a621e3ee76776c8b7b40cf6d707e69ba53a940283e30ff2f55d",
+        "url": "https://nginx.org/download/nginx-1.24.0.tar.gz"
+      },
+      "upstream_version": "1.24.0"
+    },
+    {
+      "abi_version": null,
+      "advisories": [],
+      "arch": "wasm32",
       "archive_name": "openssl-3.3.2-rev1-wasm32-6533931a.tar.zst",
-      "archive_sha256": "e33c731fe9de60174819f6b14f9b833573e87988ee6cdb4f6c588ad47c035222",
+      "archive_sha256": "0009ec6c962b44657cedab9ba24c3985ea572d13cd92c1d99aea67fe0e094cb9",
       "compatibility": {
         "abi_versions": [
           1
@@ -660,8 +805,8 @@
       "name": "openssl-3.3.2-rev1-wasm32-6533931a.tar.zst",
       "program": "openssl",
       "revision": 1,
-      "sha256": "e33c731fe9de60174819f6b14f9b833573e87988ee6cdb4f6c588ad47c035222",
-      "size": 2596072,
+      "sha256": "0009ec6c962b44657cedab9ba24c3985ea572d13cd92c1d99aea67fe0e094cb9",
+      "size": 2596074,
       "source": {
         "sha256": "2e8a40b01979afe8be0bbfb3de5dc1c6709fedb46d6c89c10da114ab5fc3d281",
         "url": "https://github.com/openssl/openssl/releases/download/openssl-3.3.2/openssl-3.3.2.tar.gz"
@@ -673,7 +818,7 @@
       "advisories": [],
       "arch": "wasm32",
       "archive_name": "perl-5.40.3-rev1-wasm32-6a60ff91.tar.zst",
-      "archive_sha256": "0a38b1b6d0af680cec6dae7be4c07a43e9b4d1bbe37b2144dc9765387e1906d9",
+      "archive_sha256": "34ecc41525e0f8167260b34f510fdf744b7828c92de5db15d4066ab7713b68a9",
       "compatibility": {
         "abi_versions": [
           1
@@ -689,8 +834,8 @@
       "name": "perl-5.40.3-rev1-wasm32-6a60ff91.tar.zst",
       "program": "perl",
       "revision": 1,
-      "sha256": "0a38b1b6d0af680cec6dae7be4c07a43e9b4d1bbe37b2144dc9765387e1906d9",
-      "size": 901677,
+      "sha256": "34ecc41525e0f8167260b34f510fdf744b7828c92de5db15d4066ab7713b68a9",
+      "size": 901888,
       "source": {
         "sha256": "4c155b4e6160682b38919b55ac319081b898db11857cf18a7d9ffed2648ccaff",
         "url": "https://www.cpan.org/src/5.0/perl-5.40.3.tar.gz"
@@ -701,13 +846,42 @@
       "abi_version": null,
       "advisories": [],
       "arch": "wasm32",
-      "archive_name": "php-8.3.2-rev1-wasm32-9bb54bc3.tar.zst",
-      "archive_sha256": "92f579bc402e8f47355613d88203292e738e7987cf18ad99997bc5afa994624f",
+      "archive_name": "perl-vfs-0.1.0-rev1-wasm32-bb99deba.tar.zst",
+      "archive_sha256": "5acb8ab250754158f4d04b578edc1110c8fd139ff4da5dff78c6e67f9d561c71",
       "compatibility": {
         "abi_versions": [
           1
         ],
-        "cache_key_sha": "9bb54bc3f2ff29d59d52ede33781b0df7958f689293cb0e241a0f93e54bbd319",
+        "cache_key_sha": "bb99debadff69ef9f6bd2a546719bc11f94df0566e8c03211ba781a4caae1126",
+        "target_arch": "wasm32"
+      },
+      "kind": "program",
+      "license": {
+        "spdx": "Artistic-1.0-Perl OR GPL-1.0-or-later",
+        "url": "https://dev.perl.org/licenses/"
+      },
+      "name": "perl-vfs-0.1.0-rev1-wasm32-bb99deba.tar.zst",
+      "program": "perl-vfs",
+      "revision": 1,
+      "sha256": "5acb8ab250754158f4d04b578edc1110c8fd139ff4da5dff78c6e67f9d561c71",
+      "size": 2952170,
+      "source": {
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "url": "https://github.com/brandonpayton/wasm-posix-kernel"
+      },
+      "upstream_version": "0.1.0"
+    },
+    {
+      "abi_version": null,
+      "advisories": [],
+      "arch": "wasm32",
+      "archive_name": "php-8.3.2-rev2-wasm32-1738385f.tar.zst",
+      "archive_sha256": "75bc1d8e7a4af0d6f2f56d6d26b40ca281615e583968ee1e3eaa9aa50c5ead37",
+      "compatibility": {
+        "abi_versions": [
+          1
+        ],
+        "cache_key_sha": "1738385fd4560a9b3b14022f9f5c6ec8b2fd391b80933797c90720481ecefd16",
         "target_arch": "wasm32"
       },
       "kind": "program",
@@ -715,11 +889,11 @@
         "spdx": "PHP-3.01",
         "url": "https://github.com/php/php-src/blob/master/LICENSE"
       },
-      "name": "php-8.3.2-rev1-wasm32-9bb54bc3.tar.zst",
+      "name": "php-8.3.2-rev2-wasm32-1738385f.tar.zst",
       "program": "php",
-      "revision": 1,
-      "sha256": "92f579bc402e8f47355613d88203292e738e7987cf18ad99997bc5afa994624f",
-      "size": 3975000,
+      "revision": 2,
+      "sha256": "75bc1d8e7a4af0d6f2f56d6d26b40ca281615e583968ee1e3eaa9aa50c5ead37",
+      "size": 9057056,
       "source": {
         "sha256": "4ffa3e44afc9c590e28dc0d2d31fc61f0139f8b335f11880a121b9f9b9f0634e",
         "url": "https://www.php.net/distributions/php-8.3.2.tar.xz"
@@ -730,8 +904,66 @@
       "abi_version": null,
       "advisories": [],
       "arch": "wasm32",
+      "archive_name": "python-vfs-0.1.0-rev1-wasm32-114e0014.tar.zst",
+      "archive_sha256": "a8ef97291e06dc34365e9cff8affec0360cf8405a51f3702aaa3d00077598c11",
+      "compatibility": {
+        "abi_versions": [
+          1
+        ],
+        "cache_key_sha": "114e001433998f8660434439d6e37ae1d904468f4ef4350a8a90cd2cfebed43d",
+        "target_arch": "wasm32"
+      },
+      "kind": "program",
+      "license": {
+        "spdx": "Python-2.0",
+        "url": "https://docs.python.org/3/license.html"
+      },
+      "name": "python-vfs-0.1.0-rev1-wasm32-114e0014.tar.zst",
+      "program": "python-vfs",
+      "revision": 1,
+      "sha256": "a8ef97291e06dc34365e9cff8affec0360cf8405a51f3702aaa3d00077598c11",
+      "size": 1865574,
+      "source": {
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "url": "https://github.com/brandonpayton/wasm-posix-kernel"
+      },
+      "upstream_version": "0.1.0"
+    },
+    {
+      "abi_version": null,
+      "advisories": [],
+      "arch": "wasm32",
+      "archive_name": "quickjs-0.12.1-rev1-wasm32-0a9e8eb5.tar.zst",
+      "archive_sha256": "a64ec7d603a2040f3ccfc3cf7f2e19b78664c8153e7045e499d0aa9d5b4b1cf4",
+      "compatibility": {
+        "abi_versions": [
+          1
+        ],
+        "cache_key_sha": "0a9e8eb580c177e6806d2722c702a1615f0b1acce538a09f92007bcb29ddd3d3",
+        "target_arch": "wasm32"
+      },
+      "kind": "program",
+      "license": {
+        "spdx": "MIT",
+        "url": "https://github.com/quickjs-ng/quickjs/blob/master/LICENSE"
+      },
+      "name": "quickjs-0.12.1-rev1-wasm32-0a9e8eb5.tar.zst",
+      "program": "quickjs",
+      "revision": 1,
+      "sha256": "a64ec7d603a2040f3ccfc3cf7f2e19b78664c8153e7045e499d0aa9d5b4b1cf4",
+      "size": 1247809,
+      "source": {
+        "sha256": "c2c54b76ca2f52ffea49658a61c5111449cfe0f94e62510bd3bd7a12e2e18884",
+        "url": "https://github.com/quickjs-ng/quickjs/archive/refs/tags/v0.12.1.tar.gz"
+      },
+      "upstream_version": "0.12.1"
+    },
+    {
+      "abi_version": null,
+      "advisories": [],
+      "arch": "wasm32",
       "archive_name": "redis-7.2.5-rev1-wasm32-1bfdc103.tar.zst",
-      "archive_sha256": "efd66898ceca23bbb009deee01533760602bea45d6d11e931296995804825cba",
+      "archive_sha256": "47aa430f9358a88f06c5ed57940c2e22a8c6ce9b8b16d00637c5ff1e9805921e",
       "compatibility": {
         "abi_versions": [
           1
@@ -747,8 +979,8 @@
       "name": "redis-7.2.5-rev1-wasm32-1bfdc103.tar.zst",
       "program": "redis",
       "revision": 1,
-      "sha256": "efd66898ceca23bbb009deee01533760602bea45d6d11e931296995804825cba",
-      "size": 2398932,
+      "sha256": "47aa430f9358a88f06c5ed57940c2e22a8c6ce9b8b16d00637c5ff1e9805921e",
+      "size": 2399104,
       "source": {
         "sha256": "98a8502a2e902d2a9785ef46a69a5f8d5e24cbf9ea3ae4d845afcfc6778aa783",
         "url": "https://github.com/redis/redis/archive/refs/tags/7.2.5.tar.gz"
@@ -760,7 +992,7 @@
       "advisories": [],
       "arch": "wasm32",
       "archive_name": "ruby-3.3.5-rev1-wasm32-13340822.tar.zst",
-      "archive_sha256": "2388e88030644deaf60e943b9c8eb1736f414d096220a76867b28b05b45c9883",
+      "archive_sha256": "d9418cceaa855f6fadd13825b3f5dbd19984fa552c03d91860233b13ffdd4570",
       "compatibility": {
         "abi_versions": [
           1
@@ -776,8 +1008,8 @@
       "name": "ruby-3.3.5-rev1-wasm32-13340822.tar.zst",
       "program": "ruby",
       "revision": 1,
-      "sha256": "2388e88030644deaf60e943b9c8eb1736f414d096220a76867b28b05b45c9883",
-      "size": 3827484,
+      "sha256": "d9418cceaa855f6fadd13825b3f5dbd19984fa552c03d91860233b13ffdd4570",
+      "size": 3827677,
       "source": {
         "sha256": "3781a3504222c2f26cb4b9eb9c1a12dbf4944d366ce24a9ff8cf99ecbce75196",
         "url": "https://cache.ruby-lang.org/pub/ruby/3.3/ruby-3.3.5.tar.gz"
@@ -789,7 +1021,7 @@
       "advisories": [],
       "arch": "wasm32",
       "archive_name": "sed-4.9-rev1-wasm32-ceea9e97.tar.zst",
-      "archive_sha256": "4137514e5292f65039c421750188a8ce4951d5f47fd7bfb2f197153ce773e587",
+      "archive_sha256": "0ebf46ad602c70a21dcb1dce7c6283508be63b5323aec5c4dea831b922083c04",
       "compatibility": {
         "abi_versions": [
           1
@@ -805,8 +1037,8 @@
       "name": "sed-4.9-rev1-wasm32-ceea9e97.tar.zst",
       "program": "sed",
       "revision": 1,
-      "sha256": "4137514e5292f65039c421750188a8ce4951d5f47fd7bfb2f197153ce773e587",
-      "size": 127278,
+      "sha256": "0ebf46ad602c70a21dcb1dce7c6283508be63b5323aec5c4dea831b922083c04",
+      "size": 127480,
       "source": {
         "sha256": "6e226b732e1cd739464ad6862bd1a1aba42d7982922da7a53519631d24975181",
         "url": "https://ftp.gnu.org/gnu/sed/sed-4.9.tar.xz"
@@ -817,8 +1049,37 @@
       "abi_version": null,
       "advisories": [],
       "arch": "wasm32",
+      "archive_name": "shell-0.1.0-rev1-wasm32-99f8e166.tar.zst",
+      "archive_sha256": "e3c7128ff34792fcbf0bc26adbcfdcb66ef24c66d66b2654df41fe1423f0ba30",
+      "compatibility": {
+        "abi_versions": [
+          1
+        ],
+        "cache_key_sha": "99f8e16686d6eff90362c53aa2994661918e86cc8c929386fd3b07ff1dc4042a",
+        "target_arch": "wasm32"
+      },
+      "kind": "program",
+      "license": {
+        "spdx": "GPL-2.0-or-later",
+        "url": "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
+      },
+      "name": "shell-0.1.0-rev1-wasm32-99f8e166.tar.zst",
+      "program": "shell",
+      "revision": 1,
+      "sha256": "e3c7128ff34792fcbf0bc26adbcfdcb66ef24c66d66b2654df41fe1423f0ba30",
+      "size": 435859,
+      "source": {
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "url": "https://github.com/brandonpayton/wasm-posix-kernel"
+      },
+      "upstream_version": "0.1.0"
+    },
+    {
+      "abi_version": null,
+      "advisories": [],
+      "arch": "wasm32",
       "archive_name": "sqlite-3.49.1-rev1-wasm32-001afa67.tar.zst",
-      "archive_sha256": "74adf01758d95923186f1691a4edc4fddfa55078616f51bf436366c3ea552911",
+      "archive_sha256": "3f752fc246c631957e3028ad51f84b3bfd6421b36322558a880bac59d64295b6",
       "compatibility": {
         "abi_versions": [
           1
@@ -834,7 +1095,7 @@
       "name": "sqlite-3.49.1-rev1-wasm32-001afa67.tar.zst",
       "program": "sqlite",
       "revision": 1,
-      "sha256": "74adf01758d95923186f1691a4edc4fddfa55078616f51bf436366c3ea552911",
+      "sha256": "3f752fc246c631957e3028ad51f84b3bfd6421b36322558a880bac59d64295b6",
       "size": 852712,
       "source": {
         "sha256": "6cebd1d8403fc58c30e93939b246f3e6e58d0765a5cd50546f16c00fd805d2c3",
@@ -847,7 +1108,7 @@
       "advisories": [],
       "arch": "wasm32",
       "archive_name": "tar-1.35-rev1-wasm32-2632a495.tar.zst",
-      "archive_sha256": "611ca121ed27a4e7b234d6a0249f71f3fbc5c02a3db2ca5c575c5b7bb952a3ce",
+      "archive_sha256": "a610e0bc6e9f2f57147855b08a29d24079236f13a7767d4271568e0535531664",
       "compatibility": {
         "abi_versions": [
           1
@@ -863,8 +1124,8 @@
       "name": "tar-1.35-rev1-wasm32-2632a495.tar.zst",
       "program": "tar",
       "revision": 1,
-      "sha256": "611ca121ed27a4e7b234d6a0249f71f3fbc5c02a3db2ca5c575c5b7bb952a3ce",
-      "size": 444124,
+      "sha256": "a610e0bc6e9f2f57147855b08a29d24079236f13a7767d4271568e0535531664",
+      "size": 444324,
       "source": {
         "sha256": "4d62ff37342ec7aed748535323930c7cf94acf71c3591882b26a7ea50f3edc16",
         "url": "https://ftp.gnu.org/gnu/tar/tar-1.35.tar.xz"
@@ -876,7 +1137,7 @@
       "advisories": [],
       "arch": "wasm32",
       "archive_name": "tcl-9.0.1-rev1-wasm32-47d88264.tar.zst",
-      "archive_sha256": "7627f61fe7aa9a3748ba1272eb6e993b8bf06ca9c98dd828afa81f7411fe19a2",
+      "archive_sha256": "987954a8107163eac0af389a41a9c7bbf7c7c9f841bd4b8d684b9eaa13839b04",
       "compatibility": {
         "abi_versions": [
           1
@@ -892,8 +1153,8 @@
       "name": "tcl-9.0.1-rev1-wasm32-47d88264.tar.zst",
       "program": "tcl",
       "revision": 1,
-      "sha256": "7627f61fe7aa9a3748ba1272eb6e993b8bf06ca9c98dd828afa81f7411fe19a2",
-      "size": 5075993,
+      "sha256": "987954a8107163eac0af389a41a9c7bbf7c7c9f841bd4b8d684b9eaa13839b04",
+      "size": 5076182,
       "source": {
         "sha256": "053ce8cdc632a6484f6a1416524fb66b614cd13e77366ad2722bc205d53eff95",
         "url": "https://github.com/tcltk/tcl/archive/refs/tags/core-9-0-1.tar.gz"
@@ -904,8 +1165,37 @@
       "abi_version": null,
       "advisories": [],
       "arch": "wasm32",
+      "archive_name": "texlive-2025-rev1-wasm32-bf8cd446.tar.zst",
+      "archive_sha256": "10bf7290c83b8005f3a63a7af87808522cee52fae845e662cff46b32ccf36b59",
+      "compatibility": {
+        "abi_versions": [
+          1
+        ],
+        "cache_key_sha": "bf8cd44606fd7beb3d42f62ee92e59c3479314b9f7c0093da6519b5628c42ad3",
+        "target_arch": "wasm32"
+      },
+      "kind": "program",
+      "license": {
+        "spdx": "LicenseRef-TeXLive-Various",
+        "url": "https://www.tug.org/texlive/copying.html"
+      },
+      "name": "texlive-2025-rev1-wasm32-bf8cd446.tar.zst",
+      "program": "texlive",
+      "revision": 1,
+      "sha256": "10bf7290c83b8005f3a63a7af87808522cee52fae845e662cff46b32ccf36b59",
+      "size": 990644,
+      "source": {
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "url": "https://ftp.math.utah.edu/pub/tex/historic/systems/texlive/2025/texlive-20250308-source.tar.xz"
+      },
+      "upstream_version": "2025"
+    },
+    {
+      "abi_version": null,
+      "advisories": [],
+      "arch": "wasm32",
       "archive_name": "unzip-6.0-rev1-wasm32-e9be2ee2.tar.zst",
-      "archive_sha256": "4d5f8a679ccff267692839cb125e2f249ed6f8965f587e96bc7baf43394cc852",
+      "archive_sha256": "f13e55a718a1c51960d2bd1c1761a902cd2bb30c7d6145fed6493548ed5f1c3f",
       "compatibility": {
         "abi_versions": [
           1
@@ -921,8 +1211,8 @@
       "name": "unzip-6.0-rev1-wasm32-e9be2ee2.tar.zst",
       "program": "unzip",
       "revision": 1,
-      "sha256": "4d5f8a679ccff267692839cb125e2f249ed6f8965f587e96bc7baf43394cc852",
-      "size": 91881,
+      "sha256": "f13e55a718a1c51960d2bd1c1761a902cd2bb30c7d6145fed6493548ed5f1c3f",
+      "size": 92083,
       "source": {
         "sha256": "036d96991646d0449ed0aa952e4fbe21b476ce994abc276e49d30e686708bd37",
         "url": "http://downloads.sourceforge.net/infozip/unzip60.tar.gz"
@@ -934,7 +1224,7 @@
       "advisories": [],
       "arch": "wasm32",
       "archive_name": "vim-9.1.0900-rev1-wasm32-1bd4548d.tar.zst",
-      "archive_sha256": "c6b1309228e97489468398dac8828af450d3d50d7c985a34681b1ab39fe786dc",
+      "archive_sha256": "2edf1ce79f3275cf35a31eb4380fbebea9e248376722bfb94ad77d0aca4a33db",
       "compatibility": {
         "abi_versions": [
           1
@@ -950,8 +1240,8 @@
       "name": "vim-9.1.0900-rev1-wasm32-1bd4548d.tar.zst",
       "program": "vim",
       "revision": 1,
-      "sha256": "c6b1309228e97489468398dac8828af450d3d50d7c985a34681b1ab39fe786dc",
-      "size": 2848404,
+      "sha256": "2edf1ce79f3275cf35a31eb4380fbebea9e248376722bfb94ad77d0aca4a33db",
+      "size": 2848599,
       "source": {
         "sha256": "30efb714ed82c5d7a1491f3e4aac6487d2c493d33c834d7ef043e6f45176772e",
         "url": "https://github.com/vim/vim/archive/refs/tags/v9.1.0900.tar.gz"
@@ -963,7 +1253,7 @@
       "advisories": [],
       "arch": "wasm32",
       "archive_name": "wget-1.25.0-rev1-wasm32-8ceeef75.tar.zst",
-      "archive_sha256": "5bcf54e8971214981e07ba231fa5e73e5a6707360d8c48106366e3698a7691d3",
+      "archive_sha256": "9f04d36a63d867a6c27c706a06139ec1c2a361a4fbe1f45d39eda9eff7066261",
       "compatibility": {
         "abi_versions": [
           1
@@ -979,8 +1269,8 @@
       "name": "wget-1.25.0-rev1-wasm32-8ceeef75.tar.zst",
       "program": "wget",
       "revision": 1,
-      "sha256": "5bcf54e8971214981e07ba231fa5e73e5a6707360d8c48106366e3698a7691d3",
-      "size": 1411318,
+      "sha256": "9f04d36a63d867a6c27c706a06139ec1c2a361a4fbe1f45d39eda9eff7066261",
+      "size": 1411512,
       "source": {
         "sha256": "766e48423e79359ea31e41db9e5c289675947a7fcf2efdcedb726ac9d0da3784",
         "url": "https://ftp.gnu.org/gnu/wget/wget-1.25.0.tar.gz"
@@ -991,8 +1281,37 @@
       "abi_version": null,
       "advisories": [],
       "arch": "wasm32",
+      "archive_name": "wordpress-6.8-rev1-wasm32-21620e7d.tar.zst",
+      "archive_sha256": "8e692216cd9f2162209c61ca49c6bae94210f5d59df5bb85e0cb14e79226ca14",
+      "compatibility": {
+        "abi_versions": [
+          1
+        ],
+        "cache_key_sha": "21620e7d3fe1db3366186c8bf96a63845c25ac1a5d1e282c29710a8827b82b06",
+        "target_arch": "wasm32"
+      },
+      "kind": "program",
+      "license": {
+        "spdx": "GPL-2.0-or-later",
+        "url": "https://wordpress.org/about/gpl/"
+      },
+      "name": "wordpress-6.8-rev1-wasm32-21620e7d.tar.zst",
+      "program": "wordpress",
+      "revision": 1,
+      "sha256": "8e692216cd9f2162209c61ca49c6bae94210f5d59df5bb85e0cb14e79226ca14",
+      "size": 26132701,
+      "source": {
+        "sha256": "f7dbedc423ddb3f2f3e98e9140f1720bfd6d4a8f4873c85da2e62f6a078de10a",
+        "url": "https://wordpress.org/wordpress-6.8.tar.gz"
+      },
+      "upstream_version": "6.8"
+    },
+    {
+      "abi_version": null,
+      "advisories": [],
+      "arch": "wasm32",
       "archive_name": "xz-5.6.2-rev1-wasm32-e61040fb.tar.zst",
-      "archive_sha256": "49e2077f2243c33702716251b249fa3742535192a0ac5a22aba5525a05081292",
+      "archive_sha256": "31525182fa72ccd2721d809a5648dc518032f8a746edadee1bd06968d29de497",
       "compatibility": {
         "abi_versions": [
           1
@@ -1008,8 +1327,8 @@
       "name": "xz-5.6.2-rev1-wasm32-e61040fb.tar.zst",
       "program": "xz",
       "revision": 1,
-      "sha256": "49e2077f2243c33702716251b249fa3742535192a0ac5a22aba5525a05081292",
-      "size": 194174,
+      "sha256": "31525182fa72ccd2721d809a5648dc518032f8a746edadee1bd06968d29de497",
+      "size": 194355,
       "source": {
         "sha256": "a9db3bb3d64e248a0fae963f8fb6ba851a26ba1822e504dc0efd18a80c626caf",
         "url": "https://tukaani.org/xz/xz-5.6.2.tar.xz"
@@ -1021,7 +1340,7 @@
       "advisories": [],
       "arch": "wasm32",
       "archive_name": "zip-3.0-rev1-wasm32-da7836e6.tar.zst",
-      "archive_sha256": "4cc34f90e5c165183faddbb2fcc36074f97117bc8ac5bbc3f21447ac093a3eb2",
+      "archive_sha256": "2ef3b19623dbda0a5e6c0ec95faeec244c07b46a3776f0013cf89068ed871c33",
       "compatibility": {
         "abi_versions": [
           1
@@ -1037,8 +1356,8 @@
       "name": "zip-3.0-rev1-wasm32-da7836e6.tar.zst",
       "program": "zip",
       "revision": 1,
-      "sha256": "4cc34f90e5c165183faddbb2fcc36074f97117bc8ac5bbc3f21447ac093a3eb2",
-      "size": 107833,
+      "sha256": "2ef3b19623dbda0a5e6c0ec95faeec244c07b46a3776f0013cf89068ed871c33",
+      "size": 108036,
       "source": {
         "sha256": "f0e8bb1f9b7eb0b01285495a2699df3a4b766784c1765a8f1aeedf63c0806369",
         "url": "http://downloads.sourceforge.net/infozip/zip30.tar.gz"
@@ -1050,7 +1369,7 @@
       "advisories": [],
       "arch": "wasm32",
       "archive_name": "zlib-1.3.1-rev1-wasm32-46f48b87.tar.zst",
-      "archive_sha256": "29e171758cfe873d1604d60f56aebc0d30994770e91517bd2fd35b7cbc98183c",
+      "archive_sha256": "ec24a0f676589cb64043be20281ce5efccf073c942802be94ba2ce56348d8c08",
       "compatibility": {
         "abi_versions": [
           1
@@ -1066,7 +1385,7 @@
       "name": "zlib-1.3.1-rev1-wasm32-46f48b87.tar.zst",
       "program": "zlib",
       "revision": 1,
-      "sha256": "29e171758cfe873d1604d60f56aebc0d30994770e91517bd2fd35b7cbc98183c",
+      "sha256": "ec24a0f676589cb64043be20281ce5efccf073c942802be94ba2ce56348d8c08",
       "size": 76030,
       "source": {
         "sha256": "9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23",
@@ -1079,7 +1398,7 @@
       "advisories": [],
       "arch": "wasm32",
       "archive_name": "zstd-1.5.6-rev1-wasm32-e9c178d8.tar.zst",
-      "archive_sha256": "556f4c68a31f3f5aee7979f88464b7a3d97e76711374eb234c007360c23956c9",
+      "archive_sha256": "d0eb9790ae570d63c50b6d46f805f30c6cd4c7cb9024421e5dfb0961949818f6",
       "compatibility": {
         "abi_versions": [
           1
@@ -1095,8 +1414,8 @@
       "name": "zstd-1.5.6-rev1-wasm32-e9c178d8.tar.zst",
       "program": "zstd",
       "revision": 1,
-      "sha256": "556f4c68a31f3f5aee7979f88464b7a3d97e76711374eb234c007360c23956c9",
-      "size": 194428,
+      "sha256": "d0eb9790ae570d63c50b6d46f805f30c6cd4c7cb9024421e5dfb0961949818f6",
+      "size": 194616,
       "source": {
         "sha256": "30f35f71c1203369dc979ecde0400ffea93c27391bfd2ac5a9715d2173d92ff7",
         "url": "https://github.com/facebook/zstd/archive/refs/tags/v1.5.6.tar.gz"
@@ -1104,7 +1423,7 @@
       "upstream_version": "1.5.6"
     }
   ],
-  "generated_at": "2026-04-27T14:31:00Z",
+  "generated_at": "2026-04-27T19:01:22Z",
   "generator": "cargo xtask build-manifest 0.1.0",
   "release_tag": "binaries-abi-v1"
 }

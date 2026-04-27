@@ -4,6 +4,15 @@ version = "0.1.0"
 revision = 1
 depends_on = []
 
+# Composite VFS image for the browser shell demo: dash binary,
+# coreutils/grep/sed symlinks, /etc system configs, magic database,
+# lazy-archive reference for vim. Built by
+# examples/browser/scripts/build-shell-vfs-image.ts. The .vfs file is
+# wrapped (not double-compressed) inside the V2 .tar.zst archive at
+# stage_release time.
+#
+# Build prerequisites: dash + coreutils + grep + sed + vim must be in
+# local-binaries/programs/ (i.e. previously built or fetched).
 [source]
 url = "https://github.com/brandonpayton/wasm-posix-kernel"
 sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
@@ -12,6 +21,12 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 spdx = "GPL-2.0-or-later"
 url = "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
 
+[build]
+script = "build-shell.sh"
+
 [[outputs]]
 name = "shell"
-wasm = "shell.vfs.zst"
+wasm = "shell.vfs"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/shell-0.1.0-rev1-wasm32-99f8e166.tar.zst"
+archive_sha256 = "e3c7128ff34792fcbf0bc26adbcfdcb66ef24c66d66b2654df41fe1423f0ba30"

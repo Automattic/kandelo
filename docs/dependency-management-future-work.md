@@ -10,6 +10,48 @@ None is on a committed schedule — pick up when the use case arrives.
 
 ## Schema / artifact
 
+### Lazy-archive VFS support for `.tar.zst`
+
+V2 ships archives as `.tar.zst` uniformly.  That works for the
+resolver path (xtask decompresses to disk on install), but it
+**doesn't work for browser-demo lazy archives**.
+
+Today `host/src/vfs/zip.ts` registers `vim.zip` as a lazy archive in
+`shell.vfs` with mount prefix `/usr/`: the ZIP's central directory is
+read up front, then individual entries are decompressed on demand
+when the user touches `/usr/bin/vim` or `/usr/share/vim/vim91/...`.
+The pattern only works for `.zip` because per-entry deflate gives
+random access; `.tar.zst` is a monolithic compressed stream with no
+per-entry seek.
+
+**Today's workaround** (acceptable for now): the browser demo repacks
+a separate `vim.zip` via `examples/browser/scripts/build-vim-zip.sh`
+that includes vim.wasm + the runtime tree. The V2 release ships
+`vim-9.1.0900-...tar.zst` containing only `vim.wasm`. Two parallel
+formats coexist; nothing in the V2 release is consumed directly by
+the lazy-mount VFS.
+
+**Future work — two options:**
+
+1. **`.tar.zst` lazy-archive reader.** Decompress the whole tar.zst
+   once on first access, hold the uncompressed image in memory or
+   cache it on disk under `binaries/objects/<sha>.tar` (fetch-binaries
+   already does this for `.zip`). Then index the tar's entry headers
+   for "lazy" reads.  Net cost: full decompression latency on first
+   touch (vs. ZIP's per-entry latency), but consistent format across
+   the whole release.
+
+2. **Mixed formats in the release.** Extend `xtask::archive_stage`
+   to take an `archive_format` per manifest (default `.tar.zst`,
+   programs that need lazy-mount specify `.zip`).  `install_release`
+   decompressors handle both. Vim ships as `.zip` directly; demos
+   skip the repack step.  Schema doesn't need a new field — the
+   filename extension is the format hint.
+
+Trigger: when a real consumer wants to fetch a published archive +
+lazy-mount its runtime tree without an intermediate repack step.
+Most likely vim or texlive (huge runtime/font trees).
+
 ### Multi-arch `[binary]` blocks
 
 V2's `[binary]` block is single-URL.  A consumer's `deps.toml` can

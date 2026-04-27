@@ -48,7 +48,7 @@ const port = parseInt(process.argv[2] || "8080", 10);
 // Validate prerequisites
 for (const [name, path, hint] of [
   ["mariadbd", mysqldPath, "bash examples/libs/mariadb/build-mariadb.sh"],
-  ["php-fpm.wasm", phpFpmWasmPath, "bash examples/nginx/build-php-fpm.sh"],
+  ["php-fpm.wasm", phpFpmWasmPath, "bash examples/libs/php/build-php.sh"],
   ["nginx.wasm", nginxWasmPath, "bash examples/nginx/build.sh"],
 ] as const) {
   if (!existsSync(path)) {

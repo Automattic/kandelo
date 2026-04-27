@@ -17,4 +17,4 @@ name = "coreutils"
 wasm = "coreutils.wasm"
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/coreutils-9.6-rev1-wasm32-05b14a25.tar.zst"
-archive_sha256 = "c05850363796a748e8cf443447013945ddb89966208a9abf3ab023abfe6a9d26"
+archive_sha256 = "7554d46f270d82c3c3a3863f7e79e374c08845c4ca44fffb312670fa384459d3"

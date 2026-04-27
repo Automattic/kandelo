@@ -1,7 +1,7 @@
 kind = "program"
 name = "php"
 version = "8.3.2"
-revision = 1
+revision = 2
 depends_on = ["zlib@1.3.1", "openssl@3.3.2", "sqlite@3.49.1", "libxml2@2.13.8"]
 
 [source]
@@ -16,12 +16,16 @@ url = "https://github.com/php/php-src/blob/master/LICENSE"
 name = "php"
 wasm = "php.wasm"
 
-# Note: php-fpm.wasm is built by examples/nginx/build-php-fpm.sh, which
-# is a separate build with its own source tree (php-fpm-src/) and
-# sysroot-copy dance for its deps. Folding it into php's main build is
-# nontrivial. For the first V2 release, php ships CLI-only; php-fpm
-# can be added in a follow-up either as its own kind=program manifest
-# or as a second [[outputs]] entry once the builds are unified.
+# php-fpm shipped as a second output. The CLI + FPM builds were
+# previously two parallel scripts (this dir's build-php.sh + the
+# now-removed examples/nginx/build-php-fpm.sh) using two separate
+# php-src checkouts and a sysroot-copy dance. Build-php.sh now does
+# both from one source tree: --enable-cli + --enable-fpm produce
+# sapi/cli/php and sapi/fpm/php-fpm; FPM gets asyncify-onlylist on
+# top so its worker fork() path resumes correctly.
+[[outputs]]
+name = "php-fpm"
+wasm = "php-fpm.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/php-8.3.2-rev1-wasm32-9bb54bc3.tar.zst"
-archive_sha256 = "92f579bc402e8f47355613d88203292e738e7987cf18ad99997bc5afa994624f"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/php-8.3.2-rev2-wasm32-1738385f.tar.zst"
+archive_sha256 = "75bc1d8e7a4af0d6f2f56d6d26b40ca281615e583968ee1e3eaa9aa50c5ead37"

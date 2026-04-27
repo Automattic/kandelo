@@ -16,7 +16,7 @@
  *   1. nginx binary:   examples/nginx/nginx.wasm
  *      (build with: bash examples/nginx/build.sh)
  *   2. PHP-FPM binary: examples/nginx/php-fpm.wasm
- *      (build with: bash examples/nginx/build-php-fpm.sh)
+ *      (build with: bash examples/libs/php/build-php.sh)
  *   3. WordPress files: examples/wordpress/wordpress/
  *      (download with: bash examples/wordpress/setup.sh)
  */
@@ -41,7 +41,7 @@ const port = parseInt(process.argv[2] || "8080", 10);
 // Validate prerequisites
 for (const [name, path, hint] of [
   ["nginx.wasm", nginxWasmPath, "bash examples/nginx/build.sh"],
-  ["php-fpm.wasm", phpFpmWasmPath, "bash examples/nginx/build-php-fpm.sh"],
+  ["php-fpm.wasm", phpFpmWasmPath, "bash examples/libs/php/build-php.sh"],
 ] as const) {
   if (!existsSync(path)) {
     console.error(`Error: ${name} not found. Run: ${hint}`);

@@ -74,19 +74,65 @@ if [ ! -x "$HOST_BUILD_DIR/texk/web2c/pdftex" ]; then
     mkdir -p "$HOST_BUILD_DIR"
     cd "$HOST_BUILD_DIR"
 
+    # We only want pdftex. TexLive's web2c builds many other engines
+    # by default (LuaTeX, XeTeX, MetaPost, Aleph, etc.) that pull in
+    # heavy deps (LuaJIT, ICU, HarfBuzz). Each engine has its own
+    # disable flag in web2c's configure; turning off the lot keeps the
+    # build to xpdf + pdftex + their direct deps.
     "$SRC_DIR/configure" \
         --disable-all-pkgs \
+        --enable-web2c \
         --enable-pdftex \
+        --disable-luatex \
+        --disable-luajittex \
+        --disable-luahbtex \
+        --disable-luajithbtex \
+        --disable-xetex \
+        --disable-aleph \
+        --disable-euptex \
+        --disable-hitex \
+        --disable-mp \
+        --disable-mflua \
+        --disable-mfluajit \
         --disable-synctex \
         --without-x \
         --disable-shared \
         --enable-static
 
-    # --disable-all-pkgs prevents top-level make from recursing into
-    # texk/web2c, so build targets explicitly in that subdir.
-    # otangle is needed by cross-compile configure even though we don't
-    # build Omega engines — web2c/configure unconditionally requires it.
-    make -C texk/web2c pdftex otangle -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
+    # TexLive's subdirs are configured *at make time* via
+    # `am/recurse.am`'s `recurse` target — `./configure` alone leaves
+    # texk/web2c/ as a non-existent subdir.
+    #
+    # A naive `make all` at the top level would compile huge unused
+    # libs (ICU, HarfBuzz, ...) before getting to texk/web2c. Instead,
+    # build the chain explicitly: kpathsea + ptexenc (texk's TeX
+    # libs), then run texk's recurse to create + build texk/web2c
+    # (which makes pdftex; we add otangle since the cross-compile
+    # configure unconditionally requires it even with Omega disabled).
+    NPROC="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
+    # TexLive's auto-recurse mechanism creates and builds its
+    # sub-subdirs at make time, NOT at configure time. The build is
+    # split across three steps:
+    #
+    # 1. `make all-local` at the top level: builds doc, texk/kpathsea,
+    #    texk/ptexenc (which are top-level "TeX-specific lib" subdirs)
+    #    AND fires the top-level recurse target which configures the
+    #    immediate CONF_SUBDIRS (auxdir/auxsub, libs, utils, texk).
+    # 2. `make -C libs recurse` configures libs's sub-subdirs (xpdf,
+    #    zlib, etc.). pdftex needs libs/xpdf for its PDF parser; the
+    #    --disable-all-pkgs --enable-pdftex combo keeps the other
+    #    sub-subdirs (icu, harfbuzz, ...) skipped.
+    # 3. `make -C texk` triggers texk's `all-local: recurse` which
+    #    configures + builds texk/web2c (the only texk sub-subdir
+    #    enabled by --enable-pdftex).
+    # 4. Finally `make -C texk/web2c pdftex otangle` ensures otangle
+    #    is built (the cross-compile configure unconditionally
+    #    requires it even with Omega engines disabled).
+    make -j"$NPROC" all-local
+    make -C libs recurse
+    make -C libs/xpdf -j"$NPROC"
+    make -C texk -j"$NPROC"
+    make -C texk/web2c -j"$NPROC" pdftex otangle
     cd "$REPO_ROOT"
 fi
 
