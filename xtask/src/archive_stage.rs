@@ -65,6 +65,24 @@ pub fn stage_archive_with_options(
 
     let manifest_text = build_archive_manifest_text(target, arch, abi_version, opts)?;
 
+    // Pre-flight: enumerate cache_dir BEFORE touching any tmp file so
+    // empty-cache rejection unwinds cleanly (no orphan tmp on disk).
+    // A zero-output kind=library / kind=program build is always a bug —
+    // fail-loud at the producer rather than ship an archive that
+    // validates structurally but doesn't deliver any artifacts.
+    let mut files: Vec<PathBuf> = Vec::new();
+    collect_files(cache_dir, &mut files)?;
+    if files.is_empty() {
+        return Err(format!(
+            "archive_stage: cache_dir {} contains no files — was the build script's [outputs] satisfied?",
+            cache_dir.display()
+        ));
+    }
+    // Deterministic ordering so two runs with identical cache_dir
+    // contents produce byte-identical tar streams (modulo zstd's
+    // internal nondeterminism, which kicks in at the encoder).
+    files.sort();
+
     // Build the tar+zstd in memory; write atomically last.
     let mut tar_bytes: Vec<u8> = Vec::new();
     {
@@ -79,12 +97,6 @@ pub fn stage_archive_with_options(
             .map_err(|e| format!("tar append manifest.toml: {e}"))?;
 
         // 2. artifacts/<every-file-in-cache-dir>.
-        let mut files: Vec<PathBuf> = Vec::new();
-        collect_files(cache_dir, &mut files)?;
-        // Deterministic ordering so two runs with identical cache_dir
-        // contents produce byte-identical tar streams (modulo zstd's
-        // internal nondeterminism, which kicks in at the encoder).
-        files.sort();
         for src in &files {
             let rel = src
                 .strip_prefix(cache_dir)
@@ -164,6 +176,11 @@ fn build_archive_manifest_text(
     if !text.ends_with('\n') {
         text.push('\n');
     }
+    // Source deps.toml is verified by parse() to have no [compatibility]
+    // block; appending the new block at the end is safe as long as the
+    // source ends without an open trailing table. The parse_archived
+    // round-trip below catches any structural breakage (malformed source
+    // TOML, pre-existing [compatibility], invalid sha) before we ship.
     text.push_str(&format!(
         "\n[compatibility]\ntarget_arch = \"{}\"\nabi_versions = [{}]\n\
          cache_key_sha = \"{}\"\nbuild_timestamp = \"{}\"\nbuild_host = \"{}\"\n",
@@ -384,6 +401,89 @@ headers = ["include/zlib.h"]
             Some(opts.build_timestamp.as_str())
         );
         assert_eq!(c.build_host.as_deref(), Some(opts.build_host.as_str()));
+    }
+
+    #[test]
+    fn produces_byte_identical_archive_on_repeat_invocation() {
+        // Determinism is load-bearing for republish: a re-run that
+        // perturbs archive_sha256 would force every consumer to refetch
+        // identical bytes under a different name. Tar headers zero
+        // mtime/uid/gid, files are sorted, zstd level 0 is deterministic
+        // — verify the property end-to-end.
+        let dir = tempdir("e2-determinism");
+        let registry = dir.join("registry/zlib");
+        fs::create_dir_all(&registry).unwrap();
+        let toml_path = registry.join("deps.toml");
+        fs::write(&toml_path, library_manifest_text()).unwrap();
+        let m = DepsManifest::load(&toml_path).unwrap();
+
+        let cache_dir = dir.join("cache_entry");
+        fs::create_dir_all(cache_dir.join("lib")).unwrap();
+        fs::create_dir_all(cache_dir.join("include")).unwrap();
+        fs::write(cache_dir.join("lib/libZ.a"), b"\x00\x01\x02").unwrap();
+        fs::write(cache_dir.join("include/zlib.h"), b"#ifndef ZLIB_H\n").unwrap();
+
+        let opts = StageOptions {
+            cache_key_sha: "1".repeat(64),
+            build_timestamp: "2026-04-26T00:00:00Z".to_string(),
+            build_host: "test-host".to_string(),
+        };
+
+        let a1 = dir.join("a1.tar.zst");
+        let a2 = dir.join("a2.tar.zst");
+        stage_archive_with_options(&m, TargetArch::Wasm32, 4, &cache_dir, &a1, &opts).unwrap();
+        stage_archive_with_options(&m, TargetArch::Wasm32, 4, &cache_dir, &a2, &opts).unwrap();
+
+        let bytes_a = fs::read(&a1).unwrap();
+        let bytes_b = fs::read(&a2).unwrap();
+        assert_eq!(
+            bytes_a, bytes_b,
+            "stage_archive_with_options must be byte-deterministic for the same inputs \
+             (load-bearing for republish — a re-run that perturbs archive_sha256 would \
+             force every consumer to refetch identical bytes under a different name)"
+        );
+    }
+
+    #[test]
+    fn rejects_empty_cache_dir() {
+        // A zero-output kind=library / kind=program build is always a
+        // build-script bug. Defense in depth: the producer rejects
+        // rather than ship a manifest-only archive that validates but
+        // doesn't deliver any artifacts.
+        let dir = tempdir("e2-empty-cache");
+        let registry = dir.join("registry/zlib");
+        fs::create_dir_all(&registry).unwrap();
+        let toml_path = registry.join("deps.toml");
+        fs::write(&toml_path, library_manifest_text()).unwrap();
+        let m = DepsManifest::load(&toml_path).unwrap();
+
+        let empty_cache = dir.join("empty_cache");
+        fs::create_dir_all(&empty_cache).unwrap();
+        // No files inside.
+
+        let archive = dir.join("a.tar.zst");
+        let opts = StageOptions {
+            cache_key_sha: "0".repeat(64),
+            build_timestamp: "2026-04-26T00:00:00Z".to_string(),
+            build_host: "test-host".to_string(),
+        };
+        let err = stage_archive_with_options(
+            &m,
+            TargetArch::Wasm32,
+            4,
+            &empty_cache,
+            &archive,
+            &opts,
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("contains no files") || err.contains("[outputs]"),
+            "got: {err}"
+        );
+        assert!(
+            !archive.exists(),
+            "no archive should be produced on empty-cache rejection"
+        );
     }
 
     #[test]
