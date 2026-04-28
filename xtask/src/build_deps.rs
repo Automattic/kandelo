@@ -743,6 +743,25 @@ fn build_into_cache(
     let status = {
         let mut cmd = Command::new("bash");
         cmd.arg(&script);
+        // Worktree-local SDK invocation. Prepend `<repo>/sdk/bin` to PATH
+        // so build scripts that call `wasm32posix-cc` (and friends)
+        // resolve to THIS worktree's SDK source — not whatever a global
+        // `npm link` last pointed at. Without this, a sibling worktree's
+        // SDK + sysroot can leak into the build, producing binaries with
+        // a foreign ABI. The shape of `<repo>/sdk/bin/` is committed
+        // symlinks pointing at `_wasm-posix-dispatch`; see
+        // `docs/package-management.md` "SDK toolchain invocation".
+        let sdk_bin = crate::repo_root().join("sdk").join("bin");
+        let path_var = match std::env::var_os("PATH") {
+            Some(existing) => {
+                let mut p = std::ffi::OsString::from(&sdk_bin);
+                p.push(":");
+                p.push(existing);
+                p
+            }
+            None => std::ffi::OsString::from(&sdk_bin),
+        };
+        cmd.env("PATH", path_var);
         cmd.env("WASM_POSIX_DEP_OUT_DIR", &tmp);
         cmd.env("WASM_POSIX_DEP_NAME", &target.name);
         cmd.env("WASM_POSIX_DEP_VERSION", &target.version);
