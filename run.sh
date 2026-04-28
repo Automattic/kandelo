@@ -497,54 +497,37 @@ build_vim_zip() {
         return
     fi
 
-    # vim.zip = vim.wasm + minimal runtime tree (~500KB of syntax/
-    # ftplugin/etc. selected by bundle-runtime.sh). The shell demo
-    # registers it as a lazy archive so first `vim` exec fetches and
-    # unpacks the whole thing. It's intentionally NOT shipped in the
-    # binaries-abi-v6 release archive set — it's a small browser-only
-    # asset built locally and cached in local-binaries/programs/wasm32/
-    # via install_local_binary.
-
-    # Materialize vim.wasm into the source tree if only the prebuilt
-    # exists. build-vim-zip.sh wants `examples/libs/vim/bin/vim.wasm`
-    # specifically.
-    local vim_bin="$REPO_ROOT/examples/libs/vim/bin/vim.wasm"
-    if [ ! -f "$vim_bin" ]; then
-        if has_resolvable programs/vim.wasm; then
-            mkdir -p "$REPO_ROOT/examples/libs/vim/bin"
-            local resolved
-            resolved="$("$REPO_ROOT/scripts/resolve-binary.sh" programs/vim.wasm)"
-            cp "$resolved" "$vim_bin"
-        else
-            warn "vim.wasm not available — run: bash examples/libs/vim/build-vim.sh"
-            return
-        fi
+    # vim.zip = vim.wasm + minimal runtime tree, packaged for the
+    # browser shell demo's lazy-archive fetch. Vim's release archive
+    # ships both pieces (build-vim.sh stages runtime/ alongside
+    # vim.wasm into the resolver scratch), so this builder just locates
+    # the cache canonical dir and rezips. No upstream source download.
+    local vim_dir
+    vim_dir="$(cargo run -p xtask --target aarch64-apple-darwin --quiet -- \
+        build-deps resolve vim --arch wasm32 2>/dev/null)" || {
+        warn "vim package could not be resolved — run: ./run.sh build vim"
+        return
+    }
+    if [ ! -f "$vim_dir/vim.wasm" ] || [ ! -d "$vim_dir/runtime" ]; then
+        warn "vim cache at $vim_dir is missing vim.wasm or runtime/ — re-fetch the release"
+        return
     fi
 
-    # Materialize the runtime tree. Comes from a vim source checkout.
-    # If neither the bundled runtime nor a vim-src tree is available,
-    # fetch the upstream tarball — needed only for ~500KB of script
-    # files, no compilation.
-    local runtime_dir="$REPO_ROOT/examples/libs/vim/runtime"
-    if [ ! -d "$runtime_dir" ]; then
-        if [ ! -d "$REPO_ROOT/examples/libs/vim/vim-src/runtime" ]; then
-            step "Fetching Vim source for runtime"
-            local vim_ver="9.1.0900"
-            local tarball="$REPO_ROOT/examples/libs/vim/vim-${vim_ver}.tar.gz"
-            curl -sSL "https://github.com/vim/vim/archive/refs/tags/v${vim_ver}.tar.gz" \
-                 -o "$tarball"
-            tar xzf "$tarball" -C "$REPO_ROOT/examples/libs/vim"
-            mv "$REPO_ROOT/examples/libs/vim/vim-${vim_ver}" \
-               "$REPO_ROOT/examples/libs/vim/vim-src"
-            rm -f "$tarball"
-        fi
-        step "Bundling Vim runtime"
-        bash "$REPO_ROOT/examples/libs/vim/bundle-runtime.sh"
-    fi
-
-    step "Building vim.zip (binary + runtime)"
-    bash "$REPO_ROOT/examples/browser/scripts/build-vim-zip.sh"
-    info "vim.zip built"
+    step "Packaging vim.zip from cached vim package"
+    local stage out
+    stage="$(mktemp -d)"
+    out="$REPO_ROOT/examples/browser/public/vim.zip"
+    mkdir -p "$stage/bin" "$stage/share/vim/vim91" "$(dirname "$out")"
+    cp "$vim_dir/vim.wasm" "$stage/bin/vim"
+    chmod 755 "$stage/bin/vim"
+    rsync -a "$vim_dir/runtime/" "$stage/share/vim/vim91/"
+    rm -f "$out"
+    (cd "$stage" && zip -r -q "$out" .)
+    rm -rf "$stage"
+    # shellcheck source=scripts/install-local-binary.sh
+    source "$REPO_ROOT/scripts/install-local-binary.sh"
+    install_local_binary vim "$out"
+    info "vim.zip built ($(du -h "$out" | cut -f1))"
 }
 
 build_nethack_zip() {

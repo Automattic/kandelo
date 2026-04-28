@@ -236,12 +236,25 @@ echo ""
 echo "==> vim built successfully!"
 echo "Binary: $BIN_DIR/vim.wasm"
 
-# Install into local-binaries/ so the resolver picks the freshly-built
-# binary over the fetched release. Note: vim's runtime tree
-# (examples/libs/vim/runtime/) is NOT installed into the the archives
-# in this revision — without it vim launches but lacks syntax/ftplugin
-# data. Bundling the runtime is a follow-up (the [[outputs]] schema
-# only carries .wasm files today; runtime trees need a parallel
-# data-tree mechanism — tracked in package-management-future-work.md).
+# Bundle the minimal runtime (~7MB of syntax/ftplugin/etc.) and ship
+# it alongside vim.wasm in the release archive. archive_stage packs
+# every file under WASM_POSIX_DEP_OUT_DIR, so writing runtime/ into
+# the resolver scratch is enough — the resulting tar.zst contains
+# vim.wasm + runtime/* and is self-sufficient (consumers don't need
+# to re-fetch upstream source to assemble vim.zip).
+echo "==> Bundling Vim runtime (for archive)..."
+bash "$SCRIPT_DIR/bundle-runtime.sh"
+
 source "$REPO_ROOT/scripts/install-local-binary.sh"
 install_local_binary vim "$BIN_DIR/vim.wasm"
+
+# Stage the runtime tree into the resolver scratch so it lands in
+# the cache canonical path (and from there, the archive). Outside
+# the resolver, $WASM_POSIX_DEP_OUT_DIR is unset and this is a
+# no-op — direct invocations of build-vim.sh just leave runtime/
+# at its source-tree location.
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ] && [ -d "$SCRIPT_DIR/runtime" ]; then
+    rm -rf "$WASM_POSIX_DEP_OUT_DIR/runtime"
+    cp -R "$SCRIPT_DIR/runtime" "$WASM_POSIX_DEP_OUT_DIR/runtime"
+    echo "  staged runtime tree into resolver scratch"
+fi

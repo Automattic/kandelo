@@ -1,7 +1,7 @@
 kind = "program"
 name = "vim"
 version = "9.1.0900"
-revision = 1
+revision = 2
 depends_on = []
 
 [source]
@@ -16,5 +16,5 @@ url = "https://github.com/vim/vim/blob/v9.1.0900/LICENSE"
 name = "vim"
 wasm = "vim.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/vim-9.1.0900-rev1-abi6-wasm32-28edd7a5.tar.zst"
-archive_sha256 = "1682e3c4ee2125fd00aa5ef9e8b39ac79f5014bd358d9e05d3664e6765e980f9"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/vim-9.1.0900-rev2-abi6-wasm32-fdcaac4b.tar.zst"
+archive_sha256 = "66b2c872f2f0ddd5c6e85a9c86680ee799c756a0fc9a06ad55b95671be71e1d6"
