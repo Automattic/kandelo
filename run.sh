@@ -104,6 +104,7 @@ has_zlib()      { [ -f "$REPO_ROOT/sysroot/lib/libz.a" ]; }
 has_openssl()   { [ -f "$REPO_ROOT/sysroot/lib/libssl.a" ] && [ -f "$REPO_ROOT/sysroot/lib/libcrypto.a" ]; }
 has_libcurl()   { [ -f "$REPO_ROOT/sysroot/lib/libcurl.a" ] && [ -f "$REPO_ROOT/sysroot/include/curl/curl.h" ]; }
 has_vim()    { has_resolvable programs/vim.wasm || [ -f "$REPO_ROOT/examples/libs/vim/bin/vim.wasm" ]; }
+has_vim_zip() { has_resolvable programs/vim.zip || [ -f "$REPO_ROOT/examples/browser/public/vim.zip" ]; }
 has_git()    { has_resolvable programs/git/git.wasm || [ -f "$REPO_ROOT/examples/libs/git/bin/git.wasm" ]; }
 has_perl()    { has_resolvable programs/perl.wasm || [ -f "$REPO_ROOT/examples/libs/perl/bin/perl.wasm" ]; }
 has_ruby()    { has_resolvable programs/ruby.wasm || [ -f "$REPO_ROOT/examples/libs/ruby/bin/ruby.wasm" ]; }
@@ -491,22 +492,59 @@ build_perl_vfs() {
 }
 
 build_vim_zip() {
-    if [ ! -f "$REPO_ROOT/examples/browser/public/vim.zip" ]; then
-        if [ ! -d "$REPO_ROOT/examples/libs/vim/runtime" ]; then
-            if [ -d "$REPO_ROOT/examples/libs/vim/vim-src/runtime" ]; then
-                step "Bundling Vim runtime"
-                bash "$REPO_ROOT/examples/libs/vim/bundle-runtime.sh"
-            else
-                warn "Vim source not found, skipping vim.zip"
-                return
-            fi
-        fi
-        step "Building vim.zip (binary + runtime)"
-        bash "$REPO_ROOT/examples/browser/scripts/build-vim-zip.sh"
-        info "vim.zip built"
-    else
+    if has_vim_zip; then
         info "vim.zip"
+        return
     fi
+
+    # vim.zip = vim.wasm + minimal runtime tree (~500KB of syntax/
+    # ftplugin/etc. selected by bundle-runtime.sh). The shell demo
+    # registers it as a lazy archive so first `vim` exec fetches and
+    # unpacks the whole thing. It's intentionally NOT shipped in the
+    # binaries-abi-v6 release archive set — it's a small browser-only
+    # asset built locally and cached in local-binaries/programs/wasm32/
+    # via install_local_binary.
+
+    # Materialize vim.wasm into the source tree if only the prebuilt
+    # exists. build-vim-zip.sh wants `examples/libs/vim/bin/vim.wasm`
+    # specifically.
+    local vim_bin="$REPO_ROOT/examples/libs/vim/bin/vim.wasm"
+    if [ ! -f "$vim_bin" ]; then
+        if has_resolvable programs/vim.wasm; then
+            mkdir -p "$REPO_ROOT/examples/libs/vim/bin"
+            local resolved
+            resolved="$("$REPO_ROOT/scripts/resolve-binary.sh" programs/vim.wasm)"
+            cp "$resolved" "$vim_bin"
+        else
+            warn "vim.wasm not available — run: bash examples/libs/vim/build-vim.sh"
+            return
+        fi
+    fi
+
+    # Materialize the runtime tree. Comes from a vim source checkout.
+    # If neither the bundled runtime nor a vim-src tree is available,
+    # fetch the upstream tarball — needed only for ~500KB of script
+    # files, no compilation.
+    local runtime_dir="$REPO_ROOT/examples/libs/vim/runtime"
+    if [ ! -d "$runtime_dir" ]; then
+        if [ ! -d "$REPO_ROOT/examples/libs/vim/vim-src/runtime" ]; then
+            step "Fetching Vim source for runtime"
+            local vim_ver="9.1.0900"
+            local tarball="$REPO_ROOT/examples/libs/vim/vim-${vim_ver}.tar.gz"
+            curl -sSL "https://github.com/vim/vim/archive/refs/tags/v${vim_ver}.tar.gz" \
+                 -o "$tarball"
+            tar xzf "$tarball" -C "$REPO_ROOT/examples/libs/vim"
+            mv "$REPO_ROOT/examples/libs/vim/vim-${vim_ver}" \
+               "$REPO_ROOT/examples/libs/vim/vim-src"
+            rm -f "$tarball"
+        fi
+        step "Bundling Vim runtime"
+        bash "$REPO_ROOT/examples/libs/vim/bundle-runtime.sh"
+    fi
+
+    step "Building vim.zip (binary + runtime)"
+    bash "$REPO_ROOT/examples/browser/scripts/build-vim-zip.sh"
+    info "vim.zip built"
 }
 
 build_nethack_zip() {
@@ -1115,6 +1153,7 @@ build_target() {
         openssl)    build_openssl ;;
         libcurl)    build_libcurl ;;
         vim)        build_vim ;;
+        vim-zip)    build_vim_zip ;;
         git)        build_git ;;
         perl)       build_perl ;;
         ruby)       build_ruby ;;
@@ -1136,7 +1175,7 @@ build_target() {
 # (less: ncurses libtermcap duplicate tputs; wget: requires automake
 # aclocal). They aren't in the release either, so the associated demo
 # features skip gracefully at runtime.
-BROWSER_DEPS=(kernel programs dash bash coreutils grep sed bc file m4 make tar curl-cli gzip bzip2 xz zstd zip unzip nano vim nethack fbdoom git nginx php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis cpython python-vfs perl perl-vfs ruby shell-vfs wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs)
+BROWSER_DEPS=(kernel programs dash bash coreutils grep sed bc file m4 make tar curl-cli gzip bzip2 xz zstd zip unzip nano vim vim-zip nethack fbdoom git nginx php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis cpython python-vfs perl perl-vfs ruby shell-vfs wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs)
 
 build_browser() {
     for t in "${BROWSER_DEPS[@]}"; do
@@ -1409,8 +1448,13 @@ clean_target() {
                    "$REPO_ROOT/examples/libs/vim/bin" \
                    "$REPO_ROOT/examples/libs/vim/runtime"
             rm -f "$REPO_ROOT/examples/browser/public/vim.zip" \
-                  "$REPO_ROOT/examples/browser/public/shell.vfs"
+                  "$REPO_ROOT/examples/browser/public/shell.vfs" \
+                  "$REPO_ROOT/local-binaries/programs/wasm32/vim.zip"
             warn "Cleaned Vim (also invalidated vim.zip and shell.vfs; run '$0 build shell-vfs' to regenerate for browser demo)" ;;
+        vim-zip)
+            rm -f "$REPO_ROOT/examples/browser/public/vim.zip" \
+                  "$REPO_ROOT/local-binaries/programs/wasm32/vim.zip"
+            warn "Cleaned vim.zip" ;;
         git)
             rm -rf "$REPO_ROOT/examples/libs/git/git-src" \
                    "$REPO_ROOT/examples/libs/git/bin"
@@ -1448,7 +1492,7 @@ clean_target() {
                 clean_target "$t"
             done ;;
         all)
-            for t in kernel sysroot sysroot64 host programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano ncurses zlib openssl libcurl vim git nginx php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis cpython python-vfs perl perl-vfs ruby shell-vfs wordpress wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs dlopen; do
+            for t in kernel sysroot sysroot64 host programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano ncurses zlib openssl libcurl vim vim-zip git nginx php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis cpython python-vfs perl perl-vfs ruby shell-vfs wordpress wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs dlopen; do
                 clean_target "$t"
             done ;;
         *)  err "Unknown clean target: $target"; exit 1 ;;
