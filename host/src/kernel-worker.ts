@@ -881,6 +881,8 @@ export class CentralizedKernelWorker {
       onNetListen: (fd: number, port: number, addr: [number, number, number, number]): number => {
         const pid = this.currentHandlePid;
         if (pid === 0) return 0;
+        // addr is currently informational; reserved for future per-iface filtering.
+        void addr;
         this.startTcpListener(pid, fd, port);
         return 0;
       },

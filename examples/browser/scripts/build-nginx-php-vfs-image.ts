@@ -22,9 +22,10 @@ import { addDinitInit } from "./dinit-image-helpers";
 
 const OUT_FILE = join(findRepoRoot(), "examples", "browser", "public", "nginx-php.vfs");
 
-const NGINX_CONF = `daemon off;
-master_process on;
-worker_processes 2;
+const NGINX_CONF = `user root;
+daemon off;
+master_process off;
+worker_processes 0;
 error_log stderr info;
 pid /tmp/nginx.pid;
 
@@ -34,21 +35,20 @@ events {
 }
 
 http {
-    access_log /dev/stderr;
-    client_body_temp_path /tmp/nginx_client_temp;
-    fastcgi_temp_path /tmp/nginx_fastcgi_temp;
-
     types {
-        text/html  html htm;
+        text/html  html;
         text/css   css;
         text/javascript js;
         application/json json;
-        image/png png;
+        image/png  png;
         image/jpeg jpg jpeg;
-        image/gif gif;
+        image/gif  gif;
         image/svg+xml svg;
     }
     default_type application/octet-stream;
+
+    client_body_temp_path /tmp/nginx_client_temp;
+    fastcgi_temp_path     /tmp/nginx_fastcgi_temp;
 
     server {
         listen 8080;
@@ -56,25 +56,38 @@ http {
         root /var/www/html;
         index index.php index.html;
 
-        # Match no PCRE: every request → FastCGI, the router PHP decides
-        # static vs dynamic dispatch. nginx in this build is compiled
-        # without PCRE so we can't use ~ regex location blocks.
+        # Route every request through fpm-router.php so PHP decides static
+        # vs dynamic dispatch. Simpler than juggling location ordering for
+        # an early-stage demo.
         location / {
             fastcgi_pass 127.0.0.1:9000;
+            fastcgi_index fpm-router.php;
+            include /etc/nginx/fastcgi_params;
             fastcgi_param SCRIPT_FILENAME /var/www/fpm-router.php;
-            fastcgi_param DOCUMENT_ROOT /var/www/html;
-            fastcgi_param REQUEST_URI $request_uri;
-            fastcgi_param QUERY_STRING $query_string;
-            fastcgi_param REQUEST_METHOD $request_method;
-            fastcgi_param CONTENT_TYPE $content_type;
-            fastcgi_param CONTENT_LENGTH $content_length;
-            fastcgi_param SERVER_PROTOCOL $server_protocol;
-            fastcgi_param SERVER_PORT $server_port;
-            fastcgi_param SERVER_NAME $server_name;
-            fastcgi_param REDIRECT_STATUS 200;
+            fastcgi_param SCRIPT_NAME /fpm-router.php;
         }
     }
 }
+`;
+
+const FASTCGI_PARAMS = `fastcgi_param  QUERY_STRING       $query_string;
+fastcgi_param  REQUEST_METHOD     $request_method;
+fastcgi_param  CONTENT_TYPE       $content_type;
+fastcgi_param  CONTENT_LENGTH     $content_length;
+fastcgi_param  SCRIPT_NAME        $fastcgi_script_name;
+fastcgi_param  REQUEST_URI        $request_uri;
+fastcgi_param  DOCUMENT_URI       $document_uri;
+fastcgi_param  DOCUMENT_ROOT      $document_root;
+fastcgi_param  SERVER_PROTOCOL    $server_protocol;
+fastcgi_param  REQUEST_SCHEME     $scheme;
+fastcgi_param  GATEWAY_INTERFACE  CGI/1.1;
+fastcgi_param  SERVER_SOFTWARE    nginx/$nginx_version;
+fastcgi_param  REMOTE_ADDR        $remote_addr;
+fastcgi_param  REMOTE_PORT        $remote_port;
+fastcgi_param  SERVER_ADDR        $server_addr;
+fastcgi_param  SERVER_PORT        $server_port;
+fastcgi_param  SERVER_NAME        $server_name;
+fastcgi_param  REDIRECT_STATUS    200;
 `;
 
 const PHP_FPM_CONF = `[global]
@@ -196,6 +209,7 @@ async function main() {
 
   // Config + content
   writeVfsFile(fs, "/etc/nginx/nginx.conf", NGINX_CONF);
+  writeVfsFile(fs, "/etc/nginx/fastcgi_params", FASTCGI_PARAMS);
   writeVfsFile(fs, "/etc/php-fpm.conf", PHP_FPM_CONF);
   writeVfsFile(fs, "/var/www/fpm-router.php", FPM_ROUTER_PHP);
   writeVfsFile(fs, "/var/www/html/index.php", INDEX_PHP);
@@ -207,16 +221,16 @@ async function main() {
       name: "php-fpm",
       type: "process",
       command: "/usr/sbin/php-fpm --nodaemonize --fpm-config /etc/php-fpm.conf",
-      restart: true,
-      restartDelay: 2,
+      logfile: "/var/log/php-fpm.log",
+      restart: false,
     },
     {
       name: "nginx",
       type: "process",
-      command: "/usr/sbin/nginx -p /etc/nginx -c nginx.conf",
+      command: "/usr/sbin/nginx -c /etc/nginx/nginx.conf",
       dependsOn: ["php-fpm"],
-      restart: true,
-      restartDelay: 2,
+      logfile: "/var/log/nginx.log",
+      restart: false,
     },
   ]);
 
