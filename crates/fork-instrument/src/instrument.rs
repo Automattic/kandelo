@@ -1629,6 +1629,12 @@ fn natural_align(ty: ValType) -> u32 {
     scalar_size(ty)
 }
 
+/// Round `x` up to the nearest 8-byte boundary. Used by B1 scratch
+/// planning and (Task 1.3) save-buffer reservation.
+fn align_up_8(x: u32) -> u32 {
+    (x + 7) & !7u32
+}
+
 fn default_for_type(ty: ValType) -> Option<Instr> {
     Some(match ty {
         ValType::I32 => Instr::Const(Const { value: Value::I32(0) }),
@@ -1971,7 +1977,12 @@ fn visit_try_tables(f: &LocalFunction, seq: InstrSeqId, out: &mut Vec<InstrSeqId
 /// recorded per-region for later Stage 2 wiring.
 #[derive(Debug, Clone)]
 pub struct PlainCatchArm {
-    /// Index of this arm within its try_table's `catches` list.
+    /// Index of this arm within its try_table's `catches` list. Stage 2
+    /// writes this value as the `arm_id` field of the saved scratch tuple
+    /// at unwind time; the rewind path reads it to select which
+    /// `throw $tag (operands)` to emit. Combined with the function's
+    /// `catch_region_id` (tracked by `CatchRegionPlan`), the pair is
+    /// unique within the function — no module-wide arm_id is needed.
     pub arm_idx: u32,
     /// Tag this arm catches.
     pub tag: TagId,
@@ -2054,8 +2065,15 @@ pub struct PlainCatchArmSlot {
     /// scratch base (which `Runtime.b1_scratch_base` will track in
     /// Task 1.3); not yet relative to absolute buffer base.
     pub scratch_offset: u32,
-    /// Total size in bytes of this arm's saved tuple
-    /// (4 bytes arm_id + sum-of-naturally-aligned-operand-sizes).
+    /// Total size in bytes of this arm's saved tuple: 4 (arm_id) +
+    /// concatenated scalar operand sizes. Per-operand alignment is
+    /// preserved without padding because (a) operand sizes are
+    /// powers-of-2 (4, 8, or 16 bytes), (b) the tuple itself starts
+    /// 8-aligned within the scratch area, and (c) operands appear in
+    /// declaration order — the first operand at +4 lands 4-aligned,
+    /// and any 8-aligned operand falls on a tuple offset that's
+    /// already 8-aligned because preceding operands are also
+    /// powers-of-2.
     pub tuple_size: u32,
 }
 
@@ -2114,10 +2132,16 @@ pub fn plan_b1_scratch(module: &Module, targets: &[FunctionId]) -> B1ScratchPlan
         for (body_seq, arm_list) in arms_per_region {
             let mut slots: Vec<PlainCatchArmSlot> = Vec::with_capacity(arm_list.len());
             for arm in arm_list {
-                let payload_size: u32 = arm.operand_tys.iter().map(|t| b1_scalar_size(*t)).sum();
+                debug_assert!(
+                    arm.operand_tys.iter().all(|t| !matches!(t, ValType::Ref(_))),
+                    "B1 plan_b1_scratch invariant: caller must filter ref-payload arms via Stage 2 \
+                     fallback-to-guard-dispatch before reaching the planner. Affected function has \
+                     a tag with a ref-typed operand."
+                );
+                let payload_size: u32 = arm.operand_tys.iter().map(|t| scalar_size(*t)).sum();
                 let tuple_size = 4 + payload_size;
                 // Outer 8-byte alignment for the tuple start.
-                let aligned = (cursor + 7) & !7u32;
+                let aligned = align_up_8(cursor);
                 slots.push(PlainCatchArmSlot {
                     arm,
                     scratch_offset: aligned,
@@ -2132,22 +2156,8 @@ pub fn plan_b1_scratch(module: &Module, targets: &[FunctionId]) -> B1ScratchPlan
     // Final scratch area aligned up to 8 bytes so `frames_start_offset`
     // (which sits after the scratch area) lands aligned for the frame
     // header writes that follow.
-    plan.total_bytes = (cursor + 7) & !7u32;
+    plan.total_bytes = align_up_8(cursor);
     plan
-}
-
-fn b1_scalar_size(ty: ValType) -> u32 {
-    match ty {
-        ValType::I32 | ValType::F32 => 4,
-        ValType::I64 | ValType::F64 => 8,
-        ValType::V128 => 16,
-        ValType::Ref(_) => panic!(
-            "B1 plan_b1_scratch: ref-typed catch operand encountered. \
-             Stage 2 will detect this earlier and fall back to \
-             guard-dispatch for affected functions; the unreachable \
-             panic remains as a defense-in-depth assertion."
-        ),
-    }
 }
 
 // ----------------------------------------------------------------------

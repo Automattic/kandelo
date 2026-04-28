@@ -1730,3 +1730,88 @@ fn b1_scratch_plan_two_arms_align_to_8_bytes_each() {
         "rounded up from 20 to next 8-byte boundary"
     );
 }
+
+#[test]
+fn b1_scratch_plan_arm_with_8_aligned_tuple_needs_no_padding() {
+    // Two arms, both with i32 payload (tuple_size = 8 each).
+    // Arm 0: aligned=0, tuple=8, cursor=8.
+    // Arm 1: aligned=align_up_8(8)=8 (no padding), tuple=8, cursor=8+8=16.
+    // total_bytes = align_up_8(16) = 16 (no spurious padding).
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (tag $a (param i32))
+          (tag $b (param i32))
+          (func $caller (export "caller") (result i32)
+            (block $ha (result i32)
+              (try_table (catch $a $ha)
+                i32.const 0
+                drop)
+              i32.const 0)
+            drop
+            (block $hb (result i32)
+              (try_table (catch $b $hb)
+                i32.const 0
+                drop)
+              i32.const 0)
+            drop
+            call $fork)
+          (memory 1))
+    "#;
+    let bytes = parse_wat(wat);
+    let module = walrus::Module::from_buffer(&bytes).unwrap();
+    let caller = func_by_name(&module, "caller");
+    let plan = fork_instrument::instrument::plan_b1_scratch(&module, &[caller]);
+    let per_func = &plan.per_function[&caller];
+    assert_eq!(per_func.len(), 2, "two try_tables");
+    let (_, slots_a) = &per_func[0];
+    let (_, slots_b) = &per_func[1];
+    assert_eq!(slots_a[0].scratch_offset, 0);
+    assert_eq!(slots_a[0].tuple_size, 8);
+    assert_eq!(
+        slots_b[0].scratch_offset, 8,
+        "8-aligned tuple end means next arm needs no padding"
+    );
+    assert_eq!(slots_b[0].tuple_size, 8);
+    assert_eq!(plan.total_bytes, 16, "no spurious padding inserted");
+}
+
+#[test]
+fn b1_scratch_plan_handles_f32_f64_operand_sizes() {
+    // tag with (param f32 f64) → tuple = 4 (arm_id) + 4 (f32) + 8 (f64) = 16.
+    // Verifies scalar_size correctly maps f32→4, f64→8 through the planner.
+    //
+    // Catch label semantics (mirroring existing i32-payload test): branching
+    // to a `(block $h (result f32 f64))` carries the block's RESULT types,
+    // matching the tag's payload arity.
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (tag $exn (param f32 f64))
+          (func $caller (export "caller") (result i32)
+            (block $h (result f32 f64)
+              (try_table (catch $exn $h)
+                f32.const 0
+                f64.const 0
+                drop
+                drop)
+              f32.const 0
+              f64.const 0)
+            drop
+            drop
+            call $fork)
+          (memory 1))
+    "#;
+    let bytes = parse_wat(wat);
+    let module = walrus::Module::from_buffer(&bytes).unwrap();
+    let caller = func_by_name(&module, "caller");
+    let plan = fork_instrument::instrument::plan_b1_scratch(&module, &[caller]);
+    let per_func = &plan.per_function[&caller];
+    let (_, slots) = &per_func[0];
+    assert_eq!(
+        slots[0].tuple_size, 16,
+        "arm_id (4) + f32 (4) + f64 (8) = 16"
+    );
+    assert_eq!(slots[0].scratch_offset, 0);
+    assert_eq!(plan.total_bytes, 16);
+}
