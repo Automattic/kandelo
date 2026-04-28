@@ -199,12 +199,12 @@ if [ ! -f Makefile ]; then
     fi
 
     wasm32posix-configure \
-        "${PREFIX_ARGS[@]}" \
+        ${PREFIX_ARGS[@]+"${PREFIX_ARGS[@]}"} \
         --disable-nls \
         --disable-shared \
         --enable-static \
-        "${SSL_FLAGS[@]}" \
-        "${ZLIB_FLAGS[@]}" \
+        ${SSL_FLAGS[@]+"${SSL_FLAGS[@]}"} \
+        ${ZLIB_FLAGS[@]+"${ZLIB_FLAGS[@]}"} \
         --without-brotli \
         --without-zstd \
         --without-nghttp2 \
