@@ -51,23 +51,24 @@ has_sdk()       { command -v wasm32posix-cc &>/dev/null; }
 has_host()      { [ -d "$REPO_ROOT/host/dist" ]; }
 has_programs()    { has_resolvable programs/fork-exec.wasm || [ -f "$REPO_ROOT/host/wasm/fork-exec.wasm" ]; }
 has_nginx()    { has_resolvable programs/nginx.wasm || [ -f "$REPO_ROOT/examples/nginx/nginx.wasm" ]; }
-has_php()       { [ -f "$REPO_ROOT/examples/libs/php/php-src/sapi/cli/php" ]; }
+has_php()       { has_resolvable programs/php/php.wasm || [ -f "$REPO_ROOT/examples/libs/php/php-src/sapi/cli/php" ]; }
 has_php_fpm()    { has_resolvable programs/php/php-fpm.wasm || [ -f "$REPO_ROOT/examples/nginx/php-fpm.wasm" ]; }
 has_mariadb()    { has_resolvable programs/mariadb/mariadbd.wasm || [ -f "$REPO_ROOT/examples/libs/mariadb/mariadb-install/bin/mariadbd" ]; }
-has_mariadb64() { [ -f "$REPO_ROOT/examples/libs/mariadb/mariadb-install-64/bin/mariadbd" ]; }
+has_mariadb64() { has_resolvable programs/wasm64/mariadb/mariadbd.wasm || [ -f "$REPO_ROOT/examples/libs/mariadb/mariadb-install-64/bin/mariadbd" ]; }
 has_mariadb_vfs() {
-    if has_resolvable vfs/mariadb.vfs.zst; then return 0; fi
+    if has_resolvable programs/mariadb-vfs.vfs; then return 0; fi
     local vfs="$REPO_ROOT/examples/browser/public/mariadb.vfs"
     local mariadbd="$REPO_ROOT/examples/libs/mariadb/mariadb-install/bin/mariadbd.wasm"
     [ -f "$vfs" ] && [ -f "$mariadbd" ] && [ "$vfs" -nt "$mariadbd" ]
 }
 has_mariadb64_vfs() {
+    if has_resolvable programs/wasm64/mariadb-vfs.vfs; then return 0; fi
     local vfs="$REPO_ROOT/examples/browser/public/mariadb-64.vfs"
     local mariadbd="$REPO_ROOT/examples/libs/mariadb/mariadb-install-64/bin/mariadbd.wasm"
     [ -f "$vfs" ] && [ -f "$mariadbd" ] && [ "$vfs" -nt "$mariadbd" ]
 }
 has_wordpress() { [ -f "$REPO_ROOT/examples/wordpress/wordpress/wp-settings.php" ]; }
-has_wp_vfs()    { has_resolvable vfs/wordpress.vfs.zst || [ -f "$REPO_ROOT/examples/browser/public/wordpress.vfs" ]; }
+has_wp_vfs()    { has_resolvable programs/wordpress.vfs || [ -f "$REPO_ROOT/examples/browser/public/wordpress.vfs" ]; }
 has_dash()    { has_resolvable programs/dash.wasm || [ -f "$REPO_ROOT/examples/libs/dash/bin/dash.wasm" ]; }
 has_bash()    { has_resolvable programs/bash.wasm || [ -f "$REPO_ROOT/examples/libs/bash/bin/bash.wasm" ]; }
 has_coreutils()    { has_resolvable programs/coreutils.wasm || [ -f "$REPO_ROOT/examples/libs/coreutils/bin/coreutils.wasm" ]; }
@@ -75,12 +76,12 @@ has_grep()    { has_resolvable programs/grep.wasm || [ -f "$REPO_ROOT/examples/l
 has_sed()    { has_resolvable programs/sed.wasm || [ -f "$REPO_ROOT/examples/libs/sed/bin/sed.wasm" ]; }
 has_redis()    { has_resolvable programs/redis/redis-server.wasm || [ -f "$REPO_ROOT/examples/libs/redis/bin/redis-server.wasm" ]; }
 has_cpython()    { has_resolvable programs/cpython.wasm || [ -f "$REPO_ROOT/examples/libs/cpython/bin/python.wasm" ]; }
-has_python_vfs()    { has_resolvable vfs/python.vfs.zst || [ -f "$REPO_ROOT/examples/browser/public/python.vfs" ]; }
-has_perl_vfs()    { has_resolvable vfs/perl.vfs.zst || [ -f "$REPO_ROOT/examples/browser/public/perl.vfs" ]; }
-has_shell_vfs()    { has_resolvable vfs/shell.vfs.zst || [ -f "$REPO_ROOT/examples/browser/public/shell.vfs" ]; }
+has_python_vfs()    { has_resolvable programs/python-vfs.vfs || [ -f "$REPO_ROOT/examples/browser/public/python.vfs" ]; }
+has_perl_vfs()    { has_resolvable programs/perl-vfs.vfs || [ -f "$REPO_ROOT/examples/browser/public/perl.vfs" ]; }
+has_shell_vfs()    { has_resolvable programs/shell.vfs || [ -f "$REPO_ROOT/examples/browser/public/shell.vfs" ]; }
 has_erlang()    { has_resolvable programs/erlang.wasm || [ -f "$REPO_ROOT/examples/libs/erlang/bin/beam.wasm" ]; }
-has_erlang_vfs()    { has_resolvable vfs/erlang.vfs.zst || [ -f "$REPO_ROOT/examples/browser/public/erlang.vfs" ]; }
-has_lamp_vfs()    { has_resolvable vfs/lamp.vfs.zst || [ -f "$REPO_ROOT/examples/browser/public/lamp.vfs" ]; }
+has_erlang_vfs()    { has_resolvable programs/erlang-vfs.vfs || [ -f "$REPO_ROOT/examples/browser/public/erlang.vfs" ]; }
+has_lamp_vfs()    { has_resolvable programs/lamp.vfs || [ -f "$REPO_ROOT/examples/browser/public/lamp.vfs" ]; }
 has_bc()    { has_resolvable programs/bc.wasm || [ -f "$REPO_ROOT/examples/libs/bc/bin/bc.wasm" ]; }
 has_file()    { has_resolvable programs/file.wasm || [ -f "$REPO_ROOT/examples/libs/file/bin/file.wasm" ]; }
 has_less()    { has_resolvable programs/less.wasm || [ -f "$REPO_ROOT/examples/libs/less/bin/less.wasm" ]; }
@@ -102,13 +103,13 @@ has_ncurses()   { [ -f "$REPO_ROOT/sysroot/lib/libncursesw.a" ]; }
 has_zlib()      { [ -f "$REPO_ROOT/sysroot/lib/libz.a" ]; }
 has_openssl()   { [ -f "$REPO_ROOT/sysroot/lib/libssl.a" ] && [ -f "$REPO_ROOT/sysroot/lib/libcrypto.a" ]; }
 has_libcurl()   { [ -f "$REPO_ROOT/sysroot/lib/libcurl.a" ] && [ -f "$REPO_ROOT/sysroot/include/curl/curl.h" ]; }
-has_vim()    { has_resolvable programs/vim.zip || [ -f "$REPO_ROOT/examples/libs/vim/bin/vim.wasm" ]; }
+has_vim()    { has_resolvable programs/vim.wasm || [ -f "$REPO_ROOT/examples/libs/vim/bin/vim.wasm" ]; }
 has_git()    { has_resolvable programs/git/git.wasm || [ -f "$REPO_ROOT/examples/libs/git/bin/git.wasm" ]; }
 has_perl()    { has_resolvable programs/perl.wasm || [ -f "$REPO_ROOT/examples/libs/perl/bin/perl.wasm" ]; }
 has_ruby()    { has_resolvable programs/ruby.wasm || [ -f "$REPO_ROOT/examples/libs/ruby/bin/ruby.wasm" ]; }
 has_dlopen()    { [ -f "$REPO_ROOT/examples/dlopen/hello-lib.so" ] && \
                   [ -f "$REPO_ROOT/examples/dlopen/main.wasm" ]; }
-has_texlive()        { [ -f "$REPO_ROOT/examples/libs/texlive/bin/pdftex.wasm" ]; }
+has_texlive()        { has_resolvable programs/pdftex.wasm || [ -f "$REPO_ROOT/examples/libs/texlive/bin/pdftex.wasm" ]; }
 has_texlive_vfs() { [ -f "$REPO_ROOT/examples/browser/public/texlive-bundle.json" ]; }
 
 # ─── Need functions (ensure dependency is built) ─────────────────────────────
@@ -303,27 +304,27 @@ build_mariadb64() {
 }
 
 build_mariadb_vfs() {
+    if has_mariadb_vfs; then
+        info "MariaDB VFS image (wasm32)"
+        return
+    fi
     build_mariadb
     build_dash
-    if ! has_mariadb_vfs; then
-        step "Building MariaDB VFS image (wasm32)"
-        bash "$REPO_ROOT/examples/browser/scripts/build-mariadb-vfs-image.sh"
-        info "MariaDB VFS image (wasm32) built"
-    else
-        info "MariaDB VFS image (wasm32)"
-    fi
+    step "Building MariaDB VFS image (wasm32)"
+    bash "$REPO_ROOT/examples/browser/scripts/build-mariadb-vfs-image.sh"
+    info "MariaDB VFS image (wasm32) built"
 }
 
 build_mariadb64_vfs() {
+    if has_mariadb64_vfs; then
+        info "MariaDB VFS image (wasm64)"
+        return
+    fi
     build_mariadb64
     build_dash
-    if ! has_mariadb64_vfs; then
-        step "Building MariaDB VFS image (wasm64)"
-        bash "$REPO_ROOT/examples/browser/scripts/build-mariadb-vfs-image.sh" --wasm64
-        info "MariaDB VFS image (wasm64) built"
-    else
-        info "MariaDB VFS image (wasm64)"
-    fi
+    step "Building MariaDB VFS image (wasm64)"
+    bash "$REPO_ROOT/examples/browser/scripts/build-mariadb-vfs-image.sh" --wasm64
+    info "MariaDB VFS image (wasm64) built"
 }
 
 build_wordpress() {
@@ -337,14 +338,15 @@ build_wordpress() {
 }
 
 build_wp_vfs() {
-    build_wordpress
-    if ! has_wp_vfs; then
-        step "Building WordPress VFS image"
-        bash "$REPO_ROOT/examples/browser/scripts/build-wp-vfs-image.sh"
-        info "WP VFS image built"
-    else
+    if has_wp_vfs; then
         info "WP VFS image"
+        return
     fi
+    # Source needed only if we have to build the VFS from scratch.
+    build_wordpress
+    step "Building WordPress VFS image"
+    bash "$REPO_ROOT/examples/browser/scripts/build-wp-vfs-image.sh"
+    info "WP VFS image built"
 }
 
 build_dash() {
@@ -369,18 +371,18 @@ build_dash() {
 }
 
 build_bash() {
+    if has_bash; then
+        info "bash"
+        return
+    fi
     # bash's build script resolves ncurses through the dep cache via
     # `cargo xtask build-deps resolve ncurses` — no sysroot install
     # needed here.
     need_kernel
     need_sdk
-    if ! has_bash; then
-        step "Building bash shell"
-        bash "$REPO_ROOT/examples/libs/bash/build-bash.sh"
-        info "bash built"
-    else
-        info "bash"
-    fi
+    step "Building bash shell"
+    bash "$REPO_ROOT/examples/libs/bash/build-bash.sh"
+    info "bash built"
 }
 
 build_coreutils() {
@@ -464,14 +466,14 @@ build_cpython() {
 }
 
 build_python_vfs() {
-    build_cpython
-    if ! has_python_vfs; then
-        step "Building Python VFS image"
-        bash "$REPO_ROOT/examples/browser/scripts/build-python-vfs-image.sh"
-        info "Python VFS image built"
-    else
+    if has_python_vfs; then
         info "Python VFS image"
+        return
     fi
+    build_cpython
+    step "Building Python VFS image"
+    bash "$REPO_ROOT/examples/browser/scripts/build-python-vfs-image.sh"
+    info "Python VFS image built"
 }
 
 build_perl_vfs() {
@@ -556,25 +558,25 @@ build_erlang() {
 }
 
 build_erlang_vfs() {
-    build_erlang
-    if ! has_erlang_vfs; then
-        step "Building Erlang VFS image"
-        bash "$REPO_ROOT/examples/browser/scripts/build-erlang-vfs-image.sh"
-        info "Erlang VFS image built"
-    else
+    if has_erlang_vfs; then
         info "Erlang VFS image"
+        return
     fi
+    build_erlang
+    step "Building Erlang VFS image"
+    bash "$REPO_ROOT/examples/browser/scripts/build-erlang-vfs-image.sh"
+    info "Erlang VFS image built"
 }
 
 build_lamp_vfs() {
-    build_wordpress
-    if ! has_lamp_vfs; then
-        step "Building LAMP VFS image"
-        bash "$REPO_ROOT/examples/browser/scripts/build-lamp-vfs-image.sh"
-        info "LAMP VFS image built"
-    else
+    if has_lamp_vfs; then
         info "LAMP VFS image"
+        return
     fi
+    build_wordpress
+    step "Building LAMP VFS image"
+    bash "$REPO_ROOT/examples/browser/scripts/build-lamp-vfs-image.sh"
+    info "LAMP VFS image built"
 }
 
 build_texlive() {
@@ -594,14 +596,25 @@ build_texlive() {
 }
 
 build_texlive_vfs() {
-    build_texlive
-    if ! has_texlive_vfs; then
-        step "Building TeX Live browser bundle"
-        bash "$REPO_ROOT/examples/browser/scripts/build-texlive-bundle.sh"
-        info "TeX Live bundle built"
-    else
+    if has_texlive_vfs; then
         info "TeX Live bundle"
+        return
     fi
+    # The bundle isn't a release artifact — it's a JSON dump of the
+    # texlive runtime tree, only built locally. Without a host pdftex
+    # (built by `bash examples/libs/texlive/build-texlive.sh`), the
+    # bundle script fails. Skip with a clear hint instead of breaking
+    # the browser bring-up — the texlive demo will surface the missing
+    # bundle to the user.
+    local host_pdftex="$REPO_ROOT/examples/libs/texlive/texlive-build/host/bin/pdftex"
+    if [ ! -x "$host_pdftex" ]; then
+        warn "Skipping TeX Live bundle (host pdftex not built — run: bash examples/libs/texlive/build-texlive.sh)"
+        return
+    fi
+    build_texlive
+    step "Building TeX Live browser bundle"
+    bash "$REPO_ROOT/examples/browser/scripts/build-texlive-bundle.sh"
+    info "TeX Live bundle built"
 }
 
 build_bc() {
@@ -826,17 +839,17 @@ build_unzip() {
 }
 
 build_nano() {
+    if has_nano; then
+        info "nano"
+        return
+    fi
     # nano's build script resolves ncurses through the dep cache itself
     # (`cargo xtask build-deps resolve ncurses`); no sysroot prep here.
     need_kernel
     need_sdk
-    if ! has_nano; then
-        step "Building nano"
-        bash "$REPO_ROOT/examples/libs/nano/build-nano.sh"
-        info "nano built"
-    else
-        info "nano"
-    fi
+    step "Building nano"
+    bash "$REPO_ROOT/examples/libs/nano/build-nano.sh"
+    info "nano built"
 }
 
 build_zlib() {
@@ -895,6 +908,10 @@ build_openssl() {
 }
 
 build_libcurl() {
+    if has_libcurl; then
+        info "libcurl"
+        return
+    fi
     # libcurl's build script resolves zlib + openssl through the dep cache.
     need_kernel
     need_sdk
@@ -939,57 +956,57 @@ build_ncurses() {
 }
 
 build_nethack() {
+    if has_nethack; then
+        info "NetHack"
+        return
+    fi
     # nethack's build script resolves ncurses through the dep cache.
     need_kernel
     need_sdk
-    if ! has_nethack; then
-        step "Building NetHack"
-        bash "$REPO_ROOT/examples/libs/nethack/build-nethack.sh"
-        info "NetHack built"
-    else
-        info "NetHack"
-    fi
+    step "Building NetHack"
+    bash "$REPO_ROOT/examples/libs/nethack/build-nethack.sh"
+    info "NetHack built"
 }
 
 build_fbdoom() {
+    if has_fbdoom; then
+        info "fbDOOM"
+        return
+    fi
     need_kernel
     need_sdk
-    if ! has_fbdoom; then
-        step "Building fbDOOM"
-        bash "$REPO_ROOT/examples/libs/fbdoom/build-fbdoom.sh"
-        info "fbDOOM built"
-    else
-        info "fbDOOM"
-    fi
+    step "Building fbDOOM"
+    bash "$REPO_ROOT/examples/libs/fbdoom/build-fbdoom.sh"
+    info "fbDOOM built"
 }
 
 build_vim() {
+    if has_vim; then
+        info "Vim"
+        return
+    fi
     # Vim's build script now resolves ncurses through the dep cache
     # (`cargo xtask build-deps resolve ncurses`), so we don't prep it
     # into the sysroot here.
     need_kernel
     need_sdk
-    if ! has_vim; then
-        step "Building Vim"
-        bash "$REPO_ROOT/examples/libs/vim/build-vim.sh"
-        info "Vim built"
-    else
-        info "Vim"
-    fi
+    step "Building Vim"
+    bash "$REPO_ROOT/examples/libs/vim/build-vim.sh"
+    info "Vim built"
 }
 
 build_git() {
+    if has_git; then
+        info "git"
+        return
+    fi
     # git's build script resolves zlib/openssl/curl through the dep
     # cache itself; no sysroot prep here.
     need_kernel
     need_sdk
-    if ! has_git; then
-        step "Building git"
-        bash "$REPO_ROOT/examples/libs/git/build-git.sh"
-        info "git built"
-    else
-        info "git"
-    fi
+    step "Building git"
+    bash "$REPO_ROOT/examples/libs/git/build-git.sh"
+    info "git built"
     # Stub git-remote-http.wasm for browser demo if build somehow
     # didn't produce one (e.g. user skipped curl resolution manually).
     if [ ! -f "$REPO_ROOT/examples/libs/git/bin/git-remote-http.wasm" ]; then
@@ -1110,12 +1127,16 @@ build_target() {
     esac
 }
 
-# All targets needed for browser demos.
+# All targets needed for browser demos. Each entry's `has_X` short-
+# circuits when its release binary is in `binaries/`, so this loop is
+# a no-op on a fully-fetched checkout. sysroot/sysroot64 are NOT
+# listed: they're toolchain prerequisites for source builds, and any
+# `build_X` whose prebuilt is missing calls `need_sysroot` lazily.
 # `less` and `wget` are omitted — both have known local-build failures
 # (less: ncurses libtermcap duplicate tputs; wget: requires automake
 # aclocal). They aren't in the release either, so the associated demo
 # features skip gracefully at runtime.
-BROWSER_DEPS=(kernel sysroot sysroot64 programs dash bash coreutils grep sed bc file m4 make tar curl-cli gzip bzip2 xz zstd zip unzip nano vim nethack fbdoom git nginx php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis cpython python-vfs perl perl-vfs ruby shell-vfs wordpress wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs)
+BROWSER_DEPS=(kernel programs dash bash coreutils grep sed bc file m4 make tar curl-cli gzip bzip2 xz zstd zip unzip nano vim nethack fbdoom git nginx php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis cpython python-vfs perl perl-vfs ruby shell-vfs wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs)
 
 build_browser() {
     for t in "${BROWSER_DEPS[@]}"; do
