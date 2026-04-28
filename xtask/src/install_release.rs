@@ -35,7 +35,7 @@ use wasm_posix_shared as shared;
 use crate::build_deps::{
     self, canonical_path, default_cache_root, parse_target_arch, Registry,
 };
-use crate::deps_manifest::{Binary, DepsManifest, ManifestKind};
+use crate::deps_manifest::{Binary, DepsManifest, ManifestKind, TargetArch};
 use crate::remote_fetch;
 use crate::repo_root;
 use crate::util::hex;
@@ -230,8 +230,19 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         // bytes via the cache canonical path. Symlinks are always
         // (re)placed — they're cheap, atomic, and make the binaries/
         // tree mirror the cache's current state.
+        //
+        // Multi-arch caveat: when the manifest carries both wasm32
+        // and wasm64 entries for the same program, naively symlinking
+        // for both makes the second write win and points
+        // `binaries/programs/<x>.wasm` at the wrong arch. Browser
+        // demos and host tests exclusively load user programs as
+        // wasm32 (the kernel is wasm64; user programs are wasm32),
+        // so cap the binaries/ symlinks to wasm32 only. wasm64
+        // archives are still installed into the resolver cache and
+        // reachable via canonical paths for any wasm64-aware
+        // consumer.
         if let Some(bdir) = binaries_dir.as_deref() {
-            if matches!(m.kind, ManifestKind::Program) {
+            if matches!(m.kind, ManifestKind::Program) && arch == TargetArch::Wasm32 {
                 place_binaries_symlinks(&m, &canonical, bdir)?;
             }
         }
