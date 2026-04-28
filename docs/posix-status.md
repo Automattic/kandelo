@@ -606,3 +606,18 @@ Programs must be linked with two extra flags for signal handler dispatch to work
 
 - `--table-base=3`: Reserves function table indices 0 (SIG_DFL), 1 (SIG_IGN), and 2 (`__main_void` wrapper) so they don't collide with real C function pointers.
 - `--export-table`: Exports `__indirect_function_table` so the host can look up handler functions to call them.
+
+### C++ exception support
+
+C++ programs that throw exceptions work end-to-end (commit `9482326ef`).
+Itanium-EH unwinding uses LLVM `libunwind` statically bundled into
+`libc++abi.a` via the libcxx package (`examples/libs/libcxx/`,
+`LIBCXXABI_USE_LLVM_UNWINDER` + `LIBCXXABI_STATICALLY_LINK_UNWINDER_IN_STATIC_LIBRARY`),
+so consumers link `-lc++ -lc++abi` and `_Unwind_*` resolves internally —
+no separate `-lunwind`. clang must be invoked with `-fwasm-exceptions`;
+without it catch handlers are dead-code-eliminated and `throw` hangs.
+
+Regression gate: `programs/cpp_throw_test.cpp` exercises throw → catch
+in a single program; `host/test/cpp-throw-test.test.ts` runs it via the
+centralized harness. The gap was first surfaced by the SpiderMonkey EH
+spike (see external `memory/spidermonkey-spike-eh-toolchain-gap.md`).

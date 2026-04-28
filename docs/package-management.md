@@ -2,7 +2,7 @@
 
 How we declare, build, cache, and publish the artifacts the project
 produces — static libraries (zlib, ncurses, openssl, libcurl,
-libxml2, libpng, sqlite, …), ported programs (vim, git, php, …),
+libxml2, libpng, sqlite, libcxx, …), ported programs (vim, git, php, …),
 source trees that consumer builds reach into (PCRE2 for MariaDB,
 …), and the host-tool requirements that gate them all.
 
@@ -28,7 +28,9 @@ this work caches the build outputs, not the linker step. Runtime
 The previous state: each program's `build-<prog>.sh` called its
 prerequisite lib build scripts explicitly, everything installed into
 `sysroot/`, and rebuilding one program re-ran every dep from source.
-That worked when we had two or three libs. Now that 7+ libs back 20+
+That worked when we had two or three libs. Now that 8+ libs (including
+the libcxx package, which builds libc++/libc++abi and statically bundles
+LLVM libunwind so C++ programs can throw exceptions) back 20+
 programs, we need:
 
 - rebuilding one program not to rebuild its deps from source;

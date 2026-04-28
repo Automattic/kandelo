@@ -137,7 +137,7 @@ bash build.sh
 ```
 
 This builds the kernel from source. Library dependencies (zlib, openssl,
-sqlite, etc.) and ported programs (vim, git, php, etc.) are resolved
+sqlite, libcxx, etc.) and ported programs (vim, git, php, etc.) are resolved
 on demand by `cargo xtask build-deps resolve <name>`, which prefers
 the per-user cache, then falls back to the published binary release at
 [`binaries-abi-v<ABI_VERSION>`](https://github.com/brandonpayton/wasm-posix-kernel/releases),
