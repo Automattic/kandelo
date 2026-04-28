@@ -4,6 +4,7 @@
  * nginx. nginx routes every request through FastCGI to php-fpm; the
  * router PHP decides static vs dynamic dispatch.
  */
+import { BrowserKernel } from "../../lib/browser-kernel";
 import { initServiceWorkerBridge } from "../../lib/init/service-worker-bridge";
 import { HttpBridgeHost } from "../../lib/http-bridge";
 import kernelWasmUrl from "@kernel-wasm?url";
