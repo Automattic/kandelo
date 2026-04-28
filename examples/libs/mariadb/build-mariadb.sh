@@ -177,43 +177,48 @@ if [ ! -f "$HOST_BUILD_DIR/import_executables.cmake" ]; then
     echo "==> Host build complete."
 fi
 
-# --- Set up libc++ headers for C++ support ---
-LLVM_PREFIX="${LLVM_PREFIX:-$(brew --prefix llvm 2>/dev/null || echo /opt/homebrew/opt/llvm)}"
-LLVM_CLANG="$LLVM_PREFIX/bin/clang"
-LLVM_CXX_HEADERS="$LLVM_PREFIX/include/c++/v1"
-
-if [ ! -f "$SYSROOT/include/c++/v1/__config" ]; then
-    echo "==> Installing libc++ headers into sysroot..."
-    mkdir -p "$SYSROOT/include/c++/v1"
-    cp -R "$LLVM_CXX_HEADERS/"* "$SYSROOT/include/c++/v1/"
-
-    # Fix __config_site for wasm32/musl target
-    CONFIG_SITE="$SYSROOT/include/c++/v1/__config_site"
-    if [ -f "$CONFIG_SITE" ]; then
-        sed -i.bak 's/_LIBCPP_HAS_MUSL_LIBC 0/_LIBCPP_HAS_MUSL_LIBC 1/' "$CONFIG_SITE"
-        sed -i.bak 's/_LIBCPP_HAS_THREAD_API_PTHREAD 0/_LIBCPP_HAS_THREAD_API_PTHREAD 1/' "$CONFIG_SITE"
-        sed -i.bak 's/^#define _LIBCPP_PSTL_BACKEND_LIBDISPATCH/\/* #undef _LIBCPP_PSTL_BACKEND_LIBDISPATCH *\/\n#define _LIBCPP_PSTL_BACKEND_SERIAL/' "$CONFIG_SITE"
-    fi
-
-    echo "==> libc++ headers installed"
-fi
-
-# --- Build libc++ if not already built ---
-if [ ! -f "$SYSROOT/lib/libc++.a" ] || [ "$(wc -c < "$SYSROOT/lib/libc++.a" | tr -d ' ')" -lt 1000 ]; then
-    echo "==> Building libc++ for $WASM_ARCH (required for C++ exception support)..."
-    if [ "$WASM_ARCH" = "wasm64" ]; then
-        bash "$REPO_ROOT/scripts/build-libcxx.sh" --arch wasm64
-    else
-        bash "$REPO_ROOT/scripts/build-libcxx.sh"
-    fi
-fi
-
-# --- Resolve pcre2-source via the dep cache (package-system kind="source") ---
+# --- Resolver helper (used for libcxx + pcre2-source below) ---
 HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
 resolve_dep() {
     local name="$1"
     (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TARGET" --quiet -- build-deps resolve "$name")
 }
+
+# --- Resolve libcxx via the dep cache, then index into the sysroot ---
+LLVM_PREFIX="${LLVM_PREFIX:-$(brew --prefix llvm 2>/dev/null || echo /opt/homebrew/opt/llvm)}"
+LLVM_CLANG="$LLVM_PREFIX/bin/clang"
+
+LIBCXX_PREFIX="${WASM_POSIX_DEP_LIBCXX_DIR:-}"
+if [ -z "$LIBCXX_PREFIX" ]; then
+    echo "==> Resolving libcxx via cargo xtask build-deps..."
+    LIBCXX_PREFIX="$(resolve_dep libcxx)"
+fi
+[ -f "$LIBCXX_PREFIX/lib/libc++.a" ] || {
+    echo "ERROR: libcxx resolve missing libc++.a at $LIBCXX_PREFIX" >&2
+    exit 1
+}
+[ -f "$LIBCXX_PREFIX/lib/libc++abi.a" ] || {
+    echo "ERROR: libcxx resolve missing libc++abi.a at $LIBCXX_PREFIX" >&2
+    exit 1
+}
+[ -d "$LIBCXX_PREFIX/include/c++/v1" ] || {
+    echo "ERROR: libcxx resolve missing include/c++/v1 at $LIBCXX_PREFIX" >&2
+    exit 1
+}
+
+# MariaDB's CMake / link steps expect libc++.a, libc++abi.a, and the
+# C++ header tree under $SYSROOT. Symlink the resolved cache contents
+# in (absolute targets — survive a sysroot move) instead of copying;
+# keeps the sysroot a thin index of cache-managed artifacts.
+mkdir -p "$SYSROOT/lib" "$SYSROOT/include/c++"
+ln -sf "$LIBCXX_PREFIX/lib/libc++.a"    "$SYSROOT/lib/libc++.a"
+ln -sf "$LIBCXX_PREFIX/lib/libc++abi.a" "$SYSROOT/lib/libc++abi.a"
+# Replace any existing v1 dir/symlink so a stale tree from the old
+# in-tree build script does not shadow the resolved headers.
+rm -rf "$SYSROOT/include/c++/v1"
+ln -sfn "$LIBCXX_PREFIX/include/c++/v1" "$SYSROOT/include/c++/v1"
+
+echo "==> libcxx resolved at $LIBCXX_PREFIX (symlinked into $SYSROOT)"
 
 # Source-kind direct deps export under _SRC_DIR (Chunk C decision 12).
 PCRE2_SOURCE_DIR="${WASM_POSIX_DEP_PCRE2_SOURCE_SRC_DIR:-}"
