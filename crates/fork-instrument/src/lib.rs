@@ -99,7 +99,18 @@ pub fn instrument(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
     // Phase 4a: runtime scaffolding. Always injected so the module's
     // exported ABI is stable regardless of whether any caller was
     // actually rewritten.
-    let runtime = runtime::inject_runtime(&mut module);
+    //
+    // Stage 1 (B1): reserve plain-catch scratch space in the save
+    // buffer. `total_bytes` is 0 when no fork-path function has a
+    // plain catch — preserves byte-identical behavior to pre-B1
+    // for all currently-shipping ports. The plan must be computed
+    // *before* `inject_runtime` because the resulting size shifts
+    // `frames_start_offset`, which gets baked into the unwind_begin
+    // body as a constant.
+    let fork_path_targets: Vec<walrus::FunctionId> =
+        fork_path.iter().copied().collect();
+    let b1_plan = instrument::plan_b1_scratch(&module, &fork_path_targets);
+    let runtime = runtime::inject_runtime(&mut module, b1_plan.total_bytes);
 
     // Phase 4b: structural wrap of each fork-path function's body.
     // No-op when `fork_path` is empty (module doesn't use fork).

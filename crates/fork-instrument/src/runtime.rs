@@ -23,17 +23,21 @@
 //! auxiliary tables (Phase 4f); this phase skips them.
 //!
 //! Buffer layout (all offsets byte-exact; `P` is pointer width —
-//! 4 bytes on wasm32, 8 on wasm64):
+//! 4 bytes on wasm32, 8 on wasm64; `B` is the B1 plain-catch scratch
+//! reservation, 0 when no fork-path function has a plain catch):
 //!
 //! ```text
-//! +0        P     current_pos        Next free byte for frame data
-//! +P        P     end_pos            One past end of buffer
-//! +2P       N     saved_globals[]    Mutable scalar globals, declaration order
-//! +2P+N     -     frame data         Grows upward from here
+//! +0          P     current_pos        Next free byte for frame data
+//! +P          P     end_pos            One past end of buffer
+//! +2P         N     saved_globals[]    Mutable scalar globals, declaration order
+//! +2P+N       B     b1_scratch[]       Per-arm scratch tuples (Stage 1 B1)
+//! +2P+N+B     -     frame data         Grows upward from here
 //! ```
 //!
-//! `frames_start_offset` in [`Runtime`] exposes `2P + N` so the host
-//! can initialize `current_pos` correctly at unwind time.
+//! `frames_start_offset` in [`Runtime`] exposes `2P + N + B` so the
+//! host can initialize `current_pos` correctly at unwind time.
+//! `b1_scratch_base` exposes `2P + N` (== `frames_start_offset` when
+//! `B == 0`) and `b1_scratch_size` exposes `B` (rounded up to 8).
 
 use walrus::{
     ConstExpr, FunctionBuilder, FunctionId, GlobalId, InstrSeqBuilder, MemoryId, Module, ValType,
@@ -87,12 +91,22 @@ pub struct Runtime {
     /// and `wpk_fork_rewind_begin` restores. Declaration order.
     pub saved_globals: Vec<SavedGlobal>,
 
-    /// Byte offset in the save buffer at which frame data begins.
+    /// Byte offset at which frame data begins. Includes any space
+    /// reserved for B1's plain-catch scratch area
+    /// (see `b1_scratch_base` / `b1_scratch_size`).
     /// The host must initialize `current_pos` (the i32/i64 at offset
     /// 0 of the buffer) to this value before driving unwind, and the
     /// buffer must be sized such that
     /// `frames_start_offset + sum_of_frame_sizes <= buffer_size`.
     pub frames_start_offset: u32,
+
+    /// Stage 1 (B1): byte offset at which the plain-catch scratch
+    /// area begins. Equals `2P + N` (header + saved_globals).
+    pub b1_scratch_base: u32,
+    /// Stage 1 (B1): bytes reserved for the plain-catch scratch area.
+    /// Zero when no fork-path function in the module has a plain catch.
+    /// `b1_scratch_base + b1_scratch_size == frames_start_offset`.
+    pub b1_scratch_size: u32,
 }
 
 /// Return the pointer type appropriate for the module's primary
@@ -135,7 +149,22 @@ fn zero_const(ptr_ty: ValType) -> ConstExpr {
 /// Injects the state-machine globals, control functions, and — when
 /// the module has linear memory — the per-global save/restore
 /// machinery in `wpk_fork_unwind_begin` / `wpk_fork_rewind_begin`.
-pub fn inject_runtime(module: &mut Module) -> Runtime {
+///
+/// `b1_scratch_size` is the number of bytes B1 (Stage 1 plain-catch
+/// scratch area) needs reserved between `saved_globals` and
+/// `frame data` in the save buffer. It is zero when no fork-path
+/// function in the module has a plain catch — preserving byte-identical
+/// behavior to pre-B1 for modules that don't exercise the feature.
+/// The value is rounded up to 8-byte alignment internally so frame
+/// data starts aligned regardless of saved-globals payload size.
+///
+/// **Why a parameter and not a setter:** `frames_start_offset` gets
+/// baked into `wpk_fork_unwind_begin`'s body as a constant during this
+/// call (see step 3 in [`emit_unwind_begin`]). Shifting the offset
+/// after `inject_runtime` returns would silently desync the const and
+/// the host-visible offset. Computing the B1 plan first and passing
+/// the size in keeps everything consistent.
+pub fn inject_runtime(module: &mut Module, b1_scratch_size: u32) -> Runtime {
     let ptr_ty = ptr_type(module);
     let memory = module.memories.iter().next().map(|m| m.id());
 
@@ -175,7 +204,13 @@ pub fn inject_runtime(module: &mut Module) -> Runtime {
         });
         next_off += scalar_size(g.ty);
     }
-    let frames_start_offset = next_off;
+    // B1 plain-catch scratch area sits between saved_globals and
+    // frame data. When `b1_scratch_size == 0` (the common case for
+    // modules without plain-catch fork) this is a no-op and
+    // `frames_start_offset` is byte-identical to pre-B1.
+    let b1_scratch_base = next_off;
+    let aligned_b1_size = align_up_8(b1_scratch_size);
+    let frames_start_offset = b1_scratch_base + aligned_b1_size;
 
     // --- Runtime globals (state + buf) ---
     let state_global = module.globals.add_local(
@@ -243,6 +278,8 @@ pub fn inject_runtime(module: &mut Module) -> Runtime {
         state,
         saved_globals,
         frames_start_offset,
+        b1_scratch_base,
+        b1_scratch_size: aligned_b1_size,
     }
 }
 
@@ -414,6 +451,13 @@ fn store_kind_for(ty: ValType) -> StoreKind {
 
 fn natural_align(ty: ValType) -> u32 {
     scalar_size(ty)
+}
+
+/// Round `x` up to the nearest 8-byte boundary. Mirrors the helper
+/// in `instrument.rs`; kept private here to avoid widening visibility
+/// for a one-line helper. A future cleanup pass can consolidate.
+fn align_up_8(x: u32) -> u32 {
+    (x + 7) & !7u32
 }
 
 /// Emit a `() -> ()` function that resets state to NORMAL.

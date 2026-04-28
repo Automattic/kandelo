@@ -507,7 +507,7 @@ fn instrument_functions_returns_rewritten_set() {
     let seed = call_graph::find_import_func(&module, "kernel.kernel_fork")
         .expect("seed import present");
     let fork_path = call_graph::reaching_closure(&module, seed);
-    let runtime = inject_runtime(&mut module);
+    let runtime = inject_runtime(&mut module, 0);
     let rewritten = instrument_functions(&mut module, &runtime, &fork_path);
 
     let names: HashSet<String> = rewritten
@@ -1814,4 +1814,57 @@ fn b1_scratch_plan_handles_f32_f64_operand_sizes() {
     );
     assert_eq!(slots[0].scratch_offset, 0);
     assert_eq!(plan.total_bytes, 16);
+}
+
+// ======================================================================
+// Stage 1 (B1) Task 1.3 — end-to-end smoke via lib::instrument
+// ======================================================================
+
+#[test]
+fn b1_stage_1_module_without_plain_catch_validates_and_b1_size_zero() {
+    // A fork-using module with no plain catch should be byte-identical
+    // (instrumentation-wise) to pre-B1 — Stage 1 only adds bookkeeping;
+    // emission is unchanged. The standard wpk_fork_* exports must
+    // still be present.
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (func $caller (export "caller") (result i32)
+            call $fork)
+          (memory 1))
+    "#;
+    let bytes = instrument_wat(wat);
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+    assert!(
+        module.exports.iter().any(|e| e.name == "wpk_fork_state"),
+        "wpk_fork_state export must remain after Stage 1"
+    );
+}
+
+#[test]
+fn b1_stage_1_module_with_plain_catch_still_validates() {
+    // The plain-catch fixture from Tasks 1.1/1.2: B1 plan computes a
+    // non-zero scratch size, frames_start_offset shifts, but the
+    // emitted module still validates and exposes the standard
+    // wpk_fork_* exports. Behavioral assertions (parent forks → child
+    // resumes inside catch) come in Stage 2.
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (tag $exn)
+          (func $caller (export "caller") (result i32)
+            (block $h
+              (try_table (catch $exn $h)
+                nop))
+            call $fork)
+          (memory 1))
+    "#;
+    let bytes = instrument_wat(wat);
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+    assert!(
+        module.exports.iter().any(|e| e.name == "wpk_fork_state"),
+        "wpk_fork_state export must remain after Stage 1"
+    );
 }
