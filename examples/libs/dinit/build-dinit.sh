@@ -114,4 +114,28 @@ for binary in dinit dinitctl dinitcheck; do
     fi
 done
 
+# --- Asyncify transform for fork support ---
+# dinit forks once per service to launch each daemon (fork()+execvp()
+# pattern). Without asyncify wrapping kernel_fork, the child wasm
+# instance re-runs main() from scratch and always dispatches the FIRST
+# service in dinit's start order — every fork's child ends up as the
+# first service, no matter which service dinit thinks it's launching.
+#
+# The asyncify pass instruments callers up the chain to kernel_fork so
+# the host can save/restore the call stack across fork: child resumes
+# from the fork point with all locals intact, exec's the right binary.
+# Same pattern as nginx/php-fpm/bash. Apply only to dinit (the only
+# binary that forks); dinitctl and dinitcheck don't need it.
+WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
+if [ -z "$WASM_OPT" ]; then
+    echo "ERROR: wasm-opt not found. Install binaryen." >&2
+    exit 1
+fi
+
+echo "==> Applying asyncify transform to dinit.wasm..."
+"$WASM_OPT" --asyncify \
+    --pass-arg="asyncify-imports@kernel.kernel_fork" \
+    "$BIN_DIR/dinit.wasm" -o "$BIN_DIR/dinit.wasm"
+ls -la "$BIN_DIR/dinit.wasm"
+
 echo "==> dinit build complete"
