@@ -6,7 +6,7 @@
  *
  * Usage: npx tsx examples/browser/scripts/build-redis-vfs-image.ts
  */
-import { readFileSync, lstatSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
@@ -14,17 +14,14 @@ import {
   ensureDirRecursive,
   writeVfsBinary,
 } from "../../../host/src/vfs/image-helpers";
+import { resolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
 import { saveImage } from "./vfs-image-helpers";
 import { addDinitInit } from "./dinit-image-helpers";
 
-const SCRIPT_DIR = new URL(".", import.meta.url).pathname;
-const REPO_ROOT = join(SCRIPT_DIR, "..", "..", "..");
-const REDIS_WASM = join(REPO_ROOT, "examples", "libs", "redis", "bin", "redis-server.wasm");
-const OUT_FILE = join(REPO_ROOT, "examples", "browser", "public", "redis.vfs");
+const OUT_FILE = join(findRepoRoot(), "examples", "browser", "public", "redis.vfs");
 
 async function main() {
-  try { lstatSync(REDIS_WASM); }
-  catch { throw new Error(`redis-server.wasm not found at ${REDIS_WASM} — run 'bash run.sh build redis'`); }
+  const REDIS_WASM = resolveBinary("programs/redis/redis-server.wasm");
 
   const sab = new SharedArrayBuffer(32 * 1024 * 1024, { maxByteLength: 128 * 1024 * 1024 });
   const fs = MemoryFileSystem.create(sab, 128 * 1024 * 1024);

@@ -7,7 +7,7 @@
  *
  * Usage: npx tsx examples/browser/scripts/build-nginx-php-vfs-image.ts
  */
-import { readFileSync, lstatSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
@@ -16,14 +16,11 @@ import {
   writeVfsFile,
   writeVfsBinary,
 } from "../../../host/src/vfs/image-helpers";
+import { resolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
 import { saveImage } from "./vfs-image-helpers";
 import { addDinitInit } from "./dinit-image-helpers";
 
-const SCRIPT_DIR = new URL(".", import.meta.url).pathname;
-const REPO_ROOT = join(SCRIPT_DIR, "..", "..", "..");
-const NGINX_WASM = join(REPO_ROOT, "examples", "nginx", "nginx.wasm");
-const PHP_FPM_WASM = join(REPO_ROOT, "examples", "nginx", "php-fpm.wasm");
-const OUT_FILE = join(REPO_ROOT, "examples", "browser", "public", "nginx-php.vfs");
+const OUT_FILE = join(findRepoRoot(), "examples", "browser", "public", "nginx-php.vfs");
 
 const NGINX_CONF = `daemon off;
 master_process on;
@@ -177,10 +174,8 @@ sort($extensions);
 `;
 
 async function main() {
-  for (const path of [NGINX_WASM, PHP_FPM_WASM]) {
-    try { lstatSync(path); }
-    catch { throw new Error(`${path} not found — run 'bash run.sh build nginx php-fpm'`); }
-  }
+  const NGINX_WASM = resolveBinary("programs/nginx.wasm");
+  const PHP_FPM_WASM = resolveBinary("programs/php/php-fpm.wasm");
 
   const sab = new SharedArrayBuffer(64 * 1024 * 1024, { maxByteLength: 256 * 1024 * 1024 });
   const fs = MemoryFileSystem.create(sab, 256 * 1024 * 1024);

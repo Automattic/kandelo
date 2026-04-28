@@ -8,7 +8,7 @@
  * with argv `["/sbin/dinit", "--container"]`. dinit is PID 1; it reads
  * `/etc/dinit.d/boot` and pulls in everything that depends on it.
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
@@ -16,13 +16,31 @@ import {
   writeVfsFile,
   ensureDirRecursive,
 } from "../../../host/src/vfs/image-helpers";
+import { tryResolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
 
-const SCRIPT_DIR = new URL(".", import.meta.url).pathname;
-const REPO_ROOT = join(SCRIPT_DIR, "..", "..", "..");
+const REPO_ROOT = findRepoRoot();
 
-/** Where build-dinit.sh drops the binary. */
-const DINIT_WASM = join(REPO_ROOT, "examples", "libs", "dinit", "bin", "dinit.wasm");
-const DINITCTL_WASM = join(REPO_ROOT, "examples", "libs", "dinit", "bin", "dinitctl.wasm");
+/**
+ * Locate the dinit + dinitctl binaries.
+ *
+ * dinit isn't in the published release yet, so this prefers the
+ * resolver (which honors local-binaries/ overrides + future releases)
+ * but falls back to the source-tree path that build-dinit.sh produces.
+ */
+function resolveDinitBinaries(): { dinit: string; dinitctl: string } {
+  const dinit = tryResolveBinary("programs/dinit/dinit.wasm")
+    ?? join(REPO_ROOT, "examples", "libs", "dinit", "bin", "dinit.wasm");
+  const dinitctl = tryResolveBinary("programs/dinit/dinitctl.wasm")
+    ?? join(REPO_ROOT, "examples", "libs", "dinit", "bin", "dinitctl.wasm");
+  if (!existsSync(dinit) || !existsSync(dinitctl)) {
+    throw new Error(
+      "dinit binaries not found. Run 'bash run.sh build dinit' or place\n" +
+      "  pre-built dinit.wasm and dinitctl.wasm under\n" +
+      `  ${join(REPO_ROOT, "local-binaries/programs/wasm32/dinit/")}`,
+    );
+  }
+  return { dinit, dinitctl };
+}
 
 /**
  * One service entry baked into the image at /etc/dinit.d/<name>. The
@@ -138,8 +156,9 @@ export function addDinitInit(
 ): void {
   // Binaries
   ensureDirRecursive(fs, "/sbin");
-  writeVfsBinary(fs, "/sbin/dinit", new Uint8Array(readFileSync(DINIT_WASM)));
-  writeVfsBinary(fs, "/sbin/dinitctl", new Uint8Array(readFileSync(DINITCTL_WASM)));
+  const { dinit, dinitctl } = resolveDinitBinaries();
+  writeVfsBinary(fs, "/sbin/dinit", new Uint8Array(readFileSync(dinit)));
+  writeVfsBinary(fs, "/sbin/dinitctl", new Uint8Array(readFileSync(dinitctl)));
 
   // Basic rootfs files. Most Unix daemons expect these to exist at
   // startup; missing them is the usual cause of "started but exits 1

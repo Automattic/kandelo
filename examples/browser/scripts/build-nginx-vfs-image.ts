@@ -8,7 +8,7 @@
  *
  * Usage: npx tsx examples/browser/scripts/build-nginx-vfs-image.ts
  */
-import { readFileSync, lstatSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
@@ -17,12 +17,11 @@ import {
   writeVfsFile,
   writeVfsBinary,
 } from "../../../host/src/vfs/image-helpers";
+import { resolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
 import { saveImage } from "./vfs-image-helpers";
 import { addDinitInit } from "./dinit-image-helpers";
 
-const SCRIPT_DIR = new URL(".", import.meta.url).pathname;
-const REPO_ROOT = join(SCRIPT_DIR, "..", "..", "..");
-const NGINX_WASM = join(REPO_ROOT, "examples", "nginx", "nginx.wasm");
+const REPO_ROOT = findRepoRoot();
 const NGINX_CONF_HOST = join(REPO_ROOT, "examples", "nginx", "nginx.conf");
 const OUT_FILE = join(REPO_ROOT, "examples", "browser", "public", "nginx.vfs");
 
@@ -64,9 +63,7 @@ function loadNginxConf(): string {
 }
 
 async function main() {
-  // Validate inputs
-  try { lstatSync(NGINX_WASM); }
-  catch { throw new Error(`nginx.wasm not found at ${NGINX_WASM} — run 'bash run.sh build nginx'`); }
+  const NGINX_WASM = resolveBinary("programs/nginx.wasm");
 
   // 32MB SAB; nginx wasm itself is ~3MB, dinit+dinitctl ~1.6MB,
   // plus configs and html — fits comfortably with room to grow at boot.
