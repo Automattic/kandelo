@@ -86,9 +86,14 @@ function renderService(svc: DinitService): string {
   if (svc.workingDir) lines.push(`working-dir = ${svc.workingDir}`);
   for (const dep of svc.dependsOn ?? []) lines.push(`depends-on = ${dep}`);
   for (const dep of svc.waitsFor ?? []) lines.push(`waits-for = ${dep}`);
+  // Always emit restart explicitly. dinit's compiled-in default is
+  // ON_FAILURE (DEFAULT_AUTO_RESTART), so an unset field would silently
+  // turn restart=false into a restart loop.
   if (svc.restart) {
     lines.push("restart = true");
     if (svc.restartDelay !== undefined) lines.push(`restart-delay = ${svc.restartDelay}`);
+  } else {
+    lines.push("restart = false");
   }
   if (svc.logfile !== undefined) {
     lines.push(`logfile = ${svc.logfile}`);
@@ -136,23 +141,45 @@ const ETC_HOSTS = [
 ].join("\n");
 
 /**
- * Add the dinit binary, basic rootfs files, the implicit `boot` service
- * that pulls in the supplied services, and per-service config files.
+ * Options for {@link addDinitInit}. The defaults set up an implicit
+ * `boot` service that depends on every supplied service — fine for
+ * demos that always start the whole tree. Demos that bake multiple
+ * variants (e.g. mariadb's Aria vs InnoDB trees) and select one via
+ * dinit's positional service-name argv set `boot: false` so the
+ * variants don't both start at boot.
+ */
+export interface AddDinitInitOptions {
+  /**
+   * Implicit boot service. `true` (default) creates an internal
+   * service named "boot" depending on every supplied service.
+   * `false` skips it; demos must pass a service name as dinit's
+   * positional argv to pick a starting tree. A string customizes
+   * the name (rare).
+   */
+  boot?: boolean | string;
+}
+
+/**
+ * Add the dinit binary, basic rootfs files, and per-service config
+ * files. Optionally adds an implicit `boot` service.
  *
  * Image gets:
  *   /sbin/dinit              - the init binary
  *   /sbin/dinitctl           - the control client
  *   /etc/passwd, /etc/group  - user/group database (daemons getpwnam at start)
  *   /etc/hosts               - localhost resolution
- *   /etc/dinit.d/boot        - internal service depending on each service
+ *   /etc/dinit.d/boot        - implicit boot service (unless boot=false)
  *   /etc/dinit.d/<name>      - per-service config file
  *   /var/log, /run           - standard runtime dirs
  *
- * The browser demo boots with argv = ["/sbin/dinit", "--container"].
+ * Default boot uses argv = ["/sbin/dinit", "--container"]. With
+ * boot=false, demos pass the target service name as a positional
+ * argument: ["/sbin/dinit", "--container", "aria-mariadb"].
  */
 export function addDinitInit(
   fs: MemoryFileSystem,
   services: DinitService[],
+  opts: AddDinitInitOptions = {},
 ): void {
   // Binaries
   ensureDirRecursive(fs, "/sbin");
@@ -177,14 +204,16 @@ export function addDinitInit(
   // Service tree
   ensureDirRecursive(fs, "/etc/dinit.d");
 
-  // Implicit "boot" service: dinit's default target. Depends on every
-  // listed service so the whole tree starts when dinit comes up.
-  const boot: DinitService = {
-    name: "boot",
-    type: "internal",
-    dependsOn: services.map((s) => s.name),
-  };
-  writeVfsFile(fs, "/etc/dinit.d/boot", renderService(boot));
+  const bootOpt = opts.boot ?? true;
+  if (bootOpt !== false) {
+    const bootName = typeof bootOpt === "string" ? bootOpt : "boot";
+    const boot: DinitService = {
+      name: bootName,
+      type: "internal",
+      dependsOn: services.map((s) => s.name),
+    };
+    writeVfsFile(fs, `/etc/dinit.d/${bootName}`, renderService(boot));
+  }
 
   // Per-service config files.
   for (const svc of services) {
