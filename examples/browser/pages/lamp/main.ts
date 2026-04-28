@@ -31,12 +31,12 @@ import { decompressVfsImage } from "../../../../host/src/vfs/load-image";
 import { SystemInit } from "../../lib/init/system-init";
 import { writeVfsFile } from "../../lib/init/vfs-utils";
 import kernelWasmUrl from "@kernel-wasm?url";
-import nginxWasmUrl from "../../../../binaries/programs/nginx.wasm?url";
-import phpFpmWasmUrl from "../../../../binaries/programs/php/php-fpm.wasm?url";
-import coreutilsWasmUrl from "../../../../binaries/programs/coreutils.wasm?url";
-import grepWasmUrl from "../../../../binaries/programs/grep.wasm?url";
-import sedWasmUrl from "../../../../binaries/programs/sed.wasm?url";
-import VFS_IMAGE_URL from "@binaries/programs/lamp.vfs?url";
+import nginxWasmUrl from "../../../../binaries/programs/wasm32/nginx.wasm?url";
+import phpFpmWasmUrl from "../../../../binaries/programs/wasm32/php/php-fpm.wasm?url";
+import coreutilsWasmUrl from "../../../../binaries/programs/wasm32/coreutils.wasm?url";
+import grepWasmUrl from "../../../../binaries/programs/wasm32/grep.wasm?url";
+import sedWasmUrl from "../../../../binaries/programs/wasm32/sed.wasm?url";
+import VFS_IMAGE_URL from "@binaries/programs/wasm32/lamp.vfs?url";
 import "@xterm/xterm/css/xterm.css";
 import "../../lib/terminal-panel.css";
 

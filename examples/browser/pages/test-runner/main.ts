@@ -7,10 +7,10 @@
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
 import kernelWasmUrl from "@kernel-wasm?url";
-import dashWasmUrl from "../../../../binaries/programs/dash.wasm?url";
-import coreutilsWasmUrl from "../../../../binaries/programs/coreutils.wasm?url";
-import grepWasmUrl from "../../../../binaries/programs/grep.wasm?url";
-import sedWasmUrl from "../../../../binaries/programs/sed.wasm?url";
+import dashWasmUrl from "../../../../binaries/programs/wasm32/dash.wasm?url";
+import coreutilsWasmUrl from "../../../../binaries/programs/wasm32/coreutils.wasm?url";
+import grepWasmUrl from "../../../../binaries/programs/wasm32/grep.wasm?url";
+import sedWasmUrl from "../../../../binaries/programs/wasm32/sed.wasm?url";
 import genCatWasmUrl from "../../../../examples/gencat.wasm?url";
 
 interface DataFile {

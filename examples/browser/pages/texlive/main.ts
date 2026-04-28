@@ -5,7 +5,7 @@
 import { BrowserKernel } from "../../lib/browser-kernel";
 import { loadTexliveBundle } from "../../lib/texlive-bundle";
 import kernelWasmUrl from "@kernel-wasm?url";
-import pdftexWasmUrl from "../../../../binaries/programs/pdftex.wasm?url";
+import pdftexWasmUrl from "../../../../binaries/programs/wasm32/pdftex.wasm?url";
 
 // CodeMirror imports
 import { EditorView, keymap, lineNumbers } from "@codemirror/view";

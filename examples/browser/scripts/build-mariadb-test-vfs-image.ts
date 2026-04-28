@@ -2,7 +2,13 @@
  * Build a pre-built VFS image containing MariaDB, mysql-test files, and
  * init descriptors for the browser test runner.
  *
- * Produces: examples/browser/public/mariadb-test.vfs
+ * Produces: $MARIADB_TEST_VFS_OUT (default:
+ * examples/browser/public/mariadb-test.vfs).
+ *
+ * The package-management wrapper (examples/libs/mariadb-test/build-mariadb-test.sh)
+ * sets MARIADB_TEST_VFS_OUT to a staging path so the resolver picks it up
+ * via install_local_binary. Direct invocations write to public/ for
+ * convenience during local iteration.
  *
  * Usage:
  *   npx tsx examples/browser/scripts/build-mariadb-test-vfs-image.ts          # curated tests
@@ -25,7 +31,8 @@ const MYSQL_TEST_DIR = "examples/libs/mariadb/mariadb-install/mysql-test";
 const MARIADB_PATH = resolveBinary("programs/mariadb/mariadbd.wasm");
 const SYSTEM_TABLES_PATH = "examples/libs/mariadb/mariadb-install/share/mysql/mysql_system_tables.sql";
 const SYSTEM_DATA_PATH = "examples/libs/mariadb/mariadb-install/share/mysql/mysql_system_tables_data.sql";
-const OUT_FILE = "examples/browser/public/mariadb-test.vfs";
+const OUT_FILE = process.env.MARIADB_TEST_VFS_OUT
+  ?? "examples/browser/public/mariadb-test.vfs";
 
 const includeAll = process.argv.includes("--all");
 

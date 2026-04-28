@@ -6,8 +6,8 @@
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
 import kernelWasmUrl from "@kernel-wasm?url";
-import gitWasmUrl from "../../../../binaries/programs/git/git.wasm?url";
-import gitRemoteHttpWasmUrl from "../../../../binaries/programs/git/git-remote-http.wasm?url";
+import gitWasmUrl from "../../../../binaries/programs/wasm32/git/git.wasm?url";
+import gitRemoteHttpWasmUrl from "../../../../binaries/programs/wasm32/git/git-remote-http.wasm?url";
 
 declare global {
   interface Window {

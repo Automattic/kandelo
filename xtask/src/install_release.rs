@@ -220,30 +220,26 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         // manually edited local-binaries/ and wants it re-populated
         // without busting the cache.
         if matches!(m.kind, ManifestKind::Program) && (installed_fresh || force_mirror) {
-            mirror_program_outputs(&m, &canonical, &local_binaries_dir)?;
+            mirror_program_outputs(&m, &canonical, &local_binaries_dir, arch)?;
         }
 
-        // Symlink each declared output into <binaries_dir>/programs/
-        // when --binaries-dir is supplied. fetch-binaries.sh passes
-        // this so the legacy `binaries/...?url` import surface (≈100
-        // imports across browser demos and tests) finds the fetched
-        // bytes via the cache canonical path. Symlinks are always
-        // (re)placed — they're cheap, atomic, and make the binaries/
-        // tree mirror the cache's current state.
+        // Symlink each declared output into
+        // <binaries_dir>/programs/<arch>/ when --binaries-dir is
+        // supplied. fetch-binaries.sh passes this so consumer Vite
+        // imports of `@binaries/programs/<arch>/<x>` find the
+        // fetched bytes via the cache canonical path. Symlinks are
+        // always (re)placed — they're cheap, atomic, and make the
+        // binaries/ tree mirror the cache's current state.
         //
-        // Multi-arch caveat: when the manifest carries both wasm32
-        // and wasm64 entries for the same program, naively symlinking
-        // for both makes the second write win and points
-        // `binaries/programs/<x>.wasm` at the wrong arch. Browser
-        // demos and host tests exclusively load user programs as
-        // wasm32 (the kernel is wasm64; user programs are wasm32),
-        // so cap the binaries/ symlinks to wasm32 only. wasm64
-        // archives are still installed into the resolver cache and
-        // reachable via canonical paths for any wasm64-aware
-        // consumer.
+        // The per-arch subdirectory is load-bearing: a multi-arch
+        // program (e.g. mariadb-vfs ships both wasm32 and wasm64)
+        // would otherwise last-write-wins on a flat
+        // `binaries/programs/<x>` symlink and silently point
+        // consumers at the wrong arch. The per-arch layout mirrors
+        // the resolver cache's per-arch canonical paths.
         if let Some(bdir) = binaries_dir.as_deref() {
-            if matches!(m.kind, ManifestKind::Program) && arch == TargetArch::Wasm32 {
-                place_binaries_symlinks(&m, &canonical, bdir)?;
+            if matches!(m.kind, ManifestKind::Program) {
+                place_binaries_symlinks(&m, &canonical, bdir, arch)?;
             }
         }
     }
@@ -290,12 +286,12 @@ fn build_archive_url(
 }
 
 /// Copy each declared `[[outputs]]` wasm from the cache into
-/// `local-binaries/programs/`.
+/// `local-binaries/programs/<arch>/`.
 ///
-/// Layout matches `scripts/build-programs.sh`'s convention:
+/// Layout (per arch — wasm32 and wasm64 mirror in parallel):
 ///
-///   * 1 output: `<local_binaries>/programs/<output.name>.wasm`.
-///   * ≥2 outputs: `<local_binaries>/programs/<program.name>/<output.name>.wasm`.
+///   * 1 output: `<local_binaries>/programs/<arch>/<output.name>.wasm`.
+///   * ≥2 outputs: `<local_binaries>/programs/<arch>/<program.name>/<output.name>.wasm`.
 ///
 /// Atomic copy via tmp + rename so a crash mid-copy doesn't expose a
 /// partial file at the destination.
@@ -303,15 +299,17 @@ fn mirror_program_outputs(
     m: &DepsManifest,
     canonical: &Path,
     local_binaries_dir: &Path,
+    arch: TargetArch,
 ) -> Result<(), String> {
     let outputs = &m.program_outputs;
     if outputs.is_empty() {
         return Err(format!("program {:?} has no [[outputs]]", m.name));
     }
+    let arch_root = local_binaries_dir.join("programs").join(arch.as_str());
     let dest_dir = if outputs.len() > 1 {
-        local_binaries_dir.join("programs").join(&m.name)
+        arch_root.join(&m.name)
     } else {
-        local_binaries_dir.join("programs")
+        arch_root
     };
     fs::create_dir_all(&dest_dir)
         .map_err(|e| format!("mkdir {}: {e}", dest_dir.display()))?;
@@ -380,15 +378,17 @@ fn place_binaries_symlinks(
     m: &DepsManifest,
     canonical: &Path,
     binaries_dir: &Path,
+    arch: TargetArch,
 ) -> Result<(), String> {
     let outputs = &m.program_outputs;
     if outputs.is_empty() {
         return Err(format!("program {:?} has no [[outputs]]", m.name));
     }
+    let arch_root = binaries_dir.join("programs").join(arch.as_str());
     let dest_dir = if outputs.len() > 1 {
-        binaries_dir.join("programs").join(&m.name)
+        arch_root.join(&m.name)
     } else {
-        binaries_dir.join("programs")
+        arch_root
     };
     fs::create_dir_all(&dest_dir)
         .map_err(|e| format!("mkdir {}: {e}", dest_dir.display()))?;
@@ -615,15 +615,21 @@ spdx = "TestLicense"
         ])
         .expect("install_release must succeed");
 
-        let mirror = local_bin.join("programs/myprog.wasm");
+        let mirror = local_bin.join("programs/wasm32/myprog.wasm");
         assert!(mirror.is_file(), "expected {} to exist", mirror.display());
         assert_eq!(fs::read(&mirror).unwrap(), b"p1\n");
 
         // Multi-output dir layout MUST NOT be present for a single-output
         // program. Catches regressions where every program ends up nested.
         assert!(
-            !local_bin.join("programs/myprog/myprog.wasm").exists(),
+            !local_bin.join("programs/wasm32/myprog/myprog.wasm").exists(),
             "single-output program must use flat layout, not nested"
+        );
+        // The legacy arch-agnostic path must NOT exist — every consumer
+        // must select an arch explicitly.
+        assert!(
+            !local_bin.join("programs/myprog.wasm").exists(),
+            "flat (non-arch) path must not be populated"
         );
     }
 
@@ -663,7 +669,7 @@ spdx = "TestLicense"
         ])
         .expect("install_release must succeed");
 
-        let link = bdir.join("programs/fixprog.wasm");
+        let link = bdir.join("programs/wasm32/fixprog.wasm");
         let meta = fs::symlink_metadata(&link).expect("symlink metadata");
         assert!(
             meta.file_type().is_symlink(),
@@ -673,6 +679,11 @@ spdx = "TestLicense"
         // Target should resolve into the cache canonical path and be
         // readable. The contents come from the build script we wrote.
         assert_eq!(fs::read(&link).unwrap(), b"bdata\n");
+        // Arch-agnostic path must not be created.
+        assert!(
+            !bdir.join("programs/fixprog.wasm").exists(),
+            "flat (non-arch) symlink path must not be populated"
+        );
     }
 
     #[test]
@@ -713,22 +724,27 @@ spdx = "TestLicense"
         ])
         .expect("install_release must succeed");
 
-        // Multi-output programs nest under a per-program subdir.
+        // Multi-output programs nest under a per-program subdir, inside
+        // the per-arch subtree.
         assert!(
-            bdir.join("programs/fixmulti/a.wasm").is_symlink_or_file(),
+            bdir.join("programs/wasm32/fixmulti/a.wasm").is_symlink_or_file(),
             "expected nested a.wasm symlink"
         );
         assert!(
-            bdir.join("programs/fixmulti/b.wasm").is_symlink_or_file(),
+            bdir.join("programs/wasm32/fixmulti/b.wasm").is_symlink_or_file(),
             "expected nested b.wasm symlink"
         );
         assert!(
-            !bdir.join("programs/a.wasm").exists(),
-            "multi-output program must NOT use flat layout"
+            !bdir.join("programs/wasm32/a.wasm").exists(),
+            "multi-output program must NOT use flat layout (per arch)"
+        );
+        assert!(
+            !bdir.join("programs/fixmulti/a.wasm").exists(),
+            "arch-agnostic path must not be populated"
         );
         // Symlinks are readable through to the cache contents.
-        assert_eq!(fs::read(bdir.join("programs/fixmulti/a.wasm")).unwrap(), b"a\n");
-        assert_eq!(fs::read(bdir.join("programs/fixmulti/b.wasm")).unwrap(), b"b\n");
+        assert_eq!(fs::read(bdir.join("programs/wasm32/fixmulti/a.wasm")).unwrap(), b"a\n");
+        assert_eq!(fs::read(bdir.join("programs/wasm32/fixmulti/b.wasm")).unwrap(), b"b\n");
     }
 
     /// Tiny shim to keep the test assertions readable. `fs::Path` doesn't
@@ -780,15 +796,16 @@ spdx = "TestLicense"
         ])
         .expect("install_release must succeed");
 
-        let m1 = local_bin.join("programs/git/git.wasm");
-        let m2 = local_bin.join("programs/git/git-remote-http.wasm");
+        let m1 = local_bin.join("programs/wasm32/git/git.wasm");
+        let m2 = local_bin.join("programs/wasm32/git/git-remote-http.wasm");
         assert!(m1.is_file(), "expected {} to exist", m1.display());
         assert!(m2.is_file(), "expected {} to exist", m2.display());
         assert_eq!(fs::read(&m1).unwrap(), b"gitdata\n");
         assert_eq!(fs::read(&m2).unwrap(), b"httpdata\n");
 
         // Flat layout MUST NOT be used for multi-output programs.
-        assert!(!local_bin.join("programs/git.wasm").exists());
+        assert!(!local_bin.join("programs/wasm32/git.wasm").exists());
+        assert!(!local_bin.join("programs/git/git.wasm").exists());
     }
 
     #[test]
@@ -958,7 +975,7 @@ spdx = "TestLicense"
         ];
 
         super::run(args.clone()).expect("first install_release must succeed");
-        let mirror = local_bin.join("programs/myprog.wasm");
+        let mirror = local_bin.join("programs/wasm32/myprog.wasm");
         assert!(mirror.is_file(), "first install must create mirror");
         fs::remove_file(&mirror).unwrap();
         assert!(!mirror.exists(), "mirror removed for the test setup");
@@ -1010,7 +1027,7 @@ spdx = "TestLicense"
         ];
 
         super::run(args.clone()).expect("first install_release must succeed");
-        let mirror = local_bin.join("programs/myprog.wasm");
+        let mirror = local_bin.join("programs/wasm32/myprog.wasm");
         assert!(mirror.is_file(), "first install must create mirror");
         fs::remove_file(&mirror).unwrap();
         assert!(!mirror.exists(), "mirror removed for the test setup");

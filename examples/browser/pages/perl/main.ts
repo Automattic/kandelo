@@ -9,8 +9,8 @@ import { PtyTerminal } from "../../lib/pty-terminal";
 import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
 import { decompressVfsImage } from "../../../../host/src/vfs/load-image";
 import kernelWasmUrl from "@kernel-wasm?url";
-import perlWasmUrl from "../../../../binaries/programs/perl.wasm?url";
-import VFS_IMAGE_URL from "@binaries/programs/perl-vfs.vfs?url";
+import perlWasmUrl from "../../../../binaries/programs/wasm32/perl.wasm?url";
+import VFS_IMAGE_URL from "@binaries/programs/wasm32/perl-vfs.vfs?url";
 import "@xterm/xterm/css/xterm.css";
 
 // --- DOM elements ---

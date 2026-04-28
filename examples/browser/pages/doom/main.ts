@@ -12,7 +12,7 @@
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
 import { attachCanvas } from "../../../../host/src/framebuffer/canvas-renderer";
-import fbdoomWasmUrl from "../../../../binaries/programs/fbdoom.wasm?url";
+import fbdoomWasmUrl from "../../../../binaries/programs/wasm32/fbdoom.wasm?url";
 import kernelWasmUrl from "@kernel-wasm?url";
 
 const startBtn = document.getElementById("start") as HTMLButtonElement;

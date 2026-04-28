@@ -10,8 +10,14 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SYSROOT="$REPO_ROOT/sysroot"
 GLUE_DIR="$REPO_ROOT/glue"
-OUT_DIR="$REPO_ROOT/local-binaries/programs"
-mkdir -p "$OUT_DIR"
+# Per-arch output dirs match the layout install_release writes:
+# binaries/programs/<arch>/ and local-binaries/programs/<arch>/.
+# wasm32 and wasm64 builds share program names (e.g. hello64.wasm)
+# so they MUST live in separate trees — a flat OUT_DIR would
+# last-write-wins across arches.
+OUT_DIR_32="$REPO_ROOT/local-binaries/programs/wasm32"
+OUT_DIR_64="$REPO_ROOT/local-binaries/programs/wasm64"
+mkdir -p "$OUT_DIR_32" "$OUT_DIR_64"
 
 # Auto-detect LLVM (same logic as SDK / run-libc-tests.sh)
 find_llvm_bin() {
@@ -74,8 +80,6 @@ LINK_FLAGS=(
 
 ASYNCIFY_IMPORTS="kernel.kernel_fork"
 
-mkdir -p "$OUT_DIR"
-
 build_program() {
     local src="$1"
     local out_dir="$2"
@@ -103,7 +107,7 @@ for src in "$REPO_ROOT/programs/"*.c; do
     [ "$(basename "$src")" = "sh.c" ] && continue
     # Skip hello64.c — built separately with wasm64 toolchain below
     [ "$(basename "$src")" = "hello64.c" ] && continue
-    build_program "$src" "$OUT_DIR"
+    build_program "$src" "$OUT_DIR_32"
 done
 
 echo "Building example programs..."
@@ -162,7 +166,7 @@ if [ -f "$SYSROOT64/lib/libc.a" ]; then
         [ -f "$src" ] || continue
         local_name=$(basename "$src" .c)
         echo "  Compiling $local_name (wasm64)..."
-        "$CC" "${CFLAGS64[@]}" "$src" "${LINK_FLAGS64[@]}" -o "$OUT_DIR/${local_name}.wasm"
+        "$CC" "${CFLAGS64[@]}" "$src" "${LINK_FLAGS64[@]}" -o "$OUT_DIR_64/${local_name}.wasm"
     done
 fi
 

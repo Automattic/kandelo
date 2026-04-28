@@ -22,7 +22,8 @@ import { SystemInit } from "../../lib/init/system-init";
 import { MySqlBrowserClient } from "../../lib/mysql-client";
 import { writeInitDescriptor } from "../../lib/init/vfs-utils";
 import kernelWasmUrl from "@kernel-wasm?url";
-import VFS_IMAGE_URL_32 from "@binaries/programs/mariadb-vfs.vfs?url";
+import VFS_IMAGE_URL_32 from "@binaries/programs/wasm32/mariadb-vfs.vfs?url";
+import VFS_IMAGE_URL_64 from "@binaries/programs/wasm64/mariadb-vfs.vfs?url";
 import "@xterm/xterm/css/xterm.css";
 import "../../lib/terminal-panel.css";
 
@@ -46,15 +47,10 @@ async function loadOptionalUrl(relPath: string): Promise<string | null> {
   return loader ? await loader() : null;
 }
 
-// VFS_IMAGE_URL_32 is imported above via the @binaries alias.
-//
-// wasm64 mariadb-vfs is built and lives in the resolver cache, but
-// xtask install-release only symlinks the wasm32 arch into binaries/
-// (last-write-wins on a single symlink path otherwise picks the wrong
-// arch — see xtask/src/install_release.rs). The wasm64 demo therefore
-// loads its VFS from the legacy public/ asset until binaries/ gains a
-// per-arch layout.
-const VFS_IMAGE_URL_64 = import.meta.env.BASE_URL + "mariadb-64.vfs";
+// VFS_IMAGE_URL_32 / VFS_IMAGE_URL_64 are imported above via the
+// @binaries alias. install_release symlinks each arch into a
+// `binaries/programs/<arch>/` subtree, so consumers select the
+// arch they want as a literal path segment.
 
 const log = document.getElementById("log") as HTMLPreElement;
 const startBtn = document.getElementById("start") as HTMLButtonElement;

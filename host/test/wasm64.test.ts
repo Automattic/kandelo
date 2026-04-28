@@ -16,7 +16,7 @@ function loadWasm(relPath: string): ArrayBuffer {
 
 describe("wasm64 process support", () => {
   test("detectPtrWidth identifies wasm64 binary", () => {
-    const bytes = loadWasm("programs/hello64.wasm");
+    const bytes = loadWasm("programs/wasm64/hello64.wasm");
     expect(detectPtrWidth(bytes)).toBe(8);
   });
 
@@ -28,7 +28,7 @@ describe("wasm64 process support", () => {
 
   test("hello64: LP64 type sizes", async () => {
     const result = await runCentralizedProgram({
-      programPath: resolveBinary("programs/hello64.wasm"),
+      programPath: resolveBinary("programs/wasm64/hello64.wasm"),
       timeout: 10_000,
     });
 

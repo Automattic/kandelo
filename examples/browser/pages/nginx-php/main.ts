@@ -21,12 +21,12 @@ import {
 } from "../../lib/init/shell-binaries";
 import { writeVfsFile, writeInitDescriptor } from "../../lib/init/vfs-utils";
 import kernelWasmUrl from "@kernel-wasm?url";
-import nginxWasmUrl from "../../../../binaries/programs/nginx.wasm?url";
-import phpFpmWasmUrl from "../../../../binaries/programs/php/php-fpm.wasm?url";
-import dashWasmUrl from "../../../../binaries/programs/dash.wasm?url";
-import coreutilsWasmUrl from "../../../../binaries/programs/coreutils.wasm?url";
-import grepWasmUrl from "../../../../binaries/programs/grep.wasm?url";
-import sedWasmUrl from "../../../../binaries/programs/sed.wasm?url";
+import nginxWasmUrl from "../../../../binaries/programs/wasm32/nginx.wasm?url";
+import phpFpmWasmUrl from "../../../../binaries/programs/wasm32/php/php-fpm.wasm?url";
+import dashWasmUrl from "../../../../binaries/programs/wasm32/dash.wasm?url";
+import coreutilsWasmUrl from "../../../../binaries/programs/wasm32/coreutils.wasm?url";
+import grepWasmUrl from "../../../../binaries/programs/wasm32/grep.wasm?url";
+import sedWasmUrl from "../../../../binaries/programs/wasm32/sed.wasm?url";
 import "@xterm/xterm/css/xterm.css";
 import "../../lib/terminal-panel.css";
 

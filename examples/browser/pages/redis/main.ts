@@ -23,11 +23,11 @@ import {
 } from "../../lib/init/vfs-utils";
 import { RedisBrowserClient } from "../../lib/redis-client";
 import kernelWasmUrl from "@kernel-wasm?url";
-import redisWasmUrl from "../../../../binaries/programs/redis/redis-server.wasm?url";
-import dashWasmUrl from "../../../../binaries/programs/dash.wasm?url";
-import coreutilsWasmUrl from "../../../../binaries/programs/coreutils.wasm?url";
-import grepWasmUrl from "../../../../binaries/programs/grep.wasm?url";
-import sedWasmUrl from "../../../../binaries/programs/sed.wasm?url";
+import redisWasmUrl from "../../../../binaries/programs/wasm32/redis/redis-server.wasm?url";
+import dashWasmUrl from "../../../../binaries/programs/wasm32/dash.wasm?url";
+import coreutilsWasmUrl from "../../../../binaries/programs/wasm32/coreutils.wasm?url";
+import grepWasmUrl from "../../../../binaries/programs/wasm32/grep.wasm?url";
+import sedWasmUrl from "../../../../binaries/programs/wasm32/sed.wasm?url";
 import "@xterm/xterm/css/xterm.css";
 import "../../lib/terminal-panel.css";
 

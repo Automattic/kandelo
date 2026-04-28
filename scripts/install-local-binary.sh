@@ -19,10 +19,15 @@
 #   <program>          logical program name matching manifest entries
 #                      (e.g., "dash", "git", "php").
 #   <src>              path to the freshly-built .wasm (or .zip).
-#   <dest-filename>    optional: filename under local-binaries/programs/<program>/
-#                      for multi-binary programs. When omitted, the file
-#                      lands at local-binaries/programs/<program>.<ext>
+#   <dest-filename>    optional: filename under
+#                      local-binaries/programs/<arch>/<program>/ for
+#                      multi-binary programs. When omitted, the file
+#                      lands at local-binaries/programs/<arch>/<program>.<ext>
 #                      (single-binary convention).
+#
+# Arch is taken from $WASM_POSIX_DEP_TARGET_ARCH (set by the resolver
+# while running build scripts) and falls back to "wasm32" for direct
+# build-script invocations like `bash examples/libs/dash/build-dash.sh`.
 #
 # Multi-binary examples:
 #   install_local_binary git examples/libs/git/bin/git.wasm git.wasm
@@ -54,14 +59,15 @@ install_local_binary() {
         repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
     fi
 
+    local arch="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
     local dest
     if [ -n "$dest_name" ]; then
-        # Multi-binary program — dest goes under programs/<program>/
-        dest="$repo_root/local-binaries/programs/$program/$dest_name"
+        # Multi-binary program — dest goes under programs/<arch>/<program>/
+        dest="$repo_root/local-binaries/programs/$arch/$program/$dest_name"
     else
-        # Single-binary — programs/<program>.<ext>
+        # Single-binary — programs/<arch>/<program>.<ext>
         local ext="${src##*.}"
-        dest="$repo_root/local-binaries/programs/$program.$ext"
+        dest="$repo_root/local-binaries/programs/$arch/$program.$ext"
     fi
 
     mkdir -p "$(dirname "$dest")"

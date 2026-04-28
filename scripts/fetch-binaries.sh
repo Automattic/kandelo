@@ -160,7 +160,7 @@ zip_all_flat_wasm() {
     return 0
 }
 
-# --- Helper: extract a flat zip into binaries/programs/<prog>/ -------------
+# --- Helper: extract a flat zip into a destination dir ---------------------
 extract_flat_zip() {
     local zip_file="$1" rel_dest_dir="$2"
     local dest_dir="$BIN_DIR/$rel_dest_dir"
@@ -192,11 +192,11 @@ place "$MANIFEST_OBJ" "manifest.json"
 # --- Step 1.5: install package-archive entries via xtask -----------
 # Each archive-style entry has archive_name + archive_sha256 +
 # compatibility; remote_fetch in xtask handles fetch + verify + install
-# into the resolver's canonical cache path, mirrors program outputs
-# into local-binaries/programs/, and (with --binaries-dir) places
-# symlinks under binaries/programs/ pointing at the cache so the
-# legacy `binaries/...?url` import surface (≈100 sites across browser
-# demos and tests) finds the fetched bytes.
+# into the resolver's canonical cache path. Program archives are also
+# mirrored into local-binaries/programs/<arch>/ and (with
+# --binaries-dir) symlinked under binaries/programs/<arch>/ so consumer
+# Vite imports of `@binaries/programs/<arch>/<x>` resolve through the
+# cache.
 #
 # Legacy zip/wasm-vintage entries (no archive_name) are left for Step
 # 2's symlink-into-binaries/ codepath below — that path handles
@@ -313,28 +313,6 @@ if [ "$PRUNE" = "1" ]; then
         fi
     done
     echo "  removed $removed unreferenced objects"
-fi
-
-# --- Step 4: populate examples/browser/public/ for Vite -------------------
-#
-# Browser demos import binaries via Vite `?url` imports (from
-# `binaries/...`) — those are bundled. Vite's dev server also serves
-# anything under `examples/browser/public/` at the site root, which
-# is what VFS images need (`fetch("/vfs/shell.vfs.zst")`).
-#
-# Rather than duplicate the bytes, we mirror the relevant subset into
-# public/ as symlinks pointing back at `binaries/`. Kept intentionally
-# narrow — only files the browser actually fetches at runtime.
-PUB_DIR="$REPO_ROOT/examples/browser/public"
-if [ -d "$PUB_DIR" ]; then
-    mkdir -p "$PUB_DIR/vfs"
-    for vfs in "$BIN_DIR"/vfs/*.vfs.zst; do
-        [ -e "$vfs" ] || continue
-        name=$(basename "$vfs")
-        target="$PUB_DIR/vfs/$name"
-        rm -f "$target"
-        ln -s "$vfs" "$target"
-    done
 fi
 
 echo

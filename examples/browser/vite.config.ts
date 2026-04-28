@@ -31,6 +31,51 @@ function resolveKernelWasm(): string {
 }
 
 /**
+ * Vite plugin: resolve `@binaries/...` imports against the
+ * resolver-managed binaries trees.
+ *
+ * Lookup order, first hit wins:
+ *   1. `<repoRoot>/local-binaries/<rest>` — populated by xtask while
+ *      installing into the resolver cache, plus any direct
+ *      `install_local_binary` writes from build scripts.
+ *   2. `<repoRoot>/binaries/<rest>` — populated by xtask when given
+ *      `--binaries-dir`; mirrors release archives via symlinks.
+ *
+ * The fallback is what makes the alias useful for both release-shipped
+ * artifacts and local-only ones (e.g. dev builds, test fixtures): a
+ * page just imports `@binaries/programs/wasm32/<x>` and gets whichever
+ * copy is present.
+ *
+ * Doing this with a custom plugin (rather than `resolve.alias`) is
+ * deliberate: `@rollup/plugin-alias` has a single `replacement` string,
+ * which can't express "try this directory first, then that one." A
+ * `resolveId` hook can.
+ */
+function resolveBinariesAlias(): Plugin {
+  const PREFIX = "@binaries/";
+  return {
+    name: "resolve-binaries-alias",
+    enforce: "pre",
+    resolveId(source) {
+      if (!source.startsWith(PREFIX)) return null;
+      const queryIdx = source.indexOf("?");
+      const pathPart = queryIdx === -1 ? source : source.slice(0, queryIdx);
+      const query = queryIdx === -1 ? "" : source.slice(queryIdx);
+      const rest = pathPart.slice(PREFIX.length);
+      const local = path.resolve(repoRoot, "local-binaries", rest);
+      if (fs.existsSync(local)) return local + query;
+      const fetched = path.resolve(repoRoot, "binaries", rest);
+      if (fs.existsSync(fetched)) return fetched + query;
+      this.error(
+        `@binaries: ${rest} not found. ` +
+        `Looked at:\n  ${local}\n  ${fetched}\n` +
+        `Run \`./run.sh fetch\` to install release archives, or build the artifact locally.`
+      );
+    },
+  };
+}
+
+/**
  * Vite plugin: rewrite absolute nav links in HTML to include the base path.
  * In dev mode (base="/") this is a no-op. In production with a custom base
  * (e.g. "/wasm-posix-kernel/"), it rewrites href="/" → href="/wasm-posix-kernel/".
@@ -212,24 +257,22 @@ function injectCorsProxyUrl(): Plugin {
 export default defineConfig({
   base: process.env.VITE_BASE || "/",
   resolve: {
-    // Two aliases for asset imports:
-    //   `@kernel-wasm`     → the kernel binary (resolves local-binaries/
-    //                        first, then binaries/ from the release).
-    //   `@binaries/...`    → the binaries/ tree at the repo root (program
-    //                        wasms and VFS images installed by xtask).
+    // `@kernel-wasm` resolves to the single kernel binary (chosen at
+    // config load time by resolveKernelWasm — local-binaries/ first,
+    // then binaries/). `@binaries/...` is handled by the
+    // resolveBinariesAlias plugin so it can fall back local→fetched
+    // per import.
     //
-    // `@kernel-wasm` uses a lookahead-anchored regex so it matches at end
-    // of the import spec OR right before `?query` (e.g. `?url`), without
-    // consuming the `?`. The default object-form matcher in
-    // @rollup/plugin-alias only fires on exact match or `<key>/...`, which
-    // excludes bare `?url` suffixes. `@binaries` is followed by `/...`
-    // in every consumer, so the default matcher works.
+    // The lookahead anchor lets `@kernel-wasm` match both the bare
+    // form and `?query` suffixes (e.g. `?url`); @rollup/plugin-alias's
+    // default object-form matcher only fires on exact match or
+    // `<key>/...`, which would reject the query.
     alias: [
       { find: /^@kernel-wasm(?=$|\?)/, replacement: resolveKernelWasm() },
-      { find: "@binaries", replacement: path.resolve(repoRoot, "binaries") },
     ],
   },
   plugins: [
+    resolveBinariesAlias(),
     rewriteNavLinks(),
     injectGitRevision(),
     injectCoiServiceWorker(),
