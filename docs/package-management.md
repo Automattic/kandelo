@@ -70,6 +70,8 @@ url = "https://github.com/madler/zlib/blob/v1.3.1/LICENSE"  # optional
 Optional sections:
 
 ```toml
+arches = ["wasm32"]        # opt-in target arches; default: ["wasm32"]
+
 [build]
 script = "build-zlib.sh"   # default: build-<name>.sh in this directory
 
@@ -78,6 +80,31 @@ libs = ["lib/libz.a"]                            # must exist post-build
 headers = ["include/zlib.h", "include/zconf.h"]
 pkgconfig = ["lib/pkgconfig/zlib.pc"]
 ```
+
+### `arches`
+
+`arches = ["wasm32", "wasm64"]` declares which target architectures
+the manifest opts into. Read by `xtask stage-release`: any
+`(manifest, arch)` pair where `arch` isn't listed is silently
+skipped and no archive is staged. Defaults to `["wasm32"]` when
+omitted.
+
+The default reflects the project's wasm64 build policy: the kernel
+is wasm64, but most ported user-space programs (dash, vim, perl,
+etc.) ship wasm32 only. The packages that currently opt into
+wasm64 are MariaDB, MariaDB-VFS, PHP, and the libraries PHP
+depends on transitively (zlib, openssl, sqlite, libxml2). Adding
+a manifest to the wasm64 set is one line:
+
+```toml
+arches = ["wasm32", "wasm64"]
+```
+
+The resolver cache and `binary-resolver.ts` are arch-aware
+independent of this field — `arches` only governs what gets staged
+into a release archive. A locally-built wasm64 artifact still
+populates `local-binaries/programs/wasm64/...` regardless of what
+the manifest declares.
 
 **Keep top-level arrays (`depends_on`, etc.) above the first `[section]`.**
 TOML binds a bare key inside whatever section most recently opened; a
