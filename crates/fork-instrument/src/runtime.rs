@@ -211,6 +211,11 @@ pub fn inject_runtime(module: &mut Module, b1_scratch_size: u32) -> Runtime {
     let b1_scratch_base = next_off;
     let aligned_b1_size = align_up_8(b1_scratch_size);
     let frames_start_offset = b1_scratch_base + aligned_b1_size;
+    debug_assert_eq!(
+        b1_scratch_base + aligned_b1_size,
+        frames_start_offset,
+        "B1 invariant: scratch must end exactly where frames begin",
+    );
 
     // --- Runtime globals (state + buf) ---
     let state_global = module.globals.add_local(

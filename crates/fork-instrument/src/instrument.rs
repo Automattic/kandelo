@@ -1630,7 +1630,8 @@ fn natural_align(ty: ValType) -> u32 {
 }
 
 /// Round `x` up to the nearest 8-byte boundary. Used by B1 scratch
-/// planning and (Task 1.3) save-buffer reservation.
+/// planning and (Task 1.3) save-buffer reservation. A near-duplicate
+/// lives in `runtime.rs`; consolidate when extracting `crate::layout`.
 fn align_up_8(x: u32) -> u32 {
     (x + 7) & !7u32
 }

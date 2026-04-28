@@ -106,9 +106,20 @@ pub fn instrument(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
     // for all currently-shipping ports. The plan must be computed
     // *before* `inject_runtime` because the resulting size shifts
     // `frames_start_offset`, which gets baked into the unwind_begin
-    // body as a constant.
-    let fork_path_targets: Vec<walrus::FunctionId> =
-        fork_path.iter().copied().collect();
+    // body as a constant. Filter to local functions and sort to
+    // match the determinism of `instrument_functions`'s target walk
+    // — Stage 2 reads `B1ScratchPlan.per_function[fid]` and the
+    // per-function scratch_offset values must be stable across runs
+    // for byte-reproducible builds. We do NOT also filter
+    // `runtime_funcs` here because they don't exist yet at this
+    // point in the pipeline (they're added by `inject_runtime` on
+    // the next line).
+    let mut fork_path_targets: Vec<walrus::FunctionId> = fork_path
+        .iter()
+        .copied()
+        .filter(|id| matches!(module.funcs.get(*id).kind, walrus::FunctionKind::Local(_)))
+        .collect();
+    fork_path_targets.sort();
     let b1_plan = instrument::plan_b1_scratch(&module, &fork_path_targets);
     let runtime = runtime::inject_runtime(&mut module, b1_plan.total_bytes);
 
