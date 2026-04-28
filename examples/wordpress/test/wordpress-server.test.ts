@@ -147,7 +147,7 @@ describe.skipIf(!!SKIP_REASON)("WordPress HTTP Server", () => {
           return tid;
         },
         onExit: (pid, exitStatus) => {
-          if (pid === 1) {
+          if (pid === 100) {
             kernelWorker.unregisterProcess(pid);
             if (mainWorker) mainWorker.terminate().catch(() => {});
           } else {
@@ -174,7 +174,10 @@ describe.skipIf(!!SKIP_REASON)("WordPress HTTP Server", () => {
     memory.grow(MAX_PAGES - 17);
     new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
-    const pid = 1;
+    // The kernel reserves PID 1 for a virtual init process (used by
+    // `kill(1, ...)` / EPERM semantics), so the test runs WordPress at
+    // PID 100. The actual PID doesn't matter to the program.
+    const pid = 100;
     kernelWorker.registerProcess(pid, memory, [channelOffset]);
 
     const initData: CentralizedWorkerInitMessage = {

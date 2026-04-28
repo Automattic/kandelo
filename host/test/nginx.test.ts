@@ -140,7 +140,7 @@ describe.skipIf(!nginxWasmPath)(
           },
           onExec: async () => -38,
           onExit: (pid, status) => {
-            if (pid === 1) {
+            if (pid === 100) {
               kw.unregisterProcess(pid);
               resolveExit!(status);
             } else {
@@ -163,13 +163,17 @@ describe.skipIf(!nginxWasmPath)(
       memory.grow(MAX_PAGES - 17);
       new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
-      kw.registerProcess(1, memory, [channelOffset]);
-      kw.setCwd(1, nginxPrefix);
-      kw.setNextChildPid(2);
+      // The kernel reserves PID 1 for a virtual init process (used by
+      // `kill(1, ...)` / EPERM semantics), so the test runs nginx at
+      // PID 100 with workers spawned at 101+. The actual PID nginx
+      // sees doesn't matter to its operation.
+      kw.registerProcess(100, memory, [channelOffset]);
+      kw.setCwd(100, nginxPrefix);
+      kw.setNextChildPid(101);
 
       const initData: CentralizedWorkerInitMessage = {
         type: "centralized_init",
-        pid: 1,
+        pid: 100,
         ppid: 0,
         programBytes,
         memory,
@@ -179,7 +183,7 @@ describe.skipIf(!nginxWasmPath)(
       };
 
       const masterWorker = workerAdapter.createWorker(initData);
-      workers.set(1, masterWorker);
+      workers.set(100, masterWorker);
       masterWorker.on("error", () => {});
 
       // Wait for the TCP listener to be ready (poll until port accepts)

@@ -97,6 +97,7 @@ has_zip()    { has_resolvable programs/zip.wasm || [ -f "$REPO_ROOT/examples/lib
 has_unzip()    { has_resolvable programs/unzip.wasm || [ -f "$REPO_ROOT/examples/libs/unzip/bin/unzip.wasm" ]; }
 has_nano()    { has_resolvable programs/nano.wasm || [ -f "$REPO_ROOT/examples/libs/nano/bin/nano.wasm" ]; }
 has_nethack()    { has_resolvable programs/nethack.wasm || [ -f "$REPO_ROOT/examples/libs/nethack/bin/nethack.wasm" ]; }
+has_fbdoom()    { has_resolvable programs/fbdoom.wasm || [ -f "$REPO_ROOT/examples/libs/fbdoom/fbdoom.wasm" ]; }
 has_ncurses()   { [ -f "$REPO_ROOT/sysroot/lib/libncursesw.a" ]; }
 has_zlib()      { [ -f "$REPO_ROOT/sysroot/lib/libz.a" ]; }
 has_openssl()   { [ -f "$REPO_ROOT/sysroot/lib/libssl.a" ] && [ -f "$REPO_ROOT/sysroot/lib/libcrypto.a" ]; }
@@ -368,8 +369,9 @@ build_dash() {
 }
 
 build_bash() {
-    # bash bundles readline which needs termcap.h from ncurses/tinfo
-    build_ncurses
+    # bash's build script resolves ncurses through the dep cache via
+    # `cargo xtask build-deps resolve ncurses` — no sysroot install
+    # needed here.
     need_kernel
     need_sdk
     if ! has_bash; then
@@ -699,9 +701,16 @@ build_tar() {
 }
 
 build_curl_cli() {
-    # build_libcurl builds both the library and the CLI binary
-    build_libcurl
-    info "curl"
+    if has_curl; then
+        info "curl"
+        return
+    fi
+    need_kernel
+    need_sdk
+    # libcurl's build script produces both libcurl.a and the curl CLI.
+    step "Building curl (CLI)"
+    bash "$REPO_ROOT/examples/libs/libcurl/build-libcurl.sh"
+    info "curl built"
 }
 
 build_wget() {
@@ -886,8 +895,7 @@ build_openssl() {
 }
 
 build_libcurl() {
-    build_zlib
-    build_openssl
+    # libcurl's build script resolves zlib + openssl through the dep cache.
     need_kernel
     need_sdk
     if ! has_libcurl; then
@@ -931,7 +939,7 @@ build_ncurses() {
 }
 
 build_nethack() {
-    build_ncurses
+    # nethack's build script resolves ncurses through the dep cache.
     need_kernel
     need_sdk
     if ! has_nethack; then
@@ -940,6 +948,18 @@ build_nethack() {
         info "NetHack built"
     else
         info "NetHack"
+    fi
+}
+
+build_fbdoom() {
+    need_kernel
+    need_sdk
+    if ! has_fbdoom; then
+        step "Building fbDOOM"
+        bash "$REPO_ROOT/examples/libs/fbdoom/build-fbdoom.sh"
+        info "fbDOOM built"
+    else
+        info "fbDOOM"
     fi
 }
 
@@ -1072,6 +1092,7 @@ build_target() {
         unzip)      build_unzip ;;
         nano)       build_nano ;;
         nethack)    build_nethack ;;
+        fbdoom)     build_fbdoom ;;
         ncurses)    build_ncurses ;;
         zlib)       build_zlib ;;
         openssl)    build_openssl ;;
@@ -1094,7 +1115,7 @@ build_target() {
 # (less: ncurses libtermcap duplicate tputs; wget: requires automake
 # aclocal). They aren't in the release either, so the associated demo
 # features skip gracefully at runtime.
-BROWSER_DEPS=(kernel sysroot sysroot64 programs dash bash coreutils grep sed bc file m4 make tar curl-cli gzip bzip2 xz zstd zip unzip nano vim nethack git nginx php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis cpython python-vfs perl perl-vfs ruby shell-vfs wordpress wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs)
+BROWSER_DEPS=(kernel sysroot sysroot64 programs dash bash coreutils grep sed bc file m4 make tar curl-cli gzip bzip2 xz zstd zip unzip nano vim nethack fbdoom git nginx php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis cpython python-vfs perl perl-vfs ruby shell-vfs wordpress wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs)
 
 build_browser() {
     for t in "${BROWSER_DEPS[@]}"; do
@@ -1341,6 +1362,11 @@ clean_target() {
             rm -f "$REPO_ROOT/examples/browser/public/nethack.zip" \
                   "$REPO_ROOT/examples/browser/public/shell.vfs"
             warn "Cleaned NetHack (also invalidated nethack.zip and shell.vfs; run '$0 build shell-vfs' to regenerate for browser demo)" ;;
+        fbdoom)
+            rm -rf "$REPO_ROOT/examples/libs/fbdoom/fbdoom-src"
+            rm -f "$REPO_ROOT/examples/libs/fbdoom/fbdoom.wasm" \
+                  "$REPO_ROOT/local-binaries/programs/fbdoom.wasm"
+            warn "Cleaned fbDOOM" ;;
         ncurses)
             rm -rf "$REPO_ROOT/examples/libs/ncurses/ncurses-src"
             # ncurses installs into sysroot, cleaned with sysroot
@@ -1693,6 +1719,7 @@ cmd_list() {
     echo "  ncurses     ncurses library                        $(has_ncurses && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  vim         Vim 9.1 text editor                    $(has_vim && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  nethack     NetHack 3.6.7 roguelike (curses)       $(has_nethack && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  fbdoom      fbDOOM (framebuffer DOOM via /dev/fb0) $(has_fbdoom && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  git         Git 2.47.1                             $(has_git && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  nginx       nginx 1.24 Wasm binary                $(has_nginx && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  php         PHP 8.3 CLI binary                    $(has_php && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
