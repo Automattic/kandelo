@@ -26,8 +26,12 @@ use walrus::{
 
 // --- Helpers ----------------------------------------------------------
 
+fn parse_wat(wat_src: &str) -> Vec<u8> {
+    wat::parse_str(wat_src).expect("wat parse")
+}
+
 fn instrument_wat(wat_src: &str) -> Vec<u8> {
-    let bytes = wat::parse_str(wat_src).expect("wat parse");
+    let bytes = parse_wat(wat_src);
     instrument(&bytes, &Options::default()).expect("instrument")
 }
 
@@ -1595,4 +1599,134 @@ fn nested_seqs_in_test(instr: &Instr) -> Vec<InstrSeqId> {
         Instr::TryTable(tt) => vec![tt.seq],
         _ => Vec::new(),
     }
+}
+
+// --- B1 Stage 1 Task 1.2 — plan_b1_scratch tests ----------------------
+
+#[test]
+fn b1_scratch_plan_empty_targets_is_zero_sized() {
+    // Self-review: empty target list → empty plan, zero bytes.
+    let wat = r#"
+        (module
+          (func $caller (export "caller") (result i32) i32.const 0)
+          (memory 1))
+    "#;
+    let bytes = parse_wat(wat);
+    let module = walrus::Module::from_buffer(&bytes).unwrap();
+    let plan = fork_instrument::instrument::plan_b1_scratch(&module, &[]);
+    assert_eq!(plan.total_bytes, 0, "no targets → zero scratch bytes");
+    assert!(
+        plan.per_function.is_empty(),
+        "no targets → empty per_function map"
+    );
+}
+
+#[test]
+fn b1_scratch_plan_empty_payload_arm_is_4_bytes() {
+    // Tag with no payload → tuple_size = 4 (just arm_id).
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (tag $exn)
+          (func $caller (export "caller") (result i32)
+            (block $h
+              (try_table (catch $exn $h)
+                nop))
+            call $fork)
+          (memory 1))
+    "#;
+    let bytes = parse_wat(wat);
+    let module = walrus::Module::from_buffer(&bytes).unwrap();
+    let caller = func_by_name(&module, "caller");
+    let plan = fork_instrument::instrument::plan_b1_scratch(&module, &[caller]);
+    assert_eq!(
+        plan.per_function.len(),
+        1,
+        "one function had plain-catch arms"
+    );
+    let per_func = &plan.per_function[&caller];
+    assert_eq!(per_func.len(), 1, "one try_table with plain-catch arms");
+    let (_body_seq, slots) = &per_func[0];
+    assert_eq!(slots.len(), 1, "one plain-catch arm");
+    assert_eq!(slots[0].tuple_size, 4, "no payload → arm_id only");
+    assert_eq!(slots[0].scratch_offset, 0, "first slot at offset 0");
+    assert_eq!(plan.total_bytes, 8, "rounded up to 8-byte alignment");
+}
+
+#[test]
+fn b1_scratch_plan_i32_payload_arm_is_8_bytes() {
+    // Tag with i32 payload → tuple_size = 4 + 4 = 8.
+    //
+    // Catch label semantics: branching to a `block` carries the
+    // block's RESULT types (forward-branch arity), so a tag with a
+    // single i32 operand requires a `(block (result i32))` target.
+    // The block then drops the value before falling through.
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (tag $exn (param i32))
+          (func $caller (export "caller") (result i32)
+            (block $h (result i32)
+              (try_table (catch $exn $h)
+                i32.const 0
+                drop)
+              i32.const 0)
+            drop
+            call $fork)
+          (memory 1))
+    "#;
+    let bytes = parse_wat(wat);
+    let module = walrus::Module::from_buffer(&bytes).unwrap();
+    let caller = func_by_name(&module, "caller");
+    let plan = fork_instrument::instrument::plan_b1_scratch(&module, &[caller]);
+    let per_func = &plan.per_function[&caller];
+    let (_, slots) = &per_func[0];
+    assert_eq!(slots[0].tuple_size, 8, "arm_id (4) + i32 payload (4)");
+    assert_eq!(slots[0].scratch_offset, 0);
+    assert_eq!(plan.total_bytes, 8);
+}
+
+#[test]
+fn b1_scratch_plan_two_arms_align_to_8_bytes_each() {
+    // Two arms in one function, payload sizes 0 and 8.
+    // First arm: tuple_size=4 → aligned start 0, end 4
+    // Second arm: aligned to 8 → start 8, end 8 + (4 + 8) = 20
+    // total_bytes rounds up to 24.
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (tag $a)
+          (tag $b (param i64))
+          (func $caller (export "caller") (result i32)
+            (block $ha
+              (try_table (catch $a $ha)
+                nop))
+            (block $hb (result i64)
+              (try_table (catch $b $hb)
+                i64.const 0
+                drop)
+              i64.const 0)
+            drop
+            call $fork)
+          (memory 1))
+    "#;
+    let bytes = parse_wat(wat);
+    let module = walrus::Module::from_buffer(&bytes).unwrap();
+    let caller = func_by_name(&module, "caller");
+    let plan = fork_instrument::instrument::plan_b1_scratch(&module, &[caller]);
+    let per_func = &plan.per_function[&caller];
+    assert_eq!(per_func.len(), 2, "two try_tables");
+    let (_, slots_a) = &per_func[0];
+    let (_, slots_b) = &per_func[1];
+    assert_eq!(slots_a[0].scratch_offset, 0);
+    assert_eq!(slots_a[0].tuple_size, 4);
+    assert_eq!(
+        slots_b[0].scratch_offset, 8,
+        "second arm aligned to next 8-byte boundary"
+    );
+    assert_eq!(slots_b[0].tuple_size, 12, "arm_id (4) + i64 (8)");
+    assert_eq!(
+        plan.total_bytes, 24,
+        "rounded up from 20 to next 8-byte boundary"
+    );
 }

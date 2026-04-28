@@ -2045,6 +2045,111 @@ fn visit_for_plain_catch(
     }
 }
 
+/// Stage 1 (B1) — per-arm slot in the scratch area.
+#[derive(Debug, Clone)]
+pub struct PlainCatchArmSlot {
+    pub arm: PlainCatchArm,
+    /// Byte offset within the B1 scratch area at which this arm's
+    /// (arm_id, operand_0..N-1) tuple is stored. Relative to the
+    /// scratch base (which `Runtime.b1_scratch_base` will track in
+    /// Task 1.3); not yet relative to absolute buffer base.
+    pub scratch_offset: u32,
+    /// Total size in bytes of this arm's saved tuple
+    /// (4 bytes arm_id + sum-of-naturally-aligned-operand-sizes).
+    pub tuple_size: u32,
+}
+
+/// Stage 1 (B1) — module-wide plain-catch scratch plan.
+#[derive(Debug, Clone, Default)]
+pub struct B1ScratchPlan {
+    /// Total bytes the B1 scratch area occupies. Stage 1 Task 1.3
+    /// will reserve this many bytes between `saved_globals` and
+    /// `frame data` in the save buffer.
+    pub total_bytes: u32,
+    /// Per-function per-region per-arm slot assignments. Outer Vec
+    /// parallels `discover_plain_catch_arms`'s return shape (one
+    /// entry per try_table that has at least one plain-catch arm).
+    pub per_function:
+        std::collections::HashMap<FunctionId, Vec<(InstrSeqId, Vec<PlainCatchArmSlot>)>>,
+}
+
+/// Stage 1 (B1) — assigns scratch offsets for every plain-catch arm
+/// across all fork-path functions. The scratch area lives between
+/// `saved_globals` and `frame data` in the save buffer; its base is
+/// `Runtime.b1_scratch_base` (set in Task 1.3) and its total size
+/// is `B1ScratchPlan.total_bytes`.
+///
+/// Tuple layout per arm (Stage 2 will read/write this):
+/// ```text
+/// +0    4    arm_id (i32)
+/// +4    var  operand_0 ... operand_N-1, naturally aligned
+/// ```
+/// Tuples are 8-byte-aligned within the scratch area so that
+/// i64/f64 operands at offset +4 (the first operand position)
+/// land on a properly aligned address relative to the scratch base.
+///
+/// Operand types are restricted to scalars (i32/i64/f32/f64/v128)
+/// at this stage. Ref-typed operands (externref/funcref/exnref/GC
+/// refs) will require aux-table spilling — a future B2 carve-out.
+/// Stage 1 panics with a clear diagnostic on encountering them;
+/// Stage 2 will detect-and-fall-back-to-guard-dispatch earlier in
+/// the pipeline so this panic is unreachable in production paths.
+///
+/// The cursor walks `targets` in iteration order, so per-function
+/// offsets depend on the caller's ordering of `targets`. Stage 2's
+/// emission code reads `B1ScratchPlan.per_function[fid]` keyed by
+/// `FunctionId`, so this ordering is internal to the plan and
+/// irrelevant to correctness — but tests that pin specific offset
+/// values must use stable target ordering.
+pub fn plan_b1_scratch(module: &Module, targets: &[FunctionId]) -> B1ScratchPlan {
+    let mut plan = B1ScratchPlan::default();
+    let mut cursor: u32 = 0;
+    for &fid in targets {
+        let arms_per_region = discover_plain_catch_arms(module, fid);
+        if arms_per_region.is_empty() {
+            continue;
+        }
+        let mut per_func: Vec<(InstrSeqId, Vec<PlainCatchArmSlot>)> =
+            Vec::with_capacity(arms_per_region.len());
+        for (body_seq, arm_list) in arms_per_region {
+            let mut slots: Vec<PlainCatchArmSlot> = Vec::with_capacity(arm_list.len());
+            for arm in arm_list {
+                let payload_size: u32 = arm.operand_tys.iter().map(|t| b1_scalar_size(*t)).sum();
+                let tuple_size = 4 + payload_size;
+                // Outer 8-byte alignment for the tuple start.
+                let aligned = (cursor + 7) & !7u32;
+                slots.push(PlainCatchArmSlot {
+                    arm,
+                    scratch_offset: aligned,
+                    tuple_size,
+                });
+                cursor = aligned + tuple_size;
+            }
+            per_func.push((body_seq, slots));
+        }
+        plan.per_function.insert(fid, per_func);
+    }
+    // Final scratch area aligned up to 8 bytes so `frames_start_offset`
+    // (which sits after the scratch area) lands aligned for the frame
+    // header writes that follow.
+    plan.total_bytes = (cursor + 7) & !7u32;
+    plan
+}
+
+fn b1_scalar_size(ty: ValType) -> u32 {
+    match ty {
+        ValType::I32 | ValType::F32 => 4,
+        ValType::I64 | ValType::F64 => 8,
+        ValType::V128 => 16,
+        ValType::Ref(_) => panic!(
+            "B1 plan_b1_scratch: ref-typed catch operand encountered. \
+             Stage 2 will detect this earlier and fall back to \
+             guard-dispatch for affected functions; the unreachable \
+             panic remains as a defense-in-depth assertion."
+        ),
+    }
+}
+
 // ----------------------------------------------------------------------
 // Phase 6c — rewind-throw stub injection
 // ----------------------------------------------------------------------
