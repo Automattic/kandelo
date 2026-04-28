@@ -16,7 +16,7 @@ import {
   COREUTILS_NAMES,
   type BinaryDef,
 } from "../../lib/init/shell-binaries";
-import kernelWasmUrl from "../../../../binaries/kernel.wasm?url";
+import kernelWasmUrl from "@kernel-wasm?url";
 import dashWasmUrl from "../../../../binaries/programs/dash.wasm?url";
 import bashWasmUrl from "../../../../binaries/programs/bash.wasm?url";
 import coreutilsWasmUrl from "../../../../binaries/programs/coreutils.wasm?url";

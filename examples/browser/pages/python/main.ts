@@ -8,7 +8,7 @@ import { BrowserKernel } from "../../lib/browser-kernel";
 import { PtyTerminal } from "../../lib/pty-terminal";
 import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
 import { decompressVfsImage } from "../../../../host/src/vfs/load-image";
-import kernelWasmUrl from "../../../../binaries/kernel.wasm?url";
+import kernelWasmUrl from "@kernel-wasm?url";
 import pythonWasmUrl from "../../../../binaries/programs/cpython.wasm?url";
 import "@xterm/xterm/css/xterm.css";
 

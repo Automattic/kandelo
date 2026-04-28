@@ -11,7 +11,7 @@ import { BrowserKernel } from "../../lib/browser-kernel";
 import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
 import { decompressVfsImage } from "../../../../host/src/vfs/load-image";
 import { SystemInit } from "../../lib/init/system-init";
-import kernelWasmUrl from "../../../../binaries/kernel.wasm?url";
+import kernelWasmUrl from "@kernel-wasm?url";
 import mysqlTestWasmUrl from "../../../../binaries/programs/mariadb/mysqltest.wasm?url";
 
 interface TestResult {

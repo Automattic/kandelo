@@ -22,7 +22,7 @@ import {
   ensureDirs,
 } from "../../lib/init/vfs-utils";
 import { RedisBrowserClient } from "../../lib/redis-client";
-import kernelWasmUrl from "../../../../binaries/kernel.wasm?url";
+import kernelWasmUrl from "@kernel-wasm?url";
 import redisWasmUrl from "../../../../binaries/programs/redis/redis-server.wasm?url";
 import dashWasmUrl from "../../../../binaries/programs/dash.wasm?url";
 import coreutilsWasmUrl from "../../../../binaries/programs/coreutils.wasm?url";

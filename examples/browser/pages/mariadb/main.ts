@@ -21,7 +21,7 @@ import { decompressVfsImage } from "../../../../host/src/vfs/load-image";
 import { SystemInit } from "../../lib/init/system-init";
 import { MySqlBrowserClient } from "../../lib/mysql-client";
 import { writeInitDescriptor } from "../../lib/init/vfs-utils";
-import kernelWasmUrl from "../../../../binaries/kernel.wasm?url";
+import kernelWasmUrl from "@kernel-wasm?url";
 import "@xterm/xterm/css/xterm.css";
 import "../../lib/terminal-panel.css";
 

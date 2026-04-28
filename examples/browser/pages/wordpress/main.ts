@@ -25,7 +25,7 @@ import { decompressVfsImage } from "../../../../host/src/vfs/load-image";
 import { SystemInit } from "../../lib/init/system-init";
 import { COREUTILS_NAMES } from "../../lib/init/shell-binaries";
 import { writeVfsFile } from "../../lib/init/vfs-utils";
-import kernelWasmUrl from "../../../../binaries/kernel.wasm?url";
+import kernelWasmUrl from "@kernel-wasm?url";
 import nginxWasmUrl from "../../../../binaries/programs/nginx.wasm?url";
 import phpFpmWasmUrl from "../../../../binaries/programs/php/php-fpm.wasm?url";
 import coreutilsWasmUrl from "../../../../binaries/programs/coreutils.wasm?url";

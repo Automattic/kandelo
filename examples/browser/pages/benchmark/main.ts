@@ -32,7 +32,7 @@ import cloneWasmUrl from "../../../../benchmarks/wasm/clone-bench.wasm?url";
 import helloWasmUrl from "../../../../benchmarks/wasm/hello.wasm?url";
 
 // Kernel
-import kernelWasmUrl from "../../../../binaries/kernel.wasm?url";
+import kernelWasmUrl from "@kernel-wasm?url";
 
 // VFS images (fetched lazily; 404 handled per-suite)
 const ERLANG_VFS_URL = import.meta.env.BASE_URL + "vfs/erlang.vfs.zst";

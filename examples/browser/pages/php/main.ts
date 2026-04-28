@@ -3,7 +3,7 @@
  * with a textarea for entering code and output display.
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
-import kernelWasmUrl from "../../../../binaries/kernel.wasm?url";
+import kernelWasmUrl from "@kernel-wasm?url";
 import phpWasmUrl from "../../../../binaries/programs/php/php.wasm?url";
 
 const codeEl = document.getElementById("code") as HTMLTextAreaElement;

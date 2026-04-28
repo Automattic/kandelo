@@ -5,7 +5,7 @@
  * and exposes window.__runGitClone(url) for Playwright to call.
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
-import kernelWasmUrl from "../../../../binaries/kernel.wasm?url";
+import kernelWasmUrl from "@kernel-wasm?url";
 import gitWasmUrl from "../../../../binaries/programs/git/git.wasm?url";
 import gitRemoteHttpWasmUrl from "../../../../binaries/programs/git/git-remote-http.wasm?url";
 

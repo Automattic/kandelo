@@ -6,7 +6,7 @@
  * and returns { exitCode, stdout, stderr }.
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
-import kernelWasmUrl from "../../../../binaries/kernel.wasm?url";
+import kernelWasmUrl from "@kernel-wasm?url";
 import dashWasmUrl from "../../../../binaries/programs/dash.wasm?url";
 import coreutilsWasmUrl from "../../../../binaries/programs/coreutils.wasm?url";
 import grepWasmUrl from "../../../../binaries/programs/grep.wasm?url";

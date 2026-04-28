@@ -20,7 +20,7 @@ import {
   COREUTILS_NAMES,
 } from "../../lib/init/shell-binaries";
 import { writeVfsFile, writeInitDescriptor } from "../../lib/init/vfs-utils";
-import kernelWasmUrl from "../../../../binaries/kernel.wasm?url";
+import kernelWasmUrl from "@kernel-wasm?url";
 import nginxWasmUrl from "../../../../binaries/programs/nginx.wasm?url";
 import phpFpmWasmUrl from "../../../../binaries/programs/php/php-fpm.wasm?url";
 import dashWasmUrl from "../../../../binaries/programs/dash.wasm?url";

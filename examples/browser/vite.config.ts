@@ -8,6 +8,29 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../..");
 
 /**
+ * Resolve the absolute path to the kernel wasm. The kernel is built locally
+ * by `bash build.sh` (it's not in the binaries-abi-v6 release; tracked as
+ * deferred future-work), so it lives under `local-binaries/`. Pages don't
+ * need to know that — they import `@kernel-wasm?url` and Vite resolves the
+ * alias here.
+ *
+ * If the local build is missing, fall back to `binaries/kernel.wasm` (a
+ * future release that ships the kernel would make this the live path),
+ * and finally surface a helpful error if neither exists.
+ */
+function resolveKernelWasm(): string {
+  const local = path.resolve(repoRoot, "local-binaries/kernel.wasm");
+  if (fs.existsSync(local)) return local;
+  const fetched = path.resolve(repoRoot, "binaries/kernel.wasm");
+  if (fs.existsSync(fetched)) return fetched;
+  throw new Error(
+    "kernel.wasm not found. Run `bash build.sh` from the repo root.\n" +
+    `  Looked at: ${local}\n` +
+    `  Looked at: ${fetched}\n`
+  );
+}
+
+/**
  * Vite plugin: rewrite absolute nav links in HTML to include the base path.
  * In dev mode (base="/") this is a no-op. In production with a custom base
  * (e.g. "/wasm-posix-kernel/"), it rewrites href="/" → href="/wasm-posix-kernel/".
@@ -188,6 +211,16 @@ function injectCorsProxyUrl(): Plugin {
 
 export default defineConfig({
   base: process.env.VITE_BASE || "/",
+  resolve: {
+    // Lookahead so the regex matches `@kernel-wasm` at the end of the
+    // import spec OR right before a `?query` suffix (e.g. `?url`), without
+    // consuming the `?`. The default object-form matcher in
+    // @rollup/plugin-alias only fires on exact match or `@kernel-wasm/...`,
+    // which excludes query suffixes.
+    alias: [
+      { find: /^@kernel-wasm(?=$|\?)/, replacement: resolveKernelWasm() },
+    ],
+  },
   plugins: [
     rewriteNavLinks(),
     injectGitRevision(),
