@@ -211,11 +211,16 @@ pub fn inject_runtime(module: &mut Module, b1_scratch_size: u32) -> Runtime {
     let b1_scratch_base = next_off;
     let aligned_b1_size = align_up_8(b1_scratch_size);
     let frames_start_offset = b1_scratch_base + aligned_b1_size;
-    debug_assert_eq!(
-        b1_scratch_base + aligned_b1_size,
-        frames_start_offset,
-        "B1 invariant: scratch must end exactly where frames begin",
-    );
+    // Invariant: `b1_scratch_base + b1_scratch_size == frames_start_offset`
+    // holds by construction here — `frames_start_offset` is defined as
+    // the sum on the previous line, and `b1_scratch_size` is stored as
+    // `aligned_b1_size`. This is documented in the `Runtime` struct doc
+    // and the leading buffer-layout comment block; we don't enforce it
+    // via debug_assert! because any check using the same locals is
+    // tautological, and a stronger check (e.g., 8-alignment of
+    // `frames_start_offset`) doesn't hold for all currently-shipping
+    // modules — the pre-B1 code already permits non-aligned values
+    // because wasm tolerates unaligned i64 stores.
 
     // --- Runtime globals (state + buf) ---
     let state_global = module.globals.add_local(
