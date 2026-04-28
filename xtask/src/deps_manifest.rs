@@ -402,6 +402,15 @@ pub struct DepsManifest {
     /// (probe runner) and `cmd_check` (host-tool consistency lint).
     pub host_tools: Vec<HostTool>,
 
+    /// Target arches this manifest opts into. Read from the optional
+    /// top-level `arches = ["wasm32", "wasm64"]` TOML field. Defaults
+    /// to `["wasm32"]` when absent — wasm32 is the canonical target;
+    /// only manifests that explicitly need wasm64 (right now: mariadb,
+    /// mariadb-vfs, php) opt in. Consumed by `stage-release` to skip
+    /// manifest×arch pairs the manifest didn't ask for, which keeps
+    /// the release archive set tight.
+    pub target_arches: Vec<TargetArch>,
+
     /// Directory containing this `deps.toml`. The build script path and
     /// any per-dep build state live underneath it.
     pub dir: PathBuf,
@@ -507,6 +516,10 @@ struct Raw {
     binary: Option<Binary>,
     #[serde(default)]
     host_tools: Vec<RawHostTool>,
+    /// Optional `arches = ["wasm32", "wasm64"]`. Empty/absent =
+    /// `["wasm32"]` (the default — see DepsManifest::target_arches).
+    #[serde(default)]
+    arches: Vec<TargetArch>,
 }
 
 /// Default `outputs` value when the key is absent: an empty table.
@@ -837,6 +850,23 @@ impl DepsManifest {
             }
         };
 
+        // Default `arches` to `["wasm32"]` when omitted. Reject
+        // duplicates so a manifest can't say `["wasm32", "wasm32"]`.
+        let target_arches = if raw.arches.is_empty() {
+            vec![TargetArch::Wasm32]
+        } else {
+            let mut seen: Vec<TargetArch> = Vec::new();
+            for &a in &raw.arches {
+                if seen.contains(&a) {
+                    return Err(format!(
+                        "arches lists {:?} twice",
+                        a.as_str()
+                    ));
+                }
+                seen.push(a);
+            }
+            raw.arches
+        };
         Ok(DepsManifest {
             kind: raw.kind,
             name: raw.name,
@@ -851,6 +881,7 @@ impl DepsManifest {
             compatibility: raw.compatibility,
             binary: raw.binary,
             host_tools,
+            target_arches,
             dir,
         })
     }

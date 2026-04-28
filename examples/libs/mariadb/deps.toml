@@ -3,6 +3,8 @@ name = "mariadb"
 version = "10.5.28"
 revision = 1
 depends_on = ["pcre2-source@10.44"]
+# Opt into wasm64 — see memory/wasm64-build-policy.md.
+arches = ["wasm32", "wasm64"]
 
 [source]
 url = "https://archive.mariadb.org/mariadb-10.5.28/source/mariadb-10.5.28.tar.gz"

@@ -154,6 +154,21 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             }
         }
         for &arch in &arches {
+            // Honor the manifest's per-arch opt-in: a manifest that
+            // doesn't list this arch in `target_arches` is silently
+            // skipped. The field defaults to `["wasm32"]`, so most
+            // manifests stage only wasm32 and only mariadb / mariadb-vfs /
+            // php (which carry an explicit `arches = ["wasm32", "wasm64"]`)
+            // produce a wasm64 archive.
+            if !m.target_arches.contains(&arch) {
+                eprintln!(
+                    "skip {} {} (manifest target_arches = {:?})",
+                    m.name,
+                    arch.as_str(),
+                    m.target_arches.iter().map(|a| a.as_str()).collect::<Vec<_>>()
+                );
+                continue;
+            }
             match stage_one(
                 &m,
                 &registry,

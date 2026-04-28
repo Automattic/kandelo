@@ -3,6 +3,10 @@ name = "mariadb-vfs"
 version = "0.1.0"
 revision = 1
 depends_on = []
+# Opt into wasm64 — see memory/wasm64-build-policy.md. The VFS image
+# embeds the arch-specific mariadbd binary, so it must be built
+# per-arch alongside mariadb.
+arches = ["wasm32", "wasm64"]
 
 # Pre-built VFS image for the MariaDB browser demo: mariadbd binary
 # at /usr/sbin/mariadbd, bootstrap SQL at /etc/mariadb/bootstrap.sql,
