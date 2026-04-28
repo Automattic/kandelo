@@ -112,8 +112,14 @@ build_cpp_program() {
     local wasm="$out_dir/${name}.wasm"
 
     echo "  Compiling $name (C++)..."
+    # -fwasm-exceptions is required for clang to lower C++ try/catch
+    # to wasm-EH `try`/`catch` instructions. Without it clang emits
+    # `__cxa_throw; unreachable` and DCEs the catch handlers, so the
+    # whole exception-propagation chain (libunwind + libc++abi) never
+    # runs.
     wasm32posix-c++ \
         -O2 \
+        -fwasm-exceptions \
         "$src" \
         -lc++ -lc++abi \
         -o "$wasm"

@@ -1,7 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build libc++ and libc++abi for wasm32 or wasm64 from LLVM source.
+# Build libc++, libc++abi, and libunwind for wasm32 or wasm64 from LLVM source.
+#
+# As of revision 2, LLVM libunwind is built alongside libcxx + libcxxabi
+# and statically linked into libc++abi.a (via the three-flag combo:
+# LIBCXXABI_USE_LLVM_UNWINDER + LIBCXXABI_ENABLE_STATIC_UNWINDER +
+# LIBCXXABI_STATICALLY_LINK_UNWINDER_IN_STATIC_LIBRARY). Consumers can
+# therefore link `-lc++ -lc++abi` and have `_Unwind_*` symbols resolved
+# without naming `-lunwind` separately. C++ throw/catch propagates
+# end-to-end through the wasm exception-handling proposal.
 #
 # Honors the dep-resolver build-script contract (see
 # docs/package-management.md). When invoked via
@@ -20,7 +28,7 @@ set -euo pipefail
 # Output layout:
 #   $WASM_POSIX_DEP_OUT_DIR/
 #     lib/libc++.a
-#     lib/libc++abi.a
+#     lib/libc++abi.a              ← bundles libunwind contents
 #     include/c++/v1/__config_site
 #     include/c++/v1/...           ← copied from $LLVM_PREFIX/include/c++/v1
 
@@ -90,7 +98,7 @@ fi
 
 # --- Clone LLVM source (sparse, runtimes only) ---
 if [ ! -f "$LLVM_SRC_DIR/runtimes/CMakeLists.txt" ]; then
-    echo "==> Cloning LLVM ${LLVM_MAJOR}.x source (sparse: libcxx + libcxxabi)..."
+    echo "==> Cloning LLVM ${LLVM_MAJOR}.x source (sparse: libcxx + libcxxabi + libunwind)..."
     rm -rf "$LLVM_SRC_DIR"
     mkdir -p "$LLVM_SRC_DIR"
 
@@ -99,7 +107,7 @@ if [ ! -f "$LLVM_SRC_DIR/runtimes/CMakeLists.txt" ]; then
         https://github.com/llvm/llvm-project.git "$LLVM_SRC_DIR"
 
     (cd "$LLVM_SRC_DIR" && \
-        git sparse-checkout set libcxx libcxxabi runtimes cmake llvm/cmake llvm/utils/llvm-lit libc)
+        git sparse-checkout set libcxx libcxxabi libunwind runtimes cmake llvm/cmake llvm/utils/llvm-lit libc)
     echo "==> LLVM source ready."
 fi
 
@@ -117,7 +125,7 @@ mkdir -p "$BUILD_DIR"
 cd "$BUILD_DIR"
 
 cmake -G "Unix Makefiles" -S "$LLVM_SRC_DIR/runtimes" \
-    -DLLVM_ENABLE_RUNTIMES="libcxx;libcxxabi" \
+    -DLLVM_ENABLE_RUNTIMES="libcxx;libcxxabi;libunwind" \
     -DCMAKE_SYSTEM_NAME=Generic \
     -DCMAKE_SYSTEM_PROCESSOR="${ARCH}" \
     -DCMAKE_C_COMPILER="$LLVM_CLANG" \
@@ -151,17 +159,26 @@ cmake -G "Unix Makefiles" -S "$LLVM_SRC_DIR/runtimes" \
     -DLIBCXXABI_ENABLE_SHARED=OFF \
     -DLIBCXXABI_ENABLE_STATIC=ON \
     -DLIBCXXABI_ENABLE_EXCEPTIONS=ON \
-    -DLIBCXXABI_USE_LLVM_UNWINDER=OFF \
+    -DLIBCXXABI_USE_LLVM_UNWINDER=ON \
+    -DLIBCXXABI_ENABLE_STATIC_UNWINDER=ON \
+    -DLIBCXXABI_STATICALLY_LINK_UNWINDER_IN_STATIC_LIBRARY=ON \
     -DLIBCXXABI_ENABLE_THREADS=ON \
     -DLIBCXXABI_HAS_PTHREAD_API=ON \
     -DLIBCXXABI_INCLUDE_TESTS=OFF \
+    \
+    -DLIBUNWIND_ENABLE_SHARED=OFF \
+    -DLIBUNWIND_ENABLE_STATIC=ON \
+    -DLIBUNWIND_ENABLE_THREADS=ON \
+    -DLIBUNWIND_USE_COMPILER_RT=OFF \
+    -DLIBUNWIND_INCLUDE_TESTS=OFF \
+    -DLIBUNWIND_HIDE_SYMBOLS=ON \
     \
     -DCMAKE_SIZEOF_VOID_P="${SIZEOF_VOID_P}" \
     2>&1 | tail -20
 
 echo "==> Compiling (this may take a few minutes)..."
 NPROC="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
-make -j"$NPROC" cxx cxxabi 2>&1 | tail -10
+make -j"$NPROC" cxx cxxabi unwind 2>&1 | tail -10
 
 # --- Install into the resolver's OUT_DIR ---
 echo "==> Installing to $INSTALL_DIR..."

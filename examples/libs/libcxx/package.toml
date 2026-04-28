@@ -5,9 +5,13 @@
 # (release/${version}.x branch via sparse checkout) and installs the
 # libc++ v1 headers from the host LLVM toolchain.
 #
-# NOTE: this revision (rev 1) does NOT bundle libunwind. C++ programs
-# that throw exceptions still hit unresolved `_Unwind_RaiseException`
-# imports at runtime. libunwind bundling arrives in revision 2.
+# As of revision 2, LLVM libunwind is built alongside libcxx + libcxxabi
+# and statically linked into libc++abi.a (LIBCXXABI_USE_LLVM_UNWINDER +
+# LIBCXXABI_ENABLE_STATIC_UNWINDER +
+# LIBCXXABI_STATICALLY_LINK_UNWINDER_IN_STATIC_LIBRARY). C++ programs
+# that throw exceptions can now resolve `_Unwind_RaiseException` and
+# friends inside libc++abi.a — consumers link `-lc++ -lc++abi`, no
+# separate `-lunwind` needed.
 
 kind = "library"
 
@@ -15,7 +19,7 @@ name = "libcxx"
 # LLVM major version. The build script clones release/<MAJOR>.x
 # and compiles libcxx + libcxxabi from that branch.
 version = "21"
-revision = 1
+revision = 2
 depends_on = []
 # Both wasm32 (everyone) and wasm64 (MariaDB, PHP) currently
 # need libcxx, so we opt into both.
