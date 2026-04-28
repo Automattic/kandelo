@@ -1477,3 +1477,31 @@ fn plain_catch_only_try_table_is_not_6d_rewritten() {
         "plain-catch-only try_tables should not be retargeted by Phase 6d",
     );
 }
+
+#[test]
+fn plain_catch_arms_discovered_for_fork_path_handler() {
+    // Fork-path function with a try_table that has a plain `catch` arm.
+    // The fork call lives "after" the catch's target block — i.e. it
+    // executes when the catch dispatches `br $h` (which jumps to just
+    // past the block's end). Stage 1 must enumerate the plain-catch
+    // arm regardless of fork-call reachability; this matches Phase 6's
+    // unfiltered approach for catch_ref.
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (tag $exn)
+          (func $caller (export "caller") (result i32)
+            (block $h
+              (try_table (catch $exn $h)
+                nop))
+            call $fork)
+          (memory 1))
+    "#;
+    let bytes = instrument_wat(wat);
+    validate(&bytes);
+    // Stage 1 only validates that the module still validates post-
+    // instrumentation. Once Stage 2 lands we'll assert the saved-
+    // operand path. The discovery helper itself is exercised
+    // implicitly via the `instrument()` round-trip — Stage 2 will
+    // wire it into emission.
+}

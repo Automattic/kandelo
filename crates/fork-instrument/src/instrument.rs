@@ -114,7 +114,7 @@ use std::collections::{HashMap, HashSet};
 
 use walrus::{
     AbstractHeapType, FunctionId, FunctionKind, GlobalId, HeapType, LocalFunction, LocalId,
-    MemoryId, Module, RefType, TableId, TypeId, ValType,
+    MemoryId, Module, RefType, TableId, TagId, TypeId, ValType,
     ir::{
         BinaryOp, Binop, Block, Br, BrIf, BrTable, Call, CallIndirect, Const, Drop, GlobalGet,
         IfElse, Instr, InstrLocId, InstrSeqId, InstrSeqType, LegacyCatch, LoadKind, LocalGet,
@@ -1962,6 +1962,79 @@ fn visit_try_tables(f: &LocalFunction, seq: InstrSeqId, out: &mut Vec<InstrSeqId
         }
         for child in nested_seqs(instr) {
             visit_try_tables(f, child, out);
+        }
+    }
+}
+
+/// Stage 1 (B1) — describes a single `catch $tag $label` clause in a
+/// fork-path try_table. Discovered alongside `CatchRegionPlan` and
+/// recorded per-region for later Stage 2 wiring.
+#[derive(Debug, Clone)]
+pub struct PlainCatchArm {
+    /// Index of this arm within its try_table's `catches` list.
+    pub arm_idx: u32,
+    /// Tag this arm catches.
+    pub tag: TagId,
+    /// Label the arm branches to on catch (target block id).
+    pub label: InstrSeqId,
+    /// Tag's operand types (matches the params of the type that
+    /// `module.tags.get(tag).ty()` references). Cached at discovery
+    /// time so we don't re-look-up on emission.
+    pub operand_tys: Vec<ValType>,
+}
+
+/// Stage 1 (B1) — for each try_table in `func_id`, returns
+/// `(body_seq, plain_catch_arms)` where `plain_catch_arms` lists
+/// every plain `Catch { tag, label }` clause. Following Phase 6's
+/// unfiltered pattern: catch_ref/catch_all_ref clauses are skipped
+/// (they're handled by Phase 6); plain catches are enumerated
+/// regardless of whether the handler-reachable code forks — that
+/// reachability optimization is deferred to Stage 2 if useful.
+fn discover_plain_catch_arms(
+    module: &Module,
+    func_id: FunctionId,
+) -> Vec<(InstrSeqId, Vec<PlainCatchArm>)> {
+    let local = match &module.funcs.get(func_id).kind {
+        FunctionKind::Local(l) => l,
+        _ => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    visit_for_plain_catch(module, local, local.entry_block(), &mut out);
+    out
+}
+
+fn visit_for_plain_catch(
+    module: &Module,
+    f: &LocalFunction,
+    seq: InstrSeqId,
+    out: &mut Vec<(InstrSeqId, Vec<PlainCatchArm>)>,
+) {
+    for (instr, _) in &f.block(seq).instrs {
+        if let Instr::TryTable(tt) = instr {
+            let mut arms: Vec<PlainCatchArm> = Vec::new();
+            for (i, c) in tt.catches.iter().enumerate() {
+                let (tag, label) = match c {
+                    TryTableCatch::Catch { tag, label } => (*tag, *label),
+                    _ => continue, // catch_ref / catch_all / catch_all_ref: handled by Phase 6
+                };
+                let operand_tys: Vec<ValType> = module
+                    .types
+                    .get(module.tags.get(tag).ty())
+                    .params()
+                    .to_vec();
+                arms.push(PlainCatchArm {
+                    arm_idx: i as u32,
+                    tag,
+                    label,
+                    operand_tys,
+                });
+            }
+            if !arms.is_empty() {
+                out.push((tt.seq, arms));
+            }
+        }
+        for child in nested_seqs(instr) {
+            visit_for_plain_catch(module, f, child, out);
         }
     }
 }
