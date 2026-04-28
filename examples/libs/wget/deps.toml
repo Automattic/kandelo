@@ -16,5 +16,5 @@ url = "https://git.savannah.gnu.org/cgit/wget.git/tree/COPYING"
 name = "wget"
 wasm = "wget.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/wget-1.25.0-rev1-abi1-wasm32-67addd00.tar.zst"
-archive_sha256 = "8324e362a79d4c46b776a747ec8865720607061a9e9764f085854eff0aebdf3d"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/wget-1.25.0-rev1-abi6-wasm32-c8e1dcbd.tar.zst"
+archive_sha256 = "14a422b2ac378d2ee443e9a7bdec6b7c5da318dd413e992f455087acbd313a0a"

@@ -17,4 +17,4 @@ name = "xz"
 wasm = "xz.wasm"
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/xz-5.6.2-rev1-abi6-wasm32-0bb8a2d3.tar.zst"
-archive_sha256 = "27fc433ff1cfa3d4255cf876ec4f5b5cf704c4e077261a18a39ac2d9d45af71c"
+archive_sha256 = "ff941ca47e4c172e569e771c4fbf2b1574a3da17ed5c21ee60d5b68e7d696ea9"

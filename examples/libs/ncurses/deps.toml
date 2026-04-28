@@ -35,4 +35,4 @@ headers = ["include/ncursesw"]
 # `--enable-pc-files=no --with-pkg-config=no`: no pkgconfig outputs.
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/ncurses-6.5-rev1-abi6-wasm32-014a9575.tar.zst"
-archive_sha256 = "7c4055fa3c6aada61877302678dd3b5295b257ff504f6dcfddf53b98bf4764db"
+archive_sha256 = "aee8f04f624c2a694c8e293daf08c4d980a002dc0ffa24920bc4721de1fd77e4"

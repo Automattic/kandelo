@@ -17,4 +17,4 @@ name = "grep"
 wasm = "grep.wasm"
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/grep-3.11-rev1-abi6-wasm32-f78a0573.tar.zst"
-archive_sha256 = "330a9ffcdbafbc6f1de035667c2416f8a18a38773e160f3b29c1b7c26c4a691c"
+archive_sha256 = "5498494459140f129c04d636605eeebbaa059cca3009ae11113892b1ba4fa8c6"

@@ -17,4 +17,4 @@ name = "nethack"
 wasm = "nethack.wasm"
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/nethack-3.6.7-rev1-abi6-wasm32-802afb1b.tar.zst"
-archive_sha256 = "a5501460c2d9ced5c47b9f111ea4444e75d2531140b8e69600a25fb61144c5ed"
+archive_sha256 = "70f96ca3dc0a2b9671c621bc093952464e73b648dffd8109a31cc7e99fc29e1d"

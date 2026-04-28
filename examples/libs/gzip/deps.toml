@@ -17,4 +17,4 @@ name = "gzip"
 wasm = "gzip.wasm"
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/gzip-1.13-rev1-abi6-wasm32-9bbb8cfe.tar.zst"
-archive_sha256 = "7c560ff4562dcfaccd9f922e76effac93ec2585a3b09670429b3fcf93549b9ba"
+archive_sha256 = "a6a3930269f5c77bb8fcefba836382e39e030e666bd8f06b57452dddd1ae63fa"

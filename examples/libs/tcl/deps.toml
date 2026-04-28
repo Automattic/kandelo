@@ -17,4 +17,4 @@ name = "tcl"
 wasm = "tclsh.wasm"
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/tcl-9.0.1-rev1-abi6-wasm32-a931d396.tar.zst"
-archive_sha256 = "0af0443af2be1e1a353a35eb93996c275b9e302a68c1146a2f36d238683401a8"
+archive_sha256 = "14abd0a0d074b13da78f792eb047cc02b6e91da64589dd204de812c52e098b22"

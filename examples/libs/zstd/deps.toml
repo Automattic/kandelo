@@ -17,4 +17,4 @@ name = "zstd"
 wasm = "zstd.wasm"
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/zstd-1.5.6-rev1-abi6-wasm32-c66e7982.tar.zst"
-archive_sha256 = "ee87d68ffe83beb713652d12e8f6161fbd74796882aa237f73b6b0d1e45615c8"
+archive_sha256 = "2d6dacd1cef0dad51ab925925a2ab60f3f99b1b7605d51ce39354786e5e2c565"

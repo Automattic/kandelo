@@ -17,4 +17,4 @@ name = "cpython"
 wasm = "python.wasm"
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/cpython-3.13.3-rev1-abi6-wasm32-62c97219.tar.zst"
-archive_sha256 = "2d96eb20879eaa030d773aff1b2834058af7dd5898c2b7f964b0212ac975e354"
+archive_sha256 = "aff712780b88f6a0860481d93be1e4f572273a20ebb1bda62018647cc34ae762"

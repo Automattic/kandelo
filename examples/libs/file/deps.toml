@@ -17,4 +17,4 @@ name = "file"
 wasm = "file.wasm"
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/file-5.45-rev1-abi6-wasm32-10b13f5f.tar.zst"
-archive_sha256 = "dc13e3047f5d3197b85981eb5eed35e20fa63501fb9381ef83b59da4fbae5033"
+archive_sha256 = "243df9b20cd56905e86a25bb101307a058dbde9987e1b953a9ab3b270b16b673"

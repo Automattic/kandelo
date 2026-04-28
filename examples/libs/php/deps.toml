@@ -28,4 +28,4 @@ name = "php-fpm"
 wasm = "php-fpm.wasm"
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/php-8.3.2-rev2-abi6-wasm32-2b6ee83c.tar.zst"
-archive_sha256 = "64e24d0832d884cb6f90371eeac554c63e2ccaa062720235526789a7afe18b2f"
+archive_sha256 = "5f9f8b420f29e5c8df8e139736a7a9f7a4bc4f979ef8ad3e6ceb6bfbd572aa72"

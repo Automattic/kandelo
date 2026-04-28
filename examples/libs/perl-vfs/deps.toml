@@ -24,4 +24,4 @@ name = "perl-vfs"
 wasm = "perl-vfs.vfs"
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/perl-vfs-0.1.0-rev1-abi6-wasm32-324b4cf4.tar.zst"
-archive_sha256 = "fa17d18628787319d8f9996b5f80955380758ade25c737a51faec069e1dd18eb"
+archive_sha256 = "0eea47c831b5399f189f431b478c8f742f7048e3a86b707d425b62c8bec9d947"

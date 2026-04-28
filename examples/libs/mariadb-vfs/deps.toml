@@ -23,5 +23,5 @@ script = "build-mariadb-vfs.sh"
 name = "mariadb-vfs"
 wasm = "mariadb-vfs.vfs"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/mariadb-vfs-0.1.0-rev1-abi1-wasm32-a916f4a9.tar.zst"
-archive_sha256 = "9d09902b46a2eaa4764fc4e844a48ca7fe3f009426ace08bfc9f8c7d46f2d564"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/mariadb-vfs-0.1.0-rev1-abi6-wasm32-752762e6.tar.zst"
+archive_sha256 = "a6db97eb4c1f7d4b3e984bc98b236036a06cf2875a51c2af652490409d227008"

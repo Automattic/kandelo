@@ -17,4 +17,4 @@ name = "make"
 wasm = "make.wasm"
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/make-4.4.1-rev1-abi6-wasm32-594c9214.tar.zst"
-archive_sha256 = "287dc3b30d419c7d4848cda07778252cc603461680f55e89ace1a661fc7b7da6"
+archive_sha256 = "c59fdc47ab005cf37271445aa26109cc230a0501d524e62d2830576857abf422"

@@ -29,4 +29,4 @@ name = "sdiff"
 wasm = "sdiff.wasm"
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/diffutils-3.10-rev1-abi6-wasm32-96a93611.tar.zst"
-archive_sha256 = "9d36a4380f4fd0b852ff41a9860e18e2ac93b24351e8c33becd112baa5d20b47"
+archive_sha256 = "4cdfab9d1f1fa3f643fff2eb9bb1290299150a62112da39def164d1bad05db32"
