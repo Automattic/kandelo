@@ -31,6 +31,7 @@ import phpFpmWasmUrl from "../../../../binaries/programs/php/php-fpm.wasm?url";
 import coreutilsWasmUrl from "../../../../binaries/programs/coreutils.wasm?url";
 import grepWasmUrl from "../../../../binaries/programs/grep.wasm?url";
 import sedWasmUrl from "../../../../binaries/programs/sed.wasm?url";
+import VFS_IMAGE_URL from "@binaries/programs/wordpress.vfs?url";
 import "@xterm/xterm/css/xterm.css";
 import "../../lib/terminal-panel.css";
 
@@ -40,7 +41,6 @@ const APP_PATH = import.meta.env.BASE_URL + "app";
 // Capture the real page protocol so wp-config.php generates correct URLs
 const PROTO = window.location.protocol === "https:" ? "https" : "http";
 const SW_URL = import.meta.env.BASE_URL + "service-worker.js";
-const VFS_IMAGE_URL = import.meta.env.BASE_URL + "vfs/wordpress.vfs.zst";
 
 const log = document.getElementById("log") as HTMLPreElement;
 const startBtn = document.getElementById("start") as HTMLButtonElement;

@@ -10,9 +10,8 @@ import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
 import { decompressVfsImage } from "../../../../host/src/vfs/load-image";
 import kernelWasmUrl from "@kernel-wasm?url";
 import pythonWasmUrl from "../../../../binaries/programs/cpython.wasm?url";
+import VFS_IMAGE_URL from "@binaries/programs/python-vfs.vfs?url";
 import "@xterm/xterm/css/xterm.css";
-
-const VFS_IMAGE_URL = import.meta.env.BASE_URL + "vfs/python.vfs.zst";
 
 // --- DOM elements ---
 const terminalContainer = document.getElementById("terminal") as HTMLDivElement;

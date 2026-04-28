@@ -35,8 +35,8 @@ import helloWasmUrl from "../../../../benchmarks/wasm/hello.wasm?url";
 import kernelWasmUrl from "@kernel-wasm?url";
 
 // VFS images (fetched lazily; 404 handled per-suite)
-const ERLANG_VFS_URL = import.meta.env.BASE_URL + "vfs/erlang.vfs.zst";
-const WP_VFS_URL = import.meta.env.BASE_URL + "vfs/wordpress.vfs.zst";
+import ERLANG_VFS_URL from "@binaries/programs/erlang-vfs.vfs?url";
+import WP_VFS_URL from "@binaries/programs/wordpress.vfs?url";
 
 /**
  * Optional application-binary URL imports are resolved via `import.meta.glob`.

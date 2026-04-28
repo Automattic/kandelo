@@ -40,6 +40,7 @@ import zipWasmUrl from "../../../../binaries/programs/zip.wasm?url";
 import unzipWasmUrl from "../../../../binaries/programs/unzip.wasm?url";
 import nanoWasmUrl from "../../../../binaries/programs/nano.wasm?url";
 import lsofWasmUrl from "../../../../examples/lsof.wasm?url";
+import VFS_IMAGE_URL from "@binaries/programs/shell.vfs?url";
 import "@xterm/xterm/css/xterm.css";
 
 // --- DOM elements ---
@@ -59,7 +60,6 @@ const batchView = document.getElementById("batch-view") as HTMLDivElement;
 
 const encoder = new TextEncoder();
 
-const VFS_IMAGE_URL = import.meta.env.BASE_URL + "vfs/shell.vfs.zst";
 let vfsImageBuf: ArrayBuffer | null = null;
 
 // --- Mode switching ---

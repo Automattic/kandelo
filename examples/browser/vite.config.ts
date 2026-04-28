@@ -212,13 +212,21 @@ function injectCorsProxyUrl(): Plugin {
 export default defineConfig({
   base: process.env.VITE_BASE || "/",
   resolve: {
-    // Lookahead so the regex matches `@kernel-wasm` at the end of the
-    // import spec OR right before a `?query` suffix (e.g. `?url`), without
+    // Two aliases for asset imports:
+    //   `@kernel-wasm`     → the kernel binary (resolves local-binaries/
+    //                        first, then binaries/ from the release).
+    //   `@binaries/...`    → the binaries/ tree at the repo root (program
+    //                        wasms and VFS images installed by xtask).
+    //
+    // `@kernel-wasm` uses a lookahead-anchored regex so it matches at end
+    // of the import spec OR right before `?query` (e.g. `?url`), without
     // consuming the `?`. The default object-form matcher in
-    // @rollup/plugin-alias only fires on exact match or `@kernel-wasm/...`,
-    // which excludes query suffixes.
+    // @rollup/plugin-alias only fires on exact match or `<key>/...`, which
+    // excludes bare `?url` suffixes. `@binaries` is followed by `/...`
+    // in every consumer, so the default matcher works.
     alias: [
       { find: /^@kernel-wasm(?=$|\?)/, replacement: resolveKernelWasm() },
+      { find: "@binaries", replacement: path.resolve(repoRoot, "binaries") },
     ],
   },
   plugins: [
@@ -272,5 +280,5 @@ export default defineConfig({
   worker: {
     format: "es",
   },
-  assetsInclude: ["**/*.wasm", "**/*.sql"],
+  assetsInclude: ["**/*.wasm", "**/*.sql", "**/*.vfs"],
 });
