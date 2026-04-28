@@ -9,7 +9,8 @@
  * we restore the image, register lazy binaries, and spawn dash.
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
-import { MemoryFileSystem , decompressVfsImage} from "../../../../host/src/vfs/memory-fs";
+import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
+import { decompressVfsImage } from "../../../../host/src/vfs/load-image";
 import { PtyTerminal } from "../../lib/pty-terminal";
 import {
   COREUTILS_NAMES,

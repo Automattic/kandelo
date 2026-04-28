@@ -20,7 +20,8 @@
  * the kernel's TCP stack to nginx.
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
-import { MemoryFileSystem , decompressVfsImage} from "../../../../host/src/vfs/memory-fs";
+import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
+import { decompressVfsImage } from "../../../../host/src/vfs/load-image";
 import { SystemInit } from "../../lib/init/system-init";
 import { COREUTILS_NAMES } from "../../lib/init/shell-binaries";
 import { writeVfsFile } from "../../lib/init/vfs-utils";

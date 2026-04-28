@@ -6,7 +6,8 @@
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
 import { PtyTerminal } from "../../lib/pty-terminal";
-import { MemoryFileSystem , decompressVfsImage} from "../../../../host/src/vfs/memory-fs";
+import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
+import { decompressVfsImage } from "../../../../host/src/vfs/load-image";
 import kernelWasmUrl from "../../../../binaries/kernel.wasm?url";
 import perlWasmUrl from "../../../../binaries/programs/perl.wasm?url";
 import "@xterm/xterm/css/xterm.css";

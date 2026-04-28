@@ -26,7 +26,8 @@
  * Service worker intercepts ${BASE_URL}app/* requests and routes them to nginx.
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
-import { MemoryFileSystem , decompressVfsImage} from "../../../../host/src/vfs/memory-fs";
+import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
+import { decompressVfsImage } from "../../../../host/src/vfs/load-image";
 import { SystemInit } from "../../lib/init/system-init";
 import { writeVfsFile } from "../../lib/init/vfs-utils";
 import kernelWasmUrl from "../../../../binaries/kernel.wasm?url";

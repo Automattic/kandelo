@@ -4,7 +4,8 @@
  * BEAM uses -noshell -eval, so no interactive REPL.
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
-import { MemoryFileSystem , decompressVfsImage} from "../../../../host/src/vfs/memory-fs";
+import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
+import { decompressVfsImage } from "../../../../host/src/vfs/load-image";
 import kernelWasmUrl from "../../../../binaries/kernel.wasm?url";
 import beamWasmUrl from "../../../../binaries/programs/erlang.wasm?url";
 

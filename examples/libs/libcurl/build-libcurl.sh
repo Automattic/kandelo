@@ -245,11 +245,21 @@ if [ "$RESOLVER_MODE" = "1" ]; then
     # --- Install library + headers + pkgconfig into the cache ---
     # curl's `make install` copies src/curl and curl-config into
     # $INSTALL_DIR/bin/ and a manpage tree into $INSTALL_DIR/share/.
-    # Drop both afterwards — the CLI is a consumer artifact, and
-    # curl-config is a host-shell shim that doesn't belong in the
-    # cached library output.
+    # The CLI is a consumer artifact, and curl-config is a host-shell
+    # shim that doesn't belong in the cached library output.
+    #
+    # When this script is invoked for the *curl* manifest (kind=program,
+    # outputs.wasm = "curl.wasm"), the resolver also expects
+    # `$INSTALL_DIR/curl.wasm` to exist post-build — so promote the CLI
+    # binary to a flat location at the install root before pruning bin/.
+    # When invoked for libcurl itself, the curl.wasm file is harmless
+    # ballast in the cache (libcurl's outputs validator only checks
+    # lib/libcurl.a + include/curl/*).
     echo "==> Installing libcurl to $INSTALL_DIR..."
     make install 2>&1 | tail -20
+    if [ -f "$INSTALL_DIR/bin/curl" ]; then
+        cp "$INSTALL_DIR/bin/curl" "$INSTALL_DIR/curl.wasm"
+    fi
     rm -rf "$INSTALL_DIR/bin" "$INSTALL_DIR/share"
 
     if [ -f "$INSTALL_DIR/lib/libcurl.a" ]; then

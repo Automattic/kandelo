@@ -16,7 +16,8 @@
  *   pid N: dash -i (interactive shell with PTY)
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
-import { MemoryFileSystem , decompressVfsImage} from "../../../../host/src/vfs/memory-fs";
+import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
+import { decompressVfsImage } from "../../../../host/src/vfs/load-image";
 import { SystemInit } from "../../lib/init/system-init";
 import { MySqlBrowserClient } from "../../lib/mysql-client";
 import { writeInitDescriptor } from "../../lib/init/vfs-utils";

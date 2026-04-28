@@ -13,7 +13,8 @@
  *   - "mariadb-innodb": MariaDB with InnoDB engine
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
-import { MemoryFileSystem , decompressVfsImage} from "../../../../host/src/vfs/memory-fs";
+import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
+import { decompressVfsImage } from "../../../../host/src/vfs/load-image";
 import { populateMariadbDirs } from "../../lib/init/mariadb-config";
 import {
   writeVfsBinary,

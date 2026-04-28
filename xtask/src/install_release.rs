@@ -243,21 +243,25 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
 /// Construct the archive URL the consumer should fetch.
 ///
 /// `base` may be one of:
-///   * `file://…` or `http(s)://…` — used as a URL prefix verbatim
-///     (trailing slash trimmed); the result is
-///     `{base}/{kind_subdir}/{archive_name}`.
-///   * Plain absolute filesystem path — wrapped in `file://`. Relative
-///     paths are rejected because the resulting URL would depend on
-///     the resolver's cwd.
+///   * `http(s)://…` — used as a flat URL prefix; assets are flat in
+///     GitHub releases (`gh release create` ignores the source path
+///     and uses each asset's basename), so the result is
+///     `{base}/{archive_name}` — no `kind_subdir` segment.
+///   * `file://…` or absolute path — points at a `release-staging/`
+///     directory laid out by `xtask stage-release`, which keeps
+///     archives in `libs/` and `programs/` subdirectories. Result is
+///     `{base}/{kind_subdir}/{archive_name}`. Relative paths are
+///     rejected because the resulting URL would depend on the
+///     resolver's cwd.
 fn build_archive_url(
     base: &str,
     kind_subdir: &str,
     archive_name: &str,
 ) -> Result<String, String> {
-    if base.starts_with("file://")
-        || base.starts_with("http://")
-        || base.starts_with("https://")
-    {
+    if base.starts_with("http://") || base.starts_with("https://") {
+        let trimmed = base.trim_end_matches('/');
+        Ok(format!("{trimmed}/{archive_name}"))
+    } else if base.starts_with("file://") {
         let trimmed = base.trim_end_matches('/');
         Ok(format!("{trimmed}/{kind_subdir}/{archive_name}"))
     } else {

@@ -1,12 +1,18 @@
 kind = "program"
 name = "curl"
-version = "8.10.1"
+version = "8.11.1"
 revision = 1
+# curl is a side-output of libcurl's build (libcurl's autoconf produces
+# both lib/libcurl.a and src/curl). Keep this manifest aligned with
+# libcurl's source so build-curl.sh — which delegates to
+# build-libcurl.sh — finds a pre-generated `configure` script. The
+# github "archive/refs/tags/" tarball does NOT contain one (autoconf
+# runs at release time, not in git); the curl.se release tarball does.
 depends_on = []
 
 [source]
-url = "https://github.com/curl/curl/archive/refs/tags/curl-8_10_1.tar.gz"
-sha256 = "5aaf131294f734756325dd99d849518c9a5060fc702517ab3064c76257dc700c"
+url = "https://curl.se/download/curl-8.11.1.tar.xz"
+sha256 = "c7ca7db48b0909743eaef34250da02c19bc61d4f1dcedd6603f109409536ab56"
 
 [license]
 spdx = "curl"
@@ -15,3 +21,6 @@ url = "https://github.com/curl/curl/blob/master/COPYING"
 [[outputs]]
 name = "curl"
 wasm = "curl.wasm"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/curl-8.11.1-rev1-abi6-wasm32-dc1febdf.tar.zst"
+archive_sha256 = "b73ab60cd0e54f82c0ad48cb3a355a9d9e7339db415ef031ae7929b73348b621"
