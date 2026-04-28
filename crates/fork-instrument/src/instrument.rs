@@ -1986,11 +1986,15 @@ pub struct PlainCatchArm {
 /// Stage 1 (B1) — for each try_table in `func_id`, returns
 /// `(body_seq, plain_catch_arms)` where `plain_catch_arms` lists
 /// every plain `Catch { tag, label }` clause. Following Phase 6's
-/// unfiltered pattern: catch_ref/catch_all_ref clauses are skipped
-/// (they're handled by Phase 6); plain catches are enumerated
-/// regardless of whether the handler-reachable code forks — that
-/// reachability optimization is deferred to Stage 2 if useful.
-fn discover_plain_catch_arms(
+/// pattern: catch_ref / catch_all_ref clauses are skipped (Phase 6
+/// territory); plain catch is enumerated unfiltered.
+///
+/// Function-level filtering happens at the call site (caller passes
+/// only fork-path `FunctionId`s, mirroring `discover_try_table_bodies`).
+/// Sub-function arm-by-arm reachability filtering is intentionally
+/// not done — Phase 6 doesn't filter either, and the cost of
+/// recording an unused `PlainCatchArm` is one struct per arm.
+pub fn discover_plain_catch_arms(
     module: &Module,
     func_id: FunctionId,
 ) -> Vec<(InstrSeqId, Vec<PlainCatchArm>)> {
@@ -2015,7 +2019,9 @@ fn visit_for_plain_catch(
             for (i, c) in tt.catches.iter().enumerate() {
                 let (tag, label) = match c {
                     TryTableCatch::Catch { tag, label } => (*tag, *label),
-                    _ => continue, // catch_ref / catch_all / catch_all_ref: handled by Phase 6
+                    _ => continue, // CatchRef / CatchAllRef: handled by Phase 6.
+                                   // CatchAll: unsupported today; not in B1 scope
+                                   // (no tag → no operand_tys to save).
                 };
                 let operand_tys: Vec<ValType> = module
                     .types

@@ -1499,9 +1499,100 @@ fn plain_catch_arms_discovered_for_fork_path_handler() {
     "#;
     let bytes = instrument_wat(wat);
     validate(&bytes);
-    // Stage 1 only validates that the module still validates post-
-    // instrumentation. Once Stage 2 lands we'll assert the saved-
-    // operand path. The discovery helper itself is exercised
-    // implicitly via the `instrument()` round-trip — Stage 2 will
-    // wire it into emission.
+    // Stage 1 only verifies that this WAT shape — the target case for B1 —
+    // still round-trips through today's instrumenter without breaking. The
+    // emission of plain-catch save/restore code is Stage 2; this test will
+    // be extended to assert behavioral correctness (parent forks → child
+    // resumes inside catch handler with restored payload) once Stage 2
+    // lands.
+}
+
+#[test]
+fn discover_plain_catch_arms_returns_one_arm_for_single_catch() {
+    // Direct unit test for `discover_plain_catch_arms`. The integration
+    // test above only round-trips a WAT through `instrument()`, which
+    // does not (yet) call the discovery helper — Stage 2 will. This
+    // test exercises the helper directly so it is covered (and not
+    // dead code) before the wiring lands.
+    let wat = r#"
+        (module
+          (tag $exn)
+          (func $caller (result i32)
+            (block $h
+              (try_table (catch $exn $h)
+                nop))
+            i32.const 0)
+          (memory 1))
+    "#;
+    let bytes = wat::parse_str(wat).expect("wat parse");
+    let module = Module::from_buffer(&bytes).expect("module parse");
+
+    let func_id = func_by_name(&module, "caller");
+    let entries = fork_instrument::instrument::discover_plain_catch_arms(&module, func_id);
+
+    assert_eq!(entries.len(), 1, "expected exactly one try_table entry");
+    let (_body_seq, arms) = &entries[0];
+    assert_eq!(arms.len(), 1, "expected exactly one plain-catch arm");
+
+    let arm = &arms[0];
+    assert_eq!(arm.arm_idx, 0, "single catch arm has idx 0");
+    assert!(
+        arm.operand_tys.is_empty(),
+        "tag $exn declares no payload, so operand_tys should be empty (got {:?})",
+        arm.operand_tys,
+    );
+
+    // Sanity: the recorded `tag` matches the only tag declared by the
+    // module. Proves the helper captured the real tag id rather than a
+    // stale or default value.
+    let module_tag_id = module
+        .tags
+        .iter()
+        .next()
+        .expect("module declares one tag")
+        .id();
+    assert_eq!(
+        arm.tag, module_tag_id,
+        "arm.tag should equal the module's declared tag id",
+    );
+
+    // Sanity: the recorded `label` is one of the sequence ids actually
+    // reachable from the function's entry block — i.e. the helper
+    // walked the IR rather than emitting a default. We collect every
+    // reachable InstrSeqId in `caller` and confirm `arm.label` is
+    // among them.
+    let local = local_func(&module, func_id);
+    let mut seen: HashSet<InstrSeqId> = HashSet::new();
+    collect_seq_ids(local, local.entry_block(), &mut seen);
+    assert!(
+        seen.contains(&arm.label),
+        "arm.label {:?} should be a reachable sequence id in caller (seen={:?})",
+        arm.label,
+        seen,
+    );
+}
+
+/// Recursively collect every `InstrSeqId` reachable from `seq` in
+/// `f`. Used by the discovery test above to sanity-check that the
+/// helper records a real label rather than a stale/default id.
+fn collect_seq_ids(f: &LocalFunction, seq: InstrSeqId, out: &mut HashSet<InstrSeqId>) {
+    out.insert(seq);
+    for (instr, _) in &f.block(seq).instrs {
+        for child in nested_seqs_in_test(instr) {
+            collect_seq_ids(f, child, out);
+        }
+    }
+}
+
+/// Local helper mirroring `instrument::nested_seqs` — returns child
+/// `InstrSeqId`s of a given instruction. Kept tiny and self-contained
+/// to avoid widening the crate's public surface.
+fn nested_seqs_in_test(instr: &Instr) -> Vec<InstrSeqId> {
+    match instr {
+        Instr::Block(b) => vec![b.seq],
+        Instr::Loop(l) => vec![l.seq],
+        Instr::IfElse(ie) => vec![ie.consequent, ie.alternative],
+        Instr::TryTable(tt) => vec![tt.seq],
+        _ => Vec::new(),
+    }
 }
