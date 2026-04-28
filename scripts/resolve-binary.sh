@@ -40,8 +40,23 @@ if [ -z "$repo_root" ]; then
     exit 1
 fi
 
-local_path="$repo_root/local-binaries/$rel"
-fetched_path="$repo_root/binaries/$rel"
+# Default-arch shim: callers historically pass `programs/<x>` without
+# an arch segment (run.sh has 30+ `has_resolvable programs/<name>.wasm`
+# checks). After the per-arch layout refactor, those files live at
+# `programs/wasm32/<x>` (or `wasm64/<x>`). Inject `wasm32/` when the
+# caller's path starts with `programs/` and the next segment isn't
+# already `wasm32` or `wasm64`. Mirrors the same shim in
+# host/src/binary-resolver.ts (applyDefaultArch).
+adjusted="$rel"
+case "$rel" in
+    programs/wasm32/*|programs/wasm64/*) ;;  # explicit arch — pass through
+    programs/*)
+        adjusted="programs/wasm32/${rel#programs/}"
+        ;;
+esac
+
+local_path="$repo_root/local-binaries/$adjusted"
+fetched_path="$repo_root/binaries/$adjusted"
 
 if [ -e "$local_path" ]; then
     echo "$local_path"
@@ -56,6 +71,6 @@ cat >&2 <<EOF
 ERROR: binary not found: $rel
   checked: $local_path
   checked: $fetched_path
-  Run scripts/fetch-binaries.sh or place a file at local-binaries/$rel.
+  Run scripts/fetch-binaries.sh or place a file at local-binaries/$adjusted.
 EOF
 exit 1
