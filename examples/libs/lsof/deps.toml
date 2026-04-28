@@ -22,4 +22,4 @@ name = "lsof"
 wasm = "lsof.wasm"
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/lsof-0.1.0-rev1-abi6-wasm32-611f4166.tar.zst"
-archive_sha256 = "944899d217aa68f01418041fb47bd2f4936914445120292e50de00c773ada205"
+archive_sha256 = "16d1081435523bf2aed1e66d0327eeec67103f5ee167167dd120acddc4c94a08"

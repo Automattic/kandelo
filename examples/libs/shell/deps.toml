@@ -29,4 +29,4 @@ name = "shell"
 wasm = "shell.vfs"
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/shell-0.1.0-rev1-abi6-wasm32-8cb32ab2.tar.zst"
-archive_sha256 = "54de6580ae8351d9bfcc6cd427d7839bf8d48efa9b6858fdf17ca58f0a646c8f"
+archive_sha256 = "eb0c95bdc63a29c337b254829e3183c0b1c1cb94e2b5a7f3cf18d149b6d648a4"

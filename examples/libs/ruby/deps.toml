@@ -17,4 +17,4 @@ name = "ruby"
 wasm = "ruby.wasm"
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/ruby-3.3.5-rev1-abi6-wasm32-4e2203fb.tar.zst"
-archive_sha256 = "cf8de52e75220088d41eab204d0fa3dd41cad0e94468a541ce9092a2d1575b06"
+archive_sha256 = "74b4aefa2281cceff69a5c0a7d989b5ccf6ad6cae99028b180ad50c8004e8b51"

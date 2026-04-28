@@ -20,4 +20,4 @@ name = "lamp"
 wasm = "lamp.vfs"
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/lamp-0.1.0-rev1-abi6-wasm32-9621cfd0.tar.zst"
-archive_sha256 = "1fd6cc1ed82c3f00d8b4f49aca14cb6055b47eca91d7d8005a1146662131efd8"
+archive_sha256 = "53d7382b2ad4f3e274af3cf6e1b3f85801714b4ab0a39dbc929b29f70bd9b608"

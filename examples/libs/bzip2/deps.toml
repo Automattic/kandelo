@@ -17,4 +17,4 @@ name = "bzip2"
 wasm = "bzip2.wasm"
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/bzip2-1.0.8-rev1-abi6-wasm32-6b64b249.tar.zst"
-archive_sha256 = "e1c5fe9a926af78eac38ded33e065d097213d85b37e5850c2620e89e082863dd"
+archive_sha256 = "58789742eb207fc231d9ba10c5495a9d6b4dd15e018d5749e296500e4f9fb4b3"

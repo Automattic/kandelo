@@ -348,12 +348,32 @@ cmake "$SRC_DIR" \
 
 echo "==> CMake configuration complete. Starting build..."
 
-# Build mysqld
-make -j"$NPROC" mariadbd 2>&1 | tail -20
+# Build mysqld. Capture full output to a log so a failed build doesn't
+# bury the actual diagnostic in `tail -N`. Show the tail on success and
+# the relevant error context on failure.
+MARIADBD_LOG="$CROSS_BUILD_DIR/build-mariadbd.log"
+if make -j"$NPROC" mariadbd > "$MARIADBD_LOG" 2>&1; then
+    tail -10 "$MARIADBD_LOG"
+else
+    echo "==> mariadbd build failed; printing error context:" >&2
+    grep -B 2 -E "[Ee]rror|fatal|undefined" "$MARIADBD_LOG" | tail -50 >&2
+    echo "" >&2
+    echo "Full log: $MARIADBD_LOG" >&2
+    exit 1
+fi
 
 # Build mysqltest client (mariadb-test target)
 echo "==> Building mysqltest..."
-make -j"$NPROC" mariadb-test 2>&1 | tail -20
+MYSQLTEST_LOG="$CROSS_BUILD_DIR/build-mysqltest.log"
+if make -j"$NPROC" mariadb-test > "$MYSQLTEST_LOG" 2>&1; then
+    tail -10 "$MYSQLTEST_LOG"
+else
+    echo "==> mariadb-test build failed; printing error context:" >&2
+    grep -B 2 -E "[Ee]rror|fatal|undefined" "$MYSQLTEST_LOG" | tail -50 >&2
+    echo "" >&2
+    echo "Full log: $MYSQLTEST_LOG" >&2
+    exit 1
+fi
 
 # Check if mariadbd was built (10.5+ renames mysqld → mariadbd)
 MYSQLD_BIN="$CROSS_BUILD_DIR/sql/mariadbd"

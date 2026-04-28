@@ -17,4 +17,4 @@ name = "bash"
 wasm = "bash.wasm"
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/bash-5.2.37-rev1-abi6-wasm32-f5bb9786.tar.zst"
-archive_sha256 = "0ed1218992913e3660c4c8f91206814e2df4e5a0bf0bff9cc3464e41a870081a"
+archive_sha256 = "ce2a3f13b46cb2ef4fe3e224c56debcb3bb2af5f587288cfcb8fb6ad5b2384bf"

@@ -17,4 +17,4 @@ name = "less"
 wasm = "less.wasm"
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/less-668-rev1-abi6-wasm32-2426ea29.tar.zst"
-archive_sha256 = "8315e81966e9e62ba5c6a51438883464ce618b9948596d8edd00646b25ca809f"
+archive_sha256 = "18062c5b5bd9b7c037940ae51dd6fdc69250a47bc7ee93187e6c3c45f0ed648d"

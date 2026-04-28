@@ -23,4 +23,4 @@ name = "erlang-vfs"
 wasm = "erlang-vfs.vfs"
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/erlang-vfs-0.1.0-rev1-abi6-wasm32-25d1091a.tar.zst"
-archive_sha256 = "46975e9fa8a7dd7f8ef0b604f1dc1eb14a0ed0dc17f551a19d90d41017186f10"
+archive_sha256 = "10f5f70947fa01fa8d2ca59fd319824311f5f3cebb134b542e1e60d974ad3540"

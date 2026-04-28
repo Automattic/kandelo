@@ -17,4 +17,4 @@ name = "sed"
 wasm = "sed.wasm"
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/sed-4.9-rev1-abi6-wasm32-d1c47362.tar.zst"
-archive_sha256 = "35f4ff5c92994d785c2eedfceaf8dd0e3cb180410eae1257811e475e0b06716e"
+archive_sha256 = "567315a44a579e63f9049cae25cac65142c3a2946a85158f0157d1b5530eef3f"

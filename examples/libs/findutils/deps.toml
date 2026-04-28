@@ -21,4 +21,4 @@ name = "xargs"
 wasm = "xargs.wasm"
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/findutils-4.10.0-rev1-abi6-wasm32-66230212.tar.zst"
-archive_sha256 = "e706828b5139d43edaa45825854d22dc6b45579c04e7501ebb1b9a5b3af51096"
+archive_sha256 = "50946c09cc2ba7f6278388d0c3417d7cfbcee35851c30502396f3264b406600c"

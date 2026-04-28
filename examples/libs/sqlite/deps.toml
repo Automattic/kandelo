@@ -26,4 +26,4 @@ headers = ["include/sqlite3.h", "include/sqlite3ext.h"]
 pkgconfig = ["lib/pkgconfig/sqlite3.pc"]
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/sqlite-3.49.1-rev1-abi6-wasm32-0c5cd915.tar.zst"
-archive_sha256 = "bfb2b2dd26c8d65184420fbd7da3588d5cad82cfcb273508a418f12643d4fdcb"
+archive_sha256 = "552c269a960da8c1887c0fec9ea38c0e3260cbab1640bdf0080258ee6c06f9b8"

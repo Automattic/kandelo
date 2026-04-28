@@ -23,4 +23,4 @@ name = "python-vfs"
 wasm = "python-vfs.vfs"
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/python-vfs-0.1.0-rev1-abi6-wasm32-81d9a8ae.tar.zst"
-archive_sha256 = "309038397cb86e1ef66a0ad7bb608e3a478ce415c45498f464f544cbd64b55d6"
+archive_sha256 = "4827ffd559ee26fbd2897fca61939adfc5167fe26cc9d9585a95e99222726553"
