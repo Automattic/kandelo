@@ -2,10 +2,13 @@
  * Build a fully-bootable VFS image for the WordPress + MariaDB (LAMP)
  * browser demo. dinit (PID 1) brings up the full stack:
  *
- *   mariadb-bootstrap (scripted) — wraps `mariadbd --bootstrap < SQL`
- *                                  with a sleep+kill timeout because
- *                                  mariadbd doesn't exit at stdin EOF.
- *   mariadb           (process)  — depends-on mariadb-bootstrap
+ *   mariadb-bootstrap (internal) — no-op anchor (TEMPORARY: see the
+ *                                  workaround note on `buildServices`
+ *                                  below; `mariadbd --bootstrap` is
+ *                                  deadlocking under investigation).
+ *   mariadb           (process)  — depends-on mariadb-bootstrap; runs
+ *                                  with `--init-file=/etc/mariadb/init.sql`
+ *                                  to create the `wordpress` database.
  *   wp-config-init    (scripted) — substitutes @@APP_PATH@@/@@PROTO@@
  *                                  in /etc/wp-config-template.php from
  *                                  env vars passed via kernel.boot().
@@ -35,8 +38,9 @@ const BROWSER_DIR = join(REPO_ROOT, "examples", "browser");
 const WP_DIR = join(REPO_ROOT, "examples", "wordpress", "wordpress");
 const MARIADB_INSTALL = join(REPO_ROOT, "examples", "libs", "mariadb", "mariadb-install");
 const MARIADB_PATH = join(MARIADB_INSTALL, "bin", "mariadbd.wasm");
-const SYSTEM_TABLES_PATH = join(MARIADB_INSTALL, "share", "mysql", "mysql_system_tables.sql");
-const SYSTEM_DATA_PATH = join(MARIADB_INSTALL, "share", "mysql", "mysql_system_tables_data.sql");
+// SYSTEM_TABLES_PATH / SYSTEM_DATA_PATH are unused while the
+// mariadb-bootstrap pass is disabled; re-add the constants when
+// re-enabling that service.
 const DASH_PATH = resolveBinary("programs/dash.wasm");
 const NGINX_PATH = resolveBinary("programs/nginx.wasm");
 const PHP_FPM_PATH = resolveBinary("programs/php/php-fpm.wasm");
@@ -82,10 +86,12 @@ function populateShellSymlinks(fs: MemoryFileSystem): void {
 function populateMariadb(fs: MemoryFileSystem): void {
   writeVfsBinary(fs, "/usr/sbin/mariadbd", new Uint8Array(readFileSync(MARIADB_PATH)));
   ensureDirRecursive(fs, "/etc/mariadb");
-  const systemTablesSql = readFileSync(SYSTEM_TABLES_PATH, "utf-8");
-  const systemDataSql = readFileSync(SYSTEM_DATA_PATH, "utf-8");
-  const bootstrapSql = `use mysql;\n${systemTablesSql}\n${systemDataSql}\nCREATE DATABASE IF NOT EXISTS wordpress;\n`;
-  writeVfsFile(fs, "/etc/mariadb/bootstrap.sql", bootstrapSql);
+  // bootstrap.sql is no longer baked: the `mariadb-bootstrap` dinit
+  // service is a no-op anchor while the bootstrap-mode startup hang
+  // is open (see workaround note on `buildServices`). The system
+  // tables would be re-emitted by `--init-file` if needed, but
+  // `--skip-grant-tables` lets mariadbd run without them. Re-add
+  // these reads + the writeVfsFile when re-enabling the bootstrap.
 }
 
 function populateNginxConfig(fs: MemoryFileSystem): void {
@@ -226,23 +232,9 @@ include $docRoot . '/index.php';
   writeVfsFile(fs, "/var/www/fpm-router.php", fpmRouter);
 }
 
-const MARIADB_BOOTSTRAP_SCRIPT = `# mariadbd --bootstrap doesn't exit at stdin EOF in our wasm port.
-# Background it, sleep long enough for the SQL to drain (data files
-# written synchronously while mariadbd reads stdin), then kill it.
-# **No \`wait\`** — dinit (PID 1) reaps orphans and races with dash's
-# wait builtin, which then blocks. Letting dinit reap is fine.
-/usr/sbin/mariadbd --no-defaults --user=mysql --datadir=/data --tmpdir=/data/tmp \\
-    --default-storage-engine=Aria --skip-grant-tables \\
-    --key-buffer-size=1048576 --table-open-cache=10 --sort-buffer-size=262144 \\
-    --bootstrap --skip-networking --log-warnings=0 \\
-    --log-error=/data/bootstrap.log < /etc/mariadb/bootstrap.sql &
-PID=$!
-sleep 60
-kill -TERM $PID 2>/dev/null
-sleep 1
-kill -KILL $PID 2>/dev/null
-exit 0
-`;
+// MARIADB_BOOTSTRAP_SCRIPT removed — see workaround note on
+// `buildServices` below. Re-add as a `scripted` service body once the
+// `mariadbd --bootstrap` startup hang is root-caused.
 
 const WP_CONFIG_INIT_SCRIPT = `# Substitute runtime values into wp-config.php. WP_APP_PATH and WP_PROTO
 # come from the env the page passes through kernel.boot() — dinit
@@ -295,13 +287,36 @@ if ( ! defined( 'ABSPATH' ) ) {
 require_once ABSPATH . 'wp-settings.php';
 `;
 
+/**
+ * ─── TEMPORARY WORKAROUND ─────────────────────────────────────────────
+ * `mariadb-bootstrap` is wired as a no-op `internal` service because
+ * `mariadbd --bootstrap` deadlocks during user-space startup in the
+ * wasm port — see the deferred "MariaDB bootstrap-mode startup hang"
+ * investigation. Same root-cause as the workaround applied to
+ * mariadb-vfs / mariadb-test / the standalone MariaDB browser demo.
+ *
+ * Daemon mariadbd then starts on top of an empty /data tree. The
+ * existing `--init-file=/etc/mariadb/init.sql` (already there as a
+ * belt-and-suspenders for the `sleep 60; kill` truncation case)
+ * creates the `wordpress` database after mariadbd is ready, so
+ * WordPress can lazily create its tables.
+ *
+ * Trade-off: `mysql.*` system tables don't exist. Demo paths only
+ * touch the `wordpress` database; `--skip-grant-tables` keeps
+ * mariadbd happy without `mysql.user`. WP install + rendering work.
+ *
+ * Re-enable the real bootstrap pass by reverting `mariadb-bootstrap`
+ * to a `scripted` service running the bootstrap shell wrapper, and
+ * re-emitting `MARIADB_BOOTSTRAP_SCRIPT` + `/etc/mariadb/bootstrap.sh`
+ * once the startup hang is fixed.
+ * ──────────────────────────────────────────────────────────────────────
+ */
 function buildServices(): DinitService[] {
   return [
     {
+      // No-op anchor — see workaround note above.
       name: "mariadb-bootstrap",
-      type: "scripted",
-      command: "/bin/sh /etc/mariadb/bootstrap.sh",
-      logfile: "/var/log/mariadb-bootstrap.log",
+      type: "internal",
       restart: false,
     },
     {
@@ -313,9 +328,9 @@ function buildServices(): DinitService[] {
         "--sort-buffer-size=262144 --skip-networking=0 --port=3306 " +
         "--bind-address=0.0.0.0 --socket= --max-connections=10 " +
         "--thread-handling=no-threads --log-error=/data/error.log " +
-        // --init-file runs after the daemon is ready — guarantees the
-        // wordpress DB exists even if the bootstrap timeout-and-kill
-        // truncated the original CREATE DATABASE.
+        // --init-file runs after the daemon is ready. With the bootstrap
+        // pass disabled, this is the only step that creates the
+        // `wordpress` database. WordPress then creates its tables lazily.
         "--init-file=/etc/mariadb/init.sql",
       dependsOn: ["mariadb-bootstrap"],
       logfile: "/var/log/mariadb.log",
@@ -377,12 +392,14 @@ async function main() {
   populateNginxConfig(fs);
   populatePhpFpmConfig(fs);
 
-  // Bootstrap + config-init scripts (sed-substituted at boot from env).
-  writeVfsFile(fs, "/etc/mariadb/bootstrap.sh", MARIADB_BOOTSTRAP_SCRIPT);
-  // mariadbd --init-file runs at server startup — used as a belt-and-
-  // suspenders guarantee that the wordpress DB exists, since the
-  // bootstrap timeout-and-kill might truncate the original
-  // CREATE DATABASE during system-table replay.
+  // wp-config-init script (sed-substituted at boot from env).
+  // mariadb-bootstrap.sh is no longer emitted — the bootstrap pass is
+  // disabled (see workaround note on `buildServices`).
+  // mariadbd --init-file runs at server startup. With the bootstrap
+  // pass disabled, this is now the SOLE step that creates the
+  // `wordpress` database; WordPress creates its tables lazily on
+  // top of it. The bootstrap.sql file isn't written either since
+  // nothing reads it now.
   writeVfsFile(fs, "/etc/mariadb/init.sql", "CREATE DATABASE IF NOT EXISTS wordpress;\n");
   writeVfsFile(fs, "/etc/wp-config-template.php", WP_CONFIG_TEMPLATE_PHP);
   writeVfsFile(fs, "/etc/wp-config-init.sh", WP_CONFIG_INIT_SCRIPT);
