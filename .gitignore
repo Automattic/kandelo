@@ -45,6 +45,7 @@ node_modules/
 # Editor/tool caches
 .vite/
 .playwright-mcp/
+.build-cache/
 
 # Browser example build output
 examples/browser/dist/
@@ -109,6 +110,11 @@ examples/libs/vim/bin/
 examples/libs/nethack/nethack-src/
 examples/libs/nethack/bin/
 examples/libs/nethack/runtime/
+
+# dinit build artifacts (source cloned by build-dinit.sh; bin/ already
+# covered by the *.wasm rule but keep an explicit entry for clarity)
+examples/libs/dinit/dinit-src/
+examples/libs/dinit/bin/
 
 # Debug/trace artifacts
 examples/fp128*.c

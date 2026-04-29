@@ -3,12 +3,16 @@ import { existsSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runCentralizedProgram } from "../../../../host/test/centralized-test-helper";
+import { tryResolveBinary } from "../../../../host/src/binary-resolver";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "../../../..");
 
-// PHP must be recompiled with channel_syscall.c for centralized mode
-const phpBinaryPath = join(__dirname, "../php-src/sapi/cli/php");
+// Prefer the package-managed binary (always built against the current ABI).
+// Fall back to a freshly built local php-src/sapi/cli/php for development.
+const phpBinaryPath =
+  tryResolveBinary("programs/php/php.wasm") ??
+  join(__dirname, "../php-src/sapi/cli/php");
 const PHP_AVAILABLE = existsSync(phpBinaryPath);
 
 describe.skipIf(!PHP_AVAILABLE)("PHP CLI on wasm-posix-kernel", () => {

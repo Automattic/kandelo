@@ -17,10 +17,13 @@ import { existsSync, writeFileSync, unlinkSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runCentralizedProgram } from "../../../host/test/centralized-test-helper";
+import { tryResolveBinary } from "../../../host/src/binary-resolver";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "../../..");
-const phpBinaryPath = join(repoRoot, "examples/libs/php/php-src/sapi/cli/php");
+const phpBinaryPath =
+  tryResolveBinary("programs/php/php.wasm") ??
+  join(repoRoot, "examples/libs/php/php-src/sapi/cli/php");
 const wpDir = join(__dirname, "../wordpress");
 const dbPath = join(wpDir, "wp-content/database/wordpress.db");
 

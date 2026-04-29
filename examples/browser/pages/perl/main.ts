@@ -8,6 +8,11 @@ import { BrowserKernel } from "../../lib/browser-kernel";
 import { PtyTerminal } from "../../lib/pty-terminal";
 import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
 import { decompressVfsImage } from "../../../../host/src/vfs/load-image";
+import {
+  ensureDirRecursive,
+  writeVfsFile,
+  writeVfsBinary,
+} from "../../../../host/src/vfs/image-helpers";
 import kernelWasmUrl from "@kernel-wasm?url";
 import perlWasmUrl from "../../../../binaries/programs/wasm32/perl.wasm?url";
 import VFS_IMAGE_URL from "@binaries/programs/wasm32/perl-vfs.vfs?url";
@@ -29,7 +34,6 @@ const interactiveView = document.getElementById("interactive-view") as HTMLDivEl
 const batchView = document.getElementById("batch-view") as HTMLDivElement;
 
 const decoder = new TextDecoder();
-const encoder = new TextEncoder();
 
 // --- Mode switching ---
 let currentMode: "interactive" | "batch" = "interactive";
@@ -94,22 +98,24 @@ const PERL_ENV = [
   "PATH=/usr/local/bin:/usr/bin:/bin",
 ];
 
-/** Initialize a kernel from the pre-built VFS image. */
-async function initKernelWithStdlib(
-  options?: { onStdout?: (data: Uint8Array) => void; onStderr?: (data: Uint8Array) => void },
-): Promise<BrowserKernel> {
-  const memfs = MemoryFileSystem.fromImage(decompressVfsImage(new Uint8Array(vfsImageBuf!)), {
+/**
+ * Build a VFS image: load the Perl stdlib from the prebuilt perl-vfs.vfs
+ * (decompressing the published archive), splice the perl binary in at
+ * /usr/local/bin/perl, and write any user scripts. Serialize back to
+ * bytes for the kernel to own.
+ */
+async function buildPerlImage(
+  files: Array<{ path: string; content: string }>,
+): Promise<Uint8Array> {
+  const fs = MemoryFileSystem.fromImage(decompressVfsImage(new Uint8Array(vfsImageBuf!)), {
     maxByteLength: 256 * 1024 * 1024,
   });
-
-  const kernel = new BrowserKernel({
-    memfs,
-    onStdout: options?.onStdout,
-    onStderr: options?.onStderr,
-  });
-  await kernel.init(kernelBytes!);
-
-  return kernel;
+  ensureDirRecursive(fs, "/usr/local/bin");
+  ensureDirRecursive(fs, "/tmp");
+  fs.chmod("/tmp", 0o777);
+  writeVfsBinary(fs, "/usr/local/bin/perl", new Uint8Array(perlBytes!));
+  for (const f of files) writeVfsFile(fs, f.path, f.content);
+  return fs.saveImage();
 }
 
 // A simple REPL script written to the VFS. Perl doesn't have a built-in
@@ -143,13 +149,6 @@ while (1) {
 print "\\n";
 `;
 
-function writeFile(fs: BrowserKernel["fs"], path: string, content: string): void {
-  const data = encoder.encode(content);
-  const fd = fs.open(path, 0x241 /* O_WRONLY|O_CREAT|O_TRUNC */, 0o755);
-  fs.write(fd, data, null, data.length);
-  fs.close(fd);
-}
-
 // ============================================================
 // Interactive REPL mode
 // ============================================================
@@ -167,12 +166,14 @@ async function startInteractiveRepl() {
   try {
     const info = await loadBinaries();
 
-    const kernel = await initKernelWithStdlib();
-    writeFile(kernel.fs, "/tmp/repl.pl", REPL_SCRIPT);
+    setStatus("Building VFS image...", "loading");
+    const vfsImage = await buildPerlImage([
+      { path: "/tmp/repl.pl", content: REPL_SCRIPT },
+    ]);
 
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
     activeKernel = kernel;
 
-    // Create PTY terminal
     const ptyTerminal = new PtyTerminal(terminalContainer, kernel);
     activePtyTerminal = ptyTerminal;
 
@@ -184,8 +185,10 @@ async function startInteractiveRepl() {
     hideStatus();
     ptyTerminal.terminal.focus();
 
-    // Spawn perl running the REPL script with PTY
-    const exitCode = await ptyTerminal.spawn(perlBytes!, ["perl", "/tmp/repl.pl"], {
+    const exitCode = await ptyTerminal.boot({
+      kernelWasm: kernelBytes!,
+      vfsImage,
+      argv: ["/usr/local/bin/perl", "/tmp/repl.pl"],
       env: PERL_ENV,
     });
 
@@ -464,24 +467,26 @@ async function runBatch() {
     if (info) appendBatchOutput(info, "info");
 
     const code = codeEl.value;
+    const scriptPath = "/tmp/script.pl";
 
-    const kernel = await initKernelWithStdlib({
+    setStatus("Building VFS image...", "loading");
+    const vfsImage = await buildPerlImage([{ path: scriptPath, content: code }]);
+
+    const kernel = new BrowserKernel({
+      kernelOwnedFs: true,
       onStdout: (data) => appendBatchOutput(decoder.decode(data)),
       onStderr: (data) => appendBatchOutput(decoder.decode(data), "stderr"),
     });
 
-    // Write script to a file in the VFS
-    const scriptPath = "/tmp/script.pl";
-    const scriptBytes = encoder.encode(code);
-    const fd = kernel.fs.open(scriptPath, 0x241 /* O_WRONLY|O_CREAT|O_TRUNC */, 0o644);
-    kernel.fs.write(fd, scriptBytes, null, scriptBytes.length);
-    kernel.fs.close(fd);
-
     setStatus("Running Perl...", "running");
 
-    const exitCode = await kernel.spawn(perlBytes!, ["perl", scriptPath], {
+    const { exit } = await kernel.boot({
+      kernelWasm: kernelBytes!,
+      vfsImage,
+      argv: ["/usr/local/bin/perl", scriptPath],
       env: PERL_ENV,
     });
+    const exitCode = await exit;
 
     appendBatchOutput(`\nExited with code ${exitCode}\n`, "info");
     hideStatus();

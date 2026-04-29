@@ -10,7 +10,19 @@
 export interface InitMessage {
   type: "init";
   kernelWasmBytes: ArrayBuffer;
-  fsSab: SharedArrayBuffer;
+  /**
+   * Pre-built VFS image bytes from MemoryFileSystem.saveImage(). The worker
+   * constructs its own memfs via MemoryFileSystem.fromImage(). When this is
+   * present, the kernel owns the FS — no SAB is shared with the main thread,
+   * and `kernel.fs` is unavailable.
+   */
+  vfsImage?: Uint8Array;
+  /**
+   * @deprecated — legacy path. Kept until all demos migrate to vfsImage.
+   * Pre-formatted SharedFS SAB shared with the main thread (so demos can
+   * pre-populate via the now-deprecated `kernel.fs` accessor).
+   */
+  fsSab?: SharedArrayBuffer;
   shmSab: SharedArrayBuffer;
   workerEntryUrl: string;
   bridgePort?: MessagePort;
@@ -24,7 +36,14 @@ export interface InitMessage {
 export interface SpawnMessage {
   type: "spawn";
   requestId: number;
-  pid: number;
+  /**
+   * Optional. When omitted, the worker allocates a fresh pid via the
+   * kernel's allocator (which skips reserved pids like the virtual init).
+   * The assigned pid is returned in the response. The pid field exists for
+   * legacy callers (PtyTerminal.spawn, system-init) that still pre-pick;
+   * new code should leave it undefined.
+   */
+  pid?: number;
   programPath?: string;
   programBytes?: ArrayBuffer;
   argv: string[];

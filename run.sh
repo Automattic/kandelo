@@ -67,7 +67,6 @@ has_mariadb64_vfs() {
     local mariadbd="$REPO_ROOT/examples/libs/mariadb/mariadb-install-64/bin/mariadbd.wasm"
     [ -f "$vfs" ] && [ -f "$mariadbd" ] && [ "$vfs" -nt "$mariadbd" ]
 }
-has_wordpress() { [ -f "$REPO_ROOT/examples/wordpress/wordpress/wp-settings.php" ]; }
 has_wp_vfs()    { has_resolvable programs/wordpress.vfs || [ -f "$REPO_ROOT/examples/browser/public/wordpress.vfs" ]; }
 has_dash()    { has_resolvable programs/dash.wasm || [ -f "$REPO_ROOT/examples/libs/dash/bin/dash.wasm" ]; }
 has_bash()    { has_resolvable programs/bash.wasm || [ -f "$REPO_ROOT/examples/libs/bash/bin/bash.wasm" ]; }
@@ -75,6 +74,7 @@ has_coreutils()    { has_resolvable programs/coreutils.wasm || [ -f "$REPO_ROOT/
 has_grep()    { has_resolvable programs/grep.wasm || [ -f "$REPO_ROOT/examples/libs/grep/bin/grep.wasm" ]; }
 has_sed()    { has_resolvable programs/sed.wasm || [ -f "$REPO_ROOT/examples/libs/sed/bin/sed.wasm" ]; }
 has_redis()    { has_resolvable programs/redis/redis-server.wasm || [ -f "$REPO_ROOT/examples/libs/redis/bin/redis-server.wasm" ]; }
+has_dinit()    { has_resolvable programs/dinit/dinit.wasm || [ -f "$REPO_ROOT/examples/libs/dinit/bin/dinit.wasm" ]; }
 has_cpython()    { has_resolvable programs/cpython.wasm || [ -f "$REPO_ROOT/examples/libs/cpython/bin/python.wasm" ]; }
 has_python_vfs()    { has_resolvable programs/python-vfs.vfs || [ -f "$REPO_ROOT/examples/browser/public/python.vfs" ]; }
 has_perl_vfs()    { has_resolvable programs/perl-vfs.vfs || [ -f "$REPO_ROOT/examples/browser/public/perl.vfs" ]; }
@@ -82,6 +82,9 @@ has_shell_vfs()    { has_resolvable programs/shell.vfs || [ -f "$REPO_ROOT/examp
 has_erlang()    { has_resolvable programs/erlang.wasm || [ -f "$REPO_ROOT/examples/libs/erlang/bin/beam.wasm" ]; }
 has_erlang_vfs()    { has_resolvable programs/erlang-vfs.vfs || [ -f "$REPO_ROOT/examples/browser/public/erlang.vfs" ]; }
 has_lamp_vfs()    { has_resolvable programs/lamp.vfs || [ -f "$REPO_ROOT/examples/browser/public/lamp.vfs" ]; }
+has_nginx_vfs()  { [ -f "$REPO_ROOT/examples/browser/public/nginx.vfs" ]; }
+has_redis_vfs()  { [ -f "$REPO_ROOT/examples/browser/public/redis.vfs" ]; }
+has_nginx_php_vfs() { [ -f "$REPO_ROOT/examples/browser/public/nginx-php.vfs" ]; }
 has_bc()    { has_resolvable programs/bc.wasm || [ -f "$REPO_ROOT/examples/libs/bc/bin/bc.wasm" ]; }
 has_file()    { has_resolvable programs/file.wasm || [ -f "$REPO_ROOT/examples/libs/file/bin/file.wasm" ]; }
 has_less()    { has_resolvable programs/less.wasm || [ -f "$REPO_ROOT/examples/libs/less/bin/less.wasm" ]; }
@@ -450,6 +453,24 @@ build_redis() {
     fi
 }
 
+build_dinit() {
+    need_kernel
+    need_sdk
+    # dinit uses libc++ which the mariadb build script installs into
+    # the sysroot. Force a mariadb build first if libc++ isn't there
+    # — it's the cheapest path to get the headers + library set up.
+    if [ ! -f "$REPO_ROOT/sysroot/lib/libc++.a" ]; then
+        build_mariadb
+    fi
+    if ! has_dinit; then
+        step "Building dinit"
+        bash "$REPO_ROOT/examples/libs/dinit/build-dinit.sh"
+        info "dinit built"
+    else
+        info "dinit"
+    fi
+}
+
 build_cpython() {
     if has_cpython; then
         info "cpython"
@@ -598,6 +619,43 @@ build_lamp_vfs() {
     step "Building LAMP VFS image"
     bash "$REPO_ROOT/examples/browser/scripts/build-lamp-vfs-image.sh"
     info "LAMP VFS image built"
+}
+
+build_nginx_vfs() {
+    build_dinit
+    build_nginx
+    if ! has_nginx_vfs; then
+        step "Building nginx VFS image"
+        bash "$REPO_ROOT/examples/browser/scripts/build-nginx-vfs-image.sh"
+        info "nginx VFS image built"
+    else
+        info "nginx VFS image"
+    fi
+}
+
+build_redis_vfs() {
+    build_dinit
+    build_redis
+    if ! has_redis_vfs; then
+        step "Building Redis VFS image"
+        bash "$REPO_ROOT/examples/browser/scripts/build-redis-vfs-image.sh"
+        info "Redis VFS image built"
+    else
+        info "Redis VFS image"
+    fi
+}
+
+build_nginx_php_vfs() {
+    build_dinit
+    build_nginx
+    build_php_fpm
+    if ! has_nginx_php_vfs; then
+        step "Building nginx + PHP-FPM VFS image"
+        bash "$REPO_ROOT/examples/browser/scripts/build-nginx-php-vfs-image.sh"
+        info "nginx + PHP-FPM VFS image built"
+    else
+        info "nginx + PHP-FPM VFS image"
+    fi
 }
 
 build_texlive() {
@@ -1105,6 +1163,7 @@ build_target() {
         mariadb-vfs) build_mariadb_vfs ;;
         mariadb64-vfs) build_mariadb64_vfs ;;
         redis)      build_redis ;;
+        dinit)      build_dinit ;;
         cpython)    build_cpython ;;
         python-vfs) build_python_vfs ;;
         perl-vfs)   build_perl_vfs ;;
@@ -1114,6 +1173,9 @@ build_target() {
         erlang)     build_erlang ;;
         erlang-vfs) build_erlang_vfs ;;
         lamp-vfs)   build_lamp_vfs ;;
+        nginx-vfs)  build_nginx_vfs ;;
+        redis-vfs)  build_redis_vfs ;;
+        nginx-php-vfs) build_nginx_php_vfs ;;
         bc)         build_bc ;;
         file)       build_file ;;
         less)       build_less ;;
@@ -1158,7 +1220,7 @@ build_target() {
 # (less: ncurses libtermcap duplicate tputs; wget: requires automake
 # aclocal). They aren't in the release either, so the associated demo
 # features skip gracefully at runtime.
-BROWSER_DEPS=(kernel programs dash bash coreutils grep sed bc file m4 make tar curl-cli gzip bzip2 xz zstd zip unzip nano vim vim-zip nethack fbdoom git nginx php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis cpython python-vfs perl perl-vfs ruby shell-vfs wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs)
+BROWSER_DEPS=(kernel programs dash bash coreutils grep sed bc file m4 make tar curl-cli gzip bzip2 xz zstd zip unzip nano vim vim-zip nethack fbdoom git dinit nginx nginx-vfs php php-fpm nginx-php-vfs mariadb mariadb-vfs mariadb64 mariadb64-vfs redis redis-vfs cpython python-vfs perl perl-vfs ruby shell-vfs wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs)
 
 build_browser() {
     for t in "${BROWSER_DEPS[@]}"; do
@@ -1201,6 +1263,7 @@ build_all() {
     build_mariadb
     build_mariadb_vfs
     build_redis
+    build_dinit
     build_cpython
     build_python_vfs
     build_perl
@@ -1305,6 +1368,10 @@ clean_target() {
             rm -rf "$REPO_ROOT/examples/libs/redis/redis-src" \
                    "$REPO_ROOT/examples/libs/redis/bin"
             warn "Cleaned Redis" ;;
+        dinit)
+            rm -rf "$REPO_ROOT/examples/libs/dinit/dinit-src" \
+                   "$REPO_ROOT/examples/libs/dinit/bin"
+            warn "Cleaned dinit" ;;
         cpython)
             rm -rf "$REPO_ROOT/examples/libs/cpython/cpython-src" \
                    "$REPO_ROOT/examples/libs/cpython/cpython-host-build" \
@@ -1330,6 +1397,15 @@ clean_target() {
         lamp-vfs)
             rm -f "$REPO_ROOT/examples/browser/public/lamp.vfs"
             warn "Cleaned LAMP VFS image" ;;
+        nginx-vfs)
+            rm -f "$REPO_ROOT/examples/browser/public/nginx.vfs"
+            warn "Cleaned nginx VFS image" ;;
+        redis-vfs)
+            rm -f "$REPO_ROOT/examples/browser/public/redis.vfs"
+            warn "Cleaned Redis VFS image" ;;
+        nginx-php-vfs)
+            rm -f "$REPO_ROOT/examples/browser/public/nginx-php.vfs"
+            warn "Cleaned nginx + PHP-FPM VFS image" ;;
         erlang)
             rm -rf "$REPO_ROOT/examples/libs/erlang/erlang-src" \
                    "$REPO_ROOT/examples/libs/erlang/erlang-install" \

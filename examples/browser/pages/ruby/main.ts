@@ -6,6 +6,13 @@
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
 import { PtyTerminal } from "../../lib/pty-terminal";
+import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
+import {
+  ensureDir,
+  ensureDirRecursive,
+  writeVfsFile,
+  writeVfsBinary,
+} from "../../../../host/src/vfs/image-helpers";
 import kernelWasmUrl from "@kernel-wasm?url";
 import rubyWasmUrl from "../../../../binaries/programs/wasm32/ruby.wasm?url";
 import "@xterm/xterm/css/xterm.css";
@@ -26,7 +33,6 @@ const interactiveView = document.getElementById("interactive-view") as HTMLDivEl
 const batchView = document.getElementById("batch-view") as HTMLDivElement;
 
 const decoder = new TextDecoder();
-const encoder = new TextEncoder();
 
 // --- Mode switching ---
 let currentMode: "interactive" | "batch" = "interactive";
@@ -113,11 +119,20 @@ end
 puts
 `;
 
-function writeFile(fs: BrowserKernel["fs"], path: string, content: string): void {
-  const data = encoder.encode(content);
-  const fd = fs.open(path, 0x241 /* O_WRONLY|O_CREAT|O_TRUNC */, 0o755);
-  fs.write(fd, data, null, data.length);
-  fs.close(fd);
+/**
+ * Build the VFS image once per Ruby boot. Includes:
+ *   - /usr/bin/ruby (the binary, from rubyBytes)
+ *   - /tmp + /home as scratch dirs
+ *   - The user-supplied script written into the image at scriptPath
+ */
+async function buildVfsImage(scriptPath: string, scriptContent: string): Promise<Uint8Array> {
+  const fs = MemoryFileSystem.create(new SharedArrayBuffer(16 * 1024 * 1024, { maxByteLength: 64 * 1024 * 1024 }), 64 * 1024 * 1024);
+  for (const d of ["/tmp", "/home", "/dev"]) ensureDir(fs, d);
+  fs.chmod("/tmp", 0o777);
+  ensureDirRecursive(fs, "/usr/bin");
+  writeVfsBinary(fs, "/usr/bin/ruby", new Uint8Array(rubyBytes!));
+  writeVfsFile(fs, scriptPath, scriptContent);
+  return fs.saveImage();
 }
 
 // ============================================================
@@ -137,19 +152,12 @@ async function startInteractiveRepl() {
   try {
     const info = await loadBinaries();
 
-    const kernel = new BrowserKernel();
-    await kernel.init(kernelBytes!);
+    setStatus("Building VFS image...", "loading");
+    const vfsImage = await buildVfsImage("/tmp/repl.rb", REPL_SCRIPT);
 
-    // Create directories and write REPL script
-    const fs = kernel.fs;
-    for (const d of ["/tmp", "/home", "/usr", "/usr/bin"]) {
-      try { fs.mkdir(d, 0o755); } catch { /* exists */ }
-    }
-    writeFile(fs, "/tmp/repl.rb", REPL_SCRIPT);
-
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
     activeKernel = kernel;
 
-    // Create PTY terminal
     const ptyTerminal = new PtyTerminal(terminalContainer, kernel);
     activePtyTerminal = ptyTerminal;
 
@@ -161,8 +169,11 @@ async function startInteractiveRepl() {
     hideStatus();
     ptyTerminal.terminal.focus();
 
-    // Spawn ruby running the REPL script with PTY
-    const exitCode = await ptyTerminal.spawn(rubyBytes!, ["ruby", "/tmp/repl.rb"], {
+    // Boot the kernel with /usr/bin/ruby /tmp/repl.rb as the first process.
+    const exitCode = await ptyTerminal.boot({
+      kernelWasm: kernelBytes!,
+      vfsImage,
+      argv: ["/usr/bin/ruby", "/tmp/repl.rb"],
       env: RUBY_ENV,
     });
 
@@ -461,30 +472,24 @@ async function runBatch() {
 
     const code = codeEl.value;
 
+    setStatus("Building VFS image...", "loading");
+    const vfsImage = await buildVfsImage("/tmp/script.rb", code);
+
     const kernel = new BrowserKernel({
+      kernelOwnedFs: true,
       onStdout: (data) => appendBatchOutput(decoder.decode(data)),
       onStderr: (data) => appendBatchOutput(decoder.decode(data), "stderr"),
     });
-    await kernel.init(kernelBytes!);
-
-    // Create directories
-    const fs = kernel.fs;
-    for (const d of ["/tmp", "/home"]) {
-      try { fs.mkdir(d, 0o755); } catch { /* exists */ }
-    }
-
-    // Write script to a file in the VFS
-    const scriptPath = "/tmp/script.rb";
-    const scriptBytes = encoder.encode(code);
-    const fd = fs.open(scriptPath, 0x241 /* O_WRONLY|O_CREAT|O_TRUNC */, 0o644);
-    fs.write(fd, scriptBytes, null, scriptBytes.length);
-    fs.close(fd);
 
     setStatus("Running Ruby...", "running");
 
-    const exitCode = await kernel.spawn(rubyBytes!, ["ruby", scriptPath], {
+    const { exit } = await kernel.boot({
+      kernelWasm: kernelBytes!,
+      vfsImage,
+      argv: ["/usr/bin/ruby", "/tmp/script.rb"],
       env: RUBY_ENV,
     });
+    const exitCode = await exit;
 
     appendBatchOutput(`\nExited with code ${exitCode}\n`, "info");
     hideStatus();

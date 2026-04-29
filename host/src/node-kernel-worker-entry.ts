@@ -160,6 +160,7 @@ async function handleInit(msg: InitMessage) {
       maxWorkers: msg.config.maxWorkers,
       dataBufferSize: msg.config.dataBufferSize ?? 65536,
       useSharedMemory: msg.config.useSharedMemory ?? true,
+      enableSyscallLog: !!process.env.KERNEL_SYSCALL_LOG,
     },
     io,
     {
@@ -248,6 +249,20 @@ function handleSpawn(msg: SpawnMessage) {
 
     worker.on("error", (err: Error) => {
       console.error(`[kernel-worker] Worker error pid=${pid}:`, err.message);
+    });
+
+    // Process-worker top-level catch in worker-main posts {type:"error"}
+    // for instantiation failures (ABI mismatch, link errors). Without
+    // routing those upward, the spawn just hangs until the host's timeout
+    // — so surface them to stderr and synthesize an exit so the host's
+    // exitResolver fires with a non-zero status.
+    worker.on("message", (raw: unknown) => {
+      const m = raw as { type: string; pid?: number; message?: string };
+      if (m.type === "error" && m.pid === pid) {
+        const errBytes = new TextEncoder().encode(`[process-worker] ${m.message ?? "unknown error"}\n`);
+        post({ type: "stderr", pid, data: errBytes });
+        post({ type: "exit", pid, status: -1 });
+      }
     });
 
     respond(msg.requestId, pid);

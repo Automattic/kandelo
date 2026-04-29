@@ -163,8 +163,18 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   threadAllocator = new ThreadPageAllocator(maxPages);
   defaultEnv = msg.config.env;
 
-  // Create VFS from shared SABs
-  memfs = MemoryFileSystem.fromExisting(msg.fsSab);
+  // Create VFS — prefer pre-built image bytes (kernel-owned FS); fall back
+  // to the legacy shared-SAB path so the existing demos keep working.
+  if (msg.vfsImage) {
+    // 1 GiB max growth — generous so demos like mariadb (~100 MiB
+    // InnoDB log + table files) don't ENOSPC at boot. The SAB only
+    // grows on demand, so the upfront cost is the image's own size.
+    memfs = MemoryFileSystem.fromImage(msg.vfsImage, { maxByteLength: 1 * 1024 * 1024 * 1024 });
+  } else if (msg.fsSab) {
+    memfs = MemoryFileSystem.fromExisting(msg.fsSab);
+  } else {
+    throw new Error("init: vfsImage or fsSab required");
+  }
   const shmfs = MemoryFileSystem.fromExisting(msg.shmSab);
   const devfs = new DeviceFileSystem();
   const mounts: Array<{ mountPoint: string; backend: any }> = [
@@ -189,8 +199,10 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // Install the MITM CA certificate in the VFS so OpenSSL trusts it.
   const caCertPem = tlsBackend.getCACertPEM();
   try {
-    try { memfs.mkdir("/etc/ssl", 0o755); } catch { /* exists */ }
-    try { memfs.mkdir("/etc/ssl/certs", 0o755); } catch { /* exists */ }
+    // Demo images don't always include /etc — create the full chain.
+    for (const dir of ["/etc", "/etc/ssl", "/etc/ssl/certs"]) {
+      try { memfs.mkdir(dir, 0o755); } catch { /* exists */ }
+    }
     const certBytes = new TextEncoder().encode(caCertPem);
     const certFd = memfs.open("/etc/ssl/certs/ca-certificates.crt", 0o1101, 0o644);
     memfs.write(certFd, certBytes, 0, certBytes.length);
@@ -330,7 +342,9 @@ function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>) {
       return;
     }
 
-    const pid = msg.pid;
+    // Pid: if the caller pre-picked one, honor it (legacy spawn() callers
+    // still do); otherwise the worker is the source of truth and allocates.
+    const pid = msg.pid ?? kernelWorker.allocatePid();
     const pages = msg.maxPages ?? maxPages;
     const ptrWidth = detectPtrWidth(programBytes);
     const memory = createProcessMemory(ptrWidth, pages);

@@ -656,6 +656,19 @@ export class CentralizedKernelWorker {
   private scratchOffset = 0;
   private initialized = false;
   private nextChildPid = 100;
+
+  /**
+   * Allocate a fresh pid for a top-level spawn from a host. Skips any pids
+   * already in the kernel's process table (forked children, the virtual
+   * init at pid 1, etc.). The host is no longer expected to pick pids;
+   * this is the single source of truth.
+   */
+  allocatePid(): number {
+    while (this.processes.has(this.nextChildPid)) {
+      this.nextChildPid++;
+    }
+    return this.nextChildPid++;
+  }
   /** Maps "pid:channelOffset" to TID for tracking thread channels */
   private channelTids = new Map<string, number>();
   /** Tracks the pid currently being serviced by kernel_handle_channel */
@@ -868,6 +881,8 @@ export class CentralizedKernelWorker {
       onNetListen: (fd: number, port: number, addr: [number, number, number, number]): number => {
         const pid = this.currentHandlePid;
         if (pid === 0) return 0;
+        // addr is currently informational; reserved for future per-iface filtering.
+        void addr;
         this.startTcpListener(pid, fd, port);
         return 0;
       },
@@ -1011,6 +1026,12 @@ export class CentralizedKernelWorker {
     options?: { skipKernelCreate?: boolean; argv?: string[]; ptrWidth?: 4 | 8 },
   ): void {
     if (!this.initialized) throw new Error("Kernel not initialized");
+
+    // A fresh registration starts a new "generation" for this pid — even
+    // if the same numeric pid was previously reaped (it can't be today
+    // since nextChildPid is monotonic, but defensive), the new process
+    // hasn't been reaped yet.
+    this.hostReaped.delete(pid);
 
     // Create process in kernel's process table (skip if already created, e.g. by fork)
     if (!options?.skipKernelCreate) {
@@ -1329,6 +1350,10 @@ export class CentralizedKernelWorker {
     this.pendingSelectRetries.delete(pid);
     // Clean up TCP listeners for this process
     this.cleanupTcpListeners(pid);
+    // Clear the killed-but-not-yet-reaped guard for this pid; if the
+    // pid is later reused for a fresh fork+register, the new process
+    // gets its own reaping decision.
+    this.hostReaped.delete(pid);
   }
 
   /**
@@ -2082,18 +2107,26 @@ export class CentralizedKernelWorker {
       this.recheckDeferredWaitpids();
     }
 
-    // --- Cross-process signal delivery: wake blocked peers ---
+    // --- Cross-process signal delivery: wake blocked peers + reap kills ---
     // When a guest calls kill() on another process (or a process group),
     // kernel_kill may invoke deliver_pending_signals on each target. If the
-    // default action is Terminate (e.g., SIGUSR1 with no handler), the target
-    // is marked Exited in its Process struct, but the target's worker is still
-    // blocked on a syscall (commonly a pipe read). Nothing else wakes that
-    // blocked syscall, so retrySyscall is never called and the process stays
-    // stuck. Poke the generic wake path so pending pipe readers / pollers /
-    // selecters retry and pick up the exit status via retrySyscall's
-    // kernel_get_process_exit_status check.
+    // default action is Terminate (e.g., SIGTERM with no handler), the target
+    // is marked Exited in its Process struct.
+    //
+    // Two follow-ups are required:
+    //   (a) Wake any blocked syscalls on the target (pipe/poll/select) so
+    //       their handlers observe the new exit state and complete with the
+    //       right errno (handled by scheduleWakeBlockedRetries).
+    //   (b) For any process the kernel marked Exited but that is still
+    //       blocked in a non-blocking-retry path (most importantly
+    //       pendingSleeps), call handleProcessTerminated directly so the
+    //       parent's wait4 actually sees the killed child. Without this,
+    //       a `kill` of a sleeping child silently reaps the process at the
+    //       kernel level but leaves it in parentToChildren forever — the
+    //       parent's wait4(-1) then blocks indefinitely.
     if (errVal === 0 && syscallNr === SYS_KILL) {
       this.scheduleWakeBlockedRetries();
+      this.reapKilledProcessesAfterSyscall();
     }
 
 
@@ -5223,6 +5256,19 @@ export class CentralizedKernelWorker {
     // Main thread exit or exit_group: record exit status for waitpid,
     // queue SIGCHLD to parent, then notify the host callback.
     const exitingPid = channel.pid;
+    // Idempotency: this guard is shared with handleProcessTerminated so a
+    // SYS_KILL that races a clean SYS_EXIT from the same process doesn't
+    // produce two SIGCHLDs / two parent wake-ups. Cleared by
+    // deactivateProcess and registerProcess.
+    if (this.hostReaped.has(exitingPid)) {
+      // Already reaped via the kill path — still complete the channel so
+      // the worker can finish tearing down, but skip the parent-wakeup work.
+      this.completeChannelRaw(channel, 0, 0);
+      this.scheduleWakeBlockedRetries();
+      if (this.callbacks.onExit) this.callbacks.onExit(exitingPid, exitStatus);
+      return;
+    }
+    this.hostReaped.add(exitingPid);
     const parentPid = this.childToParent.get(exitingPid);
     if (parentPid !== undefined) {
       // Check if the kernel marked this process as killed by a signal.
@@ -5285,6 +5331,13 @@ export class CentralizedKernelWorker {
    */
   private handleProcessTerminated(channel: ChannelInfo, waitStatus: number): void {
     const exitingPid = channel.pid;
+    // Idempotency guard — both handleExit and reapKilledProcessesAfterSyscall
+    // can route here for the same pid; do the parent-wakeup work exactly
+    // once per generation. Cleared by deactivateProcess + registerProcess
+    // so a recycled pid (currently impossible with monotonic nextChildPid,
+    // but defensive) starts fresh.
+    if (this.hostReaped.has(exitingPid)) return;
+    this.hostReaped.add(exitingPid);
     const parentPid = this.childToParent.get(exitingPid);
     if (parentPid !== undefined) {
       const hasNoCldWait = this.kernelInstance!.exports
@@ -5311,6 +5364,54 @@ export class CentralizedKernelWorker {
       this.callbacks.onExit(exitingPid, exitCode);
     }
   }
+
+  /**
+   * After SYS_KILL completes, scan for processes the kernel just marked
+   * Exited that the host hasn't reaped. Without this, a `kill` of a
+   * sleeping child (or any process not blocked in poll/select/pipe — those
+   * are handled by scheduleWakeBlockedRetries) silently reaps the process
+   * at the kernel level but leaves it in parentToChildren — wait4(-1)
+   * then blocks forever.
+   *
+   * The kernel sets exit_status to 128 + signum for default Terminate
+   * actions. Anything < 0 means the process is still alive.
+   */
+  private reapKilledProcessesAfterSyscall(): void {
+    const getExitStatus = this.kernelInstance!.exports
+      .kernel_get_process_exit_status as ((pid: number) => number) | undefined;
+    if (!getExitStatus) return;
+
+    // Snapshot the registered pids so we can mutate this.processes safely
+    // inside the loop (handleProcessTerminated calls onExit which can
+    // remove entries).
+    const pids = Array.from(this.processes.keys());
+    for (const pid of pids) {
+      const status = getExitStatus(pid);
+      if (status < 0) continue;             // still alive
+      if (this.hostReaped.has(pid)) continue; // already reaped this generation
+
+      const sigKilled = status >= 128 ? status - 128 : 0;
+      const waitStatus = sigKilled > 0
+        ? (sigKilled & 0x7f)
+        : ((status & 0xff) << 8);
+
+      // Cancel any pending blocking-syscall timers — the process is gone.
+      const ps = this.pendingSleeps.get(pid);
+      if (ps) { clearTimeout(ps.timer); this.pendingSleeps.delete(pid); }
+
+      const proc = this.processes.get(pid);
+      const ch = proc?.channels[0];
+      // handleProcessTerminated re-checks hostReaped and adds the pid
+      // itself, so passing through here is idempotent if two reap
+      // events fire close together.
+      if (ch) this.handleProcessTerminated(ch, waitStatus);
+    }
+  }
+  /** Track pids the host has already reaped (prevents double-reaping
+   *  when reapKilledProcessesAfterSyscall is called multiple times for
+   *  the same already-Exited process). Cleared when the pid is
+   *  re-allocated by a fresh fork+register. */
+  private hostReaped = new Set<number>();
 
   /**
    * Handle SYS_WAIT4: wait for a child process to exit.

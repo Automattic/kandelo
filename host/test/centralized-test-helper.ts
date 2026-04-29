@@ -427,6 +427,20 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
     rejectExit(err);
   });
 
+  // The worker posts {type:"error"} from its top-level catch (e.g. ABI
+  // mismatch, instantiate failure). Without a handler here the test would
+  // wait for an "exit" message that's never coming and look like a 5s/30s
+  // timeout instead of surfacing the real error. Reject the exit promise
+  // so the failure shows the kernel's diagnostic verbatim.
+  mainWorker.on("message", (msg: unknown) => {
+    const m = msg as WorkerToHostMessage;
+    if (m.type === "error" && m.pid === pid) {
+      clearTimeout(timer);
+      for (const [, w] of workers) w.terminate().catch(() => {});
+      rejectExit(new Error(m.message));
+    }
+  });
+
   const exitCode = await exitPromise;
   clearTimeout(timer);
 

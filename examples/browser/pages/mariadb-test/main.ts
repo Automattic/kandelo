@@ -1,19 +1,26 @@
 /**
- * MariaDB mysql-test browser runner — boots MariaDB via SystemInit,
- * loads test files from VFS image, and exposes window.__runMariadbTest() for Playwright.
+ * MariaDB mysql-test browser runner — boots a service-demo VFS image
+ * with dinit (PID 1) bringing up:
  *
- * Process layout:
- *   pid 1: mariadbd --bootstrap (oneshot, terminated after stdin consumed)
- *   pid 2: mariadbd server (daemon, port 3306)
- *   pid 3+: mysqltest (transient, one per test)
+ *   mariadb-bootstrap (scripted, oneshot) → mariadb (process)
+ *
+ * Once port 3306 is listening, the page runs setup SQL via mysqltest
+ * and exposes window.__runMariadbTest() for Playwright. Each test
+ * invocation is a transient kernel.spawn() of mysqltest.wasm — those
+ * processes are not part of the dinit service tree.
+ *
+ * Process layout once boot completes:
+ *   pid 1: dinit (--container)
+ *   pid 100+: mariadb-bootstrap (exits cleanly after SQL drained)
+ *   pid 100+: mariadb (daemon, port 3306)
+ *   pid 100+: mysqltest (transient, one per __runMariadbTest call)
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
-import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
-import { decompressVfsImage } from "../../../../host/src/vfs/load-image";
-import { SystemInit } from "../../lib/init/system-init";
 import kernelWasmUrl from "@kernel-wasm?url";
 import mysqlTestWasmUrl from "../../../../binaries/programs/wasm32/mariadb/mysqltest.wasm?url";
 import VFS_IMAGE_URL from "@binaries/programs/wasm32/mariadb-test.vfs?url";
+
+const MYSQL_PORT = 3306;
 
 interface TestResult {
   exitCode: number;
@@ -44,7 +51,6 @@ let kernel: BrowserKernel | null = null;
 let mysqlTestBytes: ArrayBuffer | null = null;
 let testStderr = "";
 
-/** Spawn mysqltest with given test SQL content. */
 async function runMysqlTestCommand(
   testName: string,
   testFile: string,
@@ -100,94 +106,95 @@ async function runMysqlTestCommand(
 async function init() {
   statusEl.textContent = "Loading resources...";
 
-  // Fetch kernel, VFS image, and mysqltest in parallel
-  const [kernelBytes, vfsImageBuf, mysqlTestBytesResult] =
-    await Promise.all([
-      fetch(kernelWasmUrl).then((r) => r.arrayBuffer()),
-      fetch(VFS_IMAGE_URL).then((r) => {
-        if (!r.ok) {
-          throw new Error(
-            `Failed to load VFS image from ${VFS_IMAGE_URL} (${r.status}). ` +
-            `Run: bash examples/libs/mariadb-test/build-mariadb-test.sh`
-          );
-        }
-        return r.arrayBuffer();
-      }),
-      fetch(mysqlTestWasmUrl).then((r) => r.arrayBuffer()),
-    ]);
+  const [kernelBytes, vfsImageBuf, mysqlTestBytesResult] = await Promise.all([
+    fetch(kernelWasmUrl).then((r) => r.arrayBuffer()),
+    fetch(VFS_IMAGE_URL).then((r) => {
+      if (!r.ok) {
+        throw new Error(
+          `Failed to load VFS image from ${VFS_IMAGE_URL} (${r.status}). ` +
+          `Run: bash examples/libs/mariadb-test/build-mariadb-test.sh`,
+        );
+      }
+      return r.arrayBuffer();
+    }),
+    fetch(mysqlTestWasmUrl).then((r) => r.arrayBuffer()),
+  ]);
 
   mysqlTestBytes = mysqlTestBytesResult;
+  const vfsImage = new Uint8Array(vfsImageBuf);
 
   appendLog(
     `Loaded: kernel ${(kernelBytes.byteLength / 1024).toFixed(0)}KB, ` +
-    `VFS image ${(vfsImageBuf.byteLength / (1024 * 1024)).toFixed(1)}MB, ` +
+    `VFS image ${(vfsImage.byteLength / (1024 * 1024)).toFixed(1)}MB, ` +
     `mysqltest ${(mysqlTestBytesResult.byteLength / (1024 * 1024)).toFixed(1)}MB\n`,
     "info",
   );
 
-  // Restore MemoryFileSystem from the pre-built VFS image
-  statusEl.textContent = "Restoring VFS from image...";
-  const memfs = MemoryFileSystem.fromImage(decompressVfsImage(new Uint8Array(vfsImageBuf)), {
-    maxByteLength: 512 * 1024 * 1024,
-  });
+  statusEl.textContent = "Booting MariaDB via dinit...";
+  appendLog("Booting MariaDB via dinit...\n", "info");
 
-  // Create kernel with pre-built filesystem
+  let portReadyResolve: (() => void) | null = null;
+  const portReady = new Promise<void>((resolve) => { portReadyResolve = resolve; });
+
   kernel = new BrowserKernel({
-    memfs,
+    kernelOwnedFs: true,
     maxWorkers: 12,
-    onStdout: (data) => {
-      // Server stdout — mostly noise, ignore for tests
+    onStdout: (_data) => {
+      // Server stdout — mostly noise, ignore for tests.
     },
     onStderr: (data) => {
       testStderr += decoder.decode(data);
     },
-  });
-
-  await kernel.init(kernelBytes);
-
-  // Boot
-  statusEl.textContent = "Booting MariaDB...";
-  appendLog("Booting MariaDB...\n", "info");
-
-  const initSystem = new SystemInit(kernel, {
-    onLog: (msg, level) => appendLog(msg + "\n", level === "info" ? "info" : "error"),
-    onServiceReady: async (name) => {
-      if (name === "mariadb-bootstrap") {
-        appendLog("Bootstrap complete.\n", "info");
-      }
-      if (name === "mariadb") {
-        appendLog("Server ready on port 3306.\n", "info");
-
-        // Run setup SQL
-        statusEl.textContent = "Running setup SQL...";
-        const setupResult = await runMysqlTestCommand("__setup", "/mysql-test/main/__setup.test", 30000);
-        if (setupResult.exitCode !== 0) {
-          appendLog(`Warning: setup SQL exited with code ${setupResult.exitCode}\n`, "error");
-        } else {
-          appendLog("Setup SQL complete.\n", "info");
-        }
-
-        // Expose test runner API
-        window.__runMariadbTest = async (testName: string, timeoutMs = 60000): Promise<TestResult> => {
-          // Reset test database
-          const resetResult = await runMysqlTestCommand("__reset", "/mysql-test/main/__reset.test", 15000);
-          if (resetResult.exitCode !== 0 && resetResult.stderr !== "TIMEOUT") {
-            // Non-fatal — continue anyway
-          }
-
-          // Run actual test
-          const testFile = `/mysql-test/main/${testName}.test`;
-          return runMysqlTestCommand(testName, testFile, timeoutMs);
-        };
-
-        window.__mariadbTestReady = true;
-        statusEl.textContent = "Ready — waiting for test commands";
-        appendLog("Test runner ready.\n", "info");
-      }
+    onListenTcp: (_pid, _fd, port) => {
+      appendLog(`service listening on :${port}\n`, "info");
+      if (port === MYSQL_PORT) portReadyResolve?.();
     },
   });
 
-  await initSystem.boot();
+  const { exit } = await kernel.boot({
+    kernelWasm: kernelBytes,
+    vfsImage,
+    argv: ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl"],
+    env: ["HOME=/root", "TERM=xterm-256color", "PATH=/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin"],
+  });
+
+  // Surface dinit exit if it ever happens — should not while tests run.
+  exit.then((code) => {
+    appendLog(`\ndinit exited with code ${code}\n`, "info");
+    statusEl.textContent = `dinit exited with code ${code}`;
+  });
+
+  await portReady;
+  appendLog("Server ready on port 3306.\n", "info");
+
+  // Setup SQL needs a brief retry — port-bind happens before
+  // the server's accept loop is fully ready.
+  statusEl.textContent = "Running setup SQL...";
+  let setupResult: TestResult | null = null;
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    setupResult = await runMysqlTestCommand("__setup", "/mysql-test/main/__setup.test", 30000);
+    if (setupResult.exitCode === 0) break;
+    appendLog(`Setup attempt ${attempt} failed (exit ${setupResult.exitCode}); retrying...\n`, "info");
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  if (!setupResult || setupResult.exitCode !== 0) {
+    appendLog(`Warning: setup SQL exited with code ${setupResult?.exitCode}\n`, "error");
+  } else {
+    appendLog("Setup SQL complete.\n", "info");
+  }
+
+  window.__runMariadbTest = async (testName: string, timeoutMs = 60000): Promise<TestResult> => {
+    const resetResult = await runMysqlTestCommand("__reset", "/mysql-test/main/__reset.test", 15000);
+    if (resetResult.exitCode !== 0 && resetResult.stderr !== "TIMEOUT") {
+      // Non-fatal — continue anyway.
+    }
+    const testFile = `/mysql-test/main/${testName}.test`;
+    return runMysqlTestCommand(testName, testFile, timeoutMs);
+  };
+
+  window.__mariadbTestReady = true;
+  statusEl.textContent = "Ready — waiting for test commands";
+  appendLog("Test runner ready.\n", "info");
 }
 
 init().catch((err) => {

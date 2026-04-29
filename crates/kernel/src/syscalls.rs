@@ -106,10 +106,33 @@ const SYNTHETIC_FILE_HANDLE: i64 = -100;
 
 /// Return static content for synthetic /etc files.
 /// These provide a minimal POSIX environment (user/group database, DNS).
+///
+/// Daemons (nginx, redis, postgres, ...) routinely call getpwnam("nobody")
+/// or similar at startup; the system-account entries below cover the
+/// common ones so daemons don't [emerg] before the rootfs.vfs mount-table
+/// path lands (PR #342-#345). When that PR merges this whole function
+/// goes away.
 fn synthetic_file_content(path: &[u8]) -> Option<&'static [u8]> {
     match path {
-        b"/etc/passwd" => Some(b"root:x:0:0:root:/root:/bin/sh\nuser:x:1000:1000:user:/home/user:/bin/sh\n"),
-        b"/etc/group" => Some(b"root:x:0:\nuser:x:1000:\n"),
+        b"/etc/passwd" => Some(b"\
+root:x:0:0:root:/root:/bin/sh\n\
+daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin\n\
+nobody:x:65534:65534:nobody:/nonexistent:/usr/sbin/nologin\n\
+www-data:x:33:33:www-data:/var/www:/usr/sbin/nologin\n\
+redis:x:100:100:redis:/var/lib/redis:/usr/sbin/nologin\n\
+mysql:x:101:101:mysql:/var/lib/mysql:/usr/sbin/nologin\n\
+user:x:1000:1000:user:/home/user:/bin/sh\n\
+"),
+        b"/etc/group" => Some(b"\
+root:x:0:\n\
+daemon:x:1:\n\
+nogroup:x:65534:\n\
+nobody:x:65534:\n\
+www-data:x:33:\n\
+redis:x:100:\n\
+mysql:x:101:\n\
+user:x:1000:\n\
+"),
         b"/etc/hosts" => Some(b"127.0.0.1\tlocalhost\n::1\tlocalhost\n"),
         _ => None,
     }
@@ -2515,11 +2538,16 @@ pub fn sys_rmdir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resu
 
 pub fn sys_unlink(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
     let resolved = resolve_path(path, &proc.cwd);
-    // Check if this is a Unix socket path
+    // AF_UNIX bind() creates a real host inode, so unlink must remove both the
+    // registry entry and the inode. ENOENT from host_unlink is tolerated because
+    // some hosts (test mocks) don't track the inode.
     {
         let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
         if registry.unregister(&resolved) {
-            return Ok(());
+            match host.host_unlink(&resolved) {
+                Ok(()) | Err(Errno::ENOENT) => return Ok(()),
+                Err(e) => return Err(e),
+            }
         }
     }
     match host.host_unlink(&resolved) {
@@ -4749,7 +4777,7 @@ pub fn sys_setsockopt_timeout(
 ///
 /// For AF_INET sockets, parses sockaddr_in and stores the IP + port.
 /// If port == 0, assigns an ephemeral port.
-pub fn sys_bind(proc: &mut Process, fd: i32, addr: &[u8]) -> Result<(), Errno> {
+pub fn sys_bind(proc: &mut Process, host: &mut dyn HostIO, fd: i32, addr: &[u8]) -> Result<(), Errno> {
     use crate::socket::{SocketDomain, SocketState};
 
     let entry = proc.fd_table.get(fd)?;
@@ -4804,9 +4832,28 @@ pub fn sys_bind(proc: &mut Process, fd: i32, addr: &[u8]) -> Result<(), Errno> {
             let sun_path = &path_bytes[..path_end];
             let resolved = crate::path::resolve_path(sun_path, &proc.cwd);
 
-            // Register in global Unix socket registry
+            // POSIX: bind() must create a filesystem inode at sun_path so
+            // chmod/stat/ls find a node there. Do that first via host O_CREAT|
+            // O_EXCL so a pre-existing path turns into EADDRINUSE, matching the
+            // registry contract below. Other host_open errors (e.g. ENOENT for
+            // missing parent dir) propagate unchanged. (PR #356 — restored
+            // here after the package-management rebase dropped it; the same
+            // code lives at the merge base but didn't survive into the
+            // rebased branch.)
+            use wasm_posix_shared::flags::{O_CREAT, O_EXCL, O_WRONLY};
+            let h = match host.host_open(&resolved, O_CREAT | O_EXCL | O_WRONLY, 0o600) {
+                Ok(h) => h,
+                Err(Errno::EEXIST) => return Err(Errno::EADDRINUSE),
+                Err(e) => return Err(e),
+            };
+            let _ = host.host_close(h);
+
+            // Register in global Unix socket registry. If a stale entry exists
+            // (host had no inode but registry did — shouldn't happen normally)
+            // unwind the host inode so we don't leak.
             let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
             if !registry.register(resolved.clone(), proc.pid, sock_idx) {
+                let _ = host.host_unlink(&resolved);
                 return Err(Errno::EADDRINUSE);
             }
 
@@ -5826,11 +5873,15 @@ pub fn sys_unlinkat(
     if flags & AT_REMOVEDIR != 0 {
         host.host_rmdir(&resolved)
     } else {
-        // Check if this is a Unix socket path
+        // AF_UNIX bind() creates a host inode; remove both the registry
+        // entry and the inode. (Same as sys_unlink.)
         {
             let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
             if registry.unregister(&resolved) {
-                return Ok(());
+                match host.host_unlink(&resolved) {
+                    Ok(()) | Err(Errno::ENOENT) => return Ok(()),
+                    Err(e) => return Err(e),
+                }
             }
         }
         match host.host_unlink(&resolved) {
@@ -7472,11 +7523,16 @@ pub fn sys_fchmod(
     let ofd_idx = entry.ofd_ref.0;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
 
-    if ofd.file_type != FileType::Regular && ofd.file_type != FileType::Directory {
-        return Err(Errno::EINVAL);
+    match ofd.file_type {
+        FileType::Regular | FileType::Directory => host.host_fchmod(ofd.host_handle, mode),
+        // CharDevice / Pipe / Socket / PtyMaster / PtySlave / etc.: Linux
+        // allows fchmod on these (e.g. on /dev/stderr or a unix-domain
+        // socket fd — daemons like dinit do this routinely and abort on
+        // EINVAL). The mode change has no observable effect for kernel-
+        // synthesized devices, but accepting the call is what user-space
+        // expects.
+        _ => Ok(()),
     }
-
-    host.host_fchmod(ofd.host_handle, mode)
 }
 
 /// fchown -- change file owner and group via file descriptor.
@@ -7491,11 +7547,12 @@ pub fn sys_fchown(
     let ofd_idx = entry.ofd_ref.0;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
 
-    if ofd.file_type != FileType::Regular && ofd.file_type != FileType::Directory {
-        return Err(Errno::EINVAL);
+    match ofd.file_type {
+        FileType::Regular | FileType::Directory => host.host_fchown(ofd.host_handle, uid, gid),
+        // Match sys_fchmod above — accept the call on all fd types so
+        // daemons that touch ownership during startup don't fail.
+        _ => Ok(()),
     }
-
-    host.host_fchown(ofd.host_handle, uid, gid)
 }
 
 /// writev -- write data from multiple buffers (scatter-gather I/O).
@@ -10053,7 +10110,7 @@ mod tests {
         // Bind + listen + mark connected
         let mut addr = [0u8; 16];
         addr[0] = 2; // AF_INET
-        sys_bind(&mut proc, fd, &addr).unwrap();
+        sys_bind(&mut proc, &mut host, fd, &addr).unwrap();
         // tcp_info should work on bound socket
         let buf = sys_getsockopt_tcp_info(&proc, fd).unwrap();
         assert_eq!(buf[0], 7); // TCP_CLOSE (not connected/listening yet)
@@ -10071,7 +10128,7 @@ mod tests {
         let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
         let mut addr = [0u8; 16];
         addr[0] = 2;
-        sys_bind(&mut proc, fd, &addr).unwrap();
+        sys_bind(&mut proc, &mut host, fd, &addr).unwrap();
         sys_listen(&mut proc, &mut host, fd, 5).unwrap();
         let buf = sys_getsockopt_tcp_info(&proc, fd).unwrap();
         assert_eq!(buf[0], 10); // TCP_LISTEN
@@ -10123,14 +10180,15 @@ mod tests {
         let mut addr = [0u8; 16];
         addr[0] = 2; // AF_INET
         addr[2] = 0x1F; addr[3] = 0x90; // port 8080 big-endian
-        let result = sys_bind(&mut proc, fd, &addr);
+        let result = sys_bind(&mut proc, &mut host, fd, &addr);
         assert_eq!(result, Ok(()));
     }
 
     #[test]
     fn test_bind_enotsock() {
         let mut proc = Process::new(1);
-        let result = sys_bind(&mut proc, 0, &[0u8; 16]);
+        let mut host = MockHostIO::new();
+        let result = sys_bind(&mut proc, &mut host, 0, &[0u8; 16]);
         assert_eq!(result, Err(Errno::ENOTSOCK));
     }
 
@@ -10150,7 +10208,7 @@ mod tests {
         addr[0] = 1; // AF_UNIX
         addr[1] = 0;
         addr[2..2 + path.len()].copy_from_slice(path);
-        sys_bind(&mut proc, fd, &addr[..2 + path.len() + 1]).unwrap();
+        sys_bind(&mut proc, &mut host, fd, &addr[..2 + path.len() + 1]).unwrap();
         // Socket should be in Bound state
         let entry = proc.fd_table.get(fd).unwrap();
         let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
@@ -10179,8 +10237,8 @@ mod tests {
         addr[0] = 1; // AF_UNIX
         addr[2..2 + path.len()].copy_from_slice(path);
         let addrlen = 2 + path.len() + 1;
-        sys_bind(&mut proc, fd1, &addr[..addrlen]).unwrap();
-        let err = sys_bind(&mut proc, fd2, &addr[..addrlen]).unwrap_err();
+        sys_bind(&mut proc, &mut host, fd1, &addr[..addrlen]).unwrap();
+        let err = sys_bind(&mut proc, &mut host, fd2, &addr[..addrlen]).unwrap_err();
         assert_eq!(err, Errno::EADDRINUSE);
 
         // Clean up
@@ -10196,7 +10254,7 @@ mod tests {
         // Must bind before listen
         let mut addr = [0u8; 16];
         addr[0] = 2;
-        sys_bind(&mut proc, fd, &addr).unwrap();
+        sys_bind(&mut proc, &mut host, fd, &addr).unwrap();
         let result = sys_listen(&mut proc, &mut host, fd, 5);
         assert_eq!(result, Ok(()));
     }
@@ -10209,7 +10267,7 @@ mod tests {
         let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
         let mut addr = [0u8; 16];
         addr[0] = 2;
-        sys_bind(&mut proc, fd, &addr).unwrap();
+        sys_bind(&mut proc, &mut host, fd, &addr).unwrap();
         sys_listen(&mut proc, &mut host, fd, 5).unwrap();
         let result = sys_accept(&mut proc, &mut host, fd);
         assert_eq!(result, Err(Errno::EAGAIN));
@@ -11405,12 +11463,16 @@ mod tests {
     }
 
     #[test]
-    fn test_fchmod_pipe_einval() {
+    fn test_fchmod_pipe_accepted() {
+        // Linux accepts fchmod on non-regular fds (pipes, sockets, devices)
+        // even though the mode change has no observable effect. dinit and
+        // other daemons rely on this — pre-relaxation EINVAL aborted them
+        // mid-startup.
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         let (r, _w) = sys_pipe(&mut proc).unwrap();
         let result = sys_fchmod(&mut proc, &mut host, r, 0o755);
-        assert_eq!(result, Err(Errno::EINVAL));
+        assert_eq!(result, Ok(()));
     }
 
     // ---- fchown tests ----
@@ -12543,7 +12605,7 @@ mod tests {
         addr[0] = 1; // AF_UNIX
         addr[2..2 + path.len()].copy_from_slice(path);
         let addrlen = 2 + path.len() + 1;
-        sys_bind(&mut proc, server_fd, &addr[..addrlen]).unwrap();
+        sys_bind(&mut proc, &mut host, server_fd, &addr[..addrlen]).unwrap();
         sys_listen(&mut proc, &mut host, server_fd, 5).unwrap();
 
         // Connect a client
@@ -12596,7 +12658,7 @@ mod tests {
         addr[0] = 1;
         addr[2..2 + path.len()].copy_from_slice(path);
         let addrlen = 2 + path.len() + 1;
-        sys_bind(&mut proc, server_fd, &addr[..addrlen]).unwrap();
+        sys_bind(&mut proc, &mut host, server_fd, &addr[..addrlen]).unwrap();
         sys_listen(&mut proc, &mut host, server_fd, 5).unwrap();
 
         // Connect client
@@ -12634,7 +12696,7 @@ mod tests {
         addr[0] = 1;
         let path = b"/tmp/stat.sock";
         addr[2..2 + path.len()].copy_from_slice(path);
-        sys_bind(&mut proc, fd, &addr[..2 + path.len() + 1]).unwrap();
+        sys_bind(&mut proc, &mut host, fd, &addr[..2 + path.len() + 1]).unwrap();
 
         let st = sys_stat(&mut proc, &mut host, b"/tmp/stat.sock").unwrap();
         assert_eq!(st.st_mode & wasm_posix_shared::mode::S_IFMT, wasm_posix_shared::mode::S_IFSOCK);
@@ -12655,7 +12717,7 @@ mod tests {
         addr[0] = 1;
         let path = b"/tmp/unlink.sock";
         addr[2..2 + path.len()].copy_from_slice(path);
-        sys_bind(&mut proc, fd, &addr[..2 + path.len() + 1]).unwrap();
+        sys_bind(&mut proc, &mut host, fd, &addr[..2 + path.len() + 1]).unwrap();
 
         // Socket path should exist
         assert!(sys_stat(&mut proc, &mut host, b"/tmp/unlink.sock").is_ok());
@@ -12665,7 +12727,7 @@ mod tests {
 
         // Another socket can now bind to the same path
         let fd2 = sys_socket(&mut proc, &mut host, 1, 1, 0).unwrap();
-        sys_bind(&mut proc, fd2, &addr[..2 + path.len() + 1]).unwrap();
+        sys_bind(&mut proc, &mut host, fd2, &addr[..2 + path.len() + 1]).unwrap();
 
         // Cleanup
         let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
@@ -12692,7 +12754,7 @@ mod tests {
         addr[0] = 1;
         let path = b"/tmp/getsockname.sock";
         addr[2..2 + path.len()].copy_from_slice(path);
-        sys_bind(&mut proc, fd, &addr[..2 + path.len() + 1]).unwrap();
+        sys_bind(&mut proc, &mut host, fd, &addr[..2 + path.len() + 1]).unwrap();
 
         let mut buf = [0u8; 128];
         let n = sys_getsockname(&proc, fd, &mut buf).unwrap();
@@ -13240,7 +13302,7 @@ mod tests {
         let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
         // Bind with port=0 → ephemeral
         let addr = [2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-        sys_bind(&mut proc, fd, &addr).unwrap();
+        sys_bind(&mut proc, &mut host, fd, &addr).unwrap();
         // getsockname should show the assigned ephemeral port
         let mut buf = [0u8; 16];
         let n = sys_getsockname(&proc, fd, &mut buf).unwrap();
@@ -13261,7 +13323,7 @@ mod tests {
         addr[0] = 2;
         addr[2] = 0x1F; addr[3] = 0x90; // 8080 big-endian
         addr[4] = 127; addr[5] = 0; addr[6] = 0; addr[7] = 1;
-        sys_bind(&mut proc, fd, &addr).unwrap();
+        sys_bind(&mut proc, &mut host, fd, &addr).unwrap();
         let mut buf = [0u8; 16];
         sys_getsockname(&proc, fd, &mut buf).unwrap();
         assert_eq!(buf[0], 2); // AF_INET
@@ -13281,7 +13343,7 @@ mod tests {
         let mut addr = [0u8; 16];
         addr[0] = 2; // AF_INET
         addr[2] = 0x1F; addr[3] = 0x90; // port 8080
-        sys_bind(&mut proc, server_fd, &addr).unwrap();
+        sys_bind(&mut proc, &mut host, server_fd, &addr).unwrap();
         sys_listen(&mut proc, &mut host, server_fd, 5).unwrap();
 
         // Client: socket → connect to 127.0.0.1:8080
@@ -13323,7 +13385,7 @@ mod tests {
         let mut addr = [0u8; 16];
         addr[0] = 2;
         // port=0 → ephemeral
-        sys_bind(&mut proc, recv_fd, &addr).unwrap();
+        sys_bind(&mut proc, &mut host, recv_fd, &addr).unwrap();
 
         // Get the assigned port
         let mut gsa_buf = [0u8; 16];
@@ -13334,7 +13396,7 @@ mod tests {
         let send_fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
         let mut sender_addr = [0u8; 16];
         sender_addr[0] = 2;
-        sys_bind(&mut proc, send_fd, &sender_addr).unwrap();
+        sys_bind(&mut proc, &mut host, send_fd, &sender_addr).unwrap();
 
         // Send to the receiver via loopback
         let mut dest_addr = [0u8; 16];

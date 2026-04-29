@@ -1,60 +1,39 @@
 /**
- * WordPress (LAMP) browser demo — nginx + MariaDB + PHP-FPM + WordPress,
- * pre-loaded from a VFS image for instant boot.
+ * WordPress (LAMP) browser demo — boots a service-demo VFS image with
+ * dinit as PID 1. dinit chains:
  *
- * Uses SystemInit to orchestrate boot from /etc/init.d/ service descriptors.
+ *   mariadb-bootstrap (scripted) — populates /data via mariadbd --bootstrap
+ *   mariadb           (process)  — daemon, listens 127.0.0.1:3306
+ *   wp-config-init    (scripted) — sed-substitutes @@APP_PATH@@/@@PROTO@@
+ *   php-fpm           (process)  — FastCGI on 127.0.0.1:9000
+ *   nginx             (process)  — HTTP on :8080
  *
- * Process layout:
- *   pid 1: mariadbd --bootstrap (oneshot, terminated after stdin consumed)
- *   pid 2: mariadbd server (daemon, spawns 5 background threads)
- *   pid N: php-fpm master -> forks worker
- *   pid N: nginx master   -> forks workers
- *   pid N: dash -i (interactive shell with PTY)
- *
- * The VFS image (lamp.vfs) is built at build time and contains all
- * WordPress files, MariaDB binary + bootstrap SQL, system configs,
- * directory structure, dash binary, and symlinks. At runtime we only
- * need to:
- *   1. Restore the image into a MemoryFileSystem
- *   2. Register lazy binaries (nginx, php-fpm, coreutils, grep, sed)
- *   3. Write the dynamic wp-config.php (depends on runtime URL/protocol)
- *
- * MariaDB listens on 127.0.0.1:3306, PHP-FPM on 127.0.0.1:9000,
- * nginx on 127.0.0.1:8080. All inter-process communication flows
- * through the kernel's loopback TCP.
- *
- * Service worker intercepts ${BASE_URL}app/* requests and routes them to nginx.
+ * The page passes WP_APP_PATH and WP_PROTO via env so wp-config-init
+ * can finalize wp-config.php's runtime values (WP_HOME / WP_SITEURL).
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
-import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
-import { decompressVfsImage } from "../../../../host/src/vfs/load-image";
-import { SystemInit } from "../../lib/init/system-init";
-import { writeVfsFile } from "../../lib/init/vfs-utils";
+import { initServiceWorkerBridge } from "../../lib/init/service-worker-bridge";
+import { HttpBridgeHost } from "../../lib/http-bridge";
 import kernelWasmUrl from "@kernel-wasm?url";
-import nginxWasmUrl from "../../../../binaries/programs/wasm32/nginx.wasm?url";
-import phpFpmWasmUrl from "../../../../binaries/programs/wasm32/php/php-fpm.wasm?url";
-import coreutilsWasmUrl from "../../../../binaries/programs/wasm32/coreutils.wasm?url";
-import grepWasmUrl from "../../../../binaries/programs/wasm32/grep.wasm?url";
-import sedWasmUrl from "../../../../binaries/programs/wasm32/sed.wasm?url";
-import VFS_IMAGE_URL from "@binaries/programs/wasm32/lamp.vfs?url";
-import "@xterm/xterm/css/xterm.css";
 import "../../lib/terminal-panel.css";
 
+const VFS_IMAGE_URL = import.meta.env.BASE_URL + "lamp.vfs";
 const APP_PREFIX = import.meta.env.BASE_URL + "app/";
-// Without trailing slash, for embedding in PHP config strings
 const APP_PATH = import.meta.env.BASE_URL + "app";
-// Capture the real page protocol so wp-config.php generates correct URLs
 const PROTO = window.location.protocol === "https:" ? "https" : "http";
 const SW_URL = import.meta.env.BASE_URL + "service-worker.js";
+const HTTP_PORT = 8080;
 
 const log = document.getElementById("log") as HTMLPreElement;
 const startBtn = document.getElementById("start") as HTMLButtonElement;
 const reloadBtn = document.getElementById("reload") as HTMLButtonElement;
 const statusDiv = document.getElementById("status") as HTMLDivElement;
-const terminalPanel = document.getElementById("terminal-panel") as HTMLDivElement;
 let frame = document.getElementById("frame") as HTMLIFrameElement;
 
 const decoder = new TextDecoder();
+
+let kernel: BrowserKernel | null = null;
+let bridgeHttpPort: number | null = null;
 
 function appendLog(text: string, cls?: string) {
   const span = document.createElement("span");
@@ -70,60 +49,31 @@ function setStatus(text: string, type: "loading" | "running" | "error") {
   statusDiv.className = `status ${type}`;
 }
 
-// WordPress wp-config.php for MySQL/MariaDB — depends on runtime APP_PREFIX
-// and PROTO, so it can't be baked into the VFS image.
-const WP_CONFIG_PHP = `<?php
-define('DB_NAME', 'wordpress');
-define('DB_USER', 'root');
-define('DB_PASSWORD', '');
-define('DB_HOST', '127.0.0.1:3306');
-define('DB_CHARSET', 'utf8');
-define('DB_COLLATE', '');
-
-define('AUTH_KEY',         'wasm-posix-kernel-lamp');
-define('SECURE_AUTH_KEY',  'wasm-posix-kernel-lamp');
-define('LOGGED_IN_KEY',    'wasm-posix-kernel-lamp');
-define('NONCE_KEY',        'wasm-posix-kernel-lamp');
-define('AUTH_SALT',        'wasm-posix-kernel-lamp');
-define('SECURE_AUTH_SALT', 'wasm-posix-kernel-lamp');
-define('LOGGED_IN_SALT',   'wasm-posix-kernel-lamp');
-define('NONCE_SALT',       'wasm-posix-kernel-lamp');
-
-$table_prefix = 'wp_';
-
-define('WP_DEBUG', true);
-define('WP_DEBUG_LOG', true);
-define('WP_DEBUG_DISPLAY', true);
-
-if (isset($_SERVER['HTTP_HOST'])) {
-    if ('${PROTO}' === 'https') { $_SERVER['HTTPS'] = 'on'; }
-    define('WP_HOME', '${PROTO}://' . $_SERVER['HTTP_HOST'] . '${APP_PATH}');
-    define('WP_SITEURL', '${PROTO}://' . $_SERVER['HTTP_HOST'] . '${APP_PATH}');
+function loadFrame() {
+  const next = document.createElement("iframe");
+  next.id = "frame";
+  next.src = APP_PREFIX;
+  frame.replaceWith(next);
+  frame = next;
 }
 
-define('WP_HTTP_BLOCK_EXTERNAL', true);
-define('DISABLE_WP_CRON', true);
-
-if ( ! defined( 'ABSPATH' ) ) {
-    define( 'ABSPATH', __DIR__ . '/' );
+function setupBridgeRestoreListener() {
+  if (!("serviceWorker" in navigator)) return;
+  navigator.serviceWorker.addEventListener("message", (event) => {
+    if (event.data?.type !== "need-bridge") return;
+    const replyPort = event.ports[0];
+    if (!replyPort) return;
+    const bridge = new HttpBridgeHost();
+    replyPort.postMessage(
+      { type: "bridge-restored", appPrefix: APP_PREFIX },
+      [bridge.getSwPort()],
+    );
+    if (kernel && bridgeHttpPort != null) {
+      kernel.sendBridgePort(bridge.detachHostPort(), bridgeHttpPort);
+    }
+    appendLog("Bridge restored after service worker restart\n", "info");
+  });
 }
-
-require_once ABSPATH . 'wp-settings.php';
-`;
-
-/** Fetch file size via HEAD request. Returns 0 on failure. */
-async function fetchSize(url: string): Promise<number> {
-  try {
-    const resp = await fetch(url, { method: "HEAD" });
-    if (!resp.ok) return 0;
-    return parseInt(resp.headers.get("content-length") || "0", 10) || 0;
-  } catch {
-    return 0;
-  }
-}
-
-let kernel: BrowserKernel | null = null;
-let init: SystemInit | null = null;
 
 async function start() {
   startBtn.disabled = true;
@@ -131,118 +81,98 @@ async function start() {
   setStatus("Loading WordPress (LAMP)...", "loading");
 
   try {
-    // Fetch kernel wasm, VFS image, and lazy binary sizes in parallel
-    appendLog("Fetching kernel wasm and VFS image...\n", "info");
-    const [kernelBytes, vfsImageBuf, nginxSize, phpFpmSize, coreutilsSize, grepSize, sedSize] =
-      await Promise.all([
-        fetch(kernelWasmUrl).then((r) => r.arrayBuffer()),
-        fetch(VFS_IMAGE_URL).then((r) => {
-          if (!r.ok) {
-            throw new Error(
-              `Failed to load VFS image from ${VFS_IMAGE_URL} (${r.status}). ` +
-              `Run: bash examples/browser/scripts/build-lamp-vfs-image.sh`
-            );
-          }
-          return r.arrayBuffer();
-        }),
-        fetchSize(nginxWasmUrl),
-        fetchSize(phpFpmWasmUrl),
-        fetchSize(coreutilsWasmUrl),
-        fetchSize(grepWasmUrl),
-        fetchSize(sedWasmUrl),
-      ]);
-
+    appendLog("Fetching kernel + VFS image...\n", "info");
+    const [kernelBytes, vfsImageBuf] = await Promise.all([
+      fetch(kernelWasmUrl).then((r) => r.arrayBuffer()),
+      fetch(VFS_IMAGE_URL).then((r) => {
+        if (!r.ok) {
+          throw new Error(
+            `Failed to load VFS image from ${VFS_IMAGE_URL} (${r.status}). ` +
+            `Run: bash examples/browser/scripts/build-lamp-vfs-image.sh`,
+          );
+        }
+        return r.arrayBuffer();
+      }),
+    ]);
+    const vfsImage = new Uint8Array(vfsImageBuf);
     appendLog(
       `Kernel: ${(kernelBytes.byteLength / 1024).toFixed(0)}KB, ` +
-      `VFS image: ${(vfsImageBuf.byteLength / (1024 * 1024)).toFixed(1)}MB\n`,
+      `VFS: ${(vfsImage.byteLength / (1024 * 1024)).toFixed(1)}MB\n`,
       "info",
     );
 
-    // Restore MemoryFileSystem from the pre-built VFS image
-    appendLog("Restoring VFS from image...\n", "info");
-    const maxFsSize = 1024 * 1024 * 1024; // 1GB max growth
-    const memfs = MemoryFileSystem.fromImage(decompressVfsImage(new Uint8Array(vfsImageBuf)), {
-      maxByteLength: maxFsSize,
-    });
+    appendLog("Initializing service worker bridge...\n", "info");
+    const swBridge = await initServiceWorkerBridge(SW_URL, APP_PREFIX);
+    if (!swBridge) {
+      throw new Error("Service workers unavailable — HTTP bridge not initialized");
+    }
 
-    // Create kernel with pre-built filesystem
+    setStatus("Booting kernel with /sbin/dinit...", "loading");
+    // Track which ports are listening so we only load the iframe once
+    // BOTH nginx (8080) and mariadbd (3306) are accepting connections —
+    // dinit considers a `process` service started right after exec(),
+    // racing the daemon's actual port-bind by ~10s for mariadbd.
+    // Also gate on bridgeSent — see nginx/main.ts for the bridge-vs-listen
+    // race rationale (mariadb's slow boot usually masks it here, but be
+    // explicit anyway).
+    const seenPorts = new Set<number>();
+    const REQUIRED_PORTS = [HTTP_PORT, 3306];
+    let bridgeSent = false;
+    const tryLoadFrame = () => {
+      const allReady = REQUIRED_PORTS.every((p) => seenPorts.has(p));
+      if (allReady && bridgeSent && reloadBtn.disabled) {
+        setStatus("WordPress running! Loading page...", "running");
+        reloadBtn.disabled = false;
+        loadFrame();
+      }
+    };
+
     kernel = new BrowserKernel({
-      memfs,
+      kernelOwnedFs: true,
       maxWorkers: 16,
-      maxMemoryPages: 4096,
+      // No maxMemoryPages cap — mariadbd's Aria recovery needs ~130 MiB
+      // allocations during InnoDB+Aria startup, which spilled past the
+      // 256 MiB cap (4096 pages) the wordpress demo uses. Default is
+      // 16384 pages (1 GiB) which is plenty.
       onStdout: (data) => appendLog(decoder.decode(data)),
-      onStderr: (data) => {
-        const text = decoder.decode(data);
-        appendLog(text, "stderr");
-        console.log(`[STDERR] ${text.trim()}`);
+      onStderr: (data) => appendLog(decoder.decode(data), "stderr"),
+      onListenTcp: (_pid, _fd, port) => {
+        appendLog(`service listening on :${port}\n`, "info");
+        seenPorts.add(port);
+        tryLoadFrame();
       },
     });
 
-    await kernel.init(kernelBytes);
-
-    // Register lazy binaries — the image already has all symlinks,
-    // we just need to create the stub files and register URLs
-    const lazyFiles: Array<{ path: string; url: string; size: number; mode?: number }> = [];
-    if (nginxSize > 0) {
-      lazyFiles.push({ path: "/usr/sbin/nginx", url: nginxWasmUrl, size: nginxSize, mode: 0o755 });
-    }
-    if (phpFpmSize > 0) {
-      lazyFiles.push({ path: "/usr/sbin/php-fpm", url: phpFpmWasmUrl, size: phpFpmSize, mode: 0o755 });
-    }
-    if (coreutilsSize > 0) {
-      lazyFiles.push({ path: "/bin/coreutils", url: coreutilsWasmUrl, size: coreutilsSize, mode: 0o755 });
-    }
-    if (grepSize > 0) {
-      lazyFiles.push({ path: "/usr/bin/grep", url: grepWasmUrl, size: grepSize, mode: 0o755 });
-    }
-    if (sedSize > 0) {
-      lazyFiles.push({ path: "/usr/bin/sed", url: sedWasmUrl, size: sedSize, mode: 0o755 });
-    }
-    if (lazyFiles.length > 0) {
-      kernel.registerLazyFiles(lazyFiles);
-    }
-
-    // Write dynamic wp-config.php (depends on runtime APP_PREFIX and PROTO)
-    writeVfsFile(kernel.fs, "/var/www/html/wp-config.php", WP_CONFIG_PHP);
-
-    // Create SystemInit and boot
-    setStatus("Booting system...", "loading");
-    init = new SystemInit(kernel, {
-      onLog: (msg, level) => appendLog(msg + "\n", level === "info" ? "info" : "stderr"),
-      terminalContainer: terminalPanel,
-      serviceWorkerUrl: SW_URL,
-      appPrefix: APP_PREFIX,
-      onBeforeService: async (name) => {
-        if (name === "shell") {
-          // WordPress files and MariaDB are already in the VFS from the image
-          setStatus("LEMP stack running!", "running");
-          reloadBtn.disabled = false;
-          loadFrame();
-        }
-      },
-      onServiceReady: (name) => {
-        if (name === "mariadb-bootstrap") {
-          appendLog("Bootstrap complete\n", "info");
-        }
-      },
+    const { exit } = await kernel.boot({
+      kernelWasm: kernelBytes,
+      vfsImage,
+      argv: ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl"],
+      env: [
+        "HOME=/root",
+        "TERM=xterm-256color",
+        "PATH=/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin",
+        `WP_APP_PATH=${APP_PATH}`,
+        `WP_PROTO=${PROTO}`,
+      ],
     });
 
-    await init.boot();
+    kernel.sendBridgePort(swBridge.detachHostPort(), HTTP_PORT);
+    bridgeHttpPort = HTTP_PORT;
+    appendLog(`HTTP bridge ready on port ${HTTP_PORT}\n`, "info");
+    setupBridgeRestoreListener();
+    bridgeSent = true;
+    tryLoadFrame();
+
+    const code = await exit;
+    appendLog(`\ndinit exited with code ${code}\n`, "info");
+    setStatus(`dinit exited with code ${code}`, "error");
   } catch (e: any) {
     const msg = e?.message || String(e);
-    appendLog(`\nError: ${msg}\n`, "stderr");
     setStatus(`Error: ${msg}`, "error");
+    appendLog(`Error: ${msg}\n`, "stderr");
     console.error(e);
     startBtn.disabled = false;
   }
-}
-
-function loadFrame() {
-  const next = document.createElement("iframe");
-  next.id = "frame";
-  next.src = APP_PREFIX;
-  frame.replaceWith(next);
-  frame = next;
 }
 
 startBtn.addEventListener("click", start);

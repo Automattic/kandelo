@@ -22,13 +22,13 @@ The kernel runs in a dedicated web worker, freeing the main thread for UI render
 ```
 Main Thread (BrowserKernel)              Kernel Worker
 ├── UI / rendering                       ├── CentralizedKernelWorker
-├── MemoryFileSystem (shared SAB)        ├── Kernel Wasm instance
-├── Page API (spawn, stdin, fs)          ├── VirtualPlatformIO (shared SAB)
-├── PTY terminal ──pty events──>         ├── Syscall dispatch (Atomics.waitAsync)
+├── Page API (boot, stdin, TCP)          ├── MemoryFileSystem (kernel-owned)
+├── PTY terminal ──pty events──>         ├── Kernel Wasm instance
+├── HTTP bridge / TCP injection          ├── Syscall dispatch (Atomics.waitAsync)
 ├── App clients (MySQL, Redis)           ├── Process lifecycle (fork/exec/clone/exit)
 │   └── async pipe ops ────────────────> ├── Process sub-worker creation
 │                                        ├── Connection pump (HTTP↔TCP bridge)
-│                                        ├── Exec reads binaries from shared FS
+│                                        ├── Exec reads binaries from VFS
 └──── MessagePort (RPC) ───────────────> └── Blocking retry management
                                                     │
 Service Worker ──MessagePort──> Kernel Worker       │
@@ -48,8 +48,10 @@ Service Worker ──MessagePort──> Kernel Worker       │
 ### Key Design Decisions
 
 - **Kernel in dedicated worker**: Enables `Atomics.waitAsync` without V8 microtask chain freeze bug (main-thread-only). No need for MessageChannel-based polling. Zero UI jank regardless of syscall load.
-- **Shared MemoryFileSystem**: Main thread and kernel worker share the same `SharedArrayBuffer`-backed filesystem via `MemoryFileSystem.fromExisting()`. The main thread pre-populates files (via VFS images or direct writes), the kernel worker reads them (exec binaries, configs, data files).
-- **Exec reads from filesystem**: Like a real OS, `exec()` reads binaries from the shared filesystem. Programs are loaded into the FS by the page before spawning. Symlinks are used for multicall binaries (e.g., coreutils).
+- **Kernel-owned VFS** (preferred path, `kernelOwnedFs: true` + `kernel.boot()`): the kernel worker restores a pre-built VFS image and exec()s `argv[0]` as the first process. The main thread never instantiates a `MemoryFileSystem` and is not in the FS hot path. Service-supervised demos run dinit (PID 1) inside this image; single-program demos exec the language interpreter directly.
+- **Legacy shared VFS** (`memfs:` constructor option + `kernel.spawn()`): main thread holds a `MemoryFileSystem` and shares the SAB with the kernel worker. Used by demos that fetch transient binaries at runtime (test runners, REPLs that load arbitrary user code, benchmark suites). Kept in place until the kernel grows a "spawn-into-running-kernel" path that doesn't need a main-thread pid.
+- **Exec reads from filesystem**: Like a real OS, `exec()` reads binaries from the kernel-side `MemoryFileSystem`. Programs are baked into the VFS image at build time (or written by the page in the legacy path before spawning). Symlinks are used for multicall binaries (e.g., coreutils).
+- **dinit (PID 1) for service supervision**: Multi-process demos (nginx, redis, mariadb, nginx-php, wordpress, lamp, mariadb-test) bake `/sbin/dinit` and per-service files under `/etc/dinit.d/` into the VFS image via `addDinitInit()` (`examples/browser/scripts/dinit-image-helpers.ts`). dinit handles SIGCHLD reaping, `depends-on` ordering, and bootstrap-then-daemon chains. Page code waits for service-ready via `onListenTcp` (port-bind) callbacks, then starts driving the demo over kernel-loopback TCP or the HTTP bridge.
 - **Connection pump in kernel worker**: HTTP↔TCP bridge runs inside the kernel worker with synchronous pipe I/O (direct Wasm export calls). Service worker transfers a MessagePort to the kernel worker for HTTP request delivery.
 - **App clients on main thread**: MySQL and Redis wire protocol clients stay on the main thread and use async pipe operations via the message protocol.
 
@@ -109,19 +111,30 @@ Browser fetch → Service Worker intercepts
 
 Located in `examples/browser/pages/`:
 
-| Demo | Software | Features |
-|------|----------|----------|
-| simple | C programs | Basic file I/O, printf |
-| shell | dash + coreutils | Interactive shell with exec, pipes, PATH lookup |
-| python | CPython 3.13 | REPL + script runner |
-| php | PHP CLI | Script execution |
-| nginx | nginx | Static file serving via service worker |
-| nginx-php | nginx + PHP-FPM | FastCGI, fork workers |
-| mariadb | MariaDB 10.5 | SQL database with threads |
-| redis | Redis 7.2 | In-memory store with threads |
-| wordpress | nginx + PHP-FPM + WP | Full stack with SQLite |
-| lamp | MariaDB + nginx + PHP-FPM + WP | Full LAMP stack |
-| doom | fbDOOM | `/dev/fb0` framebuffer + canvas renderer + keyboard via stdin |
+| Demo | Software | Boot pattern | Features |
+|------|----------|--------------|----------|
+| simple | C programs | legacy spawn | Basic file I/O, printf |
+| shell | dash + coreutils | legacy spawn | Interactive shell with exec, pipes, PATH lookup |
+| python | CPython 3.13 | `kernel.boot` | REPL + script runner |
+| perl | Perl 5.40 | `kernel.boot` | REPL + script runner |
+| php | PHP CLI | `kernel.boot` | Script execution |
+| ruby | Ruby 3.3 | `kernel.boot` | REPL + script runner |
+| erlang | OTP 28 BEAM | legacy spawn | Erlang VM, message passing |
+| nginx | nginx | dinit | Static file serving via service worker |
+| nginx-php | nginx + PHP-FPM | dinit | FastCGI, fork workers |
+| mariadb | MariaDB 10.5 | dinit | SQL database with threads (Aria/InnoDB) |
+| redis | Redis 7.2 | dinit | In-memory store with threads |
+| wordpress | nginx + PHP-FPM + WP | dinit | Full stack with SQLite |
+| lamp | MariaDB + nginx + PHP-FPM + WP | dinit | Full LAMP stack |
+| mariadb-test | MariaDB + mysqltest | dinit + spawn | Playwright-driven mysql-test runner |
+| benchmark | (per-suite) | legacy spawn | Micro-benchmarks + WordPress + Erlang ring |
+| doom | fbDOOM | legacy spawn | `/dev/fb0` framebuffer + canvas renderer + keyboard via stdin |
+
+The "Boot pattern" column reflects how the demo enters the kernel:
+- **`kernel.boot`** — `kernelOwnedFs: true`, exec the language interpreter as the first process.
+- **dinit** — `kernelOwnedFs: true`, exec dinit (PID 1), which brings up the per-demo service tree.
+- **dinit + spawn** — dinit boots the supervised services; the page spawns transient binaries (e.g. mysqltest) via `kernel.spawn()`.
+- **legacy spawn** — main thread restores a `MemoryFileSystem`, page calls `kernel.spawn(programBytes, argv)` for each binary.
 
 Run demos: `cd examples/browser && npx vite --port 5198`
 

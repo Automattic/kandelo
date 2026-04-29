@@ -11,7 +11,7 @@
 
 import { decompress as zstdDecompress } from "fzstd";
 
-import { MemoryFileSystem, type VfsImageOptions } from "./memory-fs.ts";
+import { MemoryFileSystem, type VfsImageOptions } from "./memory-fs";
 
 /**
  * Decompress a `.vfs.zst` blob if needed and return raw VFS image bytes.
@@ -22,10 +22,12 @@ import { MemoryFileSystem, type VfsImageOptions } from "./memory-fs.ts";
  */
 export function decompressVfsImage(buf: Uint8Array): Uint8Array {
   if (buf.byteLength >= 4) {
-    const magic =
-      buf[0] | (buf[1] << 8) | (buf[2] << 16) | (buf[3] << 24);
     // zstd magic is 0xFD2FB528 (LE); first 4 bytes 28 B5 2F FD.
-    if (magic === 0xfd2fb528 | 0) {
+    // The shift-and-OR sequence below produces a signed int32 because
+    // the high byte's <<24 sign-extends; force `0xfd2fb528 | 0` the
+    // same way so the comparison is signed↔signed.
+    const magic = buf[0] | (buf[1] << 8) | (buf[2] << 16) | (buf[3] << 24);
+    if (magic === (0xfd2fb528 | 0)) {
       return zstdDecompress(buf);
     }
   }

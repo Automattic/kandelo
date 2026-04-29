@@ -33,3 +33,48 @@ The kernel has full PTY support (PR #181) but browser demos still use plain `<di
 `host/src/browser.ts` doesn't export `CentralizedKernelWorker`, `CentralizedKernelCallbacks`, `patchWasmForThread`, or `centralizedThreadWorkerMain`. External consumers can't build their own `BrowserKernel`-like wrapper from the published package.
 
 **Files:** `host/src/browser.ts`
+
+## Kernel — regressions
+
+### Multi-process nginx: injected connections don't reach fork workers
+The standalone nginx demo previously worked with `master_process on;
+worker_processes 2;` (kernel's listener-sharing-via-fork path delivered
+the injected TCP connection to a worker). That path appears to have
+regressed: with the same config, nginx accepts the connection
+(`sawWriteOpen=true` from the bridge) but never produces a response
+and the bridge times out after 60s. The standalone demo has been
+switched to single-process for now; LAMP/WordPress/nginx-php were
+already single-process and aren't affected.
+
+The bug is likely in either: (a) connection-injection target selection
+when the listener fd is shared across pids via `dup`-on-fork, or (b)
+nginx's worker not seeing the accepted connection in its event loop
+because the wakeup is delivered to the master.
+
+**Files:** `crates/kernel/src/socket.rs` (TCP listener accept queue),
+`examples/browser/lib/kernel-worker-entry.ts` (`handleHttpRequest` —
+how it picks a target listening pid).
+
+## Host runtime
+
+### Pre-instantiation worker errors bypass the kernel exit path
+When a process worker fails before any syscall (e.g. ABI mismatch, link
+error, malformed wasm), it posts `{type:"error"}` via `port.postMessage`.
+The kernel-worker-entry catches that and synthesizes `{type:"stderr"}` +
+`{type:"exit"}` messages directly to the host, which works for the
+common case but bypasses the kernel's normal exit path
+(`callbacks.onExit` → `kernelWorker.unregisterProcess(pid)` →
+hostReaped tracking → child-pid bookkeeping). For these pre-instantiation
+failures the kernel only holds `kernel_create_process(pid)` state, so the
+leak is minimal — but it's inconsistent with how successful exits flow.
+
+The SAB syscall channel can't carry this signal because the channel
+glue isn't linked yet at the failure point (the wasm instance doesn't
+exist), so the postMessage path is the right transport. The fix is to
+route the message through the kernel's normal exit machinery — call
+`kernelWorker.unregisterProcess(pid)` and trigger the `onExit` callback
+with a non-zero status — instead of fabricating an exit message at
+the protocol layer.
+
+**Files:** `host/src/node-kernel-worker-entry.ts` (handleSpawn's
+`worker.on("message")` handler).

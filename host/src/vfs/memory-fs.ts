@@ -423,7 +423,8 @@ export class MemoryFileSystem implements FileSystemBackend {
       throw new Error("VFS image truncated");
     }
 
-    // Restore SharedArrayBuffer (optionally growable)
+    // Restore SharedArrayBuffer (optionally growable). The 2-arg form is
+    // typed via the ES2024.SharedMemory lib (see host/tsconfig.json).
     const sabOptions = options?.maxByteLength
       ? { maxByteLength: options.maxByteLength }
       : undefined;
