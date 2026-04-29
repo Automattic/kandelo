@@ -550,28 +550,55 @@ fn detect_zip_arch(bytes: &[u8]) -> Option<&'static str> {
     None
 }
 
+/// Accepts:
+/// - the bare form `binaries-abi-v<N>`,
+/// - the dated form `binaries-abi-v<N>-YYYY-MM-DD` (what we publish to
+///   GitHub Releases — see `docs/binary-releases.md` "Release tag
+///   convention"),
+/// - PR-staging tags `pr-<NNN>-staging` (per-PR pre-releases that mirror
+///   the durable ABI; see
+///   `docs/plans/2026-04-29-pr-package-builds-design.md` §3.4).
+/// The bare form is preserved so legacy callers (and the
+/// build_manifest tests) keep working. The PR-staging tag does not
+/// encode an ABI version — manifest entries still carry
+/// `abi_versions`, so consumer-side validation remains intact.
 fn verify_tag_matches_abi(tag: &str, abi_version: u32) -> Result<(), String> {
-    // PR-staging release tags (`pr-<NNN>-staging`) are exempt — they
-    // label a per-PR pre-release that mirrors the durable ABI. The
-    // manifest entries still encode `abi_versions`, so consumer-side
-    // validation remains intact. See
-    // `docs/plans/2026-04-29-pr-package-builds-design.md` §3.4.
     if let Some(rest) = tag.strip_prefix("pr-") {
         if rest.ends_with("-staging") {
             return Ok(());
         }
     }
-    let expected = format!("binaries-abi-v{abi_version}");
-    if tag == expected {
+    let prefix = format!("binaries-abi-v{abi_version}");
+    let suffix_ok = match tag.strip_prefix(&prefix) {
+        Some("") => true,
+        Some(rest) => is_valid_date_suffix(rest),
+        None => false,
+    };
+    if suffix_ok {
         Ok(())
     } else {
         Err(format!(
-            "tag {tag:?} does not equal {expected:?} — refusing to \
-             generate a manifest that would claim a different ABI than \
-             `wasm_posix_shared::ABI_VERSION` ({abi_version}). \
-             See docs/binary-releases.md."
+            "tag {tag:?} does not match {prefix:?}, {prefix:?}-YYYY-MM-DD, \
+             or pr-<NNN>-staging — refusing to generate a manifest that \
+             would claim a different ABI than `wasm_posix_shared::ABI_VERSION` \
+             ({abi_version}). See docs/binary-releases.md."
         ))
     }
+}
+
+/// Strict shape check for the date suffix: a leading `-` followed by
+/// `YYYY-MM-DD` (10 ASCII digits + 2 dashes). We don't validate the
+/// calendar date — the schema regex is the source of truth, and a bad
+/// date there would already fail consumer-side schema validation.
+fn is_valid_date_suffix(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    if bytes.len() != 11 {
+        return false;
+    }
+    let digits = [1, 2, 3, 4, 6, 7, 9, 10];
+    let dashes = [0, 5, 8];
+    digits.iter().all(|&i| bytes[i].is_ascii_digit())
+        && dashes.iter().all(|&i| bytes[i] == b'-')
 }
 
 /// Emit a release-manifest `source` block from a `DepsManifest`.
@@ -770,6 +797,59 @@ mod tests {
         assert!(
             !validates_against_schema(&entry),
             "$ anchor must reject 65-char hex"
+        );
+    }
+
+    #[test]
+    fn verify_tag_matches_abi_accepts_bare_and_dated_forms() {
+        use super::verify_tag_matches_abi;
+        verify_tag_matches_abi("binaries-abi-v6", 6).unwrap();
+        verify_tag_matches_abi("binaries-abi-v6-2026-04-29", 6).unwrap();
+        verify_tag_matches_abi("binaries-abi-v12-2030-12-31", 12).unwrap();
+
+        // Wrong ABI.
+        assert!(verify_tag_matches_abi("binaries-abi-v5-2026-04-29", 6).is_err());
+        // Bare with no separator before junk.
+        assert!(verify_tag_matches_abi("binaries-abi-v6foo", 6).is_err());
+        // Date-shaped wrong: extra digit, missing dash, letters.
+        assert!(verify_tag_matches_abi("binaries-abi-v6-2026-04-299", 6).is_err());
+        assert!(verify_tag_matches_abi("binaries-abi-v6-20260429", 6).is_err());
+        assert!(verify_tag_matches_abi("binaries-abi-v6-2026-04-XX", 6).is_err());
+        // Unknown prefix.
+        assert!(verify_tag_matches_abi("release-v6", 6).is_err());
+        // Empty suffix preceded by dash is not "bare" or "dated".
+        assert!(verify_tag_matches_abi("binaries-abi-v6-", 6).is_err());
+    }
+
+    #[test]
+    fn schema_accepts_dated_release_tag() {
+        let schema_path = repo_root().join("abi/manifest.schema.json");
+        let schema: Value = serde_json::from_slice(&std::fs::read(&schema_path).unwrap())
+            .expect("parse schema");
+        let validator = jsonschema::JSONSchema::compile(&schema).expect("compile schema");
+
+        let doc = serde_json::json!({
+            "abi_version": 6,
+            "release_tag": "binaries-abi-v6-2026-04-29",
+            "generated_at": "2026-04-29T00:00:00Z",
+            "generator": "test",
+            "entries": [],
+        });
+        assert!(
+            validator.is_valid(&doc),
+            "dated release_tag must validate against schema"
+        );
+
+        let bad = serde_json::json!({
+            "abi_version": 6,
+            "release_tag": "binaries-abi-v6-tomorrow",
+            "generated_at": "2026-04-29T00:00:00Z",
+            "generator": "test",
+            "entries": [],
+        });
+        assert!(
+            !validator.is_valid(&bad),
+            "non-date suffix must fail schema"
         );
     }
 

@@ -268,8 +268,12 @@ For now, manual. Eventually a GitHub Actions workflow
    (kernel via `bash build.sh`, programs via
    `scripts/build-programs.sh`, ported software via each
    `examples/libs/*/build-*.sh`).
-2. Run `bash scripts/stage-release.sh --out release-staging`. The
-   script handles both halves:
+2. Run `bash scripts/stage-release.sh --out release-staging --tag
+   binaries-abi-v<N>-YYYY-MM-DD`. The `--tag` is mandatory and must
+   match the GitHub release tag you intend to publish under — it is
+   baked into the manifest's `release_tag` field, which
+   `scripts/fetch-binaries.sh` compares to `binaries.lock` on the
+   consumer side. The script handles both halves:
    - legacy entries (kernel, userspace, hand-bundled test programs)
      are staged via `xtask bundle-program --plain-wasm`.
    - the system entries (every `kind=library` and `kind=program`
@@ -279,9 +283,12 @@ For now, manual. Eventually a GitHub Actions workflow
      needed, packs each cache tree into a `.tar.zst` archive
      under `release-staging/{libs,programs}/`, and emits the
      combined `manifest.json`.
-3. Run `bash scripts/publish-release.sh <DATE>` (or equivalent) to
-   create the GitHub release and upload every staged asset (flat
-   wasm, legacy zip bundles, and the system `.tar.zst` archives).
+3. Run `bash scripts/publish-release.sh --tag
+   binaries-abi-v<N>-YYYY-MM-DD --staging release-staging` to create
+   the GitHub release and upload every staged asset (flat wasm,
+   legacy zip bundles, and the system `.tar.zst` archives). The
+   script asserts the staged manifest's `release_tag` matches `--tag`
+   before uploading, so a stage/publish tag drift fails fast.
 4. Commit the generated manifest into `abi/manifest.json` as the
    repo's reference copy. Follow-up changes to `binaries.lock` pin
    consumers to this release.

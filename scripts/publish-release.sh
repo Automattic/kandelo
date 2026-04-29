@@ -7,13 +7,16 @@
 #       --staging /path/to/staging-dir
 #
 # Prerequisites:
-#   - `gh` CLI authenticated against the upstream repo.
+#   - `gh` and `jq` CLIs on PATH; `gh` authenticated against the
+#     upstream repo.
 #   - Staging directory already populated by `scripts/stage-release.sh`,
 #     including manifest.json and the {libs,programs}/ subdirectories
 #     produced by V2 archive staging.
 #   - The tag must begin with `binaries-abi-v<ABI_VERSION>` — the
-#     manifest produced by stage-release encodes the same prefix, so
-#     drift here would surface at consumer-side validation.
+#     manifest produced by stage-release encodes the full tag (including
+#     any `-YYYY-MM-DD` snapshot suffix). This script asserts they match
+#     before uploading; drift would otherwise surface at consumer-side
+#     validation in `scripts/fetch-binaries.sh`.
 #
 # The script is deliberately thin: it exists so the PR review sees the
 # exact commands that run, and so the publishing flow is scriptable for
@@ -58,6 +61,20 @@ fi
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
+
+# The staged manifest's release_tag is what fetch-binaries.sh
+# compares against binaries.lock on the consumer side. If we upload
+# a manifest whose release_tag disagrees with the GitHub tag we're
+# creating, every downstream `fetch-binaries.sh` run fails. Catch
+# the drift here, before `gh release create`, rather than after.
+manifest_tag=$(jq -r .release_tag "$STAGING/manifest.json" 2>/dev/null || echo "<unparseable>")
+if [ "$manifest_tag" != "$TAG" ]; then
+    echo "ERROR: staged manifest.json release_tag=$manifest_tag does not match --tag=$TAG" >&2
+    echo "  Re-run scripts/stage-release.sh with --tag $TAG (the manifest's" >&2
+    echo "  release_tag field is what fetch-binaries.sh validates against" >&2
+    echo "  binaries.lock — see docs/binary-releases.md)." >&2
+    exit 1
+fi
 
 echo "== Manifest =="
 cat "$STAGING/manifest.json"
