@@ -2,7 +2,7 @@
  * Low-level VFS write utilities for populating the in-memory filesystem.
  *
  * These helpers wrap MemoryFileSystem operations with convenient defaults
- * and are used by both SystemInit and individual demo page setup code.
+ * and are used by demo build scripts that construct VFS images.
  */
 import type { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
 
@@ -80,26 +80,3 @@ export function ensureDirRecursive(
   }
 }
 
-/**
- * Write an init service descriptor file to /etc/init.d/.
- *
- * Ensures /etc/init.d exists, then writes a key=value file.
- * Fields with undefined values are skipped.
- */
-export function writeInitDescriptor(
-  fs: MemoryFileSystem,
-  filename: string,
-  fields: Record<string, string | undefined>,
-): void {
-  ensureDir(fs, "/etc");
-  ensureDir(fs, "/etc/init.d");
-
-  const lines: string[] = [];
-  for (const [key, value] of Object.entries(fields)) {
-    if (value !== undefined) {
-      lines.push(`${key}=${value}`);
-    }
-  }
-
-  writeVfsFile(fs, `/etc/init.d/${filename}`, lines.join("\n") + "\n");
-}

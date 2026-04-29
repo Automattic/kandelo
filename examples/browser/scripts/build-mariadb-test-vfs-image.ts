@@ -1,40 +1,56 @@
 /**
- * Build a pre-built VFS image containing MariaDB, mysql-test files, and
- * init descriptors for the browser test runner.
+ * Build a fully-bootable VFS image for the MariaDB mysql-test browser
+ * runner. dinit (PID 1) brings up the test-server tree:
+ *
+ *   mariadb-bootstrap (scripted, oneshot) → mariadb (process)
+ *
+ * Once port 3306 is listening the page runs setup SQL and exposes
+ * window.__runMariadbTest() for Playwright. Each test invocation
+ * spawns mysqltest via kernel.spawn() (transient binary, no service).
  *
  * Produces: $MARIADB_TEST_VFS_OUT (default:
  * examples/browser/public/mariadb-test.vfs).
- *
- * The package-management wrapper (examples/libs/mariadb-test/build-mariadb-test.sh)
- * sets MARIADB_TEST_VFS_OUT to a staging path so the resolver picks it up
- * via install_local_binary. Direct invocations write to public/ for
- * convenience during local iteration.
  *
  * Usage:
  *   npx tsx examples/browser/scripts/build-mariadb-test-vfs-image.ts          # curated tests
  *   npx tsx examples/browser/scripts/build-mariadb-test-vfs-image.ts --all    # ALL tests
  */
-import { readFileSync, readdirSync, lstatSync, existsSync } from "fs";
-import { join, resolve } from "path";
+import { readFileSync, readdirSync, lstatSync, existsSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
-import { resolveBinary } from "../../../host/src/binary-resolver";
 import {
-  writeVfsFile,
-  writeVfsBinary,
   ensureDir,
   ensureDirRecursive,
-  walkAndWrite,
-  saveImage,
-} from "./vfs-image-helpers";
+  writeVfsFile,
+  writeVfsBinary,
+  symlink,
+} from "../../../host/src/vfs/image-helpers";
+import { resolveBinary, tryResolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
+import { saveImage, walkAndWrite } from "./vfs-image-helpers";
+import { addDinitInit, type DinitService } from "./dinit-image-helpers";
 
-const MYSQL_TEST_DIR = "examples/libs/mariadb/mariadb-install/mysql-test";
+const REPO_ROOT = findRepoRoot();
+const MYSQL_TEST_DIR = join(REPO_ROOT, "examples/libs/mariadb/mariadb-install/mysql-test");
 const MARIADB_PATH = resolveBinary("programs/mariadb/mariadbd.wasm");
-const SYSTEM_TABLES_PATH = "examples/libs/mariadb/mariadb-install/share/mysql/mysql_system_tables.sql";
-const SYSTEM_DATA_PATH = "examples/libs/mariadb/mariadb-install/share/mysql/mysql_system_tables_data.sql";
+const SYSTEM_TABLES_PATH = join(REPO_ROOT, "examples/libs/mariadb/mariadb-install/share/mysql/mysql_system_tables.sql");
+const SYSTEM_DATA_PATH = join(REPO_ROOT, "examples/libs/mariadb/mariadb-install/share/mysql/mysql_system_tables_data.sql");
+const DASH_PATH = resolveBinary("programs/dash.wasm");
+const COREUTILS_PATH = tryResolveBinary("programs/coreutils.wasm");
+
 const OUT_FILE = process.env.MARIADB_TEST_VFS_OUT
-  ?? "examples/browser/public/mariadb-test.vfs";
+  ?? join(REPO_ROOT, "examples/browser/public/mariadb-test.vfs");
 
 const includeAll = process.argv.includes("--all");
+
+const COREUTILS_SYMLINK_NAMES = [
+  "ls", "cat", "cp", "mv", "rm", "echo", "mkdir", "rmdir", "touch", "pwd",
+  "head", "tail", "wc", "sort", "uniq", "cut", "tr", "date", "basename",
+  "dirname", "chmod", "chown", "ln", "readlink", "true", "false", "yes",
+  "sleep", "env", "printenv", "id", "whoami", "hostname", "uname", "stat",
+  "df", "du", "tee", "nl", "paste", "tac", "rev", "expand", "unexpand",
+  "fold", "fmt", "pr", "od", "hexdump", "xxd", "sha256sum", "sha512sum",
+  "md5sum", "seq", "test", "[",
+];
 
 // 185 tests verified to pass in headless Chromium with MariaDB on wasm-posix-kernel.
 const CURATED_TESTS = [
@@ -118,51 +134,135 @@ FLUSH PRIVILEGES;
 
 const RESET_SQL = `DROP DATABASE IF EXISTS test;\nCREATE DATABASE test;\n`;
 
+function commonMariadbArgs(): string[] {
+  return [
+    "/usr/sbin/mariadbd", "--no-defaults",
+    // mariadbd refuses to run as root by default; the bootstrap SQL
+    // populates mysql.user / global_priv so root@127.0.0.1 has full
+    // access. The daemon itself runs as the mysql user (uid 101).
+    "--user=mysql",
+    "--datadir=/data", "--tmpdir=/data/tmp",
+    "--default-storage-engine=Aria",
+    "--skip-grant-tables",
+    "--key-buffer-size=1048576", "--table-open-cache=10",
+    "--sort-buffer-size=262144",
+  ];
+}
+
+function buildServices(): DinitService[] {
+  const args = commonMariadbArgs();
+  const daemonCmd = [
+    ...args,
+    "--skip-networking=0", "--port=3306",
+    "--bind-address=0.0.0.0", "--socket=",
+    "--max-connections=10", "--thread-handling=no-threads",
+    "--wait-timeout=10", "--net-read-timeout=10",
+    "--net-write-timeout=10", "--lock-wait-timeout=10",
+    "--log-error=/data/error.log",
+  ].join(" ");
+
+  return [
+    {
+      name: "mariadb-bootstrap",
+      type: "scripted",
+      // mariadbd --bootstrap doesn't exit at stdin EOF in the wasm port.
+      // The wrapper backgrounds it, sleeps long enough for bootstrap to
+      // drain the SQL, then kills it. **No `wait`** — dinit (PID 1)
+      // reaps orphans aggressively and dash's `wait` builtin then blocks
+      // indefinitely. Letting dinit reap is fine.
+      command: "/bin/sh /etc/mariadb/bootstrap.sh",
+      logfile: "/var/log/mariadb-bootstrap.log",
+      restart: false,
+    },
+    {
+      name: "mariadb",
+      type: "process",
+      command: daemonCmd,
+      dependsOn: ["mariadb-bootstrap"],
+      logfile: "/var/log/mariadb.log",
+      restart: false,
+    },
+  ];
+}
+
 async function main() {
-  // Validate prerequisites
   if (!existsSync(MARIADB_PATH)) {
     console.error("mariadbd.wasm not found. Run: bash examples/libs/mariadb/build-mariadb.sh");
     process.exit(1);
   }
-
   if (!existsSync(join(MYSQL_TEST_DIR, "main"))) {
     console.error("mysql-test directory not found. Run: bash examples/libs/mariadb/build-mariadb.sh");
     process.exit(1);
   }
-
-  // 128MB SharedArrayBuffer for building the image
-  const sab = new SharedArrayBuffer(128 * 1024 * 1024);
-  const fs = MemoryFileSystem.create(sab);
-
-  // MariaDB binary
-  console.log("Writing mariadbd binary...");
-  ensureDirRecursive(fs, "/usr/sbin");
-  const mariadbBytes = readFileSync(MARIADB_PATH);
-  writeVfsBinary(fs, "/usr/sbin/mariadbd", new Uint8Array(mariadbBytes));
-
-  // Data directories
-  for (const dir of ["/data", "/data/mysql", "/data/tmp", "/data/test"]) {
-    ensureDirRecursive(fs, dir);
+  if (!existsSync(SYSTEM_TABLES_PATH) || !existsSync(SYSTEM_DATA_PATH)) {
+    console.error(`MariaDB bootstrap SQL files missing under examples/libs/mariadb/mariadb-install/share/mysql/`);
+    process.exit(1);
   }
 
-  // Bootstrap SQL
-  console.log("Writing bootstrap SQL...");
-  const systemTablesSql = readFileSync(SYSTEM_TABLES_PATH, "utf-8");
-  const systemDataSql = readFileSync(SYSTEM_DATA_PATH, "utf-8");
-  const bootstrapSql = `use mysql;\n${systemTablesSql}\n${systemDataSql}\nCREATE DATABASE IF NOT EXISTS test;\n`;
+  console.log("==> Building MariaDB test-runner VFS image");
+
+  const sab = new SharedArrayBuffer(64 * 1024 * 1024, { maxByteLength: 256 * 1024 * 1024 });
+  const fs = MemoryFileSystem.create(sab, 256 * 1024 * 1024);
+
+  for (const dir of [
+    "/tmp", "/home", "/dev", "/etc", "/bin", "/usr", "/usr/bin",
+    "/usr/local", "/usr/local/bin", "/usr/share", "/root", "/usr/sbin",
+    "/data", "/data/mysql", "/data/tmp", "/data/test",
+  ]) {
+    ensureDir(fs, dir);
+  }
+  fs.chmod("/tmp", 0o777);
+
+  // dash + coreutils for the bootstrap wrapper script (sh, sleep, kill).
+  if (existsSync(DASH_PATH)) {
+    writeVfsBinary(fs, "/bin/dash", new Uint8Array(readFileSync(DASH_PATH)));
+    symlink(fs, "/bin/dash", "/bin/sh");
+    symlink(fs, "/bin/dash", "/usr/bin/dash");
+    symlink(fs, "/bin/dash", "/usr/bin/sh");
+  }
+  if (COREUTILS_PATH && existsSync(COREUTILS_PATH)) {
+    writeVfsBinary(fs, "/bin/coreutils", new Uint8Array(readFileSync(COREUTILS_PATH)));
+  } else {
+    console.warn("  Warning: coreutils.wasm not found — bootstrap wrapper will fail at sleep");
+  }
+  for (const name of COREUTILS_SYMLINK_NAMES) {
+    symlink(fs, "/bin/coreutils", `/bin/${name}`);
+    symlink(fs, "/bin/coreutils", `/usr/bin/${name}`);
+  }
+
+  console.log("  Writing mariadbd binary...");
+  writeVfsBinary(fs, "/usr/sbin/mariadbd", new Uint8Array(readFileSync(MARIADB_PATH)));
+
+  console.log("  Writing bootstrap SQL...");
   ensureDirRecursive(fs, "/etc/mariadb");
+  const systemTables = readFileSync(SYSTEM_TABLES_PATH, "utf-8");
+  const systemData = readFileSync(SYSTEM_DATA_PATH, "utf-8");
+  const bootstrapSql = `use mysql;\n${systemTables}\n${systemData}\nCREATE DATABASE IF NOT EXISTS test;\n`;
   writeVfsFile(fs, "/etc/mariadb/bootstrap.sql", bootstrapSql);
 
-  // /tmp with 0o777
-  ensureDir(fs, "/tmp");
-  fs.chmod("/tmp", 0o777);
+  // bootstrap-runner: backgrounds mariadbd --bootstrap, sleeps to let
+  // it drain SQL, then SIGTERMs it. See per-engine notes in
+  // build-mariadb-vfs-image.ts for why `wait` is unsafe here.
+  const bootstrapArgs = [
+    ...commonMariadbArgs(),
+    "--bootstrap", "--skip-networking", "--log-warnings=0",
+    "--log-error=/data/bootstrap.log",
+  ].join(" ");
+  writeVfsFile(fs, "/etc/mariadb/bootstrap.sh", `${bootstrapArgs} < /etc/mariadb/bootstrap.sql &
+PID=$!
+sleep 30
+kill -TERM $PID 2>/dev/null
+sleep 1
+kill -KILL $PID 2>/dev/null
+exit 0
+`);
 
   // Test files
   ensureDirRecursive(fs, "/mysql-test/main");
   let testCount = 0;
 
   if (includeAll) {
-    console.log("Writing ALL .test files from main/...");
+    console.log("  Writing ALL .test files from main/...");
     const mainDir = resolve(MYSQL_TEST_DIR, "main");
     for (const name of readdirSync(mainDir).sort()) {
       if (!name.endsWith(".test")) continue;
@@ -176,7 +276,7 @@ async function main() {
       } catch { /* skip */ }
     }
   } else {
-    console.log("Writing curated test files...");
+    console.log("  Writing curated test files...");
     for (const name of CURATED_TESTS) {
       const testFile = resolve(MYSQL_TEST_DIR, "main", `${name}.test`);
       if (existsSync(testFile)) {
@@ -186,52 +286,31 @@ async function main() {
       }
     }
   }
-  console.log(`  ${testCount} test files`);
+  console.log(`    ${testCount} test files`);
 
-  // Setup and reset SQL test files
+  // Setup and reset SQL test files (run by the page after server-ready)
   writeVfsFile(fs, "/mysql-test/main/__setup.test", SETUP_SQL);
   writeVfsFile(fs, "/mysql-test/main/__reset.test", RESET_SQL);
 
-  // Include directory
+  // Include + std_data directories
   const includeDir = resolve(MYSQL_TEST_DIR, "include");
   if (existsSync(includeDir)) {
-    console.log("Writing include/ directory...");
-    const includeCount = walkAndWrite(fs, includeDir, "/mysql-test/include");
-    console.log(`  ${includeCount} include files`);
+    console.log("  Writing include/ directory...");
+    walkAndWrite(fs, includeDir, "/mysql-test/include");
   }
-
-  // std_data directory
   const stdDataDir = resolve(MYSQL_TEST_DIR, "std_data");
   if (existsSync(stdDataDir)) {
-    console.log("Writing std_data/ directory...");
-    const stdDataCount = walkAndWrite(fs, stdDataDir, "/mysql-test/std_data");
-    console.log(`  ${stdDataCount} std_data files`);
+    console.log("  Writing std_data/ directory...");
+    walkAndWrite(fs, stdDataDir, "/mysql-test/std_data");
   }
 
-  // Init descriptors
-  console.log("Writing init descriptors...");
-  ensureDirRecursive(fs, "/etc/init.d");
+  // dinit service tree (no auto-boot — page passes target service as argv).
+  // We use the default boot:true here because the page only ever wants
+  // the mariadb tree up; no engine selection like the mariadb demo.
+  addDinitInit(fs, buildServices());
 
-  writeVfsFile(fs, "/etc/init.d/05-mariadb-bootstrap", [
-    "type=oneshot",
-    "command=/usr/sbin/mariadbd --no-defaults --bootstrap --datadir=/data --tmpdir=/data/tmp --default-storage-engine=Aria --skip-grant-tables --key-buffer-size=1048576 --table-open-cache=10 --sort-buffer-size=262144 --skip-networking --log-warnings=0 --log-error=/data/bootstrap.log",
-    "stdin=/etc/mariadb/bootstrap.sql",
-    "ready=stdin-consumed",
-    "terminate=true",
-    "",
-  ].join("\n"));
-
-  writeVfsFile(fs, "/etc/init.d/10-mariadb", [
-    "type=daemon",
-    "command=/usr/sbin/mariadbd --no-defaults --datadir=/data --tmpdir=/data/tmp --default-storage-engine=Aria --skip-grant-tables --key-buffer-size=1048576 --table-open-cache=10 --sort-buffer-size=262144 --skip-networking=0 --port=3306 --bind-address=0.0.0.0 --socket= --max-connections=10 --thread-handling=no-threads --wait-timeout=10 --net-read-timeout=10 --net-write-timeout=10 --lock-wait-timeout=10 --log-error=/data/error.log",
-    "depends=mariadb-bootstrap",
-    "ready=port:3306",
-    "",
-  ].join("\n"));
-
-  // Save image
   await saveImage(fs, OUT_FILE);
-  console.log(`${testCount} test files total`);
+  console.log(`==> Wrote ${OUT_FILE} (${testCount} test files)`);
 }
 
 main().catch((err) => {

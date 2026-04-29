@@ -1,16 +1,10 @@
 /**
- * Browser demo init system — barrel export.
+ * Browser demo init utilities — barrel export.
  *
- * Re-exports all public APIs from the init/ modules for convenient
- * single-import usage.
+ * Helpers shared across demos for VFS image construction and worker-side
+ * setup. The legacy SystemInit orchestrator was removed once all demos
+ * migrated to dinit-as-PID-1 (see scripts/dinit-image-helpers.ts).
  */
-
-// Service descriptor parser
-export {
-  parseServiceDescriptor,
-  type ServiceDescriptor,
-  type ReadyCondition,
-} from "./service-descriptor";
 
 // Terminal panel UI component
 export { TerminalPanel } from "../terminal-panel";
@@ -22,7 +16,6 @@ export {
   ensureDir,
   ensureDirs,
   ensureDirRecursive,
-  writeInitDescriptor,
 } from "./vfs-utils";
 
 // Shell binary population
@@ -35,20 +28,5 @@ export {
 // Service worker bridge
 export { initServiceWorkerBridge } from "./service-worker-bridge";
 
-// nginx config
-export {
-  populateNginxConfig,
-  type NginxConfigOptions,
-} from "./nginx-config";
-
-// PHP-FPM config
-export {
-  populatePhpFpmConfig,
-  type PhpFpmConfigOptions,
-} from "./php-fpm-config";
-
 // MariaDB directory setup
 export { populateMariadbDirs } from "./mariadb-config";
-
-// System init orchestrator
-export { SystemInit, type SystemInitOptions } from "./system-init";
