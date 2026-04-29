@@ -1,14 +1,20 @@
 /**
- * Build a pre-built VFS image containing WordPress, system configs, and
- * shell binaries for instant browser demo boot.
+ * Build a fully-bootable VFS image for the WordPress browser demo.
+ * dinit (PID 1) brings up:
+ *
+ *   wp-config-init (scripted) → php-fpm (process) → nginx (process)
+ *
+ * The wp-config-init service runs sed at boot to substitute the page-
+ * supplied @@APP_PATH@@ and @@PROTO@@ values into wp-config.php. The
+ * page passes those as env vars when calling kernel.boot(); dinit
+ * inherits its env to scripted children.
  *
  * Produces: examples/browser/public/wordpress.vfs
- *
- * Usage: npx tsx examples/browser/scripts/build-wp-vfs-image.ts
  */
-import { readFileSync, lstatSync } from "fs";
-import { join } from "path";
+import { readFileSync, lstatSync } from "node:fs";
+import { join } from "node:path";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import { resolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
 import { COREUTILS_NAMES } from "../lib/init/shell-binaries";
 import {
   writeVfsFile,
@@ -19,13 +25,18 @@ import {
   walkAndWrite,
   saveImage,
 } from "./vfs-image-helpers";
+import { addDinitInit, type DinitService } from "./dinit-image-helpers";
 
-const SCRIPT_DIR = new URL(".", import.meta.url).pathname;
-const BROWSER_DIR = join(SCRIPT_DIR, "..");
-const WP_EXAMPLE_DIR = join(BROWSER_DIR, "..", "wordpress");
+const REPO_ROOT = findRepoRoot();
+const BROWSER_DIR = join(REPO_ROOT, "examples", "browser");
+const WP_EXAMPLE_DIR = join(REPO_ROOT, "examples", "wordpress");
 const WP_DIR = join(WP_EXAMPLE_DIR, "wordpress");
 const SQLITE_DIR = join(WP_EXAMPLE_DIR, "sqlite-database-integration");
-const DASH_PATH = join(BROWSER_DIR, "..", "libs", "dash", "bin", "dash.wasm");
+const DASH_PATH = resolveBinary("programs/dash.wasm");
+const NGINX_PATH = resolveBinary("programs/nginx.wasm");
+const PHP_FPM_PATH = resolveBinary("programs/php/php-fpm.wasm");
+const COREUTILS_PATH = resolveBinary("programs/coreutils.wasm");
+const SED_PATH = resolveBinary("programs/sed.wasm");
 const OUT_FILE = join(BROWSER_DIR, "public", "wordpress.vfs");
 
 // --- System setup (mirrors BrowserKernel constructor + populateShellBinaries) ---
@@ -173,9 +184,10 @@ function populateNginxConfig(fs: MemoryFileSystem): void {
             fastcgi_param REDIRECT_STATUS 200;
         }`;
 
-  const nginxConf = `daemon off;
-master_process on;
-worker_processes 2;
+  const nginxConf = `user root;
+daemon off;
+master_process off;
+worker_processes 0;
 error_log stderr info;
 pid /tmp/nginx.pid;
 
@@ -223,6 +235,8 @@ error_log = /dev/stderr
 log_level = notice
 
 [www]
+user = nobody
+group = nobody
 listen = 127.0.0.1:9000
 pm = static
 pm.max_children = 1
@@ -289,35 +303,101 @@ include $docRoot . '/index.php';
   writeVfsFile(fs, "/var/www/fpm-router.php", fpmRouter);
 }
 
-function writeInitDescriptors(fs: MemoryFileSystem): void {
-  ensureDir(fs, "/etc");
-  ensureDir(fs, "/etc/init.d");
-
-  writeVfsFile(fs, "/etc/init.d/10-php-fpm", [
-    "type=daemon",
-    "command=/usr/sbin/php-fpm -y /etc/php-fpm.conf -c /dev/null --nodaemonize",
-    "ready=delay:5000",
-    "",
-  ].join("\n"));
-
-  writeVfsFile(fs, "/etc/init.d/20-nginx", [
-    "type=daemon",
-    "command=/usr/sbin/nginx -p /etc/nginx -c nginx.conf",
-    "depends=php-fpm",
-    "ready=port:8080",
-    "bridge=8080",
-    "",
-  ].join("\n"));
-
-  writeVfsFile(fs, "/etc/init.d/99-shell", [
-    "type=interactive",
-    "command=/bin/dash -i",
-    "env=TERM=xterm-256color PS1=\\w\\$\\  HOME=/root PATH=/usr/local/bin:/usr/bin:/bin",
-    "pty=true",
-    "cwd=/root",
-    "",
-  ].join("\n"));
+/**
+ * dinit service tree:
+ *   wp-config-init (scripted) — sed-substitutes @@APP_PATH@@ / @@PROTO@@
+ *                               in /var/www/html/wp-config.php from env vars
+ *                               passed by the page through dinit.
+ *   php-fpm        (process)  — depends-on wp-config-init
+ *   nginx          (process)  — depends-on php-fpm
+ */
+function buildServices(): DinitService[] {
+  return [
+    {
+      name: "wp-config-init",
+      type: "scripted",
+      command: "/bin/sh /etc/wp-config-init.sh",
+      logfile: "/var/log/wp-config-init.log",
+      restart: false,
+    },
+    {
+      name: "php-fpm",
+      type: "process",
+      // -c /dev/null suppresses default php.ini lookup (which lands on
+      // /usr/local/lib/php/php.ini-development by default and trips
+      // unsupported-config errors on our wasm port).
+      command: "/usr/sbin/php-fpm -y /etc/php-fpm.conf -c /dev/null --nodaemonize",
+      dependsOn: ["wp-config-init"],
+      logfile: "/var/log/php-fpm.log",
+      restart: false,
+    },
+    {
+      name: "nginx",
+      type: "process",
+      command: "/usr/sbin/nginx -c /etc/nginx/nginx.conf",
+      dependsOn: ["php-fpm"],
+      logfile: "/var/log/nginx.log",
+      restart: false,
+    },
+  ];
 }
+
+const WP_CONFIG_INIT_SCRIPT = `# Substitute runtime values into wp-config.php. WP_APP_PATH and WP_PROTO
+# come from the env the page passes through kernel.boot() — dinit
+# inherits its env to scripted services.
+: "\${WP_APP_PATH:=/app}"
+: "\${WP_PROTO:=http}"
+sed -e "s|@@APP_PATH@@|$WP_APP_PATH|g" \\
+    -e "s|@@PROTO@@|$WP_PROTO|g" \\
+    /etc/wp-config-template.php > /var/www/html/wp-config.php
+echo "wp-config-init: APP_PATH=$WP_APP_PATH PROTO=$WP_PROTO"
+`;
+
+const WP_CONFIG_TEMPLATE_PHP = `<?php
+define('DB_NAME', 'wordpress');
+define('DB_USER', '');
+define('DB_PASSWORD', '');
+define('DB_HOST', '');
+define('DB_CHARSET', 'utf8');
+define('DB_COLLATE', '');
+
+define('DB_DIR', __DIR__ . '/wp-content/database/');
+define('DB_FILE', 'wordpress.db');
+
+define('AUTH_KEY',         'wasm-posix-kernel-dev');
+define('SECURE_AUTH_KEY',  'wasm-posix-kernel-dev');
+define('LOGGED_IN_KEY',    'wasm-posix-kernel-dev');
+define('NONCE_KEY',        'wasm-posix-kernel-dev');
+define('AUTH_SALT',        'wasm-posix-kernel-dev');
+define('SECURE_AUTH_SALT', 'wasm-posix-kernel-dev');
+define('LOGGED_IN_SALT',   'wasm-posix-kernel-dev');
+define('NONCE_SALT',       'wasm-posix-kernel-dev');
+
+$table_prefix = 'wp_';
+
+define('WP_DEBUG', true);
+define('WP_DEBUG_LOG', true);
+define('WP_DEBUG_DISPLAY', false);
+@ini_set('display_errors', '0');
+
+// Site URL includes app prefix — the service worker intercepts app/*
+// and strips it before sending to nginx. @@APP_PATH@@ and @@PROTO@@
+// are replaced at boot time by the wp-config-init dinit service.
+if (isset($_SERVER['HTTP_HOST'])) {
+    if ('@@PROTO@@' === 'https') { $_SERVER['HTTPS'] = 'on'; }
+    define('WP_HOME', '@@PROTO@@://' . $_SERVER['HTTP_HOST'] . '@@APP_PATH@@');
+    define('WP_SITEURL', '@@PROTO@@://' . $_SERVER['HTTP_HOST'] . '@@APP_PATH@@');
+}
+
+define('WP_HTTP_BLOCK_EXTERNAL', true);
+define('DISABLE_WP_CRON', true);
+
+if ( ! defined( 'ABSPATH' ) ) {
+    define( 'ABSPATH', __DIR__ . '/' );
+}
+
+require_once ABSPATH . 'wp-settings.php';
+`;
 
 // --- Main ---
 
@@ -337,11 +417,11 @@ async function main() {
     process.exit(1);
   }
 
-  // Create a MemoryFileSystem sized for WordPress (~80MB data + SharedFS overhead).
-  // 128MB is sufficient. At runtime, fromImage() with maxByteLength creates a
-  // growable SAB so the filesystem can expand beyond this initial size.
-  const sab = new SharedArrayBuffer(128 * 1024 * 1024);
-  const fs = MemoryFileSystem.create(sab);
+  // 128 MiB initial, 256 MiB max growth. WordPress core + SQLite plugin
+  // is ~80 MiB. Worker entry then makes the SAB growable to 1 GiB at
+  // runtime (mariadbd's InnoDB log lessons).
+  const sab = new SharedArrayBuffer(128 * 1024 * 1024, { maxByteLength: 256 * 1024 * 1024 });
+  const fs = MemoryFileSystem.create(sab, 256 * 1024 * 1024);
 
   console.log("Populating system directories and configs...");
   populateSystem(fs);
@@ -349,7 +429,24 @@ async function main() {
   populateShellSymlinks(fs);
   populateNginxConfig(fs);
   populatePhpFpmConfig(fs);
-  writeInitDescriptors(fs);
+
+  // Bake server binaries directly — dinit's --container boot path can't
+  // lazy-load these, and nginx + php-fpm + coreutils total ~14 MiB
+  // (compressed less inside the .vfs).
+  console.log("Writing server binaries...");
+  writeVfsBinary(fs, "/usr/sbin/nginx", new Uint8Array(readFileSync(NGINX_PATH)));
+  writeVfsBinary(fs, "/usr/sbin/php-fpm", new Uint8Array(readFileSync(PHP_FPM_PATH)));
+  writeVfsBinary(fs, "/bin/coreutils", new Uint8Array(readFileSync(COREUTILS_PATH)));
+  // sed isn't part of coreutils — wp-config-init.sh needs it for the
+  // @@APP_PATH@@ / @@PROTO@@ template substitution at boot.
+  writeVfsBinary(fs, "/usr/bin/sed", new Uint8Array(readFileSync(SED_PATH)));
+
+  // Template + bootstrap script. wp-config-init service runs the script
+  // at boot, sed-substituting @@APP_PATH@@ and @@PROTO@@ from env vars
+  // the page passes through dinit's argv/env.
+  ensureDirRecursive(fs, "/var/www/html");
+  writeVfsFile(fs, "/etc/wp-config-template.php", WP_CONFIG_TEMPLATE_PHP);
+  writeVfsFile(fs, "/etc/wp-config-init.sh", WP_CONFIG_INIT_SCRIPT);
 
   // WordPress-specific directories
   ensureDirRecursive(fs, "/var/www/html/wp-content/database");
@@ -381,6 +478,10 @@ if (!defined('DISALLOW_FILE_MODS')) define('DISALLOW_FILE_MODS', true);
   );
   console.log(`  SQLite plugin: ${sqliteCount} files`);
   wpCount += sqliteCount;
+
+  // dinit + service tree. nginx → php-fpm → wp-config-init dependency
+  // chain ensures wp-config.php is finalized before any FastCGI request.
+  addDinitInit(fs, buildServices());
 
   // Save image
   await saveImage(fs, OUT_FILE);
