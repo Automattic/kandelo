@@ -5,7 +5,14 @@
 #
 # Usage:
 #   scripts/stage-release.sh --out /tmp/release-staging \
+#       --tag binaries-abi-v<N>-YYYY-MM-DD \
 #       [--abi <N>] [--arch wasm32|wasm64]...
+#
+# --tag is required and must match the GitHub Release tag the
+# manifest will be published under (see docs/binary-releases.md).
+# It is baked into the manifest.json `release_tag` field, so a
+# mismatch with publish-release.sh's --tag would be caught by
+# fetch-binaries.sh on the consumer side.
 #
 # Default --abi: ABI_VERSION from crates/shared/src/lib.rs.
 # Default --arch: wasm32 only.  Pass --arch repeatedly to broaden.
@@ -29,18 +36,26 @@ set -euo pipefail
 
 STAGING=""
 ABI=""
+TAG=""
 ARCHES=()
 KINDS=()
 while [ $# -gt 0 ]; do
     case "$1" in
         --out) STAGING="$2"; shift 2 ;;
         --abi) ABI="$2"; shift 2 ;;
+        --tag) TAG="$2"; shift 2 ;;
         --arch) ARCHES+=("$2"); shift 2 ;;
         --kind) KINDS+=("$2"); shift 2 ;;
         *) echo "unknown arg $1" >&2; exit 2 ;;
     esac
 done
 [ -n "$STAGING" ] || { echo "--out is required" >&2; exit 2; }
+[ -n "$TAG" ] || {
+    echo "--tag is required (e.g. binaries-abi-v6-2026-04-29)." >&2
+    echo "  The tag is baked into manifest.json's release_tag field," >&2
+    echo "  and must match the GitHub release tag publish-release.sh uploads to." >&2
+    exit 2
+}
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
@@ -49,7 +64,18 @@ HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
 if [ -z "$ABI" ]; then
     ABI=$(grep -oE 'ABI_VERSION: u32 = [0-9]+' crates/shared/src/lib.rs | awk '{print $4}')
 fi
-TAG="binaries-abi-v$ABI"
+
+# Sanity-check that the tag begins with binaries-abi-v$ABI. xtask
+# stage-release will reject a fully bogus tag, but giving an early
+# error here is easier to debug than a Rust panic mid-stage.
+case "$TAG" in
+    binaries-abi-v"$ABI"|binaries-abi-v"$ABI"-*) ;;
+    *)
+        echo "ERROR: --tag $TAG does not start with binaries-abi-v$ABI" >&2
+        echo "  (--abi=$ABI; tag must be binaries-abi-v$ABI or binaries-abi-v$ABI-YYYY-MM-DD)" >&2
+        exit 2
+        ;;
+esac
 
 if [ ${#ARCHES[@]} -eq 0 ]; then
     ARCHES=(wasm32)
