@@ -447,7 +447,12 @@ Produced alongside code, not after:
 - `docs/fork-instrumentation.md` — *the* reference. Byte-level save
   buffer format, state machine, exported ABI, instrumentation transform
   shown as WAT before/after pairs, guarantees and non-guarantees,
-  performance envelope. Kept current across phases.
+  performance envelope. Kept current across phases. As of Phase 7 it
+  also covers nested per-block switch-dispatch (cascading `POST_K`
+  blocks plus `br_table` dispatch at each fork-bearing sub-region),
+  the IfElse cond rewrite via `select`, carryover-spilling at SubRegion
+  landings, and the LocalTee identity-passthrough fix from the
+  popen-class divergence investigation.
 - `docs/architecture.md` — update fork section to reference the tool.
 - `docs/porting-guide.md` — update compile flow: no more
   `asyncify-onlylist.txt`, no more `--asyncify-imports` flag.

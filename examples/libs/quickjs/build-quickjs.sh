@@ -132,6 +132,7 @@ if [ ! -f "$QJSC" ]; then
     $HOST_CC $HOST_CFLAGS -c "$SRC_DIR/libunicode.c" -o "$HOST_BUILD_DIR/libunicode.o"
     $HOST_CC $HOST_CFLAGS -c "$SRC_DIR/quickjs-libc.c" -o "$HOST_BUILD_DIR/quickjs-libc.o"
     $HOST_CC $HOST_CFLAGS -c "$SRC_DIR/qjsc.c" -o "$HOST_BUILD_DIR/qjsc.o"
+    # cutils.h is header-only (static inline) in quickjs-ng v0.12.1+; no cutils.c to compile.
     $HOST_CC $HOST_CFLAGS -c "$SRC_DIR/unicode_gen_def.c" -o "$HOST_BUILD_DIR/unicode_gen_def.o" 2>/dev/null || true
     $HOST_CC \
         "$HOST_BUILD_DIR/qjsc.o" \

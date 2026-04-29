@@ -159,15 +159,16 @@ resume](#catch-handler-resume).
 
 ## Dispatch schemes
 
-Every fork-path function uses **one of two dispatch shapes**, chosen by the
+Every fork-path function uses **one of three dispatch shapes**, chosen by the
 tool per-function based on call-site topology:
 
-| Scheme            | When picked                                                                                                                                                                                                       | How REWIND reaches the resumed call                                                                                                              |
-|-------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------|
-| switch-dispatch   | Every fork-path call lives at the function's top level AND no top-level fork-path call has an operand-stack carryover (a value pushed before the call's args and consumed after the call returns).                | A top-level `br_table`, gated by `state == REWINDING`, jumps directly to the matching `$POST_K` label. The chunks between calls run only on the NORMAL fall-through path.       |
-| guard-dispatch    | Any fork-path call is nested inside a `block`/`loop`/`if`/`try_table`, OR a top-level fork-path call has an operand-stack carryover. The body re-executes top-to-bottom on REWIND with per-call if-else guards.   | Each fork-path call site is wrapped in `(state == NORMAL) || (state == REWINDING && call_idx == N)`. Phase 4g gates side-effect ops in the body so they don't re-fire on REWIND. |
+| Scheme                       | When picked                                                                                                                                                                                                                                                                                                                       | How REWIND reaches the resumed call                                                                                                                                                                                            |
+|------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| switch-dispatch (top-level)  | Every fork-path call lives at the function's top level AND no top-level fork-path call has an operand-stack carryover.                                                                                                                                                                                                            | A top-level `br_table`, gated by `state == REWINDING`, jumps directly to the matching `$POST_K` label. The chunks between calls run only on the NORMAL fall-through path.                                                      |
+| switch-dispatch (nested)     | Some fork-path calls live inside `Block` / `IfElse` / `Loop` / `TryTable` bodies, but the nesting pattern is supportable: legacy `Try` is absent, no fork-bearing block has multi-value params, and any operand-stack carryover at a sub-region landing fits the carryover-spilling MVP (single i32 at a non-IfElse sub-region). | Cascading `POST_K` blocks plus a per-region `br_table` route REWIND through each enclosing instruction's own dispatch — see [Nested per-block switch-dispatch](#nested-per-block-switch-dispatch).                              |
+| guard-dispatch               | Any pattern not covered above: legacy `Try`, multi-value-params blocks, operand-stack carryovers at DirectCall or SubRegionIfElse landings, or wider carryover shapes at sub-region landings. The body re-executes top-to-bottom on REWIND with per-call if-else guards.                                                          | Each fork-path call site is wrapped in `(state == NORMAL) || (state == REWINDING && call_idx == N)`. Phase 4g gates side-effect ops in the body so they don't re-fire on REWIND.                                                |
 
-Both schemes share:
+All three shapes share:
 
 - The state machine, exported ABI, and save-buffer header.
 - The per-function frame layout (header + scalar locals).
@@ -175,16 +176,18 @@ Both schemes share:
 - Catch-handler resume via `throw_ref` (Phase 6).
 - **Non-fork-path direct call gating** in guard-dispatch — see below.
 
-Switch-dispatch is the preferred path because no body code runs during REWIND
-except the chosen call site's post-call handling. Guard-dispatch has to run
-the prefix of the body to reach the matching call, but Phase 4g + non-fork-
-path call gating make that replay side-effect-free.
+Switch-dispatch (top-level or nested) is preferred over guard-dispatch because
+no chunk before the chosen `POST_K` runs on REWIND, so non-fork-path calls and
+side-effect ops in those chunks never re-execute. Guard-dispatch has to run
+the prefix of the body to reach the matching call; Phase 4g + non-fork-path
+call gating + LocalTee identity-passthrough are what make that replay
+side-effect-free in practice.
 
 The tool's `instrument_one_function` (in `crates/fork-instrument/src/instrument.rs`)
-inspects the original body, classifies each fork-path call as top-level or
-nested, runs a stack-effect tracker over the entry block to detect carryovers,
-and routes to either `instrument_one_function_switch` or
-`instrument_one_function_guard_dispatch`.
+inspects the original body, runs `classify_nested_pattern` to decide whether
+the per-region transform applies, and routes to either
+`instrument_one_function_nested_switch`, `instrument_one_function_switch`, or
+`instrument_one_function_guard_dispatch` accordingly.
 
 ### Non-fork-path call gating
 
@@ -441,6 +444,132 @@ Callouts:
   condition runs, so the operand stack is empty at the gate boundary and the
   else-branch can supply typed defaults.
 
+## Nested per-block switch-dispatch
+
+Top-level switch-dispatch only fires when every fork-path call is at the
+function's entry-block depth. Real LLVM-emitted C — popen's `__fork`,
+`posix_spawn`, FPM's child-spawn, and many libc paths — keeps fork-path
+calls inside a `block` / `if` / `loop` / `try_table`, which would force
+those functions into guard-dispatch. The popen-class hangs investigated
+in `memory/fork-instrument-O2-bug-investigation.md` (external memory)
+showed that guard-dispatch's body-replay diverges from NORMAL flow on
+LLVM-O2-shaped inputs, even with non-fork-path call gating: the kernel_fork
+wrap can be skipped entirely if a control-flow gate reads a different value
+on REWIND than on NORMAL.
+
+`instrument_one_function_nested_switch` extends switch-dispatch to nested
+fork-bearing regions so those functions never enter guard-dispatch. Two
+ideas combine:
+
+### 1. Cascading POST blocks per region
+
+`partition_region_instrs` (in `crates/fork-instrument/src/instrument.rs`)
+splits each fork-bearing seq into chunks separated by **landings**. A
+landing is one of:
+
+- **DirectCall** — a direct fork-path `Call` or any `CallIndirect` at this
+  seq's level. Same shape as classic switch-dispatch.
+- **SubRegion** — a `Block` / `Loop` / `TryTable` whose body is
+  fork-bearing. The enclosing instruction is preserved verbatim and the
+  per-region `br_table` lands the function-level `call_idx` *just before*
+  it; the sub-region's own internal dispatch (built bottom-up by recursive
+  invocation of the same transform) routes the rest of the way.
+- **SubRegionIfElse** — an `IfElse` whose `then` and/or `else` branches are
+  fork-bearing. Both branch ranges are recorded so the cond rewrite (below)
+  can pick the active branch on REWIND.
+
+The function-level `br_table` maps each `call_idx` to either a direct
+`POST_K` (top-level call) or a `POST_J_ENTER` label positioned right before
+a sub-region landing. Sub-regions then dispatch internally via their own
+`br_table` over the call_idxs that fall in their range.
+
+### 2. IfElse cond rewrite via `select`
+
+The standard top-level `POST_K` block has type `Simple(None)` (0 → 0).
+That's incompatible with an `IfElse` landing because the chunk preceding
+the IfElse has to leave the original cond on the stack. The fix:
+
+- At the end of the chunk inside `POST_K`, spill the original cond into a
+  freshly-allocated i32 local, `cond_swap_local`.
+- After `POST_K` closes, synthesize a replacement cond using a wasm
+  `select`:
+
+```wat
+;; chunk leaves orig_cond on the stack, then:
+local.set $cond_swap         ;; spill — handled by emit_chunk_tail_for_landing.
+end                          ;; close POST_K (Simple(None) is satisfied).
+
+;; post-landing sequence — re-create cond for the IfElse:
+push force_flag              ;; 1 if active call_idx in THEN's range, else 0.
+local.get $cond_swap         ;; re-push orig_cond.
+push (state == REWINDING)
+select                       ;; (is_rewind ? force_flag : orig_cond)
+if (then ...) (else ...)     ;; original IfElse, untouched.
+```
+
+`force_flag` discrimination:
+
+- only THEN has fork-path calls → `i32.const 1`
+- only ELSE → `i32.const 0`
+- both branches → range-membership test on THEN's call_idx range
+  (`call_idx >= then_lo && call_idx <= then_hi`)
+
+On NORMAL the rewritten cond evaluates to `orig_cond`, preserving the
+program's semantics. On REWIND it forces entry into whichever branch
+contains the active call_idx, regardless of `orig_cond`. This avoids
+re-evaluating the original cond expression during REWIND — important when
+that expression has side effects or reads state that may diverge between
+parent NORMAL and child/parent REWIND.
+
+### 3. Carryover-spilling at SubRegion landings
+
+LLVM at -O2 inlines `posix_spawn` into `main` (and similar patterns
+elsewhere) and emits a single i32 pushed *before* a fork-bearing block
+that's consumed *after* it. The
+`os-test/basic/spawn/posix_spawnattr_setpgroup` -O2 fixture is the
+canonical instance:
+
+```wat
+local.get 0           ;; push __errno_location() — the carryover.
+block (result i32)    ;; the block contains kernel_fork.
+  ... kernel_fork wrap ...
+end
+local.tee 1
+i32.store             ;; consumes both: *errno_location = posix_spawn_rc.
+```
+
+`POST_K` is `Simple(None)` (0 → 0), so the chunk before the SubRegion can't
+leave anything on the stack. The fix is to spill the carryover into a
+fresh **frame-resident** i32 local at the chunk tail, then reload it after
+the enclosing instruction runs:
+
+- `CarryoverPlan` allocates a `spill_local` (always) and an optional
+  `tmp_result_local` (used when the enclosing instruction returns 1 i32 —
+  needed to juggle the result above the restored carryover). Both locals
+  are appended to the function's frame so they get serialized on UNWIND
+  and restored on REWIND, matching every other scalar user local.
+- `emit_chunk_tail_for_landing` emits `local.set $spill_local` at the end
+  of the chunk inside `POST_K`. Net stack effect of the chunk: 0 → 0,
+  satisfying `POST_K`'s type.
+- The post-landing sequence emits the enclosing instruction verbatim,
+  optionally captures its i32 result into `tmp_result_local`, restores the
+  carryover via `local.get $spill_local`, then re-pushes the result. The
+  consumer downstream sees `[carryover, result]` — the same shape it would
+  see on NORMAL.
+
+The carryover plan is allocated by `analyze_carryover_depths`, which walks
+the seq's stack effects and reports the depth at each SubRegion (non-IfElse)
+landing. `seq_has_unsupported_carryover` runs first as a gate and rejects
+patterns the MVP can't spill (DirectCall carryovers, SubRegionIfElse
+carryovers, multi-value carryovers, non-i32 result types) — those still
+fall back to guard-dispatch. The comment block above
+`seq_has_unsupported_carryover` records that **guard-dispatch was the
+originally-expected solution** for the LLVM-O2 carryover pattern, but
+multiple debugging sessions never pinned down the precise divergence;
+revisiting guard-dispatch in the future would cover any other
+LLVM-codegen-sensitive shape that doesn't fit the carryover-spilling MVP
+scope.
+
 ## Auxiliary tables
 
 When the module has at least one fork-path ref-typed user local of a given
@@ -603,6 +732,21 @@ are skipped during rewind in guard-dispatch. Instructions currently gated:
 `memory.grow`, `memory.fill`, `memory.copy`, `memory.init`, `data.drop`,
 `elem.drop`, `table.set`.
 
+`local.tee` is special-cased in `emit_gated_side_effect`. The standard
+gating shape is `(if (state == NORMAL) (then op) (else drop ...; default
+0))` — for instructions whose result type isn't carrying program data this
+is fine, but `local.tee` is `[T] → [T]`: it both writes the local *and*
+re-pushes the value being teed. The original gating dropped the input and
+pushed `default(0)` on REWIND, so any consumer reading the tee's result
+saw `0` instead of the value that was on the stack. Real bug found during
+the popen-class divergence investigation
+(`memory/fork-instrument-O2-bug-investigation.md`, external memory): that
+zero made a downstream control-flow gate take a different branch on
+REWIND, silently skipping the kernel_fork wrap. The current code emits an
+**empty else-branch** typed `[T] → [T]` so the input passes through to the
+output unchanged. The local stays at its preamble-restored value (correct
+as of fork time) and the consumer sees a value matching NORMAL flow.
+
 In addition, **direct `Call` instructions to non-fork-path callees are
 gated** in guard-dispatch with frame-saved result locals (see [Non-fork-path
 call gating](#non-fork-path-call-gating)). Switch-dispatch does not need
@@ -640,12 +784,32 @@ wasm-tools print "$BIN" | awk '/^\s+\(func [^;]*main/{found=1} found{print}' | h
 ```
 
 A leading `block ... block ... if (state == REWINDING) ... br_table ...`
-shape means switch-dispatch. A `block $unwind_save` followed by per-call
+shape at the function's entry means **switch-dispatch** (top-level or
+nested). A `block $unwind_save` followed by per-call
 `(state == NORMAL || (REWINDING && call_idx == K))` if-elses means
-guard-dispatch. The cargo test
+**guard-dispatch**.
+
+To distinguish top-level switch-dispatch from nested switch-dispatch,
+look inside the enclosing instructions: nested switch-dispatch emits the
+same `if (state == REWINDING) ... br_table ...` shape inside any
+fork-bearing `block` / `loop` / `if` / `try_table`, plus a
+`local.set $cond_swap_local` at the end of the chunk preceding any IfElse
+landing and a `select` rewriting that IfElse's cond afterwards. Top-level
+switch-dispatch has only the function-level dispatch and never touches a
+sub-region's body.
+
+Carryover-spilling at a SubRegion landing shows up as a pair of fresh
+i32 locals (recorded in the function's frame): the chunk inside `POST_K`
+ends with `local.set $spill_local`, and after the enclosing instruction
+the post-landing sequence emits `local.get $spill_local` (and, when the
+enclosing instr returns an i32, a brief juggle through `tmp_result_local`).
+
+The cargo test
 `tests/switch_dispatch.rs::guard_dispatch_gates_non_fork_path_direct_call`
 asserts the gated-call shape on a minimal fixture; copy that pattern when
-adding new regression cases.
+adding new regression cases. Nested switch-dispatch coverage lives in
+`tests/switch_dispatch.rs::nested_fork_call_uses_per_block_switch_dispatch`
+and the carryover-spilling fixtures alongside it.
 
 ### Running tests
 
