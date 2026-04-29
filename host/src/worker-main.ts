@@ -11,7 +11,13 @@ import type {
   WorkerToHostMessage,
 } from "./worker-protocol";
 import { DynamicLinker } from "./dylink";
-import { WasiShim, WasiExit, isWasiModule, wasiModuleDefinesMemory } from "./wasi-shim";
+// WASI detection helpers are tiny and live in their own file so we can
+// import them eagerly without dragging in the 1300-line WasiShim class.
+// The shim itself is dynamically imported below, only when a worker
+// actually needs to host a wasi_snapshot_preview1 module — which our
+// native channel-syscall binaries (mariadbd, dinit, dash, coreutils,
+// everything compiled by wasm32-posix) never trigger.
+import { isWasiModule, wasiModuleDefinesMemory } from "./wasi-detect";
 export interface MessagePort {
   postMessage(msg: unknown, transferList?: unknown[]): void;
   on(event: string, handler: (...args: unknown[]) => void): void;
@@ -543,6 +549,11 @@ export async function centralizedWorkerMain(
           "(compiled with --import-memory) are supported.",
         );
       }
+
+      // Lazy-import the heavy shim only when we actually have a WASI
+      // module to host. Native channel-syscall workers (the common
+      // case) skip this import entirely.
+      const { WasiShim, WasiExit } = await import("./wasi-shim");
 
       const wasiShim = new WasiShim(
         memory, channelOffset, initData.argv || [], initData.env || [],

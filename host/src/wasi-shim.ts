@@ -6,6 +6,12 @@
  * to run on the wasm-posix-kernel without recompilation.
  *
  * Only supports WASI modules that import memory (--import-memory).
+ *
+ * This module is dynamically imported by `worker-main.ts` only when
+ * `isWasiModule()` (in `./wasi-detect.ts`) returns true. Workers that
+ * load a native channel-syscall binary never pay this file's parse
+ * + JIT cost. Don't add eager imports of it from the worker
+ * bootstrap path.
  */
 
 // --- Channel layout (must match crates/shared/src/lib.rs + glue/channel_syscall.c) ---
@@ -1443,29 +1449,13 @@ export class WasiShim {
   }
 }
 
-/**
- * Detect whether a compiled WebAssembly module is a WASI module.
- */
-export function isWasiModule(module: WebAssembly.Module): boolean {
-  return WebAssembly.Module.imports(module).some(
-    imp => imp.module === "wasi_snapshot_preview1",
-  );
-}
-
-/**
- * Check if a WASI module imports memory (required for shared memory channel).
- */
-export function wasiModuleImportsMemory(module: WebAssembly.Module): boolean {
-  return WebAssembly.Module.imports(module).some(
-    imp => imp.module === "env" && imp.name === "memory" && imp.kind === "memory",
-  );
-}
-
-/**
- * Check if a WASI module defines its own memory (not supported).
- */
-export function wasiModuleDefinesMemory(module: WebAssembly.Module): boolean {
-  return WebAssembly.Module.exports(module).some(
-    exp => exp.name === "memory" && exp.kind === "memory",
-  );
-}
+// `isWasiModule`, `wasiModuleImportsMemory`, and `wasiModuleDefinesMemory`
+// moved to `./wasi-detect.ts`. Re-export them here so existing public
+// imports of `wasm-posix-kernel/host` keep working — but worker-main.ts
+// imports them directly from wasi-detect.ts to avoid pulling this file
+// onto the worker bootstrap path.
+export {
+  isWasiModule,
+  wasiModuleImportsMemory,
+  wasiModuleDefinesMemory,
+} from "./wasi-detect";
