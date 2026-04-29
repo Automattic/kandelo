@@ -1,40 +1,36 @@
 /**
- * Build a pre-built VFS image for the MariaDB browser demo.
+ * Build a fully-bootable VFS image for the MariaDB browser demo.
+ * dinit (PID 1) brings up the selected engine's service tree:
  *
- * The image contains everything needed at boot time:
- *   - mariadbd binary                (/usr/sbin/mariadbd)
- *   - bootstrap SQL                  (/etc/mariadb/bootstrap.sql)
- *   - data directory tree            (/data, /data/mysql, /data/tmp, /data/test)
- *   - shell init descriptors         (/etc/init.d/05-mariadb-bootstrap, 10-mariadb)
- *   - dash + coreutils/grep/sed symlinks for the companion terminal panel
+ *   <engine>-bootstrap (scripted, oneshot) → <engine>-mariadb (process)
  *
- * The demo page overrides the init-descriptor command lines at runtime to
- * switch storage engine and InnoDB tuning, so we only include sensible Aria
- * defaults here.
+ * Two engine trees are baked: aria-{bootstrap,mariadb} and
+ * innodb-{bootstrap,mariadb}. The page selects which engine to start
+ * by passing the service name as dinit's positional argv at boot
+ * (e.g. `dinit --container aria-mariadb`); dinit resolves the
+ * dependency on the matching bootstrap and brings up only that tree.
  *
  * Two target architectures are supported:
- *   bash build-mariadb-vfs-image.sh           → examples/browser/public/mariadb.vfs     (wasm32)
- *   bash build-mariadb-vfs-image.sh --wasm64  → examples/browser/public/mariadb-64.vfs  (wasm64)
- *
- * Produces: examples/browser/public/mariadb[-64].vfs
+ *   bash build-mariadb-vfs-image.sh           → public/mariadb.vfs     (wasm32)
+ *   bash build-mariadb-vfs-image.sh --wasm64  → public/mariadb-64.vfs  (wasm64)
  */
-import { readFileSync, existsSync } from "fs";
-import { join } from "path";
+import { readFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
-  writeVfsFile,
-  writeVfsBinary,
   ensureDir,
   ensureDirRecursive,
+  writeVfsFile,
+  writeVfsBinary,
   symlink,
-  saveImage,
-} from "./vfs-image-helpers";
+} from "../../../host/src/vfs/image-helpers";
+import { resolveBinary, tryResolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
+import { saveImage } from "./vfs-image-helpers";
+import { addDinitInit, type DinitService } from "./dinit-image-helpers";
 
-const SCRIPT_DIR = new URL(".", import.meta.url).pathname;
-const BROWSER_DIR = join(SCRIPT_DIR, "..");
-const REPO_ROOT = join(BROWSER_DIR, "..", "..");
-
+const REPO_ROOT = findRepoRoot();
 const useWasm64 = process.argv.includes("--wasm64");
+
 const MARIADB_INSTALL = useWasm64
   ? join(REPO_ROOT, "examples/libs/mariadb/mariadb-install-64")
   : join(REPO_ROOT, "examples/libs/mariadb/mariadb-install");
@@ -42,17 +38,17 @@ const MARIADB_INSTALL = useWasm64
 const MARIADB_PATH = join(MARIADB_INSTALL, "bin/mariadbd.wasm");
 const SYSTEM_TABLES_PATH = join(MARIADB_INSTALL, "share/mysql/mysql_system_tables.sql");
 const SYSTEM_DATA_PATH = join(MARIADB_INSTALL, "share/mysql/mysql_system_tables_data.sql");
-
-import { resolveBinary } from "../../../host/src/binary-resolver";
 const DASH_PATH = resolveBinary("programs/dash.wasm");
+// Coreutils is required at boot for the bootstrap-runner.sh wrapper
+// (sleep, kill — well kill is a dash builtin, but sleep isn't). Bake
+// it directly rather than rely on lazy loading, since the kernel-owned
+// VFS has no lazy-load path during dinit boot.
+const COREUTILS_PATH = tryResolveBinary("programs/coreutils.wasm");
 
 const OUT_FILE = useWasm64
-  ? join(BROWSER_DIR, "public", "mariadb-64.vfs")
-  : join(BROWSER_DIR, "public", "mariadb.vfs");
+  ? join(REPO_ROOT, "examples/browser/public/mariadb-64.vfs")
+  : join(REPO_ROOT, "examples/browser/public/mariadb.vfs");
 
-// Shell binaries that appear as symlinks to be materialized lazily by the page.
-// The actual binaries are NOT baked into the image — the demo registers them
-// with kernel.registerLazyFiles at runtime to keep the image small.
 const COREUTILS_SYMLINK_NAMES = [
   "ls", "cat", "cp", "mv", "rm", "echo", "mkdir", "rmdir", "touch", "pwd",
   "head", "tail", "wc", "sort", "uniq", "cut", "tr", "date", "basename",
@@ -63,74 +59,76 @@ const COREUTILS_SYMLINK_NAMES = [
   "md5sum", "seq", "test", "[",
 ];
 
-function populateSystem(fs: MemoryFileSystem): void {
-  for (const dir of [
-    "/tmp", "/home", "/dev", "/etc", "/bin", "/usr", "/usr/bin",
-    "/usr/local", "/usr/local/bin", "/usr/share", "/root", "/usr/sbin",
-    "/data", "/data/mysql", "/data/tmp", "/data/test",
-  ]) {
-    ensureDir(fs, dir);
-  }
-  fs.chmod("/tmp", 0o777);
-}
-
-function populateDash(fs: MemoryFileSystem): void {
-  if (!existsSync(DASH_PATH)) {
-    console.warn(`  Skipping dash (not built): ${DASH_PATH}`);
-    return;
-  }
-  const dashBytes = readFileSync(DASH_PATH);
-  writeVfsBinary(fs, "/bin/dash", new Uint8Array(dashBytes));
-  symlink(fs, "/bin/dash", "/bin/sh");
-  symlink(fs, "/bin/dash", "/usr/bin/dash");
-  symlink(fs, "/bin/dash", "/usr/bin/sh");
-}
-
-function populateShellSymlinks(fs: MemoryFileSystem): void {
-  // Coreutils/grep/sed are registered lazily by the page via kernel.registerLazyFiles.
-  // We only need the symlinks here so dash can resolve them from PATH.
-  for (const name of COREUTILS_SYMLINK_NAMES) {
-    symlink(fs, "/bin/coreutils", `/bin/${name}`);
-    symlink(fs, "/bin/coreutils", `/usr/bin/${name}`);
-  }
-}
-
-function populateInitDescriptors(fs: MemoryFileSystem, engine: string): void {
-  ensureDirRecursive(fs, "/etc/init.d");
-
-  const commonArgs = [
+function commonMariadbArgs(engine: string): string[] {
+  return [
     "/usr/sbin/mariadbd", "--no-defaults",
+    // mariadbd refuses to run as root by default; we have a mysql user
+    // in /etc/passwd (uid 101) precisely for this.
+    "--user=mysql",
     "--datadir=/data", "--tmpdir=/data/tmp",
     `--default-storage-engine=${engine}`,
     "--skip-grant-tables",
     "--key-buffer-size=1048576", "--table-open-cache=10",
     "--sort-buffer-size=262144",
   ];
+}
 
-  writeVfsFile(fs, "/etc/init.d/05-mariadb-bootstrap", [
-    "type=oneshot",
-    `command=${[...commonArgs,
-      "--bootstrap", "--skip-networking", "--log-warnings=0",
-      "--log-error=/data/bootstrap.log",
-    ].join(" ")}`,
-    "stdin=/etc/mariadb/bootstrap.sql",
-    "ready=stdin-consumed",
-    "terminate=true",
-    "",
-  ].join("\n"));
+const INNODB_TUNING = [
+  "--innodb-buffer-pool-size=8M",
+  "--innodb-log-file-size=4M",
+  "--innodb-log-buffer-size=1M",
+  "--innodb-flush-log-at-trx-commit=2",
+  "--innodb-buffer-pool-load-at-startup=OFF",
+  "--innodb-buffer-pool-dump-at-shutdown=OFF",
+];
 
-  writeVfsFile(fs, "/etc/init.d/10-mariadb", [
-    "type=daemon",
-    `command=${[...commonArgs,
-      "--skip-networking=0", "--port=3306",
-      "--bind-address=0.0.0.0", "--socket=",
-      "--max-connections=10", "--thread-handling=no-threads",
-      "--log-error=/data/error.log",
-    ].join(" ")}`,
-    "depends=mariadb-bootstrap",
-    "ready=port:3306",
-    "",
-  ].join("\n"));
+/**
+ * Build the bootstrap and daemon services for a given engine. Bootstrap
+ * is `scripted` so dinit waits for it to exit before the daemon depends-on
+ * is satisfied — the daemon never sees a half-initialized data dir.
+ *
+ * Bootstrap reads bootstrap.sql from stdin via `/bin/sh -c '... < FILE'`
+ * because dinit's service schema doesn't take an explicit stdin redirect
+ * (it does have `socket-listen` but that's for activation, not feeding).
+ */
+function buildEngineServices(engine: "Aria" | "InnoDB"): DinitService[] {
+  const tag = engine === "Aria" ? "aria" : "innodb";
+  const args = commonMariadbArgs(engine);
+  const innodbArgs = engine === "InnoDB" ? INNODB_TUNING : [];
+  const bootstrapArgs = [
+    ...args, ...innodbArgs,
+    "--bootstrap", "--skip-networking", "--log-warnings=0",
+    `--log-error=/data/${tag}-bootstrap.log`,
+  ].join(" ");
+  const daemonCmd = [
+    ...args, ...innodbArgs,
+    "--skip-networking=0", "--port=3306",
+    "--bind-address=0.0.0.0", "--socket=",
+    "--max-connections=10", "--thread-handling=no-threads",
+    `--log-error=/data/${tag}-error.log`,
+  ].join(" ");
+
+  return [
+    {
+      name: `${tag}-bootstrap`,
+      type: "scripted",
+      // mariadbd --bootstrap doesn't exit at stdin EOF in the wasm port.
+      // The wrapper backgrounds it, sleeps to let bootstrap drain SQL,
+      // SIGTERMs it. Invoked via `sh SCRIPT` because wasm exec doesn't
+      // honor shebangs.
+      command: `/bin/sh /etc/mariadb/${tag}-bootstrap.sh`,
+      logfile: `/var/log/${tag}-bootstrap.log`,
+      restart: false,
+    },
+    {
+      name: `${tag}-mariadb`,
+      type: "process",
+      command: daemonCmd,
+      dependsOn: [`${tag}-bootstrap`],
+      logfile: `/var/log/${tag}-mariadb.log`,
+      restart: false,
+    },
+  ];
 }
 
 async function main() {
@@ -140,7 +138,6 @@ async function main() {
     console.error(`Run: bash examples/libs/mariadb/build-mariadb.sh${flag}`);
     process.exit(1);
   }
-
   if (!existsSync(SYSTEM_TABLES_PATH) || !existsSync(SYSTEM_DATA_PATH)) {
     console.error(`MariaDB bootstrap SQL files missing from ${MARIADB_INSTALL}/share/mysql/`);
     process.exit(1);
@@ -148,27 +145,84 @@ async function main() {
 
   console.log(`==> Building MariaDB VFS image (${useWasm64 ? "wasm64" : "wasm32"})`);
 
-  // 32MB SAB is enough: mariadbd.wasm (~13MB on wasm32, ~16MB on wasm64) plus
-  // bootstrap SQL (~500KB) and dash + init descriptors (negligible) fit easily.
-  const sab = new SharedArrayBuffer(32 * 1024 * 1024);
-  const fs = MemoryFileSystem.create(sab);
+  const sab = new SharedArrayBuffer(64 * 1024 * 1024, { maxByteLength: 256 * 1024 * 1024 });
+  const fs = MemoryFileSystem.create(sab, 256 * 1024 * 1024);
 
-  populateSystem(fs);
-  populateDash(fs);
-  populateShellSymlinks(fs);
+  for (const dir of [
+    "/tmp", "/home", "/dev", "/etc", "/bin", "/usr", "/usr/bin",
+    "/usr/local", "/usr/local/bin", "/usr/share", "/root", "/usr/sbin",
+    "/data", "/data/mysql", "/data/tmp", "/data/test",
+  ]) {
+    ensureDir(fs, dir);
+  }
+  fs.chmod("/tmp", 0o777);
+
+  // dash + coreutils symlinks (page registers coreutils.wasm lazily).
+  if (existsSync(DASH_PATH)) {
+    writeVfsBinary(fs, "/bin/dash", new Uint8Array(readFileSync(DASH_PATH)));
+    symlink(fs, "/bin/dash", "/bin/sh");
+    symlink(fs, "/bin/dash", "/usr/bin/dash");
+    symlink(fs, "/bin/dash", "/usr/bin/sh");
+  }
+  // Bake coreutils.wasm — the bootstrap-runner.sh wrapper uses `sleep`
+  // (a coreutils applet) at boot before any lazy-load mechanism can run.
+  if (COREUTILS_PATH && existsSync(COREUTILS_PATH)) {
+    writeVfsBinary(fs, "/bin/coreutils", new Uint8Array(readFileSync(COREUTILS_PATH)));
+  } else {
+    console.warn("  Warning: coreutils.wasm not found — bootstrap wrapper will fail at sleep");
+  }
+  for (const name of COREUTILS_SYMLINK_NAMES) {
+    symlink(fs, "/bin/coreutils", `/bin/${name}`);
+    symlink(fs, "/bin/coreutils", `/usr/bin/${name}`);
+  }
 
   console.log("  Writing mariadbd binary...");
-  const mariadbBytes = readFileSync(MARIADB_PATH);
-  writeVfsBinary(fs, "/usr/sbin/mariadbd", new Uint8Array(mariadbBytes));
+  writeVfsBinary(fs, "/usr/sbin/mariadbd", new Uint8Array(readFileSync(MARIADB_PATH)));
 
   console.log("  Writing bootstrap SQL...");
+  ensureDirRecursive(fs, "/etc/mariadb");
   const systemTables = readFileSync(SYSTEM_TABLES_PATH, "utf-8");
   const systemData = readFileSync(SYSTEM_DATA_PATH, "utf-8");
   const bootstrapSql = `use mysql;\n${systemTables}\n${systemData}\nCREATE DATABASE IF NOT EXISTS test;\n`;
-  ensureDirRecursive(fs, "/etc/mariadb");
   writeVfsFile(fs, "/etc/mariadb/bootstrap.sql", bootstrapSql);
 
-  populateInitDescriptors(fs, "Aria");
+  // Per-engine bootstrap-runner scripts. Invoked via `/bin/sh SCRIPT`
+  // from each engine's dinit bootstrap service (see buildEngineServices
+  // for why the inline `sh -c` form was abandoned: dinit's command-line
+  // parsing strips quotes, breaking long single-string commands).
+  for (const eng of [{ tag: "aria", engine: "Aria" }, { tag: "innodb", engine: "InnoDB" }] as const) {
+    const args = commonMariadbArgs(eng.engine);
+    const innodbArgs = eng.engine === "InnoDB" ? INNODB_TUNING : [];
+    const bootstrapCmd = [
+      ...args, ...innodbArgs,
+      "--bootstrap", "--skip-networking", "--log-warnings=0",
+      `--log-error=/data/${eng.tag}-bootstrap.log`,
+    ].join(" ");
+    // mariadbd --bootstrap doesn't exit at stdin EOF in our wasm port,
+    // so we run it in the background, sleep long enough for the bootstrap
+    // SQL to drain (data files written synchronously while reading), then
+    // SIGTERM/SIGKILL it. **No `wait`** — dinit (PID 1) reaps orphans
+    // aggressively and dash's `wait` builtin then blocks indefinitely.
+    // Letting dinit reap is fine; bootstrap data is on disk by the time
+    // we kill the daemon.
+    const script = `${bootstrapCmd} < /etc/mariadb/bootstrap.sql &
+PID=$!
+sleep 30
+kill -TERM $PID 2>/dev/null
+sleep 1
+kill -KILL $PID 2>/dev/null
+exit 0
+`;
+    writeVfsFile(fs, `/etc/mariadb/${eng.tag}-bootstrap.sh`, script);
+  }
+
+  // Bake both engine trees, no implicit boot — page selects which engine
+  // to start by passing `<engine>-mariadb` as dinit's positional argv.
+  addDinitInit(
+    fs,
+    [...buildEngineServices("Aria"), ...buildEngineServices("InnoDB")],
+    { boot: false },
+  );
 
   await saveImage(fs, OUT_FILE);
 }

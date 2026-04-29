@@ -166,7 +166,10 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // Create VFS — prefer pre-built image bytes (kernel-owned FS); fall back
   // to the legacy shared-SAB path so the existing demos keep working.
   if (msg.vfsImage) {
-    memfs = MemoryFileSystem.fromImage(msg.vfsImage);
+    // 1 GiB max growth — generous so demos like mariadb (~100 MiB
+    // InnoDB log + table files) don't ENOSPC at boot. The SAB only
+    // grows on demand, so the upfront cost is the image's own size.
+    memfs = MemoryFileSystem.fromImage(msg.vfsImage, { maxByteLength: 1 * 1024 * 1024 * 1024 });
   } else if (msg.fsSab) {
     memfs = MemoryFileSystem.fromExisting(msg.fsSab);
   } else {
