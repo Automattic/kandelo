@@ -2191,7 +2191,24 @@ pub fn plan_b1_scratch(module: &Module, targets: &[FunctionId]) -> B1ScratchPlan
                     .any(|t| matches!(t, ValType::Ref(_)))
             })
         });
-        if has_unsupported {
+        // Stage 2 (B1) Task 2.4: multi-target plain-catch guard.
+        // A try_table whose plain-catch arms branch to *different*
+        // labels has not been verified end-to-end. Per-arm capture
+        // blocks each branch to their own original target label, and
+        // the rewind dispatcher's re-throw routes through the
+        // try_table's catch clauses to reach those captures, so in
+        // principle multi-target should work — but until a real port
+        // exercises it, conservatively treat such functions as
+        // b2_carveout. Single-target multi-arm (multiple catches all
+        // pointing at the same label) remains supported.
+        let has_multi_target = arms_per_region.iter().any(|(_, arms)| {
+            if arms.len() <= 1 {
+                return false;
+            }
+            let first = arms[0].label;
+            arms.iter().any(|arm| arm.label != first)
+        });
+        if has_unsupported || has_multi_target {
             plan.b2_carveout.insert(fid);
             continue;
         }

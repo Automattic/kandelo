@@ -1937,6 +1937,70 @@ fn b1_scratch_plan_scalar_only_function_is_not_carved_out() {
     );
 }
 
+#[test]
+fn b1_scratch_plan_multi_target_plain_catch_carved_out() {
+    // Two arms in one try_table, pointing at different labels.
+    // Should be carved out (Task 2.4 conservative guard: multi-target
+    // plain-catch fork has not been verified end-to-end).
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (tag $a)
+          (tag $b)
+          (func $caller (export "caller") (result i32)
+            (block $h2
+              (block $h1
+                (try_table (catch $a $h1) (catch $b $h2)
+                  nop)))
+            call $fork)
+          (memory 1))
+    "#;
+    let bytes = parse_wat(wat);
+    let module = walrus::Module::from_buffer(&bytes).unwrap();
+    let caller = func_by_name(&module, "caller");
+    let plan = fork_instrument::instrument::plan_b1_scratch(&module, &[caller]);
+    assert!(
+        plan.b2_carveout.contains(&caller),
+        "multi-target try_table should be carved out"
+    );
+    assert!(
+        !plan.per_function.contains_key(&caller),
+        "carved-out function should not have a slot plan"
+    );
+}
+
+#[test]
+fn b1_scratch_plan_single_target_multi_arm_is_supported() {
+    // Two arms in one try_table, both pointing at the SAME label.
+    // Should NOT be carved out (this is the supported multi-arm case
+    // — Task 2.4's guard only triggers when arms diverge).
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (tag $a)
+          (tag $b)
+          (func $caller (export "caller") (result i32)
+            (block $h
+              (try_table (catch $a $h) (catch $b $h)
+                nop))
+            call $fork)
+          (memory 1))
+    "#;
+    let bytes = parse_wat(wat);
+    let module = walrus::Module::from_buffer(&bytes).unwrap();
+    let caller = func_by_name(&module, "caller");
+    let plan = fork_instrument::instrument::plan_b1_scratch(&module, &[caller]);
+    assert!(
+        !plan.b2_carveout.contains(&caller),
+        "single-target multi-arm should be supported"
+    );
+    assert!(plan.per_function.contains_key(&caller));
+    let per_func = &plan.per_function[&caller];
+    assert_eq!(per_func.len(), 1, "one try_table");
+    let (_, slots) = &per_func[0];
+    assert_eq!(slots.len(), 2, "two arms (both targeting same label)");
+}
+
 // ======================================================================
 // Stage 1 (B1) Task 1.3 — end-to-end smoke via lib::instrument
 // ======================================================================
