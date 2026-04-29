@@ -44,7 +44,7 @@ case "$ARCH" in
         ;;
 esac
 
-LLVM_PREFIX="$(brew --prefix llvm 2>/dev/null || echo /opt/homebrew/opt/llvm)"
+LLVM_PREFIX="${LLVM_PREFIX:-$(brew --prefix llvm 2>/dev/null || echo /opt/homebrew/opt/llvm)}"
 LLVM_CLANG="$LLVM_PREFIX/bin/clang"
 LLVM_AR="$LLVM_PREFIX/bin/llvm-ar"
 LLVM_RANLIB="$LLVM_PREFIX/bin/llvm-ranlib"

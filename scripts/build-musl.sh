@@ -45,8 +45,8 @@ case "$ARCH" in
         ;;
 esac
 
-# Use Homebrew LLVM 21 toolchain
-LLVM_BIN="/opt/homebrew/opt/llvm/bin"
+# Use Homebrew LLVM 21 toolchain (override via LLVM_BIN env)
+LLVM_BIN="${LLVM_BIN:-/opt/homebrew/opt/llvm/bin}"
 CC="$LLVM_BIN/clang"
 AR="$LLVM_BIN/llvm-ar"
 RANLIB="$LLVM_BIN/llvm-ranlib"
