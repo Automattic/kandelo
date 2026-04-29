@@ -30,6 +30,11 @@ clap = { version = "4", features = ["derive"] }
 # output round-trips cleanly through a separate implementation.
 wasmparser = "0.247"
 
+# wasmprinter — byte-level wasm-to-WAT for assertions that walrus's IR
+# can't see (notably post-Br "unreachable" code that walrus's parser
+# strips on round-trip but is preserved in the actual wasm bytes).
+wasmprinter = "0.247"
+
 # wat — compiles WAT source into wasm bytes in-test. Keeps fixture
 # sources readable as text alongside the assertions that consume them.
 wat = "1"

@@ -220,11 +220,6 @@ fn instrument_one_function(
     catch_plan: &[CatchRegionPlan],
     b1_slots: &[(InstrSeqId, Vec<PlainCatchArmSlot>)],
 ) {
-    // Stage-2 B1 emission (Tasks 2.1-2.3) will read `b1_slots` to
-    // emit per-arm capture blocks and multi-arm rewind dispatch. Task
-    // 2.0 plumbs the parameter through; consumers ignore it for now.
-    let _ = b1_slots;
-
     // Choose scheme based on call-site topology. Both schemes
     // implement the same fork-resume contract and share the frame
     // layout; they differ only in how REWIND reaches the resumed call:
@@ -271,6 +266,7 @@ fn instrument_one_function(
                 aux_tables,
                 ref_plan,
                 catch_plan,
+                b1_slots,
             );
             return;
         }
@@ -299,6 +295,7 @@ fn instrument_one_function(
             aux_tables,
             ref_plan,
             catch_plan,
+            b1_slots,
         );
         return;
     }
@@ -313,6 +310,7 @@ fn instrument_one_function(
             aux_tables,
             ref_plan,
             catch_plan,
+            b1_slots,
         );
         return;
     }
@@ -326,6 +324,7 @@ fn instrument_one_function(
         aux_tables,
         ref_plan,
         catch_plan,
+        b1_slots,
     );
 }
 
@@ -343,6 +342,7 @@ fn instrument_one_function_switch(
     aux_tables: &AuxTables,
     ref_plan: &[RefLocalSlot],
     catch_plan: &[CatchRegionPlan],
+    b1_slots: &[(InstrSeqId, Vec<PlainCatchArmSlot>)],
 ) {
     // Pre-existing user locals (args + referenced in body). Scalars
     // live in the frame; ref-typed locals go through aux tables.
@@ -574,6 +574,20 @@ fn instrument_one_function_switch(
     // original handler is re-entered via `br`. Runs after body rebuild
     // so it finds the try_tables at their new locations inside chunks.
     apply_catch_ref_handlers(module, func_id, &catch_handlers, aux_tables);
+
+    // Stage 2 (B1) plain-catch capture-block emission: per-arm
+    // captures intercept plain catch dispatch so the operand tuple
+    // can be saved at unwind time. Runs AFTER Phase 6 so it finds
+    // try_tables at their post-Phase-6 locations.
+    apply_plain_catch_handlers(
+        module,
+        func_id,
+        runtime,
+        catch_region_id_local,
+        b1_slots,
+        catch_plan,
+        &catch_handlers,
+    );
 }
 
 // ----------------------------------------------------------------------
@@ -2498,6 +2512,391 @@ fn apply_catch_ref_handlers(
     }
 }
 
+// ----------------------------------------------------------------------
+// Stage 2 (B1) — per-arm capture-block emission for plain catch
+// ----------------------------------------------------------------------
+
+/// Per-region emission state for a B1 plain-catch transform: links the
+/// region's try_table body to the function-local "in_catch" flag and
+/// the region's id (used for setting `catch_region_id_local` at unwind
+/// time).
+///
+/// Phase 6's `CatchHandlerInfo::in_catch_local` is allocated only for
+/// regions with a catch_ref/catch_all_ref clause. For plain-catch-only
+/// regions we allocate a fresh local; for mixed regions we reuse Phase
+/// 6's local so `maybe_record_catch_state` continues to see a single
+/// flag per region.
+#[derive(Debug, Clone, Copy)]
+#[allow(dead_code)] // Task 2.3 will consume these fields.
+struct PlainCatchRegionInfo {
+    body_seq: InstrSeqId,
+    catch_region_id: u32,
+    in_catch_local: LocalId,
+}
+
+/// Stage 2 (B1) — emit per-arm capture blocks that intercept plain
+/// catch dispatch.
+///
+/// For each fork-path try_table that has at least one plain-catch arm
+/// (and whose function is NOT in `b2_carveout`), this rewrites:
+///
+/// ```wat
+/// (try_table (catch $tag $h) ... body ...)   ;; original
+/// ```
+/// into:
+/// ```wat
+/// (block $b1_outer <try_table_type>
+///   (block $cap_arm_0 <tag0.params()>
+///     ...
+///     (block $cap_arm_N-1 <tagN-1.params()>
+///       (try_table (catch $tag0 $cap_arm_0) ... (catch $tagN-1 $cap_arm_N-1) body)
+///       br $b1_outer)
+///     ;; cap_arm_N-1 body: tagN-1.params on stack — save, set flags, br $hN-1
+///   ...
+///   ;; cap_arm_0 body: tag0.params on stack — save, set flags, br $h0
+/// ```
+///
+/// Inside each cap_arm_J body the operands are:
+///   1. spilled to fresh locals (top-of-stack first).
+///   2. saved as a tuple (arm_id, op_0, ..., op_M-1) at scratch slot
+///      `runtime.b1_scratch_base + slot.scratch_offset`.
+///   3. used to set `in_catch_local = 1` and `catch_region_id_local =
+///      region_id`.
+///   4. re-pushed (in declaration order) and `br $hJ` executes.
+///
+/// CatchAll/CatchRef/CatchAllRef clauses are preserved verbatim. If
+/// Phase 6 already retargeted CatchRef/CatchAllRef clauses, those
+/// retargets are passed through unchanged.
+///
+/// `catch_handlers` is Phase 6's per-region info; the `in_catch_local`
+/// is reused for any region that overlaps with B1's emission. For
+/// plain-catch-only regions, a fresh `in_catch_local` is allocated.
+///
+/// Returns the per-region info Task 2.3 will consume: the region_id
+/// + in_catch_local pair lets `inject_rewind_throw_stubs` and
+/// `maybe_record_catch_state` extend their dispatch to plain-catch-
+/// only regions. Currently the caller discards the return; Task 2.3
+/// will plumb it through.
+#[allow(dead_code)]
+fn apply_plain_catch_handlers(
+    module: &mut Module,
+    func_id: FunctionId,
+    runtime: &Runtime,
+    catch_region_id_local: LocalId,
+    b1_slots: &[(InstrSeqId, Vec<PlainCatchArmSlot>)],
+    catch_plan: &[CatchRegionPlan],
+    catch_handlers: &[CatchHandlerInfo],
+) -> Vec<PlainCatchRegionInfo> {
+    let mut regions = Vec::new();
+    if b1_slots.is_empty() {
+        return regions;
+    }
+    let memory = first_memory(module);
+
+    for (body_seq, arm_slots) in b1_slots {
+        if arm_slots.is_empty() {
+            continue;
+        }
+
+        // Phase 6's `apply_catch_ref_handlers` may have moved this
+        // try_table inside its own capture block. `find_try_table_parent_seq`
+        // walks recursively from the entry block, so the new parent
+        // is discovered automatically.
+        let (parent_seq, original_catches, try_table_type) = {
+            let local = match &module.funcs.get(func_id).kind {
+                FunctionKind::Local(l) => l,
+                _ => continue,
+            };
+            let (parent, tt) =
+                match find_try_table_parent_seq(local, local.entry_block(), *body_seq) {
+                    Some(v) => v,
+                    None => continue,
+                };
+            (parent, tt.catches.clone(), local.block(*body_seq).ty)
+        };
+
+        // Look up region_id from catch_plan (every fork-path try_table
+        // gets a catch_region_id assigned in plan_and_inject_aux_tables).
+        let catch_region_id = catch_plan
+            .iter()
+            .find(|p| p.body_seq == *body_seq)
+            .map(|p| p.catch_region_id)
+            .unwrap_or(0);
+
+        // Reuse Phase 6's in_catch_local if the region overlaps; else
+        // allocate a fresh one. (Mixed catch_ref+plain regions share
+        // the same flag so post-call dispatch sees a single signal per
+        // region.)
+        let in_catch_local = catch_handlers
+            .iter()
+            .find(|h| h.body_seq == *body_seq)
+            .map(|h| h.in_catch_local)
+            .unwrap_or_else(|| module.locals.add(ValType::I32));
+
+        regions.push(PlainCatchRegionInfo {
+            body_seq: *body_seq,
+            catch_region_id,
+            in_catch_local,
+        });
+
+        // ----------------------------------------------------------
+        // Build dangling sequences: outer + N caps.
+        // Caps are ordered outer-to-inner so `cap_seq_ids[J]` is the
+        // J-th outermost (and corresponds to `arm_slots[J]`). The
+        // innermost cap (`cap_seq_ids[N-1]`) holds the inner try_table
+        // and the `br $b1_outer` that handles normal exit.
+        // ----------------------------------------------------------
+        let outer_seq_id = {
+            let local = local_mut(module, func_id);
+            local.builder_mut().dangling_instr_seq(try_table_type).id()
+        };
+
+        // Build per-arm InstrSeqType up-front (mutates module.types)
+        // before any &mut LocalFunction borrow is needed.
+        let cap_types: Vec<InstrSeqType> = arm_slots
+            .iter()
+            .map(|slot| {
+                InstrSeqType::new(&mut module.types, &[], &slot.arm.operand_tys)
+            })
+            .collect();
+
+        let mut cap_seq_ids: Vec<InstrSeqId> = Vec::with_capacity(arm_slots.len());
+        for cap_ty in &cap_types {
+            let local = local_mut(module, func_id);
+            cap_seq_ids.push(local.builder_mut().dangling_instr_seq(*cap_ty).id());
+        }
+
+        // Per-arm operand spill locals.
+        let mut arm_spill_locals: Vec<Vec<LocalId>> =
+            Vec::with_capacity(arm_slots.len());
+        for slot in arm_slots {
+            let spills: Vec<LocalId> = slot
+                .arm
+                .operand_tys
+                .iter()
+                .map(|&ty| module.locals.add(ty))
+                .collect();
+            arm_spill_locals.push(spills);
+        }
+
+        // ----------------------------------------------------------
+        // Rewrite the inner try_table's catches: each plain Catch
+        // arm now points at its capture block; everything else (incl.
+        // catch_ref/catch_all_ref already retargeted by Phase 6) is
+        // preserved verbatim.
+        //
+        // We map by arm position within `arm_slots` -- each entry's
+        // `arm.arm_idx` is the arm's index in the original try_table's
+        // catches list. We walk `original_catches` and substitute each
+        // matching plain Catch with its capture target.
+        // ----------------------------------------------------------
+        let mut new_catches: Vec<TryTableCatch> = original_catches.clone();
+        for (j, slot) in arm_slots.iter().enumerate() {
+            let arm_idx = slot.arm.arm_idx as usize;
+            if let Some(c) = new_catches.get_mut(arm_idx) {
+                if let TryTableCatch::Catch { tag, .. } = c {
+                    *c = TryTableCatch::Catch {
+                        tag: *tag,
+                        label: cap_seq_ids[j],
+                    };
+                }
+            }
+        }
+
+        // ----------------------------------------------------------
+        // Populate innermost cap (cap_seq_ids[N-1]):
+        //   try_table(...)
+        //   br $b1_outer
+        //   ;; cap-end body for arm N-1
+        // ----------------------------------------------------------
+        let n = arm_slots.len();
+        {
+            let local = local_mut(module, func_id);
+            let s = &mut local.block_mut(cap_seq_ids[n - 1]).instrs;
+            push_instr(
+                s,
+                Instr::TryTable(TryTable {
+                    seq: *body_seq,
+                    catches: new_catches,
+                }),
+            );
+            push_instr(s, Instr::Br(Br { block: outer_seq_id }));
+            // After the unconditional br, the rest of this block is
+            // reached only when the engine catches arm (N-1). At that
+            // point tag(N-1).params are on the stack.
+        }
+        emit_capture_save_and_branch(
+            module,
+            func_id,
+            runtime,
+            memory,
+            cap_seq_ids[n - 1],
+            &arm_slots[n - 1],
+            &arm_spill_locals[n - 1],
+            in_catch_local,
+            catch_region_id_local,
+            catch_region_id,
+        );
+
+        // ----------------------------------------------------------
+        // Populate non-innermost caps (cap_seq_ids[J] for J < N-1):
+        //   Block(cap_seq_ids[J+1])
+        //   ;; cap-end body for arm J
+        // ----------------------------------------------------------
+        for j in (0..n - 1).rev() {
+            {
+                let local = local_mut(module, func_id);
+                let s = &mut local.block_mut(cap_seq_ids[j]).instrs;
+                push_instr(
+                    s,
+                    Instr::Block(Block { seq: cap_seq_ids[j + 1] }),
+                );
+            }
+            emit_capture_save_and_branch(
+                module,
+                func_id,
+                runtime,
+                memory,
+                cap_seq_ids[j],
+                &arm_slots[j],
+                &arm_spill_locals[j],
+                in_catch_local,
+                catch_region_id_local,
+                catch_region_id,
+            );
+        }
+
+        // ----------------------------------------------------------
+        // Populate $b1_outer: just contains the outermost cap block.
+        // After the cap block ends (only reachable via normal-exit
+        // path through the inner try_table → br $b1_outer), control
+        // falls out of $b1_outer with try_table_type values on the
+        // stack (matching outer's result type). On the catch path,
+        // each cap's body unconditionally `br $hJ`, leaving $b1_outer
+        // entirely.
+        // ----------------------------------------------------------
+        {
+            let local = local_mut(module, func_id);
+            let s = &mut local.block_mut(outer_seq_id).instrs;
+            push_instr(s, Instr::Block(Block { seq: cap_seq_ids[0] }));
+        }
+
+        // ----------------------------------------------------------
+        // Replace the original TryTable in the parent seq with
+        // Block($b1_outer). The TryTable now lives inside the
+        // innermost cap, retargeted to the per-arm captures.
+        // ----------------------------------------------------------
+        {
+            let local = local_mut(module, func_id);
+            let parent_instrs = &mut local.block_mut(parent_seq).instrs;
+            let tt_idx = parent_instrs
+                .iter()
+                .position(|(i, _)| {
+                    matches!(i, Instr::TryTable(tt) if tt.seq == *body_seq)
+                })
+                .expect("try_table not found in its parent (B1 stage 2 emission)");
+            parent_instrs[tt_idx].0 = Instr::Block(Block { seq: outer_seq_id });
+        }
+    }
+
+    regions
+}
+
+/// Emit the capture-block "tail" for a single plain-catch arm: at the
+/// point where this is invoked, `tag.params()` are on the operand
+/// stack. The emitted sequence:
+///
+///   1. Spill operands to per-arm locals (top-of-stack first).
+///   2. Save tuple (arm_id, op_0, ..., op_M-1) to memory at
+///      `b1_scratch_base + slot.scratch_offset`.
+///   3. Set `in_catch_local = 1`, `catch_region_id_local = region_id`.
+///   4. Re-push operands (declaration order).
+///   5. `br slot.arm.label` (original handler).
+fn emit_capture_save_and_branch(
+    module: &mut Module,
+    func_id: FunctionId,
+    runtime: &Runtime,
+    memory: MemoryId,
+    cap_seq_id: InstrSeqId,
+    slot: &PlainCatchArmSlot,
+    spills: &[LocalId],
+    in_catch_local: LocalId,
+    catch_region_id_local: LocalId,
+    catch_region_id: u32,
+) {
+    let local = local_mut(module, func_id);
+    let s = &mut local.block_mut(cap_seq_id).instrs;
+
+    // 1. Spill operands. Operands were declared L-to-R but appear on
+    //    the stack with the LAST one on top — so we spill in reverse
+    //    declaration order: spills[M-1] first, then [M-2], ..., [0].
+    for i in (0..spills.len()).rev() {
+        push_instr(
+            s,
+            Instr::LocalSet(LocalSet { local: spills[i] }),
+        );
+    }
+
+    // 2. Save arm_id at offset +0 of this arm's scratch tuple. The
+    //    absolute address is `*(buf_global) + b1_scratch_base +
+    //    scratch_offset`. We fold the constant offset into the
+    //    MemArg.offset and push `global.get $buf_global` as the
+    //    address.
+    let scratch_off = (runtime.b1_scratch_base + slot.scratch_offset) as u64;
+    push_instr(
+        s,
+        Instr::GlobalGet(GlobalGet { global: runtime.buf_global }),
+    );
+    push_instr(
+        s,
+        Instr::Const(Const {
+            value: Value::I32(slot.arm.arm_idx as i32),
+        }),
+    );
+    push_instr(s, store_i32(memory, scratch_off));
+
+    // 2b. Save operands at offset +4 + cumulative.
+    let mut cur_off: u32 = 4;
+    for (i, &ty) in slot.arm.operand_tys.iter().enumerate() {
+        let abs_off = scratch_off + cur_off as u64;
+        push_instr(
+            s,
+            Instr::GlobalGet(GlobalGet { global: runtime.buf_global }),
+        );
+        push_instr(s, Instr::LocalGet(LocalGet { local: spills[i] }));
+        push_instr(s, store_scalar(memory, ty, abs_off));
+        cur_off += scalar_size(ty);
+    }
+
+    // 3. Set flags.
+    push_instr(s, Instr::Const(Const { value: Value::I32(1) }));
+    push_instr(
+        s,
+        Instr::LocalSet(LocalSet { local: in_catch_local }),
+    );
+    push_instr(
+        s,
+        Instr::Const(Const {
+            value: Value::I32(catch_region_id as i32),
+        }),
+    );
+    push_instr(
+        s,
+        Instr::LocalSet(LocalSet { local: catch_region_id_local }),
+    );
+
+    // 4. Re-push operands in declaration order.
+    for &spill in spills {
+        push_instr(s, Instr::LocalGet(LocalGet { local: spill }));
+    }
+
+    // 5. Branch to original handler.
+    push_instr(
+        s,
+        Instr::Br(Br { block: slot.arm.label }),
+    );
+}
+
 fn find_try_table_parent_seq<'a>(
     f: &'a LocalFunction,
     seq: InstrSeqId,
@@ -2550,6 +2949,7 @@ fn instrument_one_function_guard_dispatch(
     aux_tables: &AuxTables,
     ref_plan: &[RefLocalSlot],
     catch_plan: &[CatchRegionPlan],
+    b1_slots: &[(InstrSeqId, Vec<PlainCatchArmSlot>)],
 ) {
     let all_user_locals = collect_user_locals(module, func_id);
     let user_scalar_locals: Vec<(LocalId, ValType)> = all_user_locals
@@ -2592,6 +2992,18 @@ fn instrument_one_function_guard_dispatch(
     rewrite_calls_in_seq_guard_dispatch(module, func_id, wrapper_id, &mut call_ctx);
 
     apply_catch_ref_handlers(module, func_id, &catch_handlers, aux_tables);
+
+    // Stage 2 (B1) plain-catch capture-block emission. Runs AFTER
+    // Phase 6 so it sees post-Phase-6 try_table locations.
+    apply_plain_catch_handlers(
+        module,
+        func_id,
+        runtime,
+        catch_region_id_local,
+        b1_slots,
+        catch_plan,
+        &catch_handlers,
+    );
 
     // Result-save locals from gated non-fork-path direct calls must
     // participate in the frame so REWIND restores the parent's return
@@ -4017,6 +4429,7 @@ fn instrument_one_function_nested_switch(
     aux_tables: &AuxTables,
     ref_plan: &[RefLocalSlot],
     catch_plan: &[CatchRegionPlan],
+    b1_slots: &[(InstrSeqId, Vec<PlainCatchArmSlot>)],
 ) {
     // Pre-existing user locals.
     let all_user_locals = collect_user_locals(module, func_id);
@@ -4036,7 +4449,7 @@ fn instrument_one_function_nested_switch(
         // top-level switch-dispatch (which handles n_calls==0 cleanly).
         instrument_one_function_switch(
             module, func_id, runtime, fork_path, func_ordinal,
-            aux_tables, ref_plan, catch_plan,
+            aux_tables, ref_plan, catch_plan, b1_slots,
         );
         return;
     }
@@ -4363,6 +4776,18 @@ fn instrument_one_function_nested_switch(
     entry_seq.extend(postamble);
 
     apply_catch_ref_handlers(module, func_id, &catch_handlers, aux_tables);
+
+    // Stage 2 (B1) plain-catch capture-block emission. Runs AFTER
+    // Phase 6 so it sees post-Phase-6 try_table locations.
+    apply_plain_catch_handlers(
+        module,
+        func_id,
+        runtime,
+        catch_region_id_local,
+        b1_slots,
+        catch_plan,
+        &catch_handlers,
+    );
 }
 
 /// At the end of a chunk that precedes a landing (inside the POST_K

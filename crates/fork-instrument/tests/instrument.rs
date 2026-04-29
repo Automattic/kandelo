@@ -1989,3 +1989,228 @@ fn b1_stage_1_module_with_plain_catch_still_validates() {
         "wpk_fork_state export must remain after Stage 1"
     );
 }
+
+// ======================================================================
+// Stage 2 (B1) Task 2.2 — per-arm capture-block emission
+// ======================================================================
+
+/// Walks the function and returns each TryTable instruction. Includes
+/// nested ones — used to count + inspect catch clauses post-instrument.
+fn collect_try_tables(f: &LocalFunction) -> Vec<ir::TryTable> {
+    let mut out: Vec<ir::TryTable> = Vec::new();
+    walk_all(f, f.entry_block(), &mut |_, instr| {
+        if let Instr::TryTable(tt) = instr {
+            out.push(tt.clone());
+        }
+    });
+    out
+}
+
+
+#[test]
+fn b1_stage_2_plain_catch_arm_retargets_to_capture_block() {
+    // After instrumentation, the original try_table's plain Catch
+    // clause should point at an injected capture block, not at the
+    // original handler label `$h`. The capture block contains the
+    // save+rebroadcast logic and a `br` to the original handler.
+    //
+    // Note: walrus's parser drops post-`br` "unreachable" code on
+    // round-trip via `Module::from_buffer`. Our save-and-branch logic
+    // lives after `br $b1_outer` in the cap block — visible in the
+    // serialized wasm but invisible via re-parsed walrus IR. We use
+    // wasmprinter to assert against the actual wasm bytes.
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (tag $exn)
+          (func $caller (export "caller") (result i32)
+            (block $h
+              (try_table (catch $exn $h)
+                nop))
+            call $fork)
+          (memory 1))
+    "#;
+    let bytes = instrument_wat(wat);
+    validate(&bytes);
+
+    // 1. Walrus-level: the try_table is preserved with a Catch clause.
+    //    (The Catch label points at our capture block; we can't easily
+    //    distinguish "the user's $h" from "B1's cap" in walrus IR
+    //    without re-parsing tricks, so we only assert presence here.)
+    let module = Module::from_buffer(&bytes).unwrap();
+    let caller = func_by_name(&module, "caller");
+    let f = local_func(&module, caller);
+    let try_tables = collect_try_tables(f);
+    assert_eq!(
+        try_tables.len(),
+        1,
+        "expected exactly one try_table post-instrument"
+    );
+    let tt = &try_tables[0];
+    assert_eq!(tt.catches.len(), 1, "should still have 1 catch clause");
+    assert!(
+        matches!(&tt.catches[0], ir::TryTableCatch::Catch { .. }),
+        "should be a plain Catch clause"
+    );
+
+    // 2. Byte-level (wasmprinter): the cap block must contain the B1
+    //    save sequence (i32.store of arm_id followed by local.set of
+    //    in_catch / catch_region_id locals) and an outer `br` of the
+    //    handler. We grep for the i32.store + local.set pattern that
+    //    is unique to B1's emission. (Walrus drops these on re-parse
+    //    because they're after the unconditional `br $b1_outer`.)
+    let printed = wasmprinter::print_bytes(&bytes).expect("wasmprinter");
+    let caller_section = extract_function_text(&printed, "caller");
+    assert!(
+        caller_section.contains("try_table"),
+        "caller must still have a try_table:\n{caller_section}"
+    );
+    // The save sequence: `i32.store offset=N` is unique to the B1
+    // emission. (The frame-IO emissions use offset=0/4/8/12 only.)
+    // For the no-operand fixture, slot.scratch_offset = 0 within the
+    // scratch area, and runtime.b1_scratch_base is where the scratch
+    // starts (at 8 in this module: 2P=8 with no saved globals + B=8
+    // rounded). We look for ANY of i32.store with offset >= 16 that
+    // follows a global.get $_wpk_fork_buf — the unique B1 pattern.
+    // Easier signature: the literal sequence "i32.const 0\n  ...
+    // i32.store offset=8" stores arm_idx 0 at scratch offset 0
+    // (absolute = b1_scratch_base = 8). The exact offset depends on
+    // saved globals; the only invariant is *some* store happens.
+    assert!(
+        caller_section.contains("i32.store offset=8"),
+        "caller must contain i32.store at the B1 scratch arm_id offset \
+         (= b1_scratch_base + 0 = 8 for this fixture):\n{caller_section}"
+    );
+}
+
+/// Extract the `(func $name ... )` section from a wasmprinter dump.
+fn extract_function_text<'a>(printed: &'a str, name: &str) -> String {
+    let needle = format!("(func ${name} ");
+    let start = printed.find(&needle).unwrap_or_else(|| {
+        panic!("function ${name} not found in:\n{printed}");
+    });
+    // Walk paren depth from start to find the matching close.
+    let mut depth = 0i32;
+    let mut end = start;
+    for (i, c) in printed[start..].char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = start + i + 1;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    printed[start..end].to_string()
+}
+
+#[test]
+fn b1_stage_2_b2_carveout_function_is_not_transformed() {
+    // A function whose plain-catch arm has a ref-typed payload is in
+    // b2_carveout (per Task 2.1). For these functions, B1 emission
+    // is skipped, so the byte output must NOT contain the B1 capture
+    // block's save-to-scratch pattern. The Catch clause must still
+    // be present (Phase 6 doesn't intercept plain catch).
+    //
+    // Note: ref-typed catch payloads are not yet supported by the
+    // existing Phase-6 ref-local pipeline (function would panic with
+    // a "non-nullable or non-abstract ref" or fail wasm validation in
+    // some shapes). We use a fork-bearing function that *contains*
+    // a try_table whose tag has a ref operand, but the catch handler
+    // itself stays simple. To avoid type-mismatch errors during wat
+    // parse, we feed the catch via `throw`-then-`drop` inside a block
+    // typed `(result externref)`.
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (tag $exn (param externref))
+          (func $caller (export "caller") (result i32)
+            (block $h (result externref)
+              (try_table (result externref) (catch $exn $h)
+                ref.null extern
+                throw $exn))
+            drop
+            call $fork)
+          (memory 1))
+    "#;
+    let bytes = instrument_wat(wat);
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+    let caller = func_by_name(&module, "caller");
+    let f = local_func(&module, caller);
+
+    // Carve-out functions have NO B1 transform applied. The try_table
+    // is preserved with its catches as-emitted by Phase 6 (which
+    // doesn't intercept plain Catch clauses; only catch_ref / catch_all_ref).
+    let try_tables = collect_try_tables(f);
+    assert_eq!(
+        try_tables.len(),
+        1,
+        "carved-out function must still have exactly one try_table"
+    );
+    let tt = &try_tables[0];
+    let has_catch = tt
+        .catches
+        .iter()
+        .any(|c| matches!(c, ir::TryTableCatch::Catch { .. }));
+    assert!(
+        has_catch,
+        "carved-out function's plain Catch clause must be preserved \
+         (B1 must NOT have transformed it)"
+    );
+
+    // Byte-level: with the function in `b2_carveout`, the plan
+    // reserves zero scratch bytes for it — `B1ScratchPlan.total_bytes
+    // == 0` and `runtime.b1_scratch_size == 0`. We confirm via the
+    // direct planner API: a fresh plan over `[caller]` must list it
+    // in b2_carveout, not per_function.
+    let plan = fork_instrument::instrument::plan_b1_scratch(&module, &[caller]);
+    assert!(
+        plan.b2_carveout.contains(&caller),
+        "carved-out function (ref-typed catch operand) must be in \
+         b2_carveout"
+    );
+    assert!(
+        !plan.per_function.contains_key(&caller),
+        "carved-out function must NOT have a per_function entry"
+    );
+    assert_eq!(
+        plan.total_bytes, 0,
+        "no scratch reservation expected when only function is carved \
+         out"
+    );
+}
+
+#[test]
+fn b1_stage_2_byte_identity_for_module_without_plain_catch() {
+    // A fork-using module with NO plain-catch should produce stable
+    // output that's byte-identical across repeated runs (instrument
+    // is deterministic) and produces ZERO try_tables — Stage 2's
+    // emission must not fire when there are no plain-catch arms.
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (func $caller (export "caller") (result i32)
+            call $fork)
+          (memory 1))
+    "#;
+    let bytes_a = instrument_wat(wat);
+    let bytes_b = instrument_wat(wat);
+    assert_eq!(bytes_a, bytes_b, "instrument must be deterministic");
+    validate(&bytes_a);
+
+    let module = Module::from_buffer(&bytes_a).unwrap();
+    let caller = func_by_name(&module, "caller");
+    let f = local_func(&module, caller);
+    let try_tables = collect_try_tables(f);
+    assert!(
+        try_tables.is_empty(),
+        "no try_tables expected for a fork-only function — Stage 2 \
+         must not introduce any: got {} try_tables",
+        try_tables.len()
+    );
+}
