@@ -4,7 +4,15 @@
 #
 # Usage:
 #   scripts/publish-release.sh --tag binaries-abi-v<N>-YYYY-MM-DD \
-#       --staging /path/to/staging-dir
+#       --staging /path/to/staging-dir [--allow-partial]
+#
+# `--allow-partial` skips the registry-vs-manifest completeness
+# check (default: enforced via `cargo xtask
+# verify-release-completeness`). Use only when you knowingly want
+# to ship a release without every (library/program manifest, arch)
+# combination the registry declares — e.g. an emergency wasm32-only
+# patch. The default is to refuse partial releases so a missing
+# arch can't silently break consumers.
 #
 # Prerequisites:
 #   - `gh` and `jq` CLIs on PATH; `gh` authenticated against the
@@ -26,11 +34,13 @@ set -euo pipefail
 
 TAG=""
 STAGING=""
+ALLOW_PARTIAL=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --tag)          TAG="$2"; shift 2 ;;
         --staging)      STAGING="$2"; shift 2 ;;
+        --allow-partial) ALLOW_PARTIAL=1; shift ;;
         -h|--help)
             sed -n '3,20p' "$0"
             exit 0
@@ -75,6 +85,19 @@ if [ "$manifest_tag" != "$TAG" ]; then
     echo "  binaries.lock — see docs/binary-releases.md)." >&2
     exit 1
 fi
+
+# Block partial releases. Walks the registry and rejects publish
+# unless every (library/program manifest, declared arch) is present
+# in manifest.json. Caught the regression that shipped
+# binaries-abi-v6-2026-04-29 without wasm64 mariadb / php archives.
+echo "== Verifying release completeness against registry =="
+HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
+verify_args=(--manifest "$STAGING/manifest.json")
+if [ "$ALLOW_PARTIAL" = "1" ]; then
+    verify_args+=(--allow-partial)
+fi
+cargo run -p xtask --target "$HOST_TARGET" --quiet -- \
+    verify-release-completeness "${verify_args[@]}"
 
 echo "== Manifest =="
 cat "$STAGING/manifest.json"

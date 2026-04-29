@@ -15,7 +15,14 @@
 # fetch-binaries.sh on the consumer side.
 #
 # Default --abi: ABI_VERSION from crates/shared/src/lib.rs.
-# Default --arch: wasm32 only.  Pass --arch repeatedly to broaden.
+# Default --arch: wasm32 AND wasm64.  Per-manifest `target_arches`
+# in `deps.toml` opts each library/program into a subset, so
+# defaulting to both arches stages the full intended release without
+# accidentally dropping wasm64-opted entries.  Pass --arch explicitly
+# to narrow (rarely correct — `publish-release.sh` runs
+# `xtask verify-release-completeness` against the staged
+# manifest.json and rejects partial coverage unless you also pass
+# `--allow-partial`).
 #
 # Output: $STAGING/{libs,programs}/<archive>.tar.zst plus manifest.json.
 #
@@ -78,7 +85,13 @@ case "$TAG" in
 esac
 
 if [ ${#ARCHES[@]} -eq 0 ]; then
-    ARCHES=(wasm32)
+    # Both arches by default. Manifests not opting into wasm64 are
+    # silently filtered by xtask stage-release via target_arches,
+    # so the cost of asking for wasm64 here is zero for wasm32-only
+    # manifests. The benefit is that mariadb / php (which DO opt
+    # into wasm64) get staged automatically — preventing the
+    # partial-release foot-gun that shipped binaries-abi-v6-2026-04-29.
+    ARCHES=(wasm32 wasm64)
 fi
 
 rm -rf "$STAGING" && mkdir -p "$STAGING"

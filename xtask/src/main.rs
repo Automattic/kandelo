@@ -10,6 +10,10 @@
 //!   install-release Consumer side of V2: read manifest.json, fetch + verify
 //!                   library/program archives, mirror program outputs into
 //!                   local-binaries/.
+//!   verify-release-completeness
+//!                   Assert a staged manifest.json covers every (manifest,
+//!                   target_arch) pair the registry declares. Wired into
+//!                   publish-release.sh to block partial releases.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -27,6 +31,7 @@ mod remote_fetch;
 mod source_extract;
 mod stage_release;
 mod util;
+mod verify_release;
 mod wasm_abi;
 
 fn main() -> ExitCode {
@@ -36,7 +41,8 @@ fn main() -> ExitCode {
         None => {
             eprintln!("usage: xtask <subcommand> [args...]");
             eprintln!(
-                "subcommands: dump-abi, build-manifest, bundle-program, build-deps, stage-release, install-release"
+                "subcommands: dump-abi, build-manifest, bundle-program, build-deps, \
+                 stage-release, install-release, verify-release-completeness"
             );
             return ExitCode::from(2);
         }
@@ -49,6 +55,7 @@ fn main() -> ExitCode {
         "build-deps" => build_deps::run(rest),
         "stage-release" => stage_release::run(rest),
         "install-release" => install_release::run(rest),
+        "verify-release-completeness" => verify_release::run(rest),
         other => {
             eprintln!("xtask: unknown subcommand {other:?}");
             return ExitCode::from(2);
