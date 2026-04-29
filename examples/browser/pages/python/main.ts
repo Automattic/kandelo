@@ -7,11 +7,11 @@
 import { BrowserKernel } from "../../lib/browser-kernel";
 import { PtyTerminal } from "../../lib/pty-terminal";
 import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
-import kernelWasmUrl from "../../../../host/wasm/wasm_posix_kernel.wasm?url";
-import pythonWasmUrl from "../../../../examples/libs/cpython/bin/python.wasm?url";
+import { decompressVfsImage } from "../../../../host/src/vfs/load-image";
+import kernelWasmUrl from "@kernel-wasm?url";
+import pythonWasmUrl from "../../../../binaries/programs/wasm32/cpython.wasm?url";
+import VFS_IMAGE_URL from "@binaries/programs/wasm32/python-vfs.vfs?url";
 import "@xterm/xterm/css/xterm.css";
-
-const VFS_IMAGE_URL = import.meta.env.BASE_URL + "python.vfs";
 
 // --- DOM elements ---
 const terminalContainer = document.getElementById("terminal") as HTMLDivElement;
@@ -90,7 +90,7 @@ async function loadBinaries(): Promise<string> {
 async function initKernelWithStdlib(
   options?: { onStdout?: (data: Uint8Array) => void; onStderr?: (data: Uint8Array) => void },
 ): Promise<BrowserKernel> {
-  const memfs = MemoryFileSystem.fromImage(new Uint8Array(vfsImageBuf!), {
+  const memfs = MemoryFileSystem.fromImage(decompressVfsImage(new Uint8Array(vfsImageBuf!)), {
     maxByteLength: 256 * 1024 * 1024,
   });
   const kernel = new BrowserKernel({

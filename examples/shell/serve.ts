@@ -10,10 +10,11 @@
  *   bash examples/libs/dash/build-dash.sh
  */
 
-import { existsSync, readFileSync } from "fs";
+import { readFileSync } from "fs";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { NodeKernelHost } from "../../host/src/node-kernel-host";
+import { tryResolveBinary } from "../../host/src/binary-resolver";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "../..");
@@ -38,12 +39,11 @@ function readStdin(): Promise<Buffer> {
 }
 
 async function main() {
-  const dashBinPath = resolve(repoRoot, "examples/libs/dash/bin/dash.wasm");
-  const dashSrcPath = resolve(repoRoot, "examples/libs/dash/dash-src/src/dash");
-  const dashBinary = existsSync(dashBinPath) ? dashBinPath : dashSrcPath;
-  if (!existsSync(dashBinary)) {
+  const dashBinary = tryResolveBinary("programs/dash.wasm");
+  if (!dashBinary) {
     console.error(
-      "dash binary not found. Run: bash examples/libs/dash/build-dash.sh",
+      "dash.wasm not found. Run: scripts/fetch-binaries.sh " +
+      "(or bash examples/libs/dash/build-dash.sh to build locally).",
     );
     process.exit(1);
   }
@@ -60,12 +60,9 @@ async function main() {
   // --- Load external programs for exec ---
   const execPrograms: Record<string, string> = {};
 
-  // Load coreutils single binary (if built)
-  const coreutilsBinary = resolve(
-    repoRoot,
-    "examples/libs/coreutils/bin/coreutils.wasm",
-  );
-  if (existsSync(coreutilsBinary)) {
+  // Load coreutils single binary (if available)
+  const coreutilsBinary = tryResolveBinary("programs/coreutils.wasm");
+  if (coreutilsBinary) {
     const coreutilsNames = [
       "arch", "b2sum", "base32", "base64", "basename", "basenc", "cat",
       "chcon", "chgrp", "chmod", "chown", "chroot", "cksum", "comm", "cp",
@@ -91,9 +88,9 @@ async function main() {
     console.error(`Loaded ${coreutilsNames.length} coreutils commands`);
   }
 
-  // Load GNU grep (if built)
-  const grepBinary = resolve(repoRoot, "examples/libs/grep/bin/grep.wasm");
-  if (existsSync(grepBinary)) {
+  // Load GNU grep (if available)
+  const grepBinary = tryResolveBinary("programs/grep.wasm");
+  if (grepBinary) {
     for (const name of ["grep", "egrep", "fgrep"]) {
       execPrograms[`/bin/${name}`] = grepBinary;
       execPrograms[`/usr/bin/${name}`] = grepBinary;
@@ -101,9 +98,9 @@ async function main() {
     console.error("Loaded GNU grep");
   }
 
-  // Load GNU sed (if built)
-  const sedBinary = resolve(repoRoot, "examples/libs/sed/bin/sed.wasm");
-  if (existsSync(sedBinary)) {
+  // Load GNU sed (if available)
+  const sedBinary = tryResolveBinary("programs/sed.wasm");
+  if (sedBinary) {
     execPrograms["/bin/sed"] = sedBinary;
     execPrograms["/usr/bin/sed"] = sedBinary;
     console.error("Loaded GNU sed");

@@ -1,0 +1,20 @@
+kind = "program"
+name = "vim"
+version = "9.1.0900"
+revision = 2
+depends_on = []
+
+[source]
+url = "https://github.com/vim/vim/archive/refs/tags/v9.1.0900.tar.gz"
+sha256 = "30efb714ed82c5d7a1491f3e4aac6487d2c493d33c834d7ef043e6f45176772e"
+
+[license]
+spdx = "Vim"
+url = "https://github.com/vim/vim/blob/v9.1.0900/LICENSE"
+
+[[outputs]]
+name = "vim"
+wasm = "vim.wasm"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/vim-9.1.0900-rev2-abi6-wasm32-fdcaac4b.tar.zst"
+archive_sha256 = "66b2c872f2f0ddd5c6e85a9c86680ee799c756a0fc9a06ad55b95671be71e1d6"

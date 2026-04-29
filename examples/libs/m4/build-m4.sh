@@ -30,7 +30,7 @@ export WASM_POSIX_SYSROOT="$SYSROOT"
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading m4 $M4_VERSION..."
     TARBALL="m4-${M4_VERSION}.tar.xz"
-    URL="https://ftp.gnu.org/gnu/m4/${TARBALL}"
+    URL="https://ftpmirror.gnu.org/gnu/m4/${TARBALL}"
     curl -fsSL "$URL" -o "/tmp/$TARBALL"
     mkdir -p "$SRC_DIR"
     tar xJf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
@@ -181,3 +181,8 @@ fi
 echo ""
 echo "==> m4 built successfully!"
 echo "Binary: $BIN_DIR/m4.wasm"
+
+# Install into local-binaries/ so the resolver picks the freshly-built
+# binary over the fetched release.
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary m4 "$SCRIPT_DIR/bin/m4.wasm"

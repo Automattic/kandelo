@@ -1,51 +1,69 @@
 #!/usr/bin/env bash
-set -euo pipefail
-
+#
 # Build ncurses 6.5 for wasm32-posix-kernel.
 #
-# Produces libncurses.a and libtinfo.a (plus headers) installed into the
-# sysroot. This enables TUI programs (vim, htop, tig, etc.) to use proper
-# terminal capabilities instead of hardcoded ANSI fallbacks.
+# Honors the dep-resolver build-script contract (see
+# docs/package-management.md). When invoked via
+# `cargo xtask build-deps resolve ncurses`, these env vars are set by
+# the resolver and the build installs into the shared cache:
 #
-# Also compiles a minimal terminfo database (xterm-256color) so programs
-# can look up terminal capabilities at runtime.
+#     WASM_POSIX_DEP_OUT_DIR        # where the script must `make install`
+#     WASM_POSIX_DEP_VERSION        # upstream version
+#     WASM_POSIX_DEP_SOURCE_URL     # tarball URL
+#     WASM_POSIX_DEP_SOURCE_SHA256  # expected sha256 of the tarball
+#
+# For ad-hoc / legacy invocation (`bash build-ncurses.sh`), the script
+# falls back to the in-tree `ncurses-install/` layout.
+#
+# Produces libncursesw.a and libtinfow.a with compiled-in fallback
+# terminal entries (xterm-256color, xterm, vt100, dumb). Consumers
+# don't need a runtime terminfo database — ncurses resolves these
+# names against the linked-in table.
+#
+# Host `tic` and `infocmp` are needed during the build to regenerate
+# `fallback.c` from `terminfo.src`. They live under
+# `$SCRIPT_DIR/ncurses-host-build/` and are not cached by the
+# resolver (they're host binaries, not wasm artifacts).
 
-NCURSES_VERSION="${NCURSES_VERSION:-6.5}"
+set -euo pipefail
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 SRC_DIR="$SCRIPT_DIR/ncurses-src"
-SYSROOT="$REPO_ROOT/sysroot"
 
-# --- Prerequisites ---
+# --- Inputs from resolver, with legacy fallbacks ---
+NCURSES_VERSION="${WASM_POSIX_DEP_VERSION:-${NCURSES_VERSION:-6.5}}"
+INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/ncurses-install}"
+SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://ftpmirror.gnu.org/gnu/ncurses/ncurses-${NCURSES_VERSION}.tar.gz}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
+
 if ! command -v wasm32posix-cc &>/dev/null; then
     echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
     exit 1
 fi
 
-if [ ! -f "$SYSROOT/lib/libc.a" ]; then
-    echo "ERROR: sysroot not found. Run: bash build.sh && bash scripts/build-musl.sh" >&2
-    exit 1
-fi
-
-export WASM_POSIX_SYSROOT="$SYSROOT"
-
-# --- Download ncurses source ---
+# --- Fetch + verify source ---
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading ncurses $NCURSES_VERSION..."
-    TARBALL="ncurses-${NCURSES_VERSION}.tar.gz"
-    URL="https://ftp.gnu.org/gnu/ncurses/${TARBALL}"
-    curl -fsSL "$URL" -o "/tmp/$TARBALL"
+    TARBALL="/tmp/ncurses-${NCURSES_VERSION}.tar.gz"
+    curl -fsSL "$SOURCE_URL" -o "$TARBALL"
+    if [ -n "$SOURCE_SHA256" ]; then
+        echo "==> Verifying source sha256..."
+        echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
+    else
+        echo "==> (no SOURCE_SHA256 declared; skipping verification)"
+    fi
     mkdir -p "$SRC_DIR"
-    tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/$TARBALL"
+    tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
+    rm "$TARBALL"
     echo "==> Source extracted to $SRC_DIR"
 fi
 
-# --- Build host tic first (needed to compile terminfo entries) ---
+# --- Build host tic + infocmp once (needed to generate fallback.c) ---
 HOST_BUILD_DIR="$SCRIPT_DIR/ncurses-host-build"
 HOST_TIC="$HOST_BUILD_DIR/progs/tic"
-if [ ! -f "$HOST_TIC" ]; then
-    echo "==> Building host tic..."
+HOST_INFOCMP="$HOST_BUILD_DIR/progs/infocmp"
+if [ ! -f "$HOST_TIC" ] || [ ! -f "$HOST_INFOCMP" ]; then
+    echo "==> Building host tic + infocmp..."
     mkdir -p "$HOST_BUILD_DIR"
     (
         cd "$HOST_BUILD_DIR"
@@ -59,71 +77,86 @@ if [ ! -f "$HOST_TIC" ]; then
             --enable-pc-files=no \
             --with-pkg-config=no \
             2>&1 | tail -5
-        # Must build include + ncurses lib before progs (progs depends on ../include/curses.h)
+        # progs/ depends on include/ and ncurses/ being built first.
         make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" -C include 2>&1 | tail -5
         make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" -C ncurses 2>&1 | tail -5
         make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" -C progs tic infocmp 2>&1 | tail -10
     )
-    echo "==> Host tic built: $HOST_TIC"
+    echo "==> Host tic + infocmp built"
+fi
+
+# --- Compile minimal terminfo DB (build-time intermediate, not a declared output) ---
+# Fed into MKfallback.sh below to produce the compiled-in fallback table.
+TERMINFO_DIR="$SCRIPT_DIR/terminfo"
+if [ ! -f "$TERMINFO_DIR/x/xterm-256color" ]; then
+    echo "==> Compiling host-side terminfo database..."
+    mkdir -p "$TERMINFO_DIR"
+    TERMINFO="$TERMINFO_DIR" "$HOST_TIC" -x -e xterm-256color,xterm,vt100,dumb \
+        "$SRC_DIR/misc/terminfo.src" 2>&1 | tail -5 || true
 fi
 
 # --- Cross-compile ncurses for wasm32 ---
+# Always rebuild from a clean slate: INSTALL_DIR can differ between
+# cache-miss invocations, and autoconf bakes the prefix into the
+# Makefile, so reusing a stale wasm-build dir would `make install`
+# into the wrong path.
 WASM_BUILD_DIR="$SCRIPT_DIR/ncurses-wasm-build"
-if [ ! -f "$WASM_BUILD_DIR/lib/libncurses.a" ]; then
-    echo "==> Configuring ncurses for wasm32..."
-    mkdir -p "$WASM_BUILD_DIR"
+rm -rf "$WASM_BUILD_DIR" "$INSTALL_DIR"
+mkdir -p "$WASM_BUILD_DIR"
 
-    # ncurses configure needs these for cross-compilation
-    export cf_cv_func_mkstemp=yes
-    export cf_cv_func_nanosleep=yes
-    export cf_cv_link_funcs=no
-    export cf_cv_working_poll=yes
-    export cf_cv_func_poll=yes
-    export cf_cv_posix_saved_ids=yes
+echo "==> Configuring ncurses for wasm32..."
 
-    # Sizes for wasm32
-    export ac_cv_sizeof_signed_char=1
-    export ac_cv_sizeof_short=2
-    export ac_cv_sizeof_int=4
-    export ac_cv_sizeof_long=4
-    export ac_cv_sizeof_void_p=4
+# configure feature probes that would otherwise try to run a wasm binary.
+export cf_cv_func_mkstemp=yes
+export cf_cv_func_nanosleep=yes
+export cf_cv_link_funcs=no
+export cf_cv_working_poll=yes
+export cf_cv_func_poll=yes
+export cf_cv_posix_saved_ids=yes
 
-    (
-        cd "$WASM_BUILD_DIR"
+# Type sizes for wasm32.
+export ac_cv_sizeof_signed_char=1
+export ac_cv_sizeof_short=2
+export ac_cv_sizeof_int=4
+export ac_cv_sizeof_long=4
+export ac_cv_sizeof_void_p=4
 
-        CC=wasm32posix-cc \
-        CXX=wasm32posix-c++ \
-        AR=wasm32posix-ar \
-        RANLIB=wasm32posix-ranlib \
-        LD=wasm32posix-cc \
-        CFLAGS="-O2" \
-        LDFLAGS="" \
-        "$SRC_DIR/configure" \
-            --host=wasm32-unknown-none \
-            --prefix="$SYSROOT" \
-            --without-cxx \
-            --without-cxx-binding \
-            --without-ada \
-            --without-tests \
-            --without-manpages \
-            --without-progs \
-            --with-termlib \
-            --without-debug \
-            --without-profile \
-            --without-shared \
-            --with-normal \
-            --disable-database \
-            --with-fallbacks=xterm-256color,xterm,vt100,dumb \
-            --enable-pc-files=no \
-            --with-pkg-config=no \
-            --disable-stripping \
-            --enable-widec \
-            2>&1 | tail -20
+(
+    cd "$WASM_BUILD_DIR"
 
-        # Pre-populate fallback.c with a stub so make doesn't try to run
-        # tic (which fails in cross-compilation). We regenerate it properly
-        # after make using the host-built tic/infocmp.
-        cat > ncurses/fallback.c <<'STUB'
+    CC=wasm32posix-cc \
+    CXX=wasm32posix-c++ \
+    AR=wasm32posix-ar \
+    RANLIB=wasm32posix-ranlib \
+    LD=wasm32posix-cc \
+    CFLAGS="-O2" \
+    LDFLAGS="" \
+    "$SRC_DIR/configure" \
+        --host=wasm32-unknown-none \
+        --prefix="$INSTALL_DIR" \
+        --without-cxx \
+        --without-cxx-binding \
+        --without-ada \
+        --without-tests \
+        --without-manpages \
+        --without-progs \
+        --with-termlib \
+        --without-debug \
+        --without-profile \
+        --without-shared \
+        --with-normal \
+        --disable-database \
+        --with-fallbacks=xterm-256color,xterm,vt100,dumb \
+        --enable-pc-files=no \
+        --with-pkg-config=no \
+        --disable-stripping \
+        --enable-widec \
+        2>&1 | tail -20
+
+    # The cross-compiled `tic` can't run during `make`, so MKfallback.sh
+    # would produce an empty fallback.c. Stub it out now and regenerate
+    # it below with the host-built tic/infocmp.
+    cat > ncurses/fallback.c <<'STUB'
 #include <curses.priv.h>
 NCURSES_EXPORT(const TERMTYPE2 *)
 _nc_fallback2(const char *name GCC_UNUSED)
@@ -135,89 +168,66 @@ _nc_fallback(const char *name GCC_UNUSED)
 #endif
 STUB
 
-        echo "==> Building ncurses..."
-        make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" 2>&1 | tail -20
-    )
-    # Compile terminfo database using host tic (needed before fallback generation)
-    TERMINFO_DIR="$SCRIPT_DIR/terminfo"
-    if [ ! -f "$TERMINFO_DIR/x/xterm-256color" ]; then
-        echo "==> Compiling terminfo database..."
-        mkdir -p "$TERMINFO_DIR"
-        TERMINFO="$TERMINFO_DIR" "$HOST_TIC" -x -e xterm-256color,xterm,vt100,dumb \
-            "$SRC_DIR/misc/terminfo.src" 2>&1 | tail -5 || true
+    echo "==> Building ncurses..."
+    make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" 2>&1 | tail -20
+)
+
+# --- Regenerate fallback.c with real terminal entries, recompile, re-archive ---
+echo "==> Regenerating fallback terminal entries..."
+TERMINFO_SRC="$SRC_DIR/misc/terminfo.src"
+MKFALLBACK="$SRC_DIR/ncurses/tinfo/MKfallback.sh"
+TERMINFO="$TERMINFO_DIR" bash -e "$MKFALLBACK" \
+    "$TERMINFO_DIR" "$TERMINFO_SRC" "$HOST_TIC" "$HOST_INFOCMP" \
+    xterm-256color xterm vt100 dumb \
+    > "$WASM_BUILD_DIR/ncurses/fallback.c" 2>/dev/null
+
+(
+    cd "$WASM_BUILD_DIR"
+    wasm32posix-cc -I./ncurses -I./include -I"$SRC_DIR/ncurses" -I"$SRC_DIR/include" \
+        -DHAVE_CONFIG_H -DNDEBUG -O2 -DNCURSES_STATIC -DUSE_TERMLIB \
+        -c ncurses/fallback.c -o objects/fallback.o 2>&1 | grep -v warning || true
+    wasm32posix-ar r lib/libtinfow.a objects/fallback.o 2>&1
+    wasm32posix-ranlib lib/libtinfow.a
+)
+echo "==> Fallback entries compiled into libtinfow.a"
+
+# --- Install into $INSTALL_DIR ---
+echo "==> Installing to $INSTALL_DIR..."
+(
+    cd "$WASM_BUILD_DIR"
+    make install 2>&1 | tail -10
+)
+
+# Non-wide symlinks for consumers that link `-lncurses` / `-ltinfo`.
+# Nice-to-have — the resolver only enforces the underlying wide files.
+# Use explicit `if` blocks rather than `[ ... ] && cmd` at statement
+# level, since the latter returns non-zero when the test is false and
+# `set -e` can pick that up as a script failure.
+(
+    cd "$INSTALL_DIR/lib"
+    if [ ! -e libncurses.a ]; then ln -sf libncursesw.a libncurses.a; fi
+    if [ ! -e libtinfo.a   ]; then ln -sf libtinfow.a   libtinfo.a;   fi
+)
+
+# Convenience: symlink include/ncursesw → include/ncurses, and expose
+# each header at top-level for programs that `#include <curses.h>`
+# without the ncursesw prefix.
+(
+    cd "$INSTALL_DIR/include"
+    if [ -d ncursesw ] && [ ! -e ncurses ]; then
+        ln -sf ncursesw ncurses
     fi
+    for h in ncursesw/*.h; do
+        name="$(basename "$h")"
+        if [ ! -e "$name" ]; then ln -sf "ncursesw/$name" "$name"; fi
+    done
+)
 
-    # Regenerate fallback.c with host tic+infocmp — the cross-build can't
-    # run tic to generate the compiled-in terminal entries, so fallback.c
-    # ends up empty. We use the host-built tools to produce correct data.
-    echo "==> Regenerating fallback terminal entries..."
-    HOST_INFOCMP="$HOST_BUILD_DIR/progs/infocmp"
-    TERMINFO_SRC="$SRC_DIR/misc/terminfo.src"
-    MKFALLBACK="$SRC_DIR/ncurses/tinfo/MKfallback.sh"
-    TERMINFO="$TERMINFO_DIR" bash -e "$MKFALLBACK" \
-        "$TERMINFO_DIR" "$TERMINFO_SRC" "$HOST_TIC" "$HOST_INFOCMP" \
-        xterm-256color xterm vt100 dumb \
-        > "$WASM_BUILD_DIR/ncurses/fallback.c" 2>/dev/null
-
-    # Recompile fallback.o and update the library
-    (
-        cd "$WASM_BUILD_DIR"
-        wasm32posix-cc -I./ncurses -I./include -I"$SRC_DIR/ncurses" -I"$SRC_DIR/include" \
-            -DHAVE_CONFIG_H -DNDEBUG -O2 -DNCURSES_STATIC -DUSE_TERMLIB \
-            -c ncurses/fallback.c -o objects/fallback.o 2>&1 | grep -v warning || true
-        wasm32posix-ar r lib/libtinfow.a objects/fallback.o 2>&1
-        wasm32posix-ranlib lib/libtinfow.a
-    )
-    echo "==> Fallback entries compiled"
-
-    echo "==> ncurses cross-compiled"
+if [ -f "$INSTALL_DIR/lib/libncursesw.a" ] && [ -f "$INSTALL_DIR/lib/libtinfow.a" ]; then
+    echo ""
+    echo "==> ncurses $NCURSES_VERSION built successfully!"
+    ls -lh "$INSTALL_DIR/lib/libncursesw.a" "$INSTALL_DIR/lib/libtinfow.a"
+else
+    echo "ERROR: Build failed — expected libraries not found" >&2
+    exit 1
 fi
-
-# --- Install into sysroot ---
-if [ ! -f "$SYSROOT/lib/libncursesw.a" ]; then
-    echo "==> Installing ncurses into sysroot..."
-    (
-        cd "$WASM_BUILD_DIR"
-        make install 2>&1 | tail -10
-    )
-
-    # Create non-wide symlinks for programs that don't use the wide variants
-    (
-        cd "$SYSROOT/lib"
-        [ ! -f libncurses.a ] && ln -sf libncursesw.a libncurses.a
-        [ ! -f libtinfo.a ] && ln -sf libtinfow.a libtinfo.a
-    )
-    (
-        cd "$SYSROOT/include"
-        if [ -d ncursesw ] && [ ! -d ncurses ]; then
-            ln -sf ncursesw ncurses
-        fi
-        # Symlink headers to top-level include for programs expecting <curses.h>
-        for h in ncursesw/*.h; do
-            name="$(basename "$h")"
-            [ ! -f "$name" ] && ln -sf "ncursesw/$name" "$name"
-        done
-    )
-
-    echo "==> ncurses installed into sysroot"
-fi
-
-# --- Compile minimal terminfo database (if not already done above) ---
-TERMINFO_DIR="${TERMINFO_DIR:-$SCRIPT_DIR/terminfo}"
-if [ ! -f "$TERMINFO_DIR/x/xterm-256color" ]; then
-    echo "==> Compiling terminfo database..."
-    mkdir -p "$TERMINFO_DIR"
-
-    # Use host tic to compile just the xterm-256color entry
-    TERMINFO="$TERMINFO_DIR" "$HOST_TIC" -x -e xterm-256color,xterm,vt100,dumb \
-        "$SRC_DIR/misc/terminfo.src" 2>&1 | tail -5 || true
-
-    echo "==> Terminfo entries:"
-    find "$TERMINFO_DIR" -type f | head -20
-fi
-
-echo ""
-echo "==> ncurses $NCURSES_VERSION built successfully!"
-echo "Libraries: $SYSROOT/lib/libncursesw.a, $SYSROOT/lib/libtinfow.a"
-echo "Headers:   $SYSROOT/include/ncursesw/"
-echo "Terminfo:  $TERMINFO_DIR/"

@@ -1,0 +1,20 @@
+kind = "program"
+name = "make"
+version = "4.4.1"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://ftpmirror.gnu.org/gnu/make/make-4.4.1.tar.gz"
+sha256 = "dd16fb1d67bfab79a72f5e8390735c49e3e8e70b4945a15ab1f81ddb78658fb3"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://git.savannah.gnu.org/cgit/make.git/tree/COPYING"
+
+[[outputs]]
+name = "make"
+wasm = "make.wasm"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/make-4.4.1-rev1-abi6-wasm32-594c9214.tar.zst"
+archive_sha256 = "997083b6b5fba96e51c88f96a2436eeea762cca52d0b240ea776c5f6a391ad7f"

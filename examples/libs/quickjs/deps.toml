@@ -1,0 +1,20 @@
+kind = "program"
+name = "quickjs"
+version = "0.12.1"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://github.com/quickjs-ng/quickjs/archive/refs/tags/v0.12.1.tar.gz"
+sha256 = "c2c54b76ca2f52ffea49658a61c5111449cfe0f94e62510bd3bd7a12e2e18884"
+
+[license]
+spdx = "MIT"
+url = "https://github.com/quickjs-ng/quickjs/blob/master/LICENSE"
+
+[[outputs]]
+name = "quickjs"
+wasm = "qjs.wasm"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/quickjs-0.12.1-rev1-abi6-wasm32-fff9c5f4.tar.zst"
+archive_sha256 = "acd49790eee6a05724da1e6045d8f0e84bee1a3e39777066bff11a6851d91ab0"

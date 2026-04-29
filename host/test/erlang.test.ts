@@ -7,16 +7,27 @@
  */
 import { describe, it, expect } from "vitest";
 import { join, dirname } from "node:path";
-import { existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { tryResolveBinary, findRepoRoot } from "../src/binary-resolver";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const repoRoot = join(__dirname, "../..");
-const beamBinary = join(repoRoot, "examples/libs/erlang/bin/beam.wasm");
+const repoRoot = findRepoRoot();
+const beamBinary = tryResolveBinary("programs/erlang.wasm");
 const serveScript = join(repoRoot, "examples/erlang/serve.ts");
 
-const hasErlang = existsSync(beamBinary);
+// serve.ts passes -root/-bindir/-boot pointing at
+// `examples/libs/erlang/erlang-install/` on the host; NodeKernelHost
+// passes those paths through to the BEAM emulator. Without the
+// install tree, BEAM crashes during boot. The tree comes from
+// `bash examples/libs/erlang/build-erlang.sh` (a full source build);
+// the binaries-abi-v6 release ships only erlang.wasm. Skip when the
+// host-side OTP runtime isn't present — re-running this test on a
+// machine without a local erlang build is an environment setup
+// issue, not a regression.
+const installDir = join(repoRoot, "examples/libs/erlang/erlang-install");
+const hasErlang = !!beamBinary && existsSync(installDir);
 
 function runErlang(evalExpr: string, timeoutMs = 30_000): string {
   const result = execFileSync("npx", ["tsx", serveScript, "-eval", evalExpr], {

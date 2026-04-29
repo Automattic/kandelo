@@ -1,0 +1,23 @@
+kind = "program"
+name = "wordpress"
+version = "6.8"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://wordpress.org/wordpress-6.8.tar.gz"
+sha256 = "f7dbedc423ddb3f2f3e98e9140f1720bfd6d4a8f4873c85da2e62f6a078de10a"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://wordpress.org/about/gpl/"
+
+[build]
+script = "build-wordpress.sh"
+
+[[outputs]]
+name = "wordpress"
+wasm = "wordpress.vfs"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/wordpress-6.8-rev1-abi6-wasm32-31113b92.tar.zst"
+archive_sha256 = "8e8b54013d801f5135a2431084d6a962b12c86bef301d3b3fbda1da9aeee5b73"

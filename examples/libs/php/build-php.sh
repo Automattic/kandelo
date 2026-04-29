@@ -1,83 +1,72 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Builds two PHP binaries from one source tree:
+#
+#   sapi/cli/php        → php.wasm     (CLI; no asyncify)
+#   sapi/fpm/php-fpm    → php-fpm.wasm (FastCGI Process Manager;
+#                                       asyncified via onlylist for
+#                                       fork support)
+#
+# The two builds were previously separate scripts (this one + the
+# now-removed examples/nginx/build-php-fpm.sh). Unifying them lets a
+# single autoconf invocation produce both sapis from one source tree
+# and one set of patched config.h/Makefile.
+#
+# CFLAGS/LDFLAGS are set to FPM's stricter requirements (line tables
+# preserved, clang's automatic wasm-opt step skipped) because they're
+# needed for FPM's asyncify-onlylist to find function names. CLI just
+# ships the same way without asyncify on top.
+
 PHP_VERSION="${PHP_VERSION:-8.3.15}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SRC_DIR="$SCRIPT_DIR/php-src"
 INSTALL_DIR="$SCRIPT_DIR/php-install"
 
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+# Worktree-local SDK on PATH (no global npm link required).
+# shellcheck source=/dev/null
+source "$REPO_ROOT/sdk/activate.sh"
+
 if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
+    echo "ERROR: wasm32posix-cc not found after sourcing sdk/activate.sh." >&2
     exit 1
 fi
 
-REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SYSROOT="$REPO_ROOT/sysroot"
+SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 export WASM_POSIX_SYSROOT="$SYSROOT"
-SQLITE_DIR="$SCRIPT_DIR/../sqlite/sqlite-install"
 
-# Build SQLite if not already built
-if [ ! -f "$SQLITE_DIR/lib/libsqlite3.a" ]; then
-    echo "==> Building SQLite..."
-    bash "$SCRIPT_DIR/../sqlite/build-sqlite.sh"
-fi
+# --- Resolve cache deps via cargo xtask build-deps ---
+HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
+resolve_dep() {
+    local name="$1"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TARGET" --quiet -- build-deps resolve "$name")
+}
 
-# Install SQLite into sysroot so pkg-config can find it
-echo "==> Installing SQLite into sysroot..."
-cp "$SQLITE_DIR/include/sqlite3.h" "$SQLITE_DIR/include/sqlite3ext.h" "$SYSROOT/include/"
-cp "$SQLITE_DIR/lib/libsqlite3.a" "$SYSROOT/lib/"
-mkdir -p "$SYSROOT/lib/pkgconfig"
-sed "s|^prefix=.*|prefix=$SYSROOT|" "$SQLITE_DIR/lib/pkgconfig/sqlite3.pc" \
-    > "$SYSROOT/lib/pkgconfig/sqlite3.pc"
+ZLIB_PREFIX="${WASM_POSIX_DEP_ZLIB_DIR:-}"
+[ -z "$ZLIB_PREFIX" ] && { echo "==> Resolving zlib..."; ZLIB_PREFIX="$(resolve_dep zlib)"; }
+SQLITE_PREFIX="${WASM_POSIX_DEP_SQLITE_DIR:-}"
+[ -z "$SQLITE_PREFIX" ] && { echo "==> Resolving sqlite..."; SQLITE_PREFIX="$(resolve_dep sqlite)"; }
+OPENSSL_PREFIX="${WASM_POSIX_DEP_OPENSSL_DIR:-}"
+[ -z "$OPENSSL_PREFIX" ] && { echo "==> Resolving openssl..."; OPENSSL_PREFIX="$(resolve_dep openssl)"; }
+LIBXML2_PREFIX="${WASM_POSIX_DEP_LIBXML2_DIR:-}"
+[ -z "$LIBXML2_PREFIX" ] && { echo "==> Resolving libxml2..."; LIBXML2_PREFIX="$(resolve_dep libxml2)"; }
+[ -f "$ZLIB_PREFIX/lib/libz.a" ] || { echo "ERROR: zlib resolve missing libz.a"; exit 1; }
+[ -f "$SQLITE_PREFIX/lib/libsqlite3.a" ] || { echo "ERROR: sqlite resolve missing libsqlite3.a"; exit 1; }
+[ -f "$OPENSSL_PREFIX/lib/libssl.a" ] || { echo "ERROR: openssl resolve missing libssl.a"; exit 1; }
+[ -f "$LIBXML2_PREFIX/lib/libxml2.a" ] || { echo "ERROR: libxml2 resolve missing libxml2.a"; exit 1; }
+echo "==> zlib at $ZLIB_PREFIX"
+echo "==> sqlite at $SQLITE_PREFIX"
+echo "==> openssl at $OPENSSL_PREFIX"
+echo "==> libxml2 at $LIBXML2_PREFIX"
 
-# Build zlib if not already built
-ZLIB_DIR="$SCRIPT_DIR/../zlib/zlib-install"
-if [ ! -f "$ZLIB_DIR/lib/libz.a" ]; then
-    echo "==> Building zlib..."
-    bash "$SCRIPT_DIR/../zlib/build-zlib.sh"
-fi
+# Compose PKG_CONFIG_PATH for all 4 deps so wasm32posix-configure's
+# pkg-config probes can find them in the cache instead of the sysroot.
+DEP_PKG_CONFIG_PATH="$ZLIB_PREFIX/lib/pkgconfig:$SQLITE_PREFIX/lib/pkgconfig:$OPENSSL_PREFIX/lib/pkgconfig:$LIBXML2_PREFIX/lib/pkgconfig"
 
-# Install zlib into sysroot
-echo "==> Installing zlib into sysroot..."
-cp "$ZLIB_DIR/include/zlib.h" "$ZLIB_DIR/include/zconf.h" "$SYSROOT/include/"
-cp "$ZLIB_DIR/lib/libz.a" "$SYSROOT/lib/"
-mkdir -p "$SYSROOT/lib/pkgconfig"
-sed "s|^prefix=.*|prefix=$SYSROOT|" "$ZLIB_DIR/lib/pkgconfig/zlib.pc" \
-    > "$SYSROOT/lib/pkgconfig/zlib.pc"
-
-# Build OpenSSL if not already built
-OPENSSL_DIR="$SCRIPT_DIR/../openssl/openssl-install"
-if [ ! -f "$OPENSSL_DIR/lib/libssl.a" ]; then
-    echo "==> Building OpenSSL..."
-    bash "$SCRIPT_DIR/../openssl/build-openssl.sh"
-fi
-
-# Install OpenSSL into sysroot
-echo "==> Installing OpenSSL into sysroot..."
-cp -r "$OPENSSL_DIR/include/openssl" "$SYSROOT/include/"
-cp "$OPENSSL_DIR/lib/libssl.a" "$OPENSSL_DIR/lib/libcrypto.a" "$SYSROOT/lib/"
-mkdir -p "$SYSROOT/lib/pkgconfig"
-for pc in openssl.pc libssl.pc libcrypto.pc; do
-    if [ -f "$OPENSSL_DIR/lib/pkgconfig/$pc" ]; then
-        sed "s|^prefix=.*|prefix=$SYSROOT|" "$OPENSSL_DIR/lib/pkgconfig/$pc" \
-            > "$SYSROOT/lib/pkgconfig/$pc"
-    fi
-done
-
-# Build libxml2 if not already built
-LIBXML2_DIR="$SCRIPT_DIR/../libxml2/libxml2-install"
-if [ ! -f "$LIBXML2_DIR/lib/libxml2.a" ]; then
-    echo "==> Building libxml2..."
-    bash "$SCRIPT_DIR/../libxml2/build-libxml2.sh"
-fi
-
-# Install libxml2 into sysroot
-echo "==> Installing libxml2 into sysroot..."
-cp -r "$LIBXML2_DIR/include/libxml" "$SYSROOT/include/"
-cp "$LIBXML2_DIR/lib/libxml2.a" "$SYSROOT/lib/"
-mkdir -p "$SYSROOT/lib/pkgconfig"
-sed "s|^prefix=.*|prefix=$SYSROOT|" "$LIBXML2_DIR/lib/pkgconfig/libxml-2.0.pc" \
-    > "$SYSROOT/lib/pkgconfig/libxml-2.0.pc"
+# Compose -I and -L flags for defense-in-depth (autoconf raw probes).
+DEP_CPPFLAGS="-I$ZLIB_PREFIX/include -I$SQLITE_PREFIX/include -I$OPENSSL_PREFIX/include -I$LIBXML2_PREFIX/include"
+DEP_LDFLAGS="-L$ZLIB_PREFIX/lib -L$SQLITE_PREFIX/lib -L$OPENSSL_PREFIX/lib -L$LIBXML2_PREFIX/lib"
 
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading PHP $PHP_VERSION..."
@@ -102,13 +91,22 @@ if ! grep -q 'ZEND_USE_ASM_ARITHMETIC 0' Zend/zend_multiply.h 2>/dev/null; then
     fi
 fi
 
-echo "==> Configuring PHP for Wasm..."
+echo "==> Configuring PHP for Wasm (CLI + FPM, single tree)..."
+# Drop a stale config.cache from a previous build whose env (CPPFLAGS,
+# PKG_CONFIG_PATH, etc.) may not match this run. autoconf would
+# otherwise reject the cache with "changes in the environment can
+# compromise the build" — recovering requires a fresh cache anyway.
+rm -f "$SCRIPT_DIR/config.cache"
 if [ ! -f Makefile ]; then
+    PKG_CONFIG_PATH="$DEP_PKG_CONFIG_PATH" \
+    CPPFLAGS="$DEP_CPPFLAGS" \
+    LDFLAGS="$DEP_LDFLAGS --no-wasm-opt" \
     wasm32posix-configure \
         --disable-all \
         --disable-cgi \
         --disable-phpdbg \
         --enable-cli \
+        --enable-fpm \
         --enable-mbstring \
         --disable-mbregex \
         --enable-ctype \
@@ -123,6 +121,8 @@ if [ ! -f Makefile ]; then
         --with-sqlite3 \
         --enable-pdo \
         --with-pdo-sqlite \
+        --with-pdo-mysql=mysqlnd \
+        --with-mysqli=mysqlnd \
         --enable-fileinfo \
         --enable-exif \
         --with-zlib \
@@ -135,7 +135,12 @@ if [ ! -f Makefile ]; then
         --enable-xmlwriter \
         --cache-file="$SCRIPT_DIR/config.cache" \
         --prefix="$INSTALL_DIR" \
-        CFLAGS="-O2 -DZEND_USE_ASM_ARITHMETIC=0"
+        CFLAGS="-O2 -gline-tables-only -DZEND_USE_ASM_ARITHMETIC=0"
+    # CFLAGS includes -gline-tables-only and LDFLAGS sets --no-wasm-opt
+    # to keep the wasm name section intact for FPM's asyncify-onlylist
+    # to find function names. CLI doesn't need either but inheriting
+    # the same flags doesn't change CLI's behaviour besides a slightly
+    # larger binary.
 
     # Patch config.h: disable features that pass link-time checks (--allow-undefined)
     # but don't actually exist in our musl sysroot
@@ -151,6 +156,7 @@ if [ ! -f Makefile ]; then
         -e 's/^#define HAVE_FUNOPEN 1/\/* #undef HAVE_FUNOPEN *\//' \
         -e 's/^#define HAVE_STD_SYSLOG 1/\/* #undef HAVE_STD_SYSLOG *\//' \
         -e 's/^#define HAVE_SETPROCTITLE 1/\/* #undef HAVE_SETPROCTITLE *\//' \
+        -e 's/^#define HAVE_SETPROCTITLE_FAST 1/\/* #undef HAVE_SETPROCTITLE_FAST *\//' \
         -e 's/^#define HAVE_PRCTL 1/\/* #undef HAVE_PRCTL *\//' \
         -e 's/^#define HAVE_RAND_EGD 1/\/* #undef HAVE_RAND_EGD *\//' \
         main/php_config.h && rm -f main/php_config.h.bak
@@ -164,13 +170,57 @@ if [ ! -f Makefile ]; then
         Makefile && rm -f Makefile.bak
 fi
 
-echo "==> Building PHP..."
+echo "==> Building PHP CLI..."
 make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" cli
 
-echo "==> PHP CLI built successfully!"
+echo "==> Building PHP FPM..."
+make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" fpm
+
+echo "==> Both PHP binaries built successfully!"
 
 # Copy to bin/ with .wasm extension (needed for Vite browser demos)
 mkdir -p "$SCRIPT_DIR/bin"
 cp sapi/cli/php "$SCRIPT_DIR/bin/php.wasm"
+cp sapi/fpm/php-fpm "$SCRIPT_DIR/bin/php-fpm.wasm"
 
-ls -la "$SCRIPT_DIR/bin/php.wasm"
+# Both CLI and FPM are built with -gline-tables-only + --no-wasm-opt
+# so FPM's asyncify-onlylist can find function names. That leaves CLI
+# with ~18MB of unneeded debug info; wasm-opt -O2 strips it.
+WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
+if [ -n "$WASM_OPT" ]; then
+    echo "==> Optimizing CLI binary (strip debug info)..."
+    "$WASM_OPT" -O2 "$SCRIPT_DIR/bin/php.wasm" -o "$SCRIPT_DIR/bin/php.wasm"
+
+    # Asyncify FPM (it forks worker children). CLI is sequential.
+    # The asyncify-onlylist restricts instrumentation to ~48 named
+    # functions on the fork call path, keeping the binary small (~10MB
+    # vs ~21MB for full asyncify) and avoiding V8 stack overflow in
+    # browser web workers.
+    #
+    # Onlylist requires the wasm name section to be intact:
+    #   - CFLAGS includes -gline-tables-only (set above)
+    #   - LDFLAGS includes --no-wasm-opt (set above)
+    #   - wasm-opt -g flag (below)
+    ONLYLIST="$SCRIPT_DIR/asyncify-fpm-onlylist.txt"
+    if [ -f "$ONLYLIST" ]; then
+        ONLY_FUNCS=$(grep -v '^#' "$ONLYLIST" | grep -v '^$' | tr '\n' ',' | sed 's/,$//')
+        FUNC_COUNT=$(echo "$ONLY_FUNCS" | tr ',' '\n' | wc -l | tr -d ' ')
+        echo "==> Applying asyncify-onlylist to FPM ($FUNC_COUNT functions)..."
+        "$WASM_OPT" -g --asyncify \
+            --pass-arg="asyncify-imports@kernel.kernel_fork" \
+            --pass-arg="asyncify-onlylist@${ONLY_FUNCS}" \
+            "$SCRIPT_DIR/bin/php-fpm.wasm" -o "$SCRIPT_DIR/bin/php-fpm.wasm"
+        echo "==> Optimizing asyncified FPM binary..."
+        "$WASM_OPT" -O2 "$SCRIPT_DIR/bin/php-fpm.wasm" -o "$SCRIPT_DIR/bin/php-fpm.wasm"
+    else
+        echo "==> WARN: $ONLYLIST not found, skipping asyncify (FPM fork will not work)."
+    fi
+fi
+
+ls -la "$SCRIPT_DIR/bin/php.wasm" "$SCRIPT_DIR/bin/php-fpm.wasm"
+
+# Install into local-binaries/ so the resolver picks the freshly-built
+# binaries over the fetched release.
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary php "$SCRIPT_DIR/bin/php.wasm"     php.wasm
+install_local_binary php "$SCRIPT_DIR/bin/php-fpm.wasm" php-fpm.wasm

@@ -6,8 +6,8 @@
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
 import { PtyTerminal } from "../../lib/pty-terminal";
-import kernelWasmUrl from "../../../../host/wasm/wasm_posix_kernel.wasm?url";
-import rubyWasmUrl from "../../../../examples/libs/ruby/bin/ruby.wasm?url";
+import kernelWasmUrl from "@kernel-wasm?url";
+import rubyWasmUrl from "../../../../binaries/programs/wasm32/ruby.wasm?url";
 import "@xterm/xterm/css/xterm.css";
 
 // --- DOM elements ---

@@ -1,0 +1,20 @@
+kind = "program"
+name = "zstd"
+version = "1.5.6"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://github.com/facebook/zstd/archive/refs/tags/v1.5.6.tar.gz"
+sha256 = "30f35f71c1203369dc979ecde0400ffea93c27391bfd2ac5a9715d2173d92ff7"
+
+[license]
+spdx = "BSD-3-Clause OR GPL-2.0-only"
+url = "https://github.com/facebook/zstd/blob/dev/LICENSE"
+
+[[outputs]]
+name = "zstd"
+wasm = "zstd.wasm"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/zstd-1.5.6-rev1-abi6-wasm32-c66e7982.tar.zst"
+archive_sha256 = "58786ccd7da6735f534979b5a254d449c4d4d54053266a39f886d7906476c593"

@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Thin SDK wrapper: invokes this worktree's TypeScript source for
+# wasm64posix-configure. Self-contained — no symlinks, no central
+# dispatcher. The arch is fixed at the script level, the env var lets
+# detectArch (sdk/src/lib/arch.ts) see what we were invoked as.
+set -e
+WASM_POSIX_INVOKED_AS=wasm64posix-configure \
+  exec node --experimental-strip-types "$(dirname "$0")/../src/bin/configure.ts" "$@"

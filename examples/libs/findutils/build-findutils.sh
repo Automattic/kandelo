@@ -30,7 +30,7 @@ export WASM_POSIX_SYSROOT="$SYSROOT"
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading findutils $FINDUTILS_VERSION..."
     TARBALL="findutils-${FINDUTILS_VERSION}.tar.xz"
-    URL="https://ftp.gnu.org/gnu/findutils/${TARBALL}"
+    URL="https://ftpmirror.gnu.org/gnu/findutils/${TARBALL}"
     curl -fsSL "$URL" -o "/tmp/$TARBALL"
     mkdir -p "$SRC_DIR"
     tar xJf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
@@ -202,3 +202,9 @@ fi
 echo ""
 echo "==> findutils built successfully!"
 echo "Binaries: $BIN_DIR/find.wasm $BIN_DIR/xargs.wasm"
+
+# Install into local-binaries/ so the resolver picks the freshly-built
+# binary over the fetched release.
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary findutils "$SCRIPT_DIR/bin/find.wasm" find.wasm
+install_local_binary findutils "$SCRIPT_DIR/bin/xargs.wasm" xargs.wasm

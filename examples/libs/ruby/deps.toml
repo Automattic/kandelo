@@ -1,0 +1,20 @@
+kind = "program"
+name = "ruby"
+version = "3.3.5"
+revision = 1
+depends_on = ["zlib@1.3.1"]
+
+[source]
+url = "https://cache.ruby-lang.org/pub/ruby/3.3/ruby-3.3.5.tar.gz"
+sha256 = "3781a3504222c2f26cb4b9eb9c1a12dbf4944d366ce24a9ff8cf99ecbce75196"
+
+[license]
+spdx = "Ruby OR BSD-2-Clause"
+url = "https://github.com/ruby/ruby/blob/master/COPYING"
+
+[[outputs]]
+name = "ruby"
+wasm = "ruby.wasm"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/ruby-3.3.5-rev1-abi6-wasm32-4e2203fb.tar.zst"
+archive_sha256 = "3eef403a48e8630989e1bb8bc1d7755849cb5d18b2ae19e059162fdefc68a57f"

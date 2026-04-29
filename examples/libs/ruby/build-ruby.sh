@@ -11,8 +11,8 @@ set -euo pipefail
 #
 # Prerequisites:
 #   - bash build.sh (kernel + sysroot)
-#   - npm link in sdk/
 #   - zlib built (auto-triggered if missing)
+# The SDK toolchain is activated automatically via sdk/activate.sh below.
 
 RUBY_VERSION="${RUBY_VERSION:-3.3.6}"
 RUBY_MAJOR_MINOR="$(echo "$RUBY_VERSION" | cut -d. -f1-2)"
@@ -23,12 +23,16 @@ HOST_BUILD_DIR="$SCRIPT_DIR/ruby-host-build"
 CROSS_BUILD_DIR="$SCRIPT_DIR/ruby-cross-build"
 INSTALL_DIR="$SCRIPT_DIR/ruby-install"
 BIN_DIR="$SCRIPT_DIR/bin"
-SYSROOT="$REPO_ROOT/sysroot"
+# Worktree-local SDK on PATH (no global npm link required).
+# shellcheck source=/dev/null
+source "$REPO_ROOT/sdk/activate.sh"
+# Explicit env wins; else the in-tree sysroot.
+SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
 if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
+    echo "ERROR: wasm32posix-cc not found after sourcing sdk/activate.sh." >&2
     exit 1
 fi
 
@@ -37,20 +41,25 @@ if [ ! -f "$SYSROOT/lib/libc.a" ]; then
     exit 1
 fi
 
-# Build zlib if not already built
-ZLIB_DIR="$SCRIPT_DIR/../zlib/zlib-install"
-if [ ! -f "$ZLIB_DIR/lib/libz.a" ]; then
-    echo "==> Building zlib..."
-    bash "$SCRIPT_DIR/../zlib/build-zlib.sh"
-fi
+# --- Resolve zlib via the dep cache ---
+# Env-var short-circuit lets an outer resolver run pass the prefix
+# through without re-invoking cargo.
+HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
+resolve_dep() {
+    local name="$1"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TARGET" --quiet -- build-deps resolve "$name")
+}
 
-# Install zlib into sysroot
-echo "==> Installing zlib into sysroot..."
-cp "$ZLIB_DIR/include/zlib.h" "$ZLIB_DIR/include/zconf.h" "$SYSROOT/include/"
-cp "$ZLIB_DIR/lib/libz.a" "$SYSROOT/lib/"
-mkdir -p "$SYSROOT/lib/pkgconfig"
-sed "s|^prefix=.*|prefix=$SYSROOT|" "$ZLIB_DIR/lib/pkgconfig/zlib.pc" \
-    > "$SYSROOT/lib/pkgconfig/zlib.pc"
+ZLIB_PREFIX="${WASM_POSIX_DEP_ZLIB_DIR:-}"
+if [ -z "$ZLIB_PREFIX" ]; then
+    echo "==> Resolving zlib via cargo xtask build-deps..."
+    ZLIB_PREFIX="$(resolve_dep zlib)"
+fi
+if [ ! -f "$ZLIB_PREFIX/lib/libz.a" ]; then
+    echo "ERROR: zlib resolve returned '$ZLIB_PREFIX' but libz.a missing" >&2
+    exit 1
+fi
+echo "==> zlib at $ZLIB_PREFIX"
 
 # Build libyaml if not already built (Ruby needs it for psych/YAML)
 LIBYAML_DIR="$SCRIPT_DIR/libyaml-install"
@@ -78,6 +87,7 @@ fi
 # Install libyaml into sysroot
 cp "$LIBYAML_DIR/include/yaml.h" "$SYSROOT/include/"
 cp "$LIBYAML_DIR/lib/libyaml.a" "$SYSROOT/lib/"
+mkdir -p "$SYSROOT/lib/pkgconfig"
 if [ -f "$LIBYAML_DIR/lib/pkgconfig/yaml-0.1.pc" ]; then
     sed "s|^prefix=.*|prefix=$SYSROOT|" "$LIBYAML_DIR/lib/pkgconfig/yaml-0.1.pc" \
         > "$SYSROOT/lib/pkgconfig/yaml-0.1.pc"
@@ -502,8 +512,10 @@ SITE_EOF
     NM=wasm32posix-nm \
     STRIP=wasm32posix-strip \
     PKG_CONFIG=wasm32posix-pkg-config \
+    PKG_CONFIG_PATH="$ZLIB_PREFIX/lib/pkgconfig" \
     CFLAGS="-O2 -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS" \
-    LDFLAGS="" \
+    CPPFLAGS="-I$ZLIB_PREFIX/include" \
+    LDFLAGS="-L$ZLIB_PREFIX/lib" \
     "$SRC_DIR/configure" \
         --host=wasm32-unknown-wasi \
         --build="$(uname -m)-apple-darwin" \
@@ -700,3 +712,8 @@ make install MINIRUBY="$HOST_MINIRUBY -I$SRC_DIR/lib" DESTDIR="" 2>/dev/null || 
 echo ""
 echo "==> Ruby built successfully!"
 ls -lh "$BIN_DIR/ruby.wasm"
+
+# Install into local-binaries/ so the resolver picks the freshly-built
+# binary over the fetched release.
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary ruby "$SCRIPT_DIR/bin/ruby.wasm"

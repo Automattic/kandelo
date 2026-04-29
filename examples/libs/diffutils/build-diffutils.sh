@@ -30,7 +30,7 @@ export WASM_POSIX_SYSROOT="$SYSROOT"
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading diffutils $DIFFUTILS_VERSION..."
     TARBALL="diffutils-${DIFFUTILS_VERSION}.tar.xz"
-    URL="https://ftp.gnu.org/gnu/diffutils/${TARBALL}"
+    URL="https://ftpmirror.gnu.org/gnu/diffutils/${TARBALL}"
     curl -fsSL "$URL" -o "/tmp/$TARBALL"
     mkdir -p "$SRC_DIR"
     tar xJf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
@@ -186,3 +186,11 @@ done
 echo ""
 echo "==> diffutils built successfully!"
 echo "Binaries: $BIN_DIR/{diff,cmp,sdiff,diff3}.wasm"
+
+# Install into local-binaries/ so the resolver picks the freshly-built
+# binary over the fetched release.
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary diffutils "$SCRIPT_DIR/bin/diff.wasm" diff.wasm
+install_local_binary diffutils "$SCRIPT_DIR/bin/cmp.wasm" cmp.wasm
+install_local_binary diffutils "$SCRIPT_DIR/bin/diff3.wasm" diff3.wasm
+install_local_binary diffutils "$SCRIPT_DIR/bin/sdiff.wasm" sdiff.wasm

@@ -27,14 +27,16 @@
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
 import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
+import { decompressVfsImage } from "../../../../host/src/vfs/load-image";
 import { SystemInit } from "../../lib/init/system-init";
 import { writeVfsFile } from "../../lib/init/vfs-utils";
-import kernelWasmUrl from "../../../../host/wasm/wasm_posix_kernel.wasm?url";
-import nginxWasmUrl from "../../../../examples/nginx/nginx.wasm?url";
-import phpFpmWasmUrl from "../../../../examples/nginx/php-fpm.wasm?url";
-import coreutilsWasmUrl from "../../../../examples/libs/coreutils/bin/coreutils.wasm?url";
-import grepWasmUrl from "../../../../examples/libs/grep/bin/grep.wasm?url";
-import sedWasmUrl from "../../../../examples/libs/sed/bin/sed.wasm?url";
+import kernelWasmUrl from "@kernel-wasm?url";
+import nginxWasmUrl from "../../../../binaries/programs/wasm32/nginx.wasm?url";
+import phpFpmWasmUrl from "../../../../binaries/programs/wasm32/php/php-fpm.wasm?url";
+import coreutilsWasmUrl from "../../../../binaries/programs/wasm32/coreutils.wasm?url";
+import grepWasmUrl from "../../../../binaries/programs/wasm32/grep.wasm?url";
+import sedWasmUrl from "../../../../binaries/programs/wasm32/sed.wasm?url";
+import VFS_IMAGE_URL from "@binaries/programs/wasm32/lamp.vfs?url";
 import "@xterm/xterm/css/xterm.css";
 import "../../lib/terminal-panel.css";
 
@@ -44,7 +46,6 @@ const APP_PATH = import.meta.env.BASE_URL + "app";
 // Capture the real page protocol so wp-config.php generates correct URLs
 const PROTO = window.location.protocol === "https:" ? "https" : "http";
 const SW_URL = import.meta.env.BASE_URL + "service-worker.js";
-const VFS_IMAGE_URL = import.meta.env.BASE_URL + "lamp.vfs";
 
 const log = document.getElementById("log") as HTMLPreElement;
 const startBtn = document.getElementById("start") as HTMLButtonElement;
@@ -160,7 +161,7 @@ async function start() {
     // Restore MemoryFileSystem from the pre-built VFS image
     appendLog("Restoring VFS from image...\n", "info");
     const maxFsSize = 1024 * 1024 * 1024; // 1GB max growth
-    const memfs = MemoryFileSystem.fromImage(new Uint8Array(vfsImageBuf), {
+    const memfs = MemoryFileSystem.fromImage(decompressVfsImage(new Uint8Array(vfsImageBuf)), {
       maxByteLength: maxFsSize,
     });
 

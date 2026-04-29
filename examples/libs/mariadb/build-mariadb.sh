@@ -16,6 +16,9 @@ MARIADB_MAJOR="10.5"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+# Worktree-local SDK on PATH (no global npm link required).
+# shellcheck source=/dev/null
+source "$REPO_ROOT/sdk/activate.sh"
 SRC_DIR="$SCRIPT_DIR/mariadb-src"
 HOST_BUILD_DIR="$SCRIPT_DIR/mariadb-host-build"
 GLUE_DIR="$REPO_ROOT/glue"
@@ -33,7 +36,7 @@ if [ "$WASM_ARCH" = "wasm64" ]; then
     CROSS_BUILD_DIR="$SCRIPT_DIR/mariadb-cross-build-64"
     INSTALL_DIR="$SCRIPT_DIR/mariadb-install-64"
     TOOLCHAIN_FILE="$SCRIPT_DIR/wasm64-posix-toolchain.cmake"
-    SYSROOT="$REPO_ROOT/sysroot64"
+    SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot64}"
     WASM_TARGET="wasm64-unknown-unknown"
     # LLVM 21 wasm64 backend has -O2 miscompilation bugs (sign-extension of i32 to i64
     # in table lookups). Use -O1 until the LLVM wasm64 backend matures.
@@ -42,9 +45,10 @@ else
     CROSS_BUILD_DIR="$SCRIPT_DIR/mariadb-cross-build"
     INSTALL_DIR="$SCRIPT_DIR/mariadb-install"
     TOOLCHAIN_FILE="$SCRIPT_DIR/wasm32-posix-toolchain.cmake"
-    SYSROOT="$REPO_ROOT/sysroot"
+    SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
     WASM_TARGET="wasm32-unknown-unknown"
 fi
+export WASM_POSIX_SYSROOT="$SYSROOT"
 
 NPROC="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
 
@@ -186,20 +190,28 @@ if [ ! -f "$SYSROOT/lib/libc++.a" ] || [ "$(wc -c < "$SYSROOT/lib/libc++.a" | tr
     fi
 fi
 
-# --- Build PCRE2 if not present ---
-if [ ! -f "$SYSROOT/lib/libpcre2-8.a" ]; then
-    echo "==> Building PCRE2 for $WASM_ARCH..."
-    PCRE2_VERSION="10.44"
-    PCRE2_DIR="$SCRIPT_DIR/pcre2-${PCRE2_VERSION}"
-    PCRE2_BUILD="$SCRIPT_DIR/pcre2-wasm-build"
+# --- Resolve pcre2-source via the dep cache (package-system kind="source") ---
+HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
+resolve_dep() {
+    local name="$1"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TARGET" --quiet -- build-deps resolve "$name")
+}
 
-    if [ ! -f "$PCRE2_DIR/CMakeLists.txt" ]; then
-        rm -rf "$PCRE2_DIR"
-        curl -fsSL "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-${PCRE2_VERSION}/pcre2-${PCRE2_VERSION}.tar.gz" -o "$SCRIPT_DIR/pcre2.tar.gz"
-        tar xzf "$SCRIPT_DIR/pcre2.tar.gz" -C "$SCRIPT_DIR"
-        rm "$SCRIPT_DIR/pcre2.tar.gz"
-    fi
+# Source-kind direct deps export under _SRC_DIR (Chunk C decision 12).
+PCRE2_SOURCE_DIR="${WASM_POSIX_DEP_PCRE2_SOURCE_SRC_DIR:-}"
+if [ -z "$PCRE2_SOURCE_DIR" ]; then
+    echo "==> Resolving pcre2-source via cargo xtask build-deps..."
+    PCRE2_SOURCE_DIR="$(resolve_dep pcre2-source)"
+fi
+[ -d "$PCRE2_SOURCE_DIR" ] || { echo "ERROR: pcre2-source resolve returned '$PCRE2_SOURCE_DIR' but dir missing" >&2; exit 1; }
+[ -f "$PCRE2_SOURCE_DIR/CMakeLists.txt" ] || { echo "ERROR: pcre2-source missing CMakeLists.txt at '$PCRE2_SOURCE_DIR'" >&2; exit 1; }
 
+# Build PCRE2 static libs once per cache entry. Output stays in a
+# build-side tree under SCRIPT_DIR (not cached as a library — kind=source
+# is just the unbuilt tree; the build is mariadb-specific by configuration).
+PCRE2_BUILD="$SCRIPT_DIR/pcre2-wasm-build"
+if [ ! -f "$PCRE2_BUILD/libpcre2-8.a" ]; then
+    echo "==> Building PCRE2 for $WASM_ARCH from source at $PCRE2_SOURCE_DIR..."
     PCRE2_SIZEOF_VOID_P=4
     [ "$WASM_ARCH" = "wasm64" ] && PCRE2_SIZEOF_VOID_P=8
 
@@ -207,7 +219,7 @@ if [ ! -f "$SYSROOT/lib/libpcre2-8.a" ]; then
     mkdir -p "$PCRE2_BUILD"
     cd "$PCRE2_BUILD"
 
-    cmake "$PCRE2_DIR" \
+    cmake "$PCRE2_SOURCE_DIR" \
         -DCMAKE_C_COMPILER="$LLVM_CLANG" \
         -DCMAKE_C_FLAGS="--target=$WASM_TARGET -matomics -mbulk-memory -mexception-handling -fno-exceptions -fno-trapping-math --sysroot=$SYSROOT -O2 -DNDEBUG" \
         -DCMAKE_AR="$LLVM_PREFIX/bin/llvm-ar" \
@@ -225,15 +237,19 @@ if [ ! -f "$SYSROOT/lib/libpcre2-8.a" ]; then
         2>&1 | tail -3
 
     make -j"$NPROC" pcre2-8-static pcre2-posix-static 2>&1 | tail -3
-
-    cp "$PCRE2_BUILD/libpcre2-8.a" "$SYSROOT/lib/"
-    cp "$PCRE2_BUILD/libpcre2-posix.a" "$SYSROOT/lib/"
-    cp "$PCRE2_BUILD/pcre2.h" "$SYSROOT/include/"
-    cp "$PCRE2_DIR/src/pcre2posix.h" "$SYSROOT/include/"
-
-    cd "$SCRIPT_DIR"
-    echo "==> PCRE2 installed to sysroot"
 fi
+
+# Install PCRE2 into the sysroot (mariadb's main cmake expects them there).
+# This is a localized install: the cache holds the SOURCE tree (arch-agnostic);
+# the BUILT static libs are tied to wasm32/wasm64 cross-compile and stay in
+# pcre2-wasm-build/ + sysroot for mariadb's main build to link against.
+cp "$PCRE2_BUILD/libpcre2-8.a" "$SYSROOT/lib/"
+cp "$PCRE2_BUILD/libpcre2-posix.a" "$SYSROOT/lib/"
+cp "$PCRE2_BUILD/pcre2.h" "$SYSROOT/include/"
+cp "$PCRE2_SOURCE_DIR/src/pcre2posix.h" "$SYSROOT/include/"
+
+cd "$SCRIPT_DIR"
+echo "==> PCRE2 installed to sysroot from cached source"
 
 # --- Pre-compile glue objects ---
 WASM_COMPILE_FLAGS="--target=$WASM_TARGET -matomics -mbulk-memory -mexception-handling -mllvm -wasm-enable-sjlj -fno-trapping-math --sysroot=$SYSROOT"
@@ -332,12 +348,32 @@ cmake "$SRC_DIR" \
 
 echo "==> CMake configuration complete. Starting build..."
 
-# Build mysqld
-make -j"$NPROC" mariadbd 2>&1 | tail -20
+# Build mysqld. Capture full output to a log so a failed build doesn't
+# bury the actual diagnostic in `tail -N`. Show the tail on success and
+# the relevant error context on failure.
+MARIADBD_LOG="$CROSS_BUILD_DIR/build-mariadbd.log"
+if make -j"$NPROC" mariadbd > "$MARIADBD_LOG" 2>&1; then
+    tail -10 "$MARIADBD_LOG"
+else
+    echo "==> mariadbd build failed; printing error context:" >&2
+    grep -B 2 -E "[Ee]rror|fatal|undefined" "$MARIADBD_LOG" | tail -50 >&2
+    echo "" >&2
+    echo "Full log: $MARIADBD_LOG" >&2
+    exit 1
+fi
 
 # Build mysqltest client (mariadb-test target)
 echo "==> Building mysqltest..."
-make -j"$NPROC" mariadb-test 2>&1 | tail -20
+MYSQLTEST_LOG="$CROSS_BUILD_DIR/build-mysqltest.log"
+if make -j"$NPROC" mariadb-test > "$MYSQLTEST_LOG" 2>&1; then
+    tail -10 "$MYSQLTEST_LOG"
+else
+    echo "==> mariadb-test build failed; printing error context:" >&2
+    grep -B 2 -E "[Ee]rror|fatal|undefined" "$MYSQLTEST_LOG" | tail -50 >&2
+    echo "" >&2
+    echo "Full log: $MYSQLTEST_LOG" >&2
+    exit 1
+fi
 
 # Check if mariadbd was built (10.5+ renames mysqld → mariadbd)
 MYSQLD_BIN="$CROSS_BUILD_DIR/sql/mariadbd"
@@ -408,3 +444,9 @@ if [ -d "$MYSQL_TEST_SRC" ]; then
 else
     echo "WARNING: mysql-test directory not found in source tree" >&2
 fi
+
+# Install into local-binaries/ so the resolver picks the freshly-built
+# binary over the fetched release.
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary mariadb "$SCRIPT_DIR/mariadb-install/bin/mariadbd.wasm" mariadbd.wasm
+[ -f "$SCRIPT_DIR/mariadb-install/bin/mysqltest.wasm" ] && install_local_binary mariadb "$SCRIPT_DIR/mariadb-install/bin/mysqltest.wasm" mysqltest.wasm || true

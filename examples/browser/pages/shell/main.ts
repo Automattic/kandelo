@@ -10,35 +10,37 @@
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
 import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
+import { decompressVfsImage } from "../../../../host/src/vfs/load-image";
 import { PtyTerminal } from "../../lib/pty-terminal";
 import {
   COREUTILS_NAMES,
   type BinaryDef,
 } from "../../lib/init/shell-binaries";
-import kernelWasmUrl from "../../../../host/wasm/wasm_posix_kernel.wasm?url";
-import dashWasmUrl from "../../../../examples/libs/dash/bin/dash.wasm?url";
-import bashWasmUrl from "../../../../examples/libs/bash/bin/bash.wasm?url";
-import coreutilsWasmUrl from "../../../../examples/libs/coreutils/bin/coreutils.wasm?url";
-import grepWasmUrl from "../../../../examples/libs/grep/bin/grep.wasm?url";
-import sedWasmUrl from "../../../../examples/libs/sed/bin/sed.wasm?url";
-import bcWasmUrl from "../../../../examples/libs/bc/bin/bc.wasm?url";
-import fileWasmUrl from "../../../../examples/libs/file/bin/file.wasm?url";
-import lessWasmUrl from "../../../../examples/libs/less/bin/less.wasm?url";
-import m4WasmUrl from "../../../../examples/libs/m4/bin/m4.wasm?url";
-import makeWasmUrl from "../../../../examples/libs/make/bin/make.wasm?url";
-import tarWasmUrl from "../../../../examples/libs/tar/bin/tar.wasm?url";
-import curlWasmUrl from "../../../../examples/libs/curl/bin/curl.wasm?url";
-import wgetWasmUrl from "../../../../examples/libs/wget/bin/wget.wasm?url";
-import gitWasmUrl from "../../../../examples/libs/git/bin/git.wasm?url";
-import gitRemoteHttpWasmUrl from "../../../../examples/libs/git/bin/git-remote-http.wasm?url";
-import gzipWasmUrl from "../../../../examples/libs/gzip/bin/gzip.wasm?url";
-import bzip2WasmUrl from "../../../../examples/libs/bzip2/bin/bzip2.wasm?url";
-import xzWasmUrl from "../../../../examples/libs/xz/bin/xz.wasm?url";
-import zstdWasmUrl from "../../../../examples/libs/zstd/bin/zstd.wasm?url";
-import zipWasmUrl from "../../../../examples/libs/zip/bin/zip.wasm?url";
-import unzipWasmUrl from "../../../../examples/libs/unzip/bin/unzip.wasm?url";
-import nanoWasmUrl from "../../../../examples/libs/nano/bin/nano.wasm?url";
+import kernelWasmUrl from "@kernel-wasm?url";
+import dashWasmUrl from "../../../../binaries/programs/wasm32/dash.wasm?url";
+import bashWasmUrl from "../../../../binaries/programs/wasm32/bash.wasm?url";
+import coreutilsWasmUrl from "../../../../binaries/programs/wasm32/coreutils.wasm?url";
+import grepWasmUrl from "../../../../binaries/programs/wasm32/grep.wasm?url";
+import sedWasmUrl from "../../../../binaries/programs/wasm32/sed.wasm?url";
+import bcWasmUrl from "../../../../binaries/programs/wasm32/bc.wasm?url";
+import fileWasmUrl from "../../../../binaries/programs/wasm32/file.wasm?url";
+import lessWasmUrl from "../../../../binaries/programs/wasm32/less.wasm?url";
+import m4WasmUrl from "../../../../binaries/programs/wasm32/m4.wasm?url";
+import makeWasmUrl from "../../../../binaries/programs/wasm32/make.wasm?url";
+import tarWasmUrl from "../../../../binaries/programs/wasm32/tar.wasm?url";
+import curlWasmUrl from "../../../../binaries/programs/wasm32/curl.wasm?url";
+import wgetWasmUrl from "../../../../binaries/programs/wasm32/wget.wasm?url";
+import gitWasmUrl from "../../../../binaries/programs/wasm32/git/git.wasm?url";
+import gitRemoteHttpWasmUrl from "../../../../binaries/programs/wasm32/git/git-remote-http.wasm?url";
+import gzipWasmUrl from "../../../../binaries/programs/wasm32/gzip.wasm?url";
+import bzip2WasmUrl from "../../../../binaries/programs/wasm32/bzip2.wasm?url";
+import xzWasmUrl from "../../../../binaries/programs/wasm32/xz.wasm?url";
+import zstdWasmUrl from "../../../../binaries/programs/wasm32/zstd.wasm?url";
+import zipWasmUrl from "../../../../binaries/programs/wasm32/zip.wasm?url";
+import unzipWasmUrl from "../../../../binaries/programs/wasm32/unzip.wasm?url";
+import nanoWasmUrl from "../../../../binaries/programs/wasm32/nano.wasm?url";
 import lsofWasmUrl from "../../../../examples/lsof.wasm?url";
+import VFS_IMAGE_URL from "@binaries/programs/wasm32/shell.vfs?url";
 import "@xterm/xterm/css/xterm.css";
 
 // --- DOM elements ---
@@ -58,7 +60,6 @@ const batchView = document.getElementById("batch-view") as HTMLDivElement;
 
 const encoder = new TextEncoder();
 
-const VFS_IMAGE_URL = import.meta.env.BASE_URL + "shell.vfs";
 let vfsImageBuf: ArrayBuffer | null = null;
 
 // --- Mode switching ---
@@ -203,7 +204,7 @@ async function startInteractiveShell() {
 
     setStatus("Starting shell...", "running");
 
-    const memfs = MemoryFileSystem.fromImage(new Uint8Array(vfsImageBuf!), {
+    const memfs = MemoryFileSystem.fromImage(decompressVfsImage(new Uint8Array(vfsImageBuf!)), {
       maxByteLength: 256 * 1024 * 1024,
     });
     // Archive URLs were stored as bare filenames at build time; prepend the
@@ -464,7 +465,7 @@ async function runBatch() {
     const commands = codeEl.value;
     setStatus("Running shell...", "running");
 
-    const memfs = MemoryFileSystem.fromImage(new Uint8Array(vfsImageBuf!), {
+    const memfs = MemoryFileSystem.fromImage(decompressVfsImage(new Uint8Array(vfsImageBuf!)), {
       maxByteLength: 256 * 1024 * 1024,
     });
 

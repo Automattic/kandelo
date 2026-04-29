@@ -22,12 +22,12 @@ import {
   ensureDirs,
 } from "../../lib/init/vfs-utils";
 import { RedisBrowserClient } from "../../lib/redis-client";
-import kernelWasmUrl from "../../../../host/wasm/wasm_posix_kernel.wasm?url";
-import redisWasmUrl from "../../../../examples/libs/redis/bin/redis-server.wasm?url";
-import dashWasmUrl from "../../../../examples/libs/dash/bin/dash.wasm?url";
-import coreutilsWasmUrl from "../../../../examples/libs/coreutils/bin/coreutils.wasm?url";
-import grepWasmUrl from "../../../../examples/libs/grep/bin/grep.wasm?url";
-import sedWasmUrl from "../../../../examples/libs/sed/bin/sed.wasm?url";
+import kernelWasmUrl from "@kernel-wasm?url";
+import redisWasmUrl from "../../../../binaries/programs/wasm32/redis/redis-server.wasm?url";
+import dashWasmUrl from "../../../../binaries/programs/wasm32/dash.wasm?url";
+import coreutilsWasmUrl from "../../../../binaries/programs/wasm32/coreutils.wasm?url";
+import grepWasmUrl from "../../../../binaries/programs/wasm32/grep.wasm?url";
+import sedWasmUrl from "../../../../binaries/programs/wasm32/sed.wasm?url";
 import "@xterm/xterm/css/xterm.css";
 import "../../lib/terminal-panel.css";
 

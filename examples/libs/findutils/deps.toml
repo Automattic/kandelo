@@ -1,0 +1,24 @@
+kind = "program"
+name = "findutils"
+version = "4.10.0"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://ftpmirror.gnu.org/gnu/findutils/findutils-4.10.0.tar.xz"
+sha256 = "1387e0b67ff247d2abde998f90dfbf70c1491391a59ddfecb8ae698789f0a4f5"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://git.savannah.gnu.org/cgit/findutils.git/tree/COPYING"
+
+[[outputs]]
+name = "find"
+wasm = "find.wasm"
+
+[[outputs]]
+name = "xargs"
+wasm = "xargs.wasm"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/findutils-4.10.0-rev1-abi6-wasm32-66230212.tar.zst"
+archive_sha256 = "6feb68bb8505341d5e3eb319da9652e59164d48e880dabec577c5717ee692490"

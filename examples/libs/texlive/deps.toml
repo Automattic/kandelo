@@ -1,0 +1,20 @@
+kind = "program"
+name = "texlive"
+version = "2025"
+revision = 1
+depends_on = ["zlib@1.3.1", "libpng@1.6.43"]
+
+[source]
+url = "https://ftp.math.utah.edu/pub/tex/historic/systems/texlive/2025/texlive-20250308-source.tar.xz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "LicenseRef-TeXLive-Various"
+url = "https://www.tug.org/texlive/copying.html"
+
+[[outputs]]
+name = "pdftex"
+wasm = "pdftex.wasm"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/texlive-2025-rev1-abi6-wasm32-12249438.tar.zst"
+archive_sha256 = "fa1da8fc580f87f8cd9335277a4f1fffc57dee9f491f4465079f264f276a4b04"

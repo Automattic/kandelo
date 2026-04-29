@@ -1,0 +1,20 @@
+kind = "program"
+name = "m4"
+version = "1.4.19"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://ftpmirror.gnu.org/gnu/m4/m4-1.4.19.tar.xz"
+sha256 = "63aede5c6d33b6d9b13511cd0be2cac046f2e70fd0a07aa9573a04a82783af96"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://git.savannah.gnu.org/cgit/m4.git/tree/COPYING"
+
+[[outputs]]
+name = "m4"
+wasm = "m4.wasm"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/m4-1.4.19-rev1-abi6-wasm32-0d0429c9.tar.zst"
+archive_sha256 = "d3351ef80561e1d7174285966209a60da3a8103f82ee6bf827533e3533c343ae"

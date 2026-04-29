@@ -13,7 +13,7 @@ import type {
   MainToKernelMessage,
   KernelToMainMessage,
 } from "./kernel-worker-protocol";
-import kernelWasmUrl from "../../../host/wasm/wasm_posix_kernel.wasm?url";
+import kernelWasmUrl from "@kernel-wasm?url";
 import workerEntryUrl from "../../../host/src/worker-entry-browser.ts?worker&url";
 import kernelWorkerEntryUrl from "./kernel-worker-entry.ts?worker&url";
 

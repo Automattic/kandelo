@@ -1,0 +1,20 @@
+kind = "program"
+name = "nano"
+version = "8.0"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://ftpmirror.gnu.org/gnu/nano/nano-8.0.tar.xz"
+sha256 = "c17f43fc0e37336b33ee50a209c701d5beb808adc2d9f089ca831b40539c9ac4"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://git.savannah.gnu.org/cgit/nano.git/tree/COPYING"
+
+[[outputs]]
+name = "nano"
+wasm = "nano.wasm"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/nano-8.0-rev1-abi6-wasm32-6796ee6e.tar.zst"
+archive_sha256 = "05af71f24be682b5f7f1c65724d879945e7e2a81b0f3ede374abf2949acba829"

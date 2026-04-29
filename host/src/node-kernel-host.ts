@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { Worker as NodeThreadWorker } from "node:worker_threads";
+import { resolveBinary } from "./binary-resolver";
 import type {
   MainToKernelMessage,
   KernelToMainMessage,
@@ -260,7 +261,7 @@ export class NodeKernelHost {
 // ── Module-level helpers ──
 
 function loadKernelWasm(): ArrayBuffer {
-  const buf = readFileSync(join(__dirname, "../wasm/wasm_posix_kernel.wasm"));
+  const buf = readFileSync(resolveBinary("kernel.wasm"));
   return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 }
 

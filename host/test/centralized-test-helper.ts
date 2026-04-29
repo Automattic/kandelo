@@ -9,6 +9,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CentralizedKernelWorker } from "../src/kernel-worker";
+import { resolveBinary } from "../src/binary-resolver";
 import { NodePlatformIO } from "../src/platform/node";
 import { NodeWorkerAdapter } from "../src/worker-adapter";
 import { ThreadPageAllocator } from "../src/thread-allocator";
@@ -52,7 +53,7 @@ function growToMax(memory: WebAssembly.Memory, ptrWidth: 4 | 8, currentPages: nu
 }
 
 function loadKernelWasm(): ArrayBuffer {
-  const buf = readFileSync(join(__dirname, "../wasm/wasm_posix_kernel.wasm"));
+  const buf = readFileSync(resolveBinary("kernel.wasm"));
   return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 }
 

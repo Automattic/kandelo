@@ -1,0 +1,32 @@
+kind = "program"
+name = "diffutils"
+version = "3.10"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://ftpmirror.gnu.org/gnu/diffutils/diffutils-3.10.tar.xz"
+sha256 = "90e5e93cc724e4ebe12ede80df1634063c7a855692685919bfe60b556c9bd09e"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://git.savannah.gnu.org/cgit/diffutils.git/tree/COPYING"
+
+[[outputs]]
+name = "diff"
+wasm = "diff.wasm"
+
+[[outputs]]
+name = "cmp"
+wasm = "cmp.wasm"
+
+[[outputs]]
+name = "diff3"
+wasm = "diff3.wasm"
+
+[[outputs]]
+name = "sdiff"
+wasm = "sdiff.wasm"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/diffutils-3.10-rev1-abi6-wasm32-96a93611.tar.zst"
+archive_sha256 = "103bc140be4c2aea3e26e21463604153a5d9cbeed9d9516210a59b03067469d0"

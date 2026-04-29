@@ -1,0 +1,35 @@
+# Per-library manifest for libpng. See docs/package-management.md.
+#
+# libpng depends on zlib at both build and link time. The logical
+# name "libpng" matches the directory; consumers reference it as
+# `libpng@1.6.43` in their own `depends_on`.
+
+kind = "library"
+
+name = "libpng"
+version = "1.6.43"
+revision = 1
+depends_on = ["zlib@1.3.1"]
+
+[source]
+url = "https://download.sourceforge.net/libpng/libpng-1.6.43.tar.xz"
+sha256 = "6a5ca0652392a2d7c9db2ae5b40210843c0bbc081cbd410825ab00cc59f14a6c"
+
+[license]
+spdx = "libpng-2.0"
+url = "http://www.libpng.org/pub/png/src/libpng-LICENSE.txt"
+
+[outputs]
+# Upstream installs the real archive as libpng16.a with libpng.a as a
+# compatibility symlink; same for the .pc files. Declare the real
+# files; consumers linking `-lpng` (or looking up `libpng.pc`) still
+# resolve via the symlinks the install left behind.
+libs = ["lib/libpng16.a"]
+# Headers are installed under include/libpng16/ with convenience
+# symlinks at include/{png,pngconf,pnglibconf}.h. Declare the real
+# directory — validator accepts dirs (see openssl/ncurses).
+headers = ["include/libpng16"]
+pkgconfig = ["lib/pkgconfig/libpng16.pc"]
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/libpng-1.6.43-rev1-abi6-wasm32-47600ce8.tar.zst"
+archive_sha256 = "aee99cd9c5b79e96deea1ff82cea62a8679e3a6aa72a8a6e769e3a992bb8c4fc"

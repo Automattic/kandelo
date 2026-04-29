@@ -1,0 +1,20 @@
+kind = "program"
+name = "less"
+version = "668"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://www.greenwoodsoftware.com/less/less-668.tar.gz"
+sha256 = "2819f55564d86d542abbecafd82ff61e819a3eec967faa36cd3e68f1596a44b8"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://www.greenwoodsoftware.com/less/LICENSE"
+
+[[outputs]]
+name = "less"
+wasm = "less.wasm"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/less-668-rev1-abi6-wasm32-2426ea29.tar.zst"
+archive_sha256 = "0b010dc155dc7d377a4342811f29529cf10c626079ba1772b44d10e2213dc7df"

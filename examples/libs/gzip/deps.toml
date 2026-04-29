@@ -1,0 +1,20 @@
+kind = "program"
+name = "gzip"
+version = "1.13"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://ftpmirror.gnu.org/gnu/gzip/gzip-1.13.tar.xz"
+sha256 = "7454eb6935db17c6655576c2e1b0fabefd38b4d0936e0f87f48cd062ce91a057"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://git.savannah.gnu.org/cgit/gzip.git/tree/COPYING"
+
+[[outputs]]
+name = "gzip"
+wasm = "gzip.wasm"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/gzip-1.13-rev1-abi6-wasm32-9bbb8cfe.tar.zst"
+archive_sha256 = "22364c12e23705059192f4a9a6963a379cfbea861a857e8d5ff80db45661698a"

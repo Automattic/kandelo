@@ -1,0 +1,26 @@
+kind = "program"
+name = "nginx"
+version = "1.24.0"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://nginx.org/download/nginx-1.24.0.tar.gz"
+sha256 = "77a2541637b92a621e3ee76776c8b7b40cf6d707e69ba53a940283e30ff2f55d"
+
+[license]
+spdx = "BSD-2-Clause"
+url = "https://nginx.org/LICENSE"
+
+# The actual build lives at examples/nginx/build.sh (it's been there since
+# pre-package-system and does the configure-from-tarball + asyncify dance). Point the
+# resolver at it via [build].script.
+[build]
+script = "build-nginx.sh"
+
+[[outputs]]
+name = "nginx"
+wasm = "nginx.wasm"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/nginx-1.24.0-rev1-abi6-wasm32-a8bac2a5.tar.zst"
+archive_sha256 = "151ea0940b36c20b3cd24b21dfc109eb1bee45d8375389874f876239579d9e46"

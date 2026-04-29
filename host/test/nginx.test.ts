@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createConnection, createServer } from "node:net";
 import { CentralizedKernelWorker } from "../src/kernel-worker";
+import { resolveBinary, tryResolveBinary } from "../src/binary-resolver";
 import { NodePlatformIO } from "../src/platform/node";
 import { NodeWorkerAdapter } from "../src/worker-adapter";
 import type {
@@ -25,7 +26,7 @@ const MAX_PAGES = 16384;
 const CH_TOTAL_SIZE = 72 + 65536;
 const ASYNCIFY_BUF_SIZE = 16384;
 
-const nginxWasmPath = join(repoRoot, "examples/nginx/nginx.wasm");
+const nginxWasmPath = tryResolveBinary("programs/nginx.wasm");
 const nginxPrefix = join(repoRoot, "examples/nginx");
 
 /** Find a free TCP port by briefly binding to port 0. */
@@ -73,7 +74,7 @@ function httpGet(
   });
 }
 
-describe.skipIf(!existsSync(nginxWasmPath))(
+describe.skipIf(!nginxWasmPath)(
   "nginx static file serving",
   () => {
     it("serves index.html via HTTP", async () => {
@@ -85,8 +86,8 @@ describe.skipIf(!existsSync(nginxWasmPath))(
       const confTemplate = readFileSync(join(nginxPrefix, "nginx.conf"), "utf8");
       writeFileSync(testConf, confTemplate.replace("listen 8080", `listen ${testPort}`));
 
-      const kernelBytes = loadWasm(join(__dirname, "../wasm/wasm_posix_kernel.wasm"));
-      const programBytes = loadWasm(nginxWasmPath);
+      const kernelBytes = loadWasm(resolveBinary("kernel.wasm"));
+      const programBytes = loadWasm(nginxWasmPath!);
       const workerAdapter = new NodeWorkerAdapter();
       const io = new NodePlatformIO();
 
@@ -139,7 +140,7 @@ describe.skipIf(!existsSync(nginxWasmPath))(
           },
           onExec: async () => -38,
           onExit: (pid, status) => {
-            if (pid === 1) {
+            if (pid === 100) {
               kw.unregisterProcess(pid);
               resolveExit!(status);
             } else {
@@ -162,13 +163,17 @@ describe.skipIf(!existsSync(nginxWasmPath))(
       memory.grow(MAX_PAGES - 17);
       new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
-      kw.registerProcess(1, memory, [channelOffset]);
-      kw.setCwd(1, nginxPrefix);
-      kw.setNextChildPid(2);
+      // The kernel reserves PID 1 for a virtual init process (used by
+      // `kill(1, ...)` / EPERM semantics), so the test runs nginx at
+      // PID 100 with workers spawned at 101+. The actual PID nginx
+      // sees doesn't matter to its operation.
+      kw.registerProcess(100, memory, [channelOffset]);
+      kw.setCwd(100, nginxPrefix);
+      kw.setNextChildPid(101);
 
       const initData: CentralizedWorkerInitMessage = {
         type: "centralized_init",
-        pid: 1,
+        pid: 100,
         ppid: 0,
         programBytes,
         memory,
@@ -178,7 +183,7 @@ describe.skipIf(!existsSync(nginxWasmPath))(
       };
 
       const masterWorker = workerAdapter.createWorker(initData);
-      workers.set(1, masterWorker);
+      workers.set(100, masterWorker);
       masterWorker.on("error", () => {});
 
       // Wait for the TCP listener to be ready (poll until port accepts)

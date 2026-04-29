@@ -1,0 +1,34 @@
+# Per-library manifest consumed by `cargo xtask build-deps`.
+# Schema: see docs/package-management.md.
+
+kind = "library"
+
+name = "zlib"
+version = "1.3.1"
+revision = 1
+depends_on = []
+# Opt into wasm64 because PHP/MariaDB depend on it transitively.
+# See memory/wasm64-build-policy.md.
+arches = ["wasm32", "wasm64"]
+
+[source]
+url = "https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz"
+sha256 = "9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23"
+
+[license]
+spdx = "Zlib"
+url = "https://github.com/madler/zlib/blob/v1.3.1/LICENSE"
+
+# `build.script` defaults to `build-<name>.sh` in this directory,
+# so we don't need a [build] section here.
+
+[outputs]
+libs = ["lib/libz.a"]
+headers = ["include/zlib.h", "include/zconf.h"]
+pkgconfig = ["lib/pkgconfig/zlib.pc"]
+[binary.wasm32]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/zlib-1.3.1-rev1-abi6-wasm32-32c07a1d.tar.zst"
+archive_sha256 = "e0e1d28ab2e803df230e35ca01742c06853934bd6c24f445bff86caf7c2df2ba"
+[binary.wasm64]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/zlib-1.3.1-rev1-abi6-wasm64-fc396d58.tar.zst"
+archive_sha256 = "baccbe4395cba626c204c92f35f043130774b8065755c6bb91d0885f1be89d7d"

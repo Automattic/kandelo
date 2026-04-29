@@ -36,11 +36,26 @@ fi
 export WASM_POSIX_SYSROOT="$SYSROOT"
 export WASM_POSIX_GLUE_DIR="$REPO_ROOT/glue"
 
+# --- Resolve ncurses via the dep cache (provides libtinfo for bash readline) ---
+NCURSES_PREFIX="${WASM_POSIX_DEP_NCURSES_DIR:-}"
+if [ -z "$NCURSES_PREFIX" ]; then
+    echo "==> Resolving ncurses via cargo xtask build-deps..."
+    HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
+    NCURSES_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TARGET" --quiet -- build-deps resolve ncurses)"
+fi
+if [ ! -f "$NCURSES_PREFIX/lib/libtinfo.a" ]; then
+    echo "ERROR: ncurses resolve returned '$NCURSES_PREFIX' but libtinfo.a missing" >&2
+    exit 1
+fi
+echo "==> ncurses at $NCURSES_PREFIX"
+export CPPFLAGS="-I$NCURSES_PREFIX/include"
+export LDFLAGS_NCURSES="-L$NCURSES_PREFIX/lib"
+
 # --- Download bash source ---
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading bash $BASH_VERSION_PKG..."
     TARBALL="bash-${BASH_VERSION_PKG}.tar.gz"
-    URL="https://ftp.gnu.org/gnu/bash/${TARBALL}"
+    URL="https://ftpmirror.gnu.org/gnu/bash/${TARBALL}"
     curl -fsSL "$URL" -o "/tmp/$TARBALL"
     mkdir -p "$SRC_DIR"
     tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
@@ -109,7 +124,7 @@ if [ ! -f Makefile ]; then
     # to read function names from (the wasm `name` section is stripped by
     # clang's driver's default post-link wasm-opt, but DWARF is preserved).
     export CFLAGS="-O2 -gline-tables-only -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-pointer-types"
-    export LDFLAGS="-Wl,-z,stack-size=1048576"
+    export LDFLAGS="-Wl,-z,stack-size=1048576 ${LDFLAGS_NCURSES:-}"
 
     wasm32posix-configure \
         --prefix=/usr \
@@ -361,7 +376,11 @@ fi
 
 # --- Build ---
 echo "==> Building bash..."
-make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" 2>&1 | tail -30
+# bash 5.2.37's Makefile has a parallel-build race (`lib/<subdir>/Makefile`
+# vs the top-level link) that produces exit 2 under -jN with no visible
+# error. Serial builds fine; ~3 min on an 8-core. Stay with -j1 unless
+# bash's own Makefile gets fixed upstream.
+make -j1 2>&1 | tail -30
 
 BASH_BIN="$SRC_DIR/bash"
 if [ ! -f "$BASH_BIN" ]; then
@@ -405,6 +424,12 @@ echo "==> Final size: $(echo "$SIZE_AFTER" | numfmt --to=iec 2>/dev/null || echo
 echo ""
 echo "==> bash built successfully!"
 echo "Binary: $BIN_DIR/bash.wasm"
+
+# Install into local-binaries/ (resolver priority 1) and the resolver
+# scratch dir when invoked by xtask build-deps / stage-release.
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary bash "$BIN_DIR/bash.wasm"
+
 echo ""
 echo "Run with:"
 echo "  npx tsx examples/shell/serve.ts -c 'echo hello from bash'"

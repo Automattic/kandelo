@@ -1,0 +1,23 @@
+kind = "program"
+name = "fbdoom"
+version = "0.1.0"
+revision = 1
+depends_on = []
+
+# Upstream is a depth-1 git clone of maximevince/fbDOOM at HEAD; no
+# release-tag tarball exists. Source SHA is placeholder until either
+# the upstream pins a release or we mirror a frozen tarball.
+[source]
+url = "https://github.com/maximevince/fbDOOM"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://github.com/maximevince/fbDOOM/blob/master/COPYING"
+
+[[outputs]]
+name = "fbdoom"
+wasm = "fbdoom.wasm"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/fbdoom-0.1.0-rev1-abi6-wasm32-40651daf.tar.zst"
+archive_sha256 = "4757910af6276b9ae6496e65485de13f7b2a307ae6352ceeddba90615bfced08"

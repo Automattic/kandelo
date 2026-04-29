@@ -1,0 +1,26 @@
+kind = "program"
+name = "erlang-vfs"
+version = "0.1.0"
+revision = 1
+depends_on = []
+
+# Pre-built VFS image containing Erlang/OTP 28 runtime files (kernel,
+# stdlib, erts, compiler, release boot scripts). Source at
+# examples/browser/scripts/build-erlang-vfs-image.ts.
+[source]
+url = "https://github.com/brandonpayton/wasm-posix-kernel"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "Apache-2.0"
+url = "https://github.com/erlang/otp/blob/maint/LICENSE.txt"
+
+[build]
+script = "build-erlang-vfs.sh"
+
+[[outputs]]
+name = "erlang-vfs"
+wasm = "erlang-vfs.vfs"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/erlang-vfs-0.1.0-rev1-abi6-wasm32-25d1091a.tar.zst"
+archive_sha256 = "0de6200ac6e394c6074702571921dc461af9861dd916d534e3bab69cef322fb9"

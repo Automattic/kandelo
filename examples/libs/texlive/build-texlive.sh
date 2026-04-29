@@ -9,29 +9,45 @@ CROSS_BUILD_DIR="$SCRIPT_DIR/texlive-cross-build"
 BIN_DIR="$SCRIPT_DIR/bin"
 
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SYSROOT="$REPO_ROOT/sysroot"
+# Worktree-local SDK on PATH (no global npm link required).
+# shellcheck source=/dev/null
+source "$REPO_ROOT/sdk/activate.sh"
+# Explicit env wins; else the in-tree sysroot. Matches build-git.sh.
+SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
 if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found." >&2
+    echo "ERROR: wasm32posix-cc not found after sourcing sdk/activate.sh." >&2
     exit 1
 fi
 
-# Build libpng if needed
-LIBPNG_DIR="$REPO_ROOT/examples/libs/libpng/libpng-install"
-if [ ! -f "$LIBPNG_DIR/lib/libpng.a" ] && [ ! -f "$LIBPNG_DIR/lib/libpng16.a" ]; then
-    echo "==> Building libpng..."
-    bash "$REPO_ROOT/examples/libs/libpng/build-libpng.sh"
-fi
+# --- Resolve zlib + libpng via the dep cache ---
+HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
+resolve_dep() {
+    local name="$1"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TARGET" --quiet -- build-deps resolve "$name")
+}
 
-# Install libpng into sysroot
-echo "==> Installing libpng into sysroot..."
-for f in png.h pngconf.h pnglibconf.h; do
-    [ -f "$LIBPNG_DIR/include/$f" ] && cp "$LIBPNG_DIR/include/$f" "$SYSROOT/include/"
-done
-for f in libpng.a libpng16.a; do
-    [ -f "$LIBPNG_DIR/lib/$f" ] && cp "$LIBPNG_DIR/lib/$f" "$SYSROOT/lib/"
-done
+ZLIB_PREFIX="${WASM_POSIX_DEP_ZLIB_DIR:-}"
+if [ -z "$ZLIB_PREFIX" ]; then
+    echo "==> Resolving zlib via cargo xtask build-deps..."
+    ZLIB_PREFIX="$(resolve_dep zlib)"
+fi
+LIBPNG_PREFIX="${WASM_POSIX_DEP_LIBPNG_DIR:-}"
+if [ -z "$LIBPNG_PREFIX" ]; then
+    echo "==> Resolving libpng via cargo xtask build-deps..."
+    LIBPNG_PREFIX="$(resolve_dep libpng)"
+fi
+if [ ! -f "$ZLIB_PREFIX/lib/libz.a" ]; then
+    echo "ERROR: zlib resolve returned '$ZLIB_PREFIX' but libz.a missing" >&2
+    exit 1
+fi
+if [ ! -f "$LIBPNG_PREFIX/lib/libpng.a" ] && [ ! -f "$LIBPNG_PREFIX/lib/libpng16.a" ]; then
+    echo "ERROR: libpng resolve returned '$LIBPNG_PREFIX' but libpng[16].a missing" >&2
+    exit 1
+fi
+echo "==> zlib at $ZLIB_PREFIX"
+echo "==> libpng at $LIBPNG_PREFIX"
 
 # Download TeX Live source
 if [ ! -d "$SRC_DIR" ]; then
@@ -58,28 +74,65 @@ if [ ! -x "$HOST_BUILD_DIR/texk/web2c/pdftex" ]; then
     mkdir -p "$HOST_BUILD_DIR"
     cd "$HOST_BUILD_DIR"
 
+    # We only want pdftex. TexLive's web2c builds many other engines
+    # by default (LuaTeX, XeTeX, MetaPost, Aleph, etc.) that pull in
+    # heavy deps (LuaJIT, ICU, HarfBuzz). Each engine has its own
+    # disable flag in web2c's configure; turning off the lot keeps the
+    # build to xpdf + pdftex + their direct deps.
     "$SRC_DIR/configure" \
         --disable-all-pkgs \
+        --enable-web2c \
         --enable-pdftex \
+        --disable-luatex \
+        --disable-luajittex \
+        --disable-luahbtex \
+        --disable-luajithbtex \
+        --disable-xetex \
+        --disable-aleph \
+        --disable-euptex \
+        --disable-hitex \
+        --disable-mp \
+        --disable-mflua \
+        --disable-mfluajit \
         --disable-synctex \
         --without-x \
         --disable-shared \
         --enable-static
 
+    # TexLive's subdirs are configured *at make time* via
+    # `am/recurse.am`'s `recurse` target — `./configure` alone leaves
+    # texk/web2c/ as a non-existent subdir.
+    #
+    # A naive `make all` at the top level would compile huge unused
+    # libs (ICU, HarfBuzz, ...) before getting to texk/web2c. Instead,
+    # build the chain explicitly: kpathsea + ptexenc (texk's TeX
+    # libs), then run texk's recurse to create + build texk/web2c
+    # (which makes pdftex; we add otangle since the cross-compile
+    # configure unconditionally requires it even with Omega disabled).
     NPROC="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
-
-    # --disable-all-pkgs leaves MAKE_SUBDIRS empty, so configure alone
-    # doesn't create the texk/web2c, texk/kpathsea, etc. directories —
-    # those are created lazily by the top-level make's `recurse` target,
-    # which walks CONF_SUBDIRS and runs each sub-configure. Without this
-    # initial top-level make, `make -C texk/web2c` below fails with
-    # "No such file or directory".
-    make -j"$NPROC"
-
-    # otangle is needed by the cross-compile sub-configure even though
-    # we don't build Omega engines — web2c/configure unconditionally
-    # requires it.
-    make -C texk/web2c pdftex otangle -j"$NPROC"
+    # TexLive's auto-recurse mechanism creates and builds its
+    # sub-subdirs at make time, NOT at configure time. The build is
+    # split across three steps:
+    #
+    # 1. `make all-local` at the top level: builds doc, texk/kpathsea,
+    #    texk/ptexenc (which are top-level "TeX-specific lib" subdirs)
+    #    AND fires the top-level recurse target which configures the
+    #    immediate CONF_SUBDIRS (auxdir/auxsub, libs, utils, texk).
+    # 2. `make -C libs recurse` configures libs's sub-subdirs (xpdf,
+    #    zlib, etc.). pdftex needs libs/xpdf for its PDF parser; the
+    #    --disable-all-pkgs --enable-pdftex combo keeps the other
+    #    sub-subdirs (icu, harfbuzz, ...) skipped.
+    # 3. `make -C texk` triggers texk's `all-local: recurse` which
+    #    configures + builds texk/web2c (the only texk sub-subdir
+    #    enabled by --enable-pdftex).
+    # 4. Finally `make -C texk/web2c pdftex otangle` ensures otangle
+    #    is built (the cross-compile configure unconditionally
+    #    requires it even with Omega engines disabled).
+    make -j"$NPROC" all-local
+    make -C libs recurse
+    make -C libs/xpdf -j"$NPROC"
+    make -C texk -j"$NPROC"
+    make -C texk/web2c -j"$NPROC" pdftex otangle
     cd "$REPO_ROOT"
 fi
 
@@ -130,12 +183,12 @@ SITE
         CXX=wasm32posix-c++ \
         AR=wasm32posix-ar \
         RANLIB=wasm32posix-ranlib \
-        CFLAGS="-O2 -I$SYSROOT/include" \
-        LDFLAGS="-L$SYSROOT/lib" \
-        ZLIB_CFLAGS="-I$SYSROOT/include" \
-        ZLIB_LIBS="-L$SYSROOT/lib -lz" \
-        LIBPNG_CFLAGS="-I$SYSROOT/include" \
-        LIBPNG_LIBS="-L$SYSROOT/lib -lpng -lz"
+        CFLAGS="-O2 -I$ZLIB_PREFIX/include -I$LIBPNG_PREFIX/include" \
+        LDFLAGS="-L$ZLIB_PREFIX/lib -L$LIBPNG_PREFIX/lib" \
+        ZLIB_CFLAGS="-I$ZLIB_PREFIX/include" \
+        ZLIB_LIBS="-L$ZLIB_PREFIX/lib -lz" \
+        LIBPNG_CFLAGS="-I$LIBPNG_PREFIX/include" \
+        LIBPNG_LIBS="-L$LIBPNG_PREFIX/lib -lpng -lz"
 
     # --disable-all-pkgs leaves MAKE_SUBDIRS empty everywhere, but
     # CONF_SUBDIRS still lists all subdirectories. Running top-level
@@ -167,3 +220,8 @@ cp "$CROSS_BUILD_DIR/texk/web2c/pdftex" "$BIN_DIR/pdftex.wasm"
 
 echo "==> pdftex.wasm: $(du -h "$BIN_DIR/pdftex.wasm" | cut -f1)"
 echo "==> Done."
+
+# Install into local-binaries/ so the resolver picks the freshly-built
+# binary over the fetched release.
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary texlive "$BIN_DIR/pdftex.wasm" pdftex.wasm

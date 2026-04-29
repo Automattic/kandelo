@@ -3,7 +3,9 @@ set -euo pipefail
 
 # Build GNU wget 1.24.5 for wasm32-posix-kernel.
 #
-# Links against pre-built OpenSSL and zlib if available.
+# Resolves OpenSSL and zlib via `cargo xtask build-deps resolve <name>` —
+# the shared library cache (or builds on miss). See
+# docs/package-management.md.
 # Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
 #
 # Output: examples/libs/wget/bin/wget.wasm
@@ -13,7 +15,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 SRC_DIR="$SCRIPT_DIR/wget-src"
 BIN_DIR="$SCRIPT_DIR/bin"
-SYSROOT="$REPO_ROOT/sysroot"
+# Explicit env wins; else the in-tree sysroot. Matches build-curl.sh:49.
+SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 
 # --- Prerequisites ---
 if ! command -v wasm32posix-cc &>/dev/null; then
@@ -28,41 +31,52 @@ fi
 
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
-# --- Locate OpenSSL and zlib ---
-OPENSSL_DIR="$REPO_ROOT/examples/libs/openssl/openssl-install"
-ZLIB_DIR="$REPO_ROOT/examples/libs/zlib/zlib-install"
+# --- Resolve OpenSSL and zlib via the dep cache ---
+# Env-var short-circuit so another resolver run can pass the prefixes
+# in directly without re-invoking cargo.
+HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
+resolve_dep() {
+    local name="$1"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TARGET" --quiet -- build-deps resolve "$name")
+}
 
-SSL_FLAGS=()
-EXTRA_CFLAGS=""
-EXTRA_LDFLAGS=""
-
-if [ -f "$OPENSSL_DIR/lib/libssl.a" ] && [ -f "$OPENSSL_DIR/lib/libcrypto.a" ]; then
-    echo "==> Found OpenSSL at $OPENSSL_DIR"
-    SSL_FLAGS+=("--with-ssl=openssl")
-    EXTRA_CFLAGS="-I$OPENSSL_DIR/include"
-    EXTRA_LDFLAGS="-L$OPENSSL_DIR/lib"
-    # Set pkg-config bypass variables so configure doesn't need .pc files
-    export OPENSSL_CFLAGS="-I$OPENSSL_DIR/include"
-    export OPENSSL_LIBS="-L$OPENSSL_DIR/lib -lssl -lcrypto"
-else
-    echo "==> OpenSSL not found, building without SSL support"
-    SSL_FLAGS+=("--without-ssl")
+OPENSSL_DIR="${WASM_POSIX_DEP_OPENSSL_DIR:-}"
+if [ -z "$OPENSSL_DIR" ]; then
+    echo "==> Resolving openssl via cargo xtask build-deps..."
+    OPENSSL_DIR="$(resolve_dep openssl)"
 fi
-
-if [ -f "$ZLIB_DIR/lib/libz.a" ]; then
-    echo "==> Found zlib at $ZLIB_DIR"
-    EXTRA_CFLAGS="$EXTRA_CFLAGS -I$ZLIB_DIR/include"
-    EXTRA_LDFLAGS="$EXTRA_LDFLAGS -L$ZLIB_DIR/lib"
-else
-    echo "==> zlib not found, building without zlib support"
-    SSL_FLAGS+=("--without-zlib")
+if [ ! -f "$OPENSSL_DIR/lib/libssl.a" ] || [ ! -f "$OPENSSL_DIR/lib/libcrypto.a" ]; then
+    echo "ERROR: openssl resolve returned '$OPENSSL_DIR' but libssl.a/libcrypto.a missing" >&2
+    exit 1
 fi
+echo "==> openssl at $OPENSSL_DIR"
+
+ZLIB_DIR="${WASM_POSIX_DEP_ZLIB_DIR:-}"
+if [ -z "$ZLIB_DIR" ]; then
+    echo "==> Resolving zlib via cargo xtask build-deps..."
+    ZLIB_DIR="$(resolve_dep zlib)"
+fi
+if [ ! -f "$ZLIB_DIR/lib/libz.a" ]; then
+    echo "ERROR: zlib resolve returned '$ZLIB_DIR' but libz.a missing" >&2
+    exit 1
+fi
+echo "==> zlib at $ZLIB_DIR"
+
+SSL_FLAGS=("--with-ssl=openssl")
+EXTRA_CFLAGS="-I$OPENSSL_DIR/include -I$ZLIB_DIR/include"
+EXTRA_LDFLAGS="-L$OPENSSL_DIR/lib -L$ZLIB_DIR/lib"
+# pkg-config bypass so configure doesn't try to run .pc link tests
+# against host-built binaries.
+export OPENSSL_CFLAGS="-I$OPENSSL_DIR/include"
+export OPENSSL_LIBS="-L$OPENSSL_DIR/lib -lssl -lcrypto"
 
 # --- Download wget source ---
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading wget $WGET_VERSION..."
     TARBALL="wget-${WGET_VERSION}.tar.gz"
-    URL="https://ftp.gnu.org/gnu/wget/${TARBALL}"
+    # ftpmirror.gnu.org redirects to a working GNU mirror; ftpmirror.gnu.org
+    # itself sometimes refuses connections during peak hours.
+    URL="https://ftpmirror.gnu.org/gnu/wget/${TARBALL}"
     curl -fsSL "$URL" -o "/tmp/$TARBALL"
     mkdir -p "$SRC_DIR"
     tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
@@ -240,3 +254,8 @@ fi
 echo ""
 echo "==> wget built successfully!"
 echo "Binary: $BIN_DIR/wget.wasm"
+
+# Install into local-binaries/ so the resolver picks the freshly-built
+# binary over the fetched release.
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+[ -f "$SCRIPT_DIR/bin/wget.wasm" ] && install_local_binary wget "$SCRIPT_DIR/bin/wget.wasm" || true

@@ -1,0 +1,34 @@
+kind = "program"
+name = "mariadb-vfs"
+version = "0.1.0"
+revision = 1
+depends_on = []
+# Opt into wasm64 — see memory/wasm64-build-policy.md. The VFS image
+# embeds the arch-specific mariadbd binary, so it must be built
+# per-arch alongside mariadb.
+arches = ["wasm32", "wasm64"]
+
+# Pre-built VFS image for the MariaDB browser demo: mariadbd binary
+# at /usr/sbin/mariadbd, bootstrap SQL at /etc/mariadb/bootstrap.sql,
+# data tree at /data, shell init descriptors. Source at
+# examples/browser/scripts/build-mariadb-vfs-image.ts.
+[source]
+url = "https://github.com/brandonpayton/wasm-posix-kernel"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
+
+[build]
+script = "build-mariadb-vfs.sh"
+
+[[outputs]]
+name = "mariadb-vfs"
+wasm = "mariadb-vfs.vfs"
+[binary.wasm32]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/mariadb-vfs-0.1.0-rev1-abi6-wasm32-752762e6.tar.zst"
+archive_sha256 = "7ae2eeef8c8d7604b9ac60c7cf159f050acd8680e1647ec96051eded2548a9c0"
+[binary.wasm64]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/mariadb-vfs-0.1.0-rev1-abi6-wasm64-0ed848e7.tar.zst"
+archive_sha256 = "74b1157271b68653d8dc4fca99888ee708a287a100aa675e9d30af655d5f45ed"

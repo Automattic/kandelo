@@ -17,10 +17,13 @@
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
 import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
+import { decompressVfsImage } from "../../../../host/src/vfs/load-image";
 import { SystemInit } from "../../lib/init/system-init";
 import { MySqlBrowserClient } from "../../lib/mysql-client";
 import { writeInitDescriptor } from "../../lib/init/vfs-utils";
-import kernelWasmUrl from "../../../../host/wasm/wasm_posix_kernel.wasm?url";
+import kernelWasmUrl from "@kernel-wasm?url";
+import VFS_IMAGE_URL_32 from "@binaries/programs/wasm32/mariadb-vfs.vfs?url";
+import VFS_IMAGE_URL_64 from "@binaries/programs/wasm64/mariadb-vfs.vfs?url";
 import "@xterm/xterm/css/xterm.css";
 import "../../lib/terminal-panel.css";
 
@@ -44,8 +47,10 @@ async function loadOptionalUrl(relPath: string): Promise<string | null> {
   return loader ? await loader() : null;
 }
 
-const VFS_IMAGE_URL_32 = import.meta.env.BASE_URL + "mariadb.vfs";
-const VFS_IMAGE_URL_64 = import.meta.env.BASE_URL + "mariadb-64.vfs";
+// VFS_IMAGE_URL_32 / VFS_IMAGE_URL_64 are imported above via the
+// @binaries alias. install_release symlinks each arch into a
+// `binaries/programs/<arch>/` subtree, so consumers select the
+// arch they want as a literal path segment.
 
 const log = document.getElementById("log") as HTMLPreElement;
 const startBtn = document.getElementById("start") as HTMLButtonElement;
@@ -158,7 +163,7 @@ async function start() {
     // Restore MemoryFileSystem from the pre-built VFS image
     appendLog("Restoring VFS from image...\n", "info");
     const maxFsSize = 1024 * 1024 * 1024; // 1GB max growth
-    const memfs = MemoryFileSystem.fromImage(new Uint8Array(vfsImageBuf), {
+    const memfs = MemoryFileSystem.fromImage(decompressVfsImage(new Uint8Array(vfsImageBuf)), {
       maxByteLength: maxFsSize,
     });
 

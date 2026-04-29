@@ -1,0 +1,37 @@
+kind = "program"
+name = "php"
+version = "8.3.2"
+revision = 2
+depends_on = ["zlib@1.3.1", "openssl@3.3.2", "sqlite@3.49.1", "libxml2@2.13.8"]
+# Opt into wasm64 — see memory/wasm64-build-policy.md. Both the CLI
+# and php-fpm outputs ship per-arch.
+arches = ["wasm32", "wasm64"]
+
+[source]
+url = "https://www.php.net/distributions/php-8.3.2.tar.xz"
+sha256 = "4ffa3e44afc9c590e28dc0d2d31fc61f0139f8b335f11880a121b9f9b9f0634e"
+
+[license]
+spdx = "PHP-3.01"
+url = "https://github.com/php/php-src/blob/master/LICENSE"
+
+[[outputs]]
+name = "php"
+wasm = "php.wasm"
+
+# php-fpm shipped as a second output. The CLI + FPM builds were
+# previously two parallel scripts (this dir's build-php.sh + the
+# now-removed examples/nginx/build-php-fpm.sh) using two separate
+# php-src checkouts and a sysroot-copy dance. Build-php.sh now does
+# both from one source tree: --enable-cli + --enable-fpm produce
+# sapi/cli/php and sapi/fpm/php-fpm; FPM gets asyncify-onlylist on
+# top so its worker fork() path resumes correctly.
+[[outputs]]
+name = "php-fpm"
+wasm = "php-fpm.wasm"
+[binary.wasm32]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/php-8.3.2-rev2-abi6-wasm32-2b6ee83c.tar.zst"
+archive_sha256 = "0d0ef625abfffffb2724eef358945fa3ad632db41da8ca1cb6c905104e8a6d6f"
+[binary.wasm64]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/php-8.3.2-rev2-abi6-wasm64-55297fc3.tar.zst"
+archive_sha256 = "4936ffa185cee35963618faf00582ea8a54026012e01c7c55c358be2b11545e5"

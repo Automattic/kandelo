@@ -1,0 +1,20 @@
+kind = "program"
+name = "unzip"
+version = "6.0"
+revision = 1
+depends_on = []
+
+[source]
+url = "http://downloads.sourceforge.net/infozip/unzip60.tar.gz"
+sha256 = "036d96991646d0449ed0aa952e4fbe21b476ce994abc276e49d30e686708bd37"
+
+[license]
+spdx = "Info-ZIP"
+url = "https://infozip.sourceforge.net/license.html"
+
+[[outputs]]
+name = "unzip"
+wasm = "unzip.wasm"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/unzip-6.0-rev1-abi6-wasm32-a413d48d.tar.zst"
+archive_sha256 = "6bc15f7499aa63bf4550bbf19d31fd913d87521fab9298ba7ed10b36c6c8e065"

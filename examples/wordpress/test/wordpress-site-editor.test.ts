@@ -21,16 +21,18 @@ import { fileURLToPath } from "node:url";
 import { spawn, type ChildProcess } from "node:child_process";
 import { chromium, type Browser, type Page, type Frame } from "@playwright/test";
 
+import { tryResolveBinary } from "../../../host/src/binary-resolver";
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "../../..");
-const phpBinaryPath = join(repoRoot, "examples/libs/php/php-src/sapi/cli/php");
-const kernelWasmPath = join(repoRoot, "host/wasm/wasm_posix_kernel.wasm");
+const phpBinaryPath = tryResolveBinary("programs/php/php.wasm");
+const kernelWasmPath = tryResolveBinary("kernel.wasm");
 const wpDir = join(dirname(__dirname), "wordpress");
 const dbPath = join(wpDir, "wp-content/database/wordpress.db");
 
-const PHP_AVAILABLE = existsSync(phpBinaryPath);
+const PHP_AVAILABLE = !!phpBinaryPath;
 const WP_AVAILABLE = existsSync(join(wpDir, "wp-settings.php"));
-const KERNEL_AVAILABLE = existsSync(kernelWasmPath);
+const KERNEL_AVAILABLE = !!kernelWasmPath;
 
 const SKIP_REASON = !PHP_AVAILABLE
   ? "PHP binary not built"

@@ -1,0 +1,38 @@
+kind = "program"
+name = "erlang"
+version = "28.2"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://github.com/erlang/otp/archive/refs/tags/OTP-28.2.tar.gz"
+sha256 = "b984f9e02bb61637997a35daa9070ae8f41cea1667676416438c467fda3d141f"
+
+[license]
+spdx = "Apache-2.0"
+url = "https://github.com/erlang/otp/blob/maint/LICENSE.txt"
+
+[[outputs]]
+name = "erlang"
+wasm = "beam.wasm"
+
+# Host-side prerequisites probed before the build runs.
+# OTP 28 cross-compilation requires a host Erlang with BEAM emulator
+# 16+ (which is the version reported by OTP 28.0+). The host erl/erlc
+# generates bootstrap .beam files consumed by the cross-compiled VM.
+[[host_tools]]
+name = "erl"
+version_constraint = ">=16.0"
+probe = { args = ["-version"], version_regex = "emulator version (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "brew install erlang", linux = "apt install erlang  # or: asdf install erlang 28.0" }
+
+# GNU make >=3.80 is OTP's documented minimum (matches what stock macOS
+# bundles — Apple ships make 3.81 — and any reasonable linux distro).
+[[host_tools]]
+name = "make"
+version_constraint = ">=3.80"
+probe = { args = ["--version"], version_regex = "GNU Make (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "ships with macOS Command Line Tools; or: brew install make", linux = "apt install make" }
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/erlang-28.2-rev1-abi6-wasm32-af59757f.tar.zst"
+archive_sha256 = "b573eef7430a9e467be15e115beb40736f209978750716415966e8dd4b00bc70"

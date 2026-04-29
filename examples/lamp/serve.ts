@@ -23,6 +23,7 @@
 import { readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync } from "fs";
 import { resolve, dirname, join } from "path";
 import { NodeKernelHost } from "../../host/src/node-kernel-host";
+import { resolveBinary } from "../../host/src/binary-resolver";
 
 const scriptDir = dirname(new URL(import.meta.url).pathname);
 const repoRoot = resolve(scriptDir, "../..");
@@ -30,8 +31,8 @@ const repoRoot = resolve(scriptDir, "../..");
 // Binary paths
 const mariadbInstall = resolve(repoRoot, "examples/libs/mariadb/mariadb-install");
 const mysqldPath = resolve(mariadbInstall, "bin/mariadbd");
-const phpFpmWasmPath = resolve(repoRoot, "examples/nginx/php-fpm.wasm");
-const nginxWasmPath = resolve(repoRoot, "examples/nginx/nginx.wasm");
+const phpFpmWasmPath = resolveBinary("programs/php/php-fpm.wasm");
+const nginxWasmPath = resolveBinary("programs/nginx.wasm");
 
 // WordPress and config paths
 const wpDir = resolve(scriptDir, "wordpress");
@@ -47,7 +48,7 @@ const port = parseInt(process.argv[2] || "8080", 10);
 // Validate prerequisites
 for (const [name, path, hint] of [
   ["mariadbd", mysqldPath, "bash examples/libs/mariadb/build-mariadb.sh"],
-  ["php-fpm.wasm", phpFpmWasmPath, "bash examples/nginx/build-php-fpm.sh"],
+  ["php-fpm.wasm", phpFpmWasmPath, "bash examples/libs/php/build-php.sh"],
   ["nginx.wasm", nginxWasmPath, "bash examples/nginx/build.sh"],
 ] as const) {
   if (!existsSync(path)) {

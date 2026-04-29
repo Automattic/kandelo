@@ -1,5 +1,5 @@
 import { BrowserKernel } from "./lib/browser-kernel";
-import kernelWasmUrl from "../../host/wasm/wasm_posix_kernel.wasm?url";
+import kernelWasmUrl from "@kernel-wasm?url";
 
 const output = document.getElementById("output") as HTMLPreElement;
 const programSelect = document.getElementById("program") as HTMLSelectElement;

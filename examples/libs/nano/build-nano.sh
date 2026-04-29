@@ -4,7 +4,9 @@ set -euo pipefail
 # Build GNU nano 8.3 for wasm32-posix-kernel.
 #
 # Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
-# Links against ncurses (must be built first via build-ncurses.sh).
+# Resolves ncurses via `cargo xtask build-deps resolve ncurses` — the
+# shared library cache (or builds it on miss). See
+# docs/dependency-management.md.
 #
 # Output: examples/libs/nano/bin/nano.wasm
 
@@ -13,7 +15,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 SRC_DIR="$SCRIPT_DIR/nano-src"
 BIN_DIR="$SCRIPT_DIR/bin"
-SYSROOT="$REPO_ROOT/sysroot"
+# Explicit env wins; else the in-tree sysroot. Matches build-curl.sh:49.
+SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 
 # --- Prerequisites ---
 if ! command -v wasm32posix-cc &>/dev/null; then
@@ -26,12 +29,22 @@ if [ ! -f "$SYSROOT/lib/libc.a" ]; then
     exit 1
 fi
 
-if [ ! -f "$SYSROOT/lib/libncursesw.a" ]; then
-    echo "ERROR: ncurses not found. Run: bash examples/libs/ncurses/build-ncurses.sh" >&2
+export WASM_POSIX_SYSROOT="$SYSROOT"
+
+# --- Resolve ncurses via the dep cache ---
+# Env-var short-circuit lets another resolver run pass the prefix in
+# directly without re-invoking cargo.
+NCURSES_PREFIX="${WASM_POSIX_DEP_NCURSES_DIR:-}"
+if [ -z "$NCURSES_PREFIX" ]; then
+    echo "==> Resolving ncurses via cargo xtask build-deps..."
+    HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
+    NCURSES_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TARGET" --quiet -- build-deps resolve ncurses)"
+fi
+if [ ! -f "$NCURSES_PREFIX/lib/libncursesw.a" ]; then
+    echo "ERROR: ncurses resolve returned '$NCURSES_PREFIX' but libncursesw.a missing" >&2
     exit 1
 fi
-
-export WASM_POSIX_SYSROOT="$SYSROOT"
+echo "==> ncurses at $NCURSES_PREFIX"
 
 # --- Download nano source ---
 if [ ! -d "$SRC_DIR" ]; then
@@ -166,9 +179,13 @@ if [ ! -f Makefile ]; then
     export ac_cv_sizeof_int=4
     export ac_cv_sizeof_size_t=4
 
-    # ncurses is in sysroot — tell pkg-config where to find it
-    export NCURSESW_CFLAGS="-I${SYSROOT}/include/ncursesw"
-    export NCURSESW_LIBS="-lncursesw -ltinfow"
+    # Point configure at the resolver-returned ncurses prefix. Use the
+    # top-level include dir: the ncursesw headers in the cache reference
+    # each other as `<ncursesw/foo.h>`, and top-level symlinks
+    # (`include/curses.h -> ncursesw/curses.h`) provide the unprefixed
+    # form that nano itself uses.
+    export NCURSESW_CFLAGS="-I${NCURSES_PREFIX}/include"
+    export NCURSESW_LIBS="-L${NCURSES_PREFIX}/lib -lncursesw -ltinfow"
 
     wasm32posix-configure \
         --disable-nls \
@@ -201,3 +218,8 @@ fi
 echo ""
 echo "==> nano built successfully!"
 echo "Binary: $BIN_DIR/nano.wasm"
+
+# Install into local-binaries/ so the resolver picks the freshly-built
+# binary over the fetched release.
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary nano "$SCRIPT_DIR/bin/nano.wasm"

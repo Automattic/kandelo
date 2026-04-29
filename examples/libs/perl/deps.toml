@@ -1,0 +1,20 @@
+kind = "program"
+name = "perl"
+version = "5.40.3"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://www.cpan.org/src/5.0/perl-5.40.3.tar.gz"
+sha256 = "4c155b4e6160682b38919b55ac319081b898db11857cf18a7d9ffed2648ccaff"
+
+[license]
+spdx = "Artistic-1.0-Perl OR GPL-1.0-or-later"
+url = "https://dev.perl.org/licenses/"
+
+[[outputs]]
+name = "perl"
+wasm = "perl.wasm"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/perl-5.40.3-rev1-abi6-wasm32-fa757a25.tar.zst"
+archive_sha256 = "317c86a11341382f34335463506240d792b76557b4b0525152a242a057332e30"

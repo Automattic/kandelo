@@ -1,0 +1,38 @@
+# Per-library manifest for ncurses. See docs/package-management.md.
+#
+# No wasm deps (host `tic`/`infocmp` are built out-of-band inside the
+# lib dir — they're host binaries, not cacheable wasm artifacts, so
+# they don't go through the resolver). The compiled-in terminal
+# fallback entries (xterm-256color, xterm, vt100, dumb) are linked
+# into libtinfow.a via MKfallback.sh; consumers don't need a runtime
+# terminfo database.
+
+kind = "library"
+
+name = "ncurses"
+version = "6.5"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://ftpmirror.gnu.org/gnu/ncurses/ncurses-6.5.tar.gz"
+sha256 = "136d91bc269a9a5785e5f9e980bc76ab57428f604ce3e5a5a90cebc767971cc6"
+
+[license]
+spdx = "X11"
+url = "https://invisible-island.net/ncurses/ncurses-license.html"
+
+[outputs]
+# Wide variants are the ones we actually build (--enable-widec). Non-wide
+# names (libncurses.a, libtinfo.a) are provided as symlinks for consumers
+# that link `-lncurses`, but the resolver only enforces the underlying
+# files. Symlinks are nice-to-have, not part of the contract.
+libs = ["lib/libncursesw.a", "lib/libtinfow.a"]
+# Install produces ~40 headers under include/ncursesw/. Declare the
+# directory (validator accepts dirs; see openssl) instead of listing
+# every header — churn-free across version bumps.
+headers = ["include/ncursesw"]
+# `--enable-pc-files=no --with-pkg-config=no`: no pkgconfig outputs.
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/ncurses-6.5-rev1-abi6-wasm32-014a9575.tar.zst"
+archive_sha256 = "77385913d443ee01009538189475abb204141940b74c5ac408fec368f560d78e"

@@ -1,0 +1,20 @@
+kind = "program"
+name = "cpython"
+version = "3.13.3"
+revision = 1
+depends_on = ["zlib@1.3.1"]
+
+[source]
+url = "https://www.python.org/ftp/python/3.13.3/Python-3.13.3.tar.xz"
+sha256 = "40f868bcbdeb8149a3149580bb9bfd407b3321cd48f0be631af955ac92c0e041"
+
+[license]
+spdx = "Python-2.0"
+url = "https://docs.python.org/3/license.html"
+
+[[outputs]]
+name = "cpython"
+wasm = "python.wasm"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/cpython-3.13.3-rev1-abi6-wasm32-62c97219.tar.zst"
+archive_sha256 = "c023f6d2e34fba95a7de45d8427c66a8657d7301eed56256d479a52943a9c0a6"

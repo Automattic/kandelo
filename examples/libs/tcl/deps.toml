@@ -1,0 +1,20 @@
+kind = "program"
+name = "tcl"
+version = "9.0.1"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://github.com/tcltk/tcl/archive/refs/tags/core-9-0-1.tar.gz"
+sha256 = "053ce8cdc632a6484f6a1416524fb66b614cd13e77366ad2722bc205d53eff95"
+
+[license]
+spdx = "TCL"
+url = "https://www.tcl.tk/software/tcltk/license.html"
+
+[[outputs]]
+name = "tcl"
+wasm = "tclsh.wasm"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/tcl-9.0.1-rev1-abi6-wasm32-a931d396.tar.zst"
+archive_sha256 = "91ffd21cb98aaec378a9b79fa80ba7e65c1ed3bf2742b9c3122741ca88597055"

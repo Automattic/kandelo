@@ -16,7 +16,7 @@ SYSROOT="$REPO_ROOT/sysroot"
 GLUE_DIR="$REPO_ROOT/glue"
 LIBC_TEST="$REPO_ROOT/libc-test"
 BUILD_DIR="$REPO_ROOT/libc-test/build"
-KERNEL_WASM="$REPO_ROOT/host/wasm/wasm_posix_kernel.wasm"
+KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"
 
 # ── Expected failures ──────────────────────────────────────
 # Tests known to fail due to wasm32 soft-float precision limits (no hardware FPU rounding control).

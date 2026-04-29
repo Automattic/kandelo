@@ -8,6 +8,7 @@ import { fileURLToPath } from "url";
 import { CentralizedKernelWorker } from "../../host/src/kernel-worker";
 import { NodePlatformIO } from "../../host/src/platform/node";
 import { NodeWorkerAdapter } from "../../host/src/worker-adapter";
+import { resolveBinary } from "../../host/src/binary-resolver";
 import type {
   CentralizedWorkerInitMessage,
 } from "../../host/src/worker-protocol";
@@ -24,9 +25,9 @@ function loadBytes(path: string): ArrayBuffer {
 }
 
 async function main() {
-  const pythonWasm = resolve(__dirname, "../libs/cpython/bin/python.wasm");
+  const pythonWasm = resolveBinary("programs/cpython.wasm");
   const pythonHome = resolve(__dirname, "../libs/cpython/cpython-install");
-  const kernelWasmPath = resolve(repoRoot, "host/wasm/wasm_posix_kernel.wasm");
+  const kernelWasmPath = resolveBinary("kernel.wasm");
 
   console.error(`[${Date.now()}] Loading wasm files...`);
   const kernelWasmBytes = loadBytes(kernelWasmPath);

@@ -30,7 +30,7 @@ export WASM_POSIX_SYSROOT="$SYSROOT"
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading gawk $GAWK_VERSION..."
     TARBALL="gawk-${GAWK_VERSION}.tar.xz"
-    URL="https://ftp.gnu.org/gnu/gawk/${TARBALL}"
+    URL="https://ftpmirror.gnu.org/gnu/gawk/${TARBALL}"
     curl -fsSL "$URL" -o "/tmp/$TARBALL"
     mkdir -p "$SRC_DIR"
     tar xJf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
@@ -188,3 +188,8 @@ fi
 echo ""
 echo "==> gawk built successfully!"
 echo "Binary: $BIN_DIR/gawk.wasm"
+
+# Install into local-binaries/ so the resolver picks the freshly-built
+# binary over the fetched release.
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary gawk "$SCRIPT_DIR/bin/gawk.wasm"

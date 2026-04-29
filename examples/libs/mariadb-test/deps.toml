@@ -1,0 +1,32 @@
+kind = "program"
+name = "mariadb-test"
+version = "0.1.0"
+revision = 1
+depends_on = []
+
+# Pre-built VFS image for the MariaDB test runner: mariadbd binary,
+# mysql-test test files (curated 185 tests), system-table SQL,
+# and init descriptors. Source at
+# examples/browser/scripts/build-mariadb-test-vfs-image.ts. Used by
+# examples/browser/pages/mariadb-test/main.ts (Playwright harness).
+#
+# Not part of the binaries-abi-v6 release: this is a test fixture
+# that depends on a built MariaDB tree (examples/libs/mariadb/
+# mariadb-install/), which is local-only. The page imports it via
+# `@binaries/programs/wasm32/mariadb-test.vfs?url`; the @binaries
+# resolver in vite.config.ts falls back to local-binaries/ when no
+# released archive exists.
+[source]
+url = "https://github.com/brandonpayton/wasm-posix-kernel"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
+
+[build]
+script = "build-mariadb-test.sh"
+
+[[outputs]]
+name = "mariadb-test"
+wasm = "mariadb-test.vfs"

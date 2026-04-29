@@ -1,0 +1,23 @@
+kind = "program"
+name = "lamp"
+version = "0.1.0"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://github.com/brandonpayton/wasm-posix-kernel"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
+
+[build]
+script = "build-lamp.sh"
+
+[[outputs]]
+name = "lamp"
+wasm = "lamp.vfs"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/lamp-0.1.0-rev1-abi6-wasm32-9621cfd0.tar.zst"
+archive_sha256 = "00f1b31156f3fb2f993c619a74535360fc66ac424310f6ab3e1006fd6663119c"

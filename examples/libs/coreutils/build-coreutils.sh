@@ -30,7 +30,7 @@ export WASM_POSIX_SYSROOT="$SYSROOT"
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading coreutils $COREUTILS_VERSION..."
     TARBALL="coreutils-${COREUTILS_VERSION}.tar.xz"
-    URL="https://ftp.gnu.org/gnu/coreutils/${TARBALL}"
+    URL="https://ftpmirror.gnu.org/gnu/coreutils/${TARBALL}"
     curl -fsSL "$URL" -o "/tmp/$TARBALL"
     mkdir -p "$SRC_DIR"
     tar xJf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
@@ -258,3 +258,8 @@ fi
 echo ""
 echo "==> coreutils built successfully!"
 echo "Binary: $BIN_DIR/coreutils.wasm"
+
+# Install into local-binaries/ so the resolver picks the freshly-built
+# binary over the fetched release.
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary coreutils "$SCRIPT_DIR/bin/coreutils.wasm"

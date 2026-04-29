@@ -9,9 +9,11 @@
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
 import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
+import { decompressVfsImage } from "../../../../host/src/vfs/load-image";
 import { SystemInit } from "../../lib/init/system-init";
-import kernelWasmUrl from "../../../../host/wasm/wasm_posix_kernel.wasm?url";
-import mysqlTestWasmUrl from "../../../../examples/libs/mariadb/mariadb-install/bin/mysqltest.wasm?url";
+import kernelWasmUrl from "@kernel-wasm?url";
+import mysqlTestWasmUrl from "../../../../binaries/programs/wasm32/mariadb/mysqltest.wasm?url";
+import VFS_IMAGE_URL from "@binaries/programs/wasm32/mariadb-test.vfs?url";
 
 interface TestResult {
   exitCode: number;
@@ -29,8 +31,6 @@ declare global {
 const statusEl = document.getElementById("status")!;
 const logEl = document.getElementById("log")!;
 const decoder = new TextDecoder();
-
-const VFS_IMAGE_URL = import.meta.env.BASE_URL + "mariadb-test.vfs";
 
 function appendLog(text: string, cls?: string) {
   const span = document.createElement("span");
@@ -108,7 +108,7 @@ async function init() {
         if (!r.ok) {
           throw new Error(
             `Failed to load VFS image from ${VFS_IMAGE_URL} (${r.status}). ` +
-            `Run: bash examples/browser/scripts/build-mariadb-test-vfs-image.sh`
+            `Run: bash examples/libs/mariadb-test/build-mariadb-test.sh`
           );
         }
         return r.arrayBuffer();
@@ -127,7 +127,7 @@ async function init() {
 
   // Restore MemoryFileSystem from the pre-built VFS image
   statusEl.textContent = "Restoring VFS from image...";
-  const memfs = MemoryFileSystem.fromImage(new Uint8Array(vfsImageBuf), {
+  const memfs = MemoryFileSystem.fromImage(decompressVfsImage(new Uint8Array(vfsImageBuf)), {
     maxByteLength: 512 * 1024 * 1024,
   });
 

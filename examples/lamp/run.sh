@@ -51,7 +51,7 @@ fi
 # Step 5: PHP-FPM (builds sqlite, zlib, openssl, libxml2 as needed)
 if [ ! -f "$NGINX_DIR/php-fpm.wasm" ]; then
     echo "--- Building PHP-FPM + dependencies ---"
-    bash "$NGINX_DIR/build-php-fpm.sh"
+    bash "$REPO_ROOT/examples/libs/php/build-php.sh"
 else
     echo "--- php-fpm.wasm: OK ---"
 fi

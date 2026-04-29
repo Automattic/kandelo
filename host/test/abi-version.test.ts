@@ -1,9 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
+import { resolveBinary } from "../src/binary-resolver";
 
 /**
  * Coverage for the ABI version surface:
@@ -19,9 +16,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
  * the machinery today.
  */
 describe("ABI version marker", () => {
-  const kernelWasm = readFileSync(
-    join(__dirname, "../wasm/wasm_posix_kernel.wasm"),
-  );
+  const kernelWasm = readFileSync(resolveBinary("kernel.wasm"));
 
   async function instantiateKernelOnly(
     bytes: Uint8Array,
@@ -62,9 +57,7 @@ describe("ABI version marker", () => {
 
   it("freshly-built user programs export a matching __abi_version", async () => {
     // Pick a program we know build-programs.sh regenerates every run.
-    const userProg = readFileSync(
-      join(__dirname, "../wasm/exec-caller.wasm"),
-    );
+    const userProg = readFileSync(resolveBinary("programs/exec-caller.wasm"));
     const module = await WebAssembly.compile(userProg as BufferSource);
     const exports = WebAssembly.Module.exports(module);
     const entry = exports.find((e) => e.name === "__abi_version");

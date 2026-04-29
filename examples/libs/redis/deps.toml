@@ -1,0 +1,24 @@
+kind = "program"
+name = "redis"
+version = "7.2.5"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://github.com/redis/redis/archive/refs/tags/7.2.5.tar.gz"
+sha256 = "98a8502a2e902d2a9785ef46a69a5f8d5e24cbf9ea3ae4d845afcfc6778aa783"
+
+[license]
+spdx = "BSD-3-Clause"
+url = "https://github.com/redis/redis/blob/7.2/COPYING"
+
+[[outputs]]
+name = "redis-server"
+wasm = "redis-server.wasm"
+
+[[outputs]]
+name = "redis-cli"
+wasm = "redis-cli.wasm"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/redis-7.2.5-rev1-abi6-wasm32-3720cbfd.tar.zst"
+archive_sha256 = "fa7653467bb6467d3d10e27438b4414b5b8fbdba291d6f371411fb07e6f350d1"

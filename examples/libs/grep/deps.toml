@@ -1,0 +1,20 @@
+kind = "program"
+name = "grep"
+version = "3.11"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://ftpmirror.gnu.org/gnu/grep/grep-3.11.tar.xz"
+sha256 = "1db2aedde89d0dea42b16d9528f894c8d15dae4e190b59aecc78f5a951276eab"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://git.savannah.gnu.org/cgit/grep.git/tree/COPYING?h=v3.11"
+
+[[outputs]]
+name = "grep"
+wasm = "grep.wasm"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/grep-3.11-rev1-abi6-wasm32-f78a0573.tar.zst"
+archive_sha256 = "f0f4295a95af19e982420fc1c0b2cea6b6e645ab3888e1b077d02f6d411204ca"

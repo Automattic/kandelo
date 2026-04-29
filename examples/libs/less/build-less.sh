@@ -120,3 +120,8 @@ fi
 echo ""
 echo "==> less built successfully!"
 echo "Binary: $BIN_DIR/less.wasm"
+
+# Install into local-binaries/ so the resolver picks the freshly-built
+# binary over the fetched release.
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+[ -f "$SCRIPT_DIR/bin/less.wasm" ] && install_local_binary less "$SCRIPT_DIR/bin/less.wasm" || true

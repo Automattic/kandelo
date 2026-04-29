@@ -191,3 +191,16 @@ else
     echo "ERROR: Build failed — libtcl8.6.a not found" >&2
     exit 1
 fi
+
+# Install into local-binaries/ so the resolver picks the freshly-built
+# binary over the fetched release.
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary tcl "$SCRIPT_DIR/bin/tclsh.wasm"
+
+# Manifest declares `wasm = "tclsh.wasm"` (not tcl.wasm), so the
+# resolver's $WASM_POSIX_DEP_OUT_DIR scratch needs the file under that
+# exact name. The helper's default-fallback uses <program>.<ext>.
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    cp "$SCRIPT_DIR/bin/tclsh.wasm" "$WASM_POSIX_DEP_OUT_DIR/tclsh.wasm"
+    echo "  installed $WASM_POSIX_DEP_OUT_DIR/tclsh.wasm (manifest output name)"
+fi

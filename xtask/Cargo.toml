@@ -3,6 +3,19 @@ name = "xtask"
 version.workspace = true
 edition.workspace = true
 publish = false
+# xtask is a host-only build tool. The workspace `.cargo/config.toml`
+# defaults `target` to `wasm64-unknown-unknown`, but xtask MUST be
+# built and tested for the host: `ureq`'s `tls` feature transitively
+# depends on `ring`, whose C build does not support wasm targets.
+#
+# Always pass an explicit host target when working with this crate:
+#
+#     cargo test -p xtask --target aarch64-apple-darwin
+#     cargo build -p xtask --target aarch64-apple-darwin
+#
+# (See `xtask/README.md`.) `forced-target` would resolve this in
+# theory but is gated on nightly-only `per-package-target`, which is
+# unstable and currently panics in the resolver on our toolchain.
 
 [[bin]]
 name = "xtask"
@@ -10,8 +23,45 @@ path = "src/main.rs"
 
 [dependencies]
 wasm-posix-shared = { path = "../crates/shared" }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Pinned to a single minor. wasmparser has churned across minors
 # (CompositeType vs CompositeInnerType, SubType shape, etc). A passive
 # `cargo update` should not silently break the snapshot generator.
 wasmparser = "0.247"
+sha2 = "0.10"
+toml = "0.8"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+# Remote-fetch path (Task A.9). `ureq` is used because the resolver only
+# needs sync, blocking HTTP and ureq pulls a much smaller transitive
+# tree than reqwest. `zstd` + `tar` decode the binary-cache archive.
+ureq = { version = "2", default-features = false, features = ["tls"] }
+zstd = "0.13"
+tar = "0.4"
+# Source-kind default fetch+extract (Task C.4). flate2 with the pure-rust
+# backend avoids zlib-sys; bzip2 + xz2 each link a small bundled C lib,
+# which is fine on the host where xtask runs.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+bzip2 = "0.4"
+xz2 = "0.1"
+# Host-tool probe runner (Task C.9): match the captured version
+# substring out of `<tool> --version` output. `regex` is a default-
+# featured, well-cached crate; no non-default features needed.
+regex = "1"
+
+[dev-dependencies]
+# Used by source_extract + build_deps integration tests for ergonomic
+# tempdirs. Not promoted to a runtime dep: the source_extract zip path
+# uses std::io::Cursor instead of NamedTempFile.
+tempfile = "3"
+# JSON-Schema conformance test for `abi/manifest.schema.json`
+# (Task E.1). Pinned to 0.18 — tested clean on aarch64-apple-darwin;
+# newer 0.4x versions pull in `aws-lc-rs` via a default feature path
+# that has historically been brittle on macOS hosts.
+#
+# `default-features = false` to drop `resolve-http` (reqwest + tokio +
+# hyper + wasm-bindgen) and `cli` (clap). The schema only ever resolves
+# local `#/$defs/...` fragment refs, so no network/file resolver is
+# needed. Mirrors the project's "minimize transitive deps" invariant —
+# see the `ureq` rationale just above.
+jsonschema = { version = "0.18", default-features = false }

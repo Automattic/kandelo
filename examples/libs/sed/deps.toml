@@ -1,0 +1,20 @@
+kind = "program"
+name = "sed"
+version = "4.9"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://ftpmirror.gnu.org/gnu/sed/sed-4.9.tar.xz"
+sha256 = "6e226b732e1cd739464ad6862bd1a1aba42d7982922da7a53519631d24975181"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://git.savannah.gnu.org/cgit/sed.git/tree/COPYING?h=v4.9"
+
+[[outputs]]
+name = "sed"
+wasm = "sed.wasm"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/sed-4.9-rev1-abi6-wasm32-d1c47362.tar.zst"
+archive_sha256 = "e20f88bead55894cced63e375946d9044cb382a0620d288b0341bfed8dcb20d1"

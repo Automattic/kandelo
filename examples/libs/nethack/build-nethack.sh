@@ -42,12 +42,22 @@ if [ ! -f "$SYSROOT/lib/libc.a" ]; then
     exit 1
 fi
 
-if [ ! -f "$SYSROOT/lib/libncursesw.a" ]; then
-    echo "ERROR: ncurses not found. Run: bash examples/libs/ncurses/build-ncurses.sh" >&2
+export WASM_POSIX_SYSROOT="$SYSROOT"
+
+# --- Resolve ncurses via the dep cache (provides libncursesw, libtinfow, ncursesw headers) ---
+NCURSES_PREFIX="${WASM_POSIX_DEP_NCURSES_DIR:-}"
+if [ -z "$NCURSES_PREFIX" ]; then
+    echo "==> Resolving ncurses via cargo xtask build-deps..."
+    HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
+    NCURSES_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TARGET" --quiet -- build-deps resolve ncurses)"
+fi
+if [ ! -f "$NCURSES_PREFIX/lib/libncursesw.a" ]; then
+    echo "ERROR: ncurses resolve returned '$NCURSES_PREFIX' but libncursesw.a missing" >&2
     exit 1
 fi
-
-export WASM_POSIX_SYSROOT="$SYSROOT"
+echo "==> ncurses at $NCURSES_PREFIX"
+export CPPFLAGS="${CPPFLAGS:-} -I$NCURSES_PREFIX/include"
+export LDFLAGS="${LDFLAGS:-} -L$NCURSES_PREFIX/lib"
 
 # --- Download NetHack source ---
 if [ ! -d "$SRC_DIR" ]; then
@@ -211,11 +221,20 @@ if [ -f "$SRC_MAKEFILE" ] && ! grep -q "wasm32posix patch" "$SRC_MAKEFILE"; then
         "$SRC_MAKEFILE"
 
     # Append an additional CFLAGS line after the hints-supplied block so
-    # ncursesw and sysroot headers resolve when cross-compiling.
-    awk -v sysroot="$SYSROOT" '
+    # ncursesw (from the resolver cache) and sysroot headers resolve when
+    # cross-compiling. The hints set LFLAGS=-rdynamic with `=` (not `+=`)
+    # later in the Makefile, which would clobber a `LFLAGS+=...` that
+    # appeared earlier — so rewrite `LFLAGS=-rdynamic` to `LFLAGS+=...`
+    # that prepends our `-L` to whatever was set previously.
+    awk -v ncurses="$NCURSES_PREFIX" -v sysroot="$SYSROOT" '
         /^CFLAGS\+=-DCURSES_GRAPHICS/ {
             print;
-            print "CFLAGS+=-I" sysroot "/include/ncursesw -I" sysroot "/include";
+            print "CFLAGS+=-I" ncurses "/include/ncursesw -I" ncurses "/include -I" sysroot "/include";
+            print "LFLAGS+=-L" ncurses "/lib";
+            next;
+        }
+        /^LFLAGS=-rdynamic$/ {
+            print "LFLAGS+=-rdynamic -L" ncurses "/lib";
             next;
         }
         { print }
@@ -292,6 +311,11 @@ echo "==> Staging outputs..."
 
 mkdir -p "$BIN_DIR"
 cp "$SRC_DIR/src/nethack" "$BIN_DIR/nethack.wasm"
+
+# Install into local-binaries/ (resolver priority 1) and the resolver
+# scratch dir when invoked by xtask build-deps / stage-release.
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary nethack "$BIN_DIR/nethack.wasm"
 
 mkdir -p "$RUNTIME_DIR/share/nethack"
 cp "$SRC_DIR/dat/nhdat" "$RUNTIME_DIR/share/nethack/nhdat"

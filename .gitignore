@@ -8,6 +8,19 @@
 host/dist/
 host/docs/
 
+# Fetched / locally-built binaries. `binaries/` is populated by
+# scripts/fetch-binaries.sh; `local-binaries/` is a user-managed
+# override tree that takes priority. Neither is tracked.
+/binaries/
+/local-binaries/
+
+# host/wasm/ and examples/libs/*/bin/ used to hold committed
+# binaries. They're now artifacts produced by build scripts — not
+# tracked in git.
+host/wasm/
+examples/libs/dash/bin/
+examples/libs/git/bin/
+
 # Dependencies
 node_modules/
 

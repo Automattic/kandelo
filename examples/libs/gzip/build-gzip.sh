@@ -31,7 +31,7 @@ export WASM_POSIX_SYSROOT="$SYSROOT"
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading gzip $GZIP_VERSION..."
     TARBALL="gzip-${GZIP_VERSION}.tar.xz"
-    URL="https://ftp.gnu.org/gnu/gzip/${TARBALL}"
+    URL="https://ftpmirror.gnu.org/gnu/gzip/${TARBALL}"
     curl -fsSL "$URL" -o "/tmp/$TARBALL"
     mkdir -p "$SRC_DIR"
     tar xJf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
@@ -186,3 +186,8 @@ fi
 echo ""
 echo "==> gzip built successfully!"
 echo "Binary: $BIN_DIR/gzip.wasm"
+
+# Install into local-binaries/ so the resolver picks the freshly-built
+# binary over the fetched release.
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary gzip "$SCRIPT_DIR/bin/gzip.wasm"

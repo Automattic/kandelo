@@ -1,0 +1,20 @@
+kind = "program"
+name = "nethack"
+version = "3.6.7"
+revision = 1
+depends_on = ["ncurses@6.5"]
+
+[source]
+url = "https://www.nethack.org/download/3.6.7/nethack-367-src.tgz"
+sha256 = "98cf67df6debf9668a61745aa84c09bcab362e5d33f5b944ec5155d44d2aacb2"
+
+[license]
+spdx = "NGPL"
+url = "https://nethack.org/common/license.html"
+
+[[outputs]]
+name = "nethack"
+wasm = "nethack.wasm"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/nethack-3.6.7-rev1-abi6-wasm32-802afb1b.tar.zst"
+archive_sha256 = "47e69174da70a67874e4021804ead97f0b0090f6ce1a4539bbcb819cfff8021f"

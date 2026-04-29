@@ -5,10 +5,10 @@
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
 import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
-import kernelWasmUrl from "../../../../host/wasm/wasm_posix_kernel.wasm?url";
-import beamWasmUrl from "../../../../examples/libs/erlang/bin/beam.wasm?url";
-
-const VFS_IMAGE_URL = import.meta.env.BASE_URL + "erlang.vfs";
+import { decompressVfsImage } from "../../../../host/src/vfs/load-image";
+import kernelWasmUrl from "@kernel-wasm?url";
+import beamWasmUrl from "../../../../binaries/programs/wasm32/erlang.wasm?url";
+import VFS_IMAGE_URL from "@binaries/programs/wasm32/erlang-vfs.vfs?url";
 
 // --- DOM elements ---
 const codeEl = document.getElementById("code") as HTMLTextAreaElement;
@@ -289,8 +289,7 @@ async function runBatch() {
     let lastOutputTime = 0;
     let outputSeen = false;
 
-    const memfs = MemoryFileSystem.fromImage(
-      new Uint8Array(vfsImageBuf!),
+    const memfs = MemoryFileSystem.fromImage(decompressVfsImage(new Uint8Array(vfsImageBuf!)),
       { maxByteLength: 256 * 1024 * 1024 },
     );
 

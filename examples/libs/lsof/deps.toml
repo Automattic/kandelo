@@ -1,0 +1,25 @@
+kind = "program"
+name = "lsof"
+version = "0.1.0"
+revision = 1
+depends_on = []
+
+# In-tree implementation, not the upstream lsof. The source lives at
+# examples/lsof.c and reads this kernel's /proc to enumerate open
+# file descriptors. Versioned alongside the kernel, so the source
+# URL is the project repo and the sha256 is a placeholder (the source
+# is on-disk in the repo, not fetched).
+[source]
+url = "https://github.com/brandonpayton/wasm-posix-kernel"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
+
+[[outputs]]
+name = "lsof"
+wasm = "lsof.wasm"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/lsof-0.1.0-rev1-abi6-wasm32-611f4166.tar.zst"
+archive_sha256 = "4eec5ffcefaf6a9ff9460831e9aaf2ac37e9eceefa2223b0eb78b8c33adbe433"

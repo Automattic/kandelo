@@ -1,0 +1,20 @@
+kind = "program"
+name = "zip"
+version = "3.0"
+revision = 1
+depends_on = []
+
+[source]
+url = "http://downloads.sourceforge.net/infozip/zip30.tar.gz"
+sha256 = "f0e8bb1f9b7eb0b01285495a2699df3a4b766784c1765a8f1aeedf63c0806369"
+
+[license]
+spdx = "Info-ZIP"
+url = "https://infozip.sourceforge.net/license.html"
+
+[[outputs]]
+name = "zip"
+wasm = "zip.wasm"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/zip-3.0-rev1-abi6-wasm32-cdbcc9d5.tar.zst"
+archive_sha256 = "1c87b0d4175e1d54b137145240038c4097803cd9464ace38f1a75060734b81e2"

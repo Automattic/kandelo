@@ -1,0 +1,20 @@
+kind = "program"
+name = "wget"
+version = "1.25.0"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://ftpmirror.gnu.org/gnu/wget/wget-1.25.0.tar.gz"
+sha256 = "766e48423e79359ea31e41db9e5c289675947a7fcf2efdcedb726ac9d0da3784"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://git.savannah.gnu.org/cgit/wget.git/tree/COPYING"
+
+[[outputs]]
+name = "wget"
+wasm = "wget.wasm"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/wget-1.25.0-rev1-abi6-wasm32-c8e1dcbd.tar.zst"
+archive_sha256 = "2183d1f270dcde2f183eef1aede7707725905c0fbb4dafb0df5099881ab8c814"

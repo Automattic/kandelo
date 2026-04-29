@@ -15,6 +15,12 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 
+# Activate the worktree-local SDK toolchain (no global npm link required).
+# Build scripts also source this directly; sourcing here makes the tools
+# available to anything `run.sh` shells out to (e.g. `bash run.sh build_X`).
+# shellcheck source=/dev/null
+source "$REPO_ROOT/sdk/activate.sh"
+
 # ─── Colors ───────────────────────────────────────────────────────────────────
 
 if [ -t 1 ] && command -v tput &>/dev/null && [ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]; then
@@ -31,69 +37,80 @@ step()  { echo "${CYAN}${BOLD}=== $* ===${RESET}"; }
 
 # ─── Artifact checks ─────────────────────────────────────────────────────────
 
-has_kernel()    { [ -f "$REPO_ROOT/host/wasm/wasm_posix_kernel.wasm" ]; }
+# `has_resolvable <rel>` is true when the binary resolves via
+# `local-binaries/` or `binaries/`. Used to treat fetched binaries as
+# "already built" so build_target skips.
+has_resolvable() {
+    "$REPO_ROOT/scripts/resolve-binary.sh" "$1" >/dev/null 2>&1
+}
+
+has_kernel()    { has_resolvable kernel.wasm || [ -f "$REPO_ROOT/host/wasm/wasm_posix_kernel.wasm" ]; }
 has_sysroot()   { [ -f "$REPO_ROOT/sysroot/lib/libc.a" ]; }
 has_sysroot64() { [ -f "$REPO_ROOT/sysroot64/lib/libc.a" ]; }
 has_sdk()       { command -v wasm32posix-cc &>/dev/null; }
 has_host()      { [ -d "$REPO_ROOT/host/dist" ]; }
-has_programs()  { [ -f "$REPO_ROOT/host/wasm/fork-exec.wasm" ]; }
-has_nginx()     { [ -f "$REPO_ROOT/examples/nginx/nginx.wasm" ]; }
-has_php()       { [ -f "$REPO_ROOT/examples/libs/php/php-src/sapi/cli/php" ]; }
-has_php_fpm()   { [ -f "$REPO_ROOT/examples/nginx/php-fpm.wasm" ]; }
-has_mariadb()   { [ -f "$REPO_ROOT/examples/libs/mariadb/mariadb-install/bin/mariadbd" ]; }
-has_mariadb64() { [ -f "$REPO_ROOT/examples/libs/mariadb/mariadb-install-64/bin/mariadbd" ]; }
+has_programs()    { has_resolvable programs/fork-exec.wasm || [ -f "$REPO_ROOT/host/wasm/fork-exec.wasm" ]; }
+has_nginx()    { has_resolvable programs/nginx.wasm || [ -f "$REPO_ROOT/examples/nginx/nginx.wasm" ]; }
+has_php()       { has_resolvable programs/php/php.wasm || [ -f "$REPO_ROOT/examples/libs/php/php-src/sapi/cli/php" ]; }
+has_php_fpm()    { has_resolvable programs/php/php-fpm.wasm || [ -f "$REPO_ROOT/examples/nginx/php-fpm.wasm" ]; }
+has_mariadb()    { has_resolvable programs/mariadb/mariadbd.wasm || [ -f "$REPO_ROOT/examples/libs/mariadb/mariadb-install/bin/mariadbd" ]; }
+has_mariadb64() { has_resolvable programs/wasm64/mariadb/mariadbd.wasm || [ -f "$REPO_ROOT/examples/libs/mariadb/mariadb-install-64/bin/mariadbd" ]; }
 has_mariadb_vfs() {
+    if has_resolvable programs/mariadb-vfs.vfs; then return 0; fi
     local vfs="$REPO_ROOT/examples/browser/public/mariadb.vfs"
     local mariadbd="$REPO_ROOT/examples/libs/mariadb/mariadb-install/bin/mariadbd.wasm"
     [ -f "$vfs" ] && [ -f "$mariadbd" ] && [ "$vfs" -nt "$mariadbd" ]
 }
 has_mariadb64_vfs() {
+    if has_resolvable programs/wasm64/mariadb-vfs.vfs; then return 0; fi
     local vfs="$REPO_ROOT/examples/browser/public/mariadb-64.vfs"
     local mariadbd="$REPO_ROOT/examples/libs/mariadb/mariadb-install-64/bin/mariadbd.wasm"
     [ -f "$vfs" ] && [ -f "$mariadbd" ] && [ "$vfs" -nt "$mariadbd" ]
 }
 has_wordpress() { [ -f "$REPO_ROOT/examples/wordpress/wordpress/wp-settings.php" ]; }
-has_wp_vfs()    { [ -f "$REPO_ROOT/examples/browser/public/wordpress.vfs" ]; }
-has_dash()      { [ -f "$REPO_ROOT/examples/libs/dash/bin/dash.wasm" ]; }
-has_bash()      { [ -f "$REPO_ROOT/examples/libs/bash/bin/bash.wasm" ]; }
-has_coreutils() { [ -f "$REPO_ROOT/examples/libs/coreutils/bin/coreutils.wasm" ]; }
-has_grep()      { [ -f "$REPO_ROOT/examples/libs/grep/bin/grep.wasm" ]; }
-has_sed()       { [ -f "$REPO_ROOT/examples/libs/sed/bin/sed.wasm" ]; }
-has_redis()     { [ -f "$REPO_ROOT/examples/libs/redis/bin/redis-server.wasm" ]; }
-has_cpython()   { [ -f "$REPO_ROOT/examples/libs/cpython/bin/python.wasm" ]; }
-has_python_vfs() { [ -f "$REPO_ROOT/examples/browser/public/python.vfs" ]; }
-has_perl_vfs()   { [ -f "$REPO_ROOT/examples/browser/public/perl.vfs" ]; }
-has_shell_vfs()  { [ -f "$REPO_ROOT/examples/browser/public/shell.vfs" ]; }
-has_erlang()    { [ -f "$REPO_ROOT/examples/libs/erlang/bin/beam.wasm" ]; }
-has_erlang_vfs() { [ -f "$REPO_ROOT/examples/browser/public/erlang.vfs" ]; }
-has_lamp_vfs()   { [ -f "$REPO_ROOT/examples/browser/public/lamp.vfs" ]; }
-has_bc()        { [ -f "$REPO_ROOT/examples/libs/bc/bin/bc.wasm" ]; }
-has_file()      { [ -f "$REPO_ROOT/examples/libs/file/bin/file.wasm" ]; }
-has_less()      { [ -f "$REPO_ROOT/examples/libs/less/bin/less.wasm" ]; }
-has_m4()        { [ -f "$REPO_ROOT/examples/libs/m4/bin/m4.wasm" ]; }
-has_make()      { [ -f "$REPO_ROOT/examples/libs/make/bin/make.wasm" ]; }
-has_tar()       { [ -f "$REPO_ROOT/examples/libs/tar/bin/tar.wasm" ]; }
-has_curl()      { [ -f "$REPO_ROOT/examples/libs/curl/bin/curl.wasm" ]; }
-has_wget()      { [ -f "$REPO_ROOT/examples/libs/wget/bin/wget.wasm" ]; }
-has_gzip()      { [ -f "$REPO_ROOT/examples/libs/gzip/bin/gzip.wasm" ]; }
-has_bzip2()     { [ -f "$REPO_ROOT/examples/libs/bzip2/bin/bzip2.wasm" ]; }
-has_xz()        { [ -f "$REPO_ROOT/examples/libs/xz/bin/xz.wasm" ]; }
-has_zstd()      { [ -f "$REPO_ROOT/examples/libs/zstd/bin/zstd.wasm" ]; }
-has_zip()       { [ -f "$REPO_ROOT/examples/libs/zip/bin/zip.wasm" ]; }
-has_unzip()     { [ -f "$REPO_ROOT/examples/libs/unzip/bin/unzip.wasm" ]; }
-has_nano()      { [ -f "$REPO_ROOT/examples/libs/nano/bin/nano.wasm" ]; }
-has_nethack()   { [ -f "$REPO_ROOT/examples/libs/nethack/bin/nethack.wasm" ]; }
+has_wp_vfs()    { has_resolvable programs/wordpress.vfs || [ -f "$REPO_ROOT/examples/browser/public/wordpress.vfs" ]; }
+has_dash()    { has_resolvable programs/dash.wasm || [ -f "$REPO_ROOT/examples/libs/dash/bin/dash.wasm" ]; }
+has_bash()    { has_resolvable programs/bash.wasm || [ -f "$REPO_ROOT/examples/libs/bash/bin/bash.wasm" ]; }
+has_coreutils()    { has_resolvable programs/coreutils.wasm || [ -f "$REPO_ROOT/examples/libs/coreutils/bin/coreutils.wasm" ]; }
+has_grep()    { has_resolvable programs/grep.wasm || [ -f "$REPO_ROOT/examples/libs/grep/bin/grep.wasm" ]; }
+has_sed()    { has_resolvable programs/sed.wasm || [ -f "$REPO_ROOT/examples/libs/sed/bin/sed.wasm" ]; }
+has_redis()    { has_resolvable programs/redis/redis-server.wasm || [ -f "$REPO_ROOT/examples/libs/redis/bin/redis-server.wasm" ]; }
+has_cpython()    { has_resolvable programs/cpython.wasm || [ -f "$REPO_ROOT/examples/libs/cpython/bin/python.wasm" ]; }
+has_python_vfs()    { has_resolvable programs/python-vfs.vfs || [ -f "$REPO_ROOT/examples/browser/public/python.vfs" ]; }
+has_perl_vfs()    { has_resolvable programs/perl-vfs.vfs || [ -f "$REPO_ROOT/examples/browser/public/perl.vfs" ]; }
+has_shell_vfs()    { has_resolvable programs/shell.vfs || [ -f "$REPO_ROOT/examples/browser/public/shell.vfs" ]; }
+has_erlang()    { has_resolvable programs/erlang.wasm || [ -f "$REPO_ROOT/examples/libs/erlang/bin/beam.wasm" ]; }
+has_erlang_vfs()    { has_resolvable programs/erlang-vfs.vfs || [ -f "$REPO_ROOT/examples/browser/public/erlang.vfs" ]; }
+has_lamp_vfs()    { has_resolvable programs/lamp.vfs || [ -f "$REPO_ROOT/examples/browser/public/lamp.vfs" ]; }
+has_bc()    { has_resolvable programs/bc.wasm || [ -f "$REPO_ROOT/examples/libs/bc/bin/bc.wasm" ]; }
+has_file()    { has_resolvable programs/file.wasm || [ -f "$REPO_ROOT/examples/libs/file/bin/file.wasm" ]; }
+has_less()    { has_resolvable programs/less.wasm || [ -f "$REPO_ROOT/examples/libs/less/bin/less.wasm" ]; }
+has_m4()    { has_resolvable programs/m4.wasm || [ -f "$REPO_ROOT/examples/libs/m4/bin/m4.wasm" ]; }
+has_make()    { has_resolvable programs/make.wasm || [ -f "$REPO_ROOT/examples/libs/make/bin/make.wasm" ]; }
+has_tar()    { has_resolvable programs/tar.wasm || [ -f "$REPO_ROOT/examples/libs/tar/bin/tar.wasm" ]; }
+has_curl()    { has_resolvable programs/curl.wasm || [ -f "$REPO_ROOT/examples/libs/curl/bin/curl.wasm" ]; }
+has_wget()    { has_resolvable programs/wget.wasm || [ -f "$REPO_ROOT/examples/libs/wget/bin/wget.wasm" ]; }
+has_gzip()    { has_resolvable programs/gzip.wasm || [ -f "$REPO_ROOT/examples/libs/gzip/bin/gzip.wasm" ]; }
+has_bzip2()    { has_resolvable programs/bzip2.wasm || [ -f "$REPO_ROOT/examples/libs/bzip2/bin/bzip2.wasm" ]; }
+has_xz()    { has_resolvable programs/xz.wasm || [ -f "$REPO_ROOT/examples/libs/xz/bin/xz.wasm" ]; }
+has_zstd()    { has_resolvable programs/zstd.wasm || [ -f "$REPO_ROOT/examples/libs/zstd/bin/zstd.wasm" ]; }
+has_zip()    { has_resolvable programs/zip.wasm || [ -f "$REPO_ROOT/examples/libs/zip/bin/zip.wasm" ]; }
+has_unzip()    { has_resolvable programs/unzip.wasm || [ -f "$REPO_ROOT/examples/libs/unzip/bin/unzip.wasm" ]; }
+has_nano()    { has_resolvable programs/nano.wasm || [ -f "$REPO_ROOT/examples/libs/nano/bin/nano.wasm" ]; }
+has_nethack()    { has_resolvable programs/nethack.wasm || [ -f "$REPO_ROOT/examples/libs/nethack/bin/nethack.wasm" ]; }
+has_fbdoom()    { has_resolvable programs/fbdoom.wasm || [ -f "$REPO_ROOT/examples/libs/fbdoom/fbdoom.wasm" ]; }
 has_ncurses()   { [ -f "$REPO_ROOT/sysroot/lib/libncursesw.a" ]; }
 has_zlib()      { [ -f "$REPO_ROOT/sysroot/lib/libz.a" ]; }
 has_openssl()   { [ -f "$REPO_ROOT/sysroot/lib/libssl.a" ] && [ -f "$REPO_ROOT/sysroot/lib/libcrypto.a" ]; }
 has_libcurl()   { [ -f "$REPO_ROOT/sysroot/lib/libcurl.a" ] && [ -f "$REPO_ROOT/sysroot/include/curl/curl.h" ]; }
-has_vim()       { [ -f "$REPO_ROOT/examples/libs/vim/bin/vim.wasm" ]; }
-has_git()       { [ -f "$REPO_ROOT/examples/libs/git/bin/git.wasm" ]; }
-has_perl()      { [ -f "$REPO_ROOT/examples/libs/perl/bin/perl.wasm" ]; }
-has_ruby()      { [ -f "$REPO_ROOT/examples/libs/ruby/bin/ruby.wasm" ]; }
+has_vim()    { has_resolvable programs/vim.wasm || [ -f "$REPO_ROOT/examples/libs/vim/bin/vim.wasm" ]; }
+has_vim_zip() { has_resolvable programs/vim.zip || [ -f "$REPO_ROOT/examples/browser/public/vim.zip" ]; }
+has_git()    { has_resolvable programs/git/git.wasm || [ -f "$REPO_ROOT/examples/libs/git/bin/git.wasm" ]; }
+has_perl()    { has_resolvable programs/perl.wasm || [ -f "$REPO_ROOT/examples/libs/perl/bin/perl.wasm" ]; }
+has_ruby()    { has_resolvable programs/ruby.wasm || [ -f "$REPO_ROOT/examples/libs/ruby/bin/ruby.wasm" ]; }
 has_dlopen()    { [ -f "$REPO_ROOT/examples/dlopen/hello-lib.so" ] && \
                   [ -f "$REPO_ROOT/examples/dlopen/main.wasm" ]; }
-has_texlive()        { [ -f "$REPO_ROOT/examples/libs/texlive/bin/pdftex.wasm" ]; }
+has_texlive()        { has_resolvable programs/pdftex.wasm || [ -f "$REPO_ROOT/examples/libs/texlive/bin/pdftex.wasm" ]; }
 has_texlive_vfs() { [ -f "$REPO_ROOT/examples/browser/public/texlive-bundle.json" ]; }
 
 # ─── Need functions (ensure dependency is built) ─────────────────────────────
@@ -135,14 +152,16 @@ need_sysroot64() {
 
 need_sdk() {
     need_sysroot
+    # The worktree-local SDK is on PATH via sdk/activate.sh (sourced at
+    # the top of this script). If wasm32posix-cc still isn't found, the
+    # wrappers under sdk/bin are missing or their dispatcher is broken —
+    # not something `npm link` can fix.
     if ! has_sdk; then
-        step "Installing SDK tools"
-        cd "$REPO_ROOT/sdk" && npm link
-        cd "$REPO_ROOT"
-        info "SDK installed"
-    else
-        info "SDK"
+        err "SDK tools not on PATH after sourcing sdk/activate.sh."
+        err "Expected sdk/bin/wasm32posix-cc to be a working symlink."
+        exit 1
     fi
+    info "SDK"
 }
 
 need_host() {
@@ -189,6 +208,10 @@ build_host() {
 }
 
 build_programs() {
+    if has_programs; then
+        info "programs"
+        return
+    fi
     need_kernel
     need_sysroot
     if ! has_programs; then
@@ -201,6 +224,10 @@ build_programs() {
 }
 
 build_nginx() {
+    if has_nginx; then
+        info "nginx"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_nginx; then
@@ -213,6 +240,10 @@ build_nginx() {
 }
 
 build_php() {
+    if has_php; then
+        info "php"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_php; then
@@ -225,11 +256,15 @@ build_php() {
 }
 
 build_php_fpm() {
+    if has_php_fpm; then
+        info "php-fpm"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_php_fpm; then
         step "Building PHP-FPM"
-        bash "$REPO_ROOT/examples/nginx/build-php-fpm.sh"
+        bash "$REPO_ROOT/examples/libs/php/build-php.sh"
         info "PHP-FPM built"
     else
         info "PHP-FPM"
@@ -237,6 +272,10 @@ build_php_fpm() {
 }
 
 build_mariadb() {
+    if has_mariadb; then
+        info "mariadb"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_mariadb; then
@@ -249,6 +288,10 @@ build_mariadb() {
 }
 
 build_mariadb64() {
+    if has_mariadb64; then
+        info "mariadb64"
+        return
+    fi
     need_kernel
     need_sdk
     need_sysroot64
@@ -262,27 +305,27 @@ build_mariadb64() {
 }
 
 build_mariadb_vfs() {
+    if has_mariadb_vfs; then
+        info "MariaDB VFS image (wasm32)"
+        return
+    fi
     build_mariadb
     build_dash
-    if ! has_mariadb_vfs; then
-        step "Building MariaDB VFS image (wasm32)"
-        bash "$REPO_ROOT/examples/browser/scripts/build-mariadb-vfs-image.sh"
-        info "MariaDB VFS image (wasm32) built"
-    else
-        info "MariaDB VFS image (wasm32)"
-    fi
+    step "Building MariaDB VFS image (wasm32)"
+    bash "$REPO_ROOT/examples/browser/scripts/build-mariadb-vfs-image.sh"
+    info "MariaDB VFS image (wasm32) built"
 }
 
 build_mariadb64_vfs() {
+    if has_mariadb64_vfs; then
+        info "MariaDB VFS image (wasm64)"
+        return
+    fi
     build_mariadb64
     build_dash
-    if ! has_mariadb64_vfs; then
-        step "Building MariaDB VFS image (wasm64)"
-        bash "$REPO_ROOT/examples/browser/scripts/build-mariadb-vfs-image.sh" --wasm64
-        info "MariaDB VFS image (wasm64) built"
-    else
-        info "MariaDB VFS image (wasm64)"
-    fi
+    step "Building MariaDB VFS image (wasm64)"
+    bash "$REPO_ROOT/examples/browser/scripts/build-mariadb-vfs-image.sh" --wasm64
+    info "MariaDB VFS image (wasm64) built"
 }
 
 build_wordpress() {
@@ -296,17 +339,22 @@ build_wordpress() {
 }
 
 build_wp_vfs() {
-    build_wordpress
-    if ! has_wp_vfs; then
-        step "Building WordPress VFS image"
-        bash "$REPO_ROOT/examples/browser/scripts/build-wp-vfs-image.sh"
-        info "WP VFS image built"
-    else
+    if has_wp_vfs; then
         info "WP VFS image"
+        return
     fi
+    # Source needed only if we have to build the VFS from scratch.
+    build_wordpress
+    step "Building WordPress VFS image"
+    bash "$REPO_ROOT/examples/browser/scripts/build-wp-vfs-image.sh"
+    info "WP VFS image built"
 }
 
 build_dash() {
+    if has_dash; then
+        info "dash"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_dash; then
@@ -324,20 +372,25 @@ build_dash() {
 }
 
 build_bash() {
-    # bash bundles readline which needs termcap.h from ncurses/tinfo
-    build_ncurses
+    if has_bash; then
+        info "bash"
+        return
+    fi
+    # bash's build script resolves ncurses through the dep cache via
+    # `cargo xtask build-deps resolve ncurses` — no sysroot install
+    # needed here.
     need_kernel
     need_sdk
-    if ! has_bash; then
-        step "Building bash shell"
-        bash "$REPO_ROOT/examples/libs/bash/build-bash.sh"
-        info "bash built"
-    else
-        info "bash"
-    fi
+    step "Building bash shell"
+    bash "$REPO_ROOT/examples/libs/bash/build-bash.sh"
+    info "bash built"
 }
 
 build_coreutils() {
+    if has_coreutils; then
+        info "coreutils"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_coreutils; then
@@ -350,6 +403,10 @@ build_coreutils() {
 }
 
 build_grep() {
+    if has_grep; then
+        info "grep"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_grep; then
@@ -362,6 +419,10 @@ build_grep() {
 }
 
 build_sed() {
+    if has_sed; then
+        info "sed"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_sed; then
@@ -374,6 +435,10 @@ build_sed() {
 }
 
 build_redis() {
+    if has_redis; then
+        info "redis"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_redis; then
@@ -386,6 +451,10 @@ build_redis() {
 }
 
 build_cpython() {
+    if has_cpython; then
+        info "cpython"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_cpython; then
@@ -398,14 +467,14 @@ build_cpython() {
 }
 
 build_python_vfs() {
-    build_cpython
-    if ! has_python_vfs; then
-        step "Building Python VFS image"
-        bash "$REPO_ROOT/examples/browser/scripts/build-python-vfs-image.sh"
-        info "Python VFS image built"
-    else
+    if has_python_vfs; then
         info "Python VFS image"
+        return
     fi
+    build_cpython
+    step "Building Python VFS image"
+    bash "$REPO_ROOT/examples/browser/scripts/build-python-vfs-image.sh"
+    info "Python VFS image built"
 }
 
 build_perl_vfs() {
@@ -423,22 +492,42 @@ build_perl_vfs() {
 }
 
 build_vim_zip() {
-    if [ ! -f "$REPO_ROOT/examples/browser/public/vim.zip" ]; then
-        if [ ! -d "$REPO_ROOT/examples/libs/vim/runtime" ]; then
-            if [ -d "$REPO_ROOT/examples/libs/vim/vim-src/runtime" ]; then
-                step "Bundling Vim runtime"
-                bash "$REPO_ROOT/examples/libs/vim/bundle-runtime.sh"
-            else
-                warn "Vim source not found, skipping vim.zip"
-                return
-            fi
-        fi
-        step "Building vim.zip (binary + runtime)"
-        bash "$REPO_ROOT/examples/browser/scripts/build-vim-zip.sh"
-        info "vim.zip built"
-    else
+    if has_vim_zip; then
         info "vim.zip"
+        return
     fi
+
+    # vim.zip = vim.wasm + minimal runtime tree, packaged for the
+    # browser shell demo's lazy-archive fetch. Vim's release archive
+    # ships both pieces (build-vim.sh stages runtime/ alongside
+    # vim.wasm into the resolver scratch), so this builder just locates
+    # the cache canonical dir and rezips. No upstream source download.
+    local vim_dir
+    vim_dir="$(cargo run -p xtask --target aarch64-apple-darwin --quiet -- \
+        build-deps resolve vim --arch wasm32 2>/dev/null)" || {
+        warn "vim package could not be resolved — run: ./run.sh build vim"
+        return
+    }
+    if [ ! -f "$vim_dir/vim.wasm" ] || [ ! -d "$vim_dir/runtime" ]; then
+        warn "vim cache at $vim_dir is missing vim.wasm or runtime/ — re-fetch the release"
+        return
+    fi
+
+    step "Packaging vim.zip from cached vim package"
+    local stage out
+    stage="$(mktemp -d)"
+    out="$REPO_ROOT/examples/browser/public/vim.zip"
+    mkdir -p "$stage/bin" "$stage/share/vim/vim91" "$(dirname "$out")"
+    cp "$vim_dir/vim.wasm" "$stage/bin/vim"
+    chmod 755 "$stage/bin/vim"
+    rsync -a "$vim_dir/runtime/" "$stage/share/vim/vim91/"
+    rm -f "$out"
+    (cd "$stage" && zip -r -q "$out" .)
+    rm -rf "$stage"
+    # shellcheck source=scripts/install-local-binary.sh
+    source "$REPO_ROOT/scripts/install-local-binary.sh"
+    install_local_binary vim "$out"
+    info "vim.zip built ($(du -h "$out" | cut -f1))"
 }
 
 build_nethack_zip() {
@@ -468,6 +557,10 @@ build_shell_vfs() {
 }
 
 build_erlang() {
+    if has_erlang; then
+        info "erlang"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_erlang; then
@@ -486,28 +579,32 @@ build_erlang() {
 }
 
 build_erlang_vfs() {
-    build_erlang
-    if ! has_erlang_vfs; then
-        step "Building Erlang VFS image"
-        bash "$REPO_ROOT/examples/browser/scripts/build-erlang-vfs-image.sh"
-        info "Erlang VFS image built"
-    else
+    if has_erlang_vfs; then
         info "Erlang VFS image"
+        return
     fi
+    build_erlang
+    step "Building Erlang VFS image"
+    bash "$REPO_ROOT/examples/browser/scripts/build-erlang-vfs-image.sh"
+    info "Erlang VFS image built"
 }
 
 build_lamp_vfs() {
-    build_wordpress
-    if ! has_lamp_vfs; then
-        step "Building LAMP VFS image"
-        bash "$REPO_ROOT/examples/browser/scripts/build-lamp-vfs-image.sh"
-        info "LAMP VFS image built"
-    else
+    if has_lamp_vfs; then
         info "LAMP VFS image"
+        return
     fi
+    build_wordpress
+    step "Building LAMP VFS image"
+    bash "$REPO_ROOT/examples/browser/scripts/build-lamp-vfs-image.sh"
+    info "LAMP VFS image built"
 }
 
 build_texlive() {
+    if has_texlive; then
+        info "texlive"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_texlive; then
@@ -520,17 +617,32 @@ build_texlive() {
 }
 
 build_texlive_vfs() {
-    build_texlive
-    if ! has_texlive_vfs; then
-        step "Building TeX Live browser bundle"
-        bash "$REPO_ROOT/examples/browser/scripts/build-texlive-bundle.sh"
-        info "TeX Live bundle built"
-    else
+    if has_texlive_vfs; then
         info "TeX Live bundle"
+        return
     fi
+    # The bundle isn't a release artifact — it's a JSON dump of the
+    # texlive runtime tree, only built locally. Without a host pdftex
+    # (built by `bash examples/libs/texlive/build-texlive.sh`), the
+    # bundle script fails. Skip with a clear hint instead of breaking
+    # the browser bring-up — the texlive demo will surface the missing
+    # bundle to the user.
+    local host_pdftex="$REPO_ROOT/examples/libs/texlive/texlive-build/host/bin/pdftex"
+    if [ ! -x "$host_pdftex" ]; then
+        warn "Skipping TeX Live bundle (host pdftex not built — run: bash examples/libs/texlive/build-texlive.sh)"
+        return
+    fi
+    build_texlive
+    step "Building TeX Live browser bundle"
+    bash "$REPO_ROOT/examples/browser/scripts/build-texlive-bundle.sh"
+    info "TeX Live bundle built"
 }
 
 build_bc() {
+    if has_bc; then
+        info "bc"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_bc; then
@@ -543,6 +655,10 @@ build_bc() {
 }
 
 build_file() {
+    if has_file; then
+        info "file"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_file; then
@@ -555,6 +671,10 @@ build_file() {
 }
 
 build_less() {
+    if has_less; then
+        info "less"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_less; then
@@ -567,6 +687,10 @@ build_less() {
 }
 
 build_m4() {
+    if has_m4; then
+        info "m4"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_m4; then
@@ -579,6 +703,10 @@ build_m4() {
 }
 
 build_make() {
+    if has_make; then
+        info "make"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_make; then
@@ -591,6 +719,10 @@ build_make() {
 }
 
 build_tar() {
+    if has_tar; then
+        info "tar"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_tar; then
@@ -603,12 +735,23 @@ build_tar() {
 }
 
 build_curl_cli() {
-    # build_libcurl builds both the library and the CLI binary
-    build_libcurl
-    info "curl"
+    if has_curl; then
+        info "curl"
+        return
+    fi
+    need_kernel
+    need_sdk
+    # libcurl's build script produces both libcurl.a and the curl CLI.
+    step "Building curl (CLI)"
+    bash "$REPO_ROOT/examples/libs/libcurl/build-libcurl.sh"
+    info "curl built"
 }
 
 build_wget() {
+    if has_wget; then
+        info "wget"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_wget; then
@@ -621,6 +764,10 @@ build_wget() {
 }
 
 build_gzip() {
+    if has_gzip; then
+        info "gzip"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_gzip; then
@@ -633,6 +780,10 @@ build_gzip() {
 }
 
 build_bzip2() {
+    if has_bzip2; then
+        info "bzip2"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_bzip2; then
@@ -645,6 +796,10 @@ build_bzip2() {
 }
 
 build_xz() {
+    if has_xz; then
+        info "xz"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_xz; then
@@ -657,6 +812,10 @@ build_xz() {
 }
 
 build_zstd() {
+    if has_zstd; then
+        info "zstd"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_zstd; then
@@ -669,6 +828,10 @@ build_zstd() {
 }
 
 build_zip() {
+    if has_zip; then
+        info "zip"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_zip; then
@@ -681,6 +844,10 @@ build_zip() {
 }
 
 build_unzip() {
+    if has_unzip; then
+        info "unzip"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_unzip; then
@@ -693,19 +860,24 @@ build_unzip() {
 }
 
 build_nano() {
-    build_ncurses
+    if has_nano; then
+        info "nano"
+        return
+    fi
+    # nano's build script resolves ncurses through the dep cache itself
+    # (`cargo xtask build-deps resolve ncurses`); no sysroot prep here.
     need_kernel
     need_sdk
-    if ! has_nano; then
-        step "Building nano"
-        bash "$REPO_ROOT/examples/libs/nano/build-nano.sh"
-        info "nano built"
-    else
-        info "nano"
-    fi
+    step "Building nano"
+    bash "$REPO_ROOT/examples/libs/nano/build-nano.sh"
+    info "nano built"
 }
 
 build_zlib() {
+    if has_zlib; then
+        info "zlib"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_zlib; then
@@ -726,6 +898,10 @@ build_zlib() {
 }
 
 build_openssl() {
+    if has_openssl; then
+        info "openssl"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_openssl; then
@@ -753,18 +929,21 @@ build_openssl() {
 }
 
 build_libcurl() {
-    build_zlib
-    build_openssl
+    if has_libcurl; then
+        info "libcurl"
+        return
+    fi
+    # libcurl's build script resolves zlib + openssl through the dep cache.
     need_kernel
     need_sdk
     if ! has_libcurl; then
         step "Building libcurl"
         # Force reconfigure if curl was previously built without SSL
-        local CURL_SRC="$REPO_ROOT/examples/libs/curl/curl-src"
+        local CURL_SRC="$REPO_ROOT/examples/libs/libcurl/curl-src"
         if [ -f "$CURL_SRC/Makefile" ]; then
             rm -f "$CURL_SRC/Makefile"
         fi
-        bash "$REPO_ROOT/examples/libs/curl/build-curl.sh"
+        bash "$REPO_ROOT/examples/libs/libcurl/build-libcurl.sh"
         # Install libcurl + headers into sysroot
         local SYSROOT="$REPO_ROOT/sysroot"
         cp "$CURL_SRC/lib/.libs/libcurl.a" "$SYSROOT/lib/"
@@ -782,6 +961,10 @@ build_libcurl() {
 }
 
 build_ncurses() {
+    if has_ncurses; then
+        info "ncurses"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_ncurses; then
@@ -794,43 +977,59 @@ build_ncurses() {
 }
 
 build_nethack() {
-    build_ncurses
+    if has_nethack; then
+        info "NetHack"
+        return
+    fi
+    # nethack's build script resolves ncurses through the dep cache.
     need_kernel
     need_sdk
-    if ! has_nethack; then
-        step "Building NetHack"
-        bash "$REPO_ROOT/examples/libs/nethack/build-nethack.sh"
-        info "NetHack built"
-    else
-        info "NetHack"
+    step "Building NetHack"
+    bash "$REPO_ROOT/examples/libs/nethack/build-nethack.sh"
+    info "NetHack built"
+}
+
+build_fbdoom() {
+    if has_fbdoom; then
+        info "fbDOOM"
+        return
     fi
+    need_kernel
+    need_sdk
+    step "Building fbDOOM"
+    bash "$REPO_ROOT/examples/libs/fbdoom/build-fbdoom.sh"
+    info "fbDOOM built"
 }
 
 build_vim() {
-    build_ncurses
+    if has_vim; then
+        info "Vim"
+        return
+    fi
+    # Vim's build script now resolves ncurses through the dep cache
+    # (`cargo xtask build-deps resolve ncurses`), so we don't prep it
+    # into the sysroot here.
     need_kernel
     need_sdk
-    if ! has_vim; then
-        step "Building Vim"
-        bash "$REPO_ROOT/examples/libs/vim/build-vim.sh"
-        info "Vim built"
-    else
-        info "Vim"
-    fi
+    step "Building Vim"
+    bash "$REPO_ROOT/examples/libs/vim/build-vim.sh"
+    info "Vim built"
 }
 
 build_git() {
-    build_libcurl
+    if has_git; then
+        info "git"
+        return
+    fi
+    # git's build script resolves zlib/openssl/curl through the dep
+    # cache itself; no sysroot prep here.
     need_kernel
     need_sdk
-    if ! has_git; then
-        step "Building git"
-        bash "$REPO_ROOT/examples/libs/git/build-git.sh"
-        info "git built"
-    else
-        info "git"
-    fi
-    # Stub git-remote-http.wasm for browser demo if libcurl wasn't available
+    step "Building git"
+    bash "$REPO_ROOT/examples/libs/git/build-git.sh"
+    info "git built"
+    # Stub git-remote-http.wasm for browser demo if build somehow
+    # didn't produce one (e.g. user skipped curl resolution manually).
     if [ ! -f "$REPO_ROOT/examples/libs/git/bin/git-remote-http.wasm" ]; then
         mkdir -p "$REPO_ROOT/examples/libs/git/bin"
         printf '\x00asm\x01\x00\x00\x00' > "$REPO_ROOT/examples/libs/git/bin/git-remote-http.wasm"
@@ -838,6 +1037,10 @@ build_git() {
 }
 
 build_perl() {
+    if has_perl; then
+        info "perl"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_perl; then
@@ -850,6 +1053,10 @@ build_perl() {
 }
 
 build_ruby() {
+    if has_ruby; then
+        info "ruby"
+        return
+    fi
     need_kernel
     need_sdk
     if ! has_ruby; then
@@ -862,6 +1069,10 @@ build_ruby() {
 }
 
 build_dlopen() {
+    if has_dlopen; then
+        info "dlopen"
+        return
+    fi
     need_sysroot
     if ! has_dlopen; then
         step "Building dlopen example"
@@ -919,11 +1130,13 @@ build_target() {
         unzip)      build_unzip ;;
         nano)       build_nano ;;
         nethack)    build_nethack ;;
+        fbdoom)     build_fbdoom ;;
         ncurses)    build_ncurses ;;
         zlib)       build_zlib ;;
         openssl)    build_openssl ;;
         libcurl)    build_libcurl ;;
         vim)        build_vim ;;
+        vim-zip)    build_vim_zip ;;
         git)        build_git ;;
         perl)       build_perl ;;
         ruby)       build_ruby ;;
@@ -936,8 +1149,16 @@ build_target() {
     esac
 }
 
-# All targets needed for browser demos
-BROWSER_DEPS=(kernel sysroot sysroot64 programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano vim nethack git nginx php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis cpython python-vfs perl perl-vfs ruby shell-vfs wordpress wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs)
+# All targets needed for browser demos. Each entry's `has_X` short-
+# circuits when its release binary is in `binaries/`, so this loop is
+# a no-op on a fully-fetched checkout. sysroot/sysroot64 are NOT
+# listed: they're toolchain prerequisites for source builds, and any
+# `build_X` whose prebuilt is missing calls `need_sysroot` lazily.
+# `less` and `wget` are omitted — both have known local-build failures
+# (less: ncurses libtermcap duplicate tputs; wget: requires automake
+# aclocal). They aren't in the release either, so the associated demo
+# features skip gracefully at runtime.
+BROWSER_DEPS=(kernel programs dash bash coreutils grep sed bc file m4 make tar curl-cli gzip bzip2 xz zstd zip unzip nano vim vim-zip nethack fbdoom git nginx php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis cpython python-vfs perl perl-vfs ruby shell-vfs wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs)
 
 build_browser() {
     for t in "${BROWSER_DEPS[@]}"; do
@@ -1013,7 +1234,8 @@ clean_target() {
             rm -rf "$REPO_ROOT/sysroot64"
             warn "Cleaned sysroot64" ;;
         sdk)
-            warn "SDK is installed globally via npm link — run 'npm unlink -g wasm32posix' to remove"
+            warn "SDK is worktree-local (sdk/bin wrappers + activate.sh)."
+            warn "Nothing to clean. If you previously ran 'npm link', remove it with: (cd sdk && npm unlink)"
             ;;
         host)
             rm -rf "$REPO_ROOT/host/dist"
@@ -1183,6 +1405,11 @@ clean_target() {
             rm -f "$REPO_ROOT/examples/browser/public/nethack.zip" \
                   "$REPO_ROOT/examples/browser/public/shell.vfs"
             warn "Cleaned NetHack (also invalidated nethack.zip and shell.vfs; run '$0 build shell-vfs' to regenerate for browser demo)" ;;
+        fbdoom)
+            rm -rf "$REPO_ROOT/examples/libs/fbdoom/fbdoom-src"
+            rm -f "$REPO_ROOT/examples/libs/fbdoom/fbdoom.wasm" \
+                  "$REPO_ROOT/local-binaries/programs/fbdoom.wasm"
+            warn "Cleaned fbDOOM" ;;
         ncurses)
             rm -rf "$REPO_ROOT/examples/libs/ncurses/ncurses-src"
             # ncurses installs into sysroot, cleaned with sysroot
@@ -1197,15 +1424,20 @@ clean_target() {
                    "$REPO_ROOT/examples/libs/openssl/openssl-install"
             warn "Cleaned OpenSSL (rebuild sysroot to fully clean)" ;;
         libcurl)
-            rm -rf "$REPO_ROOT/examples/libs/curl/curl-src"
+            rm -rf "$REPO_ROOT/examples/libs/libcurl/curl-src"
             warn "Cleaned libcurl (rebuild sysroot to fully clean)" ;;
         vim)
             rm -rf "$REPO_ROOT/examples/libs/vim/vim-src" \
                    "$REPO_ROOT/examples/libs/vim/bin" \
                    "$REPO_ROOT/examples/libs/vim/runtime"
             rm -f "$REPO_ROOT/examples/browser/public/vim.zip" \
-                  "$REPO_ROOT/examples/browser/public/shell.vfs"
+                  "$REPO_ROOT/examples/browser/public/shell.vfs" \
+                  "$REPO_ROOT/local-binaries/programs/wasm32/vim.zip"
             warn "Cleaned Vim (also invalidated vim.zip and shell.vfs; run '$0 build shell-vfs' to regenerate for browser demo)" ;;
+        vim-zip)
+            rm -f "$REPO_ROOT/examples/browser/public/vim.zip" \
+                  "$REPO_ROOT/local-binaries/programs/wasm32/vim.zip"
+            warn "Cleaned vim.zip" ;;
         git)
             rm -rf "$REPO_ROOT/examples/libs/git/git-src" \
                    "$REPO_ROOT/examples/libs/git/bin"
@@ -1243,7 +1475,7 @@ clean_target() {
                 clean_target "$t"
             done ;;
         all)
-            for t in kernel sysroot sysroot64 host programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano ncurses zlib openssl libcurl vim git nginx php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis cpython python-vfs perl perl-vfs ruby shell-vfs wordpress wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs dlopen; do
+            for t in kernel sysroot sysroot64 host programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano ncurses zlib openssl libcurl vim vim-zip git nginx php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis cpython python-vfs perl perl-vfs ruby shell-vfs wordpress wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs dlopen; do
                 clean_target "$t"
             done ;;
         *)  err "Unknown clean target: $target"; exit 1 ;;
@@ -1372,6 +1604,16 @@ cmd_run() {
 
 cmd_browser() {
     local BROWSER_DIR="$REPO_ROOT/examples/browser"
+
+    # Fetch the release binaries pinned by binaries.lock first. The
+    # resolver-aware has_X guards below then treat fetched binaries as
+    # "already built", so build_browser's per-target loop is a no-op
+    # for anything that's in the release. Only genuinely missing
+    # artifacts (local-only programs, stale VFS images) trigger a build.
+    if [ -f "$REPO_ROOT/binaries.lock" ]; then
+        step "Fetching binaries for the pinned release"
+        "$REPO_ROOT/scripts/fetch-binaries.sh"
+    fi
 
     build_browser
 
@@ -1525,6 +1767,7 @@ cmd_list() {
     echo "  ncurses     ncurses library                        $(has_ncurses && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  vim         Vim 9.1 text editor                    $(has_vim && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  nethack     NetHack 3.6.7 roguelike (curses)       $(has_nethack && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  fbdoom      fbDOOM (framebuffer DOOM via /dev/fb0) $(has_fbdoom && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  git         Git 2.47.1                             $(has_git && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  nginx       nginx 1.24 Wasm binary                $(has_nginx && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  php         PHP 8.3 CLI binary                    $(has_php && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"

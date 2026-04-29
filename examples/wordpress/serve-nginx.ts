@@ -16,7 +16,7 @@
  *   1. nginx binary:   examples/nginx/nginx.wasm
  *      (build with: bash examples/nginx/build.sh)
  *   2. PHP-FPM binary: examples/nginx/php-fpm.wasm
- *      (build with: bash examples/nginx/build-php-fpm.sh)
+ *      (build with: bash examples/libs/php/build-php.sh)
  *   3. WordPress files: examples/wordpress/wordpress/
  *      (download with: bash examples/wordpress/setup.sh)
  */
@@ -24,12 +24,13 @@
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from "fs";
 import { resolve, dirname, join } from "path";
 import { NodeKernelHost } from "../../host/src/node-kernel-host";
+import { resolveBinary } from "../../host/src/binary-resolver";
 
 const scriptDir = dirname(new URL(import.meta.url).pathname);
 const repoRoot = resolve(scriptDir, "../..");
 
-const nginxWasmPath = resolve(repoRoot, "examples/nginx/nginx.wasm");
-const phpFpmWasmPath = resolve(repoRoot, "examples/nginx/php-fpm.wasm");
+const nginxWasmPath = resolveBinary("programs/nginx.wasm");
+const phpFpmWasmPath = resolveBinary("programs/php/php-fpm.wasm");
 const wpDir = resolve(scriptDir, "wordpress");
 const confTemplate = resolve(scriptDir, "nginx.conf");
 const phpFpmConf = resolve(scriptDir, "php-fpm.conf");
@@ -40,7 +41,7 @@ const port = parseInt(process.argv[2] || "8080", 10);
 // Validate prerequisites
 for (const [name, path, hint] of [
   ["nginx.wasm", nginxWasmPath, "bash examples/nginx/build.sh"],
-  ["php-fpm.wasm", phpFpmWasmPath, "bash examples/nginx/build-php-fpm.sh"],
+  ["php-fpm.wasm", phpFpmWasmPath, "bash examples/libs/php/build-php.sh"],
 ] as const) {
   if (!existsSync(path)) {
     console.error(`Error: ${name} not found. Run: ${hint}`);

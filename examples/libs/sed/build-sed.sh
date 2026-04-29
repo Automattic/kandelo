@@ -30,7 +30,7 @@ export WASM_POSIX_SYSROOT="$SYSROOT"
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading sed $SED_VERSION..."
     TARBALL="sed-${SED_VERSION}.tar.xz"
-    URL="https://ftp.gnu.org/gnu/sed/${TARBALL}"
+    URL="https://ftpmirror.gnu.org/gnu/sed/${TARBALL}"
     curl -fsSL "$URL" -o "/tmp/$TARBALL"
     mkdir -p "$SRC_DIR"
     tar xJf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
@@ -181,3 +181,8 @@ fi
 echo ""
 echo "==> sed built successfully!"
 echo "Binary: $BIN_DIR/sed.wasm"
+
+# Install into local-binaries/ so the resolver picks the freshly-built
+# binary over the fetched release.
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary sed "$SCRIPT_DIR/bin/sed.wasm"

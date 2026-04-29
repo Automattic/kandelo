@@ -6,11 +6,11 @@
  * and returns { exitCode, stdout, stderr }.
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
-import kernelWasmUrl from "../../../../host/wasm/wasm_posix_kernel.wasm?url";
-import dashWasmUrl from "../../../../examples/libs/dash/bin/dash.wasm?url";
-import coreutilsWasmUrl from "../../../../examples/libs/coreutils/bin/coreutils.wasm?url";
-import grepWasmUrl from "../../../../examples/libs/grep/bin/grep.wasm?url";
-import sedWasmUrl from "../../../../examples/libs/sed/bin/sed.wasm?url";
+import kernelWasmUrl from "@kernel-wasm?url";
+import dashWasmUrl from "../../../../binaries/programs/wasm32/dash.wasm?url";
+import coreutilsWasmUrl from "../../../../binaries/programs/wasm32/coreutils.wasm?url";
+import grepWasmUrl from "../../../../binaries/programs/wasm32/grep.wasm?url";
+import sedWasmUrl from "../../../../binaries/programs/wasm32/sed.wasm?url";
 import genCatWasmUrl from "../../../../examples/gencat.wasm?url";
 
 interface DataFile {

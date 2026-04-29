@@ -10,6 +10,7 @@
 import { readFileSync, lstatSync } from "fs";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import { parseZipCentralDirectory } from "../../../host/src/vfs/zip";
+import { resolveBinary, tryResolveBinary } from "../../../host/src/binary-resolver";
 import { COREUTILS_NAMES } from "../lib/init/shell-binaries";
 import {
   writeVfsFile,
@@ -19,10 +20,14 @@ import {
   saveImage,
 } from "./vfs-image-helpers";
 
-const DASH_PATH = "examples/libs/dash/bin/dash.wasm";
+const DASH_PATH = resolveBinary("programs/dash.wasm");
 const MAGIC_PATH = "examples/libs/file/bin/magic.lite";
-const VIM_ZIP_PATH = "examples/browser/public/vim.zip";
-const NETHACK_ZIP_PATH = "examples/browser/public/nethack.zip";
+// vim.zip and nethack.zip may come from binaries/ (as a program bundle) or
+// still live in examples/browser/public/ as a local-built artifact.
+const VIM_ZIP_PATH = tryResolveBinary("programs/vim.zip") ??
+  "examples/browser/public/vim.zip";
+const NETHACK_ZIP_PATH = tryResolveBinary("programs/nethack.zip") ??
+  "examples/browser/public/nethack.zip";
 const OUT_FILE = "examples/browser/public/shell.vfs";
 
 // --- System setup ---

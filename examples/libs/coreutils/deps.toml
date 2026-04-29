@@ -1,0 +1,20 @@
+kind = "program"
+name = "coreutils"
+version = "9.6"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://ftpmirror.gnu.org/gnu/coreutils/coreutils-9.6.tar.xz"
+sha256 = "7a0124327b398fd9eb1a6abde583389821422c744ffa10734b24f557610d3283"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://git.savannah.gnu.org/cgit/coreutils.git/tree/COPYING?h=v9.6"
+
+[[outputs]]
+name = "coreutils"
+wasm = "coreutils.wasm"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/coreutils-9.6-rev1-abi6-wasm32-236ce2f7.tar.zst"
+archive_sha256 = "1b5add98af61ffe8b06cabdfdba94255d8aae1c9b1dffd8082090909701fe8f2"

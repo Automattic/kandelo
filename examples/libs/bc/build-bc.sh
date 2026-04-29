@@ -47,7 +47,7 @@ download_bc() {
     local dest="$1"
     echo "==> Downloading bc $BC_VERSION to $dest..."
     TARBALL="bc-${BC_VERSION}.tar.gz"
-    URL="https://ftp.gnu.org/gnu/bc/${TARBALL}"
+    URL="https://ftpmirror.gnu.org/gnu/bc/${TARBALL}"
     curl -fsSL "$URL" -o "/tmp/$TARBALL"
     mkdir -p "$dest"
     tar xzf "/tmp/$TARBALL" -C "$dest" --strip-components=1
@@ -132,3 +132,8 @@ fi
 echo ""
 echo "==> bc built successfully!"
 echo "Binary: $BIN_DIR/bc.wasm"
+
+# Install into local-binaries/ so the resolver picks the freshly-built
+# binary over the fetched release.
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary bc "$SCRIPT_DIR/bin/bc.wasm"
