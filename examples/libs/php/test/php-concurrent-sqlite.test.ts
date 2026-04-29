@@ -13,9 +13,12 @@ import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { runCentralizedProgram } from "../../../../host/test/centralized-test-helper";
+import { tryResolveBinary } from "../../../../host/src/binary-resolver";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const phpBinaryPath = join(__dirname, "../php-src/sapi/cli/php");
+const phpBinaryPath =
+  tryResolveBinary("programs/php/php.wasm") ??
+  join(__dirname, "../php-src/sapi/cli/php");
 const PHP_AVAILABLE = existsSync(phpBinaryPath);
 
 describe.skipIf(!PHP_AVAILABLE)("PHP concurrent SQLite access", () => {

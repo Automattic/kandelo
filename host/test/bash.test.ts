@@ -10,12 +10,12 @@ import { join, dirname } from "node:path";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { runCentralizedProgram } from "./centralized-test-helper";
+import { tryResolveBinary } from "../src/binary-resolver";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const bashBinary = join(
-  __dirname,
-  "../../examples/libs/bash/bin/bash.wasm",
-);
+const bashBinary =
+  tryResolveBinary("programs/bash.wasm") ??
+  join(__dirname, "../../examples/libs/bash/bin/bash.wasm");
 
 const hasBash = existsSync(bashBinary);
 
