@@ -677,15 +677,24 @@ Stage 2 ends with the emission code in place. Behavioral correctness is asserted
 
 ---
 
-## Stage 3 — Runtime harness (target: 1-2 days, ~150 LoC)
+## Stage 3 — Runtime harness — DEFERRED to SpiderMonkey port
 
-**Goal:** End-to-end test that proves Stage 2 actually works.
+**Decision (2026-04-28):** the natural real-world validation event for B1 is the in-progress SpiderMonkey-based Node.js runtime port (see `memory/spidermonkey-node-runtime-initiative.md`, design doc `docs/plans/2026-04-28-spidermonkey-node-runtime-design.md`). SpiderMonkey is a C++ codebase that uses C++ exception handling extensively; Node.js compatibility requires `child_process` / `popen` patterns that exercise fork-from-plain-catch in real production code paths.
 
-- **3a — Add `wasmtime` as fork-instrument dev-dependency** (or use existing test harness if one exists — verify before adding).
-- **3b — Build a C++ fork-from-catch fixture.** Smallest possible C++ program that uses `try { ... fork() ... } catch (T) { fork(); ... }` style. Compile with our wasm32-posix toolchain. Budget for a libc++ rebuild if exception support requires it.
-- **3c — Drive the fixture under wasmtime.** Parent forks; copy linear memory; instantiate child; verify child reaches the post-fork point with payload-equality.
+The SpiderMonkey port's pre-Phase-1 gate 1.B was originally specified as "B1 follow-up shipped." With Stages 1+2 landed (this document), gate 1.B is met for the planning-and-emission portion. The runtime validation gap that Stage 3 was meant to close is **better filled by the port itself** — passing a SpiderMonkey-built C++ fork-from-catch test under both wasmtime AND the kernel's process-worker host is stronger evidence than a synthetic single-purpose fixture would be.
 
-**Stage 3 verification:** End-to-end test green, plus all five wasm-posix-kernel suites still pass (including the application suites once the harness is fixed in a separate effort).
+**Action item in the SpiderMonkey port plan:** Phase 1's test suite must include an explicit B1 fixture. Recommended shape:
+
+- A small C++ fixture using `try { ... fork() ... } catch (T& e) { fork(); ... }` where the catch handler does real work (libc calls, allocations) before/after fork. Both parent and child paths exercised.
+- Run via wasmtime AND via the kernel's process-worker host (different runtime environments may surface different bugs).
+- The fixture lives in the SpiderMonkey port's test suite; its passing is the acceptance bar for B1 Stage 3.
+
+**Until the SpiderMonkey port hits this case**, B1 Stages 1+2 remain unproven for real-world use:
+- High confidence Stage 2 doesn't break existing programs (sortix `--all` byte-identical).
+- Medium confidence Stage 2 emits valid wasm for plain-catch programs (validated, not run).
+- Zero confidence Stage 2 produces *correct* runtime behavior for fork-from-plain-catch.
+
+If a non-SpiderMonkey port forces fork-from-plain-catch first, that port becomes the validation event instead and the same fixture-shape requirement applies.
 
 ---
 
