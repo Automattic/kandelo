@@ -321,9 +321,12 @@ describe.skipIf(hostTriple === null)("release round-trip", () => {
         existsSync(path.join(progsDir, progCanonical!, "fixprog.wasm")),
       ).toBe(true);
 
-      // Single-output program mirrored to local-binaries/programs/<name>.wasm.
+      // Single-output program mirrored to
+      // local-binaries/programs/<arch>/<name>.wasm. The per-arch
+      // subtree is required so wasm32 and wasm64 builds of the same
+      // program don't last-write-wins on a flat path.
       expect(
-        existsSync(path.join(localBinaries, "programs", "fixprog.wasm")),
+        existsSync(path.join(localBinaries, "programs", "wasm32", "fixprog.wasm")),
       ).toBe(true);
     } finally {
       try {
