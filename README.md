@@ -171,7 +171,7 @@ npm install
 npx vite --port 5198
 ```
 
-Open `http://localhost:5198` to try 12 interactive demos — C programs, interactive shell, Python/Perl/Ruby REPLs, nginx, MariaDB, Redis, full WordPress, and a LAMP stack — all running in the browser.
+Open `http://localhost:5198` to try 15 interactive demos — C programs, interactive shell, Python/Perl/Ruby REPLs, nginx, MariaDB, Redis, full WordPress, a LAMP stack, TeX Live, and DOOM — all running in the browser.
 
 Browser demos use pre-built **VFS images** — binary filesystem snapshots that load instantly at runtime. See [docs/browser-support.md](docs/browser-support.md#vfs-images) for details.
 
@@ -239,7 +239,7 @@ musl-overlay/        Wasm32-specific architecture patches for musl
 scripts/             Build scripts, test runners (libc-test, POSIX, Sortix)
 examples/
   *.c / *.wasm       Simple C example programs
-  browser/           Browser demo app (Vite + 12 demo pages)
+  browser/           Browser demo app (Vite + 15 demo pages)
   libs/              Build scripts for ported software (36 packages)
 docs/
   architecture.md    Architecture reference
