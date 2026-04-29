@@ -313,31 +313,32 @@ When restoring for use in a browser, pass `maxByteLength` to create a growable `
 const restored = MemoryFileSystem.fromImage(image, { maxByteLength: 1024 * 1024 * 1024 });
 ```
 
-All browser demos use this approach. Each demo has a build script that pre-populates a VFS with runtime files, directory structure, configs, and symlinks, then saves it as a `.vfs` file. At runtime, restoring the image replaces thousands of individual file writes with a single buffer copy.
+Most browser demos use this approach. Each demo has a build script that pre-populates a VFS with runtime files, directory structure, configs, and symlinks, then saves it as a `.vfs` file. At runtime, restoring the image replaces thousands of individual file writes with a single buffer copy.
 
-| Demo | VFS Image | Build Script | Contents |
-|------|-----------|-------------|----------|
-| Python | `python.vfs` | `build-python-vfs-image.sh` | CPython 3.13 stdlib (`/usr/lib/python3.13/`) |
-| Erlang | `erlang.vfs` | `build-erlang-vfs-image.sh` | OTP 28 runtime (kernel, stdlib, erts, compiler ebin dirs) |
-| Perl | `perl.vfs` | `build-perl-vfs-image.sh` | Perl 5.40 stdlib (`/usr/lib/perl5/5.40.3/`) |
-| Shell | `shell.vfs` | `build-shell-vfs-image.sh` | dash, coreutils/grep/sed symlinks, vim runtime, magic db |
-| WordPress | `wordpress.vfs` | `build-wp-vfs-image.sh` | nginx + PHP-FPM configs, WordPress files, shell symlinks |
-| LAMP | `lamp.vfs` | `build-lamp-vfs-image.sh` | MariaDB binary + data, nginx/PHP-FPM configs, WordPress files |
-| MariaDB test | `mariadb-test.vfs` | `build-mariadb-test-vfs-image.sh` | MariaDB binary + data, mysql-test suite files |
+There are two consumption patterns for VFS images, depending on whether the demo wants the kernel worker to fully own the filesystem:
 
-Build scripts are in `examples/browser/scripts/` and share common helpers from `vfs-image-helpers.ts`. To build all VFS images:
+**Kernel-owned VFS (`kernelOwnedFs: true` + `kernel.boot()`).** The main thread never instantiates the `MemoryFileSystem`. Instead, the demo fetches the `.vfs` bytes and hands them to `BrowserKernel.boot({ kernelWasm, vfsImage, argv, env })`. The kernel worker restores the filesystem internally, exec()s `argv[0]` as the first ("init") process, and the main thread becomes a thin client — only routing stdin/stdout, TCP injection, framebuffer events, and HTTP-bridge messages. Service-supervised demos run dinit (`/sbin/dinit --container`) as that init process; dinit reads `/etc/dinit.d/*` from the image and brings up the service tree. Single-program demos (python, perl, php, ruby) exec the language interpreter directly. This is the path new demos should use.
 
-```bash
-bash examples/browser/scripts/build-python-vfs-image.sh
-bash examples/browser/scripts/build-erlang-vfs-image.sh
-bash examples/browser/scripts/build-perl-vfs-image.sh
-bash examples/browser/scripts/build-shell-vfs-image.sh
-bash examples/browser/scripts/build-wp-vfs-image.sh
-bash examples/browser/scripts/build-lamp-vfs-image.sh
-bash examples/browser/scripts/build-mariadb-test-vfs-image.sh
-```
+**Legacy main-thread-owned VFS (`memfs:` constructor option + `kernel.spawn()`).** The main thread restores the image into its own `MemoryFileSystem`, hands the SAB to a fresh `BrowserKernel`, and then calls `kernel.spawn(programBytes, argv)` to launch transient binaries. Useful for demos that fetch additional binaries at runtime (test runners, REPLs that load arbitrary code), but the main thread is in the syscall hot path for FS operations. Still used by `benchmark`, `erlang`, and `shell`.
 
-Or use the convenience targets in `run.sh` (e.g., `./run.sh build python-vfs`).
+| Demo | VFS Image | Build Script | Boot pattern |
+|------|-----------|-------------|--------------|
+| Python | `python.vfs` | `build-python-vfs-image.sh` | `kernel.boot` → `python3` |
+| Perl | `perl.vfs` | `build-perl-vfs-image.sh` | `kernel.boot` → `perl` |
+| PHP | `php.vfs` | `build-php-vfs-image.sh` | `kernel.boot` → `php` |
+| Ruby | `ruby.vfs` | `build-ruby-vfs-image.sh` | `kernel.boot` → `ruby` |
+| nginx | `nginx.vfs` | `build-nginx-vfs-image.sh` | `kernel.boot` → dinit → nginx |
+| nginx-php | `nginx-php.vfs` | `build-nginx-php-vfs-image.sh` | `kernel.boot` → dinit → php-fpm + nginx |
+| Redis | `redis.vfs` | `build-redis-vfs-image.sh` | `kernel.boot` → dinit → redis-server |
+| MariaDB | `mariadb.vfs` | `build-mariadb-vfs-image.sh` | `kernel.boot` → dinit → mariadb-bootstrap → mariadbd |
+| WordPress | `wordpress.vfs` | `build-wp-vfs-image.sh` | `kernel.boot` → dinit → php-fpm + nginx (SQLite WP) |
+| LAMP | `lamp.vfs` | `build-lamp-vfs-image.sh` | `kernel.boot` → dinit → mariadb + php-fpm + nginx |
+| MariaDB test | `mariadb-test.vfs` | `build-mariadb-test-vfs-image.sh` | `kernel.boot` → dinit → mariadb; mysqltest via `kernel.spawn` |
+| Erlang | `erlang.vfs` | `build-erlang-vfs-image.sh` | legacy `kernel.spawn` → BEAM |
+| Shell | `shell.vfs` | `build-shell-vfs-image.sh` | legacy `kernel.spawn` → dash |
+| Benchmark | (multiple) | (per-suite) | legacy `kernel.spawn` |
+
+Build scripts are in `examples/browser/scripts/` and share common helpers (`vfs-image-helpers.ts` for VFS write primitives, `dinit-image-helpers.ts` for the dinit binary + standard rootfs files + service-file rendering). To build all VFS images, use the per-demo scripts above or the convenience targets in `run.sh` (e.g., `./run.sh build python-vfs`).
 
 **Binary format:**
 
@@ -410,15 +411,22 @@ In the browser, an additional layer wraps the kernel:
 ```
 Main Thread                              Kernel Worker
 ├── BrowserKernel (thin proxy)           ├── CentralizedKernelWorker
-├── MemoryFileSystem (shared SAB)        ├── Kernel Wasm instance
-├── UI code (HTML/JS)                    ├── Process sub-workers
-├── App clients (MySQL, Redis)           ├── Connection pump (HTTP↔TCP)
-└── PTY terminal (xterm.js)              └── Blocking retry management
+├── UI code (HTML/JS)                    ├── MemoryFileSystem (kernel-owned)
+├── App clients (MySQL, Redis)           ├── Kernel Wasm instance
+├── HTTP bridge / TCP injection          ├── Process sub-workers
+└── PTY terminal (xterm.js)              └── Connection pump, blocking retries
 ```
 
-**`BrowserKernel`** (`examples/browser/lib/browser-kernel.ts`): Main-thread proxy that communicates with the kernel worker via `postMessage`. Provides `spawn()`, `pipeRead()`/`pipeWrite()`, `injectConnection()`, stdin/PTY methods.
+**`BrowserKernel`** (`examples/browser/lib/browser-kernel.ts`): Main-thread proxy that communicates with the kernel worker via `postMessage`. The current API has two boot paths:
+
+- `kernel.boot({ kernelWasm, vfsImage, argv, env, ... })` — preferred. Combined with `kernelOwnedFs: true`, the main thread never holds a `MemoryFileSystem` reference. The kernel worker restores the image and exec()s `argv[0]` as the first process. All FS operations stay inside the worker, off the syscall hot path.
+- `kernel.spawn(programBytes, argv, opts)` — legacy. Allocates a pid on the main thread, posts the wasm bytes to the worker, and starts a process. Kept for transient binary launches (REPLs, test runners, benchmarks) that the kernel can't currently load via fork+exec from a baked binary.
+
+The remaining methods (`pipeRead`/`pipeWrite`, `injectConnection`, stdin/PTY routing, framebuffer registry mirroring, HTTP bridge handoff) are pid-addressed and work the same in both boot paths.
 
 **Kernel Worker** (`examples/browser/lib/kernel-worker-entry.ts`): Dedicated web worker that hosts `CentralizedKernelWorker`, following the standard architecture requirement. Process workers are sub-workers created by the kernel worker. The dedicated worker provides a clean event loop for fast `Atomics.waitAsync` notification delivery and avoids V8's microtask freeze bug that occurs on the main thread.
+
+**dinit (PID 1)** (`examples/libs/dinit/`): Service-supervised demos boot dinit v0.19.4 (cross-compiled to wasm32) as the first process via `kernel.boot({ argv: ["/sbin/dinit", "--container", ...] })`. The service tree is baked into `/etc/dinit.d/*` at image-build time via `addDinitInit()` in `dinit-image-helpers.ts`. Service types in use: `process` (long-running daemons), `scripted` (one-shot bootstraps that exit cleanly), and `internal` (dependency-only nodes used to express "boot the whole tree" or "pick this engine"). dinit handles SIGCHLD reaping, restarts disabled by default, and inter-service `depends-on` ordering.
 
 **Service Worker** (`examples/browser/public/service-worker.js`): Dual-mode file that acts as both a page bootstrap script (registers itself, enables cross-origin isolation) and a service worker (adds COOP/COEP headers, handles HTTP bridge routing).
 
