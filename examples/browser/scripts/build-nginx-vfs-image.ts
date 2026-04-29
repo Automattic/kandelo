@@ -22,8 +22,54 @@ import { saveImage } from "./vfs-image-helpers";
 import { addDinitInit } from "./dinit-image-helpers";
 
 const REPO_ROOT = findRepoRoot();
-const NGINX_CONF_HOST = join(REPO_ROOT, "examples", "nginx", "nginx.conf");
 const OUT_FILE = join(REPO_ROOT, "examples", "browser", "public", "nginx.vfs");
+
+// Single-process nginx config — the standalone demo previously loaded
+// examples/nginx/nginx.conf which uses `master_process on; worker_processes 2;`,
+// but kernel-side TCP connection injection isn't reliably routed to fork
+// children right now (LAMP works because its inline config is single-process).
+// Until multi-process listener sharing is restored, the demo runs nginx
+// without a master + worker split. Functionally equivalent for the static
+// page this image serves.
+const NGINX_CONF = `\
+user nobody;
+daemon off;
+master_process off;
+worker_processes 0;
+error_log stderr info;
+pid /tmp/nginx.pid;
+
+events {
+    worker_connections 64;
+    use poll;
+}
+
+http {
+    access_log /dev/stderr;
+    client_body_temp_path /tmp/nginx_client_temp;
+
+    types {
+        text/html                             html htm;
+        text/css                              css;
+        text/javascript                       js;
+        application/json                      json;
+        image/png                             png;
+        image/jpeg                            jpg jpeg;
+        image/gif                             gif;
+        image/svg+xml                         svg;
+        application/octet-stream              bin;
+    }
+    default_type application/octet-stream;
+
+    server {
+        listen 8080;
+        server_name localhost;
+        root /var/www/html;
+        index index.html;
+        location / {}
+    }
+}
+`;
 
 const INDEX_HTML = `<!DOCTYPE html>
 <html>
@@ -51,17 +97,6 @@ const INDEX_HTML = `<!DOCTYPE html>
 </html>
 `;
 
-// nginx.conf shipped in the image — uses the project's existing conf.
-// nginx's master process calls getpwnam("nobody") at startup; the
-// kernel's synthetic /etc/passwd has the entry, so no override needed.
-function loadNginxConf(): string {
-  try {
-    return readFileSync(NGINX_CONF_HOST, "utf8");
-  } catch {
-    throw new Error(`nginx.conf not found at ${NGINX_CONF_HOST}`);
-  }
-}
-
 async function main() {
   const NGINX_WASM = resolveBinary("programs/nginx.wasm");
 
@@ -81,12 +116,8 @@ async function main() {
 
   // nginx binary + config + content
   writeVfsBinary(fs, "/usr/sbin/nginx", new Uint8Array(readFileSync(NGINX_WASM)));
-  writeVfsFile(fs, "/etc/nginx/nginx.conf", loadNginxConf());
+  writeVfsFile(fs, "/etc/nginx/nginx.conf", NGINX_CONF);
   writeVfsFile(fs, "/var/www/html/index.html", INDEX_HTML);
-  // The packaged conf uses `root html;` (relative to the prefix passed
-  // via -p), so symlink /etc/nginx/html -> /var/www/html so the conf
-  // resolves to a real path.
-  try { fs.symlink("/var/www/html", "/etc/nginx/html"); } catch { /* exists */ }
 
   // dinit + service tree
   addDinitInit(fs, [

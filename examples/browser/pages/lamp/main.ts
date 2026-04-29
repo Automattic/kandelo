@@ -112,8 +112,21 @@ async function start() {
     // BOTH nginx (8080) and mariadbd (3306) are accepting connections —
     // dinit considers a `process` service started right after exec(),
     // racing the daemon's actual port-bind by ~10s for mariadbd.
+    // Also gate on bridgeSent — see nginx/main.ts for the bridge-vs-listen
+    // race rationale (mariadb's slow boot usually masks it here, but be
+    // explicit anyway).
     const seenPorts = new Set<number>();
     const REQUIRED_PORTS = [HTTP_PORT, 3306];
+    let bridgeSent = false;
+    const tryLoadFrame = () => {
+      const allReady = REQUIRED_PORTS.every((p) => seenPorts.has(p));
+      if (allReady && bridgeSent && reloadBtn.disabled) {
+        setStatus("WordPress running! Loading page...", "running");
+        reloadBtn.disabled = false;
+        loadFrame();
+      }
+    };
+
     kernel = new BrowserKernel({
       kernelOwnedFs: true,
       maxWorkers: 16,
@@ -126,12 +139,7 @@ async function start() {
       onListenTcp: (_pid, _fd, port) => {
         appendLog(`service listening on :${port}\n`, "info");
         seenPorts.add(port);
-        const allReady = REQUIRED_PORTS.every((p) => seenPorts.has(p));
-        if (allReady && reloadBtn.disabled) {
-          setStatus("WordPress running! Loading page...", "running");
-          reloadBtn.disabled = false;
-          loadFrame();
-        }
+        tryLoadFrame();
       },
     });
 
@@ -152,6 +160,8 @@ async function start() {
     bridgeHttpPort = HTTP_PORT;
     appendLog(`HTTP bridge ready on port ${HTTP_PORT}\n`, "info");
     setupBridgeRestoreListener();
+    bridgeSent = true;
+    tryLoadFrame();
 
     const code = await exit;
     appendLog(`\ndinit exited with code ${code}\n`, "info");

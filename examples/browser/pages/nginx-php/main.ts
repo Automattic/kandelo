@@ -91,6 +91,17 @@ async function start() {
     }
 
     setStatus("Booting kernel with /sbin/dinit...", "loading");
+    // See nginx/main.ts for the bridge-vs-listen race rationale.
+    let nginxListening = false;
+    let bridgeSent = false;
+    const tryLoadFrame = () => {
+      if (nginxListening && bridgeSent && reloadBtn.disabled) {
+        setStatus("nginx + PHP-FPM running! Loading page...", "running");
+        reloadBtn.disabled = false;
+        loadFrame();
+      }
+    };
+
     kernel = new BrowserKernel({
       kernelOwnedFs: true,
       maxWorkers: 8,
@@ -99,9 +110,8 @@ async function start() {
       onListenTcp: (_pid, _fd, port) => {
         appendLog(`service listening on :${port}\n`, "info");
         if (port === HTTP_PORT) {
-          setStatus("nginx + PHP-FPM running! Loading page...", "running");
-          reloadBtn.disabled = false;
-          loadFrame();
+          nginxListening = true;
+          tryLoadFrame();
         }
       },
     });
@@ -117,6 +127,8 @@ async function start() {
     bridgeHttpPort = HTTP_PORT;
     appendLog(`HTTP bridge ready on port ${HTTP_PORT}\n`, "info");
     setupBridgeRestoreListener();
+    bridgeSent = true;
+    tryLoadFrame();
 
     const code = await exit;
     appendLog(`\ndinit exited with code ${code}\n`, "info");

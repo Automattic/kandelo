@@ -101,6 +101,23 @@ async function start() {
     }
 
     setStatus("Booting kernel with /sbin/dinit...", "loading");
+    // The first iframe load races with HTTP-bridge setup: nginx binds
+    // :8080 inside the kernel as soon as dinit execs it, but the bridge
+    // port can only be sent after kernel.boot() resolves. Without a
+    // gate, the iframe makes a request before bridgePort.onmessage is
+    // wired up and the request is dropped (refresh works because by
+    // then the bridge is ready). Track both readiness signals and
+    // only load the iframe when both have arrived.
+    let nginxListening = false;
+    let bridgeSent = false;
+    const tryLoadFrame = () => {
+      if (nginxListening && bridgeSent && reloadBtn.disabled) {
+        setStatus("nginx is running! Loading page...", "running");
+        reloadBtn.disabled = false;
+        loadFrame();
+      }
+    };
+
     kernel = new BrowserKernel({
       kernelOwnedFs: true,
       onStdout: (data) => appendLog(decoder.decode(data)),
@@ -108,9 +125,8 @@ async function start() {
       onListenTcp: (_pid, _fd, port) => {
         appendLog(`nginx listening on :${port}\n`, "info");
         if (port === HTTP_PORT) {
-          setStatus("nginx is running! Loading page...", "running");
-          reloadBtn.disabled = false;
-          loadFrame();
+          nginxListening = true;
+          tryLoadFrame();
         }
       },
     });
@@ -128,6 +144,8 @@ async function start() {
     bridgeHttpPort = HTTP_PORT;
     appendLog(`HTTP bridge ready on port ${HTTP_PORT}\n`, "info");
     setupBridgeRestoreListener();
+    bridgeSent = true;
+    tryLoadFrame();
 
     // Wait for the init process (dinit) to exit. In normal operation
     // this never returns — dinit stays up as PID 1 and supervises
