@@ -15,6 +15,21 @@ SYSROOT="$REPO_ROOT/sysroot"
 SRC_DIR="$SCRIPT_DIR/dinit-src"
 BIN_DIR="$SCRIPT_DIR/bin"
 
+# --- Idempotent fast path ---
+# If all three artifacts already exist (e.g. left over from a prior
+# build, or downloaded by scripts/fetch-binaries.sh into bin/), just
+# install them and return. This lets `xtask stage-release` succeed in
+# environments that don't have libc++ available — needed because the
+# resolver invokes this script to ensure_built before staging.
+if [ -f "$BIN_DIR/dinit.wasm" ] && [ -f "$BIN_DIR/dinitctl.wasm" ] && [ -f "$BIN_DIR/dinitcheck.wasm" ]; then
+    echo "==> Reusing existing dinit artifacts in $BIN_DIR (skip rebuild)."
+    source "$REPO_ROOT/scripts/install-local-binary.sh"
+    install_local_binary dinit "$BIN_DIR/dinit.wasm" dinit.wasm
+    install_local_binary dinit "$BIN_DIR/dinitctl.wasm" dinitctl.wasm
+    install_local_binary dinit "$BIN_DIR/dinitcheck.wasm" dinitcheck.wasm
+    exit 0
+fi
+
 # --- Prerequisites ---
 if ! command -v wasm32posix-c++ &>/dev/null; then
     echo "ERROR: wasm32posix-c++ not found. Run 'npm link' in sdk/ first." >&2
@@ -137,5 +152,14 @@ echo "==> Applying asyncify transform to dinit.wasm..."
     --pass-arg="asyncify-imports@kernel.kernel_fork" \
     "$BIN_DIR/dinit.wasm" -o "$BIN_DIR/dinit.wasm"
 ls -la "$BIN_DIR/dinit.wasm"
+
+# Install into local-binaries/ so the resolver (host/src/binary-resolver.ts)
+# picks these up over anything fetched by scripts/fetch-binaries.sh.
+# Also makes the artifacts visible to `xtask stage-release` during a
+# release cut.
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary dinit "$BIN_DIR/dinit.wasm" dinit.wasm
+install_local_binary dinit "$BIN_DIR/dinitctl.wasm" dinitctl.wasm
+install_local_binary dinit "$BIN_DIR/dinitcheck.wasm" dinitcheck.wasm
 
 echo "==> dinit build complete"
