@@ -101,22 +101,26 @@ needs to allocate a buffer at least as large as the instrumented module's
 
 All offsets are byte-exact, all values little-endian. `P` is pointer width
 (4 on wasm32, 8 on wasm64). `N` is the total byte size of the module's saved
-scalar globals — fixed per module at instrument time.
+scalar globals — fixed per module at instrument time. `B` is the total byte
+size of the B1 plain-catch scratch region, fixed per module at instrument
+time and 0 in modules that do not contain plain-catch capture sites.
 
-| Offset     | Size | Field                 | Purpose                                |
-|------------|------|-----------------------|----------------------------------------|
-| `+0`       | `P`  | `current_pos`         | Next free byte for frame data          |
-| `+P`       | `P`  | `end_pos`             | Reserved; not read or written today    |
-| `+2P`      | `N`  | `saved_globals[]`     | Mutable scalar globals, decl. order    |
-| `+2P + N`  | var  | frame data            | Frames grow upward from here           |
+| Offset            | Size | Field                 | Purpose                                |
+|-------------------|------|-----------------------|----------------------------------------|
+| `+0`              | `P`  | `current_pos`         | Next free byte for frame data          |
+| `+P`              | `P`  | `end_pos`             | Reserved; not read or written today    |
+| `+2P`             | `N`  | `saved_globals[]`     | Mutable scalar globals, decl. order    |
+| `+2P + N`         | `B`  | `b1_scratch[]`        | Plain-catch operand stash (see B1)     |
+| `+2P + N + B`     | var  | frame data            | Frames grow upward from here           |
 
-`frames_start_offset = 2P + N`. It is exposed as metadata on the tool's
+`frames_start_offset = 2P + N + B`. It is exposed as metadata on the tool's
 internal `Runtime` struct, and `wpk_fork_unwind_begin` writes it into
 `*(buf + 0)` on every invocation.
 
 For wasm32 (`P = 4`) with a module that declares three additional scalar
 mutable globals totaling 16 bytes (e.g. `__stack_pointer`, `__tls_base`, one
-user i64):
+user i64) and one fork-path function with a single `(catch $tag (param i32))`
+arm (16-byte scratch tuple after 8-byte alignment):
 
 ```
 +0    4    current_pos
@@ -124,8 +128,13 @@ user i64):
 +8    4    saved __stack_pointer  (i32)
 +12   4    saved __tls_base       (i32)
 +16   8    saved user i64 global
-+24        frames start here
++24   16   b1 scratch (1 slot)
++40        frames start here
 ```
+
+The `b1_scratch` region is empty (`B == 0`) when no fork-path function in the
+module has a plain (non-`_ref`) catch arm — this is the case for every
+shipping port today other than future C++ EH ports.
 
 Ref-typed mutable globals (`funcref` / `externref` / `exnref`) are not stored
 in the linear-memory header — they would need aux-table spill slots, which is
@@ -649,9 +658,15 @@ continues to the fork call site.
 └────────────────────────────────────────────────────────────────────┘
 ```
 
-Only `catch_ref` and `catch_all_ref` clauses can drive this mechanism — a
-plain `catch` clause has no exnref to stash. Fork paths through plain-catch
-handlers are tracked as a future extension (see [Non-guarantees](#guarantees-and-non-guarantees)).
+`catch_ref` and `catch_all_ref` clauses use the exnref stash + `throw_ref`
+flow above. Plain (non-`_ref`) `catch` clauses have no exnref to re-throw,
+so B1 stages 1+2 add a parallel scratch-replay path: each fork-path plain-catch
+arm stashes its operand tuple to the module-level B1 scratch region on
+NORMAL entry and replays the operand tuple on REWIND. The unified rewind-throw
+stub uses `ref.is_null` on the exnref slot to discriminate between the two
+modes, and an arm-id if-chain to dispatch among multiple arms in the same
+try_table. See [Fork-from-plain-catch (B1 stages 1+2)](#fork-from-plain-catch-b1-stages-12)
+under "Maintainer notes" for the implementation.
 
 ## Call-graph discovery
 
@@ -710,15 +725,21 @@ closure is still a strict subset of full-module instrumentation.
 - **`makecontext` / `swapcontext` / `getcontext` / `setcontext`.** Userspace
   stack-switching primitives are unsupported and not on any roadmap. See
   [posix-status.md](posix-status.md) for rationale.
-- **Fork-from-catch through a plain `catch` clause.** The rewind-throw
-  mechanism relies on an exnref being available; plain (non-`_ref`) catch
-  clauses do not carry one. Fork from inside such a handler will trap on
-  rewind with an empty stash. Tracked outside the repo as follow-up B1 —
-  see `memory/fork-instrument-b1-followup.md` (external memory file).
 - **Multi-target `*_ref` try_tables.** A try_table with multiple `catch_ref`
   or `catch_all_ref` clauses dispatching to different handlers is currently
   skipped at the 6d rewrite stage. No shipping program has forced the issue;
   support can be added when needed.
+- **Multi-target plain-catch try_tables.** A try_table with multiple plain
+  (non-`_ref`) catch arms whose handlers branch to different labels is also
+  unsupported. B1 stage 2 detects this shape and excludes the function from
+  fork-path instrumentation rather than emitting a half-correct dispatcher;
+  see [Catch-handler resume — plain catch](#catch-handler-resume).
+- **Functions whose plain-catch arms carry ref-typed operands.** Catch arms
+  whose operand tuple includes an `(ref ...)` value (typically a function or
+  GC ref) are carved out of the fork-path set at instrument time. Spilling
+  ref-typed catch operands would require a per-arm aux table; no shipping
+  fork-path program forces it. The carve-out runs in
+  `instrument::plan_b1_scratch` and is reported in `B1ScratchPlan::b2_carveout`.
 - **Wasm-GC refs.** Abstract `any` / `eq` / `struct` / `array` / `i31` refs
   and concrete GC refs are rejected at the `classify_ref` step — the tool
   panics rather than produce a silently-broken module. Add classes in
@@ -869,14 +890,57 @@ Phase 4g's list of gated instructions lives in `side_effect_shape` in
 3. Add a fixture test under `tests/instrument.rs` that confirms the
    instruction appears inside a NORMAL gate in the instrumented output.
 
-### Extending for fork-from-plain-catch
+### Fork-from-plain-catch (B1 stages 1+2)
 
-Follow-up B1 (tracked outside the repo at
-`memory/fork-instrument-b1-followup.md`) covers the case of `fork()` from
-inside a plain-catch handler. The staged plan there introduces tag-by-tag
-stashes and synthesizes an exnref from the tag payload at unwind time so the
-rewind-throw mechanism applies uniformly. It is deferred post-Phase 7 and
-will be picked up when a hosted program forces the issue.
+Plain (non-`_ref`) `catch` arms unwrap the thrown exception's operand tuple
+onto the operand stack at handler entry, but unlike `catch_ref` /
+`catch_all_ref` they do not push an exnref. The Phase 6 rewind-throw stub
+reaches the handler by `throw_ref`-ing a saved exnref into the original
+try_table's catch clause; with a plain catch there is no exnref to save, so
+some other resume path is needed.
+
+B1 stages 1+2 add that path:
+
+1. **Discovery (Stage 1, `instrument::discover_plain_catch_arms`).** Walks
+   each function and collects every plain-catch arm's tag, target label, and
+   operand-tuple types. Stage 1 also assigns each arm a `B1ScratchPlanSlot`
+   with a per-arm offset into the module-level scratch region (computed by
+   `plan_b1_scratch`). Each arm's slot is sized to the natural-aligned
+   total of its operand tuple's scalar widths.
+2. **Capture-block emission (Stage 2 Task 2.2,
+   `apply_plain_catch_handlers`).** Every plain-catch arm gets a wrapping
+   `$capture` block injected around its handler body. On entry the block
+   pops the arm's operand tuple off the stack, stores each value into the
+   arm's `b1_scratch` slot, sets `$catch_region_id_local` and a
+   per-handler arm-id, then re-pushes the operands and falls through to the
+   user handler. On REWIND the rewind-throw stub uses the arm-id to dispatch
+   into a synthesized re-throw that lands the operands back on the stack
+   from `b1_scratch` and re-enters the user handler with the same operand
+   shape it would have seen on the NORMAL pass.
+3. **Multi-arm dispatch (Stage 2 Task 2.3, in `inject_rewind_throw_stubs`).**
+   The pre-existing rewind-throw stub used a single `(if (state == REWINDING
+   && catch_region_id == K))` check, fine for catch_ref's exnref-stash path.
+   For plain catches the stub now also discriminates on `arm_id` via an
+   if-chain so a try_table with multiple plain-catch arms reaches the
+   correct one. The stub still uses `ref.is_null` on the exnref slot to
+   select between catch_ref-style throw_ref and plain-catch-style operand
+   replay.
+4. **Carve-out (Stage 2 Task 2.1, in `plan_b1_scratch`).** Functions whose
+   plain-catch arms carry ref-typed operands (`(ref T)` other than `exnref`)
+   are removed from the fork-path set rather than instrumented, since the
+   scratch region only stores scalar tuples. This is the safe path: ref
+   payloads are uncommon in fork-using libc, but C++ EH may produce them
+   and we'd prefer a clean carve-out to a half-correct lowering. Stage 2
+   Task 2.4 also detects multi-target plain-catch try_tables and applies
+   the same carve-out.
+
+The carve-out is reported via `B1ScratchPlan::b2_carveout`; the scratch
+region is sized only for the surviving fork-path arms. For shipping ports
+the carve-out is empty (no plain-catch arms reach a fork in the libc
+they link against), so the instrumented binaries are byte-identical to the
+pre-B1 output. Stage 3 (a SpiderMonkey runtime harness for fork-from-C++-EH)
+is deferred until the SpiderMonkey port forces it; see
+`docs/plans/2026-04-28-fork-instrument-b1-fork-from-plain-catch.md`.
 
 ## See also
 
