@@ -17,4 +17,4 @@ name = "gawk"
 wasm = "gawk.wasm"
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/gawk-5.3.0-rev1-abi6-wasm32-ead04e4c.tar.zst"
-archive_sha256 = "dcf84873f83467272d99ac69f511d09f6f04894b1d2c8ca7b927646e09cd3155"
+archive_sha256 = "f3c54b43b64430427c0904990a5fbd22295c421ac97779c6fc968d428711c032"

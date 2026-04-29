@@ -638,7 +638,7 @@ fn ensure_built_inner(
             // falls through to the source build below; a remote-fetch
             // error should never cause the resolver to refuse to
             // produce an artifact.
-            if let Some(binary) = &target.binary {
+            if let Some(binary) = target.binary.get(&arch) {
                 let cache_key_sha_hex = hex(&sha);
                 match remote_fetch::fetch_and_install(
                     binary,

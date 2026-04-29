@@ -17,4 +17,4 @@ name = "perl"
 wasm = "perl.wasm"
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/perl-5.40.3-rev1-abi6-wasm32-fa757a25.tar.zst"
-archive_sha256 = "36428dd29429fd8d82101faa3bf473602c704721dbbbea8aae70cc27004c1f18"
+archive_sha256 = "317c86a11341382f34335463506240d792b76557b4b0525152a242a057332e30"

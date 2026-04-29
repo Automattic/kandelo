@@ -20,4 +20,4 @@ name = "fbdoom"
 wasm = "fbdoom.wasm"
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/fbdoom-0.1.0-rev1-abi6-wasm32-40651daf.tar.zst"
-archive_sha256 = "6d1cb46f8b9c5dde11720b6ba1255688b52383826e56f9b84e9b4a4dc9edc6f3"
+archive_sha256 = "4757910af6276b9ae6496e65485de13f7b2a307ae6352ceeddba90615bfced08"

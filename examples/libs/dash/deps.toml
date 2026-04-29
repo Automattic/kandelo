@@ -17,4 +17,4 @@ name = "dash"
 wasm = "dash.wasm"
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/dash-0.5.12-rev1-abi6-wasm32-1dc88490.tar.zst"
-archive_sha256 = "adae61820d9f97174708b09a45f75226dea7738698cd815b3db40d1485e650ef"
+archive_sha256 = "e379afc94811aaeed89de445d78d6a8ddc2d18ce192de617b21037385109a5a3"

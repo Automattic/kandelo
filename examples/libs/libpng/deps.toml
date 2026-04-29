@@ -32,4 +32,4 @@ headers = ["include/libpng16"]
 pkgconfig = ["lib/pkgconfig/libpng16.pc"]
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/libpng-1.6.43-rev1-abi6-wasm32-47600ce8.tar.zst"
-archive_sha256 = "5d7cb9e8837c66f91a65511c09ef6a864b44bd83f23486bc6c8179352ceed184"
+archive_sha256 = "aee99cd9c5b79e96deea1ff82cea62a8679e3a6aa72a8a6e769e3a992bb8c4fc"

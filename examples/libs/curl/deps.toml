@@ -23,4 +23,4 @@ name = "curl"
 wasm = "curl.wasm"
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/curl-8.11.1-rev1-abi6-wasm32-dc1febdf.tar.zst"
-archive_sha256 = "11c81b273f6138b97568362b9b72e1805dabea0e0d9da35f567a6c4030374219"
+archive_sha256 = "97658327cf46462c0ba799f3c4f424d2dd5cb07f6f757d7caa38e3b9c9c7e438"

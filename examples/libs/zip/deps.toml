@@ -17,4 +17,4 @@ name = "zip"
 wasm = "zip.wasm"
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/zip-3.0-rev1-abi6-wasm32-cdbcc9d5.tar.zst"
-archive_sha256 = "151c6689da4263971410870699121804894d9f957fb682964647afd8c64b0d56"
+archive_sha256 = "1c87b0d4175e1d54b137145240038c4097803cd9464ace38f1a75060734b81e2"

@@ -20,4 +20,4 @@ name = "wordpress"
 wasm = "wordpress.vfs"
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/wordpress-6.8-rev1-abi6-wasm32-31113b92.tar.zst"
-archive_sha256 = "b6a7578a2dd9d1f924646a937925b64c0a5fe3a0c6e231cf5732ad4a34a691f1"
+archive_sha256 = "8e8b54013d801f5135a2431084d6a962b12c86bef301d3b3fbda1da9aeee5b73"

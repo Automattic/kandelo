@@ -23,4 +23,4 @@ name = "nginx"
 wasm = "nginx.wasm"
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/nginx-1.24.0-rev1-abi6-wasm32-a8bac2a5.tar.zst"
-archive_sha256 = "e19ba04376b28b6f693cdf6c00668ff6632d5fb366b384145420a8deb71656e7"
+archive_sha256 = "151ea0940b36c20b3cd24b21dfc109eb1bee45d8375389874f876239579d9e46"

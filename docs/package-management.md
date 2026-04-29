@@ -106,6 +106,37 @@ into a release archive. A locally-built wasm64 artifact still
 populates `local-binaries/programs/wasm64/...` regardless of what
 the manifest declares.
 
+### `[binary]` — per-arch remote-fetch pointers
+
+The optional `[binary]` block tells the resolver where to download
+a prebuilt archive when the cache misses. Two equivalent shapes:
+
+```toml
+# Single-arch (most packages — implicit wasm32):
+[binary]
+archive_url    = "https://.../foo-wasm32-<sha>.tar.zst"
+archive_sha256 = "<64 hex>"
+
+# Multi-arch (mariadb, php, and their deps):
+[binary.wasm32]
+archive_url    = "https://.../foo-wasm32-<sha>.tar.zst"
+archive_sha256 = "<64 hex>"
+[binary.wasm64]
+archive_url    = "https://.../foo-wasm64-<sha>.tar.zst"
+archive_sha256 = "<64 hex>"
+```
+
+The bare form is an alias for `[binary.wasm32]`; mixing both forms
+in one manifest is a parse error. When `xtask build-deps resolve
+<pkg> --arch <arch>` runs, the resolver looks up
+`[binary.<arch>]`. If no entry exists for the requested arch, it
+falls through to a source build — same behavior as no `[binary]`
+block at all.
+
+`fetch-binaries.sh` doesn't read `[binary]` at all — it walks
+`manifest.json` and downloads every entry the manifest catalogs.
+`[binary]` is the entry point for direct, single-package fetches.
+
 **Keep top-level arrays (`depends_on`, etc.) above the first `[section]`.**
 TOML binds a bare key inside whatever section most recently opened; a
 key placed after `[license]` ends up as `license.depends_on`, which

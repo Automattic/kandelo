@@ -67,7 +67,7 @@ pub enum ManifestKind {
 /// Closed enum — unknown values are rejected at parse time. Only
 /// present in archived `manifest.toml` (under `[compatibility]`),
 /// never in source `deps.toml`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TargetArch {
     Wasm32,
@@ -390,11 +390,26 @@ pub struct DepsManifest {
     /// `target_arch`, `abi_versions`, and `cache_key_sha`.
     pub compatibility: Option<Compatibility>,
 
-    /// Optional remote-fetch pointer (see [`Binary`]). When `Some`,
-    /// the resolver may download a prebuilt archive instead of
-    /// running the source build (consumed in `build_deps`'s
-    /// `ensure_built` and `remote_fetch`).
-    pub binary: Option<Binary>,
+    /// Per-arch remote-fetch pointers (see [`Binary`]). Keyed by the
+    /// arch the archive was built for. Empty when no `[binary]` block
+    /// is present. Consumed by `build_deps`'s `ensure_built`, which
+    /// looks up the requested arch and falls through to a source
+    /// build if no entry exists for it.
+    ///
+    /// TOML accepts two equivalent shapes:
+    ///   * Bare `[binary]` (single-arch — interpreted as wasm32):
+    ///       [binary]
+    ///       archive_url = "..."
+    ///       archive_sha256 = "..."
+    ///   * Per-arch tables (multi-arch):
+    ///       [binary.wasm32]
+    ///       archive_url = "..."
+    ///       archive_sha256 = "..."
+    ///       [binary.wasm64]
+    ///       archive_url = "..."
+    ///       archive_sha256 = "..."
+    /// A manifest cannot mix both; the parser rejects mixed shapes.
+    pub binary: BTreeMap<TargetArch, Binary>,
 
     /// Inline host-tool requirements (`[[host_tools]]` in TOML).
     /// Empty when none are declared. Allowed on every manifest kind
@@ -512,8 +527,15 @@ struct Raw {
     outputs: toml::Value,
     #[serde(default)]
     compatibility: Option<Compatibility>,
+    // `binary` accepts two shapes:
+    //   * bare `[binary]` (archive_url + archive_sha256 directly),
+    //     interpreted as wasm32-keyed for back-compat;
+    //   * per-arch `[binary.wasm32]` / `[binary.wasm64]` tables.
+    // We deserialize as a generic `toml::Value` and disambiguate in
+    // `validate_common`, so a mixed shape gets a precise error
+    // instead of a confusing serde mismatch.
     #[serde(default)]
-    binary: Option<Binary>,
+    binary: Option<toml::Value>,
     #[serde(default)]
     host_tools: Vec<RawHostTool>,
     /// Optional `arches = ["wasm32", "wasm64"]`. Empty/absent =
@@ -624,6 +646,92 @@ impl DepsManifest {
         Ok(())
     }
 
+    /// Decode `[binary]` into a per-arch map. Accepts:
+    ///   * Bare `archive_url` + `archive_sha256` keys → wasm32-only.
+    ///   * Per-arch sub-tables (`wasm32`, `wasm64`).
+    /// Mixed shapes (a bare `archive_url` next to a `[binary.wasm64]`
+    /// table) are rejected — they're almost certainly a typo, and the
+    /// resulting precedence would be confusing either way.
+    fn parse_binary_block(
+        value: toml::Value,
+    ) -> Result<BTreeMap<TargetArch, Binary>, String> {
+        let table = value
+            .as_table()
+            .ok_or_else(|| "[binary] must be a table".to_string())?
+            .clone();
+
+        // Detect shape: presence of `archive_url` at the top is the
+        // bare form. Presence of an arch-named subtable is the
+        // per-arch form. Either, but not both, is allowed.
+        let has_bare = table.contains_key("archive_url")
+            || table.contains_key("archive_sha256");
+        let arch_keys: Vec<&str> = table
+            .keys()
+            .filter(|k| matches!(k.as_str(), "wasm32" | "wasm64"))
+            .map(String::as_str)
+            .collect();
+        let has_per_arch = !arch_keys.is_empty();
+
+        if has_bare && has_per_arch {
+            return Err(
+                "[binary] mixes the bare form (archive_url at the top) \
+                 with per-arch sub-tables ([binary.wasm32] / [binary.wasm64]). \
+                 Pick one shape."
+                    .into(),
+            );
+        }
+
+        // Reject any unknown keys to surface typos early.
+        let allowed_per_arch: BTreeSet<&str> =
+            ["wasm32", "wasm64"].into_iter().collect();
+        let allowed_bare: BTreeSet<&str> =
+            ["archive_url", "archive_sha256"].into_iter().collect();
+        for key in table.keys() {
+            let allowed = if has_per_arch {
+                allowed_per_arch.contains(key.as_str())
+            } else {
+                allowed_bare.contains(key.as_str())
+            };
+            if !allowed {
+                return Err(format!(
+                    "[binary] has unexpected key {:?} (allowed: {})",
+                    key,
+                    if has_per_arch {
+                        "wasm32, wasm64"
+                    } else {
+                        "archive_url, archive_sha256"
+                    }
+                ));
+            }
+        }
+
+        let mut out: BTreeMap<TargetArch, Binary> = BTreeMap::new();
+        if has_per_arch {
+            for arch_key in arch_keys {
+                let arch = match arch_key {
+                    "wasm32" => TargetArch::Wasm32,
+                    "wasm64" => TargetArch::Wasm64,
+                    _ => unreachable!("filtered above"),
+                };
+                let sub = table[arch_key].clone();
+                let b: Binary = sub
+                    .try_into()
+                    .map_err(|e| format!("[binary.{arch_key}]: {e}"))?;
+                Self::validate_binary(&b)
+                    .map_err(|e| format!("[binary.{arch_key}]: {e}"))?;
+                out.insert(arch, b);
+            }
+        } else {
+            // Bare form. Reconstruct a Binary out of the table.
+            let b: Binary = toml::Value::Table(table)
+                .try_into()
+                .map_err(|e| format!("[binary]: {e}"))?;
+            Self::validate_binary(&b)?;
+            out.insert(TargetArch::Wasm32, b);
+        }
+        Ok(out)
+    }
+
     fn validate_common(raw: Raw, dir: PathBuf) -> Result<Self, String> {
         if raw.name.is_empty() {
             return Err("name must not be empty".into());
@@ -655,16 +763,19 @@ impl DepsManifest {
             return Err("license.spdx must not be empty".into());
         }
 
-        if let Some(b) = raw.binary.as_ref() {
-            Self::validate_binary(b)?;
-            if matches!(raw.kind, ManifestKind::Source) {
-                return Err(
-                    "kind = \"source\" must not declare [binary] \
-                     (sources are not published as remote-fetchable archives)"
-                        .into(),
-                );
+        let binary = match raw.binary.as_ref() {
+            None => BTreeMap::new(),
+            Some(value) => {
+                if matches!(raw.kind, ManifestKind::Source) {
+                    return Err(
+                        "kind = \"source\" must not declare [binary] \
+                         (sources are not published as remote-fetchable archives)"
+                            .into(),
+                    );
+                }
+                Self::parse_binary_block(value.clone())?
             }
-        }
+        };
 
         let depends_on: Vec<DepRef> = raw
             .depends_on
@@ -879,7 +990,7 @@ impl DepsManifest {
             outputs,
             program_outputs,
             compatibility: raw.compatibility,
-            binary: raw.binary,
+            binary,
             host_tools,
             target_arches,
             dir,
@@ -1105,23 +1216,74 @@ spdx = "MIT"
     }
 
     #[test]
-    fn parses_binary_block_optional() {
+    fn parses_bare_binary_block_as_wasm32() {
         let text = format!(
             "{}\n[binary]\narchive_url = \"https://x/foo.tar.zst\"\narchive_sha256 = \"{:0>64}\"\n",
             EXAMPLE, ""
         );
         let m = DepsManifest::parse(&text, PathBuf::from("/x")).unwrap();
-        let b = m.binary.as_ref().unwrap();
+        let b = m.binary.get(&TargetArch::Wasm32).expect("wasm32 entry");
         assert_eq!(b.archive_url, "https://x/foo.tar.zst");
         assert_eq!(b.archive_sha256, "0".repeat(64));
+        assert!(m.binary.get(&TargetArch::Wasm64).is_none());
+    }
+
+    #[test]
+    fn parses_per_arch_binary_block() {
+        let text = format!(
+            "{}\n[binary.wasm32]\narchive_url = \"https://x/32.tar.zst\"\n\
+                          archive_sha256 = \"{:0>64}\"\n\
+             [binary.wasm64]\narchive_url = \"https://x/64.tar.zst\"\n\
+                          archive_sha256 = \"{:1>64}\"\n",
+            EXAMPLE, "", ""
+        );
+        let m = DepsManifest::parse(&text, PathBuf::from("/x")).unwrap();
+        let b32 = m.binary.get(&TargetArch::Wasm32).expect("wasm32 entry");
+        let b64 = m.binary.get(&TargetArch::Wasm64).expect("wasm64 entry");
+        assert_eq!(b32.archive_url, "https://x/32.tar.zst");
+        assert_eq!(b64.archive_url, "https://x/64.tar.zst");
+        assert!(b32.archive_sha256.starts_with("0"));
+        assert!(b64.archive_sha256.starts_with("1"));
+    }
+
+    #[test]
+    fn rejects_mixed_binary_shape() {
+        // Bare archive_url next to [binary.wasm64] is a typo trap —
+        // require pick-one-shape.
+        let text = format!(
+            "{}\n[binary]\narchive_url = \"https://x/foo.tar.zst\"\n\
+                         archive_sha256 = \"{:0>64}\"\n\
+             [binary.wasm64]\narchive_url = \"https://x/64.tar.zst\"\n\
+                          archive_sha256 = \"{:0>64}\"\n",
+            EXAMPLE, "", ""
+        );
+        let err = DepsManifest::parse(&text, PathBuf::from("/x"))
+            .expect_err("mixed shape must fail");
+        assert!(
+            err.contains("mixes the bare form") || err.contains("[binary]"),
+            "error must call out the mixed shape, got: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_binary_key() {
+        let text = format!(
+            "{}\n[binary]\narchive_url = \"https://x/foo.tar.zst\"\n\
+                         archive_sha256 = \"{:0>64}\"\n\
+                         bogus = true\n",
+            EXAMPLE, ""
+        );
+        let err = DepsManifest::parse(&text, PathBuf::from("/x"))
+            .expect_err("unknown key must fail");
+        assert!(err.contains("bogus"), "got: {err}");
     }
 
     #[test]
     fn parse_accepts_no_binary_block() {
         // EXAMPLE has no [binary] block. Confirm parse succeeds and
-        // binary is None.
+        // binary is empty.
         let m = DepsManifest::parse(EXAMPLE, PathBuf::from("/x")).unwrap();
-        assert!(m.binary.is_none());
+        assert!(m.binary.is_empty());
     }
 
     #[test]
@@ -1345,7 +1507,7 @@ spdx = "BSD-3-Clause"
         assert_eq!(m.name, "pcre2-source");
         assert!(m.outputs.libs.is_empty());
         assert!(m.program_outputs.is_empty());
-        assert!(m.binary.is_none());
+        assert!(m.binary.is_empty());
     }
 
     const LIB_WITH_HOST_TOOLS: &str = r#"

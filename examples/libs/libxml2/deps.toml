@@ -32,6 +32,9 @@ url = "https://gitlab.gnome.org/GNOME/libxml2/-/blob/v2.13.8/Copyright"
 libs = ["lib/libxml2.a"]
 headers = ["include/libxml"]
 pkgconfig = ["lib/pkgconfig/libxml-2.0.pc"]
-[binary]
+[binary.wasm32]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/libxml2-2.13.8-rev1-abi6-wasm32-36641b15.tar.zst"
-archive_sha256 = "b27f08668ee6054b309fe86b9c1048c0c0f6d25bbc0d817137465327467a5471"
+archive_sha256 = "6cecb5947fe9a9b219f8e1c790e8718f1032a3499c6f5335726269f70a93479e"
+[binary.wasm64]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/libxml2-2.13.8-rev1-abi6-wasm64-80a9b06b.tar.zst"
+archive_sha256 = "91e6aa3fb47b9155f32c89ffc8c9207654003f3df4ee1eadbe33452a1427f24a"

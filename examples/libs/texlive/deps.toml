@@ -17,4 +17,4 @@ name = "pdftex"
 wasm = "pdftex.wasm"
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/texlive-2025-rev1-abi6-wasm32-12249438.tar.zst"
-archive_sha256 = "a8ae05a19d9b174922277aede11067c83078ae7454eac31071b60ede746f18ae"
+archive_sha256 = "fa1da8fc580f87f8cd9335277a4f1fffc57dee9f491f4465079f264f276a4b04"
