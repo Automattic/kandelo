@@ -1,0 +1,32 @@
+kind = "program"
+name = "dinit"
+version = "0.19.4"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://github.com/davmac314/dinit"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "Apache-2.0"
+url = "https://github.com/davmac314/dinit/blob/v0.19.4/LICENSE"
+
+[build]
+script = "build-dinit.sh"
+
+[[outputs]]
+name = "dinit"
+wasm = "dinit.wasm"
+
+[[outputs]]
+name = "dinitctl"
+wasm = "dinitctl.wasm"
+
+[[outputs]]
+name = "dinitcheck"
+wasm = "dinitcheck.wasm"
+
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6-2026-04-29/dinit-0.19.4-rev1-abi6-wasm32-a62cf11f.tar.zst"
+archive_sha256 = "a69394824c1825395f525357b4f5bd175958ac925e21e530491a3ab9cf3ad4e6"
