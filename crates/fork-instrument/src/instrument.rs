@@ -2090,6 +2090,13 @@ pub struct PlainCatchArmSlot {
 }
 
 /// Stage 1 (B1) — module-wide plain-catch scratch plan.
+///
+/// Stage 2 (Task 2.1) adds `b2_carveout`: functions whose plain-catch
+/// arms include unsupported operand types (e.g., ref-typed) land here
+/// instead of `per_function`. Stage 2 emission tasks check this set
+/// and skip plain-catch instrumentation for carved-out functions —
+/// falling back to today's behavior (Phase 6 catch_ref still works,
+/// plain-catch fork remains unsupported for those specific shapes).
 #[derive(Debug, Clone, Default)]
 pub struct B1ScratchPlan {
     /// Total bytes the B1 scratch area occupies. Stage 1 Task 1.3
@@ -2101,6 +2108,12 @@ pub struct B1ScratchPlan {
     /// entry per try_table that has at least one plain-catch arm).
     pub per_function:
         std::collections::HashMap<FunctionId, Vec<(InstrSeqId, Vec<PlainCatchArmSlot>)>>,
+    /// Stage 2 (B1): functions whose plain-catch arms include
+    /// unsupported operand types (e.g., ref-typed). For these
+    /// functions, B1 emission tasks fall back to today's behavior
+    /// (Phase 6 doesn't intercept plain-catch arms — the function
+    /// works for catch_ref but is unsupported for plain-catch fork).
+    pub b2_carveout: std::collections::HashSet<FunctionId>,
 }
 
 /// Stage 1 (B1) — assigns scratch offsets for every plain-catch arm
@@ -2121,9 +2134,20 @@ pub struct B1ScratchPlan {
 /// Operand types are restricted to scalars (i32/i64/f32/f64/v128)
 /// at this stage. Ref-typed operands (externref/funcref/exnref/GC
 /// refs) will require aux-table spilling — a future B2 carve-out.
-/// Stage 1 panics with a clear diagnostic on encountering them;
-/// Stage 2 will detect-and-fall-back-to-guard-dispatch earlier in
-/// the pipeline so this panic is unreachable in production paths.
+///
+/// Stage 2 (Task 2.1) detects ref-typed payloads here and routes the
+/// affected function to `B1ScratchPlan.b2_carveout` instead of
+/// `per_function`. Stage 2 emission tasks check the carve-out set
+/// and skip plain-catch instrumentation for those functions, so
+/// `scalar_size`'s ref-type panic is now unreachable from the
+/// planner — it survives only as a defense-in-depth assertion for
+/// future callers that bypass the carve-out filter.
+///
+/// The carve-out is whole-function: if any arm in any region of a
+/// function has a ref-typed operand, the entire function's
+/// plain-catch instrumentation is skipped. We don't selectively drop
+/// arms because Task 2.3's rewind dispatcher needs the whole
+/// region's arm set or none.
 ///
 /// The cursor walks `targets` in iteration order, so per-function
 /// offsets depend on the caller's ordering of `targets`. Stage 2's
@@ -2137,6 +2161,23 @@ pub fn plan_b1_scratch(module: &Module, targets: &[FunctionId]) -> B1ScratchPlan
     for &fid in targets {
         let arms_per_region = discover_plain_catch_arms(module, fid);
         if arms_per_region.is_empty() {
+            continue;
+        }
+        // Stage 2 (B1): detect unsupported operand types and carve out
+        // the entire function. We can't selectively drop just the bad
+        // arms because the rewind-throw stub dispatches by arm_id and
+        // expects every arm in a region to have a scratch slot — Stage
+        // 2 keeps things simple by treating the whole function's
+        // plain-catch as off-limits if any arm has a ref operand.
+        let has_unsupported = arms_per_region.iter().any(|(_, arms)| {
+            arms.iter().any(|arm| {
+                arm.operand_tys
+                    .iter()
+                    .any(|t| matches!(t, ValType::Ref(_)))
+            })
+        });
+        if has_unsupported {
+            plan.b2_carveout.insert(fid);
             continue;
         }
         let mut per_func: Vec<(InstrSeqId, Vec<PlainCatchArmSlot>)> =

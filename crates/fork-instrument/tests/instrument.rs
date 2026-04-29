@@ -1817,6 +1817,126 @@ fn b1_scratch_plan_handles_f32_f64_operand_sizes() {
     assert_eq!(plan.total_bytes, 16);
 }
 
+// --- B1 Stage 2 Task 2.1 — operand-type carve-out tests ----------------
+
+#[test]
+fn b1_scratch_plan_ref_operand_function_is_carved_out() {
+    // A try_table with a tag whose payload includes externref.
+    // The function should land in b2_carveout, NOT in per_function.
+    //
+    // Catch label semantics mirror the existing scalar tests: the
+    // block's RESULT type matches the tag's payload arity, and the
+    // body drops the value before falling through to a synthesized
+    // ref to keep stack arity consistent.
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (tag $exn (param externref))
+          (func $caller (export "caller") (result i32)
+            (block $h (result externref)
+              (try_table (catch $exn $h)
+                ref.null extern
+                drop)
+              ref.null extern)
+            drop
+            call $fork)
+          (memory 1))
+    "#;
+    let bytes = parse_wat(wat);
+    let module = walrus::Module::from_buffer(&bytes).unwrap();
+    let caller = func_by_name(&module, "caller");
+    let plan = fork_instrument::instrument::plan_b1_scratch(&module, &[caller]);
+    assert!(
+        !plan.per_function.contains_key(&caller),
+        "carved-out function must not appear in per_function"
+    );
+    assert!(
+        plan.b2_carveout.contains(&caller),
+        "carved-out function must be in b2_carveout"
+    );
+    assert_eq!(
+        plan.total_bytes, 0,
+        "no scratch allocated for carved-out function"
+    );
+}
+
+#[test]
+fn b1_scratch_plan_mixed_ref_and_scalar_arms_carves_whole_function() {
+    // A function with two try_tables: one with i32 payload (supported),
+    // one with externref (unsupported). The whole function gets carved
+    // out because we don't selectively drop arms — Task 2.3's rewind
+    // dispatcher needs the whole function's regions or none.
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (tag $a (param i32))
+          (tag $b (param externref))
+          (func $caller (export "caller") (result i32)
+            (block $ha (result i32)
+              (try_table (catch $a $ha)
+                i32.const 0
+                drop)
+              i32.const 0)
+            drop
+            (block $hb (result externref)
+              (try_table (catch $b $hb)
+                ref.null extern
+                drop)
+              ref.null extern)
+            drop
+            call $fork)
+          (memory 1))
+    "#;
+    let bytes = parse_wat(wat);
+    let module = walrus::Module::from_buffer(&bytes).unwrap();
+    let caller = func_by_name(&module, "caller");
+    let plan = fork_instrument::instrument::plan_b1_scratch(&module, &[caller]);
+    assert!(
+        plan.b2_carveout.contains(&caller),
+        "carve-out must include functions with mixed scalar+ref arms"
+    );
+    assert!(
+        !plan.per_function.contains_key(&caller),
+        "carved-out function must not appear in per_function even \
+         though one arm is otherwise supported"
+    );
+    assert_eq!(
+        plan.total_bytes, 0,
+        "carved-out functions allocate no scratch"
+    );
+}
+
+#[test]
+fn b1_scratch_plan_scalar_only_function_is_not_carved_out() {
+    // Sanity: the existing scalar-only fixture must NOT be carved out.
+    // Mirrors the scalar tests above to ensure carve-out is gated
+    // strictly on ref-typed operands and doesn't accidentally trip
+    // for the supported case.
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (tag $exn)
+          (func $caller (export "caller") (result i32)
+            (block $h
+              (try_table (catch $exn $h)
+                nop))
+            call $fork)
+          (memory 1))
+    "#;
+    let bytes = parse_wat(wat);
+    let module = walrus::Module::from_buffer(&bytes).unwrap();
+    let caller = func_by_name(&module, "caller");
+    let plan = fork_instrument::instrument::plan_b1_scratch(&module, &[caller]);
+    assert!(
+        !plan.b2_carveout.contains(&caller),
+        "scalar-only function must not be in b2_carveout"
+    );
+    assert!(
+        plan.per_function.contains_key(&caller),
+        "scalar-only function must have a per_function entry"
+    );
+}
+
 // ======================================================================
 // Stage 1 (B1) Task 1.3 — end-to-end smoke via lib::instrument
 // ======================================================================
