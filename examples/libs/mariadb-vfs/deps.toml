@@ -1,18 +1,31 @@
 kind = "program"
 name = "mariadb-vfs"
 version = "0.1.0"
-# rev2: rebuild VFS so /sbin/dinit (added by addDinitInit during
-# the dinit-supervised refactor in PR #370) actually gets baked in.
-# rev1's archive on binaries-abi-v6-2026-04-29 was a stale cache
-# entry that predated PR #370 and shipped without dinit, breaking
-# the MariaDB browser demo. The package management system can't
-# automatically invalidate VFS caches when a runtime artifact baked
-# in by the build script changes (depends_on entries inherit the
-# parent's arch, but baked artifacts are arch-agnostic — wasm64
+# rev3: TEMPORARY workaround for a deferred runtime bug. mariadbd
+# --bootstrap mode hangs during user-space startup in the wasm
+# port — see the "MariaDB bootstrap-mode startup hang" investigation
+# (deferred to a follow-up worktree). The dinit `<engine>-bootstrap`
+# service is now a no-op `internal` anchor instead of running
+# `mariadbd --bootstrap < bootstrap.sql`. Daemon mariadbd starts
+# directly on top of an empty /data tree and lazily creates Aria
+# table files. Trade-off: mysql.* system tables don't exist; the
+# demo's example queries don't touch them and work fine. Boot is
+# ~30s faster (no sleep-wait around the wedged bootstrap).
+#
+# Revert this to rev2 + restore the scripted bootstrap service in
+# build-mariadb-vfs-image.ts once the startup hang is root-caused.
+#
+# rev2 history (kept for reference): rebuild VFS so /sbin/dinit
+# (added by addDinitInit during the dinit-supervised refactor in
+# PR #370) actually gets baked in. rev1's archive on
+# binaries-abi-v6-2026-04-29 was a stale cache entry that predated
+# PR #370 and shipped without dinit. The package management system
+# can't automatically invalidate VFS caches when a runtime artifact
+# baked in by the build script changes (depends_on entries inherit
+# the parent's arch, but baked artifacts are arch-agnostic — wasm64
 # VFS bakes wasm32 dinit). Until that's solved, bump revision
-# manually whenever a change to a baked artifact must reach
-# consumers.
-revision = 2
+# manually whenever a change to a baked artifact must reach consumers.
+revision = 3
 depends_on = []
 # Opt into wasm64 — see memory/wasm64-build-policy.md. The VFS image
 # embeds the arch-specific mariadbd binary, so it must be built
@@ -38,8 +51,8 @@ script = "build-mariadb-vfs.sh"
 name = "mariadb-vfs"
 wasm = "mariadb-vfs.vfs"
 [binary.wasm32]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6-2026-04-29/mariadb-vfs-0.1.0-rev2-abi6-wasm32-f6e75408.tar.zst"
-archive_sha256 = "f0ea392854d4ee54d96dfb61a8477153fde5617482ed6c73ada642f82ce2c234"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6-2026-04-29/mariadb-vfs-0.1.0-rev3-abi6-wasm32-dca9e71c.tar.zst"
+archive_sha256 = "7e2b0defc54926699ce537bde9d7d35bffe372ddcdc0a7be46da506dc0494adf"
 [binary.wasm64]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6-2026-04-29/mariadb-vfs-0.1.0-rev2-abi6-wasm64-a334251b.tar.zst"
-archive_sha256 = "0055667b23b47ee4e17a4d3c3c005a291c13dc0f98d7445c844889519898d111"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6-2026-04-29/mariadb-vfs-0.1.0-rev3-abi6-wasm64-f9d03e26.tar.zst"
+archive_sha256 = "e3ad6233fa61095af34ef28699f5f76704d41b820cba0e42c2fe973a59b95b8e"

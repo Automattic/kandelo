@@ -83,23 +83,41 @@ const INNODB_TUNING = [
 ];
 
 /**
- * Build the bootstrap and daemon services for a given engine. Bootstrap
- * is `scripted` so dinit waits for it to exit before the daemon depends-on
- * is satisfied — the daemon never sees a half-initialized data dir.
+ * Build the daemon service tree for an engine.
  *
- * Bootstrap reads bootstrap.sql from stdin via `/bin/sh -c '... < FILE'`
- * because dinit's service schema doesn't take an explicit stdin redirect
- * (it does have `socket-listen` but that's for activation, not feeding).
+ * ─── TEMPORARY WORKAROUND ─────────────────────────────────────────────
+ * `<engine>-bootstrap` is wired as a no-op `internal` service because
+ * `mariadbd --bootstrap` deadlocks during user-space startup in the
+ * wasm port — see the deferred investigation prompt at the top of
+ * commit history (and the "MariaDB bootstrap-mode startup hang"
+ * follow-up). Symptom: mariadbd-bootstrap makes ~4 syscalls (libc
+ * heap setup), then no further syscalls for 60+ seconds. Disassembly
+ * traced the hang to wasm-LD-injected init function 16, called by
+ * `_start` before any of mariadbd's user code runs. Daemon-mode
+ * mariadbd (same binary, same kernel, no `--bootstrap`) sails through
+ * that same code path — almost certainly a concurrency / atomic-wait
+ * timing interaction in our centralized kernel-worker, not a
+ * mariadbd bug.
+ *
+ * Trade-off of the workaround: `mysql.*` system tables are NOT
+ * created. Anything querying `mysql.user` etc. fails. The demo's
+ * example queries (`SELECT VERSION()`, `CREATE TABLE` in `test`,
+ * `INSERT`, `SELECT`, `SHOW TABLES FROM test`, `SHOW DATABASES`) all
+ * work because Aria creates table files lazily and the queries don't
+ * touch the missing system tables. The boot is also dramatically
+ * faster — no 30s sleep waiting for the wedged bootstrap process.
+ *
+ * Re-enable the real bootstrap pass once the startup hang is fixed
+ * by reverting this to a `type: "scripted"` service that runs
+ * `mariadbd --bootstrap < bootstrap.sql`. The bootstrap SQL file
+ * is still baked into the VFS at /etc/mariadb/bootstrap.sql so
+ * nothing needs to be re-emitted.
+ * ──────────────────────────────────────────────────────────────────────
  */
 function buildEngineServices(engine: "Aria" | "InnoDB"): DinitService[] {
   const tag = engine === "Aria" ? "aria" : "innodb";
   const args = commonMariadbArgs(engine);
   const innodbArgs = engine === "InnoDB" ? INNODB_TUNING : [];
-  const bootstrapArgs = [
-    ...args, ...innodbArgs,
-    "--bootstrap", "--skip-networking", "--log-warnings=0",
-    `--log-error=/data/${tag}-bootstrap.log`,
-  ].join(" ");
   const daemonCmd = [
     ...args, ...innodbArgs,
     "--skip-networking=0", "--port=3306",
@@ -110,14 +128,10 @@ function buildEngineServices(engine: "Aria" | "InnoDB"): DinitService[] {
 
   return [
     {
+      // No-op anchor service. dinit considers `internal` services started
+      // immediately, satisfying the daemon's depends-on with zero work.
       name: `${tag}-bootstrap`,
-      type: "scripted",
-      // mariadbd --bootstrap doesn't exit at stdin EOF in the wasm port.
-      // The wrapper backgrounds it, sleeps to let bootstrap drain SQL,
-      // SIGTERMs it. Invoked via `sh SCRIPT` because wasm exec doesn't
-      // honor shebangs.
-      command: `/bin/sh /etc/mariadb/${tag}-bootstrap.sh`,
-      logfile: `/var/log/${tag}-bootstrap.log`,
+      type: "internal",
       restart: false,
     },
     {
@@ -186,35 +200,10 @@ async function main() {
   const bootstrapSql = `use mysql;\n${systemTables}\n${systemData}\nCREATE DATABASE IF NOT EXISTS test;\n`;
   writeVfsFile(fs, "/etc/mariadb/bootstrap.sql", bootstrapSql);
 
-  // Per-engine bootstrap-runner scripts. Invoked via `/bin/sh SCRIPT`
-  // from each engine's dinit bootstrap service (see buildEngineServices
-  // for why the inline `sh -c` form was abandoned: dinit's command-line
-  // parsing strips quotes, breaking long single-string commands).
-  for (const eng of [{ tag: "aria", engine: "Aria" }, { tag: "innodb", engine: "InnoDB" }] as const) {
-    const args = commonMariadbArgs(eng.engine);
-    const innodbArgs = eng.engine === "InnoDB" ? INNODB_TUNING : [];
-    const bootstrapCmd = [
-      ...args, ...innodbArgs,
-      "--bootstrap", "--skip-networking", "--log-warnings=0",
-      `--log-error=/data/${eng.tag}-bootstrap.log`,
-    ].join(" ");
-    // mariadbd --bootstrap doesn't exit at stdin EOF in our wasm port,
-    // so we run it in the background, sleep long enough for the bootstrap
-    // SQL to drain (data files written synchronously while reading), then
-    // SIGTERM/SIGKILL it. **No `wait`** — dinit (PID 1) reaps orphans
-    // aggressively and dash's `wait` builtin then blocks indefinitely.
-    // Letting dinit reap is fine; bootstrap data is on disk by the time
-    // we kill the daemon.
-    const script = `${bootstrapCmd} < /etc/mariadb/bootstrap.sql &
-PID=$!
-sleep 30
-kill -TERM $PID 2>/dev/null
-sleep 1
-kill -KILL $PID 2>/dev/null
-exit 0
-`;
-    writeVfsFile(fs, `/etc/mariadb/${eng.tag}-bootstrap.sh`, script);
-  }
+  // Bootstrap-runner scripts are NOT emitted while the bootstrap pass is
+  // disabled (see the workaround note on `buildEngineServices`). The
+  // bootstrap SQL itself is still written above so re-enabling is a
+  // single-file change once the underlying hang is fixed.
 
   // Bake both engine trees, no implicit boot — page selects which engine
   // to start by passing `<engine>-mariadb` as dinit's positional argv.
