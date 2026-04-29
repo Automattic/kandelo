@@ -1,14 +1,23 @@
 /**
- * Build a pre-built VFS image containing WordPress + MariaDB (LAMP stack),
- * system configs, and shell binaries for instant browser demo boot.
+ * Build a fully-bootable VFS image for the WordPress + MariaDB (LAMP)
+ * browser demo. dinit (PID 1) brings up the full stack:
+ *
+ *   mariadb-bootstrap (scripted) — wraps `mariadbd --bootstrap < SQL`
+ *                                  with a sleep+kill timeout because
+ *                                  mariadbd doesn't exit at stdin EOF.
+ *   mariadb           (process)  — depends-on mariadb-bootstrap
+ *   wp-config-init    (scripted) — substitutes @@APP_PATH@@/@@PROTO@@
+ *                                  in /etc/wp-config-template.php from
+ *                                  env vars passed via kernel.boot().
+ *   php-fpm           (process)  — depends-on mariadb, wp-config-init
+ *   nginx             (process)  — depends-on php-fpm
  *
  * Produces: examples/browser/public/lamp.vfs
- *
- * Usage: npx tsx examples/browser/scripts/build-lamp-vfs-image.ts
  */
-import { readFileSync, lstatSync } from "fs";
-import { join } from "path";
+import { readFileSync, lstatSync } from "node:fs";
+import { join } from "node:path";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import { resolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
 import { COREUTILS_NAMES } from "../lib/init/shell-binaries";
 import {
   writeVfsFile,
@@ -19,150 +28,73 @@ import {
   walkAndWrite,
   saveImage,
 } from "./vfs-image-helpers";
+import { addDinitInit, type DinitService } from "./dinit-image-helpers";
 
-const SCRIPT_DIR = new URL(".", import.meta.url).pathname;
-const BROWSER_DIR = join(SCRIPT_DIR, "..");
-const WP_DIR = join(BROWSER_DIR, "..", "wordpress", "wordpress");
-const DASH_PATH = join(BROWSER_DIR, "..", "libs", "dash", "bin", "dash.wasm");
-const MARIADB_PATH = join(BROWSER_DIR, "..", "libs", "mariadb", "mariadb-install", "bin", "mariadbd.wasm");
-const SYSTEM_TABLES_PATH = join(BROWSER_DIR, "..", "libs", "mariadb", "mariadb-install", "share", "mysql", "mysql_system_tables.sql");
-const SYSTEM_DATA_PATH = join(BROWSER_DIR, "..", "libs", "mariadb", "mariadb-install", "share", "mysql", "mysql_system_tables_data.sql");
+const REPO_ROOT = findRepoRoot();
+const BROWSER_DIR = join(REPO_ROOT, "examples", "browser");
+const WP_DIR = join(REPO_ROOT, "examples", "wordpress", "wordpress");
+const MARIADB_INSTALL = join(REPO_ROOT, "examples", "libs", "mariadb", "mariadb-install");
+const MARIADB_PATH = join(MARIADB_INSTALL, "bin", "mariadbd.wasm");
+const SYSTEM_TABLES_PATH = join(MARIADB_INSTALL, "share", "mysql", "mysql_system_tables.sql");
+const SYSTEM_DATA_PATH = join(MARIADB_INSTALL, "share", "mysql", "mysql_system_tables_data.sql");
+const DASH_PATH = resolveBinary("programs/dash.wasm");
+const NGINX_PATH = resolveBinary("programs/nginx.wasm");
+const PHP_FPM_PATH = resolveBinary("programs/php/php-fpm.wasm");
+const COREUTILS_PATH = resolveBinary("programs/coreutils.wasm");
+const SED_PATH = resolveBinary("programs/sed.wasm");
 const OUT_FILE = join(BROWSER_DIR, "public", "lamp.vfs");
 
-// --- System setup (mirrors BrowserKernel constructor + populateShellBinaries) ---
-
 function populateSystem(fs: MemoryFileSystem): void {
-  // Standard directories
   for (const dir of [
     "/tmp", "/home", "/dev", "/etc", "/bin", "/usr", "/usr/bin",
     "/usr/local", "/usr/local/bin", "/usr/share", "/usr/share/misc",
     "/usr/share/file", "/root", "/usr/sbin",
+    "/data", "/data/mysql", "/data/tmp", "/data/test",
   ]) {
     ensureDir(fs, dir);
   }
-  // /tmp needs 0o777
   fs.chmod("/tmp", 0o777);
 
   // /etc/services for getservbyname/getservbyport
   const services = [
-    "tcpmux\t\t1/tcp",
-    "echo\t\t7/tcp",
-    "echo\t\t7/udp",
-    "discard\t\t9/tcp\t\tsink null",
-    "discard\t\t9/udp\t\tsink null",
-    "ftp-data\t20/tcp",
-    "ftp\t\t21/tcp",
-    "ssh\t\t22/tcp",
-    "telnet\t\t23/tcp",
-    "smtp\t\t25/tcp\t\tmail",
-    "domain\t\t53/tcp",
-    "domain\t\t53/udp",
-    "http\t\t80/tcp\t\twww",
-    "pop3\t\t110/tcp\t\tpop-3",
-    "nntp\t\t119/tcp\t\treadnews untp",
-    "ntp\t\t123/udp",
-    "imap\t\t143/tcp\t\timap2",
-    "snmp\t\t161/udp",
-    "https\t\t443/tcp",
-    "imaps\t\t993/tcp",
-    "pop3s\t\t995/tcp",
+    "ftp\t\t21/tcp", "ssh\t\t22/tcp", "telnet\t\t23/tcp",
+    "smtp\t\t25/tcp\t\tmail", "http\t\t80/tcp\t\twww",
+    "https\t\t443/tcp", "mysql\t\t3306/tcp",
   ].join("\n") + "\n";
   writeVfsFile(fs, "/etc/services", services);
-
-  // Git config
-  const gitconfig = [
-    "[maintenance]",
-    "\tauto = false",
-    "[gc]",
-    "\tauto = 0",
-    "[core]",
-    "\tpager = cat",
-    "[user]",
-    "\tname = User",
-    "\temail = user@wasm.local",
-    "[init]",
-    "\tdefaultBranch = main",
-    "",
-  ].join("\n");
-  writeVfsFile(fs, "/etc/gitconfig", gitconfig);
 }
 
 function populateDash(fs: MemoryFileSystem): void {
-  const dashBytes = readFileSync(DASH_PATH);
-  writeVfsBinary(fs, "/bin/dash", new Uint8Array(dashBytes));
+  writeVfsBinary(fs, "/bin/dash", new Uint8Array(readFileSync(DASH_PATH)));
   symlink(fs, "/bin/dash", "/bin/sh");
   symlink(fs, "/bin/dash", "/usr/bin/dash");
   symlink(fs, "/bin/dash", "/usr/bin/sh");
 }
 
 function populateShellSymlinks(fs: MemoryFileSystem): void {
-  // Coreutils symlinks — target stubs don't need to exist, symlink target
-  // is just a stored path string. The actual binary is registered lazily at runtime.
   for (const name of [...COREUTILS_NAMES, "["]) {
     symlink(fs, "/bin/coreutils", `/bin/${name}`);
     symlink(fs, "/bin/coreutils", `/usr/bin/${name}`);
   }
-
-  // grep symlinks
-  symlink(fs, "/usr/bin/grep", "/bin/grep");
-  symlink(fs, "/usr/bin/grep", "/usr/bin/egrep");
-  symlink(fs, "/usr/bin/grep", "/bin/egrep");
-  symlink(fs, "/usr/bin/grep", "/usr/bin/fgrep");
-  symlink(fs, "/usr/bin/grep", "/bin/fgrep");
-
-  // sed symlinks
   symlink(fs, "/usr/bin/sed", "/bin/sed");
 }
 
-// --- MariaDB ---
-
 function populateMariadb(fs: MemoryFileSystem): void {
-  // MariaDB binary
-  const mariadbBytes = readFileSync(MARIADB_PATH);
-  writeVfsBinary(fs, "/usr/sbin/mariadbd", new Uint8Array(mariadbBytes));
-
-  // Data directories
-  ensureDir(fs, "/data");
-  ensureDir(fs, "/data/mysql");
-  ensureDir(fs, "/data/tmp");
-  ensureDir(fs, "/data/test");
-
-  // Bootstrap SQL: combine system tables + system data + create wordpress DB
+  writeVfsBinary(fs, "/usr/sbin/mariadbd", new Uint8Array(readFileSync(MARIADB_PATH)));
+  ensureDirRecursive(fs, "/etc/mariadb");
   const systemTablesSql = readFileSync(SYSTEM_TABLES_PATH, "utf-8");
   const systemDataSql = readFileSync(SYSTEM_DATA_PATH, "utf-8");
   const bootstrapSql = `use mysql;\n${systemTablesSql}\n${systemDataSql}\nCREATE DATABASE IF NOT EXISTS wordpress;\n`;
-  ensureDirRecursive(fs, "/etc/mariadb");
   writeVfsFile(fs, "/etc/mariadb/bootstrap.sql", bootstrapSql);
 }
 
-// --- Service configs ---
-
 function populateNginxConfig(fs: MemoryFileSystem): void {
-  const dirs = [
+  for (const dir of [
     "/etc/nginx", "/var/www/html", "/var/log/nginx",
-    "/tmp/nginx_client_temp", "/tmp/nginx-wasm/logs",
-  ];
-  for (const dir of dirs) ensureDirRecursive(fs, dir);
+    "/tmp/nginx_client_temp", "/tmp/nginx_fastcgi_temp",
+  ]) ensureDirRecursive(fs, dir);
 
-  // WordPress FastCGI location block — static asset directories are served
-  // directly by nginx (no PHP-FPM overhead). Everything else goes through the
-  // FPM router which handles directory index resolution, PHP execution, and
-  // the front controller fallback for pretty URLs.
-  const extraLocations = `        # Static asset directories — served directly by nginx
-        location /wp-includes/css/ { }
-        location /wp-includes/js/ { }
-        location /wp-includes/fonts/ { }
-        location /wp-includes/images/ { }
-        location /wp-admin/css/ { }
-        location /wp-admin/js/ { }
-        location /wp-admin/images/ { }
-        location /wp-content/ {
-            try_files $uri @fpm;
-        }
-
-        # Everything else through PHP-FPM (PHP pages, front controller)
-        location @fpm {
-            fastcgi_pass 127.0.0.1:9000;
+  const fastcgiParams = `fastcgi_pass 127.0.0.1:9000;
             fastcgi_param SCRIPT_FILENAME /var/www/fpm-router.php;
             fastcgi_param DOCUMENT_ROOT $document_root;
             fastcgi_param DOCUMENT_URI $document_uri;
@@ -175,29 +107,12 @@ function populateNginxConfig(fs: MemoryFileSystem): void {
             fastcgi_param SERVER_PORT $server_port;
             fastcgi_param SERVER_NAME $server_name;
             fastcgi_param HTTP_HOST $http_host;
-            fastcgi_param REDIRECT_STATUS 200;
-        }
+            fastcgi_param REDIRECT_STATUS 200;`;
 
-        location / {
-            fastcgi_pass 127.0.0.1:9000;
-            fastcgi_param SCRIPT_FILENAME /var/www/fpm-router.php;
-            fastcgi_param DOCUMENT_ROOT $document_root;
-            fastcgi_param DOCUMENT_URI $document_uri;
-            fastcgi_param QUERY_STRING $query_string;
-            fastcgi_param REQUEST_METHOD $request_method;
-            fastcgi_param CONTENT_TYPE $content_type;
-            fastcgi_param CONTENT_LENGTH $content_length;
-            fastcgi_param REQUEST_URI $request_uri;
-            fastcgi_param SERVER_PROTOCOL $server_protocol;
-            fastcgi_param SERVER_PORT $server_port;
-            fastcgi_param SERVER_NAME $server_name;
-            fastcgi_param HTTP_HOST $http_host;
-            fastcgi_param REDIRECT_STATUS 200;
-        }`;
-
-  const nginxConf = `daemon off;
-master_process on;
-worker_processes 2;
+  const nginxConf = `user root;
+daemon off;
+master_process off;
+worker_processes 0;
 error_log stderr info;
 pid /tmp/nginx.pid;
 
@@ -207,15 +122,14 @@ events {
 }
 
 http {
-    access_log /dev/stderr;
     client_body_temp_path /tmp/nginx_client_temp;
-
+    fastcgi_temp_path     /tmp/nginx_fastcgi_temp;
     types {
         text/html  html htm;
         text/css   css;
         text/javascript js;
         application/json json;
-        image/png png;
+        image/png  png;
         image/svg+xml svg;
     }
     default_type application/octet-stream;
@@ -226,18 +140,31 @@ http {
         root /var/www/html;
         index index.html;
 
-${extraLocations}
+        location /wp-includes/css/ { }
+        location /wp-includes/js/ { }
+        location /wp-includes/fonts/ { }
+        location /wp-includes/images/ { }
+        location /wp-admin/css/ { }
+        location /wp-admin/js/ { }
+        location /wp-admin/images/ { }
+        location /wp-content/ {
+            try_files $uri @fpm;
+        }
+        location @fpm {
+            ${fastcgiParams}
+        }
+        location / {
+            ${fastcgiParams}
+        }
     }
 }
 `;
-
   writeVfsFile(fs, "/etc/nginx/nginx.conf", nginxConf);
 }
 
 function populatePhpFpmConfig(fs: MemoryFileSystem): void {
   ensureDirRecursive(fs, "/etc/php-fpm.d");
   ensureDirRecursive(fs, "/var/log");
-  ensureDirRecursive(fs, "/tmp/nginx_fastcgi_temp");
 
   const phpFpmConf = `[global]
 daemonize = no
@@ -245,6 +172,8 @@ error_log = /dev/stderr
 log_level = notice
 
 [www]
+user = nobody
+group = nobody
 listen = 127.0.0.1:9000
 pm = static
 pm.max_children = 1
@@ -252,35 +181,21 @@ clear_env = no
 slowlog = /dev/null
 request_slowlog_trace_depth = 0
 `;
-
   writeVfsFile(fs, "/etc/php-fpm.conf", phpFpmConf);
 
-  // FPM router script
   const fpmRouter = `<?php
 $uri = urldecode(parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH));
 $docRoot = $_SERVER['DOCUMENT_ROOT'];
 $file = $docRoot . $uri;
 
 $staticTypes = [
-    'css'   => 'text/css',
-    'js'    => 'text/javascript',
-    'json'  => 'application/json',
-    'png'   => 'image/png',
-    'jpg'   => 'image/jpeg',
-    'jpeg'  => 'image/jpeg',
-    'gif'   => 'image/gif',
-    'svg'   => 'image/svg+xml',
-    'ico'   => 'image/x-icon',
-    'woff'  => 'font/woff',
-    'woff2' => 'font/woff2',
-    'ttf'   => 'font/ttf',
-    'eot'   => 'application/vnd.ms-fontobject',
-    'map'   => 'application/json',
-    'xml'   => 'application/xml',
-    'txt'   => 'text/plain',
+    'css' => 'text/css', 'js' => 'text/javascript', 'json' => 'application/json',
+    'png' => 'image/png', 'jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg',
+    'gif' => 'image/gif', 'svg' => 'image/svg+xml', 'ico' => 'image/x-icon',
+    'woff' => 'font/woff', 'woff2' => 'font/woff2', 'ttf' => 'font/ttf',
+    'map' => 'application/json', 'xml' => 'application/xml', 'txt' => 'text/plain',
 ];
 
-// Resolve directory URLs to index.php (e.g. /wp-admin/ -> /wp-admin/index.php)
 if (is_dir($file)) {
     $idx = rtrim($file, '/') . '/index.php';
     if (is_file($idx)) {
@@ -311,103 +226,169 @@ include $docRoot . '/index.php';
   writeVfsFile(fs, "/var/www/fpm-router.php", fpmRouter);
 }
 
-// --- Init descriptors ---
+const MARIADB_BOOTSTRAP_SCRIPT = `# mariadbd --bootstrap doesn't exit at stdin EOF in our wasm port.
+# Background it, sleep long enough for the SQL to drain (data files
+# written synchronously while mariadbd reads stdin), then kill it.
+# **No \`wait\`** — dinit (PID 1) reaps orphans and races with dash's
+# wait builtin, which then blocks. Letting dinit reap is fine.
+/usr/sbin/mariadbd --no-defaults --user=mysql --datadir=/data --tmpdir=/data/tmp \\
+    --default-storage-engine=Aria --skip-grant-tables \\
+    --key-buffer-size=1048576 --table-open-cache=10 --sort-buffer-size=262144 \\
+    --bootstrap --skip-networking --log-warnings=0 \\
+    --log-error=/data/bootstrap.log < /etc/mariadb/bootstrap.sql &
+PID=$!
+sleep 60
+kill -TERM $PID 2>/dev/null
+sleep 1
+kill -KILL $PID 2>/dev/null
+exit 0
+`;
 
-function writeInitDescriptors(fs: MemoryFileSystem): void {
-  ensureDir(fs, "/etc");
-  ensureDir(fs, "/etc/init.d");
+const WP_CONFIG_INIT_SCRIPT = `# Substitute runtime values into wp-config.php. WP_APP_PATH and WP_PROTO
+# come from the env the page passes through kernel.boot() — dinit
+# inherits its env to scripted services.
+: "\${WP_APP_PATH:=/app}"
+: "\${WP_PROTO:=http}"
+sed -e "s|@@APP_PATH@@|$WP_APP_PATH|g" \\
+    -e "s|@@PROTO@@|$WP_PROTO|g" \\
+    /etc/wp-config-template.php > /var/www/html/wp-config.php
+echo "wp-config-init: APP_PATH=$WP_APP_PATH PROTO=$WP_PROTO"
+`;
 
-  writeVfsFile(fs, "/etc/init.d/05-mariadb-bootstrap", [
-    "type=oneshot",
-    "command=/usr/sbin/mariadbd --no-defaults --bootstrap --datadir=/data --tmpdir=/data/tmp --default-storage-engine=Aria --skip-grant-tables --key-buffer-size=1048576 --table-open-cache=10 --sort-buffer-size=262144 --skip-networking --log-warnings=0 --log-error=/data/bootstrap.log",
-    "stdin=/etc/mariadb/bootstrap.sql",
-    "ready=stdin-consumed",
-    "terminate=true",
-    "",
-  ].join("\n"));
+const WP_CONFIG_TEMPLATE_PHP = `<?php
+define('DB_NAME', 'wordpress');
+define('DB_USER', 'root');
+define('DB_PASSWORD', '');
+define('DB_HOST', '127.0.0.1:3306');
+define('DB_CHARSET', 'utf8');
+define('DB_COLLATE', '');
 
-  writeVfsFile(fs, "/etc/init.d/10-mariadb", [
-    "type=daemon",
-    "command=/usr/sbin/mariadbd --no-defaults --datadir=/data --tmpdir=/data/tmp --default-storage-engine=Aria --skip-grant-tables --key-buffer-size=1048576 --table-open-cache=10 --sort-buffer-size=262144 --skip-networking=0 --port=3306 --bind-address=0.0.0.0 --socket= --max-connections=10 --thread-handling=no-threads --log-error=/data/error.log",
-    "depends=mariadb-bootstrap",
-    "ready=port:3306",
-    "",
-  ].join("\n"));
+define('AUTH_KEY',         'wasm-posix-kernel-lamp');
+define('SECURE_AUTH_KEY',  'wasm-posix-kernel-lamp');
+define('LOGGED_IN_KEY',    'wasm-posix-kernel-lamp');
+define('NONCE_KEY',        'wasm-posix-kernel-lamp');
+define('AUTH_SALT',        'wasm-posix-kernel-lamp');
+define('SECURE_AUTH_SALT', 'wasm-posix-kernel-lamp');
+define('LOGGED_IN_SALT',   'wasm-posix-kernel-lamp');
+define('NONCE_SALT',       'wasm-posix-kernel-lamp');
 
-  writeVfsFile(fs, "/etc/init.d/20-php-fpm", [
-    "type=daemon",
-    "command=/usr/sbin/php-fpm -y /etc/php-fpm.conf -c /dev/null --nodaemonize",
-    "depends=mariadb",
-    "ready=port:9000",
-    "",
-  ].join("\n"));
+$table_prefix = 'wp_';
 
-  writeVfsFile(fs, "/etc/init.d/30-nginx", [
-    "type=daemon",
-    "command=/usr/sbin/nginx -p /etc/nginx -c nginx.conf",
-    "depends=php-fpm",
-    "ready=port:8080",
-    "bridge=8080",
-    "",
-  ].join("\n"));
+define('WP_DEBUG', true);
+define('WP_DEBUG_LOG', true);
+define('WP_DEBUG_DISPLAY', false);
+@ini_set('display_errors', '0');
 
-  writeVfsFile(fs, "/etc/init.d/99-shell", [
-    "type=interactive",
-    "command=/bin/dash -i",
-    "env=TERM=xterm-256color PS1=\\w\\$\\  HOME=/root PATH=/usr/local/bin:/usr/bin:/bin",
-    "pty=true",
-    "cwd=/root",
-    "",
-  ].join("\n"));
+if (isset($_SERVER['HTTP_HOST'])) {
+    if ('@@PROTO@@' === 'https') { $_SERVER['HTTPS'] = 'on'; }
+    define('WP_HOME', '@@PROTO@@://' . $_SERVER['HTTP_HOST'] . '@@APP_PATH@@');
+    define('WP_SITEURL', '@@PROTO@@://' . $_SERVER['HTTP_HOST'] . '@@APP_PATH@@');
 }
 
-// --- Main ---
+define('WP_HTTP_BLOCK_EXTERNAL', true);
+define('DISABLE_WP_CRON', true);
+
+if ( ! defined( 'ABSPATH' ) ) {
+    define( 'ABSPATH', __DIR__ . '/' );
+}
+
+require_once ABSPATH . 'wp-settings.php';
+`;
+
+function buildServices(): DinitService[] {
+  return [
+    {
+      name: "mariadb-bootstrap",
+      type: "scripted",
+      command: "/bin/sh /etc/mariadb/bootstrap.sh",
+      logfile: "/var/log/mariadb-bootstrap.log",
+      restart: false,
+    },
+    {
+      name: "mariadb",
+      type: "process",
+      command: "/usr/sbin/mariadbd --no-defaults --user=mysql " +
+        "--datadir=/data --tmpdir=/data/tmp --default-storage-engine=Aria " +
+        "--skip-grant-tables --key-buffer-size=1048576 --table-open-cache=10 " +
+        "--sort-buffer-size=262144 --skip-networking=0 --port=3306 " +
+        "--bind-address=0.0.0.0 --socket= --max-connections=10 " +
+        "--thread-handling=no-threads --log-error=/data/error.log " +
+        // --init-file runs after the daemon is ready — guarantees the
+        // wordpress DB exists even if the bootstrap timeout-and-kill
+        // truncated the original CREATE DATABASE.
+        "--init-file=/etc/mariadb/init.sql",
+      dependsOn: ["mariadb-bootstrap"],
+      logfile: "/var/log/mariadb.log",
+      restart: false,
+    },
+    {
+      name: "wp-config-init",
+      type: "scripted",
+      command: "/bin/sh /etc/wp-config-init.sh",
+      logfile: "/var/log/wp-config-init.log",
+      restart: false,
+    },
+    {
+      name: "php-fpm",
+      type: "process",
+      command: "/usr/sbin/php-fpm -y /etc/php-fpm.conf -c /dev/null --nodaemonize",
+      dependsOn: ["mariadb", "wp-config-init"],
+      logfile: "/var/log/php-fpm.log",
+      restart: false,
+    },
+    {
+      name: "nginx",
+      type: "process",
+      command: "/usr/sbin/nginx -c /etc/nginx/nginx.conf",
+      dependsOn: ["php-fpm"],
+      logfile: "/var/log/nginx.log",
+      restart: false,
+    },
+  ];
+}
 
 async function main() {
-  // Validate prerequisites
-  try {
-    lstatSync(join(WP_DIR, "wp-settings.php"));
-  } catch {
-    console.error("WordPress not found. Run: bash examples/wordpress/setup.sh");
-    process.exit(1);
-  }
+  try { lstatSync(join(WP_DIR, "wp-settings.php")); }
+  catch { console.error("WordPress not found. Run: bash examples/wordpress/setup.sh"); process.exit(1); }
+  try { lstatSync(MARIADB_PATH); }
+  catch { console.error("mariadbd.wasm not found. Run: bash examples/libs/mariadb/build-mariadb.sh"); process.exit(1); }
 
-  try {
-    lstatSync(DASH_PATH);
-  } catch {
-    console.error("dash.wasm not found. Run: bash build.sh");
-    process.exit(1);
-  }
+  // 256 MiB initial — WordPress core + SQLite plugin (~80 MiB) + MariaDB
+  // binary (~14 MiB) + bootstrap SQL (~1 MiB) plus headroom. Worker entry
+  // makes the SAB growable to 1 GiB so InnoDB's allocations and table
+  // data can expand at runtime.
+  const sab = new SharedArrayBuffer(256 * 1024 * 1024, { maxByteLength: 512 * 1024 * 1024 });
+  const fs = MemoryFileSystem.create(sab, 512 * 1024 * 1024);
 
-  try {
-    lstatSync(MARIADB_PATH);
-  } catch {
-    console.error("mariadbd.wasm not found. Build MariaDB first.");
-    process.exit(1);
-  }
-
-  // Create a MemoryFileSystem sized for WordPress + MariaDB (~30MB binary + ~50MB WP files).
-  // 192MB is sufficient. At runtime, fromImage() with maxByteLength creates a
-  // growable SAB so the filesystem can expand beyond this initial size.
-  const sab = new SharedArrayBuffer(192 * 1024 * 1024);
-  const fs = MemoryFileSystem.create(sab);
-
-  console.log("Populating system directories and configs...");
+  console.log("Populating system + binaries...");
   populateSystem(fs);
   populateDash(fs);
+
+  console.log("Writing server binaries...");
+  writeVfsBinary(fs, "/usr/sbin/nginx", new Uint8Array(readFileSync(NGINX_PATH)));
+  writeVfsBinary(fs, "/usr/sbin/php-fpm", new Uint8Array(readFileSync(PHP_FPM_PATH)));
+  writeVfsBinary(fs, "/bin/coreutils", new Uint8Array(readFileSync(COREUTILS_PATH)));
+  writeVfsBinary(fs, "/usr/bin/sed", new Uint8Array(readFileSync(SED_PATH)));
   populateShellSymlinks(fs);
 
-  console.log("Writing MariaDB binary and bootstrap SQL...");
+  console.log("Writing MariaDB binary + bootstrap SQL...");
   populateMariadb(fs);
 
   populateNginxConfig(fs);
   populatePhpFpmConfig(fs);
-  writeInitDescriptors(fs);
 
-  // WordPress-specific directories
+  // Bootstrap + config-init scripts (sed-substituted at boot from env).
+  writeVfsFile(fs, "/etc/mariadb/bootstrap.sh", MARIADB_BOOTSTRAP_SCRIPT);
+  // mariadbd --init-file runs at server startup — used as a belt-and-
+  // suspenders guarantee that the wordpress DB exists, since the
+  // bootstrap timeout-and-kill might truncate the original
+  // CREATE DATABASE during system-table replay.
+  writeVfsFile(fs, "/etc/mariadb/init.sql", "CREATE DATABASE IF NOT EXISTS wordpress;\n");
+  writeVfsFile(fs, "/etc/wp-config-template.php", WP_CONFIG_TEMPLATE_PHP);
+  writeVfsFile(fs, "/etc/wp-config-init.sh", WP_CONFIG_INIT_SCRIPT);
+
+  // WordPress-specific dirs + mu-plugin
   ensureDirRecursive(fs, "/var/www/html/wp-content/mu-plugins");
-
-  // mu-plugin to disable operations that hang in Wasm
   const muPlugin = `<?php
 add_filter('pre_wp_mail', '__return_false');
 add_filter('pre_http_request', function($pre, $args, $url) {
@@ -417,18 +398,16 @@ if (!defined('DISALLOW_FILE_MODS')) define('DISALLOW_FILE_MODS', true);
 `;
   writeVfsFile(fs, "/var/www/html/wp-content/mu-plugins/wasm-optimizations.php", muPlugin);
 
-  // WordPress core files
-  const excludeDb = (rel: string) => rel.endsWith(".db");
   console.log("Writing WordPress core files...");
+  const excludeDb = (rel: string) => rel.endsWith(".db") || rel.includes("wp-content/db.php");
   const wpCount = walkAndWrite(fs, WP_DIR, "/var/www/html", { exclude: excludeDb });
   console.log(`  WordPress core: ${wpCount} files`);
 
-  // Save image
+  // Service tree
+  addDinitInit(fs, buildServices());
+
   await saveImage(fs, OUT_FILE);
   console.log(`${wpCount} WordPress files total`);
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+main().catch((err) => { console.error(err); process.exit(1); });
