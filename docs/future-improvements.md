@@ -34,6 +34,27 @@ The kernel has full PTY support (PR #181) but browser demos still use plain `<di
 
 **Files:** `host/src/browser.ts`
 
+## Kernel — regressions
+
+### Multi-process nginx: injected connections don't reach fork workers
+The standalone nginx demo previously worked with `master_process on;
+worker_processes 2;` (kernel's listener-sharing-via-fork path delivered
+the injected TCP connection to a worker). That path appears to have
+regressed: with the same config, nginx accepts the connection
+(`sawWriteOpen=true` from the bridge) but never produces a response
+and the bridge times out after 60s. The standalone demo has been
+switched to single-process for now; LAMP/WordPress/nginx-php were
+already single-process and aren't affected.
+
+The bug is likely in either: (a) connection-injection target selection
+when the listener fd is shared across pids via `dup`-on-fork, or (b)
+nginx's worker not seeing the accepted connection in its event loop
+because the wakeup is delivered to the master.
+
+**Files:** `crates/kernel/src/socket.rs` (TCP listener accept queue),
+`examples/browser/lib/kernel-worker-entry.ts` (`handleHttpRequest` —
+how it picks a target listening pid).
+
 ## Host runtime
 
 ### Pre-instantiation worker errors bypass the kernel exit path
