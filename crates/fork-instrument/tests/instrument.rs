@@ -2214,3 +2214,130 @@ fn b1_stage_2_byte_identity_for_module_without_plain_catch() {
         try_tables.len()
     );
 }
+
+// ======================================================================
+// Stage 2 (B1) Task 2.3 — multi-arm rewind dispatch
+// ======================================================================
+
+#[test]
+fn b1_stage_2_rewind_stub_has_plain_catch_dispatch() {
+    // The rewind-throw stub for a region with a plain-catch arm must
+    // include a `throw $tag` (in addition to Phase 6's existing
+    // `throw_ref`) so that on REWIND the original handler observes
+    // the same exception class. The exact wat shape varies with
+    // walrus's emitter, so we just check the key semantic markers.
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (tag $exn)
+          (func $caller (export "caller") (result i32)
+            (block $h
+              (try_table (catch $exn $h)
+                nop))
+            call $fork)
+          (memory 1))
+    "#;
+    let bytes = instrument_wat(wat);
+    validate(&bytes);
+
+    let printed = wasmprinter::print_bytes(&bytes).expect("wasmprinter");
+    let caller_section = extract_function_text(&printed, "caller");
+    // Both stub paths must be present:
+    //   - throw_ref (Phase 6 catch_ref re-throw)
+    //   - throw $exn (B1 plain-catch arm dispatch)
+    assert!(
+        caller_section.contains("throw_ref"),
+        "rewind stub must retain Phase 6's throw_ref path:\n{caller_section}"
+    );
+    assert!(
+        caller_section.contains("throw $exn") || caller_section.contains("throw 0"),
+        "rewind stub must contain a `throw $exn` for the plain-catch \
+         arm dispatch:\n{caller_section}"
+    );
+    // ref.is_null indicates the sentinel check (B1 selects between
+    // catch_ref and plain-catch paths based on whether the exnref
+    // stash slot is null).
+    assert!(
+        caller_section.contains("ref.is_null"),
+        "rewind stub must use ref.is_null on the exnref stash to \
+         choose between catch_ref and plain-catch paths:\n{caller_section}"
+    );
+}
+
+#[test]
+fn b1_stage_2_rewind_stub_dispatches_two_arms() {
+    // A try_table with two plain-catch arms (different tags) must
+    // produce a rewind dispatch with two distinct `throw $tag`
+    // emissions — one per arm — so the if-chain on saved arm_id
+    // routes correctly at REWIND.
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (tag $a (param i32))
+          (tag $b (param i32))
+          (func $caller (export "caller") (result i32)
+            (block $h (result i32)
+              (try_table (result i32) (catch $a $h) (catch $b $h)
+                i32.const 0))
+            drop
+            call $fork)
+          (memory 1))
+    "#;
+    let bytes = instrument_wat(wat);
+    validate(&bytes);
+    let printed = wasmprinter::print_bytes(&bytes).expect("wasmprinter");
+    let caller_section = extract_function_text(&printed, "caller");
+    let throw_a = caller_section.matches("throw $a").count();
+    let throw_b = caller_section.matches("throw $b").count();
+    // Each arm contributes a `throw $a` from B1 dispatch and a
+    // `throw $b` from B1 dispatch. The original `throw $exn` in the
+    // try_table body is NOT in the source (the wat only catches),
+    // so the only `throw $a` / `throw $b` in the printed output come
+    // from the B1 rewind stub. We expect at least 1 of each.
+    assert!(
+        throw_a >= 1,
+        "expected `throw $a` for the first plain-catch arm:\n{caller_section}"
+    );
+    assert!(
+        throw_b >= 1,
+        "expected `throw $b` for the second plain-catch arm:\n{caller_section}"
+    );
+}
+
+#[test]
+fn b1_stage_2_carved_out_function_no_b1_dispatch_emitted() {
+    // A function in `b2_carveout` (here: ref-typed catch payload)
+    // must NOT receive B1's plain-catch dispatch — its rewind stub
+    // should retain Phase 6's pre-B1 form (throw_ref only) and
+    // contain no `ref.is_null`-based sentinel.
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (tag $exn (param externref))
+          (func $caller (export "caller") (result i32)
+            (block $h (result externref)
+              (try_table (result externref) (catch $exn $h)
+                ref.null extern
+                throw $exn))
+            drop
+            call $fork)
+          (memory 1))
+    "#;
+    let bytes = instrument_wat(wat);
+    validate(&bytes);
+
+    let printed = wasmprinter::print_bytes(&bytes).expect("wasmprinter");
+    let caller_section = extract_function_text(&printed, "caller");
+    // The carved-out function's rewind stub uses ONLY Phase 6's
+    // throw_ref path. It must NOT contain B1's `ref.is_null` sentinel
+    // (which would indicate a B1 plain-catch dispatch was emitted).
+    assert!(
+        caller_section.contains("throw_ref"),
+        "carved-out function must retain Phase 6's throw_ref:\n{caller_section}"
+    );
+    assert!(
+        !caller_section.contains("ref.is_null"),
+        "carved-out function must NOT have B1's ref.is_null sentinel \
+         (no plain-catch dispatch should be emitted):\n{caller_section}"
+    );
+}

@@ -118,8 +118,8 @@ use walrus::{
     ir::{
         BinaryOp, Binop, Block, Br, BrIf, BrTable, Call, CallIndirect, Const, Drop, GlobalGet,
         IfElse, Instr, InstrLocId, InstrSeqId, InstrSeqType, LegacyCatch, LoadKind, LocalGet,
-        LocalSet, LocalTee, Loop, MemArg, RefAsNonNull, RefNull, Return, StoreKind, TableGet,
-        TableSet, ThrowRef, TryTable, TryTableCatch, Unreachable, Value,
+        LocalSet, LocalTee, Loop, MemArg, RefAsNonNull, RefIsNull, RefNull, Return, StoreKind,
+        TableGet, TableSet, Throw, ThrowRef, TryTable, TryTableCatch, Unreachable, Value,
     },
 };
 
@@ -418,9 +418,9 @@ fn instrument_one_function_switch(
     let ptr_ty = runtime.buf_type;
 
     // Phase 6c rewind-throw stubs: prepended to each fork-path
-    // try_table body. Dead code in the MVP (fork-from-catch is
-    // rejected), but kept to preserve the exnref serialization path
-    // for future work.
+    // try_table body. Phase 6 covers catch_ref / catch_all_ref.
+    // B1 Stage 2 (Task 2.3) extends the same stub with a plain-catch
+    // dispatch when `b1_slots` lists arms for the region.
     if aux_tables.exnref.is_some() {
         inject_rewind_throw_stubs(
             module,
@@ -429,6 +429,7 @@ fn instrument_one_function_switch(
             catch_region_id_local,
             aux_tables,
             catch_plan,
+            b1_slots,
         );
         // The stub injection appended to the try_tables' own body
         // seqs. Those seqs are reachable from instructions inside
@@ -2232,6 +2233,34 @@ pub fn plan_b1_scratch(module: &Module, targets: &[FunctionId]) -> B1ScratchPlan
 // ----------------------------------------------------------------------
 
 #[allow(clippy::too_many_arguments)]
+/// Phase 6c (extended by B1 Stage 2 Task 2.3) — prepend a rewind-throw
+/// stub at the top of each fork-path try_table body.
+///
+/// On REWIND, when `catch_region_id_local == K`, the stub re-enters the
+/// try_table's catch dispatch so the original handler observes the same
+/// exception that was caught pre-fork. The shape depends on what kind
+/// of catch was originally taken:
+///
+/// - **catch_ref / catch_all_ref**: Phase 6's `apply_catch_ref_handlers`
+///   stashed the exnref in `_wpk_fork_exnref_stash[slot]`. We re-throw
+///   it via `throw_ref`. Selected when the stash slot is non-null.
+///
+/// - **plain catch (B1 Stage 2)**: the per-arm capture block stored
+///   `(arm_id, op_0, ..., op_M-1)` in the B1 scratch tuple at
+///   `runtime.b1_scratch_base + slot.scratch_offset`. We load the
+///   arm_id, dispatch by value to the matching arm, push the saved
+///   operands, and `throw $tag`. Selected when the stash slot is null.
+///
+/// The exnref-stash null-check is the sentinel: Phase 6's capture
+/// always writes a non-null exnref; B1's plain-catch capture never
+/// touches the stash. This naturally disambiguates regions with mixed
+/// `catch_ref` and `catch` clauses without Phase 6 needing to know
+/// about B1.
+///
+/// `b1_slots_lookup` maps `body_seq -> arm slots` for regions that have
+/// at least one plain-catch arm in scope (i.e. function not in
+/// `b2_carveout`). Regions with no plain arms fall back to today's
+/// catch_ref-only stub shape.
 fn inject_rewind_throw_stubs(
     module: &mut Module,
     func_id: FunctionId,
@@ -2239,6 +2268,7 @@ fn inject_rewind_throw_stubs(
     catch_region_id_local: LocalId,
     aux_tables: &AuxTables,
     catch_plan: &[CatchRegionPlan],
+    b1_slots: &[(InstrSeqId, Vec<PlainCatchArmSlot>)],
 ) {
     let exnref_table = match aux_tables.exnref {
         Some(t) => t,
@@ -2248,33 +2278,93 @@ fn inject_rewind_throw_stubs(
         }
     };
 
+    let b1_lookup: HashMap<InstrSeqId, &[PlainCatchArmSlot]> = b1_slots
+        .iter()
+        .map(|(seq, slots)| (*seq, slots.as_slice()))
+        .collect();
+
+    let memory = first_memory(module);
+
     for plan in catch_plan {
         let body_seq_id = plan.body_seq;
         let region_id = plan.catch_region_id;
         let slot = plan.exnref_slot;
+        let plain_arms: &[PlainCatchArmSlot] =
+            b1_lookup.get(&body_seq_id).copied().unwrap_or(&[]);
 
-        let local = local_mut(module, func_id);
-        let then_id = local
-            .builder_mut()
-            .dangling_instr_seq(InstrSeqType::Simple(None))
-            .id();
-        let else_id = local
-            .builder_mut()
-            .dangling_instr_seq(InstrSeqType::Simple(None))
-            .id();
-        {
-            let s = &mut local.block_mut(then_id).instrs;
+        // Build the inner "catch_ref path" sequence (Phase 6's existing
+        // logic). Always emitted — used either as the only path
+        // (region has no plain arms) or as the false-branch of the
+        // B1 sentinel check (region has plain arms).
+        let throw_ref_seq_id = {
+            let local = local_mut(module, func_id);
+            let s = local
+                .builder_mut()
+                .dangling_instr_seq(InstrSeqType::Simple(None))
+                .id();
+            let block = &mut local.block_mut(s).instrs;
             push_instr(
-                s,
+                block,
                 Instr::Const(Const {
                     value: Value::I32(slot as i32),
                 }),
             );
-            push_instr(s, Instr::TableGet(TableGet { table: exnref_table }));
-            push_instr(s, Instr::RefAsNonNull(RefAsNonNull {}));
-            push_instr(s, Instr::ThrowRef(ThrowRef {}));
-        }
+            push_instr(block, Instr::TableGet(TableGet { table: exnref_table }));
+            push_instr(block, Instr::RefAsNonNull(RefAsNonNull {}));
+            push_instr(block, Instr::ThrowRef(ThrowRef {}));
+            s
+        };
 
+        // Build the "rewind dispatch" sequence: either a single
+        // throw_ref (no plain arms) or a sentinel-gated split between
+        // plain-catch dispatch and throw_ref.
+        let dispatch_seq_id = if plain_arms.is_empty() {
+            throw_ref_seq_id
+        } else {
+            // B1 plain-catch dispatch: build first, then wrap in
+            // an IfElse that selects on `exnref_stash[slot] is null`.
+            let plain_dispatch_id =
+                build_plain_catch_dispatch(module, func_id, runtime, memory, plain_arms);
+
+            let local = local_mut(module, func_id);
+            let outer = local
+                .builder_mut()
+                .dangling_instr_seq(InstrSeqType::Simple(None))
+                .id();
+            let block = &mut local.block_mut(outer).instrs;
+            // Sentinel: load `_wpk_fork_exnref_stash[slot]` and check if
+            // it's null. If null → plain-catch dispatch; if non-null →
+            // catch_ref throw_ref.
+            push_instr(
+                block,
+                Instr::Const(Const {
+                    value: Value::I32(slot as i32),
+                }),
+            );
+            push_instr(block, Instr::TableGet(TableGet { table: exnref_table }));
+            push_instr(block, Instr::RefIsNull(RefIsNull {}));
+            push_instr(
+                block,
+                Instr::IfElse(IfElse {
+                    consequent: plain_dispatch_id,
+                    alternative: throw_ref_seq_id,
+                }),
+            );
+            outer
+        };
+
+        // Build the empty else for the outer REWIND-match guard.
+        let else_id = {
+            let local = local_mut(module, func_id);
+            local
+                .builder_mut()
+                .dangling_instr_seq(InstrSeqType::Simple(None))
+                .id()
+        };
+
+        // Prepend the outer guard `if state==REWINDING && cri == K`
+        // to the try_table body.
+        let local = local_mut(module, func_id);
         let original: Vec<(Instr, InstrLocId)> =
             std::mem::take(&mut local.block_mut(body_seq_id).instrs);
         let body = &mut local.block_mut(body_seq_id).instrs;
@@ -2309,13 +2399,130 @@ fn inject_rewind_throw_stubs(
         push_instr(
             body,
             Instr::IfElse(IfElse {
-                consequent: then_id,
+                consequent: dispatch_seq_id,
                 alternative: else_id,
             }),
         );
 
         body.extend(original);
     }
+}
+
+/// Build a dangling instr_seq that performs B1 plain-catch rewind
+/// dispatch. The sequence reads the saved `arm_id` from the B1 scratch
+/// tuple and walks an if-chain over `arm_idx` values, throwing the
+/// matching tag with operands loaded from the same tuple.
+///
+/// Layout of the scratch tuple (per `emit_capture_save_and_branch`):
+///   +0       i32  arm_id
+///   +4..     scalar operand_0, operand_1, ...
+///
+/// The base address is `*runtime.buf_global + runtime.b1_scratch_base
+/// + slot.scratch_offset`.
+fn build_plain_catch_dispatch(
+    module: &mut Module,
+    func_id: FunctionId,
+    runtime: &Runtime,
+    memory: MemoryId,
+    arms: &[PlainCatchArmSlot],
+) -> InstrSeqId {
+    debug_assert!(!arms.is_empty());
+
+    // We build the if-chain bottom-up: the "else" of arm[N-1] is a
+    // single `unreachable` (all arm_ids exhausted); each preceding
+    // arm wraps the previous chain in `if arm_id == K { throw J } else {
+    // ...prev... }`.
+    //
+    // arm_id is stable across capture+rewind: capture writes
+    // `slot.arm.arm_idx` at offset +0; we compare against the same
+    // value here.
+
+    // Innermost else: unreachable (defense; arm_id always matches one
+    // of the saved arms).
+    let unreachable_id = {
+        let local = local_mut(module, func_id);
+        let s = local
+            .builder_mut()
+            .dangling_instr_seq(InstrSeqType::Simple(None))
+            .id();
+        push_instr(&mut local.block_mut(s).instrs, Instr::Unreachable(Unreachable {}));
+        s
+    };
+
+    let mut chain = unreachable_id;
+    for slot in arms.iter().rev() {
+        // Build the "throw arm[J]" body: load operands from scratch,
+        // then throw the tag.
+        let throw_id = {
+            let local = local_mut(module, func_id);
+            local
+                .builder_mut()
+                .dangling_instr_seq(InstrSeqType::Simple(None))
+                .id()
+        };
+        let scratch_off = (runtime.b1_scratch_base + slot.scratch_offset) as u64;
+        // Operands start at +4 (after arm_id i32). Walk in declaration
+        // order so they land on the operand stack in the order the
+        // tag's params expect.
+        let mut cur_off: u32 = 4;
+        let operand_loads: Vec<(Instr, Instr)> = slot
+            .arm
+            .operand_tys
+            .iter()
+            .map(|&ty| {
+                let abs_off = scratch_off + cur_off as u64;
+                cur_off += scalar_size(ty);
+                (
+                    Instr::GlobalGet(GlobalGet { global: runtime.buf_global }),
+                    load_scalar(memory, ty, abs_off),
+                )
+            })
+            .collect();
+
+        let local = local_mut(module, func_id);
+        let s = &mut local.block_mut(throw_id).instrs;
+        for (gget, load) in operand_loads {
+            push_instr(s, gget);
+            push_instr(s, load);
+        }
+        push_instr(s, Instr::Throw(Throw { tag: slot.arm.tag }));
+
+        // Wrap: if (load arm_id) == arm_idx { throw_id } else { chain }
+        let outer_id = {
+            let local = local_mut(module, func_id);
+            local
+                .builder_mut()
+                .dangling_instr_seq(InstrSeqType::Simple(None))
+                .id()
+        };
+        {
+            let local = local_mut(module, func_id);
+            let s = &mut local.block_mut(outer_id).instrs;
+            // Load arm_id from scratch (offset +0 of tuple).
+            push_instr(
+                s,
+                Instr::GlobalGet(GlobalGet { global: runtime.buf_global }),
+            );
+            push_instr(s, load_i32(memory, scratch_off));
+            push_instr(
+                s,
+                Instr::Const(Const {
+                    value: Value::I32(slot.arm.arm_idx as i32),
+                }),
+            );
+            push_instr(s, Instr::Binop(Binop { op: BinaryOp::I32Eq }));
+            push_instr(
+                s,
+                Instr::IfElse(IfElse {
+                    consequent: throw_id,
+                    alternative: chain,
+                }),
+            );
+        }
+        chain = outer_id;
+    }
+
+    chain
 }
 
 // ----------------------------------------------------------------------
@@ -2973,6 +3180,7 @@ fn instrument_one_function_guard_dispatch(
             catch_region_id_local,
             aux_tables,
             catch_plan,
+            b1_slots,
         );
     }
 
@@ -4602,7 +4810,8 @@ fn instrument_one_function_nested_switch(
 
     // Phase 6c rewind-throw stubs (still emitted for try_table bodies
     // without fork-path calls — preserves the exnref serialization
-    // path).
+    // path). Extended by B1 Stage 2 Task 2.3 with plain-catch arm
+    // dispatch when `b1_slots` lists arms for the region.
     if aux_tables.exnref.is_some() {
         inject_rewind_throw_stubs(
             module,
@@ -4611,6 +4820,7 @@ fn instrument_one_function_nested_switch(
             catch_region_id_local,
             aux_tables,
             catch_plan,
+            b1_slots,
         );
     }
 
