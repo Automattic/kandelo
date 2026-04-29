@@ -540,21 +540,140 @@ git tag -a fork-instrument-b1-stage1 -m "B1 Stage 1: infrastructure (discovery +
 
 ## Stage 2 — Emission (target: 2-3 days, ~600 LoC)
 
-> **Detailed plan deferred until Stage 1 lands.** Re-plan against the actual structures Stage 1 produced. Sketch follows.
+**Goal:** Wire the scratch area into the unwind/rewind paths so plain-catch arms actually function — at unwind time, save the `(arm_id, operands...)` tuple to the scratch slot the planner allocated; at rewind time, load arm_id from scratch and re-throw the matching tag with restored operands.
 
-**Goal:** Wire the scratch area into the unwind/rewind paths.
+### Stage-1 structures Stage 2 consumes
 
-Key tasks (high-level):
+These were finalized during Stage 1 (commits `62ad0d506..761d6c87e`):
 
-- **2a — Per-arm extract helper.** For each plain-catch arm, generate a "$capture_K_arm_J" block that consumes the tag's operand types from the catch's branch arguments, saves `(arm_id=J, operand_0, ..., operand_N-1)` into the scratch slot at `b1_scratch_base + slot.scratch_offset`, sets `$in_catch_K = 1`, then re-pushes the operands and br's to the original handler label.
-- **2b — Rewrite catch clauses.** Modify `apply_catch_ref_handlers` (or add a sibling `apply_plain_catch_handlers`) that retargets each plain `Catch { tag, label }` to its `$capture_K_arm_J` block. Multi-arm interaction: if the same try_table has both catch_ref and plain catch arms targeting different labels, both rewrites must coexist.
-- **2c — Per-arm rewind-throw stub.** Extend `inject_rewind_throw_stubs` so that when REWIND with matching `catch_region_id == K`, the function checks `arm_id` from the scratch slot and dispatches via a chain of `if`s: `if arm_id == 0 { throw_ref ... } else if arm_id == 1 { throw $tag1 (load operand_0, ...) } else if arm_id == 2 { ... }`. Existing exnref path is `arm_id == 0`. The arm_id is loaded from the scratch slot at `b1_scratch_base + region_first_arm.scratch_offset`.
-- **2d — Operand type guard.** Before plan_b1_scratch returns, walk all discovered arms and reject (panic-with-diagnostic-or-fall-back-to-guard-dispatch) any with non-scalar operand types. This is the B2-style carve-out the memory mentions.
-- **2e — Multi-target try_tables.** Decision point: extend the existing single-target restriction to handle multi-target with one scratch tuple per (region, arm). The restriction at `plan_catch_ref_handlers:2111` was "exactly 1 ref_target." For B1, the analogous restriction is "exactly 1 plain-catch target plus optionally exactly 1 ref-target." Decide once we hit the test fixture.
+- **`PlainCatchArm`** (`crates/fork-instrument/src/instrument.rs:1972`): `arm_idx: u32` (index in tt.catches), `tag: TagId`, `label: InstrSeqId`, `operand_tys: Vec<ValType>`. Note: `arm_idx` is the **runtime arm_id Stage 2 writes into the scratch tuple** — combined with `catch_region_id` (per `CatchRegionPlan`), the pair is unique within a function.
+- **`PlainCatchArmSlot`** (`instrument.rs:2050`): `arm: PlainCatchArm`, `scratch_offset: u32` (relative to scratch_base — Stage 2 must add `runtime.b1_scratch_base` for absolute address), `tuple_size: u32`.
+- **`B1ScratchPlan`** (`instrument.rs:2065`): `total_bytes`, `per_function: HashMap<FunctionId, Vec<(InstrSeqId, Vec<PlainCatchArmSlot>)>>`. Outer Vec parallels `discover_try_table_bodies` order; inner Vec is per-arm.
+- **`Runtime.b1_scratch_base: u32`** (`runtime.rs:75-92`): byte offset where scratch begins. `b1_scratch_size`: total reserved bytes (already `align_up_8`'d).
+- **`pub fn plan_b1_scratch(module, targets) -> B1ScratchPlan`**: callable in tests directly.
+- **Discovery is pre-ordered**: `lib.rs::instrument` filters `fork_path` to Local functions and sorts before passing to `plan_b1_scratch`. Stage 2 must use the **same filter+sort** when iterating to look up per-function plans, OR consume the plan via FunctionId-keyed hashmap (recommended — order-independent).
 
-Each task gets its own commit. Run `cargo test` + libc-test gate after each.
+### Stage-1 gotchas Stage 2 must respect
 
-**Stage 2 verification:** Add a fork-from-plain-catch fixture WAT that drives a real instrument-then-instantiate cycle. Confirm the child process resumes from the fork call site inside the catch handler with the expected operands restored.
+- **Walrus tag operand types**: `module.types.get(module.tags.get(tag).ty()).params()` — `Tag::ty()` returns `TypeId`, not `Type`.
+- **Walrus `throw $tag` semantics**: walrus IR has `Instr::Throw { tag: TagId }`. Operands are popped from the stack; the order matches `tag.params()`. Verify shape in walrus 0.26 source if unfamiliar.
+- **Walrus `try_table` rewrite pattern**: see how `apply_catch_ref_handlers` (`instrument.rs:2138`) rewrites `CatchRef`/`CatchAllRef` → `$capture_K` blocks. The pattern: build new `Vec<TryTableCatch>` with replaced labels, replace the parent's `Instr::TryTable` with `Instr::Block(outer_seq)`, populate `outer_seq` with `Instr::Block(capture_seq)` + br_target. Stage 2's plain-catch capture follows the same shape.
+- **Catch label block typing**: Wasm requires the catch's target block's signature to consume the tag's operand types. WAT shape that works for tests: `(block $h (result T) ...)` or `(block $h (param T) (result T'))` depending on what fall-through values the producer arranges. The previous Stage 1 attempt at `(block $h (param i32))` for a function-body-top fork-path target FAILED validation because the function entry stack is empty. Stage 2 fixtures should use the result-type-pattern that the existing `b1_scratch_plan_i32_payload_arm_is_8_bytes` test demonstrates.
+- **Byte-identity goal NOT applicable to Stage 2.** Stage 1 was purely additive and preserved emit-byte-identity for shipping ports. Stage 2 changes emission for fork-path functions with plain-catch arms — by design. **However**, modules WITHOUT plain-catch arms must remain byte-identical (none of Stage 2's emission changes should fire when `B1ScratchPlan.per_function` is empty for that function). Test this explicitly.
+- **The pre-existing alignment quirk** (synthetic test fixture with one i32 saved global → `frames_start_offset = 12`, not 8-aligned): Stage 2's i64 stores into the scratch area depend on `b1_scratch_base` being well-aligned, NOT `frames_start_offset`. Since `b1_scratch_base = 2P + N` (without alignment), it shares the same quirk. Verify Stage 2 uses unaligned stores OR aligns the b1_scratch_base. The `align_up_8` helper exists in both `instrument.rs` and `runtime.rs`.
+- **Sortix basic / libc-test gate**: every Phase-7-shipping port instruments cleanly via the current pipeline and runs all sortix basic tests (929 PASS / 0 FAIL / 4 XFAIL). Stage 2 must preserve this — add a regression gate (`bash scripts/run-sortix-tests.sh basic`) after each emission task.
+
+### Tasks
+
+#### Task 2.0: Plumb `B1ScratchPlan` into `instrument_functions`
+
+**Files:**
+- `crates/fork-instrument/src/lib.rs`
+- `crates/fork-instrument/src/instrument.rs::instrument_functions`
+
+Pass the already-computed `b1_plan` from `lib.rs::instrument` down to `instrument_functions`, then thread it through to `instrument_one_function` (the per-function pipeline). Currently `lib.rs` discards `b1_plan` after consuming `total_bytes`.
+
+Acceptance: `instrument_one_function` receives a `&[(InstrSeqId, Vec<PlainCatchArmSlot>)]` for the active function (lookup via `b1_plan.per_function.get(&fid).unwrap_or(&empty)`). No emission change yet — slots are just plumbed through.
+
+Tests: existing 88 still pass; one new test asserts the plumbing reaches `instrument_one_function` (e.g., via a debug counter or via observing structural change in a fixture once the next task wires emission).
+
+Commit: `feat(fork-instrument): B1 stage 2 — plumb plan through to per-function pipeline`.
+
+#### Task 2.1: Operand-type carve-out (B2-style)
+
+**Files:**
+- `crates/fork-instrument/src/instrument.rs::plan_b1_scratch`
+
+Before allocating scratch slots, walk each arm's `operand_tys` and check for unsupported types: `ValType::Ref(_)` (any ref class). For functions whose plain-catch arms include unsupported operand types, **drop those arms from the plan** AND record the function ID in a `b2_carveout: HashSet<FunctionId>` field on `B1ScratchPlan`. Emission tasks (2.2-2.4) will check this set and skip plain-catch instrumentation for those functions — falling back to today's "guard-dispatch + body replay diverges from NORMAL flow at the catch handler" behavior. That's not better than today, but it doesn't make things worse, and it surfaces the limitation cleanly.
+
+Replace the existing `panic!` in `b1_scalar_size` (or its callers) with this carve-out logic.
+
+Tests:
+- A test fixture with `(tag $exn (param externref))` should produce a `B1ScratchPlan` with empty `per_function[that_fid]` and the function in `b2_carveout`.
+- Existing tests must continue to pass (none use ref operands).
+- Add `f32 + i32 + i64` mixed-payload coverage.
+
+Commit: `feat(fork-instrument): B1 stage 2 — fall back to guard-dispatch for ref-typed catch operands`.
+
+#### Task 2.2: Per-arm capture block emission
+
+**Files:**
+- `crates/fork-instrument/src/instrument.rs` — new function `apply_plain_catch_handlers` (sibling of `apply_catch_ref_handlers` at `:2138`).
+
+For each fork-path function with plain-catch arms (and not in `b2_carveout`), for each `(try_table_body_seq, plain_catch_arms)` entry:
+- Build a fresh `$capture_K_arm_J` block per arm, typed `[operand_tys] -> [operand_tys]` (consumes catch's branch args, re-pushes them after saving).
+- Emit save sequence inside `$capture_K_arm_J`:
+  - For each operand i: `local.set` to a fresh per-arm scratch local (or directly emit `store` to `b1_scratch_base + scratch_offset + 4 + per_operand_offset` using `runtime.buf_global` as base). Choose direct-store; simpler and matches Phase 6's approach.
+  - Then `i32.store` at `[b1_scratch_base + scratch_offset]` for the `arm_id = arm_idx` value.
+  - Then re-push operands by reading them back, OR (cleaner) pre-spill to locals before the save sequence and `local.get` back at the end.
+- Set `in_catch_K = 1` (per existing Phase 6 catch_ref logic) and `catch_region_id_local = K`.
+- `br` to the original `arm.label`.
+
+The try_table rewrite: replace each plain `Catch { tag, label }` with `Catch { tag, label: capture_seq_id }`. Mixed plain+catch_ref try_tables: BOTH rewrites must apply. Verify by reading `apply_catch_ref_handlers`'s catches-list rebuild logic (lines 2175-2189) and extend.
+
+Tests:
+- Emission test: a fixture with a single plain-catch arm produces the expected capture-block shape. Assert via walrus IR walk that the `Instr::TryTable`'s catches list has the capture_seq_id substituted.
+- Validation test: post-instrument module validates.
+- Byte-identity guard: a module without plain-catch arms produces byte-identical output to pre-Task-2.2.
+
+Commit: `feat(fork-instrument): B1 stage 2 — per-arm capture-block emission`.
+
+#### Task 2.3: Per-arm rewind dispatch in `inject_rewind_throw_stubs`
+
+**Files:**
+- `crates/fork-instrument/src/instrument.rs::inject_rewind_throw_stubs` (currently at `:1974`).
+
+Today's stub: `if state == REWINDING && catch_region_id == K { throw_ref (table.get exnref_stash slot) }`.
+
+Extended stub for plain-catch arms in region K:
+```
+if state == REWINDING && catch_region_id == K {
+    let arm_id = i32.load [b1_scratch_base + region_first_arm.scratch_offset]
+    if arm_id == 0 { throw_ref (table.get exnref_stash slot) }   ;; existing catch_ref
+    else if arm_id == J { throw $tag_J (load operand_0, ..., load operand_N-1) }
+    else if arm_id == K' { ... }
+    ...
+}
+```
+
+`arm_id == 0` is reserved for the catch_ref path (which writes 0 because Phase 6 doesn't set arm_id). Plain-catch arms write `arm_idx + 1`? No — arm_idx 0 is a valid plain-catch arm index. Use a different sentinel. Two options:
+- Use `arm_idx` directly as arm_id, and add a separate `is_ref: i32` flag at a different scratch offset to distinguish ref-path from plain-path.
+- Reserve `arm_id = -1` (or `u32::MAX`) for catch_ref, use `arm_idx` for plain.
+
+Option 2 is cleaner. Stage 1's `arm_id` field comment said "Stage 2 writes this value as the `arm_id` field of the saved scratch tuple at unwind time" — keep that contract. The catch_ref path just doesn't write to the scratch tuple at all; the rewind stub treats absence-of-write (initial value, set by parent process or zero-on-fresh-buffer) as "use the exnref path." Simplest: the rewind stub checks `is_in_catch_region == K` first, then if the `_wpk_fork_exnref_stash[slot]` is non-null, take the ref path; otherwise look up arm_id.
+
+This needs a design pass during Task 2.3 implementation. Don't over-spec it now — the right answer will be obvious once Task 2.2's emission gives a concrete state to dispatch from.
+
+Tests:
+- Emission test: rewind stub for a region with both ref and plain arms has the expected if-chain shape.
+- Stage 2 integration: parent forks from inside plain-catch handler, child resumes with operands restored. Requires Task 3's wasmtime harness — defer behavioral assertion to Stage 3.
+
+Commit: `feat(fork-instrument): B1 stage 2 — multi-arm rewind dispatch (catch_ref + plain)`.
+
+#### Task 2.4: Multi-target try_table support (decision point)
+
+**Files:**
+- `crates/fork-instrument/src/instrument.rs::plan_catch_ref_handlers` (the single-target restriction at `:2111`).
+
+Phase 6 today rejects multi-target `*_ref` try_tables. B1's plain-catch capture inherently supports multiple targets (each gets its own `$capture_K_arm_J`). Decide whether to:
+- (a) Lift the multi-target restriction in Phase 6 to match B1's capability.
+- (b) Keep Phase 6's restriction and add a similar one for B1 plain-catch (single-target only).
+
+Option (a) is more work (Phase 6 needs the same per-arm dispatch B1 just got) but unblocks programs with multi-target try_tables. Option (b) is faster.
+
+**Recommendation: option (b) for Stage 2, file follow-up for option (a).** Synthetic fixtures don't force option (a), and shipping ports don't have multi-target try_tables.
+
+Add a check in `discover_plain_catch_arms` (or in `plan_b1_scratch`'s carve-out): if a try_table has more than one plain-catch arm AND the labels differ, skip B1 instrumentation for that try_table and add the function to `b2_carveout`. Single-target multi-arm (all arms point to same label) is fine.
+
+Commit: `feat(fork-instrument): B1 stage 2 — guard against multi-target plain-catch try_tables`.
+
+### Stage 2 verification
+
+After each task: `cargo test -p fork-instrument` + `bash scripts/run-sortix-tests.sh basic`. The sortix gate is the byte-identity check for shipping ports — if any of the 929 currently-passing tests regresses, Stage 2 has broken something. Stop and diagnose.
+
+After Task 2.4: full gauntlet (cargo lib, vitest, libc-test, posix, sortix --all, ABI). vitest application failures (PHP/WP/Erlang) are environmental and not B1's concern.
+
+Stage 2 ends with the emission code in place. Behavioral correctness is asserted in Stage 3 via a wasmtime-driven C++ fork-from-catch fixture.
 
 ---
 
