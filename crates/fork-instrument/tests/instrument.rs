@@ -498,7 +498,7 @@ fn multivalue_return_wraps_and_validates() {
 #[test]
 fn instrument_functions_returns_rewritten_set() {
     use fork_instrument::call_graph;
-    use fork_instrument::instrument::instrument_functions;
+    use fork_instrument::instrument::{instrument_functions, B1ScratchPlan};
     use fork_instrument::runtime::inject_runtime;
 
     let bytes = wat::parse_str(FIXTURE_TRANSITIVE).unwrap();
@@ -508,7 +508,8 @@ fn instrument_functions_returns_rewritten_set() {
         .expect("seed import present");
     let fork_path = call_graph::reaching_closure(&module, seed);
     let runtime = inject_runtime(&mut module, 0);
-    let rewritten = instrument_functions(&mut module, &runtime, &fork_path);
+    let b1_plan = B1ScratchPlan::default();
+    let rewritten = instrument_functions(&mut module, &runtime, &fork_path, &b1_plan);
 
     let names: HashSet<String> = rewritten
         .iter()

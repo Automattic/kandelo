@@ -132,6 +132,7 @@ pub fn instrument_functions(
     module: &mut Module,
     runtime: &Runtime,
     fork_path: &HashSet<FunctionId>,
+    b1_plan: &B1ScratchPlan,
 ) -> HashSet<FunctionId> {
     let runtime_funcs: HashSet<FunctionId> = [
         runtime.unwind_begin,
@@ -153,12 +154,15 @@ pub fn instrument_functions(
 
     let (aux_tables, ref_plan, catch_plans) = plan_and_inject_aux_tables(module, &targets);
 
+    let empty_b1_slots: Vec<(InstrSeqId, Vec<PlainCatchArmSlot>)> = Vec::new();
+
     let mut instrumented = HashSet::new();
     for (ordinal, id) in targets.iter().enumerate() {
         let empty_plan: Vec<RefLocalSlot> = Vec::new();
         let this_plan = ref_plan.get(id).unwrap_or(&empty_plan);
         let empty_catch_plan: Vec<CatchRegionPlan> = Vec::new();
         let this_catch_plan = catch_plans.get(id).unwrap_or(&empty_catch_plan);
+        let this_b1_slots = b1_plan.per_function.get(id).unwrap_or(&empty_b1_slots);
         instrument_one_function(
             module,
             *id,
@@ -168,6 +172,7 @@ pub fn instrument_functions(
             &aux_tables,
             this_plan,
             this_catch_plan,
+            this_b1_slots,
         );
         instrumented.insert(*id);
     }
@@ -213,7 +218,13 @@ fn instrument_one_function(
     aux_tables: &AuxTables,
     ref_plan: &[RefLocalSlot],
     catch_plan: &[CatchRegionPlan],
+    b1_slots: &[(InstrSeqId, Vec<PlainCatchArmSlot>)],
 ) {
+    // Stage-2 B1 emission (Tasks 2.1-2.3) will read `b1_slots` to
+    // emit per-arm capture blocks and multi-arm rewind dispatch. Task
+    // 2.0 plumbs the parameter through; consumers ignore it for now.
+    let _ = b1_slots;
+
     // Choose scheme based on call-site topology. Both schemes
     // implement the same fork-resume contract and share the frame
     // layout; they differ only in how REWIND reaches the resumed call:

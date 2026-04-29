@@ -125,7 +125,7 @@ pub fn instrument(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
 
     // Phase 4b: structural wrap of each fork-path function's body.
     // No-op when `fork_path` is empty (module doesn't use fork).
-    instrument::instrument_functions(&mut module, &runtime, &fork_path);
+    instrument::instrument_functions(&mut module, &runtime, &fork_path, &b1_plan);
 
     // --- Future phases will mutate `module` further here. ---
     // Phase 4c: wrap call sites with state-machine gating + br $unwind_save.
