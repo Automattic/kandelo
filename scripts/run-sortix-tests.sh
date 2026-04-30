@@ -47,7 +47,8 @@ BASIC_EXPECTED_FAIL=(
     # while passing on the Mac dev hosts the team uses. Likely a
     # Node-24 / Linux interaction in our kernel's execve env-copy
     # path; investigate as a separate kernel-portability follow-up.
-    "aio/aio_cancel"
+    # aio/aio_cancel was flaky (FAIL once, XPASS next run) — left
+    # off this list; if it starts failing reliably, add it back.
     "spawn/posix_spawn"
     "spawn/posix_spawnp"
     "unistd/execle"
