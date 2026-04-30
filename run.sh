@@ -125,8 +125,19 @@ need_kernel() {
         cargo build --release -p wasm-posix-kernel \
             -Z build-std=core,alloc \
             -Z build-std-features=panic_immediate_abort
-        mkdir -p host/wasm
-        cp target/wasm64-unknown-unknown/release/wasm_posix_kernel.wasm host/wasm/
+        # Mirror what build.sh does: copy to local-binaries/ (the
+        # canonical override tree the binary-resolver checks). The
+        # host/wasm/ copy is preserved as a legacy fallback for older
+        # consumers that haven't migrated to local-binaries/.
+        mkdir -p local-binaries host/wasm
+        cp target/wasm64-unknown-unknown/release/wasm_posix_kernel.wasm \
+            local-binaries/kernel.wasm
+        cp target/wasm64-unknown-unknown/release/wasm_posix_kernel.wasm \
+            host/wasm/wasm_posix_kernel.wasm
+        if [ -f target/wasm64-unknown-unknown/release/wasm_posix_userspace.wasm ]; then
+            cp target/wasm64-unknown-unknown/release/wasm_posix_userspace.wasm \
+                local-binaries/userspace.wasm
+        fi
         info "Kernel built"
     else
         info "Kernel"
