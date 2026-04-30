@@ -138,11 +138,31 @@ if [ -n "$PR_NUMBER" ] && [ ! -f "$OVERLAY_FILE" ]; then
         STAGING_TAG_GUESS="pr-${PR_NUMBER}-staging"
         STAGING_BASE="https://github.com/$OWNER_REPO/releases/download/$STAGING_TAG_GUESS"
         echo "fetch-binaries: downloading overlay from $STAGING_TAG_GUESS..."
-        if curl -fsSL --retry 2 -o "$OVERLAY_FILE.partial" "$STAGING_BASE/binaries.lock.pr"; then
-            mv "$OVERLAY_FILE.partial" "$OVERLAY_FILE"
-        else
-            rm -f "$OVERLAY_FILE.partial"
-            echo "fetch-binaries: no overlay at $STAGING_TAG_GUESS (PR may not have a staging release yet); falling back to durable release"
+        # Prefer `gh release download` over curl for the overlay file:
+        # the release-asset CDN aggressively caches by URL path, so a
+        # maintainer-side re-publish (or a freshly-rebuilt staging
+        # release on a PR push) can be silently masked by curl. The
+        # GitHub API call that gh uses bypasses the CDN.
+        downloaded=0
+        if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+            if gh release download "$STAGING_TAG_GUESS" \
+                    --repo "$OWNER_REPO" \
+                    --pattern binaries.lock.pr \
+                    --output "$OVERLAY_FILE.partial" \
+                    --clobber >/dev/null 2>&1; then
+                mv "$OVERLAY_FILE.partial" "$OVERLAY_FILE"
+                downloaded=1
+            else
+                rm -f "$OVERLAY_FILE.partial"
+            fi
+        fi
+        if [ "$downloaded" = "0" ]; then
+            if curl -fsSL --retry 2 -o "$OVERLAY_FILE.partial" "$STAGING_BASE/binaries.lock.pr"; then
+                mv "$OVERLAY_FILE.partial" "$OVERLAY_FILE"
+            else
+                rm -f "$OVERLAY_FILE.partial"
+                echo "fetch-binaries: no overlay at $STAGING_TAG_GUESS (PR may not have a staging release yet); falling back to durable release"
+            fi
         fi
     fi
 fi
