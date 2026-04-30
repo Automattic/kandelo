@@ -7,7 +7,7 @@ echo "==> Building MariaDB VFS image..."
 npx tsx "$SCRIPT_DIR/build-mariadb-vfs-image.ts" "$@"
 echo "==> Done."
 if [[ "$*" == *--wasm64* ]]; then
-    ls -lh examples/browser/public/mariadb-64.vfs
+    ls -lh examples/browser/public/mariadb-64.vfs.zst
 else
-    ls -lh examples/browser/public/mariadb.vfs
+    ls -lh examples/browser/public/mariadb.vfs.zst
 fi

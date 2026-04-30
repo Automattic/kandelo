@@ -1,7 +1,7 @@
 kind = "program"
 name = "erlang-vfs"
 version = "0.1.0"
-revision = 1
+revision = 2
 kernel_abi = 7
 # Implicit dep: build-erlang-vfs-image.ts reads the OTP runtime files
 # from `examples/libs/erlang/erlang-install/` — populated as a side
@@ -28,7 +28,7 @@ repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 [[outputs]]
 name = "erlang-vfs"
-wasm = "erlang-vfs.vfs"
+wasm = "erlang-vfs.vfs.zst"
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/erlang-vfs-0.1.0-rev1-abi6-wasm32-25d1091a.tar.zst"
 archive_sha256 = "0de6200ac6e394c6074702571921dc461af9861dd916d534e3bab69cef322fb9"

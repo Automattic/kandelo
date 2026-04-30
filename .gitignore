@@ -39,6 +39,12 @@ node_modules/
 # global-setup from .wat sources. Nothing tracked under git.
 *.wasm
 
+# VFS images are build artifacts produced by
+# examples/browser/scripts/build-*-vfs-image.ts. Reproducible from
+# source; not tracked.
+*.vfs
+*.vfs.zst
+
 # OS noise
 .DS_Store
 

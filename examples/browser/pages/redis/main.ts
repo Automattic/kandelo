@@ -7,7 +7,7 @@
 import { BrowserKernel } from "../../lib/browser-kernel";
 import { RedisBrowserClient } from "../../lib/redis-client";
 import kernelWasmUrl from "@kernel-wasm?url";
-import VFS_IMAGE_URL from "@binaries/programs/wasm32/redis-vfs.vfs?url";
+import VFS_IMAGE_URL from "@binaries/programs/wasm32/redis-vfs.vfs.zst?url";
 
 const REDIS_PORT = 6379;
 

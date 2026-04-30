@@ -146,8 +146,8 @@ Browser demos use pre-built **VFS images** — binary snapshots of a `MemoryFile
 
 ### How it works
 
-1. **Build time**: A TypeScript build script creates a `MemoryFileSystem`, writes files/dirs/symlinks into it, and calls `saveImage()` to produce a `.vfs` binary file.
-2. **Runtime**: The demo page fetches the `.vfs` file, calls `MemoryFileSystem.fromImage(imageBytes, { maxByteLength })` to restore it, and passes the resulting filesystem to `BrowserKernel({ memfs })`.
+1. **Build time**: A TypeScript build script creates a `MemoryFileSystem`, writes files/dirs/symlinks into it, and calls `saveImage()` to produce a zstd-compressed `.vfs.zst` file. Empty regions of the SharedFS allocator compress to nearly nothing, so a 32 MB filesystem with a few MB of real content typically ships as a 1–3 MB download.
+2. **Runtime**: The demo page fetches the `.vfs.zst` file, calls `MemoryFileSystem.fromImage(imageBytes, { maxByteLength })` (which auto-detects zstd magic and decompresses transparently), and passes the resulting filesystem to `BrowserKernel({ memfs })`.
 
 ```typescript
 // Typical demo pattern
@@ -168,13 +168,13 @@ const kernel = await BrowserKernel.create({ kernelWasm: kernelBuf, memfs });
 
 | Demo | Image | Build command | What's inside |
 |------|-------|--------------|---------------|
-| Python | `python.vfs` | `bash examples/browser/scripts/build-python-vfs-image.sh` | CPython stdlib |
-| Erlang | `erlang.vfs` | `bash examples/browser/scripts/build-erlang-vfs-image.sh` | OTP runtime |
-| Perl | `perl.vfs` | `bash examples/browser/scripts/build-perl-vfs-image.sh` | Perl stdlib |
-| Shell | `shell.vfs` | `bash examples/browser/scripts/build-shell-vfs-image.sh` | dash, symlinks, vim runtime |
-| WordPress | `wordpress.vfs` | `bash examples/browser/scripts/build-wp-vfs-image.sh` | WP files, nginx/PHP configs |
-| LAMP | `lamp.vfs` | `bash examples/browser/scripts/build-lamp-vfs-image.sh` | MariaDB + WP + configs |
-| MariaDB test | `mariadb-test.vfs` | `bash examples/browser/scripts/build-mariadb-test-vfs-image.sh` | MariaDB + test suite |
+| Python | `python.vfs.zst` | `bash examples/browser/scripts/build-python-vfs-image.sh` | CPython stdlib |
+| Erlang | `erlang.vfs.zst` | `bash examples/browser/scripts/build-erlang-vfs-image.sh` | OTP runtime |
+| Perl | `perl.vfs.zst` | `bash examples/browser/scripts/build-perl-vfs-image.sh` | Perl stdlib |
+| Shell | `shell.vfs.zst` | `bash examples/browser/scripts/build-shell-vfs-image.sh` | dash, symlinks, vim runtime |
+| WordPress | `wordpress.vfs.zst` | `bash examples/browser/scripts/build-wp-vfs-image.sh` | WP files, nginx/PHP configs |
+| LAMP | `lamp.vfs.zst` | `bash examples/browser/scripts/build-lamp-vfs-image.sh` | MariaDB + WP + configs |
+| MariaDB test | `mariadb-test.vfs.zst` | `bash examples/browser/scripts/build-mariadb-test-vfs-image.sh` | MariaDB + test suite |
 
 VFS images are `.gitignore`d and must be built locally. The `run.sh` script handles this automatically (e.g., `./run.sh browser` builds any missing VFS images before starting the dev server).
 
@@ -192,7 +192,7 @@ Each build script requires the corresponding software to be compiled first (e.g.
 
 1. Create `examples/browser/scripts/build-<name>-vfs-image.ts` — import helpers from `vfs-image-helpers.ts`
 2. Create `examples/browser/scripts/build-<name>-vfs-image.sh` — shell wrapper that runs the TypeScript script
-3. Update the demo's `main.ts` to fetch the `.vfs` file and use `MemoryFileSystem.fromImage()`
+3. Update the demo's `main.ts` to fetch the `.vfs.zst` file and use `MemoryFileSystem.fromImage()` (which auto-decompresses)
 4. Add a build target in `run.sh`
 
 The shared helpers in `vfs-image-helpers.ts` provide:

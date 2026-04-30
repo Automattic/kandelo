@@ -14,7 +14,6 @@
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
 import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
-import { decompressVfsImage } from "../../../../host/src/vfs/load-image";
 import { populateMariadbDirs } from "../../lib/init/mariadb-config";
 import {
   writeVfsBinary,
@@ -35,8 +34,8 @@ import helloWasmUrl from "../../../../benchmarks/wasm/hello.wasm?url";
 import kernelWasmUrl from "@kernel-wasm?url";
 
 // VFS images (fetched lazily; 404 handled per-suite)
-import ERLANG_VFS_URL from "@binaries/programs/wasm32/erlang-vfs.vfs?url";
-import WP_VFS_URL from "@binaries/programs/wasm32/wordpress.vfs?url";
+import ERLANG_VFS_URL from "@binaries/programs/wasm32/erlang-vfs.vfs.zst?url";
+import WP_VFS_URL from "@binaries/programs/wasm32/wordpress.vfs.zst?url";
 
 /**
  * Optional application-binary URL imports are resolved via `import.meta.glob`.
@@ -265,7 +264,7 @@ async function runErlangRing(): Promise<Record<string, number>> {
   let lastOutputTime = 0;
   let outputSeen = false;
 
-  const memfs = MemoryFileSystem.fromImage(decompressVfsImage(new Uint8Array(vfsImageBuf)), {
+  const memfs = MemoryFileSystem.fromImage(new Uint8Array(vfsImageBuf), {
     maxByteLength: 256 * 1024 * 1024,
   });
 
@@ -429,7 +428,7 @@ async function runWordPress(): Promise<Record<string, number>> {
   }
 
   // Restore MemoryFileSystem from the pre-built VFS image
-  const memfs = MemoryFileSystem.fromImage(decompressVfsImage(new Uint8Array(vfsImageBuf)), {
+  const memfs = MemoryFileSystem.fromImage(new Uint8Array(vfsImageBuf), {
     maxByteLength: 1024 * 1024 * 1024,
   });
 

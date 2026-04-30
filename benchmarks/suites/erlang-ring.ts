@@ -22,7 +22,7 @@ const MAX_PAGES = 16384;
 
 const erlangLibDir = resolve(repoRoot, "examples/libs/erlang");
 const installDir = resolve(erlangLibDir, "erlang-install");
-const beamWasm = tryResolveBinary("programs/erlang.wasm");
+const beamWasm = tryResolveBinary("programs/erlang/erlang.wasm");
 const ringDir = resolve(repoRoot, "examples/erlang");
 
 function loadBytes(path: string): ArrayBuffer {

@@ -14,7 +14,7 @@ import { tryResolveBinary, findRepoRoot } from "../src/binary-resolver";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = findRepoRoot();
-const beamBinary = tryResolveBinary("programs/erlang.wasm");
+const beamBinary = tryResolveBinary("programs/erlang/erlang.wasm");
 const serveScript = join(repoRoot, "examples/erlang/serve.ts");
 
 // serve.ts passes -root/-bindir/-boot pointing at

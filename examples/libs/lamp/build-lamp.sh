@@ -12,7 +12,7 @@ bash "$REPO_ROOT/examples/wordpress/setup.sh"
 
 bash "$REPO_ROOT/examples/browser/scripts/build-lamp-vfs-image.sh"
 
-VFS="$REPO_ROOT/examples/browser/public/lamp.vfs"
+VFS="$REPO_ROOT/examples/browser/public/lamp.vfs.zst"
 [ -f "$VFS" ] || { echo "ERROR: $VFS not produced by builder" >&2; exit 1; }
 
 source "$REPO_ROOT/scripts/install-local-binary.sh"

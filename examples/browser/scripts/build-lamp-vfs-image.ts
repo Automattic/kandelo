@@ -14,7 +14,7 @@
  *
  * Produces: examples/browser/public/lamp.vfs
  */
-import { readFileSync, lstatSync } from "node:fs";
+import { readFileSync, lstatSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import { resolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
@@ -29,20 +29,35 @@ import {
   saveImage,
 } from "./vfs-image-helpers";
 import { addDinitInit, type DinitService } from "./dinit-image-helpers";
+import { ensureSourceExtract } from "./source-extract-helper";
 
 const REPO_ROOT = findRepoRoot();
 const BROWSER_DIR = join(REPO_ROOT, "examples", "browser");
-const WP_DIR = join(REPO_ROOT, "examples", "wordpress", "wordpress");
-const MARIADB_INSTALL = join(REPO_ROOT, "examples", "libs", "mariadb", "mariadb-install");
-const MARIADB_PATH = join(MARIADB_INSTALL, "bin", "mariadbd.wasm");
-const SYSTEM_TABLES_PATH = join(MARIADB_INSTALL, "share", "mysql", "mysql_system_tables.sql");
-const SYSTEM_DATA_PATH = join(MARIADB_INSTALL, "share", "mysql", "mysql_system_tables_data.sql");
+// WordPress + MariaDB source-tree fallbacks so the demo builds in a
+// fetch-only checkout. The mariadbd binary comes from the resolver
+// (already in the binary release); the system_tables SQL files are
+// shipped only in the upstream MariaDB source tarball, so we extract
+// it on demand the same way build-mariadb-vfs-image.ts does.
+const WP_DIR = ensureSourceExtract(
+  "wordpress",
+  REPO_ROOT,
+  join(REPO_ROOT, "examples", "wordpress", "wordpress"),
+);
+const MARIADB_LEGACY_INSTALL = join(REPO_ROOT, "examples", "libs", "mariadb", "mariadb-install");
+const MARIADB_SOURCE = ensureSourceExtract("mariadb", REPO_ROOT);
+const MARIADB_PATH = resolveBinary("programs/mariadb/mariadbd.wasm");
+const SYSTEM_TABLES_PATH = existsSync(join(MARIADB_LEGACY_INSTALL, "share/mysql/mysql_system_tables.sql"))
+  ? join(MARIADB_LEGACY_INSTALL, "share/mysql/mysql_system_tables.sql")
+  : join(MARIADB_SOURCE, "scripts/mysql_system_tables.sql");
+const SYSTEM_DATA_PATH = existsSync(join(MARIADB_LEGACY_INSTALL, "share/mysql/mysql_system_tables_data.sql"))
+  ? join(MARIADB_LEGACY_INSTALL, "share/mysql/mysql_system_tables_data.sql")
+  : join(MARIADB_SOURCE, "scripts/mysql_system_tables_data.sql");
 const DASH_PATH = resolveBinary("programs/dash.wasm");
 const NGINX_PATH = resolveBinary("programs/nginx.wasm");
 const PHP_FPM_PATH = resolveBinary("programs/php/php-fpm.wasm");
 const COREUTILS_PATH = resolveBinary("programs/coreutils.wasm");
 const SED_PATH = resolveBinary("programs/sed.wasm");
-const OUT_FILE = join(BROWSER_DIR, "public", "lamp.vfs");
+const OUT_FILE = join(BROWSER_DIR, "public", "lamp.vfs.zst");
 
 function populateSystem(fs: MemoryFileSystem): void {
   for (const dir of [
@@ -376,10 +391,8 @@ function buildServices(): DinitService[] {
 }
 
 async function main() {
-  try { lstatSync(join(WP_DIR, "wp-settings.php")); }
-  catch { console.error("WordPress not found. Run: bash examples/wordpress/setup.sh"); process.exit(1); }
   try { lstatSync(MARIADB_PATH); }
-  catch { console.error("mariadbd.wasm not found. Run: bash examples/libs/mariadb/build-mariadb.sh"); process.exit(1); }
+  catch { console.error("mariadbd.wasm not found. fetch-binaries should provide programs/mariadb/mariadbd.wasm"); process.exit(1); }
 
   // 256 MiB initial — WordPress core + SQLite plugin (~80 MiB) + MariaDB
   // binary (~14 MiB) + bootstrap SQL (~1 MiB) plus headroom. Worker entry

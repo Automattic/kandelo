@@ -323,5 +323,5 @@ export default defineConfig({
   worker: {
     format: "es",
   },
-  assetsInclude: ["**/*.wasm", "**/*.sql", "**/*.vfs"],
+  assetsInclude: ["**/*.wasm", "**/*.sql", "**/*.vfs", "**/*.vfs.zst"],
 });

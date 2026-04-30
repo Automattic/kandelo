@@ -68,6 +68,14 @@ install_local_binary() {
     local src_basename
     src_basename="$(basename "$src")"
 
+    # Take everything from the FIRST dot in the source basename onward
+    # so compound extensions like `.vfs.zst` round-trip intact (matches
+    # xtask/src/install_release.rs's behaviour).
+    local src_ext=""
+    case "$src_basename" in
+        *.*) src_ext=".${src_basename#*.}" ;;
+    esac
+
     # Ask xtask for the package.toml-driven destination relative path.
     # On hit, that's the canonical location matching install-release.
     # On miss (package not in the registry, e.g. the dash→sh alias
@@ -94,9 +102,9 @@ install_local_binary() {
     else
         # Legacy single-binary fallback. Used by aliasing call sites
         # like `install_local_binary sh "$BIN_DIR/dash.wasm"` where
-        # the "program" is a name registered nowhere.
-        local ext="${src##*.}"
-        dest="$repo_root/local-binaries/programs/$arch/$program.$ext"
+        # the "program" is a name registered nowhere. Uses the full
+        # compound extension so `.vfs.zst` round-trips intact.
+        dest="$repo_root/local-binaries/programs/$arch/$program$src_ext"
     fi
 
     mkdir -p "$(dirname "$dest")"

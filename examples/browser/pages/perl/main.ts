@@ -7,7 +7,6 @@
 import { BrowserKernel } from "../../lib/browser-kernel";
 import { PtyTerminal } from "../../lib/pty-terminal";
 import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
-import { decompressVfsImage } from "../../../../host/src/vfs/load-image";
 import {
   ensureDirRecursive,
   writeVfsFile,
@@ -15,7 +14,7 @@ import {
 } from "../../../../host/src/vfs/image-helpers";
 import kernelWasmUrl from "@kernel-wasm?url";
 import perlWasmUrl from "../../../../binaries/programs/wasm32/perl.wasm?url";
-import VFS_IMAGE_URL from "@binaries/programs/wasm32/perl-vfs.vfs?url";
+import VFS_IMAGE_URL from "@binaries/programs/wasm32/perl-vfs.vfs.zst?url";
 import "@xterm/xterm/css/xterm.css";
 
 // --- DOM elements ---
@@ -107,7 +106,7 @@ const PERL_ENV = [
 async function buildPerlImage(
   files: Array<{ path: string; content: string }>,
 ): Promise<Uint8Array> {
-  const fs = MemoryFileSystem.fromImage(decompressVfsImage(new Uint8Array(vfsImageBuf!)), {
+  const fs = MemoryFileSystem.fromImage(new Uint8Array(vfsImageBuf!), {
     maxByteLength: 256 * 1024 * 1024,
   });
   ensureDirRecursive(fs, "/usr/local/bin");

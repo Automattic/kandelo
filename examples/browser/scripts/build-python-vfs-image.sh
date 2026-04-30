@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Build a Python stdlib VFS image for the browser demo.
-# Produces: examples/browser/public/python.vfs
+# Produces: examples/browser/public/python.vfs.zst
 #
 set -euo pipefail
 
@@ -14,4 +14,4 @@ echo "==> Building Python VFS image..."
 npx tsx "$SCRIPT_DIR/build-python-vfs-image.ts"
 
 echo "==> Done."
-ls -lh examples/browser/public/python.vfs
+ls -lh examples/browser/public/python.vfs.zst

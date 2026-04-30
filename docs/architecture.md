@@ -323,34 +323,42 @@ When restoring for use in a browser, pass `maxByteLength` to create a growable `
 const restored = MemoryFileSystem.fromImage(image, { maxByteLength: 1024 * 1024 * 1024 });
 ```
 
-Most browser demos use this approach. Each demo has a build script that pre-populates a VFS with runtime files, directory structure, configs, and symlinks, then saves it as a `.vfs` file. At runtime, restoring the image replaces thousands of individual file writes with a single buffer copy.
+Most browser demos use this approach. Each demo has a build script that pre-populates a VFS with runtime files, directory structure, configs, and symlinks, then saves it as a `.vfs.zst` file (zstd-compressed; `saveImage()` compresses on write). At runtime, the demo fetches the file and `MemoryFileSystem.fromImage` decompresses transparently — restoring the image replaces thousands of individual file writes with a single buffer copy. The empty regions of the SharedFS allocator compress to almost nothing, so a 32 MB filesystem with a few MB of real content typically ships as a 1–3 MB download.
 
 There are two consumption patterns for VFS images, depending on whether the demo wants the kernel worker to fully own the filesystem:
 
-**Kernel-owned VFS (`kernelOwnedFs: true` + `kernel.boot()`).** The main thread never instantiates the `MemoryFileSystem`. Instead, the demo fetches the `.vfs` bytes and hands them to `BrowserKernel.boot({ kernelWasm, vfsImage, argv, env })`. The kernel worker restores the filesystem internally, exec()s `argv[0]` as the first ("init") process, and the main thread becomes a thin client — only routing stdin/stdout, TCP injection, framebuffer events, and HTTP-bridge messages. Service-supervised demos run dinit (`/sbin/dinit --container`) as that init process; dinit reads `/etc/dinit.d/*` from the image and brings up the service tree. Single-program demos (python, perl, php, ruby) exec the language interpreter directly. This is the path new demos should use.
+**Kernel-owned VFS (`kernelOwnedFs: true` + `kernel.boot()`).** The main thread never instantiates the `MemoryFileSystem`. Instead, the demo fetches the `.vfs.zst` bytes and hands them to `BrowserKernel.boot({ kernelWasm, vfsImage, argv, env })`. The kernel worker restores the filesystem internally (auto-detecting zstd magic), exec()s `argv[0]` as the first ("init") process, and the main thread becomes a thin client — only routing stdin/stdout, TCP injection, framebuffer events, and HTTP-bridge messages. Service-supervised demos run dinit (`/sbin/dinit --container`) as that init process; dinit reads `/etc/dinit.d/*` from the image and brings up the service tree. Single-program demos (python, perl, php, ruby) exec the language interpreter directly. This is the path new demos should use.
 
 **Legacy main-thread-owned VFS (`memfs:` constructor option + `kernel.spawn()`).** The main thread restores the image into its own `MemoryFileSystem`, hands the SAB to a fresh `BrowserKernel`, and then calls `kernel.spawn(programBytes, argv)` to launch transient binaries. Useful for demos that fetch additional binaries at runtime (test runners, REPLs that load arbitrary code), but the main thread is in the syscall hot path for FS operations. Still used by `benchmark`, `erlang`, and `shell`.
 
 | Demo | VFS Image | Build Script | Boot pattern |
 |------|-----------|-------------|--------------|
-| Python | `python.vfs` | `build-python-vfs-image.sh` | `kernel.boot` → `python3` |
-| Perl | `perl.vfs` | `build-perl-vfs-image.sh` | `kernel.boot` → `perl` |
-| PHP | `php.vfs` | `build-php-vfs-image.sh` | `kernel.boot` → `php` |
-| Ruby | `ruby.vfs` | `build-ruby-vfs-image.sh` | `kernel.boot` → `ruby` |
-| nginx | `nginx.vfs` | `build-nginx-vfs-image.sh` | `kernel.boot` → dinit → nginx |
-| nginx-php | `nginx-php.vfs` | `build-nginx-php-vfs-image.sh` | `kernel.boot` → dinit → php-fpm + nginx |
-| Redis | `redis.vfs` | `build-redis-vfs-image.sh` | `kernel.boot` → dinit → redis-server |
-| MariaDB | `mariadb.vfs` | `build-mariadb-vfs-image.sh` | `kernel.boot` → dinit → mariadb-bootstrap → mariadbd |
-| WordPress | `wordpress.vfs` | `build-wp-vfs-image.sh` | `kernel.boot` → dinit → php-fpm + nginx (SQLite WP) |
-| LAMP | `lamp.vfs` | `build-lamp-vfs-image.sh` | `kernel.boot` → dinit → mariadb + php-fpm + nginx |
-| MariaDB test | `mariadb-test.vfs` | `build-mariadb-test-vfs-image.sh` | `kernel.boot` → dinit → mariadb; mysqltest via `kernel.spawn` |
-| Erlang | `erlang.vfs` | `build-erlang-vfs-image.sh` | legacy `kernel.spawn` → BEAM |
-| Shell | `shell.vfs` | `build-shell-vfs-image.sh` | legacy `kernel.spawn` → dash |
+| Python | `python.vfs.zst` | `build-python-vfs-image.sh` | `kernel.boot` → `python3` |
+| Perl | `perl.vfs.zst` | `build-perl-vfs-image.sh` | `kernel.boot` → `perl` |
+| PHP | `php.vfs.zst` | `build-php-vfs-image.sh` | `kernel.boot` → `php` |
+| Ruby | `ruby.vfs.zst` | `build-ruby-vfs-image.sh` | `kernel.boot` → `ruby` |
+| nginx | `nginx.vfs.zst` | `build-nginx-vfs-image.sh` | `kernel.boot` → dinit → nginx |
+| nginx-php | `nginx-php.vfs.zst` | `build-nginx-php-vfs-image.sh` | `kernel.boot` → dinit → php-fpm + nginx |
+| Redis | `redis.vfs.zst` | `build-redis-vfs-image.sh` | `kernel.boot` → dinit → redis-server |
+| MariaDB | `mariadb.vfs.zst` | `build-mariadb-vfs-image.sh` | `kernel.boot` → dinit → mariadb-bootstrap → mariadbd |
+| WordPress | `wordpress.vfs.zst` | `build-wp-vfs-image.sh` | `kernel.boot` → dinit → php-fpm + nginx (SQLite WP) |
+| LAMP | `lamp.vfs.zst` | `build-lamp-vfs-image.sh` | `kernel.boot` → dinit → mariadb + php-fpm + nginx |
+| MariaDB test | `mariadb-test.vfs.zst` | `build-mariadb-test-vfs-image.sh` | `kernel.boot` → dinit → mariadb; mysqltest via `kernel.spawn` |
+| Erlang | `erlang.vfs.zst` | `build-erlang-vfs-image.sh` | legacy `kernel.spawn` → BEAM |
+| Shell | `shell.vfs.zst` | `build-shell-vfs-image.sh` | legacy `kernel.spawn` → dash |
 | Benchmark | (multiple) | (per-suite) | legacy `kernel.spawn` |
 
 Build scripts are in `examples/browser/scripts/` and share common helpers (`vfs-image-helpers.ts` for VFS write primitives, `dinit-image-helpers.ts` for the dinit binary + standard rootfs files + service-file rendering). To build all VFS images, use the per-demo scripts above or the convenience targets in `run.sh` (e.g., `./run.sh build python-vfs`).
 
 **Binary format:**
+
+The on-disk file is the raw VFS image below, wrapped in a single zstd
+frame. `saveImage()` always writes the compressed form (`.vfs.zst`);
+`MemoryFileSystem.fromImage()` accepts either form and auto-detects
+the zstd magic (`28 B5 2F FD`) at offset 0 to decide whether to
+decompress before parsing.
+
+Decompressed layout:
 
 ```
 Offset   Size   Field

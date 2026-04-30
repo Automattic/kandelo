@@ -26,18 +26,35 @@ import {
   saveImage,
 } from "./vfs-image-helpers";
 import { addDinitInit, type DinitService } from "./dinit-image-helpers";
+import { ensureSourceExtract, ensureExtract } from "./source-extract-helper";
 
 const REPO_ROOT = findRepoRoot();
 const BROWSER_DIR = join(REPO_ROOT, "examples", "browser");
 const WP_EXAMPLE_DIR = join(REPO_ROOT, "examples", "wordpress");
-const WP_DIR = join(WP_EXAMPLE_DIR, "wordpress");
-const SQLITE_DIR = join(WP_EXAMPLE_DIR, "sqlite-database-integration");
+// WordPress + SQLite-Database-Integration plugin trees: prefer the local
+// `examples/wordpress/setup.sh` outputs if present (back-compat with
+// existing local workflows), otherwise download both via
+// source-extract-helper. The WP version + sha live in the wordpress
+// package's package.toml; the SQLite plugin is a wp.org-hosted zip with
+// no package.toml of its own, so its URL+sha are pinned here.
+const SQLITE_PLUGIN_VERSION = "2.1.16";
+const SQLITE_PLUGIN_URL =
+  `https://downloads.wordpress.org/plugin/sqlite-database-integration.${SQLITE_PLUGIN_VERSION}.zip`;
+const SQLITE_PLUGIN_SHA256 =
+  "ccc69cada05983e6c2dac8c0962b548c437b4c96c00ea41b0e130fc128671391";
+const WP_DIR = ensureSourceExtract("wordpress", REPO_ROOT, join(WP_EXAMPLE_DIR, "wordpress"));
+const SQLITE_DIR = ensureExtract({
+  url: SQLITE_PLUGIN_URL,
+  sha256: SQLITE_PLUGIN_SHA256,
+  cacheKey: `sqlite-database-integration-${SQLITE_PLUGIN_VERSION}`,
+  legacyPath: join(WP_EXAMPLE_DIR, "sqlite-database-integration"),
+});
 const DASH_PATH = resolveBinary("programs/dash.wasm");
 const NGINX_PATH = resolveBinary("programs/nginx.wasm");
 const PHP_FPM_PATH = resolveBinary("programs/php/php-fpm.wasm");
 const COREUTILS_PATH = resolveBinary("programs/coreutils.wasm");
 const SED_PATH = resolveBinary("programs/sed.wasm");
-const OUT_FILE = join(BROWSER_DIR, "public", "wordpress.vfs");
+const OUT_FILE = join(BROWSER_DIR, "public", "wordpress.vfs.zst");
 
 // --- System setup (mirrors BrowserKernel constructor + populateShellBinaries) ---
 
@@ -402,14 +419,6 @@ require_once ABSPATH . 'wp-settings.php';
 // --- Main ---
 
 async function main() {
-  // Validate prerequisites
-  try {
-    lstatSync(join(WP_DIR, "wp-settings.php"));
-  } catch {
-    console.error("WordPress not found. Run: bash examples/wordpress/setup.sh");
-    process.exit(1);
-  }
-
   try {
     lstatSync(DASH_PATH);
   } catch {
@@ -478,6 +487,13 @@ if (!defined('DISALLOW_FILE_MODS')) define('DISALLOW_FILE_MODS', true);
   );
   console.log(`  SQLite plugin: ${sqliteCount} files`);
   wpCount += sqliteCount;
+
+  // Drop-in db.php → routes WP_DB_HOST to the SQLite plugin instead of
+  // MySQL. setup.sh copies sqlite-database-integration/db.copy into
+  // wp-content/db.php; do the same here for the source-extracted path.
+  const dbCopy = readFileSync(join(SQLITE_DIR, "db.copy"));
+  writeVfsBinary(fs, "/var/www/html/wp-content/db.php", new Uint8Array(dbCopy), 0o644);
+  wpCount += 1;
 
   // dinit + service tree. nginx → php-fpm → wp-config-init dependency
   // chain ensures wp-config.php is finalized before any FastCGI request.

@@ -11,8 +11,8 @@
  * dependency on the matching bootstrap and brings up only that tree.
  *
  * Two target architectures are supported:
- *   bash build-mariadb-vfs-image.sh           → public/mariadb.vfs     (wasm32)
- *   bash build-mariadb-vfs-image.sh --wasm64  → public/mariadb-64.vfs  (wasm64)
+ *   bash build-mariadb-vfs-image.sh           → public/mariadb.vfs.zst    (wasm32)
+ *   bash build-mariadb-vfs-image.sh --wasm64  → public/mariadb-64.vfs.zst (wasm64)
  */
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -27,17 +27,30 @@ import {
 import { resolveBinary, tryResolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
 import { saveImage } from "./vfs-image-helpers";
 import { addDinitInit, type DinitService } from "./dinit-image-helpers";
+import { ensureSourceExtract } from "./source-extract-helper";
 
 const REPO_ROOT = findRepoRoot();
 const useWasm64 = process.argv.includes("--wasm64");
 
-const MARIADB_INSTALL = useWasm64
+// mariadbd binary comes from the resolver-managed package cache (wasm32
+// or wasm64 archive in the binary release). The system_tables SQL files
+// are in the upstream MariaDB source tarball under scripts/, so we extract
+// it on demand for fetch-only checkouts. Local source-build users keep
+// using examples/libs/mariadb/mariadb-install/ as before.
+const MARIADB_LEGACY_INSTALL = useWasm64
   ? join(REPO_ROOT, "examples/libs/mariadb/mariadb-install-64")
   : join(REPO_ROOT, "examples/libs/mariadb/mariadb-install");
 
-const MARIADB_PATH = join(MARIADB_INSTALL, "bin/mariadbd.wasm");
-const SYSTEM_TABLES_PATH = join(MARIADB_INSTALL, "share/mysql/mysql_system_tables.sql");
-const SYSTEM_DATA_PATH = join(MARIADB_INSTALL, "share/mysql/mysql_system_tables_data.sql");
+const MARIADB_PATH = useWasm64
+  ? resolveBinary("programs/wasm64/mariadb/mariadbd.wasm")
+  : resolveBinary("programs/mariadb/mariadbd.wasm");
+const MARIADB_SOURCE = ensureSourceExtract("mariadb", REPO_ROOT);
+const SYSTEM_TABLES_PATH = existsSync(join(MARIADB_LEGACY_INSTALL, "share/mysql/mysql_system_tables.sql"))
+  ? join(MARIADB_LEGACY_INSTALL, "share/mysql/mysql_system_tables.sql")
+  : join(MARIADB_SOURCE, "scripts/mysql_system_tables.sql");
+const SYSTEM_DATA_PATH = existsSync(join(MARIADB_LEGACY_INSTALL, "share/mysql/mysql_system_tables_data.sql"))
+  ? join(MARIADB_LEGACY_INSTALL, "share/mysql/mysql_system_tables_data.sql")
+  : join(MARIADB_SOURCE, "scripts/mysql_system_tables_data.sql");
 const DASH_PATH = resolveBinary("programs/dash.wasm");
 // Coreutils is baked into the VFS so users get an immediate `ls`/`cat`
 // in the shell demo without waiting for a lazy-load fetch. Not strictly
@@ -45,8 +58,8 @@ const DASH_PATH = resolveBinary("programs/dash.wasm");
 const COREUTILS_PATH = tryResolveBinary("programs/coreutils.wasm");
 
 const OUT_FILE = useWasm64
-  ? join(REPO_ROOT, "examples/browser/public/mariadb-64.vfs")
-  : join(REPO_ROOT, "examples/browser/public/mariadb.vfs");
+  ? join(REPO_ROOT, "examples/browser/public/mariadb-64.vfs.zst")
+  : join(REPO_ROOT, "examples/browser/public/mariadb.vfs.zst");
 
 const COREUTILS_SYMLINK_NAMES = [
   "ls", "cat", "cp", "mv", "rm", "echo", "mkdir", "rmdir", "touch", "pwd",
@@ -131,13 +144,13 @@ function buildEngineServices(engine: "Aria" | "InnoDB"): DinitService[] {
 
 async function main() {
   if (!existsSync(MARIADB_PATH)) {
-    const flag = useWasm64 ? " --wasm64" : "";
-    console.error(`mariadbd.wasm not found at ${MARIADB_PATH}.`);
-    console.error(`Run: bash examples/libs/mariadb/build-mariadb.sh${flag}`);
+    console.error(`mariadbd.wasm not found at ${MARIADB_PATH}. ` +
+      `fetch-binaries should provide it via the mariadb package.`);
     process.exit(1);
   }
   if (!existsSync(SYSTEM_TABLES_PATH) || !existsSync(SYSTEM_DATA_PATH)) {
-    console.error(`MariaDB bootstrap SQL files missing from ${MARIADB_INSTALL}/share/mysql/`);
+    console.error(`MariaDB bootstrap SQL files missing.`);
+    console.error(`  Looked at:\n    ${SYSTEM_TABLES_PATH}\n    ${SYSTEM_DATA_PATH}`);
     process.exit(1);
   }
 

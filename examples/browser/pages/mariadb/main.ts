@@ -21,8 +21,8 @@ import { MySqlBrowserClient } from "../../lib/mysql-client";
 import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
 import { writeVfsFile } from "../../../../host/src/vfs/image-helpers";
 import kernelWasmUrl from "@kernel-wasm?url";
-import VFS_IMAGE_URL_32 from "@binaries/programs/wasm32/mariadb-vfs.vfs?url";
-import VFS_IMAGE_URL_64 from "@binaries/programs/wasm64/mariadb-vfs.vfs?url";
+import VFS_IMAGE_URL_32 from "@binaries/programs/wasm32/mariadb-vfs.vfs.zst?url";
+import VFS_IMAGE_URL_64 from "@binaries/programs/wasm64/mariadb-vfs.vfs.zst?url";
 import "../../lib/terminal-panel.css";
 
 // Diagnostic toggle. When true, we redirect mariadbd's --log-error from

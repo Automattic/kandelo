@@ -582,15 +582,44 @@ echo "==> Erlang/OTP ${OTP_VERSION} build complete!"
 echo "==> Install directory: $INSTALL_DIR"
 
 # Install into local-binaries/ so the resolver picks the freshly-built
-# binary over the fetched release.
+# binary over the fetched release. Multi-output: erlang.wasm
+# (renamed from beam.wasm) + erlang-otp.tar.zst. Both land under
+# local-binaries/programs/<arch>/erlang/ (multi-output subdir layout
+# from install_release.rs).
+cp "$SCRIPT_DIR/beam.wasm" "$SCRIPT_DIR/erlang.wasm"
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary erlang "$SCRIPT_DIR/beam.wasm"
+install_local_binary erlang "$SCRIPT_DIR/erlang.wasm"
 
-# Manifest declares `wasm = "beam.wasm"` (not erlang.wasm), so the
-# resolver's $WASM_POSIX_DEP_OUT_DIR scratch needs the file under that
-# exact name. The helper's default-fallback uses <program>.<ext> which
-# doesn't match here.
-if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
-    cp "$SCRIPT_DIR/beam.wasm" "$WASM_POSIX_DEP_OUT_DIR/beam.wasm"
-    echo "  installed $WASM_POSIX_DEP_OUT_DIR/beam.wasm (manifest output name)"
-fi
+# --- Pack OTP runtime tree for the erlang-vfs demo ---
+# erlang-vfs needs the compiled .beam files for the bundled OTP apps
+# (kernel, stdlib, erts, compiler) plus the boot script under
+# releases/28. These live in INSTALL_DIR after the cross build.
+# Bundle them as a second package output so a fetch-only checkout has
+# everything it needs without re-running this script.
+echo "==> Packing OTP runtime tree (erlang-otp.tar.zst)..."
+OTP_STAGE=$(mktemp -d)
+trap 'rm -rf "$OTP_STAGE"' EXIT
+OTP_SUBDIRS=(
+    "lib/kernel-10.4.2"
+    "lib/stdlib-7.1"
+    "lib/erts-16.1.2"
+    "lib/compiler-9.0.3"
+    "releases/28"
+)
+for sub in "${OTP_SUBDIRS[@]}"; do
+    src="$INSTALL_DIR/$sub"
+    if [ ! -d "$src" ]; then
+        echo "ERROR: expected OTP subdir not produced: $src" >&2
+        exit 1
+    fi
+    mkdir -p "$OTP_STAGE/$(dirname "$sub")"
+    cp -R "$src" "$OTP_STAGE/$sub"
+done
+OTP_TARBALL="$SCRIPT_DIR/erlang-otp.tar.zst"
+rm -f "$OTP_TARBALL"
+tar --zstd -cf "$OTP_TARBALL" -C "$OTP_STAGE" .
+
+OTP_SIZE=$(wc -c < "$OTP_TARBALL" | tr -d ' ')
+echo "==> erlang-otp.tar.zst: $(echo "$OTP_SIZE" | numfmt --to=iec 2>/dev/null || echo "${OTP_SIZE} bytes")"
+
+install_local_binary erlang "$OTP_TARBALL"

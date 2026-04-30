@@ -1,3 +1,4 @@
+import { decompress as zstdDecompress } from "fzstd";
 import type { StatResult } from "../types";
 import type { FileSystemBackend, DirEntry } from "./types";
 import {
@@ -56,6 +57,11 @@ export interface VfsImageOptions {
    */
   materializeAll?: boolean;
 }
+
+// zstd frame magic (little-endian on the wire: 28 B5 2F FD).
+// fromImage() auto-detects this and decompresses transparently so callers
+// don't have to know whether the bytes came from a `.vfs` or `.vfs.zst`.
+const ZSTD_MAGIC_BYTES = [0x28, 0xb5, 0x2f, 0xfd];
 
 // VFS image binary format constants
 const VFS_IMAGE_MAGIC = 0x56465349; // "VFSI"
@@ -395,6 +401,16 @@ export class MemoryFileSystem implements FileSystemBackend {
    * so the filesystem can expand beyond the image's original size.
    */
   static fromImage(image: Uint8Array, options?: { maxByteLength?: number }): MemoryFileSystem {
+    if (
+      image.byteLength >= ZSTD_MAGIC_BYTES.length &&
+      image[0] === ZSTD_MAGIC_BYTES[0] &&
+      image[1] === ZSTD_MAGIC_BYTES[1] &&
+      image[2] === ZSTD_MAGIC_BYTES[2] &&
+      image[3] === ZSTD_MAGIC_BYTES[3]
+    ) {
+      image = decompressZstd(image);
+    }
+
     if (image.byteLength < VFS_IMAGE_HEADER_SIZE) {
       throw new Error("VFS image too small");
     }
@@ -677,4 +693,18 @@ export class MemoryFileSystem implements FileSystemBackend {
   closedir(handle: number): void {
     this.fs.closedir(handle);
   }
+}
+
+// fzstd is a regular sync static import (see top of file). Earlier we
+// tried lazy-loading it via top-level `await import("fzstd")`, but a
+// top-level await turns this module — and every consumer, including
+// the kernel worker entry — into an async module. `BrowserKernel.boot
+// Worker()` posts its `init` message immediately after `new Worker(url)`,
+// before the worker's async load completes; the message was being
+// dropped before the worker's onmessage handler became reachable. A
+// static import is bundled by Vite for browser pages and resolved by
+// Node for tests + build scripts (host/package.json + examples/browser/
+// package.json both declare fzstd, so it's always installed).
+function decompressZstd(image: Uint8Array): Uint8Array {
+  return zstdDecompress(image);
 }

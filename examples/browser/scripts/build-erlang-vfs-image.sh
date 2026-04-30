@@ -6,4 +6,4 @@ cd "$REPO_ROOT"
 echo "==> Building Erlang VFS image..."
 npx tsx "$SCRIPT_DIR/build-erlang-vfs-image.ts"
 echo "==> Done."
-ls -lh examples/browser/public/erlang.vfs
+ls -lh examples/browser/public/erlang.vfs.zst

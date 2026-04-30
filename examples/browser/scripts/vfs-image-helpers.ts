@@ -5,6 +5,7 @@
  */
 import { readFileSync, readdirSync, lstatSync, writeFileSync, mkdirSync } from "fs";
 import { join, relative } from "path";
+import { zstdCompressSync, constants as zlibConstants } from "node:zlib";
 import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 
 export {
@@ -64,18 +65,37 @@ export function walkAndWrite(
 }
 
 /**
- * Save a MemoryFileSystem image to disk with size logging.
+ * Save a MemoryFileSystem image to disk as a zstd-compressed `.vfs.zst`
+ * file. The empty regions of the SharedFS allocator compress to almost
+ * nothing, so this typically shrinks images by 80–95%. The browser-side
+ * loader (`MemoryFileSystem.fromImage`) detects the zstd magic and
+ * decompresses on load.
+ *
+ * `outFile` must end in `.vfs.zst` to make the on-disk format obvious.
  */
 export async function saveImage(fs: MemoryFileSystem, outFile: string): Promise<Uint8Array> {
+  if (!outFile.endsWith(".vfs.zst")) {
+    throw new Error(
+      `saveImage outFile must end in .vfs.zst (got: ${outFile})`,
+    );
+  }
+
   console.log("Saving VFS image...");
   const image = await fs.saveImage();
+  // Level 19 — slow build, smaller download. Decompression speed is
+  // unaffected by compression level, so this is a one-sided trade.
+  const compressed = zstdCompressSync(image, {
+    params: { [zlibConstants.ZSTD_c_compressionLevel]: 19 },
+  });
 
   const outDir = outFile.substring(0, outFile.lastIndexOf("/"));
   mkdirSync(outDir, { recursive: true });
-  writeFileSync(outFile, image);
+  writeFileSync(outFile, compressed);
 
-  const sizeMB = (image.byteLength / (1024 * 1024)).toFixed(1);
-  console.log(`VFS image: ${sizeMB} MB`);
+  const rawMB = (image.byteLength / (1024 * 1024)).toFixed(1);
+  const compMB = (compressed.byteLength / (1024 * 1024)).toFixed(1);
+  const ratio = ((compressed.byteLength / image.byteLength) * 100).toFixed(1);
+  console.log(`VFS image: ${rawMB} MB raw → ${compMB} MB zstd (${ratio}%)`);
   console.log(`Written to: ${outFile}`);
-  return image;
+  return new Uint8Array(compressed.buffer, compressed.byteOffset, compressed.byteLength);
 }
