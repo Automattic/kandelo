@@ -45,27 +45,44 @@ jobs:
           #   APPROVED          — at least one approving review, branch
           #                       protection requires reviews
           #   REVIEW_REQUIRED   — branch protection requires reviews,
-          #                       none yet (block)
+          #                       none yet
           #   CHANGES_REQUESTED — at least one CHANGES_REQUESTED review
-          #                       (block)
           #   ""/null           — no review policy on the branch (solo
           #                       maintainer flows, internal repos)
-          # We block REVIEW_REQUIRED and CHANGES_REQUESTED. Empty/null
-          # is allowed — the workflow itself is the merge gate, not
-          # a substitute for branch protection. Repos that want to
-          # enforce review should configure required reviewers on
-          # main, which surfaces as REVIEW_REQUIRED here.
+          #
+          # Default policy: block REVIEW_REQUIRED and CHANGES_REQUESTED.
+          # Maintainer override: a user with admin/maintain permission
+          # who applies `ready-to-ship` can bypass the review gate (the
+          # ask was: let maintainers ship without an approving review).
+          # Required-check failures are NEVER bypassable here — those
+          # gate on objective signals.
+          LABELER="${{ github.event.sender.login }}"
+          PERM=$(gh api "/repos/${{ github.repository }}/collaborators/${LABELER}/permission" -q .permission 2>/dev/null || echo "")
+          MAINTAINER=0
+          case "$PERM" in
+            admin|maintain) MAINTAINER=1 ;;
+          esac
+          echo "labeler=$LABELER permission=$PERM maintainer=$MAINTAINER"
+
           REVIEW=$(gh pr view "$PR_NUMBER" --repo ${{ github.repository }} --json reviewDecision -q .reviewDecision)
           case "$REVIEW" in
             REVIEW_REQUIRED|CHANGES_REQUESTED)
-              gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship
-              gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: PR review state is ${REVIEW}."
-              exit 1
+              if [ "$MAINTAINER" = "1" ]; then
+                echo "::notice::review state $REVIEW; bypassed by maintainer ${LABELER}"
+              else
+                gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship
+                gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: PR review state is ${REVIEW}. (A maintainer — admin/maintain permission — can re-apply \`ready-to-ship\` to override.)"
+                exit 1
+              fi
               ;;
           esac
           # Count failing required checks. Other non-skipping checks
           # currently in flight are tolerated (auto-merge will wait for
-          # them after we enable it).
+          # them after we enable it). Required-check failure is NOT
+          # bypassable, even by maintainers — the workflow's own
+          # post-publish tests gate the merge-gate status, and
+          # bypassing pre-existing failed checks here would defeat
+          # that intent.
           FAILING=$(gh pr checks "$PR_NUMBER" --repo ${{ github.repository }} --json bucket -q '[.[] | select(.bucket == "fail")] | length')
           if [ "$FAILING" -gt 0 ]; then
             gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship
