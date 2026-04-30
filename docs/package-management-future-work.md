@@ -174,12 +174,19 @@ until a real conflict.
 
 ### CI-driven dep builds
 
-Manual `scripts/stage-release.sh` + `scripts/publish-release.sh` works
-today.  A GitHub Actions workflow would matrix-build across arches and
-ABI versions, and drop the resulting `binaries-abi-v<N>` automatically.
-This becomes attractive when releases are frequent (we cut binaries-abi-v1 manually
-on 2026-04-27; if v2/v3 land within months of each other, automation
-pays off).
+**Status (2026-04-29):** Partial — the per-PR staging release flow +
+on-merge durable publish ship via three GHA workflows (see
+[`docs/binary-releases.md`](binary-releases.md#pr-package-builds)
+and design doc
+[`docs/plans/2026-04-29-pr-package-builds-design.md`](plans/2026-04-29-pr-package-builds-design.md)).
+Fork-PR support (§9.1 of the design doc) is the remaining open piece;
+fork PRs continue to fall back to the resolver's source-build path
+locally.
+
+Manual `scripts/stage-release.sh` + `scripts/publish-release.sh` is
+still the path for cutting a release outside the PR flow (e.g.,
+hand-rebuilds, recovery from a CI outage). The `prepare-merge.yml`
+workflow wraps those same two scripts.
 
 ### Hard-coded version strings in build scripts (lint)
 

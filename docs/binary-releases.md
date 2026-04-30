@@ -295,3 +295,80 @@ For now, manual. Eventually a GitHub Actions workflow
 
 See `scripts/stage-release.sh` and `scripts/publish-release.sh`
 for the current scripts.
+
+## PR package builds
+
+Replaces the previous manual two-PR release flow (PR bumps a
+package + merges → maintainer manually runs stage/publish-release →
+second PR bumps `binaries.lock`) with a single-PR flow driven by
+three GitHub Actions workflows. Full design in
+[`docs/plans/2026-04-29-pr-package-builds-design.md`](plans/2026-04-29-pr-package-builds-design.md).
+
+### Workflows at a glance
+
+| Workflow | Trigger | What it does |
+|---|---|---|
+| `staging-build.yml` | Every push to a same-repo PR | Stages packages whose `cache_key_sha` differs from the durable release; uploads to `pr-<NNN>-staging` pre-release; posts sticky comment. |
+| `prepare-merge.yml` | `ready-to-ship` label applied | Builds against PR HEAD merged with tip-of-main; publishes a fresh `binaries-abi-v<N>-YYYY-MM-DD[-<seq>]` durable release; pushes lockfile bump to PR branch; enables squash auto-merge. |
+| `staging-cleanup.yml` | PR closed + daily 08:00 UTC cron + manual dispatch | Deletes `pr-<NNN>-staging` releases when their PR closes; daily sweep catches orphans. |
+
+### Author flow
+
+1. Edit `examples/libs/<name>/deps.toml` (bump version, swap source
+   URL/sha) and any associated build script. Other code/test changes
+   may go in the same PR.
+2. Locally: `cargo xtask build-deps build <name>` — resolver
+   source-builds the new version into the local cache. Tests pass.
+3. **Do not** touch `binaries.lock` or `binaries.lock.pr`.
+4. Open the PR. CI publishes the staging release automatically.
+
+### Reviewer flow
+
+1. Read PR diff: `deps.toml` + code/test changes only. No lockfile
+   churn.
+2. Read the sticky `pr-staging-build` comment for the list of
+   archives that were rebuilt.
+3. Optional, to exercise locally:
+   ```
+   gh pr checkout <N>
+   scripts/fetch-binaries.sh
+   ```
+   `fetch-binaries.sh` auto-detects the PR via the public GitHub API
+   and downloads `binaries.lock.pr` from the staging release;
+   override entries fetched from staging, the rest from the durable
+   release.
+4. Approve. Apply the `ready-to-ship` label.
+
+### After auto-merge
+
+`prepare-merge.yml` publishes the durable release, pushes a single
+`chore(binaries): bump lockfile to <new-tag>` commit to the PR
+branch, and enables squash auto-merge. The squash merge collapses
+code + `deps.toml` + lockfile bump into one main commit — main is
+never in a state where the lockfile disagrees with the `deps.toml`.
+
+### Overlay file lifecycle (`binaries.lock.pr`)
+
+Gitignored. Created by `staging-build.yml` and uploaded as an asset
+on the staging release. Downloaded on demand by `fetch-binaries.sh`
+when the local clone is checked out on a PR branch. Never committed.
+Schema is `{staging_tag, staging_manifest_sha256, overrides}` —
+overrides are package names, not archive filenames, so a version-
+string bump in a same-PR push doesn't invalidate the overlay.
+
+### Branch protection setup (one-time)
+
+When deploying these workflows for the first time, the maintainer
+must:
+- Allow `github-actions[bot]` (or whatever account `GITHUB_TOKEN`
+  resolves to) to push to PR branches via repository permissions.
+  The lockfile bump pushes to PR branches, not main.
+- Create the `ready-to-ship` label
+  (`gh label create ready-to-ship --color 0E8A16 --description ...`)
+  if absent.
+
+### Fork PRs
+
+Not supported in v1 — they fall back to the resolver's source-build
+path locally. Two-stage `workflow_run` support is documented as
+future work in §9.1 of the design doc.

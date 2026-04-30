@@ -704,6 +704,10 @@ canonical path populated and returns it without re-running
 
 ### Shell-script wrappers
 
+For the per-PR staging flow (single-PR-with-package-bumps,
+auto-merge after a `ready-to-ship` label), see
+[`docs/binary-releases.md`](binary-releases.md#pr-package-builds).
+
 `scripts/stage-release.sh` and `scripts/fetch-binaries.sh` wrap
 the xtask subcommands with the rest of the legacy release flow:
 
