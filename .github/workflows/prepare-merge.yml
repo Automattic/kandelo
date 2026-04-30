@@ -185,7 +185,7 @@ jobs:
               --staging /tmp/durable
 
       - name: Build kernel + test programs + install host deps (test prereqs)
-        # See staging-build.yml for the rationale on build-programs.sh.
+        # See staging-build.yml for rationale.
         run: |
           nix develop --accept-flake-config --command bash -c '
             cargo build --release -p wasm-posix-kernel \
@@ -195,6 +195,7 @@ jobs:
             cp target/wasm64-unknown-unknown/release/wasm_posix_kernel.wasm \
               local-binaries/kernel.wasm
             bash scripts/build-programs.sh
+            npm install --no-audit --no-fund
             cd host && npm install --no-audit --no-fund
           '
 

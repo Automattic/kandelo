@@ -119,6 +119,10 @@ jobs:
         # — without these, vitest tests that target the centralized
         # kernel against a specific program error out with "Binary
         # not found".
+        # Two npm installs: host/ for vitest's own deps, and the
+        # repo root for tsx (needed by run-posix-tests.sh /
+        # run-libc-tests.sh / run-sortix-tests.sh which spawn
+        # `node --import tsx/esm examples/run-example.ts`).
         run: |
           nix develop --accept-flake-config --command bash -c '
             cargo build --release -p wasm-posix-kernel \
@@ -128,6 +132,7 @@ jobs:
             cp target/wasm64-unknown-unknown/release/wasm_posix_kernel.wasm \
               local-binaries/kernel.wasm
             bash scripts/build-programs.sh
+            npm install --no-audit --no-fund
             cd host && npm install --no-audit --no-fund
           '
 
