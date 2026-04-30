@@ -136,7 +136,8 @@ jobs:
             scripts/stage-release.sh \
               --out /tmp/durable \
               --tag ${{ steps.tag.outputs.tag }} \
-              --arch wasm32
+              --arch wasm32 \
+              --arch wasm64
           '
 
       - name: Publish durable release

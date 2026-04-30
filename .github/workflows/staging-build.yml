@@ -85,7 +85,8 @@ jobs:
             scripts/stage-pr-staging.sh \
               --pr ${{ github.event.pull_request.number }} \
               --out /tmp/pr-staging \
-              --arch wasm32
+              --arch wasm32 \
+              --arch wasm64
           '
           override_count=$(jq '.overrides | length' /tmp/pr-staging/binaries.lock.pr)
           echo "override_count=$override_count" >> $GITHUB_OUTPUT

@@ -85,25 +85,27 @@ run_scenario_1() {
 
     setup_test_repo "$TEST_ROOT"
 
-    # Durable manifest: 2 entries. Use realistic shape — `name` is
-    # the full archive filename (matches how stage-release emits
-    # entries), `program` is the package name.
+    # Durable manifest: realistic shape (`name` is full archive
+    # filename, `program` is package name). libdinit ships both
+    # arches; libzlib ships wasm32 only.
     local DURABLE_SHA
     write_manifest_at "$TEST_ROOT/binaries/objects" DURABLE_SHA \
         "binaries-abi-v6-2026-04-01" \
         '[
-          {"name": "libzlib-1.0-rev1-wasm32-aaaaaaaa.tar.zst",  "program": "libzlib",  "archive_name": "libzlib-1.0-rev1-wasm32-aaaaaaaa.tar.zst",  "kind": "library"},
-          {"name": "libdinit-1.0-rev1-wasm32-bbbbbbbb.tar.zst", "program": "libdinit", "archive_name": "libdinit-1.0-rev1-wasm32-bbbbbbbb.tar.zst", "kind": "library"}
+          {"name": "libzlib-1.0-rev1-wasm32-aaaaaaaa.tar.zst",  "program": "libzlib",  "arch": "wasm32", "archive_name": "libzlib-1.0-rev1-wasm32-aaaaaaaa.tar.zst",  "kind": "library"},
+          {"name": "libdinit-1.0-rev1-wasm32-bbbbbbbb.tar.zst", "program": "libdinit", "arch": "wasm32", "archive_name": "libdinit-1.0-rev1-wasm32-bbbbbbbb.tar.zst", "kind": "library"},
+          {"name": "libdinit-1.0-rev1-wasm64-dddddddd.tar.zst", "program": "libdinit", "arch": "wasm64", "archive_name": "libdinit-1.0-rev1-wasm64-dddddddd.tar.zst", "kind": "library"}
         ]'
 
-    # Overlay manifest: only dinit (changed in PR), with a NEW
-    # cache_key_sha (different archive name than durable) — proves
-    # the filter matches on .program, not .name.
+    # Overlay manifest: PR rebuilt only the wasm32 libdinit (new
+    # cache_key_sha → different archive_name). The wasm64 libdinit
+    # entry stays in durable's domain — the filter must match on
+    # (program, arch) so wasm64 doesn't accidentally get filtered out.
     local OVERLAY_SHA
     write_manifest_at "$TEST_ROOT/binaries/objects" OVERLAY_SHA \
         "pr-999-staging" \
         '[
-          {"name": "libdinit-1.0-rev1-wasm32-cccccccc.tar.zst", "program": "libdinit", "archive_name": "libdinit-1.0-rev1-wasm32-cccccccc.tar.zst", "kind": "library"}
+          {"name": "libdinit-1.0-rev1-wasm32-cccccccc.tar.zst", "program": "libdinit", "arch": "wasm32", "archive_name": "libdinit-1.0-rev1-wasm32-cccccccc.tar.zst", "kind": "library"}
         ]'
 
     # binaries.lock pins durable.
@@ -172,26 +174,32 @@ STUB
     # Stdout should mention overlay setup.
     assert_contains "overlay tag log line" "$out" "overlay tag=pr-999-staging"
 
-    # Filter contents — the bug we hit on PR #378 was that fetch-binaries
-    # filtered on `.name` (the archive filename) rather than `.program`,
-    # so override entries stayed in the durable_filtered manifest and
-    # install-release tried (and failed) to install them from the
-    # durable URL.
+    # Filter contents:
+    # - The original bug (PR #378) was filtering on `.name` instead
+    #   of `.program`, so overrides never matched.
+    # - The follow-up was filtering by program-name only — for a
+    #   program with both wasm32 + wasm64 archives where staging
+    #   only has wasm32, the wasm64 entry would get dropped from
+    #   durable AND not be in overlay. Now filter by (program, arch).
     local durable_filt="$TEST_ROOT/manifest-snapshot.0.json"
     local overlay_filt="$TEST_ROOT/manifest-snapshot.1.json"
     if [ -f "$durable_filt" ]; then
-        local durable_progs
-        durable_progs=$(jq -r '[.entries[].program] | sort | join(",")' "$durable_filt")
-        assert_eq "durable_filtered excludes overrides" "libzlib" "$durable_progs"
+        local durable_keys
+        durable_keys=$(jq -r '[.entries[] | "\(.program)/\(.arch)"] | sort | join(",")' "$durable_filt")
+        # libzlib/wasm32 stays. libdinit/wasm32 is overridden by
+        # overlay → out. libdinit/wasm64 has no overlay → stays.
+        assert_eq "durable_filtered keeps wasm64 of partially-overridden program" \
+            "libdinit/wasm64,libzlib/wasm32" "$durable_keys"
     else
         echo "  FAIL: missing durable_filtered snapshot"; FAIL=$((FAIL + 1))
     fi
     if [ -f "$overlay_filt" ]; then
-        local overlay_progs
-        overlay_progs=$(jq -r '[.entries[].program] | sort | join(",")' "$overlay_filt")
-        assert_eq "overlay_filtered keeps only overrides" "libdinit" "$overlay_progs"
+        local overlay_keys
+        overlay_keys=$(jq -r '[.entries[] | "\(.program)/\(.arch)"] | sort | join(",")' "$overlay_filt")
+        assert_eq "overlay manifest contents installed verbatim" \
+            "libdinit/wasm32" "$overlay_keys"
     else
-        echo "  FAIL: missing overlay_filtered snapshot"; FAIL=$((FAIL + 1))
+        echo "  FAIL: missing overlay snapshot"; FAIL=$((FAIL + 1))
     fi
 }
 

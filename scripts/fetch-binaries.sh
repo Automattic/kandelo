@@ -316,19 +316,26 @@ if jq -e '.entries[] | select(.archive_name != null)' "$MANIFEST_OBJ" > /dev/nul
     else
         HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
 
-        # Compute filtered manifests when an overlay is in play:
-        #   durable_filtered = entries from durable manifest whose .program is NOT in overrides
-        #   overlay_filtered = entries from overlay manifest whose .program IS in overrides
-        # Filter on .program, not .name — .name is the full archive
-        # filename (e.g. "lamp-0.1.0-rev2-abi6-wasm32-5cc34f35.tar.zst")
-        # while overrides lists program names (e.g. "lamp").
-        # The two are installed against different archive bases.
+        # Compute filtered manifests when an overlay is in play.
+        # Filter unit is (.program, .arch) — derived from the overlay
+        # manifest's actual entries. A staging build that produced
+        # only wasm32 archives for a given program leaves the wasm64
+        # archive coming from the durable release, rather than
+        # silently dropping it (which happened when overrides was a
+        # flat program-name list and we filtered both arches out).
         DURABLE_MANIFEST="$MANIFEST_OBJ"
         DURABLE_FILTERED=""
         if [ -n "$OVERLAY_TAG" ]; then
             DURABLE_FILTERED=$(mktemp -t fetch-binaries-durable.XXXXXX).json
-            jq --argjson overrides "$OVERLAY_OVERRIDES_JSON" '
-                .entries |= map(select(.program as $n | $overrides | index($n) | not))
+            # Build [{program, arch}, ...] set from overlay manifest.
+            OVERLAY_SET=$(jq -c '[.entries[] | {program, arch}]' "$OVERLAY_MANIFEST_OBJ")
+            jq --argjson set "$OVERLAY_SET" '
+                .entries |= map(select(
+                    . as $e
+                    | $set
+                    | any(.program == $e.program and .arch == $e.arch)
+                    | not
+                ))
             ' "$MANIFEST_OBJ" > "$DURABLE_FILTERED"
             DURABLE_MANIFEST="$DURABLE_FILTERED"
         fi
@@ -340,16 +347,12 @@ if jq -e '.entries[] | select(.archive_name != null)' "$MANIFEST_OBJ" > /dev/nul
             --binaries-dir "$BIN_DIR"
 
         if [ -n "$OVERLAY_TAG" ]; then
-            OVERLAY_FILTERED=$(mktemp -t fetch-binaries-overlay.XXXXXX).json
-            jq --argjson overrides "$OVERLAY_OVERRIDES_JSON" '
-                .entries |= map(select(.program as $n | $overrides | index($n)))
-            ' "$OVERLAY_MANIFEST_OBJ" > "$OVERLAY_FILTERED"
             echo "fetch-binaries: installing overlay archives from $OVERLAY_TAG..."
             cargo run -p xtask --target "$HOST_TARGET" --quiet -- install-release \
-                --manifest "$OVERLAY_FILTERED" \
+                --manifest "$OVERLAY_MANIFEST_OBJ" \
                 --archive-base "$OVERLAY_REL_BASE" \
                 --binaries-dir "$BIN_DIR"
-            rm -f "$DURABLE_FILTERED" "$OVERLAY_FILTERED"
+            rm -f "$DURABLE_FILTERED"
         fi
     fi
 fi
