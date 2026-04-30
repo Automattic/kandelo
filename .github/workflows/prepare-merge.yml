@@ -195,6 +195,11 @@ jobs:
           echo "abi=$ABI" >> $GITHUB_OUTPUT
           echo "tag=$TAG" >> $GITHUB_OUTPUT
 
+      - name: Fetch durable binaries (source-build prereqs)
+        # See staging-build.yml.
+        run: |
+          nix develop --accept-flake-config --command bash scripts/fetch-binaries.sh
+
       - name: Stage durable release
         run: |
           mkdir -p /tmp/durable

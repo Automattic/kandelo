@@ -123,6 +123,14 @@ jobs:
           nix develop --accept-flake-config --command bash scripts/build-libcxx.sh
           nix develop --accept-flake-config --command bash scripts/build-libcxx.sh --arch wasm64
 
+      - name: Fetch durable binaries (so source-build fallbacks have prereqs)
+        # Some packages source-build when their cache_key_sha differs
+        # from baseline (mariadb-test depends on programs/mariadb/mariadbd.wasm
+        # being available locally). fetch-binaries materializes the
+        # durable release into binaries/ where the resolver finds it.
+        run: |
+          nix develop --accept-flake-config --command bash scripts/fetch-binaries.sh
+
       - name: Stage PR overlay
         id: stage
         run: |
