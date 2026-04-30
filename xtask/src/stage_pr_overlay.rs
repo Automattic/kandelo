@@ -100,6 +100,10 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     fs::create_dir_all(out.join("libs")).map_err(|e| format!("mkdir staging/libs: {e}"))?;
     fs::create_dir_all(out.join("programs"))
         .map_err(|e| format!("mkdir staging/programs: {e}"))?;
+    // Clear any pre-existing overlay artifacts so build_manifest doesn't
+    // try to parse them as archive entries on a re-run.
+    let _ = fs::remove_file(out.join("binaries.lock.pr"));
+    let _ = fs::remove_file(out.join("manifest.json"));
 
     // --- Read baseline manifest, build (program, arch) -> cache_key_sha map.
     let baseline_bytes = fs::read(&baseline_manifest)
