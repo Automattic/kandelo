@@ -45,7 +45,11 @@ if [ ! -f "$DEPS_TOML" ]; then
     exit 1
 fi
 
+strict_log=""
 cleanup() {
+    if [ -n "$strict_log" ] && [ -e "$strict_log" ]; then
+        rm -f "$strict_log"
+    fi
     if [ -f "$BACKUP" ]; then
         mv "$BACKUP" "$DEPS_TOML"
         echo "smoke: restored $DEPS_TOML"
@@ -79,10 +83,14 @@ CACHE_DIR="${WASM_POSIX_CACHE_DIR:-$HOME/.cache/wasm-posix-kernel}/programs"
 wipe_built_artifacts() {
     rm -f "$EXPECTED"
     if [ -d "$CACHE_DIR" ]; then
-        # Match the smoke-mutation cache dir for bzip2-wasm32. The
-        # rev1/wasm64 entries (untouched by this test) stay put.
-        find "$CACHE_DIR" -maxdepth 1 -type d -name "${PKG}-*-wasm32-*" \
-            ! -name "${PKG}-*-rev1-wasm32-*" \
+        # Delete only entries for our mutated revision (rev99); the
+        # canonical revision's cache entries are left alone. A POSITIVE
+        # match on rev99 is symmetric with the mutation (both reference
+        # rev99) and survives any future juggling of segments between
+        # revN and the trailing sha (e.g. abi tag insertion). A negative
+        # rev1 exclusion would silently delete the canonical entry if
+        # the cache-key formula gained another segment.
+        find "$CACHE_DIR" -maxdepth 1 -type d -name "${PKG}-*-rev99-*" \
             -exec rm -rf {} +
     fi
 }
@@ -96,6 +104,8 @@ wipe_built_artifacts
 # in xtask/src/install_release.rs.
 echo
 echo "smoke: [mode 1/3] strict default — expect failure"
+# strict_log is declared at script scope so the EXIT trap cleans it up
+# even if a later mode dies under set -e.
 strict_log="$(mktemp -t allow-stale-strict.XXXXXX.log)"
 set +e
 ./run.sh fetch >"$strict_log" 2>&1
@@ -104,7 +114,6 @@ set -e
 if [ "$strict_rc" -eq 0 ]; then
     echo "FAIL: strict ./run.sh fetch unexpectedly succeeded with stale manifest" >&2
     cat "$strict_log" >&2
-    rm -f "$strict_log"
     exit 1
 fi
 if ! grep -E -q 'cache_key_sha|stale' "$strict_log"; then
@@ -112,11 +121,26 @@ if ! grep -E -q 'cache_key_sha|stale' "$strict_log"; then
     echo "----- log -----" >&2
     cat "$strict_log" >&2
     echo "---------------" >&2
-    rm -f "$strict_log"
     exit 1
 fi
 echo "smoke: [mode 1/3] PASS — exit=$strict_rc, error mentions cache_key_sha/stale"
-rm -f "$strict_log"
+
+# Asserts $EXPECTED exists, is non-empty, and starts with the wasm magic
+# number (\0asm). Catches a 0-byte file or a non-wasm artifact (e.g. an
+# error log accidentally written to the path) that a plain `[ -f ]`
+# check would let through.
+assert_wasm_artifact() {
+    if [ ! -s "$EXPECTED" ]; then
+        echo "FAIL: $EXPECTED is empty or missing" >&2
+        exit 1
+    fi
+    # `cmp -n 4` is POSIX and present everywhere; process substitution
+    # is bash-only but the script already requires bash via the shebang.
+    if ! cmp -n 4 "$EXPECTED" <(printf '\0asm') >/dev/null 2>&1; then
+        echo "FAIL: $EXPECTED is not a valid wasm binary (missing \\0asm magic)" >&2
+        exit 1
+    fi
+}
 
 # --- Mode 2: --allow-stale flag ----------------------------------------------
 echo
@@ -126,6 +150,7 @@ if [ ! -f "$EXPECTED" ]; then
     echo "FAIL: --allow-stale flag did not produce $EXPECTED" >&2
     exit 1
 fi
+assert_wasm_artifact
 echo "smoke: [mode 2/3] PASS — produced $EXPECTED"
 
 # Wipe again so mode 3 re-runs the build script from scratch.
@@ -139,6 +164,7 @@ if [ ! -f "$EXPECTED" ]; then
     echo "FAIL: env-var path did not produce $EXPECTED" >&2
     exit 1
 fi
+assert_wasm_artifact
 echo "smoke: [mode 3/3] PASS — produced $EXPECTED"
 
 echo
