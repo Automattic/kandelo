@@ -25,7 +25,7 @@
 //! consumer expects, it should fail loudly so a stale manifest can be
 //! diagnosed.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -49,6 +49,12 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let mut registry_root: Option<PathBuf> = None;
     let mut abi: Option<u32> = None;
     let mut force_mirror = false;
+    // Names whose cache_key_sha is permitted to differ from the
+    // manifest's stamped value. Mismatches for these print a warning
+    // and skip the entry; mismatches for any OTHER name still hard-fail
+    // (preserving the strict default — see the doc comment on the
+    // pre-flight check below).
+    let mut allow_stale: BTreeSet<String> = BTreeSet::new();
 
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
@@ -83,6 +89,18 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                 )
             }
             "--force-mirror" => force_mirror = true,
+            // Repeatable. CSV form (`--allow-stale a,b,c`) is also
+            // accepted so the staging-build workflow can pass a single
+            // shell-computed string without splitting.
+            "--allow-stale" => {
+                let csv = it.next().ok_or("--allow-stale requires <name[,name…]>")?;
+                for n in csv.split(',') {
+                    let trimmed = n.trim();
+                    if !trimmed.is_empty() {
+                        allow_stale.insert(trimmed.to_string());
+                    }
+                }
+            }
             other => return Err(format!("unknown arg {other:?}")),
         }
     }
@@ -176,12 +194,32 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         // clearer error than the deeper mismatch the resolver would
         // produce. Unlike the resolver's silent fall-through, the
         // caller here invoked install explicitly.
+        //
+        // `--allow-stale <name>` carves out an opt-in skip path for the
+        // staging-build workflow: fetch-binaries.sh runs install-release
+        // on the durable manifest, but every package the PR touches has
+        // a stale cache_key_sha because its deps.toml differs from the
+        // baseline. Those names are listed in --allow-stale; their
+        // mismatches log a warning and skip the entry (the resolver +
+        // stage-pr-overlay pick them up later). Mismatches for any
+        // OTHER name still hard-fail — the allowlist is a contract,
+        // not a blanket bypass, and surfacing drift between
+        // fetch-binaries' skip set and stage-pr-overlay's build set
+        // is one of its safety properties.
         let manifest_compat_sha = entry
             .get("compatibility")
             .and_then(|c| c.get("cache_key_sha"))
             .and_then(|v| v.as_str())
             .unwrap_or("");
         if manifest_compat_sha != local_sha_hex {
+            if allow_stale.contains(program_name) {
+                eprintln!(
+                    "skip {program_name} ({arch_str}): cache_key_sha mismatch \
+                     covered by --allow-stale (manifest {manifest_compat_sha}, \
+                     local {local_sha_hex})"
+                );
+                continue;
+            }
             return Err(format!(
                 "{program_name} ({arch_str}): manifest.json cache_key_sha {manifest_compat_sha:?} \
                  does not match locally-computed {local_sha_hex:?} — \
@@ -1066,5 +1104,186 @@ spdx = "TestLicense"
             err.contains("archive-base"),
             "error must name --archive-base, got: {err}"
         );
+    }
+
+    // --- --allow-stale opt-in lenient mode --------------------------------
+    //
+    // Designed for the staging-build CI flow: fetch-binaries.sh runs
+    // install-release on the durable manifest, but every package the PR
+    // touches will have a stale cache_key_sha (its deps.toml differs
+    // from the durable baseline). Those packages will be source-built
+    // by stage-pr-overlay and published as overrides. install-release
+    // needs a way to be told "skip these names without erroring," while
+    // still hard-failing for any UNEXPECTED stale entry — that's drift
+    // between fetch-binaries' skip set and stage-pr-overlay's build set
+    // and means something is broken.
+
+    /// Helper: corrupt one named entry's cache_key_sha in a manifest.json
+    /// (leaves the others valid). Returns nothing — mutates in place.
+    fn corrupt_entry_sha(manifest_path: &Path, name: &str) {
+        let text = fs::read_to_string(manifest_path).unwrap();
+        let mut json: Value = serde_json::from_str(&text).unwrap();
+        let entries = json["entries"].as_array_mut().unwrap();
+        let mut hit = false;
+        for entry in entries.iter_mut() {
+            if entry.get("archive_name").is_none() {
+                continue;
+            }
+            if entry.get("program").and_then(|v| v.as_str()) == Some(name) {
+                entry["compatibility"]["cache_key_sha"] =
+                    Value::String("0".repeat(64));
+                hit = true;
+            }
+        }
+        assert!(hit, "no archive entry for program {name:?} in manifest");
+        fs::write(
+            manifest_path,
+            serde_json::to_string_pretty(&json).unwrap(),
+        )
+        .unwrap();
+    }
+
+    /// Two-library fixture with libZ corrupted: libY's sha is left valid
+    /// so it should still install regardless of --allow-stale's setting.
+    fn stage_two_libs_with_z_corrupted(label: &str) -> (PathBuf, PathBuf) {
+        let (staging, registry, _stage_cache) = stage(label, |registry| {
+            write_fixture(
+                registry,
+                "libY",
+                "1.0.0",
+                "library",
+                "mkdir -p $WASM_POSIX_DEP_OUT_DIR/lib && \
+                 echo ydata > $WASM_POSIX_DEP_OUT_DIR/lib/libY.a",
+                "[outputs]\nlibs = [\"lib/libY.a\"]\n",
+            );
+            write_fixture(
+                registry,
+                "libZ",
+                "1.0.0",
+                "library",
+                "mkdir -p $WASM_POSIX_DEP_OUT_DIR/lib && \
+                 echo zdata > $WASM_POSIX_DEP_OUT_DIR/lib/libZ.a",
+                "[outputs]\nlibs = [\"lib/libZ.a\"]\n",
+            );
+        });
+        let manifest_path = staging.join("manifest.json");
+        corrupt_entry_sha(&manifest_path, "libZ");
+        (staging, registry)
+    }
+
+    #[test]
+    fn install_release_skips_stale_when_on_allowlist() {
+        // libZ is corrupted; allowlist contains libZ → libZ skipped with
+        // a warning, libY still installs, run succeeds.
+        let (staging, registry) =
+            stage_two_libs_with_z_corrupted("allow-stale-on-list");
+        let install_cache = tempdir("allow-stale-on-list-cache");
+        let local_bin = tempdir("allow-stale-on-list-bin");
+
+        super::run(vec![
+            "--manifest".into(),
+            staging.join("manifest.json").display().to_string(),
+            "--archive-base".into(),
+            format!("file://{}", staging.display()),
+            "--cache-root".into(),
+            install_cache.display().to_string(),
+            "--local-binaries-dir".into(),
+            local_bin.display().to_string(),
+            "--registry".into(),
+            registry.display().to_string(),
+            "--abi".into(),
+            "4".into(),
+            "--allow-stale".into(),
+            "libZ".into(),
+        ])
+        .expect("--allow-stale containing libZ must permit run to succeed");
+
+        // libY's canonical entry must be in the cache (sha matched).
+        let libs_dir = install_cache.join("libs");
+        let entries: Vec<_> = fs::read_dir(&libs_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.file_name().into_string().unwrap())
+            .collect();
+        assert!(
+            entries.iter().any(|n| n.starts_with("libY-")),
+            "libY must have been installed; got cache entries: {entries:?}"
+        );
+        // libZ must NOT have been installed (skipped due to allowlist).
+        assert!(
+            entries.iter().all(|n| !n.starts_with("libZ-")),
+            "libZ must have been skipped; got cache entries: {entries:?}"
+        );
+    }
+
+    #[test]
+    fn install_release_still_rejects_stale_not_on_allowlist() {
+        // libZ is corrupted; allowlist contains an irrelevant name (libY)
+        // → libZ's mismatch is NOT covered by the allowlist, so the run
+        // must hard-fail. This is the safety property: the allowlist is
+        // a contract about WHICH packages are expected to differ, not
+        // a blanket bypass.
+        let (staging, registry) =
+            stage_two_libs_with_z_corrupted("allow-stale-not-on-list");
+        let install_cache = tempdir("allow-stale-not-on-list-cache");
+        let local_bin = tempdir("allow-stale-not-on-list-bin");
+
+        let err = super::run(vec![
+            "--manifest".into(),
+            staging.join("manifest.json").display().to_string(),
+            "--archive-base".into(),
+            format!("file://{}", staging.display()),
+            "--cache-root".into(),
+            install_cache.display().to_string(),
+            "--local-binaries-dir".into(),
+            local_bin.display().to_string(),
+            "--registry".into(),
+            registry.display().to_string(),
+            "--abi".into(),
+            "4".into(),
+            "--allow-stale".into(),
+            "libY".into(),
+        ])
+        .expect_err(
+            "libZ stale + only libY allowlisted must hard-fail (allowlist is a contract)",
+        );
+        assert!(
+            err.contains("libZ"),
+            "error must name the unexpectedly-stale package, got: {err}"
+        );
+        assert!(
+            err.contains("cache_key_sha") || err.contains("stale"),
+            "error must explain the staleness reason, got: {err}"
+        );
+    }
+
+    #[test]
+    fn install_release_allow_stale_accepts_csv() {
+        // CSV form lets the staging-build workflow pass a single
+        // computed string (`bash,nginx,...`) without splitting in shell.
+        // Functionally equivalent to repeated --allow-stale flags.
+        let (staging, registry) =
+            stage_two_libs_with_z_corrupted("allow-stale-csv");
+        let install_cache = tempdir("allow-stale-csv-cache");
+        let local_bin = tempdir("allow-stale-csv-bin");
+
+        super::run(vec![
+            "--manifest".into(),
+            staging.join("manifest.json").display().to_string(),
+            "--archive-base".into(),
+            format!("file://{}", staging.display()),
+            "--cache-root".into(),
+            install_cache.display().to_string(),
+            "--local-binaries-dir".into(),
+            local_bin.display().to_string(),
+            "--registry".into(),
+            registry.display().to_string(),
+            "--abi".into(),
+            "4".into(),
+            "--allow-stale".into(),
+            // CSV with whitespace + an irrelevant name mixed in.
+            "libQ, libZ , libR".into(),
+        ])
+        .expect("CSV allowlist containing libZ must permit run to succeed");
     }
 }

@@ -119,72 +119,37 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let host = stage_release::default_build_host();
     let mut overrides: BTreeSet<String> = BTreeSet::new();
 
-    for (_, m) in registry.walk_all()? {
-        if !matches!(m.kind, ManifestKind::Library | ManifestKind::Program) {
-            continue;
-        }
-        // Skip metadata-only manifests (no build script on disk).
-        // Mirrors stage_release::run.
-        if matches!(m.kind, ManifestKind::Program) {
-            let script_name = m
-                .build
-                .script
-                .clone()
-                .unwrap_or_else(|| format!("build-{}.sh", m.name));
-            let script_path = m.dir.join(&script_name);
-            if !script_path.is_file() {
-                continue;
+    let changed = changed_packages(&registry, &baseline_map, &arches, abi)?;
+    for (name, arch) in &changed {
+        let m = registry.load(name)?;
+        // Stage this archive.
+        match stage_release::stage_one(
+            &m,
+            &registry,
+            *arch,
+            abi,
+            &cache_root,
+            &out,
+            &timestamp,
+            &host,
+        ) {
+            Ok(archive_path) => {
+                eprintln!("staged {}", archive_path.display());
+                overrides.insert(m.name.clone());
             }
-        }
-        for &arch in &arches {
-            if !m.target_arches.contains(&arch) {
-                continue;
-            }
-            // Compute fresh memo per arch (same pattern as stage_release).
-            let mut chain: Vec<String> = Vec::new();
-            let mut memo: BTreeMap<String, [u8; 32]> = BTreeMap::new();
-            let sha = build_deps::compute_sha(&m, &registry, arch, abi, &mut memo, &mut chain)
-                .map_err(|e| format!("compute_sha for {} {:?}: {e}", m.name, arch.as_str()))?;
-            let sha_hex = hex(&sha);
-
-            let baseline_sha = baseline_map.get(&(m.name.clone(), arch.as_str().to_string()));
-            let changed = match baseline_sha {
-                Some(b) => *b != sha_hex,
-                None => true,
-            };
-            if !changed {
-                continue;
-            }
-
-            // Stage this archive.
-            match stage_release::stage_one(
-                &m,
-                &registry,
-                arch,
-                abi,
-                &cache_root,
-                &out,
-                &timestamp,
-                &host,
-            ) {
-                Ok(archive_path) => {
-                    eprintln!("staged {}", archive_path.display());
-                    overrides.insert(m.name.clone());
-                }
-                Err(e) => {
-                    if continue_on_error {
-                        eprintln!(
-                            "WARN stage_one {} {}: {e} — continuing under --continue-on-error",
-                            m.name,
-                            arch.as_str()
-                        );
-                    } else {
-                        return Err(format!(
-                            "stage_one {} {}: {e}",
-                            m.name,
-                            arch.as_str()
-                        ));
-                    }
+            Err(e) => {
+                if continue_on_error {
+                    eprintln!(
+                        "WARN stage_one {} {}: {e} — continuing under --continue-on-error",
+                        m.name,
+                        arch.as_str()
+                    );
+                } else {
+                    return Err(format!(
+                        "stage_one {} {}: {e}",
+                        m.name,
+                        arch.as_str()
+                    ));
                 }
             }
         }
@@ -244,9 +209,75 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     Ok(())
 }
 
+/// Walk the registry, return the `(name, arch)` pairs that should be
+/// staged into the PR overlay — i.e. those whose locally-computed
+/// `cache_key_sha` differs from the baseline manifest's stamped value
+/// (or whose name has no entry in the baseline at all — new packages
+/// are always "changed").
+///
+/// Shared between `stage-pr-overlay` (which BUILDS each pair) and
+/// `cache-key-diff` (which EMITS the names so fetch-binaries can
+/// allowlist them on its `install-release` call). Sharing this
+/// function is the safety property: fetch-binaries' skip set and
+/// stage-pr-overlay's build set are derived from the same logic, so
+/// they cannot drift.
+///
+/// Skips:
+/// * source-kind manifests (no archives ever staged).
+/// * program manifests with no on-disk build script (metadata-only).
+/// * (name, arch) pairs whose manifest doesn't opt into that arch
+///   via `target_arches`.
+pub(crate) fn changed_packages(
+    registry: &Registry,
+    baseline_map: &BTreeMap<(String, String), String>,
+    arches: &[TargetArch],
+    abi: u32,
+) -> Result<BTreeSet<(String, TargetArch)>, String> {
+    let mut changed: BTreeSet<(String, TargetArch)> = BTreeSet::new();
+    for (_, m) in registry.walk_all()? {
+        if !matches!(m.kind, ManifestKind::Library | ManifestKind::Program) {
+            continue;
+        }
+        // Skip metadata-only manifests (no build script on disk).
+        // Mirrors stage_release::run.
+        if matches!(m.kind, ManifestKind::Program) {
+            let script_name = m
+                .build
+                .script
+                .clone()
+                .unwrap_or_else(|| format!("build-{}.sh", m.name));
+            let script_path = m.dir.join(&script_name);
+            if !script_path.is_file() {
+                continue;
+            }
+        }
+        for &arch in arches {
+            if !m.target_arches.contains(&arch) {
+                continue;
+            }
+            // Compute fresh memo per arch (same pattern as stage_release).
+            let mut chain: Vec<String> = Vec::new();
+            let mut memo: BTreeMap<String, [u8; 32]> = BTreeMap::new();
+            let sha = build_deps::compute_sha(&m, registry, arch, abi, &mut memo, &mut chain)
+                .map_err(|e| format!("compute_sha for {} {:?}: {e}", m.name, arch.as_str()))?;
+            let sha_hex = hex(&sha);
+
+            let baseline_sha = baseline_map.get(&(m.name.clone(), arch.as_str().to_string()));
+            let is_changed = match baseline_sha {
+                Some(b) => *b != sha_hex,
+                None => true,
+            };
+            if is_changed {
+                changed.insert((m.name.clone(), arch));
+            }
+        }
+    }
+    Ok(changed)
+}
+
 /// Walk the baseline manifest's `entries` array, build a lookup from
 /// (program-name, arch) to `cache_key_sha` (hex string).
-fn build_baseline_map(manifest: &Value) -> BTreeMap<(String, String), String> {
+pub(crate) fn build_baseline_map(manifest: &Value) -> BTreeMap<(String, String), String> {
     let mut map: BTreeMap<(String, String), String> = BTreeMap::new();
     let entries = match manifest.get("entries").and_then(|v| v.as_array()) {
         Some(e) => e,

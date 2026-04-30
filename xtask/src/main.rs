@@ -12,6 +12,10 @@
 //!   install-release   Consumer side of V2: read manifest.json, fetch + verify
 //!                     library/program archives, mirror program outputs into
 //!                     local-binaries/.
+//!   cache-key-diff    Print CSV of package names whose locally-computed
+//!                     cache_key_sha differs from a baseline release manifest.
+//!                     Drives `install-release --allow-stale` for fetch-binaries
+//!                     in the staging-build CI flow.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -21,6 +25,7 @@ mod archive_stage;
 mod build_deps;
 mod build_manifest;
 mod bundle_program;
+mod cache_key_diff;
 mod deps_manifest;
 mod dump_abi;
 mod host_tool_probe;
@@ -39,7 +44,7 @@ fn main() -> ExitCode {
         None => {
             eprintln!("usage: xtask <subcommand> [args...]");
             eprintln!(
-                "subcommands: dump-abi, build-manifest, bundle-program, build-deps, stage-release, stage-pr-overlay, install-release"
+                "subcommands: dump-abi, build-manifest, bundle-program, build-deps, stage-release, stage-pr-overlay, install-release, cache-key-diff"
             );
             return ExitCode::from(2);
         }
@@ -53,6 +58,7 @@ fn main() -> ExitCode {
         "stage-release" => stage_release::run(rest),
         "stage-pr-overlay" => stage_pr_overlay::run(rest),
         "install-release" => install_release::run(rest),
+        "cache-key-diff" => cache_key_diff::run(rest),
         other => {
             eprintln!("xtask: unknown subcommand {other:?}");
             return ExitCode::from(2);

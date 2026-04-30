@@ -128,8 +128,21 @@ jobs:
         # from baseline (mariadb-test depends on programs/mariadb/mariadbd.wasm
         # being available locally). fetch-binaries materializes the
         # durable release into binaries/ where the resolver finds it.
+        #
+        # --auto-allow-stale: when this PR's deps.toml edits change a
+        # package's cache_key_sha (or — as in PR #389 — the cache_key_sha
+        # *formula* itself changes, shifting every package's sha), the
+        # durable manifest's stamped values are out of date for those
+        # packages. Without this flag install-release would hard-fail
+        # the entire run. Auto mode runs `xtask cache-key-diff` against
+        # the just-downloaded durable manifest to compute the precise
+        # set of names whose mismatch should skip-with-warning; any
+        # OTHER mismatch still hard-fails (drift detection). The same
+        # comparison drives stage-pr-overlay's build set, so the
+        # skip-set and build-set are guaranteed consistent.
         run: |
-          nix develop --accept-flake-config --command bash scripts/fetch-binaries.sh
+          nix develop --accept-flake-config --command \
+            bash scripts/fetch-binaries.sh --auto-allow-stale
 
       - name: Stage PR overlay
         id: stage
