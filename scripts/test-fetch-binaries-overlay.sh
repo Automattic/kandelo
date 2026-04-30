@@ -85,21 +85,25 @@ run_scenario_1() {
 
     setup_test_repo "$TEST_ROOT"
 
-    # Durable manifest: 2 entries (libzlib, libdinit).
+    # Durable manifest: 2 entries. Use realistic shape — `name` is
+    # the full archive filename (matches how stage-release emits
+    # entries), `program` is the package name.
     local DURABLE_SHA
     write_manifest_at "$TEST_ROOT/binaries/objects" DURABLE_SHA \
         "binaries-abi-v6-2026-04-01" \
         '[
-          {"name": "libzlib", "archive_name": "libzlib.tar.zst", "kind": "lib"},
-          {"name": "libdinit", "archive_name": "libdinit.tar.zst", "kind": "lib"}
+          {"name": "libzlib-1.0-rev1-wasm32-aaaaaaaa.tar.zst",  "program": "libzlib",  "archive_name": "libzlib-1.0-rev1-wasm32-aaaaaaaa.tar.zst",  "kind": "library"},
+          {"name": "libdinit-1.0-rev1-wasm32-bbbbbbbb.tar.zst", "program": "libdinit", "archive_name": "libdinit-1.0-rev1-wasm32-bbbbbbbb.tar.zst", "kind": "library"}
         ]'
 
-    # Overlay manifest: only dinit (changed in PR).
+    # Overlay manifest: only dinit (changed in PR), with a NEW
+    # cache_key_sha (different archive name than durable) — proves
+    # the filter matches on .program, not .name.
     local OVERLAY_SHA
     write_manifest_at "$TEST_ROOT/binaries/objects" OVERLAY_SHA \
         "pr-999-staging" \
         '[
-          {"name": "libdinit", "archive_name": "libdinit.tar.zst", "kind": "lib"}
+          {"name": "libdinit-1.0-rev1-wasm32-cccccccc.tar.zst", "program": "libdinit", "archive_name": "libdinit-1.0-rev1-wasm32-cccccccc.tar.zst", "kind": "library"}
         ]'
 
     # binaries.lock pins durable.
@@ -120,11 +124,24 @@ EOF
 }
 EOF
 
-    # Stub cargo: log invocation args, do nothing.
+    # Stub cargo: log invocation args + snapshot the --manifest file's
+    # contents so the test can assert on the filter result.
     STUB_BIN=$(mktemp -d -t fetch-overlay-stub.XXXXXX)
     cat > "$STUB_BIN/cargo" <<'STUB'
 #!/usr/bin/env bash
 echo "cargo $*" >> "$CARGO_LOG"
+# Find --manifest <path> and snapshot it. Each call writes to a
+# distinct snapshot.<N>.json so the test can inspect both.
+MAN=""
+PREV=""
+for a in "$@"; do
+    if [ "$PREV" = "--manifest" ]; then MAN="$a"; break; fi
+    PREV="$a"
+done
+if [ -n "$MAN" ] && [ -f "$MAN" ]; then
+    n=$(ls "$(dirname "$CARGO_LOG")"/manifest-snapshot.*.json 2>/dev/null | wc -l | tr -d ' ')
+    cp "$MAN" "$(dirname "$CARGO_LOG")/manifest-snapshot.$n.json"
+fi
 exit 0
 STUB
     chmod +x "$STUB_BIN/cargo"
@@ -154,6 +171,28 @@ STUB
 
     # Stdout should mention overlay setup.
     assert_contains "overlay tag log line" "$out" "overlay tag=pr-999-staging"
+
+    # Filter contents — the bug we hit on PR #378 was that fetch-binaries
+    # filtered on `.name` (the archive filename) rather than `.program`,
+    # so override entries stayed in the durable_filtered manifest and
+    # install-release tried (and failed) to install them from the
+    # durable URL.
+    local durable_filt="$TEST_ROOT/manifest-snapshot.0.json"
+    local overlay_filt="$TEST_ROOT/manifest-snapshot.1.json"
+    if [ -f "$durable_filt" ]; then
+        local durable_progs
+        durable_progs=$(jq -r '[.entries[].program] | sort | join(",")' "$durable_filt")
+        assert_eq "durable_filtered excludes overrides" "libzlib" "$durable_progs"
+    else
+        echo "  FAIL: missing durable_filtered snapshot"; FAIL=$((FAIL + 1))
+    fi
+    if [ -f "$overlay_filt" ]; then
+        local overlay_progs
+        overlay_progs=$(jq -r '[.entries[].program] | sort | join(",")' "$overlay_filt")
+        assert_eq "overlay_filtered keeps only overrides" "libdinit" "$overlay_progs"
+    else
+        echo "  FAIL: missing overlay_filtered snapshot"; FAIL=$((FAIL + 1))
+    fi
 }
 
 run_scenario_no_overlay() {

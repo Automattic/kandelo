@@ -317,15 +317,18 @@ if jq -e '.entries[] | select(.archive_name != null)' "$MANIFEST_OBJ" > /dev/nul
         HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
 
         # Compute filtered manifests when an overlay is in play:
-        #   durable_filtered = entries from durable manifest whose .name is NOT in overrides
-        #   overlay_filtered = entries from overlay manifest whose .name IS in overrides
+        #   durable_filtered = entries from durable manifest whose .program is NOT in overrides
+        #   overlay_filtered = entries from overlay manifest whose .program IS in overrides
+        # Filter on .program, not .name — .name is the full archive
+        # filename (e.g. "lamp-0.1.0-rev2-abi6-wasm32-5cc34f35.tar.zst")
+        # while overrides lists program names (e.g. "lamp").
         # The two are installed against different archive bases.
         DURABLE_MANIFEST="$MANIFEST_OBJ"
         DURABLE_FILTERED=""
         if [ -n "$OVERLAY_TAG" ]; then
             DURABLE_FILTERED=$(mktemp -t fetch-binaries-durable.XXXXXX).json
             jq --argjson overrides "$OVERLAY_OVERRIDES_JSON" '
-                .entries |= map(select(.name as $n | $overrides | index($n) | not))
+                .entries |= map(select(.program as $n | $overrides | index($n) | not))
             ' "$MANIFEST_OBJ" > "$DURABLE_FILTERED"
             DURABLE_MANIFEST="$DURABLE_FILTERED"
         fi
@@ -339,7 +342,7 @@ if jq -e '.entries[] | select(.archive_name != null)' "$MANIFEST_OBJ" > /dev/nul
         if [ -n "$OVERLAY_TAG" ]; then
             OVERLAY_FILTERED=$(mktemp -t fetch-binaries-overlay.XXXXXX).json
             jq --argjson overrides "$OVERLAY_OVERRIDES_JSON" '
-                .entries |= map(select(.name as $n | $overrides | index($n)))
+                .entries |= map(select(.program as $n | $overrides | index($n)))
             ' "$OVERLAY_MANIFEST_OBJ" > "$OVERLAY_FILTERED"
             echo "fetch-binaries: installing overlay archives from $OVERLAY_TAG..."
             cargo run -p xtask --target "$HOST_TARGET" --quiet -- install-release \
