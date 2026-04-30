@@ -40,6 +40,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let mut cache_root: Option<PathBuf> = None;
     let mut abi: Option<u32> = None;
     let mut arches: Vec<TargetArch> = Vec::new();
+    let mut continue_on_error = false;
 
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
@@ -72,6 +73,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             "--arch" => arches.push(parse_target_arch(
                 &it.next().ok_or("--arch requires wasm32|wasm64")?,
             )?),
+            "--continue-on-error" => continue_on_error = true,
             other => return Err(format!("unknown arg {other:?}")),
         }
     }
@@ -155,7 +157,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             }
 
             // Stage this archive.
-            let archive_path = stage_release::stage_one(
+            match stage_release::stage_one(
                 &m,
                 &registry,
                 arch,
@@ -164,11 +166,27 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                 &out,
                 &timestamp,
                 &host,
-            )
-            .map_err(|e| format!("stage_one {} {}: {e}", m.name, arch.as_str()))?;
-            eprintln!("staged {}", archive_path.display());
-
-            overrides.insert(m.name.clone());
+            ) {
+                Ok(archive_path) => {
+                    eprintln!("staged {}", archive_path.display());
+                    overrides.insert(m.name.clone());
+                }
+                Err(e) => {
+                    if continue_on_error {
+                        eprintln!(
+                            "WARN stage_one {} {}: {e} — continuing under --continue-on-error",
+                            m.name,
+                            arch.as_str()
+                        );
+                    } else {
+                        return Err(format!(
+                            "stage_one {} {}: {e}",
+                            m.name,
+                            arch.as_str()
+                        ));
+                    }
+                }
+            }
         }
     }
 

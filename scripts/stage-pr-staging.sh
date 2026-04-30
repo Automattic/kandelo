@@ -100,10 +100,16 @@ for a in "${ARCHES[@]}"; do
 done
 
 echo "== Staging PR overlay for PR #$PR (arches: ${ARCHES[*]}) =="
+# --continue-on-error: a single package whose source build fails on
+# the runner (e.g. mariadb-test wants the full mysql-test directory
+# from a host MariaDB build) should not abort the whole overlay.
+# Such packages stay at their durable-release version; only packages
+# that successfully (re)stage become overrides.
 cargo run -p xtask --target "$HOST_TARGET" --quiet -- stage-pr-overlay \
     --baseline-manifest "$BASELINE_TMP" \
     --staging-tag "pr-${PR}-staging" \
     --out "$STAGING" \
+    --continue-on-error \
     "${arch_args[@]}"
 
 if [ ! -f "$STAGING/binaries.lock.pr" ]; then
