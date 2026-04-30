@@ -24,18 +24,16 @@ import { addDinitInit } from "./dinit-image-helpers";
 const REPO_ROOT = findRepoRoot();
 const OUT_FILE = join(REPO_ROOT, "examples", "browser", "public", "nginx.vfs");
 
-// Single-process nginx config — the standalone demo previously loaded
-// examples/nginx/nginx.conf which uses `master_process on; worker_processes 2;`,
-// but kernel-side TCP connection injection isn't reliably routed to fork
-// children right now (LAMP works because its inline config is single-process).
-// Until multi-process listener sharing is restored, the demo runs nginx
-// without a master + worker split. Functionally equivalent for the static
-// page this image serves.
+// Multi-process nginx config — master + 2 workers, mirroring the
+// standalone CLI demo's nginx.conf. AF_INET listening sockets share a
+// cross-process accept queue (see crates/kernel/src/socket.rs), so
+// connections injected from the host are pulled by whichever worker
+// happens to be ready, matching POSIX shared-listener semantics.
 const NGINX_CONF = `\
 user nobody;
 daemon off;
-master_process off;
-worker_processes 0;
+master_process on;
+worker_processes 2;
 error_log stderr info;
 pid /tmp/nginx.pid;
 

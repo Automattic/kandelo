@@ -30,7 +30,7 @@ use crate::terminal::{TerminalState, WinSize, NCCS};
 
 const FORK_MAGIC: u32 = 0x464F524B; // "FORK"
 const EXEC_MAGIC: u32 = 0x45584543; // "EXEC"
-const FORK_VERSION: u32 = 6;
+const FORK_VERSION: u32 = 7;
 
 // Bounds for deserialization to prevent OOM from malformed buffers.
 const MAX_FDS: u32 = 65536;
@@ -506,6 +506,9 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
                 }
                 // Global pipes flag (cross-process loopback)
                 w.write_u32(if sock.global_pipes { 1 } else { 0 })?;
+                // Shared listener backlog idx (AF_INET listening sockets).
+                // 0xFFFFFFFF = None.
+                w.write_u32(sock.shared_backlog_idx.map(|v| v as u32).unwrap_or(0xFFFFFFFF))?;
                 // bind_path for AF_UNIX
                 match &sock.bind_path {
                     Some(p) => {
@@ -862,6 +865,17 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
             sock.peer_port = peer_port;
             sock.listen_backlog = listen_backlog;
             sock.global_pipes = r.read_u32()? != 0;
+            // Shared listener backlog idx (AF_INET listening sockets).
+            // Increment refcount so the child holds an additional reference
+            // — close()/exit drop one ref, last drop frees the slot.
+            let sb_raw = r.read_u32()?;
+            sock.shared_backlog_idx = if sb_raw == 0xFFFFFFFF {
+                None
+            } else {
+                let idx = sb_raw as usize;
+                unsafe { crate::socket::shared_listener_backlog_table().add_ref(idx) };
+                Some(idx)
+            };
             // bind_path for AF_UNIX
             if r.remaining() >= 4 {
                 let bp_len = r.read_u32()?;

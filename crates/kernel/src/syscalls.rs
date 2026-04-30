@@ -523,6 +523,12 @@ pub fn sys_close(
                     if let Some(net_handle) = sock.host_net_handle {
                         let _ = host.host_net_close(net_handle);
                     }
+                    // Drop our reference to the shared listener backlog (if any).
+                    // The slot is freed when the last process holding the
+                    // listener closes it.
+                    if let Some(shared_idx) = sock.shared_backlog_idx {
+                        unsafe { crate::socket::shared_listener_backlog_table().dec_ref(shared_idx) };
+                    }
                     let use_global = sock.global_pipes;
                     if let Some(send_idx) = sock.send_buf_idx {
                         let pipe = if use_global {
@@ -4887,8 +4893,16 @@ pub fn sys_listen(proc: &mut Process, host: &mut dyn HostIO, fd: i32, _backlog: 
     }
     sock.state = SocketState::Listening;
 
-    // Notify the host for AF_INET sockets so it can open a real TCP server
+    // For AF_INET listeners, allocate a shared accept queue that fork
+    // children will inherit. This way every process sharing this listener
+    // pulls from the same queue (POSIX semantics) — see socket.rs.
     let domain = sock.domain;
+    if domain == SocketDomain::Inet && sock.shared_backlog_idx.is_none() {
+        let backlog_idx = unsafe { crate::socket::shared_listener_backlog_table().alloc() };
+        sock.shared_backlog_idx = Some(backlog_idx);
+    }
+
+    // Notify the host for AF_INET sockets so it can open a real TCP server
     let port = sock.bind_port;
     let addr = sock.bind_addr;
     if domain == SocketDomain::Inet {
@@ -4902,7 +4916,7 @@ pub fn sys_listen(proc: &mut Process, host: &mut dyn HostIO, fd: i32, _backlog: 
 /// Pops a pending connection from the listener's backlog, creates an OFD + FD
 /// for the accepted socket, and returns the new fd.
 pub fn sys_accept(proc: &mut Process, _host: &mut dyn HostIO, fd: i32) -> Result<i32, Errno> {
-    use crate::socket::SocketState;
+    use crate::socket::{SocketDomain, SocketInfo, SocketState, SocketType};
 
     let entry = proc.fd_table.get(fd)?;
     let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
@@ -4914,6 +4928,41 @@ pub fn sys_accept(proc: &mut Process, _host: &mut dyn HostIO, fd: i32) -> Result
     let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
     if sock.state != SocketState::Listening {
         return Err(Errno::EINVAL);
+    }
+
+    // AF_INET listeners use a shared cross-process accept queue. Try
+    // popping from there first; the accepted SocketInfo is created
+    // lazily here in the accepting process. See socket.rs.
+    if let Some(shared_idx) = sock.shared_backlog_idx {
+        let bind_addr = sock.bind_addr;
+        let bind_port = sock.bind_port;
+        let pending = unsafe { crate::socket::shared_listener_backlog_table().pop(shared_idx) };
+        if let Some(pc) = pending {
+            let mut accepted = SocketInfo::new(SocketDomain::Inet, SocketType::Stream, 0);
+            accepted.state = SocketState::Connected;
+            accepted.recv_buf_idx = Some(pc.recv_pipe_idx);
+            accepted.send_buf_idx = Some(pc.send_pipe_idx);
+            accepted.bind_addr = bind_addr;
+            accepted.bind_port = bind_port;
+            accepted.peer_addr = pc.peer_addr;
+            accepted.peer_port = pc.peer_port;
+            accepted.global_pipes = true;
+            let accepted_sock_idx = proc.sockets.alloc(accepted);
+            let host_handle = -((accepted_sock_idx as i64) + 1);
+            let ofd_idx = proc.ofd_table.create(
+                FileType::Socket,
+                O_RDWR,
+                host_handle,
+                b"/dev/socket".to_vec(),
+            );
+            let new_fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), 0)?;
+            return Ok(new_fd);
+        }
+        // Shared queue empty — fall through to per-process backlog
+        // for AF_UNIX-style entries (none for INET listeners). We return
+        // EAGAIN below if both queues are empty.
+        let _ = SocketType::Stream; // silence unused-import warning if path unused
+        let _ = SocketDomain::Inet;
     }
 
     let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
@@ -5505,8 +5554,18 @@ fn poll_check(proc: &mut Process, fds: &mut [WasmPollFd]) -> i32 {
                         revents |= POLLERR;
                     }
                     // Listening socket: POLLIN if backlog has pending connections
-                    if sock.state == SocketState::Listening && !sock.listen_backlog.is_empty() {
-                        if pollfd.events & POLLIN != 0 {
+                    // Check both the shared cross-process queue (AF_INET) and the
+                    // per-process backlog (AF_UNIX same-process).
+                    if sock.state == SocketState::Listening {
+                        let mut has_pending = !sock.listen_backlog.is_empty();
+                        if !has_pending {
+                            if let Some(shared_idx) = sock.shared_backlog_idx {
+                                has_pending = unsafe {
+                                    crate::socket::shared_listener_backlog_table().len(shared_idx) > 0
+                                };
+                            }
+                        }
+                        if has_pending && (pollfd.events & POLLIN != 0) {
                             revents |= POLLIN;
                         }
                     }

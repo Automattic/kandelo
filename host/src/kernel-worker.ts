@@ -2952,10 +2952,12 @@ export class CentralizedKernelWorker {
       (pid: number, pipeIdx: number, bufPtr: bigint, bufLen: number) => number;
     const mem = this.getKernelMem();
 
+    // Injected-connection pipes live in the global pipe table; pid=0
+    // tells kernel_pipe_read to use it directly. See kernel_inject_connection.
     for (const conn of conns) {
       // Drain all available data from the send pipe (not just one chunk)
       for (;;) {
-        const readN = pipeRead(pid, conn.sendPipeIdx, BigInt(conn.scratchOffset), 65536);
+        const readN = pipeRead(0, conn.sendPipeIdx, BigInt(conn.scratchOffset), 65536);
         if (readN <= 0) break;
         const outData = Buffer.from(mem.slice(conn.scratchOffset, conn.scratchOffset + readN));
         if (!conn.clientSocket.destroyed) {
@@ -6464,13 +6466,20 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    // Wake any blocked poll/accept in the target process — the listening
-    // socket's backlog now has a new entry (POLLIN should be set).
+    // Wake any blocked poll/accept anywhere — the listener's shared
+    // accept queue now has a new entry, and any worker sharing the
+    // listener can pick it up. Broad wake covers all of them.
     this.scheduleWakeBlockedRetries();
 
     const sendPipeIdx = recvPipeIdx + 1;
 
-    // Get kernel pipe access functions
+    // The injected pipes live in the global pipe table (see
+    // kernel_inject_connection in crates/kernel/src/wasm_api.rs). Pass
+    // pid=0 to the kernel pipe APIs as a sentinel meaning "use the
+    // global pipe table" — needed because any process sharing the
+    // listener can accept this connection, so the pipes can't live in
+    // a single process's per-pid pipe table.
+    const GLOBAL_PIPE_PID = 0;
     const pipeWrite = this.kernelInstance!.exports.kernel_pipe_write as
       (pid: number, pipeIdx: number, bufPtr: bigint, bufLen: number) => number;
     const pipeRead = this.kernelInstance!.exports.kernel_pipe_read as
@@ -6500,7 +6509,7 @@ export class CentralizedKernelWorker {
         const chunk = inboundQueue[0]!;
         const toWrite = Math.min(chunk.length, 65536);
         mem.set(chunk.subarray(0, toWrite), scratchOffset);
-        const written = pipeWrite(pid, recvPipeIdx, BigInt(scratchOffset), toWrite);
+        const written = pipeWrite(GLOBAL_PIPE_PID, recvPipeIdx, BigInt(scratchOffset), toWrite);
         if (written <= 0) break; // Pipe full, retry next pump
         if (written >= chunk.length) {
           inboundQueue.shift();
@@ -6509,7 +6518,7 @@ export class CentralizedKernelWorker {
         }
       }
       if (clientEnded && inboundQueue.length === 0) {
-        pipeCloseWrite(pid, recvPipeIdx);
+        pipeCloseWrite(GLOBAL_PIPE_PID, recvPipeIdx);
       }
     };
 
@@ -6521,7 +6530,7 @@ export class CentralizedKernelWorker {
       // Responses larger than 65KB (e.g. 662KB site-editor.php) need
       // multiple reads to fully transfer.
       for (;;) {
-        const readN = pipeRead(pid, sendPipeIdx, BigInt(scratchOffset), 65536);
+        const readN = pipeRead(GLOBAL_PIPE_PID, sendPipeIdx, BigInt(scratchOffset), 65536);
         if (readN <= 0) break;
         totalRead += readN;
         const outData = Buffer.from(mem.slice(scratchOffset, scratchOffset + readN));
@@ -6553,7 +6562,7 @@ export class CentralizedKernelWorker {
       const readN = drainOutbound();
 
       // Check if PHP closed its write end of the send pipe
-      const writeOpen = pipeIsWriteOpen(pid, sendPipeIdx);
+      const writeOpen = pipeIsWriteOpen(GLOBAL_PIPE_PID, sendPipeIdx);
       if (writeOpen === 0 && readN === 0) {
         if (!clientSocket.destroyed) {
           clientSocket.end();
@@ -6623,8 +6632,8 @@ export class CentralizedKernelWorker {
       // Close the host's ends of both pipes:
       //   recvPipe: host is the writer → close write end
       //   sendPipe: host is the reader → close read end
-      pipeCloseWrite(pid, recvPipeIdx);
-      pipeCloseRead(pid, sendPipeIdx);
+      pipeCloseWrite(GLOBAL_PIPE_PID, recvPipeIdx);
+      pipeCloseRead(GLOBAL_PIPE_PID, sendPipeIdx);
       connections.delete(clientSocket);
       // Remove from tcpConnections tracking
       const arr = this.tcpConnections?.get(pid);
