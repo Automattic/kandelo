@@ -44,7 +44,13 @@
           packages = [
             rustToolchain
             llvmTree
-            pkgs.nodejs_22
+            # Node 24, not 22: the host code constructs
+            # WebAssembly.Memory with address: "i64" + BigInt
+            # initial/max (memory64), which V8 12.4 (Node 22) does
+            # not enable by default. V8 12.9 (Node 24) ships with
+            # memory64 on, matching the host Macs the team develops
+            # on (homebrew node 24/25).
+            pkgs.nodejs_24
             pkgs.erlang_28
             pkgs.cmake
             pkgs.autoconf
@@ -79,7 +85,7 @@
               esac
             fi
             unset __repo_root
-            echo "wasm-posix-kernel dev shell — LLVM 21, Rust (pinned via rust-toolchain.toml), Node 22, Erlang 28, SDK on PATH"
+            echo "wasm-posix-kernel dev shell — LLVM 21, Rust (pinned via rust-toolchain.toml), Node 24, Erlang 28, SDK on PATH"
           '';
         };
       });

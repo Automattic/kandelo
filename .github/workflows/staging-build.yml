@@ -125,12 +125,6 @@ jobs:
           '
 
       - name: Run cargo + vitest tests
-        # NODE_OPTIONS enables wasm memory64 on Node.js builds where
-        # it is not yet on by default; the kernel uses memory64 (the
-        # tests construct WebAssembly.Memory with `address: "i64"` and
-        # BigInt initial/max).
-        env:
-          NODE_OPTIONS: "--experimental-wasm-memory64"
         run: |
           nix develop --accept-flake-config --command bash -c '
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")

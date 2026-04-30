@@ -200,8 +200,6 @@ jobs:
         # by any binaries.lock), but no merge-gate status is set, so
         # the PR can't merge. Contributor fixes tests, re-applies
         # ready-to-ship; next run cuts a fresh durable.
-        env:
-          NODE_OPTIONS: "--experimental-wasm-memory64"
         run: |
           nix develop --accept-flake-config --command bash -c '
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
