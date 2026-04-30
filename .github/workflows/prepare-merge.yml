@@ -167,7 +167,7 @@ jobs:
             for arch_dir in sysroot sysroot64; do
               if [ ! -f "$arch_dir/include/c++/v1/__config" ]; then
                 mkdir -p "$arch_dir/include/c++/v1"
-                cp -R "$src"/* "$arch_dir/include/c++/v1/"
+                cp -RL "$src"/* "$arch_dir/include/c++/v1/"
                 chmod -R u+w "$arch_dir/include/c++/v1/"
                 cs="$arch_dir/include/c++/v1/__config_site"
                 if [ -f "$cs" ]; then
