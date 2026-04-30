@@ -32,6 +32,7 @@ jobs:
     permissions:
       contents: write          # push lockfile commit to PR branch + create release
       pull-requests: write     # auto-merge, comments, label management
+      statuses: write          # post merge-gate commit status
     env:
       PR_NUMBER: ${{ github.event.pull_request.number }}
       PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
