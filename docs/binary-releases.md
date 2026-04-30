@@ -373,6 +373,24 @@ Not supported in v1 — they fall back to the resolver's source-build
 path locally. Two-stage `workflow_run` support is documented as
 future work in §9.1 of the design doc.
 
+### Post-upload integrity check
+
+Both `scripts/publish-release.sh` and `scripts/publish-pr-staging.sh`
+run `scripts/verify-release.sh --tag <tag>` after the upload step. The
+check downloads every archive listed in `manifest.json` and confirms
+its bytes hash to the manifest's `archive_sha256`. Catches drift
+between manifest entries and the actual asset bytes — the kind of
+inconsistency that bit `binaries-abi-v6-2026-04-29` (manifest
+re-uploaded with new shas while archive bytes stayed old, surfaced as
+`./run.sh browser` failures days later).
+
+`verify-release.sh` is also runnable standalone for diagnosing an
+existing release:
+
+```
+scripts/verify-release.sh --tag binaries-abi-v6-2026-04-29
+```
+
 ### Reproducible toolchain via Nix
 
 `staging-build.yml` and `prepare-merge.yml` install Nix on the

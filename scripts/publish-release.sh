@@ -114,6 +114,16 @@ gh release create "$TAG" \
 
 echo
 echo "Released: https://github.com/brandonpayton/wasm-posix-kernel/releases/tag/$TAG"
+
+# Post-upload verification: walk the just-published release and confirm
+# every archive's bytes hash to its manifest entry's archive_sha256.
+# Catches the kind of drift that bit binaries-abi-v6-2026-04-29 (manifest
+# re-uploaded with new shas while archive bytes stayed old, surfaced as
+# `./run.sh browser` failures days later).
+echo
+echo "Verifying release consistency..."
+"$REPO_ROOT/scripts/verify-release.sh" --tag "$TAG"
+
 echo
 echo "Commit abi/manifest.json into the repo as the reference copy if"
 echo "you haven't already:"

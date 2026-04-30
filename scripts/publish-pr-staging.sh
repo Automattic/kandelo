@@ -129,3 +129,11 @@ fi
 
 echo
 echo "Published: https://github.com/brandonpayton/wasm-posix-kernel/releases/tag/$TAG"
+
+# Post-upload verification — see publish-release.sh for the rationale.
+# Failures here mean the release we just published has manifest <-> archive
+# drift; reviewers and downstream CI would all hit it on fetch.
+echo
+echo "Verifying release consistency..."
+OWNER_REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
+"$REPO_ROOT/scripts/verify-release.sh" --tag "$TAG" --owner-repo "$OWNER_REPO"
