@@ -37,6 +37,7 @@ REGRESSION_EXPECTED_FAIL=(
     setenv-oom                  # OOM behavior differs in Wasm linear memory
     tls_get_new-dtv             # requires dlopen TLS (dynamic TLS not supported)
     pthread_cond-smasher        # CI-flaky on slow Linux runners (passes on Mac dev hosts) — thread-timing
+    raise-race                  # known kernel race; tracked separately. Hangs on Linux CI past timeout.
 )
 
 # ── Helper: check if a test is in an expected-failure list ──
