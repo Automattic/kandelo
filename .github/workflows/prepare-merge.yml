@@ -166,14 +166,12 @@ jobs:
       - name: Stage durable release
         run: |
           mkdir -p /tmp/durable
-          nix develop --accept-flake-config --command bash -c '
-            source sdk/activate.sh
+          nix develop --accept-flake-config --command \
             scripts/stage-release.sh \
               --out /tmp/durable \
               --tag ${{ steps.tag.outputs.tag }} \
               --arch wasm32 \
               --arch wasm64
-          '
 
       - name: Publish durable release
         run: |
@@ -203,12 +201,8 @@ jobs:
         # by any binaries.lock), but no merge-gate status is set, so
         # the PR can't merge. Contributor fixes tests, re-applies
         # ready-to-ship; next run cuts a fresh durable.
-        #
-        # vitest's global-setup compiles a fixture C file via
-        # wasm32posix-cc — needs sdk/activate.sh sourced.
         run: |
           nix develop --accept-flake-config --command bash -c '
-            source sdk/activate.sh
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
             cargo test -p wasm-posix-kernel --target "$HOST_TARGET" --lib
             cd host && npx vitest run

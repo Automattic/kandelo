@@ -84,14 +84,12 @@ jobs:
         id: stage
         run: |
           mkdir -p /tmp/pr-staging
-          nix develop --accept-flake-config --command bash -c '
-            source sdk/activate.sh
+          nix develop --accept-flake-config --command \
             scripts/stage-pr-staging.sh \
               --pr ${{ github.event.pull_request.number }} \
               --out /tmp/pr-staging \
               --arch wasm32 \
               --arch wasm64
-          '
           override_count=$(jq '.overrides | length' /tmp/pr-staging/binaries.lock.pr)
           echo "override_count=$override_count" >> $GITHUB_OUTPUT
           echo "overrides=$(jq -r '.overrides | join(", ")' /tmp/pr-staging/binaries.lock.pr)" >> $GITHUB_OUTPUT
@@ -122,12 +120,8 @@ jobs:
           '
 
       - name: Run cargo + vitest tests
-        # vitest's global-setup compiles a fixture C file via
-        # wasm32posix-cc, which lives in sdk/bin/ — needs activate.sh
-        # sourced so the SDK shim is on PATH inside the nix shell.
         run: |
           nix develop --accept-flake-config --command bash -c '
-            source sdk/activate.sh
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
             cargo test -p wasm-posix-kernel --target "$HOST_TARGET" --lib
             cd host && npx vitest run

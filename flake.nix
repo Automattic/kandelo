@@ -64,7 +64,22 @@
             export LLVM_BIN=${llvmTree}/bin
             export LLVM_PREFIX=${llvmTree}
             export LLVM_VERSION=21
-            echo "wasm-posix-kernel dev shell — LLVM 21, Rust (pinned via rust-toolchain.toml), Node 22, Erlang 28"
+            # Put the worktree-local SDK shims on PATH so wasm32posix-cc
+            # / wasm64posix-cc resolve without requiring contributors to
+            # source sdk/activate.sh manually. Mirrors what activate.sh
+            # does — kept idempotent + tolerant of being run from a
+            # subdirectory by anchoring on the flake's repo root via
+            # `git rev-parse`. Falls back to $PWD if git isn't usable
+            # (shouldn't happen in this repo, but cheap to guard).
+            __repo_root=$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")
+            if [ -d "$__repo_root/sdk/bin" ]; then
+              case ":$PATH:" in
+                *:"$__repo_root/sdk/bin":*) ;;
+                *) export PATH="$__repo_root/sdk/bin:$PATH" ;;
+              esac
+            fi
+            unset __repo_root
+            echo "wasm-posix-kernel dev shell — LLVM 21, Rust (pinned via rust-toolchain.toml), Node 22, Erlang 28, SDK on PATH"
           '';
         };
       });
