@@ -74,7 +74,8 @@ jobs:
           path: |
             sysroot
             sysroot64
-          key: musl-sysroot-${{ runner.os }}-${{ hashFiles('scripts/build-musl.sh', 'musl-overlay/**', 'glue/**') }}
+          # v2: now also caches the wasm64 sysroot (added 2026-04-30).
+          key: musl-sysroot-v2-${{ runner.os }}-${{ hashFiles('scripts/build-musl.sh', 'musl-overlay/**', 'glue/**') }}
 
       - name: Build musl sysroot (wasm32 + wasm64)
         if: steps.cache-sysroot.outputs.cache-hit != 'true'
