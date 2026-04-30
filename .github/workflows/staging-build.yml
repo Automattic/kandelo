@@ -122,8 +122,12 @@ jobs:
           '
 
       - name: Run cargo + vitest tests
+        # vitest's global-setup compiles a fixture C file via
+        # wasm32posix-cc, which lives in sdk/bin/ — needs activate.sh
+        # sourced so the SDK shim is on PATH inside the nix shell.
         run: |
           nix develop --accept-flake-config --command bash -c '
+            source sdk/activate.sh
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
             cargo test -p wasm-posix-kernel --target "$HOST_TARGET" --lib
             cd host && npx vitest run
