@@ -626,6 +626,46 @@ That is the strict-equivalence check the design relies on:
 the archive is honored if and only if its source-side inputs
 hash to exactly what this checkout would produce.
 
+### Iterating on a package locally
+
+When you edit an `examples/libs/<name>/deps.toml` (or any input
+that changes the package's `cache_key_sha` — `revision`,
+`source.url`, `source.sha256`, transitive deps), the published
+release manifest goes stale relative to your local state. By
+default, `./run.sh fetch` and `./run.sh browser` then abort with:
+
+```
+xtask install-release: <name> (<arch>): manifest.json cache_key_sha
+"<published>" does not match locally-computed "<local>" — the
+manifest is stale relative to this consumer's deps.toml
+```
+
+That is the "Why `cache_key_sha` is the strict equivalence
+check" rejection above, surfaced at the install-release seam.
+For day-to-day iteration — bumping `revision` to test a new
+compiler flag, swapping a `[source]` URL while debugging —
+re-publishing a release just to satisfy the gate is wasted
+motion. Pass `--allow-stale` instead:
+
+```bash
+./run.sh browser --allow-stale          # one-shot
+./run.sh fetch   --allow-stale          # also works for any subcommand
+WASM_POSIX_ALLOW_STALE=1 ./run.sh ...   # sticky for the shell session
+```
+
+With the flag set, `install-release` skips the mismatched
+manifest entries (a one-line diagnostic per skip) and continues
+with the rest of the manifest. The skipped packages then fall
+through the resolver chain on the next `cargo xtask build-deps
+resolve <name>` — `local-libs/` first, then the content-addressed
+cache, then a source build via `build-<name>.sh`. Outputs land
+under `local-binaries/programs/<arch>/`, which the Vite resolver
+and `scripts/resolve-binary.sh` already prefer over `binaries/`.
+
+`binaries/` itself stays release-pure regardless of the flag —
+the entries it gets are the ones the manifest agreed on. CI does
+not pass `--allow-stale` and remains strict-by-construction.
+
 ### Worked example: zlib
 
 Source manifest at `examples/libs/zlib/deps.toml`:
