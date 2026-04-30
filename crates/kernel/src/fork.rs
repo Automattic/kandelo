@@ -1255,9 +1255,15 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
     };
 
     // ── Program break ──
-    let program_break = r.read_u32()?;
-    let mut memory = MemoryManager::new();
-    memory.set_brk(program_break as usize);
+    // Read but discard: POSIX exec resets the program break (Linux does the
+    // same), and the host calls `kernel_set_brk_base` with the new program's
+    // `__heap_base` immediately after exec to install the correct value
+    // before `_start` runs. Preserving the previous program's brk here would
+    // leave malloc allocating from inside the new program's stack region
+    // when the new program has a larger data section than the old one
+    // (e.g. /bin/sh exec'ing mariadbd).
+    let _program_break = r.read_u32()?;
+    let memory = MemoryManager::new();
 
     Ok(Process {
         pid,
@@ -1583,7 +1589,13 @@ mod tests {
     }
 
     #[test]
-    fn test_exec_inherits_program_break() {
+    fn test_exec_resets_program_break() {
+        // POSIX/Linux: exec resets the program break. The host re-installs
+        // it via `kernel_set_brk_base(__heap_base)` immediately after, so
+        // the new program's malloc gets a value above its data + stack
+        // region instead of inheriting an arbitrary value from the prior
+        // program (which could land inside the new program's stack region
+        // when the new program has a larger data section).
         let mut proc = Process::new(1);
         proc.memory.set_brk(0x02000000);
 
@@ -1591,7 +1603,14 @@ mod tests {
         let written = serialize_exec_state(&proc, &mut buf).unwrap();
         let child = deserialize_exec_state(&buf[..written], 1).unwrap();
 
-        assert_eq!(child.memory.get_brk(), 0x02000000);
+        // Default fallback (no `set_brk_base` call yet); host overrides
+        // this with the new program's `__heap_base` before `_start` runs.
+        let default_brk = {
+            let m = crate::memory::MemoryManager::new();
+            m.get_brk()
+        };
+        assert_eq!(child.memory.get_brk(), default_brk);
+        assert_ne!(child.memory.get_brk(), 0x02000000);
     }
 
     #[test]
