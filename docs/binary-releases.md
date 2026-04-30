@@ -360,12 +360,35 @@ string bump in a same-PR push doesn't invalidate the overlay.
 
 When deploying these workflows for the first time, the maintainer
 must:
-- Allow `github-actions[bot]` (or whatever account `GITHUB_TOKEN`
-  resolves to) to push to PR branches via repository permissions.
-  The lockfile bump pushes to PR branches, not main.
-- Create the `ready-to-ship` label
-  (`gh label create ready-to-ship --color 0E8A16 --description ...`)
-  if absent.
+
+- Create the `ready-to-ship` label:
+  ```
+  gh label create ready-to-ship --color 0E8A16 \
+    --description "Trigger prepare-merge.yml: build, publish durable release, push lockfile bump, auto-merge."
+  ```
+- Allow `github-actions[bot]` to push to PR branches via repository
+  permissions. The lockfile bump pushes to PR branches, not main.
+- **Require the `merge-gate` status check on `main`** in branch
+  protection. `prepare-merge.yml` posts `merge-gate=success` on the
+  lockfile-bump commit only after a fresh durable release has been
+  published. Without this required check, PRs could be merged
+  without ever cutting a fresh durable release — the lockfile on
+  main would be a step behind whatever `deps.toml` says. Admins
+  retain bypass via the standard branch-protection override (or
+  "Allow specified actors to bypass required pull requests").
+
+  To configure via the GitHub UI: Settings → Branches → branch
+  protection rule for `main` → "Require status checks to pass" →
+  add `merge-gate`.
+
+  To configure via the API (idempotent):
+  ```
+  gh api --method PUT \
+    -H "Accept: application/vnd.github+json" \
+    "/repos/<owner>/<repo>/branches/main/protection/required_status_checks" \
+    -f strict=true \
+    -F 'contexts[]=merge-gate'
+  ```
 
 ### Fork PRs
 

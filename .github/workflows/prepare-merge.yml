@@ -38,15 +38,31 @@ jobs:
       PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - name: Verify PR approved + required checks green
+      - name: Verify PR review state + required checks green
         id: gate
         run: |
+          # reviewDecision values:
+          #   APPROVED          — at least one approving review, branch
+          #                       protection requires reviews
+          #   REVIEW_REQUIRED   — branch protection requires reviews,
+          #                       none yet (block)
+          #   CHANGES_REQUESTED — at least one CHANGES_REQUESTED review
+          #                       (block)
+          #   ""/null           — no review policy on the branch (solo
+          #                       maintainer flows, internal repos)
+          # We block REVIEW_REQUIRED and CHANGES_REQUESTED. Empty/null
+          # is allowed — the workflow itself is the merge gate, not
+          # a substitute for branch protection. Repos that want to
+          # enforce review should configure required reviewers on
+          # main, which surfaces as REVIEW_REQUIRED here.
           REVIEW=$(gh pr view "$PR_NUMBER" --repo ${{ github.repository }} --json reviewDecision -q .reviewDecision)
-          if [ "$REVIEW" != "APPROVED" ]; then
-            gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship
-            gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: PR is not in APPROVED state (got: ${REVIEW:-PENDING})."
-            exit 1
-          fi
+          case "$REVIEW" in
+            REVIEW_REQUIRED|CHANGES_REQUESTED)
+              gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship
+              gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: PR review state is ${REVIEW}."
+              exit 1
+              ;;
+          esac
           # Count failing required checks. Other non-skipping checks
           # currently in flight are tolerated (auto-merge will wait for
           # them after we enable it).
@@ -169,6 +185,7 @@ jobs:
           ready-to-ship for PR #${{ env.PR_NUMBER }}."
 
       - name: Push lockfile commit to PR branch
+        id: push
         run: |
           # --force-with-lease guards against author force-pushing
           # between label-apply and now. If the remote has advanced
@@ -179,6 +196,28 @@ jobs:
             gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: PR HEAD changed during build (force-push or new commit). Re-apply the ready-to-ship label after CI is green again."
             exit 1
           fi
+          # Record the new HEAD (the lockfile bump commit) so the
+          # merge-gate status check below targets the right sha. This
+          # is what auto-merge will squash, so the status check needs
+          # to land on that sha to satisfy branch protection.
+          echo "new_head=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Set merge-gate status check
+        # Posts a `merge-gate` commit status with state=success on the
+        # lockfile-bump commit. Configure branch protection on `main`
+        # to require this status check — that hard-blocks merging
+        # without a fresh durable release behind it. Admins can
+        # bypass via standard branch-protection override. See
+        # docs/binary-releases.md "PR package builds → Branch
+        # protection setup".
+        run: |
+          gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${{ github.repository }}/statuses/${{ steps.push.outputs.new_head }}" \
+            -f state=success \
+            -f context=merge-gate \
+            -f description="Fresh durable release published: ${{ steps.tag.outputs.tag }}"
 
       - name: Enable squash auto-merge
         run: |
