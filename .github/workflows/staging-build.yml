@@ -1,0 +1,134 @@
+name: Staging build
+
+# Builds per-PR archives whose cache_key_sha differs from the durable
+# release pinned by binaries.lock. Uploads them to a pr-<NNN>-staging
+# pre-release for reviewers + CI to consume via fetch-binaries.sh's
+# overlay support.
+#
+# See docs/plans/2026-04-29-pr-package-builds-design.md §4.1.
+#
+# Same-repo PRs only. Fork-PR support is documented as future work in
+# §9.1 of the design doc.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+# Serialize concurrent runs on the same PR so a slow build doesn't
+# step on a fresher push's run. cancel-in-progress: true means a new
+# push aborts an in-flight run — fine, the overlay is content-keyed.
+concurrency:
+  group: staging-build-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write          # gh release create/upload to pr-<N>-staging
+      pull-requests: write     # sticky comment
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Install host build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            zstd jq cmake ninja-build \
+            llvm clang lld
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Cache resolver + cargo target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/wasm-posix-kernel
+            target
+          key: staging-build-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'examples/libs/**/deps.toml') }}
+          restore-keys: |
+            staging-build-${{ runner.os }}-
+
+      - name: Cache musl sysroot
+        uses: actions/cache@v4
+        id: cache-sysroot
+        with:
+          path: |
+            sysroot
+            sysroot64
+          key: musl-sysroot-${{ runner.os }}-${{ hashFiles('scripts/build-musl.sh', 'musl-overlay/**', 'glue/**') }}
+
+      - name: Build musl sysroot
+        if: steps.cache-sysroot.outputs.cache-hit != 'true'
+        run: bash scripts/build-musl.sh
+
+      - name: Stage PR overlay
+        id: stage
+        run: |
+          mkdir -p /tmp/pr-staging
+          source sdk/activate.sh
+          scripts/stage-pr-staging.sh \
+            --pr ${{ github.event.pull_request.number }} \
+            --out /tmp/pr-staging \
+            --arch wasm32
+          override_count=$(jq '.overrides | length' /tmp/pr-staging/binaries.lock.pr)
+          echo "override_count=$override_count" >> $GITHUB_OUTPUT
+          echo "overrides=$(jq -r '.overrides | join(", ")' /tmp/pr-staging/binaries.lock.pr)" >> $GITHUB_OUTPUT
+
+      - name: Publish to pr-${{ github.event.pull_request.number }}-staging
+        if: steps.stage.outputs.override_count != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          scripts/publish-pr-staging.sh \
+            --pr ${{ github.event.pull_request.number }} \
+            --staging /tmp/pr-staging
+
+      - name: Post sticky comment (built archives)
+        if: steps.stage.outputs.override_count != '0'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: pr-staging-build
+          message: |
+            **Staging build for this PR**
+
+            Built **${{ steps.stage.outputs.override_count }}** package archive(s):
+            `${{ steps.stage.outputs.overrides }}`
+
+            Uploaded to [`pr-${{ github.event.pull_request.number }}-staging`](https://github.com/${{ github.repository }}/releases/tag/pr-${{ github.event.pull_request.number }}-staging).
+
+            Reviewers can consume them locally:
+
+            ```
+            gh pr checkout ${{ github.event.pull_request.number }}
+            scripts/fetch-binaries.sh
+            ```
+
+            `fetch-binaries.sh` auto-detects this PR via the GitHub API
+            and downloads `binaries.lock.pr` from the staging release —
+            override entries fetched from the staging URL, the rest from
+            the durable release.
+
+      - name: Post sticky comment (no rebuild needed)
+        if: steps.stage.outputs.override_count == '0'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: pr-staging-build
+          message: |
+            **Staging build for this PR**
+
+            No package contents changed in this push (cache_key_sha
+            unchanged for all packages). Existing
+            [`pr-${{ github.event.pull_request.number }}-staging`](https://github.com/${{ github.repository }}/releases/tag/pr-${{ github.event.pull_request.number }}-staging)
+            release (if any) remains valid; reviewers should keep
+            consuming it as-is.
