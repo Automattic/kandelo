@@ -587,18 +587,32 @@ fn verify_tag_matches_abi(tag: &str, abi_version: u32) -> Result<(), String> {
 }
 
 /// Strict shape check for the date suffix: a leading `-` followed by
-/// `YYYY-MM-DD` (10 ASCII digits + 2 dashes). We don't validate the
+/// `YYYY-MM-DD`, optionally followed by `-<seq>` where seq is 1+ digits
+/// (the seq suffix is appended by prepare-merge.yml when today's date
+/// already has a release — see design doc §3.4). We don't validate the
 /// calendar date — the schema regex is the source of truth, and a bad
 /// date there would already fail consumer-side schema validation.
 fn is_valid_date_suffix(s: &str) -> bool {
     let bytes = s.as_bytes();
-    if bytes.len() != 11 {
+    if bytes.len() < 11 {
         return false;
     }
+    // First 11 bytes: -YYYY-MM-DD
     let digits = [1, 2, 3, 4, 6, 7, 9, 10];
     let dashes = [0, 5, 8];
-    digits.iter().all(|&i| bytes[i].is_ascii_digit())
-        && dashes.iter().all(|&i| bytes[i] == b'-')
+    let date_ok = digits.iter().all(|&i| bytes[i].is_ascii_digit())
+        && dashes.iter().all(|&i| bytes[i] == b'-');
+    if !date_ok {
+        return false;
+    }
+    // Either nothing more, or `-<seq>` where seq is 1+ digits.
+    if bytes.len() == 11 {
+        return true;
+    }
+    if bytes[11] != b'-' || bytes.len() < 13 {
+        return false;
+    }
+    bytes[12..].iter().all(|c| c.is_ascii_digit())
 }
 
 /// Emit a release-manifest `source` block from a `DepsManifest`.

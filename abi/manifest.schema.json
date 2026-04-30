@@ -20,8 +20,8 @@
     },
     "release_tag": {
       "type": "string",
-      "pattern": "^binaries-abi-v[0-9]+(-[0-9]{4}-[0-9]{2}-[0-9]{2})?$",
-      "description": "GitHub release tag. Immutable; this manifest is tied to this tag. The optional `-YYYY-MM-DD` suffix distinguishes snapshots that share an ABI version (see docs/binary-releases.md)."
+      "pattern": "^binaries-abi-v[0-9]+(-[0-9]{4}-[0-9]{2}-[0-9]{2}(-[0-9]+)?)?$",
+      "description": "GitHub release tag. Immutable; this manifest is tied to this tag. The optional `-YYYY-MM-DD[-<seq>]` suffix distinguishes snapshots that share an ABI version. The `-<seq>` is appended by prepare-merge.yml when today's date already has a release (see docs/binary-releases.md)."
     },
     "generated_at": {
       "type": "string",
