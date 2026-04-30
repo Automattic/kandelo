@@ -82,11 +82,26 @@ jobs:
         if: steps.cache-sysroot.outputs.cache-hit != 'true'
         # build-programs.sh emits wasm64 fixtures only when sysroot64
         # exists. C++ packages (dinit, mariadb-test, …) require
-        # libc++.a in the sysroot or their build scripts bail. Build
-        # all three sets while the cache is cold.
+        # libc++.a + headers in the sysroot. The MariaDB build is the
+        # canonical place where C++ headers get installed; replicate
+        # the relevant part inline before build-libcxx.sh so dinit's
+        # compile sees `#include <iostream>`.
         run: |
           nix develop --accept-flake-config --command bash scripts/build-musl.sh
           nix develop --accept-flake-config --command bash scripts/build-musl.sh --arch wasm64posix
+          nix develop --accept-flake-config --command bash -c '
+            for arch_dir in sysroot sysroot64; do
+              if [ ! -f "$arch_dir/include/c++/v1/__config" ]; then
+                mkdir -p "$arch_dir/include/c++/v1"
+                cp -R "$LLVM_PREFIX/include/c++/v1/"* "$arch_dir/include/c++/v1/"
+                cs="$arch_dir/include/c++/v1/__config_site"
+                if [ -f "$cs" ]; then
+                  sed -i "s/_LIBCPP_HAS_MUSL_LIBC 0/_LIBCPP_HAS_MUSL_LIBC 1/" "$cs"
+                  sed -i "s/_LIBCPP_HAS_THREAD_API_PTHREAD 0/_LIBCPP_HAS_THREAD_API_PTHREAD 1/" "$cs"
+                fi
+              fi
+            done
+          '
           nix develop --accept-flake-config --command bash scripts/build-libcxx.sh
           nix develop --accept-flake-config --command bash scripts/build-libcxx.sh --arch wasm64
 
