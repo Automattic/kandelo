@@ -237,7 +237,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn stage_one(
+pub(crate) fn stage_one(
     m: &DepsManifest,
     registry: &Registry,
     arch: TargetArch,
@@ -312,7 +312,7 @@ fn stage_one(
 /// resolver. `to_lowercase()` is defensive: both `OS` and `ARCH` are
 /// already lowercase today, but the format is documented as
 /// "lowercased" so we make that explicit.
-fn default_build_host() -> String {
+pub(crate) fn default_build_host() -> String {
     format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH).to_lowercase()
 }
 

@@ -551,6 +551,16 @@ fn detect_zip_arch(bytes: &[u8]) -> Option<&'static str> {
 }
 
 fn verify_tag_matches_abi(tag: &str, abi_version: u32) -> Result<(), String> {
+    // PR-staging release tags (`pr-<NNN>-staging`) are exempt — they
+    // label a per-PR pre-release that mirrors the durable ABI. The
+    // manifest entries still encode `abi_versions`, so consumer-side
+    // validation remains intact. See
+    // `docs/plans/2026-04-29-pr-package-builds-design.md` §3.4.
+    if let Some(rest) = tag.strip_prefix("pr-") {
+        if rest.ends_with("-staging") {
+            return Ok(());
+        }
+    }
     let expected = format!("binaries-abi-v{abi_version}");
     if tag == expected {
         Ok(())
