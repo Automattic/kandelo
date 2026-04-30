@@ -79,10 +79,12 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Fetch musl submodule
-        # See staging-build.yml for why we fetch musl explicitly
-        # rather than via `submodules: true` on checkout.
-        run: git submodule update --init --depth 1 musl
+      - name: Fetch submodules (musl, libc-test, os-test)
+        # See staging-build.yml for the rationale + the SSH→HTTPS
+        # override for libc-test.
+        run: |
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git submodule update --init --depth 1 musl libc-test os-test
 
       - name: Merge tip-of-main into PR HEAD (in-memory)
         run: |
@@ -190,6 +192,18 @@ jobs:
             cargo test -p wasm-posix-kernel --target "$HOST_TARGET" --lib
             cd host && npx vitest run
           '
+
+      - name: Run libc-test conformance suite
+        run: |
+          nix develop --accept-flake-config --command bash scripts/run-libc-tests.sh
+
+      - name: Run Open POSIX Test Suite
+        run: |
+          nix develop --accept-flake-config --command bash scripts/run-posix-tests.sh
+
+      - name: Run Sortix os-test suite
+        run: |
+          nix develop --accept-flake-config --command bash scripts/run-sortix-tests.sh --all
 
       - name: Rewrite binaries.lock on PR HEAD
         run: |

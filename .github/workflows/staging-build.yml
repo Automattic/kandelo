@@ -37,12 +37,16 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
 
-      - name: Fetch musl submodule
-        # `actions/checkout` does not pull submodules by default. We
-        # need musl/ for scripts/build-musl.sh; libc-test and os-test
-        # are only used by test harnesses (and one of them uses an
-        # ssh:// URL that wouldn't work in CI anyway).
-        run: git submodule update --init --depth 1 musl
+      - name: Fetch submodules (musl, libc-test, os-test)
+        # actions/checkout doesn't pull submodules by default. We need:
+        #   musl       — for scripts/build-musl.sh
+        #   libc-test  — for scripts/run-libc-tests.sh
+        #   os-test    — for scripts/run-sortix-tests.sh
+        # libc-test's URL in .gitmodules is git@github.com: (SSH);
+        # rewrite to HTTPS for runner-side anonymous fetch.
+        run: |
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git submodule update --init --depth 1 musl libc-test os-test
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v18
@@ -124,6 +128,25 @@ jobs:
             cargo test -p wasm-posix-kernel --target "$HOST_TARGET" --lib
             cd host && npx vitest run
           '
+
+      - name: Run libc-test conformance suite
+        # XFAILs (expected failures from wasm fundamentals — no soft-FPU
+        # rounding control, opaque stack, no file-backed mmap for
+        # sem_open) and TIME (per-test timeouts) are tolerated. Any
+        # FAIL not on the XFAIL list is a regression and exits 1.
+        run: |
+          nix develop --accept-flake-config --command bash scripts/run-libc-tests.sh
+
+      - name: Run Open POSIX Test Suite
+        # 0 FAIL required; UNRES (unresolved) and SKIP are acceptable.
+        run: |
+          nix develop --accept-flake-config --command bash scripts/run-posix-tests.sh
+
+      - name: Run Sortix os-test suite
+        # `--all` runs every suite (include, limits, basic, malloc,
+        # stdio, io, signal, process, paths). 0 FAIL, 0 XPASS required.
+        run: |
+          nix develop --accept-flake-config --command bash scripts/run-sortix-tests.sh --all
 
       - name: Post sticky comment (built archives)
         if: steps.stage.outputs.override_count != '0'
