@@ -63,6 +63,11 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Fetch musl submodule
+        # See staging-build.yml for why we fetch musl explicitly
+        # rather than via `submodules: true` on checkout.
+        run: git submodule update --init --depth 1 musl
+
       - name: Merge tip-of-main into PR HEAD (in-memory)
         run: |
           git config user.name "wasm-posix-binaries-bot"

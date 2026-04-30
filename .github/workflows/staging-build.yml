@@ -37,6 +37,13 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
 
+      - name: Fetch musl submodule
+        # `actions/checkout` does not pull submodules by default. We
+        # need musl/ for scripts/build-musl.sh; libc-test and os-test
+        # are only used by test harnesses (and one of them uses an
+        # ssh:// URL that wouldn't work in CI anyway).
+        run: git submodule update --init --depth 1 musl
+
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v18
 
