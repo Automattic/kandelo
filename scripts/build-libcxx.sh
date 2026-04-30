@@ -183,6 +183,10 @@ cp "$LIBCXXABI_A" "$SYSROOT/lib/libc++abi.a"
 # Also install the generated __config_site so sysroot headers match the built library
 GENERATED_CONFIG_SITE="$BUILD_DIR/include/c++/v1/__config_site"
 if [ -f "$GENERATED_CONFIG_SITE" ]; then
+    # mkdir -p in case the include tree doesn't exist yet (CI runs
+    # this script without first running the MariaDB build, which
+    # otherwise creates this dir as a side effect).
+    mkdir -p "$SYSROOT/include/c++/v1"
     cp "$GENERATED_CONFIG_SITE" "$SYSROOT/include/c++/v1/__config_site"
 fi
 
