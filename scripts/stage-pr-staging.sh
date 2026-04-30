@@ -117,7 +117,10 @@ echo "== stage-pr-staging: $OVERRIDE_COUNT override(s) staged =="
 if [ "$OVERRIDE_COUNT" -gt 0 ]; then
     while IFS= read -r f; do
         [ -n "$f" ] || continue
-        sz=$(stat -f %z "$f" 2>/dev/null || stat -c %s "$f")
+        # `wc -c < <file>` is portable across BSD and GNU coreutils;
+        # `stat -f %z` (BSD) and `stat -c %s` (GNU) collide on syntax
+        # under Nix's GNU stat, which interprets `-f` as filesystem-info.
+        sz=$(wc -c < "$f" | tr -d ' ')
         printf "  %10s  %s\n" "$sz" "$(basename "$f")"
     done < <({
         find "$STAGING/libs" -maxdepth 1 -type f 2>/dev/null

@@ -98,7 +98,10 @@ done < <(
 
 echo "== Publishing $TAG with ${#assets[@]} asset(s) =="
 for a in "${assets[@]}"; do
-    size=$(stat -f %z "$a" 2>/dev/null || stat -c %s "$a")
+    # `wc -c < <file>` is portable across BSD and GNU coreutils;
+    # `stat -f %z` (BSD) collides with GNU stat's `-f` syntax inside
+    # the Nix dev shell.
+    size=$(wc -c < "$a" | tr -d ' ')
     printf "  %10s  %s\n" "$size" "$(basename "$a")"
 done
 

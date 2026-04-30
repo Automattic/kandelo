@@ -75,20 +75,14 @@ jobs:
             exit 1
           fi
 
-      - name: Install host build tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            zstd jq cmake ninja-build \
-            llvm clang lld
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v18
 
-      - uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: rust-src
+      - name: Cache Nix store + flake eval
+        uses: DeterminateSystems/magic-nix-cache-action@v13
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
+      - name: Warm Nix dev shell
+        run: nix develop --accept-flake-config --command true
 
       - name: Cache resolver + cargo target
         uses: actions/cache@v4
@@ -112,7 +106,7 @@ jobs:
 
       - name: Build musl sysroot
         if: steps.cache-sysroot.outputs.cache-hit != 'true'
-        run: bash scripts/build-musl.sh
+        run: nix develop --accept-flake-config --command bash scripts/build-musl.sh
 
       - name: Compute durable release tag
         id: tag
@@ -131,18 +125,21 @@ jobs:
 
       - name: Stage durable release
         run: |
-          source sdk/activate.sh
           mkdir -p /tmp/durable
-          scripts/stage-release.sh \
-            --out /tmp/durable \
-            --tag ${{ steps.tag.outputs.tag }} \
-            --arch wasm32
+          nix develop --accept-flake-config --command bash -c '
+            source sdk/activate.sh
+            scripts/stage-release.sh \
+              --out /tmp/durable \
+              --tag ${{ steps.tag.outputs.tag }} \
+              --arch wasm32
+          '
 
       - name: Publish durable release
         run: |
-          scripts/publish-release.sh \
-            --tag ${{ steps.tag.outputs.tag }} \
-            --staging /tmp/durable
+          nix develop --accept-flake-config --command \
+            scripts/publish-release.sh \
+              --tag ${{ steps.tag.outputs.tag }} \
+              --staging /tmp/durable
 
       - name: Rewrite binaries.lock on PR HEAD
         run: |

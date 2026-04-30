@@ -372,3 +372,14 @@ must:
 Not supported in v1 — they fall back to the resolver's source-build
 path locally. Two-stage `workflow_run` support is documented as
 future work in §9.1 of the design doc.
+
+### Reproducible toolchain via Nix
+
+`staging-build.yml` and `prepare-merge.yml` install Nix on the
+runner and execute every build/stage step via `nix develop --command`
+against the repo's `flake.nix`. The flake pins LLVM 21, the Rust
+toolchain (per `rust-toolchain.toml`), Node 22, and Erlang 28, so
+runner-host drift can't leak into archive bytes — the same
+`cache_key_sha` reproduces across CI and contributor laptops that
+also use `nix develop`. Cache hits across workflow runs come from
+`DeterminateSystems/magic-nix-cache-action`.
