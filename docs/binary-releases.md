@@ -247,6 +247,18 @@ verification chain is documented in
 [`docs/package-management.md`](package-management.md)
 under "Release archives".
 
+### PR-staging overlay (`binaries.lock.pr`)
+
+When a PR's CI publishes per-PR archives to `pr-<NNN>-staging`, it
+also uploads a `binaries.lock.pr` overlay listing which packages
+were rebuilt. `scripts/fetch-binaries.sh` reads this file
+(gitignored, never committed) and merges it over `binaries.lock`:
+override entries are fetched from the staging release, the rest
+from the durable release. The overlay schema is
+`{ staging_tag, staging_manifest_sha256, overrides }` — see
+`docs/plans/2026-04-29-pr-package-builds-design.md` §3 for the
+full schema.
+
 ## Producing a release
 
 For now, manual. Eventually a GitHub Actions workflow

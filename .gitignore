@@ -14,6 +14,11 @@ host/docs/
 /binaries/
 /local-binaries/
 
+# PR-build overlay file. Created by scripts/fetch-binaries.sh when
+# checked out on a PR branch with a corresponding pr-<NNN>-staging
+# pre-release. Never committed; see docs/binary-releases.md.
+binaries.lock.pr
+
 # host/wasm/ and examples/libs/*/bin/ used to hold committed
 # binaries. They're now artifacts produced by build scripts — not
 # tracked in git.

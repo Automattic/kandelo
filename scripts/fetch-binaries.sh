@@ -71,6 +71,28 @@ mkdir -p "$OBJ_DIR"
 
 echo "fetch-binaries: release=$LOCK_TAG abi=$LOCK_ABI"
 
+# --- Optional overlay (PR staging) ---------------------------------------
+# When binaries.lock.pr exists at the repo root, fetch-binaries splits
+# archive installation into two passes: durable entries minus overrides,
+# and staging-release entries for overrides only. See
+# docs/plans/2026-04-29-pr-package-builds-design.md §3.
+OVERLAY_FILE="$REPO_ROOT/binaries.lock.pr"
+OVERLAY_TAG=""
+OVERLAY_MANIFEST_SHA=""
+OVERLAY_OVERRIDES_JSON="[]"
+OVERLAY_REL_BASE=""
+OVERLAY_MANIFEST_OBJ=""
+if [ -f "$OVERLAY_FILE" ]; then
+    OVERLAY_TAG=$(jq -r .staging_tag "$OVERLAY_FILE")
+    OVERLAY_MANIFEST_SHA=$(jq -r .staging_manifest_sha256 "$OVERLAY_FILE")
+    OVERLAY_OVERRIDES_JSON=$(jq -c .overrides "$OVERLAY_FILE")
+    [ "$OVERLAY_TAG" = "null" ] && { echo "ERROR: overlay missing staging_tag" >&2; exit 1; }
+    [ "$OVERLAY_MANIFEST_SHA" = "null" ] && { echo "ERROR: overlay missing staging_manifest_sha256" >&2; exit 1; }
+    [ "$OVERLAY_OVERRIDES_JSON" = "null" ] && { echo "ERROR: overlay missing overrides" >&2; exit 1; }
+    OVERLAY_REL_BASE="https://github.com/brandonpayton/wasm-posix-kernel/releases/download/$OVERLAY_TAG"
+    echo "fetch-binaries: overlay tag=$OVERLAY_TAG ($(echo "$OVERLAY_OVERRIDES_JSON" | jq 'length') overrides)"
+fi
+
 # --- Helper: verify a file's sha256 ---------------------------------------
 verify_sha() {
     local file="$1" expected="$2"
@@ -189,6 +211,22 @@ fi
 # Cached alias for consumer introspection.
 place "$MANIFEST_OBJ" "manifest.json"
 
+# --- Step 1.25: overlay manifest (if any) --------------------------------
+# Fetch + verify the staging manifest the same way as the durable one.
+# Reuse ensure_object by temporarily swapping REL_BASE.
+if [ -n "$OVERLAY_TAG" ]; then
+    OVERLAY_MANIFEST_OBJ="$OBJ_DIR/$OVERLAY_MANIFEST_SHA.json"
+    REL_BASE_SAVE="$REL_BASE"
+    REL_BASE="$OVERLAY_REL_BASE"
+    ensure_object "manifest.json" "$OVERLAY_MANIFEST_SHA"
+    REL_BASE="$REL_BASE_SAVE"
+    overlay_abi=$(jq -r .abi_version "$OVERLAY_MANIFEST_OBJ")
+    if [ "$overlay_abi" != "$LOCK_ABI" ]; then
+        echo "ERROR: overlay manifest abi=$overlay_abi != lock abi=$LOCK_ABI" >&2
+        exit 1
+    fi
+fi
+
 # --- Step 1.5: install package-archive entries via xtask -----------
 # Each archive-style entry has archive_name + archive_sha256 +
 # compatibility; remote_fetch in xtask handles fetch + verify + install
@@ -212,11 +250,39 @@ if jq -e '.entries[] | select(.archive_name != null)' "$MANIFEST_OBJ" > /dev/nul
         echo "fetch-binaries: skipping archive install (offline mode)"
     else
         HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
+
+        # Compute filtered manifests when an overlay is in play:
+        #   durable_filtered = entries from durable manifest whose .name is NOT in overrides
+        #   overlay_filtered = entries from overlay manifest whose .name IS in overrides
+        # The two are installed against different archive bases.
+        DURABLE_MANIFEST="$MANIFEST_OBJ"
+        DURABLE_FILTERED=""
+        if [ -n "$OVERLAY_TAG" ]; then
+            DURABLE_FILTERED=$(mktemp -t fetch-binaries-durable.XXXXXX).json
+            jq --argjson overrides "$OVERLAY_OVERRIDES_JSON" '
+                .entries |= map(select(.name as $n | $overrides | index($n) | not))
+            ' "$MANIFEST_OBJ" > "$DURABLE_FILTERED"
+            DURABLE_MANIFEST="$DURABLE_FILTERED"
+        fi
+
         echo "fetch-binaries: installing archives via xtask install-release..."
         cargo run -p xtask --target "$HOST_TARGET" --quiet -- install-release \
-            --manifest "$MANIFEST_OBJ" \
+            --manifest "$DURABLE_MANIFEST" \
             --archive-base "$REL_BASE" \
             --binaries-dir "$BIN_DIR"
+
+        if [ -n "$OVERLAY_TAG" ]; then
+            OVERLAY_FILTERED=$(mktemp -t fetch-binaries-overlay.XXXXXX).json
+            jq --argjson overrides "$OVERLAY_OVERRIDES_JSON" '
+                .entries |= map(select(.name as $n | $overrides | index($n)))
+            ' "$OVERLAY_MANIFEST_OBJ" > "$OVERLAY_FILTERED"
+            echo "fetch-binaries: installing overlay archives from $OVERLAY_TAG..."
+            cargo run -p xtask --target "$HOST_TARGET" --quiet -- install-release \
+                --manifest "$OVERLAY_FILTERED" \
+                --archive-base "$OVERLAY_REL_BASE" \
+                --binaries-dir "$BIN_DIR"
+            rm -f "$DURABLE_FILTERED" "$OVERLAY_FILTERED"
+        fi
     fi
 fi
 
