@@ -137,7 +137,6 @@ describe.skipIf(!rustcAvailable)("fetch-binaries.sh --allow-stale", () => {
     // The canned stale-payload the fake cargo will write when it sees
     // --stale-out. Two entries to verify the build-deps loop iterates
     // (and only logs one summary line).
-    fakeBinDir = path.join(fakeRepoRoot, "fake-bin");
     const stalePayload = [
       { program: "alpha", arch: "wasm32", local_sha: "a".repeat(64) },
       { program: "beta", arch: "wasm64", local_sha: "b".repeat(64) },
@@ -286,6 +285,6 @@ exit 0
       { cwd: fakeRepoRoot, encoding: "utf8" },
     );
     expect(r.status).toBe(0);
-    expect(r.stdout).toMatch(/--allow-stale/);
+    expect(r.stdout).toMatch(/--allow-stale\s/);
   });
 });

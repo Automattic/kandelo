@@ -40,6 +40,12 @@
 
 set -euo pipefail
 
+# Tempfile cleanup: when --allow-stale is used we mktemp a STALE_OUT
+# below; install the trap up front (with `${STALE_OUT:-}` guard) so it
+# fires even if `cargo install-release` exits non-zero. Matches the
+# convention in run-sortix-tests.sh / run-mariadb-tests.sh.
+trap '[ -n "${STALE_OUT:-}" ] && rm -f "$STALE_OUT"' EXIT
+
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
@@ -389,7 +395,6 @@ if jq -e '.entries[] | select(.archive_name != null)' "$MANIFEST_OBJ" > /dev/nul
         # consumer's deps.toml) to STALE_OUT; we source-build those
         # via `xtask build-deps resolve` after each pass. The trap
         # set up earlier in this script removes STALE_OUT on exit.
-        STALE_OUT=""
         EXTRA_FLAGS=()
         if [ "$ALLOW_STALE" -eq 1 ]; then
             STALE_OUT="$(mktemp -t fetch-binaries-stale.XXXXXX.json)"
