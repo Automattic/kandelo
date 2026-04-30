@@ -90,10 +90,23 @@ jobs:
           nix develop --accept-flake-config --command bash scripts/build-musl.sh
           nix develop --accept-flake-config --command bash scripts/build-musl.sh --arch wasm64posix
           nix develop --accept-flake-config --command bash -c '
+            # Nix puts libc++ headers under share/libc++/v1 (vs.
+            # Homebrew at include/c++/v1). Try both for portability.
+            src=""
+            for cand in "$LLVM_PREFIX/include/c++/v1" "$LLVM_PREFIX/share/libc++/v1"; do
+              if [ -f "$cand/__config" ] || [ -f "$cand/iostream" ]; then
+                src="$cand"; break
+              fi
+            done
+            if [ -z "$src" ]; then
+              echo "ERROR: cant locate libc++ headers under $LLVM_PREFIX" >&2
+              exit 1
+            fi
+            echo "installing libc++ headers from $src"
             for arch_dir in sysroot sysroot64; do
               if [ ! -f "$arch_dir/include/c++/v1/__config" ]; then
                 mkdir -p "$arch_dir/include/c++/v1"
-                cp -R "$LLVM_PREFIX/include/c++/v1/"* "$arch_dir/include/c++/v1/"
+                cp -R "$src"/* "$arch_dir/include/c++/v1/"
                 cs="$arch_dir/include/c++/v1/__config_site"
                 if [ -f "$cs" ]; then
                   sed -i "s/_LIBCPP_HAS_MUSL_LIBC 0/_LIBCPP_HAS_MUSL_LIBC 1/" "$cs"
