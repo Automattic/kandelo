@@ -322,6 +322,19 @@ cp "$SRC_DIR/dat/nhdat" "$RUNTIME_DIR/share/nethack/nhdat"
 [ -f "$SRC_DIR/dat/symbols" ] && cp "$SRC_DIR/dat/symbols" "$RUNTIME_DIR/share/nethack/symbols"
 [ -f "$SRC_DIR/dat/license" ] && cp "$SRC_DIR/dat/license" "$RUNTIME_DIR/share/nethack/license"
 
+# Stage the runtime tree into the resolver scratch so it lands in the
+# cache canonical path (and from there, the .tar.zst release archive).
+# archive_stage packs every file under WASM_POSIX_DEP_OUT_DIR, so writing
+# runtime/ here is enough — the resulting archive contains nethack.wasm +
+# runtime/share/nethack/* and is self-sufficient. Outside the resolver,
+# WASM_POSIX_DEP_OUT_DIR is unset and this is a no-op. Mirrors
+# examples/libs/vim/build-vim.sh.
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ] && [ -d "$RUNTIME_DIR" ]; then
+    rm -rf "$WASM_POSIX_DEP_OUT_DIR/runtime"
+    cp -R "$RUNTIME_DIR" "$WASM_POSIX_DEP_OUT_DIR/runtime"
+    echo "  staged runtime tree into resolver scratch"
+fi
+
 SIZE=$(wc -c < "$BIN_DIR/nethack.wasm" | tr -d ' ')
 echo "==> Final size: $(echo "$SIZE" | numfmt --to=iec 2>/dev/null || echo "${SIZE} bytes")"
 
