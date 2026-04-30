@@ -40,7 +40,33 @@ use crate::remote_fetch;
 use crate::repo_root;
 use crate::util::hex;
 
-pub fn run(args: Vec<String>) -> Result<(), String> {
+/// Parsed CLI options for `install-release`.
+///
+/// Extracted from `run` so the parser is independently testable. The
+/// fields are intentionally `Option<_>` where `run` later applies
+/// defaults — keeping that distinction here lets tests assert "the
+/// user did not pass this flag" vs "the user passed the default value".
+struct InstallReleaseOpts {
+    manifest_path: Option<PathBuf>,
+    archive_base: Option<String>,
+    cache_root: Option<PathBuf>,
+    local_binaries_dir: Option<PathBuf>,
+    binaries_dir: Option<PathBuf>,
+    registry_root: Option<PathBuf>,
+    abi: Option<u32>,
+    force_mirror: bool,
+    /// Set by `--allow-stale-manifest`. When true, a manifest whose
+    /// `compatibility.cache_key_sha` disagrees with the locally
+    /// computed value will be downgraded from a hard error to a warning
+    /// (Task 2 wires this in). Parse-only as of Task 1.
+    allow_stale_manifest: bool,
+    /// Set by `--stale-out <path>`. When supplied, the consumer writes
+    /// a JSON report of stale entries to this path (Task 2 wires this
+    /// in). Parse-only as of Task 1.
+    stale_out: Option<PathBuf>,
+}
+
+fn parse_args(args: Vec<String>) -> Result<InstallReleaseOpts, String> {
     let mut manifest_path: Option<PathBuf> = None;
     let mut archive_base: Option<String> = None;
     let mut cache_root: Option<PathBuf> = None;
@@ -49,6 +75,8 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let mut registry_root: Option<PathBuf> = None;
     let mut abi: Option<u32> = None;
     let mut force_mirror = false;
+    let mut allow_stale_manifest = false;
+    let mut stale_out: Option<PathBuf> = None;
 
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
@@ -83,9 +111,43 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                 )
             }
             "--force-mirror" => force_mirror = true,
+            "--allow-stale-manifest" => allow_stale_manifest = true,
+            "--stale-out" => {
+                stale_out = Some(it.next().ok_or("--stale-out requires path")?.into())
+            }
             other => return Err(format!("unknown arg {other:?}")),
         }
     }
+
+    Ok(InstallReleaseOpts {
+        manifest_path,
+        archive_base,
+        cache_root,
+        local_binaries_dir,
+        binaries_dir,
+        registry_root,
+        abi,
+        force_mirror,
+        allow_stale_manifest,
+        stale_out,
+    })
+}
+
+pub fn run(args: Vec<String>) -> Result<(), String> {
+    let InstallReleaseOpts {
+        manifest_path,
+        archive_base,
+        cache_root,
+        local_binaries_dir,
+        binaries_dir,
+        registry_root,
+        abi,
+        force_mirror,
+        // Parse-only as of Task 1 — Task 2 will read these in the
+        // manifest-vs-local pre-flight below.
+        allow_stale_manifest: _,
+        stale_out: _,
+    } = parse_args(args)?;
 
     let manifest_path = manifest_path.ok_or("--manifest is required")?;
     let archive_base =
@@ -1042,6 +1104,50 @@ spdx = "TestLicense"
             mirror.display()
         );
         assert_eq!(fs::read(&mirror).unwrap(), b"p1\n");
+    }
+
+    #[test]
+    fn parses_allow_stale_flags() {
+        // Parse-only check: the new --allow-stale-manifest boolean flag
+        // and --stale-out <path> flag must show up on the parsed-options
+        // struct. They aren't *used* anywhere yet — Task 2 wires them
+        // into the manifest-vs-local cache_key_sha pre-flight.
+        let opts = parse_args(vec![
+            "--manifest".into(),
+            "/tmp/x".into(),
+            "--archive-base".into(),
+            "file:///tmp/staging".into(),
+            "--allow-stale-manifest".into(),
+            "--stale-out".into(),
+            "/tmp/foo.json".into(),
+        ])
+        .expect("parse_args must succeed");
+        assert!(
+            opts.allow_stale_manifest,
+            "--allow-stale-manifest must set the flag"
+        );
+        assert_eq!(
+            opts.stale_out,
+            Some(PathBuf::from("/tmp/foo.json")),
+            "--stale-out must capture the path"
+        );
+        assert_eq!(opts.manifest_path, Some(PathBuf::from("/tmp/x")));
+        assert_eq!(opts.archive_base, Some("file:///tmp/staging".to_string()));
+    }
+
+    #[test]
+    fn parses_allow_stale_flags_default_off() {
+        // Defaults: omitting both flags must yield false / None. Catches
+        // a regression where the flag accidentally defaults to true.
+        let opts = parse_args(vec![
+            "--manifest".into(),
+            "/tmp/x".into(),
+            "--archive-base".into(),
+            "file:///tmp/staging".into(),
+        ])
+        .expect("parse_args must succeed");
+        assert!(!opts.allow_stale_manifest);
+        assert_eq!(opts.stale_out, None);
     }
 
     #[test]
