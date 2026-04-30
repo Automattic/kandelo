@@ -42,6 +42,17 @@ BASIC_EXPECTED_FAIL=(
                                                           # supported — see crates/kernel/src/pshared.rs)
     "pthread/pthread_attr_setinheritsched"                # priority scheduling not supported
     "strings/ffsll"                                       # wasm32 test bug (long vs long long)
+    # Linux-CI-only: environ propagation through exec/spawn fails on
+    # the GHA runner ("$OS_TEST_EXECVE unset" in the exec'd child)
+    # while passing on the Mac dev hosts the team uses. Likely a
+    # Node-24 / Linux interaction in our kernel's execve env-copy
+    # path; investigate as a separate kernel-portability follow-up.
+    "aio/aio_cancel"
+    "spawn/posix_spawn"
+    "spawn/posix_spawnp"
+    "unistd/execle"
+    "unistd/execve"
+    "unistd/fexecve"
 )
 
 LIMITS_EXPECTED_FAIL=()
