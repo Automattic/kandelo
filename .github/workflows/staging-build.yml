@@ -107,6 +107,10 @@ jobs:
               if [ ! -f "$arch_dir/include/c++/v1/__config" ]; then
                 mkdir -p "$arch_dir/include/c++/v1"
                 cp -R "$src"/* "$arch_dir/include/c++/v1/"
+                # Files from the Nix store come in read-only; later
+                # steps (build-libcxx.sh, MariaDB build) need to
+                # overwrite __config_site, so make the tree writable.
+                chmod -R u+w "$arch_dir/include/c++/v1/"
                 cs="$arch_dir/include/c++/v1/__config_site"
                 if [ -f "$cs" ]; then
                   sed -i "s/_LIBCPP_HAS_MUSL_LIBC 0/_LIBCPP_HAS_MUSL_LIBC 1/" "$cs"

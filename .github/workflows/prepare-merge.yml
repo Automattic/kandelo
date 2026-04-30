@@ -168,6 +168,7 @@ jobs:
               if [ ! -f "$arch_dir/include/c++/v1/__config" ]; then
                 mkdir -p "$arch_dir/include/c++/v1"
                 cp -R "$src"/* "$arch_dir/include/c++/v1/"
+                chmod -R u+w "$arch_dir/include/c++/v1/"
                 cs="$arch_dir/include/c++/v1/__config_site"
                 if [ -f "$cs" ]; then
                   sed -i "s/_LIBCPP_HAS_MUSL_LIBC 0/_LIBCPP_HAS_MUSL_LIBC 1/" "$cs"
