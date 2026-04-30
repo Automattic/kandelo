@@ -131,9 +131,12 @@ echo
 echo "Published: https://github.com/brandonpayton/wasm-posix-kernel/releases/tag/$TAG"
 
 # Post-upload verification — see publish-release.sh for the rationale.
-# Failures here mean the release we just published has manifest <-> archive
-# drift; reviewers and downstream CI would all hit it on fetch.
+# Verify against the LOCAL staging dir (whose bytes we just uploaded),
+# not via --tag. The GitHub release CDN serves cached assets for
+# several minutes after a fresh upload; verifying the live tag
+# straight after the publish would routinely false-positive.
 echo
-echo "Verifying release consistency..."
-OWNER_REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
-"$REPO_ROOT/scripts/verify-release.sh" --tag "$TAG" --owner-repo "$OWNER_REPO"
+echo "Verifying release consistency (local manifest + staging dir)..."
+"$REPO_ROOT/scripts/verify-release.sh" \
+    --manifest "$STAGING/manifest.json" \
+    --archive-base "$STAGING"

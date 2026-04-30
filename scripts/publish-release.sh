@@ -121,8 +121,13 @@ echo "Released: https://github.com/brandonpayton/wasm-posix-kernel/releases/tag/
 # re-uploaded with new shas while archive bytes stayed old, surfaced as
 # `./run.sh browser` failures days later).
 echo
-echo "Verifying release consistency..."
-"$REPO_ROOT/scripts/verify-release.sh" --tag "$TAG"
+echo "Verifying release consistency (local manifest + staging dir)..."
+# Verify against the local staging bytes (just uploaded) instead of
+# --tag — the release CDN serves cached assets for several minutes
+# after upload and would false-positive a freshly-published tag.
+"$REPO_ROOT/scripts/verify-release.sh" \
+    --manifest "$STAGING/manifest.json" \
+    --archive-base "$STAGING"
 
 echo
 echo "Commit abi/manifest.json into the repo as the reference copy if"
