@@ -151,6 +151,12 @@ pre-built artifact at once, run `bash scripts/fetch-binaries.sh` after
 into the resolver cache plus the ported programs into
 `local-binaries/programs/`.
 
+If you are editing a package's `deps.toml` to iterate locally, the
+strict cache-key check will abort fetch with a `manifest.json
+cache_key_sha ... does not match` error. Pass `--allow-stale` (or set
+`WASM_POSIX_ALLOW_STALE=1`) to skip the strict check and source-build
+the modified package — see [Iterating on a package locally](docs/package-management.md#iterating-on-a-package-locally).
+
 ### 2. Install the SDK
 
 ```bash
