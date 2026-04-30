@@ -76,9 +76,15 @@ jobs:
             sysroot64
           key: musl-sysroot-${{ runner.os }}-${{ hashFiles('scripts/build-musl.sh', 'musl-overlay/**', 'glue/**') }}
 
-      - name: Build musl sysroot
+      - name: Build musl sysroot (wasm32 + wasm64)
         if: steps.cache-sysroot.outputs.cache-hit != 'true'
-        run: nix develop --accept-flake-config --command bash scripts/build-musl.sh
+        # build-programs.sh emits wasm64 fixtures (e.g. hello64.wasm)
+        # only when sysroot64/lib/libc.a exists — vitest's wasm64
+        # tests need it. build-musl.sh builds the default wasm32
+        # sysroot; --arch wasm64posix builds sysroot64.
+        run: |
+          nix develop --accept-flake-config --command bash scripts/build-musl.sh
+          nix develop --accept-flake-config --command bash scripts/build-musl.sh --arch wasm64posix
 
       - name: Stage PR overlay
         id: stage

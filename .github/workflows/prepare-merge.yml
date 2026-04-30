@@ -144,9 +144,12 @@ jobs:
             sysroot64
           key: musl-sysroot-${{ runner.os }}-${{ hashFiles('scripts/build-musl.sh', 'musl-overlay/**', 'glue/**') }}
 
-      - name: Build musl sysroot
+      - name: Build musl sysroot (wasm32 + wasm64)
         if: steps.cache-sysroot.outputs.cache-hit != 'true'
-        run: nix develop --accept-flake-config --command bash scripts/build-musl.sh
+        # See staging-build.yml for why we build both arches.
+        run: |
+          nix develop --accept-flake-config --command bash scripts/build-musl.sh
+          nix develop --accept-flake-config --command bash scripts/build-musl.sh --arch wasm64posix
 
       - name: Compute durable release tag
         id: tag
