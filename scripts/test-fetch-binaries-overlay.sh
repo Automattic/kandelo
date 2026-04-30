@@ -227,8 +227,164 @@ STUB
     esac
 }
 
+run_scenario_2_autodetect() {
+    echo "=== Scenario 2: auto-detect PR + download overlay ==="
+    local TEST_ROOT
+    TEST_ROOT=$(mktemp -d -t fetch-autodetect-test.XXXXXX)
+    trap 'rm -rf "$TEST_ROOT" "$STUB_BIN" "$FIXTURE_DIR"' RETURN
+
+    setup_test_repo "$TEST_ROOT"
+
+    # Make TEST_ROOT a git repo with a fake origin.
+    (
+        cd "$TEST_ROOT"
+        git init -q
+        git config user.email "test@example.com"
+        git config user.name "Test"
+        git remote add origin https://github.com/fakeowner/fakerepo.git
+        # Need at least one commit for HEAD to resolve.
+        echo "test" > README.txt
+        git add README.txt
+        git commit -q -m "initial"
+    )
+
+    # Durable manifest.
+    local DURABLE_SHA
+    write_manifest_at "$TEST_ROOT/binaries/objects" DURABLE_SHA \
+        "binaries-abi-v6-2026-04-01" \
+        '[
+          {"name": "libzlib", "archive_name": "libzlib.tar.zst", "kind": "lib"},
+          {"name": "libdinit", "archive_name": "libdinit.tar.zst", "kind": "lib"}
+        ]'
+
+    # Overlay manifest (will be served by curl shim).
+    FIXTURE_DIR=$(mktemp -d -t fetch-autodetect-fixtures.XXXXXX)
+    local OVERLAY_TMP="$FIXTURE_DIR/overlay-manifest.json"
+    cat > "$OVERLAY_TMP" <<EOF
+{
+  "abi_version": 6,
+  "release_tag": "pr-42-staging",
+  "entries": [
+    {"name": "libdinit", "archive_name": "libdinit.tar.zst", "kind": "lib"}
+  ]
+}
+EOF
+    local OVERLAY_SHA
+    OVERLAY_SHA=$(shasum -a 256 "$OVERLAY_TMP" | awk '{print $1}')
+    # Pre-cache it locally so ensure_object hits the cache for the
+    # overlay manifest (we only need to test the download of
+    # binaries.lock.pr itself, not the manifest).
+    cp "$OVERLAY_TMP" "$TEST_ROOT/binaries/objects/$OVERLAY_SHA.json"
+
+    # binaries.lock pins durable.
+    cat > "$TEST_ROOT/binaries.lock" <<EOF
+{
+  "abi_version": 6,
+  "release_tag": "binaries-abi-v6-2026-04-01",
+  "manifest_sha256": "$DURABLE_SHA"
+}
+EOF
+
+    # Fixture overlay file the curl shim will return.
+    cat > "$FIXTURE_DIR/binaries.lock.pr" <<EOF
+{
+  "staging_tag": "pr-42-staging",
+  "staging_manifest_sha256": "$OVERLAY_SHA",
+  "overrides": ["libdinit"]
+}
+EOF
+
+    # Fixture pulls.json for /repos/fakeowner/fakerepo/commits/<sha>/pulls.
+    cat > "$FIXTURE_DIR/pulls.json" <<EOF
+[{"number": 42, "state": "open"}]
+EOF
+
+    STUB_BIN=$(mktemp -d -t fetch-autodetect-stub.XXXXXX)
+
+    # curl stub: serve fixtures based on URL pattern. Fall through to
+    # real curl for any URL we don't recognize (so the prereq check
+    # finds curl works). We pass FIXTURE_DIR via env.
+    cat > "$STUB_BIN/curl" <<STUB
+#!/usr/bin/env bash
+# Capture URL (last arg).
+url=""
+for arg in "\$@"; do url="\$arg"; done
+case "\$url" in
+    *api.github.com/repos/fakeowner/fakerepo/commits/*/pulls*)
+        # Find the -o flag if present.
+        out=""
+        prev=""
+        for a in "\$@"; do
+            if [ "\$prev" = "-o" ]; then out="\$a"; fi
+            prev="\$a"
+        done
+        if [ -n "\$out" ]; then
+            cp "$FIXTURE_DIR/pulls.json" "\$out"
+        else
+            cat "$FIXTURE_DIR/pulls.json"
+        fi
+        exit 0
+        ;;
+    *github.com/fakeowner/fakerepo/releases/download/pr-42-staging/binaries.lock.pr*)
+        out=""
+        prev=""
+        for a in "\$@"; do
+            if [ "\$prev" = "-o" ]; then out="\$a"; fi
+            prev="\$a"
+        done
+        if [ -n "\$out" ]; then
+            cp "$FIXTURE_DIR/binaries.lock.pr" "\$out"
+        else
+            cat "$FIXTURE_DIR/binaries.lock.pr"
+        fi
+        exit 0
+        ;;
+    *)
+        echo "curl stub: unhandled URL: \$url" >&2
+        exit 22
+        ;;
+esac
+STUB
+    chmod +x "$STUB_BIN/curl"
+
+    cat > "$STUB_BIN/cargo" <<'STUB'
+#!/usr/bin/env bash
+echo "cargo $*" >> "$CARGO_LOG"
+exit 0
+STUB
+    chmod +x "$STUB_BIN/cargo"
+
+    # Stub gh: force the curl-fallback path. Without this, the script
+    # would prefer real `gh api` and hit the real GitHub API for the
+    # fake owner/repo, which 404s.
+    cat > "$STUB_BIN/gh" <<'STUB'
+#!/usr/bin/env bash
+# Make `gh auth status` fail so the script falls back to curl.
+exit 1
+STUB
+    chmod +x "$STUB_BIN/gh"
+
+    export CARGO_LOG="$TEST_ROOT/cargo.log"
+    : > "$CARGO_LOG"
+
+    local out
+    if ! out=$(PATH="$STUB_BIN:$PATH" bash "$TEST_ROOT/scripts/fetch-binaries.sh" 2>&1); then
+        :
+    fi
+
+    assert_contains "PR detected log line" "$out" "detected PR #42"
+    assert_contains "downloaded overlay log line" "$out" "downloading overlay from pr-42-staging"
+    assert_contains "overlay tag log line" "$out" "overlay tag=pr-42-staging"
+
+    # Two install-release calls (durable + overlay).
+    local nlines
+    nlines=$(grep -c "install-release" "$CARGO_LOG" || true)
+    assert_eq "two install-release invocations after auto-detect" "2" "$nlines"
+}
+
 run_scenario_no_overlay
 run_scenario_1
+run_scenario_2_autodetect
 echo
 echo "=== summary: $PASS pass, $FAIL fail ==="
 [ "$FAIL" = "0" ]

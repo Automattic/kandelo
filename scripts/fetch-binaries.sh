@@ -20,6 +20,11 @@
 #                 the current manifest.
 #   --offline     Fail if an object isn't already in objects/ rather
 #                 than hitting the network.
+#   --pr <N>      Force PR overlay from pr-<N>-staging. Without this
+#                 flag, the script auto-detects the PR via the public
+#                 api.github.com /commits/{sha}/pulls endpoint when the
+#                 current HEAD belongs to an open PR. Skipped when
+#                 binaries.lock.pr already exists locally.
 #
 # Exit codes:
 #   0  success
@@ -34,13 +39,15 @@ cd "$REPO_ROOT"
 FORCE=0
 PRUNE=0
 OFFLINE=0
+PR_NUMBER=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --force)   FORCE=1; shift ;;
         --prune)   PRUNE=1; shift ;;
         --offline) OFFLINE=1; shift ;;
+        --pr)      PR_NUMBER="$2"; shift 2 ;;
         -h|--help)
-            sed -n '3,30p' "$0"
+            sed -n '3,32p' "$0"
             exit 0
             ;;
         *) echo "unknown arg $1" >&2; exit 2 ;;
@@ -82,6 +89,64 @@ OVERLAY_MANIFEST_SHA=""
 OVERLAY_OVERRIDES_JSON="[]"
 OVERLAY_REL_BASE=""
 OVERLAY_MANIFEST_OBJ=""
+
+# --- PR auto-detect + overlay download -----------------------------------
+# When --pr <N> is not given and no binaries.lock.pr is on disk, query
+# the public GitHub API to find the PR (if any) for the current HEAD.
+OWNER_REPO=""
+auto_detect_pr() {
+    # Echoes PR number on stdout, or empty if not found.
+    # Sets OWNER_REPO as a side effect.
+    local origin head_sha pulls_json pr_num
+    origin=$(git -C "$REPO_ROOT" config --get remote.origin.url 2>/dev/null) || return 0
+    head_sha=$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null) || return 0
+    case "$origin" in
+        git@github.com:*)        OWNER_REPO="${origin#git@github.com:}";   OWNER_REPO="${OWNER_REPO%.git}" ;;
+        https://github.com/*)    OWNER_REPO="${origin#https://github.com/}"; OWNER_REPO="${OWNER_REPO%.git}" ;;
+        *) return 0 ;;
+    esac
+    [ -z "$OWNER_REPO" ] && return 0
+    case "$OWNER_REPO" in */*) ;; *) OWNER_REPO=""; return 0 ;; esac
+
+    if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+        pulls_json=$(gh api "repos/$OWNER_REPO/commits/$head_sha/pulls" 2>/dev/null) || return 0
+    else
+        pulls_json=$(curl -fsSL \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$OWNER_REPO/commits/$head_sha/pulls" 2>/dev/null) || return 0
+    fi
+    pr_num=$(echo "$pulls_json" | jq -r '[.[] | select(.state=="open")][0].number // empty' 2>/dev/null)
+    echo "$pr_num"
+}
+
+if [ -z "$PR_NUMBER" ] && [ ! -f "$OVERLAY_FILE" ]; then
+    PR_NUMBER=$(auto_detect_pr || true)
+    [ -n "$PR_NUMBER" ] && echo "fetch-binaries: detected PR #$PR_NUMBER"
+fi
+
+if [ -n "$PR_NUMBER" ] && [ ! -f "$OVERLAY_FILE" ]; then
+    # Need OWNER_REPO populated. If --pr was passed explicitly without
+    # going through auto_detect_pr, derive it now from origin.
+    if [ -z "$OWNER_REPO" ]; then
+        origin_url=$(git -C "$REPO_ROOT" config --get remote.origin.url 2>/dev/null || true)
+        case "$origin_url" in
+            git@github.com:*)     OWNER_REPO="${origin_url#git@github.com:}";   OWNER_REPO="${OWNER_REPO%.git}" ;;
+            https://github.com/*) OWNER_REPO="${origin_url#https://github.com/}"; OWNER_REPO="${OWNER_REPO%.git}" ;;
+        esac
+    fi
+    if [ -n "$OWNER_REPO" ]; then
+        STAGING_TAG_GUESS="pr-${PR_NUMBER}-staging"
+        STAGING_BASE="https://github.com/$OWNER_REPO/releases/download/$STAGING_TAG_GUESS"
+        echo "fetch-binaries: downloading overlay from $STAGING_TAG_GUESS..."
+        if curl -fsSL --retry 2 -o "$OVERLAY_FILE.partial" "$STAGING_BASE/binaries.lock.pr"; then
+            mv "$OVERLAY_FILE.partial" "$OVERLAY_FILE"
+        else
+            rm -f "$OVERLAY_FILE.partial"
+            echo "fetch-binaries: no overlay at $STAGING_TAG_GUESS (PR may not have a staging release yet); falling back to durable release"
+        fi
+    fi
+fi
+
 if [ -f "$OVERLAY_FILE" ]; then
     OVERLAY_TAG=$(jq -r .staging_tag "$OVERLAY_FILE")
     OVERLAY_MANIFEST_SHA=$(jq -r .staging_manifest_sha256 "$OVERLAY_FILE")
