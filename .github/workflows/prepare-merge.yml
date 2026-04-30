@@ -1,0 +1,188 @@
+name: Prepare merge
+
+# Triggered when a maintainer applies the `ready-to-ship` label to an
+# approved PR. Builds packages against PR HEAD merged with tip-of-main,
+# publishes a fresh `binaries-abi-v<N>-YYYY-MM-DD[-<seq>]` durable
+# release, pushes a single `chore(binaries): bump lockfile` commit to
+# the PR branch, and enables squash auto-merge.
+#
+# The squash merge collapses code + deps.toml + lockfile bump into a
+# single main commit — main is never in a state where the lockfile
+# disagrees with the deps.toml on the same branch.
+#
+# See docs/plans/2026-04-29-pr-package-builds-design.md §4.2.
+
+on:
+  pull_request:
+    types: [labeled]
+
+# Only one PR may publish a durable release at a time. Sequential
+# (cancel-in-progress: false) so a queued PR re-merges main on its
+# turn rather than racing.
+concurrency:
+  group: prepare-merge-singleton
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: |
+      github.event.label.name == 'ready-to-ship' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write          # push lockfile commit to PR branch + create release
+      pull-requests: write     # auto-merge, comments, label management
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Verify PR approved + required checks green
+        id: gate
+        run: |
+          REVIEW=$(gh pr view "$PR_NUMBER" --repo ${{ github.repository }} --json reviewDecision -q .reviewDecision)
+          if [ "$REVIEW" != "APPROVED" ]; then
+            gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship
+            gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: PR is not in APPROVED state (got: ${REVIEW:-PENDING})."
+            exit 1
+          fi
+          # Count failing required checks. Other non-skipping checks
+          # currently in flight are tolerated (auto-merge will wait for
+          # them after we enable it).
+          FAILING=$(gh pr checks "$PR_NUMBER" --repo ${{ github.repository }} --json bucket -q '[.[] | select(.bucket == "fail")] | length')
+          if [ "$FAILING" -gt 0 ]; then
+            gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship
+            gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: $FAILING required check(s) failing."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.PR_HEAD_SHA }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Merge tip-of-main into PR HEAD (in-memory)
+        run: |
+          git config user.name "wasm-posix-binaries-bot"
+          git config user.email "noreply@anthropic.com"
+          git fetch origin main
+          if ! git merge --no-edit origin/main; then
+            git merge --abort || true
+            gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship
+            gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: PR has merge conflicts with main. Please rebase or merge main and re-apply the label."
+            exit 1
+          fi
+
+      - name: Install host build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            zstd jq cmake ninja-build \
+            llvm clang lld
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Cache resolver + cargo target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/wasm-posix-kernel
+            target
+          key: prepare-merge-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'examples/libs/**/deps.toml') }}
+          restore-keys: |
+            prepare-merge-${{ runner.os }}-
+            staging-build-${{ runner.os }}-
+
+      - name: Cache musl sysroot
+        uses: actions/cache@v4
+        id: cache-sysroot
+        with:
+          path: |
+            sysroot
+            sysroot64
+          key: musl-sysroot-${{ runner.os }}-${{ hashFiles('scripts/build-musl.sh', 'musl-overlay/**', 'glue/**') }}
+
+      - name: Build musl sysroot
+        if: steps.cache-sysroot.outputs.cache-hit != 'true'
+        run: bash scripts/build-musl.sh
+
+      - name: Compute durable release tag
+        id: tag
+        run: |
+          ABI=$(grep -oE 'ABI_VERSION: u32 = [0-9]+' crates/shared/src/lib.rs | awk '{print $4}')
+          DATE=$(date -u +%Y-%m-%d)
+          BASE="binaries-abi-v${ABI}-${DATE}"
+          TAG="$BASE"
+          SEQ=2
+          while gh release view "$TAG" --repo ${{ github.repository }} >/dev/null 2>&1; do
+            TAG="${BASE}-${SEQ}"
+            SEQ=$((SEQ + 1))
+          done
+          echo "abi=$ABI" >> $GITHUB_OUTPUT
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Stage durable release
+        run: |
+          source sdk/activate.sh
+          mkdir -p /tmp/durable
+          scripts/stage-release.sh \
+            --out /tmp/durable \
+            --tag ${{ steps.tag.outputs.tag }} \
+            --arch wasm32
+
+      - name: Publish durable release
+        run: |
+          scripts/publish-release.sh \
+            --tag ${{ steps.tag.outputs.tag }} \
+            --staging /tmp/durable
+
+      - name: Rewrite binaries.lock on PR HEAD
+        run: |
+          # Throw away the in-memory merge of main — we don't want to
+          # push that merge commit to the PR branch. Reset to PR HEAD
+          # and apply only the lockfile bump on top.
+          git checkout "$PR_HEAD_SHA"
+
+          SHA=$(shasum -a 256 /tmp/durable/manifest.json | awk '{print $1}')
+          jq -n \
+            --argjson abi ${{ steps.tag.outputs.abi }} \
+            --arg tag "${{ steps.tag.outputs.tag }}" \
+            --arg sha "$SHA" \
+            '{abi_version: $abi, release_tag: $tag, manifest_sha256: $sha}' \
+            > binaries.lock
+
+          git add binaries.lock
+          git commit -m "chore(binaries): bump lockfile to ${{ steps.tag.outputs.tag }}
+
+          Generated by .github/workflows/prepare-merge.yml on label
+          ready-to-ship for PR #${{ env.PR_NUMBER }}."
+
+      - name: Push lockfile commit to PR branch
+        run: |
+          # --force-with-lease guards against author force-pushing
+          # between label-apply and now. If the remote has advanced
+          # past PR_HEAD_SHA, the push fails and we drop the label.
+          if ! git push --force-with-lease=refs/heads/$PR_HEAD_REF:$PR_HEAD_SHA \
+                origin HEAD:refs/heads/$PR_HEAD_REF; then
+            gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship
+            gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: PR HEAD changed during build (force-push or new commit). Re-apply the ready-to-ship label after CI is green again."
+            exit 1
+          fi
+
+      - name: Enable squash auto-merge
+        run: |
+          gh pr merge "$PR_NUMBER" --repo ${{ github.repository }} --auto --squash
+
+      - name: Drop label + comment on failure
+        if: failure() && steps.gate.outcome == 'success'
+        run: |
+          gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship || true
+          gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "prepare-merge failed. Check the workflow run log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}. Re-apply the ready-to-ship label after fixing." || true
