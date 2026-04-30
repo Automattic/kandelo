@@ -98,9 +98,29 @@ See [docs/posix-status.md](docs/posix-status.md) for the full syscall-by-syscall
 
 ## Prerequisites
 
-- **Rust nightly** (for `build-std` and atomics)
+- **Rust nightly** (for `build-std` and atomics) — pinned via `rust-toolchain.toml`
 - **LLVM 21+** with `clang` and `wasm-ld` (macOS: `brew install llvm`)
 - **Node.js** 22+
+
+Or use the Nix flake (see [Using Nix](#using-nix) below) and skip per-tool installs.
+
+## Using Nix
+
+A `flake.nix` provides a reproducible dev shell with the pinned Rust nightly,
+LLVM 21, Node 22, Erlang 28, and the autotools/cmake/binaryen/wabt stack the
+build scripts need. With [Nix](https://nixos.org/download.html) installed
+(flakes enabled — Determinate Systems Nix has them on by default):
+
+```bash
+nix develop                          # interactive shell
+# or
+nix develop -c bash build.sh         # one-shot
+```
+
+The `shellHook` exports `LLVM_BIN` / `LLVM_PREFIX` so the build scripts
+pick up the Nix-provided LLVM 21 instead of looking for a Homebrew install.
+The first `nix develop` downloads the toolchain (~10–15 min); subsequent
+entries are near-instant.
 
 ## Quick Start
 
