@@ -15323,14 +15323,10 @@ mod tests {
         assert_eq!(st.st_ino, VirtualDevice::Fb0.ino());
     }
 
-    /// Mutex serializing tests that touch the global FB0_OWNER atomic.
-    static FB0_OWNER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     #[test]
     fn fbioget_vscreeninfo_returns_640x400_bgra32() {
         use wasm_posix_shared::fbdev::*;
         use core::sync::atomic::Ordering;
-        let _g = FB0_OWNER_LOCK.lock().unwrap();
         crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
 
         let mut proc = Process::new(1);
@@ -15354,7 +15350,6 @@ mod tests {
     fn fbioget_fscreeninfo_reports_correct_smem_len() {
         use wasm_posix_shared::fbdev::*;
         use core::sync::atomic::Ordering;
-        let _g = FB0_OWNER_LOCK.lock().unwrap();
         crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
 
         let mut proc = Process::new(1);
@@ -15376,7 +15371,6 @@ mod tests {
     fn fbiopan_display_succeeds() {
         use wasm_posix_shared::fbdev::*;
         use core::sync::atomic::Ordering;
-        let _g = FB0_OWNER_LOCK.lock().unwrap();
         crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
 
         let mut proc = Process::new(1);
@@ -15391,7 +15385,6 @@ mod tests {
     fn fbioput_vscreeninfo_rejects_mismatched_geometry() {
         use wasm_posix_shared::fbdev::*;
         use core::sync::atomic::Ordering;
-        let _g = FB0_OWNER_LOCK.lock().unwrap();
         crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
 
         let mut proc = Process::new(1);
@@ -15416,7 +15409,6 @@ mod tests {
     #[test]
     fn unknown_fb_ioctl_returns_enotty() {
         use core::sync::atomic::Ordering;
-        let _g = FB0_OWNER_LOCK.lock().unwrap();
         crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
 
         let mut proc = Process::new(1);
@@ -15432,7 +15424,6 @@ mod tests {
     fn write_fb0_lazy_binds_and_forwards_pixels() {
         use core::sync::atomic::Ordering;
         use wasm_posix_shared::flags::O_RDWR;
-        let _g = FB0_OWNER_LOCK.lock().unwrap();
         crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
 
         let mut proc = Process::new(1);
@@ -15478,7 +15469,6 @@ mod tests {
         use core::sync::atomic::Ordering;
         use wasm_posix_shared::flags::O_RDWR;
         use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
-        let _g = FB0_OWNER_LOCK.lock().unwrap();
         crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
 
         let mut proc = Process::new(1);
@@ -15511,7 +15501,6 @@ mod tests {
         use core::sync::atomic::Ordering;
         use wasm_posix_shared::flags::O_RDWR;
         use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
-        let _g = FB0_OWNER_LOCK.lock().unwrap();
         crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
 
         let mut proc = Process::new(1);
@@ -15532,7 +15521,6 @@ mod tests {
         use core::sync::atomic::Ordering;
         use wasm_posix_shared::flags::O_RDWR;
         use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
-        let _g = FB0_OWNER_LOCK.lock().unwrap();
         crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
 
         let mut proc = Process::new(1);
@@ -15553,7 +15541,6 @@ mod tests {
         use core::sync::atomic::Ordering;
         use wasm_posix_shared::flags::O_RDWR;
         use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
-        let _g = FB0_OWNER_LOCK.lock().unwrap();
         crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
 
         let mut proc = Process::new(1);
@@ -15576,7 +15563,6 @@ mod tests {
         use core::sync::atomic::Ordering;
         use wasm_posix_shared::flags::O_RDWR;
         use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
-        let _g = FB0_OWNER_LOCK.lock().unwrap();
         crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
 
         let mut proc = Process::new(1);
@@ -15595,9 +15581,6 @@ mod tests {
     #[test]
     fn open_dev_fb0_is_single_owner() {
         use core::sync::atomic::Ordering;
-        let _g = FB0_OWNER_LOCK.lock().unwrap();
-        // Reset state in case a prior test (with a poisoned lock) left the
-        // atomic dirty. Tests within this lock own the value.
         crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
 
         let mut proc1 = Process::new(1);
