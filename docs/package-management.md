@@ -642,10 +642,26 @@ manifest is stale relative to this consumer's deps.toml
 
 That is the "Why `cache_key_sha` is the strict equivalence
 check" rejection above, surfaced at the install-release seam.
-For day-to-day iteration — bumping `revision` to test a new
-compiler flag, swapping a `[source]` URL while debugging —
-re-publishing a release just to satisfy the gate is wasted
-motion. Pass `--allow-stale` instead:
+
+The primary remedy is the per-PR overlay flow — push your
+branch, let `staging-build.yml` rebuild the touched packages,
+and `fetch-binaries.sh` will auto-detect the open PR and pull
+its `pr-<NNN>-staging` archives via `binaries.lock.pr` (see
+[binary-releases.md](binary-releases.md) "Per-PR staging
+overlay"). That works for any `deps.toml` change pushed to a
+PR with CI write access, and is the path code-review and merge
+both use.
+
+`--allow-stale` is the escape hatch for the cases the overlay
+flow doesn't cover:
+
+- pre-push iteration before any commit lands on the branch,
+- fork PRs that lack write access to publish staging releases,
+- `WIP:` commits where the staging build hasn't completed (or
+  failed) and you want to see the demo locally,
+- local edits past the last CI build on your own PR.
+
+Pass it instead of waiting for the overlay:
 
 ```bash
 ./run.sh browser --allow-stale          # one-shot
