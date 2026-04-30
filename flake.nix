@@ -30,6 +30,10 @@
         # Combined tree so LLVM_PREFIX/bin contains clang + llvm-* + wasm-ld,
         # and LLVM_PREFIX/include/c++/v1 contains libc++ headers — matching
         # the layout the build scripts expect from a Homebrew LLVM install.
+        # libcxx.dev carries the standard-library headers (iostream, cstring,
+        # etc.) — without the .dev output, only the runtime modules at
+        # share/libc++/v1 are present and C++ source builds fail with
+        # "'cstring' file not found".
         llvmTree = pkgs.symlinkJoin {
           name = "llvm-21-tree";
           paths = [
@@ -37,6 +41,7 @@
             llvmPkg.llvm
             llvmPkg.lld
             llvmPkg.libcxx
+            llvmPkg.libcxx.dev
           ];
         };
       in {
