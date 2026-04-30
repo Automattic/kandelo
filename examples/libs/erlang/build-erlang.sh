@@ -25,7 +25,7 @@ SYSROOT="$REPO_ROOT/sysroot"
 NPROC="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
 
 # Homebrew LLVM
-LLVM_PREFIX="$(brew --prefix llvm 2>/dev/null || echo /opt/homebrew/opt/llvm)"
+LLVM_PREFIX="${LLVM_PREFIX:-$(brew --prefix llvm 2>/dev/null || echo /opt/homebrew/opt/llvm)}"
 LLVM_CLANG="$LLVM_PREFIX/bin/clang"
 
 # --- Verify prerequisites ---

@@ -9,6 +9,9 @@ The wasm-posix-sdk provides a cross-compilation toolchain for building C/C++ pro
 1. **LLVM 21+** with clang and wasm-ld:
    - macOS: `brew install llvm`
    - Ubuntu: `apt install llvm clang lld`
+   - Or use the Nix dev shell (`nix develop` from the repo root) — provides
+     LLVM 21 plus the rest of the toolchain, no per-tool install needed.
+     See the README's "Using Nix" section.
 2. **musl sysroot** built from this repo:
    ```bash
    git submodule update --init musl
@@ -44,7 +47,8 @@ This makes 8 CLI tools available globally:
 The SDK finds LLVM in this order:
 
 1. `$WASM_POSIX_LLVM_DIR` environment variable (path to LLVM bin directory)
-2. `clang` on `$PATH` (tested for wasm32 support)
+2. `clang` on `$PATH` (tested for wasm32 support — covers the Nix dev shell,
+   which puts the pinned LLVM 21 first on `PATH`)
 3. `/opt/homebrew/opt/llvm/bin` (macOS Homebrew)
 4. `/usr/lib/llvm-*/bin` (Linux, highest version)
 

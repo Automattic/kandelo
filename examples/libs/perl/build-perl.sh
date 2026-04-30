@@ -41,7 +41,7 @@ for tool in gnu-sed coreutils findutils grep; do
     [ -d "$gnubin" ] && export PATH="$gnubin:$PATH"
 done
 # LLVM provides readelf and objdump that perl-cross needs
-LLVM_BIN="/opt/homebrew/opt/llvm/bin"
+LLVM_BIN="${LLVM_BIN:-/opt/homebrew/opt/llvm/bin}"
 if [ -d "$LLVM_BIN" ]; then
     # Create temp dir with readelf/objdump symlinks for perl-cross
     TOOL_DIR="$SCRIPT_DIR/.host-tools"

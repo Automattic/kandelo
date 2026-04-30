@@ -160,7 +160,7 @@ if [ ! -f "$HOST_BUILD_DIR/import_executables.cmake" ]; then
 fi
 
 # --- Set up libc++ headers for C++ support ---
-LLVM_PREFIX="$(brew --prefix llvm 2>/dev/null || echo /opt/homebrew/opt/llvm)"
+LLVM_PREFIX="${LLVM_PREFIX:-$(brew --prefix llvm 2>/dev/null || echo /opt/homebrew/opt/llvm)}"
 LLVM_CLANG="$LLVM_PREFIX/bin/clang"
 LLVM_CXX_HEADERS="$LLVM_PREFIX/include/c++/v1"
 
