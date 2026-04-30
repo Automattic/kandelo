@@ -136,22 +136,24 @@ jobs:
             prepare-merge-${{ runner.os }}-
             staging-build-${{ runner.os }}-
 
-      - name: Cache musl sysroot
+      - name: Cache musl sysroot + libc++
         uses: actions/cache@v4
         id: cache-sysroot
         with:
           path: |
             sysroot
             sysroot64
-          # v2: now also caches the wasm64 sysroot (added 2026-04-30).
-          key: musl-sysroot-v2-${{ runner.os }}-${{ hashFiles('scripts/build-musl.sh', 'musl-overlay/**', 'glue/**') }}
+          # v3: also includes libc++ (see staging-build.yml).
+          key: musl-sysroot-v3-${{ runner.os }}-${{ hashFiles('scripts/build-musl.sh', 'scripts/build-libcxx.sh', 'musl-overlay/**', 'glue/**') }}
 
-      - name: Build musl sysroot (wasm32 + wasm64)
+      - name: Build musl sysroot + libc++ (wasm32 + wasm64)
         if: steps.cache-sysroot.outputs.cache-hit != 'true'
-        # See staging-build.yml for why we build both arches.
+        # See staging-build.yml.
         run: |
           nix develop --accept-flake-config --command bash scripts/build-musl.sh
           nix develop --accept-flake-config --command bash scripts/build-musl.sh --arch wasm64posix
+          nix develop --accept-flake-config --command bash scripts/build-libcxx.sh
+          nix develop --accept-flake-config --command bash scripts/build-libcxx.sh --arch wasm64
 
       - name: Compute durable release tag
         id: tag
