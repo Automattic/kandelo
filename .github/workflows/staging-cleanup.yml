@@ -1,0 +1,67 @@
+name: Staging cleanup
+
+# Deletes pr-<NNN>-staging pre-releases when the corresponding PR
+# closes (merged or abandoned), with a daily cron + manual dispatch
+# fallback to sweep up orphans (webhook misses, workflow failures
+# during the close event).
+#
+# See docs/plans/2026-04-29-pr-package-builds-design.md §4.3.
+
+on:
+  pull_request:
+    types: [closed]
+  schedule:
+    - cron: '0 8 * * *'   # daily at 08:00 UTC
+  workflow_dispatch:        # manual sweep
+
+jobs:
+  cleanup-on-close:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Delete pr-${{ github.event.pull_request.number }}-staging
+        run: |
+          TAG="pr-${{ github.event.pull_request.number }}-staging"
+          if gh release view "$TAG" --repo ${{ github.repository }} >/dev/null 2>&1; then
+            gh release delete "$TAG" --repo ${{ github.repository }} --yes --cleanup-tag
+            echo "Deleted $TAG"
+          else
+            echo "$TAG does not exist; nothing to clean up"
+          fi
+
+  sweep:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Sweep orphan pr-*-staging tags
+        run: |
+          # Up to 200 most recent pre-releases; pr-<N>-staging is the
+          # only naming pattern we own, so we filter on it directly.
+          gh release list --repo ${{ github.repository }} --limit 200 \
+              --json tagName,isPrerelease \
+              -q '.[] | select(.isPrerelease and (.tagName | startswith("pr-")) and (.tagName | endswith("-staging"))) | .tagName' \
+            | while read -r TAG; do
+                # Extract PR number from pr-<N>-staging.
+                PR=${TAG#pr-}
+                PR=${PR%-staging}
+                if [ -z "$PR" ] || ! [[ "$PR" =~ ^[0-9]+$ ]]; then
+                  echo "WARN: cannot parse PR number from $TAG, skipping"
+                  continue
+                fi
+                STATE=$(gh pr view "$PR" --repo ${{ github.repository }} --json state -q .state 2>/dev/null || echo "MISSING")
+                if [ "$STATE" != "OPEN" ]; then
+                  echo "Deleting orphan $TAG (PR state: $STATE)"
+                  gh release delete "$TAG" --repo ${{ github.repository }} --yes --cleanup-tag
+                else
+                  echo "Keeping $TAG (PR is OPEN)"
+                fi
+              done
