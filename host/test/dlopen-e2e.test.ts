@@ -16,8 +16,13 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "../..");
 const SYSROOT = join(REPO_ROOT, "sysroot");
 const GLUE_DIR = join(REPO_ROOT, "glue");
-const CLANG = "/opt/homebrew/opt/llvm@21/bin/clang";
-const WASM_LD = "/opt/homebrew/bin/wasm-ld";
+// Resolve via $LLVM_BIN (set by the Nix dev shell / SDK toolchain)
+// so this runs on Linux CI as well. Homebrew paths stay as fallback.
+const LLVM_BIN = process.env.LLVM_BIN || "/opt/homebrew/opt/llvm@21/bin";
+const CLANG = `${LLVM_BIN}/clang`;
+const WASM_LD = process.env.LLVM_BIN
+  ? `${LLVM_BIN}/wasm-ld`
+  : "/opt/homebrew/bin/wasm-ld";
 
 const hasSysroot = existsSync(join(SYSROOT, "lib", "libc.a"));
 const hasKernel = existsSync(join(REPO_ROOT, "binaries", "kernel.wasm")) ||

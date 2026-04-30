@@ -180,10 +180,8 @@ jobs:
               --tag ${{ steps.tag.outputs.tag }} \
               --staging /tmp/durable
 
-      - name: Build kernel + install host deps (test prereqs)
-        # Vitest tests load kernel.wasm via the resolver; cargo unit
-        # tests run as native binaries. Both inside nix develop for
-        # the pinned LLVM/Rust/Node toolchain.
+      - name: Build kernel + test programs + install host deps (test prereqs)
+        # See staging-build.yml for the rationale on build-programs.sh.
         run: |
           nix develop --accept-flake-config --command bash -c '
             cargo build --release -p wasm-posix-kernel \
@@ -192,6 +190,7 @@ jobs:
             mkdir -p local-binaries
             cp target/wasm64-unknown-unknown/release/wasm_posix_kernel.wasm \
               local-binaries/kernel.wasm
+            bash scripts/build-programs.sh
             cd host && npm install --no-audit --no-fund
           '
 

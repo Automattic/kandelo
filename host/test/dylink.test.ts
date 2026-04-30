@@ -9,8 +9,15 @@ import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-const CLANG = "/opt/homebrew/opt/llvm@21/bin/clang";
-const WASM_LD = "/opt/homebrew/bin/wasm-ld";
+// Resolve clang/wasm-ld via $LLVM_BIN (set by the Nix dev shell or
+// the SDK toolchain) so this test runs on Linux CI as well as on a
+// Mac with Homebrew LLVM. The hardcoded Homebrew paths remain as a
+// last-resort fallback for shells where LLVM_BIN is unset.
+const LLVM_BIN = process.env.LLVM_BIN || "/opt/homebrew/opt/llvm@21/bin";
+const CLANG = `${LLVM_BIN}/clang`;
+const WASM_LD = process.env.LLVM_BIN
+  ? `${LLVM_BIN}/wasm-ld`
+  : "/opt/homebrew/bin/wasm-ld";
 
 /** Build a shared Wasm library from C source. */
 function buildSharedLib(source: string, name: string, opts?: { allowUndefined?: boolean }): Uint8Array {

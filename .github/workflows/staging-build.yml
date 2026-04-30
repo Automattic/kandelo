@@ -104,10 +104,14 @@ jobs:
               --pr ${{ github.event.pull_request.number }} \
               --staging /tmp/pr-staging
 
-      - name: Build kernel + install host deps (test prereqs)
-        # Vitest tests load kernel.wasm via the resolver; cargo unit
-        # tests run as native binaries. Both inside nix develop for
-        # the pinned LLVM/Rust/Node toolchain.
+      - name: Build kernel + test programs + install host deps (test prereqs)
+        # Vitest tests load kernel.wasm + various programs/*.wasm via
+        # the resolver. cargo unit tests run as native binaries.
+        # build-programs.sh compiles programs/*.c (fork-exec.wasm,
+        # ifhwaddr.wasm, hello64.wasm, mmap_shared_test.wasm, etc.)
+        # — without these, vitest tests that target the centralized
+        # kernel against a specific program error out with "Binary
+        # not found".
         run: |
           nix develop --accept-flake-config --command bash -c '
             cargo build --release -p wasm-posix-kernel \
@@ -116,6 +120,7 @@ jobs:
             mkdir -p local-binaries
             cp target/wasm64-unknown-unknown/release/wasm_posix_kernel.wasm \
               local-binaries/kernel.wasm
+            bash scripts/build-programs.sh
             cd host && npm install --no-audit --no-fund
           '
 
