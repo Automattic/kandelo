@@ -1,1 +1,0 @@
-libgnu_a-argp-pv.o: argp-pv.c
