@@ -163,6 +163,34 @@ jobs:
               --tag ${{ steps.tag.outputs.tag }} \
               --staging /tmp/durable
 
+      - name: Build kernel + install host deps (test prereqs)
+        # Vitest tests load kernel.wasm via the resolver; cargo unit
+        # tests run as native binaries. Both inside nix develop for
+        # the pinned LLVM/Rust/Node toolchain.
+        run: |
+          nix develop --accept-flake-config --command bash -c '
+            cargo build --release -p wasm-posix-kernel \
+              -Z build-std=core,alloc \
+              -Z build-std-features=panic_immediate_abort
+            mkdir -p local-binaries
+            cp target/wasm64-unknown-unknown/release/wasm_posix_kernel.wasm \
+              local-binaries/kernel.wasm
+            cd host && npm install --no-audit --no-fund
+          '
+
+      - name: Run cargo + vitest tests
+        # Tests run AFTER publish but BEFORE the lockfile bump push.
+        # On failure: durable release exists (orphaned — never pinned
+        # by any binaries.lock), but no merge-gate status is set, so
+        # the PR can't merge. Contributor fixes tests, re-applies
+        # ready-to-ship; next run cuts a fresh durable.
+        run: |
+          nix develop --accept-flake-config --command bash -c '
+            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
+            cargo test -p wasm-posix-kernel --target "$HOST_TARGET" --lib
+            cd host && npx vitest run
+          '
+
       - name: Rewrite binaries.lock on PR HEAD
         run: |
           # Throw away the in-memory merge of main — we don't want to

@@ -102,6 +102,29 @@ jobs:
               --pr ${{ github.event.pull_request.number }} \
               --staging /tmp/pr-staging
 
+      - name: Build kernel + install host deps (test prereqs)
+        # Vitest tests load kernel.wasm via the resolver; cargo unit
+        # tests run as native binaries. Both inside nix develop for
+        # the pinned LLVM/Rust/Node toolchain.
+        run: |
+          nix develop --accept-flake-config --command bash -c '
+            cargo build --release -p wasm-posix-kernel \
+              -Z build-std=core,alloc \
+              -Z build-std-features=panic_immediate_abort
+            mkdir -p local-binaries
+            cp target/wasm64-unknown-unknown/release/wasm_posix_kernel.wasm \
+              local-binaries/kernel.wasm
+            cd host && npm install --no-audit --no-fund
+          '
+
+      - name: Run cargo + vitest tests
+        run: |
+          nix develop --accept-flake-config --command bash -c '
+            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
+            cargo test -p wasm-posix-kernel --target "$HOST_TARGET" --lib
+            cd host && npx vitest run
+          '
+
       - name: Post sticky comment (built archives)
         if: steps.stage.outputs.override_count != '0'
         uses: marocchino/sticky-pull-request-comment@v2
