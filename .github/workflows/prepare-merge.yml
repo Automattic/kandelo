@@ -103,6 +103,49 @@ jobs:
             exit 1
           fi
 
+      - name: Wait for staging-build on PR HEAD
+        # staging-build runs the same full test suite (cargo, vitest,
+        # libc-test, POSIX, sortix) on every PR push. If we proceed
+        # while it's in flight we'll (a) duplicate ~all of its compute,
+        # and (b) race its `merge-gate=pending` status post — when this
+        # workflow's `merge-gate=success` lands first and a still-running
+        # staging-build then overwrites it with `pending`, branch
+        # protection blocks the auto-merge we just enabled.
+        #
+        # `gh pr checks` above only treats `fail` as blocking; pending
+        # checks pass through. So gate explicitly here.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # The label event can fire before staging-build's run is
+          # registered against PR_HEAD_SHA. Retry briefly.
+          RUN_ID=""
+          for attempt in 1 2 3 4 5 6; do
+            RUN_ID=$(gh run list \
+              --repo ${{ github.repository }} \
+              --workflow=staging-build.yml \
+              --commit="$PR_HEAD_SHA" \
+              --limit=1 \
+              --json databaseId \
+              --jq '.[0].databaseId // empty')
+            [ -n "$RUN_ID" ] && break
+            sleep 10
+          done
+
+          if [ -z "$RUN_ID" ]; then
+            gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship
+            gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: no \`staging-build\` run found for HEAD \`$PR_HEAD_SHA\` after 60s. Push a new commit (or close+reopen the PR) to trigger one, then re-apply \`ready-to-ship\`."
+            exit 1
+          fi
+
+          echo "Waiting for staging-build run $RUN_ID on $PR_HEAD_SHA…"
+          # --exit-status: non-zero on failure/cancelled conclusion.
+          if ! gh run watch "$RUN_ID" --repo ${{ github.repository }} --exit-status; then
+            gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship
+            gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: \`staging-build\` for HEAD \`$PR_HEAD_SHA\` did not succeed (run ${{ github.server_url }}/${{ github.repository }}/actions/runs/$RUN_ID). Re-apply \`ready-to-ship\` once it is green."
+            exit 1
+          fi
+
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.PR_HEAD_SHA }}
