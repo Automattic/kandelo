@@ -429,9 +429,190 @@ STUB
     assert_eq "two install-release invocations after auto-detect" "2" "$nlines"
 }
 
+run_scenario_abi_bump_in_flight() {
+    echo "=== Scenario 3: consumer ABI ahead of lock ABI → skip archive install ==="
+    local TEST_ROOT
+    TEST_ROOT=$(mktemp -d -t fetch-abi-bump-test.XXXXXX)
+    trap 'rm -rf "$TEST_ROOT" "$STUB_BIN"' RETURN
+
+    setup_test_repo "$TEST_ROOT"
+
+    # Durable manifest at ABI 6 (the lockfile's pinned generation).
+    local DURABLE_SHA
+    write_manifest_at "$TEST_ROOT/binaries/objects" DURABLE_SHA \
+        "binaries-abi-v6-2026-04-01" \
+        '[
+          {"name": "libzlib", "archive_name": "libzlib.tar.zst", "kind": "lib"}
+        ]'
+
+    cat > "$TEST_ROOT/binaries.lock" <<EOF
+{
+  "abi_version": 6,
+  "release_tag": "binaries-abi-v6-2026-04-01",
+  "manifest_sha256": "$DURABLE_SHA"
+}
+EOF
+
+    # Consumer's source-of-truth ABI: bumped to 7 (ABI bump in flight).
+    mkdir -p "$TEST_ROOT/glue"
+    cat > "$TEST_ROOT/glue/abi_constants.h" <<'EOF'
+#define WASM_POSIX_ABI_VERSION 7u
+EOF
+
+    STUB_BIN=$(mktemp -d -t fetch-abi-bump-stub.XXXXXX)
+    cat > "$STUB_BIN/cargo" <<'STUB'
+#!/usr/bin/env bash
+echo "cargo $*" >> "$CARGO_LOG"
+exit 0
+STUB
+    chmod +x "$STUB_BIN/cargo"
+    export CARGO_LOG="$TEST_ROOT/cargo.log"
+    : > "$CARGO_LOG"
+
+    local out rc
+    set +e
+    out=$(PATH="$STUB_BIN:$PATH" bash "$TEST_ROOT/scripts/fetch-binaries.sh" 2>&1)
+    rc=$?
+    set -e
+
+    # Skip is informational, not fatal — fetch-binaries must still exit 0
+    # so the staging-build workflow proceeds to source-build.
+    assert_eq "fetch-binaries exits 0 during ABI bump" "0" "$rc"
+
+    # The skip log line names both ABIs so the operator sees the mismatch.
+    assert_contains "log mentions consumer abi=7 != lock abi=6" \
+        "$out" "consumer abi=7 != lock abi=6"
+    assert_contains "log explains durable skip + source-build follow-up" \
+        "$out" "skipping durable archive install"
+
+    # install-release MUST NOT be invoked for the durable manifest: the
+    # strict check inside it would correctly fail every per-entry
+    # compatibility check (manifest cache_key_sha computed against ABI 6,
+    # consumer at ABI 7). With no overlay in this scenario, install-release
+    # isn't called at all.
+    local nlines
+    nlines=$(grep -c "install-release" "$CARGO_LOG" || true)
+    assert_eq "no install-release invocation under ABI mismatch (no overlay)" "0" "$nlines"
+}
+
+run_scenario_abi_bump_with_overlay() {
+    echo "=== Scenario 4: consumer ABI ahead, overlay at consumer ABI → overlay still installs ==="
+    # Models the prepare-merge workflow on an ABI-bump PR: the staging
+    # build successfully published a pr-<N>-staging release with archives
+    # at the new ABI, but the durable lockfile still pins the old
+    # generation. The durable install must skip; the overlay install
+    # must proceed (its archives are at the consumer's ABI and pass
+    # install-release's strict per-entry checks).
+    local TEST_ROOT
+    TEST_ROOT=$(mktemp -d -t fetch-abi-bump-overlay-test.XXXXXX)
+    trap 'rm -rf "$TEST_ROOT" "$STUB_BIN"' RETURN
+
+    setup_test_repo "$TEST_ROOT"
+
+    # Durable manifest at ABI 6 (lockfile's pinned generation).
+    local DURABLE_SHA
+    write_manifest_at "$TEST_ROOT/binaries/objects" DURABLE_SHA \
+        "binaries-abi-v6-2026-04-01" \
+        '[
+          {"name": "libzlib", "archive_name": "libzlib.tar.zst", "kind": "lib"}
+        ]'
+
+    # Overlay manifest at ABI 7 (the consumer's ABI; built by staging).
+    # `write_manifest_at` hardcodes abi_version: 6, so write the v7
+    # overlay manifest by hand to override.
+    local OVERLAY_TMP="$TEST_ROOT/binaries/objects/overlay-tmp.json"
+    cat > "$OVERLAY_TMP" <<'EOF'
+{
+  "abi_version": 7,
+  "release_tag": "pr-999-staging",
+  "entries": [
+    {"name": "libdinit-1.0-rev1-wasm32-cccccccc.tar.zst", "program": "libdinit", "arch": "wasm32", "archive_name": "libdinit-1.0-rev1-wasm32-cccccccc.tar.zst", "kind": "library"}
+  ]
+}
+EOF
+    local OVERLAY_SHA
+    OVERLAY_SHA=$(shasum -a 256 "$OVERLAY_TMP" | awk '{print $1}')
+    mv "$OVERLAY_TMP" "$TEST_ROOT/binaries/objects/$OVERLAY_SHA.json"
+
+    cat > "$TEST_ROOT/binaries.lock" <<EOF
+{
+  "abi_version": 6,
+  "release_tag": "binaries-abi-v6-2026-04-01",
+  "manifest_sha256": "$DURABLE_SHA"
+}
+EOF
+    cat > "$TEST_ROOT/binaries.lock.pr" <<EOF
+{
+  "staging_tag": "pr-999-staging",
+  "staging_manifest_sha256": "$OVERLAY_SHA",
+  "overrides": ["libdinit"]
+}
+EOF
+    mkdir -p "$TEST_ROOT/glue"
+    cat > "$TEST_ROOT/glue/abi_constants.h" <<'EOF'
+#define WASM_POSIX_ABI_VERSION 7u
+EOF
+
+    STUB_BIN=$(mktemp -d -t fetch-abi-bump-overlay-stub.XXXXXX)
+    cat > "$STUB_BIN/cargo" <<'STUB'
+#!/usr/bin/env bash
+echo "cargo $*" >> "$CARGO_LOG"
+exit 0
+STUB
+    chmod +x "$STUB_BIN/cargo"
+    export CARGO_LOG="$TEST_ROOT/cargo.log"
+    : > "$CARGO_LOG"
+
+    local out rc
+    set +e
+    out=$(PATH="$STUB_BIN:$PATH" bash "$TEST_ROOT/scripts/fetch-binaries.sh" 2>&1)
+    rc=$?
+    set -e
+
+    assert_eq "fetch-binaries exits 0 with v7 overlay on v6 lockfile" "0" "$rc"
+
+    # The early sanity check now compares overlay against CONSUMER, not
+    # LOCK. v7 overlay against v7 consumer must pass.
+    case "$out" in
+        *"overlay manifest abi="*"!= "*)
+            echo "  FAIL: spurious overlay-vs-lock ABI mismatch error"
+            echo "    log: $out"
+            FAIL=$((FAIL + 1))
+            ;;
+        *)
+            echo "  PASS: overlay sanity check accepts v7 overlay vs v7 consumer"
+            PASS=$((PASS + 1))
+            ;;
+    esac
+
+    # Durable install skipped (consumer != lock).
+    assert_contains "durable install skip is logged" \
+        "$out" "skipping durable archive install"
+
+    # Overlay install runs — exactly one install-release invocation.
+    local nlines overlay_call
+    nlines=$(grep -c "install-release" "$CARGO_LOG" || true)
+    assert_eq "exactly one install-release (overlay only)" "1" "$nlines"
+    overlay_call=$(grep "install-release" "$CARGO_LOG" | head -1)
+    case "$overlay_call" in
+        *"$OVERLAY_SHA"*)
+            echo "  PASS: overlay manifest installed (matched by sha)"
+            PASS=$((PASS + 1))
+            ;;
+        *)
+            echo "  FAIL: install-release invoked with wrong manifest"
+            echo "    expected sha: $OVERLAY_SHA"
+            echo "    cargo call:   $overlay_call"
+            FAIL=$((FAIL + 1))
+            ;;
+    esac
+}
+
 run_scenario_no_overlay
 run_scenario_1
 run_scenario_2_autodetect
+run_scenario_abi_bump_in_flight
+run_scenario_abi_bump_with_overlay
 echo
 echo "=== summary: $PASS pass, $FAIL fail ==="
 [ "$FAIL" = "0" ]

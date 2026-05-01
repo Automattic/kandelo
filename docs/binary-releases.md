@@ -368,7 +368,15 @@ must:
   ```
 - Allow `github-actions[bot]` to push to PR branches via repository
   permissions. The lockfile bump pushes to PR branches, not main.
-- **Require the `merge-gate` status check on `main`** in branch
+- **Enable repository auto-merge.** `prepare-merge.yml`'s final step
+  calls `gh pr merge --auto --squash`, which the GitHub API rejects
+  with `Auto merge is not allowed for this repository` if the repo
+  setting is off.
+
+  ```
+  gh api --method PATCH "/repos/<owner>/<repo>" -F allow_auto_merge=true
+  ```
+- **Require ONLY the `merge-gate` status check on `main`** in branch
   protection. `prepare-merge.yml` posts `merge-gate=success` on the
   lockfile-bump commit only after a fresh durable release has been
   published. Without this required check, PRs could be merged
@@ -377,18 +385,30 @@ must:
   retain bypass via the standard branch-protection override (or
   "Allow specified actors to bypass required pull requests").
 
+  Do **not** also require `staging-build`'s `build` check. The
+  lockfile-bump commit that `prepare-merge.yml` pushes uses
+  `GITHUB_TOKEN`, and pushes authored by `GITHUB_TOKEN` deliberately
+  do not re-trigger workflows (GitHub's anti-recursion rule). So the
+  `build` check never appears on the lockfile-bump commit, and a
+  required `build` would block auto-merge forever. `merge-gate`
+  alone is sufficient: prepare-merge runs every test suite that
+  staging-build runs (and more) before posting it.
+
   To configure via the GitHub UI: Settings → Branches → branch
   protection rule for `main` → "Require status checks to pass" →
-  add `merge-gate`.
+  set the required-checks list to `merge-gate` only.
 
   To configure via the API (idempotent):
   ```
-  gh api --method PUT \
-    -H "Accept: application/vnd.github+json" \
-    "/repos/<owner>/<repo>/branches/main/protection/required_status_checks" \
-    -f strict=true \
-    -F 'contexts[]=merge-gate'
+  echo '{"strict":true,"contexts":["merge-gate"]}' | \
+    gh api --method PATCH \
+      -H "Accept: application/vnd.github+json" \
+      --input - \
+      "/repos/<owner>/<repo>/branches/main/protection/required_status_checks"
   ```
+
+  (`-f strict=true` would send the value as a string, which the API
+  rejects with `\"true\" is not a boolean`. Pipe a JSON body instead.)
 
 ### Fork PRs
 

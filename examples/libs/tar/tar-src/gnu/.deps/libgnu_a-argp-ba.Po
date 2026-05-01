@@ -1,1 +1,0 @@
-libgnu_a-argp-ba.o: argp-ba.c

@@ -13,7 +13,7 @@ import { resolveBinary } from "../src/binary-resolver";
 import { NodePlatformIO } from "../src/platform/node";
 import { NodeWorkerAdapter } from "../src/worker-adapter";
 import { ThreadPageAllocator } from "../src/thread-allocator";
-import { detectPtrWidth } from "../src/constants";
+import { detectPtrWidth, extractHeapBase } from "../src/constants";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import type { CentralizedWorkerInitMessage, CentralizedThreadInitMessage, WorkerToHostMessage } from "../src/worker-protocol";
 import type { PlatformIO } from "../src/types";
@@ -292,6 +292,8 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         new Uint8Array(newMemory.buffer, newChannelOffset, CH_TOTAL_SIZE).fill(0);
 
         kernelWorker.registerProcess(execPid, newMemory, [newChannelOffset], { skipKernelCreate: true, ptrWidth: newPtrWidth });
+        const execHeapBase = extractHeapBase(newProgramBytes);
+        if (execHeapBase !== null) kernelWorker.setBrkBase(execPid, execHeapBase);
         processProgramBytes.set(execPid, newProgramBytes);
 
         const initData: CentralizedWorkerInitMessage = {
@@ -391,6 +393,8 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
   new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
   kernelWorker.registerProcess(pid, memory, [channelOffset], { ptrWidth });
+  const initialHeapBase = extractHeapBase(programBytes);
+  if (initialHeapBase !== null) kernelWorker.setBrkBase(pid, initialHeapBase);
 
   if (options.stdinBytes != null) {
     kernelWorker.setStdinData(pid, options.stdinBytes);

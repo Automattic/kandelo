@@ -31,7 +31,11 @@ impl MemoryManager {
     /// keep MMAP_BASE low to maximize available space.
     const MMAP_BASE: usize = 0x04000000;
 
-    /// Default initial program break at 16MB.
+    /// Fallback initial program break at 16MB, used only when the host
+    /// has not called [`Self::set_brk_base`] with the program's
+    /// `__heap_base` export. For programs built with our SDK this is
+    /// always overridden before `_start` runs; the constant is a safety
+    /// net for non-standard binaries that lack `__heap_base`.
     const INITIAL_BRK: usize = 0x01000000;
 
     /// Default address space limit (1GB, matching --max-memory).
@@ -187,6 +191,21 @@ impl MemoryManager {
     /// Get the current program break.
     pub fn get_brk(&self) -> usize {
         self.program_break
+    }
+
+    /// Set the program's initial break to a value derived from the wasm
+    /// binary's `__heap_base` export. Updates both the current break and
+    /// the `initial_brk` baseline used for `RLIMIT_DATA` accounting.
+    ///
+    /// Called by the host once per process, between `kernel_create_process`
+    /// (or post-exec re-init) and the moment the new program's `_start`
+    /// can issue its first `brk` syscall. Without this, [`Self::INITIAL_BRK`]
+    /// is a fallback that may sit inside the stack region of programs
+    /// with a large data section (e.g. mariadbd's `__heap_base ≈ 16.32MB`),
+    /// causing the heap and shadow stack to overlap.
+    pub fn set_brk_base(&mut self, addr: usize) {
+        self.initial_brk = addr;
+        self.program_break = addr;
     }
 
     /// Set the program break. Returns the new break on success, or the

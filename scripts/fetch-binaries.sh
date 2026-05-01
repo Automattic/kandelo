@@ -70,6 +70,21 @@ LOCK_ABI=$(jq -r .abi_version "$LOCK_FILE")
 LOCK_TAG=$(jq -r .release_tag "$LOCK_FILE")
 LOCK_MANIFEST_SHA=$(jq -r .manifest_sha256 "$LOCK_FILE")
 
+# Consumer's source-of-truth ABI from glue/abi_constants.h (mirrored
+# from `crates/shared/src/lib.rs::ABI_VERSION` by check-abi-version.sh).
+# When the consumer has bumped past the lockfile's pinned release
+# (legitimate state during an ABI-bump PR before a new durable release
+# is cut), the archive-install path below is a no-op: every published
+# archive's compatibility block lists only `LOCK_ABI` and every
+# cache_key_sha was computed against `LOCK_ABI`, so install-release
+# would correctly fail per-entry checks. Skipping the archive install
+# (not the check inside install-release, which stays strict) lets
+# staging-build proceed to source-build the ABI-current binaries.
+CONSUMER_ABI=""
+if [ -f "$REPO_ROOT/glue/abi_constants.h" ]; then
+    CONSUMER_ABI=$(awk '/^#define WASM_POSIX_ABI_VERSION / {sub(/u$/,"",$3); print $3}' "$REPO_ROOT/glue/abi_constants.h")
+fi
+
 REL_BASE="https://github.com/brandonpayton/wasm-posix-kernel/releases/download/$LOCK_TAG"
 
 BIN_DIR="$REPO_ROOT/binaries"
@@ -306,8 +321,16 @@ if [ -n "$OVERLAY_TAG" ]; then
     ensure_object "manifest.json" "$OVERLAY_MANIFEST_SHA"
     REL_BASE="$REL_BASE_SAVE"
     overlay_abi=$(jq -r .abi_version "$OVERLAY_MANIFEST_OBJ")
-    if [ "$overlay_abi" != "$LOCK_ABI" ]; then
-        echo "ERROR: overlay manifest abi=$overlay_abi != lock abi=$LOCK_ABI" >&2
+    # An overlay represents archives staged by the current PR. During an
+    # ABI-bump-in-flight (CONSUMER_ABI ahead of LOCK_ABI before a new
+    # durable release is cut), the overlay legitimately disagrees with
+    # the lockfile while still matching the consumer. The invariant is
+    # `overlay_abi == consumer_abi`, not `overlay_abi == lock_abi`. Fall
+    # back to LOCK_ABI when CONSUMER_ABI is unavailable (preserves the
+    # original check for callers that don't expose abi_constants.h).
+    expected_overlay_abi="${CONSUMER_ABI:-$LOCK_ABI}"
+    if [ "$overlay_abi" != "$expected_overlay_abi" ]; then
+        echo "ERROR: overlay manifest abi=$overlay_abi != consumer abi=$expected_overlay_abi" >&2
         exit 1
     fi
 fi
@@ -336,44 +359,66 @@ if jq -e '.entries[] | select(.archive_name != null)' "$MANIFEST_OBJ" > /dev/nul
     else
         HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
 
-        # Compute filtered manifests when an overlay is in play.
-        # Filter unit is (.program, .arch) — derived from the overlay
-        # manifest's actual entries. A staging build that produced
-        # only wasm32 archives for a given program leaves the wasm64
-        # archive coming from the durable release, rather than
-        # silently dropping it (which happened when overrides was a
-        # flat program-name list and we filtered both arches out).
-        DURABLE_MANIFEST="$MANIFEST_OBJ"
-        DURABLE_FILTERED=""
-        if [ -n "$OVERLAY_TAG" ]; then
-            DURABLE_FILTERED=$(mktemp -t fetch-binaries-durable.XXXXXX).json
-            # Build [{program, arch}, ...] set from overlay manifest.
-            OVERLAY_SET=$(jq -c '[.entries[] | {program, arch}]' "$OVERLAY_MANIFEST_OBJ")
-            jq --argjson set "$OVERLAY_SET" '
-                .entries |= map(select(
-                    . as $e
-                    | $set
-                    | any(.program == $e.program and .arch == $e.arch)
-                    | not
-                ))
-            ' "$MANIFEST_OBJ" > "$DURABLE_FILTERED"
-            DURABLE_MANIFEST="$DURABLE_FILTERED"
+        # Durable install: skip when the consumer's ABI is ahead of the
+        # lockfile's pinned release (legitimate state during an ABI-bump
+        # PR before a new durable release is cut). The strict
+        # cache_key_sha check inside install-release stays valid; this
+        # branch just doesn't invoke it across ABI generations. Overlay
+        # archives — which were built at the consumer's ABI by the
+        # staging-build workflow — still install below.
+        SKIP_DURABLE=0
+        if [ -n "$CONSUMER_ABI" ] && [ "$CONSUMER_ABI" != "$LOCK_ABI" ]; then
+            SKIP_DURABLE=1
         fi
 
-        echo "fetch-binaries: installing archives via xtask install-release..."
-        cargo run -p xtask --target "$HOST_TARGET" --quiet -- install-release \
-            --manifest "$DURABLE_MANIFEST" \
-            --archive-base "$REL_BASE" \
-            --binaries-dir "$BIN_DIR"
+        DURABLE_FILTERED=""
+        if [ "$SKIP_DURABLE" = "1" ]; then
+            echo "fetch-binaries: consumer abi=$CONSUMER_ABI != lock abi=$LOCK_ABI — skipping durable archive install"
+            echo "fetch-binaries: a new durable release at abi=$CONSUMER_ABI must be cut after this PR merges; overlay archives + source-build cover the gap"
+        else
+            # Compute filtered manifests when an overlay is in play.
+            # Filter unit is (.program, .arch) — derived from the overlay
+            # manifest's actual entries. A staging build that produced
+            # only wasm32 archives for a given program leaves the wasm64
+            # archive coming from the durable release, rather than
+            # silently dropping it (which happened when overrides was a
+            # flat program-name list and we filtered both arches out).
+            DURABLE_MANIFEST="$MANIFEST_OBJ"
+            if [ -n "$OVERLAY_TAG" ]; then
+                DURABLE_FILTERED=$(mktemp -t fetch-binaries-durable.XXXXXX).json
+                # Build [{program, arch}, ...] set from overlay manifest.
+                OVERLAY_SET=$(jq -c '[.entries[] | {program, arch}]' "$OVERLAY_MANIFEST_OBJ")
+                jq --argjson set "$OVERLAY_SET" '
+                    .entries |= map(select(
+                        . as $e
+                        | $set
+                        | any(.program == $e.program and .arch == $e.arch)
+                        | not
+                    ))
+                ' "$MANIFEST_OBJ" > "$DURABLE_FILTERED"
+                DURABLE_MANIFEST="$DURABLE_FILTERED"
+            fi
 
+            echo "fetch-binaries: installing archives via xtask install-release..."
+            cargo run -p xtask --target "$HOST_TARGET" --quiet -- install-release \
+                --manifest "$DURABLE_MANIFEST" \
+                --archive-base "$REL_BASE" \
+                --binaries-dir "$BIN_DIR"
+        fi
+
+        # Overlay install runs independently of the durable-skip decision.
+        # Overlay archives carry abi_versions matching the consumer (verified
+        # against `expected_overlay_abi` in Step 1.25 above), so install-release
+        # passes its per-entry compatibility checks against the consumer's ABI.
         if [ -n "$OVERLAY_TAG" ]; then
             echo "fetch-binaries: installing overlay archives from $OVERLAY_TAG..."
             cargo run -p xtask --target "$HOST_TARGET" --quiet -- install-release \
                 --manifest "$OVERLAY_MANIFEST_OBJ" \
                 --archive-base "$OVERLAY_REL_BASE" \
                 --binaries-dir "$BIN_DIR"
-            rm -f "$DURABLE_FILTERED"
         fi
+
+        [ -n "$DURABLE_FILTERED" ] && rm -f "$DURABLE_FILTERED"
     fi
 fi
 
