@@ -167,6 +167,10 @@ need_sysroot() {
         bash "$REPO_ROOT/scripts/build-musl.sh"
         info "Sysroot built"
     else
+        # Re-sync overlay headers into the existing sysroot. Cheap (just a
+        # few cp) and ensures newly-added musl-overlay/include/ files reach
+        # an existing sysroot without forcing a full musl rebuild.
+        bash "$REPO_ROOT/scripts/install-overlay-headers.sh" "$REPO_ROOT/sysroot"
         info "Sysroot"
     fi
 }
@@ -177,6 +181,7 @@ need_sysroot64() {
         bash "$REPO_ROOT/scripts/build-musl.sh" --arch wasm64posix
         info "Sysroot64 built"
     else
+        bash "$REPO_ROOT/scripts/install-overlay-headers.sh" "$REPO_ROOT/sysroot64"
         info "Sysroot64"
     fi
 }
