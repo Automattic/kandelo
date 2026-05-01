@@ -2,13 +2,25 @@ name: Prepare merge
 
 # Triggered when a maintainer applies the `ready-to-ship` label to an
 # approved PR. Builds packages against PR HEAD merged with tip-of-main,
-# publishes a fresh `binaries-abi-v<N>-YYYY-MM-DD[-<seq>]` durable
-# release, pushes a single `chore(binaries): bump lockfile` commit to
-# the PR branch, and enables squash auto-merge.
+# and either:
+#   * publishes a fresh `binaries-abi-v<N>-YYYY-MM-DD[-<seq>]` durable
+#     release and pushes a `chore(binaries): bump lockfile` commit to
+#     the PR branch, OR
+#   * skips publish + lockfile bump when the staged manifest's
+#     per-package cache_key_sha set matches the baseline already pinned
+#     in binaries.lock (CI-only / docs-only / kernel-only PRs that
+#     don't change package contents).
 #
-# The squash merge collapses code + deps.toml + lockfile bump into a
-# single main commit — main is never in a state where the lockfile
-# disagrees with the deps.toml on the same branch.
+# In both cases, posts a `merge-gate=success` commit status (on the
+# bot lockfile-bump commit when published, on PR HEAD when skipped)
+# and enables squash auto-merge. Branch protection's required check
+# evaluates against the head sha at squash time; either form satisfies
+# it.
+#
+# When a fresh release is published, the squash merge collapses code +
+# deps.toml + lockfile bump into a single main commit — main is never
+# in a state where the lockfile disagrees with the deps.toml on the
+# same branch.
 #
 # See docs/plans/2026-04-29-pr-package-builds-design.md §4.2.
 
@@ -210,7 +222,38 @@ jobs:
               --arch wasm32 \
               --arch wasm64
 
+      - name: Detect package content drift vs baseline
+        id: drift
+        run: |
+          # Compare the freshly-staged manifest against the baseline
+          # manifest already on disk from "Fetch durable binaries"
+          # (binaries/manifest.json is a stable symlink into
+          # binaries/objects/, placed by fetch-binaries.sh step 1).
+          # Diff key is the set of (program, arch, cache_key_sha)
+          # tuples — the same content fingerprint stage-pr-overlay
+          # uses to compute its overrides array (see
+          # xtask/src/stage_pr_overlay.rs). If the set is identical,
+          # the new release would be byte-equivalent to the pinned
+          # baseline and there's nothing to publish or pin.
+          baseline="binaries/manifest.json"
+          if [ ! -f "$baseline" ]; then
+            echo "ERROR: baseline manifest not found at $baseline (Fetch durable binaries did not run?)" >&2
+            exit 1
+          fi
+          baseline_sigs=$(jq -cS '[.entries[] | {program, arch, cache_key_sha: .compatibility.cache_key_sha}] | sort' "$baseline")
+          new_sigs=$(jq -cS '[.entries[] | {program, arch, cache_key_sha: .compatibility.cache_key_sha}] | sort' /tmp/durable/manifest.json)
+          if [ "$new_sigs" = "$baseline_sigs" ]; then
+            baseline_tag=$(jq -r .release_tag "$baseline")
+            echo "::notice::No package content drift vs $baseline_tag — skipping publish + lockfile bump."
+            echo "noop=true" >> "$GITHUB_OUTPUT"
+            echo "baseline_tag=$baseline_tag" >> "$GITHUB_OUTPUT"
+          else
+            echo "Package content drift detected — will publish fresh durable release ${{ steps.tag.outputs.tag }}."
+            echo "noop=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Publish durable release
+        if: steps.drift.outputs.noop == 'false'
         run: |
           nix develop --accept-flake-config --command \
             scripts/publish-release.sh \
@@ -233,11 +276,17 @@ jobs:
           '
 
       - name: Run cargo + vitest tests
-        # Tests run AFTER publish but BEFORE the lockfile bump push.
-        # On failure: durable release exists (orphaned — never pinned
-        # by any binaries.lock), but no merge-gate status is set, so
-        # the PR can't merge. Contributor fixes tests, re-applies
-        # ready-to-ship; next run cuts a fresh durable.
+        # Tests run AFTER publish (when not skipped by drift detection)
+        # but BEFORE the lockfile bump push. They run unconditionally —
+        # PR code may break tests independent of whether package
+        # contents changed.
+        #
+        # On failure: when publish ran, the durable release exists
+        # (orphaned — never pinned by any binaries.lock). When publish
+        # was skipped, nothing was published. In both cases no
+        # merge-gate status is set, so the PR can't merge. Contributor
+        # fixes tests, re-applies ready-to-ship; next run either cuts a
+        # fresh durable or skips publish again, depending on drift.
         run: |
           nix develop --accept-flake-config --command bash -c '
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
@@ -258,6 +307,7 @@ jobs:
           nix develop --accept-flake-config --command bash scripts/run-sortix-tests.sh --all
 
       - name: Rewrite binaries.lock on PR HEAD
+        if: steps.drift.outputs.noop == 'false'
         run: |
           # Throw away the in-memory merge of main — we don't want to
           # push that merge commit to the PR branch. Reset to PR HEAD
@@ -280,6 +330,7 @@ jobs:
 
       - name: Push lockfile commit to PR branch
         id: push
+        if: steps.drift.outputs.noop == 'false'
         run: |
           # --force-with-lease guards against author force-pushing
           # between label-apply and now. If the remote has advanced
@@ -297,21 +348,37 @@ jobs:
           echo "new_head=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
 
       - name: Set merge-gate status check
-        # Posts a `merge-gate` commit status with state=success on the
-        # lockfile-bump commit. Configure branch protection on `main`
+        # Posts a `merge-gate=success` commit status on whichever sha
+        # auto-merge will squash. Configure branch protection on `main`
         # to require this status check — that hard-blocks merging
-        # without a fresh durable release behind it. Admins can
+        # without a successful prepare-merge run behind it. Admins can
         # bypass via standard branch-protection override. See
         # docs/binary-releases.md "PR package builds → Branch
         # protection setup".
+        #
+        # Two paths:
+        #   * Publish ran (noop=false): PR HEAD advanced to the bot
+        #     lockfile-bump commit; status posts there
+        #     (steps.push.outputs.new_head).
+        #   * Publish skipped (noop=true): PR HEAD is still the
+        #     original PR_HEAD_SHA; status posts there. Existing
+        #     binaries.lock pin already satisfies the merge gate
+        #     because the staged content is byte-equivalent to it.
         run: |
+          if [ "${{ steps.drift.outputs.noop }}" = "true" ]; then
+            target_sha="$PR_HEAD_SHA"
+            description="Content unchanged vs ${{ steps.drift.outputs.baseline_tag }}; existing pin satisfies merge gate."
+          else
+            target_sha="${{ steps.push.outputs.new_head }}"
+            description="Fresh durable release published: ${{ steps.tag.outputs.tag }}"
+          fi
           gh api \
             --method POST \
             -H "Accept: application/vnd.github+json" \
-            "/repos/${{ github.repository }}/statuses/${{ steps.push.outputs.new_head }}" \
+            "/repos/${{ github.repository }}/statuses/$target_sha" \
             -f state=success \
             -f context=merge-gate \
-            -f description="Fresh durable release published: ${{ steps.tag.outputs.tag }}"
+            -f description="$description"
 
       - name: Enable squash auto-merge
         run: |
