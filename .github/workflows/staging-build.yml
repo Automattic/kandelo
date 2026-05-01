@@ -146,8 +146,46 @@ jobs:
           echo "override_count=$override_count" >> $GITHUB_OUTPUT
           echo "overrides=$(jq -r '.overrides | join(", ")' /tmp/pr-staging/binaries.lock.pr)" >> $GITHUB_OUTPUT
 
-      - name: Publish to pr-${{ github.event.pull_request.number }}-staging
+      - name: Compare overlay against existing pr-staging release
+        # Mirrors the `prepare-merge.yml` skip-on-unchanged-content path
+        # (PR #391), but for the per-PR overlay side: if the freshly
+        # staged `binaries.lock.pr` is byte-equivalent to the one
+        # already published on `pr-<N>-staging`, skip the upload.
+        # The overlay's `staging_manifest_sha256` is a SHA over the
+        # staged manifest.json (which contains every changed archive's
+        # cache_key_sha), so equality of (manifest sha + sorted
+        # overrides) is sufficient to prove the overlay didn't change.
+        # cancel-in-progress on the concurrency group keeps us from
+        # racing against a stale in-flight publish — by the time we
+        # read the live release, it reflects the latest non-cancelled
+        # run's output.
+        id: detect_noop
         if: steps.stage.outputs.override_count != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="pr-${{ github.event.pull_request.number }}-staging"
+          new=/tmp/pr-staging/binaries.lock.pr
+          prev=/tmp/prev-overlay.json
+          if gh release download "$TAG" -p binaries.lock.pr -O "$prev" 2>/dev/null; then
+            prev_sha=$(jq -r .staging_manifest_sha256 "$prev")
+            new_sha=$(jq -r .staging_manifest_sha256 "$new")
+            prev_overrides=$(jq -cS .overrides "$prev")
+            new_overrides=$(jq -cS .overrides "$new")
+            if [ "$prev_sha" = "$new_sha" ] && [ "$prev_overrides" = "$new_overrides" ]; then
+              echo "noop=true" >> "$GITHUB_OUTPUT"
+              echo "Overlay byte-equivalent to existing $TAG — publish will be skipped."
+            else
+              echo "noop=false" >> "$GITHUB_OUTPUT"
+              echo "Overlay differs from existing $TAG — publish will run."
+            fi
+          else
+            echo "noop=false" >> "$GITHUB_OUTPUT"
+            echo "No existing $TAG release — publish will run."
+          fi
+
+      - name: Publish to pr-${{ github.event.pull_request.number }}-staging
+        if: steps.stage.outputs.override_count != '0' && steps.detect_noop.outputs.noop != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -209,7 +247,7 @@ jobs:
           nix develop --accept-flake-config --command bash scripts/run-sortix-tests.sh --all
 
       - name: Post sticky comment (built archives)
-        if: steps.stage.outputs.override_count != '0'
+        if: steps.stage.outputs.override_count != '0' && steps.detect_noop.outputs.noop != 'true'
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           header: pr-staging-build
@@ -232,6 +270,20 @@ jobs:
             and downloads `binaries.lock.pr` from the staging release —
             override entries fetched from the staging URL, the rest from
             the durable release.
+
+      - name: Post sticky comment (overlay unchanged since previous push)
+        if: steps.stage.outputs.override_count != '0' && steps.detect_noop.outputs.noop == 'true'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: pr-staging-build
+          message: |
+            **Staging build for this PR**
+
+            Overlay byte-equivalent to the previous push — every staged
+            archive's `cache_key_sha` matches what's already on
+            [`pr-${{ github.event.pull_request.number }}-staging`](https://github.com/${{ github.repository }}/releases/tag/pr-${{ github.event.pull_request.number }}-staging),
+            so the upload was skipped. Reviewers should keep consuming
+            the existing release as-is.
 
       - name: Post sticky comment (no rebuild needed)
         if: steps.stage.outputs.override_count == '0'
