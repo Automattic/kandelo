@@ -12,10 +12,13 @@ name: Prepare merge
 #     don't change package contents).
 #
 # In both cases, posts a `merge-gate=success` commit status (on the
-# bot lockfile-bump commit when published, on PR HEAD when skipped)
-# and enables squash auto-merge. Branch protection's required check
-# evaluates against the head sha at squash time; either form satisfies
-# it.
+# bot lockfile-bump commit when published, on PR HEAD when skipped),
+# unblocking the merge button. The maintainer clicks Merge manually
+# after the workflow finishes — branch protection's required check
+# evaluates against the head sha at click time; either form satisfies
+# it. Branch protection also requires `strict: true` (up-to-date with
+# main), so if main advances after this workflow finishes, the click
+# is blocked until the PR branch is updated and re-labeled.
 #
 # When a fresh release is published, the squash merge collapses code +
 # deps.toml + lockfile bump into a single main commit — main is never
@@ -349,11 +352,11 @@ jobs:
 
       - name: Set merge-gate status check
         # Posts a `merge-gate=success` commit status on whichever sha
-        # auto-merge will squash. Configure branch protection on `main`
-        # to require this status check — that hard-blocks merging
-        # without a successful prepare-merge run behind it. Admins can
-        # bypass via standard branch-protection override. See
-        # docs/binary-releases.md "PR package builds → Branch
+        # the maintainer will squash. Configure branch protection on
+        # `main` to require this status check — that hard-blocks
+        # merging without a successful prepare-merge run behind it.
+        # Admins can bypass via standard branch-protection override.
+        # See docs/binary-releases.md "PR package builds → Branch
         # protection setup".
         #
         # Two paths:
@@ -379,10 +382,6 @@ jobs:
             -f state=success \
             -f context=merge-gate \
             -f description="$description"
-
-      - name: Enable squash auto-merge
-        run: |
-          gh pr merge "$PR_NUMBER" --repo ${{ github.repository }} --auto --squash
 
       - name: Drop label + comment on failure
         if: failure() && steps.gate.outcome == 'success'
