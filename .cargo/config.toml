@@ -1,6 +1,10 @@
 [build]
 target = "wasm64-unknown-unknown"
 
+# Kernel globals assume single-threaded access; serialize cargo tests.
+[env]
+RUST_TEST_THREADS = "1"
+
 [target.wasm32-unknown-unknown]
 rustflags = ["-C", "target-feature=+atomics,+bulk-memory,+mutable-globals"]
 

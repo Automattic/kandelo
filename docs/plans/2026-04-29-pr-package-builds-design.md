@@ -115,17 +115,31 @@ Trigger: `on: pull_request` `types: [labeled]`, filtered to label `ready-to-ship
    for collisions; append `-<seq>` if needed.
 5. Build all packages via xtask. Cache hits cover packages staging already built;
    no-op packages reuse existing durable archives via the content-addressed cache.
-6. Stage + publish the durable release: `scripts/stage-release.sh` then
-   `scripts/publish-release.sh --tag <new-tag> --staging <dir>`.
-7. Rewrite top-level binaries.lock with new release_tag + manifest_sha256.
-8. Push a single commit to the PR's HEAD branch (using GITHUB_TOKEN; same-repo
-   PR, so push permission exists):
-       chore(binaries): bump lockfile to <new-tag>
-9. Set status check `auto-merge eligible` to green.
-10. Enable squash auto-merge: `gh pr merge --auto --squash`.
+6. Stage the durable release: `scripts/stage-release.sh`.
+7. Detect drift vs baseline: compare the staged manifest's per-entry
+   `(program, arch, compatibility.cache_key_sha)` set against
+   `binaries/manifest.json` (the baseline already on disk from `fetch-binaries.sh`).
+   * If identical → skip steps 8–10 (no fresh release, no lockfile bump). The
+     existing pin in `binaries.lock` already covers the merged-state code
+     byte-for-byte; cutting another tag would just produce content-identical
+     archives under a new name.
+   * If any entry differs → continue with steps 8–10.
+8. Publish the durable release: `scripts/publish-release.sh --tag <new-tag> --staging <dir>`.
+9. Rewrite top-level binaries.lock with new release_tag + manifest_sha256.
+10. Push a single commit to the PR's HEAD branch (using GITHUB_TOKEN; same-repo
+    PR, so push permission exists):
+        chore(binaries): bump lockfile to <new-tag>
+11. Set status check `merge-gate=success`. Target sha:
+    * If publish ran → the bot lockfile-bump commit (PR HEAD advanced).
+    * If publish was skipped → the original PR HEAD sha. Branch protection
+      evaluates the required check against the squash target's head sha;
+      either form satisfies it.
+12. Enable squash auto-merge: `gh pr merge --auto --squash`.
 ```
 
-Failure handling: any step fails → drop `ready-to-ship` label, post a comment naming the failing step, exit. Main is untouched. The contributor (or a maintainer) re-applies the label after addressing the failure.
+Tests (cargo / vitest / libc-test / POSIX / sortix) run unconditionally between staging and the lockfile bump — PR code may break tests independent of whether package contents changed.
+
+Failure handling: any step fails → drop `ready-to-ship` label, post a comment naming the failing step, exit. Main is untouched. The contributor (or a maintainer) re-applies the label after addressing the failure. In the drift-skip path, no orphaned durable release is left behind on test failure (publish never ran).
 
 ### §4.3 `staging-cleanup.yml` — PR close + daily sweep
 

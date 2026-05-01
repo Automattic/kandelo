@@ -207,14 +207,9 @@ fn reset_table() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    // Guard against parallel test execution modifying global PTY table
-    static PTY_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_alloc_pty() {
-        let _lock = PTY_TEST_LOCK.lock().unwrap();
         reset_table();
 
         let idx = alloc_pty().unwrap();
@@ -236,7 +231,6 @@ mod tests {
 
     #[test]
     fn test_pty_data_flow_raw_mode() {
-        let _lock = PTY_TEST_LOCK.lock().unwrap();
         reset_table();
 
         let idx = alloc_pty().unwrap();
@@ -264,7 +258,6 @@ mod tests {
 
     #[test]
     fn test_pty_canonical_mode() {
-        let _lock = PTY_TEST_LOCK.lock().unwrap();
         reset_table();
 
         let idx = alloc_pty().unwrap();
@@ -292,7 +285,6 @@ mod tests {
 
     #[test]
     fn test_pty_onlcr() {
-        let _lock = PTY_TEST_LOCK.lock().unwrap();
         reset_table();
 
         let idx = alloc_pty().unwrap();
@@ -310,7 +302,6 @@ mod tests {
 
     #[test]
     fn test_pty_isig_canonical() {
-        let _lock = PTY_TEST_LOCK.lock().unwrap();
         reset_table();
 
         let idx = alloc_pty().unwrap();
@@ -338,7 +329,6 @@ mod tests {
 
     #[test]
     fn test_pty_isig_raw_mode() {
-        let _lock = PTY_TEST_LOCK.lock().unwrap();
         reset_table();
 
         let idx = alloc_pty().unwrap();
@@ -358,7 +348,6 @@ mod tests {
 
     #[test]
     fn test_pty_isig_disabled_raw_mode() {
-        let _lock = PTY_TEST_LOCK.lock().unwrap();
         reset_table();
 
         let idx = alloc_pty().unwrap();
