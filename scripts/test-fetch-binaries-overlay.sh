@@ -429,9 +429,74 @@ STUB
     assert_eq "two install-release invocations after auto-detect" "2" "$nlines"
 }
 
+run_scenario_abi_bump_in_flight() {
+    echo "=== Scenario 3: consumer ABI ahead of lock ABI → skip archive install ==="
+    local TEST_ROOT
+    TEST_ROOT=$(mktemp -d -t fetch-abi-bump-test.XXXXXX)
+    trap 'rm -rf "$TEST_ROOT" "$STUB_BIN"' RETURN
+
+    setup_test_repo "$TEST_ROOT"
+
+    # Durable manifest at ABI 6 (the lockfile's pinned generation).
+    local DURABLE_SHA
+    write_manifest_at "$TEST_ROOT/binaries/objects" DURABLE_SHA \
+        "binaries-abi-v6-2026-04-01" \
+        '[
+          {"name": "libzlib", "archive_name": "libzlib.tar.zst", "kind": "lib"}
+        ]'
+
+    cat > "$TEST_ROOT/binaries.lock" <<EOF
+{
+  "abi_version": 6,
+  "release_tag": "binaries-abi-v6-2026-04-01",
+  "manifest_sha256": "$DURABLE_SHA"
+}
+EOF
+
+    # Consumer's source-of-truth ABI: bumped to 7 (ABI bump in flight).
+    mkdir -p "$TEST_ROOT/glue"
+    cat > "$TEST_ROOT/glue/abi_constants.h" <<'EOF'
+#define WASM_POSIX_ABI_VERSION 7u
+EOF
+
+    STUB_BIN=$(mktemp -d -t fetch-abi-bump-stub.XXXXXX)
+    cat > "$STUB_BIN/cargo" <<'STUB'
+#!/usr/bin/env bash
+echo "cargo $*" >> "$CARGO_LOG"
+exit 0
+STUB
+    chmod +x "$STUB_BIN/cargo"
+    export CARGO_LOG="$TEST_ROOT/cargo.log"
+    : > "$CARGO_LOG"
+
+    local out rc
+    set +e
+    out=$(PATH="$STUB_BIN:$PATH" bash "$TEST_ROOT/scripts/fetch-binaries.sh" 2>&1)
+    rc=$?
+    set -e
+
+    # Skip is informational, not fatal — fetch-binaries must still exit 0
+    # so the staging-build workflow proceeds to source-build.
+    assert_eq "fetch-binaries exits 0 during ABI bump" "0" "$rc"
+
+    # The skip log line names both ABIs so the operator sees the mismatch.
+    assert_contains "log mentions consumer abi=7 != lock abi=6" \
+        "$out" "consumer abi=7 != lock abi=6"
+    assert_contains "log explains skip + source-build follow-up" \
+        "$out" "skipping archive install"
+
+    # install-release MUST NOT be invoked: the strict check inside it
+    # would correctly fail every per-entry compatibility check (manifest
+    # cache_key_sha computed against ABI 6, consumer at ABI 7).
+    local nlines
+    nlines=$(grep -c "install-release" "$CARGO_LOG" || true)
+    assert_eq "no install-release invocation under ABI mismatch" "0" "$nlines"
+}
+
 run_scenario_no_overlay
 run_scenario_1
 run_scenario_2_autodetect
+run_scenario_abi_bump_in_flight
 echo
 echo "=== summary: $PASS pass, $FAIL fail ==="
 [ "$FAIL" = "0" ]

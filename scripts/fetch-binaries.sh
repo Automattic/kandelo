@@ -70,6 +70,21 @@ LOCK_ABI=$(jq -r .abi_version "$LOCK_FILE")
 LOCK_TAG=$(jq -r .release_tag "$LOCK_FILE")
 LOCK_MANIFEST_SHA=$(jq -r .manifest_sha256 "$LOCK_FILE")
 
+# Consumer's source-of-truth ABI from glue/abi_constants.h (mirrored
+# from `crates/shared/src/lib.rs::ABI_VERSION` by check-abi-version.sh).
+# When the consumer has bumped past the lockfile's pinned release
+# (legitimate state during an ABI-bump PR before a new durable release
+# is cut), the archive-install path below is a no-op: every published
+# archive's compatibility block lists only `LOCK_ABI` and every
+# cache_key_sha was computed against `LOCK_ABI`, so install-release
+# would correctly fail per-entry checks. Skipping the archive install
+# (not the check inside install-release, which stays strict) lets
+# staging-build proceed to source-build the ABI-current binaries.
+CONSUMER_ABI=""
+if [ -f "$REPO_ROOT/glue/abi_constants.h" ]; then
+    CONSUMER_ABI=$(awk '/^#define WASM_POSIX_ABI_VERSION / {sub(/u$/,"",$3); print $3}' "$REPO_ROOT/glue/abi_constants.h")
+fi
+
 REL_BASE="https://github.com/brandonpayton/wasm-posix-kernel/releases/download/$LOCK_TAG"
 
 BIN_DIR="$REPO_ROOT/binaries"
@@ -333,6 +348,12 @@ fi
 if jq -e '.entries[] | select(.archive_name != null)' "$MANIFEST_OBJ" > /dev/null 2>&1; then
     if [ "$OFFLINE" = "1" ]; then
         echo "fetch-binaries: skipping archive install (offline mode)"
+    elif [ -n "$CONSUMER_ABI" ] && [ "$CONSUMER_ABI" != "$LOCK_ABI" ]; then
+        # ABI-bump-in-flight: the durable release at LOCK_ABI is genuinely
+        # incompatible with the consumer at CONSUMER_ABI. Don't invoke
+        # install-release with a manifest it would correctly reject.
+        echo "fetch-binaries: consumer abi=$CONSUMER_ABI != lock abi=$LOCK_ABI — skipping archive install"
+        echo "fetch-binaries: a new durable release at abi=$CONSUMER_ABI must be cut after this PR merges; source-build will produce ABI-current binaries in the meantime"
     else
         HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
 
