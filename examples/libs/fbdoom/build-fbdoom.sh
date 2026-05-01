@@ -60,31 +60,37 @@ cp fbdoom "$HERE/fbdoom.wasm"
 ls -la "$HERE/fbdoom.wasm"
 echo "==> fbdoom.wasm built."
 
-# Install into local-binaries/ (resolver priority 1) and the resolver
-# scratch dir when invoked by xtask build-deps / stage-release.
-source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary fbdoom "$HERE/fbdoom.wasm"
-
 # ── DOOM IWAD ─────────────────────────────────────────────────────────────
-# Fetch a freely-redistributable IWAD into the browser-demo asset slot.
+# Fetch a freely-redistributable IWAD and stage it next to fbdoom.wasm.
 #
-# Freedoom Phase 1 (BSD-style licence) is a drop-in replacement for the
-# DOOM shareware IWAD that maximevince/fbDOOM accepts unmodified. We
-# pin a release tag + sha256 so the demo is reproducible.
+# Freedoom Phase 1 (Modified BSD licence) is a drop-in replacement for the
+# DOOM shareware IWAD that maximevince/fbDOOM accepts unmodified. The zip
+# release URL and sha256 are pinned so the result is reproducible.
 #
-# Skip the download if a WAD is already present — lets users substitute
-# the original shareware doom1.wad if they prefer.
+# We extract four files (filenames as they appear in the zip):
+#   freedoom1.wad        → doom1.wad         (the IWAD itself)
+#   COPYING.txt          → COPYING.txt       (Modified-BSD licence text)
+#   CREDITS.txt          → CREDITS.txt       (asset / contributor attribution)
+#   CREDITS-MUSIC.txt    → CREDITS-MUSIC.txt (music attribution: CC-BY entries)
+#
+# These ship inside the package's tar.zst archive (see deps.toml's
+# second [[outputs]]) so a cache-fetch user gets a complete bundle —
+# the browser doom demo loads doom1.wad via a Vite ?url import off
+# the `binaries/programs/wasm32/fbdoom/` symlinks placed by
+# install_release. The licence files travel with it for compliance.
 
-WAD_DEST="$REPO_ROOT/examples/browser/public/assets/doom/doom1.wad"
 FREEDOOM_VERSION="0.13.0"
 FREEDOOM_URL="https://github.com/freedoom/freedoom/releases/download/v${FREEDOOM_VERSION}/freedoom-${FREEDOOM_VERSION}.zip"
 FREEDOOM_ZIP_SHA256="3f9b264f3e3ce503b4fb7f6bdcb1f419d93c7b546f4df3e874dd878db9688f59"
 FREEDOOM_WAD_SHA256="7323bcc168c5a45ff10749b339960e98314740a734c30d4b9f3337001f9e703d"
 
-mkdir -p "$(dirname "$WAD_DEST")"
+WAD_DEST="$HERE/doom1.wad"
+COPYING_DEST="$HERE/COPYING.txt"
+CREDITS_DEST="$HERE/CREDITS.txt"
+CREDITS_MUSIC_DEST="$HERE/CREDITS-MUSIC.txt"
 
-if [ -f "$WAD_DEST" ]; then
-    echo "==> WAD already present at $WAD_DEST — skipping fetch."
+if [ -f "$WAD_DEST" ] && [ -f "$COPYING_DEST" ] && [ -f "$CREDITS_DEST" ] && [ -f "$CREDITS_MUSIC_DEST" ]; then
+    echo "==> Freedoom assets already present at $HERE — skipping fetch."
 else
     echo "==> Fetching Freedoom Phase 1 v${FREEDOOM_VERSION} …"
     TMPDIR="$(mktemp -d)"
@@ -101,7 +107,10 @@ else
         exit 1
     fi
 
-    unzip -p "$ZIP" "freedoom-${FREEDOOM_VERSION}/freedoom1.wad" > "$WAD_DEST"
+    unzip -p "$ZIP" "freedoom-${FREEDOOM_VERSION}/freedoom1.wad"     > "$WAD_DEST"
+    unzip -p "$ZIP" "freedoom-${FREEDOOM_VERSION}/COPYING.txt"       > "$COPYING_DEST"
+    unzip -p "$ZIP" "freedoom-${FREEDOOM_VERSION}/CREDITS.txt"       > "$CREDITS_DEST"
+    unzip -p "$ZIP" "freedoom-${FREEDOOM_VERSION}/CREDITS-MUSIC.txt" > "$CREDITS_MUSIC_DEST"
 
     GOT_WAD_SHA="$(shasum -a 256 "$WAD_DEST" | awk '{print $1}')"
     if [ "$GOT_WAD_SHA" != "$FREEDOOM_WAD_SHA256" ]; then
@@ -111,5 +120,24 @@ else
         exit 1
     fi
 
-    echo "==> Freedoom1 WAD installed at $WAD_DEST ($(wc -c < "$WAD_DEST") bytes)."
+    echo "==> Freedoom1 assets installed at $HERE ($(wc -c < "$WAD_DEST") bytes WAD)."
 fi
+
+# Install into local-binaries/ (resolver priority 1) and the resolver
+# scratch dir when invoked by xtask build-deps / stage-release.
+# fbdoom is now a multi-output package — pass the destination filename
+# so install_local_binary uses the per-program subdir layout
+# (local-binaries/programs/<arch>/fbdoom/<file>).
+#
+# `cd "$REPO_ROOT"` is load-bearing: install_local_binary uses
+# `git rev-parse --show-toplevel` to locate the repo root, and we're
+# still inside `$SRC/fbdoom` (a nested git clone) from the make step.
+# Without the cd, git would return fbdoom's clone as the toplevel and
+# we'd write into examples/libs/fbdoom/fbdoom-src/local-binaries/.
+cd "$REPO_ROOT"
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary fbdoom "$HERE/fbdoom.wasm"   fbdoom.wasm
+install_local_binary fbdoom "$WAD_DEST"           doom1.wad
+install_local_binary fbdoom "$COPYING_DEST"       COPYING.txt
+install_local_binary fbdoom "$CREDITS_DEST"       CREDITS.txt
+install_local_binary fbdoom "$CREDITS_MUSIC_DEST" CREDITS-MUSIC.txt
