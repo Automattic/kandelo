@@ -310,6 +310,7 @@ three GitHub Actions workflows. Full design in
 |---|---|---|
 | `staging-build.yml` | Every push to a same-repo PR | Stages packages whose `cache_key_sha` differs from the durable release; uploads to `pr-<NNN>-staging` pre-release; posts sticky comment. |
 | `prepare-merge.yml` | `ready-to-ship` label applied | Builds against PR HEAD merged with tip-of-main; publishes a fresh `binaries-abi-v<N>-YYYY-MM-DD[-<seq>]` durable release; pushes lockfile bump to PR branch; enables squash auto-merge. |
+| `force-rebuild.yml` | Manual `workflow_dispatch` | Source-builds named manifests (or all) bypassing the cache and `[binary]` archive_url; publishes a fresh durable release; optionally opens a lockfile-bump PR. |
 | `staging-cleanup.yml` | PR closed + daily 08:00 UTC cron + manual dispatch | Deletes `pr-<NNN>-staging` releases when their PR closes; daily sweep catches orphans. |
 
 ### Author flow
@@ -395,6 +396,53 @@ must:
 Not supported in v1 — they fall back to the resolver's source-build
 path locally. Two-stage `workflow_run` support is documented as
 future work in §9.1 of the design doc.
+
+### Manual force-rebuild
+
+`force-rebuild.yml` is the escape hatch for the case where the
+content-addressed resolver's view of "unchanged" is wrong. The
+normal flow (`staging-build` + `prepare-merge`) only source-builds a
+package when its `cache_key_sha` differs from the durable release.
+That key hashes manifest contents, source URL+sha, declared
+dependencies, target arch, and ABI version — but if a build script
+behavior depends on something *outside* that hash (a sysroot quirk,
+a host-tool version pin that wasn't bumped in `host_tools`, a glue
+file change that should have invalidated everything but didn't),
+unchanged-from-cache might still be incorrect.
+
+Trigger via Actions → "Force rebuild" → "Run workflow". Inputs:
+
+- **packages** — `all` (default) or comma-separated names
+  (e.g. `php,mariadb`). Names match the `name = "..."` field in
+  each `examples/libs/<dir>/deps.toml`.
+- **arches** — comma-separated subset of `wasm32,wasm64` (default:
+  both). Manifests whose `target_arches` don't include a requested
+  arch are silently skipped.
+- **ref** — git ref to build from (default: `main`).
+- **skip_tests** — when true, publishes without running the 5 test
+  suites. Defaults to false. `workflow_dispatch` is maintainer-only,
+  so this is treated as deliberate.
+- **bump_lockfile** — when true (default), opens a PR bumping
+  `binaries.lock` to the new release. Disable for diagnostic
+  rebuilds where you only want to compare archives — the release is
+  still published, but main isn't repointed to it.
+
+Mechanics:
+
+1. Tests run BEFORE publish (vs `prepare-merge.yml`'s
+   publish-then-test ordering). Force-rebuild is the place to
+   investigate suspected cache problems; we don't want orphaned
+   releases scattered around when an investigation fails.
+2. The lockfile-bump PR carries its own `merge-gate=success` status
+   posted by this workflow. Its bump PR does NOT go through
+   `prepare-merge.yml` — that would cut a second redundant durable
+   release. Auto-merge picks it up after any other required checks.
+3. Concurrency-shares `prepare-merge-singleton`, so force-rebuild
+   and prepare-merge can't both publish a durable release at the
+   same moment.
+
+Use `--force-rebuild`/`--force-rebuild-all` directly with
+`scripts/stage-release.sh` for a local rebuild without publishing.
 
 ### Post-upload integrity check
 

@@ -347,6 +347,16 @@ pub struct ResolveOpts<'a> {
     /// subdirectory exists under this root, it wins over the cache
     /// and the build script is not run.
     pub local_libs: Option<&'a Path>,
+    /// Manifest names that must be source-built unconditionally, even
+    /// on a cache hit and even when a `[binary]` archive_url would
+    /// otherwise satisfy the request. Used by the manual `force-rebuild`
+    /// workflow to refresh archives whose cache key is suspected stale.
+    /// `None` means "no force rebuild" (the default for every consumer
+    /// other than the manual workflow). `local_libs` still wins over
+    /// force_source_build (a hand-patched override is always honored).
+    /// The single-process resolver assumes no concurrent peers during
+    /// a force rebuild — see `build_into_cache`'s atomic-install comment.
+    pub force_source_build: Option<&'a BTreeSet<String>>,
 }
 
 /// Resolve a library to a concrete on-disk path with the artifacts
@@ -535,9 +545,22 @@ fn ensure_built_inner(
     let sha = compute_sha(target, registry, arch, abi_version, memo, &mut chain)?;
     let canonical = canonical_path(opts.cache_root, target, arch, &sha);
 
+    let force_rebuild = opts
+        .force_source_build
+        .map(|s| s.contains(&target.name))
+        .unwrap_or(false);
+
     // Cache hit: trust it. Users invalidate by deleting the directory.
-    if canonical.is_dir() {
+    // `force_source_build` skips this so the build script always runs;
+    // we additionally wipe `canonical` below so `build_into_cache`'s
+    // atomic-install doesn't discard the fresh tmp dir as a same-input
+    // duplicate.
+    if !force_rebuild && canonical.is_dir() {
         return Ok((canonical, transitive));
+    }
+    if force_rebuild && canonical.is_dir() {
+        std::fs::remove_dir_all(&canonical)
+            .map_err(|e| format!("force-rebuild: clear {}: {e}", canonical.display()))?;
     }
 
     // Run host-tool probes before any work that might invoke a build
@@ -638,7 +661,12 @@ fn ensure_built_inner(
             // falls through to the source build below; a remote-fetch
             // error should never cause the resolver to refuse to
             // produce an artifact.
-            if let Some(binary) = target.binary.get(&arch) {
+            //
+            // `force_rebuild` short-circuits remote fetch — re-installing
+            // the same archive_url would defeat the whole point of the
+            // force flag (the workflow opted in because it suspects the
+            // existing archive is stale). Falls through to source build.
+            if !force_rebuild && let Some(binary) = target.binary.get(&arch) {
                 let cache_key_sha_hex = hex(&sha);
                 match remote_fetch::fetch_and_install(
                     binary,
@@ -1218,6 +1246,7 @@ fn cmd_resolve(
     let opts = ResolveOpts {
         cache_root: &cache_root,
         local_libs: Some(&local_libs),
+        force_source_build: None,
     };
     let path = ensure_built(m, registry, arch, current_abi_version(), &opts)?;
     println!("{}", path.display());
@@ -1657,6 +1686,7 @@ spdx = "TestLicense"
         ResolveOpts {
             cache_root: cache,
             local_libs: local,
+            force_source_build: None,
         }
     }
 
@@ -3200,6 +3230,7 @@ spdx = "BSD-3-Clause"
         let opts = ResolveOpts {
             cache_root: &cache,
             local_libs: None,
+            force_source_build: None,
         };
         let path = ensure_built(&m, &registry, TEST_ARCH, TEST_ABI, &opts).unwrap();
         assert!(
@@ -3669,5 +3700,231 @@ version_constraint = "{constraint}"
         let registry = Registry { roots: vec![root] };
         let err = cmd_check(&registry).expect_err("mismatched probes should fail");
         assert!(err.contains("probe"), "got: {err}");
+    }
+
+    // --- force-rebuild tests (Task force_source_build) ---
+
+    #[test]
+    fn force_rebuild_runs_build_script_on_cache_hit() {
+        // Pre-populate the cache with one ensure_built call, then call
+        // again with force_source_build set — the build script must run
+        // a SECOND time, producing fresh contents at the canonical path.
+        let root = tempdir("force-cache-reg");
+        let cache = tempdir("force-cache-cache");
+        write_lib(
+            &root,
+            "libF1",
+            "1.0.0",
+            &[],
+            &format!(
+                r#"
+echo ran >> "{}/counter"
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib"
+touch "$WASM_POSIX_DEP_OUT_DIR/lib/libF1.a"
+"#,
+                root.display()
+            ),
+            r#"[outputs]
+libs = ["lib/libF1.a"]
+"#,
+        );
+        let reg = Registry { roots: vec![root.clone()] };
+        let m = reg.load("libF1").unwrap();
+
+        // First call — cache miss, script runs.
+        let p1 = ensure_built(
+            &m,
+            &reg,
+            TEST_ARCH,
+            TEST_ABI,
+            &resolve_opts(&cache, None),
+        )
+        .unwrap();
+
+        // Second call WITHOUT force — cache hit, script does not run.
+        let p2 = ensure_built(
+            &m,
+            &reg,
+            TEST_ARCH,
+            TEST_ABI,
+            &resolve_opts(&cache, None),
+        )
+        .unwrap();
+        assert_eq!(p1, p2);
+        let runs = std::fs::read_to_string(root.join("counter")).unwrap();
+        assert_eq!(runs.lines().count(), 1, "without force, cache hit must skip script");
+
+        // Third call WITH force — script runs again despite cache hit.
+        let mut force = BTreeSet::new();
+        force.insert("libF1".to_string());
+        let opts = ResolveOpts {
+            cache_root: &cache,
+            local_libs: None,
+            force_source_build: Some(&force),
+        };
+        let p3 = ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &opts).unwrap();
+        assert_eq!(p1, p3, "force-rebuild must land at the same canonical path");
+        let runs = std::fs::read_to_string(root.join("counter")).unwrap();
+        assert_eq!(
+            runs.lines().count(),
+            2,
+            "force-rebuild must re-run the build script (counter: {runs:?})"
+        );
+    }
+
+    #[test]
+    fn force_rebuild_bypasses_remote_fetch() {
+        // Stage a real archive on disk and point [binary].archive_url at
+        // it. Without force, the resolver installs from the archive and
+        // the source build's `via-build` sentinel does NOT appear. With
+        // force, the resolver skips remote fetch and source-builds — the
+        // sentinel DOES appear.
+        let root = tempdir("force-rf-reg");
+        let cache = tempdir("force-rf-cache");
+        let archive_dir = tempdir("force-rf-archive");
+
+        // Compute cache_key_sha for the lib (matches write_lib_with_binary's shape).
+        let throwaway_root = tempdir("force-rf-pre");
+        write_lib(
+            &throwaway_root,
+            "libF2",
+            "1.0.0",
+            &[],
+            "true",
+            "[outputs]\nlibs = [\"lib/out.a\"]\n",
+        );
+        let pre_reg = Registry { roots: vec![throwaway_root.clone()] };
+        let pre_m = pre_reg.load("libF2").unwrap();
+        let pre_sha = compute_sha(
+            &pre_m,
+            &pre_reg,
+            TEST_ARCH,
+            TEST_ABI,
+            &mut BTreeMap::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        let cache_key_hex = hex(&pre_sha);
+        let _ = std::fs::remove_dir_all(&throwaway_root);
+
+        // Build a remote archive whose contents differ from the source build,
+        // so we can tell which path produced the artifact.
+        let manifest_text =
+            archived_manifest_text("libF2", "wasm32", &[TEST_ABI], &cache_key_hex);
+        let archive_bytes = crate::remote_fetch::build_test_archive(
+            &manifest_text,
+            &[("lib/out.a", b"REMOTE-ARCHIVE")],
+        );
+        let archive_sha_hex = sha256_hex(&archive_bytes);
+        let archive_path = archive_dir.join("libF2-1.0.0.tar.zst");
+        std::fs::write(&archive_path, &archive_bytes).unwrap();
+
+        // The real consumer lib advertises that archive.
+        write_lib_with_binary(&root, "libF2", &archive_path, &archive_sha_hex);
+        let reg = Registry { roots: vec![root] };
+        let m = reg.load("libF2").unwrap();
+
+        // Force-build into a fresh cache. Remote fetch must be skipped:
+        // the source build's `via-build` sentinel must exist, and
+        // `lib/out.a` must hold BUILD content (not REMOTE-ARCHIVE).
+        let mut force = BTreeSet::new();
+        force.insert("libF2".to_string());
+        let opts = ResolveOpts {
+            cache_root: &cache,
+            local_libs: None,
+            force_source_build: Some(&force),
+        };
+        let path = ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &opts).unwrap();
+        assert!(
+            path.join("via-build").exists(),
+            "force-rebuild must source-build (sentinel missing at {})",
+            path.display()
+        );
+        let lib_bytes = std::fs::read(path.join("lib/out.a")).unwrap();
+        assert_eq!(
+            lib_bytes,
+            b"BUILD\n",
+            "force-rebuild must use the source-built artifact, not the remote archive"
+        );
+    }
+
+    #[test]
+    fn force_rebuild_only_affects_named_packages() {
+        // Two libs in the registry, only one in the force set: the
+        // listed one re-runs its build script, the other stays cached.
+        let root = tempdir("force-named-reg");
+        let cache = tempdir("force-named-cache");
+        write_lib(
+            &root,
+            "libF3a",
+            "1.0.0",
+            &[],
+            &format!(
+                r#"
+echo ran >> "{}/counter-a"
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib"
+touch "$WASM_POSIX_DEP_OUT_DIR/lib/libF3a.a"
+"#,
+                root.display()
+            ),
+            r#"[outputs]
+libs = ["lib/libF3a.a"]
+"#,
+        );
+        write_lib(
+            &root,
+            "libF3b",
+            "1.0.0",
+            &[],
+            &format!(
+                r#"
+echo ran >> "{}/counter-b"
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib"
+touch "$WASM_POSIX_DEP_OUT_DIR/lib/libF3b.a"
+"#,
+                root.display()
+            ),
+            r#"[outputs]
+libs = ["lib/libF3b.a"]
+"#,
+        );
+        let reg = Registry { roots: vec![root.clone()] };
+        let ma = reg.load("libF3a").unwrap();
+        let mb = reg.load("libF3b").unwrap();
+
+        // Prime both caches.
+        ensure_built(&ma, &reg, TEST_ARCH, TEST_ABI, &resolve_opts(&cache, None)).unwrap();
+        ensure_built(&mb, &reg, TEST_ARCH, TEST_ABI, &resolve_opts(&cache, None)).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("counter-a")).unwrap().lines().count(),
+            1
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("counter-b")).unwrap().lines().count(),
+            1
+        );
+
+        // Force only libF3a.
+        let mut force = BTreeSet::new();
+        force.insert("libF3a".to_string());
+        let opts = ResolveOpts {
+            cache_root: &cache,
+            local_libs: None,
+            force_source_build: Some(&force),
+        };
+        ensure_built(&ma, &reg, TEST_ARCH, TEST_ABI, &opts).unwrap();
+        ensure_built(&mb, &reg, TEST_ARCH, TEST_ABI, &opts).unwrap();
+
+        // libF3a re-ran (counter-a now has 2), libF3b stayed cached.
+        assert_eq!(
+            std::fs::read_to_string(root.join("counter-a")).unwrap().lines().count(),
+            2,
+            "named lib must re-run under force"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("counter-b")).unwrap().lines().count(),
+            1,
+            "non-named lib must stay cached"
+        );
     }
 }

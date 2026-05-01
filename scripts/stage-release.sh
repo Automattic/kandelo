@@ -6,7 +6,13 @@
 # Usage:
 #   scripts/stage-release.sh --out /tmp/release-staging \
 #       --tag binaries-abi-v<N>-YYYY-MM-DD \
-#       [--abi <N>] [--arch wasm32|wasm64]...
+#       [--abi <N>] [--arch wasm32|wasm64]... \
+#       [--force-rebuild <name>]... [--force-rebuild-all]
+#
+# --force-rebuild / --force-rebuild-all source-build the named
+# manifests instead of using the content-addressed cache or fetching
+# `[binary].archive_url`. Used by the manual force-rebuild workflow
+# to refresh archives whose cache key is suspected stale.
 #
 # --tag is required and must match the GitHub Release tag the
 # manifest will be published under (see docs/binary-releases.md).
@@ -39,6 +45,8 @@ ABI=""
 TAG=""
 ARCHES=()
 KINDS=()
+FORCE_REBUILD_NAMES=()
+FORCE_REBUILD_ALL=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --out) STAGING="$2"; shift 2 ;;
@@ -46,6 +54,8 @@ while [ $# -gt 0 ]; do
         --tag) TAG="$2"; shift 2 ;;
         --arch) ARCHES+=("$2"); shift 2 ;;
         --kind) KINDS+=("$2"); shift 2 ;;
+        --force-rebuild) FORCE_REBUILD_NAMES+=("$2"); shift 2 ;;
+        --force-rebuild-all) FORCE_REBUILD_ALL=1; shift ;;
         *) echo "unknown arg $1" >&2; exit 2 ;;
     esac
 done
@@ -98,6 +108,16 @@ if [ ${#KINDS[@]} -gt 0 ]; then
     done
 fi
 
+force_args=()
+if [ "$FORCE_REBUILD_ALL" = "1" ]; then
+    force_args+=(--force-rebuild-all)
+fi
+if [ ${#FORCE_REBUILD_NAMES[@]} -gt 0 ]; then
+    for n in "${FORCE_REBUILD_NAMES[@]}"; do
+        force_args+=(--force-rebuild "$n")
+    done
+fi
+
 echo "== Staging archive entries (kinds: ${KINDS[*]:-library,program}, arches: ${ARCHES[*]}) =="
 cargo run -p xtask --target "$HOST_TARGET" --quiet -- stage-release \
     --staging "$STAGING" \
@@ -105,6 +125,7 @@ cargo run -p xtask --target "$HOST_TARGET" --quiet -- stage-release \
     --tag "$TAG" \
     "${arch_args[@]}" \
     ${kind_args[@]+"${kind_args[@]}"} \
+    ${force_args[@]+"${force_args[@]}"} \
     --build-timestamp "$timestamp" \
     --build-host "$host" \
     --continue-on-error

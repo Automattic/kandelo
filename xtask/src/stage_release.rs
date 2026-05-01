@@ -18,7 +18,7 @@
 //!   * With `--continue-on-error`: even total-failure manifests
 //!     are warnings, never fatal.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -42,6 +42,11 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let mut build_host: Option<String> = None;
     let mut continue_on_error = false;
     let mut kinds: Vec<ManifestKind> = Vec::new();
+    // Force-rebuild: bypass cache hits + remote-fetch and source-build
+    // these manifests. `--force-rebuild-all` populates the set from the
+    // walked registry once we have it.
+    let mut force_rebuild_names: BTreeSet<String> = BTreeSet::new();
+    let mut force_rebuild_all = false;
 
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
@@ -88,6 +93,11 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                 build_host = Some(it.next().ok_or("--build-host requires value")?)
             }
             "--continue-on-error" => continue_on_error = true,
+            "--force-rebuild" => {
+                force_rebuild_names
+                    .insert(it.next().ok_or("--force-rebuild requires <name>")?);
+            }
+            "--force-rebuild-all" => force_rebuild_all = true,
             other => return Err(format!("unknown arg {other:?}")),
         }
     }
@@ -126,7 +136,30 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     // on whether EVERY arch failed (fatal) vs SOME (warn-only).
     let mut errors: BTreeMap<String, Vec<(TargetArch, String)>> = BTreeMap::new();
 
-    for (_, m) in registry.walk_all()? {
+    let walked = registry.walk_all()?;
+    if force_rebuild_all {
+        // Expand to every walked manifest of a stageable kind. Source
+        // manifests aren't staged by stage_release, so leaving them out
+        // of the set is consistent with what gets built.
+        for (_, m) in &walked {
+            if matches!(m.kind, ManifestKind::Library | ManifestKind::Program) {
+                force_rebuild_names.insert(m.name.clone());
+            }
+        }
+    }
+    let force_source_build: Option<&BTreeSet<String>> =
+        if force_rebuild_names.is_empty() {
+            None
+        } else {
+            eprintln!(
+                "force-rebuild: source-building {} manifest(s): {}",
+                force_rebuild_names.len(),
+                force_rebuild_names.iter().cloned().collect::<Vec<_>>().join(", "),
+            );
+            Some(&force_rebuild_names)
+        };
+
+    for (_, m) in walked {
         if !kinds.contains(&m.kind) {
             continue;
         }
@@ -178,6 +211,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                 &staging,
                 &build_timestamp,
                 &build_host,
+                force_source_build,
             ) {
                 Ok(archive_path) => {
                     eprintln!("staged {}", archive_path.display());
@@ -246,6 +280,7 @@ pub(crate) fn stage_one(
     staging: &Path,
     build_timestamp: &str,
     build_host: &str,
+    force_source_build: Option<&BTreeSet<String>>,
 ) -> Result<PathBuf, String> {
     // Compute the cache-key sha so we know what filename to stage
     // under and what to inject into the [compatibility] block.
@@ -281,9 +316,22 @@ pub(crate) fn stage_one(
         }
     };
     let archive_path = staging.join(subdir).join(&archive_name);
-    if archive_path.exists() {
+    let force_this = force_source_build
+        .map(|s| s.contains(&m.name))
+        .unwrap_or(false);
+    if archive_path.exists() && !force_this {
         // Already staged; idempotent re-run.
         return Ok(archive_path);
+    }
+    if archive_path.exists() && force_this {
+        // Force-rebuild: drop the stale archive so the resolver +
+        // archive_stage produces a fresh one. The cache_key_sha
+        // (encoded in the filename's short_sha slot) won't change
+        // unless inputs change, so the new archive overwrites the
+        // same path — clearing first keeps the contract simple.
+        std::fs::remove_file(&archive_path).map_err(|e| {
+            format!("force-rebuild: remove stale {}: {e}", archive_path.display())
+        })?;
     }
 
     // Resolve / build the cache entry. Local-libs override is
@@ -292,6 +340,7 @@ pub(crate) fn stage_one(
     let resolve_opts = ResolveOpts {
         cache_root,
         local_libs: None,
+        force_source_build,
     };
     let cache_path = build_deps::ensure_built(m, registry, arch, abi, &resolve_opts)
         .map_err(|e| format!("ensure_built: {e}"))?;

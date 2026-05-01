@@ -1,0 +1,351 @@
+name: Force rebuild
+
+# Manually-triggered escape hatch for refreshing the durable binaries
+# release. Runs the package resolver with `--force-rebuild` flags so
+# the named manifests source-build instead of resolving from the
+# content-addressed cache or `[binary].archive_url`. Use this when
+# the cache_key composition is suspected incomplete (e.g., a
+# toolchain pin was bumped without invalidating package archives) and
+# you want to confirm the published archives match a fresh source
+# build.
+#
+# Inputs (rendered in the GitHub Actions "Run workflow" modal):
+#   packages       — `all` (default) or a comma-separated list of
+#                    deps.toml names (e.g. `php,mariadb`). `all`
+#                    rebuilds every library + program manifest in
+#                    the registry.
+#   arches         — comma-separated subset of `wasm32,wasm64`
+#                    (default: both). Manifests whose `target_arches`
+#                    don't include a requested arch are silently
+#                    skipped per the existing stage-release behavior.
+#   ref            — git ref to build from (default: `main`).
+#   skip_tests     — when true, publishes without running the 5 test
+#                    suites. Defaults to false (tests must pass before
+#                    publish). workflow_dispatch is maintainer-only,
+#                    so this is treated as deliberate.
+#   bump_lockfile  — when true (default), opens a PR that bumps
+#                    binaries.lock to the new release. Disable for
+#                    diagnostic rebuilds where you only want to
+#                    compare archives without changing what main
+#                    consumes. The bump PR carries its own
+#                    `merge-gate` success status (set by this
+#                    workflow), so it can auto-merge without going
+#                    through prepare-merge.yml — which would
+#                    otherwise cut a second redundant durable
+#                    release.
+#
+# See docs/binary-releases.md for context. Concurrency-shares
+# `prepare-merge-singleton` so force-rebuild and prepare-merge can't
+# both publish a durable release at the same moment.
+
+on:
+  workflow_dispatch:
+    inputs:
+      packages:
+        description: 'Comma-separated package names, or `all`. Names match deps.toml entries (e.g. php,mariadb).'
+        required: false
+        default: 'all'
+        type: string
+      arches:
+        description: 'Comma-separated arch list. Subset of wasm32,wasm64.'
+        required: false
+        default: 'wasm32,wasm64'
+        type: string
+      ref:
+        description: 'Git ref to build from.'
+        required: false
+        default: 'main'
+        type: string
+      skip_tests:
+        description: 'Publish without running the 5 test suites. Use with care — durable releases normally gate on tests.'
+        required: false
+        default: false
+        type: boolean
+      bump_lockfile:
+        description: 'After publish, open a PR bumping binaries.lock to the new release tag. Disable for diagnostic-only rebuilds.'
+        required: false
+        default: true
+        type: boolean
+
+# Share the prepare-merge singleton group so force-rebuild and
+# prepare-merge serialize against each other — neither should be
+# computing a release tag and pushing while the other is mid-flight.
+concurrency:
+  group: prepare-merge-singleton
+  cancel-in-progress: false
+
+jobs:
+  rebuild:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write          # release create/upload + push bot branch
+      pull-requests: write     # open + auto-merge bump PR
+      statuses: write          # post merge-gate status on bump PR
+    env:
+      INPUT_PACKAGES: ${{ inputs.packages }}
+      INPUT_ARCHES: ${{ inputs.arches }}
+      INPUT_REF: ${{ inputs.ref }}
+      INPUT_SKIP_TESTS: ${{ inputs.skip_tests }}
+      INPUT_BUMP_LOCKFILE: ${{ inputs.bump_lockfile }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fetch submodules (musl, libc-test, os-test)
+        # See staging-build.yml for the SSH→HTTPS rewrite rationale.
+        run: |
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git submodule update --init --depth 1 musl libc-test os-test
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v18
+
+      - name: Cache Nix store + flake eval
+        uses: DeterminateSystems/magic-nix-cache-action@v13
+
+      - name: Warm Nix dev shell
+        run: nix develop --accept-flake-config --command true
+
+      - name: Cache resolver + cargo target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/wasm-posix-kernel
+            target
+          key: force-rebuild-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'examples/libs/**/deps.toml') }}
+          restore-keys: |
+            force-rebuild-${{ runner.os }}-
+            prepare-merge-${{ runner.os }}-
+            staging-build-${{ runner.os }}-
+
+      - name: Cache musl sysroot + libc++
+        uses: actions/cache@v4
+        id: cache-sysroot
+        with:
+          path: |
+            sysroot
+            sysroot64
+          key: musl-sysroot-v3-${{ runner.os }}-${{ hashFiles('scripts/build-musl.sh', 'scripts/build-libcxx.sh', 'musl-overlay/**', 'glue/**') }}
+
+      - name: Build musl sysroot + libc++ (wasm32 + wasm64)
+        if: steps.cache-sysroot.outputs.cache-hit != 'true'
+        # See staging-build.yml.
+        run: |
+          nix develop --accept-flake-config --command bash scripts/build-musl.sh
+          nix develop --accept-flake-config --command bash scripts/build-musl.sh --arch wasm64posix
+          nix develop --accept-flake-config --command bash -c '
+            src=""
+            for cand in "$LLVM_PREFIX/include/c++/v1" "$LLVM_PREFIX/share/libc++/v1"; do
+              if [ -f "$cand/__config" ] || [ -f "$cand/iostream" ]; then
+                src="$cand"; break
+              fi
+            done
+            if [ -z "$src" ]; then
+              echo "ERROR: cant locate libc++ headers under $LLVM_PREFIX" >&2
+              exit 1
+            fi
+            echo "installing libc++ headers from $src"
+            for arch_dir in sysroot sysroot64; do
+              if [ ! -f "$arch_dir/include/c++/v1/__config" ]; then
+                mkdir -p "$arch_dir/include/c++/v1"
+                cp -RL "$src"/* "$arch_dir/include/c++/v1/"
+                chmod -R u+w "$arch_dir/include/c++/v1/"
+                cs="$arch_dir/include/c++/v1/__config_site"
+                if [ -f "$cs" ]; then
+                  sed -i "s/_LIBCPP_HAS_MUSL_LIBC 0/_LIBCPP_HAS_MUSL_LIBC 1/" "$cs"
+                  sed -i "s/_LIBCPP_HAS_THREAD_API_PTHREAD 0/_LIBCPP_HAS_THREAD_API_PTHREAD 1/" "$cs"
+                fi
+              fi
+            done
+          '
+          nix develop --accept-flake-config --command bash scripts/build-libcxx.sh
+          nix develop --accept-flake-config --command bash scripts/build-libcxx.sh --arch wasm64
+
+      - name: Compute durable release tag
+        id: tag
+        run: |
+          ABI=$(grep -oE 'ABI_VERSION: u32 = [0-9]+' crates/shared/src/lib.rs | awk '{print $4}')
+          DATE=$(date -u +%Y-%m-%d)
+          BASE="binaries-abi-v${ABI}-${DATE}"
+          TAG="$BASE"
+          SEQ=2
+          while gh release view "$TAG" --repo ${{ github.repository }} >/dev/null 2>&1; do
+            TAG="${BASE}-${SEQ}"
+            SEQ=$((SEQ + 1))
+          done
+          echo "abi=$ABI" >> $GITHUB_OUTPUT
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Fetch durable binaries (non-forced packages reuse prior release)
+        # When `packages` is a subset, the resolver still needs prior
+        # archives for the un-forced manifests so stage-release can
+        # source-build dependents without re-fetching the world. When
+        # `packages=all` this fetch is wasted but harmless — every
+        # cache lookup will be invalidated anyway.
+        run: |
+          nix develop --accept-flake-config --command bash scripts/fetch-binaries.sh
+
+      - name: Stage durable release (force-rebuild)
+        # Translate the comma-separated `packages` input into one
+        # `--force-rebuild-all` or N `--force-rebuild <name>` flags.
+        # `arches` is split the same way. Inputs are read via env to
+        # keep them out of the bash-parsed source after expansion
+        # (defence against odd characters in input strings).
+        run: |
+          force_args=()
+          if [ "$INPUT_PACKAGES" = "all" ]; then
+            force_args+=(--force-rebuild-all)
+          else
+            IFS=',' read -ra names <<< "$INPUT_PACKAGES"
+            for n in "${names[@]}"; do
+              # Trim leading/trailing whitespace (tolerant of `a, b, c`).
+              n="${n#"${n%%[![:space:]]*}"}"
+              n="${n%"${n##*[![:space:]]}"}"
+              [ -n "$n" ] && force_args+=(--force-rebuild "$n")
+            done
+          fi
+          arch_args=()
+          IFS=',' read -ra arches_arr <<< "$INPUT_ARCHES"
+          for a in "${arches_arr[@]}"; do
+            a="${a#"${a%%[![:space:]]*}"}"
+            a="${a%"${a##*[![:space:]]}"}"
+            [ -n "$a" ] && arch_args+=(--arch "$a")
+          done
+          mkdir -p /tmp/durable
+          nix develop --accept-flake-config --command \
+            scripts/stage-release.sh \
+              --out /tmp/durable \
+              --tag "${{ steps.tag.outputs.tag }}" \
+              "${arch_args[@]}" \
+              "${force_args[@]}"
+
+      - name: Build kernel + test programs + install host deps (test prereqs)
+        # Required for vitest + the C-program suites even when
+        # skip_tests=true, because publish-release.sh consumes
+        # local-binaries/ for kernel.wasm packaging? No — kernel.wasm
+        # isn't in the durable release per stage-release.sh's header
+        # ("kernel.wasm and userspace.wasm are not in the release"),
+        # so we can guard this on !skip_tests.
+        if: ${{ !inputs.skip_tests }}
+        run: |
+          nix develop --accept-flake-config --command bash -c '
+            cargo build --release -p wasm-posix-kernel \
+              -Z build-std=core,alloc \
+              -Z build-std-features=panic_immediate_abort
+            mkdir -p local-binaries
+            cp target/wasm64-unknown-unknown/release/wasm_posix_kernel.wasm \
+              local-binaries/kernel.wasm
+            bash scripts/build-programs.sh
+            npm install --no-audit --no-fund
+            cd host && npm install --no-audit --no-fund
+          '
+
+      - name: Run cargo + vitest tests
+        if: ${{ !inputs.skip_tests }}
+        run: |
+          nix develop --accept-flake-config --command bash -c '
+            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
+            cargo test -p wasm-posix-kernel --target "$HOST_TARGET" --lib
+            cd host && npx vitest run
+          '
+
+      - name: Run libc-test conformance suite
+        if: ${{ !inputs.skip_tests }}
+        run: |
+          nix develop --accept-flake-config --command bash scripts/run-libc-tests.sh
+
+      - name: Run Open POSIX Test Suite
+        if: ${{ !inputs.skip_tests }}
+        run: |
+          nix develop --accept-flake-config --command bash scripts/run-posix-tests.sh
+
+      - name: Run Sortix os-test suite
+        if: ${{ !inputs.skip_tests }}
+        run: |
+          nix develop --accept-flake-config --command bash scripts/run-sortix-tests.sh --all
+
+      - name: Publish durable release
+        # Reached only after tests pass (or skip_tests=true). Tests
+        # before publish (vs prepare-merge.yml's publish-then-test) is
+        # the safer ordering for a manual rebuild — we don't want
+        # orphaned releases scattered around when force-rebuild is
+        # used to investigate a suspected cache problem.
+        run: |
+          nix develop --accept-flake-config --command \
+            scripts/publish-release.sh \
+              --tag "${{ steps.tag.outputs.tag }}" \
+              --staging /tmp/durable
+
+      - name: Open lockfile-bump PR
+        if: ${{ inputs.bump_lockfile }}
+        id: bump
+        run: |
+          # Branch name encodes the new tag for human readability.
+          BRANCH="bot/bump-lockfile-${{ steps.tag.outputs.tag }}"
+
+          git config user.name "wasm-posix-binaries-bot"
+          git config user.email "noreply@anthropic.com"
+          git checkout -b "$BRANCH"
+
+          SHA=$(shasum -a 256 /tmp/durable/manifest.json | awk '{print $1}')
+          jq -n \
+            --argjson abi ${{ steps.tag.outputs.abi }} \
+            --arg tag "${{ steps.tag.outputs.tag }}" \
+            --arg sha "$SHA" \
+            '{abi_version: $abi, release_tag: $tag, manifest_sha256: $sha}' \
+            > binaries.lock
+
+          git add binaries.lock
+          git commit -m "chore(binaries): bump lockfile to ${{ steps.tag.outputs.tag }}
+
+          Generated by .github/workflows/force-rebuild.yml. Force-rebuild
+          packages: $INPUT_PACKAGES (arches: $INPUT_ARCHES). Triggered by
+          ${{ github.event.sender.login }}."
+
+          git push -u origin "$BRANCH"
+          NEW_SHA=$(git rev-parse HEAD)
+
+          # Open PR. Skip prepare-merge by NOT applying ready-to-ship.
+          gh pr create \
+            --repo ${{ github.repository }} \
+            --base "${{ inputs.ref }}" \
+            --head "$BRANCH" \
+            --title "chore(binaries): bump lockfile to ${{ steps.tag.outputs.tag }}" \
+            --body "Auto-generated by .github/workflows/force-rebuild.yml.
+
+          Force-rebuilt packages: \`$INPUT_PACKAGES\` (arches: \`$INPUT_ARCHES\`).
+          Triggered by @${{ github.event.sender.login }}.
+
+          Tests: $([ \"$INPUT_SKIP_TESTS\" = \"true\" ] && echo \"SKIPPED (skip_tests=true)\" || echo \"all 5 suites passed before publish\").
+
+          The \`merge-gate\` status is posted as success by this workflow — the durable release was published only after tests passed (or after the maintainer chose to skip), so no further verification is needed before merge."
+
+          PR_NUMBER=$(gh pr view "$BRANCH" --repo ${{ github.repository }} --json number -q .number)
+          echo "branch=$BRANCH" >> $GITHUB_OUTPUT
+          echo "new_sha=$NEW_SHA" >> $GITHUB_OUTPUT
+          echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+
+      - name: Set merge-gate status on bump PR
+        # Required for branch-protection-on-main with the merge-gate
+        # check. Symmetric with prepare-merge.yml's post-publish
+        # status step.
+        if: ${{ inputs.bump_lockfile }}
+        run: |
+          gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${{ github.repository }}/statuses/${{ steps.bump.outputs.new_sha }}" \
+            -f state=success \
+            -f context=merge-gate \
+            -f description="force-rebuild published ${{ steps.tag.outputs.tag }} (tests: $([ "$INPUT_SKIP_TESTS" = "true" ] && echo skipped || echo passed))"
+
+      - name: Enable squash auto-merge on bump PR
+        if: ${{ inputs.bump_lockfile }}
+        run: |
+          gh pr merge "${{ steps.bump.outputs.pr_number }}" \
+            --repo ${{ github.repository }} \
+            --auto --squash
