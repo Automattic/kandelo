@@ -18,8 +18,7 @@
  *   pid N+2: nginx
  */
 import { BrowserKernel } from "@host/browser-kernel-host";
-import { initServiceWorkerBridge } from "../../lib/init/service-worker-bridge";
-import { HttpBridgeHost } from "../../lib/http-bridge";
+import { setupServiceWorkerFetchBridge } from "../../lib/init/sw-bridge-fetch";
 import { TerminalPanel } from "../../lib/init";
 import { PtyTerminal } from "../../lib/pty-terminal";
 import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
@@ -60,7 +59,6 @@ let frame = document.getElementById("frame") as HTMLIFrameElement;
 const decoder = new TextDecoder();
 
 let kernel: BrowserKernel | null = null;
-let bridgeHttpPort: number | null = null;
 
 function appendLog(text: string, cls?: string) {
   const span = document.createElement("span");
@@ -82,24 +80,6 @@ function loadFrame() {
   next.src = APP_PREFIX;
   frame.replaceWith(next);
   frame = next;
-}
-
-function setupBridgeRestoreListener() {
-  if (!("serviceWorker" in navigator)) return;
-  navigator.serviceWorker.addEventListener("message", (event) => {
-    if (event.data?.type !== "need-bridge") return;
-    const replyPort = event.ports[0];
-    if (!replyPort) return;
-    const bridge = new HttpBridgeHost();
-    replyPort.postMessage(
-      { type: "bridge-restored", appPrefix: APP_PREFIX },
-      [bridge.getSwPort()],
-    );
-    if (kernel && bridgeHttpPort != null) {
-      kernel.sendBridgePort(bridge.detachHostPort(), bridgeHttpPort);
-    }
-    appendLog("Bridge restored after service worker restart\n", "info");
-  });
 }
 
 function setupTerminalPane(kernel: BrowserKernel): void {
@@ -169,18 +149,12 @@ async function start() {
     memfs.rewriteLazyArchiveUrls((url) => import.meta.env.BASE_URL + url);
     const vfsImage = await memfs.saveImage();
 
-    appendLog("Initializing service worker bridge...\n", "info");
-    const swBridge = await initServiceWorkerBridge(SW_URL, APP_PREFIX);
-    if (!swBridge) {
-      throw new Error("Service workers unavailable — HTTP bridge not initialized");
-    }
-
     setStatus("Booting kernel with /sbin/dinit...", "loading");
     // See nginx/main.ts for the bridge-vs-listen race rationale.
     let nginxListening = false;
-    let bridgeSent = false;
+    let bridgeReady = false;
     const tryLoadFrame = () => {
-      if (nginxListening && bridgeSent && reloadBtn.disabled) {
+      if (nginxListening && bridgeReady && reloadBtn.disabled) {
         setStatus("WordPress running! Loading page...", "running");
         reloadBtn.disabled = false;
         loadFrame();
@@ -216,11 +190,13 @@ async function start() {
       ],
     });
 
-    kernel.sendBridgePort(swBridge.detachHostPort(), HTTP_PORT);
-    bridgeHttpPort = HTTP_PORT;
+    appendLog("Initializing service worker bridge -> fetchInKernel...\n", "info");
+    await setupServiceWorkerFetchBridge(SW_URL, APP_PREFIX, kernel, HTTP_PORT, {
+      timeoutMs: 300_000,
+      debugLog: (line) => appendLog(line + "\n", "info"),
+    });
     appendLog(`HTTP bridge ready on port ${HTTP_PORT}\n`, "info");
-    setupBridgeRestoreListener();
-    bridgeSent = true;
+    bridgeReady = true;
     tryLoadFrame();
 
     setupTerminalPane(kernel);
