@@ -1,9 +1,0 @@
-math.o: math.c config.h math.h \
-  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/math.h \
-  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/features.h \
-  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/alltypes.h
-config.h:
-math.h:
-/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/math.h:
-/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/features.h:
-/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/bits/alltypes.h:

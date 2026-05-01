@@ -1,7 +1,0 @@
-c-ctype.o: c-ctype.c config.h c-ctype.h \
-  /opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/stdbool.h \
-  /Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/stdbool.h
-config.h:
-c-ctype.h:
-/opt/homebrew/Cellar/llvm/21.1.8/lib/clang/21/include/stdbool.h:
-/Users/brandon/ai-src/wasm-posix-kernel/sysroot/include/stdbool.h:

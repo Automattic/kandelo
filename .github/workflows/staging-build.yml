@@ -31,6 +31,7 @@ jobs:
     permissions:
       contents: write          # gh release create/upload to pr-<N>-staging
       pull-requests: write     # sticky comment
+      statuses: write          # post pending merge-gate status with helpful description
     steps:
       - uses: actions/checkout@v4
         with:
@@ -245,3 +246,23 @@ jobs:
             [`pr-${{ github.event.pull_request.number }}-staging`](https://github.com/${{ github.repository }}/releases/tag/pr-${{ github.event.pull_request.number }}-staging)
             release (if any) remains valid; reviewers should keep
             consuming it as-is.
+
+      - name: Post pending merge-gate status (instructs reviewer)
+        # Branch protection on `main` requires a `merge-gate` status
+        # context (posted as success by prepare-merge.yml after the
+        # ready-to-ship label triggers a durable release). Without
+        # this step, GitHub's merge UI shows the generic "Waiting
+        # for status to be reported" — unhelpful. Posting `pending`
+        # with our own description replaces that text with actionable
+        # guidance. prepare-merge.yml later overwrites the same
+        # context with state=success on the lockfile-bump commit.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api -X POST \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${{ github.repository }}/statuses/${{ github.event.pull_request.head.sha }}" \
+            -f state=pending \
+            -f context=merge-gate \
+            -f description="Tests green. Apply the ready-to-ship label to build the durable release and merge." \
+            -f target_url="https://github.com/${{ github.repository }}/blob/main/docs/plans/2026-04-29-pr-package-builds-design.md"
