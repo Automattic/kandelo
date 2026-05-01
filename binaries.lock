@@ -1,5 +1,5 @@
 {
-  "abi_version": 6,
-  "release_tag": "binaries-abi-v6-2026-04-30-4",
-  "manifest_sha256": "440131bd7e6c1631e1dcc9e64967b537c481b0202eadbf58df893579b5c49e1f"
+  "abi_version": 7,
+  "release_tag": "binaries-abi-v7-2026-05-01",
+  "manifest_sha256": "21dc481cadf3449365d4bb69bc6dfa9651786f6f99a1da2d313714c138748c3b"
 }

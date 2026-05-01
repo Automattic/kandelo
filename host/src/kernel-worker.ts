@@ -6260,6 +6260,25 @@ export class CentralizedKernelWorker {
     }
   }
 
+  /**
+   * Set the program's initial brk to its `__heap_base` value. Must be
+   * called between `registerProcess` and the moment the new process worker
+   * issues its first syscall — otherwise the kernel falls back to its
+   * built-in `INITIAL_BRK` constant, which can land inside the program's
+   * stack region for binaries with a large data section (e.g. mariadbd).
+   *
+   * Accepts `bigint` (preferred — what `extractHeapBase` returns) or
+   * `number`. The kernel runs in wasm64 so the export takes a `usize`,
+   * which is `bigint` on the JS side.
+   */
+  setBrkBase(pid: number, addr: bigint | number): void {
+    const setBrkBaseFn = this.kernelInstance!.exports.kernel_set_brk_base as
+      ((pid: number, addr: bigint) => number) | undefined;
+    if (setBrkBaseFn) {
+      setBrkBaseFn(pid, typeof addr === "bigint" ? addr : BigInt(addr));
+    }
+  }
+
   /** Get the underlying kernel instance for direct access. */
   getKernel(): WasmPosixKernel {
     return this.kernel;

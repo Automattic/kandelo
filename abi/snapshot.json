@@ -1,5 +1,5 @@
 {
-  "abi_version": 6,
+  "abi_version": 7,
   "asyncify_save_slots": [
     {
       "meaning": "parent TLS base (__tls_base) saved for child rewind",
@@ -1081,6 +1081,11 @@
       "kind": "func",
       "name": "kernel_sendto",
       "signature": "(i32,i64,i32,i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_set_brk_base",
+      "signature": "(i32,i64) -> (i32)"
     },
     {
       "kind": "func",
