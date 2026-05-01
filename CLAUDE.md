@@ -107,6 +107,20 @@ Centralized kernel mode only. One kernel Wasm instance serves all process worker
 
 See [docs/architecture.md](docs/architecture.md) for full architecture details.
 
+## Two hosts: Browser AND Node.js
+
+This project supports **two host runtimes**: Node.js (`host/src/node-kernel-host.ts`, `host/src/node-kernel-worker-entry.ts`, `host/src/worker-adapter.ts`) and Browser (`host/src/browser.ts`, `host/src/worker-adapter-browser.ts`, `host/src/worker-entry-browser.ts`, plus `examples/browser/lib/browser-kernel.ts`).
+
+**Every bug fix and feature must be considered for both hosts.** A fix wired only into the Node path leaves the browser broken — the brk-base fix (PR #388) shipped this exact regression because the spawn/exec call sites on the browser side were missed during review.
+
+When changing host code:
+- Search both: `grep -rn "<symbol>" host/ examples/browser/`. If the Node path has it, the browser path almost certainly needs it too.
+- The two hosts share `host/src/kernel-worker.ts` (the `CentralizedKernelWorker` class) and `host/src/worker-main.ts` (the process-worker entry). Changes there are cross-cutting — verify both code paths still work.
+- Spawn / fork / exec / clone all have parallel implementations in the Node and Browser host adapters. If you touch one, audit the other.
+- Tests should cover both: vitest tests with `runCentralizedProgram` exercise the Node path; browser-host tests live under `host/test/browser-worker-adapter.test.ts` and `examples/browser/test/`. A Node-only regression test does not protect the browser path.
+
+When reviewing a change, ask explicitly: *what does this look like on the browser host?* If the answer isn't immediately obvious, the change is incomplete.
+
 ## Performance: Do NOT Micro-Optimize the Syscall Hot Path
 
 **Do not add "optimization" tables or shortcut logic to `kernel-worker.ts`.** Specifically, do not:
