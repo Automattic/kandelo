@@ -12,6 +12,22 @@ name: Staging build
 #
 # Same-repo PRs only. Fork-PR support is documented as future work in
 # §9.1 of the design doc.
+#
+# Layout: a single monolithic build job was split into discrete jobs so
+# each phase shows up as its own check in the PR CI UI. Reviewers can
+# tell at a glance whether a failure is in build, stage, publish, or a
+# specific test suite.
+#
+#   prepare ──┬── stage ── publish ─┐
+#             ├── test-cargo-vitest ├── comment
+#             ├── test-libc         │
+#             ├── test-posix        ├── merge-gate-status
+#             └── test-sortix ──────┘
+#
+# `prepare` builds shared deps (sysroot, kernel.wasm, programs/*.wasm)
+# once and uploads them as a `build-outputs` artifact. The four test
+# jobs and `stage` reuse the same cache keys; the test jobs additionally
+# restore `build-outputs` and run `npm install` for tsx/vitest.
 
 on:
   pull_request:
@@ -25,104 +41,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
+  prepare:
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    permissions:
-      contents: write          # gh release create/upload to pr-<N>-staging
-      pull-requests: write     # sticky comment
-      statuses: write          # post pending merge-gate status with helpful description
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
 
-      - name: Fetch submodules (musl, libc-test, os-test)
-        # actions/checkout doesn't pull submodules by default. We need:
-        #   musl       — for scripts/build-musl.sh
-        #   libc-test  — for scripts/run-libc-tests.sh
-        #   os-test    — for scripts/run-sortix-tests.sh
-        # libc-test's URL in .gitmodules is git@github.com: (SSH);
-        # rewrite to HTTPS for runner-side anonymous fetch.
-        run: |
-          git config --global url."https://github.com/".insteadOf "git@github.com:"
-          git submodule update --init --depth 1 musl libc-test os-test
-
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v18
-
-      - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@v13
-
-      - name: Warm Nix dev shell
-        run: nix develop --accept-flake-config --command true
-
-      - name: Cache resolver + cargo target
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/wasm-posix-kernel
-            target
-          key: staging-build-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'examples/libs/**/deps.toml') }}
-          restore-keys: |
-            staging-build-${{ runner.os }}-
-
-      - name: Cache musl sysroot + libc++
-        uses: actions/cache@v4
-        id: cache-sysroot
-        with:
-          path: |
-            sysroot
-            sysroot64
-          # v3: also includes libc++ (needed for C++ packages like dinit
-          # whose build scripts bail when sysroot/lib/libc++.a is missing).
-          key: musl-sysroot-v3-${{ runner.os }}-${{ hashFiles('scripts/build-musl.sh', 'scripts/build-libcxx.sh', 'musl-overlay/**', 'glue/**') }}
-
-      - name: Build musl sysroot + libc++ (wasm32 + wasm64)
-        if: steps.cache-sysroot.outputs.cache-hit != 'true'
-        # build-programs.sh emits wasm64 fixtures only when sysroot64
-        # exists. C++ packages (dinit, mariadb-test, …) require
-        # libc++.a + headers in the sysroot. The MariaDB build is the
-        # canonical place where C++ headers get installed; replicate
-        # the relevant part inline before build-libcxx.sh so dinit's
-        # compile sees `#include <iostream>`.
-        run: |
-          nix develop --accept-flake-config --command bash scripts/build-musl.sh
-          nix develop --accept-flake-config --command bash scripts/build-musl.sh --arch wasm64posix
-          nix develop --accept-flake-config --command bash -c '
-            # Nix puts libc++ headers under share/libc++/v1 (vs.
-            # Homebrew at include/c++/v1). Try both for portability.
-            src=""
-            for cand in "$LLVM_PREFIX/include/c++/v1" "$LLVM_PREFIX/share/libc++/v1"; do
-              if [ -f "$cand/__config" ] || [ -f "$cand/iostream" ]; then
-                src="$cand"; break
-              fi
-            done
-            if [ -z "$src" ]; then
-              echo "ERROR: cant locate libc++ headers under $LLVM_PREFIX" >&2
-              exit 1
-            fi
-            echo "installing libc++ headers from $src"
-            for arch_dir in sysroot sysroot64; do
-              if [ ! -f "$arch_dir/include/c++/v1/__config" ]; then
-                mkdir -p "$arch_dir/include/c++/v1"
-                # cp -L dereferences symlinks (Nix symlinkJoin
-                # produces a tree of symlinks into the read-only
-                # store; without -L, later writes that overwrite
-                # __config_site fail with EACCES).
-                cp -RL "$src"/* "$arch_dir/include/c++/v1/"
-                chmod -R u+w "$arch_dir/include/c++/v1/"
-                cs="$arch_dir/include/c++/v1/__config_site"
-                if [ -f "$cs" ]; then
-                  sed -i "s/_LIBCPP_HAS_MUSL_LIBC 0/_LIBCPP_HAS_MUSL_LIBC 1/" "$cs"
-                  sed -i "s/_LIBCPP_HAS_THREAD_API_PTHREAD 0/_LIBCPP_HAS_THREAD_API_PTHREAD 1/" "$cs"
-                fi
-              fi
-            done
-          '
-          nix develop --accept-flake-config --command bash scripts/build-libcxx.sh
-          nix develop --accept-flake-config --command bash scripts/build-libcxx.sh --arch wasm64
+      - uses: ./.github/actions/setup-build
 
       - name: Fetch durable binaries (so source-build fallbacks have prereqs)
         # Some packages source-build when their cache_key_sha differs
@@ -130,18 +58,67 @@ jobs:
         # being available locally). fetch-binaries materializes the
         # durable release into binaries/ where the resolver finds it.
         #
-        # --allow-stale is required because this PR ships a compute_sha
-        # formula change (folding [[outputs]] into cache_key_sha). Every
-        # entry in the existing durable release was stamped under the old
-        # formula, so its compatibility.cache_key_sha disagrees with what
-        # this checkout would compute. Without --allow-stale the strict
-        # pre-flight in install-release would abort the whole step. With
-        # the flag, mismatched entries are skipped and source-built into
-        # local-binaries/ via `xtask build-deps resolve` — the resolver
-        # picks them up there. Once a fresh durable release is published
-        # under the new formula, this flag becomes a no-op for normal CI
-        # runs (the strict check passes again) but stays in place as the
-        # escape hatch documented in docs/package-management.md.
+        # --allow-stale is required because the recent compute_sha
+        # formula change (folding [[outputs]] into cache_key_sha) means
+        # entries in older durable releases were stamped under the old
+        # formula. Without --allow-stale the strict pre-flight in
+        # install-release would abort. With the flag, mismatched
+        # entries are skipped and source-built into local-binaries/
+        # via `xtask build-deps resolve` — the resolver picks them up
+        # there. Once a fresh durable release is published under the
+        # new formula, this flag is a no-op for normal CI runs.
+        run: |
+          nix develop --accept-flake-config --command bash scripts/fetch-binaries.sh --allow-stale
+
+      - name: Build kernel + test programs
+        # Vitest tests load kernel.wasm + various programs/*.wasm via
+        # the resolver. cargo unit tests run as native binaries.
+        # build-programs.sh compiles programs/*.c (fork-exec.wasm,
+        # ifhwaddr.wasm, hello64.wasm, mmap_shared_test.wasm, etc.)
+        # — without these, vitest tests that target the centralized
+        # kernel against a specific program error out with "Binary
+        # not found".
+        run: |
+          nix develop --accept-flake-config --command bash -c '
+            cargo build --release -p wasm-posix-kernel \
+              -Z build-std=core,alloc \
+              -Z build-std-features=panic_immediate_abort
+            mkdir -p local-binaries
+            cp target/wasm64-unknown-unknown/release/wasm_posix_kernel.wasm \
+              local-binaries/kernel.wasm
+            bash scripts/build-programs.sh
+          '
+
+      - name: Upload build-outputs artifact
+        # Consumed by the four test jobs. Stage and publish don't need it.
+        # node_modules/ is intentionally NOT included: actions/upload-artifact@v4
+        # strips the executable bit (esbuild, vitest, etc. lose +x and fail with
+        # EACCES on the consumer side). Test jobs run npm install themselves.
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-outputs
+          path: |
+            local-binaries/
+            programs/**/*.wasm
+          retention-days: 1
+          if-no-files-found: error
+
+  stage:
+    needs: prepare
+    runs-on: ubuntu-latest
+    outputs:
+      override_count: ${{ steps.stage.outputs.override_count }}
+      overrides_csv: ${{ steps.stage.outputs.overrides_csv }}
+      noop: ${{ steps.detect_noop.outputs.noop }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - uses: ./.github/actions/setup-build
+
+      - name: Fetch durable binaries (so source-build fallbacks have prereqs)
         run: |
           nix develop --accept-flake-config --command bash scripts/fetch-binaries.sh --allow-stale
 
@@ -157,7 +134,7 @@ jobs:
               --arch wasm64
           override_count=$(jq '.overrides | length' /tmp/pr-staging/binaries.lock.pr)
           echo "override_count=$override_count" >> $GITHUB_OUTPUT
-          echo "overrides=$(jq -r '.overrides | join(", ")' /tmp/pr-staging/binaries.lock.pr)" >> $GITHUB_OUTPUT
+          echo "overrides_csv=$(jq -r '.overrides | join(", ")' /tmp/pr-staging/binaries.lock.pr)" >> $GITHUB_OUTPUT
 
       - name: Compare overlay against existing pr-staging release
         # Mirrors the `prepare-merge.yml` skip-on-unchanged-content path
@@ -197,38 +174,63 @@ jobs:
             echo "No existing $TAG release — publish will run."
           fi
 
-      - name: Publish to pr-${{ github.event.pull_request.number }}-staging
+      - name: Upload pr-staging artifact
         if: steps.stage.outputs.override_count != '0' && steps.detect_noop.outputs.noop != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-staging
+          path: /tmp/pr-staging
+          retention-days: 1
+          if-no-files-found: error
+
+  publish:
+    needs: stage
+    if: needs.stage.outputs.override_count != '0' && needs.stage.outputs.noop != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write          # gh release create/upload to pr-<N>-staging
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Download pr-staging artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: pr-staging
+          path: /tmp/pr-staging
+
+      - name: Publish to pr-${{ github.event.pull_request.number }}-staging
+        # publish-pr-staging.sh + verify-release.sh need only gh, jq,
+        # curl, and shasum — all pre-installed on ubuntu-latest. No
+        # Nix or sysroot required, so this job skips the composite.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          nix develop --accept-flake-config --command \
-            scripts/publish-pr-staging.sh \
-              --pr ${{ github.event.pull_request.number }} \
-              --staging /tmp/pr-staging
+          scripts/publish-pr-staging.sh \
+            --pr ${{ github.event.pull_request.number }} \
+            --staging /tmp/pr-staging
 
-      - name: Build kernel + test programs + install host deps (test prereqs)
-        # Vitest tests load kernel.wasm + various programs/*.wasm via
-        # the resolver. cargo unit tests run as native binaries.
-        # build-programs.sh compiles programs/*.c (fork-exec.wasm,
-        # ifhwaddr.wasm, hello64.wasm, mmap_shared_test.wasm, etc.)
-        # — without these, vitest tests that target the centralized
-        # kernel against a specific program error out with "Binary
-        # not found".
-        # Two npm installs: host/ for vitest's own deps, and the
-        # repo root for tsx (needed by run-posix-tests.sh /
-        # run-libc-tests.sh / run-sortix-tests.sh which spawn
-        # `node --import tsx/esm examples/run-example.ts`).
+  test-cargo-vitest:
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - uses: ./.github/actions/setup-build
+        with:
+          download-build-outputs: 'true'
+
+      - name: Install host npm deps
+        # vitest binary lives in host/node_modules/.bin/vitest; install
+        # fresh per job — node_modules can't go through actions/upload-artifact
+        # without losing executable bits.
         run: |
           nix develop --accept-flake-config --command bash -c '
-            cargo build --release -p wasm-posix-kernel \
-              -Z build-std=core,alloc \
-              -Z build-std-features=panic_immediate_abort
-            mkdir -p local-binaries
-            cp target/wasm64-unknown-unknown/release/wasm_posix_kernel.wasm \
-              local-binaries/kernel.wasm
-            bash scripts/build-programs.sh
-            npm install --no-audit --no-fund
             cd host && npm install --no-audit --no-fund
           '
 
@@ -240,6 +242,23 @@ jobs:
             cd host && npx vitest run
           '
 
+  test-libc:
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - uses: ./.github/actions/setup-build
+        with:
+          download-build-outputs: 'true'
+
+      - name: Install root npm deps (tsx for run-example.ts)
+        run: |
+          nix develop --accept-flake-config --command npm install --no-audit --no-fund
+
       - name: Run libc-test conformance suite
         # XFAILs (expected failures from wasm fundamentals — no soft-FPU
         # rounding control, opaque stack, no file-backed mmap for
@@ -248,10 +267,44 @@ jobs:
         run: |
           nix develop --accept-flake-config --command bash scripts/run-libc-tests.sh
 
+  test-posix:
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - uses: ./.github/actions/setup-build
+        with:
+          download-build-outputs: 'true'
+
+      - name: Install root npm deps (tsx for run-example.ts)
+        run: |
+          nix develop --accept-flake-config --command npm install --no-audit --no-fund
+
       - name: Run Open POSIX Test Suite
         # 0 FAIL required; UNRES (unresolved) and SKIP are acceptable.
         run: |
           nix develop --accept-flake-config --command bash scripts/run-posix-tests.sh
+
+  test-sortix:
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - uses: ./.github/actions/setup-build
+        with:
+          download-build-outputs: 'true'
+
+      - name: Install root npm deps (tsx for run-example.ts)
+        run: |
+          nix develop --accept-flake-config --command npm install --no-audit --no-fund
 
       - name: Run Sortix os-test suite
         # `--all` runs every suite (include, limits, basic, malloc,
@@ -259,16 +312,28 @@ jobs:
         run: |
           nix develop --accept-flake-config --command bash scripts/run-sortix-tests.sh --all
 
+  comment:
+    needs: [stage, publish]
+    # Run as long as `stage` succeeded — even if `publish` was skipped
+    # (override_count == 0 or noop == true → publish's `if` evaluates
+    # false → status 'skipped'). `always()` overrides the default
+    # skip-on-skip needs propagation so the no-rebuild and
+    # overlay-unchanged branches can post.
+    if: always() && needs.stage.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write     # sticky comment
+    steps:
       - name: Post sticky comment (built archives)
-        if: steps.stage.outputs.override_count != '0' && steps.detect_noop.outputs.noop != 'true'
+        if: needs.stage.outputs.override_count != '0' && needs.stage.outputs.noop != 'true'
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           header: pr-staging-build
           message: |
             **Staging build for this PR**
 
-            Built **${{ steps.stage.outputs.override_count }}** package archive(s):
-            `${{ steps.stage.outputs.overrides }}`
+            Built **${{ needs.stage.outputs.override_count }}** package archive(s):
+            `${{ needs.stage.outputs.overrides_csv }}`
 
             Uploaded to [`pr-${{ github.event.pull_request.number }}-staging`](https://github.com/${{ github.repository }}/releases/tag/pr-${{ github.event.pull_request.number }}-staging).
 
@@ -285,7 +350,7 @@ jobs:
             the durable release.
 
       - name: Post sticky comment (overlay unchanged since previous push)
-        if: steps.stage.outputs.override_count != '0' && steps.detect_noop.outputs.noop == 'true'
+        if: needs.stage.outputs.override_count != '0' && needs.stage.outputs.noop == 'true'
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           header: pr-staging-build
@@ -299,7 +364,7 @@ jobs:
             the existing release as-is.
 
       - name: Post sticky comment (no rebuild needed)
-        if: steps.stage.outputs.override_count == '0'
+        if: needs.stage.outputs.override_count == '0'
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           header: pr-staging-build
@@ -312,15 +377,35 @@ jobs:
             release (if any) remains valid; reviewers should keep
             consuming it as-is.
 
+  merge-gate-status:
+    # Branch protection on `main` requires a `merge-gate` status
+    # context (posted as success by prepare-merge.yml after the
+    # ready-to-ship label triggers a durable release). Without
+    # this job, GitHub's merge UI shows the generic "Waiting
+    # for status to be reported" — unhelpful. Posting `pending`
+    # with our own description replaces that text with actionable
+    # guidance. prepare-merge.yml later overwrites the same
+    # context with state=success on the lockfile-bump commit.
+    #
+    # Runs only when EVERY upstream job is green; publish is
+    # 'success' when it ran and 'skipped' when nothing needed
+    # publishing (override_count == 0 or overlay unchanged) —
+    # both are acceptable from a merge-gate perspective.
+    needs: [prepare, stage, publish, test-cargo-vitest, test-libc, test-posix, test-sortix]
+    if: |
+      always() &&
+      needs.prepare.result == 'success' &&
+      needs.stage.result == 'success' &&
+      needs.test-cargo-vitest.result == 'success' &&
+      needs.test-libc.result == 'success' &&
+      needs.test-posix.result == 'success' &&
+      needs.test-sortix.result == 'success' &&
+      (needs.publish.result == 'success' || needs.publish.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write          # post pending merge-gate status with helpful description
+    steps:
       - name: Post pending merge-gate status (instructs reviewer)
-        # Branch protection on `main` requires a `merge-gate` status
-        # context (posted as success by prepare-merge.yml after the
-        # ready-to-ship label triggers a durable release). Without
-        # this step, GitHub's merge UI shows the generic "Waiting
-        # for status to be reported" — unhelpful. Posting `pending`
-        # with our own description replaces that text with actionable
-        # guidance. prepare-merge.yml later overwrites the same
-        # context with state=success on the lockfile-bump commit.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
