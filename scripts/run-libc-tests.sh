@@ -526,3 +526,8 @@ if $REPORT_MODE; then
     } > "$REPORT"
     echo "Report written to: $REPORT"
 fi
+
+# Exit with error if any unexpected failures
+if [ $FAIL -gt 0 ] || [ $XPASS -gt 0 ] || [ $BUILD_FAIL -gt 0 ]; then
+    exit 1
+fi
