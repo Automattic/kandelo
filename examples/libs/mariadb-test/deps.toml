@@ -2,14 +2,17 @@ kind = "program"
 name = "mariadb-test"
 version = "0.1.0"
 revision = 1
-# Implicit dep: build-mariadb-test-vfs-image.ts reads the mariadbd
-# binary, mysql-test tree, and system-table SQL from
-# `examples/libs/mariadb/mariadb-install/` — populated as a side
-# effect of `build-mariadb.sh`. Without this declaration a clean
-# source-build (e.g., during manual force-rebuild) fails. Folds
-# mariadb's cache_key into ours so a mariadb bump invalidates the
-# mariadb-test cache.
-depends_on = ["mariadb@10.5.28"]
+# Implicit deps: build-mariadb-test-vfs-image.ts
+#   - reads mariadbd + mysql-test + system-table SQL from
+#     `examples/libs/mariadb/mariadb-install/` (side effect of `build-mariadb.sh`)
+#   - calls `resolveBinary("programs/dash.wasm")` (strict — throws if missing)
+#     to bake `/bin/dash` + `/bin/sh` symlink
+#   - calls `addDinitInit(...)` which calls `resolveDinitBinaries()` (strict —
+#     throws if neither tryResolveBinary nor the source-tree path resolves)
+#     to bake the init system that boots the test runner.
+# Without these declarations a clean source-build (e.g., during manual
+# force-rebuild) fails. Folds each prereq's cache_key into ours.
+depends_on = ["mariadb@10.5.28", "dash@0.5.12", "dinit@0.19.4"]
 
 # Pre-built VFS image for the MariaDB test runner: mariadbd binary,
 # mysql-test test files (curated 185 tests), system-table SQL,

@@ -2,13 +2,18 @@ kind = "program"
 name = "mariadb-vfs"
 version = "0.1.0"
 revision = 1
-# Implicit dep: build-mariadb-vfs-image.ts reads the mariadbd binary
-# and bootstrap SQL from `examples/libs/mariadb/mariadb-install{,-64}/`
-# — populated as a side effect of `build-mariadb.sh`. Without this
-# declaration a clean source-build (e.g., during manual force-rebuild)
-# fails. Folds mariadb's cache_key into ours so a mariadb bump
-# invalidates the mariadb-vfs cache.
-depends_on = ["mariadb@10.5.28"]
+# Implicit deps: build-mariadb-vfs-image.ts
+#   - reads mariadbd + bootstrap SQL from `examples/libs/mariadb/mariadb-install{,-64}/`
+#     (side effect of `build-mariadb.sh`)
+#   - calls `resolveBinary("programs/dash.wasm")` (strict — throws if missing)
+#     to bake `/bin/dash` + `/bin/sh` symlink for dinit's scripted bootstrap services
+#   - calls `addDinitInit(...)` which calls `resolveDinitBinaries()` (strict —
+#     throws if neither tryResolveBinary nor the source-tree path resolves)
+#     to bake `/sbin/dinit` + `/sbin/dinitctl` (PID 1 for the service tree).
+# Without these declarations a clean source-build (e.g., during manual
+# force-rebuild) fails. Folds each prereq's cache_key into ours so any
+# bump invalidates the mariadb-vfs cache.
+depends_on = ["mariadb@10.5.28", "dash@0.5.12", "dinit@0.19.4"]
 # Opt into wasm64 — see memory/wasm64-build-policy.md. The VFS image
 # embeds the arch-specific mariadbd binary, so it must be built
 # per-arch alongside mariadb.

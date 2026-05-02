@@ -2,9 +2,16 @@ kind = "program"
 name = "wordpress"
 version = "6.8"
 revision = 1
-# build-wp-vfs-image.ts uses resolveBinary() for dash/nginx/php-fpm/coreutils/sed
-# and reads `examples/wordpress/wordpress/` (the WordPress PHP source, downloaded
-# by examples/wordpress/setup.sh — invoked from build-wordpress.sh).
+# build-wp-vfs-image.ts:
+#   - uses `resolveBinary("programs/<x>.wasm")` (strict) for
+#     dash/nginx/php-fpm/coreutils/sed
+#   - reads `examples/wordpress/wordpress/` (the WordPress PHP source,
+#     downloaded by examples/wordpress/setup.sh — invoked from
+#     build-wordpress.sh; not a registry package)
+#   - calls `addDinitInit(...)` which calls `resolveDinitBinaries()`
+#     (strict — throws if neither tryResolveBinary nor the source-tree
+#     path resolves) to bake the PID-1 init system. The demo boots from
+#     /sbin/dinit; without dinit baked in the VFS is unbootable.
 depends_on = [
     "dash@0.5.12",
     "nginx@1.24.0",
