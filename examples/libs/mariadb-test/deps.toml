@@ -2,7 +2,14 @@ kind = "program"
 name = "mariadb-test"
 version = "0.1.0"
 revision = 1
-depends_on = []
+# Implicit dep: build-mariadb-test-vfs-image.ts reads the mariadbd
+# binary, mysql-test tree, and system-table SQL from
+# `examples/libs/mariadb/mariadb-install/` — populated as a side
+# effect of `build-mariadb.sh`. Without this declaration a clean
+# source-build (e.g., during manual force-rebuild) fails. Folds
+# mariadb's cache_key into ours so a mariadb bump invalidates the
+# mariadb-test cache.
+depends_on = ["mariadb@10.5.28"]
 
 # Pre-built VFS image for the MariaDB test runner: mariadbd binary,
 # mysql-test test files (curated 185 tests), system-table SQL,
