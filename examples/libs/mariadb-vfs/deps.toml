@@ -2,7 +2,13 @@ kind = "program"
 name = "mariadb-vfs"
 version = "0.1.0"
 revision = 1
-depends_on = []
+# Implicit dep: build-mariadb-vfs-image.ts reads the mariadbd binary
+# and bootstrap SQL from `examples/libs/mariadb/mariadb-install{,-64}/`
+# — populated as a side effect of `build-mariadb.sh`. Without this
+# declaration a clean source-build (e.g., during manual force-rebuild)
+# fails. Folds mariadb's cache_key into ours so a mariadb bump
+# invalidates the mariadb-vfs cache.
+depends_on = ["mariadb@10.5.28"]
 # Opt into wasm64 — see memory/wasm64-build-policy.md. The VFS image
 # embeds the arch-specific mariadbd binary, so it must be built
 # per-arch alongside mariadb.

@@ -2,7 +2,13 @@ kind = "program"
 name = "python-vfs"
 version = "0.1.0"
 revision = 1
-depends_on = []
+# Implicit dep: build-python-vfs-image.ts reads the CPython stdlib
+# from `examples/libs/cpython/cpython-src/Lib/` — populated as a
+# side effect of `build-cpython.sh`'s tarball extraction. Without
+# this declaration a clean source-build (e.g., during manual
+# force-rebuild) fails. Folds cpython's cache_key into ours so a
+# cpython bump invalidates the python-vfs cache.
+depends_on = ["cpython@3.13.3"]
 
 # Pre-built VFS image containing the CPython 3.13 stdlib for the
 # browser demo. Source at

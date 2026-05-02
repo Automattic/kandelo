@@ -2,7 +2,24 @@ kind = "program"
 name = "shell"
 version = "0.1.0"
 revision = 1
-depends_on = []
+# Implicit deps: build-shell-vfs-image.ts reads:
+#   - dash.wasm via `resolveBinary("programs/dash.wasm")` (hard
+#     readFileSync; exits 1 if missing).
+#   - magic.lite from `examples/libs/file/bin/magic.lite` (side
+#     effect of build-file.sh; hard exit if missing).
+#   - vim.wasm and nethack.wasm via the resolver chain — vim/nethack
+#     program builds must have completed so their wasms are present.
+# Without these declarations a clean source-build (e.g., during
+# manual force-rebuild) fails. Folds each dep's cache_key into ours.
+#
+# Note: build-shell-vfs-image.ts ALSO requires vim.zip and
+# nethack.zip, which are produced by the auxiliary scripts
+# `examples/browser/scripts/build-{vim,nethack}-zip.sh`. Those zip
+# bundles are NOT outputs of vim/nethack registry packages, so
+# declaring vim/nethack as deps does not on its own make shell
+# source-build reproducibly — that gap is separate from the
+# perl-vfs-style fix here.
+depends_on = ["dash@0.5.12", "file@5.45", "vim@9.1.0900", "nethack@3.6.7"]
 
 # Composite VFS image for the browser shell demo: dash binary,
 # coreutils/grep/sed symlinks, /etc system configs, magic database,
@@ -10,9 +27,6 @@ depends_on = []
 # examples/browser/scripts/build-shell-vfs-image.ts. The .vfs file is
 # wrapped (not double-compressed) inside the package-system .tar.zst archive at
 # stage_release time.
-#
-# Build prerequisites: dash + coreutils + grep + sed + vim must be in
-# local-binaries/programs/ (i.e. previously built or fetched).
 [source]
 url = "https://github.com/brandonpayton/wasm-posix-kernel"
 sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
