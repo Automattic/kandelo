@@ -2,7 +2,18 @@ kind = "program"
 name = "perl-vfs"
 version = "0.1.0"
 revision = 1
-depends_on = []
+# Declares perl as a dep so the resolver builds perl FIRST, leaving
+# `examples/libs/perl/perl-src/` populated as a side effect of
+# `build-perl.sh`'s tarball extraction. `build-perl-vfs-image.ts`
+# reads the Perl stdlib straight from that source tree at
+# `examples/libs/perl/perl-src/{lib,cpan,dist,ext}` (see
+# `examples/browser/scripts/build-perl-vfs-image.ts:22`). Without
+# this declaration a clean source-build of perl-vfs (e.g., during
+# the manual force-rebuild workflow when no usable v7 perl archive
+# exists in the cache or the durable release) fails with
+# "Perl source not found." Listing perl as a dep also folds its
+# cache_key into ours so a perl bump invalidates the perl-vfs cache.
+depends_on = ["perl@5.40.3"]
 
 # Pre-built VFS image containing the Perl 5.40.3 stdlib for the
 # browser demo. Source at
