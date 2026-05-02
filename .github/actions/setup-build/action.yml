@@ -11,6 +11,14 @@ inputs:
     description: When 'true', restore the build-outputs artifact uploaded by `prepare`
     required: false
     default: 'false'
+  merge-with-main:
+    description: >
+      When 'true', merge origin/main into the checked-out PR HEAD in-memory
+      before any build steps. Used by prepare-merge.yml to test against the
+      merged tree. If the calling job already merged (e.g. prepare did its
+      own conflict-aware merge), this step is a no-op ("Already up to date").
+    required: false
+    default: 'false'
 
 runs:
   using: composite
@@ -26,6 +34,22 @@ runs:
       run: |
         git config --global url."https://github.com/".insteadOf "git@github.com:"
         git submodule update --init --depth 1 musl libc-test os-test
+
+    - name: Merge tip-of-main into PR HEAD (in-memory)
+      if: inputs.merge-with-main == 'true'
+      # Used by prepare-merge.yml so every job tests/builds against the
+      # tree the squash merge will land. No conflict-specific handling
+      # here — prepare-merge's `prepare` job runs an explicit merge step
+      # earlier with the label-drop-and-comment behaviour, so any
+      # conflict is already caught and reported by the time downstream
+      # jobs reach this composite. If prepare's merge already ran, this
+      # is a no-op ("Already up to date").
+      shell: bash
+      run: |
+        git config user.name "wasm-posix-binaries-bot"
+        git config user.email "noreply@anthropic.com"
+        git fetch origin main
+        git merge --no-edit origin/main
 
     - name: Install Nix
       uses: DeterminateSystems/nix-installer-action@v18

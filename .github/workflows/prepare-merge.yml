@@ -26,6 +26,26 @@ name: Prepare merge
 # same branch.
 #
 # See docs/plans/2026-04-29-pr-package-builds-design.md §4.2.
+#
+# Layout: split into discrete jobs so each phase shows up as its own
+# check on the PR. Mirrors staging-build.yml's structure.
+#
+#   prepare ──┬── stage ── publish ─┐
+#             ├── test-cargo-vitest │
+#             ├── test-libc         ├── finalize
+#             ├── test-posix        │
+#             └── test-sortix ──────┘
+#                                   │
+#                 cleanup-on-failure (if: failure())
+#
+# `prepare` runs the review/checks gate and the conflict-aware
+# tip-of-main merge. Other jobs use setup-build's `merge-with-main`
+# input to redo the merge against their own checkout (a no-op when
+# already merged); they assume prepare's merge succeeded so they don't
+# carry conflict-specific label-drop logic. `finalize` posts the
+# merge-gate=success status and (when content drifted) pushes the
+# lockfile bump. `cleanup-on-failure` drops the label only when the
+# gate succeeded — otherwise the gate already dropped it.
 
 on:
   pull_request:
@@ -39,20 +59,23 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  publish:
+  prepare:
     if: |
       github.event.label.name == 'ready-to-ship' &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
-      contents: write          # push lockfile commit to PR branch + create release
-      pull-requests: write     # auto-merge, comments, label management
-      statuses: write          # post merge-gate commit status
+      contents: read
+      pull-requests: write     # gate failure removes the label + comments
     env:
       PR_NUMBER: ${{ github.event.pull_request.number }}
       PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
       PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      abi: ${{ steps.tag.outputs.abi }}
+      gate_outcome: ${{ steps.gate.outcome }}
     steps:
       - name: Verify PR review state + required checks green
         id: gate
@@ -112,14 +135,11 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Fetch submodules (musl, libc-test, os-test)
-        # See staging-build.yml for the rationale + the SSH→HTTPS
-        # override for libc-test.
-        run: |
-          git config --global url."https://github.com/".insteadOf "git@github.com:"
-          git submodule update --init --depth 1 musl libc-test os-test
-
       - name: Merge tip-of-main into PR HEAD (in-memory)
+        # Conflict-aware merge: if main can't be merged cleanly, drop
+        # the label and post a contributor-actionable comment, then
+        # exit. setup-build's own merge step is a no-op once this
+        # succeeds, so subsequent jobs reach the same merged state.
         run: |
           git config user.name "wasm-posix-binaries-bot"
           git config user.email "noreply@anthropic.com"
@@ -131,69 +151,9 @@ jobs:
             exit 1
           fi
 
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v18
-
-      - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@v13
-
-      - name: Warm Nix dev shell
-        run: nix develop --accept-flake-config --command true
-
-      - name: Cache resolver + cargo target
-        uses: actions/cache@v4
+      - uses: ./.github/actions/setup-build
         with:
-          path: |
-            ~/.cache/wasm-posix-kernel
-            target
-          key: prepare-merge-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'examples/libs/**/deps.toml') }}
-          restore-keys: |
-            prepare-merge-${{ runner.os }}-
-            staging-build-${{ runner.os }}-
-
-      - name: Cache musl sysroot + libc++
-        uses: actions/cache@v4
-        id: cache-sysroot
-        with:
-          path: |
-            sysroot
-            sysroot64
-          # v3: also includes libc++ (see staging-build.yml).
-          key: musl-sysroot-v3-${{ runner.os }}-${{ hashFiles('scripts/build-musl.sh', 'scripts/build-libcxx.sh', 'musl-overlay/**', 'glue/**') }}
-
-      - name: Build musl sysroot + libc++ (wasm32 + wasm64)
-        if: steps.cache-sysroot.outputs.cache-hit != 'true'
-        # See staging-build.yml.
-        run: |
-          nix develop --accept-flake-config --command bash scripts/build-musl.sh
-          nix develop --accept-flake-config --command bash scripts/build-musl.sh --arch wasm64posix
-          nix develop --accept-flake-config --command bash -c '
-            src=""
-            for cand in "$LLVM_PREFIX/include/c++/v1" "$LLVM_PREFIX/share/libc++/v1"; do
-              if [ -f "$cand/__config" ] || [ -f "$cand/iostream" ]; then
-                src="$cand"; break
-              fi
-            done
-            if [ -z "$src" ]; then
-              echo "ERROR: cant locate libc++ headers under $LLVM_PREFIX" >&2
-              exit 1
-            fi
-            echo "installing libc++ headers from $src"
-            for arch_dir in sysroot sysroot64; do
-              if [ ! -f "$arch_dir/include/c++/v1/__config" ]; then
-                mkdir -p "$arch_dir/include/c++/v1"
-                cp -RL "$src"/* "$arch_dir/include/c++/v1/"
-                chmod -R u+w "$arch_dir/include/c++/v1/"
-                cs="$arch_dir/include/c++/v1/__config_site"
-                if [ -f "$cs" ]; then
-                  sed -i "s/_LIBCPP_HAS_MUSL_LIBC 0/_LIBCPP_HAS_MUSL_LIBC 1/" "$cs"
-                  sed -i "s/_LIBCPP_HAS_THREAD_API_PTHREAD 0/_LIBCPP_HAS_THREAD_API_PTHREAD 1/" "$cs"
-                fi
-              fi
-            done
-          '
-          nix develop --accept-flake-config --command bash scripts/build-libcxx.sh
-          nix develop --accept-flake-config --command bash scripts/build-libcxx.sh --arch wasm64
+          merge-with-main: 'true'
 
       - name: Compute durable release tag
         id: tag
@@ -210,21 +170,49 @@ jobs:
           echo "abi=$ABI" >> $GITHUB_OUTPUT
           echo "tag=$TAG" >> $GITHUB_OUTPUT
 
+      - name: Build kernel + test programs
+        # See staging-build.yml for the rationale (why not include
+        # node_modules in the artifact: actions/upload-artifact@v4
+        # strips +x bits, breaking esbuild/vitest on the consumer).
+        run: |
+          nix develop --accept-flake-config --command bash -c '
+            cargo build --release -p wasm-posix-kernel \
+              -Z build-std=core,alloc \
+              -Z build-std-features=panic_immediate_abort
+            mkdir -p local-binaries
+            cp target/wasm64-unknown-unknown/release/wasm_posix_kernel.wasm \
+              local-binaries/kernel.wasm
+            bash scripts/build-programs.sh
+          '
+
+      - name: Upload build-outputs artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-outputs
+          path: |
+            local-binaries/
+            programs/**/*.wasm
+          retention-days: 1
+          if-no-files-found: error
+
+  stage:
+    needs: prepare
+    runs-on: ubuntu-latest
+    outputs:
+      noop: ${{ steps.drift.outputs.noop }}
+      baseline_tag: ${{ steps.drift.outputs.baseline_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - uses: ./.github/actions/setup-build
+        with:
+          merge-with-main: 'true'
+
       - name: Fetch durable binaries (source-build prereqs)
-        # See staging-build.yml.
-        #
-        # --allow-stale is required because this PR ships a compute_sha
-        # formula change (folding [[outputs]] into cache_key_sha). Every
-        # entry in the existing durable release was stamped under the old
-        # formula, so its compatibility.cache_key_sha disagrees with what
-        # this checkout would compute. Without --allow-stale the strict
-        # pre-flight in install-release would abort the whole step. With
-        # the flag, mismatched entries are skipped and source-built into
-        # local-binaries/ via `xtask build-deps resolve` — the resolver
-        # picks them up there. Once a fresh durable release is published
-        # under the new formula, this flag becomes a no-op for normal CI
-        # runs (the strict check passes again) but stays in place as the
-        # escape hatch documented in docs/package-management.md.
+        # See staging-build.yml for the --allow-stale rationale.
         run: |
           nix develop --accept-flake-config --command bash scripts/fetch-binaries.sh --allow-stale
 
@@ -234,7 +222,7 @@ jobs:
           nix develop --accept-flake-config --command \
             scripts/stage-release.sh \
               --out /tmp/durable \
-              --tag ${{ steps.tag.outputs.tag }} \
+              --tag ${{ needs.prepare.outputs.tag }} \
               --arch wasm32 \
               --arch wasm64
 
@@ -264,45 +252,69 @@ jobs:
             echo "noop=true" >> "$GITHUB_OUTPUT"
             echo "baseline_tag=$baseline_tag" >> "$GITHUB_OUTPUT"
           else
-            echo "Package content drift detected — will publish fresh durable release ${{ steps.tag.outputs.tag }}."
+            echo "Package content drift detected — will publish fresh durable release ${{ needs.prepare.outputs.tag }}."
             echo "noop=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Publish durable release
+      - name: Upload durable artifact
         if: steps.drift.outputs.noop == 'false'
-        run: |
-          nix develop --accept-flake-config --command \
-            scripts/publish-release.sh \
-              --tag ${{ steps.tag.outputs.tag }} \
-              --staging /tmp/durable
+        uses: actions/upload-artifact@v4
+        with:
+          name: durable
+          path: /tmp/durable
+          retention-days: 1
+          if-no-files-found: error
 
-      - name: Build kernel + test programs + install host deps (test prereqs)
-        # See staging-build.yml for rationale.
+  publish:
+    needs: stage
+    if: needs.stage.outputs.noop != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write          # gh release create
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Download durable artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: durable
+          path: /tmp/durable
+
+      - name: Publish durable release
+        # publish-release.sh needs only gh, jq, curl, shasum — all
+        # pre-installed on ubuntu-latest. No Nix or sysroot required,
+        # so this job skips the composite (saves ~1 min).
+        run: |
+          scripts/publish-release.sh \
+            --tag ${{ needs.prepare.outputs.tag }} \
+            --staging /tmp/durable
+
+  test-cargo-vitest:
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - uses: ./.github/actions/setup-build
+        with:
+          merge-with-main: 'true'
+          download-build-outputs: 'true'
+
+      - name: Install host npm deps
         run: |
           nix develop --accept-flake-config --command bash -c '
-            cargo build --release -p wasm-posix-kernel \
-              -Z build-std=core,alloc \
-              -Z build-std-features=panic_immediate_abort
-            mkdir -p local-binaries
-            cp target/wasm64-unknown-unknown/release/wasm_posix_kernel.wasm \
-              local-binaries/kernel.wasm
-            bash scripts/build-programs.sh
-            npm install --no-audit --no-fund
             cd host && npm install --no-audit --no-fund
           '
 
       - name: Run cargo + vitest tests
-        # Tests run AFTER publish (when not skipped by drift detection)
-        # but BEFORE the lockfile bump push. They run unconditionally —
-        # PR code may break tests independent of whether package
-        # contents changed.
-        #
-        # On failure: when publish ran, the durable release exists
-        # (orphaned — never pinned by any binaries.lock). When publish
-        # was skipped, nothing was published. In both cases no
-        # merge-gate status is set, so the PR can't merge. Contributor
-        # fixes tests, re-applies ready-to-ship; next run either cuts a
-        # fresh durable or skips publish again, depending on drift.
         run: |
           nix develop --accept-flake-config --command bash -c '
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
@@ -310,57 +322,144 @@ jobs:
             cd host && npx vitest run
           '
 
+  test-libc:
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - uses: ./.github/actions/setup-build
+        with:
+          merge-with-main: 'true'
+          download-build-outputs: 'true'
+
+      - name: Install root npm deps (tsx for run-example.ts)
+        run: |
+          nix develop --accept-flake-config --command npm install --no-audit --no-fund
+
       - name: Run libc-test conformance suite
         run: |
           nix develop --accept-flake-config --command bash scripts/run-libc-tests.sh
+
+  test-posix:
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - uses: ./.github/actions/setup-build
+        with:
+          merge-with-main: 'true'
+          download-build-outputs: 'true'
+
+      - name: Install root npm deps (tsx for run-example.ts)
+        run: |
+          nix develop --accept-flake-config --command npm install --no-audit --no-fund
 
       - name: Run Open POSIX Test Suite
         run: |
           nix develop --accept-flake-config --command bash scripts/run-posix-tests.sh
 
+  test-sortix:
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - uses: ./.github/actions/setup-build
+        with:
+          merge-with-main: 'true'
+          download-build-outputs: 'true'
+
+      - name: Install root npm deps (tsx for run-example.ts)
+        run: |
+          nix develop --accept-flake-config --command npm install --no-audit --no-fund
+
       - name: Run Sortix os-test suite
         run: |
           nix develop --accept-flake-config --command bash scripts/run-sortix-tests.sh --all
 
-      - name: Rewrite binaries.lock on PR HEAD
-        if: steps.drift.outputs.noop == 'false'
+  finalize:
+    # Runs only when every upstream job is green. publish is 'success'
+    # when it ran and 'skipped' when content didn't drift — both are
+    # acceptable here. On drift, we re-checkout PR HEAD (not the merged
+    # tree — we don't push the merge commit), apply the lockfile bump,
+    # and force-with-lease push to the PR branch. Then we post the
+    # merge-gate=success status on whichever sha the maintainer will
+    # squash (the lockfile-bump commit on drift, PR HEAD on noop).
+    needs: [prepare, stage, publish, test-cargo-vitest, test-libc, test-posix, test-sortix]
+    if: |
+      always() &&
+      needs.prepare.result == 'success' &&
+      needs.stage.result == 'success' &&
+      needs.test-cargo-vitest.result == 'success' &&
+      needs.test-libc.result == 'success' &&
+      needs.test-posix.result == 'success' &&
+      needs.test-sortix.result == 'success' &&
+      (needs.publish.result == 'success' || needs.publish.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write          # push lockfile-bump commit to PR branch
+      statuses: write          # post merge-gate=success
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        if: needs.stage.outputs.noop != 'true'
+        with:
+          ref: ${{ env.PR_HEAD_SHA }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download durable artifact (for manifest sha)
+        if: needs.stage.outputs.noop != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: durable
+          path: /tmp/durable
+
+      - name: Rewrite binaries.lock and push to PR branch
+        id: push
+        if: needs.stage.outputs.noop != 'true'
+        # --force-with-lease guards against author force-pushing
+        # between label-apply and now. If the remote has advanced
+        # past PR_HEAD_SHA, the push fails and cleanup-on-failure
+        # drops the label.
         run: |
-          # Throw away the in-memory merge of main — we don't want to
-          # push that merge commit to the PR branch. Reset to PR HEAD
-          # and apply only the lockfile bump on top.
-          git checkout "$PR_HEAD_SHA"
+          git config user.name "wasm-posix-binaries-bot"
+          git config user.email "noreply@anthropic.com"
 
           SHA=$(shasum -a 256 /tmp/durable/manifest.json | awk '{print $1}')
           jq -n \
-            --argjson abi ${{ steps.tag.outputs.abi }} \
-            --arg tag "${{ steps.tag.outputs.tag }}" \
+            --argjson abi ${{ needs.prepare.outputs.abi }} \
+            --arg tag "${{ needs.prepare.outputs.tag }}" \
             --arg sha "$SHA" \
             '{abi_version: $abi, release_tag: $tag, manifest_sha256: $sha}' \
             > binaries.lock
 
           git add binaries.lock
-          git commit -m "chore(binaries): bump lockfile to ${{ steps.tag.outputs.tag }}
+          git commit -m "chore(binaries): bump lockfile to ${{ needs.prepare.outputs.tag }}
 
           Generated by .github/workflows/prepare-merge.yml on label
           ready-to-ship for PR #${{ env.PR_NUMBER }}."
 
-      - name: Push lockfile commit to PR branch
-        id: push
-        if: steps.drift.outputs.noop == 'false'
-        run: |
-          # --force-with-lease guards against author force-pushing
-          # between label-apply and now. If the remote has advanced
-          # past PR_HEAD_SHA, the push fails and we drop the label.
           if ! git push --force-with-lease=refs/heads/$PR_HEAD_REF:$PR_HEAD_SHA \
                 origin HEAD:refs/heads/$PR_HEAD_REF; then
-            gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship
-            gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: PR HEAD changed during build (force-push or new commit). Re-apply the ready-to-ship label after CI is green again."
+            echo "ERROR: PR HEAD changed during build (force-push or new commit). Cleanup-on-failure will drop the label." >&2
             exit 1
           fi
-          # Record the new HEAD (the lockfile bump commit) so the
-          # merge-gate status check below targets the right sha. This
-          # is what auto-merge will squash, so the status check needs
-          # to land on that sha to satisfy branch protection.
           echo "new_head=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
 
       - name: Set merge-gate status check
@@ -373,20 +472,20 @@ jobs:
         # protection setup".
         #
         # Two paths:
-        #   * Publish ran (noop=false): PR HEAD advanced to the bot
+        #   * Publish ran (drift=true): PR HEAD advanced to the bot
         #     lockfile-bump commit; status posts there
         #     (steps.push.outputs.new_head).
-        #   * Publish skipped (noop=true): PR HEAD is still the
+        #   * Publish skipped (drift=false): PR HEAD is still the
         #     original PR_HEAD_SHA; status posts there. Existing
         #     binaries.lock pin already satisfies the merge gate
         #     because the staged content is byte-equivalent to it.
         run: |
-          if [ "${{ steps.drift.outputs.noop }}" = "true" ]; then
+          if [ "${{ needs.stage.outputs.noop }}" = "true" ]; then
             target_sha="$PR_HEAD_SHA"
-            description="Content unchanged vs ${{ steps.drift.outputs.baseline_tag }}; existing pin satisfies merge gate."
+            description="Content unchanged vs ${{ needs.stage.outputs.baseline_tag }}; existing pin satisfies merge gate."
           else
             target_sha="${{ steps.push.outputs.new_head }}"
-            description="Fresh durable release published: ${{ steps.tag.outputs.tag }}"
+            description="Fresh durable release published: ${{ needs.prepare.outputs.tag }}"
           fi
           gh api \
             --method POST \
@@ -396,8 +495,24 @@ jobs:
             -f context=merge-gate \
             -f description="$description"
 
-      - name: Drop label + comment on failure
-        if: failure() && steps.gate.outcome == 'success'
+  cleanup-on-failure:
+    # Drops the ready-to-ship label and posts a comment with the run
+    # URL when any post-gate job fails. Skipped when prepare's gate
+    # itself failed (gate already drops the label and posts a
+    # contextual comment) — equivalent to the original monolith's
+    # `if: failure() && steps.gate.outcome == 'success'` guard.
+    needs: [prepare, stage, publish, test-cargo-vitest, test-libc, test-posix, test-sortix, finalize]
+    if: |
+      failure() &&
+      needs.prepare.outputs.gate_outcome == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write     # remove label, post comment
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Drop label + comment
         run: |
           gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship || true
           gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "prepare-merge failed. Check the workflow run log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}. Re-apply the ready-to-ship label after fixing." || true
