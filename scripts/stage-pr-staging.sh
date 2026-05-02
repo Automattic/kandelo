@@ -120,16 +120,18 @@ if [ ${#FORCE_REBUILD_NAMES[@]} -gt 0 ]; then
 fi
 
 echo "== Staging PR overlay for PR #$PR (arches: ${ARCHES[*]}) =="
-# --continue-on-error: a single package whose source build fails on
-# the runner (e.g. mariadb-test wants the full mysql-test directory
-# from a host MariaDB build) should not abort the whole overlay.
-# Such packages stay at their durable-release version; only packages
-# that successfully (re)stage become overrides.
+# Strict-by-default: if a package's source build fails on the runner,
+# fail the whole staging job so the contributor sees the breakage
+# *before* applying ready-to-ship. Tolerating silent failures here
+# delays bad news to prepare-merge.yml (after the label is applied,
+# inside the singleton concurrency group), which is a much worse
+# place to learn that v6→v7 dropped 12 packages from the durable
+# release. The xtask's per-arch policy (partial-arch failure = warn,
+# total-arch failure = error) still applies.
 cargo run -p xtask --target "$HOST_TARGET" --quiet -- stage-pr-overlay \
     --baseline-manifest "$BASELINE_TMP" \
     --staging-tag "pr-${PR}-staging" \
     --out "$STAGING" \
-    --continue-on-error \
     "${arch_args[@]}" \
     ${force_args[@]+"${force_args[@]}"}
 

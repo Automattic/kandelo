@@ -15,9 +15,9 @@ import { BrowserKernel } from "../../lib/browser-kernel";
 import { initServiceWorkerBridge } from "../../lib/init/service-worker-bridge";
 import { HttpBridgeHost } from "../../lib/http-bridge";
 import kernelWasmUrl from "@kernel-wasm?url";
+import VFS_IMAGE_URL from "@binaries/programs/wasm32/lamp.vfs?url";
 import "../../lib/terminal-panel.css";
 
-const VFS_IMAGE_URL = import.meta.env.BASE_URL + "lamp.vfs";
 const APP_PREFIX = import.meta.env.BASE_URL + "app/";
 const APP_PATH = import.meta.env.BASE_URL + "app";
 const PROTO = window.location.protocol === "https:" ? "https" : "http";

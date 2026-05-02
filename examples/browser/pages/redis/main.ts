@@ -7,8 +7,8 @@
 import { BrowserKernel } from "../../lib/browser-kernel";
 import { RedisBrowserClient } from "../../lib/redis-client";
 import kernelWasmUrl from "@kernel-wasm?url";
+import VFS_IMAGE_URL from "@binaries/programs/wasm32/redis-vfs.vfs?url";
 
-const VFS_IMAGE_URL = import.meta.env.BASE_URL + "redis.vfs";
 const REDIS_PORT = 6379;
 
 const log = document.getElementById("log") as HTMLPreElement;

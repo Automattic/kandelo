@@ -27,11 +27,12 @@
 #
 # `xtask stage-release` walks examples/libs/<name>/deps.toml entries
 # (kind = "library" or "program") and runs the resolver's ensure_built
-# + archive_stage on each.  Composite metadata manifests without a
-# build script (kernel, userspace, examples, shell, lamp, node,
-# wordpress) fail their per-arch ensure_built and become WARN-only
-# under --continue-on-error.  The first cut therefore contains only
-# the libs and the ported programs that have working build scripts.
+# + archive_stage on each. Strict-by-default: if any manifest fails to
+# build for *every* requested arch, the staging step aborts before
+# `manifest.json` is written, so publish-release.sh + prepare-merge.yml
+# never publish a release with packages silently dropped. Partial-arch
+# failures (e.g. wasm32 succeeds, wasm64 doesn't) are still downgraded
+# to warnings — see xtask/src/stage_release.rs:216-234.
 #
 # kernel.wasm and userspace.wasm are not in the release; they're built
 # locally by `bash build.sh` and live in local-binaries/.  This is a
@@ -127,8 +128,7 @@ cargo run -p xtask --target "$HOST_TARGET" --quiet -- stage-release \
     ${kind_args[@]+"${kind_args[@]}"} \
     ${force_args[@]+"${force_args[@]}"} \
     --build-timestamp "$timestamp" \
-    --build-host "$host" \
-    --continue-on-error
+    --build-host "$host"
 echo
 
 echo "== Staged assets =="

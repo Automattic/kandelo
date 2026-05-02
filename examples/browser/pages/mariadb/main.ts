@@ -19,10 +19,10 @@
 import { BrowserKernel } from "../../lib/browser-kernel";
 import { MySqlBrowserClient } from "../../lib/mysql-client";
 import kernelWasmUrl from "@kernel-wasm?url";
+import VFS_IMAGE_URL_32 from "@binaries/programs/wasm32/mariadb-vfs.vfs?url";
+import VFS_IMAGE_URL_64 from "@binaries/programs/wasm64/mariadb-vfs.vfs?url";
 import "../../lib/terminal-panel.css";
 
-const VFS_IMAGE_URL_32 = import.meta.env.BASE_URL + "mariadb.vfs";
-const VFS_IMAGE_URL_64 = import.meta.env.BASE_URL + "mariadb-64.vfs";
 const MYSQL_PORT = 3306;
 
 const log = document.getElementById("log") as HTMLPreElement;

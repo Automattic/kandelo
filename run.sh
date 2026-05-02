@@ -82,19 +82,9 @@ has_php()       { has_resolvable programs/php/php.wasm || [ -f "$REPO_ROOT/examp
 has_php_fpm()    { has_resolvable programs/php/php-fpm.wasm || [ -f "$REPO_ROOT/examples/nginx/php-fpm.wasm" ]; }
 has_mariadb()    { has_resolvable programs/mariadb/mariadbd.wasm || [ -f "$REPO_ROOT/examples/libs/mariadb/mariadb-install/bin/mariadbd" ]; }
 has_mariadb64() { has_resolvable programs/wasm64/mariadb/mariadbd.wasm || [ -f "$REPO_ROOT/examples/libs/mariadb/mariadb-install-64/bin/mariadbd" ]; }
-has_mariadb_vfs() {
-    if has_resolvable programs/mariadb-vfs.vfs; then return 0; fi
-    local vfs="$REPO_ROOT/examples/browser/public/mariadb.vfs"
-    local mariadbd="$REPO_ROOT/examples/libs/mariadb/mariadb-install/bin/mariadbd.wasm"
-    [ -f "$vfs" ] && [ -f "$mariadbd" ] && [ "$vfs" -nt "$mariadbd" ]
-}
-has_mariadb64_vfs() {
-    if has_resolvable programs/wasm64/mariadb-vfs.vfs; then return 0; fi
-    local vfs="$REPO_ROOT/examples/browser/public/mariadb-64.vfs"
-    local mariadbd="$REPO_ROOT/examples/libs/mariadb/mariadb-install-64/bin/mariadbd.wasm"
-    [ -f "$vfs" ] && [ -f "$mariadbd" ] && [ "$vfs" -nt "$mariadbd" ]
-}
-has_wp_vfs()    { has_resolvable programs/wordpress.vfs || [ -f "$REPO_ROOT/examples/browser/public/wordpress.vfs" ]; }
+has_mariadb_vfs() { has_resolvable programs/mariadb-vfs.vfs; }
+has_mariadb64_vfs() { has_resolvable programs/wasm64/mariadb-vfs.vfs; }
+has_wp_vfs()    { has_resolvable programs/wordpress.vfs; }
 has_dash()    { has_resolvable programs/dash.wasm || [ -f "$REPO_ROOT/examples/libs/dash/bin/dash.wasm" ]; }
 has_bash()    { has_resolvable programs/bash.wasm || [ -f "$REPO_ROOT/examples/libs/bash/bin/bash.wasm" ]; }
 has_coreutils()    { has_resolvable programs/coreutils.wasm || [ -f "$REPO_ROOT/examples/libs/coreutils/bin/coreutils.wasm" ]; }
@@ -108,10 +98,10 @@ has_perl_vfs()    { has_resolvable programs/perl-vfs.vfs || [ -f "$REPO_ROOT/exa
 has_shell_vfs()    { has_resolvable programs/shell.vfs || [ -f "$REPO_ROOT/examples/browser/public/shell.vfs" ]; }
 has_erlang()    { has_resolvable programs/erlang.wasm || [ -f "$REPO_ROOT/examples/libs/erlang/bin/beam.wasm" ]; }
 has_erlang_vfs()    { has_resolvable programs/erlang-vfs.vfs || [ -f "$REPO_ROOT/examples/browser/public/erlang.vfs" ]; }
-has_lamp_vfs()    { has_resolvable programs/lamp.vfs || [ -f "$REPO_ROOT/examples/browser/public/lamp.vfs" ]; }
-has_nginx_vfs()  { [ -f "$REPO_ROOT/examples/browser/public/nginx.vfs" ]; }
-has_redis_vfs()  { [ -f "$REPO_ROOT/examples/browser/public/redis.vfs" ]; }
-has_nginx_php_vfs() { [ -f "$REPO_ROOT/examples/browser/public/nginx-php.vfs" ]; }
+has_lamp_vfs()    { has_resolvable programs/lamp.vfs; }
+has_nginx_vfs()  { has_resolvable programs/nginx-vfs.vfs; }
+has_redis_vfs()  { has_resolvable programs/redis-vfs.vfs; }
+has_nginx_php_vfs() { has_resolvable programs/nginx-php-vfs.vfs; }
 has_bc()    { has_resolvable programs/bc.wasm || [ -f "$REPO_ROOT/examples/libs/bc/bin/bc.wasm" ]; }
 has_file()    { has_resolvable programs/file.wasm || [ -f "$REPO_ROOT/examples/libs/file/bin/file.wasm" ]; }
 has_less()    { has_resolvable programs/less.wasm || [ -f "$REPO_ROOT/examples/libs/less/bin/less.wasm" ]; }
@@ -353,7 +343,11 @@ build_mariadb_vfs() {
     build_mariadb
     build_dash
     step "Building MariaDB VFS image (wasm32)"
-    bash "$REPO_ROOT/examples/browser/scripts/build-mariadb-vfs-image.sh"
+    # Delegate to the package-system wrapper so install_local_binary
+    # populates local-binaries/programs/wasm32/mariadb-vfs.vfs (the
+    # path the @binaries/ Vite alias resolves against).
+    WASM_POSIX_DEP_TARGET_ARCH=wasm32 \
+        bash "$REPO_ROOT/examples/libs/mariadb-vfs/build-mariadb-vfs.sh"
     info "MariaDB VFS image (wasm32) built"
 }
 
@@ -365,7 +359,8 @@ build_mariadb64_vfs() {
     build_mariadb64
     build_dash
     step "Building MariaDB VFS image (wasm64)"
-    bash "$REPO_ROOT/examples/browser/scripts/build-mariadb-vfs-image.sh" --wasm64
+    WASM_POSIX_DEP_TARGET_ARCH=wasm64 \
+        bash "$REPO_ROOT/examples/libs/mariadb-vfs/build-mariadb-vfs.sh"
     info "MariaDB VFS image (wasm64) built"
 }
 
@@ -387,7 +382,10 @@ build_wp_vfs() {
     # Source needed only if we have to build the VFS from scratch.
     build_wordpress
     step "Building WordPress VFS image"
-    bash "$REPO_ROOT/examples/browser/scripts/build-wp-vfs-image.sh"
+    # Delegate to the package-system wrapper so install_local_binary
+    # populates local-binaries/programs/wasm32/wordpress.vfs (the path
+    # the @binaries/ Vite alias resolves against).
+    bash "$REPO_ROOT/examples/libs/wordpress/build-wordpress.sh"
     info "WP VFS image built"
 }
 
@@ -655,7 +653,10 @@ build_lamp_vfs() {
     fi
     build_wordpress
     step "Building LAMP VFS image"
-    bash "$REPO_ROOT/examples/browser/scripts/build-lamp-vfs-image.sh"
+    # Delegate to the package-system wrapper so install_local_binary
+    # populates local-binaries/programs/wasm32/lamp.vfs (the path the
+    # @binaries/ Vite alias resolves against).
+    bash "$REPO_ROOT/examples/libs/lamp/build-lamp.sh"
     info "LAMP VFS image built"
 }
 
@@ -1397,10 +1398,12 @@ clean_target() {
                    "$REPO_ROOT/examples/libs/mariadb/mariadb-glue-objs-64"
             warn "Cleaned MariaDB" ;;
         mariadb-vfs)
-            rm -f "$REPO_ROOT/examples/browser/public/mariadb.vfs"
+            rm -f "$REPO_ROOT/examples/browser/public/mariadb.vfs" \
+                  "$REPO_ROOT/local-binaries/programs/wasm32/mariadb-vfs.vfs"
             warn "Cleaned MariaDB VFS image (wasm32)" ;;
         mariadb64-vfs)
-            rm -f "$REPO_ROOT/examples/browser/public/mariadb-64.vfs"
+            rm -f "$REPO_ROOT/examples/browser/public/mariadb-64.vfs" \
+                  "$REPO_ROOT/local-binaries/programs/wasm64/mariadb-vfs.vfs"
             warn "Cleaned MariaDB VFS image (wasm64)" ;;
         redis)
             rm -rf "$REPO_ROOT/examples/libs/redis/redis-src" \
@@ -1430,19 +1433,24 @@ clean_target() {
             rm -rf "$REPO_ROOT/examples/wordpress/wordpress"
             warn "Cleaned WordPress" ;;
         wp-vfs)
-            rm -f "$REPO_ROOT/examples/browser/public/wordpress.vfs"
+            rm -f "$REPO_ROOT/examples/browser/public/wordpress.vfs" \
+                  "$REPO_ROOT/local-binaries/programs/wasm32/wordpress.vfs"
             warn "Cleaned WP VFS image" ;;
         lamp-vfs)
-            rm -f "$REPO_ROOT/examples/browser/public/lamp.vfs"
+            rm -f "$REPO_ROOT/examples/browser/public/lamp.vfs" \
+                  "$REPO_ROOT/local-binaries/programs/wasm32/lamp.vfs"
             warn "Cleaned LAMP VFS image" ;;
         nginx-vfs)
-            rm -f "$REPO_ROOT/examples/browser/public/nginx.vfs"
+            rm -f "$REPO_ROOT/examples/browser/public/nginx.vfs" \
+                  "$REPO_ROOT/local-binaries/programs/wasm32/nginx-vfs.vfs"
             warn "Cleaned nginx VFS image" ;;
         redis-vfs)
-            rm -f "$REPO_ROOT/examples/browser/public/redis.vfs"
+            rm -f "$REPO_ROOT/examples/browser/public/redis.vfs" \
+                  "$REPO_ROOT/local-binaries/programs/wasm32/redis-vfs.vfs"
             warn "Cleaned Redis VFS image" ;;
         nginx-php-vfs)
-            rm -f "$REPO_ROOT/examples/browser/public/nginx-php.vfs"
+            rm -f "$REPO_ROOT/examples/browser/public/nginx-php.vfs" \
+                  "$REPO_ROOT/local-binaries/programs/wasm32/nginx-php-vfs.vfs"
             warn "Cleaned nginx + PHP-FPM VFS image" ;;
         erlang)
             rm -rf "$REPO_ROOT/examples/libs/erlang/erlang-src" \
