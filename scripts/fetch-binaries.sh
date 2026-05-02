@@ -413,17 +413,33 @@ if jq -e '.entries[] | select(.archive_name != null)' "$MANIFEST_OBJ" > /dev/nul
             stale_count=$(jq 'length' "$STALE_OUT")
             [ "$stale_count" -gt 0 ] || { : > "$STALE_OUT"; return 0; }
             echo "fetch-binaries: $stale_count package(s) had stale manifests; source-building locally..."
-            # Process substitution (not a pipe) so the loop body runs
-            # in this shell — `set -e` failures inside cargo propagate.
+            # Per-entry tolerance matches `--allow-stale`'s stated design
+            # (PR #385): "lets CI keep functioning by skipping stale
+            # entries during fetch and source-building them via xtask
+            # build-deps resolve." Aborting the loop on the first source-
+            # build failure would defeat that — one stuck package (e.g. a
+            # consumer with stale `[binary]` URLs that fall back to a
+            # source build the runner can't perform) would block every
+            # subsequent entry. Track failures and surface them at the
+            # end so the operator still sees what didn't build.
+            local failed=()
             while IFS= read -r entry; do
                 local program arch
                 program=$(echo "$entry" | jq -r .program)
                 arch=$(echo "$entry" | jq -r .arch)
                 echo "  - $program ($arch)"
-                cargo run -p xtask --target "$HOST_TARGET" --quiet -- \
-                    build-deps --arch "$arch" resolve "$program"
+                if ! cargo run -p xtask --target "$HOST_TARGET" --quiet -- \
+                        build-deps --arch "$arch" resolve "$program"; then
+                    echo "fetch-binaries: WARN $program ($arch) source-build failed; continuing under --allow-stale" >&2
+                    failed+=("$program ($arch)")
+                fi
             done < <(jq -c '.[]' "$STALE_OUT")
-            echo "fetch-binaries: source-build complete. binaries/ remains pinned to $LOCK_TAG."
+            if [ ${#failed[@]} -gt 0 ]; then
+                echo "fetch-binaries: source-build complete with ${#failed[@]} failure(s): ${failed[*]}" >&2
+                echo "fetch-binaries: failed packages stay at the durable-release version in binaries/." >&2
+            else
+                echo "fetch-binaries: source-build complete. binaries/ remains pinned to $LOCK_TAG."
+            fi
             : > "$STALE_OUT"
         }
 

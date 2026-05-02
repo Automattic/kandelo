@@ -231,9 +231,22 @@ if [ ! -f config.sh ]; then
     # unsigned long long — same size but different type. Suppress host warnings.
     export HOSTCFLAGS="-Wno-format"
 
+    # perl-cross's `--mode=cross` spawns two sub-configures: one for
+    # the host miniperl (`--mode=buildmini`) and one for the target
+    # cross-perl (`--mode=target`). Args don't propagate to the sub-
+    # configures except via $hco (built from `--host-*` opts). Without
+    # `--host-cc`, the buildmini sub-configure auto-detects via
+    # `whichprog cc CC gcc` — which on the GHA Ubuntu runner inside
+    # `nix develop` falls through (gcc isn't in the nix-managed PATH;
+    # only clang from llvmTree is) and lands on whatever `cc` resolves
+    # to, then fails every header probe with "Cannot proceed without
+    # <stdint.h>". Pin the host compiler to clang explicitly — it's
+    # always on PATH in the nix shell (LLVM_BIN/clang) and ships its
+    # own builtin <stdint.h>/<stdarg.h>, so the probes pass.
     ./configure \
         --target=wasm32-unknown-none \
         --prefix=/usr \
+        --host-cc=clang \
         -Dcc=wasm32posix-cc \
         -Dld=wasm32posix-cc \
         -Dar=wasm32posix-ar \
