@@ -266,6 +266,47 @@ pub fn compute_sha(
             h.update(b"\n");
             h.update(target.source.sha256.as_bytes());
             h.update(b"\n");
+            // Fold in declared outputs so changing what a build is
+            // expected to produce invalidates the cache. Without this,
+            // renaming a program's `wasm = "..."` (or any library
+            // libs/headers/pkgconfig path) leaves cache_key_sha
+            // unchanged — the resolver then serves a canonical
+            // directory that doesn't match the new declaration and
+            // stage_release packs broken archives. Bug discovered in
+            // PR #384 (lamp.vfs → lamp.vfs.zst).
+            //
+            // Ordering: hashed in authored Vec order (no sort). That
+            // matches how consumers like `mirror_program_outputs`
+            // iterate, and re-ordering is a real semantic change
+            // worth invalidating on. `b"|"` separators keep
+            // adjacent strings unambiguous (e.g. lib `"a"` + `"bc"` ≠
+            // lib `"ab"` + `"c"`). A section tag (`"libs:"`, etc.)
+            // before each list prevents cross-section collisions.
+            h.update(b"outputs.libs:\n");
+            for s in &target.outputs.libs {
+                h.update(s.as_bytes());
+                h.update(b"|");
+            }
+            h.update(b"\n");
+            h.update(b"outputs.headers:\n");
+            for s in &target.outputs.headers {
+                h.update(s.as_bytes());
+                h.update(b"|");
+            }
+            h.update(b"\n");
+            h.update(b"outputs.pkgconfig:\n");
+            for s in &target.outputs.pkgconfig {
+                h.update(s.as_bytes());
+                h.update(b"|");
+            }
+            h.update(b"\n");
+            h.update(b"program_outputs:\n");
+            for out in &target.program_outputs {
+                h.update(out.name.as_bytes());
+                h.update(b"|");
+                h.update(out.wasm.as_bytes());
+                h.update(b"\n");
+            }
         }
     }
     for (dref, dsha) in &dep_shas {
@@ -1597,6 +1638,264 @@ libs = ["lib/lib{name}.a"]
         // Sanity: the helper actually reads from crates/shared, so a bump
         // there propagates here without manual sync.
         assert_eq!(current_abi_version(), wasm_posix_shared::ABI_VERSION);
+    }
+
+    // --- outputs-folding cache-key tests ---
+    //
+    // These pin the cache_key_sha contract that changing any declared
+    // output (library lib/header/pkgconfig path or program output's
+    // name/wasm) must invalidate the cache key. Without this, a build
+    // can be served from a canonical cache directory whose contents
+    // don't match the current `[outputs]` / `[[outputs]]` declaration —
+    // which is exactly how PR #384 shipped broken archives for
+    // lamp/mariadb-vfs (see the bug report on this branch).
+
+    /// Write a `kind = "program"` deps.toml with a custom `[[outputs]]`
+    /// block. `outputs_block` is the literal TOML body (e.g.
+    /// `r#"[[outputs]]\nname = "p"\nwasm = "p.wasm"\n"#`).
+    fn write_program_manifest(dir: &Path, name: &str, version: &str, outputs_block: &str) {
+        let prog_dir = dir.join(name);
+        fs::create_dir_all(&prog_dir).unwrap();
+        let text = format!(
+            r#"
+kind = "program"
+name = "{name}"
+version = "{version}"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://example.test/{name}-{version}.tar.gz"
+sha256 = "{:0>64}"
+
+[license]
+spdx = "TestLicense"
+
+{outputs_block}
+"#,
+            ""
+        );
+        fs::write(prog_dir.join("deps.toml"), text).unwrap();
+    }
+
+    fn sha_of(reg: &Registry, name: &str) -> [u8; 32] {
+        let m = reg.load(name).unwrap();
+        compute_sha(
+            &m,
+            reg,
+            TEST_ARCH,
+            TEST_ABI,
+            &mut BTreeMap::new(),
+            &mut Vec::new(),
+        )
+        .unwrap()
+    }
+
+    /// The exact failure mode from PR #384: a program changes its
+    /// declared output filename (e.g. `lamp.vfs` → `lamp.vfs.zst`) but
+    /// nothing else. Before the fix, cache_key_sha was unchanged so
+    /// the resolver served the old canonical directory containing the
+    /// old filename, and stage_release silently packed broken archives.
+    #[test]
+    fn cache_key_sha_changes_when_program_output_wasm_filename_changes() {
+        let root = tempdir("sha-prog-wasm-rename");
+        write_program_manifest(
+            &root,
+            "lamp",
+            "1.0.0",
+            "[[outputs]]\nname = \"lamp\"\nwasm = \"lamp.vfs\"\n",
+        );
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+        let sha_before = sha_of(&reg, "lamp");
+
+        // Same manifest, different output filename — exactly the
+        // PR #384 transition.
+        let toml_path = root.join("lamp/deps.toml");
+        let text = std::fs::read_to_string(&toml_path).unwrap();
+        std::fs::write(&toml_path, text.replace("lamp.vfs", "lamp.vfs.zst"))
+            .unwrap();
+        let sha_after = sha_of(&reg, "lamp");
+
+        assert_ne!(
+            sha_before, sha_after,
+            "renaming a program output's wasm filename must invalidate the cache key"
+        );
+    }
+
+    #[test]
+    fn cache_key_sha_changes_when_program_output_name_changes() {
+        let root = tempdir("sha-prog-name-rename");
+        write_program_manifest(
+            &root,
+            "tool",
+            "1.0.0",
+            "[[outputs]]\nname = \"tool\"\nwasm = \"tool.wasm\"\n",
+        );
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+        let sha_before = sha_of(&reg, "tool");
+
+        let toml_path = root.join("tool/deps.toml");
+        let text = std::fs::read_to_string(&toml_path).unwrap();
+        std::fs::write(&toml_path, text.replace("name = \"tool\"\nwasm", "name = \"tool-renamed\"\nwasm"))
+            .unwrap();
+        let sha_after = sha_of(&reg, "tool");
+
+        assert_ne!(
+            sha_before, sha_after,
+            "renaming a program output's logical name must invalidate the cache key"
+        );
+    }
+
+    #[test]
+    fn cache_key_sha_changes_when_program_output_added() {
+        let root = tempdir("sha-prog-output-added");
+        write_program_manifest(
+            &root,
+            "git",
+            "1.0.0",
+            "[[outputs]]\nname = \"git\"\nwasm = \"git.wasm\"\n",
+        );
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+        let sha_before = sha_of(&reg, "git");
+
+        // Add a second output (e.g. git-remote-http alongside git).
+        let toml_path = root.join("git/deps.toml");
+        let text = std::fs::read_to_string(&toml_path).unwrap();
+        let added = format!(
+            "{text}\n[[outputs]]\nname = \"git-remote-http\"\nwasm = \"git-remote-http.wasm\"\n"
+        );
+        std::fs::write(&toml_path, added).unwrap();
+        let sha_after = sha_of(&reg, "git");
+
+        assert_ne!(
+            sha_before, sha_after,
+            "adding a program output must invalidate the cache key"
+        );
+    }
+
+    /// Pins behavior: program outputs are hashed in declaration order.
+    /// Re-ordering DOES change cache_key_sha. We deliberately don't
+    /// normalize because (a) the manifest preserves authored order
+    /// (`Vec<ProgramOutput>`) and (b) consumers of `program_outputs`
+    /// (e.g. `mirror_program_outputs` in install_release) iterate in
+    /// the same order, so the cache key tracks what consumers see.
+    #[test]
+    fn cache_key_sha_changes_when_program_outputs_reordered() {
+        let root = tempdir("sha-prog-reorder");
+        write_program_manifest(
+            &root,
+            "git",
+            "1.0.0",
+            "[[outputs]]\nname = \"git\"\nwasm = \"git.wasm\"\n\n\
+             [[outputs]]\nname = \"git-remote-http\"\nwasm = \"git-remote-http.wasm\"\n",
+        );
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+        let sha_before = sha_of(&reg, "git");
+
+        // Swap the two output entries.
+        let toml_path = root.join("git/deps.toml");
+        std::fs::write(
+            &toml_path,
+            std::fs::read_to_string(&toml_path)
+                .unwrap()
+                .replace(
+                    "[[outputs]]\nname = \"git\"\nwasm = \"git.wasm\"\n\n\
+                     [[outputs]]\nname = \"git-remote-http\"\nwasm = \"git-remote-http.wasm\"\n",
+                    "[[outputs]]\nname = \"git-remote-http\"\nwasm = \"git-remote-http.wasm\"\n\n\
+                     [[outputs]]\nname = \"git\"\nwasm = \"git.wasm\"\n",
+                ),
+        )
+        .unwrap();
+        let sha_after = sha_of(&reg, "git");
+
+        assert_ne!(
+            sha_before, sha_after,
+            "re-ordering program outputs is a meaningful change (not normalized) and must \
+             invalidate the cache key"
+        );
+    }
+
+    #[test]
+    fn cache_key_sha_changes_when_library_output_lib_filename_changes() {
+        let root = tempdir("sha-lib-rename");
+        write(&root, "libZ", "1.0.0", &[]);
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+        let sha_before = sha_of(&reg, "libZ");
+
+        let toml_path = root.join("libZ/deps.toml");
+        let text = std::fs::read_to_string(&toml_path).unwrap();
+        std::fs::write(&toml_path, text.replace("lib/liblibZ.a", "lib/liblibZ-renamed.a"))
+            .unwrap();
+        let sha_after = sha_of(&reg, "libZ");
+
+        assert_ne!(
+            sha_before, sha_after,
+            "renaming a library's output lib must invalidate the cache key"
+        );
+    }
+
+    #[test]
+    fn cache_key_sha_changes_when_library_output_header_added() {
+        let root = tempdir("sha-lib-header-added");
+        write(&root, "libZ", "1.0.0", &[]);
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+        let sha_before = sha_of(&reg, "libZ");
+
+        let toml_path = root.join("libZ/deps.toml");
+        let text = std::fs::read_to_string(&toml_path).unwrap();
+        std::fs::write(
+            &toml_path,
+            text.replace(
+                "libs = [\"lib/liblibZ.a\"]",
+                "libs = [\"lib/liblibZ.a\"]\nheaders = [\"include/libZ.h\"]",
+            ),
+        )
+        .unwrap();
+        let sha_after = sha_of(&reg, "libZ");
+
+        assert_ne!(
+            sha_before, sha_after,
+            "adding a library header output must invalidate the cache key"
+        );
+    }
+
+    #[test]
+    fn cache_key_sha_changes_when_library_output_pkgconfig_added() {
+        let root = tempdir("sha-lib-pkgconfig-added");
+        write(&root, "libZ", "1.0.0", &[]);
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+        let sha_before = sha_of(&reg, "libZ");
+
+        let toml_path = root.join("libZ/deps.toml");
+        let text = std::fs::read_to_string(&toml_path).unwrap();
+        std::fs::write(
+            &toml_path,
+            text.replace(
+                "libs = [\"lib/liblibZ.a\"]",
+                "libs = [\"lib/liblibZ.a\"]\npkgconfig = [\"lib/pkgconfig/libZ.pc\"]",
+            ),
+        )
+        .unwrap();
+        let sha_after = sha_of(&reg, "libZ");
+
+        assert_ne!(
+            sha_before, sha_after,
+            "adding a library pkgconfig output must invalidate the cache key"
+        );
     }
 
     // --- ensure_built / build_into_cache tests ---

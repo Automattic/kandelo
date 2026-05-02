@@ -212,8 +212,21 @@ jobs:
 
       - name: Fetch durable binaries (source-build prereqs)
         # See staging-build.yml.
+        #
+        # --allow-stale is required because this PR ships a compute_sha
+        # formula change (folding [[outputs]] into cache_key_sha). Every
+        # entry in the existing durable release was stamped under the old
+        # formula, so its compatibility.cache_key_sha disagrees with what
+        # this checkout would compute. Without --allow-stale the strict
+        # pre-flight in install-release would abort the whole step. With
+        # the flag, mismatched entries are skipped and source-built into
+        # local-binaries/ via `xtask build-deps resolve` — the resolver
+        # picks them up there. Once a fresh durable release is published
+        # under the new formula, this flag becomes a no-op for normal CI
+        # runs (the strict check passes again) but stays in place as the
+        # escape hatch documented in docs/package-management.md.
         run: |
-          nix develop --accept-flake-config --command bash scripts/fetch-binaries.sh
+          nix develop --accept-flake-config --command bash scripts/fetch-binaries.sh --allow-stale
 
       - name: Stage durable release
         run: |

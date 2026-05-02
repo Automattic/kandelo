@@ -6,10 +6,16 @@
 #   ./run.sh build [target...]    Build specific targets (or all)
 #   ./run.sh rebuild [target...]  Force-rebuild (clean + build)
 #   ./run.sh clean [target...]    Remove build artifacts
+#   ./run.sh fetch                Fetch binaries pinned by binaries.lock
 #   ./run.sh run <example> [args] Run a Node.js example
 #   ./run.sh browser [args]       Start the Vite browser dev server
 #   ./run.sh list                 Show available targets and examples
 #   ./run.sh test [suite...]      Run test suites
+#
+# Top-level flags (recognized anywhere in the argument list):
+#   --allow-stale                 Soften the install-release manifest gate
+#                                  (forwarded to scripts/fetch-binaries.sh).
+#                                  Equivalent to WASM_POSIX_ALLOW_STALE=1.
 #
 set -euo pipefail
 
@@ -34,6 +40,27 @@ info()  { echo "${GREEN}[OK]${RESET} $*"; }
 warn()  { echo "${YELLOW}[>>]${RESET} $*"; }
 err()   { echo "${RED}[!!]${RESET} $*" >&2; }
 step()  { echo "${CYAN}${BOLD}=== $* ===${RESET}"; }
+
+# ─── Top-level flag parsing ──────────────────────────────────────────────────
+#
+# Scrub --allow-stale from $@ and turn it into an env var so any
+# downstream invocation of fetch-binaries.sh (called directly or
+# nested via build_target) picks it up. Also honor the env var if
+# the user prefers `WASM_POSIX_ALLOW_STALE=1 ./run.sh browser`.
+ALLOW_STALE_ARGS=()
+NEW_ARGS=()
+for a in "$@"; do
+    if [ "$a" = "--allow-stale" ]; then
+        ALLOW_STALE_ARGS=(--allow-stale)
+    else
+        NEW_ARGS+=("$a")
+    fi
+done
+set -- "${NEW_ARGS[@]+"${NEW_ARGS[@]}"}"
+if [ "${WASM_POSIX_ALLOW_STALE:-0}" = "1" ]; then
+    ALLOW_STALE_ARGS=(--allow-stale)
+fi
+export WASM_POSIX_ALLOW_STALE=$([ "${#ALLOW_STALE_ARGS[@]}" -gt 0 ] && echo 1 || echo 0)
 
 # ─── Artifact checks ─────────────────────────────────────────────────────────
 
@@ -1689,6 +1716,15 @@ cmd_run() {
     esac
 }
 
+cmd_fetch() {
+    if [ ! -f "$REPO_ROOT/binaries.lock" ]; then
+        err "binaries.lock not found"
+        exit 1
+    fi
+    step "Fetching binaries for the pinned release"
+    "$REPO_ROOT/scripts/fetch-binaries.sh" "${ALLOW_STALE_ARGS[@]+"${ALLOW_STALE_ARGS[@]}"}" "$@"
+}
+
 cmd_browser() {
     local BROWSER_DIR="$REPO_ROOT/examples/browser"
 
@@ -1699,7 +1735,7 @@ cmd_browser() {
     # artifacts (local-only programs, stale VFS images) trigger a build.
     if [ -f "$REPO_ROOT/binaries.lock" ]; then
         step "Fetching binaries for the pinned release"
-        "$REPO_ROOT/scripts/fetch-binaries.sh"
+        "$REPO_ROOT/scripts/fetch-binaries.sh" "${ALLOW_STALE_ARGS[@]+"${ALLOW_STALE_ARGS[@]}"}"
     fi
 
     build_browser
@@ -1882,6 +1918,14 @@ cmd_list() {
     echo "  ./run.sh clean all                   Remove all build artifacts"
     echo "  ./run.sh rebuild <target...>         Clean + rebuild specific targets"
     echo ""
+    echo "${BOLD}Binaries:${RESET}"
+    echo "  ./run.sh fetch                       Fetch binaries pinned by binaries.lock"
+    echo ""
+    echo "${BOLD}Top-level flags:${RESET}"
+    echo "  --allow-stale                        Soften the install-release manifest"
+    echo "                                        gate (forwarded to fetch-binaries.sh)."
+    echo "                                        Equivalent to WASM_POSIX_ALLOW_STALE=1."
+    echo ""
     echo "${BOLD}Run examples:${RESET}"
     echo "  ./run.sh run shell                   Interactive shell (dash + coreutils + grep + sed)"
     echo "  ./run.sh run nginx [port]            nginx HTTP server"
@@ -1918,6 +1962,7 @@ case "${1:-list}" in
     build)    cmd_build "${@:2}" ;;
     rebuild)  cmd_rebuild "${@:2}" ;;
     clean)    cmd_clean "${@:2}" ;;
+    fetch)    cmd_fetch "${@:2}" ;;
     run)      cmd_run "${@:2}" ;;
     browser)  cmd_browser "${@:2}" ;;
     test)     cmd_test "${@:2}" ;;

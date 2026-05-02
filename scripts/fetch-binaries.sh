@@ -15,16 +15,23 @@
 #   * Every entry's sha256 must verify after download.
 #
 # Flags:
-#   --force       Re-download even if objects/ already has the file.
-#   --prune       Delete binaries/objects/ entries not referenced by
-#                 the current manifest.
-#   --offline     Fail if an object isn't already in objects/ rather
-#                 than hitting the network.
-#   --pr <N>      Force PR overlay from pr-<N>-staging. Without this
-#                 flag, the script auto-detects the PR via the public
-#                 api.github.com /commits/{sha}/pulls endpoint when the
-#                 current HEAD belongs to an open PR. Skipped when
-#                 binaries.lock.pr already exists locally.
+#   --force        Re-download even if objects/ already has the file.
+#   --prune        Delete binaries/objects/ entries not referenced by
+#                  the current manifest.
+#   --offline      Fail if an object isn't already in objects/ rather
+#                  than hitting the network.
+#   --pr <N>       Force PR overlay from pr-<N>-staging. Without this
+#                  flag, the script auto-detects the PR via the public
+#                  api.github.com /commits/{sha}/pulls endpoint when the
+#                  current HEAD belongs to an open PR. Skipped when
+#                  binaries.lock.pr already exists locally.
+#   --allow-stale  Tolerate manifest entries whose
+#                  compatibility.cache_key_sha disagrees with the
+#                  locally-computed value: skip them in install-release
+#                  and source-build them via `xtask build-deps resolve`
+#                  instead of aborting. Used for local deps.toml edits
+#                  that aren't yet covered by a PR overlay (pre-push,
+#                  fork PRs without write access, in-flight WIP).
 #
 # Exit codes:
 #   0  success
@@ -33,6 +40,12 @@
 
 set -euo pipefail
 
+# Tempfile cleanup: when --allow-stale is used we mktemp a STALE_OUT
+# below; install the trap up front (with `${STALE_OUT:-}` guard) so it
+# fires even if `cargo install-release` exits non-zero. Matches the
+# convention in run-sortix-tests.sh / run-mariadb-tests.sh.
+trap '[ -n "${STALE_OUT:-}" ] && rm -f "$STALE_OUT"' EXIT
+
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
@@ -40,14 +53,16 @@ FORCE=0
 PRUNE=0
 OFFLINE=0
 PR_NUMBER=""
+ALLOW_STALE=0
 while [ $# -gt 0 ]; do
     case "$1" in
-        --force)   FORCE=1; shift ;;
-        --prune)   PRUNE=1; shift ;;
-        --offline) OFFLINE=1; shift ;;
-        --pr)      PR_NUMBER="$2"; shift 2 ;;
+        --force)       FORCE=1; shift ;;
+        --prune)       PRUNE=1; shift ;;
+        --offline)     OFFLINE=1; shift ;;
+        --pr)          PR_NUMBER="$2"; shift 2 ;;
+        --allow-stale) ALLOW_STALE=1; shift ;;
         -h|--help)
-            sed -n '3,32p' "$0"
+            sed -n '3,38p' "$0"
             exit 0
             ;;
         *) echo "unknown arg $1" >&2; exit 2 ;;
@@ -372,6 +387,46 @@ if jq -e '.entries[] | select(.archive_name != null)' "$MANIFEST_OBJ" > /dev/nul
         fi
 
         DURABLE_FILTERED=""
+
+        # Set up --allow-stale plumbing once, outside the SKIP_DURABLE
+        # branching, so both the durable and overlay install-release
+        # passes get the same flags. install-release writes the names
+        # of skipped entries (cache_key_sha mismatches against the
+        # consumer's deps.toml) to STALE_OUT; we source-build those
+        # via `xtask build-deps resolve` after each pass. The trap
+        # set up earlier in this script removes STALE_OUT on exit.
+        EXTRA_FLAGS=()
+        if [ "$ALLOW_STALE" -eq 1 ]; then
+            STALE_OUT="$(mktemp -t fetch-binaries-stale.XXXXXX.json)"
+            EXTRA_FLAGS+=(--allow-stale-manifest --stale-out "$STALE_OUT")
+        fi
+
+        # Truncate STALE_OUT after each install-release pass so the
+        # next pass starts with a clean slate. local-binaries/ — the
+        # eventual home of the source-built outputs — is what the
+        # Vite resolver and downstream consumers prefer over
+        # binaries/, so this transparently picks up locally-built
+        # artifacts while binaries/ stays pinned to the release tag.
+        process_stale_out() {
+            [ "$ALLOW_STALE" -eq 1 ] && [ -s "$STALE_OUT" ] || return 0
+            local stale_count
+            stale_count=$(jq 'length' "$STALE_OUT")
+            [ "$stale_count" -gt 0 ] || { : > "$STALE_OUT"; return 0; }
+            echo "fetch-binaries: $stale_count package(s) had stale manifests; source-building locally..."
+            # Process substitution (not a pipe) so the loop body runs
+            # in this shell — `set -e` failures inside cargo propagate.
+            while IFS= read -r entry; do
+                local program arch
+                program=$(echo "$entry" | jq -r .program)
+                arch=$(echo "$entry" | jq -r .arch)
+                echo "  - $program ($arch)"
+                cargo run -p xtask --target "$HOST_TARGET" --quiet -- \
+                    build-deps --arch "$arch" resolve "$program"
+            done < <(jq -c '.[]' "$STALE_OUT")
+            echo "fetch-binaries: source-build complete. binaries/ remains pinned to $LOCK_TAG."
+            : > "$STALE_OUT"
+        }
+
         if [ "$SKIP_DURABLE" = "1" ]; then
             echo "fetch-binaries: consumer abi=$CONSUMER_ABI != lock abi=$LOCK_ABI — skipping durable archive install"
             echo "fetch-binaries: a new durable release at abi=$CONSUMER_ABI must be cut after this PR merges; overlay archives + source-build cover the gap"
@@ -403,7 +458,12 @@ if jq -e '.entries[] | select(.archive_name != null)' "$MANIFEST_OBJ" > /dev/nul
             cargo run -p xtask --target "$HOST_TARGET" --quiet -- install-release \
                 --manifest "$DURABLE_MANIFEST" \
                 --archive-base "$REL_BASE" \
-                --binaries-dir "$BIN_DIR"
+                --binaries-dir "$BIN_DIR" \
+                ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}
+
+            # Source-build durable-pass stale entries here so the
+            # cache is warm before the overlay install-release runs.
+            process_stale_out
         fi
 
         # Overlay install runs independently of the durable-skip decision.
@@ -415,7 +475,13 @@ if jq -e '.entries[] | select(.archive_name != null)' "$MANIFEST_OBJ" > /dev/nul
             cargo run -p xtask --target "$HOST_TARGET" --quiet -- install-release \
                 --manifest "$OVERLAY_MANIFEST_OBJ" \
                 --archive-base "$OVERLAY_REL_BASE" \
-                --binaries-dir "$BIN_DIR"
+                --binaries-dir "$BIN_DIR" \
+                ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}
+            # Overlay-pass stale entries are rare (overlay is built
+            # from the developer's deps.toml at PR-build time) but can
+            # appear if the developer made further local edits past
+            # their last CI build.
+            process_stale_out
         fi
 
         [ -n "$DURABLE_FILTERED" ] && rm -f "$DURABLE_FILTERED"
