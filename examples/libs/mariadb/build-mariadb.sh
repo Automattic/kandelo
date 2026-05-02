@@ -97,15 +97,15 @@ echo "==> Applying wasm32 source patches..."
 CONC_CMAKE="$SRC_DIR/cmake/mariadb_connector_c.cmake"
 if grep -q 'IF(NOT CONC_WITH_SSL)' "$CONC_CMAKE" 2>/dev/null; then
     echo "  Patching cmake/mariadb_connector_c.cmake (disable SSL for cross-build)..."
-    sed -i '' 's/IF(NOT CONC_WITH_SSL)/IF(NOT CONC_WITH_SSL AND NOT CONC_WITH_SSL STREQUAL "OFF")/' "$CONC_CMAKE"
+    sed -i.bak 's/IF(NOT CONC_WITH_SSL)/IF(NOT CONC_WITH_SSL AND NOT CONC_WITH_SSL STREQUAL "OFF")/' "$CONC_CMAKE"
 fi
 
 # 2. my_gethwaddr: Enable Linux code path for wasm (SIOCGIFCONF + SIOCGIFHWADDR)
 HWADDR_FILE="$SRC_DIR/mysys/my_gethwaddr.c"
 if ! grep -q '__wasm' "$HWADDR_FILE" 2>/dev/null; then
     echo "  Patching mysys/my_gethwaddr.c (enable MAC address retrieval for wasm)..."
-    sed -i '' 's/defined(__linux__) || defined(__sun) || defined(_WIN32)/defined(__linux__) || defined(__sun) || defined(_WIN32) || defined(__wasm32__) || defined(__wasm64__)/' "$HWADDR_FILE"
-    sed -i '' 's/#elif defined(_AIX) || defined(__linux__) || defined(__sun)/#elif defined(_AIX) || defined(__linux__) || defined(__sun) || defined(__wasm32__) || defined(__wasm64__)/' "$HWADDR_FILE"
+    sed -i.bak 's/defined(__linux__) || defined(__sun) || defined(_WIN32)/defined(__linux__) || defined(__sun) || defined(_WIN32) || defined(__wasm32__) || defined(__wasm64__)/' "$HWADDR_FILE"
+    sed -i.bak 's/#elif defined(_AIX) || defined(__linux__) || defined(__sun)/#elif defined(_AIX) || defined(__linux__) || defined(__sun) || defined(__wasm32__) || defined(__wasm64__)/' "$HWADDR_FILE"
 fi
 
 # Apply any .patch files from patches/ directory
@@ -172,9 +172,9 @@ if [ ! -f "$SYSROOT/include/c++/v1/__config" ]; then
     # Fix __config_site for wasm32/musl target
     CONFIG_SITE="$SYSROOT/include/c++/v1/__config_site"
     if [ -f "$CONFIG_SITE" ]; then
-        sed -i '' 's/_LIBCPP_HAS_MUSL_LIBC 0/_LIBCPP_HAS_MUSL_LIBC 1/' "$CONFIG_SITE"
-        sed -i '' 's/_LIBCPP_HAS_THREAD_API_PTHREAD 0/_LIBCPP_HAS_THREAD_API_PTHREAD 1/' "$CONFIG_SITE"
-        sed -i '' 's/^#define _LIBCPP_PSTL_BACKEND_LIBDISPATCH/\/* #undef _LIBCPP_PSTL_BACKEND_LIBDISPATCH *\/\n#define _LIBCPP_PSTL_BACKEND_SERIAL/' "$CONFIG_SITE"
+        sed -i.bak 's/_LIBCPP_HAS_MUSL_LIBC 0/_LIBCPP_HAS_MUSL_LIBC 1/' "$CONFIG_SITE"
+        sed -i.bak 's/_LIBCPP_HAS_THREAD_API_PTHREAD 0/_LIBCPP_HAS_THREAD_API_PTHREAD 1/' "$CONFIG_SITE"
+        sed -i.bak 's/^#define _LIBCPP_PSTL_BACKEND_LIBDISPATCH/\/* #undef _LIBCPP_PSTL_BACKEND_LIBDISPATCH *\/\n#define _LIBCPP_PSTL_BACKEND_SERIAL/' "$CONFIG_SITE"
     fi
 
     echo "==> libc++ headers installed"
