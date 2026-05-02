@@ -184,10 +184,24 @@ jobs:
         # When `packages` is a subset, the resolver still needs prior
         # archives for the un-forced manifests so stage-release can
         # source-build dependents without re-fetching the world. When
-        # `packages=all` this fetch is wasted but harmless — every
-        # cache lookup will be invalidated anyway.
+        # `packages=all` this fetch is mostly wasted (every package
+        # source-builds anyway) but cheap to run and warms binaries/
+        # for downstream steps that read from there directly.
+        #
+        # --allow-stale is load-bearing here, NOT a defensive default.
+        # Force-rebuild's whole premise is that the published manifest
+        # may have drifted from this checkout's deps.toml — that's the
+        # situation it exists to fix. Without --allow-stale the strict
+        # pre-flight in install-release would abort on the first
+        # mismatched cache_key_sha and the workflow could never reach
+        # the rebuild step that resolves the drift. With the flag,
+        # mismatched entries are skipped (logged as warnings) and the
+        # resolver later source-builds them as part of stage-release.
+        # Mirrors the --allow-stale wiring on prepare-merge.yml /
+        # staging-build.yml added by PR #385.
         run: |
-          nix develop --accept-flake-config --command bash scripts/fetch-binaries.sh
+          nix develop --accept-flake-config --command \
+            bash scripts/fetch-binaries.sh --allow-stale
 
       - name: Stage durable release (force-rebuild)
         # Translate the comma-separated `packages` input into one
