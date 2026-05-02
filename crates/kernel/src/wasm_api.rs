@@ -955,6 +955,22 @@ pub extern "C" fn kernel_create_process(pid: u32) -> i32 {
     }
 }
 
+/// Set the program's initial brk to the value of its `__heap_base` export.
+/// Called by the host once per process — between [`kernel_create_process`]
+/// (or post-exec re-init) and the first syscall from the new program — so
+/// `brk(0)` returns a value above the program's data section and stack
+/// region. Returns 0 on success, -ESRCH if pid not found.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_set_brk_base(pid: u32, addr: usize) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    if let Some(proc) = table.get_mut(pid) {
+        proc.memory.set_brk_base(addr);
+        0
+    } else {
+        -(Errno::ESRCH as i32)
+    }
+}
+
 /// Set the mmap address space upper bound for a process.
 /// Used to prevent mmap from overlapping the channel region.
 /// Returns 0 on success, -ESRCH if pid not found.

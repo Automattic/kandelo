@@ -137,3 +137,19 @@ When the ABI is bumped, all binaries must be rebuilt and a new
 `abi-v{N}/` release is cut. Old releases remain valid for old kernel
 revisions; a repo pin (`binaries.lock`) anchors consumers to a specific
 release.
+
+### Additive changes still require a bump
+
+Even when an ABI change is purely additive (a new `kernel_*` export, a
+new syscall number) and v(N-1) binaries would in principle still run
+correctly against the v(N) kernel, the policy is to bump and rebuild.
+Two reasons: (1) the snapshot check is structural — any change to the
+export set produces a snapshot diff, and CI refuses a snapshot diff
+without a matching version bump; (2) the host-side `verifyProgramAbi`
+check is strict equality (`actual !== expected`), not `actual <=
+expected`, so mismatched binaries fail at instantiation regardless of
+whether the missing surface is actually used. Relaxing either of these
+to allow `actual <= expected` would let a future *non*-additive change
+slip through unnoticed. The cost of the strict policy is the
+coordinated rebuild; the cost of relaxing it is undetected ABI
+breakage.

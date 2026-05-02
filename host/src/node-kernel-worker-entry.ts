@@ -20,7 +20,7 @@ import { NodePlatformIO } from "./platform/node";
 import { NodeWorkerAdapter } from "./worker-adapter";
 import { ThreadPageAllocator } from "./thread-allocator";
 import { patchWasmForThread } from "./worker-main";
-import { detectPtrWidth } from "./constants";
+import { detectPtrWidth, extractHeapBase } from "./constants";
 import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD } from "./constants";
 import type {
   CentralizedWorkerInitMessage,
@@ -206,6 +206,11 @@ function handleSpawn(msg: SpawnMessage) {
       argv: msg.argv,
     });
 
+    const heapBase = extractHeapBase(msg.programBytes);
+    if (heapBase !== null) {
+      kernelWorker.setBrkBase(pid, heapBase);
+    }
+
     if (msg.cwd) {
       kernelWorker.setCwd(pid, msg.cwd);
     }
@@ -359,6 +364,11 @@ async function handleExec(
     skipKernelCreate: true,
     ptrWidth: newPtrWidth,
   });
+
+  const heapBase = extractHeapBase(resolved);
+  if (heapBase !== null) {
+    kernelWorker.setBrkBase(pid, heapBase);
+  }
 
   // Clear thread module cache — new program binary is different
   threadModuleCache.delete(pid);

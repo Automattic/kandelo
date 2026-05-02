@@ -73,6 +73,7 @@ kernel_handle_channel(channel_offset, pid) → result
 kernel_exec_setup(pid) → result
 kernel_get_cwd(pid, buf, len) → bytes_written
 kernel_set_max_addr(pid, addr) → 0
+kernel_set_brk_base(pid, addr) → 0
 kernel_is_fd_nonblock(pid, fd) → bool
 ```
 
@@ -218,11 +219,14 @@ Key detail: Asyncify restores Wasm locals but NOT globals. The `__stack_pointer`
 
 1. User calls `execve(path, argv, envp)` → kernel returns exec request to host
 2. Host resolves `path` to a Wasm binary (via filesystem or program map)
-3. `kernel_exec_setup` closes CLOEXEC fds and resets signals
+3. `kernel_exec_setup` closes CLOEXEC fds, resets signals, and **resets the program break** (POSIX/Linux behavior — the prior program's brk does not carry over)
 4. Host terminates the old worker
 5. Host creates fresh `WebAssembly.Memory` and re-registers the PID
-6. Host spawns a new worker with the new program binary
-7. New program starts from `_start` with the given argv/envp
+6. Host parses the new binary's `__heap_base` export and calls `kernel_set_brk_base(pid, __heap_base)` so `brk(0)` returns a value above the new program's data + stack region
+7. Host spawns a new worker with the new program binary
+8. New program starts from `_start` with the given argv/envp
+
+Step 6 is required: without it, `MemoryManager` falls back to a hardcoded 16MB `INITIAL_BRK`, which can land *inside* the stack region of programs whose data section pushes `__heap_base` above 16MB (mariadbd's `__heap_base ≈ 16.32MB`). Heap allocations there collide with shadow-stack frames during C++ static initialization, corrupting memory and hanging in `__wasm_call_ctors`.
 
 ### clone() (threads)
 
@@ -251,6 +255,12 @@ MAX_PAGES         End of memory (1GB default)
 ```
 
 The channel occupies the last 2 pages (128KB). Thread channels are allocated counting down from the main channel, with 3 pages per thread (2 for channel + 1 for TLS).
+
+### Heap initialization (brk)
+
+The kernel's `MemoryManager` tracks `program_break` per process. On every `spawn` and `exec`, the host parses `__heap_base` from the new program's exports (`extractHeapBase` in `host/src/constants.ts`) and calls `kernel_set_brk_base(pid, __heap_base)` *before* the new worker can issue its first syscall. The new program's first `brk(0)` then returns its own `__heap_base`, so musl's malloc places the heap above the data and shadow-stack regions.
+
+The kernel's hardcoded `INITIAL_BRK` (16MB) is a fallback for binaries that don't export `__heap_base`. Programs built with our SDK always export it, so the fallback is never used in normal operation. `fork` correctly inherits the parent's brk via the kernel's process-state serialization; `exec` resets it (POSIX-correct) and the host re-installs it from the new program's `__heap_base`.
 
 ## Filesystem
 

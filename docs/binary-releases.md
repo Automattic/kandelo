@@ -245,7 +245,11 @@ field, or `cache_key_sha` mismatch is a hard error — we never
 fall back to "best effort." For the system archives the full
 verification chain is documented in
 [`docs/package-management.md`](package-management.md)
-under "Release archives".
+under "Release archives". The `cache_key_sha` mismatch is
+soft-skippable for local development via `./run.sh
+--allow-stale` (or `WASM_POSIX_ALLOW_STALE=1`) — see
+"Iterating on a package locally" in the same doc. CI never
+passes the flag.
 
 ### PR-staging overlay (`binaries.lock.pr`)
 

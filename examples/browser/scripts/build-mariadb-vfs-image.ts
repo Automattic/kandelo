@@ -39,10 +39,9 @@ const MARIADB_PATH = join(MARIADB_INSTALL, "bin/mariadbd.wasm");
 const SYSTEM_TABLES_PATH = join(MARIADB_INSTALL, "share/mysql/mysql_system_tables.sql");
 const SYSTEM_DATA_PATH = join(MARIADB_INSTALL, "share/mysql/mysql_system_tables_data.sql");
 const DASH_PATH = resolveBinary("programs/dash.wasm");
-// Coreutils is required at boot for the bootstrap-runner.sh wrapper
-// (sleep, kill — well kill is a dash builtin, but sleep isn't). Bake
-// it directly rather than rely on lazy loading, since the kernel-owned
-// VFS has no lazy-load path during dinit boot.
+// Coreutils is baked into the VFS so users get an immediate `ls`/`cat`
+// in the shell demo without waiting for a lazy-load fetch. Not strictly
+// required by the bootstrap wrapper (which is just `exec mariadbd < sql`).
 const COREUTILS_PATH = tryResolveBinary("programs/coreutils.wasm");
 
 const OUT_FILE = useWasm64
@@ -112,10 +111,9 @@ function buildEngineServices(engine: "Aria" | "InnoDB"): DinitService[] {
     {
       name: `${tag}-bootstrap`,
       type: "scripted",
-      // mariadbd --bootstrap doesn't exit at stdin EOF in the wasm port.
-      // The wrapper backgrounds it, sleeps to let bootstrap drain SQL,
-      // SIGTERMs it. Invoked via `sh SCRIPT` because wasm exec doesn't
-      // honor shebangs.
+      // Wrapper script does the stdin redirection (dinit's command-line
+      // parsing strips quotes, breaking inline `sh -c '... < FILE'`).
+      // Invoked via `sh SCRIPT` because wasm exec doesn't honor shebangs.
       command: `/bin/sh /etc/mariadb/${tag}-bootstrap.sh`,
       logfile: `/var/log/${tag}-bootstrap.log`,
       restart: false,
@@ -164,12 +162,12 @@ async function main() {
     symlink(fs, "/bin/dash", "/usr/bin/dash");
     symlink(fs, "/bin/dash", "/usr/bin/sh");
   }
-  // Bake coreutils.wasm — the bootstrap-runner.sh wrapper uses `sleep`
-  // (a coreutils applet) at boot before any lazy-load mechanism can run.
+  // Bake coreutils.wasm so the shell demo has `ls`/`cat`/etc. without
+  // waiting for a lazy-load fetch on first invocation.
   if (COREUTILS_PATH && existsSync(COREUTILS_PATH)) {
     writeVfsBinary(fs, "/bin/coreutils", new Uint8Array(readFileSync(COREUTILS_PATH)));
   } else {
-    console.warn("  Warning: coreutils.wasm not found — bootstrap wrapper will fail at sleep");
+    console.warn("  Warning: coreutils.wasm not found — shell demo will lack /bin/ls etc.");
   }
   for (const name of COREUTILS_SYMLINK_NAMES) {
     symlink(fs, "/bin/coreutils", `/bin/${name}`);
@@ -198,21 +196,10 @@ async function main() {
       "--bootstrap", "--skip-networking", "--log-warnings=0",
       `--log-error=/data/${eng.tag}-bootstrap.log`,
     ].join(" ");
-    // mariadbd --bootstrap doesn't exit at stdin EOF in our wasm port,
-    // so we run it in the background, sleep long enough for the bootstrap
-    // SQL to drain (data files written synchronously while reading), then
-    // SIGTERM/SIGKILL it. **No `wait`** — dinit (PID 1) reaps orphans
-    // aggressively and dash's `wait` builtin then blocks indefinitely.
-    // Letting dinit reap is fine; bootstrap data is on disk by the time
-    // we kill the daemon.
-    const script = `${bootstrapCmd} < /etc/mariadb/bootstrap.sql &
-PID=$!
-sleep 30
-kill -TERM $PID 2>/dev/null
-sleep 1
-kill -KILL $PID 2>/dev/null
-exit 0
-`;
+    // `exec` replaces the wrapper shell with mariadbd so dinit observes
+    // mariadbd's exit status directly. mariadbd reads the bootstrap SQL
+    // from stdin, executes it, and exits 0 at EOF.
+    const script = `exec ${bootstrapCmd} < /etc/mariadb/bootstrap.sql\n`;
     writeVfsFile(fs, `/etc/mariadb/${eng.tag}-bootstrap.sh`, script);
   }
 

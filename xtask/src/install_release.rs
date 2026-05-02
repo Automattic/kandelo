@@ -29,6 +29,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use serde::Serialize;
 use serde_json::Value;
 use wasm_posix_shared as shared;
 
@@ -40,7 +41,50 @@ use crate::remote_fetch;
 use crate::repo_root;
 use crate::util::hex;
 
-pub fn run(args: Vec<String>) -> Result<(), String> {
+/// One row written to `--stale-out` when `--allow-stale-manifest` is
+/// set and a manifest entry's `compatibility.cache_key_sha` disagrees
+/// with the locally-computed value. The downstream caller (Task 3's
+/// `fetch-binaries.sh`) reads this list to decide which entries to
+/// source-build instead of fetching.
+///
+/// Schema is load-bearing — the script consumes `program`, `arch`,
+/// `local_sha` by exact name. Don't rename without updating Task 3.
+#[derive(Serialize)]
+struct StaleEntry {
+    program: String,
+    arch: String,
+    local_sha: String,
+}
+
+/// Parsed CLI options for `install-release`.
+///
+/// Extracted from `run` so the parser is independently testable. The
+/// fields are intentionally `Option<_>` where `run` later applies
+/// defaults — keeping that distinction here lets tests assert "the
+/// user did not pass this flag" vs "the user passed the default value".
+struct InstallReleaseOpts {
+    manifest_path: Option<PathBuf>,
+    archive_base: Option<String>,
+    cache_root: Option<PathBuf>,
+    local_binaries_dir: Option<PathBuf>,
+    binaries_dir: Option<PathBuf>,
+    registry_root: Option<PathBuf>,
+    abi: Option<u32>,
+    force_mirror: bool,
+    /// Set by `--allow-stale-manifest`. When true, a manifest entry
+    /// whose `compatibility.cache_key_sha` disagrees with the
+    /// locally-computed value is skipped (and recorded for the
+    /// downstream source-build fallback) rather than aborting the run.
+    allow_stale_manifest: bool,
+    /// Set by `--stale-out <path>`. Path to write a JSON report of
+    /// stale entries collected during the run. Only consulted when
+    /// `allow_stale_manifest` is also set; the empty `[]` case is still
+    /// written so callers can detect that the install ran in
+    /// stale-tolerant mode.
+    stale_out: Option<PathBuf>,
+}
+
+fn parse_args(args: Vec<String>) -> Result<InstallReleaseOpts, String> {
     let mut manifest_path: Option<PathBuf> = None;
     let mut archive_base: Option<String> = None;
     let mut cache_root: Option<PathBuf> = None;
@@ -49,6 +93,8 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let mut registry_root: Option<PathBuf> = None;
     let mut abi: Option<u32> = None;
     let mut force_mirror = false;
+    let mut allow_stale_manifest = false;
+    let mut stale_out: Option<PathBuf> = None;
 
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
@@ -83,9 +129,41 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                 )
             }
             "--force-mirror" => force_mirror = true,
+            "--allow-stale-manifest" => allow_stale_manifest = true,
+            "--stale-out" => {
+                stale_out = Some(it.next().ok_or("--stale-out requires path")?.into())
+            }
             other => return Err(format!("unknown arg {other:?}")),
         }
     }
+
+    Ok(InstallReleaseOpts {
+        manifest_path,
+        archive_base,
+        cache_root,
+        local_binaries_dir,
+        binaries_dir,
+        registry_root,
+        abi,
+        force_mirror,
+        allow_stale_manifest,
+        stale_out,
+    })
+}
+
+pub fn run(args: Vec<String>) -> Result<(), String> {
+    let InstallReleaseOpts {
+        manifest_path,
+        archive_base,
+        cache_root,
+        local_binaries_dir,
+        binaries_dir,
+        registry_root,
+        abi,
+        force_mirror,
+        allow_stale_manifest,
+        stale_out,
+    } = parse_args(args)?;
 
     let manifest_path = manifest_path.ok_or("--manifest is required")?;
     let archive_base =
@@ -107,6 +185,14 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let entries = manifest["entries"]
         .as_array()
         .ok_or("manifest.entries missing or not an array")?;
+
+    // Stale-but-tolerated entries collected during the per-entry loop
+    // when `--allow-stale-manifest` is set. The list is serialized to
+    // `--stale-out` after the loop so a downstream caller (Task 3:
+    // `fetch-binaries.sh`) can source-build the affected programs
+    // instead of fetching them. The empty case is meaningful — see the
+    // post-loop write block.
+    let mut stale_entries: Vec<StaleEntry> = Vec::new();
 
     for entry in entries {
         let kind = entry.get("kind").and_then(|v| v.as_str()).unwrap_or("");
@@ -182,6 +268,25 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             .and_then(|v| v.as_str())
             .unwrap_or("");
         if manifest_compat_sha != local_sha_hex {
+            // `--allow-stale-manifest` downgrades the strict equality
+            // failure to a recorded skip. The entry is NOT installed:
+            // no archive fetch, no canonical-path file, no
+            // local-binaries mirror, no `binaries/` symlink. Task 3's
+            // `fetch-binaries.sh` will re-source-build these from the
+            // recorded list.
+            if allow_stale_manifest {
+                eprintln!(
+                    "skip {program_name} ({arch_str}) — manifest stale \
+                     (manifest={manifest_compat_sha}, local={local_sha_hex}); \
+                     will source-build later"
+                );
+                stale_entries.push(StaleEntry {
+                    program: program_name.to_string(),
+                    arch: arch_str.to_string(),
+                    local_sha: local_sha_hex.clone(),
+                });
+                continue;
+            }
             return Err(format!(
                 "{program_name} ({arch_str}): manifest.json cache_key_sha {manifest_compat_sha:?} \
                  does not match locally-computed {local_sha_hex:?} — \
@@ -242,6 +347,23 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                 place_binaries_symlinks(&m, &canonical, bdir, arch)?;
             }
         }
+    }
+
+    // When `--stale-out` is supplied AND `--allow-stale-manifest` is
+    // on, write the collected list as JSON. We always write in that
+    // mode — even when the list is empty — so the file's existence
+    // is a robust signal to the downstream caller (Task 3:
+    // `fetch-binaries.sh`) that the install ran in stale-tolerant
+    // mode. An empty `[]` means "no entries needed source-build
+    // fallback." `--stale-out` without `--allow-stale-manifest` is a
+    // no-op rather than an error: the strict path will already have
+    // returned `Err` on any mismatch, so an empty file would be
+    // misleading.
+    if let Some(path) = stale_out.as_ref().filter(|_| allow_stale_manifest) {
+        let json = serde_json::to_string_pretty(&stale_entries)
+            .map_err(|e| format!("serialize stale_entries: {e}"))?;
+        fs::write(path, json)
+            .map_err(|e| format!("write {}: {e}", path.display()))?;
     }
 
     Ok(())
@@ -1042,6 +1164,318 @@ spdx = "TestLicense"
             mirror.display()
         );
         assert_eq!(fs::read(&mirror).unwrap(), b"p1\n");
+    }
+
+    #[test]
+    fn parses_allow_stale_flags() {
+        // Parse-only check: the new --allow-stale-manifest boolean flag
+        // and --stale-out <path> flag must show up on the parsed-options
+        // struct. They aren't *used* anywhere yet — Task 2 wires them
+        // into the manifest-vs-local cache_key_sha pre-flight.
+        let opts = parse_args(vec![
+            "--manifest".into(),
+            "/tmp/x".into(),
+            "--archive-base".into(),
+            "file:///tmp/staging".into(),
+            "--allow-stale-manifest".into(),
+            "--stale-out".into(),
+            "/tmp/foo.json".into(),
+        ])
+        .expect("parse_args must succeed");
+        assert!(
+            opts.allow_stale_manifest,
+            "--allow-stale-manifest must set the flag"
+        );
+        assert_eq!(
+            opts.stale_out,
+            Some(PathBuf::from("/tmp/foo.json")),
+            "--stale-out must capture the path"
+        );
+        assert_eq!(opts.manifest_path, Some(PathBuf::from("/tmp/x")));
+        assert_eq!(opts.archive_base, Some("file:///tmp/staging".to_string()));
+    }
+
+    #[test]
+    fn parses_allow_stale_flags_default_off() {
+        // Defaults: omitting both flags must yield false / None. Catches
+        // a regression where the flag accidentally defaults to true.
+        let opts = parse_args(vec![
+            "--manifest".into(),
+            "/tmp/x".into(),
+            "--archive-base".into(),
+            "file:///tmp/staging".into(),
+        ])
+        .expect("parse_args must succeed");
+        assert!(!opts.allow_stale_manifest);
+        assert_eq!(opts.stale_out, None);
+    }
+
+    #[test]
+    fn allow_stale_skips_mismatched_entries() {
+        // Two libraries staged together. We hand-edit the manifest to
+        // corrupt only the FIRST entry's cache_key_sha; the second
+        // entry should install normally. With --allow-stale-manifest
+        // set, install_release must Ok, skip the mismatched entry, and
+        // emit a JSON record naming it.
+        let (staging, registry, _stage_cache) = stage("allow-stale-mixed", |registry| {
+            write_fixture(
+                registry,
+                "z",
+                "1.0.0",
+                "library",
+                "mkdir -p $WASM_POSIX_DEP_OUT_DIR/lib && \
+                 echo zdata > $WASM_POSIX_DEP_OUT_DIR/lib/libZ.a",
+                "[outputs]\nlibs = [\"lib/libZ.a\"]\n",
+            );
+            write_fixture(
+                registry,
+                "y",
+                "1.0.0",
+                "library",
+                "mkdir -p $WASM_POSIX_DEP_OUT_DIR/lib && \
+                 echo ydata > $WASM_POSIX_DEP_OUT_DIR/lib/libY.a",
+                "[outputs]\nlibs = [\"lib/libY.a\"]\n",
+            );
+        });
+
+        // Corrupt ONE entry's cache_key_sha (the "z" entry) so the
+        // pre-flight comparison fails for it but passes for "y".
+        let manifest_path = staging.join("manifest.json");
+        let text = fs::read_to_string(&manifest_path).unwrap();
+        let mut json: Value = serde_json::from_str(&text).unwrap();
+        let entries = json["entries"].as_array_mut().unwrap();
+        let mut corrupted = false;
+        for entry in entries.iter_mut() {
+            if entry.get("archive_name").is_some()
+                && entry.get("program").and_then(|v| v.as_str()) == Some("z")
+            {
+                entry["compatibility"]["cache_key_sha"] =
+                    Value::String("0".repeat(64));
+                corrupted = true;
+            }
+        }
+        assert!(corrupted, "test setup: must have corrupted z's compat sha");
+        fs::write(&manifest_path, serde_json::to_string_pretty(&json).unwrap())
+            .unwrap();
+
+        let install_cache = tempdir("allow-stale-mixed-install-cache");
+        let local_bin = tempdir("allow-stale-mixed-local-bin");
+        let stale_out = tempdir("allow-stale-mixed-out").join("stale.json");
+
+        super::run(vec![
+            "--manifest".into(),
+            manifest_path.display().to_string(),
+            "--archive-base".into(),
+            format!("file://{}", staging.display()),
+            "--cache-root".into(),
+            install_cache.display().to_string(),
+            "--local-binaries-dir".into(),
+            local_bin.display().to_string(),
+            "--registry".into(),
+            registry.display().to_string(),
+            "--abi".into(),
+            "4".into(),
+            "--allow-stale-manifest".into(),
+            "--stale-out".into(),
+            stale_out.display().to_string(),
+        ])
+        .expect("install_release must Ok with --allow-stale-manifest");
+
+        // Compute canonical paths so we can assert "z is absent" and
+        // "y is present" without hard-coding hash values.
+        let reg = Registry {
+            roots: vec![registry.clone()],
+        };
+        let mz = reg.load("z").unwrap();
+        let my = reg.load("y").unwrap();
+        let mut chain = Vec::new();
+        let mut memo = BTreeMap::new();
+        let z_sha = build_deps::compute_sha(
+            &mz, &reg, TargetArch::Wasm32, 4, &mut memo, &mut chain,
+        )
+        .unwrap();
+        let mut chain = Vec::new();
+        let mut memo = BTreeMap::new();
+        let y_sha = build_deps::compute_sha(
+            &my, &reg, TargetArch::Wasm32, 4, &mut memo, &mut chain,
+        )
+        .unwrap();
+        let z_canonical =
+            canonical_path(&install_cache, &mz, TargetArch::Wasm32, &z_sha);
+        let y_canonical =
+            canonical_path(&install_cache, &my, TargetArch::Wasm32, &y_sha);
+
+        assert!(
+            !z_canonical.exists(),
+            "stale entry z must NOT have been installed at {}",
+            z_canonical.display()
+        );
+        assert!(
+            y_canonical.is_dir(),
+            "non-stale entry y must have been installed at {}",
+            y_canonical.display()
+        );
+        assert!(
+            y_canonical.join("lib/libY.a").is_file(),
+            "y's declared output must be present in cache"
+        );
+
+        // The --stale-out file must list exactly the one stale entry,
+        // with the documented field names (program/arch/local_sha).
+        let stale_text = fs::read_to_string(&stale_out)
+            .expect("--stale-out file must be written");
+        let stale_json: Value = serde_json::from_str(&stale_text).unwrap();
+        let arr = stale_json
+            .as_array()
+            .expect("--stale-out must be a JSON array");
+        assert_eq!(arr.len(), 1, "exactly one stale entry expected");
+        assert_eq!(arr[0]["program"], "z");
+        assert_eq!(arr[0]["arch"], "wasm32");
+        // local_sha must equal the computed sha for z (hex-encoded).
+        let expected_local = hex(&z_sha);
+        assert_eq!(arr[0]["local_sha"], Value::String(expected_local));
+    }
+
+    #[test]
+    fn allow_stale_writes_empty_list_when_nothing_stale() {
+        // --allow-stale-manifest is set, but the manifest is fully
+        // consistent. Expect Ok(()), normal install, and an empty
+        // JSON array written to --stale-out (so the downstream
+        // caller knows install ran in stale-tolerant mode).
+        let (staging, registry, _stage_cache) = stage("allow-stale-empty", |registry| {
+            write_fixture(
+                registry,
+                "z",
+                "1.0.0",
+                "library",
+                "mkdir -p $WASM_POSIX_DEP_OUT_DIR/lib && \
+                 echo zdata > $WASM_POSIX_DEP_OUT_DIR/lib/libZ.a",
+                "[outputs]\nlibs = [\"lib/libZ.a\"]\n",
+            );
+        });
+
+        let install_cache = tempdir("allow-stale-empty-install-cache");
+        let local_bin = tempdir("allow-stale-empty-local-bin");
+        let stale_out = tempdir("allow-stale-empty-out").join("stale.json");
+
+        super::run(vec![
+            "--manifest".into(),
+            staging.join("manifest.json").display().to_string(),
+            "--archive-base".into(),
+            format!("file://{}", staging.display()),
+            "--cache-root".into(),
+            install_cache.display().to_string(),
+            "--local-binaries-dir".into(),
+            local_bin.display().to_string(),
+            "--registry".into(),
+            registry.display().to_string(),
+            "--abi".into(),
+            "4".into(),
+            "--allow-stale-manifest".into(),
+            "--stale-out".into(),
+            stale_out.display().to_string(),
+        ])
+        .expect("install_release must Ok when nothing is stale");
+
+        // z installs normally.
+        let reg = Registry {
+            roots: vec![registry.clone()],
+        };
+        let mz = reg.load("z").unwrap();
+        let mut chain = Vec::new();
+        let mut memo = BTreeMap::new();
+        let z_sha = build_deps::compute_sha(
+            &mz, &reg, TargetArch::Wasm32, 4, &mut memo, &mut chain,
+        )
+        .unwrap();
+        let z_canonical =
+            canonical_path(&install_cache, &mz, TargetArch::Wasm32, &z_sha);
+        assert!(
+            z_canonical.is_dir(),
+            "consistent entry z must have been installed at {}",
+            z_canonical.display()
+        );
+
+        // The stale-out file must exist and contain `[]`.
+        let stale_text = fs::read_to_string(&stale_out)
+            .expect("--stale-out file must be written even when empty");
+        let stale_json: Value = serde_json::from_str(&stale_text).unwrap();
+        let arr = stale_json
+            .as_array()
+            .expect("--stale-out must be a JSON array");
+        assert!(
+            arr.is_empty(),
+            "with no stale entries, --stale-out must contain []; got {arr:?}"
+        );
+    }
+
+    #[test]
+    fn strict_default_unchanged_when_flag_off() {
+        // Regression guard: without --allow-stale-manifest, a stale
+        // manifest must still surface as Err with the existing error
+        // wording. (Companion to install_release_rejects_compat_mismatch
+        // — that one corrupts ALL entries; this one corrupts ONE in a
+        // multi-entry manifest to make sure the strict path triggers
+        // on the FIRST stale entry without scanning past it.)
+        let (staging, registry, _stage_cache) = stage("strict-default-off", |registry| {
+            write_fixture(
+                registry,
+                "z",
+                "1.0.0",
+                "library",
+                "mkdir -p $WASM_POSIX_DEP_OUT_DIR/lib && \
+                 echo zdata > $WASM_POSIX_DEP_OUT_DIR/lib/libZ.a",
+                "[outputs]\nlibs = [\"lib/libZ.a\"]\n",
+            );
+            write_fixture(
+                registry,
+                "y",
+                "1.0.0",
+                "library",
+                "mkdir -p $WASM_POSIX_DEP_OUT_DIR/lib && \
+                 echo ydata > $WASM_POSIX_DEP_OUT_DIR/lib/libY.a",
+                "[outputs]\nlibs = [\"lib/libY.a\"]\n",
+            );
+        });
+
+        let manifest_path = staging.join("manifest.json");
+        let text = fs::read_to_string(&manifest_path).unwrap();
+        let mut json: Value = serde_json::from_str(&text).unwrap();
+        let entries = json["entries"].as_array_mut().unwrap();
+        for entry in entries.iter_mut() {
+            if entry.get("archive_name").is_some()
+                && entry.get("program").and_then(|v| v.as_str()) == Some("z")
+            {
+                entry["compatibility"]["cache_key_sha"] =
+                    Value::String("0".repeat(64));
+            }
+        }
+        fs::write(&manifest_path, serde_json::to_string_pretty(&json).unwrap())
+            .unwrap();
+
+        let install_cache = tempdir("strict-default-off-install-cache");
+        let local_bin = tempdir("strict-default-off-local-bin");
+
+        let err = super::run(vec![
+            "--manifest".into(),
+            manifest_path.display().to_string(),
+            "--archive-base".into(),
+            format!("file://{}", staging.display()),
+            "--cache-root".into(),
+            install_cache.display().to_string(),
+            "--local-binaries-dir".into(),
+            local_bin.display().to_string(),
+            "--registry".into(),
+            registry.display().to_string(),
+            "--abi".into(),
+            "4".into(),
+        ])
+        .expect_err("install_release must Err without --allow-stale-manifest");
+
+        assert!(
+            err.contains("stale") || err.contains("cache_key_sha"),
+            "error must surface the staleness, got: {err}"
+        );
     }
 
     #[test]

@@ -100,7 +100,7 @@ The wasm-posix-kernel uses a **centralized architecture**: a single kernel Wasm 
 | Function | Status | Notes |
 |----------|--------|-------|
 | `fork()` | Full | Centralized mode: kernel serializes full process state (FD/OFD tables, signals, environment, CWD, rlimits, brk, terminal), host spawns child Worker with copied Memory. Children re-execute from `_start` with fork return value 0. Cross-process pipes, signals, and waitpid all functional. |
-| `exec()` | Full | Kernel-initiated via SYS_EXECVE (syscall 211). Host `handleExec` reads path/argv/envp from process memory, calls `onExec` callback. Replaces process image. Preserves PID, open fds (closes CLOEXEC), environment, CWD, signal mask. |
+| `exec()` | Full | Kernel-initiated via SYS_EXECVE (syscall 211). Host `handleExec` reads path/argv/envp from process memory, calls `onExec` callback. Replaces process image. Preserves PID, open fds (closes CLOEXEC), environment, CWD, signal mask. **Resets** the program break (POSIX-correct); host then re-installs the new program's `__heap_base` via `kernel_set_brk_base`. |
 | `waitpid()` | Full | Kernel-internal: blocks parent until child exits (WNOHANG supported). Reaps zombie processes. Supports pid>0 (specific child), pid=-1 (any child), pid=0 (same pgid), pid<-1 (specific pgid). Returns status with WIFEXITED/WEXITSTATUS. |
 | `exit()` / `_exit()` | Full | Closes all fds and dir streams, releases all fcntl locks, sets ProcessState::Exited. SIGCHLD delivered to parent. Zombie state maintained until reaped by waitpid. |
 | `getpid()` | Full | Returns pid from Process struct. |
@@ -170,7 +170,7 @@ The wasm-posix-kernel uses a **centralized architecture**: a single kernel Wasm 
 | `msync()` | Full | Flushes MAP_SHARED regions back to the file via pwrite. No-op for MAP_PRIVATE (correct per POSIX). |
 | `shm_open()` / `shm_unlink()` | Full | musl maps to `/dev/shm/` paths; host rewrites to tmpdir on macOS. Works with MAP_SHARED mmap. |
 | `munmap()` | Full | Removes tracked region. Page-aligned address required. Partial munmap supported: front trim, back trim, and middle split. |
-| `brk()` / `sbrk()` | Partial | Kernel-managed program break. Initial break at 0x01000000. Growing and shrinking supported. Program break inherited on fork/exec. |
+| `brk()` / `sbrk()` | Partial | Kernel-managed program break. Initial break installed by host from the program's `__heap_base` export via `kernel_set_brk_base` (16MB hardcoded fallback for binaries without `__heap_base`). Growing and shrinking supported. Inherited on `fork`; **reset** on `exec` and re-installed from the new program's `__heap_base` (POSIX-correct). |
 | `mprotect()` | Partial | Returns success (no-op). Wasm linear memory has no page-level protection, so protection changes are silently accepted. |
 | `memfd_create()` | Full | In-kernel anonymous file backed by Vec. MFD_CLOEXEC and MFD_ALLOW_SEALING flags. Supports read, write, lseek, ftruncate, fstat, mmap. |
 
@@ -386,7 +386,7 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 | **Socket options partially no-op** | socket | SO_REUSEADDR, SO_KEEPALIVE, SO_LINGER, SO_BROADCAST, SO_RCVTIMEO, SO_SNDTIMEO, TCP_NODELAY accepted and stored but have no effect on data transfer. |
 | **POLLERR partial** | I/O multiplex | poll() reports POLLERR for sockets with both read and write shut down. No POLLERR for other error conditions. |
 | **pread/pwrite not multi-process safe** | I/O | Uses save/seek/read/restore pattern — safe in single process but races with shared OFDs across processes. |
-| ~~**brk not inherited on fork**~~ | memory | **Resolved.** Program break now serialized/deserialized in fork/exec state. |
+| ~~**brk not inherited on fork**~~ | memory | **Resolved.** Program break serialized/deserialized in fork state. (`exec` reset is intentional per POSIX; host re-installs from new program's `__heap_base`.) |
 | ~~**VMIN/VTIME not interpreted**~~ | terminal | **Partially resolved.** VMIN/VTIME values accessible via TerminalState methods. Full VMIN/VTIME read semantics for raw mode are approximated. |
 | ~~**ICANON no line buffering**~~ | terminal | **Resolved.** ICANON mode now buffers input with line editing: VERASE (backspace), VKILL (^U), VEOF (^D). ICRNL/INLCR/IGNCR input processing and ECHO/ECHOE/ECHOK/ECHONL echo handling. |
 | ~~**No job control**~~ | terminal | **Partially resolved.** tcgetpgrp()/tcsetpgrp() implemented via TIOCGPGRP/TIOCSPGRP ioctls. SIGTTIN/SIGTTOU not yet generated. |
