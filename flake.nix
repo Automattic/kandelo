@@ -117,6 +117,16 @@
             # dies later with "makeinfo: command not found" on every
             # `*.info` rule.
             pkgs.texinfo
+            # Mozilla CA bundle — Nix's curl is built against
+            # cacert and looks up its bundle via SSL_CERT_FILE /
+            # NIX_SSL_CERT_FILE / GIT_SSL_CAINFO. Pure-shell
+            # (`scripts/dev-shell.sh` uses --ignore-environment)
+            # strips those env vars from the parent, so without
+            # cacert in the flake + the shellHook export below,
+            # every HTTPS download fails with curl exit 77 ("Problem
+            # with the SSL CA cert"). All ~50 build scripts fetch
+            # sources via curl over HTTPS, so this is load-bearing.
+            pkgs.cacert
             # libcrypt.so.1 (legacy SONAME) for host miniperl. Ubuntu
             # 24.04 dropped libcrypt.so.1 from default install (libc
             # split crypt(3) out into libxcrypt, which carries
@@ -148,6 +158,13 @@
             export LLVM_BIN=${llvmTree}/bin
             export LLVM_PREFIX=${llvmTree}
             export LLVM_VERSION=21
+            # CA bundle for HTTPS — pure-shell strips the user's
+            # SSL_CERT_FILE; without an explicit re-export, every
+            # `curl https://…` returns exit 77 ("Problem with the
+            # SSL CA cert"). pkgs.cacert ships the Mozilla bundle.
+            export SSL_CERT_FILE="${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+            export NIX_SSL_CERT_FILE="$SSL_CERT_FILE"
+            export GIT_SSL_CAINFO="$SSL_CERT_FILE"
             # Make libcrypt.so.1 findable at runtime for host miniperl
             # built by perl-cross. mkShell rpath-binds via gcc-wrapper
             # at link time, but if the perl-cross link line comes from
