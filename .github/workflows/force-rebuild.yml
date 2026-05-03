@@ -116,7 +116,7 @@ jobs:
         uses: DeterminateSystems/magic-nix-cache-action@v13
 
       - name: Warm Nix dev shell
-        run: nix develop --accept-flake-config --command true
+        run: bash scripts/dev-shell.sh true
 
       - name: Cache resolver + cargo target
         uses: actions/cache@v4
@@ -143,9 +143,9 @@ jobs:
         if: steps.cache-sysroot.outputs.cache-hit != 'true'
         # See staging-build.yml.
         run: |
-          nix develop --accept-flake-config --command bash scripts/build-musl.sh
-          nix develop --accept-flake-config --command bash scripts/build-musl.sh --arch wasm64posix
-          nix develop --accept-flake-config --command bash -c '
+          bash scripts/dev-shell.sh bash scripts/build-musl.sh
+          bash scripts/dev-shell.sh bash scripts/build-musl.sh --arch wasm64posix
+          bash scripts/dev-shell.sh bash -c '
             src=""
             for cand in "$LLVM_PREFIX/include/c++/v1" "$LLVM_PREFIX/share/libc++/v1"; do
               if [ -f "$cand/__config" ] || [ -f "$cand/iostream" ]; then
@@ -170,8 +170,8 @@ jobs:
               fi
             done
           '
-          nix develop --accept-flake-config --command bash scripts/build-libcxx.sh
-          nix develop --accept-flake-config --command bash scripts/build-libcxx.sh --arch wasm64
+          bash scripts/dev-shell.sh bash scripts/build-libcxx.sh
+          bash scripts/dev-shell.sh bash scripts/build-libcxx.sh --arch wasm64
 
       - name: Compute durable release tag
         id: tag
@@ -198,7 +198,7 @@ jobs:
         # way; the test-suite step further down does its own install
         # too (idempotent, fast cache hit on second run).
         run: |
-          nix develop --accept-flake-config --command bash -c '
+          bash scripts/dev-shell.sh bash -c '
             npm install --no-audit --no-fund
             cd host && npm install --no-audit --no-fund
           '
@@ -243,7 +243,7 @@ jobs:
           # once texlive can source-build under
           # `nix develop --ignore-environment`.
           mkdir -p /tmp/durable
-          nix develop --accept-flake-config --command \
+          bash scripts/dev-shell.sh \
             scripts/stage-release.sh \
               --out /tmp/durable \
               --tag "${{ steps.tag.outputs.tag }}" \
@@ -272,7 +272,7 @@ jobs:
         if: ${{ !inputs.skip_tests }}
         run: |
           HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
-          nix develop --accept-flake-config --command \
+          bash scripts/dev-shell.sh \
             cargo run -p xtask --target "$HOST_TARGET" --quiet -- install-release \
               --manifest /tmp/durable/manifest.json \
               --archive-base "file:///tmp/durable" \
@@ -284,7 +284,7 @@ jobs:
         # only when tests need them.
         if: ${{ !inputs.skip_tests }}
         run: |
-          nix develop --accept-flake-config --command bash -c '
+          bash scripts/dev-shell.sh bash -c '
             cargo build --release -p wasm-posix-kernel \
               -Z build-std=core,alloc \
               -Z build-std-features=panic_immediate_abort
@@ -299,7 +299,7 @@ jobs:
       - name: Run cargo + vitest tests
         if: ${{ !inputs.skip_tests }}
         run: |
-          nix develop --accept-flake-config --command bash -c '
+          bash scripts/dev-shell.sh bash -c '
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
             cargo test -p wasm-posix-kernel --target "$HOST_TARGET" --lib
             cd host && npx vitest run
@@ -308,17 +308,17 @@ jobs:
       - name: Run libc-test conformance suite
         if: ${{ !inputs.skip_tests }}
         run: |
-          nix develop --accept-flake-config --command bash scripts/run-libc-tests.sh
+          bash scripts/dev-shell.sh bash scripts/run-libc-tests.sh
 
       - name: Run Open POSIX Test Suite
         if: ${{ !inputs.skip_tests }}
         run: |
-          nix develop --accept-flake-config --command bash scripts/run-posix-tests.sh
+          bash scripts/dev-shell.sh bash scripts/run-posix-tests.sh
 
       - name: Run Sortix os-test suite
         if: ${{ !inputs.skip_tests }}
         run: |
-          nix develop --accept-flake-config --command bash scripts/run-sortix-tests.sh --all
+          bash scripts/dev-shell.sh bash scripts/run-sortix-tests.sh --all
 
       - name: Publish durable release
         # Reached only after tests pass (or skip_tests=true). Tests
@@ -327,7 +327,7 @@ jobs:
         # orphaned releases scattered around when force-rebuild is
         # used to investigate a suspected cache problem.
         run: |
-          nix develop --accept-flake-config --command \
+          bash scripts/dev-shell.sh \
             scripts/publish-release.sh \
               --tag "${{ steps.tag.outputs.tag }}" \
               --staging /tmp/durable

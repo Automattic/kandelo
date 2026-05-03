@@ -110,6 +110,13 @@
             # binary for user programs — different from the host
             # packager pkgs.zip.
             pkgs.zip
+            # texinfo provides `makeinfo` — autotools projects (bc,
+            # gawk, m4, …) call it to generate .info docs from .texi
+            # sources. Without it, configure passes (it's only
+            # WANT_-but-not-required at configure time) and the build
+            # dies later with "makeinfo: command not found" on every
+            # `*.info` rule.
+            pkgs.texinfo
             # libcrypt.so.1 (legacy SONAME) for host miniperl. Ubuntu
             # 24.04 dropped libcrypt.so.1 from default install (libc
             # split crypt(3) out into libxcrypt, which carries

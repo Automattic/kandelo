@@ -141,6 +141,35 @@ bash build.sh          # Build kernel wasm + musl sysroot
 scripts/build-programs.sh  # Build test/example C programs
 ```
 
+### Always use `scripts/dev-shell.sh`, not bare `nix develop`
+
+The canonical entry to the dev shell is `scripts/dev-shell.sh`. It wraps
+`nix develop --ignore-environment` with a curated `--keep` list (HOME,
+TERM, INPUT_*, GH_TOKEN, GITHUB_*) so only flake-declared deps are
+visible. Bare `nix develop` inherits the host PATH — every host tool
+silently leaks in, and the build "works on my machine" while a CI
+runner without the same Homebrew/apt packages explodes. PR #406's
+force-rebuild iterations diagnosed exactly this class of bug
+(/usr/bin/curl, /opt/homebrew/bin/python3, /usr/bin/perl, makeinfo,
+rsync, jq, …) — all caught by switching to pure mode.
+
+Usage:
+
+```bash
+scripts/dev-shell.sh bash scripts/build-musl.sh   # one-shot
+scripts/dev-shell.sh bash                         # interactive shell
+```
+
+CI workflows (`.github/workflows/force-rebuild.yml`,
+`staging-build.yml`, `prepare-merge.yml`) all invoke build steps via
+`bash scripts/dev-shell.sh ...`. To add a new env-var to the keep-list,
+edit `scripts/dev-shell.sh` once — single source of truth.
+
+If a build fails with "command not found" inside the dev shell, the
+correct fix is to add the package to `flake.nix`, not to expand
+`--keep`. `--keep` is for workflow context (auth, dispatch inputs),
+not for tools.
+
 ## Cross-Compilation and Configure Scripts
 
 We cross-compile C libraries for wasm32 using `wasm32posix-cc`. Autoconf `configure` scripts often run feature-detection checks (e.g., `AC_CHECK_FUNCS`) that test against the **host** system's libraries rather than the wasm sysroot. This produces incorrect results — functions like `feenableexcept` may exist on macOS/Linux but not in our musl-based wasm sysroot.
