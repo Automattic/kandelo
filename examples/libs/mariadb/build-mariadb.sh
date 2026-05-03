@@ -83,7 +83,7 @@ if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading MariaDB $MARIADB_VERSION..."
     TARBALL="mariadb-${MARIADB_VERSION}.tar.gz"
     URL="https://archive.mariadb.org/mariadb-${MARIADB_VERSION}/source/${TARBALL}"
-    curl --retry 5 --retry-delay 2 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
     mkdir -p "$SRC_DIR"
     tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
     rm "/tmp/$TARBALL"
@@ -457,7 +457,10 @@ else
 fi
 
 # Install into local-binaries/ so the resolver picks the freshly-built
-# binary over the fetched release.
+# binary over the fetched release. Use $INSTALL_DIR (set per WASM_ARCH
+# above) — hard-coding mariadb-install/ lost the wasm64 build's output
+# at mariadb-install-64/, which then made build-mariadb-vfs.sh's wasm64
+# branch fail with "mariadbd.wasm not found".
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary mariadb "$SCRIPT_DIR/mariadb-install/bin/mariadbd.wasm" mariadbd.wasm
-[ -f "$SCRIPT_DIR/mariadb-install/bin/mysqltest.wasm" ] && install_local_binary mariadb "$SCRIPT_DIR/mariadb-install/bin/mysqltest.wasm" mysqltest.wasm || true
+install_local_binary mariadb "$INSTALL_DIR/bin/mariadbd.wasm" mariadbd.wasm
+[ -f "$INSTALL_DIR/bin/mysqltest.wasm" ] && install_local_binary mariadb "$INSTALL_DIR/bin/mysqltest.wasm" mysqltest.wasm || true

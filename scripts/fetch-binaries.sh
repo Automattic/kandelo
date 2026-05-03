@@ -141,7 +141,7 @@ auto_detect_pr() {
     if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
         pulls_json=$(gh api "repos/$OWNER_REPO/commits/$head_sha/pulls" 2>/dev/null) || return 0
     else
-        pulls_json=$(curl --retry 5 --retry-delay 2 --retry-all-errors -fsSL \
+        pulls_json=$(curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/$OWNER_REPO/commits/$head_sha/pulls" 2>/dev/null) || return 0
     fi
@@ -187,7 +187,7 @@ if [ -n "$PR_NUMBER" ] && [ ! -f "$OVERLAY_FILE" ]; then
             fi
         fi
         if [ "$downloaded" = "0" ]; then
-            if curl --retry 5 --retry-delay 2 --retry-all-errors -fsSL --retry 2 -o "$OVERLAY_FILE.partial" "$STAGING_BASE/binaries.lock.pr"; then
+            if curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL --retry 2 -o "$OVERLAY_FILE.partial" "$STAGING_BASE/binaries.lock.pr"; then
                 mv "$OVERLAY_FILE.partial" "$OVERLAY_FILE"
             else
                 rm -f "$OVERLAY_FILE.partial"
@@ -250,7 +250,7 @@ ensure_object() {
 
     local tmp="$obj_path.partial"
     echo "  downloading $rel_name..."
-    if ! curl --retry 5 --retry-delay 2 --retry-all-errors -fsSL --retry 3 -o "$tmp" "$REL_BASE/$rel_name"; then
+    if ! curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL --retry 3 -o "$tmp" "$REL_BASE/$rel_name"; then
         rm -f "$tmp"
         echo "ERROR: download failed for $rel_name" >&2
         return 1

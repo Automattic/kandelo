@@ -53,7 +53,7 @@ echo "==> libpng at $LIBPNG_PREFIX"
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading TeX Live $TEXLIVE_VERSION source..."
     TARBALL="texlive-${TEXLIVE_VERSION}0308-source.tar.xz"
-    curl --retry 5 --retry-delay 2 --retry-all-errors -fsSL "https://ftp.math.utah.edu/pub/tex/historic/systems/texlive/${TEXLIVE_VERSION}/${TARBALL}" \
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "https://ftp.math.utah.edu/pub/tex/historic/systems/texlive/${TEXLIVE_VERSION}/${TARBALL}" \
         -o "/tmp/${TARBALL}"
     mkdir -p "$SRC_DIR"
     tar xf "/tmp/${TARBALL}" -C "$SRC_DIR" --strip-components=1

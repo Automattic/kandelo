@@ -42,6 +42,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Mutex, OnceLock};
 
 use sha2::{Digest, Sha256};
 
@@ -497,6 +498,59 @@ fn render_probe_failures(target: &DepsManifest, failures: &[ProbeFailure]) -> St
     out
 }
 
+/// Process-lifetime memo of `(name, arch) → ensure_built_uncached`'s
+/// result. Within a single `xtask` invocation (e.g. one
+/// `stage-release` run), a manifest reached transitively via multiple
+/// dependents (mariadb is reached 6× during a force-rebuild-all:
+/// directly + via lamp + via mariadb-test + via mariadb-vfs ×2)
+/// otherwise re-runs its full source build N times — ~80 minutes of
+/// pointless work for mariadb alone. The memo collapses that to one
+/// build per `(name, arch)`.
+///
+/// Caches BOTH `Ok` (so subsequent dependents reuse the resolved
+/// path) and `Err` (so a failed manifest doesn't waste 10 more
+/// minutes per dependent re-discovering the same failure). Cycle
+/// errors are intentionally NOT cached — those depend on the call
+/// stack at the moment of detection, and caching them could leak a
+/// stale cycle result into a later acyclic traversal.
+///
+/// Lifetime: process-only. A fresh xtask invocation starts with an
+/// empty memo, which keeps CI semantics intact (every run from
+/// scratch retries any failures).
+///
+/// Key dimensions:
+/// * `cache_root` — same process can host independent test cases
+///   (cargo runs tests in parallel within one process; each test
+///   uses a fresh tempdir). In production there's only ever one
+///   cache_root per run, so this dimension is invisible to the
+///   force-rebuild path.
+/// * `name` — the manifest's identifier within its registry.
+/// * `arch` — wasm32 vs wasm64. The same name builds independently
+///   per-arch.
+/// * `was_force_rebuild` — `force_source_build` bypasses the
+///   on-disk cache. Memoizing across the force-rebuild boundary
+///   would mean a no-force result satisfies a later force request,
+///   defeating the bypass intent. Keep them as separate slots so
+///   a force-call after a no-force-call still rebuilds. In
+///   stage-release's force-rebuild-all loop every call has the
+///   same flag, so the memo collapses N calls per (name, arch)
+///   into 1 build — the actual optimization we wanted.
+type BuildMemoKey = (PathBuf, String, TargetArch, bool);
+type BuildMemoValue = Result<(PathBuf, BTreeSet<PathBuf>), String>;
+
+fn build_memo() -> &'static Mutex<BTreeMap<BuildMemoKey, BuildMemoValue>> {
+    static MEMO: OnceLock<Mutex<BTreeMap<BuildMemoKey, BuildMemoValue>>> = OnceLock::new();
+    MEMO.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+/// Cycle-error sentinel — these errors must NOT be memoized because
+/// they describe the call stack at detection time, not a property of
+/// the manifest. A later acyclic call for the same node should be
+/// allowed to proceed.
+fn is_cycle_error(e: &str) -> bool {
+    e.starts_with("cycle while building:")
+}
+
 /// Resolve `target`, returning its on-disk path *and* the set of
 /// transitively-resolved lib paths underneath it (its direct deps, their
 /// deps, and so on — but NOT `target`'s own path; the caller adds that).
@@ -509,6 +563,59 @@ fn render_probe_failures(target: &DepsManifest, failures: &[ProbeFailure]) -> St
 /// Deduped via `BTreeSet` so a diamond dep (`libZ -> {libA, libB} ->
 /// libCommon`) only contributes `libCommon`'s path once.
 fn ensure_built_inner(
+    target: &DepsManifest,
+    registry: &Registry,
+    arch: TargetArch,
+    abi_version: u32,
+    opts: &ResolveOpts<'_>,
+    memo: &mut BTreeMap<String, [u8; 32]>,
+    building: &mut Vec<String>,
+) -> Result<(PathBuf, BTreeSet<PathBuf>), String> {
+    // Process-lifetime memo: the same (name, arch) often gets
+    // requested multiple times within one stage-release run via
+    // different dep chains. Without this, mariadb wasm32 source-builds
+    // 4 times in a single force-rebuild-all (lamp, mariadb,
+    // mariadb-test, mariadb-vfs each independently demand it). See
+    // `build_memo`'s doc comment for full rationale.
+    let was_force_rebuild = opts
+        .force_source_build
+        .map(|s| s.contains(&target.name))
+        .unwrap_or(false);
+    let memo_key: BuildMemoKey = (
+        opts.cache_root.to_path_buf(),
+        target.name.clone(),
+        arch,
+        was_force_rebuild,
+    );
+    {
+        let cache = build_memo().lock().unwrap();
+        if let Some(cached) = cache.get(&memo_key) {
+            return cached.clone();
+        }
+    }
+
+    let result = ensure_built_uncached(
+        target, registry, arch, abi_version, opts, memo, building,
+    );
+
+    // Don't poison the cache with cycle errors — those reflect the
+    // call stack at the moment of detection, not a stable property
+    // of the manifest. Everything else (Ok path + non-cycle Err)
+    // gets memoized.
+    let should_memo = match &result {
+        Ok(_) => true,
+        Err(e) => !is_cycle_error(e),
+    };
+    if should_memo {
+        build_memo()
+            .lock()
+            .unwrap()
+            .insert(memo_key, result.clone());
+    }
+    result
+}
+
+fn ensure_built_uncached(
     target: &DepsManifest,
     registry: &Registry,
     arch: TargetArch,
