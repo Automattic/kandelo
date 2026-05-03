@@ -454,9 +454,18 @@ if [ ! -f config.sh ]; then
 
     echo "==> Configure complete."
 
-    # Fix xconfig.h: perl-cross may generate broken preprocessor directives
-    # when function detection fails (e.g. "# HAS_NANOSLEEP" without "define")
-    sed -i.bak -e 's/^# HAS_\([A-Z_]*\)\([ \t]\)/#define HAS_\1\2/' xconfig.h
+    # Fix xconfig.h: perl-cross silently drops some -Dd_<feature>=define
+    # overrides for the cross sub-configure (target xconfig.sh) — e.g.
+    # d_nanosleep is set in host config.sh but missing from xconfig.sh,
+    # so config_h.SH templates `#$d_nanosleep HAS_NANOSLEEP /**/` to
+    # `# HAS_NANOSLEEP /**/`, an invalid preprocessor directive that
+    # fails to compile every TU including perl.h.
+    #
+    # NOTE on portability: the prior version used `[ \t]` in BRE, but
+    # BSD sed (macOS) treats `\t` inside `[]` as literal backslash-t,
+    # so the substitution silently no-op'd on Mac while working on
+    # GNU sed. Use ERE + [[:space:]] for portability across BSD/GNU.
+    sed -i.bak -E -e 's/^# ([A-Z][A-Z0-9_]+)([[:space:]])/#define \1\2/' xconfig.h
 
     # Patch Makefile.config:
     # - Remove -lc (our toolchain links libc automatically)
