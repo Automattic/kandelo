@@ -48,6 +48,7 @@ ARCHES=()
 KINDS=()
 FORCE_REBUILD_NAMES=()
 FORCE_REBUILD_ALL=0
+ALLOW_FAILURE_NAMES=()
 while [ $# -gt 0 ]; do
     case "$1" in
         --out) STAGING="$2"; shift 2 ;;
@@ -57,6 +58,7 @@ while [ $# -gt 0 ]; do
         --kind) KINDS+=("$2"); shift 2 ;;
         --force-rebuild) FORCE_REBUILD_NAMES+=("$2"); shift 2 ;;
         --force-rebuild-all) FORCE_REBUILD_ALL=1; shift ;;
+        --allow-failure) ALLOW_FAILURE_NAMES+=("$2"); shift 2 ;;
         *) echo "unknown arg $1" >&2; exit 2 ;;
     esac
 done
@@ -119,6 +121,13 @@ if [ ${#FORCE_REBUILD_NAMES[@]} -gt 0 ]; then
     done
 fi
 
+allow_args=()
+if [ ${#ALLOW_FAILURE_NAMES[@]} -gt 0 ]; then
+    for n in "${ALLOW_FAILURE_NAMES[@]}"; do
+        allow_args+=(--allow-failure "$n")
+    done
+fi
+
 echo "== Staging archive entries (kinds: ${KINDS[*]:-library,program}, arches: ${ARCHES[*]}) =="
 cargo run -p xtask --target "$HOST_TARGET" --quiet -- stage-release \
     --staging "$STAGING" \
@@ -127,6 +136,7 @@ cargo run -p xtask --target "$HOST_TARGET" --quiet -- stage-release \
     "${arch_args[@]}" \
     ${kind_args[@]+"${kind_args[@]}"} \
     ${force_args[@]+"${force_args[@]}"} \
+    ${allow_args[@]+"${allow_args[@]}"} \
     --build-timestamp "$timestamp" \
     --build-host "$host"
 echo

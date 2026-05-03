@@ -47,6 +47,15 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     // walked registry once we have it.
     let mut force_rebuild_names: BTreeSet<String> = BTreeSet::new();
     let mut force_rebuild_all = false;
+    // Per-package allow-failure list. When a manifest in this set fails
+    // every attempted arch, it's downgraded to a warning rather than
+    // failing the whole stage-release. Release-policy escape hatch for
+    // packages with known-broken source builds we don't want to gate the
+    // workflow on. Lives at the workflow layer (e.g., force-rebuild.yml
+    // passes `--allow-failure texlive`) so the package's deps.toml stays
+    // agnostic — "OK to fail right now" is a release-policy decision,
+    // not a property of the package itself.
+    let mut allow_failure_names: BTreeSet<String> = BTreeSet::new();
 
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
@@ -98,6 +107,10 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                     .insert(it.next().ok_or("--force-rebuild requires <name>")?);
             }
             "--force-rebuild-all" => force_rebuild_all = true,
+            "--allow-failure" => {
+                allow_failure_names
+                    .insert(it.next().ok_or("--allow-failure requires <name>")?);
+            }
             other => return Err(format!("unknown arg {other:?}")),
         }
     }
@@ -261,14 +274,34 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     // arches silently skipped by target_arches filtering — otherwise a
     // wasm32-only manifest could never be a total failure under
     // `--arch wasm32 --arch wasm64`, hiding real build breakage.
+    //
+    // `--allow-failure <name>` carves out a per-package exception:
+    // total-failure for that name logs a warning but doesn't gate the
+    // workflow exit code. Used to keep force-rebuild green while a
+    // known-broken package (e.g. texlive's pmpost-pulls-in-gmp.h trap)
+    // is being fixed in a follow-up. The package's deps.toml stays
+    // unchanged; the policy lives at the call site.
     if !errors.is_empty() && !continue_on_error {
-        let total_failures: Vec<&str> = errors
-            .iter()
-            .filter(|(name, v)| {
-                attempted.get(*name).copied().unwrap_or(0) == v.len() && v.len() > 0
-            })
-            .map(|(k, _)| k.as_str())
-            .collect();
+        let mut total_failures: Vec<&str> = Vec::new();
+        let mut allowed_total_failures: Vec<&str> = Vec::new();
+        for (name, v) in &errors {
+            if attempted.get(name).copied().unwrap_or(0) != v.len() || v.is_empty() {
+                continue;
+            }
+            if allow_failure_names.contains(name) {
+                allowed_total_failures.push(name);
+            } else {
+                total_failures.push(name);
+            }
+        }
+        if !allowed_total_failures.is_empty() {
+            eprintln!(
+                "stage-release: {} manifest(s) failed every attempted arch \
+                 but are listed via --allow-failure — downgraded to warnings: {}",
+                allowed_total_failures.len(),
+                allowed_total_failures.join(", "),
+            );
+        }
         if !total_failures.is_empty() {
             return Err(format!(
                 "stage-release: {} manifest(s) failed every attempted arch — \
@@ -789,6 +822,85 @@ echo data > "$WASM_POSIX_DEP_OUT_DIR/lib/libY.a"
         assert!(
             err.contains("every attempted arch"),
             "error must use 'attempted arch' semantics, got: {err}"
+        );
+    }
+
+    /// `--allow-failure <name>` downgrades a total-failure for that
+    /// specific manifest to a warning. Other manifests' total
+    /// failures still hard-fail as usual.
+    #[test]
+    fn stage_release_allow_failure_downgrades_named_manifest_only() {
+        let dir = tempdir("e4-allow-failure");
+        let registry = dir.join("registry");
+        let cache_root = dir.join("cache");
+        let staging = dir.join("staging");
+        fs::create_dir_all(&registry).unwrap();
+        fs::create_dir_all(&cache_root).unwrap();
+
+        write_fixture_lib(
+            &registry,
+            "tolerated",
+            "1.0.0",
+            "echo always-fails >&2; exit 1",
+            "[outputs]\nlibs = [\"lib/libT.a\"]\n",
+        );
+
+        // First: tolerated alone with --allow-failure must Ok().
+        super::run(vec![
+            "--staging".into(),
+            staging.display().to_string(),
+            "--registry".into(),
+            registry.display().to_string(),
+            "--cache-root".into(),
+            cache_root.display().to_string(),
+            "--abi".into(),
+            "4".into(),
+            "--arch".into(),
+            "wasm32".into(),
+            "--allow-failure".into(),
+            "tolerated".into(),
+            "--build-timestamp".into(),
+            "2026-04-26T00:00:00Z".into(),
+            "--build-host".into(),
+            "test-host".into(),
+        ])
+        .expect("tolerated total-failure must be downgraded under --allow-failure");
+
+        // Second: tolerated + a non-tolerated failure must still Err().
+        let staging2 = dir.join("staging2");
+        write_fixture_lib(
+            &registry,
+            "untolerated",
+            "1.0.0",
+            "echo always-fails >&2; exit 1",
+            "[outputs]\nlibs = [\"lib/libU.a\"]\n",
+        );
+        let err = super::run(vec![
+            "--staging".into(),
+            staging2.display().to_string(),
+            "--registry".into(),
+            registry.display().to_string(),
+            "--cache-root".into(),
+            cache_root.display().to_string(),
+            "--abi".into(),
+            "4".into(),
+            "--arch".into(),
+            "wasm32".into(),
+            "--allow-failure".into(),
+            "tolerated".into(),
+            "--build-timestamp".into(),
+            "2026-04-26T00:00:00Z".into(),
+            "--build-host".into(),
+            "test-host".into(),
+        ])
+        .expect_err("untolerated total-failure must still gate the run");
+        assert!(
+            err.contains("untolerated"),
+            "error must name the un-allowed manifest, got: {err}"
+        );
+        assert!(
+            !err.contains("tolerated") || err.contains("untolerated"),
+            "error must not list `tolerated` outside of substring match, got: {err}"
         );
     }
 
