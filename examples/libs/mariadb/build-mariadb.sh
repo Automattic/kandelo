@@ -23,10 +23,17 @@ SRC_DIR="$SCRIPT_DIR/mariadb-src"
 HOST_BUILD_DIR="$SCRIPT_DIR/mariadb-host-build"
 GLUE_DIR="$REPO_ROOT/glue"
 
-# Parse --wasm64 flag
-WASM_ARCH="wasm32"
+# Default to xtask resolver's WASM_POSIX_DEP_TARGET_ARCH (set per
+# manifest arch at build-deps time); fall back to wasm32 outside the
+# resolver. CLI flags override — useful for direct manual invocation.
+# Without this, `cargo xtask build-deps` for the wasm64 mariadb target
+# silently rebuilt wasm32 (env var ignored, no --wasm64 in argv) and
+# left mariadb-install-64/ empty, breaking the downstream
+# build-mariadb-vfs.sh wasm64 step.
+WASM_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
 while [ $# -gt 0 ]; do
     case "$1" in
+        --wasm32) WASM_ARCH="wasm32"; shift ;;
         --wasm64) WASM_ARCH="wasm64"; shift ;;
         *) echo "Unknown argument: $1" >&2; exit 1 ;;
     esac
