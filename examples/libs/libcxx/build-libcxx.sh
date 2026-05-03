@@ -197,15 +197,29 @@ cp "$LIBCXX_A" "$INSTALL_DIR/lib/libc++.a"
 cp "$LIBCXXABI_A" "$INSTALL_DIR/lib/libc++abi.a"
 
 # Copy libc++ headers from host LLVM. We continue to source headers from
-# Homebrew LLVM at build time (matching version with the binary we just
+# the host LLVM at build time (matching version with the binary we just
 # produced); migrating headers into an upstream tarball is a future
 # cleanup tracked in the design doc.
-LLVM_CXX_HEADERS="$LLVM_PREFIX/include/c++/v1"
-if [ ! -d "$LLVM_CXX_HEADERS" ]; then
-    echo "ERROR: libc++ headers not found at $LLVM_CXX_HEADERS" >&2
+#
+# Header path differs by distribution:
+#   - Homebrew LLVM:  $LLVM_PREFIX/include/c++/v1/
+#   - Nix LLVM:       $LLVM_PREFIX/share/libc++/v1/
+# Try both in order; first one with __config (or iostream) wins.
+LLVM_CXX_HEADERS=""
+for cand in "$LLVM_PREFIX/include/c++/v1" "$LLVM_PREFIX/share/libc++/v1"; do
+    if [ -f "$cand/__config" ] || [ -f "$cand/iostream" ]; then
+        LLVM_CXX_HEADERS="$cand"
+        break
+    fi
+done
+if [ -z "$LLVM_CXX_HEADERS" ]; then
+    echo "ERROR: libc++ headers not found under $LLVM_PREFIX (tried include/c++/v1 and share/libc++/v1)" >&2
     exit 1
 fi
-cp -R "$LLVM_CXX_HEADERS/." "$INSTALL_DIR/include/c++/v1/"
+# cp -L dereferences symlinks (Nix's symlinkJoin tree contains read-only
+# symlinks; later writes to __config_site fail with EACCES otherwise).
+cp -RL "$LLVM_CXX_HEADERS/." "$INSTALL_DIR/include/c++/v1/"
+chmod -R u+w "$INSTALL_DIR/include/c++/v1/"
 
 # Override __config_site with the build-generated copy so the headers
 # match the just-built libc++.a (musl libc + pthread thread API +

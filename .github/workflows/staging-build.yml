@@ -88,54 +88,37 @@ jobs:
           path: |
             sysroot
             sysroot64
-          # v3: also includes libc++ (needed for C++ packages like dinit
-          # whose build scripts bail when sysroot/lib/libc++.a is missing).
-          key: musl-sysroot-v3-${{ runner.os }}-${{ hashFiles('scripts/build-musl.sh', 'scripts/build-libcxx.sh', 'musl-overlay/**', 'glue/**') }}
+          # v4: libcxx is now resolved via cargo xtask build-deps (package
+          # examples/libs/libcxx/), so the cache key tracks that path.
+          key: musl-sysroot-v4-${{ runner.os }}-${{ hashFiles('scripts/build-musl.sh', 'examples/libs/libcxx/**', 'musl-overlay/**', 'glue/**') }}
 
-      - name: Build musl sysroot + libc++ (wasm32 + wasm64)
+      - name: Build musl sysroot + resolve libcxx (wasm32 + wasm64)
         if: steps.cache-sysroot.outputs.cache-hit != 'true'
-        # build-programs.sh emits wasm64 fixtures only when sysroot64
-        # exists. C++ packages (dinit, mariadb-test, …) require
-        # libc++.a + headers in the sysroot. The MariaDB build is the
-        # canonical place where C++ headers get installed; replicate
-        # the relevant part inline before build-libcxx.sh so dinit's
-        # compile sees `#include <iostream>`.
+        # libcxx now lives in examples/libs/libcxx/ as a package-managed
+        # binary. Resolve it for both arches via cargo xtask, then symlink
+        # the cache contents into the sysroots so downstream consumers
+        # (mariadb, dinit, cpp_throw_test, …) link -lc++ -lc++abi as before.
+        # The libcxx package's build script handles the Nix-vs-Homebrew
+        # libc++ header path difference internally.
         run: |
           bash scripts/dev-shell.sh bash scripts/build-musl.sh
           bash scripts/dev-shell.sh bash scripts/build-musl.sh --arch wasm64posix
           bash scripts/dev-shell.sh bash -c '
-            # Nix puts libc++ headers under share/libc++/v1 (vs.
-            # Homebrew at include/c++/v1). Try both for portability.
-            src=""
-            for cand in "$LLVM_PREFIX/include/c++/v1" "$LLVM_PREFIX/share/libc++/v1"; do
-              if [ -f "$cand/__config" ] || [ -f "$cand/iostream" ]; then
-                src="$cand"; break
-              fi
-            done
-            if [ -z "$src" ]; then
-              echo "ERROR: cant locate libc++ headers under $LLVM_PREFIX" >&2
-              exit 1
-            fi
-            echo "installing libc++ headers from $src"
-            for arch_dir in sysroot sysroot64; do
-              if [ ! -f "$arch_dir/include/c++/v1/__config" ]; then
-                mkdir -p "$arch_dir/include/c++/v1"
-                # cp -L dereferences symlinks (Nix symlinkJoin
-                # produces a tree of symlinks into the read-only
-                # store; without -L, later writes that overwrite
-                # __config_site fail with EACCES).
-                cp -RL "$src"/* "$arch_dir/include/c++/v1/"
-                chmod -R u+w "$arch_dir/include/c++/v1/"
-                cs="$arch_dir/include/c++/v1/__config_site"
-                if [ -f "$cs" ]; then
-                  sed -i "s/_LIBCPP_HAS_MUSL_LIBC 0/_LIBCPP_HAS_MUSL_LIBC 1/" "$cs"
-                  sed -i "s/_LIBCPP_HAS_THREAD_API_PTHREAD 0/_LIBCPP_HAS_THREAD_API_PTHREAD 1/" "$cs"
-                fi
-              fi
+            set -euo pipefail
+            HOST_TARGET="$(rustc -vV | awk "/^host/ {print \$2}")"
+            for arch in wasm32 wasm64; do
+              cargo run -p xtask --target "$HOST_TARGET" --quiet -- \
+                build-deps resolve libcxx --arch "$arch"
+              prefix="$(cargo run -p xtask --target "$HOST_TARGET" --quiet -- \
+                build-deps path libcxx --arch "$arch")"
+              if [ "$arch" = "wasm64" ]; then sysroot="sysroot64"; else sysroot="sysroot"; fi
+              mkdir -p "$sysroot/lib" "$sysroot/include/c++"
+              ln -sf "$prefix/lib/libc++.a"    "$sysroot/lib/libc++.a"
+              ln -sf "$prefix/lib/libc++abi.a" "$sysroot/lib/libc++abi.a"
+              rm -rf "$sysroot/include/c++/v1"
+              ln -sfn "$prefix/include/c++/v1" "$sysroot/include/c++/v1"
             done
           '
-          bash scripts/dev-shell.sh bash scripts/build-libcxx.sh
-          bash scripts/dev-shell.sh bash scripts/build-libcxx.sh --arch wasm64
 
       - name: Fetch durable binaries (so source-build fallbacks have prereqs)
         # Some packages source-build when their cache_key_sha differs
@@ -554,7 +537,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       # Exposed so matrix-build can restore the same cache layer. Using
-      # the same `musl-sysroot-v3-...` key shape as the legacy `build`
+      # the same `musl-sysroot-v4-...` key shape as the legacy `build`
       # job means a cache populated by either job warms the other.
       cache-key: ${{ steps.key.outputs.value }}
     steps:
@@ -580,18 +563,16 @@ jobs:
         # Mirrors the key in the legacy `build` job (and prepare-merge)
         # exactly so all three caches alias. hashFiles() over the inputs
         # that affect the produced sysroot:
-        #   - scripts/build-musl.sh, scripts/build-libcxx.sh: the build
-        #     recipes themselves
+        #   - scripts/build-musl.sh: the musl build recipe
+        #   - examples/libs/libcxx/**: the libcxx package (build script,
+        #     manifest, and any helpers — replaces the deleted
+        #     scripts/build-libcxx.sh)
         #   - musl-overlay/**: source patches/overrides applied on top of
         #     the musl submodule
         #   - glue/**: channel_syscall.c + headers compiled into libc.a
-        # The libc++ __config_site sed patch lives inline in this
-        # workflow file's Build step — any change to it forces a fresh
-        # workflow file SHA, which means the matrix re-evaluates from
-        # scratch and the cache miss is observed naturally.
         id: key
         run: |
-          KEY="musl-sysroot-v3-${{ runner.os }}-${{ hashFiles('scripts/build-musl.sh', 'scripts/build-libcxx.sh', 'musl-overlay/**', 'glue/**') }}"
+          KEY="musl-sysroot-v4-${{ runner.os }}-${{ hashFiles('scripts/build-musl.sh', 'examples/libs/libcxx/**', 'musl-overlay/**', 'glue/**') }}"
           echo "value=$KEY" >> "$GITHUB_OUTPUT"
           echo "toolchain-cache key: $KEY"
 
@@ -606,40 +587,31 @@ jobs:
 
       - name: Build sysroots if cache miss
         if: steps.cache.outputs.cache-hit != 'true'
-        # Verbatim from the legacy `build` job (and prepare-merge.yml)
-        # so a cache populated here is byte-identical to what the
-        # legacy path would produce. See those files for the rationale
-        # behind the libc++ header copy + __config_site sed patch.
+        # Mirrors the legacy `build` job's "Build musl sysroot + resolve
+        # libcxx" step so a cache populated here is interchangeable with
+        # what the legacy path produces. libcxx is resolved via the
+        # package system (examples/libs/libcxx/) and symlinked into the
+        # sysroot; its build script handles the Nix-vs-Homebrew libc++
+        # header path difference internally.
         run: |
           bash scripts/dev-shell.sh bash scripts/build-musl.sh
           bash scripts/dev-shell.sh bash scripts/build-musl.sh --arch wasm64posix
           bash scripts/dev-shell.sh bash -c '
-            src=""
-            for cand in "$LLVM_PREFIX/include/c++/v1" "$LLVM_PREFIX/share/libc++/v1"; do
-              if [ -f "$cand/__config" ] || [ -f "$cand/iostream" ]; then
-                src="$cand"; break
-              fi
-            done
-            if [ -z "$src" ]; then
-              echo "ERROR: cant locate libc++ headers under $LLVM_PREFIX" >&2
-              exit 1
-            fi
-            echo "installing libc++ headers from $src"
-            for arch_dir in sysroot sysroot64; do
-              if [ ! -f "$arch_dir/include/c++/v1/__config" ]; then
-                mkdir -p "$arch_dir/include/c++/v1"
-                cp -RL "$src"/* "$arch_dir/include/c++/v1/"
-                chmod -R u+w "$arch_dir/include/c++/v1/"
-                cs="$arch_dir/include/c++/v1/__config_site"
-                if [ -f "$cs" ]; then
-                  sed -i "s/_LIBCPP_HAS_MUSL_LIBC 0/_LIBCPP_HAS_MUSL_LIBC 1/" "$cs"
-                  sed -i "s/_LIBCPP_HAS_THREAD_API_PTHREAD 0/_LIBCPP_HAS_THREAD_API_PTHREAD 1/" "$cs"
-                fi
-              fi
+            set -euo pipefail
+            HOST_TARGET="$(rustc -vV | awk "/^host/ {print \$2}")"
+            for arch in wasm32 wasm64; do
+              cargo run -p xtask --target "$HOST_TARGET" --quiet -- \
+                build-deps resolve libcxx --arch "$arch"
+              prefix="$(cargo run -p xtask --target "$HOST_TARGET" --quiet -- \
+                build-deps path libcxx --arch "$arch")"
+              if [ "$arch" = "wasm64" ]; then sysroot="sysroot64"; else sysroot="sysroot"; fi
+              mkdir -p "$sysroot/lib" "$sysroot/include/c++"
+              ln -sf "$prefix/lib/libc++.a"    "$sysroot/lib/libc++.a"
+              ln -sf "$prefix/lib/libc++abi.a" "$sysroot/lib/libc++abi.a"
+              rm -rf "$sysroot/include/c++/v1"
+              ln -sfn "$prefix/include/c++/v1" "$sysroot/include/c++/v1"
             done
           '
-          bash scripts/dev-shell.sh bash scripts/build-libcxx.sh
-          bash scripts/dev-shell.sh bash scripts/build-libcxx.sh --arch wasm64
 
   matrix-build:
     needs: [preflight, toolchain-cache]
