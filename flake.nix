@@ -83,6 +83,17 @@
             # explicitly carries the .so.1 SONAME and rpath-binds via
             # the gcc-wrapper.
             pkgs.libxcrypt-legacy
+            # Host-side ncurses for MariaDB's Step 1 host build. Its
+            # CMake unconditionally calls MYSQL_CHECK_READLINE →
+            # FIND_CURSES (CMakeLists.txt:416 → cmake/readline.cmake)
+            # even when -DWITH_EDITLINE=bundled is passed; without
+            # this, configure fails with "Could NOT find Curses
+            # (missing: CURSES_LIBRARY CURSES_INCLUDE_PATH)" before
+            # `import_executables.cmake` is generated, so the wasm32
+            # cross-build can't proceed. Nix's CMake searches Nix-store
+            # paths only, so installing libncurses-dev on the host
+            # doesn't help — the lib has to come from nixpkgs.
+            pkgs.ncurses
           ];
 
           shellHook = ''
