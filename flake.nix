@@ -94,6 +94,22 @@
             pkgs.xz
             pkgs.gnupatch
             pkgs.gh
+            # rsync — build-vim-zip.sh / build-shell-vfs-image.sh
+            #   use it to copy vim's runtime tree.
+            # jq    — fetch-binaries / verify-release / publish-release
+            #   parse manifest.json against expected schema.
+            # unzip — sqlite source tarball is a .zip; tcl + several
+            #   other releases also ship .zip.
+            pkgs.rsync
+            pkgs.jq
+            pkgs.unzip
+            # `zip` for build-vim-zip.sh / build-nethack-zip.sh which
+            # bundle the vim/nethack runtime trees into the .zip
+            # lazy-archives mounted by the shell VFS image. Note: the
+            # `examples/libs/zip/` registry entry builds a wasm32 zip
+            # binary for user programs — different from the host
+            # packager pkgs.zip.
+            pkgs.zip
             # libcrypt.so.1 (legacy SONAME) for host miniperl. Ubuntu
             # 24.04 dropped libcrypt.so.1 from default install (libc
             # split crypt(3) out into libxcrypt, which carries

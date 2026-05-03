@@ -68,27 +68,53 @@ if [ -x "$SRC_DIR/libs/luajit/configure" ]; then
     chmod -x "$SRC_DIR/libs/luajit/configure"
 fi
 
-# Same pattern for libs/gmp + libs/mpfr. These are only used by
-# MetaPost (and we pass --disable-mp), but TexLive's recursive
-# Makefile descends into them unconditionally. The bundled GMP
-# spawns a `native/` sub-configure with `CC=` blank — autoconf then
-# auto-detects `${build_alias}-gcc` (i.e. `x86_64-unknown-linux-gnu-gcc`
-# on the Nix-on-Linux CI runner). That points at Nix's gcc-wrapper,
-# which fails its compile-test ("C compiler cannot create
-# executables") because the cmdline `CFLAGS=` blank also gets through
-# and strips the wrapper's required spec injections. Passing
-# CC_FOR_BUILD on the outer configure doesn't help — it's clobbered
-# at recurse time.
+# TexLive's bundled libs that pdftex doesn't need but the recursive
+# Makefile still touches:
 #
-# Since we don't actually need GMP/MPFR for pdftex (the only engine
-# we build), drop both configure scripts so TexLive's recursive make
-# skips them. Cleaner than chasing the autoconf override chain.
-for unused_lib in gmp mpfr; do
+#   1. Outer libs/Makefile.am descends into every libs/<name>. Use
+#      the existing chmod -x trick (already applied to luajit) to
+#      make the recurse skip these dirs.
+#   2. texk/web2c/Makefile has separate `cd ../../libs/<X> && make
+#      rebuild` rules to (re)generate `<X>.h` headers for MetaPost
+#      source files (mp.w, mpost.w, etc.). These rules fire even
+#      with --disable-mp because the AM template includes them
+#      unconditionally. Pre-create empty stub headers at the
+#      expected paths so make sees the targets as up-to-date and
+#      skips the recipe. pdftex's actual C code never #includes
+#      these headers — only the MetaPost .w sources do, and those
+#      compilation steps are gated on --enable-mp.
+#
+# Concrete failure that prompted this: gmp's bundled `native/`
+# sub-configure clobbers CC= blank at recurse time, autoconf then
+# auto-detects `${build_alias}-gcc` (= `x86_64-unknown-linux-gnu-gcc`
+# on Nix-on-Linux CI), and Nix's gcc-wrapper fails its compile-test
+# because cmdline `CFLAGS=` blank strips the spec injections it
+# needs. Same family of issues lurks under mpfi/mpfr/cairo/lua/etc.
+#
+# Keeps: xpdf (pdftex's PDF parser), zlib + libpng (we use
+# --with-system-zlib / --with-system-libpng but the recurse still
+# touches the bundled headers).
+for unused_lib in cairo freetype2 gd gmp graphite2 harfbuzz icu \
+                  libpaper lua53 mpfi mpfr pixman potrace pplib \
+                  teckit zziplib; do
     cfg="$SRC_DIR/libs/$unused_lib/configure"
     if [ -x "$cfg" ]; then
         chmod -x "$cfg"
     fi
 done
+
+# Stub headers expected by texk/web2c/Makefile's MetaPost-source
+# preprocessing rules. The header *paths* match what Makefile rules
+# on lines around 21495+ say (libs/<name>/include/<name>.h, except
+# cairo which is libs/cairo/cairo/cairo.h). Empty files satisfy
+# make's existence check; web2c's source never reads them with
+# --disable-mp.
+mkdir -p "$SRC_DIR/libs/mpfi/include" \
+         "$SRC_DIR/libs/mpfr/include" \
+         "$SRC_DIR/libs/cairo/cairo"
+: > "$SRC_DIR/libs/mpfi/include/mpfi.h"
+: > "$SRC_DIR/libs/mpfr/include/mpfr.h"
+: > "$SRC_DIR/libs/cairo/cairo/cairo.h"
 
 # ─── Phase 1: Host-native pdftex ──────────────────────────────────
 if [ ! -x "$HOST_BUILD_DIR/texk/web2c/pdftex" ]; then
