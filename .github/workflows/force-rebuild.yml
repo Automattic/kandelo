@@ -180,29 +180,6 @@ jobs:
           echo "abi=$ABI" >> $GITHUB_OUTPUT
           echo "tag=$TAG" >> $GITHUB_OUTPUT
 
-      - name: Fetch durable binaries (non-forced packages reuse prior release)
-        # When `packages` is a subset, the resolver still needs prior
-        # archives for the un-forced manifests so stage-release can
-        # source-build dependents without re-fetching the world. When
-        # `packages=all` this fetch is mostly wasted (every package
-        # source-builds anyway) but cheap to run and warms binaries/
-        # for downstream steps that read from there directly.
-        #
-        # --allow-stale is load-bearing here, NOT a defensive default.
-        # Force-rebuild's whole premise is that the published manifest
-        # may have drifted from this checkout's deps.toml — that's the
-        # situation it exists to fix. Without --allow-stale the strict
-        # pre-flight in install-release would abort on the first
-        # mismatched cache_key_sha and the workflow could never reach
-        # the rebuild step that resolves the drift. With the flag,
-        # mismatched entries are skipped (logged as warnings) and the
-        # resolver later source-builds them as part of stage-release.
-        # Mirrors the --allow-stale wiring on prepare-merge.yml /
-        # staging-build.yml added by PR #385.
-        run: |
-          nix develop --accept-flake-config --command \
-            bash scripts/fetch-binaries.sh --allow-stale
-
       - name: Stage durable release (force-rebuild)
         # Translate the comma-separated `packages` input into one
         # `--force-rebuild-all` or N `--force-rebuild <name>` flags.
@@ -237,13 +214,37 @@ jobs:
               "${arch_args[@]}" \
               "${force_args[@]}"
 
+      - name: Place binaries/ symlinks pointing at the fresh staged archives
+        # Tests must validate the freshly-built artifacts in
+        # /tmp/durable, not the prior release's binaries. Stage-release
+        # has populated the resolver cache and produced .tar.zst
+        # archives under /tmp/durable, but binary-resolver.ts reads
+        # binaries/ + local-binaries/, neither of which stage-release
+        # touches. Run install-release against /tmp/durable's
+        # manifest.json with file:// archive-base; --binaries-dir
+        # places binaries/programs/<arch>/<x> symlinks pointing at the
+        # cache canonical paths (which now hold the fresh bytes).
+        #
+        # No --force-mirror: install-release skips the local-binaries/
+        # mirror on cache-hit, and that's fine — binary-resolver.ts
+        # falls through to binaries/ when local-binaries/ has no entry,
+        # and binaries/ symlinks are placed unconditionally when
+        # --binaries-dir is set. Mirroring to local-binaries/ would
+        # just duplicate bytes into a path the resolver doesn't reach
+        # for these programs.
+        if: ${{ !inputs.skip_tests }}
+        run: |
+          HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
+          nix develop --accept-flake-config --command \
+            cargo run -p xtask --target "$HOST_TARGET" --quiet -- install-release \
+              --manifest /tmp/durable/manifest.json \
+              --archive-base "file:///tmp/durable" \
+              --binaries-dir binaries
+
       - name: Build kernel + test programs + install host deps (test prereqs)
-        # Required for vitest + the C-program suites even when
-        # skip_tests=true, because publish-release.sh consumes
-        # local-binaries/ for kernel.wasm packaging? No — kernel.wasm
-        # isn't in the durable release per stage-release.sh's header
-        # ("kernel.wasm and userspace.wasm are not in the release"),
-        # so we can guard this on !skip_tests.
+        # kernel.wasm and userspace.wasm aren't in the durable release
+        # (per stage-release.sh's header), so they're built locally
+        # only when tests need them.
         if: ${{ !inputs.skip_tests }}
         run: |
           nix develop --accept-flake-config --command bash -c '
