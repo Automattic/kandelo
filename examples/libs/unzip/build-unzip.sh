@@ -32,7 +32,7 @@ if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading unzip $UNZIP_VERSION..."
     TARBALL="unzip${UNZIP_VERSION}.tar.gz"
     URL="https://downloads.sourceforge.net/infozip/${TARBALL}"
-    curl -fsSL -L "$URL" -o "/tmp/$TARBALL"
+    curl --retry 5 --retry-delay 2 --retry-all-errors -fsSL -L "$URL" -o "/tmp/$TARBALL"
     mkdir -p "$SRC_DIR"
     tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
     rm "/tmp/$TARBALL"

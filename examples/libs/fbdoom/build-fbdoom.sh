@@ -90,7 +90,7 @@ else
     TMPDIR="$(mktemp -d)"
     trap 'rm -rf "$TMPDIR"' EXIT
     ZIP="$TMPDIR/freedoom.zip"
-    curl -fSL --retry 3 -o "$ZIP" "$FREEDOOM_URL"
+    curl --retry 5 --retry-delay 2 --retry-all-errors -fsSL -o "$ZIP" "$FREEDOOM_URL"
 
     # Verify the zip checksum before extracting.
     GOT_ZIP_SHA="$(shasum -a 256 "$ZIP" | awk '{print $1}')"

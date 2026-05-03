@@ -56,7 +56,7 @@ if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading Perl $PERL_VERSION..."
     TARBALL="perl-${PERL_VERSION}.tar.gz"
     URL="https://www.cpan.org/src/5.0/${TARBALL}"
-    curl -fsSL "$URL" -o "/tmp/$TARBALL"
+    curl --retry 5 --retry-delay 2 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
     mkdir -p "$SRC_DIR"
     tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
     rm "/tmp/$TARBALL"
@@ -64,7 +64,7 @@ if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading perl-cross $PERL_CROSS_VERSION..."
     CROSS_TARBALL="perl-cross-${PERL_CROSS_VERSION}.tar.gz"
     CROSS_URL="https://github.com/arsv/perl-cross/releases/download/${PERL_CROSS_VERSION}/${CROSS_TARBALL}"
-    curl -fsSL "$CROSS_URL" -o "/tmp/$CROSS_TARBALL"
+    curl --retry 5 --retry-delay 2 --retry-all-errors -fsSL "$CROSS_URL" -o "/tmp/$CROSS_TARBALL"
     # Overlay perl-cross on top of perl source tree
     tar xzf "/tmp/$CROSS_TARBALL" -C "$SRC_DIR" --strip-components=1
     rm "/tmp/$CROSS_TARBALL"

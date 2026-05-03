@@ -58,7 +58,7 @@ if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading Erlang/OTP ${OTP_VERSION}..."
     TARBALL="otp_src_${OTP_VERSION}.tar.gz"
     URL="https://github.com/erlang/otp/releases/download/${OTP_TAG}/${TARBALL}"
-    curl -fsSL "$URL" -o "/tmp/$TARBALL"
+    curl --retry 5 --retry-delay 2 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
     mkdir -p "$SRC_DIR"
     tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
     rm "/tmp/$TARBALL"

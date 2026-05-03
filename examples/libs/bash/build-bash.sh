@@ -56,7 +56,7 @@ if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading bash $BASH_VERSION_PKG..."
     TARBALL="bash-${BASH_VERSION_PKG}.tar.gz"
     URL="https://ftpmirror.gnu.org/gnu/bash/${TARBALL}"
-    curl -fsSL "$URL" -o "/tmp/$TARBALL"
+    curl --retry 5 --retry-delay 2 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
     mkdir -p "$SRC_DIR"
     tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
     rm "/tmp/$TARBALL"

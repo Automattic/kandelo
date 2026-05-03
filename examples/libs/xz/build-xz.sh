@@ -33,7 +33,7 @@ if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading xz $XZ_VERSION..."
     TARBALL="xz-${XZ_VERSION}.tar.gz"
     URL="https://github.com/tukaani-project/xz/releases/download/v${XZ_VERSION}/${TARBALL}"
-    curl -fsSL "$URL" -o "/tmp/$TARBALL"
+    curl --retry 5 --retry-delay 2 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
     mkdir -p "$SRC_DIR"
     tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
     rm "/tmp/$TARBALL"

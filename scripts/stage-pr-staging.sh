@@ -96,7 +96,7 @@ trap 'rm -f "$BASELINE_TMP"' EXIT
 
 BASELINE_URL="https://github.com/brandonpayton/wasm-posix-kernel/releases/download/$BASELINE_TAG/manifest.json"
 echo "stage-pr-staging: fetching baseline manifest from $BASELINE_TAG"
-if ! curl -fsSL --retry 3 -o "$BASELINE_TMP" "$BASELINE_URL"; then
+if ! curl --retry 5 --retry-delay 2 --retry-all-errors -fsSL --retry 3 -o "$BASELINE_TMP" "$BASELINE_URL"; then
     echo "ERROR: failed to download baseline manifest from $BASELINE_URL" >&2
     exit 1
 fi
