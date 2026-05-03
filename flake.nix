@@ -69,12 +69,33 @@
             pkgs.git
             pkgs.binaryen
             pkgs.wabt
+            # libcrypt.so.1 (legacy SONAME) for host miniperl. Ubuntu
+            # 24.04 dropped libcrypt.so.1 from default install (libc
+            # split crypt(3) out into libxcrypt, which carries
+            # libcrypt.so.2 only). perl-cross's host-side Configure
+            # link-tests `crypt(3)`, succeeds against the Nix stdlib's
+            # libxcrypt-2 symbol-aliases, and bakes
+            # `DT_NEEDED libcrypt.so.1` into the resulting miniperl
+            # ELF. The dynamic loader can't resolve `.so.1` without
+            # this package, so the next make step
+            # (`./miniperl_top make_patchnum.pl`) dies with
+            # "cannot open shared object file". libxcrypt-legacy
+            # explicitly carries the .so.1 SONAME and rpath-binds via
+            # the gcc-wrapper.
+            pkgs.libxcrypt-legacy
           ];
 
           shellHook = ''
             export LLVM_BIN=${llvmTree}/bin
             export LLVM_PREFIX=${llvmTree}
             export LLVM_VERSION=21
+            # Make libcrypt.so.1 findable at runtime for host miniperl
+            # built by perl-cross. mkShell rpath-binds via gcc-wrapper
+            # at link time, but if the perl-cross link line comes from
+            # an unwrapped invocation (or the wrapper's rpath rules
+            # don't fire for SONAME=.so.1), the dynamic loader falls
+            # back to LD_LIBRARY_PATH. Belt-and-suspenders.
+            export LD_LIBRARY_PATH="${pkgs.libxcrypt-legacy}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
             # Put the worktree-local SDK shims on PATH so wasm32posix-cc
             # / wasm64posix-cc resolve without requiring contributors to
             # source sdk/activate.sh manually. Mirrors what activate.sh

@@ -145,6 +145,22 @@ jobs:
         run: |
           nix develop --accept-flake-config --command bash scripts/fetch-binaries.sh --allow-stale
 
+      - name: Install host npm deps (build prereq)
+        # Some package builds invoke node scripts that import from
+        # host/src/ — e.g. shell's build-shell-vfs-image.ts pulls in
+        # host/src/vfs/zip.ts (→ `fflate`). tsx resolves modules
+        # relative to the importing file, so without host/node_modules
+        # populated the source-build of `shell` fails with "Cannot find
+        # package 'fflate'". Done before stage-pr-overlay so this can't
+        # bite when fetch-binaries falls back to a local source build.
+        # The test-suite step further down does its own install too —
+        # idempotent, fast cache hit on second run.
+        run: |
+          nix develop --accept-flake-config --command bash -c '
+            npm install --no-audit --no-fund
+            cd host && npm install --no-audit --no-fund
+          '
+
       - name: Stage PR overlay
         id: stage
         run: |

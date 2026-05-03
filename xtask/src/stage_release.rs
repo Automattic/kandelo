@@ -135,6 +135,13 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     // Track per-manifest failures so we can decide pass/fail based
     // on whether EVERY arch failed (fatal) vs SOME (warn-only).
     let mut errors: BTreeMap<String, Vec<(TargetArch, String)>> = BTreeMap::new();
+    // Track how many arches were actually attempted per manifest. A manifest
+    // with `target_arches = ["wasm32"]` invoked under `--arch wasm32 --arch
+    // wasm64` only attempts 1 arch (wasm64 is silently skipped); without
+    // tracking this, a wasm32-only package failing wasm32 would be misjudged
+    // as a "partial" failure since errors[name].len() < arches.len() — even
+    // though the package failed every arch it could possibly produce.
+    let mut attempted: BTreeMap<String, usize> = BTreeMap::new();
 
     let walked = registry.walk_all()?;
     if force_rebuild_all {
@@ -202,6 +209,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                 );
                 continue;
             }
+            *attempted.entry(m.name.clone()).or_insert(0) += 1;
             match stage_one(
                 &m,
                 &registry,
@@ -248,18 +256,22 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     build_manifest::run(manifest_args)?;
 
     // Decide pass/fail. Without --continue-on-error, treat a manifest
-    // that failed every requested arch as fatal; partial failures are
-    // still just warnings (already logged above).
+    // that failed every arch it ATTEMPTED as fatal; partial failures are
+    // still just warnings (already logged above). "Attempted" excludes
+    // arches silently skipped by target_arches filtering — otherwise a
+    // wasm32-only manifest could never be a total failure under
+    // `--arch wasm32 --arch wasm64`, hiding real build breakage.
     if !errors.is_empty() && !continue_on_error {
-        let total = arches.len();
         let total_failures: Vec<&str> = errors
             .iter()
-            .filter(|(_, v)| v.len() == total)
+            .filter(|(name, v)| {
+                attempted.get(*name).copied().unwrap_or(0) == v.len() && v.len() > 0
+            })
             .map(|(k, _)| k.as_str())
             .collect();
         if !total_failures.is_empty() {
             return Err(format!(
-                "stage-release: {} manifest(s) failed every requested arch — \
+                "stage-release: {} manifest(s) failed every attempted arch — \
                  see WARN logs above. Failed: {}",
                 total_failures.len(),
                 total_failures.join(", "),
@@ -720,8 +732,63 @@ echo data > "$WASM_POSIX_DEP_OUT_DIR/lib/libY.a"
             "error must name failed manifest, got: {err}"
         );
         assert!(
-            err.contains("every requested arch"),
+            err.contains("every attempted arch"),
             "error must mention total-failure semantics, got: {err}"
+        );
+    }
+
+    /// A manifest with `target_arches = ["wasm32"]` that fails wasm32
+    /// must be reported as a TOTAL failure even when wasm64 was also
+    /// requested — wasm64 was silently filtered out by target_arches,
+    /// so wasm32 is the only arch that could have produced an archive.
+    /// Pre-fix the run() check compared errors[name].len() against
+    /// arches.len() (= 2), so a wasm32-only failure was misclassified
+    /// as "partial" and silently downgraded to a warning, hiding the
+    /// real breakage from the workflow exit code.
+    #[test]
+    fn stage_release_wasm32_only_failure_is_total_when_wasm64_also_requested() {
+        let dir = tempdir("e4-wasm32-only-fail");
+        let registry = dir.join("registry");
+        let cache_root = dir.join("cache");
+        let staging = dir.join("staging");
+        fs::create_dir_all(&registry).unwrap();
+        fs::create_dir_all(&cache_root).unwrap();
+
+        // Default target_arches = ["wasm32"]; build script always fails.
+        write_fixture_lib(
+            &registry,
+            "wasm32only",
+            "1.0.0",
+            "echo always-fails >&2; exit 1",
+            "[outputs]\nlibs = [\"lib/libW.a\"]\n",
+        );
+
+        let err = super::run(vec![
+            "--staging".into(),
+            staging.display().to_string(),
+            "--registry".into(),
+            registry.display().to_string(),
+            "--cache-root".into(),
+            cache_root.display().to_string(),
+            "--abi".into(),
+            "4".into(),
+            "--arch".into(),
+            "wasm32".into(),
+            "--arch".into(),
+            "wasm64".into(),
+            "--build-timestamp".into(),
+            "2026-04-26T00:00:00Z".into(),
+            "--build-host".into(),
+            "test-host".into(),
+        ])
+        .expect_err("wasm32-only manifest failing wasm32 must be total failure");
+        assert!(
+            err.contains("wasm32only"),
+            "error must name failed manifest, got: {err}"
+        );
+        assert!(
+            err.contains("every attempted arch"),
+            "error must use 'attempted arch' semantics, got: {err}"
         );
     }
 

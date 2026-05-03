@@ -228,6 +228,16 @@ jobs:
         run: |
           nix develop --accept-flake-config --command bash scripts/fetch-binaries.sh --allow-stale
 
+      - name: Install host npm deps (build prereq)
+        # See staging-build.yml — shell's vfs-image build pulls in
+        # host/src/vfs/zip.ts (→ `fflate`), which only resolves when
+        # host/node_modules is populated.
+        run: |
+          nix develop --accept-flake-config --command bash -c '
+            npm install --no-audit --no-fund
+            cd host && npm install --no-audit --no-fund
+          '
+
       - name: Stage durable release
         run: |
           mkdir -p /tmp/durable

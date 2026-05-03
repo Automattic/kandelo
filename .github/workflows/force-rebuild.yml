@@ -180,6 +180,21 @@ jobs:
           echo "abi=$ABI" >> $GITHUB_OUTPUT
           echo "tag=$TAG" >> $GITHUB_OUTPUT
 
+      - name: Install host npm deps (build prereq)
+        # Some package builds invoke node scripts that import from
+        # host/src/ — e.g. shell's build-shell-vfs-image.ts pulls in
+        # host/src/vfs/zip.ts (→ `fflate`). tsx resolves modules
+        # relative to the importing file, so without host/node_modules
+        # populated the build dies with "Cannot find package 'fflate'".
+        # Done before stage-release so source-rebuilds don't fail this
+        # way; the test-suite step further down does its own install
+        # too (idempotent, fast cache hit on second run).
+        run: |
+          nix develop --accept-flake-config --command bash -c '
+            npm install --no-audit --no-fund
+            cd host && npm install --no-audit --no-fund
+          '
+
       - name: Stage durable release (force-rebuild)
         # Translate the comma-separated `packages` input into one
         # `--force-rebuild-all` or N `--force-rebuild <name>` flags.

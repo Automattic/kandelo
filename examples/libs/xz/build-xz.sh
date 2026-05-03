@@ -40,7 +40,7 @@ if [ ! -d "$SRC_DIR" ]; then
     echo "==> Source extracted to $SRC_DIR"
 
     # Patch: xz excludes __wasm__ from sigprocmask path, but our sysroot has it
-    sed -i '' 's/!defined(__wasm__)/!defined(__wasm_no_signal__)/' "$SRC_DIR/src/common/mythread.h"
+    sed -i.bak 's/!defined(__wasm__)/!defined(__wasm_no_signal__)/' "$SRC_DIR/src/common/mythread.h"
     echo "==> Patched mythread.h for wasm signal support"
 fi
 
