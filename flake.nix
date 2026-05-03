@@ -69,6 +69,31 @@
             pkgs.git
             pkgs.binaryen
             pkgs.wabt
+            # System tools that build scripts pull from /usr/bin or
+            # /opt/homebrew/bin in non-pure shells. Pinning them via
+            # the flake makes `nix develop --ignore-environment` work
+            # (so `bash examples/libs/<pkg>/build-*.sh` reproduces CI
+            # locally) and removes silent host-version drift between
+            # darwin dev boxes and the Ubuntu CI runner. Each is
+            # invoked by ≥1 build script:
+            #   curl   — every download step (40+ scripts)
+            #   perl   — openssl Configure, mariadb cmake codegen,
+            #            wget configure, libxml2 (xmllint), etc.
+            #   python3 — perl-cross checksize patch, ruby
+            #            mkconfig, cpython itself, file's
+            #            magic-build, etc.
+            #   flex/bison — bash, m4, mariadb (yacc-style parsers)
+            #   xz     — extracting .tar.xz tarballs (sed, m4, …)
+            #   patch  — applying *.patch files (mariadb, ruby)
+            #   gh     — only used by stage-pr-staging release lookup
+            pkgs.curl
+            pkgs.perl
+            pkgs.python3
+            pkgs.flex
+            pkgs.bison
+            pkgs.xz
+            pkgs.gnupatch
+            pkgs.gh
             # libcrypt.so.1 (legacy SONAME) for host miniperl. Ubuntu
             # 24.04 dropped libcrypt.so.1 from default install (libc
             # split crypt(3) out into libxcrypt, which carries
