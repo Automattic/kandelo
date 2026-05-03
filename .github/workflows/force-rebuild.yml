@@ -214,21 +214,24 @@ jobs:
               "${arch_args[@]}" \
               "${force_args[@]}"
 
-      - name: Mirror staged archives into binaries/ + local-binaries/ for tests
+      - name: Place binaries/ symlinks pointing at the fresh staged archives
         # Tests must validate the freshly-built artifacts in
         # /tmp/durable, not the prior release's binaries. Stage-release
         # has populated the resolver cache and produced .tar.zst
         # archives under /tmp/durable, but binary-resolver.ts reads
         # binaries/ + local-binaries/, neither of which stage-release
         # touches. Run install-release against /tmp/durable's
-        # manifest.json with file:// archive-base so the symlinks +
-        # mirrors point at the new bytes.
+        # manifest.json with file:// archive-base; --binaries-dir
+        # places binaries/programs/<arch>/<x> symlinks pointing at the
+        # cache canonical paths (which now hold the fresh bytes).
         #
-        # --force-mirror: stage-release already populated the cache, so
-        # install-release sees cache hits and would otherwise skip
-        # the local-binaries/ mirror (it gates that on installed_fresh).
-        # Force the mirror so freshly-built program outputs reach
-        # local-binaries/programs/<arch>/ where the resolver looks.
+        # No --force-mirror: install-release skips the local-binaries/
+        # mirror on cache-hit, and that's fine — binary-resolver.ts
+        # falls through to binaries/ when local-binaries/ has no entry,
+        # and binaries/ symlinks are placed unconditionally when
+        # --binaries-dir is set. Mirroring to local-binaries/ would
+        # just duplicate bytes into a path the resolver doesn't reach
+        # for these programs.
         if: ${{ !inputs.skip_tests }}
         run: |
           HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
@@ -236,8 +239,7 @@ jobs:
             cargo run -p xtask --target "$HOST_TARGET" --quiet -- install-release \
               --manifest /tmp/durable/manifest.json \
               --archive-base "file:///tmp/durable" \
-              --binaries-dir binaries \
-              --force-mirror
+              --binaries-dir binaries
 
       - name: Build kernel + test programs + install host deps (test prereqs)
         # kernel.wasm and userspace.wasm aren't in the durable release
