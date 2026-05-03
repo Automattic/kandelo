@@ -68,6 +68,28 @@ if [ -x "$SRC_DIR/libs/luajit/configure" ]; then
     chmod -x "$SRC_DIR/libs/luajit/configure"
 fi
 
+# Same pattern for libs/gmp + libs/mpfr. These are only used by
+# MetaPost (and we pass --disable-mp), but TexLive's recursive
+# Makefile descends into them unconditionally. The bundled GMP
+# spawns a `native/` sub-configure with `CC=` blank — autoconf then
+# auto-detects `${build_alias}-gcc` (i.e. `x86_64-unknown-linux-gnu-gcc`
+# on the Nix-on-Linux CI runner). That points at Nix's gcc-wrapper,
+# which fails its compile-test ("C compiler cannot create
+# executables") because the cmdline `CFLAGS=` blank also gets through
+# and strips the wrapper's required spec injections. Passing
+# CC_FOR_BUILD on the outer configure doesn't help — it's clobbered
+# at recurse time.
+#
+# Since we don't actually need GMP/MPFR for pdftex (the only engine
+# we build), drop both configure scripts so TexLive's recursive make
+# skips them. Cleaner than chasing the autoconf override chain.
+for unused_lib in gmp mpfr; do
+    cfg="$SRC_DIR/libs/$unused_lib/configure"
+    if [ -x "$cfg" ]; then
+        chmod -x "$cfg"
+    fi
+done
+
 # ─── Phase 1: Host-native pdftex ──────────────────────────────────
 if [ ! -x "$HOST_BUILD_DIR/texk/web2c/pdftex" ]; then
     echo "==> Building host-native pdftex..."

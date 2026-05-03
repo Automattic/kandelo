@@ -128,6 +128,16 @@ if [ ! -f "$HOST_BUILD_DIR/import_executables.cmake" ]; then
     mkdir -p "$HOST_BUILD_DIR"
     cd "$HOST_BUILD_DIR"
 
+    # `WITH_SSL=OFF` + `CONC_WITH_SSL=OFF`: the host build only
+    # produces helper executables (the import_executables target).
+    # None of those helpers need SSL, but libmariadb's
+    # CMakeLists.txt:336 unconditionally calls FIND_PACKAGE(GnuTLS
+    # REQUIRED) unless CONC_WITH_SSL=OFF — and the patch we apply
+    # earlier to cmake/mariadb_connector_c.cmake already wires the
+    # OFF code path. Without these flags, configure dies with
+    # "Could NOT find GnuTLS (missing: GNUTLS_LIBRARY
+    # GNUTLS_INCLUDE_DIR)" on any host that doesn't have GnuTLS
+    # ≥3.4.2 installed (Nix dev shell, fresh CI runner, etc.).
     cmake "$SRC_DIR" \
         -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
         -DWITH_UNIT_TESTS=OFF \
@@ -143,7 +153,8 @@ if [ ! -f "$HOST_BUILD_DIR/import_executables.cmake" ]; then
         -DPLUGIN_COLUMNSTORE=NO \
         -DPLUGIN_S3=NO \
         -DPLUGIN_CRACKLIB_PASSWORD_CHECK=NO \
-        -DWITH_SSL=bundled \
+        -DWITH_SSL=OFF \
+        -DCONC_WITH_SSL=OFF \
         -DWITH_PCRE=bundled \
         -DWITH_EDITLINE=bundled \
         -DWITH_ZLIB=bundled \
