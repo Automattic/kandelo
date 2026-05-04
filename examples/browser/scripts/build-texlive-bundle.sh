@@ -7,8 +7,14 @@ REPO_ROOT="$(cd "$BROWSER_DIR/../.." && pwd)"
 
 TEXLIVE_DIR="$REPO_ROOT/examples/libs/texlive"
 HOST_PDFTEX="$TEXLIVE_DIR/texlive-host-build/texk/web2c/pdftex"
-BUNDLE_FILE="$BROWSER_DIR/public/texlive-bundle.json"
 INSTALL_DIR="$TEXLIVE_DIR/texlive-dist"
+
+# Bundle output destination. Default: served-from-public/ for direct
+# `bash build-texlive-bundle.sh` invocations during local dev.
+# Overridable so build-texlive.sh can drop the bundle into
+# $WASM_POSIX_DEP_OUT_DIR (resolver scratch, packed into the package's
+# tar.zst archive — same pattern as vim's runtime tree).
+BUNDLE_FILE="${TEXLIVE_BUNDLE_OUT:-$BROWSER_DIR/public/texlive-bundle.json}"
 
 if [ ! -x "$HOST_PDFTEX" ]; then
     echo "ERROR: Host pdftex not found. Run build-texlive.sh first." >&2
@@ -48,10 +54,35 @@ tlpdbopt_install_docfiles 0
 tlpdbopt_install_srcfiles 0
 EOF
 
+    # install-tl normally calls `sw_vers -productVersion` (Apple) or
+    # equivalent system tools to identify the host platform. Under
+    # `nix develop --ignore-environment` (CI + scripts/dev-shell.sh),
+    # those tools aren't on PATH and detection fails with "only
+    # MacOSX is supported, not darwin" / "no binary platform
+    # specified/available". Force the platform explicitly so install
+    # proceeds without depending on host introspection.
+    #
+    # We don't actually use install-tl's downloaded binaries — pdftex
+    # comes from our own wasm32 cross-build. The platform is named
+    # purely so install-tl agrees to run; the binfiles end up in
+    # texlive-dist/bin/<platform>/ unused.
+    case "$(uname -s)" in
+        Darwin) TL_PLATFORM=universal-darwin ;;
+        Linux)
+            case "$(uname -m)" in
+                x86_64)         TL_PLATFORM=x86_64-linux ;;
+                aarch64|arm64)  TL_PLATFORM=aarch64-linux ;;
+                *) echo "ERROR: unsupported Linux arch: $(uname -m)" >&2; exit 1 ;;
+            esac
+            ;;
+        *) echo "ERROR: unsupported OS: $(uname -s)" >&2; exit 1 ;;
+    esac
+
     cd "$INSTALLER_DIR"
     perl install-tl \
         --profile="$TEXLIVE_DIR/texlive.profile" \
         --no-interaction \
+        --force-platform="$TL_PLATFORM" \
         --repository=https://mirror.ctan.org/systems/texlive/tlnet
     cd "$REPO_ROOT"
 fi

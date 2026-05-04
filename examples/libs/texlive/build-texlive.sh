@@ -232,9 +232,30 @@ mkdir -p "$BIN_DIR"
 cp "$CROSS_BUILD_DIR/texk/web2c/pdftex" "$BIN_DIR/pdftex.wasm"
 
 echo "==> pdftex.wasm: $(du -h "$BIN_DIR/pdftex.wasm" | cut -f1)"
+
+# ─── Phase 4: Runtime bundle ──────────────────────────────────────
+# pdftex.wasm alone can't typeset anything — it needs a TeX Live
+# distribution (texmf-dist macros, fonts, etc.) plus a precompiled
+# latex.fmt. The bundle script installs a minimal TeX Live via
+# install-tl, generates latex.fmt with our just-built host pdftex,
+# and packs the selected files into a JSON manifest the demo loads
+# at runtime.
+#
+# Built here (not just in the browser-side script) so the bundle
+# ships inside the texlive package's tar.zst archive — same pattern
+# as vim's runtime/ tree. archive_stage packs everything in the
+# resolver scratch dir, so writing the JSON there is enough.
+BUNDLE_FILE="$BIN_DIR/texlive-bundle.json"
+echo "==> Building TeX Live distribution bundle..."
+TEXLIVE_BUNDLE_OUT="$BUNDLE_FILE" \
+    bash "$REPO_ROOT/examples/browser/scripts/build-texlive-bundle.sh"
+echo "==> texlive-bundle.json: $(du -h "$BUNDLE_FILE" | cut -f1)"
+
 echo "==> Done."
 
 # Install into local-binaries/ so the resolver picks the freshly-built
-# binary over the fetched release.
+# binaries over the fetched release. Two outputs: pdftex.wasm (the
+# engine) + texlive-bundle.json (its runtime distribution).
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary texlive "$BIN_DIR/pdftex.wasm" pdftex.wasm
+install_local_binary texlive "$BIN_DIR/pdftex.wasm"
+install_local_binary texlive "$BIN_DIR/texlive-bundle.json"

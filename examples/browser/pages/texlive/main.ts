@@ -5,7 +5,12 @@
 import { BrowserKernel } from "../../lib/browser-kernel";
 import { loadTexliveBundle } from "../../lib/texlive-bundle";
 import kernelWasmUrl from "@kernel-wasm?url";
-import pdftexWasmUrl from "../../../../binaries/programs/wasm32/pdftex.wasm?url";
+// Multi-output package: install-release nests outputs under the
+// program name (`texlive/`) per its layout convention. pdftex.wasm
+// is the engine; texlive-bundle.json carries texmf-dist + latex.fmt
+// runtime data.
+import pdftexWasmUrl from "@binaries/programs/wasm32/texlive/pdftex.wasm?url";
+import texliveBundleUrl from "@binaries/programs/wasm32/texlive/texlive-bundle.json?url";
 
 // CodeMirror imports
 import { EditorView, keymap, lineNumbers } from "@codemirror/view";
@@ -407,7 +412,7 @@ async function compile() {
     setStatus("Loading TeX Live distribution...", "loading");
     const loaded = await loadTexliveBundle(
       fs,
-      import.meta.env.BASE_URL + "texlive-bundle.json",
+      texliveBundleUrl,
       (current, total) => {
         setStatus(`Loading TeX Live... ${current}/${total} files`, "loading");
       },
