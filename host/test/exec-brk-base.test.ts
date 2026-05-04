@@ -136,18 +136,33 @@ const MARIADB_ARGS =
   "--no-defaults --bootstrap --skip-networking --skip-grant-tables " +
   "--datadir=/tmp --tmpdir=/tmp";
 
-// All three cases are .skip until the mariadbd-shutdown spin-loop bug is
-// fixed: after `wait_for_signal_thread_to_end` completes and signal_hand
-// has cleanly exited, mariadbd's main thread enters a CPU-active loop in
-// the destructor/atexit chain (~80 munmap calls in heap teardown, then
-// 100+ seconds of zero syscalls — busy-loop in user-space, not a kernel
-// blocking syscall). On a "warm" /tmp (leftover ibdata1 from a prior run)
-// init is fast and shutdown takes a different code path that doesn't hit
-// the loop, so cases #2 and #3 sometimes pass; cold-/tmp CI runs fail
-// reproducibly. Independent of and orthogonal to the pselect6 signal-loop
-// fix in this PR (host/src/kernel-worker.ts handlePselect6); that fix is
-// exercised by the wordpress-* tests, which run php-fpm against the same
-// select-with-NULL-inner-sigmask pattern that triggered the loop here.
+// All three are .skip'd until the wasm-port-side mariadbd-shutdown bug is
+// fixed. Symptom in our wasm port: after `InnoDB started` prints,
+// mariadbd's atexit chain calls free() on a heap chunk whose mallocng
+// group header is corrupt. mallocng's get_meta() loads `base->meta` —
+// which holds a value >= 1GB — then traps with "memory access out of
+// bounds" on `i32.load 2 8` (wasm-function[111]:0x35873).
+//
+// The corruption is wasm-port-specific: the same MariaDB 10.5.x against
+// the same musl mallocng on x86_64 Linux (Alpine 3.13, MariaDB 10.5.17,
+// musl 1.2.2 — verified) bootstraps and exits cleanly across many runs.
+// So this isn't a latent mariadbd 10.5 + mallocng bug that mallocng
+// strictness merely surfaces — something in our kernel / musl-overlay /
+// SDK toolchain is producing the bad metadata.
+//
+// Suspected (in order, narrowing): (1) mallocng's hardcoded 4KB page
+// assumptions interacting with our 64KB wasm pages; (2) `mprotect` /
+// `MAP_FIXED PROT_NONE` are no-ops in our kernel, so mallocng's guard
+// pages don't actually guard buffer overruns into adjacent meta state;
+// (3) wasm-target codegen differences in mallocng's atomic / alignment
+// paths.
+//
+// The host-side safety net in node-kernel-worker-entry.ts catches the
+// resulting wasm trap and synthesizes a clean exit (code 128+SIGSEGV)
+// instead of hanging. With that, these three tests would technically
+// pass — `expect(stderr).toContain("InnoDB started")` matches because
+// the prints land before the trap — but that would be papering over the
+// actual bug. Keep them .skip'd until the trap itself is resolved.
 describe.skipIf(!compatible)("brk-base regression: mariadbd bootstrap via dash-exec", () => {
   // Sanity: dash exec's mariadbd directly, no intermediate shell layer.
   it.skip("dash → exec mariadbd: boots InnoDB", async () => {
