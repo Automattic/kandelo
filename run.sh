@@ -125,6 +125,7 @@ has_openssl()   { [ -f "$REPO_ROOT/sysroot/lib/libssl.a" ] && [ -f "$REPO_ROOT/s
 has_libcurl()   { [ -f "$REPO_ROOT/sysroot/lib/libcurl.a" ] && [ -f "$REPO_ROOT/sysroot/include/curl/curl.h" ]; }
 has_vim()    { has_resolvable programs/vim.wasm || [ -f "$REPO_ROOT/examples/libs/vim/bin/vim.wasm" ]; }
 has_vim_zip() { has_resolvable programs/vim.zip || [ -f "$REPO_ROOT/examples/browser/public/vim.zip" ]; }
+has_nethack_zip() { has_resolvable programs/nethack.zip || [ -f "$REPO_ROOT/examples/browser/public/nethack.zip" ]; }
 has_git()    { has_resolvable programs/git/git.wasm || [ -f "$REPO_ROOT/examples/libs/git/bin/git.wasm" ]; }
 has_perl()    { has_resolvable programs/perl.wasm || [ -f "$REPO_ROOT/examples/libs/perl/bin/perl.wasm" ]; }
 has_ruby()    { has_resolvable programs/ruby.wasm || [ -f "$REPO_ROOT/examples/libs/ruby/bin/ruby.wasm" ]; }
@@ -593,17 +594,20 @@ build_vim_zip() {
 }
 
 build_nethack_zip() {
-    if [ ! -f "$REPO_ROOT/examples/browser/public/nethack.zip" ]; then
-        if [ ! -d "$REPO_ROOT/examples/libs/nethack/runtime/share/nethack" ]; then
-            warn "NetHack runtime not found, skipping nethack.zip"
-            return
-        fi
-        step "Building nethack.zip (binary + runtime)"
-        bash "$REPO_ROOT/examples/browser/scripts/build-nethack-zip.sh"
-        info "nethack.zip built"
-    else
+    if has_nethack_zip; then
         info "nethack.zip"
+        return
     fi
+
+    # nethack.zip = nethack.wasm + runtime tree (nhdat, symbols, license),
+    # packaged for the browser shell demo's lazy-archive fetch. NetHack's
+    # release archive ships both pieces (build-nethack.sh stages
+    # runtime/ alongside nethack.wasm into the resolver scratch), so this
+    # builder reads from the cache canonical dir and rezips. Mirrors
+    # build_vim_zip.
+    step "Packaging nethack.zip from cached nethack package"
+    bash "$REPO_ROOT/examples/browser/scripts/build-nethack-zip.sh"
+    info "nethack.zip built ($(du -h "$REPO_ROOT/examples/browser/public/nethack.zip" | cut -f1))"
 }
 
 build_shell_vfs() {
