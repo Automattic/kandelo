@@ -8,7 +8,12 @@ revision = 1
 # build-libcurl.sh — finds a pre-generated `configure` script. The
 # github "archive/refs/tags/" tarball does NOT contain one (autoconf
 # runs at release time, not in git); the curl.se release tarball does.
-depends_on = []
+#
+# build-curl.sh is literally `exec bash build-libcurl.sh`, so curl
+# is a strict consumer of libcurl's build. Declaring the dep makes
+# the resolver build libcurl first; folds libcurl's cache_key into
+# ours so a libcurl bump invalidates the curl cache.
+depends_on = ["libcurl@8.11.1"]
 
 [source]
 url = "https://curl.se/download/curl-8.11.1.tar.xz"

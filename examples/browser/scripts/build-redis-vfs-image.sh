@@ -7,3 +7,8 @@ echo "==> Building Redis VFS image..."
 npx tsx "$SCRIPT_DIR/build-redis-vfs-image.ts"
 echo "==> Done."
 ls -lh examples/browser/public/redis.vfs
+
+# Mirror into local-binaries/ so the @binaries/ Vite alias resolves for
+# pages/redis/main.ts. See sibling build-nginx-vfs-image.sh for rationale.
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary redis-vfs "$REPO_ROOT/examples/browser/public/redis.vfs"

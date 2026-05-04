@@ -15,31 +15,35 @@ set(CMAKE_SYSTEM_PROCESSOR wasm32)
 set(CMAKE_CROSSCOMPILING TRUE)
 
 # --- Locate LLVM clang ---
-# Prefer Homebrew LLVM (macOS) over system clang.
-find_program(LLVM_CLANG
-  NAMES clang
-  PATHS /opt/homebrew/opt/llvm/bin /usr/local/opt/llvm/bin
-  NO_DEFAULT_PATH
-)
-if(NOT LLVM_CLANG)
-  message(FATAL_ERROR "Homebrew LLVM clang not found. Install: brew install llvm")
+# Search order, highest priority first:
+#   1. $LLVM_BIN — exported by the Nix flake's shellHook (so this works
+#      identically on Linux CI and Mac dev shells).
+#   2. $LLVM_PREFIX/bin — sibling form of (1) the flake also exports.
+#   3. Homebrew LLVM — for Mac users running outside the flake.
+# Without this, the file used Homebrew-only paths and failed on Linux
+# with "brew install llvm" — even though the flake had clang on PATH.
+set(_LLVM_SEARCH_PATHS)
+if(DEFINED ENV{LLVM_BIN})
+  list(APPEND _LLVM_SEARCH_PATHS "$ENV{LLVM_BIN}")
 endif()
+if(DEFINED ENV{LLVM_PREFIX})
+  list(APPEND _LLVM_SEARCH_PATHS "$ENV{LLVM_PREFIX}/bin")
+endif()
+list(APPEND _LLVM_SEARCH_PATHS
+  /opt/homebrew/opt/llvm/bin
+  /usr/local/opt/llvm/bin
+)
 
-find_program(LLVM_AR
-  NAMES llvm-ar
-  PATHS /opt/homebrew/opt/llvm/bin /usr/local/opt/llvm/bin
-  NO_DEFAULT_PATH
-)
-find_program(LLVM_RANLIB
-  NAMES llvm-ranlib
-  PATHS /opt/homebrew/opt/llvm/bin /usr/local/opt/llvm/bin
-  NO_DEFAULT_PATH
-)
-find_program(LLVM_NM
-  NAMES llvm-nm
-  PATHS /opt/homebrew/opt/llvm/bin /usr/local/opt/llvm/bin
-  NO_DEFAULT_PATH
-)
+find_program(LLVM_CLANG NAMES clang PATHS ${_LLVM_SEARCH_PATHS} NO_DEFAULT_PATH)
+if(NOT LLVM_CLANG)
+  message(FATAL_ERROR
+    "LLVM clang not found. Searched: ${_LLVM_SEARCH_PATHS}. "
+    "Set LLVM_BIN (Nix dev shell exports this) or install Homebrew LLVM."
+  )
+endif()
+find_program(LLVM_AR     NAMES llvm-ar     PATHS ${_LLVM_SEARCH_PATHS} NO_DEFAULT_PATH)
+find_program(LLVM_RANLIB NAMES llvm-ranlib PATHS ${_LLVM_SEARCH_PATHS} NO_DEFAULT_PATH)
+find_program(LLVM_NM     NAMES llvm-nm     PATHS ${_LLVM_SEARCH_PATHS} NO_DEFAULT_PATH)
 
 # --- Sysroot ---
 # Allow override via WASM_POSIX_SYSROOT env or cmake var.

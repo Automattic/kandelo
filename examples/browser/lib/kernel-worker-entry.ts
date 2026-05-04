@@ -68,7 +68,7 @@ import { DeviceFileSystem } from "../../../host/src/vfs/device-fs";
 import { BrowserTimeProvider } from "../../../host/src/vfs/time";
 import { TlsNetworkBackend } from "./tls-network-backend";
 import { patchWasmForThread } from "../../../host/src/worker-main";
-import { detectPtrWidth } from "../../../host/src/constants";
+import { detectPtrWidth, extractHeapBase } from "../../../host/src/constants";
 import type {
   CentralizedWorkerInitMessage,
   CentralizedThreadInitMessage,
@@ -356,6 +356,17 @@ function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>) {
       argv: msg.argv,
     });
 
+    // Install the program's `__heap_base` as the initial brk before the
+    // process worker is spawned (matches handleSpawn in
+    // host/src/node-kernel-worker-entry.ts). Without this the kernel's
+    // hardcoded INITIAL_BRK can land inside the program's stack region
+    // for binaries with a large data section (e.g. mariadbd) — see
+    // docs/architecture.md "Heap initialization (brk)".
+    const heapBase = extractHeapBase(programBytes);
+    if (heapBase !== null) {
+      kernelWorker.setBrkBase(pid, heapBase);
+    }
+
     if (msg.cwd) {
       kernelWorker.setCwd(pid, msg.cwd);
     }
@@ -531,6 +542,15 @@ async function handleExec(
     skipKernelCreate: true,
     ptrWidth,
   });
+
+  // Re-install the new program's `__heap_base` post-exec — the kernel
+  // reset the brk in deserialize_exec_state (POSIX-correct), so the new
+  // program would otherwise see the fallback INITIAL_BRK. Mirrors
+  // handleExec in host/src/node-kernel-worker-entry.ts.
+  const execHeapBase = extractHeapBase(bytes);
+  if (execHeapBase !== null) {
+    kernelWorker.setBrkBase(pid, execHeapBase);
+  }
 
   const execInitData: CentralizedWorkerInitMessage = {
     type: "centralized_init",

@@ -6,10 +6,16 @@
 #   ./run.sh build [target...]    Build specific targets (or all)
 #   ./run.sh rebuild [target...]  Force-rebuild (clean + build)
 #   ./run.sh clean [target...]    Remove build artifacts
+#   ./run.sh fetch                Fetch binaries pinned by binaries.lock
 #   ./run.sh run <example> [args] Run a Node.js example
 #   ./run.sh browser [args]       Start the Vite browser dev server
 #   ./run.sh list                 Show available targets and examples
 #   ./run.sh test [suite...]      Run test suites
+#
+# Top-level flags (recognized anywhere in the argument list):
+#   --allow-stale                 Soften the install-release manifest gate
+#                                  (forwarded to scripts/fetch-binaries.sh).
+#                                  Equivalent to WASM_POSIX_ALLOW_STALE=1.
 #
 set -euo pipefail
 
@@ -35,6 +41,27 @@ warn()  { echo "${YELLOW}[>>]${RESET} $*"; }
 err()   { echo "${RED}[!!]${RESET} $*" >&2; }
 step()  { echo "${CYAN}${BOLD}=== $* ===${RESET}"; }
 
+# ─── Top-level flag parsing ──────────────────────────────────────────────────
+#
+# Scrub --allow-stale from $@ and turn it into an env var so any
+# downstream invocation of fetch-binaries.sh (called directly or
+# nested via build_target) picks it up. Also honor the env var if
+# the user prefers `WASM_POSIX_ALLOW_STALE=1 ./run.sh browser`.
+ALLOW_STALE_ARGS=()
+NEW_ARGS=()
+for a in "$@"; do
+    if [ "$a" = "--allow-stale" ]; then
+        ALLOW_STALE_ARGS=(--allow-stale)
+    else
+        NEW_ARGS+=("$a")
+    fi
+done
+set -- "${NEW_ARGS[@]+"${NEW_ARGS[@]}"}"
+if [ "${WASM_POSIX_ALLOW_STALE:-0}" = "1" ]; then
+    ALLOW_STALE_ARGS=(--allow-stale)
+fi
+export WASM_POSIX_ALLOW_STALE=$([ "${#ALLOW_STALE_ARGS[@]}" -gt 0 ] && echo 1 || echo 0)
+
 # ─── Artifact checks ─────────────────────────────────────────────────────────
 
 # `has_resolvable <rel>` is true when the binary resolves via
@@ -55,19 +82,9 @@ has_php()       { has_resolvable programs/php/php.wasm || [ -f "$REPO_ROOT/examp
 has_php_fpm()    { has_resolvable programs/php/php-fpm.wasm || [ -f "$REPO_ROOT/examples/nginx/php-fpm.wasm" ]; }
 has_mariadb()    { has_resolvable programs/mariadb/mariadbd.wasm || [ -f "$REPO_ROOT/examples/libs/mariadb/mariadb-install/bin/mariadbd" ]; }
 has_mariadb64() { has_resolvable programs/wasm64/mariadb/mariadbd.wasm || [ -f "$REPO_ROOT/examples/libs/mariadb/mariadb-install-64/bin/mariadbd" ]; }
-has_mariadb_vfs() {
-    if has_resolvable programs/mariadb-vfs.vfs; then return 0; fi
-    local vfs="$REPO_ROOT/examples/browser/public/mariadb.vfs"
-    local mariadbd="$REPO_ROOT/examples/libs/mariadb/mariadb-install/bin/mariadbd.wasm"
-    [ -f "$vfs" ] && [ -f "$mariadbd" ] && [ "$vfs" -nt "$mariadbd" ]
-}
-has_mariadb64_vfs() {
-    if has_resolvable programs/wasm64/mariadb-vfs.vfs; then return 0; fi
-    local vfs="$REPO_ROOT/examples/browser/public/mariadb-64.vfs"
-    local mariadbd="$REPO_ROOT/examples/libs/mariadb/mariadb-install-64/bin/mariadbd.wasm"
-    [ -f "$vfs" ] && [ -f "$mariadbd" ] && [ "$vfs" -nt "$mariadbd" ]
-}
-has_wp_vfs()    { has_resolvable programs/wordpress.vfs || [ -f "$REPO_ROOT/examples/browser/public/wordpress.vfs" ]; }
+has_mariadb_vfs() { has_resolvable programs/mariadb-vfs.vfs; }
+has_mariadb64_vfs() { has_resolvable programs/wasm64/mariadb-vfs.vfs; }
+has_wp_vfs()    { has_resolvable programs/wordpress.vfs; }
 has_dash()    { has_resolvable programs/dash.wasm || [ -f "$REPO_ROOT/examples/libs/dash/bin/dash.wasm" ]; }
 has_bash()    { has_resolvable programs/bash.wasm || [ -f "$REPO_ROOT/examples/libs/bash/bin/bash.wasm" ]; }
 has_coreutils()    { has_resolvable programs/coreutils.wasm || [ -f "$REPO_ROOT/examples/libs/coreutils/bin/coreutils.wasm" ]; }
@@ -81,10 +98,10 @@ has_perl_vfs()    { has_resolvable programs/perl-vfs.vfs || [ -f "$REPO_ROOT/exa
 has_shell_vfs()    { has_resolvable programs/shell.vfs || [ -f "$REPO_ROOT/examples/browser/public/shell.vfs" ]; }
 has_erlang()    { has_resolvable programs/erlang.wasm || [ -f "$REPO_ROOT/examples/libs/erlang/bin/beam.wasm" ]; }
 has_erlang_vfs()    { has_resolvable programs/erlang-vfs.vfs || [ -f "$REPO_ROOT/examples/browser/public/erlang.vfs" ]; }
-has_lamp_vfs()    { has_resolvable programs/lamp.vfs || [ -f "$REPO_ROOT/examples/browser/public/lamp.vfs" ]; }
-has_nginx_vfs()  { [ -f "$REPO_ROOT/examples/browser/public/nginx.vfs" ]; }
-has_redis_vfs()  { [ -f "$REPO_ROOT/examples/browser/public/redis.vfs" ]; }
-has_nginx_php_vfs() { [ -f "$REPO_ROOT/examples/browser/public/nginx-php.vfs" ]; }
+has_lamp_vfs()    { has_resolvable programs/lamp.vfs; }
+has_nginx_vfs()  { has_resolvable programs/nginx-vfs.vfs; }
+has_redis_vfs()  { has_resolvable programs/redis-vfs.vfs; }
+has_nginx_php_vfs() { has_resolvable programs/nginx-php-vfs.vfs; }
 has_bc()    { has_resolvable programs/bc.wasm || [ -f "$REPO_ROOT/examples/libs/bc/bin/bc.wasm" ]; }
 has_file()    { has_resolvable programs/file.wasm || [ -f "$REPO_ROOT/examples/libs/file/bin/file.wasm" ]; }
 has_less()    { has_resolvable programs/less.wasm || [ -f "$REPO_ROOT/examples/libs/less/bin/less.wasm" ]; }
@@ -101,7 +118,7 @@ has_zip()    { has_resolvable programs/zip.wasm || [ -f "$REPO_ROOT/examples/lib
 has_unzip()    { has_resolvable programs/unzip.wasm || [ -f "$REPO_ROOT/examples/libs/unzip/bin/unzip.wasm" ]; }
 has_nano()    { has_resolvable programs/nano.wasm || [ -f "$REPO_ROOT/examples/libs/nano/bin/nano.wasm" ]; }
 has_nethack()    { has_resolvable programs/nethack.wasm || [ -f "$REPO_ROOT/examples/libs/nethack/bin/nethack.wasm" ]; }
-has_fbdoom()    { has_resolvable programs/fbdoom.wasm || [ -f "$REPO_ROOT/examples/libs/fbdoom/fbdoom.wasm" ]; }
+has_fbdoom()    { has_resolvable programs/fbdoom/fbdoom.wasm || { [ -f "$REPO_ROOT/examples/libs/fbdoom/fbdoom.wasm" ] && [ -f "$REPO_ROOT/examples/libs/fbdoom/doom1.wad" ]; }; }
 has_ncurses()   { [ -f "$REPO_ROOT/sysroot/lib/libncursesw.a" ]; }
 has_zlib()      { [ -f "$REPO_ROOT/sysroot/lib/libz.a" ]; }
 has_openssl()   { [ -f "$REPO_ROOT/sysroot/lib/libssl.a" ] && [ -f "$REPO_ROOT/sysroot/lib/libcrypto.a" ]; }
@@ -151,6 +168,10 @@ need_sysroot() {
         bash "$REPO_ROOT/scripts/build-musl.sh"
         info "Sysroot built"
     else
+        # Re-sync overlay headers into the existing sysroot. Cheap (just a
+        # few cp) and ensures newly-added musl-overlay/include/ files reach
+        # an existing sysroot without forcing a full musl rebuild.
+        bash "$REPO_ROOT/scripts/install-overlay-headers.sh" "$REPO_ROOT/sysroot"
         info "Sysroot"
     fi
 }
@@ -161,6 +182,7 @@ need_sysroot64() {
         bash "$REPO_ROOT/scripts/build-musl.sh" --arch wasm64posix
         info "Sysroot64 built"
     else
+        bash "$REPO_ROOT/scripts/install-overlay-headers.sh" "$REPO_ROOT/sysroot64"
         info "Sysroot64"
     fi
 }
@@ -327,7 +349,11 @@ build_mariadb_vfs() {
     build_mariadb
     build_dash
     step "Building MariaDB VFS image (wasm32)"
-    bash "$REPO_ROOT/examples/browser/scripts/build-mariadb-vfs-image.sh"
+    # Delegate to the package-system wrapper so install_local_binary
+    # populates local-binaries/programs/wasm32/mariadb-vfs.vfs (the
+    # path the @binaries/ Vite alias resolves against).
+    WASM_POSIX_DEP_TARGET_ARCH=wasm32 \
+        bash "$REPO_ROOT/examples/libs/mariadb-vfs/build-mariadb-vfs.sh"
     info "MariaDB VFS image (wasm32) built"
 }
 
@@ -339,7 +365,8 @@ build_mariadb64_vfs() {
     build_mariadb64
     build_dash
     step "Building MariaDB VFS image (wasm64)"
-    bash "$REPO_ROOT/examples/browser/scripts/build-mariadb-vfs-image.sh" --wasm64
+    WASM_POSIX_DEP_TARGET_ARCH=wasm64 \
+        bash "$REPO_ROOT/examples/libs/mariadb-vfs/build-mariadb-vfs.sh"
     info "MariaDB VFS image (wasm64) built"
 }
 
@@ -361,7 +388,10 @@ build_wp_vfs() {
     # Source needed only if we have to build the VFS from scratch.
     build_wordpress
     step "Building WordPress VFS image"
-    bash "$REPO_ROOT/examples/browser/scripts/build-wp-vfs-image.sh"
+    # Delegate to the package-system wrapper so install_local_binary
+    # populates local-binaries/programs/wasm32/wordpress.vfs (the path
+    # the @binaries/ Vite alias resolves against).
+    bash "$REPO_ROOT/examples/libs/wordpress/build-wordpress.sh"
     info "WP VFS image built"
 }
 
@@ -632,7 +662,10 @@ build_lamp_vfs() {
     fi
     build_wordpress
     step "Building LAMP VFS image"
-    bash "$REPO_ROOT/examples/browser/scripts/build-lamp-vfs-image.sh"
+    # Delegate to the package-system wrapper so install_local_binary
+    # populates local-binaries/programs/wasm32/lamp.vfs (the path the
+    # @binaries/ Vite alias resolves against).
+    bash "$REPO_ROOT/examples/libs/lamp/build-lamp.sh"
     info "LAMP VFS image built"
 }
 
@@ -1374,10 +1407,12 @@ clean_target() {
                    "$REPO_ROOT/examples/libs/mariadb/mariadb-glue-objs-64"
             warn "Cleaned MariaDB" ;;
         mariadb-vfs)
-            rm -f "$REPO_ROOT/examples/browser/public/mariadb.vfs"
+            rm -f "$REPO_ROOT/examples/browser/public/mariadb.vfs" \
+                  "$REPO_ROOT/local-binaries/programs/wasm32/mariadb-vfs.vfs"
             warn "Cleaned MariaDB VFS image (wasm32)" ;;
         mariadb64-vfs)
-            rm -f "$REPO_ROOT/examples/browser/public/mariadb-64.vfs"
+            rm -f "$REPO_ROOT/examples/browser/public/mariadb-64.vfs" \
+                  "$REPO_ROOT/local-binaries/programs/wasm64/mariadb-vfs.vfs"
             warn "Cleaned MariaDB VFS image (wasm64)" ;;
         redis)
             rm -rf "$REPO_ROOT/examples/libs/redis/redis-src" \
@@ -1407,19 +1442,24 @@ clean_target() {
             rm -rf "$REPO_ROOT/examples/wordpress/wordpress"
             warn "Cleaned WordPress" ;;
         wp-vfs)
-            rm -f "$REPO_ROOT/examples/browser/public/wordpress.vfs"
+            rm -f "$REPO_ROOT/examples/browser/public/wordpress.vfs" \
+                  "$REPO_ROOT/local-binaries/programs/wasm32/wordpress.vfs"
             warn "Cleaned WP VFS image" ;;
         lamp-vfs)
-            rm -f "$REPO_ROOT/examples/browser/public/lamp.vfs"
+            rm -f "$REPO_ROOT/examples/browser/public/lamp.vfs" \
+                  "$REPO_ROOT/local-binaries/programs/wasm32/lamp.vfs"
             warn "Cleaned LAMP VFS image" ;;
         nginx-vfs)
-            rm -f "$REPO_ROOT/examples/browser/public/nginx.vfs"
+            rm -f "$REPO_ROOT/examples/browser/public/nginx.vfs" \
+                  "$REPO_ROOT/local-binaries/programs/wasm32/nginx-vfs.vfs"
             warn "Cleaned nginx VFS image" ;;
         redis-vfs)
-            rm -f "$REPO_ROOT/examples/browser/public/redis.vfs"
+            rm -f "$REPO_ROOT/examples/browser/public/redis.vfs" \
+                  "$REPO_ROOT/local-binaries/programs/wasm32/redis-vfs.vfs"
             warn "Cleaned Redis VFS image" ;;
         nginx-php-vfs)
-            rm -f "$REPO_ROOT/examples/browser/public/nginx-php.vfs"
+            rm -f "$REPO_ROOT/examples/browser/public/nginx-php.vfs" \
+                  "$REPO_ROOT/local-binaries/programs/wasm32/nginx-php-vfs.vfs"
             warn "Cleaned nginx + PHP-FPM VFS image" ;;
         erlang)
             rm -rf "$REPO_ROOT/examples/libs/erlang/erlang-src" \
@@ -1497,9 +1537,13 @@ clean_target() {
                   "$REPO_ROOT/examples/browser/public/shell.vfs"
             warn "Cleaned NetHack (also invalidated nethack.zip and shell.vfs; run '$0 build shell-vfs' to regenerate for browser demo)" ;;
         fbdoom)
-            rm -rf "$REPO_ROOT/examples/libs/fbdoom/fbdoom-src"
+            rm -rf "$REPO_ROOT/examples/libs/fbdoom/fbdoom-src" \
+                   "$REPO_ROOT/local-binaries/programs/wasm32/fbdoom"
             rm -f "$REPO_ROOT/examples/libs/fbdoom/fbdoom.wasm" \
-                  "$REPO_ROOT/local-binaries/programs/fbdoom.wasm"
+                  "$REPO_ROOT/examples/libs/fbdoom/doom1.wad" \
+                  "$REPO_ROOT/examples/libs/fbdoom/COPYING.txt" \
+                  "$REPO_ROOT/examples/libs/fbdoom/CREDITS.txt" \
+                  "$REPO_ROOT/examples/libs/fbdoom/CREDITS-MUSIC.txt"
             warn "Cleaned fbDOOM" ;;
         ncurses)
             rm -rf "$REPO_ROOT/examples/libs/ncurses/ncurses-src"
@@ -1693,6 +1737,15 @@ cmd_run() {
     esac
 }
 
+cmd_fetch() {
+    if [ ! -f "$REPO_ROOT/binaries.lock" ]; then
+        err "binaries.lock not found"
+        exit 1
+    fi
+    step "Fetching binaries for the pinned release"
+    "$REPO_ROOT/scripts/fetch-binaries.sh" "${ALLOW_STALE_ARGS[@]+"${ALLOW_STALE_ARGS[@]}"}" "$@"
+}
+
 cmd_browser() {
     local BROWSER_DIR="$REPO_ROOT/examples/browser"
 
@@ -1703,7 +1756,7 @@ cmd_browser() {
     # artifacts (local-only programs, stale VFS images) trigger a build.
     if [ -f "$REPO_ROOT/binaries.lock" ]; then
         step "Fetching binaries for the pinned release"
-        "$REPO_ROOT/scripts/fetch-binaries.sh"
+        "$REPO_ROOT/scripts/fetch-binaries.sh" "${ALLOW_STALE_ARGS[@]+"${ALLOW_STALE_ARGS[@]}"}"
     fi
 
     build_browser
@@ -1886,6 +1939,14 @@ cmd_list() {
     echo "  ./run.sh clean all                   Remove all build artifacts"
     echo "  ./run.sh rebuild <target...>         Clean + rebuild specific targets"
     echo ""
+    echo "${BOLD}Binaries:${RESET}"
+    echo "  ./run.sh fetch                       Fetch binaries pinned by binaries.lock"
+    echo ""
+    echo "${BOLD}Top-level flags:${RESET}"
+    echo "  --allow-stale                        Soften the install-release manifest"
+    echo "                                        gate (forwarded to fetch-binaries.sh)."
+    echo "                                        Equivalent to WASM_POSIX_ALLOW_STALE=1."
+    echo ""
     echo "${BOLD}Run examples:${RESET}"
     echo "  ./run.sh run shell                   Interactive shell (dash + coreutils + grep + sed)"
     echo "  ./run.sh run nginx [port]            nginx HTTP server"
@@ -1922,6 +1983,7 @@ case "${1:-list}" in
     build)    cmd_build "${@:2}" ;;
     rebuild)  cmd_rebuild "${@:2}" ;;
     clean)    cmd_clean "${@:2}" ;;
+    fetch)    cmd_fetch "${@:2}" ;;
     run)      cmd_run "${@:2}" ;;
     browser)  cmd_browser "${@:2}" ;;
     test)     cmd_test "${@:2}" ;;

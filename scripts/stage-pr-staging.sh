@@ -6,11 +6,17 @@
 #
 # Usage:
 #   scripts/stage-pr-staging.sh --pr <N> --out <staging-dir> \
-#       [--baseline-tag <tag>] [--arch wasm32|wasm64]...
+#       [--baseline-tag <tag>] [--arch wasm32|wasm64]... \
+#       [--force-rebuild <name>]... [--force-rebuild-all]
 #
 # Reads `binaries.lock` to find the durable release tag (or use
 # --baseline-tag to override), downloads its manifest.json, then
 # invokes `xtask stage-pr-overlay` against it.
+#
+# --force-rebuild / --force-rebuild-all source-build the named
+# manifests and treat them as changed-vs-baseline even when their
+# cache_key_sha matches the baseline. Useful for local dry runs to
+# confirm a fresh archive against a suspected stale durable entry.
 #
 # Output:
 #   $STAGING/libs/*.tar.zst         (only changed libraries)
@@ -32,14 +38,18 @@ PR=""
 STAGING=""
 BASELINE_TAG=""
 ARCHES=()
+FORCE_REBUILD_NAMES=()
+FORCE_REBUILD_ALL=0
 while [ $# -gt 0 ]; do
     case "$1" in
-        --pr)              PR="$2"; shift 2 ;;
-        --out)             STAGING="$2"; shift 2 ;;
-        --baseline-tag)    BASELINE_TAG="$2"; shift 2 ;;
-        --arch)            ARCHES+=("$2"); shift 2 ;;
+        --pr)                  PR="$2"; shift 2 ;;
+        --out)                 STAGING="$2"; shift 2 ;;
+        --baseline-tag)        BASELINE_TAG="$2"; shift 2 ;;
+        --arch)                ARCHES+=("$2"); shift 2 ;;
+        --force-rebuild)       FORCE_REBUILD_NAMES+=("$2"); shift 2 ;;
+        --force-rebuild-all)   FORCE_REBUILD_ALL=1; shift ;;
         -h|--help)
-            sed -n '3,27p' "$0"
+            sed -n '3,32p' "$0"
             exit 0
             ;;
         *) echo "unknown arg $1" >&2; exit 2 ;;
@@ -86,7 +96,7 @@ trap 'rm -f "$BASELINE_TMP"' EXIT
 
 BASELINE_URL="https://github.com/brandonpayton/wasm-posix-kernel/releases/download/$BASELINE_TAG/manifest.json"
 echo "stage-pr-staging: fetching baseline manifest from $BASELINE_TAG"
-if ! curl -fsSL --retry 3 -o "$BASELINE_TMP" "$BASELINE_URL"; then
+if ! curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL --retry 3 -o "$BASELINE_TMP" "$BASELINE_URL"; then
     echo "ERROR: failed to download baseline manifest from $BASELINE_URL" >&2
     exit 1
 fi
@@ -99,18 +109,31 @@ for a in "${ARCHES[@]}"; do
     arch_args+=(--arch "$a")
 done
 
+force_args=()
+if [ "$FORCE_REBUILD_ALL" = "1" ]; then
+    force_args+=(--force-rebuild-all)
+fi
+if [ ${#FORCE_REBUILD_NAMES[@]} -gt 0 ]; then
+    for n in "${FORCE_REBUILD_NAMES[@]}"; do
+        force_args+=(--force-rebuild "$n")
+    done
+fi
+
 echo "== Staging PR overlay for PR #$PR (arches: ${ARCHES[*]}) =="
-# --continue-on-error: a single package whose source build fails on
-# the runner (e.g. mariadb-test wants the full mysql-test directory
-# from a host MariaDB build) should not abort the whole overlay.
-# Such packages stay at their durable-release version; only packages
-# that successfully (re)stage become overrides.
+# Strict-by-default: if a package's source build fails on the runner,
+# fail the whole staging job so the contributor sees the breakage
+# *before* applying ready-to-ship. Tolerating silent failures here
+# delays bad news to prepare-merge.yml (after the label is applied,
+# inside the singleton concurrency group), which is a much worse
+# place to learn that v6→v7 dropped 12 packages from the durable
+# release. The xtask's per-arch policy (partial-arch failure = warn,
+# total-arch failure = error) still applies.
 cargo run -p xtask --target "$HOST_TARGET" --quiet -- stage-pr-overlay \
     --baseline-manifest "$BASELINE_TMP" \
     --staging-tag "pr-${PR}-staging" \
     --out "$STAGING" \
-    --continue-on-error \
-    "${arch_args[@]}"
+    "${arch_args[@]}" \
+    ${force_args[@]+"${force_args[@]}"}
 
 if [ ! -f "$STAGING/binaries.lock.pr" ]; then
     echo "ERROR: xtask did not produce $STAGING/binaries.lock.pr" >&2

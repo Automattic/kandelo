@@ -185,14 +185,7 @@ echo "==> Building sigsetjmp helpers..."
 # 9. Install override headers
 # ---------------------------------------------------------------
 echo "==> Installing override headers..."
-if [ -d "$OVERLAY_DIR/include" ]; then
-    cd "$OVERLAY_DIR/include"
-    find . -name '*.h' | while read f; do
-        mkdir -p "$SYSROOT/include/$(dirname "$f")"
-        cp "$f" "$SYSROOT/include/$f"
-    done
-    cd "$REPO_ROOT"
-fi
+bash "$REPO_ROOT/scripts/install-overlay-headers.sh" "$SYSROOT"
 
 echo ""
 echo "==> musl build complete!"

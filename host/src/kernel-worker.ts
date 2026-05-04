@@ -468,6 +468,20 @@ const SYSCALL_ARGS: Record<number, ArgDesc[]> = {
   // Exec
   211: [{ argIndex: 0, direction: "in", size: { type: "cstring" } }],          // EXECVE: path
 
+  // prctl(option, arg2, arg3, arg4, arg5)
+  // Always marshal arg2 as a 16-byte inout buffer:
+  //   PR_SET_NAME (15): kernel reads thread name from buf
+  //   PR_GET_NAME (16): kernel writes thread name to buf
+  //   Any other option: kernel ignores buf entirely (sys_prctl returns Ok(()) for
+  //   unknown options without touching it), so always-marshalling is wasted-but-safe.
+  // Without this, the user's wasm32 buffer pointer was passed unchanged to the
+  // kernel's `from_raw_parts_mut(arg2 as *mut u8, 16)` — the kernel would
+  // dereference user-space addresses against its own memory, with the failure
+  // mode depending on whether the address landed in already-grown kernel pages
+  // (silent corruption) or past them (RuntimeError: memory access out of bounds).
+  // Triggered by mariadbd's pthread_setname_np during boot.
+  223: [{ argIndex: 1, direction: "inout", size: { type: "fixed", size: 16 } }],
+
   // Timer
   225: [
     { argIndex: 1, direction: "in", size: { type: "fixed", size: ITIMERVAL_SIZE } },   // SETITIMER: new
@@ -3470,7 +3484,20 @@ export class CentralizedKernelWorker {
     // Decode sigmask: pselect6 arg6 → pointer to {sigset_t *mask, size_t size}
     // On wasm32: {u32 mask_ptr, u32 size} = 8 bytes
     // On wasm64: {u64 mask_ptr, u64 size} = 16 bytes
+    //
+    // POSIX pselect6 semantics: arg6 points at `{const sigset_t *ss, size_t
+    // ss_len}`. If `ss == NULL`, the syscall must NOT swap the signal mask
+    // (callers like glibc's `select(2)` wrapper pass a non-NULL outer struct
+    // with `ss=NULL` to use the unified syscall path without requesting a
+    // mask swap). We mirror that here by treating "inner mask NULL" the same
+    // as "outer struct NULL": don't pass a mask-pointer to the kernel, so
+    // sys_pselect6 leaves `mask=None` and skips the temp-mask path. Without
+    // this, mariadbd's `select()` from main blew its sigmask away to 0 every
+    // call, letting the next kill(getpid, SIGTERM) fire the main-thread
+    // handler before the dedicated `signal_hand` thread could `sigwait` it
+    // — `wait_for_signal_thread_to_end` then spun forever.
     const maskOffset = dataStart + 3 * FD_SET_SIZE;
+    let kernelMaskPtr = 0; // 0 = no mask swap
     if (maskDataPtr !== 0) {
       const pw = this.getPtrWidth(channel.pid);
       const mdv = new DataView(channel.memory.buffer, maskDataPtr);
@@ -3479,11 +3506,8 @@ export class CentralizedKernelWorker {
         : mdv.getUint32(0, true);
       if (maskPtr !== 0) {
         kernelMem.set(processMem.subarray(maskPtr, maskPtr + 8), maskOffset);
-      } else {
-        kernelMem.fill(0, maskOffset, maskOffset + 8);
+        kernelMaskPtr = maskOffset;
       }
-    } else {
-      kernelMem.fill(0, maskOffset, maskOffset + 8);
     }
 
     // Write args: (nfds, readfds_kernel_ptr, writefds_kernel_ptr,
@@ -3494,7 +3518,7 @@ export class CentralizedKernelWorker {
     kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(writePtr !== 0 ? dataStart + FD_SET_SIZE : 0), true);
     kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, BigInt(exceptPtr !== 0 ? dataStart + 2 * FD_SET_SIZE : 0), true);
     kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, BigInt(timeoutMs), true);
-    kernelView.setBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, BigInt(maskDataPtr !== 0 ? maskOffset : 0), true);
+    kernelView.setBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, BigInt(kernelMaskPtr), true);
 
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
       (offset: bigint, pid: number) => number;

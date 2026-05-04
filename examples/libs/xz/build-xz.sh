@@ -33,14 +33,14 @@ if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading xz $XZ_VERSION..."
     TARBALL="xz-${XZ_VERSION}.tar.gz"
     URL="https://github.com/tukaani-project/xz/releases/download/v${XZ_VERSION}/${TARBALL}"
-    curl -fsSL "$URL" -o "/tmp/$TARBALL"
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
     mkdir -p "$SRC_DIR"
     tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
     rm "/tmp/$TARBALL"
     echo "==> Source extracted to $SRC_DIR"
 
     # Patch: xz excludes __wasm__ from sigprocmask path, but our sysroot has it
-    sed -i '' 's/!defined(__wasm__)/!defined(__wasm_no_signal__)/' "$SRC_DIR/src/common/mythread.h"
+    sed -i.bak 's/!defined(__wasm__)/!defined(__wasm_no_signal__)/' "$SRC_DIR/src/common/mythread.h"
     echo "==> Patched mythread.h for wasm signal support"
 fi
 

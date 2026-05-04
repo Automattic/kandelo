@@ -5,8 +5,10 @@ name: Staging build
 # pre-release for reviewers + CI to consume via fetch-binaries.sh's
 # overlay support.
 #
-# All build steps run inside `nix develop --command` for a reproducible
-# Rust/LLVM/Node toolchain (see flake.nix).
+# All build steps run inside `scripts/dev-shell.sh` for a reproducible
+# Rust/LLVM/Node toolchain (see flake.nix). The wrapper enters
+# `nix develop --ignore-environment` so only flake-declared deps are
+# visible — host /usr/bin tools that aren't in the flake won't leak in.
 #
 # See docs/plans/2026-04-29-pr-package-builds-design.md §4.1.
 #
@@ -56,7 +58,7 @@ jobs:
         uses: DeterminateSystems/magic-nix-cache-action@v13
 
       - name: Warm Nix dev shell
-        run: nix develop --accept-flake-config --command true
+        run: bash scripts/dev-shell.sh true
 
       - name: Cache resolver + cargo target
         uses: actions/cache@v4
@@ -88,9 +90,9 @@ jobs:
         # the relevant part inline before build-libcxx.sh so dinit's
         # compile sees `#include <iostream>`.
         run: |
-          nix develop --accept-flake-config --command bash scripts/build-musl.sh
-          nix develop --accept-flake-config --command bash scripts/build-musl.sh --arch wasm64posix
-          nix develop --accept-flake-config --command bash -c '
+          bash scripts/dev-shell.sh bash scripts/build-musl.sh
+          bash scripts/dev-shell.sh bash scripts/build-musl.sh --arch wasm64posix
+          bash scripts/dev-shell.sh bash -c '
             # Nix puts libc++ headers under share/libc++/v1 (vs.
             # Homebrew at include/c++/v1). Try both for portability.
             src=""
@@ -121,22 +123,51 @@ jobs:
               fi
             done
           '
-          nix develop --accept-flake-config --command bash scripts/build-libcxx.sh
-          nix develop --accept-flake-config --command bash scripts/build-libcxx.sh --arch wasm64
+          bash scripts/dev-shell.sh bash scripts/build-libcxx.sh
+          bash scripts/dev-shell.sh bash scripts/build-libcxx.sh --arch wasm64
 
       - name: Fetch durable binaries (so source-build fallbacks have prereqs)
         # Some packages source-build when their cache_key_sha differs
         # from baseline (mariadb-test depends on programs/mariadb/mariadbd.wasm
         # being available locally). fetch-binaries materializes the
         # durable release into binaries/ where the resolver finds it.
+        #
+        # --allow-stale is required because this PR ships a compute_sha
+        # formula change (folding [[outputs]] into cache_key_sha). Every
+        # entry in the existing durable release was stamped under the old
+        # formula, so its compatibility.cache_key_sha disagrees with what
+        # this checkout would compute. Without --allow-stale the strict
+        # pre-flight in install-release would abort the whole step. With
+        # the flag, mismatched entries are skipped and source-built into
+        # local-binaries/ via `xtask build-deps resolve` — the resolver
+        # picks them up there. Once a fresh durable release is published
+        # under the new formula, this flag becomes a no-op for normal CI
+        # runs (the strict check passes again) but stays in place as the
+        # escape hatch documented in docs/package-management.md.
         run: |
-          nix develop --accept-flake-config --command bash scripts/fetch-binaries.sh
+          bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh --allow-stale
+
+      - name: Install host npm deps (build prereq)
+        # Some package builds invoke node scripts that import from
+        # host/src/ — e.g. shell's build-shell-vfs-image.ts pulls in
+        # host/src/vfs/zip.ts (→ `fflate`). tsx resolves modules
+        # relative to the importing file, so without host/node_modules
+        # populated the source-build of `shell` fails with "Cannot find
+        # package 'fflate'". Done before stage-pr-overlay so this can't
+        # bite when fetch-binaries falls back to a local source build.
+        # The test-suite step further down does its own install too —
+        # idempotent, fast cache hit on second run.
+        run: |
+          bash scripts/dev-shell.sh bash -c '
+            npm install --no-audit --no-fund
+            cd host && npm install --no-audit --no-fund
+          '
 
       - name: Stage PR overlay
         id: stage
         run: |
           mkdir -p /tmp/pr-staging
-          nix develop --accept-flake-config --command \
+          bash scripts/dev-shell.sh \
             scripts/stage-pr-staging.sh \
               --pr ${{ github.event.pull_request.number }} \
               --out /tmp/pr-staging \
@@ -189,7 +220,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          nix develop --accept-flake-config --command \
+          bash scripts/dev-shell.sh \
             scripts/publish-pr-staging.sh \
               --pr ${{ github.event.pull_request.number }} \
               --staging /tmp/pr-staging
@@ -207,7 +238,7 @@ jobs:
         # run-libc-tests.sh / run-sortix-tests.sh which spawn
         # `node --import tsx/esm examples/run-example.ts`).
         run: |
-          nix develop --accept-flake-config --command bash -c '
+          bash scripts/dev-shell.sh bash -c '
             cargo build --release -p wasm-posix-kernel \
               -Z build-std=core,alloc \
               -Z build-std-features=panic_immediate_abort
@@ -217,11 +248,12 @@ jobs:
             bash scripts/build-programs.sh
             npm install --no-audit --no-fund
             cd host && npm install --no-audit --no-fund
+            cd .. && npx --prefix host playwright install chromium
           '
 
       - name: Run cargo + vitest tests
         run: |
-          nix develop --accept-flake-config --command bash -c '
+          bash scripts/dev-shell.sh bash -c '
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
             cargo test -p wasm-posix-kernel --target "$HOST_TARGET" --lib
             cd host && npx vitest run
@@ -233,18 +265,18 @@ jobs:
         # sem_open) and TIME (per-test timeouts) are tolerated. Any
         # FAIL not on the XFAIL list is a regression and exits 1.
         run: |
-          nix develop --accept-flake-config --command bash scripts/run-libc-tests.sh
+          bash scripts/dev-shell.sh bash scripts/run-libc-tests.sh
 
       - name: Run Open POSIX Test Suite
         # 0 FAIL required; UNRES (unresolved) and SKIP are acceptable.
         run: |
-          nix develop --accept-flake-config --command bash scripts/run-posix-tests.sh
+          bash scripts/dev-shell.sh bash scripts/run-posix-tests.sh
 
       - name: Run Sortix os-test suite
         # `--all` runs every suite (include, limits, basic, malloc,
         # stdio, io, signal, process, paths). 0 FAIL, 0 XPASS required.
         run: |
-          nix develop --accept-flake-config --command bash scripts/run-sortix-tests.sh --all
+          bash scripts/dev-shell.sh bash scripts/run-sortix-tests.sh --all
 
       - name: Post sticky comment (built archives)
         if: steps.stage.outputs.override_count != '0' && steps.detect_noop.outputs.noop != 'true'

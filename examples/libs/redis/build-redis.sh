@@ -20,7 +20,12 @@ fi
 # Download if needed
 if [ ! -f "$SCRIPT_DIR/$TARBALL" ]; then
     echo "==> Downloading Redis $VERSION..."
-    curl -L -o "$SCRIPT_DIR/$TARBALL" \
+    # `-f` (--fail) is load-bearing here: without it, curl returns 0
+    # and writes the error HTML payload to TARBALL on a 5xx response,
+    # which then poisons the tar-extract step downstream. Combined
+    # with --retry to ride out transient mirror outages (#406).
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL \
+        -o "$SCRIPT_DIR/$TARBALL" \
         "https://github.com/redis/redis/archive/refs/tags/${VERSION}.tar.gz"
 fi
 

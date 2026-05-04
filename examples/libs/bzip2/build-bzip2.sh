@@ -32,7 +32,7 @@ if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading bzip2 $BZIP2_VERSION..."
     TARBALL="bzip2-${BZIP2_VERSION}.tar.gz"
     URL="https://sourceware.org/pub/bzip2/${TARBALL}"
-    curl -fsSL "$URL" -o "/tmp/$TARBALL"
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
     mkdir -p "$SRC_DIR"
     tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
     rm "/tmp/$TARBALL"

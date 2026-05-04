@@ -18,7 +18,7 @@
 //!   * With `--continue-on-error`: even total-failure manifests
 //!     are warnings, never fatal.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -42,6 +42,20 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let mut build_host: Option<String> = None;
     let mut continue_on_error = false;
     let mut kinds: Vec<ManifestKind> = Vec::new();
+    // Force-rebuild: bypass cache hits + remote-fetch and source-build
+    // these manifests. `--force-rebuild-all` populates the set from the
+    // walked registry once we have it.
+    let mut force_rebuild_names: BTreeSet<String> = BTreeSet::new();
+    let mut force_rebuild_all = false;
+    // Per-package allow-failure list. When a manifest in this set fails
+    // every attempted arch, it's downgraded to a warning rather than
+    // failing the whole stage-release. Release-policy escape hatch for
+    // packages with known-broken source builds we don't want to gate the
+    // workflow on. Lives at the workflow layer (e.g., force-rebuild.yml
+    // passes `--allow-failure texlive`) so the package's deps.toml stays
+    // agnostic — "OK to fail right now" is a release-policy decision,
+    // not a property of the package itself.
+    let mut allow_failure_names: BTreeSet<String> = BTreeSet::new();
 
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
@@ -88,6 +102,15 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                 build_host = Some(it.next().ok_or("--build-host requires value")?)
             }
             "--continue-on-error" => continue_on_error = true,
+            "--force-rebuild" => {
+                force_rebuild_names
+                    .insert(it.next().ok_or("--force-rebuild requires <name>")?);
+            }
+            "--force-rebuild-all" => force_rebuild_all = true,
+            "--allow-failure" => {
+                allow_failure_names
+                    .insert(it.next().ok_or("--allow-failure requires <name>")?);
+            }
             other => return Err(format!("unknown arg {other:?}")),
         }
     }
@@ -125,8 +148,38 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     // Track per-manifest failures so we can decide pass/fail based
     // on whether EVERY arch failed (fatal) vs SOME (warn-only).
     let mut errors: BTreeMap<String, Vec<(TargetArch, String)>> = BTreeMap::new();
+    // Track how many arches were actually attempted per manifest. A manifest
+    // with `target_arches = ["wasm32"]` invoked under `--arch wasm32 --arch
+    // wasm64` only attempts 1 arch (wasm64 is silently skipped); without
+    // tracking this, a wasm32-only package failing wasm32 would be misjudged
+    // as a "partial" failure since errors[name].len() < arches.len() — even
+    // though the package failed every arch it could possibly produce.
+    let mut attempted: BTreeMap<String, usize> = BTreeMap::new();
 
-    for (_, m) in registry.walk_all()? {
+    let walked = registry.walk_all()?;
+    if force_rebuild_all {
+        // Expand to every walked manifest of a stageable kind. Source
+        // manifests aren't staged by stage_release, so leaving them out
+        // of the set is consistent with what gets built.
+        for (_, m) in &walked {
+            if matches!(m.kind, ManifestKind::Library | ManifestKind::Program) {
+                force_rebuild_names.insert(m.name.clone());
+            }
+        }
+    }
+    let force_source_build: Option<&BTreeSet<String>> =
+        if force_rebuild_names.is_empty() {
+            None
+        } else {
+            eprintln!(
+                "force-rebuild: source-building {} manifest(s): {}",
+                force_rebuild_names.len(),
+                force_rebuild_names.iter().cloned().collect::<Vec<_>>().join(", "),
+            );
+            Some(&force_rebuild_names)
+        };
+
+    for (_, m) in walked {
         if !kinds.contains(&m.kind) {
             continue;
         }
@@ -169,6 +222,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                 );
                 continue;
             }
+            *attempted.entry(m.name.clone()).or_insert(0) += 1;
             match stage_one(
                 &m,
                 &registry,
@@ -178,6 +232,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                 &staging,
                 &build_timestamp,
                 &build_host,
+                force_source_build,
             ) {
                 Ok(archive_path) => {
                     eprintln!("staged {}", archive_path.display());
@@ -214,18 +269,42 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     build_manifest::run(manifest_args)?;
 
     // Decide pass/fail. Without --continue-on-error, treat a manifest
-    // that failed every requested arch as fatal; partial failures are
-    // still just warnings (already logged above).
+    // that failed every arch it ATTEMPTED as fatal; partial failures are
+    // still just warnings (already logged above). "Attempted" excludes
+    // arches silently skipped by target_arches filtering — otherwise a
+    // wasm32-only manifest could never be a total failure under
+    // `--arch wasm32 --arch wasm64`, hiding real build breakage.
+    //
+    // `--allow-failure <name>` carves out a per-package exception:
+    // total-failure for that name logs a warning but doesn't gate the
+    // workflow exit code. Used to keep force-rebuild green while a
+    // known-broken package (e.g. texlive's pmpost-pulls-in-gmp.h trap)
+    // is being fixed in a follow-up. The package's deps.toml stays
+    // unchanged; the policy lives at the call site.
     if !errors.is_empty() && !continue_on_error {
-        let total = arches.len();
-        let total_failures: Vec<&str> = errors
-            .iter()
-            .filter(|(_, v)| v.len() == total)
-            .map(|(k, _)| k.as_str())
-            .collect();
+        let mut total_failures: Vec<&str> = Vec::new();
+        let mut allowed_total_failures: Vec<&str> = Vec::new();
+        for (name, v) in &errors {
+            if attempted.get(name).copied().unwrap_or(0) != v.len() || v.is_empty() {
+                continue;
+            }
+            if allow_failure_names.contains(name) {
+                allowed_total_failures.push(name);
+            } else {
+                total_failures.push(name);
+            }
+        }
+        if !allowed_total_failures.is_empty() {
+            eprintln!(
+                "stage-release: {} manifest(s) failed every attempted arch \
+                 but are listed via --allow-failure — downgraded to warnings: {}",
+                allowed_total_failures.len(),
+                allowed_total_failures.join(", "),
+            );
+        }
         if !total_failures.is_empty() {
             return Err(format!(
-                "stage-release: {} manifest(s) failed every requested arch — \
+                "stage-release: {} manifest(s) failed every attempted arch — \
                  see WARN logs above. Failed: {}",
                 total_failures.len(),
                 total_failures.join(", "),
@@ -246,6 +325,7 @@ pub(crate) fn stage_one(
     staging: &Path,
     build_timestamp: &str,
     build_host: &str,
+    force_source_build: Option<&BTreeSet<String>>,
 ) -> Result<PathBuf, String> {
     // Compute the cache-key sha so we know what filename to stage
     // under and what to inject into the [compatibility] block.
@@ -281,9 +361,22 @@ pub(crate) fn stage_one(
         }
     };
     let archive_path = staging.join(subdir).join(&archive_name);
-    if archive_path.exists() {
+    let force_this = force_source_build
+        .map(|s| s.contains(&m.name))
+        .unwrap_or(false);
+    if archive_path.exists() && !force_this {
         // Already staged; idempotent re-run.
         return Ok(archive_path);
+    }
+    if archive_path.exists() && force_this {
+        // Force-rebuild: drop the stale archive so the resolver +
+        // archive_stage produces a fresh one. The cache_key_sha
+        // (encoded in the filename's short_sha slot) won't change
+        // unless inputs change, so the new archive overwrites the
+        // same path — clearing first keeps the contract simple.
+        std::fs::remove_file(&archive_path).map_err(|e| {
+            format!("force-rebuild: remove stale {}: {e}", archive_path.display())
+        })?;
     }
 
     // Resolve / build the cache entry. Local-libs override is
@@ -292,6 +385,7 @@ pub(crate) fn stage_one(
     let resolve_opts = ResolveOpts {
         cache_root,
         local_libs: None,
+        force_source_build,
     };
     let cache_path = build_deps::ensure_built(m, registry, arch, abi, &resolve_opts)
         .map_err(|e| format!("ensure_built: {e}"))?;
@@ -671,8 +765,142 @@ echo data > "$WASM_POSIX_DEP_OUT_DIR/lib/libY.a"
             "error must name failed manifest, got: {err}"
         );
         assert!(
-            err.contains("every requested arch"),
+            err.contains("every attempted arch"),
             "error must mention total-failure semantics, got: {err}"
+        );
+    }
+
+    /// A manifest with `target_arches = ["wasm32"]` that fails wasm32
+    /// must be reported as a TOTAL failure even when wasm64 was also
+    /// requested — wasm64 was silently filtered out by target_arches,
+    /// so wasm32 is the only arch that could have produced an archive.
+    /// Pre-fix the run() check compared errors[name].len() against
+    /// arches.len() (= 2), so a wasm32-only failure was misclassified
+    /// as "partial" and silently downgraded to a warning, hiding the
+    /// real breakage from the workflow exit code.
+    #[test]
+    fn stage_release_wasm32_only_failure_is_total_when_wasm64_also_requested() {
+        let dir = tempdir("e4-wasm32-only-fail");
+        let registry = dir.join("registry");
+        let cache_root = dir.join("cache");
+        let staging = dir.join("staging");
+        fs::create_dir_all(&registry).unwrap();
+        fs::create_dir_all(&cache_root).unwrap();
+
+        // Default target_arches = ["wasm32"]; build script always fails.
+        write_fixture_lib(
+            &registry,
+            "wasm32only",
+            "1.0.0",
+            "echo always-fails >&2; exit 1",
+            "[outputs]\nlibs = [\"lib/libW.a\"]\n",
+        );
+
+        let err = super::run(vec![
+            "--staging".into(),
+            staging.display().to_string(),
+            "--registry".into(),
+            registry.display().to_string(),
+            "--cache-root".into(),
+            cache_root.display().to_string(),
+            "--abi".into(),
+            "4".into(),
+            "--arch".into(),
+            "wasm32".into(),
+            "--arch".into(),
+            "wasm64".into(),
+            "--build-timestamp".into(),
+            "2026-04-26T00:00:00Z".into(),
+            "--build-host".into(),
+            "test-host".into(),
+        ])
+        .expect_err("wasm32-only manifest failing wasm32 must be total failure");
+        assert!(
+            err.contains("wasm32only"),
+            "error must name failed manifest, got: {err}"
+        );
+        assert!(
+            err.contains("every attempted arch"),
+            "error must use 'attempted arch' semantics, got: {err}"
+        );
+    }
+
+    /// `--allow-failure <name>` downgrades a total-failure for that
+    /// specific manifest to a warning. Other manifests' total
+    /// failures still hard-fail as usual.
+    #[test]
+    fn stage_release_allow_failure_downgrades_named_manifest_only() {
+        let dir = tempdir("e4-allow-failure");
+        let registry = dir.join("registry");
+        let cache_root = dir.join("cache");
+        let staging = dir.join("staging");
+        fs::create_dir_all(&registry).unwrap();
+        fs::create_dir_all(&cache_root).unwrap();
+
+        write_fixture_lib(
+            &registry,
+            "tolerated",
+            "1.0.0",
+            "echo always-fails >&2; exit 1",
+            "[outputs]\nlibs = [\"lib/libT.a\"]\n",
+        );
+
+        // First: tolerated alone with --allow-failure must Ok().
+        super::run(vec![
+            "--staging".into(),
+            staging.display().to_string(),
+            "--registry".into(),
+            registry.display().to_string(),
+            "--cache-root".into(),
+            cache_root.display().to_string(),
+            "--abi".into(),
+            "4".into(),
+            "--arch".into(),
+            "wasm32".into(),
+            "--allow-failure".into(),
+            "tolerated".into(),
+            "--build-timestamp".into(),
+            "2026-04-26T00:00:00Z".into(),
+            "--build-host".into(),
+            "test-host".into(),
+        ])
+        .expect("tolerated total-failure must be downgraded under --allow-failure");
+
+        // Second: tolerated + a non-tolerated failure must still Err().
+        let staging2 = dir.join("staging2");
+        write_fixture_lib(
+            &registry,
+            "untolerated",
+            "1.0.0",
+            "echo always-fails >&2; exit 1",
+            "[outputs]\nlibs = [\"lib/libU.a\"]\n",
+        );
+        let err = super::run(vec![
+            "--staging".into(),
+            staging2.display().to_string(),
+            "--registry".into(),
+            registry.display().to_string(),
+            "--cache-root".into(),
+            cache_root.display().to_string(),
+            "--abi".into(),
+            "4".into(),
+            "--arch".into(),
+            "wasm32".into(),
+            "--allow-failure".into(),
+            "tolerated".into(),
+            "--build-timestamp".into(),
+            "2026-04-26T00:00:00Z".into(),
+            "--build-host".into(),
+            "test-host".into(),
+        ])
+        .expect_err("untolerated total-failure must still gate the run");
+        assert!(
+            err.contains("untolerated"),
+            "error must name the un-allowed manifest, got: {err}"
+        );
+        assert!(
+            !err.contains("tolerated") || err.contains("untolerated"),
+            "error must not list `tolerated` outside of substring match, got: {err}"
         );
     }
 

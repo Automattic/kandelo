@@ -41,6 +41,14 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let mut abi: Option<u32> = None;
     let mut arches: Vec<TargetArch> = Vec::new();
     let mut continue_on_error = false;
+    // Force-rebuild: treat the named manifests as changed-vs-baseline
+    // even when cache_key_sha matches, AND source-build them inside
+    // stage_one (bypassing cache hits + `[binary]` remote fetch).
+    // `--force-rebuild-all` populates the set from every walked
+    // library/program manifest. Useful for local PR-staging dry runs
+    // when the maintainer suspects the resolver's cache view is stale.
+    let mut force_rebuild_names: BTreeSet<String> = BTreeSet::new();
+    let mut force_rebuild_all = false;
 
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
@@ -74,6 +82,11 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                 &it.next().ok_or("--arch requires wasm32|wasm64")?,
             )?),
             "--continue-on-error" => continue_on_error = true,
+            "--force-rebuild" => {
+                force_rebuild_names
+                    .insert(it.next().ok_or("--force-rebuild requires <name>")?);
+            }
+            "--force-rebuild-all" => force_rebuild_all = true,
             other => return Err(format!("unknown arg {other:?}")),
         }
     }
@@ -119,7 +132,27 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let host = stage_release::default_build_host();
     let mut overrides: BTreeSet<String> = BTreeSet::new();
 
-    for (_, m) in registry.walk_all()? {
+    let walked = registry.walk_all()?;
+    if force_rebuild_all {
+        for (_, m) in &walked {
+            if matches!(m.kind, ManifestKind::Library | ManifestKind::Program) {
+                force_rebuild_names.insert(m.name.clone());
+            }
+        }
+    }
+    let force_source_build: Option<&BTreeSet<String>> =
+        if force_rebuild_names.is_empty() {
+            None
+        } else {
+            eprintln!(
+                "force-rebuild: source-building {} manifest(s): {}",
+                force_rebuild_names.len(),
+                force_rebuild_names.iter().cloned().collect::<Vec<_>>().join(", "),
+            );
+            Some(&force_rebuild_names)
+        };
+
+    for (_, m) in walked {
         if !matches!(m.kind, ManifestKind::Library | ManifestKind::Program) {
             continue;
         }
@@ -152,11 +185,20 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                 Some(b) => *b != sha_hex,
                 None => true,
             };
-            if !changed {
+            // Force-listed packages are treated as changed even when
+            // cache_key_sha matches baseline — the whole point is to
+            // surface a fresh archive against the maintainer's
+            // suspicion that the cached one is wrong.
+            let force_this = force_source_build
+                .map(|s| s.contains(&m.name))
+                .unwrap_or(false);
+            if !changed && !force_this {
                 continue;
             }
 
-            // Stage this archive.
+            // Stage this archive. force_source_build (if any) makes
+            // stage_one source-build instead of resolving from cache
+            // or remote `[binary]`.
             match stage_release::stage_one(
                 &m,
                 &registry,
@@ -166,6 +208,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                 &out,
                 &timestamp,
                 &host,
+                force_source_build,
             ) {
                 Ok(archive_path) => {
                     eprintln!("staged {}", archive_path.display());
@@ -495,5 +538,86 @@ echo data > "$WASM_POSIX_DEP_OUT_DIR/lib/libz.a""#,
         let digest = hasher.finalize();
         let actual_sha = hex(digest.as_slice());
         assert_eq!(overlay["staging_manifest_sha256"], actual_sha);
+    }
+
+    #[test]
+    fn stage_pr_overlay_force_rebuild_stages_unchanged_package() {
+        // Sanity case (without force) is `stage_pr_overlay_skips_unchanged_packages`:
+        // an unchanged-vs-baseline package is skipped. With
+        // `--force-rebuild z`, the same unchanged package must still
+        // get staged (treated as changed) AND the resolver must
+        // source-build it (counter increments past the baseline run).
+        let dir = tempdir("force-rebuild");
+        let registry = dir.join("registry");
+        let cache_root = dir.join("cache");
+        fs::create_dir_all(&registry).unwrap();
+        fs::create_dir_all(&cache_root).unwrap();
+
+        // Counter file in registry root tracks build-script invocations.
+        let counter_path = registry.join("counter");
+        write_fixture_lib(
+            &registry,
+            "z",
+            "1.0.0",
+            &format!(
+                r#"echo ran >> "{}"
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib"
+echo data > "$WASM_POSIX_DEP_OUT_DIR/lib/libz.a""#,
+                counter_path.display(),
+            ),
+        );
+
+        // Baseline run populates the cache (counter=1).
+        let (baseline_manifest, _) = stage_baseline(&registry, &cache_root, 4);
+        let runs_after_baseline = fs::read_to_string(&counter_path)
+            .unwrap()
+            .lines()
+            .count();
+        assert_eq!(runs_after_baseline, 1);
+
+        // PR overlay run with --force-rebuild z → must re-stage even
+        // though cache_key_sha is identical to baseline.
+        let pr_out = dir.join("pr-staging");
+        super::run(vec![
+            "--baseline-manifest".into(),
+            baseline_manifest.display().to_string(),
+            "--staging-tag".into(),
+            "pr-7-staging".into(),
+            "--out".into(),
+            pr_out.display().to_string(),
+            "--registry".into(),
+            registry.display().to_string(),
+            "--cache-root".into(),
+            cache_root.display().to_string(),
+            "--abi".into(),
+            "4".into(),
+            "--arch".into(),
+            "wasm32".into(),
+            "--force-rebuild".into(),
+            "z".into(),
+        ])
+        .unwrap();
+
+        // Build script ran a second time (force bypassed cache hit).
+        let runs_after_force = fs::read_to_string(&counter_path)
+            .unwrap()
+            .lines()
+            .count();
+        assert_eq!(
+            runs_after_force, 2,
+            "force-rebuild must re-run the build script"
+        );
+
+        // Archive landed in libs/ and overlay lists z as an override.
+        let libs: Vec<_> = fs::read_dir(pr_out.join("libs"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(libs.len(), 1, "expected one z archive, got: {libs:?}");
+        let overlay: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(pr_out.join("binaries.lock.pr")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(overlay["overrides"], serde_json::json!(["z"]));
     }
 }

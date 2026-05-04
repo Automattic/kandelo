@@ -626,6 +626,62 @@ That is the strict-equivalence check the design relies on:
 the archive is honored if and only if its source-side inputs
 hash to exactly what this checkout would produce.
 
+### Iterating on a package locally
+
+When you edit an `examples/libs/<name>/deps.toml` (or any input
+that changes the package's `cache_key_sha` — `revision`,
+`source.url`, `source.sha256`, transitive deps), the published
+release manifest goes stale relative to your local state. By
+default, `./run.sh fetch` and `./run.sh browser` then abort with:
+
+```
+xtask install-release: <name> (<arch>): manifest.json cache_key_sha
+"<published>" does not match locally-computed "<local>" — the
+manifest is stale relative to this consumer's deps.toml
+```
+
+That is the "Why `cache_key_sha` is the strict equivalence
+check" rejection above, surfaced at the install-release seam.
+
+The primary remedy is the per-PR overlay flow — push your
+branch, let `staging-build.yml` rebuild the touched packages,
+and `fetch-binaries.sh` will auto-detect the open PR and pull
+its `pr-<NNN>-staging` archives via `binaries.lock.pr` (see
+[binary-releases.md](binary-releases.md) "Per-PR staging
+overlay"). That works for any `deps.toml` change pushed to a
+PR with CI write access, and is the path code-review and merge
+both use.
+
+`--allow-stale` is the escape hatch for the cases the overlay
+flow doesn't cover:
+
+- pre-push iteration before any commit lands on the branch,
+- fork PRs that lack write access to publish staging releases,
+- `WIP:` commits where the staging build hasn't completed (or
+  failed) and you want to see the demo locally,
+- local edits past the last CI build on your own PR.
+
+Pass it instead of waiting for the overlay:
+
+```bash
+./run.sh browser --allow-stale          # one-shot
+./run.sh fetch   --allow-stale          # also works for any subcommand
+WASM_POSIX_ALLOW_STALE=1 ./run.sh ...   # sticky for the shell session
+```
+
+With the flag set, `install-release` skips the mismatched
+manifest entries (a one-line diagnostic per skip) and continues
+with the rest of the manifest. The skipped packages then fall
+through the resolver chain on the next `cargo xtask build-deps
+resolve <name>` — `local-libs/` first, then the content-addressed
+cache, then a source build via `build-<name>.sh`. Outputs land
+under `local-binaries/programs/<arch>/`, which the Vite resolver
+and `scripts/resolve-binary.sh` already prefer over `binaries/`.
+
+`binaries/` itself stays release-pure regardless of the flag —
+the entries it gets are the ones the manifest agreed on. CI does
+not pass `--allow-stale` and remains strict-by-construction.
+
 ### Worked example: zlib
 
 Source manifest at `examples/libs/zlib/deps.toml`:

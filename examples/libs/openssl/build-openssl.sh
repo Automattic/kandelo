@@ -27,7 +27,7 @@ fi
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading OpenSSL $OPENSSL_VERSION..."
     TARBALL="openssl-${OPENSSL_VERSION}.tar.gz"
-    curl -fsSL "$SOURCE_URL" -o "/tmp/${TARBALL}"
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "/tmp/${TARBALL}"
     if [ -n "$SOURCE_SHA256" ]; then
         echo "==> Verifying source sha256..."
         echo "$SOURCE_SHA256  /tmp/${TARBALL}" | shasum -a 256 -c -

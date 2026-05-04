@@ -12,7 +12,13 @@
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
 import { attachCanvas } from "../../../../host/src/framebuffer/canvas-renderer";
-import fbdoomWasmUrl from "../../../../binaries/programs/wasm32/fbdoom.wasm?url";
+// Both files come from the same fbdoom package archive (see
+// examples/libs/fbdoom/deps.toml — multi-output → per-program subdir).
+// `@binaries/` resolves to local-binaries/ first, then binaries/ — so
+// a fresh `bash build-fbdoom.sh` shadows the cached release without
+// needing to mirror the symlinks under binaries/.
+import fbdoomWasmUrl from "@binaries/programs/wasm32/fbdoom/fbdoom.wasm?url";
+import wadUrl from "@binaries/programs/wasm32/fbdoom/doom1.wad?url";
 import kernelWasmUrl from "@kernel-wasm?url";
 
 const startBtn = document.getElementById("start") as HTMLButtonElement;
@@ -20,7 +26,6 @@ const canvas = document.getElementById("fb") as HTMLCanvasElement;
 const statusEl = document.getElementById("status")!;
 
 const WAD_VFS_PATH = "/usr/local/games/doom/doom1.wad";
-const WAD_URL = "/assets/doom/doom1.wad";
 
 /**
  * Browser `KeyboardEvent.code` → Linux *keycode* (the values in
@@ -83,26 +88,26 @@ startBtn.addEventListener("click", async () => {
   const kernelBytes = await fetch(kernelWasmUrl).then((r) => r.arrayBuffer());
   await kernel.init(kernelBytes);
 
-  // Lazy-register the WAD: fetched on first read, no upfront cost.
-  // doom1.wad is gitignored; users provide it per
-  // examples/browser/public/assets/doom/README.md.
-  // Probe the size with a HEAD request so the VFS knows the file size
-  // up front (registerLazyFile requires a size).
+  // The WAD ships in fbdoom's cache archive — Vite's ?url import
+  // resolves through the `binaries/programs/wasm32/fbdoom/doom1.wad`
+  // symlink to the canonical cache path. Probe the size with a HEAD
+  // request so registerLazyFile gets a known size up front.
   let wadSize = 0;
   try {
-    const head = await fetch(WAD_URL, { method: "HEAD" });
+    const head = await fetch(wadUrl, { method: "HEAD" });
     if (!head.ok) throw new Error(`HTTP ${head.status}`);
     wadSize = Number(head.headers.get("content-length") ?? 0);
     if (!wadSize) throw new Error("Content-Length missing");
   } catch (err) {
     statusEl.textContent =
-      `Couldn't find ${WAD_URL} — see examples/browser/public/assets/doom/README.md.`;
+      "Couldn't load doom1.wad from the fbdoom package — re-run " +
+      "`bash examples/libs/fbdoom/build-fbdoom.sh` or `./run.sh build fbdoom`.";
     console.error("WAD HEAD probe failed:", err);
     startBtn.disabled = false;
     return;
   }
   kernel.registerLazyFiles([
-    { path: WAD_VFS_PATH, url: WAD_URL, size: wadSize, mode: 0o444 },
+    { path: WAD_VFS_PATH, url: wadUrl, size: wadSize, mode: 0o444 },
   ]);
   // The lazy-fetch path materializes on-exec, but the WAD is a *data*
   // file fbDOOM will open() at runtime. Pull it into the VFS now so

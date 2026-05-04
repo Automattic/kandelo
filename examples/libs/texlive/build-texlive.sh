@@ -53,7 +53,7 @@ echo "==> libpng at $LIBPNG_PREFIX"
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading TeX Live $TEXLIVE_VERSION source..."
     TARBALL="texlive-${TEXLIVE_VERSION}0308-source.tar.xz"
-    curl -fsSL "https://ftp.math.utah.edu/pub/tex/historic/systems/texlive/${TEXLIVE_VERSION}/${TARBALL}" \
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "https://ftp.math.utah.edu/pub/tex/historic/systems/texlive/${TEXLIVE_VERSION}/${TARBALL}" \
         -o "/tmp/${TARBALL}"
     mkdir -p "$SRC_DIR"
     tar xf "/tmp/${TARBALL}" -C "$SRC_DIR" --strip-components=1
@@ -164,6 +164,17 @@ SITE
     export PATH="$HOST_WEB2C:$PATH"
     export CONFIG_SITE="$CROSS_BUILD_DIR/config.site"
 
+    # CC_FOR_BUILD: TeX Live's bundled GMP recursively configures a
+    # `native/` subdir (a host-arch helper used during cross-compile).
+    # That sub-configure forwards its parent's args and tacks on
+    # `'CC=' 'CFLAGS=' '...'` to clear them, then re-detects via
+    # `${build_alias}-gcc`. On Nix-CI that resolves to a wrapped
+    # `x86_64-unknown-linux-gnu-gcc` whose required env (e.g. NIX_*
+    # CRT/spec injections) gets stripped along with CFLAGS, so the
+    # bare invocation can't link executables ("C compiler cannot
+    # create executables"). Pinning CC_FOR_BUILD survives the recurse
+    # because GMP's m4 macros consult it before falling back to host
+    # detection.
     "$SRC_DIR/configure" \
         --host=wasm32-unknown-none \
         --build="$(cc -dumpmachine)" \
@@ -183,6 +194,8 @@ SITE
         CXX=wasm32posix-c++ \
         AR=wasm32posix-ar \
         RANLIB=wasm32posix-ranlib \
+        CC_FOR_BUILD=cc \
+        CXX_FOR_BUILD=c++ \
         CFLAGS="-O2 -I$ZLIB_PREFIX/include -I$LIBPNG_PREFIX/include" \
         LDFLAGS="-L$ZLIB_PREFIX/lib -L$LIBPNG_PREFIX/lib" \
         ZLIB_CFLAGS="-I$ZLIB_PREFIX/include" \

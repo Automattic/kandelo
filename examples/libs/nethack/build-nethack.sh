@@ -64,7 +64,7 @@ if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading NetHack $NETHACK_VERSION..."
     TARBALL="nethack-${NETHACK_SHORT}-src.tgz"
     URL="https://www.nethack.org/download/${NETHACK_VERSION}/${TARBALL}"
-    curl -fsSL "$URL" -o "/tmp/${TARBALL}"
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/${TARBALL}"
     mkdir -p "$SRC_DIR"
     tar xzf "/tmp/${TARBALL}" -C "$SRC_DIR" --strip-components=1
     rm "/tmp/${TARBALL}"

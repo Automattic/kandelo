@@ -52,7 +52,7 @@ done
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading CPython $PYTHON_VERSION..."
     TARBALL="Python-${PYTHON_VERSION}.tgz"
-    curl -fsSL "https://www.python.org/ftp/python/${PYTHON_VERSION}/${TARBALL}" -o "/tmp/${TARBALL}"
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "https://www.python.org/ftp/python/${PYTHON_VERSION}/${TARBALL}" -o "/tmp/${TARBALL}"
     mkdir -p "$SRC_DIR"
     tar xzf "/tmp/${TARBALL}" -C "$SRC_DIR" --strip-components=1
     rm "/tmp/${TARBALL}"

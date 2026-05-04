@@ -23,10 +23,17 @@ SRC_DIR="$SCRIPT_DIR/mariadb-src"
 HOST_BUILD_DIR="$SCRIPT_DIR/mariadb-host-build"
 GLUE_DIR="$REPO_ROOT/glue"
 
-# Parse --wasm64 flag
-WASM_ARCH="wasm32"
+# Default to xtask resolver's WASM_POSIX_DEP_TARGET_ARCH (set per
+# manifest arch at build-deps time); fall back to wasm32 outside the
+# resolver. CLI flags override — useful for direct manual invocation.
+# Without this, `cargo xtask build-deps` for the wasm64 mariadb target
+# silently rebuilt wasm32 (env var ignored, no --wasm64 in argv) and
+# left mariadb-install-64/ empty, breaking the downstream
+# build-mariadb-vfs.sh wasm64 step.
+WASM_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
 while [ $# -gt 0 ]; do
     case "$1" in
+        --wasm32) WASM_ARCH="wasm32"; shift ;;
         --wasm64) WASM_ARCH="wasm64"; shift ;;
         *) echo "Unknown argument: $1" >&2; exit 1 ;;
     esac
@@ -83,7 +90,7 @@ if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading MariaDB $MARIADB_VERSION..."
     TARBALL="mariadb-${MARIADB_VERSION}.tar.gz"
     URL="https://archive.mariadb.org/mariadb-${MARIADB_VERSION}/source/${TARBALL}"
-    curl -fsSL "$URL" -o "/tmp/$TARBALL"
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
     mkdir -p "$SRC_DIR"
     tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
     rm "/tmp/$TARBALL"
@@ -97,15 +104,15 @@ echo "==> Applying wasm32 source patches..."
 CONC_CMAKE="$SRC_DIR/cmake/mariadb_connector_c.cmake"
 if grep -q 'IF(NOT CONC_WITH_SSL)' "$CONC_CMAKE" 2>/dev/null; then
     echo "  Patching cmake/mariadb_connector_c.cmake (disable SSL for cross-build)..."
-    sed -i '' 's/IF(NOT CONC_WITH_SSL)/IF(NOT CONC_WITH_SSL AND NOT CONC_WITH_SSL STREQUAL "OFF")/' "$CONC_CMAKE"
+    sed -i.bak 's/IF(NOT CONC_WITH_SSL)/IF(NOT CONC_WITH_SSL AND NOT CONC_WITH_SSL STREQUAL "OFF")/' "$CONC_CMAKE"
 fi
 
 # 2. my_gethwaddr: Enable Linux code path for wasm (SIOCGIFCONF + SIOCGIFHWADDR)
 HWADDR_FILE="$SRC_DIR/mysys/my_gethwaddr.c"
 if ! grep -q '__wasm' "$HWADDR_FILE" 2>/dev/null; then
     echo "  Patching mysys/my_gethwaddr.c (enable MAC address retrieval for wasm)..."
-    sed -i '' 's/defined(__linux__) || defined(__sun) || defined(_WIN32)/defined(__linux__) || defined(__sun) || defined(_WIN32) || defined(__wasm32__) || defined(__wasm64__)/' "$HWADDR_FILE"
-    sed -i '' 's/#elif defined(_AIX) || defined(__linux__) || defined(__sun)/#elif defined(_AIX) || defined(__linux__) || defined(__sun) || defined(__wasm32__) || defined(__wasm64__)/' "$HWADDR_FILE"
+    sed -i.bak 's/defined(__linux__) || defined(__sun) || defined(_WIN32)/defined(__linux__) || defined(__sun) || defined(_WIN32) || defined(__wasm32__) || defined(__wasm64__)/' "$HWADDR_FILE"
+    sed -i.bak 's/#elif defined(_AIX) || defined(__linux__) || defined(__sun)/#elif defined(_AIX) || defined(__linux__) || defined(__sun) || defined(__wasm32__) || defined(__wasm64__)/' "$HWADDR_FILE"
 fi
 
 # Apply any .patch files from patches/ directory
@@ -128,6 +135,16 @@ if [ ! -f "$HOST_BUILD_DIR/import_executables.cmake" ]; then
     mkdir -p "$HOST_BUILD_DIR"
     cd "$HOST_BUILD_DIR"
 
+    # `WITH_SSL=OFF` + `CONC_WITH_SSL=OFF`: the host build only
+    # produces helper executables (the import_executables target).
+    # None of those helpers need SSL, but libmariadb's
+    # CMakeLists.txt:336 unconditionally calls FIND_PACKAGE(GnuTLS
+    # REQUIRED) unless CONC_WITH_SSL=OFF — and the patch we apply
+    # earlier to cmake/mariadb_connector_c.cmake already wires the
+    # OFF code path. Without these flags, configure dies with
+    # "Could NOT find GnuTLS (missing: GNUTLS_LIBRARY
+    # GNUTLS_INCLUDE_DIR)" on any host that doesn't have GnuTLS
+    # ≥3.4.2 installed (Nix dev shell, fresh CI runner, etc.).
     cmake "$SRC_DIR" \
         -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
         -DWITH_UNIT_TESTS=OFF \
@@ -143,7 +160,8 @@ if [ ! -f "$HOST_BUILD_DIR/import_executables.cmake" ]; then
         -DPLUGIN_COLUMNSTORE=NO \
         -DPLUGIN_S3=NO \
         -DPLUGIN_CRACKLIB_PASSWORD_CHECK=NO \
-        -DWITH_SSL=bundled \
+        -DWITH_SSL=OFF \
+        -DCONC_WITH_SSL=OFF \
         -DWITH_PCRE=bundled \
         -DWITH_EDITLINE=bundled \
         -DWITH_ZLIB=bundled \
@@ -172,9 +190,9 @@ if [ ! -f "$SYSROOT/include/c++/v1/__config" ]; then
     # Fix __config_site for wasm32/musl target
     CONFIG_SITE="$SYSROOT/include/c++/v1/__config_site"
     if [ -f "$CONFIG_SITE" ]; then
-        sed -i '' 's/_LIBCPP_HAS_MUSL_LIBC 0/_LIBCPP_HAS_MUSL_LIBC 1/' "$CONFIG_SITE"
-        sed -i '' 's/_LIBCPP_HAS_THREAD_API_PTHREAD 0/_LIBCPP_HAS_THREAD_API_PTHREAD 1/' "$CONFIG_SITE"
-        sed -i '' 's/^#define _LIBCPP_PSTL_BACKEND_LIBDISPATCH/\/* #undef _LIBCPP_PSTL_BACKEND_LIBDISPATCH *\/\n#define _LIBCPP_PSTL_BACKEND_SERIAL/' "$CONFIG_SITE"
+        sed -i.bak 's/_LIBCPP_HAS_MUSL_LIBC 0/_LIBCPP_HAS_MUSL_LIBC 1/' "$CONFIG_SITE"
+        sed -i.bak 's/_LIBCPP_HAS_THREAD_API_PTHREAD 0/_LIBCPP_HAS_THREAD_API_PTHREAD 1/' "$CONFIG_SITE"
+        sed -i.bak 's/^#define _LIBCPP_PSTL_BACKEND_LIBDISPATCH/\/* #undef _LIBCPP_PSTL_BACKEND_LIBDISPATCH *\/\n#define _LIBCPP_PSTL_BACKEND_SERIAL/' "$CONFIG_SITE"
     fi
 
     echo "==> libc++ headers installed"
@@ -209,7 +227,16 @@ fi
 # Build PCRE2 static libs once per cache entry. Output stays in a
 # build-side tree under SCRIPT_DIR (not cached as a library — kind=source
 # is just the unbuilt tree; the build is mariadb-specific by configuration).
-PCRE2_BUILD="$SCRIPT_DIR/pcre2-wasm-build"
+# Per-arch dir so wasm32 and wasm64 builds don't share artifacts — without
+# this, whichever arch ran first would leave its libpcre2-8.a in place and
+# the second arch would skip the rebuild (the `if [ ! -f ... ]` guard
+# below) and try to link a wasm32 archive into a wasm64 binary, dying
+# with: "wasm32 object file can't be linked in wasm64 mode".
+if [ "$WASM_ARCH" = "wasm64" ]; then
+    PCRE2_BUILD="$SCRIPT_DIR/pcre2-wasm-build-64"
+else
+    PCRE2_BUILD="$SCRIPT_DIR/pcre2-wasm-build"
+fi
 if [ ! -f "$PCRE2_BUILD/libpcre2-8.a" ]; then
     echo "==> Building PCRE2 for $WASM_ARCH from source at $PCRE2_SOURCE_DIR..."
     PCRE2_SIZEOF_VOID_P=4
@@ -446,7 +473,10 @@ else
 fi
 
 # Install into local-binaries/ so the resolver picks the freshly-built
-# binary over the fetched release.
+# binary over the fetched release. Use $INSTALL_DIR (set per WASM_ARCH
+# above) — hard-coding mariadb-install/ lost the wasm64 build's output
+# at mariadb-install-64/, which then made build-mariadb-vfs.sh's wasm64
+# branch fail with "mariadbd.wasm not found".
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary mariadb "$SCRIPT_DIR/mariadb-install/bin/mariadbd.wasm" mariadbd.wasm
-[ -f "$SCRIPT_DIR/mariadb-install/bin/mysqltest.wasm" ] && install_local_binary mariadb "$SCRIPT_DIR/mariadb-install/bin/mysqltest.wasm" mysqltest.wasm || true
+install_local_binary mariadb "$INSTALL_DIR/bin/mariadbd.wasm" mariadbd.wasm
+[ -f "$INSTALL_DIR/bin/mysqltest.wasm" ] && install_local_binary mariadb "$INSTALL_DIR/bin/mysqltest.wasm" mysqltest.wasm || true

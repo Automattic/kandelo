@@ -55,7 +55,7 @@ if [ -n "$TAG" ]; then
     MANIFEST_TMP=$(mktemp -t verify-release.XXXXXX).json
     trap 'rm -f "$MANIFEST_TMP"' EXIT
     echo "verify-release: fetching manifest from $TAG"
-    curl -fsSL --retry 3 -o "$MANIFEST_TMP" "$ARCHIVE_BASE/manifest.json" || {
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL --retry 3 -o "$MANIFEST_TMP" "$ARCHIVE_BASE/manifest.json" || {
         echo "ERROR: failed to download manifest.json from $ARCHIVE_BASE" >&2
         exit 1
     }
@@ -82,7 +82,7 @@ while read -r archive_name archive_sha; do
     if [ "$ARCHIVE_BASE" != "${ARCHIVE_BASE#http}" ]; then
         # URL fetch.
         url="$ARCHIVE_BASE/$archive_name"
-        actual=$(curl -fsSL --retry 3 "$url" 2>/dev/null | shasum -a 256 | awk '{print $1}')
+        actual=$(curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL --retry 3 "$url" 2>/dev/null | shasum -a 256 | awk '{print $1}')
         if [ -z "$actual" ] || [ ${#actual} -ne 64 ]; then
             printf "  MISSING %s (download failed from %s)\n" "$archive_name" "$url"
             MISSING=$((MISSING + 1))

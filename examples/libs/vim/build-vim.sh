@@ -69,7 +69,7 @@ if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading vim $VIM_VERSION..."
     TARBALL="v${VIM_VERSION}.tar.gz"
     URL="https://github.com/vim/vim/archive/refs/tags/${TARBALL}"
-    curl -fsSL "$URL" -o "/tmp/vim-$TARBALL"
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/vim-$TARBALL"
     mkdir -p "$SRC_DIR"
     tar xzf "/tmp/vim-$TARBALL" -C "$SRC_DIR" --strip-components=1
     rm "/tmp/vim-$TARBALL"

@@ -38,7 +38,7 @@ fi
 if [ ! -d "$SRC_DIR/sqlite3.c" ] && [ ! -f "$SRC_DIR/sqlite3.c" ]; then
     echo "==> Downloading SQLite $SQLITE_VERSION..."
     TARBALL="/tmp/sqlite-amalgamation.zip"
-    curl -fsSL "$SOURCE_URL" -o "$TARBALL"
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
     if [ -n "$SOURCE_SHA256" ]; then
         echo "==> Verifying source sha256..."
         echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -

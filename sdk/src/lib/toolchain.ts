@@ -24,13 +24,28 @@ export interface Toolchain {
 const HOMEBREW_LLVM = '/opt/homebrew/opt/llvm/bin';
 
 export async function findLlvmDir(): Promise<string> {
+  // 1. Project-specific override — highest priority.
   const envDir = process.env.WASM_POSIX_LLVM_DIR;
   if (envDir) {
     if (existsSync(join(envDir, 'clang'))) return envDir;
     throw new Error(`WASM_POSIX_LLVM_DIR="${envDir}" does not contain clang`);
   }
 
-  // Check if clang on PATH supports wasm32
+  // 2. The Nix flake's shellHook exports LLVM_BIN (=${llvmTree}/bin) so
+  //    that build scripts can call $LLVM_BIN/clang directly. Honor it
+  //    here so wasm32posix-cc resolves to the same toolchain — without
+  //    this, the discovery fallback below would silently pick a system
+  //    clang from /usr/lib/llvm-* on Ubuntu CI (older version, missing
+  //    -wasm-use-legacy-eh=true and other modern wasm flags). LLVM_PREFIX
+  //    is the same tree, just the parent — accept either.
+  const llvmBin = process.env.LLVM_BIN;
+  if (llvmBin && existsSync(join(llvmBin, 'clang'))) return llvmBin;
+  const llvmPrefix = process.env.LLVM_PREFIX;
+  if (llvmPrefix && existsSync(join(llvmPrefix, 'bin', 'clang'))) {
+    return join(llvmPrefix, 'bin');
+  }
+
+  // 3. Check if clang on PATH supports wasm32
   const pathResult = await run('which', ['clang']);
   if (pathResult.exitCode === 0) {
     const clangPath = pathResult.stdout.trim();

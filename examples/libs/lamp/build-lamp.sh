@@ -6,6 +6,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
+# Same WordPress-source bootstrap as build-wordpress.sh — see that file
+# for rationale. Idempotent.
+bash "$REPO_ROOT/examples/wordpress/setup.sh"
+
 bash "$REPO_ROOT/examples/browser/scripts/build-lamp-vfs-image.sh"
 
 VFS="$REPO_ROOT/examples/browser/public/lamp.vfs"

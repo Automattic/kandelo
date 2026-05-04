@@ -233,3 +233,121 @@ A `dependentRequired` or `if/then` clause would tighten the contract.
 `remote_fetch::fetch_and_install`.  The deeper 4-axis chain inside
 `fetch_and_install` covers `target_arch` and `abi_versions`, but the
 pre-flight could also short-circuit on those for clearer errors.
+
+### Memoize failed builds within a stage-release run
+
+`xtask::stage_release` iterates manifests alphabetically and calls
+`stage_one` → `ensure_built` per (manifest, arch). When a manifest
+fails (say, mariadb wasm32) every later dependent (lamp,
+mariadb-test, mariadb-vfs, etc.) re-enters `ensure_built` for the
+same failing dep and re-runs its build script from scratch.
+
+In the force-rebuild run that diagnosed PR #406's six root causes,
+mariadb's host CMake configure ran 6 times for one logical failure
+(once per dependent — confirmed by `grep -c "Step 1: Host build"`
+returning 6 in the run logs). CMake fails fast there
+(~1.5s/attempt → ~9s wasted total), so the symptom was mild — but
+a deeper failure (say, in `make` after 10 minutes of compile)
+compounds into 6 × 10min = 1 hour of duplicate work.
+
+Fix: a process-global `OnceLock<Mutex<BTreeMap<(name, TargetArch),
+String>>>` in `build_deps.rs`. Before invoking the build script,
+check the map; if a prior failure is recorded, return its cached
+error string. After the build attempt, record success-or-failure.
+Survives a single `xtask` process; intentionally NOT persisted
+across runs (a fresh CI run should always retry).
+
+Trigger: any time we observe a long-running build's failure being
+re-attempted by its dependents in stage-release logs.
+
+## Workflow
+
+### Convert force-rebuild + staging-build to a tier-based job matrix
+
+The current force-rebuild workflow runs every package source build
+sequentially in one Ubuntu runner. Wall time is ~2 hours;
+diagnostic visibility is poor (a single grep through 80k log lines
+to find which package broke); single-package failures take a
+~2-hour cycle to surface the next. PR #406's iteration history is
+a concrete example: six independent root causes, each separated by
+a multi-hour rebuild attempt.
+
+Sketch:
+
+1. New `xtask plan-tiers` subcommand walks every `deps.toml`,
+   topo-sorts by `depends_on`, and emits JSON tier arrays. No
+   manifest changes — the dep graph already exists.
+2. Workflow has four jobs: `plan` (emits tier outputs), `setup`
+   (kernel + sysroot + libc++, uploaded as artifact), `tierN`
+   (matrix per tier, each cell builds one package), and
+   `publish` (collects archives, writes manifest, creates release).
+3. Each `tierN` cell:
+   - Downloads `setup` artifacts (sysroot, kernel.wasm).
+   - Downloads its deps' archives from prior tiers' artifacts and
+     re-populates `~/.cache/wasm-posix-kernel/`.
+   - Runs `cargo xtask build-deps build <package>`.
+   - Uploads its own archive as an artifact.
+
+Wins:
+- Wall time ~30-50 min (vs 2h) — true hardware parallelism per cell.
+- Failure isolation — one bad package marks one cell red; the rest
+  of the matrix still produces archives.
+- Per-package logs are scoped to a single cell, easier to triage.
+- Naturally subsumes the in-process memoization above (each cell
+  builds exactly one package).
+
+Costs:
+- 2-3× compute (more runner-minutes; matters more on paid orgs).
+- ~2-3 min per-cell Nix install + artifact transfer overhead — for
+  a 2-min build, near 100% overhead. Net win because long-tail
+  packages dominate wall time.
+- Free-tier 20-job concurrency cap means tier 1 (~30 packages)
+  queues into ~2 batches.
+- Dynamic matrix needs `outputs:` + `fromJSON()` — non-trivial
+  YAML. ~1-2 days implementation.
+
+Trigger: once the current sequential workflow is durably green, or
+sooner if force-rebuild runs continue to take >1 hour to surface
+the next latent build bug.
+
+### Re-enable TexLive in force-rebuild (currently `--allow-failure`)
+
+PR #406's force-rebuild.yml passes `--allow-failure texlive` to keep
+the workflow green while TexLive's source build is broken. The flag
+downgrades a total-failure for that one package to a warning at the
+stage-release exit-code level — every other package is still gated
+strictly. The package's `deps.toml` is intentionally untouched; the
+release-policy decision lives at the call site (workflow YAML).
+
+Re-enable when the underlying gmp.h chain is fixed:
+
+* TexLive's `web2c` Phase-1 host build auto-generates `pmpost`'s C
+  sources from `.w` files (the WEB literate-programming format).
+  `pmpmathbinary.c` and `pmpmathinterval.c` hard-`#include <gmp.h>`
+  regardless of `--disable-mp / --disable-ptex / --disable-uptex /
+  --disable-euptex` — those flags only gate the resulting binary,
+  not the source-file generation pass.
+* The bundled `libs/gmp/native/` sub-configure clobbers `CC=` blank
+  on recurse, autoconf re-detects `${build_alias}-gcc` (= the
+  Nix-wrapped gcc on Linux CI), and the wrapper fails its
+  compile-test because the cmdline `CFLAGS=` blank also strips its
+  required spec injections. Same family of issues lurks under
+  `libs/{mpfi,mpfr,cairo}/`.
+
+The proper fix is most-likely:
+
+1. Add `pkgs.gmp pkgs.mpfr pkgs.cairo` to `flake.nix` so their
+   headers + libs land on the Nix wrapper's auto-included path for
+   the host phase.
+2. Switch the host configure to `--with-system-{gmp,mpfr,cairo}=yes`
+   so TexLive uses the Nix-provided libs instead of trying to build
+   bundled copies.
+3. Phase-2 cross-build also needs these libs targeted at wasm32 —
+   either build wasm32 ports of gmp/mpfr/cairo as new
+   `examples/libs/<name>/` packages, OR keep the Phase-2 path on
+   bundled libs and only fix Phase 1.
+4. Drop `--allow-failure texlive` from `force-rebuild.yml`.
+
+Trigger: when TexLive becomes a blocker for a release, or when
+someone is willing to invest the ~half-day on the gmp/mpfr/cairo
+flake additions and dual-phase wiring.

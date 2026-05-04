@@ -42,6 +42,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Mutex, OnceLock};
 
 use sha2::{Digest, Sha256};
 
@@ -266,6 +267,47 @@ pub fn compute_sha(
             h.update(b"\n");
             h.update(target.source.sha256.as_bytes());
             h.update(b"\n");
+            // Fold in declared outputs so changing what a build is
+            // expected to produce invalidates the cache. Without this,
+            // renaming a program's `wasm = "..."` (or any library
+            // libs/headers/pkgconfig path) leaves cache_key_sha
+            // unchanged — the resolver then serves a canonical
+            // directory that doesn't match the new declaration and
+            // stage_release packs broken archives. Bug discovered in
+            // PR #384 (lamp.vfs → lamp.vfs.zst).
+            //
+            // Ordering: hashed in authored Vec order (no sort). That
+            // matches how consumers like `mirror_program_outputs`
+            // iterate, and re-ordering is a real semantic change
+            // worth invalidating on. `b"|"` separators keep
+            // adjacent strings unambiguous (e.g. lib `"a"` + `"bc"` ≠
+            // lib `"ab"` + `"c"`). A section tag (`"libs:"`, etc.)
+            // before each list prevents cross-section collisions.
+            h.update(b"outputs.libs:\n");
+            for s in &target.outputs.libs {
+                h.update(s.as_bytes());
+                h.update(b"|");
+            }
+            h.update(b"\n");
+            h.update(b"outputs.headers:\n");
+            for s in &target.outputs.headers {
+                h.update(s.as_bytes());
+                h.update(b"|");
+            }
+            h.update(b"\n");
+            h.update(b"outputs.pkgconfig:\n");
+            for s in &target.outputs.pkgconfig {
+                h.update(s.as_bytes());
+                h.update(b"|");
+            }
+            h.update(b"\n");
+            h.update(b"program_outputs:\n");
+            for out in &target.program_outputs {
+                h.update(out.name.as_bytes());
+                h.update(b"|");
+                h.update(out.wasm.as_bytes());
+                h.update(b"\n");
+            }
         }
     }
     for (dref, dsha) in &dep_shas {
@@ -347,6 +389,16 @@ pub struct ResolveOpts<'a> {
     /// subdirectory exists under this root, it wins over the cache
     /// and the build script is not run.
     pub local_libs: Option<&'a Path>,
+    /// Manifest names that must be source-built unconditionally, even
+    /// on a cache hit and even when a `[binary]` archive_url would
+    /// otherwise satisfy the request. Used by the manual `force-rebuild`
+    /// workflow to refresh archives whose cache key is suspected stale.
+    /// `None` means "no force rebuild" (the default for every consumer
+    /// other than the manual workflow). `local_libs` still wins over
+    /// force_source_build (a hand-patched override is always honored).
+    /// The single-process resolver assumes no concurrent peers during
+    /// a force rebuild — see `build_into_cache`'s atomic-install comment.
+    pub force_source_build: Option<&'a BTreeSet<String>>,
 }
 
 /// Resolve a library to a concrete on-disk path with the artifacts
@@ -446,6 +498,59 @@ fn render_probe_failures(target: &DepsManifest, failures: &[ProbeFailure]) -> St
     out
 }
 
+/// Process-lifetime memo of `(name, arch) → ensure_built_uncached`'s
+/// result. Within a single `xtask` invocation (e.g. one
+/// `stage-release` run), a manifest reached transitively via multiple
+/// dependents (mariadb is reached 6× during a force-rebuild-all:
+/// directly + via lamp + via mariadb-test + via mariadb-vfs ×2)
+/// otherwise re-runs its full source build N times — ~80 minutes of
+/// pointless work for mariadb alone. The memo collapses that to one
+/// build per `(name, arch)`.
+///
+/// Caches BOTH `Ok` (so subsequent dependents reuse the resolved
+/// path) and `Err` (so a failed manifest doesn't waste 10 more
+/// minutes per dependent re-discovering the same failure). Cycle
+/// errors are intentionally NOT cached — those depend on the call
+/// stack at the moment of detection, and caching them could leak a
+/// stale cycle result into a later acyclic traversal.
+///
+/// Lifetime: process-only. A fresh xtask invocation starts with an
+/// empty memo, which keeps CI semantics intact (every run from
+/// scratch retries any failures).
+///
+/// Key dimensions:
+/// * `cache_root` — same process can host independent test cases
+///   (cargo runs tests in parallel within one process; each test
+///   uses a fresh tempdir). In production there's only ever one
+///   cache_root per run, so this dimension is invisible to the
+///   force-rebuild path.
+/// * `name` — the manifest's identifier within its registry.
+/// * `arch` — wasm32 vs wasm64. The same name builds independently
+///   per-arch.
+/// * `was_force_rebuild` — `force_source_build` bypasses the
+///   on-disk cache. Memoizing across the force-rebuild boundary
+///   would mean a no-force result satisfies a later force request,
+///   defeating the bypass intent. Keep them as separate slots so
+///   a force-call after a no-force-call still rebuilds. In
+///   stage-release's force-rebuild-all loop every call has the
+///   same flag, so the memo collapses N calls per (name, arch)
+///   into 1 build — the actual optimization we wanted.
+type BuildMemoKey = (PathBuf, String, TargetArch, bool);
+type BuildMemoValue = Result<(PathBuf, BTreeSet<PathBuf>), String>;
+
+fn build_memo() -> &'static Mutex<BTreeMap<BuildMemoKey, BuildMemoValue>> {
+    static MEMO: OnceLock<Mutex<BTreeMap<BuildMemoKey, BuildMemoValue>>> = OnceLock::new();
+    MEMO.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+/// Cycle-error sentinel — these errors must NOT be memoized because
+/// they describe the call stack at detection time, not a property of
+/// the manifest. A later acyclic call for the same node should be
+/// allowed to proceed.
+fn is_cycle_error(e: &str) -> bool {
+    e.starts_with("cycle while building:")
+}
+
 /// Resolve `target`, returning its on-disk path *and* the set of
 /// transitively-resolved lib paths underneath it (its direct deps, their
 /// deps, and so on — but NOT `target`'s own path; the caller adds that).
@@ -458,6 +563,59 @@ fn render_probe_failures(target: &DepsManifest, failures: &[ProbeFailure]) -> St
 /// Deduped via `BTreeSet` so a diamond dep (`libZ -> {libA, libB} ->
 /// libCommon`) only contributes `libCommon`'s path once.
 fn ensure_built_inner(
+    target: &DepsManifest,
+    registry: &Registry,
+    arch: TargetArch,
+    abi_version: u32,
+    opts: &ResolveOpts<'_>,
+    memo: &mut BTreeMap<String, [u8; 32]>,
+    building: &mut Vec<String>,
+) -> Result<(PathBuf, BTreeSet<PathBuf>), String> {
+    // Process-lifetime memo: the same (name, arch) often gets
+    // requested multiple times within one stage-release run via
+    // different dep chains. Without this, mariadb wasm32 source-builds
+    // 4 times in a single force-rebuild-all (lamp, mariadb,
+    // mariadb-test, mariadb-vfs each independently demand it). See
+    // `build_memo`'s doc comment for full rationale.
+    let was_force_rebuild = opts
+        .force_source_build
+        .map(|s| s.contains(&target.name))
+        .unwrap_or(false);
+    let memo_key: BuildMemoKey = (
+        opts.cache_root.to_path_buf(),
+        target.name.clone(),
+        arch,
+        was_force_rebuild,
+    );
+    {
+        let cache = build_memo().lock().unwrap();
+        if let Some(cached) = cache.get(&memo_key) {
+            return cached.clone();
+        }
+    }
+
+    let result = ensure_built_uncached(
+        target, registry, arch, abi_version, opts, memo, building,
+    );
+
+    // Don't poison the cache with cycle errors — those reflect the
+    // call stack at the moment of detection, not a stable property
+    // of the manifest. Everything else (Ok path + non-cycle Err)
+    // gets memoized.
+    let should_memo = match &result {
+        Ok(_) => true,
+        Err(e) => !is_cycle_error(e),
+    };
+    if should_memo {
+        build_memo()
+            .lock()
+            .unwrap()
+            .insert(memo_key, result.clone());
+    }
+    result
+}
+
+fn ensure_built_uncached(
     target: &DepsManifest,
     registry: &Registry,
     arch: TargetArch,
@@ -535,9 +693,22 @@ fn ensure_built_inner(
     let sha = compute_sha(target, registry, arch, abi_version, memo, &mut chain)?;
     let canonical = canonical_path(opts.cache_root, target, arch, &sha);
 
+    let force_rebuild = opts
+        .force_source_build
+        .map(|s| s.contains(&target.name))
+        .unwrap_or(false);
+
     // Cache hit: trust it. Users invalidate by deleting the directory.
-    if canonical.is_dir() {
+    // `force_source_build` skips this so the build script always runs;
+    // we additionally wipe `canonical` below so `build_into_cache`'s
+    // atomic-install doesn't discard the fresh tmp dir as a same-input
+    // duplicate.
+    if !force_rebuild && canonical.is_dir() {
         return Ok((canonical, transitive));
+    }
+    if force_rebuild && canonical.is_dir() {
+        std::fs::remove_dir_all(&canonical)
+            .map_err(|e| format!("force-rebuild: clear {}: {e}", canonical.display()))?;
     }
 
     // Run host-tool probes before any work that might invoke a build
@@ -638,7 +809,12 @@ fn ensure_built_inner(
             // falls through to the source build below; a remote-fetch
             // error should never cause the resolver to refuse to
             // produce an artifact.
-            if let Some(binary) = target.binary.get(&arch) {
+            //
+            // `force_rebuild` short-circuits remote fetch — re-installing
+            // the same archive_url would defeat the whole point of the
+            // force flag (the workflow opted in because it suspects the
+            // existing archive is stale). Falls through to source build.
+            if !force_rebuild && let Some(binary) = target.binary.get(&arch) {
                 let cache_key_sha_hex = hex(&sha);
                 match remote_fetch::fetch_and_install(
                     binary,
@@ -1218,6 +1394,7 @@ fn cmd_resolve(
     let opts = ResolveOpts {
         cache_root: &cache_root,
         local_libs: Some(&local_libs),
+        force_source_build: None,
     };
     let path = ensure_built(m, registry, arch, current_abi_version(), &opts)?;
     println!("{}", path.display());
@@ -1599,6 +1776,264 @@ libs = ["lib/lib{name}.a"]
         assert_eq!(current_abi_version(), wasm_posix_shared::ABI_VERSION);
     }
 
+    // --- outputs-folding cache-key tests ---
+    //
+    // These pin the cache_key_sha contract that changing any declared
+    // output (library lib/header/pkgconfig path or program output's
+    // name/wasm) must invalidate the cache key. Without this, a build
+    // can be served from a canonical cache directory whose contents
+    // don't match the current `[outputs]` / `[[outputs]]` declaration —
+    // which is exactly how PR #384 shipped broken archives for
+    // lamp/mariadb-vfs (see the bug report on this branch).
+
+    /// Write a `kind = "program"` deps.toml with a custom `[[outputs]]`
+    /// block. `outputs_block` is the literal TOML body (e.g.
+    /// `r#"[[outputs]]\nname = "p"\nwasm = "p.wasm"\n"#`).
+    fn write_program_manifest(dir: &Path, name: &str, version: &str, outputs_block: &str) {
+        let prog_dir = dir.join(name);
+        fs::create_dir_all(&prog_dir).unwrap();
+        let text = format!(
+            r#"
+kind = "program"
+name = "{name}"
+version = "{version}"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://example.test/{name}-{version}.tar.gz"
+sha256 = "{:0>64}"
+
+[license]
+spdx = "TestLicense"
+
+{outputs_block}
+"#,
+            ""
+        );
+        fs::write(prog_dir.join("deps.toml"), text).unwrap();
+    }
+
+    fn sha_of(reg: &Registry, name: &str) -> [u8; 32] {
+        let m = reg.load(name).unwrap();
+        compute_sha(
+            &m,
+            reg,
+            TEST_ARCH,
+            TEST_ABI,
+            &mut BTreeMap::new(),
+            &mut Vec::new(),
+        )
+        .unwrap()
+    }
+
+    /// The exact failure mode from PR #384: a program changes its
+    /// declared output filename (e.g. `lamp.vfs` → `lamp.vfs.zst`) but
+    /// nothing else. Before the fix, cache_key_sha was unchanged so
+    /// the resolver served the old canonical directory containing the
+    /// old filename, and stage_release silently packed broken archives.
+    #[test]
+    fn cache_key_sha_changes_when_program_output_wasm_filename_changes() {
+        let root = tempdir("sha-prog-wasm-rename");
+        write_program_manifest(
+            &root,
+            "lamp",
+            "1.0.0",
+            "[[outputs]]\nname = \"lamp\"\nwasm = \"lamp.vfs\"\n",
+        );
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+        let sha_before = sha_of(&reg, "lamp");
+
+        // Same manifest, different output filename — exactly the
+        // PR #384 transition.
+        let toml_path = root.join("lamp/deps.toml");
+        let text = std::fs::read_to_string(&toml_path).unwrap();
+        std::fs::write(&toml_path, text.replace("lamp.vfs", "lamp.vfs.zst"))
+            .unwrap();
+        let sha_after = sha_of(&reg, "lamp");
+
+        assert_ne!(
+            sha_before, sha_after,
+            "renaming a program output's wasm filename must invalidate the cache key"
+        );
+    }
+
+    #[test]
+    fn cache_key_sha_changes_when_program_output_name_changes() {
+        let root = tempdir("sha-prog-name-rename");
+        write_program_manifest(
+            &root,
+            "tool",
+            "1.0.0",
+            "[[outputs]]\nname = \"tool\"\nwasm = \"tool.wasm\"\n",
+        );
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+        let sha_before = sha_of(&reg, "tool");
+
+        let toml_path = root.join("tool/deps.toml");
+        let text = std::fs::read_to_string(&toml_path).unwrap();
+        std::fs::write(&toml_path, text.replace("name = \"tool\"\nwasm", "name = \"tool-renamed\"\nwasm"))
+            .unwrap();
+        let sha_after = sha_of(&reg, "tool");
+
+        assert_ne!(
+            sha_before, sha_after,
+            "renaming a program output's logical name must invalidate the cache key"
+        );
+    }
+
+    #[test]
+    fn cache_key_sha_changes_when_program_output_added() {
+        let root = tempdir("sha-prog-output-added");
+        write_program_manifest(
+            &root,
+            "git",
+            "1.0.0",
+            "[[outputs]]\nname = \"git\"\nwasm = \"git.wasm\"\n",
+        );
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+        let sha_before = sha_of(&reg, "git");
+
+        // Add a second output (e.g. git-remote-http alongside git).
+        let toml_path = root.join("git/deps.toml");
+        let text = std::fs::read_to_string(&toml_path).unwrap();
+        let added = format!(
+            "{text}\n[[outputs]]\nname = \"git-remote-http\"\nwasm = \"git-remote-http.wasm\"\n"
+        );
+        std::fs::write(&toml_path, added).unwrap();
+        let sha_after = sha_of(&reg, "git");
+
+        assert_ne!(
+            sha_before, sha_after,
+            "adding a program output must invalidate the cache key"
+        );
+    }
+
+    /// Pins behavior: program outputs are hashed in declaration order.
+    /// Re-ordering DOES change cache_key_sha. We deliberately don't
+    /// normalize because (a) the manifest preserves authored order
+    /// (`Vec<ProgramOutput>`) and (b) consumers of `program_outputs`
+    /// (e.g. `mirror_program_outputs` in install_release) iterate in
+    /// the same order, so the cache key tracks what consumers see.
+    #[test]
+    fn cache_key_sha_changes_when_program_outputs_reordered() {
+        let root = tempdir("sha-prog-reorder");
+        write_program_manifest(
+            &root,
+            "git",
+            "1.0.0",
+            "[[outputs]]\nname = \"git\"\nwasm = \"git.wasm\"\n\n\
+             [[outputs]]\nname = \"git-remote-http\"\nwasm = \"git-remote-http.wasm\"\n",
+        );
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+        let sha_before = sha_of(&reg, "git");
+
+        // Swap the two output entries.
+        let toml_path = root.join("git/deps.toml");
+        std::fs::write(
+            &toml_path,
+            std::fs::read_to_string(&toml_path)
+                .unwrap()
+                .replace(
+                    "[[outputs]]\nname = \"git\"\nwasm = \"git.wasm\"\n\n\
+                     [[outputs]]\nname = \"git-remote-http\"\nwasm = \"git-remote-http.wasm\"\n",
+                    "[[outputs]]\nname = \"git-remote-http\"\nwasm = \"git-remote-http.wasm\"\n\n\
+                     [[outputs]]\nname = \"git\"\nwasm = \"git.wasm\"\n",
+                ),
+        )
+        .unwrap();
+        let sha_after = sha_of(&reg, "git");
+
+        assert_ne!(
+            sha_before, sha_after,
+            "re-ordering program outputs is a meaningful change (not normalized) and must \
+             invalidate the cache key"
+        );
+    }
+
+    #[test]
+    fn cache_key_sha_changes_when_library_output_lib_filename_changes() {
+        let root = tempdir("sha-lib-rename");
+        write(&root, "libZ", "1.0.0", &[]);
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+        let sha_before = sha_of(&reg, "libZ");
+
+        let toml_path = root.join("libZ/deps.toml");
+        let text = std::fs::read_to_string(&toml_path).unwrap();
+        std::fs::write(&toml_path, text.replace("lib/liblibZ.a", "lib/liblibZ-renamed.a"))
+            .unwrap();
+        let sha_after = sha_of(&reg, "libZ");
+
+        assert_ne!(
+            sha_before, sha_after,
+            "renaming a library's output lib must invalidate the cache key"
+        );
+    }
+
+    #[test]
+    fn cache_key_sha_changes_when_library_output_header_added() {
+        let root = tempdir("sha-lib-header-added");
+        write(&root, "libZ", "1.0.0", &[]);
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+        let sha_before = sha_of(&reg, "libZ");
+
+        let toml_path = root.join("libZ/deps.toml");
+        let text = std::fs::read_to_string(&toml_path).unwrap();
+        std::fs::write(
+            &toml_path,
+            text.replace(
+                "libs = [\"lib/liblibZ.a\"]",
+                "libs = [\"lib/liblibZ.a\"]\nheaders = [\"include/libZ.h\"]",
+            ),
+        )
+        .unwrap();
+        let sha_after = sha_of(&reg, "libZ");
+
+        assert_ne!(
+            sha_before, sha_after,
+            "adding a library header output must invalidate the cache key"
+        );
+    }
+
+    #[test]
+    fn cache_key_sha_changes_when_library_output_pkgconfig_added() {
+        let root = tempdir("sha-lib-pkgconfig-added");
+        write(&root, "libZ", "1.0.0", &[]);
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+        let sha_before = sha_of(&reg, "libZ");
+
+        let toml_path = root.join("libZ/deps.toml");
+        let text = std::fs::read_to_string(&toml_path).unwrap();
+        std::fs::write(
+            &toml_path,
+            text.replace(
+                "libs = [\"lib/liblibZ.a\"]",
+                "libs = [\"lib/liblibZ.a\"]\npkgconfig = [\"lib/pkgconfig/libZ.pc\"]",
+            ),
+        )
+        .unwrap();
+        let sha_after = sha_of(&reg, "libZ");
+
+        assert_ne!(
+            sha_before, sha_after,
+            "adding a library pkgconfig output must invalidate the cache key"
+        );
+    }
+
     // --- ensure_built / build_into_cache tests ---
 
     /// Create a deps.toml + build-<name>.sh pair. The build script uses
@@ -1657,6 +2092,7 @@ spdx = "TestLicense"
         ResolveOpts {
             cache_root: cache,
             local_libs: local,
+            force_source_build: None,
         }
     }
 
@@ -3200,6 +3636,7 @@ spdx = "BSD-3-Clause"
         let opts = ResolveOpts {
             cache_root: &cache,
             local_libs: None,
+            force_source_build: None,
         };
         let path = ensure_built(&m, &registry, TEST_ARCH, TEST_ABI, &opts).unwrap();
         assert!(
@@ -3669,5 +4106,231 @@ version_constraint = "{constraint}"
         let registry = Registry { roots: vec![root] };
         let err = cmd_check(&registry).expect_err("mismatched probes should fail");
         assert!(err.contains("probe"), "got: {err}");
+    }
+
+    // --- force-rebuild tests (Task force_source_build) ---
+
+    #[test]
+    fn force_rebuild_runs_build_script_on_cache_hit() {
+        // Pre-populate the cache with one ensure_built call, then call
+        // again with force_source_build set — the build script must run
+        // a SECOND time, producing fresh contents at the canonical path.
+        let root = tempdir("force-cache-reg");
+        let cache = tempdir("force-cache-cache");
+        write_lib(
+            &root,
+            "libF1",
+            "1.0.0",
+            &[],
+            &format!(
+                r#"
+echo ran >> "{}/counter"
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib"
+touch "$WASM_POSIX_DEP_OUT_DIR/lib/libF1.a"
+"#,
+                root.display()
+            ),
+            r#"[outputs]
+libs = ["lib/libF1.a"]
+"#,
+        );
+        let reg = Registry { roots: vec![root.clone()] };
+        let m = reg.load("libF1").unwrap();
+
+        // First call — cache miss, script runs.
+        let p1 = ensure_built(
+            &m,
+            &reg,
+            TEST_ARCH,
+            TEST_ABI,
+            &resolve_opts(&cache, None),
+        )
+        .unwrap();
+
+        // Second call WITHOUT force — cache hit, script does not run.
+        let p2 = ensure_built(
+            &m,
+            &reg,
+            TEST_ARCH,
+            TEST_ABI,
+            &resolve_opts(&cache, None),
+        )
+        .unwrap();
+        assert_eq!(p1, p2);
+        let runs = std::fs::read_to_string(root.join("counter")).unwrap();
+        assert_eq!(runs.lines().count(), 1, "without force, cache hit must skip script");
+
+        // Third call WITH force — script runs again despite cache hit.
+        let mut force = BTreeSet::new();
+        force.insert("libF1".to_string());
+        let opts = ResolveOpts {
+            cache_root: &cache,
+            local_libs: None,
+            force_source_build: Some(&force),
+        };
+        let p3 = ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &opts).unwrap();
+        assert_eq!(p1, p3, "force-rebuild must land at the same canonical path");
+        let runs = std::fs::read_to_string(root.join("counter")).unwrap();
+        assert_eq!(
+            runs.lines().count(),
+            2,
+            "force-rebuild must re-run the build script (counter: {runs:?})"
+        );
+    }
+
+    #[test]
+    fn force_rebuild_bypasses_remote_fetch() {
+        // Stage a real archive on disk and point [binary].archive_url at
+        // it. Without force, the resolver installs from the archive and
+        // the source build's `via-build` sentinel does NOT appear. With
+        // force, the resolver skips remote fetch and source-builds — the
+        // sentinel DOES appear.
+        let root = tempdir("force-rf-reg");
+        let cache = tempdir("force-rf-cache");
+        let archive_dir = tempdir("force-rf-archive");
+
+        // Compute cache_key_sha for the lib (matches write_lib_with_binary's shape).
+        let throwaway_root = tempdir("force-rf-pre");
+        write_lib(
+            &throwaway_root,
+            "libF2",
+            "1.0.0",
+            &[],
+            "true",
+            "[outputs]\nlibs = [\"lib/out.a\"]\n",
+        );
+        let pre_reg = Registry { roots: vec![throwaway_root.clone()] };
+        let pre_m = pre_reg.load("libF2").unwrap();
+        let pre_sha = compute_sha(
+            &pre_m,
+            &pre_reg,
+            TEST_ARCH,
+            TEST_ABI,
+            &mut BTreeMap::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        let cache_key_hex = hex(&pre_sha);
+        let _ = std::fs::remove_dir_all(&throwaway_root);
+
+        // Build a remote archive whose contents differ from the source build,
+        // so we can tell which path produced the artifact.
+        let manifest_text =
+            archived_manifest_text("libF2", "wasm32", &[TEST_ABI], &cache_key_hex);
+        let archive_bytes = crate::remote_fetch::build_test_archive(
+            &manifest_text,
+            &[("lib/out.a", b"REMOTE-ARCHIVE")],
+        );
+        let archive_sha_hex = sha256_hex(&archive_bytes);
+        let archive_path = archive_dir.join("libF2-1.0.0.tar.zst");
+        std::fs::write(&archive_path, &archive_bytes).unwrap();
+
+        // The real consumer lib advertises that archive.
+        write_lib_with_binary(&root, "libF2", &archive_path, &archive_sha_hex);
+        let reg = Registry { roots: vec![root] };
+        let m = reg.load("libF2").unwrap();
+
+        // Force-build into a fresh cache. Remote fetch must be skipped:
+        // the source build's `via-build` sentinel must exist, and
+        // `lib/out.a` must hold BUILD content (not REMOTE-ARCHIVE).
+        let mut force = BTreeSet::new();
+        force.insert("libF2".to_string());
+        let opts = ResolveOpts {
+            cache_root: &cache,
+            local_libs: None,
+            force_source_build: Some(&force),
+        };
+        let path = ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &opts).unwrap();
+        assert!(
+            path.join("via-build").exists(),
+            "force-rebuild must source-build (sentinel missing at {})",
+            path.display()
+        );
+        let lib_bytes = std::fs::read(path.join("lib/out.a")).unwrap();
+        assert_eq!(
+            lib_bytes,
+            b"BUILD\n",
+            "force-rebuild must use the source-built artifact, not the remote archive"
+        );
+    }
+
+    #[test]
+    fn force_rebuild_only_affects_named_packages() {
+        // Two libs in the registry, only one in the force set: the
+        // listed one re-runs its build script, the other stays cached.
+        let root = tempdir("force-named-reg");
+        let cache = tempdir("force-named-cache");
+        write_lib(
+            &root,
+            "libF3a",
+            "1.0.0",
+            &[],
+            &format!(
+                r#"
+echo ran >> "{}/counter-a"
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib"
+touch "$WASM_POSIX_DEP_OUT_DIR/lib/libF3a.a"
+"#,
+                root.display()
+            ),
+            r#"[outputs]
+libs = ["lib/libF3a.a"]
+"#,
+        );
+        write_lib(
+            &root,
+            "libF3b",
+            "1.0.0",
+            &[],
+            &format!(
+                r#"
+echo ran >> "{}/counter-b"
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib"
+touch "$WASM_POSIX_DEP_OUT_DIR/lib/libF3b.a"
+"#,
+                root.display()
+            ),
+            r#"[outputs]
+libs = ["lib/libF3b.a"]
+"#,
+        );
+        let reg = Registry { roots: vec![root.clone()] };
+        let ma = reg.load("libF3a").unwrap();
+        let mb = reg.load("libF3b").unwrap();
+
+        // Prime both caches.
+        ensure_built(&ma, &reg, TEST_ARCH, TEST_ABI, &resolve_opts(&cache, None)).unwrap();
+        ensure_built(&mb, &reg, TEST_ARCH, TEST_ABI, &resolve_opts(&cache, None)).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("counter-a")).unwrap().lines().count(),
+            1
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("counter-b")).unwrap().lines().count(),
+            1
+        );
+
+        // Force only libF3a.
+        let mut force = BTreeSet::new();
+        force.insert("libF3a".to_string());
+        let opts = ResolveOpts {
+            cache_root: &cache,
+            local_libs: None,
+            force_source_build: Some(&force),
+        };
+        ensure_built(&ma, &reg, TEST_ARCH, TEST_ABI, &opts).unwrap();
+        ensure_built(&mb, &reg, TEST_ARCH, TEST_ABI, &opts).unwrap();
+
+        // libF3a re-ran (counter-a now has 2), libF3b stayed cached.
+        assert_eq!(
+            std::fs::read_to_string(root.join("counter-a")).unwrap().lines().count(),
+            2,
+            "named lib must re-run under force"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("counter-b")).unwrap().lines().count(),
+            1,
+            "non-named lib must stay cached"
+        );
     }
 }
