@@ -53,5 +53,11 @@ exec nix develop \
     --keep GITHUB_SHA \
     --keep GITHUB_RUN_ID \
     --keep GITHUB_ACTIONS \
+    --keep WASM_POSIX_DEP_TARGET_ARCH \
+    --keep WASM_POSIX_DEP_OUT_DIR \
+    --keep WASM_POSIX_DEP_NAME \
+    --keep WASM_POSIX_DEP_VERSION \
+    --keep WASM_POSIX_SYSROOT \
+    --keep WASM_POSIX_LLVM_DIR \
     --accept-flake-config \
     --command "$@"
