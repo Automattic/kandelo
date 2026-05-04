@@ -118,13 +118,14 @@ has_zip()    { has_resolvable programs/zip.wasm || [ -f "$REPO_ROOT/examples/lib
 has_unzip()    { has_resolvable programs/unzip.wasm || [ -f "$REPO_ROOT/examples/libs/unzip/bin/unzip.wasm" ]; }
 has_nano()    { has_resolvable programs/nano.wasm || [ -f "$REPO_ROOT/examples/libs/nano/bin/nano.wasm" ]; }
 has_nethack()    { has_resolvable programs/nethack.wasm || [ -f "$REPO_ROOT/examples/libs/nethack/bin/nethack.wasm" ]; }
-has_fbdoom()    { has_resolvable programs/fbdoom.wasm || [ -f "$REPO_ROOT/examples/libs/fbdoom/fbdoom.wasm" ]; }
+has_fbdoom()    { has_resolvable programs/fbdoom/fbdoom.wasm || { [ -f "$REPO_ROOT/examples/libs/fbdoom/fbdoom.wasm" ] && [ -f "$REPO_ROOT/examples/libs/fbdoom/doom1.wad" ]; }; }
 has_ncurses()   { [ -f "$REPO_ROOT/sysroot/lib/libncursesw.a" ]; }
 has_zlib()      { [ -f "$REPO_ROOT/sysroot/lib/libz.a" ]; }
 has_openssl()   { [ -f "$REPO_ROOT/sysroot/lib/libssl.a" ] && [ -f "$REPO_ROOT/sysroot/lib/libcrypto.a" ]; }
 has_libcurl()   { [ -f "$REPO_ROOT/sysroot/lib/libcurl.a" ] && [ -f "$REPO_ROOT/sysroot/include/curl/curl.h" ]; }
 has_vim()    { has_resolvable programs/vim.wasm || [ -f "$REPO_ROOT/examples/libs/vim/bin/vim.wasm" ]; }
 has_vim_zip() { has_resolvable programs/vim.zip || [ -f "$REPO_ROOT/examples/browser/public/vim.zip" ]; }
+has_nethack_zip() { has_resolvable programs/nethack.zip || [ -f "$REPO_ROOT/examples/browser/public/nethack.zip" ]; }
 has_git()    { has_resolvable programs/git/git.wasm || [ -f "$REPO_ROOT/examples/libs/git/bin/git.wasm" ]; }
 has_perl()    { has_resolvable programs/perl.wasm || [ -f "$REPO_ROOT/examples/libs/perl/bin/perl.wasm" ]; }
 has_ruby()    { has_resolvable programs/ruby.wasm || [ -f "$REPO_ROOT/examples/libs/ruby/bin/ruby.wasm" ]; }
@@ -167,6 +168,10 @@ need_sysroot() {
         bash "$REPO_ROOT/scripts/build-musl.sh"
         info "Sysroot built"
     else
+        # Re-sync overlay headers into the existing sysroot. Cheap (just a
+        # few cp) and ensures newly-added musl-overlay/include/ files reach
+        # an existing sysroot without forcing a full musl rebuild.
+        bash "$REPO_ROOT/scripts/install-overlay-headers.sh" "$REPO_ROOT/sysroot"
         info "Sysroot"
     fi
 }
@@ -177,6 +182,7 @@ need_sysroot64() {
         bash "$REPO_ROOT/scripts/build-musl.sh" --arch wasm64posix
         info "Sysroot64 built"
     else
+        bash "$REPO_ROOT/scripts/install-overlay-headers.sh" "$REPO_ROOT/sysroot64"
         info "Sysroot64"
     fi
 }
@@ -588,17 +594,20 @@ build_vim_zip() {
 }
 
 build_nethack_zip() {
-    if [ ! -f "$REPO_ROOT/examples/browser/public/nethack.zip" ]; then
-        if [ ! -d "$REPO_ROOT/examples/libs/nethack/runtime/share/nethack" ]; then
-            warn "NetHack runtime not found, skipping nethack.zip"
-            return
-        fi
-        step "Building nethack.zip (binary + runtime)"
-        bash "$REPO_ROOT/examples/browser/scripts/build-nethack-zip.sh"
-        info "nethack.zip built"
-    else
+    if has_nethack_zip; then
         info "nethack.zip"
+        return
     fi
+
+    # nethack.zip = nethack.wasm + runtime tree (nhdat, symbols, license),
+    # packaged for the browser shell demo's lazy-archive fetch. NetHack's
+    # release archive ships both pieces (build-nethack.sh stages
+    # runtime/ alongside nethack.wasm into the resolver scratch), so this
+    # builder reads from the cache canonical dir and rezips. Mirrors
+    # build_vim_zip.
+    step "Packaging nethack.zip from cached nethack package"
+    bash "$REPO_ROOT/examples/browser/scripts/build-nethack-zip.sh"
+    info "nethack.zip built ($(du -h "$REPO_ROOT/examples/browser/public/nethack.zip" | cut -f1))"
 }
 
 build_shell_vfs() {
@@ -1528,9 +1537,13 @@ clean_target() {
                   "$REPO_ROOT/examples/browser/public/shell.vfs"
             warn "Cleaned NetHack (also invalidated nethack.zip and shell.vfs; run '$0 build shell-vfs' to regenerate for browser demo)" ;;
         fbdoom)
-            rm -rf "$REPO_ROOT/examples/libs/fbdoom/fbdoom-src"
+            rm -rf "$REPO_ROOT/examples/libs/fbdoom/fbdoom-src" \
+                   "$REPO_ROOT/local-binaries/programs/wasm32/fbdoom"
             rm -f "$REPO_ROOT/examples/libs/fbdoom/fbdoom.wasm" \
-                  "$REPO_ROOT/local-binaries/programs/fbdoom.wasm"
+                  "$REPO_ROOT/examples/libs/fbdoom/doom1.wad" \
+                  "$REPO_ROOT/examples/libs/fbdoom/COPYING.txt" \
+                  "$REPO_ROOT/examples/libs/fbdoom/CREDITS.txt" \
+                  "$REPO_ROOT/examples/libs/fbdoom/CREDITS-MUSIC.txt"
             warn "Cleaned fbDOOM" ;;
         ncurses)
             rm -rf "$REPO_ROOT/examples/libs/ncurses/ncurses-src"

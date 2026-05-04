@@ -5991,26 +5991,23 @@ fn cross_process_loopback_connect(
         client.bind_addr = [127, 0, 0, 1];
     }
 
-    // Now set up the accepted socket in the LISTENER's process
+    // Push the connection metadata to the listener's shared accept queue.
+    // The accepting process (any of the listener's fork-inherited copies)
+    // creates its own accepted SocketInfo lazily in sys_accept.
     let listener_proc = table.get_mut(listener_pid).ok_or(Errno::ESRCH)?;
+    let shared_idx = listener_proc.sockets.get(listener_sock_idx)
+        .and_then(|s| s.shared_backlog_idx)
+        .ok_or(Errno::ECONNREFUSED)?;
 
-    let listener_bind_addr = listener_proc.sockets.get(listener_sock_idx).map(|s| s.bind_addr).unwrap_or([0; 4]);
-    let listener_bind_port = listener_proc.sockets.get(listener_sock_idx).map(|s| s.bind_port).unwrap_or(0);
-
-    let mut accepted_sock = SocketInfo::new(SocketDomain::Inet, SocketType::Stream, 0);
-    accepted_sock.state = SocketState::Connected;
-    accepted_sock.recv_buf_idx = Some(pipe_a_idx); // reads client's writes
-    accepted_sock.send_buf_idx = Some(pipe_b_idx); // writes to client's reads
-    accepted_sock.bind_addr = listener_bind_addr;
-    accepted_sock.bind_port = listener_bind_port;
-    accepted_sock.peer_addr = client_addr;
-    accepted_sock.peer_port = client_port;
-    accepted_sock.global_pipes = true; // pipes are in global pipe table
-    let accepted_idx = listener_proc.sockets.alloc(accepted_sock);
-
-    // Push to listener's backlog
-    let listener = listener_proc.sockets.get_mut(listener_sock_idx).ok_or(Errno::EBADF)?;
-    listener.listen_backlog.push(accepted_idx);
+    let pc = crate::socket::PendingConnection {
+        peer_addr: client_addr,
+        peer_port: client_port,
+        recv_pipe_idx: pipe_a_idx, // server reads client's writes
+        send_pipe_idx: pipe_b_idx, // server writes to client's reads
+    };
+    if !unsafe { crate::socket::shared_listener_backlog_table().push(shared_idx, pc) } {
+        return Err(Errno::ECONNREFUSED);
+    }
 
     Ok(())
 }
@@ -8083,8 +8080,17 @@ pub extern "C" fn kernel_pselect6(
 
 /// Inject an external TCP connection into a listening socket's backlog.
 ///
-/// Called by the host when a real TCP connection arrives. Creates pipe pairs
-/// and an accepted socket, mirroring the loopback connect pattern.
+/// Called by the host when a real TCP connection arrives. Pre-allocates
+/// pipe buffers in the global pipe table and pushes a `PendingConnection`
+/// onto the listener's shared accept queue. Any process that has the
+/// listener fd open (the original bound process or any fork-inherited
+/// copy) can then pop the entry via `accept()` and create its own
+/// accepted SocketInfo, matching POSIX shared-listener semantics.
+///
+/// `pid`+`listener_fd` are still required so the host can locate the
+/// listener (and so we can fail with ESRCH/EBADF/ENOTSOCK if the host
+/// passed something stale), but the routing of which process eventually
+/// accepts is no longer determined here — workers race for it via accept().
 ///
 /// Returns the recv_pipe_idx on success (host derives send_pipe_idx = recv_pipe_idx + 1),
 /// or negative errno on error.
@@ -8099,7 +8105,7 @@ pub extern "C" fn kernel_inject_connection(
     peer_port: u32,
 ) -> i32 {
     use crate::pipe::PipeBuffer;
-    use crate::socket::{SocketDomain, SocketInfo, SocketState, SocketType};
+    use crate::socket::{PendingConnection, SocketState};
     use crate::ofd::FileType;
 
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
@@ -8129,49 +8135,65 @@ pub extern "C" fn kernel_inject_connection(
     if sock.state != SocketState::Listening {
         return -(Errno::EINVAL as i32);
     }
+    let shared_idx = match sock.shared_backlog_idx {
+        Some(i) => i,
+        // Should always be set for AF_INET listeners (sys_listen allocates
+        // it). Defensive: refuse the inject rather than fall back to a
+        // per-process backlog that fork siblings can't see.
+        None => return -(Errno::EINVAL as i32),
+    };
 
-    let bind_addr = sock.bind_addr;
-    let bind_port = sock.bind_port;
-
-    // Allocate two pipe buffers for bidirectional data:
-    //   recv_pipe: host writes (incoming TCP data) → process reads
-    //   send_pipe: process writes → host reads (outgoing TCP data)
-    // Reuse freed consecutive slots to avoid unbounded growth of proc.pipes.
-    let (recv_pipe_idx, send_pipe_idx) = proc.alloc_pipe_pair(
+    // Allocate the recv/send pipes in the GLOBAL pipe table so any process
+    // sharing this listener can read/write them after accept(). The host
+    // TCP bridge assumes the indices are consecutive (it derives
+    // sendPipeIdx as recvPipeIdx + 1), so use alloc_pair which preserves
+    // that invariant even when the free list is in play.
+    let pipe_table = unsafe { crate::pipe::global_pipe_table() };
+    let (recv_pipe_idx, send_pipe_idx) = pipe_table.alloc_pair(
         PipeBuffer::new(65536),
         PipeBuffer::new(65536),
     );
 
-    // Create accepted socket with pipe buffers
-    let mut accepted_sock = SocketInfo::new(SocketDomain::Inet, SocketType::Stream, 0);
-    accepted_sock.state = SocketState::Connected;
-    accepted_sock.recv_buf_idx = Some(recv_pipe_idx);
-    accepted_sock.send_buf_idx = Some(send_pipe_idx);
-    accepted_sock.bind_addr = bind_addr;
-    accepted_sock.bind_port = bind_port;
-    accepted_sock.peer_addr = [
-        peer_addr_a as u8,
-        peer_addr_b as u8,
-        peer_addr_c as u8,
-        peer_addr_d as u8,
-    ];
-    accepted_sock.peer_port = peer_port as u16;
-    let accepted_idx = proc.sockets.alloc(accepted_sock);
-
-    // Push to listener's backlog
-    let listener = match proc.sockets.get_mut(listener_idx) {
-        Some(s) => s,
-        None => return -(Errno::EBADF as i32),
+    let pc = PendingConnection {
+        peer_addr: [
+            peer_addr_a as u8,
+            peer_addr_b as u8,
+            peer_addr_c as u8,
+            peer_addr_d as u8,
+        ],
+        peer_port: peer_port as u16,
+        recv_pipe_idx,
+        send_pipe_idx,
     };
-    listener.listen_backlog.push(accepted_idx);
+    let pushed = unsafe { crate::socket::shared_listener_backlog_table().push(shared_idx, pc) };
+    if !pushed {
+        // Slot was freed (last listener closed concurrently) — release pipes
+        pipe_table.free_if_closed(recv_pipe_idx);
+        pipe_table.free_if_closed(send_pipe_idx);
+        return -(Errno::EBADF as i32);
+    }
 
     recv_pipe_idx as i32
 }
 
 /// Read data from a pipe buffer into kernel memory.
 /// Returns number of bytes read, or negative errno.
+///
+/// `pid == 0` is a sentinel meaning "use the global pipe table directly"
+/// (used by the host TCP bridge to access pipes injected via
+/// `kernel_inject_connection`, which live in the global table so any
+/// fork-shared listener's accepting process can use them).
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_pipe_read(pid: u32, pipe_idx: u32, buf_ptr: *mut u8, buf_len: u32) -> i32 {
+    let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
+    if pid == 0 {
+        let pipe_table = unsafe { crate::pipe::global_pipe_table() };
+        let pipe = match pipe_table.get_mut(pipe_idx as usize) {
+            Some(p) => p,
+            None => return -(Errno::EBADF as i32),
+        };
+        return pipe.read(buf) as i32;
+    }
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     let proc = match table.get_mut(pid) {
         Some(p) => p,
@@ -8181,14 +8203,24 @@ pub extern "C" fn kernel_pipe_read(pid: u32, pipe_idx: u32, buf_ptr: *mut u8, bu
         Some(Some(p)) => p,
         _ => return -(Errno::EBADF as i32),
     };
-    let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
     pipe.read(buf) as i32
 }
 
 /// Write data from kernel memory into a pipe buffer.
 /// Returns number of bytes written, or negative errno.
+///
+/// `pid == 0` ⇒ use the global pipe table (see `kernel_pipe_read`).
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_pipe_write(pid: u32, pipe_idx: u32, buf_ptr: *const u8, buf_len: u32) -> i32 {
+    let buf = unsafe { slice::from_raw_parts(buf_ptr, buf_len as usize) };
+    if pid == 0 {
+        let pipe_table = unsafe { crate::pipe::global_pipe_table() };
+        let pipe = match pipe_table.get_mut(pipe_idx as usize) {
+            Some(p) => p,
+            None => return -(Errno::EBADF as i32),
+        };
+        return pipe.write(buf) as i32;
+    }
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     let proc = match table.get_mut(pid) {
         Some(p) => p,
@@ -8198,14 +8230,25 @@ pub extern "C" fn kernel_pipe_write(pid: u32, pipe_idx: u32, buf_ptr: *const u8,
         Some(Some(p)) => p,
         _ => return -(Errno::EBADF as i32),
     };
-    let buf = unsafe { slice::from_raw_parts(buf_ptr, buf_len as usize) };
     pipe.write(buf) as i32
 }
 
 /// Close the write end of a pipe buffer (signals EOF to the reader).
 /// Returns 0 on success, negative errno on error.
+///
+/// `pid == 0` ⇒ use the global pipe table (see `kernel_pipe_read`).
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_pipe_close_write(pid: u32, pipe_idx: u32) -> i32 {
+    if pid == 0 {
+        let pipe_table = unsafe { crate::pipe::global_pipe_table() };
+        let pipe = match pipe_table.get_mut(pipe_idx as usize) {
+            Some(p) => p,
+            None => return -(Errno::EBADF as i32),
+        };
+        pipe.close_write_end();
+        pipe_table.free_if_closed(pipe_idx as usize);
+        return 0;
+    }
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     let proc = match table.get_mut(pid) {
         Some(p) => p,
@@ -8225,8 +8268,20 @@ pub extern "C" fn kernel_pipe_close_write(pid: u32, pipe_idx: u32) -> i32 {
 
 /// Close the read end of a pipe buffer (signals to the writer that nobody is reading).
 /// Returns 0 on success, negative errno on error.
+///
+/// `pid == 0` ⇒ use the global pipe table (see `kernel_pipe_read`).
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_pipe_close_read(pid: u32, pipe_idx: u32) -> i32 {
+    if pid == 0 {
+        let pipe_table = unsafe { crate::pipe::global_pipe_table() };
+        let pipe = match pipe_table.get_mut(pipe_idx as usize) {
+            Some(p) => p,
+            None => return -(Errno::EBADF as i32),
+        };
+        pipe.close_read_end();
+        pipe_table.free_if_closed(pipe_idx as usize);
+        return 0;
+    }
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     let proc = match table.get_mut(pid) {
         Some(p) => p,
@@ -8246,8 +8301,18 @@ pub extern "C" fn kernel_pipe_close_read(pid: u32, pipe_idx: u32) -> i32 {
 
 /// Check if a pipe's write end is still open.
 /// Returns 1 if open, 0 if closed, negative errno on error.
+///
+/// `pid == 0` ⇒ use the global pipe table (see `kernel_pipe_read`).
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_pipe_is_write_open(pid: u32, pipe_idx: u32) -> i32 {
+    if pid == 0 {
+        let pipe_table = unsafe { crate::pipe::global_pipe_table() };
+        let pipe = match pipe_table.get(pipe_idx as usize) {
+            Some(p) => p,
+            None => return -(Errno::EBADF as i32),
+        };
+        return if pipe.is_write_end_open() { 1 } else { 0 };
+    }
     let table = unsafe { &*PROCESS_TABLE.0.get() };
     let proc = match table.get(pid) {
         Some(p) => p,
@@ -8262,8 +8327,18 @@ pub extern "C" fn kernel_pipe_is_write_open(pid: u32, pipe_idx: u32) -> i32 {
 
 /// Check if a pipe's read end is still open.
 /// Returns 1 if open, 0 if closed, negative errno on error.
+///
+/// `pid == 0` ⇒ use the global pipe table (see `kernel_pipe_read`).
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_pipe_is_read_open(pid: u32, pipe_idx: u32) -> i32 {
+    if pid == 0 {
+        let pipe_table = unsafe { crate::pipe::global_pipe_table() };
+        let pipe = match pipe_table.get(pipe_idx as usize) {
+            Some(p) => p,
+            None => return -(Errno::EBADF as i32),
+        };
+        return if pipe.is_read_end_open() { 1 } else { 0 };
+    }
     let table = unsafe { &*PROCESS_TABLE.0.get() };
     let proc = match table.get(pid) {
         Some(p) => p,

@@ -236,8 +236,10 @@ test("@slow nginx-php: starts and serves PHP page", async ({ page }) => {
   });
 
   const log = await page.locator("#log").textContent();
+  // The demo page log shows dinit's `[OK] nginx` / `[OK] php-fpm` lines
+  // (lowercase service names) rather than uppercase product names.
   expect(log).toContain("nginx");
-  expect(log).toContain("PHP-FPM");
+  expect(log).toContain("php-fpm");
   await assertNoError(page);
 });
 
@@ -360,9 +362,10 @@ test("@slow wordpress: install, login, and load dashboard", async ({
   await waitForRunning(page, 180_000);
 
   const logText = await page.locator("#log").textContent();
-  expect(logText).toContain("WordPress loaded");
+  // dinit logs `[OK] <service>` lines (lowercase service names) when each
+  // declared service comes up — verify the stack we expect is present.
   expect(logText).toContain("nginx");
-  expect(logText).toContain("PHP-FPM");
+  expect(logText).toContain("php-fpm");
   await assertNoError(page);
 
   // The iframe navigates to /app/ which WordPress redirects to the install page.
@@ -486,10 +489,11 @@ test("@slow lamp: full stack serves WordPress", async ({ page }) => {
   await waitForRunning(page, 300_000);
 
   const log = await page.locator("#log").textContent();
-  expect(log).toContain("LAMP stack running");
-  expect(log).toContain("MariaDB");
-  expect(log).toContain("PHP-FPM");
+  // dinit logs `[OK] <service>` lines (lowercase service names) — verify
+  // every layer of the stack reported ready.
   expect(log).toContain("nginx");
+  expect(log).toContain("php-fpm");
+  expect(log).toContain("mariadb");
   await assertNoError(page);
 
   // Verify WordPress install page actually loads in the iframe

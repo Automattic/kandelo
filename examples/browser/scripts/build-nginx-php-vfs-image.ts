@@ -24,8 +24,8 @@ const OUT_FILE = join(findRepoRoot(), "examples", "browser", "public", "nginx-ph
 
 const NGINX_CONF = `user root;
 daemon off;
-master_process off;
-worker_processes 0;
+master_process on;
+worker_processes 2;
 error_log stderr info;
 pid /tmp/nginx.pid;
 
@@ -100,7 +100,7 @@ user = nobody
 group = nobody
 listen = 127.0.0.1:9000
 pm = static
-pm.max_children = 1
+pm.max_children = 2
 clear_env = no
 slowlog = /dev/null
 request_slowlog_trace_depth = 0

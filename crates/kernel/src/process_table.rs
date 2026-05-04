@@ -132,10 +132,16 @@ impl ProcessTable {
         // Clean up socket OFDs: close pipe endpoints so peers get EOF/EPIPE.
         // Without this, a peer process reading from a connected socket would
         // block forever instead of getting EOF when this process exits.
+        let shared_backlog_table = unsafe { crate::socket::shared_listener_backlog_table() };
         for (_ofd_idx, ofd) in proc.ofd_table.iter() {
             if ofd.file_type == FileType::Socket && ofd.host_handle < 0 {
                 let sock_idx = (-(ofd.host_handle + 1)) as usize;
                 if let Some(sock) = proc.sockets.get(sock_idx) {
+                    // Drop our reference to the shared listener backlog
+                    // (matches sys_close behaviour for clean process exit).
+                    if let Some(shared_idx) = sock.shared_backlog_idx {
+                        shared_backlog_table.dec_ref(shared_idx);
+                    }
                     if sock.global_pipes {
                         // Cross-process socket: close pipe ends in global table
                         if let Some(send_idx) = sock.send_buf_idx {
