@@ -229,7 +229,17 @@ if [ ! -f config.sh ]; then
     # Host build inherits use64bitint, which makes UV=uint64_t (unsigned long long).
     # On macOS aarch64, Perl's format macros use %l (unsigned long) but UV is
     # unsigned long long — same size but different type. Suppress host warnings.
-    export HOSTCFLAGS="-Wno-format"
+    #
+    # `-fno-strict-aliasing` is load-bearing: perl's interpreter relies on
+    # C type-punning patterns the C standard treats as UB, and clang -O2
+    # optimizes the resulting code into a host miniperl that panics in
+    # `magic_killbackrefs` (warnings.pm:620) the first time it traverses
+    # weak refs. Reproduces with Nix's clang 21 in the pure-shell on Mac
+    # arm64; perl's own hints/* set this flag for a reason on every
+    # platform that builds perl with clang. (Adding it to HOSTCFLAGS
+    # ensures the buildmini sub-configure inherits it — perl-cross
+    # propagates HOSTCFLAGS into the host CC invocation.)
+    export HOSTCFLAGS="-Wno-format -fno-strict-aliasing"
 
     # perl-cross's `--mode=cross` spawns two sub-configures: one for
     # the host miniperl (`--mode=buildmini`) and one for the target
