@@ -152,6 +152,16 @@
             # paths only, so installing libncurses-dev on the host
             # doesn't help — the lib has to come from nixpkgs.
             pkgs.ncurses
+            # sqlite3 CLI — host-side test helper. The WordPress
+            # site-editor test (`examples/wordpress/test/wordpress-
+            # site-editor.test.ts`) polls the WP install's SQLite DB
+            # via `execSync("sqlite3 ...")` to detect when WP is
+            # ready; without this every poll prints "/bin/sh: 1:
+            # sqlite3: not found" and the test eventually times out
+            # at 10 minutes. Different from the wasm32 sqlite we
+            # cross-build under examples/libs/sqlite/ — that's the
+            # target binary, this is the host CLI used by tests.
+            pkgs.sqlite
           ];
 
           shellHook = ''
