@@ -306,11 +306,33 @@ function handleSpawn(msg: SpawnMessage) {
     // — so surface them to stderr and synthesize an exit so the host's
     // exitResolver fires with a non-zero status.
     worker.on("message", (raw: unknown) => {
-      const m = raw as { type: string; pid?: number; message?: string };
+      const m = raw as { type: string; pid?: number; message?: string; status?: number };
       if (m.type === "error" && m.pid === pid) {
         const errBytes = new TextEncoder().encode(`[process-worker] ${m.message ?? "unknown error"}\n`);
         post({ type: "stderr", pid, data: errBytes });
         post({ type: "exit", pid, status: -1 });
+      } else if (m.type === "exit" && m.pid === pid) {
+        // worker-main posts {type:"exit"} when _start returns or hits an
+        // "unreachable" trap (the latter is treated as normal _Exit). If
+        // the kernel didn't process a SYS_exit_group first, the kernel
+        // still has the process registered and host.spawn() would hang.
+        // Tear down kernel state and forward the exit to the host.
+        const cur = processes.get(pid);
+        if (cur && cur.worker === worker) {
+          try { kernelWorker.deactivateProcess(pid); } catch { /* best-effort */ }
+          processes.delete(pid);
+          threadModuleCache.delete(pid);
+          ptyByPid.delete(pid);
+          const threads = threadWorkers.get(pid);
+          if (threads) {
+            for (const t of threads) {
+              intentionallyTerminated.add(t.worker as object);
+              t.worker.terminate().catch(() => {});
+            }
+            threadWorkers.delete(pid);
+          }
+        }
+        post({ type: "exit", pid, status: m.status ?? 0 });
       }
     });
 
@@ -379,11 +401,28 @@ async function handleFork(
   });
 
   childWorker.on("message", (raw: unknown) => {
-    const m = raw as { type: string; pid?: number; message?: string };
+    const m = raw as { type: string; pid?: number; message?: string; status?: number };
     if (m.type === "error" && m.pid === childPid) {
       const errBytes = new TextEncoder().encode(`[process-worker] ${m.message ?? "unknown error"}\n`);
       post({ type: "stderr", pid: childPid, data: errBytes });
       post({ type: "exit", pid: childPid, status: -1 });
+    } else if (m.type === "exit" && m.pid === childPid) {
+      const cur = processes.get(childPid);
+      if (cur && cur.worker === childWorker) {
+        try { kernelWorker.deactivateProcess(childPid); } catch { /* best-effort */ }
+        processes.delete(childPid);
+        threadModuleCache.delete(childPid);
+        ptyByPid.delete(childPid);
+        const threads = threadWorkers.get(childPid);
+        if (threads) {
+          for (const t of threads) {
+            intentionallyTerminated.add(t.worker as object);
+            t.worker.terminate().catch(() => {});
+          }
+          threadWorkers.delete(childPid);
+        }
+      }
+      post({ type: "exit", pid: childPid, status: m.status ?? 0 });
     }
   });
 
@@ -461,11 +500,28 @@ async function handleExec(
   // uncaught wasm traps) so the host learns the process died — same
   // wiring as handleSpawn.
   newWorker.on("message", (raw: unknown) => {
-    const m = raw as { type: string; pid?: number; message?: string };
+    const m = raw as { type: string; pid?: number; message?: string; status?: number };
     if (m.type === "error" && m.pid === pid) {
       const errBytes = new TextEncoder().encode(`[process-worker] ${m.message ?? "unknown error"}\n`);
       post({ type: "stderr", pid, data: errBytes });
       post({ type: "exit", pid, status: -1 });
+    } else if (m.type === "exit" && m.pid === pid) {
+      const cur = processes.get(pid);
+      if (cur && cur.worker === newWorker) {
+        try { kernelWorker.deactivateProcess(pid); } catch { /* best-effort */ }
+        processes.delete(pid);
+        threadModuleCache.delete(pid);
+        ptyByPid.delete(pid);
+        const threads = threadWorkers.get(pid);
+        if (threads) {
+          for (const t of threads) {
+            intentionallyTerminated.add(t.worker as object);
+            t.worker.terminate().catch(() => {});
+          }
+          threadWorkers.delete(pid);
+        }
+      }
+      post({ type: "exit", pid, status: m.status ?? 0 });
     }
   });
 

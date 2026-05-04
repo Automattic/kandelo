@@ -136,36 +136,38 @@ const MARIADB_ARGS =
   "--no-defaults --bootstrap --skip-networking --skip-grant-tables " +
   "--datadir=/tmp --tmpdir=/tmp";
 
-// All three are .skip'd until the wasm-port-side mariadbd-shutdown bug is
-// fixed. Symptom in our wasm port: after `InnoDB started` prints,
-// mariadbd's atexit chain calls free() on a heap chunk whose mallocng
-// group header is corrupt. mallocng's get_meta() loads `base->meta` —
-// which holds a value >= 1GB — then traps with "memory access out of
-// bounds" on `i32.load 2 8` (wasm-function[111]:0x35873).
+// What looked like a "spin loop" was a cascade of two wasm-port bugs:
 //
-// The corruption is wasm-port-specific: the same MariaDB 10.5.x against
-// the same musl mallocng on x86_64 Linux (Alpine 3.13, MariaDB 10.5.17,
-// musl 1.2.2 — verified) bootstraps and exits cleanly across many runs.
-// So this isn't a latent mariadbd 10.5 + mallocng bug that mallocng
-// strictness merely surfaces — something in our kernel / musl-overlay /
-// SDK toolchain is producing the bad metadata.
+//   1. musl-overlay/arch/wasm32posix/atomic_arch.h didn't override
+//      `a_crash`, so the generic `*(volatile char *)0 = 0` fallback was
+//      used. On Linux x86 address 0 is unmapped → SIGSEGV (clean abort);
+//      on wasm32 address 0 is the start of valid linear memory, so the
+//      write succeeds silently. Every mallocng / pthread / stdio
+//      assertion was therefore a no-op on our port — including
+//      mallocng's `assert(meta->mem == base)` in get_meta(). mariadbd's
+//      atexit destructor chain happens to double-free a few InnoDB
+//      pointers; mallocng caught the second free and called a_crash(),
+//      which on wasm just dirtied byte 0, then proceeded with a corrupt
+//      meta pointer. Eventually nontrivial_free dereferenced past the
+//      memory bound and the wasm runtime trapped with "memory access
+//      out of bounds" — far from the actual bug.
 //
-// Suspected (in order, narrowing): (1) mallocng's hardcoded 4KB page
-// assumptions interacting with our 64KB wasm pages; (2) `mprotect` /
-// `MAP_FIXED PROT_NONE` are no-ops in our kernel, so mallocng's guard
-// pages don't actually guard buffer overruns into adjacent meta state;
-// (3) wasm-target codegen differences in mallocng's atomic / alignment
-// paths.
+//   2. host/src/node-kernel-worker-entry.ts only handled the `error`
+//      message type from process workers, not `exit`. When the proper
+//      a_crash trapped via `__builtin_trap()`, worker-main.ts caught
+//      the unreachable trap (treating it as normal _Exit semantics)
+//      and posted `{type:"exit",pid,status:0}`. With no listener for
+//      that message, the host kept waiting for an exit that never came.
 //
-// The host-side safety net in node-kernel-worker-entry.ts catches the
-// resulting wasm trap and synthesizes a clean exit (code 128+SIGSEGV)
-// instead of hanging. With that, these three tests would technically
-// pass — `expect(stderr).toContain("InnoDB started")` matches because
-// the prints land before the trap — but that would be papering over the
-// actual bug. Keep them .skip'd until the trap itself is resolved.
+// Both fixes land in this PR. The underlying mariadbd 10.5 atexit
+// double-free is its own bug — it doesn't repro on Alpine 3.13 (same
+// musl 1.2.2 + mallocng), so it's specific to how mariadbd's static
+// destructors get invoked under our wasm-target compilation; not
+// pursued further here. The clean-trap behaviour preserves the
+// "InnoDB started" stderr output these tests actually assert against.
 describe.skipIf(!compatible)("brk-base regression: mariadbd bootstrap via dash-exec", () => {
   // Sanity: dash exec's mariadbd directly, no intermediate shell layer.
-  it.skip("dash → exec mariadbd: boots InnoDB", async () => {
+  it("dash → exec mariadbd: boots InnoDB", async () => {
     const r = await runDashCommand(`exec /usr/sbin/mariadbd ${MARIADB_ARGS} < ${SQL_PATH}`);
     expect(r.stderr).toContain("InnoDB");
     expect(r.stderr).toContain("started");
@@ -174,7 +176,7 @@ describe.skipIf(!compatible)("brk-base regression: mariadbd bootstrap via dash-e
   // Bug case 1: dash exec's /bin/sh which then exec's mariadbd. Pre-fix
   // this hung silently in __wasm_call_ctors because the chain advanced
   // brk into mariadbd's stack region.
-  it.skip("dash → exec /bin/sh → exec mariadbd: boots InnoDB", async () => {
+  it("dash → exec /bin/sh → exec mariadbd: boots InnoDB", async () => {
     const r = await runDashCommand(
       `exec /bin/sh -c "exec /usr/sbin/mariadbd ${MARIADB_ARGS} < ${SQL_PATH}"`,
     );
@@ -185,7 +187,7 @@ describe.skipIf(!compatible)("brk-base regression: mariadbd bootstrap via dash-e
   // Bug case 2: dash forks /bin/sh which forks mariadbd. The dinit-shape
   // chain (PID 1 → fork sh → fork mariadbd) — this is the original
   // mariadbd-bootstrap-hangs-in-wasm-port-during-kernel reproducer.
-  it.skip("dash → fork /bin/sh → fork mariadbd: boots InnoDB", async () => {
+  it("dash → fork /bin/sh → fork mariadbd: boots InnoDB", async () => {
     const r = await runDashCommand(
       `/bin/sh -c "/usr/sbin/mariadbd ${MARIADB_ARGS} < ${SQL_PATH}"`,
     );
