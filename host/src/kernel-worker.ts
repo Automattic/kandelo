@@ -468,6 +468,20 @@ const SYSCALL_ARGS: Record<number, ArgDesc[]> = {
   // Exec
   211: [{ argIndex: 0, direction: "in", size: { type: "cstring" } }],          // EXECVE: path
 
+  // prctl(option, arg2, arg3, arg4, arg5)
+  // Always marshal arg2 as a 16-byte inout buffer:
+  //   PR_SET_NAME (15): kernel reads thread name from buf
+  //   PR_GET_NAME (16): kernel writes thread name to buf
+  //   Any other option: kernel ignores buf entirely (sys_prctl returns Ok(()) for
+  //   unknown options without touching it), so always-marshalling is wasted-but-safe.
+  // Without this, the user's wasm32 buffer pointer was passed unchanged to the
+  // kernel's `from_raw_parts_mut(arg2 as *mut u8, 16)` — the kernel would
+  // dereference user-space addresses against its own memory, with the failure
+  // mode depending on whether the address landed in already-grown kernel pages
+  // (silent corruption) or past them (RuntimeError: memory access out of bounds).
+  // Triggered by mariadbd's pthread_setname_np during boot.
+  223: [{ argIndex: 1, direction: "inout", size: { type: "fixed", size: 16 } }],
+
   // Timer
   225: [
     { argIndex: 1, direction: "in", size: { type: "fixed", size: ITIMERVAL_SIZE } },   // SETITIMER: new
