@@ -428,13 +428,6 @@ fn mirror_program_outputs(
         return Err(format!("program {:?} has no [[outputs]]", m.name));
     }
     let arch_root = local_binaries_dir.join("programs").join(arch.as_str());
-    let dest_dir = if outputs.len() > 1 {
-        arch_root.join(&m.name)
-    } else {
-        arch_root
-    };
-    fs::create_dir_all(&dest_dir)
-        .map_err(|e| format!("mkdir {}: {e}", dest_dir.display()))?;
     for out in outputs {
         let src = canonical.join(&out.wasm);
         if !src.is_file() {
@@ -444,32 +437,18 @@ fn mirror_program_outputs(
                 src.display()
             ));
         }
-        // Preserve the source file's extension(s) so `.vfs.zst`,
-        // `.wasm`, `.zip`, etc. all round-trip. Take everything from
-        // the FIRST `.` onward as the extension chunk so double
-        // extensions like `.vfs.zst` survive intact.
-        //
-        //   out.wasm = "python.wasm"     → ext = ".wasm"
-        //                                  dest = "<out.name>.wasm"
-        //   out.wasm = "shell.vfs.zst"   → ext = ".vfs.zst"
-        //                                  dest = "<out.name>.vfs.zst"
-        //   out.wasm = "git.wasm"        → ext = ".wasm"
-        //                                  dest = "<out.name>.wasm"
-        let basename = std::path::Path::new(&out.wasm)
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or(&out.wasm);
-        let ext = match basename.find('.') {
-            Some(i) => &basename[i..],
-            None => "",
-        };
-        let dest_name = format!("{}{}", out.name, ext);
-        let dest = dest_dir.join(&dest_name);
+        let dest = arch_root.join(m.output_dest_rel_for(out));
+        let dest_dir = dest.parent().ok_or_else(|| {
+            format!("dest path {} has no parent", dest.display())
+        })?;
+        fs::create_dir_all(dest_dir)
+            .map_err(|e| format!("mkdir {}: {e}", dest_dir.display()))?;
         // PID suffix matches the convention used in remote_fetch /
         // archive_stage: lets two install-release runs sharing a
         // --local-binaries-dir not race on the same .tmp filename.
-        let tmp_name = format!("{}.tmp-{}", dest_name, std::process::id());
-        let tmp = dest_dir.join(&tmp_name);
+        let dest_filename = dest.file_name().and_then(|s| s.to_str())
+            .ok_or_else(|| format!("dest {} has no filename", dest.display()))?;
+        let tmp = dest_dir.join(format!("{}.tmp-{}", dest_filename, std::process::id()));
         fs::copy(&src, &tmp).map_err(|e| {
             format!("copy {} -> {}: {e}", src.display(), tmp.display())
         })?;
@@ -507,13 +486,6 @@ fn place_binaries_symlinks(
         return Err(format!("program {:?} has no [[outputs]]", m.name));
     }
     let arch_root = binaries_dir.join("programs").join(arch.as_str());
-    let dest_dir = if outputs.len() > 1 {
-        arch_root.join(&m.name)
-    } else {
-        arch_root
-    };
-    fs::create_dir_all(&dest_dir)
-        .map_err(|e| format!("mkdir {}: {e}", dest_dir.display()))?;
     for out in outputs {
         let src = canonical.join(&out.wasm);
         if !src.is_file() {
@@ -523,18 +495,12 @@ fn place_binaries_symlinks(
                 src.display()
             ));
         }
-        // Match mirror_program_outputs's filename convention: keep
-        // every dot-extension chunk (`.vfs.zst`, `.tar.gz`, etc.).
-        let basename = std::path::Path::new(&out.wasm)
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or(&out.wasm);
-        let ext = match basename.find('.') {
-            Some(i) => &basename[i..],
-            None => "",
-        };
-        let dest_name = format!("{}{}", out.name, ext);
-        let dest = dest_dir.join(&dest_name);
+        let dest = arch_root.join(m.output_dest_rel_for(out));
+        let dest_dir = dest.parent().ok_or_else(|| {
+            format!("dest path {} has no parent", dest.display())
+        })?;
+        fs::create_dir_all(dest_dir)
+            .map_err(|e| format!("mkdir {}: {e}", dest_dir.display()))?;
         // Replace-in-place: remove any existing entry (file or
         // symlink), then create a fresh symlink. Skipping the remove
         // step would cause `symlink` to fail with EEXIST if the
