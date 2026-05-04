@@ -21,6 +21,8 @@ const TEST_PROGRAMS = [
   "putenv_test.c",
   "getaddrinfo_test.c",
   "sysv_ipc_test.c",
+  "wasm_trap_test.c",
+  "abort_test.c",
 ];
 
 /** WAT fixtures used by host/test/wasi-shim.test.ts. */
