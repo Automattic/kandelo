@@ -227,7 +227,16 @@ fi
 # Build PCRE2 static libs once per cache entry. Output stays in a
 # build-side tree under SCRIPT_DIR (not cached as a library — kind=source
 # is just the unbuilt tree; the build is mariadb-specific by configuration).
-PCRE2_BUILD="$SCRIPT_DIR/pcre2-wasm-build"
+# Per-arch dir so wasm32 and wasm64 builds don't share artifacts — without
+# this, whichever arch ran first would leave its libpcre2-8.a in place and
+# the second arch would skip the rebuild (the `if [ ! -f ... ]` guard
+# below) and try to link a wasm32 archive into a wasm64 binary, dying
+# with: "wasm32 object file can't be linked in wasm64 mode".
+if [ "$WASM_ARCH" = "wasm64" ]; then
+    PCRE2_BUILD="$SCRIPT_DIR/pcre2-wasm-build-64"
+else
+    PCRE2_BUILD="$SCRIPT_DIR/pcre2-wasm-build"
+fi
 if [ ! -f "$PCRE2_BUILD/libpcre2-8.a" ]; then
     echo "==> Building PCRE2 for $WASM_ARCH from source at $PCRE2_SOURCE_DIR..."
     PCRE2_SIZEOF_VOID_P=4
