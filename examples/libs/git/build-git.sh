@@ -101,7 +101,7 @@ if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading git $GIT_VERSION..."
     TARBALL="git-${GIT_VERSION}.tar.xz"
     URL="https://www.kernel.org/pub/software/scm/git/${TARBALL}"
-    curl -fsSL "$URL" -o "/tmp/$TARBALL"
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
     mkdir -p "$SRC_DIR"
     tar xJf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
     rm "/tmp/$TARBALL"

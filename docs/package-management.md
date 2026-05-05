@@ -40,13 +40,13 @@ programs, we need:
 - rebuild-in-progress in one worktree not to corrupt a sibling
   worktree's read of the same cached lib.
 
-## Schema: `deps.toml`
+## Schema: `package.toml`
 
-Every library declares one `deps.toml` file, next to its build script:
+Every library declares one `package.toml` file, next to its build script:
 
 ```
 examples/libs/zlib/
-    deps.toml              ← declares the lib
+    package.toml              ← declares the lib
     build-zlib.sh          ← builds it (invoked by the resolver)
 ```
 
@@ -167,7 +167,7 @@ Inspect:
 ```bash
 cargo xtask build-deps sha     zlib   # → 9acb9405ef818905a193…
 cargo xtask build-deps path    zlib   # → ~/.cache/wasm-posix-kernel/libs/zlib-1.3.1-rev1-9acb9405
-cargo xtask build-deps parse   zlib   # → normalized dump of deps.toml
+cargo xtask build-deps parse   zlib   # → normalized dump of package.toml
 cargo xtask build-deps resolve zlib   # → build-if-needed, then print the path
 ```
 
@@ -196,10 +196,10 @@ that doesn't respect them cannot be cached safely.
 | Variable | Meaning |
 |---|---|
 | `WASM_POSIX_DEP_OUT_DIR` | Temp dir the script must install into. Layout matches `outputs.libs` / `outputs.headers` / `outputs.pkgconfig` relative paths. |
-| `WASM_POSIX_DEP_NAME` | `name` from deps.toml. |
-| `WASM_POSIX_DEP_VERSION` | `version` from deps.toml. |
-| `WASM_POSIX_DEP_REVISION` | `revision` from deps.toml. |
-| `WASM_POSIX_DEP_SOURCE_URL` | Upstream tarball URL (`source.url` from deps.toml). |
+| `WASM_POSIX_DEP_NAME` | `name` from package.toml. |
+| `WASM_POSIX_DEP_VERSION` | `version` from package.toml. |
+| `WASM_POSIX_DEP_REVISION` | `revision` from package.toml. |
+| `WASM_POSIX_DEP_SOURCE_URL` | Upstream tarball URL (`source.url` from package.toml). |
 | `WASM_POSIX_DEP_SOURCE_SHA256` | Expected sha256 of the downloaded tarball. Scripts **must** verify after download — the resolver does not fetch. |
 | `WASM_POSIX_DEP_<UPPER>_DIR` | For each *direct* dep, the resolved path to that dep's build output. `<UPPER>` is the dep name upper-cased, with `-` → `_` (e.g. `zlib-ng` → `ZLIB_NG`). Transitive deps are not surfaced — scripts that need them should declare them in `depends_on`. |
 
@@ -362,7 +362,7 @@ D.5): MariaDB's CMake expects to compile PCRE2 against its own
 internal headers and link the result statically into `mariadbd`,
 so a generic `libpcre2.a` would not satisfy it.
 
-The pcre2-source manifest (`examples/libs/pcre2-source/deps.toml`):
+The pcre2-source manifest (`examples/libs/pcre2-source/package.toml`):
 
 ```toml
 kind = "source"
@@ -383,7 +383,7 @@ extracts in-place into
 `<cache_root>/sources/pcre2-source-10.44-rev1-<sha>/`. No
 `<arch>` segment because source trees are arch-agnostic.
 
-The MariaDB manifest (`examples/libs/mariadb/deps.toml`):
+The MariaDB manifest (`examples/libs/mariadb/package.toml`):
 
 ```toml
 depends_on = ["pcre2-source@10.44"]
@@ -508,7 +508,7 @@ Not every contributor wants — or has the toolchain for — a
 local cross-compile. Pre-built `.tar.zst` archives
 alongside the existing release manifest so a fresh checkout can
 fetch a binary, verify it against the consumer's source
-`deps.toml`, and install it directly into the resolver's cache.
+`package.toml`, and install it directly into the resolver's cache.
 A subsequent `cargo xtask build-deps resolve` then hits the
 canonical cache path with no source build.
 
@@ -564,7 +564,7 @@ hand-built programs use.
 
 ### The injected `[compatibility]` block
 
-`stage-release` reads each consumer's source `deps.toml`,
+`stage-release` reads each consumer's source `package.toml`,
 appends a `[compatibility]` block, and writes the result as
 `manifest.toml` at the root of the archive (alongside an
 `artifacts/` subtree carrying the built files). The block
@@ -582,7 +582,7 @@ build_host = "darwin-arm64"                # optional, informational
 `DepsManifest::parse_archived` is the validator. It rejects:
 
 - a missing or empty `[compatibility]` block (a source
-  `deps.toml` doesn't have one; an archived `manifest.toml` must),
+  `package.toml` doesn't have one; an archived `manifest.toml` must),
 - empty `abi_versions`,
 - `cache_key_sha` that isn't 64 lowercase hex chars,
 - a re-injected block on a manifest that already had one.
@@ -600,7 +600,7 @@ axis is the strict-equivalence axis: a consumer recomputes
 the cache-key sha from its current source tree and rejects the
 archive if the recorded value differs.
 
-Concrete example. Suppose a contributor's local `deps.toml`
+Concrete example. Suppose a contributor's local `package.toml`
 for ncurses has bumped `revision` from 1 to 2 (perhaps to pick
 up a new compiler flag). The producer's archive recorded
 `cache_key_sha` is whatever rev1 produced — say
@@ -628,7 +628,7 @@ hash to exactly what this checkout would produce.
 
 ### Iterating on a package locally
 
-When you edit an `examples/libs/<name>/deps.toml` (or any input
+When you edit an `examples/libs/<name>/package.toml` (or any input
 that changes the package's `cache_key_sha` — `revision`,
 `source.url`, `source.sha256`, transitive deps), the published
 release manifest goes stale relative to your local state. By
@@ -637,7 +637,7 @@ default, `./run.sh fetch` and `./run.sh browser` then abort with:
 ```
 xtask install-release: <name> (<arch>): manifest.json cache_key_sha
 "<published>" does not match locally-computed "<local>" — the
-manifest is stale relative to this consumer's deps.toml
+manifest is stale relative to this consumer's package.toml
 ```
 
 That is the "Why `cache_key_sha` is the strict equivalence
@@ -648,7 +648,7 @@ branch, let `staging-build.yml` rebuild the touched packages,
 and `fetch-binaries.sh` will auto-detect the open PR and pull
 its `pr-<NNN>-staging` archives via `binaries.lock.pr` (see
 [binary-releases.md](binary-releases.md) "Per-PR staging
-overlay"). That works for any `deps.toml` change pushed to a
+overlay"). That works for any `package.toml` change pushed to a
 PR with CI write access, and is the path code-review and merge
 both use.
 
@@ -684,7 +684,7 @@ not pass `--allow-stale` and remains strict-by-construction.
 
 ### Worked example: zlib
 
-Source manifest at `examples/libs/zlib/deps.toml`:
+Source manifest at `examples/libs/zlib/package.toml`:
 
 ```toml
 kind = "library"
@@ -821,7 +821,7 @@ WASM_POSIX_DEPS_REGISTRY="./examples/libs:~/my-wasm-packages" \
 
 Colon-separated. First hit wins — later entries have lower priority,
 like `$PATH`. This is how third parties bring their own packages
-without patching the repo: they drop a `<lib>/deps.toml` into their
+without patching the repo: they drop a `<lib>/package.toml` into their
 own directory tree and prepend it to the registry path.
 
 ## Source-kind manifests

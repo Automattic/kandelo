@@ -56,7 +56,7 @@ if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading Perl $PERL_VERSION..."
     TARBALL="perl-${PERL_VERSION}.tar.gz"
     URL="https://www.cpan.org/src/5.0/${TARBALL}"
-    curl -fsSL "$URL" -o "/tmp/$TARBALL"
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
     mkdir -p "$SRC_DIR"
     tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
     rm "/tmp/$TARBALL"
@@ -64,7 +64,7 @@ if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading perl-cross $PERL_CROSS_VERSION..."
     CROSS_TARBALL="perl-cross-${PERL_CROSS_VERSION}.tar.gz"
     CROSS_URL="https://github.com/arsv/perl-cross/releases/download/${PERL_CROSS_VERSION}/${CROSS_TARBALL}"
-    curl -fsSL "$CROSS_URL" -o "/tmp/$CROSS_TARBALL"
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$CROSS_URL" -o "/tmp/$CROSS_TARBALL"
     # Overlay perl-cross on top of perl source tree
     tar xzf "/tmp/$CROSS_TARBALL" -C "$SRC_DIR" --strip-components=1
     rm "/tmp/$CROSS_TARBALL"
@@ -229,7 +229,17 @@ if [ ! -f config.sh ]; then
     # Host build inherits use64bitint, which makes UV=uint64_t (unsigned long long).
     # On macOS aarch64, Perl's format macros use %l (unsigned long) but UV is
     # unsigned long long — same size but different type. Suppress host warnings.
-    export HOSTCFLAGS="-Wno-format"
+    #
+    # `-fno-strict-aliasing` is load-bearing: perl's interpreter relies on
+    # C type-punning patterns the C standard treats as UB, and clang -O2
+    # optimizes the resulting code into a host miniperl that panics in
+    # `magic_killbackrefs` (warnings.pm:620) the first time it traverses
+    # weak refs. Reproduces with Nix's clang 21 in the pure-shell on Mac
+    # arm64; perl's own hints/* set this flag for a reason on every
+    # platform that builds perl with clang. (Adding it to HOSTCFLAGS
+    # ensures the buildmini sub-configure inherits it — perl-cross
+    # propagates HOSTCFLAGS into the host CC invocation.)
+    export HOSTCFLAGS="-Wno-format -fno-strict-aliasing"
 
     # perl-cross's `--mode=cross` spawns two sub-configures: one for
     # the host miniperl (`--mode=buildmini`) and one for the target
@@ -454,9 +464,18 @@ if [ ! -f config.sh ]; then
 
     echo "==> Configure complete."
 
-    # Fix xconfig.h: perl-cross may generate broken preprocessor directives
-    # when function detection fails (e.g. "# HAS_NANOSLEEP" without "define")
-    sed -i.bak -e 's/^# HAS_\([A-Z_]*\)\([ \t]\)/#define HAS_\1\2/' xconfig.h
+    # Fix xconfig.h: perl-cross silently drops some -Dd_<feature>=define
+    # overrides for the cross sub-configure (target xconfig.sh) — e.g.
+    # d_nanosleep is set in host config.sh but missing from xconfig.sh,
+    # so config_h.SH templates `#$d_nanosleep HAS_NANOSLEEP /**/` to
+    # `# HAS_NANOSLEEP /**/`, an invalid preprocessor directive that
+    # fails to compile every TU including perl.h.
+    #
+    # NOTE on portability: the prior version used `[ \t]` in BRE, but
+    # BSD sed (macOS) treats `\t` inside `[]` as literal backslash-t,
+    # so the substitution silently no-op'd on Mac while working on
+    # GNU sed. Use ERE + [[:space:]] for portability across BSD/GNU.
+    sed -i.bak -E -e 's/^# ([A-Z][A-Z0-9_]+)([[:space:]])/#define \1\2/' xconfig.h
 
     # Patch Makefile.config:
     # - Remove -lc (our toolchain links libc automatically)

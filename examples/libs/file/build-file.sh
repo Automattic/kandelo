@@ -36,7 +36,7 @@ if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading file $FILE_VERSION..."
     TARBALL="file-${FILE_VERSION}.tar.gz"
     URL="https://astron.com/pub/file/${TARBALL}"
-    curl -fsSL "$URL" -o "/tmp/$TARBALL"
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
     mkdir -p "$SRC_DIR"
     tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
     rm "/tmp/$TARBALL"
@@ -252,3 +252,15 @@ echo "Usage: file.wasm -m /path/to/magic.lite /path/to/file"
 # binary over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
 install_local_binary file "$SCRIPT_DIR/bin/file.wasm"
+
+# Stage magic.lite into the resolver scratch so it lands in the cache
+# canonical path (and from there, the .tar.zst release archive).
+# archive_stage packs every file under WASM_POSIX_DEP_OUT_DIR. Shell's
+# build-shell-vfs-image.ts reads magic.lite from the file package's
+# cache canonical dir; without staging, a cache-hit on file leaves the
+# consumer's path empty and shell's source build dies. Outside the
+# resolver, $WASM_POSIX_DEP_OUT_DIR is unset and this is a no-op.
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ] && [ -f "$BIN_DIR/magic.lite" ]; then
+    cp "$BIN_DIR/magic.lite" "$WASM_POSIX_DEP_OUT_DIR/magic.lite"
+    echo "  staged magic.lite into resolver scratch"
+fi

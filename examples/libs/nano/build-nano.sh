@@ -51,7 +51,7 @@ if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading nano $NANO_VERSION..."
     TARBALL="nano-${NANO_VERSION}.tar.xz"
     URL="https://www.nano-editor.org/dist/v${NANO_VERSION%%.*}/${TARBALL}"
-    curl -fsSL "$URL" -o "/tmp/$TARBALL"
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
     mkdir -p "$SRC_DIR"
     tar xJf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
     rm "/tmp/$TARBALL"

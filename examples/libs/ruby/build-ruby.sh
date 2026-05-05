@@ -68,7 +68,7 @@ if [ ! -f "$LIBYAML_DIR/lib/libyaml.a" ]; then
     LIBYAML_VERSION="0.2.5"
     LIBYAML_SRC="$SCRIPT_DIR/libyaml-src"
     if [ ! -d "$LIBYAML_SRC" ]; then
-        curl -fsSL "https://pyyaml.org/download/libyaml/yaml-${LIBYAML_VERSION}.tar.gz" \
+        curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "https://pyyaml.org/download/libyaml/yaml-${LIBYAML_VERSION}.tar.gz" \
             -o "/tmp/yaml-${LIBYAML_VERSION}.tar.gz"
         mkdir -p "$LIBYAML_SRC"
         tar xzf "/tmp/yaml-${LIBYAML_VERSION}.tar.gz" -C "$LIBYAML_SRC" --strip-components=1
@@ -104,7 +104,7 @@ done
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading Ruby $RUBY_VERSION..."
     TARBALL="ruby-${RUBY_VERSION}.tar.gz"
-    curl -fsSL "https://cache.ruby-lang.org/pub/ruby/${RUBY_MAJOR_MINOR}/${TARBALL}" \
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "https://cache.ruby-lang.org/pub/ruby/${RUBY_MAJOR_MINOR}/${TARBALL}" \
         -o "/tmp/${TARBALL}"
     mkdir -p "$SRC_DIR"
     tar xzf "/tmp/${TARBALL}" -C "$SRC_DIR" --strip-components=1

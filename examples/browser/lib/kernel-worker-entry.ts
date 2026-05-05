@@ -930,8 +930,13 @@ function handleHttpRequest(requestId: number, request: any) {
 
   console.log(`[bridge] req#${requestId} ${request.method} ${url} → pid=${target.pid}`);
 
+  // Injected pipes live in the global pipe table (any process sharing
+  // the listener can accept this connection). Pass pid=0 to the kernel
+  // pipe APIs as the global-pipe sentinel — see kernel_inject_connection.
+  const GLOBAL_PIPE_PID = 0;
+
   // Write request directly to pipe (synchronous)
-  const written = pipeWriteDirect(target.pid, recvPipeIdx, rawRequest);
+  const written = pipeWriteDirect(GLOBAL_PIPE_PID, recvPipeIdx, rawRequest);
   if (written < rawRequest.length) {
     console.warn(`[bridge] req#${requestId} partial write: ${written}/${rawRequest.length}`);
   }
@@ -947,25 +952,14 @@ function handleHttpRequest(requestId: number, request: any) {
     }
   }
 
-  // Directly wake the target process's pending poll — scheduleWakeBlockedRetries
-  // uses setImmediate which may be delayed by busy pump loops, causing the poll
-  // to wait for its full 5000ms fallback timer. Synchronous wake guarantees the
-  // nginx worker accepts injected connections immediately.
-  for (const [key, entry] of kw.pendingPollRetries) {
-    if (entry.channel.pid === target.pid) {
-      if (entry.timer !== null) clearTimeout(entry.timer);
-      kw.pendingPollRetries.delete(key);
-      if (kw.processes.has(target.pid)) {
-        kw.retrySyscall(entry.channel);
-      }
-      break;
-    }
-  }
-  // Also schedule broad wake for other processes that might care
+  // Wake all blocked poll/accept retries — any worker sharing the
+  // listener can pick up this entry from the shared accept queue,
+  // so a broad wake is correct (and required, since the host no
+  // longer routes to a specific pid at inject time).
   kw.scheduleWakeBlockedRetries();
 
   // Pump response
-  pumpResponse(requestId, target.pid, sendPipeIdx, recvPipeIdx, url);
+  pumpResponse(requestId, GLOBAL_PIPE_PID, sendPipeIdx, recvPipeIdx, url);
 }
 
 function pipeWriteDirect(pid: number, pipeIdx: number, data: Uint8Array): number {

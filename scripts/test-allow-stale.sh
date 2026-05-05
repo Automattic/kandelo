@@ -5,7 +5,7 @@
 #
 # What it covers
 # --------------
-# Mutates a small package's deps.toml so the locally-computed
+# Mutates a small package's package.toml so the locally-computed
 # cache_key_sha no longer matches the pinned release manifest, then
 # exercises the three entry points that were wired up in tasks 1-4:
 #
@@ -26,7 +26,7 @@
 #
 # Cleanup
 # -------
-# A trap restores the original deps.toml on exit (success, failure, or
+# A trap restores the original package.toml on exit (success, failure, or
 # Ctrl-C). The script is idempotent — running it twice in a row should
 # behave identically.
 
@@ -36,7 +36,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
 PKG=bzip2
-DEPS_TOML="examples/libs/$PKG/deps.toml"
+DEPS_TOML="examples/libs/$PKG/package.toml"
 BACKUP="$DEPS_TOML.bak.allowstale-test"
 EXPECTED="local-binaries/programs/wasm32/$PKG.wasm"
 
@@ -57,7 +57,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# --- Mutate deps.toml --------------------------------------------------------
+# --- Mutate package.toml --------------------------------------------------------
 cp "$DEPS_TOML" "$BACKUP"
 
 # Replace the integer `revision = 1` with `revision = 99`. Anchored to
@@ -67,7 +67,7 @@ sed -i.tmp 's/^revision = .*/revision = 99/' "$DEPS_TOML"
 rm -f "$DEPS_TOML.tmp"
 
 if ! grep -q '^revision = 99$' "$DEPS_TOML"; then
-    echo "FAIL: deps.toml mutation did not stick" >&2
+    echo "FAIL: package.toml mutation did not stick" >&2
     cat "$DEPS_TOML" >&2
     exit 1
 fi

@@ -29,7 +29,7 @@
 #                  compatibility.cache_key_sha disagrees with the
 #                  locally-computed value: skip them in install-release
 #                  and source-build them via `xtask build-deps resolve`
-#                  instead of aborting. Used for local deps.toml edits
+#                  instead of aborting. Used for local package.toml edits
 #                  that aren't yet covered by a PR overlay (pre-push,
 #                  fork PRs without write access, in-flight WIP).
 #
@@ -141,7 +141,7 @@ auto_detect_pr() {
     if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
         pulls_json=$(gh api "repos/$OWNER_REPO/commits/$head_sha/pulls" 2>/dev/null) || return 0
     else
-        pulls_json=$(curl -fsSL \
+        pulls_json=$(curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/$OWNER_REPO/commits/$head_sha/pulls" 2>/dev/null) || return 0
     fi
@@ -187,7 +187,7 @@ if [ -n "$PR_NUMBER" ] && [ ! -f "$OVERLAY_FILE" ]; then
             fi
         fi
         if [ "$downloaded" = "0" ]; then
-            if curl -fsSL --retry 2 -o "$OVERLAY_FILE.partial" "$STAGING_BASE/binaries.lock.pr"; then
+            if curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL --retry 2 -o "$OVERLAY_FILE.partial" "$STAGING_BASE/binaries.lock.pr"; then
                 mv "$OVERLAY_FILE.partial" "$OVERLAY_FILE"
             else
                 rm -f "$OVERLAY_FILE.partial"
@@ -250,7 +250,7 @@ ensure_object() {
 
     local tmp="$obj_path.partial"
     echo "  downloading $rel_name..."
-    if ! curl -fsSL --retry 3 -o "$tmp" "$REL_BASE/$rel_name"; then
+    if ! curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL --retry 3 -o "$tmp" "$REL_BASE/$rel_name"; then
         rm -f "$tmp"
         echo "ERROR: download failed for $rel_name" >&2
         return 1
@@ -392,7 +392,7 @@ if jq -e '.entries[] | select(.archive_name != null)' "$MANIFEST_OBJ" > /dev/nul
         # branching, so both the durable and overlay install-release
         # passes get the same flags. install-release writes the names
         # of skipped entries (cache_key_sha mismatches against the
-        # consumer's deps.toml) to STALE_OUT; we source-build those
+        # consumer's package.toml) to STALE_OUT; we source-build those
         # via `xtask build-deps resolve` after each pass. The trap
         # set up earlier in this script removes STALE_OUT on exit.
         EXTRA_FLAGS=()
@@ -494,7 +494,7 @@ if jq -e '.entries[] | select(.archive_name != null)' "$MANIFEST_OBJ" > /dev/nul
                 --binaries-dir "$BIN_DIR" \
                 ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}
             # Overlay-pass stale entries are rare (overlay is built
-            # from the developer's deps.toml at PR-build time) but can
+            # from the developer's package.toml at PR-build time) but can
             # appear if the developer made further local edits past
             # their last CI build.
             process_stale_out

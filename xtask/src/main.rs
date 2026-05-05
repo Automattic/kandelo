@@ -21,7 +21,7 @@ mod archive_stage;
 mod build_deps;
 mod build_manifest;
 mod bundle_program;
-mod deps_manifest;
+mod pkg_manifest;
 mod dump_abi;
 mod host_tool_probe;
 mod install_release;

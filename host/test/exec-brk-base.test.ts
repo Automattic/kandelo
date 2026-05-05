@@ -136,14 +136,42 @@ const MARIADB_ARGS =
   "--no-defaults --bootstrap --skip-networking --skip-grant-tables " +
   "--datadir=/tmp --tmpdir=/tmp";
 
+// What looked like a "spin loop" was a cascade of two wasm-port bugs:
+//
+//   1. musl-overlay/arch/wasm32posix/atomic_arch.h didn't override
+//      `a_crash`, so the generic `*(volatile char *)0 = 0` fallback was
+//      used. On Linux x86 address 0 is unmapped → SIGSEGV (clean abort);
+//      on wasm32 address 0 is the start of valid linear memory, so the
+//      write succeeds silently. Every mallocng / pthread / stdio
+//      assertion was therefore a no-op on our port — including
+//      mallocng's `assert(meta->mem == base)` in get_meta(). mariadbd's
+//      atexit destructor chain happens to double-free a few InnoDB
+//      pointers; mallocng caught the second free and called a_crash(),
+//      which on wasm just dirtied byte 0, then proceeded with a corrupt
+//      meta pointer. Eventually nontrivial_free dereferenced past the
+//      memory bound and the wasm runtime trapped with "memory access
+//      out of bounds" — far from the actual bug.
+//
+//   2. host/src/node-kernel-worker-entry.ts only handled the `error`
+//      message type from process workers, not `exit`. When the proper
+//      a_crash trapped via `__builtin_trap()`, worker-main.ts caught
+//      the unreachable trap (treating it as normal _Exit semantics)
+//      and posted `{type:"exit",pid,status:0}`. With no listener for
+//      that message, the host kept waiting for an exit that never came.
+//
+// Both fixes land in this PR. The underlying mariadbd 10.5 atexit
+// double-free is its own bug — it doesn't repro on Alpine 3.13 (same
+// musl 1.2.2 + mallocng), so it's specific to how mariadbd's static
+// destructors get invoked under our wasm-target compilation; not
+// pursued further here. The clean-trap behaviour preserves the
+// "InnoDB started" stderr output these tests actually assert against.
 describe.skipIf(!compatible)("brk-base regression: mariadbd bootstrap via dash-exec", () => {
-  // Sanity: works in every codebase state — dash exec's mariadbd directly,
-  // no intermediate shell layer.
+  // Sanity: dash exec's mariadbd directly, no intermediate shell layer.
   it("dash → exec mariadbd: boots InnoDB", async () => {
     const r = await runDashCommand(`exec /usr/sbin/mariadbd ${MARIADB_ARGS} < ${SQL_PATH}`);
     expect(r.stderr).toContain("InnoDB");
     expect(r.stderr).toContain("started");
-  });
+  }, 30_000);
 
   // Bug case 1: dash exec's /bin/sh which then exec's mariadbd. Pre-fix
   // this hung silently in __wasm_call_ctors because the chain advanced
@@ -154,7 +182,7 @@ describe.skipIf(!compatible)("brk-base regression: mariadbd bootstrap via dash-e
     );
     expect(r.stderr).toContain("InnoDB");
     expect(r.stderr).toContain("started");
-  });
+  }, 30_000);
 
   // Bug case 2: dash forks /bin/sh which forks mariadbd. The dinit-shape
   // chain (PID 1 → fork sh → fork mariadbd) — this is the original
@@ -165,5 +193,5 @@ describe.skipIf(!compatible)("brk-base regression: mariadbd bootstrap via dash-e
     );
     expect(r.stderr).toContain("InnoDB");
     expect(r.stderr).toContain("started");
-  });
+  }, 30_000);
 });

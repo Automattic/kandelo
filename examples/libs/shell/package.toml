@@ -1,0 +1,50 @@
+kind = "program"
+name = "shell"
+version = "0.1.0"
+revision = 1
+# Implicit deps consumed by build-shell-vfs-image.ts and the
+# build-{vim,nethack}-zip.sh helpers it drives:
+#
+#   - dash.wasm via `resolveBinary("programs/dash.wasm")`.
+#   - magic.lite via `cargo xtask build-deps resolve file` →
+#     `<file-cache-canonical>/magic.lite`. file's deps.toml declares
+#     `magic.lite` as an output and build-file.sh stages it into
+#     OUT_DIR. Falls back to `examples/libs/file/bin/magic.lite`
+#     for direct invocations.
+#   - vim.wasm + runtime/ via `cargo xtask build-deps resolve vim`
+#     (build-vim-zip.sh) — vim's package archive ships both.
+#   - nethack.wasm + runtime/ via `cargo xtask build-deps resolve
+#     nethack` (build-nethack-zip.sh) — nethack's rev2 archive ships
+#     the runtime tree alongside the wasm.
+#
+# Folding each dep's cache_key into ours via depends_on guarantees a
+# fresh shell archive whenever any of these inputs changes. The
+# build-{vim,nethack}-zip.sh helpers produce vim.zip and nethack.zip
+# on-the-fly during shell's source build using the resolver-provided
+# cache paths; those zips aren't published as part of vim/nethack's
+# release archives.
+depends_on = ["dash@0.5.12", "file@5.45", "vim@9.1.0900", "nethack@3.6.7"]
+
+# Composite VFS image for the browser shell demo: dash binary,
+# coreutils/grep/sed symlinks, /etc system configs, magic database,
+# lazy-archive reference for vim. Built by
+# examples/browser/scripts/build-shell-vfs-image.ts. The .vfs file is
+# wrapped (not double-compressed) inside the package-system .tar.zst archive at
+# stage_release time.
+[source]
+url = "https://github.com/brandonpayton/wasm-posix-kernel"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
+
+[build]
+script = "build-shell.sh"
+
+[[outputs]]
+name = "shell"
+wasm = "shell.vfs"
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/shell-0.1.0-rev1-abi6-wasm32-8cb32ab2.tar.zst"
+archive_sha256 = "b6d48c3f1987994557bb2439406eb31e8938a6f0bfb90101959380651a89a161"

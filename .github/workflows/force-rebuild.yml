@@ -11,14 +11,19 @@ name: Force rebuild
 #
 # Inputs (rendered in the GitHub Actions "Run workflow" modal):
 #   packages       — `all` (default) or a comma-separated list of
-#                    deps.toml names (e.g. `php,mariadb`). `all`
+#                    package.toml names (e.g. `php,mariadb`). `all`
 #                    rebuilds every library + program manifest in
 #                    the registry.
 #   arches         — comma-separated subset of `wasm32,wasm64`
 #                    (default: both). Manifests whose `target_arches`
 #                    don't include a requested arch are silently
 #                    skipped per the existing stage-release behavior.
-#   ref            — git ref to build from (default: `main`).
+#   ref            — git ref to build from. Defaults to the branch the
+#                    workflow was triggered from (`github.ref_name`),
+#                    so dispatching from a PR branch tests the PR's
+#                    sources rather than silently building `main`. Set
+#                    to a specific tag/sha for a one-shot rebuild from
+#                    history.
 #   skip_tests     — when true, publishes without running the 5 test
 #                    suites. Defaults to false (tests must pass before
 #                    publish). workflow_dispatch is maintainer-only,
@@ -42,7 +47,7 @@ on:
   workflow_dispatch:
     inputs:
       packages:
-        description: 'Comma-separated package names, or `all`. Names match deps.toml entries (e.g. php,mariadb).'
+        description: 'Comma-separated package names, or `all`. Names match package.toml entries (e.g. php,mariadb).'
         required: false
         default: 'all'
         type: string
@@ -52,9 +57,9 @@ on:
         default: 'wasm32,wasm64'
         type: string
       ref:
-        description: 'Git ref to build from.'
+        description: 'Git ref to build from. Empty = the branch the workflow was triggered from.'
         required: false
-        default: 'main'
+        default: ''
         type: string
       skip_tests:
         description: 'Publish without running the 5 test suites. Use with care — durable releases normally gate on tests.'
@@ -84,14 +89,17 @@ jobs:
     env:
       INPUT_PACKAGES: ${{ inputs.packages }}
       INPUT_ARCHES: ${{ inputs.arches }}
-      INPUT_REF: ${{ inputs.ref }}
+      INPUT_REF: ${{ inputs.ref != '' && inputs.ref || github.ref_name }}
       INPUT_SKIP_TESTS: ${{ inputs.skip_tests }}
       INPUT_BUMP_LOCKFILE: ${{ inputs.bump_lockfile }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref }}
+          # Resolve via env var so a single source of truth (INPUT_REF)
+          # carries the empty-input fallback into both checkout and the
+          # downstream gh-cli calls (lockfile-bump PR's --base).
+          ref: ${{ env.INPUT_REF }}
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -108,7 +116,7 @@ jobs:
         uses: DeterminateSystems/magic-nix-cache-action@v13
 
       - name: Warm Nix dev shell
-        run: nix develop --accept-flake-config --command true
+        run: bash scripts/dev-shell.sh true
 
       - name: Cache resolver + cargo target
         uses: actions/cache@v4
@@ -116,7 +124,7 @@ jobs:
           path: |
             ~/.cache/wasm-posix-kernel
             target
-          key: force-rebuild-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'examples/libs/**/deps.toml') }}
+          key: force-rebuild-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'examples/libs/**/package.toml') }}
           restore-keys: |
             force-rebuild-${{ runner.os }}-
             prepare-merge-${{ runner.os }}-
@@ -135,9 +143,9 @@ jobs:
         if: steps.cache-sysroot.outputs.cache-hit != 'true'
         # See staging-build.yml.
         run: |
-          nix develop --accept-flake-config --command bash scripts/build-musl.sh
-          nix develop --accept-flake-config --command bash scripts/build-musl.sh --arch wasm64posix
-          nix develop --accept-flake-config --command bash -c '
+          bash scripts/dev-shell.sh bash scripts/build-musl.sh
+          bash scripts/dev-shell.sh bash scripts/build-musl.sh --arch wasm64posix
+          bash scripts/dev-shell.sh bash -c '
             src=""
             for cand in "$LLVM_PREFIX/include/c++/v1" "$LLVM_PREFIX/share/libc++/v1"; do
               if [ -f "$cand/__config" ] || [ -f "$cand/iostream" ]; then
@@ -162,8 +170,8 @@ jobs:
               fi
             done
           '
-          nix develop --accept-flake-config --command bash scripts/build-libcxx.sh
-          nix develop --accept-flake-config --command bash scripts/build-libcxx.sh --arch wasm64
+          bash scripts/dev-shell.sh bash scripts/build-libcxx.sh
+          bash scripts/dev-shell.sh bash scripts/build-libcxx.sh --arch wasm64
 
       - name: Compute durable release tag
         id: tag
@@ -180,28 +188,20 @@ jobs:
           echo "abi=$ABI" >> $GITHUB_OUTPUT
           echo "tag=$TAG" >> $GITHUB_OUTPUT
 
-      - name: Fetch durable binaries (non-forced packages reuse prior release)
-        # When `packages` is a subset, the resolver still needs prior
-        # archives for the un-forced manifests so stage-release can
-        # source-build dependents without re-fetching the world. When
-        # `packages=all` this fetch is mostly wasted (every package
-        # source-builds anyway) but cheap to run and warms binaries/
-        # for downstream steps that read from there directly.
-        #
-        # --allow-stale is load-bearing here, NOT a defensive default.
-        # Force-rebuild's whole premise is that the published manifest
-        # may have drifted from this checkout's deps.toml — that's the
-        # situation it exists to fix. Without --allow-stale the strict
-        # pre-flight in install-release would abort on the first
-        # mismatched cache_key_sha and the workflow could never reach
-        # the rebuild step that resolves the drift. With the flag,
-        # mismatched entries are skipped (logged as warnings) and the
-        # resolver later source-builds them as part of stage-release.
-        # Mirrors the --allow-stale wiring on prepare-merge.yml /
-        # staging-build.yml added by PR #385.
+      - name: Install host npm deps (build prereq)
+        # Some package builds invoke node scripts that import from
+        # host/src/ — e.g. shell's build-shell-vfs-image.ts pulls in
+        # host/src/vfs/zip.ts (→ `fflate`). tsx resolves modules
+        # relative to the importing file, so without host/node_modules
+        # populated the build dies with "Cannot find package 'fflate'".
+        # Done before stage-release so source-rebuilds don't fail this
+        # way; the test-suite step further down does its own install
+        # too (idempotent, fast cache hit on second run).
         run: |
-          nix develop --accept-flake-config --command \
-            bash scripts/fetch-binaries.sh --allow-stale
+          bash scripts/dev-shell.sh bash -c '
+            npm install --no-audit --no-fund
+            cd host && npm install --no-audit --no-fund
+          '
 
       - name: Stage durable release (force-rebuild)
         # Translate the comma-separated `packages` input into one
@@ -229,24 +229,70 @@ jobs:
             a="${a%"${a##*[![:space:]]}"}"
             [ -n "$a" ] && arch_args+=(--arch "$a")
           done
+          # `--allow-failure texlive`: TexLive's bundled web2c
+          # auto-generates `pmpost`'s C sources from `.w` files (the
+          # WEB literate-programming format), and pmpmathbinary.c
+          # hard-`#include`s <gmp.h> regardless of `--disable-mp /
+          # --disable-ptex / --disable-uptex`. Until that's untangled
+          # (likely needs `pkgs.gmp/mpfr/cairo` in flake plus
+          # `--with-system-gmp=yes` for both Phase 1 host and Phase
+          # 2 cross builds, with matching wasm32 ports of those
+          # libs), keep texlive's source-build red but un-gating —
+          # warn instead of fail. Track in
+          # docs/package-management-future-work.md. Drop this flag
+          # once texlive can source-build under
+          # `nix develop --ignore-environment`.
           mkdir -p /tmp/durable
-          nix develop --accept-flake-config --command \
+          bash scripts/dev-shell.sh \
             scripts/stage-release.sh \
               --out /tmp/durable \
               --tag "${{ steps.tag.outputs.tag }}" \
+              --allow-failure texlive \
               "${arch_args[@]}" \
               "${force_args[@]}"
 
-      - name: Build kernel + test programs + install host deps (test prereqs)
-        # Required for vitest + the C-program suites even when
-        # skip_tests=true, because publish-release.sh consumes
-        # local-binaries/ for kernel.wasm packaging? No — kernel.wasm
-        # isn't in the durable release per stage-release.sh's header
-        # ("kernel.wasm and userspace.wasm are not in the release"),
-        # so we can guard this on !skip_tests.
+      - name: Place binaries/ symlinks pointing at the fresh staged archives
+        # Tests must validate the freshly-built artifacts in
+        # /tmp/durable, not the prior release's binaries. Stage-release
+        # has populated the resolver cache and produced .tar.zst
+        # archives under /tmp/durable, but binary-resolver.ts reads
+        # binaries/ + local-binaries/, neither of which stage-release
+        # touches. Run install-release against /tmp/durable's
+        # manifest.json with file:// archive-base; --binaries-dir
+        # places binaries/programs/<arch>/<x> symlinks pointing at the
+        # cache canonical paths (which now hold the fresh bytes).
+        #
+        # No --force-mirror: install-release skips the local-binaries/
+        # mirror on cache-hit, and that's fine — binary-resolver.ts
+        # falls through to binaries/ when local-binaries/ has no entry,
+        # and binaries/ symlinks are placed unconditionally when
+        # --binaries-dir is set. Mirroring to local-binaries/ would
+        # just duplicate bytes into a path the resolver doesn't reach
+        # for these programs.
         if: ${{ !inputs.skip_tests }}
         run: |
-          nix develop --accept-flake-config --command bash -c '
+          HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
+          bash scripts/dev-shell.sh \
+            cargo run -p xtask --target "$HOST_TARGET" --quiet -- install-release \
+              --manifest /tmp/durable/manifest.json \
+              --archive-base "file:///tmp/durable" \
+              --binaries-dir binaries
+
+      - name: Build kernel + test programs + install host deps (test prereqs)
+        # kernel.wasm and userspace.wasm aren't in the durable release
+        # (per stage-release.sh's header), so they're built locally
+        # only when tests need them.
+        #
+        # `npx playwright install chromium` downloads the headless-shell
+        # browser binary into ~/.cache/ms-playwright/. The
+        # examples/wordpress/test/wordpress-site-editor.test.ts E2E test
+        # invokes `chromium.launch()` directly (not via `npx playwright
+        # test` runner), so the browser must be present before vitest
+        # runs — `npm install` alone only fetches the @playwright/test
+        # NPM package, not the browser bundles.
+        if: ${{ !inputs.skip_tests }}
+        run: |
+          bash scripts/dev-shell.sh bash -c '
             cargo build --release -p wasm-posix-kernel \
               -Z build-std=core,alloc \
               -Z build-std-features=panic_immediate_abort
@@ -256,12 +302,13 @@ jobs:
             bash scripts/build-programs.sh
             npm install --no-audit --no-fund
             cd host && npm install --no-audit --no-fund
+            cd .. && npx --prefix host playwright install chromium
           '
 
       - name: Run cargo + vitest tests
         if: ${{ !inputs.skip_tests }}
         run: |
-          nix develop --accept-flake-config --command bash -c '
+          bash scripts/dev-shell.sh bash -c '
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
             cargo test -p wasm-posix-kernel --target "$HOST_TARGET" --lib
             cd host && npx vitest run
@@ -270,17 +317,17 @@ jobs:
       - name: Run libc-test conformance suite
         if: ${{ !inputs.skip_tests }}
         run: |
-          nix develop --accept-flake-config --command bash scripts/run-libc-tests.sh
+          bash scripts/dev-shell.sh bash scripts/run-libc-tests.sh
 
       - name: Run Open POSIX Test Suite
         if: ${{ !inputs.skip_tests }}
         run: |
-          nix develop --accept-flake-config --command bash scripts/run-posix-tests.sh
+          bash scripts/dev-shell.sh bash scripts/run-posix-tests.sh
 
       - name: Run Sortix os-test suite
         if: ${{ !inputs.skip_tests }}
         run: |
-          nix develop --accept-flake-config --command bash scripts/run-sortix-tests.sh --all
+          bash scripts/dev-shell.sh bash scripts/run-sortix-tests.sh --all
 
       - name: Publish durable release
         # Reached only after tests pass (or skip_tests=true). Tests
@@ -289,7 +336,7 @@ jobs:
         # orphaned releases scattered around when force-rebuild is
         # used to investigate a suspected cache problem.
         run: |
-          nix develop --accept-flake-config --command \
+          bash scripts/dev-shell.sh \
             scripts/publish-release.sh \
               --tag "${{ steps.tag.outputs.tag }}" \
               --staging /tmp/durable
@@ -324,9 +371,12 @@ jobs:
           NEW_SHA=$(git rev-parse HEAD)
 
           # Open PR. Skip prepare-merge by NOT applying ready-to-ship.
+          # Base = the resolved ref we built from (INPUT_REF), so a
+          # PR-branch dispatch lands the bump on that PR's branch
+          # rather than punting to main.
           gh pr create \
             --repo ${{ github.repository }} \
-            --base "${{ inputs.ref }}" \
+            --base "$INPUT_REF" \
             --head "$BRANCH" \
             --title "chore(binaries): bump lockfile to ${{ steps.tag.outputs.tag }}" \
             --body "Auto-generated by .github/workflows/force-rebuild.yml.

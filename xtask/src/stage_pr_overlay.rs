@@ -27,7 +27,7 @@ use wasm_posix_shared as shared;
 
 use crate::build_deps::{self, default_cache_root, parse_target_arch, Registry};
 use crate::build_manifest;
-use crate::deps_manifest::{ManifestKind, TargetArch};
+use crate::pkg_manifest::{ManifestKind, TargetArch};
 use crate::repo_root;
 use crate::stage_release;
 use crate::util::hex;
@@ -354,7 +354,7 @@ libs = ["lib/lib{name}.a"]
 "#,
             ""
         );
-        fs::write(lib_dir.join("deps.toml"), toml).unwrap();
+        fs::write(lib_dir.join("package.toml"), toml).unwrap();
         let script_path = lib_dir.join(format!("build-{name}.sh"));
         let script = format!("#!/bin/bash\nset -euo pipefail\n{body}\n");
         fs::write(&script_path, script).unwrap();

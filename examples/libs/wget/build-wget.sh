@@ -77,7 +77,7 @@ if [ ! -d "$SRC_DIR" ]; then
     # ftpmirror.gnu.org redirects to a working GNU mirror; ftpmirror.gnu.org
     # itself sometimes refuses connections during peak hours.
     URL="https://ftpmirror.gnu.org/gnu/wget/${TARBALL}"
-    curl -fsSL "$URL" -o "/tmp/$TARBALL"
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
     mkdir -p "$SRC_DIR"
     tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
     rm "/tmp/$TARBALL"

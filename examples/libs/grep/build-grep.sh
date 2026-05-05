@@ -31,7 +31,7 @@ if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading grep $GREP_VERSION..."
     TARBALL="grep-${GREP_VERSION}.tar.xz"
     URL="https://ftpmirror.gnu.org/gnu/grep/${TARBALL}"
-    curl -fsSL "$URL" -o "/tmp/$TARBALL"
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
     mkdir -p "$SRC_DIR"
     tar xJf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
     rm "/tmp/$TARBALL"

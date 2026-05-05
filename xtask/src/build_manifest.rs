@@ -3,7 +3,7 @@
 //! Walks the given directory (non-recursively — the release namespace
 //! is intentionally flat, see `docs/binary-releases.md`), computes
 //! SHA-256 of every file, extracts metadata from filenames and the
-//! per-dir program registry (`examples/libs/<name>/deps.toml` with
+//! per-dir program registry (`examples/libs/<name>/package.toml` with
 //! `kind = "program"`), and writes a deterministic JSON manifest
 //! that conforms to `abi/manifest.schema.json`.
 
@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 use wasm_posix_shared as shared;
 
 use crate::build_deps::{compute_sha, parse_target_arch, programs_by_name, Registry};
-use crate::deps_manifest::{DepsManifest, ManifestKind, TargetArch};
+use crate::pkg_manifest::{DepsManifest, ManifestKind, TargetArch};
 use crate::repo_root;
 use crate::wasm_abi::extract_abi_version;
 use crate::JsonMap;
@@ -226,7 +226,7 @@ fn build_entry(
         format!(
             "no entry for program {:?} in the per-dir registry — \
              every shipped asset must declare source + license via \
-             examples/libs/<program>/deps.toml with kind = \"program\"",
+             examples/libs/<program>/package.toml with kind = \"program\"",
             parsed.program
         )
     })?;
@@ -356,7 +356,7 @@ impl ParsedName {
             .ok_or_else(|| {
                 format!(
                     "filename {name:?} doesn't start with a known program name \
-                     from the per-dir registry (examples/libs/<name>/deps.toml \
+                     from the per-dir registry (examples/libs/<name>/package.toml \
                      with kind = \"program\"). Add the program or rename \
                      the asset."
                 )
@@ -907,7 +907,7 @@ mod tests {
         let dir = registry.join(name);
         fs::create_dir_all(&dir).unwrap();
         fs::write(
-            dir.join("deps.toml"),
+            dir.join("package.toml"),
             format!(
                 "kind = \"library\"\n\
                  name = \"{name}\"\n\
@@ -930,7 +930,7 @@ mod tests {
         let dir = registry.join(name);
         fs::create_dir_all(&dir).unwrap();
         fs::write(
-            dir.join("deps.toml"),
+            dir.join("package.toml"),
             format!(
                 "kind = \"program\"\n\
                  name = \"{name}\"\n\
@@ -954,7 +954,7 @@ mod tests {
         let dir = registry.join(name);
         fs::create_dir_all(&dir).unwrap();
         fs::write(
-            dir.join("deps.toml"),
+            dir.join("package.toml"),
             format!(
                 "kind = \"source\"\n\
                  name = \"{name}\"\n\
@@ -976,7 +976,7 @@ mod tests {
     fn archive_name_for(
         registry_root: &Path,
         manifest_name: &str,
-        arch: crate::deps_manifest::TargetArch,
+        arch: crate::pkg_manifest::TargetArch,
         abi: u32,
     ) -> (String, [u8; 32]) {
         let reg = crate::build_deps::Registry {
@@ -1013,7 +1013,7 @@ mod tests {
         let (archive_name, sha) = archive_name_for(
             &registry,
             "zlib",
-            crate::deps_manifest::TargetArch::Wasm32,
+            crate::pkg_manifest::TargetArch::Wasm32,
             4,
         );
 
@@ -1108,7 +1108,7 @@ mod tests {
         let (archive_name, _sha) = archive_name_for(
             &registry,
             "myprog",
-            crate::deps_manifest::TargetArch::Wasm32,
+            crate::pkg_manifest::TargetArch::Wasm32,
             4,
         );
 
@@ -1206,13 +1206,13 @@ mod tests {
         let (name_a, _) = archive_name_for(
             &registry,
             "alib",
-            crate::deps_manifest::TargetArch::Wasm32,
+            crate::pkg_manifest::TargetArch::Wasm32,
             4,
         );
         let (name_z, _) = archive_name_for(
             &registry,
             "zlib",
-            crate::deps_manifest::TargetArch::Wasm32,
+            crate::pkg_manifest::TargetArch::Wasm32,
             4,
         );
         fs::write(staging.join("libs").join(&name_a), b"a").unwrap();
@@ -1275,13 +1275,13 @@ mod tests {
         let (name32, _) = archive_name_for(
             &registry,
             "zlib",
-            crate::deps_manifest::TargetArch::Wasm32,
+            crate::pkg_manifest::TargetArch::Wasm32,
             4,
         );
         let (name64, _) = archive_name_for(
             &registry,
             "zlib",
-            crate::deps_manifest::TargetArch::Wasm64,
+            crate::pkg_manifest::TargetArch::Wasm64,
             4,
         );
         fs::write(staging.join("libs").join(&name32), b"32bit").unwrap();

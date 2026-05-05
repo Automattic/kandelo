@@ -71,7 +71,7 @@ DEP_LDFLAGS="-L$ZLIB_PREFIX/lib -L$SQLITE_PREFIX/lib -L$OPENSSL_PREFIX/lib -L$LI
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading PHP $PHP_VERSION..."
     TARBALL="php-${PHP_VERSION}.tar.gz"
-    curl -fsSL "https://www.php.net/distributions/${TARBALL}" -o "/tmp/${TARBALL}"
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "https://www.php.net/distributions/${TARBALL}" -o "/tmp/${TARBALL}"
     mkdir -p "$SRC_DIR"
     tar xzf "/tmp/${TARBALL}" -C "$SRC_DIR" --strip-components=1
     rm "/tmp/${TARBALL}"

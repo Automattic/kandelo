@@ -58,7 +58,7 @@ if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading Erlang/OTP ${OTP_VERSION}..."
     TARBALL="otp_src_${OTP_VERSION}.tar.gz"
     URL="https://github.com/erlang/otp/releases/download/${OTP_TAG}/${TARBALL}"
-    curl -fsSL "$URL" -o "/tmp/$TARBALL"
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
     mkdir -p "$SRC_DIR"
     tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
     rm "/tmp/$TARBALL"
@@ -433,23 +433,23 @@ patch_config_h "$ERTS_CONFIG"
 # Patch run_erl.c: LOG_ERR is NULL when syslog disabled, needs to be int
 RUN_ERL="$SRC_DIR/erts/etc/unix/run_erl.c"
 if grep -q '#    define LOG_ERR NULL' "$RUN_ERL" 2>/dev/null; then
-    sed -i '' 's/#    define LOG_ERR NULL/#    define LOG_ERR 3/' "$RUN_ERL"
-    sed -i '' 's/#    define LOG_WARNING NULL/#    define LOG_WARNING 4/' "$RUN_ERL"
-    sed -i '' 's/#    define LOG_INFO NULL/#    define LOG_INFO 6/' "$RUN_ERL"
+    sed -i.bak 's/#    define LOG_ERR NULL/#    define LOG_ERR 3/' "$RUN_ERL"
+    sed -i.bak 's/#    define LOG_WARNING NULL/#    define LOG_WARNING 4/' "$RUN_ERL"
+    sed -i.bak 's/#    define LOG_INFO NULL/#    define LOG_INFO 6/' "$RUN_ERL"
     echo "==> Patched run_erl.c syslog defines"
 fi
 
 # Patch epmd.c: closelog() called unconditionally but we don't have syslog
 EPMD_C="$SRC_DIR/erts/epmd/src/epmd.c"
 if grep -q '    closelog();' "$EPMD_C" 2>/dev/null && ! grep -q 'HAVE_SYSLOG_H.*closelog' "$EPMD_C" 2>/dev/null; then
-    sed -i '' 's/    closelog();/#ifdef HAVE_SYSLOG_H\n    closelog();\n#endif/' "$EPMD_C"
+    sed -i.bak 's/    closelog();/#ifdef HAVE_SYSLOG_H\n    closelog();\n#endif/' "$EPMD_C"
     echo "==> Patched epmd.c closelog"
 fi
 
 # Patch sys_drivers.c: skip forker (fork+exec erl_child_setup) on wasm32
 SYS_DRIVERS="$SRC_DIR/erts/emulator/sys/unix/sys_drivers.c"
 if ! grep -q '__wasm32__' "$SYS_DRIVERS" 2>/dev/null; then
-    sed -i '' '/forker_port = erts_drvport2id(port_num);/a\
+    sed -i.bak '/forker_port = erts_drvport2id(port_num);/a\
 \
 #ifdef __wasm32__\
     /* On wasm32, we cannot fork+exec erl_child_setup. */\
@@ -486,24 +486,24 @@ fi
 INET_DRV="$SRC_DIR/erts/emulator/drivers/common/inet_drv.c"
 if grep -q 'tcp_inet_start(ErlDrvPort, char\* command);' "$INET_DRV" 2>/dev/null; then
     # Fix forward declarations (add 3rd param)
-    sed -i '' \
+    sed -i.bak \
         's/static ErlDrvData tcp_inet_start(ErlDrvPort, char\* command);/static ErlDrvData tcp_inet_start(ErlDrvPort, char* command, void*);/' \
         "$INET_DRV"
-    sed -i '' \
+    sed -i.bak \
         's/static ErlDrvData udp_inet_start(ErlDrvPort, char\* command);/static ErlDrvData udp_inet_start(ErlDrvPort, char* command, void*);/' \
         "$INET_DRV"
     # Fix definitions (add 3rd param)
-    sed -i '' \
+    sed -i.bak \
         's/static ErlDrvData tcp_inet_start(ErlDrvPort port, char\* args)$/static ErlDrvData tcp_inet_start(ErlDrvPort port, char* args, void* _opts)/' \
         "$INET_DRV"
-    sed -i '' \
+    sed -i.bak \
         's/static ErlDrvData udp_inet_start(ErlDrvPort port, char \*args)$/static ErlDrvData udp_inet_start(ErlDrvPort port, char *args, void* _opts)/' \
         "$INET_DRV"
     # Cast function pointers in struct initializers to match 2-arg typedef
-    sed -i '' \
+    sed -i.bak \
         's/    tcp_inet_start,/    (ErlDrvData (*)(ErlDrvPort, char*)) tcp_inet_start,/' \
         "$INET_DRV"
-    sed -i '' \
+    sed -i.bak \
         's/    udp_inet_start,/    (ErlDrvData (*)(ErlDrvPort, char*)) udp_inet_start,/' \
         "$INET_DRV"
     echo "==> Patched inet_drv.c driver start signatures (3-arg for wasm call_indirect)"
@@ -512,17 +512,17 @@ fi
 RAM_FILE_DRV="$SRC_DIR/erts/emulator/drivers/common/ram_file_drv.c"
 if grep -q 'rfile_start(ErlDrvPort, char\*);' "$RAM_FILE_DRV" 2>/dev/null; then
     # Fix declaration and definition (add 3rd param)
-    sed -i '' \
+    sed -i.bak \
         's/static ErlDrvData rfile_start(ErlDrvPort, char\*);/static ErlDrvData rfile_start(ErlDrvPort, char*, void*);/' \
         "$RAM_FILE_DRV"
-    sed -i '' \
+    sed -i.bak \
         's/static ErlDrvData rfile_start(ErlDrvPort port, char\* buf)$/static ErlDrvData rfile_start(ErlDrvPort port, char* buf, void* _opts)/' \
         "$RAM_FILE_DRV"
     # Cast function pointers in struct initializer and dynamic assignment
-    sed -i '' \
+    sed -i.bak \
         's/    rfile_start,$/    (ErlDrvData (*)(ErlDrvPort, char*)) rfile_start,/' \
         "$RAM_FILE_DRV"
-    sed -i '' \
+    sed -i.bak \
         's/\.start = rfile_start;/.start = (ErlDrvData (*)(ErlDrvPort, char*)) rfile_start;/' \
         "$RAM_FILE_DRV"
     echo "==> Patched ram_file_drv.c driver start signature (3-arg for wasm call_indirect)"
@@ -533,7 +533,7 @@ fi
 # shadow-stack pointer corruption and incorrect aggregate initialization.
 EMU_MAKEFILE="$SRC_DIR/erts/emulator/wasm32-unknown-wasi/Makefile"
 if [ -f "$EMU_MAKEFILE" ] && ! grep -q 'erl_unicode.o:' "$EMU_MAKEFILE"; then
-    sed -i '' '/\$(OBJDIR)\/beam_emu\.o: beam\/emu\/beam_emu\.c/i\
+    sed -i.bak '/\$(OBJDIR)\/beam_emu\.o: beam\/emu\/beam_emu\.c/i\
 # wasm32: erl_unicode.c miscompiles at -O2 (iodata traversal returns garbage).\
 $(OBJDIR)/erl_unicode.o: beam/erl_unicode.c\
 	$(V_CC) $(subst -O2,-O1,$(CFLAGS)) $(INCLUDES) -c $< -o $@\

@@ -40,7 +40,7 @@ fi
 if [ ! -d "$SQLITE_FULL/src" ]; then
     echo "ERROR: Full SQLite source not found at $SQLITE_FULL" >&2
     echo "Download with:" >&2
-    echo "  curl -fsSL https://www.sqlite.org/2025/sqlite-src-3490100.zip -o /tmp/sqlite-full.zip" >&2
+    echo "  curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL https://www.sqlite.org/2025/sqlite-src-3490100.zip -o /tmp/sqlite-full.zip" >&2
     echo "  unzip -q /tmp/sqlite-full.zip -d /tmp && mv /tmp/sqlite-src-3490100 $SQLITE_FULL" >&2
     exit 1
 fi

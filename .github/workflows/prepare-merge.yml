@@ -21,8 +21,8 @@ name: Prepare merge
 # is blocked until the PR branch is updated and re-labeled.
 #
 # When a fresh release is published, the squash merge collapses code +
-# deps.toml + lockfile bump into a single main commit — main is never
-# in a state where the lockfile disagrees with the deps.toml on the
+# package.toml + lockfile bump into a single main commit — main is never
+# in a state where the lockfile disagrees with the package.toml on the
 # same branch.
 #
 # See docs/plans/2026-04-29-pr-package-builds-design.md §4.2.
@@ -131,6 +131,16 @@ jobs:
             exit 1
           fi
 
+      - name: Detect change scope vs main
+        # After the in-memory merge above, HEAD is the merge commit
+        # and origin/main is a direct parent — three-dot diff inside
+        # the action reduces to the PR's net contribution. fetch-base
+        # is false because the Merge step already fetched main.
+        id: changes
+        uses: ./.github/actions/detect-change-scope
+        with:
+          fetch-base: 'false'
+
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v18
 
@@ -138,7 +148,7 @@ jobs:
         uses: DeterminateSystems/magic-nix-cache-action@v13
 
       - name: Warm Nix dev shell
-        run: nix develop --accept-flake-config --command true
+        run: bash scripts/dev-shell.sh true
 
       - name: Cache resolver + cargo target
         uses: actions/cache@v4
@@ -146,7 +156,7 @@ jobs:
           path: |
             ~/.cache/wasm-posix-kernel
             target
-          key: prepare-merge-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'examples/libs/**/deps.toml') }}
+          key: prepare-merge-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'examples/libs/**/package.toml') }}
           restore-keys: |
             prepare-merge-${{ runner.os }}-
             staging-build-${{ runner.os }}-
@@ -165,9 +175,9 @@ jobs:
         if: steps.cache-sysroot.outputs.cache-hit != 'true'
         # See staging-build.yml.
         run: |
-          nix develop --accept-flake-config --command bash scripts/build-musl.sh
-          nix develop --accept-flake-config --command bash scripts/build-musl.sh --arch wasm64posix
-          nix develop --accept-flake-config --command bash -c '
+          bash scripts/dev-shell.sh bash scripts/build-musl.sh
+          bash scripts/dev-shell.sh bash scripts/build-musl.sh --arch wasm64posix
+          bash scripts/dev-shell.sh bash -c '
             src=""
             for cand in "$LLVM_PREFIX/include/c++/v1" "$LLVM_PREFIX/share/libc++/v1"; do
               if [ -f "$cand/__config" ] || [ -f "$cand/iostream" ]; then
@@ -192,8 +202,8 @@ jobs:
               fi
             done
           '
-          nix develop --accept-flake-config --command bash scripts/build-libcxx.sh
-          nix develop --accept-flake-config --command bash scripts/build-libcxx.sh --arch wasm64
+          bash scripts/dev-shell.sh bash scripts/build-libcxx.sh
+          bash scripts/dev-shell.sh bash scripts/build-libcxx.sh --arch wasm64
 
       - name: Compute durable release tag
         id: tag
@@ -226,12 +236,22 @@ jobs:
         # runs (the strict check passes again) but stays in place as the
         # escape hatch documented in docs/package-management.md.
         run: |
-          nix develop --accept-flake-config --command bash scripts/fetch-binaries.sh --allow-stale
+          bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh --allow-stale
+
+      - name: Install host npm deps (build prereq)
+        # See staging-build.yml — shell's vfs-image build pulls in
+        # host/src/vfs/zip.ts (→ `fflate`), which only resolves when
+        # host/node_modules is populated.
+        run: |
+          bash scripts/dev-shell.sh bash -c '
+            npm install --no-audit --no-fund
+            cd host && npm install --no-audit --no-fund
+          '
 
       - name: Stage durable release
         run: |
           mkdir -p /tmp/durable
-          nix develop --accept-flake-config --command \
+          bash scripts/dev-shell.sh \
             scripts/stage-release.sh \
               --out /tmp/durable \
               --tag ${{ steps.tag.outputs.tag }} \
@@ -271,15 +291,18 @@ jobs:
       - name: Publish durable release
         if: steps.drift.outputs.noop == 'false'
         run: |
-          nix develop --accept-flake-config --command \
+          bash scripts/dev-shell.sh \
             scripts/publish-release.sh \
               --tag ${{ steps.tag.outputs.tag }} \
               --staging /tmp/durable
 
       - name: Build kernel + test programs + install host deps (test prereqs)
         # See staging-build.yml for rationale.
+        # Gate: !docs_only — vitest needs these inputs even on
+        # package-only PRs.
+        if: steps.changes.outputs.docs_only != 'true'
         run: |
-          nix develop --accept-flake-config --command bash -c '
+          bash scripts/dev-shell.sh bash -c '
             cargo build --release -p wasm-posix-kernel \
               -Z build-std=core,alloc \
               -Z build-std-features=panic_immediate_abort
@@ -291,11 +314,9 @@ jobs:
             cd host && npm install --no-audit --no-fund
           '
 
-      - name: Run cargo + vitest tests
+      - name: Run cargo tests (kernel unit tests)
         # Tests run AFTER publish (when not skipped by drift detection)
-        # but BEFORE the lockfile bump push. They run unconditionally —
-        # PR code may break tests independent of whether package
-        # contents changed.
+        # but BEFORE the lockfile bump push.
         #
         # On failure: when publish ran, the durable release exists
         # (orphaned — never pinned by any binaries.lock). When publish
@@ -303,24 +324,36 @@ jobs:
         # merge-gate status is set, so the PR can't merge. Contributor
         # fixes tests, re-applies ready-to-ship; next run either cuts a
         # fresh durable or skips publish again, depending on drift.
+        if: steps.changes.outputs.kernel == 'true'
         run: |
-          nix develop --accept-flake-config --command bash -c '
+          bash scripts/dev-shell.sh bash -c '
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
             cargo test -p wasm-posix-kernel --target "$HOST_TARGET" --lib
+          '
+
+      - name: Run vitest (host integration tests)
+        # Exercises kernel + host + many built packages — runs whenever
+        # the diff is not docs-only.
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          bash scripts/dev-shell.sh bash -c '
             cd host && npx vitest run
           '
 
       - name: Run libc-test conformance suite
+        if: steps.changes.outputs.kernel == 'true'
         run: |
-          nix develop --accept-flake-config --command bash scripts/run-libc-tests.sh
+          bash scripts/dev-shell.sh bash scripts/run-libc-tests.sh
 
       - name: Run Open POSIX Test Suite
+        if: steps.changes.outputs.kernel == 'true'
         run: |
-          nix develop --accept-flake-config --command bash scripts/run-posix-tests.sh
+          bash scripts/dev-shell.sh bash scripts/run-posix-tests.sh
 
       - name: Run Sortix os-test suite
+        if: steps.changes.outputs.kernel == 'true'
         run: |
-          nix develop --accept-flake-config --command bash scripts/run-sortix-tests.sh --all
+          bash scripts/dev-shell.sh bash scripts/run-sortix-tests.sh --all
 
       - name: Rewrite binaries.lock on PR HEAD
         if: steps.drift.outputs.noop == 'false'

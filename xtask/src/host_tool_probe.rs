@@ -18,7 +18,7 @@ use std::process::Command;
 
 use regex::Regex;
 
-use crate::deps_manifest::{HostTool, Version, VersionConstraint};
+use crate::pkg_manifest::{HostTool, Version, VersionConstraint};
 
 /// Probe failure modes. The variants mirror the four ways a probe can
 /// go wrong: tool absent, tool ran but output didn't match the regex,
@@ -122,7 +122,7 @@ pub fn probe(tool: &HostTool) -> Result<(), ProbeFailure> {
     combined.push('\n');
     combined.push_str(&String::from_utf8_lossy(&output.stderr));
 
-    // SAFETY: `validate_common` in `deps_manifest` compiles every
+    // SAFETY: `validate_common` in `pkg_manifest` compiles every
     // `[[host_tools]].probe.version_regex` at TOML parse time and
     // rejects malformed regexes there. By the time we reach the probe
     // runner the string is guaranteed to compile.
@@ -161,7 +161,7 @@ pub fn probe(tool: &HostTool) -> Result<(), ProbeFailure> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::deps_manifest::HostToolProbe;
+    use crate::pkg_manifest::HostToolProbe;
     use std::os::unix::fs::PermissionsExt;
 
     // `std::env::set_var` is process-global. cargo runs unit tests in

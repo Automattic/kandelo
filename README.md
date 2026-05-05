@@ -151,7 +151,7 @@ pre-built artifact at once, run `bash scripts/fetch-binaries.sh` after
 into the resolver cache plus the ported programs into
 `local-binaries/programs/`.
 
-If you are editing a package's `deps.toml` to iterate locally, the
+If you are editing a package's `package.toml` to iterate locally, the
 strict cache-key check will abort fetch with a `manifest.json
 cache_key_sha ... does not match` error. Pass `--allow-stale` (or set
 `WASM_POSIX_ALLOW_STALE=1`) to skip the strict check and source-build
@@ -284,7 +284,7 @@ docs/
 | [SDK Guide](docs/sdk-guide.md) | Compiling programs, toolchain setup, autoconf/CMake integration |
 | [Porting Guide](docs/porting-guide.md) | How to port software, create Node.js and browser demos |
 | [Browser Support](docs/browser-support.md) | Browser architecture, capabilities, demo list, limitations |
-| [Package Management](docs/package-management.md) | `examples/libs/<name>/deps.toml` schema, resolver, release archives |
+| [Package Management](docs/package-management.md) | `examples/libs/<name>/package.toml` schema, resolver, release archives |
 | [Package Management — Future Work](docs/package-management-future-work.md) | Deferred items: WASI caching, semver, multi-arch `[binary]`, etc. |
 | [Binary Releases](docs/binary-releases.md) | `manifest.json` schema, package-system `.tar.zst` archive layout, fetch + verify flow |
 | [Profiling & Benchmarking](docs/profiling.md) | Syscall profiler, benchmark suite, cross-host comparison |

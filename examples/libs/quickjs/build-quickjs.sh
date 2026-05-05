@@ -17,9 +17,19 @@ SRC_DIR="$SCRIPT_DIR/quickjs-src"
 BIN_DIR="$SCRIPT_DIR/bin"
 GEN_DIR="$BIN_DIR/gen"
 
-# SDK tools
-CC="${CC:-wasm32posix-cc}"
-AR="${AR:-wasm32posix-ar}"
+# SDK tools — use the worktree-local SDK shims unconditionally. We do NOT
+# honour an inherited $CC: in a Nix dev shell (flake.nix), `stdenv.cc`
+# exports CC pointing at a Nix-wrapped host gcc, and that wrapper injects
+# `-Wformat -Wformat-security -Werror=format-security` via
+# NIX_CFLAGS_COMPILE. Combined with this script's `-Wno-format`, gcc's
+# cc1 errors with "'-Wformat-security' ignored without '-Wformat'
+# [-Werror=format-security]" — and even if that warning were appeased,
+# the host gcc would emit native x86_64 objects rather than wasm32, so
+# the link step against the wasm sysroot would fail anyway. Same logic
+# for AR: a host `${AR:-ar}` produces archives the wasm linker can't
+# read.
+CC="wasm32posix-cc"
+AR="wasm32posix-ar"
 
 SYSROOT="$REPO_ROOT/sysroot"
 if [ ! -f "$SYSROOT/lib/libc.a" ]; then

@@ -259,6 +259,44 @@ impl PipeTable {
         i
     }
 
+    /// Allocate two pipe buffers with adjacent indices (`second_idx == first_idx + 1`).
+    /// The host TCP-bridge code assumes the recv and send pipes for an injected
+    /// connection are consecutive (`sendPipeIdx = recvPipeIdx + 1`); this helper
+    /// preserves that invariant in the global table by skipping the free list
+    /// when it can't supply two consecutive slots.
+    pub fn alloc_pair(&mut self, first: PipeBuffer, second: PipeBuffer) -> (usize, usize) {
+        // Try to find two consecutive freed slots in the free_list. The free
+        // list is a Vec of indices; sort a copy and scan for adjacent pairs.
+        if self.free_list.len() >= 2 {
+            let mut sorted = self.free_list.clone();
+            sorted.sort_unstable();
+            for w in sorted.windows(2) {
+                if w[1] == w[0] + 1 {
+                    let a = w[0];
+                    let b = w[1];
+                    self.free_list.retain(|&x| x != a && x != b);
+                    let mut p1 = first;
+                    p1.pipe_idx = a as u32;
+                    self.pipes[a] = Some(p1);
+                    let mut p2 = second;
+                    p2.pipe_idx = b as u32;
+                    self.pipes[b] = Some(p2);
+                    return (a, b);
+                }
+            }
+        }
+        // No consecutive freed pair — append both to the tail.
+        let a = self.pipes.len();
+        let b = a + 1;
+        let mut p1 = first;
+        p1.pipe_idx = a as u32;
+        self.pipes.push(Some(p1));
+        let mut p2 = second;
+        p2.pipe_idx = b as u32;
+        self.pipes.push(Some(p2));
+        (a, b)
+    }
+
     /// Get a reference to a pipe buffer by index.
     pub fn get(&self, idx: usize) -> Option<&PipeBuffer> {
         self.pipes.get(idx).and_then(|p| p.as_ref())

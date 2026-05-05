@@ -1,6 +1,7 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
+use core::cell::UnsafeCell;
 
 /// Socket address family.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,7 +64,14 @@ pub struct SocketInfo {
     /// Peer port (for connected AF_INET sockets).
     pub peer_port: u16,
     /// Pending connection socket indices (for listening sockets).
+    /// Used by AF_UNIX same-process sys_connect, which pre-allocates the
+    /// accepted SocketInfo and pushes its index here.
     pub listen_backlog: Vec<usize>,
+    /// Index into the global SHARED_LISTENER_BACKLOG_TABLE for AF_INET
+    /// listening sockets. Set by sys_listen for INET sockets so all
+    /// fork-inherited copies of the listener share a single accept queue.
+    /// `None` for AF_UNIX or before listen() is called.
+    pub shared_backlog_idx: Option<usize>,
     /// Received UDP datagrams (for DGRAM sockets).
     pub dgram_queue: Vec<Datagram>,
     /// Whether recv/send pipe indices refer to the global pipe table
@@ -99,6 +107,7 @@ impl SocketInfo {
             peer_addr: [0; 4],
             peer_port: 0,
             listen_backlog: Vec::new(),
+            shared_backlog_idx: None,
             dgram_queue: Vec::new(),
             global_pipes: false,
             oob_byte: None,
@@ -185,6 +194,133 @@ impl SocketTable {
         }
         self.entries[idx] = Some(info);
     }
+}
+
+// ── Shared listener backlog (cross-process accept queue) ──
+//
+// In real Linux, a listening socket inherited via fork() shares a single
+// accept queue across parent and children — any process can accept a
+// pending connection. Our SocketInfo lives in per-process tables, so a
+// naive fork+accept model would give each process its own backlog. To
+// match POSIX semantics for AF_INET listeners (the typical fork-server
+// pattern: nginx master + workers), we keep the actual pending queue
+// in this global table and reference it by index from each forked
+// SocketInfo copy.
+//
+// AF_UNIX same-process listeners still use the inline `listen_backlog`
+// field (sys_connect pre-allocates the accepted SocketInfo there).
+
+/// A pending TCP connection waiting in a shared accept queue.
+pub struct PendingConnection {
+    pub peer_addr: [u8; 4],
+    pub peer_port: u16,
+    /// Recv pipe index (in the global pipe table). Host writes incoming
+    /// TCP data here; the accepting process reads from it.
+    pub recv_pipe_idx: usize,
+    /// Send pipe index (in the global pipe table). The accepting
+    /// process writes outgoing TCP data here; host reads and forwards.
+    pub send_pipe_idx: usize,
+}
+
+/// One slot in the shared backlog table.
+pub struct SharedBacklog {
+    pub queue: Vec<PendingConnection>,
+    /// Number of SocketInfos referencing this slot. When a listener is
+    /// fork-inherited, the child's copy adds a reference; close()/free
+    /// drops one. The slot is freed when ref_count reaches 0.
+    pub ref_count: u32,
+    /// True when the slot is allocated; false when freed and reusable.
+    pub in_use: bool,
+}
+
+pub struct SharedBacklogTable {
+    pub entries: Vec<SharedBacklog>,
+}
+
+impl SharedBacklogTable {
+    pub const fn new() -> Self {
+        SharedBacklogTable { entries: Vec::new() }
+    }
+
+    /// Allocate a new shared backlog slot, reusing freed slots.
+    /// Returns the slot index. The slot starts with ref_count=1.
+    pub fn alloc(&mut self) -> usize {
+        for i in 0..self.entries.len() {
+            if !self.entries[i].in_use {
+                self.entries[i].queue.clear();
+                self.entries[i].ref_count = 1;
+                self.entries[i].in_use = true;
+                return i;
+            }
+        }
+        let idx = self.entries.len();
+        self.entries.push(SharedBacklog { queue: Vec::new(), ref_count: 1, in_use: true });
+        idx
+    }
+
+    /// Increment the reference count. Called when a fork-child inherits
+    /// a listener that already has a shared backlog.
+    pub fn add_ref(&mut self, idx: usize) {
+        if let Some(entry) = self.entries.get_mut(idx) {
+            if entry.in_use {
+                entry.ref_count = entry.ref_count.saturating_add(1);
+            }
+        }
+    }
+
+    /// Decrement the reference count. If it reaches zero, free the slot
+    /// (queue is dropped — pending connections are lost, matching what
+    /// happens when the last process holding a listener fd closes it).
+    pub fn dec_ref(&mut self, idx: usize) {
+        if let Some(entry) = self.entries.get_mut(idx) {
+            if !entry.in_use { return; }
+            entry.ref_count = entry.ref_count.saturating_sub(1);
+            if entry.ref_count == 0 {
+                entry.queue.clear();
+                entry.in_use = false;
+            }
+        }
+    }
+
+    /// Push a pending connection. Returns true on success.
+    pub fn push(&mut self, idx: usize, pc: PendingConnection) -> bool {
+        if let Some(entry) = self.entries.get_mut(idx) {
+            if entry.in_use {
+                entry.queue.push(pc);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Pop the oldest pending connection.
+    pub fn pop(&mut self, idx: usize) -> Option<PendingConnection> {
+        let entry = self.entries.get_mut(idx)?;
+        if entry.in_use && !entry.queue.is_empty() {
+            Some(entry.queue.remove(0))
+        } else {
+            None
+        }
+    }
+
+    /// Returns the number of pending connections, or 0 if the slot is invalid.
+    pub fn len(&self, idx: usize) -> usize {
+        self.entries.get(idx)
+            .map(|e| if e.in_use { e.queue.len() } else { 0 })
+            .unwrap_or(0)
+    }
+}
+
+pub struct GlobalSharedBacklogTable(pub UnsafeCell<SharedBacklogTable>);
+unsafe impl Sync for GlobalSharedBacklogTable {}
+
+pub static SHARED_LISTENER_BACKLOG_TABLE: GlobalSharedBacklogTable =
+    GlobalSharedBacklogTable(UnsafeCell::new(SharedBacklogTable::new()));
+
+/// SAFETY: kernel runs single-threaded; callers must not hold a previous
+/// reference across calls.
+pub unsafe fn shared_listener_backlog_table() -> &'static mut SharedBacklogTable {
+    unsafe { &mut *SHARED_LISTENER_BACKLOG_TABLE.0.get() }
 }
 
 #[cfg(test)]

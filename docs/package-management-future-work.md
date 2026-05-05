@@ -80,9 +80,84 @@ Trigger: when a real consumer wants to fetch a published archive +
 lazy-mount its runtime tree without an intermediate repack step.
 Most likely vim or texlive (huge runtime/font trees).
 
+### Cross-package source-tree reads (mariadb-install pattern)
+
+Three browser VFS-image scripts read from a sibling package's local
+source-build tree rather than via the resolver
+(`cargo xtask build-deps resolve <name>` → cache canonical dir):
+
+- `examples/browser/scripts/build-mariadb-vfs-image.ts` (consumed
+  by `mariadb-vfs`) reads
+  `examples/libs/mariadb/mariadb-install{,-64}/{bin/mariadbd.wasm,
+  share/mysql/mysql_system_tables{,_data}.sql}`.
+- `examples/browser/scripts/build-mariadb-test-vfs-image.ts`
+  (consumed by `mariadb-test`) additionally reads
+  `examples/libs/mariadb/mariadb-install/mysql-test/`.
+- `examples/browser/scripts/build-lamp-vfs-image.ts` (consumed by
+  `lamp`) reads the same SQL files as mariadb-vfs.
+
+The mariadb v6/v7 release archive only ships
+`{mariadbd,mysqltest}.wasm` at the artifact root. The SQL files
+(~2 MB) and `mysql-test/` (~217 MB uncompressed) aren't bundled.
+So when mariadb is *cache-hit* (archive installed without
+source-build), `examples/libs/mariadb/mariadb-install/` is empty
+and any of these three downstream scripts fails on its first
+`readFileSync` / `existsSync`.
+
+The bug doesn't fire on routine staging-build CI today because
+none of mariadb-vfs / mariadb-test / lamp's `cache_key_sha`
+changes in typical PRs, so the resolver doesn't trigger their
+source-build. It *does* fire on `force-rebuild` flows and any
+future PR whose changes cascade into one of those packages' dep
+graphs (cf. PR #410, where merging main brought nethack rev2 +
+fbdoom rev2 in and cascaded into shell — exactly the same shape
+of bug, just on a different consumer).
+
+PR #410's shell fix is the symmetric template:
+
+1. `examples/libs/mariadb/build-mariadb.sh` — stage
+   `share/mysql/` into `$WASM_POSIX_DEP_OUT_DIR/share/mysql/`
+   (same pattern build-vim.sh uses for `runtime/`).
+2. `examples/libs/mariadb/package.toml` — add `[[outputs]]` entries
+   for `share/mysql/mysql_system_tables.sql` +
+   `mysql_system_tables_data.sql` so the v7 archive is treated
+   as stale (`compatibility.cache_key_sha` mismatch) and the
+   resolver source-rebuilds mariadb, picking up the new stage
+   step. Cache key cascades to mariadb-vfs, mariadb-test, lamp —
+   all source-rebuild on the next staging-build for any PR that
+   touches them.
+3. `build-{mariadb-vfs,mariadb-test,lamp}-vfs-image.ts` — call
+   `cargo xtask build-deps resolve mariadb` and read
+   `<cache-dir>/{bin,share}/...`, falling back to
+   `examples/libs/mariadb/mariadb-install/` for direct
+   invocations (mirroring build-{vim,nethack}-zip.sh).
+
+`mysql-test/` (~217 MB) is the awkward part — 50–80 MB zstd'd
+inside mariadb's archive isn't great. Options:
+
+- **Bundle it in mariadb's archive anyway.** Smallest diff;
+  affects every release.
+- **Split into a separate `mariadb-test-data` package.** Its
+  build script extracts the relevant `mysql-test/{main,include,
+  std_data,suite}` subdirs from mariadb's already-fetched source
+  tarball. mariadb-test depends on `mariadb-test-data` instead of
+  reaching into mariadb's local install dir. Keeps mariadb's
+  archive lean and gives mysql-test its own cache-key lifecycle.
+
+The split is the cleaner path; the all-in-one staging is the
+smaller diff if 50–80 MB extra in mariadb's archive is
+acceptable.
+
+Trigger: a PR ends up source-rebuilding mariadb-vfs /
+mariadb-test / lamp (e.g. a kernel-ABI bump invalidates
+everything, a mariadb revision bump, or a transitive cascade
+similar to PR #410), and staging-build / prepare-merge fails on
+"mariadbd.wasm not found at examples/libs/mariadb/mariadb-install/
+bin/mariadbd.wasm".
+
 ### Multi-arch `[binary]` blocks
 
-The `[binary]` block is single-URL.  A consumer's `deps.toml` can
+The `[binary]` block is single-URL.  A consumer's `package.toml` can
 declare one `archive_url` + `archive_sha256`; the resolver uses it for
 whatever arch it's currently resolving.  In practice we backfilled the
 wasm32 archive URL because user programs are wasm32-only at the moment.
@@ -191,7 +266,7 @@ workflow wraps those same two scripts.
 ### Hard-coded version strings in build scripts (lint)
 
 A `build-<name>.sh` that hard-codes an upstream version string can drift
-from its `deps.toml`'s `version` field — `xtask build-deps check` would
+from its `package.toml`'s `version` field — `xtask build-deps check` would
 ideally catch this.  Today the only signal is a sha mismatch on the
 fetched tarball.  Lower priority since the sha catches the case
 eventually; useful if cache invalidation becomes a debugging chore.
@@ -233,3 +308,121 @@ A `dependentRequired` or `if/then` clause would tighten the contract.
 `remote_fetch::fetch_and_install`.  The deeper 4-axis chain inside
 `fetch_and_install` covers `target_arch` and `abi_versions`, but the
 pre-flight could also short-circuit on those for clearer errors.
+
+### Memoize failed builds within a stage-release run
+
+`xtask::stage_release` iterates manifests alphabetically and calls
+`stage_one` → `ensure_built` per (manifest, arch). When a manifest
+fails (say, mariadb wasm32) every later dependent (lamp,
+mariadb-test, mariadb-vfs, etc.) re-enters `ensure_built` for the
+same failing dep and re-runs its build script from scratch.
+
+In the force-rebuild run that diagnosed PR #406's six root causes,
+mariadb's host CMake configure ran 6 times for one logical failure
+(once per dependent — confirmed by `grep -c "Step 1: Host build"`
+returning 6 in the run logs). CMake fails fast there
+(~1.5s/attempt → ~9s wasted total), so the symptom was mild — but
+a deeper failure (say, in `make` after 10 minutes of compile)
+compounds into 6 × 10min = 1 hour of duplicate work.
+
+Fix: a process-global `OnceLock<Mutex<BTreeMap<(name, TargetArch),
+String>>>` in `build_deps.rs`. Before invoking the build script,
+check the map; if a prior failure is recorded, return its cached
+error string. After the build attempt, record success-or-failure.
+Survives a single `xtask` process; intentionally NOT persisted
+across runs (a fresh CI run should always retry).
+
+Trigger: any time we observe a long-running build's failure being
+re-attempted by its dependents in stage-release logs.
+
+## Workflow
+
+### Convert force-rebuild + staging-build to a tier-based job matrix
+
+The current force-rebuild workflow runs every package source build
+sequentially in one Ubuntu runner. Wall time is ~2 hours;
+diagnostic visibility is poor (a single grep through 80k log lines
+to find which package broke); single-package failures take a
+~2-hour cycle to surface the next. PR #406's iteration history is
+a concrete example: six independent root causes, each separated by
+a multi-hour rebuild attempt.
+
+Sketch:
+
+1. New `xtask plan-tiers` subcommand walks every `package.toml`,
+   topo-sorts by `depends_on`, and emits JSON tier arrays. No
+   manifest changes — the dep graph already exists.
+2. Workflow has four jobs: `plan` (emits tier outputs), `setup`
+   (kernel + sysroot + libc++, uploaded as artifact), `tierN`
+   (matrix per tier, each cell builds one package), and
+   `publish` (collects archives, writes manifest, creates release).
+3. Each `tierN` cell:
+   - Downloads `setup` artifacts (sysroot, kernel.wasm).
+   - Downloads its deps' archives from prior tiers' artifacts and
+     re-populates `~/.cache/wasm-posix-kernel/`.
+   - Runs `cargo xtask build-deps build <package>`.
+   - Uploads its own archive as an artifact.
+
+Wins:
+- Wall time ~30-50 min (vs 2h) — true hardware parallelism per cell.
+- Failure isolation — one bad package marks one cell red; the rest
+  of the matrix still produces archives.
+- Per-package logs are scoped to a single cell, easier to triage.
+- Naturally subsumes the in-process memoization above (each cell
+  builds exactly one package).
+
+Costs:
+- 2-3× compute (more runner-minutes; matters more on paid orgs).
+- ~2-3 min per-cell Nix install + artifact transfer overhead — for
+  a 2-min build, near 100% overhead. Net win because long-tail
+  packages dominate wall time.
+- Free-tier 20-job concurrency cap means tier 1 (~30 packages)
+  queues into ~2 batches.
+- Dynamic matrix needs `outputs:` + `fromJSON()` — non-trivial
+  YAML. ~1-2 days implementation.
+
+Trigger: once the current sequential workflow is durably green, or
+sooner if force-rebuild runs continue to take >1 hour to surface
+the next latent build bug.
+
+### Re-enable TexLive in force-rebuild (currently `--allow-failure`)
+
+PR #406's force-rebuild.yml passes `--allow-failure texlive` to keep
+the workflow green while TexLive's source build is broken. The flag
+downgrades a total-failure for that one package to a warning at the
+stage-release exit-code level — every other package is still gated
+strictly. The package's `package.toml` is intentionally untouched; the
+release-policy decision lives at the call site (workflow YAML).
+
+Re-enable when the underlying gmp.h chain is fixed:
+
+* TexLive's `web2c` Phase-1 host build auto-generates `pmpost`'s C
+  sources from `.w` files (the WEB literate-programming format).
+  `pmpmathbinary.c` and `pmpmathinterval.c` hard-`#include <gmp.h>`
+  regardless of `--disable-mp / --disable-ptex / --disable-uptex /
+  --disable-euptex` — those flags only gate the resulting binary,
+  not the source-file generation pass.
+* The bundled `libs/gmp/native/` sub-configure clobbers `CC=` blank
+  on recurse, autoconf re-detects `${build_alias}-gcc` (= the
+  Nix-wrapped gcc on Linux CI), and the wrapper fails its
+  compile-test because the cmdline `CFLAGS=` blank also strips its
+  required spec injections. Same family of issues lurks under
+  `libs/{mpfi,mpfr,cairo}/`.
+
+The proper fix is most-likely:
+
+1. Add `pkgs.gmp pkgs.mpfr pkgs.cairo` to `flake.nix` so their
+   headers + libs land on the Nix wrapper's auto-included path for
+   the host phase.
+2. Switch the host configure to `--with-system-{gmp,mpfr,cairo}=yes`
+   so TexLive uses the Nix-provided libs instead of trying to build
+   bundled copies.
+3. Phase-2 cross-build also needs these libs targeted at wasm32 —
+   either build wasm32 ports of gmp/mpfr/cairo as new
+   `examples/libs/<name>/` packages, OR keep the Phase-2 path on
+   bundled libs and only fix Phase 1.
+4. Drop `--allow-failure texlive` from `force-rebuild.yml`.
+
+Trigger: when TexLive becomes a blocker for a release, or when
+someone is willing to invest the ~half-day on the gmp/mpfr/cairo
+flake additions and dual-phase wiring.
