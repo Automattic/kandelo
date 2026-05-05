@@ -15,6 +15,18 @@ url = "https://github.com/file/file/blob/master/COPYING"
 [[outputs]]
 name = "file"
 wasm = "file.wasm"
+
+# magic.lite — wasm-safe trimmed magic database. Read by shell's
+# build-shell-vfs-image.ts from file's cache canonical dir during
+# shell's source build. Declaring it here makes it part of the
+# package's cache_key_sha + validate_outputs contract: the existing
+# v6/v7 release archives (which don't carry magic.lite) become stale,
+# and the resolver source-rebuilds file — picking up the build-file.sh
+# stage step that copies magic.lite into OUT_DIR.
+[[outputs]]
+name = "file-magic"
+wasm = "magic.lite"
+
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/file-5.45-rev1-abi6-wasm32-10b13f5f.tar.zst"
 archive_sha256 = "851562ba92c1ca76ee6cd95cba910bb72503df1c5332340e26288f8f63c35a81"

@@ -59,6 +59,50 @@ interface ProcessInfo {
 }
 const processes = new Map<number, ProcessInfo>();
 
+// Workers terminated by the kernel-worker entry itself (handleExit /
+// handleExec / handleTerminate). The crash safety-net listener checks
+// this set so it doesn't fire for our own teardown calls.
+const intentionallyTerminated = new WeakSet<object>();
+
+/**
+ * Install a safety-net 'exit' listener on a process worker. If the wasm
+ * worker_thread exits unexpectedly (e.g. an uncaught wasm trap that
+ * bypasses the SYS_exit_group path), no kernel-side exit handler runs and
+ * the host's spawn promise would hang waiting for an exit notification
+ * that never comes. This listener detects that case — when the worker we
+ * registered here is *still* the one bound to `pid` in `processes` and we
+ * didn't terminate it ourselves — and synthesizes a crash exit so the
+ * host learns the process is gone. Encoded as 128+SIGSEGV (139) by
+ * convention for "killed by signal 11".
+ */
+function installCrashSafetyNet(
+  worker: ReturnType<NodeWorkerAdapter["createWorker"]>,
+  pid: number,
+): void {
+  worker.on("exit", (code: number) => {
+    if (intentionallyTerminated.has(worker as object)) return;
+    const cur = processes.get(pid);
+    if (!cur || cur.worker !== worker) return; // already torn down or replaced
+    const errBytes = new TextEncoder().encode(
+      `[process-worker] pid=${pid} crashed (worker exit code=${code}, no SYS_exit_group from wasm)\n`,
+    );
+    post({ type: "stderr", pid, data: errBytes });
+    try { kernelWorker.deactivateProcess(pid); } catch { /* best-effort */ }
+    processes.delete(pid);
+    threadModuleCache.delete(pid);
+    ptyByPid.delete(pid);
+    const threads = threadWorkers.get(pid);
+    if (threads) {
+      for (const t of threads) {
+        intentionallyTerminated.add(t.worker as object);
+        t.worker.terminate().catch(() => {});
+      }
+      threadWorkers.delete(pid);
+    }
+    post({ type: "exit", pid, status: 128 + 11 /* SIGSEGV */ });
+  });
+}
+
 // Spawn PID counter. Starts at 100 so user programs never occupy pid 1 —
 // POSIX tests (e.g. libc-test regression/daemon-failure) treat `getppid() == 1`
 // as the signal that a daemon has reparented to init, so a test binary running
@@ -262,13 +306,37 @@ function handleSpawn(msg: SpawnMessage) {
     // — so surface them to stderr and synthesize an exit so the host's
     // exitResolver fires with a non-zero status.
     worker.on("message", (raw: unknown) => {
-      const m = raw as { type: string; pid?: number; message?: string };
+      const m = raw as { type: string; pid?: number; message?: string; status?: number };
       if (m.type === "error" && m.pid === pid) {
         const errBytes = new TextEncoder().encode(`[process-worker] ${m.message ?? "unknown error"}\n`);
         post({ type: "stderr", pid, data: errBytes });
         post({ type: "exit", pid, status: -1 });
+      } else if (m.type === "exit" && m.pid === pid) {
+        // worker-main posts {type:"exit"} when _start returns or hits an
+        // "unreachable" trap (the latter is treated as normal _Exit). If
+        // the kernel didn't process a SYS_exit_group first, the kernel
+        // still has the process registered and host.spawn() would hang.
+        // Tear down kernel state and forward the exit to the host.
+        const cur = processes.get(pid);
+        if (cur && cur.worker === worker) {
+          try { kernelWorker.deactivateProcess(pid); } catch { /* best-effort */ }
+          processes.delete(pid);
+          threadModuleCache.delete(pid);
+          ptyByPid.delete(pid);
+          const threads = threadWorkers.get(pid);
+          if (threads) {
+            for (const t of threads) {
+              intentionallyTerminated.add(t.worker as object);
+              t.worker.terminate().catch(() => {});
+            }
+            threadWorkers.delete(pid);
+          }
+        }
+        post({ type: "exit", pid, status: m.status ?? 0 });
       }
     });
+
+    installCrashSafetyNet(worker, pid);
 
     respond(msg.requestId, pid);
   } catch (e) {
@@ -332,6 +400,34 @@ async function handleFork(
     processes.delete(childPid);
   });
 
+  childWorker.on("message", (raw: unknown) => {
+    const m = raw as { type: string; pid?: number; message?: string; status?: number };
+    if (m.type === "error" && m.pid === childPid) {
+      const errBytes = new TextEncoder().encode(`[process-worker] ${m.message ?? "unknown error"}\n`);
+      post({ type: "stderr", pid: childPid, data: errBytes });
+      post({ type: "exit", pid: childPid, status: -1 });
+    } else if (m.type === "exit" && m.pid === childPid) {
+      const cur = processes.get(childPid);
+      if (cur && cur.worker === childWorker) {
+        try { kernelWorker.deactivateProcess(childPid); } catch { /* best-effort */ }
+        processes.delete(childPid);
+        threadModuleCache.delete(childPid);
+        ptyByPid.delete(childPid);
+        const threads = threadWorkers.get(childPid);
+        if (threads) {
+          for (const t of threads) {
+            intentionallyTerminated.add(t.worker as object);
+            t.worker.terminate().catch(() => {});
+          }
+          threadWorkers.delete(childPid);
+        }
+      }
+      post({ type: "exit", pid: childPid, status: m.status ?? 0 });
+    }
+  });
+
+  installCrashSafetyNet(childWorker, childPid);
+
   return [childChannelOffset];
 }
 
@@ -352,6 +448,7 @@ async function handleExec(
 
   const oldInfo = processes.get(pid);
   if (oldInfo?.worker) {
+    intentionallyTerminated.add(oldInfo.worker as object);
     await oldInfo.worker.terminate().catch(() => {});
   }
 
@@ -398,6 +495,37 @@ async function handleExec(
   newWorker.on("error", (err: Error) => {
     console.error(`[exec] worker error for pid ${pid}:`, err.message);
   });
+
+  // Forward worker-main top-level errors (instantiation failures,
+  // uncaught wasm traps) so the host learns the process died — same
+  // wiring as handleSpawn.
+  newWorker.on("message", (raw: unknown) => {
+    const m = raw as { type: string; pid?: number; message?: string; status?: number };
+    if (m.type === "error" && m.pid === pid) {
+      const errBytes = new TextEncoder().encode(`[process-worker] ${m.message ?? "unknown error"}\n`);
+      post({ type: "stderr", pid, data: errBytes });
+      post({ type: "exit", pid, status: -1 });
+    } else if (m.type === "exit" && m.pid === pid) {
+      const cur = processes.get(pid);
+      if (cur && cur.worker === newWorker) {
+        try { kernelWorker.deactivateProcess(pid); } catch { /* best-effort */ }
+        processes.delete(pid);
+        threadModuleCache.delete(pid);
+        ptyByPid.delete(pid);
+        const threads = threadWorkers.get(pid);
+        if (threads) {
+          for (const t of threads) {
+            intentionallyTerminated.add(t.worker as object);
+            t.worker.terminate().catch(() => {});
+          }
+          threadWorkers.delete(pid);
+        }
+      }
+      post({ type: "exit", pid, status: m.status ?? 0 });
+    }
+  });
+
+  installCrashSafetyNet(newWorker, pid);
 
   return 0;
 }
@@ -461,6 +589,7 @@ async function handleClone(
   threadWorker.on("message", (msg: unknown) => {
     const m = msg as WorkerToHostMessage;
     if (m.type === "thread_exit") {
+      intentionallyTerminated.add(threadWorker as object);
       threadWorker.terminate().catch(() => {});
       reclaimThread();
     }
@@ -481,6 +610,7 @@ function handleExit(pid: number, exitStatus: number): void {
   kernelWorker.deactivateProcess(pid);
 
   if (info?.worker) {
+    intentionallyTerminated.add(info.worker as object);
     info.worker.terminate().catch(() => {});
   }
 
@@ -489,6 +619,7 @@ function handleExit(pid: number, exitStatus: number): void {
   const threads = threadWorkers.get(pid);
   if (threads) {
     for (const t of threads) {
+      intentionallyTerminated.add(t.worker as object);
       t.worker.terminate().catch(() => {});
     }
     threadWorkers.delete(pid);
@@ -511,6 +642,7 @@ async function handleTerminate(msg: TerminateProcessMessage) {
   const threads = threadWorkers.get(pid);
   if (threads) {
     for (const t of threads) {
+      intentionallyTerminated.add(t.worker as object);
       await t.worker.terminate().catch(() => {});
       try {
         kernelWorker.notifyThreadExit(pid, t.tid);
@@ -523,6 +655,7 @@ async function handleTerminate(msg: TerminateProcessMessage) {
   // Terminate main process worker
   const info = processes.get(pid);
   if (info?.worker) {
+    intentionallyTerminated.add(info.worker as object);
     await info.worker.terminate().catch(() => {});
   }
 
@@ -540,7 +673,10 @@ async function handleTerminate(msg: TerminateProcessMessage) {
 
 function handleDestroy(msg: { requestId: number }) {
   for (const [pid, info] of processes) {
-    if (info.worker) info.worker.terminate().catch(() => {});
+    if (info.worker) {
+      intentionallyTerminated.add(info.worker as object);
+      info.worker.terminate().catch(() => {});
+    }
     try { kernelWorker.unregisterProcess(pid); } catch {}
   }
   processes.clear();

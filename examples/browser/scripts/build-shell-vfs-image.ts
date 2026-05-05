@@ -7,10 +7,12 @@
  *
  * Usage: npx tsx examples/browser/scripts/build-shell-vfs-image.ts
  */
-import { readFileSync, lstatSync } from "fs";
+import { execFileSync } from "child_process";
+import { readFileSync, lstatSync, existsSync } from "fs";
+import { join } from "path";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import { parseZipCentralDirectory } from "../../../host/src/vfs/zip";
-import { resolveBinary, tryResolveBinary } from "../../../host/src/binary-resolver";
+import { resolveBinary, tryResolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
 import { COREUTILS_NAMES } from "../lib/init/shell-binaries";
 import {
   writeVfsFile,
@@ -20,8 +22,37 @@ import {
   saveImage,
 } from "./vfs-image-helpers";
 
+const REPO_ROOT = findRepoRoot();
+
 const DASH_PATH = resolveBinary("programs/dash.wasm");
-const MAGIC_PATH = "examples/libs/file/bin/magic.lite";
+
+// Resolve magic.lite from the file package's cache canonical dir
+// (populated by `cargo xtask build-deps resolve file`, which either
+// runs build-file.sh or fetches the release archive). file's
+// build-file.sh stages magic.lite into OUT_DIR; deps.toml declares it
+// as an [[outputs]] entry. Falls back to the in-tree source layout
+// `examples/libs/file/bin/magic.lite` when a cache lookup fails —
+// useful while iterating on build-file.sh without going through the
+// resolver. Mirrors examples/browser/scripts/build-{vim,nethack}-zip.sh.
+function resolveMagicPath(): string {
+  let cacheDir: string | null = null;
+  try {
+    const out = execFileSync(
+      "cargo",
+      ["run", "-p", "xtask", "--quiet", "--",
+       "build-deps", "resolve", "file", "--arch", "wasm32"],
+      { cwd: REPO_ROOT, stdio: ["ignore", "pipe", "ignore"], encoding: "utf8" },
+    ).trim();
+    if (out) cacheDir = out;
+  } catch {
+    // Resolve failed — fall through to in-tree fallback.
+  }
+  if (cacheDir && existsSync(join(cacheDir, "magic.lite"))) {
+    return join(cacheDir, "magic.lite");
+  }
+  return "examples/libs/file/bin/magic.lite";
+}
+const MAGIC_PATH = resolveMagicPath();
 // vim.zip and nethack.zip may come from binaries/ (as a program bundle) or
 // still live in examples/browser/public/ as a local-built artifact.
 const VIM_ZIP_PATH = tryResolveBinary("programs/vim.zip") ??

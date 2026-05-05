@@ -14,7 +14,12 @@
 # interactive use need. `HOME` is required because cargo/npm/git
 # all stash state under `~/`. The `INPUT_*` and `GITHUB_*` lists
 # carry workflow-context vars through (auth tokens, dispatch
-# inputs, ref/sha names). PATH is intentionally NOT kept — Nix
+# inputs, ref/sha names). `CI`, `LOGNAME`, `USER` carry GHA-runner
+# identity through to test scripts: `run-sortix-tests.sh` checks
+# `${CI:-}` to skip flaky tests, and musl's `getlogin()` reads
+# `LOGNAME`/`USER` (the os-test getlogin probe expects either a
+# valid login name or NULL+ENOTTY/ENXIO; without LOGNAME it gets
+# NULL+errno=0 and FAILs). PATH is intentionally NOT kept — Nix
 # rebuilds it from the flake so anything that needs to leak from
 # the host raises a "command not found" instead of building wrong.
 #
@@ -40,6 +45,9 @@ exec nix develop \
     --ignore-environment \
     --keep HOME \
     --keep TERM \
+    --keep CI \
+    --keep LOGNAME \
+    --keep USER \
     --keep INPUT_PACKAGES \
     --keep INPUT_ARCHES \
     --keep INPUT_REF \

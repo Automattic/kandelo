@@ -80,6 +80,81 @@ Trigger: when a real consumer wants to fetch a published archive +
 lazy-mount its runtime tree without an intermediate repack step.
 Most likely vim or texlive (huge runtime/font trees).
 
+### Cross-package source-tree reads (mariadb-install pattern)
+
+Three browser VFS-image scripts read from a sibling package's local
+source-build tree rather than via the resolver
+(`cargo xtask build-deps resolve <name>` → cache canonical dir):
+
+- `examples/browser/scripts/build-mariadb-vfs-image.ts` (consumed
+  by `mariadb-vfs`) reads
+  `examples/libs/mariadb/mariadb-install{,-64}/{bin/mariadbd.wasm,
+  share/mysql/mysql_system_tables{,_data}.sql}`.
+- `examples/browser/scripts/build-mariadb-test-vfs-image.ts`
+  (consumed by `mariadb-test`) additionally reads
+  `examples/libs/mariadb/mariadb-install/mysql-test/`.
+- `examples/browser/scripts/build-lamp-vfs-image.ts` (consumed by
+  `lamp`) reads the same SQL files as mariadb-vfs.
+
+The mariadb v6/v7 release archive only ships
+`{mariadbd,mysqltest}.wasm` at the artifact root. The SQL files
+(~2 MB) and `mysql-test/` (~217 MB uncompressed) aren't bundled.
+So when mariadb is *cache-hit* (archive installed without
+source-build), `examples/libs/mariadb/mariadb-install/` is empty
+and any of these three downstream scripts fails on its first
+`readFileSync` / `existsSync`.
+
+The bug doesn't fire on routine staging-build CI today because
+none of mariadb-vfs / mariadb-test / lamp's `cache_key_sha`
+changes in typical PRs, so the resolver doesn't trigger their
+source-build. It *does* fire on `force-rebuild` flows and any
+future PR whose changes cascade into one of those packages' dep
+graphs (cf. PR #410, where merging main brought nethack rev2 +
+fbdoom rev2 in and cascaded into shell — exactly the same shape
+of bug, just on a different consumer).
+
+PR #410's shell fix is the symmetric template:
+
+1. `examples/libs/mariadb/build-mariadb.sh` — stage
+   `share/mysql/` into `$WASM_POSIX_DEP_OUT_DIR/share/mysql/`
+   (same pattern build-vim.sh uses for `runtime/`).
+2. `examples/libs/mariadb/deps.toml` — add `[[outputs]]` entries
+   for `share/mysql/mysql_system_tables.sql` +
+   `mysql_system_tables_data.sql` so the v7 archive is treated
+   as stale (`compatibility.cache_key_sha` mismatch) and the
+   resolver source-rebuilds mariadb, picking up the new stage
+   step. Cache key cascades to mariadb-vfs, mariadb-test, lamp —
+   all source-rebuild on the next staging-build for any PR that
+   touches them.
+3. `build-{mariadb-vfs,mariadb-test,lamp}-vfs-image.ts` — call
+   `cargo xtask build-deps resolve mariadb` and read
+   `<cache-dir>/{bin,share}/...`, falling back to
+   `examples/libs/mariadb/mariadb-install/` for direct
+   invocations (mirroring build-{vim,nethack}-zip.sh).
+
+`mysql-test/` (~217 MB) is the awkward part — 50–80 MB zstd'd
+inside mariadb's archive isn't great. Options:
+
+- **Bundle it in mariadb's archive anyway.** Smallest diff;
+  affects every release.
+- **Split into a separate `mariadb-test-data` package.** Its
+  build script extracts the relevant `mysql-test/{main,include,
+  std_data,suite}` subdirs from mariadb's already-fetched source
+  tarball. mariadb-test depends on `mariadb-test-data` instead of
+  reaching into mariadb's local install dir. Keeps mariadb's
+  archive lean and gives mysql-test its own cache-key lifecycle.
+
+The split is the cleaner path; the all-in-one staging is the
+smaller diff if 50–80 MB extra in mariadb's archive is
+acceptable.
+
+Trigger: a PR ends up source-rebuilding mariadb-vfs /
+mariadb-test / lamp (e.g. a kernel-ABI bump invalidates
+everything, a mariadb revision bump, or a transitive cascade
+similar to PR #410), and staging-build / prepare-merge fails on
+"mariadbd.wasm not found at examples/libs/mariadb/mariadb-install/
+bin/mariadbd.wasm".
+
 ### Multi-arch `[binary]` blocks
 
 The `[binary]` block is single-URL.  A consumer's `deps.toml` can
