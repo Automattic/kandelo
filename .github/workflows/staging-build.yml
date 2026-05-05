@@ -40,6 +40,78 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
 
+      - name: Detect change scope vs main
+        # Two tiers, computed against the diff vs origin/main:
+        #
+        #   docs_only — every changed file is in the docs/meta
+        #     allowlist (docs/, top-level *.md, LICENSE, COPYING*,
+        #     .gitignore/.gitattributes/.editorconfig, the docs +
+        #     staging-cleanup workflow files, benchmarks/ results).
+        #     When true, every test step skips.
+        #
+        #   kernel — at least one changed file matches the kernel
+        #     path set (kernel sources, glue, musl, sysroot build
+        #     scripts, conformance-suite submodules, host integration
+        #     code, runner harness). Gates the slow suites: cargo,
+        #     libc-test, POSIX, sortix. main is the known-good
+        #     baseline because every commit on main was gated through
+        #     prepare-merge with full suites green.
+        #
+        # vitest exercises built packages (dash, bash, nginx, erlang,
+        # php, quickjs, ...) on top of the kernel, so it gates on
+        # `!docs_only` rather than on `kernel` — a PR that only
+        # touches examples/libs/php/ must re-validate the PHP test.
+        #
+        # Defaults are conservative: an empty kernel match skips the
+        # slow suites, and an empty docs-only match runs everything.
+        # Path-filter drift fails safe: an unfamiliar path outside
+        # the docs allowlist runs vitest, and outside the kernel
+        # filter only suppresses the slow suites — never silences
+        # test failure altogether.
+        id: changes
+        run: |
+          git fetch origin main --depth=1
+          base=$(git merge-base origin/main HEAD)
+          files=$(git diff --name-only "$base"...HEAD)
+          echo "Changed files vs main:"
+          echo "$files" | sed 's/^/  /'
+
+          # Tier B — kernel filter (gates cargo + libc-test + POSIX + sortix).
+          if echo "$files" | grep -E \
+            -e '^(crates|glue|musl-overlay|musl|libc-test|libc-test-overlay|os-test|host|programs|abi)/' \
+            -e '^(Cargo\.(lock|toml)|flake\.(nix|lock)|rust-toolchain\.toml|\.gitmodules)$' \
+            -e '^scripts/(build-musl|build-libcxx|build-programs|dev-shell|run-libc-tests|run-posix-tests|run-sortix-tests|check-abi-version)\.sh$' \
+            -e '^examples/run-example\.ts$' \
+            -e '^\.github/workflows/(staging-build|prepare-merge)\.yml$' \
+            >/dev/null; then
+            echo "kernel=true" >> "$GITHUB_OUTPUT"
+            kernel_state="will run"
+          else
+            echo "kernel=false" >> "$GITHUB_OUTPUT"
+            kernel_state="skip — main is the known-good baseline"
+          fi
+
+          # Tier A — docs-only filter (when true, vitest also skips).
+          # Implemented as inverse: any file outside the docs allowlist
+          # forces docs_only=false.
+          non_docs=$(echo "$files" | grep -vE \
+            -e '^docs/' \
+            -e '^[^/]+\.md$' \
+            -e '^(LICENSE|COPYING|COPYING\.runtime)$' \
+            -e '^\.(gitignore|gitattributes|editorconfig)$' \
+            -e '^\.github/workflows/(docs|staging-cleanup)\.yml$' \
+            -e '^benchmarks/results/' \
+            || true)
+          if [ -z "$non_docs" ] && [ -n "$files" ]; then
+            echo "docs_only=true" >> "$GITHUB_OUTPUT"
+            vitest_state="skip — docs-only diff"
+          else
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            vitest_state="will run"
+          fi
+
+          echo "::notice::vitest: $vitest_state | cargo+libc-test+POSIX+sortix: $kernel_state"
+
       - name: Fetch submodules (musl, libc-test, os-test)
         # actions/checkout doesn't pull submodules by default. We need:
         #   musl       — for scripts/build-musl.sh
@@ -237,6 +309,11 @@ jobs:
         # repo root for tsx (needed by run-posix-tests.sh /
         # run-libc-tests.sh / run-sortix-tests.sh which spawn
         # `node --import tsx/esm examples/run-example.ts`).
+        #
+        # Gate: !docs_only — vitest needs these inputs even on
+        # package-only PRs (e.g. examples/libs/php/ change → still
+        # need to run php-browser.spec.ts against the new binary).
+        if: steps.changes.outputs.docs_only != 'true'
         run: |
           bash scripts/dev-shell.sh bash -c '
             cargo build --release -p wasm-posix-kernel \
@@ -251,11 +328,23 @@ jobs:
             cd .. && npx --prefix host playwright install chromium
           '
 
-      - name: Run cargo + vitest tests
+      - name: Run cargo tests (kernel unit tests)
+        # Native Rust unit tests of the kernel — no wasm packages
+        # involved, so this only re-runs when kernel paths change.
+        if: steps.changes.outputs.kernel == 'true'
         run: |
           bash scripts/dev-shell.sh bash -c '
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
             cargo test -p wasm-posix-kernel --target "$HOST_TARGET" --lib
+          '
+
+      - name: Run vitest (host integration tests)
+        # Exercises kernel + host + many built packages (dash, bash,
+        # nginx, erlang, php, quickjs, ...). Runs whenever the diff
+        # is not docs-only, including on package-recipe-only PRs.
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          bash scripts/dev-shell.sh bash -c '
             cd host && npx vitest run
           '
 
@@ -264,17 +353,20 @@ jobs:
         # rounding control, opaque stack, no file-backed mmap for
         # sem_open) and TIME (per-test timeouts) are tolerated. Any
         # FAIL not on the XFAIL list is a regression and exits 1.
+        if: steps.changes.outputs.kernel == 'true'
         run: |
           bash scripts/dev-shell.sh bash scripts/run-libc-tests.sh
 
       - name: Run Open POSIX Test Suite
         # 0 FAIL required; UNRES (unresolved) and SKIP are acceptable.
+        if: steps.changes.outputs.kernel == 'true'
         run: |
           bash scripts/dev-shell.sh bash scripts/run-posix-tests.sh
 
       - name: Run Sortix os-test suite
         # `--all` runs every suite (include, limits, basic, malloc,
         # stdio, io, signal, process, paths). 0 FAIL, 0 XPASS required.
+        if: steps.changes.outputs.kernel == 'true'
         run: |
           bash scripts/dev-shell.sh bash scripts/run-sortix-tests.sh --all
 

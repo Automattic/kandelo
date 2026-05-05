@@ -131,6 +131,51 @@ jobs:
             exit 1
           fi
 
+      - name: Detect change scope vs main
+        # After the in-memory merge, the merged tree's diff vs main
+        # is exactly the PR's net contribution to what would land.
+        # See staging-build.yml's identical step for the rationale —
+        # keep the two filters in sync.
+        id: changes
+        run: |
+          files=$(git diff --name-only origin/main HEAD)
+          echo "Changed files vs main (post-merge):"
+          echo "$files" | sed 's/^/  /'
+
+          # Tier B — kernel filter (gates cargo + libc-test + POSIX + sortix).
+          if echo "$files" | grep -E \
+            -e '^(crates|glue|musl-overlay|musl|libc-test|libc-test-overlay|os-test|host|programs|abi)/' \
+            -e '^(Cargo\.(lock|toml)|flake\.(nix|lock)|rust-toolchain\.toml|\.gitmodules)$' \
+            -e '^scripts/(build-musl|build-libcxx|build-programs|dev-shell|run-libc-tests|run-posix-tests|run-sortix-tests|check-abi-version)\.sh$' \
+            -e '^examples/run-example\.ts$' \
+            -e '^\.github/workflows/(staging-build|prepare-merge)\.yml$' \
+            >/dev/null; then
+            echo "kernel=true" >> "$GITHUB_OUTPUT"
+            kernel_state="will run"
+          else
+            echo "kernel=false" >> "$GITHUB_OUTPUT"
+            kernel_state="skip — main is the known-good baseline"
+          fi
+
+          # Tier A — docs-only filter (when true, vitest also skips).
+          non_docs=$(echo "$files" | grep -vE \
+            -e '^docs/' \
+            -e '^[^/]+\.md$' \
+            -e '^(LICENSE|COPYING|COPYING\.runtime)$' \
+            -e '^\.(gitignore|gitattributes|editorconfig)$' \
+            -e '^\.github/workflows/(docs|staging-cleanup)\.yml$' \
+            -e '^benchmarks/results/' \
+            || true)
+          if [ -z "$non_docs" ] && [ -n "$files" ]; then
+            echo "docs_only=true" >> "$GITHUB_OUTPUT"
+            vitest_state="skip — docs-only diff"
+          else
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            vitest_state="will run"
+          fi
+
+          echo "::notice::vitest: $vitest_state | cargo+libc-test+POSIX+sortix: $kernel_state"
+
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v18
 
@@ -288,6 +333,9 @@ jobs:
 
       - name: Build kernel + test programs + install host deps (test prereqs)
         # See staging-build.yml for rationale.
+        # Gate: !docs_only — vitest needs these inputs even on
+        # package-only PRs.
+        if: steps.changes.outputs.docs_only != 'true'
         run: |
           bash scripts/dev-shell.sh bash -c '
             cargo build --release -p wasm-posix-kernel \
@@ -301,11 +349,9 @@ jobs:
             cd host && npm install --no-audit --no-fund
           '
 
-      - name: Run cargo + vitest tests
+      - name: Run cargo tests (kernel unit tests)
         # Tests run AFTER publish (when not skipped by drift detection)
-        # but BEFORE the lockfile bump push. They run unconditionally —
-        # PR code may break tests independent of whether package
-        # contents changed.
+        # but BEFORE the lockfile bump push.
         #
         # On failure: when publish ran, the durable release exists
         # (orphaned — never pinned by any binaries.lock). When publish
@@ -313,22 +359,34 @@ jobs:
         # merge-gate status is set, so the PR can't merge. Contributor
         # fixes tests, re-applies ready-to-ship; next run either cuts a
         # fresh durable or skips publish again, depending on drift.
+        if: steps.changes.outputs.kernel == 'true'
         run: |
           bash scripts/dev-shell.sh bash -c '
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
             cargo test -p wasm-posix-kernel --target "$HOST_TARGET" --lib
+          '
+
+      - name: Run vitest (host integration tests)
+        # Exercises kernel + host + many built packages — runs whenever
+        # the diff is not docs-only.
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          bash scripts/dev-shell.sh bash -c '
             cd host && npx vitest run
           '
 
       - name: Run libc-test conformance suite
+        if: steps.changes.outputs.kernel == 'true'
         run: |
           bash scripts/dev-shell.sh bash scripts/run-libc-tests.sh
 
       - name: Run Open POSIX Test Suite
+        if: steps.changes.outputs.kernel == 'true'
         run: |
           bash scripts/dev-shell.sh bash scripts/run-posix-tests.sh
 
       - name: Run Sortix os-test suite
+        if: steps.changes.outputs.kernel == 'true'
         run: |
           bash scripts/dev-shell.sh bash scripts/run-sortix-tests.sh --all
 
