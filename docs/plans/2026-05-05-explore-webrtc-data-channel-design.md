@@ -7,7 +7,7 @@ Branch: `explore-webrtc-data-channel-design`
 
 **Goal.** A standalone browser demo page (`examples/browser/pages/webrtc-test/`) that lets two browser instances on a LAN exchange typed messages over an `RTCDataChannel`. Signaling is manual: each peer copy-pastes the other's SDP into a textarea. The page does **not** use the kernel — it is a transport prerequisite.
 
-**Why this exists.** The longer-term goal (separate plan) is a `RelayNetworkBackend` (sibling of `FetchNetworkBackend` in `host/src/networking/`) that lets two `wasm-posix-kernel` instances communicate over a peer-to-peer `RTCDataChannel`, enabling cross-instance shell programs, VFS sharing, and multiplayer games. Before any kernel integration, we need ground truth on three questions:
+**Why this exists.** The longer-term goal (separate plan) is a `RelayNetworkBackend` (sibling of `FetchNetworkBackend` in `host/src/networking/`) that lets two `wasm-posix-kernel` instances communicate over an `RTCDataChannel`. The byte path is peer-to-peer when NATs cooperate; when they don't (symmetric NAT, CGNAT — common across the public internet), the channel falls back to a TURN relay. The user's staged goals are LAN first, then two homes in different countries — the second of which likely needs TURN. See §5 for the NAT-traversal detail and §8 for how TURN fits the staged plan. Before any kernel integration, we need ground truth on three questions:
 
 1. Does WebRTC actually connect between two physical machines on the user's home LAN?
 2. Can the same HTTPS / cross-origin-isolation envelope satisfy *both* `SharedArrayBuffer` (for the kernel) *and* `RTCPeerConnection` (for WebRTC) simultaneously?
@@ -155,18 +155,28 @@ To settle in the plan PR or during implementation:
 
 ## §8. What this unlocks
 
-Once this page works between the user's home and their colleague's home:
+The user's actual goal is staged: **LAN first** (validate the WebRTC handshake at all, on real hardware, with the same browsers and the same cross-origin-isolation setup that the kernel needs), then **two homes in different countries**. This v1 page covers stage one; stage two needs additional infrastructure — most importantly a TURN relay if either NAT is symmetric.
 
-- **Confirmed transport.** WebRTC works for them; STUN-only is sufficient for their NATs (or it isn't, and they know to plan for TURN).
+Stage one (LAN) — once this page works between two laptops on the user's WiFi:
+
+- **Confirmed LAN handshake.** WebRTC's offer/answer/candidate flow runs successfully between two physical browsers. Direct `host`-candidate pairing — no STUN, no TURN.
+- **Confirmed cross-origin-isolation compatibility.** The same `COOP`/`COEP` envelope that the kernel needs also works for `RTCPeerConnection`. No subtle interaction blows up.
 - **Performance baseline.** The DataChannel ping shows the bare-network RTT. Future kernel-integration work can compare against this number to size the kernel overhead.
 - **Mental model anchored.** The user has hands-on familiarity with the offer/answer/candidate dance before reading any of `RelayNetworkBackend`'s code.
 
-The follow-up work — explicitly out of scope for this design — is:
+Stage two (cross-country) — explicitly **not** validated by this v1 page, since both peers are on the same LAN. A separate follow-up will:
 
-- `RelayNetworkBackend` that wraps an `RTCDataChannel` for kernel `host_net_*` outbound (sibling of `FetchNetworkBackend`)
-- Inbound connection pump (parallel to `examples/browser/lib/connection-pump.ts`) that calls `injectConnection` when a peer opens a connection to a listening port
-- A real signaling server (HTTP `PUT`/`GET` for offer/answer blobs keyed by room-id; ~30 lines of any web framework)
-- ACL layer (which peer can `connect()` to which port on which kernel)
-- Unreliable+unordered DataChannel mode for `SOCK_DGRAM`, in service of multiplayer games (Doom)
+- Test the same page across two different home networks (one peer at home, one peer on a hotspot or remote location). This stresses STUN-mapped `srflx` candidates and may surface symmetric-NAT failures.
+- Add TURN (likely a self-hosted [coturn](https://github.com/coturn/coturn), or a managed service) to provide a working fallback when direct P2P fails. This is a **byte-path relay**, distinct from a signaling server, and is needed even when the rest of the architecture stays peer-to-peer.
+
+The follow-up work — explicitly out of scope for this design, listed roughly in dependency order:
+
+- **Cross-network validation** — same v1 page, two peers on different networks (no kernel changes needed; just retry the smoke test from elsewhere). First evidence of whether the user's NAT pair needs TURN.
+- **TURN relay** — required if cross-network validation surfaces symmetric-NAT failure. Self-host coturn on a small VPS, or use a managed service. Even then, the byte path stays direct on the happy path; TURN only kicks in as a fallback.
+- **A real signaling server** — HTTP `PUT`/`GET` for offer/answer blobs keyed by room-id; ~30 lines of any web framework. Replaces manual copy-paste.
+- **`RelayNetworkBackend`** — sibling of `FetchNetworkBackend` in `host/src/networking/`, wraps an `RTCDataChannel` for kernel `host_net_*` outbound. This is the first kernel-touching follow-up.
+- **Inbound peer-connection pump** — parallel to `examples/browser/lib/connection-pump.ts`; calls `injectConnection` when a peer opens a connection to a listening port.
+- **ACL layer** — which peer can `connect()` to which port on which kernel. Non-optional even at home: without it, a paired peer can `connect()` to anything you happen to be running.
+- **Unreliable+unordered DataChannel mode** — for `SOCK_DGRAM`, in service of multiplayer games (Doom).
 
 Each of those is its own design+plan PR pair.
