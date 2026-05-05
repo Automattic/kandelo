@@ -13,7 +13,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 # outputs of the vim/nethack registry packages (the release ships
 # vim.wasm/nethack.wasm bare in tar.zst archives), so without this
 # step the .ts script aborts with "vim.zip not found" on a clean
-# source-build of `shell`. The vim/nethack deps in deps.toml ensure
+# source-build of `shell`. The vim/nethack deps in package.toml ensure
 # the underlying wasms + runtime trees are already built by the
 # resolver before we land here. Idempotent: each zip script
 # short-circuits if its output is already present.

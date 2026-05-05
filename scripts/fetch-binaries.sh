@@ -29,7 +29,7 @@
 #                  compatibility.cache_key_sha disagrees with the
 #                  locally-computed value: skip them in install-release
 #                  and source-build them via `xtask build-deps resolve`
-#                  instead of aborting. Used for local deps.toml edits
+#                  instead of aborting. Used for local package.toml edits
 #                  that aren't yet covered by a PR overlay (pre-push,
 #                  fork PRs without write access, in-flight WIP).
 #
@@ -392,7 +392,7 @@ if jq -e '.entries[] | select(.archive_name != null)' "$MANIFEST_OBJ" > /dev/nul
         # branching, so both the durable and overlay install-release
         # passes get the same flags. install-release writes the names
         # of skipped entries (cache_key_sha mismatches against the
-        # consumer's deps.toml) to STALE_OUT; we source-build those
+        # consumer's package.toml) to STALE_OUT; we source-build those
         # via `xtask build-deps resolve` after each pass. The trap
         # set up earlier in this script removes STALE_OUT on exit.
         EXTRA_FLAGS=()
@@ -494,7 +494,7 @@ if jq -e '.entries[] | select(.archive_name != null)' "$MANIFEST_OBJ" > /dev/nul
                 --binaries-dir "$BIN_DIR" \
                 ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}
             # Overlay-pass stale entries are rare (overlay is built
-            # from the developer's deps.toml at PR-build time) but can
+            # from the developer's package.toml at PR-build time) but can
             # appear if the developer made further local edits past
             # their last CI build.
             process_stale_out

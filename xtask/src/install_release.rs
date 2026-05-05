@@ -36,7 +36,7 @@ use wasm_posix_shared as shared;
 use crate::build_deps::{
     self, canonical_path, default_cache_root, parse_target_arch, Registry,
 };
-use crate::deps_manifest::{Binary, DepsManifest, ManifestKind, TargetArch};
+use crate::pkg_manifest::{Binary, DepsManifest, ManifestKind, TargetArch};
 use crate::remote_fetch;
 use crate::repo_root;
 use crate::util::hex;
@@ -290,7 +290,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             return Err(format!(
                 "{program_name} ({arch_str}): manifest.json cache_key_sha {manifest_compat_sha:?} \
                  does not match locally-computed {local_sha_hex:?} — \
-                 the manifest is stale relative to this consumer's deps.toml",
+                 the manifest is stale relative to this consumer's package.toml",
             ));
         }
 
@@ -556,7 +556,7 @@ fn place_binaries_symlinks(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::deps_manifest::TargetArch;
+    use crate::pkg_manifest::TargetArch;
 
     fn tempdir(label: &str) -> PathBuf {
         let p = std::env::temp_dir()
@@ -567,7 +567,7 @@ mod tests {
         p
     }
 
-    /// Drop a `<name>/deps.toml` + executable build script under
+    /// Drop a `<name>/package.toml` + executable build script under
     /// `registry`. The build script emits whatever `body` says using
     /// the standard env-var contract. `outputs_section` is the TOML
     /// block (caller writes the table or array-of-tables shape).
@@ -600,7 +600,7 @@ spdx = "TestLicense"
 "#,
             ""
         );
-        fs::write(lib_dir.join("deps.toml"), toml).unwrap();
+        fs::write(lib_dir.join("package.toml"), toml).unwrap();
         let script_path = lib_dir.join(format!("build-{name}.sh"));
         let script = format!("#!/bin/bash\nset -euo pipefail\n{body}\n");
         fs::write(&script_path, script).unwrap();

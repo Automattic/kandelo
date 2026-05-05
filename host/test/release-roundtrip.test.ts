@@ -112,7 +112,7 @@ describe.skipIf(hostTriple === null)("release round-trip", () => {
     const libDir = path.join(registryRoot, "fixlib");
     mkdirSync(libDir, { recursive: true });
     writeFileSync(
-      path.join(libDir, "deps.toml"),
+      path.join(libDir, "package.toml"),
       [
         'kind = "library"',
         'name = "fixlib"',
@@ -156,7 +156,7 @@ describe.skipIf(hostTriple === null)("release round-trip", () => {
     const progDir = path.join(registryRoot, "fixprog");
     mkdirSync(progDir, { recursive: true });
     writeFileSync(
-      path.join(progDir, "deps.toml"),
+      path.join(progDir, "package.toml"),
       [
         'kind = "program"',
         'name = "fixprog"',

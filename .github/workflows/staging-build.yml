@@ -66,7 +66,7 @@ jobs:
           path: |
             ~/.cache/wasm-posix-kernel
             target
-          key: staging-build-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'examples/libs/**/deps.toml') }}
+          key: staging-build-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'examples/libs/**/package.toml') }}
           restore-keys: |
             staging-build-${{ runner.os }}-
 

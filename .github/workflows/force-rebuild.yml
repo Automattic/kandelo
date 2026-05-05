@@ -11,7 +11,7 @@ name: Force rebuild
 #
 # Inputs (rendered in the GitHub Actions "Run workflow" modal):
 #   packages       — `all` (default) or a comma-separated list of
-#                    deps.toml names (e.g. `php,mariadb`). `all`
+#                    package.toml names (e.g. `php,mariadb`). `all`
 #                    rebuilds every library + program manifest in
 #                    the registry.
 #   arches         — comma-separated subset of `wasm32,wasm64`
@@ -47,7 +47,7 @@ on:
   workflow_dispatch:
     inputs:
       packages:
-        description: 'Comma-separated package names, or `all`. Names match deps.toml entries (e.g. php,mariadb).'
+        description: 'Comma-separated package names, or `all`. Names match package.toml entries (e.g. php,mariadb).'
         required: false
         default: 'all'
         type: string
@@ -124,7 +124,7 @@ jobs:
           path: |
             ~/.cache/wasm-posix-kernel
             target
-          key: force-rebuild-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'examples/libs/**/deps.toml') }}
+          key: force-rebuild-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'examples/libs/**/package.toml') }}
           restore-keys: |
             force-rebuild-${{ runner.os }}-
             prepare-merge-${{ runner.os }}-

@@ -27,7 +27,7 @@ use wasm_posix_shared as shared;
 use crate::archive_stage::{self, StageOptions};
 use crate::build_deps::{self, default_cache_root, parse_target_arch, Registry, ResolveOpts};
 use crate::build_manifest;
-use crate::deps_manifest::{DepsManifest, ManifestKind, TargetArch};
+use crate::pkg_manifest::{DepsManifest, ManifestKind, TargetArch};
 use crate::repo_root;
 use crate::util::hex;
 
@@ -52,7 +52,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     // failing the whole stage-release. Release-policy escape hatch for
     // packages with known-broken source builds we don't want to gate the
     // workflow on. Lives at the workflow layer (e.g., force-rebuild.yml
-    // passes `--allow-failure texlive`) so the package's deps.toml stays
+    // passes `--allow-failure texlive`) so the package's package.toml stays
     // agnostic — "OK to fail right now" is a release-policy decision,
     // not a property of the package itself.
     let mut allow_failure_names: BTreeSet<String> = BTreeSet::new();
@@ -279,7 +279,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     // total-failure for that name logs a warning but doesn't gate the
     // workflow exit code. Used to keep force-rebuild green while a
     // known-broken package (e.g. texlive's pmpost-pulls-in-gmp.h trap)
-    // is being fixed in a follow-up. The package's deps.toml stays
+    // is being fixed in a follow-up. The package's package.toml stays
     // unchanged; the policy lives at the call site.
     if !errors.is_empty() && !continue_on_error {
         let mut total_failures: Vec<&str> = Vec::new();
@@ -423,7 +423,7 @@ mod tests {
         p
     }
 
-    /// Drop a `<name>/deps.toml` + executable build script under
+    /// Drop a `<name>/package.toml` + executable build script under
     /// `registry`. The build script writes whatever `body` says
     /// using the standard env-var contract. `outputs_section` is
     /// the `[outputs]` TOML block (caller writes the table).
@@ -472,7 +472,7 @@ spdx = "TestLicense"
 "#,
             ""
         );
-        fs::write(lib_dir.join("deps.toml"), toml).unwrap();
+        fs::write(lib_dir.join("package.toml"), toml).unwrap();
         let script_path = lib_dir.join(format!("build-{name}.sh"));
         let script = format!("#!/bin/bash\nset -euo pipefail\n{body}\n");
         fs::write(&script_path, script).unwrap();
@@ -510,7 +510,7 @@ script = "build-{name}.sh"
 "#,
             ""
         );
-        fs::write(lib_dir.join("deps.toml"), toml).unwrap();
+        fs::write(lib_dir.join("package.toml"), toml).unwrap();
         let script_path = lib_dir.join(format!("build-{name}.sh"));
         let script = format!("#!/bin/bash\nset -euo pipefail\n{body}\n");
         fs::write(&script_path, script).unwrap();

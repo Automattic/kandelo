@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # package-system build wrapper. The actual nginx build lives at
-# examples/nginx/build.sh (predates the package-system deps.toml registry); this
+# examples/nginx/build.sh (predates the package-system package.toml registry); this
 # wrapper exists so the package-system resolver finds a build script in the
 # registry dir.
 #

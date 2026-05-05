@@ -100,7 +100,7 @@
         "archive_sha256": {
           "type": ["string", "null"],
           "pattern": "^[0-9a-f]{64}$",
-          "description": "SHA-256 of the archive bytes. Identical to `sha256` for V2 .tar.zst entries; the field is repeated under `archive_*` for symmetry with the consumer-side [binary] block in deps.toml. Null for V1 entries."
+          "description": "SHA-256 of the archive bytes. Identical to `sha256` for V2 .tar.zst entries; the field is repeated under `archive_*` for symmetry with the consumer-side [binary] block in package.toml. Null for V1 entries."
         },
         "compatibility": {
           "$ref": "#/$defs/compatibility",
@@ -136,7 +136,7 @@
         "cache_key_sha": {
           "type": "string",
           "pattern": "^[0-9a-f]{64}$",
-          "description": "Locally-computable cache-key sha — what the consumer must produce from its source deps.toml in order for this archive to be honored."
+          "description": "Locally-computable cache-key sha — what the consumer must produce from its source package.toml in order for this archive to be honored."
         }
       }
     },

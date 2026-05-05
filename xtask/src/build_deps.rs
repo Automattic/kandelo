@@ -32,7 +32,7 @@
 //! first wins and the second's temp dir is discarded.
 //!
 //! Subcommands:
-//!   parse    <name|path>   Load + validate a deps.toml, print it back
+//!   parse    <name|path>   Load + validate a package.toml, print it back
 //!                          normalised.
 //!   sha      <name>        Print the cache-key sha (transitive).
 //!   path     <name>        Print the canonical cache path.
@@ -46,7 +46,7 @@ use std::sync::{Mutex, OnceLock};
 
 use sha2::{Digest, Sha256};
 
-use crate::deps_manifest::{DepRef, DepsManifest, HostTool, ManifestKind, TargetArch};
+use crate::pkg_manifest::{DepRef, DepsManifest, HostTool, ManifestKind, TargetArch};
 use crate::host_tool_probe::{self, ProbeFailure};
 use crate::remote_fetch;
 use crate::repo_root;
@@ -90,11 +90,11 @@ impl Registry {
         }
     }
 
-    /// Locate `<name>/deps.toml` by walking registry roots. First hit
+    /// Locate `<name>/package.toml` by walking registry roots. First hit
     /// wins.
     pub fn find(&self, name: &str) -> Option<PathBuf> {
         for root in &self.roots {
-            let p = root.join(name).join("deps.toml");
+            let p = root.join(name).join("package.toml");
             if p.is_file() {
                 return Some(p);
             }
@@ -106,7 +106,7 @@ impl Registry {
         let path = self.find(name).ok_or_else(|| {
             let paths: Vec<_> = self.roots.iter().map(|p| p.display().to_string()).collect();
             format!(
-                "dep {:?}: no deps.toml found in registry roots [{}]",
+                "dep {:?}: no package.toml found in registry roots [{}]",
                 name,
                 paths.join(", ")
             )
@@ -115,7 +115,7 @@ impl Registry {
     }
 
     /// Walk every registry root non-recursively (one level deep —
-    /// `<root>/<name>/deps.toml`); load each manifest. Returns
+    /// `<root>/<name>/package.toml`); load each manifest. Returns
     /// `(name, manifest)` pairs in deterministic name order. Errors
     /// from individual manifests propagate (don't silently skip).
     pub fn walk_all(&self) -> Result<Vec<(String, DepsManifest)>, String> {
@@ -129,7 +129,7 @@ impl Registry {
             for entry in rd {
                 let entry = entry.map_err(|e| format!("read_dir entry: {e}"))?;
                 let path = entry.path();
-                let toml = path.join("deps.toml");
+                let toml = path.join("package.toml");
                 if !toml.is_file() {
                     continue;
                 }
@@ -402,7 +402,7 @@ pub struct ResolveOpts<'a> {
 }
 
 /// Resolve a library to a concrete on-disk path with the artifacts
-/// declared in its `deps.toml`. Ensures dependencies are resolved
+/// declared in its `package.toml`. Ensures dependencies are resolved
 /// first (depth-first), then runs the build script if neither a
 /// `local-libs/` override nor a cache hit is available.
 ///
@@ -1294,7 +1294,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             let target = target.ok_or_else(|| {
                 format!("build-deps {sub}: missing <name|path>")
             })?;
-            // `target` is either a path to a deps.toml (contains '/'
+            // `target` is either a path to a package.toml (contains '/'
             // or ends with .toml) or a bare name to look up in the
             // registry.
             let manifest = load_target(&target, &registry)?;
@@ -1506,7 +1506,7 @@ libs = ["lib/lib{name}.a"]
 "#,
             ""
         );
-        fs::write(lib_dir.join("deps.toml"), text).unwrap();
+        fs::write(lib_dir.join("package.toml"), text).unwrap();
     }
 
     fn tempdir(label: &str) -> PathBuf {
@@ -1530,7 +1530,7 @@ libs = ["lib/lib{name}.a"]
         };
 
         let path = reg.find("libA").expect("libA should resolve");
-        assert_eq!(path, root1.join("libA/deps.toml"));
+        assert_eq!(path, root1.join("libA/package.toml"));
     }
 
     #[test]
@@ -1544,7 +1544,7 @@ libs = ["lib/lib{name}.a"]
         };
 
         let path = reg.find("libB").expect("libB should fall through to root2");
-        assert_eq!(path, root2.join("libB/deps.toml"));
+        assert_eq!(path, root2.join("libB/package.toml"));
     }
 
     /// Test-default arch — matches the CLI's `DEFAULT_ARCH` so existing
@@ -1604,7 +1604,7 @@ libs = ["lib/lib{name}.a"]
         .unwrap();
 
         // Bump revision in-place by editing the file.
-        let toml_path = root.join("libX/deps.toml");
+        let toml_path = root.join("libX/package.toml");
         let text = std::fs::read_to_string(&toml_path).unwrap();
         let bumped = text.replace("revision = 1", "revision = 2");
         std::fs::write(&toml_path, bumped).unwrap();
@@ -1642,7 +1642,7 @@ libs = ["lib/lib{name}.a"]
         .unwrap();
 
         // Bump the dep's revision: consumer's sha must change.
-        let dep_path = root.join("libDep/deps.toml");
+        let dep_path = root.join("libDep/package.toml");
         let text = std::fs::read_to_string(&dep_path).unwrap();
         std::fs::write(&dep_path, text.replace("revision = 1", "revision = 9"))
             .unwrap();
@@ -1786,7 +1786,7 @@ libs = ["lib/lib{name}.a"]
     // which is exactly how PR #384 shipped broken archives for
     // lamp/mariadb-vfs (see the bug report on this branch).
 
-    /// Write a `kind = "program"` deps.toml with a custom `[[outputs]]`
+    /// Write a `kind = "program"` package.toml with a custom `[[outputs]]`
     /// block. `outputs_block` is the literal TOML body (e.g.
     /// `r#"[[outputs]]\nname = "p"\nwasm = "p.wasm"\n"#`).
     fn write_program_manifest(dir: &Path, name: &str, version: &str, outputs_block: &str) {
@@ -1811,7 +1811,7 @@ spdx = "TestLicense"
 "#,
             ""
         );
-        fs::write(prog_dir.join("deps.toml"), text).unwrap();
+        fs::write(prog_dir.join("package.toml"), text).unwrap();
     }
 
     fn sha_of(reg: &Registry, name: &str) -> [u8; 32] {
@@ -1848,7 +1848,7 @@ spdx = "TestLicense"
 
         // Same manifest, different output filename — exactly the
         // PR #384 transition.
-        let toml_path = root.join("lamp/deps.toml");
+        let toml_path = root.join("lamp/package.toml");
         let text = std::fs::read_to_string(&toml_path).unwrap();
         std::fs::write(&toml_path, text.replace("lamp.vfs", "lamp.vfs.zst"))
             .unwrap();
@@ -1874,7 +1874,7 @@ spdx = "TestLicense"
         };
         let sha_before = sha_of(&reg, "tool");
 
-        let toml_path = root.join("tool/deps.toml");
+        let toml_path = root.join("tool/package.toml");
         let text = std::fs::read_to_string(&toml_path).unwrap();
         std::fs::write(&toml_path, text.replace("name = \"tool\"\nwasm", "name = \"tool-renamed\"\nwasm"))
             .unwrap();
@@ -1901,7 +1901,7 @@ spdx = "TestLicense"
         let sha_before = sha_of(&reg, "git");
 
         // Add a second output (e.g. git-remote-http alongside git).
-        let toml_path = root.join("git/deps.toml");
+        let toml_path = root.join("git/package.toml");
         let text = std::fs::read_to_string(&toml_path).unwrap();
         let added = format!(
             "{text}\n[[outputs]]\nname = \"git-remote-http\"\nwasm = \"git-remote-http.wasm\"\n"
@@ -1937,7 +1937,7 @@ spdx = "TestLicense"
         let sha_before = sha_of(&reg, "git");
 
         // Swap the two output entries.
-        let toml_path = root.join("git/deps.toml");
+        let toml_path = root.join("git/package.toml");
         std::fs::write(
             &toml_path,
             std::fs::read_to_string(&toml_path)
@@ -1968,7 +1968,7 @@ spdx = "TestLicense"
         };
         let sha_before = sha_of(&reg, "libZ");
 
-        let toml_path = root.join("libZ/deps.toml");
+        let toml_path = root.join("libZ/package.toml");
         let text = std::fs::read_to_string(&toml_path).unwrap();
         std::fs::write(&toml_path, text.replace("lib/liblibZ.a", "lib/liblibZ-renamed.a"))
             .unwrap();
@@ -1989,7 +1989,7 @@ spdx = "TestLicense"
         };
         let sha_before = sha_of(&reg, "libZ");
 
-        let toml_path = root.join("libZ/deps.toml");
+        let toml_path = root.join("libZ/package.toml");
         let text = std::fs::read_to_string(&toml_path).unwrap();
         std::fs::write(
             &toml_path,
@@ -2016,7 +2016,7 @@ spdx = "TestLicense"
         };
         let sha_before = sha_of(&reg, "libZ");
 
-        let toml_path = root.join("libZ/deps.toml");
+        let toml_path = root.join("libZ/package.toml");
         let text = std::fs::read_to_string(&toml_path).unwrap();
         std::fs::write(
             &toml_path,
@@ -2036,7 +2036,7 @@ spdx = "TestLicense"
 
     // --- ensure_built / build_into_cache tests ---
 
-    /// Create a deps.toml + build-<name>.sh pair. The build script uses
+    /// Create a package.toml + build-<name>.sh pair. The build script uses
     /// `WASM_POSIX_DEP_OUT_DIR` to lay out declared outputs.
     fn write_lib(
         root: &Path,
@@ -2073,7 +2073,7 @@ spdx = "TestLicense"
 "#,
             ""
         );
-        std::fs::write(lib_dir.join("deps.toml"), deps_toml).unwrap();
+        std::fs::write(lib_dir.join("package.toml"), deps_toml).unwrap();
 
         let script = format!("#!/bin/bash\nset -euo pipefail\n{build_body}\n");
         let script_path = lib_dir.join(format!("build-{name}.sh"));
@@ -2977,7 +2977,7 @@ libs = ["lib/libConsumer.a"]
         hex(&out)
     }
 
-    /// Build a deps.toml / build script pair for remote-fetch tests.
+    /// Build a package.toml / build script pair for remote-fetch tests.
     /// Declared output is `lib/out.a` (kept simple — the prefix-less
     /// name avoids the double-`lib` confusion, and is the same string
     /// the test archive uses). The build script also drops a sentinel
@@ -3017,7 +3017,7 @@ archive_sha256 = "{archive_sha}"
 "#,
             ""
         );
-        std::fs::write(lib_dir.join("deps.toml"), deps_toml).unwrap();
+        std::fs::write(lib_dir.join("package.toml"), deps_toml).unwrap();
 
         let script = "#!/bin/bash\nset -euo pipefail\n\
 mkdir -p \"$WASM_POSIX_DEP_OUT_DIR/lib\"\n\
@@ -3083,7 +3083,7 @@ cache_key_sha = "{cache_key_sha}"
         let archive_dir = tempdir("rf-happy-archive");
 
         // Compute the cache_key_sha the resolver would produce for our
-        // (fixed-shape) deps.toml. We don't have the deps.toml on disk
+        // (fixed-shape) package.toml. We don't have the package.toml on disk
         // yet; build a throwaway and parse it through the registry.
         // Note: adding a [binary] block does NOT change cache_key_sha
         // (only name/version/revision/source/arch/abi/dep-shas are
@@ -3163,7 +3163,7 @@ cache_key_sha = "{cache_key_sha}"
         let cache = tempdir("rf-shafail-cache");
         let archive_dir = tempdir("rf-shafail-archive");
 
-        // Build a real archive but advertise the WRONG sha in deps.toml.
+        // Build a real archive but advertise the WRONG sha in package.toml.
         let manifest_text = archived_manifest_text(
             "libRfSha",
             "wasm32",
@@ -3328,7 +3328,7 @@ cache_key_sha = "{cache_key_sha}"
 
     // --- kind = "program" resolver tests (Task B.2) ---
 
-    /// Create a `kind = "program"` deps.toml + build-<name>.sh pair.
+    /// Create a `kind = "program"` package.toml + build-<name>.sh pair.
     /// Mirrors `write_lib` but emits `[[outputs]]` array-of-tables.
     fn write_program(
         root: &Path,
@@ -3352,7 +3352,7 @@ cache_key_sha = "{cache_key_sha}"
             ));
         }
         fs::write(
-            dir.join("deps.toml"),
+            dir.join("package.toml"),
             format!(
                 r#"kind = "program"
 name = "{name}"
@@ -3792,7 +3792,7 @@ script = "noop.sh"
                 .unwrap();
         }
         std::fs::write(
-            foo_dir.join("deps.toml"),
+            foo_dir.join("package.toml"),
             r#"
 kind = "source"
 name = "foo-source"
@@ -4014,7 +4014,7 @@ install_hints = { darwin = "brew install needs-darwin-hint" }
     // C.11: build-deps check (cross-consumer host-tool consistency lint)
     // -----------------------------------------------------------------
 
-    /// Helper for C.11 tests: write a minimal library deps.toml that
+    /// Helper for C.11 tests: write a minimal library package.toml that
     /// declares a single `[[host_tools]]` entry for the named tool.
     /// `extra` is appended verbatim inside the host_tools table — used
     /// to override the probe.
@@ -4051,7 +4051,7 @@ version_constraint = "{constraint}"
 "#,
             ""
         );
-        fs::write(dir.join("deps.toml"), text).unwrap();
+        fs::write(dir.join("package.toml"), text).unwrap();
     }
 
     /// Two consumers each declaring `make >=4.0` with default probes

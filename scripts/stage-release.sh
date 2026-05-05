@@ -25,7 +25,7 @@
 #
 # Output: $STAGING/{libs,programs}/<archive>.tar.zst plus manifest.json.
 #
-# `xtask stage-release` walks examples/libs/<name>/deps.toml entries
+# `xtask stage-release` walks examples/libs/<name>/package.toml entries
 # (kind = "library" or "program") and runs the resolver's ensure_built
 # + archive_stage on each. Strict-by-default: if any manifest fails to
 # build for *every* requested arch, the staging step aborts before

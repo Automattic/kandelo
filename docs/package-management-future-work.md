@@ -118,7 +118,7 @@ PR #410's shell fix is the symmetric template:
 1. `examples/libs/mariadb/build-mariadb.sh` — stage
    `share/mysql/` into `$WASM_POSIX_DEP_OUT_DIR/share/mysql/`
    (same pattern build-vim.sh uses for `runtime/`).
-2. `examples/libs/mariadb/deps.toml` — add `[[outputs]]` entries
+2. `examples/libs/mariadb/package.toml` — add `[[outputs]]` entries
    for `share/mysql/mysql_system_tables.sql` +
    `mysql_system_tables_data.sql` so the v7 archive is treated
    as stale (`compatibility.cache_key_sha` mismatch) and the
@@ -157,7 +157,7 @@ bin/mariadbd.wasm".
 
 ### Multi-arch `[binary]` blocks
 
-The `[binary]` block is single-URL.  A consumer's `deps.toml` can
+The `[binary]` block is single-URL.  A consumer's `package.toml` can
 declare one `archive_url` + `archive_sha256`; the resolver uses it for
 whatever arch it's currently resolving.  In practice we backfilled the
 wasm32 archive URL because user programs are wasm32-only at the moment.
@@ -266,7 +266,7 @@ workflow wraps those same two scripts.
 ### Hard-coded version strings in build scripts (lint)
 
 A `build-<name>.sh` that hard-codes an upstream version string can drift
-from its `deps.toml`'s `version` field — `xtask build-deps check` would
+from its `package.toml`'s `version` field — `xtask build-deps check` would
 ideally catch this.  Today the only signal is a sha mismatch on the
 fetched tarball.  Lower priority since the sha catches the case
 eventually; useful if cache invalidation becomes a debugging chore.
@@ -349,7 +349,7 @@ a multi-hour rebuild attempt.
 
 Sketch:
 
-1. New `xtask plan-tiers` subcommand walks every `deps.toml`,
+1. New `xtask plan-tiers` subcommand walks every `package.toml`,
    topo-sorts by `depends_on`, and emits JSON tier arrays. No
    manifest changes — the dep graph already exists.
 2. Workflow has four jobs: `plan` (emits tier outputs), `setup`
@@ -391,7 +391,7 @@ PR #406's force-rebuild.yml passes `--allow-failure texlive` to keep
 the workflow green while TexLive's source build is broken. The flag
 downgrades a total-failure for that one package to a warning at the
 stage-release exit-code level — every other package is still gated
-strictly. The package's `deps.toml` is intentionally untouched; the
+strictly. The package's `package.toml` is intentionally untouched; the
 release-policy decision lives at the call site (workflow YAML).
 
 Re-enable when the underlying gmp.h chain is fixed:

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
-# Backfill `[binary]` blocks into per-library deps.toml files using
+# Backfill `[binary]` blocks into per-library package.toml files using
 # the published release manifest. Reads `<staging>/manifest.json` (or
 # the path given via --manifest), iterates entries with archive_name +
 # archive_sha256, and rewrites
-# `examples/libs/<program>/deps.toml`'s `[binary]` block to point at
+# `examples/libs/<program>/package.toml`'s `[binary]` block to point at
 # the corresponding asset in the GitHub release.
 #
 # Usage:
@@ -12,7 +12,7 @@
 #       --manifest /tmp/wpk-release-2026-04-27/manifest.json \
 #       --tag binaries-abi-v1
 #
-# Idempotent: any existing `[binary]` block in the deps.toml is
+# Idempotent: any existing `[binary]` block in the package.toml is
 # replaced. Programs are wasm32-only in the first cut; multi-arch
 # `[binary]` blocks are deferred (see
 # docs/package-management-future-work.md).
@@ -41,9 +41,9 @@ jq -r '.entries[]
        | [.program, .archive_name, .archive_sha256] | @tsv' \
    "$MANIFEST" |
 while IFS=$'\t' read -r program archive_name archive_sha; do
-    deps_toml="$REPO_ROOT/examples/libs/$program/deps.toml"
+    deps_toml="$REPO_ROOT/examples/libs/$program/package.toml"
     if [ ! -f "$deps_toml" ]; then
-        echo "skip $program (no deps.toml at $deps_toml)"
+        echo "skip $program (no package.toml at $deps_toml)"
         continue
     fi
     python3 - "$deps_toml" "$BASE/$archive_name" "$archive_sha" <<'PY'

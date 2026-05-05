@@ -21,8 +21,8 @@ name: Prepare merge
 # is blocked until the PR branch is updated and re-labeled.
 #
 # When a fresh release is published, the squash merge collapses code +
-# deps.toml + lockfile bump into a single main commit — main is never
-# in a state where the lockfile disagrees with the deps.toml on the
+# package.toml + lockfile bump into a single main commit — main is never
+# in a state where the lockfile disagrees with the package.toml on the
 # same branch.
 #
 # See docs/plans/2026-04-29-pr-package-builds-design.md §4.2.
@@ -146,7 +146,7 @@ jobs:
           path: |
             ~/.cache/wasm-posix-kernel
             target
-          key: prepare-merge-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'examples/libs/**/deps.toml') }}
+          key: prepare-merge-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'examples/libs/**/package.toml') }}
           restore-keys: |
             prepare-merge-${{ runner.os }}-
             staging-build-${{ runner.os }}-

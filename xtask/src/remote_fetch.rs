@@ -1,6 +1,6 @@
 //! Remote-fetch resolver path.
 //!
-//! When a `deps.toml` carries a `[binary]` block, the resolver tries to
+//! When a `package.toml` carries a `[binary]` block, the resolver tries to
 //! fetch and install the prebuilt archive *before* falling back to a
 //! source build. The path slots between "cache miss" and "run build
 //! script" in [`build_deps::ensure_built_inner`].
@@ -41,9 +41,9 @@
 //! # Security note on `file://`
 //!
 //! `file://` URLs let tests sidestep a real HTTP server. They are also
-//! reachable from a malicious `deps.toml` and can read arbitrary
+//! reachable from a malicious `package.toml` and can read arbitrary
 //! local files. That's the user's choice — they put the URL in their
-//! own `deps.toml`. We do not sanitise.
+//! own `package.toml`. We do not sanitise.
 
 use std::fs;
 use std::io::Read;
@@ -52,7 +52,7 @@ use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
-use crate::deps_manifest::{Binary, DepsManifest, TargetArch};
+use crate::pkg_manifest::{Binary, DepsManifest, TargetArch};
 use crate::util::hex;
 
 /// Maximum response size we will accept from `fetch_url`. A registry
@@ -289,11 +289,11 @@ pub fn fetch_and_install(
 /// Plain `http://` is allowed: integrity is ensured by the SHA-256
 /// check on the bytes after fetch (`verify_sha`). Confidentiality is
 /// not a goal — `archive_sha256` is already public information, sat
-/// next to `archive_url` in the consumer's `deps.toml`. A MITM cannot
+/// next to `archive_url` in the consumer's `package.toml`. A MITM cannot
 /// substitute bytes that hash to the published digest.
 ///
 /// `file://` is allowed for tests and offline development. The risk
-/// is bounded by the user controlling their own `deps.toml` registry
+/// is bounded by the user controlling their own `package.toml` registry
 /// list — a malicious manifest could read arbitrary local files, but
 /// the user already had to add the manifest.
 pub(crate) fn fetch_url(url: &str) -> Result<Vec<u8>, FetchError> {
