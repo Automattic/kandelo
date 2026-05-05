@@ -3,7 +3,7 @@
 //! Walks the given directory (non-recursively — the release namespace
 //! is intentionally flat, see `docs/binary-releases.md`), computes
 //! SHA-256 of every file, extracts metadata from filenames and the
-//! per-dir program registry (`examples/libs/<name>/deps.toml` with
+//! per-dir program registry (`examples/libs/<name>/package.toml` with
 //! `kind = "program"`), and writes a deterministic JSON manifest
 //! that conforms to `abi/manifest.schema.json`.
 
@@ -226,7 +226,7 @@ fn build_entry(
         format!(
             "no entry for program {:?} in the per-dir registry — \
              every shipped asset must declare source + license via \
-             examples/libs/<program>/deps.toml with kind = \"program\"",
+             examples/libs/<program>/package.toml with kind = \"program\"",
             parsed.program
         )
     })?;
@@ -356,7 +356,7 @@ impl ParsedName {
             .ok_or_else(|| {
                 format!(
                     "filename {name:?} doesn't start with a known program name \
-                     from the per-dir registry (examples/libs/<name>/deps.toml \
+                     from the per-dir registry (examples/libs/<name>/package.toml \
                      with kind = \"program\"). Add the program or rename \
                      the asset."
                 )
@@ -907,7 +907,7 @@ mod tests {
         let dir = registry.join(name);
         fs::create_dir_all(&dir).unwrap();
         fs::write(
-            dir.join("deps.toml"),
+            dir.join("package.toml"),
             format!(
                 "kind = \"library\"\n\
                  name = \"{name}\"\n\
@@ -930,7 +930,7 @@ mod tests {
         let dir = registry.join(name);
         fs::create_dir_all(&dir).unwrap();
         fs::write(
-            dir.join("deps.toml"),
+            dir.join("package.toml"),
             format!(
                 "kind = \"program\"\n\
                  name = \"{name}\"\n\
@@ -954,7 +954,7 @@ mod tests {
         let dir = registry.join(name);
         fs::create_dir_all(&dir).unwrap();
         fs::write(
-            dir.join("deps.toml"),
+            dir.join("package.toml"),
             format!(
                 "kind = \"source\"\n\
                  name = \"{name}\"\n\

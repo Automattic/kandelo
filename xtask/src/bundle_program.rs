@@ -88,7 +88,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let progs = programs_by_name(&registry)?;
     if !progs.contains_key(&program) {
         return Err(format!(
-            "program {program:?} has no examples/libs/{program}/deps.toml \
+            "program {program:?} has no examples/libs/{program}/package.toml \
              with kind = \"program\" — add a manifest before bundling"
         ));
     }

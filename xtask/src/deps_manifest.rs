@@ -1,7 +1,7 @@
-//! Parser for `deps.toml` — per-library build/cache manifest.
+//! Parser for `package.toml` — per-library build/cache manifest.
 //!
 //! Each wasm-posix-kernel library declares one of these next to its
-//! build script (`examples/libs/<name>/deps.toml`). The resolver
+//! build script (`examples/libs/<name>/package.toml`). The resolver
 //! (`xtask build-deps`) walks these across a registry search path to
 //! build an acyclic dependency graph, compute a deterministic cache
 //! key per library, and produce or fetch the static `.a` artifacts.
@@ -50,7 +50,7 @@ use serde::Deserialize;
 
 /// Discriminator for the kind of artifact a manifest produces.
 ///
-/// Required at the top level of every `deps.toml` (`kind = "library"`,
+/// Required at the top level of every `package.toml` (`kind = "library"`,
 /// `kind = "program"`, or `kind = "source"`). Tagged-enum dispatch on
 /// this value lands in subsequent commits; for now it's parsed and
 /// stored unchanged.
@@ -66,7 +66,7 @@ pub enum ManifestKind {
 ///
 /// Closed enum — unknown values are rejected at parse time. Only
 /// present in archived `manifest.toml` (under `[compatibility]`),
-/// never in source `deps.toml`.
+/// never in source `package.toml`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TargetArch {
@@ -89,7 +89,7 @@ impl TargetArch {
 }
 
 /// Build-time provenance + ABI compatibility data injected into an
-/// archived `manifest.toml` at archive creation. Source `deps.toml`
+/// archived `manifest.toml` at archive creation. Source `package.toml`
 /// files MUST NOT contain this block; archived manifests MUST.
 ///
 /// Used by the resolver's remote-fetch path (Task A.9) to reject
@@ -120,7 +120,7 @@ pub struct Compatibility {
 /// priority — after `local-libs/` override and the local cache,
 /// before falling back to a source build (Task A.9).
 ///
-/// Allowed in BOTH source `deps.toml` (the canonical place — the URL
+/// Allowed in BOTH source `package.toml` (the canonical place — the URL
 /// describes where the archive lives) and archived `manifest.toml`
 /// (carried through unchanged; redundant but harmless).
 ///
@@ -154,7 +154,7 @@ pub struct ProgramOutput {
 /// in defaults so the rest of the resolver always sees a complete
 /// `HostTool`.
 ///
-/// `version_constraint` is parsed at deps.toml load time into a
+/// `version_constraint` is parsed at package.toml load time into a
 /// [`VersionConstraint`] newtype (C.8). Only `>=X.Y` and `>=X.Y.Z`
 /// are accepted; other operators reject with a future-work error
 /// linking design decision 11. The runner that actually invokes
@@ -362,7 +362,7 @@ struct RawHostToolProbe {
     version_regex: Option<String>,
 }
 
-/// One fully-parsed `deps.toml` file.
+/// One fully-parsed `package.toml` file.
 #[derive(Debug, Clone)]
 pub struct DepsManifest {
     pub kind: ManifestKind,
@@ -383,7 +383,7 @@ pub struct DepsManifest {
     pub program_outputs: Vec<ProgramOutput>,
 
     /// Build-time provenance + ABI compatibility. Always `None` for
-    /// manifests parsed via [`DepsManifest::parse`] (source `deps.toml`)
+    /// manifests parsed via [`DepsManifest::parse`] (source `package.toml`)
     /// and always `Some` for those parsed via
     /// [`DepsManifest::parse_archived`] (archived `manifest.toml`).
     /// Consumed by `remote_fetch` to verify a downloaded archive's
@@ -426,7 +426,7 @@ pub struct DepsManifest {
     /// the release archive set tight.
     pub target_arches: Vec<TargetArch>,
 
-    /// Directory containing this `deps.toml`. The build script path and
+    /// Directory containing this `package.toml`. The build script path and
     /// any per-dep build state live underneath it.
     pub dir: PathBuf,
 }
@@ -553,7 +553,7 @@ fn default_outputs_value() -> toml::Value {
 }
 
 impl DepsManifest {
-    /// Read + parse + validate a `deps.toml` file. `dir` is the
+    /// Read + parse + validate a `package.toml` file. `dir` is the
     /// directory containing the file (used later to resolve
     /// `build.script` relative paths).
     pub fn load(path: &Path) -> Result<Self, String> {
@@ -567,12 +567,12 @@ impl DepsManifest {
             .map_err(|e| format!("{}: {e}", path.display()))
     }
 
-    /// Parse a source `deps.toml`. Rejects manifests that contain a
+    /// Parse a source `package.toml`. Rejects manifests that contain a
     /// `[compatibility]` block — that block is reserved for archived
     /// `manifest.toml` files (see [`parse_archived`]).
     pub fn parse(text: &str, dir: PathBuf) -> Result<Self, String> {
         let raw: Raw =
-            toml::from_str(text).map_err(|e| format!("parse deps.toml: {e}"))?;
+            toml::from_str(text).map_err(|e| format!("parse package.toml: {e}"))?;
         Self::validate_source(raw, dir)
     }
 
@@ -588,7 +588,7 @@ impl DepsManifest {
     fn validate_source(raw: Raw, dir: PathBuf) -> Result<Self, String> {
         if raw.compatibility.is_some() {
             return Err(
-                "source deps.toml must not contain a [compatibility] block \
+                "source package.toml must not contain a [compatibility] block \
                  (it is injected into archived manifest.toml at build time)"
                     .into(),
             );
@@ -845,7 +845,7 @@ impl DepsManifest {
                 }
             };
             // Compile-test the regex at parse time so a typo in
-            // deps.toml surfaces as a manifest error, not as a probe-
+            // package.toml surfaces as a manifest error, not as a probe-
             // time `BadOutput { output: "invalid regex: ..." }` that
             // C.10's renderer can't tell apart from a runtime tool-
             // output mismatch. The runtime probe in `host_tool_probe`
@@ -998,7 +998,7 @@ impl DepsManifest {
     }
 
     /// Absolute path to the build script. Default is `build-<name>.sh`
-    /// in the same directory as this `deps.toml`.
+    /// in the same directory as this `package.toml`.
     pub fn build_script_path(&self) -> PathBuf {
         let script = self
             .build

@@ -7,7 +7,7 @@
 //!
 //! Decision 14 in
 //! `docs/plans/2026-04-22-deps-management-v2-design.md`: the archive
-//! carries a single `manifest.toml` (source `deps.toml` + injected
+//! carries a single `manifest.toml` (source `package.toml` + injected
 //! `[compatibility]` block) plus an `artifacts/` subtree holding the
 //! built files. `flatten_archive_layout` on the consumer side hoists
 //! `artifacts/*` to the cache-root layout post-extract.
@@ -158,7 +158,7 @@ fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
     Ok(())
 }
 
-/// Read the source `deps.toml`, append a `[compatibility]` block
+/// Read the source `package.toml`, append a `[compatibility]` block
 /// populated from `arch`/`abi_version`/`opts`, and round-trip the
 /// result through [`DepsManifest::parse_archived`] so any injection
 /// bug (malformed source TOML, pre-existing `[compatibility]`,
@@ -170,13 +170,13 @@ fn build_archive_manifest_text(
     abi_version: u32,
     opts: &StageOptions,
 ) -> Result<String, String> {
-    let src_path = target.dir.join("deps.toml");
+    let src_path = target.dir.join("package.toml");
     let mut text = fs::read_to_string(&src_path)
         .map_err(|e| format!("read {}: {e}", src_path.display()))?;
     if !text.ends_with('\n') {
         text.push('\n');
     }
-    // Source deps.toml is verified by parse() to have no [compatibility]
+    // Source package.toml is verified by parse() to have no [compatibility]
     // block; appending the new block at the end is safe as long as the
     // source ends without an open trailing table. The parse_archived
     // round-trip below catches any structural breakage (malformed source
@@ -227,7 +227,7 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 [license]
 spdx = "BSD-3-Clause"
 "#;
-        let toml_path = registry.join("deps.toml");
+        let toml_path = registry.join("package.toml");
         fs::write(&toml_path, toml).unwrap();
         let m = DepsManifest::load(&toml_path).unwrap();
 
@@ -270,7 +270,7 @@ headers = ["include/zlib.h"]
         let dir = tempdir(label);
         let registry = dir.join("registry/zlib");
         fs::create_dir_all(&registry).unwrap();
-        let toml_path = registry.join("deps.toml");
+        let toml_path = registry.join("package.toml");
         fs::write(&toml_path, library_manifest_text()).unwrap();
         let m = DepsManifest::load(&toml_path).unwrap();
 
@@ -413,7 +413,7 @@ headers = ["include/zlib.h"]
         let dir = tempdir("e2-determinism");
         let registry = dir.join("registry/zlib");
         fs::create_dir_all(&registry).unwrap();
-        let toml_path = registry.join("deps.toml");
+        let toml_path = registry.join("package.toml");
         fs::write(&toml_path, library_manifest_text()).unwrap();
         let m = DepsManifest::load(&toml_path).unwrap();
 
@@ -453,7 +453,7 @@ headers = ["include/zlib.h"]
         let dir = tempdir("e2-empty-cache");
         let registry = dir.join("registry/zlib");
         fs::create_dir_all(&registry).unwrap();
-        let toml_path = registry.join("deps.toml");
+        let toml_path = registry.join("package.toml");
         fs::write(&toml_path, library_manifest_text()).unwrap();
         let m = DepsManifest::load(&toml_path).unwrap();
 
@@ -491,7 +491,7 @@ headers = ["include/zlib.h"]
         let dir = tempdir("missing-cache");
         let registry = dir.join("registry/zlib");
         fs::create_dir_all(&registry).unwrap();
-        let toml_path = registry.join("deps.toml");
+        let toml_path = registry.join("package.toml");
         fs::write(&toml_path, library_manifest_text()).unwrap();
         let m = DepsManifest::load(&toml_path).unwrap();
 
