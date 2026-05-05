@@ -132,49 +132,14 @@ jobs:
           fi
 
       - name: Detect change scope vs main
-        # After the in-memory merge, the merged tree's diff vs main
-        # is exactly the PR's net contribution to what would land.
-        # See staging-build.yml's identical step for the rationale —
-        # keep the two filters in sync.
+        # After the in-memory merge above, HEAD is the merge commit
+        # and origin/main is a direct parent — three-dot diff inside
+        # the action reduces to the PR's net contribution. fetch-base
+        # is false because the Merge step already fetched main.
         id: changes
-        run: |
-          files=$(git diff --name-only origin/main HEAD)
-          echo "Changed files vs main (post-merge):"
-          echo "$files" | sed 's/^/  /'
-
-          # Tier B — kernel filter (gates cargo + libc-test + POSIX + sortix).
-          if echo "$files" | grep -E \
-            -e '^(crates|glue|musl-overlay|musl|libc-test|libc-test-overlay|os-test|host|programs|abi)/' \
-            -e '^(Cargo\.(lock|toml)|flake\.(nix|lock)|rust-toolchain\.toml|\.gitmodules)$' \
-            -e '^scripts/(build-musl|build-libcxx|build-programs|dev-shell|run-libc-tests|run-posix-tests|run-sortix-tests|check-abi-version)\.sh$' \
-            -e '^examples/run-example\.ts$' \
-            -e '^\.github/workflows/(staging-build|prepare-merge)\.yml$' \
-            >/dev/null; then
-            echo "kernel=true" >> "$GITHUB_OUTPUT"
-            kernel_state="will run"
-          else
-            echo "kernel=false" >> "$GITHUB_OUTPUT"
-            kernel_state="skip — main is the known-good baseline"
-          fi
-
-          # Tier A — docs-only filter (when true, vitest also skips).
-          non_docs=$(echo "$files" | grep -vE \
-            -e '^docs/' \
-            -e '^[^/]+\.md$' \
-            -e '^(LICENSE|COPYING|COPYING\.runtime)$' \
-            -e '^\.(gitignore|gitattributes|editorconfig)$' \
-            -e '^\.github/workflows/(docs|staging-cleanup)\.yml$' \
-            -e '^benchmarks/results/' \
-            || true)
-          if [ -z "$non_docs" ] && [ -n "$files" ]; then
-            echo "docs_only=true" >> "$GITHUB_OUTPUT"
-            vitest_state="skip — docs-only diff"
-          else
-            echo "docs_only=false" >> "$GITHUB_OUTPUT"
-            vitest_state="will run"
-          fi
-
-          echo "::notice::vitest: $vitest_state | cargo+libc-test+POSIX+sortix: $kernel_state"
+        uses: ./.github/actions/detect-change-scope
+        with:
+          fetch-base: 'false'
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v18
