@@ -73,7 +73,7 @@ echo "==> fbdoom.wasm built."
 #   CREDITS.txt          → CREDITS.txt       (asset / contributor attribution)
 #   CREDITS-MUSIC.txt    → CREDITS-MUSIC.txt (music attribution: CC-BY entries)
 #
-# These ship inside the package's tar.zst archive (see deps.toml's
+# These ship inside the package's tar.zst archive (see package.toml's
 # second [[outputs]]) so a cache-fetch user gets a complete bundle —
 # the browser doom demo loads doom1.wad via a Vite ?url import off
 # the `binaries/programs/wasm32/fbdoom/` symlinks placed by

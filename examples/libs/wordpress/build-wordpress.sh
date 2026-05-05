@@ -7,7 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
 # WordPress PHP source (and the SQLite db.php drop-in) live outside the
-# deps.toml registry — they're downloaded by examples/wordpress/setup.sh
+# package.toml registry — they're downloaded by examples/wordpress/setup.sh
 # into examples/wordpress/{wordpress,sqlite-database-integration}/. The
 # vfs-image builder reads from there. setup.sh is idempotent: it skips
 # downloads when the trees are already present.
