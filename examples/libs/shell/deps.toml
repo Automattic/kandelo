@@ -2,23 +2,27 @@ kind = "program"
 name = "shell"
 version = "0.1.0"
 revision = 1
-# Implicit deps: build-shell-vfs-image.ts reads:
-#   - dash.wasm via `resolveBinary("programs/dash.wasm")` (hard
-#     readFileSync; exits 1 if missing).
-#   - magic.lite from `examples/libs/file/bin/magic.lite` (side
-#     effect of build-file.sh; hard exit if missing).
-#   - vim.wasm and nethack.wasm via the resolver chain — vim/nethack
-#     program builds must have completed so their wasms are present.
-# Without these declarations a clean source-build (e.g., during
-# manual force-rebuild) fails. Folds each dep's cache_key into ours.
+# Implicit deps consumed by build-shell-vfs-image.ts and the
+# build-{vim,nethack}-zip.sh helpers it drives:
 #
-# Note: build-shell-vfs-image.ts ALSO requires vim.zip and
-# nethack.zip, which are produced by the auxiliary scripts
-# `examples/browser/scripts/build-{vim,nethack}-zip.sh`. Those zip
-# bundles are NOT outputs of vim/nethack registry packages, so
-# declaring vim/nethack as deps does not on its own make shell
-# source-build reproducibly — that gap is separate from the
-# perl-vfs-style fix here.
+#   - dash.wasm via `resolveBinary("programs/dash.wasm")`.
+#   - magic.lite via `cargo xtask build-deps resolve file` →
+#     `<file-cache-canonical>/magic.lite`. file's deps.toml declares
+#     `magic.lite` as an output and build-file.sh stages it into
+#     OUT_DIR. Falls back to `examples/libs/file/bin/magic.lite`
+#     for direct invocations.
+#   - vim.wasm + runtime/ via `cargo xtask build-deps resolve vim`
+#     (build-vim-zip.sh) — vim's package archive ships both.
+#   - nethack.wasm + runtime/ via `cargo xtask build-deps resolve
+#     nethack` (build-nethack-zip.sh) — nethack's rev2 archive ships
+#     the runtime tree alongside the wasm.
+#
+# Folding each dep's cache_key into ours via depends_on guarantees a
+# fresh shell archive whenever any of these inputs changes. The
+# build-{vim,nethack}-zip.sh helpers produce vim.zip and nethack.zip
+# on-the-fly during shell's source build using the resolver-provided
+# cache paths; those zips aren't published as part of vim/nethack's
+# release archives.
 depends_on = ["dash@0.5.12", "file@5.45", "vim@9.1.0900", "nethack@3.6.7"]
 
 # Composite VFS image for the browser shell demo: dash binary,
