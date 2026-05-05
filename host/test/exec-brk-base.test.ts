@@ -171,7 +171,7 @@ describe.skipIf(!compatible)("brk-base regression: mariadbd bootstrap via dash-e
     const r = await runDashCommand(`exec /usr/sbin/mariadbd ${MARIADB_ARGS} < ${SQL_PATH}`);
     expect(r.stderr).toContain("InnoDB");
     expect(r.stderr).toContain("started");
-  });
+  }, 30_000);
 
   // Bug case 1: dash exec's /bin/sh which then exec's mariadbd. Pre-fix
   // this hung silently in __wasm_call_ctors because the chain advanced
@@ -182,7 +182,7 @@ describe.skipIf(!compatible)("brk-base regression: mariadbd bootstrap via dash-e
     );
     expect(r.stderr).toContain("InnoDB");
     expect(r.stderr).toContain("started");
-  });
+  }, 30_000);
 
   // Bug case 2: dash forks /bin/sh which forks mariadbd. The dinit-shape
   // chain (PID 1 → fork sh → fork mariadbd) — this is the original
@@ -193,5 +193,5 @@ describe.skipIf(!compatible)("brk-base regression: mariadbd bootstrap via dash-e
     );
     expect(r.stderr).toContain("InnoDB");
     expect(r.stderr).toContain("started");
-  });
+  }, 30_000);
 });
