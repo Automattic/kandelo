@@ -16,7 +16,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use crate::deps_manifest::{DepsManifest, ManifestKind, TargetArch};
+use crate::pkg_manifest::{DepsManifest, ManifestKind, TargetArch};
 
 /// Caller-supplied build provenance + the locally-computed cache-key
 /// sha. We don't recompute the sha here so the caller (`stage_release`
@@ -198,7 +198,7 @@ fn build_archive_manifest_text(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::deps_manifest::DepsManifest;
+    use crate::pkg_manifest::DepsManifest;
     use std::fs;
     use std::path::PathBuf;
 
@@ -296,7 +296,7 @@ headers = ["include/zlib.h"]
 
     #[test]
     fn produces_archive_consumable_by_remote_fetch() {
-        use crate::deps_manifest::Binary;
+        use crate::pkg_manifest::Binary;
         use crate::remote_fetch::fetch_and_install;
         use sha2::{Digest, Sha256};
 

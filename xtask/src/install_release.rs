@@ -36,7 +36,7 @@ use wasm_posix_shared as shared;
 use crate::build_deps::{
     self, canonical_path, default_cache_root, parse_target_arch, Registry,
 };
-use crate::deps_manifest::{Binary, DepsManifest, ManifestKind, TargetArch};
+use crate::pkg_manifest::{Binary, DepsManifest, ManifestKind, TargetArch};
 use crate::remote_fetch;
 use crate::repo_root;
 use crate::util::hex;
@@ -556,7 +556,7 @@ fn place_binaries_symlinks(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::deps_manifest::TargetArch;
+    use crate::pkg_manifest::TargetArch;
 
     fn tempdir(label: &str) -> PathBuf {
         let p = std::env::temp_dir()

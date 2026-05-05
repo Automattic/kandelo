@@ -46,7 +46,7 @@ use std::sync::{Mutex, OnceLock};
 
 use sha2::{Digest, Sha256};
 
-use crate::deps_manifest::{DepRef, DepsManifest, HostTool, ManifestKind, TargetArch};
+use crate::pkg_manifest::{DepRef, DepsManifest, HostTool, ManifestKind, TargetArch};
 use crate::host_tool_probe::{self, ProbeFailure};
 use crate::remote_fetch;
 use crate::repo_root;

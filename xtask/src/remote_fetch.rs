@@ -52,7 +52,7 @@ use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
-use crate::deps_manifest::{Binary, DepsManifest, TargetArch};
+use crate::pkg_manifest::{Binary, DepsManifest, TargetArch};
 use crate::util::hex;
 
 /// Maximum response size we will accept from `fetch_url`. A registry

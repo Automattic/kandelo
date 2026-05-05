@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 use wasm_posix_shared as shared;
 
 use crate::build_deps::{compute_sha, parse_target_arch, programs_by_name, Registry};
-use crate::deps_manifest::{DepsManifest, ManifestKind, TargetArch};
+use crate::pkg_manifest::{DepsManifest, ManifestKind, TargetArch};
 use crate::repo_root;
 use crate::wasm_abi::extract_abi_version;
 use crate::JsonMap;
@@ -976,7 +976,7 @@ mod tests {
     fn archive_name_for(
         registry_root: &Path,
         manifest_name: &str,
-        arch: crate::deps_manifest::TargetArch,
+        arch: crate::pkg_manifest::TargetArch,
         abi: u32,
     ) -> (String, [u8; 32]) {
         let reg = crate::build_deps::Registry {
@@ -1013,7 +1013,7 @@ mod tests {
         let (archive_name, sha) = archive_name_for(
             &registry,
             "zlib",
-            crate::deps_manifest::TargetArch::Wasm32,
+            crate::pkg_manifest::TargetArch::Wasm32,
             4,
         );
 
@@ -1108,7 +1108,7 @@ mod tests {
         let (archive_name, _sha) = archive_name_for(
             &registry,
             "myprog",
-            crate::deps_manifest::TargetArch::Wasm32,
+            crate::pkg_manifest::TargetArch::Wasm32,
             4,
         );
 
@@ -1206,13 +1206,13 @@ mod tests {
         let (name_a, _) = archive_name_for(
             &registry,
             "alib",
-            crate::deps_manifest::TargetArch::Wasm32,
+            crate::pkg_manifest::TargetArch::Wasm32,
             4,
         );
         let (name_z, _) = archive_name_for(
             &registry,
             "zlib",
-            crate::deps_manifest::TargetArch::Wasm32,
+            crate::pkg_manifest::TargetArch::Wasm32,
             4,
         );
         fs::write(staging.join("libs").join(&name_a), b"a").unwrap();
@@ -1275,13 +1275,13 @@ mod tests {
         let (name32, _) = archive_name_for(
             &registry,
             "zlib",
-            crate::deps_manifest::TargetArch::Wasm32,
+            crate::pkg_manifest::TargetArch::Wasm32,
             4,
         );
         let (name64, _) = archive_name_for(
             &registry,
             "zlib",
-            crate::deps_manifest::TargetArch::Wasm64,
+            crate::pkg_manifest::TargetArch::Wasm64,
             4,
         );
         fs::write(staging.join("libs").join(&name32), b"32bit").unwrap();

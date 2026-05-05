@@ -27,7 +27,7 @@ use wasm_posix_shared as shared;
 
 use crate::build_deps::{self, default_cache_root, parse_target_arch, Registry};
 use crate::build_manifest;
-use crate::deps_manifest::{ManifestKind, TargetArch};
+use crate::pkg_manifest::{ManifestKind, TargetArch};
 use crate::repo_root;
 use crate::stage_release;
 use crate::util::hex;
