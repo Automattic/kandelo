@@ -131,6 +131,16 @@ jobs:
             exit 1
           fi
 
+      - name: Detect change scope vs main
+        # After the in-memory merge above, HEAD is the merge commit
+        # and origin/main is a direct parent — three-dot diff inside
+        # the action reduces to the PR's net contribution. fetch-base
+        # is false because the Merge step already fetched main.
+        id: changes
+        uses: ./.github/actions/detect-change-scope
+        with:
+          fetch-base: 'false'
+
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v18
 
@@ -288,6 +298,9 @@ jobs:
 
       - name: Build kernel + test programs + install host deps (test prereqs)
         # See staging-build.yml for rationale.
+        # Gate: !docs_only — vitest needs these inputs even on
+        # package-only PRs.
+        if: steps.changes.outputs.docs_only != 'true'
         run: |
           bash scripts/dev-shell.sh bash -c '
             cargo build --release -p wasm-posix-kernel \
@@ -301,11 +314,9 @@ jobs:
             cd host && npm install --no-audit --no-fund
           '
 
-      - name: Run cargo + vitest tests
+      - name: Run cargo tests (kernel unit tests)
         # Tests run AFTER publish (when not skipped by drift detection)
-        # but BEFORE the lockfile bump push. They run unconditionally —
-        # PR code may break tests independent of whether package
-        # contents changed.
+        # but BEFORE the lockfile bump push.
         #
         # On failure: when publish ran, the durable release exists
         # (orphaned — never pinned by any binaries.lock). When publish
@@ -313,22 +324,34 @@ jobs:
         # merge-gate status is set, so the PR can't merge. Contributor
         # fixes tests, re-applies ready-to-ship; next run either cuts a
         # fresh durable or skips publish again, depending on drift.
+        if: steps.changes.outputs.kernel == 'true'
         run: |
           bash scripts/dev-shell.sh bash -c '
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
             cargo test -p wasm-posix-kernel --target "$HOST_TARGET" --lib
+          '
+
+      - name: Run vitest (host integration tests)
+        # Exercises kernel + host + many built packages — runs whenever
+        # the diff is not docs-only.
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          bash scripts/dev-shell.sh bash -c '
             cd host && npx vitest run
           '
 
       - name: Run libc-test conformance suite
+        if: steps.changes.outputs.kernel == 'true'
         run: |
           bash scripts/dev-shell.sh bash scripts/run-libc-tests.sh
 
       - name: Run Open POSIX Test Suite
+        if: steps.changes.outputs.kernel == 'true'
         run: |
           bash scripts/dev-shell.sh bash scripts/run-posix-tests.sh
 
       - name: Run Sortix os-test suite
+        if: steps.changes.outputs.kernel == 'true'
         run: |
           bash scripts/dev-shell.sh bash scripts/run-sortix-tests.sh --all
 

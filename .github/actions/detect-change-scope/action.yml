@@ -1,0 +1,124 @@
+name: Detect change scope
+description: |
+  Compute kernel/docs_only flags from the diff vs a base ref. Used by
+  staging-build.yml and prepare-merge.yml to gate test suites.
+
+  Two tiers:
+
+    docs_only — every changed file is in the docs/meta allowlist
+      (docs/, top-level *.md, LICENSE, COPYING*, .gitignore et al, the
+      docs + staging-cleanup workflow files, benchmarks/results/).
+      When true, every test step skips.
+
+    kernel — at least one changed file matches the kernel path set
+      (kernel sources, glue, musl, sysroot build scripts, conformance
+      submodules, host integration, runner harness). Gates the slow
+      native-and-conformance suites: cargo, libc-test, POSIX, sortix.
+      Caller's base ref is the known-good baseline because every
+      commit there was gated through prepare-merge with full suites
+      green.
+
+  vitest gates on `!docs_only` rather than on `kernel` — its 51 test
+  files exercise built packages (dash, bash, nginx, erlang, php,
+  quickjs, ...) on top of the kernel, so a PR that only touches
+  examples/libs/php/ must re-validate the PHP test against the new
+  binary.
+
+  Filters fail safe: an unknown path outside the docs allowlist
+  forces `docs_only=false` (vitest still runs); an unknown path
+  outside the kernel filter only suppresses the slow suites — never
+  silences a regression in their coverage area without something
+  else flagging it.
+
+inputs:
+  base-ref:
+    description: |
+      Base ref to diff against. Three-dot diff (`base...HEAD`) so
+      that callers can run this either pre-merge (HEAD = PR HEAD,
+      diff = PR's contribution since branch point) or post-merge
+      (HEAD = merge commit, diff = PR's net contribution; `base`
+      is a direct parent so three-dot reduces to two-dot).
+    default: origin/main
+  fetch-base:
+    description: |
+      Whether to `git fetch` the base ref before diffing. Set to
+      'false' when the workflow already has it locally (e.g. after
+      an in-memory merge that fetched main first, or after
+      actions/checkout with fetch-depth: 0 which fetches all
+      branches).
+    default: 'true'
+
+outputs:
+  kernel:
+    description: |
+      'true' when at least one changed path matches the kernel
+      filter. Gates cargo + libc-test + POSIX + sortix.
+    value: ${{ steps.scope.outputs.kernel }}
+  docs_only:
+    description: |
+      'true' when every changed path is in the docs/meta allowlist.
+      Gates the prereq kernel build + vitest.
+    value: ${{ steps.scope.outputs.docs_only }}
+
+runs:
+  using: composite
+  steps:
+    - id: scope
+      shell: bash
+      env:
+        BASE_REF: ${{ inputs.base-ref }}
+        FETCH_BASE: ${{ inputs.fetch-base }}
+      run: |
+        set -eo pipefail
+
+        if [ "$FETCH_BASE" = 'true' ]; then
+          remote_branch="${BASE_REF#origin/}"
+          git fetch origin "$remote_branch" --depth=1
+        fi
+
+        files=$(git diff --name-only "$BASE_REF"...HEAD)
+        echo "Changed files vs $BASE_REF:"
+        echo "$files" | sed 's/^/  /'
+
+        # Tier B — kernel filter (gates cargo + libc-test + POSIX + sortix).
+        # Includes this action's own path so changes to the detection
+        # logic re-run the full suite for self-validation, mirroring
+        # the way the workflow files themselves are kernel-gated.
+        if echo "$files" | grep -E \
+          -e '^(crates|glue|musl-overlay|musl|libc-test|libc-test-overlay|os-test|host|programs|abi)/' \
+          -e '^(Cargo\.(lock|toml)|flake\.(nix|lock)|rust-toolchain\.toml|\.gitmodules)$' \
+          -e '^scripts/(build-musl|build-libcxx|build-programs|dev-shell|run-libc-tests|run-posix-tests|run-sortix-tests|check-abi-version)\.sh$' \
+          -e '^examples/run-example\.ts$' \
+          -e '^\.github/workflows/(staging-build|prepare-merge)\.yml$' \
+          -e '^\.github/actions/detect-change-scope/' \
+          >/dev/null; then
+          echo 'kernel=true' >> "$GITHUB_OUTPUT"
+          kernel_state='will run'
+        else
+          echo 'kernel=false' >> "$GITHUB_OUTPUT"
+          kernel_state="skip — $BASE_REF is the known-good baseline"
+        fi
+
+        # Tier A — docs-only filter (when true, vitest also skips).
+        # Implemented as inverse: any file outside the docs allowlist
+        # forces docs_only=false. Empty diff is treated as
+        # docs_only=false (defensive — a real PR will never have an
+        # empty diff, so an empty result indicates something
+        # unexpected and we don't want to skip silently).
+        non_docs=$(echo "$files" | grep -vE \
+          -e '^docs/' \
+          -e '^[^/]+\.md$' \
+          -e '^(LICENSE|COPYING|COPYING\.runtime)$' \
+          -e '^\.(gitignore|gitattributes|editorconfig)$' \
+          -e '^\.github/workflows/(docs|staging-cleanup)\.yml$' \
+          -e '^benchmarks/results/' \
+          || true)
+        if [ -z "$non_docs" ] && [ -n "$files" ]; then
+          echo 'docs_only=true' >> "$GITHUB_OUTPUT"
+          vitest_state='skip — docs-only diff'
+        else
+          echo 'docs_only=false' >> "$GITHUB_OUTPUT"
+          vitest_state='will run'
+        fi
+
+        echo "::notice::vitest: $vitest_state | cargo+libc-test+POSIX+sortix: $kernel_state"
