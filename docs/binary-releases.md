@@ -67,7 +67,7 @@ shas and thus distinct names.
 Each `.tar.zst` carries exactly two top-level entries:
 
 ```
-manifest.toml              ← source deps.toml + injected [compatibility]
+manifest.toml              ← source package.toml + injected [compatibility]
 artifacts/                 ← cache-tree contents
     lib/libz.a
     include/zlib.h
@@ -179,7 +179,7 @@ filename ends in `.tar.zst`) also carry:
 - **`arch`** — `"wasm32"`, `"wasm64"`, or `"any"`. Set per
   archive on the system entries; absent on legacy wasm/zip assets.
 - **`upstream_version`** / **`revision`** — verbatim from the
-  source `deps.toml`. `revision` bumps when the build changes
+  source `package.toml`. `revision` bumps when the build changes
   without an upstream version bump.
 - **`archive_name`** — filename of the `.tar.zst`. Identical to
   `name` for the system entries; `null` (or absent) on legacy entries. The
@@ -189,7 +189,7 @@ filename ends in `.tar.zst`) also carry:
 - **`archive_sha256`** — SHA-256 of the archive bytes. Equal to
   `sha256` for the system entries; the field is repeated under the
   `archive_*` prefix for symmetry with the consumer-side
-  `[binary]` block in `deps.toml`.
+  `[binary]` block in `package.toml`.
 - **`compatibility`** — required on the system entries; absent on legacy.
   Object with three required fields:
   - `target_arch` — `"wasm32"` or `"wasm64"`.
@@ -203,7 +203,7 @@ filename ends in `.tar.zst`) also carry:
   the system-generated manifests; legacy-vintage manifests carry a `ref`
   instead (a git tag or upstream version label).
 - **`license`** — `{spdx, url?}` block, verbatim from
-  `deps.toml`.
+  `package.toml`.
 - **`advisories`** — array of known security advisories
   against the asset. Empty array if none.
 
@@ -319,7 +319,7 @@ three GitHub Actions workflows. Full design in
 
 ### Author flow
 
-1. Edit `examples/libs/<name>/deps.toml` (bump version, swap source
+1. Edit `examples/libs/<name>/package.toml` (bump version, swap source
    URL/sha) and any associated build script. Other code/test changes
    may go in the same PR.
 2. Locally: `cargo xtask build-deps build <name>` — resolver
@@ -329,7 +329,7 @@ three GitHub Actions workflows. Full design in
 
 ### Reviewer flow
 
-1. Read PR diff: `deps.toml` + code/test changes only. No lockfile
+1. Read PR diff: `package.toml` + code/test changes only. No lockfile
    churn.
 2. Read the sticky `pr-staging-build` comment for the list of
    archives that were rebuilt.
@@ -349,8 +349,8 @@ three GitHub Actions workflows. Full design in
 `prepare-merge.yml` publishes the durable release, pushes a single
 `chore(binaries): bump lockfile to <new-tag>` commit to the PR
 branch, and enables squash auto-merge. The squash merge collapses
-code + `deps.toml` + lockfile bump into one main commit — main is
-never in a state where the lockfile disagrees with the `deps.toml`.
+code + `package.toml` + lockfile bump into one main commit — main is
+never in a state where the lockfile disagrees with the `package.toml`.
 
 ### Overlay file lifecycle (`binaries.lock.pr`)
 
@@ -386,7 +386,7 @@ must:
   lockfile-bump commit only after a fresh durable release has been
   published. Without this required check, PRs could be merged
   without ever cutting a fresh durable release — the lockfile on
-  main would be a step behind whatever `deps.toml` says. Admins
+  main would be a step behind whatever `package.toml` says. Admins
   retain bypass via the standard branch-protection override (or
   "Allow specified actors to bypass required pull requests").
 
@@ -438,7 +438,7 @@ Trigger via Actions → "Force rebuild" → "Run workflow". Inputs:
 
 - **packages** — `all` (default) or comma-separated names
   (e.g. `php,mariadb`). Names match the `name = "..."` field in
-  each `examples/libs/<dir>/deps.toml`.
+  each `examples/libs/<dir>/package.toml`.
 - **arches** — comma-separated subset of `wasm32,wasm64` (default:
   both). Manifests whose `target_arches` don't include a requested
   arch are silently skipped.
