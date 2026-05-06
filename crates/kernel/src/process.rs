@@ -652,6 +652,26 @@ mod tests {
     }
 
     #[test]
+    fn fork_count_bumps_on_successful_fork() {
+        use crate::process_table::ProcessTable;
+        let mut table = ProcessTable::new();
+        table.create_process(100).unwrap();
+        // Sanity: counter starts at 0.
+        assert_eq!(table.get(100).unwrap().fork_count(), 0);
+
+        table.fork_process(100, 101).expect("first fork");
+        assert_eq!(table.get(100).unwrap().fork_count(), 1);
+
+        table.fork_process(100, 102).expect("second fork");
+        assert_eq!(table.get(100).unwrap().fork_count(), 2);
+
+        // Children's counters are independent and start at 0 — they have not
+        // forked themselves.
+        assert_eq!(table.get(101).unwrap().fork_count(), 0);
+        assert_eq!(table.get(102).unwrap().fork_count(), 0);
+    }
+
+    #[test]
     fn test_alloc_pipe_reuses_freed_slots() {
         let mut proc = Process::new(1);
         assert!(proc.pipes.is_empty());

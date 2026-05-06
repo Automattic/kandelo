@@ -344,6 +344,15 @@ impl ProcessTable {
         child.fork_pipe_replay = pipe_fd_pairs.into_values().collect();
 
         self.processes.insert(child_pid, child);
+
+        // Parent's fork-counter regression guardrail. The non-forking spawn
+        // tests assert this stays put across a SYS_SPAWN, proving the new
+        // path doesn't fall back to fork. Re-borrow at the very end because
+        // earlier code held an immutable `&parent`.
+        if let Some(parent) = self.processes.get_mut(&parent_pid) {
+            parent.increment_fork_count();
+        }
+
         Ok(())
     }
 
