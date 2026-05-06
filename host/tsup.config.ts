@@ -6,6 +6,7 @@ export default defineConfig({
     "src/browser.ts",
     "src/worker-entry.ts",
     "src/worker-entry-browser.ts",
+    "src/node-kernel-worker-entry.ts",
     "src/vfs/opfs-worker.ts",
   ],
   format: ["esm", "cjs"],
