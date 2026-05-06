@@ -62,14 +62,23 @@ jobs:
       #   * php: standalone PHP startup + a small compute loop. Replaces
       #     wordpress in CI — isolates interpreter perf from framework
       #     so a regression here is attributable to PHP itself.
-      #   * mariadb-* (wasm32 + wasm64, both engines): heavy native app
-      #     coverage. Tractable now that the suite batches all queries
-      #     into one mysqltest invocation (was ~50s × 4 calls per round
-      #     just for spawn overhead — now ~50s once).
+      #   * mariadb-aria + mariadb-innodb (wasm32 only): heavy native
+      #     app coverage with both storage engines. Tractable now that
+      #     the suite batches all queries into one mysqltest invocation
+      #     (was ~50s × 4 calls per round just for spawn overhead —
+      #     now ~50s once).
       #
       # Skipped in CI but still registered in benchmarks/run.ts'
       # SUITE_MODULES so they remain runnable locally and are easy to
       # re-enable:
+      #   * mariadb-aria-64 / mariadb-innodb-64 — wasm64 mariadbd cold
+      #     start under V8 wasm-c-api takes ~3-5 minutes per round even
+      #     with batched queries (large memory64 module compile + map),
+      #     so including them pushes CI from ~15 min to ~100 min for
+      #     wasm64-specific perf coverage that's mostly attributable to
+      #     module-load overhead rather than to kernel/glue changes.
+      #     Re-enable once wasm64 cold start is faster, or move them
+      #     to a slower nightly job.
       #   * wordpress — folded into php-standalone for CI; the WordPress
       #     suite is still useful for measuring framework-level deltas
       #     ad-hoc.
@@ -77,8 +86,8 @@ jobs:
       #     (examples/libs/erlang/erlang-install/) which isn't shipped
       #     by package management today; would silently skip even if
       #     listed as expected.
-      EXPECTED_SUITES: "syscall-io,process-lifecycle,php,mariadb-aria,mariadb-aria-64,mariadb-innodb,mariadb-innodb-64"
-      SKIP_SUITES: "wordpress,erlang-ring"
+      EXPECTED_SUITES: "syscall-io,process-lifecycle,php,mariadb-aria,mariadb-innodb"
+      SKIP_SUITES: "wordpress,erlang-ring,mariadb-aria-64,mariadb-innodb-64"
       ROUNDS: "3"
       THRESHOLD: "5"
     steps:
