@@ -1,21 +1,22 @@
 name: Performance benchmarks
 
-# Runs the full benchmark suite (Node + browser hosts) twice on the
-# same runner — once on the PR HEAD, once on the PR base — and posts
-# a sticky PR comment with the per-suite delta table.
+# Runs the benchmark suite (Node + browser hosts) twice on the same
+# runner — once on the PR HEAD, once on the PR base — and posts a
+# sticky PR comment with the per-suite delta table.
 #
-# Self-comparing per PR: both sides run on the same runner back-to-back,
-# so absolute noise floor matters less than the relative delta between
-# sides. The compare/gate uses ±5% as the change-of-note threshold
-# (matches benchmarks/compare.ts default).
+# **STRICTLY INFORMATIONAL — does NOT gate merge.**
 #
-# **Informational only**: the gate marks regressions in the comment but
-# does NOT fail the job — `continue-on-error: true` is set on the
-# compare steps. Shared-tenant `ubuntu-latest` jitter still shows up at
-# 10–40% on small benchmarks even back-to-back, so a hard threshold
-# would be flake-prone today. Reviewers eyeball the comment; future
-# work can re-enable hard fails once we have either a beefier runner,
-# more rounds + percentile-based gating, or both.
+# Every benchmark step has `continue-on-error: true` so failures and
+# flagged "regressions" never fail the job. Shared-tenant
+# `ubuntu-latest` jitter routinely shows 10–40% movement on small
+# benchmarks even when both sides run back-to-back, and we run a
+# single round per suite (median-of-3 was costing ~30 min for variance
+# smoothing the gate threshold can't even resolve). The ±5% threshold
+# in the comment is a "hey look at this" indicator, not a verdict.
+#
+# Re-introduce hard gating + more rounds when we have a dedicated or
+# beefier runner that produces stable enough measurements to justify
+# gating decisions on them.
 #
 # Path-filtered: skipped for changes that can't plausibly affect runtime
 # performance (docs, sdk tooling, browser-only demo HTML, CI config for
@@ -88,7 +89,13 @@ jobs:
       #     listed as expected.
       EXPECTED_SUITES: "syscall-io,process-lifecycle,php,mariadb-aria,mariadb-innodb"
       SKIP_SUITES: "wordpress,erlang-ring,mariadb-aria-64,mariadb-innodb-64"
-      ROUNDS: "3"
+      # Single round per suite for CI. Median-of-3 was costing ~30 min
+      # of wall-clock for variance smoothing that the gate's own ±5%
+      # threshold can't even resolve against shared-tenant runner
+      # noise (which routinely shows 10-40% jitter on small benchmarks
+      # even back-to-back). Re-introduce more rounds if/when CI gets
+      # a beefier or dedicated runner.
+      ROUNDS: "1"
       THRESHOLD: "5"
     steps:
       - uses: actions/checkout@v4
@@ -341,17 +348,31 @@ jobs:
         # plain string, not a shell — there's no command substitution. So
         # we build the body in shell, write it to a file, then load it
         # into GITHUB_OUTPUT for the next step.
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           NODE_BODY=$(cat /tmp/gate-node.md 2>/dev/null || echo "_gate did not run_")
           BROWSER_BODY=$(cat /tmp/gate-browser.md 2>/dev/null || echo "_gate did not run_")
-          NODE_MARK="${{ steps.gate-node.outcome == 'success' && '✅' || '❌' }}"
-          BROWSER_MARK="${{ steps.gate-browser.outcome == 'success' && '✅' || '❌' }}"
+          # Movement counters — informational only, not pass/fail.
+          # gate.ts exits non-zero when any metric crosses ±THRESHOLD,
+          # but with single-round measurements that's a noise indicator,
+          # not a regression indicator.
+          NODE_MARK="${{ steps.gate-node.outcome == 'success' && '✓' || '⚠' }}"
+          BROWSER_MARK="${{ steps.gate-browser.outcome == 'success' && '✓' || '⚠' }}"
+          UPDATED="$(date -u +'%Y-%m-%d %H:%M:%S UTC')"
           {
-            echo "**Performance benchmarks** — \`${{ env.ROUNDS }}\` round(s), gating threshold ±${{ env.THRESHOLD }}%"
+            echo "## Performance benchmarks — informational only"
             echo
-            echo "Both sides ran on the same \`ubuntu-latest\` runner back-to-back."
+            echo "**These numbers do NOT gate merge.** Single-round measurements on a"
+            echo "shared-tenant \`ubuntu-latest\` runner have ±10–40% jitter on small"
+            echo "benchmarks even when both sides run back-to-back. The ±${{ env.THRESHOLD }}% threshold"
+            echo "below highlights *movement worth eyeballing*, not regressions to act on."
+            echo "Treat large deltas as a hint to look closer, not as a verdict."
             echo
-            echo "${NODE_MARK} **Node** &nbsp;&nbsp; ${BROWSER_MARK} **Browser**"
+            echo "Run config: \`${{ env.ROUNDS }}\` round per suite, threshold ±${{ env.THRESHOLD }}%."
+            echo "Last updated: \`${UPDATED}\` &middot; [run log](${RUN_URL})"
+            echo
+            echo "${NODE_MARK} Node &middot; ${BROWSER_MARK} Browser &nbsp; (\`✓\` = no metric crossed ±${{ env.THRESHOLD }}%; \`⚠\` = at least one did — open the run log for details)"
             echo
             echo "<details><summary>Node host results</summary>"
             echo
