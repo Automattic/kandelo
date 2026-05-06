@@ -193,7 +193,9 @@ export class NodePlatformIO implements PlatformIO {
   }
 
   chown(path: string, uid: number, gid: number): void {
-    fs.chownSync(this.rewritePath(path), uid, gid);
+    swallowChownPermissionError(() =>
+      fs.chownSync(this.rewritePath(path), uid, gid),
+    );
   }
 
   access(path: string, mode: number): void {
@@ -252,7 +254,7 @@ export class NodePlatformIO implements PlatformIO {
   }
 
   fchown(handle: number, uid: number, gid: number): void {
-    fs.fchownSync(handle, uid, gid);
+    swallowChownPermissionError(() => fs.fchownSync(handle, uid, gid));
   }
 
   clockGettime(
@@ -281,5 +283,25 @@ export class NodePlatformIO implements PlatformIO {
       const arr = new Int32Array(sab);
       Atomics.wait(arr, 0, 0, ms);
     }
+  }
+}
+
+/**
+ * The kernel runs every wasm process as root (uid 0); programs like nginx
+ * therefore call chown() during startup to set ownership of temp dirs to a
+ * less-privileged worker user. The host fs underneath, however, is owned by
+ * the developer's unprivileged user and cannot honor those chowns. Swallow
+ * EPERM/EINVAL/ENOTSUP so the caller observes a successful chown — the
+ * operation is purely virtual from the kernel's perspective.
+ */
+function swallowChownPermissionError(op: () => void): void {
+  try {
+    op();
+  } catch (e: unknown) {
+    const code = (e as NodeJS.ErrnoException | undefined)?.code;
+    if (code === "EPERM" || code === "EINVAL" || code === "ENOTSUP") {
+      return;
+    }
+    throw e;
   }
 }

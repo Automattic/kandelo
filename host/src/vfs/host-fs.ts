@@ -173,7 +173,7 @@ export class HostFileSystem implements FileSystemBackend {
   }
 
   fchown(handle: number, uid: number, gid: number): void {
-    fs.fchownSync(handle, uid, gid);
+    swallowChownPermissionError(() => fs.fchownSync(handle, uid, gid));
   }
 
   // ── Path-based operations ───────────────────────────────────
@@ -219,7 +219,9 @@ export class HostFileSystem implements FileSystemBackend {
   }
 
   chown(path: string, uid: number, gid: number): void {
-    fs.chownSync(this.safePath(path), uid, gid);
+    swallowChownPermissionError(() =>
+      fs.chownSync(this.safePath(path), uid, gid),
+    );
   }
 
   access(path: string, mode: number): void {
@@ -264,5 +266,25 @@ export class HostFileSystem implements FileSystemBackend {
     if (!dir) throw new Error("Invalid dir handle");
     dir.closeSync();
     this.dirHandles.delete(handle);
+  }
+}
+
+/**
+ * The kernel runs every wasm process as root (uid 0); programs like nginx
+ * therefore call chown() during startup to set ownership of temp dirs to a
+ * less-privileged worker user. The host fs underneath, however, is owned by
+ * the developer's unprivileged user and cannot honor those chowns. Swallow
+ * EPERM/EINVAL/ENOTSUP so the caller observes a successful chown — the
+ * operation is purely virtual from the kernel's perspective.
+ */
+function swallowChownPermissionError(op: () => void): void {
+  try {
+    op();
+  } catch (e: unknown) {
+    const code = (e as NodeJS.ErrnoException | undefined)?.code;
+    if (code === "EPERM" || code === "EINVAL" || code === "ENOTSUP") {
+      return;
+    }
+    throw e;
   }
 }
