@@ -97,10 +97,20 @@ echo "==> Configuring PHP for Wasm (CLI + FPM, single tree)..."
 # otherwise reject the cache with "changes in the environment can
 # compromise the build" — recovering requires a fresh cache anyway.
 rm -f "$SCRIPT_DIR/config.cache"
+# --stack-size=131072 (128 KiB) sizes the wasm linear-memory stack
+# region. Required because fcgi_read_request (php-src/main/fastcgi.c)
+# declares `unsigned char buf[FCGI_MAX_LENGTH+8]` = 65543 bytes on the
+# stack. The wasm-ld default of 64 KiB cannot fit even that single
+# frame, so the buffer overflows into the static BSS area and silently
+# corrupts whatever global the linker placed adjacent — in practice
+# musl's `vmlock[2]` (used by mmap/munmap/__vm_wait), which then
+# deadlocks on a futex nobody can wake. 128 KiB = 2x the buffer plus
+# room for the call chain leading into it; PHP's deep recursion lives
+# on the heap-backed zend_vm_stack so this is not a recursion limit.
 if [ ! -f Makefile ]; then
     PKG_CONFIG_PATH="$DEP_PKG_CONFIG_PATH" \
     CPPFLAGS="$DEP_CPPFLAGS" \
-    LDFLAGS="$DEP_LDFLAGS --no-wasm-opt" \
+    LDFLAGS="$DEP_LDFLAGS --no-wasm-opt -Wl,-z,stack-size=131072" \
     wasm32posix-configure \
         --disable-all \
         --disable-cgi \
