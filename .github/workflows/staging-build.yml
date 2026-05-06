@@ -40,6 +40,10 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
 
+      - name: Detect change scope vs main
+        id: changes
+        uses: ./.github/actions/detect-change-scope
+
       - name: Fetch submodules (musl, libc-test, os-test)
         # actions/checkout doesn't pull submodules by default. We need:
         #   musl       — for scripts/build-musl.sh
@@ -237,6 +241,11 @@ jobs:
         # repo root for tsx (needed by run-posix-tests.sh /
         # run-libc-tests.sh / run-sortix-tests.sh which spawn
         # `node --import tsx/esm examples/run-example.ts`).
+        #
+        # Gate: !docs_only — vitest needs these inputs even on
+        # package-only PRs (e.g. examples/libs/php/ change → still
+        # need to run php-browser.spec.ts against the new binary).
+        if: steps.changes.outputs.docs_only != 'true'
         run: |
           bash scripts/dev-shell.sh bash -c '
             cargo build --release -p wasm-posix-kernel \
@@ -251,11 +260,23 @@ jobs:
             cd .. && npx --prefix host playwright install chromium
           '
 
-      - name: Run cargo + vitest tests
+      - name: Run cargo tests (kernel unit tests)
+        # Native Rust unit tests of the kernel — no wasm packages
+        # involved, so this only re-runs when kernel paths change.
+        if: steps.changes.outputs.kernel == 'true'
         run: |
           bash scripts/dev-shell.sh bash -c '
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
             cargo test -p wasm-posix-kernel --target "$HOST_TARGET" --lib
+          '
+
+      - name: Run vitest (host integration tests)
+        # Exercises kernel + host + many built packages (dash, bash,
+        # nginx, erlang, php, quickjs, ...). Runs whenever the diff
+        # is not docs-only, including on package-recipe-only PRs.
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          bash scripts/dev-shell.sh bash -c '
             cd host && npx vitest run
           '
 
@@ -264,17 +285,20 @@ jobs:
         # rounding control, opaque stack, no file-backed mmap for
         # sem_open) and TIME (per-test timeouts) are tolerated. Any
         # FAIL not on the XFAIL list is a regression and exits 1.
+        if: steps.changes.outputs.kernel == 'true'
         run: |
           bash scripts/dev-shell.sh bash scripts/run-libc-tests.sh
 
       - name: Run Open POSIX Test Suite
         # 0 FAIL required; UNRES (unresolved) and SKIP are acceptable.
+        if: steps.changes.outputs.kernel == 'true'
         run: |
           bash scripts/dev-shell.sh bash scripts/run-posix-tests.sh
 
       - name: Run Sortix os-test suite
         # `--all` runs every suite (include, limits, basic, malloc,
         # stdio, io, signal, process, paths). 0 FAIL, 0 XPASS required.
+        if: steps.changes.outputs.kernel == 'true'
         run: |
           bash scripts/dev-shell.sh bash scripts/run-sortix-tests.sh --all
 
