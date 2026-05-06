@@ -1,22 +1,26 @@
 //! xtask — repo-local utilities.
 //!
 //! Subcommands:
-//!   dump-abi          Regenerate `abi/snapshot.json` from authoritative sources.
-//!   build-manifest    Generate a binary-release `manifest.json` from a staging dir.
-//!   bundle-program    Zip-bundle one program's binary + runtime + LICENSE.
-//!   build-deps        Wasm library dep-graph resolver (see docs/dependency-management.md).
-//!   stage-release     Orchestrate full V2 producer side: walk registry, build
-//!                     archives, emit manifest.json into a staging directory.
-//!   stage-pr-overlay  Stage only changed-vs-baseline archives + overlay file
-//!                     for per-PR staging release uploads.
-//!   install-release   Consumer side of V2: read manifest.json, fetch + verify
-//!                     library/program archives, mirror program outputs into
-//!                     local-binaries/.
-//!   set-build-commit  Stamp `[build].commit = <sha>` into one
-//!                     `examples/libs/<name>/package.toml`. Used by the
-//!                     publish flow (Phase A-bis Task 5) when an archive
-//!                     is uploaded; mirrors the lifecycle of
-//!                     `[binary].archive_url` + `archive_sha256`.
+//!   dump-abi              Regenerate `abi/snapshot.json` from authoritative sources.
+//!   build-manifest        Generate a binary-release `manifest.json` from a staging dir.
+//!   bundle-program        Zip-bundle one program's binary + runtime + LICENSE.
+//!   build-deps            Wasm library dep-graph resolver (see docs/dependency-management.md).
+//!   compute-cache-key-sha Print a package's cache-key sha (64 hex chars) to stdout.
+//!                         Args: --package <dir> --arch <wasm32|wasm64>. Used by the
+//!                         Phase B-1 pre-flight workflow to skip already-published
+//!                         matrix entries.
+//!   stage-release         Orchestrate full V2 producer side: walk registry, build
+//!                         archives, emit manifest.json into a staging directory.
+//!   stage-pr-overlay      Stage only changed-vs-baseline archives + overlay file
+//!                         for per-PR staging release uploads.
+//!   install-release       Consumer side of V2: read manifest.json, fetch + verify
+//!                         library/program archives, mirror program outputs into
+//!                         local-binaries/.
+//!   set-build-commit      Stamp `[build].commit = <sha>` into one
+//!                         `examples/libs/<name>/package.toml`. Used by the
+//!                         publish flow (Phase A-bis Task 5) when an archive
+//!                         is uploaded; mirrors the lifecycle of
+//!                         `[binary].archive_url` + `archive_sha256`.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -45,7 +49,7 @@ fn main() -> ExitCode {
         None => {
             eprintln!("usage: xtask <subcommand> [args...]");
             eprintln!(
-                "subcommands: dump-abi, build-manifest, bundle-program, build-deps, stage-release, stage-pr-overlay, install-release, set-build-commit"
+                "subcommands: dump-abi, build-manifest, bundle-program, build-deps, compute-cache-key-sha, stage-release, stage-pr-overlay, install-release, set-build-commit"
             );
             return ExitCode::from(2);
         }
@@ -56,6 +60,7 @@ fn main() -> ExitCode {
         "build-manifest" => build_manifest::run(rest),
         "bundle-program" => bundle_program::run(rest),
         "build-deps" => build_deps::run(rest),
+        "compute-cache-key-sha" => build_deps::run_compute_cache_key_sha(rest),
         "stage-release" => stage_release::run(rest),
         "stage-pr-overlay" => stage_pr_overlay::run(rest),
         "install-release" => install_release::run(rest),

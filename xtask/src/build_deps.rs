@@ -1430,6 +1430,116 @@ fn cmd_resolve(
     Ok(())
 }
 
+/// Parse the argument vector for `xtask compute-cache-key-sha`.
+///
+/// Required flags (order-independent, both `--flag value` and
+/// `--flag=value` forms accepted):
+///   --package <dir>           Path to the package directory (containing
+///                             `package.toml`).
+///   --arch    <wasm32|wasm64> Target architecture for the cache key.
+///
+/// Hand-rolled because the CLI surface is small and the existing
+/// `extract_arch_flag` helper is shared with `build-deps`, where
+/// `--arch` is optional and the positional arguments differ. Keeping
+/// this parser focused makes the contract for the pre-flight workflow
+/// (Phase B-1, Task 2) easy to read at the call site.
+fn parse_compute_cache_key_sha_args(
+    args: Vec<String>,
+) -> Result<(PathBuf, TargetArch), String> {
+    let mut package: Option<PathBuf> = None;
+    let mut arch: Option<TargetArch> = None;
+    let mut it = args.into_iter();
+    while let Some(a) = it.next() {
+        if let Some(value) = a.strip_prefix("--package=") {
+            if package.is_some() {
+                return Err("--package given more than once".into());
+            }
+            package = Some(PathBuf::from(value));
+        } else if a == "--package" {
+            if package.is_some() {
+                return Err("--package given more than once".into());
+            }
+            let value = it
+                .next()
+                .ok_or_else(|| "--package requires a directory path".to_string())?;
+            package = Some(PathBuf::from(value));
+        } else if let Some(value) = a.strip_prefix("--arch=") {
+            if arch.is_some() {
+                return Err("--arch given more than once".into());
+            }
+            arch = Some(parse_target_arch(value)?);
+        } else if a == "--arch" {
+            if arch.is_some() {
+                return Err("--arch given more than once".into());
+            }
+            let value = it
+                .next()
+                .ok_or_else(|| "--arch requires a value (wasm32 or wasm64)".to_string())?;
+            arch = Some(parse_target_arch(&value)?);
+        } else {
+            return Err(format!("unexpected argument {a:?}"));
+        }
+    }
+    let package = package.ok_or_else(|| {
+        "compute-cache-key-sha: --package <dir> is required".to_string()
+    })?;
+    let arch = arch.ok_or_else(|| {
+        "compute-cache-key-sha: --arch <wasm32|wasm64> is required".to_string()
+    })?;
+    Ok((package, arch))
+}
+
+/// Compute the cache-key sha for the manifest at
+/// `<package_dir>/package.toml`, resolving deps against `registry`.
+/// Returns the lowercase 64-char hex string (no trailing newline) so
+/// callers can either print it directly or use it programmatically.
+///
+/// This is a thin wrapper around [`compute_sha`] that loads the
+/// manifest, threads through the canonical `memo` / `chain` state, and
+/// hex-encodes the digest. Factored out from [`run_compute_cache_key_sha`]
+/// so unit tests can exercise the logic without capturing stdout.
+fn compute_cache_key_sha_for_package(
+    package_dir: &Path,
+    registry: &Registry,
+    arch: TargetArch,
+    abi_version: u32,
+) -> Result<String, String> {
+    let toml = package_dir.join("package.toml");
+    let manifest = DepsManifest::load(&toml)?;
+    let mut memo = BTreeMap::new();
+    let mut chain = Vec::new();
+    let sha = compute_sha(&manifest, registry, arch, abi_version, &mut memo, &mut chain)?;
+    Ok(hex(&sha))
+}
+
+/// CLI entry point for `xtask compute-cache-key-sha`.
+///
+/// Wraps the existing internal [`compute_sha`] function as a stable
+/// CLI surface for Phase B-1's pre-flight workflow, which calls this
+/// for every (package, arch) pair to decide which matrix entries are
+/// already published and can be skipped.
+///
+/// Args:
+///   --package <path-to-package-dir>  Directory containing `package.toml`.
+///   --arch    <wasm32|wasm64>        Target architecture.
+///
+/// On success: prints exactly 64 lowercase hex chars + newline to
+/// stdout. On error: returns an `Err`; the top-level `xtask` dispatch
+/// in `main.rs` writes it to stderr and exits non-zero.
+pub fn run_compute_cache_key_sha(args: Vec<String>) -> Result<(), String> {
+    let (package_dir, arch) = parse_compute_cache_key_sha_args(args)?;
+    let repo = repo_root();
+    let registry = Registry::from_env(&repo);
+    let sha = compute_cache_key_sha_for_package(
+        &package_dir,
+        &registry,
+        arch,
+        current_abi_version(),
+    )?;
+    println!("{sha}");
+    Ok(())
+}
+
 /// Cross-consumer host-tool consistency lint. Walks the registry,
 /// groups `[[host_tools]]` declarations by `name` across consumers,
 /// and reports an error when consumers disagree on
@@ -1803,6 +1913,146 @@ libs = ["lib/lib{name}.a"]
         // Sanity: the helper actually reads from crates/shared, so a bump
         // there propagates here without manual sync.
         assert_eq!(current_abi_version(), wasm_posix_shared::ABI_VERSION);
+    }
+
+    // --- compute-cache-key-sha CLI subcommand tests ---
+    //
+    // The subcommand is a thin shell over `compute_sha`: parse
+    // `--package <dir> --arch <wasm32|wasm64>`, load the manifest from
+    // `<dir>/package.toml`, hash it against the supplied registry and
+    // current ABI version, print 64 hex chars to stdout. These tests
+    // pin the helper layer (`compute_cache_key_sha_for_package`) so the
+    // CI pre-flight workflow's contract is locked down even though the
+    // CLI binary itself is exercised by the end-to-end smoke step.
+
+    #[test]
+    fn compute_cache_key_sha_subcommand_prints_64_hex_for_real_package() {
+        // Smoke against a real first-party package — `bash` has a
+        // non-trivial dep graph (depends on ncurses), exercising
+        // transitive cache-key resolution end-to-end.
+        let repo = repo_root();
+        let registry = Registry::from_env(&repo);
+        let pkg = repo.join("examples/libs/bash");
+        let sha = compute_cache_key_sha_for_package(
+            &pkg,
+            &registry,
+            TargetArch::Wasm32,
+            current_abi_version(),
+        )
+        .expect("bash@wasm32 cache-key sha should compute cleanly");
+        assert_eq!(sha.len(), 64, "expected 64 hex chars, got {sha:?}");
+        assert!(
+            sha.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            "expected lowercase hex chars, got {sha:?}"
+        );
+    }
+
+    #[test]
+    fn compute_cache_key_sha_changes_on_input_change() {
+        let root = tempdir("ckcs-input-change");
+        write(&root, "libW", "1.0.0", &[]);
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+
+        let pkg = root.join("libW");
+        let sha_before = compute_cache_key_sha_for_package(
+            &pkg, &reg, TargetArch::Wasm32, TEST_ABI,
+        )
+        .unwrap();
+
+        // Bump revision in-place; helper should re-hash and produce a
+        // different sha.
+        let toml_path = pkg.join("package.toml");
+        let text = std::fs::read_to_string(&toml_path).unwrap();
+        std::fs::write(&toml_path, text.replace("revision = 1", "revision = 7")).unwrap();
+
+        let sha_after = compute_cache_key_sha_for_package(
+            &pkg, &reg, TargetArch::Wasm32, TEST_ABI,
+        )
+        .unwrap();
+        assert_ne!(
+            sha_before, sha_after,
+            "revision bump must change cache_key_sha"
+        );
+    }
+
+    #[test]
+    fn compute_cache_key_sha_is_deterministic_across_invocations() {
+        let root = tempdir("ckcs-deterministic");
+        write(&root, "libDet", "1.0.0", &[]);
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+        let pkg = root.join("libDet");
+
+        let sha1 = compute_cache_key_sha_for_package(
+            &pkg, &reg, TargetArch::Wasm32, TEST_ABI,
+        )
+        .unwrap();
+        let sha2 = compute_cache_key_sha_for_package(
+            &pkg, &reg, TargetArch::Wasm32, TEST_ABI,
+        )
+        .unwrap();
+        assert_eq!(sha1, sha2, "two invocations on identical inputs must agree");
+        assert_eq!(sha1.len(), 64);
+    }
+
+    #[test]
+    fn compute_cache_key_sha_args_parse_long_form() {
+        let (pkg, arch) = parse_compute_cache_key_sha_args(vec![
+            "--package".into(),
+            "examples/libs/bash".into(),
+            "--arch".into(),
+            "wasm32".into(),
+        ])
+        .unwrap();
+        assert_eq!(pkg, PathBuf::from("examples/libs/bash"));
+        assert!(matches!(arch, TargetArch::Wasm32));
+    }
+
+    #[test]
+    fn compute_cache_key_sha_args_parse_equals_form() {
+        let (pkg, arch) = parse_compute_cache_key_sha_args(vec![
+            "--package=some/dir".into(),
+            "--arch=wasm64".into(),
+        ])
+        .unwrap();
+        assert_eq!(pkg, PathBuf::from("some/dir"));
+        assert!(matches!(arch, TargetArch::Wasm64));
+    }
+
+    #[test]
+    fn compute_cache_key_sha_args_reject_missing_package() {
+        let err = parse_compute_cache_key_sha_args(vec![
+            "--arch".into(),
+            "wasm32".into(),
+        ])
+        .unwrap_err();
+        assert!(err.contains("--package"), "got: {err}");
+    }
+
+    #[test]
+    fn compute_cache_key_sha_args_reject_missing_arch() {
+        let err = parse_compute_cache_key_sha_args(vec![
+            "--package".into(),
+            "some/dir".into(),
+        ])
+        .unwrap_err();
+        assert!(err.contains("--arch"), "got: {err}");
+    }
+
+    #[test]
+    fn compute_cache_key_sha_args_reject_unknown_flag() {
+        let err = parse_compute_cache_key_sha_args(vec![
+            "--package".into(),
+            "x".into(),
+            "--arch".into(),
+            "wasm32".into(),
+            "--bogus".into(),
+        ])
+        .unwrap_err();
+        assert!(err.contains("--bogus") || err.contains("unexpected"), "got: {err}");
     }
 
     // --- outputs-folding cache-key tests ---
