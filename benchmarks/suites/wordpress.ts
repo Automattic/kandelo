@@ -10,12 +10,19 @@ import { resolve, dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { runCentralizedProgram } from "../../host/test/centralized-test-helper.js";
 import { NodeKernelHost } from "../../host/src/node-kernel-host.js";
+import { tryResolveBinary } from "../../host/src/binary-resolver.js";
 import type { BenchmarkSuite } from "../types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "../..");
 
-const phpBinaryPath = resolve(repoRoot, "examples/libs/php/php-src/sapi/cli/php");
+// Prefer the packaged php.wasm (binaries/programs/wasm32/php/php.wasm,
+// populated by scripts/fetch-binaries.sh). Fall back to the local
+// source build at examples/libs/php/php-src/sapi/cli/php so devs who
+// just ran build-php.sh keep working without re-fetching.
+const phpBinaryPath =
+  tryResolveBinary("programs/php/php.wasm") ??
+  resolve(repoRoot, "examples/libs/php/php-src/sapi/cli/php");
 const wpDir = resolve(repoRoot, "examples/wordpress/wordpress");
 const routerScript = resolve(repoRoot, "examples/wordpress/router.php");
 

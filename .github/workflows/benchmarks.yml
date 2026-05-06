@@ -1,16 +1,21 @@
 name: Performance benchmarks
 
-# Runs the full benchmark suite (8 suites × Node + browser hosts) twice on
-# the same runner — once on the PR HEAD, once on the PR base — and gates
-# the merge on regressions > 5%.
+# Runs the full benchmark suite (Node + browser hosts) twice on the
+# same runner — once on the PR HEAD, once on the PR base — and posts
+# a sticky PR comment with the per-suite delta table.
 #
 # Self-comparing per PR: both sides run on the same runner back-to-back,
 # so absolute noise floor matters less than the relative delta between
-# sides. Threshold = 5% (matches benchmarks/compare.ts default).
+# sides. The compare/gate uses ±5% as the change-of-note threshold
+# (matches benchmarks/compare.ts default).
 #
-# Hard-fail on baseline-broken suites: if any expected suite produces
-# zero metrics on either side (silent skip), the gate fails. This forces
-# the benchmark suites themselves to stay healthy.
+# **Informational only**: the gate marks regressions in the comment but
+# does NOT fail the job — `continue-on-error: true` is set on the
+# compare steps. Shared-tenant `ubuntu-latest` jitter still shows up at
+# 10–40% on small benchmarks even back-to-back, so a hard threshold
+# would be flake-prone today. Reviewers eyeball the comment; future
+# work can re-enable hard fails once we have either a beefier runner,
+# more rounds + percentile-based gating, or both.
 #
 # Path-filtered: skipped for changes that can't plausibly affect runtime
 # performance (docs, sdk tooling, browser-only demo HTML, CI config for
@@ -161,6 +166,15 @@ jobs:
         run: |
           nix develop --accept-flake-config --command bash scripts/fetch-binaries.sh
 
+      - name: Stage bench fixtures (after)
+        # WordPress checkout + MariaDB bootstrap SQL — see script.
+        # Only staged on the AFTER side: the fixtures land in untracked
+        # paths (examples/wordpress/wordpress/, examples/libs/mariadb/share/mysql/),
+        # so they survive the `git checkout $BASE` below and the BEFORE
+        # side reuses them without needing the script to exist on base.
+        run: |
+          nix develop --accept-flake-config --command bash scripts/stage-bench-fixtures.sh
+
       - name: Run benchmarks — Node host (after)
         run: |
           nix develop --accept-flake-config --command \
@@ -223,6 +237,9 @@ jobs:
 
       - name: Compare and gate (Node)
         id: gate-node
+        # Informational — see header comment. Non-zero exit from gate.ts
+        # surfaces as ❌ in the comment without failing the job.
+        continue-on-error: true
         run: |
           set -o pipefail
           nix develop --accept-flake-config --command \
@@ -237,6 +254,7 @@ jobs:
       - name: Compare and gate (browser)
         if: always()
         id: gate-browser
+        continue-on-error: true
         run: |
           set -o pipefail
           nix develop --accept-flake-config --command \

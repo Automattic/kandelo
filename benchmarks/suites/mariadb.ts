@@ -9,6 +9,7 @@ import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { createConnection, createServer, type Socket } from "net";
 import { NodeKernelHost } from "../../host/src/node-kernel-host.js";
+import { tryResolveBinary } from "../../host/src/binary-resolver.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "../..");
@@ -17,8 +18,37 @@ const mariadbLibDir = resolve(repoRoot, "examples/libs/mariadb");
 
 export type WasmArch = "wasm32" | "wasm64";
 
-function installDirFor(arch: WasmArch): string {
+function localInstallDir(arch: WasmArch): string {
   return resolve(mariadbLibDir, arch === "wasm64" ? "mariadb-install-64" : "mariadb-install");
+}
+
+// Resolve the mariadbd / mysqltest wasm binary. Priority:
+//   1. Packaged binary under binaries/programs/<arch>/mariadb/<name>
+//      (populated by scripts/fetch-binaries.sh).
+//   2. Local source build under examples/libs/mariadb/mariadb-install[-64]/bin/.
+function resolveMariaDBBinary(arch: WasmArch, name: "mariadbd" | "mysqltest.wasm"): string | null {
+  const packaged = tryResolveBinary(`programs/${arch}/mariadb/${name === "mariadbd" ? "mariadbd.wasm" : name}`);
+  if (packaged) return packaged;
+  const local = resolve(localInstallDir(arch), "bin", name);
+  if (existsSync(local)) return local;
+  return null;
+}
+
+// Locate the mysql_system_tables*.sql bootstrap files. The mariadb
+// package archive ships only the wasm binaries (see package.toml
+// outputs), so these SQL files come from one of:
+//   1. $MARIADB_BENCH_SQL_DIR (CI / explicit override)
+//   2. examples/libs/mariadb/share/mysql/ (vendored / staged fixture)
+//   3. examples/libs/mariadb/mariadb-install[-64]/share/mysql/ (local source build)
+function resolveSystemTablesSql(arch: WasmArch, basename: string): string | null {
+  const candidates: string[] = [];
+  if (process.env.MARIADB_BENCH_SQL_DIR) {
+    candidates.push(resolve(process.env.MARIADB_BENCH_SQL_DIR, basename));
+  }
+  candidates.push(resolve(mariadbLibDir, "share/mysql", basename));
+  candidates.push(resolve(localInstallDir(arch), "share/mysql", basename));
+  for (const c of candidates) if (existsSync(c)) return c;
+  return null;
 }
 
 function loadBytes(path: string): ArrayBuffer {
@@ -58,8 +88,13 @@ interface MariaDBInstance {
 
 async function startMariaDB(arch: WasmArch, dataDir: string, bootstrap: boolean, engineArgs: string[]): Promise<MariaDBInstance> {
   const port = await getFreePort();
-  const installDir = installDirFor(arch);
-  const mysqldBytes = loadBytes(resolve(installDir, "bin/mariadbd"));
+  const mariadbdPath = resolveMariaDBBinary(arch, "mariadbd");
+  if (!mariadbdPath) {
+    throw new Error(
+      `mariadbd ${arch} binary not found. Expected via fetch-binaries (binaries/programs/${arch}/mariadb/mariadbd.wasm) or local build (mariadb-install/bin/mariadbd).`,
+    );
+  }
+  const mysqldBytes = loadBytes(mariadbdPath);
 
   const verbose = process.env.MARIADB_BENCH_VERBOSE === "1";
   const host = new NodeKernelHost({
@@ -89,9 +124,16 @@ async function startMariaDB(arch: WasmArch, dataDir: string, bootstrap: boolean,
 
   let stdinData: Uint8Array | undefined;
   if (bootstrap) {
-    const shareDir = resolve(installDirFor(arch), "share/mysql");
-    const systemTables = readFileSync(resolve(shareDir, "mysql_system_tables.sql"), "utf-8");
-    const systemData = readFileSync(resolve(shareDir, "mysql_system_tables_data.sql"), "utf-8");
+    const tablesPath = resolveSystemTablesSql(arch, "mysql_system_tables.sql");
+    const dataPath = resolveSystemTablesSql(arch, "mysql_system_tables_data.sql");
+    if (!tablesPath || !dataPath) {
+      throw new Error(
+        "MariaDB bootstrap SQL not found (mysql_system_tables.sql + mysql_system_tables_data.sql). " +
+          "Set $MARIADB_BENCH_SQL_DIR, vendor under examples/libs/mariadb/share/mysql/, or run build-mariadb.sh.",
+      );
+    }
+    const systemTables = readFileSync(tablesPath, "utf-8");
+    const systemData = readFileSync(dataPath, "utf-8");
     const bootstrapSql = `use mysql;\n${systemTables}\n${systemData}\n`;
     stdinData = new TextEncoder().encode(bootstrapSql);
   }
@@ -119,9 +161,13 @@ async function runMysqlTest(
   instance: MariaDBInstance,
   sql: string,
 ): Promise<{ stdout: string; exitCode: number }> {
+  const mysqltestPath = resolveMariaDBBinary(arch, "mysqltest.wasm");
+  if (!mysqltestPath) {
+    throw new Error(`mysqltest ${arch} binary not found.`);
+  }
   const { runCentralizedProgram } = await import("../../host/test/centralized-test-helper.js");
   const result = await runCentralizedProgram({
-    programPath: resolve(installDirFor(arch), "bin/mysqltest.wasm"),
+    programPath: mysqltestPath,
     argv: [
       "mysqltest",
       "--host=127.0.0.1",
@@ -136,13 +182,17 @@ async function runMysqlTest(
 }
 
 export function isMariaDBAvailable(arch: WasmArch = "wasm32"): boolean {
-  return existsSync(resolve(installDirFor(arch), "bin/mariadbd"));
+  return resolveMariaDBBinary(arch, "mariadbd") !== null
+    && resolveSystemTablesSql(arch, "mysql_system_tables.sql") !== null;
 }
 
 export async function runMariaDBBenchmark(engine: string, arch: WasmArch = "wasm32"): Promise<Record<string, number>> {
   if (!isMariaDBAvailable(arch)) {
     const flag = arch === "wasm64" ? " --wasm64" : "";
-    console.warn(`  MariaDB ${arch} not found, skipping. Run: bash examples/libs/mariadb/build-mariadb.sh${flag}`);
+    console.warn(
+      `  MariaDB ${arch} not runnable (missing binary or bootstrap SQL); skipping.\n` +
+      `    Hint: scripts/fetch-binaries.sh + scripts/stage-bench-fixtures.sh, or build locally: bash examples/libs/mariadb/build-mariadb.sh${flag}`,
+    );
     return {};
   }
 
