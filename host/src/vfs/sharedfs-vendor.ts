@@ -1645,6 +1645,36 @@ export class SharedFS {
     }
   }
 
+  chown(path: string, uid: number, gid: number): void {
+    const ino = this.pathResolve(path, true); // POSIX chown follows symlinks
+    if (ino < 0) throw new SFSError(ino);
+    this.inodeWriteLock(ino);
+    try {
+      const off = this.inodeOffset(ino);
+      this.w32(off + INO_UID, uid);
+      this.w32(off + INO_GID, gid);
+      this.w64(off + INO_CTIME, Date.now());
+      // POSIX: chown may clear setuid/setgid bits. Deferred to PR 5/5
+      // (permission enforcement); for now we just store.
+    } finally {
+      this.inodeWriteUnlock(ino);
+    }
+  }
+
+  fchown(fd: number, uid: number, gid: number): void {
+    const entry = this.fdGet(fd);
+    if (!entry) throw new SFSError(EBADF);
+    this.inodeWriteLock(entry.ino);
+    try {
+      const off = this.inodeOffset(entry.ino);
+      this.w32(off + INO_UID, uid);
+      this.w32(off + INO_GID, gid);
+      this.w64(off + INO_CTIME, Date.now());
+    } finally {
+      this.inodeWriteUnlock(entry.ino);
+    }
+  }
+
   utimens(path: string, atimeSec: number, atimeNsec: number, mtimeSec: number, mtimeNsec: number): void {
     const ino = this.pathResolve(path, true);
     if (ino < 0) throw new SFSError(ino);

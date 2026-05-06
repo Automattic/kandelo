@@ -79,4 +79,52 @@ describe("SharedFS uid/gid", () => {
     expect(stl.uid).toBe(1234);
     expect(stl.gid).toBe(5678);
   });
+
+  it("chown changes uid/gid", () => {
+    const sab = new SharedArrayBuffer(1024 * 1024);
+    const fs = MemoryFileSystem.create(sab);
+    const fd = fs.open("/hello", O_WRONLY | O_CREAT | O_TRUNC, 0o644);
+    fs.close(fd);
+    fs.chown("/hello", 1000, 1000);
+    const st = fs.stat("/hello");
+    expect(st.uid).toBe(1000);
+    expect(st.gid).toBe(1000);
+  });
+
+  it("fchown changes uid/gid via fd", () => {
+    const sab = new SharedArrayBuffer(1024 * 1024);
+    const fs = MemoryFileSystem.create(sab);
+    const fd = fs.open("/hello", O_WRONLY | O_CREAT | O_TRUNC, 0o644);
+    fs.fchown(fd, 500, 600);
+    fs.close(fd);
+    const st = fs.stat("/hello");
+    expect(st.uid).toBe(500);
+    expect(st.gid).toBe(600);
+  });
+
+  it("chown round-trips back to zero and leaves other inode fields intact", () => {
+    const sab = new SharedArrayBuffer(1024 * 1024);
+    const fs = MemoryFileSystem.create(sab);
+    const fd = fs.open("/rt", O_WRONLY | O_CREAT | O_TRUNC, 0o644);
+    fs.close(fd);
+
+    const before = fs.stat("/rt");
+    expect(before.uid).toBe(0);
+    expect(before.gid).toBe(0);
+
+    fs.chown("/rt", 7777, 8888);
+    const mid = fs.stat("/rt");
+    expect(mid.uid).toBe(7777);
+    expect(mid.gid).toBe(8888);
+    // chown must not disturb mode, link count, or size.
+    expect(mid.mode).toBe(before.mode);
+    expect(mid.linkCount).toBe(before.linkCount);
+    expect(mid.size).toBe(before.size);
+
+    fs.chown("/rt", 0, 0);
+    const after = fs.stat("/rt");
+    expect(after.uid).toBe(0);
+    expect(after.gid).toBe(0);
+    expect(after.mode).toBe(before.mode);
+  });
 });
