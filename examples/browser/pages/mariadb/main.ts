@@ -18,10 +18,20 @@
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
 import { MySqlBrowserClient } from "../../lib/mysql-client";
+import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
+import { writeVfsFile } from "../../../../host/src/vfs/image-helpers";
 import kernelWasmUrl from "@kernel-wasm?url";
 import VFS_IMAGE_URL_32 from "@binaries/programs/wasm32/mariadb-vfs.vfs?url";
 import VFS_IMAGE_URL_64 from "@binaries/programs/wasm64/mariadb-vfs.vfs?url";
 import "../../lib/terminal-panel.css";
+
+// Diagnostic toggle. When true, we redirect mariadbd's --log-error from
+// /data/<eng>-bootstrap.log (a path inside the VFS that's invisible from
+// outside the kernel) to /dev/stderr so the daemon's startup messages land
+// in the demo log pane, AND turn on per-syscall tracing for the selected
+// arch's mariadbd process. Off by default — turn on when investigating
+// boot regressions.
+const WASM64_DEBUG = false;
 
 const MYSQL_PORT = 3306;
 
@@ -105,12 +115,35 @@ async function start() {
         return r.arrayBuffer();
       }),
     ]);
-    const vfsImage = new Uint8Array(vfsImageBuf);
+    let vfsImage = new Uint8Array(vfsImageBuf);
     appendLog(
       `Kernel: ${(kernelBytes.byteLength / 1024).toFixed(0)}KB, ` +
       `VFS (${archLabel}): ${(vfsImage.byteLength / (1024 * 1024)).toFixed(1)}MB\n`,
       "info",
     );
+
+    // Debug overlay: redirect mariadbd's --log-error from /data/<eng>-bootstrap.log
+    // (a path inside the VFS that's invisible from outside the kernel) to
+    // /dev/stderr so the daemon's own startup messages land in the demo log
+    // pane via onStderr. This is read-and-rewrite the bootstrap.sh wrapper,
+    // not the mariadbd binary itself.
+    if (WASM64_DEBUG && arch === "wasm64") {
+      const fs = MemoryFileSystem.fromImage(vfsImage, { maxByteLength: 1 * 1024 * 1024 * 1024 });
+      const scriptPath = `/etc/mariadb/${tag}-bootstrap.sh`;
+      const fdR = fs.open(scriptPath, 0o0, 0);
+      const stat = fs.fstat(fdR);
+      const buf = new Uint8Array(stat.size);
+      fs.read(fdR, buf, 0, buf.length);
+      fs.close(fdR);
+      const orig = new TextDecoder().decode(buf);
+      const patched = orig.replace(
+        /--log-error=\/data\/[a-z]+-bootstrap\.log/,
+        "--log-error=/dev/stderr",
+      );
+      writeVfsFile(fs, scriptPath, patched);
+      appendLog(`[debug] patched ${scriptPath}: ${patched.trim()}\n`, "info");
+      vfsImage = await fs.saveImage();
+    }
 
     setStatus(`Booting kernel with /sbin/dinit (${targetService})...`, "loading");
 
@@ -120,6 +153,10 @@ async function start() {
     kernel = new BrowserKernel({
       kernelOwnedFs: true,
       maxWorkers: 12,
+      // Filter syscall trace to the selected arch's mariadbd process. dinit
+      // (wasm32) stays quiet when arch=wasm64; mariadbd-wasm32 traces only
+      // when arch=wasm32.
+      syscallLogPtrWidth: WASM64_DEBUG ? (arch === "wasm64" ? 8 : 4) : undefined,
       onStdout: (data) => appendLog(decoder.decode(data)),
       onStderr: (data) => appendLog(decoder.decode(data), "stderr"),
       onListenTcp: (_pid, _fd, port) => {

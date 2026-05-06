@@ -229,6 +229,8 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
       maxWorkers: msg.config.maxWorkers,
       dataBufferSize: PAGE_SIZE,
       useSharedMemory: true,
+      enableSyscallLog: msg.config.enableSyscallLog,
+      syscallLogPtrWidth: msg.config.syscallLogPtrWidth,
     },
     io,
     {

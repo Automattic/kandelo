@@ -4,6 +4,11 @@ export interface KernelConfig {
   useSharedMemory: boolean;
   /** Log every syscall with decoded args and return values to stderr */
   enableSyscallLog?: boolean;
+  /** Log syscalls only for processes with this ptrWidth (4 or 8). Useful when
+   *  one wasm64 process in a multi-process demo is misbehaving and the rest
+   *  are wasm32 — enabling enableSyscallLog drowns the trace in unrelated
+   *  syscalls. */
+  syscallLogPtrWidth?: 4 | 8;
 }
 
 export interface StatResult {

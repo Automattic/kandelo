@@ -83,6 +83,16 @@ because the wakeup is delivered to the master.
 `examples/browser/lib/kernel-worker-entry.ts` (`handleHttpRequest` —
 how it picks a target listening pid).
 
+### wasm64 musl: missing `__NR_pselect6_time64` alias forces select() through SYS_select
+`musl-overlay/arch/wasm32posix/bits/syscall.h.in:109` defines `__NR_pselect6_time64 = __NR_pselect6`, so musl's `select.c` routes wasm32 through SYS_pselect6 (252). The wasm64 overlay omits that alias; musl falls through to `#ifdef SYS_select` and uses **SYS_select (103)** instead. The host gained a SYS_SELECT timeout-aware handler (kernel-worker.ts `handleSelect`) so this works correctly today, but as defense-in-depth the wasm64 overlay should mirror wasm32 — fewer code paths, single canonical entry point. Doing this requires rebuilding the cached wasm64 binaries (the libc.a baked into them changes), so it's a coordinated rebuild task.
+
+**Files:** `musl-overlay/arch/wasm64posix/bits/syscall.h.in`
+
+### Audit other PR #383 callers that may have missed the `GLOBAL_PIPE_PID` migration
+PR #383 (`fix(kernel): share AF_INET accept queue across fork — nginx multi-worker`, May 2026) moved injected-connection pipes to the kernel's GLOBAL pipe table. `kernel_pipe_{read,write,close_*,is_*_open}` now treat `pid == 0` as a sentinel meaning "use the global pipe table". The HTTP bridge in `kernel-worker-entry.ts` and `NodeKernelHost` were updated; `examples/browser/lib/mysql-client.ts` and `examples/browser/lib/redis-client.ts` were missed and have since been fixed. **Audit any other call site that does `kernel.injectConnection(...)` and then `kernel.pipeRead/pipeWrite` with a non-zero pid** — they're broken in the same way (silent EBADF; greeting bytes never reach the browser-side reader). Currently visible: only the two demo clients that have already been fixed, but a future demo that reuses the inject-and-read pattern needs to know about the convention.
+
+**Files:** `examples/browser/lib/*-client.ts`, anything calling `BrowserKernel.injectConnection`. Convention: store `this.pid = 0` (or import `GLOBAL_PIPE_PID = 0`) for all pipe ops on injected pipes.
+
 ## Host runtime
 
 ### Pre-instantiation worker errors bypass the kernel exit path

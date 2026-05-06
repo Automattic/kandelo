@@ -13,6 +13,15 @@ import type { BrowserKernel } from "./browser-kernel";
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
+// Pipes returned by `kernel.injectConnection` live in the kernel's
+// global pipe table, not the target process's per-process pipes
+// (introduced in PR #383's shared accept queue). The pipe-API entry
+// points use `pid == 0` as the global-table sentinel; passing the
+// listener's pid would look in the wrong table and silently return
+// EBADF. Mirrors the convention `mysql-client.ts` uses for the same
+// reason.
+const GLOBAL_PIPE_PID = 0;
+
 export interface RedisResult {
   type: "string" | "error" | "integer" | "bulk" | "array" | "null";
   value: string | number | null | RedisResult[];
@@ -72,7 +81,7 @@ export class RedisBrowserClient {
     }
 
     // Send command
-    await this.kernel.pipeWrite(this.pid, this.recvPipeIdx, encoder.encode(cmd));
+    await this.kernel.pipeWrite(GLOBAL_PIPE_PID, this.recvPipeIdx, encoder.encode(cmd));
     this.kernel.wakeBlockedReaders(this.recvPipeIdx);
 
     // Read response
@@ -167,7 +176,7 @@ export class RedisBrowserClient {
   private async fillBuffer(): Promise<void> {
     // Poll for data from the kernel pipe
     for (let attempt = 0; attempt < 200; attempt++) {
-      const data = await this.kernel.pipeRead(this.pid, this.sendPipeIdx);
+      const data = await this.kernel.pipeRead(GLOBAL_PIPE_PID, this.sendPipeIdx);
       if (data && data.length > 0) {
         const merged = new Uint8Array(this.readBuffer.length + data.length);
         merged.set(this.readBuffer);

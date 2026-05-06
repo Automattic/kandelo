@@ -44,6 +44,7 @@ const SYS_FUTEX = 200;
 const SYS_POLL = 60;
 const SYS_PPOLL = 251;
 const SYS_PSELECT6 = 252;
+const SYS_SELECT = 103;
 const SYS_EPOLL_PWAIT = 241;
 const SYS_EPOLL_CREATE1 = 239;
 const SYS_EPOLL_CREATE = 378;
@@ -763,7 +764,7 @@ export class CentralizedKernelWorker {
      *  os-test/signal/ppoll-block-sleep-write-raise. */
     needsSignalSafeWake?: boolean;
   }>();
-  /** Pending pselect6 retries — used for signal-driven wakeup and timeout tracking */
+  /** Pending pselect6/select retries — used for signal-driven wakeup and timeout tracking */
   private pendingSelectRetries = new Map<number, {
     timer: any;  // setTimeout or setImmediate handle
     channel: ChannelInfo;
@@ -771,6 +772,9 @@ export class CentralizedKernelWorker {
     deadline: number;  // Date.now() deadline, -1 for infinite
     /** True if this pselect6 retry has an atomic sigmask swap. */
     needsSignalSafeWake?: boolean;
+    /** SYS_SELECT (103) or SYS_PSELECT6 (252). Determines retry-dispatch
+     *  target when a wake fires; the two have different time-struct shapes. */
+    syscallNr?: number;
   }>();
   /** Flag to coalesce cross-process wakeup microtasks */
   private wakeScheduled = false;
@@ -1693,8 +1697,13 @@ export class CentralizedKernelWorker {
     ring.push(`  syscall=${syscallNr} args=[${origArgs.join(',')}]`);
     if (ring.length > 30) ring.shift();
 
-    // Syscall logging
-    const logging = this.config.enableSyscallLog;
+    // Syscall logging (enable globally via enableSyscallLog, or filter by
+    // process pointer width via syscallLogPtrWidth — useful when a single
+    // wasm64 process in a mixed-arch demo needs a focused trace).
+    const widthFilter = this.config.syscallLogPtrWidth;
+    const matchesWidthFilter = widthFilter !== undefined
+      && this.processes.get(channel.pid)?.ptrWidth === widthFilter;
+    const logging = !!this.config.enableSyscallLog || matchesWidthFilter;
     let logEntry = "";
     if (logging) {
       logEntry = this.formatSyscallEntry(channel, syscallNr, origArgs);
@@ -1751,6 +1760,26 @@ export class CentralizedKernelWorker {
     // centralized mode the futex address is in process memory. Intercept
     // here and handle directly.
     if (syscallNr === SYS_FUTEX) {
+      if (logging) {
+        // Futex args: (uaddr, op, val, timeout, uaddr2, val3). Decode the op
+        // to make hung-thread investigations readable.
+        const FUTEX_OPS: Record<number, string> = {
+          0: "WAIT", 1: "WAKE", 2: "FD", 3: "REQUEUE", 4: "CMP_REQUEUE",
+          5: "WAKE_OP", 6: "LOCK_PI", 7: "UNLOCK_PI", 8: "TRYLOCK_PI",
+          9: "WAIT_BITSET", 10: "WAKE_BITSET", 11: "WAIT_REQUEUE_PI",
+          12: "CMP_REQUEUE_PI",
+        };
+        const FUTEX_PRIVATE_FLAG = 128;
+        const FUTEX_CLOCK_REALTIME = 256;
+        const op = origArgs[1] >>> 0;
+        const cmd = op & ~(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME);
+        const opName = FUTEX_OPS[cmd] ?? `op${cmd}`;
+        const flags = (op & FUTEX_PRIVATE_FLAG ? "|PRIVATE" : "")
+          + (op & FUTEX_CLOCK_REALTIME ? "|REALTIME" : "");
+        const tid = this.channelTids.get(`${channel.pid}:${channel.channelOffset}`);
+        const tidSuffix = tid !== undefined ? `:t${tid}` : ``;
+        console.error(`[${channel.pid}${tidSuffix}] futex(0x${(origArgs[0] >>> 0).toString(16)}, ${opName}${flags}, val=${origArgs[2]})`);
+      }
       this.handleFutex(channel, origArgs);
       return;
     }
@@ -1872,6 +1901,20 @@ export class CentralizedKernelWorker {
     // --- pselect6: fd_sets (inout) + timeout/sigmask decoding ---
     if (syscallNr === SYS_PSELECT6) {
       this.handlePselect6(channel, origArgs);
+      return;
+    }
+
+    // --- select(2): same shape as pselect6 but with `struct timeval`
+    // (sec, usec) and no sigmask. musl's select.c routes here on wasm64
+    // because `__NR_pselect6_time64` isn't defined for that arch (unlike
+    // wasm32, which aliases it to __NR_pselect6). Without this intercept,
+    // sys_select returns EAGAIN unconditionally in centralized mode and
+    // the generic blocking-retry has no select-timeout awareness — every
+    // `select(0,0,0,0,&tv)` (= my_sleep) becomes an infinite loop. That
+    // surfaced as the wasm64 mariadbd boot hang at
+    // wait_for_signal_thread_to_end's kill+my_sleep loop.
+    if (syscallNr === SYS_SELECT) {
+      this.handleSelect(channel, origArgs);
       return;
     }
 
@@ -2782,7 +2825,13 @@ export class CentralizedKernelWorker {
       // Cancel both setTimeout and setImmediate handles (one will be a no-op)
       clearTimeout(entry.timer);
       clearImmediate(entry.timer);
-      this.handlePselect6(entry.channel, entry.origArgs);
+      // Re-dispatch to the right handler — SYS_SELECT and SYS_PSELECT6 have
+      // different time-struct shapes (timeval vs timespec).
+      if (entry.syscallNr === SYS_SELECT) {
+        this.handleSelect(entry.channel, entry.origArgs);
+      } else {
+        this.handlePselect6(entry.channel, entry.origArgs);
+      }
     }
 
     // Also wake all pending pipe readers — a cross-process write may have
@@ -3560,6 +3609,171 @@ export class CentralizedKernelWorker {
    *   [256..384] exceptfds (fd_set, 128 bytes)
    *   [384..392] mask (8 bytes: mask_lo + mask_hi)
    */
+  /**
+   * select(2) — args (nfds, readfds, writefds, exceptfds, *timeval).
+   *
+   * Differs from pselect6 only in the time struct: select takes
+   * `struct timeval { long sec; long usec; }` and has no sigmask. musl
+   * routes here on wasm64 because `__NR_pselect6_time64` isn't defined for
+   * that arch (unlike wasm32, which aliases it to __NR_pselect6 and lands
+   * on pselect6 instead).
+   *
+   * We decode timeval → ms, drive the kernel with sys_select directly, and
+   * mirror handlePselect6's EAGAIN/timeout bookkeeping. The hot path in our
+   * own code is `select(0, NULL, NULL, NULL, &tv)` (mysys/my_sleep.c) — the
+   * pure-sleep case, fast-path'd to a setTimeout.
+   */
+  private handleSelect(channel: ChannelInfo, origArgs: number[]): void {
+    const FD_SET_SIZE = 128;
+    const nfds = origArgs[0];
+    const readPtr = origArgs[1];
+    const writePtr = origArgs[2];
+    const exceptPtr = origArgs[3];
+    const tvPtr = origArgs[4];
+
+    let timeoutMs = -1; // -1 = infinite (NULL timeval)
+    if (tvPtr !== 0) {
+      const ptrWidth = this.getPtrWidth(channel.pid);
+      const pv = new DataView(channel.memory.buffer, tvPtr);
+      let sec: number, usec: number;
+      if (ptrWidth === 8) {
+        sec = Number(pv.getBigInt64(0, true));
+        usec = Number(pv.getBigInt64(8, true));
+      } else {
+        sec = pv.getInt32(0, true);
+        usec = pv.getInt32(4, true);
+      }
+      timeoutMs = sec * 1000 + Math.floor(usec / 1000);
+      if (timeoutMs < 0) timeoutMs = 0;
+    }
+
+    // Pure-sleep fast path: select(0, NULL, NULL, NULL, &tv) is `my_sleep`.
+    // The kernel can't tell us anything new — there are no fds to poll —
+    // so we just wait the timeout and return 0. Tracked in
+    // pendingSelectRetries so a cross-process kill can break us out early
+    // (handleKill -> scheduleWakeBlockedRetries -> wakeAllBlockedRetries
+    // already iterates pendingSelectRetries entries).
+    if (nfds === 0 && readPtr === 0 && writePtr === 0 && exceptPtr === 0) {
+      if (timeoutMs === 0) {
+        this.completeChannel(channel, SYS_SELECT, origArgs, undefined, 0, 0);
+        return;
+      }
+      const finite = timeoutMs > 0;
+      const timer = finite
+        ? setTimeout(() => {
+            this.pendingSelectRetries.delete(channel.pid);
+            if (this.processes.has(channel.pid)) {
+              this.completeChannel(channel, SYS_SELECT, origArgs, undefined, 0, 0);
+            }
+          }, timeoutMs)
+        : (null as any);
+      this.pendingSelectRetries.set(channel.pid, {
+        timer,
+        channel,
+        origArgs,
+        deadline: finite ? Date.now() + timeoutMs : -1,
+        needsSignalSafeWake: false,
+        syscallNr: SYS_SELECT,
+      });
+      return;
+    }
+
+    // General case: dispatch to the kernel's sys_select with timeout_ms in
+    // arg5. fd_sets are copied via the standard pre-existing scratch flow
+    // (kernel_select reads readfds_ptr/writefds_ptr/exceptfds_ptr into
+    // process memory directly, so we copy them in just like handlePselect6).
+    const processMem = new Uint8Array(channel.memory.buffer);
+    const kernelMem = this.getKernelMem();
+    const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
+    const dataStart = this.scratchOffset + CH_DATA;
+
+    if (readPtr !== 0) {
+      kernelMem.set(processMem.subarray(readPtr, readPtr + FD_SET_SIZE), dataStart);
+    } else {
+      kernelMem.fill(0, dataStart, dataStart + FD_SET_SIZE);
+    }
+    if (writePtr !== 0) {
+      kernelMem.set(processMem.subarray(writePtr, writePtr + FD_SET_SIZE), dataStart + FD_SET_SIZE);
+    } else {
+      kernelMem.fill(0, dataStart + FD_SET_SIZE, dataStart + 2 * FD_SET_SIZE);
+    }
+    if (exceptPtr !== 0) {
+      kernelMem.set(processMem.subarray(exceptPtr, exceptPtr + FD_SET_SIZE), dataStart + 2 * FD_SET_SIZE);
+    } else {
+      kernelMem.fill(0, dataStart + 2 * FD_SET_SIZE, dataStart + 3 * FD_SET_SIZE);
+    }
+
+    kernelView.setUint32(CH_SYSCALL, SYS_SELECT, true);
+    kernelView.setBigInt64(CH_ARGS + 0 * CH_ARG_SIZE, BigInt(nfds), true);
+    kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(readPtr !== 0 ? dataStart : 0), true);
+    kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(writePtr !== 0 ? dataStart + FD_SET_SIZE : 0), true);
+    kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, BigInt(exceptPtr !== 0 ? dataStart + 2 * FD_SET_SIZE : 0), true);
+    kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, BigInt(timeoutMs), true);
+
+    const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
+      (offset: bigint, pid: number) => number;
+    this.currentHandlePid = channel.pid;
+    this.bindKernelTidForChannel(channel);
+    try {
+      handleChannel(BigInt(this.scratchOffset), channel.pid);
+    } finally {
+      this.currentHandlePid = 0;
+    }
+
+    const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
+    const errVal = kernelView.getUint32(CH_ERRNO, true);
+
+    // Copy fd_sets back from kernel → process on success
+    if (retVal >= 0) {
+      const freshProcessMem = new Uint8Array(channel.memory.buffer);
+      if (readPtr !== 0) {
+        freshProcessMem.set(kernelMem.subarray(dataStart, dataStart + FD_SET_SIZE), readPtr);
+      }
+      if (writePtr !== 0) {
+        freshProcessMem.set(
+          kernelMem.subarray(dataStart + FD_SET_SIZE, dataStart + 2 * FD_SET_SIZE),
+          writePtr,
+        );
+      }
+      if (exceptPtr !== 0) {
+        freshProcessMem.set(
+          kernelMem.subarray(dataStart + 2 * FD_SET_SIZE, dataStart + 3 * FD_SET_SIZE),
+          exceptPtr,
+        );
+      }
+    }
+
+    this.dequeueSignalForDelivery(channel);
+
+    // EAGAIN retry for blocking select. Mirrors handlePselect6.
+    if (retVal === -1 && errVal === EAGAIN) {
+      if (timeoutMs === 0) {
+        this.completeChannel(channel, SYS_SELECT, origArgs, undefined, 0, 0);
+        return;
+      }
+      const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : -1;
+      const retryFn = () => {
+        this.pendingSelectRetries.delete(channel.pid);
+        if (!this.processes.has(channel.pid)) return;
+        if (deadline > 0 && Date.now() >= deadline) {
+          this.completeChannel(channel, SYS_SELECT, origArgs, undefined, 0, 0);
+          return;
+        }
+        this.handleSelect(channel, origArgs);
+      };
+      const finite = timeoutMs > 0;
+      const remainingMs = finite ? Math.max(deadline - Date.now(), 1) : 50;
+      const timer = setTimeout(retryFn, Math.min(remainingMs, 50));
+      this.pendingSelectRetries.set(channel.pid, {
+        timer, channel, origArgs, deadline, needsSignalSafeWake: false,
+        syscallNr: SYS_SELECT,
+      });
+      return;
+    }
+
+    this.completeChannel(channel, SYS_SELECT, origArgs, undefined, retVal, errVal);
+  }
+
   private handlePselect6(channel: ChannelInfo, origArgs: number[]): void {
     const FD_SET_SIZE = 128;
     const processMem = new Uint8Array(channel.memory.buffer);

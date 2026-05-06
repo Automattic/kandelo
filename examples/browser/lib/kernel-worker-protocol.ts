@@ -30,6 +30,11 @@ export interface InitMessage {
     maxWorkers: number;
     maxMemoryPages: number;
     env: string[];
+    /** Forwarded to KernelConfig.enableSyscallLog — log every syscall. */
+    enableSyscallLog?: boolean;
+    /** Forwarded to KernelConfig.syscallLogPtrWidth — only log for processes
+     *  of the given pointer width. */
+    syscallLogPtrWidth?: 4 | 8;
   };
 }
 

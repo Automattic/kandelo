@@ -53,6 +53,12 @@ export interface BrowserKernelOptions {
    *  architecture — `kernel.fs` and `memfs` will be removed once all demos
    *  migrate. */
   kernelOwnedFs?: boolean;
+  /** Debug: log every syscall to the kernel-worker console. Noisy. */
+  enableSyscallLog?: boolean;
+  /** Debug: only log syscalls for processes of the given pointer width
+   *  (4=wasm32, 8=wasm64). Use 8 to focus on a single wasm64 process in a
+   *  mixed-arch demo. */
+  syscallLogPtrWidth?: 4 | 8;
 }
 
 /** Options for {@link BrowserKernel.boot}. */
@@ -308,6 +314,8 @@ export class BrowserKernel {
           maxWorkers: this.options.maxWorkers,
           maxMemoryPages: this.maxPages,
           env: this.options.env,
+          enableSyscallLog: this.options.enableSyscallLog,
+          syscallLogPtrWidth: this.options.syscallLogPtrWidth,
         },
       };
       this.kernelWorkerHandle.postMessage(initMsg, [transferBuf]);
