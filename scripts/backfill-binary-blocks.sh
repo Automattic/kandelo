@@ -10,7 +10,18 @@
 # Usage:
 #   scripts/backfill-binary-blocks.sh \
 #       --manifest /tmp/wpk-release-2026-04-27/manifest.json \
-#       --tag binaries-abi-v1
+#       --tag binaries-abi-v1 \
+#       [--commit <sha>]
+#
+# When --commit is supplied, the script also stamps `[build].commit =
+# <sha>` into each package.toml that has a `[build]` block. This is
+# the Phase A-bis Task 5 publish-time writeback: the SHA of the
+# building commit (typically `${{ github.sha }}` in a CI workflow,
+# or `git rev-parse HEAD` for local maintainer runs) is recorded
+# alongside the freshly-published archive. Packages without a
+# `[build]` block (third-party archives, or first-party packages with
+# no build script — kernel, userspace, examples, node, sqlite-cli,
+# pcre2-source) are skipped silently.
 #
 # Idempotent: any existing `[binary]` block in the package.toml is
 # replaced. Programs are wasm32-only in the first cut; multi-arch
@@ -21,10 +32,12 @@ set -euo pipefail
 
 MANIFEST=""
 TAG=""
+COMMIT=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --manifest) MANIFEST="$2"; shift 2 ;;
         --tag)      TAG="$2"; shift 2 ;;
+        --commit)   COMMIT="$2"; shift 2 ;;
         *) echo "unknown arg $1" >&2; exit 2 ;;
     esac
 done
@@ -63,4 +76,17 @@ stripped = stripped.rstrip() + block
 path.write_text(stripped)
 PY
     echo "wrote [binary] for $program"
+
+    # Phase A-bis Task 5: when --commit is supplied, also stamp the
+    # building-commit SHA into [build].commit. Delegated to the
+    # xtask subcommand so the in-place edit (which must preserve
+    # existing comments + layout) lives in unit-tested Rust rather
+    # than ad-hoc Python regex. The xtask helper is a silent no-op
+    # for packages without a [build] block; we don't pre-filter here.
+    if [ -n "$COMMIT" ]; then
+        ( cd "$REPO_ROOT" && \
+          cargo run --quiet --release -p xtask -- set-build-commit \
+              --package-toml "$deps_toml" \
+              --commit "$COMMIT" )
+    fi
 done
