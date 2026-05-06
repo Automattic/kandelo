@@ -656,6 +656,11 @@ jobs:
           '
 
       - name: Build kernel + test programs + install host deps
+        # `npx playwright install chromium` mirrors staging-build.yml: the
+        # wordpress-site-editor E2E test invokes `chromium.launch()`
+        # directly, so the browser binary must be present in the runner
+        # cache before vitest runs. `npm install` alone only fetches the
+        # @playwright/test JS package, not the browser.
         run: |
           bash scripts/dev-shell.sh bash -c '
             cargo build --release -p wasm-posix-kernel \
@@ -668,6 +673,7 @@ jobs:
             npm install --no-audit --no-fund
             cd host && npm install --no-audit --no-fund && cd ..
             bash scripts/build-rootfs.sh
+            npx --prefix host playwright install chromium
           '
 
       - name: Run cargo tests (kernel unit tests)
