@@ -128,12 +128,17 @@ jobs:
 
       - name: Install Node deps + Playwright browser
         # host/ is what benchmarks import; examples/browser/ is what the
-        # browser harness boots. Repo root pulls tsx for the runner.
+        # browser harness boots. Repo root pulls tsx for the runner and
+        # owns the `playwright` dep that benchmarks/browser/run-browser.ts
+        # imports — install browsers from there so the chromium-headless-shell
+        # version matches the repo-root Playwright (host/ + examples/browser/
+        # ship a slightly older @playwright/test which expects a different
+        # browser build).
         run: |
           nix develop --accept-flake-config --command bash -c '
             npm install --no-audit --no-fund
-            cd host && npm install --no-audit --no-fund
-            cd ../examples/browser && npm install --no-audit --no-fund
+            (cd host && npm install --no-audit --no-fund)
+            (cd examples/browser && npm install --no-audit --no-fund)
             npx playwright install --with-deps chromium
           '
 
