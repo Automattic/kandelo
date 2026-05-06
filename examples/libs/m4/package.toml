@@ -12,6 +12,10 @@ sha256 = "63aede5c6d33b6d9b13511cd0be2cac046f2e70fd0a07aa9573a04a82783af96"
 spdx = "GPL-3.0-or-later"
 url = "https://git.savannah.gnu.org/cgit/m4.git/tree/COPYING"
 
+[build]
+script_path = "examples/libs/m4/build-m4.sh"
+repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+
 [[outputs]]
 name = "m4"
 wasm = "m4.wasm"

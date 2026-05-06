@@ -12,6 +12,10 @@ sha256 = "a9db3bb3d64e248a0fae963f8fb6ba851a26ba1822e504dc0efd18a80c626caf"
 spdx = "GPL-2.0-or-later AND LGPL-2.1-or-later AND 0BSD"
 url = "https://github.com/tukaani-project/xz/blob/main/COPYING"
 
+[build]
+script_path = "examples/libs/xz/build-xz.sh"
+repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+
 [[outputs]]
 name = "xz"
 wasm = "xz.wasm"

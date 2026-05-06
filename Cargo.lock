@@ -1456,6 +1456,7 @@ dependencies = [
  "tar",
  "tempfile",
  "toml",
+ "toml_edit",
  "ureq",
  "wasm-posix-shared",
  "wasmparser",

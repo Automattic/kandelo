@@ -12,6 +12,10 @@ sha256 = "2819f55564d86d542abbecafd82ff61e819a3eec967faa36cd3e68f1596a44b8"
 spdx = "GPL-3.0-or-later"
 url = "https://www.greenwoodsoftware.com/less/LICENSE"
 
+[build]
+script_path = "examples/libs/less/build-less.sh"
+repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+
 [[outputs]]
 name = "less"
 wasm = "less.wasm"

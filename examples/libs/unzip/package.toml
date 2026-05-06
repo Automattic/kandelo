@@ -12,6 +12,10 @@ sha256 = "036d96991646d0449ed0aa952e4fbe21b476ce994abc276e49d30e686708bd37"
 spdx = "Info-ZIP"
 url = "https://infozip.sourceforge.net/license.html"
 
+[build]
+script_path = "examples/libs/unzip/build-unzip.sh"
+repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+
 [[outputs]]
 name = "unzip"
 wasm = "unzip.wasm"

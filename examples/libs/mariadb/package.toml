@@ -14,6 +14,10 @@ sha256 = "0b5070208da0116640f20bd085f1136527f998cc23268715bcbf352e7b7f3cc1"
 spdx = "GPL-2.0-only"
 url = "https://github.com/MariaDB/server/blob/10.5/COPYING"
 
+[build]
+script_path = "examples/libs/mariadb/build-mariadb.sh"
+repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+
 [[outputs]]
 name = "mariadbd"
 wasm = "mariadbd.wasm"

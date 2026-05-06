@@ -22,7 +22,8 @@ spdx = "Apache-2.0"
 url = "https://github.com/erlang/otp/blob/maint/LICENSE.txt"
 
 [build]
-script = "build-erlang-vfs.sh"
+script_path = "examples/libs/erlang-vfs/build-erlang-vfs.sh"
+repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 [[outputs]]
 name = "erlang-vfs"

@@ -12,6 +12,10 @@ sha256 = "98a8502a2e902d2a9785ef46a69a5f8d5e24cbf9ea3ae4d845afcfc6778aa783"
 spdx = "BSD-3-Clause"
 url = "https://github.com/redis/redis/blob/7.2/COPYING"
 
+[build]
+script_path = "examples/libs/redis/build-redis.sh"
+repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+
 [[outputs]]
 name = "redis-server"
 wasm = "redis-server.wasm"

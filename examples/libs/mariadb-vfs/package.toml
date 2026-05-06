@@ -32,7 +32,8 @@ spdx = "GPL-2.0-or-later"
 url = "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
 
 [build]
-script = "build-mariadb-vfs.sh"
+script_path = "examples/libs/mariadb-vfs/build-mariadb-vfs.sh"
+repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 [[outputs]]
 name = "mariadb-vfs"

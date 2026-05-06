@@ -28,7 +28,8 @@ spdx = "Artistic-1.0-Perl OR GPL-1.0-or-later"
 url = "https://dev.perl.org/licenses/"
 
 [build]
-script = "build-perl-vfs.sh"
+script_path = "examples/libs/perl-vfs/build-perl-vfs.sh"
+repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 [[outputs]]
 name = "perl-vfs"

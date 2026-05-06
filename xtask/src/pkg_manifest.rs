@@ -25,7 +25,10 @@
 //! url = "https://github.com/madler/zlib/blob/v1.3.1/LICENSE"
 //!
 //! [build]
-//! script = "build-zlib.sh"        # optional; default = "build-<name>.sh"
+//! # repo-relative path; default = "examples/libs/<name>/build-<name>.sh"
+//! script_path = "examples/libs/zlib/build-zlib.sh"
+//! repo_url    = "https://github.com/Automattic/wasm-posix-kernel"  # optional
+//! commit      = "deadbeef..."                                      # filled by CI
 //!
 //! [outputs]
 //! libs = ["lib/libz.a"]
@@ -429,6 +432,15 @@ pub struct DepsManifest {
     /// Directory containing this `package.toml`. The build script path and
     /// any per-dep build state live underneath it.
     pub dir: PathBuf,
+
+    /// Optional ABI floor declared via top-level `kernel_abi = N`.
+    /// Phase A-bis records this; Phase B's CI matrix will enforce that
+    /// a binary published against `binaries-abi-vN` is only consumed
+    /// when the kernel's ABI version is `>= kernel_abi`. None = no
+    /// declared floor (the existing implicit behavior).
+    /// `dead_code` allow until Phase B wires the enforcement.
+    #[allow(dead_code)]
+    pub kernel_abi: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -444,13 +456,47 @@ pub struct License {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Build {
+    /// DEPRECATED. Package-dir-relative filename of the build script.
+    /// Kept for backward compatibility with archived `manifest.toml`
+    /// inside `.tar.zst` files published before Phase A-bis (durable
+    /// release `binaries-abi-v7-2026-05-05` was published with this
+    /// field name). Source `package.toml` files must use
+    /// `script_path` instead; `validate_source` rejects this field on
+    /// the source parse path. Never read at runtime — the resolver
+    /// uses `script_path` only.
+    #[allow(dead_code)]
     pub script: Option<String>,
+    /// Repo-relative path to the build script (e.g.
+    /// `examples/libs/zlib/build-zlib.sh`). Renamed from `script` (which
+    /// was package-dir-relative) so the path is canonical regardless of
+    /// where the resolver runs from. The resolver joins this against the
+    /// repo root, not the manifest directory.
+    pub script_path: Option<String>,
+    /// Clonable URL of the source repo. Filled at publish time so the
+    /// archived `manifest.toml` records exactly which repo produced the
+    /// binary; consumed by Phase B's reproducibility/audit tooling.
+    /// `dead_code` allow until Phase B wires the consumer.
+    #[allow(dead_code)]
+    pub repo_url: Option<String>,
+    /// Commit SHA of the source repo at the time the binary was built.
+    /// Filled by CI at publish time (Phase A-bis Task 5); empty in
+    /// source `package.toml` files checked into the repo.
+    /// `dead_code` allow until Task 5 wires the publish-time fill and
+    /// downstream consumers.
+    #[allow(dead_code)]
+    pub commit: Option<String>,
 }
 
 impl Default for Build {
     fn default() -> Self {
-        Self { script: None }
+        Self {
+            script: None,
+            script_path: None,
+            repo_url: None,
+            commit: None,
+        }
     }
 }
 
@@ -542,6 +588,11 @@ struct Raw {
     /// `["wasm32"]` (the default — see DepsManifest::target_arches).
     #[serde(default)]
     arches: Vec<TargetArch>,
+    /// Optional top-level `kernel_abi = N`. Phase A-bis records the
+    /// declared ABI floor; Phase B will enforce it via the CI matrix
+    /// ABI-floor check. Absent = no declared floor.
+    #[serde(default)]
+    kernel_abi: Option<u32>,
 }
 
 /// Default `outputs` value when the key is absent: an empty table.
@@ -555,7 +606,7 @@ fn default_outputs_value() -> toml::Value {
 impl DepsManifest {
     /// Read + parse + validate a `package.toml` file. `dir` is the
     /// directory containing the file (used later to resolve
-    /// `build.script` relative paths).
+    /// `build.script_path` relative paths).
     pub fn load(path: &Path) -> Result<Self, String> {
         let text = std::fs::read_to_string(path)
             .map_err(|e| format!("read {}: {e}", path.display()))?;
@@ -590,6 +641,21 @@ impl DepsManifest {
             return Err(
                 "source package.toml must not contain a [compatibility] block \
                  (it is injected into archived manifest.toml at build time)"
+                    .into(),
+            );
+        }
+        // Phase A-bis: source `package.toml` files must use
+        // `[build].script_path` (repo-relative). The legacy
+        // `[build].script` field is accepted at the parser level for
+        // back-compat with already-published archived `manifest.toml`
+        // files, but is rejected on the source path so stale source
+        // files surface immediately.
+        if raw.build.script.is_some() {
+            return Err(
+                "source package.toml uses deprecated [build].script — \
+                 use [build].script_path (repo-relative path) instead. \
+                 See docs/plans/2026-05-05-decoupled-package-builds-design.md \
+                 §3.1."
                     .into(),
             );
         }
@@ -994,18 +1060,34 @@ impl DepsManifest {
             host_tools,
             target_arches,
             dir,
+            kernel_abi: raw.kernel_abi,
         })
     }
 
-    /// Absolute path to the build script. Default is `build-<name>.sh`
-    /// in the same directory as this `package.toml`.
-    pub fn build_script_path(&self) -> PathBuf {
-        let script = self
-            .build
-            .script
-            .clone()
-            .unwrap_or_else(|| format!("build-{}.sh", self.name));
-        self.dir.join(script)
+    /// Absolute path to the build script.
+    ///
+    /// Resolution rules (Phase A-bis Task 2):
+    /// - When `[build].script_path` is set, it is **repo-root-relative**:
+    ///   the returned path is `<repo_root>/<script_path>`. This decouples
+    ///   the build-script location from the `package.toml` location, so
+    ///   a single shared script can be referenced by multiple packages.
+    /// - When `[build].script_path` is absent, the convention
+    ///   `build-<name>.sh` is resolved against this manifest's own
+    ///   directory (`self.dir`). For first-party packages, where
+    ///   `self.dir == <repo_root>/examples/libs/<name>`, that resolves
+    ///   to the same absolute path either way; keeping the fallback
+    ///   anchored at `self.dir` is what lets tests use bespoke layouts
+    ///   (`<tmpdir>/<name>/build-<name>.sh`) without an extra
+    ///   `examples/libs/` prefix.
+    ///
+    /// `repo_root` should be the repo / workspace root (typically
+    /// `crate::repo_root()`). It is consulted only when an explicit
+    /// `script_path` is set; the fallback ignores it.
+    pub fn build_script_path(&self, repo_root: &Path) -> PathBuf {
+        match self.build.script_path.as_deref() {
+            Some(rel) => repo_root.join(rel),
+            None => self.dir.join(format!("build-{}.sh", self.name)),
+        }
     }
 
     /// `"<name>@<version>"` — the form used in `depends_on` strings.
@@ -1046,21 +1128,138 @@ headers = ["include/zlib.h"]
         assert!(m.depends_on.is_empty());
         assert_eq!(m.outputs.libs, vec!["lib/libz.a"]);
         assert_eq!(m.spec(), "zlib@1.3.1");
+        // Fallback (no [build].script_path) resolves against self.dir,
+        // so the repo_root argument is irrelevant.
         assert_eq!(
-            m.build_script_path(),
+            m.build_script_path(Path::new("/repo")),
             PathBuf::from("/x/build-zlib.sh")
         );
     }
 
     #[test]
-    fn build_script_override_is_respected() {
-        // Append a [build] section at the end; the example doesn't have one.
-        let text = format!("{EXAMPLE}\n[build]\nscript = \"custom-build.sh\"\n");
+    fn build_script_override_is_repo_root_relative() {
+        // Phase A-bis Task 2: an explicit `[build].script_path` is
+        // resolved against the repo root, NOT the package's own
+        // directory. This decouples script location from manifest
+        // location.
+        let text = format!(
+            "{EXAMPLE}\n[build]\n\
+             script_path = \"examples/libs/zlib/build-zlib.sh\"\n"
+        );
         let m = DepsManifest::parse(&text, PathBuf::from("/x")).unwrap();
         assert_eq!(
-            m.build_script_path(),
-            PathBuf::from("/x/custom-build.sh")
+            m.build_script_path(Path::new("/repo")),
+            PathBuf::from("/repo/examples/libs/zlib/build-zlib.sh")
         );
+        // self.dir is ignored for the override branch.
+        assert_eq!(
+            m.build_script_path(Path::new("/other-root")),
+            PathBuf::from("/other-root/examples/libs/zlib/build-zlib.sh")
+        );
+    }
+
+    #[test]
+    fn build_accepts_repo_url_and_commit() {
+        let text = format!(
+            "{EXAMPLE}\n\
+             [build]\n\
+             script_path = \"examples/libs/zlib/build-zlib.sh\"\n\
+             repo_url    = \"https://github.com/Automattic/wasm-posix-kernel\"\n\
+             commit      = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"\n"
+        );
+        let m = DepsManifest::parse(&text, PathBuf::from("/x")).unwrap();
+        assert_eq!(
+            m.build.script_path.as_deref(),
+            Some("examples/libs/zlib/build-zlib.sh")
+        );
+        assert_eq!(
+            m.build.repo_url.as_deref(),
+            Some("https://github.com/Automattic/wasm-posix-kernel")
+        );
+        assert_eq!(
+            m.build.commit.as_deref(),
+            Some("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
+        );
+    }
+
+    #[test]
+    fn build_rejects_legacy_script_field() {
+        // The Phase A-bis schema renames `[build].script` →
+        // `[build].script_path`. The legacy field is accepted at the
+        // parser level (so already-published archived manifest.toml
+        // continues to deserialize) but rejected on the source parse
+        // path by `validate_source` so stale source files surface
+        // immediately rather than silently parsing as the default.
+        let text = format!("{EXAMPLE}\n[build]\nscript = \"custom-build.sh\"\n");
+        let err = DepsManifest::parse(&text, PathBuf::from("/x")).unwrap_err();
+        assert!(
+            err.contains("script") && err.contains("script_path"),
+            "expected error to mention legacy `script` and recommend \
+             `script_path`, got: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_archived_accepts_legacy_script_field() {
+        // Archived manifest.toml files inside .tar.zst archives
+        // published before Phase A-bis use the legacy
+        // `[build].script` field. These archives are immutable
+        // historical bytes — install-release / fetch-binaries must
+        // continue to parse them. validate_archived deliberately does
+        // NOT reject `[build].script` (only validate_source does).
+        let sha = "0".repeat(64);
+        let text = format!(
+            "{}\n[build]\nscript = \"build-foo.sh\"\n\
+             [compatibility]\ntarget_arch = \"wasm32\"\n\
+             abi_versions = [4]\ncache_key_sha = \"{}\"\n",
+            EXAMPLE, sha
+        );
+        let m = DepsManifest::parse_archived(&text, PathBuf::from("/x"))
+            .expect("archived parse must accept legacy [build].script");
+        // Field is preserved on the struct (parser-level back-compat)
+        // but the resolver never reads it — runtime path uses
+        // script_path only.
+        assert_eq!(m.build.script.as_deref(), Some("build-foo.sh"));
+        assert_eq!(m.build.script_path, None);
+    }
+
+    #[test]
+    fn parse_archived_accepts_script_path_field() {
+        // Forward-compat: archives published with the new schema
+        // (Phase A-bis onward) carry `[build].script_path` instead
+        // of the legacy `script`. validate_archived accepts both.
+        let sha = "0".repeat(64);
+        let text = format!(
+            "{}\n[build]\nscript_path = \"examples/libs/foo/build-foo.sh\"\n\
+             [compatibility]\ntarget_arch = \"wasm32\"\n\
+             abi_versions = [4]\ncache_key_sha = \"{}\"\n",
+            EXAMPLE, sha
+        );
+        let m = DepsManifest::parse_archived(&text, PathBuf::from("/x"))
+            .expect("archived parse must accept [build].script_path");
+        assert_eq!(
+            m.build.script_path.as_deref(),
+            Some("examples/libs/foo/build-foo.sh")
+        );
+        assert_eq!(m.build.script, None);
+    }
+
+    #[test]
+    fn parses_top_level_kernel_abi() {
+        let text = EXAMPLE.replace(
+            "revision = 1",
+            "revision = 1\nkernel_abi = 6",
+        );
+        let m = DepsManifest::parse(&text, PathBuf::from("/x")).unwrap();
+        assert_eq!(m.kernel_abi, Some(6));
+    }
+
+    #[test]
+    fn kernel_abi_is_optional() {
+        // EXAMPLE has no kernel_abi key; parse must succeed and the
+        // field must be None.
+        let m = DepsManifest::parse(EXAMPLE, PathBuf::from("/x")).unwrap();
+        assert_eq!(m.kernel_abi, None);
     }
 
     #[test]

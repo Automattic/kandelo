@@ -1,5 +1,5 @@
 //! Source-kind archive fetch + extract. Reused by the resolver
-//! when a `kind = "source"` manifest has no [build].script.
+//! when a `kind = "source"` manifest has no [build].script_path.
 //!
 //! Format detection is purely on URL extension. The resolver
 //! never inspects archive bytes for magic numbers — the URL is

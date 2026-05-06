@@ -12,6 +12,10 @@ sha256 = "30654cc6c0142fa68050cc7b0ee6a2a65944288b907821781112efaf24293b23"
 spdx = "GPL-2.0-only"
 url = "https://github.com/git/git/blob/v2.47.1/COPYING"
 
+[build]
+script_path = "examples/libs/git/build-git.sh"
+repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+
 [[outputs]]
 name = "git"
 wasm = "git.wasm"

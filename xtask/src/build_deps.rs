@@ -3,7 +3,7 @@
 //! Resolution order per library:
 //!   1. `<repo>/local-libs/<name>/build/` — hand-patched source, in-progress.
 //!   2. `<cache_root>/libs/<name>-<ver>-rev<N>-<shortsha>/` — canonical cache.
-//!   3. Build from source: run the declared `build.script`, validate
+//!   3. Build from source: run the declared `build.script_path`, validate
 //!      declared outputs, atomically install into the canonical cache.
 //!
 //! The build script runs with:
@@ -399,6 +399,11 @@ pub struct ResolveOpts<'a> {
     /// The single-process resolver assumes no concurrent peers during
     /// a force rebuild — see `build_into_cache`'s atomic-install comment.
     pub force_source_build: Option<&'a BTreeSet<String>>,
+    /// Repo root used to resolve `[build].script_path` (which is
+    /// repo-relative as of Phase A-bis Task 2). `None` means "use
+    /// `crate::repo_root()`", which is the production default.
+    /// Tests use this to point the resolver at a tempdir.
+    pub repo_root: Option<&'a Path>,
 }
 
 /// Resolve a library to a concrete on-disk path with the artifacts
@@ -745,7 +750,7 @@ fn ensure_built_uncached(
     //                        declared outputs list.
     //   (Library | Program,_) — try `[binary]` remote fetch first,
     //                        then fall back to the build script.
-    match (target.kind, target.build.script.is_some()) {
+    match (target.kind, target.build.script_path.is_some()) {
         (ManifestKind::Source, false) => {
             let parent = canonical
                 .parent()
@@ -798,7 +803,18 @@ fn ensure_built_uncached(
             // sources (`[binary]` is rejected at parse time for source
             // kind), so we go straight to `build_into_cache`.
             let pkgconfig_path = compose_pkgconfig_path(&transitive);
-            build_into_cache(target, arch, &canonical, &dep_dirs, &pkgconfig_path)?;
+            let repo_root = opts
+                .repo_root
+                .map(Path::to_path_buf)
+                .unwrap_or_else(crate::repo_root);
+            build_into_cache(
+                target,
+                arch,
+                &canonical,
+                &dep_dirs,
+                &pkgconfig_path,
+                &repo_root,
+            )?;
             Ok((canonical, transitive))
         }
         (ManifestKind::Library | ManifestKind::Program, _) => {
@@ -837,7 +853,18 @@ fn ensure_built_uncached(
             }
 
             let pkgconfig_path = compose_pkgconfig_path(&transitive);
-            build_into_cache(target, arch, &canonical, &dep_dirs, &pkgconfig_path)?;
+            let repo_root = opts
+                .repo_root
+                .map(Path::to_path_buf)
+                .unwrap_or_else(crate::repo_root);
+            build_into_cache(
+                target,
+                arch,
+                &canonical,
+                &dep_dirs,
+                &pkgconfig_path,
+                &repo_root,
+            )?;
             Ok((canonical, transitive))
         }
     }
@@ -883,6 +910,7 @@ fn build_into_cache(
     canonical: &Path,
     dep_dirs: &BTreeMap<String, DirectDep>,
     pkgconfig_path: &str,
+    repo_root: &Path,
 ) -> Result<(), String> {
     let parent = canonical
         .parent()
@@ -906,7 +934,7 @@ fn build_into_cache(
     std::fs::create_dir_all(&tmp)
         .map_err(|e| format!("create temp {}: {e}", tmp.display()))?;
 
-    let script = target.build_script_path();
+    let script = target.build_script_path(repo_root);
     if !script.is_file() {
         let _ = std::fs::remove_dir_all(&tmp);
         return Err(format!(
@@ -1343,7 +1371,7 @@ fn cmd_parse(m: &DepsManifest) -> Result<(), String> {
             .collect::<Vec<_>>()
             .join(", ")
     );
-    println!("build     = {}", m.build_script_path().display());
+    println!("build     = {}", m.build_script_path(&crate::repo_root()).display());
     println!("outputs.libs     = {:?}", m.outputs.libs);
     println!("outputs.headers  = {:?}", m.outputs.headers);
     if !m.outputs.pkgconfig.is_empty() {
@@ -1395,6 +1423,7 @@ fn cmd_resolve(
         cache_root: &cache_root,
         local_libs: Some(&local_libs),
         force_source_build: None,
+        repo_root: Some(repo),
     };
     let path = ensure_built(m, registry, arch, current_abi_version(), &opts)?;
     println!("{}", path.display());
@@ -2093,6 +2122,24 @@ spdx = "TestLicense"
             cache_root: cache,
             local_libs: local,
             force_source_build: None,
+            repo_root: None,
+        }
+    }
+
+    /// Like `resolve_opts`, but lets a test pin a specific
+    /// `repo_root` so an explicit `[build].script_path` resolves
+    /// against a tempdir rather than the live workspace. Phase A-bis
+    /// Task 2.
+    fn resolve_opts_with_repo<'a>(
+        cache: &'a Path,
+        local: Option<&'a Path>,
+        repo_root: &'a Path,
+    ) -> ResolveOpts<'a> {
+        ResolveOpts {
+            cache_root: cache,
+            local_libs: local,
+            force_source_build: None,
+            repo_root: Some(repo_root),
         }
     }
 
@@ -3576,7 +3623,7 @@ libs = []
     }
 
     /// End-to-end integration: a `kind = "source"` manifest that
-    /// declares no `[build].script` resolves by fetching its archive
+    /// declares no `[build].script_path` resolves by fetching its archive
     /// (file:// URL here), verifying the sha256, extracting +
     /// flattening, and atomically renaming into the canonical cache
     /// path. A second resolve hits the cache.
@@ -3637,6 +3684,7 @@ spdx = "BSD-3-Clause"
             cache_root: &cache,
             local_libs: None,
             force_source_build: None,
+            repo_root: None,
         };
         let path = ensure_built(&m, &registry, TEST_ARCH, TEST_ABI, &opts).unwrap();
         assert!(
@@ -3652,12 +3700,18 @@ spdx = "BSD-3-Clause"
         assert_eq!(path, path2);
     }
 
-    /// C.5: source-kind manifest with `[build].script` runs the script
+    /// C.5: source-kind manifest with `[build].script_path` runs the script
     /// through `build_into_cache` and atomically installs the populated
     /// OUT_DIR under `<cache>/sources/...`. The script gets the same
     /// env-var contract as lib/program builds (OUT_DIR + NAME +
     /// VERSION + ...), so a marker file written via
     /// `$WASM_POSIX_DEP_OUT_DIR/marker` lands in the canonical path.
+    ///
+    /// Phase A-bis Task 2: `[build].script_path` is repo-root-relative,
+    /// so the test pins `repo_root = manifest_dir` via
+    /// `resolve_opts_with_repo`; the script_path basename `"custom.sh"`
+    /// then resolves to `<manifest_dir>/custom.sh`, where the test
+    /// fixture wrote it.
     #[test]
     fn ensure_built_source_kind_with_build_script_runs_it() {
         let manifest_dir = tempdir("c5-script-manifest");
@@ -3690,9 +3744,10 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 spdx = "BSD-3-Clause"
 
 [build]
-script = "custom.sh"
+script_path = "custom.sh"
 "#;
-        let m = DepsManifest::parse(manifest_text, manifest_dir).unwrap();
+        let m =
+            DepsManifest::parse(manifest_text, manifest_dir.clone()).unwrap();
 
         let registry = Registry { roots: vec![] };
         let path = ensure_built(
@@ -3700,7 +3755,7 @@ script = "custom.sh"
             &registry,
             TEST_ARCH,
             TEST_ABI,
-            &resolve_opts(&cache, None),
+            &resolve_opts_with_repo(&cache, None, &manifest_dir),
         )
         .unwrap();
         assert!(
@@ -3743,9 +3798,13 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 spdx = "BSD-3-Clause"
 
 [build]
-script = "noop.sh"
+script_path = "noop.sh"
 "#;
-        let m = DepsManifest::parse(manifest_text, manifest_dir).unwrap();
+        // Phase A-bis Task 2: pin repo_root = manifest_dir so the
+        // repo-relative basename `"noop.sh"` resolves to where the
+        // fixture wrote it.
+        let m =
+            DepsManifest::parse(manifest_text, manifest_dir.clone()).unwrap();
 
         let registry = Registry { roots: vec![] };
         let err = ensure_built(
@@ -3753,7 +3812,7 @@ script = "noop.sh"
             &registry,
             TEST_ARCH,
             TEST_ABI,
-            &resolve_opts(&cache, None),
+            &resolve_opts_with_repo(&cache, None, &manifest_dir),
         )
         .unwrap_err();
         assert!(
@@ -3791,6 +3850,10 @@ script = "noop.sh"
             std::fs::set_permissions(&foo_script, std::fs::Permissions::from_mode(0o755))
                 .unwrap();
         }
+        // Phase A-bis Task 2: `script_path` is repo-root-relative.
+        // The test pins `repo_root = root` below, so the script's
+        // path must be expressed relative to `root` —
+        // `foo-source/custom.sh`, NOT a bare `custom.sh`.
         std::fs::write(
             foo_dir.join("package.toml"),
             r#"
@@ -3807,7 +3870,7 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 spdx = "TestLicense"
 
 [build]
-script = "custom.sh"
+script_path = "foo-source/custom.sh"
 "#,
         )
         .unwrap();
@@ -3836,14 +3899,16 @@ libs = ["lib/libconsumer.a"]
 "#,
         );
 
-        let reg = Registry { roots: vec![root] };
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
         let consumer = reg.load("consumer").unwrap();
         let consumer_path = ensure_built(
             &consumer,
             &reg,
             TEST_ARCH,
             TEST_ABI,
-            &resolve_opts(&cache, None),
+            &resolve_opts_with_repo(&cache, None, &root),
         )
         .unwrap();
         assert!(
@@ -4167,6 +4232,7 @@ libs = ["lib/libF1.a"]
             cache_root: &cache,
             local_libs: None,
             force_source_build: Some(&force),
+            repo_root: None,
         };
         let p3 = ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &opts).unwrap();
         assert_eq!(p1, p3, "force-rebuild must land at the same canonical path");
@@ -4239,6 +4305,7 @@ libs = ["lib/libF1.a"]
             cache_root: &cache,
             local_libs: None,
             force_source_build: Some(&force),
+            repo_root: None,
         };
         let path = ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &opts).unwrap();
         assert!(
@@ -4317,6 +4384,7 @@ libs = ["lib/libF3b.a"]
             cache_root: &cache,
             local_libs: None,
             force_source_build: Some(&force),
+            repo_root: None,
         };
         ensure_built(&ma, &reg, TEST_ARCH, TEST_ABI, &opts).unwrap();
         ensure_built(&mb, &reg, TEST_ARCH, TEST_ABI, &opts).unwrap();

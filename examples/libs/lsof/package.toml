@@ -17,6 +17,10 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 spdx = "GPL-2.0-or-later"
 url = "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
 
+[build]
+script_path = "examples/libs/lsof/build-lsof.sh"
+repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+
 [[outputs]]
 name = "lsof"
 wasm = "lsof.wasm"

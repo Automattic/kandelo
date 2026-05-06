@@ -12,6 +12,10 @@ sha256 = "30f35f71c1203369dc979ecde0400ffea93c27391bfd2ac5a9715d2173d92ff7"
 spdx = "BSD-3-Clause OR GPL-2.0-only"
 url = "https://github.com/facebook/zstd/blob/dev/LICENSE"
 
+[build]
+script_path = "examples/libs/zstd/build-zstd.sh"
+repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+
 [[outputs]]
 name = "zstd"
 wasm = "zstd.wasm"

@@ -12,6 +12,10 @@ sha256 = "1387e0b67ff247d2abde998f90dfbf70c1491391a59ddfecb8ae698789f0a4f5"
 spdx = "GPL-3.0-or-later"
 url = "https://git.savannah.gnu.org/cgit/findutils.git/tree/COPYING"
 
+[build]
+script_path = "examples/libs/findutils/build-findutils.sh"
+repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+
 [[outputs]]
 name = "find"
 wasm = "find.wasm"
