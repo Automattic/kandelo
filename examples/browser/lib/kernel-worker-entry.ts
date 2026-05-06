@@ -864,37 +864,8 @@ function handlePipeWrite(msg: Extract<MainToKernelMessage, { type: "pipe_write" 
     if (n <= 0) break;
     written += n;
   }
-  // After writing, wake any blocked readers on this pipe.
-  const kw = kernelWorker as any;
-  const readers = kw.pendingPipeReaders?.get(msg.pipeIdx);
-  if (readers && readers.length > 0) {
-    kw.pendingPipeReaders.delete(msg.pipeIdx);
-    for (const reader of readers) {
-      if (kw.processes.has(reader.pid)) {
-        kw.retrySyscall(reader.channel);
-      }
-    }
-  }
-  // Targeted wake for poll/pselect6 watchers on this pipe — mirrors the
-  // Node-side TCP bridge's `wakeBlockedPoll(pid, recvPipeIdx)` call (in
-  // `host/src/kernel-worker.ts handleIncomingTcpConnection`). Without
-  // this, mariadbd's poll on the connection fd only wakes via
-  // handleBlockingRetry's 200 ms fallback timer (kernel-worker.ts line
-  // 3114) — turning every page-side MySQL query into a 200 ms ping-pong
-  // (measured: SELECT 1 = 210 ms on the broad-wake path, ~12 ms with
-  // this targeted wake). The Node TCP bridge calls wakeBlockedPoll
-  // directly; the browser bridge had only the broader scheduleWake
-  // (which fires via setImmediate but doesn't cancel the 200 ms timer
-  // installed by handleBlockingRetry).
-  if (kw.pendingPollRetries) {
-    for (const [key, entry] of kw.pendingPollRetries as Map<number, { timer: ReturnType<typeof setTimeout> | null; channel: { pid: number; channelOffset: number }; pipeIndices: number[] }>) {
-      if (!entry.pipeIndices.includes(msg.pipeIdx)) continue;
-      if (entry.timer !== null) clearTimeout(entry.timer);
-      kw.pendingPollRetries.delete(key);
-      if (kw.processes.has(entry.channel.pid)) kw.retrySyscall(entry.channel);
-    }
-  }
-  kw.scheduleWakeBlockedRetries();
+  // Wake readers + pollers watching this pipe + broad wake.
+  kernelWorker.notifyPipeReadable(msg.pipeIdx);
   respond(msg.requestId, written);
 }
 
@@ -1085,22 +1056,11 @@ function handleHttpRequest(requestId: number, request: any) {
     console.warn(`[bridge] req#${requestId} partial write: ${written}/${rawRequest.length}`);
   }
 
-  // Wake blocked readers on the recv pipe
-  const readers = kw.pendingPipeReaders?.get(recvPipeIdx);
-  if (readers && readers.length > 0) {
-    kw.pendingPipeReaders.delete(recvPipeIdx);
-    for (const reader of readers) {
-      if (kw.processes.has(reader.pid)) {
-        kw.retrySyscall(reader.channel);
-      }
-    }
-  }
-
-  // Wake all blocked poll/accept retries — any worker sharing the
-  // listener can pick up this entry from the shared accept queue,
-  // so a broad wake is correct (and required, since the host no
-  // longer routes to a specific pid at inject time).
-  kw.scheduleWakeBlockedRetries();
+  // Wake any worker blocked reading or polling on the new recv pipe.
+  // No pid filter: any worker sharing the listener (from the shared
+  // SHARED_LISTENER_BACKLOG_TABLE — see PR #383) can pick up this
+  // entry from the accept queue.
+  kernelWorker.notifyPipeReadable(recvPipeIdx);
 
   // Pump response
   pumpResponse(requestId, GLOBAL_PIPE_PID, sendPipeIdx, recvPipeIdx, url);
@@ -1230,18 +1190,8 @@ function pumpResponse(
     if (data) {
       chunks.push(data);
       totalBytes += data.length;
-      // Wake blocked writers
-      const kw = kernelWorker as any;
-      const writers = kw.pendingPipeWriters?.get(sendPipeIdx);
-      if (writers && writers.length > 0) {
-        kw.pendingPipeWriters.delete(sendPipeIdx);
-        for (const writer of writers) {
-          if (kw.processes.has(writer.pid)) {
-            kw.retrySyscall(writer.channel);
-          }
-        }
-      }
-      kw.scheduleWakeBlockedRetries();
+      // Wake any process blocked writing because the pipe was full.
+      kernelWorker.notifyPipeWritable(sendPipeIdx);
     }
 
     const writeOpen = (kernelInstance!.exports.kernel_pipe_is_write_open as (pid: number, pipeIdx: number) => number)(pid, sendPipeIdx) === 1;

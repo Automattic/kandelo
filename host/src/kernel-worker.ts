@@ -2549,6 +2549,70 @@ export class CentralizedKernelWorker {
     }
   }
 
+  /**
+   * Public wake helper for host-side pipe writes (TCP bridges, HTTP
+   * bridges, etc.). Call this AFTER directly writing into a pipe via
+   * `kernel_pipe_write` or `kernel_inject_connection`.
+   *
+   * In order:
+   *   1. Wake any process blocked in read/recv on this pipe
+   *      (`pendingPipeReaders`).
+   *   2. Wake any process blocked in poll/ppoll/pselect6 whose
+   *      `pipeIndices` includes this pipe (`pendingPollRetries`).
+   *      Pass `pidFilter` to restrict the wake to a single owning
+   *      pid — used by the Node TCP bridge when dispatching an
+   *      inbound connection to a specific listener.
+   *   3. Schedule a broad wake (`scheduleWakeBlockedRetries`) for
+   *      everything else.
+   *
+   * Without step 2, blocked pollers wait for the fallback timer in
+   * `handleBlockingRetry` to fire, which is the bug behind PR fixing
+   * the WordPress LAMP demo's slow install.php (see commit history).
+   */
+  public notifyPipeReadable(pipeIdx: number, pidFilter?: number): void {
+    // 1. Blocked readers
+    const readers = this.pendingPipeReaders.get(pipeIdx);
+    if (readers && readers.length > 0) {
+      this.pendingPipeReaders.delete(pipeIdx);
+      for (const reader of readers) {
+        if (this.processes.has(reader.pid)) {
+          this.retrySyscall(reader.channel);
+        }
+      }
+    }
+    // 2. Blocked pollers watching this pipe
+    for (const [key, entry] of this.pendingPollRetries) {
+      if (pidFilter !== undefined && entry.channel.pid !== pidFilter) continue;
+      if (!entry.pipeIndices.includes(pipeIdx)) continue;
+      if (entry.timer !== null) clearTimeout(entry.timer);
+      this.pendingPollRetries.delete(key);
+      if (this.processes.has(entry.channel.pid)) {
+        this.retrySyscall(entry.channel);
+      }
+    }
+    // 3. Broad wake for any other pending retries
+    this.scheduleWakeBlockedRetries();
+  }
+
+  /**
+   * Public wake helper for host-side pipe reads (response pump in
+   * the TCP/HTTP bridges). Call this AFTER directly reading data
+   * from a pipe so any process blocked writing because the pipe was
+   * full can resume, plus a broad wake.
+   */
+  public notifyPipeWritable(pipeIdx: number): void {
+    const writers = this.pendingPipeWriters.get(pipeIdx);
+    if (writers && writers.length > 0) {
+      this.pendingPipeWriters.delete(pipeIdx);
+      for (const writer of writers) {
+        if (this.processes.has(writer.pid)) {
+          this.retrySyscall(writer.channel);
+        }
+      }
+    }
+    this.scheduleWakeBlockedRetries();
+  }
+
   /** Cancel all pending poll retries for a given pid (used during cleanup) */
   private cleanupPendingPollRetries(pid: number): void {
     for (const [key, entry] of this.pendingPollRetries) {
@@ -6639,19 +6703,11 @@ export class CentralizedKernelWorker {
       inboundQueue.push(chunk);
       if (!this.processes.has(pid)) { cleanup(); return; }
       drainInbound();
-      // Wake any process blocked on poll/pselect6 watching this recv pipe
-      this.wakeBlockedPoll(pid, recvPipeIdx);
-      // Wake any process blocked on read/recv for this pipe
-      const readers = this.pendingPipeReaders.get(recvPipeIdx);
-      if (readers && readers.length > 0) {
-        this.pendingPipeReaders.delete(recvPipeIdx);
-        for (const reader of readers) {
-          if (this.processes.has(reader.pid)) {
-            this.retrySyscall(reader.channel);
-          }
-        }
-      }
-      this.scheduleWakeBlockedRetries();
+      // Wake readers + pollers watching this recv pipe + broad wake.
+      // The pid filter limits the targeted poll wake to this listener
+      // pid (the recvPipeIdx is per-connection so any matching poller
+      // is necessarily owned by this pid; the filter is defensive).
+      this.notifyPipeReadable(recvPipeIdx, pid);
       // Schedule pump to handle outbound + close detection
       schedulePump();
     });
