@@ -8570,7 +8570,13 @@ mod tests {
         }
 
         fn host_chmod(&mut self, _path: &[u8], _mode: u32) -> Result<(), Errno> { Ok(()) }
-        fn host_chown(&mut self, _path: &[u8], _uid: u32, _gid: u32) -> Result<(), Errno> { Ok(()) }
+        fn host_chown(&mut self, path: &[u8], uid: u32, gid: u32) -> Result<(), Errno> {
+            // Mirror the host VFS: chown updates owner state. A subsequent
+            // host_stat(path) must return the new uid/gid. Tests rely on this
+            // to verify sys_chown propagates through to the host VFS.
+            self.file_owners.insert(path.to_vec(), (uid, gid));
+            Ok(())
+        }
         fn host_access(&mut self, _path: &[u8], _amode: u32) -> Result<(), Errno> { Ok(()) }
 
         fn host_opendir(&mut self, _path: &[u8]) -> Result<i64, Errno> {
@@ -8617,7 +8623,14 @@ mod tests {
             Ok(())
         }
 
-        fn host_fchown(&mut self, _handle: i64, _uid: u32, _gid: u32) -> Result<(), Errno> {
+        fn host_fchown(&mut self, handle: i64, uid: u32, gid: u32) -> Result<(), Errno> {
+            // Mirror the host VFS: fchown updates the owner state visible via
+            // both host_fstat(handle) and host_stat(path) for the underlying
+            // inode. The mock open() captures handle->path indirectly through
+            // file_owners; without a reverse map we update the per-handle
+            // overlay so host_fstat returns the new owner. Tests that also
+            // care about host_stat(path) after fchown can use sys_chown.
+            self.handle_owners.insert(handle, (uid, gid));
             Ok(())
         }
 
@@ -8990,6 +9003,53 @@ mod tests {
         let st = sys_fstatat(&mut proc, &mut host, AT_FDCWD, b"/baz", 0).unwrap();
         assert_eq!(st.st_uid, 4242);
         assert_eq!(st.st_gid, 4343);
+    }
+
+    /// sys_chown must propagate uid/gid into the host VFS so that a subsequent
+    /// sys_stat returns the freshly written values. The asymmetric (uid != gid,
+    /// neither equal to proc.euid) pair catches any single-field clobber and
+    /// any "kernel overrides chown args with caller's euid" regression.
+    #[test]
+    fn test_sys_chown_round_trip_through_host() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        // Seed the file with owner (0, 0) so the post-chown values are clearly
+        // distinguishable from the initial state.
+        host.set_file_with_owner(b"/foo", 0, 0, 0o644, b"hi");
+        sys_chown(&mut proc, &mut host, b"/foo", 1000, 2000).unwrap();
+        let st = sys_stat(&mut proc, &mut host, b"/foo").unwrap();
+        assert_eq!(st.st_uid, 1000, "sys_chown uid did not reach host VFS");
+        assert_eq!(st.st_gid, 2000, "sys_chown gid did not reach host VFS");
+    }
+
+    /// sys_fchown must propagate uid/gid into the host VFS via the open file
+    /// handle so that a subsequent sys_fstat returns the new values.
+    #[test]
+    fn test_sys_fchown_round_trip_through_host() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/bar", 0, 0, 0o644, b"hi");
+        let fd = sys_open(&mut proc, &mut host, b"/bar", O_RDONLY, 0o644).unwrap();
+        sys_fchown(&mut proc, &mut host, fd, 3000, 4000).unwrap();
+        let st = sys_fstat(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(st.st_uid, 3000, "sys_fchown uid did not reach host VFS");
+        assert_eq!(st.st_gid, 4000, "sys_fchown gid did not reach host VFS");
+    }
+
+    /// sys_fchownat with AT_FDCWD shares its propagation path with sys_chown
+    /// (resolves path then calls host.host_chown). Round-trip via sys_stat to
+    /// confirm the *at variant also reaches the host VFS — the syscall is
+    /// dispatched separately by libc-test/util-linux chown -h paths.
+    #[test]
+    fn test_sys_fchownat_round_trip_through_host() {
+        use wasm_posix_shared::flags::AT_FDCWD;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/baz", 0, 0, 0o644, b"hi");
+        sys_fchownat(&mut proc, &mut host, AT_FDCWD, b"/baz", 5000, 6000, 0).unwrap();
+        let st = sys_stat(&mut proc, &mut host, b"/baz").unwrap();
+        assert_eq!(st.st_uid, 5000, "sys_fchownat uid did not reach host VFS");
+        assert_eq!(st.st_gid, 6000, "sys_fchownat gid did not reach host VFS");
     }
 
     #[test]
