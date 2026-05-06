@@ -34,6 +34,34 @@ The kernel has full PTY support (PR #181) but browser demos still use plain `<di
 
 **Files:** `host/src/browser.ts`
 
+## Performance
+
+### Revisit an optional wasm32 kernel build for IPC-heavy workloads
+A May 6, 2026 prototype found that the Rust kernel can likely be built as
+`wasm32-unknown-unknown` while keeping user-process pointer width independent
+through the host's existing `ptrWidth` handling. The ABI 7 syscall channel
+layout remained unchanged (72-byte header, 6 x i64 args, i64 return, i32
+errno, 64KiB data buffer), and focused local tests covered wasm32 users,
+wasm64 users, pipe IPC, and fork/exec on a wasm32 kernel.
+
+The performance result was not stable enough to justify changing the default.
+The first Node benchmark pass showed modest wins in some syscall and process
+lifecycle paths, but the rerun was noisy: wasm32 process-lifecycle results
+stayed close to the first run, while wasm32 syscall latency and wasm64 process
+lifecycle numbers varied widely. Treat `kernel32.wasm` as a possible optional
+artifact to investigate, not a replacement for the current wasm64 kernel path.
+
+Any follow-up should:
+
+- keep ABI 7 and wasm64 user-program support intact;
+- keep the wasm64 kernel as the default until broader benchmark evidence exists;
+- run all benchmark suites on both Node and browser hosts with repeated,
+  alternating wasm32/wasm64 runs;
+- check whether IPC time is dominated by host-side copying, wakeup scheduling,
+  or retry logic rather than kernel pointer width;
+- if the approach still looks useful, expose it as a separate `kernel32.wasm`
+  build option.
+
 ## Kernel — regressions
 
 ### Multi-process nginx: injected connections don't reach fork workers
