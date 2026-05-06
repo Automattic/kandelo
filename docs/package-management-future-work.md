@@ -279,6 +279,63 @@ would cut download size when consumers want both.  Not a priority while
 download size for a single arch is small (zlib is ~200KB) but worth
 revisiting if we ever publish a megabyte-scale lib.
 
+## Security & trust
+
+### Package signing
+
+**Deferred from `docs/plans/2026-05-05-decoupled-package-builds-design.md` (§7, §10).**
+
+Today's trust model is rooted in `archive_sha256` in the local
+`package.toml` plus HTTPS for transport. That covers integrity for
+already-pinned packages and tampering by random network adversaries.
+Two threats it does not cover:
+
+1. **Manifest tampering by a compromised source host.** A consumer who
+   has added a third-party source URL trusts whatever bytes that URL
+   returns on subsequent `index.toml` fetches. If the source host is
+   compromised, an attacker could publish a malicious manifest pointing
+   at malicious archives with valid (attacker-chosen) shas. HTTPS
+   prevents in-flight tampering but not host compromise.
+2. **Auto-update malice.** If/when the resolver grows an "is there a
+   newer version?" check against a configured source, that check
+   trusts the manifest content. A compromised source could push a
+   malicious update without operator intervention.
+
+Cryptographic signing of manifests (and optionally archives) addresses
+both. Implementation requires picking a scheme (minisign / sigstore /
+GPG / similar), a CI key-management story, key distribution for
+third-party sources, and consumer-side verification UX. Real
+engineering scope — defer until at least one of the following lands:
+
+- Auto-update / update-check feature.
+- Heterogeneous mirror network where archives are hosted on
+  infrastructure not controlled by the publisher.
+- A trust-authority concept (e.g. "this manifest must chain to the
+  wasm-posix-kernel root key").
+
+The schema reserves no placeholder field; sign-related fields are
+designed properly when the feature lands rather than retrofitted into
+a stub.
+
+### Auto-update / update-check
+
+The source-manifest design (`index.toml`, `2026-05-05-decoupled-package-builds-design.md`)
+makes "is there a newer version of package X in source Y?" a fetch + diff
+operation. Not implemented. Triggers when consumers want a
+non-manual upgrade path. Couples with package signing — auto-fetching
+new shas without a signature check is the threat model that motivates
+signing.
+
+### Garbage collection of stale archives
+
+Per-file uploads under `binaries-abi-v<N>` accumulate every sha ever
+published. Storage is cheap on GitHub releases; old shas remain
+reachable indefinitely (good for reproducibility). No GC is planned.
+If storage pressure ever justifies it, the candidates are time-based
+(prune unreferenced archives older than N days) or
+reference-counted-against-`main`'s `package.toml` files (smallest
+storage, harshest on stale branches).
+
 ## Resolver internals
 
 ### `compute_sha` memo keyed on arch
