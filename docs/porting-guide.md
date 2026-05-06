@@ -1,6 +1,6 @@
 # Porting Guide
 
-This guide covers how to port C/C++ software to wasm-posix-kernel, create Node.js runners, and build browser demos.
+This guide covers how to port C/C++ software to Kandelo, create Node.js runners, and build browser demos.
 
 ## Overview
 

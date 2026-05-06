@@ -2,7 +2,7 @@
 
 ## Goal
 
-Enable HTTPS in C programs targeting wasm-posix-kernel by compiling OpenSSL to Wasm and providing a reference TLS-intercepting browser backend.
+Enable HTTPS in C programs targeting Kandelo by compiling OpenSSL to Wasm and providing a reference TLS-intercepting browser backend.
 
 ## Architecture
 

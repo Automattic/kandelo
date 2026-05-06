@@ -1,4 +1,4 @@
-# Wasm POSIX Kernel — Design Document
+# Kandelo — Design Document
 
 ## Goal
 

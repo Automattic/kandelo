@@ -311,7 +311,7 @@ engineering scope — defer until at least one of the following lands:
 - Heterogeneous mirror network where archives are hosted on
   infrastructure not controlled by the publisher.
 - A trust-authority concept (e.g. "this manifest must chain to the
-  wasm-posix-kernel root key").
+  Kandelo root key").
 
 The schema reserves no placeholder field; sign-related fields are
 designed properly when the feature lands rather than retrofitted into

@@ -2,7 +2,7 @@
 
 **Vision:** A POSIX-compliant kernel for WebAssembly that runs and coordinates multiple Wasm-based processes. The goal is to take existing systems software and run it on this kernel with minimal changes — ideally none. Full POSIX compliance is the default; developers can optionally trade compliance for simplicity or performance.
 
-This document tracks the implementation status of POSIX APIs in the wasm-posix-kernel. It is organized by subsystem and updated as features are implemented.
+This document tracks the implementation status of POSIX APIs in Kandelo. It is organized by subsystem and updated as features are implemented.
 
 **Legend:**
 - **Full** — Fully implemented per POSIX spec
@@ -15,7 +15,7 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 
 ## Architecture: Centralized Kernel Model
 
-The wasm-posix-kernel uses a **centralized architecture**: a single kernel Wasm instance holds a `ProcessTable` and serves all process workers via channel IPC (`Atomics.waitAsync`).
+Kandelo uses a **centralized architecture**: a single kernel Wasm instance holds a `ProcessTable` and serves all process workers via channel IPC (`Atomics.waitAsync`).
 
 **Key properties:**
 - **Single kernel instance** with a `ProcessTable` mapping PIDs to `Process` structs

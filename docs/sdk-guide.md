@@ -1,6 +1,6 @@
 # SDK Guide
 
-The wasm-posix-sdk provides a cross-compilation toolchain for building C/C++ programs that run on wasm-posix-kernel. It wraps LLVM tools with the correct flags for the `wasm32-unknown-unknown` target and links against the musl libc sysroot.
+The wasm-posix-sdk provides a cross-compilation toolchain for building C/C++ programs that run on Kandelo. It wraps LLVM tools with the correct flags for the `wasm32-unknown-unknown` target and links against the musl libc sysroot.
 
 ## Installation
 

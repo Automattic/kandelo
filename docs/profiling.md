@@ -1,6 +1,6 @@
 # Profiling and Benchmarking
 
-This document covers the performance measurement tools available in wasm-posix-kernel: a runtime syscall profiler for detailed per-syscall analysis, and a benchmark suite for repeatable cross-host comparisons.
+This document covers Kandelo's performance measurement tools: a runtime syscall profiler for detailed per-syscall analysis, and a benchmark suite for repeatable cross-host comparisons.
 
 ## Syscall Profiler
 

@@ -2,7 +2,7 @@
 
 ## Goal
 
-A working POSIX shell (dash) with GNU coreutils running on wasm-posix-kernel,
+A working POSIX shell (dash) with GNU coreutils running on Kandelo,
 providing an interactive terminal experience where the shell forks and execs
 real separate .wasm binaries for each command.
 

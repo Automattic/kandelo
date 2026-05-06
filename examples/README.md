@@ -1,6 +1,6 @@
 # Examples
 
-C programs demonstrating wasm-posix-kernel capabilities. Each can be compiled with the SDK and run on the TypeScript host.
+C programs demonstrating Kandelo capabilities. Each can be compiled with the SDK and run on the TypeScript host.
 
 ## Building and Running
 
@@ -69,7 +69,7 @@ npx vite --port 5198
 | WordPress | `/pages/wordpress/` | nginx + PHP-FPM + SQLite |
 | LAMP | `/pages/lamp/` | MariaDB + nginx + PHP-FPM + WordPress |
 
-Live at: [brandonpayton.github.io/wasm-posix-kernel](https://brandonpayton.github.io/wasm-posix-kernel/)
+Live at: [Kandelo browser demos](https://brandonpayton.github.io/wasm-posix-kernel/)
 
 See [docs/porting-guide.md](../docs/porting-guide.md) for how to create new demos.
 

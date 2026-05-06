@@ -1322,7 +1322,7 @@ git commit -m "examples(fbdoom): bundle doom1.wad shareware (lazy-loaded)"
 <html>
 <head>
   <meta charset="utf-8">
-  <title>DOOM (fbDOOM on wasm-posix-kernel)</title>
+  <title>DOOM (fbDOOM on Kandelo)</title>
   <style>
     body { background: #111; color: #ccc; font-family: monospace; margin: 0; padding: 20px; }
     canvas { image-rendering: pixelated; width: 1280px; height: 800px;

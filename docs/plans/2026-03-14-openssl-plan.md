@@ -2,7 +2,7 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Enable HTTPS in C programs targeting wasm-posix-kernel by compiling OpenSSL to Wasm and providing a reference TLS-intercepting browser backend.
+**Goal:** Enable HTTPS in C programs targeting Kandelo by compiling OpenSSL to Wasm and providing a reference TLS-intercepting browser backend.
 
 **Architecture:** OpenSSL compiles to static Wasm libraries using the SDK's `wasm32posix-cc`. On Node.js, TLS works natively over raw TCP (TcpNetworkBackend). For browsers, a TLS-intercepting fetch backend (adapted from WordPress Playground's TLS 1.2 library) performs MITM, decrypts to HTTP, and routes through `fetch()`. Everything lives in `examples/libs/openssl/` — not core kernel infrastructure.
 
@@ -740,7 +740,7 @@ The backend must expose the CA certificate as PEM so it can be written to the Wa
 ```typescript
 export async function createCARootCertificate(): Promise<GeneratedCertificate> {
     return await generateCertificate({
-        subject: { commonName: "Wasm POSIX MITM CA", organizationName: "wasm-posix-kernel" },
+        subject: { commonName: "Kandelo MITM CA", organizationName: "Kandelo" },
         validity: { notBefore: new Date("2020-01-01"), notAfter: new Date("2040-01-01") },
         basicConstraints: { isCA: true },
     });

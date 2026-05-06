@@ -1,6 +1,6 @@
 # Software Targets
 
-Systems software to port to wasm-posix-kernel, prioritized by POSIX depth and browser utility.
+Systems software to port to Kandelo, prioritized by POSIX depth and browser utility.
 
 ## POSIX Coverage Matrix
 

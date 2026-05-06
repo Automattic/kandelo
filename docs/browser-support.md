@@ -2,7 +2,7 @@
 
 ## Overview
 
-The wasm-posix-kernel runs in modern browsers with SharedArrayBuffer support (Chrome 91+, Firefox 79+, Safari 16.4+). The centralized kernel architecture uses one kernel Wasm instance in a dedicated web worker, with each process running in a sub-worker.
+Kandelo runs in modern browsers with SharedArrayBuffer support (Chrome 91+, Firefox 79+, Safari 16.4+). The centralized kernel architecture uses one kernel Wasm instance in a dedicated web worker, with each process running in a sub-worker.
 
 ## Required HTTP Headers
 

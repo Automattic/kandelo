@@ -2,7 +2,7 @@
 
 ## Overview
 
-Integrate [Sortix os-test](https://gitlab.com/sortix/os-test) as a POSIX conformance test suite for wasm-posix-kernel. The suite tests compliance with POSIX.1-2024 across ~4730 tests.
+Integrate [Sortix os-test](https://gitlab.com/sortix/os-test) as a POSIX conformance test suite for Kandelo. The suite tests compliance with POSIX.1-2024 across ~4730 tests.
 
 ## Architecture
 
