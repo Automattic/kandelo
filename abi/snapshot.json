@@ -1,5 +1,5 @@
 {
-  "abi_version": 7,
+  "abi_version": 8,
   "asyncify_save_slots": [
     {
       "meaning": "parent TLS base (__tls_base) saved for child rewind",
@@ -128,6 +128,28 @@
       "__abi_"
     ]
   },
+  "host_intercepted_syscalls": [
+    {
+      "name": "SYS_EXECVE",
+      "number": 211
+    },
+    {
+      "name": "SYS_FORK",
+      "number": 212
+    },
+    {
+      "name": "SYS_VFORK",
+      "number": 213
+    },
+    {
+      "name": "SYS_SPAWN",
+      "number": 214
+    },
+    {
+      "name": "SYS_EXECVEAT",
+      "number": 386
+    }
+  ],
   "kernel_exports": [
     {
       "kind": "func",
