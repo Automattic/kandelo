@@ -5,6 +5,26 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BROWSER_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$BROWSER_DIR/../.." && pwd)"
 
+# Pinned to the same TeX Live release whose source tarball
+# build-texlive.sh compiles. Bumping requires changing both — the
+# texmf-dist macros + format files install-tl downloads here must match
+# the engine pdftex.wasm we just built. mismatch surfaces as either an
+# install-tl version error (cross-edition tlpdb) or runtime "format
+# file not found / cannot read format" once pdftex tries to load
+# latex.fmt at demo time.
+TEXLIVE_VERSION="${TEXLIVE_VERSION:-2025}"
+
+# Frozen historical archive — `mirror.ctan.org/.../tlnet/` always points
+# at the *current* TeX Live release, so as soon as upstream rolls
+# (around April annually) install-tl + tlpdb shift to the new edition
+# and refuse to install against an older `local: 2025` engine. The
+# `historic/.../<year>/tlnet-final/` tree is the immutable post-rollover
+# snapshot of that year's final release; using it pins both halves of
+# the install (install-tl binary + the repository it pulls packages
+# from) to the same edition.
+TEXLIVE_INSTALL_URL="https://ftp.math.utah.edu/pub/tex/historic/systems/texlive/${TEXLIVE_VERSION}/tlnet-final/install-tl-unx.tar.gz"
+TEXLIVE_REPOSITORY="https://ftp.math.utah.edu/pub/tex/historic/systems/texlive/${TEXLIVE_VERSION}/tlnet-final"
+
 TEXLIVE_DIR="$REPO_ROOT/examples/libs/texlive"
 HOST_PDFTEX="$TEXLIVE_DIR/texlive-host-build/texk/web2c/pdftex"
 INSTALL_DIR="$TEXLIVE_DIR/texlive-dist"
@@ -25,10 +45,11 @@ fi
 if [ ! -d "$INSTALL_DIR/texmf-dist" ]; then
     echo "==> Installing minimal TeX Live distribution..."
 
-    # Download install-tl
+    # Download install-tl from the pinned historical archive (see header).
     INSTALLER_DIR="$TEXLIVE_DIR/install-tl"
     if [ ! -d "$INSTALLER_DIR" ]; then
-        curl -fsSL "https://mirror.ctan.org/systems/texlive/tlnet/install-tl-unx.tar.gz" \
+        curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors \
+            -fsSL "$TEXLIVE_INSTALL_URL" \
             -o "/tmp/install-tl.tar.gz"
         mkdir -p "$INSTALLER_DIR"
         tar xzf "/tmp/install-tl.tar.gz" -C "$INSTALLER_DIR" --strip-components=1
@@ -83,7 +104,7 @@ EOF
         --profile="$TEXLIVE_DIR/texlive.profile" \
         --no-interaction \
         --force-platform="$TL_PLATFORM" \
-        --repository=https://mirror.ctan.org/systems/texlive/tlnet
+        --repository="$TEXLIVE_REPOSITORY"
     cd "$REPO_ROOT"
 fi
 

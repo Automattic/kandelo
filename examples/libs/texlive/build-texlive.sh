@@ -2,6 +2,10 @@
 set -euo pipefail
 
 TEXLIVE_VERSION="${TEXLIVE_VERSION:-2025}"
+# Exported so build-texlive-bundle.sh's tlnet-final URL pins to the
+# same release as the source tarball below — keeps the engine and
+# its texmf-dist macros from drifting across upstream rollovers.
+export TEXLIVE_VERSION
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SRC_DIR="$SCRIPT_DIR/texlive-src"
 HOST_BUILD_DIR="$SCRIPT_DIR/texlive-host-build"
