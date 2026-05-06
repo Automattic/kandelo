@@ -461,9 +461,11 @@ Mechanics:
    posted by this workflow. Its bump PR does NOT go through
    `prepare-merge.yml` — that would cut a second redundant durable
    release. Auto-merge picks it up after any other required checks.
-3. Concurrency-shares `prepare-merge-singleton`, so force-rebuild
-   and prepare-merge can't both publish a durable release at the
-   same moment.
+3. Shares the durable-release lock with `prepare-merge.yml`, so
+   force-rebuild and prepare-merge can't both publish a durable
+   release at the same moment. The lock is a Git ref rather than a
+   GitHub Actions concurrency group because Actions keeps only one
+   pending run per group and cancels/replaces additional queued runs.
 
 Use `--force-rebuild`/`--force-rebuild-all` directly with
 `scripts/stage-release.sh` for a local rebuild without publishing.
