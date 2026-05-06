@@ -1075,6 +1075,20 @@ pub extern "C" fn kernel_fork_process(parent_pid: u32, child_pid: u32) -> i32 {
     }
 }
 
+/// Returns the per-process fork counter (parent side, incremented on
+/// successful fork). Used by the non-forking spawn test suite as a
+/// regression guardrail. Returns `u64::MAX` as a sentinel if the pid
+/// does not exist (so callers can distinguish "no process" from
+/// "0 forks").
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_get_fork_count(pid: u32) -> u64 {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    match table.get(pid) {
+        Some(proc) => proc.fork_count(),
+        None => u64::MAX,
+    }
+}
+
 /// Check if a process is a fork child (centralized mode).
 /// Returns 1 if fork child, 0 otherwise, -ESRCH if not found.
 #[unsafe(no_mangle)]

@@ -501,6 +501,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_get_fork_count",
+      "signature": "(i32) -> (i64)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_get_fork_exec_argc",
       "signature": "() -> (i32)"
     },
