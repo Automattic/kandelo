@@ -91,6 +91,23 @@ if ! grep -q 'ZEND_USE_ASM_ARITHMETIC 0' Zend/zend_multiply.h 2>/dev/null; then
     fi
 fi
 
+# opcache's MAP_ANON shared-memory probe is an AC_RUN_IFELSE that fails
+# under cross-compilation; the fallback only sets have_shm_mmap_anon=yes
+# for *linux* hosts (configure ext/opcache/config.m4). Without this
+# patch, configure rejects --enable-opcache with "No supported shared
+# memory caching support". For our wasm target the runtime semantics
+# are fine: each php-fpm worker is its own wasm instance, so an
+# MAP_SHARED|MAP_ANON allocation is naturally per-process — exactly the
+# per-worker opcache the user wants. Flip the cross-compile fallback's
+# *) branch from "no" to "yes" so opcache builds. The pattern
+# "      have_shm_mmap_anon=no" followed by "      ;;" appears only in
+# that fallback (the AC_RUN_IFELSE failure branch is one-line:
+# `e) have_shm_mmap_anon=no ;;`).
+if [ -f configure ] && ! grep -q "wasm-opcache patch applied" configure; then
+    perl -i.bak -0pe 's/      have_shm_mmap_anon=no\n      ;;/      have_shm_mmap_anon=yes\n      ;; # wasm-opcache patch applied/' configure
+    rm -f configure.bak
+fi
+
 echo "==> Configuring PHP for Wasm (CLI + FPM, single tree)..."
 # Drop a stale config.cache from a previous build whose env (CPPFLAGS,
 # PKG_CONFIG_PATH, etc.) may not match this run. autoconf would
@@ -107,6 +124,7 @@ if [ ! -f Makefile ]; then
         --disable-phpdbg \
         --enable-cli \
         --enable-fpm \
+        --enable-opcache \
         --enable-mbstring \
         --disable-mbregex \
         --enable-ctype \

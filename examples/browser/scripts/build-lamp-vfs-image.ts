@@ -209,6 +209,19 @@ request_slowlog_trace_depth = 0
 `;
   writeVfsFile(fs, "/etc/php-fpm.conf", phpFpmConf);
 
+  // opcache: each php-fpm worker keeps its own bytecode cache (no cross-
+  // process SHM in our wasm port — the static worker pool is small and
+  // warmups are fast). validate_timestamps=0 is safe because VFS files
+  // don't change at runtime.
+  const phpIni = `[opcache]
+opcache.enable=1
+opcache.enable_cli=1
+opcache.memory_consumption=64
+opcache.max_accelerated_files=2000
+opcache.validate_timestamps=0
+`;
+  writeVfsFile(fs, "/etc/php.ini", phpIni);
+
   const fpmRouter = `<?php
 $uri = urldecode(parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH));
 $docRoot = $_SERVER['DOCUMENT_ROOT'];
@@ -374,7 +387,7 @@ function buildServices(): DinitService[] {
     {
       name: "php-fpm",
       type: "process",
-      command: "/usr/sbin/php-fpm -y /etc/php-fpm.conf -c /dev/null --nodaemonize",
+      command: "/usr/sbin/php-fpm -y /etc/php-fpm.conf -c /etc/php.ini --nodaemonize",
       dependsOn: ["mariadb", "wp-config-init"],
       logfile: "/var/log/php-fpm.log",
       restart: false,
