@@ -2962,11 +2962,17 @@ export class CentralizedKernelWorker {
   }
 
   private wakeBlockedPoll(pid: number, pipeIdx: number): void {
-    for (const [key, entry] of this.pendingPollRetries) {
-      if (entry.channel.pid !== pid) continue;
-      if (!entry.pipeIndices.includes(pipeIdx)) continue;
-
-      // Cancel the scheduled retry and fire immediately
+    // retrySyscall runs handleSyscall synchronously, which can re-insert
+    // the same key via pendingPollRetries.set when the kernel returns
+    // EAGAIN. JS Map iterators are not snapshots — re-inserted entries
+    // appear at the new tail and the iterator yields them, livelocking
+    // wakeBlockedPoll-hit / poll / poll-register inside one tick. Mirror
+    // wakeAllBlockedRetries' snapshot-and-skip-if-replaced pattern.
+    const matches = Array.from(this.pendingPollRetries.entries()).filter(
+      ([, e]) => e.channel.pid === pid && e.pipeIndices.includes(pipeIdx),
+    );
+    for (const [key, entry] of matches) {
+      if (this.pendingPollRetries.get(key) !== entry) continue;
       if (entry.timer !== null) {
         clearTimeout(entry.timer);
       }
