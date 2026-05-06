@@ -15,7 +15,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const browserDir = resolve(__dirname, "../../examples/browser");
 
 /** Suites available in the browser benchmark page. */
-const BROWSER_SUITES = [
+export const BROWSER_SUITES = [
   "syscall-io", "process-lifecycle", "erlang-ring", "wordpress",
   "mariadb-aria", "mariadb-aria-64",
   "mariadb-innodb", "mariadb-innodb-64",

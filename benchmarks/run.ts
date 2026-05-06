@@ -16,9 +16,17 @@ import type { BenchmarkSuite, BenchmarkOutput } from "./types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-function parseArgs(argv: string[]): { host: "node" | "browser"; suite?: string; rounds: number } {
+interface ParsedArgs {
+  host: "node" | "browser";
+  suite?: string;
+  exclude: string[];
+  rounds: number;
+}
+
+function parseArgs(argv: string[]): ParsedArgs {
   let host: "node" | "browser" = "node";
   let suite: string | undefined;
+  let exclude: string[] = [];
   let rounds = 3;
 
   const args = argv.slice(2);
@@ -42,6 +50,10 @@ function parseArgs(argv: string[]): { host: "node" | "browser"; suite?: string; 
       suite = arg.slice(8);
     } else if (arg === "--suite") {
       suite = args[++i];
+    } else if (arg.startsWith("--exclude=")) {
+      exclude = arg.slice(10).split(",").map((s) => s.trim()).filter(Boolean);
+    } else if (arg === "--exclude") {
+      exclude = args[++i].split(",").map((s) => s.trim()).filter(Boolean);
     } else if (arg.startsWith("--rounds=")) {
       rounds = parseInt(arg.slice(9), 10);
       if (isNaN(rounds) || rounds < 1) {
@@ -60,13 +72,14 @@ function parseArgs(argv: string[]): { host: "node" | "browser"; suite?: string; 
 Options:
   --host=node|browser   Execution host (default: node)
   --suite=<name>        Run a single suite
+  --exclude=a,b,c       Skip these suites (comma-separated; ignored when --suite is set)
   --rounds=<n>          Number of rounds per suite (default: 3, reports median)
 `);
       process.exit(0);
     }
   }
 
-  return { host, suite, rounds };
+  return { host, suite, exclude, rounds };
 }
 
 function median(values: number[]): number {
@@ -89,8 +102,11 @@ const SUITE_MODULES: Record<string, string> = {
   "mariadb-innodb-64": "./suites/mariadb-innodb-64.js",
 };
 
-async function loadNodeSuites(filter?: string): Promise<BenchmarkSuite[]> {
-  const names = filter ? [filter] : Object.keys(SUITE_MODULES);
+async function loadNodeSuites(filter?: string, exclude: string[] = []): Promise<BenchmarkSuite[]> {
+  const excludeSet = new Set(exclude);
+  const names = filter
+    ? [filter]
+    : Object.keys(SUITE_MODULES).filter((n) => !excludeSet.has(n));
   const suites: BenchmarkSuite[] = [];
 
   for (const name of names) {
@@ -163,12 +179,17 @@ async function runSuites(
 }
 
 async function main() {
-  const { host, suite: suiteFilter, rounds } = parseArgs(process.argv);
+  const { host, suite: suiteFilter, exclude, rounds } = parseArgs(process.argv);
 
   if (host === "browser") {
     // Browser execution via Playwright
     const { runBrowserBenchmarks } = await import("./browser/run-browser.js");
-    const suiteNames = suiteFilter ? [suiteFilter] : undefined;
+    let suiteNames: string[] | undefined = suiteFilter ? [suiteFilter] : undefined;
+    if (!suiteNames && exclude.length > 0) {
+      const { BROWSER_SUITES } = await import("./browser/run-browser.js");
+      const excludeSet = new Set(exclude);
+      suiteNames = BROWSER_SUITES.filter((n: string) => !excludeSet.has(n));
+    }
     const results = await runBrowserBenchmarks({ suites: suiteNames, rounds });
 
     const output: BenchmarkOutput = {
@@ -191,7 +212,7 @@ async function main() {
   }
 
   // Node.js execution
-  const suites = await loadNodeSuites(suiteFilter);
+  const suites = await loadNodeSuites(suiteFilter, exclude);
   if (suites.length === 0) {
     console.error("No suites available to run.");
     process.exit(1);

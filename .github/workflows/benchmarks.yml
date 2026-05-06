@@ -55,7 +55,15 @@ jobs:
       contents: read
       pull-requests: write
     env:
-      EXPECTED_SUITES: "syscall-io,process-lifecycle,erlang-ring,wordpress,mariadb-aria,mariadb-aria-64,mariadb-innodb,mariadb-innodb-64"
+      # wasm64 mariadb suites are excluded from CI for now: mariadbd
+      # cold-start under wasm64 exceeds the per-call 120s timeout in
+      # benchmarks/suites/mariadb.ts, costing ~6 minutes of timeout per
+      # round × 2 sides without producing data. Re-add when either the
+      # suite gains a longer per-call budget or wasm64 mariadb cold-start
+      # gets faster. See SKIP_SUITES below for the matching --exclude
+      # passed to run.ts.
+      EXPECTED_SUITES: "syscall-io,process-lifecycle,erlang-ring,wordpress,mariadb-aria,mariadb-innodb"
+      SKIP_SUITES: "mariadb-aria-64,mariadb-innodb-64"
       ROUNDS: "3"
       THRESHOLD: "5"
     steps:
@@ -184,7 +192,7 @@ jobs:
         continue-on-error: true
         run: |
           nix develop --accept-flake-config --command \
-            npx tsx benchmarks/run.ts --rounds=${{ env.ROUNDS }} --host=node
+            npx tsx benchmarks/run.ts --rounds=${{ env.ROUNDS }} --exclude=${{ env.SKIP_SUITES }} --host=node
           mv $(ls -t benchmarks/results/benchmark-node-*.json | head -1) /tmp/after-node.json
 
       - name: Run benchmarks — browser host (after)
@@ -192,7 +200,7 @@ jobs:
         continue-on-error: true
         run: |
           nix develop --accept-flake-config --command \
-            npx tsx benchmarks/run.ts --rounds=${{ env.ROUNDS }} --host=browser
+            npx tsx benchmarks/run.ts --rounds=${{ env.ROUNDS }} --exclude=${{ env.SKIP_SUITES }} --host=browser
           mv $(ls -t benchmarks/results/benchmark-browser-*.json | head -1) /tmp/after-browser.json
 
       # ---- BEFORE side: PR base ----
@@ -239,7 +247,7 @@ jobs:
         continue-on-error: true
         run: |
           nix develop --accept-flake-config --command \
-            npx tsx benchmarks/run.ts --rounds=${{ env.ROUNDS }} --host=node
+            npx tsx benchmarks/run.ts --rounds=${{ env.ROUNDS }} --exclude=${{ env.SKIP_SUITES }} --host=node
           mv $(ls -t benchmarks/results/benchmark-node-*.json | head -1) /tmp/before-node.json
 
       - name: Run benchmarks — browser host (before)
@@ -247,7 +255,7 @@ jobs:
         continue-on-error: true
         run: |
           nix develop --accept-flake-config --command \
-            npx tsx benchmarks/run.ts --rounds=${{ env.ROUNDS }} --host=browser
+            npx tsx benchmarks/run.ts --rounds=${{ env.ROUNDS }} --exclude=${{ env.SKIP_SUITES }} --host=browser
           mv $(ls -t benchmarks/results/benchmark-browser-*.json | head -1) /tmp/before-browser.json
 
       # ---- Compare and gate ----
