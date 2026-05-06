@@ -113,10 +113,18 @@ if [ ! -x "$HOST_BUILD_DIR/texk/web2c/pdftex" ]; then
     # libs), then run texk's recurse to create + build texk/web2c
     # (which makes pdftex; we add otangle since the cross-compile
     # configure unconditionally requires it even with Omega disabled).
-    NPROC="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
+    # Cap at 2 jobs on memory-constrained runners. pdftex0.c +
+    # pdftexini.c each compile to ~1.5GB of gcc working set; -j4 on a
+    # GHA standard runner (7GB RAM) triggers swap thrash and the
+    # streaming-log heartbeat starves long enough that the runner
+    # appears hung from outside (no output for >10 min). -j2 keeps
+    # peak under 4GB and keeps logs flowing. Local dev with more cores
+    # can override via JOBS=$(nproc).
+    NPROC="${JOBS:-2}"
+    echo "==> Host build: -j$NPROC"
     # TexLive's auto-recurse mechanism creates and builds its
     # sub-subdirs at make time, NOT at configure time. The build is
-    # split across three steps:
+    # split across four steps:
     #
     # 1. `make all-local` at the top level: builds doc, texk/kpathsea,
     #    texk/ptexenc (which are top-level "TeX-specific lib" subdirs)
@@ -132,10 +140,14 @@ if [ ! -x "$HOST_BUILD_DIR/texk/web2c/pdftex" ]; then
     # 4. Finally `make -C texk/web2c pdftex otangle` ensures otangle
     #    is built (the cross-compile configure unconditionally
     #    requires it even with Omega engines disabled).
+    echo "==> Host build step 1/4: top-level all-local"
     make -j"$NPROC" all-local
+    echo "==> Host build step 2/4: libs/ recurse + xpdf"
     make -C libs recurse
     make -C libs/xpdf -j"$NPROC"
+    echo "==> Host build step 3/4: texk/ (kpathsea, ptexenc, web2c)"
     make -C texk -j"$NPROC"
+    echo "==> Host build step 4/4: pdftex + otangle"
     make -C texk/web2c -j"$NPROC" pdftex otangle
     cd "$REPO_ROOT"
 fi
@@ -220,7 +232,8 @@ SITE
     #   - libs/xpdf, libs/zlib, etc. (libs/ CONF_SUBDIRS)
     #   - texk/web2c, etc. (texk/ CONF_SUBDIRS)
     # Without this, kpathsea and xpdf directories don't exist.
-    NPROC="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
+    NPROC="${JOBS:-2}"
+    echo "==> Cross build: -j$NPROC"
 
     # Pass AR/RANLIB on the command line so they override Makefile
     # assignments. xpdf's sub-configure ignores the top-level AR
@@ -228,11 +241,14 @@ SITE
     # archives for wasm object files.
     WASM_AR="AR=wasm32posix-ar RANLIB=wasm32posix-ranlib"
 
+    echo "==> Cross build step 1/4: top-level recurse"
     make -j"$NPROC" $WASM_AR
 
-    # Build pdftex's bundled dependencies before pdftex itself.
+    echo "==> Cross build step 2/4: texk/kpathsea"
     make -C texk/kpathsea -j"$NPROC" $WASM_AR
+    echo "==> Cross build step 3/4: libs/xpdf"
     make -C libs/xpdf -j"$NPROC" $WASM_AR
+    echo "==> Cross build step 4/4: texk/web2c pdftex"
     make -C texk/web2c pdftex -j"$NPROC" $WASM_AR
     cd "$REPO_ROOT"
 fi
