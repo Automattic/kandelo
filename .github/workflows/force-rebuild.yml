@@ -229,25 +229,17 @@ jobs:
             a="${a%"${a##*[![:space:]]}"}"
             [ -n "$a" ] && arch_args+=(--arch "$a")
           done
-          # `--allow-failure texlive`: TexLive's bundled web2c
-          # auto-generates `pmpost`'s C sources from `.w` files (the
-          # WEB literate-programming format), and pmpmathbinary.c
-          # hard-`#include`s <gmp.h> regardless of `--disable-mp /
-          # --disable-ptex / --disable-uptex`. Until that's untangled
-          # (likely needs `pkgs.gmp/mpfr/cairo` in flake plus
-          # `--with-system-gmp=yes` for both Phase 1 host and Phase
-          # 2 cross builds, with matching wasm32 ports of those
-          # libs), keep texlive's source-build red but un-gating —
-          # warn instead of fail. Track in
-          # docs/package-management-future-work.md. Drop this flag
-          # once texlive can source-build under
-          # `nix develop --ignore-environment`.
+          # No package-specific allow-failure exceptions today.
+          # If a package's source build is broken on the runner but
+          # we want force-rebuild to keep producing a release, pass
+          # `--allow-failure <name>` here. Stage-release will log a
+          # stale-flag notice once the build is fixed so the bypass
+          # doesn't linger.
           mkdir -p /tmp/durable
           bash scripts/dev-shell.sh \
             scripts/stage-release.sh \
               --out /tmp/durable \
               --tag "${{ steps.tag.outputs.tag }}" \
-              --allow-failure texlive \
               "${arch_args[@]}" \
               "${force_args[@]}"
 

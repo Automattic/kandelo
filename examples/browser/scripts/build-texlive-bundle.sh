@@ -5,10 +5,36 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BROWSER_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$BROWSER_DIR/../.." && pwd)"
 
+# Pinned to the same TeX Live release whose source tarball
+# build-texlive.sh compiles. Bumping requires changing both — the
+# texmf-dist macros + format files install-tl downloads here must match
+# the engine pdftex.wasm we just built. mismatch surfaces as either an
+# install-tl version error (cross-edition tlpdb) or runtime "format
+# file not found / cannot read format" once pdftex tries to load
+# latex.fmt at demo time.
+TEXLIVE_VERSION="${TEXLIVE_VERSION:-2025}"
+
+# Frozen historical archive — `mirror.ctan.org/.../tlnet/` always points
+# at the *current* TeX Live release, so as soon as upstream rolls
+# (around April annually) install-tl + tlpdb shift to the new edition
+# and refuse to install against an older `local: 2025` engine. The
+# `historic/.../<year>/tlnet-final/` tree is the immutable post-rollover
+# snapshot of that year's final release; using it pins both halves of
+# the install (install-tl binary + the repository it pulls packages
+# from) to the same edition.
+TEXLIVE_INSTALL_URL="https://ftp.math.utah.edu/pub/tex/historic/systems/texlive/${TEXLIVE_VERSION}/tlnet-final/install-tl-unx.tar.gz"
+TEXLIVE_REPOSITORY="https://ftp.math.utah.edu/pub/tex/historic/systems/texlive/${TEXLIVE_VERSION}/tlnet-final"
+
 TEXLIVE_DIR="$REPO_ROOT/examples/libs/texlive"
 HOST_PDFTEX="$TEXLIVE_DIR/texlive-host-build/texk/web2c/pdftex"
-BUNDLE_FILE="$BROWSER_DIR/public/texlive-bundle.json"
 INSTALL_DIR="$TEXLIVE_DIR/texlive-dist"
+
+# Bundle output destination. Default: served-from-public/ for direct
+# `bash build-texlive-bundle.sh` invocations during local dev.
+# Overridable so build-texlive.sh can drop the bundle into
+# $WASM_POSIX_DEP_OUT_DIR (resolver scratch, packed into the package's
+# tar.zst archive — same pattern as vim's runtime tree).
+BUNDLE_FILE="${TEXLIVE_BUNDLE_OUT:-$BROWSER_DIR/public/texlive-bundle.json}"
 
 if [ ! -x "$HOST_PDFTEX" ]; then
     echo "ERROR: Host pdftex not found. Run build-texlive.sh first." >&2
@@ -19,10 +45,11 @@ fi
 if [ ! -d "$INSTALL_DIR/texmf-dist" ]; then
     echo "==> Installing minimal TeX Live distribution..."
 
-    # Download install-tl
+    # Download install-tl from the pinned historical archive (see header).
     INSTALLER_DIR="$TEXLIVE_DIR/install-tl"
     if [ ! -d "$INSTALLER_DIR" ]; then
-        curl -fsSL "https://mirror.ctan.org/systems/texlive/tlnet/install-tl-unx.tar.gz" \
+        curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors \
+            -fsSL "$TEXLIVE_INSTALL_URL" \
             -o "/tmp/install-tl.tar.gz"
         mkdir -p "$INSTALLER_DIR"
         tar xzf "/tmp/install-tl.tar.gz" -C "$INSTALLER_DIR" --strip-components=1
@@ -48,11 +75,36 @@ tlpdbopt_install_docfiles 0
 tlpdbopt_install_srcfiles 0
 EOF
 
+    # install-tl normally calls `sw_vers -productVersion` (Apple) or
+    # equivalent system tools to identify the host platform. Under
+    # `nix develop --ignore-environment` (CI + scripts/dev-shell.sh),
+    # those tools aren't on PATH and detection fails with "only
+    # MacOSX is supported, not darwin" / "no binary platform
+    # specified/available". Force the platform explicitly so install
+    # proceeds without depending on host introspection.
+    #
+    # We don't actually use install-tl's downloaded binaries — pdftex
+    # comes from our own wasm32 cross-build. The platform is named
+    # purely so install-tl agrees to run; the binfiles end up in
+    # texlive-dist/bin/<platform>/ unused.
+    case "$(uname -s)" in
+        Darwin) TL_PLATFORM=universal-darwin ;;
+        Linux)
+            case "$(uname -m)" in
+                x86_64)         TL_PLATFORM=x86_64-linux ;;
+                aarch64|arm64)  TL_PLATFORM=aarch64-linux ;;
+                *) echo "ERROR: unsupported Linux arch: $(uname -m)" >&2; exit 1 ;;
+            esac
+            ;;
+        *) echo "ERROR: unsupported OS: $(uname -s)" >&2; exit 1 ;;
+    esac
+
     cd "$INSTALLER_DIR"
     perl install-tl \
         --profile="$TEXLIVE_DIR/texlive.profile" \
         --no-interaction \
-        --repository=https://mirror.ctan.org/systems/texlive/tlnet
+        --force-platform="$TL_PLATFORM" \
+        --repository="$TEXLIVE_REPOSITORY"
     cd "$REPO_ROOT"
 fi
 

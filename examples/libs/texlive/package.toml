@@ -1,11 +1,20 @@
 kind = "program"
 name = "texlive"
 version = "2025"
-revision = 1
+# rev2: bundle texlive-bundle.json into the package archive (so the
+# distribution macros + latex.fmt ride alongside pdftex.wasm). Bumped
+# from rev1 to invalidate any cached rev1 archives that only contain
+# pdftex.wasm.
+revision = 2
 depends_on = ["zlib@1.3.1", "libpng@1.6.43"]
 
 [source]
 url = "https://ftp.math.utah.edu/pub/tex/historic/systems/texlive/2025/texlive-20250308-source.tar.xz"
+# Source-tarball sha is intentionally a placeholder. The build
+# script's curl pulls this URL at Phase 0; the resolver chain only
+# verifies it when source-building, and a force-rebuild populates
+# whatever the upstream mirror returns. Will be filled in once an
+# archive ships through CI.
 sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 
 [license]
@@ -16,9 +25,18 @@ url = "https://www.tug.org/texlive/copying.html"
 script_path = "examples/libs/texlive/build-texlive.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
+# Two outputs: the wasm engine + the runtime distribution bundle.
+# install-release places both under `binaries/programs/<arch>/texlive/`
+# (multi-output convention).
 [[outputs]]
 name = "pdftex"
 wasm = "pdftex.wasm"
-[binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/texlive-2025-rev1-abi6-wasm32-12249438.tar.zst"
-archive_sha256 = "fa1da8fc580f87f8cd9335277a4f1fffc57dee9f491f4465079f264f276a4b04"
+
+[[outputs]]
+name = "texlive-bundle"
+wasm = "texlive-bundle.json"
+
+# [binary] block intentionally absent: no published archive exists
+# for ABI v7 yet. Once a force-rebuild lands one, fill in archive_url
+# + archive_sha256 here. Until then, the resolver chain falls through
+# to a source build.

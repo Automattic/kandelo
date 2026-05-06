@@ -442,44 +442,23 @@ Trigger: once the current sequential workflow is durably green, or
 sooner if force-rebuild runs continue to take >1 hour to surface
 the next latent build bug.
 
-### Re-enable TexLive in force-rebuild (currently `--allow-failure`)
+### `--allow-failure` workflow flag
 
-PR #406's force-rebuild.yml passes `--allow-failure texlive` to keep
-the workflow green while TexLive's source build is broken. The flag
-downgrades a total-failure for that one package to a warning at the
-stage-release exit-code level — every other package is still gated
-strictly. The package's `package.toml` is intentionally untouched; the
-release-policy decision lives at the call site (workflow YAML).
+`scripts/stage-release.sh --allow-failure <name>` carves out a
+per-package exception: total-failure for `<name>` logs a warning
+instead of gating the workflow exit code, while every other package
+is still gated strictly. Use it as a temporary bypass when a
+package's source build is broken on the runner and you need to keep
+producing a release.
 
-Re-enable when the underlying gmp.h chain is fixed:
+The flag self-polices. When `<name>` actually built every attempted
+arch successfully (or didn't match any manifest at all),
+`stage-release` logs a "stale --allow-failure" notice naming the
+flag — that's the cue to drop it from the workflow YAML. No log
+line means the flag is still load-bearing.
 
-* TexLive's `web2c` Phase-1 host build auto-generates `pmpost`'s C
-  sources from `.w` files (the WEB literate-programming format).
-  `pmpmathbinary.c` and `pmpmathinterval.c` hard-`#include <gmp.h>`
-  regardless of `--disable-mp / --disable-ptex / --disable-uptex /
-  --disable-euptex` — those flags only gate the resulting binary,
-  not the source-file generation pass.
-* The bundled `libs/gmp/native/` sub-configure clobbers `CC=` blank
-  on recurse, autoconf re-detects `${build_alias}-gcc` (= the
-  Nix-wrapped gcc on Linux CI), and the wrapper fails its
-  compile-test because the cmdline `CFLAGS=` blank also strips its
-  required spec injections. Same family of issues lurks under
-  `libs/{mpfi,mpfr,cairo}/`.
-
-The proper fix is most-likely:
-
-1. Add `pkgs.gmp pkgs.mpfr pkgs.cairo` to `flake.nix` so their
-   headers + libs land on the Nix wrapper's auto-included path for
-   the host phase.
-2. Switch the host configure to `--with-system-{gmp,mpfr,cairo}=yes`
-   so TexLive uses the Nix-provided libs instead of trying to build
-   bundled copies.
-3. Phase-2 cross-build also needs these libs targeted at wasm32 —
-   either build wasm32 ports of gmp/mpfr/cairo as new
-   `examples/libs/<name>/` packages, OR keep the Phase-2 path on
-   bundled libs and only fix Phase 1.
-4. Drop `--allow-failure texlive` from `force-rebuild.yml`.
-
-Trigger: when TexLive becomes a blocker for a release, or when
-someone is willing to invest the ~half-day on the gmp/mpfr/cairo
-flake additions and dual-phase wiring.
+No packages are bypassed today. (TexLive's source build was thought
+to be blocked on a `pmpost` → `gmp.h` chain, but that turned out to
+be a stale diagnosis: the bundled `libs/gmp/native/` builds fine
+under `nix develop --ignore-environment` on at least Mac aarch64.
+Dropped from the bypass list along with the diagnosis.)

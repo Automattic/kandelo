@@ -604,6 +604,70 @@ fn default_outputs_value() -> toml::Value {
 }
 
 impl DepsManifest {
+    /// Relative path under `programs/<arch>/` where `out` should land
+    /// once produced. Single source of truth for the placement
+    /// convention; both install-release (release consumer) and
+    /// install-local-binary (developer build script) compute the
+    /// destination through this method, so a freshly-built local
+    /// artifact can shadow the released bytes at the resolver's
+    /// expected path.
+    ///
+    /// Layout:
+    ///   * 1 output:  `<output.name><ext>`
+    ///   * ≥2 outputs: `<program.name>/<output.name><ext>`
+    ///
+    /// `<ext>` is everything from the first `.` onward in `out.wasm`'s
+    /// basename, so `.vfs.zst`, `.tar.gz`, etc. round-trip intact.
+    pub fn output_dest_rel_for(&self, out: &ProgramOutput) -> PathBuf {
+        let basename = Path::new(&out.wasm)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(&out.wasm);
+        let ext = match basename.find('.') {
+            Some(i) => &basename[i..],
+            None => "",
+        };
+        let dest_name = format!("{}{}", out.name, ext);
+        if self.program_outputs.len() > 1 {
+            Path::new(&self.name).join(dest_name)
+        } else {
+            PathBuf::from(dest_name)
+        }
+    }
+
+    /// Same as [`output_dest_rel_for`] but keyed by the `wasm`
+    /// filename instead of the output struct — used by build scripts
+    /// (via `xtask build-deps output-path`) which have only the file
+    /// they just built, not the parsed package.toml struct.
+    pub fn output_dest_rel(&self, wasm_basename: &str) -> Result<PathBuf, String> {
+        if self.kind != ManifestKind::Program {
+            return Err(format!(
+                "manifest {:?} is kind={:?}; output_dest_rel is program-only",
+                self.name, self.kind
+            ));
+        }
+        let outputs = &self.program_outputs;
+        if outputs.is_empty() {
+            return Err(format!("program {:?} has no [[outputs]]", self.name));
+        }
+        let out = outputs
+            .iter()
+            .find(|o| {
+                Path::new(&o.wasm).file_name().and_then(|s| s.to_str())
+                    == Some(wasm_basename)
+            })
+            .ok_or_else(|| {
+                let declared: Vec<&str> =
+                    outputs.iter().map(|o| o.wasm.as_str()).collect();
+                format!(
+                    "program {:?} has no [[outputs]] entry whose wasm = {:?} \
+                     (declared: {:?})",
+                    self.name, wasm_basename, declared
+                )
+            })?;
+        Ok(self.output_dest_rel_for(out))
+    }
+
     /// Read + parse + validate a `package.toml` file. `dir` is the
     /// directory containing the file (used later to resolve
     /// `build.script_path` relative paths).
@@ -1907,6 +1971,125 @@ probe = { args = ["--version"], version_regex = "(unclosed" }
         let err = VersionConstraint::parse(">=3.20-rc1", "cmake").unwrap_err();
         assert!(
             err.contains("prerelease") || err.contains("suffix"),
+            "got: {err}"
+        );
+    }
+
+    // ── output_dest_rel ───────────────────────────────────────────
+    //
+    // Mirrors install-release's `mirror_program_outputs` /
+    // `place_binaries_symlinks` placement convention so build scripts
+    // (via `install-local-binary.sh` → `xtask build-deps output-path`)
+    // can land freshly-built artifacts at the same relative path the
+    // resolver/install-release would. See xtask/src/install_release.rs
+    // for the producer-side mirror.
+
+    fn program_manifest(name: &str, outputs_section: &str) -> DepsManifest {
+        let text = format!(
+            r#"
+kind = "program"
+name = "{name}"
+version = "1.0"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://example.test/{name}-1.0.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "TestLicense"
+
+{outputs_section}
+"#
+        );
+        DepsManifest::parse(&text, PathBuf::from("/x")).unwrap()
+    }
+
+    #[test]
+    fn output_dest_rel_single_output_program_name_matches_output_name() {
+        // Most common shape (dash, cpython, vim): one [[outputs]] whose
+        // `name` happens to equal the program's `name`. Path collapses
+        // to a flat `<name>.<ext>` under programs/<arch>/.
+        let m = program_manifest(
+            "dash",
+            "[[outputs]]\nname = \"dash\"\nwasm = \"dash.wasm\"\n",
+        );
+        assert_eq!(
+            m.output_dest_rel("dash.wasm").unwrap(),
+            PathBuf::from("dash.wasm")
+        );
+    }
+
+    #[test]
+    fn output_dest_rel_single_output_with_diverging_name_uses_output_name() {
+        // Single-output where program.name != output.name (texlive case:
+        // package "texlive" produces output named "pdftex"). The
+        // dest-name is keyed off [[outputs]].name, NOT the package name —
+        // matching install-release's `dest_name = "{out.name}{ext}"`
+        // logic (xtask/src/install_release.rs:466). install_local_binary
+        // previously used the package name here, producing a path that
+        // didn't match what the resolver places after `install-release`.
+        let m = program_manifest(
+            "texlive",
+            "[[outputs]]\nname = \"pdftex\"\nwasm = \"pdftex.wasm\"\n",
+        );
+        assert_eq!(
+            m.output_dest_rel("pdftex.wasm").unwrap(),
+            PathBuf::from("pdftex.wasm")
+        );
+    }
+
+    #[test]
+    fn output_dest_rel_multi_output_uses_program_subdir() {
+        // ≥2 outputs: install-release nests under <program.name>/, so
+        // each output's per-arch path is unique even when other packages
+        // happen to declare an output with the same name.
+        let m = program_manifest(
+            "git",
+            r#"
+[[outputs]]
+name = "git"
+wasm = "git.wasm"
+
+[[outputs]]
+name = "git-remote-http"
+wasm = "git-remote-http.wasm"
+"#,
+        );
+        assert_eq!(
+            m.output_dest_rel("git.wasm").unwrap(),
+            PathBuf::from("git/git.wasm")
+        );
+        assert_eq!(
+            m.output_dest_rel("git-remote-http.wasm").unwrap(),
+            PathBuf::from("git/git-remote-http.wasm")
+        );
+    }
+
+    #[test]
+    fn output_dest_rel_unknown_basename_errors() {
+        // Caller passed a wasm filename not declared in [[outputs]].
+        // The error must name the unknown basename + the package, so
+        // build-script log readers can pinpoint the mismatch quickly.
+        let m = program_manifest(
+            "texlive",
+            "[[outputs]]\nname = \"pdftex\"\nwasm = \"pdftex.wasm\"\n",
+        );
+        let err = m.output_dest_rel("xetex.wasm").unwrap_err();
+        assert!(err.contains("xetex.wasm"), "got: {err}");
+        assert!(err.contains("texlive"), "got: {err}");
+    }
+
+    #[test]
+    fn output_dest_rel_library_kind_errors() {
+        // Library manifests have no [[outputs]] tables — the function
+        // is program-only. Reject loudly rather than silently returning
+        // an empty path.
+        let lib = DepsManifest::parse(EXAMPLE, PathBuf::from("/x")).unwrap();
+        let err = lib.output_dest_rel("libz.a").unwrap_err();
+        assert!(
+            err.contains("kind") || err.contains("program"),
             "got: {err}"
         );
     }

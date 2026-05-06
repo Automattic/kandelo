@@ -2,6 +2,10 @@
 set -euo pipefail
 
 TEXLIVE_VERSION="${TEXLIVE_VERSION:-2025}"
+# Exported so build-texlive-bundle.sh's tlnet-final URL pins to the
+# same release as the source tarball below — keeps the engine and
+# its texmf-dist macros from drifting across upstream rollovers.
+export TEXLIVE_VERSION
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SRC_DIR="$SCRIPT_DIR/texlive-src"
 HOST_BUILD_DIR="$SCRIPT_DIR/texlive-host-build"
@@ -109,10 +113,18 @@ if [ ! -x "$HOST_BUILD_DIR/texk/web2c/pdftex" ]; then
     # libs), then run texk's recurse to create + build texk/web2c
     # (which makes pdftex; we add otangle since the cross-compile
     # configure unconditionally requires it even with Omega disabled).
-    NPROC="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
+    # Cap at 2 jobs on memory-constrained runners. pdftex0.c +
+    # pdftexini.c each compile to ~1.5GB of gcc working set; -j4 on a
+    # GHA standard runner (7GB RAM) triggers swap thrash and the
+    # streaming-log heartbeat starves long enough that the runner
+    # appears hung from outside (no output for >10 min). -j2 keeps
+    # peak under 4GB and keeps logs flowing. Local dev with more cores
+    # can override via JOBS=$(nproc).
+    NPROC="${JOBS:-2}"
+    echo "==> Host build: -j$NPROC"
     # TexLive's auto-recurse mechanism creates and builds its
     # sub-subdirs at make time, NOT at configure time. The build is
-    # split across three steps:
+    # split across four steps:
     #
     # 1. `make all-local` at the top level: builds doc, texk/kpathsea,
     #    texk/ptexenc (which are top-level "TeX-specific lib" subdirs)
@@ -128,10 +140,14 @@ if [ ! -x "$HOST_BUILD_DIR/texk/web2c/pdftex" ]; then
     # 4. Finally `make -C texk/web2c pdftex otangle` ensures otangle
     #    is built (the cross-compile configure unconditionally
     #    requires it even with Omega engines disabled).
+    echo "==> Host build step 1/4: top-level all-local"
     make -j"$NPROC" all-local
+    echo "==> Host build step 2/4: libs/ recurse + xpdf"
     make -C libs recurse
     make -C libs/xpdf -j"$NPROC"
+    echo "==> Host build step 3/4: texk/ (kpathsea, ptexenc, web2c)"
     make -C texk -j"$NPROC"
+    echo "==> Host build step 4/4: pdftex + otangle"
     make -C texk/web2c -j"$NPROC" pdftex otangle
     cd "$REPO_ROOT"
 fi
@@ -164,17 +180,20 @@ SITE
     export PATH="$HOST_WEB2C:$PATH"
     export CONFIG_SITE="$CROSS_BUILD_DIR/config.site"
 
-    # CC_FOR_BUILD: TeX Live's bundled GMP recursively configures a
-    # `native/` subdir (a host-arch helper used during cross-compile).
-    # That sub-configure forwards its parent's args and tacks on
-    # `'CC=' 'CFLAGS=' '...'` to clear them, then re-detects via
-    # `${build_alias}-gcc`. On Nix-CI that resolves to a wrapped
-    # `x86_64-unknown-linux-gnu-gcc` whose required env (e.g. NIX_*
-    # CRT/spec injections) gets stripped along with CFLAGS, so the
-    # bare invocation can't link executables ("C compiler cannot
-    # create executables"). Pinning CC_FOR_BUILD survives the recurse
-    # because GMP's m4 macros consult it before falling back to host
-    # detection.
+    # BUILDCC / BUILDCXX / BUILDCFLAGS / BUILDCPPFLAGS / BUILDLDFLAGS:
+    # TeX Live's documented build-host compiler vars (README.2building
+    # §4.6.1). KPSE_NATIVE_SUBDIRS (m4/kpse-common.m4) — invoked by
+    # libs/gmp and texk/web2c for their host-helper subdirs — appends
+    # `--host=$build CC='$BUILDCC' CFLAGS='$BUILDCFLAGS' ...` to the
+    # recursed configure args when cross-compiling. With BUILDCC unset
+    # this becomes `CC=''`, autoconf falls through to prefix detection
+    # via `--host=x86_64-unknown-linux-gnu`, finds nix's unwrapped
+    # `x86_64-unknown-linux-gnu-gcc` binary (which lacks the cc-wrapper
+    # CRT/spec injection), and the link probe fails with "C compiler
+    # cannot create executables". Pinning BUILDCC=cc routes the recurse
+    # through the wrapped `cc` instead. (Autoconf-2.70 CC_FOR_BUILD is
+    # a different mechanism — TeX Live doesn't read it, so setting it
+    # here had no effect on the recurse.)
     "$SRC_DIR/configure" \
         --host=wasm32-unknown-none \
         --build="$(cc -dumpmachine)" \
@@ -194,8 +213,11 @@ SITE
         CXX=wasm32posix-c++ \
         AR=wasm32posix-ar \
         RANLIB=wasm32posix-ranlib \
-        CC_FOR_BUILD=cc \
-        CXX_FOR_BUILD=c++ \
+        BUILDCC=cc \
+        BUILDCXX=c++ \
+        BUILDCFLAGS=-O2 \
+        BUILDCPPFLAGS= \
+        BUILDLDFLAGS= \
         CFLAGS="-O2 -I$ZLIB_PREFIX/include -I$LIBPNG_PREFIX/include" \
         LDFLAGS="-L$ZLIB_PREFIX/lib -L$LIBPNG_PREFIX/lib" \
         ZLIB_CFLAGS="-I$ZLIB_PREFIX/include" \
@@ -210,7 +232,8 @@ SITE
     #   - libs/xpdf, libs/zlib, etc. (libs/ CONF_SUBDIRS)
     #   - texk/web2c, etc. (texk/ CONF_SUBDIRS)
     # Without this, kpathsea and xpdf directories don't exist.
-    NPROC="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
+    NPROC="${JOBS:-2}"
+    echo "==> Cross build: -j$NPROC"
 
     # Pass AR/RANLIB on the command line so they override Makefile
     # assignments. xpdf's sub-configure ignores the top-level AR
@@ -218,11 +241,14 @@ SITE
     # archives for wasm object files.
     WASM_AR="AR=wasm32posix-ar RANLIB=wasm32posix-ranlib"
 
+    echo "==> Cross build step 1/4: top-level recurse"
     make -j"$NPROC" $WASM_AR
 
-    # Build pdftex's bundled dependencies before pdftex itself.
+    echo "==> Cross build step 2/4: texk/kpathsea"
     make -C texk/kpathsea -j"$NPROC" $WASM_AR
+    echo "==> Cross build step 3/4: libs/xpdf"
     make -C libs/xpdf -j"$NPROC" $WASM_AR
+    echo "==> Cross build step 4/4: texk/web2c pdftex"
     make -C texk/web2c pdftex -j"$NPROC" $WASM_AR
     cd "$REPO_ROOT"
 fi
@@ -232,9 +258,30 @@ mkdir -p "$BIN_DIR"
 cp "$CROSS_BUILD_DIR/texk/web2c/pdftex" "$BIN_DIR/pdftex.wasm"
 
 echo "==> pdftex.wasm: $(du -h "$BIN_DIR/pdftex.wasm" | cut -f1)"
+
+# ─── Phase 4: Runtime bundle ──────────────────────────────────────
+# pdftex.wasm alone can't typeset anything — it needs a TeX Live
+# distribution (texmf-dist macros, fonts, etc.) plus a precompiled
+# latex.fmt. The bundle script installs a minimal TeX Live via
+# install-tl, generates latex.fmt with our just-built host pdftex,
+# and packs the selected files into a JSON manifest the demo loads
+# at runtime.
+#
+# Built here (not just in the browser-side script) so the bundle
+# ships inside the texlive package's tar.zst archive — same pattern
+# as vim's runtime/ tree. archive_stage packs everything in the
+# resolver scratch dir, so writing the JSON there is enough.
+BUNDLE_FILE="$BIN_DIR/texlive-bundle.json"
+echo "==> Building TeX Live distribution bundle..."
+TEXLIVE_BUNDLE_OUT="$BUNDLE_FILE" \
+    bash "$REPO_ROOT/examples/browser/scripts/build-texlive-bundle.sh"
+echo "==> texlive-bundle.json: $(du -h "$BUNDLE_FILE" | cut -f1)"
+
 echo "==> Done."
 
 # Install into local-binaries/ so the resolver picks the freshly-built
-# binary over the fetched release.
+# binaries over the fetched release. Two outputs: pdftex.wasm (the
+# engine) + texlive-bundle.json (its runtime distribution).
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary texlive "$BIN_DIR/pdftex.wasm" pdftex.wasm
+install_local_binary texlive "$BIN_DIR/pdftex.wasm"
+install_local_binary texlive "$BIN_DIR/texlive-bundle.json"

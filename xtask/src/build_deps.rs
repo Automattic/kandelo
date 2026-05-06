@@ -1301,9 +1301,15 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
 
     let mut it = rest.into_iter();
     let sub = it.next().ok_or(
-        "usage: xtask build-deps [--arch=wasm32|wasm64] <parse|sha|path|resolve|check> [<name|path>]",
+        "usage: xtask build-deps [--arch=wasm32|wasm64] \
+         <parse|sha|path|resolve|check|output-path> [<name|path> [<wasm-basename>]]",
     )?;
     let target = it.next();
+    // `output-path` takes a second positional arg (the wasm basename
+    // to resolve); every other subcommand stops at one arg. Pull the
+    // extra slot up-front so the unexpected-arg check below still
+    // catches stray inputs for the simple subcommands.
+    let extra = it.next();
     if it.next().is_some() {
         return Err(format!("build-deps {sub}: unexpected extra args"));
     }
@@ -1327,10 +1333,38 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             // registry.
             let manifest = load_target(&target, &registry)?;
             match sub.as_str() {
-                "parse" => cmd_parse(&manifest),
-                "sha" => cmd_sha(&manifest, &registry, arch),
-                "path" => cmd_path(&manifest, &registry, arch),
-                "resolve" => cmd_resolve(&manifest, &registry, &repo, arch),
+                "parse" => {
+                    if extra.is_some() {
+                        return Err("build-deps parse: unexpected extra arg".into());
+                    }
+                    cmd_parse(&manifest)
+                }
+                "sha" => {
+                    if extra.is_some() {
+                        return Err("build-deps sha: unexpected extra arg".into());
+                    }
+                    cmd_sha(&manifest, &registry, arch)
+                }
+                "path" => {
+                    if extra.is_some() {
+                        return Err("build-deps path: unexpected extra arg".into());
+                    }
+                    cmd_path(&manifest, &registry, arch)
+                }
+                "resolve" => {
+                    if extra.is_some() {
+                        return Err("build-deps resolve: unexpected extra arg".into());
+                    }
+                    cmd_resolve(&manifest, &registry, &repo, arch)
+                }
+                "output-path" => {
+                    let basename = extra.ok_or_else(|| {
+                        "build-deps output-path: missing <wasm-basename> \
+                         (usage: build-deps output-path <name|path> <wasm-basename>)"
+                            .to_string()
+                    })?;
+                    cmd_output_path(&manifest, &basename)
+                }
                 other => Err(format!("build-deps: unknown subcommand {other:?}")),
             }
         }
@@ -1408,6 +1442,23 @@ fn cmd_path(m: &DepsManifest, registry: &Registry, arch: TargetArch) -> Result<(
     )?;
     let path = canonical_path(&default_cache_root(), m, arch, &sha);
     println!("{}", path.display());
+    Ok(())
+}
+
+/// `output-path <name|path> <wasm-basename>`: print the relative path
+/// (under `programs/<arch>/`) where install-release would mirror this
+/// program's `wasm_basename` output.
+///
+/// Consumed by `scripts/install-local-binary.sh` so build scripts
+/// drop their freshly-built bytes at the same path the resolver +
+/// install-release write to. Without this, the build-script-side
+/// install-local-binary path could diverge from the release path
+/// (the case that surfaced for texlive: program "texlive" with output
+/// "pdftex" — the resolver writes pdftex.wasm, but install_local_binary
+/// historically wrote texlive.wasm or texlive/pdftex.wasm).
+fn cmd_output_path(m: &DepsManifest, wasm_basename: &str) -> Result<(), String> {
+    let rel = m.output_dest_rel(wasm_basename)?;
+    println!("{}", rel.display());
     Ok(())
 }
 

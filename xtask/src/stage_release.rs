@@ -280,38 +280,130 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     // known-broken package (e.g. texlive's pmpost-pulls-in-gmp.h trap)
     // is being fixed in a follow-up. The package's package.toml stays
     // unchanged; the policy lives at the call site.
-    if !errors.is_empty() && !continue_on_error {
-        let mut total_failures: Vec<&str> = Vec::new();
-        let mut allowed_total_failures: Vec<&str> = Vec::new();
-        for (name, v) in &errors {
-            if attempted.get(name).copied().unwrap_or(0) != v.len() || v.is_empty() {
-                continue;
-            }
-            if allow_failure_names.contains(name) {
-                allowed_total_failures.push(name);
-            } else {
-                total_failures.push(name);
-            }
-        }
-        if !allowed_total_failures.is_empty() {
-            eprintln!(
-                "stage-release: {} manifest(s) failed every attempted arch \
-                 but are listed via --allow-failure — downgraded to warnings: {}",
-                allowed_total_failures.len(),
-                allowed_total_failures.join(", "),
-            );
-        }
-        if !total_failures.is_empty() {
-            return Err(format!(
-                "stage-release: {} manifest(s) failed every attempted arch — \
-                 see WARN logs above. Failed: {}",
-                total_failures.len(),
-                total_failures.join(", "),
-            ));
-        }
+    //
+    // The flag also reports its own staleness: if a name listed in
+    // --allow-failure built every attempted arch successfully (or
+    // matched no manifest at all), the run logs a notice so the
+    // operator can drop the now-no-op flag from the workflow. Without
+    // this, the flag silently lingers — long after the underlying
+    // build is fixed, no log line nudges anyone to remove it.
+    let report = analyze_allow_failure(&errors, &attempted, &allow_failure_names);
+    if !report.allowed_total_failures.is_empty() {
+        eprintln!(
+            "stage-release: {} manifest(s) failed every attempted arch \
+             but are listed via --allow-failure — downgraded to warnings: {}",
+            report.allowed_total_failures.len(),
+            report.allowed_total_failures.join(", "),
+        );
+    }
+    if !report.stale_allow_failure_succeeded.is_empty() {
+        eprintln!(
+            "stage-release: --allow-failure flag is no-op for {} manifest(s) \
+             that built every attempted arch successfully — drop them from \
+             the call site: {}",
+            report.stale_allow_failure_succeeded.len(),
+            report.stale_allow_failure_succeeded.join(", "),
+        );
+    }
+    if !report.stale_allow_failure_unknown.is_empty() {
+        eprintln!(
+            "stage-release: --allow-failure listed {} name(s) that didn't \
+             match any attempted manifest (typo? removed package?): {}",
+            report.stale_allow_failure_unknown.len(),
+            report.stale_allow_failure_unknown.join(", "),
+        );
+    }
+    if !continue_on_error && !report.total_failures.is_empty() {
+        return Err(format!(
+            "stage-release: {} manifest(s) failed every attempted arch — \
+             see WARN logs above. Failed: {}",
+            report.total_failures.len(),
+            report.total_failures.join(", "),
+        ));
     }
 
     Ok(())
+}
+
+/// Categorization of `--allow-failure` outcomes after the staging
+/// loop, by name. Each name listed in `allow_failure_names` lands in
+/// exactly one of `allowed_total_failures` /
+/// `stale_allow_failure_succeeded` / `stale_allow_failure_unknown`.
+/// Names NOT in `allow_failure_names` that failed every attempted
+/// arch land in `total_failures` instead.
+struct AllowFailureReport<'a> {
+    /// Failed every attempted arch, NOT in --allow-failure. Caller
+    /// turns these into a hard error (gates the workflow).
+    total_failures: Vec<&'a str>,
+    /// Failed every attempted arch, IS in --allow-failure. Caller
+    /// downgrades to a warning. The flag is doing the job it was
+    /// added for.
+    allowed_total_failures: Vec<&'a str>,
+    /// Listed in --allow-failure but built every attempted arch
+    /// successfully. The flag is no-op — surface it so the operator
+    /// can drop it from the call site.
+    stale_allow_failure_succeeded: Vec<&'a str>,
+    /// Listed in --allow-failure but didn't match any attempted
+    /// manifest (typo, deleted package, name mismatch). Surface so
+    /// the dead flag doesn't linger.
+    stale_allow_failure_unknown: Vec<&'a str>,
+}
+
+fn analyze_allow_failure<'a>(
+    errors: &'a BTreeMap<String, Vec<(TargetArch, String)>>,
+    attempted: &'a BTreeMap<String, usize>,
+    allow_failure_names: &'a BTreeSet<String>,
+) -> AllowFailureReport<'a> {
+    let mut total_failures: Vec<&str> = Vec::new();
+    let mut allowed_total_failures: Vec<&str> = Vec::new();
+
+    // First: classify everything that has at least one error. A
+    // manifest is a total failure when every attempted arch errored;
+    // partial failures (some succeeded) are non-gating either way and
+    // don't appear in any returned bucket — they're already a warning
+    // logged inline.
+    for (name, errs) in errors {
+        let attempts = attempted.get(name).copied().unwrap_or(0);
+        if attempts == 0 || errs.len() != attempts {
+            continue;
+        }
+        if allow_failure_names.contains(name) {
+            allowed_total_failures.push(name.as_str());
+        } else {
+            total_failures.push(name.as_str());
+        }
+    }
+
+    // Second: partition --allow-failure entries that DIDN'T land in
+    // `allowed_total_failures`. Two shapes: the manifest succeeded
+    // (attempted but no errors / partial failure) vs. the name
+    // matched nothing at all (typo, removed package). Both are stale
+    // flag signals; surface them distinctly because the fix differs
+    // (drop the flag vs. fix the name). Partial failure leaves the
+    // flag in place — it still has a real job for the next run if
+    // the failure regresses to total.
+    let mut stale_allow_failure_succeeded: Vec<&str> = Vec::new();
+    let mut stale_allow_failure_unknown: Vec<&str> = Vec::new();
+    for name in allow_failure_names {
+        if allowed_total_failures.iter().any(|n| *n == name.as_str()) {
+            continue;
+        }
+        if attempted.contains_key(name) {
+            let errored_count = errors.get(name).map(|v| v.len()).unwrap_or(0);
+            if errored_count == 0 {
+                stale_allow_failure_succeeded.push(name.as_str());
+            }
+        } else {
+            stale_allow_failure_unknown.push(name.as_str());
+        }
+    }
+
+    AllowFailureReport {
+        total_failures,
+        allowed_total_failures,
+        stale_allow_failure_succeeded,
+        stale_allow_failure_unknown,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -413,6 +505,143 @@ pub(crate) fn default_build_host() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── analyze_allow_failure ─────────────────────────────────────
+    //
+    // Pure categorization step extracted from `run` so we can assert
+    // exact behavior without spinning up a registry + build script
+    // per case. Mirrors the four buckets a `--allow-failure` name
+    // can fall into:
+    //
+    //   * total failure, NOT allow-listed → gates the run
+    //   * total failure, allow-listed     → downgraded to warning
+    //   * allow-listed, every arch passed → stale flag (surface)
+    //   * allow-listed, never attempted   → unknown name (surface)
+    //
+    // The "stale flag" buckets are the load-bearing piece for this
+    // change. Without them, `--allow-failure foo` lingers in CI
+    // workflows long after foo's build is fixed: the flag has no
+    // observable effect on the outcome, so an operator scanning
+    // logs sees nothing prompting them to drop it.
+
+    fn empty_errors() -> BTreeMap<String, Vec<(TargetArch, String)>> {
+        BTreeMap::new()
+    }
+    fn fail(arch: TargetArch) -> (TargetArch, String) {
+        (arch, "build failed".into())
+    }
+
+    #[test]
+    fn allow_failure_report_total_failure_not_listed_gates() {
+        // Baseline: a manifest that failed every attempted arch and
+        // is NOT listed in --allow-failure. Lands in `total_failures`
+        // (which the caller turns into a hard error).
+        let mut errors = empty_errors();
+        errors.insert("foo".into(), vec![fail(TargetArch::Wasm32)]);
+        let mut attempted = BTreeMap::new();
+        attempted.insert("foo".into(), 1);
+        let allow_failure: BTreeSet<String> = BTreeSet::new();
+        let r = analyze_allow_failure(&errors, &attempted, &allow_failure);
+        assert_eq!(r.total_failures, vec!["foo"]);
+        assert!(r.allowed_total_failures.is_empty());
+        assert!(r.stale_allow_failure_succeeded.is_empty());
+        assert!(r.stale_allow_failure_unknown.is_empty());
+    }
+
+    #[test]
+    fn allow_failure_report_total_failure_allow_listed_is_downgraded() {
+        // Same shape but listed in --allow-failure: downgraded to
+        // warning, NOT counted as a stale flag. The flag is doing
+        // the job it was added for.
+        let mut errors = empty_errors();
+        errors.insert("foo".into(), vec![fail(TargetArch::Wasm32)]);
+        let mut attempted = BTreeMap::new();
+        attempted.insert("foo".into(), 1);
+        let mut allow_failure = BTreeSet::new();
+        allow_failure.insert("foo".into());
+        let r = analyze_allow_failure(&errors, &attempted, &allow_failure);
+        assert!(r.total_failures.is_empty());
+        assert_eq!(r.allowed_total_failures, vec!["foo"]);
+        assert!(r.stale_allow_failure_succeeded.is_empty());
+        assert!(r.stale_allow_failure_unknown.is_empty());
+    }
+
+    #[test]
+    fn allow_failure_report_listed_but_succeeded_is_stale() {
+        // The motivating case: `--allow-failure foo` AND foo built
+        // every attempted arch successfully. The flag is now stale —
+        // surface it so the operator can drop it from the workflow.
+        // Doesn't gate the run (success is success), just becomes
+        // visible in the log.
+        let errors = empty_errors();
+        let mut attempted = BTreeMap::new();
+        attempted.insert("foo".into(), 2);
+        let mut allow_failure = BTreeSet::new();
+        allow_failure.insert("foo".into());
+        let r = analyze_allow_failure(&errors, &attempted, &allow_failure);
+        assert!(r.total_failures.is_empty());
+        assert!(r.allowed_total_failures.is_empty());
+        assert_eq!(r.stale_allow_failure_succeeded, vec!["foo"]);
+        assert!(r.stale_allow_failure_unknown.is_empty());
+    }
+
+    #[test]
+    fn allow_failure_report_listed_but_partial_failure_is_not_stale() {
+        // Partial failure (some arches passed, some failed) is
+        // already a non-gating warning. The flag remains in case
+        // the next run regresses to total failure — don't flag it
+        // as stale.
+        let mut errors = empty_errors();
+        // 2 attempted, only 1 failed → partial failure.
+        errors.insert("foo".into(), vec![fail(TargetArch::Wasm32)]);
+        let mut attempted = BTreeMap::new();
+        attempted.insert("foo".into(), 2);
+        let mut allow_failure = BTreeSet::new();
+        allow_failure.insert("foo".into());
+        let r = analyze_allow_failure(&errors, &attempted, &allow_failure);
+        assert!(r.total_failures.is_empty());
+        assert!(r.allowed_total_failures.is_empty());
+        assert!(r.stale_allow_failure_succeeded.is_empty());
+        assert!(r.stale_allow_failure_unknown.is_empty());
+    }
+
+    #[test]
+    fn allow_failure_report_listed_unknown_name_surfaces() {
+        // `--allow-failure typo` where `typo` matched no manifest at
+        // all (typo, removed package, wrong arch filter, etc.). The
+        // flag is doing nothing — surface it so it doesn't linger.
+        let errors = empty_errors();
+        let attempted = BTreeMap::new();
+        let mut allow_failure = BTreeSet::new();
+        allow_failure.insert("typo".into());
+        let r = analyze_allow_failure(&errors, &attempted, &allow_failure);
+        assert!(r.total_failures.is_empty());
+        assert!(r.allowed_total_failures.is_empty());
+        assert!(r.stale_allow_failure_succeeded.is_empty());
+        assert_eq!(r.stale_allow_failure_unknown, vec!["typo"]);
+    }
+
+    #[test]
+    fn allow_failure_report_mixed_categories_partition_correctly() {
+        // Sanity check: a single run can mix all four buckets.
+        // Verifies each name lands in exactly one bucket.
+        let mut errors = empty_errors();
+        errors.insert("ungated_fail".into(), vec![fail(TargetArch::Wasm32)]);
+        errors.insert("allowed_fail".into(), vec![fail(TargetArch::Wasm32)]);
+        let mut attempted = BTreeMap::new();
+        attempted.insert("ungated_fail".into(), 1);
+        attempted.insert("allowed_fail".into(), 1);
+        attempted.insert("succeeded".into(), 1);
+        let mut allow_failure = BTreeSet::new();
+        allow_failure.insert("allowed_fail".into());
+        allow_failure.insert("succeeded".into());
+        allow_failure.insert("typo".into());
+        let r = analyze_allow_failure(&errors, &attempted, &allow_failure);
+        assert_eq!(r.total_failures, vec!["ungated_fail"]);
+        assert_eq!(r.allowed_total_failures, vec!["allowed_fail"]);
+        assert_eq!(r.stale_allow_failure_succeeded, vec!["succeeded"]);
+        assert_eq!(r.stale_allow_failure_unknown, vec!["typo"]);
+    }
 
     fn tempdir(label: &str) -> PathBuf {
         let p = std::env::temp_dir()

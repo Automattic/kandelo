@@ -10,41 +10,46 @@
 # so running any program's local build automatically shadows the
 # released version.
 #
-# Usage (each argument is one install target):
+# Path discovery: the destination relative path under
+# `local-binaries/programs/<arch>/` is read from the package's
+# `package.toml` via `xtask build-deps output-path <program> <basename>`.
+# This is the SAME path xtask install-release writes to from a
+# published archive — keeping local builds and releases interchangeable
+# at the resolver layer (single-output is flat `<output.name>.<ext>`,
+# multi-output nests under `<program.name>/`). Without this lookup, a
+# package whose `program.name != output.name` (e.g. texlive/pdftex) had
+# divergent local-vs-release paths and the demo could never see a
+# fresh local build.
+#
+# Usage (each call is one install target):
 #     source scripts/install-local-binary.sh   # adds install_local_binary()
 #
-#     install_local_binary <program> <src> [<dest-filename>]
+#     install_local_binary <program> <src>
 #
 # Where:
-#   <program>          logical program name matching manifest entries
-#                      (e.g., "dash", "git", "php").
-#   <src>              path to the freshly-built .wasm (or .zip).
-#   <dest-filename>    optional: filename under
-#                      local-binaries/programs/<arch>/<program>/ for
-#                      multi-binary programs. When omitted, the file
-#                      lands at local-binaries/programs/<arch>/<program>.<ext>
-#                      (single-binary convention).
+#   <program>   logical program name matching a package.toml `name` field
+#               in the registry (e.g. "dash", "git", "texlive").
+#   <src>       path to the freshly-built file. Its basename must
+#               match one of the `[[outputs]].wasm` filenames declared
+#               in the package's package.toml.
+#
+# Legacy 3-arg form `install_local_binary <program> <src> <dest-name>`
+# is silently accepted: the third arg is ignored when the package.toml
+# lookup succeeds (the lookup is the source of truth) and falls
+# through to the legacy multi-binary subdir layout otherwise. Treat
+# the 2-arg form as canonical for new build scripts.
 #
 # Arch is taken from $WASM_POSIX_DEP_TARGET_ARCH (set by the resolver
 # while running build scripts) and falls back to "wasm32" for direct
 # build-script invocations like `bash examples/libs/dash/build-dash.sh`.
-#
-# Multi-binary examples:
-#   install_local_binary git examples/libs/git/bin/git.wasm git.wasm
-#   install_local_binary git examples/libs/git/bin/git-remote-http.wasm \
-#       git-remote-http.wasm
-#
-# Single-binary examples:
-#   install_local_binary dash examples/libs/dash/bin/dash.wasm
-#   install_local_binary nginx examples/nginx/nginx.wasm
 
 install_local_binary() {
     local program="$1"
     local src="$2"
-    local dest_name="${3:-}"
+    local legacy_dest_name="${3:-}"
 
     if [ -z "$program" ] || [ -z "$src" ]; then
-        echo "install_local_binary: usage: install_local_binary <program> <src> [<dest-filename>]" >&2
+        echo "install_local_binary: usage: install_local_binary <program> <src>" >&2
         return 2
     fi
     if [ ! -f "$src" ]; then
@@ -60,12 +65,36 @@ install_local_binary() {
     fi
 
     local arch="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
+    local src_basename
+    src_basename="$(basename "$src")"
+
+    # Ask xtask for the package.toml-driven destination relative path.
+    # On hit, that's the canonical location matching install-release.
+    # On miss (package not in the registry, e.g. the dash→sh alias
+    # call site, or no [[outputs]] entry for this basename) fall back
+    # to the legacy heuristic so existing build scripts keep working.
+    local rel=""
+    local host_target
+    host_target="$(rustc -vV 2>/dev/null | awk '/^host/ {print $2}')"
+    if [ -n "$host_target" ]; then
+        rel="$(cd "$repo_root" && \
+            cargo run -p xtask --target "$host_target" --quiet -- \
+                build-deps output-path "$program" "$src_basename" 2>/dev/null || true)"
+    fi
+
     local dest
-    if [ -n "$dest_name" ]; then
-        # Multi-binary program — dest goes under programs/<arch>/<program>/
-        dest="$repo_root/local-binaries/programs/$arch/$program/$dest_name"
+    if [ -n "$rel" ]; then
+        dest="$repo_root/local-binaries/programs/$arch/$rel"
+    elif [ -n "$legacy_dest_name" ]; then
+        # Legacy multi-binary subdir layout. Used to be the only way to
+        # express "this program produces multiple wasms"; package.toml's
+        # [[outputs]] now does that explicitly. Reachable today only
+        # for callers whose program name isn't in the registry.
+        dest="$repo_root/local-binaries/programs/$arch/$program/$legacy_dest_name"
     else
-        # Single-binary — programs/<arch>/<program>.<ext>
+        # Legacy single-binary fallback. Used by aliasing call sites
+        # like `install_local_binary sh "$BIN_DIR/dash.wasm"` where
+        # the "program" is a name registered nowhere.
         local ext="${src##*.}"
         dest="$repo_root/local-binaries/programs/$arch/$program.$ext"
     fi
@@ -74,29 +103,22 @@ install_local_binary() {
     cp "$src" "$dest"
     echo "  installed $dest"
 
-    # When invoked under the package-system resolver (`xtask build-deps resolve`,
-    # `xtask stage-release`), WASM_POSIX_DEP_OUT_DIR points at the
-    # resolver's scratch dir. The build script must install its
+    # When invoked under the package-system resolver (`xtask build-deps
+    # resolve`, `xtask stage-release`), WASM_POSIX_DEP_OUT_DIR points at
+    # the resolver's scratch dir. The build script must install its
     # declared `[[outputs]].wasm` files there so `validate_outputs`
     # finds them and `archive_stage` packs them into the release
-    # archive.
+    # archive — and `validate_outputs` looks them up by EXACT
+    # `[[outputs]].wasm` filename (xtask/src/build_deps.rs:1136).
     #
-    # Mapping (matches the build_deps program-output validator):
-    #   single-binary (no dest_name) →
-    #     $WASM_POSIX_DEP_OUT_DIR/<program>.<ext>
-    #   multi-binary (dest_name given) →
-    #     $WASM_POSIX_DEP_OUT_DIR/<dest_name>
+    # The src filename (build script's own output) is what the build
+    # script declared via `[[outputs]].wasm`, so basename(src) is
+    # always the right key. No translation needed.
     #
     # Outside the resolver, WASM_POSIX_DEP_OUT_DIR is unset and this
     # path is a no-op.
     if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
-        local resolver_dest
-        if [ -n "$dest_name" ]; then
-            resolver_dest="$WASM_POSIX_DEP_OUT_DIR/$dest_name"
-        else
-            local ext_resolver="${src##*.}"
-            resolver_dest="$WASM_POSIX_DEP_OUT_DIR/$program.$ext_resolver"
-        fi
+        local resolver_dest="$WASM_POSIX_DEP_OUT_DIR/$src_basename"
         mkdir -p "$(dirname "$resolver_dest")"
         cp "$src" "$resolver_dest"
         echo "  installed $resolver_dest (resolver scratch)"
