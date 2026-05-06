@@ -655,6 +655,21 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
+      - name: Compute commit-bound build provenance
+        # Use the commit author timestamp (%aI) — stable for a given SHA
+        # across all wall-clock re-runs of this workflow. github.event.
+        # repository.updated_at is NOT stable: it advances on every push
+        # to any branch, so a re-run after an unrelated push would change
+        # the embedded [compatibility].build_timestamp and shift archive
+        # bytes. %aI (author date) survives rebases that don't change
+        # content; %cI (committer date) does not. ISO-8601 with offset.
+        id: provenance
+        run: |
+          ts=$(git log -1 --format=%aI HEAD)
+          echo "build-timestamp=$ts" >> "$GITHUB_OUTPUT"
+          echo "build-host=${{ github.repository }}@${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          echo "provenance: build-timestamp=$ts" >&2
+
       - name: Fetch musl submodule
         # Even though sysroot/ + sysroot64/ are restored from cache,
         # downstream package builds (Task 4) reach into musl/ for
@@ -688,15 +703,72 @@ jobs:
           key: ${{ needs.toolchain-cache.outputs.cache-key }}
           fail-on-cache-miss: true
 
-      - name: Placeholder build (Task 4 adds the real build step)
-        # Scaffolding only: this step exits 0 so the matrix entry
-        # registers as success while the rest of Phase B-1 lands. The
-        # ls confirms the toolchain cache restored intact — Task 4's
-        # `xtask build-deps` invocation depends on these libc.a files.
-        # Tasks 5-7 then add the test gate, per-file uploads, and
-        # index.toml emission.
+      - name: Fetch durable binaries (so source-build fallbacks have prereqs)
+        # Mirrors the legacy `build` job's prerequisite fetch (see the
+        # comment up there): a matrix entry whose target package
+        # transitively pulls a not-yet-published archive (e.g.
+        # mariadb-test → mariadbd.wasm) needs the durable release
+        # materialized into binaries/ so the resolver finds it. Without
+        # this, source-build fallbacks fail mid-matrix on a missing
+        # prereq with no useful error.
+        #
+        # --allow-stale matches the legacy job's setting: this PR may
+        # ship a compute_sha formula change that invalidates existing
+        # entries' compatibility.cache_key_sha. Stale entries are
+        # skipped; the resolver source-builds them.
         run: |
-          echo "would build ${{ matrix.package }} / ${{ matrix.arch }} (sha ${{ matrix.sha }})"
-          echo "target tag: ${{ needs.preflight.outputs.target_tag }}"
-          echo "abi: ${{ needs.preflight.outputs.abi }}"
-          ls -la sysroot/lib/libc.a sysroot64/lib/libc.a
+          bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh --allow-stale
+
+      - name: Install host npm deps (build prereq)
+        # Mirrors the legacy `build` job: some package builds invoke
+        # tsx scripts that import from host/src/ (e.g. shell's
+        # build-shell-vfs-image.ts → fflate). Done before the
+        # archive-stage step so a node_modules-related miss doesn't
+        # surface as a confusing build-script failure.
+        run: |
+          bash scripts/dev-shell.sh bash -c '
+            npm install --no-audit --no-fund
+            cd host && npm install --no-audit --no-fund
+          '
+
+      - name: Build ${{ matrix.package }} (${{ matrix.arch }})
+        # Per-package wrapper around the existing build-deps +
+        # archive_stage internals. Equivalent to one (package, arch)
+        # slice of `xtask stage-release`, but without walking the
+        # registry or emitting a manifest.json — exactly what each
+        # matrix entry needs.
+        #
+        # build-timestamp + build-host are pinned to commit-bound values
+        # computed in the "Compute commit-bound build provenance" step
+        # above, so re-running the same SHA at any wall-clock time
+        # produces byte-identical archives — load-bearing for Task 5's
+        # test-gate that re-installs from artifacts. Both values are a
+        # function of the commit alone; neither depends on workflow run
+        # number, repository.updated_at, or any other mutable field.
+        #   * build-timestamp: commit author date (%aI), ISO-8601.
+        #   * build-host: <repo>@<sha> identifies the producing CI run
+        #     in the embedded manifest.toml so consumers can correlate
+        #     archive contents back to the workflow that emitted them.
+        run: |
+          bash scripts/dev-shell.sh bash -c '
+            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
+            cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
+              archive-stage \
+                --package "examples/libs/${{ matrix.package }}" \
+                --arch "${{ matrix.arch }}" \
+                --out "$RUNNER_TEMP/staged" \
+                --build-timestamp "${{ steps.provenance.outputs.build-timestamp }}" \
+                --build-host "${{ steps.provenance.outputs.build-host }}"
+          '
+
+      - name: Upload archive as workflow artifact
+        # if-no-files-found: error so a silent build that produced no
+        # archive surfaces as a CI failure rather than a quiet upload
+        # of nothing. Consumed by Task 5 (post-matrix test gate) and
+        # Task 6 (per-file uploads to the release tag).
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.package }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/staged/*.tar.zst
+          retention-days: 7
+          if-no-files-found: error

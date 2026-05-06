@@ -9,6 +9,12 @@
 //!                         Args: --package <dir> --arch <wasm32|wasm64>. Used by the
 //!                         Phase B-1 pre-flight workflow to skip already-published
 //!                         matrix entries.
+//!   archive-stage         Produce one package's `.tar.zst` archive into --out.
+//!                         Args: --package <dir> --arch <wasm32|wasm64>
+//!                               --out <dir> --build-timestamp <ISO> --build-host <s>.
+//!                         Per-package wrapper around the same internals
+//!                         `stage-release` uses; doesn't walk the registry or emit a
+//!                         manifest.json. Used by Phase B-1 matrix-build entries.
 //!   stage-release         Orchestrate full V2 producer side: walk registry, build
 //!                         archives, emit manifest.json into a staging directory.
 //!   stage-pr-overlay      Stage only changed-vs-baseline archives + overlay file
@@ -27,6 +33,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 mod archive_stage;
+mod archive_stage_cli;
 mod build_deps;
 mod build_manifest;
 mod bundle_program;
@@ -49,7 +56,7 @@ fn main() -> ExitCode {
         None => {
             eprintln!("usage: xtask <subcommand> [args...]");
             eprintln!(
-                "subcommands: dump-abi, build-manifest, bundle-program, build-deps, compute-cache-key-sha, stage-release, stage-pr-overlay, install-release, set-build-commit"
+                "subcommands: dump-abi, build-manifest, bundle-program, build-deps, compute-cache-key-sha, archive-stage, stage-release, stage-pr-overlay, install-release, set-build-commit"
             );
             return ExitCode::from(2);
         }
@@ -61,6 +68,7 @@ fn main() -> ExitCode {
         "bundle-program" => bundle_program::run(rest),
         "build-deps" => build_deps::run(rest),
         "compute-cache-key-sha" => build_deps::run_compute_cache_key_sha(rest),
+        "archive-stage" => archive_stage_cli::run(rest),
         "stage-release" => stage_release::run(rest),
         "stage-pr-overlay" => stage_pr_overlay::run(rest),
         "install-release" => install_release::run(rest),
