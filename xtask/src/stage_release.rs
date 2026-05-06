@@ -194,7 +194,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         if matches!(m.kind, ManifestKind::Program) {
             let script_name = m
                 .build
-                .script
+                .script_path
                 .clone()
                 .unwrap_or_else(|| format!("build-{}.sh", m.name));
             let script_path = m.dir.join(&script_name);
@@ -485,7 +485,7 @@ spdx = "TestLicense"
         }
     }
 
-    /// Source-kind fixture with a `[build].script` (so we don't
+    /// Source-kind fixture with a `[build].script_path` (so we don't
     /// have to fetch a tarball from a URL). The script just needs
     /// to leave OUT_DIR non-empty.
     fn write_fixture_source(registry: &Path, name: &str, version: &str, body: &str) {
@@ -506,7 +506,7 @@ sha256 = "{:0>64}"
 spdx = "TestLicense"
 
 [build]
-script = "build-{name}.sh"
+script_path = "build-{name}.sh"
 "#,
             ""
         );

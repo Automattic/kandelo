@@ -161,7 +161,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         if matches!(m.kind, ManifestKind::Program) {
             let script_name = m
                 .build
-                .script
+                .script_path
                 .clone()
                 .unwrap_or_else(|| format!("build-{}.sh", m.name));
             let script_path = m.dir.join(&script_name);

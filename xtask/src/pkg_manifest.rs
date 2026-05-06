@@ -25,7 +25,10 @@
 //! url = "https://github.com/madler/zlib/blob/v1.3.1/LICENSE"
 //!
 //! [build]
-//! script = "build-zlib.sh"        # optional; default = "build-<name>.sh"
+//! # repo-relative path; default = "examples/libs/<name>/build-<name>.sh"
+//! script_path = "examples/libs/zlib/build-zlib.sh"
+//! repo_url    = "https://github.com/Automattic/wasm-posix-kernel"  # optional
+//! commit      = "deadbeef..."                                      # filled by CI
 //!
 //! [outputs]
 //! libs = ["lib/libz.a"]
@@ -429,6 +432,15 @@ pub struct DepsManifest {
     /// Directory containing this `package.toml`. The build script path and
     /// any per-dep build state live underneath it.
     pub dir: PathBuf,
+
+    /// Optional ABI floor declared via top-level `kernel_abi = N`.
+    /// Phase A-bis records this; Phase B's CI matrix will enforce that
+    /// a binary published against `binaries-abi-vN` is only consumed
+    /// when the kernel's ABI version is `>= kernel_abi`. None = no
+    /// declared floor (the existing implicit behavior).
+    /// `dead_code` allow until Phase B wires the enforcement.
+    #[allow(dead_code)]
+    pub kernel_abi: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -444,13 +456,36 @@ pub struct License {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Build {
-    pub script: Option<String>,
+    /// Repo-relative path to the build script (e.g.
+    /// `examples/libs/zlib/build-zlib.sh`). Renamed from `script` (which
+    /// was package-dir-relative) so the path is canonical regardless of
+    /// where the resolver runs from. The resolver joins this against the
+    /// repo root, not the manifest directory.
+    pub script_path: Option<String>,
+    /// Clonable URL of the source repo. Filled at publish time so the
+    /// archived `manifest.toml` records exactly which repo produced the
+    /// binary; consumed by Phase B's reproducibility/audit tooling.
+    /// `dead_code` allow until Phase B wires the consumer.
+    #[allow(dead_code)]
+    pub repo_url: Option<String>,
+    /// Commit SHA of the source repo at the time the binary was built.
+    /// Filled by CI at publish time (Phase A-bis Task 5); empty in
+    /// source `package.toml` files checked into the repo.
+    /// `dead_code` allow until Task 5 wires the publish-time fill and
+    /// downstream consumers.
+    #[allow(dead_code)]
+    pub commit: Option<String>,
 }
 
 impl Default for Build {
     fn default() -> Self {
-        Self { script: None }
+        Self {
+            script_path: None,
+            repo_url: None,
+            commit: None,
+        }
     }
 }
 
@@ -542,6 +577,11 @@ struct Raw {
     /// `["wasm32"]` (the default — see DepsManifest::target_arches).
     #[serde(default)]
     arches: Vec<TargetArch>,
+    /// Optional top-level `kernel_abi = N`. Phase A-bis records the
+    /// declared ABI floor; Phase B will enforce it via the CI matrix
+    /// ABI-floor check. Absent = no declared floor.
+    #[serde(default)]
+    kernel_abi: Option<u32>,
 }
 
 /// Default `outputs` value when the key is absent: an empty table.
@@ -555,7 +595,7 @@ fn default_outputs_value() -> toml::Value {
 impl DepsManifest {
     /// Read + parse + validate a `package.toml` file. `dir` is the
     /// directory containing the file (used later to resolve
-    /// `build.script` relative paths).
+    /// `build.script_path` relative paths).
     pub fn load(path: &Path) -> Result<Self, String> {
         let text = std::fs::read_to_string(path)
             .map_err(|e| format!("read {}: {e}", path.display()))?;
@@ -994,15 +1034,26 @@ impl DepsManifest {
             host_tools,
             target_arches,
             dir,
+            kernel_abi: raw.kernel_abi,
         })
     }
 
     /// Absolute path to the build script. Default is `build-<name>.sh`
     /// in the same directory as this `package.toml`.
+    ///
+    /// NOTE: Phase A-bis Task 1 introduces `[build].script_path` with
+    /// repo-relative semantics (replacing the old package-dir-relative
+    /// `[build].script`). The repo-relative resolution is wired in
+    /// Task 2; until then, this method reads the new field but still
+    /// joins against `self.dir`, which is correct for the default
+    /// (basename-only) case but wrong for an explicit
+    /// `script_path` override. Source `package.toml` files do not yet
+    /// set `script_path` (Task 3 backfills them), so this is currently
+    /// dead-code in the override branch.
     pub fn build_script_path(&self) -> PathBuf {
         let script = self
             .build
-            .script
+            .script_path
             .clone()
             .unwrap_or_else(|| format!("build-{}.sh", self.name));
         self.dir.join(script)
@@ -1055,12 +1106,74 @@ headers = ["include/zlib.h"]
     #[test]
     fn build_script_override_is_respected() {
         // Append a [build] section at the end; the example doesn't have one.
-        let text = format!("{EXAMPLE}\n[build]\nscript = \"custom-build.sh\"\n");
+        // Note: Phase A-bis Task 1 renames `script` → `script_path`. The
+        // repo-relative resolution is wired in Task 2; for now
+        // `build_script_path` still joins against `self.dir`, so the
+        // fixture uses a basename to keep the assertion meaningful.
+        let text =
+            format!("{EXAMPLE}\n[build]\nscript_path = \"custom-build.sh\"\n");
         let m = DepsManifest::parse(&text, PathBuf::from("/x")).unwrap();
         assert_eq!(
             m.build_script_path(),
             PathBuf::from("/x/custom-build.sh")
         );
+    }
+
+    #[test]
+    fn build_accepts_repo_url_and_commit() {
+        let text = format!(
+            "{EXAMPLE}\n\
+             [build]\n\
+             script_path = \"examples/libs/zlib/build-zlib.sh\"\n\
+             repo_url    = \"https://github.com/Automattic/wasm-posix-kernel\"\n\
+             commit      = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"\n"
+        );
+        let m = DepsManifest::parse(&text, PathBuf::from("/x")).unwrap();
+        assert_eq!(
+            m.build.script_path.as_deref(),
+            Some("examples/libs/zlib/build-zlib.sh")
+        );
+        assert_eq!(
+            m.build.repo_url.as_deref(),
+            Some("https://github.com/Automattic/wasm-posix-kernel")
+        );
+        assert_eq!(
+            m.build.commit.as_deref(),
+            Some("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
+        );
+    }
+
+    #[test]
+    fn build_rejects_legacy_script_field() {
+        // The Phase A-bis schema renames `[build].script` →
+        // `[build].script_path`. The old field is rejected via
+        // `#[serde(deny_unknown_fields)]` on Build so stale data
+        // surfaces immediately rather than silently parsing as the
+        // default (no override).
+        let text = format!("{EXAMPLE}\n[build]\nscript = \"custom-build.sh\"\n");
+        let err = DepsManifest::parse(&text, PathBuf::from("/x")).unwrap_err();
+        assert!(
+            err.contains("script") && err.contains("unknown field"),
+            "expected error to mention unknown field `script`, got: {err}"
+        );
+    }
+
+    #[test]
+    fn parses_top_level_kernel_abi() {
+        let text = EXAMPLE.replace(
+            "revision = 1",
+            "revision = 1\nkernel_abi = 6",
+        );
+        let m = DepsManifest::parse(&text, PathBuf::from("/x")).unwrap();
+        assert_eq!(m.kernel_abi, Some(6));
+    }
+
+    #[test]
+    fn kernel_abi_is_optional() {
+        // EXAMPLE has no kernel_abi key; parse must succeed and the
+        // field must be None.
+        let m = DepsManifest::parse(EXAMPLE, PathBuf::from("/x")).unwrap();
+        assert_eq!(m.kernel_abi, None);
     }
 
     #[test]

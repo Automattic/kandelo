@@ -3,7 +3,7 @@
 //! Resolution order per library:
 //!   1. `<repo>/local-libs/<name>/build/` — hand-patched source, in-progress.
 //!   2. `<cache_root>/libs/<name>-<ver>-rev<N>-<shortsha>/` — canonical cache.
-//!   3. Build from source: run the declared `build.script`, validate
+//!   3. Build from source: run the declared `build.script_path`, validate
 //!      declared outputs, atomically install into the canonical cache.
 //!
 //! The build script runs with:
@@ -745,7 +745,7 @@ fn ensure_built_uncached(
     //                        declared outputs list.
     //   (Library | Program,_) — try `[binary]` remote fetch first,
     //                        then fall back to the build script.
-    match (target.kind, target.build.script.is_some()) {
+    match (target.kind, target.build.script_path.is_some()) {
         (ManifestKind::Source, false) => {
             let parent = canonical
                 .parent()
@@ -3576,7 +3576,7 @@ libs = []
     }
 
     /// End-to-end integration: a `kind = "source"` manifest that
-    /// declares no `[build].script` resolves by fetching its archive
+    /// declares no `[build].script_path` resolves by fetching its archive
     /// (file:// URL here), verifying the sha256, extracting +
     /// flattening, and atomically renaming into the canonical cache
     /// path. A second resolve hits the cache.
@@ -3652,7 +3652,7 @@ spdx = "BSD-3-Clause"
         assert_eq!(path, path2);
     }
 
-    /// C.5: source-kind manifest with `[build].script` runs the script
+    /// C.5: source-kind manifest with `[build].script_path` runs the script
     /// through `build_into_cache` and atomically installs the populated
     /// OUT_DIR under `<cache>/sources/...`. The script gets the same
     /// env-var contract as lib/program builds (OUT_DIR + NAME +
@@ -3690,7 +3690,7 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 spdx = "BSD-3-Clause"
 
 [build]
-script = "custom.sh"
+script_path = "custom.sh"
 "#;
         let m = DepsManifest::parse(manifest_text, manifest_dir).unwrap();
 
@@ -3743,7 +3743,7 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 spdx = "BSD-3-Clause"
 
 [build]
-script = "noop.sh"
+script_path = "noop.sh"
 "#;
         let m = DepsManifest::parse(manifest_text, manifest_dir).unwrap();
 
@@ -3807,7 +3807,7 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 spdx = "TestLicense"
 
 [build]
-script = "custom.sh"
+script_path = "custom.sh"
 "#,
         )
         .unwrap();
