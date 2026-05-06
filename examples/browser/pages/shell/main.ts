@@ -23,7 +23,7 @@ import coreutilsWasmUrl from "../../../../binaries/programs/wasm32/coreutils.was
 import grepWasmUrl from "../../../../binaries/programs/wasm32/grep.wasm?url";
 import sedWasmUrl from "../../../../binaries/programs/wasm32/sed.wasm?url";
 import bcWasmUrl from "../../../../binaries/programs/wasm32/bc.wasm?url";
-import fileWasmUrl from "../../../../binaries/programs/wasm32/file.wasm?url";
+import fileWasmUrl from "../../../../binaries/programs/wasm32/file/file.wasm?url";
 import lessWasmUrl from "../../../../binaries/programs/wasm32/less.wasm?url";
 import m4WasmUrl from "../../../../binaries/programs/wasm32/m4.wasm?url";
 import makeWasmUrl from "../../../../binaries/programs/wasm32/make.wasm?url";
