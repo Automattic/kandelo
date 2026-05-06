@@ -210,12 +210,27 @@ jobs:
       # whatever data each side managed to produce.
       - name: Reset to PR base
         if: always()
-        # Hard reset working tree to the PR base SHA. Submodules update
-        # to base-pinned commits. local-binaries/ + benchmarks/results/
-        # are deleted to ensure the BEFORE side rebuilds from base.
+        # Hard reset working tree to the PR base SHA, then re-apply the
+        # PR-HEAD benchmark harness on top.
+        #
+        # Why keep `benchmarks/` at HEAD: the benchmark suites are the
+        # *measuring tool*, not the system under test. Reverting them
+        # to base means BEFORE runs different code than AFTER, so the
+        # comparison isn't apples-to-apples. Concretely, the previous
+        # PR's wordpress.ts / mariadb.ts fixes (use packaged binaries
+        # via tryResolveBinary) only ship on PR HEAD; BASE's suites
+        # hard-code source-build paths that don't exist in CI, so they
+        # silently skip and produce no BEFORE data for those suites.
+        # Holding `benchmarks/` to HEAD on both sides keeps the harness
+        # version pinned per-run.
+        #
+        # local-binaries/ + benchmarks/results/ are deleted to ensure
+        # BEFORE rebuilds from base.
         run: |
           BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
           git checkout "$BASE"
+          git checkout "$HEAD_SHA" -- benchmarks/
           git submodule update --init --depth 1 musl
           rm -rf local-binaries benchmarks/results
 
