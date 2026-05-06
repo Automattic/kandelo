@@ -772,3 +772,204 @@ jobs:
           path: ${{ runner.temp }}/staged/*.tar.zst
           retention-days: 7
           if-no-files-found: error
+
+  test-gate:
+    # Runs the 5 test suites against the union of (matrix-built archives
+    # + durable release fallback). This is the test-before-publish
+    # safety property the legacy `build` job preserves today, hoisted up
+    # to the matrix level: a green test-gate is what blesses the
+    # subsequent publish (Task 6) of the matrix archives.
+    #
+    # if: always() — test even when some matrix entries failed. Per the
+    # design doc, partial-matrix-failure is a real scenario the consumer
+    # side handles via last-green fallback, so the green packages should
+    # still be tested for the union they form with the durable release.
+    # The empty-matrix case (preflight produced []) is short-circuited:
+    # nothing was built, nothing to test.
+    needs: [preflight, toolchain-cache, matrix-build]
+    if: always() && needs.preflight.outputs.matrix != '[]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Fetch submodules (musl, libc-test, os-test)
+        # musl       — sysroot rebuild fallback (cache restore should
+        #               succeed; this is defense-in-depth for any
+        #               build-script that reaches into musl/ for headers).
+        # libc-test  — scripts/run-libc-tests.sh
+        # os-test    — scripts/run-sortix-tests.sh
+        # Same SSH→HTTPS rewrite as the legacy build job for libc-test.
+        run: |
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git submodule update --init --depth 1 musl libc-test os-test
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v18
+
+      - name: Cache Nix store + flake eval
+        uses: DeterminateSystems/magic-nix-cache-action@v13
+
+      - name: Restore toolchain cache
+        # fail-on-cache-miss: true — the upstream toolchain-cache job is
+        # in our `needs:` set, so by the time we reach this step the
+        # cache MUST be populated. A miss means a real bug (eviction
+        # between populate + restore, or upstream silent failure) we
+        # want to surface rather than mask with a multi-minute rebuild
+        # inside this gate.
+        uses: actions/cache@v4
+        with:
+          path: |
+            sysroot
+            sysroot64
+          key: ${{ needs.toolchain-cache.outputs.cache-key }}
+          fail-on-cache-miss: true
+
+      - name: Download matrix artifacts
+        # Each matrix entry uploaded one artifact named "<pkg>-<arch>"
+        # containing one .tar.zst. With no `name:` filter this downloads
+        # every artifact produced by this run, landing them at
+        # `<path>/<artifact-name>/<archive>.tar.zst`. We re-flatten in
+        # the next step.
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/staged-archives
+
+      - name: Materialize binaries (synth manifest + install-release overlay)
+        # The matrix produced a flat set of per-package archives whose
+        # filenames encode (program, version, revision, abi, arch,
+        # short_sha). install-release wants a manifest.json describing
+        # the set, plus archives laid out under {libs,programs}/. We:
+        #
+        #   1. Run scripts/fetch-binaries.sh first to populate
+        #      binaries/ from the durable release. This is the
+        #      "everything not built by the matrix" baseline.
+        #
+        #   2. Sort the matrix .tar.zst files into <staging>/libs/ or
+        #      <staging>/programs/ based on each package's `kind` from
+        #      examples/libs/<pkg>/package.toml.
+        #
+        #   3. Run `xtask build-manifest --in <staging>` to synthesize
+        #      a manifest.json from the sorted archives. build-manifest
+        #      walks the registry to compute each (pkg, arch)'s
+        #      cache_key_sha, finds the matching .tar.zst on disk, and
+        #      emits a archive entry with the right `compatibility`
+        #      block — the same shape `xtask stage-release` produces.
+        #
+        #   4. Run `xtask install-release` to overlay those archives
+        #      onto the binaries/ tree populated by fetch-binaries.
+        #      install-release replaces symlinks under
+        #      binaries/programs/<arch>/ with ones pointing at the
+        #      matrix-built canonical cache entries. Tests then see
+        #      the matrix-built bytes for changed packages and the
+        #      durable bytes for everything else.
+        #
+        # `--allow-stale` mirrors the matrix-build step: a PR shipping a
+        # compute_sha formula change will fail the strict pre-flight on
+        # the durable side, but `fetch-binaries.sh --allow-stale` falls
+        # back to source builds. The overlay (matrix archives produced
+        # by THIS workflow) was just stamped by Task 4 with the live
+        # formula, so it always passes the strict check there.
+        run: |
+          bash scripts/dev-shell.sh bash -c '
+            set -euo pipefail
+            bash scripts/fetch-binaries.sh --allow-stale
+
+            STAGE="$RUNNER_TEMP/staged-overlay"
+            mkdir -p "$STAGE/libs" "$STAGE/programs"
+
+            # Flatten <name>-<arch>/<x>.tar.zst → libs/ or programs/
+            # based on the source package'"'"'s kind. The package name
+            # is the artifact-name prefix before the trailing -wasm32 or
+            # -wasm64; we strip the arch suffix to get the directory
+            # under examples/libs/.
+            shopt -s nullglob
+            for adir in "$RUNNER_TEMP/staged-archives"/*/; do
+              aname=$(basename "$adir")
+              pkg="${aname%-wasm32}"
+              pkg="${pkg%-wasm64}"
+              ptoml="examples/libs/$pkg/package.toml"
+              if [ ! -f "$ptoml" ]; then
+                echo "test-gate: no package.toml for $pkg (artifact $aname); skipping" >&2
+                continue
+              fi
+              kind=$(awk -F\" "/^kind *=/ {print \$2; exit}" "$ptoml")
+              case "$kind" in
+                library) sub=libs ;;
+                program) sub=programs ;;
+                *) echo "test-gate: unknown kind=$kind for $pkg" >&2; exit 1 ;;
+              esac
+              for f in "$adir"*.tar.zst; do
+                cp -v "$f" "$STAGE/$sub/"
+              done
+            done
+
+            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
+
+            # Synthesize manifest.json. --tag is a synthetic value; we
+            # reuse the pr-<NNN>-staging shape (accepted by
+            # verify_tag_matches_abi without ABI coupling) so this works
+            # regardless of the kernel ABI in this branch.
+            cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
+              build-manifest \
+                --in "$STAGE" \
+                --out "$STAGE/manifest.json" \
+                --tag "pr-${{ github.event.pull_request.number }}-test-gate-staging"
+
+            # Overlay onto binaries/. install-release replaces program
+            # symlinks under binaries/programs/<arch>/ with ones into
+            # the matrix-built cache entries.
+            cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
+              install-release \
+                --manifest "$STAGE/manifest.json" \
+                --archive-base "file://$STAGE" \
+                --binaries-dir binaries
+          '
+
+      - name: Build kernel + test programs + install host deps
+        # Test prereqs not shipped in the release archives: kernel.wasm
+        # is built fresh (and copied into local-binaries/ where the
+        # resolver finds it ahead of binaries/), as are programs/*.wasm
+        # fixtures consumed by vitest. Two npm installs: host/ for
+        # vitest, repo root for tsx (used by the libc-test/POSIX/sortix
+        # runners).
+        run: |
+          bash scripts/dev-shell.sh bash -c '
+            cargo build --release -p wasm-posix-kernel \
+              -Z build-std=core,alloc \
+              -Z build-std-features=panic_immediate_abort
+            mkdir -p local-binaries
+            cp target/wasm64-unknown-unknown/release/wasm_posix_kernel.wasm \
+              local-binaries/kernel.wasm
+            bash scripts/build-programs.sh
+            npm install --no-audit --no-fund
+            cd host && npm install --no-audit --no-fund
+          '
+
+      - name: Run cargo tests (kernel unit tests)
+        run: |
+          bash scripts/dev-shell.sh bash -c '
+            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
+            cargo test -p wasm-posix-kernel --target "$HOST_TARGET" --lib
+          '
+
+      - name: Run vitest (host integration tests)
+        run: |
+          bash scripts/dev-shell.sh bash -c '
+            cd host && npx vitest run
+          '
+
+      - name: Run libc-test conformance suite
+        run: |
+          bash scripts/dev-shell.sh bash scripts/run-libc-tests.sh
+
+      - name: Run Open POSIX Test Suite
+        run: |
+          bash scripts/dev-shell.sh bash scripts/run-posix-tests.sh
+
+      - name: Run Sortix os-test suite
+        run: |
+          bash scripts/dev-shell.sh bash scripts/run-sortix-tests.sh --all
