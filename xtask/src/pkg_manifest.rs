@@ -458,6 +458,16 @@ pub struct License {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Build {
+    /// DEPRECATED. Package-dir-relative filename of the build script.
+    /// Kept for backward compatibility with archived `manifest.toml`
+    /// inside `.tar.zst` files published before Phase A-bis (durable
+    /// release `binaries-abi-v7-2026-05-05` was published with this
+    /// field name). Source `package.toml` files must use
+    /// `script_path` instead; `validate_source` rejects this field on
+    /// the source parse path. Never read at runtime — the resolver
+    /// uses `script_path` only.
+    #[allow(dead_code)]
+    pub script: Option<String>,
     /// Repo-relative path to the build script (e.g.
     /// `examples/libs/zlib/build-zlib.sh`). Renamed from `script` (which
     /// was package-dir-relative) so the path is canonical regardless of
@@ -482,6 +492,7 @@ pub struct Build {
 impl Default for Build {
     fn default() -> Self {
         Self {
+            script: None,
             script_path: None,
             repo_url: None,
             commit: None,
@@ -630,6 +641,21 @@ impl DepsManifest {
             return Err(
                 "source package.toml must not contain a [compatibility] block \
                  (it is injected into archived manifest.toml at build time)"
+                    .into(),
+            );
+        }
+        // Phase A-bis: source `package.toml` files must use
+        // `[build].script_path` (repo-relative). The legacy
+        // `[build].script` field is accepted at the parser level for
+        // back-compat with already-published archived `manifest.toml`
+        // files, but is rejected on the source path so stale source
+        // files surface immediately.
+        if raw.build.script.is_some() {
+            return Err(
+                "source package.toml uses deprecated [build].script — \
+                 use [build].script_path (repo-relative path) instead. \
+                 See docs/plans/2026-05-05-decoupled-package-builds-design.md \
+                 §3.1."
                     .into(),
             );
         }
@@ -1159,16 +1185,63 @@ headers = ["include/zlib.h"]
     #[test]
     fn build_rejects_legacy_script_field() {
         // The Phase A-bis schema renames `[build].script` →
-        // `[build].script_path`. The old field is rejected via
-        // `#[serde(deny_unknown_fields)]` on Build so stale data
-        // surfaces immediately rather than silently parsing as the
-        // default (no override).
+        // `[build].script_path`. The legacy field is accepted at the
+        // parser level (so already-published archived manifest.toml
+        // continues to deserialize) but rejected on the source parse
+        // path by `validate_source` so stale source files surface
+        // immediately rather than silently parsing as the default.
         let text = format!("{EXAMPLE}\n[build]\nscript = \"custom-build.sh\"\n");
         let err = DepsManifest::parse(&text, PathBuf::from("/x")).unwrap_err();
         assert!(
-            err.contains("script") && err.contains("unknown field"),
-            "expected error to mention unknown field `script`, got: {err}"
+            err.contains("script") && err.contains("script_path"),
+            "expected error to mention legacy `script` and recommend \
+             `script_path`, got: {err}"
         );
+    }
+
+    #[test]
+    fn parse_archived_accepts_legacy_script_field() {
+        // Archived manifest.toml files inside .tar.zst archives
+        // published before Phase A-bis use the legacy
+        // `[build].script` field. These archives are immutable
+        // historical bytes — install-release / fetch-binaries must
+        // continue to parse them. validate_archived deliberately does
+        // NOT reject `[build].script` (only validate_source does).
+        let sha = "0".repeat(64);
+        let text = format!(
+            "{}\n[build]\nscript = \"build-foo.sh\"\n\
+             [compatibility]\ntarget_arch = \"wasm32\"\n\
+             abi_versions = [4]\ncache_key_sha = \"{}\"\n",
+            EXAMPLE, sha
+        );
+        let m = DepsManifest::parse_archived(&text, PathBuf::from("/x"))
+            .expect("archived parse must accept legacy [build].script");
+        // Field is preserved on the struct (parser-level back-compat)
+        // but the resolver never reads it — runtime path uses
+        // script_path only.
+        assert_eq!(m.build.script.as_deref(), Some("build-foo.sh"));
+        assert_eq!(m.build.script_path, None);
+    }
+
+    #[test]
+    fn parse_archived_accepts_script_path_field() {
+        // Forward-compat: archives published with the new schema
+        // (Phase A-bis onward) carry `[build].script_path` instead
+        // of the legacy `script`. validate_archived accepts both.
+        let sha = "0".repeat(64);
+        let text = format!(
+            "{}\n[build]\nscript_path = \"examples/libs/foo/build-foo.sh\"\n\
+             [compatibility]\ntarget_arch = \"wasm32\"\n\
+             abi_versions = [4]\ncache_key_sha = \"{}\"\n",
+            EXAMPLE, sha
+        );
+        let m = DepsManifest::parse_archived(&text, PathBuf::from("/x"))
+            .expect("archived parse must accept [build].script_path");
+        assert_eq!(
+            m.build.script_path.as_deref(),
+            Some("examples/libs/foo/build-foo.sh")
+        );
+        assert_eq!(m.build.script, None);
     }
 
     #[test]
