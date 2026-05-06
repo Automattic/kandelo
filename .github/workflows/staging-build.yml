@@ -43,6 +43,13 @@ jobs:
       - name: Detect change scope vs main
         id: changes
         uses: ./.github/actions/detect-change-scope
+        with:
+          # Checkout above already fetched main with fetch-depth: 0,
+          # so the action's own depth=1 fetch is both redundant and
+          # harmful: it shallows main at its tip, which breaks
+          # merge-base resolution for PRs branched from any older
+          # commit. Mirrors prepare-merge.yml's call.
+          fetch-base: 'false'
 
       - name: Fetch submodules (musl, libc-test, os-test)
         # actions/checkout doesn't pull submodules by default. We need:
