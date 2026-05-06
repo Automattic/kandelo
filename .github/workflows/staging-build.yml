@@ -391,12 +391,16 @@ jobs:
   # B-1 is intentionally additive — the legacy job stays in place
   # until Phase B-2 / C retires it after the new flow is proven.
   #
-  # Task 2 (this commit) ships the SCAFFOLDING:
-  #   - preflight:    computes which (package, arch) pairs need rebuild
-  #   - matrix-build: per-entry job whose build step is currently a STUB
+  # Task 2 ships the SCAFFOLDING (preflight + matrix-build stub).
+  # Task 3 (this commit) adds the `toolchain-cache` job: a one-shot
+  # build of the wasm32 + wasm64 musl sysroot + libc++ headers, cached
+  # under the same content-addressed key the legacy `build` job above
+  # uses. The new key is shared, so a hit on either side warms both;
+  # `matrix-build` now restores from this layer instead of rebuilding
+  # the toolchain N times across matrix entries.
   #
-  # Tasks 3-7 fill in toolchain cache, real build, test gate, per-file
-  # uploads, and index.toml generation.
+  # Tasks 4-7 fill in the real build, test gate, per-file uploads, and
+  # index.toml generation.
   # ---------------------------------------------------------------------
 
   preflight:
@@ -544,8 +548,102 @@ jobs:
             echo "$matrix" | jq .
           '
 
+  toolchain-cache:
+    # Same fork-PR gate as preflight + the legacy `build` job. Fork PRs
+    # see this job as Skipped, consistent with current behavior.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    outputs:
+      # Exposed so matrix-build can restore the same cache layer. Using
+      # the same `musl-sysroot-v3-...` key shape as the legacy `build`
+      # job means a cache populated by either job warms the other.
+      cache-key: ${{ steps.key.outputs.value }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Fetch musl submodule
+        # build-musl.sh + build-libcxx.sh consume musl/ directly. The
+        # other submodules (libc-test, os-test) are test inputs and not
+        # needed here.
+        run: |
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git submodule update --init --depth 1 musl
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v18
+
+      - name: Cache Nix store + flake eval
+        uses: DeterminateSystems/magic-nix-cache-action@v13
+
+      - name: Compute cache key
+        # Mirrors the key in the legacy `build` job (and prepare-merge)
+        # exactly so all three caches alias. hashFiles() over the inputs
+        # that affect the produced sysroot:
+        #   - scripts/build-musl.sh, scripts/build-libcxx.sh: the build
+        #     recipes themselves
+        #   - musl-overlay/**: source patches/overrides applied on top of
+        #     the musl submodule
+        #   - glue/**: channel_syscall.c + headers compiled into libc.a
+        # The libc++ __config_site sed patch lives inline in this
+        # workflow file's Build step — any change to it forces a fresh
+        # workflow file SHA, which means the matrix re-evaluates from
+        # scratch and the cache miss is observed naturally.
+        id: key
+        run: |
+          KEY="musl-sysroot-v3-${{ runner.os }}-${{ hashFiles('scripts/build-musl.sh', 'scripts/build-libcxx.sh', 'musl-overlay/**', 'glue/**') }}"
+          echo "value=$KEY" >> "$GITHUB_OUTPUT"
+          echo "toolchain-cache key: $KEY"
+
+      - name: Cache musl sysroot + libc++
+        uses: actions/cache@v4
+        id: cache
+        with:
+          path: |
+            sysroot
+            sysroot64
+          key: ${{ steps.key.outputs.value }}
+
+      - name: Build sysroots if cache miss
+        if: steps.cache.outputs.cache-hit != 'true'
+        # Verbatim from the legacy `build` job (and prepare-merge.yml)
+        # so a cache populated here is byte-identical to what the
+        # legacy path would produce. See those files for the rationale
+        # behind the libc++ header copy + __config_site sed patch.
+        run: |
+          bash scripts/dev-shell.sh bash scripts/build-musl.sh
+          bash scripts/dev-shell.sh bash scripts/build-musl.sh --arch wasm64posix
+          bash scripts/dev-shell.sh bash -c '
+            src=""
+            for cand in "$LLVM_PREFIX/include/c++/v1" "$LLVM_PREFIX/share/libc++/v1"; do
+              if [ -f "$cand/__config" ] || [ -f "$cand/iostream" ]; then
+                src="$cand"; break
+              fi
+            done
+            if [ -z "$src" ]; then
+              echo "ERROR: cant locate libc++ headers under $LLVM_PREFIX" >&2
+              exit 1
+            fi
+            echo "installing libc++ headers from $src"
+            for arch_dir in sysroot sysroot64; do
+              if [ ! -f "$arch_dir/include/c++/v1/__config" ]; then
+                mkdir -p "$arch_dir/include/c++/v1"
+                cp -RL "$src"/* "$arch_dir/include/c++/v1/"
+                chmod -R u+w "$arch_dir/include/c++/v1/"
+                cs="$arch_dir/include/c++/v1/__config_site"
+                if [ -f "$cs" ]; then
+                  sed -i "s/_LIBCPP_HAS_MUSL_LIBC 0/_LIBCPP_HAS_MUSL_LIBC 1/" "$cs"
+                  sed -i "s/_LIBCPP_HAS_THREAD_API_PTHREAD 0/_LIBCPP_HAS_THREAD_API_PTHREAD 1/" "$cs"
+                fi
+              fi
+            done
+          '
+          bash scripts/dev-shell.sh bash scripts/build-libcxx.sh
+          bash scripts/dev-shell.sh bash scripts/build-libcxx.sh --arch wasm64
+
   matrix-build:
-    needs: preflight
+    needs: [preflight, toolchain-cache]
     if: needs.preflight.outputs.matrix != '[]'
     runs-on: ubuntu-latest
     strategy:
@@ -557,13 +655,48 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: Placeholder build (Tasks 3-4 add toolchain restore + real build)
+      - name: Fetch musl submodule
+        # Even though sysroot/ + sysroot64/ are restored from cache,
+        # downstream package builds (Task 4) reach into musl/ for
+        # headers/sources during their configure steps. Initialize it
+        # here so the cache restore that follows can layer on top.
+        run: |
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git submodule update --init --depth 1 musl
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v18
+
+      - name: Cache Nix store + flake eval
+        uses: DeterminateSystems/magic-nix-cache-action@v13
+
+      - name: Restore toolchain cache
+        # fail-on-cache-miss: true is intentional. toolchain-cache is a
+        # `needs:` dependency of this job, so by the time we reach this
+        # step the cache MUST have been populated by the upstream job
+        # (or by an earlier identical key from a prior run / the legacy
+        # `build` job — the keys alias). A miss here means the cache
+        # got evicted between the upstream populate and this restore,
+        # or the upstream populate silently failed — both are real bugs
+        # worth surfacing as a hard fail rather than triggering a
+        # surprise rebuild inside every matrix entry.
+        uses: actions/cache@v4
+        with:
+          path: |
+            sysroot
+            sysroot64
+          key: ${{ needs.toolchain-cache.outputs.cache-key }}
+          fail-on-cache-miss: true
+
+      - name: Placeholder build (Task 4 adds the real build step)
         # Scaffolding only: this step exits 0 so the matrix entry
-        # registers as success while the rest of Phase B-1 lands.
-        # Task 3 adds toolchain-cache restore; Task 4 adds the real
-        # `xtask build-deps` invocation; Tasks 5-7 add the test gate,
-        # per-file uploads, and index.toml emission.
+        # registers as success while the rest of Phase B-1 lands. The
+        # ls confirms the toolchain cache restored intact — Task 4's
+        # `xtask build-deps` invocation depends on these libc.a files.
+        # Tasks 5-7 then add the test gate, per-file uploads, and
+        # index.toml emission.
         run: |
           echo "would build ${{ matrix.package }} / ${{ matrix.arch }} (sha ${{ matrix.sha }})"
           echo "target tag: ${{ needs.preflight.outputs.target_tag }}"
           echo "abi: ${{ needs.preflight.outputs.abi }}"
+          ls -la sysroot/lib/libc.a sysroot64/lib/libc.a
