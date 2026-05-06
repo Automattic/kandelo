@@ -1,11 +1,29 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Bundle a minimal Vim runtime for use in the browser shell demo.
+# Bundle the Vim runtime for the browser shell demo (and any other
+# host that runs vim.wasm).
 #
-# Vim needs runtime files for syntax highlighting, filetype detection,
-# and default settings. The full runtime is ~30MB; this script copies
-# only the essential files (~500KB).
+# Strategy: ship the full upstream runtime/ tree — the same set of
+# files `apt install vim-runtime` lays down under
+# /usr/share/vim/vim<ver>/ — minus a small denylist of pieces that
+# have no use in this environment:
+#
+#   1. Upstream test fixtures (~4 MB).
+#      syntax/testdir, syntax/generator, indent/testdir exist for
+#      Vim's own `make test_syntax`. They aren't loaded at runtime
+#      and aren't shipped by distro packages.
+#
+#   2. Encodings/locales we don't use (~5 MB).
+#      The demo runs LANG=en_US.UTF-8, so non-utf-8 spell encodings,
+#      non-English tutor files, and per-language spell dictionaries
+#      are dead weight. lang/ is gettext .mo translations; vim is
+#      built --disable-nls and won't read them.
+#
+#   3. Host-platform integration (~0.5 MB).
+#      Icons, .desktop entries, PostScript print files, and host-side
+#      Perl/shell tools are for desktop integration and :hardcopy
+#      printing — neither applies in wasm-on-browser.
 #
 # Output: examples/libs/vim/runtime/ (directory tree)
 
@@ -19,93 +37,70 @@ if [ ! -d "$RUNTIME_SRC" ]; then
     exit 1
 fi
 
-echo "==> Bundling minimal Vim runtime..."
+echo "==> Bundling Vim runtime..."
 
 rm -rf "$RUNTIME_OUT"
-mkdir -p "$RUNTIME_OUT/syntax" "$RUNTIME_OUT/colors" "$RUNTIME_OUT/ftplugin" \
-         "$RUNTIME_OUT/indent" "$RUNTIME_OUT/plugin" "$RUNTIME_OUT/autoload" \
-         "$RUNTIME_OUT/doc"
+mkdir -p "$RUNTIME_OUT"
 
-# Core vim scripts
-for f in defaults.vim filetype.vim scripts.vim; do
-    [ -f "$RUNTIME_SRC/$f" ] && cp "$RUNTIME_SRC/$f" "$RUNTIME_OUT/$f"
-done
+# Sync the full runtime tree, excluding the bucket-1/2/3 items above.
+# rsync trailing-slash semantics: "$RUNTIME_SRC/" copies the contents
+# of runtime/ into RUNTIME_OUT/ (not runtime/ itself).
+rsync -a \
+    --exclude='syntax/testdir/' \
+    --exclude='syntax/generator/' \
+    --exclude='indent/testdir/' \
+    --exclude='keymap/' \
+    --exclude='lang/' \
+    --exclude='print/' \
+    --exclude='tools/' \
+    --exclude='bitmaps/' \
+    --exclude='icons/' \
+    --exclude='*.png' \
+    --exclude='*.gif' \
+    --exclude='*.svg' \
+    --exclude='*.xpm' \
+    --exclude='*.eps' \
+    --exclude='*.pdf' \
+    --exclude='*.cdr' \
+    --exclude='*.desktop' \
+    --exclude='doc/version[0-9]*.txt' \
+    --exclude='spell/en.latin1.spl' \
+    --exclude='spell/en.latin1.sug' \
+    --exclude='spell/en.ascii.spl' \
+    --exclude='spell/en.ascii.sug' \
+    --exclude='spell/en/' \
+    "$RUNTIME_SRC/" "$RUNTIME_OUT/"
 
-# Syntax loading infrastructure
-for f in syntax.vim synload.vim syncolor.vim nosyntax.vim; do
-    [ -f "$RUNTIME_SRC/syntax/$f" ] && cp "$RUNTIME_SRC/syntax/$f" "$RUNTIME_OUT/syntax/$f"
-done
+# Per-language spell dictionaries live in $lang/ subdirs and top-level
+# $lang.{spl,sug} files. rsync's --exclude can't easily express
+# "everything except en*", so prune after the copy.
+if [ -d "$RUNTIME_OUT/spell" ]; then
+    find "$RUNTIME_OUT/spell" -mindepth 1 -maxdepth 1 -type d ! -name 'en*' -exec rm -rf {} +
+    find "$RUNTIME_OUT/spell" -mindepth 1 -maxdepth 1 -type f \
+        ! -name 'en*' \
+        ! -name 'README*' \
+        ! -name '*.vim' \
+        ! -name '*.aap' \
+        -delete
+fi
 
-# Common syntax files (~20 languages)
-SYNTAX_FILES=(
-    c.vim cpp.vim python.vim javascript.vim typescript.vim
-    sh.vim html.vim css.vim json.vim yaml.vim
-    markdown.vim rust.vim go.vim lua.vim vim.vim
-    make.vim conf.vim diff.vim gitcommit.vim help.vim
-    text.vim xml.vim sql.vim java.vim dockerfile.vim
-    toml.vim ini.vim sed.vim awk.vim perl.vim
-    ruby.vim php.vim
-)
-
-for f in "${SYNTAX_FILES[@]}"; do
-    [ -f "$RUNTIME_SRC/syntax/$f" ] && cp "$RUNTIME_SRC/syntax/$f" "$RUNTIME_OUT/syntax/$f"
-done
-
-# Filetype plugins for indentation
-FTPLUGIN_FILES=(
-    c.vim python.vim javascript.vim sh.vim html.vim
-    json.vim yaml.vim markdown.vim rust.vim vim.vim
-)
-
-for f in "${FTPLUGIN_FILES[@]}"; do
-    [ -f "$RUNTIME_SRC/ftplugin/$f" ] && cp "$RUNTIME_SRC/ftplugin/$f" "$RUNTIME_OUT/ftplugin/$f"
-done
-
-# Indent files
-INDENT_FILES=(
-    c.vim python.vim javascript.vim sh.vim html.vim vim.vim
-)
-
-for f in "${INDENT_FILES[@]}"; do
-    [ -f "$RUNTIME_SRC/indent/$f" ] && cp "$RUNTIME_SRC/indent/$f" "$RUNTIME_OUT/indent/$f"
-done
-
-# Autoload files needed by the syntax system
-for f in dist/ft.vim; do
-    if [ -f "$RUNTIME_SRC/autoload/$f" ]; then
-        mkdir -p "$(dirname "$RUNTIME_OUT/autoload/$f")"
-        cp "$RUNTIME_SRC/autoload/$f" "$RUNTIME_OUT/autoload/$f"
-    fi
-done
-
-# netrw — built-in file/directory browser (:Explore, :Vex, opening a dir)
-# Local browsing uses vim's readdir/glob/stat only; no shell required.
-# Remote features (scp/ftp/http) are not supported in this environment.
-NETRW_PLUGIN_FILES=(netrwPlugin.vim)
-for f in "${NETRW_PLUGIN_FILES[@]}"; do
-    [ -f "$RUNTIME_SRC/plugin/$f" ] && cp "$RUNTIME_SRC/plugin/$f" "$RUNTIME_OUT/plugin/$f"
-done
-
-NETRW_AUTOLOAD_FILES=(netrw.vim netrwSettings.vim netrw_gitignore.vim)
-for f in "${NETRW_AUTOLOAD_FILES[@]}"; do
-    [ -f "$RUNTIME_SRC/autoload/$f" ] && cp "$RUNTIME_SRC/autoload/$f" "$RUNTIME_OUT/autoload/$f"
-done
-
-[ -f "$RUNTIME_SRC/syntax/netrw.vim" ] && cp "$RUNTIME_SRC/syntax/netrw.vim" "$RUNTIME_OUT/syntax/netrw.vim"
-
-# A basic color scheme
-[ -f "$RUNTIME_SRC/colors/default.vim" ] && cp "$RUNTIME_SRC/colors/default.vim" "$RUNTIME_OUT/colors/default.vim"
-
-# Help files (doc/*.txt + tags) — enables :help
-# Excludes version history files (version4-9.txt, ~4.7MB) which are rarely needed.
-if [ -d "$RUNTIME_SRC/doc" ]; then
-    for f in "$RUNTIME_SRC"/doc/*.txt; do
-        case "$(basename "$f")" in
-            version[0-9]*.txt) ;; # skip version history
-            *) cp "$f" "$RUNTIME_OUT/doc/" ;;
-        esac
-    done
-    [ -f "$RUNTIME_SRC/doc/tags" ] && cp "$RUNTIME_SRC/doc/tags" "$RUNTIME_OUT/doc/tags"
+# Translated tutor files: tutor.<lang>[.<encoding>] and README.<lang>.*.
+# Keep English (`tutor`, `tutor.utf-8`, `tutor2*`, `tutor.tutor*`,
+# `tutor.vim`, `tutor.info`, the en/ dir, build scripts, README.txt).
+if [ -d "$RUNTIME_OUT/tutor" ]; then
+    find "$RUNTIME_OUT/tutor" -mindepth 1 -maxdepth 1 -type f \
+        ! -name 'tutor' \
+        ! -name 'tutor.utf-8' \
+        ! -name 'tutor.info' \
+        ! -name 'tutor.vim' \
+        ! -name 'tutor.tutor' \
+        ! -name 'tutor.tutor.json' \
+        ! -name 'tutor2' \
+        ! -name 'tutor2.utf-8' \
+        ! -name 'Make*' \
+        ! -name 'README.txt' \
+        ! -name 'README.txt.info' \
+        -delete
 fi
 
 # Count files and total size
