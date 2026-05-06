@@ -1675,6 +1675,20 @@ export class SharedFS {
     }
   }
 
+  lchown(path: string, uid: number, gid: number): void {
+    const ino = this.pathResolve(path, false); // no-follow: chowns the symlink itself
+    if (ino < 0) throw new SFSError(ino);
+    this.inodeWriteLock(ino);
+    try {
+      const off = this.inodeOffset(ino);
+      this.w32(off + INO_UID, uid);
+      this.w32(off + INO_GID, gid);
+      this.w64(off + INO_CTIME, Date.now());
+    } finally {
+      this.inodeWriteUnlock(ino);
+    }
+  }
+
   utimens(path: string, atimeSec: number, atimeNsec: number, mtimeSec: number, mtimeNsec: number): void {
     const ino = this.pathResolve(path, true);
     if (ino < 0) throw new SFSError(ino);

@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { MemoryFileSystem } from "../../src/vfs/memory-fs";
+import { ensureDirRecursive } from "../../src/vfs/image-helpers";
 
 // O_WRONLY | O_CREAT | O_TRUNC, matching sharedfs-vendor.ts constants.
 const O_WRONLY = 0x0001;
@@ -126,5 +127,78 @@ describe("SharedFS uid/gid", () => {
     expect(after.uid).toBe(0);
     expect(after.gid).toBe(0);
     expect(after.mode).toBe(before.mode);
+  });
+
+  it("createFileWithOwner sets uid/gid at creation", () => {
+    const sab = new SharedArrayBuffer(1024 * 1024);
+    const fs = MemoryFileSystem.create(sab);
+    ensureDirRecursive(fs, "/etc");
+    fs.createFileWithOwner(
+      "/etc/passwd",
+      0o644,
+      0,
+      0,
+      new TextEncoder().encode("root:x:0:0:root:/root:/bin/sh\n"),
+    );
+    const st = fs.stat("/etc/passwd");
+    expect(st.uid).toBe(0);
+    expect(st.gid).toBe(0);
+    expect(st.mode & 0o777).toBe(0o644);
+  });
+
+  it("createFileWithOwner sets non-root uid/gid", () => {
+    const sab = new SharedArrayBuffer(1024 * 1024);
+    const fs = MemoryFileSystem.create(sab);
+    fs.createFileWithOwner(
+      "/data",
+      0o600,
+      4242,
+      9999,
+      new TextEncoder().encode("hello"),
+    );
+    const st = fs.stat("/data");
+    expect(st.uid).toBe(4242);
+    expect(st.gid).toBe(9999);
+    expect(st.mode & 0o777).toBe(0o600);
+    expect(st.size).toBe(5);
+  });
+
+  it("mkdirWithOwner sets uid/gid at creation", () => {
+    const sab = new SharedArrayBuffer(1024 * 1024);
+    const fs = MemoryFileSystem.create(sab);
+    ensureDirRecursive(fs, "/var");
+    fs.mkdirWithOwner("/var/log", 0o755, 0, 0);
+    const st = fs.stat("/var/log");
+    expect(st.uid).toBe(0);
+    expect(st.gid).toBe(0);
+    expect(st.mode & 0o777).toBe(0o755);
+  });
+
+  it("symlinkWithOwner sets uid/gid at creation", () => {
+    const sab = new SharedArrayBuffer(1024 * 1024);
+    const fs = MemoryFileSystem.create(sab);
+    ensureDirRecursive(fs, "/usr/bin");
+    fs.createFileWithOwner(
+      "/usr/bin/sh",
+      0o755,
+      0,
+      0,
+      new TextEncoder().encode(""),
+    );
+    ensureDirRecursive(fs, "/bin");
+    fs.symlinkWithOwner("/usr/bin/sh", "/bin/sh", 0, 0);
+    const st = fs.lstat("/bin/sh");
+    expect(st.uid).toBe(0);
+    expect(st.gid).toBe(0);
+  });
+
+  it("symlinkWithOwner does not follow symlinks (chowns the link, not target)", () => {
+    const sab = new SharedArrayBuffer(1024 * 1024);
+    const fs = MemoryFileSystem.create(sab);
+    // target /nonexistent does NOT exist; symlinkWithOwner must succeed anyway
+    fs.symlinkWithOwner("/nonexistent", "/mylink", 1234, 5678);
+    const st = fs.lstat("/mylink");
+    expect(st.uid).toBe(1234);
+    expect(st.gid).toBe(5678);
   });
 });
