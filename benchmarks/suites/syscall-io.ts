@@ -1,13 +1,17 @@
 /**
- * Suite 4: Syscall/IO Throughput
+ * Suite: Syscall / IPC / IO microbenchmarks
  *
- * Measures channel IPC and I/O performance using small C benchmark programs.
+ * Small C programs measuring kernel IPC and I/O paths in isolation.
+ * Each program prints `metric_name=value` lines to stdout.
  *
  * Metrics:
- *   pipe_mbps        — Write 1MB through a pipe
- *   file_write_mbps  — Write 1MB to a file
- *   file_read_mbps   — Read 1MB from a file
- *   syscall_latency_us — Average getpid round-trip over 1000 calls
+ *   pipe_mbps          — 1MiB through a pipe (parent → child via fork)
+ *   socketpair_mbps    — 1MiB through socketpair(AF_UNIX, SOCK_STREAM)
+ *                        — separate kernel path from pipe
+ *   file_write_mbps    — 1MiB sequential write to a file
+ *   file_read_mbps     — 1MiB sequential read
+ *   syscall_latency_us — Average getpid() round-trip over 1000 calls
+ *   signal_latency_us  — Average raise(SIGUSR1) handler round-trip
  */
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
@@ -28,39 +32,28 @@ function parseMetrics(stdout: string): Record<string, number> {
   return metrics;
 }
 
+async function runProgram(name: string): Promise<Record<string, number>> {
+  const result = await runCentralizedProgram({
+    programPath: resolve(wasmDir, `${name}.wasm`),
+    argv: [name],
+    timeout: 60_000,
+  });
+  if (result.exitCode !== 0) {
+    throw new Error(`${name} failed (exit ${result.exitCode}): ${result.stderr}`);
+  }
+  return parseMetrics(result.stdout);
+}
+
 const suite: BenchmarkSuite = {
   name: "syscall-io",
 
   async run(): Promise<Record<string, number>> {
     const results: Record<string, number> = {};
-
-    // Pipe throughput
-    const pipe = await runCentralizedProgram({
-      programPath: resolve(wasmDir, "pipe-throughput.wasm"),
-      argv: ["pipe-throughput"],
-      timeout: 60_000,
-    });
-    if (pipe.exitCode !== 0) throw new Error(`pipe-throughput failed: ${pipe.stderr}`);
-    Object.assign(results, parseMetrics(pipe.stdout));
-
-    // File throughput
-    const file = await runCentralizedProgram({
-      programPath: resolve(wasmDir, "file-throughput.wasm"),
-      argv: ["file-throughput"],
-      timeout: 60_000,
-    });
-    if (file.exitCode !== 0) throw new Error(`file-throughput failed: ${file.stderr}`);
-    Object.assign(results, parseMetrics(file.stdout));
-
-    // Syscall latency
-    const syscall = await runCentralizedProgram({
-      programPath: resolve(wasmDir, "syscall-latency.wasm"),
-      argv: ["syscall-latency"],
-      timeout: 60_000,
-    });
-    if (syscall.exitCode !== 0) throw new Error(`syscall-latency failed: ${syscall.stderr}`);
-    Object.assign(results, parseMetrics(syscall.stdout));
-
+    Object.assign(results, await runProgram("pipe-throughput"));
+    Object.assign(results, await runProgram("socketpair-throughput"));
+    Object.assign(results, await runProgram("file-throughput"));
+    Object.assign(results, await runProgram("syscall-latency"));
+    Object.assign(results, await runProgram("signal-latency"));
     return results;
   },
 };

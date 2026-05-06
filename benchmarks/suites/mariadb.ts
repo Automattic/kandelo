@@ -166,6 +166,11 @@ async function runMysqlTest(
     throw new Error(`mysqltest ${arch} binary not found.`);
   }
   const { runCentralizedProgram } = await import("../../host/test/centralized-test-helper.js");
+  // wasm64 mariadbd cold-start under V8 wasm-c-api takes substantially
+  // longer than wasm32 — observed >120s on the very first query.
+  // Use a more generous budget for wasm64 so the cold-start path can
+  // complete; wasm32 keeps the tighter cap to fail fast on real hangs.
+  const timeoutMs = arch === "wasm64" ? 600_000 : 180_000;
   const result = await runCentralizedProgram({
     programPath: mysqltestPath,
     argv: [
@@ -176,7 +181,7 @@ async function runMysqlTest(
       "--silent",
     ],
     stdin: sql,
-    timeout: 120_000,
+    timeout: timeoutMs,
   });
   return { stdout: result.stdout, exitCode: result.exitCode };
 }
@@ -233,43 +238,33 @@ export async function runMariaDBBenchmark(engine: string, arch: WasmArch = "wasm
   }
 
   try {
-    // 3. CREATE TABLE
+    // 3. Run all DDL + DML + queries in a SINGLE mysqltest invocation.
+    //
+    // Previously this was 4 separate runMysqlTest() calls (CREATE,
+    // INSERT, SELECT, JOIN) and the per-call numbers all clocked
+    // ~50,800ms — almost entirely mysqltest spawn + TCP handshake
+    // overhead, with the actual SQL work in the noise. Batching pays
+    // that startup once and gives a single end-to-end measurement
+    // that's still dominated by startup but at ~25% of the wall clock.
+    //
+    // Side benefit: this also means wasm64 mariadb only pays its
+    // (much heavier) cold-start once per round instead of four times,
+    // which is what makes wasm64 mariadb tractable in CI again.
+    const batchedSql =
+      `CREATE DATABASE IF NOT EXISTS bench;\n` +
+      `USE bench;\n` +
+      `CREATE TABLE t1 (id INT PRIMARY KEY AUTO_INCREMENT, name VARCHAR(100), value INT) ENGINE=${engine};\n` +
+      `CREATE TABLE t2 (id INT PRIMARY KEY AUTO_INCREMENT, t1_id INT, data VARCHAR(200)) ENGINE=${engine};\n` +
+      Array.from({ length: 100 }, (_, i) =>
+        `INSERT INTO t1 (name, value) VALUES ('item_${i}', ${i * 10});`).join("\n") + "\n" +
+      Array.from({ length: 100 }, (_, i) =>
+        `INSERT INTO t2 (t1_id, data) VALUES (${i + 1}, 'data_for_item_${i}');`).join("\n") + "\n" +
+      `SELECT * FROM t1 WHERE value > 500 AND value < 800;\n` +
+      `SELECT t1.name, t2.data FROM t1 JOIN t2 ON t1.id = t2.t1_id WHERE t1.value > 500;\n`;
+
     const t1 = performance.now();
-    await runMysqlTest(arch, instance,`
-      CREATE DATABASE IF NOT EXISTS bench;
-      USE bench;
-      CREATE TABLE t1 (id INT PRIMARY KEY AUTO_INCREMENT, name VARCHAR(100), value INT) ENGINE=${engine};
-      CREATE TABLE t2 (id INT PRIMARY KEY AUTO_INCREMENT, t1_id INT, data VARCHAR(200)) ENGINE=${engine};
-    `);
-    results.query_create_ms = performance.now() - t1;
-
-    // 4. INSERT 100 rows
-    let insertSql = "USE bench;\n";
-    for (let i = 0; i < 100; i++) {
-      insertSql += `INSERT INTO t1 (name, value) VALUES ('item_${i}', ${i * 10});\n`;
-    }
-    for (let i = 0; i < 100; i++) {
-      insertSql += `INSERT INTO t2 (t1_id, data) VALUES (${i + 1}, 'data_for_item_${i}');\n`;
-    }
-    const t2 = performance.now();
-    await runMysqlTest(arch, instance,insertSql);
-    results.query_insert_ms = performance.now() - t2;
-
-    // 5. SELECT with WHERE
-    const t3 = performance.now();
-    await runMysqlTest(arch, instance,`
-      USE bench;
-      SELECT * FROM t1 WHERE value > 500 AND value < 800;
-    `);
-    results.query_select_ms = performance.now() - t3;
-
-    // 6. JOIN
-    const t4 = performance.now();
-    await runMysqlTest(arch, instance,`
-      USE bench;
-      SELECT t1.name, t2.data FROM t1 JOIN t2 ON t1.id = t2.t1_id WHERE t1.value > 500;
-    `);
-    results.query_join_ms = performance.now() - t4;
+    await runMysqlTest(arch, instance, batchedSql);
+    results.all_queries_ms = performance.now() - t1;
   } finally {
     await instance.cleanup();
   }

@@ -55,15 +55,30 @@ jobs:
       contents: read
       pull-requests: write
     env:
-      # wasm64 mariadb suites are excluded from CI for now: mariadbd
-      # cold-start under wasm64 exceeds the per-call 120s timeout in
-      # benchmarks/suites/mariadb.ts, costing ~6 minutes of timeout per
-      # round × 2 sides without producing data. Re-add when either the
-      # suite gains a longer per-call budget or wasm64 mariadb cold-start
-      # gets faster. See SKIP_SUITES below for the matching --exclude
-      # passed to run.ts.
-      EXPECTED_SUITES: "syscall-io,process-lifecycle,erlang-ring,wordpress,mariadb-aria,mariadb-innodb"
-      SKIP_SUITES: "mariadb-aria-64,mariadb-innodb-64"
+      # CI-run suite shape:
+      #   * syscall-io / process-lifecycle: kernel primitives — fast
+      #     (well under a minute combined). Highest-value coverage for
+      #     fork/exec/clone and IPC regressions.
+      #   * php: standalone PHP startup + a small compute loop. Replaces
+      #     wordpress in CI — isolates interpreter perf from framework
+      #     so a regression here is attributable to PHP itself.
+      #   * mariadb-* (wasm32 + wasm64, both engines): heavy native app
+      #     coverage. Tractable now that the suite batches all queries
+      #     into one mysqltest invocation (was ~50s × 4 calls per round
+      #     just for spawn overhead — now ~50s once).
+      #
+      # Skipped in CI but still registered in benchmarks/run.ts'
+      # SUITE_MODULES so they remain runnable locally and are easy to
+      # re-enable:
+      #   * wordpress — folded into php-standalone for CI; the WordPress
+      #     suite is still useful for measuring framework-level deltas
+      #     ad-hoc.
+      #   * erlang-ring — needs the full OTP install tree
+      #     (examples/libs/erlang/erlang-install/) which isn't shipped
+      #     by package management today; would silently skip even if
+      #     listed as expected.
+      EXPECTED_SUITES: "syscall-io,process-lifecycle,php,mariadb-aria,mariadb-aria-64,mariadb-innodb,mariadb-innodb-64"
+      SKIP_SUITES: "wordpress,erlang-ring"
       ROUNDS: "3"
       THRESHOLD: "5"
     steps:

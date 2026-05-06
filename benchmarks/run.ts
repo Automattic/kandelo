@@ -96,6 +96,7 @@ const SUITE_MODULES: Record<string, string> = {
   "process-lifecycle": "./suites/process-lifecycle.js",
   "erlang-ring": "./suites/erlang-ring.js",
   "wordpress": "./suites/wordpress.js",
+  "php": "./suites/php.js",
   "mariadb-aria": "./suites/mariadb-aria.js",
   "mariadb-aria-64": "./suites/mariadb-aria-64.js",
   "mariadb-innodb": "./suites/mariadb-innodb.js",
