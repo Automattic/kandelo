@@ -101,6 +101,9 @@ const INO_ATIME = 40; // uint64 (milliseconds since epoch)
 const INO_DIRECT = 48; // 10 * 4 bytes
 const INO_INDIRECT = 88;
 const INO_DOUBLE_INDIRECT = 92;
+const INO_UID = 96; // u32
+const INO_GID = 100; // u32
+// 104-127 reserved for future fields (flags, xattrs, etc.)
 
 // FD entry layout
 const FD_IN_USE = 0;
@@ -124,6 +127,8 @@ export interface StatResult {
   mtime: number;
   ctime: number;
   atime: number;
+  uid: number;
+  gid: number;
 }
 
 const ERROR_MESSAGES: Record<number, string> = {
@@ -1163,6 +1168,8 @@ export class SharedFS {
       mtime: this.r64(off + INO_MTIME),
       ctime: this.r64(off + INO_CTIME),
       atime: this.r64(off + INO_ATIME),
+      uid: this.r32(off + INO_UID),
+      gid: this.r32(off + INO_GID),
     };
   }
 

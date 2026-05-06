@@ -1,0 +1,82 @@
+import { describe, it, expect } from "vitest";
+import { MemoryFileSystem } from "../../src/vfs/memory-fs";
+
+// O_WRONLY | O_CREAT | O_TRUNC, matching sharedfs-vendor.ts constants.
+const O_WRONLY = 0x0001;
+const O_CREAT = 0x0040;
+const O_TRUNC = 0x0200;
+
+// Inode layout from sharedfs-vendor.ts. Mirrored here so the test
+// would catch a silent shift of the offset constants.
+const INODE_SIZE = 128;
+const INO_UID = 96;
+const INO_GID = 100;
+
+describe("SharedFS uid/gid", () => {
+  it("new file has uid=0 gid=0 by default", () => {
+    const sab = new SharedArrayBuffer(1024 * 1024);
+    const fs = MemoryFileSystem.create(sab);
+    const fd = fs.open("/hello", O_WRONLY | O_CREAT | O_TRUNC, 0o644);
+    fs.close(fd);
+    const st = fs.stat("/hello");
+    expect(st.uid).toBe(0);
+    expect(st.gid).toBe(0);
+  });
+
+  it("stat surfaces non-zero uid/gid written to inode bytes", () => {
+    // This test verifies the buildStat → adaptStat propagation path is
+    // wired to the new INO_UID/INO_GID fields, not just hardcoded to 0.
+    // Without this, the previous test would pass trivially against a
+    // stub that returns {uid:0, gid:0}.
+    const sab = new SharedArrayBuffer(1024 * 1024);
+    const fs = MemoryFileSystem.create(sab);
+
+    // Create a file with a unique mode so we can locate its inode bytes.
+    const uniqueMode = 0o100631; // S_IFREG | 0o631 — unlikely to collide
+    const fd = fs.open("/marker", O_WRONLY | O_CREAT | O_TRUNC, 0o631);
+    fs.close(fd);
+
+    // Sanity: the open above should have produced mode = S_IFREG | 0o631.
+    const stPre = fs.stat("/marker");
+    expect(stPre.mode).toBe(uniqueMode);
+    expect(stPre.uid).toBe(0);
+    expect(stPre.gid).toBe(0);
+
+    // Locate the inode by scanning the SAB for the unique mode word.
+    // INO_MODE = 8, so the mode lives at inodeOffset + 8.
+    const view = new DataView(sab);
+    let inodeOffset = -1;
+    for (let off = 0; off + INODE_SIZE <= sab.byteLength; off += INODE_SIZE) {
+      // mode is at byte 8 within the inode
+      if (view.getUint32(off + 8, true) === uniqueMode) {
+        // Verify it also looks like the right inode by checking link_count==1.
+        if (view.getUint32(off + 12, true) === 1) {
+          inodeOffset = off;
+          break;
+        }
+      }
+    }
+    expect(inodeOffset).toBeGreaterThan(0);
+
+    // Write non-zero uid/gid directly into the reserved bytes.
+    view.setUint32(inodeOffset + INO_UID, 1234, true);
+    view.setUint32(inodeOffset + INO_GID, 5678, true);
+
+    // stat must surface them.
+    const st = fs.stat("/marker");
+    expect(st.uid).toBe(1234);
+    expect(st.gid).toBe(5678);
+
+    // fstat must surface them too.
+    const fd2 = fs.open("/marker", 0 /* O_RDONLY */, 0);
+    const stf = fs.fstat(fd2);
+    fs.close(fd2);
+    expect(stf.uid).toBe(1234);
+    expect(stf.gid).toBe(5678);
+
+    // lstat must surface them too.
+    const stl = fs.lstat("/marker");
+    expect(stl.uid).toBe(1234);
+    expect(stl.gid).toBe(5678);
+  });
+});
