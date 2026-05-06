@@ -602,6 +602,18 @@ export class BrowserKernel {
     return result;
   }
 
+  /** Diagnostic: turn on per-(pid, syscall_nr) timing aggregation in the
+   *  kernel worker. Call sysprofDump() afterward to print and reset. */
+  sysprofStart(): void {
+    this.kernelWorkerHandle.postMessage({ type: "sysprof_start" } as unknown as MainToKernelMessage, []);
+  }
+  sysprofDump(): void {
+    this.kernelWorkerHandle.postMessage({ type: "sysprof_dump" } as unknown as MainToKernelMessage, []);
+  }
+  pidMapDump(): void {
+    this.kernelWorkerHandle.postMessage({ type: "pid_map_dump" } as unknown as MainToKernelMessage, []);
+  }
+
   private sendToKernel(msg: MainToKernelMessage, transfer?: Transferable[]): void {
     this.kernelWorkerHandle.postMessage(msg, transfer ?? []);
   }

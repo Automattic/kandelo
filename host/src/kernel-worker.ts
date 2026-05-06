@@ -1990,6 +1990,31 @@ export class CentralizedKernelWorker {
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as (offset: bigint, pid: number) => number;
     this.currentHandlePid = channel.pid;
     this.bindKernelTidForChannel(channel);
+    // DIAGNOSTIC: globalThis.__sysprof aggregates per-(pid,syscall_nr)
+    // timing across kernel_handle_channel calls so we can dump a profile
+    // afterward (via globalThis.__sysprofDump()). Off by default — flip on
+    // from the demo page right before the slow operation, off after.
+    // Also tracks wall-clock gap since *this* pid's previous syscall — that
+    // gap is the time the pid spent in user wasm code, the actual perf
+    // bottleneck when kernel-side handling itself is fast.
+    const sysprof = (globalThis as { __sysprof?: boolean }).__sysprof;
+    const sysprofStart = sysprof ? performance.now() : 0;
+    if (sysprof) {
+      type GapRow = { count: number; gapTotalMs: number; gapMaxMs: number };
+      const g = globalThis as { __sysprofGap?: Map<number, GapRow>; __sysprofLastSeen?: Map<number, number> };
+      if (!g.__sysprofGap) g.__sysprofGap = new Map();
+      if (!g.__sysprofLastSeen) g.__sysprofLastSeen = new Map();
+      const last = g.__sysprofLastSeen.get(channel.pid);
+      if (last !== undefined) {
+        const gap = sysprofStart - last;
+        let row = g.__sysprofGap.get(channel.pid);
+        if (!row) { row = { count: 0, gapTotalMs: 0, gapMaxMs: 0 }; g.__sysprofGap.set(channel.pid, row); }
+        row.count++;
+        row.gapTotalMs += gap;
+        if (gap > row.gapMaxMs) row.gapMaxMs = gap;
+      }
+      g.__sysprofLastSeen.set(channel.pid, sysprofStart);
+    }
     try {
       handleChannel(BigInt(this.scratchOffset), channel.pid);
     } catch (err) {
@@ -2002,6 +2027,21 @@ export class CentralizedKernelWorker {
       return;
     } finally {
       this.currentHandlePid = 0;
+      if (sysprof) {
+        const elapsed = performance.now() - sysprofStart;
+        type ProfRow = { count: number; totalMs: number; maxMs: number };
+        const g = globalThis as { __sysprofTable?: Map<string, ProfRow> };
+        if (!g.__sysprofTable) g.__sysprofTable = new Map();
+        const key = `${channel.pid}:${syscallNr}`;
+        let row = g.__sysprofTable.get(key);
+        if (!row) { row = { count: 0, totalMs: 0, maxMs: 0 }; g.__sysprofTable.set(key, row); }
+        row.count++;
+        row.totalMs += elapsed;
+        if (elapsed > row.maxMs) row.maxMs = elapsed;
+        if (elapsed > 50) {
+          console.warn(`[sysprof] slow pid=${channel.pid} nr=${syscallNr} ${elapsed.toFixed(1)}ms args=[${origArgs.join(',')}]`);
+        }
+      }
     }
 
     // Read return value and errno from kernel scratch
@@ -3070,8 +3110,21 @@ export class CentralizedKernelWorker {
       // use moderate fallback for cases where the targeted wake misses
       // (e.g., listener socket backlogs which lack pipe indices for
       // wakeBlockedPoll). Without pipe indices, use short retry.
+      // The intended wakeup path is event-driven:
+      // drainAndProcessWakeupEvents → scheduleWakeBlockedRetries
+      // (setImmediate) retries the poll when any of its watched pipes
+      // changes state. The timer is a fallback. Empirically the
+      // 200 ms safety net was sleeping past wakeups in the browser
+      // worker (WordPress install.php measured 28 s with 200 ms,
+      // 1.9 s with 10 ms — a 14× difference far in excess of what
+      // 5 fallback fires can explain, suggesting setImmediate-based
+      // broad wakes occasionally lose against the timer in the
+      // browser's MessageChannel polyfill). 10 ms matches the default
+      // for read-like / write-like blocking retries (lines ~3320,
+      // ~3827, ~3953). Listener-socket cases without pipe indices
+      // continue to use 50 ms.
       const retryMs = pipeIndices.length > 0
-        ? (deadline > 0 ? Math.min(deadline - Date.now(), 200) : 200)
+        ? (deadline > 0 ? Math.min(deadline - Date.now(), 10) : 10)
         : (deadline > 0 ? Math.min(deadline - Date.now(), 50) : 50);
       const timer = setTimeout(retryFn, Math.max(retryMs, 1));
       this.pendingPollRetries.set(channel.channelOffset, { timer, channel, pipeIndices, needsSignalSafeWake });

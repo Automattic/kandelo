@@ -14,6 +14,16 @@ import type { BrowserKernel } from "./browser-kernel";
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
+// Pipes returned by `kernel.injectConnection` live in the kernel's
+// global pipe table, not the target process's per-process pipes
+// (introduced in PR #383's shared accept queue). The pipe-API entry
+// points use `pid == 0` as the global-table sentinel; passing the
+// listener's pid would look in the wrong table and silently return
+// EBADF — handshake reads time out and the demo retries forever.
+// Mirror the host bridge in `kernel-worker-entry.ts handleHttpRequest`,
+// which already passes `pid=0` for the same reason.
+const GLOBAL_PIPE_PID = 0;
+
 interface MySqlColumn {
   name: string;
 }
@@ -118,8 +128,8 @@ export class MySqlBrowserClient {
    * Close the connection by closing both pipe ends.
    */
   close(): void {
-    this.kernel.pipeCloseWrite(this.pid, this.recvPipeIdx);
-    this.kernel.pipeCloseRead(this.pid, this.sendPipeIdx);
+    this.kernel.pipeCloseWrite(GLOBAL_PIPE_PID, this.recvPipeIdx);
+    this.kernel.pipeCloseRead(GLOBAL_PIPE_PID, this.sendPipeIdx);
   }
 
   // --- Protocol internals ---
@@ -217,7 +227,7 @@ export class MySqlBrowserClient {
     packet[3] = this.seqNum++;
     packet.set(payload, 4);
 
-    await this.kernel.pipeWrite(this.pid, this.recvPipeIdx, packet);
+    await this.kernel.pipeWrite(GLOBAL_PIPE_PID, this.recvPipeIdx, packet);
   }
 
   private async readPacket(): Promise<Uint8Array | null> {
@@ -253,11 +263,18 @@ export class MySqlBrowserClient {
   }
 
   private async readBytesFromPipe(): Promise<Uint8Array | null> {
-    // Poll the pipe for data with timeout (30s = 1500 × 20ms)
-    for (let i = 0; i < 1500; i++) {
-      const data = await this.kernel.pipeRead(this.pid, this.sendPipeIdx);
+    // Poll the pipe for data, yielding via setTimeout(0) so we re-enter
+    // the event loop *immediately* after each empty probe instead of
+    // waiting a full polling tick. The previous 20 ms tick added ~200
+    // ms of avoidable latency to every query (a trivial SELECT 1
+    // measured at 210 ms with the fixed 20 ms poll, dropping to single-
+    // digits with this change) — mariadbd typically answers in a few
+    // ms, but each empty probe pinned the answer behind setTimeout(20).
+    // Cap kept at ~30 s real-time via a generous iteration limit.
+    for (let i = 0; i < 30000; i++) {
+      const data = await this.kernel.pipeRead(GLOBAL_PIPE_PID, this.sendPipeIdx);
       if (data && data.length > 0) return data;
-      await new Promise((r) => setTimeout(r, 20));
+      await new Promise((r) => setTimeout(r, 0));
     }
     return null;
   }

@@ -107,19 +107,39 @@ Centralized kernel mode only. One kernel Wasm instance serves all process worker
 
 See [docs/architecture.md](docs/architecture.md) for full architecture details.
 
-## Two hosts: Browser AND Node.js
+## Two hosts: Browser AND Node.js — DUAL-HOST PARITY IS LOAD-BEARING
 
-This project supports **two host runtimes**: Node.js (`host/src/node-kernel-host.ts`, `host/src/node-kernel-worker-entry.ts`, `host/src/worker-adapter.ts`) and Browser (`host/src/browser.ts`, `host/src/worker-adapter-browser.ts`, `host/src/worker-entry-browser.ts`, plus `examples/browser/lib/browser-kernel.ts`).
+**Node.js and the Browser host are equals.** Neither is a primary; neither is a follower. Every fix, feature, and refactor that touches host-runtime behavior MUST land on both — in the **same PR**, not in a follow-up. A "we'll do the browser side later" PR is the bug. PRs that merge a one-sided fix have repeatedly broken production demos for users:
 
-**Every bug fix and feature must be considered for both hosts.** A fix wired only into the Node path leaves the browser broken — the brk-base fix (PR #388) shipped this exact regression because the spawn/exec call sites on the browser side were missed during review.
+- **PR #388 (brk-base fix)** wired Node-only; browser spawn/exec call sites missed → mariadbd hang in the browser demo. Cleanup landed in PR #397 *weeks later*.
+- **PR #410 (a_crash trap + worker exit message)** wired Node-only; browser host had no `{type:"exit"}` message handling on `handleSpawn`/`handleFork` and **no message listener at all on `handleExec`** → silent worker crashes during WordPress LAMP install hung the user's demo with no error indication.
 
-When changing host code:
-- Search both: `grep -rn "<symbol>" host/ examples/browser/`. If the Node path has it, the browser path almost certainly needs it too.
-- The two hosts share `host/src/kernel-worker.ts` (the `CentralizedKernelWorker` class) and `host/src/worker-main.ts` (the process-worker entry). Changes there are cross-cutting — verify both code paths still work.
-- Spawn / fork / exec / clone all have parallel implementations in the Node and Browser host adapters. If you touch one, audit the other.
-- Tests should cover both: vitest tests with `runCentralizedProgram` exercise the Node path; browser-host tests live under `host/test/browser-worker-adapter.test.ts` and `examples/browser/test/`. A Node-only regression test does not protect the browser path.
+These are not edge cases. They are the same failure mode repeated. The cost lands on users running `./run.sh browser`, who see a frozen demo with no error in console.
 
-When reviewing a change, ask explicitly: *what does this look like on the browser host?* If the answer isn't immediately obvious, the change is incomplete.
+### Hard requirements when touching host code
+
+A change is incomplete unless ALL of these hold:
+
+1. **Symmetry check first.** Before writing any host-side change, run `grep -rn "<symbol>" host/ examples/browser/` for every callsite of the affected function. Both trees should show parallel structure; if one is missing handlers the other has, that's the change.
+2. **Both PRs of the wiring land in the same commit.** Don't merge a host-side change with a TODO/follow-up note for the other side. The follow-up will be lost — see PR #388/#397 above.
+3. **Tests cover both paths.** A vitest test (Node) does not protect the browser path. Add a browser test under `host/test/*.spec.ts` (Playwright) or `examples/browser/test/`, OR — at minimum — manually verify the affected demo via `./run.sh browser` per the [Test Verification](#test-verification) checklist (item 6: browser demo verification).
+4. **PR description names both hosts.** The reviewer should not have to ask "what about the browser?" — the answer should be in the PR body, with the diff to prove it. If the answer is "browser doesn't need this," the PR must explain *why* (e.g., "browser uses a different mechanism that already handles this case, see X").
+
+### Where the parallel implementations live
+
+| Concern | Node.js | Browser |
+|---|---|---|
+| Host entry | `host/src/node-kernel-host.ts` | `examples/browser/lib/browser-kernel.ts` |
+| Worker entry / spawn / fork / exec / clone / exit / terminate | `host/src/node-kernel-worker-entry.ts` | `examples/browser/lib/kernel-worker-entry.ts` |
+| Worker adapter | `host/src/worker-adapter.ts` | `host/src/worker-adapter-browser.ts` |
+| Process-worker entry | shared: `host/src/worker-main.ts` |
+| Kernel | shared: `host/src/kernel-worker.ts` (`CentralizedKernelWorker`) |
+
+`host/src/kernel-worker.ts` and `host/src/worker-main.ts` are shared and cross-cutting — verify both runtimes still work after changes there.
+
+### Reviewer prompt
+
+When reviewing a change touching any of the files above, ask explicitly: ***"What does this look like on the OTHER host?"*** If the answer isn't an obvious diff hunk in the same PR, request changes. Reviewers should treat a one-sided host change as an incomplete PR, not a "ship and follow up."
 
 ## Performance: Do NOT Micro-Optimize the Syscall Hot Path
 

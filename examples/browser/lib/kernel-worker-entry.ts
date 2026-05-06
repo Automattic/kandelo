@@ -106,6 +106,15 @@ interface ProcessInfo {
 const processes = new Map<number, ProcessInfo>();
 
 /**
+ * Workers we deliberately terminated — exec, exit, top-level destroy. The
+ * synthesized "exit" event from {@link BrowserWorkerHandle} fires on
+ * `worker.terminate()` indistinguishably from an unexpected death; this
+ * WeakSet lets the crash detector skip the deliberate cases. Mirrors the
+ * `intentionallyTerminated` set on the Node host (PR #410).
+ */
+const intentionallyTerminated = new WeakSet<object>();
+
+/**
  * Create shared memory sized for a wasm32 or wasm64 process. wasm64 modules
  * import memory with `address: 'i64'`; instantiation fails with a LinkError
  * if the shared memory was allocated as i32.
@@ -395,22 +404,90 @@ function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>) {
     const worker = workerAdapter.createWorker(initData);
     processes.set(pid, { memory, programBytes, worker, channelOffset, ptrWidth });
 
-    worker.on("error", (err: Error) => {
-      console.error(`[kernel-worker] Worker error pid=${pid}:`, err.message);
-      handleExit(pid, 127);
-    });
-    worker.on("message", (msg: unknown) => {
-      const m = msg as { type?: string; message?: string; pid?: number };
-      if (m.type === "error") {
-        console.error(`[kernel-worker] Process error pid=${pid}:`, m.message);
-        handleExit(pid, 127);
-      }
-    });
+    installProcessWorkerListeners(worker, pid);
 
     respond(msg.requestId, pid);
   } catch (e) {
     respondError(msg.requestId, String(e));
   }
+}
+
+/**
+ * Wire the four ways a process worker can die so the kernel's view of
+ * the process matches reality: worker-level uncaught error, worker-main
+ * `{type:"error"}` (instantiation/init failure), worker-main
+ * `{type:"exit"}` (_start returned without SYS_exit_group, or an
+ * "unreachable" trap that worker-main treated as a normal exit), and
+ * the synthesized "exit" event from {@link BrowserWorkerHandle} when
+ * `worker.onerror` fires or `terminate()` is called externally.
+ *
+ * Without this, a wasm trap inside a process would post `{type:"exit"}`
+ * to the main thread, but the kernel would still see the process as
+ * alive — any `waitpid()` in the parent (e.g. dinit waiting on a child,
+ * php-fpm master waiting on a worker) would block forever, and the
+ * whole demo appears hung.
+ *
+ * Mirrors the wiring on the Node side (`installCrashSafetyNet` +
+ * per-handler "error"/"exit" message routing in
+ * `host/src/node-kernel-worker-entry.ts`, PR #410).
+ */
+function installProcessWorkerListeners(
+  worker: ReturnType<BrowserWorkerAdapter["createWorker"]>,
+  pid: number,
+): void {
+  let exited = false;
+  const finalize = (status: number, source: string) => {
+    if (exited) return;
+    exited = true;
+    if (processes.get(pid)?.worker !== worker) return; // already replaced (e.g. by exec)
+    console.warn(`[kernel-worker] pid=${pid} ${source} → forcing exit ${status}`);
+    handleExit(pid, status);
+  };
+
+  // Status conventions match the Node host (PR #410):
+  //   139 = 128 + SIGSEGV (11) — uncaught wasm trap, worker died without
+  //         a SYS_exit_group. Matches a Linux child killed by SIGSEGV.
+  //   -1  — worker-main caught an instantiation/init error and posted
+  //         {type:"error"}. Same convention as Node-side handleSpawn.
+  //   m.status — worker-main posted {type:"exit"}, normal exit path.
+  worker.on("error", (err: Error) => {
+    if (intentionallyTerminated.has(worker as object)) return;
+    console.error(`[kernel-worker] Worker error pid=${pid}:`, err.message);
+    finalize(128 + 11, "worker.onerror");
+  });
+  worker.on("exit", (code: number) => {
+    // BrowserWorkerHandle synthesizes an "exit" event when the underlying
+    // Worker dies via onerror or external terminate(). worker-main itself
+    // never triggers this — it posts {type:"exit"} via postMessage instead.
+    // Skip the synthesized event when we're the ones terminating (exec,
+    // explicit exit/destroy/terminate_process); otherwise we'd tear down
+    // kernel state for a process that's still alive in a new wasm worker.
+    if (intentionallyTerminated.has(worker as object)) return;
+    // BrowserWorkerHandle synthesizes code=1 from onerror; we already
+    // finalized via the "error" handler above, so this is a no-op there.
+    // If "exit" fires without a prior "error" (worker died via some path
+    // we don't yet model), still treat it as a crash.
+    finalize(128 + 11, "worker exit event");
+  });
+  worker.on("message", (msg: unknown) => {
+    const m = msg as { type?: string; message?: string; pid?: number; status?: number };
+    if (m.type === "error") {
+      console.error(`[kernel-worker] Process error pid=${pid}:`, m.message);
+      // Forward to host stderr so the demo log shows the actual failure
+      // ("Centralized worker failed: …" with the wasm trap or
+      // instantiation error). Without this, a process death in the
+      // browser is invisible to the user — only console.error in the
+      // kernel-worker scope, which most users don't open. Mirrors the
+      // Node-side handleSpawn message-listener stderr forwarding.
+      const errBytes = new TextEncoder().encode(
+        `[process-worker] ${m.message ?? "unknown error"}\n`,
+      );
+      post({ type: "stderr", pid, data: errBytes });
+      finalize(-1, "worker-main error message");
+    } else if (m.type === "exit") {
+      finalize(m.status ?? 0, "worker-main exit message");
+    }
+  });
 }
 
 // ── Process lifecycle callbacks ──
@@ -477,22 +554,6 @@ async function handleFork(
   };
 
   const childWorker = workerAdapter.createWorker(childInitData);
-  childWorker.on("message", (msg: unknown) => {
-    const m = msg as { type?: string; pid?: number; status?: number; message?: string };
-    if (m?.type === "exit") {
-      kernelWorker.unregisterProcess(childPid);
-      processes.delete(childPid);
-    } else if (m?.type === "error") {
-      console.error(`[kernel-worker] fork child=${childPid} error: ${m.message}`);
-      kernelWorker.unregisterProcess(childPid);
-      processes.delete(childPid);
-    }
-  });
-  childWorker.on("error", (err: Error) => {
-    console.error(`[kernel-worker] fork child=${childPid} worker error:`, err);
-    kernelWorker.unregisterProcess(childPid);
-    processes.delete(childPid);
-  });
 
   processes.set(childPid, {
     memory: childMemory,
@@ -502,6 +563,8 @@ async function handleFork(
     channelOffset: childChannelOffset,
     ptrWidth,
   });
+
+  installProcessWorkerListeners(childWorker, childPid);
 
   return [childChannelOffset];
 }
@@ -525,12 +588,24 @@ async function handleExec(
 
   kernelWorker.prepareProcessForExec(pid);
 
-  // Terminate old worker
+  // Terminate old worker. Mark it as intentionally terminated *before*
+  // calling terminate(): the synthesized "exit" event from
+  // BrowserWorkerHandle would otherwise fire installProcessWorkerListeners'
+  // crash detector and tear down the kernel's view of the still-alive
+  // (post-exec) process.
   const oldInfo = processes.get(pid);
   if (oldInfo?.worker) {
+    intentionallyTerminated.add(oldInfo.worker as object);
     await oldInfo.worker.terminate().catch(() => {});
   }
 
+  // DIAGNOSTIC: track pid → exec path so the sysprof dump can name
+  // each pid (otherwise the table is just opaque numbers).
+  {
+    const g = globalThis as { __pidMap?: Map<number, string> };
+    if (!g.__pidMap) g.__pidMap = new Map();
+    g.__pidMap.set(pid, path);
+  }
   // Create fresh memory sized for the new binary's arch (exec across
   // wasm32↔wasm64 replaces the process image — memory type must match).
   const ptrWidth = detectPtrWidth(bytes);
@@ -565,9 +640,6 @@ async function handleExec(
   };
 
   const newWorker = workerAdapter.createWorker(execInitData);
-  newWorker.on("error", (err: Error) => {
-    console.error(`[kernel-worker] exec worker error pid=${pid}:`, err.message);
-  });
 
   // Clear cached thread module — the new program binary is different
   threadModuleCache.delete(pid);
@@ -579,6 +651,13 @@ async function handleExec(
     channelOffset: newChannelOffset,
     ptrWidth,
   });
+
+  // Wire post-exec error/exit handling. The handleFork listener (on the
+  // pre-exec worker) is gone with the terminated worker; without re-arming
+  // here, a wasm trap in the exec'd binary (php-fpm child handling a slow
+  // request, sed inside wp-config-init, etc.) leaves the kernel believing
+  // the process is alive and the parent's waitpid blocks forever.
+  installProcessWorkerListeners(newWorker, pid);
 
   return 0;
 }
@@ -646,11 +725,25 @@ async function handleClone(
   threadWorker.on("message", (msg: unknown) => {
     const m = msg as WorkerToHostMessage;
     if (m.type === "thread_exit") {
+      intentionallyTerminated.add(threadWorker as object);
+      threadWorker.terminate().catch(() => {});
+      reclaimThread();
+    } else if ((m as { type?: string }).type === "error") {
+      // worker-main posted {type:"error"} — instantiation failure, top-level
+      // throw, etc. Without this the parent's pthread_join blocks forever.
+      console.error(
+        `[kernel-worker] thread error pid=${pid} tid=${tid}:`,
+        (m as { message?: string }).message,
+      );
+      kernelWorker.notifyThreadExit(pid, tid);
+      kernelWorker.removeChannel(pid, alloc.channelOffset);
+      intentionallyTerminated.add(threadWorker as object);
       threadWorker.terminate().catch(() => {});
       reclaimThread();
     }
   });
-  threadWorker.on("error", () => {
+  threadWorker.on("error", (err: Error) => {
+    console.error(`[kernel-worker] thread worker error pid=${pid} tid=${tid}:`, err.message);
     kernelWorker.notifyThreadExit(pid, tid);
     kernelWorker.removeChannel(pid, alloc.channelOffset);
     reclaimThread();
@@ -667,8 +760,24 @@ function handleExit(pid: number, exitStatus: number): void {
   kernelWorker.deactivateProcess(pid);
 
   if (info?.worker) {
+    intentionallyTerminated.add(info.worker as object);
     info.worker.terminate().catch(() => {});
   }
+
+  // Terminate any surviving thread workers for this process; the main
+  // process worker exiting means their shared state (memory, fd table,
+  // signal mask) is gone. Mirrors handleExit in Node-side
+  // node-kernel-worker-entry.ts; without this, threads of an exited
+  // process leak Web Workers indefinitely.
+  const threads = threadWorkers.get(pid);
+  if (threads) {
+    for (const t of threads) {
+      intentionallyTerminated.add(t.worker as object);
+      t.worker.terminate().catch(() => {});
+    }
+    threadWorkers.delete(pid);
+  }
+
   processes.delete(pid);
   threadModuleCache.delete(pid);
   ptyByPid.delete(pid);
@@ -686,6 +795,7 @@ async function handleTerminateProcess(msg: Extract<MainToKernelMessage, { type: 
   const threads = threadWorkers.get(pid);
   if (threads) {
     for (const t of threads) {
+      intentionallyTerminated.add(t.worker as object);
       await t.worker.terminate().catch(() => {});
       try {
         kernelWorker.notifyThreadExit(pid, t.tid);
@@ -698,6 +808,7 @@ async function handleTerminateProcess(msg: Extract<MainToKernelMessage, { type: 
   // Terminate main process worker
   const info = processes.get(pid);
   if (info?.worker) {
+    intentionallyTerminated.add(info.worker as object);
     await info.worker.terminate().catch(() => {});
   }
 
@@ -753,7 +864,7 @@ function handlePipeWrite(msg: Extract<MainToKernelMessage, { type: "pipe_write" 
     if (n <= 0) break;
     written += n;
   }
-  // After writing, wake any blocked readers on this pipe
+  // After writing, wake any blocked readers on this pipe.
   const kw = kernelWorker as any;
   const readers = kw.pendingPipeReaders?.get(msg.pipeIdx);
   if (readers && readers.length > 0) {
@@ -762,6 +873,25 @@ function handlePipeWrite(msg: Extract<MainToKernelMessage, { type: "pipe_write" 
       if (kw.processes.has(reader.pid)) {
         kw.retrySyscall(reader.channel);
       }
+    }
+  }
+  // Targeted wake for poll/pselect6 watchers on this pipe — mirrors the
+  // Node-side TCP bridge's `wakeBlockedPoll(pid, recvPipeIdx)` call (in
+  // `host/src/kernel-worker.ts handleIncomingTcpConnection`). Without
+  // this, mariadbd's poll on the connection fd only wakes via
+  // handleBlockingRetry's 200 ms fallback timer (kernel-worker.ts line
+  // 3114) — turning every page-side MySQL query into a 200 ms ping-pong
+  // (measured: SELECT 1 = 210 ms on the broad-wake path, ~12 ms with
+  // this targeted wake). The Node TCP bridge calls wakeBlockedPoll
+  // directly; the browser bridge had only the broader scheduleWake
+  // (which fires via setImmediate but doesn't cancel the 200 ms timer
+  // installed by handleBlockingRetry).
+  if (kw.pendingPollRetries) {
+    for (const [key, entry] of kw.pendingPollRetries as Map<number, { timer: ReturnType<typeof setTimeout> | null; channel: { pid: number; channelOffset: number }; pipeIndices: number[] }>) {
+      if (!entry.pipeIndices.includes(msg.pipeIdx)) continue;
+      if (entry.timer !== null) clearTimeout(entry.timer);
+      kw.pendingPollRetries.delete(key);
+      if (kw.processes.has(entry.channel.pid)) kw.retrySyscall(entry.channel);
     }
   }
   kw.scheduleWakeBlockedRetries();
@@ -842,13 +972,27 @@ function handlePickListenerTarget(msg: Extract<MainToKernelMessage, { type: "pic
 }
 
 function handleDestroy(msg: Extract<MainToKernelMessage, { type: "destroy" }>) {
-  // Terminate all process workers
+  // Terminate all process + thread workers, then clear every per-pid
+  // map. Mirrors handleDestroy in node-kernel-worker-entry.ts —
+  // without the threadWorkers / ptyByPid clears, those maps stay
+  // populated across kernel rebuilds (e.g. iframe reload) and leak.
   for (const [pid, info] of processes) {
-    if (info.worker) info.worker.terminate().catch(() => {});
+    if (info.worker) {
+      intentionallyTerminated.add(info.worker as object);
+      info.worker.terminate().catch(() => {});
+    }
     try { kernelWorker.unregisterProcess(pid); } catch {}
+  }
+  for (const threads of threadWorkers.values()) {
+    for (const t of threads) {
+      intentionallyTerminated.add(t.worker as object);
+      t.worker.terminate().catch(() => {});
+    }
   }
   processes.clear();
   threadModuleCache.clear();
+  threadWorkers.clear();
+  ptyByPid.clear();
   respond(msg.requestId, true);
 }
 
@@ -1043,7 +1187,13 @@ function buildRawHttpRequest(request: any): Uint8Array {
   return result;
 }
 
-const HTTP_PUMP_TIMEOUT_MS = 60_000;
+// 5 min: WordPress install on the LAMP stack does a long sequence of
+// CREATE TABLE + INSERT against MariaDB inside the same wasm process —
+// 60s wasn't enough for the request to complete on slower hardware.
+// The bridge needs to outlive any single request the demo can make,
+// otherwise the iframe shows a blank 504 even though the kernel is
+// still happily processing the request.
+const HTTP_PUMP_TIMEOUT_MS = 300_000;
 
 function pumpResponse(
   requestId: number,
@@ -1255,7 +1405,41 @@ sw.onmessage = (e: MessageEvent) => {
     default: {
       // Handle non-protocol messages (e.g., bridge port transfer)
       const raw = e.data as any;
-      if (raw?.type === "set_bridge_port" && raw.bridgePort) {
+      if (raw?.type === "sysprof_start") {
+        (globalThis as { __sysprof?: boolean }).__sysprof = true;
+        (globalThis as { __sysprofTable?: Map<string, unknown> }).__sysprofTable = new Map();
+        (globalThis as { __sysprofStartedAt?: number }).__sysprofStartedAt = performance.now();
+        post({ type: "stdout", pid: 0, data: new TextEncoder().encode("[sysprof] started\n") });
+      } else if (raw?.type === "pid_map_dump") {
+        const m = (globalThis as { __pidMap?: Map<number, string> }).__pidMap;
+        const out = ["[pid-map] (pid → exec'd path)\n"];
+        if (m) for (const [pid, p] of [...m.entries()].sort((a, b) => a[0] - b[0])) out.push(`  pid=${pid} ${p}\n`);
+        post({ type: "stdout", pid: 0, data: new TextEncoder().encode(out.join("")) });
+      } else if (raw?.type === "sysprof_dump") {
+        const table = (globalThis as { __sysprofTable?: Map<string, { count: number; totalMs: number; maxMs: number }> }).__sysprofTable;
+        const gapTable = (globalThis as { __sysprofGap?: Map<number, { count: number; gapTotalMs: number; gapMaxMs: number }> }).__sysprofGap;
+        const startedAt = (globalThis as { __sysprofStartedAt?: number }).__sysprofStartedAt ?? 0;
+        const elapsed = performance.now() - startedAt;
+        const rows = table ? [...table.entries()].map(([k, v]) => ({ key: k, ...v })) : [];
+        rows.sort((a, b) => b.totalMs - a.totalMs);
+        let out = `[sysprof] ${elapsed.toFixed(0)}ms total, top syscalls by kernel-side time:\n`;
+        for (const r of rows.slice(0, 20)) {
+          const [pid, nr] = r.key.split(":");
+          out += `  pid=${pid} nr=${nr} count=${r.count} total=${r.totalMs.toFixed(0)}ms max=${r.maxMs.toFixed(1)}ms avg=${(r.totalMs / r.count).toFixed(2)}ms\n`;
+        }
+        // Wall-clock gaps tell us which pid's *user wasm code* is the
+        // actual bottleneck — kernel handling itself has been ~negligible.
+        if (gapTable) {
+          const gapRows = [...gapTable.entries()].map(([pid, v]) => ({ pid, ...v }));
+          gapRows.sort((a, b) => b.gapTotalMs - a.gapTotalMs);
+          out += `[sysprof] gap-between-syscalls per pid (= time spent in user wasm):\n`;
+          for (const r of gapRows.slice(0, 15)) {
+            out += `  pid=${r.pid} gaps=${r.count} total=${r.gapTotalMs.toFixed(0)}ms max=${r.gapMaxMs.toFixed(1)}ms avg=${(r.gapTotalMs / r.count).toFixed(2)}ms\n`;
+          }
+        }
+        post({ type: "stdout", pid: 0, data: new TextEncoder().encode(out) });
+        (globalThis as { __sysprof?: boolean }).__sysprof = false;
+      } else if (raw?.type === "set_bridge_port" && raw.bridgePort) {
         bridgePort = raw.bridgePort;
         if (typeof raw.httpPort === "number") {
           bridgeTargetPort = raw.httpPort;

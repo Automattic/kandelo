@@ -134,6 +134,17 @@ http {
     }
     default_type application/octet-stream;
 
+    # WordPress install.php on this stack legitimately runs longer than
+    # nginx's 60s default (bcrypt + ~100 SQL round-trips against the
+    # wasm-emulated MariaDB → mysql client → kernel-pipe loopback —
+    # each round-trip is several ms even on a warm cache). Without the
+    # bump, the user sees a 504 Gateway Time-out from nginx and the
+    # demo appears hung. 600s is generous; the request itself takes
+    # tens of seconds at most on real hardware.
+    fastcgi_read_timeout 600;
+    fastcgi_send_timeout 600;
+    proxy_read_timeout 600;
+
     server {
         listen 8080;
         server_name localhost;
@@ -227,17 +238,34 @@ include $docRoot . '/index.php';
 }
 
 const MARIADB_BOOTSTRAP_SCRIPT = `# mariadbd --bootstrap doesn't exit at stdin EOF in our wasm port.
-# Background it, sleep long enough for the SQL to drain (data files
-# written synchronously while mariadbd reads stdin), then kill it.
-# **No \`wait\`** — dinit (PID 1) reaps orphans and races with dash's
-# wait builtin, which then blocks. Letting dinit reap is fine.
+# Background it, watch for the canonical "bootstrap done" marker (the
+# \`wordpress\` database directory created by the LAST statement in
+# bootstrap.sql), then kill mariadbd. Falls back to a 60s safety cap
+# if the marker never lands. **No \`wait\`** — dinit (PID 1) reaps
+# orphans and races with dash's wait builtin, which then blocks.
+# Letting dinit reap is fine.
+#
+# Polling the marker shaves ~30-50s off boot vs the previous fixed
+# 60s sleep — that sleep was the dominant boot-time cost, since the
+# rest of dinit's chain runs concurrently with bootstrap.
 /usr/sbin/mariadbd --no-defaults --user=mysql --datadir=/data --tmpdir=/data/tmp \\
     --default-storage-engine=Aria --skip-grant-tables \\
     --key-buffer-size=1048576 --table-open-cache=10 --sort-buffer-size=262144 \\
     --bootstrap --skip-networking --log-warnings=0 \\
     --log-error=/data/bootstrap.log < /etc/mariadb/bootstrap.sql &
 PID=$!
-sleep 60
+i=0
+while [ $i -lt 60 ]; do
+    if [ -d /data/wordpress ]; then
+        # Marker present — give mariadbd a moment to flush its writes,
+        # then tear it down. The persistent mariadb daemon will start
+        # fresh on the populated /data and serve normal requests.
+        sleep 1
+        break
+    fi
+    sleep 1
+    i=$((i + 1))
+done
 kill -TERM $PID 2>/dev/null
 sleep 1
 kill -KILL $PID 2>/dev/null
