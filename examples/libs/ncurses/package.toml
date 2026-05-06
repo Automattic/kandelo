@@ -22,6 +22,10 @@ sha256 = "136d91bc269a9a5785e5f9e980bc76ab57428f604ce3e5a5a90cebc767971cc6"
 spdx = "X11"
 url = "https://invisible-island.net/ncurses/ncurses-license.html"
 
+[build]
+script_path = "examples/libs/ncurses/build-ncurses.sh"
+repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+
 [outputs]
 # Wide variants are the ones we actually build (--enable-widec). Non-wide
 # names (libncurses.a, libtinfo.a) are provided as symlinks for consumers

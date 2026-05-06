@@ -12,6 +12,10 @@ sha256 = "7454eb6935db17c6655576c2e1b0fabefd38b4d0936e0f87f48cd062ce91a057"
 spdx = "GPL-3.0-or-later"
 url = "https://git.savannah.gnu.org/cgit/gzip.git/tree/COPYING"
 
+[build]
+script_path = "examples/libs/gzip/build-gzip.sh"
+repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+
 [[outputs]]
 name = "gzip"
 wasm = "gzip.wasm"

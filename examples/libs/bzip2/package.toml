@@ -12,6 +12,10 @@ sha256 = "ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269"
 spdx = "bzip2-1.0.6"
 url = "https://gitlab.com/bzip2/bzip2/-/blob/master/LICENSE"
 
+[build]
+script_path = "examples/libs/bzip2/build-bzip2.sh"
+repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+
 [[outputs]]
 name = "bzip2"
 wasm = "bzip2.wasm"

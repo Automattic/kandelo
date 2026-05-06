@@ -19,8 +19,9 @@ sha256 = "9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23"
 spdx = "Zlib"
 url = "https://github.com/madler/zlib/blob/v1.3.1/LICENSE"
 
-# `build.script` defaults to `build-<name>.sh` in this directory,
-# so we don't need a [build] section here.
+[build]
+script_path = "examples/libs/zlib/build-zlib.sh"
+repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 [outputs]
 libs = ["lib/libz.a"]

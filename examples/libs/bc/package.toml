@@ -12,6 +12,10 @@ sha256 = "62adfca89b0a1c0164c2cdca59ca210c1d44c3ffc46daf9931cf4942664cb02a"
 spdx = "GPL-3.0-or-later"
 url = "https://git.savannah.gnu.org/cgit/bc.git/tree/COPYING"
 
+[build]
+script_path = "examples/libs/bc/build-bc.sh"
+repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+
 [[outputs]]
 name = "bc"
 wasm = "bc.wasm"

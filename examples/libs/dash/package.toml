@@ -12,6 +12,10 @@ sha256 = "6a474ac46e8b0b32916c4c60df694c82058d3297d8b385b74508030ca4a8f28a"
 spdx = "BSD-3-Clause AND GPL-2.0-or-later"
 url = "https://git.kernel.org/pub/scm/utils/dash/dash.git/tree/COPYING"
 
+[build]
+script_path = "examples/libs/dash/build-dash.sh"
+repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+
 [[outputs]]
 name = "dash"
 wasm = "dash.wasm"

@@ -12,6 +12,10 @@ sha256 = "053ce8cdc632a6484f6a1416524fb66b614cd13e77366ad2722bc205d53eff95"
 spdx = "TCL"
 url = "https://www.tcl.tk/software/tcltk/license.html"
 
+[build]
+script_path = "examples/libs/tcl/build-tcl.sh"
+repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+
 [[outputs]]
 name = "tcl"
 wasm = "tclsh.wasm"

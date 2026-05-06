@@ -12,6 +12,10 @@ sha256 = "4d62ff37342ec7aed748535323930c7cf94acf71c3591882b26a7ea50f3edc16"
 spdx = "GPL-3.0-or-later"
 url = "https://git.savannah.gnu.org/cgit/tar.git/tree/COPYING"
 
+[build]
+script_path = "examples/libs/tar/build-tar.sh"
+repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+
 [[outputs]]
 name = "tar"
 wasm = "tar.wasm"

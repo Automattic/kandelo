@@ -12,6 +12,10 @@ sha256 = "4c155b4e6160682b38919b55ac319081b898db11857cf18a7d9ffed2648ccaff"
 spdx = "Artistic-1.0-Perl OR GPL-1.0-or-later"
 url = "https://dev.perl.org/licenses/"
 
+[build]
+script_path = "examples/libs/perl/build-perl.sh"
+repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+
 [[outputs]]
 name = "perl"
 wasm = "perl.wasm"

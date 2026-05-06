@@ -12,6 +12,10 @@ sha256 = "90e5e93cc724e4ebe12ede80df1634063c7a855692685919bfe60b556c9bd09e"
 spdx = "GPL-3.0-or-later"
 url = "https://git.savannah.gnu.org/cgit/diffutils.git/tree/COPYING"
 
+[build]
+script_path = "examples/libs/diffutils/build-diffutils.sh"
+repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+
 [[outputs]]
 name = "diff"
 wasm = "diff.wasm"

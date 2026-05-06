@@ -23,6 +23,10 @@ sha256 = "c7ca7db48b0909743eaef34250da02c19bc61d4f1dcedd6603f109409536ab56"
 spdx = "curl"
 url = "https://github.com/curl/curl/blob/master/COPYING"
 
+[build]
+script_path = "examples/libs/curl/build-curl.sh"
+repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+
 [[outputs]]
 name = "curl"
 wasm = "curl.wasm"
