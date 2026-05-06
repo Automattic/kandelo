@@ -1038,25 +1038,30 @@ impl DepsManifest {
         })
     }
 
-    /// Absolute path to the build script. Default is `build-<name>.sh`
-    /// in the same directory as this `package.toml`.
+    /// Absolute path to the build script.
     ///
-    /// NOTE: Phase A-bis Task 1 introduces `[build].script_path` with
-    /// repo-relative semantics (replacing the old package-dir-relative
-    /// `[build].script`). The repo-relative resolution is wired in
-    /// Task 2; until then, this method reads the new field but still
-    /// joins against `self.dir`, which is correct for the default
-    /// (basename-only) case but wrong for an explicit
-    /// `script_path` override. Source `package.toml` files do not yet
-    /// set `script_path` (Task 3 backfills them), so this is currently
-    /// dead-code in the override branch.
-    pub fn build_script_path(&self) -> PathBuf {
-        let script = self
-            .build
-            .script_path
-            .clone()
-            .unwrap_or_else(|| format!("build-{}.sh", self.name));
-        self.dir.join(script)
+    /// Resolution rules (Phase A-bis Task 2):
+    /// - When `[build].script_path` is set, it is **repo-root-relative**:
+    ///   the returned path is `<repo_root>/<script_path>`. This decouples
+    ///   the build-script location from the `package.toml` location, so
+    ///   a single shared script can be referenced by multiple packages.
+    /// - When `[build].script_path` is absent, the convention
+    ///   `build-<name>.sh` is resolved against this manifest's own
+    ///   directory (`self.dir`). For first-party packages, where
+    ///   `self.dir == <repo_root>/examples/libs/<name>`, that resolves
+    ///   to the same absolute path either way; keeping the fallback
+    ///   anchored at `self.dir` is what lets tests use bespoke layouts
+    ///   (`<tmpdir>/<name>/build-<name>.sh`) without an extra
+    ///   `examples/libs/` prefix.
+    ///
+    /// `repo_root` should be the repo / workspace root (typically
+    /// `crate::repo_root()`). It is consulted only when an explicit
+    /// `script_path` is set; the fallback ignores it.
+    pub fn build_script_path(&self, repo_root: &Path) -> PathBuf {
+        match self.build.script_path.as_deref() {
+            Some(rel) => repo_root.join(rel),
+            None => self.dir.join(format!("build-{}.sh", self.name)),
+        }
     }
 
     /// `"<name>@<version>"` — the form used in `depends_on` strings.
@@ -1097,25 +1102,33 @@ headers = ["include/zlib.h"]
         assert!(m.depends_on.is_empty());
         assert_eq!(m.outputs.libs, vec!["lib/libz.a"]);
         assert_eq!(m.spec(), "zlib@1.3.1");
+        // Fallback (no [build].script_path) resolves against self.dir,
+        // so the repo_root argument is irrelevant.
         assert_eq!(
-            m.build_script_path(),
+            m.build_script_path(Path::new("/repo")),
             PathBuf::from("/x/build-zlib.sh")
         );
     }
 
     #[test]
-    fn build_script_override_is_respected() {
-        // Append a [build] section at the end; the example doesn't have one.
-        // Note: Phase A-bis Task 1 renames `script` → `script_path`. The
-        // repo-relative resolution is wired in Task 2; for now
-        // `build_script_path` still joins against `self.dir`, so the
-        // fixture uses a basename to keep the assertion meaningful.
-        let text =
-            format!("{EXAMPLE}\n[build]\nscript_path = \"custom-build.sh\"\n");
+    fn build_script_override_is_repo_root_relative() {
+        // Phase A-bis Task 2: an explicit `[build].script_path` is
+        // resolved against the repo root, NOT the package's own
+        // directory. This decouples script location from manifest
+        // location.
+        let text = format!(
+            "{EXAMPLE}\n[build]\n\
+             script_path = \"examples/libs/zlib/build-zlib.sh\"\n"
+        );
         let m = DepsManifest::parse(&text, PathBuf::from("/x")).unwrap();
         assert_eq!(
-            m.build_script_path(),
-            PathBuf::from("/x/custom-build.sh")
+            m.build_script_path(Path::new("/repo")),
+            PathBuf::from("/repo/examples/libs/zlib/build-zlib.sh")
+        );
+        // self.dir is ignored for the override branch.
+        assert_eq!(
+            m.build_script_path(Path::new("/other-root")),
+            PathBuf::from("/other-root/examples/libs/zlib/build-zlib.sh")
         );
     }
 

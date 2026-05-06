@@ -192,12 +192,11 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         // produce a buildable archive. Silently skip rather than
         // emitting a noisy WARN per arch.
         if matches!(m.kind, ManifestKind::Program) {
-            let script_name = m
-                .build
-                .script_path
-                .clone()
-                .unwrap_or_else(|| format!("build-{}.sh", m.name));
-            let script_path = m.dir.join(&script_name);
+            // Phase A-bis Task 2: `script_path`, when set, resolves
+            // against the repo root; the convention fallback resolves
+            // against the package's own directory. Delegate to
+            // `build_script_path()` so the rules stay in one place.
+            let script_path = m.build_script_path(&repo_root());
             if !script_path.is_file() {
                 eprintln!(
                     "skip {} (metadata-only manifest, no build script)",
@@ -386,6 +385,7 @@ pub(crate) fn stage_one(
         cache_root,
         local_libs: None,
         force_source_build,
+        repo_root: None,
     };
     let cache_path = build_deps::ensure_built(m, registry, arch, abi, &resolve_opts)
         .map_err(|e| format!("ensure_built: {e}"))?;
