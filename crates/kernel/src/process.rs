@@ -326,6 +326,11 @@ pub struct Process {
     /// Live mmap of `/dev/fb0`, if any. `Some` between successful
     /// `mmap` and the matching `munmap`/process-exit/exec.
     pub fb_binding: Option<FbBinding>,
+    /// Counts how many times this process has called fork() (parent side, on success).
+    /// Read-only from outside the kernel via `kernel_get_fork_count`.
+    /// Used as a regression guardrail by the spawn test suite to confirm
+    /// non-forking spawn doesn't sneak through the fork path.
+    pub(crate) fork_count: u64,
 }
 
 impl Process {
@@ -405,7 +410,19 @@ impl Process {
             procfs_bufs: Vec::new(),
             has_exec: false,
             fb_binding: None,
+            fork_count: 0,
         }
+    }
+
+    /// Returns how many times this process has successfully forked (parent side).
+    pub fn fork_count(&self) -> u64 {
+        self.fork_count
+    }
+
+    /// Increment the fork counter. Called by `ProcessTable::fork_process` on
+    /// the parent after a child is successfully created.
+    pub(crate) fn increment_fork_count(&mut self) {
+        self.fork_count += 1;
     }
 
     /// Allocate a process-local pipe buffer, reusing the first free slot.
@@ -627,6 +644,12 @@ impl Process {
 mod tests {
     use super::*;
     use crate::pipe::PipeBuffer;
+
+    #[test]
+    fn fork_count_starts_at_zero() {
+        let proc = Process::new(1);
+        assert_eq!(proc.fork_count(), 0);
+    }
 
     #[test]
     fn test_alloc_pipe_reuses_freed_slots() {

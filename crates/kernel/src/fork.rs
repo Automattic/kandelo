@@ -949,6 +949,7 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
         // registered as a host display target. fbDOOM doesn't fork
         // mid-game; documented limitation in the design doc.
         fb_binding: None,
+        fork_count: 0,
     })
 }
 
@@ -1333,6 +1334,12 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
         // exec wipes any prior framebuffer binding — the new program
         // must open and mmap /dev/fb0 itself.
         fb_binding: None,
+        // The fork counter exists as a kernel-side regression guardrail.
+        // Resetting on exec keeps semantics simple: the next spawn-from-this-pid
+        // test starts from a clean slate. The plan's regression check inspects
+        // the *parent* process's counter, not the post-exec child, so this
+        // reset is safe.
+        fork_count: 0,
     })
 }
 
