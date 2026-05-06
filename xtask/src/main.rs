@@ -15,6 +15,14 @@
 //!                         Per-package wrapper around the same internals
 //!                         `stage-release` uses; doesn't walk the registry or emit a
 //!                         manifest.json. Used by Phase B-1 matrix-build entries.
+//!   build-index           Emit `index.toml` (the source manifest of
+//!                         §3.2 in the Phase B-1 design doc) from a
+//!                         directory of staged `.tar.zst` archives.
+//!                         Args: --abi <N> --generator <s>
+//!                               --archives-dir <dir> --out <path>
+//!                               [--generated-at <RFC3339>].
+//!                         Used by Phase B-1's `generate-index` job
+//!                         after per-file uploads land.
 //!   stage-release         Orchestrate full V2 producer side: walk registry, build
 //!                         archives, emit manifest.json into a staging directory.
 //!   stage-pr-overlay      Stage only changed-vs-baseline archives + overlay file
@@ -35,6 +43,7 @@ use std::process::ExitCode;
 mod archive_stage;
 mod archive_stage_cli;
 mod build_deps;
+mod build_index;
 mod build_manifest;
 mod bundle_program;
 mod pkg_manifest;
@@ -56,7 +65,7 @@ fn main() -> ExitCode {
         None => {
             eprintln!("usage: xtask <subcommand> [args...]");
             eprintln!(
-                "subcommands: dump-abi, build-manifest, bundle-program, build-deps, compute-cache-key-sha, archive-stage, stage-release, stage-pr-overlay, install-release, set-build-commit"
+                "subcommands: dump-abi, build-manifest, bundle-program, build-deps, compute-cache-key-sha, archive-stage, build-index, stage-release, stage-pr-overlay, install-release, set-build-commit"
             );
             return ExitCode::from(2);
         }
@@ -69,6 +78,7 @@ fn main() -> ExitCode {
         "build-deps" => build_deps::run(rest),
         "compute-cache-key-sha" => build_deps::run_compute_cache_key_sha(rest),
         "archive-stage" => archive_stage_cli::run(rest),
+        "build-index" => build_index::run(rest),
         "stage-release" => stage_release::run(rest),
         "stage-pr-overlay" => stage_pr_overlay::run(rest),
         "install-release" => install_release::run(rest),

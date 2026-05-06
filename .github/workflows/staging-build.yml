@@ -1081,3 +1081,116 @@ jobs:
             count=$((count + 1))
           done < <(find "$RUNNER_TEMP/staged-archives" -name '*.tar.zst' -print | sort)
           echo "publish: uploaded $count archive(s) to $TAG"
+
+  generate-index:
+    # Phase B-1 Task 7 — index.toml generation + upload.
+    #
+    # Runs after `publish` so every per-file archive has landed on the
+    # release tag before we enumerate it. Lives in its own job (rather
+    # than appended to `publish` as a final step) to keep the publish
+    # job focused on archive uploads — index.toml generation reads back
+    # from the tag, so it's a logically distinct concern.
+    #
+    # Concurrency group: same as `publish` so a re-run racing against
+    # a still-uploading earlier run waits its turn. Without this, two
+    # back-to-back pushes could both download the release assets at
+    # different points in the publish sequence and emit
+    # mutually-inconsistent index.tomls.
+    #
+    # Future consumers of the source-manifest format (resolver,
+    # third-party catalog browsers per the design's software-source
+    # concept in §4) read this file for discovery without enumerating
+    # release assets via the GitHub API.
+    needs: [preflight, publish]
+    if: needs.publish.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # gh release upload index.toml
+    concurrency:
+      group: phase-b-1-publish-${{ needs.preflight.outputs.target_tag }}
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v18
+
+      - name: Cache Nix store + flake eval
+        uses: DeterminateSystems/magic-nix-cache-action@v13
+
+      - name: Cache xtask build
+        # Aliases the preflight job's xtask cache key so the build
+        # below is a fast cache hit when nothing in xtask/ changed.
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            target
+          key: preflight-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'xtask/**') }}
+          restore-keys: |
+            preflight-${{ runner.os }}-
+
+      - name: Build xtask
+        run: |
+          bash scripts/dev-shell.sh bash -c '
+            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
+            cargo build --release -p xtask --target "$HOST_TARGET"
+          '
+
+      - name: Compute commit-bound generated_at
+        # Use the commit author timestamp (%aI) — same provenance source
+        # the matrix-build step uses for `[compatibility].build_timestamp`.
+        # Pinning to a commit-bound value keeps `index.toml` byte-stable
+        # across wall-clock re-runs of this workflow on the same SHA;
+        # otherwise re-running generate-index would produce a different
+        # index.toml byte-for-byte (mostly harmless, but wasteful).
+        id: provenance
+        run: |
+          ts=$(git log -1 --format=%aI HEAD)
+          echo "generated-at=$ts" >> "$GITHUB_OUTPUT"
+          echo "generated_at: $ts" >&2
+
+      - name: Download all archives from release
+        # Restricted to `*.tar.zst` so a previous run's index.toml (if
+        # any) doesn't get pulled into the input set. The current run's
+        # index.toml hasn't been uploaded yet — defensive filter for
+        # the re-run / partial-publish case.
+        run: |
+          TAG="${{ needs.preflight.outputs.target_tag }}"
+          mkdir -p "$RUNNER_TEMP/index-archives"
+          gh release download "$TAG" --repo "${{ github.repository }}" --pattern '*.tar.zst' --dir "$RUNNER_TEMP/index-archives"
+          echo "downloaded $(find "$RUNNER_TEMP/index-archives" -name '*.tar.zst' | wc -l) archive(s) for indexing"
+
+      - name: Generate index.toml
+        run: |
+          TAG="${{ needs.preflight.outputs.target_tag }}"
+          ABI="${{ needs.preflight.outputs.abi }}"
+          bash scripts/dev-shell.sh bash -c '
+            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
+            cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
+              build-index \
+                --abi "'"$ABI"'" \
+                --generator "wasm-posix-kernel CI @ ${{ github.sha }}" \
+                --archives-dir "'"$RUNNER_TEMP"'/index-archives" \
+                --out "'"$RUNNER_TEMP"'/index.toml" \
+                --generated-at "${{ steps.provenance.outputs.generated-at }}"
+          '
+          echo "--- index.toml head ---"
+          head -30 "$RUNNER_TEMP/index.toml"
+
+      - name: Upload index.toml to release
+        # --clobber: re-runs with a deterministic generated_at +
+        # identical archive set produce byte-identical index.toml,
+        # so re-uploading is a no-op. A re-run with a changed archive
+        # set legitimately replaces the old index.toml with the new
+        # one, which is the correct behavior — consumers always read
+        # the latest index.toml on the tag.
+        run: |
+          TAG="${{ needs.preflight.outputs.target_tag }}"
+          gh release upload "$TAG" "$RUNNER_TEMP/index.toml" --clobber --repo "${{ github.repository }}"
+          echo "uploaded index.toml to $TAG"
