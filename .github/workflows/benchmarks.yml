@@ -1,0 +1,288 @@
+name: Performance benchmarks
+
+# Runs the full benchmark suite (8 suites × Node + browser hosts) twice on
+# the same runner — once on the PR HEAD, once on the PR base — and gates
+# the merge on regressions > 5%.
+#
+# Self-comparing per PR: both sides run on the same runner back-to-back,
+# so absolute noise floor matters less than the relative delta between
+# sides. Threshold = 5% (matches benchmarks/compare.ts default).
+#
+# Hard-fail on baseline-broken suites: if any expected suite produces
+# zero metrics on either side (silent skip), the gate fails. This forces
+# the benchmark suites themselves to stay healthy.
+#
+# Path-filtered: skipped for changes that can't plausibly affect runtime
+# performance (docs, sdk tooling, browser-only demo HTML, CI config for
+# unrelated workflows). Kernel/host/glue/binaries.lock changes always
+# run.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'crates/kernel/**'
+      - 'crates/shared/**'
+      - 'crates/userspace/**'
+      - 'host/src/**'
+      - 'glue/**'
+      - 'binaries.lock'
+      - 'examples/libs/**'
+      - 'benchmarks/**'
+      - 'scripts/build-musl.sh'
+      - 'scripts/build-libcxx.sh'
+      - 'scripts/build-programs.sh'
+      - 'scripts/fetch-binaries.sh'
+      - 'flake.nix'
+      - 'flake.lock'
+      - '.github/workflows/benchmarks.yml'
+
+concurrency:
+  group: benchmarks-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  benchmarks:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      EXPECTED_SUITES: "syscall-io,process-lifecycle,erlang-ring,wordpress,mariadb-aria,mariadb-aria-64,mariadb-innodb,mariadb-innodb-64"
+      ROUNDS: "3"
+      THRESHOLD: "5"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Fetch submodules (musl)
+        run: |
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git submodule update --init --depth 1 musl
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v18
+
+      - name: Cache Nix store + flake eval
+        uses: DeterminateSystems/magic-nix-cache-action@v13
+
+      - name: Warm Nix dev shell
+        run: nix develop --accept-flake-config --command true
+
+      - name: Cache resolver + cargo target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/wasm-posix-kernel
+            target
+          key: benchmarks-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'examples/libs/**/deps.toml') }}
+          restore-keys: |
+            benchmarks-${{ runner.os }}-
+            staging-build-${{ runner.os }}-
+
+      - name: Cache musl sysroot + libc++
+        uses: actions/cache@v4
+        id: cache-sysroot
+        with:
+          path: |
+            sysroot
+            sysroot64
+          key: musl-sysroot-v3-${{ runner.os }}-${{ hashFiles('scripts/build-musl.sh', 'scripts/build-libcxx.sh', 'musl-overlay/**', 'glue/**') }}
+
+      - name: Build musl sysroot + libc++ (wasm32 + wasm64)
+        if: steps.cache-sysroot.outputs.cache-hit != 'true'
+        # Mirrors staging-build.yml.
+        run: |
+          nix develop --accept-flake-config --command bash scripts/build-musl.sh
+          nix develop --accept-flake-config --command bash scripts/build-musl.sh --arch wasm64posix
+          nix develop --accept-flake-config --command bash -c '
+            src=""
+            for cand in "$LLVM_PREFIX/include/c++/v1" "$LLVM_PREFIX/share/libc++/v1"; do
+              if [ -f "$cand/__config" ] || [ -f "$cand/iostream" ]; then
+                src="$cand"; break
+              fi
+            done
+            if [ -z "$src" ]; then
+              echo "ERROR: cannot locate libc++ headers under $LLVM_PREFIX" >&2
+              exit 1
+            fi
+            for arch_dir in sysroot sysroot64; do
+              if [ ! -f "$arch_dir/include/c++/v1/__config" ]; then
+                mkdir -p "$arch_dir/include/c++/v1"
+                cp -RL "$src"/* "$arch_dir/include/c++/v1/"
+                chmod -R u+w "$arch_dir/include/c++/v1/"
+                cs="$arch_dir/include/c++/v1/__config_site"
+                if [ -f "$cs" ]; then
+                  sed -i "s/_LIBCPP_HAS_MUSL_LIBC 0/_LIBCPP_HAS_MUSL_LIBC 1/" "$cs"
+                  sed -i "s/_LIBCPP_HAS_THREAD_API_PTHREAD 0/_LIBCPP_HAS_THREAD_API_PTHREAD 1/" "$cs"
+                fi
+              fi
+            done
+          '
+          nix develop --accept-flake-config --command bash scripts/build-libcxx.sh
+          nix develop --accept-flake-config --command bash scripts/build-libcxx.sh --arch wasm64
+
+      - name: Install Node deps + Playwright browser
+        # host/ is what benchmarks import; examples/browser/ is what the
+        # browser harness boots. Repo root pulls tsx for the runner.
+        run: |
+          nix develop --accept-flake-config --command bash -c '
+            npm install --no-audit --no-fund
+            cd host && npm install --no-audit --no-fund
+            cd ../examples/browser && npm install --no-audit --no-fund
+            npx playwright install --with-deps chromium
+          '
+
+      # ---- AFTER side: PR HEAD ----
+      - name: Build kernel + programs (after)
+        run: |
+          nix develop --accept-flake-config --command bash -c '
+            cargo build --release -p wasm-posix-kernel \
+              -Z build-std=core,alloc \
+              -Z build-std-features=panic_immediate_abort
+            mkdir -p local-binaries
+            cp target/wasm64-unknown-unknown/release/wasm_posix_kernel.wasm \
+              local-binaries/kernel.wasm
+            bash scripts/build-programs.sh
+          '
+
+      - name: Fetch binaries (after — auto PR overlay)
+        # fetch-binaries.sh auto-detects the PR via the GitHub API and
+        # applies pr-<N>-staging overlay if present.
+        run: |
+          nix develop --accept-flake-config --command bash scripts/fetch-binaries.sh
+
+      - name: Run benchmarks — Node host (after)
+        run: |
+          nix develop --accept-flake-config --command \
+            npx tsx benchmarks/run.ts --rounds=${{ env.ROUNDS }} --host=node
+          mv $(ls -t benchmarks/results/benchmark-node-*.json | head -1) /tmp/after-node.json
+
+      - name: Run benchmarks — browser host (after)
+        run: |
+          nix develop --accept-flake-config --command \
+            npx tsx benchmarks/run.ts --rounds=${{ env.ROUNDS }} --host=browser
+          mv $(ls -t benchmarks/results/benchmark-browser-*.json | head -1) /tmp/after-browser.json
+
+      # ---- BEFORE side: PR base ----
+      - name: Reset to PR base
+        # Hard reset working tree to the PR base SHA. Submodules update
+        # to base-pinned commits. local-binaries/ + benchmarks/results/
+        # are deleted to ensure the BEFORE side rebuilds from base.
+        run: |
+          BASE="${{ github.event.pull_request.base.sha }}"
+          git checkout "$BASE"
+          git submodule update --init --depth 1 musl
+          rm -rf local-binaries benchmarks/results
+
+      - name: Build kernel + programs (before)
+        run: |
+          nix develop --accept-flake-config --command bash -c '
+            cargo build --release -p wasm-posix-kernel \
+              -Z build-std=core,alloc \
+              -Z build-std-features=panic_immediate_abort
+            mkdir -p local-binaries
+            cp target/wasm64-unknown-unknown/release/wasm_posix_kernel.wasm \
+              local-binaries/kernel.wasm
+            bash scripts/build-programs.sh
+          '
+
+      - name: Fetch binaries (before — base lockfile, no overlay)
+        # We are checked out at base SHA, so any PR-overlay auto-detection
+        # via /commits/{sha}/pulls returns empty and fetch-binaries reads
+        # base's binaries.lock alone. Delete a stale binaries.lock.pr from
+        # the AFTER side so it can't be reused.
+        run: |
+          rm -f binaries.lock.pr
+          nix develop --accept-flake-config --command bash scripts/fetch-binaries.sh
+
+      - name: Run benchmarks — Node host (before)
+        run: |
+          nix develop --accept-flake-config --command \
+            npx tsx benchmarks/run.ts --rounds=${{ env.ROUNDS }} --host=node
+          mv $(ls -t benchmarks/results/benchmark-node-*.json | head -1) /tmp/before-node.json
+
+      - name: Run benchmarks — browser host (before)
+        run: |
+          nix develop --accept-flake-config --command \
+            npx tsx benchmarks/run.ts --rounds=${{ env.ROUNDS }} --host=browser
+          mv $(ls -t benchmarks/results/benchmark-browser-*.json | head -1) /tmp/before-browser.json
+
+      # ---- Compare and gate ----
+      - name: Restore PR HEAD (for gate.ts source)
+        run: git checkout "${{ github.event.pull_request.head.sha }}"
+
+      - name: Compare and gate (Node)
+        id: gate-node
+        run: |
+          set -o pipefail
+          nix develop --accept-flake-config --command \
+            npx tsx benchmarks/gate.ts \
+              --before /tmp/before-node.json \
+              --after  /tmp/after-node.json \
+              --expected "${{ env.EXPECTED_SUITES }}" \
+              --threshold ${{ env.THRESHOLD }} \
+              --label "Node host" \
+            | tee /tmp/gate-node.md
+
+      - name: Compare and gate (browser)
+        if: always()
+        id: gate-browser
+        run: |
+          set -o pipefail
+          nix develop --accept-flake-config --command \
+            npx tsx benchmarks/gate.ts \
+              --before /tmp/before-browser.json \
+              --after  /tmp/after-browser.json \
+              --expected "${{ env.EXPECTED_SUITES }}" \
+              --threshold ${{ env.THRESHOLD }} \
+              --label "Browser host" \
+            | tee /tmp/gate-browser.md
+
+      - name: Assemble PR comment body
+        if: always()
+        id: comment
+        # The sticky-pull-request-comment action's `message:` field is a
+        # plain string, not a shell — there's no command substitution. So
+        # we build the body in shell, write it to a file, then load it
+        # into GITHUB_OUTPUT for the next step.
+        run: |
+          NODE_BODY=$(cat /tmp/gate-node.md 2>/dev/null || echo "_gate did not run_")
+          BROWSER_BODY=$(cat /tmp/gate-browser.md 2>/dev/null || echo "_gate did not run_")
+          NODE_MARK="${{ steps.gate-node.outcome == 'success' && '✅' || '❌' }}"
+          BROWSER_MARK="${{ steps.gate-browser.outcome == 'success' && '✅' || '❌' }}"
+          {
+            echo "**Performance benchmarks** — \`${{ env.ROUNDS }}\` round(s), gating threshold ±${{ env.THRESHOLD }}%"
+            echo
+            echo "Both sides ran on the same \`ubuntu-latest\` runner back-to-back."
+            echo
+            echo "${NODE_MARK} **Node** &nbsp;&nbsp; ${BROWSER_MARK} **Browser**"
+            echo
+            echo "<details><summary>Node host results</summary>"
+            echo
+            echo "${NODE_BODY}"
+            echo
+            echo "</details>"
+            echo
+            echo "<details><summary>Browser host results</summary>"
+            echo
+            echo "${BROWSER_BODY}"
+            echo
+            echo "</details>"
+          } > /tmp/comment.md
+          {
+            echo "body<<COMMENT_EOF"
+            cat /tmp/comment.md
+            echo "COMMENT_EOF"
+          } >> $GITHUB_OUTPUT
+
+      - name: Post sticky comment with results
+        if: always()
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: pr-benchmarks
+          message: ${{ steps.comment.outputs.body }}
