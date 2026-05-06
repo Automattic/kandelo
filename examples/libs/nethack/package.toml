@@ -12,6 +12,10 @@ sha256 = "98cf67df6debf9668a61745aa84c09bcab362e5d33f5b944ec5155d44d2aacb2"
 spdx = "NGPL"
 url = "https://nethack.org/common/license.html"
 
+[build]
+script_path = "examples/libs/nethack/build-nethack.sh"
+repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+
 [[outputs]]
 name = "nethack"
 wasm = "nethack.wasm"

@@ -22,6 +22,10 @@ sha256 = "c7ca7db48b0909743eaef34250da02c19bc61d4f1dcedd6603f109409536ab56"
 spdx = "curl"
 url = "https://curl.se/docs/copyright.html"
 
+[build]
+script_path = "examples/libs/libcurl/build-libcurl.sh"
+repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+
 [outputs]
 libs = ["lib/libcurl.a"]
 # curl installs ~12 headers under include/curl/. Declare the directory

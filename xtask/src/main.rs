@@ -12,6 +12,11 @@
 //!   install-release   Consumer side of V2: read manifest.json, fetch + verify
 //!                     library/program archives, mirror program outputs into
 //!                     local-binaries/.
+//!   set-build-commit  Stamp `[build].commit = <sha>` into one
+//!                     `examples/libs/<name>/package.toml`. Used by the
+//!                     publish flow (Phase A-bis Task 5) when an archive
+//!                     is uploaded; mirrors the lifecycle of
+//!                     `[binary].archive_url` + `archive_sha256`.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -29,6 +34,7 @@ mod remote_fetch;
 mod source_extract;
 mod stage_pr_overlay;
 mod stage_release;
+mod update_pkg_manifest;
 mod util;
 mod wasm_abi;
 
@@ -39,7 +45,7 @@ fn main() -> ExitCode {
         None => {
             eprintln!("usage: xtask <subcommand> [args...]");
             eprintln!(
-                "subcommands: dump-abi, build-manifest, bundle-program, build-deps, stage-release, stage-pr-overlay, install-release"
+                "subcommands: dump-abi, build-manifest, bundle-program, build-deps, stage-release, stage-pr-overlay, install-release, set-build-commit"
             );
             return ExitCode::from(2);
         }
@@ -53,6 +59,7 @@ fn main() -> ExitCode {
         "stage-release" => stage_release::run(rest),
         "stage-pr-overlay" => stage_pr_overlay::run(rest),
         "install-release" => install_release::run(rest),
+        "set-build-commit" => update_pkg_manifest::run(rest),
         other => {
             eprintln!("xtask: unknown subcommand {other:?}");
             return ExitCode::from(2);

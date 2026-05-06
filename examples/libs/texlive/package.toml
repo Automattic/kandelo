@@ -21,6 +21,10 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 spdx = "LicenseRef-TeXLive-Various"
 url = "https://www.tug.org/texlive/copying.html"
 
+[build]
+script_path = "examples/libs/texlive/build-texlive.sh"
+repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+
 # Two outputs: the wasm engine + the runtime distribution bundle.
 # install-release places both under `binaries/programs/<arch>/texlive/`
 # (multi-output convention).

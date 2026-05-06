@@ -19,6 +19,10 @@ sha256 = "6a5ca0652392a2d7c9db2ae5b40210843c0bbc081cbd410825ab00cc59f14a6c"
 spdx = "libpng-2.0"
 url = "http://www.libpng.org/pub/png/src/libpng-LICENSE.txt"
 
+[build]
+script_path = "examples/libs/libpng/build-libpng.sh"
+repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+
 [outputs]
 # Upstream installs the real archive as libpng16.a with libpng.a as a
 # compatibility symlink; same for the .pc files. Declare the real

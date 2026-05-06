@@ -12,6 +12,10 @@ sha256 = "6e226b732e1cd739464ad6862bd1a1aba42d7982922da7a53519631d24975181"
 spdx = "GPL-3.0-or-later"
 url = "https://git.savannah.gnu.org/cgit/sed.git/tree/COPYING?h=v4.9"
 
+[build]
+script_path = "examples/libs/sed/build-sed.sh"
+repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+
 [[outputs]]
 name = "sed"
 wasm = "sed.wasm"

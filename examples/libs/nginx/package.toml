@@ -14,9 +14,10 @@ url = "https://nginx.org/LICENSE"
 
 # The actual build lives at examples/nginx/build.sh (it's been there since
 # pre-package-system and does the configure-from-tarball + asyncify dance). Point the
-# resolver at it via [build].script.
+# resolver at it via [build].script_path.
 [build]
-script = "build-nginx.sh"
+script_path = "examples/libs/nginx/build-nginx.sh"
+repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 [[outputs]]
 name = "nginx"

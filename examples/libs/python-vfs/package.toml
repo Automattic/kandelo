@@ -22,7 +22,8 @@ spdx = "Python-2.0"
 url = "https://docs.python.org/3/license.html"
 
 [build]
-script = "build-python-vfs.sh"
+script_path = "examples/libs/python-vfs/build-python-vfs.sh"
+repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 [[outputs]]
 name = "python-vfs"

@@ -12,6 +12,10 @@ sha256 = "b984f9e02bb61637997a35daa9070ae8f41cea1667676416438c467fda3d141f"
 spdx = "Apache-2.0"
 url = "https://github.com/erlang/otp/blob/maint/LICENSE.txt"
 
+[build]
+script_path = "examples/libs/erlang/build-erlang.sh"
+repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+
 [[outputs]]
 name = "erlang"
 wasm = "beam.wasm"

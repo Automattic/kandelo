@@ -12,6 +12,10 @@ sha256 = "3781a3504222c2f26cb4b9eb9c1a12dbf4944d366ce24a9ff8cf99ecbce75196"
 spdx = "Ruby OR BSD-2-Clause"
 url = "https://github.com/ruby/ruby/blob/master/COPYING"
 
+[build]
+script_path = "examples/libs/ruby/build-ruby.sh"
+repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+
 [[outputs]]
 name = "ruby"
 wasm = "ruby.wasm"

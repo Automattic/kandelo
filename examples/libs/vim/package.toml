@@ -12,6 +12,10 @@ sha256 = "30efb714ed82c5d7a1491f3e4aac6487d2c493d33c834d7ef043e6f45176772e"
 spdx = "Vim"
 url = "https://github.com/vim/vim/blob/v9.1.0900/LICENSE"
 
+[build]
+script_path = "examples/libs/vim/build-vim.sh"
+repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+
 [[outputs]]
 name = "vim"
 wasm = "vim.wasm"

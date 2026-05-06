@@ -159,12 +159,10 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         // Skip metadata-only manifests (no build script on disk).
         // Mirrors stage_release::run.
         if matches!(m.kind, ManifestKind::Program) {
-            let script_name = m
-                .build
-                .script
-                .clone()
-                .unwrap_or_else(|| format!("build-{}.sh", m.name));
-            let script_path = m.dir.join(&script_name);
+            // Phase A-bis Task 2: delegate to `build_script_path()` so
+            // the repo-root-vs-package-dir resolution rules stay in
+            // one place. Mirrors `stage_release::run`.
+            let script_path = m.build_script_path(&repo_root());
             if !script_path.is_file() {
                 continue;
             }

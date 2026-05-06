@@ -21,15 +21,32 @@ export WASM_POSIX_SYSROOT="$REPO_ROOT/sysroot"
 if [ ! -d "$SRC" ]; then
     echo "==> Cloning maximevince/fbDOOM..."
     git clone --depth 1 https://github.com/maximevince/fbDOOM "$SRC"
-
-    echo "==> Applying patches..."
-    # Apply each numbered patch in order. Idempotent: only on fresh clone.
-    for p in "$HERE/patches/"*.patch; do
-        [ -f "$p" ] || continue
-        echo "    $(basename "$p")"
-        (cd "$SRC" && patch -p1 < "$p")
-    done
 fi
+
+# Apply patches every build, skipping any that are already applied. The
+# previous "patch only on fresh clone" gate silently produced a broken
+# wasm whenever the source tree was reused — every required patch was
+# missing, but `make` happily linked it and DOOM trapped at I_InitGraphics.
+#
+# We rely on `git apply --check` to distinguish "needs apply" from
+# "already applied" — `patch --dry-run` prompts on stdin when it
+# detects an already-applied hunk, which makes its exit code unreliable
+# in non-interactive scripts. fbDOOM is cloned via `git clone` above,
+# so the source tree is always a git repo here.
+echo "==> Applying patches..."
+for p in "$HERE/patches/"*.patch; do
+    [ -f "$p" ] || continue
+    name="$(basename "$p")"
+    if (cd "$SRC" && git apply --check "$p") >/dev/null 2>&1; then
+        echo "    $name"
+        (cd "$SRC" && git apply "$p")
+    elif (cd "$SRC" && git apply --reverse --check "$p") >/dev/null 2>&1; then
+        echo "    $name (already applied)"
+    else
+        echo "ERROR: patch $name does not apply cleanly and is not already applied" >&2
+        exit 1
+    fi
+done
 
 cd "$SRC/fbdoom"
 

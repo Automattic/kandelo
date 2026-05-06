@@ -18,6 +18,10 @@ sha256 = "2e8a40b01979afe8be0bbfb3de5dc1c6709fedb46d6c89c10da114ab5fc3d281"
 spdx = "Apache-2.0"
 url = "https://github.com/openssl/openssl/blob/openssl-3.3.2/LICENSE.txt"
 
+[build]
+script_path = "examples/libs/openssl/build-openssl.sh"
+repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+
 [outputs]
 # Both static libs — consumers (libcurl, php, git, mariadb, ruby) link
 # against one or both depending on whether they need TLS layer or just

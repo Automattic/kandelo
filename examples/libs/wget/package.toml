@@ -12,6 +12,10 @@ sha256 = "766e48423e79359ea31e41db9e5c289675947a7fcf2efdcedb726ac9d0da3784"
 spdx = "GPL-3.0-or-later"
 url = "https://git.savannah.gnu.org/cgit/wget.git/tree/COPYING"
 
+[build]
+script_path = "examples/libs/wget/build-wget.sh"
+repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+
 [[outputs]]
 name = "wget"
 wasm = "wget.wasm"

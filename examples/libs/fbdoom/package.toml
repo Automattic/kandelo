@@ -18,6 +18,10 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 spdx = "GPL-2.0-or-later"
 url = "https://github.com/maximevince/fbDOOM/blob/master/COPYING"
 
+[build]
+script_path = "examples/libs/fbdoom/build-fbdoom.sh"
+repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+
 [[outputs]]
 name = "fbdoom"
 wasm = "fbdoom.wasm"
