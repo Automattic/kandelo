@@ -30,7 +30,8 @@ spdx = "GPL-2.0-or-later"
 url = "https://wordpress.org/about/gpl/"
 
 [build]
-script = "build-wordpress.sh"
+script_path = "examples/libs/wordpress/build-wordpress.sh"
+repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 [[outputs]]
 name = "wordpress"

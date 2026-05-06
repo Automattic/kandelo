@@ -40,7 +40,8 @@ spdx = "GPL-2.0-or-later"
 url = "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
 
 [build]
-script = "build-lamp.sh"
+script_path = "examples/libs/lamp/build-lamp.sh"
+repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 [[outputs]]
 name = "lamp"
