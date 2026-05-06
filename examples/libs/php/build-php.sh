@@ -184,12 +184,14 @@ cp sapi/cli/php "$SCRIPT_DIR/bin/php.wasm"
 cp sapi/fpm/php-fpm "$SCRIPT_DIR/bin/php-fpm.wasm"
 
 # Both CLI and FPM are built with -gline-tables-only + --no-wasm-opt
-# so FPM's asyncify-onlylist can find function names. That leaves CLI
-# with ~18MB of unneeded debug info; wasm-opt -O2 strips it.
+# so FPM's asyncify-onlylist can find function names. wasm-opt then
+# runs -Oz (smallest binary; ~28% reduction) with -g --strip-dwarf
+# (drop DWARF line tables, keep the names section so V8 stack traces
+# stay readable in production crashes).
 WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
 if [ -n "$WASM_OPT" ]; then
-    echo "==> Optimizing CLI binary (strip debug info)..."
-    "$WASM_OPT" -O2 "$SCRIPT_DIR/bin/php.wasm" -o "$SCRIPT_DIR/bin/php.wasm"
+    echo "==> Optimizing CLI binary (-Oz, keep names, drop DWARF)..."
+    "$WASM_OPT" -Oz -g --strip-dwarf "$SCRIPT_DIR/bin/php.wasm" -o "$SCRIPT_DIR/bin/php.wasm"
 
     # Asyncify FPM (it forks worker children). CLI is sequential.
     # The asyncify-onlylist restricts instrumentation to ~48 named
@@ -210,8 +212,8 @@ if [ -n "$WASM_OPT" ]; then
             --pass-arg="asyncify-imports@kernel.kernel_fork" \
             --pass-arg="asyncify-onlylist@${ONLY_FUNCS}" \
             "$SCRIPT_DIR/bin/php-fpm.wasm" -o "$SCRIPT_DIR/bin/php-fpm.wasm"
-        echo "==> Optimizing asyncified FPM binary..."
-        "$WASM_OPT" -O2 "$SCRIPT_DIR/bin/php-fpm.wasm" -o "$SCRIPT_DIR/bin/php-fpm.wasm"
+        echo "==> Optimizing asyncified FPM binary (-Oz, keep names, drop DWARF)..."
+        "$WASM_OPT" -Oz -g --strip-dwarf "$SCRIPT_DIR/bin/php-fpm.wasm" -o "$SCRIPT_DIR/bin/php-fpm.wasm"
     else
         echo "==> WARN: $ONLYLIST not found, skipping asyncify (FPM fork will not work)."
     fi
