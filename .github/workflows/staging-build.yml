@@ -381,3 +381,189 @@ jobs:
             -f context=merge-gate \
             -f description="Tests green. Apply the ready-to-ship label to build the durable release and merge." \
             -f target_url="https://github.com/${{ github.repository }}/blob/main/docs/plans/2026-04-29-pr-package-builds-design.md"
+
+  # ---------------------------------------------------------------------
+  # Phase B-1 — decoupled package builds (additive)
+  #
+  # The two jobs below run in parallel with the legacy `build` job
+  # above. They implement the new per-package matrix flow described in
+  # docs/plans/2026-05-05-decoupled-package-builds-design.md. Phase
+  # B-1 is intentionally additive — the legacy job stays in place
+  # until Phase B-2 / C retires it after the new flow is proven.
+  #
+  # Task 2 (this commit) ships the SCAFFOLDING:
+  #   - preflight:    computes which (package, arch) pairs need rebuild
+  #   - matrix-build: per-entry job whose build step is currently a STUB
+  #
+  # Tasks 3-7 fill in toolchain cache, real build, test gate, per-file
+  # uploads, and index.toml generation.
+  # ---------------------------------------------------------------------
+
+  preflight:
+    # Fork-PR support is deferred (design doc §9.1). Same gate as the
+    # legacy `build` job above keeps fork PRs from hitting a no-token
+    # `gh release view` failure inside the matrix-compute step.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read           # gh release view (target tag probe)
+    outputs:
+      matrix: ${{ steps.compute.outputs.matrix }}
+      abi: ${{ steps.compute.outputs.abi }}
+      target_tag: ${{ steps.compute.outputs.target_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Fetch musl submodule
+        # compute-cache-key-sha walks the package's source/build inputs
+        # to derive a deterministic hash. It does NOT need libc-test or
+        # os-test (those are test inputs, not build inputs). musl is
+        # pulled in case any package's [build] dependency chain reaches
+        # into the sysroot recipe.
+        run: |
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git submodule update --init --depth 1 musl
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v18
+
+      - name: Cache Nix store + flake eval
+        uses: DeterminateSystems/magic-nix-cache-action@v13
+
+      - name: Warm Nix dev shell
+        run: bash scripts/dev-shell.sh true
+
+      - name: Cache xtask build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            target
+          key: preflight-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'xtask/**') }}
+          restore-keys: |
+            preflight-${{ runner.os }}-
+
+      - name: Build xtask
+        run: |
+          bash scripts/dev-shell.sh bash -c '
+            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
+            cargo build --release -p xtask --target "$HOST_TARGET"
+          '
+
+      - name: Compute matrix
+        id: compute
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          bash scripts/dev-shell.sh bash -c '
+            set -euo pipefail
+
+            ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/shared/src/lib.rs | awk "{print \$4}")
+            echo "abi=$ABI" >> "$GITHUB_OUTPUT"
+
+            # Target tag: pr-<NNN>-staging on PR runs, binaries-abi-v<N>
+            # otherwise. Phase B-2 Task 10 formally flips the active
+            # publish target to the undated tag; the new matrix flow can
+            # already target it because it runs in parallel with the
+            # legacy job and any duplicate work is idempotent (D3
+            # content-hash gating below).
+            if [ "${{ github.event_name }}" = "pull_request" ]; then
+              TARGET_TAG="pr-${{ github.event.pull_request.number }}-staging"
+            else
+              TARGET_TAG="binaries-abi-v${ABI}"
+            fi
+            echo "target_tag=$TARGET_TAG" >> "$GITHUB_OUTPUT"
+
+            # One-shot fetch of existing release assets for fast lookup.
+            # Falls back to empty list if the release doesn'"'"'t exist
+            # yet (new ABI, new PR) — that just means everything in the
+            # matrix needs to build.
+            existing_assets=$(gh release view "$TARGET_TAG" --repo "${{ github.repository }}" --json assets --jq "[.assets[].name]" 2>/dev/null || echo "[]")
+            echo "existing-assets:"
+            echo "$existing_assets" | jq -r ".[]" | head -20
+            echo "..."
+
+            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
+            matrix="[]"
+
+            for pkg_dir in examples/libs/*/; do
+              pkg=$(basename "$pkg_dir")
+              # Filter: package must have a [build] block. Today this
+              # selects the 10 first-party recipes that own a build
+              # script (dinit, lamp, mariadb-test, mariadb-vfs, nginx,
+              # erlang-vfs, perl-vfs, python-vfs, shell, wordpress) and
+              # naturally excludes kernel/userspace/examples/node and
+              # *-source packages. The decoupled-package-builds design
+              # plans to make [build] required for first-party programs
+              # in a follow-up; this loop will then expand to the full
+              # set without a workflow change.
+              if ! grep -q "^\[build\]" "$pkg_dir/package.toml"; then
+                continue
+              fi
+
+              # Per-package arches from package.toml'"'"'s top-level
+              # `arches = [...]` field (default `["wasm32"]` when
+              # absent). Mirrors the filter in
+              # xtask/src/stage_release.rs:216, which skips archives
+              # whose arch isn'"'"'t in the manifest'"'"'s target_arches
+              # (parsed in xtask/src/pkg_manifest.rs around line 540).
+              # Iterating only declared arches here avoids spawning
+              # matrix entries the staging step would silently drop.
+              # Assumes the single-line form `arches = ["a", "b"]`;
+              # all current package.toml files use that shape.
+              arches=$(awk -F'"'"'[][]'"'"' '"'"'/^arches *=/ {print $2}'"'"' "$pkg_dir/package.toml" | tr -d '"'"' "'"'"' | tr '"'"','"'"' '"'"' '"'"')
+              arches=${arches:-wasm32}
+              for arch in $arches; do
+                sha=$(cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
+                  compute-cache-key-sha --package "$pkg_dir" --arch "$arch" 2>/dev/null) || {
+                  echo "preflight: skipping $pkg/$arch (compute-cache-key-sha failed)" >&2
+                  continue
+                }
+                short=${sha:0:8}
+                # Archive filename: <name>-<version>-rev<N>-abi<N>-<arch>-<short8>.tar.zst.
+                # Version + revision live in package.toml and we donʼt
+                # need them here — startswith($prefix) + endswith($suffix)
+                # uniquely identifies the (pkg, arch, sha) triple in the
+                # release assets.
+                prefix="${pkg}-"
+                suffix="-abi${ABI}-${arch}-${short}.tar.zst"
+                if echo "$existing_assets" | jq -e --arg pre "$prefix" --arg suf "$suffix" \
+                    "any(.[]; startswith(\$pre) and endswith(\$suf))" >/dev/null; then
+                  echo "preflight: skip $pkg/$arch (sha $short already published)"
+                else
+                  matrix=$(echo "$matrix" | jq -c --arg pkg "$pkg" --arg arch "$arch" --arg sha "$sha" \
+                    ". + [{\"package\": \$pkg, \"arch\": \$arch, \"sha\": \$sha}]")
+                fi
+              done
+            done
+
+            echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+            echo "preflight: $(echo "$matrix" | jq "length") entries to build"
+            echo "$matrix" | jq .
+          '
+
+  matrix-build:
+    needs: preflight
+    if: needs.preflight.outputs.matrix != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.preflight.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Placeholder build (Tasks 3-4 add toolchain restore + real build)
+        # Scaffolding only: this step exits 0 so the matrix entry
+        # registers as success while the rest of Phase B-1 lands.
+        # Task 3 adds toolchain-cache restore; Task 4 adds the real
+        # `xtask build-deps` invocation; Tasks 5-7 add the test gate,
+        # per-file uploads, and index.toml emission.
+        run: |
+          echo "would build ${{ matrix.package }} / ${{ matrix.arch }} (sha ${{ matrix.sha }})"
+          echo "target tag: ${{ needs.preflight.outputs.target_tag }}"
+          echo "abi: ${{ needs.preflight.outputs.abi }}"
