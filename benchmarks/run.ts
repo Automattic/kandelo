@@ -123,14 +123,24 @@ async function runSuites(
   for (const suite of suites) {
     console.log(`\n--- ${suite.name} ---`);
     const roundResults: Record<string, number[]> = {};
+    let suiteAborted = false;
 
     for (let r = 0; r < rounds; r++) {
       console.log(`  round ${r + 1}/${rounds}...`);
-      const metrics = await suite.run();
-
-      for (const [key, value] of Object.entries(metrics)) {
-        if (!roundResults[key]) roundResults[key] = [];
-        roundResults[key].push(value);
+      try {
+        const metrics = await suite.run();
+        for (const [key, value] of Object.entries(metrics)) {
+          if (!roundResults[key]) roundResults[key] = [];
+          roundResults[key].push(value);
+        }
+      } catch (err: any) {
+        // Don't let one suite's timeout/error abort the rest of the
+        // benchmark run — gate.ts treats an empty metrics object as
+        // a missing suite, which is the right semantics here. CI logs
+        // still capture the underlying error.
+        console.warn(`  ${suite.name} round ${r + 1} failed: ${err?.message ?? err}`);
+        suiteAborted = true;
+        break;
       }
     }
 
@@ -141,7 +151,9 @@ async function runSuites(
     }
     results[suite.name] = suiteResult;
 
-    // Print inline
+    if (suiteAborted) {
+      console.log(`  (suite aborted — partial or empty results recorded)`);
+    }
     for (const [key, value] of Object.entries(suiteResult)) {
       console.log(`  ${key}: ${value}`);
     }

@@ -176,19 +176,32 @@ jobs:
           nix develop --accept-flake-config --command bash scripts/stage-bench-fixtures.sh
 
       - name: Run benchmarks — Node host (after)
+        # Tolerate suite-level failures: run.ts already catches per-suite
+        # errors and records empty metrics, but continue-on-error here
+        # also covers infrastructure-level failures (a Playwright launch
+        # crash, a wasm trap inside the harness) so the BEFORE side and
+        # the comment still get to run.
+        continue-on-error: true
         run: |
           nix develop --accept-flake-config --command \
             npx tsx benchmarks/run.ts --rounds=${{ env.ROUNDS }} --host=node
           mv $(ls -t benchmarks/results/benchmark-node-*.json | head -1) /tmp/after-node.json
 
       - name: Run benchmarks — browser host (after)
+        if: always()
+        continue-on-error: true
         run: |
           nix develop --accept-flake-config --command \
             npx tsx benchmarks/run.ts --rounds=${{ env.ROUNDS }} --host=browser
           mv $(ls -t benchmarks/results/benchmark-browser-*.json | head -1) /tmp/after-browser.json
 
       # ---- BEFORE side: PR base ----
+      # All BEFORE-side steps use `if: always()` so a partial AFTER-side
+      # failure (single suite throwing, browser harness flake, etc.) doesn't
+      # prevent us from collecting baseline numbers. The gate then renders
+      # whatever data each side managed to produce.
       - name: Reset to PR base
+        if: always()
         # Hard reset working tree to the PR base SHA. Submodules update
         # to base-pinned commits. local-binaries/ + benchmarks/results/
         # are deleted to ensure the BEFORE side rebuilds from base.
@@ -199,6 +212,7 @@ jobs:
           rm -rf local-binaries benchmarks/results
 
       - name: Build kernel + programs (before)
+        if: always()
         run: |
           nix develop --accept-flake-config --command bash -c '
             cargo build --release -p wasm-posix-kernel \
@@ -211,6 +225,7 @@ jobs:
           '
 
       - name: Fetch binaries (before — base lockfile, no overlay)
+        if: always()
         # We are checked out at base SHA, so any PR-overlay auto-detection
         # via /commits/{sha}/pulls returns empty and fetch-binaries reads
         # base's binaries.lock alone. Delete a stale binaries.lock.pr from
@@ -220,12 +235,16 @@ jobs:
           nix develop --accept-flake-config --command bash scripts/fetch-binaries.sh
 
       - name: Run benchmarks — Node host (before)
+        if: always()
+        continue-on-error: true
         run: |
           nix develop --accept-flake-config --command \
             npx tsx benchmarks/run.ts --rounds=${{ env.ROUNDS }} --host=node
           mv $(ls -t benchmarks/results/benchmark-node-*.json | head -1) /tmp/before-node.json
 
       - name: Run benchmarks — browser host (before)
+        if: always()
+        continue-on-error: true
         run: |
           nix develop --accept-flake-config --command \
             npx tsx benchmarks/run.ts --rounds=${{ env.ROUNDS }} --host=browser
@@ -233,10 +252,12 @@ jobs:
 
       # ---- Compare and gate ----
       - name: Restore PR HEAD (for gate.ts source)
+        if: always()
         run: git checkout "${{ github.event.pull_request.head.sha }}"
 
       - name: Compare and gate (Node)
         id: gate-node
+        if: always()
         # Informational — see header comment. Non-zero exit from gate.ts
         # surfaces as ❌ in the comment without failing the job.
         continue-on-error: true
