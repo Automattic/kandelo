@@ -148,17 +148,21 @@ fn bump_inherited_resource_refcounts(child: &Process) {
         }
     }
 
-    // Shared listener backlog (AF_INET listeners): increment one ref per
-    // socket entry that points at one. close() and process exit each drop
-    // one ref, last-drop frees the slot. Iterates `child.sockets` directly
-    // (not via OFDs) so an unaccepted-but-still-stored listener inherits a
-    // refcount even if no fd in the child happens to reference it — this
-    // matches the prior fork-deserialize-time bump.
+    // Shared listener backlog (AF_INET listeners) and host_net_handle
+    // (connected AF_INET sockets): increment one ref per socket entry that
+    // carries one. close() and process exit each drop one ref; last-drop
+    // either frees the listener slot or calls host_net_close. Iterates
+    // `child.sockets` directly (not via OFDs) so an unaccepted-but-stored
+    // listener inherits a refcount even if no fd in the child happens to
+    // reference it — this matches the prior fork-deserialize-time bump.
     let backlog_table = unsafe { crate::socket::shared_listener_backlog_table() };
     for sock_idx in 0..child.sockets.len() {
         if let Some(sock) = child.sockets.get(sock_idx) {
             if let Some(shared_idx) = sock.shared_backlog_idx {
                 backlog_table.add_ref(shared_idx);
+            }
+            if let Some(net_handle) = sock.host_net_handle {
+                crate::socket::host_net_handle_fork_ref(net_handle);
             }
         }
     }
@@ -283,6 +287,15 @@ impl ProcessTable {
                     // (matches sys_close behaviour for clean process exit).
                     if let Some(shared_idx) = sock.shared_backlog_idx {
                         shared_backlog_table.dec_ref(shared_idx);
+                    }
+                    // Drop one cross-process ref on the host net handle
+                    // (connected AF_INET sockets). We can't reach the
+                    // host trait from here to call host_net_close, but
+                    // keeping the kernel-side refcount consistent is the
+                    // important part — sys_close on a fd-holding process
+                    // is what actually tears the handle down host-side.
+                    if let Some(net_handle) = sock.host_net_handle {
+                        let _ = crate::socket::host_net_handle_close_ref(net_handle);
                     }
                     if sock.global_pipes {
                         // Cross-process socket: close pipe ends in global table

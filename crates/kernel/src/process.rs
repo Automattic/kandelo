@@ -731,6 +731,54 @@ mod tests {
     }
 
     #[test]
+    fn fork_and_spawn_bump_host_net_handle_refcount() {
+        // Regression: connected AF_INET sockets were value-cloned across
+        // fork and spawn, so the first process to call close()/host_net_close
+        // would kill the other's view of the connection. Now we refcount
+        // host_net_handle the same way we refcount file host handles.
+        use crate::process_table::ProcessTable;
+        use crate::socket::{host_net_handle_ref_count, SocketDomain, SocketInfo, SocketType};
+        use crate::spawn::SpawnAttrs;
+
+        let mut table = ProcessTable::new();
+        table.create_process(300).unwrap();
+
+        // Pretend the parent connected an AF_INET socket; the host returned
+        // handle 42.
+        const HANDLE: i32 = 42;
+        let mut sock = SocketInfo::new(SocketDomain::Inet, SocketType::Stream, 0);
+        sock.host_net_handle = Some(HANDLE);
+        table
+            .processes
+            .get_mut(&300)
+            .unwrap()
+            .sockets
+            .alloc(sock);
+
+        // The handle isn't in the cross-process table yet — single-owner.
+        assert_eq!(host_net_handle_ref_count(HANDLE), 0);
+
+        // Spawn a child. The bump turns the table entry into "1 (parent) + 1
+        // (child) = 2".
+        let _child = table
+            .spawn_child(300, &[b"a".as_slice()], &[], &[], &SpawnAttrs::empty())
+            .expect("spawn_child");
+        assert_eq!(
+            host_net_handle_ref_count(HANDLE),
+            2,
+            "spawn child must bump host_net_handle ref"
+        );
+
+        // Forking again bumps once more.
+        table.fork_process(300, 999).expect("fork_process");
+        assert_eq!(
+            host_net_handle_ref_count(HANDLE),
+            3,
+            "fork child must bump host_net_handle ref via the same helper"
+        );
+    }
+
+    #[test]
     fn fork_count_bumps_on_successful_fork() {
         use crate::process_table::ProcessTable;
         let mut table = ProcessTable::new();

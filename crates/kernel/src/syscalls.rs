@@ -474,8 +474,15 @@ pub fn sys_close(
                 let mut send_idx_to_free: Option<usize> = None;
                 let mut recv_idx_to_free: Option<usize> = None;
                 if let Some(sock) = proc.sockets.get(sock_idx) {
+                    // Connected AF_INET socket: drop one cross-process ref
+                    // (fork/spawn share host_net_handle by value). Only the
+                    // last close actually tears down the host connection —
+                    // otherwise a parent that closed first would kill its
+                    // child's view of the socket.
                     if let Some(net_handle) = sock.host_net_handle {
-                        let _ = host.host_net_close(net_handle);
+                        if crate::socket::host_net_handle_close_ref(net_handle) {
+                            let _ = host.host_net_close(net_handle);
+                        }
                     }
                     // Drop our reference to the shared listener backlog (if any).
                     // The slot is freed when the last process holding the
