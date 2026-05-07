@@ -659,6 +659,96 @@ export interface CentralizedKernelCallbacks {
   onExitGroup?: (pid: number) => void;
 }
 
+/**
+ * A single host-side timer registered with the kernel worker's deadline
+ * heap. `cancelled` and `heapIdx` are mutated by IndexedTimerHeap;
+ * consumers should treat the entry as opaque and only pass it back to
+ * cancelHostTimer.
+ */
+export interface TimerEntry {
+  deadlineMs: number;
+  fn: () => void;
+  intervalMs: number;
+  heapIdx: number;
+  cancelled: boolean;
+}
+
+class IndexedTimerHeap {
+  private items: TimerEntry[] = [];
+
+  size(): number { return this.items.length; }
+  peek(): TimerEntry | null { return this.items[0] ?? null; }
+
+  push(entry: TimerEntry): void {
+    entry.heapIdx = this.items.length;
+    this.items.push(entry);
+    this.siftUp(entry.heapIdx);
+  }
+
+  pop(): TimerEntry | null {
+    const n = this.items.length;
+    if (n === 0) return null;
+    const top = this.items[0]!;
+    top.heapIdx = -1;
+    if (n === 1) {
+      this.items.pop();
+    } else {
+      const last = this.items.pop()!;
+      this.items[0] = last;
+      last.heapIdx = 0;
+      this.siftDown(0);
+    }
+    return top;
+  }
+
+  remove(entry: TimerEntry): void {
+    const idx = entry.heapIdx;
+    if (idx < 0 || idx >= this.items.length || this.items[idx] !== entry) return;
+    entry.heapIdx = -1;
+    if (idx === this.items.length - 1) {
+      this.items.pop();
+      return;
+    }
+    const last = this.items.pop()!;
+    this.items[idx] = last;
+    last.heapIdx = idx;
+    this.siftDown(idx);
+    this.siftUp(idx);
+  }
+
+  private siftUp(i: number): void {
+    while (i > 0) {
+      const parent = (i - 1) >>> 1;
+      if (this.items[parent]!.deadlineMs <= this.items[i]!.deadlineMs) break;
+      this.swap(parent, i);
+      i = parent;
+    }
+  }
+
+  private siftDown(i: number): void {
+    const n = this.items.length;
+    for (;;) {
+      const l = 2 * i + 1;
+      const r = 2 * i + 2;
+      let m = i;
+      if (l < n && this.items[l]!.deadlineMs < this.items[m]!.deadlineMs) m = l;
+      if (r < n && this.items[r]!.deadlineMs < this.items[m]!.deadlineMs) m = r;
+      if (m === i) break;
+      this.swap(i, m);
+      i = m;
+    }
+  }
+
+  private swap(a: number, b: number): void {
+    const ea = this.items[a]!;
+    const eb = this.items[b]!;
+    this.items[a] = eb;
+    this.items[b] = ea;
+    ea.heapIdx = b;
+    eb.heapIdx = a;
+  }
+}
+
 export class CentralizedKernelWorker {
   private kernel: WasmPosixKernel;
   private kernelInstance: WebAssembly.Instance | null = null;
@@ -702,13 +792,13 @@ export class CentralizedKernelWorker {
       ((tid: number) => void) | undefined;
     if (setTid) setTid(tid);
   }
-  /** Alarm timers per process: pid → NodeJS.Timeout */
-  private alarmTimers = new Map<number, ReturnType<typeof setTimeout>>();
-  /** POSIX timers: "pid:timerId" → {timeout, interval?, signo} */
-  private posixTimers = new Map<string, { timeout: ReturnType<typeof setTimeout>; interval?: ReturnType<typeof setInterval>; signo: number }>();
-  /** Pending sleep timers per process: pid → {timer, channel, syscallNr, origArgs, retVal, errVal} */
+  /** Alarm timers per process: pid → host timer entry */
+  private alarmTimers = new Map<number, TimerEntry>();
+  /** POSIX timers: "pid:timerId" → { entry, signo }. */
+  private posixTimers = new Map<string, { entry: TimerEntry; signo: number }>();
+  /** Pending sleep timers per process: pid → { entry, channel, ... } */
   private pendingSleeps = new Map<number, {
-    timer: ReturnType<typeof setTimeout>;
+    entry: TimerEntry;
     channel: ChannelInfo;
     syscallNr: number;
     origArgs: number[];
@@ -774,6 +864,16 @@ export class CentralizedKernelWorker {
   }>();
   /** Flag to coalesce cross-process wakeup microtasks */
   private wakeScheduled = false;
+
+  /** Single deadline-min-heap that drives host-side timers (alarm,
+   * POSIX timers, sleep, socket SO_RCVTIMEO/SO_SNDTIMEO, etc.). */
+  private timerHeap = new IndexedTimerHeap();
+  /** Sentinel for the timer loop's Atomics.waitAsync. The value at
+   * index 0 stays at 0 forever; Atomics.notify only wakes waiters,
+   * it doesn't mutate. waitAsync(arr, 0, 0, t) succeeds indefinitely;
+   * notify() re-arms the loop on a new earlier deadline. */
+  private timerSentinel = new Int32Array(new SharedArrayBuffer(4));
+  private timerLoopRunning = false;
   /** Pending pipe/socket readers: pipeIdx → array of waiting channels.
    * When a read-like syscall returns EAGAIN on a pipe/socket fd, the reader
    * is registered here instead of using a blind setImmediate retry.
@@ -801,7 +901,7 @@ export class CentralizedKernelWorker {
    * blocks and has SO_RCVTIMEO/SO_SNDTIMEO set, a timer is scheduled
    * to complete the syscall with ETIMEDOUT. Cleared when the operation
    * completes before the timeout. */
-  private socketTimeoutTimers = new Map<ChannelInfo, ReturnType<typeof setTimeout>>();
+  private socketTimeoutTimers = new Map<ChannelInfo, TimerEntry>();
   /** Pending futex waits: channelOffset → { futexAddr, futexIndex }.
    * Tracked so SYS_THREAD_CANCEL can force-wake a futex-blocked thread
    * by firing Atomics.notify on the address it is waiting on. The waitAsync
@@ -891,21 +991,20 @@ export class CentralizedKernelWorker {
         const pid = this.currentHandlePid;
         if (pid === 0) return 0;
 
-        // Cancel any existing alarm for this process
         const existing = this.alarmTimers.get(pid);
         if (existing) {
-          clearTimeout(existing);
+          this.cancelHostTimer(existing);
           this.alarmTimers.delete(pid);
         }
 
         if (seconds > 0) {
-          const timer = setTimeout(() => {
+          const entry = this.scheduleHostTimer(seconds * 1000, () => {
             this.alarmTimers.delete(pid);
             if (this.processes.has(pid)) {
               this.sendSignalToProcess(pid, SIGALRM);
             }
-          }, seconds * 1000);
-          this.alarmTimers.set(pid, timer);
+          });
+          this.alarmTimers.set(pid, entry);
         }
         return 0;
       },
@@ -922,48 +1021,38 @@ export class CentralizedKernelWorker {
         if (pid === 0) return 0;
         const key = `${pid}:${timerId}`;
 
-        // Cancel any existing timer for this slot
         const existing = this.posixTimers.get(key);
         if (existing) {
-          clearTimeout(existing.timeout);
-          if (existing.interval) clearInterval(existing.interval);
+          this.cancelHostTimer(existing.entry);
           this.posixTimers.delete(key);
         }
 
         if (valueMs > 0 || intervalMs > 0) {
-          // valueMs > 0 means armed (0 = disarm, kernel ensures >= 1ms for armed timers)
           const delay = Math.max(0, valueMs);
-          const timeout = setTimeout(() => {
+          let firstFire = true;
+          const fire = () => {
             if (!this.processes.has(pid)) {
-              this.posixTimers.delete(key);
+              const e = this.posixTimers.get(key);
+              if (e) { this.cancelHostTimer(e.entry); this.posixTimers.delete(key); }
               return;
             }
-            this.sendSignalToProcess(pid, signo);
-
-            // Set up repeating interval if needed
-            if (intervalMs > 0) {
-              const iv = setInterval(() => {
-                if (!this.processes.has(pid)) {
-                  const entry = this.posixTimers.get(key);
-                  if (entry?.interval) clearInterval(entry.interval);
-                  this.posixTimers.delete(key);
-                  return;
-                }
-                // Check if signal is already pending (overrun) or new cycle
-                const intervalFire = this.kernelInstance!.exports
-                  .kernel_posix_timer_interval_fire as ((pid: number, timerId: number) => number) | undefined;
-                const alreadyPending = intervalFire ? intervalFire(pid, timerId) : 0;
-                if (!alreadyPending) {
-                  this.sendSignalToProcess(pid, signo);
-                }
-              }, intervalMs);
-              const entry = this.posixTimers.get(key);
-              if (entry) entry.interval = iv;
+            if (firstFire) {
+              firstFire = false;
+              this.sendSignalToProcess(pid, signo);
+              if (intervalMs === 0) this.posixTimers.delete(key);
             } else {
-              this.posixTimers.delete(key);
+              const intervalFire = this.kernelInstance!.exports
+                .kernel_posix_timer_interval_fire as ((pid: number, timerId: number) => number) | undefined;
+              const alreadyPending = intervalFire ? intervalFire(pid, timerId) : 0;
+              if (!alreadyPending) {
+                this.sendSignalToProcess(pid, signo);
+              }
             }
-          }, delay);
-          this.posixTimers.set(key, { timeout, signo });
+          };
+          const entry = intervalMs > 0
+            ? this.scheduleHostInterval(delay, intervalMs, fire)
+            : this.scheduleHostTimer(delay, fire);
+          this.posixTimers.set(key, { entry, signo });
         }
         return 0;
       },
@@ -1218,6 +1307,68 @@ export class CentralizedKernelWorker {
     };
   }
 
+  // ── Host-side deadline timers ──
+
+  scheduleHostTimer(delayMs: number, fn: () => void): TimerEntry {
+    return this.scheduleHostTimerInternal(delayMs, 0, fn);
+  }
+
+  scheduleHostInterval(delayMs: number, intervalMs: number, fn: () => void): TimerEntry {
+    return this.scheduleHostTimerInternal(delayMs, intervalMs, fn);
+  }
+
+  private scheduleHostTimerInternal(delayMs: number, intervalMs: number, fn: () => void): TimerEntry {
+    const entry: TimerEntry = {
+      deadlineMs: Date.now() + Math.max(0, delayMs),
+      fn,
+      intervalMs,
+      heapIdx: -1,
+      cancelled: false,
+    };
+    this.timerHeap.push(entry);
+    if (!this.timerLoopRunning) {
+      this.timerLoopRunning = true;
+      void this.runTimerLoop();
+    } else if (this.timerHeap.peek() === entry) {
+      Atomics.notify(this.timerSentinel, 0);
+    }
+    return entry;
+  }
+
+  cancelHostTimer(entry: TimerEntry | null | undefined): void {
+    if (!entry) return;
+    entry.cancelled = true;
+    this.timerHeap.remove(entry);
+  }
+
+  private async runTimerLoop(): Promise<void> {
+    try {
+      while (this.timerHeap.size() > 0) {
+        const top = this.timerHeap.peek()!;
+        const now = Date.now();
+        const delay = Math.max(0, top.deadlineMs - now);
+        if (delay > 0) {
+          const wait = Atomics.waitAsync(this.timerSentinel, 0, 0, delay);
+          if (wait.async) await wait.value;
+        }
+        const expiredAt = Date.now();
+        while (true) {
+          const e = this.timerHeap.peek();
+          if (!e || e.deadlineMs > expiredAt) break;
+          this.timerHeap.pop();
+          if (e.cancelled) continue;
+          try { e.fn(); } catch (err) { console.error("[timer-loop]", err); }
+          if (e.intervalMs > 0 && !e.cancelled) {
+            e.deadlineMs += e.intervalMs;
+            this.timerHeap.push(e);
+          }
+        }
+      }
+    } finally {
+      this.timerLoopRunning = false;
+    }
+  }
+
   // ── PTY management ──
 
   /**
@@ -1350,7 +1501,7 @@ export class CentralizedKernelWorker {
     // Clean up socket timeout timers for this process
     for (const [ch, timer] of this.socketTimeoutTimers) {
       if (ch.pid === pid) {
-        clearTimeout(timer);
+        this.cancelHostTimer(timer);
         this.socketTimeoutTimers.delete(ch);
       }
     }
@@ -1405,21 +1556,20 @@ export class CentralizedKernelWorker {
     // Cancel any pending alarm timer for this process
     const alarmTimer = this.alarmTimers.get(pid);
     if (alarmTimer) {
-      clearTimeout(alarmTimer);
+      this.cancelHostTimer(alarmTimer);
       this.alarmTimers.delete(pid);
     }
     // Cancel any pending posix timers for this process
     for (const [key, entry] of this.posixTimers) {
       if (key.startsWith(`${pid}:`)) {
-        clearTimeout(entry.timeout);
-        if (entry.interval) clearInterval(entry.interval);
+        this.cancelHostTimer(entry.entry);
         this.posixTimers.delete(key);
       }
     }
     // Cancel any pending sleep timer for this process
     const sleepTimer = this.pendingSleeps.get(pid);
     if (sleepTimer) {
-      clearTimeout(sleepTimer.timer);
+      this.cancelHostTimer(sleepTimer.entry);
       this.pendingSleeps.delete(pid);
     }
     // Clean up pending poll retries
@@ -1464,7 +1614,7 @@ export class CentralizedKernelWorker {
     this.cleanupPendingPipeWriters(pid);
     for (const [ch, timer] of this.socketTimeoutTimers) {
       if (ch.pid === pid) {
-        clearTimeout(timer);
+        this.cancelHostTimer(timer);
         this.socketTimeoutTimers.delete(ch);
       }
     }
@@ -2822,7 +2972,7 @@ export class CentralizedKernelWorker {
   private clearSocketTimeout(channel: ChannelInfo): void {
     const timer = this.socketTimeoutTimers.get(channel);
     if (timer !== undefined) {
-      clearTimeout(timer);
+      this.cancelHostTimer(timer);
       this.socketTimeoutTimers.delete(channel);
     }
   }
@@ -3228,15 +3378,14 @@ export class CentralizedKernelWorker {
         const isRecv = READ_LIKE_SYSCALLS.has(syscallNr) ? 1 : 0;
         const timeoutMs = Number(getTimeout(channel.pid, fd, isRecv));
         if (timeoutMs > 0) {
-          const timer = setTimeout(() => {
+          const entry = this.scheduleHostTimer(timeoutMs, () => {
             this.socketTimeoutTimers.delete(channel);
-            // Remove from pending pipe readers if registered
             this.removePendingPipeReader(channel);
             if (this.processes.has(channel.pid)) {
               this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], -1, ETIMEDOUT);
             }
-          }, timeoutMs);
-          this.socketTimeoutTimers.set(channel, timer);
+          });
+          this.socketTimeoutTimers.set(channel, entry);
         }
       }
     }
@@ -3398,13 +3547,13 @@ export class CentralizedKernelWorker {
     }
 
     if (delayMs > 0) {
-      const timer = setTimeout(() => {
+      const entry = this.scheduleHostTimer(delayMs, () => {
         this.pendingSleeps.delete(channel.pid);
         if (this.processes.has(channel.pid)) {
           this.completeSleepWithSignalCheck(channel, syscallNr, origArgs, retVal, errVal);
         }
-      }, delayMs);
-      this.pendingSleeps.set(channel.pid, { timer, channel, syscallNr, origArgs, retVal, errVal });
+      });
+      this.pendingSleeps.set(channel.pid, { entry, channel, syscallNr, origArgs, retVal, errVal });
       return true;
     }
 
@@ -5488,7 +5637,7 @@ export class CentralizedKernelWorker {
 
       // Cancel any pending blocking-syscall timers — the process is gone.
       const ps = this.pendingSleeps.get(pid);
-      if (ps) { clearTimeout(ps.timer); this.pendingSleeps.delete(pid); }
+      if (ps) { this.cancelHostTimer(ps.entry); this.pendingSleeps.delete(pid); }
 
       const proc = this.processes.get(pid);
       const ch = proc?.channels[0];
@@ -6058,7 +6207,7 @@ export class CentralizedKernelWorker {
     // 1. Pending sleep (nanosleep, usleep, clock_nanosleep)
     const pendingSleep = this.pendingSleeps.get(targetPid);
     if (pendingSleep) {
-      clearTimeout(pendingSleep.timer);
+      this.cancelHostTimer(pendingSleep.entry);
       this.pendingSleeps.delete(targetPid);
       this.completeSleepWithSignalCheck(
         pendingSleep.channel, pendingSleep.syscallNr, pendingSleep.origArgs,
