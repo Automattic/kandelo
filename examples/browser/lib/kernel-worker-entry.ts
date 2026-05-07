@@ -1056,69 +1056,62 @@ function pumpResponse(
   let sawWriteOpen = false;
   const startTime = Date.now();
   let totalBytes = 0;
+  let finished = false;
+  let unregister: (() => void) | null = null;
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  const kw = kernelWorker as any;
 
-  let pumpIter = 0;
-  const pump = () => {
-    pumpIter++;
-    if (Date.now() - startTime > HTTP_PUMP_TIMEOUT_MS) {
-      // Timeout — clean up and send error response
-      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-      console.warn(`[bridge] TIMEOUT req#${requestId} after ${elapsed}s, ${totalBytes} bytes received, sawWriteOpen=${sawWriteOpen}, url=${debugUrl}`);
-      pipeCloseReadDirect(pid, sendPipeIdx);
-      pipeCloseWriteDirect(pid, recvPipeIdx);
-      bridgePort!.postMessage({
-        type: "http-response",
-        requestId,
-        status: 504,
-        headers: {},
-        body: new Uint8Array(0),
-      });
-      return;
-    }
+  const finish = (status: number, body: Uint8Array, headers: Record<string, string>) => {
+    if (finished) return;
+    finished = true;
+    if (unregister) { unregister(); unregister = null; }
+    if (timeoutHandle !== null) { clearTimeout(timeoutHandle); timeoutHandle = null; }
+    pipeCloseReadDirect(pid, sendPipeIdx);
+    pipeCloseWriteDirect(pid, recvPipeIdx);
+    bridgePort!.postMessage({ type: "http-response", requestId, status, headers, body });
+  };
 
+  // Registered host pipe reader. Fires whenever the kernel side writes
+  // bytes into sendPipe or closes its write end. Replaces the prior
+  // setTimeout(pump, 2) polling loop.
+  const onReadable = () => {
+    if (finished) return;
     const data = pipeReadDirect(pid, sendPipeIdx);
     if (data) {
       chunks.push(data);
       totalBytes += data.length;
-      // Wake blocked writers
-      const kw = kernelWorker as any;
       const writers = kw.pendingPipeWriters?.get(sendPipeIdx);
       if (writers && writers.length > 0) {
         kw.pendingPipeWriters.delete(sendPipeIdx);
         for (const writer of writers) {
-          if (kw.processes.has(writer.pid)) {
-            kw.retrySyscall(writer.channel);
-          }
+          if (kw.processes.has(writer.pid)) kw.retrySyscall(writer.channel);
         }
       }
       kw.scheduleWakeBlockedRetries();
     }
 
-    const writeOpen = (kernelInstance!.exports.kernel_pipe_is_write_open as (pid: number, pipeIdx: number) => number)(pid, sendPipeIdx) === 1;
-    if (writeOpen && !sawWriteOpen) sawWriteOpen = true;
+    const writeOpen = pipeIsWriteOpenDirect(pid, sendPipeIdx);
+    if (writeOpen) sawWriteOpen = true;
 
     if (sawWriteOpen && !writeOpen && !data) {
-      // Response complete
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
       console.log(`[bridge] DONE req#${requestId} ${elapsed}s ${totalBytes}B ${debugUrl}`);
-      pipeCloseReadDirect(pid, sendPipeIdx);
-      pipeCloseWriteDirect(pid, recvPipeIdx);
-      const rawResponse = concatChunks(chunks);
-      const parsed = parseRawHttpResponse(rawResponse);
-      bridgePort!.postMessage({
-        type: "http-response",
-        requestId,
-        status: parsed.status,
-        headers: parsed.headers,
-        body: parsed.body,
-      });
-      return;
+      const parsed = parseRawHttpResponse(concatChunks(chunks));
+      finish(parsed.status, parsed.body, parsed.headers);
     }
-
-    setTimeout(pump, data ? 0 : 2);
   };
 
-  pump();
+  unregister = kw.registerHostPipeReader(sendPipeIdx, onReadable);
+
+  // Backstop for misbehaving handlers that never close the write end.
+  timeoutHandle = setTimeout(() => {
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    console.warn(`[bridge] TIMEOUT req#${requestId} after ${elapsed}s, ${totalBytes} bytes received, sawWriteOpen=${sawWriteOpen}, url=${debugUrl}`);
+    finish(504, new Uint8Array(0), {});
+  }, HTTP_PUMP_TIMEOUT_MS);
+
+  // Drain anything already buffered.
+  onReadable();
 }
 
 function concatChunks(chunks: Uint8Array[]): Uint8Array {

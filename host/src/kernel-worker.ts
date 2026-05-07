@@ -783,6 +783,20 @@ export class CentralizedKernelWorker {
    * When a write-like syscall returns EAGAIN on a pipe/socket fd (buffer full),
    * the writer is registered here. When a read drains the pipe, writers wake. */
   private pendingPipeWriters = new Map<number, Array<{channel: ChannelInfo, pid: number}>>();
+
+  /** Host-side pipe readers: pipeIdx → array of host callbacks to invoke
+   * synchronously when the pipe becomes readable. Used by the in-worker
+   * bridge code (browser HTTP bridge, Node TCP bridge) to wait for kernel
+   * processes to write into a pipe without polling. Fires from inside
+   * drainAndProcessWakeupEvents alongside the existing reader wakes. */
+  private pendingHostPipeReaders =
+    new Map<number, Array<{ onReadable: () => void }>>();
+
+  /** Host-side pipe writers: sendPipeIdx → array of host callbacks to invoke
+   * synchronously when the pipe becomes writable (drained). Used by the
+   * Node TCP bridge to retry drainInbound when the recv pipe was full. */
+  private pendingHostPipeWriters =
+    new Map<number, Array<{ onWritable: () => void }>>();
   /** Socket timeout timers: channel → timer. When a socket read/write
    * blocks and has SO_RCVTIMEO/SO_SNDTIMEO set, a timer is scheduled
    * to complete the syscall with ETIMEDOUT. Cleared when the operation
@@ -808,13 +822,16 @@ export class CentralizedKernelWorker {
   /** Processes with finite stdin (setStdinData). Reads return EOF when buffer exhausted.
    *  Processes NOT in this set get EAGAIN (blocking) when no stdin data is available. */
   private stdinFinite = new Set<number>();
-  /** Active TCP connections per process for piggyback flushing */
+  /** Active TCP connections per process for piggyback flushing.
+   * pumpOutbound drains the kernel send pipe to the client socket and
+   * checks for write-end close; flushTcpSendPipes calls it directly
+   * after a syscall completion to push response bytes synchronously. */
   private tcpConnections = new Map<number, Array<{
     sendPipeIdx: number;
     scratchOffset: number;
     clientSocket: import("net").Socket;
     recvPipeIdx: number;
-    schedulePump: () => void;
+    pumpOutbound: () => void;
   }>>();
   /** Per-process MAP_SHARED file-backed mappings: pid → Map<addr, info> */
   private sharedMappings = new Map<number, Map<number, {
@@ -1150,6 +1167,55 @@ export class CentralizedKernelWorker {
     }
     // Wake any blocked readers for this process
     this.scheduleWakeBlockedRetries();
+  }
+
+  // ── Host-side pipe-wake registration ──
+
+  /**
+   * Register a host-side reader callback for a kernel pipe. The callback
+   * fires synchronously from drainAndProcessWakeupEvents whenever the
+   * pipe transitions to readable (data appended OR write end closed).
+   *
+   * Replaces polling-based bridge pumps (browser HTTP bridge, Node TCP
+   * bridge) with event-driven drains. Returns an unregister function.
+   */
+  registerHostPipeReader(pipeIdx: number, onReadable: () => void): () => void {
+    let list = this.pendingHostPipeReaders.get(pipeIdx);
+    if (!list) {
+      list = [];
+      this.pendingHostPipeReaders.set(pipeIdx, list);
+    }
+    const entry = { onReadable };
+    list.push(entry);
+    return () => {
+      const cur = this.pendingHostPipeReaders.get(pipeIdx);
+      if (!cur) return;
+      const i = cur.indexOf(entry);
+      if (i >= 0) cur.splice(i, 1);
+      if (cur.length === 0) this.pendingHostPipeReaders.delete(pipeIdx);
+    };
+  }
+
+  /**
+   * Register a host-side writer callback for a kernel pipe. Fires when
+   * the pipe transitions to writable (drained or read-end closed).
+   * Used by the Node TCP bridge to retry queued inbound data.
+   */
+  registerHostPipeWriter(pipeIdx: number, onWritable: () => void): () => void {
+    let list = this.pendingHostPipeWriters.get(pipeIdx);
+    if (!list) {
+      list = [];
+      this.pendingHostPipeWriters.set(pipeIdx, list);
+    }
+    const entry = { onWritable };
+    list.push(entry);
+    return () => {
+      const cur = this.pendingHostPipeWriters.get(pipeIdx);
+      if (!cur) return;
+      const i = cur.indexOf(entry);
+      if (i >= 0) cur.splice(i, 1);
+      if (cur.length === 0) this.pendingHostPipeWriters.delete(pipeIdx);
+    };
   }
 
   // ── PTY management ──
@@ -2559,6 +2625,14 @@ export class CentralizedKernelWorker {
             }
           }
         }
+        // Host-side bridge callbacks. Snapshot because callbacks may
+        // unregister themselves (or register more).
+        const hostReaders = this.pendingHostPipeReaders.get(pipeIdx);
+        if (hostReaders && hostReaders.length > 0) {
+          for (const h of hostReaders.slice()) {
+            try { h.onReadable(); } catch (e) { console.error("[host-pipe-reader]", e); }
+          }
+        }
       }
 
       if (wakeType & WAKE_WRITABLE) {
@@ -2570,6 +2644,12 @@ export class CentralizedKernelWorker {
             if (this.processes.has(writer.pid)) {
               this.retrySyscall(writer.channel);
             }
+          }
+        }
+        const hostWriters = this.pendingHostPipeWriters.get(pipeIdx);
+        if (hostWriters && hostWriters.length > 0) {
+          for (const h of hostWriters.slice()) {
+            try { h.onWritable(); } catch (e) { console.error("[host-pipe-writer]", e); }
           }
         }
       }
@@ -2947,25 +3027,10 @@ export class CentralizedKernelWorker {
   private flushTcpSendPipes(pid: number): void {
     const conns = this.tcpConnections.get(pid);
     if (!conns || conns.length === 0) return;
-
-    const pipeRead = this.kernelInstance!.exports.kernel_pipe_read as
-      (pid: number, pipeIdx: number, bufPtr: bigint, bufLen: number) => number;
-    const mem = this.getKernelMem();
-
-    // Injected-connection pipes live in the global pipe table; pid=0
-    // tells kernel_pipe_read to use it directly. See kernel_inject_connection.
-    for (const conn of conns) {
-      // Drain all available data from the send pipe (not just one chunk)
-      for (;;) {
-        const readN = pipeRead(0, conn.sendPipeIdx, BigInt(conn.scratchOffset), 65536);
-        if (readN <= 0) break;
-        const outData = Buffer.from(mem.slice(conn.scratchOffset, conn.scratchOffset + readN));
-        if (!conn.clientSocket.destroyed) {
-          conn.clientSocket.write(outData);
-        }
-      }
-      // Schedule pump to detect pipe closure (PHP closing the socket)
-      conn.schedulePump();
+    // pumpOutbound drains the send pipe + handles write-end close.
+    // Iterating a snapshot since pumpOutbound may close + remove the conn.
+    for (const conn of conns.slice()) {
+      conn.pumpOutbound();
     }
   }
 
@@ -6494,15 +6559,17 @@ export class CentralizedKernelWorker {
     // Queue for incoming TCP data (written to recv pipe)
     const inboundQueue: Buffer[] = [];
     let clientEnded = false;
-    let pumpPending = false;
     let cleaned = false;
+    let unregisterReader: (() => void) | null = null;
+    let unregisterWriter: (() => void) | null = null;
 
     const scratchOffset = this.tcpScratchOffset;
 
     const pipeIsWriteOpen = this.kernelInstance!.exports.kernel_pipe_is_write_open as
       (pid: number, pipeIdx: number) => number;
 
-    // Drain inbound queue into recv pipe
+    // Drain inbound queue into recv pipe. If the pipe fills up, register
+    // a host pipe writer so we retry as soon as the kernel drains it.
     const drainInbound = () => {
       const mem = this.getKernelMem();
       while (inboundQueue.length > 0) {
@@ -6510,7 +6577,7 @@ export class CentralizedKernelWorker {
         const toWrite = Math.min(chunk.length, 65536);
         mem.set(chunk.subarray(0, toWrite), scratchOffset);
         const written = pipeWrite(GLOBAL_PIPE_PID, recvPipeIdx, BigInt(scratchOffset), toWrite);
-        if (written <= 0) break; // Pipe full, retry next pump
+        if (written <= 0) break; // Pipe full — wait for writer wakeup
         if (written >= chunk.length) {
           inboundQueue.shift();
         } else {
@@ -6519,76 +6586,42 @@ export class CentralizedKernelWorker {
       }
       if (clientEnded && inboundQueue.length === 0) {
         pipeCloseWrite(GLOBAL_PIPE_PID, recvPipeIdx);
+        if (unregisterWriter) { unregisterWriter(); unregisterWriter = null; }
+      } else if (inboundQueue.length > 0 && !unregisterWriter) {
+        unregisterWriter = this.registerHostPipeWriter(recvPipeIdx, drainInbound);
+      } else if (inboundQueue.length === 0 && unregisterWriter) {
+        unregisterWriter(); unregisterWriter = null;
       }
     };
 
-    // Read send pipe → TCP socket (drains all available data)
-    const drainOutbound = () => {
+    // Drain send pipe → TCP socket; on write-end close, end the connection.
+    // Registered as a host pipe reader on sendPipeIdx; replaces the
+    // pre-refactor perpetual setImmediate pump loop.
+    const pumpOutbound = () => {
+      if (cleaned) return;
       const mem = this.getKernelMem();
-      let totalRead = 0;
-      // Loop to drain the entire pipe, not just one 65KB chunk.
-      // Responses larger than 65KB (e.g. 662KB site-editor.php) need
-      // multiple reads to fully transfer.
       for (;;) {
         const readN = pipeRead(GLOBAL_PIPE_PID, sendPipeIdx, BigInt(scratchOffset), 65536);
         if (readN <= 0) break;
-        totalRead += readN;
         const outData = Buffer.from(mem.slice(scratchOffset, scratchOffset + readN));
         if (!clientSocket.destroyed) {
           clientSocket.write(outData);
         }
       }
-      return totalRead;
-    };
-
-    const schedulePump = (delayMs = 0) => {
-      if (pumpPending || cleaned) return;
-      pumpPending = true;
-      if (delayMs > 0) {
-        setTimeout(pump, delayMs);
-      } else {
-        setImmediate(pump);
-      }
-    };
-
-    const pump = () => {
-      pumpPending = false;
-      if (cleaned || !this.processes.has(pid)) {
-        cleanup();
-        return;
-      }
-
-      drainInbound();
-      const readN = drainOutbound();
-
-      // Check if PHP closed its write end of the send pipe
       const writeOpen = pipeIsWriteOpen(GLOBAL_PIPE_PID, sendPipeIdx);
-      if (writeOpen === 0 && readN === 0) {
+      if (writeOpen === 0) {
         if (!clientSocket.destroyed) {
           clientSocket.end();
         }
         cleanup();
-        return;
       }
-
-      // Always reschedule while connection is alive. After fork(), the child
-      // process writes response data to the same pipe, but flushTcpSendPipes
-      // is keyed by pid and won't find the parent's connections. Without
-      // continuous pumping, response data gets stranded in the pipe.
-      // Use setImmediate for both active and idle — the 2ms idle delay adds
-      // significant latency when fork children write to the send pipe (since
-      // flushTcpSendPipes is keyed by parent pid and won't find child writes).
-      schedulePump();
     };
 
-    // Incoming TCP data → write directly to recv pipe, queue overflow
     clientSocket.on("data", (chunk: Buffer) => {
       inboundQueue.push(chunk);
       if (!this.processes.has(pid)) { cleanup(); return; }
       drainInbound();
-      // Wake any process blocked on poll/pselect6 watching this recv pipe
       this.wakeBlockedPoll(pid, recvPipeIdx);
-      // Wake any process blocked on read/recv for this pipe
       const readers = this.pendingPipeReaders.get(recvPipeIdx);
       if (readers && readers.length > 0) {
         this.pendingPipeReaders.delete(recvPipeIdx);
@@ -6599,13 +6632,11 @@ export class CentralizedKernelWorker {
         }
       }
       this.scheduleWakeBlockedRetries();
-      // Schedule pump to handle outbound + close detection
-      schedulePump();
     });
 
     clientSocket.on("end", () => {
       clientEnded = true;
-      schedulePump();
+      drainInbound();
     });
 
     clientSocket.on("error", () => {
@@ -6614,28 +6645,29 @@ export class CentralizedKernelWorker {
     });
 
     clientSocket.on("close", () => {
-      connections.delete(clientSocket);
+      cleanup();
     });
 
-    // Register this connection for piggyback flushing
+    unregisterReader = this.registerHostPipeReader(sendPipeIdx, pumpOutbound);
+
     let conns = this.tcpConnections.get(pid);
     if (!conns) {
       conns = [];
       this.tcpConnections.set(pid, conns);
     }
-    const connEntry = { sendPipeIdx, scratchOffset, clientSocket, recvPipeIdx, schedulePump };
+    const connEntry = { sendPipeIdx, scratchOffset, clientSocket, recvPipeIdx, pumpOutbound };
     conns.push(connEntry);
+
+    pumpOutbound();
 
     const cleanup = () => {
       if (cleaned) return;
       cleaned = true;
-      // Close the host's ends of both pipes:
-      //   recvPipe: host is the writer → close write end
-      //   sendPipe: host is the reader → close read end
+      if (unregisterReader) { unregisterReader(); unregisterReader = null; }
+      if (unregisterWriter) { unregisterWriter(); unregisterWriter = null; }
       pipeCloseWrite(GLOBAL_PIPE_PID, recvPipeIdx);
       pipeCloseRead(GLOBAL_PIPE_PID, sendPipeIdx);
       connections.delete(clientSocket);
-      // Remove from tcpConnections tracking
       const arr = this.tcpConnections?.get(pid);
       if (arr) {
         const idx = arr.indexOf(connEntry);
