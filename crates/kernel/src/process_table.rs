@@ -48,6 +48,133 @@ pub struct ProcessTable {
     current_tid: u32,
 }
 
+/// Subset of parent state inherited by a `posix_spawn` child. Captured up
+/// front under an immutable `&parent` borrow so the rest of `spawn_child`
+/// can mutate `self.processes` freely.
+struct SpawnInheritFromParent {
+    uid: u32,
+    gid: u32,
+    euid: u32,
+    egid: u32,
+    pgid: u32,
+    sid: u32,
+    umask: u32,
+    nice: i32,
+    rlimits: [[u64; 2]; 16],
+    cwd: Vec<u8>,
+    blocked_signals: u64,
+    fd_table: crate::fd::FdTable,
+    ofd_table: crate::ofd::OfdTable,
+    sockets: crate::socket::SocketTable,
+}
+
+/// Bump cross-process refcounts on resources the child inherited from the
+/// parent (host file handles, global pipes, PTYs, and the global pipes
+/// referenced by sockets with `global_pipes`).
+///
+/// Both fork and spawn need this — once a child holds a reference to any of
+/// these shared resources, the parent closing or exiting must not free them
+/// out from under the child.
+///
+/// The function operates only on global tables and the child's own state,
+/// so it does not need access to `ProcessTable`.
+fn bump_inherited_resource_refcounts(child: &Process) {
+    let pipe_table = unsafe { crate::pipe::global_pipe_table() };
+
+    // Pipe-OFDs (host_handle is the negative-encoded global pipe index).
+    for (_idx, ofd) in child.ofd_table.iter() {
+        if ofd.file_type == FileType::Pipe && ofd.host_handle < 0 {
+            let pipe_idx = (-(ofd.host_handle + 1)) as usize;
+            if let Some(pipe) = pipe_table.get_mut(pipe_idx) {
+                let access_mode = ofd.status_flags & O_ACCMODE;
+                if access_mode == wasm_posix_shared::flags::O_RDONLY {
+                    pipe.add_reader();
+                } else {
+                    pipe.add_writer();
+                }
+            }
+        }
+    }
+
+    // Host file handles (regular files / dirs / chardevs / pipe-via-host).
+    for (_idx, ofd) in child.ofd_table.iter() {
+        if ofd.host_handle >= 0 {
+            match ofd.file_type {
+                FileType::Regular | FileType::Directory | FileType::CharDevice | FileType::Pipe => {
+                    crate::ofd::host_handle_fork_ref(ofd.host_handle);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // PTYs.
+    for (_idx, ofd) in child.ofd_table.iter() {
+        match ofd.file_type {
+            FileType::PtyMaster => {
+                let pty_idx = ofd.host_handle as usize;
+                if let Some(pty) = crate::pty::get_pty(pty_idx) {
+                    pty.master_refs += 1;
+                }
+            }
+            FileType::PtySlave => {
+                let pty_idx = ofd.host_handle as usize;
+                if let Some(pty) = crate::pty::get_pty(pty_idx) {
+                    pty.slave_refs += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Global pipes referenced by socket OFDs (cross-process loopback).
+    for (_idx, ofd) in child.ofd_table.iter() {
+        if ofd.file_type == FileType::Socket && ofd.host_handle < 0 {
+            let sock_idx = (-(ofd.host_handle + 1)) as usize;
+            if let Some(sock) = child.sockets.get(sock_idx) {
+                if sock.global_pipes {
+                    if let Some(send_idx) = sock.send_buf_idx {
+                        if let Some(pipe) = pipe_table.get_mut(send_idx) {
+                            pipe.add_writer();
+                        }
+                    }
+                    if let Some(recv_idx) = sock.recv_buf_idx {
+                        if let Some(pipe) = pipe_table.get_mut(recv_idx) {
+                            pipe.add_reader();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Build the fork-only `fork_pipe_replay` table: a list of (read_fd,
+/// write_fd) pairs so that when the child re-runs pre-fork code under
+/// asyncify rewind, `sys_pipe` returns the same fd numbers the parent saw.
+/// Spawn doesn't replay code, so this stays fork-local.
+fn build_fork_pipe_replay(child: &Process) -> Vec<(i32, i32)> {
+    use alloc::collections::BTreeMap;
+    let mut pipe_fd_pairs: BTreeMap<usize, (i32, i32)> = BTreeMap::new();
+    for fd in 0..1024i32 {
+        if let Ok(entry) = child.fd_table.get(fd) {
+            if let Some(ofd) = child.ofd_table.get(entry.ofd_ref.0) {
+                if ofd.file_type == FileType::Pipe && ofd.host_handle < 0 {
+                    let pipe_idx = (-(ofd.host_handle + 1)) as usize;
+                    let access_mode = ofd.status_flags & O_ACCMODE;
+                    let pair = pipe_fd_pairs.entry(pipe_idx).or_insert((-1, -1));
+                    if access_mode == wasm_posix_shared::flags::O_RDONLY {
+                        pair.0 = fd;
+                    } else {
+                        pair.1 = fd;
+                    }
+                }
+            }
+        }
+    }
+    pipe_fd_pairs.into_values().collect()
+}
+
 impl ProcessTable {
     pub const fn new() -> Self {
         ProcessTable {
@@ -233,25 +360,6 @@ impl ProcessTable {
     /// Uses the existing fork serialization infrastructure to deep-copy Process state.
     /// Returns Ok(()) on success, Err(errno) on failure.
     pub fn fork_process(&mut self, parent_pid: u32, child_pid: u32) -> Result<(), Errno> {
-        self.clone_process_state(parent_pid, child_pid)?;
-
-        // Parent's fork-counter regression guardrail. The non-forking spawn
-        // tests assert this stays put across a SYS_SPAWN, proving the new
-        // path doesn't fall back to fork.
-        if let Some(parent) = self.processes.get_mut(&parent_pid) {
-            parent.increment_fork_count();
-        }
-        Ok(())
-    }
-
-    /// Deep-copy a parent's Process state into a new child entry.
-    ///
-    /// Shared by `fork_process` and `spawn_child`. Handles fd/ofd refcount
-    /// bookkeeping (host handles, pipes, PTYs, sockets) plus the
-    /// `fork_pipe_replay` reconstruction. Does **not** bump the parent's
-    /// fork counter — fork_process layers that on top; spawn_child must
-    /// not.
-    fn clone_process_state(&mut self, parent_pid: u32, child_pid: u32) -> Result<(), Errno> {
         if self.processes.contains_key(&child_pid) {
             return Err(Errno::EEXIST);
         }
@@ -263,124 +371,45 @@ impl ProcessTable {
         let written = crate::fork::serialize_fork_state(parent, &mut buf)?;
 
         // Deserialize as child
-        let child = crate::fork::deserialize_fork_state(&buf[..written], child_pid)?;
+        let mut child = crate::fork::deserialize_fork_state(&buf[..written], child_pid)?;
 
-        // Increment pipe ref counts in the global pipe table for pipe OFDs
-        // that the child inherited from the parent.
-        // Also build pipe_fd_pairs for fork_pipe_replay (ordered by pipe_idx).
-        use alloc::collections::BTreeMap;
-        let pipe_table = unsafe { crate::pipe::global_pipe_table() };
-        let mut pipe_fd_pairs: BTreeMap<usize, (i32, i32)> = BTreeMap::new(); // pipe_idx → (read_fd, write_fd)
-        for (_ofd_idx, ofd) in child.ofd_table.iter() {
-            if ofd.file_type == FileType::Pipe && ofd.host_handle < 0 {
-                let pipe_idx = (-(ofd.host_handle + 1)) as usize;
-                if let Some(pipe) = pipe_table.get_mut(pipe_idx) {
-                    let access_mode = ofd.status_flags & O_ACCMODE;
-                    if access_mode == wasm_posix_shared::flags::O_RDONLY {
-                        pipe.add_reader();
-                    } else {
-                        pipe.add_writer();
-                    }
-                }
-            }
-        }
+        // Bump cross-process refcounts on inherited fd state (host handles,
+        // global pipes, PTYs, socket-pipes). Identical to spawn's needs —
+        // factored out into a free helper.
+        bump_inherited_resource_refcounts(&child);
 
-        // Increment cross-process refcount for host file handles (regular files,
-        // directories, etc.) so that fork children closing their FDs don't
-        // invalidate host handles the parent still uses.
-        for (_ofd_idx, ofd) in child.ofd_table.iter() {
-            if ofd.host_handle >= 0 {
-                match ofd.file_type {
-                    FileType::Regular | FileType::Directory | FileType::CharDevice | FileType::Pipe => {
-                        crate::ofd::host_handle_fork_ref(ofd.host_handle);
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        // Increment PTY refcounts for inherited PTY OFDs.
-        for (_ofd_idx, ofd) in child.ofd_table.iter() {
-            match ofd.file_type {
-                FileType::PtyMaster => {
-                    let pty_idx = ofd.host_handle as usize;
-                    if let Some(pty) = crate::pty::get_pty(pty_idx) {
-                        pty.master_refs += 1;
-                    }
-                }
-                FileType::PtySlave => {
-                    let pty_idx = ofd.host_handle as usize;
-                    if let Some(pty) = crate::pty::get_pty(pty_idx) {
-                        pty.slave_refs += 1;
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        // Increment global pipe ref counts for cross-process socket OFDs.
-        // Without this, the parent closing/exiting would free pipes still
-        // needed by the child (or vice versa).
-        for (_ofd_idx, ofd) in child.ofd_table.iter() {
-            if ofd.file_type == FileType::Socket && ofd.host_handle < 0 {
-                let sock_idx = (-(ofd.host_handle + 1)) as usize;
-                if let Some(sock) = child.sockets.get(sock_idx) {
-                    if sock.global_pipes {
-                        if let Some(send_idx) = sock.send_buf_idx {
-                            if let Some(pipe) = pipe_table.get_mut(send_idx) {
-                                pipe.add_writer();
-                            }
-                        }
-                        if let Some(recv_idx) = sock.recv_buf_idx {
-                            if let Some(pipe) = pipe_table.get_mut(recv_idx) {
-                                pipe.add_reader();
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Build fork_pipe_replay: map pipe FDs by pipe_idx
-        // Scan fd_table → ofd_table to find (read_fd, write_fd) pairs per pipe_idx
-        for fd in 0..1024i32 {
-            if let Ok(entry) = child.fd_table.get(fd) {
-                if let Some(ofd) = child.ofd_table.get(entry.ofd_ref.0) {
-                    if ofd.file_type == FileType::Pipe && ofd.host_handle < 0 {
-                        let pipe_idx = (-(ofd.host_handle + 1)) as usize;
-                        let access_mode = ofd.status_flags & O_ACCMODE;
-                        let pair = pipe_fd_pairs.entry(pipe_idx).or_insert((-1, -1));
-                        if access_mode == wasm_posix_shared::flags::O_RDONLY {
-                            pair.0 = fd;
-                        } else {
-                            pair.1 = fd;
-                        }
-                    }
-                }
-            }
-        }
-        let mut child = child;
-        child.fork_pipe_replay = pipe_fd_pairs.into_values().collect();
+        // Build fork-only `fork_pipe_replay` (asyncify replay needs it to
+        // return the same fds as the parent did when re-running
+        // pre-fork code). Spawn doesn't replay, so this stays fork-local.
+        child.fork_pipe_replay = build_fork_pipe_replay(&child);
 
         self.processes.insert(child_pid, child);
+
+        // Parent's fork-counter regression guardrail. The non-forking spawn
+        // tests assert this stays put across a SYS_SPAWN, proving the new
+        // path doesn't fall back to fork. Re-borrow at the very end because
+        // earlier code held an immutable `&parent`.
+        if let Some(parent) = self.processes.get_mut(&parent_pid) {
+            parent.increment_fork_count();
+        }
+
         Ok(())
     }
 
     /// Non-forking spawn: build a child process for `posix_spawn` without
-    /// going through the fork/asyncify path. The child inherits the
-    /// parent's fd table (with refcounts handled exactly as fork does), but
-    /// runs a fresh program directly via a new host worker — no asyncify
-    /// rewind, no fork-pipe replay.
+    /// going through fork/asyncify at all. The child is constructed from a
+    /// fresh `Process::new(child_pid)` and selectively inherits only what
+    /// POSIX requires (identity, cwd, umask, rlimits, signal mask, fd
+    /// state); everything else (signal handlers, threads, mmap, alt-stack,
+    /// terminal state, pending signals, alarms) is left at the
+    /// `Process::new` defaults — exec semantics would reset those anyway.
     ///
-    /// `argv` and `envp` are the new program's argv/envp (not the parent's).
-    /// Path strings are owned by the caller's slice; they are copied into
-    /// the child's process state.
+    /// `argv` and `envp` come from the spawn caller, not the parent.
     ///
-    /// Critically, `fork_count` on the parent is **not** incremented — the
-    /// regression test for the spawn fast-path asserts this.
+    /// Critically, `fork_count` on the parent is **not** incremented.
     ///
-    /// File actions and spawn attributes are accepted but not yet applied;
-    /// they are handled in subsequent commits.
+    /// File actions and spawn attributes are accepted but not yet applied
+    /// (Tasks 8 / 9).
     pub fn spawn_child(
         &mut self,
         parent_pid: u32,
@@ -389,24 +418,68 @@ impl ProcessTable {
         _file_actions: &[crate::spawn::FileAction],
         _attrs: &crate::spawn::SpawnAttrs,
     ) -> Result<u32, Errno> {
-        if !self.processes.contains_key(&parent_pid) {
-            return Err(Errno::ESRCH);
-        }
+        // Snapshot inheritable parent state under an immutable borrow.
+        let inherit = {
+            let parent = self.processes.get(&parent_pid).ok_or(Errno::ESRCH)?;
+            SpawnInheritFromParent {
+                uid: parent.uid,
+                gid: parent.gid,
+                euid: parent.euid,
+                egid: parent.egid,
+                pgid: parent.pgid,
+                sid: parent.sid,
+                umask: parent.umask,
+                nice: parent.nice,
+                rlimits: parent.rlimits,
+                cwd: parent.cwd.clone(),
+                blocked_signals: parent.signals.blocked,
+                fd_table: parent.fd_table.clone(),
+                ofd_table: parent.ofd_table.clone(),
+                sockets: parent.sockets.clone(),
+            }
+        };
 
         let child_pid = self.allocate_spawn_pid();
+        let mut child = Process::new(child_pid);
 
-        // Deep-copy parent state without bumping the fork counter.
-        self.clone_process_state(parent_pid, child_pid)?;
+        // ── POSIX-required inheritance ─────────────────────────────────
+        child.ppid = parent_pid;
+        child.uid = inherit.uid;
+        child.gid = inherit.gid;
+        child.euid = inherit.euid;
+        child.egid = inherit.egid;
+        child.pgid = inherit.pgid;     // POSIX_SPAWN_SETPGROUP may override (Task 9).
+        child.sid = inherit.sid;       // POSIX_SPAWN_SETSID may override (Task 9).
+        child.umask = inherit.umask;
+        child.nice = inherit.nice;
+        child.rlimits = inherit.rlimits;
+        child.cwd = inherit.cwd;
 
-        // Customize the child for spawn semantics: a fresh worker will run
-        // the new program from `_start`, so the fork-replay machinery is
-        // inapplicable and argv/envp come from the spawn caller, not from
-        // the parent's image.
-        if let Some(child) = self.processes.get_mut(&child_pid) {
-            child.fork_pipe_replay.clear();
-            child.argv = argv.iter().map(|s| s.to_vec()).collect();
-            child.environ = envp.iter().map(|s| s.to_vec()).collect();
-        }
+        // The new program's argv/envp come from the spawn caller.
+        child.argv = argv.iter().map(|s| s.to_vec()).collect();
+        child.environ = envp.iter().map(|s| s.to_vec()).collect();
+
+        // Parent's fd state replaces the default stdio table from
+        // Process::new (we want the parent's open fds, not fresh stdio).
+        // The Process::new-created OFDs at indices 0/1/2 are dropped here
+        // without decrementing any global refcount because Process::new
+        // never bumped them.
+        child.fd_table = inherit.fd_table;
+        child.ofd_table = inherit.ofd_table;
+        child.sockets = inherit.sockets;
+
+        // Signal mask is inherited; POSIX_SPAWN_SETSIGMASK overrides
+        // (Task 9). Signal handlers stay at Process::new defaults — that
+        // matches POSIX exec's implicit reset (caught → SIG_DFL); SIG_IGN
+        // preservation across exec is handled in Task 9 alongside SETSIGDEF.
+        child.signals.blocked = inherit.blocked_signals;
+
+        self.processes.insert(child_pid, child);
+
+        // Bump cross-process refcounts on the inherited fd state. The same
+        // helper fork uses — this is the genuinely-shared concern.
+        let child_ref = self.processes.get(&child_pid).unwrap();
+        bump_inherited_resource_refcounts(child_ref);
 
         Ok(child_pid)
     }

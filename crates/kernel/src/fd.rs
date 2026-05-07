@@ -18,6 +18,7 @@ pub struct FdEntry {
 ///
 /// Maps integer file descriptors to open file description references.
 /// Guarantees lowest-available-fd allocation (POSIX requirement).
+#[derive(Clone)]
 pub struct FdTable {
     /// Sparse table: index is the fd number, `None` means the slot is free.
     entries: Vec<Option<FdEntry>>,

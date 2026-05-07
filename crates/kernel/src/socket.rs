@@ -29,6 +29,7 @@ pub enum SocketState {
 }
 
 /// A received UDP datagram.
+#[derive(Clone)]
 pub struct Datagram {
     pub data: Vec<u8>,
     pub src_addr: [u8; 4],
@@ -36,6 +37,7 @@ pub struct Datagram {
 }
 
 /// Per-socket kernel state.
+#[derive(Clone)]
 pub struct SocketInfo {
     pub domain: SocketDomain,
     pub sock_type: SocketType,
@@ -140,6 +142,7 @@ impl SocketInfo {
 }
 
 /// Table of socket state, indexed by socket slot.
+#[derive(Clone)]
 pub struct SocketTable {
     entries: Vec<Option<SocketInfo>>,
 }
