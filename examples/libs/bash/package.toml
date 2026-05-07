@@ -2,6 +2,7 @@ kind = "program"
 name = "bash"
 version = "5.2.37"
 revision = 1
+kernel_abi = 7
 depends_on = ["ncurses@6.5"]
 
 [source]

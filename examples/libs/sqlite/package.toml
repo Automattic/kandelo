@@ -10,6 +10,7 @@ kind = "library"
 name = "sqlite"
 version = "3.49.1"
 revision = 1
+kernel_abi = 7
 depends_on = []
 # Opt into wasm64 because PHP depends on it. See
 # memory/wasm64-build-policy.md.

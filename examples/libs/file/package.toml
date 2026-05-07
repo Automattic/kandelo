@@ -2,6 +2,7 @@ kind = "program"
 name = "file"
 version = "5.45"
 revision = 1
+kernel_abi = 7
 depends_on = []
 
 [source]

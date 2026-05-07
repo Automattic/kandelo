@@ -2,6 +2,7 @@ kind = "program"
 name = "m4"
 version = "1.4.19"
 revision = 1
+kernel_abi = 7
 depends_on = []
 
 [source]

@@ -2,6 +2,7 @@ kind = "program"
 name = "lamp"
 version = "0.1.0"
 revision = 1
+kernel_abi = 7
 # Implicit deps: build-lamp-vfs-image.ts reads:
 #   - dash.wasm, nginx.wasm, php-fpm.wasm, coreutils.wasm, sed.wasm
 #     via `resolveBinary("programs/<x>.wasm")` (each consumed at

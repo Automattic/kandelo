@@ -2,6 +2,7 @@ kind = "program"
 name = "zip"
 version = "3.0"
 revision = 1
+kernel_abi = 7
 depends_on = []
 
 [source]

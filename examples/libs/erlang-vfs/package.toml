@@ -2,6 +2,7 @@ kind = "program"
 name = "erlang-vfs"
 version = "0.1.0"
 revision = 1
+kernel_abi = 7
 # Implicit dep: build-erlang-vfs-image.ts reads the OTP runtime files
 # from `examples/libs/erlang/erlang-install/` — populated as a side
 # effect of `build-erlang.sh`. Without this declaration a clean

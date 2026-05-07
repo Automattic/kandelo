@@ -2,6 +2,7 @@ kind = "program"
 name = "mariadb-vfs"
 version = "0.1.0"
 revision = 1
+kernel_abi = 7
 # Implicit deps: build-mariadb-vfs-image.ts
 #   - reads mariadbd + bootstrap SQL from `examples/libs/mariadb/mariadb-install{,-64}/`
 #     (side effect of `build-mariadb.sh`)

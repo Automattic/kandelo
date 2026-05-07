@@ -2,6 +2,7 @@ kind = "program"
 name = "wordpress"
 version = "6.8"
 revision = 1
+kernel_abi = 7
 # build-wp-vfs-image.ts:
 #   - uses `resolveBinary("programs/<x>.wasm")` (strict) for
 #     dash/nginx/php-fpm/coreutils/sed

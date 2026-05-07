@@ -2,6 +2,7 @@ kind = "program"
 name = "curl"
 version = "8.11.1"
 revision = 1
+kernel_abi = 7
 # curl is a side-output of libcurl's build (libcurl's autoconf produces
 # both lib/libcurl.a and src/curl). Keep this manifest aligned with
 # libcurl's source so build-curl.sh — which delegates to

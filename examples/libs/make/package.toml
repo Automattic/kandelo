@@ -2,6 +2,7 @@ kind = "program"
 name = "make"
 version = "4.4.1"
 revision = 1
+kernel_abi = 7
 depends_on = []
 
 [source]

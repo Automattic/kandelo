@@ -2,6 +2,7 @@ kind = "program"
 name = "quickjs"
 version = "0.12.1"
 revision = 1
+kernel_abi = 7
 depends_on = []
 
 [source]

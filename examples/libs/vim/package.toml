@@ -2,6 +2,7 @@ kind = "program"
 name = "vim"
 version = "9.1.0900"
 revision = 2
+kernel_abi = 7
 depends_on = []
 
 [source]

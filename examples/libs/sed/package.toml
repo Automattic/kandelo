@@ -2,6 +2,7 @@ kind = "program"
 name = "sed"
 version = "4.9"
 revision = 1
+kernel_abi = 7
 depends_on = []
 
 [source]

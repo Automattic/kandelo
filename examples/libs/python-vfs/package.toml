@@ -2,6 +2,7 @@ kind = "program"
 name = "python-vfs"
 version = "0.1.0"
 revision = 1
+kernel_abi = 7
 # Implicit dep: build-python-vfs-image.ts reads the CPython stdlib
 # from `examples/libs/cpython/cpython-src/Lib/` — populated as a
 # side effect of `build-cpython.sh`'s tarball extraction. Without

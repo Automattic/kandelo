@@ -2,6 +2,7 @@ kind = "program"
 name = "dinit"
 version = "0.19.4"
 revision = 1
+kernel_abi = 7
 depends_on = []
 
 [source]

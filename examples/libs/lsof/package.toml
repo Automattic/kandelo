@@ -2,6 +2,7 @@ kind = "program"
 name = "lsof"
 version = "0.1.0"
 revision = 1
+kernel_abi = 7
 depends_on = []
 
 # In-tree implementation, not the upstream lsof. The source lives at

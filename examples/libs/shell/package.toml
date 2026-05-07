@@ -2,6 +2,7 @@ kind = "program"
 name = "shell"
 version = "0.1.0"
 revision = 1
+kernel_abi = 7
 # Implicit deps consumed by build-shell-vfs-image.ts and the
 # build-{vim,nethack}-zip.sh helpers it drives:
 #

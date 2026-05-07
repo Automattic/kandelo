@@ -2,6 +2,7 @@ kind = "program"
 name = "mariadb"
 version = "10.5.28"
 revision = 1
+kernel_abi = 7
 depends_on = ["pcre2-source@10.44", "libcxx@21"]
 # Opt into wasm64 — see memory/wasm64-build-policy.md.
 arches = ["wasm32", "wasm64"]

@@ -12,6 +12,7 @@ kind = "library"
 name = "ncurses"
 version = "6.5"
 revision = 1
+kernel_abi = 7
 depends_on = []
 
 [source]

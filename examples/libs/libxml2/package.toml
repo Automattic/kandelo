@@ -10,6 +10,7 @@ kind = "library"
 name = "libxml2"
 version = "2.13.8"
 revision = 1
+kernel_abi = 7
 depends_on = ["zlib@1.3.1"]
 # Opt into wasm64 because PHP depends on it. See
 # memory/wasm64-build-policy.md.

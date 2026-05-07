@@ -2,6 +2,7 @@ kind = "program"
 name = "nethack"
 version = "3.6.7"
 revision = 2
+kernel_abi = 7
 depends_on = ["ncurses@6.5"]
 
 [source]

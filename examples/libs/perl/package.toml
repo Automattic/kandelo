@@ -2,6 +2,7 @@ kind = "program"
 name = "perl"
 version = "5.40.3"
 revision = 1
+kernel_abi = 7
 depends_on = []
 
 [source]

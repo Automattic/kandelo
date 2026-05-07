@@ -2,6 +2,7 @@ kind = "program"
 name = "perl-vfs"
 version = "0.1.0"
 revision = 1
+kernel_abi = 7
 # Declares perl as a dep so the resolver builds perl FIRST, leaving
 # `examples/libs/perl/perl-src/` populated as a side effect of
 # `build-perl.sh`'s tarball extraction. `build-perl-vfs-image.ts`

@@ -6,6 +6,7 @@ version = "2025"
 # from rev1 to invalidate any cached rev1 archives that only contain
 # pdftex.wasm.
 revision = 2
+kernel_abi = 7
 depends_on = ["zlib@1.3.1", "libpng@1.6.43"]
 
 [source]

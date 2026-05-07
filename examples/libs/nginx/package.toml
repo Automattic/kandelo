@@ -2,6 +2,7 @@ kind = "program"
 name = "nginx"
 version = "1.24.0"
 revision = 1
+kernel_abi = 7
 depends_on = []
 
 [source]

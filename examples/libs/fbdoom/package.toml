@@ -5,6 +5,7 @@ version = "0.1.0"
 # the browser demo gets the WAD via the resolver chain — no separate
 # fetch in `examples/browser/public/assets/doom/` required.
 revision = 2
+kernel_abi = 7
 depends_on = []
 
 # Upstream is a depth-1 git clone of maximevince/fbDOOM at HEAD; no

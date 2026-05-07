@@ -2,6 +2,7 @@ kind = "program"
 name = "tcl"
 version = "9.0.1"
 revision = 1
+kernel_abi = 7
 depends_on = []
 
 [source]
