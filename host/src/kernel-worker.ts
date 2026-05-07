@@ -607,9 +607,8 @@ interface ChannelInfo {
   i32View: Int32Array;
   /** @deprecated Kept for compat — no longer used after relistenChannel simplification. */
   consecutiveSyscalls: number;
-  /** True while this channel is being handled by handleSyscall or an async
-   *  retry/sleep/fork/exec path. Prevents the poller from re-entering a
-   *  channel that is already in flight. Only used when usePolling=true. */
+  /** True while this channel is being handled by handleSyscall or an
+   *  async retry/sleep/fork/exec path. Reset by relistenChannel. */
   handling?: boolean;
 }
 
@@ -1228,14 +1227,9 @@ export class CentralizedKernelWorker {
     this.processes.set(pid, registration);
     this.activeChannels.push(...channels);
 
-    if (this.usePolling) {
-      // Polling mode: start the poller (no per-channel listeners)
-      this.startPolling();
-    } else {
-      // Event-driven mode: start listening on each channel
-      for (const channel of channels) {
-        this.listenOnChannel(channel);
-      }
+    // Event-driven mode: start listening on each channel via Atomics.waitAsync.
+    for (const channel of channels) {
+      this.listenOnChannel(channel);
     }
   }
 
@@ -1558,11 +1552,6 @@ export class CentralizedKernelWorker {
     this.stdinFinite.delete(pid);
     this.stdinBuffers.delete(pid);
 
-    // Stop poller if no more processes
-    if (this.usePolling && this.processes.size === 0) {
-      this.stopPolling();
-    }
-
     // Clean up PTY state
     const ptyIdx = this.ptyIndexByPid.get(pid);
     if (ptyIdx !== undefined) {
@@ -1695,10 +1684,7 @@ export class CentralizedKernelWorker {
       setMaxAddr(pid, BigInt(tlsPageAddr));
     }
 
-    // In polling mode, the poller picks up new channels automatically.
-    if (!this.usePolling) {
-      this.listenOnChannel(channel);
-    }
+    this.listenOnChannel(channel);
   }
 
   /**
@@ -2539,88 +2525,9 @@ export class CentralizedKernelWorker {
   }
 
 
-  /**
-   * When true, use a MessageChannel-based poller to check all channels
-   * instead of per-channel Atomics.waitAsync listeners.
-   *
-   * This avoids a V8 bug where Atomics.waitAsync microtask chains from
-   * multiple concurrent processes freeze the main thread. The poller
-   * uses MessageChannel for ~0ms dispatch (bypassing the browser's 4ms
-   * timer clamp on setTimeout/setInterval), with periodic setTimeout
-   * yields every 4ms to keep timers and rendering alive.
-   *
-   * Enable this in browser environments where the kernel runs on the
-   * main thread. In Node.js (where setImmediate is native), the default
-   * event-driven mode (Atomics.waitAsync) is preferred.
-   */
-  usePolling = false;
-  private pollMC: MessageChannel | null = null;
-  private pollScheduled = false;
-  private pollLastYield = 0;
-
-  /** Start the channel poller. Called automatically when usePolling=true
-   *  and a process is registered. */
-  private startPolling(): void {
-    if (this.pollMC !== null) return;
-    this.pollMC = new MessageChannel();
-    this.pollMC.port1.onmessage = () => this.pollTick();
-    this.pollLastYield = performance.now();
-    this.schedulePoll();
-  }
-
-  /** Stop the channel poller. Called when all processes are unregistered. */
-  private stopPolling(): void {
-    if (this.pollMC !== null) {
-      this.pollMC.port1.close();
-      this.pollMC = null;
-      this.pollScheduled = false;
-    }
-  }
-
-  /** Schedule the next poll tick. Uses MessageChannel for ~0ms dispatch,
-   *  with a setTimeout yield every 4ms to prevent timer starvation. */
-  private schedulePoll(): void {
-    if (this.pollScheduled || !this.pollMC) return;
-    this.pollScheduled = true;
-    const now = performance.now();
-    if (now - this.pollLastYield >= 4) {
-      // Yield to timers/rendering
-      this.pollLastYield = now;
-      setTimeout(() => {
-        this.pollScheduled = false;
-        this.pollTick();
-      }, 0);
-    } else {
-      this.pollMC.port2.postMessage(null);
-    }
-  }
-
-  /** Poll all active channels for PENDING syscalls. */
-  private pollTick(): void {
-    this.pollScheduled = false;
-    if (!this.pollMC || this.activeChannels.length === 0) return;
-
-    // Snapshot to handle mutations during iteration (addChannel/removeChannel)
-    const channels = this.activeChannels.slice();
-    for (const channel of channels) {
-      if (channel.handling) continue;
-      // Re-create view in case memory was grown
-      const i32View = new Int32Array(channel.memory.buffer, channel.channelOffset);
-      channel.i32View = i32View;
-      if (Atomics.load(i32View, 0) === CH_PENDING) {
-        channel.handling = true;
-        this.handleSyscall(channel);
-      }
-    }
-
-    this.schedulePoll();
-  }
-
   private relistenChannel(channel: ChannelInfo): void {
     channel.handling = false;
     if (!this.processes.has(channel.pid)) return;
-    // In polling mode, don't re-listen — the poller will pick up the next syscall
-    if (this.usePolling) return;
     // Always queueMicrotask. The pre-refactor every-Nth setImmediate yield
     // existed so setTimeout/setInterval callbacks could interleave; the
     // timer heap (Step 2) and the macrotask heartbeat (fda4a9f09) cover
