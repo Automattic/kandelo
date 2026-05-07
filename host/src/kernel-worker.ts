@@ -1132,8 +1132,28 @@ export class CentralizedKernelWorker {
     this.lockTable = SharedLockTable.create();
     this.kernel.registerSharedLockTable(this.lockTable.getBuffer());
 
+    // Macrotask heartbeat. A no-op setInterval is required to keep the
+    // event loop's macrotask queue ticking at a regular cadence.
+    //
+    // Why: Atomics.waitAsync promise resolution is technically a
+    // microtask, but in practice browser engines drain it more
+    // promptly when the macrotask queue is also active. The
+    // pre-refactor bridge pump's setTimeout(pump, 2) and the
+    // setTimeout-backed alarm/posix/sleep timers provided ~hundreds
+    // of macrotask boundaries per second incidentally. Step 1 +
+    // Step 2 removed almost all of those, dropping the boot of the
+    // LAMP demo from ~90 s to ~720 s. A single 4 ms heartbeat
+    // restores normal pacing without re-introducing polling.
+    //
+    // No explicit cleanup — the interval handle is owned by the
+    // worker's event loop and is destroyed when the worker
+    // terminates.
+    this.heartbeatTimer = setInterval(() => {}, 4);
+
     this.initialized = true;
   }
+
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
   /**
    * Register a process and its thread channels with the kernel.
