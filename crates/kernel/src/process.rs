@@ -652,6 +652,38 @@ mod tests {
     }
 
     #[test]
+    fn spawn_child_basic_inherits_cwd_and_returns_pid() {
+        use crate::process_table::ProcessTable;
+        use crate::spawn::SpawnAttrs;
+        let mut table = ProcessTable::new();
+        table.create_process(100).unwrap();
+        table.processes.get_mut(&100).unwrap().cwd = b"/tmp".to_vec();
+
+        let child_pid = table
+            .spawn_child(
+                100,
+                &[b"/bin/echo".as_slice(), b"hi".as_slice()],
+                &[b"PATH=/bin".as_slice()],
+                &[],
+                &SpawnAttrs::empty(),
+            )
+            .expect("spawn_child");
+
+        assert_ne!(child_pid, 100, "child pid must differ from parent");
+        let child = table.get(child_pid).expect("child in table");
+        assert_eq!(child.cwd, b"/tmp", "child inherits parent cwd");
+        assert_eq!(child.ppid, 100, "child ppid is parent pid");
+        assert_eq!(
+            child.argv,
+            alloc::vec![b"/bin/echo".to_vec(), b"hi".to_vec()],
+            "child argv comes from caller, not parent"
+        );
+        // The whole point of non-forking spawn: the parent's fork counter
+        // must NOT bump.
+        assert_eq!(table.get(100).unwrap().fork_count(), 0);
+    }
+
+    #[test]
     fn fork_count_bumps_on_successful_fork() {
         use crate::process_table::ProcessTable;
         let mut table = ProcessTable::new();

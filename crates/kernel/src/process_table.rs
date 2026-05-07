@@ -233,6 +233,25 @@ impl ProcessTable {
     /// Uses the existing fork serialization infrastructure to deep-copy Process state.
     /// Returns Ok(()) on success, Err(errno) on failure.
     pub fn fork_process(&mut self, parent_pid: u32, child_pid: u32) -> Result<(), Errno> {
+        self.clone_process_state(parent_pid, child_pid)?;
+
+        // Parent's fork-counter regression guardrail. The non-forking spawn
+        // tests assert this stays put across a SYS_SPAWN, proving the new
+        // path doesn't fall back to fork.
+        if let Some(parent) = self.processes.get_mut(&parent_pid) {
+            parent.increment_fork_count();
+        }
+        Ok(())
+    }
+
+    /// Deep-copy a parent's Process state into a new child entry.
+    ///
+    /// Shared by `fork_process` and `spawn_child`. Handles fd/ofd refcount
+    /// bookkeeping (host handles, pipes, PTYs, sockets) plus the
+    /// `fork_pipe_replay` reconstruction. Does **not** bump the parent's
+    /// fork counter — fork_process layers that on top; spawn_child must
+    /// not.
+    fn clone_process_state(&mut self, parent_pid: u32, child_pid: u32) -> Result<(), Errno> {
         if self.processes.contains_key(&child_pid) {
             return Err(Errno::EEXIST);
         }
@@ -344,16 +363,61 @@ impl ProcessTable {
         child.fork_pipe_replay = pipe_fd_pairs.into_values().collect();
 
         self.processes.insert(child_pid, child);
+        Ok(())
+    }
 
-        // Parent's fork-counter regression guardrail. The non-forking spawn
-        // tests assert this stays put across a SYS_SPAWN, proving the new
-        // path doesn't fall back to fork. Re-borrow at the very end because
-        // earlier code held an immutable `&parent`.
-        if let Some(parent) = self.processes.get_mut(&parent_pid) {
-            parent.increment_fork_count();
+    /// Non-forking spawn: build a child process for `posix_spawn` without
+    /// going through the fork/asyncify path. The child inherits the
+    /// parent's fd table (with refcounts handled exactly as fork does), but
+    /// runs a fresh program directly via a new host worker — no asyncify
+    /// rewind, no fork-pipe replay.
+    ///
+    /// `argv` and `envp` are the new program's argv/envp (not the parent's).
+    /// Path strings are owned by the caller's slice; they are copied into
+    /// the child's process state.
+    ///
+    /// Critically, `fork_count` on the parent is **not** incremented — the
+    /// regression test for the spawn fast-path asserts this.
+    ///
+    /// File actions and spawn attributes are accepted but not yet applied;
+    /// they are handled in subsequent commits.
+    pub fn spawn_child(
+        &mut self,
+        parent_pid: u32,
+        argv: &[&[u8]],
+        envp: &[&[u8]],
+        _file_actions: &[crate::spawn::FileAction],
+        _attrs: &crate::spawn::SpawnAttrs,
+    ) -> Result<u32, Errno> {
+        if !self.processes.contains_key(&parent_pid) {
+            return Err(Errno::ESRCH);
         }
 
-        Ok(())
+        let child_pid = self.allocate_spawn_pid();
+
+        // Deep-copy parent state without bumping the fork counter.
+        self.clone_process_state(parent_pid, child_pid)?;
+
+        // Customize the child for spawn semantics: a fresh worker will run
+        // the new program from `_start`, so the fork-replay machinery is
+        // inapplicable and argv/envp come from the spawn caller, not from
+        // the parent's image.
+        if let Some(child) = self.processes.get_mut(&child_pid) {
+            child.fork_pipe_replay.clear();
+            child.argv = argv.iter().map(|s| s.to_vec()).collect();
+            child.environ = envp.iter().map(|s| s.to_vec()).collect();
+        }
+
+        Ok(child_pid)
+    }
+
+    /// Smallest unused pid >= 2 (pid 1 is reserved for init).
+    fn allocate_spawn_pid(&self) -> u32 {
+        let mut pid = 2u32;
+        while self.processes.contains_key(&pid) {
+            pid += 1;
+        }
+        pid
     }
 
     /// Get a reference to a process by pid.
