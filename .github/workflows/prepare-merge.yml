@@ -419,12 +419,33 @@ jobs:
             -f description="$description"
 
       - name: Enable squash auto-merge
+        id: automerge
         run: |
-          gh pr merge "$PR_NUMBER" \
+          set +e
+          output=$(gh pr merge "$PR_NUMBER" \
             --repo ${{ github.repository }} \
-            --auto --squash
+            --auto --squash 2>&1)
+          status=$?
+          set -e
+
+          if [ "$status" -eq 0 ]; then
+            printf '%s\n' "$output"
+            echo "manual_merge_required=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          printf '%s\n' "$output" >&2
+          if printf '%s\n' "$output" | grep -q 'without `workflows` permission'; then
+            echo "manual_merge_required=true" >> "$GITHUB_OUTPUT"
+            gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "prepare-merge passed and posted \`merge-gate=success\`, but GitHub Actions cannot enable auto-merge because this PR changes workflow files. A user with workflow permission must merge this PR manually."
+            exit 0
+          fi
+
+          echo "manual_merge_required=false" >> "$GITHUB_OUTPUT"
+          exit "$status"
 
       - name: Wait for PR to merge
+        if: steps.automerge.outputs.manual_merge_required != 'true'
         timeout-minutes: 45
         run: |
           while true; do
