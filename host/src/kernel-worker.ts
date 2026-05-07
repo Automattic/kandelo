@@ -1732,19 +1732,11 @@ export class CentralizedKernelWorker {
     const currentStatus = Atomics.load(i32View, statusIndex);
 
     if (currentStatus === CH_PENDING) {
-      // Handle the syscall. In browser mode (relistenBatchSize=1), defer via
-      // setImmediate so that Atomics.waitAsync microtask resolutions don't
-      // create tight chains that starve the event loop. In Node.js (default
-      // batchSize=64), handle immediately for throughput.
-      if (this.relistenBatchSize <= 1) {
-        setImmediate(() => {
-          if (this.processes.has(channel.pid)) {
-            this.handleSyscall(channel);
-          }
-        });
-      } else {
-        this.handleSyscall(channel);
-      }
+      // Process beat us to PENDING — handle inline. The pre-refactor
+      // code branched on relistenBatchSize <= 1 to defer via
+      // setImmediate; with the timer heap + macrotask heartbeat there's
+      // no need to break microtask chains here.
+      this.handleSyscall(channel);
       return;
     }
 
@@ -2546,25 +2538,6 @@ export class CentralizedKernelWorker {
     this.relistenChannel(channel);
   }
 
-  /**
-   * Schedule re-listen on a channel.
-   *
-   * Uses queueMicrotask for speed (near-zero delay between syscalls).
-   * Every Nth call (relistenBatchSize), yields via setImmediate so timer
-   * callbacks (setTimeout/setInterval) can fire — prevents event loop
-   * starvation while keeping throughput close to Node.js native setImmediate.
-   *
-   * In the browser (main thread), set relistenBatchSize=1 so every syscall
-   * yields via setImmediate. The browser setImmediate polyfill (MessageChannel)
-   * batches these efficiently while still allowing rendering frames between
-   * batches. Without this, microtask chains from multi-threaded programs
-   * (e.g. MariaDB's 5 threads) starve requestAnimationFrame and rendering.
-   */
-  private relistenCount = 0;
-  /** How many syscalls to process via microtask before yielding to the event
-   *  loop via setImmediate. Default 64 is optimal for Node.js. Set to 1 in
-   *  browser environments where the kernel runs on the main thread. */
-  relistenBatchSize = 64;
 
   /**
    * When true, use a MessageChannel-based poller to check all channels
@@ -2644,19 +2617,15 @@ export class CentralizedKernelWorker {
   }
 
   private relistenChannel(channel: ChannelInfo): void {
-    // Clear handling flag so the poller can pick up this channel again
     channel.handling = false;
     if (!this.processes.has(channel.pid)) return;
     // In polling mode, don't re-listen — the poller will pick up the next syscall
     if (this.usePolling) return;
-    this.relistenCount++;
-    const useImmediate = this.relistenCount >= this.relistenBatchSize;
-    if (useImmediate) {
-      this.relistenCount = 0;
-      setImmediate(() => this.listenOnChannel(channel));
-    } else {
-      queueMicrotask(() => this.listenOnChannel(channel));
-    }
+    // Always queueMicrotask. The pre-refactor every-Nth setImmediate yield
+    // existed so setTimeout/setInterval callbacks could interleave; the
+    // timer heap (Step 2) and the macrotask heartbeat (fda4a9f09) cover
+    // those concerns now without per-syscall branching.
+    queueMicrotask(() => this.listenOnChannel(channel));
   }
 
   /**
