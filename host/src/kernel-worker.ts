@@ -841,7 +841,7 @@ export class CentralizedKernelWorker {
   private cachedKernelBuffer: ArrayBuffer | null = null;
   /** Pending poll/ppoll retries — keyed by channelOffset for per-thread tracking */
   private pendingPollRetries = new Map<number, {
-    timer: any;  // setImmediate or setTimeout handle
+    timer: TimerEntry | null;
     channel: ChannelInfo;
     pipeIndices: number[];
     /** True if this retry was entered via ppoll with an atomic sigmask swap.
@@ -852,9 +852,13 @@ export class CentralizedKernelWorker {
      *  os-test/signal/ppoll-block-sleep-write-raise. */
     needsSignalSafeWake?: boolean;
   }>();
-  /** Pending pselect6 retries — used for signal-driven wakeup and timeout tracking */
+  /** Pending pselect6 retries — used for signal-driven wakeup and timeout tracking.
+   *  timer is either a TimerEntry (for nfds=0 finite-timeout pure-sleep,
+   *  scheduled via the heap) or a setImmediate handle (for fast retries
+   *  with actual fds — kept on macrotask path so tight retry loops where
+   *  pselect6 keeps returning EAGAIN don't starve the event loop). */
   private pendingSelectRetries = new Map<number, {
-    timer: any;  // setTimeout or setImmediate handle
+    timer: TimerEntry | ReturnType<typeof setImmediate> | null;
     channel: ChannelInfo;
     origArgs: number[];
     deadline: number;  // Date.now() deadline, -1 for infinite
@@ -1364,6 +1368,17 @@ export class CentralizedKernelWorker {
     this.timerHeap.remove(entry);
   }
 
+  /** Cancel a select-retry timer that may be either a TimerEntry (nfds=0
+   *  finite-timeout case) or a setImmediate handle (fast-retry case). */
+  private cancelSelectRetryTimer(handle: TimerEntry | ReturnType<typeof setImmediate> | null | undefined): void {
+    if (handle == null) return;
+    if (typeof handle === "object" && "deadlineMs" in (handle as object)) {
+      this.cancelHostTimer(handle as TimerEntry);
+    } else {
+      clearImmediate(handle as ReturnType<typeof setImmediate>);
+    }
+  }
+
   private async runTimerLoop(): Promise<void> {
     try {
       while (this.timerHeap.size() > 0) {
@@ -1516,7 +1531,7 @@ export class CentralizedKernelWorker {
     this.cleanupPendingPollRetries(pid);
     // Clean up pending select retries
     const selectEntry = this.pendingSelectRetries.get(pid);
-    if (selectEntry?.timer) clearImmediate(selectEntry.timer);
+    if (selectEntry?.timer) this.cancelSelectRetryTimer(selectEntry.timer);
     this.pendingSelectRetries.delete(pid);
     // Clean up pending pipe readers/writers
     this.cleanupPendingPipeReaders(pid);
@@ -1594,7 +1609,7 @@ export class CentralizedKernelWorker {
     this.cleanupPendingPollRetries(pid);
     // Clean up pending select retries
     const selectEntry = this.pendingSelectRetries.get(pid);
-    if (selectEntry?.timer) clearImmediate(selectEntry.timer);
+    if (selectEntry?.timer) this.cancelSelectRetryTimer(selectEntry.timer);
     this.pendingSelectRetries.delete(pid);
     // Clean up TCP listeners for this process
     this.cleanupTcpListeners(pid);
@@ -1626,7 +1641,7 @@ export class CentralizedKernelWorker {
     // Clean up pending blocking retries (the old program's syscalls are dead)
     this.cleanupPendingPollRetries(pid);
     const selectEntry = this.pendingSelectRetries.get(pid);
-    if (selectEntry?.timer) clearImmediate(selectEntry.timer);
+    if (selectEntry?.timer) this.cancelSelectRetryTimer(selectEntry.timer);
     this.pendingSelectRetries.delete(pid);
     this.cleanupPendingPipeReaders(pid);
     this.cleanupPendingPipeWriters(pid);
@@ -2620,9 +2635,7 @@ export class CentralizedKernelWorker {
       if (!entry.pipeIndices.includes(pipeIdx)) continue;
 
       // Cancel the scheduled retry and fire immediately
-      if (entry.timer !== null) {
-        clearTimeout(entry.timer);
-      }
+      this.cancelHostTimer(entry.timer);
       this.pendingPollRetries.delete(key);
       if (this.processes.has(pid)) {
         this.retrySyscall(entry.channel);
@@ -2634,7 +2647,7 @@ export class CentralizedKernelWorker {
   private cleanupPendingPollRetries(pid: number): void {
     for (const [key, entry] of this.pendingPollRetries) {
       if (entry.channel.pid === pid) {
-        if (entry.timer) clearTimeout(entry.timer);
+        this.cancelHostTimer(entry.timer);
         this.pendingPollRetries.delete(key);
       }
     }
@@ -2761,10 +2774,10 @@ export class CentralizedKernelWorker {
     if (this.wakeScheduled) return;
     if (this.pendingPollRetries.size === 0 && this.pendingSelectRetries.size === 0 && this.pendingPipeReaders.size === 0 && this.pendingPipeWriters.size === 0) return;
     this.wakeScheduled = true;
-    setTimeout(() => {
+    this.scheduleHostTimer(10, () => {
       this.wakeScheduled = false;
       this.wakeAllBlockedRetries();
-    }, 10);
+    });
   }
 
   /**
@@ -2818,17 +2831,13 @@ export class CentralizedKernelWorker {
 
     for (const [_key, entry] of pollEntries) {
       if (!this.processes.has(entry.channel.pid)) continue;
-      if (entry.timer !== null) {
-        clearTimeout(entry.timer);
-      }
+      this.cancelHostTimer(entry.timer);
       this.retrySyscall(entry.channel);
     }
 
     for (const [pid, entry] of selectEntries) {
       if (!this.processes.has(pid)) continue;
-      // Cancel both setTimeout and setImmediate handles (one will be a no-op)
-      clearTimeout(entry.timer);
-      clearImmediate(entry.timer);
+      this.cancelSelectRetryTimer(entry.timer);
       this.handlePselect6(entry.channel, entry.origArgs);
     }
 
@@ -3005,7 +3014,7 @@ export class CentralizedKernelWorker {
     //    with -EINTR the same way an unblocked syscall entry would.
     const pollEntry = this.pendingPollRetries.get(target.channelOffset);
     if (pollEntry) {
-      if (pollEntry.timer !== null) clearTimeout(pollEntry.timer);
+      this.cancelHostTimer(pollEntry.timer);
       this.pendingPollRetries.delete(target.channelOffset);
       this.completeChannelRaw(target, -EINTR_ERRNO, EINTR_ERRNO);
       this.relistenChannel(target);
@@ -3015,8 +3024,7 @@ export class CentralizedKernelWorker {
     // 3) Pselect6 retry timer (keyed by pid).
     const selEntry = this.pendingSelectRetries.get(target.pid);
     if (selEntry && selEntry.channel === target) {
-      clearTimeout(selEntry.timer);
-      clearImmediate(selEntry.timer);
+      this.cancelSelectRetryTimer(selEntry.timer);
       this.pendingSelectRetries.delete(target.pid);
       this.completeChannelRaw(target, -EINTR_ERRNO, EINTR_ERRNO);
       this.relistenChannel(target);
@@ -3139,7 +3147,10 @@ export class CentralizedKernelWorker {
           });
         } else {
           // Already changed — use setImmediate (not queueMicrotask) to avoid
-          // microtask chains that starve the browser event loop.
+          // microtask chain via setImmediate (macrotask). scheduleHostTimer(0)
+          // would be a microtask via runTimerLoop and could starve the
+          // event loop in tight retry loops where the syscall keeps
+          // returning EAGAIN.
           setImmediate(() => this.retrySyscall(channel));
         }
         return;
@@ -3181,12 +3192,12 @@ export class CentralizedKernelWorker {
       const nfds = origArgs[1]; // poll(fds, nfds, ...) / ppoll(fds, nfds, ...)
       if (timeoutMs > 0 && nfds === 0) {
         // Pure sleep: no fds to poll, just wait for timeout
-        const timer = setTimeout(() => {
+        const timer = this.scheduleHostTimer(timeoutMs, () => {
           this.pendingPollRetries.delete(channel.channelOffset);
           if (this.processes.has(channel.pid)) {
             this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], 0, 0);
           }
-        }, timeoutMs);
+        });
         this.pendingPollRetries.set(channel.channelOffset, { timer, channel, pipeIndices, needsSignalSafeWake });
         return;
       }
@@ -3209,7 +3220,7 @@ export class CentralizedKernelWorker {
       const retryMs = pipeIndices.length > 0
         ? (deadline > 0 ? Math.min(deadline - Date.now(), 200) : 200)
         : (deadline > 0 ? Math.min(deadline - Date.now(), 50) : 50);
-      const timer = setTimeout(retryFn, Math.max(retryMs, 1));
+      const timer = this.scheduleHostTimer(Math.max(retryMs, 1), retryFn);
       this.pendingPollRetries.set(channel.channelOffset, { timer, channel, pipeIndices, needsSignalSafeWake });
       return;
     }
@@ -3223,16 +3234,14 @@ export class CentralizedKernelWorker {
       const timeoutPtr = origArgs[2]; // pointer to timespec in process memory
       if (timeoutPtr === 0) {
         // NULL timeout = wait indefinitely. Use long retry interval since
-        // signals arrive via kernel_kill, not organically. In the browser,
-        // short retries starve the event loop when multiple threads are active
-        // (e.g. MariaDB's signal handler thread). 500ms is adequate because
-        // cross-process signals are rare, and immediate delivery for kill()
-        // works via scheduleWakeBlockedRetries.
-        setTimeout(() => {
+        // signals arrive via kernel_kill, not organically. 500ms is
+        // adequate because cross-process signals are rare and immediate
+        // delivery for kill() works via scheduleWakeBlockedRetries.
+        this.scheduleHostTimer(500, () => {
           if (this.processes.has(channel.pid)) {
             this.retrySyscall(channel);
           }
-        }, 500);
+        });
         return;
       }
       const pv = new DataView(channel.memory.buffer, timeoutPtr);
@@ -3244,11 +3253,11 @@ export class CentralizedKernelWorker {
       if (timeoutMs <= 0) {
         this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], -1, EAGAIN_ERRNO);
       } else {
-        setTimeout(() => {
+        this.scheduleHostTimer(timeoutMs, () => {
           if (this.processes.has(channel.pid)) {
             this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], -1, EAGAIN_ERRNO);
           }
-        }, timeoutMs);
+        });
       }
       return;
     }
@@ -3407,7 +3416,7 @@ export class CentralizedKernelWorker {
         this.retrySyscall(channel);
       }
     };
-    const timer = setTimeout(retryFn, 10);
+    const timer = this.scheduleHostTimer(10, retryFn);
     this.pendingPollRetries.set(channel.channelOffset, { timer, channel, pipeIndices: [] });
   }
 
@@ -3712,22 +3721,25 @@ export class CentralizedKernelWorker {
       // With infinite timeout: block until signal (wakeAllBlockedRetries).
       if (nfds === 0) {
         if (timeoutMs > 0) {
-          const timer = setTimeout(() => {
+          const timer = this.scheduleHostTimer(timeoutMs, () => {
             this.pendingSelectRetries.delete(channel.pid);
             if (this.processes.has(channel.pid)) {
               this.completeChannel(channel, SYS_PSELECT6, origArgs, undefined, 0, 0);
             }
-          }, timeoutMs);
+          });
           this.pendingSelectRetries.set(channel.pid, { timer, channel, origArgs, deadline, needsSignalSafeWake });
         } else {
           // Infinite timeout with nfds=0: wait for signal delivery.
           // No timer — wakeAllBlockedRetries will trigger the retry.
-          this.pendingSelectRetries.set(channel.pid, { timer: null as any, channel, origArgs, deadline: -1, needsSignalSafeWake });
+          this.pendingSelectRetries.set(channel.pid, { timer: null, channel, origArgs, deadline: -1, needsSignalSafeWake });
         }
         return;
       }
 
-      // For finite timeout with actual fds, track the deadline
+      // For finite timeout with actual fds, track the deadline. Fire on
+      // the next macrotask via setImmediate. scheduleHostTimer(0) would
+      // be a microtask via runTimerLoop and could starve the event loop
+      // in tight retry loops where pselect6 keeps returning EAGAIN.
       const retryFn = () => {
         this.pendingSelectRetries.delete(channel.pid);
         if (!this.processes.has(channel.pid)) return;
@@ -3914,7 +3926,7 @@ export class CentralizedKernelWorker {
           this.handleEpollPwait(channel, syscallNr, origArgs);
         }
       };
-      const timer = setTimeout(retryFn, 10);
+      const timer = this.scheduleHostTimer(10, retryFn);
       this.pendingPollRetries.set(channel.channelOffset, { timer, channel, pipeIndices: [] });
       return;
     }
@@ -4040,7 +4052,7 @@ export class CentralizedKernelWorker {
         this.handleEpollPwait(channel, syscallNr, origArgs);
       }
     };
-    const timer = setTimeout(retryFn, 10);
+    const timer = this.scheduleHostTimer(10, retryFn);
     this.pendingPollRetries.set(channel.channelOffset, { timer, channel, pipeIndices });
   }
 
@@ -5993,12 +6005,12 @@ export class CentralizedKernelWorker {
       const waitResult = Atomics.waitAsync(i32View, index, val);
       if (waitResult.async) {
         let settled = false;
-        let timer: ReturnType<typeof setTimeout> | undefined;
+        let timer: TimerEntry | null = null;
 
         const complete = (retVal: number, errVal: number) => {
           if (settled) return;
           settled = true;
-          if (timer !== undefined) clearTimeout(timer);
+          if (timer !== null) this.cancelHostTimer(timer);
           this.pendingFutexWaits.delete(channel.channelOffset);
           if (!this.processes.has(channel.pid)) return;
           this.completeChannelRaw(channel, retVal, errVal);
@@ -6016,11 +6028,11 @@ export class CentralizedKernelWorker {
         });
 
         if (timeoutMs !== undefined) {
-          timer = setTimeout(() => {
+          timer = this.scheduleHostTimer(timeoutMs, () => {
             // Wake ourselves to break out of the Atomics.waitAsync
             Atomics.notify(i32View, index, 1);
             complete(-ETIMEDOUT, ETIMEDOUT);
-          }, timeoutMs);
+          });
         }
       } else {
         // Already changed — return 0
@@ -6139,7 +6151,7 @@ export class CentralizedKernelWorker {
     // 2. Pending ppoll/poll retry — wake ALL threads for this pid
     for (const [key, pollEntry] of this.pendingPollRetries) {
       if (pollEntry.channel.pid !== targetPid) continue;
-      if (pollEntry.timer) clearTimeout(pollEntry.timer);
+      this.cancelHostTimer(pollEntry.timer);
       this.pendingPollRetries.delete(key);
       if (this.processes.has(targetPid)) {
         this.retrySyscall(pollEntry.channel);
@@ -6149,7 +6161,7 @@ export class CentralizedKernelWorker {
     // 3. Pending pselect6 retry
     const selectEntry = this.pendingSelectRetries.get(targetPid);
     if (selectEntry) {
-      clearImmediate(selectEntry.timer);
+      this.cancelSelectRetryTimer(selectEntry.timer);
       this.pendingSelectRetries.delete(targetPid);
       if (this.processes.has(targetPid)) {
         this.handlePselect6(selectEntry.channel, selectEntry.origArgs);

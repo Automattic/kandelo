@@ -1055,14 +1055,14 @@ function pumpResponse(
   let totalBytes = 0;
   let finished = false;
   let unregister: (() => void) | null = null;
-  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  let timeoutHandle: any = null;
   const kw = kernelWorker as any;
 
   const finish = (status: number, body: Uint8Array, headers: Record<string, string>) => {
     if (finished) return;
     finished = true;
     if (unregister) { unregister(); unregister = null; }
-    if (timeoutHandle !== null) { clearTimeout(timeoutHandle); timeoutHandle = null; }
+    if (timeoutHandle !== null) { kw.cancelHostTimer(timeoutHandle); timeoutHandle = null; }
     pipeCloseReadDirect(pid, sendPipeIdx);
     pipeCloseWriteDirect(pid, recvPipeIdx);
     bridgePort!.postMessage({ type: "http-response", requestId, status, headers, body });
@@ -1101,11 +1101,13 @@ function pumpResponse(
   unregister = kw.registerHostPipeReader(sendPipeIdx, onReadable);
 
   // Backstop for misbehaving handlers that never close the write end.
-  timeoutHandle = setTimeout(() => {
+  // Routes through the kernel worker's host-timer heap so all bridge-pump
+  // timing lives in one place (Atomics-driven, cancellable).
+  timeoutHandle = kw.scheduleHostTimer(HTTP_PUMP_TIMEOUT_MS, () => {
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     console.warn(`[bridge] TIMEOUT req#${requestId} after ${elapsed}s, ${totalBytes} bytes received, sawWriteOpen=${sawWriteOpen}, url=${debugUrl}`);
     finish(504, new Uint8Array(0), {});
-  }, HTTP_PUMP_TIMEOUT_MS);
+  });
 
   // Drain anything already buffered.
   onReadable();
