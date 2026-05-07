@@ -275,13 +275,11 @@ jobs:
         # (per stage-release.sh's header), so they're built locally
         # only when tests need them.
         #
-        # `npx playwright install chromium` downloads the headless-shell
-        # browser binary into ~/.cache/ms-playwright/. The
-        # examples/wordpress/test/wordpress-site-editor.test.ts E2E test
-        # invokes `chromium.launch()` directly (not via `npx playwright
-        # test` runner), so the browser must be present before vitest
-        # runs — `npm install` alone only fetches the @playwright/test
-        # NPM package, not the browser bundles.
+        # The Playwright chromium browser binary needed by
+        # examples/wordpress/test/wordpress-site-editor.test.ts is
+        # fetched on demand by host/test/global-setup.ts (vitest
+        # globalSetup); no separate `npx playwright install` step is
+        # required here.
         if: ${{ !inputs.skip_tests }}
         run: |
           bash scripts/dev-shell.sh bash -c '
@@ -294,7 +292,6 @@ jobs:
             bash scripts/build-programs.sh
             npm install --no-audit --no-fund
             cd host && npm install --no-audit --no-fund
-            cd .. && npx --prefix host playwright install chromium
           '
 
       - name: Run cargo + vitest tests

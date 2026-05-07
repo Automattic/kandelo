@@ -264,7 +264,6 @@ jobs:
             bash scripts/build-programs.sh
             npm install --no-audit --no-fund
             cd host && npm install --no-audit --no-fund
-            cd .. && npx --prefix host playwright install chromium
           '
 
       - name: Run cargo tests (kernel unit tests)
