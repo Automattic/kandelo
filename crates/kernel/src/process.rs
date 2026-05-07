@@ -779,6 +779,59 @@ mod tests {
     }
 
     #[test]
+    fn spawn_child_clears_consume_once_socket_state() {
+        // Regression: SocketInfo's hand-written Clone must drop dgram_queue
+        // and oob_byte so a fork/spawn child can't consume the "same"
+        // datagram or OOB byte the parent will consume. fork already
+        // discards these via its serialize-side skip; this test pins the
+        // spawn path to the same behavior.
+        use crate::process_table::ProcessTable;
+        use crate::socket::{Datagram, SocketDomain, SocketInfo, SocketType};
+        use crate::spawn::SpawnAttrs;
+
+        let mut table = ProcessTable::new();
+        table.create_process(400).unwrap();
+
+        // Parent has a UDP socket with a pending datagram and a TCP socket
+        // with a pending OOB byte.
+        let mut udp = SocketInfo::new(SocketDomain::Inet, SocketType::Dgram, 0);
+        udp.dgram_queue.push(Datagram {
+            data: b"hello".to_vec(),
+            src_addr: [127, 0, 0, 1],
+            src_port: 12345,
+        });
+        let mut tcp = SocketInfo::new(SocketDomain::Inet, SocketType::Stream, 0);
+        tcp.oob_byte = Some(0xAB);
+        let parent = table.processes.get_mut(&400).unwrap();
+        let udp_idx = parent.sockets.alloc(udp);
+        let tcp_idx = parent.sockets.alloc(tcp);
+
+        // Sanity: parent still has the consume-once data.
+        assert_eq!(table.get(400).unwrap().sockets.get(udp_idx).unwrap().dgram_queue.len(), 1);
+        assert_eq!(table.get(400).unwrap().sockets.get(tcp_idx).unwrap().oob_byte, Some(0xAB));
+
+        let child_pid = table
+            .spawn_child(400, &[b"a".as_slice()], &[], &[], &SpawnAttrs::empty())
+            .expect("spawn_child");
+
+        // Child must NOT see them.
+        let child = table.get(child_pid).unwrap();
+        assert!(
+            child.sockets.get(udp_idx).unwrap().dgram_queue.is_empty(),
+            "child must start with empty dgram queue"
+        );
+        assert_eq!(
+            child.sockets.get(tcp_idx).unwrap().oob_byte, None,
+            "child must not inherit pending OOB byte"
+        );
+
+        // Parent's pending data is intact (consume-once stayed with parent).
+        let parent = table.get(400).unwrap();
+        assert_eq!(parent.sockets.get(udp_idx).unwrap().dgram_queue.len(), 1);
+        assert_eq!(parent.sockets.get(tcp_idx).unwrap().oob_byte, Some(0xAB));
+    }
+
+    #[test]
     fn fork_count_bumps_on_successful_fork() {
         use crate::process_table::ProcessTable;
         let mut table = ProcessTable::new();

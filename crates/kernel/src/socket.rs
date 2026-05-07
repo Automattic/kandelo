@@ -92,7 +92,11 @@ pub struct Datagram {
 }
 
 /// Per-socket kernel state.
-#[derive(Clone)]
+///
+/// `Clone` is hand-written (not derived) so that fork/spawn cloning
+/// discards consume-once state that should not double-fire in the child.
+/// See the `impl Clone for SocketInfo` block below for which fields are
+/// reset.
 pub struct SocketInfo {
     pub domain: SocketDomain,
     pub sock_type: SocketType,
@@ -193,6 +197,50 @@ impl SocketInfo {
             }
         }
         None
+    }
+}
+
+/// Hand-written so fork/spawn child inheritance discards consume-once
+/// state. POSIX-wise these are properties of the underlying connection
+/// (one OOB byte per socket; one queue of pending datagrams), but our
+/// per-process SocketInfo can't truly share — duplicating them would let
+/// both parent and child consume the "same" data.
+///
+/// Discarded in the child:
+///   * `dgram_queue` — buffered UDP datagrams (matches fork's existing
+///     serialize-side skip in `crates/kernel/src/fork.rs`).
+///   * `oob_byte` — pending TCP out-of-band byte; consume-once.
+///
+/// Everything else is value-cloned. `host_net_handle` and
+/// `shared_backlog_idx` are still inherited; the cross-process refcount
+/// bumps for those live in `process_table::bump_inherited_resource_refcounts`.
+impl Clone for SocketInfo {
+    fn clone(&self) -> Self {
+        SocketInfo {
+            domain: self.domain,
+            sock_type: self.sock_type,
+            protocol: self.protocol,
+            state: self.state,
+            peer_idx: self.peer_idx,
+            recv_buf_idx: self.recv_buf_idx,
+            send_buf_idx: self.send_buf_idx,
+            shut_rd: self.shut_rd,
+            shut_wr: self.shut_wr,
+            host_net_handle: self.host_net_handle,
+            options: self.options.clone(),
+            bind_addr: self.bind_addr,
+            bind_port: self.bind_port,
+            peer_addr: self.peer_addr,
+            peer_port: self.peer_port,
+            listen_backlog: self.listen_backlog.clone(),
+            shared_backlog_idx: self.shared_backlog_idx,
+            dgram_queue: Vec::new(),  // consume-once: don't double-deliver
+            global_pipes: self.global_pipes,
+            oob_byte: None,            // consume-once: don't double-deliver
+            recv_timeout_us: self.recv_timeout_us,
+            send_timeout_us: self.send_timeout_us,
+            bind_path: self.bind_path.clone(),
+        }
     }
 }
 
