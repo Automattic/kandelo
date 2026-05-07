@@ -22,6 +22,7 @@ pub mod process_table;
 pub mod pty;
 pub mod signal;
 pub mod socket;
+pub mod spawn;
 pub mod syscalls;
 pub mod terminal;
 pub mod unix_socket;
