@@ -4036,6 +4036,7 @@ kind = "source"
 name = "pcre2-source"
 version = "10.42"
 revision = 1
+kernel_abi = 7
 
 [source]
 url = "https://example.test/unused"
@@ -4090,6 +4091,7 @@ kind = "source"
 name = "pcre2-source"
 version = "10.42"
 revision = 1
+kernel_abi = 7
 
 [source]
 url = "https://example.test/unused"
@@ -4162,6 +4164,7 @@ kind = "source"
 name = "foo-source"
 version = "1.0"
 revision = 1
+kernel_abi = 7
 
 [source]
 url = "https://example.test/unused"

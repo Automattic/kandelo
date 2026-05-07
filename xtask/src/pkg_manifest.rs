@@ -723,6 +723,34 @@ impl DepsManifest {
                     .into(),
             );
         }
+        // Phase B-2 Task 3: source manifests with a [build] block must
+        // declare top-level `kernel_abi`. The [build] block marks "this
+        // package gets matrix-built"; the matrix's ABI-floor check
+        // (design §6.2) requires `kernel_abi` to be present so it can
+        // hard-fail when no archive has been published for the current
+        // kernel ABI. Source-only packages and metadata-only packages
+        // (no [build]) are exempt — they don't produce binaries and
+        // aren't gated by ABI.
+        //
+        // `validate_archived` deliberately does NOT enforce this: legacy
+        // `manifest.toml` bytes inside .tar.zst archives published before
+        // Phase A-bis don't carry `kernel_abi`, and install-release /
+        // fetch-binaries must continue to parse them. The required-ness
+        // is enforced only on the source path.
+        let has_build_block = raw.build.script_path.is_some()
+            || raw.build.repo_url.is_some()
+            || raw.build.commit.is_some()
+            || raw.build.script.is_some();
+        if has_build_block && raw.kernel_abi.is_none() {
+            return Err(
+                "source package.toml has [build] but no top-level kernel_abi — \
+                 declare kernel_abi = N (matching ABI_VERSION in \
+                 crates/shared/src/lib.rs) at the top of the file. \
+                 See docs/plans/2026-05-05-decoupled-package-builds-design.md \
+                 §3.1."
+                    .into(),
+            );
+        }
         Self::validate_common(raw, dir)
     }
 
@@ -1206,9 +1234,13 @@ headers = ["include/zlib.h"]
         // resolved against the repo root, NOT the package's own
         // directory. This decouples script location from manifest
         // location.
+        // Phase B-2 Task 3: source manifests with [build] must declare
+        // top-level kernel_abi; inject it via the EXAMPLE replacement
+        // so the parser accepts the fixture.
         let text = format!(
-            "{EXAMPLE}\n[build]\n\
-             script_path = \"examples/libs/zlib/build-zlib.sh\"\n"
+            "{}\n[build]\n\
+             script_path = \"examples/libs/zlib/build-zlib.sh\"\n",
+            EXAMPLE.replace("revision = 1", "revision = 1\nkernel_abi = 7")
         );
         let m = DepsManifest::parse(&text, PathBuf::from("/x")).unwrap();
         assert_eq!(
@@ -1224,12 +1256,15 @@ headers = ["include/zlib.h"]
 
     #[test]
     fn build_accepts_repo_url_and_commit() {
+        // Phase B-2 Task 3: source manifests with [build] must declare
+        // top-level kernel_abi; inject it via the EXAMPLE replacement.
         let text = format!(
-            "{EXAMPLE}\n\
+            "{}\n\
              [build]\n\
              script_path = \"examples/libs/zlib/build-zlib.sh\"\n\
              repo_url    = \"https://github.com/Automattic/wasm-posix-kernel\"\n\
-             commit      = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"\n"
+             commit      = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"\n",
+            EXAMPLE.replace("revision = 1", "revision = 1\nkernel_abi = 7")
         );
         let m = DepsManifest::parse(&text, PathBuf::from("/x")).unwrap();
         assert_eq!(
@@ -1324,6 +1359,110 @@ headers = ["include/zlib.h"]
         // field must be None.
         let m = DepsManifest::parse(EXAMPLE, PathBuf::from("/x")).unwrap();
         assert_eq!(m.kernel_abi, None);
+    }
+
+    #[test]
+    fn source_parse_rejects_missing_kernel_abi_when_build_block_present() {
+        // Phase B-2 Task 3: a source manifest with a [build] block
+        // (the marker for "this package is matrix-built") must declare
+        // top-level kernel_abi. The matrix's ABI-floor check (design
+        // §6.2) needs the floor to enforce "no archive published for
+        // current kernel ABI → hard fail".
+        let toml = r#"
+kind = "library"
+name = "test"
+version = "1.0.0"
+revision = 1
+
+[source]
+url = "https://example.com/test-1.0.0.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "TestLicense"
+
+[build]
+script_path = "examples/libs/test/build-test.sh"
+repo_url = "https://example.com/repo.git"
+
+[outputs]
+libs = ["lib/libtest.a"]
+"#;
+        let dir = std::path::PathBuf::from("/tmp/test");
+        let result = DepsManifest::parse(toml, dir);
+        assert!(result.is_err(), "expected error for missing kernel_abi");
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("kernel_abi"),
+            "error must mention kernel_abi: {msg}"
+        );
+        assert!(
+            msg.contains("declare"),
+            "error must say 'declare': {msg}"
+        );
+    }
+
+    #[test]
+    fn archived_parse_accepts_missing_kernel_abi() {
+        // Legacy `.tar.zst` archives published before Phase A-bis don't
+        // carry `kernel_abi` in their archived manifest.toml.
+        // validate_archived must keep tolerating absence so
+        // install-release / fetch-binaries can still parse those
+        // immutable historical bytes. Required-ness lives in
+        // validate_source only.
+        let toml = r#"
+kind = "library"
+name = "test"
+version = "1.0.0"
+revision = 1
+
+[source]
+url = "https://example.com/test-1.0.0.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "TestLicense"
+
+[outputs]
+libs = ["lib/libtest.a"]
+
+[binary.wasm32]
+archive_url = "https://example.com/test.tar.zst"
+archive_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[compatibility]
+target_arch = "wasm32"
+abi_versions = [7]
+cache_key_sha = "0000000000000000000000000000000000000000000000000000000000000000"
+"#;
+        let dir = std::path::PathBuf::from("/tmp/test");
+        DepsManifest::parse_archived(toml, dir)
+            .expect("archive must parse without kernel_abi");
+    }
+
+    #[test]
+    fn source_parse_accepts_kernel_abi_absent_when_no_build_block() {
+        // Source-only packages (pcre2-source) and metadata-only
+        // packages (kernel, userspace, examples, node, sqlite-cli)
+        // don't have a [build] block and aren't subject to the
+        // kernel_abi requirement — they don't produce binaries and
+        // aren't gated by ABI.
+        let toml = r#"
+kind = "source"
+name = "test-source"
+version = "1.0.0"
+revision = 1
+
+[source]
+url = "https://example.com/test-1.0.0.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "TestLicense"
+"#;
+        let dir = std::path::PathBuf::from("/tmp/test");
+        DepsManifest::parse(toml, dir)
+            .expect("source-kind without [build] must parse without kernel_abi");
     }
 
     #[test]

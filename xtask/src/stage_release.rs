@@ -726,6 +726,7 @@ kind = "source"
 name = "{name}"
 version = "{version}"
 revision = 1
+kernel_abi = 7
 
 [source]
 url = "https://example.test/{name}-{version}.tar.gz"
