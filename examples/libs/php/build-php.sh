@@ -108,6 +108,32 @@ if [ -f configure ] && ! grep -q "wasm-opcache patch applied" configure; then
     rm -f configure.bak
 fi
 
+# Default opcache.enable to "0" (was "1"). Rationale: PHP's built-in dev
+# server (`php -S`) uses the cli-server SAPI, which IS in opcache's
+# supported_sapis list (only the bare `cli` SAPI is gated by
+# `opcache.enable_cli`). With the upstream default of "1", every CLI
+# invocation under cli-server pays opcache MINIT cost (128MB SHM
+# allocation + per-request validation) — heavy enough to push the
+# wordpress-site-editor E2E test (examples/wordpress/test/) past its
+# 10-minute install deadline on CI runners. Our LAMP/WP/nginx-php
+# php-fpm demos explicitly set opcache.enable=1 in /etc/php.ini, so
+# flipping the compile-time default to "0" preserves the per-worker
+# bytecode-cache win for FPM while leaving CLI / cli-server behavior
+# pre-PR-identical.
+if [ -f ext/opcache/zend_accelerator_module.c ] \
+   && ! grep -q "wasm-opcache enable=0 patch applied" ext/opcache/zend_accelerator_module.c; then
+    sed -i.bak \
+        -e 's|STD_PHP_INI_BOOLEAN("opcache.enable"             , "1"|STD_PHP_INI_BOOLEAN("opcache.enable"             , "0"|' \
+        ext/opcache/zend_accelerator_module.c
+    # Drop a marker comment so re-running the patch is idempotent.
+    if ! grep -q "wasm-opcache enable=0 patch applied" ext/opcache/zend_accelerator_module.c; then
+        sed -i.bak2 '/STD_PHP_INI_BOOLEAN("opcache.enable"             , "0"/i\
+/* wasm-opcache enable=0 patch applied — see examples/libs/php/build-php.sh */
+' ext/opcache/zend_accelerator_module.c
+    fi
+    rm -f ext/opcache/zend_accelerator_module.c.bak ext/opcache/zend_accelerator_module.c.bak2
+fi
+
 echo "==> Configuring PHP for Wasm (CLI + FPM, single tree)..."
 # Drop a stale config.cache from a previous build whose env (CPPFLAGS,
 # PKG_CONFIG_PATH, etc.) may not match this run. autoconf would
