@@ -864,6 +864,15 @@ export class CentralizedKernelWorker {
   }>();
   /** Flag to coalesce cross-process wakeup microtasks */
   private wakeScheduled = false;
+  /** Sentinel for the broad-wake Atomics.waitAsync. Same invariant as
+   * timerSentinel: the value at index 0 stays at 0 forever. Atomics.notify
+   * doesn't mutate the value, it only wakes waiters, so waitAsync(arr, 0, 0)
+   * always returns { async: true, value: Promise } when there's no pending
+   * waiter and resolves the promise on a subsequent notify. wakeScheduled
+   * prevents cascading: each wake only triggers one waitAsync chain at a
+   * time. The macrotask heartbeat (set up in handleInit) keeps macrotasks
+   * draining so this microtask wake doesn't starve postMessage delivery. */
+  private wakeSentinel = new Int32Array(new SharedArrayBuffer(4));
 
   /** Single deadline-min-heap that drives host-side timers (alarm,
    * POSIX timers, sleep, socket SO_RCVTIMEO/SO_SNDTIMEO, etc.). */
@@ -2883,25 +2892,41 @@ export class CentralizedKernelWorker {
   }
 
   /**
-   * Schedule a microtask to wake all blocked poll/pselect6 retries.
-   * Coalesced via wakeScheduled flag — multiple calls within the same
-   * microtask batch result in only one wake cycle. This catches cross-process
-   * pipe writes, socket connections, and other state changes that unblock
-   * another process's pending poll/select.
+   * Schedule a wake of all blocked poll/pselect6 retries on the next
+   * microtask boundary. Coalesced via wakeScheduled — multiple calls
+   * within the same async chain produce a single wake cycle.
+   *
+   * Mechanism: same-thread Atomics.waitAsync + Atomics.notify resolves
+   * the waitAsync promise as a microtask. This replaces the pre-refactor
+   * setImmediate (which went through the MessageChannel-polyfilled
+   * macrotask queue in browsers — slower and subject to event-loop
+   * ordering quirks). The macrotask-heartbeat ensures macrotasks still
+   * fire regularly so this faster wake doesn't starve postMessage
+   * delivery.
+   *
+   * Sentinel-stays-zero invariant: wakeSentinel[0] never changes.
+   * Atomics.notify only wakes waiters, doesn't mutate. waitAsync first,
+   * then notify, is the correct order.
    */
   private scheduleWakeBlockedRetries(): void {
     if (this.wakeScheduled) return;
     if (this.pendingPollRetries.size === 0 && this.pendingSelectRetries.size === 0 && this.pendingPipeReaders.size === 0 && this.pendingPipeWriters.size === 0) return;
     this.wakeScheduled = true;
-    // Use setImmediate (not queueMicrotask) so that timer callbacks
-    // (setTimeout/setInterval) can interleave.  In browsers, microtask
-    // chains from queueMicrotask starve all macrotasks, breaking progress
-    // updates and timeouts.  setImmediate goes through the polyfill which
-    // yields to the timer queue periodically.
-    setImmediate(() => {
-      this.wakeScheduled = false;
-      this.wakeAllBlockedRetries();
-    });
+    const wait = Atomics.waitAsync(this.wakeSentinel, 0, 0);
+    if (wait.async) {
+      (wait.value as Promise<"ok" | "timed-out">).then(() => {
+        this.wakeScheduled = false;
+        this.wakeAllBlockedRetries();
+      });
+      Atomics.notify(this.wakeSentinel, 0);
+    } else {
+      // Sentinel value didn't match (cannot happen since we only ever
+      // store 0). Defensive fallback.
+      queueMicrotask(() => {
+        this.wakeScheduled = false;
+        this.wakeAllBlockedRetries();
+      });
+    }
   }
 
   /**
