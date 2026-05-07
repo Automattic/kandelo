@@ -1172,3 +1172,173 @@ jobs:
           TAG="${{ needs.preflight.outputs.target_tag }}"
           gh release upload "$TAG" "$RUNNER_TEMP/index.toml" --clobber --repo "${{ github.repository }}"
           echo "uploaded index.toml to $TAG"
+
+  f2-status:
+    # Phase B-2 Task 1 — F2 sticky PR-comment bot.
+    #
+    # Aggregates the narrowed matrix from preflight against the release
+    # asset list (post-publish, post-generate-index) into a flat
+    # publish-status.json, uploads it as a workflow artifact, and
+    # posts/edits a sticky PR comment surfacing per-package outcomes
+    # ("X built, Y failed").
+    #
+    # `if: always()` is intentional: the bot's whole purpose is to
+    # surface partial failures in matrix-build. We still skip when
+    # the narrowed matrix is empty (nothing was attempted; nothing
+    # to report). For B-2, only matrix-included entries are
+    # reported — `cached-skip` (entries the preflight gate filtered
+    # out) is not surfaced. Follow-up if reviewers want full coverage.
+    #
+    # Joins the publish concurrency group so the comment can't race a
+    # concurrent re-run on the same target tag. The narrow window where
+    # this matters: workflow_dispatch or "re-run all jobs" on a still-
+    # current PR (the workflow-level `cancel-in-progress: true` already
+    # eliminates the common-case quick-push race). cancel-in-progress is
+    # false here because aborting an in-flight comment edit is worse than
+    # waiting one more comment-edit's worth of time.
+    needs: [preflight, matrix-build, publish, generate-index]
+    if: always() && needs.preflight.outputs.matrix != '[]'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: phase-b-1-publish-${{ needs.preflight.outputs.target_tag }}
+      cancel-in-progress: false
+    permissions:
+      pull-requests: write   # post/edit PR comment
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Compute publish-status.json
+        id: status
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.preflight.outputs.target_tag }}"
+          ABI="${{ needs.preflight.outputs.abi }}"
+          MATRIX='${{ needs.preflight.outputs.matrix }}'
+
+          # Currently published assets in the release (post-publish,
+          # post-generate-index). Falls back to [] if the release
+          # doesn't exist (matrix all failed early, nothing published).
+          existing=$(gh release view "$TAG" --repo "${{ github.repository }}" \
+            --json assets --jq '[.assets[].name]' 2>/dev/null || echo '[]')
+
+          # For each matrix entry, decide status by checking whether
+          # the expected canonical archive name is in the release.
+          # If yes: built. If no: failed (matrix-build for that entry
+          # failed). For failed entries, look up a prior archive for
+          # the same (pkg, arch) — the short-sha tail of that name is
+          # the previous_sha (last green).
+          #
+          # NOTE: process substitution (< <(...)) NOT a pipe — under
+          # non-interactive bash, `cmd | while` runs the loop body in a
+          # subshell, losing mutations to packages_json on each iteration.
+          packages_json='[]'
+          while IFS= read -r entry; do
+            pkg=$(echo "$entry" | jq -r .package)
+            arch=$(echo "$entry" | jq -r .arch)
+            sha=$(echo "$entry" | jq -r .sha)
+            short8="${sha:0:8}"
+
+            # Canonical archive name: <pkg>-<ver>-rev<N>-abi<N>-<arch>-<short8>.tar.zst.
+            # The (pkg, arch, short8) triple uniquely identifies an entry;
+            # version + revision live in the package manifest and don't
+            # need to round-trip through this aggregation.
+            if echo "$existing" | jq -e --arg pre "${pkg}-" --arg suf "-abi${ABI}-${arch}-${short8}.tar.zst" \
+                'any(.[]; startswith($pre) and endswith($suf))' >/dev/null; then
+              entry_json=$(jq -nc --arg n "$pkg" --arg a "$arch" --arg s "$sha" \
+                '{name:$n, arch:$a, status:"built", sha:$s}')
+            else
+              # Find a prior archive for the same (pkg, arch) — different sha.
+              # Best-effort; if multiple shas exist (shouldn't, but
+              # defensively), jq picks the first.
+              prev_short=$(echo "$existing" | jq -r --arg pre "${pkg}-" --arg arch_part "-abi${ABI}-${arch}-" \
+                '[.[] | select(startswith($pre) and contains($arch_part))] | .[0] // ""' \
+                | sed -nE 's/.*-([a-f0-9]{8})\.tar\.zst$/\1/p')
+              if [ -n "$prev_short" ]; then
+                entry_json=$(jq -nc --arg n "$pkg" --arg a "$arch" --arg p "$prev_short" \
+                  '{name:$n, arch:$a, status:"failed", previous_sha:$p}')
+              else
+                entry_json=$(jq -nc --arg n "$pkg" --arg a "$arch" \
+                  '{name:$n, arch:$a, status:"failed"}')
+              fi
+            fi
+            packages_json=$(echo "$packages_json" | jq -c --argjson e "$entry_json" '. + [$e]')
+          done < <(echo "$MATRIX" | jq -c '.[]')
+
+          jq -nc --argjson abi "$ABI" --arg tag "$TAG" --argjson pkgs "$packages_json" \
+            '{abi_version:$abi, release_tag:$tag, packages:$pkgs}' \
+            > publish-status.json
+
+          echo "--- publish-status.json ---"
+          jq . publish-status.json
+
+          # Stash compact JSON in step output for the comment script.
+          # Use a heredoc-style multi-line output to avoid quoting issues
+          # with embedded special characters in package names / shas.
+          json=$(jq -c . publish-status.json)
+          {
+            echo "json<<__EOF__"
+            echo "$json"
+            echo "__EOF__"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload publish-status.json
+        uses: actions/upload-artifact@v4
+        with:
+          name: publish-status
+          path: publish-status.json
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Post or edit sticky PR comment
+        # Skipped on non-PR triggers (workflow_dispatch from the
+        # force-rebuild flow, etc.) — those still get the artifact
+        # but have no PR to comment on.
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        env:
+          STATUS_JSON: ${{ steps.status.outputs.json }}
+        with:
+          script: |
+            const status = JSON.parse(process.env.STATUS_JSON);
+            const marker = '<!-- phase-b-status -->';
+            const total = status.packages.length;
+            const built = status.packages.filter(p => p.status === 'built').length;
+            const failed = status.packages.filter(p => p.status === 'failed').length;
+
+            const rows = status.packages.map(p => {
+              const sha = p.sha
+                ? `\`${p.sha.slice(0, 8)}\``
+                : (p.previous_sha ? `\`(prev ${p.previous_sha})\`` : '—');
+              return `| ${p.name} | ${p.arch} | ${p.status} | ${sha} |`;
+            }).join('\n');
+
+            const body = [
+              marker,
+              `## Phase B-1 matrix build status — \`${status.release_tag}\``,
+              '',
+              `ABI v${status.abi_version}. **${built} built**, **${failed} failed**, ${total} total.`,
+              '',
+              '| Package | Arch | Status | Sha |',
+              '| --- | --- | --- | --- |',
+              rows,
+              '',
+              '<sub>Auto-generated; replaced on each push. Raw data in the `publish-status` workflow artifact.</sub>',
+            ].join('\n');
+
+            const issue_number = context.issue.number;
+            const { owner, repo } = context.repo;
+
+            const { data: comments } = await github.rest.issues.listComments({ owner, repo, issue_number });
+            const existing = comments.find(c => c.body && c.body.startsWith(marker));
+
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+              console.log(`Updated sticky comment ${existing.id}`);
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+              console.log('Created new sticky comment');
+            }
