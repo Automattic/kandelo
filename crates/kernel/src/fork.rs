@@ -865,16 +865,16 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
             sock.peer_port = peer_port;
             sock.listen_backlog = listen_backlog;
             sock.global_pipes = r.read_u32()? != 0;
-            // Shared listener backlog idx (AF_INET listening sockets).
-            // Increment refcount so the child holds an additional reference
-            // — close()/exit drop one ref, last drop frees the slot.
+            // Shared listener backlog idx (AF_INET listening sockets). The
+            // refcount bump for inherited references happens in
+            // `process_table::bump_inherited_resource_refcounts`, which both
+            // fork and spawn call after building the child — keeping
+            // refcount logic in one place.
             let sb_raw = r.read_u32()?;
             sock.shared_backlog_idx = if sb_raw == 0xFFFFFFFF {
                 None
             } else {
-                let idx = sb_raw as usize;
-                unsafe { crate::socket::shared_listener_backlog_table().add_ref(idx) };
-                Some(idx)
+                Some(sb_raw as usize)
             };
             // bind_path for AF_UNIX
             if r.remaining() >= 4 {

@@ -684,6 +684,53 @@ mod tests {
     }
 
     #[test]
+    fn spawn_child_bumps_shared_listener_backlog_refcount() {
+        // Regression: spawn must inherit AF_INET listener backlog the same
+        // way fork does. Otherwise a parent that opened a listener and then
+        // spawned a child would see the backlog free'd when the child
+        // exited and called dec_ref one too many times.
+        use crate::process_table::ProcessTable;
+        use crate::socket::{shared_listener_backlog_table, SocketDomain, SocketInfo, SocketType};
+        use crate::spawn::SpawnAttrs;
+
+        let mut table = ProcessTable::new();
+        table.create_process(200).unwrap();
+
+        // Allocate a backlog slot (starts with ref_count=1) and attach it
+        // to a parent-owned listener socket.
+        let backlog_idx = unsafe { shared_listener_backlog_table().alloc() };
+        let mut listener = SocketInfo::new(SocketDomain::Inet, SocketType::Stream, 0);
+        listener.shared_backlog_idx = Some(backlog_idx);
+        let _sock_idx = table
+            .processes
+            .get_mut(&200)
+            .unwrap()
+            .sockets
+            .alloc(listener);
+
+        let initial = unsafe { shared_listener_backlog_table().entries[backlog_idx].ref_count };
+        assert_eq!(initial, 1, "alloc starts the slot at ref_count=1");
+
+        let _child_pid = table
+            .spawn_child(200, &[b"a".as_slice()], &[], &[], &SpawnAttrs::empty())
+            .expect("spawn_child");
+
+        let after_spawn = unsafe { shared_listener_backlog_table().entries[backlog_idx].ref_count };
+        assert_eq!(
+            after_spawn, 2,
+            "spawn child must add one ref to the inherited listener backlog"
+        );
+
+        // Same slot should also bump on fork — the helper is shared.
+        table.fork_process(200, 999).expect("fork_process");
+        let after_fork = unsafe { shared_listener_backlog_table().entries[backlog_idx].ref_count };
+        assert_eq!(
+            after_fork, 3,
+            "fork child must add one ref via the shared helper"
+        );
+    }
+
+    #[test]
     fn fork_count_bumps_on_successful_fork() {
         use crate::process_table::ProcessTable;
         let mut table = ProcessTable::new();

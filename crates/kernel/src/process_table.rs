@@ -147,6 +147,21 @@ fn bump_inherited_resource_refcounts(child: &Process) {
             }
         }
     }
+
+    // Shared listener backlog (AF_INET listeners): increment one ref per
+    // socket entry that points at one. close() and process exit each drop
+    // one ref, last-drop frees the slot. Iterates `child.sockets` directly
+    // (not via OFDs) so an unaccepted-but-still-stored listener inherits a
+    // refcount even if no fd in the child happens to reference it — this
+    // matches the prior fork-deserialize-time bump.
+    let backlog_table = unsafe { crate::socket::shared_listener_backlog_table() };
+    for sock_idx in 0..child.sockets.len() {
+        if let Some(sock) = child.sockets.get(sock_idx) {
+            if let Some(shared_idx) = sock.shared_backlog_idx {
+                backlog_table.add_ref(shared_idx);
+            }
+        }
+    }
 }
 
 /// Build the fork-only `fork_pipe_replay` table: a list of (read_fd,
