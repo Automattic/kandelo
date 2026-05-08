@@ -250,6 +250,7 @@ async function handleInit(msg: InitMessage) {
     {
       onFork: handleFork,
       onExec: handleExec,
+      onSpawn: handlePosixSpawn,
       onClone: handleClone,
       onExit: handleExit,
     },
@@ -566,6 +567,80 @@ async function handleExec(
   });
 
   installCrashSafetyNet(newWorker, pid);
+
+  return 0;
+}
+
+/**
+ * Handle SYS_SPAWN (non-forking posix_spawn).
+ *
+ * The kernel has already constructed the child Process descriptor in its
+ * ProcessTable under `childPid` (with attrs and file actions applied).
+ * This callback resolves the program bytes for `path`, allocates a fresh
+ * Memory for the child, registers it with the kernel via
+ * `registerProcess({ skipKernelCreate: true })`, and launches a Worker
+ * for it.
+ *
+ * Distinct from handleExec (which replaces the calling worker) and
+ * handleFork (which clones the parent's Memory): handlePosixSpawn always
+ * creates a fresh Memory and runs the new program from `_start`.
+ *
+ * Returns 0 on success, negative errno on failure (e.g. -ENOENT).
+ */
+async function handlePosixSpawn(
+  childPid: number,
+  path: string,
+  argv: string[],
+  envp: string[],
+): Promise<number> {
+  const resolved = await resolveExec(path);
+  if (!resolved) return -2; // ENOENT
+
+  const ptrWidth = detectPtrWidth(resolved);
+  const memory = createProcessMemory(ptrWidth);
+  const channelOffset = (maxPages - 2) * 65536;
+  growToMax(memory, ptrWidth, 17);
+  new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
+
+  // The kernel already created the child Process via kernel_spawn_process,
+  // so skip the kernelCreate side of registerProcess.
+  kernelWorker.registerProcess(childPid, memory, [channelOffset], {
+    skipKernelCreate: true,
+    ptrWidth,
+  });
+
+  const heapBase = extractHeapBase(resolved);
+  if (heapBase !== null) {
+    kernelWorker.setBrkBase(childPid, heapBase);
+  }
+
+  const initData: CentralizedWorkerInitMessage = {
+    type: "centralized_init",
+    pid: childPid,
+    ppid: 0,
+    programBytes: resolved,
+    memory,
+    channelOffset,
+    argv,
+    env: envp,
+    ptrWidth,
+    kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
+  };
+
+  const newWorker = workerAdapter.createWorker(initData);
+  processes.set(childPid, {
+    memory,
+    programBytes: resolved,
+    worker: newWorker,
+    channelOffset,
+    ptrWidth,
+  });
+
+  newWorker.on("error", (err: Error) => {
+    console.error(`[spawn] worker error for pid ${childPid}:`, err.message);
+    kernelWorker.unregisterProcess(childPid);
+    processes.delete(childPid);
+  });
 
   return 0;
 }
