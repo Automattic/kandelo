@@ -884,6 +884,53 @@ mod tests {
     }
 
     #[test]
+    fn remove_process_emits_host_net_close_only_on_last_ref() {
+        // Regression: when the last process holding a host_net_handle
+        // exits, remove_process must report it in `host_net_closes` so
+        // the kernel-export wrapper can call host_net_close. Earlier
+        // refs (parent still holding it) must NOT report it.
+        use crate::process_table::ProcessTable;
+        use crate::socket::{host_net_handle_ref_count, SocketDomain, SocketInfo, SocketType};
+        use crate::spawn::SpawnAttrs;
+
+        const HANDLE: i32 = 84;
+        let mut table = ProcessTable::new();
+        table.create_process(600).unwrap();
+        let mut sock = SocketInfo::new(SocketDomain::Inet, SocketType::Stream, 0);
+        sock.host_net_handle = Some(HANDLE);
+        let _sock_idx = table
+            .processes
+            .get_mut(&600)
+            .unwrap()
+            .sockets
+            .alloc(sock);
+
+        // Spawn a child → bump the refcount to (parent=1, child=2).
+        let child_pid = table
+            .spawn_child(600, &[b"a".as_slice()], &[], &[], &SpawnAttrs::empty())
+            .expect("spawn_child");
+        assert_eq!(host_net_handle_ref_count(HANDLE), 2);
+
+        // Removing the child first: NOT the last reference → no close.
+        let r1 = table.remove_process(child_pid).expect("remove child");
+        assert!(
+            r1.host_net_closes.is_empty(),
+            "child exit must not emit host_net_close while parent still holds the handle"
+        );
+        assert_eq!(host_net_handle_ref_count(HANDLE), 1);
+
+        // Removing the parent now: IS the last reference → emit close.
+        let r2 = table.remove_process(600).expect("remove parent");
+        assert_eq!(
+            r2.host_net_closes,
+            alloc::vec![HANDLE],
+            "parent exit must emit host_net_close for the last-ref handle"
+        );
+        // The refcount table entry should be gone (close_ref dropped to 0).
+        assert_eq!(host_net_handle_ref_count(HANDLE), 0);
+    }
+
+    #[test]
     fn fork_count_bumps_on_successful_fork() {
         use crate::process_table::ProcessTable;
         let mut table = ProcessTable::new();

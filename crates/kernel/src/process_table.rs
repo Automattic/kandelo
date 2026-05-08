@@ -48,6 +48,20 @@ pub struct ProcessTable {
     current_tid: u32,
 }
 
+/// Outcome of `ProcessTable::remove_process`. Bundles the removed
+/// `Process` with side-effect lists the caller must drain — currently
+/// just AF_INET host net handles whose cross-process refcount hit zero
+/// during cleanup. The caller is `kernel_remove_process`, which has
+/// access to the raw `host_net_close` extern; this layer doesn't.
+pub struct RemoveProcessResult {
+    pub process: Process,
+    /// Host net handles whose cross-process refcount reached 0 during
+    /// teardown. The caller must invoke `host_net_close(h)` on each —
+    /// this kernel-side bookkeeping intentionally doesn't touch the
+    /// host trait so `process_table.rs` stays host-agnostic.
+    pub host_net_closes: Vec<i32>,
+}
+
 /// Subset of parent state inherited by a `posix_spawn` child. Captured up
 /// front under an immutable `&parent` borrow so the rest of `spawn_child`
 /// can mutate `self.processes` freely.
@@ -231,8 +245,9 @@ impl ProcessTable {
     /// Remove a process from the table.
     /// Cleans up all cross-process resources: pipe ref counts, socket pipes,
     /// and listening socket backlogs in the global pipe table.
-    pub fn remove_process(&mut self, pid: u32) -> Option<Process> {
+    pub fn remove_process(&mut self, pid: u32) -> Option<RemoveProcessResult> {
         let proc = self.processes.remove(&pid)?;
+        let mut host_net_closes: Vec<i32> = Vec::new();
 
         let pipe_table = unsafe { crate::pipe::global_pipe_table() };
 
@@ -278,25 +293,16 @@ impl ProcessTable {
         // Clean up socket OFDs: close pipe endpoints so peers get EOF/EPIPE.
         // Without this, a peer process reading from a connected socket would
         // block forever instead of getting EOF when this process exits.
-        let shared_backlog_table = unsafe { crate::socket::shared_listener_backlog_table() };
+        //
+        // NOTE: refcount drops for shared_backlog_idx and host_net_handle
+        // happen in the separate per-socket loop below — once per socket
+        // entry, not once per Socket OFD. That matches the per-socket bump
+        // in `bump_inherited_resource_refcounts` and stays consistent
+        // regardless of fd-dup count.
         for (_ofd_idx, ofd) in proc.ofd_table.iter() {
             if ofd.file_type == FileType::Socket && ofd.host_handle < 0 {
                 let sock_idx = (-(ofd.host_handle + 1)) as usize;
                 if let Some(sock) = proc.sockets.get(sock_idx) {
-                    // Drop our reference to the shared listener backlog
-                    // (matches sys_close behaviour for clean process exit).
-                    if let Some(shared_idx) = sock.shared_backlog_idx {
-                        shared_backlog_table.dec_ref(shared_idx);
-                    }
-                    // Drop one cross-process ref on the host net handle
-                    // (connected AF_INET sockets). We can't reach the
-                    // host trait from here to call host_net_close, but
-                    // keeping the kernel-side refcount consistent is the
-                    // important part — sys_close on a fd-holding process
-                    // is what actually tears the handle down host-side.
-                    if let Some(net_handle) = sock.host_net_handle {
-                        let _ = crate::socket::host_net_handle_close_ref(net_handle);
-                    }
                     if sock.global_pipes {
                         // Cross-process socket: close pipe ends in global table
                         if let Some(send_idx) = sock.send_buf_idx {
@@ -335,6 +341,28 @@ impl ProcessTable {
             }
         }
 
+        // Drop cross-process refcounts for socket-side resources, once per
+        // socket entry. Mirrors the per-socket bump in
+        // `bump_inherited_resource_refcounts` so a fork/spawn parent and
+        // child each contribute exactly one ref on inheritance and one
+        // drop on exit. Sockets that the process closed via sys_close are
+        // already removed from `proc.sockets` (sys_close calls
+        // `sockets.free` on its happy path), so this loop visits only
+        // entries the process held until exit.
+        let shared_backlog_table = unsafe { crate::socket::shared_listener_backlog_table() };
+        for sock_idx in 0..proc.sockets.len() {
+            if let Some(sock) = proc.sockets.get(sock_idx) {
+                if let Some(shared_idx) = sock.shared_backlog_idx {
+                    shared_backlog_table.dec_ref(shared_idx);
+                }
+                if let Some(net_handle) = sock.host_net_handle {
+                    if crate::socket::host_net_handle_close_ref(net_handle) {
+                        host_net_closes.push(net_handle);
+                    }
+                }
+            }
+        }
+
         // Clean up mqueue notifications for this process
         let mq_table = unsafe { crate::mqueue::global_mqueue_table() };
         mq_table.cleanup_process(pid);
@@ -348,7 +376,7 @@ impl ProcessTable {
         let pshared = unsafe { crate::pshared::global_pshared_table() };
         pshared.cleanup_process(pid);
 
-        Some(proc)
+        Some(RemoveProcessResult { process: proc, host_net_closes })
     }
 
     /// Set the current pid for syscall dispatch.

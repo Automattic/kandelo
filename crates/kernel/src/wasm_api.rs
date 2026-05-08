@@ -1047,7 +1047,8 @@ pub extern "C" fn kernel_remove_process(pid: u32) -> i32 {
     use core::sync::atomic::Ordering;
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     match table.remove_process(pid) {
-        Some(removed) => {
+        Some(result) => {
+            let removed = result.process;
             // /dev/fb0 cleanup: if the exiting process held a live mmap,
             // tell the host to drop the canvas binding before the
             // process Memory disappears. Then release the global owner
@@ -1057,6 +1058,12 @@ pub extern "C" fn kernel_remove_process(pid: u32) -> i32 {
             }
             let _ = crate::process_table::FB0_OWNER
                 .compare_exchange(pid as i32, -1, Ordering::SeqCst, Ordering::SeqCst);
+            // Tear down host-side AF_INET handles whose cross-process
+            // refcount hit zero during teardown. process_table.rs can't
+            // call host externs directly; we drain its close-list here.
+            for net_handle in result.host_net_closes {
+                unsafe { host_net_close(net_handle) };
+            }
             0
         }
         None => -(Errno::ESRCH as i32),
