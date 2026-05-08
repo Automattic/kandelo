@@ -10,11 +10,25 @@ use alloc::vec::Vec;
 use wasm_posix_shared::Errno;
 
 /// Bit flags from `posix_spawnattr_t::__flags`. Values match POSIX / musl
-/// (`bits/posix_spawn.h`).
+/// (`musl/include/spawn.h`):
+///
+/// ```text
+///   POSIX_SPAWN_RESETIDS      = 1
+///   POSIX_SPAWN_SETPGROUP     = 2
+///   POSIX_SPAWN_SETSIGDEF     = 4
+///   POSIX_SPAWN_SETSIGMASK    = 8
+///   POSIX_SPAWN_SETSCHEDPARAM = 16
+///   POSIX_SPAWN_SETSCHEDULER  = 32
+///   POSIX_SPAWN_USEVFORK      = 64
+///   POSIX_SPAWN_SETSID        = 128
+/// ```
+///
+/// `posix_spawn.c` passes `a->__flags` into the SYS_SPAWN blob unmodified,
+/// so these values must align byte-for-byte with the libc constants.
 pub mod attr_flags {
     pub const SETPGROUP:  u32 = 0x02;
+    pub const SETSIGDEF:  u32 = 0x04;
     pub const SETSIGMASK: u32 = 0x08;
-    pub const SETSIGDEF:  u32 = 0x10;
     pub const SETSID:     u32 = 0x80;
 }
 
