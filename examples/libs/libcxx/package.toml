@@ -1,0 +1,50 @@
+# Per-library manifest for libc++ and libc++abi. See docs/package-management.md.
+#
+# This package replaces the in-tree scripts/build-libcxx.sh.
+# It builds libc++.a and libc++abi.a from the LLVM monorepo
+# (release/${version}.x branch via sparse checkout) and installs the
+# libc++ v1 headers from the host LLVM toolchain.
+#
+# As of revision 2, LLVM libunwind is built alongside libcxx + libcxxabi
+# and statically linked into libc++abi.a (LIBCXXABI_USE_LLVM_UNWINDER +
+# LIBCXXABI_ENABLE_STATIC_UNWINDER +
+# LIBCXXABI_STATICALLY_LINK_UNWINDER_IN_STATIC_LIBRARY). C++ programs
+# that throw exceptions can now resolve `_Unwind_RaiseException` and
+# friends inside libc++abi.a — consumers link `-lc++ -lc++abi`, no
+# separate `-lunwind` needed.
+
+kind = "library"
+
+name = "libcxx"
+# LLVM major version. The build script clones release/<MAJOR>.x
+# and compiles libcxx + libcxxabi from that branch.
+version = "21"
+revision = 2
+depends_on = []
+# Both wasm32 (everyone) and wasm64 (MariaDB, PHP) currently
+# need libcxx, so we opt into both.
+arches = ["wasm32", "wasm64"]
+
+# Source: the upstream LLVM project. The build script clones
+# sparse against release/${VERSION}.x; we don't pin a tarball
+# because LLVM's release artifacts don't ship the granular
+# source-only archive we want. The schema requires sha256 to be
+# 64-char lowercase hex; we record all-zeros to denote "not a
+# tarball" — fetch integrity is delegated to the git branch ref
+# instead. (cargo xtask build-deps's tarball-verifier never runs
+# on this manifest; the build script does its own clone.)
+[source]
+url = "https://github.com/llvm/llvm-project.git"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "Apache-2.0 WITH LLVM-exception"
+url = "https://github.com/llvm/llvm-project/blob/main/LICENSE.TXT"
+
+[build]
+script_path = "examples/libs/libcxx/build-libcxx.sh"
+repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+
+[outputs]
+libs = ["lib/libc++.a", "lib/libc++abi.a"]
+headers = ["include/c++/v1"]

@@ -98,6 +98,58 @@ build_program() {
     fi
 }
 
+# Build a C++ program via the SDK's wasm32posix-c++ wrapper. The SDK
+# injects the toolchain's standard compile + link flags, the channel
+# syscall glue, the C++ runtime stubs (cxxrt.c), and the sysroot path.
+# The default include search includes the sysroot's libc++ headers so
+# no extra -isystem is needed; we only have to supply -lc++ / -lc++abi
+# at link time.
+build_cpp_program() {
+    local src="$1"
+    local out_dir="$2"
+    local name
+    name=$(basename "$src" .cpp)
+    local wasm="$out_dir/${name}.wasm"
+
+    echo "  Compiling $name (C++)..."
+    # -fwasm-exceptions is required for clang to lower C++ try/catch
+    # to wasm-EH `try`/`catch` instructions. Without it clang emits
+    # `__cxa_throw; unreachable` and DCEs the catch handlers, so the
+    # whole exception-propagation chain (libunwind + libc++abi) never
+    # runs.
+    wasm32posix-c++ \
+        -O2 \
+        -fwasm-exceptions \
+        "$src" \
+        -lc++ -lc++abi \
+        -o "$wasm"
+
+    # Asyncify for fork/exec support. Harmless when no kernel.kernel_fork
+    # import is present (the pass becomes a no-op).
+    if [ -n "$WASM_OPT" ]; then
+        "$WASM_OPT" --asyncify \
+            --pass-arg="asyncify-imports@${ASYNCIFY_IMPORTS}" \
+            "$wasm" -o "$wasm" 2>/dev/null || true
+    fi
+}
+
+# Resolve libcxx and symlink its outputs into the sysroot if there are
+# any .cpp programs to build. Skip the resolver entirely when libc++.a
+# is already present so repeat runs are fast.
+if ls "$REPO_ROOT/programs/"*.cpp >/dev/null 2>&1; then
+    if [ ! -f "$SYSROOT/lib/libc++.a" ]; then
+        echo "==> Resolving libcxx for C++ programs..."
+        HOST_TRIPLE="$(rustc -vV | awk '/^host/ {print $2}')"
+        (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve libcxx >/dev/null)
+        LIBCXX_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libcxx)"
+        ln -sf "$LIBCXX_PREFIX/lib/libc++.a"    "$SYSROOT/lib/libc++.a"
+        ln -sf "$LIBCXX_PREFIX/lib/libc++abi.a" "$SYSROOT/lib/libc++abi.a"
+        mkdir -p "$SYSROOT/include/c++"
+        rm -rf "$SYSROOT/include/c++/v1"
+        ln -sfn "$LIBCXX_PREFIX/include/c++/v1" "$SYSROOT/include/c++/v1"
+    fi
+fi
+
 echo "Building user programs..."
 for src in "$REPO_ROOT/programs/"*.c; do
     [ -f "$src" ] || continue
@@ -108,6 +160,11 @@ for src in "$REPO_ROOT/programs/"*.c; do
     # Skip hello64.c — built separately with wasm64 toolchain below
     [ "$(basename "$src")" = "hello64.c" ] && continue
     build_program "$src" "$OUT_DIR_32"
+done
+
+for src in "$REPO_ROOT/programs/"*.cpp; do
+    [ -f "$src" ] || continue
+    build_cpp_program "$src" "$OUT_DIR_32"
 done
 
 echo "Building example programs..."

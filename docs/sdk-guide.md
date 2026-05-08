@@ -84,6 +84,24 @@ wasm32posix-cc -O2 program.c -o program.wasm
 wasm32posix-c++ program.cpp -o program.wasm
 ```
 
+### Linking C++ programs (with exceptions)
+
+C++ programs link against libc++ + libc++abi. Both are produced by
+the libcxx package (`examples/libs/libcxx/`) and resolved automatically
+by `cargo xtask build-deps resolve libcxx`. LLVM libunwind is statically
+bundled into `libc++abi.a`, so:
+
+```bash
+wasm32posix-c++ -fwasm-exceptions main.cpp -lc++ -lc++abi -o app.wasm
+```
+
+works out of the box — `_Unwind_*` symbols resolve internally, no
+separate `-lunwind`.
+
+`-fwasm-exceptions` is required for clang to lower C++ `try`/`catch`
+to wasm-EH `try_table` / `catch_ref` instructions. Without it, catch
+handlers are dead-code-eliminated and `throw` hangs at runtime.
+
 ### Building static libraries
 
 ```bash

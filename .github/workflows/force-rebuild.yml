@@ -137,41 +137,30 @@ jobs:
           path: |
             sysroot
             sysroot64
-          key: musl-sysroot-v3-${{ runner.os }}-${{ hashFiles('scripts/build-musl.sh', 'scripts/build-libcxx.sh', 'musl-overlay/**', 'glue/**') }}
+          key: musl-sysroot-v4-${{ runner.os }}-${{ hashFiles('scripts/build-musl.sh', 'examples/libs/libcxx/**', 'musl-overlay/**', 'glue/**') }}
 
-      - name: Build musl sysroot + libc++ (wasm32 + wasm64)
+      - name: Build musl sysroot + resolve libcxx (wasm32 + wasm64)
         if: steps.cache-sysroot.outputs.cache-hit != 'true'
         # See staging-build.yml.
         run: |
           bash scripts/dev-shell.sh bash scripts/build-musl.sh
           bash scripts/dev-shell.sh bash scripts/build-musl.sh --arch wasm64posix
           bash scripts/dev-shell.sh bash -c '
-            src=""
-            for cand in "$LLVM_PREFIX/include/c++/v1" "$LLVM_PREFIX/share/libc++/v1"; do
-              if [ -f "$cand/__config" ] || [ -f "$cand/iostream" ]; then
-                src="$cand"; break
-              fi
-            done
-            if [ -z "$src" ]; then
-              echo "ERROR: cant locate libc++ headers under $LLVM_PREFIX" >&2
-              exit 1
-            fi
-            echo "installing libc++ headers from $src"
-            for arch_dir in sysroot sysroot64; do
-              if [ ! -f "$arch_dir/include/c++/v1/__config" ]; then
-                mkdir -p "$arch_dir/include/c++/v1"
-                cp -RL "$src"/* "$arch_dir/include/c++/v1/"
-                chmod -R u+w "$arch_dir/include/c++/v1/"
-                cs="$arch_dir/include/c++/v1/__config_site"
-                if [ -f "$cs" ]; then
-                  sed -i "s/_LIBCPP_HAS_MUSL_LIBC 0/_LIBCPP_HAS_MUSL_LIBC 1/" "$cs"
-                  sed -i "s/_LIBCPP_HAS_THREAD_API_PTHREAD 0/_LIBCPP_HAS_THREAD_API_PTHREAD 1/" "$cs"
-                fi
-              fi
+            set -euo pipefail
+            HOST_TARGET="$(rustc -vV | awk "/^host/ {print \$2}")"
+            for arch in wasm32 wasm64; do
+              cargo run -p xtask --target "$HOST_TARGET" --quiet -- \
+                build-deps resolve libcxx --arch "$arch"
+              prefix="$(cargo run -p xtask --target "$HOST_TARGET" --quiet -- \
+                build-deps path libcxx --arch "$arch")"
+              if [ "$arch" = "wasm64" ]; then sysroot="sysroot64"; else sysroot="sysroot"; fi
+              mkdir -p "$sysroot/lib" "$sysroot/include/c++"
+              ln -sf "$prefix/lib/libc++.a"    "$sysroot/lib/libc++.a"
+              ln -sf "$prefix/lib/libc++abi.a" "$sysroot/lib/libc++abi.a"
+              rm -rf "$sysroot/include/c++/v1"
+              ln -sfn "$prefix/include/c++/v1" "$sysroot/include/c++/v1"
             done
           '
-          bash scripts/dev-shell.sh bash scripts/build-libcxx.sh
-          bash scripts/dev-shell.sh bash scripts/build-libcxx.sh --arch wasm64
 
       - name: Compute durable release tag
         id: tag
