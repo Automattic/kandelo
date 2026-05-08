@@ -640,6 +640,72 @@ impl Process {
     }
 }
 
+/// A `HostIO` impl that returns sensible defaults for the methods our
+/// kernel-level unit tests actually invoke, and `unimplemented!()` for the
+/// rest. Lives at module scope (under `#[cfg(test)]`) so any test in the
+/// crate can `use crate::process::test_host::NoopHost;`.
+#[cfg(test)]
+pub(crate) mod test_host {
+    use super::HostIO;
+    use wasm_posix_shared::Errno;
+    use wasm_posix_shared::WasmStat;
+
+    pub struct NoopHost;
+
+    impl HostIO for NoopHost {
+        fn host_open(&mut self, _path: &[u8], _flags: u32, _mode: u32) -> Result<i64, Errno> { Err(Errno::ENOSYS) }
+        fn host_close(&mut self, _h: i64) -> Result<(), Errno> { Ok(()) }
+        fn host_read(&mut self, _h: i64, _b: &mut [u8]) -> Result<usize, Errno> { Ok(0) }
+        fn host_write(&mut self, _h: i64, b: &[u8]) -> Result<usize, Errno> { Ok(b.len()) }
+        fn host_seek(&mut self, _h: i64, _o: i64, _w: u32) -> Result<i64, Errno> { Ok(0) }
+        fn host_fstat(&mut self, _h: i64) -> Result<WasmStat, Errno> { Err(Errno::ENOSYS) }
+        fn host_stat(&mut self, _p: &[u8]) -> Result<WasmStat, Errno> { Err(Errno::ENOENT) }
+        fn host_lstat(&mut self, _p: &[u8]) -> Result<WasmStat, Errno> { Err(Errno::ENOENT) }
+        fn host_mkdir(&mut self, _p: &[u8], _m: u32) -> Result<(), Errno> { Err(Errno::ENOSYS) }
+        fn host_rmdir(&mut self, _p: &[u8]) -> Result<(), Errno> { Err(Errno::ENOSYS) }
+        fn host_unlink(&mut self, _p: &[u8]) -> Result<(), Errno> { Err(Errno::ENOSYS) }
+        fn host_rename(&mut self, _o: &[u8], _n: &[u8]) -> Result<(), Errno> { Err(Errno::ENOSYS) }
+        fn host_link(&mut self, _o: &[u8], _n: &[u8]) -> Result<(), Errno> { Err(Errno::ENOSYS) }
+        fn host_symlink(&mut self, _t: &[u8], _l: &[u8]) -> Result<(), Errno> { Err(Errno::ENOSYS) }
+        fn host_readlink(&mut self, _p: &[u8], _b: &mut [u8]) -> Result<usize, Errno> { Err(Errno::ENOSYS) }
+        fn host_chmod(&mut self, _p: &[u8], _m: u32) -> Result<(), Errno> { Err(Errno::ENOSYS) }
+        fn host_chown(&mut self, _p: &[u8], _u: u32, _g: u32) -> Result<(), Errno> { Err(Errno::ENOSYS) }
+        fn host_access(&mut self, _p: &[u8], _a: u32) -> Result<(), Errno> { Err(Errno::ENOENT) }
+        fn host_opendir(&mut self, _p: &[u8]) -> Result<i64, Errno> { Err(Errno::ENOSYS) }
+        fn host_readdir(&mut self, _h: i64, _b: &mut [u8]) -> Result<Option<(u64, u32, usize)>, Errno> { Ok(None) }
+        fn host_closedir(&mut self, _h: i64) -> Result<(), Errno> { Ok(()) }
+        fn host_clock_gettime(&mut self, _c: u32) -> Result<(i64, i64), Errno> { Ok((0, 0)) }
+        fn host_nanosleep(&mut self, _s: i64, _n: i64) -> Result<(), Errno> { Ok(()) }
+        fn host_ftruncate(&mut self, _h: i64, _l: i64) -> Result<(), Errno> { Ok(()) }
+        fn host_fsync(&mut self, _h: i64) -> Result<(), Errno> { Ok(()) }
+        fn host_fchmod(&mut self, _h: i64, _m: u32) -> Result<(), Errno> { Ok(()) }
+        fn host_fchown(&mut self, _h: i64, _u: u32, _g: u32) -> Result<(), Errno> { Ok(()) }
+        fn host_kill(&mut self, _p: i32, _s: u32) -> Result<(), Errno> { Ok(()) }
+        fn host_exec(&mut self, _p: &[u8]) -> Result<(), Errno> { Err(Errno::ENOSYS) }
+        fn host_set_alarm(&mut self, _s: u32) -> Result<(), Errno> { Ok(()) }
+        fn host_set_posix_timer(&mut self, _t: i32, _s: i32, _v: i64, _i: i64) -> Result<(), Errno> { Ok(()) }
+        fn host_sigsuspend_wait(&mut self) -> Result<u32, Errno> { Err(Errno::EINTR) }
+        fn host_call_signal_handler(&mut self, _h: u32, _s: u32, _f: u32) -> Result<(), Errno> { Ok(()) }
+        fn host_getrandom(&mut self, b: &mut [u8]) -> Result<usize, Errno> { for x in b.iter_mut() { *x = 0; } Ok(b.len()) }
+        fn host_utimensat(&mut self, _p: &[u8], _as: i64, _an: i64, _ms: i64, _mn: i64) -> Result<(), Errno> { Ok(()) }
+        fn host_waitpid(&mut self, _p: i32, _o: u32) -> Result<(i32, i32), Errno> { Err(Errno::ECHILD) }
+        fn host_net_connect(&mut self, _h: i32, _a: &[u8], _p: u16) -> Result<(), Errno> { Ok(()) }
+        fn host_net_send(&mut self, _h: i32, d: &[u8], _f: u32) -> Result<usize, Errno> { Ok(d.len()) }
+        fn host_net_recv(&mut self, _h: i32, _l: u32, _f: u32, _b: &mut [u8]) -> Result<usize, Errno> { Ok(0) }
+        fn host_net_close(&mut self, _h: i32) -> Result<(), Errno> { Ok(()) }
+        fn host_net_listen(&mut self, _f: i32, _p: u16, _a: &[u8; 4]) -> Result<(), Errno> { Ok(()) }
+        fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> { Err(Errno::ENOENT) }
+        fn host_fcntl_lock(&mut self, _p: &[u8], _pid: u32, _c: u32, _t: u32, _s: i64, _l: i64, _r: &mut [u8]) -> Result<(), Errno> { Ok(()) }
+        fn host_fork(&self) -> i32 { -(Errno::ENOSYS as i32) }
+        fn host_futex_wait(&mut self, _a: usize, _e: u32, _t: i64) -> Result<i32, Errno> { Err(Errno::EAGAIN) }
+        fn host_futex_wake(&mut self, _a: usize, _c: u32) -> Result<i32, Errno> { Ok(0) }
+        fn host_clone(&mut self, _f: usize, _a: usize, _s: usize, _t: usize, _c: usize) -> Result<i32, Errno> { Err(Errno::ENOSYS) }
+        fn bind_framebuffer(&mut self, _p: i32, _a: usize, _l: usize, _w: u32, _h: u32, _s: u32, _f: u32) {}
+        fn unbind_framebuffer(&mut self, _p: i32) {}
+        fn fb_write(&mut self, _p: i32, _o: usize, _b: &[u8]) {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -659,6 +725,7 @@ mod tests {
         table.create_process(100).unwrap();
         table.processes.get_mut(&100).unwrap().cwd = b"/tmp".to_vec();
 
+        let mut host = test_host::NoopHost;
         let child_pid = table
             .spawn_child(
                 100,
@@ -666,6 +733,7 @@ mod tests {
                 &[b"PATH=/bin".as_slice()],
                 &[],
                 &SpawnAttrs::empty(),
+                &mut host,
             )
             .expect("spawn_child");
 
@@ -711,8 +779,9 @@ mod tests {
         let initial = unsafe { shared_listener_backlog_table().entries[backlog_idx].ref_count };
         assert_eq!(initial, 1, "alloc starts the slot at ref_count=1");
 
+        let mut host = test_host::NoopHost;
         let _child_pid = table
-            .spawn_child(200, &[b"a".as_slice()], &[], &[], &SpawnAttrs::empty())
+            .spawn_child(200, &[b"a".as_slice()], &[], &[], &SpawnAttrs::empty(), &mut host)
             .expect("spawn_child");
 
         let after_spawn = unsafe { shared_listener_backlog_table().entries[backlog_idx].ref_count };
@@ -760,8 +829,9 @@ mod tests {
 
         // Spawn a child. The bump turns the table entry into "1 (parent) + 1
         // (child) = 2".
+        let mut host = test_host::NoopHost;
         let _child = table
-            .spawn_child(300, &[b"a".as_slice()], &[], &[], &SpawnAttrs::empty())
+            .spawn_child(300, &[b"a".as_slice()], &[], &[], &SpawnAttrs::empty(), &mut host)
             .expect("spawn_child");
         assert_eq!(
             host_net_handle_ref_count(HANDLE),
@@ -810,8 +880,9 @@ mod tests {
         assert_eq!(table.get(400).unwrap().sockets.get(udp_idx).unwrap().dgram_queue.len(), 1);
         assert_eq!(table.get(400).unwrap().sockets.get(tcp_idx).unwrap().oob_byte, Some(0xAB));
 
+        let mut host = test_host::NoopHost;
         let child_pid = table
-            .spawn_child(400, &[b"a".as_slice()], &[], &[], &SpawnAttrs::empty())
+            .spawn_child(400, &[b"a".as_slice()], &[], &[], &SpawnAttrs::empty(), &mut host)
             .expect("spawn_child");
 
         // Child must NOT see them.
@@ -860,8 +931,9 @@ mod tests {
         );
 
         // Spawn child must NOT inherit them.
+        let mut host = test_host::NoopHost;
         let spawn_child = table
-            .spawn_child(500, &[b"a".as_slice()], &[], &[], &SpawnAttrs::empty())
+            .spawn_child(500, &[b"a".as_slice()], &[], &[], &SpawnAttrs::empty(), &mut host)
             .expect("spawn_child");
         assert!(
             table.get(spawn_child).unwrap().sockets.get(listener_idx).unwrap().listen_backlog.is_empty(),
@@ -906,8 +978,9 @@ mod tests {
             .alloc(sock);
 
         // Spawn a child → bump the refcount to (parent=1, child=2).
+        let mut host = test_host::NoopHost;
         let child_pid = table
-            .spawn_child(600, &[b"a".as_slice()], &[], &[], &SpawnAttrs::empty())
+            .spawn_child(600, &[b"a".as_slice()], &[], &[], &SpawnAttrs::empty(), &mut host)
             .expect("spawn_child");
         assert_eq!(host_net_handle_ref_count(HANDLE), 2);
 
@@ -928,6 +1001,136 @@ mod tests {
         );
         // The refcount table entry should be gone (close_ref dropped to 0).
         assert_eq!(host_net_handle_ref_count(HANDLE), 0);
+    }
+
+    #[test]
+    fn spawn_child_applies_close_action() {
+        // Parent has fd 5 → some inherited OFD. After spawn with file
+        // action Close{fd:5}, the child must NOT have fd 5; the parent
+        // is unaffected.
+        use crate::process_table::ProcessTable;
+        use crate::process::test_host::NoopHost;
+        use crate::spawn::{FileAction, SpawnAttrs};
+
+        let mut table = ProcessTable::new();
+        table.create_process(700).unwrap();
+
+        // Inject an OFD + fd 5 into parent. Use a file_type+host_handle that
+        // won't trigger any host call on close-after-spawn.
+        let parent = table.processes.get_mut(&700).unwrap();
+        let ofd_idx = parent.ofd_table.create(
+            crate::ofd::FileType::Regular,
+            wasm_posix_shared::flags::O_RDONLY,
+            42, // host_handle (positive). bump_inherited_resource_refcounts
+                // will register it; close_ref returns false → no host_close.
+            b"/tmp/foo".to_vec(),
+        );
+        parent.fd_table.alloc_at_min(crate::fd::OpenFileDescRef(ofd_idx), 0, 5).unwrap();
+        // Sanity: parent has fd 5.
+        assert!(table.get(700).unwrap().fd_table.get(5).is_ok());
+
+        let mut host = NoopHost;
+        let child_pid = table
+            .spawn_child(
+                700,
+                &[b"a".as_slice()],
+                &[],
+                &[FileAction::Close { fd: 5 }],
+                &SpawnAttrs::empty(),
+                &mut host,
+            )
+            .expect("spawn_child");
+
+        // Child: fd 5 closed.
+        assert!(
+            table.get(child_pid).unwrap().fd_table.get(5).is_err(),
+            "child must have fd 5 closed by file action"
+        );
+        // Parent: fd 5 still open.
+        assert!(
+            table.get(700).unwrap().fd_table.get(5).is_ok(),
+            "parent fd 5 must be unaffected"
+        );
+    }
+
+    #[test]
+    fn spawn_child_applies_dup2_action() {
+        // Parent has fd 5 → some OFD. After spawn with Dup2{srcfd:5, fd:1},
+        // the child's fd 1 points at fd 5's OFD; the parent is unaffected.
+        use crate::process_table::ProcessTable;
+        use crate::process::test_host::NoopHost;
+        use crate::spawn::{FileAction, SpawnAttrs};
+
+        let mut table = ProcessTable::new();
+        table.create_process(701).unwrap();
+
+        let parent = table.processes.get_mut(&701).unwrap();
+        let ofd_idx = parent.ofd_table.create(
+            crate::ofd::FileType::Regular,
+            wasm_posix_shared::flags::O_RDONLY,
+            43,
+            b"/tmp/bar".to_vec(),
+        );
+        parent.fd_table.alloc_at_min(crate::fd::OpenFileDescRef(ofd_idx), 0, 5).unwrap();
+        let parent_fd1_ofd = table.get(701).unwrap().fd_table.get(1).unwrap().ofd_ref.0;
+
+        let mut host = NoopHost;
+        let child_pid = table
+            .spawn_child(
+                701,
+                &[b"a".as_slice()],
+                &[],
+                &[FileAction::Dup2 { srcfd: 5, fd: 1 }],
+                &SpawnAttrs::empty(),
+                &mut host,
+            )
+            .expect("spawn_child");
+
+        // Child fd 1 now points at the same OFD as fd 5.
+        let child = table.get(child_pid).unwrap();
+        let child_fd1_ofd = child.fd_table.get(1).unwrap().ofd_ref.0;
+        let child_fd5_ofd = child.fd_table.get(5).unwrap().ofd_ref.0;
+        assert_eq!(child_fd1_ofd, child_fd5_ofd, "child fd 1 dup2'd from fd 5");
+        // Parent fd 1 unchanged.
+        assert_eq!(
+            table.get(701).unwrap().fd_table.get(1).unwrap().ofd_ref.0,
+            parent_fd1_ofd,
+            "parent fd 1 unaffected"
+        );
+    }
+
+    #[test]
+    fn spawn_child_action_failure_drops_partial_child() {
+        // Dup2 from a closed source fd must fail with EBADF and leave the
+        // parent's process table unchanged.
+        use crate::process_table::ProcessTable;
+        use crate::process::test_host::NoopHost;
+        use crate::spawn::{FileAction, SpawnAttrs};
+        use wasm_posix_shared::Errno;
+
+        let mut table = ProcessTable::new();
+        table.create_process(702).unwrap();
+        let pids_before: Vec<u32> = table.all_pids();
+        let parent_fork_count_before = table.get(702).unwrap().fork_count();
+
+        let mut host = NoopHost;
+        let err = table
+            .spawn_child(
+                702,
+                &[b"a".as_slice()],
+                &[],
+                &[FileAction::Dup2 { srcfd: 999, fd: 1 }],
+                &SpawnAttrs::empty(),
+                &mut host,
+            )
+            .expect_err("spawn_child must fail when an action errors");
+        assert_eq!(err, Errno::EBADF);
+
+        // No new pid leaked.
+        let pids_after: Vec<u32> = table.all_pids();
+        assert_eq!(pids_before, pids_after, "no partial child must remain");
+        // fork_count still 0.
+        assert_eq!(table.get(702).unwrap().fork_count(), parent_fork_count_before);
     }
 
     #[test]

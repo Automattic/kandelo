@@ -471,8 +471,9 @@ impl ProcessTable {
         parent_pid: u32,
         argv: &[&[u8]],
         envp: &[&[u8]],
-        _file_actions: &[crate::spawn::FileAction],
+        file_actions: &[crate::spawn::FileAction],
         _attrs: &crate::spawn::SpawnAttrs,
+        host: &mut dyn crate::process::HostIO,
     ) -> Result<u32, Errno> {
         // Snapshot inheritable parent state under an immutable borrow.
         let inherit = {
@@ -537,7 +538,72 @@ impl ProcessTable {
         let child_ref = self.processes.get(&child_pid).unwrap();
         bump_inherited_resource_refcounts(child_ref);
 
+        // Apply file actions in forward order against the child. Any failure
+        // rolls back the partial child via remove_process — which runs the
+        // proper exit cleanup (decrements every refcount we bumped, drops
+        // any newly-opened fds, queues last-ref host net handles for close).
+        if let Err(e) = self.apply_spawn_file_actions(child_pid, file_actions, host) {
+            if let Some(removed) = self.remove_process(child_pid) {
+                for net_handle in removed.host_net_closes {
+                    let _ = host.host_net_close(net_handle);
+                }
+            }
+            return Err(e);
+        }
+
+        // TODO Task 9: apply attrs.
+
         Ok(child_pid)
+    }
+
+    /// Apply a list of `posix_spawn` file actions to the child process,
+    /// in the order given. Each action is dispatched to the existing
+    /// `sys_*` helper that takes `&mut Process`. On error, returns the
+    /// errno; the caller (`spawn_child`) is responsible for cleanup.
+    fn apply_spawn_file_actions(
+        &mut self,
+        child_pid: u32,
+        file_actions: &[crate::spawn::FileAction],
+        host: &mut dyn crate::process::HostIO,
+    ) -> Result<(), Errno> {
+        use crate::spawn::FileAction;
+        for action in file_actions {
+            let child = self.processes.get_mut(&child_pid).ok_or(Errno::ESRCH)?;
+            match action {
+                FileAction::Close { fd } => {
+                    // POSIX: close errors are silently ignored for spawn.
+                    let _ = crate::syscalls::sys_close(child, host, *fd);
+                }
+                FileAction::Dup2 { srcfd, fd } => {
+                    if srcfd == fd {
+                        // POSIX dup2(N,N) clears FD_CLOEXEC if N is open;
+                        // EBADF otherwise.
+                        let entry = child.fd_table.get_mut(*fd)?;
+                        entry.fd_flags &= !wasm_posix_shared::fd_flags::FD_CLOEXEC;
+                    } else {
+                        let _ = crate::syscalls::sys_dup2(child, host, *srcfd, *fd)?;
+                    }
+                }
+                FileAction::Open { fd, path, oflag, mode } => {
+                    let opened = crate::syscalls::sys_open(child, host, path, *oflag as u32, *mode)?;
+                    if opened != *fd {
+                        // Move opened fd to the requested target slot.
+                        let r = crate::syscalls::sys_dup2(child, host, opened, *fd);
+                        // Always close the temporary fd, even if dup2 failed —
+                        // we don't want to leak it on the error path.
+                        let _ = crate::syscalls::sys_close(child, host, opened);
+                        let _ = r?;
+                    }
+                }
+                FileAction::Chdir { path } => {
+                    crate::syscalls::sys_chdir(child, host, path)?;
+                }
+                FileAction::Fchdir { fd } => {
+                    crate::syscalls::sys_fchdir(child, *fd)?;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Smallest unused pid >= 2 (pid 1 is reserved for init).
