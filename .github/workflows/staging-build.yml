@@ -622,11 +622,9 @@ jobs:
       # max-parallel curbs cache-restore rate-limit pressure: ~60 matrix
       # entries × ~80 MB toolchain cache pulls hit GitHub Actions Cache's
       # GetCacheEntryDownloadURL throughput limit (429 ResourceExhausted)
-      # when run with default parallelism. 10 still produced 429s on
-      # 2026-05-08, so keep the burst size deliberately low until the
-      # workflow stops restoring the large toolchain cache in every
-      # matrix leg.
-      max-parallel: 4
+      # when run with default parallelism. Keep an explicit cap while
+      # still allowing enough parallelism to finish the matrix quickly.
+      max-parallel: 10
       matrix:
         include: ${{ fromJSON(needs.preflight.outputs.matrix) }}
     steps:
