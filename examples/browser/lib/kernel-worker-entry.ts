@@ -335,6 +335,8 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
         handleFork(parentPid, childPid, parentMemory),
       onExec: async (pid, path, argv, envp) =>
         handleExec(pid, path, argv, envp),
+      onSpawn: async (childPid, path, argv, envp) =>
+        handlePosixSpawn(childPid, path, argv, envp),
       onClone: (pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory) =>
         handleClone(pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory),
       onExit: (pid, exitStatus) => handleExit(pid, exitStatus),
@@ -757,6 +759,80 @@ async function handleExec(
   // request, sed inside wp-config-init, etc.) leaves the kernel believing
   // the process is alive and the parent's waitpid blocks forever.
   installProcessWorkerListeners(newWorker, pid);
+
+  return 0;
+}
+
+/**
+ * Handle SYS_SPAWN (non-forking posix_spawn) on the browser host.
+ *
+ * The kernel has already constructed the child Process descriptor under
+ * `childPid` with attrs and file actions applied. This callback resolves
+ * `path` to bytes via the shared MemoryFileSystem, allocates a fresh
+ * Memory for the child, registers it with the kernel
+ * (`skipKernelCreate: true` — kernel did its half), and spawns a Worker.
+ *
+ * Distinct from handleExec (which replaces the calling worker) and
+ * handleFork (which clones the parent's Memory): this always creates a
+ * fresh Memory and runs the new program from `_start`.
+ *
+ * Mirrors handlePosixSpawn in host/src/node-kernel-worker-entry.ts —
+ * per CLAUDE.md the two hosts must move in lockstep.
+ *
+ * Returns 0 on success, negative errno on failure.
+ */
+async function handlePosixSpawn(
+  childPid: number,
+  path: string,
+  argv: string[],
+  envp: string[],
+): Promise<number> {
+  // Materialize lazy file if needed (async fetch avoids sync XHR + SW deadlock)
+  await memfs.ensureMaterialized(path);
+
+  const bytes = readFileFromFs(path);
+  if (!bytes) return -2; // ENOENT
+
+  const ptrWidth = detectPtrWidth(bytes);
+  const newMemory = createProcessMemory(ptrWidth, maxPages);
+  const newChannelOffset = (maxPages - 2) * PAGE_SIZE;
+  new Uint8Array(newMemory.buffer, newChannelOffset, CH_TOTAL_SIZE).fill(0);
+
+  // Kernel already created the child via kernel_spawn_process.
+  kernelWorker.registerProcess(childPid, newMemory, [newChannelOffset], {
+    skipKernelCreate: true,
+    ptrWidth,
+  });
+
+  const heapBase = extractHeapBase(bytes);
+  if (heapBase !== null) {
+    kernelWorker.setBrkBase(childPid, heapBase);
+  }
+
+  const initData: CentralizedWorkerInitMessage = {
+    type: "centralized_init",
+    pid: childPid,
+    ppid: 0,
+    programBytes: bytes,
+    memory: newMemory,
+    channelOffset: newChannelOffset,
+    argv,
+    env: envp,
+    ptrWidth,
+  };
+
+  const newWorker = workerAdapter.createWorker(initData);
+  newWorker.on("error", (err: Error) => {
+    console.error(`[kernel-worker] spawn worker error pid=${childPid}:`, err.message);
+  });
+
+  processes.set(childPid, {
+    memory: newMemory,
+    programBytes: bytes,
+    worker: newWorker,
+    channelOffset: newChannelOffset,
+    ptrWidth,
+  });
 
   return 0;
 }
