@@ -20,6 +20,7 @@ name = "libcxx"
 # and compiles libcxx + libcxxabi from that branch.
 version = "21"
 revision = 2
+kernel_abi = 7
 depends_on = []
 # Both wasm32 (everyone) and wasm64 (MariaDB, PHP) currently
 # need libcxx, so we opt into both.
