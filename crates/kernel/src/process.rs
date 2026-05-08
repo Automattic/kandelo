@@ -1009,7 +1009,6 @@ mod tests {
         // action Close{fd:5}, the child must NOT have fd 5; the parent
         // is unaffected.
         use crate::process_table::ProcessTable;
-        use crate::process::test_host::NoopHost;
         use crate::spawn::{FileAction, SpawnAttrs};
 
         let mut table = ProcessTable::new();
@@ -1029,7 +1028,7 @@ mod tests {
         // Sanity: parent has fd 5.
         assert!(table.get(700).unwrap().fd_table.get(5).is_ok());
 
-        let mut host = NoopHost;
+        let mut host = test_host::NoopHost;
         let child_pid = table
             .spawn_child(
                 700,
@@ -1058,7 +1057,6 @@ mod tests {
         // Parent has fd 5 → some OFD. After spawn with Dup2{srcfd:5, fd:1},
         // the child's fd 1 points at fd 5's OFD; the parent is unaffected.
         use crate::process_table::ProcessTable;
-        use crate::process::test_host::NoopHost;
         use crate::spawn::{FileAction, SpawnAttrs};
 
         let mut table = ProcessTable::new();
@@ -1074,7 +1072,7 @@ mod tests {
         parent.fd_table.alloc_at_min(crate::fd::OpenFileDescRef(ofd_idx), 0, 5).unwrap();
         let parent_fd1_ofd = table.get(701).unwrap().fd_table.get(1).unwrap().ofd_ref.0;
 
-        let mut host = NoopHost;
+        let mut host = test_host::NoopHost;
         let child_pid = table
             .spawn_child(
                 701,
@@ -1104,7 +1102,6 @@ mod tests {
         // Dup2 from a closed source fd must fail with EBADF and leave the
         // parent's process table unchanged.
         use crate::process_table::ProcessTable;
-        use crate::process::test_host::NoopHost;
         use crate::spawn::{FileAction, SpawnAttrs};
         use wasm_posix_shared::Errno;
 
@@ -1113,7 +1110,7 @@ mod tests {
         let pids_before: Vec<u32> = table.all_pids();
         let parent_fork_count_before = table.get(702).unwrap().fork_count();
 
-        let mut host = NoopHost;
+        let mut host = test_host::NoopHost;
         let err = table
             .spawn_child(
                 702,
@@ -1131,6 +1128,157 @@ mod tests {
         assert_eq!(pids_before, pids_after, "no partial child must remain");
         // fork_count still 0.
         assert_eq!(table.get(702).unwrap().fork_count(), parent_fork_count_before);
+    }
+
+    #[test]
+    fn spawn_child_setsid_makes_session_leader() {
+        use crate::process_table::ProcessTable;
+        use crate::spawn::{attr_flags, SpawnAttrs};
+
+        let mut table = ProcessTable::new();
+        table.create_process(800).unwrap();
+        // Parent's identity to confirm child diverges.
+        table.processes.get_mut(&800).unwrap().sid = 50;
+        table.processes.get_mut(&800).unwrap().pgid = 60;
+
+        let attrs = SpawnAttrs { flags: attr_flags::SETSID, pgrp: 0, sigdef: 0, sigmask: 0 };
+        let mut host = test_host::NoopHost;
+        let cpid = table
+            .spawn_child(800, &[b"a".as_slice()], &[], &[], &attrs, &mut host)
+            .unwrap();
+
+        let child = table.get(cpid).unwrap();
+        assert_eq!(child.sid, cpid, "SETSID makes child its own session leader");
+        assert_eq!(child.pgid, cpid, "SETSID also makes child its own pgrp leader");
+        assert!(child.is_session_leader, "is_session_leader flag set");
+    }
+
+    #[test]
+    fn spawn_child_setpgroup_zero_uses_child_pid() {
+        use crate::process_table::ProcessTable;
+        use crate::spawn::{attr_flags, SpawnAttrs};
+
+        let mut table = ProcessTable::new();
+        table.create_process(801).unwrap();
+
+        let attrs = SpawnAttrs { flags: attr_flags::SETPGROUP, pgrp: 0, sigdef: 0, sigmask: 0 };
+        let mut host = test_host::NoopHost;
+        let cpid = table
+            .spawn_child(801, &[b"a".as_slice()], &[], &[], &attrs, &mut host)
+            .unwrap();
+        assert_eq!(table.get(cpid).unwrap().pgid, cpid, "SETPGROUP with pgrp=0 → child's own pid");
+    }
+
+    #[test]
+    fn spawn_child_setpgroup_explicit_lands_in_target() {
+        use crate::process_table::ProcessTable;
+        use crate::spawn::{attr_flags, SpawnAttrs};
+
+        let mut table = ProcessTable::new();
+        table.create_process(802).unwrap();
+
+        let attrs = SpawnAttrs { flags: attr_flags::SETPGROUP, pgrp: 42, sigdef: 0, sigmask: 0 };
+        let mut host = test_host::NoopHost;
+        let cpid = table
+            .spawn_child(802, &[b"a".as_slice()], &[], &[], &attrs, &mut host)
+            .unwrap();
+        assert_eq!(table.get(cpid).unwrap().pgid, 42);
+    }
+
+    #[test]
+    fn spawn_child_setsigmask_overrides_inherited_mask() {
+        use crate::process_table::ProcessTable;
+        use crate::spawn::{attr_flags, SpawnAttrs};
+
+        let mut table = ProcessTable::new();
+        table.create_process(803).unwrap();
+        // Parent has SIGINT (bit 0) blocked.
+        table.processes.get_mut(&803).unwrap().signals.blocked = 0x1;
+
+        let attrs = SpawnAttrs { flags: attr_flags::SETSIGMASK, pgrp: 0, sigdef: 0, sigmask: 0xFFu64 };
+        let mut host = test_host::NoopHost;
+        let cpid = table
+            .spawn_child(803, &[b"a".as_slice()], &[], &[], &attrs, &mut host)
+            .unwrap();
+        assert_eq!(
+            table.get(cpid).unwrap().signals.blocked, 0xFFu64,
+            "SETSIGMASK overrides the inherited mask wholesale"
+        );
+    }
+
+    #[test]
+    fn spawn_child_without_setsigmask_inherits_blocked_mask() {
+        // Sanity: confirm that without SETSIGMASK, the child gets the parent's
+        // blocked mask. This is the baseline the override test contrasts against.
+        use crate::process_table::ProcessTable;
+        use crate::spawn::SpawnAttrs;
+
+        let mut table = ProcessTable::new();
+        table.create_process(804).unwrap();
+        table.processes.get_mut(&804).unwrap().signals.blocked = 0xAAu64;
+        let mut host = test_host::NoopHost;
+        let cpid = table
+            .spawn_child(804, &[b"a".as_slice()], &[], &[], &SpawnAttrs::empty(), &mut host)
+            .unwrap();
+        assert_eq!(table.get(cpid).unwrap().signals.blocked, 0xAAu64);
+    }
+
+    #[test]
+    fn spawn_child_inherits_sig_ign_but_not_custom_handlers() {
+        // POSIX exec semantics: SIG_IGN persists across exec, custom handlers
+        // reset to SIG_DFL. spawn is fork+exec atomic, so the same applies.
+        use crate::process_table::ProcessTable;
+        use crate::signal::SignalHandler;
+        use crate::spawn::SpawnAttrs;
+        use wasm_posix_shared::signal::{SIGUSR1, SIGUSR2};
+
+        let mut table = ProcessTable::new();
+        table.create_process(805).unwrap();
+        let parent = table.processes.get_mut(&805).unwrap();
+        parent.signals.set_handler(SIGUSR1, SignalHandler::Ignore).unwrap();
+        parent.signals.set_handler(SIGUSR2, SignalHandler::Handler(42)).unwrap();
+
+        let mut host = test_host::NoopHost;
+        let cpid = table
+            .spawn_child(805, &[b"a".as_slice()], &[], &[], &SpawnAttrs::empty(), &mut host)
+            .unwrap();
+
+        let child = table.get(cpid).unwrap();
+        assert_eq!(
+            child.signals.get_handler(SIGUSR1), SignalHandler::Ignore,
+            "child inherits SIG_IGN across the implicit exec"
+        );
+        assert_eq!(
+            child.signals.get_handler(SIGUSR2), SignalHandler::Default,
+            "child resets parent's custom handler to SIG_DFL"
+        );
+    }
+
+    #[test]
+    fn spawn_child_setsigdef_resets_named_handlers_to_default() {
+        // SETSIGDEF should override SIG_IGN inheritance for named signals.
+        use crate::process_table::ProcessTable;
+        use crate::signal::SignalHandler;
+        use crate::spawn::{attr_flags, SpawnAttrs};
+        use wasm_posix_shared::signal::{SIGUSR1, SIGUSR2};
+
+        let mut table = ProcessTable::new();
+        table.create_process(806).unwrap();
+        let parent = table.processes.get_mut(&806).unwrap();
+        parent.signals.set_handler(SIGUSR1, SignalHandler::Ignore).unwrap();
+        parent.signals.set_handler(SIGUSR2, SignalHandler::Ignore).unwrap();
+
+        // Reset SIGUSR1 to SIG_DFL via SETSIGDEF; leave SIGUSR2 alone.
+        let sigdef = 1u64 << (SIGUSR1 - 1);
+        let attrs = SpawnAttrs { flags: attr_flags::SETSIGDEF, pgrp: 0, sigdef, sigmask: 0 };
+        let mut host = test_host::NoopHost;
+        let cpid = table
+            .spawn_child(806, &[b"a".as_slice()], &[], &[], &attrs, &mut host)
+            .unwrap();
+
+        let child = table.get(cpid).unwrap();
+        assert_eq!(child.signals.get_handler(SIGUSR1), SignalHandler::Default);
+        assert_eq!(child.signals.get_handler(SIGUSR2), SignalHandler::Ignore);
     }
 
     #[test]

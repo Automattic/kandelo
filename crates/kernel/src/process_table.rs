@@ -77,6 +77,12 @@ struct SpawnInheritFromParent {
     rlimits: [[u64; 2]; 16],
     cwd: Vec<u8>,
     blocked_signals: u64,
+    /// Bitmask of signals (1..=64) where the parent's disposition is
+    /// `SIG_IGN`. POSIX exec preserves SIG_IGN across the boundary while
+    /// resetting custom handlers to SIG_DFL — spawn applies the same
+    /// rule. SIGKILL and SIGSTOP can't be set to ignored, so they
+    /// can't appear here.
+    ignored_signals: u64,
     fd_table: crate::fd::FdTable,
     ofd_table: crate::ofd::OfdTable,
     sockets: crate::socket::SocketTable,
@@ -472,12 +478,19 @@ impl ProcessTable {
         argv: &[&[u8]],
         envp: &[&[u8]],
         file_actions: &[crate::spawn::FileAction],
-        _attrs: &crate::spawn::SpawnAttrs,
+        attrs: &crate::spawn::SpawnAttrs,
         host: &mut dyn crate::process::HostIO,
     ) -> Result<u32, Errno> {
         // Snapshot inheritable parent state under an immutable borrow.
         let inherit = {
             let parent = self.processes.get(&parent_pid).ok_or(Errno::ESRCH)?;
+            // Compute the SIG_IGN-disposition bitmask for signals 1..=64.
+            let mut ignored_signals: u64 = 0;
+            for sig in 1u32..=64 {
+                if parent.signals.get_handler(sig) == crate::signal::SignalHandler::Ignore {
+                    ignored_signals |= 1u64 << (sig - 1);
+                }
+            }
             SpawnInheritFromParent {
                 uid: parent.uid,
                 gid: parent.gid,
@@ -490,6 +503,7 @@ impl ProcessTable {
                 rlimits: parent.rlimits,
                 cwd: parent.cwd.clone(),
                 blocked_signals: parent.signals.blocked,
+                ignored_signals,
                 fd_table: parent.fd_table.clone(),
                 ofd_table: parent.ofd_table.clone(),
                 sockets: parent.sockets.clone(),
@@ -525,11 +539,56 @@ impl ProcessTable {
         child.ofd_table = inherit.ofd_table;
         child.sockets = inherit.sockets;
 
-        // Signal mask is inherited; POSIX_SPAWN_SETSIGMASK overrides
-        // (Task 9). Signal handlers stay at Process::new defaults — that
-        // matches POSIX exec's implicit reset (caught → SIG_DFL); SIG_IGN
-        // preservation across exec is handled in Task 9 alongside SETSIGDEF.
+        // Signal state inheritance:
+        //   * Blocked mask: inherited from parent unless SETSIGMASK overrides.
+        //   * Handlers: parent's custom handlers reset to SIG_DFL (POSIX exec
+        //     semantics); SIG_IGN dispositions are preserved across the
+        //     implicit exec; SETSIGDEF (below) can force named signals back
+        //     to SIG_DFL.
         child.signals.blocked = inherit.blocked_signals;
+        for sig in 1u32..=64 {
+            if (inherit.ignored_signals & (1u64 << (sig - 1))) != 0 {
+                // SIGKILL/SIGSTOP can never be ignored, so they can't appear
+                // in this mask; set_handler still rejects them — ignore Err.
+                let _ = child.signals.set_handler(sig, crate::signal::SignalHandler::Ignore);
+            }
+        }
+
+        // Apply spawn attrs in POSIX order (SETSID → SETPGROUP → SETSIGMASK
+        // → SETSIGDEF). All operate on local Process state and are
+        // infallible; happens before file actions, before insertion.
+        {
+            use crate::spawn::attr_flags;
+            if attrs.flags & attr_flags::SETSID != 0 {
+                child.sid = child.pid;
+                child.pgid = child.pid;
+                child.is_session_leader = true;
+                // POSIX also releases the controlling tty here. The spawn
+                // child's terminal state is fresh from `Process::new`, so
+                // there's no ctty to release.
+            }
+            if attrs.flags & attr_flags::SETPGROUP != 0 {
+                child.pgid = if attrs.pgrp == 0 {
+                    child.pid
+                } else {
+                    attrs.pgrp as u32
+                };
+            }
+            if attrs.flags & attr_flags::SETSIGMASK != 0 {
+                child.signals.blocked = attrs.sigmask;
+            }
+            if attrs.flags & attr_flags::SETSIGDEF != 0 {
+                for sig in 1u32..=64 {
+                    if (attrs.sigdef & (1u64 << (sig - 1))) != 0 {
+                        // SIGKILL/SIGSTOP set_handler rejects — ignore Err
+                        // (those signals are always SIG_DFL anyway).
+                        let _ = child
+                            .signals
+                            .set_handler(sig, crate::signal::SignalHandler::Default);
+                    }
+                }
+            }
+        }
 
         self.processes.insert(child_pid, child);
 
@@ -550,8 +609,6 @@ impl ProcessTable {
             }
             return Err(e);
         }
-
-        // TODO Task 9: apply attrs.
 
         Ok(child_pid)
     }
