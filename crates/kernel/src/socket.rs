@@ -202,14 +202,20 @@ impl SocketInfo {
 
 /// Hand-written so fork/spawn child inheritance discards consume-once
 /// state. POSIX-wise these are properties of the underlying connection
-/// (one OOB byte per socket; one queue of pending datagrams), but our
+/// (one OOB byte per socket; one queue of pending datagrams; one queue
+/// of pending AF_UNIX same-process pre-accepted connections), but our
 /// per-process SocketInfo can't truly share — duplicating them would let
 /// both parent and child consume the "same" data.
 ///
 /// Discarded in the child:
-///   * `dgram_queue` — buffered UDP datagrams (matches fork's existing
-///     serialize-side skip in `crates/kernel/src/fork.rs`).
-///   * `oob_byte` — pending TCP out-of-band byte; consume-once.
+///   * `dgram_queue` — buffered UDP datagrams.
+///   * `oob_byte` — pending TCP out-of-band byte.
+///   * `listen_backlog` — pre-accepted AF_UNIX same-process connections.
+///     Indices reference other entries in this process's SocketTable; if
+///     both parent and child kept them, both could `accept()` the same
+///     pending connection. After fork/spawn, the parent retains them;
+///     child gets fresh state. New connections that arrive post-fork are
+///     added to whichever process the connecting peer wires up to.
 ///
 /// Everything else is value-cloned. `host_net_handle` and
 /// `shared_backlog_idx` are still inherited; the cross-process refcount
@@ -232,11 +238,11 @@ impl Clone for SocketInfo {
             bind_port: self.bind_port,
             peer_addr: self.peer_addr,
             peer_port: self.peer_port,
-            listen_backlog: self.listen_backlog.clone(),
+            listen_backlog: Vec::new(), // consume-once: don't double-accept
             shared_backlog_idx: self.shared_backlog_idx,
-            dgram_queue: Vec::new(),  // consume-once: don't double-deliver
+            dgram_queue: Vec::new(),    // consume-once: don't double-deliver
             global_pipes: self.global_pipes,
-            oob_byte: None,            // consume-once: don't double-deliver
+            oob_byte: None,             // consume-once: don't double-deliver
             recv_timeout_us: self.recv_timeout_us,
             send_timeout_us: self.send_timeout_us,
             bind_path: self.bind_path.clone(),

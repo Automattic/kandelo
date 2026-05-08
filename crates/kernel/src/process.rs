@@ -832,6 +832,58 @@ mod tests {
     }
 
     #[test]
+    fn fork_and_spawn_clear_listen_backlog_on_child() {
+        // Pre-accepted AF_UNIX same-process connections are consume-once
+        // (the indices reference the same SocketTable both processes now
+        // hold copies of). A child that inherited them could double-accept.
+        // Fork serializes 0-length; spawn's hand-written Clone clears the
+        // Vec.
+        use crate::process_table::ProcessTable;
+        use crate::socket::{SocketDomain, SocketInfo, SocketType};
+        use crate::spawn::SpawnAttrs;
+
+        let mut table = ProcessTable::new();
+        table.create_process(500).unwrap();
+
+        // Parent has a listening AF_UNIX socket with pending pre-accepted
+        // connections.
+        let mut listener = SocketInfo::new(SocketDomain::Unix, SocketType::Stream, 0);
+        listener.listen_backlog.push(7);
+        listener.listen_backlog.push(11);
+        let parent = table.processes.get_mut(&500).unwrap();
+        let listener_idx = parent.sockets.alloc(listener);
+
+        // Sanity: parent has both pending entries.
+        assert_eq!(
+            table.get(500).unwrap().sockets.get(listener_idx).unwrap().listen_backlog.len(),
+            2
+        );
+
+        // Spawn child must NOT inherit them.
+        let spawn_child = table
+            .spawn_child(500, &[b"a".as_slice()], &[], &[], &SpawnAttrs::empty())
+            .expect("spawn_child");
+        assert!(
+            table.get(spawn_child).unwrap().sockets.get(listener_idx).unwrap().listen_backlog.is_empty(),
+            "spawn child must start with empty listen_backlog"
+        );
+
+        // Fork child must NOT inherit them either.
+        table.fork_process(500, 998).expect("fork_process");
+        assert!(
+            table.get(998).unwrap().sockets.get(listener_idx).unwrap().listen_backlog.is_empty(),
+            "fork child must start with empty listen_backlog"
+        );
+
+        // Parent retains them.
+        assert_eq!(
+            table.get(500).unwrap().sockets.get(listener_idx).unwrap().listen_backlog.len(),
+            2,
+            "parent's pending pre-accepted connections are intact"
+        );
+    }
+
+    #[test]
     fn fork_count_bumps_on_successful_fork() {
         use crate::process_table::ProcessTable;
         let mut table = ProcessTable::new();
