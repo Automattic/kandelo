@@ -1082,6 +1082,50 @@ pub extern "C" fn kernel_fork_process(parent_pid: u32, child_pid: u32) -> i32 {
     }
 }
 
+/// Non-forking `posix_spawn` (centralized mode). Parses the SYS_SPAWN
+/// blob (already copied from caller memory into the kernel's address
+/// space by the host), allocates a child pid, builds the child Process
+/// with attrs and file actions applied, and inserts it into the
+/// `ProcessTable`.
+///
+/// Returns the allocated child pid on success (positive), or a negated
+/// errno on failure. The host (`handleSpawn` in `kernel-worker.ts`) is
+/// responsible for actually launching the new process worker after this
+/// call returns success — see Task 11.
+///
+/// SAFETY: caller must ensure the byte range
+/// `blob_ptr..blob_ptr + blob_len` lies inside the kernel's linear
+/// memory and stays valid for the duration of this call.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_spawn_process(parent_pid: u32, blob_ptr: usize, blob_len: usize) -> i32 {
+    let bytes = unsafe { core::slice::from_raw_parts(blob_ptr as *const u8, blob_len) };
+    let parsed = match crate::spawn::parse_blob(bytes) {
+        Ok(p) => p,
+        Err(e) => return -(e as i32),
+    };
+    // Borrow argv/envp as &[&[u8]] for the spawn_child API.
+    let argv_refs: alloc::vec::Vec<&[u8]> = parsed.argv.iter().map(|v| v.as_slice()).collect();
+    let envp_refs: alloc::vec::Vec<&[u8]> = parsed.envp.iter().map(|v| v.as_slice()).collect();
+
+    // The kernel-worker dispatch path that landed us here calls into
+    // ProcessTable; reuse the global instance. spawn_child's host trait
+    // parameter dispatches file-action-time host I/O (sys_open / sys_chdir
+    // / etc) — host imports defined at the top of this module.
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let mut host = WasmHostIO;
+    match table.spawn_child(
+        parent_pid,
+        &argv_refs,
+        &envp_refs,
+        &parsed.file_actions,
+        &parsed.attrs,
+        &mut host,
+    ) {
+        Ok(child_pid) => child_pid as i32,
+        Err(e) => -(e as i32),
+    }
+}
+
 /// Returns the per-process fork counter (parent side, incremented on
 /// successful fork). Used by the non-forking spawn test suite as a
 /// regression guardrail. Returns `u64::MAX` as a sentinel if the pid

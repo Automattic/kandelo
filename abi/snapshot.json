@@ -1286,6 +1286,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_spawn_process",
+      "signature": "(i32,i64,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_stat",
       "signature": "(i64,i32,i64) -> (i32)"
     },
