@@ -1,15 +1,18 @@
 /**
- * Vitest globalSetup — compiles C test programs to .wasm and assembles
- * .wat test fixtures before tests run.
+ * Vitest globalSetup — compiles C test programs to .wasm, assembles
+ * .wat test fixtures, and ensures the Playwright chromium browser is
+ * installed before tests run.
  *
  * Uses wasm32posix-cc from the SDK for C, and wat2wasm (wabt) for WAT
- * fixtures. Outputs are only rebuilt when the source is newer.
+ * fixtures. Outputs are only rebuilt when the source is newer. The
+ * chromium check is a no-op when the binary is already cached.
  */
 
 import { execFileSync } from "node:child_process";
 import { statSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { chromium } from "@playwright/test";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "../..");
@@ -69,6 +72,29 @@ export async function setup() {
     execFileSync("wat2wasm", ["--enable-threads", src, "-o", out], {
       cwd: repoRoot,
       stdio: "pipe",
+    });
+  }
+
+  // examples/wordpress/test/wordpress-site-editor.test.ts calls
+  // chromium.launch() directly (not via the `playwright test` runner),
+  // so the browser binary must be present before vitest runs. `npm
+  // install` only fetches the @playwright/test JS package, not the
+  // ~150 MB chromium-headless-shell. Owning this here means workflow
+  // YAMLs no longer need to remember `npx playwright install chromium`
+  // — every caller of `vitest run` gets the prereq for free.
+  let chromiumPath = "";
+  try {
+    chromiumPath = chromium.executablePath();
+  } catch {
+    // executablePath() can throw on some Playwright versions when the
+    // browser hasn't been downloaded yet; treat that the same as a
+    // missing file and let the install step below run.
+  }
+  if (!chromiumPath || !existsSync(chromiumPath)) {
+    console.log("[global-setup] Installing Playwright chromium...");
+    execFileSync("npx", ["playwright", "install", "chromium"], {
+      cwd: join(repoRoot, "host"),
+      stdio: "inherit",
     });
   }
 }
