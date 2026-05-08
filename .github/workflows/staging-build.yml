@@ -759,14 +759,17 @@ jobs:
     # to the matrix level: a green test-gate is what blesses the
     # subsequent publish (Task 6) of the matrix archives.
     #
-    # if: always() — test even when some matrix entries failed. Per the
-    # design doc, partial-matrix-failure is a real scenario the consumer
-    # side handles via last-green fallback, so the green packages should
+    # Run even when some matrix entries failed. Per the design doc,
+    # partial-matrix-failure is a real scenario the consumer side
+    # handles via last-green fallback, so the green packages should
     # still be tested for the union they form with the durable release.
+    # Use !cancelled() instead of always() so manual/concurrency
+    # cancellation is respected and this long test job doesn't keep an
+    # obsolete workflow alive.
     # The empty-matrix case (preflight produced []) is short-circuited:
     # nothing was built, nothing to test.
     needs: [preflight, toolchain-cache, matrix-build]
-    if: always() && needs.preflight.outputs.matrix != '[]'
+    if: ${{ !cancelled() && needs.preflight.outputs.matrix != '[]' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -952,10 +955,11 @@ jobs:
     #
     # Gating:
     #   * needs test-gate so partial-matrix-failure doesn't ship
-    #     untested archives. test-gate itself runs with `if: always()`
-    #     against the union of (matrix-built + durable fallback), so a
-    #     green test-gate blesses the matrix archives even when the
-    #     durable side filled in some packages.
+    #     untested archives. test-gate itself runs after failed
+    #     matrix entries (but not after cancellation) against the union
+    #     of (matrix-built + durable fallback), so a green test-gate
+    #     blesses the matrix archives even when the durable side filled
+    #     in some packages.
     #   * preflight.outputs.matrix != '[]' short-circuits the empty-
     #     matrix case (every package's sha already published; nothing
     #     new to upload).
