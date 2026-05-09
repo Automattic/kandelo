@@ -13,12 +13,10 @@ name: Prepare merge
 #
 # In both cases, posts a `merge-gate=success` commit status (on the
 # bot lockfile-bump commit when published, on PR HEAD when skipped),
-# unblocking the merge button. The maintainer clicks Merge manually
-# after the workflow finishes — branch protection's required check
-# evaluates against the head sha at click time; either form satisfies
-# it. Branch protection also requires `strict: true` (up-to-date with
-# main), so if main advances after this workflow finishes, the click
-# is blocked until the PR branch is updated and re-labeled.
+# unblocking auto-merge. The workflow then enables squash auto-merge
+# and waits for the PR to merge before releasing the durable-release
+# lock, so the next queued prepare-merge run tests against the latest
+# main that includes this PR.
 #
 # When a fresh release is published, the squash merge collapses code +
 # package.toml + lockfile bump into a single main commit — main is never
@@ -31,12 +29,11 @@ on:
   pull_request:
     types: [labeled]
 
-# Only one PR may publish a durable release at a time. Sequential
-# (cancel-in-progress: false) so a queued PR re-merges main on its
-# turn rather than racing.
-concurrency:
-  group: prepare-merge-singleton
-  cancel-in-progress: false
+# Do not use workflow-level concurrency here. GitHub Actions keeps at
+# most one pending run per concurrency group, so a third ready PR
+# cancels/replaces the second instead of forming a real queue. A
+# repo-local lock step below serializes durable-release publishing
+# while preserving every workflow run.
 
 jobs:
   publish:
@@ -111,6 +108,9 @@ jobs:
           ref: ${{ env.PR_HEAD_SHA }}
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Wait for durable release turn
+        run: bash .github/scripts/durable-release-lock.sh acquire
 
       - name: Fetch submodules (musl, libc-test, os-test)
         # See staging-build.yml for the rationale + the SSH→HTTPS
@@ -417,6 +417,57 @@ jobs:
             -f state=success \
             -f context=merge-gate \
             -f description="$description"
+
+      - name: Enable squash auto-merge
+        id: automerge
+        run: |
+          set +e
+          output=$(gh pr merge "$PR_NUMBER" \
+            --repo ${{ github.repository }} \
+            --auto --squash 2>&1)
+          status=$?
+          set -e
+
+          if [ "$status" -eq 0 ]; then
+            printf '%s\n' "$output"
+            echo "manual_merge_required=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          printf '%s\n' "$output" >&2
+          if printf '%s\n' "$output" | grep -q 'without `workflows` permission'; then
+            echo "manual_merge_required=true" >> "$GITHUB_OUTPUT"
+            gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "prepare-merge passed and posted \`merge-gate=success\`, but GitHub Actions cannot enable auto-merge because this PR changes workflow files. A user with workflow permission must merge this PR manually."
+            exit 0
+          fi
+
+          echo "manual_merge_required=false" >> "$GITHUB_OUTPUT"
+          exit "$status"
+
+      - name: Wait for PR to merge
+        if: steps.automerge.outputs.manual_merge_required != 'true'
+        timeout-minutes: 45
+        run: |
+          while true; do
+            merged_at=$(gh pr view "$PR_NUMBER" --repo ${{ github.repository }} --json mergedAt -q '.mergedAt // ""')
+            if [ -n "$merged_at" ]; then
+              echo "PR #${PR_NUMBER} merged at ${merged_at}."
+              exit 0
+            fi
+
+            state=$(gh pr view "$PR_NUMBER" --repo ${{ github.repository }} --json state -q .state)
+            if [ "$state" = "CLOSED" ]; then
+              echo "PR #${PR_NUMBER} closed without merging."
+              exit 1
+            fi
+
+            echo "Waiting for PR #${PR_NUMBER} to merge..."
+            sleep 30
+          done
+
+      - name: Release durable release turn
+        if: always()
+        run: bash .github/scripts/durable-release-lock.sh release
 
       - name: Drop label + comment on failure
         if: failure() && steps.gate.outcome == 'success'

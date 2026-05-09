@@ -535,11 +535,6 @@ jobs:
     # see this job as Skipped, consistent with current behavior.
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    outputs:
-      # Exposed so matrix-build can restore the same cache layer. Using
-      # the same `musl-sysroot-v4-...` key shape as the legacy `build`
-      # job means a cache populated by either job warms the other.
-      cache-key: ${{ steps.key.outputs.value }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -613,18 +608,32 @@ jobs:
             done
           '
 
+      - name: Pack toolchain sysroots
+        # Matrix jobs fan out from this per-run artifact instead of
+        # each restoring the same large sysroot cache. That keeps
+        # Actions Cache traffic to one restore/save per workflow run
+        # and shifts matrix fanout onto workflow artifacts.
+        run: |
+          tar --zstd -cf "$RUNNER_TEMP/toolchain-sysroots.tar.zst" \
+            sysroot sysroot64
+
+      - name: Upload toolchain sysroots artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: toolchain-sysroots
+          path: ${{ runner.temp }}/toolchain-sysroots.tar.zst
+          retention-days: 1
+          if-no-files-found: error
+
   matrix-build:
     needs: [preflight, toolchain-cache]
     if: needs.preflight.outputs.matrix != '[]'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      # max-parallel curbs cache-restore rate-limit pressure: ~60 matrix
-      # entries × ~80 MB toolchain cache pulls hit GitHub Actions Cache's
-      # GetCacheEntryDownloadURL throughput limit (429 ResourceExhausted)
-      # when run with default parallelism. 10 keeps wall-clock reasonable
-      # while staying under the rate-limit threshold observed on
-      # 2026-05-06's first matrix CI run.
+      # Keep an explicit cap while allowing enough parallelism to
+      # finish the matrix quickly. Sysroot fanout uses a per-run
+      # artifact rather than N identical Actions Cache restores.
       max-parallel: 10
       matrix:
         include: ${{ fromJSON(needs.preflight.outputs.matrix) }}
@@ -663,23 +672,15 @@ jobs:
       - name: Cache Nix store + flake eval
         uses: DeterminateSystems/magic-nix-cache-action@v13
 
-      - name: Restore toolchain cache
-        # fail-on-cache-miss: true is intentional. toolchain-cache is a
-        # `needs:` dependency of this job, so by the time we reach this
-        # step the cache MUST have been populated by the upstream job
-        # (or by an earlier identical key from a prior run / the legacy
-        # `build` job — the keys alias). A miss here means the cache
-        # got evicted between the upstream populate and this restore,
-        # or the upstream populate silently failed — both are real bugs
-        # worth surfacing as a hard fail rather than triggering a
-        # surprise rebuild inside every matrix entry.
-        uses: actions/cache@v4
+      - name: Download toolchain sysroots artifact
+        uses: actions/download-artifact@v4
         with:
-          path: |
-            sysroot
-            sysroot64
-          key: ${{ needs.toolchain-cache.outputs.cache-key }}
-          fail-on-cache-miss: true
+          name: toolchain-sysroots
+          path: ${{ runner.temp }}/toolchain
+
+      - name: Extract toolchain sysroots
+        run: |
+          tar --zstd -xf "$RUNNER_TEMP/toolchain/toolchain-sysroots.tar.zst"
 
       - name: Fetch durable binaries (so source-build fallbacks have prereqs)
         # Mirrors the legacy `build` job's prerequisite fetch (see the
@@ -758,14 +759,17 @@ jobs:
     # to the matrix level: a green test-gate is what blesses the
     # subsequent publish (Task 6) of the matrix archives.
     #
-    # if: always() — test even when some matrix entries failed. Per the
-    # design doc, partial-matrix-failure is a real scenario the consumer
-    # side handles via last-green fallback, so the green packages should
+    # Run even when some matrix entries failed. Per the design doc,
+    # partial-matrix-failure is a real scenario the consumer side
+    # handles via last-green fallback, so the green packages should
     # still be tested for the union they form with the durable release.
+    # Use !cancelled() instead of always() so manual/concurrency
+    # cancellation is respected and this long test job doesn't keep an
+    # obsolete workflow alive.
     # The empty-matrix case (preflight produced []) is short-circuited:
     # nothing was built, nothing to test.
     needs: [preflight, toolchain-cache, matrix-build]
-    if: always() && needs.preflight.outputs.matrix != '[]'
+    if: ${{ !cancelled() && needs.preflight.outputs.matrix != '[]' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -791,29 +795,23 @@ jobs:
       - name: Cache Nix store + flake eval
         uses: DeterminateSystems/magic-nix-cache-action@v13
 
-      - name: Restore toolchain cache
-        # fail-on-cache-miss: true — the upstream toolchain-cache job is
-        # in our `needs:` set, so by the time we reach this step the
-        # cache MUST be populated. A miss means a real bug (eviction
-        # between populate + restore, or upstream silent failure) we
-        # want to surface rather than mask with a multi-minute rebuild
-        # inside this gate.
-        uses: actions/cache@v4
+      - name: Download toolchain sysroots artifact
+        uses: actions/download-artifact@v4
         with:
-          path: |
-            sysroot
-            sysroot64
-          key: ${{ needs.toolchain-cache.outputs.cache-key }}
-          fail-on-cache-miss: true
+          name: toolchain-sysroots
+          path: ${{ runner.temp }}/toolchain
+
+      - name: Extract toolchain sysroots
+        run: |
+          tar --zstd -xf "$RUNNER_TEMP/toolchain/toolchain-sysroots.tar.zst"
 
       - name: Download matrix artifacts
         # Each matrix entry uploaded one artifact named "<pkg>-<arch>"
-        # containing one .tar.zst. With no `name:` filter this downloads
-        # every artifact produced by this run, landing them at
-        # `<path>/<artifact-name>/<archive>.tar.zst`. We re-flatten in
-        # the next step.
+        # containing one .tar.zst. The pattern excludes the
+        # toolchain-sysroots helper artifact uploaded by toolchain-cache.
         uses: actions/download-artifact@v4
         with:
+          pattern: '*-wasm*'
           path: ${{ runner.temp }}/staged-archives
 
       - name: Materialize binaries (synth manifest + install-release overlay)
@@ -957,10 +955,11 @@ jobs:
     #
     # Gating:
     #   * needs test-gate so partial-matrix-failure doesn't ship
-    #     untested archives. test-gate itself runs with `if: always()`
-    #     against the union of (matrix-built + durable fallback), so a
-    #     green test-gate blesses the matrix archives even when the
-    #     durable side filled in some packages.
+    #     untested archives. test-gate itself runs after failed
+    #     matrix entries (but not after cancellation) against the union
+    #     of (matrix-built + durable fallback), so a green test-gate
+    #     blesses the matrix archives even when the durable side filled
+    #     in some packages.
     #   * preflight.outputs.matrix != '[]' short-circuits the empty-
     #     matrix case (every package's sha already published; nothing
     #     new to upload).
@@ -998,11 +997,11 @@ jobs:
           fetch-depth: 1
 
       - name: Download matrix artifacts
-        # No `name:` filter → downloads every artifact produced by this
-        # run, landing them at `<path>/<artifact-name>/<archive>.tar.zst`.
-        # We flatten with `find` in the upload step.
+        # Download package artifacts only. The pattern excludes the
+        # toolchain-sysroots helper artifact uploaded by toolchain-cache.
         uses: actions/download-artifact@v4
         with:
+          pattern: '*-wasm*'
           path: ${{ runner.temp }}/staged-archives
 
       - name: Ensure release tag exists

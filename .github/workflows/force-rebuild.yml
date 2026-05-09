@@ -39,9 +39,12 @@ name: Force rebuild
 #                    otherwise cut a second redundant durable
 #                    release.
 #
-# See docs/binary-releases.md for context. Concurrency-shares
-# `prepare-merge-singleton` so force-rebuild and prepare-merge can't
-# both publish a durable release at the same moment.
+# See docs/binary-releases.md for context. The durable-release lock
+# step below is shared with prepare-merge, so force-rebuild and
+# prepare-merge can't both publish a durable release at the same
+# moment. Avoid workflow-level concurrency here because GitHub Actions
+# keeps only one pending run per group and cancels/replaces additional
+# queued runs.
 
 on:
   workflow_dispatch:
@@ -72,13 +75,6 @@ on:
         default: true
         type: boolean
 
-# Share the prepare-merge singleton group so force-rebuild and
-# prepare-merge serialize against each other — neither should be
-# computing a release tag and pushing while the other is mid-flight.
-concurrency:
-  group: prepare-merge-singleton
-  cancel-in-progress: false
-
 jobs:
   rebuild:
     runs-on: ubuntu-latest
@@ -102,6 +98,9 @@ jobs:
           ref: ${{ env.INPUT_REF }}
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Wait for durable release turn
+        run: bash .github/scripts/durable-release-lock.sh acquire
 
       - name: Fetch submodules (musl, libc-test, os-test)
         # See staging-build.yml for the SSH→HTTPS rewrite rationale.
@@ -391,3 +390,7 @@ jobs:
           gh pr merge "${{ steps.bump.outputs.pr_number }}" \
             --repo ${{ github.repository }} \
             --auto --squash
+
+      - name: Release durable release turn
+        if: always()
+        run: bash .github/scripts/durable-release-lock.sh release
