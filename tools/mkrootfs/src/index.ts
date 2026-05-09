@@ -35,7 +35,10 @@ async function main(argv: string[]): Promise<number> {
       const { runInspect } = await import("./cli/inspect.ts");
       return await runInspect(argv.slice(3));
     }
-    case "extract":
+    case "extract": {
+      const { runExtract } = await import("./cli/extract.ts");
+      return await runExtract(argv.slice(3));
+    }
     case "add":
       return notImplemented(cmd);
     default:

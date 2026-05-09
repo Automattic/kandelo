@@ -2,9 +2,19 @@ import { describe, it, expect } from "vitest";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  rmSync,
+  existsSync,
+  readFileSync,
+  writeFileSync,
+  lstatSync,
+  readdirSync,
+  readlinkSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import { parseManifest } from "../src/manifest.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..", "..", "..");
@@ -28,12 +38,10 @@ describe("mkrootfs CLI — top-level", () => {
     expect(r.stderr).toContain(`unknown command "bogus"`);
   });
 
-  it("extract/add still print 'not yet implemented'", () => {
-    for (const cmd of ["extract", "add"]) {
-      const r = run(cmd);
-      expect(r.status).toBe(1);
-      expect(r.stderr).toContain(`mkrootfs ${cmd}: not yet implemented`);
-    }
+  it("add still prints 'not yet implemented'", () => {
+    const r = run("add");
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain(`mkrootfs add: not yet implemented`);
   });
 });
 
@@ -390,6 +398,226 @@ describe("mkrootfs inspect — error handling", () => {
       const r = run("inspect", image, "--format", "yaml");
       expect(r.status).toBe(2);
       expect(r.stderr).toContain("--format");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+interface WalkedEntry {
+  rel: string;
+  type: "d" | "f" | "l";
+  mode: number;
+  size?: number;
+  target?: string;
+  content?: Buffer;
+}
+
+function walkHostTree(root: string): WalkedEntry[] {
+  const out: WalkedEntry[] = [];
+  function visit(rel: string): void {
+    const abs = rel === "" ? root : join(root, rel);
+    const st = lstatSync(abs);
+    const mode = st.mode & 0o7777;
+    if (st.isDirectory()) {
+      out.push({ rel: rel === "" ? "/" : `/${rel}`, type: "d", mode });
+      const names = readdirSync(abs).sort();
+      for (const n of names) {
+        const childRel = rel === "" ? n : `${rel}/${n}`;
+        visit(childRel);
+      }
+    } else if (st.isSymbolicLink()) {
+      out.push({
+        rel: `/${rel}`,
+        type: "l",
+        mode,
+        target: readlinkSync(abs),
+      });
+    } else if (st.isFile()) {
+      out.push({
+        rel: `/${rel}`,
+        type: "f",
+        mode,
+        size: st.size,
+        content: readFileSync(abs),
+      });
+    }
+  }
+  visit("");
+  return out;
+}
+
+describe("mkrootfs extract — happy paths", () => {
+  it("round-trips a built image: extract → walk host tree matches image", () => {
+    const { tmp, image } = buildBasicImage();
+    try {
+      const outDir = join(tmp, "extracted");
+      const r = run("extract", image, outDir);
+      expect(r.status).toBe(0);
+
+      const walked = walkHostTree(outDir);
+      const byPath = new Map(walked.map((e) => [e.rel, e]));
+
+      // Every directory from the manifest should have been created.
+      expect(byPath.get("/")?.type).toBe("d");
+      expect(byPath.get("/etc")?.type).toBe("d");
+      expect(byPath.get("/etc/passwd")?.type).toBe("f");
+      expect(byPath.get("/usr/bin/sh")?.type).toBe("l");
+
+      // File content matches source byte-for-byte.
+      const passwdSrc = readFileSync(
+        join(here, "fixtures", "basic", "rootfs", "etc", "passwd"),
+      );
+      expect(byPath.get("/etc/passwd")!.content!.equals(passwdSrc)).toBe(true);
+
+      // Symlink target preserved (extracted symlink points at /bin/dash, which
+      // is dangling on the host fs; that's fine, the link itself is what we
+      // care about).
+      expect(byPath.get("/usr/bin/sh")!.target).toBe("/bin/dash");
+
+      // Mode bits preserved on dirs and files. Sticky bit (1777) must survive.
+      expect(byPath.get("/tmp")!.mode).toBe(0o1777);
+      expect(byPath.get("/home/alice")!.mode).toBe(0o700);
+      expect(byPath.get("/etc/passwd")!.mode).toBe(0o644);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("--manifest emits a sidecar that re-parses cleanly via parseManifest", () => {
+    const { tmp, image } = buildBasicImage();
+    try {
+      const outDir = join(tmp, "extracted");
+      const r = run("extract", image, outDir, "--manifest");
+      expect(r.status).toBe(0);
+      const manifestPath = join(outDir, "MANIFEST");
+      expect(existsSync(manifestPath)).toBe(true);
+
+      const text = readFileSync(manifestPath, "utf8");
+      const entries = parseManifest(text, manifestPath);
+      const byPath = new Map(entries.map((e) => [
+        e.kind === "node" ? e.path : `archive:${e.url}`,
+        e,
+      ]));
+
+      // /home/alice was uid=1000 gid=1000 in the source manifest — that has to
+      // round-trip via the sidecar (host fs can't preserve the chown).
+      const alice = byPath.get("/home/alice");
+      expect(alice).toBeDefined();
+      expect(alice!.kind).toBe("node");
+      if (alice!.kind === "node") {
+        expect(alice!.type).toBe("d");
+        expect(alice!.uid).toBe(1000);
+        expect(alice!.gid).toBe(1000);
+        expect(alice!.mode).toBe(0o700);
+      }
+
+      // Symlink reproduces target=.
+      const sh = byPath.get("/usr/bin/sh");
+      expect(sh).toBeDefined();
+      if (sh && sh.kind === "node") {
+        expect(sh.type).toBe("l");
+        expect(sh.target).toBe("/bin/dash");
+      }
+
+      // Sticky-bit dir round-trips its mode.
+      const tmpDir = byPath.get("/tmp");
+      if (tmpDir && tmpDir.kind === "node") {
+        expect(tmpDir.mode).toBe(0o1777);
+      }
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("--force allows extracting into a pre-existing empty out-dir", () => {
+    const { tmp, image } = buildBasicImage();
+    try {
+      const outDir = join(tmp, "extracted");
+      // Pre-create the out-dir so extract's existsSync check sees it.
+      mkdtempSync(outDir + "-"); // sibling, just to keep tmp non-empty
+      // Without --force, extract sees an existing tmp tree and refuses.
+      const rNo = run("extract", image, tmp);
+      expect(rNo.status).toBe(1);
+      expect(rNo.stderr).toContain("already exists");
+      // With --force into a fresh empty dir, extract overlays cleanly.
+      // (mkdirSync recursive is a no-op when the dir already exists, so
+      //  /etc/passwd etc. lay down on top of the empty out-dir.)
+      const empty = mkdtempSync(join(tmp, "empty-"));
+      const r3 = run("extract", image, empty, "--force");
+      expect(r3.status).toBe(0);
+      expect(existsSync(join(empty, "etc", "passwd"))).toBe(true);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("prints subcommand usage on `extract --help` and exits 0", () => {
+    const r = run("extract", "--help");
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain("extract");
+    expect(r.stdout).toContain("--manifest");
+    expect(r.stdout).toContain("--force");
+  });
+});
+
+describe("mkrootfs extract — error handling", () => {
+  it("exits 1 with a clean error when the image file does not exist", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-cli-extract-"));
+    try {
+      const r = run("extract", join(tmp, "nope.vfs"), join(tmp, "out"));
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain("image not found");
+      expect(r.stderr).not.toContain("at ");
+      expect(existsSync(join(tmp, "out"))).toBe(false);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("exits 1 with a clean error when the file is not a valid VFS image", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-cli-extract-"));
+    const garbage = join(tmp, "garbage.vfs");
+    try {
+      writeFileSync(garbage, "this is not a vfs image\n");
+      const r = run("extract", garbage, join(tmp, "out"));
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain("mkrootfs extract:");
+      expect(r.stderr).not.toContain("at ");
+      expect(r.stderr).not.toMatch(/\.ts:\d+/);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("exits 1 when out-dir already exists without --force", () => {
+    const { tmp, image } = buildBasicImage();
+    try {
+      const outDir = join(tmp, "pre-existing");
+      // Pre-create the dir so extract sees it.
+      writeFileSync(join(tmp, "sentinel"), "x");
+      // Use the tmp dir itself (already exists). Verify error.
+      const r = run("extract", image, tmp);
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain("already exists");
+      expect(r.stderr).toContain("--force");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("exits 2 on missing positional arguments", () => {
+    const r = run("extract");
+    expect(r.status).toBe(2);
+    expect(r.stderr).toMatch(/positional|usage/i);
+  });
+
+  it("exits 2 on unknown flag", () => {
+    const { tmp, image } = buildBasicImage();
+    try {
+      const r = run("extract", image, join(tmp, "out"), "--bogus");
+      expect(r.status).toBe(2);
+      expect(r.stderr).toContain("--bogus");
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
