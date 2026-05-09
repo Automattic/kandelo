@@ -1,0 +1,51 @@
+name: Fetch submodules with retry
+description: |
+  `git submodule update --init --depth 1` with retry. Replaces inline
+  bash blocks across staging-build.yml, prepare-merge.yml,
+  force-rebuild.yml.
+
+  Why this exists: musl's submodule URL points at the upstream
+  `git.musl-libc.org`, which is occasionally unreachable
+  ("Connection reset by peer" / "Couldn't connect to server"). A
+  one-shot fetch fails the whole job. We retry up to 3 times with a
+  10s backoff, which is enough to ride out the typical transient.
+
+  The libc-test submodule is on git@github.com: in `.gitmodules`
+  (SSH); rewrite to HTTPS for runner-side anonymous fetch.
+
+inputs:
+  submodules:
+    description: |
+      Whitespace-separated submodule paths to fetch. Common values:
+      `musl`, `musl libc-test os-test`.
+    required: true
+  attempts:
+    description: Maximum number of attempts before giving up.
+    default: '3'
+  backoff-seconds:
+    description: Sleep between attempts.
+    default: '10'
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        SUBMODULES: ${{ inputs.submodules }}
+        ATTEMPTS: ${{ inputs.attempts }}
+        BACKOFF: ${{ inputs.backoff-seconds }}
+      run: |
+        set -eo pipefail
+        git config --global url."https://github.com/".insteadOf "git@github.com:"
+
+        for i in $(seq 1 "$ATTEMPTS"); do
+          if git submodule update --init --depth 1 $SUBMODULES; then
+            exit 0
+          fi
+          if [ "$i" -lt "$ATTEMPTS" ]; then
+            echo "::warning::submodule fetch failed (attempt $i/$ATTEMPTS); retrying in ${BACKOFF}s"
+            sleep "$BACKOFF"
+          fi
+        done
+        echo "::error::submodule fetch failed after $ATTEMPTS attempts"
+        exit 1

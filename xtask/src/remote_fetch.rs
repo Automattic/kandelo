@@ -74,6 +74,12 @@ const MAX_RESPONSE_BYTES: u64 = 256 * 1024 * 1024;
 /// surfaces it as `FetchError::ExtractFailed`.
 const MAX_DECOMPRESSED_BYTES: u64 = 1024 * 1024 * 1024;
 
+/// HTTP archive fetch retry budget. GitHub Release asset downloads can
+/// intermittently return 5xx from the CDN; retrying the bounded fetch is
+/// cheaper than failing an otherwise-green matrix job.
+const HTTP_FETCH_ATTEMPTS: usize = 3;
+const HTTP_FETCH_BACKOFF: Duration = Duration::from_secs(5);
+
 /// Reasons a remote fetch can fail. Caller logs and falls through to
 /// source build — none of these is fatal to the resolver.
 #[derive(Debug)]
@@ -302,33 +308,88 @@ pub(crate) fn fetch_url(url: &str) -> Result<Vec<u8>, FetchError> {
             .map_err(|e| FetchError::Http(format!("file://{rest}: {e}")));
     }
     if url.starts_with("http://") || url.starts_with("https://") {
-        // Always set timeouts and a UA so a misbehaving registry
-        // can't hang the resolver indefinitely and so server logs can
-        // attribute the request.
-        let agent = ureq::AgentBuilder::new()
-            .timeout_connect(Duration::from_secs(30))
-            .timeout_read(Duration::from_secs(60))
-            .user_agent(concat!(
-                "wasm-posix-kernel-xtask/",
-                env!("CARGO_PKG_VERSION")
-            ))
-            .build();
-        let resp = agent
-            .get(url)
-            .call()
-            .map_err(|e| FetchError::Http(format!("{url}: {e}")))?;
-        // Cap response at MAX_RESPONSE_BYTES. A truncated body just
-        // produces a SHA mismatch downstream, so no explicit oversize
-        // error is needed here.
-        let mut bytes: Vec<u8> = Vec::new();
-        std::io::Read::take(resp.into_reader(), MAX_RESPONSE_BYTES)
-            .read_to_end(&mut bytes)
-            .map_err(|e| FetchError::Http(format!("read {url}: {e}")))?;
-        return Ok(bytes);
+        return fetch_http_url(url, HTTP_FETCH_ATTEMPTS, HTTP_FETCH_BACKOFF);
     }
     Err(FetchError::Http(format!(
         "unsupported url scheme: {url:?} (expected file://, http://, https://)"
     )))
+}
+
+fn fetch_http_url(
+    url: &str,
+    attempts: usize,
+    backoff: Duration,
+) -> Result<Vec<u8>, FetchError> {
+    let attempts = attempts.max(1);
+    // Always set timeouts and a UA so a misbehaving registry can't hang
+    // the resolver indefinitely and so server logs can attribute the
+    // request.
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(30))
+        .timeout_read(Duration::from_secs(60))
+        .user_agent(concat!(
+            "wasm-posix-kernel-xtask/",
+            env!("CARGO_PKG_VERSION")
+        ))
+        .build();
+
+    let mut last_error = String::new();
+    for attempt in 1..=attempts {
+        match fetch_http_url_once(&agent, url) {
+            Ok(bytes) => return Ok(bytes),
+            Err(err) => {
+                let retryable = err.retryable;
+                last_error = err.message;
+                if !retryable || attempt == attempts {
+                    break;
+                }
+                eprintln!(
+                    "fetch_url: WARN {url}: {last_error} (attempt {attempt}/{attempts}); retrying in {}s",
+                    backoff.as_secs()
+                );
+                if !backoff.is_zero() {
+                    std::thread::sleep(backoff);
+                }
+            }
+        }
+    }
+
+    Err(FetchError::Http(format!(
+        "{url}: {last_error} after {attempts} attempt(s)"
+    )))
+}
+
+struct HttpFetchAttemptError {
+    message: String,
+    retryable: bool,
+}
+
+fn fetch_http_url_once(
+    agent: &ureq::Agent,
+    url: &str,
+) -> Result<Vec<u8>, HttpFetchAttemptError> {
+    let resp = agent.get(url).call().map_err(|e| HttpFetchAttemptError {
+        retryable: is_retryable_ureq_error(&e),
+        message: e.to_string(),
+    })?;
+    // Cap response at MAX_RESPONSE_BYTES. A truncated body just
+    // produces a SHA mismatch downstream, so no explicit oversize
+    // error is needed here.
+    let mut bytes: Vec<u8> = Vec::new();
+    std::io::Read::take(resp.into_reader(), MAX_RESPONSE_BYTES)
+        .read_to_end(&mut bytes)
+        .map_err(|e| HttpFetchAttemptError {
+            retryable: true,
+            message: format!("read failed: {e}"),
+        })?;
+    Ok(bytes)
+}
+
+fn is_retryable_ureq_error(err: &ureq::Error) -> bool {
+    match err {
+        ureq::Error::Status(code, _) => *code == 429 || *code >= 500,
+        ureq::Error::Transport(_) => true,
+    }
 }
 
 /// Sha256(bytes) ≟ `expected_hex` (64-char lowercase hex).
@@ -452,6 +513,8 @@ pub(crate) fn build_test_archive(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
     use std::path::PathBuf;
 
     fn tempdir(label: &str) -> PathBuf {
@@ -499,6 +562,17 @@ mod tests {
     }
 
     #[test]
+    fn fetch_http_url_retries_transient_5xx() {
+        let url = serve_http_responses(vec![
+            (502, b"bad gateway".to_vec()),
+            (200, b"archive bytes".to_vec()),
+        ]);
+
+        let got = fetch_http_url(&url, 3, Duration::ZERO).unwrap();
+        assert_eq!(got, b"archive bytes");
+    }
+
+    #[test]
     fn fetch_url_returns_error_for_missing_file() {
         let url = "file:///definitely/not/here-xyz123.bin";
         let err = fetch_url(url).unwrap_err();
@@ -512,6 +586,32 @@ mod tests {
     fn fetch_url_rejects_unsupported_scheme() {
         let err = fetch_url("ftp://example.test/x").unwrap_err();
         assert!(matches!(err, FetchError::Http(_)));
+    }
+
+    fn serve_http_responses(responses: Vec<(u16, Vec<u8>)>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for (status, body) in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0u8; 1024];
+                let _ = stream.read(&mut request);
+                let reason = match status {
+                    200 => "OK",
+                    429 => "Too Many Requests",
+                    502 => "Bad Gateway",
+                    _ => "Status",
+                };
+                write!(
+                    stream,
+                    "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .unwrap();
+                stream.write_all(&body).unwrap();
+            }
+        });
+        format!("http://{addr}/archive.tar.zst")
     }
 
     #[test]
