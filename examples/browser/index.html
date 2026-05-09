@@ -40,6 +40,7 @@
           <option value="fprintf">fprintf</option>
           <option value="files">files</option>
           <option value="dirs">dirs</option>
+          <option value="spawn-smoke">spawn-smoke</option>
         </select>
         <button id="run">Run</button>
       </div>
@@ -47,6 +48,11 @@
     <div class="preview-area">
       <div class="output-area">
         <pre id="output"></pre>
+        <!-- Surfaced for the non-forking-spawn regression test. After spawn-smoke
+             runs, main.ts sets data-fork-count to the kernel's per-process fork
+             counter — Playwright reads it to assert SYS_SPAWN didn't fall back
+             to fork. -->
+        <div id="fork-count-debug" data-fork-count="" style="display: none"></div>
       </div>
     </div>
   </div>

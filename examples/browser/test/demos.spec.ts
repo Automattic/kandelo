@@ -97,6 +97,42 @@ test("simple: runs dirs program", async ({ page }) => {
   await waitForText(page, "#output", "Exited with code 0");
 });
 
+test("simple: spawn-smoke uses non-forking SYS_SPAWN on browser host", async ({
+  page,
+}) => {
+  // End-to-end exercise of the non-forking posix_spawn path on the
+  // browser host. Mirrors host/test/centralized-spawn.test.ts on the
+  // Node side. The simple page pre-stages /usr/bin/hello as a lazy file
+  // pointing at hello.wasm, then spawns spawn-smoke with that path as
+  // argv[1]. spawn-smoke calls posix_spawn → SYS_SPAWN, the spawned
+  // child runs hello, the parent waits, prints "OK".
+  //
+  // Asserts:
+  //   * stdout contains "OK"           — spawn-smoke's success line
+  //   * stdout contains "Hello from"   — the spawned child actually ran
+  //   * exit code 0
+  //   * fork-count == 0                — the load-bearing claim of this
+  //     work: SYS_SPAWN MUST NOT bump kernel_get_fork_count. A non-zero
+  //     value would mean the path silently fell back to fork.
+  await page.goto("/");
+  await page.selectOption("#program", "spawn-smoke");
+  await page.click("#run");
+  await waitForText(page, "#output", "Exited with code 0", 30_000);
+
+  const output = await page.locator("#output").textContent();
+  expect(output, `output=${output}`).toContain("OK");
+  expect(output, `output=${output}`).toContain("Hello from");
+
+  // GUARDRAIL: fork-count published via data-fork-count after kernel.spawn
+  // resolves. main.ts reads kernel.getForkCount(pid) for the parent pid
+  // captured via onStarted. Any non-zero value here means SYS_SPAWN
+  // silently fell back to kernel_fork_process.
+  const forkCount = await page
+    .locator("#fork-count-debug")
+    .getAttribute("data-fork-count");
+  expect(forkCount, `forkCount=${forkCount}`).toBe("0");
+});
+
 // ─── Shell (batch mode) ─────────────────────────────────────────────
 
 test("shell: runs batch script", async ({ page }) => {

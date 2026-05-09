@@ -274,16 +274,26 @@ called `kernel_fork_process`. The vitest harness asserts this stays at
 0 across a `posix_spawn` — any non-zero value means the path silently
 fell back to fork.
 
-**Future work for browser parity** (tracked here so we don't lose it):
+**Browser parity:**
 
-* Plumb `kernel_get_fork_count` through `BrowserKernel` so a
-  browser-side vitest can assert spawn doesn't fall back to fork
-  (mirroring the Node `centralized-spawn.test.ts` guardrail).
-* Add a non-`@slow` Playwright spawn-smoke test on the simple browser
-  page once VFS pre-staging is wired through `examples/browser/main.ts`.
-  The current structural parity check in
-  `host/test/spawn-host-parity.test.ts` is a stopgap — it catches
-  removal of the browser `onSpawn` wire but not behavioral regressions.
+* `BrowserKernel.getForkCount(pid)` mirrors `NodeKernelHost.getForkCount`
+  — round-trips a `get_fork_count` message to the kernel-worker entry,
+  which calls `kernel_get_fork_count`. Exposed via the public
+  `BrowserKernel` API.
+* `BrowserKernel.spawn(...)` accepts an `onStarted(pid)` option for
+  capturing the spawned pid before awaiting exit (same shape as
+  `NodeKernelHost.spawn`).
+* End-to-end Playwright coverage lives in
+  `examples/browser/test/demos.spec.ts` ("simple: spawn-smoke uses
+  non-forking SYS_SPAWN on browser host"). The simple browser page
+  registers `/usr/bin/hello` as a lazy file pointing at `hello.wasm`
+  via `BrowserKernel.registerLazyFiles`, then spawns spawn-smoke. The
+  test asserts stdout contains `OK` + `Hello from`, exit code 0, and
+  `data-fork-count=0` on the page (guardrail mirroring the Node
+  vitest assertion).
+* The structural source-text test (`host/test/spawn-host-parity.test.ts`)
+  remains as a fast-CI tripwire for someone removing one of the
+  parallel wires.
 
 ### clone() (threads)
 

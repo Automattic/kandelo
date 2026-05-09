@@ -1527,6 +1527,18 @@ sw.onmessage = (e: MessageEvent) => {
     case "destroy": handleDestroy(msg); break;
     case "register_lazy_files": memfs.importLazyEntries(msg.entries); break;
     case "register_lazy_archives": memfs.importLazyArchiveEntries(msg.entries); break;
+    case "get_fork_count": {
+      // Round-trip access to the kernel's per-process fork counter for
+      // tests asserting SYS_SPAWN didn't fall back to fork. Mirrors the
+      // Node-side `get_fork_count` request in node-kernel-worker-entry.ts.
+      try {
+        const count = kernelWorker.getForkCount(msg.pid);
+        respond(msg.requestId, count);
+      } catch (err) {
+        respondError(msg.requestId, (err as Error)?.message ?? String(err));
+      }
+      break;
+    }
     default: {
       // Handle non-protocol messages (e.g., bridge port transfer)
       const raw = e.data as any;
