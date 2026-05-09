@@ -90,9 +90,14 @@ impl VirtualDevice {
 }
 
 /// Check if a resolved path is a virtual device node.
+///
+/// `/dev/console` aliases to `/dev/null` (write-discard, read-EOF).
+/// Real consoles aren't meaningful in this hosted kernel — programs
+/// that probe for /dev/console as a fallback log sink should succeed
+/// with a sink that swallows output rather than failing with ENOENT.
 fn match_virtual_device(path: &[u8]) -> Option<VirtualDevice> {
     match path {
-        b"/dev/null" => Some(VirtualDevice::Null),
+        b"/dev/null" | b"/dev/console" => Some(VirtualDevice::Null),
         b"/dev/zero" => Some(VirtualDevice::Zero),
         b"/dev/urandom" | b"/dev/random" => Some(VirtualDevice::Urandom),
         b"/dev/full" => Some(VirtualDevice::Full),
@@ -13334,6 +13339,19 @@ mod tests {
     }
 
     #[test]
+    fn test_dev_console_aliases_dev_null() {
+        // /dev/console is an alias for /dev/null: write-discard, read-EOF.
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/console", O_RDWR, 0).unwrap();
+        let n = sys_write(&mut proc, &mut host, fd, b"console msg").unwrap();
+        assert_eq!(n, 11);
+        let mut buf = [0u8; 64];
+        let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[test]
     fn test_read_dev_zero_fills() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
@@ -13458,6 +13476,7 @@ mod tests {
     #[test]
     fn test_match_virtual_device() {
         assert_eq!(match_virtual_device(b"/dev/null"), Some(VirtualDevice::Null));
+        assert_eq!(match_virtual_device(b"/dev/console"), Some(VirtualDevice::Null));
         assert_eq!(match_virtual_device(b"/dev/zero"), Some(VirtualDevice::Zero));
         assert_eq!(match_virtual_device(b"/dev/urandom"), Some(VirtualDevice::Urandom));
         assert_eq!(match_virtual_device(b"/dev/random"), Some(VirtualDevice::Urandom));
