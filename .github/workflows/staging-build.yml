@@ -376,33 +376,28 @@ jobs:
         run: |
           tar --zstd -xf "$RUNNER_TEMP/toolchain/toolchain-sysroots.tar.zst"
 
-      - name: Fetch durable binaries (so source-build fallbacks have prereqs)
-        # Mirrors the legacy `build` job's prerequisite fetch (see the
-        # comment up there): a matrix entry whose target package
-        # transitively pulls a not-yet-published archive (e.g.
-        # mariadb-test → mariadbd.wasm) needs the durable release
-        # materialized into binaries/ so the resolver finds it. Without
-        # this, source-build fallbacks fail mid-matrix on a missing
-        # prereq with no useful error.
-        #
-        # --allow-stale matches the legacy job's setting: this PR may
-        # ship a compute_sha formula change that invalidates existing
-        # entries' compatibility.cache_key_sha. Stale entries are
-        # skipped; the resolver source-builds them.
-        run: |
-          bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh --allow-stale
-
       - name: Install host npm deps (build prereq)
-        # Mirrors the legacy `build` job: some package builds invoke
-        # tsx scripts that import from host/src/ (e.g. shell's
-        # build-shell-vfs-image.ts → fflate). Done before the
-        # archive-stage step so a node_modules-related miss doesn't
-        # surface as a confusing build-script failure.
+        # Some package builds invoke tsx scripts that import from
+        # host/src/ (e.g. *-vfs-image.ts → fzstd, fflate). Must run
+        # BEFORE Fetch durable binaries so any source-build fallback
+        # the resolver triggers there can find host/node_modules/.
         run: |
           bash scripts/dev-shell.sh bash -c '
             npm install --no-audit --no-fund
             cd host && npm install --no-audit --no-fund
           '
+
+      - name: Fetch durable binaries (so source-build fallbacks have prereqs)
+        # Best-effort prerequisite fetch: walk every package.toml and
+        # ensure binaries/ symlinks exist for cross-package binary
+        # references (e.g. mariadb-test → mariadbd.wasm). Under
+        # --allow-stale, individual package failures degrade to
+        # warnings — the matrix target's actual build runs below in
+        # `xtask archive-stage`, which is the authoritative gate
+        # (fails loudly if its own transitive deps don't resolve).
+        # See scripts/fetch-binaries.sh header.
+        run: |
+          bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh --allow-stale
 
       - name: Build ${{ matrix.package }} (${{ matrix.arch }})
         # Per-package wrapper around the existing build-deps +
@@ -504,6 +499,18 @@ jobs:
         with:
           pattern: '*-wasm*'
           path: ${{ runner.temp }}/staged-archives
+
+      - name: Install host npm deps (resolver prereq)
+        # Must run before Materialize binaries: the resolver may
+        # source-build a meta-package not covered by an overlay (e.g.,
+        # a matrix entry that failed to build), and those scripts
+        # invoke tsx with imports from host/src/. Without this,
+        # fetch-binaries gets a confusing fzstd module-not-found.
+        run: |
+          bash scripts/dev-shell.sh bash -c '
+            npm install --no-audit --no-fund
+            cd host && npm install --no-audit --no-fund
+          '
 
       - name: Materialize binaries (per-package package.pr.toml overlay)
         # The matrix produced a flat set of per-package archives whose

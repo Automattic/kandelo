@@ -452,16 +452,20 @@ jobs:
         run: |
           tar --zstd -xf "$RUNNER_TEMP/toolchain/toolchain-sysroots.tar.zst"
 
-      - name: Fetch durable binaries (so source-build fallbacks have prereqs)
-        run: |
-          bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh --allow-stale
-
       - name: Install host npm deps (build prereq)
+        # Must run before Fetch durable binaries: any source-build
+        # fallback the resolver triggers in the next step may invoke a
+        # tsx script that imports from host/src/ (e.g. *-vfs-image.ts
+        # → fzstd, fflate). See staging-build.yml for full rationale.
         run: |
           bash scripts/dev-shell.sh bash -c '
             npm install --no-audit --no-fund
             cd host && npm install --no-audit --no-fund
           '
+
+      - name: Fetch durable binaries (so source-build fallbacks have prereqs)
+        run: |
+          bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh --allow-stale
 
       - name: Build ${{ matrix.package }} (${{ matrix.arch }})
         run: |
@@ -521,6 +525,14 @@ jobs:
         with:
           pattern: '*-wasm*'
           path: ${{ runner.temp }}/staged-archives
+
+      - name: Install host npm deps (resolver prereq)
+        # Must run before Materialize binaries (see staging-build.yml).
+        run: |
+          bash scripts/dev-shell.sh bash -c '
+            npm install --no-audit --no-fund
+            cd host && npm install --no-audit --no-fund
+          '
 
       - name: Materialize binaries (per-package package.pr.toml overlay)
         # Phase C cutover (Task 6): per-package overlay flow, mirrors

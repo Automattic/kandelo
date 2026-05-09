@@ -3,7 +3,10 @@ name = "dinit"
 version = "0.19.4"
 revision = 1
 kernel_abi = 7
-depends_on = []
+# build-dinit.sh links against libc++/libc++abi from sysroot/lib/.
+# Without this dep the resolver doesn't pre-stage libcxx and the build
+# fails with "libc++.a not found". Mirrors mariadb's libcxx dep.
+depends_on = ["libcxx@21"]
 
 [source]
 url = "https://github.com/davmac314/dinit"

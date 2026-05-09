@@ -45,13 +45,21 @@
 #                  overlays itself — that's Task 4's CI job. This
 #                  flag is reserved for future use; today it warns
 #                  and is otherwise a no-op.
-#   --allow-stale  Accepted for back-compat with the old script. In
-#                  the new flow `resolve` already falls through to a
-#                  source build on any verification failure, so this
-#                  is effectively the default and the flag is a
-#                  no-op. Documented here so callers (CI, dev shell
-#                  one-liners) can keep passing it during the
-#                  transition without breaking.
+#   --allow-stale  Accept partial fetch. The resolver already falls
+#                  through to a source build on any verification
+#                  failure (so individual archive-fetch failures are
+#                  invisible), but a follow-up source build can also
+#                  fail (e.g., a meta-package whose script reads a
+#                  sibling source tree that hasn't been populated this
+#                  run). Without --allow-stale, any per-package
+#                  resolve failure exits 1 and aborts CI. With it,
+#                  failures degrade to warnings and the script exits 0
+#                  if any packages succeeded — matching the legacy
+#                  behavior where a stale-but-present cache was usable
+#                  even when the release was incomplete. CI callers
+#                  rely on this: the matrix target's build runs in a
+#                  later step and fails loudly if its actual deps are
+#                  missing.
 #   -h / --help    Print this header.
 #
 # Exit codes:
@@ -100,12 +108,14 @@ HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
 [ -n "$HOST_TARGET" ] || { echo "fetch-binaries: rustc -vV did not report host triple" >&2; exit 2; }
 
 if [ "$ALLOW_STALE" = "1" ]; then
-    # The resolver source-builds automatically on any verification
+    # The resolver source-builds automatically on archive verification
     # failure (xtask/src/build_deps.rs cmd_resolve fallback: any
     # remote_fetch error logs a warning and falls through to
-    # build_into_cache). The flag is a no-op here; documented in the
-    # header for back-compat.
-    echo "fetch-binaries: --allow-stale accepted (no-op; resolver auto-falls-back)"
+    # build_into_cache). --allow-stale also degrades any per-package
+    # resolve FAILURE to a warning so a meta-package whose source
+    # build is broken on this runner doesn't abort CI when the matrix
+    # target itself builds fine. See the header for full semantics.
+    echo "fetch-binaries: --allow-stale accepted (per-package failures degrade to warnings)"
 fi
 
 if [ -n "$PR_NUMBER" ]; then
@@ -237,6 +247,13 @@ if [ ${#FAILED[@]} -gt 0 ]; then
     for f in "${FAILED[@]}"; do
         echo "  - $f" >&2
     done
-    exit 1
+    if [ "$ALLOW_STALE" = "0" ]; then
+        exit 1
+    fi
+    # Under --allow-stale (the CI default), per-package failures are
+    # warnings: the matrix target's own build runs in a later step and
+    # fails loudly if its actual transitive deps are missing. A green
+    # exit here lets the producer step proceed to that real check.
+    echo "fetch-binaries: --allow-stale set, treating ${#FAILED[@]} failure(s) as warnings (resolved=$RESOLVED)" >&2
 fi
 echo "fetch-binaries: done. Symlinks at $REPO_ROOT/binaries/"
