@@ -230,6 +230,61 @@ Key detail: Asyncify restores Wasm locals but NOT globals. The `__stack_pointer`
 
 Step 6 is required: without it, `MemoryManager` falls back to a hardcoded 16MB `INITIAL_BRK`, which can land *inside* the stack region of programs whose data section pushes `__heap_base` above 16MB (mariadbd's `__heap_base ≈ 16.32MB`). Heap allocations there collide with shadow-stack frames during C++ static initialization, corrupting memory and hanging in `__wasm_call_ctors`.
 
+### posix_spawn() (non-forking)
+
+POSIX `posix_spawn` is normally fork+exec done atomically. Our kernel
+ships a custom syscall (`SYS_SPAWN = 500`, host-intercepted in
+`host/src/kernel-worker.ts`) that builds the child directly — no fork,
+no asyncify rewind, no exec replay. This is the fast path popen,
+`system`, shell pipelines, nginx-FastCGI, and any direct posix_spawn
+caller now take.
+
+1. Glue (`musl-overlay/src/process/wasm32posix/posix_spawn.c`) marshals
+   argv + envp + file actions + spawn attrs into a contiguous blob and
+   issues `__syscall6(SYS_SPAWN, path, path_len, blob, blob_len,
+   &pid_out, 0)`. Wire format documented in
+   `docs/plans/2026-05-04-non-forking-posix-spawn-design.md` Section 1.
+2. Host (`handleSpawn` in `kernel-worker.ts`) reads the blob from
+   caller memory, copies it to kernel scratch, and calls
+   `kernel_spawn_process(parent_pid, blob_ptr, blob_len)`.
+3. Kernel parses the blob (`crates/kernel/src/spawn.rs::parse_blob` —
+   the trust boundary; bails with EINVAL on any malformed offset) and
+   calls `ProcessTable::spawn_child`.
+4. `spawn_child` allocates the child pid, builds the child Process
+   from `Process::new(child_pid)` plus selective inheritance from the
+   parent (uid/gid/pgid/sid/cwd/umask/rlimits, fd_table + ofd_table +
+   sockets via the `bump_inherited_resource_refcounts` helper that
+   fork also uses), applies attrs in POSIX order (SETSID → SETPGROUP →
+   SETSIGMASK → SETSIGDEF), then applies file actions in forward
+   order. Failure on any action rolls back via `remove_process`.
+5. The kernel returns the allocated pid via `pid_out_ptr` in caller
+   memory. The host's `onSpawn` callback (Node:
+   `node-kernel-worker-entry.ts::handlePosixSpawn`; Browser:
+   `examples/browser/lib/kernel-worker-entry.ts::handlePosixSpawn`)
+   resolves the program bytes and instantiates a fresh Worker for the
+   child, registered with `skipKernelCreate: true` because the kernel
+   already inserted the Process.
+
+PATH search lives in libc (`posix_spawnp.c`); the kernel never sees
+PATH-relative names.
+
+The implementation is regression-guarded by a per-process counter:
+`kernel_get_fork_count(pid)` returns the number of times that pid has
+called `kernel_fork_process`. The vitest harness asserts this stays at
+0 across a `posix_spawn` — any non-zero value means the path silently
+fell back to fork.
+
+**Future work for browser parity** (tracked here so we don't lose it):
+
+* Plumb `kernel_get_fork_count` through `BrowserKernel` so a
+  browser-side vitest can assert spawn doesn't fall back to fork
+  (mirroring the Node `centralized-spawn.test.ts` guardrail).
+* Add a non-`@slow` Playwright spawn-smoke test on the simple browser
+  page once VFS pre-staging is wired through `examples/browser/main.ts`.
+  The current structural parity check in
+  `host/test/spawn-host-parity.test.ts` is a stopgap — it catches
+  removal of the browser `onSpawn` wire but not behavioral regressions.
+
 ### clone() (threads)
 
 1. User calls `clone(CLONE_VM | CLONE_THREAD, ...)` → kernel returns clone request
