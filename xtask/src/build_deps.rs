@@ -111,7 +111,19 @@ impl Registry {
                 paths.join(", ")
             )
         })?;
-        DepsManifest::load(&path)
+        // Phase C: registry loads honor any `package.pr.toml` overlay
+        // sitting alongside `package.toml` so the resolver picks up
+        // PR-staging archive URLs without an edit to the committed
+        // base manifest. The overlay is `[binary]`-only — `compute_sha`
+        // doesn't hash `[binary]` fields, so cache keys are unchanged
+        // when an overlay is present (the swap is purely about WHICH
+        // archive gets fetched, not which canonical cache slot it lands
+        // in). Direct path loads (`load_target` for `<dir>/package.toml`)
+        // also go through this path because their dir derivation matches.
+        let dir = path
+            .parent()
+            .ok_or_else(|| format!("{} has no parent directory", path.display()))?;
+        DepsManifest::load_with_overlay(dir)
     }
 
     /// Walk every registry root non-recursively (one level deep —
@@ -1292,16 +1304,57 @@ fn extract_arch_flag(args: Vec<String>) -> Result<(Option<TargetArch>, Vec<Strin
     Ok((arch, rest))
 }
 
+/// Extract `--binaries-dir <path>` / `--binaries-dir=<path>` from
+/// `args`, leaving non-flag arguments in place. Mirrors
+/// [`extract_arch_flag`]'s shape so `resolve --binaries-dir <p>` and
+/// `--binaries-dir=<p> resolve` are equivalent. Only meaningful for the
+/// `resolve` subcommand today (Phase C Task 2: lets the resolver do
+/// what `install-release --binaries-dir` used to — place
+/// `<binaries_dir>/programs/<arch>/<name>/<output>.wasm` symlinks at
+/// each declared `[[outputs]]`). Other subcommands ignore the value.
+fn extract_binaries_dir_flag(
+    args: Vec<String>,
+) -> Result<(Option<PathBuf>, Vec<String>), String> {
+    let mut binaries_dir: Option<PathBuf> = None;
+    let mut rest: Vec<String> = Vec::with_capacity(args.len());
+    let mut it = args.into_iter();
+    while let Some(a) = it.next() {
+        if let Some(value) = a.strip_prefix("--binaries-dir=") {
+            if binaries_dir.is_some() {
+                return Err("--binaries-dir given more than once".to_string());
+            }
+            binaries_dir = Some(PathBuf::from(value));
+        } else if a == "--binaries-dir" {
+            if binaries_dir.is_some() {
+                return Err("--binaries-dir given more than once".to_string());
+            }
+            let value = it.next().ok_or_else(|| {
+                "--binaries-dir requires a directory path".to_string()
+            })?;
+            binaries_dir = Some(PathBuf::from(value));
+        } else {
+            rest.push(a);
+        }
+    }
+    Ok((binaries_dir, rest))
+}
+
 pub fn run(args: Vec<String>) -> Result<(), String> {
     let (arch_flag, rest) = extract_arch_flag(args)?;
     let arch = match arch_flag {
         Some(a) => a,
         None => default_target_arch()?,
     };
+    // `--binaries-dir` is `resolve`-only today, but pulling it out at
+    // this layer (rather than inside the `resolve` arm) keeps the flag
+    // location-independent: `resolve --binaries-dir x foo` and
+    // `--binaries-dir x resolve foo` both work, matching `--arch`'s
+    // shape.
+    let (binaries_dir, rest) = extract_binaries_dir_flag(rest)?;
 
     let mut it = rest.into_iter();
     let sub = it.next().ok_or(
-        "usage: xtask build-deps [--arch=wasm32|wasm64] \
+        "usage: xtask build-deps [--arch=wasm32|wasm64] [--binaries-dir <path>] \
          <parse|sha|path|resolve|check|output-path> [<name|path> [<wasm-basename>]]",
     )?;
     let target = it.next();
@@ -1316,6 +1369,15 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
 
     let repo = repo_root();
     let registry = Registry::from_env(&repo);
+
+    // `--binaries-dir` is only meaningful for `resolve` — surface a
+    // clear error rather than silently ignoring it on other
+    // subcommands so a typo'd `resolve` never gets papered over.
+    if binaries_dir.is_some() && sub != "resolve" {
+        return Err(format!(
+            "build-deps {sub}: --binaries-dir is only valid for `resolve`"
+        ));
+    }
 
     match sub.as_str() {
         "check" => {
@@ -1355,7 +1417,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                     if extra.is_some() {
                         return Err("build-deps resolve: unexpected extra arg".into());
                     }
-                    cmd_resolve(&manifest, &registry, &repo, arch)
+                    cmd_resolve(&manifest, &registry, &repo, arch, binaries_dir.as_deref())
                 }
                 "output-path" => {
                     let basename = extra.ok_or_else(|| {
@@ -1376,7 +1438,18 @@ fn load_target(target: &str, registry: &Registry) -> Result<DepsManifest, String
         || target.contains('/')
         || target.starts_with('.');
     if looks_like_path {
-        DepsManifest::load(Path::new(target))
+        // Path form: derive the package dir from the .toml path so the
+        // overlay (sibling `package.pr.toml`) gets honored just like
+        // for registry-name lookups. Falls through to the plain `load`
+        // when the path doesn't sit inside a parent dir (rare; a
+        // top-level filename has no parent). Matches `Registry::load`.
+        let path = Path::new(target);
+        match path.parent() {
+            Some(dir) if !dir.as_os_str().is_empty() => {
+                DepsManifest::load_with_overlay(dir)
+            }
+            _ => DepsManifest::load(path),
+        }
     } else {
         registry.load(target)
     }
@@ -1467,6 +1540,7 @@ fn cmd_resolve(
     registry: &Registry,
     repo: &Path,
     arch: TargetArch,
+    binaries_dir: Option<&Path>,
 ) -> Result<(), String> {
     let cache_root = default_cache_root();
     let local_libs = repo.join("local-libs");
@@ -1477,7 +1551,83 @@ fn cmd_resolve(
         repo_root: Some(repo),
     };
     let path = ensure_built(m, registry, arch, current_abi_version(), &opts)?;
+
+    // Phase C Task 2: when `--binaries-dir <dir>` is supplied, also
+    // place `binaries/programs/<arch>/<output_dest_rel>` symlinks at
+    // each declared `[[outputs]]` entry. Mirrors what
+    // `install-release` did at release-install time, but driven by
+    // the per-package resolve flow that replaces the central
+    // manifest.json walk. Only programs with declared outputs get
+    // symlinks: libraries are consumed at link time via the cache
+    // and have no analog (`output_dest_rel_for` would error). Source
+    // and metadata-only kinds skip silently — `fetch-binaries.sh`
+    // walks the registry and would otherwise need to filter them
+    // upstream.
+    if let Some(bdir) = binaries_dir {
+        if matches!(m.kind, ManifestKind::Program) && !m.program_outputs.is_empty() {
+            place_binaries_symlinks(m, &path, bdir, arch)?;
+        }
+    }
+
     println!("{}", path.display());
+    Ok(())
+}
+
+/// Place symlinks under `binaries_dir/programs/<arch>/` pointing at
+/// each declared `[[outputs]]` wasm in the cache canonical directory.
+///
+/// Layout (per arch — wasm32 and wasm64 mirror in parallel):
+///   * 1 output: `<binaries_dir>/programs/<arch>/<output.name>.wasm`.
+///   * ≥2 outputs: `<binaries_dir>/programs/<arch>/<program.name>/<output.name>.wasm`.
+///
+/// This intentionally mirrors `install_release::place_binaries_symlinks`
+/// (in `xtask/src/install_release.rs`) — the `install-release` path is
+/// scheduled for deletion in Phase C Task 6, after which this becomes
+/// the only home for the layout. Browser demos hardcode these paths
+/// (see `examples/browser/vite.config.ts` and
+/// `host/src/binary-resolver.ts`), so the layout MUST NOT change here.
+///
+/// Targets are absolute paths into the resolver cache. Replace-in-place
+/// is safe (remove + symlink): symlinks are tiny and atomic, and a
+/// stale link that survives an arch flip would silently route consumers
+/// at the wrong arch — correctness trumps a microsecond saved on a
+/// no-op.
+fn place_binaries_symlinks(
+    m: &DepsManifest,
+    canonical: &Path,
+    binaries_dir: &Path,
+    arch: TargetArch,
+) -> Result<(), String> {
+    let outputs = &m.program_outputs;
+    if outputs.is_empty() {
+        return Err(format!("program {:?} has no [[outputs]]", m.name));
+    }
+    let arch_root = binaries_dir.join("programs").join(arch.as_str());
+    for out in outputs {
+        let src = canonical.join(&out.wasm);
+        if !src.is_file() {
+            return Err(format!(
+                "declared output {} not found in cache at {}",
+                out.wasm,
+                src.display()
+            ));
+        }
+        let dest = arch_root.join(m.output_dest_rel_for(out));
+        let dest_dir = dest.parent().ok_or_else(|| {
+            format!("dest path {} has no parent", dest.display())
+        })?;
+        std::fs::create_dir_all(dest_dir)
+            .map_err(|e| format!("mkdir {}: {e}", dest_dir.display()))?;
+        // Replace-in-place: remove any existing entry (file or
+        // symlink), then create a fresh symlink. Skipping the remove
+        // step would cause `symlink` to fail with EEXIST.
+        if dest.exists() || dest.symlink_metadata().is_ok() {
+            let _ = std::fs::remove_file(&dest);
+        }
+        std::os::unix::fs::symlink(&src, &dest).map_err(|e| {
+            format!("symlink {} -> {}: {e}", dest.display(), src.display())
+        })?;
+    }
     Ok(())
 }
 
@@ -4704,5 +4854,205 @@ libs = ["lib/libF3b.a"]
             1,
             "non-named lib must stay cached"
         );
+    }
+
+    // ---------------------------------------------------------------
+    // Phase C Task 2: --binaries-dir flag (resolver places symlinks)
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn extract_binaries_dir_flag_separated_form() {
+        let (got, rest) = extract_binaries_dir_flag(vec![
+            "resolve".into(),
+            "--binaries-dir".into(),
+            "/tmp/bins".into(),
+            "bash".into(),
+        ])
+        .unwrap();
+        assert_eq!(got, Some(PathBuf::from("/tmp/bins")));
+        assert_eq!(rest, vec!["resolve".to_string(), "bash".into()]);
+    }
+
+    #[test]
+    fn extract_binaries_dir_flag_equals_form() {
+        let (got, rest) = extract_binaries_dir_flag(vec![
+            "--binaries-dir=/x/y".into(),
+            "resolve".into(),
+            "z".into(),
+        ])
+        .unwrap();
+        assert_eq!(got, Some(PathBuf::from("/x/y")));
+        assert_eq!(rest, vec!["resolve".to_string(), "z".into()]);
+    }
+
+    #[test]
+    fn extract_binaries_dir_flag_absent() {
+        let (got, rest) =
+            extract_binaries_dir_flag(vec!["resolve".into(), "bash".into()]).unwrap();
+        assert_eq!(got, None);
+        assert_eq!(rest, vec!["resolve".to_string(), "bash".into()]);
+    }
+
+    #[test]
+    fn extract_binaries_dir_flag_rejects_duplicate() {
+        let err = extract_binaries_dir_flag(vec![
+            "--binaries-dir".into(),
+            "/a".into(),
+            "--binaries-dir=/b".into(),
+        ])
+        .unwrap_err();
+        assert!(err.contains("more than once"), "got: {err}");
+    }
+
+    #[test]
+    fn cmd_resolve_with_binaries_dir_places_single_output_symlink() {
+        // Single-output program: symlink lands at
+        //   <binaries_dir>/programs/<arch>/<output.name>.<ext>
+        // i.e. flat under the per-arch subdir, no per-program nest.
+        let root = tempdir("resolve-bdir-single-reg");
+        let cache = tempdir("resolve-bdir-single-cache");
+        let bin_dir = tempdir("resolve-bdir-single-bin");
+        write_program(
+            &root,
+            "tinybin",
+            "0.1.0",
+            &[],
+            r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR" && touch "$WASM_POSIX_DEP_OUT_DIR/tinybin.wasm""#,
+            &[("tinybin", "tinybin.wasm")],
+        );
+        let reg = Registry { roots: vec![root.clone()] };
+        let m = reg.load("tinybin").unwrap();
+
+        // Repo root for cmd_resolve = registry root (script_path
+        // resolves repo-relative; for these tests the per-package
+        // dir contains its own build script and the package.toml's
+        // script_path is unset, so the resolver's
+        // "<repo>/<dir-rel>/build-<name>.sh" fallback finds it).
+        cmd_resolve_with_test_cache(&m, &reg, &root, TargetArch::Wasm32, &cache, Some(&bin_dir))
+            .unwrap();
+
+        let link = bin_dir.join("programs/wasm32/tinybin.wasm");
+        assert!(link.symlink_metadata().is_ok(), "symlink missing: {}", link.display());
+        let target = std::fs::read_link(&link).unwrap();
+        assert!(target.is_absolute(), "symlink must be absolute: {target:?}");
+        assert!(target.ends_with("tinybin.wasm"), "got: {target:?}");
+        // The symlink resolves to a real file in the cache.
+        assert!(link.exists(), "symlink target unreadable: {}", link.display());
+    }
+
+    #[test]
+    fn cmd_resolve_with_binaries_dir_places_multi_output_symlinks() {
+        // Multi-output program: symlinks land at
+        //   <binaries_dir>/programs/<arch>/<program.name>/<output.name>.<ext>
+        let root = tempdir("resolve-bdir-multi-reg");
+        let cache = tempdir("resolve-bdir-multi-cache");
+        let bin_dir = tempdir("resolve-bdir-multi-bin");
+        write_program(
+            &root,
+            "twobin",
+            "0.1.0",
+            &[],
+            r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR"
+touch "$WASM_POSIX_DEP_OUT_DIR/alpha.wasm"
+touch "$WASM_POSIX_DEP_OUT_DIR/beta.wasm""#,
+            &[("alpha", "alpha.wasm"), ("beta", "beta.wasm")],
+        );
+        let reg = Registry { roots: vec![root.clone()] };
+        let m = reg.load("twobin").unwrap();
+
+        cmd_resolve_with_test_cache(&m, &reg, &root, TargetArch::Wasm32, &cache, Some(&bin_dir))
+            .unwrap();
+
+        let alpha = bin_dir.join("programs/wasm32/twobin/alpha.wasm");
+        let beta = bin_dir.join("programs/wasm32/twobin/beta.wasm");
+        assert!(alpha.exists(), "alpha symlink missing");
+        assert!(beta.exists(), "beta symlink missing");
+    }
+
+    #[test]
+    fn cmd_resolve_without_binaries_dir_places_no_symlinks() {
+        // Sanity: the flag is opt-in. No flag → no symlinks under the
+        // (initially-absent) bin_dir.
+        let root = tempdir("resolve-bdir-none-reg");
+        let cache = tempdir("resolve-bdir-none-cache");
+        let bin_dir = tempdir("resolve-bdir-none-bin");
+        write_program(
+            &root,
+            "noflag",
+            "0.1.0",
+            &[],
+            r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR" && touch "$WASM_POSIX_DEP_OUT_DIR/noflag.wasm""#,
+            &[("noflag", "noflag.wasm")],
+        );
+        let reg = Registry { roots: vec![root.clone()] };
+        let m = reg.load("noflag").unwrap();
+
+        cmd_resolve_with_test_cache(&m, &reg, &root, TargetArch::Wasm32, &cache, None)
+            .unwrap();
+
+        let link = bin_dir.join("programs/wasm32/noflag.wasm");
+        assert!(!link.exists() && link.symlink_metadata().is_err(),
+            "no symlink should exist without --binaries-dir");
+    }
+
+    #[test]
+    fn cmd_resolve_with_binaries_dir_replaces_existing_link() {
+        // A previous resolve may have left a stale symlink (e.g.
+        // pointing at a now-evicted cache entry). The resolver must
+        // overwrite rather than fail with EEXIST.
+        let root = tempdir("resolve-bdir-replace-reg");
+        let cache = tempdir("resolve-bdir-replace-cache");
+        let bin_dir = tempdir("resolve-bdir-replace-bin");
+        write_program(
+            &root,
+            "rep",
+            "0.1.0",
+            &[],
+            r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR" && touch "$WASM_POSIX_DEP_OUT_DIR/rep.wasm""#,
+            &[("rep", "rep.wasm")],
+        );
+        let reg = Registry { roots: vec![root.clone()] };
+        let m = reg.load("rep").unwrap();
+
+        // Pre-create a stale symlink at the destination.
+        let arch_root = bin_dir.join("programs/wasm32");
+        std::fs::create_dir_all(&arch_root).unwrap();
+        let dest = arch_root.join("rep.wasm");
+        std::os::unix::fs::symlink("/nonexistent/stale.wasm", &dest).unwrap();
+
+        cmd_resolve_with_test_cache(&m, &reg, &root, TargetArch::Wasm32, &cache, Some(&bin_dir))
+            .unwrap();
+
+        // New symlink replaces the stale one and resolves to a real file.
+        assert!(dest.exists(), "replaced symlink must point at a real file");
+    }
+
+    /// Test-only variant of `cmd_resolve` that takes an explicit
+    /// `cache_root` (instead of reading `default_cache_root()`) and
+    /// a repo path, so unit tests can drive the resolver from a
+    /// tempdir without touching `~/.cache/wasm-posix-kernel`. Mirrors
+    /// the production `cmd_resolve` body so the symlink path stays
+    /// honestly exercised.
+    fn cmd_resolve_with_test_cache(
+        m: &DepsManifest,
+        registry: &Registry,
+        repo: &Path,
+        arch: TargetArch,
+        cache_root: &Path,
+        binaries_dir: Option<&Path>,
+    ) -> Result<(), String> {
+        let opts = ResolveOpts {
+            cache_root,
+            local_libs: None,
+            force_source_build: None,
+            repo_root: Some(repo),
+        };
+        let path = ensure_built(m, registry, arch, TEST_ABI, &opts)?;
+        if let Some(bdir) = binaries_dir {
+            if matches!(m.kind, ManifestKind::Program) && !m.program_outputs.is_empty() {
+                place_binaries_symlinks(m, &path, bdir, arch)?;
+            }
+        }
+        Ok(())
     }
 }

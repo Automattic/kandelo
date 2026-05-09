@@ -308,6 +308,19 @@ pub(crate) fn fetch_url(url: &str) -> Result<Vec<u8>, FetchError> {
             .map_err(|e| FetchError::Http(format!("file://{rest}: {e}")));
     }
     if url.starts_with("http://") || url.starts_with("https://") {
+        // Honor WASM_POSIX_OFFLINE: when set to a non-empty, non-"0"
+        // value (e.g. by `scripts/fetch-binaries.sh --offline`), refuse
+        // to issue HTTP requests. Surfaces as `FetchError::Http` so the
+        // caller falls through to source build the same way a network
+        // failure would.
+        if std::env::var_os("WASM_POSIX_OFFLINE")
+            .is_some_and(|v| !v.is_empty() && v != "0")
+        {
+            return Err(FetchError::Http(format!(
+                "WASM_POSIX_OFFLINE is set; refusing to fetch {url}. \
+                 Run without --offline or pre-populate the cache."
+            )));
+        }
         return fetch_http_url(url, HTTP_FETCH_ATTEMPTS, HTTP_FETCH_BACKOFF);
     }
     Err(FetchError::Http(format!(
@@ -612,6 +625,66 @@ mod tests {
             }
         });
         format!("http://{addr}/archive.tar.zst")
+    }
+
+    /// `WASM_POSIX_OFFLINE=1` (or any non-empty, non-"0" value) must
+    /// short-circuit `fetch_url` for http(s) URLs before any network
+    /// I/O. We verify by setting the env var, calling fetch_url with a
+    /// URL whose hostname (.test TLD per RFC 2606) cannot resolve, and
+    /// asserting the error message names the offline guard rather than
+    /// a DNS/connect failure. `file://` is intentionally NOT gated by
+    /// the flag — local archives are still readable offline.
+    #[test]
+    fn offline_env_var_blocks_fetch() {
+        // `set_var` is process-global; serialize with the env-mutex
+        // pattern established in host_tool_probe so parallel tests
+        // don't observe a leaked WASM_POSIX_OFFLINE.
+        static OFFLINE_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _g = OFFLINE_MUTEX.lock().unwrap();
+
+        struct OfflineGuard {
+            prior: Option<std::ffi::OsString>,
+        }
+        impl OfflineGuard {
+            fn install(value: &str) -> Self {
+                let prior = std::env::var_os("WASM_POSIX_OFFLINE");
+                // SAFETY (edition 2024): set_var is unsafe because it
+                // mutates process-global env. We hold OFFLINE_MUTEX,
+                // and Drop restores the prior value even on panic.
+                unsafe {
+                    std::env::set_var("WASM_POSIX_OFFLINE", value);
+                }
+                Self { prior }
+            }
+        }
+        impl Drop for OfflineGuard {
+            fn drop(&mut self) {
+                // SAFETY: see OfflineGuard::install.
+                unsafe {
+                    match &self.prior {
+                        Some(v) => std::env::set_var("WASM_POSIX_OFFLINE", v),
+                        None => std::env::remove_var("WASM_POSIX_OFFLINE"),
+                    }
+                }
+            }
+        }
+
+        let _guard = OfflineGuard::install("1");
+        let url = "https://invalid.test/foo";
+        let err = fetch_url(url).unwrap_err();
+        match err {
+            FetchError::Http(s) => {
+                assert!(
+                    s.contains("WASM_POSIX_OFFLINE"),
+                    "expected offline guard message, got: {s}"
+                );
+                assert!(
+                    s.contains(url),
+                    "expected URL in offline error, got: {s}"
+                );
+            }
+            other => panic!("expected FetchError::Http, got: {other:?}"),
+        }
     }
 
     #[test]
