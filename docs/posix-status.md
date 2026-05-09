@@ -364,7 +364,9 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 
 ### Critical — Violates POSIX semantics, causes incorrect behavior
 
-(None currently — setitimer/getitimer resolved in Batch 5, signal handler delivery resolved via syscall-boundary checking.)
+| Gap | Subsystem | Description |
+|-----|-----------|-------------|
+| **fork siblings have independent OFD seek positions** | fork / fd | POSIX.1-2017 §2.4.1 requires that fork children's fds refer to the **same** open file description as the parent — meaning seek pointer, status flags, and pending I/O state are SHARED. Our `OfdTable` lives inside `Process`, so fork deep-clones it; each process has independent OFD copies thereafter. A program that forks then both processes append to the same fd expecting interleaved output (cooperative log writers, parallel `make` job-server pipes, etc.) will silently produce garbled output. Tracked as a redesign item in `docs/future-improvements.md` ("Per-process OFD storage breaks POSIX fork OFD-sharing") — fix is to move OFDs to a kernel-global table with `Process` holding `FdTable<OfdRef>`. |
 
 ### High — Missing features that affect common programs
 

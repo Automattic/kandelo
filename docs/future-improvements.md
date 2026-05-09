@@ -4,6 +4,17 @@ Technical debt and improvement opportunities. None are bugs — all are deferred
 
 ## Kernel
 
+### Per-process OFD storage breaks POSIX fork OFD-sharing
+Open File Descriptions live inside `Process` (`crates/kernel/src/ofd.rs`'s `OfdTable`), not in a kernel-global table. POSIX.1-2017 §2.4.1 requires that "each of the child's file descriptors shall refer to the same open file description as the corresponding file descriptor of the parent" — meaning the seek pointer, status flags, and pending I/O state are SHARED across fork siblings. Our model deep-clones the parent's `OfdTable` into the child, so each process has independent copies — independent seek pointers, independent status flags after fork.
+
+A program that does `fork()` then both processes append to the same fd expecting interleaved output (a common idiom for cooperative log writers, parallel `make` job-server pipes, or any pattern that relies on shared-position semantics) will silently produce garbled output instead. No regression test exercises this today; it's structurally there.
+
+The cleanest redesign: move OFDs to a kernel-global `OfdTable` and have `Process` hold `FdTable<OfdRef>` where `OfdRef` is a stable index. Fork's "fd inheritance" becomes the trivial pointer/refcount operation it should be (no deep clone, no per-resource cross-process refcount machinery). The non-forking `posix_spawn` work added a lot of refcount bookkeeping (host file handles, global pipes, PTYs, listener backlogs, host_net_handle) to compensate for the per-process model — that machinery would mostly disappear with kernel-global OFDs.
+
+Cost of the redesign: locking / borrow-checker complexity around the global table, plus a careful migration that doesn't regress the syscall hot path. Worth scheduling on the next big initiative — the savings compound across fork, spawn, exec, and dup.
+
+**Files:** `crates/kernel/src/ofd.rs`, `crates/kernel/src/process.rs`, `crates/kernel/src/process_table.rs`, `crates/kernel/src/fork.rs`, `crates/kernel/src/syscalls.rs`
+
 ### `sys_openat` duplicates `sys_open` logic
 `sys_openat` reimplements umask application, file type determination, creation flag stripping, and O_CLOEXEC handling rather than sharing code with `sys_open`. Consider extracting a shared internal helper or implementing `sys_open` as `sys_openat(proc, host, AT_FDCWD, path, oflags, mode)`.
 
