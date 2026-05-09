@@ -218,11 +218,127 @@ describe("manifest parser — directories, files, symlinks, devices", () => {
     });
   });
 
-  describe("archive directive (deferred to Task 2.3)", () => {
-    it("rejects archive lines with a clear deferred-implementation message", () => {
-      expect(() => parseManifest("archive  url=./vim.zip\n")).toThrow(
-        /archive.*Task 2\.3|archive.*not.*implemented|archive.*deferred/i,
+  describe("archive directive", () => {
+    it("parses archive with all fields specified", () => {
+      expect(
+        parseManifest("archive  url=./vim.zip  base=/usr  fmode=0644  dmode=0755  uid=10  gid=20\n"),
+      ).toEqual([
+        {
+          kind: "archive",
+          url: "./vim.zip",
+          base: "/usr",
+          fmode: 0o644,
+          dmode: 0o755,
+          uid: 10,
+          gid: 20,
+        },
+      ]);
+    });
+
+    it("parses archive with only url= and applies defaults", () => {
+      expect(parseManifest("archive  url=./system.zip\n")).toEqual([
+        {
+          kind: "archive",
+          url: "./system.zip",
+          base: "/",
+          fmode: 0o644,
+          dmode: 0o755,
+          uid: 0,
+          gid: 0,
+        },
+      ]);
+    });
+
+    it("rejects archive without url=", () => {
+      expect(() => parseManifest("archive  base=/usr\n")).toThrow(/url=.*required|requires url=/);
+    });
+
+    it("rejects archive with empty url= value", () => {
+      expect(() => parseManifest("archive  url=\n")).toThrow(/url.*empty|empty.*url/i);
+    });
+
+    it("rejects archive with non-octal fmode", () => {
+      expect(() => parseManifest("archive  url=./x.zip  fmode=0888\n")).toThrow(
+        /invalid octal|fmode/,
       );
+    });
+
+    it("rejects archive with non-octal dmode", () => {
+      expect(() => parseManifest("archive  url=./x.zip  dmode=abc\n")).toThrow(
+        /invalid octal|dmode/,
+      );
+    });
+
+    it("rejects archive with non-decimal uid", () => {
+      expect(() => parseManifest("archive  url=./x.zip  uid=abc\n")).toThrow(/invalid integer|uid/);
+    });
+
+    it("rejects archive with non-absolute base=", () => {
+      expect(() => parseManifest("archive  url=./x.zip  base=usr/local\n")).toThrow(
+        /base.*absolute|absolute.*base/i,
+      );
+    });
+
+    it("rejects archive with empty base= value", () => {
+      expect(() => parseManifest("archive  url=./x.zip  base=\n")).toThrow(/base.*empty|empty.*base/i);
+    });
+
+    it("rejects archive with unknown field", () => {
+      expect(() => parseManifest("archive  url=./x.zip  foo=bar\n")).toThrow(
+        /unknown archive field.*"foo"/,
+      );
+    });
+
+    it("rejects archive with malformed extra (no = sign)", () => {
+      expect(() => parseManifest("archive  url=./x.zip  bogus\n")).toThrow(/archive field|bad/);
+    });
+
+    it("preserves = characters in url= value (e.g. query strings)", () => {
+      expect(parseManifest("archive  url=./x.zip?v=1&t=2\n")[0]).toMatchObject({
+        url: "./x.zip?v=1&t=2",
+      });
+    });
+
+    it("preserves # in url= when no preceding whitespace (consistent with comment stripping)", () => {
+      expect(parseManifest("archive  url=./x.zip#frag\n")[0]).toMatchObject({
+        url: "./x.zip#frag",
+      });
+    });
+
+    it("reports archive errors with line numbers", () => {
+      expect(() => parseManifest("\n\narchive  base=/usr\n")).toThrow(/line 3/);
+    });
+
+    it("includes sourcePath in archive errors when provided", () => {
+      expect(() => parseManifest("archive  base=/usr\n", "MANIFEST")).toThrow(/MANIFEST/);
+    });
+  });
+
+  describe("mixed manifest (nodes + archives)", () => {
+    it("parses nodes and archives interleaved with correct kind discriminators", () => {
+      const text = [
+        "# mixed manifest",
+        "/etc           d  0755  0  0",
+        "archive        url=./system.zip  base=/usr",
+        "/etc/passwd    f  0644  0  0",
+        "archive        url=./vim.zip  base=/usr/share/vim  fmode=0644",
+        "/dev/null      c  0666  0  0  major=1  minor=3",
+        "",
+      ].join("\n");
+      const entries = parseManifest(text);
+      expect(entries).toHaveLength(5);
+      expect(entries.map((e) => e.kind)).toEqual([
+        "node",
+        "archive",
+        "node",
+        "archive",
+        "node",
+      ]);
+      // Discriminator narrows: archive entries have url, nodes have path.
+      const archives = entries.filter((e) => e.kind === "archive");
+      expect(archives.map((a) => a.url)).toEqual(["./system.zip", "./vim.zip"]);
+      const nodes = entries.filter((e) => e.kind === "node");
+      expect(nodes.map((n) => n.path)).toEqual(["/etc", "/etc/passwd", "/dev/null"]);
     });
   });
 

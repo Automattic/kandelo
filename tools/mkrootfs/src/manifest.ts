@@ -3,6 +3,7 @@
 // Grammar (one entry per non-blank, non-comment line):
 //
 //   <path>  <type>  <mode>  [<uid>]  [<gid>]  [key=value ...]
+//   archive  url=<path>  [base=/prefix] [fmode=<octal>] [dmode=<octal>] [uid=<n>] [gid=<n>]
 //
 // Where:
 //   <type>   one of d (dir), f (file), l (symlink), c (char dev), b (block dev)
@@ -14,10 +15,18 @@
 //   l   target=<symlink target path>   — required
 //   c|b major=<n>  minor=<n>           — both required
 //
-// Comments start with `#` and run to end of line. Leading/trailing
-// whitespace on each line is stripped. Blank lines are skipped.
+// Archive directive fields:
+//   url=<path or URL>                  — required; archive to ingest (zip/tar)
+//   base=<absolute mount prefix>       — defaults to "/"; must be absolute
+//   fmode=<octal>                      — file mode for archive entries (default 0644)
+//   dmode=<octal>                      — directory mode (default 0755)
+//   uid=<n>  gid=<n>                   — owner applied to all entries (default 0:0)
 //
-// The `archive` directive is parsed in Task 2.3; this parser rejects it.
+// Comments start with `#` and run to end of line. The `#` is only
+// treated as a comment when it appears at the start of a line or is
+// preceded by whitespace, so values like `url=./x.zip#frag` are
+// preserved. Leading/trailing whitespace on each line is stripped.
+// Blank lines are skipped.
 
 export type NodeType = "d" | "f" | "l" | "c" | "b";
 
@@ -34,7 +43,20 @@ export interface ManifestNode {
   minor?: number;
 }
 
-export type ManifestEntry = ManifestNode;
+export interface ManifestArchive {
+  kind: "archive";
+  url: string;
+  base: string;
+  fmode: number;
+  dmode: number;
+  uid: number;
+  gid: number;
+}
+
+export type ManifestEntry = ManifestNode | ManifestArchive;
+
+// The literal token that introduces an archive directive line.
+const ARCHIVE_DIRECTIVE = "archive";
 
 const VALID_TYPES = new Set<NodeType>(["d", "f", "l", "c", "b"]);
 
@@ -46,12 +68,80 @@ export function parseManifest(text: string, sourcePath?: string): ManifestEntry[
     if (!stripped) continue;
     const lineNumber = i + 1;
     const tokens = stripped.split(/\s+/);
-    if (tokens[0] === "archive") {
-      throw err(lineNumber, sourcePath, "archive directive not yet implemented (deferred to Task 2.3)");
+    if (tokens[0] === ARCHIVE_DIRECTIVE) {
+      entries.push(parseArchive(tokens.slice(1), lineNumber, sourcePath));
+      continue;
     }
     entries.push(parseNode(tokens, lineNumber, sourcePath));
   }
   return entries;
+}
+
+function parseArchive(
+  tokens: string[],
+  lineNumber: number,
+  sourcePath: string | undefined,
+): ManifestArchive {
+  const archive: ManifestArchive = {
+    kind: "archive",
+    url: "",
+    base: "/",
+    fmode: 0o644,
+    dmode: 0o755,
+    uid: 0,
+    gid: 0,
+  };
+  let urlSeen = false;
+  let baseSeen = false;
+  for (const tok of tokens) {
+    const eq = tok.indexOf("=");
+    if (eq <= 0) {
+      throw err(lineNumber, sourcePath, `bad archive field "${tok}" (expected key=value)`);
+    }
+    const key = tok.slice(0, eq);
+    const value = tok.slice(eq + 1);
+    switch (key) {
+      case "url":
+        archive.url = value;
+        urlSeen = true;
+        break;
+      case "base":
+        archive.base = value;
+        baseSeen = true;
+        break;
+      case "fmode":
+        archive.fmode = parseOctal(value, lineNumber, sourcePath, "fmode");
+        break;
+      case "dmode":
+        archive.dmode = parseOctal(value, lineNumber, sourcePath, "dmode");
+        break;
+      case "uid":
+        archive.uid = parseDecimal(value, lineNumber, sourcePath, "uid");
+        break;
+      case "gid":
+        archive.gid = parseDecimal(value, lineNumber, sourcePath, "gid");
+        break;
+      default:
+        throw err(lineNumber, sourcePath, `unknown archive field "${key}"`);
+    }
+  }
+  if (!urlSeen) {
+    throw err(lineNumber, sourcePath, "archive requires url=");
+  }
+  if (archive.url === "") {
+    throw err(lineNumber, sourcePath, "archive has empty url=");
+  }
+  if (baseSeen && archive.base === "") {
+    throw err(lineNumber, sourcePath, "archive has empty base=");
+  }
+  if (!archive.base.startsWith("/")) {
+    throw err(
+      lineNumber,
+      sourcePath,
+      `archive base= must be absolute, got "${archive.base}"`,
+    );
+  }
+  return archive;
 }
 
 function parseNode(tokens: string[], lineNumber: number, sourcePath: string | undefined): ManifestNode {
