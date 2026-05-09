@@ -18,7 +18,7 @@ import { resolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
 import { saveImage } from "./vfs-image-helpers";
 import { addDinitInit } from "./dinit-image-helpers";
 
-const OUT_FILE = join(findRepoRoot(), "examples", "browser", "public", "redis.vfs");
+const OUT_FILE = join(findRepoRoot(), "examples", "browser", "public", "redis.vfs.zst");
 
 async function main() {
   const REDIS_WASM = resolveBinary("programs/redis/redis-server.wasm");

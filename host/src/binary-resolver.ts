@@ -55,7 +55,7 @@ export function findRepoRoot(startFrom?: string): string {
  *   `userspace.wasm`
  *   `programs/vim.zip`               (implicit wasm32 — see below)
  *   `programs/git/git.wasm`          (implicit wasm32)
- *   `programs/wasm64/mariadb-vfs.vfs` (explicit arch)
+ *   `programs/wasm64/mariadb-vfs.vfs.zst` (explicit arch)
  *
  * Per-arch layout: `binaries/programs/` and `local-binaries/programs/`
  * are split into `wasm32/` and `wasm64/` subtrees so multi-arch

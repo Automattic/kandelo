@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Build a WordPress VFS image for the browser demo.
-# Produces: examples/browser/public/wordpress.vfs
+# Produces: examples/browser/public/wordpress.vfs.zst
 #
 set -euo pipefail
 
@@ -14,4 +14,4 @@ echo "==> Building WordPress VFS image..."
 npx tsx "$SCRIPT_DIR/build-wp-vfs-image.ts"
 
 echo "==> Done."
-ls -lh examples/browser/public/wordpress.vfs
+ls -lh examples/browser/public/wordpress.vfs.zst

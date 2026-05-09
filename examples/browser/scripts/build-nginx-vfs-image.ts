@@ -22,7 +22,7 @@ import { saveImage } from "./vfs-image-helpers";
 import { addDinitInit } from "./dinit-image-helpers";
 
 const REPO_ROOT = findRepoRoot();
-const OUT_FILE = join(REPO_ROOT, "examples", "browser", "public", "nginx.vfs");
+const OUT_FILE = join(REPO_ROOT, "examples", "browser", "public", "nginx.vfs.zst");
 
 // Multi-process nginx config — master + 2 workers, mirroring the
 // standalone CLI demo's nginx.conf. AF_INET listening sockets share a

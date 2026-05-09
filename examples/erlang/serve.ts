@@ -26,7 +26,7 @@ function loadBytes(path: string): ArrayBuffer {
 }
 
 async function main() {
-    const beamWasm = tryResolveBinary("programs/erlang.wasm");
+    const beamWasm = tryResolveBinary("programs/erlang/erlang.wasm");
     if (!beamWasm) {
         console.error(
             "erlang.wasm not found. Run: scripts/fetch-binaries.sh " +

@@ -1,7 +1,7 @@
 kind = "program"
 name = "mariadb-vfs"
 version = "0.1.0"
-revision = 1
+revision = 2
 kernel_abi = 7
 # Implicit deps: build-mariadb-vfs-image.ts
 #   - reads mariadbd + bootstrap SQL from `examples/libs/mariadb/mariadb-install{,-64}/`
@@ -38,7 +38,7 @@ repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 [[outputs]]
 name = "mariadb-vfs"
-wasm = "mariadb-vfs.vfs"
+wasm = "mariadb-vfs.vfs.zst"
 [binary.wasm32]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/mariadb-vfs-0.1.0-rev1-abi6-wasm32-752762e6.tar.zst"
 archive_sha256 = "7ae2eeef8c8d7604b9ac60c7cf159f050acd8680e1647ec96051eded2548a9c0"

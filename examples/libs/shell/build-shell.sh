@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # package-system build wrapper. Delegates to the existing
 # examples/browser/scripts/build-shell-vfs-image.sh which produces
-# examples/browser/public/shell.vfs, then installs that file into
+# examples/browser/public/shell.vfs.zst, then installs that file into
 # local-binaries/programs/ + the resolver scratch dir.
 set -euo pipefail
 
@@ -22,7 +22,7 @@ bash "$REPO_ROOT/examples/browser/scripts/build-nethack-zip.sh"
 
 bash "$REPO_ROOT/examples/browser/scripts/build-shell-vfs-image.sh"
 
-VFS="$REPO_ROOT/examples/browser/public/shell.vfs"
+VFS="$REPO_ROOT/examples/browser/public/shell.vfs.zst"
 [ -f "$VFS" ] || { echo "ERROR: $VFS not produced by builder" >&2; exit 1; }
 
 source "$REPO_ROOT/scripts/install-local-binary.sh"

@@ -6,4 +6,4 @@ cd "$REPO_ROOT"
 echo "==> Building Perl VFS image..."
 npx tsx "$SCRIPT_DIR/build-perl-vfs-image.ts"
 echo "==> Done."
-ls -lh examples/browser/public/perl.vfs
+ls -lh examples/browser/public/perl.vfs.zst

@@ -24,7 +24,7 @@ depends_on = ["mariadb@10.5.28", "dash@0.5.12", "dinit@0.19.4"]
 # Not part of the binaries-abi-v6 release: this is a test fixture
 # that depends on a built MariaDB tree (examples/libs/mariadb/
 # mariadb-install/), which is local-only. The page imports it via
-# `@binaries/programs/wasm32/mariadb-test.vfs?url`; the @binaries
+# `@binaries/programs/wasm32/mariadb-test.vfs.zst?url`; the @binaries
 # resolver in vite.config.ts falls back to local-binaries/ when no
 # released archive exists.
 [source]
@@ -41,4 +41,4 @@ repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 [[outputs]]
 name = "mariadb-test"
-wasm = "mariadb-test.vfs"
+wasm = "mariadb-test.vfs.zst"

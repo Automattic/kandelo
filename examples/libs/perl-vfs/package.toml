@@ -1,7 +1,7 @@
 kind = "program"
 name = "perl-vfs"
 version = "0.1.0"
-revision = 1
+revision = 2
 kernel_abi = 7
 # Declares perl as a dep so the resolver builds perl FIRST, leaving
 # `examples/libs/perl/perl-src/` populated as a side effect of
@@ -34,7 +34,7 @@ repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 [[outputs]]
 name = "perl-vfs"
-wasm = "perl-vfs.vfs"
+wasm = "perl-vfs.vfs.zst"
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/perl-vfs-0.1.0-rev1-abi6-wasm32-324b4cf4.tar.zst"
 archive_sha256 = "9e915fbf13b84753a171ef88e9cdb471518435b36ffdb79bc1d91ed475d9eee6"

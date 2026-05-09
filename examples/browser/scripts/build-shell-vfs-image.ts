@@ -26,29 +26,48 @@ const REPO_ROOT = findRepoRoot();
 
 const DASH_PATH = resolveBinary("programs/dash.wasm");
 
-// Resolve magic.lite from the file package's cache canonical dir
-// (populated by `cargo xtask build-deps resolve file`, which either
-// runs build-file.sh or fetches the release archive). file's
-// build-file.sh stages magic.lite into OUT_DIR; deps.toml declares it
-// as an [[outputs]] entry. Falls back to the in-tree source layout
-// `examples/libs/file/bin/magic.lite` when a cache lookup fails —
-// useful while iterating on build-file.sh without going through the
-// resolver. Mirrors examples/browser/scripts/build-{vim,nethack}-zip.sh.
+// Resolve magic.lite from the file package. file/package.toml
+// declares magic.lite as a second [[outputs]] entry alongside
+// file.wasm, but build-file.sh only stages it into the resolver
+// scratch dir (→ cache canonical dir) — it doesn't currently call
+// install_local_binary for it. So tryResolveBinary("programs/file/
+// magic.lite") only succeeds when fetch-binaries.sh extracted a
+// release archive that ships magic.lite. When fetch-binaries falls
+// back to a local source build (--allow-stale path, cache_key
+// mismatch), the file is in the resolver cache but neither
+// binaries/ nor local-binaries/.
+//
+// Resolution chain:
+//   1. binary-resolver lookup for `programs/file/magic.lite`
+//      (release archive that includes magic.lite).
+//   2. xtask resolve file → cache canonical dir, then look for
+//      magic.lite there (covers source-built / staged path).
+//   3. In-tree `examples/libs/file/bin/magic.lite` (direct
+//      build-file.sh invocation while iterating).
 function resolveMagicPath(): string {
-  let cacheDir: string | null = null;
+  const released = tryResolveBinary("programs/file/magic.lite");
+  if (released) return released;
   try {
-    const out = execFileSync(
+    // Explicit --target $HOST_TARGET is required; without it cargo picks
+    // up the wasm32/wasm64 target from rust-toolchain config and fails
+    // to build xtask. Mirrors examples/browser/scripts/build-{vim,
+    // nethack}-zip.sh.
+    const hostTarget = execFileSync("rustc", ["-vV"], { encoding: "utf8" })
+      .split("\n")
+      .find((l) => l.startsWith("host:"))
+      ?.split(/\s+/)[1];
+    if (!hostTarget) throw new Error("could not determine host target");
+    const cacheDir = execFileSync(
       "cargo",
-      ["run", "-p", "xtask", "--quiet", "--",
+      ["run", "-p", "xtask", "--target", hostTarget, "--quiet", "--",
        "build-deps", "resolve", "file", "--arch", "wasm32"],
       { cwd: REPO_ROOT, stdio: ["ignore", "pipe", "ignore"], encoding: "utf8" },
     ).trim();
-    if (out) cacheDir = out;
+    if (cacheDir && existsSync(join(cacheDir, "magic.lite"))) {
+      return join(cacheDir, "magic.lite");
+    }
   } catch {
-    // Resolve failed — fall through to in-tree fallback.
-  }
-  if (cacheDir && existsSync(join(cacheDir, "magic.lite"))) {
-    return join(cacheDir, "magic.lite");
+    // Fall through to in-tree fallback.
   }
   return "examples/libs/file/bin/magic.lite";
 }
@@ -59,7 +78,7 @@ const VIM_ZIP_PATH = tryResolveBinary("programs/vim.zip") ??
   "examples/browser/public/vim.zip";
 const NETHACK_ZIP_PATH = tryResolveBinary("programs/nethack.zip") ??
   "examples/browser/public/nethack.zip";
-const OUT_FILE = "examples/browser/public/shell.vfs";
+const OUT_FILE = "examples/browser/public/shell.vfs.zst";
 
 // --- System setup ---
 

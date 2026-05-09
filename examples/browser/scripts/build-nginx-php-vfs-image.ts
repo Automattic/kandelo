@@ -20,7 +20,7 @@ import { resolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
 import { saveImage } from "./vfs-image-helpers";
 import { addDinitInit } from "./dinit-image-helpers";
 
-const OUT_FILE = join(findRepoRoot(), "examples", "browser", "public", "nginx-php.vfs");
+const OUT_FILE = join(findRepoRoot(), "examples", "browser", "public", "nginx-php.vfs.zst");
 
 const NGINX_CONF = `user root;
 daemon off;

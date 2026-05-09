@@ -1,7 +1,7 @@
 kind = "program"
 name = "wordpress"
 version = "6.8"
-revision = 1
+revision = 2
 kernel_abi = 7
 # build-wp-vfs-image.ts:
 #   - uses `resolveBinary("programs/<x>.wasm")` (strict) for
@@ -36,7 +36,7 @@ repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 [[outputs]]
 name = "wordpress"
-wasm = "wordpress.vfs"
+wasm = "wordpress.vfs.zst"
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/wordpress-6.8-rev1-abi6-wasm32-31113b92.tar.zst"
 archive_sha256 = "8e8b54013d801f5135a2431084d6a962b12c86bef301d3b3fbda1da9aeee5b73"

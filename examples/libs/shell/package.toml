@@ -1,14 +1,14 @@
 kind = "program"
 name = "shell"
 version = "0.1.0"
-revision = 1
+revision = 2
 kernel_abi = 7
 # Implicit deps consumed by build-shell-vfs-image.ts and the
 # build-{vim,nethack}-zip.sh helpers it drives:
 #
 #   - dash.wasm via `resolveBinary("programs/dash.wasm")`.
 #   - magic.lite via `cargo xtask build-deps resolve file` →
-#     `<file-cache-canonical>/magic.lite`. file's deps.toml declares
+#     `<file-cache-canonical>/magic.lite`. file's package.toml declares
 #     `magic.lite` as an output and build-file.sh stages it into
 #     OUT_DIR. Falls back to `examples/libs/file/bin/magic.lite`
 #     for direct invocations.
@@ -46,7 +46,7 @@ repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 [[outputs]]
 name = "shell"
-wasm = "shell.vfs"
+wasm = "shell.vfs.zst"
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/shell-0.1.0-rev1-abi6-wasm32-8cb32ab2.tar.zst"
 archive_sha256 = "b6d48c3f1987994557bb2439406eb31e8938a6f0bfb90101959380651a89a161"

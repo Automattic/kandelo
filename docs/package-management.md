@@ -18,7 +18,7 @@ audiences:
   GitHub release.
 
 **Scope**: static-library artifacts (`.a` + headers + pkgconfig),
-ported program binaries (`.wasm`), composite VFS images (`.vfs`),
+ported program binaries (`.wasm`), composite VFS images (`.vfs.zst`),
 and source-tree extracts. Programs continue to statically link;
 this work caches the build outputs, not the linker step. Runtime
 `.so` loading is out of scope (see "Out of scope" below).

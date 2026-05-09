@@ -17,7 +17,7 @@ import { HttpBridgeHost } from "../../lib/http-bridge";
 import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
 import { writeVfsFile } from "../../../../host/src/vfs/image-helpers";
 import kernelWasmUrl from "@kernel-wasm?url";
-import VFS_IMAGE_URL from "@binaries/programs/wasm32/lamp.vfs?url";
+import VFS_IMAGE_URL from "@binaries/programs/wasm32/lamp.vfs.zst?url";
 import "../../lib/terminal-panel.css";
 
 // Replacement for /etc/mariadb/bootstrap.sh shipped in lamp.vfs. The

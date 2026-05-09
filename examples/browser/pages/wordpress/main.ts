@@ -21,7 +21,7 @@ import { BrowserKernel } from "../../lib/browser-kernel";
 import { initServiceWorkerBridge } from "../../lib/init/service-worker-bridge";
 import { HttpBridgeHost } from "../../lib/http-bridge";
 import kernelWasmUrl from "@kernel-wasm?url";
-import VFS_IMAGE_URL from "@binaries/programs/wasm32/wordpress.vfs?url";
+import VFS_IMAGE_URL from "@binaries/programs/wasm32/wordpress.vfs.zst?url";
 import "../../lib/terminal-panel.css";
 
 const APP_PREFIX = import.meta.env.BASE_URL + "app/";

@@ -5,23 +5,24 @@
  *
  * Usage: npx tsx examples/browser/scripts/build-python-vfs-image.ts
  */
-import { lstatSync } from "fs";
 import { join } from "path";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
-  writeVfsFile,
-  writeVfsBinary,
   ensureDir,
   ensureDirRecursive,
-  symlink,
   walkAndWrite,
   saveImage,
 } from "./vfs-image-helpers";
+import { ensureSourceExtract } from "./source-extract-helper";
 
 const SCRIPT_DIR = new URL(".", import.meta.url).pathname;
 const REPO_ROOT = join(SCRIPT_DIR, "..", "..", "..");
-const STDLIB_DIR = join(REPO_ROOT, "examples", "libs", "cpython", "cpython-src", "Lib");
-const OUT_FILE = join(REPO_ROOT, "examples", "browser", "public", "python.vfs");
+// Prefer the local CPython source-build tree if present (faster, matches
+// `bash examples/libs/cpython/build-cpython.sh` output). Otherwise download
+// + extract the upstream tarball into the resolver's source cache.
+const LEGACY_SRC = join(REPO_ROOT, "examples", "libs", "cpython", "cpython-src");
+const STDLIB_DIR = join(ensureSourceExtract("cpython", REPO_ROOT, LEGACY_SRC), "Lib");
+const OUT_FILE = join(REPO_ROOT, "examples", "browser", "public", "python.vfs.zst");
 
 // Directories to exclude from the stdlib (test suites, GUI, unnecessary modules)
 const EXCLUDED_DIRS = new Set([
@@ -58,14 +59,6 @@ function shouldExclude(relPath: string): boolean {
 }
 
 async function main() {
-  // Validate prerequisites
-  try {
-    lstatSync(join(STDLIB_DIR, "os.py"));
-  } catch {
-    console.error("CPython stdlib not found. Expected os.py at:", join(STDLIB_DIR, "os.py"));
-    process.exit(1);
-  }
-
   // Create a MemoryFileSystem sized for the Python stdlib (~32MB).
   const sab = new SharedArrayBuffer(32 * 1024 * 1024);
   const fs = MemoryFileSystem.create(sab);

@@ -10,17 +10,20 @@ import { readFileSync, readdirSync, lstatSync, statSync, existsSync } from "fs";
 import { join } from "path";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
-  writeVfsFile,
   writeVfsBinary,
   ensureDir,
-  ensureDirRecursive,
   saveImage,
 } from "./vfs-image-helpers";
+import { ensureSourceExtract } from "./source-extract-helper";
 
 const SCRIPT_DIR = new URL(".", import.meta.url).pathname;
 const REPO_ROOT = join(SCRIPT_DIR, "..", "..", "..");
-const PERL_SRC = join(REPO_ROOT, "examples", "libs", "perl", "perl-src");
-const OUT_FILE = join(REPO_ROOT, "examples", "browser", "public", "perl.vfs");
+// Prefer the local Perl source-build tree if present; otherwise download
+// + extract the upstream tarball. The directory layout matches:
+// `bash examples/libs/perl/build-perl.sh` extracts into perl-src/.
+const LEGACY_SRC = join(REPO_ROOT, "examples", "libs", "perl", "perl-src");
+const PERL_SRC = ensureSourceExtract("perl", REPO_ROOT, LEGACY_SRC);
+const OUT_FILE = join(REPO_ROOT, "examples", "browser", "public", "perl.vfs.zst");
 
 // Target prefix in the VFS (matches Perl's compiled-in privlib)
 const PRIVLIB = "/usr/lib/perl5/5.40.3";
@@ -106,12 +109,6 @@ function scanDir(dir: string, prefix: string): void {
 }
 
 async function main() {
-  // Validate prerequisites
-  if (!existsSync(join(PERL_SRC, "lib", "strict.pm"))) {
-    console.error("Perl source not found. Run: bash examples/libs/perl/build-perl.sh");
-    process.exit(1);
-  }
-
   // 1. Core lib/ directory -- strict.pm, warnings.pm, Config.pm, etc.
   console.log("  Scanning lib/...");
   scanDir(join(PERL_SRC, "lib"), "");

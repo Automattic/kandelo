@@ -9,7 +9,7 @@
  * spawns mysqltest via kernel.spawn() (transient binary, no service).
  *
  * Produces: $MARIADB_TEST_VFS_OUT (default:
- * examples/browser/public/mariadb-test.vfs).
+ * examples/browser/public/mariadb-test.vfs.zst).
  *
  * Usage:
  *   npx tsx examples/browser/scripts/build-mariadb-test-vfs-image.ts          # curated tests
@@ -28,17 +28,30 @@ import {
 import { resolveBinary, tryResolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
 import { saveImage, walkAndWrite } from "./vfs-image-helpers";
 import { addDinitInit, type DinitService } from "./dinit-image-helpers";
+import { ensureSourceExtract } from "./source-extract-helper";
+import { existsSync } from "node:fs";
 
 const REPO_ROOT = findRepoRoot();
-const MYSQL_TEST_DIR = join(REPO_ROOT, "examples/libs/mariadb/mariadb-install/mysql-test");
+// Local source-build keeps everything under mariadb-install/; for
+// fetch-only checkouts we extract MariaDB source on demand. Both the
+// mysql-test fixture tree and the bootstrap SQL files live in source.
+const MARIADB_LEGACY_INSTALL = join(REPO_ROOT, "examples/libs/mariadb/mariadb-install");
+const MARIADB_SOURCE = ensureSourceExtract("mariadb", REPO_ROOT);
 const MARIADB_PATH = resolveBinary("programs/mariadb/mariadbd.wasm");
-const SYSTEM_TABLES_PATH = join(REPO_ROOT, "examples/libs/mariadb/mariadb-install/share/mysql/mysql_system_tables.sql");
-const SYSTEM_DATA_PATH = join(REPO_ROOT, "examples/libs/mariadb/mariadb-install/share/mysql/mysql_system_tables_data.sql");
+const MYSQL_TEST_DIR = existsSync(join(MARIADB_LEGACY_INSTALL, "mysql-test"))
+  ? join(MARIADB_LEGACY_INSTALL, "mysql-test")
+  : join(MARIADB_SOURCE, "mysql-test");
+const SYSTEM_TABLES_PATH = existsSync(join(MARIADB_LEGACY_INSTALL, "share/mysql/mysql_system_tables.sql"))
+  ? join(MARIADB_LEGACY_INSTALL, "share/mysql/mysql_system_tables.sql")
+  : join(MARIADB_SOURCE, "scripts/mysql_system_tables.sql");
+const SYSTEM_DATA_PATH = existsSync(join(MARIADB_LEGACY_INSTALL, "share/mysql/mysql_system_tables_data.sql"))
+  ? join(MARIADB_LEGACY_INSTALL, "share/mysql/mysql_system_tables_data.sql")
+  : join(MARIADB_SOURCE, "scripts/mysql_system_tables_data.sql");
 const DASH_PATH = resolveBinary("programs/dash.wasm");
 const COREUTILS_PATH = tryResolveBinary("programs/coreutils.wasm");
 
 const OUT_FILE = process.env.MARIADB_TEST_VFS_OUT
-  ?? join(REPO_ROOT, "examples/browser/public/mariadb-test.vfs");
+  ?? join(REPO_ROOT, "examples/browser/public/mariadb-test.vfs.zst");
 
 const includeAll = process.argv.includes("--all");
 

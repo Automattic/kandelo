@@ -482,6 +482,21 @@ pub(crate) fn stage_one(
     let cache_path = build_deps::ensure_built(m, registry, arch, abi, &resolve_opts)
         .map_err(|e| format!("ensure_built: {e}"))?;
 
+    // Defense in depth: verify the cache canonical dir actually
+    // contains every file declared in [[outputs]] before we pack it.
+    // `validate_outputs` already runs after a fresh build (so newly-
+    // built caches are checked), but a cache HIT skips the build
+    // and that check. If a previous build under a different output
+    // declaration left stale content in the canonical path AND the
+    // current cache_key_sha computation collides (the bug fixed in
+    // #385 — outputs weren't folded into the hash), stage_release
+    // would silently pack a tarball whose contents disagree with
+    // the deps.toml. Consumers then fail with the misleading
+    // "declared output X not found in cache" error at install time.
+    // Catch that mismatch HERE, at publish time, with a clear
+    // diagnostic instead.
+    validate_cache_outputs(m, &cache_path)?;
+
     let opts = StageOptions {
         cache_key_sha: sha_hex,
         build_timestamp: build_timestamp.into(),
@@ -498,6 +513,57 @@ pub(crate) fn stage_one(
 /// resolver. `to_lowercase()` is defensive: both `OS` and `ARCH` are
 /// already lowercase today, but the format is documented as
 /// "lowercased" so we make that explicit.
+/// Pre-flight check before archive_stage: every file declared in
+/// `[[outputs]]` (or `[outputs]` for libraries) must exist in the
+/// cache canonical directory.
+///
+/// Without this, a stale cache (built under a different output
+/// declaration before #385 folded outputs into cache_key_sha) gets
+/// packed silently. The result is a tarball whose contents disagree
+/// with deps.toml — a class of bug that surfaced in PR #384 when
+/// `lamp.vfs` files got published into archives whose deps.toml said
+/// `wasm = "lamp.vfs.zst"`.
+fn validate_cache_outputs(m: &DepsManifest, cache_path: &Path) -> Result<(), String> {
+    let check = |rel: &str, label: &str| -> Result<(), String> {
+        let p = cache_path.join(rel);
+        if !p.exists() {
+            return Err(format!(
+                "{}: declared {} output {:?} missing from cache at {}. \
+                 The cache canonical directory does not contain the file \
+                 declared by deps.toml. This typically means a stale cache \
+                 from before the [[outputs]] field was changed; delete \
+                 {} and re-run.",
+                m.spec(),
+                label,
+                rel,
+                p.display(),
+                cache_path.display(),
+            ));
+        }
+        Ok(())
+    };
+    match m.kind {
+        ManifestKind::Library => {
+            for rel in &m.outputs.libs {
+                check(rel, "libs")?;
+            }
+            for rel in &m.outputs.headers {
+                check(rel, "headers")?;
+            }
+            for rel in &m.outputs.pkgconfig {
+                check(rel, "pkgconfig")?;
+            }
+        }
+        ManifestKind::Program => {
+            for out in &m.program_outputs {
+                check(&out.wasm, "wasm")?;
+            }
+        }
+        ManifestKind::Source => {} // Source-kind manifests carry no outputs.
+    }
+    Ok(())
+}
+
 pub(crate) fn default_build_host() -> String {
     format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH).to_lowercase()
 }
@@ -892,6 +958,94 @@ echo data > "$WASM_POSIX_DEP_OUT_DIR/lib/libY.a"
             .collect();
         assert_eq!(y_entries.len(), 1, "exactly one y entry expected");
         assert_eq!(y_entries[0]["compatibility"]["target_arch"], "wasm32");
+    }
+
+    #[test]
+    fn stage_release_rejects_cache_with_missing_declared_output() {
+        // Repro of the PR #384 misship: deps.toml declares
+        // `wasm = "lamp.vfs.zst"` but the cache canonical dir has
+        // `lamp.vfs` (a stale build before the wasm field was renamed).
+        // stage_release must refuse to pack the archive — the resulting
+        // tarball would consume-side fail with the misleading
+        // "declared output X not found in cache" error.
+        let dir = tempdir("e4-stale-cache-mismatch");
+        let registry = dir.join("registry");
+        let cache_root = dir.join("cache");
+        let staging = dir.join("staging");
+        fs::create_dir_all(&registry).unwrap();
+        fs::create_dir_all(&cache_root).unwrap();
+
+        // Build script that produces `foo.vfs` (no .zst) into the cache,
+        // but the manifest declares the output as `foo.vfs.zst`.
+        // ensure_built will pass the stale-name file through; the new
+        // pre-stage check should catch it.
+        write_fixture(
+            &registry,
+            "foo",
+            "0.1.0",
+            "program",
+            &[],
+            "echo content > $WASM_POSIX_DEP_OUT_DIR/foo.vfs.zst",
+            "[[outputs]]\nname = \"foo\"\nwasm = \"foo.vfs.zst\"\n",
+        );
+        // Manually pre-populate the cache with the WRONG filename
+        // to simulate a stale entry from before the cache_key formula
+        // included [[outputs]].
+        let m = DepsManifest::load(&registry.join("foo/deps.toml")).unwrap();
+        let mut chain: Vec<String> = Vec::new();
+        let mut memo: BTreeMap<String, [u8; 32]> = BTreeMap::new();
+        let arch = TargetArch::Wasm32;
+        let abi = 4;
+        let sha = build_deps::compute_sha(
+            &m,
+            &Registry { roots: vec![registry.clone()] },
+            arch,
+            abi,
+            &mut memo,
+            &mut chain,
+        )
+        .unwrap();
+        let canonical = build_deps::canonical_path(&cache_root, &m, arch, &sha);
+        fs::create_dir_all(&canonical).unwrap();
+        // Write the stale-named file (foo.vfs, not foo.vfs.zst) directly.
+        fs::write(canonical.join("foo.vfs"), b"stale-content").unwrap();
+
+        // Stage now should fail with a clear cache-mismatch error.
+        let err = super::run(vec![
+            "--staging".into(),
+            staging.display().to_string(),
+            "--registry".into(),
+            registry.display().to_string(),
+            "--cache-root".into(),
+            cache_root.display().to_string(),
+            "--abi".into(),
+            "4".into(),
+            "--arch".into(),
+            "wasm32".into(),
+            "--build-timestamp".into(),
+            "2026-04-26T00:00:00Z".into(),
+            "--build-host".into(),
+            "test-host".into(),
+        ])
+        .expect_err("stage_release must reject cache with missing declared output");
+
+        assert!(
+            err.contains("foo"),
+            "summary must name the failed manifest, got: {err}",
+        );
+        // The detailed cache-mismatch diagnostic is logged via WARN
+        // before the summary fires; assert that no archive landed in
+        // staging — the failed manifest must not produce a tarball.
+        let archives_dir = staging.join("programs");
+        if archives_dir.is_dir() {
+            for entry in fs::read_dir(&archives_dir).unwrap() {
+                let name = entry.unwrap().file_name().into_string().unwrap();
+                assert!(
+                    !name.starts_with("foo-"),
+                    "foo archive must not be staged when validation fails: {name}",
+                );
+            }
+        }
     }
 
     #[test]

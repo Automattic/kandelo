@@ -18,7 +18,7 @@
 import { BrowserKernel } from "../../lib/browser-kernel";
 import kernelWasmUrl from "@kernel-wasm?url";
 import mysqlTestWasmUrl from "../../../../binaries/programs/wasm32/mariadb/mysqltest.wasm?url";
-import VFS_IMAGE_URL from "@binaries/programs/wasm32/mariadb-test.vfs?url";
+import VFS_IMAGE_URL from "@binaries/programs/wasm32/mariadb-test.vfs.zst?url";
 
 const MYSQL_PORT = 3306;
 

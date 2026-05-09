@@ -6,4 +6,4 @@ cd "$REPO_ROOT"
 echo "==> Building MariaDB test VFS image..."
 npx tsx "$SCRIPT_DIR/build-mariadb-test-vfs-image.ts" "$@"
 echo "==> Done."
-ls -lh examples/browser/public/mariadb-test.vfs
+ls -lh examples/browser/public/mariadb-test.vfs.zst

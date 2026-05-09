@@ -10,7 +10,6 @@
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
 import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
-import { decompressVfsImage } from "../../../../host/src/vfs/load-image";
 import { PtyTerminal } from "../../lib/pty-terminal";
 import {
   COREUTILS_NAMES,
@@ -40,7 +39,7 @@ import zipWasmUrl from "../../../../binaries/programs/wasm32/zip.wasm?url";
 import unzipWasmUrl from "../../../../binaries/programs/wasm32/unzip.wasm?url";
 import nanoWasmUrl from "../../../../binaries/programs/wasm32/nano.wasm?url";
 import lsofWasmUrl from "../../../../examples/lsof.wasm?url";
-import VFS_IMAGE_URL from "@binaries/programs/wasm32/shell.vfs?url";
+import VFS_IMAGE_URL from "@binaries/programs/wasm32/shell.vfs.zst?url";
 import "@xterm/xterm/css/xterm.css";
 
 // --- DOM elements ---
@@ -204,7 +203,7 @@ async function startInteractiveShell() {
 
     setStatus("Starting shell...", "running");
 
-    const memfs = MemoryFileSystem.fromImage(decompressVfsImage(new Uint8Array(vfsImageBuf!)), {
+    const memfs = MemoryFileSystem.fromImage(new Uint8Array(vfsImageBuf!), {
       maxByteLength: 256 * 1024 * 1024,
     });
     // Archive URLs were stored as bare filenames at build time; prepend the
@@ -465,7 +464,7 @@ async function runBatch() {
     const commands = codeEl.value;
     setStatus("Running shell...", "running");
 
-    const memfs = MemoryFileSystem.fromImage(decompressVfsImage(new Uint8Array(vfsImageBuf!)), {
+    const memfs = MemoryFileSystem.fromImage(new Uint8Array(vfsImageBuf!), {
       maxByteLength: 256 * 1024 * 1024,
     });
 

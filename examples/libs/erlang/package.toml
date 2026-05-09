@@ -1,7 +1,10 @@
 kind = "program"
 name = "erlang"
 version = "28.2"
-revision = 1
+# rev2: package now ships erlang.wasm + erlang-otp.tar.zst (the trimmed
+# OTP runtime tree erlang-vfs needs). Multi-output, so artifacts land
+# under programs/<arch>/erlang/ instead of programs/<arch>/erlang.wasm.
+revision = 2
 kernel_abi = 7
 depends_on = []
 
@@ -19,7 +22,11 @@ repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 [[outputs]]
 name = "erlang"
-wasm = "beam.wasm"
+wasm = "erlang.wasm"
+
+[[outputs]]
+name = "erlang-otp"
+wasm = "erlang-otp.tar.zst"
 
 # Host-side prerequisites probed before the build runs.
 # OTP 28 cross-compilation requires a host Erlang with BEAM emulator
