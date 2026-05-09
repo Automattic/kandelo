@@ -103,13 +103,12 @@ jobs:
         run: bash .github/scripts/durable-release-lock.sh acquire
 
       - name: Fetch submodules (musl, libc-test, os-test)
-        # See staging-build.yml for the SSH→HTTPS rewrite rationale.
-        run: |
-          git config --global url."https://github.com/".insteadOf "git@github.com:"
-          git submodule update --init --depth 1 musl libc-test os-test
+        uses: ./.github/actions/fetch-submodules
+        with:
+          submodules: musl libc-test os-test
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v18
+        uses: DeterminateSystems/nix-installer-action@v22
 
       - name: Cache Nix store + flake eval
         uses: DeterminateSystems/magic-nix-cache-action@v13

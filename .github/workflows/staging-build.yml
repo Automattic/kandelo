@@ -56,14 +56,12 @@ jobs:
         #   musl       — for scripts/build-musl.sh
         #   libc-test  — for scripts/run-libc-tests.sh
         #   os-test    — for scripts/run-sortix-tests.sh
-        # libc-test's URL in .gitmodules is git@github.com: (SSH);
-        # rewrite to HTTPS for runner-side anonymous fetch.
-        run: |
-          git config --global url."https://github.com/".insteadOf "git@github.com:"
-          git submodule update --init --depth 1 musl libc-test os-test
+        uses: ./.github/actions/fetch-submodules
+        with:
+          submodules: musl libc-test os-test
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v18
+        uses: DeterminateSystems/nix-installer-action@v22
 
       - name: Cache Nix store + flake eval
         uses: DeterminateSystems/magic-nix-cache-action@v13
@@ -424,12 +422,12 @@ jobs:
         # os-test (those are test inputs, not build inputs). musl is
         # pulled in case any package's [build] dependency chain reaches
         # into the sysroot recipe.
-        run: |
-          git config --global url."https://github.com/".insteadOf "git@github.com:"
-          git submodule update --init --depth 1 musl
+        uses: ./.github/actions/fetch-submodules
+        with:
+          submodules: musl
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v18
+        uses: DeterminateSystems/nix-installer-action@v22
 
       - name: Cache Nix store + flake eval
         uses: DeterminateSystems/magic-nix-cache-action@v13
@@ -560,12 +558,12 @@ jobs:
         # build-musl.sh + build-libcxx.sh consume musl/ directly. The
         # other submodules (libc-test, os-test) are test inputs and not
         # needed here.
-        run: |
-          git config --global url."https://github.com/".insteadOf "git@github.com:"
-          git submodule update --init --depth 1 musl
+        uses: ./.github/actions/fetch-submodules
+        with:
+          submodules: musl
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v18
+        uses: DeterminateSystems/nix-installer-action@v22
 
       - name: Cache Nix store + flake eval
         uses: DeterminateSystems/magic-nix-cache-action@v13
@@ -678,12 +676,12 @@ jobs:
         # downstream package builds (Task 4) reach into musl/ for
         # headers/sources during their configure steps. Initialize it
         # here so the cache restore that follows can layer on top.
-        run: |
-          git config --global url."https://github.com/".insteadOf "git@github.com:"
-          git submodule update --init --depth 1 musl
+        uses: ./.github/actions/fetch-submodules
+        with:
+          submodules: musl
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v18
+        uses: DeterminateSystems/nix-installer-action@v22
 
       - name: Cache Nix store + flake eval
         uses: DeterminateSystems/magic-nix-cache-action@v13
@@ -800,13 +798,12 @@ jobs:
         #               build-script that reaches into musl/ for headers).
         # libc-test  — scripts/run-libc-tests.sh
         # os-test    — scripts/run-sortix-tests.sh
-        # Same SSH→HTTPS rewrite as the legacy build job for libc-test.
-        run: |
-          git config --global url."https://github.com/".insteadOf "git@github.com:"
-          git submodule update --init --depth 1 musl libc-test os-test
+        uses: ./.github/actions/fetch-submodules
+        with:
+          submodules: musl libc-test os-test
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v18
+        uses: DeterminateSystems/nix-installer-action@v22
 
       - name: Cache Nix store + flake eval
         uses: DeterminateSystems/magic-nix-cache-action@v13
@@ -1111,7 +1108,7 @@ jobs:
           fetch-depth: 1
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v18
+        uses: DeterminateSystems/nix-installer-action@v22
 
       - name: Cache Nix store + flake eval
         uses: DeterminateSystems/magic-nix-cache-action@v13
