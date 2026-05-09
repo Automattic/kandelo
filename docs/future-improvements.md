@@ -95,6 +95,41 @@ PR #383 (`fix(kernel): share AF_INET accept queue across fork — nginx multi-wo
 
 ## Host runtime
 
+### Clarify and encapsulate dlopen side-module memory allocation
+`host/src/dylink.ts` exposes the lower-level `DynamicLinker` machinery used
+to parse `dylink.0`, lay out side-module data, apply relocations, and resolve
+symbols. The real process path is broader: guest C `dlopen()` enters
+`glue/dlopen.c`, calls the worker import in `host/src/worker-main.ts`, and
+then reaches `DynamicLinker` with a runtime-provided allocator.
+
+That split is useful, but it should be harder for tests and production to
+accidentally exercise different contracts. The practical regression test for
+runtime dlopen behavior should be an integration test such as
+`examples/dlopen/test.test.ts`, because it covers the same path used by real
+guest programs. Lower-level `DynamicLinker` tests are still useful for linker
+internals, but they should be described and structured as core-linker coverage,
+not as evidence that guest `dlopen()` works end to end.
+
+Future cleanup:
+
+- extract the process-worker side-module allocator into a named helper or
+  small object, for example `createDlopenDataAllocator(...)`;
+- make that helper's contract explicit: allocated side-module data must be
+  visible to the guest address-space manager, so later guest `mmap()` calls
+  cannot overlap and zero it;
+- keep syscall/channel details out of `DynamicLinker`; it should require an
+  allocator, while the process worker supplies the runtime-specific tracked
+  mmap allocator;
+- consider replacing one mmap per side module with a tracked per-process
+  dlopen arena that reserves one anonymous mmap and suballocates with dylink
+  alignment;
+- keep `examples/dlopen/test.test.ts` or an equivalent guest-level test as the
+  primary regression test whenever changing dlopen allocation behavior.
+
+**Files:** `host/src/worker-main.ts` (`buildDlopenImports`),
+`host/src/dylink.ts` (`DynamicLinker`, `LoadSharedLibraryOptions`),
+`examples/dlopen/test.test.ts`, `host/test/dylink.test.ts`.
+
 ### Pre-instantiation worker errors bypass the kernel exit path
 When a process worker fails before any syscall (e.g. ABI mismatch, link
 error, malformed wasm), it posts `{type:"error"}` via `port.postMessage`.
