@@ -77,13 +77,18 @@ export class HostFileSystem implements FileSystemBackend {
   }
 
   private toStatResult(s: fs.Stats): StatResult {
+    // Normalize uid/gid to match Process::new's default euid (0).
+    // The real macOS/Linux uid of the user running the kernel is not
+    // exposed to guest programs — guest sees the sandbox as
+    // self-owned, so tools that compare ownership against their own
+    // euid (e.g. git's "dubious ownership" check) see a match.
     return {
       dev: s.dev,
       ino: s.ino,
       mode: s.mode,
       nlink: s.nlink,
-      uid: s.uid,
-      gid: s.gid,
+      uid: 0,
+      gid: 0,
       size: s.size,
       atimeMs: s.atimeMs,
       mtimeMs: s.mtimeMs,

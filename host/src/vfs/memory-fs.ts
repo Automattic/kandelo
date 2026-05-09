@@ -491,8 +491,8 @@ export class MemoryFileSystem implements FileSystemBackend {
       ino: s.ino,
       mode: s.mode,
       nlink: s.linkCount,
-      uid: 0,
-      gid: 0,
+      uid: s.uid,
+      gid: s.gid,
       size: s.size,
       atimeMs: s.atime,
       mtimeMs: s.mtime,
@@ -577,7 +577,9 @@ export class MemoryFileSystem implements FileSystemBackend {
   fchmod(handle: number, mode: number): void {
     this.fs.fchmod(handle, mode);
   }
-  fchown(_handle: number, _uid: number, _gid: number): void {}
+  fchown(handle: number, uid: number, gid: number): void {
+    this.fs.fchown(handle, uid, gid);
+  }
 
   stat(path: string): StatResult {
     const result = this.adaptStat(this.fs.stat(path));
@@ -663,7 +665,37 @@ export class MemoryFileSystem implements FileSystemBackend {
   chmod(path: string, mode: number): void {
     this.fs.chmod(path, mode);
   }
-  chown(_path: string, _uid: number, _gid: number): void {}
+  chown(path: string, uid: number, gid: number): void {
+    this.fs.chown(path, uid, gid);
+  }
+  lchown(path: string, uid: number, gid: number): void {
+    this.fs.lchown(path, uid, gid);
+  }
+
+  createFileWithOwner(
+    path: string,
+    mode: number,
+    uid: number,
+    gid: number,
+    content: Uint8Array,
+  ): void {
+    const fd = this.open(path, 0o1101, mode); // O_WRONLY | O_CREAT | O_TRUNC
+    if (content.length > 0) this.write(fd, content, null, content.length);
+    this.close(fd);
+    this.chown(path, uid, gid);
+    this.chmod(path, mode);
+  }
+
+  mkdirWithOwner(path: string, mode: number, uid: number, gid: number): void {
+    this.mkdir(path, mode);
+    this.chown(path, uid, gid);
+    this.chmod(path, mode);
+  }
+
+  symlinkWithOwner(target: string, path: string, uid: number, gid: number): void {
+    this.symlink(target, path);
+    this.lchown(path, uid, gid);
+  }
 
   // access: check if path exists by stat'ing it (stat throws on error)
   access(path: string, _mode: number): void {

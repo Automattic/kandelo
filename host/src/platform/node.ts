@@ -112,6 +112,12 @@ export class NodePlatformIO implements PlatformIO {
     return newPos;
   }
 
+  // Normalize uid/gid to match Process::new's default euid (0). The
+  // real macOS/Linux uid of the user running the kernel is not exposed
+  // to guest programs — guest sees host-mounted files as self-owned, so
+  // tools that compare ownership against their own euid (git's
+  // "dubious ownership" check, nginx config ownership, etc.) see a
+  // match. Same policy as HostFileSystem.
   fstat(handle: number): StatResult {
     const stat = fs.fstatSync(handle);
     return {
@@ -119,8 +125,8 @@ export class NodePlatformIO implements PlatformIO {
       ino: stat.ino,
       mode: stat.mode,
       nlink: stat.nlink,
-      uid: stat.uid,
-      gid: stat.gid,
+      uid: 0,
+      gid: 0,
       size: stat.size,
       atimeMs: stat.atimeMs,
       mtimeMs: stat.mtimeMs,
@@ -135,8 +141,8 @@ export class NodePlatformIO implements PlatformIO {
       ino: s.ino,
       mode: s.mode,
       nlink: s.nlink,
-      uid: s.uid,
-      gid: s.gid,
+      uid: 0,
+      gid: 0,
       size: s.size,
       atimeMs: s.atimeMs,
       mtimeMs: s.mtimeMs,
@@ -151,8 +157,8 @@ export class NodePlatformIO implements PlatformIO {
       ino: s.ino,
       mode: s.mode,
       nlink: s.nlink,
-      uid: s.uid,
-      gid: s.gid,
+      uid: 0,
+      gid: 0,
       size: s.size,
       atimeMs: s.atimeMs,
       mtimeMs: s.mtimeMs,

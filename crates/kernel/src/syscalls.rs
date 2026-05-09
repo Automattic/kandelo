@@ -2064,11 +2064,9 @@ pub fn sys_fstat(
                 _pad: 0,
             });
         }
-        // Other char devices — delegate to host
-        let mut st = host.host_fstat(ofd.host_handle)?;
-        st.st_uid = proc.euid;
-        st.st_gid = proc.egid;
-        Ok(st)
+        // Other char devices — delegate to host. VFS is the source of truth
+        // for ownership; host_fstat already returns the real uid/gid.
+        host.host_fstat(ofd.host_handle)
     } else if matches!(ofd.file_type, FileType::PtyMaster | FileType::PtySlave) {
         let pty_idx = ofd.host_handle as usize;
         Ok(WasmStat {
@@ -2143,10 +2141,9 @@ pub fn sys_fstat(
                 st_ctime_sec: 0, st_ctime_nsec: 0, _pad: 0,
             }))
     } else {
-        let mut st = host.host_fstat(ofd.host_handle)?;
-        st.st_uid = proc.euid;
-        st.st_gid = proc.egid;
-        Ok(st)
+        // VFS is the source of truth for ownership: host_fstat already returns
+        // the file's real uid/gid, so just propagate.
+        host.host_fstat(ofd.host_handle)
     }
 }
 
@@ -2474,10 +2471,9 @@ pub fn sys_stat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resul
             });
         }
     }
-    let mut st = host.host_stat(&resolved)?;
-    st.st_uid = proc.euid;
-    st.st_gid = proc.egid;
-    Ok(st)
+    // VFS is the source of truth for ownership: host_stat already returns the
+    // file's real uid/gid, so just propagate.
+    host.host_stat(&resolved)
 }
 
 pub fn sys_lstat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<WasmStat, Errno> {
@@ -2525,10 +2521,9 @@ pub fn sys_lstat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resu
             });
         }
     }
-    let mut st = host.host_lstat(&resolved)?;
-    st.st_uid = proc.euid;
-    st.st_gid = proc.egid;
-    Ok(st)
+    // VFS is the source of truth for ownership: host_lstat already returns the
+    // link's real uid/gid, so just propagate.
+    host.host_lstat(&resolved)
 }
 
 pub fn sys_mkdir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8], mode: u32) -> Result<(), Errno> {
@@ -5906,14 +5901,13 @@ pub fn sys_fstatat(
             });
         }
     }
-    let mut st = if flags & AT_SYMLINK_NOFOLLOW != 0 {
-        host.host_lstat(&resolved)?
+    // VFS is the source of truth for ownership: host_stat / host_lstat
+    // already return the real uid/gid, so just propagate.
+    if flags & AT_SYMLINK_NOFOLLOW != 0 {
+        host.host_lstat(&resolved)
     } else {
-        host.host_stat(&resolved)?
-    };
-    st.st_uid = proc.euid;
-    st.st_gid = proc.egid;
-    Ok(st)
+        host.host_stat(&resolved)
+    }
 }
 
 /// unlinkat -- unlink relative to directory fd.
@@ -8432,18 +8426,47 @@ mod tests {
         sigsuspend_signal: u32,
         sigsuspend_error: bool,
         clock_time: (i64, i64),
+        /// Per-path owner overrides for host_stat / host_lstat. Mirrors how a real
+        /// host-side VFS owns ownership; tests use `set_file_with_owner` to seed.
+        file_owners: std::collections::HashMap<Vec<u8>, (u32, u32)>,
+        /// Per-handle owner mapping captured at host_open time so host_fstat
+        /// returns the same owners host_stat would for the path.
+        handle_owners: std::collections::HashMap<i64, (u32, u32)>,
     }
 
     impl MockHostIO {
         fn new() -> Self {
-            MockHostIO { next_handle: 100, dir_entry_returned: false, dir_entry_index: 0, dir_entry_count: 1, sigsuspend_signal: 0, sigsuspend_error: false, clock_time: (1234567890, 123456789) }
+            MockHostIO {
+                next_handle: 100,
+                dir_entry_returned: false,
+                dir_entry_index: 0,
+                dir_entry_count: 1,
+                sigsuspend_signal: 0,
+                sigsuspend_error: false,
+                clock_time: (1234567890, 123456789),
+                file_owners: std::collections::HashMap::new(),
+                handle_owners: std::collections::HashMap::new(),
+            }
+        }
+
+        /// Seed the mock VFS with a file at `path` whose stat() will report the
+        /// given uid/gid. `_mode` and `_content` are accepted for parity with
+        /// the host-side helper but the existing MockHostIO does not track
+        /// per-file mode or content (host_stat infers mode from path shape).
+        fn set_file_with_owner(&mut self, path: &[u8], uid: u32, gid: u32, _mode: u32, _content: &[u8]) {
+            self.file_owners.insert(path.to_vec(), (uid, gid));
         }
     }
 
     impl HostIO for MockHostIO {
-        fn host_open(&mut self, _path: &[u8], _flags: u32, _mode: u32) -> Result<i64, Errno> {
+        fn host_open(&mut self, path: &[u8], _flags: u32, _mode: u32) -> Result<i64, Errno> {
             let handle = self.next_handle;
             self.next_handle += 1;
+            // Capture path -> owner mapping so host_fstat(handle) returns the
+            // same uid/gid host_stat(path) would.
+            if let Some(&owner) = self.file_owners.get(path) {
+                self.handle_owners.insert(handle, owner);
+            }
             Ok(handle)
         }
 
@@ -8471,14 +8494,15 @@ mod tests {
             Ok(0)
         }
 
-        fn host_fstat(&mut self, _handle: i64) -> Result<WasmStat, Errno> {
+        fn host_fstat(&mut self, handle: i64) -> Result<WasmStat, Errno> {
+            let (uid, gid) = self.handle_owners.get(&handle).copied().unwrap_or((0, 0));
             Ok(WasmStat {
                 st_dev: 0,
                 st_ino: 0,
                 st_mode: S_IFREG | 0o644,
                 st_nlink: 1,
-                st_uid: 0,
-                st_gid: 0,
+                st_uid: uid,
+                st_gid: gid,
                 st_size: 1024,
                 st_atime_sec: 0,
                 st_atime_nsec: 0,
@@ -8499,9 +8523,10 @@ mod tests {
             } else {
                 S_IFREG | 0o644
             };
+            let (uid, gid) = self.file_owners.get(path).copied().unwrap_or((0, 0));
             Ok(WasmStat {
                 st_dev: 0, st_ino: 1, st_mode: mode, st_nlink: 1,
-                st_uid: 0, st_gid: 0, st_size: 1024,
+                st_uid: uid, st_gid: gid, st_size: 1024,
                 st_atime_sec: 0, st_atime_nsec: 0,
                 st_mtime_sec: 0, st_mtime_nsec: 0,
                 st_ctime_sec: 0, st_ctime_nsec: 0, _pad: 0,
@@ -8520,9 +8545,10 @@ mod tests {
             } else {
                 S_IFREG | 0o644
             };
+            let (uid, gid) = self.file_owners.get(path).copied().unwrap_or((0, 0));
             Ok(WasmStat {
                 st_dev: 0, st_ino: 2, st_mode: mode, st_nlink: 1,
-                st_uid: 0, st_gid: 0, st_size: 1024,
+                st_uid: uid, st_gid: gid, st_size: 1024,
                 st_atime_sec: 0, st_atime_nsec: 0,
                 st_mtime_sec: 0, st_mtime_nsec: 0,
                 st_ctime_sec: 0, st_ctime_nsec: 0, _pad: 0,
@@ -8544,7 +8570,13 @@ mod tests {
         }
 
         fn host_chmod(&mut self, _path: &[u8], _mode: u32) -> Result<(), Errno> { Ok(()) }
-        fn host_chown(&mut self, _path: &[u8], _uid: u32, _gid: u32) -> Result<(), Errno> { Ok(()) }
+        fn host_chown(&mut self, path: &[u8], uid: u32, gid: u32) -> Result<(), Errno> {
+            // Mirror the host VFS: chown updates owner state. A subsequent
+            // host_stat(path) must return the new uid/gid. Tests rely on this
+            // to verify sys_chown propagates through to the host VFS.
+            self.file_owners.insert(path.to_vec(), (uid, gid));
+            Ok(())
+        }
         fn host_access(&mut self, _path: &[u8], _amode: u32) -> Result<(), Errno> { Ok(()) }
 
         fn host_opendir(&mut self, _path: &[u8]) -> Result<i64, Errno> {
@@ -8591,7 +8623,14 @@ mod tests {
             Ok(())
         }
 
-        fn host_fchown(&mut self, _handle: i64, _uid: u32, _gid: u32) -> Result<(), Errno> {
+        fn host_fchown(&mut self, handle: i64, uid: u32, gid: u32) -> Result<(), Errno> {
+            // Mirror the host VFS: fchown updates the owner state visible via
+            // both host_fstat(handle) and host_stat(path) for the underlying
+            // inode. The mock open() captures handle->path indirectly through
+            // file_owners; without a reverse map we update the per-handle
+            // overlay so host_fstat returns the new owner. Tests that also
+            // care about host_stat(path) after fchown can use sys_chown.
+            self.handle_owners.insert(handle, (uid, gid));
             Ok(())
         }
 
@@ -8913,6 +8952,104 @@ mod tests {
         // Should not fail - relative paths get cwd prepended
         let stat = sys_stat(&mut proc, &mut host, b"file.txt").unwrap();
         assert_eq!(stat.st_mode & S_IFREG, S_IFREG);
+    }
+
+    /// VFS is the source of truth for file ownership. sys_stat must propagate
+    /// uid/gid from the host VFS, not overwrite with the caller's effective
+    /// ids. proc.euid defaults to 0; with a host_stat returning (1000, 1000),
+    /// any override would clobber back to 0 (or to proc.euid) and fail.
+    #[test]
+    fn test_sys_stat_returns_host_uid_gid() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/foo", 1000, 1000, 0o644, b"hi");
+        let st = sys_stat(&mut proc, &mut host, b"/foo").unwrap();
+        assert_eq!(st.st_uid, 1000);
+        assert_eq!(st.st_gid, 1000);
+    }
+
+    /// sys_lstat must also propagate honest uid/gid from the host VFS.
+    #[test]
+    fn test_sys_lstat_returns_host_uid_gid() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/bar", 1001, 1002, 0o644, b"hi");
+        let st = sys_lstat(&mut proc, &mut host, b"/bar").unwrap();
+        assert_eq!(st.st_uid, 1001);
+        assert_eq!(st.st_gid, 1002);
+    }
+
+    /// sys_fstat must propagate uid/gid from the host VFS for the underlying
+    /// file (asymmetric uid/gid catches any single-field override).
+    #[test]
+    fn test_sys_fstat_returns_host_uid_gid() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/qux", 1234, 5678, 0o644, b"hi");
+        let fd = sys_open(&mut proc, &mut host, b"/qux", O_RDONLY, 0o644).unwrap();
+        let st = sys_fstat(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(st.st_uid, 1234);
+        assert_eq!(st.st_gid, 5678);
+    }
+
+    /// sys_fstatat (and therefore sys_statx, which delegates) must propagate
+    /// uid/gid from the host VFS.
+    #[test]
+    fn test_sys_fstatat_returns_host_uid_gid() {
+        use wasm_posix_shared::flags::AT_FDCWD;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/baz", 4242, 4343, 0o644, b"hi");
+        let st = sys_fstatat(&mut proc, &mut host, AT_FDCWD, b"/baz", 0).unwrap();
+        assert_eq!(st.st_uid, 4242);
+        assert_eq!(st.st_gid, 4343);
+    }
+
+    /// sys_chown must propagate uid/gid into the host VFS so that a subsequent
+    /// sys_stat returns the freshly written values. The asymmetric (uid != gid,
+    /// neither equal to proc.euid) pair catches any single-field clobber and
+    /// any "kernel overrides chown args with caller's euid" regression.
+    #[test]
+    fn test_sys_chown_round_trip_through_host() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        // Seed the file with owner (0, 0) so the post-chown values are clearly
+        // distinguishable from the initial state.
+        host.set_file_with_owner(b"/foo", 0, 0, 0o644, b"hi");
+        sys_chown(&mut proc, &mut host, b"/foo", 1000, 2000).unwrap();
+        let st = sys_stat(&mut proc, &mut host, b"/foo").unwrap();
+        assert_eq!(st.st_uid, 1000, "sys_chown uid did not reach host VFS");
+        assert_eq!(st.st_gid, 2000, "sys_chown gid did not reach host VFS");
+    }
+
+    /// sys_fchown must propagate uid/gid into the host VFS via the open file
+    /// handle so that a subsequent sys_fstat returns the new values.
+    #[test]
+    fn test_sys_fchown_round_trip_through_host() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/bar", 0, 0, 0o644, b"hi");
+        let fd = sys_open(&mut proc, &mut host, b"/bar", O_RDONLY, 0o644).unwrap();
+        sys_fchown(&mut proc, &mut host, fd, 3000, 4000).unwrap();
+        let st = sys_fstat(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(st.st_uid, 3000, "sys_fchown uid did not reach host VFS");
+        assert_eq!(st.st_gid, 4000, "sys_fchown gid did not reach host VFS");
+    }
+
+    /// sys_fchownat with AT_FDCWD shares its propagation path with sys_chown
+    /// (resolves path then calls host.host_chown). Round-trip via sys_stat to
+    /// confirm the *at variant also reaches the host VFS — the syscall is
+    /// dispatched separately by libc-test/util-linux chown -h paths.
+    #[test]
+    fn test_sys_fchownat_round_trip_through_host() {
+        use wasm_posix_shared::flags::AT_FDCWD;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/baz", 0, 0, 0o644, b"hi");
+        sys_fchownat(&mut proc, &mut host, AT_FDCWD, b"/baz", 5000, 6000, 0).unwrap();
+        let st = sys_stat(&mut proc, &mut host, b"/baz").unwrap();
+        assert_eq!(st.st_uid, 5000, "sys_fchownat uid did not reach host VFS");
+        assert_eq!(st.st_gid, 6000, "sys_fchownat gid did not reach host VFS");
     }
 
     #[test]
