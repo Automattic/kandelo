@@ -1,0 +1,9 @@
+/                 d  0755  0     0
+/etc              d  0755  0     0
+/etc/passwd       f  0644  0     0
+/tmp              d  1777  0     0
+/home             d  0755  0     0
+/home/alice       d  0700  1000  1000
+/usr              d  0755  0     0
+/usr/bin          d  0755  0     0
+/usr/bin/sh       l  0777  0     0  target=/bin/dash
