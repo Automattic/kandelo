@@ -844,6 +844,23 @@ port.on("message", (msg: MainToKernelMessage) => {
     case "destroy":
       handleDestroy(msg);
       break;
+    case "get_fork_count": {
+      // Round-trip access to the kernel's per-process fork counter for
+      // tests asserting SYS_SPAWN didn't fall back to fork. Result is a
+      // u64 BigInt (kernel returns u64::MAX as a "pid not found" sentinel).
+      try {
+        const count = kernelWorker.getForkCount(msg.pid);
+        post({ type: "response", requestId: msg.requestId, result: count });
+      } catch (err) {
+        post({
+          type: "response",
+          requestId: msg.requestId,
+          result: undefined,
+          error: (err as Error)?.message ?? String(err),
+        });
+      }
+      break;
+    }
     case "resolve_exec_response": {
       const resolve = pendingExecResolves.get(msg.requestId);
       if (resolve) {

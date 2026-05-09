@@ -6874,6 +6874,22 @@ export class CentralizedKernelWorker {
   }
 
   /**
+   * Per-process fork counter (parent side, incremented inside
+   * `kernel_fork_process` on success). Used by the spawn regression tests
+   * to assert that a SYS_SPAWN call did NOT fall back to the fork path.
+   *
+   * Returns `u64::MAX` (as `bigint`) if the pid does not exist; callers
+   * should compare against an explicit before-value rather than treating
+   * "no process" as "0 forks".
+   */
+  getForkCount(pid: number): bigint {
+    const fn = this.kernelInstance?.exports.kernel_get_fork_count as
+      ((pid: number) => bigint) | undefined;
+    if (!fn) return BigInt(0);
+    return fn(pid);
+  }
+
+  /**
    * ABI version the kernel advertised at startup via its
    * `__abi_version` export. Worker processes compare against this
    * and refuse to run programs built against an incompatible ABI.
