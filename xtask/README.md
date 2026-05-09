@@ -3,10 +3,16 @@
 Repo-local build/release utilities. Subcommands:
 
 - `dump-abi` — regenerate `abi/snapshot.json` from authoritative sources.
-- `build-manifest` — generate a binary-release `manifest.json` from a staging dir.
 - `bundle-program` — zip-bundle one program's binary + runtime + LICENSE.
 - `build-deps` — wasm library dep-graph resolver
   (see [`docs/dependency-management.md`](../docs/dependency-management.md)).
+- `archive-stage` — produce one package's `.tar.zst` archive
+  (single `(package, arch)` slice; no registry walk).
+- `build-index` — emit `index.toml` provenance manifest from
+  a directory of staged `.tar.zst` archives.
+- `compute-cache-key-sha` — print one package's cache-key sha to stdout.
+- `set-build-commit` — stamp `[build].commit` in a `package.toml`.
+- `set-package-binary` — update `[binary.<arch>]` in a `package.toml`.
 
 ## Always build/test xtask with `--target <host>`
 

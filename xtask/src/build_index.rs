@@ -133,10 +133,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let parsed = parse_args(args)?;
     let entries = collect_archives(&parsed.archives_dir, parsed.abi)?;
     let packages = group_packages(entries)?;
-    let generated_at = parsed
-        .generated_at
-        .clone()
-        .unwrap_or_else(crate::build_manifest::current_utc_iso);
+    let generated_at = parsed.generated_at.clone().unwrap_or_else(current_utc_iso);
     let rendered = render_index_toml(parsed.abi, &generated_at, &parsed.generator, &packages);
     if let Some(parent) = parsed.out.parent() {
         fs::create_dir_all(parent)
@@ -471,6 +468,57 @@ fn assign_once<T>(slot: &mut Option<T>, value: T, name: &str) -> Result<(), Stri
     }
     *slot = Some(value);
     Ok(())
+}
+
+// Hand-rolled RFC3339 formatter for the default `generated_at` in
+// `index.toml`. Avoids pulling `chrono` into xtask for a single
+// timestamp. Mirrors the formatter that previously lived in the
+// (now-deleted) `build_manifest` module.
+fn current_utc_iso() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let rem = secs.rem_euclid(86_400);
+    let (hh, mm, ss) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+
+    let mut day = secs.div_euclid(86_400);
+    let mut year: i64 = 1970;
+    loop {
+        let len = if is_leap(year) { 366 } else { 365 };
+        if day < len {
+            break;
+        }
+        day -= len;
+        year += 1;
+    }
+    let mut month: i64 = 1;
+    while day >= days_in_month(month, year) {
+        day -= days_in_month(month, year);
+        month += 1;
+    }
+    let day = day + 1;
+    format!("{year:04}-{month:02}-{day:02}T{hh:02}:{mm:02}:{ss:02}Z")
+}
+
+fn is_leap(y: i64) -> bool {
+    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+}
+
+fn days_in_month(m: i64, y: i64) -> i64 {
+    match m {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            if is_leap(y) {
+                29
+            } else {
+                28
+            }
+        }
+        _ => unreachable!(),
+    }
 }
 
 #[cfg(test)]

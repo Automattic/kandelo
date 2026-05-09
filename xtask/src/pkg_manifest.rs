@@ -2197,12 +2197,10 @@ probe = { args = ["--version"], version_regex = "(unclosed" }
 
     // ── output_dest_rel ───────────────────────────────────────────
     //
-    // Mirrors install-release's `mirror_program_outputs` /
-    // `place_binaries_symlinks` placement convention so build scripts
-    // (via `install-local-binary.sh` → `xtask build-deps output-path`)
-    // can land freshly-built artifacts at the same relative path the
-    // resolver/install-release would. See xtask/src/install_release.rs
-    // for the producer-side mirror.
+    // Mirrors `place_binaries_symlinks` in build_deps.rs so build
+    // scripts (via `install-local-binary.sh` → `xtask build-deps
+    // output-path`) can land freshly-built artifacts at the same
+    // relative path the resolver writes its symlinks to.
 
     fn program_manifest(name: &str, outputs_section: &str) -> DepsManifest {
         let text = format!(
@@ -2246,10 +2244,10 @@ spdx = "TestLicense"
         // Single-output where program.name != output.name (texlive case:
         // package "texlive" produces output named "pdftex"). The
         // dest-name is keyed off [[outputs]].name, NOT the package name —
-        // matching install-release's `dest_name = "{out.name}{ext}"`
-        // logic (xtask/src/install_release.rs:466). install_local_binary
+        // matching the resolver's `dest_name = "{out.name}{ext}"` logic
+        // in build_deps.rs `place_binaries_symlinks`. install_local_binary
         // previously used the package name here, producing a path that
-        // didn't match what the resolver places after `install-release`.
+        // didn't match what the resolver places.
         let m = program_manifest(
             "texlive",
             "[[outputs]]\nname = \"pdftex\"\nwasm = \"pdftex.wasm\"\n",
@@ -2262,7 +2260,7 @@ spdx = "TestLicense"
 
     #[test]
     fn output_dest_rel_multi_output_uses_program_subdir() {
-        // ≥2 outputs: install-release nests under <program.name>/, so
+        // ≥2 outputs: the resolver nests under <program.name>/, so
         // each output's per-arch path is unique even when other packages
         // happen to declare an output with the same name.
         let m = program_manifest(

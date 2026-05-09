@@ -86,10 +86,10 @@ pkgconfig = ["lib/pkgconfig/zlib.pc"]
 ### `arches`
 
 `arches = ["wasm32", "wasm64"]` declares which target architectures
-the manifest opts into. Read by `xtask stage-release`: any
-`(manifest, arch)` pair where `arch` isn't listed is silently
-skipped and no archive is staged. Defaults to `["wasm32"]` when
-omitted.
+the manifest opts into. Read by the matrix flow's preflight (which
+generates one `(package, arch)` entry per declared arch) and by
+`scripts/fetch-binaries.sh` (one `xtask build-deps resolve` call per
+declared arch). Defaults to `["wasm32"]` when omitted.
 
 The default reflects the project's wasm64 build policy: the kernel
 is wasm64, but most ported user-space programs (dash, vim, perl,
@@ -516,57 +516,63 @@ canonical cache path with no source build.
 
 ### Producer / consumer round-trip
 
-Two `xtask` subcommands bracket the pipeline. Both accept
-`--abi <N>` (defaults to the kernel's current `ABI_VERSION`)
-and emit machine-readable progress on stderr.
+The pipeline is **per-package**. There is no central manifest, no
+`binaries.lock` pinfile. Each `examples/libs/<pkg>/package.toml`
+records its own `[binary.<arch>].archive_url` +
+`archive_sha256`, the matrix flow uploads one `.tar.zst` per
+`(package, arch)` entry, and the resolver fetches each archive on
+demand.
 
-**Producer — `cargo xtask stage-release`:**
+**Producer — `cargo xtask archive-stage`:**
 
 ```bash
-cargo xtask stage-release \
-    --staging /tmp/release-staging \
-    --abi 4 \
-    --tag binaries-abi-v4-2026-04-26 \
-    --arch wasm32 --arch wasm64 \
+cargo xtask archive-stage \
+    --package examples/libs/zlib \
+    --arch wasm32 \
+    --out /tmp/archives \
     --build-timestamp 2026-04-26T10:00:00Z \
-    --build-host darwin-arm64
+    --build-host github.com/foo/bar@<sha>
 ```
 
-It walks the registry (`Registry::walk_all`), filters to
-`kind=library` and `kind=program` manifests, fans out across
-the requested arches, calls `ensure_built` to populate the
-resolver cache when needed, then `archive_stage` to pack each
+It loads the package manifest, calls `ensure_built` to populate
+the resolver cache when needed, then `archive_stage` to pack the
 cache tree into
 
 ```
-<staging>/{libs,programs}/<name>-<version>-rev<N>-<arch>-<shortsha>.tar.zst
+/tmp/archives/<name>-<version>-rev<N>-abi<N>-<arch>-<shortsha>.tar.zst
 ```
 
-Finally it delegates to `build-manifest` to emit
-`<staging>/manifest.json` covering both legacy single-asset (kernel, userspace,
-test programs) and archive (libs + programs) entries.
+The matrix flow runs one `archive-stage` invocation per matrix
+entry. Each invocation is independent — there is no registry walk
+and no shared scratch state.
 
-**Consumer — `cargo xtask install-release`:**
+**Consumer — `cargo xtask build-deps resolve <pkg>`** (called once
+per package by `scripts/fetch-binaries.sh`):
 
 ```bash
-cargo xtask install-release \
-    --manifest /path/to/manifest.json \
-    --archive-base https://github.com/.../releases/download/<tag>
+cargo run -p xtask -- build-deps --arch wasm32 \
+    --binaries-dir <repo>/binaries \
+    resolve zlib
 ```
 
-It iterates manifest entries that carry `archive_name` (archive
-shape) and dispatches each one through `remote_fetch`, which
-handles fetch + verify + install. `--archive-base` accepts both
-`https://…` and `file://…/…` (the round-trip test uses the
-latter); a relative path is rejected. Library entries land in
-`<cache>/libs/<canonical>/`; program entries land in both the
-cache and `local-binaries/programs/<name>/` so subsequent
-program builds short-circuit through the same lookup path
-hand-built programs use.
+The resolver:
+
+1. Reads `[binary.wasm32]` from `examples/libs/zlib/package.toml`.
+2. Applies `examples/libs/zlib/package.pr.toml` as an overlay (if
+   present) — replaces `archive_url` + `archive_sha256` for that
+   arch.
+3. Fetches the archive at `archive_url` via `remote_fetch`, which
+   handles fetch + verify + install. Both `https://` and `file://`
+   URLs are accepted (the latter is what the matrix flow's
+   test-gate uses to pin runner-local archives).
+4. Library entries land in `<cache>/libs/<canonical>/`; program
+   entries land in both the cache and
+   `binaries/programs/<arch>/<output>.wasm` (a symlink into the
+   cache) so browser/Node demos load by relative path.
 
 ### The injected `[compatibility]` block
 
-`stage-release` reads each consumer's source `package.toml`,
+`archive-stage` reads each package's source `package.toml`,
 appends a `[compatibility]` block, and writes the result as
 `manifest.toml` at the root of the archive (alongside an
 `artifacts/` subtree carrying the built files). The block
@@ -616,13 +622,11 @@ sha — say `b1773def…`. `remote_fetch` walks its 4-axis chain:
 4. The consumer's ABI is in `abi_versions`. Pass.
 5. `cache_key_sha` matches the locally-computed sha. **Fail.**
 
-`remote_fetch` returns the cache-key-mismatch error, and
-`install-release` errors hard (a manual install is an explicit
-"trust this archive" gesture; falling back to source build
-silently would defeat the point). In the implicit `resolve`
-codepath that `build-deps` hits during a normal build, the same
-rejection causes the resolver to fall through to source build
-— same outcome as if no archive had been published.
+`remote_fetch` returns the cache-key-mismatch error, the
+resolver logs a warning, and falls through to source build —
+same outcome as if no archive had been published. This makes
+ABI bumps and rev bumps non-fatal: stale archives just slow the
+first run.
 
 That is the strict-equivalence check the design relies on:
 the archive is honored if and only if its source-side inputs
@@ -633,56 +637,28 @@ hash to exactly what this checkout would produce.
 When you edit an `examples/libs/<name>/package.toml` (or any input
 that changes the package's `cache_key_sha` — `revision`,
 `source.url`, `source.sha256`, transitive deps), the published
-release manifest goes stale relative to your local state. By
-default, `./run.sh fetch` and `./run.sh browser` then abort with:
-
-```
-xtask install-release: <name> (<arch>): manifest.json cache_key_sha
-"<published>" does not match locally-computed "<local>" — the
-manifest is stale relative to this consumer's package.toml
-```
-
-That is the "Why `cache_key_sha` is the strict equivalence
-check" rejection above, surfaced at the install-release seam.
+archive goes stale relative to your local state. The resolver
+detects the mismatch via the `[compatibility]` block, logs a
+warning, and falls through to a source build (`build-<name>.sh`).
+No `--allow-stale` flag is needed: stale archives just slow the
+first run.
 
 The primary remedy is the per-PR overlay flow — push your
 branch, let `staging-build.yml` rebuild the touched packages,
-and `fetch-binaries.sh` will auto-detect the open PR and pull
-its `pr-<NNN>-staging` archives via `binaries.lock.pr` (see
-[binary-releases.md](binary-releases.md) "Per-PR staging
-overlay"). That works for any `package.toml` change pushed to a
-PR with CI write access, and is the path code-review and merge
-both use.
+and the matrix flow's test-gate writes
+`examples/libs/<pkg>/package.pr.toml` overlays for every changed
+archive. The overlay's `archive_url` points at the matrix-built
+bytes (file:// during test-gate, https:// after publish to the
+`pr-<NNN>-staging` release). That works for any `package.toml`
+change pushed to a PR with CI write access, and is the path
+code-review and merge both use.
 
-`--allow-stale` is the escape hatch for the cases the overlay
-flow doesn't cover:
-
-- pre-push iteration before any commit lands on the branch,
-- fork PRs that lack write access to publish staging releases,
-- `WIP:` commits where the staging build hasn't completed (or
-  failed) and you want to see the demo locally,
-- local edits past the last CI build on your own PR.
-
-Pass it instead of waiting for the overlay:
-
-```bash
-./run.sh browser --allow-stale          # one-shot
-./run.sh fetch   --allow-stale          # also works for any subcommand
-WASM_POSIX_ALLOW_STALE=1 ./run.sh ...   # sticky for the shell session
-```
-
-With the flag set, `install-release` skips the mismatched
-manifest entries (a one-line diagnostic per skip) and continues
-with the rest of the manifest. The skipped packages then fall
-through the resolver chain on the next `cargo xtask build-deps
-resolve <name>` — `local-libs/` first, then the content-addressed
-cache, then a source build via `build-<name>.sh`. Outputs land
-under `local-binaries/programs/<arch>/`, which the Vite resolver
-and `scripts/resolve-binary.sh` already prefer over `binaries/`.
-
-`binaries/` itself stays release-pure regardless of the flag —
-the entries it gets are the ones the manifest agreed on. CI does
-not pass `--allow-stale` and remains strict-by-construction.
+For pre-push iteration on packages whose source build is fast,
+just rely on the resolver's fall-through: edit `package.toml`,
+run `./run.sh browser`, and accept a one-time source build for
+the touched package. Outputs land under
+`local-binaries/programs/<arch>/`, which the Vite resolver and
+`scripts/resolve-binary.sh` already prefer over `binaries/`.
 
 ### Worked example: zlib
 
@@ -708,49 +684,32 @@ headers = ["include/zlib.h", "include/zconf.h"]
 pkgconfig = ["lib/pkgconfig/zlib.pc"]
 ```
 
-After `stage-release --arch wasm32`, one staged archive lands
-as
+After `xtask archive-stage --package examples/libs/zlib --arch wasm32`,
+one archive lands as
 
 ```
-<staging>/libs/zlib-1.3.1-rev1-wasm32-9acb9405.tar.zst
+<out>/zlib-1.3.1-rev1-abi6-wasm32-9acb9405.tar.zst
 ```
 
 (short sha `9acb9405` is the first 8 chars of the cache-key sha
 for this manifest, identical to the canonical cache directory
 suffix — `cargo xtask build-deps sha zlib` prints the full
-form). `manifest.json` carries the entry:
+form).
 
-```json
-{
-  "name": "zlib-1.3.1-rev1-wasm32-9acb9405.tar.zst",
-  "program": "zlib",
-  "kind": "library",
-  "arch": "wasm32",
-  "upstream_version": "1.3.1",
-  "revision": 1,
-  "size": 12345,
-  "sha256": "<bytes-sha>",
-  "archive_name": "zlib-1.3.1-rev1-wasm32-9acb9405.tar.zst",
-  "archive_sha256": "<bytes-sha>",
-  "compatibility": {
-    "target_arch": "wasm32",
-    "abi_versions": [4],
-    "cache_key_sha": "9acb9405ef818905a193…"
-  },
-  "source": {
-    "url": "https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz",
-    "sha256": "9a93b2b7…"
-  },
-  "license": { "spdx": "Zlib" },
-  "advisories": []
-}
+After publish, the matrix flow's amend-bot rewrites
+`examples/libs/zlib/package.toml` to:
+
+```toml
+[binary.wasm32]
+archive_url = "https://github.com/.../zlib-1.3.1-rev1-abi6-wasm32-9acb9405.tar.zst"
+archive_sha256 = "<bytes-sha>"
 ```
 
-On the consumer side, `install-release` fetches that archive,
-verifies bytes against `archive_sha256`, runs the 4-axis check
-above, then unpacks `artifacts/lib/libz.a`,
-`artifacts/include/{zlib.h,zconf.h}`, and
-`artifacts/lib/pkgconfig/zlib.pc` into
+On the consumer side, `xtask build-deps resolve zlib` reads
+that block, fetches the archive, verifies bytes against
+`archive_sha256`, runs the compatibility check, then unpacks
+`artifacts/lib/libz.a`, `artifacts/include/{zlib.h,zconf.h}`,
+and `artifacts/lib/pkgconfig/zlib.pc` into
 
 ```
 <cache_root>/libs/zlib-1.3.1-rev1-9acb9405/
@@ -760,40 +719,21 @@ A subsequent `cargo xtask build-deps resolve zlib` finds the
 canonical path populated and returns it without re-running
 `build-zlib.sh`.
 
-### Shell-script wrappers
+### Shell-script wrapper
 
-For the per-PR staging flow (single-PR-with-package-bumps,
-auto-merge after a `ready-to-ship` label), see
-[`docs/binary-releases.md`](binary-releases.md#pr-package-builds).
+`scripts/fetch-binaries.sh` walks every
+`examples/libs/<pkg>/package.toml` with a `[binary]` block and
+calls `xtask build-deps --binaries-dir <repo>/binaries resolve
+<pkg>` once per declared arch. Packages without a `[binary]`
+block (kernel, userspace, source-only) are skipped silently —
+those are local-build-only and the resolver's fall-through to
+source build covers them on demand.
 
-`scripts/stage-release.sh` and `scripts/fetch-binaries.sh` wrap
-the xtask subcommands with the rest of the legacy release flow:
-
-- `stage-release.sh` first stages legacy entries (kernel,
-  userspace, hand-bundled test programs) via `xtask
-  bundle-program --plain-wasm`, then delegates to `xtask
-  stage-release` for the lib + program archives. Both halves
-  land in the same flat staging directory with one combined
-  `manifest.json`.
-- `fetch-binaries.sh` reads `binaries.lock`, downloads
-  `manifest.json`, and dispatches archive entries (those with
-  `archive_name`) to `xtask install-release`. legacy entries
-  continue through the existing bash `place`/`extract_flat_zip`
-  codepaths into `binaries/`. The two halves coexist in one
-  release with no schema-level separation; the `archive_name`
-  field is the per-entry discriminator.
-
-### Round-trip test
-
-`host/test/release-roundtrip.test.ts` exercises the full
-producer/consumer loop end-to-end with synthetic fixtures and
-`file://` URLs. It stages a synthetic library + program,
-installs back via `install-release`, then re-runs `xtask
-build-deps resolve` against the populated cache and asserts
-the consumer's build script does **not** run a second time
-(verified via a sentinel file the script writes per
-invocation). The whole suite skips on machines without `rustc`
-on `PATH`, mirroring the existing host-tool skip pattern.
+The matrix flow's CI workflows (staging-build, prepare-merge,
+force-rebuild) all use the same per-package shape: one matrix
+entry produces one `archive-stage` archive, the publish job
+uploads that one archive to the release tag, and the amend job
+rewrites that one `package.toml`'s `[binary.<arch>]` block.
 
 ## Atomic cache install
 
@@ -1008,5 +948,11 @@ contract) in `docs/plans/2026-04-22-deps-management-v2-design.md`.
 - **Semver ranges**: exact-pinning only. Adding a resolver that picks
   one version per lib across the overall graph is real work; we punt
   until two consumers actually conflict.
-- **CI-driven dep builds**: deps are built manually and published
-  manually via `publish-release.sh`.
+- **CI-driven dep builds**: the matrix flow in
+  `.github/workflows/staging-build.yml` builds every changed
+  `(package, arch)` entry on PR push and uploads each archive
+  per-package. Merging via the `ready-to-ship` label runs the same
+  matrix against the durable `binaries-abi-v<N>` tag and amends
+  every `[binary.<arch>]` block in-tree on a bot PR. See
+  [docs/binary-releases.md](binary-releases.md) for the producer-
+  side flow.

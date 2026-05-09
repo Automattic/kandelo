@@ -134,9 +134,12 @@ binary whose custom-section version does not match the kernel's
 `__abi_version` export.
 
 When the ABI is bumped, all binaries must be rebuilt and a new
-`abi-v{N}/` release is cut. Old releases remain valid for old kernel
-revisions; a repo pin (`binaries.lock`) anchors consumers to a specific
-release.
+`binaries-abi-v{N}` release is cut. Old releases remain valid for old
+kernel revisions; per-package `[binary.<arch>].archive_url` +
+`archive_sha256` in each `examples/libs/<pkg>/package.toml` anchor
+consumers to specific archives. The matrix flow's amend-time job
+(`xtask set-package-binary`) rewrites each pin atomically when the
+ABI bump PR's archives are published.
 
 ### Additive changes still require a bump
 

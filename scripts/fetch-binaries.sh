@@ -3,10 +3,9 @@
 # Fetch published Wasm binaries by walking every per-package
 # `examples/libs/<name>/package.toml`.
 #
-# Phase C cutover (this script): the resolver consumes per-package
-# `[binary]` / `[binary.<arch>]` URLs directly. There is no
-# `binaries.lock` parse or central `manifest.json` lookup. For each
-# package that declares a `[binary]` block we run
+# The resolver consumes per-package `[binary]` / `[binary.<arch>]`
+# URLs directly — no central pinfile or manifest. For each package
+# that declares a `[binary]` block we run
 #
 #     cargo run -p xtask -- build-deps resolve <name> \
 #         --arch <arch> --binaries-dir <repo>/binaries
@@ -14,8 +13,7 @@
 # which (a) fetches+verifies the archive into the resolver's
 # content-addressed cache (~/.cache/wasm-posix-kernel/...), and (b)
 # places `binaries/programs/<arch>/<output>.wasm` symlinks pointing
-# into the cache. Layout matches what `xtask install-release
-# --binaries-dir` used to write — browser demos hardcode these paths.
+# into the cache. Browser demos hardcode these paths.
 #
 # Packages without a `[binary]` block (kernel, userspace, examples,
 # sqlite-cli, node, kind=source, libraries that ship only as
@@ -102,13 +100,12 @@ HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
 [ -n "$HOST_TARGET" ] || { echo "fetch-binaries: rustc -vV did not report host triple" >&2; exit 2; }
 
 if [ "$ALLOW_STALE" = "1" ]; then
-    # Old-world `--allow-stale` skipped install-release entries with a
-    # cache_key_sha mismatch and source-built them via a separate xtask
-    # call. The new resolver does that automatically (see
-    # xtask/src/build_deps.rs cmd_resolve fallback: any remote_fetch
-    # error logs a warning and falls through to build_into_cache).
-    # The flag is a no-op here; documented in the header.
-    echo "fetch-binaries: --allow-stale accepted (no-op in Phase C; resolver auto-falls-back)"
+    # The resolver source-builds automatically on any verification
+    # failure (xtask/src/build_deps.rs cmd_resolve fallback: any
+    # remote_fetch error logs a warning and falls through to
+    # build_into_cache). The flag is a no-op here; documented in the
+    # header for back-compat.
+    echo "fetch-binaries: --allow-stale accepted (no-op; resolver auto-falls-back)"
 fi
 
 if [ -n "$PR_NUMBER" ]; then

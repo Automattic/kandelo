@@ -1,7 +1,7 @@
 //! Utilities for extracting ABI info from wasm modules.
 //!
-//! Factored out so `build-manifest` and `bundle-program` can share
-//! the same parser and stay in sync.
+//! Factored out so `bundle-program` and other consumers can share
+//! the same parser.
 
 use wasmparser::{ExternalKind, FunctionBody, Operator, Parser, Payload, TypeRef};
 
