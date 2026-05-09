@@ -5,13 +5,13 @@ describe("manifest parser — directories, files, symlinks, devices", () => {
   describe("directories", () => {
     it("parses a directory entry", () => {
       expect(parseManifest("/tmp  d  1777  0  0\n")).toEqual([
-        { kind: "node", path: "/tmp", type: "d", mode: 0o1777, uid: 0, gid: 0 },
+        { kind: "node", path: "/tmp", type: "d", mode: 0o1777, uid: 0, gid: 0, lineNumber: 1 },
       ]);
     });
 
     it("parses a nested directory with non-zero uid/gid", () => {
       expect(parseManifest("/var/log  d  0755  100  200\n")).toEqual([
-        { kind: "node", path: "/var/log", type: "d", mode: 0o755, uid: 100, gid: 200 },
+        { kind: "node", path: "/var/log", type: "d", mode: 0o755, uid: 100, gid: 200, lineNumber: 1 },
       ]);
     });
   });
@@ -19,13 +19,13 @@ describe("manifest parser — directories, files, symlinks, devices", () => {
   describe("regular files", () => {
     it("parses a file entry without explicit src", () => {
       expect(parseManifest("/etc/passwd  f  0644  0  0\n")).toEqual([
-        { kind: "node", path: "/etc/passwd", type: "f", mode: 0o644, uid: 0, gid: 0 },
+        { kind: "node", path: "/etc/passwd", type: "f", mode: 0o644, uid: 0, gid: 0, lineNumber: 1 },
       ]);
     });
 
     it("parses a file entry with src= override", () => {
       expect(parseManifest("/etc/foo  f  0644  0  0  src=configs/foo\n")).toEqual([
-        { kind: "node", path: "/etc/foo", type: "f", mode: 0o644, uid: 0, gid: 0, src: "configs/foo" },
+        { kind: "node", path: "/etc/foo", type: "f", mode: 0o644, uid: 0, gid: 0, src: "configs/foo", lineNumber: 1 },
       ]);
     });
   });
@@ -41,6 +41,7 @@ describe("manifest parser — directories, files, symlinks, devices", () => {
           uid: 0,
           gid: 0,
           target: "/usr/share/zoneinfo/UTC",
+          lineNumber: 1,
         },
       ]);
     });
@@ -68,6 +69,7 @@ describe("manifest parser — directories, files, symlinks, devices", () => {
           gid: 0,
           major: 1,
           minor: 3,
+          lineNumber: 1,
         },
       ]);
     });
@@ -93,6 +95,7 @@ describe("manifest parser — directories, files, symlinks, devices", () => {
           gid: 0,
           major: 7,
           minor: 0,
+          lineNumber: 1,
         },
       ]);
     });
@@ -114,7 +117,7 @@ describe("manifest parser — directories, files, symlinks, devices", () => {
     it("ignores trailing comments after entries", () => {
       const entries = parseManifest("/tmp  d  1777  0  0  # trailing\n");
       expect(entries).toEqual([
-        { kind: "node", path: "/tmp", type: "d", mode: 0o1777, uid: 0, gid: 0 },
+        { kind: "node", path: "/tmp", type: "d", mode: 0o1777, uid: 0, gid: 0, lineNumber: 1 },
       ]);
     });
 
@@ -155,13 +158,13 @@ describe("manifest parser — directories, files, symlinks, devices", () => {
   describe("uid/gid defaults", () => {
     it("defaults uid and gid to 0 when omitted", () => {
       expect(parseManifest("/tmp  d  1777\n")).toEqual([
-        { kind: "node", path: "/tmp", type: "d", mode: 0o1777, uid: 0, gid: 0 },
+        { kind: "node", path: "/tmp", type: "d", mode: 0o1777, uid: 0, gid: 0, lineNumber: 1 },
       ]);
     });
 
     it("defaults gid to 0 when only uid given", () => {
       expect(parseManifest("/tmp  d  1777  42\n")).toEqual([
-        { kind: "node", path: "/tmp", type: "d", mode: 0o1777, uid: 42, gid: 0 },
+        { kind: "node", path: "/tmp", type: "d", mode: 0o1777, uid: 42, gid: 0, lineNumber: 1 },
       ]);
     });
   });
@@ -231,6 +234,7 @@ describe("manifest parser — directories, files, symlinks, devices", () => {
           dmode: 0o755,
           uid: 10,
           gid: 20,
+          lineNumber: 1,
         },
       ]);
     });
@@ -245,6 +249,7 @@ describe("manifest parser — directories, files, symlinks, devices", () => {
           dmode: 0o755,
           uid: 0,
           gid: 0,
+          lineNumber: 1,
         },
       ]);
     });

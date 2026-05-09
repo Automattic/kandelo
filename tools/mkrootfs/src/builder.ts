@@ -10,8 +10,9 @@
 //   4. Archives (zip extraction; per-archive fmode/dmode/uid/gid override
 //      the zip's embedded values for deterministic builds)
 //
-// Validation (collisions, missing sources, duplicates) is intentionally
-// out of scope here; Task 2.5 layers it on top.
+// Validation (manifest path duplicates, missing source files, archive
+// collisions, archive-vs-explicit overlaps) runs ahead of any FS work — see
+// `./validate.ts`.
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -27,6 +28,12 @@ import {
   type ManifestEntry,
   type ManifestNode,
 } from "./manifest.ts";
+import {
+  validateManifestEntries,
+  validateAndPlanArchives,
+  type ArchiveBundle,
+  type ArchiveExtractionPlan,
+} from "./validate.ts";
 
 const DEFAULT_SAB_SIZE = 16 * 1024 * 1024;
 
@@ -39,11 +46,22 @@ export interface BuildOptions {
   repoRoot: string;
   /** Backing SharedArrayBuffer size in bytes; defaults to 16 MiB. */
   sabSize?: number;
+  /** Optional sink for non-fatal audit messages (archive overrides, etc.). */
+  onWarn?: (msg: string) => void;
 }
 
 export async function buildImage(opts: BuildOptions): Promise<Uint8Array> {
   const manifestText = readFileSync(resolve(opts.manifest), "utf8");
   const entries = parseManifest(manifestText, opts.manifest);
+
+  // Phase 1: text-only validation (no FS). Catches duplicate manifest paths.
+  validateManifestEntries(entries);
+
+  // Phase 2: load every archive's central directory, then validate overlaps.
+  // Done up-front so an archive collision aborts before any FS write.
+  const archiveBundles = loadArchives(entries, opts);
+  const plan = validateAndPlanArchives(entries, archiveBundles);
+  for (const w of plan.warnings) opts.onWarn?.(w);
 
   const sab = new SharedArrayBuffer(opts.sabSize ?? DEFAULT_SAB_SIZE);
   const mfs = MemoryFileSystem.create(sab);
@@ -51,7 +69,7 @@ export async function buildImage(opts: BuildOptions): Promise<Uint8Array> {
   buildDirectories(mfs, entries);
   buildFiles(mfs, entries, opts);
   buildSymlinks(mfs, entries);
-  buildArchives(mfs, entries, opts);
+  buildArchives(mfs, archiveBundles, plan);
 
   return await mfs.saveImage();
 }
@@ -79,7 +97,17 @@ function buildFiles(
     const sourcePath = f.src
       ? resolve(opts.repoRoot, f.src)
       : resolve(opts.sourceTree, f.path.replace(/^\//, ""));
-    const content = new Uint8Array(readFileSync(sourcePath));
+    let content: Uint8Array;
+    try {
+      content = new Uint8Array(readFileSync(sourcePath));
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") {
+        throw new Error(
+          `manifest line ${f.lineNumber}: source file not found: ${sourcePath}`,
+        );
+      }
+      throw e;
+    }
     mfs.createFileWithOwner(f.path, f.mode, f.uid, f.gid, content);
   }
 }
@@ -95,19 +123,46 @@ function buildSymlinks(mfs: MemoryFileSystem, entries: ManifestEntry[]): void {
   }
 }
 
-function buildArchives(
-  mfs: MemoryFileSystem,
+interface LoadedArchive extends ArchiveBundle {
+  zipBytes: Uint8Array;
+}
+
+function loadArchives(
   entries: ManifestEntry[],
   opts: BuildOptions,
-): void {
+): LoadedArchive[] {
   const archives = entries.filter(
     (e): e is ManifestArchive => e.kind === "archive",
   );
+  const out: LoadedArchive[] = [];
   for (const a of archives) {
     const archivePath = resolve(opts.repoRoot, a.url);
-    const zipBytes = new Uint8Array(readFileSync(archivePath));
+    let zipBytes: Uint8Array;
+    try {
+      zipBytes = new Uint8Array(readFileSync(archivePath));
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") {
+        throw new Error(
+          `manifest line ${a.lineNumber}: archive not found: ${archivePath}`,
+        );
+      }
+      throw e;
+    }
     const zipEntries = parseZipCentralDirectory(zipBytes);
-    extractArchive(mfs, zipBytes, zipEntries, a);
+    out.push({ archive: a, zipBytes, zipEntries });
+  }
+  return out;
+}
+
+function buildArchives(
+  mfs: MemoryFileSystem,
+  archives: LoadedArchive[],
+  plan: ArchiveExtractionPlan,
+): void {
+  for (const loaded of archives) {
+    const skip =
+      plan.skipByArchiveUrl.get(loaded.archive.url) ?? new Set<string>();
+    extractArchive(mfs, loaded.zipBytes, loaded.zipEntries, loaded.archive, skip);
   }
 }
 
@@ -116,6 +171,7 @@ function extractArchive(
   zipBytes: Uint8Array,
   zipEntries: ZipEntry[],
   a: ManifestArchive,
+  skipPaths: Set<string>,
 ): void {
   // Strip trailing slash on base so concatenation produces a clean path;
   // base="/" becomes "" so "/" + entry.fileName works.
@@ -140,6 +196,7 @@ function extractArchive(
 
   for (const ze of fileEntries) {
     const vfsPath = base + "/" + ze.fileName;
+    if (skipPaths.has(vfsPath)) continue;
     ensureParentDirs(mfs, vfsPath, a);
     const content = extractZipEntry(zipBytes, ze);
     mfs.createFileWithOwner(vfsPath, a.fmode, a.uid, a.gid, content);

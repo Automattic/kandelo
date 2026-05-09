@@ -166,6 +166,181 @@ describe("image builder — pass 4: archives", () => {
   });
 });
 
+describe("image builder — validation", () => {
+  describe("missing source files", () => {
+    it("errors on missing implicit source with manifest line number and resolved path", async () => {
+      const fixture = join(fixtures, "missing-source");
+      await expect(
+        buildImage({
+          sourceTree: join(fixture, "rootfs"),
+          manifest: join(fixture, "MANIFEST"),
+          repoRoot: fixture,
+        }),
+      ).rejects.toThrow(/line 3.*source file not found.*rootfs\/etc\/passwd/);
+    });
+
+    it("errors on missing explicit src= with manifest line number", async () => {
+      const fixture = join(fixtures, "missing-explicit-src");
+      await expect(
+        buildImage({
+          sourceTree: join(fixture, "rootfs"),
+          manifest: join(fixture, "MANIFEST"),
+          repoRoot: fixture,
+        }),
+      ).rejects.toThrow(/line 3.*source file not found.*missing\/foo\.cfg/);
+    });
+  });
+
+  describe("duplicate manifest paths", () => {
+    it("errors on two entries declaring the same path with both line numbers", async () => {
+      const fixture = join(fixtures, "dup-paths");
+      await expect(
+        buildImage({
+          sourceTree: join(fixture, "rootfs"),
+          manifest: join(fixture, "MANIFEST"),
+          repoRoot: fixture,
+        }),
+      ).rejects.toThrow(/duplicate.*\/etc\/passwd.*line 3.*line 4/);
+    });
+  });
+
+  describe("missing archive url=", () => {
+    it("errors with manifest line number and url path", async () => {
+      const fixture = join(fixtures, "missing-archive-url");
+      await expect(
+        buildImage({
+          sourceTree: join(fixture, "rootfs"),
+          manifest: join(fixture, "MANIFEST"),
+          repoRoot: fixture,
+        }),
+      ).rejects.toThrow(/line 3.*archive not found.*opt\/missing\.zip/);
+    });
+  });
+
+  describe("archive-vs-archive collisions", () => {
+    const fixture = join(fixtures, "archive-archive-collision");
+    const optDir = join(fixture, "opt");
+
+    beforeAll(() => {
+      mkdirSync(optDir, { recursive: true });
+      writeFileSync(
+        join(optDir, "a.zip"),
+        zipSync({ "share/foo": new TextEncoder().encode("from a\n") }),
+      );
+      writeFileSync(
+        join(optDir, "b.zip"),
+        zipSync({ "share/foo": new TextEncoder().encode("from b\n") }),
+      );
+    });
+
+    it("errors when two archives both ship the same path", async () => {
+      await expect(
+        buildImage({
+          sourceTree: join(fixture, "rootfs"),
+          manifest: join(fixture, "MANIFEST"),
+          repoRoot: fixture,
+        }),
+      ).rejects.toThrow(
+        /archive collision at "\/usr\/share\/foo".*opt\/a\.zip.*line 4.*opt\/b\.zip.*line 5/,
+      );
+    });
+  });
+
+  describe("explicit-vs-archive overrides", () => {
+    const fixture = join(fixtures, "archive-collision");
+    const zipPath = join(fixture, "opt", "vim-mini.zip");
+
+    beforeAll(() => {
+      mkdirSync(join(fixture, "opt"), { recursive: true });
+      writeFileSync(
+        zipPath,
+        zipSync({
+          "bin/vim": new TextEncoder().encode("#!archive-vim\n"),
+          "bin/other": new TextEncoder().encode("from archive\n"),
+        }),
+      );
+    });
+
+    it("explicit src= entry wins over archive-provided same path", async () => {
+      const image = await buildImage({
+        sourceTree: join(fixture, "rootfs"),
+        manifest: join(fixture, "MANIFEST"),
+        repoRoot: fixture,
+      });
+      const mfs = MemoryFileSystem.fromImage(image);
+
+      const vim = mfs.stat("/usr/bin/vim");
+      expect(vim.mode & 0o777).toBe(0o755); // explicit entry's mode (not archive's 0644)
+      expect(readFromImage(mfs, "/usr/bin/vim")).toBe("#!override-vim\n");
+    });
+
+    it("non-overlapping archive entries still extract alongside the override", async () => {
+      const image = await buildImage({
+        sourceTree: join(fixture, "rootfs"),
+        manifest: join(fixture, "MANIFEST"),
+        repoRoot: fixture,
+      });
+      const mfs = MemoryFileSystem.fromImage(image);
+      expect(readFromImage(mfs, "/usr/bin/other")).toBe("from archive\n");
+    });
+
+    it("reports the override via onWarn callback so users can audit", async () => {
+      const warnings: string[] = [];
+      await buildImage({
+        sourceTree: join(fixture, "rootfs"),
+        manifest: join(fixture, "MANIFEST"),
+        repoRoot: fixture,
+        onWarn: (msg) => warnings.push(msg),
+      });
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toMatch(
+        /\/usr\/bin\/vim.*manifest line 4.*overrides.*opt\/vim-mini\.zip/,
+      );
+    });
+  });
+
+  describe("implicit-vs-archive collisions are rejected", () => {
+    const fixture = join(fixtures, "archive-implicit-collision");
+    const zipPath = join(fixture, "opt", "vim-mini.zip");
+
+    beforeAll(() => {
+      mkdirSync(join(fixture, "opt"), { recursive: true });
+      writeFileSync(
+        zipPath,
+        zipSync({ "bin/vim": new TextEncoder().encode("#!archive-vim\n") }),
+      );
+    });
+
+    it("errors when an implicit f-entry (no src=) overlaps an archive path", async () => {
+      await expect(
+        buildImage({
+          sourceTree: join(fixture, "rootfs"),
+          manifest: join(fixture, "MANIFEST"),
+          repoRoot: fixture,
+        }),
+      ).rejects.toThrow(
+        /\/usr\/bin\/vim.*implicit file.*line 4.*shipped by archive.*opt\/vim-mini\.zip.*line 6.*add src=/,
+      );
+    });
+  });
+
+  describe("explicit dir + archive at same path", () => {
+    // Documented behavior from Task 2.4: archive does NOT clobber an explicit
+    // dir's mode/uid/gid; the manifest dir wins. Validation should not break this.
+    it("preserves the explicit dir's mode when archive entries land underneath", async () => {
+      const fixture = join(fixtures, "archive");
+      const image = await buildImage({
+        sourceTree: join(fixture, "rootfs"),
+        manifest: join(fixture, "MANIFEST"),
+        repoRoot: fixture,
+      });
+      const mfs = MemoryFileSystem.fromImage(image);
+      const usrShare = mfs.stat("/usr/share");
+      expect(usrShare.mode & 0o777).toBe(0o755);
+    });
+  });
+});
+
 describe("image builder — round-trip", () => {
   it("save → load preserves a multi-pass image end-to-end", async () => {
     const fixture = join(fixtures, "basic");

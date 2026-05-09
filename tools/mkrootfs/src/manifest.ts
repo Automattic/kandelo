@@ -37,6 +37,8 @@ export interface ManifestNode {
   mode: number;
   uid: number;
   gid: number;
+  /** 1-indexed line number in the source manifest; used for downstream error reporting. */
+  lineNumber: number;
   src?: string;
   target?: string;
   major?: number;
@@ -51,6 +53,8 @@ export interface ManifestArchive {
   dmode: number;
   uid: number;
   gid: number;
+  /** 1-indexed line number in the source manifest; used for downstream error reporting. */
+  lineNumber: number;
 }
 
 export type ManifestEntry = ManifestNode | ManifestArchive;
@@ -90,6 +94,7 @@ function parseArchive(
     dmode: 0o755,
     uid: 0,
     gid: 0,
+    lineNumber,
   };
   let urlSeen = false;
   let baseSeen = false;
@@ -162,6 +167,7 @@ function parseNode(tokens: string[], lineNumber: number, sourcePath: string | un
     mode: parseOctal(modeStr, lineNumber, sourcePath, "mode"),
     uid: uidStr !== undefined ? parseDecimal(uidStr, lineNumber, sourcePath, "uid") : 0,
     gid: gidStr !== undefined ? parseDecimal(gidStr, lineNumber, sourcePath, "gid") : 0,
+    lineNumber,
   };
   for (const extra of extras) {
     const eq = extra.indexOf("=");
