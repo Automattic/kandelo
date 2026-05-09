@@ -74,7 +74,15 @@ static size_t total_string_bytes(char *const *list) {
 
 /* Walk the fdop list to count actions and total path bytes that need to
  * land in the strings region. Path strings are stored once each, NUL-
- * terminated. */
+ * terminated.
+ *
+ * NOTE on traversal direction: musl's `posix_spawn_file_actions_add*`
+ * helpers PREPEND new entries (`op->next = fa->__actions; fa->__actions
+ * = op;`), so iterating from `__actions` via `next` walks the list in
+ * REVERSE insertion order. POSIX requires file actions to be applied in
+ * insertion order, so the emit-side walk uses `op->prev` from the tail
+ * — see `emit_actions`. The count/scan walk direction doesn't matter
+ * (we only need totals). */
 static void scan_actions(struct fdop *head, unsigned *out_count, size_t *out_path_bytes) {
 	unsigned n = 0;
 	size_t path_bytes = 0;
@@ -183,7 +191,12 @@ int posix_spawn(pid_t *restrict res, const char *restrict path,
 		cursor += (uint32_t)n;
 	}
 
-	/* ── Action records (forward order — list is appended on add) ──
+	/* ── Action records (POSIX-required INSERTION order) ──
+	 *
+	 * musl's `posix_spawn_file_actions_add*` helpers prepend to the
+	 * linked list, so `fa->__actions` is the most-recently-added entry
+	 * and the list is reverse-insertion order. To emit insertion
+	 * order, walk to the tail first, then iterate via `prev`.
 	 *
 	 * Wire-format `record.fd` and `record.newfd` (offsets +4 and +8) map
 	 * to musl's fdop fields differently per op:
@@ -196,8 +209,12 @@ int posix_spawn(pid_t *restrict res, const char *restrict path,
 	 * The kernel parser (`crates/kernel/src/spawn.rs::parse_blob`) reads
 	 * the same two slots for every op and dispatches via the op code, so
 	 * mis-encoding here would silently corrupt DUP2 actions. */
+	struct fdop *tail = (struct fdop *)f->__actions;
+	if (tail) {
+		while (tail->next) tail = tail->next;
+	}
 	unsigned ai = 0;
-	for (struct fdop *op = (struct fdop *)f->__actions; op; op = op->next) {
+	for (struct fdop *op = tail; op; op = op->prev) {
 		uint32_t *r32  = (uint32_t *)(actions + ai * ACTION_RECORD_LEN);
 		int32_t  *r32s = (int32_t  *)(actions + ai * ACTION_RECORD_LEN);
 		r32[0] = wire_op_for(op->cmd);
