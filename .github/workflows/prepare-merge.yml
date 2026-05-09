@@ -463,9 +463,19 @@ jobs:
             cd host && npm install --no-audit --no-fund
           '
 
-      - name: Fetch durable binaries (so source-build fallbacks have prereqs)
+      - name: Resolve target package's transitive deps
+        # Target-only prerequisite resolve. See staging-build.yml for
+        # rationale: a bulk fetch-binaries walk would re-source-build
+        # every package on every matrix runner under v7-with-v6-only-
+        # release. The resolver follows depends_on transitively from
+        # the matrix target.
         run: |
-          bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh --allow-stale
+          bash scripts/dev-shell.sh bash -c '
+            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
+            cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
+              build-deps --arch "${{ matrix.arch }}" --binaries-dir "$(pwd)/binaries" \
+                resolve "${{ matrix.package }}"
+          '
 
       - name: Build ${{ matrix.package }} (${{ matrix.arch }})
         run: |

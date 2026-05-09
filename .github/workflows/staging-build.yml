@@ -387,17 +387,25 @@ jobs:
             cd host && npm install --no-audit --no-fund
           '
 
-      - name: Fetch durable binaries (so source-build fallbacks have prereqs)
-        # Best-effort prerequisite fetch: walk every package.toml and
-        # ensure binaries/ symlinks exist for cross-package binary
-        # references (e.g. mariadb-test → mariadbd.wasm). Under
-        # --allow-stale, individual package failures degrade to
-        # warnings — the matrix target's actual build runs below in
-        # `xtask archive-stage`, which is the authoritative gate
-        # (fails loudly if its own transitive deps don't resolve).
-        # See scripts/fetch-binaries.sh header.
+      - name: Resolve target package's transitive deps
+        # Target-only prerequisite resolve: invoke the resolver on
+        # this matrix entry's package. The resolver follows
+        # depends_on transitively, fetching archives (or source-
+        # building) and placing binaries/ symlinks for the target's
+        # actual deps only. This replaces the legacy bulk
+        # fetch-binaries walk: with v6 archives ABI-mismatched on v7,
+        # the bulk walk source-builds every registry package on every
+        # matrix runner — hours of duplicate work and a fragility
+        # surface that only the target's deps need to clear.
+        # `xtask archive-stage` below re-runs the same resolver but
+        # only does cache bookkeeping when the prereq deps are warm.
         run: |
-          bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh --allow-stale
+          bash scripts/dev-shell.sh bash -c '
+            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
+            cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
+              build-deps --arch "${{ matrix.arch }}" --binaries-dir "$(pwd)/binaries" \
+                resolve "${{ matrix.package }}"
+          '
 
       - name: Build ${{ matrix.package }} (${{ matrix.arch }})
         # Per-package wrapper around the existing build-deps +
