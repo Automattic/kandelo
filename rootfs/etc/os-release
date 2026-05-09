@@ -1,0 +1,4 @@
+NAME="wasm-posix-kernel"
+ID=wasm-posix
+PRETTY_NAME="wasm-posix-kernel"
+HOME_URL="https://github.com/Automattic/wasm-posix-kernel"

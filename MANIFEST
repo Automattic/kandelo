@@ -1,0 +1,64 @@
+# wasm-posix-kernel rootfs manifest.
+#
+# Grammar: <path>  <type>  <mode>  [<uid>]  [<gid>]  [key=value ...]
+# Types:   d dir, f file, l symlink, c char-device, b block-device
+# Archive: archive  url=<path>  base=<prefix>  [fmode=] [dmode=] [uid=] [gid=]
+#
+# Files with type f and no src= pull content from rootfs/<path>.
+# The mkrootfs builder refuses to silently drop on-disk files that
+# aren't declared here, so every rootfs/* addition needs a line below.
+#
+# Ownership defaults to 0:0 (root). uid/gid are honest once the
+# kernel's synthetic /etc interception is removed in PR 4/5 — user
+# programs will see these exact values via stat().
+#
+# The /dev tree is intentionally absent: the kernel intercepts
+# /dev/{null,zero,full,random,urandom,tty,console,fb0,stdin,stdout,
+# stderr,fd/N,pts/N,ptmx} synthetically, so declaring them here would
+# either be redundant or actively misleading.
+
+# ── Top-level system directories ───────────────────────────────────
+/etc             d  0755  0  0
+/tmp             d  1777  0  0
+/home            d  0755  0  0
+/root            d  0700  0  0
+/srv             d  0755  0  0
+/var             d  0755  0  0
+/var/log         d  0755  0  0
+/var/run         d  0755  0  0
+/var/tmp         d  1777  0  0
+/bin             d  0755  0  0
+/usr             d  0755  0  0
+/usr/bin         d  0755  0  0
+
+# ── User home ──────────────────────────────────────────────────────
+/home/user       d  0755  1000  1000
+
+# ── /etc content (source: rootfs/etc/*) ────────────────────────────
+# passwd/group/hosts are byte-identical to the kernel's current
+# synthetic_file_content() output. PR 4/5 cuts over and removes that
+# Rust function; this file becomes the source of truth.
+/etc/passwd        f  0644  0  0
+/etc/group         f  0644  0  0
+/etc/hosts         f  0644  0  0
+# shadow is mode 0640: world-unreadable per Linux convention. uid/gid
+# stay at root since we have no separate "shadow" group.
+/etc/shadow        f  0640  0  0
+/etc/hostname      f  0644  0  0
+/etc/resolv.conf   f  0644  0  0
+/etc/nsswitch.conf f  0644  0  0
+/etc/os-release    f  0644  0  0
+/etc/profile       f  0644  0  0
+/etc/motd          f  0644  0  0
+# services matches the ad-hoc table in
+# examples/browser/lib/browser-kernel.ts byte-for-byte so the cutover
+# is invisible to getservbyname/getservbyport callers.
+/etc/services      f  0644  0  0
+
+# ── /bin content ───────────────────────────────────────────────────
+# /bin/sh is a zero-byte stub. The exec resolver intercepts this path
+# and loads dash.wasm at exec time; the stub only exists so access(),
+# stat(), and similar existence checks return success. A real symlink
+# to /usr/bin/dash gets added in a later PR once the dash package is
+# wired through the rootfs build.
+/bin/sh            f  0755  0  0
