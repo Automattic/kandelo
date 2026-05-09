@@ -170,6 +170,7 @@ function buildKernelImports(
  */
 function buildDlopenImports(
   memory: WebAssembly.Memory,
+  channelOffset: number,
   getTable: () => WebAssembly.Table | undefined,
   getStackPointer: () => WebAssembly.Global | undefined,
   getInstance: () => WebAssembly.Instance | undefined,
@@ -687,6 +688,7 @@ export async function centralizedWorkerMain(
       // Build import object and instantiate
       const dlopenImports = buildDlopenImports(
         memory,
+        channelOffset,
         () => processInstance?.exports.__indirect_function_table as WebAssembly.Table | undefined,
         () => processInstance?.exports.__stack_pointer as WebAssembly.Global | undefined,
         () => processInstance ?? undefined,
@@ -825,6 +827,7 @@ export async function centralizedWorkerMain(
       let processInstance: WebAssembly.Instance | null = null;
       const dlopenImports = buildDlopenImports(
         memory,
+        channelOffset,
         () => processInstance?.exports.__indirect_function_table as WebAssembly.Table | undefined,
         () => processInstance?.exports.__stack_pointer as WebAssembly.Global | undefined,
         () => processInstance ?? undefined,
