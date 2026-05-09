@@ -30,4 +30,7 @@ npm install --prefer-offline
 npm run build
 cd ..
 
+echo "Building rootfs.vfs..."
+bash scripts/build-rootfs.sh
+
 echo "Build complete."
