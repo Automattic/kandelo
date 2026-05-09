@@ -314,6 +314,42 @@ describe("DynamicLinker", () => {
     expect(linker.dlclose(handle)).toBe(0);
   });
 
+  it("uses the supplied allocator for side-module memory", () => {
+    const memory = new WebAssembly.Memory({ initial: 1, maximum: 100 });
+    const table = new WebAssembly.Table({ initial: 1, element: "anyfunc" });
+    const stackPointer = new WebAssembly.Global(
+      { value: "i32", mutable: true },
+      65536,
+    );
+    let allocSize = 0;
+    let allocAlign = 0;
+    const linker = new DynamicLinker({
+      memory,
+      table,
+      stackPointer,
+      allocateMemory: (size, align) => {
+        allocSize = size;
+        allocAlign = align;
+        return 0x2000;
+      },
+      globalSymbols: new Map(),
+      got: new Map(),
+      loadedLibraries: new Map(),
+    });
+    const wasmBytes = buildSharedLib(
+      `
+      int value = 7;
+      int get_value(void) { return value; }
+      `,
+      "dl-allocator",
+    );
+
+    const handle = linker.dlopenSync("liballoc.so", wasmBytes);
+    expect(handle).toBeGreaterThan(0);
+    expect(allocSize).toBeGreaterThan(0);
+    expect(allocAlign).toBeGreaterThan(0);
+  });
+
   it("dlerror reports failures", () => {
     const linker = createLinker();
 

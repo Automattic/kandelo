@@ -182,8 +182,10 @@ export interface LoadSharedLibraryOptions {
   table: WebAssembly.Table;
   /** Stack pointer global (shared across all modules) */
   stackPointer: WebAssembly.Global;
-  /** Current heap pointer — updated after allocation */
-  heapPointer: { value: number };
+  /** Current heap pointer — updated after allocation when no allocator is supplied */
+  heapPointer?: { value: number };
+  /** Allocate side-module linear-memory data in the process address space */
+  allocateMemory?: (size: number, align: number) => number;
   /** Global symbol table: name → function or WebAssembly.Global */
   globalSymbols: Map<string, Function | WebAssembly.Global>;
   /** GOT entries: symbol name → mutable i32 WebAssembly.Global */
@@ -211,14 +213,29 @@ function instantiateSharedLibrary(
   const memAlign = 1 << metadata.memoryAlign;
   let memoryBase = 0;
   if (metadata.memorySize > 0) {
-    memoryBase = alignUp(options.heapPointer.value, memAlign);
-    options.heapPointer.value = memoryBase + metadata.memorySize;
+    if (options.allocateMemory) {
+      memoryBase = options.allocateMemory(metadata.memorySize, memAlign);
+      const end = memoryBase + metadata.memorySize;
+      if (end > options.memory.buffer.byteLength) {
+        throw new Error(
+          `${name}: allocator returned 0x${memoryBase.toString(16)} but memory only covers 0x${options.memory.buffer.byteLength.toString(16)}`,
+        );
+      }
+    } else {
+      if (!options.heapPointer) {
+        throw new Error(`${name}: no side-module memory allocator configured`);
+      }
+      memoryBase = alignUp(options.heapPointer.value, memAlign);
+      options.heapPointer.value = memoryBase + metadata.memorySize;
 
-    // Ensure the memory is large enough
-    const neededPages = Math.ceil(options.heapPointer.value / 65536);
-    const currentPages = options.memory.buffer.byteLength / 65536;
-    if (neededPages > currentPages) {
-      options.memory.grow(neededPages - currentPages);
+      // Ensure the memory is large enough for standalone linker tests and
+      // non-POSIX embedders. Process workers pass allocateMemory so side-module
+      // data is tracked by the guest allocator instead of a host-only pointer.
+      const neededPages = Math.ceil(options.heapPointer.value / 65536);
+      const currentPages = options.memory.buffer.byteLength / 65536;
+      if (neededPages > currentPages) {
+        options.memory.grow(neededPages - currentPages);
+      }
     }
 
     // Zero-initialize the allocated region

@@ -23,6 +23,17 @@ export interface MessagePort {
   on(event: string, handler: (...args: unknown[]) => void): void;
 }
 
+function alignUp(value: number, align: number): number {
+  return Math.ceil(value / align) * align;
+}
+
+const SYS_MMAP_NR = 46;
+const CH_ARG_SIZE = 8;
+const CH_RETURN = 56;
+const CH_ERRNO = 64;
+const PROT_READ_WRITE = 3;
+const MAP_PRIVATE_ANONYMOUS = 0x22;
+
 /**
  * Build kernel.* import stubs for channel-mode Wasm modules.
  * Both process and thread workers need these because the musl overlay CRT
@@ -162,19 +173,49 @@ function buildDlopenImports(
   getTable: () => WebAssembly.Table | undefined,
   getStackPointer: () => WebAssembly.Global | undefined,
   getInstance: () => WebAssembly.Instance | undefined,
+  ptrWidth: 4 | 8,
 ): Record<string, WebAssembly.ExportValue> {
   let linker: DynamicLinker | null = null;
   const decoder = new TextDecoder();
-
-  // Shared library memory starts at 128MB to avoid conflicting with
-  // the program's malloc heap (which starts at __heap_base, ~1MB).
-  const DYLIB_MEMORY_BASE = 128 * 1024 * 1024;
+  const n = (v: number | bigint): number => typeof v === "bigint" ? Number(v) : v;
 
   const getLinker = (): DynamicLinker => {
     if (linker) return linker;
     const table = getTable();
     const sp = getStackPointer();
     if (!table || !sp) throw new Error("dlopen: program has no table or stack pointer");
+
+    // Side-module data must be allocated through the guest address-space
+    // manager. A host-only fixed base can overlap later guest mmap ranges;
+    // anonymous mmap zeroing from the kernel/host completion path
+    // would then wipe the side module's data/GOT while the kernel sees no
+    // overlap.
+    const allocateMemory = (size: number, align: number): number => {
+      const requested = size + Math.max(align, 1) - 1;
+      const view = new DataView(memory.buffer);
+      const base = channelOffset;
+      view.setInt32(base + 4, SYS_MMAP_NR, true);
+      view.setBigInt64(base + 8 + 0 * CH_ARG_SIZE, 0n, true);
+      view.setBigInt64(base + 8 + 1 * CH_ARG_SIZE, BigInt(requested), true);
+      view.setBigInt64(base + 8 + 2 * CH_ARG_SIZE, BigInt(PROT_READ_WRITE), true);
+      view.setBigInt64(base + 8 + 3 * CH_ARG_SIZE, BigInt(MAP_PRIVATE_ANONYMOUS), true);
+      view.setBigInt64(base + 8 + 4 * CH_ARG_SIZE, -1n, true);
+      view.setBigInt64(base + 8 + 5 * CH_ARG_SIZE, 0n, true);
+
+      const i32 = new Int32Array(memory.buffer);
+      Atomics.store(i32, base / 4, 1);
+      Atomics.notify(i32, base / 4, 1);
+      while (Atomics.wait(i32, base / 4, 1) === "ok") { /* wait for mmap */ }
+
+      const result = Number(view.getBigInt64(base + CH_RETURN, true));
+      const err = view.getUint32(base + CH_ERRNO, true);
+      Atomics.store(i32, base / 4, 0);
+
+      if (err || result < 0) {
+        throw new Error(`dlopen: mmap(${requested}) failed errno=${err || -result}`);
+      }
+      return alignUp(n(result), Math.max(align, 1));
+    };
 
     // Register main program's exported functions as global symbols
     // so shared libraries can resolve references to libc, etc.
@@ -192,7 +233,7 @@ function buildDlopenImports(
       memory,
       table,
       stackPointer: sp,
-      heapPointer: { value: DYLIB_MEMORY_BASE },
+      allocateMemory,
       globalSymbols,
       got: new Map(),
       loadedLibraries: new Map(),
@@ -649,6 +690,7 @@ export async function centralizedWorkerMain(
         () => processInstance?.exports.__indirect_function_table as WebAssembly.Table | undefined,
         () => processInstance?.exports.__stack_pointer as WebAssembly.Global | undefined,
         () => processInstance ?? undefined,
+        ptrWidth,
       );
       const importObject = buildImportObject(module, memory, kernelImports, channelOffset, dlopenImports,
         () => processInstance ?? undefined, ptrWidth);
@@ -786,6 +828,7 @@ export async function centralizedWorkerMain(
         () => processInstance?.exports.__indirect_function_table as WebAssembly.Table | undefined,
         () => processInstance?.exports.__stack_pointer as WebAssembly.Global | undefined,
         () => processInstance ?? undefined,
+        ptrWidth,
       );
       const importObject = buildImportObject(module, memory, kernelImports, channelOffset, dlopenImports,
         () => processInstance ?? undefined, ptrWidth);
