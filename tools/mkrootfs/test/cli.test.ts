@@ -38,10 +38,13 @@ describe("mkrootfs CLI — top-level", () => {
     expect(r.stderr).toContain(`unknown command "bogus"`);
   });
 
-  it("add still prints 'not yet implemented'", () => {
-    const r = run("add");
-    expect(r.status).toBe(1);
-    expect(r.stderr).toContain(`mkrootfs add: not yet implemented`);
+  it("all four subcommands are wired (no more 'not yet implemented' stubs)", () => {
+    for (const sub of ["build", "inspect", "extract", "add"]) {
+      const r = run(sub, "--help");
+      expect(r.status, `${sub} --help should exit 0`).toBe(0);
+      expect(r.stdout).toContain(sub);
+      expect(r.stderr).not.toContain("not yet implemented");
+    }
   });
 });
 
@@ -618,6 +621,260 @@ describe("mkrootfs extract — error handling", () => {
       const r = run("extract", image, join(tmp, "out"), "--bogus");
       expect(r.status).toBe(2);
       expect(r.stderr).toContain("--bogus");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+function inspectJson(image: string): Array<{
+  path: string;
+  type: string;
+  mode: string;
+  uid: number;
+  gid: number;
+  size: number | null;
+  target?: string;
+}> {
+  const r = run("inspect", image, "--format", "json");
+  if (r.status !== 0) {
+    throw new Error(`inspect failed: ${r.stderr}`);
+  }
+  return JSON.parse(r.stdout);
+}
+
+describe("mkrootfs add — happy paths", () => {
+  it("adds a regular file with content + metadata, in place", () => {
+    const { tmp, image } = buildBasicImage();
+    try {
+      const src = join(tmp, "hello.txt");
+      writeFileSync(src, "hello, world\n");
+      const r = run(
+        "add", image, "/etc/hello",
+        "--file", src,
+        "--mode", "0640",
+        "--uid", "5",
+        "--gid", "7",
+      );
+      expect(r.status).toBe(0);
+
+      const entries = inspectJson(image);
+      const hello = entries.find((e) => e.path === "/etc/hello");
+      expect(hello).toBeDefined();
+      expect(hello!.type).toBe("f");
+      expect(hello!.mode).toBe("0640");
+      expect(hello!.uid).toBe(5);
+      expect(hello!.gid).toBe(7);
+      expect(hello!.size).toBe("hello, world\n".length);
+
+      // Original entries are still there.
+      expect(entries.find((e) => e.path === "/etc/passwd")).toBeDefined();
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("adds a directory with default mode 0755 when --mode omitted", () => {
+    const { tmp, image } = buildBasicImage();
+    try {
+      const r = run("add", image, "/etc/conf.d", "--dir");
+      expect(r.status).toBe(0);
+      const entries = inspectJson(image);
+      const d = entries.find((e) => e.path === "/etc/conf.d");
+      expect(d).toBeDefined();
+      expect(d!.type).toBe("d");
+      expect(d!.mode).toBe("0755");
+      expect(d!.uid).toBe(0);
+      expect(d!.gid).toBe(0);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("adds a directory with explicit mode/uid/gid", () => {
+    const { tmp, image } = buildBasicImage();
+    try {
+      const r = run(
+        "add", image, "/home/bob",
+        "--dir",
+        "--mode", "0750",
+        "--uid", "1001",
+        "--gid", "1001",
+      );
+      expect(r.status).toBe(0);
+      const entries = inspectJson(image);
+      const d = entries.find((e) => e.path === "/home/bob");
+      expect(d).toBeDefined();
+      expect(d!.type).toBe("d");
+      expect(d!.mode).toBe("0750");
+      expect(d!.uid).toBe(1001);
+      expect(d!.gid).toBe(1001);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("adds a symlink with the given target", () => {
+    const { tmp, image } = buildBasicImage();
+    try {
+      const r = run(
+        "add", image, "/usr/bin/vi",
+        "--symlink", "/usr/bin/sh",
+      );
+      expect(r.status).toBe(0);
+      const entries = inspectJson(image);
+      const link = entries.find((e) => e.path === "/usr/bin/vi");
+      expect(link).toBeDefined();
+      expect(link!.type).toBe("l");
+      expect(link!.target).toBe("/usr/bin/sh");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("--force allows same-type file overwrite (content replaced)", () => {
+    const { tmp, image } = buildBasicImage();
+    try {
+      const src = join(tmp, "new-passwd");
+      writeFileSync(src, "root:x:0:0::/root:/bin/sh\n");
+      const r = run(
+        "add", image, "/etc/passwd",
+        "--file", src,
+        "--force",
+      );
+      expect(r.status).toBe(0);
+      const entries = inspectJson(image);
+      const passwd = entries.find((e) => e.path === "/etc/passwd");
+      expect(passwd!.size).toBe("root:x:0:0::/root:/bin/sh\n".length);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("prints subcommand usage on `add --help` and exits 0 without modifying image", () => {
+    const { tmp, image } = buildBasicImage();
+    try {
+      const before = readFileSync(image);
+      const r = run("add", "--help");
+      expect(r.status).toBe(0);
+      expect(r.stdout).toContain("add");
+      expect(r.stdout).toContain("--file");
+      expect(r.stdout).toContain("--symlink");
+      expect(readFileSync(image).equals(before)).toBe(true);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("mkrootfs add — error handling", () => {
+  it("exits 1 when parent directory does not exist", () => {
+    const { tmp, image } = buildBasicImage();
+    try {
+      const before = readFileSync(image);
+      const r = run("add", image, "/nope/missing/file", "--dir");
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain("parent directory does not exist");
+      expect(r.stderr).not.toContain("at ");
+      // Image unchanged on failure (atomic write).
+      expect(readFileSync(image).equals(before)).toBe(true);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("exits 1 when target already exists without --force", () => {
+    const { tmp, image } = buildBasicImage();
+    try {
+      const before = readFileSync(image);
+      const src = join(tmp, "something.txt");
+      writeFileSync(src, "x");
+      const r = run("add", image, "/etc/passwd", "--file", src);
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain("already exists");
+      expect(r.stderr).toContain("--force");
+      expect(readFileSync(image).equals(before)).toBe(true);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("exits 1 with --force when types differ (file → dir at same path)", () => {
+    const { tmp, image } = buildBasicImage();
+    try {
+      const before = readFileSync(image);
+      const r = run("add", image, "/etc/passwd", "--dir", "--force");
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain("cross-type replace not supported");
+      expect(readFileSync(image).equals(before)).toBe(true);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("exits 2 when no operation flag is given", () => {
+    const { tmp, image } = buildBasicImage();
+    try {
+      const before = readFileSync(image);
+      const r = run("add", image, "/etc/x");
+      expect(r.status).toBe(2);
+      expect(r.stderr).toMatch(/missing operation flag|--file|--dir|--symlink/);
+      expect(readFileSync(image).equals(before)).toBe(true);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("exits 2 when multiple operation flags are given", () => {
+    const { tmp, image } = buildBasicImage();
+    try {
+      const before = readFileSync(image);
+      const src = join(tmp, "x.txt");
+      writeFileSync(src, "x");
+      const r = run("add", image, "/etc/x", "--file", src, "--dir");
+      expect(r.status).toBe(2);
+      expect(r.stderr).toContain("mutually exclusive");
+      expect(readFileSync(image).equals(before)).toBe(true);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("exits 1 with a clean error when the image file does not exist", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-cli-add-"));
+    try {
+      const r = run("add", join(tmp, "nope.vfs"), "/etc/x", "--dir");
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain("image not found");
+      expect(r.stderr).not.toContain("at ");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("exits 1 when --file source path does not exist", () => {
+    const { tmp, image } = buildBasicImage();
+    try {
+      const before = readFileSync(image);
+      const r = run(
+        "add", image, "/etc/new",
+        "--file", join(tmp, "missing-source.txt"),
+      );
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain("source file not found");
+      expect(r.stderr).not.toContain("at ");
+      expect(readFileSync(image).equals(before)).toBe(true);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("exits 2 when <vfs-path> is not absolute", () => {
+    const { tmp, image } = buildBasicImage();
+    try {
+      const r = run("add", image, "etc/x", "--dir");
+      expect(r.status).toBe(2);
+      expect(r.stderr).toContain("absolute");
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
