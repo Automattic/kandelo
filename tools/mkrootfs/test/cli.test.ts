@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 
@@ -28,8 +28,8 @@ describe("mkrootfs CLI — top-level", () => {
     expect(r.stderr).toContain(`unknown command "bogus"`);
   });
 
-  it("inspect/extract/add still print 'not yet implemented'", () => {
-    for (const cmd of ["inspect", "extract", "add"]) {
+  it("extract/add still print 'not yet implemented'", () => {
+    for (const cmd of ["extract", "add"]) {
       const r = run(cmd);
       expect(r.status).toBe(1);
       expect(r.stderr).toContain(`mkrootfs ${cmd}: not yet implemented`);
@@ -218,6 +218,178 @@ describe("mkrootfs build — error handling", () => {
       expect(r.stderr).toContain("source file not found");
       expect(r.stderr).not.toContain("at ");
       expect(existsSync(out)).toBe(false);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+function buildBasicImage(): { tmp: string; image: string } {
+  const fixture = join(here, "fixtures", "basic");
+  const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-cli-inspect-"));
+  const image = join(tmp, "rootfs.vfs");
+  const r = run(
+    "build",
+    join(fixture, "MANIFEST"),
+    join(fixture, "rootfs"),
+    "-o", image,
+    "--repo-root", fixture,
+  );
+  if (r.status !== 0) {
+    rmSync(tmp, { recursive: true, force: true });
+    throw new Error(`build prerequisite failed: ${r.stderr}`);
+  }
+  return { tmp, image };
+}
+
+describe("mkrootfs inspect — happy paths", () => {
+  it("table format lists every entry sorted by path with type/mode/uid/gid/size", () => {
+    const { tmp, image } = buildBasicImage();
+    try {
+      const r = run("inspect", image);
+      expect(r.status).toBe(0);
+      const lines = r.stdout.trimEnd().split("\n");
+      // Header + 8 entries (/, /etc, /etc/passwd, /home, /home/alice,
+      // /tmp, /usr, /usr/bin, /usr/bin/sh).
+      expect(lines[0]).toMatch(/^type\s+mode\s+uid\s+gid\s+size\s+path/);
+      const paths = lines.slice(1).map((l) => l.split(/\s+/).at(-1));
+      const idx = (p: string) => paths.findIndex((s) => s === p || s?.startsWith(`${p} `));
+      // Sorted: / < /etc < /etc/passwd < /home < ...
+      expect(idx("/")).toBe(0);
+      expect(idx("/etc")).toBeLessThan(idx("/etc/passwd"));
+      expect(idx("/etc/passwd")).toBeLessThan(idx("/home"));
+      // File row reports honest size (passwd is 137 bytes).
+      const passwd = lines.find((l) => l.includes(" /etc/passwd"));
+      expect(passwd).toBeTruthy();
+      expect(passwd).toMatch(/\bf\s+0644\s+0\s+0\s+137\s+\/etc\/passwd/);
+      // Symlink row shows " -> target".
+      const sh = lines.find((l) => l.includes("/usr/bin/sh"));
+      expect(sh).toBeTruthy();
+      expect(sh).toMatch(/\bl\s+0777\b/);
+      expect(sh).toContain("/usr/bin/sh -> /bin/dash");
+      // Sticky-bit dir.
+      const tmpRow = lines.find((l) => / \/tmp$/.test(l));
+      expect(tmpRow).toMatch(/\bd\s+1777\s+0\s+0\s+-/);
+      // Non-zero uid/gid preserved.
+      const alice = lines.find((l) => l.includes("/home/alice"));
+      expect(alice).toMatch(/\bd\s+0700\s+1000\s+1000\s+-/);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("json format emits a parseable sorted array of entries", () => {
+    const { tmp, image } = buildBasicImage();
+    try {
+      const r = run("inspect", image, "--format", "json");
+      expect(r.status).toBe(0);
+      const data = JSON.parse(r.stdout) as Array<{
+        path: string;
+        type: string;
+        mode: string;
+        uid: number;
+        gid: number;
+        size: number | null;
+        target?: string;
+      }>;
+      expect(Array.isArray(data)).toBe(true);
+      // Sorted by path.
+      const paths = data.map((e) => e.path);
+      const sorted = [...paths].sort();
+      expect(paths).toEqual(sorted);
+      // Root is first.
+      expect(data[0].path).toBe("/");
+      expect(data[0].type).toBe("d");
+      // Symlink carries target and null size.
+      const sh = data.find((e) => e.path === "/usr/bin/sh");
+      expect(sh).toBeDefined();
+      expect(sh!.type).toBe("l");
+      expect(sh!.target).toBe("/bin/dash");
+      // Regular file carries honest size.
+      const passwd = data.find((e) => e.path === "/etc/passwd");
+      expect(passwd!.type).toBe("f");
+      expect(passwd!.size).toBe(137);
+      expect(passwd!.mode).toBe("0644");
+      // Dir size is null (not included as a number).
+      const etc = data.find((e) => e.path === "/etc");
+      expect(etc!.size).toBeNull();
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("--format=json long-form works and matches --format json output", () => {
+    const { tmp, image } = buildBasicImage();
+    try {
+      const a = run("inspect", image, "--format=json");
+      const b = run("inspect", image, "--format", "json");
+      expect(a.status).toBe(0);
+      expect(b.status).toBe(0);
+      expect(a.stdout).toBe(b.stdout);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("prints subcommand usage on `inspect --help` and exits 0", () => {
+    const r = run("inspect", "--help");
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain("inspect");
+    expect(r.stdout).toContain("--format");
+  });
+});
+
+describe("mkrootfs inspect — error handling", () => {
+  it("exits 1 with a clean error when the image file does not exist", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-cli-inspect-"));
+    try {
+      const r = run("inspect", join(tmp, "nope.vfs"));
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain("image not found");
+      expect(r.stderr).not.toContain("at ");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("exits 1 with a clean error when the file is not a valid VFS image", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-cli-inspect-"));
+    const garbage = join(tmp, "garbage.vfs");
+    try {
+      writeFileSync(garbage, "this is not a vfs image\n");
+      const r = run("inspect", garbage);
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain("mkrootfs inspect:");
+      expect(r.stderr).not.toContain("at ");
+      expect(r.stderr).not.toMatch(/\.ts:\d+/);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("exits 2 on missing positional argument", () => {
+    const r = run("inspect");
+    expect(r.status).toBe(2);
+    expect(r.stderr).toMatch(/positional|usage/i);
+  });
+
+  it("exits 2 on unknown flag", () => {
+    const { tmp, image } = buildBasicImage();
+    try {
+      const r = run("inspect", image, "--bogus");
+      expect(r.status).toBe(2);
+      expect(r.stderr).toContain("--bogus");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("exits 2 when --format value is not table|json", () => {
+    const { tmp, image } = buildBasicImage();
+    try {
+      const r = run("inspect", image, "--format", "yaml");
+      expect(r.status).toBe(2);
+      expect(r.stderr).toContain("--format");
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
