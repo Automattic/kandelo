@@ -35,6 +35,14 @@
 //!                         publish flow (Phase A-bis Task 5) when an archive
 //!                         is uploaded; mirrors the lifecycle of
 //!                         `[binary].archive_url` + `archive_sha256`.
+//!   set-package-binary    Update `[binary.<arch>].archive_url` +
+//!                         `archive_sha256` (multi-arch) or `[binary]`
+//!                         (single-arch) in one
+//!                         `examples/libs/<name>/package.toml`. Used by
+//!                         Phase C's `amend-package-toml` job in
+//!                         `.github/workflows/prepare-merge.yml` (and the
+//!                         force-rebuild equivalent) to point the in-tree
+//!                         manifest at a freshly-published archive.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -65,7 +73,7 @@ fn main() -> ExitCode {
         None => {
             eprintln!("usage: xtask <subcommand> [args...]");
             eprintln!(
-                "subcommands: dump-abi, build-manifest, bundle-program, build-deps, compute-cache-key-sha, archive-stage, build-index, stage-release, stage-pr-overlay, install-release, set-build-commit"
+                "subcommands: dump-abi, build-manifest, bundle-program, build-deps, compute-cache-key-sha, archive-stage, build-index, stage-release, stage-pr-overlay, install-release, set-build-commit, set-package-binary"
             );
             return ExitCode::from(2);
         }
@@ -83,6 +91,7 @@ fn main() -> ExitCode {
         "stage-pr-overlay" => stage_pr_overlay::run(rest),
         "install-release" => install_release::run(rest),
         "set-build-commit" => update_pkg_manifest::run(rest),
+        "set-package-binary" => update_pkg_manifest::run_set_package_binary(rest),
         other => {
             eprintln!("xtask: unknown subcommand {other:?}");
             return ExitCode::from(2);
