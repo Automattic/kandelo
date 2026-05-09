@@ -3,13 +3,13 @@
 // VFS images.
 //
 // Usage:
-//   mkrootfs build <sourceTree> <manifest> -o <image>
+//   mkrootfs build <MANIFEST> <sourceTree> -o <output.vfs> [--repo-root=<dir>] [--quiet]
 //   mkrootfs inspect <image>
 //   mkrootfs extract <image> <outDir>
 //   mkrootfs add <image> <path> <src> [--mode=0644] [--uid=0] [--gid=0]
 
 const USAGE = `Usage: mkrootfs {build|inspect|extract|add} ...
-  build   <sourceTree> <manifest> -o <image> [--repoRoot=<dir>]
+  build   <MANIFEST> <sourceTree> -o <output.vfs> [--repo-root=<dir>] [--quiet]
   inspect <image>
   extract <image> <outDir>
   add     <image> <path> <src> [--mode=0644] [--uid=0] [--gid=0]
@@ -27,7 +27,10 @@ async function main(argv: string[]): Promise<number> {
     return 0;
   }
   switch (cmd) {
-    case "build":
+    case "build": {
+      const { runBuild } = await import("./cli/build.ts");
+      return await runBuild(argv.slice(3));
+    }
     case "inspect":
     case "extract":
     case "add":
