@@ -353,9 +353,25 @@ jobs:
         # with our own description replaces that text with actionable
         # guidance. prepare-merge.yml later overwrites the same
         # context with state=success on the lockfile-bump commit.
+        #
+        # Skip the post if `merge-gate` is already `success` on this
+        # SHA. That happens after prepare-merge force-pushes the
+        # lockfile-bump commit (PR HEAD advances, synchronize event
+        # triggers a fresh staging-build on the new SHA, but
+        # prepare-merge has already posted success there before
+        # enabling auto-merge). Without this guard, this step would
+        # overwrite the success with pending and block the auto-merge
+        # prepare-merge just enabled.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          existing=$(gh api \
+            "/repos/${{ github.repository }}/commits/${{ github.event.pull_request.head.sha }}/status" \
+            --jq '[.statuses[] | select(.context == "merge-gate")] | .[0].state // ""')
+          if [ "$existing" = "success" ]; then
+            echo "merge-gate already success on ${{ github.event.pull_request.head.sha }} (likely the prepare-merge lockfile-bump commit); skipping pending post."
+            exit 0
+          fi
           gh api -X POST \
             -H "Accept: application/vnd.github+json" \
             "/repos/${{ github.repository }}/statuses/${{ github.event.pull_request.head.sha }}" \
