@@ -119,3 +119,6 @@ examples/mariadb-test/test-data/
 # Benchmark results and built wasm
 benchmarks/results/
 benchmarks/wasm/
+
+# Phase C: per-package PR overlay (CI-generated; merged over package.toml at parse time).
+examples/libs/*/package.pr.toml

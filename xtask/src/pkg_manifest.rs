@@ -682,6 +682,34 @@ impl DepsManifest {
             .map_err(|e| format!("{}: {e}", path.display()))
     }
 
+    /// Read a `package.toml` and merge an optional `package.pr.toml`
+    /// overlay sitting in the same directory. The overlay is the
+    /// Phase C consumer-side mechanism for swapping in PR-staging
+    /// archive URLs without touching the committed `package.toml`:
+    /// CI generates the overlay file (gitignored) for each package
+    /// being rebuilt by a PR, then deletes it on merge. Overlays may
+    /// only contain `[binary]` / `[binary.<arch>]` entries; any
+    /// other top-level field is rejected.
+    ///
+    /// Falls through to the base manifest unchanged when no overlay
+    /// file is present in `dir`.
+    pub fn load_with_overlay(dir: &Path) -> Result<Self, String> {
+        let base_path = dir.join("package.toml");
+        let base_text = std::fs::read_to_string(&base_path)
+            .map_err(|e| format!("read {}: {e}", base_path.display()))?;
+        let mut manifest = Self::parse(&base_text, dir.to_path_buf())
+            .map_err(|e| format!("{}: {e}", base_path.display()))?;
+
+        let overlay_path = dir.join("package.pr.toml");
+        if overlay_path.exists() {
+            let overlay_text = std::fs::read_to_string(&overlay_path)
+                .map_err(|e| format!("read {}: {e}", overlay_path.display()))?;
+            apply_pr_overlay(&mut manifest, &overlay_text)
+                .map_err(|e| format!("{}: {e}", overlay_path.display()))?;
+        }
+        Ok(manifest)
+    }
+
     /// Parse a source `package.toml`. Rejects manifests that contain a
     /// `[compatibility]` block — that block is reserved for archived
     /// `manifest.toml` files (see [`parse_archived`]).
@@ -1186,6 +1214,59 @@ impl DepsManifest {
     pub fn spec(&self) -> String {
         format!("{}@{}", self.name, self.version)
     }
+}
+
+/// Parse `package.pr.toml` as a `[binary]`-only overlay and merge it
+/// into `manifest`. Overlays are intentionally narrow: they exist
+/// solely so a PR build can swap in pre-release archive URLs without
+/// rewriting the committed `package.toml`. Anything other than
+/// `[binary]` / `[binary.<arch>]` is rejected to keep the surface
+/// area small (and to keep `git diff` of the overlay file readable
+/// at a glance).
+///
+/// Merge semantics: per-arch entries in the overlay REPLACE the
+/// matching arch in the base. Arches present in the base but absent
+/// from the overlay are preserved — so an overlay declaring just
+/// `[binary.wasm32]` does not silently drop the base's
+/// `[binary.wasm64]`.
+fn apply_pr_overlay(
+    manifest: &mut DepsManifest,
+    overlay_text: &str,
+) -> Result<(), String> {
+    let value: toml::Value = toml::from_str(overlay_text)
+        .map_err(|e| format!("parse package.pr.toml: {e}"))?;
+    let table = value
+        .as_table()
+        .ok_or_else(|| "package.pr.toml must be a TOML table".to_string())?;
+
+    for key in table.keys() {
+        if key != "binary" {
+            return Err(format!(
+                "package.pr.toml may only override [binary] / [binary.<arch>] — \
+                 unexpected top-level field {key:?}. \
+                 See docs/plans/2026-05-05-decoupled-package-builds-design.md §3.3."
+            ));
+        }
+    }
+
+    let binary_value = table
+        .get("binary")
+        .cloned()
+        .ok_or_else(|| {
+            "package.pr.toml has no [binary] section (overlay must \
+             override at least one arch)"
+                .to_string()
+        })?;
+
+    // Reuse the base parser. parse_binary_block accepts both the
+    // bare `[binary]` shape (single-arch wasm32-only) and the
+    // per-arch `[binary.wasm32]` / `[binary.wasm64]` shape.
+    let new_binary = DepsManifest::parse_binary_block(binary_value)?;
+
+    for (arch, bin) in new_binary {
+        manifest.binary.insert(arch, bin);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -2230,6 +2311,176 @@ wasm = "git-remote-http.wasm"
         assert!(
             err.contains("kind") || err.contains("program"),
             "got: {err}"
+        );
+    }
+
+    /// Helper for the overlay tests: write `package.toml` and
+    /// (optionally) `package.pr.toml` into a fresh tempdir and return
+    /// the dir.
+    fn overlay_fixture_dir(label: &str, base: &str, overlay: Option<&str>) -> PathBuf {
+        let dir = std::env::temp_dir()
+            .join("wpk-xtask-pr-overlay")
+            .join(format!("{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("package.toml"), base).unwrap();
+        if let Some(o) = overlay {
+            std::fs::write(dir.join("package.pr.toml"), o).unwrap();
+        }
+        dir
+    }
+
+    /// Base manifest used by the overlay tests. Includes a
+    /// `[binary.wasm32]` block so we can verify the overlay replaces
+    /// it. Library kind so no `[[outputs]]`/`[build]` boilerplate is
+    /// required.
+    const OVERLAY_BASE: &str = r#"
+kind = "library"
+name = "zlib"
+version = "1.3.1"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://example.test/zlib-1.3.1.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "Zlib"
+
+[outputs]
+libs = ["lib/libz.a"]
+headers = ["include/zlib.h"]
+
+[binary.wasm32]
+archive_url = "https://example.test/zlib-base-wasm32.tar.zst"
+archive_sha256 = "1111111111111111111111111111111111111111111111111111111111111111"
+"#;
+
+    #[test]
+    fn overlay_merges_binary_block_over_base() {
+        // The overlay declares the same arch (wasm32) with a
+        // different sha + URL — after merge, the manifest must carry
+        // the overlay's values, not the base's.
+        let new_url = "https://example.test/zlib-pr-staging-wasm32.tar.zst";
+        let new_sha = "2".repeat(64);
+        let overlay = format!(
+            "[binary.wasm32]\n\
+             archive_url = \"{new_url}\"\n\
+             archive_sha256 = \"{new_sha}\"\n"
+        );
+        let dir = overlay_fixture_dir("merge-replace", OVERLAY_BASE, Some(&overlay));
+
+        let m = DepsManifest::load_with_overlay(&dir).unwrap();
+        let bin = m
+            .binary
+            .get(&TargetArch::Wasm32)
+            .expect("wasm32 binary entry must be present after merge");
+        assert_eq!(bin.archive_url, new_url);
+        assert_eq!(bin.archive_sha256, new_sha);
+    }
+
+    #[test]
+    fn overlay_absent_uses_base() {
+        // No `package.pr.toml` next to `package.toml` — the loader
+        // returns the base manifest unchanged.
+        let dir = overlay_fixture_dir("absent", OVERLAY_BASE, None);
+
+        let m = DepsManifest::load_with_overlay(&dir).unwrap();
+        let bin = m.binary.get(&TargetArch::Wasm32).unwrap();
+        assert_eq!(
+            bin.archive_url,
+            "https://example.test/zlib-base-wasm32.tar.zst"
+        );
+        assert_eq!(bin.archive_sha256, "1".repeat(64));
+    }
+
+    #[test]
+    fn overlay_with_non_binary_field_is_rejected() {
+        // The overlay file is intentionally narrow: only `[binary]` /
+        // `[binary.<arch>]` may appear. Any other top-level field is
+        // a mistake and must surface immediately.
+        let overlay = r#"
+name = "evil-rename"
+
+[binary.wasm32]
+archive_url = "https://example.test/anything.tar.zst"
+archive_sha256 = "3333333333333333333333333333333333333333333333333333333333333333"
+"#;
+        let dir = overlay_fixture_dir("non-binary-field", OVERLAY_BASE, Some(overlay));
+
+        let err = DepsManifest::load_with_overlay(&dir).unwrap_err();
+        assert!(
+            err.contains("package.pr.toml"),
+            "error must mention the overlay file by name, got: {err}"
+        );
+        assert!(
+            err.contains("[binary]"),
+            "error must mention that only [binary] is allowed, got: {err}"
+        );
+    }
+
+    #[test]
+    fn overlay_preserves_base_only_arches() {
+        // Regression guard: an overlay declaring only [binary.wasm32]
+        // must not drop the base's [binary.wasm64]. True today by
+        // BTreeMap::insert semantics, but pin it so a future refactor
+        // (e.g. clear-then-extend) can't silently break it.
+        let base_wasm32_sha = "1".repeat(64);
+        let base_wasm64_sha = "a".repeat(64);
+        let base = format!(
+            r#"
+kind = "library"
+name = "zlib"
+version = "1.3.1"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://example.test/zlib-1.3.1.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "Zlib"
+
+[outputs]
+libs = ["lib/libz.a"]
+headers = ["include/zlib.h"]
+
+[binary.wasm32]
+archive_url = "https://example.test/zlib-base-wasm32.tar.zst"
+archive_sha256 = "{base_wasm32_sha}"
+
+[binary.wasm64]
+archive_url = "https://example.test/zlib-base-wasm64.tar.zst"
+archive_sha256 = "{base_wasm64_sha}"
+"#
+        );
+
+        let overlay_wasm32_sha = "2".repeat(64);
+        let overlay = format!(
+            "[binary.wasm32]\n\
+             archive_url = \"https://example.test/zlib-pr-staging-wasm32.tar.zst\"\n\
+             archive_sha256 = \"{overlay_wasm32_sha}\"\n"
+        );
+        let dir = overlay_fixture_dir("preserve-base-only-arch", &base, Some(&overlay));
+
+        let m = DepsManifest::load_with_overlay(&dir).unwrap();
+        let bin32 = m
+            .binary
+            .get(&TargetArch::Wasm32)
+            .expect("wasm32 binary entry must be present after merge");
+        assert_eq!(
+            bin32.archive_sha256, overlay_wasm32_sha,
+            "wasm32 sha must come from the overlay"
+        );
+        let bin64 = m
+            .binary
+            .get(&TargetArch::Wasm64)
+            .expect("wasm64 binary entry must be preserved from the base");
+        assert_eq!(
+            bin64.archive_sha256, base_wasm64_sha,
+            "wasm64 sha must be the base's, untouched by the overlay"
         );
     }
 }
