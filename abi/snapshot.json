@@ -143,7 +143,7 @@
     },
     {
       "name": "SYS_SPAWN",
-      "number": 214
+      "number": 500
     },
     {
       "name": "SYS_EXECVEAT",

@@ -998,10 +998,17 @@ pub mod abi {
     /// kernel-dispatched syscalls only. Adding/removing a value here is an ABI
     /// change and requires bumping [`crate::ABI_VERSION`].
     pub mod host_intercepted {
-        /// Non-forking `posix_spawn` (this kernel's invention; no Linux equivalent).
-        /// Host calls `kernel_spawn_process`. See
+        /// Non-forking `posix_spawn` (this kernel's invention; no Linux
+        /// equivalent). Host calls `kernel_spawn_process`. See
         /// `docs/plans/2026-05-04-non-forking-posix-spawn-design.md`.
-        pub const SYS_SPAWN: u32 = 214;
+        ///
+        /// Numbered 500 to sit clear of every Linux syscall numbering
+        /// scheme and of our kernel-side dispatch table in `wasm_api.rs`
+        /// (highest used: 415). The original plan picked 214 to neighbour
+        /// SYS_FORK, but 214 collides with the kernel's existing
+        /// SYS_GETPGID handler — host-interception alone wouldn't help
+        /// because every legitimate getpgid call would also be caught.
+        pub const SYS_SPAWN: u32 = 500;
 
         /// Documented for completeness — also defined in
         /// `glue/channel_syscall.c` and `host/src/kernel-worker.ts`.

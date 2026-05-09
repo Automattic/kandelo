@@ -34,7 +34,7 @@
 
 /* SYS_SPAWN syscall number — keep in lockstep with
  * `glue/channel_syscall.c` and `crates/shared/src/lib.rs`. */
-#define SYS_SPAWN 214
+#define SYS_SPAWN 500
 
 /* Wire-format file-action op codes. Distinct from the FDOP_* values used
  * by musl's internal fdop list (which fdop.h numbers 1..5). */
@@ -47,7 +47,11 @@
 #define HEADER_LEN        40
 #define ACTION_RECORD_LEN 28
 
-extern long __syscall6(long, long, long, long, long, long, long);
+/* Matches the definition in glue/channel_syscall.c — all six syscall args
+ * are passed as long long (i64). Declaring them as plain `long` produces
+ * an i32-vs-i64 signature mismatch at link time on wasm32. */
+extern long __syscall6(long n, long long a1, long long a2, long long a3,
+                       long long a4, long long a5, long long a6);
 
 static const posix_spawnattr_t empty_attr;
 static const posix_spawn_file_actions_t empty_fa;
@@ -223,12 +227,12 @@ int posix_spawn(pid_t *restrict res, const char *restrict path,
 	pid_t pid_out = 0;
 	long ret = __syscall6(
 		SYS_SPAWN,
-		(long)(uintptr_t)path,
-		(long)strlen(path),
-		(long)(uintptr_t)blob,
-		(long)blob_len,
-		(long)(uintptr_t)&pid_out,
-		0
+		(long long)(uintptr_t)path,
+		(long long)strlen(path),
+		(long long)(uintptr_t)blob,
+		(long long)blob_len,
+		(long long)(uintptr_t)&pid_out,
+		0LL
 	);
 
 	free(blob);
