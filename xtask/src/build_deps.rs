@@ -675,10 +675,36 @@ fn ensure_built_uncached(
                 dep_m.spec()
             ));
         }
+        // Per the wasm64 build policy (memory/wasm64-build-policy.md):
+        // only MariaDB and PHP need wasm64 binaries; everything else
+        // is wasm32-only. So a wasm64 program (e.g. mariadb-vfs)
+        // depending on a wasm32-only dep (e.g. dinit) is the common
+        // case, not a misconfiguration. When the parent arch isn't in
+        // the dep's target_arches, fall back to wasm32 (the universal
+        // arch) for that dep. The resolver places the dep's binaries
+        // under binaries/programs/wasm32/, where build scripts'
+        // arch-agnostic tryResolveBinary("programs/<x>.wasm") finds
+        // them. The kernel runs mixed-arch programs.
+        let dep_arch = if dep_m.target_arches.contains(&arch) {
+            arch
+        } else if dep_m.target_arches.contains(&TargetArch::Wasm32) {
+            TargetArch::Wasm32
+        } else {
+            return Err(format!(
+                "{} depends on {}@{} (arch {}), but {} declares neither {} nor wasm32 in target_arches (declared: {:?})",
+                target.spec(),
+                dref.name,
+                dref.version,
+                arch.as_str(),
+                dep_m.spec(),
+                arch.as_str(),
+                dep_m.target_arches.iter().map(|a| a.as_str()).collect::<Vec<_>>(),
+            ));
+        };
         let (dep_path, dep_transitive) = ensure_built_inner(
             &dep_m,
             registry,
-            arch,
+            dep_arch,
             abi_version,
             opts,
             memo,
