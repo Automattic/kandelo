@@ -23,10 +23,10 @@ import { fileURLToPath } from "node:url";
  * top of the tree and together are unambiguous — they distinguish
  * the repo root from any nested cargo crate or npm subpackage.
  *
- * Previously this used `binaries.lock` + `abi/manifest.schema.json`
- * as markers, but Phase C removes the central `binaries.lock`
- * pinfile (per-package `package.toml` files now carry release
- * metadata) so the resolver no longer reads it.
+ * Per-package `examples/libs/<name>/package.toml` files carry the
+ * release-archive metadata directly (URL + sha256 in `[binary]` /
+ * `[binary.<arch>]`); there is no central pinfile for the resolver
+ * to read.
  */
 let cachedRepoRoot: string | null = null;
 

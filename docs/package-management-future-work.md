@@ -15,7 +15,7 @@ None is on a committed schedule — pick up when the use case arrives.
 
 Today's release excludes the kernel + userspace because their
 manifests at `examples/libs/{kernel,userspace}/` lack build scripts —
-`stage_release` skips manifests without a build script as composite
+`archive-stage` skips manifests without a build script as composite
 metadata. The browser demos import `binaries/kernel.wasm` and
 `binaries/userspace.wasm` (≈23 sites) at Vite build time; without
 those files Vite errors out unless the user has run `bash build.sh`
@@ -71,10 +71,10 @@ the lazy-mount VFS.
 
 2. **Mixed formats in the release.** Extend `xtask::archive_stage`
    to take an `archive_format` per manifest (default `.tar.zst`,
-   programs that need lazy-mount specify `.zip`).  `install_release`
-   decompressors handle both. Vim ships as `.zip` directly; demos
-   skip the repack step.  Schema doesn't need a new field — the
-   filename extension is the format hint.
+   programs that need lazy-mount specify `.zip`).  `remote_fetch::
+   fetch_and_install` decompressors handle both. Vim ships as `.zip`
+   directly; demos skip the repack step.  Schema doesn't need a new
+   field — the filename extension is the format hint.
 
 Trigger: when a real consumer wants to fetch a published archive +
 lazy-mount its runtime tree without an intermediate repack step.
@@ -357,9 +357,9 @@ trap.
 
 `abi/manifest.schema.json` currently allows `kind: "library"` or the archive-shape
 `kind: "program"` entries WITHOUT a `compatibility` block.  The
-producer (xtask::archive_stage / build_manifest) injects the block 100%
-of the time so this is unreachable, but the schema doesn't enforce it.
-A `dependentRequired` or `if/then` clause would tighten the contract.
+producer (`xtask::archive_stage`) injects the block 100% of the time
+so this is unreachable, but the schema doesn't enforce it. A
+`dependentRequired` or `if/then` clause would tighten the contract.
 
 ### Pre-flight resolver covers only `cache_key_sha`
 

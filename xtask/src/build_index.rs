@@ -29,7 +29,7 @@
 //! archive_sha256 = "def456..."
 //! ```
 //!
-//! Filename convention (mirrors `stage_release::stage_one`):
+//! Filename convention (must match what `archive-stage` writes):
 //! `<name>-<version>-rev<N>-abi<N>-<arch>-<short8>.tar.zst`.
 //!
 //! Hand-formatted (not via the `toml` crate's serializer): the design
@@ -248,8 +248,7 @@ fn parse_archive_filename(name: &str) -> Result<ParsedArchive, String> {
     // begins by looking at the string alone (both can contain `-`); we
     // adopt the convention that the LAST `-` before `rev<N>` separates
     // them. That matches every package in the registry today
-    // (mariadb-10.5.27, php-8.4.5, ncurses-6.5, ...) and the legacy
-    // `ParsedName` parser in build_manifest.rs uses the same heuristic.
+    // (mariadb-10.5.27, php-8.4.5, ncurses-6.5, ...).
     let pre_rev = &parts[..parts.len() - 4];
     if pre_rev.len() < 2 {
         return Err(format!(
@@ -472,8 +471,7 @@ fn assign_once<T>(slot: &mut Option<T>, value: T, name: &str) -> Result<(), Stri
 
 // Hand-rolled RFC3339 formatter for the default `generated_at` in
 // `index.toml`. Avoids pulling `chrono` into xtask for a single
-// timestamp. Mirrors the formatter that previously lived in the
-// (now-deleted) `build_manifest` module.
+// timestamp.
 fn current_utc_iso() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()

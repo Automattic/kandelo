@@ -148,14 +148,15 @@ jobs:
 
               # Per-package arches from package.toml'"'"'s top-level
               # `arches = [...]` field (default `["wasm32"]` when
-              # absent). Mirrors the filter in
-              # xtask/src/stage_release.rs:216, which skips archives
-              # whose arch isn'"'"'t in the manifest'"'"'s target_arches
-              # (parsed in xtask/src/pkg_manifest.rs around line 540).
-              # Iterating only declared arches here avoids spawning
-              # matrix entries the staging step would silently drop.
-              # Assumes the single-line form `arches = ["a", "b"]`;
-              # all current package.toml files use that shape.
+              # absent). Mirrors the filter inside
+              # `xtask archive-stage`, which rejects a `(package, arch)`
+              # pair whose arch isn'"'"'t in the manifest'"'"'s
+              # target_arches (parsed in xtask/src/pkg_manifest.rs around
+              # line 540). Iterating only declared arches here avoids
+              # spawning matrix entries the staging step would silently
+              # drop. Assumes the single-line form
+              # `arches = ["a", "b"]`; all current package.toml files
+              # use that shape.
               arches=$(awk -F'"'"'[][]'"'"' '"'"'/^arches *=/ {print $2}'"'"' "$pkg_dir/package.toml" | tr -d '"'"' "'"'"' | tr '"'"','"'"' '"'"' '"'"')
               arches=${arches:-wasm32}
               for arch in $arches; do
@@ -511,8 +512,7 @@ jobs:
         # changed packages and the durable-release bytes for everything
         # else.
         #
-        # Phase C cutover (Task 6): no more synthesized manifest.json +
-        # install-release overlay. The resolver consumes per-package
+        # Phase C cutover (Task 6): the resolver consumes per-package
         # package.toml directly, with optional package.pr.toml overlays
         # that replace [binary.<arch>].archive_url + archive_sha256.
         # Strategy:

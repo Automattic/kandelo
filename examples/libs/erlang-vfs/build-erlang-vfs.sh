@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # package-system build wrapper. Browser-side builder writes
 # examples/browser/public/erlang.vfs.zst; staged under the manifest's
-# program name so install_local_binary + install_release's mirror
+# program name so install_local_binary + the resolver's mirror layout
 # both produce erlang-vfs.vfs.zst.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

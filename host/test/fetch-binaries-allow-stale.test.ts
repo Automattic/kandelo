@@ -289,7 +289,10 @@ exit 0
     const deltaLines = logLines(/build-deps.*resolve\s+delta\b/);
     expect(deltaLines.length).toBe(0);
 
-    // Old install-release codepath is dead.
+    // Regression gate: the old install-release codepath was deleted in
+    // Phase C Task 6. This assertion ensures it doesn't quietly come
+    // back as a fallback under any code path — that dead code must
+    // stay dead.
     const installLines = logLines(/install-release/);
     expect(installLines.length).toBe(0);
 

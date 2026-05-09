@@ -18,7 +18,7 @@ BIN_DIR="$SCRIPT_DIR/bin"
 # --- Idempotent fast path ---
 # If all three artifacts already exist (e.g. left over from a prior
 # build, or downloaded by scripts/fetch-binaries.sh into bin/), just
-# install them and return. This lets `xtask stage-release` succeed in
+# install them and return. This lets `xtask archive-stage` succeed in
 # environments that don't have libc++ available — needed because the
 # resolver invokes this script to ensure_built before staging.
 if [ -f "$BIN_DIR/dinit.wasm" ] && [ -f "$BIN_DIR/dinitctl.wasm" ] && [ -f "$BIN_DIR/dinitcheck.wasm" ]; then
@@ -155,8 +155,8 @@ ls -la "$BIN_DIR/dinit.wasm"
 
 # Install into local-binaries/ so the resolver (host/src/binary-resolver.ts)
 # picks these up over anything fetched by scripts/fetch-binaries.sh.
-# Also makes the artifacts visible to `xtask stage-release` during a
-# release cut.
+# Also makes the artifacts visible to `xtask archive-stage` when a
+# package archive is being produced.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
 install_local_binary dinit "$BIN_DIR/dinit.wasm" dinit.wasm
 install_local_binary dinit "$BIN_DIR/dinitctl.wasm" dinitctl.wasm

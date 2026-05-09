@@ -10,20 +10,19 @@ name: Force rebuild
 # package archives) and you want to confirm the published archives match
 # a fresh source build.
 #
-# This is the Phase C cutover (see docs/plans/2026-05-05-decoupled-
-# package-builds-design.md §5.5) of the previous monolithic force-rebuild
-# that:
-#   * cut a fresh dated `binaries-abi-v<N>-YYYY-MM-DD[-<seq>]` release,
-#   * staged all packages via `xtask stage-release --force-rebuild`, and
-#   * bumped a single `binaries.lock` entry on a bot PR.
-#
-# The new flow:
-#   * targets the undated `binaries-abi-v<N>` tag (per-file uploads),
+# Flow (see docs/plans/2026-05-05-decoupled-package-builds-design.md
+# §5.5):
+#   * targets the undated `binaries-abi-v<N>` tag (per-archive uploads),
 #   * forces the listed packages back into the matrix even when their
-#     cache_key_sha is already published,
-#   * publishes per-archive (matrix → publish), and
-#   * amends in-tree per-package `package.toml` files instead of
-#     `binaries.lock` (which is gone after Phase C).
+#     cache_key_sha is already published (preflight's D3 skip-check is
+#     suppressed for them),
+#   * builds each `(package, arch)` pair in parallel via `xtask
+#     archive-stage`, gates on the test-suite, then publishes per
+#     archive,
+#   * regenerates `index.toml`, and
+#   * opens a bot PR amending each rebuilt package's
+#     `examples/libs/<name>/package.toml` `[binary]` URLs (when
+#     `bump_packages=true`).
 #
 # Inputs (rendered in the GitHub Actions "Run workflow" modal):
 #   packages       — `all` (default) or a comma-separated list of
@@ -764,7 +763,9 @@ jobs:
           echo "uploaded index.toml to $TAG"
 
   # ---------------------------------------------------------------------
-  # amend-package-toml — Phase C cutover (replaces binaries.lock bump).
+  # amend-package-toml — opens a bot PR rewriting each rebuilt
+  # `examples/libs/<pkg>/package.toml`'s `[binary]` URLs + sha256s to
+  # point at the freshly published archives.
   #
   # Mirrors prepare-merge.yml's amend job. Differences:
   #   * Branch name encodes the run timestamp (no PR number for a

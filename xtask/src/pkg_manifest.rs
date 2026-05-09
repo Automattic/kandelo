@@ -424,9 +424,10 @@ pub struct DepsManifest {
     /// top-level `arches = ["wasm32", "wasm64"]` TOML field. Defaults
     /// to `["wasm32"]` when absent — wasm32 is the canonical target;
     /// only manifests that explicitly need wasm64 (right now: mariadb,
-    /// mariadb-vfs, php) opt in. Consumed by `stage-release` to skip
-    /// manifest×arch pairs the manifest didn't ask for, which keeps
-    /// the release archive set tight.
+    /// mariadb-vfs, php) opt in. Consumed by `archive-stage` (to
+    /// reject a `(package, arch)` pair the manifest didn't ask for)
+    /// and by the per-package matrix-build preflight (to keep the
+    /// matrix tight).
     pub target_arches: Vec<TargetArch>,
 
     /// Directory containing this `package.toml`. The build script path and
@@ -606,11 +607,11 @@ fn default_outputs_value() -> toml::Value {
 impl DepsManifest {
     /// Relative path under `programs/<arch>/` where `out` should land
     /// once produced. Single source of truth for the placement
-    /// convention; both install-release (release consumer) and
-    /// install-local-binary (developer build script) compute the
-    /// destination through this method, so a freshly-built local
-    /// artifact can shadow the released bytes at the resolver's
-    /// expected path.
+    /// convention; both `place_binaries_symlinks` (resolver-driven
+    /// `binaries/` mirror) and `install-local-binary` (developer build
+    /// script) compute the destination through this method, so a
+    /// freshly-built local artifact can shadow the resolved bytes at
+    /// the consumer's expected path.
     ///
     /// Layout:
     ///   * 1 output:  `<output.name><ext>`
@@ -762,9 +763,9 @@ impl DepsManifest {
         //
         // `validate_archived` deliberately does NOT enforce this: legacy
         // `manifest.toml` bytes inside .tar.zst archives published before
-        // Phase A-bis don't carry `kernel_abi`, and install-release /
-        // fetch-binaries must continue to parse them. The required-ness
-        // is enforced only on the source path.
+        // Phase A-bis don't carry `kernel_abi`, and the `remote_fetch`
+        // unpack path must continue to parse them. The required-ness is
+        // enforced only on the source path.
         let has_build_block = raw.build.script_path.is_some()
             || raw.build.repo_url.is_some()
             || raw.build.commit.is_some()
@@ -1384,7 +1385,7 @@ headers = ["include/zlib.h"]
         // Archived manifest.toml files inside .tar.zst archives
         // published before Phase A-bis use the legacy
         // `[build].script` field. These archives are immutable
-        // historical bytes — install-release / fetch-binaries must
+        // historical bytes — the `remote_fetch` unpack path must
         // continue to parse them. validate_archived deliberately does
         // NOT reject `[build].script` (only validate_source does).
         let sha = "0".repeat(64);
@@ -1487,10 +1488,10 @@ libs = ["lib/libtest.a"]
     fn archived_parse_accepts_missing_kernel_abi() {
         // Legacy `.tar.zst` archives published before Phase A-bis don't
         // carry `kernel_abi` in their archived manifest.toml.
-        // validate_archived must keep tolerating absence so
-        // install-release / fetch-binaries can still parse those
-        // immutable historical bytes. Required-ness lives in
-        // validate_source only.
+        // validate_archived must keep tolerating absence so the
+        // `remote_fetch` unpack path can still parse those immutable
+        // historical bytes. Required-ness lives in validate_source
+        // only.
         let toml = r#"
 kind = "library"
 name = "test"

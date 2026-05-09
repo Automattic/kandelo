@@ -70,7 +70,7 @@ install_local_binary() {
 
     # Take everything from the FIRST dot in the source basename onward
     # so compound extensions like `.vfs.zst` round-trip intact (matches
-    # xtask/src/install_release.rs's behaviour).
+    # the resolver's `place_binaries_symlinks` extension handling).
     local src_ext=""
     case "$src_basename" in
         *.*) src_ext=".${src_basename#*.}" ;;

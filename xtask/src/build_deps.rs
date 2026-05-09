@@ -156,7 +156,7 @@ impl Registry {
 }
 
 /// Subset of [`Registry::walk_all`] containing only `kind = "program"`
-/// manifests. Used by `bundle-program` and `build-manifest` to look
+/// manifests. Used by `bundle-program` and `archive-stage` to look
 /// up source + license decoration for release artifacts.
 pub fn programs_by_name(registry: &Registry) -> Result<BTreeMap<String, DepsManifest>, String> {
     Ok(registry
@@ -285,7 +285,7 @@ pub fn compute_sha(
             // libs/headers/pkgconfig path) leaves cache_key_sha
             // unchanged — the resolver then serves a canonical
             // directory that doesn't match the new declaration and
-            // stage_release packs broken archives. Bug discovered in
+            // archive-stage packs broken archives. Bug discovered in
             // PR #384 (lamp.vfs → lamp.vfs.zst).
             //
             // Ordering: hashed in authored Vec order (no sort). That
@@ -517,12 +517,13 @@ fn render_probe_failures(target: &DepsManifest, failures: &[ProbeFailure]) -> St
 
 /// Process-lifetime memo of `(name, arch) → ensure_built_uncached`'s
 /// result. Within a single `xtask` invocation (e.g. one
-/// `stage-release` run), a manifest reached transitively via multiple
-/// dependents (mariadb is reached 6× during a force-rebuild-all:
-/// directly + via lamp + via mariadb-test + via mariadb-vfs ×2)
-/// otherwise re-runs its full source build N times — ~80 minutes of
-/// pointless work for mariadb alone. The memo collapses that to one
-/// build per `(name, arch)`.
+/// `archive-stage` run, or a `build-deps resolve` walk that pulls a
+/// shared dep transitively), a manifest reached via multiple dependents
+/// (mariadb is reached 6× during a force-rebuild-all: directly + via
+/// lamp + via mariadb-test + via mariadb-vfs ×2) otherwise re-runs its
+/// full source build N times — ~80 minutes of pointless work for
+/// mariadb alone. The memo collapses that to one build per
+/// `(name, arch)`.
 ///
 /// Caches BOTH `Ok` (so subsequent dependents reuse the resolved
 /// path) and `Err` (so a failed manifest doesn't waste 10 more
@@ -549,9 +550,9 @@ fn render_probe_failures(target: &DepsManifest, failures: &[ProbeFailure]) -> St
 ///   would mean a no-force result satisfies a later force request,
 ///   defeating the bypass intent. Keep them as separate slots so
 ///   a force-call after a no-force-call still rebuilds. In
-///   stage-release's force-rebuild-all loop every call has the
-///   same flag, so the memo collapses N calls per (name, arch)
-///   into 1 build — the actual optimization we wanted.
+///   a force-rebuild-all loop every call has the same flag, so the
+///   memo collapses N calls per (name, arch) into 1 build — the
+///   actual optimization we wanted.
 type BuildMemoKey = (PathBuf, String, TargetArch, bool);
 type BuildMemoValue = Result<(PathBuf, BTreeSet<PathBuf>), String>;
 
@@ -589,11 +590,11 @@ fn ensure_built_inner(
     building: &mut Vec<String>,
 ) -> Result<(PathBuf, BTreeSet<PathBuf>), String> {
     // Process-lifetime memo: the same (name, arch) often gets
-    // requested multiple times within one stage-release run via
-    // different dep chains. Without this, mariadb wasm32 source-builds
-    // 4 times in a single force-rebuild-all (lamp, mariadb,
-    // mariadb-test, mariadb-vfs each independently demand it). See
-    // `build_memo`'s doc comment for full rationale.
+    // requested multiple times within one resolver run via different
+    // dep chains. Without this, mariadb wasm32 source-builds 4 times
+    // in a single force-rebuild-all (lamp, mariadb, mariadb-test,
+    // mariadb-vfs each independently demand it). See `build_memo`'s
+    // doc comment for full rationale.
     let was_force_rebuild = opts
         .force_source_build
         .map(|s| s.contains(&target.name))
@@ -1308,10 +1309,10 @@ fn extract_arch_flag(args: Vec<String>) -> Result<(Option<TargetArch>, Vec<Strin
 /// `args`, leaving non-flag arguments in place. Mirrors
 /// [`extract_arch_flag`]'s shape so `resolve --binaries-dir <p>` and
 /// `--binaries-dir=<p> resolve` are equivalent. Only meaningful for the
-/// `resolve` subcommand today (Phase C Task 2: lets the resolver do
-/// what `install-release --binaries-dir` used to — place
+/// `resolve` subcommand: when supplied, the resolver places
 /// `<binaries_dir>/programs/<arch>/<name>/<output>.wasm` symlinks at
-/// each declared `[[outputs]]`). Other subcommands ignore the value.
+/// each declared `[[outputs]]` (see `place_binaries_symlinks`). Other
+/// subcommands ignore the value.
 fn extract_binaries_dir_flag(
     args: Vec<String>,
 ) -> Result<(Option<PathBuf>, Vec<String>), String> {
@@ -1519,16 +1520,16 @@ fn cmd_path(m: &DepsManifest, registry: &Registry, arch: TargetArch) -> Result<(
 }
 
 /// `output-path <name|path> <wasm-basename>`: print the relative path
-/// (under `programs/<arch>/`) where install-release would mirror this
-/// program's `wasm_basename` output.
+/// (under `programs/<arch>/`) where the resolver places this program's
+/// `wasm_basename` output via `place_binaries_symlinks`.
 ///
-/// Consumed by `scripts/install-local-binary.sh` so build scripts
-/// drop their freshly-built bytes at the same path the resolver +
-/// install-release write to. Without this, the build-script-side
-/// install-local-binary path could diverge from the release path
-/// (the case that surfaced for texlive: program "texlive" with output
-/// "pdftex" — the resolver writes pdftex.wasm, but install_local_binary
-/// historically wrote texlive.wasm or texlive/pdftex.wasm).
+/// Consumed by `scripts/install-local-binary.sh` so build scripts drop
+/// their freshly-built bytes at the same path the resolver writes to.
+/// Without this, the build-script-side install-local-binary path could
+/// diverge from the resolver path (the case that surfaced for texlive:
+/// program "texlive" with output "pdftex" — the resolver writes
+/// pdftex.wasm, but install_local_binary historically wrote
+/// texlive.wasm or texlive/pdftex.wasm).
 fn cmd_output_path(m: &DepsManifest, wasm_basename: &str) -> Result<(), String> {
     let rel = m.output_dest_rel(wasm_basename)?;
     println!("{}", rel.display());
@@ -1554,15 +1555,13 @@ fn cmd_resolve(
 
     // Phase C Task 2: when `--binaries-dir <dir>` is supplied, also
     // place `binaries/programs/<arch>/<output_dest_rel>` symlinks at
-    // each declared `[[outputs]]` entry. Mirrors what
-    // `install-release` did at release-install time, but driven by
-    // the per-package resolve flow that replaces the central
-    // manifest.json walk. Only programs with declared outputs get
-    // symlinks: libraries are consumed at link time via the cache
-    // and have no analog (`output_dest_rel_for` would error). Source
-    // and metadata-only kinds skip silently — `fetch-binaries.sh`
-    // walks the registry and would otherwise need to filter them
-    // upstream.
+    // each declared `[[outputs]]` entry. Driven by the per-package
+    // resolve flow — `fetch-binaries.sh` walks each `package.toml` in
+    // the registry and re-invokes `build-deps resolve` per arch, which
+    // hits this branch. Only programs with declared outputs get
+    // symlinks: libraries are consumed at link time via the cache and
+    // have no analog (`output_dest_rel_for` would error). Source and
+    // metadata-only kinds skip silently.
     if let Some(bdir) = binaries_dir {
         if matches!(m.kind, ManifestKind::Program) && !m.program_outputs.is_empty() {
             place_binaries_symlinks(m, &path, bdir, arch)?;
@@ -1580,12 +1579,10 @@ fn cmd_resolve(
 ///   * 1 output: `<binaries_dir>/programs/<arch>/<output.name>.wasm`.
 ///   * ≥2 outputs: `<binaries_dir>/programs/<arch>/<program.name>/<output.name>.wasm`.
 ///
-/// This intentionally mirrors `install_release::place_binaries_symlinks`
-/// (in `xtask/src/install_release.rs`) — the `install-release` path is
-/// scheduled for deletion in Phase C Task 6, after which this becomes
-/// the only home for the layout. Browser demos hardcode these paths
-/// (see `examples/browser/vite.config.ts` and
-/// `host/src/binary-resolver.ts`), so the layout MUST NOT change here.
+/// This is the single source of truth for the symlink layout. Browser
+/// demos hardcode these paths (see `examples/browser/vite.config.ts`
+/// and `host/src/binary-resolver.ts`), so the layout MUST NOT change
+/// here without coordinating with the consumer-side import paths.
 ///
 /// Targets are absolute paths into the resolver cache. Replace-in-place
 /// is safe (remove + symlink): symlinks are tiny and atomic, and a
@@ -2311,7 +2308,8 @@ spdx = "TestLicense"
     /// declared output filename (e.g. `lamp.vfs` → `lamp.vfs.zst`) but
     /// nothing else. Before the fix, cache_key_sha was unchanged so
     /// the resolver served the old canonical directory containing the
-    /// old filename, and stage_release silently packed broken archives.
+    /// old filename, and `archive-stage` silently packed broken
+    /// archives.
     #[test]
     fn cache_key_sha_changes_when_program_output_wasm_filename_changes() {
         let root = tempdir("sha-prog-wasm-rename");
@@ -2399,8 +2397,8 @@ spdx = "TestLicense"
     /// Re-ordering DOES change cache_key_sha. We deliberately don't
     /// normalize because (a) the manifest preserves authored order
     /// (`Vec<ProgramOutput>`) and (b) consumers of `program_outputs`
-    /// (e.g. `mirror_program_outputs` in install_release) iterate in
-    /// the same order, so the cache key tracks what consumers see.
+    /// (e.g. `place_binaries_symlinks`) iterate in the same order, so
+    /// the cache key tracks what consumers see.
     #[test]
     fn cache_key_sha_changes_when_program_outputs_reordered() {
         let root = tempdir("sha-prog-reorder");

@@ -313,7 +313,7 @@ mkdir -p "$BIN_DIR"
 cp "$SRC_DIR/src/nethack" "$BIN_DIR/nethack.wasm"
 
 # Install into local-binaries/ (resolver priority 1) and the resolver
-# scratch dir when invoked by xtask build-deps / stage-release.
+# scratch dir when invoked by xtask build-deps / archive-stage.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
 install_local_binary nethack "$BIN_DIR/nethack.wasm"
 

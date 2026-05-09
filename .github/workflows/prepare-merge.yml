@@ -3,25 +3,23 @@ name: Prepare merge
 # Triggered when a maintainer applies the `ready-to-ship` label to an
 # approved PR. Drives the per-package matrix flow (preflight +
 # toolchain-cache + matrix-build + test-gate + publish + generate-index;
-# Phase B-1's pattern, now also targeting the durable
-# `binaries-abi-v<N>` tag), then opens a bot PR amending each rebuilt
-# package's `examples/libs/<name>/package.toml` so consumers resolve
-# the freshly published archives. The bot PR is what auto-merges.
+# Phase B-1's pattern, targeting the durable `binaries-abi-v<N>` tag),
+# then opens a bot PR amending each rebuilt package's
+# `examples/libs/<name>/package.toml` so consumers resolve the freshly
+# published archives. The bot PR is what auto-merges.
 #
-# This is the Phase C cutover (design doc §4.2 +
-# docs/plans/2026-04-29-pr-package-builds-design.md §6.1) of the
-# previous monolithic prepare-merge that:
-#   * cut a fresh dated `binaries-abi-v<N>-YYYY-MM-DD[-<seq>]` release,
-#   * staged all packages via `xtask stage-release`, and
-#   * bumped a single `binaries.lock` entry on the PR branch.
-#
-# The new flow:
-#   * targets the undated `binaries-abi-v<N>` tag (per-file uploads),
-#   * narrows to packages whose cache_key_sha differs from what's
-#     already published (via preflight),
-#   * publishes per-archive (matrix → publish), and
-#   * amends in-tree per-package `package.toml` files instead of
-#     `binaries.lock` (which is gone after Phase C).
+# Flow (see docs/plans/2026-05-05-decoupled-package-builds-design.md
+# §5.5 + docs/plans/2026-04-29-pr-package-builds-design.md §4.2):
+#   * targets the undated `binaries-abi-v<N>` tag (per-archive uploads),
+#   * preflight narrows the matrix to `(package, arch)` pairs whose
+#     cache_key_sha differs from what's already published in the
+#     durable release,
+#   * builds each remaining pair in parallel via `xtask archive-stage`,
+#     gates on the test-suite, then publishes per archive,
+#   * regenerates `index.toml`, and
+#   * amends each rebuilt package's `examples/libs/<name>/package.toml`
+#     `[binary]` URLs on a bot PR — that PR is the one that actually
+#     auto-merges to `main`.
 #
 # `merge-gate=success` is posted on the bot PR's HEAD SHA, which is
 # what GitHub auto-merge squashes — branch protection on `main`
@@ -757,7 +755,9 @@ jobs:
           echo "uploaded index.toml to $TAG"
 
   # ---------------------------------------------------------------------
-  # amend-package-toml — Phase C cutover (replaces binaries.lock bump).
+  # amend-package-toml — opens a bot PR rewriting each rebuilt
+  # `examples/libs/<pkg>/package.toml`'s `[binary]` URLs + sha256s to
+  # point at the freshly published archives.
   #
   # For each (package, arch) in preflight's narrowed matrix:
   #   * Look up the freshly-published archive's sha256 from the release.

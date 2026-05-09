@@ -30,8 +30,8 @@ depends_on = ["dash@0.5.12", "file@5.45", "vim@9.1.0900", "nethack@3.6.7"]
 # coreutils/grep/sed symlinks, /etc system configs, magic database,
 # lazy-archive reference for vim. Built by
 # examples/browser/scripts/build-shell-vfs-image.ts. The .vfs file is
-# wrapped (not double-compressed) inside the package-system .tar.zst archive at
-# stage_release time.
+# wrapped (not double-compressed) inside the package-system .tar.zst
+# archive at archive-stage time.
 [source]
 url = "https://github.com/brandonpayton/wasm-posix-kernel"
 sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
