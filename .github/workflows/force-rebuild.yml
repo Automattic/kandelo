@@ -1024,7 +1024,9 @@ jobs:
             echo "Reusing bot PR #$existing on branch $BOT_BRANCH"
             BOT_PR=$existing
           else
-            BOT_PR=$(gh pr create \
+            # gh pr create prints a URL on stdout (no --json support);
+            # parse the PR number from its trailing path segment.
+            pr_url=$(gh pr create \
               --repo "${{ github.repository }}" \
               --base "${BUILD_REF}" \
               --head "$BOT_BRANCH" \
@@ -1036,9 +1038,9 @@ jobs:
           Force-rebuild packages: \`${{ inputs.packages }}\` (arches: \`${{ inputs.arches }}\`).
           Tests: $([ \"${{ inputs.skip_tests }}\" = \"true\" ] && echo \"SKIPPED (skip_tests=true)\" || echo \"all 5 suites passed before publish\").
 
-          The \`merge-gate\` status posts on this bot PR's HEAD SHA after the durable-release lock is acquired in \`merge-gate-finalize\`. Auto-merge then squashes onto \`${BUILD_REF}\`." \
-              --json number --jq .number)
-            echo "Opened bot PR #$BOT_PR on branch $BOT_BRANCH"
+          The \`merge-gate\` status posts on this bot PR's HEAD SHA after the durable-release lock is acquired in \`merge-gate-finalize\`. Auto-merge then squashes onto \`${BUILD_REF}\`.")
+            BOT_PR="${pr_url##*/}"
+            echo "Opened bot PR #$BOT_PR on branch $BOT_BRANCH ($pr_url)"
           fi
           echo "bot_pr_number=$BOT_PR" >> "$GITHUB_OUTPUT"
 

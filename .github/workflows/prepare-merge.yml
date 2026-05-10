@@ -1035,16 +1035,20 @@ jobs:
             echo "Reusing bot PR #$existing on branch $BOT_BRANCH"
             BOT_PR=$existing
           else
-            BOT_PR=$(gh pr create \
+            # gh pr create prints a URL on stdout (no --json support);
+            # parse the PR number from its trailing path segment. The
+            # URL shape is `https://github.com/<owner>/<repo>/pull/<N>`,
+            # so the basename is the number we want.
+            pr_url=$(gh pr create \
               --repo "${{ github.repository }}" \
               --base "${{ github.event.pull_request.base.ref }}" \
               --head "$BOT_BRANCH" \
               --title "chore(packages): amend package.toml for ${{ needs.preflight.outputs.target_tag }} (PR #${{ env.PR_NUMBER }})" \
               --body "Bot-generated PR amending each rebuilt package's \`package.toml\` to point at the freshly-published archives on the durable [\`${{ needs.preflight.outputs.target_tag }}\`](https://github.com/${{ github.repository }}/releases/tag/${{ needs.preflight.outputs.target_tag }}) release.
 
-          Supersedes the original PR #${{ env.PR_NUMBER }} (which contributed the code changes that triggered the rebuilds). The merge-gate status posts on this bot PR's HEAD SHA after all checks pass; auto-merge then squashes this PR onto \`${{ github.event.pull_request.base.ref }}\`." \
-              --json number --jq .number)
-            echo "Opened bot PR #$BOT_PR on branch $BOT_BRANCH"
+          Supersedes the original PR #${{ env.PR_NUMBER }} (which contributed the code changes that triggered the rebuilds). The merge-gate status posts on this bot PR's HEAD SHA after all checks pass; auto-merge then squashes this PR onto \`${{ github.event.pull_request.base.ref }}\`.")
+            BOT_PR="${pr_url##*/}"
+            echo "Opened bot PR #$BOT_PR on branch $BOT_BRANCH ($pr_url)"
           fi
           echo "bot_pr_number=$BOT_PR" >> "$GITHUB_OUTPUT"
 
