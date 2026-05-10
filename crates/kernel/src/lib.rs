@@ -74,7 +74,7 @@ pub fn current_time_secs() -> i64 {
 // Kernel mode flag
 // ---------------------------------------------------------------------------
 
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 /// Kernel operating mode.
 ///
@@ -95,6 +95,60 @@ pub fn is_centralized_mode() -> bool {
 /// Set the kernel operating mode. Called from wasm_api or tests.
 pub fn set_kernel_mode(mode: u32) {
     KERNEL_MODE.store(mode, Ordering::Relaxed);
+}
+
+// ---------------------------------------------------------------------------
+// Permission enforcement toggle
+// ---------------------------------------------------------------------------
+
+/// Runtime gate for filesystem permission checks landed across PR 5/5.
+///
+/// Default off so each enforcement commit (Tasks 5.3-5.9) can land without
+/// breaking existing tests / demos that assume root-equivalent access.
+/// Task 5.10 flips this default to on.
+static ENFORCE_PERMISSIONS: AtomicBool = AtomicBool::new(false);
+
+#[inline]
+pub fn enforce_permissions() -> bool {
+    ENFORCE_PERMISSIONS.load(Ordering::Relaxed)
+}
+
+pub fn set_enforce_permissions(enabled: bool) {
+    ENFORCE_PERMISSIONS.store(enabled, Ordering::Relaxed);
+}
+
+#[cfg(all(test, not(any(target_arch = "wasm32", target_arch = "wasm64"))))]
+mod enforce_permissions_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    // The flag is process-global; serialize the three tests so they don't
+    // observe each other's writes when cargo runs tests in parallel.
+    static LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn default_is_false() {
+        let _g = LOCK.lock().unwrap();
+        set_enforce_permissions(false);
+        assert!(!enforce_permissions());
+    }
+
+    #[test]
+    fn set_true_flips_on() {
+        let _g = LOCK.lock().unwrap();
+        set_enforce_permissions(false);
+        set_enforce_permissions(true);
+        assert!(enforce_permissions());
+        set_enforce_permissions(false);
+    }
+
+    #[test]
+    fn set_false_flips_back() {
+        let _g = LOCK.lock().unwrap();
+        set_enforce_permissions(true);
+        set_enforce_permissions(false);
+        assert!(!enforce_permissions());
+    }
 }
 
 #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]

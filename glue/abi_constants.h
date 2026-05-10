@@ -4,6 +4,6 @@
 #define WASM_POSIX_ABI_CONSTANTS_H
 
 /* Mirrors wasm_posix_shared::ABI_VERSION. */
-#define WASM_POSIX_ABI_VERSION 7u
+#define WASM_POSIX_ABI_VERSION 8u
 
 #endif /* WASM_POSIX_ABI_CONSTANTS_H */
