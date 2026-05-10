@@ -264,6 +264,60 @@ fn virtual_device_stat(dev: VirtualDevice, uid: u32, gid: u32) -> WasmStat {
     }
 }
 
+/// Permission check for `open(2)` / `openat(2)`.
+///
+/// When `crate::enforce_permissions()` is `false` (default), this is a no-op
+/// and returns `Ok(())`. When `true`, derives the requested access mode from
+/// the open flags and stat()s the file, then delegates to `crate::access::
+/// check_access`. Returns `Err(EACCES)` on denial.
+///
+/// Skips the check if `O_CREAT` is set and the file does not yet exist —
+/// creation goes through a separate parent-directory write check (Task 5.5/5.6).
+///
+/// NOTE: supplementary groups are passed as `&[]`. `Process` does not yet
+/// carry a supplementary group list; group-membership-via-supplementary will
+/// not currently grant access. This will be plumbed through in a PR 5/5
+/// follow-up; the access-check helper itself already supports it.
+fn check_open_access(
+    proc: &Process,
+    host: &mut dyn HostIO,
+    resolved: &[u8],
+    oflags: u32,
+) -> Result<(), Errno> {
+    if !crate::enforce_permissions() {
+        return Ok(());
+    }
+
+    let st = match host.host_stat(resolved) {
+        Ok(st) => st,
+        Err(_) => {
+            // File doesn't exist (or stat failed). If O_CREAT, fall through
+            // to creation; the parent-directory permission check is the
+            // responsibility of Task 5.5/5.6. Otherwise return Ok and let
+            // host_open report ENOENT.
+            return Ok(());
+        }
+    };
+
+    use wasm_posix_shared::access::{R_OK, W_OK};
+    let access_mode = oflags & O_ACCMODE;
+    let mut requested: u32 = 0;
+    if access_mode == O_RDONLY { requested |= R_OK; }
+    if access_mode == O_WRONLY { requested |= W_OK; }
+    if access_mode == O_RDWR { requested |= R_OK | W_OK; }
+    if oflags & O_TRUNC != 0 { requested |= W_OK; }
+
+    crate::access::check_access(
+        requested,
+        st.st_uid,
+        st.st_gid,
+        st.st_mode,
+        proc.euid,
+        proc.egid,
+        &[],
+    )
+}
+
 /// Open a file, returning the new file descriptor number.
 pub fn sys_open(
     proc: &mut Process,
@@ -380,6 +434,8 @@ pub fn sys_open(
             }
         }
     }
+
+    check_open_access(proc, host, &resolved, oflags)?;
 
     let host_handle = host.host_open(&resolved, oflags, effective_mode)?;
 
@@ -5693,6 +5749,8 @@ pub fn sys_openat(
         }
     }
 
+    check_open_access(proc, host, &resolved, oflags)?;
+
     let host_handle = host.host_open(&resolved, oflags, effective_mode)?;
 
     let file_type = if oflags & O_DIRECTORY != 0 {
@@ -8289,6 +8347,13 @@ mod tests {
         /// Per-handle owner mapping captured at host_open time so host_fstat
         /// returns the same owners host_stat would for the path.
         handle_owners: std::collections::HashMap<i64, (u32, u32)>,
+        /// Per-path mode override for host_stat / host_lstat. When unset, the
+        /// path-shape default (S_IFREG|0o644 or S_IFDIR|0o755) is used. Tests
+        /// that exercise permission checks set this via `set_file_with_owner`.
+        file_modes: std::collections::HashMap<Vec<u8>, u32>,
+        /// Paths that should report ENOENT on host_stat / host_lstat. Used by
+        /// permission tests to exercise the O_CREAT-and-missing-file path.
+        missing_paths: std::collections::HashSet<Vec<u8>>,
     }
 
     impl MockHostIO {
@@ -8303,15 +8368,30 @@ mod tests {
                 clock_time: (1234567890, 123456789),
                 file_owners: std::collections::HashMap::new(),
                 handle_owners: std::collections::HashMap::new(),
+                file_modes: std::collections::HashMap::new(),
+                missing_paths: std::collections::HashSet::new(),
             }
         }
 
+        /// Mark `path` as nonexistent: subsequent host_stat/host_lstat return
+        /// ENOENT. Used to test the O_CREAT-and-missing-file path through
+        /// `check_open_access`.
+        fn set_missing(&mut self, path: &[u8]) {
+            self.missing_paths.insert(path.to_vec());
+        }
+
         /// Seed the mock VFS with a file at `path` whose stat() will report the
-        /// given uid/gid. `_mode` and `_content` are accepted for parity with
-        /// the host-side helper but the existing MockHostIO does not track
-        /// per-file mode or content (host_stat infers mode from path shape).
-        fn set_file_with_owner(&mut self, path: &[u8], uid: u32, gid: u32, _mode: u32, _content: &[u8]) {
+        /// given uid/gid/mode. `_content` is accepted for parity with the
+        /// host-side helper but is not tracked. A `mode` of 0 is treated as
+        /// "do not override" so existing tests that pass 0 keep the path-shape
+        /// default; otherwise the supplied mode is stored verbatim (callers
+        /// may include `S_IFREG`/`S_IFDIR` if desired, otherwise the
+        /// path-shape default contributes the type bits).
+        fn set_file_with_owner(&mut self, path: &[u8], uid: u32, gid: u32, mode: u32, _content: &[u8]) {
             self.file_owners.insert(path.to_vec(), (uid, gid));
+            if mode != 0 {
+                self.file_modes.insert(path.to_vec(), mode);
+            }
         }
     }
 
@@ -8372,13 +8452,27 @@ mod tests {
         }
 
         fn host_stat(&mut self, path: &[u8]) -> Result<WasmStat, Errno> {
+            if self.missing_paths.contains(path) {
+                return Err(Errno::ENOENT);
+            }
             // Return S_IFDIR for paths that look like directories
             let is_dir = path.ends_with(b"dir") || path.ends_with(b"tmp")
                 || path.ends_with(b"/") || path == b"/";
-            let mode = if is_dir {
+            let default_mode = if is_dir {
                 S_IFDIR | 0o755
             } else {
                 S_IFREG | 0o644
+            };
+            // If a test set an explicit mode, use it (folding in the
+            // path-shape type bits when the test only supplied perm bits).
+            let mode = if let Some(&m) = self.file_modes.get(path) {
+                if m & wasm_posix_shared::mode::S_IFMT == 0 {
+                    (default_mode & wasm_posix_shared::mode::S_IFMT) | (m & 0o7777)
+                } else {
+                    m
+                }
+            } else {
+                default_mode
             };
             let (uid, gid) = self.file_owners.get(path).copied().unwrap_or((0, 0));
             Ok(WasmStat {
@@ -15597,5 +15691,196 @@ mod tests {
         let fd2 = sys_open(&mut proc2, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
         sys_close(&mut proc2, &mut host, fd2).unwrap();
         assert_eq!(crate::process_table::FB0_OWNER.load(Ordering::SeqCst), -1);
+    }
+
+    // ---- Task 5.4: sys_open / sys_openat permission enforcement ----
+    //
+    // The enforce_permissions toggle is process-global; serialize these tests
+    // so they don't observe each other's writes when cargo runs them in
+    // parallel. Each test resets the toggle to false on exit (and on panic
+    // via the `EnforcePermsGuard` RAII wrapper).
+    static OPEN_PERM_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct EnforcePermsGuard;
+    impl EnforcePermsGuard {
+        fn on() -> Self {
+            crate::set_enforce_permissions(true);
+            EnforcePermsGuard
+        }
+    }
+    impl Drop for EnforcePermsGuard {
+        fn drop(&mut self) {
+            crate::set_enforce_permissions(false);
+        }
+    }
+
+    #[test]
+    fn open_perm_toggle_off_skips_check() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        // Toggle stays at the default (false). Stranger opens an owner-only
+        // file — check would deny under enforcement, but enforcement is off,
+        // so this must succeed.
+        let mut proc = Process::new(1);
+        proc.euid = 2000;
+        proc.egid = 2000;
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/tmp/secret", 1000, 1000, 0o600, b"");
+        assert!(sys_open(&mut proc, &mut host, b"/tmp/secret", O_RDONLY, 0).is_ok());
+    }
+
+    #[test]
+    fn open_perm_owner_0o600_rdonly_ok() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        let mut proc = Process::new(1);
+        proc.euid = 1000;
+        proc.egid = 1000;
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/tmp/owned", 1000, 1000, 0o600, b"");
+        assert!(sys_open(&mut proc, &mut host, b"/tmp/owned", O_RDONLY, 0).is_ok());
+    }
+
+    #[test]
+    fn open_perm_owner_0o400_wronly_eacces() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        let mut proc = Process::new(1);
+        proc.euid = 1000;
+        proc.egid = 1000;
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/tmp/ro", 1000, 1000, 0o400, b"");
+        assert_eq!(
+            sys_open(&mut proc, &mut host, b"/tmp/ro", O_WRONLY, 0),
+            Err(Errno::EACCES)
+        );
+    }
+
+    #[test]
+    fn open_perm_stranger_0o600_rdonly_eacces() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        let mut proc = Process::new(1);
+        proc.euid = 2000;
+        proc.egid = 2000;
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/tmp/private", 1000, 1000, 0o600, b"");
+        assert_eq!(
+            sys_open(&mut proc, &mut host, b"/tmp/private", O_RDONLY, 0),
+            Err(Errno::EACCES)
+        );
+    }
+
+    #[test]
+    fn open_perm_root_0o000_rdonly_ok() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        let mut proc = Process::new(1); // default euid/egid = 0 (root)
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/tmp/locked", 1000, 1000, 0o000, b"");
+        assert!(sys_open(&mut proc, &mut host, b"/tmp/locked", O_RDONLY, 0).is_ok());
+    }
+
+    #[test]
+    fn open_perm_root_0o000_wronly_trunc_ok() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/tmp/locked", 1000, 1000, 0o000, b"");
+        assert!(
+            sys_open(&mut proc, &mut host, b"/tmp/locked", O_WRONLY | O_TRUNC, 0).is_ok()
+        );
+    }
+
+    #[test]
+    fn open_perm_o_creat_missing_file_ok() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        let mut proc = Process::new(1);
+        proc.euid = 1000;
+        proc.egid = 1000;
+        let mut host = MockHostIO::new();
+        // No prior set_file_with_owner; mark the path missing so host_stat
+        // returns ENOENT (the default mock would synthesize a stat with
+        // st_uid=0, which would fail under enforcement when the caller is
+        // a non-root user). check_open_access should treat ENOENT as
+        // "fall through to creation" and not deny.
+        host.set_missing(b"/tmp/new");
+        assert!(
+            sys_open(&mut proc, &mut host, b"/tmp/new", O_WRONLY | O_CREAT, 0o644)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn open_perm_rdwr_owner_0o600_ok() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        let mut proc = Process::new(1);
+        proc.euid = 1000;
+        proc.egid = 1000;
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/tmp/rw", 1000, 1000, 0o600, b"");
+        assert!(sys_open(&mut proc, &mut host, b"/tmp/rw", O_RDWR, 0).is_ok());
+    }
+
+    #[test]
+    fn open_perm_rdwr_owner_0o400_eacces() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        // O_RDWR demands both R_OK and W_OK; 0o400 grants only R_OK to owner.
+        let mut proc = Process::new(1);
+        proc.euid = 1000;
+        proc.egid = 1000;
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/tmp/ro", 1000, 1000, 0o400, b"");
+        assert_eq!(
+            sys_open(&mut proc, &mut host, b"/tmp/ro", O_RDWR, 0),
+            Err(Errno::EACCES)
+        );
+    }
+
+    #[test]
+    fn open_perm_o_trunc_demands_w_even_on_rdonly() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        // 0o400: owner has R_OK but not W_OK. O_RDONLY|O_TRUNC must fail.
+        let mut proc = Process::new(1);
+        proc.euid = 1000;
+        proc.egid = 1000;
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/tmp/ro", 1000, 1000, 0o400, b"");
+        assert_eq!(
+            sys_open(&mut proc, &mut host, b"/tmp/ro", O_RDONLY | O_TRUNC, 0),
+            Err(Errno::EACCES)
+        );
+    }
+
+    #[test]
+    fn openat_perm_owner_0o400_wronly_eacces() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        // Mirror coverage: sys_openat must enforce identically.
+        let mut proc = Process::new(1);
+        proc.euid = 1000;
+        proc.egid = 1000;
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/tmp/ro", 1000, 1000, 0o400, b"");
+        assert_eq!(
+            sys_openat(&mut proc, &mut host, AT_FDCWD, b"/tmp/ro", O_WRONLY, 0),
+            Err(Errno::EACCES)
+        );
+    }
+
+    #[test]
+    fn openat_perm_root_bypasses_check() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/tmp/locked", 1000, 1000, 0o000, b"");
+        assert!(
+            sys_openat(&mut proc, &mut host, AT_FDCWD, b"/tmp/locked", O_RDONLY, 0).is_ok()
+        );
     }
 }
