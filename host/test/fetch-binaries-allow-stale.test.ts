@@ -302,7 +302,7 @@ exit 0
     expect(stdout).toMatch(/resolved=5\s+total=5\s+skipped=1/);
   });
 
-  it("--allow-stale is accepted as a no-op (back-compat with the legacy script)", () => {
+  it("--allow-stale resolves the same packages as the default (banner printed)", () => {
     const { status, stdout, stderr } = runScript(["--allow-stale"]);
     expect(status, `stderr:\n${stderr}\nstdout:\n${stdout}`).toBe(0);
 
@@ -312,9 +312,43 @@ exit 0
     expect(logLines(/build-deps.*resolve\s+charlie\b/).length).toBe(2);
     expect(logLines(/build-deps.*resolve\s+delta\b/).length).toBe(0);
 
-    // Banner line announces the no-op so a maintainer hunting through
-    // CI logs knows the flag is passing through harmlessly.
-    expect(stdout).toMatch(/--allow-stale accepted \(no-op/);
+    // Banner line announces the flag so a maintainer hunting through
+    // CI logs knows it's active (the message also documents the
+    // lenient semantics — failures degrade to warnings).
+    expect(stdout).toMatch(/--allow-stale accepted/);
+  });
+
+  it("--allow-stale degrades per-package failures to warnings (exit 0)", () => {
+    // Without --allow-stale, a single resolve failure exits 1
+    // (covered by the next test). With --allow-stale, failures are
+    // warnings and the script still exits 0 — matrix-build's prereq
+    // step relies on this so an unrelated meta-package's broken
+    // source build doesn't abort the matrix entry's actual target
+    // build downstream.
+    const fakeCargoPath = path.join(fakeBinDir, "cargo");
+    const original = readFileSync(fakeCargoPath, "utf8");
+    const failingCargo = `#!/usr/bin/env bash
+echo "$@" >> "$CARGO_LOG"
+for arg in "$@"; do
+    if [ "$arg" = "alpha" ]; then exit 1; fi
+done
+exit 0
+`;
+    writeFileSync(fakeCargoPath, failingCargo);
+    chmodSync(fakeCargoPath, 0o755);
+    try {
+      const { status, stdout, stderr } = runScript(["--allow-stale"]);
+      expect(status, `stdout:\n${stdout}\nstderr:\n${stderr}`).toBe(0);
+      // The failure list is still printed to stderr so the human can
+      // see what was skipped — the only difference from strict mode
+      // is the exit code.
+      expect(stderr).toMatch(/alpha \(wasm32\)/);
+      expect(stderr).toMatch(/1 package\(s\) failed/);
+      expect(stderr).toMatch(/treating .* failure\(s\) as warnings/);
+    } finally {
+      writeFileSync(fakeCargoPath, original);
+      chmodSync(fakeCargoPath, 0o755);
+    }
   });
 
   it("propagates a build-deps failure as a non-zero exit + stderr listing", () => {
