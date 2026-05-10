@@ -285,7 +285,7 @@ jobs:
                 continue
               fi
 
-              kind=$(awk -F'"'"'"'"'"'"'"'"' '"'"'/^kind *=/ {print $2; exit}'"'"' "$pkg_dir/package.toml")
+              kind=$(sed -nE "s/^kind *= *\"([^\"]+)\".*/\\1/p" "$pkg_dir/package.toml" | head -1)
               case "$kind" in
                 library|program) ;;
                 *) echo "preflight: skipping $pkg (kind=$kind)" >&2; continue ;;

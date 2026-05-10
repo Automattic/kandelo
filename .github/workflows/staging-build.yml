@@ -148,7 +148,7 @@ jobs:
               # second; programs reuse the library archives via
               # package.pr.toml overlays so each library builds at
               # most once across the matrix.
-              kind=$(awk -F'"'"'"'"'"'"'"'"' '"'"'/^kind *=/ {print $2; exit}'"'"' "$pkg_dir/package.toml")
+              kind=$(sed -nE "s/^kind *= *\"([^\"]+)\".*/\\1/p" "$pkg_dir/package.toml" | head -1)
               case "$kind" in
                 library|program) ;;
                 *)
