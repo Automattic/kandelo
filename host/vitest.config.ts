@@ -18,5 +18,17 @@ export default defineConfig({
     // the timeout doesn't apply. A future vitest version (3.2.5+) is
     // expected to ship the fix; revisit then.
     pool: "forks",
+    // Even with forks, the post-run aggregation RPC (`onTaskUpdate`)
+    // can time out on a heavily contended GHA runner. Cap fork
+    // parallelism and extend the teardown window so the final
+    // result-flush has room to complete. Without this, runs of
+    // 392+ tests succeed individually but the run-summary call
+    // fails the whole job on a 3s default RPC timeout.
+    teardownTimeout: 60_000,
+    poolOptions: {
+      forks: {
+        maxForks: 4,
+      },
+    },
   },
 });
