@@ -16,10 +16,11 @@ url = "https://docs.python.org/3/license.html"
 [build]
 script_path = "examples/libs/cpython/build-cpython.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+commit = "5f6828af8d6026f3ec91b4ffbbe57deb6029b4eb"
 
 [[outputs]]
 name = "cpython"
 wasm = "python.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/cpython-3.13.3-rev1-abi6-wasm32-62c97219.tar.zst"
-archive_sha256 = "c023f6d2e34fba95a7de45d8427c66a8657d7301eed56256d479a52943a9c0a6"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/cpython-3.13.3-rev1-abi7-wasm32-7983be16.tar.zst"
+archive_sha256 = "bec922182bfb66135c282395469335170efa3f2197e5a858ad887f2673e702dd"

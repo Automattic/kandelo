@@ -16,10 +16,11 @@ url = "https://github.com/facebook/zstd/blob/dev/LICENSE"
 [build]
 script_path = "examples/libs/zstd/build-zstd.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+commit = "5f6828af8d6026f3ec91b4ffbbe57deb6029b4eb"
 
 [[outputs]]
 name = "zstd"
 wasm = "zstd.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/zstd-1.5.6-rev1-abi6-wasm32-c66e7982.tar.zst"
-archive_sha256 = "58786ccd7da6735f534979b5a254d449c4d4d54053266a39f886d7906476c593"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/zstd-1.5.6-rev1-abi7-wasm32-c6e8b134.tar.zst"
+archive_sha256 = "085c27e9c1c3b434e01bc4805bb5d2a796cf26c40efb2888f6c5f09ba7b23ee6"
