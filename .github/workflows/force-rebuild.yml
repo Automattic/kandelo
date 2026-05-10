@@ -177,7 +177,8 @@ jobs:
     permissions:
       contents: read           # gh release view (target tag probe)
     outputs:
-      matrix: ${{ steps.compute.outputs.matrix }}
+      library_matrix: ${{ steps.compute.outputs.library_matrix }}
+      program_matrix: ${{ steps.compute.outputs.program_matrix }}
       abi: ${{ steps.compute.outputs.abi }}
       target_tag: ${{ steps.compute.outputs.target_tag }}
     steps:
@@ -275,7 +276,8 @@ jobs:
             echo "..."
 
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
-            matrix="[]"
+            library_matrix="[]"
+            program_matrix="[]"
 
             for pkg_dir in examples/libs/*/; do
               pkg=$(basename "$pkg_dir")
@@ -283,7 +285,12 @@ jobs:
                 continue
               fi
 
-              # Bypass-decision per-package.
+              kind=$(awk -F'"'"'"'"'"'"'"'"' '"'"'/^kind *=/ {print $2; exit}'"'"' "$pkg_dir/package.toml")
+              case "$kind" in
+                library|program) ;;
+                *) echo "preflight: skipping $pkg (kind=$kind)" >&2; continue ;;
+              esac
+
               if [ "$FORCE_ALL" = "1" ]; then
                 bypass=1
               elif [ -n "$FORCE_LIST" ] && echo "$FORCE_LIST" | grep -q ",${pkg},"; then
@@ -295,7 +302,6 @@ jobs:
               arches=$(awk -F'"'"'[][]'"'"' '"'"'/^arches *=/ {print $2}'"'"' "$pkg_dir/package.toml" | tr -d '"'"' "'"'"' | tr '"'"','"'"' '"'"' '"'"')
               arches=${arches:-wasm32}
               for arch in $arches; do
-                # Filter by workflow `arches` input.
                 if ! echo "$ARCH_FILTER" | grep -q ",${arch},"; then
                   continue
                 fi
@@ -311,21 +317,26 @@ jobs:
 
                 if [ "$bypass" = "1" ]; then
                   echo "preflight: FORCE $pkg/$arch (sha $short, bypass=on)"
-                  matrix=$(echo "$matrix" | jq -c --arg pkg "$pkg" --arg arch "$arch" --arg sha "$sha" \
-                    ". + [{\"package\": \$pkg, \"arch\": \$arch, \"sha\": \$sha}]")
                 elif echo "$existing_assets" | jq -e --arg pre "$prefix" --arg suf "$suffix" \
                     "any(.[]; startswith(\$pre) and endswith(\$suf))" >/dev/null; then
                   echo "preflight: skip $pkg/$arch (sha $short already published, not in force list)"
+                  continue
+                fi
+                entry=$(jq -nc --arg pkg "$pkg" --arg arch "$arch" --arg sha "$sha" \
+                  "{package: \$pkg, arch: \$arch, sha: \$sha}")
+                if [ "$kind" = "library" ]; then
+                  library_matrix=$(echo "$library_matrix" | jq -c --argjson e "$entry" ". + [\$e]")
                 else
-                  matrix=$(echo "$matrix" | jq -c --arg pkg "$pkg" --arg arch "$arch" --arg sha "$sha" \
-                    ". + [{\"package\": \$pkg, \"arch\": \$arch, \"sha\": \$sha}]")
+                  program_matrix=$(echo "$program_matrix" | jq -c --argjson e "$entry" ". + [\$e]")
                 fi
               done
             done
 
-            echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
-            echo "preflight: $(echo "$matrix" | jq "length") entries to build"
-            echo "$matrix" | jq .
+            echo "library_matrix=$library_matrix" >> "$GITHUB_OUTPUT"
+            echo "program_matrix=$program_matrix" >> "$GITHUB_OUTPUT"
+            echo "preflight: library=$(echo "$library_matrix" | jq length) program=$(echo "$program_matrix" | jq length)"
+            echo "library_matrix:"; echo "$library_matrix" | jq .
+            echo "program_matrix:"; echo "$program_matrix" | jq .
           '
 
   toolchain-cache:
@@ -400,15 +411,16 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
-  matrix-build:
+  # Library wave — kind=library packages. See staging-build.yml.
+  lib-matrix-build:
     needs: [gate, preflight, toolchain-cache]
-    if: needs.preflight.outputs.matrix != '[]'
+    if: needs.preflight.outputs.library_matrix != '[]'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       max-parallel: 10
       matrix:
-        include: ${{ fromJSON(needs.preflight.outputs.matrix) }}
+        include: ${{ fromJSON(needs.preflight.outputs.library_matrix) }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -420,15 +432,14 @@ jobs:
           ts=$(git log -1 --format=%aI HEAD)
           echo "build-timestamp=$ts" >> "$GITHUB_OUTPUT"
           echo "build-host=${{ github.repository }}@${{ github.sha }}" >> "$GITHUB_OUTPUT"
-          echo "provenance: build-timestamp=$ts" >&2
 
       - name: Fetch musl submodule
-        run: |
-          git config --global url."https://github.com/".insteadOf "git@github.com:"
-          git submodule update --init --depth 1 musl
+        uses: ./.github/actions/fetch-submodules
+        with:
+          submodules: musl
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v18
+        uses: DeterminateSystems/nix-installer-action@v22
 
       - name: Cache Nix store + flake eval
         uses: DeterminateSystems/magic-nix-cache-action@v13
@@ -444,10 +455,6 @@ jobs:
           tar --zstd -xf "$RUNNER_TEMP/toolchain/toolchain-sysroots.tar.zst"
 
       - name: Install host npm deps (build prereq)
-        # Must run before Fetch durable binaries: any source-build
-        # fallback the resolver triggers in the next step may invoke a
-        # tsx script that imports from host/src/. See
-        # staging-build.yml for full rationale.
         run: |
           bash scripts/dev-shell.sh bash -c '
             npm install --no-audit --no-fund
@@ -455,8 +462,97 @@ jobs:
           '
 
       - name: Resolve target package's transitive deps
-        # Target-only prerequisite resolve. See staging-build.yml for
-        # rationale.
+        run: |
+          bash scripts/dev-shell.sh bash -c '
+            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
+            cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
+              build-deps --arch "${{ matrix.arch }}" --binaries-dir "$(pwd)/binaries" \
+                resolve "${{ matrix.package }}"
+          '
+
+      - name: Build ${{ matrix.package }} (${{ matrix.arch }})
+        run: |
+          bash scripts/dev-shell.sh bash -c '
+            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
+            cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
+              archive-stage \
+                --package "examples/libs/${{ matrix.package }}" \
+                --arch "${{ matrix.arch }}" \
+                --out "$RUNNER_TEMP/staged" \
+                --build-timestamp "${{ steps.provenance.outputs.build-timestamp }}" \
+                --build-host "${{ steps.provenance.outputs.build-host }}"
+          '
+
+      - name: Upload archive as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.package }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/staged/*.tar.zst
+          retention-days: 7
+          if-no-files-found: error
+
+  # Program wave — kind=program packages, gated on the library wave.
+  matrix-build:
+    needs: [gate, preflight, toolchain-cache, lib-matrix-build]
+    if: ${{ !cancelled() && needs.preflight.outputs.program_matrix != '[]' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        include: ${{ fromJSON(needs.preflight.outputs.program_matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.build_ref }}
+
+      - name: Compute commit-bound build provenance
+        id: provenance
+        run: |
+          ts=$(git log -1 --format=%aI HEAD)
+          echo "build-timestamp=$ts" >> "$GITHUB_OUTPUT"
+          echo "build-host=${{ github.repository }}@${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          echo "provenance: build-timestamp=$ts" >&2
+
+      - name: Fetch musl submodule
+        uses: ./.github/actions/fetch-submodules
+        with:
+          submodules: musl
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+
+      - name: Cache Nix store + flake eval
+        uses: DeterminateSystems/magic-nix-cache-action@v13
+
+      - name: Download toolchain sysroots artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: toolchain-sysroots
+          path: ${{ runner.temp }}/toolchain
+
+      - name: Extract toolchain sysroots
+        run: |
+          tar --zstd -xf "$RUNNER_TEMP/toolchain/toolchain-sysroots.tar.zst"
+
+      - name: Install host npm deps (build prereq)
+        run: |
+          bash scripts/dev-shell.sh bash -c '
+            npm install --no-audit --no-fund
+            cd host && npm install --no-audit --no-fund
+          '
+
+      - name: Download library archives from lib-matrix-build
+        uses: actions/download-artifact@v4
+        with:
+          pattern: '*-wasm*'
+          path: ${{ runner.temp }}/lib-archives
+
+      - name: Materialize library overlays
+        run: |
+          bash scripts/materialize-pr-overlays.sh "$RUNNER_TEMP/lib-archives"
+
+      - name: Resolve target package's transitive deps
         run: |
           bash scripts/dev-shell.sh bash -c '
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
@@ -487,13 +583,14 @@ jobs:
           if-no-files-found: error
 
   test-gate:
-    needs: [gate, preflight, toolchain-cache, matrix-build]
-    # Skip when matrix is empty (nothing rebuilt) or skip_tests=true.
-    # `!cancelled()` so a fail-fast in matrix-build doesn't silently
-    # skip the test gate for sibling packages that did succeed.
+    needs: [gate, preflight, toolchain-cache, lib-matrix-build, matrix-build]
+    # Skip when both matrices are empty (nothing rebuilt) or
+    # skip_tests=true. `!cancelled()` so a fail-fast in matrix-build
+    # doesn't silently skip the test gate for sibling packages that
+    # did succeed.
     if: |
       !cancelled() &&
-      needs.preflight.outputs.matrix != '[]' &&
+      (needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]') &&
       inputs.skip_tests != true
     runs-on: ubuntu-latest
     permissions:
@@ -539,66 +636,14 @@ jobs:
           '
 
       - name: Materialize binaries (per-package package.pr.toml overlay)
-        # Phase C cutover (Task 6): per-package overlay flow, mirrors
-        # staging-build.yml's test-gate. For each matrix archive, write
-        # examples/libs/<pkg>/package.pr.toml pointing at a file:// URL
-        # for that arch + sha256, then run fetch-binaries.sh to resolve
-        # via the overlay (matrix-built) or package.toml (durable).
+        # Walk downloaded matrix artifacts (lib + prog) via the shared
+        # script, then run fetch-binaries to resolve via overlay
+        # (matrix-built file://) or package.toml (durable https://).
         run: |
           bash scripts/dev-shell.sh bash -c '
             set -euo pipefail
-
             STAGE="$RUNNER_TEMP/staged-overlay"
-            mkdir -p "$STAGE"
-
-            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
-
-            shopt -s nullglob
-            for adir in "$RUNNER_TEMP/staged-archives"/*/; do
-              aname=$(basename "$adir")
-              if   [[ "$aname" == *-wasm32 ]]; then arch=wasm32; pkg="${aname%-wasm32}"
-              elif [[ "$aname" == *-wasm64 ]]; then arch=wasm64; pkg="${aname%-wasm64}"
-              else
-                echo "test-gate: artifact $aname does not end in -wasm32 or -wasm64; skipping" >&2
-                continue
-              fi
-              ptoml="examples/libs/$pkg/package.toml"
-              if [ ! -f "$ptoml" ]; then
-                echo "test-gate: no package.toml for $pkg (artifact $aname); skipping" >&2
-                continue
-              fi
-
-              archive=""
-              for f in "$adir"*.tar.zst; do
-                archive="$f"
-                break
-              done
-              if [ -z "$archive" ]; then
-                echo "test-gate: no .tar.zst inside artifact $aname; skipping" >&2
-                continue
-              fi
-
-              dest="$STAGE/$(basename "$archive")"
-              cp -v "$archive" "$dest"
-              sha=$(sha256sum "$dest" | awk "{print \$1}")
-              url="file://$dest"
-
-              prtoml="examples/libs/$pkg/package.pr.toml"
-              if [ ! -f "$prtoml" ]; then
-                echo "# Generated by force-rebuild test-gate; pins this run''s" > "$prtoml"
-                echo "# matrix-built archives via file:// URLs." >> "$prtoml"
-                echo "" >> "$prtoml"
-              fi
-              {
-                echo "[binary.$arch]"
-                echo "archive_url = \"$url\""
-                echo "archive_sha256 = \"$sha\""
-                echo ""
-              } >> "$prtoml"
-
-              echo "test-gate: overlay $pkg/$arch -> $dest"
-            done
-
+            bash scripts/materialize-pr-overlays.sh "$RUNNER_TEMP/staged-archives" "$STAGE"
             bash scripts/fetch-binaries.sh --allow-stale
           '
 
@@ -642,10 +687,10 @@ jobs:
           bash scripts/dev-shell.sh bash scripts/run-sortix-tests.sh --all
 
   publish:
-    needs: [gate, preflight, matrix-build, test-gate]
+    needs: [gate, preflight, lib-matrix-build, matrix-build, test-gate]
     # Reach publish when:
-    #   * matrix produced entries,
-    #   * matrix-build succeeded,
+    #   * either matrix produced entries,
+    #   * lib-matrix-build + matrix-build succeeded,
     #   * AND either test-gate succeeded OR skip_tests=true (in which
     #     case test-gate is `skipped`, not `success`).
     #
@@ -654,8 +699,9 @@ jobs:
     # is used to investigate a suspected cache problem.
     if: |
       !cancelled() &&
-      needs.preflight.outputs.matrix != '[]' &&
-      needs.matrix-build.result == 'success' &&
+      (needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]') &&
+      (needs.lib-matrix-build.result == 'success' || needs.lib-matrix-build.result == 'skipped') &&
+      (needs.matrix-build.result == 'success' || needs.matrix-build.result == 'skipped') &&
       (needs.test-gate.result == 'success' || inputs.skip_tests == true)
     runs-on: ubuntu-latest
     permissions:
@@ -800,7 +846,7 @@ jobs:
     if: |
       inputs.bump_packages == true &&
       needs.publish.result == 'success' &&
-      needs.preflight.outputs.matrix != '[]'
+      (needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]')
     runs-on: ubuntu-latest
     permissions:
       contents: write          # push bot branch
@@ -856,7 +902,11 @@ jobs:
           set -euo pipefail
           TAG="${{ needs.preflight.outputs.target_tag }}"
           ABI="${{ needs.preflight.outputs.abi }}"
-          MATRIX='${{ needs.preflight.outputs.matrix }}'
+          # amend-package-toml walks the union of library + program
+          # matrices; merge into a single array.
+          LIB_M='${{ needs.preflight.outputs.library_matrix }}'
+          PROG_M='${{ needs.preflight.outputs.program_matrix }}'
+          MATRIX=$(jq -nc --argjson l "$LIB_M" --argjson p "$PROG_M" '$l + $p')
           ASSET_BASE="https://github.com/${{ github.repository }}/releases/download/${TAG}"
 
           # For each matrix entry: locate the asset whose name starts
@@ -1007,7 +1057,7 @@ jobs:
     needs: [gate, preflight, publish, generate-index, amend-package-toml]
     if: |
       inputs.bump_packages == true &&
-      needs.preflight.outputs.matrix != '[]' &&
+      (needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]') &&
       needs.publish.result == 'success' &&
       needs.amend-package-toml.result == 'success' &&
       needs.amend-package-toml.outputs.bot_pr_number != ''

@@ -51,7 +51,8 @@ jobs:
       contents: read           # gh release view (target tag probe)
       statuses: write          # post pending merge-gate status with helpful description
     outputs:
-      matrix: ${{ steps.compute.outputs.matrix }}
+      library_matrix: ${{ steps.compute.outputs.library_matrix }}
+      program_matrix: ${{ steps.compute.outputs.program_matrix }}
       abi: ${{ steps.compute.outputs.abi }}
       target_tag: ${{ steps.compute.outputs.target_tag }}
     steps:
@@ -129,32 +130,39 @@ jobs:
             echo "..."
 
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
-            matrix="[]"
+            library_matrix="[]"
+            program_matrix="[]"
 
             for pkg_dir in examples/libs/*/; do
               pkg=$(basename "$pkg_dir")
               # Filter: package must have a [build] block. Today this
-              # selects the 10 first-party recipes that own a build
-              # script (dinit, lamp, mariadb-test, mariadb-vfs, nginx,
-              # erlang-vfs, perl-vfs, python-vfs, shell, wordpress) and
+              # selects the recipes that own a build script and
               # naturally excludes kernel/userspace/examples/node and
-              # *-source packages. The decoupled-package-builds design
-              # plans to make [build] required for first-party programs
-              # in a follow-up; this loop will then expand to the full
-              # set without a workflow change.
+              # *-source packages.
               if ! grep -q "^\[build\]" "$pkg_dir/package.toml"; then
                 continue
               fi
+
+              # Read kind so we can split into library_matrix /
+              # program_matrix. Library wave runs first, programs
+              # second; programs reuse the library archives via
+              # package.pr.toml overlays so each library builds at
+              # most once across the matrix.
+              kind=$(awk -F'"'"'"'"'"'"'"'"' '"'"'/^kind *=/ {print $2; exit}'"'"' "$pkg_dir/package.toml")
+              case "$kind" in
+                library|program) ;;
+                *)
+                  echo "preflight: skipping $pkg (kind=$kind, not library/program)" >&2
+                  continue
+                  ;;
+              esac
 
               # Per-package arches from package.toml'"'"'s top-level
               # `arches = [...]` field (default `["wasm32"]` when
               # absent). Mirrors the filter inside
               # `xtask archive-stage`, which rejects a `(package, arch)`
               # pair whose arch isn'"'"'t in the manifest'"'"'s
-              # target_arches (parsed in xtask/src/pkg_manifest.rs around
-              # line 540). Iterating only declared arches here avoids
-              # spawning matrix entries the staging step would silently
-              # drop. Assumes the single-line form
+              # target_arches. Assumes the single-line form
               # `arches = ["a", "b"]`; all current package.toml files
               # use that shape.
               arches=$(awk -F'"'"'[][]'"'"' '"'"'/^arches *=/ {print $2}'"'"' "$pkg_dir/package.toml" | tr -d '"'"' "'"'"' | tr '"'"','"'"' '"'"' '"'"')
@@ -166,26 +174,28 @@ jobs:
                   continue
                 }
                 short=${sha:0:8}
-                # Archive filename: <name>-<version>-rev<N>-abi<N>-<arch>-<short8>.tar.zst.
-                # Version + revision live in package.toml and we donʼt
-                # need them here — startswith($prefix) + endswith($suffix)
-                # uniquely identifies the (pkg, arch, sha) triple in the
-                # release assets.
                 prefix="${pkg}-"
                 suffix="-abi${ABI}-${arch}-${short}.tar.zst"
                 if echo "$existing_assets" | jq -e --arg pre "$prefix" --arg suf "$suffix" \
                     "any(.[]; startswith(\$pre) and endswith(\$suf))" >/dev/null; then
                   echo "preflight: skip $pkg/$arch (sha $short already published)"
+                  continue
+                fi
+                entry=$(jq -nc --arg pkg "$pkg" --arg arch "$arch" --arg sha "$sha" \
+                  "{package: \$pkg, arch: \$arch, sha: \$sha}")
+                if [ "$kind" = "library" ]; then
+                  library_matrix=$(echo "$library_matrix" | jq -c --argjson e "$entry" ". + [\$e]")
                 else
-                  matrix=$(echo "$matrix" | jq -c --arg pkg "$pkg" --arg arch "$arch" --arg sha "$sha" \
-                    ". + [{\"package\": \$pkg, \"arch\": \$arch, \"sha\": \$sha}]")
+                  program_matrix=$(echo "$program_matrix" | jq -c --argjson e "$entry" ". + [\$e]")
                 fi
               done
             done
 
-            echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
-            echo "preflight: $(echo "$matrix" | jq "length") entries to build"
-            echo "$matrix" | jq .
+            echo "library_matrix=$library_matrix" >> "$GITHUB_OUTPUT"
+            echo "program_matrix=$program_matrix" >> "$GITHUB_OUTPUT"
+            echo "preflight: library=$(echo "$library_matrix" | jq length) program=$(echo "$program_matrix" | jq length)"
+            echo "library_matrix:"; echo "$library_matrix" | jq .
+            echo "program_matrix:"; echo "$program_matrix" | jq .
           '
 
       - name: Post pending merge-gate status (instructs reviewer)
@@ -319,18 +329,113 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
-  matrix-build:
+  # Library wave — kind=library packages build first. Each runner
+  # uploads its archive as `<lib>-<arch>` so the program wave below
+  # can pull them via package.pr.toml file:// overlays. This dedupes
+  # library builds across the matrix: each library compiles exactly
+  # once per arch, instead of once per dependent program.
+  lib-matrix-build:
     needs: [preflight, toolchain-cache]
-    if: needs.preflight.outputs.matrix != '[]'
+    if: needs.preflight.outputs.library_matrix != '[]'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      # Keep an explicit cap while allowing enough parallelism to
-      # finish the matrix quickly. Sysroot fanout uses a per-run
-      # artifact rather than N identical Actions Cache restores.
       max-parallel: 10
       matrix:
-        include: ${{ fromJSON(needs.preflight.outputs.matrix) }}
+        include: ${{ fromJSON(needs.preflight.outputs.library_matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Compute commit-bound build provenance
+        id: provenance
+        run: |
+          ts=$(git log -1 --format=%aI HEAD)
+          echo "build-timestamp=$ts" >> "$GITHUB_OUTPUT"
+          echo "build-host=${{ github.repository }}@${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch musl submodule
+        uses: ./.github/actions/fetch-submodules
+        with:
+          submodules: musl
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+
+      - name: Cache Nix store + flake eval
+        uses: DeterminateSystems/magic-nix-cache-action@v13
+
+      - name: Download toolchain sysroots artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: toolchain-sysroots
+          path: ${{ runner.temp }}/toolchain
+
+      - name: Extract toolchain sysroots
+        run: |
+          tar --zstd -xf "$RUNNER_TEMP/toolchain/toolchain-sysroots.tar.zst"
+
+      - name: Install host npm deps (build prereq)
+        run: |
+          bash scripts/dev-shell.sh bash -c '
+            npm install --no-audit --no-fund
+            cd host && npm install --no-audit --no-fund
+          '
+
+      - name: Resolve target package's transitive deps
+        # Libraries depend on at most a handful of other libraries
+        # (e.g. libpng → zlib, libcurl → openssl + zlib). Within the
+        # library wave each entry source-builds its own transitive
+        # libs from a cold cache; this is bounded duplicate work.
+        # Eliminating it would require either topological sub-staging
+        # or a cross-runner cache, both deferred follow-ups.
+        run: |
+          bash scripts/dev-shell.sh bash -c '
+            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
+            cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
+              build-deps --arch "${{ matrix.arch }}" --binaries-dir "$(pwd)/binaries" \
+                resolve "${{ matrix.package }}"
+          '
+
+      - name: Build ${{ matrix.package }} (${{ matrix.arch }})
+        run: |
+          bash scripts/dev-shell.sh bash -c '
+            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
+            cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
+              archive-stage \
+                --package "examples/libs/${{ matrix.package }}" \
+                --arch "${{ matrix.arch }}" \
+                --out "$RUNNER_TEMP/staged" \
+                --build-timestamp "${{ steps.provenance.outputs.build-timestamp }}" \
+                --build-host "${{ steps.provenance.outputs.build-host }}"
+          '
+
+      - name: Upload archive as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.package }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/staged/*.tar.zst
+          retention-days: 7
+          if-no-files-found: error
+
+  # Program wave — kind=program packages, gated on the library wave.
+  # Each runner downloads the library archives produced above and
+  # materializes package.pr.toml overlays so the resolver finds each
+  # library via file:// instead of source-building a fresh copy.
+  matrix-build:
+    needs: [preflight, toolchain-cache, lib-matrix-build]
+    # !cancelled() so a partial library-wave failure (one lib failed,
+    # others succeeded) doesn't cancel programs that depend only on
+    # the green libs. Programs whose libs failed will fail loudly at
+    # resolve time, which is the correct behavior.
+    if: ${{ !cancelled() && needs.preflight.outputs.program_matrix != '[]' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        include: ${{ fromJSON(needs.preflight.outputs.program_matrix) }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -377,28 +482,41 @@ jobs:
           tar --zstd -xf "$RUNNER_TEMP/toolchain/toolchain-sysroots.tar.zst"
 
       - name: Install host npm deps (build prereq)
-        # Some package builds invoke tsx scripts that import from
-        # host/src/ (e.g. *-vfs-image.ts → fzstd, fflate). Must run
-        # BEFORE Fetch durable binaries so any source-build fallback
-        # the resolver triggers there can find host/node_modules/.
         run: |
           bash scripts/dev-shell.sh bash -c '
             npm install --no-audit --no-fund
             cd host && npm install --no-audit --no-fund
           '
 
+      - name: Download library archives from lib-matrix-build
+        # Pull every library artifact produced by lib-matrix-build.
+        # The pattern matches both wasm32 and wasm64 entries; the
+        # downstream materialize step writes per-arch overlays so a
+        # wasm32 program runner ignores wasm64 libs (and vice versa).
+        # Libraries are filtered by name in lib-matrix-build's
+        # `library_matrix` input; we don't need a separate filter
+        # here because no other artifact uploaded earlier in the run
+        # matches `*-wasm*`.
+        uses: actions/download-artifact@v4
+        with:
+          pattern: '*-wasm*'
+          path: ${{ runner.temp }}/lib-archives
+
+      - name: Materialize library overlays
+        # Write examples/libs/<lib>/package.pr.toml file:// pointers
+        # for every downloaded library archive. The next step's
+        # resolver finds each library via overlay → file:// → cache
+        # without source-building. Each library was built exactly
+        # once in lib-matrix-build above.
+        run: |
+          bash scripts/materialize-pr-overlays.sh "$RUNNER_TEMP/lib-archives"
+
       - name: Resolve target package's transitive deps
         # Target-only prerequisite resolve: invoke the resolver on
-        # this matrix entry's package. The resolver follows
-        # depends_on transitively, fetching archives (or source-
-        # building) and placing binaries/ symlinks for the target's
-        # actual deps only. This replaces the legacy bulk
-        # fetch-binaries walk: with v6 archives ABI-mismatched on v7,
-        # the bulk walk source-builds every registry package on every
-        # matrix runner — hours of duplicate work and a fragility
-        # surface that only the target's deps need to clear.
-        # `xtask archive-stage` below re-runs the same resolver but
-        # only does cache bookkeeping when the prereq deps are warm.
+        # this matrix entry's package. With library overlays in place,
+        # every library dep resolves via file:// (cache hit). Programs
+        # that source-build their own transitive program deps (e.g.
+        # mariadb-vfs → mariadb, dinit) still build those once here.
         run: |
           bash scripts/dev-shell.sh bash -c '
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
@@ -463,8 +581,8 @@ jobs:
     # obsolete workflow alive.
     # The empty-matrix case (preflight produced []) is short-circuited:
     # nothing was built, nothing to test.
-    needs: [preflight, toolchain-cache, matrix-build]
-    if: ${{ !cancelled() && needs.preflight.outputs.matrix != '[]' }}
+    needs: [preflight, toolchain-cache, lib-matrix-build, matrix-build]
+    if: ${{ !cancelled() && (needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -521,102 +639,17 @@ jobs:
           '
 
       - name: Materialize binaries (per-package package.pr.toml overlay)
-        # The matrix produced a flat set of per-package archives whose
-        # filenames encode (program, version, revision, abi, arch,
-        # short_sha). For test-gate, we want the matrix-built bytes for
-        # changed packages and the durable-release bytes for everything
-        # else.
-        #
-        # Phase C cutover (Task 6): the resolver consumes per-package
-        # package.toml directly, with optional package.pr.toml overlays
-        # that replace [binary.<arch>].archive_url + archive_sha256.
-        # Strategy:
-        #
-        #   1. For each matrix archive, copy the .tar.zst to a stable
-        #      file:// path under <stage>/ and compute its sha256.
-        #
-        #   2. Write examples/libs/<pkg>/package.pr.toml with a
-        #      [binary.<arch>] block pointing at the file:// URL +
-        #      sha. The PR-overlay parser merges this on top of
-        #      [binary.<arch>] in package.toml at resolve time.
-        #
-        #   3. Run scripts/fetch-binaries.sh, which walks every
-        #      package.toml + applies overlay (if present) + invokes
-        #      `xtask build-deps resolve --binaries-dir binaries`. The
-        #      resolver fetches each archive (matrix-built via file://
-        #      for changed packages; durable release via https:// for
-        #      everything else) into the content-addressed cache and
-        #      places the symlinks tests expect under binaries/.
-        #
-        # `--allow-stale` is the resolver default in Phase C — accepted
-        # for compatibility with the old call shape.
+        # Walk the downloaded matrix artifacts (lib + prog) and write
+        # examples/libs/<pkg>/package.pr.toml file:// pointers via the
+        # shared scripts/materialize-pr-overlays.sh. Then run
+        # fetch-binaries to populate binaries/ symlinks for every
+        # package (matrix-built via overlay; durable release via
+        # package.toml's https:// for anything skipped by D3).
         run: |
           bash scripts/dev-shell.sh bash -c '
             set -euo pipefail
-
             STAGE="$RUNNER_TEMP/staged-overlay"
-            mkdir -p "$STAGE"
-
-            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
-
-            # For each matrix artifact directory, copy its .tar.zst into
-            # $STAGE under a stable name, compute its sha256, then write
-            # examples/libs/<pkg>/package.pr.toml pointing at it.
-            shopt -s nullglob
-            for adir in "$RUNNER_TEMP/staged-archives"/*/; do
-              aname=$(basename "$adir")
-              # artifact name is "<pkg>-<arch>"; strip the arch suffix.
-              if   [[ "$aname" == *-wasm32 ]]; then arch=wasm32; pkg="${aname%-wasm32}"
-              elif [[ "$aname" == *-wasm64 ]]; then arch=wasm64; pkg="${aname%-wasm64}"
-              else
-                echo "test-gate: artifact $aname does not end in -wasm32 or -wasm64; skipping" >&2
-                continue
-              fi
-              ptoml="examples/libs/$pkg/package.toml"
-              if [ ! -f "$ptoml" ]; then
-                echo "test-gate: no package.toml for $pkg (artifact $aname); skipping" >&2
-                continue
-              fi
-
-              # There is exactly one .tar.zst per matrix entry.
-              archive=""
-              for f in "$adir"*.tar.zst; do
-                archive="$f"
-                break
-              done
-              if [ -z "$archive" ]; then
-                echo "test-gate: no .tar.zst inside artifact $aname; skipping" >&2
-                continue
-              fi
-
-              dest="$STAGE/$(basename "$archive")"
-              cp -v "$archive" "$dest"
-              sha=$(sha256sum "$dest" | awk "{print \$1}")
-              url="file://$dest"
-
-              # Write/extend package.pr.toml. The overlay parser
-              # accepts a [binary.<arch>] sub-table or a bare
-              # [binary] block; we always use [binary.<arch>] so a
-              # multi-arch run accumulates entries cleanly across the
-              # matrix.
-              prtoml="examples/libs/$pkg/package.pr.toml"
-              if [ ! -f "$prtoml" ]; then
-                echo "# Generated by staging-build test-gate; pins this PR''s" > "$prtoml"
-                echo "# matrix-built archives via file:// URLs." >> "$prtoml"
-                echo "" >> "$prtoml"
-              fi
-              {
-                echo "[binary.$arch]"
-                echo "archive_url = \"$url\""
-                echo "archive_sha256 = \"$sha\""
-                echo ""
-              } >> "$prtoml"
-
-              echo "test-gate: overlay $pkg/$arch -> $dest"
-            done
-
-            # Now resolve every package: matrix-built via overlay
-            # (file://), durable release via package.toml (https://).
+            bash scripts/materialize-pr-overlays.sh "$RUNNER_TEMP/staged-archives" "$STAGE"
             bash scripts/fetch-binaries.sh --allow-stale
           '
 
@@ -675,9 +708,9 @@ jobs:
     #     of (matrix-built + durable fallback), so a green test-gate
     #     blesses the matrix archives even when the durable side filled
     #     in some packages.
-    #   * preflight.outputs.matrix != '[]' short-circuits the empty-
-    #     matrix case (every package's sha already published; nothing
-    #     new to upload).
+    #   * library_matrix and program_matrix both '[]' short-circuits
+    #     the empty case (every package's sha already published;
+    #     nothing new to upload).
     #
     # Tag selection mirrors the preflight: `pr-<NNN>-staging` for PR
     # runs, `binaries-abi-v<N>` for non-PR runs. Same `target_tag`
@@ -694,8 +727,8 @@ jobs:
     # the same SHA, where --clobber is byte-identical and a no-op.
     # Don't cancel in-progress: an interrupted upload leaves a
     # partial asset on the release.
-    needs: [preflight, matrix-build, test-gate]
-    if: needs.test-gate.result == 'success' && needs.preflight.outputs.matrix != '[]'
+    needs: [preflight, lib-matrix-build, matrix-build, test-gate]
+    if: needs.test-gate.result == 'success' && (needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]')
     runs-on: ubuntu-latest
     permissions:
       contents: write   # gh release create/upload
@@ -907,8 +940,8 @@ jobs:
     # eliminates the common-case quick-push race). cancel-in-progress is
     # false here because aborting an in-flight comment edit is worse than
     # waiting one more comment-edit's worth of time.
-    needs: [preflight, matrix-build, publish, generate-index]
-    if: always() && needs.preflight.outputs.matrix != '[]'
+    needs: [preflight, lib-matrix-build, matrix-build, publish, generate-index]
+    if: always() && (needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]')
     runs-on: ubuntu-latest
     concurrency:
       group: phase-b-1-publish-${{ needs.preflight.outputs.target_tag }}
@@ -928,7 +961,13 @@ jobs:
           set -euo pipefail
           TAG="${{ needs.preflight.outputs.target_tag }}"
           ABI="${{ needs.preflight.outputs.abi }}"
-          MATRIX='${{ needs.preflight.outputs.matrix }}'
+          # f2-status walks the union of library + program matrices
+          # to decide per-entry status (built vs. failed); merge the
+          # two into a single array so the downstream loop stays
+          # uniform.
+          LIB_M='${{ needs.preflight.outputs.library_matrix }}'
+          PROG_M='${{ needs.preflight.outputs.program_matrix }}'
+          MATRIX=$(jq -nc --argjson l "$LIB_M" --argjson p "$PROG_M" '$l + $p')
 
           # Currently published assets in the release (post-publish,
           # post-generate-index). Falls back to [] if the release
