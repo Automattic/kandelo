@@ -221,7 +221,17 @@ pub fn compute_sha(
             target.name
         ));
     }
-    if let Some(cached) = memo.get(&target.spec()) {
+    // Memo key MUST include arch + abi: a single resolve chain can
+    // legitimately need the same package at multiple arches (e.g. a
+    // wasm64 program that transitively pulls a wasm32-only sibling
+    // via the wasm32-fallback path) and at multiple ABIs (rare today
+    // but the field is part of the sha input). Without these, a
+    // memo'd wasm64 sha bleeds into a later wasm32 lookup, producing
+    // a canonical cache path with wasm32 in the dir but the wasm64
+    // sha in the suffix — which then can't possibly be satisfied by
+    // either archive.
+    let memo_key = format!("{}|{}|{}", target.spec(), arch.as_str(), abi_version);
+    if let Some(cached) = memo.get(&memo_key) {
         return Ok(*cached);
     }
 
@@ -332,7 +342,7 @@ pub fn compute_sha(
     }
 
     let out: [u8; 32] = h.finalize().into();
-    memo.insert(target.spec(), out);
+    memo.insert(memo_key, out);
     Ok(out)
 }
 
