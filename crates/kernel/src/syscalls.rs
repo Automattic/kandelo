@@ -318,6 +318,148 @@ fn check_open_access(
     )
 }
 
+/// Return the parent-directory portion of an already-resolved absolute path.
+///
+/// `/foo/bar` → `/foo`; `/foo` → `/`; `/` → `/`. Used by the modify-like
+/// syscall permission checks (unlink/mkdir/rmdir/rename/link/symlink) which
+/// must validate write+exec on the containing directory.
+fn parent_dir_of(resolved: &[u8]) -> &[u8] {
+    if resolved == b"/" || resolved.is_empty() {
+        return b"/";
+    }
+    let end = if *resolved.last().unwrap() == b'/' { resolved.len() - 1 } else { resolved.len() };
+    let slice = &resolved[..end];
+    match slice.iter().rposition(|&b| b == b'/') {
+        Some(0) => b"/",
+        Some(idx) => &resolved[..idx],
+        None => b"/",
+    }
+}
+
+/// Require `W_OK | X_OK` on `parent_path`. Used by syscalls that mutate a
+/// directory's contents (unlink/mkdir/rmdir/rename-dst/link/symlink/etc.).
+/// No-op when `enforce_permissions()` is off. ENOENT/stat-failure on the
+/// parent is *not* treated as a denial here — the underlying host call will
+/// surface the real error.
+fn check_parent_writable(
+    host: &mut dyn HostIO,
+    parent_path: &[u8],
+    proc: &Process,
+) -> Result<(), Errno> {
+    if !crate::enforce_permissions() {
+        return Ok(());
+    }
+    use wasm_posix_shared::access::{W_OK, X_OK};
+    let st = match host.host_stat(parent_path) {
+        Ok(st) => st,
+        Err(_) => return Ok(()),
+    };
+    crate::access::check_access(
+        W_OK | X_OK, st.st_uid, st.st_gid, st.st_mode, proc.euid, proc.egid, &[],
+    )
+}
+
+/// Sticky-bit check for `unlink`/`rmdir`/`rename` source. When the parent
+/// directory has `S_ISVTX` set, only the file's owner, the parent's owner,
+/// or root may remove the entry. POSIX-defined behaviour for `/tmp`-style
+/// world-writable directories.
+fn check_sticky_unlink(
+    host: &mut dyn HostIO,
+    parent_path: &[u8],
+    file_uid: u32,
+    proc: &Process,
+) -> Result<(), Errno> {
+    if !crate::enforce_permissions() {
+        return Ok(());
+    }
+    let st = match host.host_stat(parent_path) {
+        Ok(st) => st,
+        Err(_) => return Ok(()),
+    };
+    if st.st_mode & wasm_posix_shared::mode::S_ISVTX == 0 {
+        return Ok(());
+    }
+    if proc.euid == 0 || proc.euid == file_uid || proc.euid == st.st_uid {
+        return Ok(());
+    }
+    Err(Errno::EACCES)
+}
+
+/// chmod ownership rule: only the file's owner or root may change the mode.
+/// Denial is `EPERM` (not `EACCES`) per POSIX.
+fn check_chmod_owner(file_uid: u32, proc: &Process) -> Result<(), Errno> {
+    if !crate::enforce_permissions() {
+        return Ok(());
+    }
+    if proc.euid == 0 || proc.euid == file_uid {
+        Ok(())
+    } else {
+        Err(Errno::EPERM)
+    }
+}
+
+/// chown caller rule. Only root may change a file's uid to anything other
+/// than the caller (or `-1`), or change its gid to a group the caller does
+/// not belong to. Self-uid-no-change is permitted for non-root callers;
+/// likewise gid changes to the caller's own egid. `(u32)-1` means "leave
+/// unchanged" (POSIX) and contributes no restriction. Denial is `EPERM`.
+fn check_chown_request(
+    file_uid: u32,
+    new_uid: u32,
+    new_gid: u32,
+    proc: &Process,
+) -> Result<(), Errno> {
+    if !crate::enforce_permissions() {
+        return Ok(());
+    }
+    if proc.euid == 0 {
+        return Ok(());
+    }
+    let uid_change = new_uid != u32::MAX && new_uid != file_uid;
+    if uid_change {
+        return Err(Errno::EPERM);
+    }
+    let gid_change = new_gid != u32::MAX;
+    if gid_change && new_gid != proc.egid {
+        // No supplementary group list on Process yet — see check_open_access.
+        return Err(Errno::EPERM);
+    }
+    Ok(())
+}
+
+/// utimensat permission check. Per POSIX: caller must own the file, have
+/// write access to it, or be root. `UTIME_NOW`/explicit-time both require
+/// owner-or-write. `UTIME_OMIT` in both slots is a no-op (no permission
+/// required). When only one of the two timespecs uses UTIME_OMIT, the
+/// stricter check still applies because the other slot will be modified.
+fn check_utime_perm(
+    host: &mut dyn HostIO,
+    resolved: &[u8],
+    proc: &Process,
+    times: Option<&[WasmTimespec; 2]>,
+) -> Result<(), Errno> {
+    if !crate::enforce_permissions() {
+        return Ok(());
+    }
+    const UTIME_OMIT: i64 = 0x3FFFFFFE;
+    if let Some(ts) = times {
+        if ts[0].tv_nsec == UTIME_OMIT && ts[1].tv_nsec == UTIME_OMIT {
+            return Ok(());
+        }
+    }
+    let st = match host.host_stat(resolved) {
+        Ok(st) => st,
+        Err(_) => return Ok(()),
+    };
+    if proc.euid == 0 || proc.euid == st.st_uid {
+        return Ok(());
+    }
+    use wasm_posix_shared::access::W_OK;
+    crate::access::check_access(
+        W_OK, st.st_uid, st.st_gid, st.st_mode, proc.euid, proc.egid, &[],
+    )
+}
+
 /// Open a file, returning the new file descriptor number.
 pub fn sys_open(
     proc: &mut Process,
@@ -2473,17 +2615,32 @@ pub fn sys_lstat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resu
 
 pub fn sys_mkdir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8], mode: u32) -> Result<(), Errno> {
     let resolved = resolve_path(path, &proc.cwd);
+    // NOTE: umask is already applied here (Task 5.8 will sweep up creation
+    // sites consistently; the call below mirrors the existing convention).
     let effective_mode = mode & !proc.umask;
+    check_parent_writable(host, parent_dir_of(&resolved), proc)?;
     host.host_mkdir(&resolved, effective_mode)
 }
 
 pub fn sys_rmdir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
     let resolved = resolve_path(path, &proc.cwd);
+    let parent = parent_dir_of(&resolved);
+    check_parent_writable(host, parent, proc)?;
+    if crate::enforce_permissions() {
+        let file_uid = host.host_stat(&resolved).map(|st| st.st_uid).unwrap_or(0);
+        check_sticky_unlink(host, parent, file_uid, proc)?;
+    }
     host.host_rmdir(&resolved)
 }
 
 pub fn sys_unlink(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
     let resolved = resolve_path(path, &proc.cwd);
+    let parent = parent_dir_of(&resolved);
+    check_parent_writable(host, parent, proc)?;
+    if crate::enforce_permissions() {
+        let file_uid = host.host_stat(&resolved).map(|st| st.st_uid).unwrap_or(0);
+        check_sticky_unlink(host, parent, file_uid, proc)?;
+    }
     // AF_UNIX bind() creates a real host inode, so unlink must remove both the
     // registry entry and the inode. ENOENT from host_unlink is tolerated because
     // some hosts (test mocks) don't track the inode.
@@ -2514,18 +2671,33 @@ pub fn sys_unlink(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Res
 pub fn sys_rename(proc: &mut Process, host: &mut dyn HostIO, oldpath: &[u8], newpath: &[u8]) -> Result<(), Errno> {
     let old = resolve_path(oldpath, &proc.cwd);
     let new = resolve_path(newpath, &proc.cwd);
+    let old_parent = parent_dir_of(&old);
+    let new_parent = parent_dir_of(&new);
+    check_parent_writable(host, old_parent, proc)?;
+    check_parent_writable(host, new_parent, proc)?;
+    if crate::enforce_permissions() {
+        let src_uid = host.host_stat(&old).map(|st| st.st_uid).unwrap_or(0);
+        check_sticky_unlink(host, old_parent, src_uid, proc)?;
+        // If the destination exists, the rename also unlinks it — sticky-bit
+        // on the new parent applies to the destination's owner.
+        if let Ok(dst_st) = host.host_stat(&new) {
+            check_sticky_unlink(host, new_parent, dst_st.st_uid, proc)?;
+        }
+    }
     host.host_rename(&old, &new)
 }
 
 pub fn sys_link(proc: &mut Process, host: &mut dyn HostIO, oldpath: &[u8], newpath: &[u8]) -> Result<(), Errno> {
     let old = resolve_path(oldpath, &proc.cwd);
     let new = resolve_path(newpath, &proc.cwd);
+    check_parent_writable(host, parent_dir_of(&new), proc)?;
     host.host_link(&old, &new)
 }
 
 pub fn sys_symlink(proc: &mut Process, host: &mut dyn HostIO, target: &[u8], linkpath: &[u8]) -> Result<(), Errno> {
     // Note: symlink target is stored as-is (not resolved), but linkpath is resolved
     let link = resolve_path(linkpath, &proc.cwd);
+    check_parent_writable(host, parent_dir_of(&link), proc)?;
     host.host_symlink(target, &link)
 }
 
@@ -2546,11 +2718,30 @@ pub fn sys_readlink(proc: &mut Process, host: &mut dyn HostIO, path: &[u8], buf:
 
 pub fn sys_chmod(proc: &mut Process, host: &mut dyn HostIO, path: &[u8], mode: u32) -> Result<(), Errno> {
     let resolved = resolve_path(path, &proc.cwd);
+    if crate::enforce_permissions() {
+        if let Ok(st) = host.host_stat(&resolved) {
+            check_chmod_owner(st.st_uid, proc)?;
+        }
+    }
     host.host_chmod(&resolved, mode)
 }
 
 pub fn sys_chown(proc: &mut Process, host: &mut dyn HostIO, path: &[u8], uid: u32, gid: u32) -> Result<(), Errno> {
     let resolved = resolve_path(path, &proc.cwd);
+    if crate::enforce_permissions() {
+        let file_uid = host.host_stat(&resolved).map(|st| st.st_uid).unwrap_or(0);
+        check_chown_request(file_uid, uid, gid, proc)?;
+        // POSIX: chown clears S_ISUID/S_ISGID on regular files. Apply the
+        // strip via host_chmod when the file currently has either bit set.
+        if let Ok(st) = host.host_stat(&resolved) {
+            use wasm_posix_shared::mode::{S_IFMT, S_IFREG, S_ISGID, S_ISUID};
+            if st.st_mode & S_IFMT == S_IFREG
+                && st.st_mode & (S_ISUID | S_ISGID) != 0
+            {
+                let _ = host.host_chmod(&resolved, st.st_mode & !(S_ISUID | S_ISGID) & 0o7777);
+            }
+        }
+    }
     host.host_chown(&resolved, uid, gid)
 }
 
@@ -2565,6 +2756,13 @@ pub fn sys_access(proc: &mut Process, host: &mut dyn HostIO, path: &[u8], amode:
         // Procfs entries are read-only: allow R_OK/F_OK/X_OK(dirs), deny W_OK
         if amode & 0o2 != 0 { return Err(Errno::EACCES); }
         return Ok(());
+    }
+    if crate::enforce_permissions() {
+        if let Ok(st) = host.host_stat(&resolved) {
+            return crate::access::check_access(
+                amode, st.st_uid, st.st_gid, st.st_mode, proc.euid, proc.egid, &[],
+            );
+        }
     }
     host.host_access(&resolved, amode)
 }
@@ -3768,6 +3966,8 @@ pub fn sys_utimensat(
     } else {
         resolve_at_path(proc, dirfd, path)?
     };
+
+    check_utime_perm(host, &resolved, proc, times)?;
 
     // Default: set both to current time
     let (atime_sec, atime_nsec, mtime_sec, mtime_nsec) = if let Some(ts) = times {
@@ -5842,6 +6042,12 @@ pub fn sys_unlinkat(
     use wasm_posix_shared::flags::AT_REMOVEDIR;
 
     let resolved = resolve_at_path(proc, dirfd, path)?;
+    let parent = parent_dir_of(&resolved);
+    check_parent_writable(host, parent, proc)?;
+    if crate::enforce_permissions() {
+        let file_uid = host.host_stat(&resolved).map(|st| st.st_uid).unwrap_or(0);
+        check_sticky_unlink(host, parent, file_uid, proc)?;
+    }
     if flags & AT_REMOVEDIR != 0 {
         host.host_rmdir(&resolved)
     } else {
@@ -5881,6 +6087,7 @@ pub fn sys_mkdirat(
 ) -> Result<(), Errno> {
     let resolved = resolve_at_path(proc, dirfd, path)?;
     let effective_mode = mode & !proc.umask;
+    check_parent_writable(host, parent_dir_of(&resolved), proc)?;
     host.host_mkdir(&resolved, effective_mode)
 }
 
@@ -5895,6 +6102,17 @@ pub fn sys_renameat(
 ) -> Result<(), Errno> {
     let old_resolved = resolve_at_path(proc, olddirfd, oldpath)?;
     let new_resolved = resolve_at_path(proc, newdirfd, newpath)?;
+    let old_parent = parent_dir_of(&old_resolved);
+    let new_parent = parent_dir_of(&new_resolved);
+    check_parent_writable(host, old_parent, proc)?;
+    check_parent_writable(host, new_parent, proc)?;
+    if crate::enforce_permissions() {
+        let src_uid = host.host_stat(&old_resolved).map(|st| st.st_uid).unwrap_or(0);
+        check_sticky_unlink(host, old_parent, src_uid, proc)?;
+        if let Ok(dst_st) = host.host_stat(&new_resolved) {
+            check_sticky_unlink(host, new_parent, dst_st.st_uid, proc)?;
+        }
+    }
     host.host_rename(&old_resolved, &new_resolved)
 }
 
@@ -7495,6 +7713,14 @@ pub fn sys_fchmod(
     let ofd_idx = entry.ofd_ref.0;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
 
+    if crate::enforce_permissions()
+        && matches!(ofd.file_type, FileType::Regular | FileType::Directory)
+    {
+        if let Ok(st) = host.host_fstat(ofd.host_handle) {
+            check_chmod_owner(st.st_uid, proc)?;
+        }
+    }
+
     match ofd.file_type {
         FileType::Regular | FileType::Directory => host.host_fchmod(ofd.host_handle, mode),
         // CharDevice / Pipe / Socket / PtyMaster / PtySlave / etc.: Linux
@@ -7518,6 +7744,13 @@ pub fn sys_fchown(
     let entry = proc.fd_table.get(fd)?;
     let ofd_idx = entry.ofd_ref.0;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+
+    if crate::enforce_permissions()
+        && matches!(ofd.file_type, FileType::Regular | FileType::Directory)
+    {
+        let file_uid = host.host_fstat(ofd.host_handle).map(|st| st.st_uid).unwrap_or(0);
+        check_chown_request(file_uid, uid, gid, proc)?;
+    }
 
     match ofd.file_type {
         FileType::Regular | FileType::Directory => host.host_fchown(ofd.host_handle, uid, gid),
@@ -7660,6 +7893,11 @@ pub fn sys_fchmodat(
     _flags: u32,
 ) -> Result<(), Errno> {
     let resolved = resolve_at_path(proc, dirfd, path)?;
+    if crate::enforce_permissions() {
+        if let Ok(st) = host.host_stat(&resolved) {
+            check_chmod_owner(st.st_uid, proc)?;
+        }
+    }
     host.host_chmod(&resolved, mode)
 }
 
@@ -7674,6 +7912,18 @@ pub fn sys_fchownat(
     _flags: u32,
 ) -> Result<(), Errno> {
     let resolved = resolve_at_path(proc, dirfd, path)?;
+    if crate::enforce_permissions() {
+        let file_uid = host.host_stat(&resolved).map(|st| st.st_uid).unwrap_or(0);
+        check_chown_request(file_uid, uid, gid, proc)?;
+        if let Ok(st) = host.host_stat(&resolved) {
+            use wasm_posix_shared::mode::{S_IFMT, S_IFREG, S_ISGID, S_ISUID};
+            if st.st_mode & S_IFMT == S_IFREG
+                && st.st_mode & (S_ISUID | S_ISGID) != 0
+            {
+                let _ = host.host_chmod(&resolved, st.st_mode & !(S_ISUID | S_ISGID) & 0o7777);
+            }
+        }
+    }
     host.host_chown(&resolved, uid, gid)
 }
 
@@ -7689,6 +7939,7 @@ pub fn sys_linkat(
 ) -> Result<(), Errno> {
     let old_resolved = resolve_at_path(proc, olddirfd, oldpath)?;
     let new_resolved = resolve_at_path(proc, newdirfd, newpath)?;
+    check_parent_writable(host, parent_dir_of(&new_resolved), proc)?;
     host.host_link(&old_resolved, &new_resolved)
 }
 
@@ -7704,6 +7955,7 @@ pub fn sys_symlinkat(
     linkpath: &[u8],
 ) -> Result<(), Errno> {
     let resolved_link = resolve_at_path(proc, newdirfd, linkpath)?;
+    check_parent_writable(host, parent_dir_of(&resolved_link), proc)?;
     host.host_symlink(target, &resolved_link)
 }
 
@@ -8520,7 +8772,14 @@ mod tests {
             Ok(n)
         }
 
-        fn host_chmod(&mut self, _path: &[u8], _mode: u32) -> Result<(), Errno> { Ok(()) }
+        fn host_chmod(&mut self, path: &[u8], mode: u32) -> Result<(), Errno> {
+            // Mirror the host VFS: chmod updates the per-path mode override
+            // so a subsequent host_stat(path) reflects the new mode bits.
+            // Permission tests rely on this to verify chown's POSIX
+            // setuid/setgid-strip behaviour reaches host state.
+            self.file_modes.insert(path.to_vec(), mode);
+            Ok(())
+        }
         fn host_chown(&mut self, path: &[u8], uid: u32, gid: u32) -> Result<(), Errno> {
             // Mirror the host VFS: chown updates owner state. A subsequent
             // host_stat(path) must return the new uid/gid. Tests rely on this
@@ -15882,5 +16141,537 @@ mod tests {
         assert!(
             sys_openat(&mut proc, &mut host, AT_FDCWD, b"/tmp/locked", O_RDONLY, 0).is_ok()
         );
+    }
+
+    // ---- Task 5.5: modify-like syscall permission enforcement ----
+
+    fn nonroot(uid: u32, gid: u32) -> Process {
+        let mut p = Process::new(1);
+        p.euid = uid;
+        p.egid = gid;
+        p
+    }
+
+    // chmod -----------------------------------------------------------------
+
+    #[test]
+    fn chmod_owner_ok() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        let mut proc = nonroot(1000, 1000);
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/tmp/mine", 1000, 1000, 0o600, b"");
+        assert!(sys_chmod(&mut proc, &mut host, b"/tmp/mine", 0o644).is_ok());
+    }
+
+    #[test]
+    fn chmod_stranger_eperm() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        let mut proc = nonroot(2000, 2000);
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/tmp/theirs", 1000, 1000, 0o644, b"");
+        assert_eq!(
+            sys_chmod(&mut proc, &mut host, b"/tmp/theirs", 0o600),
+            Err(Errno::EPERM),
+        );
+    }
+
+    #[test]
+    fn chmod_root_ok() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        let mut proc = Process::new(1); // root
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/tmp/anyone", 1000, 1000, 0o600, b"");
+        assert!(sys_chmod(&mut proc, &mut host, b"/tmp/anyone", 0o644).is_ok());
+    }
+
+    #[test]
+    fn chmod_toggle_off_skips_check() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let mut proc = nonroot(2000, 2000);
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/tmp/theirs", 1000, 1000, 0o644, b"");
+        assert!(sys_chmod(&mut proc, &mut host, b"/tmp/theirs", 0o600).is_ok());
+    }
+
+    #[test]
+    fn fchmod_owner_ok() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let mut proc = nonroot(1000, 1000);
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/tmp/file", 1000, 1000, 0o600, b"");
+        let fd = sys_open(&mut proc, &mut host, b"/tmp/file", O_RDWR, 0).unwrap();
+        let _e = EnforcePermsGuard::on();
+        assert!(sys_fchmod(&mut proc, &mut host, fd, 0o644).is_ok());
+    }
+
+    // chown -----------------------------------------------------------------
+
+    #[test]
+    fn chown_root_ok() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        let mut proc = Process::new(1); // root
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/tmp/anyone", 1000, 1000, 0o644, b"");
+        assert!(sys_chown(&mut proc, &mut host, b"/tmp/anyone", 2000, 2000).is_ok());
+    }
+
+    #[test]
+    fn chown_nonroot_changing_uid_eperm() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        let mut proc = nonroot(1000, 1000);
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/tmp/mine", 1000, 1000, 0o644, b"");
+        assert_eq!(
+            sys_chown(&mut proc, &mut host, b"/tmp/mine", 2000, u32::MAX),
+            Err(Errno::EPERM),
+        );
+    }
+
+    #[test]
+    fn chown_self_uid_no_change_ok() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        let mut proc = nonroot(1000, 1000);
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/tmp/mine", 1000, 1000, 0o644, b"");
+        // uid stays at 1000, gid moves to caller's own egid -> allowed.
+        assert!(sys_chown(&mut proc, &mut host, b"/tmp/mine", 1000, 1000).is_ok());
+    }
+
+    #[test]
+    fn chown_clears_setuid_setgid_on_regular_file() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        let mut proc = Process::new(1); // root
+        let mut host = MockHostIO::new();
+        // S_IFREG | S_ISUID | S_ISGID | 0o755
+        let mode = wasm_posix_shared::mode::S_IFREG
+            | wasm_posix_shared::mode::S_ISUID
+            | wasm_posix_shared::mode::S_ISGID
+            | 0o755;
+        host.set_file_with_owner(b"/tmp/binary", 0, 0, mode, b"");
+        sys_chown(&mut proc, &mut host, b"/tmp/binary", 1000, 1000).unwrap();
+        let st = host.host_stat(b"/tmp/binary").unwrap();
+        let suidsgid = wasm_posix_shared::mode::S_ISUID | wasm_posix_shared::mode::S_ISGID;
+        assert_eq!(st.st_mode & suidsgid, 0, "chown must strip setuid/setgid");
+    }
+
+    // unlink ----------------------------------------------------------------
+
+    #[test]
+    fn unlink_parent_writable_ok() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        let mut proc = nonroot(1000, 1000);
+        let mut host = MockHostIO::new();
+        // Caller owns the parent directory and has W_OK | X_OK.
+        host.set_file_with_owner(
+            b"/home/u",
+            1000, 1000,
+            wasm_posix_shared::mode::S_IFDIR | 0o755,
+            b"",
+        );
+        host.set_file_with_owner(b"/home/u/file", 1000, 1000, 0o644, b"");
+        assert!(sys_unlink(&mut proc, &mut host, b"/home/u/file").is_ok());
+    }
+
+    #[test]
+    fn unlink_parent_no_write_eacces() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        let mut proc = nonroot(2000, 2000);
+        let mut host = MockHostIO::new();
+        // Parent owned by uid 1000, mode 0o755 -> other has r-x but no w.
+        host.set_file_with_owner(
+            b"/home/u",
+            1000, 1000,
+            wasm_posix_shared::mode::S_IFDIR | 0o755,
+            b"",
+        );
+        host.set_file_with_owner(b"/home/u/file", 1000, 1000, 0o644, b"");
+        assert_eq!(
+            sys_unlink(&mut proc, &mut host, b"/home/u/file"),
+            Err(Errno::EACCES),
+        );
+    }
+
+    #[test]
+    fn unlink_sticky_dir_nonowner_eacces() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        // /tmp-like world-writable + sticky directory.
+        let mut proc = nonroot(2000, 2000);
+        let mut host = MockHostIO::new();
+        let dir_mode = wasm_posix_shared::mode::S_IFDIR
+            | wasm_posix_shared::mode::S_ISVTX
+            | 0o777;
+        host.set_file_with_owner(b"/sticky", 1000, 1000, dir_mode, b"");
+        host.set_file_with_owner(b"/sticky/other", 3000, 3000, 0o644, b"");
+        // Caller (uid 2000) is neither file owner (3000) nor parent owner
+        // (1000) nor root — sticky-bit denies.
+        assert_eq!(
+            sys_unlink(&mut proc, &mut host, b"/sticky/other"),
+            Err(Errno::EACCES),
+        );
+    }
+
+    #[test]
+    fn unlink_sticky_dir_file_owner_ok() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        let mut proc = nonroot(2000, 2000);
+        let mut host = MockHostIO::new();
+        let dir_mode = wasm_posix_shared::mode::S_IFDIR
+            | wasm_posix_shared::mode::S_ISVTX
+            | 0o777;
+        host.set_file_with_owner(b"/sticky", 1000, 1000, dir_mode, b"");
+        host.set_file_with_owner(b"/sticky/mine", 2000, 2000, 0o644, b"");
+        assert!(sys_unlink(&mut proc, &mut host, b"/sticky/mine").is_ok());
+    }
+
+    #[test]
+    fn unlink_sticky_dir_root_ok() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        let mut proc = Process::new(1); // root
+        let mut host = MockHostIO::new();
+        let dir_mode = wasm_posix_shared::mode::S_IFDIR
+            | wasm_posix_shared::mode::S_ISVTX
+            | 0o777;
+        host.set_file_with_owner(b"/sticky", 1000, 1000, dir_mode, b"");
+        host.set_file_with_owner(b"/sticky/other", 3000, 3000, 0o644, b"");
+        assert!(sys_unlink(&mut proc, &mut host, b"/sticky/other").is_ok());
+    }
+
+    // mkdir -----------------------------------------------------------------
+
+    #[test]
+    fn mkdir_parent_writable_ok() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        let mut proc = nonroot(1000, 1000);
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(
+            b"/home/u",
+            1000, 1000,
+            wasm_posix_shared::mode::S_IFDIR | 0o755,
+            b"",
+        );
+        assert!(sys_mkdir(&mut proc, &mut host, b"/home/u/newdir", 0o755).is_ok());
+    }
+
+    #[test]
+    fn mkdir_parent_no_write_eacces() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        let mut proc = nonroot(2000, 2000);
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(
+            b"/home/u",
+            1000, 1000,
+            wasm_posix_shared::mode::S_IFDIR | 0o755,
+            b"",
+        );
+        assert_eq!(
+            sys_mkdir(&mut proc, &mut host, b"/home/u/newdir", 0o755),
+            Err(Errno::EACCES),
+        );
+    }
+
+    // rmdir -----------------------------------------------------------------
+
+    #[test]
+    fn rmdir_parent_writable_ok() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        let mut proc = nonroot(1000, 1000);
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(
+            b"/home/u",
+            1000, 1000,
+            wasm_posix_shared::mode::S_IFDIR | 0o755,
+            b"",
+        );
+        host.set_file_with_owner(
+            b"/home/u/d",
+            1000, 1000,
+            wasm_posix_shared::mode::S_IFDIR | 0o755,
+            b"",
+        );
+        assert!(sys_rmdir(&mut proc, &mut host, b"/home/u/d").is_ok());
+    }
+
+    #[test]
+    fn rmdir_parent_no_write_eacces() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        let mut proc = nonroot(2000, 2000);
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(
+            b"/home/u",
+            1000, 1000,
+            wasm_posix_shared::mode::S_IFDIR | 0o755,
+            b"",
+        );
+        host.set_file_with_owner(
+            b"/home/u/d",
+            1000, 1000,
+            wasm_posix_shared::mode::S_IFDIR | 0o755,
+            b"",
+        );
+        assert_eq!(
+            sys_rmdir(&mut proc, &mut host, b"/home/u/d"),
+            Err(Errno::EACCES),
+        );
+    }
+
+    // rename ----------------------------------------------------------------
+
+    #[test]
+    fn rename_both_parents_writable_ok() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        let mut proc = nonroot(1000, 1000);
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(
+            b"/a",
+            1000, 1000,
+            wasm_posix_shared::mode::S_IFDIR | 0o755,
+            b"",
+        );
+        host.set_file_with_owner(
+            b"/b",
+            1000, 1000,
+            wasm_posix_shared::mode::S_IFDIR | 0o755,
+            b"",
+        );
+        host.set_file_with_owner(b"/a/x", 1000, 1000, 0o644, b"");
+        assert!(sys_rename(&mut proc, &mut host, b"/a/x", b"/b/x").is_ok());
+    }
+
+    #[test]
+    fn rename_new_parent_no_write_eacces() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        let mut proc = nonroot(2000, 2000);
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(
+            b"/a",
+            2000, 2000,
+            wasm_posix_shared::mode::S_IFDIR | 0o755,
+            b"",
+        );
+        host.set_file_with_owner(
+            b"/b",
+            1000, 1000,
+            wasm_posix_shared::mode::S_IFDIR | 0o755,
+            b"",
+        );
+        host.set_file_with_owner(b"/a/x", 2000, 2000, 0o644, b"");
+        assert_eq!(
+            sys_rename(&mut proc, &mut host, b"/a/x", b"/b/x"),
+            Err(Errno::EACCES),
+        );
+    }
+
+    // link ------------------------------------------------------------------
+
+    #[test]
+    fn link_new_parent_writable_ok() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        let mut proc = nonroot(1000, 1000);
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(
+            b"/a",
+            1000, 1000,
+            wasm_posix_shared::mode::S_IFDIR | 0o755,
+            b"",
+        );
+        host.set_file_with_owner(b"/a/src", 1000, 1000, 0o644, b"");
+        assert!(sys_link(&mut proc, &mut host, b"/a/src", b"/a/dst").is_ok());
+    }
+
+    #[test]
+    fn link_new_parent_no_write_eacces() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        let mut proc = nonroot(2000, 2000);
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(
+            b"/a",
+            1000, 1000,
+            wasm_posix_shared::mode::S_IFDIR | 0o755,
+            b"",
+        );
+        host.set_file_with_owner(b"/a/src", 1000, 1000, 0o644, b"");
+        assert_eq!(
+            sys_link(&mut proc, &mut host, b"/a/src", b"/a/dst"),
+            Err(Errno::EACCES),
+        );
+    }
+
+    // symlink ---------------------------------------------------------------
+
+    #[test]
+    fn symlink_new_parent_writable_ok() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        let mut proc = nonroot(1000, 1000);
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(
+            b"/a",
+            1000, 1000,
+            wasm_posix_shared::mode::S_IFDIR | 0o755,
+            b"",
+        );
+        assert!(sys_symlink(&mut proc, &mut host, b"/target", b"/a/ln").is_ok());
+    }
+
+    // truncate --------------------------------------------------------------
+
+    #[test]
+    fn truncate_writable_ok() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        let mut proc = nonroot(1000, 1000);
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/tmp/f", 1000, 1000, 0o600, b"");
+        assert!(sys_truncate(&mut proc, &mut host, b"/tmp/f", 0).is_ok());
+    }
+
+    #[test]
+    fn truncate_read_only_eacces() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        // 0o400: owner read-only — truncate must fail at the underlying
+        // sys_open(O_WRONLY) check.
+        let mut proc = nonroot(1000, 1000);
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/tmp/ro", 1000, 1000, 0o400, b"");
+        assert_eq!(
+            sys_truncate(&mut proc, &mut host, b"/tmp/ro", 0),
+            Err(Errno::EACCES),
+        );
+    }
+
+    // utimensat -------------------------------------------------------------
+
+    #[test]
+    fn utimensat_owner_ok() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        let mut proc = nonroot(1000, 1000);
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/tmp/f", 1000, 1000, 0o600, b"");
+        assert!(sys_utimensat(&mut proc, &mut host, AT_FDCWD, b"/tmp/f", None, 0).is_ok());
+    }
+
+    #[test]
+    fn utimensat_stranger_with_w_ok() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        let mut proc = nonroot(2000, 2000);
+        let mut host = MockHostIO::new();
+        // World-writable: stranger gets W_OK.
+        host.set_file_with_owner(b"/tmp/f", 1000, 1000, 0o666, b"");
+        assert!(sys_utimensat(&mut proc, &mut host, AT_FDCWD, b"/tmp/f", None, 0).is_ok());
+    }
+
+    #[test]
+    fn utimensat_stranger_no_w_eacces() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        let mut proc = nonroot(2000, 2000);
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/tmp/f", 1000, 1000, 0o644, b"");
+        assert_eq!(
+            sys_utimensat(&mut proc, &mut host, AT_FDCWD, b"/tmp/f", None, 0),
+            Err(Errno::EACCES),
+        );
+    }
+
+    #[test]
+    fn utimensat_double_omit_no_perm_required() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        // Both slots UTIME_OMIT -> no-op, no permission check.
+        let mut proc = nonroot(2000, 2000);
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/tmp/f", 1000, 1000, 0o600, b"");
+        const UTIME_OMIT: i64 = 0x3FFFFFFE;
+        let ts = [
+            WasmTimespec { tv_sec: 0, tv_nsec: UTIME_OMIT },
+            WasmTimespec { tv_sec: 0, tv_nsec: UTIME_OMIT },
+        ];
+        assert!(
+            sys_utimensat(&mut proc, &mut host, AT_FDCWD, b"/tmp/f", Some(&ts), 0).is_ok()
+        );
+    }
+
+    // access ----------------------------------------------------------------
+
+    #[test]
+    fn access_eacces_when_denied() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        let mut proc = nonroot(2000, 2000);
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/tmp/secret", 1000, 1000, 0o600, b"");
+        use wasm_posix_shared::access::R_OK;
+        assert_eq!(
+            sys_access(&mut proc, &mut host, b"/tmp/secret", R_OK),
+            Err(Errno::EACCES),
+        );
+    }
+
+    #[test]
+    fn access_world_readable_ok() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        let mut proc = nonroot(2000, 2000);
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/tmp/public", 1000, 1000, 0o644, b"");
+        use wasm_posix_shared::access::R_OK;
+        assert!(sys_access(&mut proc, &mut host, b"/tmp/public", R_OK).is_ok());
+    }
+
+    // *at variants — single mirroring tests per Task 5.5 plan ---------------
+
+    #[test]
+    fn unlinkat_sticky_dir_nonowner_eacces() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        let mut proc = nonroot(2000, 2000);
+        let mut host = MockHostIO::new();
+        let dir_mode = wasm_posix_shared::mode::S_IFDIR
+            | wasm_posix_shared::mode::S_ISVTX
+            | 0o777;
+        host.set_file_with_owner(b"/sticky", 1000, 1000, dir_mode, b"");
+        host.set_file_with_owner(b"/sticky/other", 3000, 3000, 0o644, b"");
+        assert_eq!(
+            sys_unlinkat(&mut proc, &mut host, AT_FDCWD, b"/sticky/other", 0),
+            Err(Errno::EACCES),
+        );
+    }
+
+    #[test]
+    fn fchownat_setuid_strip_on_chown() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        let mut proc = Process::new(1); // root
+        let mut host = MockHostIO::new();
+        let mode = wasm_posix_shared::mode::S_IFREG
+            | wasm_posix_shared::mode::S_ISUID
+            | 0o755;
+        host.set_file_with_owner(b"/tmp/bin", 0, 0, mode, b"");
+        sys_fchownat(&mut proc, &mut host, AT_FDCWD, b"/tmp/bin", 1000, 1000, 0).unwrap();
+        let st = host.host_stat(b"/tmp/bin").unwrap();
+        assert_eq!(st.st_mode & wasm_posix_shared::mode::S_ISUID, 0);
     }
 }
