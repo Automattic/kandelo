@@ -31,6 +31,21 @@ function resolveKernelWasm(): string {
 }
 
 /**
+ * Resolve the absolute path to the canonical rootfs VFS image. Built by
+ * `bash build.sh` (mkrootfs CLI) and written to `host/wasm/rootfs.vfs`.
+ * Pages import `@rootfs-vfs?url` and Vite emits it as a static asset
+ * (the file is allow-listed via `assetsInclude: ["**\/*.vfs"]`).
+ */
+function resolveRootfsVfs(): string {
+  const file = path.resolve(repoRoot, "host/wasm/rootfs.vfs");
+  if (fs.existsSync(file)) return file;
+  throw new Error(
+    "rootfs.vfs not found. Run `bash build.sh` from the repo root.\n" +
+    `  Looked at: ${file}\n`
+  );
+}
+
+/**
  * Vite plugin: resolve `@binaries/...` imports against the
  * resolver-managed binaries trees.
  *
@@ -269,6 +284,7 @@ export default defineConfig({
     // `<key>/...`, which would reject the query.
     alias: [
       { find: /^@kernel-wasm(?=$|\?)/, replacement: resolveKernelWasm() },
+      { find: /^@rootfs-vfs(?=$|\?)/, replacement: resolveRootfsVfs() },
     ],
   },
   plugins: [

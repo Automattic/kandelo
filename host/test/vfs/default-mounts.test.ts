@@ -6,10 +6,10 @@ import { MemoryFileSystem } from "../../src/vfs/memory-fs";
 import { HostFileSystem } from "../../src/vfs/host-fs";
 import {
   DEFAULT_MOUNT_SPEC,
-  resolveForNode,
   resolveForBrowser,
   type MountSpec,
 } from "../../src/vfs/default-mounts";
+import { resolveForNode } from "../../src/vfs/default-mounts-node";
 
 const O_RDONLY = 0x0000;
 const O_WRONLY = 0x0001;
@@ -150,13 +150,24 @@ describe("resolveForNode", () => {
 
 describe("resolveForBrowser", () => {
   let image: Uint8Array;
+  // Shrink scratch SABs so the 7 scratch mounts × default 16 MiB don't
+  // OOM the test runner (`mkfs` zero-fills every SAB up front). The
+  // production default lives in `BROWSER_SCRATCH_SAB_BYTES`.
+  const tinyScratch = Object.fromEntries(
+    DEFAULT_MOUNT_SPEC.filter((m) => m.source === "scratch").map((m) => [
+      m.path,
+      256 * 1024,
+    ]),
+  );
 
   beforeAll(async () => {
     image = await buildFixtureImage();
   });
 
   it("produces image-backed and memfs-scratch backends only", () => {
-    const mounts = resolveForBrowser(DEFAULT_MOUNT_SPEC, image);
+    const mounts = resolveForBrowser(DEFAULT_MOUNT_SPEC, image, {
+      scratchSabBytes: tinyScratch,
+    });
     expect(mounts).toHaveLength(DEFAULT_MOUNT_SPEC.length);
 
     for (const m of mounts) {
@@ -166,7 +177,9 @@ describe("resolveForBrowser", () => {
   });
 
   it("/ mount is image-backed and reads /etc/passwd from the image", () => {
-    const mounts = resolveForBrowser(DEFAULT_MOUNT_SPEC, image);
+    const mounts = resolveForBrowser(DEFAULT_MOUNT_SPEC, image, {
+      scratchSabBytes: tinyScratch,
+    });
     const root = mounts.find((m) => m.mountPoint === "/");
     expect(root).toBeDefined();
     const passwd = readMountFile(root!.backend, "/etc/passwd");
@@ -174,7 +187,9 @@ describe("resolveForBrowser", () => {
   });
 
   it("scratch mounts are independent writable memfs instances", () => {
-    const mounts = resolveForBrowser(DEFAULT_MOUNT_SPEC, image);
+    const mounts = resolveForBrowser(DEFAULT_MOUNT_SPEC, image, {
+      scratchSabBytes: tinyScratch,
+    });
     const tmp = mounts.find((m) => m.mountPoint === "/tmp");
     const home = mounts.find((m) => m.mountPoint === "/home/user");
     expect(tmp).toBeDefined();
@@ -189,6 +204,20 @@ describe("resolveForBrowser", () => {
       "scratch",
     );
     expect(() => home!.backend.stat("/x.txt")).toThrow();
+  });
+
+  it("scratchSabBytes overrides apply per mount", () => {
+    const explicit = {
+      "/tmp": 4 * 1024 * 1024,
+      "/var/log": 256 * 1024,
+    };
+    const mounts = resolveForBrowser(DEFAULT_MOUNT_SPEC, image, {
+      scratchSabBytes: { ...tinyScratch, ...explicit },
+    });
+    const tmp = mounts.find((m) => m.mountPoint === "/tmp")!.backend as MemoryFileSystem;
+    const log = mounts.find((m) => m.mountPoint === "/var/log")!.backend as MemoryFileSystem;
+    expect(tmp.sharedBuffer.byteLength).toBe(4 * 1024 * 1024);
+    expect(log.sharedBuffer.byteLength).toBe(256 * 1024);
   });
 
   it("throws on duplicate mount paths", () => {

@@ -14,6 +14,7 @@ import type {
   KernelToMainMessage,
 } from "./kernel-worker-protocol";
 import kernelWasmUrl from "@kernel-wasm?url";
+import rootfsVfsUrl from "@rootfs-vfs?url";
 import workerEntryUrl from "../../../host/src/worker-entry-browser.ts?worker&url";
 import kernelWorkerEntryUrl from "./kernel-worker-entry.ts?worker&url";
 
@@ -65,9 +66,13 @@ export interface BrowserKernelOptions {
 export interface BrowserKernelBootOptions {
   /** Kernel wasm bytes; if omitted, fetched from the bundled URL. */
   kernelWasm?: ArrayBuffer;
-  /** Pre-built VFS image bytes from {@link MemoryFileSystem.saveImage}. The
-   *  worker takes ownership; the main thread no longer has FS access. */
-  vfsImage: Uint8Array;
+  /**
+   * Pre-built VFS image bytes from {@link MemoryFileSystem.saveImage}, OR
+   * the literal `"default"` to fetch the canonical `host/wasm/rootfs.vfs`
+   * shipped with the worker entry. The worker takes ownership; the main
+   * thread no longer has FS access.
+   */
+  vfsImage: Uint8Array | "default";
   /** Argv for the first (and currently only "init") process. argv[0] should
    *  be a path inside the VFS image. */
   argv: string[];
@@ -158,40 +163,15 @@ export class BrowserKernel {
       this.fsSab = new SharedArrayBuffer(fsSize, { maxByteLength: maxFsSize });
       this.memfs = MemoryFileSystem.create(this.fsSab, maxFsSize);
 
-      // Create standard directories
+      // Create standard directories. The legacy SAB path starts from a
+      // bare memfs — demos populate everything else themselves. Once a
+      // demo migrates to `boot()` with a `vfsImage`, /etc/services and
+      // friends come from the rootfs image via DEFAULT_MOUNT_SPEC and
+      // these mkdirs become redundant.
       this.memfs.mkdir("/tmp", 0o777);
       this.memfs.mkdir("/home", 0o755);
       this.memfs.mkdir("/dev", 0o755);
       this.memfs.mkdir("/etc", 0o755);
-
-      // Populate /etc/services for getservbyname/getservbyport
-      const services = [
-        "tcpmux\t\t1/tcp",
-        "echo\t\t7/tcp",
-        "echo\t\t7/udp",
-        "discard\t\t9/tcp\t\tsink null",
-        "discard\t\t9/udp\t\tsink null",
-        "ftp-data\t20/tcp",
-        "ftp\t\t21/tcp",
-        "ssh\t\t22/tcp",
-        "telnet\t\t23/tcp",
-        "smtp\t\t25/tcp\t\tmail",
-        "domain\t\t53/tcp",
-        "domain\t\t53/udp",
-        "http\t\t80/tcp\t\twww",
-        "pop3\t\t110/tcp\t\tpop-3",
-        "nntp\t\t119/tcp\t\treadnews untp",
-        "ntp\t\t123/udp",
-        "imap\t\t143/tcp\t\timap2",
-        "snmp\t\t161/udp",
-        "https\t\t443/tcp",
-        "imaps\t\t993/tcp",
-        "pop3s\t\t995/tcp",
-      ].join("\n") + "\n";
-      const fd = this.memfs.open("/etc/services", 0x241, 0o644);
-      const enc = new TextEncoder().encode(services);
-      this.memfs.write(fd, enc, enc.length, -1);
-      this.memfs.close(fd);
     }
   }
 
@@ -254,13 +234,20 @@ export class BrowserKernel {
         "kernel.boot() requires kernelOwnedFs: true in BrowserKernel constructor options.",
       );
     }
-    const wasmBytes =
-      options.kernelWasm ??
-      (await fetch(kernelWasmUrl).then((r) => r.arrayBuffer()));
+    const [wasmBytes, vfsImage] = await Promise.all([
+      options.kernelWasm
+        ? Promise.resolve(options.kernelWasm)
+        : fetch(kernelWasmUrl).then((r) => r.arrayBuffer()),
+      options.vfsImage === "default"
+        ? fetch(rootfsVfsUrl)
+            .then((r) => r.arrayBuffer())
+            .then((b) => new Uint8Array(b))
+        : Promise.resolve(options.vfsImage),
+    ]);
 
     await this.bootWorker({
       kernelWasmBytes: wasmBytes,
-      vfsImage: options.vfsImage,
+      vfsImage,
     });
 
     // Spawn the first process — kernel worker assigns the pid and returns

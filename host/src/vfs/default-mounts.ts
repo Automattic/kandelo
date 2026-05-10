@@ -11,11 +11,8 @@
  * in once the policy lands.
  */
 
-import { join } from "node:path";
-import { mkdirSync } from "node:fs";
 import type { MountConfig } from "./types";
 import { MemoryFileSystem } from "./memory-fs";
-import { HostFileSystem } from "./host-fs";
 
 export interface MountSpec {
   /** Absolute VFS mount point (e.g., "/etc"). No trailing slash except "/". */
@@ -48,12 +45,26 @@ export const DEFAULT_MOUNT_SPEC: MountSpec[] = [
 ];
 
 /** Default growth ceiling for the rootfs image-backed memfs (1 GiB). */
-const IMAGE_MEMFS_MAX_BYTES = 1 * 1024 * 1024 * 1024;
+export const IMAGE_MEMFS_MAX_BYTES = 1 * 1024 * 1024 * 1024;
 
-/** Default size for a browser scratch memfs SAB (1 MiB). */
-const BROWSER_SCRATCH_SAB_BYTES = 1 * 1024 * 1024;
+/**
+ * Default size for a browser scratch memfs SAB (16 MiB).
+ *
+ * 16 MiB is a generous baseline that accommodates real workloads we
+ * already ship: SQLite WAL/journal under `/tmp`, MariaDB InnoDB log
+ * spillover under `/var/log` and `/var/run`, nginx access/error logs,
+ * and PHP session files under `/var/tmp`. The SAB is not pre-allocated
+ * — `MemoryFileSystem` only writes used pages — so the wall-clock cost
+ * of bumping from the prior 1 MiB is essentially free, while the prior
+ * 1 MiB ceiling was already known to ENOSPC on the WordPress install
+ * path (Task 4.3 implementer flagged this for cutover).
+ *
+ * Per-mount overrides can be supplied via `BrowserResolverOptions`
+ * once a demo needs more than the default — none do today.
+ */
+export const BROWSER_SCRATCH_SAB_BYTES = 16 * 1024 * 1024;
 
-function validateSpec(spec: MountSpec[]): void {
+export function validateSpec(spec: MountSpec[]): void {
   const seen = new Set<string>();
   for (const m of spec) {
     if (typeof m.path !== "string" || m.path.length === 0) {
@@ -79,41 +90,12 @@ function validateSpec(spec: MountSpec[]): void {
 }
 
 /**
- * Materialise `spec` for the Node host. Image mounts get a fresh
- * `MemoryFileSystem.fromImage(rootfsImage)`; scratch mounts get a
- * `HostFileSystem` rooted at `<sessionDir><spec.path>` (the directory
- * is created with `mkdirSync({recursive:true})` so `safePath` is
- * happy on first access).
- *
- * Pure function: input → output, no global state.
+ * Per-mount scratch SAB sizing. Defaults to {@link BROWSER_SCRATCH_SAB_BYTES}
+ * for any mount not in the map.
  */
-export function resolveForNode(
-  spec: MountSpec[],
-  rootfsImage: Uint8Array,
-  sessionDir: string,
-): MountConfig[] {
-  validateSpec(spec);
-  const out: MountConfig[] = [];
-  for (const m of spec) {
-    if (m.source === "image") {
-      out.push({
-        mountPoint: m.path,
-        backend: MemoryFileSystem.fromImage(rootfsImage, {
-          maxByteLength: IMAGE_MEMFS_MAX_BYTES,
-        }),
-        readonly: m.readonly,
-      });
-    } else {
-      const hostDir = join(sessionDir, m.path);
-      mkdirSync(hostDir, { recursive: true });
-      out.push({
-        mountPoint: m.path,
-        backend: new HostFileSystem(hostDir),
-        readonly: m.readonly,
-      });
-    }
-  }
-  return out;
+export interface BrowserResolverOptions {
+  /** Mount path → initial SAB size in bytes. Overrides the default. */
+  scratchSabBytes?: Record<string, number>;
 }
 
 /**
@@ -127,6 +109,7 @@ export function resolveForNode(
 export function resolveForBrowser(
   spec: MountSpec[],
   rootfsImage: Uint8Array,
+  options: BrowserResolverOptions = {},
 ): MountConfig[] {
   validateSpec(spec);
   const out: MountConfig[] = [];
@@ -140,7 +123,8 @@ export function resolveForBrowser(
         readonly: m.readonly,
       });
     } else {
-      const sab = new SharedArrayBuffer(BROWSER_SCRATCH_SAB_BYTES);
+      const bytes = options.scratchSabBytes?.[m.path] ?? BROWSER_SCRATCH_SAB_BYTES;
+      const sab = new SharedArrayBuffer(bytes);
       out.push({
         mountPoint: m.path,
         backend: MemoryFileSystem.create(sab),

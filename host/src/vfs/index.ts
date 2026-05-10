@@ -10,7 +10,7 @@ export { NodeTimeProvider, BrowserTimeProvider } from "./time";
 export type { FileSystemBackend, TimeProvider, MountConfig, DirEntry } from "./types";
 export {
   DEFAULT_MOUNT_SPEC,
-  resolveForNode,
   resolveForBrowser,
 } from "./default-mounts";
-export type { MountSpec } from "./default-mounts";
+export type { MountSpec, BrowserResolverOptions } from "./default-mounts";
+export { resolveForNode } from "./default-mounts-node";

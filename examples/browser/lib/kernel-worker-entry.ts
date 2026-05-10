@@ -66,6 +66,11 @@ import { VirtualPlatformIO } from "../../../host/src/vfs/vfs";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import { DeviceFileSystem } from "../../../host/src/vfs/device-fs";
 import { BrowserTimeProvider } from "../../../host/src/vfs/time";
+import {
+  DEFAULT_MOUNT_SPEC,
+  resolveForBrowser,
+} from "../../../host/src/vfs/default-mounts";
+import type { MountConfig } from "../../../host/src/vfs/types";
 import { TlsNetworkBackend } from "./tls-network-backend";
 import { patchWasmForThread } from "../../../host/src/worker-main";
 import { detectPtrWidth, extractHeapBase } from "../../../host/src/constants";
@@ -174,23 +179,39 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
 
   // Create VFS — prefer pre-built image bytes (kernel-owned FS); fall back
   // to the legacy shared-SAB path so the existing demos keep working.
+  //
+  // vfsImage path (Task 4.4): apply DEFAULT_MOUNT_SPEC via resolveForBrowser,
+  // giving 8 mounts — / from the image, plus scratch memfs at /tmp, /var/tmp,
+  // /var/log, /var/run, /home/user, /root, /srv. Layer /dev/shm and /dev on
+  // top: those are browser-platform internals (POSIX semaphore SAB,
+  // kernel devices) not part of the canonical spec.
+  //
+  // Legacy fsSab path keeps the prior 3-mount layout intact — its caller
+  // controls the rootfs contents directly via kernel.fs and would lose
+  // control if the spec dictated additional scratch mounts.
+  const shmfs = MemoryFileSystem.fromExisting(msg.shmSab);
+  const devfs = new DeviceFileSystem();
+  let mounts: MountConfig[];
   if (msg.vfsImage) {
-    // 1 GiB max growth — generous so demos like mariadb (~100 MiB
-    // InnoDB log + table files) don't ENOSPC at boot. The SAB only
-    // grows on demand, so the upfront cost is the image's own size.
-    memfs = MemoryFileSystem.fromImage(msg.vfsImage, { maxByteLength: 1 * 1024 * 1024 * 1024 });
+    const specMounts = resolveForBrowser(DEFAULT_MOUNT_SPEC, msg.vfsImage);
+    const rootMount = specMounts.find((m) => m.mountPoint === "/");
+    if (!rootMount) throw new Error("DEFAULT_MOUNT_SPEC missing / mount");
+    memfs = rootMount.backend as MemoryFileSystem;
+    mounts = [
+      { mountPoint: "/dev/shm", backend: shmfs },
+      { mountPoint: "/dev", backend: devfs },
+      ...specMounts,
+    ];
   } else if (msg.fsSab) {
     memfs = MemoryFileSystem.fromExisting(msg.fsSab);
+    mounts = [
+      { mountPoint: "/dev/shm", backend: shmfs },
+      { mountPoint: "/dev", backend: devfs },
+      { mountPoint: "/", backend: memfs },
+    ];
   } else {
     throw new Error("init: vfsImage or fsSab required");
   }
-  const shmfs = MemoryFileSystem.fromExisting(msg.shmSab);
-  const devfs = new DeviceFileSystem();
-  const mounts: Array<{ mountPoint: string; backend: any }> = [
-    { mountPoint: "/dev/shm", backend: shmfs },
-    { mountPoint: "/dev", backend: devfs },
-    { mountPoint: "/", backend: memfs },
-  ];
   io = new VirtualPlatformIO(mounts, new BrowserTimeProvider());
 
   // Create TLS-MITM network backend. Programs do real TLS handshakes via
