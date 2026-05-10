@@ -1,0 +1,5 @@
+/             d  0755  0  0
+/usr          d  0755  0  0
+
+archive  url=opt/a.zip  base=/usr
+archive  url=opt/b.zip  base=/usr
