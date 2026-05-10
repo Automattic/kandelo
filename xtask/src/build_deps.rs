@@ -416,6 +416,14 @@ pub struct ResolveOpts<'a> {
     /// `crate::repo_root()`", which is the production default.
     /// Tests use this to point the resolver at a tempdir.
     pub repo_root: Option<&'a Path>,
+    /// When `Some`, the resolver places `binaries/programs/<arch>/...`
+    /// symlinks for every program manifest in the dep graph (target +
+    /// transitive program deps). Required so a consumer's build
+    /// script can find sibling-package binaries via `tryResolveBinary`
+    /// after a `xtask build-deps resolve <name>` invocation. `None`
+    /// disables symlink placement (test fixtures, library-only
+    /// resolves, etc.).
+    pub binaries_dir: Option<&'a Path>,
 }
 
 /// Resolve a library to a concrete on-disk path with the artifacts
@@ -710,6 +718,21 @@ fn ensure_built_uncached(
             memo,
             building,
         )?;
+        // Place binaries/programs/<arch>/<output> symlinks for each
+        // program dep so consumer build scripts can find them via
+        // `tryResolveBinary("programs/<x>.wasm")`. Only kicks in when
+        // the caller (cmd_resolve under --binaries-dir) opted in;
+        // other ensure_built consumers (archive-stage, tests) leave
+        // binaries_dir = None and no symlinks land. Library deps and
+        // source deps are linked at compile time via WASM_POSIX_DEP_*
+        // env vars and don't need a binaries/ entry.
+        if let Some(bdir) = opts.binaries_dir {
+            if matches!(dep_m.kind, ManifestKind::Program)
+                && !dep_m.program_outputs.is_empty()
+            {
+                place_binaries_symlinks(&dep_m, &dep_path, bdir, dep_arch)?;
+            }
+        }
         dep_dirs.insert(
             dep_m.name.clone(),
             DirectDep {
@@ -1576,18 +1599,21 @@ fn cmd_resolve(
         local_libs: Some(&local_libs),
         force_source_build: None,
         repo_root: Some(repo),
+        // Plumb binaries_dir into ensure_built so place_binaries_symlinks
+        // runs for every transitive program dep, not just the target.
+        // The previous direct call here (post-ensure_built) only placed
+        // symlinks for `m`; consumer build scripts that read sibling
+        // package binaries via `tryResolveBinary` need the dep
+        // symlinks too.
+        binaries_dir,
     };
     let path = ensure_built(m, registry, arch, current_abi_version(), &opts)?;
 
-    // Phase C Task 2: when `--binaries-dir <dir>` is supplied, also
-    // place `binaries/programs/<arch>/<output_dest_rel>` symlinks at
-    // each declared `[[outputs]]` entry. Driven by the per-package
-    // resolve flow — `fetch-binaries.sh` walks each `package.toml` in
-    // the registry and re-invokes `build-deps resolve` per arch, which
-    // hits this branch. Only programs with declared outputs get
-    // symlinks: libraries are consumed at link time via the cache and
-    // have no analog (`output_dest_rel_for` would error). Source and
-    // metadata-only kinds skip silently.
+    // Top-level target: ensure_built places symlinks for transitive
+    // deps via opts.binaries_dir, but the *target's* own symlinks land
+    // here so we don't recurse into "place self" inside ensure_built
+    // (which would also fire from archive-stage's ensure_built call,
+    // where placing target symlinks isn't desired).
     if let Some(bdir) = binaries_dir {
         if matches!(m.kind, ManifestKind::Program) && !m.program_outputs.is_empty() {
             place_binaries_symlinks(m, &path, bdir, arch)?;
@@ -2598,6 +2624,7 @@ spdx = "TestLicense"
             local_libs: local,
             force_source_build: None,
             repo_root: None,
+            binaries_dir: None,
         }
     }
 
@@ -2615,6 +2642,7 @@ spdx = "TestLicense"
             local_libs: local,
             force_source_build: None,
             repo_root: Some(repo_root),
+            binaries_dir: None,
         }
     }
 
@@ -4160,6 +4188,7 @@ spdx = "BSD-3-Clause"
             local_libs: None,
             force_source_build: None,
             repo_root: None,
+            binaries_dir: None,
         };
         let path = ensure_built(&m, &registry, TEST_ARCH, TEST_ABI, &opts).unwrap();
         assert!(
@@ -4711,6 +4740,7 @@ libs = ["lib/libF1.a"]
             local_libs: None,
             force_source_build: Some(&force),
             repo_root: None,
+            binaries_dir: None,
         };
         let p3 = ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &opts).unwrap();
         assert_eq!(p1, p3, "force-rebuild must land at the same canonical path");
@@ -4784,6 +4814,7 @@ libs = ["lib/libF1.a"]
             local_libs: None,
             force_source_build: Some(&force),
             repo_root: None,
+            binaries_dir: None,
         };
         let path = ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &opts).unwrap();
         assert!(
@@ -4863,6 +4894,7 @@ libs = ["lib/libF3b.a"]
             local_libs: None,
             force_source_build: Some(&force),
             repo_root: None,
+            binaries_dir: None,
         };
         ensure_built(&ma, &reg, TEST_ARCH, TEST_ABI, &opts).unwrap();
         ensure_built(&mb, &reg, TEST_ARCH, TEST_ABI, &opts).unwrap();
@@ -5070,6 +5102,7 @@ touch "$WASM_POSIX_DEP_OUT_DIR/beta.wasm""#,
             local_libs: None,
             force_source_build: None,
             repo_root: Some(repo),
+            binaries_dir: None,
         };
         let path = ensure_built(m, registry, arch, TEST_ABI, &opts)?;
         if let Some(bdir) = binaries_dir {

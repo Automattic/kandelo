@@ -135,6 +135,10 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         local_libs: None,
         force_source_build: None,
         repo_root: None,
+        // archive-stage doesn't materialize binaries/ symlinks: it
+        // produces a single-package archive without touching consumer-
+        // facing layout.
+        binaries_dir: None,
     };
     let cache_path = build_deps::ensure_built(&manifest, &registry, parsed.arch, abi, &resolve_opts)
         .map_err(|e| format!("ensure_built: {e}"))?;
