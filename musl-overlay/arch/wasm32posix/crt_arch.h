@@ -59,10 +59,18 @@ void _start(void)
      *   p[argc+3+envc] = 0 (AT_NULL auxv key)
      *   p[argc+4+envc] = 0 (AT_NULL auxv value)
      */
-    #define MAX_ARGC 256
-    #define MAX_ENVC 256
-    #define ARGV_BUF_SIZE 8192
-    #define ENV_BUF_SIZE 16384
+    /* Sized for real-world parent environments. The original 16KB env
+     * cap dropped trailing vars on GitHub Actions Linux runners (PATH
+     * with nix store paths + GHA_* + RUNNER_* exceeds 16KB), which
+     * silently dropped any var added by the parent via setenv() right
+     * before posix_spawn — sortix's `basic/spawn/posix_spawn{,p}` set
+     * `OS_TEST_POSIX_SPAWN` last and require the child to see it. The
+     * old fork-based spawn hid the bug because env was inherited via
+     * memory copy. 128KB matches typical Linux execve env limits. */
+    #define MAX_ARGC 1024
+    #define MAX_ENVC 1024
+    #define ARGV_BUF_SIZE (64 * 1024)
+    #define ENV_BUF_SIZE  (128 * 1024)
 
     static char argv_buf[ARGV_BUF_SIZE];
     static char env_buf[ENV_BUF_SIZE];
