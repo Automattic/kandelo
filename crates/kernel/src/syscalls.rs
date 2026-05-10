@@ -2706,8 +2706,9 @@ pub fn sys_lstat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resu
 
 pub fn sys_mkdir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8], mode: u32) -> Result<(), Errno> {
     let resolved = resolve_path(path, &proc.cwd);
-    // NOTE: umask is already applied here (Task 5.8 will sweep up creation
-    // sites consistently; the call below mirrors the existing convention).
+    // POSIX: file mode = `mode & ~umask`. Applied independently of
+    // `enforce_permissions` because it's identity-of-the-file, not access
+    // checking. (Task 5.8.)
     let effective_mode = mode & !proc.umask;
     check_parent_writable(host, parent_dir_of(&resolved), proc)?;
     host.host_mkdir(&resolved, effective_mode)
@@ -3500,6 +3501,34 @@ pub fn sys_fork(_proc: &mut Process, host: &dyn HostIO) -> Result<u32, Errno> {
     }
 }
 
+/// Apply POSIX setuid/setgid-on-exec semantics for a successful execve.
+///
+/// If the binary's mode has `S_ISUID` set, the process's effective uid becomes
+/// the binary's uid. If `S_ISGID` is set, the effective gid becomes the binary's
+/// gid. The real uid/gid are unchanged. This is the mechanism that lets
+/// `/usr/bin/passwd` (mode 4755 owned by root) run as root when invoked by an
+/// unprivileged user.
+///
+/// Per the project policy, this fires independently of `enforce_permissions`:
+/// the toggle gates ACCESS CHECKS, not credential semantics. setuid bits are
+/// normally not present on test binaries; they only matter when explicitly set,
+/// so this is safe to enable unconditionally.
+///
+/// `Process::suid` / `Process::sgid` are not yet tracked (Task 5.10 follow-up);
+/// when they exist the saved-set-uid/gid should also be updated to the new
+/// effective ids.
+fn apply_setuid_setgid_on_exec(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) {
+    use wasm_posix_shared::mode::{S_ISGID, S_ISUID};
+    if let Ok(st) = host.host_stat(path) {
+        if st.st_mode & S_ISUID != 0 {
+            proc.euid = st.st_uid;
+        }
+        if st.st_mode & S_ISGID != 0 {
+            proc.egid = st.st_gid;
+        }
+    }
+}
+
 /// Execute a new program. Delegates to host for binary loading.
 /// On success, the kernel process will be replaced (POSIX: exec doesn't return on success).
 /// On failure, returns the error.
@@ -3520,7 +3549,12 @@ pub fn sys_execve(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Res
     // This is critical for posix_spawn with chdir file actions — the child's CWD
     // may differ from the initial data directory the host knows about.
     let resolved = crate::path::resolve_path(path, &proc.cwd);
-    host.host_exec(&resolved)
+    host.host_exec(&resolved)?;
+    // setuid/setgid-on-exec — apply the binary's S_ISUID/S_ISGID bits to
+    // the process's effective credentials. Only fires after host_exec
+    // succeeds so a failed exec doesn't change identity.
+    apply_setuid_setgid_on_exec(proc, host, &resolved);
+    Ok(())
 }
 
 /// Execute a new program using a file descriptor (fexecve / execveat).
@@ -3529,7 +3563,7 @@ pub fn sys_execve(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Res
 pub fn sys_execveat(proc: &mut Process, host: &mut dyn HostIO, dirfd: i32, path: &[u8], flags: u32) -> Result<(), Errno> {
     const AT_EMPTY_PATH: u32 = 0x1000;
 
-    if flags & AT_EMPTY_PATH != 0 && path.is_empty() {
+    let resolved: Vec<u8> = if flags & AT_EMPTY_PATH != 0 && path.is_empty() {
         // fexecve path: exec the file referenced by dirfd
         let entry = proc.fd_table.get(dirfd)?;
         let ofd_idx = entry.ofd_ref.0;
@@ -3537,13 +3571,12 @@ pub fn sys_execveat(proc: &mut Process, host: &mut dyn HostIO, dirfd: i32, path:
         if ofd.path.is_empty() {
             return Err(Errno::ENOENT);
         }
-        let exec_path = ofd.path.clone();
-        host.host_exec(&exec_path)
+        ofd.path.clone()
     } else if path.is_empty() {
-        Err(Errno::ENOENT)
+        return Err(Errno::ENOENT);
     } else if path[0] == b'/' {
         // Absolute path — ignore dirfd
-        host.host_exec(path)
+        path.to_vec()
     } else {
         // Relative path — resolve against dirfd or CWD
         let base = if dirfd == -100 {
@@ -3555,9 +3588,12 @@ pub fn sys_execveat(proc: &mut Process, host: &mut dyn HostIO, dirfd: i32, path:
             let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
             ofd.path.clone()
         };
-        let resolved = crate::path::resolve_path(path, &base);
-        host.host_exec(&resolved)
-    }
+        crate::path::resolve_path(path, &base)
+    };
+    host.host_exec(&resolved)?;
+    // setuid/setgid-on-exec — see sys_execve.
+    apply_setuid_setgid_on_exec(proc, host, &resolved);
+    Ok(())
 }
 
 /// Schedule a SIGALRM signal after `seconds` seconds.
@@ -8713,6 +8749,14 @@ mod tests {
         /// Paths that should report ENOENT on host_stat / host_lstat. Used by
         /// permission tests to exercise the O_CREAT-and-missing-file path.
         missing_paths: std::collections::HashSet<Vec<u8>>,
+        /// Mode argument captured from the most recent host_open call.
+        /// Tests for umask-on-create (Task 5.8) verify this matches
+        /// `requested_mode & !proc.umask`.
+        last_open_mode: u32,
+        /// Mode argument captured from the most recent host_mkdir call.
+        /// Tests for umask-on-create (Task 5.8) verify this matches
+        /// `requested_mode & !proc.umask`.
+        last_mkdir_mode: u32,
     }
 
     impl MockHostIO {
@@ -8729,6 +8773,8 @@ mod tests {
                 handle_owners: std::collections::HashMap::new(),
                 file_modes: std::collections::HashMap::new(),
                 missing_paths: std::collections::HashSet::new(),
+                last_open_mode: 0,
+                last_mkdir_mode: 0,
             }
         }
 
@@ -8755,7 +8801,8 @@ mod tests {
     }
 
     impl HostIO for MockHostIO {
-        fn host_open(&mut self, path: &[u8], _flags: u32, _mode: u32) -> Result<i64, Errno> {
+        fn host_open(&mut self, path: &[u8], _flags: u32, mode: u32) -> Result<i64, Errno> {
+            self.last_open_mode = mode;
             let handle = self.next_handle;
             self.next_handle += 1;
             // Capture path -> owner mapping so host_fstat(handle) returns the
@@ -8879,7 +8926,10 @@ mod tests {
             })
         }
 
-        fn host_mkdir(&mut self, _path: &[u8], _mode: u32) -> Result<(), Errno> { Ok(()) }
+        fn host_mkdir(&mut self, _path: &[u8], mode: u32) -> Result<(), Errno> {
+            self.last_mkdir_mode = mode;
+            Ok(())
+        }
         fn host_rmdir(&mut self, _path: &[u8]) -> Result<(), Errno> { Ok(()) }
         fn host_unlink(&mut self, _path: &[u8]) -> Result<(), Errno> { Ok(()) }
         fn host_rename(&mut self, _oldpath: &[u8], _newpath: &[u8]) -> Result<(), Errno> { Ok(()) }
@@ -11514,6 +11564,215 @@ mod tests {
         let old = sys_umask(&mut proc, 0o7777); // only 0o777 stored
         assert_eq!(old, 0o022);
         assert_eq!(proc.umask, 0o777);
+    }
+
+    // ---- Task 5.8: umask applied at file/directory creation ----
+    //
+    // POSIX requires file/dir creation modes to be `requested & ~umask`.
+    // These tests verify sys_open(O_CREAT) and sys_mkdir/mkdirat propagate
+    // the umask-stripped mode to the host. Independent of
+    // `enforce_permissions` — it's identity-of-the-file, not access checking.
+
+    #[test]
+    fn test_umask_applied_to_open_create_default_022() {
+        let mut proc = Process::new(1); // default umask 0o022
+        let mut host = MockHostIO::new();
+        host.set_missing(b"/tmp/new"); // ensure O_CREAT path is taken
+        let _fd = sys_open(&mut proc, &mut host, b"/tmp/new", O_CREAT | O_WRONLY, 0o666).unwrap();
+        assert_eq!(host.last_open_mode, 0o644, "0o666 & ~0o022 == 0o644");
+    }
+
+    #[test]
+    fn test_umask_applied_to_mkdir_default_022() {
+        let mut proc = Process::new(1); // default umask 0o022
+        let mut host = MockHostIO::new();
+        sys_mkdir(&mut proc, &mut host, b"/tmp/d", 0o777).unwrap();
+        assert_eq!(host.last_mkdir_mode, 0o755, "0o777 & ~0o022 == 0o755");
+    }
+
+    #[test]
+    fn test_umask_077_strips_group_other_on_open() {
+        let mut proc = Process::new(1);
+        sys_umask(&mut proc, 0o077);
+        let mut host = MockHostIO::new();
+        host.set_missing(b"/tmp/secret");
+        let _fd = sys_open(&mut proc, &mut host, b"/tmp/secret", O_CREAT | O_WRONLY, 0o666).unwrap();
+        assert_eq!(host.last_open_mode, 0o600, "0o666 & ~0o077 == 0o600");
+    }
+
+    #[test]
+    fn test_umask_000_preserves_full_mode_on_open() {
+        let mut proc = Process::new(1);
+        sys_umask(&mut proc, 0o000);
+        let mut host = MockHostIO::new();
+        host.set_missing(b"/tmp/wide");
+        let _fd = sys_open(&mut proc, &mut host, b"/tmp/wide", O_CREAT | O_WRONLY, 0o666).unwrap();
+        assert_eq!(host.last_open_mode, 0o666, "0o666 & ~0o000 == 0o666");
+    }
+
+    #[test]
+    fn test_umask_777_clears_all_perm_bits_on_open() {
+        let mut proc = Process::new(1);
+        sys_umask(&mut proc, 0o777);
+        let mut host = MockHostIO::new();
+        host.set_missing(b"/tmp/zero");
+        let _fd = sys_open(&mut proc, &mut host, b"/tmp/zero", O_CREAT | O_WRONLY, 0o666).unwrap();
+        assert_eq!(host.last_open_mode, 0o000, "0o666 & ~0o777 == 0o000");
+    }
+
+    #[test]
+    fn test_umask_applied_to_mkdirat() {
+        let mut proc = Process::new(1);
+        sys_umask(&mut proc, 0o027);
+        let mut host = MockHostIO::new();
+        // AT_FDCWD == -100; resolved against proc.cwd ("/").
+        sys_mkdirat(&mut proc, &mut host, -100, b"newdir", 0o775).unwrap();
+        // 0o775 & ~0o027 = 0o775 & 0o750 = 0o750
+        assert_eq!(host.last_mkdir_mode, 0o750);
+    }
+
+    #[test]
+    fn test_umask_open_no_create_does_not_apply_umask() {
+        // Without O_CREAT, mode is irrelevant per POSIX and shouldn't be
+        // umask-stripped. Verifies the `if oflags & O_CREAT != 0` branch.
+        let mut proc = Process::new(1);
+        sys_umask(&mut proc, 0o077);
+        let mut host = MockHostIO::new();
+        // No set_missing — file exists, so this is a plain open.
+        let _fd = sys_open(&mut proc, &mut host, b"/tmp/existing", O_RDONLY, 0o666).unwrap();
+        // Mode passes through unmodified (host_open ignores it for non-create
+        // anyway, but verify the kernel didn't AND-with-umask).
+        assert_eq!(host.last_open_mode, 0o666);
+    }
+
+    #[test]
+    fn test_umask_fires_when_enforcement_off() {
+        // Identity semantics — umask must apply regardless of the
+        // enforce_permissions toggle. Uses the OPEN_PERM_LOCK to coordinate
+        // with other toggle-sensitive tests.
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        crate::set_enforce_permissions(false);
+        let mut proc = Process::new(1); // umask 0o022
+        let mut host = MockHostIO::new();
+        host.set_missing(b"/tmp/off");
+        let _fd = sys_open(&mut proc, &mut host, b"/tmp/off", O_CREAT | O_WRONLY, 0o666).unwrap();
+        assert_eq!(host.last_open_mode, 0o644);
+        sys_mkdir(&mut proc, &mut host, b"/tmp/offdir", 0o777).unwrap();
+        assert_eq!(host.last_mkdir_mode, 0o755);
+    }
+
+    // ---- Task 5.7: setuid/setgid bits applied on exec ----
+    //
+    // POSIX `execve` semantics: when the binary's mode has S_ISUID, the
+    // process's effective uid becomes the binary's uid. S_ISGID does the
+    // same for egid. The real uid/gid are unchanged. This is what lets
+    // /usr/bin/passwd (mode 4755 root) run as root from an unprivileged
+    // shell. Fires independently of `enforce_permissions` — it's identity,
+    // not access checking.
+
+    #[test]
+    fn test_execve_setuid_bit_sets_euid_to_file_owner() {
+        let mut proc = Process::new(1);
+        proc.uid = 1000;
+        proc.euid = 1000;
+        proc.gid = 1000;
+        proc.egid = 1000;
+        let mut host = MockHostIO::new();
+        // /bin/passwd, mode 4755, owned by root (uid=0). Use 100 as a
+        // distinguishable owner so we can see the credential change.
+        host.set_file_with_owner(b"/bin/passwd", 100, 50, 0o4755, b"");
+        sys_execve(&mut proc, &mut host, b"/bin/passwd").unwrap();
+        assert_eq!(proc.euid, 100, "euid should match file owner via S_ISUID");
+        assert_eq!(proc.uid, 1000, "real uid is unchanged");
+        assert_eq!(proc.egid, 1000, "S_ISGID not set, egid unchanged");
+        assert_eq!(proc.gid, 1000, "real gid unchanged");
+    }
+
+    #[test]
+    fn test_execve_setgid_bit_sets_egid_to_file_group() {
+        let mut proc = Process::new(1);
+        proc.uid = 1000;
+        proc.euid = 1000;
+        proc.gid = 1000;
+        proc.egid = 1000;
+        let mut host = MockHostIO::new();
+        // mode 2755 (setgid only), owned by uid=100/gid=200.
+        host.set_file_with_owner(b"/bin/wall", 100, 200, 0o2755, b"");
+        sys_execve(&mut proc, &mut host, b"/bin/wall").unwrap();
+        assert_eq!(proc.egid, 200, "egid should match file group via S_ISGID");
+        assert_eq!(proc.gid, 1000, "real gid is unchanged");
+        assert_eq!(proc.euid, 1000, "S_ISUID not set, euid unchanged");
+        assert_eq!(proc.uid, 1000, "real uid unchanged");
+    }
+
+    #[test]
+    fn test_execve_both_setuid_setgid_apply() {
+        let mut proc = Process::new(1);
+        proc.uid = 1000;
+        proc.euid = 1000;
+        proc.gid = 1000;
+        proc.egid = 1000;
+        let mut host = MockHostIO::new();
+        // mode 6755 (both bits), owned by uid=100/gid=200.
+        host.set_file_with_owner(b"/bin/dual", 100, 200, 0o6755, b"");
+        sys_execve(&mut proc, &mut host, b"/bin/dual").unwrap();
+        assert_eq!(proc.euid, 100);
+        assert_eq!(proc.egid, 200);
+        assert_eq!(proc.uid, 1000);
+        assert_eq!(proc.gid, 1000);
+    }
+
+    #[test]
+    fn test_execve_no_special_bits_leaves_credentials_unchanged() {
+        let mut proc = Process::new(1);
+        proc.uid = 1000;
+        proc.euid = 1000;
+        proc.gid = 1000;
+        proc.egid = 1000;
+        let mut host = MockHostIO::new();
+        // mode 0755 (no setuid/setgid), owned by uid=100/gid=200.
+        host.set_file_with_owner(b"/bin/ls", 100, 200, 0o0755, b"");
+        sys_execve(&mut proc, &mut host, b"/bin/ls").unwrap();
+        assert_eq!(proc.euid, 1000, "no S_ISUID — euid stays put");
+        assert_eq!(proc.egid, 1000, "no S_ISGID — egid stays put");
+        assert_eq!(proc.uid, 1000);
+        assert_eq!(proc.gid, 1000);
+    }
+
+    #[test]
+    fn test_execve_setuid_fires_when_enforcement_off() {
+        // Identity semantics: must fire regardless of the enforce_permissions
+        // toggle. Verifies the policy choice in apply_setuid_setgid_on_exec.
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        crate::set_enforce_permissions(false);
+        let mut proc = Process::new(1);
+        proc.uid = 1000;
+        proc.euid = 1000;
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/bin/su", 0, 0, 0o4755, b"");
+        sys_execve(&mut proc, &mut host, b"/bin/su").unwrap();
+        assert_eq!(proc.euid, 0, "setuid-on-exec must fire even when enforcement is off");
+        assert_eq!(proc.uid, 1000);
+    }
+
+    #[test]
+    fn test_execve_setuid_does_not_change_real_uid() {
+        // Explicit assertion of POSIX: real uid (proc.uid) is preserved even
+        // when both S_ISUID and S_ISGID fire. The "saved set" semantics
+        // would set proc.suid/sgid to the new effective ids — those fields
+        // are not yet tracked (Task 5.10 follow-up).
+        let mut proc = Process::new(1);
+        proc.uid = 9999;
+        proc.euid = 9999;
+        proc.gid = 8888;
+        proc.egid = 8888;
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/bin/p", 0, 0, 0o6755, b"");
+        sys_execve(&mut proc, &mut host, b"/bin/p").unwrap();
+        assert_eq!(proc.uid, 9999, "real uid never changes on exec");
+        assert_eq!(proc.gid, 8888, "real gid never changes on exec");
+        assert_eq!(proc.euid, 0);
+        assert_eq!(proc.egid, 0);
     }
 
     // ---- uname tests ----
