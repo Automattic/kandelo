@@ -5,10 +5,11 @@
  * resolvers — Node materialises scratch backends as host directories
  * under a session dir; the browser uses ephemeral memfs SABs.
  *
- * `readonly` is currently advisory: `VirtualPlatformIO` does not
- * enforce it on writes today (PR 5/5 will wire enforcement). The
- * resolver still propagates the flag so backends and routers can opt
- * in once the policy lands.
+ * `readonly` is enforced by `VirtualPlatformIO`: path-based writes
+ * (open with O_WRONLY/O_RDWR/O_CREAT/O_TRUNC, mkdir, rmdir, unlink,
+ * rename, link, symlink, chmod, chown, utimensat) return EROFS, as
+ * do fd-based writes (write/ftruncate/fchmod/fchown) through a
+ * handle opened on a readonly mount.
  */
 
 import type { MountConfig } from "./types";
@@ -22,7 +23,7 @@ export interface MountSpec {
    * `scratch` — empty writable backend (host dir on Node, memfs in browser).
    */
   source: "image" | "scratch";
-  /** Advisory until PR 5/5 enforces it on writes through `VirtualPlatformIO`. */
+  /** Enforced by `VirtualPlatformIO` — write ops return EROFS when set. */
   readonly?: boolean;
   /** Documentation hint that the mount is wiped on kernel destroy. */
   ephemeral?: boolean;

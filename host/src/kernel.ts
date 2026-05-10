@@ -72,6 +72,7 @@ function negErrno(err: unknown): number {
     if (msg.startsWith("ENOSYS")) return -38;
     if (msg.startsWith("ENXIO")) return -6;
     if (msg.startsWith("EXDEV")) return -18;
+    if (msg.startsWith("EROFS")) return -30;
   }
   return -5; // EIO
 }
