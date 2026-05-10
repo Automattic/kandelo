@@ -143,9 +143,14 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
     stdinData = new TextEncoder().encode(options.stdin);
   }
 
+  // Default to mount-based VFS (rootfs.vfs at /, scratch dirs at /tmp etc.).
+  // Tests that need raw host filesystem access opt out by passing
+  // `io: new NodePlatformIO()` (which routes through `runOnMainThread` and
+  // does not engage NodeKernelHost at all).
   const host = new NodeKernelHost({
     maxWorkers: 4,
     execPrograms,
+    rootfsImage: "default",
     onStdout: (_pid: number, data: Uint8Array) => {
       stdout += new TextDecoder().decode(data);
       stdoutChunks.push(new Uint8Array(data));

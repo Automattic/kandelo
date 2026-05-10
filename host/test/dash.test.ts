@@ -4,6 +4,7 @@
 import { describe, it, expect } from "vitest";
 import { runCentralizedProgram } from "./centralized-test-helper";
 import { tryResolveBinary } from "../src/binary-resolver";
+import { NodePlatformIO } from "../src/platform/node";
 
 const dashBinary = tryResolveBinary("programs/dash.wasm");
 
@@ -135,6 +136,14 @@ describe.skipIf(!hasDash || !hasCoreutils)("dash + coreutils exec", () => {
       argv: ["dash", "-c", cmd],
       env: ["PATH=/bin:/usr/bin", "HOME=/tmp"],
       execPrograms,
+      // dash's PATH lookup stat()s /bin/<name> to gate exec; the rootfs
+      // image only ships /bin/sh, so the default mount setup correctly
+      // returns ENOENT for /bin/cat etc. and execvp fails before the
+      // exec map is consulted. Use raw NodePlatformIO so /bin/cat etc.
+      // (which exist on macOS / Linux hosts) stat-succeed; the exec map
+      // then routes the actual exec call to coreutils.wasm. Migrating
+      // these probes to a populated rootfs is a follow-up to PR 4/5.
+      io: new NodePlatformIO(),
       timeout,
     });
   }

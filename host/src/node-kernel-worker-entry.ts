@@ -14,14 +14,23 @@
  *                  resolve_exec
  */
 import { parentPort } from "node:worker_threads";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { CentralizedKernelWorker } from "./kernel-worker";
 import { NodePlatformIO } from "./platform/node";
+import {
+  VirtualPlatformIO,
+  NodeTimeProvider,
+  DEFAULT_MOUNT_SPEC,
+  resolveForNode,
+} from "./vfs";
 import { NodeWorkerAdapter } from "./worker-adapter";
 import { ThreadPageAllocator } from "./thread-allocator";
 import { patchWasmForThread } from "./worker-main";
 import { detectPtrWidth, extractHeapBase } from "./constants";
 import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD } from "./constants";
+import type { PlatformIO } from "./types";
 import type {
   CentralizedWorkerInitMessage,
   CentralizedThreadInitMessage,
@@ -48,6 +57,9 @@ let workerAdapter: NodeWorkerAdapter;
 let threadAllocator: ThreadPageAllocator;
 let maxPages = DEFAULT_MAX_PAGES;
 let execPrograms: Record<string, string> = {};
+/** Per-boot scratch directory; cleaned up on `destroy`. Only set when the
+ *  worker constructs a `VirtualPlatformIO` from the default mount spec. */
+let sessionDir: string | null = null;
 
 // Process tracking
 interface ProcessInfo {
@@ -191,13 +203,41 @@ async function resolveExec(path: string): Promise<ArrayBuffer | null> {
 
 // --- Init ---
 
+/**
+ * Materialise the default mount spec into a `VirtualPlatformIO` backed by
+ * the rootfs image at `/` and per-boot host-fs scratch dirs everywhere
+ * else. The session dir is created once per boot and torn down by
+ * `cleanupSessionDir` on `destroy`.
+ */
+function buildVirtualPlatformIO(rootfsImage: ArrayBuffer): VirtualPlatformIO {
+  sessionDir = mkdtempSync(join(tmpdir(), "wasm-posix-session-"));
+  const mounts = resolveForNode(
+    DEFAULT_MOUNT_SPEC,
+    new Uint8Array(rootfsImage),
+    sessionDir,
+  );
+  return new VirtualPlatformIO(mounts, new NodeTimeProvider());
+}
+
+function cleanupSessionDir(): void {
+  if (!sessionDir) return;
+  try {
+    rmSync(sessionDir, { recursive: true, force: true });
+  } catch {
+    // best-effort: tests should still pass even if cleanup races a hold
+  }
+  sessionDir = null;
+}
+
 async function handleInit(msg: InitMessage) {
   maxPages = msg.config.maxPages ?? DEFAULT_MAX_PAGES;
   execPrograms = msg.execPrograms ?? {};
   threadAllocator = new ThreadPageAllocator(maxPages);
   workerAdapter = new NodeWorkerAdapter();
 
-  const io = new NodePlatformIO();
+  const io: PlatformIO = msg.rootfsImage
+    ? buildVirtualPlatformIO(msg.rootfsImage)
+    : new NodePlatformIO();
 
   kernelWorker = new CentralizedKernelWorker(
     {
@@ -683,6 +723,7 @@ function handleDestroy(msg: { requestId: number }) {
   threadModuleCache.clear();
   threadWorkers.clear();
   ptyByPid.clear();
+  cleanupSessionDir();
   respond(msg.requestId, true);
 }
 

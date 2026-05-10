@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { Worker as NodeThreadWorker } from "node:worker_threads";
-import { resolveBinary } from "./binary-resolver";
+import { findRepoRoot, resolveBinary } from "./binary-resolver";
 import type {
   MainToKernelMessage,
   KernelToMainMessage,
@@ -48,6 +48,22 @@ export interface NodeKernelHostOptions {
    * Return the program bytes or null if not found.
    */
   onResolveExec?: (path: string) => ArrayBuffer | null | Promise<ArrayBuffer | null>;
+  /**
+   * Opt in to mount-based VFS for this kernel boot.
+   *
+   *   - `"default"` — load `<repoRoot>/host/wasm/rootfs.vfs` and apply
+   *     `DEFAULT_MOUNT_SPEC` via `resolveForNode`. The worker constructs
+   *     a `VirtualPlatformIO` (rootfs at `/`, host-fs scratch dirs at
+   *     `/tmp` etc.). Throws if the file is missing — callers wanting
+   *     graceful degradation should pre-check or pass explicit bytes.
+   *   - `ArrayBuffer | Uint8Array` — use the supplied image bytes
+   *     instead of reading from disk. Same mount spec applied.
+   *   - `undefined` (default) — use raw `NodePlatformIO` (every host
+   *     path reachable). Preserves the pre-cutover behaviour for the
+   *     direct-host-fs callers (demos, scripts) that haven't migrated
+   *     to a VFS-only world yet.
+   */
+  rootfsImage?: "default" | ArrayBuffer | Uint8Array;
 }
 
 export interface SpawnOptions {
@@ -75,6 +91,7 @@ export class NodeKernelHost {
   /** Initialize the kernel by spawning a dedicated worker_thread */
   async init(kernelWasmBytes?: ArrayBuffer): Promise<void> {
     const wasmBytes = kernelWasmBytes ?? loadKernelWasm();
+    const rootfsImage = resolveRootfsImage(this.options.rootfsImage);
 
     this.worker = spawnKernelWorkerThread();
 
@@ -109,6 +126,7 @@ export class NodeKernelHost {
           useSharedMemory: true,
         },
         execPrograms: this.options.execPrograms,
+        rootfsImage: rootfsImage ?? undefined,
       };
       this.worker.postMessage(initMsg);
     });
@@ -263,6 +281,36 @@ export class NodeKernelHost {
 function loadKernelWasm(): ArrayBuffer {
   const buf = readFileSync(resolveBinary("kernel.wasm"));
   return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+}
+
+/**
+ * Materialise the rootfs image bytes the worker will mount at `/`.
+ * Returns `null` when the caller hasn't opted in; the worker then
+ * falls back to raw `NodePlatformIO` (legacy host-fs passthrough).
+ */
+function resolveRootfsImage(
+  override: "default" | ArrayBuffer | Uint8Array | undefined,
+): ArrayBuffer | null {
+  if (override === undefined) return null;
+  if (override === "default") {
+    const path = join(findRepoRoot(), "host/wasm/rootfs.vfs");
+    if (!existsSync(path)) {
+      throw new Error(
+        `rootfsImage:"default" requested but ${path} is missing — ` +
+          `run scripts/build-rootfs.sh, or pass explicit bytes / omit the option.`,
+      );
+    }
+    const buf = readFileSync(path);
+    return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+  }
+  if (override instanceof Uint8Array) {
+    // Copy into a fresh ArrayBuffer — the source might live in a
+    // SharedArrayBuffer, which the worker init protocol doesn't accept.
+    const out = new ArrayBuffer(override.byteLength);
+    new Uint8Array(out).set(override);
+    return out;
+  }
+  return override;
 }
 
 /** Spawn a worker_thread running node-kernel-worker-entry.ts */

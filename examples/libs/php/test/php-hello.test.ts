@@ -4,6 +4,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runCentralizedProgram } from "../../../../host/test/centralized-test-helper";
 import { tryResolveBinary } from "../../../../host/src/binary-resolver";
+import { NodePlatformIO } from "../../../../host/src/platform/node";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "../../../..");
@@ -36,9 +37,15 @@ describe.skipIf(!PHP_AVAILABLE)("PHP CLI on wasm-posix-kernel", () => {
         const scriptPath = join(tmpDir, "test.php");
         writeFileSync(scriptPath, '<?php echo "File Script OK\\n"; ?>');
 
+        // The script lives at a real host path (under examples/libs/php/...),
+        // which the new mount-based default VFS doesn't expose. Opt out
+        // with raw NodePlatformIO so PHP can read it. (Migration: ship
+        // the fixture into the rootfs image, or use the kernel's exec
+        // path which serves wasm bytes from the host.)
         const { stdout, exitCode } = await runCentralizedProgram({
             programPath: phpBinaryPath,
             argv: ["php", scriptPath],
+            io: new NodePlatformIO(),
         });
         expect(stdout).toContain("File Script OK");
         expect(exitCode).toBe(0);

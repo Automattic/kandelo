@@ -66,11 +66,18 @@ describe.skipIf(!hasGit)("Git", () => {
     // git commit triggers fork+exec for `git gc --auto`. Without asyncify,
     // the fork child restarts from _start() with empty argv and prints help.
     const dir = `/tmp/git-commit-test-${Date.now()}`;
-    // Init repo on host filesystem first
+    // The two runs share state via /tmp; under the new mount-based VFS
+    // each NodeKernelHost boot owns its own scratch session dir, so the
+    // second invocation can't see the first's repo. Opt out with raw
+    // NodePlatformIO so /tmp resolves to the actual host fs and persists
+    // across runs. (A migration to a single shared kernel boot — or to
+    // a fixture-managed session dir — is follow-up work to PR 4/5.)
+    const ioForPersistence = () => new NodePlatformIO();
     const initResult = await runCentralizedProgram({
       programPath: gitBinary!,
       argv: ["git", "init", dir],
       env: gitEnv,
+      io: ioForPersistence(),
       timeout: 15_000,
     });
     expect(initResult.exitCode).toBe(0);
@@ -79,6 +86,7 @@ describe.skipIf(!hasGit)("Git", () => {
       programPath: gitBinary!,
       argv: ["git", "-C", dir, "commit", "--allow-empty", "-m", "test commit"],
       env: gitEnv,
+      io: ioForPersistence(),
       timeout: 20_000,
     });
     expect(result.exitCode).toBe(0);

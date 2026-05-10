@@ -26,6 +26,7 @@ const TEST_PROGRAMS = [
   "sysv_ipc_test.c",
   "wasm_trap_test.c",
   "abort_test.c",
+  "mount_probe_test.c",
 ];
 
 /** WAT fixtures used by host/test/wasi-shim.test.ts. */
