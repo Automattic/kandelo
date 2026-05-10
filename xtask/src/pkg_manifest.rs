@@ -424,9 +424,10 @@ pub struct DepsManifest {
     /// top-level `arches = ["wasm32", "wasm64"]` TOML field. Defaults
     /// to `["wasm32"]` when absent — wasm32 is the canonical target;
     /// only manifests that explicitly need wasm64 (right now: mariadb,
-    /// mariadb-vfs, php) opt in. Consumed by `stage-release` to skip
-    /// manifest×arch pairs the manifest didn't ask for, which keeps
-    /// the release archive set tight.
+    /// mariadb-vfs, php) opt in. Consumed by `archive-stage` (to
+    /// reject a `(package, arch)` pair the manifest didn't ask for)
+    /// and by the per-package matrix-build preflight (to keep the
+    /// matrix tight).
     pub target_arches: Vec<TargetArch>,
 
     /// Directory containing this `package.toml`. The build script path and
@@ -606,11 +607,11 @@ fn default_outputs_value() -> toml::Value {
 impl DepsManifest {
     /// Relative path under `programs/<arch>/` where `out` should land
     /// once produced. Single source of truth for the placement
-    /// convention; both install-release (release consumer) and
-    /// install-local-binary (developer build script) compute the
-    /// destination through this method, so a freshly-built local
-    /// artifact can shadow the released bytes at the resolver's
-    /// expected path.
+    /// convention; both `place_binaries_symlinks` (resolver-driven
+    /// `binaries/` mirror) and `install-local-binary` (developer build
+    /// script) compute the destination through this method, so a
+    /// freshly-built local artifact can shadow the resolved bytes at
+    /// the consumer's expected path.
     ///
     /// Layout:
     ///   * 1 output:  `<output.name><ext>`
@@ -682,6 +683,34 @@ impl DepsManifest {
             .map_err(|e| format!("{}: {e}", path.display()))
     }
 
+    /// Read a `package.toml` and merge an optional `package.pr.toml`
+    /// overlay sitting in the same directory. The overlay is the
+    /// Phase C consumer-side mechanism for swapping in PR-staging
+    /// archive URLs without touching the committed `package.toml`:
+    /// CI generates the overlay file (gitignored) for each package
+    /// being rebuilt by a PR, then deletes it on merge. Overlays may
+    /// only contain `[binary]` / `[binary.<arch>]` entries; any
+    /// other top-level field is rejected.
+    ///
+    /// Falls through to the base manifest unchanged when no overlay
+    /// file is present in `dir`.
+    pub fn load_with_overlay(dir: &Path) -> Result<Self, String> {
+        let base_path = dir.join("package.toml");
+        let base_text = std::fs::read_to_string(&base_path)
+            .map_err(|e| format!("read {}: {e}", base_path.display()))?;
+        let mut manifest = Self::parse(&base_text, dir.to_path_buf())
+            .map_err(|e| format!("{}: {e}", base_path.display()))?;
+
+        let overlay_path = dir.join("package.pr.toml");
+        if overlay_path.exists() {
+            let overlay_text = std::fs::read_to_string(&overlay_path)
+                .map_err(|e| format!("read {}: {e}", overlay_path.display()))?;
+            apply_pr_overlay(&mut manifest, &overlay_text)
+                .map_err(|e| format!("{}: {e}", overlay_path.display()))?;
+        }
+        Ok(manifest)
+    }
+
     /// Parse a source `package.toml`. Rejects manifests that contain a
     /// `[compatibility]` block — that block is reserved for archived
     /// `manifest.toml` files (see [`parse_archived`]).
@@ -734,9 +763,9 @@ impl DepsManifest {
         //
         // `validate_archived` deliberately does NOT enforce this: legacy
         // `manifest.toml` bytes inside .tar.zst archives published before
-        // Phase A-bis don't carry `kernel_abi`, and install-release /
-        // fetch-binaries must continue to parse them. The required-ness
-        // is enforced only on the source path.
+        // Phase A-bis don't carry `kernel_abi`, and the `remote_fetch`
+        // unpack path must continue to parse them. The required-ness is
+        // enforced only on the source path.
         let has_build_block = raw.build.script_path.is_some()
             || raw.build.repo_url.is_some()
             || raw.build.commit.is_some()
@@ -1188,6 +1217,59 @@ impl DepsManifest {
     }
 }
 
+/// Parse `package.pr.toml` as a `[binary]`-only overlay and merge it
+/// into `manifest`. Overlays are intentionally narrow: they exist
+/// solely so a PR build can swap in pre-release archive URLs without
+/// rewriting the committed `package.toml`. Anything other than
+/// `[binary]` / `[binary.<arch>]` is rejected to keep the surface
+/// area small (and to keep `git diff` of the overlay file readable
+/// at a glance).
+///
+/// Merge semantics: per-arch entries in the overlay REPLACE the
+/// matching arch in the base. Arches present in the base but absent
+/// from the overlay are preserved — so an overlay declaring just
+/// `[binary.wasm32]` does not silently drop the base's
+/// `[binary.wasm64]`.
+fn apply_pr_overlay(
+    manifest: &mut DepsManifest,
+    overlay_text: &str,
+) -> Result<(), String> {
+    let value: toml::Value = toml::from_str(overlay_text)
+        .map_err(|e| format!("parse package.pr.toml: {e}"))?;
+    let table = value
+        .as_table()
+        .ok_or_else(|| "package.pr.toml must be a TOML table".to_string())?;
+
+    for key in table.keys() {
+        if key != "binary" {
+            return Err(format!(
+                "package.pr.toml may only override [binary] / [binary.<arch>] — \
+                 unexpected top-level field {key:?}. \
+                 See docs/plans/2026-05-05-decoupled-package-builds-design.md §3.3."
+            ));
+        }
+    }
+
+    let binary_value = table
+        .get("binary")
+        .cloned()
+        .ok_or_else(|| {
+            "package.pr.toml has no [binary] section (overlay must \
+             override at least one arch)"
+                .to_string()
+        })?;
+
+    // Reuse the base parser. parse_binary_block accepts both the
+    // bare `[binary]` shape (single-arch wasm32-only) and the
+    // per-arch `[binary.wasm32]` / `[binary.wasm64]` shape.
+    let new_binary = DepsManifest::parse_binary_block(binary_value)?;
+
+    for (arch, bin) in new_binary {
+        manifest.binary.insert(arch, bin);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1303,7 +1385,7 @@ headers = ["include/zlib.h"]
         // Archived manifest.toml files inside .tar.zst archives
         // published before Phase A-bis use the legacy
         // `[build].script` field. These archives are immutable
-        // historical bytes — install-release / fetch-binaries must
+        // historical bytes — the `remote_fetch` unpack path must
         // continue to parse them. validate_archived deliberately does
         // NOT reject `[build].script` (only validate_source does).
         let sha = "0".repeat(64);
@@ -1406,10 +1488,10 @@ libs = ["lib/libtest.a"]
     fn archived_parse_accepts_missing_kernel_abi() {
         // Legacy `.tar.zst` archives published before Phase A-bis don't
         // carry `kernel_abi` in their archived manifest.toml.
-        // validate_archived must keep tolerating absence so
-        // install-release / fetch-binaries can still parse those
-        // immutable historical bytes. Required-ness lives in
-        // validate_source only.
+        // validate_archived must keep tolerating absence so the
+        // `remote_fetch` unpack path can still parse those immutable
+        // historical bytes. Required-ness lives in validate_source
+        // only.
         let toml = r#"
 kind = "library"
 name = "test"
@@ -2116,12 +2198,10 @@ probe = { args = ["--version"], version_regex = "(unclosed" }
 
     // ── output_dest_rel ───────────────────────────────────────────
     //
-    // Mirrors install-release's `mirror_program_outputs` /
-    // `place_binaries_symlinks` placement convention so build scripts
-    // (via `install-local-binary.sh` → `xtask build-deps output-path`)
-    // can land freshly-built artifacts at the same relative path the
-    // resolver/install-release would. See xtask/src/install_release.rs
-    // for the producer-side mirror.
+    // Mirrors `place_binaries_symlinks` in build_deps.rs so build
+    // scripts (via `install-local-binary.sh` → `xtask build-deps
+    // output-path`) can land freshly-built artifacts at the same
+    // relative path the resolver writes its symlinks to.
 
     fn program_manifest(name: &str, outputs_section: &str) -> DepsManifest {
         let text = format!(
@@ -2165,10 +2245,10 @@ spdx = "TestLicense"
         // Single-output where program.name != output.name (texlive case:
         // package "texlive" produces output named "pdftex"). The
         // dest-name is keyed off [[outputs]].name, NOT the package name —
-        // matching install-release's `dest_name = "{out.name}{ext}"`
-        // logic (xtask/src/install_release.rs:466). install_local_binary
+        // matching the resolver's `dest_name = "{out.name}{ext}"` logic
+        // in build_deps.rs `place_binaries_symlinks`. install_local_binary
         // previously used the package name here, producing a path that
-        // didn't match what the resolver places after `install-release`.
+        // didn't match what the resolver places.
         let m = program_manifest(
             "texlive",
             "[[outputs]]\nname = \"pdftex\"\nwasm = \"pdftex.wasm\"\n",
@@ -2181,7 +2261,7 @@ spdx = "TestLicense"
 
     #[test]
     fn output_dest_rel_multi_output_uses_program_subdir() {
-        // ≥2 outputs: install-release nests under <program.name>/, so
+        // ≥2 outputs: the resolver nests under <program.name>/, so
         // each output's per-arch path is unique even when other packages
         // happen to declare an output with the same name.
         let m = program_manifest(
@@ -2230,6 +2310,176 @@ wasm = "git-remote-http.wasm"
         assert!(
             err.contains("kind") || err.contains("program"),
             "got: {err}"
+        );
+    }
+
+    /// Helper for the overlay tests: write `package.toml` and
+    /// (optionally) `package.pr.toml` into a fresh tempdir and return
+    /// the dir.
+    fn overlay_fixture_dir(label: &str, base: &str, overlay: Option<&str>) -> PathBuf {
+        let dir = std::env::temp_dir()
+            .join("wpk-xtask-pr-overlay")
+            .join(format!("{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("package.toml"), base).unwrap();
+        if let Some(o) = overlay {
+            std::fs::write(dir.join("package.pr.toml"), o).unwrap();
+        }
+        dir
+    }
+
+    /// Base manifest used by the overlay tests. Includes a
+    /// `[binary.wasm32]` block so we can verify the overlay replaces
+    /// it. Library kind so no `[[outputs]]`/`[build]` boilerplate is
+    /// required.
+    const OVERLAY_BASE: &str = r#"
+kind = "library"
+name = "zlib"
+version = "1.3.1"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://example.test/zlib-1.3.1.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "Zlib"
+
+[outputs]
+libs = ["lib/libz.a"]
+headers = ["include/zlib.h"]
+
+[binary.wasm32]
+archive_url = "https://example.test/zlib-base-wasm32.tar.zst"
+archive_sha256 = "1111111111111111111111111111111111111111111111111111111111111111"
+"#;
+
+    #[test]
+    fn overlay_merges_binary_block_over_base() {
+        // The overlay declares the same arch (wasm32) with a
+        // different sha + URL — after merge, the manifest must carry
+        // the overlay's values, not the base's.
+        let new_url = "https://example.test/zlib-pr-staging-wasm32.tar.zst";
+        let new_sha = "2".repeat(64);
+        let overlay = format!(
+            "[binary.wasm32]\n\
+             archive_url = \"{new_url}\"\n\
+             archive_sha256 = \"{new_sha}\"\n"
+        );
+        let dir = overlay_fixture_dir("merge-replace", OVERLAY_BASE, Some(&overlay));
+
+        let m = DepsManifest::load_with_overlay(&dir).unwrap();
+        let bin = m
+            .binary
+            .get(&TargetArch::Wasm32)
+            .expect("wasm32 binary entry must be present after merge");
+        assert_eq!(bin.archive_url, new_url);
+        assert_eq!(bin.archive_sha256, new_sha);
+    }
+
+    #[test]
+    fn overlay_absent_uses_base() {
+        // No `package.pr.toml` next to `package.toml` — the loader
+        // returns the base manifest unchanged.
+        let dir = overlay_fixture_dir("absent", OVERLAY_BASE, None);
+
+        let m = DepsManifest::load_with_overlay(&dir).unwrap();
+        let bin = m.binary.get(&TargetArch::Wasm32).unwrap();
+        assert_eq!(
+            bin.archive_url,
+            "https://example.test/zlib-base-wasm32.tar.zst"
+        );
+        assert_eq!(bin.archive_sha256, "1".repeat(64));
+    }
+
+    #[test]
+    fn overlay_with_non_binary_field_is_rejected() {
+        // The overlay file is intentionally narrow: only `[binary]` /
+        // `[binary.<arch>]` may appear. Any other top-level field is
+        // a mistake and must surface immediately.
+        let overlay = r#"
+name = "evil-rename"
+
+[binary.wasm32]
+archive_url = "https://example.test/anything.tar.zst"
+archive_sha256 = "3333333333333333333333333333333333333333333333333333333333333333"
+"#;
+        let dir = overlay_fixture_dir("non-binary-field", OVERLAY_BASE, Some(overlay));
+
+        let err = DepsManifest::load_with_overlay(&dir).unwrap_err();
+        assert!(
+            err.contains("package.pr.toml"),
+            "error must mention the overlay file by name, got: {err}"
+        );
+        assert!(
+            err.contains("[binary]"),
+            "error must mention that only [binary] is allowed, got: {err}"
+        );
+    }
+
+    #[test]
+    fn overlay_preserves_base_only_arches() {
+        // Regression guard: an overlay declaring only [binary.wasm32]
+        // must not drop the base's [binary.wasm64]. True today by
+        // BTreeMap::insert semantics, but pin it so a future refactor
+        // (e.g. clear-then-extend) can't silently break it.
+        let base_wasm32_sha = "1".repeat(64);
+        let base_wasm64_sha = "a".repeat(64);
+        let base = format!(
+            r#"
+kind = "library"
+name = "zlib"
+version = "1.3.1"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://example.test/zlib-1.3.1.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "Zlib"
+
+[outputs]
+libs = ["lib/libz.a"]
+headers = ["include/zlib.h"]
+
+[binary.wasm32]
+archive_url = "https://example.test/zlib-base-wasm32.tar.zst"
+archive_sha256 = "{base_wasm32_sha}"
+
+[binary.wasm64]
+archive_url = "https://example.test/zlib-base-wasm64.tar.zst"
+archive_sha256 = "{base_wasm64_sha}"
+"#
+        );
+
+        let overlay_wasm32_sha = "2".repeat(64);
+        let overlay = format!(
+            "[binary.wasm32]\n\
+             archive_url = \"https://example.test/zlib-pr-staging-wasm32.tar.zst\"\n\
+             archive_sha256 = \"{overlay_wasm32_sha}\"\n"
+        );
+        let dir = overlay_fixture_dir("preserve-base-only-arch", &base, Some(&overlay));
+
+        let m = DepsManifest::load_with_overlay(&dir).unwrap();
+        let bin32 = m
+            .binary
+            .get(&TargetArch::Wasm32)
+            .expect("wasm32 binary entry must be present after merge");
+        assert_eq!(
+            bin32.archive_sha256, overlay_wasm32_sha,
+            "wasm32 sha must come from the overlay"
+        );
+        let bin64 = m
+            .binary
+            .get(&TargetArch::Wasm64)
+            .expect("wasm64 binary entry must be preserved from the base");
+        assert_eq!(
+            bin64.archive_sha256, base_wasm64_sha,
+            "wasm64 sha must be the base's, untouched by the overlay"
         );
     }
 }

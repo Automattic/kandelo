@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use crate::pkg_manifest::{DepsManifest, ManifestKind, TargetArch};
 
 /// Caller-supplied build provenance + the locally-computed cache-key
-/// sha. We don't recompute the sha here so the caller (`stage_release`
+/// sha. We don't recompute the sha here so the caller (`archive-stage`
 /// or a hand-driven build) can stay the source of truth on what the
 /// consumer is required to match against.
 pub struct StageOptions {

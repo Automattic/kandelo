@@ -6,16 +6,16 @@
 #   ./run.sh build [target...]    Build specific targets (or all)
 #   ./run.sh rebuild [target...]  Force-rebuild (clean + build)
 #   ./run.sh clean [target...]    Remove build artifacts
-#   ./run.sh fetch                Fetch binaries pinned by binaries.lock
+#   ./run.sh fetch                Fetch binaries pinned by per-package package.toml
 #   ./run.sh run <example> [args] Run a Node.js example
 #   ./run.sh browser [args]       Start the Vite browser dev server
 #   ./run.sh list                 Show available targets and examples
 #   ./run.sh test [suite...]      Run test suites
 #
 # Top-level flags (recognized anywhere in the argument list):
-#   --allow-stale                 Soften the install-release manifest gate
-#                                  (forwarded to scripts/fetch-binaries.sh).
-#                                  Equivalent to WASM_POSIX_ALLOW_STALE=1.
+#   --allow-stale                 Accepted for back-compat; the resolver
+#                                  source-builds automatically on any
+#                                  verification failure. No-op today.
 #
 set -euo pipefail
 
@@ -1738,26 +1738,20 @@ cmd_run() {
 }
 
 cmd_fetch() {
-    if [ ! -f "$REPO_ROOT/binaries.lock" ]; then
-        err "binaries.lock not found"
-        exit 1
-    fi
-    step "Fetching binaries for the pinned release"
+    step "Fetching binaries pinned by per-package package.toml"
     "$REPO_ROOT/scripts/fetch-binaries.sh" "${ALLOW_STALE_ARGS[@]+"${ALLOW_STALE_ARGS[@]}"}" "$@"
 }
 
 cmd_browser() {
     local BROWSER_DIR="$REPO_ROOT/examples/browser"
 
-    # Fetch the release binaries pinned by binaries.lock first. The
-    # resolver-aware has_X guards below then treat fetched binaries as
-    # "already built", so build_browser's per-target loop is a no-op
-    # for anything that's in the release. Only genuinely missing
-    # artifacts (local-only programs, stale VFS images) trigger a build.
-    if [ -f "$REPO_ROOT/binaries.lock" ]; then
-        step "Fetching binaries for the pinned release"
-        "$REPO_ROOT/scripts/fetch-binaries.sh" "${ALLOW_STALE_ARGS[@]+"${ALLOW_STALE_ARGS[@]}"}"
-    fi
+    # Fetch the per-package binaries first. The resolver-aware has_X
+    # guards below then treat fetched binaries as "already built", so
+    # build_browser's per-target loop is a no-op for anything that's
+    # already published. Only genuinely missing artifacts (local-only
+    # programs, stale VFS images) trigger a build.
+    step "Fetching binaries pinned by per-package package.toml"
+    "$REPO_ROOT/scripts/fetch-binaries.sh" "${ALLOW_STALE_ARGS[@]+"${ALLOW_STALE_ARGS[@]}"}"
 
     build_browser
 
@@ -1940,12 +1934,12 @@ cmd_list() {
     echo "  ./run.sh rebuild <target...>         Clean + rebuild specific targets"
     echo ""
     echo "${BOLD}Binaries:${RESET}"
-    echo "  ./run.sh fetch                       Fetch binaries pinned by binaries.lock"
+    echo "  ./run.sh fetch                       Fetch binaries pinned by per-package package.toml"
     echo ""
     echo "${BOLD}Top-level flags:${RESET}"
-    echo "  --allow-stale                        Soften the install-release manifest"
-    echo "                                        gate (forwarded to fetch-binaries.sh)."
-    echo "                                        Equivalent to WASM_POSIX_ALLOW_STALE=1."
+    echo "  --allow-stale                        Accepted for back-compat. The resolver"
+    echo "                                        source-builds automatically on any"
+    echo "                                        verification failure. No-op today."
     echo ""
     echo "${BOLD}Run examples:${RESET}"
     echo "  ./run.sh run shell                   Interactive shell (dash + coreutils + grep + sed)"

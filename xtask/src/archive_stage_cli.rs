@@ -1,15 +1,12 @@
 //! `xtask archive-stage` — produce one package's `.tar.zst` archive.
 //!
-//! Per-package wrapper around the internals already used by
-//! [`crate::stage_release`]: load the package manifest, resolve its
-//! deps via the existing build-deps chain
-//! (`local-libs` → cache → remote-fetch → source build), and pack the
-//! resulting cache entry into a single `.tar.zst`. Unlike
-//! `stage-release`, this subcommand takes a single
-//! `--package <dir> --arch <wasm32|wasm64>` pair, doesn't walk the
-//! registry, and doesn't emit a `manifest.json` — exactly what each
-//! Phase B-1 matrix-build entry needs to produce its single archive
-//! for upload as a workflow artifact.
+//! Loads the package manifest at `--package <dir>`, resolves its deps
+//! via the build-deps chain (`local-libs` → cache → remote-fetch →
+//! source build), and packs the resulting cache entry into a single
+//! `.tar.zst` written under `--out`. Operates on exactly one
+//! `(package, arch)` pair — no registry walk, no aggregate index emitted
+//! — which is what each Phase B-1 matrix-build entry needs to produce
+//! its single archive for upload as a workflow artifact.
 //!
 //! See `docs/plans/2026-05-05-decoupled-package-builds-design.md`
 //! and the Task 4 description.
@@ -117,10 +114,11 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     fs::create_dir_all(&parsed.out_dir)
         .map_err(|e| format!("mkdir {}: {e}", parsed.out_dir.display()))?;
 
-    // Compute filename via the same formula `stage_release::stage_one`
-    // uses, so artifacts produced here are interchangeable with those
-    // produced by the legacy stage-release path. Filename:
+    // Filename convention (single source of truth for archive naming):
     //   <name>-<v>-rev<N>-abi<N>-<arch>-<short8>.tar.zst
+    // The `<short8>` suffix is the first 8 hex chars of the cache_key
+    // sha so a freshly-published archive is content-addressable from
+    // its filename alone.
     let archive_path = archive_path_for(
         &parsed.out_dir,
         &manifest,
@@ -131,12 +129,16 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
 
     // Resolve / build the cache entry. local_libs is intentionally
     // None — staged archives must reproduce from source / cache, never
-    // from a developer's hand-patched checkout (mirrors stage_release).
+    // from a developer's hand-patched checkout.
     let resolve_opts = ResolveOpts {
         cache_root: &cache_root,
         local_libs: None,
         force_source_build: None,
         repo_root: None,
+        // archive-stage doesn't materialize binaries/ symlinks: it
+        // produces a single-package archive without touching consumer-
+        // facing layout.
+        binaries_dir: None,
     };
     let cache_path = build_deps::ensure_built(&manifest, &registry, parsed.arch, abi, &resolve_opts)
         .map_err(|e| format!("ensure_built: {e}"))?;
@@ -166,8 +168,11 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
 }
 
 /// Compute the canonical archive filename + path for a (manifest, arch,
-/// abi) triple under `out_dir`. Matches `stage_release::stage_one`'s
-/// formula so the two paths produce interchangeable filenames.
+/// abi) triple under `out_dir`. The shape (`<name>-<version>-rev<N>-
+/// abi<N>-<arch>-<short8>.tar.zst`) is parsed by `build_index` to
+/// recover `(name, version, revision, abi, arch, short_sha)` when
+/// regenerating `index.toml`, so the formatter and parser MUST stay
+/// aligned.
 fn archive_path_for(
     out_dir: &Path,
     manifest: &DepsManifest,
@@ -191,8 +196,8 @@ fn archive_path_for(
 
 /// Compute the cache-key sha for a manifest as a 64-char lowercase hex
 /// string. Thin wrapper around `build_deps::compute_sha` that allocates
-/// a fresh memo per call (the legacy memo bug surfaced in stage_release
-/// E.3 — memos must not cross arch boundaries).
+/// a fresh memo per call so the result is independent of any prior
+/// arch's traversal — memos must not cross arch boundaries.
 fn compute_sha_hex(
     manifest: &DepsManifest,
     registry: &Registry,

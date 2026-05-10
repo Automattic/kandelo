@@ -15,7 +15,7 @@ None is on a committed schedule — pick up when the use case arrives.
 
 Today's release excludes the kernel + userspace because their
 manifests at `examples/libs/{kernel,userspace}/` lack build scripts —
-`stage_release` skips manifests without a build script as composite
+`archive-stage` skips manifests without a build script as composite
 metadata. The browser demos import `binaries/kernel.wasm` and
 `binaries/userspace.wasm` (≈23 sites) at Vite build time; without
 those files Vite errors out unless the user has run `bash build.sh`
@@ -71,10 +71,10 @@ the lazy-mount VFS.
 
 2. **Mixed formats in the release.** Extend `xtask::archive_stage`
    to take an `archive_format` per manifest (default `.tar.zst`,
-   programs that need lazy-mount specify `.zip`).  `install_release`
-   decompressors handle both. Vim ships as `.zip` directly; demos
-   skip the repack step.  Schema doesn't need a new field — the
-   filename extension is the format hint.
+   programs that need lazy-mount specify `.zip`).  `remote_fetch::
+   fetch_and_install` decompressors handle both. Vim ships as `.zip`
+   directly; demos skip the repack step.  Schema doesn't need a new
+   field — the filename extension is the format hint.
 
 Trigger: when a real consumer wants to fetch a published archive +
 lazy-mount its runtime tree without an intermediate repack step.
@@ -258,10 +258,13 @@ Fork-PR support (§9.1 of the design doc) is the remaining open piece;
 fork PRs continue to fall back to the resolver's source-build path
 locally.
 
-Manual `scripts/stage-release.sh` + `scripts/publish-release.sh` is
-still the path for cutting a release outside the PR flow (e.g.,
-hand-rebuilds, recovery from a CI outage). The `prepare-merge.yml`
-workflow wraps those same two scripts.
+For hand-rebuilds outside the PR flow (e.g., recovery from a CI
+outage), `xtask archive-stage --package <dir> --arch <arch>` produces
+a single archive locally; uploading it to the release tag and
+amending the package's `[binary.<arch>]` block via `xtask
+set-package-binary` reproduces what the matrix flow does in CI.
+The `force-rebuild.yml` workflow automates that path for one or
+more packages.
 
 ### Hard-coded version strings in build scripts (lint)
 
@@ -354,108 +357,19 @@ trap.
 
 `abi/manifest.schema.json` currently allows `kind: "library"` or the archive-shape
 `kind: "program"` entries WITHOUT a `compatibility` block.  The
-producer (xtask::archive_stage / build_manifest) injects the block 100%
-of the time so this is unreachable, but the schema doesn't enforce it.
-A `dependentRequired` or `if/then` clause would tighten the contract.
+producer (`xtask::archive_stage`) injects the block 100% of the time
+so this is unreachable, but the schema doesn't enforce it. A
+`dependentRequired` or `if/then` clause would tighten the contract.
 
-### Pre-flight install-release covers only `cache_key_sha`
+### Pre-flight resolver covers only `cache_key_sha`
 
-`xtask install-release` pre-flight verifies the manifest entry's
-`cache_key_sha` matches local computation BEFORE invoking
-`remote_fetch::fetch_and_install`.  The deeper 4-axis chain inside
-`fetch_and_install` covers `target_arch` and `abi_versions`, but the
-pre-flight could also short-circuit on those for clearer errors.
-
-### Memoize failed builds within a stage-release run
-
-`xtask::stage_release` iterates manifests alphabetically and calls
-`stage_one` → `ensure_built` per (manifest, arch). When a manifest
-fails (say, mariadb wasm32) every later dependent (lamp,
-mariadb-test, mariadb-vfs, etc.) re-enters `ensure_built` for the
-same failing dep and re-runs its build script from scratch.
-
-In the force-rebuild run that diagnosed PR #406's six root causes,
-mariadb's host CMake configure ran 6 times for one logical failure
-(once per dependent — confirmed by `grep -c "Step 1: Host build"`
-returning 6 in the run logs). CMake fails fast there
-(~1.5s/attempt → ~9s wasted total), so the symptom was mild — but
-a deeper failure (say, in `make` after 10 minutes of compile)
-compounds into 6 × 10min = 1 hour of duplicate work.
-
-Fix: a process-global `OnceLock<Mutex<BTreeMap<(name, TargetArch),
-String>>>` in `build_deps.rs`. Before invoking the build script,
-check the map; if a prior failure is recorded, return its cached
-error string. After the build attempt, record success-or-failure.
-Survives a single `xtask` process; intentionally NOT persisted
-across runs (a fresh CI run should always retry).
-
-Trigger: any time we observe a long-running build's failure being
-re-attempted by its dependents in stage-release logs.
+The resolver verifies the embedded `manifest.toml`'s `cache_key_sha`
+matches local computation as part of `remote_fetch::fetch_and_install`.
+The deeper 4-axis chain inside `fetch_and_install` covers
+`target_arch` and `abi_versions`, but a pre-flight could also
+short-circuit on those for clearer errors.
 
 ## Workflow
-
-### Convert force-rebuild + staging-build to a tier-based job matrix
-
-The current force-rebuild workflow runs every package source build
-sequentially in one Ubuntu runner. Wall time is ~2 hours;
-diagnostic visibility is poor (a single grep through 80k log lines
-to find which package broke); single-package failures take a
-~2-hour cycle to surface the next. PR #406's iteration history is
-a concrete example: six independent root causes, each separated by
-a multi-hour rebuild attempt.
-
-Sketch:
-
-1. New `xtask plan-tiers` subcommand walks every `package.toml`,
-   topo-sorts by `depends_on`, and emits JSON tier arrays. No
-   manifest changes — the dep graph already exists.
-2. Workflow has four jobs: `plan` (emits tier outputs), `setup`
-   (kernel + sysroot + libc++, uploaded as artifact), `tierN`
-   (matrix per tier, each cell builds one package), and
-   `publish` (collects archives, writes manifest, creates release).
-3. Each `tierN` cell:
-   - Downloads `setup` artifacts (sysroot, kernel.wasm).
-   - Downloads its deps' archives from prior tiers' artifacts and
-     re-populates `~/.cache/wasm-posix-kernel/`.
-   - Runs `cargo xtask build-deps build <package>`.
-   - Uploads its own archive as an artifact.
-
-Wins:
-- Wall time ~30-50 min (vs 2h) — true hardware parallelism per cell.
-- Failure isolation — one bad package marks one cell red; the rest
-  of the matrix still produces archives.
-- Per-package logs are scoped to a single cell, easier to triage.
-- Naturally subsumes the in-process memoization above (each cell
-  builds exactly one package).
-
-Costs:
-- 2-3× compute (more runner-minutes; matters more on paid orgs).
-- ~2-3 min per-cell Nix install + artifact transfer overhead — for
-  a 2-min build, near 100% overhead. Net win because long-tail
-  packages dominate wall time.
-- Free-tier 20-job concurrency cap means tier 1 (~30 packages)
-  queues into ~2 batches.
-- Dynamic matrix needs `outputs:` + `fromJSON()` — non-trivial
-  YAML. ~1-2 days implementation.
-
-Trigger: once the current sequential workflow is durably green, or
-sooner if force-rebuild runs continue to take >1 hour to surface
-the next latent build bug.
-
-### `--allow-failure` workflow flag
-
-`scripts/stage-release.sh --allow-failure <name>` carves out a
-per-package exception: total-failure for `<name>` logs a warning
-instead of gating the workflow exit code, while every other package
-is still gated strictly. Use it as a temporary bypass when a
-package's source build is broken on the runner and you need to keep
-producing a release.
-
-The flag self-polices. When `<name>` actually built every attempted
-arch successfully (or didn't match any manifest at all),
-`stage-release` logs a "stale --allow-failure" notice naming the
-flag — that's the cue to drop it from the workflow YAML. No log
-line means the flag is still load-bearing.
 
 No packages are bypassed today. (TexLive's source build was thought
 to be blocked on a `pmpost` → `gmp.h` chain, but that turned out to

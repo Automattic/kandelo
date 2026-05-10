@@ -585,7 +585,7 @@ echo "==> Install directory: $INSTALL_DIR"
 # binary over the fetched release. Multi-output: erlang.wasm
 # (renamed from beam.wasm) + erlang-otp.tar.zst. Both land under
 # local-binaries/programs/<arch>/erlang/ (multi-output subdir layout
-# from install_release.rs).
+# matching the resolver's `place_binaries_symlinks` mirror).
 cp "$SCRIPT_DIR/beam.wasm" "$SCRIPT_DIR/erlang.wasm"
 source "$REPO_ROOT/scripts/install-local-binary.sh"
 install_local_binary erlang "$SCRIPT_DIR/erlang.wasm"

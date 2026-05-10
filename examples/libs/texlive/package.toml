@@ -27,8 +27,9 @@ script_path = "examples/libs/texlive/build-texlive.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 # Two outputs: the wasm engine + the runtime distribution bundle.
-# install-release places both under `binaries/programs/<arch>/texlive/`
-# (multi-output convention).
+# `place_binaries_symlinks` places both under
+# `binaries/programs/<arch>/texlive/` (multi-output convention: ≥2
+# outputs nest under a per-program subdir).
 [[outputs]]
 name = "pdftex"
 wasm = "pdftex.wasm"

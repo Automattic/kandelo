@@ -5,10 +5,10 @@
 import { BrowserKernel } from "../../lib/browser-kernel";
 import { loadTexliveBundle } from "../../lib/texlive-bundle";
 import kernelWasmUrl from "@kernel-wasm?url";
-// Multi-output package: install-release nests outputs under the
-// program name (`texlive/`) per its layout convention. pdftex.wasm
-// is the engine; texlive-bundle.json carries texmf-dist + latex.fmt
-// runtime data.
+// Multi-output package: the resolver's `place_binaries_symlinks`
+// nests outputs under the program name (`texlive/`) when ≥2 outputs
+// are declared. pdftex.wasm is the engine; texlive-bundle.json
+// carries texmf-dist + latex.fmt runtime data.
 import pdftexWasmUrl from "@binaries/programs/wasm32/texlive/pdftex.wasm?url";
 import texliveBundleUrl from "@binaries/programs/wasm32/texlive/texlive-bundle.json?url";
 

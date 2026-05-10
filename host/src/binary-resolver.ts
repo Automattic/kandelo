@@ -13,16 +13,37 @@
  * See `docs/binary-releases.md` for the layout.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /**
  * Walk up from the importing file to find the repo root. Markers:
- * `binaries.lock` + `abi/manifest.schema.json`. Both are tracked,
- * both are near the top of the tree — together they're unambiguous.
+ * workspace `Cargo.toml` + `package.json`. Both are tracked at the
+ * top of the tree and together are unambiguous — they distinguish
+ * the repo root from any nested cargo crate or npm subpackage.
+ *
+ * Per-package `examples/libs/<name>/package.toml` files carry the
+ * release-archive metadata directly (URL + sha256 in `[binary]` /
+ * `[binary.<arch>]`); there is no central pinfile for the resolver
+ * to read.
  */
 let cachedRepoRoot: string | null = null;
+
+function isRepoRoot(dir: string): boolean {
+  // Workspace Cargo.toml has a [workspace] table; nested crate
+  // Cargo.tomls do not. Cheap check that disambiguates without
+  // having to read+parse every Cargo.toml on the way up.
+  const cargo = join(dir, "Cargo.toml");
+  if (!existsSync(cargo) || !existsSync(join(dir, "package.json"))) {
+    return false;
+  }
+  try {
+    return /^\s*\[workspace\]/m.test(readFileSync(cargo, "utf8"));
+  } catch {
+    return false;
+  }
+}
 
 export function findRepoRoot(startFrom?: string): string {
   if (cachedRepoRoot && !startFrom) return cachedRepoRoot;
@@ -31,10 +52,7 @@ export function findRepoRoot(startFrom?: string): string {
     (import.meta.url ? dirname(fileURLToPath(import.meta.url)) : process.cwd());
   let dir = resolve(here);
   for (let i = 0; i < 20; i++) {
-    if (
-      existsSync(join(dir, "binaries.lock")) &&
-      existsSync(join(dir, "abi/manifest.schema.json"))
-    ) {
+    if (isRepoRoot(dir)) {
       if (!startFrom) cachedRepoRoot = dir;
       return dir;
     }
@@ -43,7 +61,7 @@ export function findRepoRoot(startFrom?: string): string {
     dir = parent;
   }
   throw new Error(
-    "Could not find repo root (expected binaries.lock + abi/manifest.schema.json)"
+    "Could not find repo root (expected workspace Cargo.toml + package.json)"
   );
 }
 

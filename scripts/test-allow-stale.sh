@@ -101,7 +101,7 @@ wipe_built_artifacts
 # Without the flag, fetch must refuse to install bzip2 and exit
 # non-zero. We only assert non-zero exit + an error message that
 # mentions either "stale" or "cache_key_sha" — the exact wording lives
-# in xtask/src/install_release.rs.
+# in xtask/src/remote_fetch.rs.
 echo
 echo "smoke: [mode 1/3] strict default — expect failure"
 # strict_log is declared at script scope so the EXIT trap cleans it up

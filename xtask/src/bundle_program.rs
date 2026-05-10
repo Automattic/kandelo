@@ -83,7 +83,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let out_dir = out_dir.ok_or("--out-dir is required")?;
 
     // Sanity: there must be a per-dir manifest with kind = "program"
-    // for this name so build-manifest can decorate it later.
+    // for this name so the resolver and `archive-stage` recognize it.
     let registry = Registry::from_env(&repo_root());
     let progs = programs_by_name(&registry)?;
     if !progs.contains_key(&program) {

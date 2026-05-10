@@ -13,9 +13,9 @@
 # Path discovery: the destination relative path under
 # `local-binaries/programs/<arch>/` is read from the package's
 # `package.toml` via `xtask build-deps output-path <program> <basename>`.
-# This is the SAME path xtask install-release writes to from a
-# published archive — keeping local builds and releases interchangeable
-# at the resolver layer (single-output is flat `<output.name>.<ext>`,
+# This is the SAME path the resolver writes to from a published
+# archive — keeping local builds and releases interchangeable at the
+# resolver layer (single-output is flat `<output.name>.<ext>`,
 # multi-output nests under `<program.name>/`). Without this lookup, a
 # package whose `program.name != output.name` (e.g. texlive/pdftex) had
 # divergent local-vs-release paths and the demo could never see a
@@ -70,14 +70,15 @@ install_local_binary() {
 
     # Take everything from the FIRST dot in the source basename onward
     # so compound extensions like `.vfs.zst` round-trip intact (matches
-    # xtask/src/install_release.rs's behaviour).
+    # the resolver's `place_binaries_symlinks` extension handling).
     local src_ext=""
     case "$src_basename" in
         *.*) src_ext=".${src_basename#*.}" ;;
     esac
 
     # Ask xtask for the package.toml-driven destination relative path.
-    # On hit, that's the canonical location matching install-release.
+    # On hit, that's the canonical location matching the resolver's
+    # symlink layout (xtask/src/build_deps.rs `place_binaries_symlinks`).
     # On miss (package not in the registry, e.g. the dash→sh alias
     # call site, or no [[outputs]] entry for this basename) fall back
     # to the legacy heuristic so existing build scripts keep working.
@@ -112,7 +113,7 @@ install_local_binary() {
     echo "  installed $dest"
 
     # When invoked under the package-system resolver (`xtask build-deps
-    # resolve`, `xtask stage-release`), WASM_POSIX_DEP_OUT_DIR points at
+    # resolve`, `xtask archive-stage`), WASM_POSIX_DEP_OUT_DIR points at
     # the resolver's scratch dir. The build script must install its
     # declared `[[outputs]].wasm` files there so `validate_outputs`
     # finds them and `archive_stage` packs them into the release

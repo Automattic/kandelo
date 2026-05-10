@@ -10,7 +10,8 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SYSROOT="$REPO_ROOT/sysroot"
 GLUE_DIR="$REPO_ROOT/glue"
-# Per-arch output dirs match the layout install_release writes:
+# Per-arch output dirs match the layout the resolver's
+# `place_binaries_symlinks` writes:
 # binaries/programs/<arch>/ and local-binaries/programs/<arch>/.
 # wasm32 and wasm64 builds share program names (e.g. hello64.wasm)
 # so they MUST live in separate trees — a flat OUT_DIR would

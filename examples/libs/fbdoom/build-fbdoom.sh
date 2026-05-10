@@ -93,8 +93,9 @@ echo "==> fbdoom.wasm built."
 # These ship inside the package's tar.zst archive (see package.toml's
 # second [[outputs]]) so a cache-fetch user gets a complete bundle —
 # the browser doom demo loads doom1.wad via a Vite ?url import off
-# the `binaries/programs/wasm32/fbdoom/` symlinks placed by
-# install_release. The licence files travel with it for compliance.
+# the `binaries/programs/wasm32/fbdoom/` symlinks placed by the
+# resolver's `place_binaries_symlinks`. The licence files travel with
+# it for compliance.
 
 FREEDOOM_VERSION="0.13.0"
 FREEDOOM_URL="https://github.com/freedoom/freedoom/releases/download/v${FREEDOOM_VERSION}/freedoom-${FREEDOOM_VERSION}.zip"
@@ -141,7 +142,7 @@ else
 fi
 
 # Install into local-binaries/ (resolver priority 1) and the resolver
-# scratch dir when invoked by xtask build-deps / stage-release.
+# scratch dir when invoked by xtask build-deps / archive-stage.
 # fbdoom is now a multi-output package — pass the destination filename
 # so install_local_binary uses the per-program subdir layout
 # (local-binaries/programs/<arch>/fbdoom/<file>).

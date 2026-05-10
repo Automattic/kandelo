@@ -28,10 +28,11 @@ name = "fbdoom"
 wasm = "fbdoom.wasm"
 
 # The Freedoom1 IWAD is staged into the archive by build-fbdoom.sh.
-# Declared here so install_release symlinks it under
-# `binaries/programs/<arch>/fbdoom/doom1.wad` for the browser demo's
-# Vite ?url import. The `wasm = …` field name is historical — the
-# resolver treats it as "filename to symlink" regardless of extension.
+# Declared here so the resolver's `place_binaries_symlinks` mirrors it
+# under `binaries/programs/<arch>/fbdoom/doom1.wad` for the browser
+# demo's Vite ?url import. The `wasm = …` field name is historical —
+# the resolver treats it as "filename to symlink" regardless of
+# extension.
 [[outputs]]
 name = "doom1"
 wasm = "doom1.wad"
