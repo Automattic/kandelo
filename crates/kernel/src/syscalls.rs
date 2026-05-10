@@ -288,6 +288,8 @@ fn check_open_access(
         return Ok(());
     }
 
+    check_path_traversal(host, resolved, proc)?;
+
     let st = match host.host_stat(resolved) {
         Ok(st) => st,
         Err(_) => {
@@ -341,6 +343,11 @@ fn parent_dir_of(resolved: &[u8]) -> &[u8] {
 /// No-op when `enforce_permissions()` is off. ENOENT/stat-failure on the
 /// parent is *not* treated as a denial here — the underlying host call will
 /// surface the real error.
+///
+/// Also enforces `X_OK` on every ancestor directory of `parent_path` via
+/// `check_path_traversal` — POSIX requires search permission on each
+/// component traversed to reach the parent, not just write on the parent
+/// itself.
 fn check_parent_writable(
     host: &mut dyn HostIO,
     parent_path: &[u8],
@@ -349,6 +356,7 @@ fn check_parent_writable(
     if !crate::enforce_permissions() {
         return Ok(());
     }
+    check_path_traversal(host, parent_path, proc)?;
     use wasm_posix_shared::access::{W_OK, X_OK};
     let st = match host.host_stat(parent_path) {
         Ok(st) => st,
@@ -357,6 +365,88 @@ fn check_parent_writable(
     crate::access::check_access(
         W_OK | X_OK, st.st_uid, st.st_gid, st.st_mode, proc.euid, proc.egid, &[],
     )
+}
+
+/// Returns `true` when `path` is a kernel-synthesized path that bypasses the
+/// host VFS (procfs, devfs, /dev/ptmx, /dev/pts/N, /dev/tty, /dev/fd/N, and
+/// the virtual character devices /dev/null|zero|full|random|urandom|fb0).
+/// Pathwalk X_OK enforcement is suppressed for these because they have no
+/// real ancestor inodes — `host_stat` on `/proc/self` etc. would fail or
+/// return synthetic perms that don't reflect any user-controllable mode.
+fn is_kernel_synthetic_path(path: &[u8]) -> bool {
+    path.starts_with(b"/proc")
+        && (path.len() == 5 || path[5] == b'/')
+        || path.starts_with(b"/dev")
+            && (path.len() == 4 || path[4] == b'/')
+}
+
+/// Yield each strict-ancestor prefix of `path` in root-to-leaf order:
+/// `/foo/bar/baz` → `/`, `/foo`, `/foo/bar`. The final component itself is
+/// NOT included — the caller's leaf permission check (R_OK/W_OK on the file,
+/// W_OK|X_OK on the parent) covers the last component on its own. The root
+/// `/` has no strict ancestors and yields an empty sequence.
+fn each_ancestor<'a>(path: &'a [u8]) -> impl Iterator<Item = &'a [u8]> {
+    // Strip trailing slash so `/foo/` is treated as `/foo` (so we walk `/`
+    // only, not `/` and `/foo`).
+    let end = if path.len() > 1 && *path.last().unwrap() == b'/' {
+        path.len() - 1
+    } else {
+        path.len()
+    };
+    let trimmed = &path[..end];
+
+    let mut positions: Vec<usize> = Vec::new();
+    // Only include the leading `/` as an ancestor if there IS a further
+    // component beyond it — i.e., `trimmed` is longer than just `/`.
+    if trimmed.starts_with(b"/") && trimmed.len() > 1 {
+        positions.push(0);
+    }
+    for (i, &b) in trimmed.iter().enumerate().skip(1) {
+        if b == b'/' {
+            positions.push(i);
+        }
+    }
+    // `positions` holds the index of every `/` whose ancestor prefix is
+    // strict. The slice `&path[..idx]` for idx>0 yields the ancestor up to
+    // but not including that `/`. For idx==0 (the leading `/`), the
+    // ancestor is `/` itself.
+    positions.into_iter().map(move |idx| {
+        if idx == 0 { &path[..1] } else { &path[..idx] }
+    })
+}
+
+/// Enforce POSIX search permission (`X_OK`) on every directory traversed to
+/// reach `path`. No-op when `enforce_permissions()` is off. Bypassed for
+/// kernel-synthesized paths (`/proc`, `/dev`) which have no real ancestors.
+///
+/// A missing intermediate is NOT treated as denial — the caller's syscall
+/// will surface the real `ENOENT` from `host_open`/`host_stat`/etc.
+///
+/// NOTE: `..` and `.` are expected to be normalized out by `resolve_path`
+/// before reaching here; seeing them is a bug elsewhere.
+fn check_path_traversal(
+    host: &mut dyn HostIO,
+    path: &[u8],
+    proc: &Process,
+) -> Result<(), Errno> {
+    if !crate::enforce_permissions() {
+        return Ok(());
+    }
+    if is_kernel_synthetic_path(path) {
+        return Ok(());
+    }
+    use wasm_posix_shared::access::X_OK;
+    for ancestor in each_ancestor(path) {
+        let st = match host.host_stat(ancestor) {
+            Ok(s) => s,
+            Err(Errno::ENOENT) => return Ok(()),
+            Err(_) => return Ok(()),
+        };
+        crate::access::check_access(
+            X_OK, st.st_uid, st.st_gid, st.st_mode, proc.euid, proc.egid, &[],
+        )?;
+    }
+    Ok(())
 }
 
 /// Sticky-bit check for `unlink`/`rmdir`/`rename` source. When the parent
@@ -447,6 +537,7 @@ fn check_utime_perm(
             return Ok(());
         }
     }
+    check_path_traversal(host, resolved, proc)?;
     let st = match host.host_stat(resolved) {
         Ok(st) => st,
         Err(_) => return Ok(()),
@@ -2719,6 +2810,7 @@ pub fn sys_readlink(proc: &mut Process, host: &mut dyn HostIO, path: &[u8], buf:
 pub fn sys_chmod(proc: &mut Process, host: &mut dyn HostIO, path: &[u8], mode: u32) -> Result<(), Errno> {
     let resolved = resolve_path(path, &proc.cwd);
     if crate::enforce_permissions() {
+        check_path_traversal(host, &resolved, proc)?;
         if let Ok(st) = host.host_stat(&resolved) {
             check_chmod_owner(st.st_uid, proc)?;
         }
@@ -2729,6 +2821,7 @@ pub fn sys_chmod(proc: &mut Process, host: &mut dyn HostIO, path: &[u8], mode: u
 pub fn sys_chown(proc: &mut Process, host: &mut dyn HostIO, path: &[u8], uid: u32, gid: u32) -> Result<(), Errno> {
     let resolved = resolve_path(path, &proc.cwd);
     if crate::enforce_permissions() {
+        check_path_traversal(host, &resolved, proc)?;
         let file_uid = host.host_stat(&resolved).map(|st| st.st_uid).unwrap_or(0);
         check_chown_request(file_uid, uid, gid, proc)?;
         // POSIX: chown clears S_ISUID/S_ISGID on regular files. Apply the
@@ -2758,6 +2851,7 @@ pub fn sys_access(proc: &mut Process, host: &mut dyn HostIO, path: &[u8], amode:
         return Ok(());
     }
     if crate::enforce_permissions() {
+        check_path_traversal(host, &resolved, proc)?;
         if let Ok(st) = host.host_stat(&resolved) {
             return crate::access::check_access(
                 amode, st.st_uid, st.st_gid, st.st_mode, proc.euid, proc.egid, &[],
@@ -2792,6 +2886,14 @@ pub fn sys_chdir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resu
     let file_type = stat.st_mode & wasm_posix_shared::mode::S_IFMT;
     if file_type != wasm_posix_shared::mode::S_IFDIR {
         return Err(Errno::ENOTDIR);
+    }
+    // POSIX: chdir requires X_OK on every ancestor AND on the target dir.
+    if crate::enforce_permissions() {
+        check_path_traversal(host, &resolved, proc)?;
+        use wasm_posix_shared::access::X_OK;
+        crate::access::check_access(
+            X_OK, stat.st_uid, stat.st_gid, stat.st_mode, proc.euid, proc.egid, &[],
+        )?;
     }
     proc.cwd = resolved;
     Ok(())
@@ -7877,6 +7979,9 @@ pub fn sys_faccessat(
         if amode & 0o2 != 0 { return Err(Errno::EACCES); }
         return Ok(());
     }
+    if crate::enforce_permissions() {
+        check_path_traversal(host, &resolved, proc)?;
+    }
     host.host_access(&resolved, amode)
 }
 
@@ -7894,6 +7999,7 @@ pub fn sys_fchmodat(
 ) -> Result<(), Errno> {
     let resolved = resolve_at_path(proc, dirfd, path)?;
     if crate::enforce_permissions() {
+        check_path_traversal(host, &resolved, proc)?;
         if let Ok(st) = host.host_stat(&resolved) {
             check_chmod_owner(st.st_uid, proc)?;
         }
@@ -7913,6 +8019,7 @@ pub fn sys_fchownat(
 ) -> Result<(), Errno> {
     let resolved = resolve_at_path(proc, dirfd, path)?;
     if crate::enforce_permissions() {
+        check_path_traversal(host, &resolved, proc)?;
         let file_uid = host.host_stat(&resolved).map(|st| st.st_uid).unwrap_or(0);
         check_chown_request(file_uid, uid, gid, proc)?;
         if let Ok(st) = host.host_stat(&resolved) {
@@ -8707,9 +8814,23 @@ mod tests {
             if self.missing_paths.contains(path) {
                 return Err(Errno::ENOENT);
             }
-            // Return S_IFDIR for paths that look like directories
+            // Return S_IFDIR for paths that look like directories, OR are a
+            // strict ancestor of any registered path. The ancestor heuristic
+            // keeps existing tests valid under pathwalk X_OK enforcement
+            // (Task 5.6) — `/home` is an ancestor of `/home/u`, so the mock
+            // reports it as a permissive directory automatically.
+            let ancestor_of_registered = self
+                .file_owners
+                .keys()
+                .chain(self.file_modes.keys())
+                .any(|p| {
+                    p.len() > path.len()
+                        && p.starts_with(path)
+                        && p[path.len()] == b'/'
+                });
             let is_dir = path.ends_with(b"dir") || path.ends_with(b"tmp")
-                || path.ends_with(b"/") || path == b"/";
+                || path.ends_with(b"/") || path == b"/"
+                || ancestor_of_registered;
             let default_mode = if is_dir {
                 S_IFDIR | 0o755
             } else {
@@ -16673,5 +16794,176 @@ mod tests {
         sys_fchownat(&mut proc, &mut host, AT_FDCWD, b"/tmp/bin", 1000, 1000, 0).unwrap();
         let st = host.host_stat(b"/tmp/bin").unwrap();
         assert_eq!(st.st_mode & wasm_posix_shared::mode::S_ISUID, 0);
+    }
+
+    // ---- Task 5.6: pathwalk X_OK enforcement on directory traversal ----
+
+    /// With enforcement OFF the default behaviour is preserved even when an
+    /// intermediate directory would be unsearchable.
+    #[test]
+    fn pathwalk_toggle_off_skips_traversal_check() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        // No EnforcePermsGuard -> toggle stays at the default (off).
+        let mut proc = nonroot(2000, 2000);
+        let mut host = MockHostIO::new();
+        let dir_mode = wasm_posix_shared::mode::S_IFDIR | 0o000;
+        host.set_file_with_owner(b"/secret", 1000, 1000, dir_mode, b"");
+        host.set_file_with_owner(b"/secret/world", 1000, 1000, 0o644, b"");
+        assert!(
+            sys_open(&mut proc, &mut host, b"/secret/world", O_RDONLY, 0).is_ok()
+        );
+    }
+
+    /// 0o755 on the intermediate directory: stranger can traverse it, so the
+    /// world-readable file is accessible.
+    #[test]
+    fn pathwalk_intermediate_0o755_stranger_can_traverse() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        let mut proc = nonroot(2000, 2000);
+        let mut host = MockHostIO::new();
+        let dir_mode = wasm_posix_shared::mode::S_IFDIR | 0o755;
+        host.set_file_with_owner(b"/pub", 1000, 1000, dir_mode, b"");
+        host.set_file_with_owner(b"/pub/world", 1000, 1000, 0o644, b"");
+        assert!(
+            sys_open(&mut proc, &mut host, b"/pub/world", O_RDONLY, 0).is_ok()
+        );
+    }
+
+    /// 0o000 on the intermediate directory: stranger cannot traverse it →
+    /// EACCES even though the leaf file is world-readable.
+    #[test]
+    fn pathwalk_intermediate_0o000_stranger_eacces() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        let mut proc = nonroot(2000, 2000);
+        let mut host = MockHostIO::new();
+        let dir_mode = wasm_posix_shared::mode::S_IFDIR | 0o000;
+        host.set_file_with_owner(b"/secret", 1000, 1000, dir_mode, b"");
+        host.set_file_with_owner(b"/secret/world", 1000, 1000, 0o644, b"");
+        assert_eq!(
+            sys_open(&mut proc, &mut host, b"/secret/world", O_RDONLY, 0),
+            Err(Errno::EACCES),
+        );
+    }
+
+    /// 0o000 on the intermediate directory: root bypasses the X check.
+    #[test]
+    fn pathwalk_intermediate_0o000_root_can_traverse() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        let mut proc = Process::new(1); // default euid/egid = 0
+        let mut host = MockHostIO::new();
+        let dir_mode = wasm_posix_shared::mode::S_IFDIR | 0o000;
+        host.set_file_with_owner(b"/secret", 1000, 1000, dir_mode, b"");
+        host.set_file_with_owner(b"/secret/world", 1000, 1000, 0o644, b"");
+        assert!(
+            sys_open(&mut proc, &mut host, b"/secret/world", O_RDONLY, 0).is_ok()
+        );
+    }
+
+    /// 0o000 on the intermediate directory: even the file's *owner* (when not
+    /// also the directory owner) cannot reach the file.
+    #[test]
+    fn pathwalk_file_owner_blocked_by_dir_eacces() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        // Caller owns the file (uid 3000) but the parent dir is owned by
+        // someone else (uid 1000) and grants no traversal to others.
+        let mut proc = nonroot(3000, 3000);
+        let mut host = MockHostIO::new();
+        let dir_mode = wasm_posix_shared::mode::S_IFDIR | 0o700;
+        host.set_file_with_owner(b"/dirfoo", 1000, 1000, dir_mode, b"");
+        host.set_file_with_owner(b"/dirfoo/mine", 3000, 3000, 0o644, b"");
+        assert_eq!(
+            sys_open(&mut proc, &mut host, b"/dirfoo/mine", O_RDONLY, 0),
+            Err(Errno::EACCES),
+        );
+    }
+
+    /// X-only (0o111) on the intermediate directory: stranger can traverse
+    /// (no read needed to walk), and reaches a world-readable leaf.
+    #[test]
+    fn pathwalk_intermediate_0o111_x_only_grants_traversal() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        let mut proc = nonroot(2000, 2000);
+        let mut host = MockHostIO::new();
+        let dir_mode = wasm_posix_shared::mode::S_IFDIR | 0o111;
+        host.set_file_with_owner(b"/dirfoo", 1000, 1000, dir_mode, b"");
+        host.set_file_with_owner(b"/dirfoo/world", 1000, 1000, 0o644, b"");
+        assert!(
+            sys_open(&mut proc, &mut host, b"/dirfoo/world", O_RDONLY, 0).is_ok()
+        );
+    }
+
+    /// Multi-component path: an unsearchable grandparent denies traversal
+    /// even when the immediate parent grants X to others.
+    #[test]
+    fn pathwalk_grandparent_0o000_denies_eacces() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        let mut proc = nonroot(2000, 2000);
+        let mut host = MockHostIO::new();
+        let perm = wasm_posix_shared::mode::S_IFDIR | 0o755;
+        let locked = wasm_posix_shared::mode::S_IFDIR | 0o000;
+        host.set_file_with_owner(b"/dirgp", 1000, 1000, locked, b"");
+        host.set_file_with_owner(b"/dirgp/parent", 1000, 1000, perm, b"");
+        host.set_file_with_owner(b"/dirgp/parent/leaf", 1000, 1000, 0o644, b"");
+        assert_eq!(
+            sys_open(&mut proc, &mut host, b"/dirgp/parent/leaf", O_RDONLY, 0),
+            Err(Errno::EACCES),
+        );
+    }
+
+    /// Permissive rootfs (`/etc` mode 0o755 + `/etc/passwd` mode 0o644 owned
+    /// by root): every caller can still traverse to and read the file with
+    /// enforcement on. This is the regression guard for the cutover.
+    #[test]
+    fn pathwalk_etc_passwd_remains_world_readable() {
+        let _g = OPEN_PERM_LOCK.lock().unwrap();
+        let _e = EnforcePermsGuard::on();
+        let mut proc = nonroot(2000, 2000);
+        let mut host = MockHostIO::new();
+        let etc_mode = wasm_posix_shared::mode::S_IFDIR | 0o755;
+        host.set_file_with_owner(b"/etc", 0, 0, etc_mode, b"");
+        host.set_file_with_owner(b"/etc/passwd", 0, 0, 0o644, b"");
+        assert!(
+            sys_open(&mut proc, &mut host, b"/etc/passwd", O_RDONLY, 0).is_ok()
+        );
+    }
+
+    /// Kernel-synthetic paths (`/proc/*`, `/dev/*`) bypass the pathwalk
+    /// check — the kernel synthesises stat for these and they have no real
+    /// ancestors.
+    #[test]
+    fn pathwalk_kernel_synthetic_path_bypassed() {
+        // is_kernel_synthetic_path is a tiny pure helper; verify directly.
+        assert!(super::is_kernel_synthetic_path(b"/proc"));
+        assert!(super::is_kernel_synthetic_path(b"/proc/self"));
+        assert!(super::is_kernel_synthetic_path(b"/proc/self/status"));
+        assert!(super::is_kernel_synthetic_path(b"/dev"));
+        assert!(super::is_kernel_synthetic_path(b"/dev/null"));
+        assert!(super::is_kernel_synthetic_path(b"/dev/pts/0"));
+        // Lookalikes that are NOT synthetic.
+        assert!(!super::is_kernel_synthetic_path(b"/procfs/x"));
+        assert!(!super::is_kernel_synthetic_path(b"/develop"));
+        assert!(!super::is_kernel_synthetic_path(b"/etc/passwd"));
+    }
+
+    /// `each_ancestor` yields strict ancestors in root-to-leaf order and
+    /// excludes the final component itself.
+    #[test]
+    fn pathwalk_each_ancestor_root_to_leaf() {
+        let ancs: Vec<&[u8]> = super::each_ancestor(b"/a/b/c").collect();
+        assert_eq!(ancs, vec![&b"/"[..], &b"/a"[..], &b"/a/b"[..]]);
+        let ancs: Vec<&[u8]> = super::each_ancestor(b"/foo").collect();
+        assert_eq!(ancs, vec![&b"/"[..]]);
+        let ancs: Vec<&[u8]> = super::each_ancestor(b"/").collect();
+        assert!(ancs.is_empty(), "root has no strict ancestors");
+        // Trailing slash on a directory path is normalised away so the
+        // walker treats `/a/b/` like `/a/b`.
+        let ancs: Vec<&[u8]> = super::each_ancestor(b"/a/b/").collect();
+        assert_eq!(ancs, vec![&b"/"[..], &b"/a"[..]]);
     }
 }
