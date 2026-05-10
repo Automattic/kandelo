@@ -218,13 +218,22 @@ function buildDlopenImports(
       return alignUp(n(result), Math.max(align, 1));
     };
 
-    // Register main program's exported functions as global symbols
-    // so shared libraries can resolve references to libc, etc.
+    // Register main program's exported functions and data globals as global
+    // symbols so shared libraries can resolve references to libc, libphp, etc.
+    // Many libc helpers (e.g. __sigsetjmp_save, __errno_location) are __-
+    // prefixed by convention but still need to be visible to side modules.
+    // RESERVED names are handled per-module by the dylink env Proxy and must
+    // not be shadowed by main exports.
+    const RESERVED = new Set([
+      "memory", "__indirect_function_table",
+      "__memory_base", "__table_base", "__stack_pointer",
+    ]);
     const globalSymbols = new Map<string, Function | WebAssembly.Global>();
     const inst = getInstance();
     if (inst) {
       for (const [name, exp] of Object.entries(inst.exports)) {
-        if (typeof exp === "function" && !name.startsWith("__")) {
+        if (RESERVED.has(name)) continue;
+        if (typeof exp === "function" || exp instanceof WebAssembly.Global) {
           globalSymbols.set(name, exp);
         }
       }

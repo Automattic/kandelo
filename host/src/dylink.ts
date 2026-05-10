@@ -259,15 +259,60 @@ function instantiateSharedLibrary(
     tableBase,
   );
 
-  // Build GOT proxy for imports
-  const getOrCreateGOTEntry = (symName: string): WebAssembly.Global => {
+  // Build GOT proxy for imports.
+  //
+  // GOT.mem entries hold the *address in linear memory* of a data symbol the
+  // side module imports from the main process. If the main module exports
+  // that symbol as a WebAssembly.Global (typical for `--export-all`), its
+  // value is the address. Without this seeding, side modules read 0 for
+  // any imported global — silent NULL deref (e.g. opcache.so reads
+  // `sapi_module.name` as NULL, accel_find_sapi fails at startup).
+  //
+  // GOT.func entries hold a *table index* — the address-of-function value
+  // a C function pointer stores. Side-module data sections capture function
+  // pointers (e.g. opcache.so's ini_entries[].on_modify == &OnUpdateString
+  // exported from main). For those references to dispatch to the real
+  // function at runtime, the function must live in the shared
+  // indirect_function_table and the GOT entry must hold its index.
+  const tableIndexFor = (fn: Function): number => {
+    const tbl = options.table;
+    for (let i = 0; i < tbl.length; i++) {
+      if (tbl.get(i) === fn) return i;
+    }
+    const idx = tbl.length;
+    tbl.grow(1);
+    tbl.set(idx, fn);
+    return idx;
+  };
+
+  const getOrCreateGOTEntry = (
+    symName: string,
+    kind: "mem" | "func",
+  ): WebAssembly.Global => {
     let entry = options.got.get(symName);
     if (!entry) {
-      entry = new WebAssembly.Global({ value: "i32", mutable: true }, 0);
+      let initial = 0;
+      const sym = options.globalSymbols.get(symName);
+      if (kind === "mem" && sym instanceof WebAssembly.Global) {
+        initial = sym.value as number;
+      } else if (kind === "func" && typeof sym === "function") {
+        initial = tableIndexFor(sym);
+      }
+      entry = new WebAssembly.Global({ value: "i32", mutable: true }, initial);
       options.got.set(symName, entry);
     }
     return entry;
   };
+
+  // Tag imported by side modules compiled with clang's wasm SjLj lowering
+  // (`-mllvm -wasm-enable-sjlj`). The host doesn't actually catch these — the
+  // main process either has its own __c_longjmp tag (LLVM 22) or doesn't use
+  // SjLj (LLVM 21). A stub Tag lets the side module's import type-check and
+  // instantiate; behavior at throw time is undefined but the side module
+  // typically never throws this tag itself.
+  const longjmpTag = (typeof (WebAssembly as any).Tag === "function")
+    ? new (WebAssembly as any).Tag({ parameters: ["i32"] })
+    : undefined;
 
   // Construct imports
   const imports: WebAssembly.Imports = {
@@ -279,6 +324,7 @@ function instantiateSharedLibrary(
           case "__memory_base": return memoryBaseGlobal;
           case "__table_base": return tableBaseGlobal;
           case "__stack_pointer": return options.stackPointer;
+          case "__c_longjmp": return longjmpTag;
         }
         const sym = options.globalSymbols.get(prop);
         if (sym !== undefined) return sym;
@@ -286,18 +332,18 @@ function instantiateSharedLibrary(
       },
       has(_target, prop: string) {
         if (["memory", "__indirect_function_table", "__memory_base",
-             "__table_base", "__stack_pointer"].includes(prop)) return true;
+             "__table_base", "__stack_pointer", "__c_longjmp"].includes(prop)) return true;
         return options.globalSymbols.has(prop);
       },
     }),
     "GOT.mem": new Proxy({} as Record<string, WebAssembly.Global>, {
       get(_target, prop: string) {
-        return getOrCreateGOTEntry(prop);
+        return getOrCreateGOTEntry(prop, "mem");
       },
     }),
     "GOT.func": new Proxy({} as Record<string, WebAssembly.Global>, {
       get(_target, prop: string) {
-        return getOrCreateGOTEntry(prop);
+        return getOrCreateGOTEntry(prop, "func");
       },
     }),
   };

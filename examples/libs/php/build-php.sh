@@ -141,9 +141,40 @@ echo "==> Configuring PHP for Wasm (CLI + FPM, single tree)..."
 # compromise the build" — recovering requires a fresh cache anyway.
 rm -f "$SCRIPT_DIR/config.cache"
 if [ ! -f Makefile ]; then
+    # -ldl: pulls glue/dlopen.c into the link, providing the `dlopen`
+    # symbol PHP uses to load Zend extensions like opcache.so. Without
+    # this, PHP runs but reports "Dynamic loading not supported" when
+    # `zend_extension=opcache` is set.
+    #
+    # -Wl,--export-all: exports every defined symbol from php.wasm so
+    # opcache.so (a side module loaded via dlopen) can resolve its
+    # imports against PHP main. Without this only the SDK's hand-picked
+    # `__heap_base`/`__tls_base`/etc. are exported and opcache.so fails
+    # to instantiate ("Import #N env.<sym>: function import requires a
+    # callable"). The size cost (~5 MB) is worth the runtime correctness.
     PKG_CONFIG_PATH="$DEP_PKG_CONFIG_PATH" \
     CPPFLAGS="$DEP_CPPFLAGS" \
-    LDFLAGS="$DEP_LDFLAGS --no-wasm-opt" \
+    # -u<sym>: force the linker to pull these libc symbols out of
+    # libc.a even though PHP itself doesn't call them. opcache.so
+    # imports them (some are sandbox/security helpers it never actually
+    # invokes on our wasm port — but the import has to resolve at
+    # instantiation time).
+    #
+    # -Wl,-z,stack-size=4194304: 4 MB wasm stack. The default wasm-ld
+    # stack is 64 KB, which sits ~100 KB above PHP's `alloc_globals`
+    # data segment. Opcache's PASS_6 (DFA-based SSA optimization) calls
+    # zend_build_ssa, which uses do_alloca() for its DFG bitsets and
+    # var-rename worklist; on large functions like WordPress's
+    # wp-includes/ID3/module.audio-video.asf.php Analyze() (1700+ lines),
+    # the alloca'd buffer plus the deep zend_ssa_rename recursion can
+    # underflow the stack into alloc_globals, scribbling garbage onto
+    # AG(mm_heap). The next _efree call then traps with "memory access
+    # out of bounds" because it tries to dereference the now-bogus heap
+    # pointer. 4 MB gives PASS_6 enough headroom for any function that
+    # passes its own `blocks*vars > 4M` size guard.
+    LDFLAGS="$DEP_LDFLAGS --no-wasm-opt -ldl -Wl,--export-all \
+-u setgid -u setuid -u initgroups -u writev -u asctime \
+-Wl,-z,stack-size=4194304" \
     wasm32posix-configure \
         --disable-all \
         --disable-cgi \
