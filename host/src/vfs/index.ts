@@ -8,3 +8,9 @@ export { OpfsFileSystem } from "./opfs";
 export { OpfsChannel, OpfsChannelStatus, OpfsOpcode, OPFS_CHANNEL_SIZE } from "./opfs-channel";
 export { NodeTimeProvider, BrowserTimeProvider } from "./time";
 export type { FileSystemBackend, TimeProvider, MountConfig, DirEntry } from "./types";
+export {
+  DEFAULT_MOUNT_SPEC,
+  resolveForNode,
+  resolveForBrowser,
+} from "./default-mounts";
+export type { MountSpec } from "./default-mounts";
