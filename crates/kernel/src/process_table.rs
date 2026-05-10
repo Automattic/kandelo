@@ -660,6 +660,27 @@ impl ProcessTable {
                 }
             }
         }
+
+        // POSIX exec semantics: after file_actions are applied, any fd that
+        // still has FD_CLOEXEC set is closed before the new program image
+        // runs. The dup2(N, N) self-dup pattern clears FD_CLOEXEC on the
+        // target fd specifically to RESCUE it from this closure (sortix
+        // basic/spawn/posix_spawn_file_actions_adddup2 exercises exactly
+        // this). Run after the action loop so file actions can rescue or
+        // clear individual fds before the sweep.
+        let child = self.processes.get_mut(&child_pid).ok_or(Errno::ESRCH)?;
+        let cloexec_fds: Vec<i32> = child
+            .fd_table
+            .iter()
+            .filter(|(_fd, e)| e.fd_flags & wasm_posix_shared::fd_flags::FD_CLOEXEC != 0)
+            .map(|(fd, _)| fd)
+            .collect();
+        for fd in cloexec_fds {
+            // POSIX: close errors here are silently ignored — same policy
+            // as the FileAction::Close handler above.
+            let _ = crate::syscalls::sys_close(child, host, fd);
+        }
+
         Ok(())
     }
 

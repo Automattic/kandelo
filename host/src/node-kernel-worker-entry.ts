@@ -250,6 +250,7 @@ async function handleInit(msg: InitMessage) {
     {
       onFork: handleFork,
       onExec: handleExec,
+      onResolveSpawn: handlePosixSpawnResolve,
       onSpawn: handlePosixSpawn,
       onClone: handleClone,
       onExit: handleExit,
@@ -587,16 +588,34 @@ async function handleExec(
  *
  * Returns 0 on success, negative errno on failure (e.g. -ENOENT).
  */
+/**
+ * Pre-flight resolver for SYS_SPAWN. Side-effect-free: looks up program
+ * bytes for `path` (via the same execPrograms map + main-thread fallback
+ * `resolveExec` already uses for execve). Returns null on ENOENT.
+ *
+ * `handleSpawn` in `host/src/kernel-worker.ts` calls this BEFORE
+ * `kernel_spawn_process` so that file_actions (which the kernel runs
+ * inside `spawn_child`) never execute on a doomed PATH iteration —
+ * see the POSIX "exactly once" rule.
+ */
+async function handlePosixSpawnResolve(path: string): Promise<ArrayBuffer | null> {
+  return resolveExec(path);
+}
+
+/**
+ * Launch a worker for a SYS_SPAWN child whose program bytes have already
+ * been resolved by `handlePosixSpawnResolve`. The kernel has built the
+ * child Process descriptor + applied file actions by the time we get
+ * here, so this just allocates a Memory, registers the process, and
+ * spawns the worker.
+ */
 async function handlePosixSpawn(
   childPid: number,
-  path: string,
+  programBytes: ArrayBuffer,
   argv: string[],
   envp: string[],
 ): Promise<number> {
-  const resolved = await resolveExec(path);
-  if (!resolved) return -2; // ENOENT
-
-  const ptrWidth = detectPtrWidth(resolved);
+  const ptrWidth = detectPtrWidth(programBytes);
   const memory = createProcessMemory(ptrWidth);
   const channelOffset = (maxPages - 2) * 65536;
   growToMax(memory, ptrWidth, 17);
@@ -609,7 +628,7 @@ async function handlePosixSpawn(
     ptrWidth,
   });
 
-  const heapBase = extractHeapBase(resolved);
+  const heapBase = extractHeapBase(programBytes);
   if (heapBase !== null) {
     kernelWorker.setBrkBase(childPid, heapBase);
   }
@@ -618,7 +637,7 @@ async function handlePosixSpawn(
     type: "centralized_init",
     pid: childPid,
     ppid: 0,
-    programBytes: resolved,
+    programBytes,
     memory,
     channelOffset,
     argv,
@@ -630,7 +649,7 @@ async function handlePosixSpawn(
   const newWorker = workerAdapter.createWorker(initData);
   processes.set(childPid, {
     memory,
-    programBytes: resolved,
+    programBytes,
     worker: newWorker,
     channelOffset,
     ptrWidth,

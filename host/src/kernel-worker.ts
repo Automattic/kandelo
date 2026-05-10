@@ -699,22 +699,35 @@ export interface CentralizedKernelCallbacks {
   onExec?: (pid: number, path: string, argv: string[], envp: string[]) => Promise<number>;
 
   /**
-   * Called when a process calls SYS_SPAWN (non-forking posix_spawn). The
-   * kernel has already constructed the child Process descriptor in its
-   * ProcessTable under `childPid` (with file actions and attrs already
-   * applied). The callback should resolve `path` to a program binary,
-   * instantiate a fresh Worker for the child, and register it with the
-   * kernel via `registerProcess` (with `skipKernelCreate: true`).
+   * Pre-flight resolution step for SYS_SPAWN. Returns the program bytes
+   * for `path`, or `null` for ENOENT. **Must NOT have side effects** —
+   * `handleSpawn` calls this BEFORE `kernel_spawn_process` so that file
+   * actions never run on a doomed PATH-iteration. POSIX requires
+   * file_actions to run "exactly once," and `posix_spawnp`'s PATH-walk
+   * issues one `posix_spawn` per candidate; without this preflight the
+   * kernel applies file_actions on every failed iteration (sortix
+   * `basic/spawn/posix_spawnp` exercises an `addopen(O_EXCL)` "once"
+   * file that would conflict on iteration 2).
    *
-   * Returns 0 on success, negative errno on failure (e.g. -ENOENT). If
-   * the callback returns a non-zero code, the kernel descriptor is rolled
-   * back via `kernel_remove_process` before completing the syscall.
+   * Required if `onSpawn` is set; together they form the spawn surface.
+   */
+  onResolveSpawn?: (path: string) => Promise<ArrayBuffer | null>;
+
+  /**
+   * Launch a worker for the spawned child with already-resolved bytes
+   * (from `onResolveSpawn`). The kernel has constructed the child Process
+   * descriptor under `childPid` and applied file actions + attrs by the
+   * time this is called. The callback instantiates a fresh Worker and
+   * registers it via `registerProcess({ skipKernelCreate: true })`.
+   *
+   * Returns 0 on success, negative errno on failure. On non-zero return
+   * the kernel descriptor is rolled back via `kernel_remove_process`.
    *
    * Distinct from `onExec` (which replaces the calling worker) and
-   * `onFork` (which clones the parent's Memory): `onSpawn` always creates
-   * a fresh Memory and runs the new program from `_start`.
+   * `onFork` (which clones the parent's Memory): `onSpawn` always
+   * creates a fresh Memory and runs the new program from `_start`.
    */
-  onSpawn?: (childPid: number, path: string, argv: string[], envp: string[]) => Promise<number>;
+  onSpawn?: (childPid: number, programBytes: ArrayBuffer, argv: string[], envp: string[]) => Promise<number>;
 
   /**
    * Called when a process calls clone (thread creation). The callback should
@@ -5391,7 +5404,7 @@ export class CentralizedKernelWorker {
     const blobLen = origArgs[3];
     const pidOutPtr = origArgs[4];
 
-    if (!this.callbacks.onSpawn) {
+    if (!this.callbacks.onSpawn || !this.callbacks.onResolveSpawn) {
       this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, 38); // ENOSYS
       return;
     }
@@ -5430,6 +5443,44 @@ export class CentralizedKernelWorker {
       return;
     }
 
+    // ── PRE-FLIGHT: resolve program bytes BEFORE calling the kernel ──
+    // POSIX requires file_actions to run "exactly once." `posix_spawnp`'s
+    // PATH search emits one `posix_spawn` per candidate; if we let the
+    // kernel apply file_actions on each iteration, the side effects
+    // (e.g. `addopen(O_EXCL)`) accumulate and the second iteration sees
+    // its own state from the first. Resolve bytes via the host's
+    // side-effect-free preflight first; only call the kernel if the
+    // program actually exists.
+    this.callbacks.onResolveSpawn(path).then((programBytes) => {
+      if (!programBytes) {
+        this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, 2); // ENOENT
+        return;
+      }
+      this.handleSpawnAfterResolve(
+        channel, origArgs, parentPid, pidOutPtr, blobBytes, blobLen, argv, envp, programBytes,
+      );
+    }).catch((err) => {
+      console.error(`[kernel] spawn resolve error for parent ${parentPid}:`, err);
+      this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, 5); // EIO
+    });
+  }
+
+  /**
+   * Continuation of `handleSpawn` after `onResolveSpawn` has returned
+   * actual program bytes. Now safe to ask the kernel to build the child
+   * (which will apply file_actions exactly once).
+   */
+  private handleSpawnAfterResolve(
+    channel: ChannelInfo,
+    origArgs: number[],
+    parentPid: number,
+    pidOutPtr: number,
+    blobBytes: Uint8Array,
+    blobLen: number,
+    argv: string[],
+    envp: string[],
+    programBytes: ArrayBuffer,
+  ): void {
     // ── Copy blob to kernel scratch ──
     const kernelMem = new Uint8Array(this.kernelMemory!.buffer);
     if (blobLen > kernelMem.byteLength - this.scratchOffset) {
@@ -5458,8 +5509,8 @@ export class CentralizedKernelWorker {
     if (!children) { children = new Set(); this.parentToChildren.set(parentPid, children); }
     children.add(childPid);
 
-    // ── Launch the worker async ──
-    this.callbacks.onSpawn(childPid, path, argv, envp).then((rc) => {
+    // ── Launch the worker async (with already-resolved bytes) ──
+    this.callbacks.onSpawn!(childPid, programBytes, argv, envp).then((rc) => {
       if (rc < 0) {
         const removeProcess = this.kernelInstance!.exports.kernel_remove_process as
           (pid: number) => number;

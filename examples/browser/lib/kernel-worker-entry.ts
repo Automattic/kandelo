@@ -335,8 +335,9 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
         handleFork(parentPid, childPid, parentMemory),
       onExec: async (pid, path, argv, envp) =>
         handleExec(pid, path, argv, envp),
-      onSpawn: async (childPid, path, argv, envp) =>
-        handlePosixSpawn(childPid, path, argv, envp),
+      onResolveSpawn: async (path) => handlePosixSpawnResolve(path),
+      onSpawn: async (childPid, programBytes, argv, envp) =>
+        handlePosixSpawn(childPid, programBytes, argv, envp),
       onClone: (pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory) =>
         handleClone(pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory),
       onExit: (pid, exitStatus) => handleExit(pid, exitStatus),
@@ -781,19 +782,31 @@ async function handleExec(
  *
  * Returns 0 on success, negative errno on failure.
  */
+/**
+ * Pre-flight resolver — see node-kernel-worker-entry.ts:handlePosixSpawnResolve.
+ * Browser-side equivalent: materialize the lazy file (async fetch via
+ * the memfs lazy-loader, avoiding sync-XHR + SW deadlocks) then read its
+ * contents from the VFS. Side-effect-free; safe to call on PATH search
+ * iterations that may not resolve.
+ */
+async function handlePosixSpawnResolve(path: string): Promise<ArrayBuffer | null> {
+  await memfs.ensureMaterialized(path);
+  const bytes = readFileFromFs(path);
+  return bytes ?? null;
+}
+
+/**
+ * Launch a worker for a SYS_SPAWN child whose program bytes have already
+ * been resolved by `handlePosixSpawnResolve`. Mirrors the Node entry's
+ * `handlePosixSpawn`.
+ */
 async function handlePosixSpawn(
   childPid: number,
-  path: string,
+  programBytes: ArrayBuffer,
   argv: string[],
   envp: string[],
 ): Promise<number> {
-  // Materialize lazy file if needed (async fetch avoids sync XHR + SW deadlock)
-  await memfs.ensureMaterialized(path);
-
-  const bytes = readFileFromFs(path);
-  if (!bytes) return -2; // ENOENT
-
-  const ptrWidth = detectPtrWidth(bytes);
+  const ptrWidth = detectPtrWidth(programBytes);
   const newMemory = createProcessMemory(ptrWidth, maxPages);
   const newChannelOffset = (maxPages - 2) * PAGE_SIZE;
   new Uint8Array(newMemory.buffer, newChannelOffset, CH_TOTAL_SIZE).fill(0);
@@ -804,7 +817,7 @@ async function handlePosixSpawn(
     ptrWidth,
   });
 
-  const heapBase = extractHeapBase(bytes);
+  const heapBase = extractHeapBase(programBytes);
   if (heapBase !== null) {
     kernelWorker.setBrkBase(childPid, heapBase);
   }
@@ -813,7 +826,7 @@ async function handlePosixSpawn(
     type: "centralized_init",
     pid: childPid,
     ppid: 0,
-    programBytes: bytes,
+    programBytes,
     memory: newMemory,
     channelOffset: newChannelOffset,
     argv,
@@ -828,7 +841,7 @@ async function handlePosixSpawn(
 
   processes.set(childPid, {
     memory: newMemory,
-    programBytes: bytes,
+    programBytes,
     worker: newWorker,
     channelOffset: newChannelOffset,
     ptrWidth,

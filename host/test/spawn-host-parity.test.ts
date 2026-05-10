@@ -37,30 +37,43 @@ const nodeEntry = join(repoRoot, "host", "src", "node-kernel-worker-entry.ts");
 const browserEntry = join(repoRoot, "examples", "browser", "lib", "kernel-worker-entry.ts");
 
 describe("spawn host parity", () => {
-  it("Node kernel-worker-entry defines handlePosixSpawn and wires it as onSpawn", () => {
+  it("Node kernel-worker-entry wires both onResolveSpawn and onSpawn", () => {
     const src = readFileSync(nodeEntry, "utf8");
     expect(src, `${nodeEntry} must define handlePosixSpawn`).toMatch(
       /\b(?:async\s+)?function\s+handlePosixSpawn\s*\(/,
     );
+    expect(src, `${nodeEntry} must define handlePosixSpawnResolve`).toMatch(
+      /\b(?:async\s+)?function\s+handlePosixSpawnResolve\s*\(/,
+    );
     expect(src, `${nodeEntry} must wire onSpawn: handlePosixSpawn`).toMatch(
       /onSpawn:\s*handlePosixSpawn/,
     );
+    expect(src, `${nodeEntry} must wire onResolveSpawn: handlePosixSpawnResolve`).toMatch(
+      /onResolveSpawn:\s*handlePosixSpawnResolve/,
+    );
   });
 
-  it("Browser kernel-worker-entry defines handlePosixSpawn and wires it as onSpawn", () => {
+  it("Browser kernel-worker-entry wires both onResolveSpawn and onSpawn", () => {
     const src = readFileSync(browserEntry, "utf8");
     expect(src, `${browserEntry} must define handlePosixSpawn`).toMatch(
       /\b(?:async\s+)?function\s+handlePosixSpawn\s*\(/,
     );
+    expect(src, `${browserEntry} must define handlePosixSpawnResolve`).toMatch(
+      /\b(?:async\s+)?function\s+handlePosixSpawnResolve\s*\(/,
+    );
     expect(src, `${browserEntry} must wire onSpawn (calling handlePosixSpawn)`).toMatch(
       /onSpawn:.*handlePosixSpawn/s,
     );
+    expect(src, `${browserEntry} must wire onResolveSpawn (calling handlePosixSpawnResolve)`).toMatch(
+      /onResolveSpawn:.*handlePosixSpawnResolve/s,
+    );
   });
 
-  it("CentralizedKernelCallbacks declares onSpawn", () => {
-    // Ensures the host shared interface itself still surfaces the
-    // callback — without this, neither entry would even type-check.
+  it("CentralizedKernelCallbacks declares both onResolveSpawn and onSpawn", () => {
+    // Ensures the host shared interface itself still surfaces both
+    // callbacks — without these, neither entry would even type-check.
     const src = readFileSync(join(repoRoot, "host", "src", "kernel-worker.ts"), "utf8");
     expect(src).toMatch(/onSpawn\?:\s*\(/);
+    expect(src).toMatch(/onResolveSpawn\?:\s*\(/);
   });
 });
