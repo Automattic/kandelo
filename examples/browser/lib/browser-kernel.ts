@@ -200,13 +200,22 @@ export class BrowserKernel {
     if (this.kernelOwnedFs) {
       throw new Error("kernel.init() is not available in kernelOwnedFs mode. Use kernel.boot() with a vfsImage.");
     }
-    const wasmBytes =
-      kernelWasmBytes ??
-      (await fetch(kernelWasmUrl).then((r) => r.arrayBuffer()));
+    // Always fetch the canonical rootfs.vfs alongside the kernel wasm so
+    // the worker can overlay /etc/{passwd,group,hosts,services,...} onto
+    // the demo's SAB-backed memfs. Synthetic in-kernel content for those
+    // paths was removed in PR 4/5 — without this overlay programs that
+    // call getpwnam/gethostbyname fail on legacy-SAB demos.
+    const [wasmBytes, rootfsVfsBuf] = await Promise.all([
+      kernelWasmBytes
+        ? Promise.resolve(kernelWasmBytes)
+        : fetch(kernelWasmUrl).then((r) => r.arrayBuffer()),
+      fetch(rootfsVfsUrl).then((r) => r.arrayBuffer()),
+    ]);
 
     await this.bootWorker({
       kernelWasmBytes: wasmBytes,
       fsSab: this.fsSab!,
+      rootfsImage: new Uint8Array(rootfsVfsBuf),
     });
 
     // Forward any lazy archive metadata from a pre-loaded VFS image so the
@@ -263,6 +272,7 @@ export class BrowserKernel {
     kernelWasmBytes: ArrayBuffer;
     fsSab?: SharedArrayBuffer;
     vfsImage?: Uint8Array;
+    rootfsImage?: Uint8Array;
   }): Promise<void> {
     // Create the kernel worker
     this.kernelWorkerHandle = new Worker(kernelWorkerEntryUrl, { type: "module" });
@@ -295,6 +305,7 @@ export class BrowserKernel {
         kernelWasmBytes: transferBuf,
         fsSab: opts.fsSab,
         vfsImage: opts.vfsImage,
+        rootfsImage: opts.rootfsImage,
         shmSab: this.shmSab,
         workerEntryUrl,
         config: {

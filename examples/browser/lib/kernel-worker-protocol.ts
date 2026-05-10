@@ -23,6 +23,17 @@ export interface InitMessage {
    * pre-populate via the now-deprecated `kernel.fs` accessor).
    */
   fsSab?: SharedArrayBuffer;
+  /**
+   * Canonical rootfs.vfs bytes. Always sent so the worker can overlay
+   * `/etc/{passwd,group,hosts,services,...}` onto whichever VFS the demo
+   * builds — the kernel's old `synthetic_file_content` shim was removed
+   * in PR 4/5, so without this overlay programs that call `getpwnam`,
+   * `gethostbyname`, etc. would fail on legacy-SAB demos.
+   *
+   * Files that already exist in the demo's VFS (e.g. an `/etc/profile`
+   * the shell demo writes itself) are NOT overwritten.
+   */
+  rootfsImage?: Uint8Array;
   shmSab: SharedArrayBuffer;
   workerEntryUrl: string;
   bridgePort?: MessagePort;
