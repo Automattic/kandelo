@@ -108,11 +108,13 @@ Key host components:
 |-----------|------|---------|
 | CentralizedKernelWorker | `kernel-worker.ts` | Manages kernel instance, process channels, blocking retry |
 | SyscallChannel | `channel.ts` | Typed view into SharedArrayBuffer channel region |
-| NodePlatformIO | `platform/node.ts` | Node.js filesystem, networking, random |
-| VirtualPlatformIO | `vfs/vfs.ts` | Browser VFS with mountable backends |
+| NodePlatformIO | `platform/node.ts` | Direct Node.js filesystem, networking, random (legacy host-fs path) |
+| VirtualPlatformIO | `vfs/vfs.ts` | Mount-table router — used by both Node and browser hosts |
 | MemoryFileSystem | `vfs/memory-fs.ts` | SharedArrayBuffer-backed in-memory filesystem |
+| HostFileSystem | `vfs/host-fs.ts` | Backend that proxies to a Node host directory |
 | DeviceFileSystem | `vfs/device-fs.ts` | /dev/null, /dev/zero, /dev/urandom, /dev/ptmx |
 | OpfsFileSystem | `vfs/opfs.ts` | Origin Private File System (browser persistence) |
+| Default mount spec | `vfs/default-mounts.ts` (+ `default-mounts-node.ts`) | Canonical mount layout + per-host resolvers |
 | SharedPipeBuffer | `shared-pipe-buffer.ts` | Cross-worker pipe ring buffers via SharedArrayBuffer |
 | SharedLockTable | `shared-lock-table.ts` | Cross-process advisory file locks |
 | SharedIpcTable | `shared-ipc-table.ts` | SysV IPC (msg queues, semaphores, shm) |
@@ -264,21 +266,45 @@ The kernel's hardcoded `INITIAL_BRK` (16MB) is a fallback for binaries that don'
 
 ## Filesystem
 
-### Node.js
+### Mount table model
 
-`NodePlatformIO` passes filesystem operations directly to Node.js `fs` APIs. The kernel tracks its own fd table and path resolution, but actual file content comes from the host filesystem.
+`VirtualPlatformIO` (`host/src/vfs/vfs.ts`) is the kernel's filesystem router on both hosts. It is configured with a list of `MountConfig { mountPoint, backend, readonly? }` entries and dispatches every path-based syscall to the backend whose mount prefix is the longest match. Cross-mount operations (`rename`, `link`) are rejected with `EXDEV`. A path that matches no mount returns `ENOENT`. `MountConfig.readonly` is currently advisory — write enforcement and full POSIX permission checks are deferred to a follow-up PR.
 
-### Browser
+`FileSystemBackend` (`host/src/vfs/types.ts`) is the per-mount interface (open/read/write/stat/readdir/symlink/...). Two backends are in use today:
 
-The browser uses a layered VFS (`VirtualPlatformIO`):
+- **`MemoryFileSystem`** (`vfs/memory-fs.ts`) — SAB-backed in-memory FS. Used for the rootfs image mount and for browser scratch mounts. Honours uid/gid/mode stored on each inode.
+- **`HostFileSystem`** (`vfs/host-fs.ts`) — proxies a Node host directory. Used for Node scratch mounts. Normalises stat uid/gid to `0/0` so the user's macOS/Linux uid does not leak into the kernel.
 
-```
-/           → MemoryFileSystem (SharedArrayBuffer-backed, shared between main thread and kernel worker)
-/dev/       → DeviceFileSystem (null, zero, urandom, ptmx, pts/N)
-/persistent → OpfsFileSystem (Origin Private File System, browser persistence)
-```
+### Default mount layout
 
-`MemoryFileSystem` is critical: it's how the main thread pre-populates files (configs, wasm binaries, runtime libraries) that the kernel worker can then read. Both threads share the same `SharedArrayBuffer`, with the filesystem's internal btree structure built directly in the buffer.
+The canonical layout lives in `host/src/vfs/default-mounts.ts` as `DEFAULT_MOUNT_SPEC: MountSpec[]`. `resolveForBrowser` and `resolveForNode` (the latter in `default-mounts-node.ts` so `node:fs`/`node:path` stay out of browser bundles) materialise the spec into `MountConfig[]`:
+
+| Mount point | Source | Browser backend | Node backend |
+|-------------|--------|-----------------|--------------|
+| `/`         | image (advisory readonly) | `MemoryFileSystem.fromImage(rootfs.vfs)` | `MemoryFileSystem.fromImage(rootfs.vfs)` |
+| `/tmp`      | scratch (ephemeral) | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
+| `/var/tmp`  | scratch | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
+| `/var/log`  | scratch | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
+| `/var/run`  | scratch (ephemeral) | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
+| `/home/user`| scratch | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
+| `/root`     | scratch | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
+| `/srv`      | scratch | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
+
+The browser host layers two additional, host-specific mounts on top: `/dev/shm` (the POSIX-semaphore SAB shared with main-thread surfaces) and `/dev` (`DeviceFileSystem` for `/dev/null`, `/dev/zero`, `/dev/urandom`, `/dev/ptmx`, `/dev/pts/N`). Sticky bits, the uid 1000 owner on `/home/user`, mode `0700` on `/root`, etc. are baked into the rootfs image at build time per the canonical `MANIFEST` and reflected honestly through the `MemoryFileSystem` inode metadata. Scratch mounts on Node start owned by uid/gid 0 because `HostFileSystem` synthesises them.
+
+### rootfs image as the source of truth
+
+`/etc/passwd`, `/etc/group`, `/etc/hosts`, `/etc/nsswitch.conf`, `/etc/resolv.conf`, etc. are real files inside `host/wasm/rootfs.vfs`, served through the `/` mount. There is no in-kernel synthetic-file shim: any program that calls `getpwnam`, `gethostbyname`, `getservbyname`, etc. reads the same bytes a `cat /etc/passwd` would.
+
+### Node host
+
+`NodeKernelHost` accepts `rootfsImage: "default" | ArrayBuffer | Uint8Array | undefined`. With `"default"` (the path used by the vitest suite), the worker reads `host/wasm/rootfs.vfs`, applies `DEFAULT_MOUNT_SPEC` via `resolveForNode`, and constructs a `VirtualPlatformIO` for the kernel. Without it, the worker falls back to raw `NodePlatformIO` (every host path reachable) — kept for legacy callers that haven't migrated.
+
+### Browser host
+
+`BrowserKernel.boot({ vfsImage, ... })` is the kernel-owned VFS path. The worker restores the supplied image (per-demo `.vfs.zst`, typically built on top of the canonical rootfs as a base layer) into a `MemoryFileSystem`, applies `DEFAULT_MOUNT_SPEC` via `resolveForBrowser` (the image becomes the `/` mount; the seven scratch mounts come up empty), and layers `/dev/shm` + `/dev` on top.
+
+The legacy `kernel.spawn(programBytes, argv, { fsSab })` path is still supported for demos that own a single `MemoryFileSystem` SAB at `/` (used by `benchmark`, `erlang`, `shell`). To keep `getpwnam`/`gethostbyname` working on that path after `synthetic_file_content` was removed, the kernel worker overlays `/etc/*` from `rootfs.vfs` into the demo SAB at boot (`overlayEtcFromRootfs` in `kernel-worker-entry.ts`), preserving any `/etc` files the demo wrote itself. This is a temporary bridge until those demos move to the `vfsImage` boot path.
 
 ### Lazy Files
 
@@ -493,6 +519,9 @@ bash build.sh
 2. Copies `wasm_posix_kernel.wasm` to `host/wasm/`
 3. Builds user programs from `programs/*.c` via `scripts/build-programs.sh`
 4. Builds TypeScript host via `npm run build` (tsup → ESM + CJS)
+5. Builds the canonical rootfs image via `scripts/build-rootfs.sh`, which invokes the `mkrootfs` CLI (`tools/mkrootfs/`) against the top-level `MANIFEST` + `rootfs/` source tree and writes `host/wasm/rootfs.vfs`
+
+`host/wasm/` is gitignored — `rootfs.vfs`, `kernel.wasm`, and the rest are built artifacts. `tools/mkrootfs/` is the source of the image-builder CLI; the canonical owners/modes/sticky-bits live in `MANIFEST`, the file content under `rootfs/`.
 
 ### User Program Compilation
 
