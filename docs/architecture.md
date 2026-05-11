@@ -268,7 +268,7 @@ The kernel's hardcoded `INITIAL_BRK` (16MB) is a fallback for binaries that don'
 
 ### Mount table model
 
-`VirtualPlatformIO` (`host/src/vfs/vfs.ts`) is the kernel's filesystem router on both hosts. It is configured with a list of `MountConfig { mountPoint, backend, readonly? }` entries and dispatches every path-based syscall to the backend whose mount prefix is the longest match. Cross-mount operations (`rename`, `link`) are rejected with `EXDEV`. A path that matches no mount returns `ENOENT`. `MountConfig.readonly` is currently advisory — write enforcement and full POSIX permission checks are deferred to a follow-up PR.
+`VirtualPlatformIO` (`host/src/vfs/vfs.ts`) is the kernel's filesystem router on both hosts. It is configured with a list of `MountConfig { mountPoint, backend, readonly? }` entries and dispatches every path-based syscall to the backend whose mount prefix is the longest match. Cross-mount operations (`rename`, `link`) are rejected with `EXDEV`. A path that matches no mount returns `ENOENT`. `MountConfig.readonly` is enforced as `EROFS` on writes (see Permission model below).
 
 `FileSystemBackend` (`host/src/vfs/types.ts`) is the per-mount interface (open/read/write/stat/readdir/symlink/...). Two backends are in use today:
 
@@ -295,6 +295,22 @@ The browser host layers two additional, host-specific mounts on top: `/dev/shm` 
 ### rootfs image as the source of truth
 
 `/etc/passwd`, `/etc/group`, `/etc/hosts`, `/etc/nsswitch.conf`, `/etc/resolv.conf`, etc. are real files inside `host/wasm/rootfs.vfs`, served through the `/` mount. There is no in-kernel synthetic-file shim: any program that calls `getpwnam`, `gethostbyname`, `getservbyname`, etc. reads the same bytes a `cat /etc/passwd` would.
+
+### Permission model
+
+The kernel enforces POSIX file permissions inside every path-based syscall. The check is independent of the host filesystem — a `MemoryFileSystem` mount and a `HostFileSystem` mount apply the same rules — and is gated by a single runtime toggle.
+
+- **Runtime toggle.** `crate::enforce_permissions()` (mutated via `set_enforce_permissions(bool)` in `crates/kernel/src/lib.rs`) is `true` by default. Setting it to `false` short-circuits every check helper to `Ok(())`, which is useful for tests that need to manipulate paths the running uid couldn't normally reach.
+- **POSIX rwx semantics.** `crate::access::check_access(proc, stat, mode)` (`crates/kernel/src/access.rs`) picks the owner / group / other rwx triplet from `stat.st_mode` based on the caller's `euid`/`egid` and returns `EACCES` on denial. Root (`euid == 0`) bypasses R and W; root X requires the execute bit to be set on at least one triplet for regular files (POSIX-correct — root cannot execute a non-executable file).
+- **Pathwalk X_OK.** Resolving any path requires X_OK on every intermediate directory. The check runs before `open`, `stat`, `unlink`, `chmod`, `access`, etc., and returns `EACCES` if any component along the way denies search.
+- **Sticky bit (S_ISVTX).** A directory with mode `1xxx` restricts `unlink`, `rmdir`, and `rename` of its entries to (a) the entry's owner, (b) the directory's owner, or (c) root. This makes `/tmp` (mode `1777`) behave like Linux's.
+- **Setuid-on-exec (S_ISUID / S_ISGID).** When `execve` succeeds, S_ISUID on the binary copies the file's `st_uid` into the process's `euid`, and S_ISGID copies `st_gid` into `egid`. The real uid/gid are unchanged. This is how a non-root program can pick up elevated identity from an exec'd helper, mirroring Linux semantics.
+- **umask at creation.** `open(O_CREAT)` and `mkdir` strip the process `umask` from the supplied mode before delegating to the host backend, so the resulting file ends up with `mode & ~umask` exactly as on Linux.
+- **Readonly mounts.** `MountConfig.readonly = true` causes `VirtualPlatformIO` to return `EROFS` from `open(O_WRONLY|O_RDWR|O_CREAT|O_TRUNC)`, `write`, `unlink`, `rename`, `link`, `symlink`, `mkdir`, `rmdir`, `chmod`, `chown`, `truncate`, and `utimensat`. Reads are unaffected. The browser's CA-cert bundle lives on a dedicated rw `/etc/ssl/certs` mount layered over an otherwise-readonly root.
+
+By construction `Process::new()` defaults `uid`/`euid`/`gid`/`egid` to `0`, so any program spawned via the standard test harnesses runs as root and bypasses owner/group checks (root R/W bypass, root X subject to the bit). Tests that need to exercise denial paths set non-zero credentials before the program issues its first syscall.
+
+The legacy `NodePlatformIO` (`host/src/platform/node.ts`) backend is still available as an explicit escape hatch for tests that need raw host-fs access — for example, the `dlopen` end-to-end tests build artifacts under `os.tmpdir()` (`/var/folders/...`), which is outside any default mount and would otherwise return `ENOENT`. Production code paths route through `VirtualPlatformIO`.
 
 ### Node host
 

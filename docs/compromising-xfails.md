@@ -84,19 +84,13 @@ This entry is retained below as **optional future hardening work**, not as an XF
 
 ---
 
-### 4. Multi-user permission model (EPERM)
+### 4. Multi-user permission model (EPERM / EACCES) — *CLOSED*
 
-**Gap:** No uid/gid access-control model. Every process runs as the same effective user. Syscalls that are supposed to return EPERM when acting on a process owned by a different user (`kill(pid_of_root, ...)` from a non-root process) don't.
+**Status:** Process-side EPERM (kill, sched_*) closed in PR #326. File-side permission enforcement closed in the VFS-resumed PR 5/5 (`vfs-resumed/05-perm-enforcement`): the kernel now evaluates POSIX rwx semantics against caller's euid/egid on every path syscall, enforces X_OK on pathwalk components, handles sticky-bit (S_ISVTX) on unlink/rmdir/rename, applies S_ISUID/S_ISGID on exec, applies umask at creation, and returns EROFS for writes to readonly mounts. Toggleable via `set_enforce_permissions(bool)`; defaults on. See `docs/architecture.md` § Permission model.
 
-**Affected tests:**
-- POSIX: `kill/2-2`, `kill/3-1`, `sched_getparam/6-1`, `sched_getscheduler/7-1`
-
-**Fix approach:** Track `uid/euid/gid/egid` per process in the kernel `Process` struct. Enforce permission checks on cross-process operations (kill, sched_setparam, ptrace, etc.). Provide `setuid/setgid/seteuid/setegid` syscalls. A minimal `/etc/passwd` in the VFS makes `getpwnam` work (target 5 below).
-
-**Starting files:**
-- `crates/kernel/src/process.rs` — Process struct (add uid/gid fields)
-- `crates/kernel/src/syscalls.rs` — `sys_kill`, `sys_sched_*`, add `sys_setuid/setgid`
-- `glue/channel_syscall.c` — syscall plumbing
+**Closed tests:**
+- POSIX: `kill/2-2`, `kill/3-1`, `sched_getparam/6-1`, `sched_getscheduler/7-1` (PR #326).
+- File-permission-dependent tests passing under the flipped flag (see PR 5/5 test-suite run for the full enumeration).
 
 ---
 
@@ -218,5 +212,5 @@ Paste one of the following into a fresh Claude Code session in this repo:
 - **Target 1** (pthread_create): Basic path landed — see the status block in section 1. Remaining sub-gaps (cancel-point asm, per-thread signal routing, AIO, OOM) are separate follow-ups.
 - **Target 2** (munmap unmapping): Reclassified to [wasm-limitations.md §6](wasm-limitations.md) — the `munmap/1-*` XFAILs are unfixable in stock wasm. Only pursue Option A (syscall-path EFAULT validation) if defensive hardening against use-after-munmap via syscalls becomes a priority; it will not close the XFAILs.
 - **Target 3** (PROCESS_SHARED): "Implement kernel-side shared pthread primitives. Model after `crates/kernel/src/ipc.rs`."
-- **Target 4** (EPERM / multi-user): "Add uid/gid to Process struct. Enforce on kill/sched_*. Provide setuid/setgid."
+- **Target 4** (EPERM / multi-user): **closed** (PR #326 + VFS-resumed PR 5/5). No further work needed.
 - **Target 5** (pwd database): "Seed /etc/passwd + /etc/group in the default VFS image. Not kernel work."

@@ -36,7 +36,7 @@ Kandelo uses a **centralized architecture**: a single kernel Wasm instance holds
 
 | Function | Status | Notes |
 |----------|--------|-------|
-| `open()` | Partial | Host-delegated. O_CREAT, O_EXCL, O_TRUNC, O_APPEND, O_NONBLOCK, O_CLOEXEC, O_DIRECTORY, O_NOFOLLOW flags handled. umask applied to mode on O_CREAT. Virtual device interception (`/dev/null`, `/dev/zero`, `/dev/urandom`, `/dev/full`, `/dev/fd/N`, `/dev/stdin`, `/dev/stdout`, `/dev/stderr`). |
+| `open()` | Partial | Host-delegated. O_CREAT, O_EXCL, O_TRUNC, O_APPEND, O_NONBLOCK, O_CLOEXEC, O_DIRECTORY, O_NOFOLLOW flags handled. umask applied to mode on O_CREAT. POSIX permission semantics enforced: file rwx bits checked against caller's euid/egid (EACCES on denial), pathwalk requires X_OK on each intermediate directory, EROFS on writes to readonly mounts. Virtual device interception (`/dev/null`, `/dev/zero`, `/dev/urandom`, `/dev/full`, `/dev/fd/N`, `/dev/stdin`, `/dev/stdout`, `/dev/stderr`). |
 | `openat()` | Full | AT_FDCWD delegates to open(). Absolute paths handled. Real dirfd supported via stored OFD paths. |
 | `close()` | Partial | Ref-counted OFD cleanup. Host handle closed when last ref dropped. Releases all fcntl advisory locks on the file (POSIX-compliant). EINTR not yet handled. |
 | `read()` | Partial | Host-delegated for files. Pipe/socket reads from kernel ring buffer with blocking when empty (EINTR on signal). Short reads permitted. O_NONBLOCK returns EAGAIN. |
@@ -100,7 +100,7 @@ Kandelo uses a **centralized architecture**: a single kernel Wasm instance holds
 | Function | Status | Notes |
 |----------|--------|-------|
 | `fork()` | Full | Centralized mode: kernel serializes full process state (FD/OFD tables, signals, environment, CWD, rlimits, brk, terminal), host spawns child Worker with copied Memory. Children re-execute from `_start` with fork return value 0. Cross-process pipes, signals, and waitpid all functional. |
-| `exec()` | Full | Kernel-initiated via SYS_EXECVE (syscall 211). Host `handleExec` reads path/argv/envp from process memory, calls `onExec` callback. Replaces process image. Preserves PID, open fds (closes CLOEXEC), environment, CWD, signal mask. **Resets** the program break (POSIX-correct); host then re-installs the new program's `__heap_base` via `kernel_set_brk_base`. |
+| `exec()` | Full | Kernel-initiated via SYS_EXECVE (syscall 211). Host `handleExec` reads path/argv/envp from process memory, calls `onExec` callback. Replaces process image. Preserves PID, open fds (closes CLOEXEC), environment, CWD, signal mask. setuid (S_ISUID) and setgid (S_ISGID) bits on the binary copy into the process's euid/egid. **Resets** the program break (POSIX-correct); host then re-installs the new program's `__heap_base` via `kernel_set_brk_base`. |
 | `waitpid()` | Full | Kernel-internal: blocks parent until child exits (WNOHANG supported). Reaps zombie processes. Supports pid>0 (specific child), pid=-1 (any child), pid=0 (same pgid), pid<-1 (specific pgid). Returns status with WIFEXITED/WEXITSTATUS. |
 | `exit()` / `_exit()` | Full | Closes all fds and dir streams, releases all fcntl locks, sets ProcessState::Exited. SIGCHLD delivered to parent. Zombie state maintained until reaped by waitpid. |
 | `getpid()` | Full | Returns pid from Process struct. |
@@ -184,14 +184,14 @@ Kandelo uses a **centralized architecture**: a single kernel Wasm instance holds
 | `rewinddir()` | Full | Closes and reopens directory via stored path. Resets position to 0. |
 | `telldir()` | Full | Returns current position counter from DirStream. |
 | `seekdir()` | Full | Rewinds and skips entries to reach target position. |
-| `mkdir()` | Partial | Host-delegated. Relative paths resolved via kernel cwd. umask applied to mode. |
-| `rmdir()` | Partial | Host-delegated. Relative paths resolved via kernel cwd. |
+| `mkdir()` | Partial | Host-delegated. Relative paths resolved via kernel cwd. umask applied to mode. Parent directory W_OK + X_OK enforced; EROFS on readonly mounts. |
+| `rmdir()` | Partial | Host-delegated. Relative paths resolved via kernel cwd. Parent W_OK + X_OK enforced; sticky-bit (S_ISVTX) on parent restricts removal to file owner, dir owner, or root. |
 | `chdir()` / `getcwd()` | Partial | Kernel-maintained cwd. chdir validates via host_stat that target is S_IFDIR. getcwd returns ERANGE if buffer too small. |
-| `link()` / `unlink()` | Partial | Host-delegated. Relative paths resolved via kernel cwd. |
-| `rename()` | Partial | Host-delegated. Both paths resolved via kernel cwd. |
-| `stat()` / `lstat()` | Partial | Host-delegated. stat follows symlinks, lstat does not. |
-| `chmod()` / `chown()` | Partial | Host-delegated. May be no-op in browser environments. |
-| `access()` | Partial | Host-delegated. Checks real filesystem permissions. |
+| `link()` / `unlink()` | Partial | Host-delegated. Relative paths resolved via kernel cwd. unlink: parent W_OK + sticky-bit check. link: parent W_OK on target dir; EROFS on readonly mounts. |
+| `rename()` | Partial | Host-delegated. Both paths resolved via kernel cwd. Source and target parent W_OK; sticky-bit on source parent restricts to file owner, dir owner, or root. EXDEV across mounts. EROFS on readonly mounts. |
+| `stat()` / `lstat()` | Partial | Host-delegated. stat follows symlinks, lstat does not. Pathwalk requires X_OK on intermediate directories. |
+| `chmod()` / `chown()` | Partial | Host-delegated. EPERM unless caller is file owner or root. EROFS on readonly mounts. |
+| `access()` | Partial | Host-delegated. Returns EACCES per POSIX rwx semantics against caller's real uid/gid. |
 | `realpath()` | Full | Resolves path against cwd, normalizes `.`/`..`, resolves symlinks via iterative lstat/readlink (ELOOP after 40 resolutions), verifies existence. |
 | `symlink()` / `readlink()` | Partial | Host-delegated. Symlink target stored as-is, linkpath resolved. |
 | `sync()` / `syncfs()` | Stub | Returns 0 (no-op). Filesystem sync managed by host. |
@@ -375,6 +375,7 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 | ~~**No signal queuing**~~ | signals | **Resolved.** RT signals (32-63) are now queued in a VecDeque; standard signals (1-31) remain coalesced per POSIX. |
 | ~~**`*at()` functions with real dirfd**~~ | filesystem | **Resolved.** All *at() syscalls now support real dirfd via stored OFD paths. |
 | ~~**No seekdir/telldir/rewinddir**~~ | directory | **Resolved.** DirStream now tracks path and position. rewinddir/telldir/seekdir implemented. |
+| ~~**Filesystem permission checks delegated to host**~~ | filesystem | **Resolved.** The kernel enforces POSIX file permissions independently of the host: `check_access` evaluates rwx bits against the caller's euid/egid (owner/group/other), pathwalk requires X_OK on intermediate directories, sticky-bit (S_ISVTX) gates unlink/rmdir/rename in 1xxx dirs, setuid/setgid (S_ISUID/S_ISGID) bits flow into euid/egid on exec, umask is applied at creation, and `MountConfig.readonly` is enforced as EROFS on writes. Toggleable via `set_enforce_permissions(bool)`; defaults on. See `docs/architecture.md` § Permission model. |
 
 ### Medium — Spec deviations with limited practical impact
 
@@ -401,7 +402,6 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 | **No cross-process MAP_SHARED** | memory | MAP_SHARED works within a single process (file-backed, with msync writeback). Cross-process shared memory would require SharedArrayBuffer coordination. |
 | **UDP sockets** | socket | AF_INET SOCK_DGRAM not yet implemented. TCP (SOCK_STREAM) fully supported via host-delegated networking. |
 | **Setuid/setgid enforcement** | process | Single-user Wasm environment; privilege checks simulated only. |
-| **Permission checks** | filesystem | Delegated to host. Kernel does not independently verify file permissions. |
 | **getrusage() zeroed** | sysinfo | No actual resource tracking available in Wasm. Returns zero-filled struct. |
 
 ### Future Work — Remaining items
