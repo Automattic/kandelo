@@ -11,6 +11,7 @@ import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { runCentralizedProgram } from "./centralized-test-helper";
+import { NodePlatformIO } from "../src/platform/node";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "../..");
@@ -102,6 +103,14 @@ describe.skipIf(!hasSysroot || !hasKernel)("dlopen end-to-end", () => {
     mkdirSync(BUILD_DIR, { recursive: true });
   });
 
+  // The .so files are written under `os.tmpdir()` (e.g. `/var/folders/.../T`
+  // on macOS) and passed to the wasm program as an absolute host path. The
+  // default mount-based VFS doesn't know about that path, so dlopen() would
+  // see ENOENT. Opt the test into the raw-host-fs escape hatch via
+  // `NodePlatformIO`, since this test exercises the dlopen plumbing rather
+  // than the VFS layer.
+  const io = () => new NodePlatformIO();
+
   it("loads a shared library and calls its functions via dlopen/dlsym", { timeout: 30_000 }, async () => {
     // Build the shared library
     const soPath = buildSharedLib(
@@ -154,6 +163,7 @@ describe.skipIf(!hasSysroot || !hasKernel)("dlopen end-to-end", () => {
       programPath: wasmPath,
       argv: ["test-dlopen", soPath],
       timeout: 10_000,
+      io: io(),
     });
 
     expect(result.exitCode).toBe(0);
@@ -184,6 +194,7 @@ describe.skipIf(!hasSysroot || !hasKernel)("dlopen end-to-end", () => {
       programPath: wasmPath,
       argv: ["test-dlopen-error"],
       timeout: 10_000,
+      io: io(),
     });
 
     expect(result.exitCode).toBe(0);
@@ -226,6 +237,7 @@ describe.skipIf(!hasSysroot || !hasKernel)("dlopen end-to-end", () => {
       programPath: wasmPath,
       argv: ["test-dlsym-missing", soPath],
       timeout: 10_000,
+      io: io(),
     });
 
     expect(result.exitCode).toBe(0);

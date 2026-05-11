@@ -13,6 +13,7 @@ import { execSync } from "node:child_process";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runCentralizedProgram } from "../../host/test/centralized-test-helper";
+import { NodePlatformIO } from "../../host/src/platform/node";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, "../..");
@@ -31,10 +32,14 @@ describe.skipIf(!hasSysroot || !hasKernel)("dlopen example", () => {
   });
 
   it("loads shared library and calls functions via dlopen/dlsym", async () => {
+    // The .so lives at an absolute host path that the default mount-based
+    // VFS doesn't know about; opt into raw host fs via `NodePlatformIO`,
+    // since this test exercises dlopen plumbing rather than the VFS.
     const result = await runCentralizedProgram({
       programPath: resolve(__dirname, "main.wasm"),
       argv: ["main", resolve(__dirname, "hello-lib.so")],
       timeout: 10_000,
+      io: new NodePlatformIO(),
     });
 
     expect(result.exitCode).toBe(0);
