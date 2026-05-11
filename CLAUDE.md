@@ -205,6 +205,73 @@ correct fix is to add the package to `flake.nix`, not to expand
 `--keep`. `--keep` is for workflow context (auth, dispatch inputs),
 not for tools.
 
+## Package system
+
+Every artifact under `examples/libs/<name>/` is a **package** with its
+own `package.toml` declaring source, deps, outputs, and a pinned
+`[binary]` archive. The resolver (`cargo xtask build-deps ...`) is
+the only thing that decides where binaries land, what to fetch, and
+when to source-build. No central lockfile (no `binaries.lock`, no
+`manifest.json`) — per-package is the source of truth.
+
+**Hard rules:**
+
+- **Never hand-edit `[binary]` URLs.** The amend-package-toml step in
+  `prepare-merge.yml` rewrites them after every durable-release
+  publish. Manual edits get clobbered. For a one-shot recovery use
+  `xtask set-package-binary` (see PR #445's amend script for the
+  pattern); for a normal flow let CI do it.
+- **Bumping `revision = N` invalidates every cached archive for that
+  package.** Bump only when output bytes legitimately change (build
+  flag tweaks, asyncify pass, etc.). Don't bump for doc-only
+  changes — that triggers a needless rebuild across the matrix.
+- **ABI bumps (`ABI_VERSION` in `crates/shared/src/lib.rs`) require
+  the full release to be re-published.** v6 archives don't satisfy
+  v7 verifications. The matrix flow handles this automatically on
+  the next prepare-merge run; just remember the v(N-1) release stays
+  stale until the bot PR closes the loop.
+- **Multi-output packages land under `binaries/programs/<arch>/<pkg>/<out>`,
+  single-output under `binaries/programs/<arch>/<out>`.** Never
+  hardcode this convention in scripts; query via
+  `xtask build-deps output-path <pkg> <wasm-basename>` (or in run.sh,
+  use the `pkg_has_output` helper). See `run.sh`'s `has_<pkg>` block
+  for the contract.
+
+**Common tasks:**
+
+| Task | Command |
+|---|---|
+| Resolve a single package (fetch or source-build, cache) | `cargo xtask build-deps resolve <name>` |
+| Materialize all consumer-facing symlinks under `binaries/` | `scripts/fetch-binaries.sh --allow-stale` |
+| Where does a package's output land? | `cargo xtask build-deps output-path <name> <wasm-basename>` |
+| Stage a single archive (matrix-build's per-entry step) | `cargo xtask archive-stage --package examples/libs/<name> --arch <arch> --out <dir>` |
+| Force a re-publish of selected packages | dispatch `.github/workflows/force-rebuild.yml` with the comma list |
+| Pin a fresh archive URL into a package.toml | `cargo xtask set-package-binary --package-toml <path> --arch <a> --archive-url <u> --archive-sha256 <s>` |
+
+**When something looks wrong:**
+
+- Source build firing for a package you expect to be cached → its
+  `[binary]` URL probably points at an old ABI or wrong sha. Check
+  `cargo xtask build-deps resolve <name>` output for the warning
+  line — it names the URL it tried.
+- `fetch-binaries.sh` reports N failures → those packages will
+  source-build on the matrix runners. With `--allow-stale` (CI
+  default) the script still exits 0 since per-target builds gate
+  failures themselves.
+- `has_<pkg>` returns false even though the archive is present →
+  check whether the resolver-driven `pkg_has_output` helper agrees;
+  if it does but `has_<pkg>` doesn't, that's a stale hardcoded path.
+
+**Reference docs (don't reinvent):**
+
+- **`docs/package-management.md`** — schema, resolver, build-script
+  contract, host-tool requirements. The reference manual.
+- **`docs/binary-releases.md`** — operational doc for the release
+  flow + `index.toml` shape + consumer-side fetch behavior.
+- **`docs/abi-versioning.md`** — when `ABI_VERSION` must bump.
+- **`docs/package-management-future-work.md`** — backlog of
+  acknowledged gaps (signing, GC, etc.).
+
 ## Cross-Compilation and Configure Scripts
 
 We cross-compile C libraries for wasm32 using `wasm32posix-cc`. Autoconf `configure` scripts often run feature-detection checks (e.g., `AC_CHECK_FUNCS`) that test against the **host** system's libraries rather than the wasm sysroot. This produces incorrect results — functions like `feenableexcept` may exist on macOS/Linux but not in our musl-based wasm sysroot.
@@ -230,6 +297,8 @@ Every PR that adds or changes user-facing features, APIs, or behavior must inclu
 - **`docs/sdk-guide.md`** — Update when changing SDK tools or compilation workflow
 - **`docs/porting-guide.md`** — Update when changing how software is ported or run
 - **`docs/browser-support.md`** — Update when changing browser capabilities or limitations
+- **`docs/package-management.md`** — Update when changing the package schema, resolver behavior, or build-script contract
+- **`docs/binary-releases.md`** — Update when changing the release flow, `index.toml` shape, or `fetch-binaries.sh` consumer path
 - **`README.md`** — Update when adding major features, new ported software, or changing project structure
 
 Do not skip documentation. If a feature is worth implementing, it is worth documenting.
