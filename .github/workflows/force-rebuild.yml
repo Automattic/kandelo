@@ -658,7 +658,8 @@ jobs:
               local-binaries/kernel.wasm
             bash scripts/build-programs.sh
             npm install --no-audit --no-fund
-            cd host && npm install --no-audit --no-fund
+            cd host && npm install --no-audit --no-fund && cd ..
+            bash scripts/build-rootfs.sh
           '
 
       - name: Run cargo tests (kernel unit tests)

@@ -659,7 +659,10 @@ jobs:
         # resolver finds it ahead of binaries/), as are programs/*.wasm
         # fixtures consumed by vitest. Two npm installs: host/ for
         # vitest, repo root for tsx (used by the libc-test/POSIX/sortix
-        # runners).
+        # runners). build-rootfs.sh produces host/wasm/rootfs.vfs, which
+        # NodeKernelHost loads when callers request `rootfsImage:"default"`
+        # — the default for runCentralizedProgram. Without this, vitest
+        # tests fail with "rootfs.vfs is missing".
         run: |
           bash scripts/dev-shell.sh bash -c '
             cargo build --release -p wasm-posix-kernel \
@@ -670,7 +673,8 @@ jobs:
               local-binaries/kernel.wasm
             bash scripts/build-programs.sh
             npm install --no-audit --no-fund
-            cd host && npm install --no-audit --no-fund
+            cd host && npm install --no-audit --no-fund && cd ..
+            bash scripts/build-rootfs.sh
           '
 
       - name: Run cargo tests (kernel unit tests)
