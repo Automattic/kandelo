@@ -71,68 +71,129 @@ has_resolvable() {
     "$REPO_ROOT/scripts/resolve-binary.sh" "$1" >/dev/null 2>&1
 }
 
+# pkg_xtask_bin: build xtask once (lazy) and return the binary path so
+# repeated `pkg_has_output` calls don't pay cargo's setup cost on each
+# call (~50ms × 40 has_* lookups in cmd_status = a real delay).
+PKG_XTASK_BIN=""
+pkg_xtask_bin() {
+    if [ -n "$PKG_XTASK_BIN" ] && [ -x "$PKG_XTASK_BIN" ]; then
+        echo "$PKG_XTASK_BIN"
+        return 0
+    fi
+    local host
+    host=$(rustc -vV 2>/dev/null | awk '/^host/ {print $2}')
+    if [ -z "$host" ]; then
+        return 1
+    fi
+    PKG_XTASK_BIN="$REPO_ROOT/target/$host/release/xtask"
+    if [ ! -x "$PKG_XTASK_BIN" ]; then
+        (cd "$REPO_ROOT" && bash scripts/dev-shell.sh \
+            cargo build --release -p xtask --target "$host" --quiet) || return 1
+    fi
+    echo "$PKG_XTASK_BIN"
+}
+
+# pkg_has_output <pkg-name> <wasm-basename> [arch]
+#
+# True when the package's named output is resolvable via the package
+# system — i.e. xtask's `build-deps output-path` returns its rel path
+# under `programs/<arch>/` AND that path resolves through `binaries/`
+# or `local-binaries/`. This is the single source of truth for "is
+# this package built?" — replaces ~30 hand-coded has_<pkg> checks
+# that hardcoded the flat-vs-nested layout convention and silently
+# drifted (e.g. the `programs/erlang.wasm` vs `programs/erlang/erlang.wasm`
+# bug). Layout decisions live in `output_dest_rel_for` only.
+#
+# The wasm-basename arg is the file listed in `[[outputs]].wasm`
+# (e.g. `python.wasm`, `mariadbd.wasm`), NOT the output `name` field.
+# Arch defaults to wasm32; pass wasm64 for the per-arch variants.
+pkg_has_output() {
+    local pkg=$1
+    local wasm=$2
+    local arch=${3:-wasm32}
+    local xtask rel
+    xtask=$(pkg_xtask_bin) || return 1
+    rel=$("$xtask" build-deps --arch "$arch" output-path "$pkg" "$wasm" 2>/dev/null) \
+        || return 1
+    if [ "$arch" = "wasm32" ]; then
+        # `has_resolvable programs/<x>` injects `wasm32/` per the
+        # default-arch shim (matches host/src/binary-resolver.ts). No
+        # explicit arch segment needed.
+        has_resolvable "programs/$rel"
+    else
+        has_resolvable "programs/$arch/$rel"
+    fi
+}
+
 has_kernel()    { has_resolvable kernel.wasm || [ -f "$REPO_ROOT/host/wasm/wasm_posix_kernel.wasm" ]; }
 has_sysroot()   { [ -f "$REPO_ROOT/sysroot/lib/libc.a" ]; }
 has_sysroot64() { [ -f "$REPO_ROOT/sysroot64/lib/libc.a" ]; }
 has_sdk()       { command -v wasm32posix-cc &>/dev/null; }
 has_host()      { [ -d "$REPO_ROOT/host/dist" ]; }
 has_programs()    { has_resolvable programs/fork-exec.wasm || [ -f "$REPO_ROOT/host/wasm/fork-exec.wasm" ]; }
-has_nginx()    { has_resolvable programs/nginx.wasm || [ -f "$REPO_ROOT/examples/nginx/nginx.wasm" ]; }
-has_php()       { has_resolvable programs/php/php.wasm || [ -f "$REPO_ROOT/examples/libs/php/php-src/sapi/cli/php" ]; }
-has_php_fpm()    { has_resolvable programs/php/php-fpm.wasm || [ -f "$REPO_ROOT/examples/nginx/php-fpm.wasm" ]; }
-has_mariadb()    { has_resolvable programs/mariadb/mariadbd.wasm || [ -f "$REPO_ROOT/examples/libs/mariadb/mariadb-install/bin/mariadbd" ]; }
-has_mariadb64() { has_resolvable programs/wasm64/mariadb/mariadbd.wasm || [ -f "$REPO_ROOT/examples/libs/mariadb/mariadb-install-64/bin/mariadbd" ]; }
-has_mariadb_vfs() { has_resolvable programs/mariadb-vfs.vfs.zst; }
-has_mariadb64_vfs() { has_resolvable programs/wasm64/mariadb-vfs.vfs.zst; }
-has_wp_vfs()    { has_resolvable programs/wordpress.vfs.zst; }
-has_dash()    { has_resolvable programs/dash.wasm || [ -f "$REPO_ROOT/examples/libs/dash/bin/dash.wasm" ]; }
-has_bash()    { has_resolvable programs/bash.wasm || [ -f "$REPO_ROOT/examples/libs/bash/bin/bash.wasm" ]; }
-has_coreutils()    { has_resolvable programs/coreutils.wasm || [ -f "$REPO_ROOT/examples/libs/coreutils/bin/coreutils.wasm" ]; }
-has_grep()    { has_resolvable programs/grep.wasm || [ -f "$REPO_ROOT/examples/libs/grep/bin/grep.wasm" ]; }
-has_sed()    { has_resolvable programs/sed.wasm || [ -f "$REPO_ROOT/examples/libs/sed/bin/sed.wasm" ]; }
-has_redis()    { has_resolvable programs/redis/redis-server.wasm || [ -f "$REPO_ROOT/examples/libs/redis/bin/redis-server.wasm" ]; }
-has_dinit()    { has_resolvable programs/dinit/dinit.wasm || [ -f "$REPO_ROOT/examples/libs/dinit/bin/dinit.wasm" ]; }
-has_cpython()    { has_resolvable programs/cpython.wasm || [ -f "$REPO_ROOT/examples/libs/cpython/bin/python.wasm" ]; }
-has_python_vfs()    { has_resolvable programs/python-vfs.vfs.zst || [ -f "$REPO_ROOT/examples/browser/public/python.vfs.zst" ]; }
-has_perl_vfs()    { has_resolvable programs/perl-vfs.vfs.zst || [ -f "$REPO_ROOT/examples/browser/public/perl.vfs.zst" ]; }
-has_shell_vfs()    { has_resolvable programs/shell.vfs.zst || [ -f "$REPO_ROOT/examples/browser/public/shell.vfs.zst" ]; }
-has_erlang()    { has_resolvable programs/erlang.wasm || [ -f "$REPO_ROOT/examples/libs/erlang/bin/beam.wasm" ]; }
-has_erlang_vfs()    { has_resolvable programs/erlang-vfs.vfs.zst || [ -f "$REPO_ROOT/examples/browser/public/erlang.vfs.zst" ]; }
-has_lamp_vfs()    { has_resolvable programs/lamp.vfs.zst; }
-has_nginx_vfs()  { has_resolvable programs/nginx-vfs.vfs.zst; }
-has_redis_vfs()  { has_resolvable programs/redis-vfs.vfs.zst; }
+
+# Package-system entries: layout derived from package.toml's
+# `[[outputs]]` via `xtask build-deps output-path`. Source-tree
+# fallbacks left in place for the developer-hand-built case.
+has_nginx()         { pkg_has_output nginx nginx.wasm || [ -f "$REPO_ROOT/examples/nginx/nginx.wasm" ]; }
+has_php()           { pkg_has_output php php.wasm || [ -f "$REPO_ROOT/examples/libs/php/php-src/sapi/cli/php" ]; }
+has_php_fpm()       { pkg_has_output php php-fpm.wasm || [ -f "$REPO_ROOT/examples/nginx/php-fpm.wasm" ]; }
+has_mariadb()       { pkg_has_output mariadb mariadbd.wasm || [ -f "$REPO_ROOT/examples/libs/mariadb/mariadb-install/bin/mariadbd" ]; }
+has_mariadb64()     { pkg_has_output mariadb mariadbd.wasm wasm64 || [ -f "$REPO_ROOT/examples/libs/mariadb/mariadb-install-64/bin/mariadbd" ]; }
+has_mariadb_vfs()   { pkg_has_output mariadb-vfs mariadb-vfs.vfs.zst; }
+has_mariadb64_vfs() { pkg_has_output mariadb-vfs mariadb-vfs.vfs.zst wasm64; }
+has_wp_vfs()        { pkg_has_output wordpress wordpress.vfs.zst; }
+has_dash()          { pkg_has_output dash dash.wasm || [ -f "$REPO_ROOT/examples/libs/dash/bin/dash.wasm" ]; }
+has_bash()          { pkg_has_output bash bash.wasm || [ -f "$REPO_ROOT/examples/libs/bash/bin/bash.wasm" ]; }
+has_coreutils()     { pkg_has_output coreutils coreutils.wasm || [ -f "$REPO_ROOT/examples/libs/coreutils/bin/coreutils.wasm" ]; }
+has_grep()          { pkg_has_output grep grep.wasm || [ -f "$REPO_ROOT/examples/libs/grep/bin/grep.wasm" ]; }
+has_sed()           { pkg_has_output sed sed.wasm || [ -f "$REPO_ROOT/examples/libs/sed/bin/sed.wasm" ]; }
+has_redis()         { pkg_has_output redis redis-server.wasm || [ -f "$REPO_ROOT/examples/libs/redis/bin/redis-server.wasm" ]; }
+has_dinit()         { pkg_has_output dinit dinit.wasm || [ -f "$REPO_ROOT/examples/libs/dinit/bin/dinit.wasm" ]; }
+has_cpython()       { pkg_has_output cpython python.wasm || [ -f "$REPO_ROOT/examples/libs/cpython/bin/python.wasm" ]; }
+has_python_vfs()    { pkg_has_output python-vfs python-vfs.vfs.zst || [ -f "$REPO_ROOT/examples/browser/public/python.vfs.zst" ]; }
+has_perl_vfs()      { pkg_has_output perl-vfs perl-vfs.vfs.zst || [ -f "$REPO_ROOT/examples/browser/public/perl.vfs.zst" ]; }
+has_shell_vfs()     { pkg_has_output shell shell.vfs.zst || [ -f "$REPO_ROOT/examples/browser/public/shell.vfs.zst" ]; }
+has_erlang()        { pkg_has_output erlang erlang.wasm || [ -f "$REPO_ROOT/examples/libs/erlang/bin/beam.wasm" ]; }
+has_erlang_vfs()    { pkg_has_output erlang-vfs erlang-vfs.vfs.zst || [ -f "$REPO_ROOT/examples/browser/public/erlang.vfs.zst" ]; }
+has_lamp_vfs()      { pkg_has_output lamp lamp.vfs.zst; }
+has_bc()            { pkg_has_output bc bc.wasm || [ -f "$REPO_ROOT/examples/libs/bc/bin/bc.wasm" ]; }
+has_file()          { pkg_has_output file file.wasm || [ -f "$REPO_ROOT/examples/libs/file/bin/file.wasm" ]; }
+has_less()          { pkg_has_output less less.wasm || [ -f "$REPO_ROOT/examples/libs/less/bin/less.wasm" ]; }
+has_m4()            { pkg_has_output m4 m4.wasm || [ -f "$REPO_ROOT/examples/libs/m4/bin/m4.wasm" ]; }
+has_make()          { pkg_has_output make make.wasm || [ -f "$REPO_ROOT/examples/libs/make/bin/make.wasm" ]; }
+has_tar()           { pkg_has_output tar tar.wasm || [ -f "$REPO_ROOT/examples/libs/tar/bin/tar.wasm" ]; }
+has_curl()          { pkg_has_output curl curl.wasm || [ -f "$REPO_ROOT/examples/libs/curl/bin/curl.wasm" ]; }
+has_wget()          { pkg_has_output wget wget.wasm || [ -f "$REPO_ROOT/examples/libs/wget/bin/wget.wasm" ]; }
+has_gzip()          { pkg_has_output gzip gzip.wasm || [ -f "$REPO_ROOT/examples/libs/gzip/bin/gzip.wasm" ]; }
+has_bzip2()         { pkg_has_output bzip2 bzip2.wasm || [ -f "$REPO_ROOT/examples/libs/bzip2/bin/bzip2.wasm" ]; }
+has_xz()            { pkg_has_output xz xz.wasm || [ -f "$REPO_ROOT/examples/libs/xz/bin/xz.wasm" ]; }
+has_zstd()          { pkg_has_output zstd zstd.wasm || [ -f "$REPO_ROOT/examples/libs/zstd/bin/zstd.wasm" ]; }
+has_zip()           { pkg_has_output zip zip.wasm || [ -f "$REPO_ROOT/examples/libs/zip/bin/zip.wasm" ]; }
+has_unzip()         { pkg_has_output unzip unzip.wasm || [ -f "$REPO_ROOT/examples/libs/unzip/bin/unzip.wasm" ]; }
+has_nano()          { pkg_has_output nano nano.wasm || [ -f "$REPO_ROOT/examples/libs/nano/bin/nano.wasm" ]; }
+has_nethack()       { pkg_has_output nethack nethack.wasm || [ -f "$REPO_ROOT/examples/libs/nethack/bin/nethack.wasm" ]; }
+has_fbdoom()        { pkg_has_output fbdoom fbdoom.wasm || { [ -f "$REPO_ROOT/examples/libs/fbdoom/fbdoom.wasm" ] && [ -f "$REPO_ROOT/examples/libs/fbdoom/doom1.wad" ]; }; }
+has_vim()           { pkg_has_output vim vim.wasm || [ -f "$REPO_ROOT/examples/libs/vim/bin/vim.wasm" ]; }
+has_git()           { pkg_has_output git git.wasm || [ -f "$REPO_ROOT/examples/libs/git/bin/git.wasm" ]; }
+has_perl()          { pkg_has_output perl perl.wasm || [ -f "$REPO_ROOT/examples/libs/perl/bin/perl.wasm" ]; }
+has_ruby()          { pkg_has_output ruby ruby.wasm || [ -f "$REPO_ROOT/examples/libs/ruby/bin/ruby.wasm" ]; }
+has_texlive()       { pkg_has_output texlive pdftex.wasm || [ -f "$REPO_ROOT/examples/libs/texlive/bin/pdftex.wasm" ]; }
+has_texlive_vfs()   { pkg_has_output texlive texlive-bundle.json || [ -f "$REPO_ROOT/examples/browser/public/texlive-bundle.json" ]; }
+
+# Non-package targets — these live outside the package system; their
+# layout is hand-rolled and doesn't go through `output-path`.
+has_nginx_vfs()     { has_resolvable programs/nginx-vfs.vfs.zst; }
+has_redis_vfs()     { has_resolvable programs/redis-vfs.vfs.zst; }
 has_nginx_php_vfs() { has_resolvable programs/nginx-php-vfs.vfs.zst; }
-has_bc()    { has_resolvable programs/bc.wasm || [ -f "$REPO_ROOT/examples/libs/bc/bin/bc.wasm" ]; }
-has_file()    { has_resolvable programs/file.wasm || [ -f "$REPO_ROOT/examples/libs/file/bin/file.wasm" ]; }
-has_less()    { has_resolvable programs/less.wasm || [ -f "$REPO_ROOT/examples/libs/less/bin/less.wasm" ]; }
-has_m4()    { has_resolvable programs/m4.wasm || [ -f "$REPO_ROOT/examples/libs/m4/bin/m4.wasm" ]; }
-has_make()    { has_resolvable programs/make.wasm || [ -f "$REPO_ROOT/examples/libs/make/bin/make.wasm" ]; }
-has_tar()    { has_resolvable programs/tar.wasm || [ -f "$REPO_ROOT/examples/libs/tar/bin/tar.wasm" ]; }
-has_curl()    { has_resolvable programs/curl.wasm || [ -f "$REPO_ROOT/examples/libs/curl/bin/curl.wasm" ]; }
-has_wget()    { has_resolvable programs/wget.wasm || [ -f "$REPO_ROOT/examples/libs/wget/bin/wget.wasm" ]; }
-has_gzip()    { has_resolvable programs/gzip.wasm || [ -f "$REPO_ROOT/examples/libs/gzip/bin/gzip.wasm" ]; }
-has_bzip2()    { has_resolvable programs/bzip2.wasm || [ -f "$REPO_ROOT/examples/libs/bzip2/bin/bzip2.wasm" ]; }
-has_xz()    { has_resolvable programs/xz.wasm || [ -f "$REPO_ROOT/examples/libs/xz/bin/xz.wasm" ]; }
-has_zstd()    { has_resolvable programs/zstd.wasm || [ -f "$REPO_ROOT/examples/libs/zstd/bin/zstd.wasm" ]; }
-has_zip()    { has_resolvable programs/zip.wasm || [ -f "$REPO_ROOT/examples/libs/zip/bin/zip.wasm" ]; }
-has_unzip()    { has_resolvable programs/unzip.wasm || [ -f "$REPO_ROOT/examples/libs/unzip/bin/unzip.wasm" ]; }
-has_nano()    { has_resolvable programs/nano.wasm || [ -f "$REPO_ROOT/examples/libs/nano/bin/nano.wasm" ]; }
-has_nethack()    { has_resolvable programs/nethack.wasm || [ -f "$REPO_ROOT/examples/libs/nethack/bin/nethack.wasm" ]; }
-has_fbdoom()    { has_resolvable programs/fbdoom/fbdoom.wasm || { [ -f "$REPO_ROOT/examples/libs/fbdoom/fbdoom.wasm" ] && [ -f "$REPO_ROOT/examples/libs/fbdoom/doom1.wad" ]; }; }
-has_ncurses()   { [ -f "$REPO_ROOT/sysroot/lib/libncursesw.a" ]; }
-has_zlib()      { [ -f "$REPO_ROOT/sysroot/lib/libz.a" ]; }
-has_openssl()   { [ -f "$REPO_ROOT/sysroot/lib/libssl.a" ] && [ -f "$REPO_ROOT/sysroot/lib/libcrypto.a" ]; }
-has_libcurl()   { [ -f "$REPO_ROOT/sysroot/lib/libcurl.a" ] && [ -f "$REPO_ROOT/sysroot/include/curl/curl.h" ]; }
-has_vim()    { has_resolvable programs/vim.wasm || [ -f "$REPO_ROOT/examples/libs/vim/bin/vim.wasm" ]; }
-has_vim_zip() { has_resolvable programs/vim.zip || [ -f "$REPO_ROOT/examples/browser/public/vim.zip" ]; }
-has_nethack_zip() { has_resolvable programs/nethack.zip || [ -f "$REPO_ROOT/examples/browser/public/nethack.zip" ]; }
-has_git()    { has_resolvable programs/git/git.wasm || [ -f "$REPO_ROOT/examples/libs/git/bin/git.wasm" ]; }
-has_perl()    { has_resolvable programs/perl.wasm || [ -f "$REPO_ROOT/examples/libs/perl/bin/perl.wasm" ]; }
-has_ruby()    { has_resolvable programs/ruby.wasm || [ -f "$REPO_ROOT/examples/libs/ruby/bin/ruby.wasm" ]; }
-has_dlopen()    { [ -f "$REPO_ROOT/examples/dlopen/hello-lib.so" ] && \
-                  [ -f "$REPO_ROOT/examples/dlopen/main.wasm" ]; }
-has_texlive()        { has_resolvable programs/pdftex.wasm || [ -f "$REPO_ROOT/examples/libs/texlive/bin/pdftex.wasm" ]; }
-has_texlive_vfs() { [ -f "$REPO_ROOT/examples/browser/public/texlive-bundle.json" ]; }
+has_ncurses()       { [ -f "$REPO_ROOT/sysroot/lib/libncursesw.a" ]; }
+has_zlib()          { [ -f "$REPO_ROOT/sysroot/lib/libz.a" ]; }
+has_openssl()       { [ -f "$REPO_ROOT/sysroot/lib/libssl.a" ] && [ -f "$REPO_ROOT/sysroot/lib/libcrypto.a" ]; }
+has_libcurl()       { [ -f "$REPO_ROOT/sysroot/lib/libcurl.a" ] && [ -f "$REPO_ROOT/sysroot/include/curl/curl.h" ]; }
+has_vim_zip()       { has_resolvable programs/vim.zip || [ -f "$REPO_ROOT/examples/browser/public/vim.zip" ]; }
+has_nethack_zip()   { has_resolvable programs/nethack.zip || [ -f "$REPO_ROOT/examples/browser/public/nethack.zip" ]; }
+has_dlopen()        { [ -f "$REPO_ROOT/examples/dlopen/hello-lib.so" ] && \
+                      [ -f "$REPO_ROOT/examples/dlopen/main.wasm" ]; }
 
 # ─── Need functions (ensure dependency is built) ─────────────────────────────
 

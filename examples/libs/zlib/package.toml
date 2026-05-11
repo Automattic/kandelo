@@ -29,8 +29,8 @@ libs = ["lib/libz.a"]
 headers = ["include/zlib.h", "include/zconf.h"]
 pkgconfig = ["lib/pkgconfig/zlib.pc"]
 [binary.wasm32]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/zlib-1.3.1-rev1-abi6-wasm32-32c07a1d.tar.zst"
-archive_sha256 = "e0e1d28ab2e803df230e35ca01742c06853934bd6c24f445bff86caf7c2df2ba"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/zlib-1.3.1-rev1-abi7-wasm32-d380c4e6.tar.zst"
+archive_sha256 = "b79d2b3324dc9c9b59fa634bb74faab0d6378daa269e05648a62d551768bbb39"
 [binary.wasm64]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/zlib-1.3.1-rev1-abi6-wasm64-fc396d58.tar.zst"
-archive_sha256 = "baccbe4395cba626c204c92f35f043130774b8065755c6bb91d0885f1be89d7d"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/zlib-1.3.1-rev1-abi7-wasm64-63339372.tar.zst"
+archive_sha256 = "ca7cf6ffda0a3cba76313f64eaa6c19be68173ae9283f41fc24f7e659a635da0"

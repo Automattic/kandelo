@@ -30,5 +30,5 @@ repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 name = "python-vfs"
 wasm = "python-vfs.vfs.zst"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/python-vfs-0.1.0-rev1-abi6-wasm32-81d9a8ae.tar.zst"
-archive_sha256 = "5d7ea41225d68da6d92b4fc5993c9087acba65bd8dd4dc2a4ab71d8a9719dc98"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/python-vfs-0.1.0-rev2-abi7-wasm32-29480d83.tar.zst"
+archive_sha256 = "b8977260b16185527e4c498cb79b6747328b15e937b0a23dbd39ffd438c44416"

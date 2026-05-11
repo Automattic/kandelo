@@ -21,5 +21,5 @@ repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 name = "tcl"
 wasm = "tclsh.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/tcl-9.0.1-rev1-abi6-wasm32-a931d396.tar.zst"
-archive_sha256 = "91ffd21cb98aaec378a9b79fa80ba7e65c1ed3bf2742b9c3122741ca88597055"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/tcl-9.0.1-rev1-abi7-wasm32-0791700e.tar.zst"
+archive_sha256 = "a7ca215d99523c4b2d4bc385dff9804c3c7c43ba5e67a104a2f279ade1cb6991"

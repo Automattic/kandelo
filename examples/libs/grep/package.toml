@@ -21,5 +21,5 @@ repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 name = "grep"
 wasm = "grep.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/grep-3.11-rev1-abi6-wasm32-f78a0573.tar.zst"
-archive_sha256 = "f0f4295a95af19e982420fc1c0b2cea6b6e645ab3888e1b077d02f6d411204ca"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/grep-3.11-rev1-abi7-wasm32-58d4de6a.tar.zst"
+archive_sha256 = "1ad2ec0f6ff9d4e2b188ed1f33d10f84c8efc4c416293165b5a97dd142d68793"

@@ -49,3 +49,13 @@ repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 [outputs]
 libs = ["lib/libc++.a", "lib/libc++abi.a"]
 headers = ["include/c++/v1"]
+
+[binary]
+
+[binary.wasm32]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/libcxx-21-rev2-abi7-wasm32-3e56cc74.tar.zst"
+archive_sha256 = "415281097ccaffaa3b1817eafb77f46616bb355411d37c1b7a47c485afa6a64d"
+
+[binary.wasm64]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/libcxx-21-rev2-abi7-wasm64-47a8cf61.tar.zst"
+archive_sha256 = "d14e4b0a5502e1057a6c4037d1bbffbcd3d8c539be152276d33afd9e2996d1a3"

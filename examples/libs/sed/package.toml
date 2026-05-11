@@ -21,5 +21,5 @@ repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 name = "sed"
 wasm = "sed.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/sed-4.9-rev1-abi6-wasm32-d1c47362.tar.zst"
-archive_sha256 = "e20f88bead55894cced63e375946d9044cb382a0620d288b0341bfed8dcb20d1"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/sed-4.9-rev1-abi7-wasm32-a92a11d1.tar.zst"
+archive_sha256 = "545719ae4edbafa39166fb6b6d251d88e9bd6a8e3da1743818b77514b981613f"

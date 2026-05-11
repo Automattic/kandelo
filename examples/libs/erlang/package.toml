@@ -46,5 +46,5 @@ version_constraint = ">=3.80"
 probe = { args = ["--version"], version_regex = "GNU Make (\\d+\\.\\d+(?:\\.\\d+)?)" }
 install_hints = { darwin = "ships with macOS Command Line Tools; or: brew install make", linux = "apt install make" }
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/erlang-28.2-rev1-abi6-wasm32-af59757f.tar.zst"
-archive_sha256 = "b573eef7430a9e467be15e115beb40736f209978750716415966e8dd4b00bc70"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/erlang-28.2-rev2-abi7-wasm32-76d9d5a2.tar.zst"
+archive_sha256 = "d1a20a038284a61507eef80e6dc9b00d8a35e3544bb00c1188b87664f0d05543"

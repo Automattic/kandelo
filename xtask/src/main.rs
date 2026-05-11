@@ -49,7 +49,6 @@ mod remote_fetch;
 mod source_extract;
 mod update_pkg_manifest;
 mod util;
-mod wasm_abi;
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);

@@ -36,5 +36,5 @@ repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 name = "perl-vfs"
 wasm = "perl-vfs.vfs.zst"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/perl-vfs-0.1.0-rev1-abi6-wasm32-324b4cf4.tar.zst"
-archive_sha256 = "9e915fbf13b84753a171ef88e9cdb471518435b36ffdb79bc1d91ed475d9eee6"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/perl-vfs-0.1.0-rev2-abi7-wasm32-374b6d84.tar.zst"
+archive_sha256 = "51ecdece56627a9d1d69fb7b26415083404805328afe1f5eb796e2d266c74888"
