@@ -364,10 +364,11 @@ if ! grep -q "wasm32_uw.o" Makefile; then
     rm -f Makefile.bak
 fi
 
-# Inject main_wrapper.o into the bash link line
+# Inject main_wrapper.o into the bash link line. Must tolerate other
+# objects (e.g. wasm32_uw.o injected above) appearing between OBJECTS=
+# and shell.o, so don't anchor on `shell.o ` being the first word.
 if ! grep -q "main_wrapper.o" Makefile; then
-    # OBJECTS line has tabs; match any whitespace before =
-    sed -i.bak 's/^\(OBJECTS[[:space:]]*=[[:space:]]*\)shell\.o /\1main_wrapper.o shell.o /' Makefile
+    sed -i.bak 's|\(^OBJECTS[[:space:]]*=[^=]*\)shell\.o |\1main_wrapper.o shell.o |' Makefile
     rm -f Makefile.bak
     if grep -q "main_wrapper.o" Makefile; then
         echo "==> Injected main_wrapper.o into OBJECTS"
