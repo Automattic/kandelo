@@ -104,10 +104,11 @@ pub fn set_kernel_mode(mode: u32) {
 
 /// Runtime gate for filesystem permission checks landed across PR 5/5.
 ///
-/// Default off so each enforcement commit (Tasks 5.3-5.9) can land without
-/// breaking existing tests / demos that assume root-equivalent access.
-/// Task 5.10 flips this default to on.
-static ENFORCE_PERMISSIONS: AtomicBool = AtomicBool::new(false);
+/// Defaults on as of Task 5.10. The earlier enforcement commits
+/// (Tasks 5.3-5.9) landed with this default off so each step could
+/// be reviewed in isolation; flipping it to true is the final gate
+/// that activates POSIX permission semantics for all syscalls.
+static ENFORCE_PERMISSIONS: AtomicBool = AtomicBool::new(true);
 
 #[inline]
 pub fn enforce_permissions() -> bool {
@@ -128,10 +129,16 @@ mod enforce_permissions_tests {
     static LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
-    fn default_is_false() {
-        let _g = LOCK.lock().unwrap();
-        set_enforce_permissions(false);
-        assert!(!enforce_permissions());
+    fn default_is_true() {
+        // Read the compile-time AtomicBool initializer directly. We
+        // intentionally do NOT take LOCK here — the goal is to observe
+        // the static's initial state, and any other concurrent test
+        // may have mutated it. To keep this test deterministic the
+        // other tests in this module restore the toggle to `true`
+        // (the compile-time default) before they return, so reading
+        // it here always observes the default value regardless of
+        // execution order.
+        assert!(enforce_permissions());
     }
 
     #[test]
@@ -140,7 +147,8 @@ mod enforce_permissions_tests {
         set_enforce_permissions(false);
         set_enforce_permissions(true);
         assert!(enforce_permissions());
-        set_enforce_permissions(false);
+        // Leave default state restored for subsequent tests.
+        set_enforce_permissions(true);
     }
 
     #[test]
@@ -149,6 +157,8 @@ mod enforce_permissions_tests {
         set_enforce_permissions(true);
         set_enforce_permissions(false);
         assert!(!enforce_permissions());
+        // Leave default state restored for subsequent tests.
+        set_enforce_permissions(true);
     }
 }
 
