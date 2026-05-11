@@ -27,6 +27,17 @@ async function buildFixtureImage(): Promise<Uint8Array> {
   return await mfs.saveImage();
 }
 
+async function buildLegacyDinitImage(): Promise<Uint8Array> {
+  const sab = new SharedArrayBuffer(2 * 1024 * 1024);
+  const mfs = MemoryFileSystem.create(sab);
+  mfs.mkdir("/etc", 0o755);
+  const group = new TextEncoder().encode("root:x:0:\nnogroup:x:65534:\n");
+  const fd = mfs.open("/etc/group", O_WRONLY | O_CREAT | O_TRUNC, 0o644);
+  mfs.write(fd, group, null, group.length);
+  mfs.close(fd);
+  return await mfs.saveImage();
+}
+
 function readMountFile(backend: any, path: string): Uint8Array {
   const st = backend.stat(path);
   const fd = backend.open(path, O_RDONLY, 0);
@@ -120,6 +131,22 @@ describe("resolveForNode", () => {
     }
   });
 
+  it("applies declared scratch directory modes", () => {
+    resolveForNode(DEFAULT_MOUNT_SPEC, image, sessionDir);
+    expect(statSync(join(sessionDir, "tmp")).mode & 0o7777).toBe(0o1777);
+    expect(statSync(join(sessionDir, "var", "tmp")).mode & 0o7777).toBe(0o1777);
+    expect(statSync(join(sessionDir, "root")).mode & 0o7777).toBe(0o700);
+  });
+
+  it("adds the nobody group to legacy dinit images", async () => {
+    const legacyImage = await buildLegacyDinitImage();
+    const mounts = resolveForNode(DEFAULT_MOUNT_SPEC, legacyImage, sessionDir);
+    const root = mounts.find((m) => m.mountPoint === "/")!;
+    const group = new TextDecoder().decode(readMountFile(root.backend, "/etc/group"));
+    expect(group).toContain("nogroup:x:65534:");
+    expect(group).toContain("nobody:x:65534:");
+  });
+
   it("throws on duplicate mount paths", () => {
     const dup: MountSpec[] = [
       { path: "/", source: "image" },
@@ -204,6 +231,29 @@ describe("resolveForBrowser", () => {
       "scratch",
     );
     expect(() => home!.backend.stat("/x.txt")).toThrow();
+  });
+
+  it("applies declared scratch root modes", () => {
+    const mounts = resolveForBrowser(DEFAULT_MOUNT_SPEC, image, {
+      scratchSabBytes: tinyScratch,
+    });
+    const tmp = mounts.find((m) => m.mountPoint === "/tmp")!.backend as MemoryFileSystem;
+    const varTmp = mounts.find((m) => m.mountPoint === "/var/tmp")!.backend as MemoryFileSystem;
+    const root = mounts.find((m) => m.mountPoint === "/root")!.backend as MemoryFileSystem;
+    expect(tmp.stat("/").mode & 0o7777).toBe(0o1777);
+    expect(varTmp.stat("/").mode & 0o7777).toBe(0o1777);
+    expect(root.stat("/").mode & 0o7777).toBe(0o700);
+  });
+
+  it("adds the nobody group to legacy dinit images", async () => {
+    const legacyImage = await buildLegacyDinitImage();
+    const mounts = resolveForBrowser(DEFAULT_MOUNT_SPEC, legacyImage, {
+      scratchSabBytes: tinyScratch,
+    });
+    const root = mounts.find((m) => m.mountPoint === "/")!;
+    const group = new TextDecoder().decode(readMountFile(root.backend, "/etc/group"));
+    expect(group).toContain("nogroup:x:65534:");
+    expect(group).toContain("nobody:x:65534:");
   });
 
   it("scratchSabBytes overrides apply per mount", () => {

@@ -24,6 +24,8 @@ export interface MountSpec {
   source: "image" | "scratch";
   /** Advisory until PR 5/5 enforces it on writes through `VirtualPlatformIO`. */
   readonly?: boolean;
+  /** Directory mode for scratch mount roots. Mirrors MANIFEST for defaults. */
+  mode?: number;
   /** Documentation hint that the mount is wiped on kernel destroy. */
   ephemeral?: boolean;
 }
@@ -35,13 +37,13 @@ export interface MountSpec {
  */
 export const DEFAULT_MOUNT_SPEC: MountSpec[] = [
   { path: "/",          source: "image",   readonly: true  },
-  { path: "/tmp",       source: "scratch", ephemeral: true },
-  { path: "/var/tmp",   source: "scratch" },
-  { path: "/var/log",   source: "scratch" },
-  { path: "/var/run",   source: "scratch", ephemeral: true },
-  { path: "/home/user", source: "scratch" },
-  { path: "/root",      source: "scratch" },
-  { path: "/srv",       source: "scratch" },
+  { path: "/tmp",       source: "scratch", mode: 0o1777, ephemeral: true },
+  { path: "/var/tmp",   source: "scratch", mode: 0o1777 },
+  { path: "/var/log",   source: "scratch", mode: 0o755 },
+  { path: "/var/run",   source: "scratch", mode: 0o755, ephemeral: true },
+  { path: "/home/user", source: "scratch", mode: 0o755 },
+  { path: "/root",      source: "scratch", mode: 0o700 },
+  { path: "/srv",       source: "scratch", mode: 0o755 },
 ];
 
 /** Default growth ceiling for the rootfs image-backed memfs (1 GiB). */
@@ -63,6 +65,48 @@ export const IMAGE_MEMFS_MAX_BYTES = 1 * 1024 * 1024 * 1024;
  * once a demo needs more than the default — none do today.
  */
 export const BROWSER_SCRATCH_SAB_BYTES = 16 * 1024 * 1024;
+
+function readTextFile(fs: MemoryFileSystem, path: string): string | null {
+  let fd: number | null = null;
+  try {
+    const st = fs.stat(path);
+    fd = fs.open(path, 0, 0);
+    const bytes = new Uint8Array(st.size);
+    let offset = 0;
+    while (offset < bytes.byteLength) {
+      const n = fs.read(fd, bytes.subarray(offset), null, bytes.byteLength - offset);
+      if (n <= 0) break;
+      offset += n;
+    }
+    return new TextDecoder().decode(bytes.subarray(0, offset));
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) {
+      try { fs.close(fd); } catch {}
+    }
+  }
+}
+
+function writeTextFile(fs: MemoryFileSystem, path: string, text: string): void {
+  const bytes = new TextEncoder().encode(text);
+  const fd = fs.open(path, 0o1101, 0o644); // O_WRONLY | O_CREAT | O_TRUNC
+  try {
+    if (bytes.byteLength > 0) fs.write(fd, bytes, null, bytes.byteLength);
+  } finally {
+    fs.close(fd);
+  }
+}
+
+export function normalizeLegacyRootfs(fs: MemoryFileSystem): void {
+  // Compatibility for already-published dinit demo images that contain a
+  // nobody user but not the matching nobody group. php-fpm validates
+  // `group = nobody` during pool startup and exits EX_CONFIG (78) without it.
+  const group = readTextFile(fs, "/etc/group");
+  if (group !== null && !/^nobody:/m.test(group)) {
+    writeTextFile(fs, "/etc/group", `${group.replace(/\n?$/, "\n")}nobody:x:65534:\n`);
+  }
+}
 
 export function validateSpec(spec: MountSpec[]): void {
   const seen = new Set<string>();
@@ -115,19 +159,23 @@ export function resolveForBrowser(
   const out: MountConfig[] = [];
   for (const m of spec) {
     if (m.source === "image") {
+      const backend = MemoryFileSystem.fromImage(rootfsImage, {
+        maxByteLength: IMAGE_MEMFS_MAX_BYTES,
+      });
+      normalizeLegacyRootfs(backend);
       out.push({
         mountPoint: m.path,
-        backend: MemoryFileSystem.fromImage(rootfsImage, {
-          maxByteLength: IMAGE_MEMFS_MAX_BYTES,
-        }),
+        backend,
         readonly: m.readonly,
       });
     } else {
       const bytes = options.scratchSabBytes?.[m.path] ?? BROWSER_SCRATCH_SAB_BYTES;
       const sab = new SharedArrayBuffer(bytes);
+      const backend = MemoryFileSystem.create(sab);
+      if (m.mode !== undefined) backend.chmod("/", m.mode);
       out.push({
         mountPoint: m.path,
-        backend: MemoryFileSystem.create(sab),
+        backend,
         readonly: m.readonly,
       });
     }

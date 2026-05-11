@@ -181,6 +181,7 @@ async function buildPhpImage(scriptPath: string, scriptContent: string): Promise
   for (const d of ["/tmp", "/home", "/dev"]) ensureDir(fs, d);
   fs.chmod("/tmp", 0o777);
   ensureDirRecursive(fs, "/usr/local/bin");
+  ensureDirRecursive(fs, "/usr/local/share/php-demo");
   writeVfsBinary(fs, "/usr/local/bin/php", new Uint8Array(phpBytes!));
   writeVfsFile(fs, scriptPath, scriptContent);
   return fs.saveImage();
@@ -194,7 +195,7 @@ async function runPhp() {
     await loadBinaries();
 
     const code = codeEl.value;
-    const scriptPath = "/tmp/script.php";
+    const scriptPath = "/usr/local/share/php-demo/script.php";
 
     setStatus("Building VFS image...", "loading");
     const vfsImage = await buildPhpImage(scriptPath, code);

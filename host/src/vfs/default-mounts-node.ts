@@ -5,12 +5,13 @@
  */
 
 import { join } from "node:path";
-import { mkdirSync } from "node:fs";
+import { chmodSync, mkdirSync } from "node:fs";
 import type { MountConfig } from "./types";
 import { MemoryFileSystem } from "./memory-fs";
 import { HostFileSystem } from "./host-fs";
 import {
   IMAGE_MEMFS_MAX_BYTES,
+  normalizeLegacyRootfs,
   validateSpec,
   type MountSpec,
 } from "./default-mounts";
@@ -33,16 +34,19 @@ export function resolveForNode(
   const out: MountConfig[] = [];
   for (const m of spec) {
     if (m.source === "image") {
+      const backend = MemoryFileSystem.fromImage(rootfsImage, {
+        maxByteLength: IMAGE_MEMFS_MAX_BYTES,
+      });
+      normalizeLegacyRootfs(backend);
       out.push({
         mountPoint: m.path,
-        backend: MemoryFileSystem.fromImage(rootfsImage, {
-          maxByteLength: IMAGE_MEMFS_MAX_BYTES,
-        }),
+        backend,
         readonly: m.readonly,
       });
     } else {
       const hostDir = join(sessionDir, m.path);
-      mkdirSync(hostDir, { recursive: true });
+      mkdirSync(hostDir, { recursive: true, mode: m.mode });
+      if (m.mode !== undefined) chmodSync(hostDir, m.mode);
       out.push({
         mountPoint: m.path,
         backend: new HostFileSystem(hostDir),

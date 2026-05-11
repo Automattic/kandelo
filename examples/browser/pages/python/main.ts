@@ -69,6 +69,8 @@ let kernelBytes: ArrayBuffer | null = null;
 let pythonBytes: ArrayBuffer | null = null;
 let vfsImageBuf: ArrayBuffer | null = null;
 
+const BATCH_SCRIPT_PATH = "/usr/local/share/python-demo/script.py";
+
 async function loadBinaries(): Promise<string> {
   if (kernelBytes && pythonBytes && vfsImageBuf) return "";
 
@@ -103,6 +105,7 @@ async function buildPythonImage(
     maxByteLength: 256 * 1024 * 1024,
   });
   ensureDirRecursive(fs, "/usr/local/bin");
+  ensureDirRecursive(fs, "/usr/local/share/python-demo");
   ensureDirRecursive(fs, "/tmp");
   fs.chmod("/tmp", 0o777);
   writeVfsBinary(fs, "/usr/local/bin/python3", new Uint8Array(pythonBytes!));
@@ -357,10 +360,9 @@ async function runBatch() {
     if (info) appendBatchOutput(info, "info");
 
     const code = codeEl.value;
-    const scriptPath = "/tmp/script.py";
 
     setStatus("Building VFS image...", "loading");
-    const vfsImage = await buildPythonImage(scriptPath, code);
+    const vfsImage = await buildPythonImage(BATCH_SCRIPT_PATH, code);
 
     const kernel = new BrowserKernel({
       kernelOwnedFs: true,
@@ -373,7 +375,7 @@ async function runBatch() {
     const { exit } = await kernel.boot({
       kernelWasm: kernelBytes!,
       vfsImage,
-      argv: ["/usr/local/bin/python3", scriptPath],
+      argv: ["/usr/local/bin/python3", BATCH_SCRIPT_PATH],
       env: PYTHON_ENV,
     });
     const exitCode = await exit;
