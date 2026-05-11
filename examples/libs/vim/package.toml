@@ -21,5 +21,5 @@ repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 name = "vim"
 wasm = "vim.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/vim-9.1.0900-rev2-abi6-wasm32-fdcaac4b.tar.zst"
-archive_sha256 = "66b2c872f2f0ddd5c6e85a9c86680ee799c756a0fc9a06ad55b95671be71e1d6"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/vim-9.1.0900-rev2-abi7-wasm32-ec2d9204.tar.zst"
+archive_sha256 = "54722bca8750f2d5331844c2b02f17b665d8f65e189e0b073fb3314c6c085e45"

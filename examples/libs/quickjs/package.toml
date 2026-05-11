@@ -21,5 +21,5 @@ repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 name = "quickjs"
 wasm = "qjs.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/quickjs-0.12.1-rev1-abi6-wasm32-fff9c5f4.tar.zst"
-archive_sha256 = "acd49790eee6a05724da1e6045d8f0e84bee1a3e39777066bff11a6851d91ab0"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/quickjs-0.12.1-rev1-abi7-wasm32-1479725f.tar.zst"
+archive_sha256 = "487d9df974091d116395aacc4eb5e2ddc2674a635a3efd018a5da012468d6e92"

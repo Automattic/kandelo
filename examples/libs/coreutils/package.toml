@@ -21,5 +21,5 @@ repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 name = "coreutils"
 wasm = "coreutils.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/coreutils-9.6-rev1-abi6-wasm32-236ce2f7.tar.zst"
-archive_sha256 = "1b5add98af61ffe8b06cabdfdba94255d8aae1c9b1dffd8082090909701fe8f2"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/coreutils-9.6-rev1-abi7-wasm32-0c0442c6.tar.zst"
+archive_sha256 = "382130f09791a637da34129ea04079da52114c05cb643345caea9fd795046af5"

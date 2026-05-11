@@ -33,5 +33,5 @@ name = "dinitcheck"
 wasm = "dinitcheck.wasm"
 
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6-2026-04-29/dinit-0.19.4-rev1-abi6-wasm32-a62cf11f.tar.zst"
-archive_sha256 = "a69394824c1825395f525357b4f5bd175958ac925e21e530491a3ab9cf3ad4e6"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/dinit-0.19.4-rev1-abi7-wasm32-6ae33fd0.tar.zst"
+archive_sha256 = "4cf50b0dc013935bc902cc2ef5aa153eda8584536b0d3f19400a7daa334d721a"

@@ -21,5 +21,5 @@ repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 name = "nethack"
 wasm = "nethack.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/nethack-3.6.7-rev1-abi6-wasm32-802afb1b.tar.zst"
-archive_sha256 = "47e69174da70a67874e4021804ead97f0b0090f6ce1a4539bbcb819cfff8021f"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/nethack-3.6.7-rev2-abi7-wasm32-76737a7d.tar.zst"
+archive_sha256 = "0ce85d6d7b0231f8b1e6919c70a216e4b620fb9c82378599fe9b726954e71c8d"

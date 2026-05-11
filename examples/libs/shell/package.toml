@@ -48,5 +48,5 @@ repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 name = "shell"
 wasm = "shell.vfs.zst"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/shell-0.1.0-rev1-abi6-wasm32-8cb32ab2.tar.zst"
-archive_sha256 = "b6d48c3f1987994557bb2439406eb31e8938a6f0bfb90101959380651a89a161"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/shell-0.1.0-rev2-abi7-wasm32-a1439be9.tar.zst"
+archive_sha256 = "dec3609eb7b3d1812a63daffa81b68aa6ea682afea5808822565d413f138a74f"

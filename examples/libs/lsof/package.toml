@@ -26,5 +26,5 @@ repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 name = "lsof"
 wasm = "lsof.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/lsof-0.1.0-rev1-abi6-wasm32-611f4166.tar.zst"
-archive_sha256 = "4eec5ffcefaf6a9ff9460831e9aaf2ac37e9eceefa2223b0eb78b8c33adbe433"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/lsof-0.1.0-rev1-abi7-wasm32-444c316c.tar.zst"
+archive_sha256 = "ae5a69ce8fc61d2e30b88e55ab6350c1a43f1bfea0e625eef8dc028c97b97b57"

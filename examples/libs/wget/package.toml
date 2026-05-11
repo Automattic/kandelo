@@ -21,5 +21,5 @@ repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 name = "wget"
 wasm = "wget.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/wget-1.25.0-rev1-abi6-wasm32-c8e1dcbd.tar.zst"
-archive_sha256 = "2183d1f270dcde2f183eef1aede7707725905c0fbb4dafb0df5099881ab8c814"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/wget-1.25.0-rev1-abi7-wasm32-b83aa2ea.tar.zst"
+archive_sha256 = "1c2bde4a330067ec433e1ac800b3e22461a20cb1c2cc4d158af48e6be0a926cb"

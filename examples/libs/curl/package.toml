@@ -32,5 +32,5 @@ repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 name = "curl"
 wasm = "curl.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/curl-8.11.1-rev1-abi6-wasm32-dc1febdf.tar.zst"
-archive_sha256 = "97658327cf46462c0ba799f3c4f424d2dd5cb07f6f757d7caa38e3b9c9c7e438"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/curl-8.11.1-rev1-abi7-wasm32-9465cc61.tar.zst"
+archive_sha256 = "827b12796241b661e5a8357c5ccb2b7bbc7fc0052bedca5b87610e72942d6fae"

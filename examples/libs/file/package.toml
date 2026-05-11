@@ -33,5 +33,5 @@ name = "file-magic"
 wasm = "magic.lite"
 
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/file-5.45-rev1-abi6-wasm32-10b13f5f.tar.zst"
-archive_sha256 = "851562ba92c1ca76ee6cd95cba910bb72503df1c5332340e26288f8f63c35a81"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/file-5.45-rev1-abi7-wasm32-47d8174f.tar.zst"
+archive_sha256 = "49de1208e13d7ae6399947dbca2bc7377df17d927e32a4714c5c23298e95873a"

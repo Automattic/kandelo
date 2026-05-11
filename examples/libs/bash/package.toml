@@ -21,5 +21,5 @@ repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 name = "bash"
 wasm = "bash.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/bash-5.2.37-rev1-abi6-wasm32-f5bb9786.tar.zst"
-archive_sha256 = "a8b9398b9610c806ab7f18fb4d01cf8afa61e52efb2471fec75089677f183a55"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/bash-5.2.37-rev1-abi7-wasm32-d4880ab3.tar.zst"
+archive_sha256 = "8f5989333a1eae83f9014f51fa11b031a6bb415b177af933e507ba61d6d7a6af"

@@ -21,5 +21,5 @@ repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 name = "unzip"
 wasm = "unzip.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/unzip-6.0-rev1-abi6-wasm32-a413d48d.tar.zst"
-archive_sha256 = "6bc15f7499aa63bf4550bbf19d31fd913d87521fab9298ba7ed10b36c6c8e065"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/unzip-6.0-rev1-abi7-wasm32-08198586.tar.zst"
+archive_sha256 = "ead6be46c0ce3d2b71473b5d1c09c69ab417cbef8cbb87bad1b2c332ca93828c"

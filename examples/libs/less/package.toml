@@ -21,5 +21,5 @@ repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 name = "less"
 wasm = "less.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/less-668-rev1-abi6-wasm32-2426ea29.tar.zst"
-archive_sha256 = "0b010dc155dc7d377a4342811f29529cf10c626079ba1772b44d10e2213dc7df"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/less-668-rev1-abi7-wasm32-e85c5433.tar.zst"
+archive_sha256 = "97fa291b60054991fb489076673abbb6287deaf208b1876165bc870f8459807a"

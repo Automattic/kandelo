@@ -27,8 +27,8 @@ wasm = "mariadbd.wasm"
 name = "mysqltest"
 wasm = "mysqltest.wasm"
 [binary.wasm32]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/mariadb-10.5.28-rev1-abi6-wasm32-330de360.tar.zst"
-archive_sha256 = "4ffdaf7888051b2fda949679c1df7772e65cc2b5fafac5c84757c2a980f81489"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/mariadb-10.5.28-rev1-abi7-wasm32-45f4092f.tar.zst"
+archive_sha256 = "92de70447042a65706f77674244d1f6766cd730dc946ae256915c11e67d9e088"
 [binary.wasm64]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/mariadb-10.5.28-rev1-abi6-wasm64-11ec04ed.tar.zst"
-archive_sha256 = "bea0c2043fb9ff056f8e844c0b898bc7546c53d0de32b82a70ee9ead450d9d80"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/mariadb-10.5.28-rev1-abi7-wasm64-a1180336.tar.zst"
+archive_sha256 = "8ab959abfde98656f20f46afe2a1f4a422b1a12a4fc274dca8d0c3c2c0af8ad6"

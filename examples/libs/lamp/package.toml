@@ -48,5 +48,5 @@ repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 name = "lamp"
 wasm = "lamp.vfs.zst"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/lamp-0.1.0-rev1-abi6-wasm32-9621cfd0.tar.zst"
-archive_sha256 = "00f1b31156f3fb2f993c619a74535360fc66ac424310f6ab3e1006fd6663119c"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/lamp-0.1.0-rev2-abi7-wasm32-e1eb4293.tar.zst"
+archive_sha256 = "6eff1a2d3b0a8d566575dcaa2cf0b5295645123757455769ca9e2b9c0a25d0b5"

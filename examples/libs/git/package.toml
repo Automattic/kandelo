@@ -25,5 +25,5 @@ wasm = "git.wasm"
 name = "git-remote-http"
 wasm = "git-remote-http.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/git-2.47.1-rev1-abi6-wasm32-07ab5aca.tar.zst"
-archive_sha256 = "6e61df72ed54aa52f60053140f8402291cee2d7e3bdac9a45ccd3074ac3272d3"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/git-2.47.1-rev1-abi7-wasm32-3862937b.tar.zst"
+archive_sha256 = "a74a58b30d5c8bcc235d74cc21b22e36ad9b3f406dd4ab5e23e665a210b3ea71"
