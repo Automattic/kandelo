@@ -93,6 +93,9 @@ const RUBY_ENV = [
   "PATH=/usr/local/bin:/usr/bin:/bin",
 ];
 
+const REPL_SCRIPT_PATH = "/usr/local/share/ruby-demo/repl.rb";
+const BATCH_SCRIPT_PATH = "/usr/local/share/ruby-demo/script.rb";
+
 // A simple REPL script written to the VFS. Ruby's irb needs the stdlib,
 // so we provide a minimal eval loop instead.
 const REPL_SCRIPT = `
@@ -130,6 +133,7 @@ async function buildVfsImage(scriptPath: string, scriptContent: string): Promise
   for (const d of ["/tmp", "/home", "/dev"]) ensureDir(fs, d);
   fs.chmod("/tmp", 0o777);
   ensureDirRecursive(fs, "/usr/bin");
+  ensureDirRecursive(fs, "/usr/local/share/ruby-demo");
   writeVfsBinary(fs, "/usr/bin/ruby", new Uint8Array(rubyBytes!));
   writeVfsFile(fs, scriptPath, scriptContent);
   return fs.saveImage();
@@ -153,7 +157,7 @@ async function startInteractiveRepl() {
     const info = await loadBinaries();
 
     setStatus("Building VFS image...", "loading");
-    const vfsImage = await buildVfsImage("/tmp/repl.rb", REPL_SCRIPT);
+    const vfsImage = await buildVfsImage(REPL_SCRIPT_PATH, REPL_SCRIPT);
 
     const kernel = new BrowserKernel({ kernelOwnedFs: true });
     activeKernel = kernel;
@@ -169,11 +173,11 @@ async function startInteractiveRepl() {
     hideStatus();
     ptyTerminal.terminal.focus();
 
-    // Boot the kernel with /usr/bin/ruby /tmp/repl.rb as the first process.
+    // Boot the kernel with the baked REPL script as the first process.
     const exitCode = await ptyTerminal.boot({
       kernelWasm: kernelBytes!,
       vfsImage,
-      argv: ["/usr/bin/ruby", "/tmp/repl.rb"],
+      argv: ["/usr/bin/ruby", REPL_SCRIPT_PATH],
       env: RUBY_ENV,
     });
 
@@ -473,7 +477,7 @@ async function runBatch() {
     const code = codeEl.value;
 
     setStatus("Building VFS image...", "loading");
-    const vfsImage = await buildVfsImage("/tmp/script.rb", code);
+    const vfsImage = await buildVfsImage(BATCH_SCRIPT_PATH, code);
 
     const kernel = new BrowserKernel({
       kernelOwnedFs: true,
@@ -486,7 +490,7 @@ async function runBatch() {
     const { exit } = await kernel.boot({
       kernelWasm: kernelBytes!,
       vfsImage,
-      argv: ["/usr/bin/ruby", "/tmp/script.rb"],
+      argv: ["/usr/bin/ruby", BATCH_SCRIPT_PATH],
       env: RUBY_ENV,
     });
     const exitCode = await exit;

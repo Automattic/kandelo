@@ -97,6 +97,9 @@ const PERL_ENV = [
   "PATH=/usr/local/bin:/usr/bin:/bin",
 ];
 
+const REPL_SCRIPT_PATH = "/usr/local/share/perl-demo/repl.pl";
+const BATCH_SCRIPT_PATH = "/usr/local/share/perl-demo/script.pl";
+
 /**
  * Build a VFS image: load the Perl stdlib from the prebuilt perl-vfs.vfs
  * (decompressing the published archive), splice the perl binary in at
@@ -110,6 +113,7 @@ async function buildPerlImage(
     maxByteLength: 256 * 1024 * 1024,
   });
   ensureDirRecursive(fs, "/usr/local/bin");
+  ensureDirRecursive(fs, "/usr/local/share/perl-demo");
   ensureDirRecursive(fs, "/tmp");
   fs.chmod("/tmp", 0o777);
   writeVfsBinary(fs, "/usr/local/bin/perl", new Uint8Array(perlBytes!));
@@ -167,7 +171,7 @@ async function startInteractiveRepl() {
 
     setStatus("Building VFS image...", "loading");
     const vfsImage = await buildPerlImage([
-      { path: "/tmp/repl.pl", content: REPL_SCRIPT },
+      { path: REPL_SCRIPT_PATH, content: REPL_SCRIPT },
     ]);
 
     const kernel = new BrowserKernel({ kernelOwnedFs: true });
@@ -187,7 +191,7 @@ async function startInteractiveRepl() {
     const exitCode = await ptyTerminal.boot({
       kernelWasm: kernelBytes!,
       vfsImage,
-      argv: ["/usr/local/bin/perl", "/tmp/repl.pl"],
+      argv: ["/usr/local/bin/perl", REPL_SCRIPT_PATH],
       env: PERL_ENV,
     });
 
@@ -466,10 +470,9 @@ async function runBatch() {
     if (info) appendBatchOutput(info, "info");
 
     const code = codeEl.value;
-    const scriptPath = "/tmp/script.pl";
 
     setStatus("Building VFS image...", "loading");
-    const vfsImage = await buildPerlImage([{ path: scriptPath, content: code }]);
+    const vfsImage = await buildPerlImage([{ path: BATCH_SCRIPT_PATH, content: code }]);
 
     const kernel = new BrowserKernel({
       kernelOwnedFs: true,
@@ -482,7 +485,7 @@ async function runBatch() {
     const { exit } = await kernel.boot({
       kernelWasm: kernelBytes!,
       vfsImage,
-      argv: ["/usr/local/bin/perl", scriptPath],
+      argv: ["/usr/local/bin/perl", BATCH_SCRIPT_PATH],
       env: PERL_ENV,
     });
     const exitCode = await exit;

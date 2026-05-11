@@ -127,6 +127,7 @@ const ETC_GROUP = [
   "root:x:0:",
   "daemon:x:1:",
   "nogroup:x:65534:",
+  "nobody:x:65534:",
   "www-data:x:33:",
   "redis:x:100:",
   "mysql:x:101:",
