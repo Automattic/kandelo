@@ -19,6 +19,7 @@ url = "https://github.com/erlang/otp/blob/maint/LICENSE.txt"
 [build]
 script_path = "examples/libs/erlang/build-erlang.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+commit = "7820d77228b1745335c259513b45573058f13fa6"
 
 [[outputs]]
 name = "erlang"
@@ -46,5 +47,5 @@ version_constraint = ">=3.80"
 probe = { args = ["--version"], version_regex = "GNU Make (\\d+\\.\\d+(?:\\.\\d+)?)" }
 install_hints = { darwin = "ships with macOS Command Line Tools; or: brew install make", linux = "apt install make" }
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/erlang-28.2-rev1-abi6-wasm32-af59757f.tar.zst"
-archive_sha256 = "b573eef7430a9e467be15e115beb40736f209978750716415966e8dd4b00bc70"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/erlang-28.2-rev2-abi8-wasm32-3d8edb2f.tar.zst"
+archive_sha256 = "2243929d1b30f62ba3ba07b3640d695f15f9cf20f7c795282aa5aa458cf7ce8c"

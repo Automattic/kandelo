@@ -16,10 +16,11 @@ url = "https://git.savannah.gnu.org/cgit/gzip.git/tree/COPYING"
 [build]
 script_path = "examples/libs/gzip/build-gzip.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+commit = "7820d77228b1745335c259513b45573058f13fa6"
 
 [[outputs]]
 name = "gzip"
 wasm = "gzip.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/gzip-1.13-rev1-abi6-wasm32-9bbb8cfe.tar.zst"
-archive_sha256 = "22364c12e23705059192f4a9a6963a379cfbea861a857e8d5ff80db45661698a"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/gzip-1.13-rev1-abi8-wasm32-8f7c5ad7.tar.zst"
+archive_sha256 = "d913ce19018652e130b827b9c800ea2429b1be1e863c211d9192a5a370ad79b2"

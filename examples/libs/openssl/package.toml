@@ -22,6 +22,7 @@ url = "https://github.com/openssl/openssl/blob/openssl-3.3.2/LICENSE.txt"
 [build]
 script_path = "examples/libs/openssl/build-openssl.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+commit = "7820d77228b1745335c259513b45573058f13fa6"
 
 [outputs]
 # Both static libs — consumers (libcurl, php, git, mariadb, ruby) link
@@ -35,8 +36,8 @@ libs = ["lib/libssl.a", "lib/libcrypto.a"]
 headers = ["include/openssl"]
 pkgconfig = ["lib/pkgconfig/libssl.pc", "lib/pkgconfig/libcrypto.pc"]
 [binary.wasm32]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/openssl-3.3.2-rev1-abi6-wasm32-07647f0c.tar.zst"
-archive_sha256 = "5ded4c7b6a2d149f9da6e7e9fb3c47770fddee02bd20cdb9907434466c807df9"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/openssl-3.3.2-rev1-abi8-wasm32-b4d65506.tar.zst"
+archive_sha256 = "05fc345d4f3e3478d82303111c4a5fa6014b7d59d3acd32fa04b080b6d88e1f7"
 [binary.wasm64]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/openssl-3.3.2-rev1-abi6-wasm64-e6535804.tar.zst"
-archive_sha256 = "38afc84c91bd9e33c9be18ccbd0e34d0dbb90e5c3a9be561140b7634501def95"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/openssl-3.3.2-rev1-abi8-wasm64-f614cdfe.tar.zst"
+archive_sha256 = "cfcb13058f23a8c13884160a5b75af83b685a8dd27c951ec46ba19d2ddbb122c"

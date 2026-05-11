@@ -26,6 +26,7 @@ url = "https://curl.se/docs/copyright.html"
 [build]
 script_path = "examples/libs/libcurl/build-libcurl.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+commit = "7820d77228b1745335c259513b45573058f13fa6"
 
 [outputs]
 libs = ["lib/libcurl.a"]
@@ -35,5 +36,5 @@ libs = ["lib/libcurl.a"]
 headers = ["include/curl"]
 pkgconfig = ["lib/pkgconfig/libcurl.pc"]
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/libcurl-8.11.1-rev1-abi6-wasm32-ebef9051.tar.zst"
-archive_sha256 = "822099c69e73f3d17e497aa242a37e9959d1971d51980b86d2a704696e43b0bd"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/libcurl-8.11.1-rev1-abi8-wasm32-6b34e07b.tar.zst"
+archive_sha256 = "79c67e7282b4fe43285923b6c3996ed5c6b50a8447856b7925614dcca22f4e7f"

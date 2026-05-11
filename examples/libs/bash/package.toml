@@ -16,10 +16,11 @@ url = "https://git.savannah.gnu.org/cgit/bash.git/tree/COPYING"
 [build]
 script_path = "examples/libs/bash/build-bash.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+commit = "7820d77228b1745335c259513b45573058f13fa6"
 
 [[outputs]]
 name = "bash"
 wasm = "bash.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/bash-5.2.37-rev1-abi6-wasm32-f5bb9786.tar.zst"
-archive_sha256 = "a8b9398b9610c806ab7f18fb4d01cf8afa61e52efb2471fec75089677f183a55"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/bash-5.2.37-rev1-abi8-wasm32-b6f39c09.tar.zst"
+archive_sha256 = "95980bcdea7373b5d02e029331fe8bb5fa19162e074aa817c55423adfb673bc1"

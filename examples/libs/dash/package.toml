@@ -16,10 +16,11 @@ url = "https://git.kernel.org/pub/scm/utils/dash/dash.git/tree/COPYING"
 [build]
 script_path = "examples/libs/dash/build-dash.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+commit = "7820d77228b1745335c259513b45573058f13fa6"
 
 [[outputs]]
 name = "dash"
 wasm = "dash.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/dash-0.5.12-rev1-abi6-wasm32-1dc88490.tar.zst"
-archive_sha256 = "e379afc94811aaeed89de445d78d6a8ddc2d18ce192de617b21037385109a5a3"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/dash-0.5.12-rev1-abi8-wasm32-31271ab3.tar.zst"
+archive_sha256 = "727278e13647d79f97be503826b85286f7bfdb8fb5746a8a920f7198b600db8b"

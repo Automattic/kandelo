@@ -16,6 +16,7 @@ url = "https://github.com/git/git/blob/v2.47.1/COPYING"
 [build]
 script_path = "examples/libs/git/build-git.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+commit = "7820d77228b1745335c259513b45573058f13fa6"
 
 [[outputs]]
 name = "git"
@@ -25,5 +26,5 @@ wasm = "git.wasm"
 name = "git-remote-http"
 wasm = "git-remote-http.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/git-2.47.1-rev1-abi6-wasm32-07ab5aca.tar.zst"
-archive_sha256 = "6e61df72ed54aa52f60053140f8402291cee2d7e3bdac9a45ccd3074ac3272d3"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/git-2.47.1-rev1-abi8-wasm32-7384d40c.tar.zst"
+archive_sha256 = "c3dfd57f673d40fba5a39d9b4b318f277750f335dbf41808562c00a539d16941"

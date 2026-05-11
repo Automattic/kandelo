@@ -16,10 +16,11 @@ url = "https://nethack.org/common/license.html"
 [build]
 script_path = "examples/libs/nethack/build-nethack.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+commit = "7820d77228b1745335c259513b45573058f13fa6"
 
 [[outputs]]
 name = "nethack"
 wasm = "nethack.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/nethack-3.6.7-rev1-abi6-wasm32-802afb1b.tar.zst"
-archive_sha256 = "47e69174da70a67874e4021804ead97f0b0090f6ce1a4539bbcb819cfff8021f"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/nethack-3.6.7-rev2-abi8-wasm32-1a93478d.tar.zst"
+archive_sha256 = "dbe10c09884a1e054b26110229d7745af337bd8894754190beaa81c9520afca6"

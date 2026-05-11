@@ -45,7 +45,18 @@ url = "https://github.com/llvm/llvm-project/blob/main/LICENSE.TXT"
 [build]
 script_path = "examples/libs/libcxx/build-libcxx.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+commit = "7820d77228b1745335c259513b45573058f13fa6"
 
 [outputs]
 libs = ["lib/libc++.a", "lib/libc++abi.a"]
 headers = ["include/c++/v1"]
+
+[binary]
+
+[binary.wasm32]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/libcxx-21-rev2-abi8-wasm32-6f370327.tar.zst"
+archive_sha256 = "118ae056e0cc6a987c972ace33a1b4df2c296ad29f4626795940aa9e3b4059b5"
+
+[binary.wasm64]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/libcxx-21-rev2-abi8-wasm64-0ba10c05.tar.zst"
+archive_sha256 = "54ff54468e8d434f5e2eb0a0473c3db8d7a3b0cb77f02ea119cf872331d589fe"

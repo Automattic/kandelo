@@ -23,6 +23,7 @@ url = "http://www.libpng.org/pub/png/src/libpng-LICENSE.txt"
 [build]
 script_path = "examples/libs/libpng/build-libpng.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+commit = "7820d77228b1745335c259513b45573058f13fa6"
 
 [outputs]
 # Upstream installs the real archive as libpng16.a with libpng.a as a
@@ -36,5 +37,5 @@ libs = ["lib/libpng16.a"]
 headers = ["include/libpng16"]
 pkgconfig = ["lib/pkgconfig/libpng16.pc"]
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/libpng-1.6.43-rev1-abi6-wasm32-47600ce8.tar.zst"
-archive_sha256 = "aee99cd9c5b79e96deea1ff82cea62a8679e3a6aa72a8a6e769e3a992bb8c4fc"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/libpng-1.6.43-rev1-abi8-wasm32-dae3415a.tar.zst"
+archive_sha256 = "bb1c4ad45272fa96e76abdf5b25a68fefdbcdf0c5df0ca8d83131912a33c3e1d"

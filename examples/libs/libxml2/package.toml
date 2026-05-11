@@ -27,6 +27,7 @@ url = "https://gitlab.gnome.org/GNOME/libxml2/-/blob/v2.13.8/Copyright"
 [build]
 script_path = "examples/libs/libxml2/build-libxml2.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+commit = "7820d77228b1745335c259513b45573058f13fa6"
 
 [outputs]
 # Note: the in-tree build installs headers directly under
@@ -38,8 +39,8 @@ libs = ["lib/libxml2.a"]
 headers = ["include/libxml"]
 pkgconfig = ["lib/pkgconfig/libxml-2.0.pc"]
 [binary.wasm32]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/libxml2-2.13.8-rev1-abi6-wasm32-36641b15.tar.zst"
-archive_sha256 = "6cecb5947fe9a9b219f8e1c790e8718f1032a3499c6f5335726269f70a93479e"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/libxml2-2.13.8-rev1-abi8-wasm32-39d22246.tar.zst"
+archive_sha256 = "23c1764a164811771fa957ff7ee9049c5a56f71661827519fec6fca18cc112fb"
 [binary.wasm64]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/libxml2-2.13.8-rev1-abi6-wasm64-80a9b06b.tar.zst"
-archive_sha256 = "91e6aa3fb47b9155f32c89ffc8c9207654003f3df4ee1eadbe33452a1427f24a"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/libxml2-2.13.8-rev1-abi8-wasm64-5f508bcf.tar.zst"
+archive_sha256 = "6fd184d67811ace94ccc57ec71c380e16cd96eee5c75322d7d95af854932f3d3"
