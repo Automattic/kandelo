@@ -599,6 +599,31 @@ The SDK (`sdk/`) provides `wasm32posix-cc` which wraps clang with:
 
 For programs that use `fork()`, Binaryen's `wasm-opt --asyncify` post-processing is required to enable call stack save/restore.
 
+### Package system
+
+Every artifact under `examples/libs/<name>/` is a **package** with a
+`package.toml` declaring source, deps, outputs, and a pinned
+`[binary]` archive URL. The resolver (`cargo xtask build-deps`)
+fetches archives from the durable `binaries-abi-v<N>` GitHub release
+by default and falls through to a source build on cache miss / sha
+mismatch / ABI mismatch. Each `(package, arch)` pair is built
+exactly once per cache-key-sha; reproducibility is gated by a
+content-hash over the manifest + source + transitive dep shas.
+
+The CI flow that publishes the durable release lives in
+`.github/workflows/staging-build.yml` (per-PR staging),
+`prepare-merge.yml` (on `ready-to-ship` label, ships to durable
+release), and `force-rebuild.yml` (manual escape hatch for stale
+caches). All three drive the same per-package matrix: preflight
+emits a `library_matrix` + `program_matrix`, the library wave
+builds first, the program wave downloads lib artifacts as
+`package.pr.toml` overlays and `xtask archive-stage`s each entry.
+
+For schema, resolver behavior, and the build-script contract see
+[docs/package-management.md](package-management.md). For the release
+operations (tag convention, `index.toml` shape, fetch-binaries.sh
+semantics) see [docs/binary-releases.md](binary-releases.md).
+
 ## Test Suites
 
 | Suite | Command | What it tests |

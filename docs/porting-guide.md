@@ -498,6 +498,165 @@ PTY allocation, xterm.js terminal, incremental stdin. See `examples/browser/page
 
 Multiple processes (MariaDB + nginx + PHP-FPM + WordPress), database bootstrap, filesystem pre-population, HTTP bridge. See `examples/browser/pages/lamp/main.ts`.
 
+## Adding a new package to the registry
+
+A "package" is anything under `examples/libs/<name>/` with a
+`package.toml`. The same shape covers static libraries (zlib,
+ncurses, openssl, ...), ported programs (vim, php, redis, ...),
+composite VFS images (mariadb-vfs, wordpress, shell), and source-only
+extracts that other builds reach into (pcre2-source). The resolver
+treats all of them uniformly — declaring a package is what gives you
+the cached-build + URL-addressable archive flow described in
+[docs/package-management.md](package-management.md) and
+[docs/binary-releases.md](binary-releases.md).
+
+### 1. Scaffold the directory
+
+```
+examples/libs/<name>/
+    package.toml        # required — schema declaration
+    build-<name>.sh     # required — produces the outputs
+    bin/                # created by build script; never committed
+```
+
+### 2. Write `package.toml`
+
+Minimum viable shape. See `examples/libs/zlib/package.toml` (single
+library) and `examples/libs/dinit/package.toml` (multi-output program
+with a library dep) for two canonical references; the schema reference
+is in [docs/package-management.md §Schema](package-management.md#schema-packagetoml).
+
+```toml
+kind = "program"           # or "library" or "source"
+name = "myprog"
+version = "1.2.3"
+revision = 1
+kernel_abi = 7             # current ABI_VERSION; required for source-having pkgs
+depends_on = ["zlib@1.3.1"]   # transitive deps the resolver will pull first
+
+[source]
+url = "https://example.test/myprog-1.2.3.tar.gz"
+sha256 = "<64-char lowercase hex>"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://example.test/LICENSE"
+
+[build]
+script_path = "examples/libs/myprog/build-myprog.sh"
+repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+
+# One [[outputs]] per produced file. Programs typically have 1 wasm;
+# multi-output packages (dinit, mariadb, php) declare each separately.
+# Layout: 1 output → flat under programs/<arch>/; ≥2 → nested under
+# programs/<arch>/<name>/. Bash never hardcodes this; query via
+# `xtask build-deps output-path` (or in run.sh use pkg_has_output).
+[[outputs]]
+name = "myprog"
+wasm = "myprog.wasm"
+
+# [binary] is the published archive URL the resolver fetches from.
+# Leave commented out on first commit; CI's amend-package-toml step
+# fills it in after the matrix flow publishes the archive.
+# [binary]
+# archive_url = "..."
+# archive_sha256 = "..."
+```
+
+For source-only packages (`kind = "source"`), omit `[[outputs]]` and
+`[binary]`; the resolver extracts the tarball into the cache and
+exports the extracted dir as `WASM_POSIX_DEP_<NAME>_SRC_DIR` for
+consumers to reach into.
+
+### 3. Write `build-<name>.sh`
+
+The build script's job: produce the declared outputs and call
+`install_local_binary` (sourced from `scripts/install-local-binary.sh`)
+to register them.
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+source "$REPO_ROOT/sdk/activate.sh"
+
+# Resolve any transitive deps via env vars the resolver injects.
+# WASM_POSIX_DEP_ZLIB_DIR is set if zlib is in depends_on; if not,
+# resolve on demand.
+ZLIB_PREFIX="${WASM_POSIX_DEP_ZLIB_DIR:-$(cargo run -p xtask --quiet -- build-deps resolve zlib)}"
+
+# … typical autoconf / cmake / make flow, using -I$ZLIB_PREFIX/include
+# and -L$ZLIB_PREFIX/lib for compile/link flags. See
+# docs/package-management.md §Migrating a consumer to the cache for
+# the full CPPFLAGS/LDFLAGS contract.
+
+# Stage outputs into bin/
+mkdir -p "$SCRIPT_DIR/bin"
+cp <built-path>/myprog "$SCRIPT_DIR/bin/myprog.wasm"
+
+# Register in local-binaries/ so the resolver + run.sh pick up the
+# fresh build over any previously-fetched archive.
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary myprog "$SCRIPT_DIR/bin/myprog.wasm"
+```
+
+### 4. Verify locally
+
+```bash
+# Should source-build (no archive yet), populate cache, place
+# binaries/programs/<arch>/myprog.wasm.
+cargo run -p xtask -- build-deps resolve myprog \
+    --arch wasm32 --binaries-dir "$(pwd)/binaries"
+
+# Verify the layout matches what run.sh / consumers expect.
+cargo run -p xtask --quiet -- build-deps output-path myprog myprog.wasm
+# → myprog.wasm   (single-output, flat)
+```
+
+### 5. Open a PR
+
+CI runs `staging-build.yml` on the PR, which:
+
+1. Detects the new package in `preflight` (its `compute-cache-key-sha`
+   yields an archive name not yet on the durable release).
+2. Runs `archive-stage` for it in `matrix-build`, uploads the
+   `.tar.zst` to the PR's staging release.
+3. `test-gate` runs the full 5-suite test gate against the union of
+   matrix-built + durable-release archives.
+4. On `ready-to-ship` + `prepare-merge.yml`, the archive ships to the
+   durable `binaries-abi-v<N>` release and the bot PR amends
+   `[binary]` in the `package.toml` to pin the new URL + sha.
+
+### 6. Register in `run.sh` (optional)
+
+If users should be able to `./run.sh build <name>` or see the package
+in `./run.sh status`, add a `has_<name>` / `build_<name>` pair using
+the `pkg_has_output` helper. See PR #445 for the resolver-driven
+pattern that derives layout from `package.toml` instead of
+hardcoding it.
+
+### Common pitfalls
+
+- **Forgetting `kernel_abi = <current>`.** Required for packages
+  with a `[build]` block on the current ABI. The parser rejects the
+  manifest otherwise.
+- **Hardcoding the output layout in scripts.** Multi-output packages
+  go nested (`programs/<arch>/<pkg>/<out>`), single-output flat
+  (`programs/<arch>/<out>`). Always query via
+  `xtask build-deps output-path` — never duplicate the decision in
+  bash.
+- **Bumping `revision` for doc-only changes.** A revision bump
+  invalidates the cache for that package and triggers a full
+  re-source-build across the matrix. Bump only when output bytes
+  legitimately change (compiler flag tweaks, fork-instrument output,
+  asyncify pass, etc.).
+- **Source-tree reads instead of declared deps.** If your build
+  script reads `examples/libs/<other>/<x>-src/...`, declare `<other>`
+  in `depends_on`. The resolver builds deps before you and exports
+  their paths via `WASM_POSIX_DEP_<NAME>_DIR` / `_SRC_DIR`. Hidden
+  source-tree reads break on clean force-rebuild runs.
+
 ## Existing Build Scripts
 
 All build scripts are in `examples/libs/`. They serve as reference implementations:

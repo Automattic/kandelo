@@ -23,6 +23,29 @@ and source-tree extracts. Programs continue to statically link;
 this work caches the build outputs, not the linker step. Runtime
 `.so` loading is out of scope (see "Out of scope" below).
 
+## Quick reference (jump-table)
+
+Most readers want one of these. Detailed sections follow further down.
+
+| I want to… | Look at |
+|---|---|
+| Pull pre-built binaries without compiling | [`scripts/fetch-binaries.sh`](#release-archives) — walks every `package.toml`, calls the resolver. Run with `--allow-stale` in CI. |
+| Add a new package to the registry | [Schema: `package.toml`](#schema-packagetoml) + [docs/porting-guide.md](porting-guide.md#adding-a-new-package-to-the-registry) for the end-to-end workflow. |
+| Resolve one package on demand | `cargo xtask build-deps resolve <name>` — handles fetch/source-build, populates the cache. |
+| Find where an output lands | `cargo xtask build-deps output-path <name> <wasm-basename>` — single source of truth for the layout convention (flat for 1-output packages, nested under `<pkg>/` for ≥2-output packages). |
+| Migrate a build script to consume cached deps | [Migrating a consumer to the cache](#migrating-a-consumer-to-the-cache) — the `WASM_POSIX_DEP_*_DIR` contract + CPPFLAGS/LDFLAGS pattern. |
+| Override a published archive locally | Drop the file at `local-binaries/programs/<arch>/<rel>` or `local-libs/<pkg>/build/`. The resolver prefers these. |
+| Override an archive in a PR for testing | Write `examples/libs/<pkg>/package.pr.toml` with `[binary.<arch>]` pointing at the alternate `archive_url` + `archive_sha256`. Gitignored; CI uses this internally. |
+| Republish a stale archive | Dispatch `.github/workflows/force-rebuild.yml` with the comma-separated package list (or `all`). |
+| Bump a package's revision number | Edit `revision = N` in its `package.toml`. Invalidates the cache for that package. Only bump when output bytes legitimately change. |
+| Understand the release flow | [docs/binary-releases.md](binary-releases.md). |
+| Trace an ABI mismatch | [docs/abi-versioning.md](abi-versioning.md). |
+| See what's missing | [docs/package-management-future-work.md](package-management-future-work.md). |
+
+The rest of this doc is the reference manual: schema details, cache-key
+hashing, resolver ordering, the consumer-side migration pattern, and
+release semantics.
+
 ## Why
 
 The previous state: each program's `build-<prog>.sh` called its
