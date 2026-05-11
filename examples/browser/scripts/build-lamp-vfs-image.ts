@@ -55,6 +55,7 @@ const SYSTEM_DATA_PATH = existsSync(join(MARIADB_LEGACY_INSTALL, "share/mysql/my
 const DASH_PATH = resolveBinary("programs/dash.wasm");
 const NGINX_PATH = resolveBinary("programs/nginx.wasm");
 const PHP_FPM_PATH = resolveBinary("programs/php/php-fpm.wasm");
+const OPCACHE_SO_PATH = resolveBinary("programs/php/opcache.so");
 const COREUTILS_PATH = resolveBinary("programs/coreutils.wasm");
 const SED_PATH = resolveBinary("programs/sed.wasm");
 const OUT_FILE = join(BROWSER_DIR, "public", "lamp.vfs.zst");
@@ -213,7 +214,18 @@ request_slowlog_trace_depth = 0
   // process SHM in our wasm port — the static worker pool is small and
   // warmups are fast). validate_timestamps=0 is safe because VFS files
   // don't change at runtime.
-  const phpIni = `[opcache]
+  // Stage opcache.so into the VFS and load it via `zend_extension=`.
+  // Without that line PHP doesn't load opcache and the [opcache]
+  // INI section below is a no-op.
+  ensureDirRecursive(fs, "/usr/lib/php/extensions");
+  writeVfsBinary(
+    fs,
+    "/usr/lib/php/extensions/opcache.so",
+    new Uint8Array(readFileSync(OPCACHE_SO_PATH)),
+  );
+  const phpIni = `zend_extension=/usr/lib/php/extensions/opcache.so
+
+[opcache]
 opcache.enable=1
 opcache.enable_cli=1
 opcache.memory_consumption=64

@@ -38,10 +38,16 @@ export function buildClangArgs(userArgs: string[], toolchain: Toolchain, arch: W
   args.push(...parsed.objectFiles);
   args.push(...parsed.archiveFiles);
 
+  // -fPIC is consumed by parseArgs (so the linker can see `parsed.pic`),
+  // but it must also reach clang at compile time so the resulting object
+  // uses PIC relocations. Without this a TU later linked into a shared
+  // library produces non-PIC objects and `wasm-ld --shared` rejects them
+  // with "R_WASM_MEMORY_ADDR_LEB cannot be used; recompile with -fPIC".
+  if (parsed.pic) args.push('-fPIC');
+
   if (linking) {
     if (parsed.shared) {
       // Shared library build: no CRT, no libc, no syscall glue
-      if (parsed.pic) args.push('-fPIC');
       args.push(...SHARED_LINK_FLAGS);
     } else {
       // Executable build: link CRT, libc, and syscall glue

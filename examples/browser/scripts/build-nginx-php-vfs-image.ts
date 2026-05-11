@@ -110,7 +110,12 @@ request_slowlog_trace_depth = 0
 // process SHM in our wasm port — the static worker pool is small and
 // warmups are fast). validate_timestamps=0 is safe because VFS files
 // don't change at runtime.
-const PHP_INI = `[opcache]
+// opcache.so is loaded via `zend_extension=` from the VFS path we
+// stage below. Without that line PHP doesn't load opcache and the
+// [opcache] INI section is a no-op.
+const PHP_INI = `zend_extension=/usr/lib/php/extensions/opcache.so
+
+[opcache]
 opcache.enable=1
 opcache.enable_cli=1
 opcache.memory_consumption=64
@@ -201,6 +206,7 @@ sort($extensions);
 async function main() {
   const NGINX_WASM = resolveBinary("programs/nginx.wasm");
   const PHP_FPM_WASM = resolveBinary("programs/php/php-fpm.wasm");
+  const OPCACHE_SO = resolveBinary("programs/php/opcache.so");
 
   const sab = new SharedArrayBuffer(64 * 1024 * 1024, { maxByteLength: 256 * 1024 * 1024 });
   const fs = MemoryFileSystem.create(sab, 256 * 1024 * 1024);
@@ -218,6 +224,11 @@ async function main() {
   // Binaries
   writeVfsBinary(fs, "/usr/sbin/nginx", new Uint8Array(readFileSync(NGINX_WASM)));
   writeVfsBinary(fs, "/usr/sbin/php-fpm", new Uint8Array(readFileSync(PHP_FPM_WASM)));
+  ensureDirRecursive(fs, "/usr/lib/php/extensions");
+  writeVfsBinary(
+    fs, "/usr/lib/php/extensions/opcache.so",
+    new Uint8Array(readFileSync(OPCACHE_SO)),
+  );
 
   // Config + content
   writeVfsFile(fs, "/etc/nginx/nginx.conf", NGINX_CONF);

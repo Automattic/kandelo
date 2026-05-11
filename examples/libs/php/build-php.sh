@@ -243,15 +243,64 @@ if [ ! -f Makefile ]; then
     sed -i.bak \
         -e 's/ -MMD -MF [^ ]* -MT [^ ]*//g' \
         Makefile && rm -f Makefile.bak
+
+    # Patch libtool to allow shared-library builds. PHP's configure
+    # detects our wasm cross-compile target as not supporting shared
+    # libraries (`build_libtool_libs=no`) — when libtool then sees
+    # `-shared` in opcache's link command it calls
+    # `func_fatal_configuration` which is not even defined in this
+    # libtool variant, so the make rule dies with
+    # `func_fatal_configuration: command not found`. Flip the flag so
+    # libtool emits PIC-compiled `.libs/*.o` objects from the
+    # opcache `.lo` rules; we then link `opcache.so` directly with
+    # `wasm32posix-cc -shared` after `make`.
+    echo "==> Patching libtool to enable shared-library mode..."
+    sed -i.bak 's/^build_libtool_libs=no$/build_libtool_libs=yes/' libtool \
+        && rm -f libtool.bak
 fi
 
+# `make` per-file rules embed `INCLUDES` from configure but ignore
+# `CPPFLAGS` (which only contains `-D_GNU_SOURCE`); `INCLUDES` for
+# our libxml2 ends up as `-I.../include/libxml` because PHP's
+# `ext/libxml/config.m4` adds the `/libxml` suffix. The real PHP
+# sources `#include <libxml/parser.h>`, which needs the parent
+# `-I.../include`. Pass it via `EXTRA_CFLAGS`, which the per-file
+# rules append last.
+EXTRA_INC_LIBXML="-I${LIBXML2_PREFIX}/include"
+
 echo "==> Building PHP CLI..."
-make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" cli
+make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" EXTRA_CFLAGS="$EXTRA_INC_LIBXML" cli
 
 echo "==> Building PHP FPM..."
-make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" fpm
+make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" EXTRA_CFLAGS="$EXTRA_INC_LIBXML" fpm
 
 echo "==> Both PHP binaries built successfully!"
+
+# Build opcache as a shared Zend extension (.so side module).
+# PHP's `make` produces PIC-compiled `.libs/ext/opcache/*.o` because
+# opcache's `[[outputs]]` config is "always shared", but the bundled
+# libtool refuses to emit the final `.so` on this target (see the
+# build_libtool_libs patch above). Skip libtool's link step entirely
+# and feed the PIC objects to the SDK's `wasm32posix-cc -shared`,
+# which routes through `wasm-ld --shared --experimental-pic`.
+echo "==> Building opcache.so (Zend extension)..."
+make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" EXTRA_CFLAGS="$EXTRA_INC_LIBXML" ext/opcache/opcache.la || true
+mkdir -p "$SCRIPT_DIR/bin"
+wasm32posix-cc -shared -fPIC -o "$SCRIPT_DIR/bin/opcache.so" \
+    ext/opcache/.libs/ZendAccelerator.o \
+    ext/opcache/.libs/zend_accelerator_blacklist.o \
+    ext/opcache/.libs/zend_accelerator_debug.o \
+    ext/opcache/.libs/zend_accelerator_hash.o \
+    ext/opcache/.libs/zend_accelerator_module.o \
+    ext/opcache/.libs/zend_persist.o \
+    ext/opcache/.libs/zend_persist_calc.o \
+    ext/opcache/.libs/zend_file_cache.o \
+    ext/opcache/.libs/zend_shared_alloc.o \
+    ext/opcache/.libs/zend_accelerator_util_funcs.o \
+    ext/opcache/.libs/shared_alloc_shm.o \
+    ext/opcache/.libs/shared_alloc_mmap.o \
+    ext/opcache/.libs/shared_alloc_posix.o
+echo "==> opcache.so: $(wc -c < "$SCRIPT_DIR/bin/opcache.so") bytes"
 
 # Copy to bin/ with .wasm extension (needed for Vite browser demos)
 mkdir -p "$SCRIPT_DIR/bin"
@@ -301,3 +350,4 @@ ls -la "$SCRIPT_DIR/bin/php.wasm" "$SCRIPT_DIR/bin/php-fpm.wasm"
 source "$REPO_ROOT/scripts/install-local-binary.sh"
 install_local_binary php "$SCRIPT_DIR/bin/php.wasm"     php.wasm
 install_local_binary php "$SCRIPT_DIR/bin/php-fpm.wasm" php-fpm.wasm
+install_local_binary php "$SCRIPT_DIR/bin/opcache.so"
