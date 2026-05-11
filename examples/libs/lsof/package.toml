@@ -21,10 +21,11 @@ url = "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
 [build]
 script_path = "examples/libs/lsof/build-lsof.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+commit = "7820d77228b1745335c259513b45573058f13fa6"
 
 [[outputs]]
 name = "lsof"
 wasm = "lsof.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/lsof-0.1.0-rev1-abi6-wasm32-611f4166.tar.zst"
-archive_sha256 = "4eec5ffcefaf6a9ff9460831e9aaf2ac37e9eceefa2223b0eb78b8c33adbe433"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/lsof-0.1.0-rev1-abi8-wasm32-86ab1c0b.tar.zst"
+archive_sha256 = "9b2cd269449bb531b876cea1e0998a7bc35190b8cf249c7cecf59ea526cf5eac"

@@ -16,10 +16,11 @@ url = "https://git.savannah.gnu.org/cgit/wget.git/tree/COPYING"
 [build]
 script_path = "examples/libs/wget/build-wget.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+commit = "7820d77228b1745335c259513b45573058f13fa6"
 
 [[outputs]]
 name = "wget"
 wasm = "wget.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/wget-1.25.0-rev1-abi6-wasm32-c8e1dcbd.tar.zst"
-archive_sha256 = "2183d1f270dcde2f183eef1aede7707725905c0fbb4dafb0df5099881ab8c814"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/wget-1.25.0-rev1-abi8-wasm32-5bf4d01f.tar.zst"
+archive_sha256 = "ac1d7996457f961849476b81e45fe27ed54906facc66b8a9c7059e15ae0e4899"

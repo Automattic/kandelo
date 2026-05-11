@@ -5,6 +5,7 @@
 extern crate alloc;
 extern crate wasm_posix_shared;
 
+pub mod access;
 pub mod devfs;
 pub mod fd;
 pub mod fork;
@@ -74,7 +75,7 @@ pub fn current_time_secs() -> i64 {
 // Kernel mode flag
 // ---------------------------------------------------------------------------
 
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 /// Kernel operating mode.
 ///
@@ -95,6 +96,70 @@ pub fn is_centralized_mode() -> bool {
 /// Set the kernel operating mode. Called from wasm_api or tests.
 pub fn set_kernel_mode(mode: u32) {
     KERNEL_MODE.store(mode, Ordering::Relaxed);
+}
+
+// ---------------------------------------------------------------------------
+// Permission enforcement toggle
+// ---------------------------------------------------------------------------
+
+/// Runtime gate for filesystem permission checks landed across PR 5/5.
+///
+/// Defaults on as of Task 5.10. The earlier enforcement commits
+/// (Tasks 5.3-5.9) landed with this default off so each step could
+/// be reviewed in isolation; flipping it to true is the final gate
+/// that activates POSIX permission semantics for all syscalls.
+static ENFORCE_PERMISSIONS: AtomicBool = AtomicBool::new(true);
+
+#[inline]
+pub fn enforce_permissions() -> bool {
+    ENFORCE_PERMISSIONS.load(Ordering::Relaxed)
+}
+
+pub fn set_enforce_permissions(enabled: bool) {
+    ENFORCE_PERMISSIONS.store(enabled, Ordering::Relaxed);
+}
+
+#[cfg(all(test, not(any(target_arch = "wasm32", target_arch = "wasm64"))))]
+mod enforce_permissions_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    // The flag is process-global; serialize the three tests so they don't
+    // observe each other's writes when cargo runs tests in parallel.
+    static LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn default_is_true() {
+        // Read the compile-time AtomicBool initializer directly. We
+        // intentionally do NOT take LOCK here — the goal is to observe
+        // the static's initial state, and any other concurrent test
+        // may have mutated it. To keep this test deterministic the
+        // other tests in this module restore the toggle to `true`
+        // (the compile-time default) before they return, so reading
+        // it here always observes the default value regardless of
+        // execution order.
+        assert!(enforce_permissions());
+    }
+
+    #[test]
+    fn set_true_flips_on() {
+        let _g = LOCK.lock().unwrap();
+        set_enforce_permissions(false);
+        set_enforce_permissions(true);
+        assert!(enforce_permissions());
+        // Leave default state restored for subsequent tests.
+        set_enforce_permissions(true);
+    }
+
+    #[test]
+    fn set_false_flips_back() {
+        let _g = LOCK.lock().unwrap();
+        set_enforce_permissions(true);
+        set_enforce_permissions(false);
+        assert!(!enforce_permissions());
+        // Leave default state restored for subsequent tests.
+        set_enforce_permissions(true);
+    }
 }
 
 #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]

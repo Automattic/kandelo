@@ -26,6 +26,7 @@ url = "https://invisible-island.net/ncurses/ncurses-license.html"
 [build]
 script_path = "examples/libs/ncurses/build-ncurses.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+commit = "7820d77228b1745335c259513b45573058f13fa6"
 
 [outputs]
 # Wide variants are the ones we actually build (--enable-widec). Non-wide
@@ -39,5 +40,5 @@ libs = ["lib/libncursesw.a", "lib/libtinfow.a"]
 headers = ["include/ncursesw"]
 # `--enable-pc-files=no --with-pkg-config=no`: no pkgconfig outputs.
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/ncurses-6.5-rev1-abi6-wasm32-014a9575.tar.zst"
-archive_sha256 = "77385913d443ee01009538189475abb204141940b74c5ac408fec368f560d78e"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/ncurses-6.5-rev1-abi8-wasm32-3ef36fae.tar.zst"
+archive_sha256 = "118456137d0daa26290803cee9204eeb262c3d40553c0a86798feb49b0fc6f5a"

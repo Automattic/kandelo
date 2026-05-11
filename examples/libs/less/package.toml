@@ -16,10 +16,11 @@ url = "https://www.greenwoodsoftware.com/less/LICENSE"
 [build]
 script_path = "examples/libs/less/build-less.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+commit = "7820d77228b1745335c259513b45573058f13fa6"
 
 [[outputs]]
 name = "less"
 wasm = "less.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/less-668-rev1-abi6-wasm32-2426ea29.tar.zst"
-archive_sha256 = "0b010dc155dc7d377a4342811f29529cf10c626079ba1772b44d10e2213dc7df"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/less-668-rev1-abi8-wasm32-f47de169.tar.zst"
+archive_sha256 = "83da980b71324a9ce6eb44306a662bcc9eb89298cd0ba47bb059de3af6409d11"

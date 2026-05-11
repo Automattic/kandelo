@@ -19,6 +19,7 @@ url = "https://github.com/php/php-src/blob/master/LICENSE"
 [build]
 script_path = "examples/libs/php/build-php.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+commit = "7820d77228b1745335c259513b45573058f13fa6"
 
 [[outputs]]
 name = "php"
@@ -35,8 +36,8 @@ wasm = "php.wasm"
 name = "php-fpm"
 wasm = "php-fpm.wasm"
 [binary.wasm32]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/php-8.3.2-rev2-abi6-wasm32-2b6ee83c.tar.zst"
-archive_sha256 = "0d0ef625abfffffb2724eef358945fa3ad632db41da8ca1cb6c905104e8a6d6f"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/php-8.3.2-rev2-abi8-wasm32-65bbf1b4.tar.zst"
+archive_sha256 = "409ac59e356fa92d9bf72fd84f29f2de69f06a93916c742e59cf72ffbcab59fe"
 [binary.wasm64]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/php-8.3.2-rev2-abi6-wasm64-55297fc3.tar.zst"
-archive_sha256 = "4936ffa185cee35963618faf00582ea8a54026012e01c7c55c358be2b11545e5"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/php-8.3.2-rev2-abi8-wasm64-60cb6b4f.tar.zst"
+archive_sha256 = "def39563ad225fbe5a14d13cf3e843d0dd390fa2bdb54782e5590d4260cc567a"

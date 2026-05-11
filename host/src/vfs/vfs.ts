@@ -4,12 +4,22 @@ import type { FileSystemBackend, MountConfig, TimeProvider } from "./types";
 interface MountEntry {
   prefix: string;
   backend: FileSystemBackend;
+  readonly: boolean;
 }
 
 interface HandleInfo {
   backend: FileSystemBackend;
   localHandle: number;
+  /** Only meaningful for file handles. Dir handles always set this to false. */
+  readonly: boolean;
 }
+
+// Linux musl open-flag bits (kernel passes these through `host_open`).
+const O_WRONLY = 0o1;
+const O_RDWR = 0o2;
+const O_CREAT = 0o100;
+const O_TRUNC = 0o1000;
+const O_WRITE_MASK = O_WRONLY | O_RDWR | O_CREAT | O_TRUNC;
 
 function normalizeMountPoint(mp: string): string {
   // Remove trailing slash unless it's the root
@@ -33,6 +43,7 @@ export class VirtualPlatformIO implements PlatformIO {
       .map((m) => ({
         prefix: normalizeMountPoint(m.mountPoint),
         backend: m.backend,
+        readonly: m.readonly === true,
       }))
       .sort((a, b) => b.prefix.length - a.prefix.length);
     this.time = time;
@@ -44,30 +55,23 @@ export class VirtualPlatformIO implements PlatformIO {
   private resolve(path: string): {
     backend: FileSystemBackend;
     relativePath: string;
+    readonly: boolean;
   } {
     for (const m of this.mounts) {
       if (m.prefix === "/") {
-        return { backend: m.backend, relativePath: path };
+        return { backend: m.backend, relativePath: path, readonly: m.readonly };
       }
       if (path === m.prefix || path.startsWith(m.prefix + "/")) {
         let rel = path.slice(m.prefix.length);
         if (!rel.startsWith("/")) rel = "/" + rel;
-        return { backend: m.backend, relativePath: rel };
+        return { backend: m.backend, relativePath: rel, readonly: m.readonly };
       }
     }
     throw new Error(`ENOENT: no mount for path: ${path}`);
   }
 
-  private resolveTwoPaths(
-    path1: string,
-    path2: string,
-  ): { backend: FileSystemBackend; rel1: string; rel2: string } {
-    const r1 = this.resolve(path1);
-    const r2 = this.resolve(path2);
-    if (r1.backend !== r2.backend) {
-      throw new Error("EXDEV: cross-device link");
-    }
-    return { backend: r1.backend, rel1: r1.relativePath, rel2: r2.relativePath };
+  private static erofs(op: string, path: string): never {
+    throw new Error(`EROFS: read-only mount (${op} ${path})`);
   }
 
   private getFileHandle(handle: number): HandleInfo {
@@ -85,10 +89,13 @@ export class VirtualPlatformIO implements PlatformIO {
   // --- File handle operations ---
 
   open(path: string, flags: number, mode: number): number {
-    const { backend, relativePath } = this.resolve(path);
+    const { backend, relativePath, readonly } = this.resolve(path);
+    if (readonly && (flags & O_WRITE_MASK) !== 0) {
+      VirtualPlatformIO.erofs("open(write)", path);
+    }
     const localHandle = backend.open(relativePath, flags, mode);
     const globalHandle = this.nextFileHandle++;
-    this.fileHandles.set(globalHandle, { backend, localHandle });
+    this.fileHandles.set(globalHandle, { backend, localHandle, readonly });
     return globalHandle;
   }
 
@@ -116,6 +123,9 @@ export class VirtualPlatformIO implements PlatformIO {
     length: number,
   ): number {
     const info = this.getFileHandle(handle);
+    if (info.readonly) {
+      throw new Error(`EROFS: read-only mount (write fd=${handle})`);
+    }
     return info.backend.write(info.localHandle, buffer, offset, length);
   }
 
@@ -131,6 +141,9 @@ export class VirtualPlatformIO implements PlatformIO {
 
   ftruncate(handle: number, length: number): void {
     const info = this.getFileHandle(handle);
+    if (info.readonly) {
+      throw new Error(`EROFS: read-only mount (ftruncate fd=${handle})`);
+    }
     info.backend.ftruncate(info.localHandle, length);
   }
 
@@ -141,11 +154,17 @@ export class VirtualPlatformIO implements PlatformIO {
 
   fchmod(handle: number, mode: number): void {
     const info = this.getFileHandle(handle);
+    if (info.readonly) {
+      throw new Error(`EROFS: read-only mount (fchmod fd=${handle})`);
+    }
     info.backend.fchmod(info.localHandle, mode);
   }
 
   fchown(handle: number, uid: number, gid: number): void {
     const info = this.getFileHandle(handle);
+    if (info.readonly) {
+      throw new Error(`EROFS: read-only mount (fchown fd=${handle})`);
+    }
     info.backend.fchown(info.localHandle, uid, gid);
   }
 
@@ -162,32 +181,49 @@ export class VirtualPlatformIO implements PlatformIO {
   }
 
   mkdir(path: string, mode: number): void {
-    const { backend, relativePath } = this.resolve(path);
+    const { backend, relativePath, readonly } = this.resolve(path);
+    if (readonly) VirtualPlatformIO.erofs("mkdir", path);
     backend.mkdir(relativePath, mode);
   }
 
   rmdir(path: string): void {
-    const { backend, relativePath } = this.resolve(path);
+    const { backend, relativePath, readonly } = this.resolve(path);
+    if (readonly) VirtualPlatformIO.erofs("rmdir", path);
     backend.rmdir(relativePath);
   }
 
   unlink(path: string): void {
-    const { backend, relativePath } = this.resolve(path);
+    const { backend, relativePath, readonly } = this.resolve(path);
+    if (readonly) VirtualPlatformIO.erofs("unlink", path);
     backend.unlink(relativePath);
   }
 
+  // EROFS fires before EXDEV: if either side is on a read-only mount we
+  // reject with EROFS regardless of whether the rename would cross devices.
   rename(oldPath: string, newPath: string): void {
-    const { backend, rel1, rel2 } = this.resolveTwoPaths(oldPath, newPath);
-    backend.rename(rel1, rel2);
+    const r1 = this.resolve(oldPath);
+    const r2 = this.resolve(newPath);
+    if (r1.readonly) VirtualPlatformIO.erofs("rename(src)", oldPath);
+    if (r2.readonly) VirtualPlatformIO.erofs("rename(dst)", newPath);
+    if (r1.backend !== r2.backend) {
+      throw new Error("EXDEV: cross-device link");
+    }
+    r1.backend.rename(r1.relativePath, r2.relativePath);
   }
 
   link(existingPath: string, newPath: string): void {
-    const { backend, rel1, rel2 } = this.resolveTwoPaths(existingPath, newPath);
-    backend.link(rel1, rel2);
+    const r1 = this.resolve(existingPath);
+    const r2 = this.resolve(newPath);
+    if (r2.readonly) VirtualPlatformIO.erofs("link(dst)", newPath);
+    if (r1.backend !== r2.backend) {
+      throw new Error("EXDEV: cross-device link");
+    }
+    r1.backend.link(r1.relativePath, r2.relativePath);
   }
 
   symlink(target: string, path: string): void {
-    const { backend, relativePath } = this.resolve(path);
+    const { backend, relativePath, readonly } = this.resolve(path);
+    if (readonly) VirtualPlatformIO.erofs("symlink", path);
     backend.symlink(target, relativePath);
   }
 
@@ -197,12 +233,14 @@ export class VirtualPlatformIO implements PlatformIO {
   }
 
   chmod(path: string, mode: number): void {
-    const { backend, relativePath } = this.resolve(path);
+    const { backend, relativePath, readonly } = this.resolve(path);
+    if (readonly) VirtualPlatformIO.erofs("chmod", path);
     backend.chmod(relativePath, mode);
   }
 
   chown(path: string, uid: number, gid: number): void {
-    const { backend, relativePath } = this.resolve(path);
+    const { backend, relativePath, readonly } = this.resolve(path);
+    if (readonly) VirtualPlatformIO.erofs("chown", path);
     backend.chown(relativePath, uid, gid);
   }
 
@@ -212,7 +250,8 @@ export class VirtualPlatformIO implements PlatformIO {
   }
 
   utimensat(path: string, atimeSec: number, atimeNsec: number, mtimeSec: number, mtimeNsec: number): void {
-    const { backend, relativePath } = this.resolve(path);
+    const { backend, relativePath, readonly } = this.resolve(path);
+    if (readonly) VirtualPlatformIO.erofs("utimensat", path);
     backend.utimensat(relativePath, atimeSec, atimeNsec, mtimeSec, mtimeNsec);
   }
 
@@ -222,7 +261,7 @@ export class VirtualPlatformIO implements PlatformIO {
     const { backend, relativePath } = this.resolve(path);
     const localHandle = backend.opendir(relativePath);
     const globalHandle = this.nextDirHandle++;
-    this.dirHandles.set(globalHandle, { backend, localHandle });
+    this.dirHandles.set(globalHandle, { backend, localHandle, readonly: false });
     return globalHandle;
   }
 

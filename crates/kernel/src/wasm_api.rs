@@ -901,6 +901,13 @@ pub extern "C" fn kernel_set_mode(mode: u32) {
     crate::set_kernel_mode(mode);
 }
 
+/// Toggle filesystem permission enforcement. 0 = off (default), 1 = on.
+/// Gates the checks added across PR 5/5 (Tasks 5.3-5.9).
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_set_enforce_permissions(enabled: i32) {
+    crate::set_enforce_permissions(enabled != 0);
+}
+
 /// Allocate a scratch buffer from the kernel's own heap allocator.
 /// Returns the offset in kernel Wasm memory. The caller must ensure
 /// the buffer is not freed (it lives for the lifetime of the kernel).

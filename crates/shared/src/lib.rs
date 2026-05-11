@@ -17,7 +17,7 @@
 /// commit.
 ///
 /// See `docs/abi-versioning.md` for the full policy.
-pub const ABI_VERSION: u32 = 7;
+pub const ABI_VERSION: u32 = 8;
 
 /// Syscall numbers for the POSIX kernel interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -633,6 +633,11 @@ pub mod mode {
     pub const S_IFDIR: u32 = 0o040000;
     pub const S_IFCHR: u32 = 0o020000;
     pub const S_IFIFO: u32 = 0o010000;
+
+    // Special permission bits
+    pub const S_ISUID: u32 = 0o4000;
+    pub const S_ISGID: u32 = 0o2000;
+    pub const S_ISVTX: u32 = 0o1000;
 
     // Owner permissions
     pub const S_IRWXU: u32 = 0o700;

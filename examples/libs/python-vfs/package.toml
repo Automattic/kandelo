@@ -25,10 +25,11 @@ url = "https://docs.python.org/3/license.html"
 [build]
 script_path = "examples/libs/python-vfs/build-python-vfs.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+commit = "7820d77228b1745335c259513b45573058f13fa6"
 
 [[outputs]]
 name = "python-vfs"
 wasm = "python-vfs.vfs.zst"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/python-vfs-0.1.0-rev1-abi6-wasm32-81d9a8ae.tar.zst"
-archive_sha256 = "5d7ea41225d68da6d92b4fc5993c9087acba65bd8dd4dc2a4ab71d8a9719dc98"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/python-vfs-0.1.0-rev2-abi8-wasm32-aeb88820.tar.zst"
+archive_sha256 = "875aa6018bf6f54f8edcfb6f93a04847348427ef40ab0a77bedb9918c463474a"

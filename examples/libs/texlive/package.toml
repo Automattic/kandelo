@@ -25,6 +25,7 @@ url = "https://www.tug.org/texlive/copying.html"
 [build]
 script_path = "examples/libs/texlive/build-texlive.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+commit = "7820d77228b1745335c259513b45573058f13fa6"
 
 # Two outputs: the wasm engine + the runtime distribution bundle.
 # `place_binaries_symlinks` places both under
@@ -37,6 +38,10 @@ wasm = "pdftex.wasm"
 [[outputs]]
 name = "texlive-bundle"
 wasm = "texlive-bundle.json"
+
+[binary]
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/texlive-2025-rev2-abi8-wasm32-51193f52.tar.zst"
+archive_sha256 = "fc171eb504ca61aa7b741e99af9d45a25934e1773b6d18f6b86d781855ca8e81"
 
 # [binary] block intentionally absent: no published archive exists
 # for ABI v7 yet. Once a force-rebuild lands one, fill in archive_url

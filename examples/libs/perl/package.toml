@@ -16,10 +16,11 @@ url = "https://dev.perl.org/licenses/"
 [build]
 script_path = "examples/libs/perl/build-perl.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+commit = "7820d77228b1745335c259513b45573058f13fa6"
 
 [[outputs]]
 name = "perl"
 wasm = "perl.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/perl-5.40.3-rev1-abi6-wasm32-fa757a25.tar.zst"
-archive_sha256 = "317c86a11341382f34335463506240d792b76557b4b0525152a242a057332e30"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/perl-5.40.3-rev1-abi8-wasm32-9efa350e.tar.zst"
+archive_sha256 = "b4e8841b2b6ea733a4e2cff0b62ba8f6cc9a956212f6955aea11327339c62241"

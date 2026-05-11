@@ -254,6 +254,15 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // control if the spec dictated additional scratch mounts.
   const shmfs = MemoryFileSystem.fromExisting(msg.shmSab);
   const devfs = new DeviceFileSystem();
+
+  // Writable overlay for the MITM CA cert. The `/` mount is read-only
+  // (Task 5.9 enforces it via `VirtualPlatformIO`), so the cert can no
+  // longer be smuggled in by writing through the root memfs backend
+  // — programs (and this worker) must reach it via a writable mount.
+  // A 256 KiB scratch memfs is sufficient: a single PEM bundle is
+  // < 200 KiB even with many trust roots.
+  const certsBackend = MemoryFileSystem.create(new SharedArrayBuffer(256 * 1024));
+
   let mounts: MountConfig[];
   if (msg.vfsImage) {
     const specMounts = resolveForBrowser(DEFAULT_MOUNT_SPEC, msg.vfsImage);
@@ -263,6 +272,9 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     mounts = [
       { mountPoint: "/dev/shm", backend: shmfs },
       { mountPoint: "/dev", backend: devfs },
+      // Longest-prefix wins in resolve(), so this overlays the read-only
+      // `/` mount with a writable backend just for the CA bundle dir.
+      { mountPoint: "/etc/ssl/certs", backend: certsBackend },
       ...specMounts,
     ];
   } else if (msg.fsSab) {
@@ -283,6 +295,9 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     mounts = [
       { mountPoint: "/dev/shm", backend: shmfs },
       { mountPoint: "/dev", backend: devfs },
+      // Same overlay as the vfsImage path so cert injection has a
+      // single, consistent target regardless of how `/` is sourced.
+      { mountPoint: "/etc/ssl/certs", backend: certsBackend },
       { mountPoint: "/", backend: memfs },
     ];
   } else {
@@ -302,17 +317,16 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   await tlsBackend.init();
   io.network = tlsBackend;
 
-  // Install the MITM CA certificate in the VFS so OpenSSL trusts it.
+  // Install the MITM CA cert into the writable `/etc/ssl/certs` overlay
+  // mount declared above. We write directly to the backend (path is
+  // mount-local "/ca-certificates.crt") so this works whether `/` is
+  // read-only or not — the overlay is always writable.
   const caCertPem = tlsBackend.getCACertPEM();
   try {
-    // Demo images don't always include /etc — create the full chain.
-    for (const dir of ["/etc", "/etc/ssl", "/etc/ssl/certs"]) {
-      try { memfs.mkdir(dir, 0o755); } catch { /* exists */ }
-    }
     const certBytes = new TextEncoder().encode(caCertPem);
-    const certFd = memfs.open("/etc/ssl/certs/ca-certificates.crt", 0o1101, 0o644);
-    memfs.write(certFd, certBytes, 0, certBytes.length);
-    memfs.close(certFd);
+    const certFd = certsBackend.open("/ca-certificates.crt", 0o1101, 0o644);
+    certsBackend.write(certFd, certBytes, 0, certBytes.length);
+    certsBackend.close(certFd);
   } catch (e) {
     console.error("[kernel-worker] Failed to write CA cert to VFS:", e);
   }

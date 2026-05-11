@@ -27,14 +27,15 @@ url = "https://www.sqlite.org/copyright.html"
 [build]
 script_path = "examples/libs/sqlite/build-sqlite.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+commit = "7820d77228b1745335c259513b45573058f13fa6"
 
 [outputs]
 libs = ["lib/libsqlite3.a"]
 headers = ["include/sqlite3.h", "include/sqlite3ext.h"]
 pkgconfig = ["lib/pkgconfig/sqlite3.pc"]
 [binary.wasm32]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/sqlite-3.49.1-rev1-abi6-wasm32-0c5cd915.tar.zst"
-archive_sha256 = "087f4e411ef2ff9437ea776519db6e8ead89311f7afb4d8e7e373ba993fee89d"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/sqlite-3.49.1-rev1-abi8-wasm32-69aa2f69.tar.zst"
+archive_sha256 = "1f9e5de63195507208972695f0626d86687086a60c7474eb2998df622b3e11a3"
 [binary.wasm64]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/sqlite-3.49.1-rev1-abi6-wasm64-c1edcf40.tar.zst"
-archive_sha256 = "ee1fcd5bf9f44dd1168edd7b637a9317610b82b8b3c361ca576f0553f3660da1"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/sqlite-3.49.1-rev1-abi8-wasm64-787285a6.tar.zst"
+archive_sha256 = "8453e825d7808a7b71ffa008b829581df7f6eaed549a5cef0a99ff97a6a1b80e"

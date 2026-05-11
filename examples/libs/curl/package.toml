@@ -27,10 +27,11 @@ url = "https://github.com/curl/curl/blob/master/COPYING"
 [build]
 script_path = "examples/libs/curl/build-curl.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+commit = "7820d77228b1745335c259513b45573058f13fa6"
 
 [[outputs]]
 name = "curl"
 wasm = "curl.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v6/curl-8.11.1-rev1-abi6-wasm32-dc1febdf.tar.zst"
-archive_sha256 = "97658327cf46462c0ba799f3c4f424d2dd5cb07f6f757d7caa38e3b9c9c7e438"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/curl-8.11.1-rev1-abi8-wasm32-8f365038.tar.zst"
+archive_sha256 = "6fc96add2030474c8dd09c3c3cfbc007fe6251ac47d6394603aa7349906e388c"
