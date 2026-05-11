@@ -96,7 +96,7 @@ has_cpython()    { has_resolvable programs/cpython.wasm || [ -f "$REPO_ROOT/exam
 has_python_vfs()    { has_resolvable programs/python-vfs.vfs.zst || [ -f "$REPO_ROOT/examples/browser/public/python.vfs.zst" ]; }
 has_perl_vfs()    { has_resolvable programs/perl-vfs.vfs.zst || [ -f "$REPO_ROOT/examples/browser/public/perl.vfs.zst" ]; }
 has_shell_vfs()    { has_resolvable programs/shell.vfs.zst || [ -f "$REPO_ROOT/examples/browser/public/shell.vfs.zst" ]; }
-has_erlang()    { has_resolvable programs/erlang.wasm || [ -f "$REPO_ROOT/examples/libs/erlang/bin/beam.wasm" ]; }
+has_erlang()    { has_resolvable programs/erlang/erlang.wasm || [ -f "$REPO_ROOT/examples/libs/erlang/bin/beam.wasm" ]; }
 has_erlang_vfs()    { has_resolvable programs/erlang-vfs.vfs.zst || [ -f "$REPO_ROOT/examples/browser/public/erlang.vfs.zst" ]; }
 has_lamp_vfs()    { has_resolvable programs/lamp.vfs.zst; }
 has_nginx_vfs()  { has_resolvable programs/nginx-vfs.vfs.zst; }
