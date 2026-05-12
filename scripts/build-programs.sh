@@ -132,12 +132,13 @@ build_cpp_program() {
         -lc++ -lc++abi \
         -o "$wasm"
 
-    # Asyncify for fork/exec support. Harmless when no kernel.kernel_fork
-    # import is present (the pass becomes a no-op).
-    if [ -n "$WASM_OPT" ]; then
-        "$WASM_OPT" --asyncify \
-            --pass-arg="asyncify-imports@${ASYNCIFY_IMPORTS}" \
-            "$wasm" -o "$wasm" 2>/dev/null || true
+    # Phase 7: fork support comes from wasm-fork-instrument. The tool is
+    # a no-op for modules without `kernel.kernel_fork`, so it's safe to
+    # run unconditionally — programs without fork stay byte-identical
+    # except for the ABI metadata section.
+    if [ -x "$FORK_INSTRUMENT" ]; then
+        "$FORK_INSTRUMENT" "$wasm" -o "$wasm.instr" 2>/dev/null && \
+            mv "$wasm.instr" "$wasm" || rm -f "$wasm.instr"
     fi
 }
 
