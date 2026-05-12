@@ -177,3 +177,66 @@ the protocol layer.
 
 **Files:** `host/src/node-kernel-worker-entry.ts` (handleSpawn's
 `worker.on("message")` handler).
+
+## User-space programs
+
+### Replace per-program `-Wl,-z,stack-size` workarounds with a real shadow-stack overflow guard
+`wasm-ld` reserves a default 64 KiB shadow stack (the linear-memory region the
+compiler uses for spilled locals, `alloca`, and address-taken locals). The
+shadow stack grows **downward** from `__stack_high`, and `wasm-ld` places it
+*immediately below* the `.data` / `.bss` segments in the same linear memory.
+There is no guard page, no stack-pointer bounds check, and no trap: a function
+that consumes more than the remaining shadow-stack budget silently writes
+through `__stack_pointer` into whatever data segment happens to be just below
+it, corrupting unrelated globals.
+
+PR #423 (PHP opcache) hit this concretely. `zend_build_ssa` (PASS_6, the
+DFA-based SSA optimization pass) recurses deeply on real-world PHP files; the
+shadow-stack frame underflowed by ~108 KiB into PHP's `alloc_globals` data
+segment, silently corrupting `AG(mm_heap)`. The next `_efree` call dereferenced
+the now-bogus heap pointer and trapped — surfacing as "memory access out of
+bounds" inside the optimizer, with no indication that the actual cause was
+stack overflow ~thousands of frames earlier. The PR's workaround is
+`LDFLAGS=-Wl,-z,stack-size=4194304` (4 MiB) in `examples/libs/php/build-php.sh`.
+That sidesteps the underflow for PHP's observed workload but doesn't *prevent*
+the failure mode — a deeper recursion or a larger `alloca` will silently
+corrupt data again, and every other large port we ship today (vim, nginx,
+mariadb, etc.) has the same latent bug.
+
+A real fix needs runtime detection so the failure surfaces as an obvious
+crash, not silent corruption. Possible approaches:
+
+- **Stack-pointer bounds check on syscall entry**: the channel-syscall glue
+  already reads `__stack_pointer` for other reasons (`worker-main.ts`,
+  `glue/channel_syscall.c`). Adding `__stack_pointer < __stack_low` →
+  `kill(SIGSEGV)` at each syscall entry would catch overflow at the next
+  kernel crossing. Cheap to implement, low overhead, but only catches
+  overflow when the program eventually calls into the kernel — silent
+  corruption between syscalls is still possible.
+- **`-fstack-check` / `-fstack-clash-protection`**: clang emits explicit
+  page-touching probes for every function prologue when the frame exceeds a
+  threshold. Catches overflow at the moment it happens, with no
+  kernel-side cost, but inflates code size and may not be fully supported
+  for the wasm target.
+- **Linker-emitted stack-overflow check**: `wasm-ld` has a `-z stack-overflow-check`
+  proposal in upstream binaryen / LLVM discussions. Worth tracking whether
+  it ships and whether it interacts with our musl + fork-instrument
+  pipeline.
+- **Guard-page-style trap region**: reserve unmapped pages just below
+  `__stack_low` so any underflow store traps cleanly. Wasm's linear memory
+  has no native "unmapped" concept, but the kernel could mark a sentinel
+  region and trap on writes to it via `kernel_*` checks at syscall time
+  (degrades to the bounds-check approach above).
+
+Once a real guard is in place, the per-program `-Wl,-z,stack-size=...`
+overrides should be audited: programs that genuinely need a larger shadow
+stack (PHP optimizer, deep parser stacks) keep the explicit override and
+document why; everything else can drop the flag and rely on the default
++ guard.
+
+**Files:** `examples/libs/php/build-php.sh` (current 4 MiB workaround),
+`glue/channel_syscall.c` (likely site for a syscall-entry bounds check),
+`host/src/worker-main.ts` (instantiation-time wiring for stack bounds),
+plus any other `build-*.sh` that hits the same wall in the meantime.
+
+**Related:** PR #423 (commit `fa9f579f6 feat(php): make opcache fully load opcache.so + survive PASS_6`) for the original root-cause analysis.
