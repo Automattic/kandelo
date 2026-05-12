@@ -697,7 +697,19 @@ jobs:
 
   publish:
     needs: [preflight, lib-matrix-build, matrix-build, test-gate]
-    if: needs.test-gate.result == 'success' && (needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]')
+    # `!cancelled()` is load-bearing: without it, GitHub Actions
+    # implicitly applies `success()` to every `needs` entry — so when
+    # one wave is empty (e.g. library_matrix == '[]' makes
+    # lib-matrix-build skip), publish silently skips even though
+    # everything else succeeded. The explicit success-or-skipped
+    # checks on each matrix job preserve the original "don't publish
+    # if a build failed" intent. Symmetric for program_matrix == '[]'.
+    if: |
+      !cancelled() &&
+      needs.test-gate.result == 'success' &&
+      (needs.lib-matrix-build.result == 'success' || needs.lib-matrix-build.result == 'skipped') &&
+      (needs.matrix-build.result == 'success' || needs.matrix-build.result == 'skipped') &&
+      (needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]')
     runs-on: ubuntu-latest
     permissions:
       contents: write   # gh release create/upload
