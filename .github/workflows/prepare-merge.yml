@@ -747,6 +747,21 @@ jobs:
           done < <(find "$RUNNER_TEMP/staged-archives" -name '*.tar.zst' -print | sort)
           echo "publish: uploaded $count archive(s) to $TAG"
 
+      - name: Prune stale staging-release archives
+        # Defensive cleanup of accumulated state on `pr-<N>-staging`.
+        # `--clobber` only overwrites assets with identical filenames,
+        # so cross-ABI carry-overs (filename declares old `abi<N>` after
+        # main bumps `ABI_VERSION`) and per-(name,arch) sha duplicates
+        # (cache_key changed → new filename suffix) survive each run
+        # and break the downstream `xtask build-index` step. The script
+        # is a no-op for non-`pr-*-staging` tags.
+        # See scripts/prune-staging-release.sh for the full rationale.
+        run: |
+          bash scripts/prune-staging-release.sh \
+            "${{ needs.preflight.outputs.target_tag }}" \
+            "${{ needs.preflight.outputs.abi }}" \
+            "${{ github.repository }}"
+
   generate-index:
     needs: [preflight, publish]
     if: needs.publish.result == 'success'
